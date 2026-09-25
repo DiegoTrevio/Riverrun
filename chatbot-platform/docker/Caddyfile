@@ -1,0 +1,5 @@
+# HTTPS automático para el panel y el webhook. Define DOMAIN en .env
+{$DOMAIN} {
+	encode gzip
+	reverse_proxy backend:3000
+}
