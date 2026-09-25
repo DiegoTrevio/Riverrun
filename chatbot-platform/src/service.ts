@@ -9,6 +9,9 @@ import { query } from './db.js';
 import * as store from './store/index.js';
 import type { Chatbot, Contact, Conversation } from './types.js';
 
+/** Antigüedad máxima de un mensaje entrante para responderlo automáticamente. */
+const MAX_MESSAGE_AGE_SECONDS = 30 * 60;
+
 export type TransportFactory = (bot: Chatbot, contact: Contact) => Transport;
 
 /** Orquesta: webhook → almacenamiento → cola → motor → envío. */
@@ -66,7 +69,10 @@ export class ChatService {
       }
     }
 
-    const triggers = msg.type !== 'reaction';
+    // Mensajes viejos (reconexión del teléfono, reenvíos de Evolution) se guardan pero no se contestan.
+    const ageSeconds = Date.now() / 1000 - msg.timestamp;
+    const stale = ageSeconds > MAX_MESSAGE_AGE_SECONDS;
+    const triggers = msg.type !== 'reaction' && !stale;
     const inserted = await store.insertMessage({
       conversation_id: conv.id,
       direction: 'in',
@@ -75,12 +81,15 @@ export class ChatService {
       content,
       evolution_message_id: msg.messageId,
       processed: !triggers,
-      meta: { push_name: msg.pushName },
+      meta: stale ? { push_name: msg.pushName, stale: true } : { push_name: msg.pushName },
     });
     if (!inserted) return; // duplicado
 
     let current = conv;
-    if (conv.status === 'human' && bot.rules.auto_resume_minutes > 0) {
+    if (conv.status === 'closed' && triggers) {
+      // El cliente vuelve a escribir: se reabre (la memoria se conserva).
+      current = (await store.setConversationStatus(conv.id, 'bot', '')) ?? conv;
+    } else if (conv.status === 'human' && bot.rules.auto_resume_minutes > 0) {
       const lastHuman = await store.lastHumanActivity(conv.id);
       const since = Math.max(new Date(conv.status_changed_at).getTime(), lastHuman ? new Date(lastHuman).getTime() : 0);
       if (Date.now() - since > bot.rules.auto_resume_minutes * 60_000) {

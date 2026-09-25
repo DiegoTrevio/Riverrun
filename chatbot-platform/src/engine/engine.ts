@@ -8,7 +8,7 @@ import { DECISION_JSON_SCHEMA } from './decision.js';
 import { maybeSummarize } from './memory.js';
 import { normalize } from './text.js';
 import type { Transport } from './transport.js';
-import { emptyPlan, validateDecision, type ExecutionPlan } from './validator.js';
+import { emptyPlan, validateDecision, type ExecutionPlan, type ValidationInput } from './validator.js';
 
 export interface ProcessResult {
   status: 'nothing' | 'inactive' | 'human' | 'handoff' | 'replied' | 'no_reply' | 'restart' | 'error';
@@ -74,7 +74,9 @@ export class Engine {
       store.listKnowledge(bot.id, true),
       store.listImages(bot.id, false),
       store.sentImageIds(conv.id),
-      store.recentMessages(conv.id, bot.ai.recent_messages + pending.length),
+      // Todo lo que aún no está en el resumen (así no hay huecos de memoria). El resumidor
+      // mantiene esto acotado a ~recent_messages + summary_batch mensajes.
+      store.unsummarizedMessages(conv.id, conv.summary_until_id, bot.ai.recent_messages + bot.ai.summary_batch + pending.length + 4),
     ]);
     const images = allImages.filter((i) => i.active);
     const imagesById = new Map<string, ImageAsset>(allImages.map((i) => [i.id, i]));
@@ -85,6 +87,8 @@ export class Engine {
     let plan: ExecutionPlan | null = null;
     let lastRaw: unknown;
     let retryable: string[] = [];
+    let factIssues = false;
+    let lastInput: ValidationInput | undefined;
     const attempts: ProcessResult['attempts'] = [];
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       const ctx = buildContext({ bot, knowledge, images, contact, conversation: conv, history, pending, sentImageIds, imagesById, correction });
@@ -99,6 +103,14 @@ export class Engine {
         });
       } catch (e: any) {
         await log('error', 'ai', `Fallo al llamar a la IA: ${e?.message ?? e}`, e);
+        // Si ya hubo una propuesta (rechazada), se corrige/asegura en vez de quedarse callado.
+        if (plan && lastInput) {
+          const v = validateDecision({ ...lastInput, final: true });
+          plan = v.plan;
+          retryable = v.retryable;
+          factIssues = v.factIssues;
+          break;
+        }
         return { status: 'error', error: String(e?.message ?? e), attempts };
       }
       let raw: unknown = completion.content;
@@ -108,7 +120,8 @@ export class Engine {
         /* el validador lo reporta */
       }
       lastRaw = raw;
-      const v = validateDecision({ raw, bot, images, sentImageIds, groundingSources: ctx.groundingSources, customerSources: ctx.customerSources, customerText });
+      lastInput = { raw, bot, images, sentImageIds, customerText, groundingSources: ctx.groundingSources, customerSources: ctx.customerSources };
+      const v = validateDecision({ ...lastInput, final: attempt === MAX_ATTEMPTS });
       attempts.push({ retryable: v.retryable, fixes: v.fixes });
       await store.insertAiRun({
         chatbot_id: bot.id,
@@ -126,22 +139,33 @@ export class Engine {
       if (v.fixes.length) await log('info', 'validator', `Correcciones aplicadas: ${v.fixes.join(' | ')}`);
       plan = v.plan;
       retryable = v.retryable;
+      factIssues = v.factIssues;
       if (!retryable.length) break;
       await log('warn', 'validator', `Propuesta rechazada (intento ${attempt}): ${retryable.join(' | ')}`, { decision: raw });
       correction = retryable.join(' ');
     }
 
     let fallbackUsed = false;
-    if (!plan || retryable.length) {
-      // Tras los reintentos sigue sin pasar la validación: respuesta segura.
+    if (!plan || (retryable.length && !factIssues)) {
+      // Respuesta inválida (JSON roto o vacía) incluso tras reintentar: no se envía nada inventado.
+      await log('error', 'ai', 'La IA no generó una respuesta válida; se reintentará más tarde', { issues: retryable, decision: lastRaw });
+      return { status: 'error', error: retryable.join(' | ') || 'Respuesta inválida', attempts };
+    }
+    if (retryable.length) {
+      // Datos no verificables tras el reintento: respuesta segura según la regla configurada.
       fallbackUsed = true;
-      const base = plan ?? emptyPlan('reply');
+      const base = plan;
       if (bot.rules.unknown_info_behavior === 'handoff') {
         plan = { ...base, action: 'handoff', messages: [], images: [], handoffReason: 'El bot no pudo dar una respuesta verificada' };
       } else {
         plan = { ...base, action: 'reply', messages: [bot.rules.fallback_message], images: [] };
       }
       await log('warn', 'validator', 'Se usó la respuesta de respaldo tras fallar la validación', { issues: retryable, decision: lastRaw });
+    }
+
+    // El backend hace cumplir la regla "si el dato no está, transferir".
+    if (plan.infoNotFound && bot.rules.unknown_info_behavior === 'handoff' && plan.action !== 'handoff' && plan.action !== 'no_reply') {
+      plan = { ...plan, action: 'handoff', messages: [], images: [], handoffReason: plan.handoffReason || 'El cliente pidió información que no está cargada' };
     }
 
     // 4) ¿Llegaron mensajes nuevos mientras la IA pensaba? Mejor responder a todo junto.

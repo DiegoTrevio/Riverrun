@@ -145,9 +145,17 @@ export async function adminRoutes(app: FastifyInstance, service: ChatService) {
     });
 
     api.put('/api/chatbots/:id', async (req: any, reply) => {
-      const parsed = ChatbotBody.safeParse(req.body ?? {});
+      const raw = (req.body ?? {}) as Record<string, any>;
+      const parsed = ChatbotBody.safeParse(raw);
       if (!parsed.success) return bad(reply, parsed.error);
-      const data = { ...parsed.data };
+      const existing = await store.getChatbot(req.params.id);
+      if (!existing) return reply.code(404).send({ error: 'No encontrado' });
+      const data: Record<string, any> = { ...parsed.data };
+      // Las secciones se fusionan con lo guardado: enviar solo un campo no reinicia los demás.
+      const sections = { personality: PersonalitySchema, rules: RulesSchema, flow: FlowSchema, ai: AiSettingsSchema } as const;
+      for (const [key, schema] of Object.entries(sections)) {
+        if (raw[key] && typeof raw[key] === 'object') data[key] = schema.parse({ ...(existing as any)[key], ...raw[key] });
+      }
       if (data.evolution_api_key === '••••••') delete data.evolution_api_key;
       try {
         const bot = await store.updateChatbot(req.params.id, data);

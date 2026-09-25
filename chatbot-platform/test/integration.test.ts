@@ -255,8 +255,11 @@ t('memoria: resume lo antiguo y no manda todo el historial', async () => {
   await waitFor(() => sent.length === 1);
   const req = calls.find((x) => x.json_schema)!;
   assert.match(req.messages[0].content, /Resumen de la conversación anterior/);
-  // system + como máximo 4 recientes + el pendiente
-  assert.ok(req.messages.length <= 1 + 4 + 1, `historial acotado (${req.messages.length})`);
+  // system + lo no resumido (acotado a recent_messages + summary_batch) + el pendiente
+  const c2 = await store.getConversation(convs[0].id);
+  const unsummarized = await store.countMessagesAfter(convs[0].id, c2!.summary_until_id);
+  assert.ok(unsummarized <= 4 + 4 + 2, `lo no resumido se mantiene acotado (${unsummarized})`);
+  assert.ok(req.messages.length <= 1 + unsummarized, `historial acotado (${req.messages.length})`);
   assert.ok(!req.messages.some((m) => m.content.includes('soy ana')), 'los mensajes antiguos no se reenvían');
 });
 

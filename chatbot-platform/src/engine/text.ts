@@ -129,6 +129,19 @@ export class FactCorpus {
     return d.length >= 3 && this.digitsJoined.includes(d);
   }
 
+  /** ¿`amount` = número del corpus × k, con k entre 2 y 60 y k aceptado por `quantityOk`? */
+  isProductOf(amount: string, quantityOk: (k: string) => boolean): boolean {
+    const a = Number(amount);
+    if (!Number.isFinite(a) || a <= 0) return false;
+    for (const n of this.numbers) {
+      const base = Number(n);
+      if (!Number.isFinite(base) || base <= 0) continue;
+      const k = a / base;
+      if (Number.isInteger(k) && k >= 2 && k <= 60 && quantityOk(String(k))) return true;
+    }
+    return false;
+  }
+
   hasPhone(p: string) {
     if (this.numbers.has(p)) return true;
     // Permitir variantes con/sin lada de país (52, 521)
@@ -154,11 +167,20 @@ export class FactCorpus {
   unverified(reply: string, trusted?: FactCorpus): string[] {
     const f = extractFacts(reply);
     const bad: string[] = [];
-    if (trusted) for (const m of extractMoney(reply)) if (!trusted.hasNumber(m)) bad.push(m);
+    const replyNumbers = new Set(f.numbers);
+    const computed = new Set<string>();
+    if (trusted) {
+      for (const m of extractMoney(reply)) {
+        if (trusted.hasNumber(m)) continue;
+        // Cotización: precio del negocio × una cantidad que aparece en la respuesta o la dijo el cliente.
+        if (trusted.isProductOf(m, (k) => replyNumbers.has(k) || this.numbers.has(k))) computed.add(m);
+        else bad.push(m);
+      }
+    }
     for (const u of f.urls) if (!this.hasUrl(u)) bad.push(u);
     for (const e of f.emails) if (!this.hasEmail(e)) bad.push(e);
     for (const p of f.phones) if (!this.hasPhone(p)) bad.push(p);
-    for (const n of f.numbers) if (!this.hasNumber(n)) bad.push(n);
+    for (const n of f.numbers) if (!computed.has(n) && !this.hasNumber(n)) bad.push(n);
     return [...new Set(bad)];
   }
 }

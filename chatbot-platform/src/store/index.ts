@@ -329,6 +329,15 @@ export async function recentMessages(conversationId: string, limit: number): Pro
   return rows.reverse();
 }
 
+/** Últimos `limit` mensajes posteriores al resumen (lo que la IA aún no tiene resumido), en orden cronológico. */
+export async function unsummarizedMessages(conversationId: string, afterId: number, limit: number): Promise<Message[]> {
+  const rows = await query<Message>(
+    `SELECT * FROM messages WHERE conversation_id = $1 AND id > $2 AND status <> 'failed' ORDER BY id DESC LIMIT $3`,
+    [conversationId, afterId, limit],
+  );
+  return rows.reverse();
+}
+
 export async function messagesBetween(conversationId: string, afterId: number, upToId: number): Promise<Message[]> {
   return query<Message>(
     `SELECT * FROM messages WHERE conversation_id = $1 AND id > $2 AND id <= $3 AND status <> 'failed' ORDER BY id`,

@@ -20,6 +20,8 @@ export interface ValidationResult {
   retryable: string[];
   /** Correcciones aplicadas automáticamente (se registran). */
   fixes: string[];
+  /** true si entre los problemas hay datos no verificables (precios, links, teléfonos...). */
+  factIssues: boolean;
 }
 
 export interface ValidationInput {
@@ -33,6 +35,11 @@ export interface ValidationInput {
   customerSources?: string[];
   /** Texto de los mensajes pendientes del cliente (para saber si pidió explícitamente una imagen). */
   customerText: string;
+  /**
+   * Último intento: los problemas de estilo (frases prohibidas, promesas de foto, largo)
+   * se corrigen automáticamente en lugar de pedir otra respuesta a la IA.
+   */
+  final?: boolean;
 }
 
 const IMAGE_PROMISE_RE = /\b(te|le|les)\s+(env[ií]o|mando|comparto|paso|dejo|adjunto)\b[^.?!\n]{0,40}\b(foto|fotos|imagen|imagenes|imágenes|men[uú]|cat[aá]logo|flyer|folleto)\b|\b(aqu[ií]|ah[ií])\s+(te|le)?\s*(va|van|est[aá]n?|tienes?)\b[^.?!\n]{0,30}\b(foto|fotos|imagen|imágenes|imagenes)\b/i;
@@ -86,20 +93,38 @@ export function validateFieldValue(field: DataField, value: string): string | nu
   }
 }
 
-function splitLongMessage(text: string, max: number): string[] {
-  if (text.length <= max) return [text];
-  const parts: string[] = [];
-  const paragraphs = text.split(/\n{2,}/);
+export function sentences(text: string): string[] {
+  return text.split(/(?<=[.!?…])\s+|\n+/).map((x) => x.trim()).filter(Boolean);
+}
+
+/** Agrupa piezas en bloques de hasta `max` caracteres. */
+function pack(pieces: string[], max: number, sep: string): string[] {
+  const out: string[] = [];
   let cur = '';
-  for (const p of paragraphs) {
-    if ((cur + '\n\n' + p).trim().length <= max) cur = (cur ? cur + '\n\n' : '') + p;
+  for (const p of pieces) {
+    if (!cur) cur = p;
+    else if ((cur + sep + p).length <= max) cur += sep + p;
     else {
-      if (cur) parts.push(cur);
+      out.push(cur);
       cur = p;
     }
   }
-  if (cur) parts.push(cur);
-  return parts;
+  if (cur) out.push(cur);
+  return out;
+}
+
+/** Divide un mensaje largo por párrafos y, si hace falta, por oraciones. */
+export function splitLongMessage(text: string, max: number): string[] {
+  if (text.length <= max) return [text];
+  const byParagraph = pack(text.split(/\n{2,}/).map((x) => x.trim()).filter(Boolean), max, '\n\n');
+  return byParagraph.flatMap((p) => (p.length <= max ? [p] : pack(sentences(p), max, ' ')));
+}
+
+/** Quita las oraciones que cumplen `test`; devuelve los mensajes que aún tienen contenido. */
+function dropSentences(messages: string[], test: (sentenceNorm: string, sentence: string) => boolean): string[] {
+  return messages
+    .map((m) => sentences(m).filter((x) => !test(normalize(x), x)).join(' ').trim())
+    .filter((m) => /[\p{L}\p{N}]/u.test(m));
 }
 
 /**
@@ -114,6 +139,7 @@ export function validateDecision(input: ValidationInput): ValidationResult {
   const rules = bot.rules;
   const fixes: string[] = [];
   const retryable: string[] = [];
+  let factIssues = false;
 
   const parsed = parseDecision(input.raw);
   if (!parsed.decision) {
@@ -121,6 +147,7 @@ export function validateDecision(input: ValidationInput): ValidationResult {
       plan: emptyPlan('no_reply'),
       retryable: [parsed.error ?? 'Respuesta inválida'],
       fixes,
+      factIssues: false,
     };
   }
   const d = parsed.decision;
@@ -144,15 +171,30 @@ export function validateDecision(input: ValidationInput): ValidationResult {
     messages = [...head, tail];
     fixes.push(`Se agruparon mensajes para no exceder ${bot.ai.max_bubbles}`);
   }
+  const soft = (issue: string, fix: () => void, fixNote: string) => {
+    if (input.final) {
+      fix();
+      fixes.push(fixNote);
+    } else retryable.push(issue);
+  };
   const tooLong = messages.some((m) => m.length > bot.ai.max_chars_per_bubble * 1.6);
-  if (tooLong && bot.personality.response_length !== 'detallada') retryable.push(`Un mensaje es demasiado largo; resume a menos de ${bot.ai.max_chars_per_bubble} caracteres por mensaje.`);
+  if (tooLong && bot.personality.response_length !== 'detallada') {
+    soft(`Un mensaje es demasiado largo; resume a menos de ${bot.ai.max_chars_per_bubble} caracteres por mensaje.`, () => undefined, 'Se aceptó un mensaje largo en el último intento');
+  }
 
   // ---------- Frases prohibidas ----------
-  const joinedNorm = normalize(messages.join(' '));
-  const banned = rules.banned_phrases.filter((p) => p.trim() && joinedNorm.includes(normalize(p)));
-  if (banned.length) retryable.push(`No uses estas frases: ${banned.map((b) => `"${b}"`).join(', ')}.`);
-  const forbiddenOut = rules.forbidden_topics.filter((t) => t.trim().length > 3 && joinedNorm.includes(normalize(t)));
-  if (forbiddenOut.length) retryable.push(`Tu respuesta menciona temas prohibidos (${forbiddenOut.join(', ')}). No hables de ellos.`);
+  const bannedList = rules.banned_phrases.map((p) => normalize(p)).filter(Boolean);
+  const banned = rules.banned_phrases.filter((p) => p.trim() && normalize(messages.join(' ')).includes(normalize(p)));
+  if (banned.length) {
+    soft(
+      `No uses estas frases: ${banned.map((b) => `"${b}"`).join(', ')}.`,
+      () => (messages = dropSentences(messages, (n) => bannedList.some((b) => n.includes(b)))),
+      `Se quitaron oraciones con frases prohibidas: ${banned.join(', ')}`,
+    );
+  }
+  // Temas prohibidos: solo se registra (declinar amablemente suele mencionarlos).
+  const forbiddenOut = rules.forbidden_topics.filter((t) => t.trim().length > 3 && normalize(messages.join(' ')).includes(normalize(t)));
+  if (forbiddenOut.length) fixes.push(`Revisar: la respuesta menciona un tema prohibido (${forbiddenOut.join(', ')})`);
 
   // ---------- Imágenes: solo del catálogo ----------
   const byCode = new Map(input.images.filter((i) => i.active).map((i) => [normalize(i.code), i]));
@@ -178,12 +220,16 @@ export function validateDecision(input: ValidationInput): ValidationResult {
     images.splice(rules.max_images_per_reply);
   }
   if (action === 'reply_with_image' && !images.length) {
-    if (invalidIds.length) retryable.push(`Los IDs de imagen ${invalidIds.join(', ')} no existen. Usa solo IDs del catálogo o responde sin imagen.`);
+    if (invalidIds.length) soft(`Los IDs de imagen ${invalidIds.join(', ')} no existen. Usa solo IDs del catálogo o responde sin imagen.`, () => undefined, 'Se respondió sin imagen');
     action = 'reply';
   }
   if (images.length && action !== 'handoff') action = 'reply_with_image';
   if (!images.length && IMAGE_PROMISE_RE.test(messages.join(' '))) {
-    retryable.push('Dices que envías una imagen pero no incluiste ningún ID válido en image_ids. Incluye el ID correcto del catálogo o no menciones que envías imagen.');
+    soft(
+      'Dices que envías una imagen pero no incluiste ningún ID válido en image_ids. Incluye el ID correcto del catálogo o no menciones que envías imagen.',
+      () => (messages = dropSentences(messages, (_n, x) => IMAGE_PROMISE_RE.test(x))),
+      'Se quitó la promesa de enviar una imagen inexistente',
+    );
   }
 
   // ---------- Verificación de hechos (cero invenciones) ----------
@@ -192,6 +238,7 @@ export function validateDecision(input: ValidationInput): ValidationResult {
     const all = new FactCorpus([...input.groundingSources, ...(input.customerSources ?? [])]);
     const unverified = all.unverified(messages.join('\n'), trusted);
     if (unverified.length) {
+      factIssues = true;
       retryable.push(
         `Mencionaste datos que no están en la información del negocio ni en la conversación: ${unverified.join(', ')}. Elimina o corrige esos datos; si no los tienes, dilo con naturalidad.`,
       );
@@ -242,6 +289,7 @@ export function validateDecision(input: ValidationInput): ValidationResult {
     },
     retryable,
     fixes,
+    factIssues,
   };
 }
 

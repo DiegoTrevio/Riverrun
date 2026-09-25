@@ -4,7 +4,9 @@ import { config } from './config.js';
 
 const COOKIE = 'cp_session';
 const TTL_MS = 7 * 24 * 3600 * 1000;
-const secret = () => config.sessionSecret || 'dev-secret-change-me-please';
+// Sin SESSION_SECRET se usa uno aleatorio (las sesiones se cierran al reiniciar), nunca uno fijo.
+const fallbackSecret = crypto.randomBytes(32).toString('hex');
+const secret = () => config.sessionSecret || fallbackSecret;
 
 function sign(payload: string) {
   return crypto.createHmac('sha256', secret()).update(payload).digest('base64url');

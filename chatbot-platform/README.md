@@ -21,7 +21,7 @@ WhatsApp ─► Evolution API ─► Backend (este proyecto) ─► WhatsApp
 | **Contexto correcto** | Se envía: prompt + conocimiento (si excede el presupuesto, solo lo relevante + lo marcado como "siempre incluir") + catálogo de imágenes + datos del cliente + notas + resumen + últimos N mensajes. Nunca el historial completo. La parte fija va primero para aprovechar el caché de prompts de OpenAI (más barato). |
 | **Cero invenciones** | 1) Instrucción explícita de usar solo la información cargada. 2) El validador extrae **precios, números, URLs, correos y teléfonos** de la respuesta y verifica que existan en el conocimiento/configuración. Los **montos de dinero** solo se aceptan si vienen del negocio (el cliente no puede "dictar" un precio). 3) Si falla, se pide a la IA que corrija; si insiste, se envía un mensaje de respaldo o se transfiere, según la regla configurada. |
 | **Imágenes correctas** | La IA solo ve un catálogo con ID, nombre, qué muestra y cuándo usarla. El backend descarta IDs inexistentes o inactivos, evita reenviar la misma imagen, limita cuántas se envían y rechaza respuestas del tipo "te mando la foto" sin imagen válida. Los archivos se validan por su firma real (JPG/PNG/WEBP, máx. 5 MB). |
-| **Memoria** | Datos del cliente (campos configurables, validados: correo, teléfono, opciones…), notas de intereses, nombre, y un **resumen acumulado** de lo antiguo que se genera automáticamente. La IA ve qué datos ya tiene y cuáles faltan, así no vuelve a preguntar. |
+| **Memoria** | Datos del cliente (campos configurables, validados: correo, teléfono, opciones…), notas de intereses, nombre, y un **resumen acumulado** de lo antiguo que se genera automáticamente. La IA recibe el resumen + todos los mensajes aún no resumidos (sin huecos), y ve qué datos ya tiene y cuáles faltan, así no vuelve a preguntar. |
 | **Transferencia a humano** | Por palabras clave (sin gastar IA), por decisión de la IA según reglas, o manualmente desde el panel. Aviso opcional por WhatsApp a un encargado. Si alguien responde desde el teléfono, el bot se pausa en esa conversación. Retoma automática opcional tras X minutos. |
 | **Registros** | Cada error/evento de Evolution, IA, validador, webhook y panel queda en `event_logs` y se ve en el panel. Cada llamada a la IA queda en `ai_runs` con tokens (incluidos los cacheados), latencia, decisión y validación. |
 | **Multiempresa** | Cada chatbot tiene su instancia/número, prompt, conocimiento, imágenes, reglas y URL de webhook secreta. Se puede duplicar un chatbot como plantilla. |
@@ -90,7 +90,13 @@ El backend (`src/engine/validator.ts`) nunca confía en la propuesta:
 - Estilo: frases prohibidas, temas prohibidos, emojis según configuración, Markdown → formato WhatsApp, longitud y número de mensajes.
 - Coherencia: `no_reply` sin mensajes, respuestas vacías, promesas de foto sin imagen.
 
-Problemas corregibles → se reintenta **una vez** con la corrección. Si persiste → respuesta de respaldo o transferencia. Además, si el cliente escribe mientras la IA piensa, la respuesta se descarta y se vuelve a generar con todos los mensajes; si una persona toma la conversación mientras tanto, no se envía nada.
+Problemas corregibles → se reintenta **una vez** con la corrección. En el último intento:
+
+- Problemas de **estilo** (frase prohibida, prometer una foto inexistente, mensaje largo) se corrigen solos: se quitan las oraciones problemáticas y se envía el resto.
+- Datos **no verificables** → respuesta de respaldo o transferencia, según la regla configurada.
+- Respuesta **inválida** (JSON roto o vacía) → no se envía nada; se registra el error y se reintenta en 1 minuto.
+
+Las cotizaciones simples (precio del catálogo × cantidad que dijo el cliente, p. ej. 3 noches) se aceptan; cualquier otro monto se rechaza. Si la regla es "transferir cuando falta un dato" y la IA marca `info_not_found`, el backend transfiere aunque la IA haya propuesto solo responder. Además, si el cliente escribe mientras la IA piensa, la respuesta se descarta y se vuelve a generar con todos los mensajes; si una persona toma la conversación mientras tanto, no se envía nada.
 
 ## Desarrollo local
 
@@ -143,4 +149,6 @@ Webhook de Evolution: `POST /webhook/:token` (URL secreta por chatbot, visible e
 - La cola vive en memoria: pensada para un proceso en un VPS. Al reiniciar, retoma los mensajes sin responder de los últimos 15 minutos.
 - La recuperación de conocimiento es por palabras clave (sin embeddings) y solo entra en juego si el conocimiento excede el presupuesto; para la mayoría de negocios se envía completo.
 - Se ignoran grupos, estados y canales de WhatsApp.
+- Los mensajes con más de 30 minutos de antigüedad (p. ej. al reconectar el teléfono) se guardan pero no se contestan automáticamente.
+- Una conversación **cerrada** se reabre (con su memoria) cuando el cliente vuelve a escribir.
 - La verificación de hechos cubre cifras, links, correos y teléfonos; afirmaciones sin números (p.ej. "sí tenemos alberca") dependen del prompt y la regla de cero invenciones.

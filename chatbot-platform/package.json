@@ -15,7 +15,7 @@
     "migrate": "tsx --env-file-if-exists=.env src/cli/migrate.ts",
     "seed:demo": "tsx --env-file-if-exists=.env src/cli/seed-demo.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --import tsx --test test/*.test.ts"
+    "test": "node --import tsx --test --test-concurrency=1 test/*.test.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.2",
