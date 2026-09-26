@@ -28,6 +28,11 @@ export interface ProcessOptions {
 
 const MAX_ATTEMPTS = 2;
 
+/** Plataformas donde tiene sentido simular "escribiendo…". */
+function hasTyping(t: Transport) {
+  return t.kind === 'whatsapp' || t.kind === 'telegram' || t.kind === 'messenger' || t.kind === 'instagram';
+}
+
 export function typingDelay(text: string, enabled: boolean) {
   if (!enabled) return 0;
   return Math.max(1000, Math.min(7000, 700 + text.length * 35));
@@ -40,15 +45,16 @@ export class Engine {
   async process(conversationId: string, transport: Transport, opts: ProcessOptions = {}): Promise<ProcessResult> {
     const conv = await store.getConversation(conversationId);
     if (!conv) return { status: 'nothing' };
-    const bot = await store.getChatbot(conv.chatbot_id);
-    const contact = await store.getContact(conv.contact_id);
-    if (!bot || !contact) return { status: 'nothing' };
+    const [contact, channel] = await Promise.all([store.getContact(conv.contact_id), store.getChannel(conv.channel_id)]);
+    const bot = conv.chatbot_id ? await store.getChatbot(conv.chatbot_id) : null;
+    if (!contact || !channel) return { status: 'nothing' };
 
     const pending = await store.pendingInbound(conv.id);
     if (!pending.length) return { status: 'nothing' };
     const lastPendingId = pending[pending.length - 1].id;
 
-    if (!bot.active && !opts.ignoreInactive) {
+    // Sin chatbot asignado, canal o cuenta desactivados: se guarda pero no se responde.
+    if (!bot || ((!bot.active || !channel.active || channel.account_active === false) && !opts.ignoreInactive)) {
       await store.markProcessed(conv.id, lastPendingId);
       return { status: 'inactive' };
     }
@@ -58,8 +64,8 @@ export class Engine {
     }
 
     const customerText = pending.map((m) => m.content).join('\n');
-    const log = (level: 'info' | 'warn' | 'error', source: 'engine' | 'ai' | 'validator' | 'evolution', message: string, details?: unknown) =>
-      logEvent({ level, source, message, details, chatbotId: bot.id, conversationId: conv.id });
+    const log = (level: 'info' | 'warn' | 'error', source: 'engine' | 'ai' | 'validator' | 'channel', message: string, details?: unknown) =>
+      logEvent({ level, source, message, details, accountId: conv.account_id, chatbotId: bot.id, channelId: conv.channel_id, conversationId: conv.id });
 
     // 1) Transferencia inmediata por palabra clave (sin gastar IA).
     const kw = matchKeyword(customerText, bot.rules.handoff_keywords);
@@ -91,7 +97,7 @@ export class Engine {
     let lastInput: ValidationInput | undefined;
     const attempts: ProcessResult['attempts'] = [];
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-      const ctx = buildContext({ bot, knowledge, images, contact, conversation: conv, history, pending, sentImageIds, imagesById, correction });
+      const ctx = buildContext({ bot, knowledge, images, contact, conversation: conv, channelType: channel.type, history, pending, sentImageIds, imagesById, correction });
       let completion;
       try {
         completion = await this.ai.complete({
@@ -124,6 +130,7 @@ export class Engine {
       const v = validateDecision({ ...lastInput, final: attempt === MAX_ATTEMPTS });
       attempts.push({ retryable: v.retryable, fixes: v.fixes });
       await store.insertAiRun({
+        account_id: conv.account_id,
         chatbot_id: bot.id,
         conversation_id: conv.id,
         kind: 'decision',
@@ -191,7 +198,7 @@ export class Engine {
     await store.markProcessed(conv.id, lastPendingId);
 
     // 6) Memoria de largo plazo (resumen) en segundo plano.
-    maybeSummarize(this.ai, bot, conv.id).catch((e) => log('error', 'ai', `Error al resumir: ${e?.message ?? e}`, e));
+    maybeSummarize(this.ai, bot, conv.id, conv.account_id).catch((e) => log('error', 'ai', `Error al resumir: ${e?.message ?? e}`, e));
 
     return {
       status: plan.action === 'handoff' ? 'handoff' : plan.action === 'no_reply' ? 'no_reply' : 'replied',
@@ -203,7 +210,7 @@ export class Engine {
   }
 
   async sendPlan(bot: Chatbot, conv: Conversation, transport: Transport, plan: ExecutionPlan, meta: Record<string, unknown>) {
-    const typing = bot.ai.typing_simulation && transport.kind === 'whatsapp';
+    const typing = bot.ai.typing_simulation && hasTyping(transport);
     for (const text of plan.messages) {
       await this.sendOut(bot, conv, transport, { sender: 'bot', text, delay: typingDelay(text, typing), meta });
     }
@@ -214,7 +221,7 @@ export class Engine {
 
   /** Guarda el mensaje ANTES de enviarlo (para reconocer el eco del webhook) y luego lo envía. */
   async sendOut(
-    bot: Chatbot,
+    bot: Chatbot | null,
     conv: Conversation,
     transport: Transport,
     o: { sender: 'bot' | 'human' | 'system'; text: string; image?: ImageAsset; delay: number; meta?: Record<string, unknown> },
@@ -232,15 +239,17 @@ export class Engine {
     if (!msg) return null;
     try {
       const extId = o.image ? await transport.sendImage(o.image, o.text, o.delay) : await transport.sendText(o.text, o.delay);
-      await store.updateMessage(msg.id, { evolution_message_id: extId, status: 'ok' });
-      return { ...msg, status: 'ok', evolution_message_id: extId };
+      await store.updateMessage(msg.id, { external_message_id: extId, status: 'ok' });
+      return { ...msg, status: 'ok', external_message_id: extId };
     } catch (e: any) {
       await store.updateMessage(msg.id, { status: 'failed', meta: { error: String(e?.message ?? e) } });
       await logEvent({
         level: 'error',
-        source: 'evolution',
-        message: `No se pudo enviar ${o.image ? `la imagen ${o.image.code}` : 'el mensaje'}: ${e?.message ?? e}`,
-        chatbotId: bot.id,
+        source: transport.kind === 'whatsapp' ? 'evolution' : 'channel',
+        message: `No se pudo enviar ${o.image ? `la imagen ${o.image.code}` : 'el mensaje'} (${transport.kind}): ${e?.message ?? e}`,
+        accountId: conv.account_id,
+        chatbotId: bot?.id ?? null,
+        channelId: conv.channel_id,
         conversationId: conv.id,
         details: e,
       });
@@ -252,16 +261,16 @@ export class Engine {
     await store.setConversationStatus(conv.id, 'human', reason);
     const texts = messages.length ? messages : bot.rules.handoff_message ? [bot.rules.handoff_message] : [];
     for (const text of texts) {
-      await this.sendOut(bot, conv, transport, { sender: 'bot', text, delay: typingDelay(text, bot.ai.typing_simulation && transport.kind === 'whatsapp'), meta: { action: 'handoff' } });
+      await this.sendOut(bot, conv, transport, { sender: 'bot', text, delay: typingDelay(text, bot.ai.typing_simulation && hasTyping(transport)), meta: { action: 'handoff' } });
     }
-    await logEvent({ level: 'info', source: 'engine', message: `Conversación transferida a humano: ${reason}`, chatbotId: bot.id, conversationId: conv.id });
+    await logEvent({ level: 'info', source: 'engine', message: `Conversación transferida a humano: ${reason}`, accountId: conv.account_id, chatbotId: bot.id, channelId: conv.channel_id, conversationId: conv.id });
     if (bot.rules.handoff_notify_number) {
-      const who = contact.name || contact.push_name || contact.phone || contact.jid;
+      const who = contact.name || contact.push_name || contact.phone || contact.external_id;
       const text = `🔔 *${bot.name}*: ${who}${contact.phone ? ` (+${contact.phone})` : ''} necesita atención.\nMotivo: ${reason}`;
       try {
         await transport.notify(bot.rules.handoff_notify_number, text);
       } catch (e: any) {
-        await logEvent({ level: 'error', source: 'evolution', message: `No se pudo avisar al encargado: ${e?.message ?? e}`, chatbotId: bot.id, conversationId: conv.id });
+        await logEvent({ level: 'error', source: 'channel', message: `No se pudo avisar al encargado: ${e?.message ?? e}`, accountId: conv.account_id, chatbotId: bot.id, conversationId: conv.id });
       }
     }
   }

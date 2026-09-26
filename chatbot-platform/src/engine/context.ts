@@ -1,5 +1,5 @@
 import type { ChatMessage } from '../ai/provider.js';
-import type { Chatbot, Contact, Conversation, DataField, ImageAsset, KnowledgeItem, Message } from '../types.js';
+import type { ChannelType, Chatbot, Contact, Conversation, DataField, ImageAsset, KnowledgeItem, Message } from '../types.js';
 import { keywords } from './text.js';
 
 export interface ContextInput {
@@ -8,6 +8,8 @@ export interface ContextInput {
   images: ImageAsset[];
   contact: Contact;
   conversation: Conversation;
+  /** Plataforma por la que se conversa. */
+  channelType?: ChannelType;
   /** Historial reciente (incluye los mensajes pendientes al final). */
   history: Message[];
   /** Mensajes del cliente aún sin responder. */
@@ -28,6 +30,15 @@ export interface BuiltContext {
   customerSources: string[];
   isFirstContact: boolean;
 }
+
+const CHANNEL_NAMES: Record<ChannelType, string> = {
+  whatsapp: 'WhatsApp',
+  telegram: 'Telegram',
+  messenger: 'Facebook Messenger',
+  instagram: 'Instagram (mensajes directos)',
+  webchat: 'chat del sitio web',
+  playground: 'simulador',
+};
 
 const LENGTH_GUIDE: Record<string, string> = {
   muy_corta: 'Respuestas muy cortas: 1 o 2 frases como máximo.',
@@ -123,7 +134,7 @@ export function buildSystemPrompt(input: ContextInput, knowledge: KnowledgeItem[
   // ---------- Parte estable (se cachea): rol, estilo, conocimiento, imágenes, reglas ----------
   s.push('# Tu papel');
   const who = p.assistant_name ? `Te llamas ${p.assistant_name} y atiendes` : 'Atiendes';
-  s.push(`${who} el WhatsApp de "${bot.name}". Conversas con clientes reales por chat.`);
+  s.push(`${who} los mensajes de "${bot.name}". Conversas con clientes reales por chat (WhatsApp, redes sociales o el sitio web).`);
   if (p.prompt.trim()) s.push(p.prompt.trim());
 
   s.push('\n# Cómo escribes');
@@ -133,7 +144,7 @@ export function buildSystemPrompt(input: ContextInput, knowledge: KnowledgeItem[
       `- Tono: ${p.tone.length ? p.tone.join(', ') : 'natural'}.`,
       `- ${LENGTH_GUIDE[p.response_length]}`,
       `- ${EMOJI_GUIDE[p.emojis]}`,
-      '- Escribe como una persona real por WhatsApp: frases simples, directas y cálidas. Nada de lenguaje de call center, frases de plantilla ni exceso de signos de exclamación.',
+      '- Escribe como una persona real por chat: frases simples, directas y cálidas. Nada de lenguaje de call center, frases de plantilla ni exceso de signos de exclamación.',
       '- Responde primero exactamente lo que el cliente preguntó. No repitas lo que el cliente acaba de decir ni lo que ya explicaste antes.',
       '- No saludes de nuevo si ya saludaste en la conversación. No te despidas en cada mensaje.',
       '- Haz como máximo UNA pregunta por turno y solo si ayuda a avanzar.',
@@ -238,7 +249,7 @@ export function buildSystemPrompt(input: ContextInput, knowledge: KnowledgeItem[
   const name = contact.name || '';
   if (name) known.push(`nombre: ${name}`);
   else if (contact.push_name) known.push(`nombre de perfil de WhatsApp (no confirmado, úsalo con cuidado): ${contact.push_name}`);
-  if (contact.phone && contact.channel === 'whatsapp') known.push(`teléfono de WhatsApp: ${contact.phone}`);
+  if (contact.phone && input.channelType === 'whatsapp') known.push(`teléfono de WhatsApp: ${contact.phone}`);
   for (const f of bot.data_fields) {
     const v = contact.data?.[f.key];
     if (v) known.push(`${f.label} (\`${f.key}\`): ${v}`);
@@ -258,6 +269,7 @@ export function buildSystemPrompt(input: ContextInput, knowledge: KnowledgeItem[
 
   s.push('\n# Momento actual');
   s.push(`Fecha y hora del negocio: ${formatDate(now, bot.ai.timezone)} (${bot.ai.timezone}).`);
+  if (input.channelType && input.channelType !== 'playground') s.push(`Canal de esta conversación: ${CHANNEL_NAMES[input.channelType]}.`);
   if (isFirstContact) {
     s.push(`Es el primer contacto con este cliente: saluda brevemente${flow.greeting ? ` (sugerencia de saludo: "${flow.greeting}")` : ''} y responde lo que pregunte.`);
   } else {

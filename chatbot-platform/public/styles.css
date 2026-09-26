@@ -133,3 +133,6 @@ code { background: var(--accent-soft); color: var(--accent); padding: 1px 6px; b
 .log-warn td { color: var(--warn); }
 details summary { cursor: pointer; color: var(--muted); }
 .sticky-save { position: sticky; bottom: 0; background: var(--bg); padding: 12px 0; border-top: 1px solid var(--border); margin-top: 10px; z-index: 5; }
+.account-switch { padding: 0 10px 12px; }
+.account-switch select { margin-top: 4px; }
+ol.small li { margin-bottom: 6px; }

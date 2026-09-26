@@ -68,6 +68,8 @@ services:
       PORT: 3000
       DATABASE_URL: postgres://chatbot:${POSTGRES_PASSWORD}@postgres:5432/chatbot
       WEBHOOK_BASE_URL: http://backend:3000
+      # URL pública con HTTPS (Telegram, Messenger, Instagram, chat web e imágenes)
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://${DOMAIN}}
       EVOLUTION_URL: http://evolution:8080
       EVOLUTION_API_KEY: ${EVOLUTION_API_KEY}
       OPENAI_API_KEY: ${OPENAI_API_KEY}

@@ -9,7 +9,7 @@ const running = new Set<string>();
  * Mantiene un resumen acumulado de los mensajes que ya salieron de la ventana reciente.
  * Así la IA recuerda toda la conversación sin enviar el historial completo (menos costo).
  */
-export async function maybeSummarize(ai: AiProvider, bot: Chatbot, conversationId: string): Promise<boolean> {
+export async function maybeSummarize(ai: AiProvider, bot: Chatbot, conversationId: string, accountId: string): Promise<boolean> {
   if (running.has(conversationId)) return false;
   running.add(conversationId);
   try {
@@ -52,6 +52,7 @@ export async function maybeSummarize(ai: AiProvider, bot: Chatbot, conversationI
       ],
     });
     await store.insertAiRun({
+      account_id: accountId,
       chatbot_id: bot.id,
       conversation_id: conv.id,
       kind: 'summary',

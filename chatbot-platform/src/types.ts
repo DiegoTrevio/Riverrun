@@ -115,13 +115,9 @@ export type AiSettings = z.infer<typeof AiSettingsSchema>;
 
 export interface ChatbotRow {
   id: string;
+  account_id: string;
   name: string;
   active: boolean;
-  whatsapp_number: string;
-  evolution_instance: string | null;
-  evolution_url: string | null;
-  evolution_api_key: string | null;
-  webhook_token: string;
   personality: unknown;
   rules: unknown;
   data_fields: unknown;
@@ -183,21 +179,25 @@ export interface ImageAsset {
 
 export interface Contact {
   id: string;
-  chatbot_id: string;
-  jid: string;
+  account_id: string;
+  channel_id: string;
+  /** Identificador del cliente en la plataforma (JID de WhatsApp, chat de Telegram, PSID de Meta, sesión web...). */
+  external_id: string;
   phone: string;
   push_name: string;
   name: string;
   data: Record<string, string>;
   notes: string[];
-  channel: string;
 }
 
 export type ConversationStatus = 'bot' | 'human' | 'closed';
 
 export interface Conversation {
   id: string;
-  chatbot_id: string;
+  account_id: string;
+  channel_id: string;
+  /** Chatbot que atiende (el asignado al canal); null si el canal no tiene chatbot. */
+  chatbot_id: string | null;
   contact_id: string;
   status: ConversationStatus;
   status_changed_at: Date;
@@ -215,11 +215,104 @@ export interface Message {
   type: string;
   content: string;
   image_id: string | null;
-  evolution_message_id: string | null;
+  external_message_id: string | null;
   processed: boolean;
   status: string;
   meta: Record<string, any>;
   created_at: Date;
+}
+
+/* ------------------------------ Cuentas y usuarios ------------------------------ */
+
+export type Role = 'superadmin' | 'admin' | 'agent';
+
+export interface Account {
+  id: string;
+  name: string;
+  active: boolean;
+  created_at: Date;
+}
+
+export interface User {
+  id: string;
+  account_id: string | null;
+  role: Role;
+  name: string;
+  email: string;
+  active: boolean;
+  last_login_at: Date | null;
+  created_at: Date;
+}
+
+/* ---------------------------------- Canales ---------------------------------- */
+
+export const CHANNEL_TYPES = ['whatsapp', 'telegram', 'messenger', 'instagram', 'webchat'] as const;
+export type PublicChannelType = (typeof CHANNEL_TYPES)[number];
+export type ChannelType = PublicChannelType | 'playground';
+
+export interface Channel {
+  id: string;
+  account_id: string;
+  chatbot_id: string | null;
+  type: ChannelType;
+  name: string;
+  active: boolean;
+  config: Record<string, any>;
+  webhook_token: string;
+  created_at: Date;
+  updated_at: Date;
+  /** Viene de un JOIN con accounts. */
+  account_active?: boolean;
+}
+
+const secret = z.string().max(1000);
+
+/** Configuración de cada plataforma. Los campos secretos nunca se devuelven completos al panel. */
+export const ChannelConfigSchemas = {
+  whatsapp: z.object({
+    instance: z.string().regex(/^[A-Za-z0-9_-]*$/, 'Instancia: solo letras, números, guion y guion bajo').max(60).default(''),
+    number: z.string().max(30).default(''),
+    url: z.string().max(300).default(''),
+    api_key: secret.default(''),
+  }),
+  telegram: z.object({
+    bot_token: secret.default(''),
+    bot_username: z.string().max(100).default(''),
+    secret: z.string().max(200).default(''),
+  }),
+  messenger: z.object({
+    page_id: z.string().max(60).default(''),
+    page_access_token: secret.default(''),
+    app_secret: secret.default(''),
+    verify_token: z.string().max(200).default(''),
+    graph_version: z.string().max(10).default('v21.0'),
+  }),
+  instagram: z.object({
+    account_id: z.string().max(60).default(''),
+    page_access_token: secret.default(''),
+    app_secret: secret.default(''),
+    verify_token: z.string().max(200).default(''),
+    graph_version: z.string().max(10).default('v21.0'),
+  }),
+  webchat: z.object({
+    title: z.string().max(80).default('¿En qué te ayudamos?'),
+    subtitle: z.string().max(120).default('Normalmente respondemos en segundos'),
+    color: z.string().regex(/^#[0-9a-fA-F]{6}$/, 'Color en formato #RRGGBB').default('#128c7e'),
+    welcome_message: z.string().max(500).default('¡Hola! 👋 ¿En qué te puedo ayudar?'),
+    launcher_text: z.string().max(40).default('Chatea con nosotros'),
+    /** Dominios que pueden insertar el chat (vacío = cualquiera). */
+    allowed_origins: z.array(z.string().max(200)).default([]),
+  }),
+  playground: z.object({}),
+} as const;
+
+export const SECRET_FIELDS = ['api_key', 'bot_token', 'page_access_token', 'app_secret'];
+export const MASK = '••••••';
+
+export function channelConfig(type: ChannelType, config: unknown): Record<string, any> {
+  const schema = ChannelConfigSchemas[type] as z.ZodType<Record<string, any>>;
+  const r = schema.safeParse(config ?? {});
+  return r.success ? r.data : schema.parse({});
 }
 
 export const KNOWLEDGE_CATEGORIES = [

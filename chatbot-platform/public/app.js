@@ -1,7 +1,8 @@
 // Panel de administración — JavaScript sin dependencias ni build.
 
 const $app = document.getElementById('app');
-const state = { meta: null, bots: [], timers: [] };
+const state = { meta: null, me: null, accounts: [], bots: [], timers: [], accountId: '' };
+try { state.accountId = localStorage.getItem('cp-account') || ''; } catch { /* sin storage */ }
 
 /* ------------------------------ Utilidades ------------------------------ */
 
@@ -118,6 +119,21 @@ function clearTimers() {
   state.timers = [];
 }
 
+const ROLE_LABEL = { superadmin: 'Superadministrador', admin: 'Administrador', agent: 'Agente' };
+const isAdmin = () => state.me && state.me.user.role !== 'agent';
+const isSuper = () => state.me && state.me.user.role === 'superadmin';
+/** Filtro de cuenta para listados (el superadmin puede elegir una o ver todas). */
+const acct = (prefix = '?') => (isSuper() && state.accountId ? `${prefix}account_id=${state.accountId}` : '');
+const accountName = (id) => state.accounts.find((a) => a.id === id)?.name || '';
+
+async function loadSession() {
+  const [meta, me, accounts] = await Promise.all([api('GET', '/api/meta'), api('GET', '/api/me'), api('GET', '/api/accounts')]);
+  state.meta = meta;
+  state.me = me;
+  state.accounts = accounts;
+  if (state.accountId && !accounts.some((a) => a.id === state.accountId)) state.accountId = '';
+}
+
 async function render() {
   clearTimers();
   const hash = location.hash.slice(1) || '/';
@@ -126,21 +142,31 @@ async function render() {
   const params = new URLSearchParams(qs || '');
 
   if (parts[0] === 'login') return renderLogin();
-  if (!state.meta) {
+  if (!state.me) {
     try {
-      state.meta = await api('GET', '/api/meta');
+      await loadSession();
     } catch {
       return;
     }
+  }
+  // Los agentes solo atienden conversaciones.
+  if (!isAdmin() && !['conversations', 'conversation', 'password'].includes(parts[0])) {
+    location.hash = '#/conversations';
+    return;
   }
   const content = h('div');
   fill($app, shell(parts[0] || 'home', content));
   try {
     if (!parts.length) await viewDashboard(content);
     else if (parts[0] === 'bot') await viewBot(content, parts[1], parts[2] || 'general');
+    else if (parts[0] === 'channels') await viewChannels(content, params);
+    else if (parts[0] === 'channel') await viewChannel(content, parts[1]);
     else if (parts[0] === 'conversations') await viewConversations(content, params);
     else if (parts[0] === 'conversation') await viewConversation(content, parts[1]);
+    else if (parts[0] === 'users') await viewUsers(content);
+    else if (parts[0] === 'accounts') await viewAccounts(content);
     else if (parts[0] === 'logs') await viewLogs(content, params);
+    else if (parts[0] === 'password') await viewPassword(content);
     else content.append(h('p', {}, 'Página no encontrada'));
   } catch (e) {
     content.append(h('div', { class: 'card' }, h('p', { class: 'muted' }, e.message)));
@@ -149,59 +175,96 @@ async function render() {
 
 function shell(active, content) {
   const link = (href, label, key) => h('a', { href, class: active === key ? 'active' : '' }, label);
+  const { user, account } = state.me;
+  const switcher = isSuper()
+    ? h('div', { class: 'account-switch' },
+        h('label', { class: 'small muted' }, 'Cuenta'),
+        h('select', {
+          onchange: (e) => {
+            state.accountId = e.target.value;
+            try { localStorage.setItem('cp-account', state.accountId); } catch { /* */ }
+            render();
+          },
+        },
+        h('option', { value: '' }, 'Todas las cuentas'),
+        state.accounts.map((a) => h('option', { value: a.id, selected: a.id === state.accountId }, a.name + (a.active ? '' : ' (inactiva)')))))
+    : h('div', { class: 'account-switch small muted' }, account?.name);
   return h('div', { class: 'layout' },
     h('nav', { class: 'sidebar' },
       h('div', { class: 'brand' }, '💬 Chatbots'),
-      link('#/', 'Chatbots', 'home'),
+      switcher,
+      isAdmin() ? link('#/', 'Chatbots', 'home') : null,
+      isAdmin() ? link('#/channels', 'Canales', 'channels') : null,
       link('#/conversations', 'Conversaciones', 'conversations'),
-      link('#/logs', 'Registros', 'logs'),
+      isAdmin() ? link('#/users', 'Usuarios', 'users') : null,
+      isSuper() ? link('#/accounts', 'Cuentas', 'accounts') : null,
+      isAdmin() ? link('#/logs', 'Registros', 'logs') : null,
       h('div', { class: 'spacer' }),
-      h('a', { href: '#', onclick: async (e) => { e.preventDefault(); await api('POST', '/api/logout'); state.meta = null; location.hash = '#/login'; } }, 'Cerrar sesión'),
+      h('div', { class: 'small muted', style: 'padding:4px 10px' }, user.name || user.email, h('br'), ROLE_LABEL[user.role]),
+      link('#/password', 'Cambiar contraseña', 'password'),
+      h('a', { href: '#', onclick: async (e) => { e.preventDefault(); await api('POST', '/api/logout'); state.me = null; location.hash = '#/login'; } }, 'Cerrar sesión'),
     ),
     h('main', { class: 'main' }, content),
   );
 }
 
 function renderLogin() {
-  const f = { user: '', password: '' };
+  const f = { email: '', password: '' };
   const submit = async (e) => {
     e.preventDefault();
     const ok = await run(() => api('POST', '/api/login', f));
-    if (ok) { state.meta = null; location.hash = '#/'; }
+    if (ok) { state.me = null; location.hash = '#/'; }
   };
-  fill($app, 
+  fill($app,
     h('form', { class: 'card login', onsubmit: submit },
       h('h1', {}, 'Panel de Chatbots'),
-      field('Usuario', text(f, 'user')),
+      field('Correo', text(f, 'email', { placeholder: 'tu@correo.com' })),
       field('Contraseña', text(f, 'password', { type: 'password' })),
       h('button', { class: 'primary', type: 'submit' }, 'Entrar'),
     ),
   );
 }
 
+/** Selector de cuenta al crear algo (solo superadmin; los demás usan la suya). */
+function accountPicker(obj) {
+  if (!isSuper()) return null;
+  if (!obj.account_id) obj.account_id = state.accountId || state.accounts[0]?.id || '';
+  return field('Cuenta', select(obj, 'account_id', state.accounts.map((a) => [a.id, a.name])));
+}
+
 /* ------------------------------ Dashboard ------------------------------ */
 
 async function viewDashboard(root) {
-  const [bots, stats] = await Promise.all([api('GET', '/api/chatbots'), api('GET', '/api/stats')]);
+  const [bots, stats, channels] = await Promise.all([api('GET', `/api/chatbots${acct()}`), api('GET', `/api/stats${acct()}`), api('GET', `/api/channels${acct()}`)]);
   state.bots = bots;
   const byId = Object.fromEntries(stats.chatbots.map((s) => [s.id, s]));
-  const create = async () => {
-    const name = prompt('Nombre del chatbot (p.ej. "Hotel Las Palmas")');
-    if (!name) return;
-    const bot = await run(() => api('POST', '/api/chatbots', { name }));
-    if (bot) location.hash = `#/bot/${bot.id}/general`;
-  };
+  const nb = { name: '' };
+  const createBox = h('div', { class: 'card', hidden: true },
+    h('h3', { style: 'margin-top:0' }, 'Nuevo chatbot'),
+    field('Nombre', text(nb, 'name', { placeholder: 'Hotel Las Palmas' })),
+    accountPicker(nb),
+    h('button', { class: 'primary', onclick: async () => {
+      if (!nb.name.trim()) return toast('Escribe un nombre', true);
+      const bot = await run(() => api('POST', '/api/chatbots', nb));
+      if (bot) location.hash = `#/bot/${bot.id}/general`;
+    } }, 'Crear'));
+  const noAccounts = isSuper() && !state.accounts.length;
   root.append(
-    h('div', { class: 'row between' }, h('h1', {}, 'Chatbots'), h('button', { class: 'primary', onclick: create }, '+ Nuevo chatbot')),
-    bots.length ? null : h('div', { class: 'card' }, h('p', {}, 'Aún no hay chatbots. Crea el primero para empezar.')),
+    h('div', { class: 'row between' }, h('h1', {}, 'Chatbots'),
+      h('button', { class: 'primary', disabled: noAccounts, onclick: () => (createBox.hidden = !createBox.hidden) }, '+ Nuevo chatbot')),
+    noAccounts ? h('div', { class: 'card' }, h('p', {}, 'Primero crea una cuenta (cliente) en ', h('a', { href: '#/accounts' }, 'Cuentas'), '.')) : null,
+    createBox,
+    bots.length || noAccounts ? null : h('div', { class: 'card' }, h('p', {}, 'Aún no hay chatbots. Crea el primero para empezar.')),
     h('div', { class: 'grid' },
       bots.map((b) => {
         const s = byId[b.id] || {};
+        const mine = channels.filter((c) => c.chatbot_id === b.id);
         return h('div', { class: 'card' },
           h('div', { class: 'row between' },
             h('h3', { style: 'margin:0' }, h('a', { href: `#/bot/${b.id}/general` }, b.name)),
             h('span', { class: `badge ${b.active ? 'green' : ''}` }, b.active ? 'Activo' : 'Inactivo')),
-          h('p', { class: 'muted small' }, b.whatsapp_number || 'Sin número', ' · ', b.evolution_instance ? `instancia: ${b.evolution_instance}` : 'sin instancia'),
+          isSuper() && !state.accountId ? h('p', { class: 'muted small', style: 'margin:4px 0 0' }, accountName(b.account_id)) : null,
+          h('p', { class: 'small' }, mine.length ? mine.map((c) => h('span', { class: 'badge', style: 'margin-right:4px' }, channelIcon(c.type), ' ', c.name)) : h('span', { class: 'muted' }, 'Sin canales')),
           h('div', { class: 'row', style: 'gap:18px' },
             h('div', {}, h('div', { class: 'kpi' }, s.conversations ?? 0), h('div', { class: 'muted small' }, 'conversaciones')),
             h('div', {}, h('div', { class: 'kpi' }, s.waiting_human ?? 0), h('div', { class: 'muted small' }, 'con humano')),
@@ -230,7 +293,6 @@ const TABS = [
   ['datos', 'Datos a recopilar'],
   ['flujo', 'Flujo'],
   ['ia', 'IA y memoria'],
-  ['whatsapp', 'WhatsApp'],
   ['probar', 'Probar'],
 ];
 
@@ -244,7 +306,7 @@ async function viewBot(root, id, tab) {
   );
   const body = h('div');
   root.append(body);
-  const views = { general: tabGeneral, personalidad: tabPersonality, conocimiento: tabKnowledge, imagenes: tabImages, reglas: tabRules, datos: tabData, flujo: tabFlow, ia: tabAi, whatsapp: tabWhatsapp, probar: tabPlayground };
+  const views = { general: tabGeneral, personalidad: tabPersonality, conocimiento: tabKnowledge, imagenes: tabImages, reglas: tabRules, datos: tabData, flujo: tabFlow, ia: tabAi, probar: tabPlayground };
   await (views[tab] || tabGeneral)(body, bot);
 }
 
@@ -257,34 +319,30 @@ async function saveBot(bot, patch) {
 }
 
 function tabGeneral(root, bot) {
-  const m = {
-    name: bot.name,
-    active: bot.active,
-    whatsapp_number: bot.whatsapp_number,
-    evolution_instance: bot.evolution_instance || '',
-    evolution_url: bot.evolution_url || '',
-    evolution_api_key: bot.evolution_api_key || '',
-  };
+  const m = { name: bot.name, active: bot.active };
+  const channels = bot.channels || [];
+  const dup = { account_id: bot.account_id };
   root.append(
     h('div', { class: 'card' },
       field('Nombre del chatbot / negocio', text(m, 'name')),
-      check(m, 'active', 'Activo (responde automáticamente por WhatsApp)'),
-      field('Número de WhatsApp', text(m, 'whatsapp_number', { placeholder: '5215512345678' }), 'Con lada de país, solo como referencia.'),
-      field('Instancia de Evolution API', text(m, 'evolution_instance', { placeholder: 'hotel_palmas' }), 'Nombre único de la instancia (letras, números, guion y guion bajo). Cada chatbot usa su propia instancia/número.'),
-      h('details', {},
-        h('summary', {}, 'Servidor de Evolution distinto al global (opcional)'),
-        h('div', { style: 'margin-top:10px' },
-          field('URL de Evolution', text(m, 'evolution_url', { placeholder: 'Vacío = usar EVOLUTION_URL' })),
-          field('API key de Evolution', text(m, 'evolution_api_key', { placeholder: 'Vacío = usar EVOLUTION_API_KEY' })))),
-      h('h3', {}, 'Webhook'),
-      h('p', { class: 'muted small' }, 'Evolution debe enviar los eventos a esta URL (se configura sola al conectar desde la pestaña WhatsApp):'),
-      h('p', {}, h('code', {}, bot.webhook_url)),
-      h('button', { class: 'small', onclick: async () => { if (confirm('¿Generar una nueva URL? La anterior dejará de funcionar.')) { await run(() => api('POST', `/api/chatbots/${bot.id}/rotate-token`), 'Nueva URL generada'); render(); } } }, 'Regenerar URL secreta'),
+      check(m, 'active', 'Activo (responde automáticamente en sus canales)'),
+      isSuper() ? h('p', { class: 'muted small' }, 'Cuenta: ', accountName(bot.account_id)) : null,
+    ),
+    h('div', { class: 'card' },
+      h('div', { class: 'row between' }, h('h3', { style: 'margin:0' }, 'Canales que atiende'),
+        h('a', { class: 'btn', href: `#/channels?new=1&chatbot_id=${bot.id}` }, '+ Agregar canal')),
+      h('p', { class: 'muted small' }, 'El mismo chatbot (prompt, información, imágenes y reglas) responde en todos sus canales.'),
+      channels.length
+        ? h('table', {}, h('tbody', {}, channels.map((c) => h('tr', { class: 'click', onclick: () => (location.hash = `#/channel/${c.id}`) },
+            h('td', {}, channelIcon(c.type), ' ', h('strong', {}, c.name)), h('td', {}, c.label),
+            h('td', {}, h('span', { class: `badge ${c.active ? 'green' : ''}` }, c.active ? 'Activo' : 'Inactivo'))))))
+        : h('p', {}, 'Aún no tiene canales. Mientras tanto puedes probarlo en la pestaña ', h('a', { href: `#/bot/${bot.id}/probar` }, 'Probar'), '.'),
     ),
     saveBar(async () => { if (await saveBot(bot, m)) render(); },
       h('span', { class: 'row', style: 'margin-left:auto' },
-        h('button', { onclick: async () => { const c = await run(() => api('POST', `/api/chatbots/${bot.id}/duplicate`), 'Chatbot duplicado'); if (c) location.hash = `#/bot/${c.id}/general`; } }, 'Duplicar'),
-        h('button', { class: 'danger', onclick: async () => { if (prompt(`Escribe "${bot.name}" para eliminarlo con todas sus conversaciones`) === bot.name) { await run(() => api('DELETE', `/api/chatbots/${bot.id}`), 'Eliminado'); location.hash = '#/'; } } }, 'Eliminar'))),
+        isSuper() ? h('span', { style: 'min-width:180px' }, select(dup, 'account_id', state.accounts.map((a) => [a.id, a.name]))) : null,
+        h('button', { onclick: async () => { const c = await run(() => api('POST', `/api/chatbots/${bot.id}/duplicate`, dup), 'Chatbot duplicado'); if (c) location.hash = `#/bot/${c.id}/general`; } }, isSuper() ? 'Duplicar en esa cuenta' : 'Duplicar'),
+        h('button', { class: 'danger', onclick: async () => { if (prompt(`Escribe "${bot.name}" para eliminarlo (sus canales quedarán sin chatbot)`) === bot.name) { await run(() => api('DELETE', `/api/chatbots/${bot.id}`), 'Eliminado'); location.hash = '#/'; } } }, 'Eliminar'))),
   );
 }
 
@@ -562,59 +620,6 @@ function tabAi(root, bot) {
   );
 }
 
-async function tabWhatsapp(root, bot) {
-  const status = h('span', { class: 'badge' }, 'consultando…');
-  const qrBox = h('div');
-  const refresh = async () => {
-    try {
-      const s = await api('GET', `/api/chatbots/${bot.id}/whatsapp/status`);
-      const label = { open: 'Conectado', connecting: 'Esperando escaneo', close: 'Desconectado', not_found: 'Instancia no creada' }[s.state] || s.state;
-      status.textContent = label;
-      status.className = `badge ${s.state === 'open' ? 'green' : s.state === 'connecting' ? 'orange' : 'red'}`;
-      if (s.state === 'open') fill(qrBox, h('p', {}, '✅ WhatsApp conectado.'));
-    } catch (e) {
-      status.textContent = e.message;
-      status.className = 'badge red';
-    }
-  };
-  const connect = async () => {
-    const r = await run(() => api('POST', `/api/chatbots/${bot.id}/whatsapp/connect`));
-    if (!r) return;
-    if (r.state === 'open') { fill(qrBox, h('p', {}, '✅ Ya está conectado. Webhook actualizado.')); return refresh(); }
-    const src = r.qr ? (r.qr.startsWith('data:') ? r.qr : `data:image/png;base64,${r.qr}`) : null;
-    fill(qrBox, 
-      h('p', {}, 'Abre WhatsApp en el teléfono → Dispositivos vinculados → Vincular dispositivo, y escanea:'),
-      src ? h('img', { class: 'qr', src }) : h('p', { class: 'muted' }, 'Evolution no devolvió QR; vuelve a intentar.'),
-      r.pairingCode ? h('p', {}, 'Código de vinculación: ', h('code', {}, r.pairingCode)) : null,
-    );
-    refresh();
-  };
-  const test = { number: '', text: 'Mensaje de prueba ✅' };
-  root.append(
-    h('div', { class: 'card' },
-      bot.evolution_instance
-        ? h('p', {}, 'Instancia: ', h('code', {}, bot.evolution_instance), ' · Estado: ', status)
-        : h('p', {}, 'Primero define el nombre de la instancia en la pestaña ', h('a', { href: `#/bot/${bot.id}/general` }, 'General'), '.'),
-      h('div', { class: 'row' },
-        h('button', { class: 'primary', onclick: connect, disabled: !bot.evolution_instance }, 'Conectar / mostrar QR'),
-        h('button', { onclick: () => run(() => api('POST', `/api/chatbots/${bot.id}/whatsapp/webhook`), 'Webhook configurado'), disabled: !bot.evolution_instance }, 'Reconfigurar webhook'),
-        h('button', { onclick: refresh, disabled: !bot.evolution_instance }, 'Actualizar estado'),
-        h('button', { class: 'danger', onclick: async () => { if (confirm('¿Desvincular este WhatsApp?')) { await run(() => api('POST', `/api/chatbots/${bot.id}/whatsapp/logout`), 'Desconectado'); refresh(); } }, disabled: !bot.evolution_instance }, 'Desconectar')),
-      qrBox,
-      !bot.active ? h('p', { class: 'badge orange' }, 'El chatbot está inactivo: recibirá y guardará mensajes, pero no responderá hasta activarlo.') : null,
-    ),
-    h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, 'Enviar mensaje de prueba'),
-      h('div', { class: 'grid' }, field('Número (con lada)', text(test, 'number', { placeholder: '5215512345678' })), field('Texto', text(test, 'text'))),
-      h('button', { onclick: () => run(() => api('POST', `/api/chatbots/${bot.id}/whatsapp/test`, test), 'Enviado'), disabled: !bot.evolution_instance }, 'Enviar'),
-    ),
-  );
-  if (bot.evolution_instance) {
-    refresh();
-    state.timers.push(setInterval(refresh, 8000));
-  }
-}
-
 async function tabPlayground(root, bot) {
   const session = localStorage.getItem('pg-session') || Math.random().toString(36).slice(2, 10);
   try { localStorage.setItem('pg-session', session); } catch { /* sin storage */ }
@@ -691,32 +696,44 @@ async function tabPlayground(root, bot) {
 const STATUS_BADGE = { bot: ['green', 'Bot'], human: ['orange', 'Humano'], closed: ['', 'Cerrada'] };
 
 async function viewConversations(root, params) {
-  const bots = await api('GET', '/api/chatbots');
-  const f = { chatbot_id: params.get('chatbot_id') || '', status: params.get('status') || '', search: params.get('search') || '' };
+  const [bots, channels] = await Promise.all([api('GET', `/api/chatbots${acct()}`), api('GET', `/api/channels${acct()}`)]);
+  const f = {
+    chatbot_id: params.get('chatbot_id') || '',
+    channel_id: params.get('channel_id') || '',
+    channel_type: params.get('channel_type') || '',
+    status: params.get('status') || '',
+    search: params.get('search') || '',
+  };
   const apply = () => { location.hash = `#/conversations?${new URLSearchParams(Object.entries(f).filter(([, v]) => v))}`; };
   const table = h('tbody');
+  const showAccount = isSuper() && !state.accountId;
   const load = async () => {
     const qs = new URLSearchParams(Object.entries(f).filter(([, v]) => v));
+    if (isSuper() && state.accountId) qs.set('account_id', state.accountId);
     const rows = await api('GET', `/api/conversations?${qs}`);
-    fill(table, 
+    fill(table,
       ...(rows.length ? rows.map((c) => {
         const [cls, label] = STATUS_BADGE[c.status] || ['', c.status];
         return h('tr', { class: 'click', onclick: () => (location.hash = `#/conversation/${c.id}`) },
-          h('td', {}, h('strong', {}, c.name || c.push_name || 'Sin nombre'), h('div', { class: 'muted small' }, c.phone ? `+${c.phone}` : '')),
-          h('td', {}, c.chatbot_name),
+          h('td', {}, h('strong', {}, c.name || c.push_name || (c.channel_type === 'webchat' ? 'Visitante del sitio' : 'Sin nombre')), h('div', { class: 'muted small' }, c.phone ? `+${c.phone}` : '')),
+          h('td', {}, channelIcon(c.channel_type), ' ', c.channel_name, h('div', { class: 'muted small' }, c.chatbot_name || 'sin chatbot')),
+          showAccount ? h('td', { class: 'small' }, c.account_name) : null,
           h('td', {}, h('span', { class: `badge ${cls}` }, label), c.status === 'human' && c.handoff_reason ? h('div', { class: 'muted small' }, c.handoff_reason) : null),
           h('td', { class: 'muted' }, (c.last_message || '').slice(0, 90)),
           h('td', { class: 'muted small' }, fmtDate(c.last_message_at)));
-      }) : [h('tr', {}, h('td', { colspan: 5, class: 'muted' }, 'No hay conversaciones.'))]),
+      }) : [h('tr', {}, h('td', { colspan: 6, class: 'muted' }, 'No hay conversaciones.'))]),
     );
   };
+  const types = state.meta.channel_types.map((t) => [t.type, t.label]);
   root.append(
     h('h1', {}, 'Conversaciones'),
     h('div', { class: 'card row' },
-      h('div', { style: 'min-width:200px' }, select(f, 'chatbot_id', [['', 'Todos los chatbots'], ...bots.map((b) => [b.id, b.name])], apply)),
-      h('div', { style: 'min-width:160px' }, select(f, 'status', [['', 'Todos los estados'], ['bot', 'Atendidas por bot'], ['human', 'Con humano'], ['closed', 'Cerradas']], apply)),
-      h('div', { style: 'flex:1' }, h('input', { type: 'search', placeholder: 'Buscar nombre o teléfono…', value: f.search, onchange: (e) => { f.search = e.target.value; apply(); } }))),
-    h('div', { class: 'card' }, h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Cliente'), h('th', {}, 'Chatbot'), h('th', {}, 'Estado'), h('th', {}, 'Último mensaje'), h('th', {}, 'Fecha'))), table)),
+      h('div', { style: 'min-width:170px' }, select(f, 'chatbot_id', [['', 'Todos los chatbots'], ...bots.map((b) => [b.id, b.name])], apply)),
+      h('div', { style: 'min-width:150px' }, select(f, 'channel_type', [['', 'Todas las plataformas'], ...types], apply)),
+      h('div', { style: 'min-width:150px' }, select(f, 'channel_id', [['', 'Todos los canales'], ...channels.map((c) => [c.id, c.name])], apply)),
+      h('div', { style: 'min-width:150px' }, select(f, 'status', [['', 'Todos los estados'], ['bot', 'Atendidas por bot'], ['human', 'Con humano'], ['closed', 'Cerradas']], apply)),
+      h('div', { style: 'flex:1;min-width:160px' }, h('input', { type: 'search', placeholder: 'Buscar nombre o teléfono…', value: f.search, onchange: (e) => { f.search = e.target.value; apply(); } }))),
+    h('div', { class: 'card' }, h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Cliente'), h('th', {}, 'Canal'), showAccount ? h('th', {}, 'Cuenta') : null, h('th', {}, 'Estado'), h('th', {}, 'Último mensaje'), h('th', {}, 'Fecha'))), table)),
   );
   await load();
   state.timers.push(setInterval(() => load().catch(() => undefined), 10000));
@@ -748,7 +765,7 @@ async function viewConversation(root, id) {
           c.status !== 'human' ? h('button', { class: 'primary', onclick: async () => { await run(() => api('POST', `/api/conversations/${id}/takeover`), 'Tomaste la conversación'); load(true); } }, 'Tomar conversación') : null,
           c.status !== 'bot' ? h('button', { class: 'primary', onclick: async () => { await run(() => api('POST', `/api/conversations/${id}/release`), 'El bot vuelve a responder'); load(true); } }, 'Devolver al bot') : null,
           c.status !== 'closed' ? h('button', { onclick: async () => { await run(() => api('POST', `/api/conversations/${id}/close`), 'Cerrada'); load(true); } }, 'Cerrar') : null)),
-      h('p', { class: 'muted' }, data.chatbot?.name, ct.phone ? ` · +${ct.phone}` : '', c.status === 'human' && c.handoff_reason ? ` · Motivo: ${c.handoff_reason}` : ''),
+      h('p', { class: 'muted' }, channelIcon(data.channel?.type), ' ', data.channel?.name, ' · ', data.chatbot?.name || 'sin chatbot', ct.phone ? ` · +${ct.phone}` : '', c.status === 'human' && c.handoff_reason ? ` · Motivo: ${c.handoff_reason}` : ''),
     );
     if (force || messages.length !== lastCount) {
       lastCount = messages.length;
@@ -784,7 +801,7 @@ async function viewConversation(root, id) {
         h('h3', { style: 'margin-top:0' }, 'Resumen de memoria'),
         h('div', { class: 'small pre muted' }, c.summary || 'Aún no hay resumen (se genera cuando la conversación crece).'),
         h('button', { class: 'small danger', style: 'margin-top:10px', onclick: async () => { if (confirm('¿Borrar memoria (resumen, datos y notas) de este cliente?')) { await run(() => api('POST', `/api/conversations/${id}/reset-memory`), 'Memoria borrada'); load(true); } } }, 'Borrar memoria')),
-      h('div', { class: 'card' }, h('a', { href: `#/logs?conversation_id=${id}` }, 'Ver registros de esta conversación →')),
+      isAdmin() ? h('div', { class: 'card' }, h('a', { href: `#/logs?conversation_id=${id}` }, 'Ver registros de esta conversación →')) : null,
     );
   };
 
@@ -803,19 +820,21 @@ async function viewConversation(root, id) {
 /* ------------------------------ Registros ------------------------------ */
 
 async function viewLogs(root, params) {
-  const bots = await api('GET', '/api/chatbots');
-  const f = { chatbot_id: params.get('chatbot_id') || '', level: params.get('level') || '', source: params.get('source') || '', conversation_id: params.get('conversation_id') || '' };
+  const bots = await api('GET', `/api/chatbots${acct()}`);
+  const f = { chatbot_id: params.get('chatbot_id') || '', channel_id: params.get('channel_id') || '', level: params.get('level') || '', source: params.get('source') || '', conversation_id: params.get('conversation_id') || '' };
   const apply = () => { location.hash = `#/logs?${new URLSearchParams(Object.entries(f).filter(([, v]) => v))}`; };
   const botName = Object.fromEntries(bots.map((b) => [b.id, b.name]));
   const qs = new URLSearchParams(Object.entries(f).filter(([, v]) => v));
+  if (isSuper() && state.accountId) qs.set('account_id', state.accountId);
   const rows = await api('GET', `/api/logs?${qs}`);
   root.append(
     h('h1', {}, 'Registros'),
     h('div', { class: 'card row' },
       h('div', { style: 'min-width:180px' }, select(f, 'chatbot_id', [['', 'Todos los chatbots'], ...bots.map((b) => [b.id, b.name])], apply)),
       h('div', { style: 'min-width:140px' }, select(f, 'level', [['', 'Todos los niveles'], ['error', 'Errores'], ['warn', 'Advertencias'], ['info', 'Información']], apply)),
-      h('div', { style: 'min-width:160px' }, select(f, 'source', [['', 'Todos los componentes'], ['evolution', 'Evolution'], ['ai', 'IA'], ['validator', 'Validador'], ['engine', 'Motor'], ['webhook', 'Webhook'], ['admin', 'Panel'], ['system', 'Sistema']], apply)),
+      h('div', { style: 'min-width:160px' }, select(f, 'source', [['', 'Todos los componentes'], ['evolution', 'Evolution (WhatsApp)'], ['channel', 'Canales'], ['ai', 'IA'], ['validator', 'Validador'], ['engine', 'Motor'], ['webhook', 'Webhook'], ['admin', 'Panel'], ['system', 'Sistema']], apply)),
       f.conversation_id ? h('span', { class: 'badge' }, 'filtrado por conversación ', h('a', { href: '#', onclick: (e) => { e.preventDefault(); f.conversation_id = ''; apply(); } }, '✕')) : null,
+      f.channel_id ? h('span', { class: 'badge' }, 'filtrado por canal ', h('a', { href: '#', onclick: (e) => { e.preventDefault(); f.channel_id = ''; apply(); } }, '✕')) : null,
       h('button', { onclick: render }, 'Actualizar')),
     h('div', { class: 'card' },
       h('table', {},
@@ -829,5 +848,331 @@ async function viewLogs(root, params) {
             h('td', {}, r.message,
               r.conversation_id ? h('div', {}, h('a', { class: 'small', href: `#/conversation/${r.conversation_id}` }, 'ver conversación')) : null,
               r.details && Object.keys(r.details).length ? h('details', {}, h('summary', {}, 'detalles'), h('pre', { class: 'small pre' }, JSON.stringify(r.details, null, 2))) : null)))))),
+  );
+}
+
+/* ------------------------------ Canales ------------------------------ */
+
+const CHANNEL_ICONS = { whatsapp: '🟢', telegram: '✈️', messenger: '💬', instagram: '📸', webchat: '🌐', playground: '🧪' };
+function channelIcon(type) {
+  return h('span', { title: type }, CHANNEL_ICONS[type] || '•');
+}
+
+const STATE_LABEL = {
+  open: ['green', 'Conectado'],
+  connecting: ['orange', 'Esperando escaneo'],
+  close: ['red', 'Desconectado'],
+  not_found: ['red', 'Instancia no creada'],
+  not_configured: ['orange', 'Falta configurar'],
+  error: ['red', 'Error'],
+  unknown: ['', 'Sin información'],
+};
+
+async function viewChannels(root, params) {
+  const [channels, bots] = await Promise.all([api('GET', `/api/channels${acct()}`), api('GET', `/api/chatbots${acct()}`)]);
+  const types = state.meta.channel_types;
+  const n = { type: 'whatsapp', name: '', chatbot_id: params.get('chatbot_id') || '' };
+  const botOptions = () => [['', '— Sin chatbot (solo guarda mensajes) —'], ...bots.filter((b) => !isSuper() || !n.account_id || b.account_id === n.account_id).map((b) => [b.id, b.name])];
+  const botSelect = h('div');
+  const drawBots = () => fill(botSelect, field('Chatbot que responde', select(n, 'chatbot_id', botOptions())));
+  const createBox = h('div', { class: 'card', hidden: params.get('new') !== '1' });
+  const picker = isSuper() ? (() => {
+    if (!n.account_id) n.account_id = bots.find((b) => b.id === n.chatbot_id)?.account_id || state.accountId || state.accounts[0]?.id || '';
+    return field('Cuenta', select(n, 'account_id', state.accounts.map((a) => [a.id, a.name]), () => { n.chatbot_id = ''; drawBots(); }));
+  })() : null;
+  drawBots();
+  fill(createBox,
+    h('h3', { style: 'margin-top:0' }, 'Nuevo canal'),
+    h('div', { class: 'grid' },
+      field('Plataforma', select(n, 'type', types.map((t) => [t.type, t.label]))),
+      field('Nombre', text(n, 'name', { placeholder: 'WhatsApp ventas, Instagram @hotel…' }))),
+    picker,
+    botSelect,
+    h('button', { class: 'primary', onclick: async () => {
+      const body = { ...n, name: n.name || types.find((t) => t.type === n.type).label, chatbot_id: n.chatbot_id || null };
+      const ch = await run(() => api('POST', '/api/channels', body), 'Canal creado');
+      if (ch) location.hash = `#/channel/${ch.id}`;
+    } }, 'Crear y configurar'));
+
+  const botName = Object.fromEntries(bots.map((b) => [b.id, b.name]));
+  root.append(
+    h('div', { class: 'row between' }, h('h1', {}, 'Canales'), h('button', { class: 'primary', onclick: () => (createBox.hidden = !createBox.hidden) }, '+ Nuevo canal')),
+    h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' },
+      'Cada canal es una conexión con una plataforma (un número de WhatsApp, un bot de Telegram, una página de Facebook, una cuenta de Instagram o el chat de un sitio web). ',
+      'Asígnale un chatbot para que responda; un mismo chatbot puede atender varios canales.')),
+    !state.meta.public_https ? h('div', { class: 'card' }, h('span', { class: 'badge orange' }, 'Aviso'), ' ',
+      `La URL pública (${state.meta.public_base_url}) no es HTTPS. Telegram, Messenger e Instagram exigen HTTPS: define PUBLIC_BASE_URL con tu dominio.`) : null,
+    createBox,
+    h('div', { class: 'card' },
+      channels.length
+        ? h('table', {},
+            h('thead', {}, h('tr', {}, h('th', {}, 'Canal'), h('th', {}, 'Plataforma'), h('th', {}, 'Chatbot'), isSuper() && !state.accountId ? h('th', {}, 'Cuenta') : null, h('th', {}, 'Estado'))),
+            h('tbody', {}, channels.map((c) => h('tr', { class: 'click', onclick: () => (location.hash = `#/channel/${c.id}`) },
+              h('td', {}, channelIcon(c.type), ' ', h('strong', {}, c.name)),
+              h('td', {}, c.label),
+              h('td', {}, c.chatbot_id ? botName[c.chatbot_id] || '—' : h('span', { class: 'badge orange' }, 'sin chatbot')),
+              isSuper() && !state.accountId ? h('td', { class: 'small' }, accountName(c.account_id)) : null,
+              h('td', {}, h('span', { class: `badge ${c.active ? 'green' : ''}` }, c.active ? 'Activo' : 'Inactivo'))))))
+        : h('p', { class: 'muted' }, 'Aún no hay canales.')),
+  );
+}
+
+/** Campos de configuración de cada plataforma. */
+function channelConfigFields(ch, cfg) {
+  const secret = (key, label, help) => field(label, h('input', { type: 'password', autocomplete: 'off', value: cfg[key] || '', placeholder: cfg[key] ? '' : 'Pega aquí el valor', oninput: (e) => (cfg[key] = e.target.value) }), help);
+  switch (ch.type) {
+    case 'whatsapp':
+      return [
+        field('Instancia de Evolution', text(cfg, 'instance', { placeholder: 'hotel_palmas' }), 'Nombre único (letras, números, guion y guion bajo). Se crea sola al conectar.'),
+        field('Número de WhatsApp', text(cfg, 'number', { placeholder: '5215512345678' }), 'Con lada de país; opcional, como referencia.'),
+        h('details', {}, h('summary', {}, 'Servidor de Evolution distinto al global (opcional)'),
+          h('div', { style: 'margin-top:10px' },
+            field('URL de Evolution', text(cfg, 'url', { placeholder: 'Vacío = usar EVOLUTION_URL' })),
+            secret('api_key', 'API key de Evolution', 'Vacío = usar EVOLUTION_API_KEY'))),
+      ];
+    case 'telegram':
+      return [
+        secret('bot_token', 'Token del bot', 'Créalo con @BotFather en Telegram (/newbot) y pega el token.'),
+        cfg.bot_username ? h('p', {}, 'Bot: ', h('a', { href: `https://t.me/${cfg.bot_username}`, target: '_blank', rel: 'noopener' }, `@${cfg.bot_username}`)) : null,
+      ];
+    case 'messenger':
+      return [
+        field('ID de la página de Facebook', text(cfg, 'page_id', { placeholder: '1234567890' }), 'Se completa solo al conectar si lo dejas vacío.'),
+        secret('page_access_token', 'Token de acceso de la página', 'Meta for Developers → tu app → Messenger → Tokens de acceso.'),
+        secret('app_secret', 'Clave secreta de la app', 'Configuración de la app → Básica. Se usa para verificar que los mensajes vienen de Meta.'),
+      ];
+    case 'instagram':
+      return [
+        field('ID de la cuenta de Instagram', text(cfg, 'account_id', { placeholder: '17841400000000000' }), 'Se completa solo al conectar si lo dejas vacío.'),
+        secret('page_access_token', 'Token de acceso', 'Token de la página de Facebook vinculada a la cuenta profesional de Instagram.'),
+        secret('app_secret', 'Clave secreta de la app', 'Configuración de la app → Básica.'),
+      ];
+    case 'webchat':
+      return [
+        h('div', { class: 'grid' },
+          field('Título', text(cfg, 'title')),
+          field('Subtítulo', text(cfg, 'subtitle')),
+          field('Color', h('input', { type: 'color', value: cfg.color, oninput: (e) => (cfg.color = e.target.value) })),
+          field('Texto del botón', text(cfg, 'launcher_text'))),
+        field('Mensaje de bienvenida', area(cfg, 'welcome_message')),
+        field('Dominios permitidos', lines(cfg, 'allowed_origins', { placeholder: 'hotelpalmas.mx\n*.hotelpalmas.mx' }), 'Vacío = cualquier sitio puede insertar el chat.'),
+      ];
+    default:
+      return [];
+  }
+}
+
+async function viewChannel(root, id) {
+  const [ch, bots] = await Promise.all([api('GET', `/api/channels/${id}`), api('GET', '/api/chatbots')]);
+  const m = { name: ch.name, active: ch.active, chatbot_id: ch.chatbot_id || '' };
+  const cfg = clone(ch.config);
+  const accountBots = bots.filter((b) => b.account_id === ch.account_id);
+  const status = h('span', { class: 'badge' }, 'consultando…');
+  const result = h('div');
+  const refresh = async () => {
+    try {
+      const s = await api('GET', `/api/channels/${id}/status`);
+      const [cls, label] = STATE_LABEL[s.state] || ['', s.state];
+      status.textContent = label + (s.details?.error ? `: ${s.details.error}` : s.details?.last_error ? `: ${s.details.last_error}` : '');
+      status.className = `badge ${cls}`;
+    } catch (e) {
+      status.textContent = e.message;
+      status.className = 'badge red';
+    }
+  };
+  const save = async () => {
+    const updated = await run(() => api('PUT', `/api/channels/${id}`, { ...m, chatbot_id: m.chatbot_id || null, config: cfg }), 'Guardado ✅');
+    if (updated) render();
+  };
+  const setup = async () => {
+    const r = await run(() => api('POST', `/api/channels/${id}/setup`));
+    if (!r) return;
+    fill(result, h('p', {}, h('span', { class: `badge ${r.ok ? 'green' : 'orange'}` }, r.ok ? 'Listo' : 'Atención'), ' ', r.message));
+    refresh();
+  };
+  const copyBtn = (value) => h('button', { class: 'small', onclick: async () => { try { await navigator.clipboard.writeText(value); toast('Copiado'); } catch { toast('No se pudo copiar', true); } } }, 'Copiar');
+
+  const connection = [];
+  if (ch.type === 'whatsapp') {
+    const qrBox = h('div');
+    const test = { number: '', text: 'Mensaje de prueba ✅' };
+    const connect = async () => {
+      const r = await run(() => api('POST', `/api/channels/${id}/whatsapp/connect`));
+      if (!r) return;
+      if (r.state === 'open') { fill(qrBox, h('p', {}, '✅ Ya está conectado. Webhook actualizado.')); return refresh(); }
+      const src = r.qr ? (r.qr.startsWith('data:') ? r.qr : `data:image/png;base64,${r.qr}`) : null;
+      fill(qrBox,
+        h('p', {}, 'Abre WhatsApp en el teléfono → Dispositivos vinculados → Vincular dispositivo, y escanea:'),
+        src ? h('img', { class: 'qr', src }) : h('p', { class: 'muted' }, 'Evolution no devolvió QR; vuelve a intentar.'),
+        r.pairingCode ? h('p', {}, 'Código de vinculación: ', h('code', {}, r.pairingCode)) : null);
+      refresh();
+    };
+    connection.push(
+      h('div', { class: 'row' },
+        h('button', { class: 'primary', onclick: connect, disabled: !ch.config.instance }, 'Conectar / mostrar QR'),
+        h('button', { onclick: setup, disabled: !ch.config.instance }, 'Reconfigurar webhook'),
+        h('button', { class: 'danger', disabled: !ch.config.instance, onclick: async () => { if (confirm('¿Desvincular este WhatsApp?')) { await run(() => api('POST', `/api/channels/${id}/whatsapp/logout`), 'Desconectado'); refresh(); } } }, 'Desconectar')),
+      qrBox,
+      h('h3', {}, 'Mensaje de prueba'),
+      h('div', { class: 'grid' }, field('Número (con lada)', text(test, 'number', { placeholder: '5215512345678' })), field('Texto', text(test, 'text'))),
+      h('button', { disabled: !ch.config.instance, onclick: () => run(() => api('POST', `/api/channels/${id}/whatsapp/test`, test), 'Enviado') }, 'Enviar'),
+    );
+  } else if (ch.type === 'telegram') {
+    connection.push(
+      h('p', { class: 'muted small' }, 'Al conectar se valida el token y se registra el webhook en Telegram automáticamente.'),
+      h('button', { class: 'primary', onclick: setup, disabled: !ch.config.bot_token }, 'Conectar con Telegram'),
+    );
+  } else if (ch.type === 'messenger' || ch.type === 'instagram') {
+    connection.push(
+      h('ol', { class: 'small' },
+        h('li', {}, 'En Meta for Developers, abre tu app → ', ch.type === 'messenger' ? 'Messenger' : 'Instagram', ' → Webhooks.'),
+        h('li', {}, 'URL de devolución de llamada: ', h('code', {}, ch.webhook_url), ' ', copyBtn(ch.webhook_url)),
+        h('li', {}, 'Token de verificación: ', h('code', {}, ch.config.verify_token), ' ', copyBtn(ch.config.verify_token)),
+        h('li', {}, 'Suscríbete a los campos ', h('code', {}, 'messages'), ', ', h('code', {}, 'messaging_postbacks'), ' y ', h('code', {}, 'message_echoes'), '.'),
+        h('li', {}, 'Guarda aquí el token y la clave secreta, y pulsa el botón:')),
+      h('button', { class: 'primary', onclick: setup, disabled: !ch.config.page_access_token }, ch.type === 'messenger' ? 'Verificar y suscribir la página' : 'Verificar token'),
+    );
+  } else if (ch.type === 'webchat') {
+    connection.push(
+      h('p', {}, 'Pega este código antes de ', h('code', {}, '</body>'), ' en el sitio web:'),
+      h('pre', { class: 'small pre', style: 'background:var(--bg);padding:10px;border-radius:8px' }, ch.embed_code),
+      h('div', { class: 'row' }, copyBtn(ch.embed_code), h('a', { class: 'btn', href: `/webchat-demo.html?channel=${encodeURIComponent(ch.webhook_token)}`, target: '_blank', rel: 'noopener' }, 'Vista previa')),
+    );
+  }
+
+  root.append(
+    h('a', { href: '#/channels' }, '← Canales'),
+    h('div', { class: 'row between' },
+      h('h1', {}, channelIcon(ch.type), ' ', ch.name, ' ', h('span', { class: `badge ${ch.active ? 'green' : ''}` }, ch.active ? 'Activo' : 'Inactivo')),
+      h('a', { href: `#/conversations?channel_id=${ch.id}` }, 'Ver conversaciones →')),
+    h('p', { class: 'muted' }, ch.label, isSuper() ? ` · ${accountName(ch.account_id)}` : ''),
+    h('div', { class: 'card' },
+      h('h3', { style: 'margin-top:0' }, 'General'),
+      field('Nombre', text(m, 'name')),
+      field('Chatbot que responde', select(m, 'chatbot_id', [['', '— Sin chatbot (solo guarda mensajes) —'], ...accountBots.map((b) => [b.id, b.name])])),
+      check(m, 'active', 'Activo (si se desactiva, los mensajes se guardan pero no se responden)')),
+    h('div', { class: 'card' }, h('h3', { style: 'margin-top:0' }, 'Configuración'), channelConfigFields(ch, cfg)),
+    h('div', { class: 'card' },
+      h('div', { class: 'row between' }, h('h3', { style: 'margin:0' }, 'Conexión'), h('span', {}, 'Estado: ', status)),
+      ch.type !== 'webchat' ? h('p', { class: 'muted small' }, 'Guarda los cambios de configuración antes de conectar.') : null,
+      connection,
+      result,
+      ch.type !== 'webchat' ? h('details', { style: 'margin-top:12px' }, h('summary', {}, 'URL del webhook'),
+        h('p', {}, h('code', {}, ch.webhook_url), ' ', copyBtn(ch.webhook_url)),
+        h('button', { class: 'small', onclick: async () => { if (confirm('¿Generar una nueva URL? La anterior dejará de funcionar y tendrás que volver a conectar.')) { await run(() => api('POST', `/api/channels/${id}/rotate-token`), 'Nueva URL generada'); render(); } } }, 'Regenerar URL secreta')) : null),
+    saveBar(save, h('span', { class: 'row', style: 'margin-left:auto' },
+      h('button', { class: 'danger', onclick: async () => {
+        if (prompt(`Escribe "${ch.name}" para eliminar el canal y todas sus conversaciones`) === ch.name) {
+          await run(() => api('DELETE', `/api/channels/${id}`), 'Canal eliminado');
+          location.hash = '#/channels';
+        }
+      } }, 'Eliminar canal'))),
+  );
+  refresh();
+}
+
+/* ------------------------------ Usuarios ------------------------------ */
+
+async function viewUsers(root) {
+  const users = await api('GET', `/api/users${acct()}`);
+  const n = { name: '', email: '', password: '', role: 'agent' };
+  const roles = [['agent', 'Agente (solo conversaciones)'], ['admin', 'Administrador de la cuenta']];
+  if (isSuper()) roles.push(['superadmin', 'Superadministrador (todas las cuentas)']);
+  const me = state.me.user;
+  root.append(
+    h('h1', {}, 'Usuarios'),
+    h('div', { class: 'card' },
+      h('h3', { style: 'margin-top:0' }, 'Nuevo usuario'),
+      h('div', { class: 'grid' },
+        field('Nombre', text(n, 'name')),
+        field('Correo', text(n, 'email', { placeholder: 'persona@empresa.com' })),
+        field('Contraseña inicial', text(n, 'password', { type: 'password' }), 'Mínimo 8 caracteres. Pídele que la cambie al entrar.'),
+        field('Rol', select(n, 'role', roles))),
+      accountPicker(n),
+      h('button', { class: 'primary', onclick: async () => { if (await run(() => api('POST', '/api/users', n), 'Usuario creado')) render(); } }, 'Crear usuario')),
+    h('div', { class: 'card' },
+      h('table', {},
+        h('thead', {}, h('tr', {}, h('th', {}, 'Usuario'), h('th', {}, 'Rol'), isSuper() ? h('th', {}, 'Cuenta') : null, h('th', {}, 'Último acceso'), h('th', {}, ''))),
+        h('tbody', {}, users.map((u) => {
+          const self = u.id === me.id;
+          return h('tr', {},
+            h('td', {}, h('strong', {}, u.name || '—'), h('div', { class: 'muted small' }, u.email), !u.active ? h('span', { class: 'badge orange' }, 'desactivado') : null),
+            h('td', {}, u.role === 'superadmin' || self ? ROLE_LABEL[u.role]
+              : h('select', { onchange: async (e) => { if (await run(() => api('PUT', `/api/users/${u.id}`, { role: e.target.value }), 'Rol actualizado')) render(); } },
+                  [['agent', 'Agente'], ['admin', 'Administrador']].map(([v, l]) => h('option', { value: v, selected: u.role === v }, l)))),
+            isSuper() ? h('td', { class: 'small' }, u.account_id ? accountName(u.account_id) : '—') : null,
+            h('td', { class: 'small muted' }, u.last_login_at ? fmtDate(u.last_login_at) : 'nunca'),
+            h('td', {}, self ? h('span', { class: 'muted small' }, 'tú') : h('div', { class: 'row' },
+              h('button', { class: 'small', onclick: async () => { if (await run(() => api('PUT', `/api/users/${u.id}`, { active: !u.active }), u.active ? 'Desactivado' : 'Activado')) render(); } }, u.active ? 'Desactivar' : 'Activar'),
+              h('button', { class: 'small', onclick: async () => { const pw = prompt('Nueva contraseña (mínimo 8 caracteres)'); if (pw) await run(() => api('PUT', `/api/users/${u.id}`, { password: pw }), 'Contraseña actualizada'); } }, 'Restablecer contraseña'),
+              h('button', { class: 'small danger', onclick: async () => { if (confirm(`¿Eliminar a ${u.email}?`)) { await run(() => api('DELETE', `/api/users/${u.id}`), 'Eliminado'); render(); } } }, 'Eliminar'))));
+        })))),
+  );
+}
+
+/* ------------------------------ Cuentas ------------------------------ */
+
+async function viewAccounts(root) {
+  const accounts = await api('GET', '/api/accounts');
+  state.accounts = accounts;
+  const n = { name: '', withAdmin: true, admin: { name: '', email: '', password: '' } };
+  const adminBox = h('div', {},
+    h('div', { class: 'grid' },
+      field('Nombre del administrador', text(n.admin, 'name')),
+      field('Correo', text(n.admin, 'email', { placeholder: 'dueño@cliente.com' })),
+      field('Contraseña inicial', text(n.admin, 'password', { type: 'password' }), 'Mínimo 8 caracteres.')));
+  root.append(
+    h('h1', {}, 'Cuentas'),
+    h('div', { class: 'card' },
+      h('p', { class: 'muted', style: 'margin-top:0' }, 'Cada cuenta es un cliente con sus propios usuarios, chatbots, canales y conversaciones. Sus usuarios solo ven lo de su cuenta.'),
+      h('h3', {}, 'Nueva cuenta'),
+      field('Nombre del cliente', text(n, 'name', { placeholder: 'Hotel Las Palmas' })),
+      h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: true, onchange: (e) => { n.withAdmin = e.target.checked; adminBox.hidden = !n.withAdmin; } }), 'Crear también su primer administrador'),
+      adminBox,
+      h('button', { class: 'primary', onclick: async () => {
+        const body = { name: n.name, ...(n.withAdmin ? { admin: n.admin } : {}) };
+        const acc = await run(() => api('POST', '/api/accounts', body), 'Cuenta creada');
+        if (acc) { state.accountId = acc.id; try { localStorage.setItem('cp-account', acc.id); } catch { /* */ } state.me = null; render(); }
+      } }, 'Crear cuenta')),
+    h('div', { class: 'card' },
+      h('table', {},
+        h('thead', {}, h('tr', {}, h('th', {}, 'Cuenta'), h('th', {}, 'Chatbots'), h('th', {}, 'Canales'), h('th', {}, 'Usuarios'), h('th', {}, 'Conversaciones'), h('th', {}, ''))),
+        h('tbody', {}, accounts.map((a) => h('tr', {},
+          h('td', {}, h('strong', {}, a.name), ' ', !a.active ? h('span', { class: 'badge orange' }, 'inactiva') : null),
+          h('td', {}, a.chatbots), h('td', {}, a.channels), h('td', {}, a.users), h('td', {}, a.conversations),
+          h('td', {}, h('div', { class: 'row' },
+            h('button', { class: 'small', onclick: () => { state.accountId = a.id; try { localStorage.setItem('cp-account', a.id); } catch { /* */ } location.hash = '#/'; } }, 'Abrir'),
+            h('button', { class: 'small', onclick: async () => { const name = prompt('Nuevo nombre', a.name); if (name) { await run(() => api('PUT', `/api/accounts/${a.id}`, { name }), 'Actualizada'); state.me = null; render(); } } }, 'Renombrar'),
+            h('button', { class: 'small', onclick: async () => {
+              if (a.active && !confirm(`Al desactivar "${a.name}", sus usuarios no podrán entrar y sus canales dejarán de responder (los mensajes se siguen guardando). ¿Continuar?`)) return;
+              await run(() => api('PUT', `/api/accounts/${a.id}`, { active: !a.active }), a.active ? 'Cuenta desactivada' : 'Cuenta activada');
+              state.me = null;
+              render();
+            } }, a.active ? 'Desactivar' : 'Activar'),
+            h('button', { class: 'small danger', onclick: async () => {
+              if (prompt(`Esto borra TODO de "${a.name}" (chatbots, canales, usuarios y conversaciones). Escribe el nombre para confirmar`) === a.name) {
+                await run(() => api('DELETE', `/api/accounts/${a.id}`), 'Cuenta eliminada');
+                if (state.accountId === a.id) state.accountId = '';
+                state.me = null;
+                render();
+              }
+            } }, 'Eliminar')))))))),
+  );
+}
+
+/* ------------------------------ Contraseña ------------------------------ */
+
+async function viewPassword(root) {
+  const f = { current: '', password: '', confirm: '' };
+  root.append(
+    h('h1', {}, 'Cambiar contraseña'),
+    h('div', { class: 'card', style: 'max-width:420px' },
+      field('Contraseña actual', text(f, 'current', { type: 'password' })),
+      field('Nueva contraseña', text(f, 'password', { type: 'password' }), 'Mínimo 8 caracteres. Se cerrarán tus otras sesiones abiertas.'),
+      field('Repite la nueva contraseña', text(f, 'confirm', { type: 'password' })),
+      h('button', { class: 'primary', onclick: async () => {
+        if (f.password !== f.confirm) return toast('Las contraseñas no coinciden', true);
+        if (await run(() => api('PUT', '/api/me/password', { current: f.current, password: f.password }), 'Contraseña actualizada')) render();
+      } }, 'Guardar')),
   );
 }

@@ -9,8 +9,7 @@ import { hydrateChatbot, type ChatbotRow, type ImageAsset, type KnowledgeItem, t
 
 function bot(over: Partial<ChatbotRow> = {}) {
   return hydrateChatbot({
-    id: 'b1', name: 'Hotel Palmas', active: true, whatsapp_number: '', evolution_instance: 'palmas', evolution_url: null,
-    evolution_api_key: null, webhook_token: 't', personality: {}, rules: {},
+    id: 'b1', account_id: 'a1', name: 'Hotel Palmas', active: true, personality: {}, rules: {},
     data_fields: [
       { key: 'nombre', label: 'Nombre', type: 'name' },
       { key: 'correo', label: 'Correo', type: 'email' },
@@ -150,16 +149,17 @@ test('buildContext: memoria, catálogo, datos faltantes y roles', () => {
   const b = bot();
   const now = new Date('2026-09-25T18:00:00Z');
   const msgs: Message[] = [
-    { id: 1, conversation_id: 'c', direction: 'in', sender: 'customer', type: 'text', content: 'hola', image_id: null, evolution_message_id: null, processed: true, status: 'ok', meta: {}, created_at: now },
-    { id: 2, conversation_id: 'c', direction: 'out', sender: 'bot', type: 'text', content: '¡Hola! ¿En qué te ayudo?', image_id: null, evolution_message_id: null, processed: true, status: 'ok', meta: {}, created_at: now },
-    { id: 3, conversation_id: 'c', direction: 'in', sender: 'customer', type: 'text', content: 'precio doble', image_id: null, evolution_message_id: null, processed: false, status: 'ok', meta: {}, created_at: now },
+    { id: 1, conversation_id: 'c', direction: 'in', sender: 'customer', type: 'text', content: 'hola', image_id: null, external_message_id: null, processed: true, status: 'ok', meta: {}, created_at: now },
+    { id: 2, conversation_id: 'c', direction: 'out', sender: 'bot', type: 'text', content: '¡Hola! ¿En qué te ayudo?', image_id: null, external_message_id: null, processed: true, status: 'ok', meta: {}, created_at: now },
+    { id: 3, conversation_id: 'c', direction: 'in', sender: 'customer', type: 'text', content: 'precio doble', image_id: null, external_message_id: null, processed: false, status: 'ok', meta: {}, created_at: now },
   ];
   const ctx = buildContext({
     bot: b,
     knowledge: [{ id: 'k', chatbot_id: 'b1', category: 'precios', title: 'Precios', content: KNOW[0], always_include: false, active: true, sort_order: 0 }],
     images: [img('doble')],
-    contact: { id: 'ct', chatbot_id: 'b1', jid: 'x', phone: '5215512345678', push_name: 'Juanito', name: 'Juan', data: { nombre: 'Juan' }, notes: ['Viaja con su esposa'], channel: 'whatsapp' },
-    conversation: { id: 'c', chatbot_id: 'b1', contact_id: 'ct', status: 'bot', status_changed_at: now, handoff_reason: '', summary: 'Preguntó por fechas de diciembre', summary_until_id: 0, last_message_at: now },
+    contact: { id: 'ct', account_id: 'a1', channel_id: 'ch', external_id: 'x', phone: '5215512345678', push_name: 'Juanito', name: 'Juan', data: { nombre: 'Juan' }, notes: ['Viaja con su esposa'] },
+    channelType: 'whatsapp',
+    conversation: { id: 'c', account_id: 'a1', channel_id: 'ch', chatbot_id: 'b1', contact_id: 'ct', status: 'bot', status_changed_at: now, handoff_reason: '', summary: 'Preguntó por fechas de diciembre', summary_until_id: 0, last_message_at: now },
     history: msgs, pending: [msgs[2]], sentImageIds: [], imagesById: new Map(), now,
   });
   const sys = ctx.messages[0].content;
@@ -170,6 +170,8 @@ test('buildContext: memoria, catálogo, datos faltantes y roles', () => {
   assert.match(sys, /Viaja con su esposa/);
   assert.match(sys, /Preguntó por fechas de diciembre/);
   assert.match(sys, /no vuelvas a presentarte/);
+  assert.match(sys, /Canal de esta conversación: WhatsApp/);
+  assert.match(sys, /teléfono de WhatsApp: 5215512345678/);
   assert.deepEqual(ctx.messages.slice(1).map((m) => m.role), ['user', 'assistant', 'user']);
 });
 

@@ -3,15 +3,56 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 import assert from 'node:assert/strict';
+import http from 'node:http';
+
+/* ---------- APIs externas simuladas (Telegram Bot API y Meta Graph API) ---------- */
+export interface ExtRequest { method: string; path: string; query: URLSearchParams; headers: http.IncomingHttpHeaders; body: any; raw: string }
+export const ext = { requests: [] as ExtRequest[], fail: new Set<string>(), n: 0 };
+const extServer = http.createServer((req, res) => {
+  const chunks: Buffer[] = [];
+  req.on('data', (c) => chunks.push(c));
+  req.on('end', () => {
+    const raw = Buffer.concat(chunks).toString('utf8');
+    const url = new URL(req.url!, 'http://x');
+    let body: any = raw;
+    try { body = raw ? JSON.parse(raw) : {}; } catch { /* multipart */ }
+    const path = url.pathname;
+    ext.requests.push({ method: req.method!, path, query: url.searchParams, headers: req.headers, body, raw });
+    const json = (code: number, data: unknown) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(data)); };
+    const method = path.split('/').pop()!;
+    if ([...ext.fail].some((f) => path.includes(f))) return json(500, { ok: false, description: 'fallo simulado', error: { message: 'fallo simulado' } });
+    if (path.startsWith('/file/')) { res.writeHead(200, { 'content-type': 'audio/ogg' }); return res.end(Buffer.from('OggS-audio')); }
+    if (path.startsWith('/bot')) {
+      if (method === 'getMe') return json(200, { ok: true, result: { id: 1, username: 'palmas_bot' } });
+      if (method === 'getFile') return json(200, { ok: true, result: { file_path: 'voice/a.ogg' } });
+      if (method === 'getWebhookInfo') return json(200, { ok: true, result: { url: 'https://bot.test/webhook/x', pending_update_count: 0 } });
+      if (method === 'sendMessage' || method === 'sendPhoto') return json(200, { ok: true, result: { message_id: ++ext.n } });
+      return json(200, { ok: true, result: true });
+    }
+    if (path.endsWith('/me/messages')) return json(200, { recipient_id: body?.recipient?.id, message_id: `m_${++ext.n}` });
+    if (path.endsWith('/subscribed_apps')) return json(200, { success: true });
+    if (path.endsWith('/me')) return json(200, { id: 'PAGE1', name: 'Hotel Palmas' });
+    return json(404, { error: { message: 'ruta simulada desconocida' } });
+  });
+});
+await new Promise<void>((r) => extServer.listen(0, '127.0.0.1', r));
+extServer.unref();
+const extUrl = `http://127.0.0.1:${(extServer.address() as any).port}`;
+process.env.TELEGRAM_API_URL = extUrl;
+process.env.META_GRAPH_URL = extUrl;
+process.env.PUBLIC_BASE_URL = 'https://bot.test';
+process.env.WEBHOOK_BASE_URL = 'http://backend:3000';
 
 process.env.DATABASE_URL = process.env.TEST_DATABASE_URL || 'postgres://chatbot:chatbot@localhost:5432/chatbot_test';
 process.env.UPLOADS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'cp-uploads-'));
-process.env.ADMIN_USER = 'admin';
+process.env.ADMIN_USER = 'admin@test.mx';
 process.env.ADMIN_PASSWORD = 'secreto123';
 process.env.SESSION_SECRET = 'una-clave-de-pruebas-muy-larga';
 
 export const { pool, migrate } = await import('../src/db.js');
 const { buildApp } = await import('../src/app.js');
+const { defaultTransport } = await import('../src/service.js');
+const { bootstrapSuperadmin } = await import('../src/auth.js');
 export const store = await import('../src/store/index.js');
 export type Req = import('../src/ai/provider.js').CompletionRequest;
 
@@ -53,7 +94,8 @@ export async function createHarness() {
     },
   };
   const failNext = { text: 0 };
-  const transportFactory = (_bot: any, contact: any) => ({
+  // WhatsApp se simula en memoria; Telegram y Meta usan sus adaptadores reales contra el servidor falso.
+  const transportFactory = (channel: any, contact: any) => (channel.type !== 'whatsapp' ? defaultTransport(channel, contact) : {
     kind: 'whatsapp' as const,
     async sendText(text: string) {
       if (failNext.text > 0) {
@@ -74,18 +116,24 @@ export async function createHarness() {
 
   await pool.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public;');
   await migrate();
+  await bootstrapSuperadmin();
   const { app, service } = await buildApp({ ai: ai as any, transportFactory: transportFactory as any });
-  const login = await app.inject({ method: 'POST', url: '/api/login', payload: { user: 'admin', password: 'secreto123' } });
-  assert.equal(login.statusCode, 200);
-  const cookie = String(login.headers['set-cookie']).split(';')[0];
-  const authed = (method: string, url: string, payload?: unknown) => app.inject({ method: method as any, url, payload: payload as any, headers: { cookie } });
+  const loginAs = async (email: string, password: string) => {
+    const login = await app.inject({ method: 'POST', url: '/api/login', payload: { email, password } });
+    assert.equal(login.statusCode, 200, login.body);
+    const cookie = String(login.headers['set-cookie']).split(';')[0];
+    return Object.assign((method: string, url: string, payload?: unknown) => app.inject({ method: method as any, url, payload: payload as any, headers: { cookie } }), { cookie });
+  };
+  const authed = await loginAs('admin@test.mx', 'secreto123');
 
   let msgN = 0;
   const h = {
-    app, service, calls, summaryCalls, sent, authed, failNext, token: '', botId: '',
+    app, service, calls, summaryCalls, sent, authed, loginAs, cookie: authed.cookie, failNext, token: '', botId: '', accountId: '', channelId: '',
     setScript(s: Script) { script = s; },
     setSummary(s: string) { summary = s; },
     reset() { calls.length = 0; summaryCalls.length = 0; sent.length = 0; },
+    /** Espera a que la cola termine todo lo pendiente (evita que una prueba contamine a la siguiente). */
+    async idle() { await waitFor(() => service.queue.size === 0, 8000); },
     webhook(text: string, opts: { fromMe?: boolean; phone?: string; id?: string; timestamp?: number } = {}) {
       const phone = opts.phone ?? '5215511112222';
       return app.inject({
@@ -102,11 +150,20 @@ export async function createHarness() {
         },
       });
     },
+    /** Cuenta de pruebas + chatbot activo + canal de WhatsApp (instancia "palmas") asignado. */
     async createBot(patch: Record<string, unknown> = {}) {
-      const r = await authed('POST', '/api/chatbots', { name: 'Hotel Palmas', evolution_instance: 'palmas', active: true, ai: { debounce_seconds: 0.2 }, ...patch });
+      if (!h.accountId) {
+        const acc = await authed('POST', '/api/accounts', { name: 'Cuenta de pruebas' });
+        assert.equal(acc.statusCode, 200, acc.body);
+        h.accountId = acc.json().id;
+      }
+      const r = await authed('POST', '/api/chatbots', { account_id: h.accountId, name: 'Hotel Palmas', active: true, ai: { debounce_seconds: 0.2 }, ...patch });
       assert.equal(r.statusCode, 200, r.body);
       h.botId = r.json().id;
-      h.token = r.json().webhook_url.split('/').pop();
+      const ch = await authed('POST', '/api/channels', { account_id: h.accountId, type: 'whatsapp', name: 'WhatsApp', chatbot_id: h.botId, config: { instance: 'palmas' } });
+      assert.equal(ch.statusCode, 200, ch.body);
+      h.channelId = ch.json().id;
+      h.token = ch.json().webhook_token;
       return r.json();
     },
     async conversationFor(phone = '5215511112222') {

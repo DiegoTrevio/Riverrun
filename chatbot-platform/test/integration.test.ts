@@ -5,113 +5,32 @@
  */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import os from 'node:os';
-import path from 'node:path';
-import fs from 'node:fs';
+import { createHarness, dbAvailable, pool, store, waitFor, type Req } from './harness.js';
 
-const DB = process.env.TEST_DATABASE_URL || 'postgres://chatbot:chatbot@localhost:5432/chatbot_test';
-process.env.DATABASE_URL = DB;
-process.env.UPLOADS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'cp-uploads-'));
-process.env.ADMIN_USER = 'admin';
-process.env.ADMIN_PASSWORD = 'secreto123';
-process.env.SESSION_SECRET = 'una-clave-de-pruebas-muy-larga';
-
-const { pool, migrate } = await import('../src/db.js');
-const { buildApp } = await import('../src/app.js');
-const store = await import('../src/store/index.js');
-type Req = import('../src/ai/provider.js').CompletionRequest;
-
-let dbOk = true;
-try {
-  await pool.query('SELECT 1');
-} catch {
-  dbOk = false;
-}
+const dbOk = await dbAvailable();
 const t = (name: string, fn: () => Promise<void>) => test(name, { skip: !dbOk && 'PostgreSQL de pruebas no disponible' }, fn);
 
-/* ---------------- IA simulada: responde según un guion ---------------- */
-type Script = (req: Req, callIndex: number) => Record<string, unknown> | string;
-const calls: Req[] = [];
-let script: Script = () => ({});
-const ai = {
-  async complete(req: Req) {
-    if (!req.json_schema) return { content: '- Ana busca la doble para diciembre', model: req.model, latency_ms: 1, usage: { input_tokens: 50, cached_tokens: 0, output_tokens: 10 } };
-    calls.push(req);
-    const out = script(req, calls.length - 1);
-    const content = typeof out === 'string' ? out : JSON.stringify({
-      thinking: '', action: 'reply', messages: [], image_ids: [], save_data: [], remember: [], handoff_reason: '', info_not_found: false, ...out,
-    });
-    return { content, model: req.model, latency_ms: 1, usage: { input_tokens: 100, cached_tokens: 0, output_tokens: 20 } };
-  },
-  async transcribe() {
-    return 'transcripción';
-  },
-};
-
-/* ---------------- WhatsApp simulado ---------------- */
-const sent: { kind: string; to: string; text: string; image?: string }[] = [];
-let sendCounter = 0;
-const transportFactory = (_bot: any, contact: any) => ({
-  kind: 'whatsapp' as const,
-  async sendText(text: string) {
-    sent.push({ kind: 'text', to: contact.phone, text });
-    return `OUT-${++sendCounter}`;
-  },
-  async sendImage(image: any, caption: string) {
-    sent.push({ kind: 'image', to: contact.phone, text: caption, image: image.code });
-    return `OUT-${++sendCounter}`;
-  },
-  async notify(number: string, text: string) {
-    sent.push({ kind: 'notify', to: number, text });
-  },
-});
-
-let app: Awaited<ReturnType<typeof buildApp>>['app'];
-let service: Awaited<ReturnType<typeof buildApp>>['service'];
+let h: Awaited<ReturnType<typeof createHarness>>;
+let app: any, authed: any, service: any, webhook: any, sent: any[], calls: Req[];
+let cookie = '';
 let botId = '';
 let token = '';
-let cookie = '';
-
-async function waitFor(cond: () => boolean | Promise<boolean>, ms = 4000) {
-  const start = Date.now();
-  while (Date.now() - start < ms) {
-    if (await cond()) return;
-    await new Promise((r) => setTimeout(r, 25));
-  }
-  throw new Error('Tiempo de espera agotado');
-}
-
-let msgN = 0;
-function webhook(text: string, opts: { fromMe?: boolean; phone?: string; id?: string } = {}) {
-  const phone = opts.phone ?? '5215511112222';
-  return app.inject({
-    method: 'POST',
-    url: `/webhook/${token}`,
-    payload: {
-      event: 'messages.upsert',
-      instance: 'palmas',
-      data: { key: { remoteJid: `${phone}@s.whatsapp.net`, fromMe: !!opts.fromMe, id: opts.id ?? `IN-${++msgN}` }, pushName: 'Ana', message: { conversation: text } },
-    },
-  });
-}
+// Guion de la IA simulada (cada prueba lo reemplaza).
+let script: (req: Req, i: number) => any = () => ({ messages: ['Ok'] });
 
 before(async () => {
   if (!dbOk) return;
-  await pool.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public;');
-  await migrate();
-  ({ app, service } = await buildApp({ ai: ai as any, transportFactory: transportFactory as any }));
-
-  const login = await app.inject({ method: 'POST', url: '/api/login', payload: { user: 'admin', password: 'secreto123' } });
-  assert.equal(login.statusCode, 200);
-  cookie = String(login.headers['set-cookie']).split(';')[0];
+  h = await createHarness();
+  ({ app, authed, service, sent, calls, cookie } = h);
+  webhook = (text: string, opts?: any) => h.webhook(text, opts);
+  h.setScript((req, i) => script(req, i));
+  h.setSummary('- Ana busca la doble para diciembre');
 });
 
 after(async () => {
-  if (app) await app.close();
+  if (h) await h.app.close();
   await pool.end();
 });
-
-const authed = (method: string, url: string, payload?: unknown) => app.inject({ method: method as any, url, payload: payload as any, headers: { cookie } });
 
 t('el panel exige autenticación', async () => {
   const r = await app.inject({ method: 'GET', url: '/api/chatbots' });
@@ -121,11 +40,9 @@ t('el panel exige autenticación', async () => {
 });
 
 t('crear y configurar chatbot desde la API', async () => {
-  const r = await authed('POST', '/api/chatbots', { name: 'Hotel Palmas', evolution_instance: 'palmas' });
-  assert.equal(r.statusCode, 200);
-  const bot = r.json();
-  botId = bot.id;
-  token = bot.webhook_url.split('/').pop();
+  await h.createBot({ name: 'Hotel Palmas', active: false });
+  botId = h.botId;
+  token = h.token;
 
   const upd = await authed('PUT', `/api/chatbots/${botId}`, {
     active: true,
@@ -333,7 +250,7 @@ t('simulador del panel usa el mismo motor aunque el bot esté inactivo', async (
   assert.equal(hist.messages.length, 3);
   // Las conversaciones del simulador no aparecen en la lista normal
   const convs = (await authed('GET', `/api/conversations?chatbot_id=${botId}`)).json();
-  assert.ok(convs.every((c: any) => c.channel === 'whatsapp'));
+  assert.ok(convs.every((c: any) => c.channel_type === 'whatsapp'));
   await authed('DELETE', `/api/chatbots/${botId}/playground/s1`);
   assert.equal((await authed('GET', `/api/chatbots/${botId}/playground/s1`)).json().messages.length, 0);
 });

@@ -1,17 +1,11 @@
+import { describeInbound, type InboundMessage } from '../channels/types.js';
+
 /**
  * Normaliza el payload del webhook de Evolution API (evento messages.upsert)
  * a una estructura simple e independiente de la versión.
  */
-export interface IncomingMessage {
+export interface IncomingMessage extends InboundMessage {
   instance: string;
-  messageId: string;
-  jid: string;          // remoteJid (identificador de chat)
-  phone: string;        // número en dígitos, si se conoce
-  fromMe: boolean;
-  pushName: string;
-  type: 'text' | 'image' | 'audio' | 'video' | 'document' | 'sticker' | 'location' | 'contact' | 'reaction' | 'other';
-  text: string;         // texto o pie de foto
-  timestamp: number;
 }
 
 export function normalizeEventName(e: unknown): string {
@@ -102,38 +96,15 @@ function parseOne(d: any, instance: string): IncomingMessage | null {
   return {
     instance,
     messageId: key.id,
-    jid,
+    externalId: jid,
     phone,
+    displayName: d.pushName ?? '',
     fromMe: !!key.fromMe,
-    pushName: d.pushName ?? '',
     type,
     text: String(text ?? '').trim(),
     timestamp: Number(d.messageTimestamp ?? Math.floor(Date.now() / 1000)),
   };
 }
 
-/** Representación textual de un mensaje entrante no textual, para la IA y el historial. */
-export function describeIncoming(m: Pick<IncomingMessage, 'type' | 'text'>): string {
-  switch (m.type) {
-    case 'text':
-      return m.text;
-    case 'image':
-      return m.text ? `[El cliente envió una imagen con el texto: "${m.text}"]` : '[El cliente envió una imagen]';
-    case 'audio':
-      return '[El cliente envió una nota de voz]';
-    case 'video':
-      return m.text ? `[El cliente envió un video: "${m.text}"]` : '[El cliente envió un video]';
-    case 'document':
-      return `[El cliente envió un documento${m.text ? `: ${m.text}` : ''}]`;
-    case 'sticker':
-      return '[El cliente envió un sticker]';
-    case 'location':
-      return `[El cliente compartió una ubicación${m.text ? `: ${m.text}` : ''}]`;
-    case 'contact':
-      return `[El cliente compartió un contacto${m.text ? `: ${m.text}` : ''}]`;
-    case 'reaction':
-      return m.text ? `[El cliente reaccionó con ${m.text}]` : '[El cliente quitó una reacción]';
-    default:
-      return '[El cliente envió un mensaje no compatible]';
-  }
-}
+/** Compatibilidad: representación textual de un mensaje entrante. */
+export const describeIncoming = describeInbound;

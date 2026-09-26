@@ -6,10 +6,10 @@ import { migrate, pool } from '../db.js';
 import * as store from '../store/index.js';
 
 await migrate();
-const bot = await store.createChatbot({
+const account = (await store.listAccounts()).find((a) => a.name === 'Demo') ?? (await store.createAccount('Demo'));
+const bot = await store.createChatbot(account.id, {
   name: 'Hotel Las Palmas (demo)',
   active: false,
-  evolution_instance: null,
   personality: {
     assistant_name: 'Sofía',
     prompt:
@@ -68,6 +68,8 @@ const knowledge = [
 for (const [i, [category, title, content, always]] of knowledge.entries()) {
   await store.upsertKnowledge(bot.id, { category, title, content, always_include: always, sort_order: i });
 }
-console.log(`Chatbot demo creado: ${bot.name} (${bot.id})`);
+const web = await store.createChannel({ account_id: account.id, chatbot_id: bot.id, type: 'webchat', name: 'Chat del sitio (demo)', config: {} });
+console.log(`Chatbot demo creado en la cuenta "${account.name}": ${bot.name} (${bot.id})`);
+console.log(`Canal de chat web: ${web.id}`);
 console.log('Sube 3 imágenes desde el panel (p.ej. habitacion_estandar, habitacion_doble, suite) y pruébalo en la pestaña "Probar".');
 await pool.end();

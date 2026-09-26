@@ -51,6 +51,11 @@ export function toWhatsappFormat(s: string): string {
     .trim();
 }
 
+/** Texto plano para plataformas sin formato (Telegram sin parse_mode, Messenger, Instagram, chat web). */
+export function toPlainText(s: string): string {
+  return s.replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s).,!?:;]|$)/g, '$1$2').replace(/(^|[\s(])_([^_\n]+)_(?=[\s).,!?:;]|$)/g, '$1$2').replace(/(^|\s)~([^~\n]+)~(?=\s|$)/g, '$1$2');
+}
+
 /* ---------------- Extracción de "hechos verificables" ---------------- */
 
 const URL_RE = /\b((?:https?:\/\/|www\.)[^\s<>"')]+|[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*\.(?:com|mx|net|org|io|co|app|site|online|store|shop|info|biz|es|us|link|ly|me|travel|lat|tv)\b(?:\/[^\s<>"')]*)?)/gi;

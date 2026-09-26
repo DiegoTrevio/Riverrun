@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import { OpenAiProvider } from './ai/provider.js';
 import { buildApp } from './app.js';
+import { bootstrapSuperadmin } from './auth.js';
 import { assertProductionConfig, config } from './config.js';
 import { migrate } from './db.js';
 import { logEvent, pruneLogs } from './logs.js';
@@ -11,6 +12,7 @@ async function main() {
 
   const applied = await migrate();
   if (applied.length) console.log(`Migraciones aplicadas: ${applied.join(', ')}`);
+  await bootstrapSuperadmin();
 
   const { app, service } = await buildApp({ ai: new OpenAiProvider(), logger: process.env.HTTP_LOG === 'true' });
   await app.listen({ port: config.port, host: config.host });

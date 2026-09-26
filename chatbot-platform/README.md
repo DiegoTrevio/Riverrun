@@ -1,10 +1,14 @@
-# Plataforma de chatbots para WhatsApp (Evolution API + OpenAI)
+# Plataforma de chatbots multicanal (WhatsApp, Telegram, Messenger, Instagram y chat web)
 
-Plataforma propia para crear, configurar y operar chatbots de WhatsApp. Todo lo que cambia de un negocio a otro (prompt, tono, información, imágenes, reglas, datos a recopilar, flujo) vive en **PostgreSQL** y se edita desde un **panel web**, sin tocar código. Para pasar de un hotel a una inmobiliaria se cambia la configuración, no el sistema.
+Plataforma propia para crear, configurar y operar chatbots para varios clientes. Cada **cuenta** (cliente) tiene sus propios usuarios, chatbots y **canales**: WhatsApp (vía Evolution API), Telegram, Facebook Messenger, Instagram y un chat para su sitio web. Un mismo chatbot puede atender varios canales a la vez. Todo lo que cambia de un negocio a otro (prompt, tono, información, imágenes, reglas, datos a recopilar, flujo) vive en **PostgreSQL** y se edita desde un **panel web**, sin tocar código. Para pasar de un hotel a una inmobiliaria se cambia la configuración, no el sistema.
 
 ```
-WhatsApp ─► Evolution API ─► Backend (este proyecto) ─► WhatsApp
-                              │
+WhatsApp (Evolution) ┐                                  ┌► misma plataforma
+Telegram             │                                  │
+Messenger/Instagram  ├─► Backend (este proyecto) ───────┤
+Chat web (widget)    ┘    │                             │
+                          ├─ Cuenta → canal → chatbot asignado
+                          │
                               ├─ Cola por conversación (agrupa mensajes seguidos)
                               ├─ Contexto controlado: prompt + conocimiento relevante + memoria + mensajes recientes
                               ├─ OpenAI PROPONE una acción (JSON estricto)
@@ -24,7 +28,8 @@ WhatsApp ─► Evolution API ─► Backend (este proyecto) ─► WhatsApp
 | **Memoria** | Datos del cliente (campos configurables, validados: correo, teléfono, opciones…), notas de intereses, nombre, y un **resumen acumulado** de lo antiguo que se genera automáticamente. La IA recibe el resumen + todos los mensajes aún no resumidos (sin huecos), y ve qué datos ya tiene y cuáles faltan, así no vuelve a preguntar. |
 | **Transferencia a humano** | Por palabras clave (sin gastar IA), por decisión de la IA según reglas, o manualmente desde el panel. Aviso opcional por WhatsApp a un encargado. Si alguien responde desde el teléfono, el bot se pausa en esa conversación. Retoma automática opcional tras X minutos. |
 | **Registros** | Cada error/evento de Evolution, IA, validador, webhook y panel queda en `event_logs` y se ve en el panel. Cada llamada a la IA queda en `ai_runs` con tokens (incluidos los cacheados), latencia, decisión y validación. |
-| **Multiempresa** | Cada chatbot tiene su instancia/número, prompt, conocimiento, imágenes, reglas y URL de webhook secreta. Se puede duplicar un chatbot como plantilla. |
+| **Cuentas y usuarios** | Cada cliente es una cuenta con sus usuarios (administradores y agentes). Solo ven lo suyo: cualquier intento de acceder a otra cuenta responde 404. El superadministrador ve y administra todas. Desactivar una cuenta corta el acceso de sus usuarios y detiene sus canales (los mensajes se siguen guardando). |
+| **Multicanal** | WhatsApp, Telegram, Messenger, Instagram y chat web. Cada canal pertenece a una cuenta y se asigna a un chatbot; un chatbot puede atender varios canales con la misma configuración. Webhooks verificados por plataforma (secreto de Telegram, firma `X-Hub-Signature-256` de Meta, URL secreta de Evolution). Se puede duplicar un chatbot como plantilla, incluso en otra cuenta. |
 | **Económico** | Todo corre en un VPS con Docker (Evolution, Postgres, Redis, backend). Solo se paga la API de OpenAI; el contexto acotado, el caché de prompts y el modelo configurable por chatbot mantienen bajo el costo. |
 
 ## Instalación en un VPS (Docker)
@@ -39,28 +44,56 @@ docker compose up -d --build
 ```
 
 - El panel queda en `http://127.0.0.1:3000` del VPS. Para abrirlo desde tu computadora: `ssh -L 3000:127.0.0.1:3000 usuario@tu-vps` y visita `http://localhost:3000`.
-- **Con dominio y HTTPS** (recomendado): apunta un dominio al VPS, define `DOMAIN` y `SECURE_COOKIES=true` en `.env` y ejecuta `docker compose --profile https up -d --build`. Caddy obtiene el certificado automáticamente.
+- **Con dominio y HTTPS** (necesario para Telegram, Messenger, Instagram y el chat web): apunta un dominio al VPS, define `DOMAIN` y `SECURE_COOKIES=true` en `.env` y ejecuta `docker compose --profile https up -d --build`. Caddy obtiene el certificado automáticamente. La URL pública (`PUBLIC_BASE_URL`, por defecto `https://$DOMAIN`) es la que usan esas plataformas para enviar mensajes y descargar imágenes.
+- Al arrancar se crea el **superadministrador** con `ADMIN_USER` (tu correo) y `ADMIN_PASSWORD`. Si olvidas la contraseña, cámbiala en `.env` y reinicia.
 - Evolution API solo escucha en `127.0.0.1:8080` (no queda expuesta a internet). El backend y Evolution se hablan por la red interna de Docker (`WEBHOOK_BASE_URL=http://backend:3000`).
 - Se recomienda fijar la versión de Evolution con `EVOLUTION_IMAGE=evoapicloud/evolution-api:<versión>`.
 
+## Cuentas, usuarios y roles
+
+| Rol | Qué puede hacer |
+|---|---|
+| **Superadministrador** | Todo, en todas las cuentas. Crea cuentas (con su primer administrador), las activa/desactiva o elimina. Tiene un selector de cuenta en el menú para trabajar dentro de una o ver todas. |
+| **Administrador** | Todo dentro de su cuenta: chatbots, canales, usuarios, conversaciones y registros. |
+| **Agente** | Solo conversaciones de su cuenta: verlas, tomarlas, responder, devolverlas al bot y editar datos del cliente. No ve la configuración ni credenciales. |
+
+Al cambiar una contraseña, las demás sesiones abiertas de ese usuario se cierran. Desactivar un usuario le quita el acceso al instante.
+
 ## Primeros pasos en el panel
 
-1. **Crear chatbot** → pestaña **General**: nombre y nombre de la instancia de Evolution (p.ej. `hotel_palmas`).
-2. **Personalidad**: prompt principal, tono, idioma, longitud, emojis, tú/usted, ejemplos de estilo.
-3. **Conocimiento**: agrega la información por categoría (servicios, precios, horarios, ubicaciones, condiciones, FAQ…). Escribe datos concretos: es lo único que el bot puede afirmar.
-4. **Imágenes**: sube las imágenes con un **ID** (`habitacion_doble`), qué muestran y **cuándo enviarlas**.
-5. **Reglas**: qué hacer si falta un dato, temas prohibidos, reglas propias, cuándo transferir, palabras clave, número de aviso.
-6. **Datos a recopilar**: nombre, correo, fechas, presupuesto… con tipo y cuándo pedirlos.
-7. **Flujo**: objetivo y etapas sugeridas (guía flexible, no guion).
-8. **Probar**: simulador con el mismo motor y validaciones que WhatsApp, con panel de depuración (acción elegida, razonamiento, intentos rechazados, correcciones, datos guardados). Funciona aunque el bot esté inactivo.
-9. **WhatsApp**: "Conectar / mostrar QR" crea la instancia en Evolution, configura el webhook y muestra el QR para vincular el teléfono.
-10. **General → Activo** para que empiece a responder.
+1. **Cuentas** (superadministrador): crea la cuenta del cliente y, opcionalmente, su primer administrador.
+2. **Chatbots → Nuevo chatbot** y configúralo:
+   - **Personalidad**: prompt principal, tono, idioma, longitud, emojis, tú/usted, ejemplos de estilo.
+   - **Conocimiento**: información por categoría (servicios, precios, horarios, ubicaciones, condiciones, FAQ…). Es lo único que el bot puede afirmar.
+   - **Imágenes**: con un **ID** (`habitacion_doble`), qué muestran y **cuándo enviarlas**.
+   - **Reglas**, **Datos a recopilar** y **Flujo**.
+   - **Probar**: simulador con el mismo motor y validaciones, con panel de depuración. Funciona aunque el bot esté inactivo.
+3. **Canales → Nuevo canal**: elige la plataforma, asígnale el chatbot y sigue las instrucciones de conexión (abajo).
+4. **General → Activo** para que el chatbot empiece a responder en sus canales.
 
-Para ver un ejemplo completo: `npm run seed:demo` (o `docker compose exec backend node dist/cli/seed-demo.js`) crea un chatbot de hotel de demostración.
+Para ver un ejemplo completo: `npm run seed:demo` (o `docker compose exec backend node dist/cli/seed-demo.js`) crea la cuenta "Demo" con un chatbot de hotel y un canal de chat web.
+
+## Conectar cada plataforma
+
+| Plataforma | Qué necesitas | Cómo se conecta |
+|---|---|---|
+| **WhatsApp** | Un teléfono con WhatsApp | Escribe un nombre de instancia, guarda y pulsa **Conectar / mostrar QR**: se crea la instancia en Evolution, se configura el webhook y escaneas el QR desde *Dispositivos vinculados*. |
+| **Telegram** | Un bot creado con **@BotFather** | Pega el token, guarda y pulsa **Conectar con Telegram**: se valida el token y se registra el webhook con un secreto (los mensajes sin ese secreto se rechazan). Solo chats privados. |
+| **Messenger** | Una app en Meta for Developers con el producto Messenger y una página de Facebook | Pega el token de la página y la clave secreta de la app. En la app de Meta configura el webhook con la **URL** y el **token de verificación** que muestra el panel, suscrito a `messages`, `messaging_postbacks` y `message_echoes`. Pulsa **Verificar y suscribir la página**. |
+| **Instagram** | Cuenta profesional de Instagram vinculada a la página, en la misma app de Meta | Igual que Messenger, en la sección Instagram de la app. |
+| **Chat web** | Nada | Personaliza título, color y bienvenida; copia el código `<script …>` en el sitio del cliente. Opcional: limita los dominios que pueden insertarlo. Hay una **vista previa** en el panel. |
+
+Detalles por plataforma:
+
+- Si alguien del equipo responde **directamente** desde WhatsApp o desde la bandeja de la página de Facebook/Instagram, el bot se pausa en esa conversación.
+- El formato `*negritas*` se usa en WhatsApp; en las demás plataformas se envía como texto plano.
+- Messenger e Instagram descargan las imágenes desde una URL pública firmada (`/media/…`), por eso necesitan HTTPS.
+- Los avisos de transferencia al encargado salen siempre por un WhatsApp activo de la cuenta, aunque la conversación sea de otra plataforma.
+- Un canal **sin chatbot** asignado guarda los mensajes pero no responde; al asignarle uno, empieza a atender.
 
 ## Conversaciones
 
-- Lista filtrable por chatbot, estado (bot / humano / cerrada) y búsqueda.
+- Lista filtrable por chatbot, plataforma, canal, estado (bot / humano / cerrada) y búsqueda.
 - Detalle con el historial (imágenes incluidas), datos del cliente editables, notas y resumen de memoria.
 - **Tomar conversación** (el bot deja de responder), **responder manualmente** desde el panel, **devolver al bot** (los mensajes que llegaron mientras atendía una persona no se contestan en automático) y **borrar memoria**.
 
@@ -126,26 +159,43 @@ src/
     engine.ts      pipeline: IA → validar → reintentar → ejecutar → memoria
     memory.ts      resumen acumulado de la conversación
     queue.ts       cola por conversación (agrupar mensajes, sin respuestas cruzadas)
-    transport.ts   salida por Evolution o por el simulador
-    text.ts        normalización, extracción de hechos, formato WhatsApp
+    transport.ts   interfaz de salida común y simulador
+    text.ts        normalización, extracción de hechos, formato WhatsApp / texto plano
+  channels/        un adaptador por plataforma (whatsapp, telegram, meta, webchat): webhook, firma, envío, conexión
   evolution/       cliente de Evolution API v2 y parser del webhook
   ai/provider.ts   cliente de OpenAI (chat + transcripción de notas de voz)
-  routes/          webhook y API del panel
+  routes/          API del panel (cuentas, usuarios, chatbots, canales, conversaciones) y rutas públicas (webhooks, chat web, imágenes)
+  access.ts        reglas de acceso por cuenta y rol
+  auth.ts          usuarios, contraseñas (scrypt) y sesiones
   store/           acceso a PostgreSQL
 migrations/        esquema SQL
-public/            panel web (HTML/CSS/JS sin build)
+public/            panel web (HTML/CSS/JS sin build) y widget del chat web (widget.js)
 test/              pruebas
 ```
 
-## API del panel (resumen)
+## API (resumen)
 
-Todas bajo `/api`, con sesión (cookie). `POST /api/login`, `GET/POST /api/chatbots`, `GET/PUT/DELETE /api/chatbots/:id`, `POST /api/chatbots/:id/duplicate`, conocimiento (`/api/chatbots/:id/knowledge`, `/api/knowledge/:id`), imágenes (`/api/chatbots/:id/images`, `/api/images/:id`), WhatsApp (`/api/chatbots/:id/whatsapp/{status,connect,webhook,logout,test}`), simulador (`/api/chatbots/:id/playground`), conversaciones (`/api/conversations`, `/:id/{takeover,release,close,send,reset-memory}`), contactos, registros (`/api/logs`), uso de IA (`/api/ai-runs`), estadísticas (`/api/stats`).
+Panel (bajo `/api`, con sesión por cookie; todo se limita a la cuenta del usuario):
 
-Webhook de Evolution: `POST /webhook/:token` (URL secreta por chatbot, visible en la pestaña General).
+- Sesión: `POST /api/login`, `GET /api/me`, `PUT /api/me/password`
+- Cuentas: `/api/accounts`
+- Usuarios: `/api/users`
+- Chatbots: `/api/chatbots`, `/:id/duplicate`, `/:id/knowledge`, `/:id/images`, `/:id/playground`
+- Canales: `/api/channels`, `/:id/setup`, `/:id/status`, `/:id/rotate-token`, `/:id/whatsapp/{connect,logout,test}`
+- Conversaciones: `/api/conversations`, `/:id/{takeover,release,close,send,reset-memory}`
+- Contactos: `/api/contacts/:id`
+- Registros, uso de IA y estadísticas: `/api/logs`, `/api/ai-runs`, `/api/stats`
+
+Públicas:
+
+- Webhooks: `GET|POST /webhook/:token`. El token es una URL secreta por canal; `GET` sirve para la verificación de Meta.
+- Chat web: `/webchat/:token/{config,session,messages}`, con CORS y límite de 15 mensajes por minuto por sesión.
+- Imágenes firmadas: `GET /media/:id?e=…&s=…`.
+
+Actualización desde la versión anterior: la migración `002` pasa automáticamente todo a una "Cuenta principal" y convierte el WhatsApp de cada chatbot en un canal, **conservando la URL del webhook** para que Evolution siga funcionando sin reconfigurar.
 
 ## Notas y límites de esta versión
 
-- Un solo usuario administrador (definido en `.env`). Pensado para crecer a usuarios por empresa.
 - La cola vive en memoria: pensada para un proceso en un VPS. Al reiniciar, retoma los mensajes sin responder de los últimos 15 minutos.
 - La recuperación de conocimiento es por palabras clave (sin embeddings) y solo entra en juego si el conocimiento excede el presupuesto; para la mayoría de negocios se envía completo.
 - Se ignoran grupos, estados y canales de WhatsApp.

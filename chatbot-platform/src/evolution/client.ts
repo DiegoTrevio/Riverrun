@@ -1,5 +1,3 @@
-import { config } from '../config.js';
-import type { Chatbot } from '../types.js';
 
 export class EvolutionError extends Error {
   constructor(message: string, public status?: number, public body?: unknown) {
@@ -13,10 +11,6 @@ export class EvolutionError extends Error {
  */
 export class EvolutionClient {
   constructor(private baseUrl: string, private apiKey: string, private timeoutMs = 30000) {}
-
-  static forChatbot(bot: Pick<Chatbot, 'evolution_url' | 'evolution_api_key'>) {
-    return new EvolutionClient(bot.evolution_url || config.evolution.url, bot.evolution_api_key || config.evolution.apiKey);
-  }
 
   async request<T = any>(method: string, path: string, body?: unknown, retries = 1): Promise<T> {
     let lastErr: unknown;
