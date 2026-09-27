@@ -1,4 +1,9 @@
 import type { AiProvider } from './ai/provider.js';
+import { Agenda } from './automation/agenda.js';
+import { Automator } from './automation/automator.js';
+import { Campaigns } from './automation/campaigns.js';
+import { Outbound } from './automation/outbound.js';
+import { Scheduler } from './automation/scheduler.js';
 import { adapterFor } from './channels/index.js';
 import { describeInbound, type InboundMessage } from './channels/types.js';
 import { query } from './db.js';
@@ -20,10 +25,44 @@ export const defaultTransport: TransportFactory = (channel, contact) => adapterF
 export class ChatService {
   engine: Engine;
   queue: ConversationQueue;
+  outbound: Outbound;
+  automator: Automator;
+  agenda: Agenda;
+  campaigns: Campaigns;
+  scheduler: Scheduler;
 
   constructor(private ai: AiProvider, private transportFactory: TransportFactory = defaultTransport) {
-    this.engine = new Engine(ai);
+    this.outbound = new Outbound(this);
+    this.automator = new Automator(this);
+    this.agenda = new Agenda(this);
+    this.campaigns = new Campaigns(this);
+    this.engine = new Engine(ai, {
+      intents: (accountId, chatbotId) => this.automator.intentsFor(accountId, chatbotId),
+      agenda: this.agenda,
+      onEvent: (e) => this.automator.emit(e),
+      onOutbound: (conv, msg) => this.automator.onOutbound(conv, msg),
+    });
     this.queue = new ConversationQueue((id, a) => this.runConversation(id, a.restarts));
+    this.scheduler = new Scheduler({
+      automation_send: (p) => this.automator.runDelayedSend(p),
+      no_reply: (p) => this.automator.runNoReply(p),
+      sequence_step: (p) => this.automator.runSequenceStep(p),
+      appointment_reminder: (p) => this.agenda.sendReminder(p),
+      campaign_start: (p) => this.campaigns.start(p.campaign_id),
+      campaign_send: (p) => this.campaigns.sendOne(p),
+    });
+  }
+
+  /** Aviso interno por WhatsApp (alertas al equipo), usando un WhatsApp activo de la cuenta. */
+  async sendInternalWhatsapp(accountId: string, number: string, text: string, preferChatbotId?: string | null) {
+    const channels = await store.listChannels(accountId);
+    const wa =
+      channels.find((c) => c.type === 'whatsapp' && c.active && c.chatbot_id === preferChatbotId && c.config.instance) ??
+      channels.find((c) => c.type === 'whatsapp' && c.active && c.config.instance);
+    if (!wa) throw new Error('La cuenta no tiene un canal de WhatsApp activo para enviar el aviso');
+    const digits = number.replace(/\D/g, '');
+    const t = this.transportFactory(wa, { phone: digits, external_id: digits } as Contact);
+    await t.sendText(text, 0);
   }
 
   /** Transporte del canal; los avisos al encargado salen siempre por un WhatsApp de la cuenta. */
@@ -38,15 +77,8 @@ export class ChatService {
     };
   }
 
-  private async notifyViaWhatsapp(channel: Channel, number: string, text: string) {
-    const channels = await store.listChannels(channel.account_id);
-    const wa =
-      channels.find((c) => c.type === 'whatsapp' && c.active && c.chatbot_id === channel.chatbot_id && c.config.instance) ??
-      channels.find((c) => c.type === 'whatsapp' && c.active && c.config.instance);
-    if (!wa) throw new Error('La cuenta no tiene un canal de WhatsApp activo para enviar el aviso');
-    const digits = number.replace(/\D/g, '');
-    const t = this.transportFactory(wa, { phone: digits, external_id: digits } as Contact);
-    await t.sendText(text, 0);
+  private notifyViaWhatsapp(channel: Channel, number: string, text: string) {
+    return this.sendInternalWhatsapp(channel.account_id, number, text, channel.chatbot_id);
   }
 
   private async runConversation(conversationId: string, restarts: number): Promise<ProcessResult> {
@@ -120,6 +152,15 @@ export class ChatService {
     }
 
     if (!triggers) return { conversationId: conv.id, messageId: inserted.id };
+    // Automatizaciones (bajas, reglas por mensaje, secuencias): corren aunque atienda una persona o el bot esté apagado.
+    if (channel.account_active !== false) {
+      const stopAi = await this.automator.onInbound(current, contact, inserted, content).catch(async (e) => {
+        await logEvent({ level: 'error', source: 'engine', message: `Error en automatizaciones: ${e?.message ?? e}`, ...logBase, details: e });
+        return false;
+      });
+      if (stopAi) await store.markMessageProcessed(inserted.id);
+      current = (await store.getConversation(conv.id)) ?? current;
+    }
     const canReply = current.status === 'bot' && bot && bot.active && channel.active && channel.account_active !== false;
     if (!canReply) {
       await store.markProcessed(conv.id, inserted.id);
@@ -169,9 +210,15 @@ export class ChatService {
     const channel = await store.getOrCreatePlaygroundChannel(bot);
     const contact = await store.upsertContact(channel, `playground:${session}`, '', 'Prueba');
     const conv = await store.getOrCreateConversation(channel, contact.id);
-    await store.insertMessage({ conversation_id: conv.id, direction: 'in', sender: 'customer', type: 'text', content: text, processed: false });
+    const inserted = await store.insertMessage({ conversation_id: conv.id, direction: 'in', sender: 'customer', type: 'text', content: text, processed: false });
+    // Las reglas automáticas también se prueban en el simulador.
+    if (inserted) {
+      const stopAi = await this.automator.onInbound(conv, contact, inserted, text).catch(() => false);
+      if (stopAi) await store.markMessageProcessed(inserted.id);
+    }
     const transport = new PlaygroundTransport();
     const result = await this.queue.exclusive(conv.id, () => this.engine.process(conv.id, transport, { ignoreInactive: true }));
+    await this.automator.settle(conv.id);
     const [freshContact, freshConv] = await Promise.all([store.getContact(contact.id), store.getConversation(conv.id)]);
     return {
       outputs: transport.outputs,

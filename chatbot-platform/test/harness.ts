@@ -21,6 +21,7 @@ const extServer = http.createServer((req, res) => {
     const json = (code: number, data: unknown) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(data)); };
     const method = path.split('/').pop()!;
     if ([...ext.fail].some((f) => path.includes(f))) return json(500, { ok: false, description: 'fallo simulado', error: { message: 'fallo simulado' } });
+    if (path === '/hook') return json(200, { ok: true });
     if (path.startsWith('/file/')) { res.writeHead(200, { 'content-type': 'audio/ogg' }); return res.end(Buffer.from('OggS-audio')); }
     if (path.startsWith('/bot')) {
       if (method === 'getMe') return json(200, { ok: true, result: { id: 1, username: 'palmas_bot' } });
@@ -42,6 +43,7 @@ process.env.TELEGRAM_API_URL = extUrl;
 process.env.META_GRAPH_URL = extUrl;
 process.env.PUBLIC_BASE_URL = 'https://bot.test';
 process.env.WEBHOOK_BASE_URL = 'http://backend:3000';
+process.env.ALLOW_PRIVATE_WEBHOOKS = 'true';
 
 process.env.DATABASE_URL = process.env.TEST_DATABASE_URL || 'postgres://chatbot:chatbot@localhost:5432/chatbot_test';
 process.env.UPLOADS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'cp-uploads-'));
@@ -132,6 +134,12 @@ export async function createHarness() {
     setScript(s: Script) { script = s; },
     setSummary(s: string) { summary = s; },
     reset() { calls.length = 0; summaryCalls.length = 0; sent.length = 0; },
+    /** Adelanta el reloj: todas las tareas pendientes vencen ya, y se ejecutan. */
+    async fastForward() {
+      await pool.query(`UPDATE jobs SET run_at = now() - interval '1 second' WHERE status = 'pending'`);
+      await service.scheduler.runDue();
+      await h.idle();
+    },
     /** Espera a que la cola termine todo lo pendiente (evita que una prueba contamine a la siguiente). */
     async idle() { await waitFor(() => service.queue.size === 0, 8000); },
     webhook(text: string, opts: { fromMe?: boolean; phone?: string; id?: string; timestamp?: number } = {}) {

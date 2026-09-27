@@ -42,6 +42,9 @@ export const config = {
    * Confiar en todos permitiría falsear la IP y saltarse los límites por IP.
    */
   trustProxyHops: Number(env('TRUST_PROXY_HOPS', '1')),
+  /** Permitir webhooks salientes hacia redes internas (solo para pruebas o redes controladas). */
+  allowPrivateWebhooks: env('ALLOW_PRIVATE_WEBHOOKS', 'false') === 'true',
+  schedulerIntervalMs: Number(env('SCHEDULER_INTERVAL_MS', '5000')),
 };
 
 export function assertProductionConfig(): string[] {

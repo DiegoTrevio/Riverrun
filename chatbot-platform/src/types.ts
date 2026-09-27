@@ -52,6 +52,8 @@ export const RulesSchema = z.object({
   pause_on_human_reply: z.boolean().default(true),
   /** Minutos tras los cuales el bot retoma una conversación transferida (0 = nunca). */
   auto_resume_minutes: z.number().int().min(0).default(0),
+  /** Permitir que la IA agende y cancele citas/llamadas con los servicios de la agenda. */
+  booking_enabled: z.boolean().default(true),
   /** Verificar que precios, números, URLs, correos y teléfonos existan en el contexto. */
   verify_facts: z.boolean().default(true),
   /** Frases prohibidas (suenan a robot). Si aparecen, se regenera la respuesta. */
@@ -188,6 +190,8 @@ export interface Contact {
   name: string;
   data: Record<string, string>;
   notes: string[];
+  tags: string[];
+  opted_out: boolean;
 }
 
 export type ConversationStatus = 'bot' | 'human' | 'closed';
@@ -239,6 +243,8 @@ export interface User {
   role: Role;
   name: string;
   email: string;
+  phone: string;
+  notify_whatsapp: boolean;
   active: boolean;
   last_login_at: Date | null;
   created_at: Date;

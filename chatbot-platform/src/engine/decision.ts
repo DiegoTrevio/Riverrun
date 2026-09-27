@@ -13,6 +13,15 @@ export const DecisionSchema = z.object({
   remember: z.array(z.string()).default([]),
   handoff_reason: z.string().default(''),
   info_not_found: z.boolean().default(false),
+  intents: z.array(z.string()).default([]),
+  booking: z
+    .object({
+      action: z.enum(['none', 'book', 'cancel']).default('none'),
+      service_id: z.string().default(''),
+      slot: z.string().default(''),
+      appointment_id: z.string().default(''),
+    })
+    .default({ action: 'none', service_id: '', slot: '', appointment_id: '' }),
 });
 export type Decision = z.infer<typeof DecisionSchema>;
 
@@ -20,7 +29,7 @@ export type Decision = z.infer<typeof DecisionSchema>;
 export const DECISION_JSON_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['thinking', 'action', 'messages', 'image_ids', 'save_data', 'remember', 'handoff_reason', 'info_not_found'],
+  required: ['thinking', 'action', 'messages', 'image_ids', 'save_data', 'remember', 'handoff_reason', 'info_not_found', 'intents', 'booking'],
   properties: {
     thinking: {
       type: 'string',
@@ -54,5 +63,22 @@ export const DECISION_JSON_SCHEMA = {
     },
     handoff_reason: { type: 'string', description: 'Motivo de la transferencia si action es handoff; si no, cadena vacía.' },
     info_not_found: { type: 'boolean', description: 'true si el cliente pidió un dato que NO está en la información del negocio.' },
+    intents: {
+      type: 'array',
+      description: 'Intenciones de la lista "Intenciones a detectar" que expresa el cliente en sus mensajes nuevos. Vacío si ninguna.',
+      items: { type: 'string' },
+    },
+    booking: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['action', 'service_id', 'slot', 'appointment_id'],
+      description: 'Agenda: "book" solo cuando el cliente ya eligió explícitamente un horario de la lista; "cancel" si pide cancelar una cita suya; si no, "none".',
+      properties: {
+        action: { type: 'string', enum: ['none', 'book', 'cancel'] },
+        service_id: { type: 'string', description: 'ID exacto del servicio (book).' },
+        slot: { type: 'string', description: 'Horario exacto de la lista, formato AAAA-MM-DDTHH:MM (book).' },
+        appointment_id: { type: 'string', description: 'ID de la cita a cancelar (cancel).' },
+      },
+    },
   },
 } as const;

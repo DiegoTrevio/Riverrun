@@ -8,6 +8,8 @@ import type { AiProvider } from './ai/provider.js';
 import { config } from './config.js';
 import { requireAuth } from './auth.js';
 import { adminRoutes, sessionRoutes } from './routes/admin.js';
+import { agendaRoutes, calendarRoutes } from './routes/agenda.js';
+import { automationRoutes } from './routes/automation.js';
 import { channelRoutes } from './routes/channels.js';
 import { chatbotRoutes } from './routes/chatbots.js';
 import { conversationRoutes } from './routes/conversations.js';
@@ -48,6 +50,7 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
   app.get('/health', async () => ({ ok: true }));
   await sessionRoutes(app);
   await publicRoutes(app, service);
+  await calendarRoutes(app);
 
   // Todo lo demás requiere sesión; cada ruta verifica además la cuenta y el rol.
   await app.register(async (api) => {
@@ -56,6 +59,8 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
     await chatbotRoutes(api, service);
     await channelRoutes(api);
     await conversationRoutes(api, service);
+    await automationRoutes(api, service);
+    await agendaRoutes(api, service);
   });
 
   return { app, service };

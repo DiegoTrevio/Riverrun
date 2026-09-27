@@ -1,5 +1,6 @@
 import type { ChatMessage } from '../ai/provider.js';
 import type { ChannelType, Chatbot, Contact, Conversation, DataField, ImageAsset, KnowledgeItem, Message } from '../types.js';
+import type { AgendaContext } from '../automation/agenda.js';
 import { keywords } from './text.js';
 
 export interface ContextInput {
@@ -19,6 +20,10 @@ export interface ContextInput {
   now?: Date;
   /** Retroalimentación del validador para un reintento. */
   correction?: string;
+  /** Intenciones que se deben detectar (de las reglas automáticas). */
+  intents?: { intent: string; description: string }[];
+  /** Servicios, horarios libres y citas del cliente. */
+  agenda?: AgendaContext | null;
 }
 
 export interface BuiltContext {
@@ -267,6 +272,13 @@ export function buildSystemPrompt(input: ContextInput, knowledge: KnowledgeItem[
     if (sent.length) s.push(`Imágenes ya enviadas en esta conversación: ${sent.join(', ')}`);
   }
 
+  if (input.agenda) s.push(agendaSection(input.agenda));
+  if (input.intents?.length) {
+    s.push('\n# Intenciones a detectar');
+    s.push('Si el cliente expresa alguna de estas intenciones en sus mensajes nuevos, inclúyela en "intents" (usa el identificador exacto):');
+    for (const it of input.intents) s.push(`- \`${it.intent}\`${it.description ? `: ${it.description}` : ''}`);
+  }
+
   s.push('\n# Momento actual');
   s.push(`Fecha y hora del negocio: ${formatDate(now, bot.ai.timezone)} (${bot.ai.timezone}).`);
   if (input.channelType && input.channelType !== 'playground') s.push(`Canal de esta conversación: ${CHANNEL_NAMES[input.channelType]}.`);
@@ -277,6 +289,35 @@ export function buildSystemPrompt(input: ContextInput, knowledge: KnowledgeItem[
   }
 
   return { prompt: s.join('\n'), isFirstContact };
+}
+
+const KIND = (k: string) => (k === 'call' ? 'llamada' : 'cita');
+
+export function agendaSection(a: AgendaContext): string {
+  const s: string[] = ['\n# Agenda (citas y llamadas)'];
+  if (a.services.length) {
+    s.push('Servicios que se pueden agendar:');
+    for (const sv of a.services) {
+      s.push(`- ID \`${sv.id}\` | ${sv.name} (${KIND(sv.kind)}, ${sv.duration} min)${sv.description ? ` | ${sv.description}` : ''}${sv.location ? ` | lugar: ${sv.location}` : ''}`);
+      const slots = a.slots[sv.id] ?? [];
+      s.push(slots.length ? `  Horarios disponibles: ${slots.map((x) => `\`${x.key}\` (${x.label})`).join('; ')}` : '  Sin horarios disponibles por ahora.');
+    }
+  }
+  if (a.appointments.length) {
+    s.push('Citas del cliente (próximas):');
+    for (const ap of a.appointments) s.push(`- ID \`${ap.id}\` | ${ap.service_name} (${KIND(ap.kind)}) | ${ap.label}`);
+  }
+  s.push(
+    [
+      'Reglas de agenda:',
+      '- Ofrece solo horarios de la lista (2 o 3 opciones, de forma natural). Nunca inventes horarios ni confirmes uno que no esté en la lista.',
+      '- Si pide un día u hora que no aparece, dile que no hay disponibilidad en ese momento y ofrece los más cercanos.',
+      '- Antes de agendar necesitas el nombre del cliente' + (a.needsPhoneFor.length ? ' (y su teléfono si es una llamada)' : '') + '.',
+      '- Agenda (booking.action = "book" con service_id y slot exactos) solo cuando el cliente ya eligió un horario concreto; en ese mismo mensaje confirma servicio, día y hora.',
+      '- Para cancelar usa booking.action = "cancel" con el ID de su cita. Para cambiar de horario: cancela la actual y agenda la nueva cuando elija.',
+    ].join('\n'),
+  );
+  return s.join('\n');
 }
 
 function historyLine(m: Message, imagesById: Map<string, ImageAsset>): string {
@@ -344,6 +385,7 @@ export function buildContext(input: ContextInput): BuiltContext {
     bot.flow.steps.map((s) => `${s.title} ${s.description}`).join('\n'),
     bot.personality.style_examples.join('\n'),
     input.images.map((i) => `${i.name} ${i.description} ${i.caption}`).join('\n'),
+    input.agenda ? agendaSection(input.agenda) : '',
   ];
 
   const customerSources = [

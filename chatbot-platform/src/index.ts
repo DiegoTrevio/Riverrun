@@ -5,6 +5,7 @@ import { bootstrapSuperadmin } from './auth.js';
 import { assertProductionConfig, config } from './config.js';
 import { migrate } from './db.js';
 import { logEvent, pruneLogs } from './logs.js';
+import { pruneAutomationData } from './automation/store.js';
 
 async function main() {
   for (const p of assertProductionConfig()) console.warn(`⚠️  ${p}`);
@@ -18,10 +19,14 @@ async function main() {
   await app.listen({ port: config.port, host: config.host });
   await logEvent({ level: 'info', source: 'system', message: `Servidor iniciado en el puerto ${config.port}` });
 
+  service.scheduler.start(config.schedulerIntervalMs);
   const resumed = await service.resumePending();
   if (resumed) console.log(`Retomando ${resumed} conversaciones pendientes`);
 
-  setInterval(() => pruneLogs(config.logRetentionDays).catch(() => undefined), 6 * 3600 * 1000).unref();
+  setInterval(() => {
+    pruneLogs(config.logRetentionDays).catch(() => undefined);
+    pruneAutomationData(config.logRetentionDays).catch(() => undefined);
+  }, 6 * 3600 * 1000).unref();
 
   const shutdown = async () => {
     console.log('Cerrando...');

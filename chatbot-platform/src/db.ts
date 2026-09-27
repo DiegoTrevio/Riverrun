@@ -23,6 +23,22 @@ export async function queryOne<T extends pg.QueryResultRow = any>(text: string, 
   return rows[0] ?? null;
 }
 
+/** Ejecuta `fn` en una transacción (con su propio cliente). */
+export async function withTransaction<T>(fn: (client: pg.PoolClient) => Promise<T>): Promise<T> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const r = await fn(client);
+    await client.query('COMMIT');
+    return r;
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const migrationsDir = path.resolve(here, '..', 'migrations');
 

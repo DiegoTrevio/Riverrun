@@ -12,6 +12,10 @@ export interface ExecutionPlan {
   remember: string[];
   handoffReason: string;
   infoNotFound: boolean;
+  /** Intenciones detectadas (solo de la lista permitida). */
+  intents: string[];
+  /** Propuesta de agenda ya validada contra los horarios reales. */
+  booking: { action: 'book'; serviceId: string; slot: string } | { action: 'cancel'; appointmentId: string } | null;
 }
 
 export interface ValidationResult {
@@ -22,6 +26,16 @@ export interface ValidationResult {
   fixes: string[];
   /** true si entre los problemas hay datos no verificables (precios, links, teléfonos...). */
   factIssues: boolean;
+  /** true si la propuesta de agenda no es válida (horario inexistente, cita ajena...). */
+  bookingIssue: boolean;
+}
+
+/** Lo que el validador necesita saber de la agenda. */
+export interface AgendaValidation {
+  slots: Record<string, string[]>;
+  appointmentIds: string[];
+  /** Servicios para los que falta pedir teléfono antes de agendar. */
+  needsPhoneFor: string[];
 }
 
 export interface ValidationInput {
@@ -40,6 +54,10 @@ export interface ValidationInput {
    * se corrigen automáticamente en lugar de pedir otra respuesta a la IA.
    */
   final?: boolean;
+  allowedIntents?: string[];
+  agenda?: AgendaValidation | null;
+  /** El cliente ya tiene un teléfono registrado (o lo dio ahora). */
+  hasPhone?: boolean;
 }
 
 const IMAGE_PROMISE_RE = /\b(te|le|les)\s+(env[ií]o|mando|comparto|paso|dejo|adjunto)\b[^.?!\n]{0,40}\b(foto|fotos|imagen|imagenes|imágenes|men[uú]|cat[aá]logo|flyer|folleto)\b|\b(aqu[ií]|ah[ií])\s+(te|le)?\s*(va|van|est[aá]n?|tienes?)\b[^.?!\n]{0,30}\b(foto|fotos|imagen|imágenes|imagenes)\b/i;
@@ -140,6 +158,7 @@ export function validateDecision(input: ValidationInput): ValidationResult {
   const fixes: string[] = [];
   const retryable: string[] = [];
   let factIssues = false;
+  let bookingIssue = false;
 
   const parsed = parseDecision(input.raw);
   if (!parsed.decision) {
@@ -148,6 +167,7 @@ export function validateDecision(input: ValidationInput): ValidationResult {
       retryable: [parsed.error ?? 'Respuesta inválida'],
       fixes,
       factIssues: false,
+      bookingIssue: false,
     };
   }
   const d = parsed.decision;
@@ -271,6 +291,43 @@ export function validateDecision(input: ValidationInput): ValidationResult {
     retryable.push('La acción requiere al menos un mensaje para el cliente.');
   }
 
+  // ---------- Intenciones: solo las configuradas ----------
+  const allowed = new Set((input.allowedIntents ?? []).map((x) => normalize(x)));
+  const intents = [...new Set(d.intents.map((x) => normalize(x)).filter((x) => allowed.has(x)))];
+  const unknownIntents = d.intents.filter((x) => !allowed.has(normalize(x)));
+  if (unknownIntents.length) fixes.push(`Intenciones desconocidas ignoradas: ${unknownIntents.join(', ')}`);
+
+  // ---------- Agenda: la IA solo elige horarios reales ----------
+  let booking: ExecutionPlan['booking'] = null;
+  const b = d.booking;
+  if (b.action !== 'none') {
+    const agenda = input.agenda;
+    if (!agenda) {
+      fixes.push('Propuesta de agenda ignorada: la agenda no está disponible');
+    } else if (b.action === 'book') {
+      const slots = agenda.slots[b.service_id];
+      if (!slots) {
+        bookingIssue = true;
+        retryable.push(`El servicio "${b.service_id}" no existe. Usa el ID exacto de la sección Agenda.`);
+      } else if (!slots.includes(b.slot)) {
+        bookingIssue = true;
+        retryable.push(`El horario "${b.slot}" no está disponible para ese servicio. Ofrece solo horarios de la lista y agenda únicamente cuando el cliente elija uno.`);
+      } else if (agenda.needsPhoneFor.includes(b.service_id) && !input.hasPhone && !Object.keys(saveData).some((k) => bot.data_fields.find((f) => f.key === k)?.type === 'phone')) {
+        bookingIssue = true;
+        retryable.push('Para agendar la llamada primero pide el número de teléfono del cliente (no agendes todavía).');
+      } else {
+        booking = { action: 'book', serviceId: b.service_id, slot: b.slot };
+      }
+    } else if (b.action === 'cancel') {
+      if (!agenda.appointmentIds.includes(b.appointment_id)) {
+        bookingIssue = true;
+        retryable.push('Esa cita no existe o no es de este cliente. Solo puedes cancelar citas de la lista "Citas del cliente".');
+      } else {
+        booking = { action: 'cancel', appointmentId: b.appointment_id };
+      }
+    }
+  }
+
   const remember = d.remember
     .map((x) => x.trim())
     .filter((x) => x.length > 2 && x.length < 200)
@@ -286,13 +343,16 @@ export function validateDecision(input: ValidationInput): ValidationResult {
       remember,
       handoffReason: d.handoff_reason.trim(),
       infoNotFound: d.info_not_found,
+      intents,
+      booking,
     },
     retryable,
     fixes,
     factIssues,
+    bookingIssue,
   };
 }
 
 export function emptyPlan(action: Action): ExecutionPlan {
-  return { action, messages: [], images: [], saveData: {}, contactName: null, remember: [], handoffReason: '', infoNotFound: false };
+  return { action, messages: [], images: [], saveData: {}, contactName: null, remember: [], handoffReason: '', infoNotFound: false, intents: [], booking: null };
 }

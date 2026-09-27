@@ -55,6 +55,11 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     account: req.user.account_id ? await store.getAccount(req.user.account_id) : null,
   }));
 
+  api.put('/api/me', async (req) => {
+    const b = parse(z.object({ name: z.string().trim().max(120).optional(), phone: z.string().max(30).optional(), notify_whatsapp: z.boolean().optional() }), req.body);
+    return store.updateUser(req.user.id, b);
+  });
+
   api.put('/api/me/password', async (req, reply) => {
     const b = parse(z.object({ current: z.string(), password: Password }), req.body);
     const full = await store.getUserForLogin(req.user.email);
@@ -144,6 +149,8 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
         password: Password,
         role: z.enum(['superadmin', 'admin', 'agent']),
         account_id: z.string().uuid().nullable().optional(),
+        phone: z.string().max(30).default(''),
+        notify_whatsapp: z.boolean().default(false),
       }),
       req.body,
     );
@@ -152,7 +159,8 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
       return store.createUser({ account_id: null, role: 'superadmin', name: b.name, email: b.email, password_hash: await hashPassword(b.password) });
     }
     const accountId = await targetAccount(req.user, b.account_id);
-    const user = await store.createUser({ account_id: accountId, role: b.role, name: b.name, email: b.email, password_hash: await hashPassword(b.password) });
+    const created = await store.createUser({ account_id: accountId, role: b.role, name: b.name, email: b.email, password_hash: await hashPassword(b.password) });
+    const user = b.phone || b.notify_whatsapp ? ((await store.updateUser(created.id, { phone: b.phone, notify_whatsapp: b.notify_whatsapp })) ?? created) : created;
     await logEvent({ level: 'info', source: 'admin', message: `Usuario creado: ${user.email} (${user.role})`, accountId });
     return user;
   });
@@ -174,6 +182,8 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
         role: z.enum(['admin', 'agent']).optional(),
         active: z.boolean().optional(),
         password: Password.optional(),
+        phone: z.string().max(30).optional(),
+        notify_whatsapp: z.boolean().optional(),
       }),
       req.body,
     );
@@ -184,11 +194,13 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     if (target.role === 'superadmin' && b.active === false && (await store.countSuperadmins()) <= 1) {
       throw new HttpError(400, 'Debe quedar al menos un superadministrador activo');
     }
-    const patch: { name?: string; email?: string; role?: Role; active?: boolean; password_hash?: string } = {
+    const patch: { name?: string; email?: string; role?: Role; active?: boolean; password_hash?: string; phone?: string; notify_whatsapp?: boolean } = {
       name: b.name,
       email: b.email,
       role: b.role,
       active: b.active,
+      phone: b.phone,
+      notify_whatsapp: b.notify_whatsapp,
     };
     if (b.password) patch.password_hash = await hashPassword(b.password);
     return store.updateUser(target.id, patch);

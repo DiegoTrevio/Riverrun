@@ -91,6 +91,78 @@ Detalles por plataforma:
 - Los avisos de transferencia al encargado salen siempre por un WhatsApp activo de la cuenta, aunque la conversación sea de otra plataforma.
 - Un canal **sin chatbot** asignado guarda los mensajes pero no responde; al asignarle uno, empieza a atender.
 
+## Automatización
+
+Menú **Automatización** (administradores). Todo corre sobre tareas programadas guardadas en PostgreSQL, así que sobreviven a reinicios del servidor.
+
+### Reglas: "cuando pase X, si se cumple Y, haz Z"
+
+| Cuándo (disparador) | Solo si (condiciones) | Hacer (acciones) |
+|---|---|---|
+| El cliente escribe (palabras clave, frase exacta, texto o cualquier mensaje; opcional: solo el primer mensaje) | Canal | Enviar mensaje (con imagen y espera opcional) |
+| Cliente nuevo | Dentro/fuera del horario del negocio | Alertar al equipo (panel + WhatsApp) |
+| **Intención detectada por la IA** ("quiere cotizar", "queja"… las defines tú) | Tiene / no tiene etiqueta | Agregar / quitar etiqueta |
+| Se guarda un dato (p. ej. correo) | Dato del cliente presente, vacío, igual o que contiene | Guardar un dato |
+| Se agrega una etiqueta | Estado de la conversación (bot, persona, cerrada) | Pasar a una persona / devolver al bot / cerrar |
+| **No responde en X minutos** (seguimiento automático, una sola vez por silencio) | | Iniciar / detener secuencias |
+| Pasa a una persona | | **Webhook** a otro sistema (n8n, Zapier, CRM), firmado con `X-Signature` |
+| Cita agendada / cancelada | | |
+| Se da de baja | | |
+
+- **Plantillas rápidas:** bienvenida, fuera de horario, palabra urgente → alerta, seguimiento, queja → persona, listo para comprar → ventas, correo → CRM, agradecer cita.
+- **Detener la IA:** una regla puede impedir que la IA responda el mensaje que la disparó.
+- **Variables en los textos:** `{{nombre}}`, `{{cliente}}`, `{{telefono}}`, `{{negocio}}`, `{{mensaje}}`, `{{link}}`, `{{dato.CAMPO}}`, `{{cita.servicio}}`, `{{cita.fecha}}`, `{{cita.hora}}`, `{{cita.lugar}}`.
+
+### Secuencias (flujos programados)
+
+- Serie de mensajes con espera entre ellos (minutos, horas o días) y hora del día opcional ("al día siguiente a las 10:00").
+- Cada paso puede tener condiciones propias.
+- Respetan el horario del negocio: lo que caiga fuera se pasa a la siguiente apertura.
+- Se detienen si el cliente responde, si se da de baja o si una persona toma la conversación.
+- Se inician con una regla o manualmente desde la conversación.
+
+### Campañas
+
+- Mensaje a un segmento: con o sin ciertas etiquetas, o que escribieron en los últimos N días. Envío inmediato o programado.
+- Se envían a ritmo controlado (mensajes por minuto) para proteger el número.
+- Siempre excluyen a quien se dio de baja. Muestran vista previa de destinatarios y estadísticas por destinatario.
+
+### Horario y ajustes
+
+- Zona horaria, horario semanal y días festivos.
+- **Bajas:** "BAJA"/"STOP" (configurable) deja de enviar mensajes promocionales; "ALTA" los reactiva. Los recordatorios de citas sí llegan.
+- Aviso al equipo cuando una conversación pasa a una persona.
+- URL del calendario `.ics` y clave de los webhooks.
+
+### Reglas de las plataformas
+
+- **Messenger e Instagram:** solo se escribe a quien envió un mensaje en las últimas 24 horas (regla de Meta). Lo demás se omite y queda registrado.
+- **WhatsApp:** envía solo a clientes que esperan saber de ti y con ritmo moderado, porque WhatsApp puede bloquear números que envían mensajes masivos no deseados.
+
+## Agenda: citas y llamadas
+
+Menú **Agenda**, para administradores y agentes.
+
+- **Servicios:** cita o llamada, con duración, descanso entre citas, clientes a la vez, anticipación mínima, días a futuro, lugar, horario propio o del negocio, y personas que atienden.
+- **La IA agenda por el chat:**
+  - Ve los horarios realmente libres y ofrece 2 o 3 opciones.
+  - Agenda cuando el cliente elige y cancela sus citas a pedido.
+  - El backend valida el horario y la cita en una transacción bloqueada, así que no hay dobles reservas.
+  - Si la IA propone un horario que no existe, se rechaza y se ofrecen horarios reales.
+- **Recordatorios** automáticos al cliente (por defecto 1 día y 1 hora antes) y **aviso al equipo** (a quien atiende) al agendar o cancelar.
+- **Desde el panel:**
+  - vista semanal en la hora del negocio;
+  - nueva cita;
+  - agendar desde una conversación (el cliente recibe la confirmación por su chat);
+  - reprogramar, completar, marcar "no asistió" y cancelar (con aviso al cliente).
+- **Calendario suscribible** (`.ics`) para Google Calendar, Outlook o Apple.
+- **Simulador:** las citas de prueba quedan marcadas "prueba", no ocupan horarios reales y no avisan al equipo. Las alertas y webhooks de las reglas se muestran como notas en el chat de prueba.
+
+## Alertas al equipo
+
+- Cada usuario ve sus **notificaciones** en el panel (con contador).
+- Quien activa "Recibir alertas por WhatsApp" en **Mi perfil** (o su administrador en **Usuarios**) las recibe también en su WhatsApp, a través de un canal de WhatsApp de la cuenta.
+
 ## Conversaciones
 
 - Lista filtrable por chatbot, plataforma, canal, estado (bot / humano / cerrada) y búsqueda.
@@ -161,6 +233,7 @@ src/
     queue.ts       cola por conversación (agrupar mensajes, sin respuestas cruzadas)
     transport.ts   interfaz de salida común y simulador
     text.ts        normalización, extracción de hechos, formato WhatsApp / texto plano
+  automation/      reglas, secuencias, campañas, agenda, alertas, envíos proactivos y programador de tareas
   channels/        un adaptador por plataforma (whatsapp, telegram, meta, webchat): webhook, firma, envío, conexión
   evolution/       cliente de Evolution API v2 y parser del webhook
   ai/provider.ts   cliente de OpenAI (chat + transcripción de notas de voz)
@@ -182,7 +255,10 @@ Panel (bajo `/api`, con sesión por cookie; todo se limita a la cuenta del usuar
 - Usuarios: `/api/users`
 - Chatbots: `/api/chatbots`, `/:id/duplicate`, `/:id/knowledge`, `/:id/images`, `/:id/playground`
 - Canales: `/api/channels`, `/:id/setup`, `/:id/status`, `/:id/rotate-token`, `/:id/whatsapp/{connect,logout,test}`
-- Conversaciones: `/api/conversations`, `/:id/{takeover,release,close,send,reset-memory}`
+- Conversaciones: `/api/conversations`, `/:id/{takeover,release,close,send,reset-memory,automation,sequences}`
+- Automatización: `/api/automations`, `/api/sequences`, `/api/campaigns` (`/:id/{preview,launch,cancel,recipients}`), `/api/settings`
+- Agenda: `/api/services` (`/:id/slots`), `/api/appointments` (`/:id/cancel`), `/api/agenda/info`
+- Notificaciones: `/api/notifications`, `/api/notifications/read`
 - Contactos: `/api/contacts/:id`
 - Registros, uso de IA y estadísticas: `/api/logs`, `/api/ai-runs`, `/api/stats`
 
@@ -191,6 +267,7 @@ Públicas:
 - Webhooks: `GET|POST /webhook/:token`. El token es una URL secreta por canal; `GET` sirve para la verificación de Meta.
 - Chat web: `/webchat/:token/{config,session,messages}`, con CORS y límite de 15 mensajes por minuto por sesión.
 - Imágenes firmadas: `GET /media/:id?e=…&s=…`.
+- Calendario: `GET /calendar/:token.ics`.
 
 Actualización desde la versión anterior: la migración `002` pasa automáticamente todo a una "Cuenta principal" y convierte el WhatsApp de cada chatbot en un canal, **conservando la URL del webhook** para que Evolution siga funcionando sin reconfigurar.
 

@@ -6,6 +6,7 @@ import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
 import { parse } from './util.js';
+import { setOptOut, setTags } from '../automation/store.js';
 
 /** Conversaciones y contactos: disponible para administradores y agentes de la cuenta. */
 export async function conversationRoutes(api: FastifyInstance, service: ChatService) {
@@ -117,9 +118,25 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
   api.put('/api/contacts/:id', async (req: any) => {
     const contact = assertAccount(req.user, await store.getContact(req.params.id), 'Contacto no encontrado');
     const b = parse(
-      z.object({ name: z.string().max(100).optional(), data: z.record(z.string(), z.string().max(500)).optional(), notes: z.array(z.string().max(300)).max(50).optional() }),
+      z.object({
+        name: z.string().max(100).optional(),
+        data: z.record(z.string(), z.string().max(500)).optional(),
+        notes: z.array(z.string().max(300)).max(50).optional(),
+        tags: z.array(z.string().trim().min(1).max(60)).max(50).optional(),
+        opted_out: z.boolean().optional(),
+      }),
       req.body,
     );
-    return store.updateContact(contact.id, b);
+    const { tags, opted_out, ...rest } = b;
+    const updated = await store.updateContact(contact.id, rest);
+    if (opted_out !== undefined && opted_out !== contact.opted_out) await setOptOut(contact.id, opted_out);
+    if (tags) {
+      await setTags(contact.id, tags);
+      // Etiquetas nuevas disparan reglas "etiqueta agregada".
+      const added = tags.filter((t) => !(contact.tags ?? []).some((x) => x.toLowerCase() === t.toLowerCase()));
+      const conv = (await query<{ id: string }>(`SELECT id FROM conversations WHERE contact_id = $1`, [contact.id]))[0];
+      if (conv) for (const tag of added) service.automator.emit({ type: 'tag_added', conversationId: conv.id, tag });
+    }
+    return (await store.getContact(contact.id)) ?? updated;
   });
 }

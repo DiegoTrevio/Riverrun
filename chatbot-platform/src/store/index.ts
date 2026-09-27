@@ -45,7 +45,7 @@ export async function deleteAccount(id: string) {
 
 /* ------------------------------ Usuarios ------------------------------ */
 
-const USER_COLS = 'id, account_id, role, name, email, active, last_login_at, created_at';
+const USER_COLS = 'id, account_id, role, name, email, phone, notify_whatsapp, active, last_login_at, created_at';
 
 export async function listUsers(accountId: string | null): Promise<User[]> {
   return accountId
@@ -80,12 +80,16 @@ export async function createUser(u: { account_id: string | null; role: Role; nam
   ))!;
 }
 
-export async function updateUser(id: string, patch: { name?: string; role?: Role; active?: boolean; password_hash?: string; email?: string }) {
+export async function updateUser(
+  id: string,
+  patch: { name?: string; role?: Role; active?: boolean; password_hash?: string; email?: string; phone?: string; notify_whatsapp?: boolean },
+) {
   return queryOne<User>(
     `UPDATE users SET name = COALESCE($2, name), role = COALESCE($3, role), active = COALESCE($4, active),
-       password_hash = COALESCE($5, password_hash), email = COALESCE($6, email), updated_at = now()
+       password_hash = COALESCE($5, password_hash), email = COALESCE($6, email),
+       phone = COALESCE($7, phone), notify_whatsapp = COALESCE($8, notify_whatsapp), updated_at = now()
      WHERE id = $1 RETURNING ${USER_COLS}`,
-    [id, patch.name ?? null, patch.role ?? null, patch.active ?? null, patch.password_hash ?? null, patch.email?.trim() ?? null],
+    [id, patch.name ?? null, patch.role ?? null, patch.active ?? null, patch.password_hash ?? null, patch.email?.trim() ?? null, patch.phone?.replace(/\D/g, '') ?? null, patch.notify_whatsapp ?? null],
   );
 }
 
@@ -473,6 +477,15 @@ export async function pendingInbound(conversationId: string): Promise<Message[]>
 
 export async function markProcessed(conversationId: string, upToId: number) {
   await query(`UPDATE messages SET processed = true WHERE conversation_id = $1 AND direction = 'in' AND processed = false AND id <= $2`, [conversationId, upToId]);
+}
+
+export async function markMessageProcessed(id: number) {
+  await query(`UPDATE messages SET processed = true WHERE id = $1`, [id]);
+}
+
+export async function countInbound(conversationId: string): Promise<number> {
+  const r = await queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM messages WHERE conversation_id = $1 AND direction = 'in'`, [conversationId]);
+  return r?.n ?? 0;
 }
 
 export async function markAllProcessed(conversationId: string) {

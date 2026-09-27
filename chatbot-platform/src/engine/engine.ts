@@ -8,7 +8,22 @@ import { DECISION_JSON_SCHEMA } from './decision.js';
 import { maybeSummarize } from './memory.js';
 import { normalize } from './text.js';
 import type { Transport } from './transport.js';
-import { emptyPlan, validateDecision, type ExecutionPlan, type ValidationInput } from './validator.js';
+import { emptyPlan, validateDecision, type AgendaValidation, type ExecutionPlan, type ValidationInput } from './validator.js';
+import type { AgendaContext, BookResult } from '../automation/agenda.js';
+import type { AutomationEvent } from '../automation/types.js';
+import type { ChannelType } from '../types.js';
+
+/** Conexiones opcionales del motor con la automatización y la agenda. */
+export interface EngineExtensions {
+  intents?(accountId: string, chatbotId: string): Promise<{ intent: string; description: string }[]>;
+  agenda?: {
+    contextFor(accountId: string, contact: Contact, channelType: ChannelType): Promise<AgendaContext | null>;
+    book(o: { accountId: string; serviceId: string; slotKey: string; conversation: Conversation; contact: Contact; source: 'bot' }): Promise<BookResult>;
+    cancel(appointmentId: string, reason: string, by: 'bot'): Promise<unknown>;
+  };
+  onEvent?(e: AutomationEvent): void;
+  onOutbound?(conv: Conversation, msg: Message): Promise<void>;
+}
 
 export interface ProcessResult {
   status: 'nothing' | 'inactive' | 'human' | 'handoff' | 'replied' | 'no_reply' | 'restart' | 'error';
@@ -28,6 +43,18 @@ export interface ProcessOptions {
 
 const MAX_ATTEMPTS = 2;
 
+function joinOptions(list: string[]) {
+  return list.length > 1 ? `${list.slice(0, -1).join(', ')} o ${list[list.length - 1]}` : list[0];
+}
+
+/** Respuesta segura cuando la IA propone un horario inexistente: horarios reales de la agenda. */
+function slotFallback(agenda: AgendaContext | null): string {
+  const svc = agenda?.services.find((s) => (agenda.slots[s.id] ?? []).length);
+  if (!agenda || !svc) return 'Por ahora no tengo horarios disponibles; déjame revisarlo con el equipo y te aviso.';
+  const opts = agenda.slots[svc.id].slice(0, 3).map((x) => x.label);
+  return `Ese horario no lo tengo disponible. Para ${svc.name} te puedo ofrecer ${joinOptions(opts)}. ¿Cuál te acomoda?`;
+}
+
 /** Plataformas donde tiene sentido simular "escribiendo…". */
 function hasTyping(t: Transport) {
   return t.kind === 'whatsapp' || t.kind === 'telegram' || t.kind === 'messenger' || t.kind === 'instagram';
@@ -39,7 +66,7 @@ export function typingDelay(text: string, enabled: boolean) {
 }
 
 export class Engine {
-  constructor(private ai: AiProvider) {}
+  constructor(private ai: AiProvider, private ext: EngineExtensions = {}) {}
 
   /** Procesa los mensajes pendientes de una conversación y ejecuta la acción validada. */
   async process(conversationId: string, transport: Transport, opts: ProcessOptions = {}): Promise<ProcessResult> {
@@ -85,6 +112,15 @@ export class Engine {
       store.unsummarizedMessages(conv.id, conv.summary_until_id, bot.ai.recent_messages + bot.ai.summary_batch + pending.length + 4),
     ]);
     const images = allImages.filter((i) => i.active);
+    // Automatización y agenda (si están conectadas).
+    const [intents, agendaCtx] = await Promise.all([
+      this.ext.intents ? this.ext.intents(conv.account_id, bot.id).catch(() => []) : Promise.resolve([]),
+      this.ext.agenda && bot.rules.booking_enabled ? this.ext.agenda.contextFor(conv.account_id, contact, channel.type).catch(() => null) : Promise.resolve(null),
+    ]);
+    const agendaVal: AgendaValidation | null = agendaCtx
+      ? { slots: Object.fromEntries(Object.entries(agendaCtx.slots).map(([k, v]) => [k, v.map((x) => x.key)])), appointmentIds: agendaCtx.appointments.map((a) => a.id), needsPhoneFor: agendaCtx.needsPhoneFor }
+      : null;
+    const hasPhone = !!contact.phone || bot.data_fields.some((f) => f.type === 'phone' && !!contact.data?.[f.key]);
     const imagesById = new Map<string, ImageAsset>(allImages.map((i) => [i.id, i]));
     const model = bot.ai.model || config.openai.defaultModel;
 
@@ -94,10 +130,11 @@ export class Engine {
     let lastRaw: unknown;
     let retryable: string[] = [];
     let factIssues = false;
+    let bookingIssue = false;
     let lastInput: ValidationInput | undefined;
     const attempts: ProcessResult['attempts'] = [];
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-      const ctx = buildContext({ bot, knowledge, images, contact, conversation: conv, channelType: channel.type, history, pending, sentImageIds, imagesById, correction });
+      const ctx = buildContext({ bot, knowledge, images, contact, conversation: conv, channelType: channel.type, history, pending, sentImageIds, imagesById, correction, intents, agenda: agendaCtx });
       let completion;
       try {
         completion = await this.ai.complete({
@@ -115,6 +152,7 @@ export class Engine {
           plan = v.plan;
           retryable = v.retryable;
           factIssues = v.factIssues;
+          bookingIssue = v.bookingIssue;
           break;
         }
         return { status: 'error', error: String(e?.message ?? e), attempts };
@@ -126,7 +164,14 @@ export class Engine {
         /* el validador lo reporta */
       }
       lastRaw = raw;
-      lastInput = { raw, bot, images, sentImageIds, customerText, groundingSources: ctx.groundingSources, customerSources: ctx.customerSources };
+      lastInput = {
+        raw, bot, images, sentImageIds, customerText,
+        groundingSources: ctx.groundingSources,
+        customerSources: ctx.customerSources,
+        allowedIntents: intents.map((i) => i.intent),
+        agenda: agendaVal,
+        hasPhone,
+      };
       const v = validateDecision({ ...lastInput, final: attempt === MAX_ATTEMPTS });
       attempts.push({ retryable: v.retryable, fixes: v.fixes });
       await store.insertAiRun({
@@ -147,13 +192,14 @@ export class Engine {
       plan = v.plan;
       retryable = v.retryable;
       factIssues = v.factIssues;
+      bookingIssue = v.bookingIssue;
       if (!retryable.length) break;
       await log('warn', 'validator', `Propuesta rechazada (intento ${attempt}): ${retryable.join(' | ')}`, { decision: raw });
       correction = retryable.join(' ');
     }
 
     let fallbackUsed = false;
-    if (!plan || (retryable.length && !factIssues)) {
+    if (!plan || (retryable.length && !factIssues && !bookingIssue)) {
       // Respuesta inválida (JSON roto o vacía) incluso tras reintentar: no se envía nada inventado.
       await log('error', 'ai', 'La IA no generó una respuesta válida; se reintentará más tarde', { issues: retryable, decision: lastRaw });
       return { status: 'error', error: retryable.join(' | ') || 'Respuesta inválida', attempts };
@@ -161,8 +207,11 @@ export class Engine {
     if (retryable.length) {
       // Datos no verificables tras el reintento: respuesta segura según la regla configurada.
       fallbackUsed = true;
-      const base = plan;
-      if (bot.rules.unknown_info_behavior === 'handoff') {
+      const base = { ...plan, booking: null };
+      if (bookingIssue && !factIssues) {
+        // La IA insistió en un horario que no existe: se ofrecen horarios reales.
+        plan = { ...base, action: 'reply', messages: [slotFallback(agendaCtx)], images: [] };
+      } else if (bot.rules.unknown_info_behavior === 'handoff') {
         plan = { ...base, action: 'handoff', messages: [], images: [], handoffReason: 'El bot no pudo dar una respuesta verificada' };
       } else {
         plan = { ...base, action: 'reply', messages: [bot.rules.fallback_message], images: [] };
@@ -188,7 +237,25 @@ export class Engine {
     }
 
     // 5) Ejecutar.
+    const dataBefore = { ...(contact.data ?? {}) };
     await this.applyMemory(contact, plan);
+    // Agenda: se ejecuta antes de enviar; si el horario se ocupó justo ahora, se avisa en vez de confirmar.
+    if (plan.booking && this.ext.agenda) {
+      if (plan.booking.action === 'book') {
+        const r = await this.ext.agenda.book({ accountId: conv.account_id, serviceId: plan.booking.serviceId, slotKey: plan.booking.slot, conversation: conv, contact, source: 'bot' });
+        if (!r.ok) {
+          plan = {
+            ...plan,
+            action: 'reply',
+            images: [],
+            messages: [r.alternatives.length ? `Uy, ese horario se acaba de ocupar. Te puedo ofrecer ${joinOptions(r.alternatives)}. ¿Cuál te acomoda?` : 'Uy, ese horario se acaba de ocupar. ¿Te puedo ofrecer otro día?'],
+          };
+          await log('warn', 'engine', `No se pudo agendar: ${r.reason}`);
+        }
+      } else {
+        await this.ext.agenda.cancel(plan.booking.appointmentId, 'Cancelada por el cliente en el chat', 'bot');
+      }
+    }
     const meta = { action: plan.action, info_not_found: plan.infoNotFound, fallback: fallbackUsed };
     if (plan.action === 'handoff') {
       await this.executeHandoff(bot, conv, contact, transport, plan.messages, plan.handoffReason || 'La IA decidió transferir');
@@ -196,6 +263,14 @@ export class Engine {
       await this.sendPlan(bot, conv, transport, plan, meta);
     }
     await store.markProcessed(conv.id, lastPendingId);
+
+    // Eventos para las reglas automáticas (se ejecutan después, sin bloquear la respuesta).
+    if (this.ext.onEvent) {
+      if (plan.intents.length) this.ext.onEvent({ type: 'intent', conversationId: conv.id, intents: plan.intents, text: customerText });
+      for (const [field, value] of Object.entries(contact.data ?? {})) {
+        if (value && dataBefore[field] !== value) this.ext.onEvent({ type: 'data_captured', conversationId: conv.id, field, text: customerText });
+      }
+    }
 
     // 6) Memoria de largo plazo (resumen) en segundo plano.
     maybeSummarize(this.ai, bot, conv.id, conv.account_id).catch((e) => log('error', 'ai', `Error al resumir: ${e?.message ?? e}`, e));
@@ -240,7 +315,9 @@ export class Engine {
     try {
       const extId = o.image ? await transport.sendImage(o.image, o.text, o.delay) : await transport.sendText(o.text, o.delay);
       await store.updateMessage(msg.id, { external_message_id: extId, status: 'ok' });
-      return { ...msg, status: 'ok', external_message_id: extId };
+      const sent = { ...msg, status: 'ok', external_message_id: extId };
+      if (this.ext.onOutbound) await this.ext.onOutbound(conv, sent).catch(() => undefined);
+      return sent;
     } catch (e: any) {
       await store.updateMessage(msg.id, { status: 'failed', meta: { error: String(e?.message ?? e) } });
       await logEvent({
@@ -264,6 +341,7 @@ export class Engine {
       await this.sendOut(bot, conv, transport, { sender: 'bot', text, delay: typingDelay(text, bot.ai.typing_simulation && hasTyping(transport)), meta: { action: 'handoff' } });
     }
     await logEvent({ level: 'info', source: 'engine', message: `Conversación transferida a humano: ${reason}`, accountId: conv.account_id, chatbotId: bot.id, channelId: conv.channel_id, conversationId: conv.id });
+    this.ext.onEvent?.({ type: 'handoff', conversationId: conv.id });
     if (bot.rules.handoff_notify_number) {
       const who = contact.name || contact.push_name || contact.phone || contact.external_id;
       const text = `🔔 *${bot.name}*: ${who}${contact.phone ? ` (+${contact.phone})` : ''} necesita atención.\nMotivo: ${reason}`;
