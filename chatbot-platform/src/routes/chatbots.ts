@@ -12,6 +12,7 @@ import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
 import { AiSettingsSchema, DataFieldSchema, FlowSchema, PersonalitySchema, RulesSchema, type Chatbot, type User } from '../types.js';
+import { alignFixedMessages, chatbotFromTemplate } from '../templates/business.js';
 import { parse, readUpload, saveFile, type UploadFile } from './util.js';
 
 const ChatbotBody = z.object({
@@ -56,9 +57,23 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
   api.get('/api/chatbots', async (req: any) => (await store.listChatbots(scopeAccount(req.user, req.query.account_id))).map((b) => visibleBot(req.user, b)));
 
   api.post('/api/chatbots', admins, async (req: any) => {
-    const b = parse(ChatbotBody.extend({ account_id: z.string().uuid().optional() }), req.body);
+    const b = parse(ChatbotBody.extend({ account_id: z.string().uuid().optional(), template: z.string().max(40).optional() }), req.body);
     const accountId = await targetAccount(req.user, b.account_id);
-    const bot = await store.createChatbot(accountId, { name: 'Nuevo chatbot', ...b });
+    const { template, account_id, ...input } = b;
+    void account_id;
+    let base: Record<string, unknown> = {};
+    if (template) {
+      // Nace con la plantilla del giro: personalidad, reglas, flujo y datos a pedir ya listos para ajustar.
+      const acc = await store.getAccount(accountId);
+      const tpl = chatbotFromTemplate({ business_type: template, company: input.name || acc!.name, assistant_name: '', description: '' });
+      base = {
+        personality: PersonalitySchema.parse(tpl.personality),
+        rules: RulesSchema.parse(tpl.rules),
+        flow: FlowSchema.parse(tpl.flow),
+        data_fields: tpl.data_fields.map((f) => DataFieldSchema.parse(f)),
+      };
+    }
+    const bot = await store.createChatbot(accountId, { name: 'Nuevo chatbot', ...base, ...input });
     await logEvent({ level: 'info', source: 'admin', message: `Chatbot creado: ${bot.name}`, accountId, chatbotId: bot.id });
     return bot;
   });
@@ -78,6 +93,9 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
     for (const [key, schema] of Object.entries(sections)) {
       if (raw[key] && typeof raw[key] === 'object') data[key] = schema.parse({ ...(existing as any)[key], ...raw[key] });
     }
+    // Al cambiar el trato (tú/usted), los mensajes fijos de fábrica se ajustan para no mezclar tratos.
+    const formality = data.personality?.formality;
+    if (formality && formality !== existing.personality.formality) data.rules = alignFixedMessages(data.rules ?? existing.rules, formality);
     const bot = await store.updateChatbot(existing.id, data);
     await logEvent({ level: 'info', source: 'admin', message: `Configuración actualizada (${Object.keys(data).join(', ')})`, accountId: existing.account_id, chatbotId: existing.id });
     return bot;

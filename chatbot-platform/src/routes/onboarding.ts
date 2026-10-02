@@ -13,7 +13,7 @@ import { config } from '../config.js';
 import { queryOne } from '../db.js';
 import { logEvent } from '../logs.js';
 import * as store from '../store/index.js';
-import { BUSINESS_TYPES, chatbotFromTemplate } from '../templates/business.js';
+import { alignFixedMessages, BUSINESS_TYPES, chatbotFromTemplate } from '../templates/business.js';
 import { DataFieldSchema, FlowSchema, PersonalitySchema, RulesSchema, type User } from '../types.js';
 import { sendVerification } from './signup.js';
 import { parse } from './util.js';
@@ -136,7 +136,10 @@ export async function onboardingRoutes(api: FastifyInstance) {
       await store.updateChatbot(bot.id, {
         personality: PersonalitySchema.parse({ ...bot.personality, ...tpl.personality }),
         flow: bot.flow.goal ? bot.flow : FlowSchema.parse({ ...bot.flow, ...tpl.flow }),
-        rules: bot.rules.custom_rules.length ? bot.rules : RulesSchema.parse({ ...bot.rules, ...tpl.rules }),
+        rules: alignFixedMessages(
+          bot.rules.custom_rules.length ? bot.rules : RulesSchema.parse({ ...bot.rules, ...tpl.rules }),
+          tpl.personality.formality ?? 'tu',
+        ),
         data_fields: bot.data_fields.length ? bot.data_fields : tpl.data_fields.map((f) => DataFieldSchema.parse(f)),
       });
       botId = bot.id;

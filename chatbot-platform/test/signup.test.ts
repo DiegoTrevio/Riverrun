@@ -305,3 +305,16 @@ t('registro cerrado: SIGNUP_ENABLED=false', async () => {
     config.signup.enabled = true;
   }
 });
+
+t('cambiar el trato en el panel ajusta los mensajes fijos de fábrica (no los escritos a mano)', async () => {
+  const bot = (await L.api('GET', '/api/chatbots')).json()[0];
+  assert.equal(bot.personality.formality, 'usted');
+  assert.match(bot.rules.handoff_message, /le comunico/);
+  const r = await L.api('PUT', `/api/chatbots/${bot.id}`, { personality: { formality: 'tu' } });
+  assert.match(r.json().rules.handoff_message, /te comunico/);
+  assert.match(r.json().rules.fallback_message, /te aviso/);
+  await L.api('PUT', `/api/chatbots/${bot.id}`, { rules: { handoff_message: 'Ahorita te paso con la doctora' } });
+  const back = await L.api('PUT', `/api/chatbots/${bot.id}`, { personality: { formality: 'usted' } });
+  assert.equal(back.json().rules.handoff_message, 'Ahorita te paso con la doctora');
+  assert.match(back.json().rules.fallback_message, /le aviso/);
+});

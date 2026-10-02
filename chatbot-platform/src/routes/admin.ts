@@ -20,6 +20,7 @@ import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
 import { AiSettingsSchema, CHANNEL_TYPES, FlowSchema, KNOWLEDGE_CATEGORIES, PersonalitySchema, RulesSchema, type Role } from '../types.js';
+import { BUSINESS_TYPES } from '../templates/business.js';
 import { parse } from './util.js';
 
 const Password = z.string().min(8, 'mínimo 8 caracteres').max(200);
@@ -85,6 +86,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     public_base_url: config.publicBaseUrl,
     public_https: config.publicBaseUrl.startsWith('https://'),
     support_contact: config.signup.supportContact,
+    business_types: BUSINESS_TYPES.map(({ key, label }) => ({ key, label })),
     require_email: config.signup.requireEmail,
   }));
 

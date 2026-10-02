@@ -62,7 +62,8 @@ export async function signupRoutes(app: FastifyInstance) {
       const account = await store.createAccount(b.company, { status: 'trial', trialEndsAt, businessType, source: 'signup' }, client);
       const user = await store.createUser({ account_id: account.id, role: 'admin', name: b.name, email: b.email, password_hash: passwordHash, verified }, client);
       await client.query(`UPDATE accounts SET owner_user_id = $2 WHERE id = $1`, [account.id, user.id]);
-      if (b.phone) await client.query(`UPDATE users SET phone = $2 WHERE id = $1`, [user.id, b.phone.replace(/\D/g, '')]);
+      // Su WhatsApp recibe los avisos de "un cliente quiere hablar con una persona".
+      if (b.phone) await client.query(`UPDATE users SET phone = $2, notify_whatsapp = true WHERE id = $1`, [user.id, b.phone.replace(/\D/g, '')]);
       return { account, user };
     });
 

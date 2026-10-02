@@ -34,8 +34,28 @@ export function stripEmojis(s: string) {
   return s.replace(EMOJI_RE, '').replace(/[ \t]{2,}/g, ' ').replace(/ +([.,!?])/g, '$1').trim();
 }
 
+const graphemes = new Intl.Segmenter('es', { granularity: 'grapheme' });
+
 export function countEmojis(s: string) {
-  return (s.match(/\p{Extended_Pictographic}/gu) || []).length;
+  let n = 0;
+  for (const { segment } of graphemes.segment(s)) if (/\p{Extended_Pictographic}/u.test(segment)) n++;
+  return n;
+}
+
+
+/** Deja solo los primeros `max` emojis del conjunto de mensajes (cuenta 👍🏽 o 👨‍👩‍👧 como uno). */
+export function limitEmojis(messages: string[], max: number): string[] {
+  let seen = 0;
+  return messages
+    .map((m) => {
+      let out = '';
+      for (const { segment } of graphemes.segment(m)) {
+        if (/\p{Extended_Pictographic}/u.test(segment) && ++seen > max) continue;
+        out += segment;
+      }
+      return out.replace(/[ \t]{2,}/g, ' ').replace(/ +([.,!?])/g, '$1').trim();
+    })
+    .filter(Boolean);
 }
 
 /** Convierte Markdown típico de LLM al formato de WhatsApp. */

@@ -162,3 +162,10 @@ ol.steps li.current a { border-color: var(--accent); color: var(--accent); font-
 .bars .bar span { display: block; width: 100%; background: var(--accent); border-radius: 3px 3px 0 0; }
 .bars .bar small { font-size: 10px; color: var(--muted); margin-top: 2px; }
 [hidden] { display: none !important; }
+
+/* Resumen del asistente y leyenda de reglas */
+ul.checklist { list-style: none; padding: 0; margin: 0 0 8px; }
+ul.checklist li { padding: 6px 0; }
+ul.checklist .mark { display: inline-block; width: 18px; color: var(--muted); font-weight: 700; }
+ul.checklist li.ok .mark { color: var(--accent); }
+.card.legend { background: var(--accent-soft); }

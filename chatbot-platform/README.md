@@ -102,14 +102,30 @@ Al cambiar una contraseña, las demás sesiones abiertas de ese usuario se cierr
 ## Primeros pasos en el panel
 
 1. **Cuentas** (superadministrador): crea la cuenta del cliente y, opcionalmente, su primer administrador.
-2. **Chatbots → Nuevo chatbot** y configúralo:
-   - **Personalidad**: prompt principal, tono, idioma, longitud, emojis, tú/usted, ejemplos de estilo.
-   - **Conocimiento**: información por categoría (servicios, precios, horarios, ubicaciones, condiciones, FAQ…). Es lo único que el bot puede afirmar.
-   - **Imágenes**: con un **ID** (`habitacion_doble`), qué muestran y **cuándo enviarlas**.
-   - **Reglas**, **Datos a recopilar** y **Flujo**.
-   - **Probar**: simulador con el mismo motor y validaciones, con panel de depuración. Funciona aunque el bot esté inactivo.
-3. **Canales → Nuevo canal**: elige la plataforma, asígnale el chatbot y sigue las instrucciones de conexión (abajo).
-4. **General → Activo** para que el chatbot empiece a responder en sus canales.
+2. **Asistentes → + Nuevo asistente**: nombre y **tipo de negocio** (nace con la forma de atender, reglas y datos típicos de ese giro). Luego, en este orden:
+   - **Resumen**: lista de lo que falta para que funcione (información, instrucciones, canal, encendido).
+   - **Lo que sabe**: precios, servicios, horarios, ubicación, políticas, preguntas frecuentes. Es lo único que puede afirmar.
+   - **Cómo habla**: instrucciones (quién es y qué debe lograr), trato tú/usted, largo de las respuestas, emojis y tono.
+   - **Reglas**: qué hacer si no tiene un dato, cuándo pasar con una persona, temas prohibidos, reglas del negocio y fotos.
+   - **Fotos**: catálogo de imágenes, cada una con su ID, qué muestra y cuándo enviarla.
+   - **Datos que pide**: nombre, teléfono, correo… y cuándo pedirlos.
+   - **Probar**: simulador con el mismo motor y las mismas reglas, con botones de preguntas de prueba y el panel **Qué revisó el sistema** (qué hizo, qué reglas obligaron a corregir la respuesta y qué datos guardó). Funciona aunque esté apagado.
+   - **Avanzado** (opcional): recorrido de la conversación y modelo de IA.
+3. **Canales → Nuevo canal**: elige la plataforma, asígnale el asistente y sigue las instrucciones de conexión (abajo).
+4. **Resumen → Encendido** para que empiece a responder.
+
+Cada ajuste del panel indica si está **✓ Garantizado** (el sistema lo revisa antes de enviar y, si no se cumple, corrige la respuesta o pide otra) o si es una **Guía** para la IA (la sigue casi siempre; compruébalo en Probar):
+
+| Garantizado por el sistema | Guía para la IA |
+|---|---|
+| No inventar precios, cantidades, teléfonos, correos ni enlaces · mensaje de respaldo · qué hacer si falta un dato | Instrucciones y tono |
+| Trato tú/usted · largo de las respuestas · emojis · número y tamaño de mensajes | Cuándo pasar con una persona (situaciones) |
+| Temas prohibidos (no los saca por su cuenta) · frases prohibidas | Reglas de tu negocio (texto libre) · de qué puede hablar |
+| Palabras que pasan con una persona · callarse si contesta el equipo | Cuándo mandar fotos |
+| Fotos solo del catálogo, sin repetir, con máximo por respuesta | Recorrido de la conversación |
+| Datos del cliente con formato válido · agenda solo con horarios reales | |
+
+Consejo: si una regla del negocio tiene cifra (precio, descuento, anticipo), escríbela también en **Lo que sabe**; así queda garantizada por la verificación de datos.
 
 Para ver un ejemplo completo: `npm run seed:demo` (o `docker compose exec backend node dist/cli/seed-demo.js`) crea la cuenta "Demo" con un chatbot de hotel y un canal de chat web.
 
@@ -232,12 +248,13 @@ El backend (`src/engine/validator.ts`) nunca confía en la propuesta:
 - Imágenes: solo IDs del catálogo del chatbot, activas, sin repetir, con límite por turno.
 - Datos: solo campos configurados; se validan y normalizan (correo, teléfono, nombre, número, opción de lista).
 - Hechos: precios/números/links/correos/teléfonos deben existir en las fuentes (dinero: solo fuentes del negocio).
-- Estilo: frases prohibidas, temas prohibidos, emojis según configuración, Markdown → formato WhatsApp, longitud y número de mensajes.
+- Estilo: frases prohibidas, temas prohibidos (si el cliente no los mencionó), trato tú/usted, emojis (máximo 2 en "pocos"), largo según la configuración, Markdown → formato WhatsApp, número y tamaño de mensajes.
+- Mensajes fijos (transferencia y respaldo): al cambiar el trato, los de fábrica se ajustan a tú/usted.
 - Coherencia: `no_reply` sin mensajes, respuestas vacías, promesas de foto sin imagen.
 
 Problemas corregibles → se reintenta **una vez** con la corrección. En el último intento:
 
-- Problemas de **estilo** (frase prohibida, prometer una foto inexistente, mensaje largo) se corrigen solos: se quitan las oraciones problemáticas y se envía el resto.
+- Problemas de **estilo** se corrigen solos: se quitan las oraciones con frases o temas prohibidos o con promesas de fotos inexistentes; el trato o el largo, si la IA insiste, se aceptan y quedan registrados para revisión (el cliente no se queda sin respuesta).
 - Datos **no verificables** → respuesta de respaldo o transferencia, según la regla configurada.
 - Respuesta **inválida** (JSON roto o vacía) → no se envía nada; se registra el error y se reintenta en 1 minuto.
 

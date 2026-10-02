@@ -215,7 +215,7 @@ function shell(active, content) {
       h('div', { class: 'brand' }, '💬 Chatbots'),
       switcher,
       isAdmin() && (!isSuper() || state.accountId) ? link('#/inicio', 'Primeros pasos', 'inicio') : null,
-      isAdmin() ? link('#/', 'Chatbots', 'home') : null,
+      isAdmin() ? link('#/', 'Asistentes', 'home') : null,
       isAdmin() ? link('#/channels', 'Canales', 'channels') : null,
       link('#/conversations', 'Conversaciones', 'conversations'),
       link('#/agenda', 'Agenda', 'agenda'),
@@ -373,23 +373,25 @@ async function viewDashboard(root) {
   const [bots, stats, channels] = await Promise.all([api('GET', `/api/chatbots${acct()}`), api('GET', `/api/stats${acct()}`), api('GET', `/api/channels${acct()}`)]);
   state.bots = bots;
   const byId = Object.fromEntries(stats.chatbots.map((s) => [s.id, s]));
-  const nb = { name: '' };
+  const nb = { name: '', template: state.me.account?.business_type || 'otro' };
   const createBox = h('div', { class: 'card', hidden: true },
-    h('h3', { style: 'margin-top:0' }, 'Nuevo chatbot'),
-    field('Nombre', text(nb, 'name', { placeholder: 'Hotel Las Palmas' })),
+    h('h3', { style: 'margin-top:0' }, 'Nuevo asistente'),
+    h('div', { class: 'grid' },
+      field('Nombre del negocio', text(nb, 'name', { placeholder: 'Hotel Las Palmas' })),
+      field('Tipo de negocio', select(nb, 'template', (state.meta.business_types || []).map((b) => [b.key, b.label])), 'Nace con la forma de atender, reglas y datos típicos de ese giro. Todo se puede cambiar.')),
     accountPicker(nb),
     h('button', { class: 'primary', onclick: async () => {
       if (!nb.name.trim()) return toast('Escribe un nombre', true);
       const bot = await run(() => api('POST', '/api/chatbots', nb));
-      if (bot) location.hash = `#/bot/${bot.id}/general`;
-    } }, 'Crear'));
+      if (bot) location.hash = `#/bot/${bot.id}/conocimiento`;
+    } }, 'Crear y agregar su información'));
   const noAccounts = isSuper() && !state.accounts.length;
   root.append(
-    h('div', { class: 'row between' }, h('h1', {}, 'Chatbots'),
-      h('button', { class: 'primary', disabled: noAccounts, onclick: () => (createBox.hidden = !createBox.hidden) }, '+ Nuevo chatbot')),
+    h('div', { class: 'row between' }, h('h1', {}, 'Asistentes'),
+      h('button', { class: 'primary', disabled: noAccounts, onclick: () => (createBox.hidden = !createBox.hidden) }, '+ Nuevo asistente')),
     noAccounts ? h('div', { class: 'card' }, h('p', {}, 'Primero crea una cuenta (cliente) en ', h('a', { href: '#/accounts' }, 'Cuentas'), '.')) : null,
     createBox,
-    bots.length || noAccounts ? null : h('div', { class: 'card' }, h('p', {}, 'Aún no hay chatbots. Crea el primero para empezar.')),
+    bots.length || noAccounts ? null : h('div', { class: 'card' }, h('p', {}, 'Aún no hay asistentes. Crea el primero para empezar.')),
     h('div', { class: 'grid' },
       bots.map((b) => {
         const s = byId[b.id] || {};
@@ -397,7 +399,7 @@ async function viewDashboard(root) {
         return h('div', { class: 'card' },
           h('div', { class: 'row between' },
             h('h3', { style: 'margin:0' }, h('a', { href: `#/bot/${b.id}/general` }, b.name)),
-            h('span', { class: `badge ${b.active ? 'green' : ''}` }, b.active ? 'Activo' : 'Inactivo')),
+            h('span', { class: `badge ${b.active ? 'green' : ''}` }, b.active ? 'Encendido' : 'Apagado')),
           isSuper() && !state.accountId ? h('p', { class: 'muted small', style: 'margin:4px 0 0' }, accountName(b.account_id)) : null,
           h('p', { class: 'small' }, mine.length ? mine.map((c) => h('span', { class: 'badge', style: 'margin-right:4px' }, channelIcon(c.type), ' ', c.name)) : h('span', { class: 'muted' }, 'Sin canales')),
           h('div', { class: 'row', style: 'gap:18px' },
@@ -419,29 +421,36 @@ async function viewDashboard(root) {
 
 /* ------------------------------ Chatbot ------------------------------ */
 
+// Orden en que se configura un asistente; lo técnico queda en "Avanzado".
 const TABS = [
-  ['general', 'General'],
-  ['personalidad', 'Personalidad'],
-  ['conocimiento', 'Conocimiento'],
-  ['imagenes', 'Imágenes'],
+  ['general', 'Resumen'],
+  ['conocimiento', 'Lo que sabe'],
+  ['personalidad', 'Cómo habla'],
   ['reglas', 'Reglas'],
-  ['datos', 'Datos a recopilar'],
-  ['flujo', 'Flujo'],
-  ['ia', 'IA y memoria'],
+  ['imagenes', 'Fotos'],
+  ['datos', 'Datos que pide'],
   ['probar', 'Probar'],
+  ['avanzado', 'Avanzado'],
 ];
+const TAB_ALIASES = { flujo: 'avanzado', ia: 'avanzado' };
+
+/** Marca si el sistema hace cumplir un ajuste o si es una guía para la IA. */
+const guaranteed = () => h('span', { class: 'badge green', title: 'El sistema lo revisa antes de enviar cada respuesta: si no se cumple, la corrige o pide otra a la IA.' }, '✓ Garantizado');
+const guide = () => h('span', { class: 'badge', title: 'Instrucción para la IA. La sigue casi siempre; compruébalo en Probar.' }, 'Guía');
+const tag = (label, badge) => h('span', {}, label, ' ', badge);
 
 async function viewBot(root, id, tab) {
+  tab = TAB_ALIASES[tab] || tab;
   const bot = await api('GET', `/api/chatbots/${id}`);
   root.append(
     h('div', { class: 'row between' },
-      h('h1', {}, bot.name, ' ', h('span', { class: `badge ${bot.active ? 'green' : ''}` }, bot.active ? 'Activo' : 'Inactivo')),
+      h('h1', {}, bot.name, ' ', h('span', { class: `badge ${bot.active ? 'green' : ''}` }, bot.active ? 'Encendido' : 'Apagado')),
       h('a', { href: `#/conversations?chatbot_id=${bot.id}` }, 'Ver conversaciones →')),
     h('div', { class: 'tabs' }, TABS.map(([k, l]) => h('a', { href: `#/bot/${id}/${k}`, class: k === tab ? 'active' : '' }, l))),
   );
   const body = h('div');
   root.append(body);
-  const views = { general: tabGeneral, personalidad: tabPersonality, conocimiento: tabKnowledge, imagenes: tabImages, reglas: tabRules, datos: tabData, flujo: tabFlow, ia: tabAi, probar: tabPlayground };
+  const views = { general: tabGeneral, personalidad: tabPersonality, conocimiento: tabKnowledge, imagenes: tabImages, reglas: tabRules, datos: tabData, avanzado: tabAdvanced, probar: tabPlayground };
   await (views[tab] || tabGeneral)(body, bot);
 }
 
@@ -453,20 +462,35 @@ async function saveBot(bot, patch) {
   return run(() => api('PUT', `/api/chatbots/${bot.id}`, patch), 'Guardado ✅');
 }
 
-function tabGeneral(root, bot) {
+async function tabGeneral(root, bot) {
   const m = { name: bot.name, active: bot.active };
   const channels = bot.channels || [];
   const dup = { account_id: bot.account_id };
+  const knowledge = await api('GET', `/api/chatbots/${bot.id}/knowledge`).catch(() => []);
+  const steps = [
+    [knowledge.some((k) => k.active), 'Tiene la información de tu negocio', 'conocimiento', 'Agrega precios, servicios, horarios y preguntas frecuentes: es lo único que puede afirmar.'],
+    [!!bot.personality.prompt.trim(), 'Sabe quién es y a quién atiende', 'personalidad', 'Escribe en "Cómo habla" qué hace tu negocio y qué debe lograr el asistente.'],
+    [channels.some((c) => c.active), 'Está en al menos un canal', null, 'Conéctalo a WhatsApp u otro canal con "+ Agregar canal".'],
+    [bot.active, 'Está encendido', null, 'Marca "Encendido" abajo y guarda.'],
+  ];
+  const ready = steps.every(([ok]) => ok);
   root.append(
     h('div', { class: 'card' },
-      field('Nombre del chatbot / negocio', text(m, 'name')),
-      check(m, 'active', 'Activo (responde automáticamente en sus canales)'),
+      h('h3', { style: 'margin-top:0' }, ready ? '✅ Tu asistente está listo y respondiendo' : 'Para que tu asistente funcione'),
+      h('ul', { class: 'checklist' }, steps.map(([ok, label, tabKey, help]) =>
+        h('li', { class: ok ? 'ok' : '' }, h('span', { class: 'mark' }, ok ? '✓' : '○'), ' ',
+          tabKey ? h('a', { href: `#/bot/${bot.id}/${tabKey}` }, label) : label,
+          ok ? null : h('div', { class: 'small muted' }, help)))),
+      h('p', { class: 'small muted', style: 'margin-bottom:0' }, 'Antes de encenderlo, ', h('a', { href: `#/bot/${bot.id}/probar` }, 'pruébalo como si fueras un cliente'), '.')),
+    h('div', { class: 'card' },
+      field('Nombre del asistente o negocio', text(m, 'name')),
+      check(m, 'active', 'Encendido (responde solo a los clientes en sus canales)'),
       isSuper() ? h('p', { class: 'muted small' }, 'Cuenta: ', accountName(bot.account_id)) : null,
     ),
     h('div', { class: 'card' },
       h('div', { class: 'row between' }, h('h3', { style: 'margin:0' }, 'Canales que atiende'),
         h('a', { class: 'btn', href: `#/channels?new=1&chatbot_id=${bot.id}` }, '+ Agregar canal')),
-      h('p', { class: 'muted small' }, 'El mismo chatbot (prompt, información, imágenes y reglas) responde en todos sus canales.'),
+      h('p', { class: 'muted small' }, 'El mismo asistente (información, reglas y fotos) responde igual en todos sus canales.'),
       channels.length
         ? h('table', {}, h('tbody', {}, channels.map((c) => h('tr', { class: 'click', onclick: () => (location.hash = `#/channel/${c.id}`) },
             h('td', {}, channelIcon(c.type), ' ', h('strong', {}, c.name)), h('td', {}, c.label),
@@ -490,27 +514,32 @@ function tabPersonality(root, bot) {
   root.append(
     h('div', { class: 'card' },
       field('Nombre del asistente (opcional)', text(p, 'assistant_name', { placeholder: 'Sofía' }), 'Si lo defines, así se presenta. Déjalo vacío para no presentarse con nombre.'),
-      field('Prompt principal', area(p, 'prompt', { big: true, placeholder: 'Ej.: Eres parte del equipo de recepción del Hotel Las Palmas en Cancún. Tu objetivo es resolver dudas y ayudar a que el cliente reserve. Eres cálido, atento y vas al grano...' }),
-        'Quién es, a quién atiende y qué busca lograr. La información del negocio va en "Conocimiento", no aquí.'),
-      field('Tono', toneInput, 'Separado por comas.'),
-      h('div', { class: 'row', style: 'margin:-6px 0 14px' }, TONE_PRESETS.map((t) => h('button', { class: 'small', onclick: () => addTone(t) }, `+ ${t}`))),
+      field(tag('Instrucciones para tu asistente', guide()), area(p, 'prompt', { big: true, placeholder: 'Ej.: Trabajas en la recepción del Hotel Las Palmas en Cancún. Ayudas a los huéspedes a resolver dudas y a reservar. Eres cálido y vas al grano. Cuando alguien muestra interés, pregúntale fechas y número de personas.' }),
+        'Quién es, a quién atiende y qué debe lograr, como se lo explicarías a un empleado nuevo. Los precios y datos van en "Lo que sabe", no aquí.'),
       h('div', { class: 'grid' },
-        field('Idioma', text(p, 'language')),
-        field('Trato', select(p, 'formality', [['tu', 'Tú'], ['usted', 'Usted']])),
-        field('Longitud de respuestas', select(p, 'response_length', [['muy_corta', 'Muy corta'], ['corta', 'Corta'], ['media', 'Media'], ['detallada', 'Detallada']])),
-        field('Emojis', select(p, 'emojis', [['none', 'Sin emojis'], ['few', 'Pocos'], ['normal', 'Normal']])),
+        field(tag('Trato', guaranteed()), select(p, 'formality', [['tu', 'De tú'], ['usted', 'De usted']]), 'Si la IA mezcla el trato, la respuesta se rehace.'),
+        field(tag('Largo de las respuestas', guaranteed()), select(p, 'response_length', [['muy_corta', 'Muy cortas (1-2 frases)'], ['corta', 'Cortas (1-3 frases)'], ['media', 'Medianas (un párrafo)'], ['detallada', 'Detalladas']]), 'Si se pasa de largo, se le pide resumir.'),
+        field(tag('Emojis', guaranteed()), select(p, 'emojis', [['none', 'Ninguno'], ['few', 'Pocos (máximo 2)'], ['normal', 'Los que quiera']]), 'Los de más se quitan antes de enviar.'),
       ),
-      field('Ejemplos de estilo', lines(p, 'style_examples', { placeholder: 'Mensajes reales de cómo escribe el negocio, uno por renglón.\nEj.: ¡Hola! Claro, con gusto te ayudo 😊' }),
-        'Opcional. La IA imita el estilo (no copia el texto).'),
+      field(tag('Tono', guide()), toneInput, 'Separado por comas, o elige:'),
+      h('div', { class: 'row', style: 'margin:-6px 0 14px' }, TONE_PRESETS.map((t) => h('button', { class: 'small', onclick: () => addTone(t) }, `+ ${t}`))),
+      h('details', {}, h('summary', {}, 'Más opciones de estilo'),
+        h('div', { style: 'margin-top:10px' },
+          field('Idioma', text(p, 'language')),
+          field(tag('Ejemplos de cómo escribes', guide()), lines(p, 'style_examples', { placeholder: 'Mensajes reales de cómo escribe el negocio, uno por renglón.\nEj.: ¡Hola! Claro, con gusto te ayudo 😊' }),
+            'Opcional. La IA imita el estilo (no copia el texto).'))),
     ),
     saveBar(async () => { if (await saveBot(bot, { personality: p })) render(); }),
   );
 }
 
+const CAT_LABELS = { general: 'General', servicios: 'Servicios', productos: 'Productos', precios: 'Precios', horarios: 'Horarios', ubicaciones: 'Ubicación y contacto', condiciones: 'Políticas y condiciones', preguntas_frecuentes: 'Preguntas frecuentes', promociones: 'Promociones', otro: 'Otro' };
+const catLabel = (c) => CAT_LABELS[c] || c.replace(/_/g, ' ');
+
 async function tabKnowledge(root, bot) {
   const items = await api('GET', `/api/chatbots/${bot.id}/knowledge`);
   const cats = state.meta.knowledge_categories;
-  const catOptions = cats.map((c) => [c, c.replace(/_/g, ' ')]);
+  const catOptions = cats.map((c) => [c, catLabel(c)]);
   const newItem = { category: 'general', title: '', content: '', always_include: false };
   const total = items.filter((i) => i.active).reduce((a, i) => a + i.title.length + i.content.length, 0);
 
@@ -524,7 +553,7 @@ async function tabKnowledge(root, bot) {
         box.append(
           h('div', { class: 'row between' },
             h('div', {},
-              h('span', { class: 'badge' }, it.category.replace(/_/g, ' ')), ' ',
+              h('span', { class: 'badge' }, catLabel(it.category)), ' ',
               h('strong', {}, it.title), ' ',
               !it.active ? h('span', { class: 'badge orange' }, 'inactivo') : null, ' ',
               it.always_include ? h('span', { class: 'badge green' }, 'siempre incluido') : null),
@@ -538,7 +567,7 @@ async function tabKnowledge(root, bot) {
           h('div', { class: 'grid' }, field('Categoría', select(m, 'category', catOptions)), field('Título', text(m, 'title'))),
           field('Contenido', area(m, 'content', { big: true })),
           check(m, 'active', 'Activo'),
-          check(m, 'always_include', 'Incluir siempre (información esencial)'),
+          check(m, 'always_include', 'Esencial: tenerlo siempre presente'),
           h('div', { class: 'row' },
             h('button', { class: 'primary', onclick: async () => { if (await run(() => api('PUT', `/api/knowledge/${it.id}`, m), 'Guardado')) render(); } }, 'Guardar'),
             h('button', { onclick: () => { editing = false; draw(); } }, 'Cancelar')),
@@ -551,20 +580,22 @@ async function tabKnowledge(root, bot) {
 
   root.append(
     h('div', { class: 'card' },
-      h('p', { class: 'muted' },
-        'Todo lo que el bot puede decir sobre el negocio sale de aquí. Si un dato no está, el bot no lo inventa. ',
-        'Escribe con datos concretos: precios, horarios, direcciones, condiciones, preguntas frecuentes.'),
-      h('p', { class: 'small muted' }, `${items.length} elementos · ${total.toLocaleString()} caracteres activos (presupuesto por mensaje: ${bot.ai.knowledge_char_budget.toLocaleString()}; si se excede, se envían los más relevantes).`),
+      h('p', { style: 'margin-top:0' }, guaranteed(), ' ',
+        'Todo lo que tu asistente afirma sale de aquí. Antes de enviar cada respuesta, el sistema comprueba que cada precio, cantidad, teléfono, correo o enlace esté escrito en esta información; si no está, la respuesta se rehace o se usa tu mensaje de respaldo.'),
+      h('p', { class: 'small muted', style: 'margin-bottom:0' }, 'Escribe datos concretos, uno por renglón: "Limpieza dental: $600". ',
+        total > bot.ai.knowledge_char_budget * 0.7
+          ? `Tienes mucha información (${total.toLocaleString()} caracteres): en cada respuesta se usa la más relacionada con la pregunta. Marca como "esencial" lo que siempre deba tener presente.`
+          : `${items.length} ${items.length === 1 ? 'tema' : 'temas'} cargados.`),
     ),
     h('div', { class: 'card' },
       h('h3', { style: 'margin-top:0' }, 'Agregar información'),
       h('div', { class: 'grid' }, field('Categoría', select(newItem, 'category', catOptions)), field('Título', text(newItem, 'title', { placeholder: 'Ej.: Precios de habitaciones' }))),
       field('Contenido', area(newItem, 'content', { big: true, placeholder: 'Habitación sencilla: $1,200 MXN por noche...\nHabitación doble: $1,650 MXN por noche...' })),
-      check(newItem, 'always_include', 'Incluir siempre (información esencial)'),
+      check(newItem, 'always_include', 'Esencial: tenerlo siempre presente (dirección, políticas importantes)'),
       h('button', { class: 'primary', onclick: async () => { if (await run(() => api('POST', `/api/chatbots/${bot.id}/knowledge`, newItem), 'Agregado')) render(); } }, 'Agregar'),
     ),
     ...cats.filter((c) => items.some((i) => i.category === c)).map((c) =>
-      h('div', { class: 'card' }, h('h3', { style: 'margin-top:0;text-transform:capitalize' }, c.replace(/_/g, ' ')), items.filter((i) => i.category === c).map(itemView))),
+      h('div', { class: 'card' }, h('h3', { style: 'margin-top:0' }, catLabel(c)), items.filter((i) => i.category === c).map(itemView))),
     ...(items.some((i) => !cats.includes(i.category)) ? [h('div', { class: 'card' }, h('h3', {}, 'Otras'), items.filter((i) => !cats.includes(i.category)).map(itemView))] : []),
   );
 }
@@ -626,36 +657,49 @@ async function tabImages(root, bot) {
 function tabRules(root, bot) {
   const r = clone(bot.rules);
   root.append(
+    h('div', { class: 'card legend' },
+      h('p', { style: 'margin:0' }, guaranteed(), ' El sistema lo revisa antes de enviar cada respuesta; si no se cumple, la corrige o pide otra a la IA. ',
+        guide(), ' Instrucción para la IA: la sigue casi siempre. Compruébalo en ', h('a', { href: `#/bot/${bot.id}/probar` }, 'Probar'), '.')),
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, 'Cero invenciones'),
-      field('Si el dato no está en la información del negocio…', select(r, 'unknown_info_behavior', [['say_unknown', 'Decir que no lo tiene confirmado'], ['ask', 'Hacer una pregunta para aclarar'], ['handoff', 'Transferir a una persona']])),
-      field('Mensaje de respaldo', area(r, 'fallback_message'), 'Se usa si la IA insiste en dar un dato que no puede verificarse.'),
-      check(r, 'verify_facts', 'Verificar precios, números, links, correos y teléfonos antes de enviar (recomendado)'),
-      field('Frases prohibidas', lines(r, 'banned_phrases'), 'Si la respuesta contiene alguna, se regenera.'),
+      h('h3', { style: 'margin-top:0' }, 'Cuando no tiene un dato'),
+      check(r, 'verify_facts', tag('No inventar precios, cantidades, teléfonos, correos ni enlaces (recomendado)', guaranteed())),
+      field(tag('Si le preguntan algo que no está en "Lo que sabe"…', guaranteed()), select(r, 'unknown_info_behavior', [['say_unknown', 'Decir que no lo tiene confirmado'], ['ask', 'Hacer una pregunta para entender mejor'], ['handoff', 'Pasar con una persona del equipo']])),
+      field(tag('Mensaje de respaldo', guaranteed()), area(r, 'fallback_message'), 'Se envía tal cual si la IA insiste en un dato que no puede comprobarse.'),
     ),
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, 'Temas'),
-      field('De qué puede hablar', area(r, 'allowed_topics', { placeholder: 'Reservaciones, habitaciones, servicios del hotel, ubicación' })),
-      field('Temas que NO debe tratar', lines(r, 'forbidden_topics', { placeholder: 'Política\nCompetencia\nTemas médicos' })),
-      field('Reglas específicas', lines(r, 'custom_rules', { big: true, placeholder: 'Nunca ofrezcas descuentos\nSiempre pregunta las fechas antes de dar disponibilidad\nNo confirmes reservaciones: eso lo hace una persona' })),
+      h('h3', { style: 'margin-top:0' }, 'Pasar con una persona'),
+      field(tag('Palabras que pasan con una persona de inmediato', guaranteed()), lines(r, 'handoff_keywords'), 'Si el cliente escribe alguna, se transfiere sin consultar a la IA.'),
+      field(tag('Cuándo pasar con una persona', guide()), lines(r, 'handoff_rules'), 'Situaciones, una por renglón: "El cliente quiere pagar", "Tiene una queja".'),
+      field(tag('Mensaje al pasar con una persona', guaranteed()), area(r, 'handoff_message'), 'Se envía tal cual. Después el asistente deja de responder en esa conversación hasta que se la devuelvas.'),
+      field('WhatsApp que recibe el aviso', text(r, 'handoff_notify_number', { placeholder: '5215512345678' }), 'Opcional, con lada. Además se avisa en el panel y por WhatsApp a quien lo tenga activado en "Mi perfil".'),
+      check(r, 'pause_on_human_reply', tag('Si alguien del equipo contesta desde el teléfono, el asistente se calla en esa conversación', guaranteed())),
+      field('El asistente retoma la conversación después de (minutos)', num(r, 'auto_resume_minutes', { min: 0 }), '0 = nunca solo; se la devuelves desde Conversaciones.'),
     ),
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, 'Imágenes'),
-      field('Cuándo mandar imágenes (criterio general)', area(r, 'image_rules', { placeholder: 'Envía fotos cuando el cliente muestre interés en una habitación concreta o pida verla.' })),
-      field('Máximo de imágenes por respuesta', num(r, 'max_images_per_reply', { min: 0, max: 5 })),
-      check(r, 'avoid_repeating_images', 'No reenviar imágenes ya enviadas (salvo que el cliente las pida)'),
+      h('h3', { style: 'margin-top:0' }, 'Temas y reglas de tu negocio'),
+      field(tag('Temas de los que no debe hablar', guaranteed()), lines(r, 'forbidden_topics', { placeholder: 'Política\nCompetencia' }),
+        'Si los menciona sin que el cliente pregunte, se quitan de la respuesta. Si el cliente pregunta, declina con amabilidad.'),
+      field(tag('Reglas de tu negocio', guide()), lines(r, 'custom_rules', { big: true, placeholder: 'Nunca ofrezcas descuentos\nSiempre pregunta las fechas antes de hablar de disponibilidad\nNo confirmes reservaciones: eso lo hace una persona' }),
+        'Una por renglón, concretas. Lo que tenga precio o cifra, escríbelo también en "Lo que sabe": así queda garantizado.'),
+      field(tag('De qué puede hablar', guide()), area(r, 'allowed_topics', { placeholder: 'Reservaciones, habitaciones, servicios del hotel, ubicación' }), 'Opcional. Si le preguntan algo ajeno, redirige la conversación.'),
+      field(tag('Frases que nunca debe usar', guaranteed()), lines(r, 'banned_phrases'), 'Si aparece alguna, la respuesta se rehace.'),
     ),
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, 'Transferir a una persona'),
-      field('Cuándo transferir', lines(r, 'handoff_rules')),
-      field('Palabras clave que transfieren de inmediato', lines(r, 'handoff_keywords'), 'Sin pasar por la IA.'),
-      field('Mensaje al transferir', area(r, 'handoff_message')),
-      field('Número que recibe el aviso de transferencia', text(r, 'handoff_notify_number', { placeholder: '5215512345678' }), 'Opcional. Se le manda un WhatsApp cuando alguien necesita atención.'),
-      check(r, 'pause_on_human_reply', 'Pausar el bot si alguien responde manualmente desde el teléfono'),
-      field('Retomar automáticamente después de (minutos)', num(r, 'auto_resume_minutes', { min: 0 }), '0 = el bot no retoma solo; hay que devolverle la conversación desde el panel.'),
+      h('h3', { style: 'margin-top:0' }, 'Fotos'),
+      field(tag('Cuándo mandar fotos', guide()), area(r, 'image_rules', { placeholder: 'Envía la foto de una habitación cuando el cliente pregunte por ella o quiera verla.' })),
+      h('div', { class: 'grid' }, field(tag('Máximo de fotos por respuesta', guaranteed()), num(r, 'max_images_per_reply', { min: 0, max: 5 }))),
+      check(r, 'avoid_repeating_images', tag('No reenviar fotos ya enviadas (salvo que el cliente las pida)', guaranteed())),
+      h('p', { class: 'small muted' }, guaranteed(), ' Solo se envían fotos de tu catálogo; nunca promete una foto que no existe.'),
     ),
     saveBar(async () => { if (await saveBot(bot, { rules: r })) render(); }),
   );
+}
+
+function uniqueKey(label, fields) {
+  const base = label.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 40) || 'dato';
+  let key = base;
+  for (let i = 2; fields.some((f) => f.key === key); i++) key = `${base}_${i}`;
+  return key;
 }
 
 function tabData(root, bot) {
@@ -667,13 +711,11 @@ function tabData(root, bot) {
       ...fields.map((f, i) =>
         h('div', { class: 'list-item' },
           h('div', { class: 'grid' },
-            field('Clave', text(f, 'key', { placeholder: 'correo' }), 'minúsculas_y_guion_bajo'),
-            field('Etiqueta', text(f, 'label', { placeholder: 'Correo electrónico' })),
-            field('Tipo', select(f, 'type', types, draw))),
-          f.type === 'option' ? field('Opciones válidas', lines(f, 'options')) : null,
-          field('Descripción', text(f, 'description', { placeholder: 'Para enviarle la confirmación' })),
-          field('Cuándo pedirlo', text(f, 'ask_when', { placeholder: 'Cuando quiera cotizar o reservar' })),
-          check(f, 'required', 'Importante'),
+            field('Dato', text(f, 'label', { placeholder: 'Correo electrónico' })),
+            field('Tipo', select(f, 'type', types, draw)),
+            field('Cuándo pedirlo', text(f, 'ask_when', { placeholder: 'Cuando quiera cotizar o reservar' }))),
+          f.type === 'option' ? field('Respuestas válidas', lines(f, 'options'), 'Una por renglón. Solo se guarda si coincide con alguna.') : null,
+          check(f, 'required', 'Importante: procura conseguirlo en la conversación'),
           h('div', { class: 'row' },
             h('button', { class: 'small', disabled: i === 0, onclick: () => { [fields[i - 1], fields[i]] = [fields[i], fields[i - 1]]; draw(); } }, '↑'),
             h('button', { class: 'small', disabled: i === fields.length - 1, onclick: () => { [fields[i + 1], fields[i]] = [fields[i], fields[i + 1]]; draw(); } }, '↓'),
@@ -684,16 +726,32 @@ function tabData(root, bot) {
   draw();
   root.append(
     h('div', { class: 'card' },
-      h('p', { class: 'muted' }, 'Datos que el bot irá recopilando de forma natural (sin formulario). Los valores se validan (correo, teléfono, opciones) antes de guardarse y nunca se vuelven a pedir.'),
+      h('p', { style: 'margin-top:0' }, 'Datos que tu asistente pide durante la conversación, sin formularios. Los verás en la ficha de cada cliente.'),
+      h('p', { class: 'small muted' }, guaranteed(), ' Solo se guarda un dato si tiene el formato correcto (un correo válido, un teléfono, una de las respuestas válidas) y no se vuelve a pedir lo que ya se tiene.'),
       list,
       h('button', { onclick: () => { fields.push({ key: '', label: '', type: 'text', description: '', options: [], required: false, ask_when: '' }); draw(); } }, '+ Agregar dato'),
     ),
-    saveBar(async () => { if (await saveBot(bot, { data_fields: fields })) render(); }),
+    saveBar(async () => {
+      if (fields.some((f) => !f.label.trim())) return toast('Escribe el nombre de cada dato', true);
+      // La clave interna se genera del nombre (las existentes no cambian: así se conservan los datos guardados).
+      for (const f of fields) if (!f.key) f.key = uniqueKey(f.label, fields);
+      if (await saveBot(bot, { data_fields: fields })) render();
+    }),
   );
 }
 
-function tabFlow(root, bot) {
+function tabAdvanced(root, bot) {
   const f = clone(bot.flow);
+  const a = clone(bot.ai);
+  root.append(
+    h('div', { class: 'card legend' }, h('p', { style: 'margin:0' }, 'No necesitas cambiar nada aquí para que tu asistente funcione. Son ajustes finos del recorrido de la conversación y del modelo de IA.')),
+    flowSection(f),
+    aiSection(a),
+    saveBar(async () => { if (await saveBot(bot, { flow: f, ai: a })) render(); }),
+  );
+}
+
+function flowSection(f) {
   const list = h('div');
   const draw = () => {
     fill(list, 
@@ -710,25 +768,23 @@ function tabFlow(root, bot) {
     );
   };
   draw();
-  root.append(
+  return h('div', {},
     h('div', { class: 'card' },
-      h('p', { class: 'muted' }, 'Es una guía, no un guion: el cliente puede saltar pasos o dar todo junto y el bot se adapta.'),
+      h('h3', { style: 'margin-top:0' }, 'Recorrido de la conversación ', guide()),
+      h('p', { class: 'muted' }, 'Es una guía, no un guion: el cliente puede saltar pasos o dar todo junto y el asistente se adapta.'),
       field('Objetivo de la conversación', area(f, 'goal', { placeholder: 'Que el cliente haga una reservación o deje sus datos para que un asesor lo contacte.' })),
       field('Saludo sugerido', text(f, 'greeting', { placeholder: '¡Hola! Gracias por escribir al Hotel Las Palmas 🌴' })),
       h('h3', {}, 'Etapas sugeridas'),
       list,
       h('button', { onclick: () => { f.steps.push({ title: '', description: '' }); draw(); } }, '+ Agregar etapa'),
       h('div', { style: 'margin-top:14px' }, field('Cuando se cumpla el objetivo', area(f, 'on_goal_completed', { placeholder: 'Agradece, confirma los datos recibidos y transfiere a una persona para cerrar la reservación.' }))),
-    ),
-    saveBar(async () => { if (await saveBot(bot, { flow: f })) render(); }),
-  );
+    ));
 }
 
-function tabAi(root, bot) {
-  const a = clone(bot.ai);
-  root.append(
+function aiSection(a) {
+  return h('div', {},
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, 'Modelo'),
+      h('h3', { style: 'margin-top:0' }, 'Modelo de IA'),
       h('div', { class: 'grid' },
         field('Modelo de OpenAI', text(a, 'model', { placeholder: state.meta.default_model }), `Vacío = ${state.meta.default_model}`),
         field('Temperatura', num(a, 'temperature', { step: 0.1, min: 0, max: 2, nullable: true }), 'Menor = más consistente. Se ignora en modelos de razonamiento.'),
@@ -742,24 +798,47 @@ function tabAi(root, bot) {
         field('Presupuesto de conocimiento (caracteres)', num(a, 'knowledge_char_budget', { min: 1000, step: 1000 }))),
     ),
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, 'Comportamiento en WhatsApp'),
+      h('h3', { style: 'margin-top:0' }, 'Comportamiento en el chat'),
       h('div', { class: 'grid' },
         field('Esperar antes de responder (segundos)', num(a, 'debounce_seconds', { min: 0, max: 60, step: 0.5 }), 'Agrupa mensajes seguidos del cliente.'),
-        field('Máximo de mensajes por respuesta', num(a, 'max_bubbles', { min: 1, max: 5 })),
-        field('Máximo de caracteres por mensaje', num(a, 'max_chars_per_bubble', { min: 80, max: 2000 })),
+        field(tag('Máximo de mensajes por respuesta', guaranteed()), num(a, 'max_bubbles', { min: 1, max: 5 })),
+        field(tag('Máximo de caracteres por mensaje', guaranteed()), num(a, 'max_chars_per_bubble', { min: 80, max: 2000 }), 'Los mensajes más largos se dividen.'),
         field('Zona horaria', text(a, 'timezone'))),
       check(a, 'typing_simulation', 'Mostrar "escribiendo…" antes de cada mensaje'),
-      check(a, 'transcribe_audio', 'Transcribir notas de voz (usa la API de audio de OpenAI)'),
-    ),
-    saveBar(async () => { if (await saveBot(bot, { ai: a })) render(); }),
-  );
+      check(a, 'transcribe_audio', 'Entender notas de voz (las transcribe; tiene un costo pequeño por minuto)'),
+    ));
 }
+
+const ACTION_LABEL = { reply: 'Respondió', reply_with_image: 'Respondió con foto', handoff: 'Pasó la conversación a una persona', no_reply: 'No respondió', human: 'No respondió: la conversación está con una persona', inactive: 'No respondió: el asistente está apagado', error: 'Error' };
+
+/** Traduce el motivo que se le dio a la IA a lenguaje para el dueño del negocio. */
+function explainIssue(x) {
+  const rules = [
+    [/^Mencionaste datos que no están[^:]*: (.*?)\. Elimina.*$/s, (m) => `Quiso dar un dato que no está en tu información (${m[1]}). Se bloqueó.`],
+    [/^No uses estas frases: (.*?)\.$/s, (m) => `Usó una frase prohibida (${m[1]}).`],
+    [/^No hables de estos temas: (.*?)\. .*$/s, (m) => `Mencionó un tema prohibido (${m[1]}).`],
+    [/^Trata al cliente de "usted".*$/s, () => 'Tuteó al cliente y está configurado "de usted".'],
+    [/^Trata al cliente de "tú".*$/s, () => 'Habló de usted y está configurado "de tú".'],
+    [/^La respuesta es demasiado larga.*$/s, () => 'La respuesta era más larga de lo configurado.'],
+    [/^Un mensaje es demasiado largo.*$/s, () => 'Un mensaje era demasiado largo.'],
+    [/^Dices que envías una imagen.*$/s, () => 'Prometió una foto que no está en tu catálogo.'],
+    [/^Los IDs de imagen.*$/s, () => 'Quiso enviar una foto que no existe en tu catálogo.'],
+    [/^El horario ".*" no está disponible.*$/s, () => 'Ofreció un horario que no está disponible en tu agenda.'],
+    [/^El servicio ".*" no existe.*$/s, () => 'Quiso agendar un servicio que no existe.'],
+    [/^Para agendar la llamada primero pide.*$/s, () => 'Quiso agendar una llamada sin tener el teléfono del cliente.'],
+  ];
+  for (const [re, fn] of rules) { const m = x.match(re); if (m) return fn(m); }
+  return x;
+}
+
+/** Preguntas para comprobar que respeta la información y las reglas. */
+const TEST_IDEAS = ['¿Cuánto cuesta?', '¿Qué horario tienen?', '¿Dónde están?', '¿Me haces un descuento?', '¿Tienen servicio a domicilio?', 'Quiero hablar con una persona'];
 
 async function tabPlayground(root, bot) {
   const session = localStorage.getItem('pg-session') || Math.random().toString(36).slice(2, 10);
   try { localStorage.setItem('pg-session', session); } catch { /* sin storage */ }
   const chat = h('div', { class: 'chat' });
-  const debug = h('div', { class: 'stack' }, h('p', { class: 'muted small' }, 'Aquí verás la decisión de la IA y la validación del backend.'));
+  const debug = h('div', { class: 'stack' }, h('p', { class: 'muted small' }, 'Después de cada respuesta verás qué hizo el asistente, si alguna regla obligó a corregirla y qué datos del cliente guardó.'));
   const input = h('textarea', { placeholder: 'Escribe como si fueras el cliente…', onkeydown: (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } } });
   const btn = h('button', { class: 'primary', onclick: () => send() }, 'Enviar');
 
@@ -792,18 +871,26 @@ async function tabPlayground(root, bot) {
     if (r.result.status === 'error') chat.append(bubble('notify', `Error: ${r.result.error}`));
     chat.scrollTop = chat.scrollHeight;
     const c = r.contact || {};
-    fill(debug, 
-      h('div', {}, h('strong', {}, 'Acción: '), h('code', {}, r.result.action || r.result.status), r.result.fallback_used ? h('span', { class: 'badge orange' }, ' respaldo') : null, r.result.info_not_found ? h('span', { class: 'badge orange' }, ' dato no encontrado') : null),
-      r.result.thinking ? h('div', {}, h('strong', {}, 'Razonamiento: '), h('span', { class: 'muted' }, r.result.thinking)) : null,
-      ...r.result.attempts.map((a, i) => h('div', { class: 'small' }, h('strong', {}, `Intento ${i + 1}: `),
-        a.retryable.length ? h('span', { class: 'badge red' }, 'rechazado') : h('span', { class: 'badge green' }, 'aprobado'),
-        a.retryable.length ? h('div', { class: 'muted' }, a.retryable.join(' · ')) : null,
-        a.fixes.length ? h('div', { class: 'muted' }, 'Correcciones: ', a.fixes.join(' · ')) : null)),
-      h('div', {}, h('strong', {}, 'Estado: '), r.conversation?.status === 'human' ? h('span', { class: 'badge orange' }, 'con humano') : h('span', { class: 'badge green' }, 'bot')),
-      h('div', {}, h('strong', {}, 'Nombre: '), c.name || '—'),
-      h('div', {}, h('strong', {}, 'Datos: '), h('pre', { class: 'small pre' }, JSON.stringify(c.data || {}, null, 2))),
-      c.notes?.length ? h('div', {}, h('strong', {}, 'Notas: '), h('ul', {}, c.notes.map((n) => h('li', {}, n)))) : null,
-      r.conversation?.summary ? h('div', {}, h('strong', {}, 'Resumen: '), h('div', { class: 'small pre muted' }, r.conversation.summary)) : null,
+    const attempts = r.result.attempts || [];
+    const fixes = attempts.flatMap((a) => a.fixes);
+    const rejected = attempts.filter((a) => a.retryable.length);
+    const dataLabels = Object.fromEntries((bot.data_fields || []).map((f) => [f.key, f.label]));
+    fill(debug,
+      h('div', {}, h('strong', {}, 'Qué hizo: '), ACTION_LABEL[r.result.action] || ACTION_LABEL[r.result.status] || r.result.status,
+        r.result.fallback_used ? h('div', { class: 'small' }, h('span', { class: 'badge orange' }, 'mensaje de respaldo'), ' La IA no logró una respuesta comprobable y se envió tu mensaje de respaldo.') : null,
+        r.result.info_not_found ? h('div', { class: 'small' }, h('span', { class: 'badge orange' }, 'dato no encontrado'), ' Le preguntaron algo que no está en "Lo que sabe". Agrégalo si quieres que lo responda.') : null),
+      h('div', {}, h('strong', {}, 'Revisión de reglas: '),
+        !rejected.length && !fixes.length ? h('span', { class: 'badge green' }, '✓ cumplió todo a la primera') : null,
+        rejected.length ? h('div', { class: 'small' }, h('span', { class: 'badge orange' }, `${rejected.length} ${rejected.length === 1 ? 'respuesta rehecha' : 'respuestas rehechas'}`), h('ul', { class: 'muted' }, [...new Set(rejected.flatMap((a) => a.retryable).map(explainIssue))].map((x) => h('li', {}, x)))) : null,
+        fixes.length ? h('div', { class: 'small' }, h('span', { class: 'badge' }, 'ajustes automáticos'), h('ul', { class: 'muted' }, fixes.map((x) => h('li', {}, x)))) : null),
+      h('div', {}, h('strong', {}, 'Conversación: '), r.conversation?.status === 'human' ? h('span', { class: 'badge orange' }, 'pasó con una persona (el asistente ya no responde)') : h('span', { class: 'badge green' }, 'la atiende el asistente')),
+      h('div', {}, h('strong', {}, 'Datos del cliente: '),
+        c.name || Object.keys(c.data || {}).length
+          ? h('ul', { class: 'small' }, c.name ? h('li', {}, 'Nombre: ', c.name) : null, Object.entries(c.data || {}).map(([k, v]) => h('li', {}, `${dataLabels[k] || k}: ${v}`)))
+          : h('span', { class: 'muted small' }, 'aún ninguno')),
+      c.notes?.length ? h('div', {}, h('strong', {}, 'Lo que recuerda: '), h('ul', { class: 'small' }, c.notes.map((n) => h('li', {}, n)))) : null,
+      r.result.thinking ? h('details', { class: 'small' }, h('summary', {}, 'Por qué respondió así'), h('p', { class: 'muted' }, r.result.thinking)) : null,
+      r.conversation?.summary ? h('details', { class: 'small' }, h('summary', {}, 'Resumen de memoria'), h('div', { class: 'pre muted' }, r.conversation.summary)) : null,
     );
   };
 
@@ -818,10 +905,12 @@ async function tabPlayground(root, bot) {
     h('div', { class: 'split' },
       h('div', { class: 'card' },
         h('div', { class: 'row between' }, h('h3', { style: 'margin:0' }, 'Simulador'), h('button', { class: 'small', onclick: reset }, 'Reiniciar conversación')),
-        h('p', { class: 'muted small' }, 'Usa exactamente el mismo motor, contexto y validaciones que WhatsApp (funciona aunque el bot esté inactivo). Las imágenes se muestran aquí en lugar de enviarse.'),
+        h('p', { class: 'muted small' }, 'Escribe como si fueras un cliente. Responde exactamente igual que en WhatsApp, con las mismas reglas (funciona aunque esté apagado). Las fotos se muestran aquí en lugar de enviarse.'),
         chat,
+        h('div', { class: 'row', style: 'margin:8px 0;gap:6px;flex-wrap:wrap' }, h('span', { class: 'small muted' }, 'Prueba:'),
+          TEST_IDEAS.map((q) => h('button', { class: 'small', onclick: () => { input.value = q; send(); } }, q))),
         h('div', { class: 'composer' }, input, btn)),
-      h('div', { class: 'card' }, h('h3', { style: 'margin-top:0' }, 'Depuración'), debug),
+      h('div', { class: 'card' }, h('h3', { style: 'margin-top:0' }, 'Qué revisó el sistema'), debug),
     ),
   );
   load().catch(() => undefined);

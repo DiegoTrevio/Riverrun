@@ -140,6 +140,32 @@ export const BUSINESS_TYPES: BusinessTemplate[] = [
   },
 ];
 
+/** Mensajes fijos (no pasan por la IA) en cada trato. Los de "tú" son los valores por defecto de las reglas. */
+export const FIXED_MESSAGES = {
+  tu: {
+    handoff_message: 'Claro, te comunico con alguien del equipo. En un momento te atienden.',
+    fallback_message: 'Ese dato no lo tengo confirmado, déjame revisarlo con el equipo y te aviso.',
+  },
+  usted: {
+    handoff_message: 'Claro, le comunico con alguien del equipo. En un momento le atienden.',
+    fallback_message: 'Ese dato no lo tengo confirmado; permítame revisarlo con el equipo y le aviso.',
+  },
+} as const;
+
+/**
+ * Los mensajes fijos se envían tal cual, sin la IA: si siguen siendo los de fábrica del otro trato,
+ * se cambian al trato elegido (los que el negocio escribió a mano no se tocan).
+ */
+export function alignFixedMessages<T extends { handoff_message: string; fallback_message: string }>(rules: T, formality: Personality['formality']): T {
+  const other = FIXED_MESSAGES[formality === 'usted' ? 'tu' : 'usted'];
+  const mine = FIXED_MESSAGES[formality];
+  return {
+    ...rules,
+    handoff_message: rules.handoff_message === other.handoff_message ? mine.handoff_message : rules.handoff_message,
+    fallback_message: rules.fallback_message === other.fallback_message ? mine.fallback_message : rules.fallback_message,
+  };
+}
+
 export function businessTemplate(key: string) {
   return BUSINESS_TYPES.find((t) => t.key === key) ?? BUSINESS_TYPES[BUSINESS_TYPES.length - 1];
 }
@@ -161,16 +187,17 @@ export function chatbotFromTemplate(a: AssistantAnswers): {
   data_fields: Partial<DataField>[];
 } {
   const t = businessTemplate(a.business_type);
+  const formality = a.formality ?? t.formality ?? 'tu';
   const who = a.assistant_name ? `Eres ${a.assistant_name}, el asistente virtual de ${a.company}.` : `Eres el asistente virtual de ${a.company}.`;
   return {
     name: a.assistant_name ? `${a.assistant_name} · ${a.company}` : `Asistente de ${a.company}`,
     personality: {
       assistant_name: a.assistant_name,
       prompt: [who, t.role, a.description ? `Sobre el negocio: ${a.description}` : ''].filter(Boolean).join('\n\n'),
-      formality: a.formality ?? t.formality ?? 'tu',
+      formality,
     },
-    rules: { custom_rules: t.custom_rules, booking_enabled: t.booking ?? false },
-    flow: { ...t.flow, greeting: `¡Hola! Soy ${a.assistant_name || 'el asistente'} de ${a.company}. ¿En qué te puedo ayudar?` },
+    rules: { custom_rules: t.custom_rules, booking_enabled: t.booking ?? false, ...FIXED_MESSAGES[formality] },
+    flow: { ...t.flow, greeting: `¡Hola! Soy ${a.assistant_name || 'el asistente'} de ${a.company}. ¿En qué ${formality === 'usted' ? 'le' : 'te'} puedo ayudar?` },
     data_fields: t.data_fields,
   };
 }

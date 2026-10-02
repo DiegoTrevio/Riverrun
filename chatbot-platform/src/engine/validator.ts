@@ -1,6 +1,6 @@
 import type { Chatbot, DataField, ImageAsset } from '../types.js';
 import { DecisionSchema, type Action, type Decision } from './decision.js';
-import { countEmojis, FactCorpus, normalize, stripEmojis, toWhatsappFormat } from './text.js';
+import { countEmojis, FactCorpus, limitEmojis, normalize, stripEmojis, toWhatsappFormat } from './text.js';
 
 /** Plan final ya validado que el backend ejecutará. */
 export interface ExecutionPlan {
@@ -63,6 +63,27 @@ export interface ValidationInput {
 const IMAGE_PROMISE_RE = /\b(te|le|les)\s+(env[ií]o|mando|comparto|paso|dejo|adjunto)\b[^.?!\n]{0,40}\b(foto|fotos|imagen|imagenes|imágenes|men[uú]|cat[aá]logo|flyer|folleto)\b|\b(aqu[ií]|ah[ií])\s+(te|le)?\s*(va|van|est[aá]n?|tienes?)\b[^.?!\n]{0,30}\b(foto|fotos|imagen|imágenes|imagenes)\b/i;
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+const MAX_FEW_EMOJIS = 2;
+
+/** Caracteres aproximados por respuesta según "Largo de las respuestas" (detallada = sin límite). */
+const LENGTH_BUDGET: Record<string, number> = { muy_corta: 220, corta: 480, media: 900, detallada: 0 };
+
+// Formas inequívocas de tuteo (verbos en 2ª persona y pronombres) y de "usted".
+// Límites de palabra con \p{L}: \b no reconoce letras acentuadas ("tú", "estás").
+const word = (alts: string) => new RegExp(`(?<![\\p{L}])(?:${alts})(?![\\p{L}])`, 'iu');
+const TU_RE = word(
+  't[uú]|te|ti|contigo|tuy[oa]s?|tus|quieres|puedes|tienes|necesitas|prefieres|deseas|buscas|est[aá]s|eres|sabes|vienes|llegas|pagas|escr[ií]beme|av[ií]same|dime|cu[eé]ntame|conf[ií]rmame|mándame|mandame',
+);
+const USTED_RE = word('usted');
+
+/** Devuelve la palabra que rompe el trato configurado (o null). */
+export function registerMismatch(text: string, formality: 'tu' | 'usted'): string | null {
+  // "té" (bebida) lleva acento y no coincide con "te"; las comillas pueden citar al cliente: se ignoran.
+  const clean = text.replace(/"[^"]*"|“[^”]*”/g, ' ');
+  const m = (formality === 'usted' ? TU_RE : USTED_RE).exec(clean);
+  return m ? m[0] : null;
+}
 
 export function parseDecision(raw: unknown): { decision: Decision | null; error?: string } {
   let obj = raw;
@@ -179,8 +200,9 @@ export function validateDecision(input: ValidationInput): ValidationResult {
     const before = messages.join('');
     messages = messages.map(stripEmojis).filter(Boolean);
     if (before !== messages.join('')) fixes.push('Se quitaron emojis (configuración: sin emojis)');
-  } else if (bot.personality.emojis === 'few' && countEmojis(messages.join(' ')) > 2) {
-    fixes.push('Demasiados emojis para la configuración "pocos"');
+  } else if (bot.personality.emojis === 'few' && countEmojis(messages.join(' ')) > MAX_FEW_EMOJIS) {
+    messages = limitEmojis(messages, MAX_FEW_EMOJIS);
+    fixes.push(`Se dejaron solo ${MAX_FEW_EMOJIS} emojis (configuración: pocos)`);
   }
   const split: string[] = [];
   for (const m of messages) split.push(...splitLongMessage(m, bot.ai.max_chars_per_bubble));
@@ -201,6 +223,28 @@ export function validateDecision(input: ValidationInput): ValidationResult {
   if (tooLong && bot.personality.response_length !== 'detallada') {
     soft(`Un mensaje es demasiado largo; resume a menos de ${bot.ai.max_chars_per_bubble} caracteres por mensaje.`, () => undefined, 'Se aceptó un mensaje largo en el último intento');
   }
+  // Largo total según "Largo de las respuestas" (con margen: listas de precios pueden pedirlo).
+  const budget = LENGTH_BUDGET[bot.personality.response_length];
+  const total = messages.join(' ').length;
+  if (budget && total > budget * 1.3 && !tooLong) {
+    soft(
+      `La respuesta es demasiado larga para el estilo configurado (${total} caracteres; máximo ~${budget}). Resume y responde solo lo que preguntó el cliente.`,
+      () => undefined,
+      `Se aceptó una respuesta larga (${total} caracteres) en el último intento`,
+    );
+  }
+
+  // ---------- Trato: tú / usted ----------
+  const register = registerMismatch(messages.join(' '), bot.personality.formality);
+  if (register) {
+    soft(
+      bot.personality.formality === 'usted'
+        ? `Trata al cliente de "usted", no de "tú" (encontré: ${register}). Ejemplo: "¿Le gustaría agendar?" en lugar de "¿Te gustaría agendar?".`
+        : `Trata al cliente de "tú", no de "usted" (encontré: ${register}).`,
+      () => undefined,
+      `Revisar trato: la respuesta no usa "${bot.personality.formality === 'usted' ? 'usted' : 'tú'}" (${register})`,
+    );
+  }
 
   // ---------- Frases prohibidas ----------
   const bannedList = rules.banned_phrases.map((p) => normalize(p)).filter(Boolean);
@@ -212,9 +256,20 @@ export function validateDecision(input: ValidationInput): ValidationResult {
       `Se quitaron oraciones con frases prohibidas: ${banned.join(', ')}`,
     );
   }
-  // Temas prohibidos: solo se registra (declinar amablemente suele mencionarlos).
-  const forbiddenOut = rules.forbidden_topics.filter((t) => t.trim().length > 3 && normalize(messages.join(' ')).includes(normalize(t)));
-  if (forbiddenOut.length) fixes.push(`Revisar: la respuesta menciona un tema prohibido (${forbiddenOut.join(', ')})`);
+  // Temas prohibidos: el bot no puede sacarlos por su cuenta. Si el cliente los mencionó, sí puede
+  // nombrarlos para declinar con amabilidad (se registra para revisión).
+  const customerNorm = normalize(input.customerText);
+  const forbiddenOut = rules.forbidden_topics.map((t) => t.trim()).filter((t) => t.length > 2 && normalize(messages.join(' ')).includes(normalize(t)));
+  const unprompted = forbiddenOut.filter((t) => !customerNorm.includes(normalize(t)));
+  if (unprompted.length) {
+    soft(
+      `No hables de estos temas: ${unprompted.map((t) => `"${t}"`).join(', ')}. El cliente no los mencionó; quítalos de la respuesta.`,
+      () => (messages = dropSentences(messages, (n) => unprompted.some((t) => n.includes(normalize(t))))),
+      `Se quitaron oraciones con temas prohibidos: ${unprompted.join(', ')}`,
+    );
+  }
+  const declined = forbiddenOut.filter((t) => !unprompted.includes(t));
+  if (declined.length) fixes.push(`Revisar: el cliente preguntó por un tema prohibido (${declined.join(', ')})`);
 
   // ---------- Imágenes: solo del catálogo ----------
   const byCode = new Map(input.images.filter((i) => i.active).map((i) => [normalize(i.code), i]));
