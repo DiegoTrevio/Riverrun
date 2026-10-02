@@ -42,6 +42,12 @@ test('trato: "usted" rechaza el tuteo y "tú" rechaza el usted', () => {
   assert.equal(registerMismatch('El paquete "te consiento" incluye masaje', 'usted'), null, 'lo citado no cuenta');
   assert.equal(registerMismatch('¿Ustedes vienen juntos?', 'tu'), null, '"ustedes" (plural) sí se usa con tú');
   assert.equal(registerMismatch('¿Usted desea agendar?', 'tu'), 'Usted');
+  // Nombres de productos o negocios no son tuteo (evita reintentos innecesarios).
+  assert.equal(registerMismatch('Ofrecemos soporte de TI para su empresa.', 'usted'), null);
+  assert.equal(registerMismatch('Le recomendamos nuestro paquete Tus Uñas Perfectas.', 'usted'), null);
+  assert.equal(registerMismatch('El salón Te Consiento abre a las 10.', 'usted'), null);
+  assert.equal(registerMismatch('¿Le parece bien? Te espero.', 'usted'), 'Te', 'al inicio de oración sí cuenta');
+  assert.equal(registerMismatch('Claro, te espero mañana.', 'usted'), 'te');
 
   const formal = bot({ personality: { formality: 'usted' } });
   assert.match(run(formal, ['¿Te gustaría agendar?']).retryable.join(), /usted/);

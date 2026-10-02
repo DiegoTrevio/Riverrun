@@ -120,3 +120,10 @@ test('plantillas: {{cliente}} nunca queda vacío en alertas', () => {
   assert.equal(renderTemplate('🚨 {{cliente}} escribió', { contact: anon, timezone: MX }), '🚨 Un cliente escribió');
   assert.equal(renderTemplate('{{cliente}}', { contact: { ...anon, phone: '5215511112222' }, timezone: MX }), '+5215511112222');
 });
+
+test('ajustes: se rechazan zonas horarias inexistentes y franjas invertidas (romperían agenda, secuencias y campañas)', () => {
+  assert.equal(AccountSettingsSchema.safeParse({ timezone: 'Marte/Olympus' }).success, false);
+  assert.equal(AccountSettingsSchema.safeParse({ business_hours: { mon: [['18:00', '09:00']] } }).success, false);
+  assert.equal(AccountSettingsSchema.safeParse({ timezone: 'America/Bogota', business_hours: { mon: [['09:00', '14:00'], ['16:00', '19:00']] } }).success, true);
+  assert.equal(ServiceBodySchema.safeParse({ name: 'X', hours: { tue: [['20:00', '19:00']] } }).success, false);
+});

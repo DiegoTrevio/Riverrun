@@ -1920,7 +1920,9 @@ function hoursEditor(hours) {
     field(label, h('input', {
       type: 'text', value: toText(hours[d]), placeholder: 'Cerrado',
       oninput: (e) => {
-        hours[d] = e.target.value.split(',').map((x) => x.trim()).filter(Boolean).map((x) => x.split('-').map((y) => y.trim().padStart(5, '0')));
+        // Acepta "9-18", "9:30-14" o "09:00-18:00".
+        const hhmm = (y) => { const [hh, mm = '00'] = y.trim().replace('.', ':').split(':'); return `${hh.padStart(2, '0')}:${mm.padStart(2, '0')}`; };
+        hours[d] = e.target.value.split(',').map((x) => x.trim()).filter(Boolean).map((x) => x.split('-').map(hhmm));
       },
     }))));
 }

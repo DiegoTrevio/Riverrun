@@ -97,10 +97,12 @@ t('sin código todavía: no reinicia la vinculación en cada consulta ni recrea 
   assert.equal(evoCalls('/instance/delete/').length, 0, 'no se recrea mientras no lleve 45 s sin código');
   // Si mientras tanto llega el QR por webhook, se muestra de inmediato.
   await webhook({ event: 'qrcode.updated', data: { qrcode: { base64: 'data:image/png;base64,QRLATE' } } });
-  assert.equal((await session()).json().qr, 'data:image/png;base64,QRLATE');
+  // El webhook responde de inmediato y procesa después: se espera a que el QR quede guardado.
+  await waitFor(async () => (await session()).json().qr === 'data:image/png;base64,QRLATE');
 });
 
 t('instancia trabada (45 s sin código): se recrea sola una vez y entrega un QR', async () => {
+  evo.slowDeleteMs = 700; // como Evolution real, el nombre sigue ocupado un momento tras borrarla
   evo.stuck.add(C.instance);
   await ageQr(60);
   attempts.set(C.id, { connectAt: 0, recreateAt: 0, waitingSince: Date.now() - 60_000 });
@@ -109,7 +111,8 @@ t('instancia trabada (45 s sin código): se recrea sola una vez y entrega un QR'
   assert.equal(r.statusCode, 200, r.body);
   assert.equal(r.json().qr, 'data:image/png;base64,QR1', 'QR de la instancia recién creada');
   assert.equal(evoCalls('/instance/delete/').length, 1);
-  assert.equal(evoCalls('/instance/create').length, 1);
+  assert.ok(evoCalls('/instance/create').length >= 2, 'reintenta la creación mientras Evolution libera el nombre');
+  evo.slowDeleteMs = 0;
   const logs = (await pool.query(`SELECT message FROM event_logs WHERE channel_id = $1`, [C.id])).rows.map((x) => x.message);
   assert.ok(logs.some((m) => /no generó código; se recrea/.test(m)));
   // Y no vuelve a recrearse enseguida aunque siguiera sin código.

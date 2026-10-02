@@ -339,6 +339,14 @@ Públicas:
 
 Actualización desde la versión anterior: la migración `002` pasa automáticamente todo a una "Cuenta principal" y convierte el WhatsApp de cada chatbot en un canal, **conservando la URL del webhook** para que Evolution siga funcionando sin reconfigurar.
 
+## Operación y resiliencia
+
+- Si PostgreSQL se reinicia, el backend se reconecta solo (no hace falta reiniciarlo).
+- Si el backend se reinicia a mitad de una conversación, al arrancar retoma los mensajes sin responder de los últimos 15 minutos.
+- Si la IA no responde ni al reintentar, el equipo recibe el aviso "⚠️ Un cliente espera respuesta" con el enlace a la conversación.
+- Los webhooks salientes validan la IP de destino al conectar (bloquean la red interna, también ante DNS cambiante) y no siguen redirecciones.
+- Detalles de la última auditoría y una lista de verificación para el servidor: [AUDITORIA.md](AUDITORIA.md).
+
 ## Notas y límites de esta versión
 
 - La cola vive en memoria: pensada para un proceso en un VPS. Al reiniciar, retoma los mensajes sin responder de los últimos 15 minutos.

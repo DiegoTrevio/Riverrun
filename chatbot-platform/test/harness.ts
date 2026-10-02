@@ -15,6 +15,9 @@ export const evo = {
   stuck: new Set<string>(),
   owner: { jid: '5218111112222@s.whatsapp.net', name: 'Clínica Sonrisa' },
   down: false,
+  /** Como Evolution real: tras borrar una instancia, el nombre sigue ocupado unos instantes. */
+  slowDeleteMs: 0,
+  deleting: new Map<string, number>(),
 };
 const extServer = http.createServer((req, res) => {
   const chunks: Buffer[] = [];
@@ -38,7 +41,9 @@ const extServer = http.createServer((req, res) => {
         return i ? json(200, { instance: { instanceName: name, state: i.state } }) : json(404, { response: { message: ['not found'] } });
       }
       if (path === '/instance/create') {
-        if (evo.instances.has(body.instanceName)) return json(403, { response: { message: ['already in use'] } });
+        if (evo.instances.has(body.instanceName) || (evo.deleting.get(body.instanceName) ?? 0) > Date.now()) {
+          return json(403, { response: { message: [`This name "${body.instanceName}" is already in use.`] } });
+        }
         evo.instances.set(body.instanceName, { state: 'connecting', qrN: 1 });
         return json(201, { instance: { instanceName: body.instanceName }, qrcode: { base64: 'data:image/png;base64,QR1', pairingCode: body.number ? 'NEWC0DE1' : null } });
       }
@@ -55,7 +60,12 @@ const extServer = http.createServer((req, res) => {
         return json(200, i ? [{ name: url.searchParams.get('instanceName'), connectionStatus: i.state, ownerJid: evo.owner.jid, profileName: evo.owner.name }] : []);
       }
       if (path.startsWith('/instance/logout/')) { const i = evo.instances.get(name); if (i) i.state = 'close'; return json(200, { status: 'SUCCESS' }); }
-      if (path.startsWith('/instance/delete/')) { evo.instances.delete(name); evo.stuck.delete(name); return json(200, { status: 'SUCCESS' }); }
+      if (path.startsWith('/instance/delete/')) {
+        evo.instances.delete(name);
+        evo.stuck.delete(name);
+        if (evo.slowDeleteMs) evo.deleting.set(name, Date.now() + evo.slowDeleteMs);
+        return json(200, { status: 'SUCCESS' });
+      }
       if (path.startsWith('/webhook/set/')) return json(201, { webhook: body.webhook });
     }
     if (path.startsWith('/file/')) { res.writeHead(200, { 'content-type': 'audio/ogg' }); return res.end(Buffer.from('OggS-audio')); }

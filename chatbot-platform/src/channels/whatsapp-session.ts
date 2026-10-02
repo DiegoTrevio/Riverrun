@@ -83,8 +83,8 @@ export async function whatsappSession(ch: Channel, o: { mode: 'qr' | 'code'; num
 
     // Instancia nueva: se crea ya con su webhook y su primer QR (sin otro clic).
     if (state === 'not_found') {
-      const created = await evo.createInstance(instance, webhookUrl(ch), number || undefined);
-      await logEvent({ level: 'info', source: 'evolution', message: `Instancia creada: ${instance}`, accountId: ch.account_id, channelId: ch.id });
+      const created = await createOrWait(ch, number);
+      if (!created) return preparing(0); // otra pestaña la está creando en este momento
       const qr = created?.qrcode;
       if (o.mode === 'qr' && qr?.base64) {
         await store.saveQr(ch.id, dataUrl(qr.base64));
@@ -127,7 +127,8 @@ export async function whatsappSession(ch: Channel, o: { mode: 'qr' | 'code'; num
       await logEvent({ level: 'warn', source: 'evolution', message: `La instancia ${instance} no generó código; se recrea`, accountId: ch.account_id, channelId: ch.id });
       await evo.logout(instance).catch(() => undefined);
       await evo.deleteInstance(instance).catch(() => undefined);
-      const created = await evo.createInstance(instance, webhookUrl(ch), number || undefined);
+      const created = await createOrWait(ch, number);
+      if (!created) return preparing(0); // Evolution aún no libera el nombre: se reintenta en la siguiente consulta
       c = { base64: created?.qrcode?.base64, pairingCode: created?.qrcode?.pairingCode ?? undefined };
     }
     if (o.mode === 'code') {
@@ -145,6 +146,26 @@ export async function whatsappSession(ch: Channel, o: { mode: 'qr' | 'code'; num
   } catch (e) {
     return friendly(ch, e);
   }
+}
+
+/**
+ * Crea la instancia. Evolution tarda un momento en liberar el nombre después de borrarla (y dos pestañas
+ * pueden intentar crearla a la vez): si responde "ya está en uso", se espera brevemente; si sigue ocupado,
+ * devuelve null y el panel muestra "preparando" en vez de un error.
+ */
+async function createOrWait(ch: Channel, number: string) {
+  const evo = evolutionFor(ch);
+  for (let i = 0; i < 6; i++) {
+    try {
+      const created = await evo.createInstance(ch.config.instance, webhookUrl(ch), number || undefined);
+      await logEvent({ level: 'info', source: 'evolution', message: `Instancia creada: ${ch.config.instance}`, accountId: ch.account_id, channelId: ch.id });
+      return created;
+    } catch (e: any) {
+      if (e?.status !== 403 && e?.status !== 409) throw e;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  }
+  return null;
 }
 
 /** Conectado: se guarda el número y el nombre de la cuenta vinculada, y se borra el QR. */

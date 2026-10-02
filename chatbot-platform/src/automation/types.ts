@@ -7,9 +7,21 @@ export const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const;
 export type Day = (typeof DAYS)[number];
 
 /** Horario semanal: por día, lista de franjas [inicio, fin]. Día sin franjas = cerrado. */
+/** Franja de atención: la hora de cierre debe ser posterior a la de apertura (en el mismo día). */
+const Range = z.tuple([HHMM, HHMM]).refine(([a, b]) => a < b, 'La hora de cierre debe ser después de la de apertura (ej. 09:00-18:00)');
 export const WeeklyHoursSchema = z.object(
-  Object.fromEntries(DAYS.map((d) => [d, z.array(z.tuple([HHMM, HHMM])).default([])])) as Record<Day, z.ZodDefault<z.ZodArray<z.ZodTuple<[typeof HHMM, typeof HHMM]>>>>,
+  Object.fromEntries(DAYS.map((d) => [d, z.array(Range).default([])])) as Record<Day, z.ZodDefault<z.ZodArray<typeof Range>>>,
 );
+
+/** Zona horaria IANA que el sistema reconoce (p.ej. America/Mexico_City). */
+export const TimezoneSchema = z.string().refine((tz) => {
+  try {
+    new Intl.DateTimeFormat('es-MX', { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}, 'Zona horaria no válida (ej. America/Mexico_City)');
 export type WeeklyHours = z.infer<typeof WeeklyHoursSchema>;
 
 export const DEFAULT_HOURS: WeeklyHours = {
@@ -25,7 +37,7 @@ export const DEFAULT_HOURS: WeeklyHours = {
 /* ------------------------------ Configuración de la cuenta ------------------------------ */
 
 export const AccountSettingsSchema = z.object({
-  timezone: z.string().default('America/Mexico_City'),
+  timezone: TimezoneSchema.default('America/Mexico_City'),
   business_hours: WeeklyHoursSchema.default(DEFAULT_HOURS),
   /** Días cerrados (YYYY-MM-DD). */
   holidays: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).default([]),

@@ -79,18 +79,33 @@ const LENGTH_BUDGET: Record<string, number> = { muy_corta: 220, corta: 480, medi
 
 // Formas inequívocas de tuteo (verbos en 2ª persona y pronombres) y de "usted".
 // Límites de palabra con \p{L}: \b no reconoce letras acentuadas ("tú", "estás").
-const word = (alts: string) => new RegExp(`(?<![\\p{L}])(?:${alts})(?![\\p{L}])`, 'iu');
+const word = (alts: string) => new RegExp(`(?<![\\p{L}])(?:${alts})(?![\\p{L}])`, 'giu');
 const TU_RE = word(
   't[uú]|te|ti|contigo|tuy[oa]s?|tus|quieres|puedes|tienes|necesitas|prefieres|deseas|buscas|est[aá]s|eres|sabes|vienes|llegas|pagas|escr[ií]beme|av[ií]same|dime|cu[eé]ntame|conf[ií]rmame|mándame|mandame',
 );
 const USTED_RE = word('usted');
 
+/**
+ * ¿Es un nombre propio y no un pronombre? Palabras en mayúsculas ("TI") o con mayúscula a mitad de
+ * oración ("paquete Tus Uñas", "salón Te Consiento") son nombres de productos o negocios.
+ */
+function looksLikeName(text: string, index: number, token: string) {
+  if (token.length > 1 && token === token.toUpperCase()) return true;
+  if (token[0] !== token[0].toUpperCase()) return false;
+  const before = text.slice(0, index).replace(/[\s"“«(¿¡]+$/u, '');
+  return before.length > 0 && !/[.!?…:\n]$/.test(before);
+}
+
 /** Devuelve la palabra que rompe el trato configurado (o null). */
 export function registerMismatch(text: string, formality: 'tu' | 'usted'): string | null {
   // "té" (bebida) lleva acento y no coincide con "te"; las comillas pueden citar al cliente: se ignoran.
-  const clean = text.replace(/"[^"]*"|“[^”]*”/g, ' ');
-  const m = (formality === 'usted' ? TU_RE : USTED_RE).exec(clean);
-  return m ? m[0] : null;
+  const clean = text.replace(/"[^"]*"|“[^”]*”|«[^»]*»/g, (m) => ' '.repeat(m.length));
+  const re = formality === 'usted' ? TU_RE : USTED_RE;
+  re.lastIndex = 0;
+  for (let m = re.exec(clean); m; m = re.exec(clean)) {
+    if (!looksLikeName(clean, m.index, m[0])) return m[0];
+  }
+  return null;
 }
 
 export function parseDecision(raw: unknown): { decision: Decision | null; error?: string } {
