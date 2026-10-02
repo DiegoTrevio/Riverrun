@@ -7,6 +7,7 @@ import { config } from './config.js';
 import { query, queryOne } from './db.js';
 import { logEvent } from './logs.js';
 import { sendMail } from './mailer.js';
+import * as store from './store/index.js';
 import type { Account, Channel } from './types.js';
 
 const WARN_DAYS = 3;
@@ -102,6 +103,7 @@ export async function recordConnectionState(ch: Pick<Channel, 'id' | 'account_id
      UPDATE channels SET connection_state = $2, connection_state_at = now() WHERE id = $1 RETURNING (SELECT connection_state FROM old) AS prev`,
     [ch.id, state],
   );
+  if (state === 'open') await store.clearConnectionCodes(ch.id);
   if (!row || row.prev === state) return;
   if (state === 'open') {
     const acc = await queryOne<Account>(`SELECT * FROM accounts WHERE id = $1`, [ch.account_id]);
@@ -111,8 +113,8 @@ export async function recordConnectionState(ch: Pick<Channel, 'id' | 'account_id
     }
   } else if (state === 'close' && row.prev === 'open') {
     const admins = await query<{ id: string; email: string }>(`SELECT id, email FROM users WHERE account_id = $1 AND role = 'admin' AND active`, [ch.account_id]);
-    const body = `El canal "${ch.name}" se desconectó y el asistente no está recibiendo mensajes. Entra al panel → Canales → ${ch.name} → "Conectar / mostrar QR" y vuelve a escanear el código desde WhatsApp → Dispositivos vinculados.`;
-    await notifyUsers(ch.account_id, admins.map((a) => a.id), { title: 'Tu WhatsApp se desconectó', body, link: `#/channel/${ch.id}`, kind: 'channel' });
-    for (const a of admins) await sendMail({ to: a.email, subject: 'Tu WhatsApp se desconectó', text: `${body}\n\n${config.publicBaseUrl}` });
+    const body = `El canal "${ch.name}" se desconectó y el asistente no está recibiendo mensajes. Vuelve a vincularlo en un minuto desde el panel: escanea el código QR o usa "Con mi número".`;
+    await notifyUsers(ch.account_id, admins.map((a) => a.id), { title: 'Tu WhatsApp se desconectó', body, link: `#/channel/${ch.id}?conectar=1`, kind: 'channel' });
+    for (const a of admins) await sendMail({ to: a.email, subject: 'Tu WhatsApp se desconectó', text: `${body}\n\n${config.publicBaseUrl}/#/channel/${ch.id}?conectar=1` });
   }
 }

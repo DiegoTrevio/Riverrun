@@ -606,6 +606,25 @@ export async function setFlowState(conversationId: string, step: number, goal: b
   return !!row?.newly;
 }
 
+/* ------------------------------ Conexión de WhatsApp ------------------------------ */
+
+export async function saveQr(channelId: string, qr: string) {
+  await query(`UPDATE channels SET qr_code = $2, qr_at = now() WHERE id = $1`, [channelId, qr]);
+}
+
+export async function savePairingCode(channelId: string, code: string, number: string) {
+  await query(`UPDATE channels SET pairing_code = $2, pairing_number = $3, pairing_at = now() WHERE id = $1`, [channelId, code, number]);
+}
+
+/** Cambia el estado de conexión sin avisos (p.ej. al desconectar a propósito desde el panel). */
+export async function setConnectionStateQuiet(channelId: string, state: string) {
+  await query(`UPDATE channels SET connection_state = $2, connection_state_at = now() WHERE id = $1`, [channelId, state]);
+}
+
+export async function clearConnectionCodes(channelId: string) {
+  await query(`UPDATE channels SET qr_code = NULL, qr_at = NULL, pairing_code = NULL, pairing_number = NULL, pairing_at = NULL WHERE id = $1`, [channelId]);
+}
+
 /** Reinicia el recorrido (al reabrir una conversación cerrada, o desde el panel). */
 export async function resetFlowState(conversationId: string) {
   await query(`UPDATE conversations SET flow_step = 0, goal_completed_at = NULL WHERE id = $1`, [conversationId]);

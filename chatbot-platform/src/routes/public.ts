@@ -42,7 +42,8 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
     // Responder rápido a la plataforma y procesar en segundo plano.
     reply.send({ ok: true });
     try {
-      const { messages, notices, connection } = adapter.parse(webhookReq);
+      const { messages, notices, connection, qr } = adapter.parse(webhookReq);
+      if (qr) await store.saveQr(channel.id, qr);
       for (const n of notices ?? []) await logEvent({ level: n.level, source: 'channel', message: n.message, accountId: channel.account_id, channelId: channel.id });
       if (connection) await recordConnectionState(channel, connection);
       for (const m of messages) await service.handleIncoming(channel, m);

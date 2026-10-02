@@ -8,6 +8,14 @@ import http from 'node:http';
 /* ---------- APIs externas simuladas (Telegram Bot API y Meta Graph API) ---------- */
 export interface ExtRequest { method: string; path: string; query: URLSearchParams; headers: http.IncomingHttpHeaders; body: any; raw: string }
 export const ext = { requests: [] as ExtRequest[], fail: new Set<string>(), n: 0 };
+/** Evolution API simulada: instancias con su estado, QR numerados y códigos de vinculación. */
+export const evo = {
+  instances: new Map<string, { state: string; qrN: number }>(),
+  /** Instancias "trabadas": connect no devuelve QR. */
+  stuck: new Set<string>(),
+  owner: { jid: '5218111112222@s.whatsapp.net', name: 'Clínica Sonrisa' },
+  down: false,
+};
 const extServer = http.createServer((req, res) => {
   const chunks: Buffer[] = [];
   req.on('data', (c) => chunks.push(c));
@@ -22,6 +30,34 @@ const extServer = http.createServer((req, res) => {
     const method = path.split('/').pop()!;
     if ([...ext.fail].some((f) => path.includes(f))) return json(500, { ok: false, description: 'fallo simulado', error: { message: 'fallo simulado' } });
     if (path === '/hook') return json(200, { ok: true });
+    if (path.startsWith('/instance/') || path.startsWith('/webhook/set/')) {
+      if (evo.down) return json(503, { message: 'Service Unavailable' });
+      const name = decodeURIComponent(path.split('/').pop()!);
+      if (path.startsWith('/instance/connectionState/')) {
+        const i = evo.instances.get(name);
+        return i ? json(200, { instance: { instanceName: name, state: i.state } }) : json(404, { response: { message: ['not found'] } });
+      }
+      if (path === '/instance/create') {
+        if (evo.instances.has(body.instanceName)) return json(403, { response: { message: ['already in use'] } });
+        evo.instances.set(body.instanceName, { state: 'connecting', qrN: 1 });
+        return json(201, { instance: { instanceName: body.instanceName }, qrcode: { base64: 'data:image/png;base64,QR1', pairingCode: body.number ? 'NEWC0DE1' : null } });
+      }
+      if (path.startsWith('/instance/connect/')) {
+        const i = evo.instances.get(name);
+        if (!i) return json(404, { response: { message: ['not found'] } });
+        if (evo.stuck.has(name)) return json(200, { count: 0 });
+        i.qrN++;
+        const number = url.searchParams.get('number');
+        return json(200, { base64: `data:image/png;base64,QR${i.qrN}`, code: `2@${i.qrN}`, pairingCode: number ? `PAIR${String(i.qrN).padStart(4, '0')}` : null });
+      }
+      if (path.startsWith('/instance/fetchInstances')) {
+        const i = evo.instances.get(url.searchParams.get('instanceName') ?? '');
+        return json(200, i ? [{ name: url.searchParams.get('instanceName'), connectionStatus: i.state, ownerJid: evo.owner.jid, profileName: evo.owner.name }] : []);
+      }
+      if (path.startsWith('/instance/logout/')) { const i = evo.instances.get(name); if (i) i.state = 'close'; return json(200, { status: 'SUCCESS' }); }
+      if (path.startsWith('/instance/delete/')) { evo.instances.delete(name); evo.stuck.delete(name); return json(200, { status: 'SUCCESS' }); }
+      if (path.startsWith('/webhook/set/')) return json(201, { webhook: body.webhook });
+    }
     if (path.startsWith('/file/')) { res.writeHead(200, { 'content-type': 'audio/ogg' }); return res.end(Buffer.from('OggS-audio')); }
     if (path.startsWith('/bot')) {
       if (method === 'getMe') return json(200, { ok: true, result: { id: 1, username: 'palmas_bot' } });
@@ -41,6 +77,8 @@ extServer.unref();
 const extUrl = `http://127.0.0.1:${(extServer.address() as any).port}`;
 process.env.TELEGRAM_API_URL = extUrl;
 process.env.META_GRAPH_URL = extUrl;
+process.env.EVOLUTION_URL = extUrl;
+process.env.EVOLUTION_API_KEY = 'llave-global-de-pruebas';
 process.env.PUBLIC_BASE_URL = 'https://bot.test';
 process.env.WEBHOOK_BASE_URL = 'http://backend:3000';
 process.env.ALLOW_PRIVATE_WEBHOOKS = 'true';

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { botFor, channelFor, HttpError, requireRole, scopeAccount, targetAccount } from '../access.js';
 import { adapterFor, mergeChannelConfig, publicChannel, webhookUrl } from '../channels/index.js';
 import { evolutionFor, newInstanceName, releaseWhatsapp } from '../channels/whatsapp.js';
+import { SessionError, whatsappSession } from '../channels/whatsapp-session.js';
 import { recordConnectionState } from '../lifecycle.js';
 import { logEvent } from '../logs.js';
 import * as store from '../store/index.js';
@@ -25,7 +26,7 @@ async function checkBot(user: User, accountId: string, chatbotId: string | null 
 }
 
 /** Campos de infraestructura de WhatsApp: solo el superadmin los define (el cliente no elige servidor, llave ni instancia). */
-const INFRA_FIELDS = ['url', 'api_key', 'instance'];
+const INFRA_FIELDS = ['url', 'api_key', 'instance', 'profile_name'];
 
 function clientConfig(user: User, type: string, cfg: Record<string, unknown> | undefined) {
   if (!cfg || type !== 'whatsapp' || user.role === 'superadmin') return cfg;
@@ -179,11 +180,29 @@ export async function channelRoutes(api: FastifyInstance) {
     }
   });
 
+  /**
+   * Sesión de conexión (el panel la consulta cada pocos segundos): crea la instancia si hace falta y
+   * devuelve un QR vigente o el código para vincular con número; al conectar, el número vinculado.
+   */
+  api.post('/api/channels/:id/whatsapp/session', admins, async (req: any) => {
+    assertVerified(req.user);
+    const ch = await whatsapp(req.user, req.params.id);
+    const b = parse(z.object({ mode: z.enum(['qr', 'code']).default('qr'), number: z.string().max(30).optional(), refresh: z.boolean().default(false) }), req.body ?? {});
+    try {
+      return await whatsappSession(ch, b);
+    } catch (e: any) {
+      if (e instanceof SessionError) throw new HttpError(400, e.message);
+      throw e;
+    }
+  });
+
   api.post('/api/channels/:id/whatsapp/logout', admins, async (req: any) => {
     const ch = await whatsapp(req.user, req.params.id);
     await evolutionFor(ch).logout(ch.config.instance).catch((e) => {
       throw new HttpError(400, e?.message ?? String(e));
     });
+    await store.clearConnectionCodes(ch.id);
+    await store.setConnectionStateQuiet(ch.id, 'close'); // desconexión a propósito: sin alerta
     return { ok: true };
   });
 

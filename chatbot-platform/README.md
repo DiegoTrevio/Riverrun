@@ -70,8 +70,8 @@ Internet ──HTTPS──> Caddy (app.tudominio.com)
    2. *Tu asistente*: nombre, trato (tú/usted) y su información: productos/servicios con precios, horarios, ubicación, preguntas frecuentes. Se crea el chatbot con la **plantilla de su giro** (restaurante, salud, hotel, tienda, servicios, belleza u otro): personalidad, flujo, datos que pide y reglas (p.ej. "nunca des diagnósticos" en salud). Todo se puede afinar después en la configuración avanzada.
    3. *Fotos* (opcional): catálogo de imágenes.
    4. *Pruébalo*: el simulador.
-   5. *WhatsApp*: **Generar código** → escanea desde *Dispositivos vinculados* → listo. El panel detecta la conexión solo.
-4. **Si su WhatsApp se desconecta** (teléfono sin internet, sesión cerrada) se le avisa en el panel y por correo para que vuelva a escanear.
+   5. *WhatsApp*: el código aparece solo (QR en computadora, "Con mi número" en celular) → se vincula desde *Dispositivos vinculados* → el panel detecta la conexión, muestra el número vinculado y avanza solo.
+4. **Si su WhatsApp se desconecta** (teléfono sin internet, sesión cerrada) se le avisa en el panel y por correo con un enlace que abre directo el código para volver a vincularlo.
 5. **Fin de la prueba**: 3 días antes se avisa a la empresa y a ti; al vencer la cuenta queda **en pausa**: puede entrar al panel, pero el bot no responde ni salen mensajes. Tú, en **Cuentas**, pulsas **Activar plan** (o **Extender prueba**). El cobro todavía es manual: `SUPPORT_CONTACT` es lo que ven para contratar.
 
 **WhatsApp por empresa, aislado.** Todas las empresas comparten tu servidor de Evolution, pero cada canal tiene su propia instancia (su sesión de WhatsApp, su QR, su webhook secreto). El nombre de la instancia lo genera el servidor y el cliente **no puede** cambiarlo, ni apuntar su canal a otro servidor de Evolution, ni ver tu `EVOLUTION_API_KEY`. Solo el superadministrador puede asignar a un canal otro servidor de Evolution (útil para repartir clientes grandes) y, en ese caso, debe darle su propia llave: la llave global nunca se envía a otra URL. Al borrar un canal o una cuenta, su instancia se cierra y se elimina de Evolution.
@@ -136,7 +136,7 @@ Para ver un ejemplo completo: `npm run seed:demo` (o `docker compose exec backen
 
 | Plataforma | Qué necesitas | Cómo se conecta |
 |---|---|---|
-| **WhatsApp** | Un teléfono con WhatsApp | Crea el canal y pulsa **Conectar / mostrar QR**: el nombre de la instancia se genera solo, se crea en Evolution, se configura el webhook y escaneas el QR desde *Dispositivos vinculados*. |
+| **WhatsApp** | Un teléfono con WhatsApp (normal o Business) | Al abrir el canal (o el paso 5 de Primeros pasos) el código **aparece solo** y se renueva solo, con cuenta regresiva: **Escanear código QR** desde la computadora, o **Con mi número** (predeterminado en celular): escribe tu número, recibes un código de 8 letras y en WhatsApp → Dispositivos vinculados → *Vincular con el número de teléfono* lo tecleas. El panel detecta la conexión y muestra "Conectado como …". Si la instancia de Evolution se traba, se recrea sola. |
 | **Telegram** | Un bot creado con **@BotFather** | Pega el token, guarda y pulsa **Conectar con Telegram**: se valida el token y se registra el webhook con un secreto (los mensajes sin ese secreto se rechazan). Solo chats privados. |
 | **Messenger** | Una app en Meta for Developers con el producto Messenger y una página de Facebook | Pega el token de la página y la clave secreta de la app. En la app de Meta configura el webhook con la **URL** y el **token de verificación** que muestra el panel, suscrito a `messages`, `messaging_postbacks` y `message_echoes`. Pulsa **Verificar y suscribir la página**. |
 | **Instagram** | Cuenta profesional de Instagram vinculada a la página, en la misma app de Meta | Igual que Messenger, en la sección Instagram de la app. |
@@ -321,7 +321,7 @@ Panel (bajo `/api`, con sesión por cookie; todo se limita a la cuenta del usuar
 - Cuentas: `/api/accounts`
 - Usuarios: `/api/users`
 - Chatbots: `/api/chatbots`, `/:id/duplicate`, `/:id/knowledge`, `/:id/images`, `/:id/playground`
-- Canales: `/api/channels`, `/:id/setup`, `/:id/status`, `/:id/rotate-token`, `/:id/whatsapp/{connect,logout,test}`
+- Canales: `/api/channels`, `/:id/setup`, `/:id/status`, `/:id/rotate-token`, `/:id/whatsapp/{session,connect,logout,test}` (`session`: crea la instancia si hace falta y devuelve el QR vigente o el código por número; el panel la consulta cada 3 s)
 - Conversaciones: `/api/conversations`, `/:id/{takeover,release,close,send,reset-memory,automation,sequences}`
 - Automatización: `/api/automations`, `/api/sequences`, `/api/campaigns` (`/:id/{preview,launch,cancel,recipients}`), `/api/settings`
 - Agenda: `/api/services` (`/:id/slots`), `/api/appointments` (`/:id/cancel`), `/api/agenda/info`

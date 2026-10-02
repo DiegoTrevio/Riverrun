@@ -1208,7 +1208,7 @@ function channelConfigFields(ch, cfg) {
   switch (ch.type) {
     case 'whatsapp':
       if (!isSuper()) {
-        return [field('Número de WhatsApp', text(cfg, 'number', { placeholder: '5215512345678' }), 'Con lada de país; opcional, como referencia. Conecta tu WhatsApp con el código QR de abajo.')];
+        return [field('Número de WhatsApp', text(cfg, 'number', { placeholder: 'Se llena solo al conectar' }), 'Se guarda automáticamente con el número que vincules.')];
       }
       return [
         field('Instancia de Evolution', text(cfg, 'instance', { placeholder: 'Se genera sola' }), 'Nombre único (letras, números, guion y guion bajo). Se genera al crear el canal y se crea en Evolution al conectar.'),
@@ -1282,28 +1282,28 @@ async function viewChannel(root, id) {
 
   const connection = [];
   if (ch.type === 'whatsapp') {
-    const qrBox = h('div');
-    const test = { number: '', text: 'Mensaje de prueba ✅' };
-    const connect = async () => {
-      const r = await run(() => api('POST', `/api/channels/${id}/whatsapp/connect`));
-      if (!r) return;
-      if (r.state === 'open') { fill(qrBox, h('p', {}, '✅ Ya está conectado. Webhook actualizado.')); return refresh(); }
-      const src = r.qr ? (r.qr.startsWith('data:') ? r.qr : `data:image/png;base64,${r.qr}`) : null;
-      fill(qrBox,
-        h('p', {}, 'Abre WhatsApp en el teléfono → Dispositivos vinculados → Vincular dispositivo, y escanea:'),
-        src ? h('img', { class: 'qr', src }) : h('p', { class: 'muted' }, 'Evolution no devolvió QR; vuelve a intentar.'),
-        r.pairingCode ? h('p', {}, 'Código de vinculación: ', h('code', {}, r.pairingCode)) : null);
-      refresh();
-    };
+    const test = { number: state.me.user.phone || '', text: 'Mensaje de prueba ✅' };
+    const box = h('div');
+    const setStatus = (s) => { const [cls, label] = STATE_LABEL[s] || ['', s]; status.textContent = label; status.className = `badge ${cls}`; };
+    const showConnector = () => fill(box, whatsappConnector(id, { onState: setStatus, onConnected: () => setTimeout(() => render(), 2500) }));
+    if (ch.connection_state === 'open') {
+      fill(box,
+        h('p', {}, h('span', { class: 'badge green' }, '✓ Conectado'), ' ',
+          ch.config.profile_name ? h('strong', {}, ch.config.profile_name) : null, ch.config.number ? ` · +${ch.config.number}` : ''),
+        h('div', { class: 'row' },
+          h('button', { onclick: async () => { if (confirm('¿Vincular otro número? Se desconecta el actual.')) { await run(() => api('POST', `/api/channels/${id}/whatsapp/logout`)); showConnector(); } } }, 'Cambiar de número'),
+          h('button', { class: 'danger', onclick: async () => { if (confirm('¿Desconectar este WhatsApp? El asistente dejará de responder por aquí.')) { await run(() => api('POST', `/api/channels/${id}/whatsapp/logout`), 'Desconectado'); render(); } } }, 'Desconectar')));
+    } else {
+      showConnector();
+    }
     connection.push(
-      h('div', { class: 'row' },
-        h('button', { class: 'primary', onclick: connect }, 'Conectar / mostrar QR'),
-        h('button', { onclick: setup }, 'Reconfigurar webhook'),
-        h('button', { class: 'danger', onclick: async () => { if (confirm('¿Desvincular este WhatsApp?')) { await run(() => api('POST', `/api/channels/${id}/whatsapp/logout`), 'Desconectado'); refresh(); } } }, 'Desconectar')),
-      qrBox,
-      h('h3', {}, 'Mensaje de prueba'),
-      h('div', { class: 'grid' }, field('Número (con lada)', text(test, 'number', { placeholder: '5215512345678' })), field('Texto', text(test, 'text'))),
-      h('button', { onclick: () => run(() => api('POST', `/api/channels/${id}/whatsapp/test`, test), 'Enviado') }, 'Enviar'),
+      box,
+      h('details', { style: 'margin-top:12px' }, h('summary', {}, 'Enviar un mensaje de prueba'),
+        h('div', { class: 'grid', style: 'margin-top:10px' }, field('Número (con lada)', text(test, 'number', { placeholder: '5215512345678' })), field('Texto', text(test, 'text'))),
+        h('button', { onclick: () => run(() => api('POST', `/api/channels/${id}/whatsapp/test`, test), 'Enviado') }, 'Enviar')),
+      h('details', {}, h('summary', {}, 'Opciones avanzadas'),
+        h('p', { class: 'small muted' }, 'Si los mensajes no llegan aunque esté conectado, vuelve a registrar el webhook.'),
+        h('button', { class: 'small', onclick: setup }, 'Reconfigurar webhook')),
     );
   } else if (ch.type === 'telegram') {
     connection.push(
@@ -1334,13 +1334,14 @@ async function viewChannel(root, id) {
       h('h1', {}, channelIcon(ch.type), ' ', ch.name, ' ', h('span', { class: `badge ${ch.active ? 'green' : ''}` }, ch.active ? 'Activo' : 'Inactivo')),
       h('a', { href: `#/conversations?channel_id=${ch.id}` }, 'Ver conversaciones →')),
     h('p', { class: 'muted' }, ch.label, isSuper() ? ` · ${accountName(ch.account_id)}` : ''),
+    ch.type === 'whatsapp' ? h('div', { class: 'card' }, h('div', { class: 'row between' }, h('h3', { style: 'margin:0' }, 'Conexión'), h('span', {}, 'Estado: ', status)), connection, result) : '',
     h('div', { class: 'card' },
       h('h3', { style: 'margin-top:0' }, 'General'),
       field('Nombre', text(m, 'name')),
       field('Chatbot que responde', select(m, 'chatbot_id', [['', '— Sin chatbot (solo guarda mensajes) —'], ...accountBots.map((b) => [b.id, b.name])])),
       check(m, 'active', 'Activo (si se desactiva, los mensajes se guardan pero no se responden)')),
     h('div', { class: 'card' }, h('h3', { style: 'margin-top:0' }, 'Configuración'), channelConfigFields(ch, cfg)),
-    h('div', { class: 'card' },
+    ch.type === 'whatsapp' ? '' : h('div', { class: 'card' },
       h('div', { class: 'row between' }, h('h3', { style: 'margin:0' }, 'Conexión'), h('span', {}, 'Estado: ', status)),
       ch.type !== 'webchat' ? h('p', { class: 'muted small' }, 'Guarda los cambios de configuración antes de conectar.') : null,
       connection,
@@ -1356,7 +1357,8 @@ async function viewChannel(root, id) {
         }
       } }, 'Eliminar canal'))),
   );
-  refresh();
+  if (ch.type !== 'whatsapp' || ch.connection_state === 'open') refresh();
+  else status.textContent = 'preparando…';
 }
 
 /* ------------------------------ Usuarios ------------------------------ */
@@ -2246,47 +2248,16 @@ function onbWhatsapp(box, ob, bot) {
         h('button', { onclick: () => run(() => api('POST', '/api/me/resend-verification'), 'Te enviamos un nuevo enlace') }, 'Reenviar correo'),
         h('button', { onclick: () => { state.me = null; render(); } }, 'Ya lo confirmé'))));
   }
-  const status = h('div');
-  const qrBox = h('div');
-  let channelId = ob.whatsapp_channel_id;
-  const showState = (st) => fill(status,
-    st === 'open' ? h('div', { class: 'banner ok' }, '✅ WhatsApp conectado. Tu asistente ya responde a tus clientes.')
-      : st === 'connecting' ? h('p', { class: 'muted' }, 'Esperando a que escanees el código…')
-      : null);
-  const poll = () => {
-    clearTimers();
-    state.timers.push(setInterval(async () => {
-      if (!channelId) return;
-      const st = await api('GET', `/api/channels/${channelId}/status`).catch(() => null);
-      if (st?.state === 'open') { clearTimers(); fill(qrBox); showState('open'); state.me = null; setTimeout(() => { location.hash = '#/inicio'; render(); }, 1500); }
-    }, 3000));
-  };
-  const connect = async () => {
-    const ch = await run(() => api('POST', withAcct('/api/onboarding/whatsapp')));
-    if (!ch) return;
-    channelId = ch.id;
-    fill(qrBox, h('p', { class: 'muted' }, 'Generando código…'));
-    const r = await run(() => api('POST', `/api/channels/${ch.id}/whatsapp/connect`));
-    if (!r) return fill(qrBox);
-    if (r.state === 'open') { fill(qrBox); showState('open'); state.me = null; return; }
-    const src = r.qr ? (r.qr.startsWith('data:') ? r.qr : `data:image/png;base64,${r.qr}`) : null;
-    fill(qrBox,
-      src ? h('img', { class: 'qr', src, alt: 'Código QR de WhatsApp' }) : h('p', { class: 'muted' }, 'No se generó el código; presiona de nuevo.'),
-      r.pairingCode ? h('p', {}, 'O vincula con el código: ', h('code', {}, r.pairingCode)) : null,
-      h('p', { class: 'small muted' }, 'El código cambia cada ~40 segundos. Si vence, presiona "Generar código" otra vez.'));
-    showState('connecting');
-    poll();
-  };
+  const area = h('div', {}, h('p', { class: 'muted' }, 'Preparando tu conexión…'));
   box.append(h('div', { class: 'card' },
     h('h3', { style: 'margin-top:0' }, 'Conecta el WhatsApp de tu negocio'),
-    h('ol', {},
-      h('li', {}, 'Ten a la mano el teléfono con el WhatsApp del negocio (puede ser WhatsApp Business).'),
-      h('li', {}, 'Presiona "Generar código".'),
-      h('li', {}, 'En el teléfono abre WhatsApp → Configuración → ', h('strong', {}, 'Dispositivos vinculados'), ' → Vincular un dispositivo, y escanea el código.'),
-      h('li', {}, 'Listo: los mensajes que lleguen los contesta ', bot.personality?.assistant_name || 'tu asistente', '. Tú puedes seguir usando WhatsApp en el teléfono; si contestas tú, el asistente se pausa en esa conversación.')),
-    h('p', { class: 'small muted' }, 'Mantén el teléfono con internet. Si se desconecta, te avisamos por correo y en el panel para que vuelvas a escanear.'),
-    h('button', { class: 'primary', onclick: connect }, 'Generar código'),
-    status, qrBox));
+    h('p', { class: 'muted' }, 'Puede ser WhatsApp normal o WhatsApp Business. Sigues usando WhatsApp en tu teléfono como siempre; si contestas tú, ',
+      bot.personality?.assistant_name || 'tu asistente', ' se pausa en esa conversación.'),
+    area));
+  // El canal se crea solo al entrar al paso; el código aparece sin más clics.
+  api('POST', withAcct('/api/onboarding/whatsapp'))
+    .then((ch) => fill(area, whatsappConnector(ch.id, { onConnected: () => { state.me = null; setTimeout(() => { location.hash = '#/inicio'; render(); }, 2500); } })))
+    .catch((e) => fill(area, h('p', { class: 'banner danger' }, e.message), h('button', { onclick: () => render() }, 'Reintentar')));
 }
 
 function onbDone(box, ob) {
@@ -2362,4 +2333,149 @@ function statusBadge(a) {
     return h('span', { class: `badge ${days !== null && days <= 3 ? 'orange' : ''}` }, days === null ? 'prueba' : `prueba · ${Math.max(0, days)} d`);
   }
   return h('span', { class: 'badge green' }, a.plan ? `activa · ${a.plan}` : 'activa');
+}
+
+/* ------------------------------ Conectar WhatsApp (QR o código por número) ------------------------------ */
+
+const isPhoneDevice = () => {
+  try { return matchMedia('(pointer: coarse)').matches && Math.min(screen.width, screen.height) < 820; } catch { return window.innerWidth < 700; }
+};
+
+/**
+ * Conector de WhatsApp: se pone en marcha solo, muestra un QR que se renueva solo (con cuenta regresiva)
+ * o un código para "Vincular con número de teléfono" (lo más fácil si el panel está abierto en el mismo celular).
+ */
+function whatsappConnector(channelId, { onConnected, onState } = {}) {
+  const st = {
+    mode: isPhoneDevice() ? 'code' : 'qr',
+    os: /iPhone|iPad|iPod/i.test(navigator.userAgent) ? 'ios' : 'android',
+    number: (state.me?.user?.phone || '').replace(/\D/g, ''),
+    expiresAt: 0,
+    ttl: 30,
+    codeRequested: false,
+    done: false,
+    error: '',
+    data: null,
+  };
+  const root = h('div', { class: 'wa-connect' });
+  const tabs = h('div', { class: 'wa-tabs' });
+  const main = h('div', { class: 'wa-main' });
+  const steps = h('div', { class: 'wa-steps' });
+  root.append(tabs, main, steps);
+  let poller = null;
+  let ticker = null;
+  let inflight = false;
+
+  const stop = () => { clearInterval(poller); clearInterval(ticker); poller = ticker = null; };
+  const start = () => {
+    stop();
+    poller = setInterval(() => { if (!document.body.contains(root)) return stop(); poll(); }, 3000);
+    ticker = setInterval(() => { if (!document.body.contains(root)) return stop(); drawCountdown(); }, 1000);
+    state.timers.push(poller, ticker);
+  };
+
+  async function poll(refresh = false) {
+    if (st.done || inflight) return;
+    if (st.mode === 'code' && !st.codeRequested) return;
+    inflight = true;
+    try {
+      const body = { mode: st.mode, refresh, ...(st.mode === 'code' ? { number: st.number } : {}) };
+      const r = await api('POST', `/api/channels/${channelId}/whatsapp/session`, body);
+      st.error = '';
+      st.data = r;
+      st.ttl = st.mode === 'qr' ? 30 : 120;
+      st.expiresAt = Date.now() + (r.expires_in || 0) * 1000;
+      onState?.(r.state);
+      if (r.state === 'open') { st.done = true; stop(); onConnected?.(r); }
+    } catch (e) {
+      st.error = e.message;
+      if (st.mode === 'code') st.codeRequested = false;
+    } finally {
+      inflight = false;
+      draw();
+    }
+  }
+
+  function drawCountdown() {
+    const ring = root.querySelector('.wa-ring');
+    if (!ring || !st.expiresAt) return;
+    const left = Math.max(0, Math.round((st.expiresAt - Date.now()) / 1000));
+    ring.style.setProperty('--p', String(Math.round((left / st.ttl) * 100)));
+    ring.querySelector('span').textContent = left ? `${left}s` : '…';
+    if (!left && document.body.contains(root)) poll(); // venció: se pide el siguiente
+  }
+
+  function drawTabs() {
+    const tab = (mode, label, sub) => h('button', {
+      class: `wa-tab ${st.mode === mode ? 'active' : ''}`,
+      onclick: () => { if (st.mode === mode) return; st.mode = mode; st.data = null; st.error = ''; st.expiresAt = 0; draw(); if (mode === 'qr') poll(); },
+    }, h('strong', {}, label), h('small', {}, sub));
+    fill(tabs, tab('qr', '📷 Escanear código QR', 'Si abriste esto en la computadora'), tab('code', '🔢 Con mi número', 'Si estás en el mismo celular'));
+  }
+
+  function drawSteps() {
+    const path = st.os === 'ios' ? ['Abre WhatsApp', 'Configuración', 'Dispositivos vinculados', 'Vincular un dispositivo'] : ['Abre WhatsApp', '⋮ (arriba a la derecha)', 'Dispositivos vinculados', 'Vincular un dispositivo'];
+    const last = st.mode === 'qr' ? 'Apunta la cámara a este código' : 'Toca "Vincular con el número de teléfono" y escribe el código';
+    fill(steps,
+      h('div', { class: 'row', style: 'gap:6px;margin-bottom:6px' }, h('span', { class: 'small muted' }, 'Tu teléfono:'),
+        ['android', 'ios'].map((os) => h('button', { class: `small ${st.os === os ? 'primary' : ''}`, onclick: () => { st.os = os; drawSteps(); } }, os === 'ios' ? 'iPhone' : 'Android'))),
+      h('ol', {}, [...path, last].map((x) => h('li', {}, x))));
+  }
+
+  function draw() {
+    if (st.done) {
+      const p = st.data?.profile;
+      fill(tabs);
+      fill(steps);
+      return fill(main,
+        h('div', { class: 'wa-done' }, h('div', { class: 'wa-check' }, '✓'),
+          h('h3', {}, '¡WhatsApp conectado!'),
+          p?.number ? h('p', {}, 'Conectado como ', h('strong', {}, p.name || 'tu cuenta'), ` · +${p.number}`) : null,
+          st.data?.warning ? h('p', { class: 'banner warn' }, st.data.warning) : null,
+          h('p', { class: 'small muted' }, 'Desde ahora tu asistente responde los mensajes que lleguen a este número.')));
+    }
+    drawTabs();
+    drawSteps();
+    const err = st.error ? h('div', { class: 'banner danger' }, st.error, ' ', h('button', { class: 'small', onclick: () => { st.error = ''; draw(); poll(true); } }, 'Reintentar')) : null;
+    if (st.mode === 'qr') {
+      const qr = st.data?.qr;
+      fill(main, err,
+        qr ? h('div', { class: 'wa-qr' }, h('img', { class: 'qr', src: qr, alt: 'Código QR para vincular WhatsApp' }),
+              h('div', { class: 'wa-ring', title: 'El código se renueva solo' }, h('span', {}, ''))) 
+           : h('div', { class: 'wa-qr wa-loading' }, h('div', { class: 'spinner' }), h('p', { class: 'muted' }, 'Generando tu código…')),
+        qr ? h('p', { class: 'small muted', style: 'text-align:center' }, 'El código se renueva solo; no tienes que hacer nada más que escanearlo.') : null);
+      return void drawCountdown();
+    }
+    // Modo número
+    const code = st.data?.pairingCode;
+    const getCode = async (refresh = false) => {
+      st.number = st.number.replace(/\D/g, '');
+      if (st.number.length < 10) { st.error = 'Escribe tu número de WhatsApp con lada (10 dígitos en México).'; return draw(); }
+      st.codeRequested = true;
+      st.data = null;
+      draw();
+      await poll(refresh);
+    };
+    const input = h('input', { type: 'tel', inputmode: 'numeric', autocomplete: 'tel', value: st.number, placeholder: '81 1234 5678', oninput: (e) => (st.number = e.target.value) });
+    fill(main, err,
+      code
+        ? h('div', { class: 'wa-code-box' },
+            h('p', { class: 'small muted' }, `Tu código para +${st.number.length === 10 ? `52${st.number}` : st.number}:`),
+            h('div', { class: 'wa-code' }, code.length === 8 ? `${code.slice(0, 4)}-${code.slice(4)}` : code),
+            h('div', { class: 'row', style: 'justify-content:center' },
+              h('button', { class: 'small', onclick: async () => { try { await navigator.clipboard.writeText(code); toast('Código copiado'); } catch { toast('Cópialo a mano', true); } } }, 'Copiar código'),
+              h('button', { class: 'small', onclick: () => getCode(true) }, 'Pedir otro'),
+              h('button', { class: 'small', onclick: () => { st.codeRequested = false; st.data = null; draw(); } }, 'Cambiar número')),
+            h('p', { class: 'small muted' }, 'Esperando a que escribas el código en WhatsApp… esta pantalla avanza sola.'))
+        : st.codeRequested
+          ? h('div', { class: 'wa-qr wa-loading' }, h('div', { class: 'spinner' }), h('p', { class: 'muted' }, 'Pidiendo tu código…'))
+          : h('div', { class: 'wa-code-box' },
+              field('Tu número de WhatsApp', input, 'El número del teléfono donde está el WhatsApp del negocio, con lada (México: 10 dígitos).'),
+              h('button', { class: 'primary', onclick: () => getCode() }, 'Obtener código')));
+  }
+
+  draw();
+  poll();
+  start();
+  return root;
 }

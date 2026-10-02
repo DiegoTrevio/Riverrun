@@ -1,4 +1,7 @@
 
+/** Eventos que Evolution envía al backend: mensajes, estado de conexión y QR nuevos. */
+const WEBHOOK_EVENTS = ['MESSAGES_UPSERT', 'CONNECTION_UPDATE', 'QRCODE_UPDATED'];
+
 export class EvolutionError extends Error {
   constructor(message: string, public status?: number, public body?: unknown) {
     super(message);
@@ -86,19 +89,34 @@ export class EvolutionClient {
       qrcode: true,
       integration: 'WHATSAPP-BAILEYS',
       number: number || undefined,
-      webhook: { url: webhookUrl, byEvents: false, base64: false, events: ['MESSAGES_UPSERT', 'CONNECTION_UPDATE'] },
+      webhook: { url: webhookUrl, byEvents: false, base64: false, events: WEBHOOK_EVENTS },
     }, 0);
   }
 
   async setWebhook(instance: string, webhookUrl: string) {
     return this.request('POST', `/webhook/set/${encodeURIComponent(instance)}`, {
-      webhook: { enabled: true, url: webhookUrl, byEvents: false, base64: false, events: ['MESSAGES_UPSERT', 'CONNECTION_UPDATE'] },
+      webhook: { enabled: true, url: webhookUrl, byEvents: false, base64: false, events: WEBHOOK_EVENTS },
     });
   }
 
-  async connect(instance: string): Promise<{ base64?: string; code?: string; pairingCode?: string; state?: string }> {
-    const res = await this.request('GET', `/instance/connect/${encodeURIComponent(instance)}`);
-    return { base64: res?.base64, code: res?.code, pairingCode: res?.pairingCode, state: res?.instance?.state };
+  /**
+   * Inicia (o reinicia) la vinculación. Devuelve un QR nuevo; con `number`, además un código de
+   * vinculación para "Vincular con número de teléfono" (útil si el panel se abre en el mismo celular).
+   */
+  async connect(instance: string, number?: string): Promise<{ base64?: string; code?: string; pairingCode?: string; state?: string }> {
+    const qs = number ? `?number=${encodeURIComponent(number)}` : '';
+    const res = await this.request('GET', `/instance/connect/${encodeURIComponent(instance)}${qs}`, undefined, 0);
+    return { base64: res?.base64, code: res?.code, pairingCode: res?.pairingCode ?? undefined, state: res?.instance?.state };
+  }
+
+  /** Número y nombre de perfil de la cuenta de WhatsApp vinculada. */
+  async fetchInstance(instance: string): Promise<{ number: string; profileName: string } | null> {
+    const res = await this.request('GET', `/instance/fetchInstances?instanceName=${encodeURIComponent(instance)}`, undefined, 0);
+    const it = Array.isArray(res) ? res[0] : res;
+    const data = it?.instance ?? it;
+    const jid = String(data?.ownerJid ?? data?.owner ?? '');
+    if (!data) return null;
+    return { number: jid.split('@')[0].split(':')[0].replace(/\D/g, ''), profileName: String(data?.profileName ?? '') };
   }
 
   async connectionState(instance: string): Promise<string> {

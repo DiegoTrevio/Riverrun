@@ -84,6 +84,10 @@ export const whatsappAdapter: ChannelAdapter = {
       notices.push({ level: 'warn', message: `Webhook de la instancia "${instance}" no coincide con la del canal ("${expected}"); se ignora` });
       return { messages: [], notices };
     }
+    if (event === 'qrcode.updated') {
+      const b64 = body?.data?.qrcode?.base64 ?? body?.data?.base64;
+      return { messages: [], qr: typeof b64 === 'string' && b64 ? (b64.startsWith('data:') ? b64 : `data:image/png;base64,${b64}`) : undefined };
+    }
     let connection: string | undefined;
     if (event === 'connection.update') {
       connection = String(body?.data?.state ?? '') || undefined;

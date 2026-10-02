@@ -290,6 +290,12 @@ export interface Channel {
   /** Último estado de conexión conocido (WhatsApp: open | connecting | close). */
   connection_state?: string;
   connection_state_at?: Date | null;
+  /** Último QR / código de vinculación de WhatsApp (solo para la sesión de conexión; nunca al panel). */
+  qr_code?: string | null;
+  qr_at?: Date | null;
+  pairing_code?: string | null;
+  pairing_number?: string | null;
+  pairing_at?: Date | null;
 }
 
 const secret = z.string().max(1000);
@@ -299,6 +305,8 @@ export const ChannelConfigSchemas = {
   whatsapp: z.object({
     instance: z.string().regex(/^[A-Za-z0-9_-]*$/, 'Instancia: solo letras, números, guion y guion bajo').max(60).default(''),
     number: z.string().max(30).default(''),
+    /** Nombre del perfil de WhatsApp vinculado (lo guarda el sistema al conectar). */
+    profile_name: z.string().max(120).default(''),
     url: z.string().max(300).default(''),
     api_key: secret.default(''),
   }),

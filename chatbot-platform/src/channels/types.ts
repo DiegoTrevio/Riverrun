@@ -33,6 +33,8 @@ export interface ParseResult {
   notices?: { level: 'info' | 'warn'; message: string }[];
   /** Nuevo estado de conexión informado por la plataforma (WhatsApp: open | connecting | close). */
   connection?: string;
+  /** QR nuevo enviado por la plataforma (WhatsApp: qrcode.updated). */
+  qr?: string;
 }
 
 export interface SetupResult {
