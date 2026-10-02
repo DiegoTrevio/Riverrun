@@ -24,9 +24,26 @@ export interface SessionResult {
   profile?: { number: string; name: string } | null;
   /** Aviso no bloqueante (p.ej. el número ya está conectado en otro canal de la cuenta). */
   warning?: string;
+  /** Todavía no hay código: se está generando. */
+  preparing?: boolean;
+  /** Segundos esperando un código (para avisar si tarda demasiado). */
+  waited_s?: number;
 }
 
 export class SessionError extends Error {}
+
+/** Cada cuánto, como máximo, se pide a Evolution una vinculación nueva mientras no hay código. */
+export const CONNECT_EVERY_MS = 15_000;
+/** Tiempo sin código a partir del cual la instancia se considera trabada y se recrea. */
+export const STUCK_AFTER_MS = 45_000;
+/** Como máximo una recreación cada 2 minutos por canal. */
+export const RECREATE_EVERY_MS = 120_000;
+
+/** Intentos en curso por canal (en memoria: el backend corre en un solo proceso). */
+export const attempts = new Map<string, { connectAt: number; recreateAt: number; waitingSince: number }>();
+
+/** Aún no hay código: el panel muestra "preparando" y vuelve a consultar. */
+const preparing = (waitedMs: number): SessionResult => ({ state: 'connecting', qr: null, pairingCode: null, expires_in: 0, preparing: true, waited_s: Math.round(waitedMs / 1000) });
 
 /** Número para vincular: solo dígitos, con lada de país (10 dígitos = México, se agrega 52). */
 export function normalizePairingNumber(raw: string): string {
@@ -79,6 +96,16 @@ export async function whatsappSession(ch: Channel, o: { mode: 'qr' | 'code'; num
       }
     }
 
+    const now = Date.now();
+    const t = attempts.get(ch.id) ?? { connectAt: 0, recreateAt: 0, waitingSince: now };
+    attempts.set(ch.id, t);
+    if (state === 'not_found') {
+      // Recién creada sin código todavía: llega en segundos (por webhook o en la siguiente consulta).
+      t.connectAt = now;
+      t.waitingSince = now;
+      return preparing(0);
+    }
+
     // Mientras la persona escanea, se reutiliza el QR vigente: pedir uno nuevo reiniciaría la vinculación.
     if (o.mode === 'qr' && !o.refresh && ch.qr_code && ageS(ch.qr_at) < QR_TTL_S) {
       return { state: 'connecting', qr: ch.qr_code, pairingCode: null, expires_in: Math.max(1, Math.round(QR_TTL_S - ageS(ch.qr_at))) };
@@ -86,24 +113,33 @@ export async function whatsappSession(ch: Channel, o: { mode: 'qr' | 'code'; num
     if (o.mode === 'code' && !o.refresh && ch.pairing_code && ch.pairing_number === number && ageS(ch.pairing_at) < CODE_TTL_S) {
       return { state: 'connecting', qr: null, pairingCode: ch.pairing_code, expires_in: Math.max(1, Math.round(CODE_TTL_S - ageS(ch.pairing_at))) };
     }
+    // Pedir la vinculación en cada consulta la reiniciaría y el código nunca alcanzaría a salir:
+    // como máximo una vez cada 15 s (sin `await` entre la revisión y la marca: dos pestañas no la duplican).
+    if (!o.refresh && now - t.connectAt < CONNECT_EVERY_MS) return preparing(now - t.waitingSince);
+    t.connectAt = now;
 
-    if (state !== 'not_found') await evo.setWebhook(instance, webhookUrl(ch));
+    await evo.setWebhook(instance, webhookUrl(ch));
     let c = await evo.connect(instance, number || undefined).catch(() => null);
-    if (!c || (o.mode === 'qr' ? !c.base64 : !c.pairingCode)) {
-      // Instancia trabada (o se agotaron los QR): se recrea una vez con el mismo nombre.
+    if (!(o.mode === 'qr' ? c?.base64 : c?.pairingCode) && now - t.waitingSince > STUCK_AFTER_MS && now - t.recreateAt > RECREATE_EVERY_MS) {
+      // Lleva rato sin generar código (instancia trabada o QR agotados): se recrea una vez con el mismo nombre.
+      t.recreateAt = now;
+      t.waitingSince = now;
       await logEvent({ level: 'warn', source: 'evolution', message: `La instancia ${instance} no generó código; se recrea`, accountId: ch.account_id, channelId: ch.id });
       await evo.logout(instance).catch(() => undefined);
       await evo.deleteInstance(instance).catch(() => undefined);
       const created = await evo.createInstance(instance, webhookUrl(ch), number || undefined);
-      c = { base64: created?.qrcode?.base64, pairingCode: created?.qrcode?.pairingCode };
-      if (o.mode === 'code' && !c.pairingCode) c = await evo.connect(instance, number);
+      c = { base64: created?.qrcode?.base64, pairingCode: created?.qrcode?.pairingCode ?? undefined };
     }
     if (o.mode === 'code') {
-      if (!c.pairingCode) throw new SessionError('No se pudo generar el código. Revisa el número o usa el código QR.');
+      if (!c?.pairingCode) {
+        throw new SessionError('WhatsApp no generó el código por número en este momento. Intenta de nuevo en un minuto o usa "Escanear código QR".');
+      }
+      t.waitingSince = now;
       await store.savePairingCode(ch.id, c.pairingCode, number);
       return { state: 'connecting', qr: null, pairingCode: c.pairingCode, expires_in: CODE_TTL_S };
     }
-    if (!c.base64) throw new SessionError('No se pudo generar el código QR. Intenta de nuevo en unos segundos.');
+    if (!c?.base64) return preparing(now - t.waitingSince);
+    t.waitingSince = now;
     await store.saveQr(ch.id, dataUrl(c.base64));
     return { state: 'connecting', qr: dataUrl(c.base64), pairingCode: null, expires_in: QR_TTL_S };
   } catch (e) {
@@ -113,6 +149,7 @@ export async function whatsappSession(ch: Channel, o: { mode: 'qr' | 'code'; num
 
 /** Conectado: se guarda el número y el nombre de la cuenta vinculada, y se borra el QR. */
 async function connected(ch: Channel): Promise<SessionResult> {
+  attempts.delete(ch.id);
   await recordConnectionState(ch, 'open');
   const profile = await evolutionFor(ch).fetchInstance(ch.config.instance).catch(() => null);
   let warning: string | undefined;

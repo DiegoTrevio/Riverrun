@@ -50,7 +50,7 @@ export class ChatService {
       },
       alertTeam: (accountId, o) => this.automator.alertTeam(accountId, o),
     });
-    this.queue = new ConversationQueue((id, a) => this.runConversation(id, a.restarts));
+    this.queue = new ConversationQueue((id, a) => this.runConversation(id, a.restarts), 2, 60_000, (id) => void this.aiUnavailable(id));
     this.scheduler = new Scheduler({
       automation_send: (p) => this.automator.runDelayedSend(p),
       no_reply: (p) => this.automator.runNoReply(p),
@@ -103,6 +103,26 @@ export class ChatService {
       return { status: 'nothing' };
     }
     return this.engine.process(conversationId, transport, { allowRestart: this.queue.canRestart(restarts) });
+  }
+
+  /** La IA falló dos veces seguidas en una conversación: se avisa al equipo para que no quede sin respuesta. */
+  private async aiUnavailable(conversationId: string) {
+    try {
+      const conv = await store.getConversation(conversationId);
+      if (!conv || conv.status !== 'bot') return;
+      const [contact, channel] = await Promise.all([store.getContact(conv.contact_id), store.getChannel(conv.channel_id)]);
+      if (!channel || channel.type === 'playground') return;
+      const who = contact?.name || contact?.push_name || (contact?.phone ? `+${contact.phone}` : 'Un cliente');
+      await logEvent({ level: 'error', source: 'ai', message: 'La IA no pudo responder tras reintentar; se avisó al equipo', accountId: conv.account_id, channelId: conv.channel_id, conversationId });
+      await this.automator.alertTeam(conv.account_id, {
+        title: '⚠️ Un cliente espera respuesta',
+        body: `${who} (${channel.name}) escribió y el asistente no pudo responder (servicio de IA no disponible). Contéstale desde el panel.`,
+        link: `#/conversation/${conversationId}`,
+        kind: 'ai_error',
+      });
+    } catch (e: any) {
+      await logEvent({ level: 'error', source: 'system', message: `No se pudo avisar de la falla de IA: ${e?.message ?? e}`, conversationId });
+    }
   }
 
   /** Maneja un mensaje ya normalizado que llegó por cualquier canal. */

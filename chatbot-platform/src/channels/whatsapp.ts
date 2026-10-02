@@ -91,7 +91,9 @@ export const whatsappAdapter: ChannelAdapter = {
     let connection: string | undefined;
     if (event === 'connection.update') {
       connection = String(body?.data?.state ?? '') || undefined;
-      notices.push({ level: connection === 'open' ? 'info' : 'warn', message: `Estado de conexión de WhatsApp: ${connection}` });
+      // "connecting" llega varias veces por minuto mientras se vincula o reconecta: no se registra (solo los cambios reales).
+      if (connection === 'open') notices.push({ level: 'info', message: 'WhatsApp conectado' });
+      else if (connection === 'close') notices.push({ level: 'warn', message: 'WhatsApp desconectado' });
     }
     return { messages, notices, connection };
   },

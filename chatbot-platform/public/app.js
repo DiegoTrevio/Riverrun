@@ -2442,13 +2442,14 @@ function whatsappConnector(channelId, { onConnected, onState } = {}) {
       fill(main, err,
         qr ? h('div', { class: 'wa-qr' }, h('img', { class: 'qr', src: qr, alt: 'Código QR para vincular WhatsApp' }),
               h('div', { class: 'wa-ring', title: 'El código se renueva solo' }, h('span', {}, ''))) 
-           : h('div', { class: 'wa-qr wa-loading' }, h('div', { class: 'spinner' }), h('p', { class: 'muted' }, 'Generando tu código…')),
+           : h('div', { class: 'wa-qr wa-loading' }, h('div', { class: 'spinner' }), h('p', { class: 'muted' }, 'Generando tu código… (unos segundos)'),
+               (st.data?.waited_s ?? 0) > 60 ? h('p', { class: 'small muted', style: 'max-width:360px;text-align:center' }, 'Está tardando más de lo normal. Puedes probar "Con mi número" o esperar: seguimos intentando solos.') : null),
         qr ? h('p', { class: 'small muted', style: 'text-align:center' }, 'El código se renueva solo; no tienes que hacer nada más que escanearlo.') : null);
       return void drawCountdown();
     }
     // Modo número
     const code = st.data?.pairingCode;
-    const getCode = async (refresh = false) => {
+    const getCode = async (refresh = true) => {
       st.number = st.number.replace(/\D/g, '');
       if (st.number.length < 10) { st.error = 'Escribe tu número de WhatsApp con lada (10 dígitos en México).'; return draw(); }
       st.codeRequested = true;

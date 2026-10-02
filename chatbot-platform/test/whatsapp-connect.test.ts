@@ -13,6 +13,7 @@ const C = { id: '', token: '', instance: '' };
 const session = (body: Record<string, unknown> = {}, api = admin) => api('POST', `/api/channels/${C.id}/whatsapp/session`, body);
 const evoCalls = (frag: string) => ext.requests.filter((r) => r.path.includes(frag));
 const ageQr = (seconds: number) => pool.query(`UPDATE channels SET qr_at = now() - make_interval(secs => $2) WHERE id = $1`, [C.id, seconds]);
+const { attempts } = await import('../src/channels/whatsapp-session.js');
 const webhook = (payload: Record<string, unknown>) => h.app.inject({ method: 'POST', url: `/webhook/${C.token}`, payload: { instance: C.instance, ...payload } });
 
 before(async () => {
@@ -72,7 +73,7 @@ t('el QR que Evolution manda por webhook (qrcode.updated) se usa en la siguiente
 t('código por número: valida, agrega la lada de México y entrega el código de 8 caracteres', async () => {
   assert.equal((await session({ mode: 'code', number: '12345' })).statusCode, 400);
   ext.requests.length = 0;
-  const r = await session({ mode: 'code', number: '81 1111 2222' });
+  const r = await session({ mode: 'code', number: '81 1111 2222', refresh: true }); // el clic en "Obtener código" fuerza la solicitud
   assert.equal(r.statusCode, 200, r.body);
   assert.match(r.json().pairingCode, /^PAIR\d{4}$/);
   assert.equal(r.json().expires_in, 120);
@@ -81,9 +82,28 @@ t('código por número: valida, agrega la lada de México y entrega el código d
   assert.equal((await session({ mode: 'code', number: '528111112222' })).json().pairingCode, r.json().pairingCode);
 });
 
-t('instancia trabada (no genera QR): se recrea sola una vez y entrega un QR', async () => {
+t('sin código todavía: no reinicia la vinculación en cada consulta ni recrea la instancia antes de tiempo', async () => {
   evo.stuck.add(C.instance);
   await ageQr(60);
+  attempts.delete(C.id);
+  ext.requests.length = 0;
+  for (let i = 0; i < 4; i++) {
+    const r = (await session()).json();
+    assert.equal(r.state, 'connecting');
+    assert.equal(r.qr, null);
+    assert.equal(r.preparing, true);
+  }
+  assert.equal(evoCalls('/instance/connect/').length, 1, 'una sola solicitud en 4 consultas (máximo una cada 15 s)');
+  assert.equal(evoCalls('/instance/delete/').length, 0, 'no se recrea mientras no lleve 45 s sin código');
+  // Si mientras tanto llega el QR por webhook, se muestra de inmediato.
+  await webhook({ event: 'qrcode.updated', data: { qrcode: { base64: 'data:image/png;base64,QRLATE' } } });
+  assert.equal((await session()).json().qr, 'data:image/png;base64,QRLATE');
+});
+
+t('instancia trabada (45 s sin código): se recrea sola una vez y entrega un QR', async () => {
+  evo.stuck.add(C.instance);
+  await ageQr(60);
+  attempts.set(C.id, { connectAt: 0, recreateAt: 0, waitingSince: Date.now() - 60_000 });
   ext.requests.length = 0;
   const r = await session();
   assert.equal(r.statusCode, 200, r.body);
@@ -92,12 +112,22 @@ t('instancia trabada (no genera QR): se recrea sola una vez y entrega un QR', as
   assert.equal(evoCalls('/instance/create').length, 1);
   const logs = (await pool.query(`SELECT message FROM event_logs WHERE channel_id = $1`, [C.id])).rows.map((x) => x.message);
   assert.ok(logs.some((m) => /no generó código; se recrea/.test(m)));
+  // Y no vuelve a recrearse enseguida aunque siguiera sin código.
+  evo.stuck.add(C.instance);
+  await ageQr(60);
+  attempts.get(C.id)!.connectAt = 0;
+  attempts.get(C.id)!.waitingSince = Date.now() - 60_000;
+  ext.requests.length = 0;
+  assert.equal((await session()).json().preparing, true);
+  assert.equal(evoCalls('/instance/delete/').length, 0, 'máximo una recreación cada 2 minutos');
+  evo.stuck.delete(C.instance);
 });
 
 t('Evolution caído: mensaje claro (el detalle técnico queda en Registros)', async () => {
   evo.down = true;
   try {
     await ageQr(60);
+    attempts.delete(C.id);
     const r = await session();
     assert.equal(r.statusCode, 400);
     assert.match(r.json().error, /No pudimos comunicarnos con el servidor de WhatsApp/);

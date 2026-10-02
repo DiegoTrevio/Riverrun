@@ -1,5 +1,7 @@
 import crypto from 'node:crypto';
 import dns from 'node:dns/promises';
+import http from 'node:http';
+import https from 'node:https';
 import net from 'node:net';
 import { config } from '../config.js';
 import { matchKeyword } from '../engine/engine.js';
@@ -91,24 +93,46 @@ function isPrivateIp(ip: string) {
   return v === '::1' || v === '::' || v.startsWith('fc') || v.startsWith('fd') || v.startsWith('fe80') || v.startsWith('::ffff:127.') || v.startsWith('::ffff:10.') || v.startsWith('::ffff:192.168.');
 }
 
+/**
+ * Resolución DNS que rechaza direcciones internas. Se usa en la conexión misma (no antes), así un dominio
+ * que cambia de IP entre la revisión y la conexión ("DNS rebinding") tampoco llega a la red interna.
+ */
+function safeLookup(hostname: string, options: any, callback: (err: Error | null, address?: any, family?: number) => void) {
+  dns
+    .lookup(hostname, { all: true })
+    .then((addrs) => {
+      const bad = addrs.find((a) => isPrivateIp(a.address));
+      if (bad || !addrs.length) return callback(new Error('La URL apunta a una red interna; no está permitido'));
+      if (options?.all) return callback(null, addrs);
+      callback(null, addrs[0].address, addrs[0].family);
+    })
+    .catch((e) => callback(e));
+}
+
 /** POST firmado a un servicio externo (n8n, Zapier, CRM). Bloquea la red interna (evita SSRF). */
 export async function postWebhook(url: string, body: unknown, secret: string) {
   const u = new URL(url);
   if (!['http:', 'https:'].includes(u.protocol)) throw new Error('Solo se permiten URLs http(s)');
-  if (!config.allowPrivateWebhooks) {
-    const host = u.hostname.replace(/^\[|\]$/g, '');
-    const addrs = net.isIP(host) ? [{ address: host }] : await dns.lookup(host, { all: true });
-    if (addrs.some((a) => isPrivateIp(a.address))) throw new Error('La URL apunta a una red interna; no está permitido');
-  }
+  const host = u.hostname.replace(/^\[|\]$/g, '');
+  if (!config.allowPrivateWebhooks && net.isIP(host) && isPrivateIp(host)) throw new Error('La URL apunta a una red interna; no está permitido');
   const payload = JSON.stringify(body);
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-signature': `sha256=${crypto.createHmac('sha256', secret).update(payload).digest('hex')}` },
-    body: payload,
-    redirect: 'error',
-    signal: AbortSignal.timeout(10_000),
+  const headers = {
+    'content-type': 'application/json',
+    'content-length': Buffer.byteLength(payload),
+    'x-signature': `sha256=${crypto.createHmac('sha256', secret).update(payload).digest('hex')}`,
+  };
+  const mod = u.protocol === 'https:' ? https : http;
+  // Sin redirecciones (una redirección podría apuntar a la red interna) y con tiempo máximo de 10 s.
+  const status = await new Promise<number>((resolve, reject) => {
+    const req = mod.request(u, { method: 'POST', headers, timeout: 10_000, ...(config.allowPrivateWebhooks ? {} : { lookup: safeLookup as any }) }, (res) => {
+      res.resume();
+      resolve(res.statusCode ?? 0);
+    });
+    req.on('timeout', () => req.destroy(new Error('El webhook no respondió a tiempo')));
+    req.on('error', reject);
+    req.end(payload);
   });
-  if (!res.ok) throw new Error(`El webhook respondió ${res.status}`);
+  if (status < 200 || status >= 300) throw new Error(`El webhook respondió ${status}`);
 }
 
 /* ------------------------------ Automatizador ------------------------------ */

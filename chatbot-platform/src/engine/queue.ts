@@ -17,7 +17,16 @@ interface Slot {
 export class ConversationQueue {
   private slots = new Map<string, Slot>();
 
-  constructor(private runner: Runner, private maxRestarts = 2, private errorRetryMs = 60_000) {}
+  /**
+   * @param onGiveUp se llama cuando el reintento también falló (p.ej. la IA no responde): el mensaje queda
+   * pendiente (se contestará cuando el cliente vuelva a escribir) y alguien del equipo debe enterarse.
+   */
+  constructor(
+    private runner: Runner,
+    private maxRestarts = 2,
+    private errorRetryMs = 60_000,
+    private onGiveUp?: (conversationId: string) => void,
+  ) {}
 
   private slot(id: string): Slot {
     let s = this.slots.get(id);
@@ -80,6 +89,7 @@ export class ConversationQueue {
         this.schedule(conversationId, this.errorRetryMs);
         return;
       }
+      this.onGiveUp?.(conversationId);
     }
     s.errors = 0;
     if (s.rerun) {

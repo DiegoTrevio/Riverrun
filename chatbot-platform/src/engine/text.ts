@@ -154,6 +154,11 @@ export class FactCorpus {
     return d.length >= 3 && this.digitsJoined.includes(d);
   }
 
+  /** Montos de dinero: siempre se verifican, aunque sean de un dígito ("$1" no es un detalle menor). */
+  hasMoney(n: string) {
+    return this.numbers.has(n) || (this.hasNumber(n) && n.replace(/\D/g, '').length >= 2);
+  }
+
   /** ¿`amount` = número del corpus × k, con k entre 2 y 60 y k aceptado por `quantityOk`? */
   isProductOf(amount: string, quantityOk: (k: string) => boolean): boolean {
     const a = Number(amount);
@@ -196,7 +201,10 @@ export class FactCorpus {
     const computed = new Set<string>();
     if (trusted) {
       for (const m of extractMoney(reply)) {
-        if (trusted.hasNumber(m)) continue;
+        if (trusted.hasMoney(m)) {
+          computed.add(m);
+          continue;
+        }
         // Cotización: precio del negocio × una cantidad que aparece en la respuesta o la dijo el cliente.
         if (trusted.isProductOf(m, (k) => replyNumbers.has(k) || this.numbers.has(k))) computed.add(m);
         else bad.push(m);

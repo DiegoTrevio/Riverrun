@@ -213,6 +213,8 @@ t('webhook saliente firmado (n8n/Zapier/CRM) y bloqueo de redes internas', async
   config.allowPrivateWebhooks = false;
   await assert.rejects(() => postWebhook(hookUrl, {}, 'x'), /red interna/);
   await assert.rejects(() => postWebhook('http://169.254.169.254/latest', {}, 'x'), /red interna/);
+  // Un dominio que resuelve a la red interna se bloquea al conectar (también protege contra "DNS rebinding").
+  await assert.rejects(() => postWebhook(hookUrl.replace('127.0.0.1', 'localhost'), {}, 'x'), /red interna/);
   config.allowPrivateWebhooks = true;
 });
 
