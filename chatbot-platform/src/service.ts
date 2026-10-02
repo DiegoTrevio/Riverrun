@@ -4,6 +4,8 @@ import { Automator } from './automation/automator.js';
 import { Campaigns } from './automation/campaigns.js';
 import { Outbound } from './automation/outbound.js';
 import { Scheduler } from './automation/scheduler.js';
+import * as astore from './automation/store.js';
+import { isOpen } from './automation/time.js';
 import { adapterFor } from './channels/index.js';
 import { config } from './config.js';
 import { describeInbound, type InboundMessage } from './channels/types.js';
@@ -42,6 +44,11 @@ export class ChatService {
       agenda: this.agenda,
       onEvent: (e) => this.automator.emit(e),
       onOutbound: (conv, msg) => this.automator.onOutbound(conv, msg),
+      business: async (accountId) => {
+        const st = await astore.getSettings(accountId);
+        return { timezone: st.timezone, hours: st.business_hours, holidays: st.holidays, openNow: isOpen(st.business_hours, st.holidays, new Date(), st.timezone) };
+      },
+      alertTeam: (accountId, o) => this.automator.alertTeam(accountId, o),
     });
     this.queue = new ConversationQueue((id, a) => this.runConversation(id, a.restarts));
     this.scheduler = new Scheduler({
@@ -155,7 +162,8 @@ export class ChatService {
 
     let current = conv;
     if (conv.status === 'closed' && triggers) {
-      // El cliente vuelve a escribir: se reabre (la memoria se conserva).
+      // El cliente vuelve a escribir: se reabre (la memoria se conserva; el recorrido empieza de nuevo).
+      await store.resetFlowState(conv.id);
       current = (await store.setConversationStatus(conv.id, 'bot', '')) ?? conv;
     } else if (conv.status === 'human' && bot && bot.rules.auto_resume_minutes > 0) {
       const lastHuman = await store.lastHumanActivity(conv.id);

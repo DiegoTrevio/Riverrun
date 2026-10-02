@@ -533,6 +533,16 @@ function tabPersonality(root, bot) {
   );
 }
 
+/** Avance del recorrido en una conversación: etapa actual y si se cumplió el objetivo. */
+function flowCard(flow, c) {
+  if (!flow || (!flow.goal && !flow.steps?.length)) return null;
+  return h('div', { class: 'card' },
+    h('h3', { style: 'margin-top:0' }, 'Recorrido'),
+    c.goal_completed_at ? h('p', {}, h('span', { class: 'badge green' }, '🎯 Objetivo cumplido'), ' ', h('span', { class: 'small muted' }, fmtDate(c.goal_completed_at))) : flow.goal ? h('p', { class: 'small' }, 'Objetivo: ', flow.goal) : null,
+    flow.steps?.length ? h('ol', { class: 'small flow-steps' }, flow.steps.map((st, i) =>
+      h('li', { class: i + 1 < (c.flow_step || 0) ? 'done' : i + 1 === c.flow_step ? 'current' : '' }, st.title))) : null);
+}
+
 const CAT_LABELS = { general: 'General', servicios: 'Servicios', productos: 'Productos', precios: 'Precios', horarios: 'Horarios', ubicaciones: 'Ubicación y contacto', condiciones: 'Políticas y condiciones', preguntas_frecuentes: 'Preguntas frecuentes', promociones: 'Promociones', otro: 'Otro' };
 const catLabel = (c) => CAT_LABELS[c] || c.replace(/_/g, ' ');
 
@@ -777,7 +787,10 @@ function flowSection(f) {
       h('h3', {}, 'Etapas sugeridas'),
       list,
       h('button', { onclick: () => { f.steps.push({ title: '', description: '' }); draw(); } }, '+ Agregar etapa'),
-      h('div', { style: 'margin-top:14px' }, field('Cuando se cumpla el objetivo', area(f, 'on_goal_completed', { placeholder: 'Agradece, confirma los datos recibidos y transfiere a una persona para cerrar la reservación.' }))),
+      h('div', { style: 'margin-top:14px' },
+        field(tag('Cuando se cumpla el objetivo, el asistente…', guide()), area(f, 'on_goal_completed', { placeholder: 'Agradece y confirma los datos recibidos.' })),
+        field(tag('…y además el sistema', guaranteed()), select(f, 'on_goal_action', [['none', 'No hace nada más'], ['handoff', 'Pasa la conversación a una persona'], ['notify', 'Avisa al equipo (panel y WhatsApp)']]),
+          'El objetivo solo cuenta como cumplido cuando ya se tienen los datos marcados como "Importante" en "Datos que pide". Pasa una sola vez por conversación; también puedes usarlo como disparador en Automatización.')),
     ));
 }
 
@@ -802,8 +815,8 @@ function aiSection(a) {
       h('div', { class: 'grid' },
         field('Esperar antes de responder (segundos)', num(a, 'debounce_seconds', { min: 0, max: 60, step: 0.5 }), 'Agrupa mensajes seguidos del cliente.'),
         field(tag('Máximo de mensajes por respuesta', guaranteed()), num(a, 'max_bubbles', { min: 1, max: 5 })),
-        field(tag('Máximo de caracteres por mensaje', guaranteed()), num(a, 'max_chars_per_bubble', { min: 80, max: 2000 }), 'Los mensajes más largos se dividen.'),
-        field('Zona horaria', text(a, 'timezone'))),
+        field(tag('Máximo de caracteres por mensaje', guaranteed()), num(a, 'max_chars_per_bubble', { min: 80, max: 2000 }), 'Los mensajes más largos se dividen.')),
+      h('p', { class: 'small muted' }, 'La zona horaria y el horario de atención que conoce el asistente se toman de ', h('a', { href: '#/automation/settings' }, 'Automatización → Horario y ajustes'), '.'),
       check(a, 'typing_simulation', 'Mostrar "escribiendo…" antes de cada mensaje'),
       check(a, 'transcribe_audio', 'Entender notas de voz (las transcribe; tiene un costo pequeño por minuto)'),
     ));
@@ -1066,6 +1079,7 @@ async function viewConversation(root, id) {
         field('Etiquetas', h('input', { type: 'text', value: m.tags.join(', '), placeholder: 'vip, interesado', oninput: (e) => (m.tags = e.target.value.split(',').map((x) => x.trim()).filter(Boolean)) }), 'Separadas por comas. Sirven para campañas y reglas.'),
         check(m, 'opted_out', 'Dado de baja (no recibe mensajes promocionales)'),
         h('button', { class: 'small', onclick: async () => { if (await run(() => api('PUT', `/api/contacts/${ct.id}`, { ...m, data: Object.fromEntries(Object.entries({ ...m.data, ...Object.fromEntries(nameKeys.map((k) => [k, m.name])) }).filter(([, v]) => v)) }), 'Datos guardados')) load(true); } }, 'Guardar datos')),
+      flowCard(data.chatbot?.flow, c),
       autoBox,
       h('div', { class: 'card' },
         h('h3', { style: 'margin-top:0' }, 'Resumen de memoria'),
@@ -1534,6 +1548,7 @@ const TRIGGERS = {
   appointment_booked: 'Se agenda una cita o llamada',
   appointment_cancelled: 'Se cancela una cita o llamada',
   opt_out: 'El cliente se da de baja',
+  goal_completed: 'Se cumple el objetivo de la conversación',
 };
 const ACTIONS = {
   send_message: 'Enviar mensaje',
@@ -1839,7 +1854,7 @@ async function editCampaign(root, id) {
   const [refs, channels] = await Promise.all([automationRefs(), api('GET', withAcct('/api/channels'))]);
   const existing = id === 'new' ? null : (await api('GET', withAcct('/api/campaigns'))).find((c) => c.id === id);
   if (id !== 'new' && !existing) throw new Error('Campaña no encontrada');
-  const c = existing ? clone(existing) : { name: '', channel_id: channels[0]?.id || '', message: '', image_id: null, audience: { tags_any: [], tags_none: [], active_within_days: 0, statuses: [] }, scheduled_at: null, rate_per_minute: 20, status: 'draft' };
+  const c = existing ? clone(existing) : { name: '', channel_id: channels[0]?.id || '', message: '', image_id: null, audience: { tags_any: [], tags_none: [], active_within_days: 0, statuses: [] }, scheduled_at: null, rate_per_minute: 20, business_hours_only: true, status: 'draft' };
   c.image_id ??= '';
   const editable = ['draft', 'scheduled'].includes(c.status);
   const local = { when: c.scheduled_at ? new Date(new Date(c.scheduled_at).getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16) : '' };
@@ -1879,12 +1894,14 @@ async function editCampaign(root, id) {
         field('Con alguna de estas etiquetas', lines(c.audience, 'tags_any', { placeholder: 'interesado\nvip' }), 'Vacío = todos'),
         field('Sin estas etiquetas', lines(c.audience, 'tags_none', { placeholder: 'ya_compro' })),
         field('Que escribieron en los últimos (días)', num(c.audience, 'active_within_days', { min: 0 }), '0 = sin límite')),
-      h('p', { class: 'small muted' }, 'Nunca se incluye a quien se dio de baja.')),
+    ),
     h('div', { class: 'card' },
       h('h3', { style: 'margin-top:0' }, 'Cuándo y a qué ritmo'),
       h('div', { class: 'grid' },
         field('Fecha y hora de envío', h('input', { type: 'datetime-local', value: local.when, oninput: (e) => (local.when = e.target.value) }), 'Vacío = al pulsar "Enviar ahora"'),
-        field('Mensajes por minuto', num(c, 'rate_per_minute', { min: 1, max: 120 }), 'Recomendado para WhatsApp: 10–30'))),
+        field('Mensajes por minuto', num(c, 'rate_per_minute', { min: 1, max: 120 }), 'Recomendado para WhatsApp: 10–30')),
+      check(c, 'business_hours_only', 'Enviar solo en horario de atención (lo que no alcance sale en la siguiente apertura)'),
+      h('p', { class: 'small muted' }, 'No se envía a quien se dio de baja ni a conversaciones que está atendiendo una persona.')),
     editable ? saveBar(save, existing ? h('span', { class: 'row', style: 'margin-left:auto' },
       h('button', { class: 'danger', onclick: async () => { if (confirm('¿Eliminar la campaña?')) { await run(() => api('DELETE', `/api/campaigns/${id}`), 'Eliminada'); location.hash = '#/automation/campaigns'; } } }, 'Eliminar')) : null) : null,
   );
@@ -1912,7 +1929,7 @@ async function editSettings(root) {
   root.append(
     h('div', { class: 'card' },
       h('h3', { style: 'margin-top:0' }, 'Horario del negocio'),
-      h('p', { class: 'small muted' }, 'Formato por día: 09:00-14:00, 16:00-19:00 (vacío = cerrado). Lo usan la agenda, las secuencias y la condición "horario del negocio".'),
+      h('p', { class: 'small muted' }, 'Formato por día: 09:00-14:00, 16:00-19:00 (vacío = cerrado). Lo usan el asistente (para responder "¿están abiertos?"), la agenda, las secuencias, las campañas y la condición "horario del negocio".'),
       field('Zona horaria', text(s, 'timezone')),
       hoursEditor(s.business_hours),
       field('Días cerrados (festivos)', lines(s, 'holidays', { placeholder: '2026-12-25\n2027-01-01' }), 'Formato AAAA-MM-DD, uno por renglón.')),
@@ -2209,7 +2226,7 @@ function onbAssistant(box, ob, done) {
     field('Describe tu negocio en una o dos frases', area(f, 'description', { placeholder: 'Clínica dental familiar en el centro de Monterrey, con 15 años de experiencia.' })),
     field('Productos o servicios con precios *', area(k, 'catalog', { big: true, placeholder: 'Limpieza dental — $600 (45 min)\nResina — desde $900\nBlanqueamiento — $3,500\nConsulta de valoración — gratis' }), 'Uno por renglón. Incluye precios, duración, tamaños o lo que te pregunten.'),
     h('div', { class: 'grid' },
-      field('Horarios', area(k, 'hours', { placeholder: 'Lunes a viernes de 9:00 a 19:00\nSábados de 9:00 a 14:00' })),
+      field('Detalles de horario (opcional)', area(k, 'hours', { placeholder: 'Último turno a las 18:30\nDías festivos cerramos' }), 'Tu horario de atención del paso 1 ya lo conoce; aquí van solo detalles extra.'),
       field('Ubicación y contacto', area(k, 'location', { placeholder: 'Av. Constitución 100, Centro, Monterrey\nEstacionamiento gratis\nTel. 81 1234 5678' }))),
     field('Preguntas frecuentes', area(k, 'faq', { big: true, placeholder: '¿Aceptan tarjeta? Sí, todas las tarjetas y transferencia.\n¿Hay estacionamiento? Sí, gratuito.' })),
     field('Otra información (promociones, políticas, formas de pago…)', area(k, 'other')),

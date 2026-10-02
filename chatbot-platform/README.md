@@ -124,6 +124,9 @@ Cada ajuste del panel indica si está **✓ Garantizado** (el sistema lo revisa 
 | Palabras que pasan con una persona · callarse si contesta el equipo | Cuándo mandar fotos |
 | Fotos solo del catálogo, sin repetir, con máximo por respuesta | Recorrido de la conversación |
 | Datos del cliente con formato válido · agenda solo con horarios reales | |
+| Recorrido: el objetivo solo cuenta con los datos "importantes" · acción al cumplirlo (pasar a una persona o avisar), una vez | |
+
+**Recorrido de la conversación** (Avanzado): objetivo, etapas y qué hacer al cumplirlo. En cada turno la IA indica en qué etapa queda y si se cumplió el objetivo; el sistema lo guarda y se lo recuerda en el siguiente turno, junto con los datos importantes que faltan, para que no repita etapas ni preguntas. El objetivo se acepta solo si ya están todos los datos marcados como "Importante"; entonces, una sola vez por conversación, el sistema **pasa la conversación a una persona** o **avisa al equipo** (según lo elegido) y dispara las reglas "Se cumple el objetivo de la conversación". La etapa y el objetivo se ven en cada conversación; al cerrarla y que el cliente vuelva a escribir, el recorrido empieza de nuevo. El asistente conoce el horario de atención y la zona horaria de **Horario y ajustes** (sabe si en este momento está abierto).
 
 Consejo: si una regla del negocio tiene cifra (precio, descuento, anticipo), escríbela también en **Lo que sabe**; así queda garantizada por la verificación de datos.
 
@@ -171,17 +174,19 @@ Menú **Automatización** (administradores). Todo corre sobre tareas programadas
 
 ### Secuencias (flujos programados)
 
-- Serie de mensajes con espera entre ellos (minutos, horas o días) y hora del día opcional ("al día siguiente a las 10:00").
+- Serie de mensajes con espera entre ellos (minutos, horas o días) y hora del día opcional ("1 día después a las 10:00" = al día siguiente a las 10:00).
 - Cada paso puede tener condiciones propias.
 - Respetan el horario del negocio: lo que caiga fuera se pasa a la siguiente apertura.
 - Se detienen si el cliente responde, si se da de baja o si una persona toma la conversación.
+- Si la cuenta está en pausa o el canal apagado, esperan (reintentan cada hora hasta 7 días) en lugar de perderse.
 - Se inician con una regla o manualmente desde la conversación.
 
 ### Campañas
 
 - Mensaje a un segmento: con o sin ciertas etiquetas, o que escribieron en los últimos N días. Envío inmediato o programado.
 - Se envían a ritmo controlado (mensajes por minuto) para proteger el número.
-- Siempre excluyen a quien se dio de baja. Muestran vista previa de destinatarios y estadísticas por destinatario.
+- Por defecto solo se envían en horario de atención: lo que no alcance sale en la siguiente apertura, al mismo ritmo.
+- Siempre excluyen a quien se dio de baja y no interrumpen conversaciones que está atendiendo una persona. Muestran vista previa de destinatarios y estadísticas por destinatario.
 
 ### Horario y ajustes
 

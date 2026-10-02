@@ -41,8 +41,13 @@ test('secuencias: espera + hora del día + horario del negocio', () => {
   assert.equal(stepTime(from, step({ delay_value: 2 }), settings, false).toISOString(), zonedToUtc('2026-09-29', '19:30', MX).toISOString());
   // 2 h después serían 19:30 (cerrado) → siguiente apertura
   assert.equal(stepTime(from, step({ delay_value: 2 }), settings, true).toISOString(), zonedToUtc('2026-09-30', '09:00', MX).toISOString());
-  // 1 día después a las 10:00
-  assert.equal(stepTime(from, step({ delay_value: 1, delay_unit: 'days', at_time: '10:00' }), settings, true).toISOString(), zonedToUtc('2026-10-01', '10:00', MX).toISOString());
+  // 1 día después a las 10:00 = al día siguiente (miércoles 30) a las 10:00, no el jueves
+  assert.equal(stepTime(from, step({ delay_value: 1, delay_unit: 'days', at_time: '10:00' }), settings, true).toISOString(), zonedToUtc('2026-09-30', '10:00', MX).toISOString());
+  assert.equal(stepTime(from, step({ delay_value: 3, delay_unit: 'days', at_time: '09:30' }), settings, false).toISOString(), zonedToUtc('2026-10-02', '09:30', MX).toISOString());
+  // Sin espera, a las 10:00: hoy ya pasó → mañana a las 10:00
+  assert.equal(stepTime(from, step({ delay_value: 0, at_time: '10:00' }), settings, false).toISOString(), zonedToUtc('2026-09-30', '10:00', MX).toISOString());
+  // Viernes + 2 días a las 10:00 cae en domingo (cerrado) → siguiente apertura: lunes 9:00
+  assert.equal(stepTime(zonedToUtc('2026-10-02', '12:00', MX), step({ delay_value: 2, delay_unit: 'days', at_time: '10:00' }), settings, true).toISOString(), zonedToUtc('2026-10-05', '09:00', MX).toISOString());
 });
 
 const svc = (o: Partial<Service> = {}): Service => ({ id: 's1', account_id: 'a', ...ServiceBodySchema.parse({ name: 'Consulta', duration_minutes: 60, min_notice_minutes: 60, max_days_ahead: 7 }), ...o });

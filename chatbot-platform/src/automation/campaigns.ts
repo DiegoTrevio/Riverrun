@@ -2,6 +2,7 @@ import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
 import * as astore from './store.js';
 import { query } from '../db.js';
+import { nextOpen } from './time.js';
 
 /** Campañas: envío programado a un segmento, espaciado para no parecer spam (y no arriesgar el número). */
 export class Campaigns {
@@ -28,16 +29,19 @@ export class Campaigns {
     const audience = await astore.campaignAudience(c);
     await astore.setCampaignStatus(c.id, 'sending');
     const gapMs = Math.ceil(60_000 / Math.max(1, c.rate_per_minute));
-    let i = 0;
+    const settings = await astore.getSettings(c.account_id);
+    // Cada envío, a ritmo constante; con "solo en horario", lo que caiga fuera se pasa a la siguiente apertura.
+    let at = new Date();
     for (const r of audience) {
+      if (c.business_hours_only) at = nextOpen(settings.business_hours, settings.holidays, at, settings.timezone);
       await query(`INSERT INTO campaign_recipients (campaign_id, conversation_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [c.id, r.conversation_id]);
       await astore.scheduleJob({
         account_id: c.account_id,
         type: 'campaign_send',
         payload: { campaign_id: c.id, conversation_id: r.conversation_id },
-        run_at: new Date(Date.now() + i * gapMs),
+        run_at: at,
       });
-      i++;
+      at = new Date(at.getTime() + gapMs);
     }
     await astore.campaignStats(c.id);
     if (!audience.length) await astore.setCampaignStatus(c.id, 'sent');
@@ -52,7 +56,7 @@ export class Campaigns {
       text: c.message,
       imageId: c.image_id ?? undefined,
       source: 'campaign',
-      allowWhenHuman: true,
+      // Una promoción no interrumpe una conversación que está atendiendo una persona.
       meta: { campaign_id: c.id },
     });
     await query(

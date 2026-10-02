@@ -91,6 +91,8 @@ export const FlowSchema = z.object({
   on_goal_completed: z.string().default(''),
   /** Saludo sugerido para el primer mensaje (la IA lo adapta). */
   greeting: z.string().default(''),
+  /** Qué hace el sistema (no la IA) la primera vez que se cumple el objetivo. */
+  on_goal_action: z.enum(['none', 'handoff', 'notify']).default('none'),
 });
 export type Flow = z.infer<typeof FlowSchema>;
 
@@ -209,6 +211,10 @@ export interface Conversation {
   summary: string;
   summary_until_id: number;
   last_message_at: Date;
+  /** Etapa del recorrido en la que va (1..n; 0 = sin etapa). */
+  flow_step?: number;
+  /** Cuándo se cumplió el objetivo de la conversación (null = aún no). */
+  goal_completed_at?: Date | null;
 }
 
 export interface Message {

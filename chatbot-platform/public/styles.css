@@ -169,3 +169,8 @@ ul.checklist li { padding: 6px 0; }
 ul.checklist .mark { display: inline-block; width: 18px; color: var(--muted); font-weight: 700; }
 ul.checklist li.ok .mark { color: var(--accent); }
 .card.legend { background: var(--accent-soft); }
+ol.flow-steps { padding-left: 20px; margin: 0; }
+ol.flow-steps li { padding: 2px 0; color: var(--muted); }
+ol.flow-steps li.done { color: var(--text); }
+ol.flow-steps li.done::marker { content: '✓ '; color: var(--accent); }
+ol.flow-steps li.current { color: var(--accent); font-weight: 600; }

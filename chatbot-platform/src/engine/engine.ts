@@ -3,7 +3,7 @@ import type { AiProvider } from '../ai/provider.js';
 import { logEvent } from '../logs.js';
 import * as store from '../store/index.js';
 import type { Chatbot, Contact, Conversation, ImageAsset, Message } from '../types.js';
-import { buildContext } from './context.js';
+import { buildContext, type BusinessInfo } from './context.js';
 import { DECISION_JSON_SCHEMA } from './decision.js';
 import { maybeSummarize } from './memory.js';
 import { normalize } from './text.js';
@@ -23,6 +23,10 @@ export interface EngineExtensions {
   };
   onEvent?(e: AutomationEvent): void;
   onOutbound?(conv: Conversation, msg: Message): Promise<void>;
+  /** Horario y zona horaria de la cuenta. */
+  business?(accountId: string): Promise<BusinessInfo | null>;
+  /** Avisa al equipo (panel y WhatsApp de quien lo tenga activado). */
+  alertTeam?(accountId: string, o: { title: string; body: string; link?: string; kind?: string }): Promise<void>;
 }
 
 export interface ProcessResult {
@@ -113,9 +117,10 @@ export class Engine {
     ]);
     const images = allImages.filter((i) => i.active);
     // Automatización y agenda (si están conectadas).
-    const [intents, agendaCtx] = await Promise.all([
+    const [intents, agendaCtx, business] = await Promise.all([
       this.ext.intents ? this.ext.intents(conv.account_id, bot.id).catch(() => []) : Promise.resolve([]),
       this.ext.agenda && bot.rules.booking_enabled ? this.ext.agenda.contextFor(conv.account_id, contact, channel.type).catch(() => null) : Promise.resolve(null),
+      this.ext.business ? this.ext.business(conv.account_id).catch(() => null) : Promise.resolve(null),
     ]);
     const agendaVal: AgendaValidation | null = agendaCtx
       ? { slots: Object.fromEntries(Object.entries(agendaCtx.slots).map(([k, v]) => [k, v.map((x) => x.key)])), appointmentIds: agendaCtx.appointments.map((a) => a.id), needsPhoneFor: agendaCtx.needsPhoneFor }
@@ -134,7 +139,7 @@ export class Engine {
     let lastInput: ValidationInput | undefined;
     const attempts: ProcessResult['attempts'] = [];
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-      const ctx = buildContext({ bot, knowledge, images, contact, conversation: conv, channelType: channel.type, history, pending, sentImageIds, imagesById, correction, intents, agenda: agendaCtx });
+      const ctx = buildContext({ bot, knowledge, images, contact, conversation: conv, channelType: channel.type, history, pending, sentImageIds, imagesById, correction, intents, agenda: agendaCtx, business });
       let completion;
       try {
         completion = await this.ai.complete({
@@ -171,6 +176,8 @@ export class Engine {
         allowedIntents: intents.map((i) => i.intent),
         agenda: agendaVal,
         hasPhone,
+        knownData: contact.data ?? {},
+        knownName: contact.name || undefined,
       };
       const v = validateDecision({ ...lastInput, final: attempt === MAX_ATTEMPTS });
       attempts.push({ retryable: v.retryable, fixes: v.fixes });
@@ -257,16 +264,33 @@ export class Engine {
       }
     }
     const meta = { action: plan.action, info_not_found: plan.infoNotFound, fallback: fallbackUsed };
+    // Recorrido: el objetivo solo cuenta una vez por conversación (hasta que se cierre y se reabra).
+    const goalReached = plan.goalCompleted && !conv.goal_completed_at;
+    const goalHandoff = goalReached && bot.flow.on_goal_action === 'handoff' && plan.action !== 'handoff';
     if (plan.action === 'handoff') {
       await this.executeHandoff(bot, conv, contact, transport, plan.messages, plan.handoffReason || 'La IA decidió transferir');
     } else if (plan.action !== 'no_reply') {
       await this.sendPlan(bot, conv, transport, plan, meta);
+    }
+    if (plan.flowStep || goalReached) {
+      const reached = await store.setFlowState(conv.id, plan.flowStep, goalReached);
+      if (reached) {
+        await log('info', 'engine', `Objetivo de la conversación cumplido${plan.flowStep ? ` (etapa ${plan.flowStep})` : ''}`);
+        if (goalHandoff) {
+          // Ya se envió la respuesta de la IA (que se despide): solo se pasa a una persona, sin otro mensaje.
+          await this.executeHandoff(bot, conv, contact, transport, [], 'Se cumplió el objetivo de la conversación', { silent: true });
+        } else if (bot.flow.on_goal_action === 'notify' && channel.type !== 'playground' && this.ext.alertTeam) {
+          const who = contact.name || contact.push_name || contact.phone || 'Un cliente';
+          await this.ext.alertTeam(conv.account_id, { title: '🎯 Objetivo cumplido', body: `${who} (${channel.name}): ${bot.flow.goal}`, link: `#/conversation/${conv.id}`, kind: 'goal' });
+        }
+      }
     }
     await store.markProcessed(conv.id, lastPendingId);
 
     // Eventos para las reglas automáticas (se ejecutan después, sin bloquear la respuesta).
     if (this.ext.onEvent) {
       if (plan.intents.length) this.ext.onEvent({ type: 'intent', conversationId: conv.id, intents: plan.intents, text: customerText });
+      if (goalReached) this.ext.onEvent({ type: 'goal_completed', conversationId: conv.id, text: customerText });
       for (const [field, value] of Object.entries(contact.data ?? {})) {
         if (value && dataBefore[field] !== value) this.ext.onEvent({ type: 'data_captured', conversationId: conv.id, field, text: customerText });
       }
@@ -334,9 +358,9 @@ export class Engine {
     }
   }
 
-  async executeHandoff(bot: Chatbot, conv: Conversation, contact: Contact, transport: Transport, messages: string[], reason: string) {
+  async executeHandoff(bot: Chatbot, conv: Conversation, contact: Contact, transport: Transport, messages: string[], reason: string, opts: { silent?: boolean } = {}) {
     await store.setConversationStatus(conv.id, 'human', reason);
-    const texts = messages.length ? messages : bot.rules.handoff_message ? [bot.rules.handoff_message] : [];
+    const texts = messages.length ? messages : bot.rules.handoff_message && !opts.silent ? [bot.rules.handoff_message] : [];
     for (const text of texts) {
       await this.sendOut(bot, conv, transport, { sender: 'bot', text, delay: typingDelay(text, bot.ai.typing_simulation && hasTyping(transport)), meta: { action: 'handoff' } });
     }

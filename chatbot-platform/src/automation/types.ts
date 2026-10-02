@@ -73,6 +73,7 @@ export const TriggerSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('appointment_booked'), service_id: z.string().default('') }),
   z.object({ type: z.literal('appointment_cancelled'), service_id: z.string().default('') }),
   z.object({ type: z.literal('opt_out') }),
+  z.object({ type: z.literal('goal_completed') }),
 ]);
 export type Trigger = z.infer<typeof TriggerSchema>;
 export type TriggerType = Trigger['type'];

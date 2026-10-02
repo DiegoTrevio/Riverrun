@@ -10,7 +10,7 @@ import * as store from '../store/index.js';
 import type { Channel, Chatbot, Contact, Conversation, Message } from '../types.js';
 import * as astore from './store.js';
 import { renderTemplate } from './templates.js';
-import { isOpen, nextOpen, nextTimeOfDay } from './time.js';
+import { addDays, isOpen, localParts, nextOpen, nextTimeOfDay, zonedToUtc } from './time.js';
 import type { AccountSettings, Action, Automation, AutomationEvent, Condition, SequenceStep, Trigger } from './types.js';
 
 interface Ctx {
@@ -400,7 +400,7 @@ export class Automator {
   }
 
   /** Tarea programada: envía un paso de secuencia y programa el siguiente. */
-  async runSequenceStep(payload: { enrollment_id: string; step: number }) {
+  async runSequenceStep(payload: { enrollment_id: string; step: number; first_due?: string }) {
     const en = await astore.getEnrollment(payload.enrollment_id);
     if (!en || en.status !== 'active' || en.current_step !== payload.step) return;
     const seq = await astore.getSequence(en.sequence_id);
@@ -410,6 +410,20 @@ export class Automator {
     if (!ctx) return stop('conversación eliminada');
     if (ctx.contact.opted_out) return stop('el cliente se dio de baja');
     if (ctx.conv.status === 'human') return stop('una persona está atendiendo la conversación');
+    if (!ctx.channel.active || ctx.channel.account_active === false) {
+      // Canal apagado o cuenta en pausa: la secuencia espera (hasta 7 días) en lugar de perderse.
+      const firstDue = payload.first_due ? new Date(payload.first_due) : new Date();
+      if (Date.now() - firstDue.getTime() > 7 * 86400_000) return stop('el canal o la cuenta siguen inactivos después de 7 días');
+      const retryAt = new Date(Date.now() + 3600_000);
+      await astore.updateEnrollment(en.id, { next_run_at: retryAt });
+      await astore.scheduleJob({
+        account_id: ctx.conv.account_id,
+        type: 'sequence_step',
+        payload: { enrollment_id: en.id, conversation_id: ctx.conv.id, step: payload.step, first_due: firstDue.toISOString() },
+        run_at: retryAt,
+      });
+      return;
+    }
     if (seq.stop_on_reply) {
       const last = await astore.lastInbound(ctx.conv.id);
       if (last && last.id > en.last_inbound_id) return stop('el cliente respondió');
@@ -433,7 +447,7 @@ export class Automator {
     const last = await astore.lastInbound(payload.conversation_id);
     if (last && last.id > payload.after_message_id) return; // sí respondió
     const ctx = await this.loadCtx(payload.conversation_id);
-    if (!ctx || !conditionsMatch(rule.conditions, ctx)) return;
+    if (!ctx || ctx.channel.account_active === false || !conditionsMatch(rule.conditions, ctx)) return;
     await this.runRule(rule, ctx, { type: 'no_reply', conversationId: ctx.conv.id });
   }
 
@@ -451,7 +465,13 @@ export class Automator {
 export function stepTime(from: Date, step: SequenceStep, settings: AccountSettings, businessOnly: boolean): Date {
   const unit = step.delay_unit === 'days' ? 86400_000 : step.delay_unit === 'hours' ? 3600_000 : 60_000;
   let t = new Date(from.getTime() + step.delay_value * unit);
-  if (step.at_time) t = nextTimeOfDay(t, step.at_time, settings.timezone);
+  if (step.at_time && step.delay_unit === 'days' && step.delay_value > 0) {
+    // "N días después a las HH:MM" = ese día del calendario a esa hora (no la siguiente HH:MM después de N×24 h).
+    const day = zonedToUtc(addDays(localParts(from, settings.timezone).date, step.delay_value), step.at_time, settings.timezone);
+    t = day.getTime() > from.getTime() ? day : nextTimeOfDay(t, step.at_time, settings.timezone);
+  } else if (step.at_time) {
+    t = nextTimeOfDay(t, step.at_time, settings.timezone);
+  }
   if (businessOnly) t = nextOpen(settings.business_hours, settings.holidays, t, settings.timezone);
   return t;
 }

@@ -54,6 +54,7 @@ const CampaignBody = z.object({
     .default({ tags_any: [], tags_none: [], active_within_days: 0, statuses: [] }),
   scheduled_at: z.string().datetime({ offset: true }).nullable().default(null),
   rate_per_minute: z.number().int().min(1).max(120).default(20),
+  business_hours_only: z.boolean().default(true),
 });
 
 export async function automationRoutes(api: FastifyInstance, service: ChatService) {

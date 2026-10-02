@@ -93,6 +93,8 @@ t('encadenado: etiqueta → secuencia con pasos programados; se detiene si el cl
     return auto.enrollments.length > 0;
   });
   assert.equal(auto.enrollments[0].status, 'active');
+  // La inscripción se guarda antes que su primer envío programado: esperar a ambos.
+  await waitFor(async () => (await pendingJobs('sequence_step')).length === 1);
   await h.service.scheduler.runDue();
   await waitFor(() => lastTexts().some((x) => x.startsWith('Paso 1')));
   // El paso 2 es mañana: no se envía todavía

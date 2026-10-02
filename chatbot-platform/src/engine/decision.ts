@@ -14,6 +14,8 @@ export const DecisionSchema = z.object({
   handoff_reason: z.string().default(''),
   info_not_found: z.boolean().default(false),
   intents: z.array(z.string()).default([]),
+  flow_step: z.number().int().default(0),
+  goal_completed: z.boolean().default(false),
   booking: z
     .object({
       action: z.enum(['none', 'book', 'cancel']).default('none'),
@@ -29,7 +31,7 @@ export type Decision = z.infer<typeof DecisionSchema>;
 export const DECISION_JSON_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['thinking', 'action', 'messages', 'image_ids', 'save_data', 'remember', 'handoff_reason', 'info_not_found', 'intents', 'booking'],
+  required: ['thinking', 'action', 'messages', 'image_ids', 'save_data', 'remember', 'handoff_reason', 'info_not_found', 'intents', 'flow_step', 'goal_completed', 'booking'],
   properties: {
     thinking: {
       type: 'string',
@@ -67,6 +69,14 @@ export const DECISION_JSON_SCHEMA = {
       type: 'array',
       description: 'Intenciones de la lista "Intenciones a detectar" que expresa el cliente en sus mensajes nuevos. Vacío si ninguna.',
       items: { type: 'string' },
+    },
+    flow_step: {
+      type: 'integer',
+      description: 'Número de la etapa del recorrido en la que queda la conversación después de esta respuesta (0 si no hay recorrido).',
+    },
+    goal_completed: {
+      type: 'boolean',
+      description: 'true solo si con esta respuesta se cumple el objetivo de la conversación (y ya se tienen los datos importantes).',
     },
     booking: {
       type: 'object',

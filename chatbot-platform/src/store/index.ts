@@ -591,6 +591,26 @@ export async function sentImageIds(conversationId: string): Promise<string[]> {
   return rows.map((r) => r.image_id);
 }
 
+/**
+ * Guarda la etapa del recorrido y, si `goal`, marca el objetivo como cumplido.
+ * Devuelve true solo la primera vez que se cumple (evita repetir la acción al cumplirlo).
+ */
+export async function setFlowState(conversationId: string, step: number, goal: boolean): Promise<boolean> {
+  const row = await queryOne<{ newly: boolean }>(
+    `WITH old AS (SELECT goal_completed_at FROM conversations WHERE id = $1)
+     UPDATE conversations SET flow_step = CASE WHEN $2::int > 0 THEN $2::int ELSE flow_step END,
+       goal_completed_at = CASE WHEN $3::boolean AND goal_completed_at IS NULL THEN now() ELSE goal_completed_at END
+     WHERE id = $1 RETURNING ($3::boolean AND (SELECT goal_completed_at FROM old) IS NULL) AS newly`,
+    [conversationId, step, goal],
+  );
+  return !!row?.newly;
+}
+
+/** Reinicia el recorrido (al reabrir una conversación cerrada, o desde el panel). */
+export async function resetFlowState(conversationId: string) {
+  await query(`UPDATE conversations SET flow_step = 0, goal_completed_at = NULL WHERE id = $1`, [conversationId]);
+}
+
 export async function lastHumanActivity(conversationId: string): Promise<Date | null> {
   const r = await queryOne<{ t: Date | null }>(
     `SELECT max(created_at) AS t FROM messages WHERE conversation_id = $1 AND sender = 'human'`,

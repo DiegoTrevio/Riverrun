@@ -112,6 +112,7 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
     const conv = await conversationFor(req.user, req.params.cid);
     await store.updateSummary(conv.id, '', 0);
     await store.updateContact(conv.contact_id, { data: {}, notes: [], name: '' });
+    await store.resetFlowState(conv.id);
     return { ok: true };
   });
 

@@ -16,6 +16,10 @@ export interface ExecutionPlan {
   intents: string[];
   /** Propuesta de agenda ya validada contra los horarios reales. */
   booking: { action: 'book'; serviceId: string; slot: string } | { action: 'cancel'; appointmentId: string } | null;
+  /** Etapa del recorrido (0 = sin recorrido o sin cambio). */
+  flowStep: number;
+  /** La IA marcó el objetivo como cumplido y el backend lo aceptó (hay objetivo y no faltan datos importantes). */
+  goalCompleted: boolean;
 }
 
 export interface ValidationResult {
@@ -58,6 +62,10 @@ export interface ValidationInput {
   agenda?: AgendaValidation | null;
   /** El cliente ya tiene un teléfono registrado (o lo dio ahora). */
   hasPhone?: boolean;
+  /** Datos del cliente ya guardados (para saber si faltan los importantes antes de cerrar el objetivo). */
+  knownData?: Record<string, string>;
+  /** Nombre confirmado del cliente (cuenta como el dato "nombre"). */
+  knownName?: string;
 }
 
 const IMAGE_PROMISE_RE = /\b(te|le|les)\s+(env[ií]o|mando|comparto|paso|dejo|adjunto)\b[^.?!\n]{0,40}\b(foto|fotos|imagen|imagenes|imágenes|men[uú]|cat[aá]logo|flyer|folleto)\b|\b(aqu[ií]|ah[ií])\s+(te|le)?\s*(va|van|est[aá]n?|tienes?)\b[^.?!\n]{0,30}\b(foto|fotos|imagen|imágenes|imagenes)\b/i;
@@ -383,6 +391,23 @@ export function validateDecision(input: ValidationInput): ValidationResult {
     }
   }
 
+  // ---------- Recorrido: etapa y objetivo ----------
+  const flow = bot.flow;
+  const flowStep = flow.steps.length ? Math.min(Math.max(0, Math.trunc(d.flow_step)), flow.steps.length) : 0;
+  if (flow.steps.length && d.flow_step > flow.steps.length) fixes.push(`Etapa ${d.flow_step} inexistente: se usó la ${flowStep}`);
+  let goalCompleted = false;
+  if (d.goal_completed) {
+    if (!flow.goal.trim()) {
+      fixes.push('Objetivo marcado como cumplido, pero el recorrido no tiene objetivo: se ignoró');
+    } else {
+      const have = { ...(input.knownData ?? {}), ...saveData };
+      const missing = bot.data_fields.filter((f) => f.required && !have[f.key] && !(f.type === 'name' && (contactName || input.knownName)));
+      if (missing.length) fixes.push(`El objetivo aún no se cumple: faltan datos importantes (${missing.map((f) => f.label).join(', ')})`);
+      else if (action === 'no_reply') fixes.push('Objetivo marcado como cumplido sin responder: se ignoró');
+      else goalCompleted = true;
+    }
+  }
+
   const remember = d.remember
     .map((x) => x.trim())
     .filter((x) => x.length > 2 && x.length < 200)
@@ -400,6 +425,8 @@ export function validateDecision(input: ValidationInput): ValidationResult {
       infoNotFound: d.info_not_found,
       intents,
       booking,
+      flowStep,
+      goalCompleted,
     },
     retryable,
     fixes,
@@ -409,5 +436,5 @@ export function validateDecision(input: ValidationInput): ValidationResult {
 }
 
 export function emptyPlan(action: Action): ExecutionPlan {
-  return { action, messages: [], images: [], saveData: {}, contactName: null, remember: [], handoffReason: '', infoNotFound: false, intents: [], booking: null };
+  return { action, messages: [], images: [], saveData: {}, contactName: null, remember: [], handoffReason: '', infoNotFound: false, intents: [], booking: null, flowStep: 0, goalCompleted: false };
 }
