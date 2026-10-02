@@ -2,10 +2,12 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { botFor, channelFor, HttpError, requireRole, scopeAccount, targetAccount } from '../access.js';
 import { adapterFor, mergeChannelConfig, publicChannel, webhookUrl } from '../channels/index.js';
-import { evolutionFor } from '../channels/whatsapp.js';
+import { evolutionFor, newInstanceName, releaseWhatsapp } from '../channels/whatsapp.js';
+import { recordConnectionState } from '../lifecycle.js';
 import { logEvent } from '../logs.js';
 import * as store from '../store/index.js';
 import { CHANNEL_TYPES, type Channel, type User } from '../types.js';
+import { assertVerified } from './onboarding.js';
 import { parse } from './util.js';
 
 const ChannelBody = z.object({
@@ -20,6 +22,15 @@ async function checkBot(user: User, accountId: string, chatbotId: string | null 
   if (!chatbotId) return;
   const bot = await botFor(user, chatbotId);
   if (bot.account_id !== accountId) throw new HttpError(400, 'El chatbot pertenece a otra cuenta');
+}
+
+/** Campos de infraestructura de WhatsApp: solo el superadmin los define (el cliente no elige servidor, llave ni instancia). */
+const INFRA_FIELDS = ['url', 'api_key', 'instance'];
+
+function clientConfig(user: User, type: string, cfg: Record<string, unknown> | undefined) {
+  if (!cfg || type !== 'whatsapp' || user.role === 'superadmin') return cfg;
+  // El formulario reenvía la configuración completa: estos campos se ignoran en silencio.
+  return Object.fromEntries(Object.entries(cfg).filter(([k]) => !INFRA_FIELDS.includes(k)));
 }
 
 function configError(e: any): never {
@@ -41,9 +52,11 @@ export async function channelRoutes(api: FastifyInstance) {
     const accountId = await targetAccount(req.user, b.account_id);
     await checkBot(req.user, accountId, b.chatbot_id);
     const adapter = adapterFor(b.type);
+    const given = clientConfig(req.user, b.type, b.config) ?? {};
+    if (b.type === 'whatsapp' && !given.instance) given.instance = newInstanceName(accountId);
     let cfg: Record<string, unknown>;
     try {
-      cfg = mergeChannelConfig(b.type, adapter.initialConfig?.() ?? {}, b.config ?? {});
+      cfg = mergeChannelConfig(b.type, adapter.initialConfig?.() ?? {}, given);
     } catch (e) {
       configError(e);
     }
@@ -65,10 +78,11 @@ export async function channelRoutes(api: FastifyInstance) {
     const ch = await channelFor(req.user, req.params.id);
     const b = parse(ChannelBody, req.body);
     await checkBot(req.user, ch.account_id, b.chatbot_id);
+    const given = clientConfig(req.user, ch.type, b.config);
     let cfg: Record<string, unknown> | undefined;
-    if (b.config) {
+    if (given) {
       try {
-        cfg = mergeChannelConfig(ch.type, ch.config, b.config);
+        cfg = mergeChannelConfig(ch.type, ch.config, given);
       } catch (e) {
         configError(e);
       }
@@ -81,6 +95,7 @@ export async function channelRoutes(api: FastifyInstance) {
   api.delete('/api/channels/:id', admins, async (req: any) => {
     const ch = await channelFor(req.user, req.params.id);
     await store.deleteChannel(ch.id);
+    await releaseWhatsapp(ch);
     await logEvent({ level: 'warn', source: 'admin', message: `Canal eliminado: ${ch.name}`, accountId: ch.account_id });
     return { ok: true };
   });
@@ -95,6 +110,7 @@ export async function channelRoutes(api: FastifyInstance) {
   api.post('/api/channels/:id/setup', admins, async (req: any) => {
     const ch = await channelFor(req.user, req.params.id);
     const adapter = adapterFor(ch.type);
+    if (adapter.setup) assertVerified(req.user);
     if (!adapter.setup) return { ok: true, message: 'Este canal no requiere conexión', channel: publicChannel(ch) };
     try {
       const r = await adapter.setup(ch, webhookUrl(ch));
@@ -113,7 +129,9 @@ export async function channelRoutes(api: FastifyInstance) {
     const adapter = adapterFor(ch.type);
     if (!adapter.status) return { state: 'unknown' };
     try {
-      return await adapter.status(ch);
+      const st = await adapter.status(ch);
+      if (ch.type === 'whatsapp' && st.state && st.state !== 'not_configured') await recordConnectionState(ch, st.state);
+      return st;
     } catch (e: any) {
       return { state: 'error', details: { error: e?.message ?? String(e) } };
     }
@@ -123,12 +141,14 @@ export async function channelRoutes(api: FastifyInstance) {
   const whatsapp = async (user: User, id: string) => {
     const ch = await channelFor(user, id);
     if (ch.type !== 'whatsapp') throw new HttpError(400, 'Este canal no es de WhatsApp');
-    if (!ch.config.instance) throw new HttpError(400, 'Primero define el nombre de la instancia de Evolution');
-    return ch;
+    if (ch.config.instance) return ch;
+    // Canales anteriores sin instancia: se le asigna una generada.
+    return (await store.updateChannel(ch.id, { config: mergeChannelConfig('whatsapp', ch.config, { instance: newInstanceName(ch.account_id) }) }))!;
   };
 
   /** Crea la instancia si no existe, configura el webhook y devuelve el QR. */
   api.post('/api/channels/:id/whatsapp/connect', admins, async (req: any) => {
+    assertVerified(req.user);
     const ch = await whatsapp(req.user, req.params.id);
     const evo = evolutionFor(ch);
     const url = webhookUrl(ch);
@@ -147,7 +167,10 @@ export async function channelRoutes(api: FastifyInstance) {
       } else {
         await evo.setWebhook(ch.config.instance, url);
       }
-      if (state === 'open') return { state };
+      if (state === 'open') {
+        await recordConnectionState(ch, 'open');
+        return { state };
+      }
       const c = await evo.connect(ch.config.instance);
       return { state: c.state ?? 'connecting', qr: c.base64 ?? null, pairingCode: c.pairingCode ?? null };
     } catch (e: any) {
@@ -165,6 +188,7 @@ export async function channelRoutes(api: FastifyInstance) {
   });
 
   api.post('/api/channels/:id/whatsapp/test', admins, async (req: any) => {
+    assertVerified(req.user);
     const ch = await whatsapp(req.user, req.params.id);
     const { number, text } = parse(z.object({ number: z.string().min(8), text: z.string().max(1000).default('Mensaje de prueba ✅') }), req.body);
     await evolutionFor(ch).sendText(ch.config.instance, number.replace(/\D/g, ''), text).catch((e) => {

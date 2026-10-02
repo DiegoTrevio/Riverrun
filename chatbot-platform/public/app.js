@@ -142,6 +142,10 @@ async function render() {
   const params = new URLSearchParams(qs || '');
 
   if (parts[0] === 'login') return renderLogin();
+  if (parts[0] === 'registro') return renderSignup();
+  if (parts[0] === 'olvide') return renderForgot();
+  if (parts[0] === 'restablecer') return renderReset(params.get('token') || '');
+  if (parts[0] === 'verificar') return renderVerify(params.get('token') || '');
   if (!state.me) {
     try {
       await loadSession();
@@ -157,7 +161,10 @@ async function render() {
   const content = h('div');
   fill($app, shell(parts[0] || 'home', content));
   try {
-    if (!parts.length) await viewDashboard(content);
+    if (!parts.length && needsOnboarding()) location.hash = '#/inicio';
+    else if (!parts.length) await viewDashboard(content);
+    else if (parts[0] === 'inicio') await viewOnboarding(content, parts[1]);
+    else if (parts[0] === 'consumo') await viewUsage(content, params);
     else if (parts[0] === 'bot') await viewBot(content, parts[1], parts[2] || 'general');
     else if (parts[0] === 'channels') await viewChannels(content, params);
     else if (parts[0] === 'channel') await viewChannel(content, parts[1]);
@@ -207,6 +214,7 @@ function shell(active, content) {
     h('nav', { class: 'sidebar' },
       h('div', { class: 'brand' }, '💬 Chatbots'),
       switcher,
+      isAdmin() && (!isSuper() || state.accountId) ? link('#/inicio', 'Primeros pasos', 'inicio') : null,
       isAdmin() ? link('#/', 'Chatbots', 'home') : null,
       isAdmin() ? link('#/channels', 'Canales', 'channels') : null,
       link('#/conversations', 'Conversaciones', 'conversations'),
@@ -215,18 +223,49 @@ function shell(active, content) {
       h('a', { href: '#/notifications', class: active === 'notifications' ? 'active' : '' }, 'Notificaciones ', bell),
       isAdmin() ? link('#/users', 'Usuarios', 'users') : null,
       isSuper() ? link('#/accounts', 'Cuentas', 'accounts') : null,
+      isAdmin() ? link('#/consumo', 'Consumo de IA', 'consumo') : null,
       isAdmin() ? link('#/logs', 'Registros', 'logs') : null,
       h('div', { class: 'spacer' }),
       h('div', { class: 'small muted', style: 'padding:4px 10px' }, user.name || user.email, h('br'), ROLE_LABEL[user.role]),
       link('#/password', 'Mi perfil', 'password'),
       h('a', { href: '#', onclick: async (e) => { e.preventDefault(); await api('POST', '/api/logout'); state.me = null; location.hash = '#/login'; } }, 'Cerrar sesión'),
     ),
-    h('main', { class: 'main' }, content),
+    h('main', { class: 'main' }, accountBanner(), content),
   );
+}
+
+/** Aviso de la cuenta: días de prueba, cuenta en pausa o correo sin confirmar. */
+function accountBanner() {
+  const { user, account } = state.me;
+  if (!account) return null;
+  const items = [];
+  if (account.status === 'paused') {
+    items.push(h('div', { class: 'banner danger' }, h('strong', {}, 'Tu cuenta está en pausa. '),
+      'Tu asistente no está respondiendo ni enviando mensajes; tu configuración y tus conversaciones se conservan.',
+      state.meta.support_contact ? [' Para activarla escribe a ', h('strong', {}, state.meta.support_contact), '.'] : ''));
+  } else if (account.status === 'trial' && account.trial_ends_at) {
+    const days = Math.max(0, Math.ceil((new Date(account.trial_ends_at) - Date.now()) / 86400000));
+    items.push(h('div', { class: `banner ${days <= 3 ? 'warn' : ''}` },
+      `Periodo de prueba: ${days === 0 ? 'termina hoy' : days === 1 ? 'queda 1 día' : `quedan ${days} días`}.`,
+      state.meta.support_contact ? [' Para contratar escribe a ', h('strong', {}, state.meta.support_contact), '.'] : ''));
+  }
+  if (!user.email_verified_at && state.meta.require_email) {
+    items.push(h('div', { class: 'banner warn' },
+      `Confirma tu correo (${user.email}) con el enlace que te enviamos para poder conectar tu WhatsApp. `,
+      h('a', { href: '#', onclick: async (e) => { e.preventDefault(); await run(() => api('POST', '/api/me/resend-verification'), 'Te enviamos un nuevo enlace'); } }, 'Reenviar correo')));
+  }
+  return items.length ? h('div', { class: 'stack', style: 'margin-bottom:16px' }, items) : null;
+}
+
+/** Cuenta propia con el asistente sin terminar: se abre "Primeros pasos" en lugar de la lista de chatbots. */
+function needsOnboarding() {
+  const acc = state.me?.account;
+  return !isSuper() && isAdmin() && acc && acc.signup_source === 'signup' && !acc.onboarding?.done;
 }
 
 function renderLogin() {
   const f = { email: '', password: '' };
+  const signupLink = h('p', { class: 'small', style: 'margin-bottom:0' });
   const submit = async (e) => {
     e.preventDefault();
     const ok = await run(() => api('POST', '/api/login', f));
@@ -238,8 +277,87 @@ function renderLogin() {
       field('Correo', text(f, 'email', { placeholder: 'tu@correo.com' })),
       field('Contraseña', text(f, 'password', { type: 'password' })),
       h('button', { class: 'primary', type: 'submit' }, 'Entrar'),
+      h('p', { class: 'small', style: 'margin-bottom:0' }, h('a', { href: '#/olvide' }, '¿Olvidaste tu contraseña?')),
+      signupLink,
     ),
   );
+  api('GET', '/api/signup/info').then((i) => { if (i.enabled) fill(signupLink, '¿Aún no tienes cuenta? ', h('a', { href: '#/registro' }, `Crea una gratis (${i.trial_days} días de prueba)`)); }).catch(() => undefined);
+}
+
+/* ------------------------------ Registro y recuperación (públicas) ------------------------------ */
+
+function publicCard(title, ...kids) {
+  fill($app, h('div', { class: 'card login', style: 'max-width:440px' }, h('h1', {}, title), kids));
+}
+
+async function renderSignup() {
+  let info;
+  try { info = await api('GET', '/api/signup/info'); } catch { info = { enabled: false, business_types: [] }; }
+  if (!info.enabled) return publicCard('Registro cerrado', h('p', {}, 'Por ahora el registro no está disponible.'), h('a', { href: '#/login' }, 'Iniciar sesión'));
+  const f = { name: '', company: '', business_type: 'otro', email: '', password: '', phone: '', accept_terms: false, website: '' };
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!f.accept_terms) return toast('Acepta los términos para continuar', true);
+    const r = await run(() => api('POST', '/api/signup', f));
+    if (r) { state.me = null; location.hash = '#/inicio'; }
+  };
+  publicCard('Crea tu asistente',
+    h('p', { class: 'muted', style: 'margin-top:0' }, `Prueba gratis ${info.trial_days} días. En unos minutos tu asistente responde por WhatsApp.`),
+    h('form', { class: 'stack', onsubmit: submit },
+      field('Tu nombre', text(f, 'name')),
+      field('Nombre de tu negocio', text(f, 'company', { placeholder: 'Clínica Sonrisa' })),
+      field('Tipo de negocio', select(f, 'business_type', info.business_types.map((b) => [b.key, b.label]))),
+      field('Correo', text(f, 'email', { type: 'email', placeholder: 'tu@negocio.com' }), 'Te enviaremos un enlace para confirmarlo.'),
+      field('Contraseña', text(f, 'password', { type: 'password' }), 'Mínimo 8 caracteres.'),
+      field('WhatsApp para avisos (opcional)', text(f, 'phone', { placeholder: '5215512345678' }), 'Ahí te avisamos cuando un cliente pida hablar con una persona.'),
+      // Campo trampa para bots: oculto para las personas.
+      h('div', { style: 'position:absolute;left:-9999px', 'aria-hidden': 'true' }, h('input', { tabindex: '-1', autocomplete: 'off', oninput: (e) => (f.website = e.target.value) })),
+      h('label', { class: 'check small' }, h('input', { type: 'checkbox', onchange: (e) => (f.accept_terms = e.target.checked) }),
+        'Acepto los términos del servicio. Entiendo que WhatsApp se conecta como "dispositivo vinculado" (no es la API oficial) y que los envíos masivos pueden provocar el bloqueo del número.'),
+      h('button', { class: 'primary', type: 'submit' }, 'Crear mi cuenta'),
+      h('p', { class: 'small', style: 'margin:0' }, '¿Ya tienes cuenta? ', h('a', { href: '#/login' }, 'Inicia sesión'))));
+}
+
+function renderForgot() {
+  const f = { email: '' };
+  const box = h('div');
+  publicCard('Recuperar contraseña', box);
+  fill(box, h('form', { class: 'stack', onsubmit: async (e) => {
+    e.preventDefault();
+    const r = await run(() => api('POST', '/api/forgot-password', f));
+    if (r) fill(box, h('p', {}, 'Si el correo está registrado, te enviamos un enlace para elegir una contraseña nueva. Vence en 1 hora.'), h('a', { href: '#/login' }, 'Volver a iniciar sesión'));
+  } },
+    field('Correo', text(f, 'email', { type: 'email' })),
+    h('button', { class: 'primary', type: 'submit' }, 'Enviar enlace'),
+    h('a', { class: 'small', href: '#/login' }, 'Volver')));
+}
+
+function renderReset(token) {
+  const f = { token, password: '', confirm: '' };
+  const box = h('div');
+  publicCard('Nueva contraseña', box);
+  if (!token) return fill(box, h('p', {}, 'El enlace no es válido.'), h('a', { href: '#/olvide' }, 'Pedir uno nuevo'));
+  fill(box, h('form', { class: 'stack', onsubmit: async (e) => {
+    e.preventDefault();
+    if (f.password !== f.confirm) return toast('Las contraseñas no coinciden', true);
+    const r = await run(() => api('POST', '/api/reset-password', { token: f.token, password: f.password }));
+    if (r) fill(box, h('p', {}, '✅ Listo, ya puedes entrar con tu contraseña nueva.'), h('a', { class: 'btn primary', href: '#/login' }, 'Iniciar sesión'));
+  } },
+    field('Contraseña nueva', text(f, 'password', { type: 'password' }), 'Mínimo 8 caracteres.'),
+    field('Repítela', text(f, 'confirm', { type: 'password' })),
+    h('button', { class: 'primary', type: 'submit' }, 'Guardar')));
+}
+
+async function renderVerify(token) {
+  const box = h('p', {}, 'Confirmando…');
+  publicCard('Confirmar correo', box);
+  try {
+    await api('POST', '/api/verify-email', { token });
+    state.me = null;
+    fill(box, '✅ Tu correo quedó confirmado. ', h('a', { href: '#/inicio' }, 'Continuar con la configuración →'));
+  } catch (e) {
+    fill(box, e.message, ' ', h('a', { href: '#/inicio' }, 'Ir al panel'));
+  }
 }
 
 /** Selector de cuenta al crear algo (solo superadmin; los demás usan la suya). */
@@ -986,13 +1104,16 @@ function channelConfigFields(ch, cfg) {
   const secret = (key, label, help) => field(label, h('input', { type: 'password', autocomplete: 'off', value: cfg[key] || '', placeholder: cfg[key] ? '' : 'Pega aquí el valor', oninput: (e) => (cfg[key] = e.target.value) }), help);
   switch (ch.type) {
     case 'whatsapp':
+      if (!isSuper()) {
+        return [field('Número de WhatsApp', text(cfg, 'number', { placeholder: '5215512345678' }), 'Con lada de país; opcional, como referencia. Conecta tu WhatsApp con el código QR de abajo.')];
+      }
       return [
-        field('Instancia de Evolution', text(cfg, 'instance', { placeholder: 'hotel_palmas' }), 'Nombre único (letras, números, guion y guion bajo). Se crea sola al conectar.'),
+        field('Instancia de Evolution', text(cfg, 'instance', { placeholder: 'Se genera sola' }), 'Nombre único (letras, números, guion y guion bajo). Se genera al crear el canal y se crea en Evolution al conectar.'),
         field('Número de WhatsApp', text(cfg, 'number', { placeholder: '5215512345678' }), 'Con lada de país; opcional, como referencia.'),
-        h('details', {}, h('summary', {}, 'Servidor de Evolution distinto al global (opcional)'),
+        h('details', {}, h('summary', {}, 'Servidor de Evolution distinto al global (solo superadmin)'),
           h('div', { style: 'margin-top:10px' },
             field('URL de Evolution', text(cfg, 'url', { placeholder: 'Vacío = usar EVOLUTION_URL' })),
-            secret('api_key', 'API key de Evolution', 'Vacío = usar EVOLUTION_API_KEY'))),
+            secret('api_key', 'API key de Evolution', 'Obligatoria si usas otra URL: la llave global nunca se envía a otro servidor.'))),
       ];
     case 'telegram':
       return [
@@ -1073,13 +1194,13 @@ async function viewChannel(root, id) {
     };
     connection.push(
       h('div', { class: 'row' },
-        h('button', { class: 'primary', onclick: connect, disabled: !ch.config.instance }, 'Conectar / mostrar QR'),
-        h('button', { onclick: setup, disabled: !ch.config.instance }, 'Reconfigurar webhook'),
-        h('button', { class: 'danger', disabled: !ch.config.instance, onclick: async () => { if (confirm('¿Desvincular este WhatsApp?')) { await run(() => api('POST', `/api/channels/${id}/whatsapp/logout`), 'Desconectado'); refresh(); } } }, 'Desconectar')),
+        h('button', { class: 'primary', onclick: connect }, 'Conectar / mostrar QR'),
+        h('button', { onclick: setup }, 'Reconfigurar webhook'),
+        h('button', { class: 'danger', onclick: async () => { if (confirm('¿Desvincular este WhatsApp?')) { await run(() => api('POST', `/api/channels/${id}/whatsapp/logout`), 'Desconectado'); refresh(); } } }, 'Desconectar')),
       qrBox,
       h('h3', {}, 'Mensaje de prueba'),
       h('div', { class: 'grid' }, field('Número (con lada)', text(test, 'number', { placeholder: '5215512345678' })), field('Texto', text(test, 'text'))),
-      h('button', { disabled: !ch.config.instance, onclick: () => run(() => api('POST', `/api/channels/${id}/whatsapp/test`, test), 'Enviado') }, 'Enviar'),
+      h('button', { onclick: () => run(() => api('POST', `/api/channels/${id}/whatsapp/test`, test), 'Enviado') }, 'Enviar'),
     );
   } else if (ch.type === 'telegram') {
     connection.push(
@@ -1206,12 +1327,32 @@ async function viewAccounts(root) {
       } }, 'Crear cuenta')),
     h('div', { class: 'card' },
       h('table', {},
-        h('thead', {}, h('tr', {}, h('th', {}, 'Cuenta'), h('th', {}, 'Chatbots'), h('th', {}, 'Canales'), h('th', {}, 'Usuarios'), h('th', {}, 'Conversaciones'), h('th', {}, ''))),
+        h('thead', {}, h('tr', {}, h('th', {}, 'Cuenta'), h('th', {}, 'Estado'), h('th', {}, 'WhatsApp'), h('th', { class: 'num' }, 'Conversaciones (mes / total)'), h('th', { class: 'num' }, 'IA (mes)'), h('th', {}, 'Última actividad'), h('th', {}, ''))),
         h('tbody', {}, accounts.map((a) => h('tr', {},
-          h('td', {}, h('strong', {}, a.name), ' ', !a.active ? h('span', { class: 'badge orange' }, 'inactiva') : null),
-          h('td', {}, a.chatbots), h('td', {}, a.channels), h('td', {}, a.users), h('td', {}, a.conversations),
+          h('td', {}, h('strong', {}, a.name),
+            a.owner_email ? h('div', { class: 'small muted' }, a.owner_email, a.owner_verified === false ? ' (sin confirmar)' : '') : null,
+            h('div', { class: 'small muted' }, `${a.chatbots} bots · ${a.channels} canales · ${a.users} usuarios${a.signup_source === 'signup' ? ' · registro propio' : ''}`)),
+          h('td', {}, statusBadge(a)),
+          h('td', {}, a.whatsapp_state ? h('span', { class: `badge ${a.whatsapp_state === 'open' ? 'green' : 'orange'}` }, { open: 'conectado', close: 'desconectado', connecting: 'conectando' }[a.whatsapp_state] || a.whatsapp_state) : h('span', { class: 'muted small' }, '—')),
+          h('td', { class: 'num' }, `${a.conversations_month} / ${a.conversations}`),
+          h('td', { class: 'num' }, usd(a.ai_cost_month)),
+          h('td', { class: 'small' }, a.last_activity_at ? fmtDate(a.last_activity_at) : '—'),
           h('td', {}, h('div', { class: 'row' },
             h('button', { class: 'small', onclick: () => { state.accountId = a.id; try { localStorage.setItem('cp-account', a.id); } catch { /* */ } location.hash = '#/'; } }, 'Abrir'),
+            a.status !== 'active' ? h('button', { class: 'small primary', onclick: async () => {
+              const plan = prompt('Plan contratado (opcional)', a.plan || '');
+              if (plan === null) return;
+              await run(() => api('PUT', `/api/accounts/${a.id}`, { status: 'active', plan }), 'Cuenta activada');
+              render();
+            } }, 'Activar plan') : h('button', { class: 'small', onclick: async () => {
+              if (!confirm(`¿Pausar "${a.name}"? Su asistente deja de responder, pero pueden entrar al panel.`)) return;
+              await run(() => api('PUT', `/api/accounts/${a.id}`, { status: 'paused' }), 'Cuenta en pausa');
+              render();
+            } }, 'Pausar'),
+            a.status !== 'active' ? h('button', { class: 'small', onclick: async () => {
+              const d = Number(prompt('¿Cuántos días más de prueba?', '7'));
+              if (d > 0) { await run(() => api('PUT', `/api/accounts/${a.id}`, { extend_trial_days: d }), 'Prueba extendida'); render(); }
+            } }, 'Extender prueba') : null,
             h('button', { class: 'small', onclick: async () => { const name = prompt('Nuevo nombre', a.name); if (name) { await run(() => api('PUT', `/api/accounts/${a.id}`, { name }), 'Actualizada'); state.me = null; render(); } } }, 'Renombrar'),
             h('button', { class: 'small', onclick: async () => {
               if (a.active && !confirm(`Al desactivar "${a.name}", sus usuarios no podrán entrar y sus canales dejarán de responder (los mensajes se siguen guardando). ¿Continuar?`)) return;
@@ -1886,4 +2027,233 @@ async function viewNotifications(root) {
         : h('p', { class: 'muted' }, state.me.user.account_id ? 'Sin notificaciones.' : 'Las notificaciones llegan a los usuarios de cada cuenta.')),
   );
   refreshBell();
+}
+
+/* ------------------------------ Primeros pasos (asistente de configuración) ------------------------------ */
+
+const ONB_STEPS = [
+  ['negocio', 'business', 'Tu negocio'],
+  ['asistente', 'assistant', 'Tu asistente'],
+  ['fotos', 'photos', 'Fotos'],
+  ['prueba', 'test', 'Pruébalo'],
+  ['whatsapp', 'whatsapp', 'WhatsApp'],
+];
+const TIMEZONES = [
+  ['America/Mexico_City', 'México (Centro)'], ['America/Monterrey', 'México (Monterrey)'], ['America/Cancun', 'México (Cancún)'],
+  ['America/Chihuahua', 'México (Chihuahua)'], ['America/Mazatlan', 'México (Pacífico)'], ['America/Tijuana', 'México (Tijuana)'],
+  ['America/Bogota', 'Colombia'], ['America/Lima', 'Perú'], ['America/Santiago', 'Chile'], ['America/Argentina/Buenos_Aires', 'Argentina'],
+  ['America/Guatemala', 'Guatemala / Centroamérica'], ['America/Panama', 'Panamá'], ['America/Caracas', 'Venezuela'],
+  ['America/Santo_Domingo', 'República Dominicana'], ['America/New_York', 'EUA (Este)'], ['America/Chicago', 'EUA (Centro)'],
+  ['America/Los_Angeles', 'EUA (Pacífico)'], ['Europe/Madrid', 'España'],
+];
+
+async function viewOnboarding(root, stepKey) {
+  const ob = await api('GET', withAcct('/api/onboarding'));
+  if (state.me.account && ob.complete && !state.me.account.onboarding?.done) state.me.account.onboarding = { ...state.me.account.onboarding, done: true };
+  const firstPending = ONB_STEPS.find(([, k]) => !ob.steps[k]);
+  const current = ONB_STEPS.find(([slug]) => slug === stepKey) || (ob.complete ? null : firstPending) || null;
+  const go = (slug) => { location.hash = `#/inicio/${slug}`; };
+  const next = (slug) => { const i = ONB_STEPS.findIndex(([s]) => s === slug); state.me = null; go(ONB_STEPS[i + 1]?.[0] || ''); };
+
+  root.append(
+    h('h1', {}, ob.complete ? '¡Tu asistente está listo! 🎉' : `Configura tu asistente`),
+    h('ol', { class: 'steps' }, ONB_STEPS.map(([slug, k, label], i) =>
+      h('li', { class: `${ob.steps[k] ? 'done' : ''} ${current?.[0] === slug ? 'current' : ''}` },
+        h('a', { href: `#/inicio/${slug}` }, h('span', { class: 'num' }, ob.steps[k] ? '✓' : i + 1), label)))),
+  );
+  const box = h('div');
+  root.append(box);
+  if (!current) return onbDone(box, ob);
+  const [slug] = current;
+  if (slug === 'negocio') return onbBusiness(box, ob, () => next(slug));
+  if (slug === 'asistente') return onbAssistant(box, ob, () => next(slug));
+  if (!ob.chatbot_id) return box.append(h('div', { class: 'card' }, h('p', {}, 'Primero configura tu asistente.'), h('a', { class: 'btn primary', href: '#/inicio/asistente' }, 'Ir al paso 2')));
+  const bot = await api('GET', `/api/chatbots/${ob.chatbot_id}`);
+  if (slug === 'fotos') {
+    box.append(h('div', { class: 'card' },
+      h('h3', { style: 'margin-top:0' }, 'Fotos de tus productos o instalaciones (opcional)'),
+      h('p', { class: 'muted' }, 'El asistente solo envía fotos de este catálogo, y elige la correcta según lo que pregunte el cliente. Describe cada foto (qué es, precio si aplica) para que la use bien.')));
+    const imgs = h('div');
+    box.append(imgs, h('div', { class: 'row' },
+      h('button', { class: 'primary', onclick: async () => { await run(() => api('POST', withAcct('/api/onboarding/step'), { step: 'photos' })); next(slug); } }, 'Continuar'),
+      h('span', { class: 'muted small' }, 'Puedes agregar o cambiar fotos después en Chatbots → Imágenes.')));
+    return tabImages(imgs, bot);
+  }
+  if (slug === 'prueba') {
+    box.append(h('div', { class: 'card' },
+      h('h3', { style: 'margin-top:0' }, 'Pruébalo como si fueras un cliente'),
+      h('p', { class: 'muted' }, 'Pregunta precios, horarios o pide algo que no esté en tu información: debe decir que lo confirma con el equipo en lugar de inventar. Si algo no te gusta, regresa al paso 2 y ajusta la información.')));
+    const pg = h('div');
+    box.append(pg, h('div', { class: 'row', style: 'margin-top:12px' },
+      h('button', { class: 'primary', onclick: async () => { await run(() => api('POST', withAcct('/api/onboarding/step'), { step: 'test' })); next(slug); } }, 'Me gusta, continuar'),
+      h('a', { class: 'btn', href: '#/inicio/asistente' }, 'Ajustar información')));
+    return tabPlayground(pg, bot);
+  }
+  if (slug === 'whatsapp') return onbWhatsapp(box, ob, bot);
+}
+
+function onbBusiness(box, ob, done) {
+  const f = { business_type: state.me.account?.business_type || 'otro', timezone: ob.business.timezone, business_hours: clone(ob.business.business_hours), alert_phone: ob.business.alert_phone };
+  box.append(h('div', { class: 'card' },
+    h('h3', { style: 'margin-top:0' }, 'Datos de tu negocio'),
+    h('div', { class: 'grid' },
+      field('Tipo de negocio', select(f, 'business_type', ob.business_types.map((b) => [b.key, b.label])), 'Con esto preparamos a tu asistente: cómo atiende, qué datos pide y qué no debe decir.'),
+      field('Zona horaria', select(f, 'timezone', TIMEZONES.some(([z]) => z === f.timezone) ? TIMEZONES : [[f.timezone, f.timezone], ...TIMEZONES])),
+      field('Tu WhatsApp para avisos', text(f, 'alert_phone', { placeholder: '5215512345678' }), 'Con lada de país. Te avisamos ahí cuando un cliente pida hablar con una persona.')),
+    h('h4', {}, 'Horario de atención'),
+    h('p', { class: 'small muted' }, 'Por día: 09:00-14:00, 16:00-19:00 (vacío = cerrado). Se usa para agendar citas y para los mensajes fuera de horario.'),
+    hoursEditor(f.business_hours),
+    h('button', { class: 'primary', onclick: async () => { if (await run(() => api('POST', withAcct('/api/onboarding/business'), f), 'Guardado')) done(); } }, 'Guardar y continuar')));
+}
+
+function onbAssistant(box, ob, done) {
+  const a = ob.assistant || { assistant_name: '', formality: '', knowledge: {} };
+  // Sin bot todavía, el trato lo decide la plantilla del giro (p.ej. "usted" en salud).
+  const f = { assistant_name: a.assistant_name || '', formality: ob.assistant ? a.formality : '', description: '', knowledge: { catalog: '', hours: '', location: '', faq: '', other: '', ...a.knowledge } };
+  const k = f.knowledge;
+  box.append(h('div', { class: 'card' },
+    h('h3', { style: 'margin-top:0' }, 'Lo que tu asistente sabe'),
+    h('p', { class: 'muted' }, 'Tu asistente responde únicamente con esta información: si un precio o dato no está aquí, dirá que lo confirma con tu equipo. Escribe como se lo explicarías a un empleado nuevo.'),
+    h('div', { class: 'grid' },
+      field('Nombre del asistente (opcional)', text(f, 'assistant_name', { placeholder: 'Sofi' })),
+      field('Cómo trata a tus clientes', select(f, 'formality', [...(f.formality ? [] : [['', 'Lo usual en tu tipo de negocio']]), ['tu', 'De tú'], ['usted', 'De usted']]))),
+    field('Describe tu negocio en una o dos frases', area(f, 'description', { placeholder: 'Clínica dental familiar en el centro de Monterrey, con 15 años de experiencia.' })),
+    field('Productos o servicios con precios *', area(k, 'catalog', { big: true, placeholder: 'Limpieza dental — $600 (45 min)\nResina — desde $900\nBlanqueamiento — $3,500\nConsulta de valoración — gratis' }), 'Uno por renglón. Incluye precios, duración, tamaños o lo que te pregunten.'),
+    h('div', { class: 'grid' },
+      field('Horarios', area(k, 'hours', { placeholder: 'Lunes a viernes de 9:00 a 19:00\nSábados de 9:00 a 14:00' })),
+      field('Ubicación y contacto', area(k, 'location', { placeholder: 'Av. Constitución 100, Centro, Monterrey\nEstacionamiento gratis\nTel. 81 1234 5678' }))),
+    field('Preguntas frecuentes', area(k, 'faq', { big: true, placeholder: '¿Aceptan tarjeta? Sí, todas las tarjetas y transferencia.\n¿Hay estacionamiento? Sí, gratuito.' })),
+    field('Otra información (promociones, políticas, formas de pago…)', area(k, 'other')),
+    h('button', { class: 'primary', onclick: async () => {
+      if (!k.catalog.trim()) return toast('Escribe al menos tus productos o servicios', true);
+      if (await run(() => api('POST', withAcct('/api/onboarding/assistant'), { ...f, formality: f.formality || undefined }), 'Asistente listo')) done();
+    } }, 'Guardar y continuar'),
+    ob.chatbot_id ? h('p', { class: 'small muted' }, 'Para ajustes finos (personalidad, reglas, datos que pide, flujo) entra a ', h('a', { href: `#/bot/${ob.chatbot_id}/personalidad` }, 'la configuración avanzada'), '.') : null));
+}
+
+function onbWhatsapp(box, ob, bot) {
+  if (!ob.email_verified) {
+    return box.append(h('div', { class: 'card' },
+      h('h3', { style: 'margin-top:0' }, 'Confirma tu correo para conectar WhatsApp'),
+      h('p', {}, `Te enviamos un enlace a ${state.me.user.email}. Ábrelo y vuelve aquí.`),
+      h('div', { class: 'row' },
+        h('button', { onclick: () => run(() => api('POST', '/api/me/resend-verification'), 'Te enviamos un nuevo enlace') }, 'Reenviar correo'),
+        h('button', { onclick: () => { state.me = null; render(); } }, 'Ya lo confirmé'))));
+  }
+  const status = h('div');
+  const qrBox = h('div');
+  let channelId = ob.whatsapp_channel_id;
+  const showState = (st) => fill(status,
+    st === 'open' ? h('div', { class: 'banner ok' }, '✅ WhatsApp conectado. Tu asistente ya responde a tus clientes.')
+      : st === 'connecting' ? h('p', { class: 'muted' }, 'Esperando a que escanees el código…')
+      : null);
+  const poll = () => {
+    clearTimers();
+    state.timers.push(setInterval(async () => {
+      if (!channelId) return;
+      const st = await api('GET', `/api/channels/${channelId}/status`).catch(() => null);
+      if (st?.state === 'open') { clearTimers(); fill(qrBox); showState('open'); state.me = null; setTimeout(() => { location.hash = '#/inicio'; render(); }, 1500); }
+    }, 3000));
+  };
+  const connect = async () => {
+    const ch = await run(() => api('POST', withAcct('/api/onboarding/whatsapp')));
+    if (!ch) return;
+    channelId = ch.id;
+    fill(qrBox, h('p', { class: 'muted' }, 'Generando código…'));
+    const r = await run(() => api('POST', `/api/channels/${ch.id}/whatsapp/connect`));
+    if (!r) return fill(qrBox);
+    if (r.state === 'open') { fill(qrBox); showState('open'); state.me = null; return; }
+    const src = r.qr ? (r.qr.startsWith('data:') ? r.qr : `data:image/png;base64,${r.qr}`) : null;
+    fill(qrBox,
+      src ? h('img', { class: 'qr', src, alt: 'Código QR de WhatsApp' }) : h('p', { class: 'muted' }, 'No se generó el código; presiona de nuevo.'),
+      r.pairingCode ? h('p', {}, 'O vincula con el código: ', h('code', {}, r.pairingCode)) : null,
+      h('p', { class: 'small muted' }, 'El código cambia cada ~40 segundos. Si vence, presiona "Generar código" otra vez.'));
+    showState('connecting');
+    poll();
+  };
+  box.append(h('div', { class: 'card' },
+    h('h3', { style: 'margin-top:0' }, 'Conecta el WhatsApp de tu negocio'),
+    h('ol', {},
+      h('li', {}, 'Ten a la mano el teléfono con el WhatsApp del negocio (puede ser WhatsApp Business).'),
+      h('li', {}, 'Presiona "Generar código".'),
+      h('li', {}, 'En el teléfono abre WhatsApp → Configuración → ', h('strong', {}, 'Dispositivos vinculados'), ' → Vincular un dispositivo, y escanea el código.'),
+      h('li', {}, 'Listo: los mensajes que lleguen los contesta ', bot.personality?.assistant_name || 'tu asistente', '. Tú puedes seguir usando WhatsApp en el teléfono; si contestas tú, el asistente se pausa en esa conversación.')),
+    h('p', { class: 'small muted' }, 'Mantén el teléfono con internet. Si se desconecta, te avisamos por correo y en el panel para que vuelvas a escanear.'),
+    h('button', { class: 'primary', onclick: connect }, 'Generar código'),
+    status, qrBox));
+}
+
+function onbDone(box, ob) {
+  box.append(h('div', { class: 'card' },
+    h('p', {}, 'Tu asistente está conectado y respondiendo. Esto es lo que puedes hacer ahora:'),
+    h('ul', {},
+      h('li', {}, h('a', { href: '#/conversations' }, 'Ver las conversaciones'), ' y tomar el control cuando quieras.'),
+      ob.chatbot_id ? h('li', {}, h('a', { href: `#/bot/${ob.chatbot_id}/conocimiento` }, 'Agregar más información'), ' o ', h('a', { href: `#/bot/${ob.chatbot_id}/imagenes` }, 'más fotos'), '.') : null,
+      h('li', {}, h('a', { href: '#/agenda/servicios' }, 'Configurar tu agenda'), ' para que agende citas solo.'),
+      h('li', {}, h('a', { href: '#/automation' }, 'Crear respuestas automáticas y recordatorios'), '.'),
+      h('li', {}, h('a', { href: '#/users' }, 'Invitar a tu equipo'), '.'))));
+}
+
+/* ------------------------------ Consumo de IA ------------------------------ */
+
+const usd = (n) => `US$${(n || 0).toFixed(n < 1 ? 4 : 2)}`;
+const KIND_LABEL = { decision: 'Respuestas', summary: 'Resúmenes de memoria', transcription: 'Notas de voz' };
+
+async function viewUsage(root, params) {
+  const month = params.get('month') || new Date().toISOString().slice(0, 7);
+  const months = [...Array(6)].map((_, i) => { const d = new Date(); d.setUTCDate(1); d.setUTCMonth(d.getUTCMonth() - i); return d.toISOString().slice(0, 7); });
+  const pick = h('select', { style: 'width:auto', onchange: (e) => (location.hash = `#/consumo?month=${e.target.value}`) }, months.map((m) => h('option', { value: m, selected: m === month }, m)));
+  const u = await api('GET', withAcct(`/api/usage?month=${month}`));
+  root.append(h('div', { class: 'row between' }, h('h1', {}, 'Consumo de IA'), pick));
+  if (u.accounts) {
+    root.append(
+      h('div', { class: 'card' }, h('div', { class: 'kpi' }, usd(u.total_usd)), h('div', { class: 'muted small' }, `Gasto total de OpenAI en ${month} (estimado con la tabla de precios)`)),
+      h('div', { class: 'card' }, h('table', {},
+        h('thead', {}, h('tr', {}, h('th', {}, 'Cuenta'), h('th', {}, 'Estado'), h('th', { class: 'num' }, 'Gasto'), h('th', { class: 'num' }, 'Llamadas'), h('th', { class: 'num' }, 'Tokens entrada'), h('th', { class: 'num' }, 'Tokens salida'), h('th', { class: 'num' }, 'Audio (min)'))),
+        h('tbody', {}, u.accounts.map((a) => h('tr', { class: 'click', onclick: () => { state.accountId = a.id; try { localStorage.setItem('cp-account', a.id); } catch { /* */ } render(); } },
+          h('td', {}, a.name), h('td', {}, statusBadge(a)), h('td', { class: 'num' }, usd(a.cost_usd)), h('td', { class: 'num' }, a.calls),
+          h('td', { class: 'num' }, Number(a.input_tokens).toLocaleString()), h('td', { class: 'num' }, Number(a.output_tokens).toLocaleString()), h('td', { class: 'num' }, (a.audio_seconds / 60).toFixed(1))))))),
+      h('div', { class: 'card' }, h('h3', { style: 'margin-top:0' }, 'Precios por modelo (USD)'), h('p', { class: 'small muted' }, 'Verifica en openai.com/api/pricing. Un cambio aplica a las llamadas nuevas; el histórico conserva su costo.'), await pricesEditor()),
+    );
+    return;
+  }
+  const max = Math.max(...u.days.map((d) => d.cost_usd), 0.000001);
+  root.append(
+    h('div', { class: 'grid' },
+      h('div', { class: 'card' }, h('div', { class: 'kpi' }, usd(u.total_usd)), h('div', { class: 'muted small' }, `Gasto de IA en ${month}`)),
+      h('div', { class: 'card' }, h('div', { class: 'kpi' }, u.conversations), h('div', { class: 'muted small' }, 'conversaciones atendidas por la IA')),
+      h('div', { class: 'card' }, h('div', { class: 'kpi' }, usd(u.cost_per_conversation)), h('div', { class: 'muted small' }, 'costo promedio por conversación'))),
+    h('div', { class: 'card' }, h('h3', { style: 'margin-top:0' }, 'Por día'),
+      u.days.length ? h('div', { class: 'bars' }, u.days.map((d) => h('div', { class: 'bar', title: `${d.day}: ${usd(d.cost_usd)} (${d.calls} llamadas)` }, h('span', { style: `height:${Math.max(2, (d.cost_usd / max) * 100)}%` }), h('small', {}, d.day.slice(8)))))
+        : h('p', { class: 'muted' }, 'Sin consumo este mes.')),
+    h('div', { class: 'grid' },
+      h('div', { class: 'card' }, h('h3', { style: 'margin-top:0' }, 'Por tipo'), h('table', {}, h('tbody', {}, u.kinds.map((k) => h('tr', {}, h('td', {}, KIND_LABEL[k.kind] || k.kind), h('td', { class: 'num' }, k.calls), h('td', { class: 'num' }, usd(k.cost_usd))))))),
+      h('div', { class: 'card' }, h('h3', { style: 'margin-top:0' }, 'Por modelo'), h('table', {}, h('tbody', {}, u.models.map((m) => h('tr', {}, h('td', {}, m.model), h('td', { class: 'num' }, `${Number(m.input_tokens).toLocaleString()} / ${Number(m.output_tokens).toLocaleString()} tokens`), h('td', { class: 'num' }, usd(m.cost_usd)))))))),
+  );
+}
+
+async function pricesEditor() {
+  const prices = await api('GET', '/api/ai-prices');
+  const row = (p) => {
+    const f = { input_per_mtok: Number(p.input_per_mtok), cached_per_mtok: Number(p.cached_per_mtok), output_per_mtok: Number(p.output_per_mtok), per_audio_minute: Number(p.per_audio_minute) };
+    return h('tr', {}, h('td', {}, p.model),
+      ...['input_per_mtok', 'cached_per_mtok', 'output_per_mtok', 'per_audio_minute'].map((k) => h('td', {}, num(f, k, { step: 0.001, min: 0 }))),
+      h('td', {}, h('button', { class: 'small', onclick: () => run(() => api('PUT', `/api/ai-prices/${encodeURIComponent(p.model)}`, f), 'Precio guardado') }, 'Guardar')));
+  };
+  const n = { model: '' };
+  return h('div', {},
+    h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Modelo (prefijo)'), h('th', {}, 'Entrada / 1M'), h('th', {}, 'En caché / 1M'), h('th', {}, 'Salida / 1M'), h('th', {}, 'Audio / min'), h('th', {}, ''))),
+      h('tbody', {}, prices.map(row))),
+    h('div', { class: 'row', style: 'margin-top:8px' }, text(n, 'model', { placeholder: 'gpt-5.1' }),
+      h('button', { class: 'small', onclick: async () => { if (n.model && await run(() => api('PUT', `/api/ai-prices/${encodeURIComponent(n.model)}`, {}), 'Modelo agregado')) render(); } }, 'Agregar modelo')));
+}
+
+function statusBadge(a) {
+  if (a.active === false) return h('span', { class: 'badge red' }, 'desactivada');
+  if (a.status === 'paused') return h('span', { class: 'badge red' }, 'en pausa');
+  if (a.status === 'trial') {
+    const days = a.trial_ends_at ? Math.ceil((new Date(a.trial_ends_at) - Date.now()) / 86400000) : null;
+    return h('span', { class: `badge ${days !== null && days <= 3 ? 'orange' : ''}` }, days === null ? 'prueba' : `prueba · ${Math.max(0, days)} d`);
+  }
+  return h('span', { class: 'badge green' }, a.plan ? `activa · ${a.plan}` : 'activa');
 }

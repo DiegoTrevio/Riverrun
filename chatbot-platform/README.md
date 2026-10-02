@@ -49,15 +49,55 @@ docker compose up -d --build
 - Evolution API solo escucha en `127.0.0.1:8080` (no queda expuesta a internet). El backend y Evolution se hablan por la red interna de Docker (`WEBHOOK_BASE_URL=http://backend:3000`).
 - Se recomienda fijar la versión de Evolution con `EVOLUTION_IMAGE=evoapicloud/evolution-api:<versión>`.
 
+## Empresas que se registran solas (modo servicio)
+
+Así funciona para vender el servicio sin que tú entres a configurar nada:
+
+```
+Internet ──HTTPS──> Caddy (app.tudominio.com)
+                      └─> backend :3000   panel, registro, webhooks, tareas
+                            ├─> PostgreSQL   BD "chatbot" (todo) + BD "evolution"
+                            ├─> OpenAI       tu clave; el gasto se registra por cuenta
+                            └─> Evolution API :8080  (solo red interna, nunca expuesta)
+                                  ├─ Redis
+                                  └─ 1 instancia por canal de WhatsApp de cada empresa: "acc<id>_<aleatorio>"
+```
+
+1. **Registro** (`/#/registro`, enlazado desde el inicio de sesión): nombre, empresa, tipo de negocio, correo y contraseña. Se crea su cuenta en **prueba** (`TRIAL_DAYS`, 14 por defecto) con ella como administradora, y entra directo. Tú recibes un aviso (panel y `SUPERADMIN_EMAIL`).
+2. **Confirmar correo**: le llega un enlace (48 h, un solo uso). Mientras no lo confirme puede configurar y probar todo, pero **no puede conectar WhatsApp** ni otros canales reales.
+3. **Primeros pasos** (`/#/inicio`), un asistente de 5 pasos:
+   1. *Tu negocio*: zona horaria, horario y su WhatsApp para avisos.
+   2. *Tu asistente*: nombre, trato (tú/usted) y su información: productos/servicios con precios, horarios, ubicación, preguntas frecuentes. Se crea el chatbot con la **plantilla de su giro** (restaurante, salud, hotel, tienda, servicios, belleza u otro): personalidad, flujo, datos que pide y reglas (p.ej. "nunca des diagnósticos" en salud). Todo se puede afinar después en la configuración avanzada.
+   3. *Fotos* (opcional): catálogo de imágenes.
+   4. *Pruébalo*: el simulador.
+   5. *WhatsApp*: **Generar código** → escanea desde *Dispositivos vinculados* → listo. El panel detecta la conexión solo.
+4. **Si su WhatsApp se desconecta** (teléfono sin internet, sesión cerrada) se le avisa en el panel y por correo para que vuelva a escanear.
+5. **Fin de la prueba**: 3 días antes se avisa a la empresa y a ti; al vencer la cuenta queda **en pausa**: puede entrar al panel, pero el bot no responde ni salen mensajes. Tú, en **Cuentas**, pulsas **Activar plan** (o **Extender prueba**). El cobro todavía es manual: `SUPPORT_CONTACT` es lo que ven para contratar.
+
+**WhatsApp por empresa, aislado.** Todas las empresas comparten tu servidor de Evolution, pero cada canal tiene su propia instancia (su sesión de WhatsApp, su QR, su webhook secreto). El nombre de la instancia lo genera el servidor y el cliente **no puede** cambiarlo, ni apuntar su canal a otro servidor de Evolution, ni ver tu `EVOLUTION_API_KEY`. Solo el superadministrador puede asignar a un canal otro servidor de Evolution (útil para repartir clientes grandes) y, en ese caso, debe darle su propia llave: la llave global nunca se envía a otra URL. Al borrar un canal o una cuenta, su instancia se cierra y se elimina de Evolution.
+
+**Gasto de IA por cuenta.** Cada llamada a OpenAI (respuestas, resúmenes y notas de voz) guarda su costo en USD calculado con la tabla de precios (**Consumo de IA → Precios por modelo**, editable; verifica en openai.com/api/pricing). Tú ves el gasto del mes por cuenta en **Cuentas** y **Consumo de IA**; cada empresa ve el suyo (por día, por tipo y costo promedio por conversación). No hay límite: con `AI_ALERT_USD_PER_ACCOUNT` recibes un aviso cuando una cuenta lo supera en el mes.
+
+**Para producción:**
+
+- Configura `SMTP_URL` (cualquier proveedor: tu hosting, Amazon SES, SendGrid, Brevo…). Sin SMTP los correos solo quedan en **Registros**; en ese caso usa `SIGNUP_REQUIRE_EMAIL=false` o nadie podrá conectar WhatsApp.
+- Servidor recomendado para empezar: 4 vCPU / 8 GB. Cada sesión de WhatsApp vive en Evolution; vigila su memoria (`docker stats`) conforme crecen las empresas.
+- **Respaldos diarios**: `docker compose exec postgres pg_dumpall -U chatbot > respaldo.sql` (incluye las dos bases) y el volumen `evolution_instances`. Sin ese volumen cada empresa tendría que volver a escanear su QR.
+- Fija la versión de Evolution (`EVOLUTION_IMAGE`) y pruébala antes de actualizar.
+- Evolution conecta WhatsApp como "dispositivo vinculado" (no es la API oficial de Meta). El registro lo advierte: las campañas masivas a números que no te escribieron pueden provocar el bloqueo del número.
+- Para cerrar el registro: `SIGNUP_ENABLED=false` (puedes seguir creando cuentas a mano en **Cuentas**).
+
 ## Cuentas, usuarios y roles
 
 | Rol | Qué puede hacer |
 |---|---|
-| **Superadministrador** | Todo, en todas las cuentas. Crea cuentas (con su primer administrador), las activa/desactiva o elimina. Tiene un selector de cuenta en el menú para trabajar dentro de una o ver todas. |
+| **Superadministrador** | Todo, en todas las cuentas. Crea cuentas (con su primer administrador), las activa/desactiva o elimina, activa planes, pausa o extiende pruebas y ve el gasto de IA de todas. Tiene un selector de cuenta en el menú para trabajar dentro de una o ver todas. |
 | **Administrador** | Todo dentro de su cuenta: chatbots, canales, usuarios, conversaciones y registros. |
 | **Agente** | Solo conversaciones de su cuenta: verlas, tomarlas, responder, devolverlas al bot y editar datos del cliente. No ve la configuración ni credenciales. |
 
-Al cambiar una contraseña, las demás sesiones abiertas de ese usuario se cierran. Desactivar un usuario le quita el acceso al instante.
+Al cambiar una contraseña, las demás sesiones abiertas de ese usuario se cierran. Desactivar un usuario le quita el acceso al instante. Cualquiera puede recuperar su contraseña con **¿Olvidaste tu contraseña?** (enlace por correo de 1 hora y un solo uso).
+
+*Desactivar* una cuenta le quita todo acceso; *pausarla* (o que venza su prueba) le deja el panel pero detiene el bot y los envíos.
 
 ## Primeros pasos en el panel
 
@@ -77,7 +117,7 @@ Para ver un ejemplo completo: `npm run seed:demo` (o `docker compose exec backen
 
 | Plataforma | Qué necesitas | Cómo se conecta |
 |---|---|---|
-| **WhatsApp** | Un teléfono con WhatsApp | Escribe un nombre de instancia, guarda y pulsa **Conectar / mostrar QR**: se crea la instancia en Evolution, se configura el webhook y escaneas el QR desde *Dispositivos vinculados*. |
+| **WhatsApp** | Un teléfono con WhatsApp | Crea el canal y pulsa **Conectar / mostrar QR**: el nombre de la instancia se genera solo, se crea en Evolution, se configura el webhook y escaneas el QR desde *Dispositivos vinculados*. |
 | **Telegram** | Un bot creado con **@BotFather** | Pega el token, guarda y pulsa **Conectar con Telegram**: se valida el token y se registra el webhook con un secreto (los mensajes sin ese secreto se rechazan). Solo chats privados. |
 | **Messenger** | Una app en Meta for Developers con el producto Messenger y una página de Facebook | Pega el token de la página y la clave secreta de la app. En la app de Meta configura el webhook con la **URL** y el **token de verificación** que muestra el panel, suscrito a `messages`, `messaging_postbacks` y `message_echoes`. Pulsa **Verificar y suscribir la página**. |
 | **Instagram** | Cuenta profesional de Instagram vinculada a la página, en la misma app de Meta | Igual que Messenger, en la sección Instagram de la app. |
@@ -237,7 +277,10 @@ src/
   channels/        un adaptador por plataforma (whatsapp, telegram, meta, webchat): webhook, firma, envío, conexión
   evolution/       cliente de Evolution API v2 y parser del webhook
   ai/provider.ts   cliente de OpenAI (chat + transcripción de notas de voz)
-  routes/          API del panel (cuentas, usuarios, chatbots, canales, conversaciones) y rutas públicas (webhooks, chat web, imágenes)
+  routes/          API del panel (cuentas, usuarios, chatbots, canales, conversaciones, primeros pasos, consumo) y rutas públicas (registro, webhooks, chat web, imágenes)
+  templates/       plantillas de chatbot por tipo de negocio (asistente de primeros pasos)
+  lifecycle.ts     fin de pruebas, avisos de gasto y de WhatsApp desconectado
+  mailer.ts        correo saliente (SMTP)
   access.ts        reglas de acceso por cuenta y rol
   auth.ts          usuarios, contraseñas (scrypt) y sesiones
   store/           acceso a PostgreSQL
@@ -250,7 +293,9 @@ test/              pruebas
 
 Panel (bajo `/api`, con sesión por cookie; todo se limita a la cuenta del usuario):
 
-- Sesión: `POST /api/login`, `GET /api/me`, `PUT /api/me/password`
+- Sesión: `POST /api/login`, `GET /api/me`, `PUT /api/me/password`, `POST /api/me/resend-verification`
+- Primeros pasos: `GET /api/onboarding`, `POST /api/onboarding/{business,assistant,step,whatsapp}`
+- Consumo de IA: `GET /api/usage?month=AAAA-MM`, `/api/ai-prices` (superadmin)
 - Cuentas: `/api/accounts`
 - Usuarios: `/api/users`
 - Chatbots: `/api/chatbots`, `/:id/duplicate`, `/:id/knowledge`, `/:id/images`, `/:id/playground`
@@ -264,6 +309,7 @@ Panel (bajo `/api`, con sesión por cookie; todo se limita a la cuenta del usuar
 
 Públicas:
 
+- Registro y contraseñas: `GET /api/signup/info`, `POST /api/signup`, `POST /api/verify-email`, `POST /api/forgot-password`, `POST /api/reset-password` (con límite de intentos por IP).
 - Webhooks: `GET|POST /webhook/:token`. El token es una URL secreta por canal; `GET` sirve para la verificación de Meta.
 - Chat web: `/webchat/:token/{config,session,messages}`, con CORS y límite de 15 mensajes por minuto por sesión.
 - Imágenes firmadas: `GET /media/:id?e=…&s=…`.
@@ -276,6 +322,7 @@ Actualización desde la versión anterior: la migración `002` pasa automáticam
 - La cola vive en memoria: pensada para un proceso en un VPS. Al reiniciar, retoma los mensajes sin responder de los últimos 15 minutos.
 - La recuperación de conocimiento es por palabras clave (sin embeddings) y solo entra en juego si el conocimiento excede el presupuesto; para la mayoría de negocios se envía completo.
 - Se ignoran grupos, estados y canales de WhatsApp.
+- El cobro de las suscripciones todavía es manual (tú activas el plan en **Cuentas**); el campo `plan` y el estado `trial/active/paused` ya están listos para conectarlo a Stripe o Mercado Pago.
 - Los mensajes con más de 30 minutos de antigüedad (p. ej. al reconectar el teléfono) se guardan pero no se contestan automáticamente.
 - Una conversación **cerrada** se reabre (con su memoria) cuando el cliente vuelve a escribir.
 - La verificación de hechos cubre cifras, links, correos y teléfonos; afirmaciones sin números (p.ej. "sí tenemos alberca") dependen del prompt y la regla de cero invenciones.

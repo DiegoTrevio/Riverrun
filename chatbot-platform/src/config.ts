@@ -45,6 +45,24 @@ export const config = {
   /** Permitir webhooks salientes hacia redes internas (solo para pruebas o redes controladas). */
   allowPrivateWebhooks: env('ALLOW_PRIVATE_WEBHOOKS', 'false') === 'true',
   schedulerIntervalMs: Number(env('SCHEDULER_INTERVAL_MS', '5000')),
+  /** Correo saliente (verificación, recuperación de contraseña, avisos). Sin SMTP_URL, los correos van al registro. */
+  mail: {
+    smtpUrl: env('SMTP_URL', ''),
+    from: env('MAIL_FROM', 'Chatbots <no-responder@localhost>'),
+  },
+  /** Autoregistro de empresas. */
+  signup: {
+    enabled: env('SIGNUP_ENABLED', 'true') === 'true',
+    trialDays: Number(env('TRIAL_DAYS', '14')),
+    /** Exigir correo verificado para conectar canales reales. Sin SMTP conviene "false". */
+    requireEmail: env('SIGNUP_REQUIRE_EMAIL', 'true') === 'true',
+    /** Correo del superadmin para avisos (cuentas nuevas, pruebas que vencen, gasto alto). */
+    superadminEmail: env('SUPERADMIN_EMAIL', ''),
+    /** Contacto que ve el cliente cuando su cuenta está pausada. */
+    supportContact: env('SUPPORT_CONTACT', ''),
+  },
+  /** Aviso (sin bloqueo) cuando una cuenta supera este gasto de IA en el mes, en USD. 0 = sin aviso. */
+  aiAlertUsdPerAccount: Number(env('AI_ALERT_USD_PER_ACCOUNT', '0')),
 };
 
 export function assertProductionConfig(): string[] {
@@ -54,5 +72,6 @@ export function assertProductionConfig(): string[] {
   if (!config.sessionSecret || config.sessionSecret.length < 16) problems.push('SESSION_SECRET debe tener al menos 16 caracteres');
   if (!config.openai.apiKey) problems.push('OPENAI_API_KEY no está definido (el bot no podrá responder)');
   if (!config.evolution.apiKey) problems.push('EVOLUTION_API_KEY no está definido (no se podrán enviar mensajes)');
+  if (config.signup.enabled && !config.mail.smtpUrl) problems.push('SMTP_URL no está definido: los correos de verificación y recuperación solo quedan en el registro');
   return problems;
 }

@@ -53,6 +53,7 @@ function parseOne(d: any, instance: string): IncomingMessage | null {
   const msg = unwrap(d.message);
   let type: IncomingMessage['type'] = 'other';
   let text = '';
+  let seconds: number | undefined;
   if (typeof msg.conversation === 'string') {
     type = 'text';
     text = msg.conversation;
@@ -64,6 +65,7 @@ function parseOne(d: any, instance: string): IncomingMessage | null {
     text = msg.imageMessage.caption ?? '';
   } else if (msg.audioMessage) {
     type = 'audio';
+    seconds = Number(msg.audioMessage.seconds) || undefined;
   } else if (msg.videoMessage) {
     type = 'video';
     text = msg.videoMessage.caption ?? '';
@@ -103,6 +105,7 @@ function parseOne(d: any, instance: string): IncomingMessage | null {
     type,
     text: String(text ?? '').trim(),
     timestamp: Number(d.messageTimestamp ?? Math.floor(Date.now() / 1000)),
+    ...(seconds ? { media: { seconds } } : {}),
   };
 }
 

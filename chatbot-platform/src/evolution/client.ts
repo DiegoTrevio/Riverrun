@@ -106,6 +106,11 @@ export class EvolutionClient {
     return res?.instance?.state ?? res?.state ?? 'unknown';
   }
 
+  /** Elimina la instancia (y su sesión) del servidor de Evolution. */
+  async deleteInstance(instance: string) {
+    return this.request('DELETE', `/instance/delete/${encodeURIComponent(instance)}`, undefined, 0);
+  }
+
   async logout(instance: string) {
     return this.request('DELETE', `/instance/logout/${encodeURIComponent(instance)}`, undefined, 0);
   }

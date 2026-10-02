@@ -61,7 +61,7 @@ h3 { font-size: 15px; margin: 16px 0 8px; }
 label.field { display: block; margin-bottom: 14px; }
 label.field > span { display: block; font-weight: 600; margin-bottom: 4px; }
 label.field > small { display: block; color: var(--muted); margin-top: 3px; font-weight: 400; }
-input[type=text], input[type=number], input[type=password], input[type=search], select, textarea {
+input[type=text], input[type=email], input:not([type]), input[type=number], input[type=password], input[type=search], select, textarea {
   width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
   background: var(--bg); color: var(--text); font: inherit;
 }
@@ -136,3 +136,29 @@ details summary { cursor: pointer; color: var(--muted); }
 .account-switch { padding: 0 10px 12px; }
 .account-switch select { margin-top: 4px; }
 ol.small li { margin-bottom: 6px; }
+
+/* Avisos de la cuenta (prueba, pausa, correo sin confirmar) */
+.banner { padding: 10px 14px; border-radius: var(--radius); background: var(--accent-soft); border: 1px solid var(--border); font-size: 14px; }
+.banner.warn { background: #fdf0d8; color: #7a4f05; border-color: #f3d9a4; }
+.banner.danger { background: #fbe3e0; color: #8f2318; border-color: #f2c1bb; }
+.banner.ok { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+@media (prefers-color-scheme: dark) {
+  .banner.warn { background: #3d2f12; color: #f0c674; border-color: #5a461c; }
+  .banner.danger { background: #3f1e1a; color: #f2a59b; border-color: #5c2b25; }
+}
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* Primeros pasos */
+ol.steps { display: flex; gap: 8px; list-style: none; padding: 0; margin: 0 0 18px; flex-wrap: wrap; }
+ol.steps li a { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 99px; border: 1px solid var(--border); background: var(--panel); color: var(--muted); }
+ol.steps li .num { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--border); color: var(--text); font-size: 12px; font-weight: 700; }
+ol.steps li.done a { color: var(--text); }
+ol.steps li.done .num { background: var(--accent); color: #fff; }
+ol.steps li.current a { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+
+/* Gráfica de barras simple (consumo por día) */
+.bars { display: flex; align-items: flex-end; gap: 4px; height: 140px; }
+.bars .bar { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; height: 100%; min-width: 0; }
+.bars .bar span { display: block; width: 100%; background: var(--accent); border-radius: 3px 3px 0 0; }
+.bars .bar small { font-size: 10px; color: var(--muted); margin-top: 2px; }
+[hidden] { display: none !important; }

@@ -12,6 +12,7 @@ import {
   verifyPassword,
 } from '../auth.js';
 import { adapterFor } from '../channels/index.js';
+import { releaseWhatsapp } from '../channels/whatsapp.js';
 import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
 import { imageAbsolutePath } from '../engine/transport.js';
@@ -83,6 +84,8 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     default_model: config.openai.defaultModel,
     public_base_url: config.publicBaseUrl,
     public_https: config.publicBaseUrl.startsWith('https://'),
+    support_contact: config.signup.supportContact,
+    require_email: config.signup.requireEmail,
   }));
 
   /* ------------------------------ Cuentas ------------------------------ */
@@ -93,13 +96,88 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
          (SELECT count(*)::int FROM chatbots b WHERE b.account_id = a.id) AS chatbots,
          (SELECT count(*)::int FROM channels c WHERE c.account_id = a.id AND c.type <> 'playground') AS channels,
          (SELECT count(*)::int FROM users u WHERE u.account_id = a.id) AS users,
-         (SELECT count(*)::int FROM conversations cv JOIN channels c ON c.id = cv.channel_id WHERE cv.account_id = a.id AND c.type <> 'playground') AS conversations
-       FROM accounts a ${all ? '' : 'WHERE a.id = $1'} ORDER BY a.created_at`,
+         (SELECT count(*)::int FROM conversations cv JOIN channels c ON c.id = cv.channel_id WHERE cv.account_id = a.id AND c.type <> 'playground') AS conversations,
+         (SELECT count(*)::int FROM conversations cv JOIN channels c ON c.id = cv.channel_id
+            WHERE cv.account_id = a.id AND c.type <> 'playground' AND cv.last_message_at >= date_trunc('month', now())) AS conversations_month,
+         (SELECT coalesce(sum(r.cost_usd), 0)::float FROM ai_runs r WHERE r.account_id = a.id AND r.created_at >= date_trunc('month', now())) AS ai_cost_month,
+         (SELECT max(cv.last_message_at) FROM conversations cv WHERE cv.account_id = a.id) AS last_activity_at,
+         (SELECT u.email FROM users u WHERE u.id = a.owner_user_id) AS owner_email,
+         (SELECT u.email_verified_at IS NOT NULL FROM users u WHERE u.id = a.owner_user_id) AS owner_verified,
+         (SELECT c.connection_state FROM channels c WHERE c.account_id = a.id AND c.type = 'whatsapp' ORDER BY c.created_at LIMIT 1) AS whatsapp_state
+       FROM accounts a ${all ? '' : 'WHERE a.id = $1'} ORDER BY a.created_at DESC`,
       all ? [] : [req.user.account_id],
     );
   });
 
-  const AccountBody = z.object({ name: z.string().trim().min(1).max(120).optional(), active: z.boolean().optional() });
+  /* ------------------------------ Consumo de IA ------------------------------ */
+
+  /**
+   * Gasto de IA. Sin cuenta (superadmin): total del mes por cuenta. Con cuenta: por día y por tipo.
+   * `month` = AAAA-MM (por defecto, el actual).
+   */
+  api.get('/api/usage', { preHandler: requireRole('admin') }, async (req: any) => {
+    const month = /^\d{4}-\d{2}$/.test(String(req.query.month ?? '')) ? String(req.query.month) : new Date().toISOString().slice(0, 7);
+    const from = `${month}-01T00:00:00Z`;
+    const range = `created_at >= $1::timestamptz AND created_at < $1::timestamptz + interval '1 month'`;
+    const accountId = scopeAccount(req.user, req.query.account_id);
+    if (!accountId) {
+      const accounts = await query(
+        `SELECT a.id, a.name, a.status, coalesce(sum(r.cost_usd), 0)::float AS cost_usd, count(r.id)::int AS calls,
+           coalesce(sum(r.input_tokens), 0)::bigint AS input_tokens, coalesce(sum(r.output_tokens), 0)::bigint AS output_tokens,
+           coalesce(sum(r.audio_seconds), 0)::int AS audio_seconds
+         FROM accounts a LEFT JOIN ai_runs r ON r.account_id = a.id AND r.created_at >= $1::timestamptz AND r.created_at < $1::timestamptz + interval '1 month'
+         GROUP BY a.id ORDER BY cost_usd DESC, a.name`,
+        [from],
+      );
+      const total = accounts.reduce((t: number, a: any) => t + a.cost_usd, 0);
+      return { month, total_usd: total, accounts };
+    }
+    const [days, kinds, models] = await Promise.all([
+      query(`SELECT to_char(created_at, 'YYYY-MM-DD') AS day, sum(cost_usd)::float AS cost_usd, count(*)::int AS calls FROM ai_runs WHERE account_id = $2 AND ${range} GROUP BY 1 ORDER BY 1`, [from, accountId]),
+      query(`SELECT kind, sum(cost_usd)::float AS cost_usd, count(*)::int AS calls FROM ai_runs WHERE account_id = $2 AND ${range} GROUP BY 1 ORDER BY 2 DESC`, [from, accountId]),
+      query(
+        `SELECT model, sum(cost_usd)::float AS cost_usd, sum(input_tokens)::bigint AS input_tokens, sum(cached_tokens)::bigint AS cached_tokens,
+           sum(output_tokens)::bigint AS output_tokens, sum(audio_seconds)::int AS audio_seconds, count(*)::int AS calls
+         FROM ai_runs WHERE account_id = $2 AND ${range} GROUP BY 1 ORDER BY 2 DESC`,
+        [from, accountId],
+      ),
+    ]);
+    const conversations = (await queryOne<{ n: number }>(
+      `SELECT count(DISTINCT conversation_id)::int AS n FROM ai_runs WHERE account_id = $2 AND conversation_id IS NOT NULL AND ${range}`,
+      [from, accountId],
+    ))!.n;
+    const total = kinds.reduce((t: number, k: any) => t + k.cost_usd, 0);
+    return { month, account_id: accountId, total_usd: total, conversations, cost_per_conversation: conversations ? total / conversations : 0, days, kinds, models };
+  });
+
+  /** Precios de OpenAI con los que se calcula el costo (solo superadmin). */
+  api.get('/api/ai-prices', { preHandler: requireRole('superadmin') }, async () => query(`SELECT * FROM ai_prices ORDER BY model`));
+
+  api.put('/api/ai-prices/:model', { preHandler: requireRole('superadmin') }, async (req: any) => {
+    const n = z.number().min(0).max(10000);
+    const b = parse(z.object({ input_per_mtok: n.default(0), cached_per_mtok: n.default(0), output_per_mtok: n.default(0), per_audio_minute: n.default(0) }), req.body);
+    const model = z.string().trim().min(1).max(100).parse(req.params.model);
+    return queryOne(
+      `INSERT INTO ai_prices (model, input_per_mtok, cached_per_mtok, output_per_mtok, per_audio_minute) VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (model) DO UPDATE SET input_per_mtok = $2, cached_per_mtok = $3, output_per_mtok = $4, per_audio_minute = $5, updated_at = now() RETURNING *`,
+      [model, b.input_per_mtok, b.cached_per_mtok, b.output_per_mtok, b.per_audio_minute],
+    );
+  });
+
+  api.delete('/api/ai-prices/:model', { preHandler: requireRole('superadmin') }, async (req: any) => {
+    await query(`DELETE FROM ai_prices WHERE model = $1`, [req.params.model]);
+    return { ok: true };
+  });
+
+  const AccountBody = z.object({
+    name: z.string().trim().min(1).max(120).optional(),
+    active: z.boolean().optional(),
+    status: z.enum(['trial', 'active', 'paused']).optional(),
+    plan: z.string().trim().max(60).optional(),
+    trial_ends_at: z.string().datetime({ offset: true }).nullable().optional(),
+    /** Atajo: extender la prueba N días desde hoy (o desde su vencimiento, si aún no vence). */
+    extend_trial_days: z.number().int().min(1).max(365).optional(),
+  });
 
   api.post('/api/accounts', { preHandler: requireRole('superadmin') }, async (req) => {
     const b = parse(
@@ -120,9 +198,20 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
 
   api.put('/api/accounts/:id', { preHandler: requireRole('superadmin') }, async (req: any) => {
     const b = parse(AccountBody, req.body);
-    const acc = await store.updateAccount(req.params.id, b);
-    if (!acc) throw notFound('Cuenta no encontrada');
-    await logEvent({ level: 'info', source: 'admin', message: `Cuenta actualizada: ${acc.name}${b.active === false ? ' (desactivada)' : ''}`, accountId: acc.id });
+    const before = await store.getAccount(req.params.id);
+    if (!before) throw notFound('Cuenta no encontrada');
+    let trialEnds: Date | null | undefined = b.trial_ends_at === undefined ? undefined : b.trial_ends_at ? new Date(b.trial_ends_at) : null;
+    let status = b.status;
+    if (b.extend_trial_days) {
+      const base = Math.max(Date.now(), before.trial_ends_at ? new Date(before.trial_ends_at).getTime() : 0);
+      trialEnds = new Date(base + b.extend_trial_days * 86400_000);
+      status = status ?? 'trial';
+    }
+    const acc = (await store.updateAccount(before.id, { name: b.name, active: b.active, status, plan: b.plan, trial_ends_at: trialEnds }))!;
+    const changes = [b.active === false ? 'desactivada' : '', status && status !== before.status ? `estado: ${status}` : '', trialEnds !== undefined ? `prueba hasta ${trialEnds?.toISOString().slice(0, 10) ?? '—'}` : '']
+      .filter(Boolean)
+      .join(', ');
+    await logEvent({ level: 'info', source: 'admin', message: `Cuenta actualizada: ${acc.name}${changes ? ` (${changes})` : ''}`, accountId: acc.id });
     return acc;
   });
 
@@ -130,7 +219,9 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     const acc = await store.getAccount(req.params.id);
     if (!acc) throw notFound('Cuenta no encontrada');
     const images = await query<{ file_path: string }>(`SELECT i.file_path FROM images i JOIN chatbots b ON b.id = i.chatbot_id WHERE b.account_id = $1`, [acc.id]);
+    const whatsapps = (await store.listChannels(acc.id)).filter((c) => c.type === 'whatsapp');
     await store.deleteAccount(acc.id);
+    for (const ch of whatsapps) await releaseWhatsapp(ch);
     for (const i of images) await fsp.rm(imageAbsolutePath(i), { force: true });
     await logEvent({ level: 'warn', source: 'admin', message: `Cuenta eliminada: ${acc.name}` });
     return { ok: true };

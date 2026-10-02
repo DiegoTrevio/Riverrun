@@ -259,7 +259,6 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
 
   /* ------------------------------ Notificaciones (todos los roles) ------------------------------ */
   api.get('/api/notifications', async (req: any) => {
-    if (!req.user.account_id) return { unread: 0, items: [] };
     const [items, unread] = await Promise.all([astore.listNotifications(req.user.id, Math.min(Number(req.query.limit) || 50, 200)), astore.unreadCount(req.user.id)]);
     return { unread, items };
   });

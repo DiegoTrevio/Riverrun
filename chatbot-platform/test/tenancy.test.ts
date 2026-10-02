@@ -8,8 +8,8 @@ const t = (name: string, fn: () => Promise<void>) => test(name, { skip: !ok && '
 let h: Awaited<ReturnType<typeof createHarness>>;
 
 type Api = Awaited<ReturnType<typeof h.loginAs>>;
-const A = { id: '', bot: '', channel: '', token: '', knowledge: '', conv: '', contact: '', api: null as unknown as Api };
-const B = { id: '', bot: '', channel: '', token: '', knowledge: '', conv: '', contact: '', api: null as unknown as Api };
+const A = { id: '', bot: '', channel: '', token: '', instance: '', knowledge: '', conv: '', contact: '', api: null as unknown as Api };
+const B = { id: '', bot: '', channel: '', token: '', instance: '', knowledge: '', conv: '', contact: '', api: null as unknown as Api };
 
 async function setupAccount(x: typeof A, name: string, email: string, instance: string, phone: string) {
   const acc = await h.authed('POST', '/api/accounts', { name, admin: { name: `Admin ${name}`, email, password: 'clave-segura-1' } });
@@ -26,12 +26,16 @@ async function setupAccount(x: typeof A, name: string, email: string, instance: 
   assert.equal(ch.statusCode, 200, ch.body);
   x.channel = ch.json().id;
   x.token = ch.json().webhook_token;
+  // El cliente no elige la instancia de Evolution: la genera el servidor.
+  x.instance = ch.json().config.instance;
+  assert.notEqual(x.instance, instance);
+  assert.match(x.instance, /^acc[0-9a-f]{8}_[0-9a-f]{6}$/);
   h.token = x.token;
   h.sent.length = 0;
   await h.app.inject({
     method: 'POST',
     url: `/webhook/${x.token}`,
-    payload: { event: 'messages.upsert', instance, data: { key: { remoteJid: `${phone}@s.whatsapp.net`, id: `M-${name}` }, pushName: name, message: { conversation: 'hola' }, messageTimestamp: Math.floor(Date.now() / 1000) } },
+    payload: { event: 'messages.upsert', instance: x.instance, data: { key: { remoteJid: `${phone}@s.whatsapp.net`, id: `M-${name}` }, pushName: name, message: { conversation: 'hola' }, messageTimestamp: Math.floor(Date.now() / 1000) } },
   });
   await waitFor(() => h.sent.length === 1);
   const conv = (await x.api('GET', '/api/conversations')).json()[0];
@@ -168,7 +172,7 @@ t('desactivar una cuenta: sus usuarios pierden acceso y sus canales dejan de res
   await h.app.inject({
     method: 'POST',
     url: `/webhook/${B.token}`,
-    payload: { event: 'messages.upsert', instance: 'inmo', data: { key: { remoteJid: '5215511110002@s.whatsapp.net', id: 'M-B-2' }, message: { conversation: 'sigue ahí?' }, messageTimestamp: Math.floor(Date.now() / 1000) } },
+    payload: { event: 'messages.upsert', instance: B.instance, data: { key: { remoteJid: '5215511110002@s.whatsapp.net', id: 'M-B-2' }, message: { conversation: 'sigue ahí?' }, messageTimestamp: Math.floor(Date.now() / 1000) } },
   });
   await sleep(400);
   assert.equal(h.sent.length, 0);

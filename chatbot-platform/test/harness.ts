@@ -142,14 +142,14 @@ export async function createHarness() {
     },
     /** Espera a que la cola termine todo lo pendiente (evita que una prueba contamine a la siguiente). */
     async idle() { await waitFor(() => service.queue.size === 0, 8000); },
-    webhook(text: string, opts: { fromMe?: boolean; phone?: string; id?: string; timestamp?: number } = {}) {
+    webhook(text: string, opts: { fromMe?: boolean; phone?: string; id?: string; timestamp?: number; instance?: string } = {}) {
       const phone = opts.phone ?? '5215511112222';
       return app.inject({
         method: 'POST',
         url: `/webhook/${h.token}`,
         payload: {
           event: 'messages.upsert',
-          instance: 'palmas',
+          instance: opts.instance ?? 'palmas',
           data: {
             key: { remoteJid: `${phone}@s.whatsapp.net`, fromMe: !!opts.fromMe, id: opts.id ?? `IN-${++msgN}-${Date.now()}` },
             pushName: 'Ana', message: { conversation: text },

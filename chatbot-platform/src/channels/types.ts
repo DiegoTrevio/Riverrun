@@ -16,7 +16,7 @@ export interface InboundMessage {
   /** Segundos Unix. */
   timestamp: number;
   /** Referencia para descargar audio (transcripción). */
-  media?: { id?: string; url?: string; mimeType?: string };
+  media?: { id?: string; url?: string; mimeType?: string; /** Duración de la nota de voz (para el costo de la transcripción). */ seconds?: number };
 }
 
 export interface WebhookRequest {
@@ -31,6 +31,8 @@ export interface ParseResult {
   messages: InboundMessage[];
   /** Eventos informativos para los registros (p.ej. cambios de conexión). */
   notices?: { level: 'info' | 'warn'; message: string }[];
+  /** Nuevo estado de conexión informado por la plataforma (WhatsApp: open | connecting | close). */
+  connection?: string;
 }
 
 export interface SetupResult {

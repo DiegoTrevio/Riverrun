@@ -5,6 +5,7 @@ import { Campaigns } from './automation/campaigns.js';
 import { Outbound } from './automation/outbound.js';
 import { Scheduler } from './automation/scheduler.js';
 import { adapterFor } from './channels/index.js';
+import { config } from './config.js';
 import { describeInbound, type InboundMessage } from './channels/types.js';
 import { query } from './db.js';
 import { Engine, type ProcessResult } from './engine/engine.js';
@@ -115,8 +116,22 @@ export class ChatService {
       try {
         const audio = await adapter.downloadAudio(channel, msg);
         if (audio) {
+          const started = Date.now();
           const text = await this.ai.transcribe(audio.buffer, audio.mimeType);
           if (text) content = `[Nota de voz del cliente, transcrita]: "${text}"`;
+          // Se registra para el costo por cuenta. Sin duración de la plataforma, se estima (~2 KB por segundo de Opus).
+          await store.insertAiRun({
+            account_id: channel.account_id,
+            chatbot_id: bot.id,
+            conversation_id: conv.id,
+            kind: 'transcription',
+            model: config.openai.transcriptionModel,
+            input_tokens: 0,
+            cached_tokens: 0,
+            output_tokens: 0,
+            latency_ms: Date.now() - started,
+            audio_seconds: msg.media?.seconds ?? Math.max(1, Math.round(audio.buffer.length / 2000)),
+          });
         }
       } catch (e: any) {
         await logEvent({ level: 'warn', source: 'ai', message: `No se pudo transcribir la nota de voz: ${e?.message ?? e}`, ...logBase });

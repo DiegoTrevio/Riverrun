@@ -230,10 +230,21 @@ export interface Message {
 
 export type Role = 'superadmin' | 'admin' | 'agent';
 
+export type AccountStatus = 'trial' | 'active' | 'paused';
+
 export interface Account {
   id: string;
   name: string;
   active: boolean;
+  status: AccountStatus;
+  plan: string;
+  trial_ends_at: Date | null;
+  trial_warned_at: Date | null;
+  business_type: string;
+  owner_user_id: string | null;
+  onboarding: Record<string, boolean>;
+  signup_source: string;
+  ai_alert_month: string;
   created_at: Date;
 }
 
@@ -246,6 +257,7 @@ export interface User {
   phone: string;
   notify_whatsapp: boolean;
   active: boolean;
+  email_verified_at: Date | null;
   last_login_at: Date | null;
   created_at: Date;
 }
@@ -269,6 +281,9 @@ export interface Channel {
   updated_at: Date;
   /** Viene de un JOIN con accounts. */
   account_active?: boolean;
+  /** Último estado de conexión conocido (WhatsApp: open | connecting | close). */
+  connection_state?: string;
+  connection_state_at?: Date | null;
 }
 
 const secret = z.string().max(1000);

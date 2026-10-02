@@ -4,6 +4,7 @@ import {
   channelConfig,
   hydrateChatbot,
   type Account,
+  type AccountStatus,
   type Channel,
   type ChannelType,
   type Role,
@@ -18,6 +19,10 @@ import {
   type Message,
 } from '../types.js';
 
+/** Cliente de una transacción (withTransaction); sin él se usa el pool. */
+type Queryable = { query: (text: string, params?: unknown[]) => Promise<{ rows: any[] }> };
+const rowsOf = async (client: Queryable | undefined, text: string, params: unknown[]) => (client ? (await client.query(text, params)).rows : query(text, params));
+
 /* ------------------------------ Cuentas ------------------------------ */
 
 export async function listAccounts(): Promise<Account[]> {
@@ -28,15 +33,35 @@ export async function getAccount(id: string) {
   return queryOne<Account>('SELECT * FROM accounts WHERE id = $1', [id]);
 }
 
-export async function createAccount(name: string): Promise<Account> {
-  return (await queryOne<Account>('INSERT INTO accounts (name) VALUES ($1) RETURNING *', [name]))!;
+export async function createAccount(
+  name: string,
+  opts: { status?: AccountStatus; trialEndsAt?: Date | null; businessType?: string; source?: string } = {},
+  client?: Queryable,
+): Promise<Account> {
+  const rows = await rowsOf(client,
+    'INSERT INTO accounts (name, status, trial_ends_at, business_type, signup_source) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+    [name, opts.status ?? 'active', opts.trialEndsAt ?? null, opts.businessType ?? '', opts.source ?? 'admin'],
+  );
+  return rows[0] as Account;
 }
 
-export async function updateAccount(id: string, patch: { name?: string; active?: boolean }) {
+export async function updateAccount(
+  id: string,
+  patch: { name?: string; active?: boolean; status?: AccountStatus; plan?: string; trial_ends_at?: Date | null; business_type?: string },
+) {
   return queryOne<Account>(
-    'UPDATE accounts SET name = COALESCE($2, name), active = COALESCE($3, active), updated_at = now() WHERE id = $1 RETURNING *',
-    [id, patch.name ?? null, patch.active ?? null],
+    `UPDATE accounts SET name = COALESCE($2, name), active = COALESCE($3, active), status = COALESCE($4, status), plan = COALESCE($5, plan),
+       trial_ends_at = CASE WHEN $6::boolean THEN $7::timestamptz ELSE trial_ends_at END,
+       trial_warned_at = CASE WHEN $6::boolean THEN NULL ELSE trial_warned_at END,
+       business_type = COALESCE($8, business_type), updated_at = now()
+     WHERE id = $1 RETURNING *`,
+    [id, patch.name ?? null, patch.active ?? null, patch.status ?? null, patch.plan ?? null, patch.trial_ends_at !== undefined, patch.trial_ends_at ?? null, patch.business_type ?? null],
   );
+}
+
+/** Marca pasos del asistente de configuración como completados. */
+export async function markOnboarding(accountId: string, steps: Record<string, boolean>) {
+  return queryOne<Account>(`UPDATE accounts SET onboarding = onboarding || $2::jsonb, updated_at = now() WHERE id = $1 RETURNING *`, [accountId, JSON.stringify(steps)]);
 }
 
 export async function deleteAccount(id: string) {
@@ -45,7 +70,7 @@ export async function deleteAccount(id: string) {
 
 /* ------------------------------ Usuarios ------------------------------ */
 
-const USER_COLS = 'id, account_id, role, name, email, phone, notify_whatsapp, active, last_login_at, created_at';
+const USER_COLS = 'id, account_id, role, name, email, phone, notify_whatsapp, active, email_verified_at, last_login_at, created_at';
 
 export async function listUsers(accountId: string | null): Promise<User[]> {
   return accountId
@@ -73,11 +98,16 @@ export async function getSessionUser(id: string) {
   );
 }
 
-export async function createUser(u: { account_id: string | null; role: Role; name: string; email: string; password_hash: string }) {
-  return (await queryOne<User>(
-    `INSERT INTO users (account_id, role, name, email, password_hash) VALUES ($1,$2,$3,$4,$5) RETURNING ${USER_COLS}`,
-    [u.account_id, u.role, u.name, u.email.trim(), u.password_hash],
-  ))!;
+export async function createUser(
+  u: { account_id: string | null; role: Role; name: string; email: string; password_hash: string; verified?: boolean },
+  client?: Queryable,
+) {
+  // Los usuarios que crea un administrador se dan por verificados; los del autoregistro, no.
+  const rows = await rowsOf(client,
+    `INSERT INTO users (account_id, role, name, email, password_hash, email_verified_at) VALUES ($1,$2,$3,$4,$5, CASE WHEN $6::boolean THEN now() END) RETURNING ${USER_COLS}`,
+    [u.account_id, u.role, u.name, u.email.trim(), u.password_hash, u.verified ?? true],
+  );
+  return rows[0] as User;
 }
 
 export async function updateUser(
@@ -91,6 +121,36 @@ export async function updateUser(
      WHERE id = $1 RETURNING ${USER_COLS}`,
     [id, patch.name ?? null, patch.role ?? null, patch.active ?? null, patch.password_hash ?? null, patch.email?.trim() ?? null, patch.phone?.replace(/\D/g, '') ?? null, patch.notify_whatsapp ?? null],
   );
+}
+
+export async function markEmailVerified(id: string) {
+  await query('UPDATE users SET email_verified_at = COALESCE(email_verified_at, now()), updated_at = now() WHERE id = $1', [id]);
+}
+
+/* ------------------------------ Tokens de un solo uso (correo y contraseña) ------------------------------ */
+
+const tokenHash = (token: string) => crypto.createHash('sha256').update(token).digest('hex');
+
+/** Crea un token de un solo uso; se guarda solo su hash. Invalida los anteriores del mismo tipo. */
+export async function createAuthToken(userId: string, kind: 'verify_email' | 'reset_password', ttlMinutes: number) {
+  const token = crypto.randomBytes(32).toString('base64url');
+  await query(`UPDATE auth_tokens SET used_at = now() WHERE user_id = $1 AND kind = $2 AND used_at IS NULL`, [userId, kind]);
+  await query(`INSERT INTO auth_tokens (user_id, kind, token_hash, expires_at) VALUES ($1, $2, $3, now() + make_interval(mins => $4))`, [
+    userId,
+    kind,
+    tokenHash(token),
+    ttlMinutes,
+  ]);
+  return token;
+}
+
+/** Consume el token (una sola vez, sin caducar). Devuelve el usuario dueño o null. */
+export async function consumeAuthToken(token: string, kind: 'verify_email' | 'reset_password') {
+  const row = await queryOne<{ user_id: string }>(
+    `UPDATE auth_tokens SET used_at = now() WHERE token_hash = $1 AND kind = $2 AND used_at IS NULL AND expires_at > now() RETURNING user_id`,
+    [tokenHash(token), kind],
+  );
+  return row?.user_id ?? null;
 }
 
 export async function touchLogin(id: string) {
@@ -186,7 +246,8 @@ export async function deleteChatbot(id: string) {
 
 /* ------------------------------ Canales ------------------------------ */
 
-const CHANNEL_SELECT = `SELECT ch.*, a.active AS account_active FROM channels ch JOIN accounts a ON a.id = ch.account_id`;
+// Una cuenta pausada (prueba vencida) conserva el panel, pero sus canales no responden ni envían.
+const CHANNEL_SELECT = `SELECT ch.*, (a.active AND a.status <> 'paused') AS account_active FROM channels ch JOIN accounts a ON a.id = ch.account_id`;
 
 function hydrateChannel(row: Channel | null): Channel | null {
   if (!row) return null;
@@ -553,10 +614,16 @@ export async function insertAiRun(run: {
   attempt?: number;
   decision?: unknown;
   validation?: unknown;
+  audio_seconds?: number;
 }) {
+  // El costo se calcula con el precio vigente del modelo (prefijo más largo: "gpt-4.1-mini-2025-04-14" → "gpt-4.1-mini").
+  // input_tokens ya incluye los tokens en caché, que se cobran a su propio precio.
   await query(
-    `INSERT INTO ai_runs (account_id, chatbot_id, conversation_id, kind, model, input_tokens, cached_tokens, output_tokens, latency_ms, attempt, decision, validation)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+    `INSERT INTO ai_runs (account_id, chatbot_id, conversation_id, kind, model, input_tokens, cached_tokens, output_tokens, latency_ms, attempt, decision, validation, audio_seconds, cost_usd)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, COALESCE((
+       SELECT (greatest($6::int - $7::int, 0) * p.input_per_mtok + $7::int * p.cached_per_mtok + $8::int * p.output_per_mtok) / 1000000.0
+              + $13::int / 60.0 * p.per_audio_minute
+       FROM ai_prices p WHERE starts_with($5::text, p.model) ORDER BY length(p.model) DESC LIMIT 1), 0))`,
     [
       run.account_id,
       run.chatbot_id,
@@ -570,6 +637,7 @@ export async function insertAiRun(run: {
       run.attempt ?? 1,
       run.decision === undefined ? null : JSON.stringify(run.decision),
       run.validation === undefined ? null : JSON.stringify(run.validation),
+      Math.round(run.audio_seconds ?? 0),
     ],
   );
 }
