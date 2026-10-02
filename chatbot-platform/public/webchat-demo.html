@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Vista previa del chat web</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 60px auto; padding: 0 16px; color: #1c1f24; background: #fff; }
+    code { background: #f1f3f5; padding: 2px 6px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <h1>Vista previa del chat web</h1>
+  <p>Así se verá el chat en el sitio de tu cliente. Usa el botón de la esquina inferior derecha.</p>
+  <p id="hint"></p>
+  <script>
+    // Carga el widget con el canal indicado en ?channel=TOKEN
+    (function () {
+      var token = new URLSearchParams(location.search).get('channel');
+      if (!token) { document.getElementById('hint').textContent = 'Falta ?channel=TOKEN en la URL.'; return; }
+      var s = document.createElement('script');
+      s.src = '/widget.js';
+      s.dataset.channel = token;
+      document.body.appendChild(s);
+    })();
+  </script>
+</body>
+</html>
