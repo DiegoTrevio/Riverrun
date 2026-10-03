@@ -8,6 +8,7 @@ import * as astore from './automation/store.js';
 import { isOpen } from './automation/time.js';
 import { adapterFor } from './channels/index.js';
 import { config } from './config.js';
+import { gate } from './engine/activation.js';
 import { describeInbound, type InboundMessage } from './channels/types.js';
 import { query } from './db.js';
 import { Engine, type ProcessResult } from './engine/engine.js';
@@ -204,13 +205,35 @@ export class ChatService {
       if (stopAi) await store.markMessageProcessed(inserted.id);
       current = (await store.getConversation(conv.id)) ?? current;
     }
-    const canReply = current.status === 'bot' && bot && bot.active && channel.active && channel.account_active !== false;
+    let canReply = current.status === 'bot' && !!bot && bot.active && channel.active && channel.account_active !== false;
+    // Activadores y desactivadores del asistente (palabras que lo encienden o lo apagan en esta conversación).
+    if (canReply) canReply = await this.applyGate(bot!, channel, current, contact, content);
     if (!canReply) {
       await store.markProcessed(conv.id, inserted.id);
       return { conversationId: conv.id, messageId: inserted.id };
     }
     this.queue.schedule(conv.id, bot!.ai.debounce_seconds * 1000);
     return { conversationId: conv.id, messageId: inserted.id };
+  }
+
+  /** Aplica los activadores/desactivadores a un mensaje del cliente. Devuelve si la IA debe responder. */
+  private async applyGate(bot: Chatbot, channel: Channel, conv: Conversation, contact: Contact, text: string, transport?: Transport): Promise<boolean> {
+    const g = gate(bot.rules.activation, conv, text);
+    if (g.change === 'on') {
+      await store.setAgentOn(conv.id);
+      await logEvent({ level: 'info', source: 'engine', message: `Asistente activado: ${g.reason}`, accountId: conv.account_id, chatbotId: bot.id, channelId: channel.id, conversationId: conv.id });
+    } else if (g.change === 'off') {
+      let t = transport;
+      try {
+        t ??= this.transportFor(channel, contact);
+      } catch (e: any) {
+        await logEvent({ level: 'error', source: 'channel', message: e?.message ?? String(e), accountId: conv.account_id, channelId: channel.id, conversationId: conv.id });
+        await store.setAgentOff(conv.id, g.reason, null);
+        return false;
+      }
+      await this.engine.deactivate(bot, conv, contact, t, g.reason);
+    }
+    return g.reply;
   }
 
   /** Mensaje enviado desde la cuenta del negocio: eco de un envío nuestro o respuesta manual de una persona. */
@@ -252,7 +275,13 @@ export class ChatService {
   async playground(bot: Chatbot, session: string, text: string) {
     const channel = await store.getOrCreatePlaygroundChannel(bot);
     const contact = await store.upsertContact(channel, `playground:${session}`, '', 'Prueba');
-    const conv = await store.getOrCreateConversation(channel, contact.id);
+    let conv = await store.getOrCreateConversation(channel, contact.id);
+    const mark = await query<{ id: string }>(`SELECT coalesce(max(id), 0) AS id FROM event_logs WHERE conversation_id = $1`, [conv.id]);
+    if (conv.status === 'closed') {
+      // Como en un canal real: si el cliente vuelve a escribir, la conversación se reabre.
+      await store.resetFlowState(conv.id);
+      conv = (await store.setConversationStatus(conv.id, 'bot', '')) ?? conv;
+    }
     const inserted = await store.insertMessage({ conversation_id: conv.id, direction: 'in', sender: 'customer', type: 'text', content: text, processed: false });
     // Las reglas automáticas también se prueban en el simulador.
     if (inserted) {
@@ -260,10 +289,23 @@ export class ChatService {
       if (stopAi) await store.markMessageProcessed(inserted.id);
     }
     const transport = new PlaygroundTransport();
-    const result = await this.queue.exclusive(conv.id, () => this.engine.process(conv.id, transport, { ignoreInactive: true }));
+    // Igual que en un canal real: el mensaje puede encender o apagar al asistente antes de la IA.
+    const current = (await store.getConversation(conv.id)) ?? conv;
+    let replies = true;
+    if (inserted && current.status === 'bot') replies = await this.applyGate(bot, channel, current, contact, text, transport);
+    const result: ProcessResult = replies
+      ? await this.queue.exclusive(conv.id, () => this.engine.process(conv.id, transport, { ignoreInactive: true }))
+      : (await store.markAllProcessed(conv.id), { status: 'paused' });
     await this.automator.settle(conv.id);
     const [freshContact, freshConv] = await Promise.all([store.getContact(contact.id), store.getConversation(conv.id)]);
+    // Qué se activó en este turno (reglas, activación/pausa del asistente, objetivo, transferencias).
+    const events = await query<{ level: string; message: string; created_at: Date }>(
+      `SELECT level, message, created_at FROM event_logs WHERE conversation_id = $1 AND id > $2 ORDER BY id`,
+      [conv.id, mark[0].id],
+    );
     return {
+      events,
+      agent: freshConv ? this.engine.agentState(bot, freshConv) : null,
       outputs: transport.outputs,
       result: {
         status: result.status,

@@ -4,6 +4,7 @@ import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
 import { config } from '../config.js';
+import { agentActive, gate } from '../engine/activation.js';
 import { matchKeyword } from '../engine/engine.js';
 import { normalize } from '../engine/text.js';
 import { logEvent } from '../logs.js';
@@ -76,10 +77,27 @@ export function conditionsMatch(conditions: Condition[], ctx: Ctx, now = new Dat
       }
       case 'status':
         return ctx.conv.status === c.status;
+      case 'agent': {
+        const on = !!ctx.bot && agentActive(ctx.bot, ctx.conv, now);
+        return c.state === 'on' ? on : !on;
+      }
       default:
         return true;
     }
   });
+}
+
+/** Condición en palabras (para el probador). */
+export function describeCondition(c: Condition): string {
+  switch (c.type) {
+    case 'channel': return `canal ${c.channel_types.join(' o ') || 'cualquiera'}`;
+    case 'business_hours': return c.inside ? 'dentro del horario' : 'fuera del horario';
+    case 'has_tag': return `${c.negate ? 'no tiene' : 'tiene'} la etiqueta "${c.tag}"`;
+    case 'field': return `dato "${c.field}" ${({ present: 'tiene valor', absent: 'está vacío', equals: `es "${c.value}"`, contains: `contiene "${c.value}"` } as const)[c.op]}`;
+    case 'status': return `conversación ${({ bot: 'con el bot', human: 'con una persona', closed: 'cerrada' } as const)[c.status]}`;
+    case 'agent': return c.state === 'on' ? 'asistente activo' : 'asistente en pausa';
+    default: return 'condición';
+  }
 }
 
 /* ------------------------------ Webhooks salientes seguros ------------------------------ */
@@ -251,7 +269,8 @@ export class Automator {
       case 'add_tag':
       case 'remove_tag': {
         const tag = a.tag.trim();
-        const current = ctx.contact.tags ?? [];
+        // Se leen las etiquetas actuales: otra regla (disparada en cadena) pudo agregar alguna mientras tanto.
+        const current = (await store.getContact(ctx.contact.id))?.tags ?? ctx.contact.tags ?? [];
         const exists = current.some((t) => normalize(t) === normalize(tag));
         if (a.type === 'add_tag' && !exists) {
           ctx.contact.tags = [...current, tag];
@@ -291,10 +310,25 @@ export class Automator {
         if (depth <= MAX_DEPTH) await this.handle({ type: 'handoff', conversationId: ctx.conv.id, depth });
         return;
       }
-      case 'resume_bot':
+      case 'resume_bot': {
+        // Devuelve la conversación al asistente y lo enciende (quita la pausa y cuenta como activado).
         await store.setConversationStatus(ctx.conv.id, 'bot', '');
+        const on = await store.setAgentOn(ctx.conv.id);
+        if (on) Object.assign(ctx.conv, on);
         ctx.conv.status = 'bot';
+        await logEvent({ level: 'info', source: 'engine', message: `Asistente activado por la regla "${rule.name}"`, accountId: ctx.conv.account_id, conversationId: ctx.conv.id });
         return;
+      }
+      case 'pause_bot': {
+        const until = a.hours > 0 ? new Date(Date.now() + a.hours * 3600_000) : null;
+        const reason = a.reason.trim() || `regla "${rule.name}"`;
+        const off = await store.setAgentOff(ctx.conv.id, reason, until);
+        if (off) Object.assign(ctx.conv, off);
+        await store.markAllProcessed(ctx.conv.id);
+        await logEvent({ level: 'info', source: 'engine', message: `Asistente en pausa: ${reason}${until ? ` (se reactiva en ${a.hours} h)` : ''}`, accountId: ctx.conv.account_id, conversationId: ctx.conv.id });
+        if (depth <= MAX_DEPTH) await this.handle({ type: 'agent_off', conversationId: ctx.conv.id, text: reason, depth });
+        return;
+      }
       case 'close_conversation':
         await store.setConversationStatus(ctx.conv.id, 'closed', `Cerrada por la regla "${rule.name}"`);
         ctx.conv.status = 'closed';
@@ -391,6 +425,98 @@ export class Automator {
         dedupe_key: `noreply:${rule.id}:${conv.id}`,
       });
     }
+  }
+
+  /* ------------------------------ Probador (sin IA, sin enviar nada) ------------------------------ */
+
+  /**
+   * Qué pasaría si un cliente escribe `text`: bajas, reglas por mensaje, activadores/desactivadores del
+   * asistente y palabras de transferencia, en el mismo orden que con un mensaje real. No guarda ni envía nada.
+   */
+  async testMessage(bot: Chatbot, o: { text: string; firstMessage: boolean; channelType: string; agent: 'on' | 'paused' | 'waiting'; tags: string[] }) {
+    const [settings, account] = await Promise.all([astore.getSettings(bot.account_id), store.getAccount(bot.account_id)]);
+    const now = new Date();
+    const conv = {
+      id: '', account_id: bot.account_id, channel_id: '', chatbot_id: bot.id, contact_id: '', status: 'bot', status_changed_at: now, handoff_reason: '',
+      summary: '', summary_until_id: 0, last_message_at: now,
+      agent_off_at: o.agent === 'paused' ? now : null, agent_off_reason: o.agent === 'paused' ? 'prueba' : '', agent_off_until: null,
+      agent_on_at: o.agent === 'on' ? now : null,
+    } as Conversation;
+    const contact = { id: '', tags: o.tags, data: {}, name: '', opted_out: false } as unknown as Contact;
+    const channel = { id: '', type: o.channelType, name: 'Prueba', active: true } as unknown as Channel;
+    const ctx: Ctx = { conv, contact, channel, bot, settings, accountName: account?.name ?? '' };
+    const steps: { kind: string; title: string; detail: string; ok: boolean }[] = [];
+    const verdict = (reply: boolean, why: string) => ({ steps, rules, ai_replies: reply, why });
+    const rules: { id: string; name: string; trigger: string; matched: boolean; reason: string; actions: string[]; stop_ai: boolean }[] = [];
+
+    // 1) Bajas de mensajes promocionales.
+    const norm = normalize(o.text).replace(/[^\p{L}\p{N} ]/gu, ' ').replace(/\s+/g, ' ').trim();
+    const oo = settings.opt_out;
+    const optOut = oo.enabled && norm ? oo.keywords.find((k) => normalize(k) === norm) : undefined;
+    if (optOut) {
+      steps.push({ kind: 'opt_out', title: 'Baja de mensajes', detail: `"${optOut}" da de baja al cliente: se le confirma y la IA no responde.`, ok: true });
+      return verdict(false, 'El cliente se da de baja de los mensajes promocionales.');
+    }
+
+    // 2) Reglas por mensaje (las de intención las decide la IA: se prueban en el simulador).
+    let stopAi = false;
+    let after: 'bot' | 'human' | 'closed' = 'bot';
+    let pausedByRule = false;
+    let resumedByRule = false;
+    const events: AutomationEvent[] = [
+      ...(o.firstMessage ? [{ type: 'new_contact' as const, conversationId: '', text: o.text }] : []),
+      { type: 'message_received', conversationId: '', text: o.text, isFirstMessage: o.firstMessage },
+    ];
+    for (const e of events) {
+      for (const rule of await astore.activeAutomations(bot.account_id, e.type, bot.id)) {
+        let reason = '';
+        if (!triggerMatches(rule.trigger, e)) {
+          const t = rule.trigger;
+          reason = t.type === 'message_received' && t.first_message_only && !o.firstMessage ? 'solo aplica en el primer mensaje del cliente' : t.type === 'message_received' ? `el mensaje no coincide con: ${t.keywords.join(', ') || '(sin palabras)'}` : 'no aplica';
+        } else {
+          const failed = rule.conditions.find((c) => !conditionsMatch([c], ctx, now));
+          if (failed) reason = `no se cumple la condición: ${describeCondition(failed)}`;
+        }
+        const matched = !reason;
+        rules.push({ id: rule.id, name: rule.name, trigger: e.type, matched, reason: matched ? 'se activaría' : reason, actions: rule.actions.map((a) => a.type), stop_ai: rule.stop_ai });
+        if (!matched) continue;
+        if (rule.stop_ai) stopAi = true;
+        for (const a of rule.actions) {
+          if (a.type === 'handoff') after = 'human';
+          if (a.type === 'close_conversation') after = 'closed';
+          if (a.type === 'pause_bot') { pausedByRule = true; resumedByRule = false; }
+          if (a.type === 'resume_bot') { after = 'bot'; pausedByRule = false; resumedByRule = true; }
+        }
+      }
+    }
+    const fired = rules.filter((r) => r.matched);
+    steps.push({ kind: 'rules', title: 'Reglas automáticas', detail: fired.length ? `Se activarían: ${fired.map((r) => `"${r.name}"`).join(', ')}.` : rules.length ? 'Ninguna regla coincide con este mensaje.' : 'No hay reglas activas por mensaje.', ok: fired.length > 0 });
+    if (after !== 'bot') return verdict(false, after === 'human' ? 'Una regla pasa la conversación a una persona.' : 'Una regla cierra la conversación.');
+    if (resumedByRule) Object.assign(conv, { agent_off_at: null, agent_off_until: null, agent_on_at: now });
+    if (pausedByRule) {
+      steps.push({ kind: 'agent', title: 'Asistente', detail: 'Una regla lo pone en pausa en esta conversación.', ok: false });
+      return verdict(false, 'Una regla pausa al asistente.');
+    }
+
+    // 3) Activadores y desactivadores del asistente.
+    const g = gate(bot.rules.activation, conv, o.text, now);
+    steps.push({
+      kind: 'agent',
+      title: 'Asistente',
+      detail: g.change === 'on' ? `Se activa: ${g.reason}.` : g.change === 'off' ? `Se apaga: ${g.reason} (${({ pause: 'queda en pausa', handoff: 'pasa a una persona', close: 'se cierra la conversación' } as const)[bot.rules.activation.off_action]}).` : g.reply ? 'Está activo y responde.' : `No responde: ${g.reason}.`,
+      ok: g.reply,
+    });
+    if (!g.reply) return verdict(false, g.change === 'off' ? 'El mensaje apaga al asistente.' : `El asistente no responde: ${g.reason}.`);
+
+    // 4) Transferencia inmediata por palabra (sin IA).
+    const kw = matchKeyword(o.text, bot.rules.handoff_keywords);
+    if (kw) {
+      steps.push({ kind: 'handoff', title: 'Pasar con una persona', detail: `"${kw}" pasa la conversación a una persona de inmediato.`, ok: true });
+      return verdict(false, 'Pasa con una persona sin consultar a la IA.');
+    }
+    if (stopAi) return verdict(false, 'Una regla indica que la IA no responda este mensaje.');
+    if (!bot.active) return verdict(true, 'La IA respondería, pero el asistente está apagado: en tus canales no contestará hasta que lo enciendas.');
+    return verdict(true, 'La IA respondería este mensaje.');
   }
 
   /** Intenciones que la IA debe detectar (de las reglas activas). */

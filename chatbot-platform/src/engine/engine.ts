@@ -3,6 +3,7 @@ import type { AiProvider } from '../ai/provider.js';
 import { logEvent } from '../logs.js';
 import * as store from '../store/index.js';
 import type { Chatbot, Contact, Conversation, ImageAsset, Message } from '../types.js';
+import { agentActive, agentStatus, offAfterReply } from './activation.js';
 import { buildContext, type BusinessInfo } from './context.js';
 import { DECISION_JSON_SCHEMA } from './decision.js';
 import { maybeSummarize } from './memory.js';
@@ -30,7 +31,7 @@ export interface EngineExtensions {
 }
 
 export interface ProcessResult {
-  status: 'nothing' | 'inactive' | 'human' | 'handoff' | 'replied' | 'no_reply' | 'restart' | 'error';
+  status: 'nothing' | 'inactive' | 'human' | 'paused' | 'handoff' | 'replied' | 'no_reply' | 'restart' | 'error';
   plan?: ExecutionPlan;
   decision?: unknown;
   attempts?: { retryable: string[]; fixes: string[] }[];
@@ -92,6 +93,11 @@ export class Engine {
     if (conv.status !== 'bot') {
       await store.markProcessed(conv.id, lastPendingId);
       return { status: 'human' };
+    }
+    // Asistente en pausa en esta conversación, o esperando su palabra de activación.
+    if (!agentActive(bot, conv)) {
+      await store.markProcessed(conv.id, lastPendingId);
+      return { status: 'paused' };
     }
 
     const customerText = pending.map((m) => m.content).join('\n');
@@ -242,9 +248,15 @@ export class Engine {
       await store.markProcessed(conv.id, lastPendingId);
       return { status: 'human', plan, attempts };
     }
+    if (!agentActive(bot, fresh)) {
+      await store.markProcessed(conv.id, lastPendingId);
+      return { status: 'paused', plan, attempts };
+    }
 
     // 5) Ejecutar.
     const dataBefore = { ...(contact.data ?? {}) };
+    const nameBefore = contact.name;
+    let booked = false;
     await this.applyMemory(contact, plan);
     // Agenda: se ejecuta antes de enviar; si el horario se ocupó justo ahora, se avisa en vez de confirmar.
     if (plan.booking && this.ext.agenda) {
@@ -258,7 +270,7 @@ export class Engine {
             messages: [r.alternatives.length ? `Uy, ese horario se acaba de ocupar. Te puedo ofrecer ${joinOptions(r.alternatives)}. ¿Cuál te acomoda?` : 'Uy, ese horario se acaba de ocupar. ¿Te puedo ofrecer otro día?'],
           };
           await log('warn', 'engine', `No se pudo agendar: ${r.reason}`);
-        }
+        } else booked = true;
       } else {
         await this.ext.agenda.cancel(plan.booking.appointmentId, 'Cancelada por el cliente en el chat', 'bot');
       }
@@ -284,6 +296,11 @@ export class Engine {
           await this.ext.alertTeam(conv.account_id, { title: '🎯 Objetivo cumplido', body: `${who} (${channel.name}): ${bot.flow.goal}`, link: `#/conversation/${conv.id}`, kind: 'goal' });
         }
       }
+    }
+    // Desactivadores después de responder (objetivo, cita, datos completos).
+    if (plan.action !== 'handoff' && !goalHandoff) {
+      const why = offAfterReply(bot.rules.activation, { goalReached, booked, before: { name: nameBefore, data: dataBefore }, after: contact });
+      if (why) await this.deactivate(bot, conv, contact, transport, why);
     }
     await store.markProcessed(conv.id, lastPendingId);
 
@@ -375,6 +392,32 @@ export class Engine {
         await logEvent({ level: 'error', source: 'channel', message: `No se pudo avisar al encargado: ${e?.message ?? e}`, accountId: conv.account_id, chatbotId: bot.id, conversationId: conv.id });
       }
     }
+  }
+
+  /** Apaga al asistente en la conversación según lo configurado: pausa, pasa a una persona o cierra. */
+  async deactivate(bot: Chatbot, conv: Conversation, contact: Contact, transport: Transport, reason: string) {
+    const a = bot.rules.activation;
+    const msg = a.off_message.trim();
+    const log = (message: string) => logEvent({ level: 'info', source: 'engine', message, accountId: conv.account_id, chatbotId: bot.id, channelId: conv.channel_id, conversationId: conv.id });
+    if (a.off_action === 'handoff') {
+      await this.executeHandoff(bot, conv, contact, transport, msg ? [msg] : [], `Asistente desactivado: ${reason}`, { silent: !msg });
+    } else {
+      if (msg) await this.sendOut(bot, conv, transport, { sender: 'bot', text: msg, delay: typingDelay(msg, bot.ai.typing_simulation && hasTyping(transport)), meta: { action: 'agent_off' } });
+      if (a.off_action === 'close') {
+        await store.setConversationStatus(conv.id, 'closed', `Asistente desactivado: ${reason}`);
+        await log(`Conversación cerrada: ${reason}`);
+      } else {
+        const until = a.resume_after_hours > 0 ? new Date(Date.now() + a.resume_after_hours * 3600_000) : null;
+        await store.setAgentOff(conv.id, reason, until);
+        await log(`Asistente en pausa: ${reason}${until ? ` (se reactiva en ${a.resume_after_hours} h)` : ''}`);
+      }
+    }
+    this.ext.onEvent?.({ type: 'agent_off', conversationId: conv.id, text: reason });
+  }
+
+  /** Estado del asistente en una conversación (para el panel y el simulador). */
+  agentState(bot: Chatbot, conv: Conversation) {
+    return agentStatus(bot, conv);
   }
 
   async applyMemory(contact: Contact, plan: ExecutionPlan) {

@@ -140,6 +140,8 @@ t('seguimiento si el cliente no responde (una sola vez) y se cancela si responde
   await waitFor(() => h.sent.length === 1);
   await h.webhook('perdón, sigo aquí', { phone: '5215510001004' });
   await waitFor(() => h.sent.length === 2);
+  // El seguimiento se programa justo después del envío: se espera a que termine para no ganarle la carrera.
+  await h.idle();
   await pool.query(`UPDATE jobs SET payload = jsonb_set(payload, '{after_message_id}', '0') WHERE type = 'no_reply' AND status = 'pending'`);
   await h.fastForward();
   assert.ok(!h.sent.some((s) => s.text.startsWith('¿Sigues ahí') && s.to === '5215510001004'));

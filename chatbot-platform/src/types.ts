@@ -66,8 +66,30 @@ export const RulesSchema = z.object({
     'no dudes en contactarnos',
     'estimado cliente',
   ]),
+  /** Activadores y desactivadores del asistente (los aplica el sistema, no la IA). */
+  activation: z
+    .object({
+      /** always: responde siempre · keywords: solo después de que el cliente escriba una palabra de activación. */
+      mode: z.enum(['always', 'keywords']).default('always'),
+      /** Encienden al asistente (modo palabras) y lo reactivan si está en pausa (ambos modos). */
+      on_keywords: z.array(z.string()).default([]),
+      /** El cliente escribe una de estas: el asistente se apaga en esa conversación. */
+      off_keywords: z.array(z.string()).default([]),
+      /** Cuando el cliente ya dio TODOS estos datos, se apaga después de responder. */
+      off_when_fields: z.array(z.string()).default([]),
+      off_on_goal: z.boolean().default(false),
+      off_on_booking: z.boolean().default(false),
+      /** pause: deja de responder sin avisar · handoff: pasa a una persona · close: cierra la conversación. */
+      off_action: z.enum(['pause', 'handoff', 'close']).default('pause'),
+      /** Mensaje opcional que se envía al apagarse. */
+      off_message: z.string().max(1000).default(''),
+      /** Horas tras las que se reactiva solo (0 = solo con palabra de activación o a mano). */
+      resume_after_hours: z.number().min(0).max(720).default(0),
+    })
+    .default({ mode: 'always', on_keywords: [], off_keywords: [], off_when_fields: [], off_on_goal: false, off_on_booking: false, off_action: 'pause', off_message: '', resume_after_hours: 0 }),
 });
 export type Rules = z.infer<typeof RulesSchema>;
+export type Activation = Rules['activation'];
 
 export const DataFieldSchema = z.object({
   key: z.string().regex(/^[a-z0-9_]+$/, 'solo minúsculas, números y guion bajo'),
@@ -215,6 +237,12 @@ export interface Conversation {
   flow_step?: number;
   /** Cuándo se cumplió el objetivo de la conversación (null = aún no). */
   goal_completed_at?: Date | null;
+  /** Asistente en pausa en esta conversación (null = no), por qué y hasta cuándo (null = hasta reactivarlo). */
+  agent_off_at?: Date | null;
+  agent_off_reason?: string;
+  agent_off_until?: Date | null;
+  /** Cuándo lo encendió una palabra de activación (modo "solo con palabras"). */
+  agent_on_at?: Date | null;
 }
 
 export interface Message {

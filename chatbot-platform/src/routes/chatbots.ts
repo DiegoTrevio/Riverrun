@@ -245,6 +245,21 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
     return service.playground(bot, session(sid), text.trim().slice(0, 4000));
   });
 
+  // Probador de palabras: qué reglas, activadores y desactivadores se dispararían, sin IA y sin enviar nada.
+  const TestMessageBody = z.object({
+    text: z.string().trim().min(1, 'Escribe un mensaje').max(4000),
+    first_message: z.boolean().default(false),
+    channel_type: z.string().max(20).default('whatsapp'),
+    agent: z.enum(['on', 'paused', 'waiting']).optional(),
+    tags: z.array(z.string().max(60)).max(20).default([]),
+  });
+  api.post('/api/chatbots/:id/test-message', admins, async (req: any) => {
+    const bot = await botFor(req.user, req.params.id);
+    const b = parse(TestMessageBody, req.body);
+    const agent = b.agent ?? (bot.rules.activation.mode === 'keywords' ? 'waiting' : 'on');
+    return service.automator.testMessage(bot, { text: b.text, firstMessage: b.first_message, channelType: b.channel_type, agent, tags: b.tags });
+  });
+
   api.get('/api/chatbots/:id/playground/:session', admins, async (req: any) => {
     const bot = await botFor(req.user, req.params.id);
     return { messages: await service.playgroundMessages(bot, session(req.params.session)) };

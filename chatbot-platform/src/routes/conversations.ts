@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { assertAccount, conversationFor, HttpError, scopeAccount } from '../access.js';
 import { query } from '../db.js';
+import { agentStatus } from '../engine/activation.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
@@ -65,6 +66,8 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
       contact,
       messages: messages.reverse(),
       chatbot: bot ? { id: bot.id, name: bot.name, data_fields: bot.data_fields } : null,
+      /** Asistente en esta conversación: activo, en pausa (motivo) o esperando su palabra de activación. */
+      agent: bot ? agentStatus(bot, conv) : null,
       channel: channel ? { id: channel.id, name: channel.name, type: channel.type } : null,
     };
   });
@@ -84,8 +87,10 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
     const conv = await conversationFor(req.user, req.params.cid);
     // Los mensajes que llegaron mientras atendía una persona no se responden en automático.
     await store.markAllProcessed(conv.id);
-    const updated = await store.setConversationStatus(conv.id, 'bot', '');
-    await log(conv, `Conversación devuelta al bot por ${req.user.email}`);
+    await store.setConversationStatus(conv.id, 'bot', '');
+    // También quita la pausa del asistente (y lo cuenta como activado en el modo "solo con palabras").
+    const updated = await store.setAgentOn(conv.id);
+    await log(conv, `Conversación devuelta al asistente por ${req.user.email}`);
     return updated;
   });
 

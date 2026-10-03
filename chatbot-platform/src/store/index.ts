@@ -626,8 +626,28 @@ export async function clearConnectionCodes(channelId: string) {
 }
 
 /** Reinicia el recorrido (al reabrir una conversación cerrada, o desde el panel). */
+/** Al reabrir: el recorrido empieza de nuevo y el asistente vuelve a su estado inicial (sin pausa ni activación). */
 export async function resetFlowState(conversationId: string) {
-  await query(`UPDATE conversations SET flow_step = 0, goal_completed_at = NULL WHERE id = $1`, [conversationId]);
+  await query(
+    `UPDATE conversations SET flow_step = 0, goal_completed_at = NULL, agent_off_at = NULL, agent_off_reason = '', agent_off_until = NULL, agent_on_at = NULL WHERE id = $1`,
+    [conversationId],
+  );
+}
+
+/* ------------------------- Asistente encendido / en pausa ------------------------- */
+
+export async function setAgentOff(conversationId: string, reason: string, until: Date | null) {
+  return queryOne<Conversation>(
+    `UPDATE conversations SET agent_off_at = now(), agent_off_reason = $2, agent_off_until = $3 WHERE id = $1 RETURNING *`,
+    [conversationId, reason, until],
+  );
+}
+
+export async function setAgentOn(conversationId: string) {
+  return queryOne<Conversation>(
+    `UPDATE conversations SET agent_off_at = NULL, agent_off_reason = '', agent_off_until = NULL, agent_on_at = now() WHERE id = $1 RETURNING *`,
+    [conversationId],
+  );
 }
 
 export async function lastHumanActivity(conversationId: string): Promise<Date | null> {

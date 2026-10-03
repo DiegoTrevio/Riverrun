@@ -427,6 +427,7 @@ const TABS = [
   ['conocimiento', 'Lo que sabe'],
   ['personalidad', 'Cómo habla'],
   ['reglas', 'Reglas'],
+  ['activacion', 'Activación'],
   ['imagenes', 'Fotos'],
   ['datos', 'Datos que pide'],
   ['probar', 'Probar'],
@@ -450,7 +451,7 @@ async function viewBot(root, id, tab) {
   );
   const body = h('div');
   root.append(body);
-  const views = { general: tabGeneral, personalidad: tabPersonality, conocimiento: tabKnowledge, imagenes: tabImages, reglas: tabRules, datos: tabData, avanzado: tabAdvanced, probar: tabPlayground };
+  const views = { general: tabGeneral, personalidad: tabPersonality, conocimiento: tabKnowledge, imagenes: tabImages, reglas: tabRules, activacion: tabActivation, datos: tabData, avanzado: tabAdvanced, probar: tabPlayground };
   await (views[tab] || tabGeneral)(body, bot);
 }
 
@@ -705,6 +706,85 @@ function tabRules(root, bot) {
   );
 }
 
+/** Activadores y desactivadores: cuándo empieza a responder el asistente y cuándo se apaga en una conversación. */
+function tabActivation(root, bot) {
+  const r = clone(bot.rules);
+  const a = r.activation;
+  const fields = bot.data_fields || [];
+  const onBox = h('div');
+  const drawOn = () => fill(onBox,
+    field(tag('¿Cuándo empieza a responder?', guaranteed()), select(a, 'mode', [['always', 'Siempre: a cualquier mensaje'], ['keywords', 'Solo cuando el cliente escriba una de estas palabras']], drawOn)),
+    field(a.mode === 'keywords' ? 'Palabras que lo activan' : 'Palabras que lo reactivan si está en pausa', lines(a, 'on_keywords', { placeholder: 'info\nquiero información\nhola asistente' }),
+      a.mode === 'keywords'
+        ? 'Una por renglón. Hasta que el cliente escriba alguna, el asistente no contesta en esa conversación (tus reglas automáticas sí funcionan). Después responde normal.'
+        : 'Opcional. Una por renglón. Si el asistente está en pausa en una conversación y el cliente escribe alguna, vuelve a responder.'));
+  drawOn();
+  root.append(
+    h('div', { class: 'card legend' }, h('p', { style: 'margin:0' }, guaranteed(), ' Todo esto lo aplica el sistema, no la IA: funciona siempre igual. No distingue mayúsculas ni acentos, y busca palabras o frases completas. Pruébalo abajo o en ', h('a', { href: `#/bot/${bot.id}/probar` }, 'Probar'), '.')),
+    h('div', { class: 'card' }, h('h3', { style: 'margin-top:0' }, '1. Activadores'), onBox),
+    h('div', { class: 'card' },
+      h('h3', { style: 'margin-top:0' }, '2. Desactivadores'),
+      h('p', { class: 'small muted', style: 'margin-top:0' }, 'El asistente se apaga solo en esa conversación (con los demás clientes sigue igual).'),
+      field('Cuando el cliente escriba alguna de estas palabras', lines(a, 'off_keywords', { placeholder: 'ya no\ngracias es todo\nno me interesa' }), 'Una por renglón. No se le pregunta a la IA.'),
+      check(a, 'off_on_goal', ['Cuando se cumpla el objetivo de la conversación', bot.flow?.goal ? h('span', { class: 'muted small' }, ` (“${bot.flow.goal}”)`) : h('span', { class: 'muted small' }, ' (define el objetivo en Avanzado)')]),
+      check(a, 'off_on_booking', 'Cuando el cliente agende una cita o llamada'),
+      field('Cuando el cliente ya haya dado todos estos datos',
+        fields.length
+          ? h('div', { class: 'row' }, fields.map((f) => h('label', { class: 'check' },
+              h('input', { type: 'checkbox', checked: a.off_when_fields.includes(f.key), onchange: (e) => { a.off_when_fields = e.target.checked ? [...a.off_when_fields, f.key] : a.off_when_fields.filter((k) => k !== f.key); } }), f.label)))
+          : h('p', { class: 'small muted', style: 'margin:0' }, 'Primero agrega los datos en ', h('a', { href: `#/bot/${bot.id}/datos` }, 'Datos que pide'), '.'),
+        'Responde ese mensaje y después se apaga. Ej.: al tener nombre y teléfono, para que una persona continúe.')),
+    h('div', { class: 'card' },
+      h('h3', { style: 'margin-top:0' }, '3. Al desactivarse'),
+      field('Qué pasa', select(a, 'off_action', [['pause', 'Se pone en pausa en silencio (no avisa a nadie)'], ['handoff', 'Pasa la conversación a una persona (avisa al equipo)'], ['close', 'Cierra la conversación (si el cliente vuelve a escribir, empieza de nuevo)']])),
+      field('Mensaje al desactivarse (opcional)', area(a, 'off_message', { placeholder: 'Gracias, en breve una persona del equipo te contacta.' }), 'Se envía tal cual. Vacío = no se envía nada.'),
+      h('div', { class: 'grid' }, field('Se reactiva solo después de (horas)', num(a, 'resume_after_hours', { min: 0, max: 720 }), '0 = solo con una palabra de activación, una regla o el botón "Reactivar asistente" en la conversación.'))),
+    h('div', { class: 'card' }, h('h3', { style: 'margin-top:0' }, 'Probar palabras'), messageTester([bot], bot.id)),
+    saveBar(async () => {
+      a.on_keywords = a.on_keywords.filter((x) => x.trim());
+      if (a.mode === 'keywords' && !a.on_keywords.length) return toast('Escribe al menos una palabra que active al asistente', true);
+      if (await saveBot(bot, { rules: r })) render();
+    }),
+  );
+}
+
+/**
+ * Probador sin IA: qué pasaría si un cliente escribe un mensaje (bajas, reglas, activadores,
+ * desactivadores y transferencia). Usa la configuración guardada; no envía ni guarda nada.
+ */
+function messageTester(bots, botId) {
+  const t = { bot: botId || bots[0]?.id || '', text: '', first: true, agent: '', channel: 'whatsapp' };
+  const out = h('div');
+  const go = async () => {
+    if (!t.text.trim()) return toast('Escribe un mensaje de prueba', true);
+    const r = await run(() => api('POST', `/api/chatbots/${t.bot}/test-message`, { text: t.text, first_message: t.first, channel_type: t.channel, agent: t.agent || undefined }));
+    if (!r) return;
+    fill(out,
+      h('p', {}, h('span', { class: `badge ${r.ai_replies ? 'green' : 'orange'}` }, r.ai_replies ? 'La IA respondería' : 'La IA no responde'), ' ', r.why),
+      h('ul', { class: 'small' }, r.steps.map((s) => h('li', {}, h('strong', {}, s.title, ': '), s.detail))),
+      r.rules.length
+        ? h('table', { class: 'small' }, h('thead', {}, h('tr', {}, h('th', {}, ''), h('th', {}, 'Regla'), h('th', {}, 'Resultado'), h('th', {}, 'Acciones'))),
+            h('tbody', {}, r.rules.map((x) => h('tr', {},
+              h('td', {}, x.matched ? '✅' : '❌'),
+              h('td', {}, h('a', { href: `#/automation/rules/${x.id}` }, x.name)),
+              h('td', { class: x.matched ? '' : 'muted' }, x.reason),
+              h('td', { class: 'muted' }, x.actions.map((k) => ACTIONS[k] || k).join(' → '), x.stop_ai ? ' · la IA no responde' : '')))))
+        : null,
+      h('p', { class: 'small muted' }, 'Las reglas por intención las decide la IA: pruébalas en el Simulador.'));
+  };
+  const input = h('input', { type: 'text', placeholder: 'Escribe un mensaje como si fueras el cliente…', oninput: (e) => (t.text = e.target.value), onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); go(); } } });
+  return h('div', {},
+    h('p', { class: 'small muted', style: 'margin-top:0' }, 'Sin IA y sin enviar nada: te dice qué reglas, activadores y desactivadores se dispararían. Usa lo que ya está guardado.'),
+    h('div', { class: 'grid' },
+      bots.length > 1 ? field('Asistente', select(t, 'bot', bots.map((b) => [b.id, b.name]))) : null,
+      field('Mensaje', input),
+      field('Estado del asistente en esa conversación', select(t, 'agent', [['', 'Como empieza una conversación nueva'], ['on', 'Activo'], ['paused', 'En pausa'], ['waiting', 'Esperando palabra de activación']])),
+      field('Canal', select(t, 'channel', (state.meta?.channel_types || [{ type: 'whatsapp', label: 'WhatsApp' }]).map((c) => [c.type, c.label])))),
+    check(t, 'first', 'Es el primer mensaje del cliente'),
+    h('div', { class: 'row' }, h('button', { class: 'primary', onclick: go }, 'Probar')),
+    out);
+}
+
 function uniqueKey(label, fields) {
   const base = label.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 40) || 'dato';
   let key = base;
@@ -822,7 +902,7 @@ function aiSection(a) {
     ));
 }
 
-const ACTION_LABEL = { reply: 'Respondió', reply_with_image: 'Respondió con foto', handoff: 'Pasó la conversación a una persona', no_reply: 'No respondió', human: 'No respondió: la conversación está con una persona', inactive: 'No respondió: el asistente está apagado', error: 'Error' };
+const ACTION_LABEL = { paused: 'No respondió: el asistente no está activo en esta conversación', reply: 'Respondió', reply_with_image: 'Respondió con foto', handoff: 'Pasó la conversación a una persona', no_reply: 'No respondió', human: 'No respondió: la conversación está con una persona', inactive: 'No respondió: el asistente está apagado', error: 'Error' };
 
 /** Traduce el motivo que se le dio a la IA a lenguaje para el dueño del negocio. */
 function explainIssue(x) {
@@ -881,6 +961,7 @@ async function tabPlayground(root, bot) {
     for (const o of r.outputs.filter((x) => x.type === 'notify')) chat.append(bubble('notify', o.text));
     if (r.result.status === 'no_reply') chat.append(bubble('notify', '(la IA decidió no responder)'));
     if (r.result.status === 'human') chat.append(bubble('notify', '(conversación en modo humano: el bot no responde)'));
+    if (r.result.status === 'paused') chat.append(bubble('notify', `(el asistente no responde: ${r.agent?.reason || 'en pausa'})`));
     if (r.result.status === 'error') chat.append(bubble('notify', `Error: ${r.result.error}`));
     chat.scrollTop = chat.scrollHeight;
     const c = r.contact || {};
@@ -892,11 +973,18 @@ async function tabPlayground(root, bot) {
       h('div', {}, h('strong', {}, 'Qué hizo: '), ACTION_LABEL[r.result.action] || ACTION_LABEL[r.result.status] || r.result.status,
         r.result.fallback_used ? h('div', { class: 'small' }, h('span', { class: 'badge orange' }, 'mensaje de respaldo'), ' La IA no logró una respuesta comprobable y se envió tu mensaje de respaldo.') : null,
         r.result.info_not_found ? h('div', { class: 'small' }, h('span', { class: 'badge orange' }, 'dato no encontrado'), ' Le preguntaron algo que no está en "Lo que sabe". Agrégalo si quieres que lo responda.') : null),
-      h('div', {}, h('strong', {}, 'Revisión de reglas: '),
+      r.result.status === 'paused' ? null : h('div', {}, h('strong', {}, 'Revisión de reglas: '),
         !rejected.length && !fixes.length ? h('span', { class: 'badge green' }, '✓ cumplió todo a la primera') : null,
         rejected.length ? h('div', { class: 'small' }, h('span', { class: 'badge orange' }, `${rejected.length} ${rejected.length === 1 ? 'respuesta rehecha' : 'respuestas rehechas'}`), h('ul', { class: 'muted' }, [...new Set(rejected.flatMap((a) => a.retryable).map(explainIssue))].map((x) => h('li', {}, x)))) : null,
         fixes.length ? h('div', { class: 'small' }, h('span', { class: 'badge' }, 'ajustes automáticos'), h('ul', { class: 'muted' }, fixes.map((x) => h('li', {}, x)))) : null),
-      h('div', {}, h('strong', {}, 'Conversación: '), r.conversation?.status === 'human' ? h('span', { class: 'badge orange' }, 'pasó con una persona (el asistente ya no responde)') : h('span', { class: 'badge green' }, 'la atiende el asistente')),
+      h('div', {}, h('strong', {}, 'Conversación: '),
+        r.conversation?.status === 'human' ? h('span', { class: 'badge orange' }, 'pasó con una persona (el asistente ya no responde)')
+          : r.conversation?.status === 'closed' ? h('span', { class: 'badge' }, 'cerrada (si escribes de nuevo, empieza otra vez)')
+          : r.agent && !r.agent.on ? h('span', {}, h('span', { class: 'badge orange' }, r.agent.state === 'waiting' ? 'esperando palabra de activación' : `asistente en pausa: ${r.agent.reason}`), ' ',
+              h('button', { class: 'small', onclick: async () => { if (await run(() => api('POST', `/api/conversations/${r.conversation.id}/release`), 'Asistente reactivado')) chat.append(bubble('notify', '(asistente reactivado)')); } }, 'Reactivar asistente'))
+          : h('span', { class: 'badge green' }, 'la atiende el asistente')),
+      h('div', {}, h('strong', {}, 'Qué se activó: '),
+        r.events?.length ? h('ul', { class: 'small' }, r.events.map((e) => h('li', { class: e.level === 'error' ? 'error' : '' }, e.message))) : h('span', { class: 'muted small' }, 'ninguna regla ni cambio')),
       h('div', {}, h('strong', {}, 'Datos del cliente: '),
         c.name || Object.keys(c.data || {}).length
           ? h('ul', { class: 'small' }, c.name ? h('li', {}, 'Nombre: ', c.name) : null, Object.entries(c.data || {}).map(([k, v]) => h('li', {}, `${dataLabels[k] || k}: ${v}`)))
@@ -1005,6 +1093,12 @@ async function viewConversation(root, id) {
           c.status !== 'bot' ? h('button', { class: 'primary', onclick: async () => { await run(() => api('POST', `/api/conversations/${id}/release`), 'El bot vuelve a responder'); load(true); } }, 'Devolver al bot') : null,
           c.status !== 'closed' ? h('button', { onclick: async () => { await run(() => api('POST', `/api/conversations/${id}/close`), 'Cerrada'); load(true); } }, 'Cerrar') : null)),
       h('p', { class: 'muted' }, channelIcon(data.channel?.type), ' ', data.channel?.name, ' · ', data.chatbot?.name || 'sin chatbot', ct.phone ? ` · +${ct.phone}` : '', c.status === 'human' && c.handoff_reason ? ` · Motivo: ${c.handoff_reason}` : ''),
+      c.status === 'bot' && data.agent && !data.agent.on
+        ? h('div', { class: 'card legend row between' },
+            h('span', {}, h('span', { class: 'badge orange' }, data.agent.state === 'waiting' ? 'Asistente esperando su palabra de activación' : 'Asistente en pausa'), ' ',
+              data.agent.state === 'paused' ? `${data.agent.reason}${data.agent.until ? ` · se reactiva ${fmtDate(data.agent.until)}` : ''}` : 'Aún no responde en esta conversación.'),
+            h('button', { class: 'small', onclick: async () => { await run(() => api('POST', `/api/conversations/${id}/release`), 'El asistente vuelve a responder'); load(true); } }, 'Reactivar asistente'))
+        : null,
     );
     if (force || messages.length !== lastCount) {
       lastCount = messages.length;
@@ -1551,6 +1645,7 @@ const TRIGGERS = {
   appointment_cancelled: 'Se cancela una cita o llamada',
   opt_out: 'El cliente se da de baja',
   goal_completed: 'Se cumple el objetivo de la conversación',
+  agent_off: 'El asistente se desactiva en una conversación',
 };
 const ACTIONS = {
   send_message: 'Enviar mensaje',
@@ -1559,7 +1654,8 @@ const ACTIONS = {
   remove_tag: 'Quitar etiqueta',
   set_field: 'Guardar un dato',
   handoff: 'Pasar a una persona',
-  resume_bot: 'Devolver al bot',
+  resume_bot: 'Activar / devolver al asistente',
+  pause_bot: 'Pausar al asistente',
   close_conversation: 'Cerrar conversación',
   start_sequence: 'Iniciar secuencia',
   stop_sequences: 'Detener secuencias',
@@ -1571,6 +1667,7 @@ const CONDITIONS = {
   has_tag: 'Etiqueta',
   field: 'Dato del cliente',
   status: 'Estado de la conversación',
+  agent: 'Asistente activo o en pausa',
 };
 
 /** Plantillas para empezar rápido: cubren las necesidades más comunes. */
@@ -1582,6 +1679,8 @@ const RULE_TEMPLATES = [
   { name: 'Queja → persona', trigger: { type: 'intent', intent: 'queja', description: 'El cliente está molesto, inconforme o reporta un problema' }, actions: [{ type: 'handoff', reason: 'Queja del cliente' }, { type: 'alert_team', message: 'Queja de {{cliente}}: "{{mensaje}}"' }] },
   { name: 'Quiere comprar → avisar a ventas', trigger: { type: 'intent', intent: 'listo_para_comprar', description: 'El cliente quiere comprar, reservar o pagar' }, actions: [{ type: 'add_tag', tag: 'caliente' }, { type: 'alert_team', message: '{{cliente}} está listo para comprar. {{link}}' }] },
   { name: 'Correo capturado → CRM', trigger: { type: 'data_captured', field: 'correo' }, actions: [{ type: 'webhook', url: 'https://mi-crm.com/webhook' }] },
+  { name: 'Palabra → pausar al asistente', trigger: { type: 'message_received', match: 'keywords', keywords: ['ya no', 'no me interesa'] }, actions: [{ type: 'pause_bot', hours: 0, reason: 'El cliente no quiere seguir' }, { type: 'add_tag', tag: 'no_interesado' }] },
+  { name: 'Palabra → activar al asistente', trigger: { type: 'message_received', match: 'keywords', keywords: ['menu', 'hola asistente'] }, actions: [{ type: 'resume_bot' }] },
   { name: 'Agradecer cita agendada', trigger: { type: 'appointment_booked' }, actions: [{ type: 'send_message', text: 'Te esperamos el {{cita.fecha}} a las {{cita.hora}} 🙌', delay_minutes: 1 }] },
 ];
 
@@ -1598,7 +1697,7 @@ function triggerSummary(t) {
 }
 
 async function listRules(root) {
-  const rules = await api('GET', withAcct('/api/automations'));
+  const [rules, bots] = await Promise.all([api('GET', withAcct('/api/automations')), api('GET', withAcct('/api/chatbots'))]);
   const create = async (tpl) => {
     const r = await run(() => api('POST', '/api/automations', { ...tpl, active: false, account_id: state.accountId || undefined }), 'Regla creada (desactivada): revísala y actívala');
     if (r) location.hash = `#/automation/rules/${r.id}`;
@@ -1609,6 +1708,7 @@ async function listRules(root) {
       h('div', { class: 'row' }, h('a', { class: 'btn primary', href: '#/automation/rules/new' }, '+ Regla en blanco')),
       h('h3', {}, 'Plantillas rápidas'),
       h('div', { class: 'row' }, RULE_TEMPLATES.map((t) => h('button', { class: 'small', onclick: () => create(t) }, t.name)))),
+    bots.length ? h('details', { class: 'card' }, h('summary', {}, h('strong', {}, '🧪 Probar palabras'), h('span', { class: 'small muted' }, ' — qué reglas se activan con un mensaje')), messageTester(bots)) : null,
     h('div', { class: 'card' },
       rules.length
         ? h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Regla'), h('th', {}, 'Cuando'), h('th', {}, 'Acciones'), h('th', {}, 'Veces'), h('th', {}, ''))),
@@ -1677,6 +1777,11 @@ function actionFields(a, refs) {
     case 'handoff':
       a.reason ??= 'Regla automática';
       return [field('Motivo', text(a, 'reason'))];
+    case 'pause_bot':
+      a.hours ??= 0; a.reason ??= '';
+      return [h('div', { class: 'grid' },
+        field('Reactivar solo después de (horas)', num(a, 'hours', { min: 0, max: 720 }), '0 = hasta que lo reactive una palabra, una regla o una persona.'),
+        field('Motivo (se ve en la conversación)', text(a, 'reason', { placeholder: 'El cliente pidió que no le escriban' })))];
     case 'start_sequence':
       a.sequence_id ??= refs.sequences[0]?.id || '';
       return [refs.sequences.length ? field('Secuencia', select(a, 'sequence_id', refs.sequences.map((s) => [s.id, s.name]))) : h('p', { class: 'muted' }, 'Primero crea una secuencia.')];
@@ -1709,6 +1814,9 @@ function conditionFields(c) {
     case 'status':
       c.status ??= 'bot';
       return [select(c, 'status', [['bot', 'La atiende el bot'], ['human', 'La atiende una persona'], ['closed', 'Cerrada']])];
+    case 'agent':
+      c.state ??= 'on';
+      return [select(c, 'state', [['on', 'El asistente está activo'], ['off', 'El asistente está en pausa o esperando su palabra']])];
     default:
       return [];
   }
