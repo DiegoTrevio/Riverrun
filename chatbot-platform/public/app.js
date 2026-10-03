@@ -142,6 +142,10 @@ async function render() {
   const params = new URLSearchParams(qs || '');
 
   if (parts[0] === 'login') return renderLogin();
+  if (parts[0] === 'registro') return renderSignup();
+  if (parts[0] === 'olvide') return renderForgot();
+  if (parts[0] === 'restablecer') return renderReset(params.get('token') || '');
+  if (parts[0] === 'verificar') return renderVerify(params.get('token') || '');
   if (!state.me) {
     try {
       await loadSession();
@@ -157,7 +161,10 @@ async function render() {
   const content = h('div');
   fill($app, shell(parts[0] || 'home', content));
   try {
-    if (!parts.length) await viewDashboard(content);
+    if (!parts.length && needsOnboarding()) location.hash = '#/inicio';
+    else if (!parts.length) await viewDashboard(content);
+    else if (parts[0] === 'inicio') await viewOnboarding(content, parts[1]);
+    else if (parts[0] === 'consumo') await viewUsage(content, params);
     else if (parts[0] === 'bot') await viewBot(content, parts[1], parts[2] || 'general');
     else if (parts[0] === 'channels') await viewChannels(content, params);
     else if (parts[0] === 'channel') await viewChannel(content, parts[1]);
@@ -207,7 +214,8 @@ function shell(active, content) {
     h('nav', { class: 'sidebar' },
       h('div', { class: 'brand' }, '💬 Chatbots'),
       switcher,
-      isAdmin() ? link('#/', 'Chatbots', 'home') : null,
+      isAdmin() && (!isSuper() || state.accountId) ? link('#/inicio', 'Primeros pasos', 'inicio') : null,
+      isAdmin() ? link('#/', 'Asistentes', 'home') : null,
       isAdmin() ? link('#/channels', 'Canales', 'channels') : null,
       link('#/conversations', 'Conversaciones', 'conversations'),
       link('#/agenda', 'Agenda', 'agenda'),
@@ -215,18 +223,49 @@ function shell(active, content) {
       h('a', { href: '#/notifications', class: active === 'notifications' ? 'active' : '' }, 'Notificaciones ', bell),
       isAdmin() ? link('#/users', 'Usuarios', 'users') : null,
       isSuper() ? link('#/accounts', 'Cuentas', 'accounts') : null,
+      isAdmin() ? link('#/consumo', 'Consumo de IA', 'consumo') : null,
       isAdmin() ? link('#/logs', 'Registros', 'logs') : null,
       h('div', { class: 'spacer' }),
       h('div', { class: 'small muted', style: 'padding:4px 10px' }, user.name || user.email, h('br'), ROLE_LABEL[user.role]),
       link('#/password', 'Mi perfil', 'password'),
       h('a', { href: '#', onclick: async (e) => { e.preventDefault(); await api('POST', '/api/logout'); state.me = null; location.hash = '#/login'; } }, 'Cerrar sesión'),
     ),
-    h('main', { class: 'main' }, content),
+    h('main', { class: 'main' }, accountBanner(), content),
   );
+}
+
+/** Aviso de la cuenta: días de prueba, cuenta en pausa o correo sin confirmar. */
+function accountBanner() {
+  const { user, account } = state.me;
+  if (!account) return null;
+  const items = [];
+  if (account.status === 'paused') {
+    items.push(h('div', { class: 'banner danger' }, h('strong', {}, 'Tu cuenta está en pausa. '),
+      'Tu asistente no está respondiendo ni enviando mensajes; tu configuración y tus conversaciones se conservan.',
+      state.meta.support_contact ? [' Para activarla escribe a ', h('strong', {}, state.meta.support_contact), '.'] : ''));
+  } else if (account.status === 'trial' && account.trial_ends_at) {
+    const days = Math.max(0, Math.ceil((new Date(account.trial_ends_at) - Date.now()) / 86400000));
+    items.push(h('div', { class: `banner ${days <= 3 ? 'warn' : ''}` },
+      `Periodo de prueba: ${days === 0 ? 'termina hoy' : days === 1 ? 'queda 1 día' : `quedan ${days} días`}.`,
+      state.meta.support_contact ? [' Para contratar escribe a ', h('strong', {}, state.meta.support_contact), '.'] : ''));
+  }
+  if (!user.email_verified_at && state.meta.require_email) {
+    items.push(h('div', { class: 'banner warn' },
+      `Confirma tu correo (${user.email}) con el enlace que te enviamos para poder conectar tu WhatsApp. `,
+      h('a', { href: '#', onclick: async (e) => { e.preventDefault(); await run(() => api('POST', '/api/me/resend-verification'), 'Te enviamos un nuevo enlace'); } }, 'Reenviar correo')));
+  }
+  return items.length ? h('div', { class: 'stack', style: 'margin-bottom:16px' }, items) : null;
+}
+
+/** Cuenta propia con el asistente sin terminar: se abre "Primeros pasos" en lugar de la lista de chatbots. */
+function needsOnboarding() {
+  const acc = state.me?.account;
+  return !isSuper() && isAdmin() && acc && acc.signup_source === 'signup' && !acc.onboarding?.done;
 }
 
 function renderLogin() {
   const f = { email: '', password: '' };
+  const signupLink = h('p', { class: 'small', style: 'margin-bottom:0' });
   const submit = async (e) => {
     e.preventDefault();
     const ok = await run(() => api('POST', '/api/login', f));
@@ -238,8 +277,87 @@ function renderLogin() {
       field('Correo', text(f, 'email', { placeholder: 'tu@correo.com' })),
       field('Contraseña', text(f, 'password', { type: 'password' })),
       h('button', { class: 'primary', type: 'submit' }, 'Entrar'),
+      h('p', { class: 'small', style: 'margin-bottom:0' }, h('a', { href: '#/olvide' }, '¿Olvidaste tu contraseña?')),
+      signupLink,
     ),
   );
+  api('GET', '/api/signup/info').then((i) => { if (i.enabled) fill(signupLink, '¿Aún no tienes cuenta? ', h('a', { href: '#/registro' }, `Crea una gratis (${i.trial_days} días de prueba)`)); }).catch(() => undefined);
+}
+
+/* ------------------------------ Registro y recuperación (públicas) ------------------------------ */
+
+function publicCard(title, ...kids) {
+  fill($app, h('div', { class: 'card login', style: 'max-width:440px' }, h('h1', {}, title), kids));
+}
+
+async function renderSignup() {
+  let info;
+  try { info = await api('GET', '/api/signup/info'); } catch { info = { enabled: false, business_types: [] }; }
+  if (!info.enabled) return publicCard('Registro cerrado', h('p', {}, 'Por ahora el registro no está disponible.'), h('a', { href: '#/login' }, 'Iniciar sesión'));
+  const f = { name: '', company: '', business_type: 'otro', email: '', password: '', phone: '', accept_terms: false, website: '' };
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!f.accept_terms) return toast('Acepta los términos para continuar', true);
+    const r = await run(() => api('POST', '/api/signup', f));
+    if (r) { state.me = null; location.hash = '#/inicio'; }
+  };
+  publicCard('Crea tu asistente',
+    h('p', { class: 'muted', style: 'margin-top:0' }, `Prueba gratis ${info.trial_days} días. En unos minutos tu asistente responde por WhatsApp.`),
+    h('form', { class: 'stack', onsubmit: submit },
+      field('Tu nombre', text(f, 'name')),
+      field('Nombre de tu negocio', text(f, 'company', { placeholder: 'Clínica Sonrisa' })),
+      field('Tipo de negocio', select(f, 'business_type', info.business_types.map((b) => [b.key, b.label]))),
+      field('Correo', text(f, 'email', { type: 'email', placeholder: 'tu@negocio.com' }), 'Te enviaremos un enlace para confirmarlo.'),
+      field('Contraseña', text(f, 'password', { type: 'password' }), 'Mínimo 8 caracteres.'),
+      field('WhatsApp para avisos (opcional)', text(f, 'phone', { placeholder: '5215512345678' }), 'Ahí te avisamos cuando un cliente pida hablar con una persona.'),
+      // Campo trampa para bots: oculto para las personas.
+      h('div', { style: 'position:absolute;left:-9999px', 'aria-hidden': 'true' }, h('input', { tabindex: '-1', autocomplete: 'off', oninput: (e) => (f.website = e.target.value) })),
+      h('label', { class: 'check small' }, h('input', { type: 'checkbox', onchange: (e) => (f.accept_terms = e.target.checked) }),
+        'Acepto los términos del servicio. Entiendo que WhatsApp se conecta como "dispositivo vinculado" (no es la API oficial) y que los envíos masivos pueden provocar el bloqueo del número.'),
+      h('button', { class: 'primary', type: 'submit' }, 'Crear mi cuenta'),
+      h('p', { class: 'small', style: 'margin:0' }, '¿Ya tienes cuenta? ', h('a', { href: '#/login' }, 'Inicia sesión'))));
+}
+
+function renderForgot() {
+  const f = { email: '' };
+  const box = h('div');
+  publicCard('Recuperar contraseña', box);
+  fill(box, h('form', { class: 'stack', onsubmit: async (e) => {
+    e.preventDefault();
+    const r = await run(() => api('POST', '/api/forgot-password', f));
+    if (r) fill(box, h('p', {}, 'Si el correo está registrado, te enviamos un enlace para elegir una contraseña nueva. Vence en 1 hora.'), h('a', { href: '#/login' }, 'Volver a iniciar sesión'));
+  } },
+    field('Correo', text(f, 'email', { type: 'email' })),
+    h('button', { class: 'primary', type: 'submit' }, 'Enviar enlace'),
+    h('a', { class: 'small', href: '#/login' }, 'Volver')));
+}
+
+function renderReset(token) {
+  const f = { token, password: '', confirm: '' };
+  const box = h('div');
+  publicCard('Nueva contraseña', box);
+  if (!token) return fill(box, h('p', {}, 'El enlace no es válido.'), h('a', { href: '#/olvide' }, 'Pedir uno nuevo'));
+  fill(box, h('form', { class: 'stack', onsubmit: async (e) => {
+    e.preventDefault();
+    if (f.password !== f.confirm) return toast('Las contraseñas no coinciden', true);
+    const r = await run(() => api('POST', '/api/reset-password', { token: f.token, password: f.password }));
+    if (r) fill(box, h('p', {}, '✅ Listo, ya puedes entrar con tu contraseña nueva.'), h('a', { class: 'btn primary', href: '#/login' }, 'Iniciar sesión'));
+  } },
+    field('Contraseña nueva', text(f, 'password', { type: 'password' }), 'Mínimo 8 caracteres.'),
+    field('Repítela', text(f, 'confirm', { type: 'password' })),
+    h('button', { class: 'primary', type: 'submit' }, 'Guardar')));
+}
+
+async function renderVerify(token) {
+  const box = h('p', {}, 'Confirmando…');
+  publicCard('Confirmar correo', box);
+  try {
+    await api('POST', '/api/verify-email', { token });
+    state.me = null;
+    fill(box, '✅ Tu correo quedó confirmado. ', h('a', { href: '#/inicio' }, 'Continuar con la configuración →'));
+  } catch (e) {
+    fill(box, e.message, ' ', h('a', { href: '#/inicio' }, 'Ir al panel'));
+  }
 }
 
 /** Selector de cuenta al crear algo (solo superadmin; los demás usan la suya). */
@@ -255,23 +373,25 @@ async function viewDashboard(root) {
   const [bots, stats, channels] = await Promise.all([api('GET', `/api/chatbots${acct()}`), api('GET', `/api/stats${acct()}`), api('GET', `/api/channels${acct()}`)]);
   state.bots = bots;
   const byId = Object.fromEntries(stats.chatbots.map((s) => [s.id, s]));
-  const nb = { name: '' };
+  const nb = { name: '', template: state.me.account?.business_type || 'otro' };
   const createBox = h('div', { class: 'card', hidden: true },
-    h('h3', { style: 'margin-top:0' }, 'Nuevo chatbot'),
-    field('Nombre', text(nb, 'name', { placeholder: 'Hotel Las Palmas' })),
+    h('h3', { style: 'margin-top:0' }, 'Nuevo asistente'),
+    h('div', { class: 'grid' },
+      field('Nombre del negocio', text(nb, 'name', { placeholder: 'Hotel Las Palmas' })),
+      field('Tipo de negocio', select(nb, 'template', (state.meta.business_types || []).map((b) => [b.key, b.label])), 'Nace con la forma de atender, reglas y datos típicos de ese giro. Todo se puede cambiar.')),
     accountPicker(nb),
     h('button', { class: 'primary', onclick: async () => {
       if (!nb.name.trim()) return toast('Escribe un nombre', true);
       const bot = await run(() => api('POST', '/api/chatbots', nb));
-      if (bot) location.hash = `#/bot/${bot.id}/general`;
-    } }, 'Crear'));
+      if (bot) location.hash = `#/bot/${bot.id}/conocimiento`;
+    } }, 'Crear y agregar su información'));
   const noAccounts = isSuper() && !state.accounts.length;
   root.append(
-    h('div', { class: 'row between' }, h('h1', {}, 'Chatbots'),
-      h('button', { class: 'primary', disabled: noAccounts, onclick: () => (createBox.hidden = !createBox.hidden) }, '+ Nuevo chatbot')),
+    h('div', { class: 'row between' }, h('h1', {}, 'Asistentes'),
+      h('button', { class: 'primary', disabled: noAccounts, onclick: () => (createBox.hidden = !createBox.hidden) }, '+ Nuevo asistente')),
     noAccounts ? h('div', { class: 'card' }, h('p', {}, 'Primero crea una cuenta (cliente) en ', h('a', { href: '#/accounts' }, 'Cuentas'), '.')) : null,
     createBox,
-    bots.length || noAccounts ? null : h('div', { class: 'card' }, h('p', {}, 'Aún no hay chatbots. Crea el primero para empezar.')),
+    bots.length || noAccounts ? null : h('div', { class: 'card' }, h('p', {}, 'Aún no hay asistentes. Crea el primero para empezar.')),
     h('div', { class: 'grid' },
       bots.map((b) => {
         const s = byId[b.id] || {};
@@ -279,7 +399,7 @@ async function viewDashboard(root) {
         return h('div', { class: 'card' },
           h('div', { class: 'row between' },
             h('h3', { style: 'margin:0' }, h('a', { href: `#/bot/${b.id}/general` }, b.name)),
-            h('span', { class: `badge ${b.active ? 'green' : ''}` }, b.active ? 'Activo' : 'Inactivo')),
+            h('span', { class: `badge ${b.active ? 'green' : ''}` }, b.active ? 'Encendido' : 'Apagado')),
           isSuper() && !state.accountId ? h('p', { class: 'muted small', style: 'margin:4px 0 0' }, accountName(b.account_id)) : null,
           h('p', { class: 'small' }, mine.length ? mine.map((c) => h('span', { class: 'badge', style: 'margin-right:4px' }, channelIcon(c.type), ' ', c.name)) : h('span', { class: 'muted' }, 'Sin canales')),
           h('div', { class: 'row', style: 'gap:18px' },
@@ -301,29 +421,37 @@ async function viewDashboard(root) {
 
 /* ------------------------------ Chatbot ------------------------------ */
 
+// Orden en que se configura un asistente; lo técnico queda en "Avanzado".
 const TABS = [
-  ['general', 'General'],
-  ['personalidad', 'Personalidad'],
-  ['conocimiento', 'Conocimiento'],
-  ['imagenes', 'Imágenes'],
+  ['general', 'Resumen'],
+  ['conocimiento', 'Lo que sabe'],
+  ['personalidad', 'Cómo habla'],
   ['reglas', 'Reglas'],
-  ['datos', 'Datos a recopilar'],
-  ['flujo', 'Flujo'],
-  ['ia', 'IA y memoria'],
+  ['activacion', 'Activación'],
+  ['imagenes', 'Fotos'],
+  ['datos', 'Datos que pide'],
   ['probar', 'Probar'],
+  ['avanzado', 'Avanzado'],
 ];
+const TAB_ALIASES = { flujo: 'avanzado', ia: 'avanzado' };
+
+/** Marca si el sistema hace cumplir un ajuste o si es una guía para la IA. */
+const guaranteed = () => h('span', { class: 'badge green', title: 'El sistema lo revisa antes de enviar cada respuesta: si no se cumple, la corrige o pide otra a la IA.' }, '✓ Garantizado');
+const guide = () => h('span', { class: 'badge', title: 'Instrucción para la IA. La sigue casi siempre; compruébalo en Probar.' }, 'Guía');
+const tag = (label, badge) => h('span', {}, label, ' ', badge);
 
 async function viewBot(root, id, tab) {
+  tab = TAB_ALIASES[tab] || tab;
   const bot = await api('GET', `/api/chatbots/${id}`);
   root.append(
     h('div', { class: 'row between' },
-      h('h1', {}, bot.name, ' ', h('span', { class: `badge ${bot.active ? 'green' : ''}` }, bot.active ? 'Activo' : 'Inactivo')),
+      h('h1', {}, bot.name, ' ', h('span', { class: `badge ${bot.active ? 'green' : ''}` }, bot.active ? 'Encendido' : 'Apagado')),
       h('a', { href: `#/conversations?chatbot_id=${bot.id}` }, 'Ver conversaciones →')),
     h('div', { class: 'tabs' }, TABS.map(([k, l]) => h('a', { href: `#/bot/${id}/${k}`, class: k === tab ? 'active' : '' }, l))),
   );
   const body = h('div');
   root.append(body);
-  const views = { general: tabGeneral, personalidad: tabPersonality, conocimiento: tabKnowledge, imagenes: tabImages, reglas: tabRules, datos: tabData, flujo: tabFlow, ia: tabAi, probar: tabPlayground };
+  const views = { general: tabGeneral, personalidad: tabPersonality, conocimiento: tabKnowledge, imagenes: tabImages, reglas: tabRules, activacion: tabActivation, datos: tabData, avanzado: tabAdvanced, probar: tabPlayground };
   await (views[tab] || tabGeneral)(body, bot);
 }
 
@@ -335,20 +463,35 @@ async function saveBot(bot, patch) {
   return run(() => api('PUT', `/api/chatbots/${bot.id}`, patch), 'Guardado ✅');
 }
 
-function tabGeneral(root, bot) {
+async function tabGeneral(root, bot) {
   const m = { name: bot.name, active: bot.active };
   const channels = bot.channels || [];
   const dup = { account_id: bot.account_id };
+  const knowledge = await api('GET', `/api/chatbots/${bot.id}/knowledge`).catch(() => []);
+  const steps = [
+    [knowledge.some((k) => k.active), 'Tiene la información de tu negocio', 'conocimiento', 'Agrega precios, servicios, horarios y preguntas frecuentes: es lo único que puede afirmar.'],
+    [!!bot.personality.prompt.trim(), 'Sabe quién es y a quién atiende', 'personalidad', 'Escribe en "Cómo habla" qué hace tu negocio y qué debe lograr el asistente.'],
+    [channels.some((c) => c.active), 'Está en al menos un canal', null, 'Conéctalo a WhatsApp u otro canal con "+ Agregar canal".'],
+    [bot.active, 'Está encendido', null, 'Marca "Encendido" abajo y guarda.'],
+  ];
+  const ready = steps.every(([ok]) => ok);
   root.append(
     h('div', { class: 'card' },
-      field('Nombre del chatbot / negocio', text(m, 'name')),
-      check(m, 'active', 'Activo (responde automáticamente en sus canales)'),
+      h('h3', { style: 'margin-top:0' }, ready ? '✅ Tu asistente está listo y respondiendo' : 'Para que tu asistente funcione'),
+      h('ul', { class: 'checklist' }, steps.map(([ok, label, tabKey, help]) =>
+        h('li', { class: ok ? 'ok' : '' }, h('span', { class: 'mark' }, ok ? '✓' : '○'), ' ',
+          tabKey ? h('a', { href: `#/bot/${bot.id}/${tabKey}` }, label) : label,
+          ok ? null : h('div', { class: 'small muted' }, help)))),
+      h('p', { class: 'small muted', style: 'margin-bottom:0' }, 'Antes de encenderlo, ', h('a', { href: `#/bot/${bot.id}/probar` }, 'pruébalo como si fueras un cliente'), '.')),
+    h('div', { class: 'card' },
+      field('Nombre del asistente o negocio', text(m, 'name')),
+      check(m, 'active', 'Encendido (responde solo a los clientes en sus canales)'),
       isSuper() ? h('p', { class: 'muted small' }, 'Cuenta: ', accountName(bot.account_id)) : null,
     ),
     h('div', { class: 'card' },
       h('div', { class: 'row between' }, h('h3', { style: 'margin:0' }, 'Canales que atiende'),
         h('a', { class: 'btn', href: `#/channels?new=1&chatbot_id=${bot.id}` }, '+ Agregar canal')),
-      h('p', { class: 'muted small' }, 'El mismo chatbot (prompt, información, imágenes y reglas) responde en todos sus canales.'),
+      h('p', { class: 'muted small' }, 'El mismo asistente (información, reglas y fotos) responde igual en todos sus canales.'),
       channels.length
         ? h('table', {}, h('tbody', {}, channels.map((c) => h('tr', { class: 'click', onclick: () => (location.hash = `#/channel/${c.id}`) },
             h('td', {}, channelIcon(c.type), ' ', h('strong', {}, c.name)), h('td', {}, c.label),
@@ -372,27 +515,42 @@ function tabPersonality(root, bot) {
   root.append(
     h('div', { class: 'card' },
       field('Nombre del asistente (opcional)', text(p, 'assistant_name', { placeholder: 'Sofía' }), 'Si lo defines, así se presenta. Déjalo vacío para no presentarse con nombre.'),
-      field('Prompt principal', area(p, 'prompt', { big: true, placeholder: 'Ej.: Eres parte del equipo de recepción del Hotel Las Palmas en Cancún. Tu objetivo es resolver dudas y ayudar a que el cliente reserve. Eres cálido, atento y vas al grano...' }),
-        'Quién es, a quién atiende y qué busca lograr. La información del negocio va en "Conocimiento", no aquí.'),
-      field('Tono', toneInput, 'Separado por comas.'),
-      h('div', { class: 'row', style: 'margin:-6px 0 14px' }, TONE_PRESETS.map((t) => h('button', { class: 'small', onclick: () => addTone(t) }, `+ ${t}`))),
+      field(tag('Instrucciones para tu asistente', guide()), area(p, 'prompt', { big: true, placeholder: 'Ej.: Trabajas en la recepción del Hotel Las Palmas en Cancún. Ayudas a los huéspedes a resolver dudas y a reservar. Eres cálido y vas al grano. Cuando alguien muestra interés, pregúntale fechas y número de personas.' }),
+        'Quién es, a quién atiende y qué debe lograr, como se lo explicarías a un empleado nuevo. Los precios y datos van en "Lo que sabe", no aquí.'),
       h('div', { class: 'grid' },
-        field('Idioma', text(p, 'language')),
-        field('Trato', select(p, 'formality', [['tu', 'Tú'], ['usted', 'Usted']])),
-        field('Longitud de respuestas', select(p, 'response_length', [['muy_corta', 'Muy corta'], ['corta', 'Corta'], ['media', 'Media'], ['detallada', 'Detallada']])),
-        field('Emojis', select(p, 'emojis', [['none', 'Sin emojis'], ['few', 'Pocos'], ['normal', 'Normal']])),
+        field(tag('Trato', guaranteed()), select(p, 'formality', [['tu', 'De tú'], ['usted', 'De usted']]), 'Si la IA mezcla el trato, la respuesta se rehace.'),
+        field(tag('Largo de las respuestas', guaranteed()), select(p, 'response_length', [['muy_corta', 'Muy cortas (1-2 frases)'], ['corta', 'Cortas (1-3 frases)'], ['media', 'Medianas (un párrafo)'], ['detallada', 'Detalladas']]), 'Si se pasa de largo, se le pide resumir.'),
+        field(tag('Emojis', guaranteed()), select(p, 'emojis', [['none', 'Ninguno'], ['few', 'Pocos (máximo 2)'], ['normal', 'Los que quiera']]), 'Los de más se quitan antes de enviar.'),
       ),
-      field('Ejemplos de estilo', lines(p, 'style_examples', { placeholder: 'Mensajes reales de cómo escribe el negocio, uno por renglón.\nEj.: ¡Hola! Claro, con gusto te ayudo 😊' }),
-        'Opcional. La IA imita el estilo (no copia el texto).'),
+      field(tag('Tono', guide()), toneInput, 'Separado por comas, o elige:'),
+      h('div', { class: 'row', style: 'margin:-6px 0 14px' }, TONE_PRESETS.map((t) => h('button', { class: 'small', onclick: () => addTone(t) }, `+ ${t}`))),
+      h('details', {}, h('summary', {}, 'Más opciones de estilo'),
+        h('div', { style: 'margin-top:10px' },
+          field('Idioma', text(p, 'language')),
+          field(tag('Ejemplos de cómo escribes', guide()), lines(p, 'style_examples', { placeholder: 'Mensajes reales de cómo escribe el negocio, uno por renglón.\nEj.: ¡Hola! Claro, con gusto te ayudo 😊' }),
+            'Opcional. La IA imita el estilo (no copia el texto).'))),
     ),
     saveBar(async () => { if (await saveBot(bot, { personality: p })) render(); }),
   );
 }
 
+/** Avance del recorrido en una conversación: etapa actual y si se cumplió el objetivo. */
+function flowCard(flow, c) {
+  if (!flow || (!flow.goal && !flow.steps?.length)) return null;
+  return h('div', { class: 'card' },
+    h('h3', { style: 'margin-top:0' }, 'Recorrido'),
+    c.goal_completed_at ? h('p', {}, h('span', { class: 'badge green' }, '🎯 Objetivo cumplido'), ' ', h('span', { class: 'small muted' }, fmtDate(c.goal_completed_at))) : flow.goal ? h('p', { class: 'small' }, 'Objetivo: ', flow.goal) : null,
+    flow.steps?.length ? h('ol', { class: 'small flow-steps' }, flow.steps.map((st, i) =>
+      h('li', { class: i + 1 < (c.flow_step || 0) ? 'done' : i + 1 === c.flow_step ? 'current' : '' }, st.title))) : null);
+}
+
+const CAT_LABELS = { general: 'General', servicios: 'Servicios', productos: 'Productos', precios: 'Precios', horarios: 'Horarios', ubicaciones: 'Ubicación y contacto', condiciones: 'Políticas y condiciones', preguntas_frecuentes: 'Preguntas frecuentes', promociones: 'Promociones', otro: 'Otro' };
+const catLabel = (c) => CAT_LABELS[c] || c.replace(/_/g, ' ');
+
 async function tabKnowledge(root, bot) {
   const items = await api('GET', `/api/chatbots/${bot.id}/knowledge`);
   const cats = state.meta.knowledge_categories;
-  const catOptions = cats.map((c) => [c, c.replace(/_/g, ' ')]);
+  const catOptions = cats.map((c) => [c, catLabel(c)]);
   const newItem = { category: 'general', title: '', content: '', always_include: false };
   const total = items.filter((i) => i.active).reduce((a, i) => a + i.title.length + i.content.length, 0);
 
@@ -406,7 +564,7 @@ async function tabKnowledge(root, bot) {
         box.append(
           h('div', { class: 'row between' },
             h('div', {},
-              h('span', { class: 'badge' }, it.category.replace(/_/g, ' ')), ' ',
+              h('span', { class: 'badge' }, catLabel(it.category)), ' ',
               h('strong', {}, it.title), ' ',
               !it.active ? h('span', { class: 'badge orange' }, 'inactivo') : null, ' ',
               it.always_include ? h('span', { class: 'badge green' }, 'siempre incluido') : null),
@@ -420,7 +578,7 @@ async function tabKnowledge(root, bot) {
           h('div', { class: 'grid' }, field('Categoría', select(m, 'category', catOptions)), field('Título', text(m, 'title'))),
           field('Contenido', area(m, 'content', { big: true })),
           check(m, 'active', 'Activo'),
-          check(m, 'always_include', 'Incluir siempre (información esencial)'),
+          check(m, 'always_include', 'Esencial: tenerlo siempre presente'),
           h('div', { class: 'row' },
             h('button', { class: 'primary', onclick: async () => { if (await run(() => api('PUT', `/api/knowledge/${it.id}`, m), 'Guardado')) render(); } }, 'Guardar'),
             h('button', { onclick: () => { editing = false; draw(); } }, 'Cancelar')),
@@ -433,41 +591,85 @@ async function tabKnowledge(root, bot) {
 
   root.append(
     h('div', { class: 'card' },
-      h('p', { class: 'muted' },
-        'Todo lo que el bot puede decir sobre el negocio sale de aquí. Si un dato no está, el bot no lo inventa. ',
-        'Escribe con datos concretos: precios, horarios, direcciones, condiciones, preguntas frecuentes.'),
-      h('p', { class: 'small muted' }, `${items.length} elementos · ${total.toLocaleString()} caracteres activos (presupuesto por mensaje: ${bot.ai.knowledge_char_budget.toLocaleString()}; si se excede, se envían los más relevantes).`),
+      h('p', { style: 'margin-top:0' }, guaranteed(), ' ',
+        'Todo lo que tu asistente afirma sale de aquí. Antes de enviar cada respuesta, el sistema comprueba que cada precio, cantidad, teléfono, correo o enlace esté escrito en esta información; si no está, la respuesta se rehace o se usa tu mensaje de respaldo.'),
+      h('p', { class: 'small muted', style: 'margin-bottom:0' }, 'Escribe datos concretos, uno por renglón: "Limpieza dental: $600". ',
+        total > bot.ai.knowledge_char_budget * 0.7
+          ? `Tienes mucha información (${total.toLocaleString()} caracteres): en cada respuesta se usa la más relacionada con la pregunta. Marca como "esencial" lo que siempre deba tener presente.`
+          : `${items.length} ${items.length === 1 ? 'tema' : 'temas'} cargados.`),
     ),
     h('div', { class: 'card' },
       h('h3', { style: 'margin-top:0' }, 'Agregar información'),
       h('div', { class: 'grid' }, field('Categoría', select(newItem, 'category', catOptions)), field('Título', text(newItem, 'title', { placeholder: 'Ej.: Precios de habitaciones' }))),
       field('Contenido', area(newItem, 'content', { big: true, placeholder: 'Habitación sencilla: $1,200 MXN por noche...\nHabitación doble: $1,650 MXN por noche...' })),
-      check(newItem, 'always_include', 'Incluir siempre (información esencial)'),
+      check(newItem, 'always_include', 'Esencial: tenerlo siempre presente (dirección, políticas importantes)'),
       h('button', { class: 'primary', onclick: async () => { if (await run(() => api('POST', `/api/chatbots/${bot.id}/knowledge`, newItem), 'Agregado')) render(); } }, 'Agregar'),
     ),
     ...cats.filter((c) => items.some((i) => i.category === c)).map((c) =>
-      h('div', { class: 'card' }, h('h3', { style: 'margin-top:0;text-transform:capitalize' }, c.replace(/_/g, ' ')), items.filter((i) => i.category === c).map(itemView))),
+      h('div', { class: 'card' }, h('h3', { style: 'margin-top:0' }, catLabel(c)), items.filter((i) => i.category === c).map(itemView))),
     ...(items.some((i) => !cats.includes(i.category)) ? [h('div', { class: 'card' }, h('h3', {}, 'Otras'), items.filter((i) => !cats.includes(i.category)).map(itemView))] : []),
   );
 }
 
+/** Valores de "¿Cuándo se envía?" de una foto (las viejas quedan en "La IA decide"). */
+const sendWhenDefaults = (w = {}) => ({ mode: 'ai', keywords: [], first_message: false, flow_steps: [], on_goal: false, on_booking: false, once: true, ...w });
+
+/** Editor de "¿Cuándo se envía?": la IA decide, o el sistema la envía en los momentos que marques. */
+function sendWhenEditor(w, bot) {
+  const box = h('div');
+  const steps = bot.flow?.steps || [];
+  const draw = () => fill(box,
+    field('¿Cuándo se envía?', select(w, 'mode', [['ai', 'La IA decide (según "Cuándo enviarla")'], ['rules', 'Solo en los momentos que marque aquí'], ['both', 'En estos momentos y también cuando la IA lo crea conveniente']], draw)),
+    w.mode === 'ai' ? null : h('div', { class: 'list-item' },
+      h('p', { class: 'small', style: 'margin-top:0' }, guaranteed(), ' El sistema la envía junto con la respuesta, aunque la IA no la elija.'),
+      field('Cuando el cliente escriba', lines(w, 'keywords', { placeholder: 'menú\nprecios\nubicación' }), 'Una por renglón. Si la vuelve a pedir, se reenvía.'),
+      check(w, 'first_message', 'En la bienvenida (primera respuesta a un cliente nuevo)'),
+      steps.length
+        ? h('div', {}, h('span', { class: 'small' }, 'Al llegar a la etapa del recorrido: '), steps.map((st, i) => h('label', { class: 'check' },
+            h('input', { type: 'checkbox', checked: w.flow_steps.includes(i + 1), onchange: (e) => { w.flow_steps = e.target.checked ? [...w.flow_steps, i + 1] : w.flow_steps.filter((x) => x !== i + 1); } }), `${i + 1}. ${st.title}`)))
+        : null,
+      check(w, 'on_goal', 'Al cumplirse el objetivo de la conversación'),
+      check(w, 'on_booking', 'Al agendar una cita (p. ej. mapa o indicaciones)'),
+      check(w, 'once', 'Solo una vez por conversación')));
+  draw();
+  return box;
+}
+
+/** Aviso de formato: WhatsApp muestra mejor JPG/PNG; las fotos pesadas tardan en llegar. */
+function imageFileHint(input) {
+  const hint = h('small', {}, 'JPG o PNG recomendados (máx. 5 MB).');
+  input.addEventListener('change', () => {
+    const f = input.files[0];
+    if (!f) return;
+    const warn = [];
+    if (f.type === 'image/webp') warn.push('WEBP: en algunos teléfonos WhatsApp no la muestra bien; mejor JPG o PNG.');
+    if (f.size > 5 * 1024 * 1024) warn.push('Pesa más de 5 MB: no se podrá subir; redúcela.');
+    else if (f.size > 2 * 1024 * 1024) warn.push('Pesa más de 2 MB: tardará más en llegar; conviene reducirla.');
+    hint.textContent = warn.join(' ') || 'Formato correcto.';
+    hint.className = warn.length ? 'error' : '';
+  });
+  return hint;
+}
+
 async function tabImages(root, bot) {
   const images = await api('GET', `/api/chatbots/${bot.id}/images`);
-  const n = { code: '', name: '', description: '', usage_rule: '', caption: '' };
+  const n = { code: '', name: '', description: '', usage_rule: '', caption: '', send_when: sendWhenDefaults() };
   const fileInput = h('input', { type: 'file', accept: 'image/jpeg,image/png,image/webp' });
   const upload = async () => {
     if (!fileInput.files[0]) return toast('Selecciona un archivo', true);
     const fd = new FormData();
-    for (const [k, v] of Object.entries(n)) fd.append(k, v);
+    for (const [k, v] of Object.entries(n)) fd.append(k, typeof v === 'object' ? JSON.stringify(v) : v);
     fd.append('file', fileInput.files[0]);
     if (await run(() => api('POST', `/api/chatbots/${bot.id}/images`, fd, true), 'Imagen agregada')) render();
   };
   const card = (img) => {
     const m = clone(img);
+    m.send_when = sendWhenDefaults(m.send_when);
     const replace = h('input', { type: 'file', accept: 'image/jpeg,image/png,image/webp' });
     const save = async () => {
       const fd = new FormData();
       for (const k of ['code', 'name', 'description', 'usage_rule', 'caption']) fd.append(k, m[k] ?? '');
+      fd.append('send_when', JSON.stringify(m.send_when));
       fd.append('active', String(m.active));
       if (replace.files[0]) fd.append('file', replace.files[0]);
       if (await run(() => api('PUT', `/api/images/${img.id}`, fd, true), 'Imagen actualizada')) render();
@@ -475,14 +677,16 @@ async function tabImages(root, bot) {
     return h('div', { class: 'img-card' },
       h('img', { src: `/api/images/${img.id}/file?v=${encodeURIComponent(img.file_path)}`, alt: img.name, loading: 'lazy' }),
       h('div', { class: 'body' },
-        h('div', { class: 'row between' }, h('code', {}, img.code), !img.active ? h('span', { class: 'badge orange' }, 'inactiva') : null),
+        h('div', { class: 'row between' }, h('code', {}, img.code),
+          h('span', {}, m.send_when.mode !== 'ai' ? h('span', { class: 'badge green' }, 'envío automático') : null, ' ', !img.active ? h('span', { class: 'badge orange' }, 'inactiva') : null)),
         field('ID (lo usa la IA)', text(m, 'code')),
         field('Nombre', text(m, 'name')),
         field('Qué muestra', area(m, 'description')),
-        field('Cuándo enviarla', area(m, 'usage_rule')),
+        field(tag('Cuándo enviarla', guide()), area(m, 'usage_rule'), 'Para la IA (modos "La IA decide" y "Ambos").'),
+        sendWhenEditor(m.send_when, bot),
         field('Pie de foto (opcional)', text(m, 'caption')),
         check(m, 'active', 'Activa'),
-        field('Reemplazar archivo', replace),
+        field('Reemplazar archivo', replace, imageFileHint(replace)),
         h('div', { class: 'row' },
           h('button', { class: 'primary small', onclick: save }, 'Guardar'),
           h('button', { class: 'small danger', onclick: async () => { if (confirm('¿Eliminar imagen?')) { await run(() => api('DELETE', `/api/images/${img.id}`), 'Eliminada'); render(); } } }, 'Eliminar'))),
@@ -490,14 +694,15 @@ async function tabImages(root, bot) {
   };
   root.append(
     h('div', { class: 'card' },
-      h('p', { class: 'muted' }, 'La IA solo puede elegir entre estas imágenes por su ID; el backend verifica que existan y estén activas antes de enviarlas. Describe bien qué muestra cada una y cuándo usarla.'),
+      h('p', { class: 'muted' }, 'Cada foto se puede enviar de tres formas: la IA la elige según "Cuándo enviarla" (el sistema verifica que exista y esté activa), el sistema la envía sola en los momentos que marques (', guaranteed(), '), o la mandas tú desde una conversación con el botón 📷 Foto. También puedes enviarla con una regla en Automatización.'),
       h('h3', {}, 'Agregar imagen'),
       h('div', { class: 'grid' },
         field('ID', text(n, 'code', { placeholder: 'habitacion_doble' }), 'Minúsculas, números, - y _'),
         field('Nombre', text(n, 'name', { placeholder: 'Foto habitación doble' })),
-        field('Archivo (JPG, PNG o WEBP, máx. 5 MB)', fileInput)),
+        field('Archivo', fileInput, imageFileHint(fileInput))),
       field('Qué muestra', area(n, 'description', { placeholder: 'Habitación doble con dos camas matrimoniales y vista al mar' })),
-      field('Cuándo enviarla', area(n, 'usage_rule', { placeholder: 'Cuando el cliente pregunte por la habitación doble o pida fotos de las habitaciones' })),
+      field(tag('Cuándo enviarla', guide()), area(n, 'usage_rule', { placeholder: 'Cuando el cliente pregunte por la habitación doble o pida fotos de las habitaciones' })),
+      sendWhenEditor(n.send_when, bot),
       field('Pie de foto (opcional)', text(n, 'caption')),
       h('button', { class: 'primary', onclick: upload }, 'Subir imagen'),
     ),
@@ -508,36 +713,128 @@ async function tabImages(root, bot) {
 function tabRules(root, bot) {
   const r = clone(bot.rules);
   root.append(
+    h('div', { class: 'card legend' },
+      h('p', { style: 'margin:0' }, guaranteed(), ' El sistema lo revisa antes de enviar cada respuesta; si no se cumple, la corrige o pide otra a la IA. ',
+        guide(), ' Instrucción para la IA: la sigue casi siempre. Compruébalo en ', h('a', { href: `#/bot/${bot.id}/probar` }, 'Probar'), '.')),
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, 'Cero invenciones'),
-      field('Si el dato no está en la información del negocio…', select(r, 'unknown_info_behavior', [['say_unknown', 'Decir que no lo tiene confirmado'], ['ask', 'Hacer una pregunta para aclarar'], ['handoff', 'Transferir a una persona']])),
-      field('Mensaje de respaldo', area(r, 'fallback_message'), 'Se usa si la IA insiste en dar un dato que no puede verificarse.'),
-      check(r, 'verify_facts', 'Verificar precios, números, links, correos y teléfonos antes de enviar (recomendado)'),
-      field('Frases prohibidas', lines(r, 'banned_phrases'), 'Si la respuesta contiene alguna, se regenera.'),
+      h('h3', { style: 'margin-top:0' }, 'Cuando no tiene un dato'),
+      check(r, 'verify_facts', tag('No inventar precios, cantidades, teléfonos, correos ni enlaces (recomendado)', guaranteed())),
+      field(tag('Si le preguntan algo que no está en "Lo que sabe"…', guaranteed()), select(r, 'unknown_info_behavior', [['say_unknown', 'Decir que no lo tiene confirmado'], ['ask', 'Hacer una pregunta para entender mejor'], ['handoff', 'Pasar con una persona del equipo']])),
+      field(tag('Mensaje de respaldo', guaranteed()), area(r, 'fallback_message'), 'Se envía tal cual si la IA insiste en un dato que no puede comprobarse.'),
     ),
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, 'Temas'),
-      field('De qué puede hablar', area(r, 'allowed_topics', { placeholder: 'Reservaciones, habitaciones, servicios del hotel, ubicación' })),
-      field('Temas que NO debe tratar', lines(r, 'forbidden_topics', { placeholder: 'Política\nCompetencia\nTemas médicos' })),
-      field('Reglas específicas', lines(r, 'custom_rules', { big: true, placeholder: 'Nunca ofrezcas descuentos\nSiempre pregunta las fechas antes de dar disponibilidad\nNo confirmes reservaciones: eso lo hace una persona' })),
+      h('h3', { style: 'margin-top:0' }, 'Pasar con una persona'),
+      field(tag('Palabras que pasan con una persona de inmediato', guaranteed()), lines(r, 'handoff_keywords'), 'Si el cliente escribe alguna, se transfiere sin consultar a la IA.'),
+      field(tag('Cuándo pasar con una persona', guide()), lines(r, 'handoff_rules'), 'Situaciones, una por renglón: "El cliente quiere pagar", "Tiene una queja".'),
+      field(tag('Mensaje al pasar con una persona', guaranteed()), area(r, 'handoff_message'), 'Se envía tal cual. Después el asistente deja de responder en esa conversación hasta que se la devuelvas.'),
+      field('WhatsApp que recibe el aviso', text(r, 'handoff_notify_number', { placeholder: '5215512345678' }), 'Opcional, con lada. Además se avisa en el panel y por WhatsApp a quien lo tenga activado en "Mi perfil".'),
+      check(r, 'pause_on_human_reply', tag('Si alguien del equipo contesta desde el teléfono, el asistente se calla en esa conversación', guaranteed())),
+      field('El asistente retoma la conversación después de (minutos)', num(r, 'auto_resume_minutes', { min: 0 }), '0 = nunca solo; se la devuelves desde Conversaciones.'),
     ),
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, 'Imágenes'),
-      field('Cuándo mandar imágenes (criterio general)', area(r, 'image_rules', { placeholder: 'Envía fotos cuando el cliente muestre interés en una habitación concreta o pida verla.' })),
-      field('Máximo de imágenes por respuesta', num(r, 'max_images_per_reply', { min: 0, max: 5 })),
-      check(r, 'avoid_repeating_images', 'No reenviar imágenes ya enviadas (salvo que el cliente las pida)'),
+      h('h3', { style: 'margin-top:0' }, 'Temas y reglas de tu negocio'),
+      field(tag('Temas de los que no debe hablar', guaranteed()), lines(r, 'forbidden_topics', { placeholder: 'Política\nCompetencia' }),
+        'Si los menciona sin que el cliente pregunte, se quitan de la respuesta. Si el cliente pregunta, declina con amabilidad.'),
+      field(tag('Reglas de tu negocio', guide()), lines(r, 'custom_rules', { big: true, placeholder: 'Nunca ofrezcas descuentos\nSiempre pregunta las fechas antes de hablar de disponibilidad\nNo confirmes reservaciones: eso lo hace una persona' }),
+        'Una por renglón, concretas. Lo que tenga precio o cifra, escríbelo también en "Lo que sabe": así queda garantizado.'),
+      field(tag('De qué puede hablar', guide()), area(r, 'allowed_topics', { placeholder: 'Reservaciones, habitaciones, servicios del hotel, ubicación' }), 'Opcional. Si le preguntan algo ajeno, redirige la conversación.'),
+      field(tag('Frases que nunca debe usar', guaranteed()), lines(r, 'banned_phrases'), 'Si aparece alguna, la respuesta se rehace.'),
     ),
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, 'Transferir a una persona'),
-      field('Cuándo transferir', lines(r, 'handoff_rules')),
-      field('Palabras clave que transfieren de inmediato', lines(r, 'handoff_keywords'), 'Sin pasar por la IA.'),
-      field('Mensaje al transferir', area(r, 'handoff_message')),
-      field('Número que recibe el aviso de transferencia', text(r, 'handoff_notify_number', { placeholder: '5215512345678' }), 'Opcional. Se le manda un WhatsApp cuando alguien necesita atención.'),
-      check(r, 'pause_on_human_reply', 'Pausar el bot si alguien responde manualmente desde el teléfono'),
-      field('Retomar automáticamente después de (minutos)', num(r, 'auto_resume_minutes', { min: 0 }), '0 = el bot no retoma solo; hay que devolverle la conversación desde el panel.'),
+      h('h3', { style: 'margin-top:0' }, 'Fotos'),
+      field(tag('Cuándo mandar fotos', guide()), area(r, 'image_rules', { placeholder: 'Envía la foto de una habitación cuando el cliente pregunte por ella o quiera verla.' })),
+      h('div', { class: 'grid' }, field(tag('Máximo de fotos por respuesta', guaranteed()), num(r, 'max_images_per_reply', { min: 0, max: 5 }))),
+      check(r, 'avoid_repeating_images', tag('No reenviar fotos ya enviadas (salvo que el cliente las pida)', guaranteed())),
+      h('p', { class: 'small muted' }, guaranteed(), ' Solo se envían fotos de tu catálogo; nunca promete una foto que no existe.'),
     ),
     saveBar(async () => { if (await saveBot(bot, { rules: r })) render(); }),
   );
+}
+
+/** Activadores y desactivadores: cuándo empieza a responder el asistente y cuándo se apaga en una conversación. */
+function tabActivation(root, bot) {
+  const r = clone(bot.rules);
+  const a = r.activation;
+  const fields = bot.data_fields || [];
+  const onBox = h('div');
+  const drawOn = () => fill(onBox,
+    field(tag('¿Cuándo empieza a responder?', guaranteed()), select(a, 'mode', [['always', 'Siempre: a cualquier mensaje'], ['keywords', 'Solo cuando el cliente escriba una de estas palabras']], drawOn)),
+    field(a.mode === 'keywords' ? 'Palabras que lo activan' : 'Palabras que lo reactivan si está en pausa', lines(a, 'on_keywords', { placeholder: 'info\nquiero información\nhola asistente' }),
+      a.mode === 'keywords'
+        ? 'Una por renglón. Hasta que el cliente escriba alguna, el asistente no contesta en esa conversación (tus reglas automáticas sí funcionan). Después responde normal.'
+        : 'Opcional. Una por renglón. Si el asistente está en pausa en una conversación y el cliente escribe alguna, vuelve a responder.'));
+  drawOn();
+  root.append(
+    h('div', { class: 'card legend' }, h('p', { style: 'margin:0' }, guaranteed(), ' Todo esto lo aplica el sistema, no la IA: funciona siempre igual. No distingue mayúsculas ni acentos, y busca palabras o frases completas. Pruébalo abajo o en ', h('a', { href: `#/bot/${bot.id}/probar` }, 'Probar'), '.')),
+    h('div', { class: 'card' }, h('h3', { style: 'margin-top:0' }, '1. Activadores'), onBox),
+    h('div', { class: 'card' },
+      h('h3', { style: 'margin-top:0' }, '2. Desactivadores'),
+      h('p', { class: 'small muted', style: 'margin-top:0' }, 'El asistente se apaga solo en esa conversación (con los demás clientes sigue igual).'),
+      field('Cuando el cliente escriba alguna de estas palabras', lines(a, 'off_keywords', { placeholder: 'ya no\ngracias es todo\nno me interesa' }), 'Una por renglón. No se le pregunta a la IA.'),
+      check(a, 'off_on_goal', ['Cuando se cumpla el objetivo de la conversación', bot.flow?.goal ? h('span', { class: 'muted small' }, ` (“${bot.flow.goal}”)`) : h('span', { class: 'muted small' }, ' (define el objetivo en Avanzado)')]),
+      check(a, 'off_on_booking', 'Cuando el cliente agende una cita o llamada'),
+      field('Cuando el cliente ya haya dado todos estos datos',
+        fields.length
+          ? h('div', { class: 'row' }, fields.map((f) => h('label', { class: 'check' },
+              h('input', { type: 'checkbox', checked: a.off_when_fields.includes(f.key), onchange: (e) => { a.off_when_fields = e.target.checked ? [...a.off_when_fields, f.key] : a.off_when_fields.filter((k) => k !== f.key); } }), f.label)))
+          : h('p', { class: 'small muted', style: 'margin:0' }, 'Primero agrega los datos en ', h('a', { href: `#/bot/${bot.id}/datos` }, 'Datos que pide'), '.'),
+        'Responde ese mensaje y después se apaga. Ej.: al tener nombre y teléfono, para que una persona continúe.')),
+    h('div', { class: 'card' },
+      h('h3', { style: 'margin-top:0' }, '3. Al desactivarse'),
+      field('Qué pasa', select(a, 'off_action', [['pause', 'Se pone en pausa en silencio (no avisa a nadie)'], ['handoff', 'Pasa la conversación a una persona (avisa al equipo)'], ['close', 'Cierra la conversación (si el cliente vuelve a escribir, empieza de nuevo)']])),
+      field('Mensaje al desactivarse (opcional)', area(a, 'off_message', { placeholder: 'Gracias, en breve una persona del equipo te contacta.' }), 'Se envía tal cual. Vacío = no se envía nada.'),
+      h('div', { class: 'grid' }, field('Se reactiva solo después de (horas)', num(a, 'resume_after_hours', { min: 0, max: 720 }), '0 = solo con una palabra de activación, una regla o el botón "Reactivar asistente" en la conversación.'))),
+    h('div', { class: 'card' }, h('h3', { style: 'margin-top:0' }, 'Probar palabras'), messageTester([bot], bot.id)),
+    saveBar(async () => {
+      a.on_keywords = a.on_keywords.filter((x) => x.trim());
+      if (a.mode === 'keywords' && !a.on_keywords.length) return toast('Escribe al menos una palabra que active al asistente', true);
+      if (await saveBot(bot, { rules: r })) render();
+    }),
+  );
+}
+
+/**
+ * Probador sin IA: qué pasaría si un cliente escribe un mensaje (bajas, reglas, activadores,
+ * desactivadores y transferencia). Usa la configuración guardada; no envía ni guarda nada.
+ */
+function messageTester(bots, botId) {
+  const t = { bot: botId || bots[0]?.id || '', text: '', first: true, agent: '', channel: 'whatsapp' };
+  const out = h('div');
+  const go = async () => {
+    if (!t.text.trim()) return toast('Escribe un mensaje de prueba', true);
+    const r = await run(() => api('POST', `/api/chatbots/${t.bot}/test-message`, { text: t.text, first_message: t.first, channel_type: t.channel, agent: t.agent || undefined }));
+    if (!r) return;
+    fill(out,
+      h('p', {}, h('span', { class: `badge ${r.ai_replies ? 'green' : 'orange'}` }, r.ai_replies ? 'La IA respondería' : 'La IA no responde'), ' ', r.why),
+      h('ul', { class: 'small' }, r.steps.map((s) => h('li', {}, h('strong', {}, s.title, ': '), s.detail))),
+      r.rules.length
+        ? h('table', { class: 'small' }, h('thead', {}, h('tr', {}, h('th', {}, ''), h('th', {}, 'Regla'), h('th', {}, 'Resultado'), h('th', {}, 'Acciones'))),
+            h('tbody', {}, r.rules.map((x) => h('tr', {},
+              h('td', {}, x.matched ? '✅' : '❌'),
+              h('td', {}, h('a', { href: `#/automation/rules/${x.id}` }, x.name)),
+              h('td', { class: x.matched ? '' : 'muted' }, x.reason),
+              h('td', { class: 'muted' }, x.actions.map((k) => ACTIONS[k] || k).join(' → '), x.stop_ai ? ' · la IA no responde' : '')))))
+        : null,
+      h('p', { class: 'small muted' }, 'Las reglas por intención las decide la IA: pruébalas en el Simulador.'));
+  };
+  const input = h('input', { type: 'text', placeholder: 'Escribe un mensaje como si fueras el cliente…', oninput: (e) => (t.text = e.target.value), onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); go(); } } });
+  return h('div', {},
+    h('p', { class: 'small muted', style: 'margin-top:0' }, 'Sin IA y sin enviar nada: te dice qué reglas, activadores y desactivadores se dispararían. Usa lo que ya está guardado.'),
+    h('div', { class: 'grid' },
+      bots.length > 1 ? field('Asistente', select(t, 'bot', bots.map((b) => [b.id, b.name]))) : null,
+      field('Mensaje', input),
+      field('Estado del asistente en esa conversación', select(t, 'agent', [['', 'Como empieza una conversación nueva'], ['on', 'Activo'], ['paused', 'En pausa'], ['waiting', 'Esperando palabra de activación']])),
+      field('Canal', select(t, 'channel', (state.meta?.channel_types || [{ type: 'whatsapp', label: 'WhatsApp' }]).map((c) => [c.type, c.label])))),
+    check(t, 'first', 'Es el primer mensaje del cliente'),
+    h('div', { class: 'row' }, h('button', { class: 'primary', onclick: go }, 'Probar')),
+    out);
+}
+
+function uniqueKey(label, fields) {
+  const base = label.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 40) || 'dato';
+  let key = base;
+  for (let i = 2; fields.some((f) => f.key === key); i++) key = `${base}_${i}`;
+  return key;
 }
 
 function tabData(root, bot) {
@@ -549,13 +846,11 @@ function tabData(root, bot) {
       ...fields.map((f, i) =>
         h('div', { class: 'list-item' },
           h('div', { class: 'grid' },
-            field('Clave', text(f, 'key', { placeholder: 'correo' }), 'minúsculas_y_guion_bajo'),
-            field('Etiqueta', text(f, 'label', { placeholder: 'Correo electrónico' })),
-            field('Tipo', select(f, 'type', types, draw))),
-          f.type === 'option' ? field('Opciones válidas', lines(f, 'options')) : null,
-          field('Descripción', text(f, 'description', { placeholder: 'Para enviarle la confirmación' })),
-          field('Cuándo pedirlo', text(f, 'ask_when', { placeholder: 'Cuando quiera cotizar o reservar' })),
-          check(f, 'required', 'Importante'),
+            field('Dato', text(f, 'label', { placeholder: 'Correo electrónico' })),
+            field('Tipo', select(f, 'type', types, draw)),
+            field('Cuándo pedirlo', text(f, 'ask_when', { placeholder: 'Cuando quiera cotizar o reservar' }))),
+          f.type === 'option' ? field('Respuestas válidas', lines(f, 'options'), 'Una por renglón. Solo se guarda si coincide con alguna.') : null,
+          check(f, 'required', 'Importante: procura conseguirlo en la conversación'),
           h('div', { class: 'row' },
             h('button', { class: 'small', disabled: i === 0, onclick: () => { [fields[i - 1], fields[i]] = [fields[i], fields[i - 1]]; draw(); } }, '↑'),
             h('button', { class: 'small', disabled: i === fields.length - 1, onclick: () => { [fields[i + 1], fields[i]] = [fields[i], fields[i + 1]]; draw(); } }, '↓'),
@@ -566,16 +861,32 @@ function tabData(root, bot) {
   draw();
   root.append(
     h('div', { class: 'card' },
-      h('p', { class: 'muted' }, 'Datos que el bot irá recopilando de forma natural (sin formulario). Los valores se validan (correo, teléfono, opciones) antes de guardarse y nunca se vuelven a pedir.'),
+      h('p', { style: 'margin-top:0' }, 'Datos que tu asistente pide durante la conversación, sin formularios. Los verás en la ficha de cada cliente.'),
+      h('p', { class: 'small muted' }, guaranteed(), ' Solo se guarda un dato si tiene el formato correcto (un correo válido, un teléfono, una de las respuestas válidas) y no se vuelve a pedir lo que ya se tiene.'),
       list,
       h('button', { onclick: () => { fields.push({ key: '', label: '', type: 'text', description: '', options: [], required: false, ask_when: '' }); draw(); } }, '+ Agregar dato'),
     ),
-    saveBar(async () => { if (await saveBot(bot, { data_fields: fields })) render(); }),
+    saveBar(async () => {
+      if (fields.some((f) => !f.label.trim())) return toast('Escribe el nombre de cada dato', true);
+      // La clave interna se genera del nombre (las existentes no cambian: así se conservan los datos guardados).
+      for (const f of fields) if (!f.key) f.key = uniqueKey(f.label, fields);
+      if (await saveBot(bot, { data_fields: fields })) render();
+    }),
   );
 }
 
-function tabFlow(root, bot) {
+function tabAdvanced(root, bot) {
   const f = clone(bot.flow);
+  const a = clone(bot.ai);
+  root.append(
+    h('div', { class: 'card legend' }, h('p', { style: 'margin:0' }, 'No necesitas cambiar nada aquí para que tu asistente funcione. Son ajustes finos del recorrido de la conversación y del modelo de IA.')),
+    flowSection(f),
+    aiSection(a),
+    saveBar(async () => { if (await saveBot(bot, { flow: f, ai: a })) render(); }),
+  );
+}
+
+function flowSection(f) {
   const list = h('div');
   const draw = () => {
     fill(list, 
@@ -592,25 +903,26 @@ function tabFlow(root, bot) {
     );
   };
   draw();
-  root.append(
+  return h('div', {},
     h('div', { class: 'card' },
-      h('p', { class: 'muted' }, 'Es una guía, no un guion: el cliente puede saltar pasos o dar todo junto y el bot se adapta.'),
+      h('h3', { style: 'margin-top:0' }, 'Recorrido de la conversación ', guide()),
+      h('p', { class: 'muted' }, 'Es una guía, no un guion: el cliente puede saltar pasos o dar todo junto y el asistente se adapta.'),
       field('Objetivo de la conversación', area(f, 'goal', { placeholder: 'Que el cliente haga una reservación o deje sus datos para que un asesor lo contacte.' })),
       field('Saludo sugerido', text(f, 'greeting', { placeholder: '¡Hola! Gracias por escribir al Hotel Las Palmas 🌴' })),
       h('h3', {}, 'Etapas sugeridas'),
       list,
       h('button', { onclick: () => { f.steps.push({ title: '', description: '' }); draw(); } }, '+ Agregar etapa'),
-      h('div', { style: 'margin-top:14px' }, field('Cuando se cumpla el objetivo', area(f, 'on_goal_completed', { placeholder: 'Agradece, confirma los datos recibidos y transfiere a una persona para cerrar la reservación.' }))),
-    ),
-    saveBar(async () => { if (await saveBot(bot, { flow: f })) render(); }),
-  );
+      h('div', { style: 'margin-top:14px' },
+        field(tag('Cuando se cumpla el objetivo, el asistente…', guide()), area(f, 'on_goal_completed', { placeholder: 'Agradece y confirma los datos recibidos.' })),
+        field(tag('…y además el sistema', guaranteed()), select(f, 'on_goal_action', [['none', 'No hace nada más'], ['handoff', 'Pasa la conversación a una persona'], ['notify', 'Avisa al equipo (panel y WhatsApp)']]),
+          'El objetivo solo cuenta como cumplido cuando ya se tienen los datos marcados como "Importante" en "Datos que pide". Pasa una sola vez por conversación; también puedes usarlo como disparador en Automatización.')),
+    ));
 }
 
-function tabAi(root, bot) {
-  const a = clone(bot.ai);
-  root.append(
+function aiSection(a) {
+  return h('div', {},
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, 'Modelo'),
+      h('h3', { style: 'margin-top:0' }, 'Modelo de IA'),
       h('div', { class: 'grid' },
         field('Modelo de OpenAI', text(a, 'model', { placeholder: state.meta.default_model }), `Vacío = ${state.meta.default_model}`),
         field('Temperatura', num(a, 'temperature', { step: 0.1, min: 0, max: 2, nullable: true }), 'Menor = más consistente. Se ignora en modelos de razonamiento.'),
@@ -624,24 +936,47 @@ function tabAi(root, bot) {
         field('Presupuesto de conocimiento (caracteres)', num(a, 'knowledge_char_budget', { min: 1000, step: 1000 }))),
     ),
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, 'Comportamiento en WhatsApp'),
+      h('h3', { style: 'margin-top:0' }, 'Comportamiento en el chat'),
       h('div', { class: 'grid' },
         field('Esperar antes de responder (segundos)', num(a, 'debounce_seconds', { min: 0, max: 60, step: 0.5 }), 'Agrupa mensajes seguidos del cliente.'),
-        field('Máximo de mensajes por respuesta', num(a, 'max_bubbles', { min: 1, max: 5 })),
-        field('Máximo de caracteres por mensaje', num(a, 'max_chars_per_bubble', { min: 80, max: 2000 })),
-        field('Zona horaria', text(a, 'timezone'))),
+        field(tag('Máximo de mensajes por respuesta', guaranteed()), num(a, 'max_bubbles', { min: 1, max: 5 })),
+        field(tag('Máximo de caracteres por mensaje', guaranteed()), num(a, 'max_chars_per_bubble', { min: 80, max: 2000 }), 'Los mensajes más largos se dividen.')),
+      h('p', { class: 'small muted' }, 'La zona horaria y el horario de atención que conoce el asistente se toman de ', h('a', { href: '#/automation/settings' }, 'Automatización → Horario y ajustes'), '.'),
       check(a, 'typing_simulation', 'Mostrar "escribiendo…" antes de cada mensaje'),
-      check(a, 'transcribe_audio', 'Transcribir notas de voz (usa la API de audio de OpenAI)'),
-    ),
-    saveBar(async () => { if (await saveBot(bot, { ai: a })) render(); }),
-  );
+      check(a, 'transcribe_audio', 'Entender notas de voz (las transcribe; tiene un costo pequeño por minuto)'),
+    ));
 }
+
+const ACTION_LABEL = { paused: 'No respondió: el asistente no está activo en esta conversación', reply: 'Respondió', reply_with_image: 'Respondió con foto', handoff: 'Pasó la conversación a una persona', no_reply: 'No respondió', human: 'No respondió: la conversación está con una persona', inactive: 'No respondió: el asistente está apagado', error: 'Error' };
+
+/** Traduce el motivo que se le dio a la IA a lenguaje para el dueño del negocio. */
+function explainIssue(x) {
+  const rules = [
+    [/^Mencionaste datos que no están[^:]*: (.*?)\. Elimina.*$/s, (m) => `Quiso dar un dato que no está en tu información (${m[1]}). Se bloqueó.`],
+    [/^No uses estas frases: (.*?)\.$/s, (m) => `Usó una frase prohibida (${m[1]}).`],
+    [/^No hables de estos temas: (.*?)\. .*$/s, (m) => `Mencionó un tema prohibido (${m[1]}).`],
+    [/^Trata al cliente de "usted".*$/s, () => 'Tuteó al cliente y está configurado "de usted".'],
+    [/^Trata al cliente de "tú".*$/s, () => 'Habló de usted y está configurado "de tú".'],
+    [/^La respuesta es demasiado larga.*$/s, () => 'La respuesta era más larga de lo configurado.'],
+    [/^Un mensaje es demasiado largo.*$/s, () => 'Un mensaje era demasiado largo.'],
+    [/^Dices que envías una imagen.*$/s, () => 'Prometió una foto que no está en tu catálogo.'],
+    [/^Los IDs de imagen.*$/s, () => 'Quiso enviar una foto que no existe en tu catálogo.'],
+    [/^El horario ".*" no está disponible.*$/s, () => 'Ofreció un horario que no está disponible en tu agenda.'],
+    [/^El servicio ".*" no existe.*$/s, () => 'Quiso agendar un servicio que no existe.'],
+    [/^Para agendar la llamada primero pide.*$/s, () => 'Quiso agendar una llamada sin tener el teléfono del cliente.'],
+  ];
+  for (const [re, fn] of rules) { const m = x.match(re); if (m) return fn(m); }
+  return x;
+}
+
+/** Preguntas para comprobar que respeta la información y las reglas. */
+const TEST_IDEAS = ['¿Cuánto cuesta?', '¿Qué horario tienen?', '¿Dónde están?', '¿Me haces un descuento?', '¿Tienen servicio a domicilio?', 'Quiero hablar con una persona'];
 
 async function tabPlayground(root, bot) {
   const session = localStorage.getItem('pg-session') || Math.random().toString(36).slice(2, 10);
   try { localStorage.setItem('pg-session', session); } catch { /* sin storage */ }
   const chat = h('div', { class: 'chat' });
-  const debug = h('div', { class: 'stack' }, h('p', { class: 'muted small' }, 'Aquí verás la decisión de la IA y la validación del backend.'));
+  const debug = h('div', { class: 'stack' }, h('p', { class: 'muted small' }, 'Después de cada respuesta verás qué hizo el asistente, si alguna regla obligó a corregirla y qué datos del cliente guardó.'));
   const input = h('textarea', { placeholder: 'Escribe como si fueras el cliente…', onkeydown: (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } } });
   const btn = h('button', { class: 'primary', onclick: () => send() }, 'Enviar');
 
@@ -671,21 +1006,37 @@ async function tabPlayground(root, bot) {
     for (const o of r.outputs.filter((x) => x.type === 'notify')) chat.append(bubble('notify', o.text));
     if (r.result.status === 'no_reply') chat.append(bubble('notify', '(la IA decidió no responder)'));
     if (r.result.status === 'human') chat.append(bubble('notify', '(conversación en modo humano: el bot no responde)'));
+    if (r.result.status === 'paused') chat.append(bubble('notify', `(el asistente no responde: ${r.agent?.reason || 'en pausa'})`));
     if (r.result.status === 'error') chat.append(bubble('notify', `Error: ${r.result.error}`));
     chat.scrollTop = chat.scrollHeight;
     const c = r.contact || {};
-    fill(debug, 
-      h('div', {}, h('strong', {}, 'Acción: '), h('code', {}, r.result.action || r.result.status), r.result.fallback_used ? h('span', { class: 'badge orange' }, ' respaldo') : null, r.result.info_not_found ? h('span', { class: 'badge orange' }, ' dato no encontrado') : null),
-      r.result.thinking ? h('div', {}, h('strong', {}, 'Razonamiento: '), h('span', { class: 'muted' }, r.result.thinking)) : null,
-      ...r.result.attempts.map((a, i) => h('div', { class: 'small' }, h('strong', {}, `Intento ${i + 1}: `),
-        a.retryable.length ? h('span', { class: 'badge red' }, 'rechazado') : h('span', { class: 'badge green' }, 'aprobado'),
-        a.retryable.length ? h('div', { class: 'muted' }, a.retryable.join(' · ')) : null,
-        a.fixes.length ? h('div', { class: 'muted' }, 'Correcciones: ', a.fixes.join(' · ')) : null)),
-      h('div', {}, h('strong', {}, 'Estado: '), r.conversation?.status === 'human' ? h('span', { class: 'badge orange' }, 'con humano') : h('span', { class: 'badge green' }, 'bot')),
-      h('div', {}, h('strong', {}, 'Nombre: '), c.name || '—'),
-      h('div', {}, h('strong', {}, 'Datos: '), h('pre', { class: 'small pre' }, JSON.stringify(c.data || {}, null, 2))),
-      c.notes?.length ? h('div', {}, h('strong', {}, 'Notas: '), h('ul', {}, c.notes.map((n) => h('li', {}, n)))) : null,
-      r.conversation?.summary ? h('div', {}, h('strong', {}, 'Resumen: '), h('div', { class: 'small pre muted' }, r.conversation.summary)) : null,
+    const attempts = r.result.attempts || [];
+    const fixes = attempts.flatMap((a) => a.fixes);
+    const rejected = attempts.filter((a) => a.retryable.length);
+    const dataLabels = Object.fromEntries((bot.data_fields || []).map((f) => [f.key, f.label]));
+    fill(debug,
+      h('div', {}, h('strong', {}, 'Qué hizo: '), ACTION_LABEL[r.result.action] || ACTION_LABEL[r.result.status] || r.result.status,
+        r.result.fallback_used ? h('div', { class: 'small' }, h('span', { class: 'badge orange' }, 'mensaje de respaldo'), ' La IA no logró una respuesta comprobable y se envió tu mensaje de respaldo.') : null,
+        r.result.info_not_found ? h('div', { class: 'small' }, h('span', { class: 'badge orange' }, 'dato no encontrado'), ' Le preguntaron algo que no está en "Lo que sabe". Agrégalo si quieres que lo responda.') : null),
+      r.result.status === 'paused' ? null : h('div', {}, h('strong', {}, 'Revisión de reglas: '),
+        !rejected.length && !fixes.length ? h('span', { class: 'badge green' }, '✓ cumplió todo a la primera') : null,
+        rejected.length ? h('div', { class: 'small' }, h('span', { class: 'badge orange' }, `${rejected.length} ${rejected.length === 1 ? 'respuesta rehecha' : 'respuestas rehechas'}`), h('ul', { class: 'muted' }, [...new Set(rejected.flatMap((a) => a.retryable).map(explainIssue))].map((x) => h('li', {}, x)))) : null,
+        fixes.length ? h('div', { class: 'small' }, h('span', { class: 'badge' }, 'ajustes automáticos'), h('ul', { class: 'muted' }, fixes.map((x) => h('li', {}, x)))) : null),
+      h('div', {}, h('strong', {}, 'Conversación: '),
+        r.conversation?.status === 'human' ? h('span', { class: 'badge orange' }, 'pasó con una persona (el asistente ya no responde)')
+          : r.conversation?.status === 'closed' ? h('span', { class: 'badge' }, 'cerrada (si escribes de nuevo, empieza otra vez)')
+          : r.agent && !r.agent.on ? h('span', {}, h('span', { class: 'badge orange' }, r.agent.state === 'waiting' ? 'esperando palabra de activación' : `asistente en pausa: ${r.agent.reason}`), ' ',
+              h('button', { class: 'small', onclick: async () => { if (await run(() => api('POST', `/api/conversations/${r.conversation.id}/release`), 'Asistente reactivado')) chat.append(bubble('notify', '(asistente reactivado)')); } }, 'Reactivar asistente'))
+          : h('span', { class: 'badge green' }, 'la atiende el asistente')),
+      h('div', {}, h('strong', {}, 'Qué se activó: '),
+        r.events?.length ? h('ul', { class: 'small' }, r.events.map((e) => h('li', { class: e.level === 'error' ? 'error' : '' }, e.message))) : h('span', { class: 'muted small' }, 'ninguna regla ni cambio')),
+      h('div', {}, h('strong', {}, 'Datos del cliente: '),
+        c.name || Object.keys(c.data || {}).length
+          ? h('ul', { class: 'small' }, c.name ? h('li', {}, 'Nombre: ', c.name) : null, Object.entries(c.data || {}).map(([k, v]) => h('li', {}, `${dataLabels[k] || k}: ${v}`)))
+          : h('span', { class: 'muted small' }, 'aún ninguno')),
+      c.notes?.length ? h('div', {}, h('strong', {}, 'Lo que recuerda: '), h('ul', { class: 'small' }, c.notes.map((n) => h('li', {}, n)))) : null,
+      r.result.thinking ? h('details', { class: 'small' }, h('summary', {}, 'Por qué respondió así'), h('p', { class: 'muted' }, r.result.thinking)) : null,
+      r.conversation?.summary ? h('details', { class: 'small' }, h('summary', {}, 'Resumen de memoria'), h('div', { class: 'pre muted' }, r.conversation.summary)) : null,
     );
   };
 
@@ -700,10 +1051,12 @@ async function tabPlayground(root, bot) {
     h('div', { class: 'split' },
       h('div', { class: 'card' },
         h('div', { class: 'row between' }, h('h3', { style: 'margin:0' }, 'Simulador'), h('button', { class: 'small', onclick: reset }, 'Reiniciar conversación')),
-        h('p', { class: 'muted small' }, 'Usa exactamente el mismo motor, contexto y validaciones que WhatsApp (funciona aunque el bot esté inactivo). Las imágenes se muestran aquí en lugar de enviarse.'),
+        h('p', { class: 'muted small' }, 'Escribe como si fueras un cliente. Responde exactamente igual que en WhatsApp, con las mismas reglas (funciona aunque esté apagado). Las fotos se muestran aquí en lugar de enviarse.'),
         chat,
+        h('div', { class: 'row', style: 'margin:8px 0;gap:6px;flex-wrap:wrap' }, h('span', { class: 'small muted' }, 'Prueba:'),
+          TEST_IDEAS.map((q) => h('button', { class: 'small', onclick: () => { input.value = q; send(); } }, q))),
         h('div', { class: 'composer' }, input, btn)),
-      h('div', { class: 'card' }, h('h3', { style: 'margin-top:0' }, 'Depuración'), debug),
+      h('div', { class: 'card' }, h('h3', { style: 'margin-top:0' }, 'Qué revisó el sistema'), debug),
     ),
   );
   load().catch(() => undefined);
@@ -773,6 +1126,20 @@ async function viewConversation(root, id) {
     if (ok) { input.value = ''; await load(true); }
   };
 
+  // Galería del catálogo para enviar una foto a mano.
+  const gallery = h('div', { class: 'gallery', hidden: true });
+  const togglePhotos = async () => {
+    if (!gallery.hidden) { gallery.hidden = true; return; }
+    if (!data?.chatbot) return toast('Esta conversación no tiene asistente: no hay catálogo de fotos', true);
+    const imgs = (await api('GET', `/api/chatbots/${data.chatbot.id}/images`)).filter((i) => i.active);
+    fill(gallery, imgs.length
+      ? imgs.map((img) => h('button', { class: 'thumb', title: `Enviar "${img.name}"`, onclick: async () => {
+          if (await run(() => api('POST', `/api/conversations/${id}/send-image`, { image_id: img.id }), 'Foto enviada')) { gallery.hidden = true; await load(true); }
+        } }, h('img', { src: `/api/images/${img.id}/file?v=${encodeURIComponent(img.file_path)}`, alt: img.name, loading: 'lazy' }), h('span', { class: 'small' }, img.name)))
+      : h('p', { class: 'muted small' }, 'No hay fotos activas. Súbelas en el asistente → Fotos.'));
+    gallery.hidden = false;
+  };
+
   const load = async (force = false) => {
     data = await api('GET', `/api/conversations/${id}`);
     const { conversation: c, contact: ct, messages } = data;
@@ -785,6 +1152,12 @@ async function viewConversation(root, id) {
           c.status !== 'bot' ? h('button', { class: 'primary', onclick: async () => { await run(() => api('POST', `/api/conversations/${id}/release`), 'El bot vuelve a responder'); load(true); } }, 'Devolver al bot') : null,
           c.status !== 'closed' ? h('button', { onclick: async () => { await run(() => api('POST', `/api/conversations/${id}/close`), 'Cerrada'); load(true); } }, 'Cerrar') : null)),
       h('p', { class: 'muted' }, channelIcon(data.channel?.type), ' ', data.channel?.name, ' · ', data.chatbot?.name || 'sin chatbot', ct.phone ? ` · +${ct.phone}` : '', c.status === 'human' && c.handoff_reason ? ` · Motivo: ${c.handoff_reason}` : ''),
+      c.status === 'bot' && data.agent && !data.agent.on
+        ? h('div', { class: 'card legend row between' },
+            h('span', {}, h('span', { class: 'badge orange' }, data.agent.state === 'waiting' ? 'Asistente esperando su palabra de activación' : 'Asistente en pausa'), ' ',
+              data.agent.state === 'paused' ? `${data.agent.reason}${data.agent.until ? ` · se reactiva ${fmtDate(data.agent.until)}` : ''}` : 'Aún no responde en esta conversación.'),
+            h('button', { class: 'small', onclick: async () => { await run(() => api('POST', `/api/conversations/${id}/release`), 'El asistente vuelve a responder'); load(true); } }, 'Reactivar asistente'))
+        : null,
     );
     if (force || messages.length !== lastCount) {
       lastCount = messages.length;
@@ -859,6 +1232,7 @@ async function viewConversation(root, id) {
         field('Etiquetas', h('input', { type: 'text', value: m.tags.join(', '), placeholder: 'vip, interesado', oninput: (e) => (m.tags = e.target.value.split(',').map((x) => x.trim()).filter(Boolean)) }), 'Separadas por comas. Sirven para campañas y reglas.'),
         check(m, 'opted_out', 'Dado de baja (no recibe mensajes promocionales)'),
         h('button', { class: 'small', onclick: async () => { if (await run(() => api('PUT', `/api/contacts/${ct.id}`, { ...m, data: Object.fromEntries(Object.entries({ ...m.data, ...Object.fromEntries(nameKeys.map((k) => [k, m.name])) }).filter(([, v]) => v)) }), 'Datos guardados')) load(true); } }, 'Guardar datos')),
+      flowCard(data.chatbot?.flow, c),
       autoBox,
       h('div', { class: 'card' },
         h('h3', { style: 'margin-top:0' }, 'Resumen de memoria'),
@@ -872,8 +1246,9 @@ async function viewConversation(root, id) {
     h('a', { href: '#/conversations' }, '← Conversaciones'),
     header,
     h('div', { class: 'split' },
-      h('div', { class: 'card' }, chat, h('div', { class: 'composer' }, input, h('button', { class: 'primary', onclick: send }, 'Enviar')),
-        h('p', { class: 'muted small' }, 'Al enviar un mensaje manual, el bot se pausa en esta conversación hasta que la devuelvas.')),
+      h('div', { class: 'card' }, chat, h('div', { class: 'composer' }, input, h('button', { onclick: togglePhotos, title: 'Enviar una foto del catálogo' }, '📷 Foto'), h('button', { class: 'primary', onclick: send }, 'Enviar')),
+        gallery,
+        h('p', { class: 'muted small' }, 'Al enviar un mensaje o una foto a mano, el bot se pausa en esta conversación hasta que la devuelvas.')),
       side),
   );
   await load(true);
@@ -986,13 +1361,16 @@ function channelConfigFields(ch, cfg) {
   const secret = (key, label, help) => field(label, h('input', { type: 'password', autocomplete: 'off', value: cfg[key] || '', placeholder: cfg[key] ? '' : 'Pega aquí el valor', oninput: (e) => (cfg[key] = e.target.value) }), help);
   switch (ch.type) {
     case 'whatsapp':
+      if (!isSuper()) {
+        return [field('Número de WhatsApp', text(cfg, 'number', { placeholder: 'Se llena solo al conectar' }), 'Se guarda automáticamente con el número que vincules.')];
+      }
       return [
-        field('Instancia de Evolution', text(cfg, 'instance', { placeholder: 'hotel_palmas' }), 'Nombre único (letras, números, guion y guion bajo). Se crea sola al conectar.'),
+        field('Instancia de Evolution', text(cfg, 'instance', { placeholder: 'Se genera sola' }), 'Nombre único (letras, números, guion y guion bajo). Se genera al crear el canal y se crea en Evolution al conectar.'),
         field('Número de WhatsApp', text(cfg, 'number', { placeholder: '5215512345678' }), 'Con lada de país; opcional, como referencia.'),
-        h('details', {}, h('summary', {}, 'Servidor de Evolution distinto al global (opcional)'),
+        h('details', {}, h('summary', {}, 'Servidor de Evolution distinto al global (solo superadmin)'),
           h('div', { style: 'margin-top:10px' },
             field('URL de Evolution', text(cfg, 'url', { placeholder: 'Vacío = usar EVOLUTION_URL' })),
-            secret('api_key', 'API key de Evolution', 'Vacío = usar EVOLUTION_API_KEY'))),
+            secret('api_key', 'API key de Evolution', 'Obligatoria si usas otra URL: la llave global nunca se envía a otro servidor.'))),
       ];
     case 'telegram':
       return [
@@ -1058,28 +1436,28 @@ async function viewChannel(root, id) {
 
   const connection = [];
   if (ch.type === 'whatsapp') {
-    const qrBox = h('div');
-    const test = { number: '', text: 'Mensaje de prueba ✅' };
-    const connect = async () => {
-      const r = await run(() => api('POST', `/api/channels/${id}/whatsapp/connect`));
-      if (!r) return;
-      if (r.state === 'open') { fill(qrBox, h('p', {}, '✅ Ya está conectado. Webhook actualizado.')); return refresh(); }
-      const src = r.qr ? (r.qr.startsWith('data:') ? r.qr : `data:image/png;base64,${r.qr}`) : null;
-      fill(qrBox,
-        h('p', {}, 'Abre WhatsApp en el teléfono → Dispositivos vinculados → Vincular dispositivo, y escanea:'),
-        src ? h('img', { class: 'qr', src }) : h('p', { class: 'muted' }, 'Evolution no devolvió QR; vuelve a intentar.'),
-        r.pairingCode ? h('p', {}, 'Código de vinculación: ', h('code', {}, r.pairingCode)) : null);
-      refresh();
-    };
+    const test = { number: state.me.user.phone || '', text: 'Mensaje de prueba ✅' };
+    const box = h('div');
+    const setStatus = (s) => { const [cls, label] = STATE_LABEL[s] || ['', s]; status.textContent = label; status.className = `badge ${cls}`; };
+    const showConnector = () => fill(box, whatsappConnector(id, { onState: setStatus, onConnected: () => setTimeout(() => render(), 2500) }));
+    if (ch.connection_state === 'open') {
+      fill(box,
+        h('p', {}, h('span', { class: 'badge green' }, '✓ Conectado'), ' ',
+          ch.config.profile_name ? h('strong', {}, ch.config.profile_name) : null, ch.config.number ? ` · +${ch.config.number}` : ''),
+        h('div', { class: 'row' },
+          h('button', { onclick: async () => { if (confirm('¿Vincular otro número? Se desconecta el actual.')) { await run(() => api('POST', `/api/channels/${id}/whatsapp/logout`)); showConnector(); } } }, 'Cambiar de número'),
+          h('button', { class: 'danger', onclick: async () => { if (confirm('¿Desconectar este WhatsApp? El asistente dejará de responder por aquí.')) { await run(() => api('POST', `/api/channels/${id}/whatsapp/logout`), 'Desconectado'); render(); } } }, 'Desconectar')));
+    } else {
+      showConnector();
+    }
     connection.push(
-      h('div', { class: 'row' },
-        h('button', { class: 'primary', onclick: connect, disabled: !ch.config.instance }, 'Conectar / mostrar QR'),
-        h('button', { onclick: setup, disabled: !ch.config.instance }, 'Reconfigurar webhook'),
-        h('button', { class: 'danger', disabled: !ch.config.instance, onclick: async () => { if (confirm('¿Desvincular este WhatsApp?')) { await run(() => api('POST', `/api/channels/${id}/whatsapp/logout`), 'Desconectado'); refresh(); } } }, 'Desconectar')),
-      qrBox,
-      h('h3', {}, 'Mensaje de prueba'),
-      h('div', { class: 'grid' }, field('Número (con lada)', text(test, 'number', { placeholder: '5215512345678' })), field('Texto', text(test, 'text'))),
-      h('button', { disabled: !ch.config.instance, onclick: () => run(() => api('POST', `/api/channels/${id}/whatsapp/test`, test), 'Enviado') }, 'Enviar'),
+      box,
+      h('details', { style: 'margin-top:12px' }, h('summary', {}, 'Enviar un mensaje de prueba'),
+        h('div', { class: 'grid', style: 'margin-top:10px' }, field('Número (con lada)', text(test, 'number', { placeholder: '5215512345678' })), field('Texto', text(test, 'text'))),
+        h('button', { onclick: () => run(() => api('POST', `/api/channels/${id}/whatsapp/test`, test), 'Enviado') }, 'Enviar')),
+      h('details', {}, h('summary', {}, 'Opciones avanzadas'),
+        h('p', { class: 'small muted' }, 'Si los mensajes no llegan aunque esté conectado, vuelve a registrar el webhook.'),
+        h('button', { class: 'small', onclick: setup }, 'Reconfigurar webhook')),
     );
   } else if (ch.type === 'telegram') {
     connection.push(
@@ -1110,13 +1488,14 @@ async function viewChannel(root, id) {
       h('h1', {}, channelIcon(ch.type), ' ', ch.name, ' ', h('span', { class: `badge ${ch.active ? 'green' : ''}` }, ch.active ? 'Activo' : 'Inactivo')),
       h('a', { href: `#/conversations?channel_id=${ch.id}` }, 'Ver conversaciones →')),
     h('p', { class: 'muted' }, ch.label, isSuper() ? ` · ${accountName(ch.account_id)}` : ''),
+    ch.type === 'whatsapp' ? h('div', { class: 'card' }, h('div', { class: 'row between' }, h('h3', { style: 'margin:0' }, 'Conexión'), h('span', {}, 'Estado: ', status)), connection, result) : '',
     h('div', { class: 'card' },
       h('h3', { style: 'margin-top:0' }, 'General'),
       field('Nombre', text(m, 'name')),
       field('Chatbot que responde', select(m, 'chatbot_id', [['', '— Sin chatbot (solo guarda mensajes) —'], ...accountBots.map((b) => [b.id, b.name])])),
       check(m, 'active', 'Activo (si se desactiva, los mensajes se guardan pero no se responden)')),
     h('div', { class: 'card' }, h('h3', { style: 'margin-top:0' }, 'Configuración'), channelConfigFields(ch, cfg)),
-    h('div', { class: 'card' },
+    ch.type === 'whatsapp' ? '' : h('div', { class: 'card' },
       h('div', { class: 'row between' }, h('h3', { style: 'margin:0' }, 'Conexión'), h('span', {}, 'Estado: ', status)),
       ch.type !== 'webchat' ? h('p', { class: 'muted small' }, 'Guarda los cambios de configuración antes de conectar.') : null,
       connection,
@@ -1132,7 +1511,8 @@ async function viewChannel(root, id) {
         }
       } }, 'Eliminar canal'))),
   );
-  refresh();
+  if (ch.type !== 'whatsapp' || ch.connection_state === 'open') refresh();
+  else status.textContent = 'preparando…';
 }
 
 /* ------------------------------ Usuarios ------------------------------ */
@@ -1206,12 +1586,32 @@ async function viewAccounts(root) {
       } }, 'Crear cuenta')),
     h('div', { class: 'card' },
       h('table', {},
-        h('thead', {}, h('tr', {}, h('th', {}, 'Cuenta'), h('th', {}, 'Chatbots'), h('th', {}, 'Canales'), h('th', {}, 'Usuarios'), h('th', {}, 'Conversaciones'), h('th', {}, ''))),
+        h('thead', {}, h('tr', {}, h('th', {}, 'Cuenta'), h('th', {}, 'Estado'), h('th', {}, 'WhatsApp'), h('th', { class: 'num' }, 'Conversaciones (mes / total)'), h('th', { class: 'num' }, 'IA (mes)'), h('th', {}, 'Última actividad'), h('th', {}, ''))),
         h('tbody', {}, accounts.map((a) => h('tr', {},
-          h('td', {}, h('strong', {}, a.name), ' ', !a.active ? h('span', { class: 'badge orange' }, 'inactiva') : null),
-          h('td', {}, a.chatbots), h('td', {}, a.channels), h('td', {}, a.users), h('td', {}, a.conversations),
+          h('td', {}, h('strong', {}, a.name),
+            a.owner_email ? h('div', { class: 'small muted' }, a.owner_email, a.owner_verified === false ? ' (sin confirmar)' : '') : null,
+            h('div', { class: 'small muted' }, `${a.chatbots} bots · ${a.channels} canales · ${a.users} usuarios${a.signup_source === 'signup' ? ' · registro propio' : ''}`)),
+          h('td', {}, statusBadge(a)),
+          h('td', {}, a.whatsapp_state ? h('span', { class: `badge ${a.whatsapp_state === 'open' ? 'green' : 'orange'}` }, { open: 'conectado', close: 'desconectado', connecting: 'conectando' }[a.whatsapp_state] || a.whatsapp_state) : h('span', { class: 'muted small' }, '—')),
+          h('td', { class: 'num' }, `${a.conversations_month} / ${a.conversations}`),
+          h('td', { class: 'num' }, usd(a.ai_cost_month)),
+          h('td', { class: 'small' }, a.last_activity_at ? fmtDate(a.last_activity_at) : '—'),
           h('td', {}, h('div', { class: 'row' },
             h('button', { class: 'small', onclick: () => { state.accountId = a.id; try { localStorage.setItem('cp-account', a.id); } catch { /* */ } location.hash = '#/'; } }, 'Abrir'),
+            a.status !== 'active' ? h('button', { class: 'small primary', onclick: async () => {
+              const plan = prompt('Plan contratado (opcional)', a.plan || '');
+              if (plan === null) return;
+              await run(() => api('PUT', `/api/accounts/${a.id}`, { status: 'active', plan }), 'Cuenta activada');
+              render();
+            } }, 'Activar plan') : h('button', { class: 'small', onclick: async () => {
+              if (!confirm(`¿Pausar "${a.name}"? Su asistente deja de responder, pero pueden entrar al panel.`)) return;
+              await run(() => api('PUT', `/api/accounts/${a.id}`, { status: 'paused' }), 'Cuenta en pausa');
+              render();
+            } }, 'Pausar'),
+            a.status !== 'active' ? h('button', { class: 'small', onclick: async () => {
+              const d = Number(prompt('¿Cuántos días más de prueba?', '7'));
+              if (d > 0) { await run(() => api('PUT', `/api/accounts/${a.id}`, { extend_trial_days: d }), 'Prueba extendida'); render(); }
+            } }, 'Extender prueba') : null,
             h('button', { class: 'small', onclick: async () => { const name = prompt('Nuevo nombre', a.name); if (name) { await run(() => api('PUT', `/api/accounts/${a.id}`, { name }), 'Actualizada'); state.me = null; render(); } } }, 'Renombrar'),
             h('button', { class: 'small', onclick: async () => {
               if (a.active && !confirm(`Al desactivar "${a.name}", sus usuarios no podrán entrar y sus canales dejarán de responder (los mensajes se siguen guardando). ¿Continuar?`)) return;
@@ -1304,15 +1704,18 @@ const TRIGGERS = {
   appointment_booked: 'Se agenda una cita o llamada',
   appointment_cancelled: 'Se cancela una cita o llamada',
   opt_out: 'El cliente se da de baja',
+  goal_completed: 'Se cumple el objetivo de la conversación',
+  agent_off: 'El asistente se desactiva en una conversación',
 };
 const ACTIONS = {
-  send_message: 'Enviar mensaje',
+  send_message: 'Enviar mensaje o foto',
   alert_team: 'Alertar al equipo',
   add_tag: 'Agregar etiqueta',
   remove_tag: 'Quitar etiqueta',
   set_field: 'Guardar un dato',
   handoff: 'Pasar a una persona',
-  resume_bot: 'Devolver al bot',
+  resume_bot: 'Activar / devolver al asistente',
+  pause_bot: 'Pausar al asistente',
   close_conversation: 'Cerrar conversación',
   start_sequence: 'Iniciar secuencia',
   stop_sequences: 'Detener secuencias',
@@ -1324,6 +1727,7 @@ const CONDITIONS = {
   has_tag: 'Etiqueta',
   field: 'Dato del cliente',
   status: 'Estado de la conversación',
+  agent: 'Asistente activo o en pausa',
 };
 
 /** Plantillas para empezar rápido: cubren las necesidades más comunes. */
@@ -1335,6 +1739,9 @@ const RULE_TEMPLATES = [
   { name: 'Queja → persona', trigger: { type: 'intent', intent: 'queja', description: 'El cliente está molesto, inconforme o reporta un problema' }, actions: [{ type: 'handoff', reason: 'Queja del cliente' }, { type: 'alert_team', message: 'Queja de {{cliente}}: "{{mensaje}}"' }] },
   { name: 'Quiere comprar → avisar a ventas', trigger: { type: 'intent', intent: 'listo_para_comprar', description: 'El cliente quiere comprar, reservar o pagar' }, actions: [{ type: 'add_tag', tag: 'caliente' }, { type: 'alert_team', message: '{{cliente}} está listo para comprar. {{link}}' }] },
   { name: 'Correo capturado → CRM', trigger: { type: 'data_captured', field: 'correo' }, actions: [{ type: 'webhook', url: 'https://mi-crm.com/webhook' }] },
+  { name: 'Palabra → pausar al asistente', trigger: { type: 'message_received', match: 'keywords', keywords: ['ya no', 'no me interesa'] }, actions: [{ type: 'pause_bot', hours: 0, reason: 'El cliente no quiere seguir' }, { type: 'add_tag', tag: 'no_interesado' }] },
+  { name: 'Palabra → activar al asistente', trigger: { type: 'message_received', match: 'keywords', keywords: ['menu', 'hola asistente'] }, actions: [{ type: 'resume_bot' }] },
+  { name: 'Palabra → enviar foto', trigger: { type: 'message_received', match: 'keywords', keywords: ['menu', 'catalogo'] }, actions: [{ type: 'send_message', text: '', image_id: '' }] },
   { name: 'Agradecer cita agendada', trigger: { type: 'appointment_booked' }, actions: [{ type: 'send_message', text: 'Te esperamos el {{cita.fecha}} a las {{cita.hora}} 🙌', delay_minutes: 1 }] },
 ];
 
@@ -1351,7 +1758,7 @@ function triggerSummary(t) {
 }
 
 async function listRules(root) {
-  const rules = await api('GET', withAcct('/api/automations'));
+  const [rules, bots] = await Promise.all([api('GET', withAcct('/api/automations')), api('GET', withAcct('/api/chatbots'))]);
   const create = async (tpl) => {
     const r = await run(() => api('POST', '/api/automations', { ...tpl, active: false, account_id: state.accountId || undefined }), 'Regla creada (desactivada): revísala y actívala');
     if (r) location.hash = `#/automation/rules/${r.id}`;
@@ -1362,6 +1769,7 @@ async function listRules(root) {
       h('div', { class: 'row' }, h('a', { class: 'btn primary', href: '#/automation/rules/new' }, '+ Regla en blanco')),
       h('h3', {}, 'Plantillas rápidas'),
       h('div', { class: 'row' }, RULE_TEMPLATES.map((t) => h('button', { class: 'small', onclick: () => create(t) }, t.name)))),
+    bots.length ? h('details', { class: 'card' }, h('summary', {}, h('strong', {}, '🧪 Probar palabras'), h('span', { class: 'small muted' }, ' — qué reglas se activan con un mensaje')), messageTester(bots)) : null,
     h('div', { class: 'card' },
       rules.length
         ? h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Regla'), h('th', {}, 'Cuando'), h('th', {}, 'Acciones'), h('th', {}, 'Veces'), h('th', {}, ''))),
@@ -1403,9 +1811,9 @@ function actionFields(a, refs) {
     case 'send_message':
       a.text ??= ''; a.image_id ??= ''; a.delay_minutes ??= 0;
       return [
-        field('Mensaje', area(a, 'text'), VARS_HELP),
+        field('Mensaje (opcional si eliges una foto)', area(a, 'text'), VARS_HELP),
         h('div', { class: 'grid' },
-          field('Imagen (opcional)', select(a, 'image_id', [['', '— Sin imagen —'], ...refs.images.map((i) => [i.id, `${i.name} (${i.bot})`])])),
+          field('Foto (opcional)', select(a, 'image_id', [['', '— Sin imagen —'], ...refs.images.map((i) => [i.id, `${i.name} (${i.bot})`])])),
           field('Esperar antes de enviar (minutos)', num(a, 'delay_minutes', { min: 0 }), '0 = de inmediato')),
       ];
     case 'alert_team':
@@ -1430,6 +1838,11 @@ function actionFields(a, refs) {
     case 'handoff':
       a.reason ??= 'Regla automática';
       return [field('Motivo', text(a, 'reason'))];
+    case 'pause_bot':
+      a.hours ??= 0; a.reason ??= '';
+      return [h('div', { class: 'grid' },
+        field('Reactivar solo después de (horas)', num(a, 'hours', { min: 0, max: 720 }), '0 = hasta que lo reactive una palabra, una regla o una persona.'),
+        field('Motivo (se ve en la conversación)', text(a, 'reason', { placeholder: 'El cliente pidió que no le escriban' })))];
     case 'start_sequence':
       a.sequence_id ??= refs.sequences[0]?.id || '';
       return [refs.sequences.length ? field('Secuencia', select(a, 'sequence_id', refs.sequences.map((s) => [s.id, s.name]))) : h('p', { class: 'muted' }, 'Primero crea una secuencia.')];
@@ -1462,6 +1875,9 @@ function conditionFields(c) {
     case 'status':
       c.status ??= 'bot';
       return [select(c, 'status', [['bot', 'La atiende el bot'], ['human', 'La atiende una persona'], ['closed', 'Cerrada']])];
+    case 'agent':
+      c.state ??= 'on';
+      return [select(c, 'state', [['on', 'El asistente está activo'], ['off', 'El asistente está en pausa o esperando su palabra']])];
     default:
       return [];
   }
@@ -1502,6 +1918,7 @@ async function editRule(root, id) {
   };
   drawTrigger();
   const save = async () => {
+    if (r.actions.some((a) => a.type === 'send_message' && !a.text?.trim() && !a.image_id)) return toast('En "Enviar mensaje o foto" escribe un mensaje o elige una foto', true);
     const body = { ...r, chatbot_id: r.chatbot_id || null, account_id: state.accountId || undefined };
     const saved = await run(() => (existing ? api('PUT', `/api/automations/${id}`, body) : api('POST', '/api/automations', body)), 'Regla guardada ✅');
     if (saved) location.hash = '#/automation/rules';
@@ -1609,7 +2026,7 @@ async function editCampaign(root, id) {
   const [refs, channels] = await Promise.all([automationRefs(), api('GET', withAcct('/api/channels'))]);
   const existing = id === 'new' ? null : (await api('GET', withAcct('/api/campaigns'))).find((c) => c.id === id);
   if (id !== 'new' && !existing) throw new Error('Campaña no encontrada');
-  const c = existing ? clone(existing) : { name: '', channel_id: channels[0]?.id || '', message: '', image_id: null, audience: { tags_any: [], tags_none: [], active_within_days: 0, statuses: [] }, scheduled_at: null, rate_per_minute: 20, status: 'draft' };
+  const c = existing ? clone(existing) : { name: '', channel_id: channels[0]?.id || '', message: '', image_id: null, audience: { tags_any: [], tags_none: [], active_within_days: 0, statuses: [] }, scheduled_at: null, rate_per_minute: 20, business_hours_only: true, status: 'draft' };
   c.image_id ??= '';
   const editable = ['draft', 'scheduled'].includes(c.status);
   const local = { when: c.scheduled_at ? new Date(new Date(c.scheduled_at).getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16) : '' };
@@ -1649,12 +2066,14 @@ async function editCampaign(root, id) {
         field('Con alguna de estas etiquetas', lines(c.audience, 'tags_any', { placeholder: 'interesado\nvip' }), 'Vacío = todos'),
         field('Sin estas etiquetas', lines(c.audience, 'tags_none', { placeholder: 'ya_compro' })),
         field('Que escribieron en los últimos (días)', num(c.audience, 'active_within_days', { min: 0 }), '0 = sin límite')),
-      h('p', { class: 'small muted' }, 'Nunca se incluye a quien se dio de baja.')),
+    ),
     h('div', { class: 'card' },
       h('h3', { style: 'margin-top:0' }, 'Cuándo y a qué ritmo'),
       h('div', { class: 'grid' },
         field('Fecha y hora de envío', h('input', { type: 'datetime-local', value: local.when, oninput: (e) => (local.when = e.target.value) }), 'Vacío = al pulsar "Enviar ahora"'),
-        field('Mensajes por minuto', num(c, 'rate_per_minute', { min: 1, max: 120 }), 'Recomendado para WhatsApp: 10–30'))),
+        field('Mensajes por minuto', num(c, 'rate_per_minute', { min: 1, max: 120 }), 'Recomendado para WhatsApp: 10–30')),
+      check(c, 'business_hours_only', 'Enviar solo en horario de atención (lo que no alcance sale en la siguiente apertura)'),
+      h('p', { class: 'small muted' }, 'No se envía a quien se dio de baja ni a conversaciones que está atendiendo una persona.')),
     editable ? saveBar(save, existing ? h('span', { class: 'row', style: 'margin-left:auto' },
       h('button', { class: 'danger', onclick: async () => { if (confirm('¿Eliminar la campaña?')) { await run(() => api('DELETE', `/api/campaigns/${id}`), 'Eliminada'); location.hash = '#/automation/campaigns'; } } }, 'Eliminar')) : null) : null,
   );
@@ -1671,7 +2090,9 @@ function hoursEditor(hours) {
     field(label, h('input', {
       type: 'text', value: toText(hours[d]), placeholder: 'Cerrado',
       oninput: (e) => {
-        hours[d] = e.target.value.split(',').map((x) => x.trim()).filter(Boolean).map((x) => x.split('-').map((y) => y.trim().padStart(5, '0')));
+        // Acepta "9-18", "9:30-14" o "09:00-18:00".
+        const hhmm = (y) => { const [hh, mm = '00'] = y.trim().replace('.', ':').split(':'); return `${hh.padStart(2, '0')}:${mm.padStart(2, '0')}`; };
+        hours[d] = e.target.value.split(',').map((x) => x.trim()).filter(Boolean).map((x) => x.split('-').map(hhmm));
       },
     }))));
 }
@@ -1682,7 +2103,7 @@ async function editSettings(root) {
   root.append(
     h('div', { class: 'card' },
       h('h3', { style: 'margin-top:0' }, 'Horario del negocio'),
-      h('p', { class: 'small muted' }, 'Formato por día: 09:00-14:00, 16:00-19:00 (vacío = cerrado). Lo usan la agenda, las secuencias y la condición "horario del negocio".'),
+      h('p', { class: 'small muted' }, 'Formato por día: 09:00-14:00, 16:00-19:00 (vacío = cerrado). Lo usan el asistente (para responder "¿están abiertos?"), la agenda, las secuencias, las campañas y la condición "horario del negocio".'),
       field('Zona horaria', text(s, 'timezone')),
       hoursEditor(s.business_hours),
       field('Días cerrados (festivos)', lines(s, 'holidays', { placeholder: '2026-12-25\n2027-01-01' }), 'Formato AAAA-MM-DD, uno por renglón.')),
@@ -1886,4 +2307,348 @@ async function viewNotifications(root) {
         : h('p', { class: 'muted' }, state.me.user.account_id ? 'Sin notificaciones.' : 'Las notificaciones llegan a los usuarios de cada cuenta.')),
   );
   refreshBell();
+}
+
+/* ------------------------------ Primeros pasos (asistente de configuración) ------------------------------ */
+
+const ONB_STEPS = [
+  ['negocio', 'business', 'Tu negocio'],
+  ['asistente', 'assistant', 'Tu asistente'],
+  ['fotos', 'photos', 'Fotos'],
+  ['prueba', 'test', 'Pruébalo'],
+  ['whatsapp', 'whatsapp', 'WhatsApp'],
+];
+const TIMEZONES = [
+  ['America/Mexico_City', 'México (Centro)'], ['America/Monterrey', 'México (Monterrey)'], ['America/Cancun', 'México (Cancún)'],
+  ['America/Chihuahua', 'México (Chihuahua)'], ['America/Mazatlan', 'México (Pacífico)'], ['America/Tijuana', 'México (Tijuana)'],
+  ['America/Bogota', 'Colombia'], ['America/Lima', 'Perú'], ['America/Santiago', 'Chile'], ['America/Argentina/Buenos_Aires', 'Argentina'],
+  ['America/Guatemala', 'Guatemala / Centroamérica'], ['America/Panama', 'Panamá'], ['America/Caracas', 'Venezuela'],
+  ['America/Santo_Domingo', 'República Dominicana'], ['America/New_York', 'EUA (Este)'], ['America/Chicago', 'EUA (Centro)'],
+  ['America/Los_Angeles', 'EUA (Pacífico)'], ['Europe/Madrid', 'España'],
+];
+
+async function viewOnboarding(root, stepKey) {
+  const ob = await api('GET', withAcct('/api/onboarding'));
+  if (state.me.account && ob.complete && !state.me.account.onboarding?.done) state.me.account.onboarding = { ...state.me.account.onboarding, done: true };
+  const firstPending = ONB_STEPS.find(([, k]) => !ob.steps[k]);
+  const current = ONB_STEPS.find(([slug]) => slug === stepKey) || (ob.complete ? null : firstPending) || null;
+  const go = (slug) => { location.hash = `#/inicio/${slug}`; };
+  const next = (slug) => { const i = ONB_STEPS.findIndex(([s]) => s === slug); state.me = null; go(ONB_STEPS[i + 1]?.[0] || ''); };
+
+  root.append(
+    h('h1', {}, ob.complete ? '¡Tu asistente está listo! 🎉' : `Configura tu asistente`),
+    h('ol', { class: 'steps' }, ONB_STEPS.map(([slug, k, label], i) =>
+      h('li', { class: `${ob.steps[k] ? 'done' : ''} ${current?.[0] === slug ? 'current' : ''}` },
+        h('a', { href: `#/inicio/${slug}` }, h('span', { class: 'num' }, ob.steps[k] ? '✓' : i + 1), label)))),
+  );
+  const box = h('div');
+  root.append(box);
+  if (!current) return onbDone(box, ob);
+  const [slug] = current;
+  if (slug === 'negocio') return onbBusiness(box, ob, () => next(slug));
+  if (slug === 'asistente') return onbAssistant(box, ob, () => next(slug));
+  if (!ob.chatbot_id) return box.append(h('div', { class: 'card' }, h('p', {}, 'Primero configura tu asistente.'), h('a', { class: 'btn primary', href: '#/inicio/asistente' }, 'Ir al paso 2')));
+  const bot = await api('GET', `/api/chatbots/${ob.chatbot_id}`);
+  if (slug === 'fotos') {
+    box.append(h('div', { class: 'card' },
+      h('h3', { style: 'margin-top:0' }, 'Fotos de tus productos o instalaciones (opcional)'),
+      h('p', { class: 'muted' }, 'El asistente solo envía fotos de este catálogo, y elige la correcta según lo que pregunte el cliente. Describe cada foto (qué es, precio si aplica) para que la use bien.')));
+    const imgs = h('div');
+    box.append(imgs, h('div', { class: 'row' },
+      h('button', { class: 'primary', onclick: async () => { await run(() => api('POST', withAcct('/api/onboarding/step'), { step: 'photos' })); next(slug); } }, 'Continuar'),
+      h('span', { class: 'muted small' }, 'Puedes agregar o cambiar fotos después en Chatbots → Imágenes.')));
+    return tabImages(imgs, bot);
+  }
+  if (slug === 'prueba') {
+    box.append(h('div', { class: 'card' },
+      h('h3', { style: 'margin-top:0' }, 'Pruébalo como si fueras un cliente'),
+      h('p', { class: 'muted' }, 'Pregunta precios, horarios o pide algo que no esté en tu información: debe decir que lo confirma con el equipo en lugar de inventar. Si algo no te gusta, regresa al paso 2 y ajusta la información.')));
+    const pg = h('div');
+    box.append(pg, h('div', { class: 'row', style: 'margin-top:12px' },
+      h('button', { class: 'primary', onclick: async () => { await run(() => api('POST', withAcct('/api/onboarding/step'), { step: 'test' })); next(slug); } }, 'Me gusta, continuar'),
+      h('a', { class: 'btn', href: '#/inicio/asistente' }, 'Ajustar información')));
+    return tabPlayground(pg, bot);
+  }
+  if (slug === 'whatsapp') return onbWhatsapp(box, ob, bot);
+}
+
+function onbBusiness(box, ob, done) {
+  const f = { business_type: state.me.account?.business_type || 'otro', timezone: ob.business.timezone, business_hours: clone(ob.business.business_hours), alert_phone: ob.business.alert_phone };
+  box.append(h('div', { class: 'card' },
+    h('h3', { style: 'margin-top:0' }, 'Datos de tu negocio'),
+    h('div', { class: 'grid' },
+      field('Tipo de negocio', select(f, 'business_type', ob.business_types.map((b) => [b.key, b.label])), 'Con esto preparamos a tu asistente: cómo atiende, qué datos pide y qué no debe decir.'),
+      field('Zona horaria', select(f, 'timezone', TIMEZONES.some(([z]) => z === f.timezone) ? TIMEZONES : [[f.timezone, f.timezone], ...TIMEZONES])),
+      field('Tu WhatsApp para avisos', text(f, 'alert_phone', { placeholder: '5215512345678' }), 'Con lada de país. Te avisamos ahí cuando un cliente pida hablar con una persona.')),
+    h('h4', {}, 'Horario de atención'),
+    h('p', { class: 'small muted' }, 'Por día: 09:00-14:00, 16:00-19:00 (vacío = cerrado). Se usa para agendar citas y para los mensajes fuera de horario.'),
+    hoursEditor(f.business_hours),
+    h('button', { class: 'primary', onclick: async () => { if (await run(() => api('POST', withAcct('/api/onboarding/business'), f), 'Guardado')) done(); } }, 'Guardar y continuar')));
+}
+
+function onbAssistant(box, ob, done) {
+  const a = ob.assistant || { assistant_name: '', formality: '', knowledge: {} };
+  // Sin bot todavía, el trato lo decide la plantilla del giro (p.ej. "usted" en salud).
+  const f = { assistant_name: a.assistant_name || '', formality: ob.assistant ? a.formality : '', description: '', knowledge: { catalog: '', hours: '', location: '', faq: '', other: '', ...a.knowledge } };
+  const k = f.knowledge;
+  box.append(h('div', { class: 'card' },
+    h('h3', { style: 'margin-top:0' }, 'Lo que tu asistente sabe'),
+    h('p', { class: 'muted' }, 'Tu asistente responde únicamente con esta información: si un precio o dato no está aquí, dirá que lo confirma con tu equipo. Escribe como se lo explicarías a un empleado nuevo.'),
+    h('div', { class: 'grid' },
+      field('Nombre del asistente (opcional)', text(f, 'assistant_name', { placeholder: 'Sofi' })),
+      field('Cómo trata a tus clientes', select(f, 'formality', [...(f.formality ? [] : [['', 'Lo usual en tu tipo de negocio']]), ['tu', 'De tú'], ['usted', 'De usted']]))),
+    field('Describe tu negocio en una o dos frases', area(f, 'description', { placeholder: 'Clínica dental familiar en el centro de Monterrey, con 15 años de experiencia.' })),
+    field('Productos o servicios con precios *', area(k, 'catalog', { big: true, placeholder: 'Limpieza dental — $600 (45 min)\nResina — desde $900\nBlanqueamiento — $3,500\nConsulta de valoración — gratis' }), 'Uno por renglón. Incluye precios, duración, tamaños o lo que te pregunten.'),
+    h('div', { class: 'grid' },
+      field('Detalles de horario (opcional)', area(k, 'hours', { placeholder: 'Último turno a las 18:30\nDías festivos cerramos' }), 'Tu horario de atención del paso 1 ya lo conoce; aquí van solo detalles extra.'),
+      field('Ubicación y contacto', area(k, 'location', { placeholder: 'Av. Constitución 100, Centro, Monterrey\nEstacionamiento gratis\nTel. 81 1234 5678' }))),
+    field('Preguntas frecuentes', area(k, 'faq', { big: true, placeholder: '¿Aceptan tarjeta? Sí, todas las tarjetas y transferencia.\n¿Hay estacionamiento? Sí, gratuito.' })),
+    field('Otra información (promociones, políticas, formas de pago…)', area(k, 'other')),
+    h('button', { class: 'primary', onclick: async () => {
+      if (!k.catalog.trim()) return toast('Escribe al menos tus productos o servicios', true);
+      if (await run(() => api('POST', withAcct('/api/onboarding/assistant'), { ...f, formality: f.formality || undefined }), 'Asistente listo')) done();
+    } }, 'Guardar y continuar'),
+    ob.chatbot_id ? h('p', { class: 'small muted' }, 'Para ajustes finos (personalidad, reglas, datos que pide, flujo) entra a ', h('a', { href: `#/bot/${ob.chatbot_id}/personalidad` }, 'la configuración avanzada'), '.') : null));
+}
+
+function onbWhatsapp(box, ob, bot) {
+  if (!ob.email_verified) {
+    return box.append(h('div', { class: 'card' },
+      h('h3', { style: 'margin-top:0' }, 'Confirma tu correo para conectar WhatsApp'),
+      h('p', {}, `Te enviamos un enlace a ${state.me.user.email}. Ábrelo y vuelve aquí.`),
+      h('div', { class: 'row' },
+        h('button', { onclick: () => run(() => api('POST', '/api/me/resend-verification'), 'Te enviamos un nuevo enlace') }, 'Reenviar correo'),
+        h('button', { onclick: () => { state.me = null; render(); } }, 'Ya lo confirmé'))));
+  }
+  const area = h('div', {}, h('p', { class: 'muted' }, 'Preparando tu conexión…'));
+  box.append(h('div', { class: 'card' },
+    h('h3', { style: 'margin-top:0' }, 'Conecta el WhatsApp de tu negocio'),
+    h('p', { class: 'muted' }, 'Puede ser WhatsApp normal o WhatsApp Business. Sigues usando WhatsApp en tu teléfono como siempre; si contestas tú, ',
+      bot.personality?.assistant_name || 'tu asistente', ' se pausa en esa conversación.'),
+    area));
+  // El canal se crea solo al entrar al paso; el código aparece sin más clics.
+  api('POST', withAcct('/api/onboarding/whatsapp'))
+    .then((ch) => fill(area, whatsappConnector(ch.id, { onConnected: () => { state.me = null; setTimeout(() => { location.hash = '#/inicio'; render(); }, 2500); } })))
+    .catch((e) => fill(area, h('p', { class: 'banner danger' }, e.message), h('button', { onclick: () => render() }, 'Reintentar')));
+}
+
+function onbDone(box, ob) {
+  box.append(h('div', { class: 'card' },
+    h('p', {}, 'Tu asistente está conectado y respondiendo. Esto es lo que puedes hacer ahora:'),
+    h('ul', {},
+      h('li', {}, h('a', { href: '#/conversations' }, 'Ver las conversaciones'), ' y tomar el control cuando quieras.'),
+      ob.chatbot_id ? h('li', {}, h('a', { href: `#/bot/${ob.chatbot_id}/conocimiento` }, 'Agregar más información'), ' o ', h('a', { href: `#/bot/${ob.chatbot_id}/imagenes` }, 'más fotos'), '.') : null,
+      h('li', {}, h('a', { href: '#/agenda/servicios' }, 'Configurar tu agenda'), ' para que agende citas solo.'),
+      h('li', {}, h('a', { href: '#/automation' }, 'Crear respuestas automáticas y recordatorios'), '.'),
+      h('li', {}, h('a', { href: '#/users' }, 'Invitar a tu equipo'), '.'))));
+}
+
+/* ------------------------------ Consumo de IA ------------------------------ */
+
+const usd = (n) => `US$${(n || 0).toFixed(n < 1 ? 4 : 2)}`;
+const KIND_LABEL = { decision: 'Respuestas', summary: 'Resúmenes de memoria', transcription: 'Notas de voz' };
+
+async function viewUsage(root, params) {
+  const month = params.get('month') || new Date().toISOString().slice(0, 7);
+  const months = [...Array(6)].map((_, i) => { const d = new Date(); d.setUTCDate(1); d.setUTCMonth(d.getUTCMonth() - i); return d.toISOString().slice(0, 7); });
+  const pick = h('select', { style: 'width:auto', onchange: (e) => (location.hash = `#/consumo?month=${e.target.value}`) }, months.map((m) => h('option', { value: m, selected: m === month }, m)));
+  const u = await api('GET', withAcct(`/api/usage?month=${month}`));
+  root.append(h('div', { class: 'row between' }, h('h1', {}, 'Consumo de IA'), pick));
+  if (u.accounts) {
+    root.append(
+      h('div', { class: 'card' }, h('div', { class: 'kpi' }, usd(u.total_usd)), h('div', { class: 'muted small' }, `Gasto total de OpenAI en ${month} (estimado con la tabla de precios)`)),
+      h('div', { class: 'card' }, h('table', {},
+        h('thead', {}, h('tr', {}, h('th', {}, 'Cuenta'), h('th', {}, 'Estado'), h('th', { class: 'num' }, 'Gasto'), h('th', { class: 'num' }, 'Llamadas'), h('th', { class: 'num' }, 'Tokens entrada'), h('th', { class: 'num' }, 'Tokens salida'), h('th', { class: 'num' }, 'Audio (min)'))),
+        h('tbody', {}, u.accounts.map((a) => h('tr', { class: 'click', onclick: () => { state.accountId = a.id; try { localStorage.setItem('cp-account', a.id); } catch { /* */ } render(); } },
+          h('td', {}, a.name), h('td', {}, statusBadge(a)), h('td', { class: 'num' }, usd(a.cost_usd)), h('td', { class: 'num' }, a.calls),
+          h('td', { class: 'num' }, Number(a.input_tokens).toLocaleString()), h('td', { class: 'num' }, Number(a.output_tokens).toLocaleString()), h('td', { class: 'num' }, (a.audio_seconds / 60).toFixed(1))))))),
+      h('div', { class: 'card' }, h('h3', { style: 'margin-top:0' }, 'Precios por modelo (USD)'), h('p', { class: 'small muted' }, 'Verifica en openai.com/api/pricing. Un cambio aplica a las llamadas nuevas; el histórico conserva su costo.'), await pricesEditor()),
+    );
+    return;
+  }
+  const max = Math.max(...u.days.map((d) => d.cost_usd), 0.000001);
+  root.append(
+    h('div', { class: 'grid' },
+      h('div', { class: 'card' }, h('div', { class: 'kpi' }, usd(u.total_usd)), h('div', { class: 'muted small' }, `Gasto de IA en ${month}`)),
+      h('div', { class: 'card' }, h('div', { class: 'kpi' }, u.conversations), h('div', { class: 'muted small' }, 'conversaciones atendidas por la IA')),
+      h('div', { class: 'card' }, h('div', { class: 'kpi' }, usd(u.cost_per_conversation)), h('div', { class: 'muted small' }, 'costo promedio por conversación'))),
+    h('div', { class: 'card' }, h('h3', { style: 'margin-top:0' }, 'Por día'),
+      u.days.length ? h('div', { class: 'bars' }, u.days.map((d) => h('div', { class: 'bar', title: `${d.day}: ${usd(d.cost_usd)} (${d.calls} llamadas)` }, h('span', { style: `height:${Math.max(2, (d.cost_usd / max) * 100)}%` }), h('small', {}, d.day.slice(8)))))
+        : h('p', { class: 'muted' }, 'Sin consumo este mes.')),
+    h('div', { class: 'grid' },
+      h('div', { class: 'card' }, h('h3', { style: 'margin-top:0' }, 'Por tipo'), h('table', {}, h('tbody', {}, u.kinds.map((k) => h('tr', {}, h('td', {}, KIND_LABEL[k.kind] || k.kind), h('td', { class: 'num' }, k.calls), h('td', { class: 'num' }, usd(k.cost_usd))))))),
+      h('div', { class: 'card' }, h('h3', { style: 'margin-top:0' }, 'Por modelo'), h('table', {}, h('tbody', {}, u.models.map((m) => h('tr', {}, h('td', {}, m.model), h('td', { class: 'num' }, `${Number(m.input_tokens).toLocaleString()} / ${Number(m.output_tokens).toLocaleString()} tokens`), h('td', { class: 'num' }, usd(m.cost_usd)))))))),
+  );
+}
+
+async function pricesEditor() {
+  const prices = await api('GET', '/api/ai-prices');
+  const row = (p) => {
+    const f = { input_per_mtok: Number(p.input_per_mtok), cached_per_mtok: Number(p.cached_per_mtok), output_per_mtok: Number(p.output_per_mtok), per_audio_minute: Number(p.per_audio_minute) };
+    return h('tr', {}, h('td', {}, p.model),
+      ...['input_per_mtok', 'cached_per_mtok', 'output_per_mtok', 'per_audio_minute'].map((k) => h('td', {}, num(f, k, { step: 0.001, min: 0 }))),
+      h('td', {}, h('button', { class: 'small', onclick: () => run(() => api('PUT', `/api/ai-prices/${encodeURIComponent(p.model)}`, f), 'Precio guardado') }, 'Guardar')));
+  };
+  const n = { model: '' };
+  return h('div', {},
+    h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Modelo (prefijo)'), h('th', {}, 'Entrada / 1M'), h('th', {}, 'En caché / 1M'), h('th', {}, 'Salida / 1M'), h('th', {}, 'Audio / min'), h('th', {}, ''))),
+      h('tbody', {}, prices.map(row))),
+    h('div', { class: 'row', style: 'margin-top:8px' }, text(n, 'model', { placeholder: 'gpt-5.1' }),
+      h('button', { class: 'small', onclick: async () => { if (n.model && await run(() => api('PUT', `/api/ai-prices/${encodeURIComponent(n.model)}`, {}), 'Modelo agregado')) render(); } }, 'Agregar modelo')));
+}
+
+function statusBadge(a) {
+  if (a.active === false) return h('span', { class: 'badge red' }, 'desactivada');
+  if (a.status === 'paused') return h('span', { class: 'badge red' }, 'en pausa');
+  if (a.status === 'trial') {
+    const days = a.trial_ends_at ? Math.ceil((new Date(a.trial_ends_at) - Date.now()) / 86400000) : null;
+    return h('span', { class: `badge ${days !== null && days <= 3 ? 'orange' : ''}` }, days === null ? 'prueba' : `prueba · ${Math.max(0, days)} d`);
+  }
+  return h('span', { class: 'badge green' }, a.plan ? `activa · ${a.plan}` : 'activa');
+}
+
+/* ------------------------------ Conectar WhatsApp (QR o código por número) ------------------------------ */
+
+const isPhoneDevice = () => {
+  try { return matchMedia('(pointer: coarse)').matches && Math.min(screen.width, screen.height) < 820; } catch { return window.innerWidth < 700; }
+};
+
+/**
+ * Conector de WhatsApp: se pone en marcha solo, muestra un QR que se renueva solo (con cuenta regresiva)
+ * o un código para "Vincular con número de teléfono" (lo más fácil si el panel está abierto en el mismo celular).
+ */
+function whatsappConnector(channelId, { onConnected, onState } = {}) {
+  const st = {
+    mode: isPhoneDevice() ? 'code' : 'qr',
+    os: /iPhone|iPad|iPod/i.test(navigator.userAgent) ? 'ios' : 'android',
+    number: (state.me?.user?.phone || '').replace(/\D/g, ''),
+    expiresAt: 0,
+    ttl: 30,
+    codeRequested: false,
+    done: false,
+    error: '',
+    data: null,
+  };
+  const root = h('div', { class: 'wa-connect' });
+  const tabs = h('div', { class: 'wa-tabs' });
+  const main = h('div', { class: 'wa-main' });
+  const steps = h('div', { class: 'wa-steps' });
+  root.append(tabs, main, steps);
+  let poller = null;
+  let ticker = null;
+  let inflight = false;
+
+  const stop = () => { clearInterval(poller); clearInterval(ticker); poller = ticker = null; };
+  const start = () => {
+    stop();
+    poller = setInterval(() => { if (!document.body.contains(root)) return stop(); poll(); }, 3000);
+    ticker = setInterval(() => { if (!document.body.contains(root)) return stop(); drawCountdown(); }, 1000);
+    state.timers.push(poller, ticker);
+  };
+
+  async function poll(refresh = false) {
+    if (st.done || inflight) return;
+    if (st.mode === 'code' && !st.codeRequested) return;
+    inflight = true;
+    try {
+      const body = { mode: st.mode, refresh, ...(st.mode === 'code' ? { number: st.number } : {}) };
+      const r = await api('POST', `/api/channels/${channelId}/whatsapp/session`, body);
+      st.error = '';
+      st.data = r;
+      st.ttl = st.mode === 'qr' ? 30 : 120;
+      st.expiresAt = Date.now() + (r.expires_in || 0) * 1000;
+      onState?.(r.state);
+      if (r.state === 'open') { st.done = true; stop(); onConnected?.(r); }
+    } catch (e) {
+      st.error = e.message;
+      if (st.mode === 'code') st.codeRequested = false;
+    } finally {
+      inflight = false;
+      draw();
+    }
+  }
+
+  function drawCountdown() {
+    const ring = root.querySelector('.wa-ring');
+    if (!ring || !st.expiresAt) return;
+    const left = Math.max(0, Math.round((st.expiresAt - Date.now()) / 1000));
+    ring.style.setProperty('--p', String(Math.round((left / st.ttl) * 100)));
+    ring.querySelector('span').textContent = left ? `${left}s` : '…';
+    if (!left && document.body.contains(root)) poll(); // venció: se pide el siguiente
+  }
+
+  function drawTabs() {
+    const tab = (mode, label, sub) => h('button', {
+      class: `wa-tab ${st.mode === mode ? 'active' : ''}`,
+      onclick: () => { if (st.mode === mode) return; st.mode = mode; st.data = null; st.error = ''; st.expiresAt = 0; draw(); if (mode === 'qr') poll(); },
+    }, h('strong', {}, label), h('small', {}, sub));
+    fill(tabs, tab('qr', '📷 Escanear código QR', 'Si abriste esto en la computadora'), tab('code', '🔢 Con mi número', 'Si estás en el mismo celular'));
+  }
+
+  function drawSteps() {
+    const path = st.os === 'ios' ? ['Abre WhatsApp', 'Configuración', 'Dispositivos vinculados', 'Vincular un dispositivo'] : ['Abre WhatsApp', '⋮ (arriba a la derecha)', 'Dispositivos vinculados', 'Vincular un dispositivo'];
+    const last = st.mode === 'qr' ? 'Apunta la cámara a este código' : 'Toca "Vincular con el número de teléfono" y escribe el código';
+    fill(steps,
+      h('div', { class: 'row', style: 'gap:6px;margin-bottom:6px' }, h('span', { class: 'small muted' }, 'Tu teléfono:'),
+        ['android', 'ios'].map((os) => h('button', { class: `small ${st.os === os ? 'primary' : ''}`, onclick: () => { st.os = os; drawSteps(); } }, os === 'ios' ? 'iPhone' : 'Android'))),
+      h('ol', {}, [...path, last].map((x) => h('li', {}, x))));
+  }
+
+  function draw() {
+    if (st.done) {
+      const p = st.data?.profile;
+      fill(tabs);
+      fill(steps);
+      return fill(main,
+        h('div', { class: 'wa-done' }, h('div', { class: 'wa-check' }, '✓'),
+          h('h3', {}, '¡WhatsApp conectado!'),
+          p?.number ? h('p', {}, 'Conectado como ', h('strong', {}, p.name || 'tu cuenta'), ` · +${p.number}`) : null,
+          st.data?.warning ? h('p', { class: 'banner warn' }, st.data.warning) : null,
+          h('p', { class: 'small muted' }, 'Desde ahora tu asistente responde los mensajes que lleguen a este número.')));
+    }
+    drawTabs();
+    drawSteps();
+    const err = st.error ? h('div', { class: 'banner danger' }, st.error, ' ', h('button', { class: 'small', onclick: () => { st.error = ''; draw(); poll(true); } }, 'Reintentar')) : null;
+    if (st.mode === 'qr') {
+      const qr = st.data?.qr;
+      fill(main, err,
+        qr ? h('div', { class: 'wa-qr' }, h('img', { class: 'qr', src: qr, alt: 'Código QR para vincular WhatsApp' }),
+              h('div', { class: 'wa-ring', title: 'El código se renueva solo' }, h('span', {}, ''))) 
+           : h('div', { class: 'wa-qr wa-loading' }, h('div', { class: 'spinner' }), h('p', { class: 'muted' }, 'Generando tu código… (unos segundos)'),
+               (st.data?.waited_s ?? 0) > 60 ? h('p', { class: 'small muted', style: 'max-width:360px;text-align:center' }, 'Está tardando más de lo normal. Puedes probar "Con mi número" o esperar: seguimos intentando solos.') : null),
+        qr ? h('p', { class: 'small muted', style: 'text-align:center' }, 'El código se renueva solo; no tienes que hacer nada más que escanearlo.') : null);
+      return void drawCountdown();
+    }
+    // Modo número
+    const code = st.data?.pairingCode;
+    const getCode = async (refresh = true) => {
+      st.number = st.number.replace(/\D/g, '');
+      if (st.number.length < 10) { st.error = 'Escribe tu número de WhatsApp con lada (10 dígitos en México).'; return draw(); }
+      st.codeRequested = true;
+      st.data = null;
+      draw();
+      await poll(refresh);
+    };
+    const input = h('input', { type: 'tel', inputmode: 'numeric', autocomplete: 'tel', value: st.number, placeholder: '81 1234 5678', oninput: (e) => (st.number = e.target.value) });
+    fill(main, err,
+      code
+        ? h('div', { class: 'wa-code-box' },
+            h('p', { class: 'small muted' }, `Tu código para +${st.number.length === 10 ? `52${st.number}` : st.number}:`),
+            h('div', { class: 'wa-code' }, code.length === 8 ? `${code.slice(0, 4)}-${code.slice(4)}` : code),
+            h('div', { class: 'row', style: 'justify-content:center' },
+              h('button', { class: 'small', onclick: async () => { try { await navigator.clipboard.writeText(code); toast('Código copiado'); } catch { toast('Cópialo a mano', true); } } }, 'Copiar código'),
+              h('button', { class: 'small', onclick: () => getCode(true) }, 'Pedir otro'),
+              h('button', { class: 'small', onclick: () => { st.codeRequested = false; st.data = null; draw(); } }, 'Cambiar número')),
+            h('p', { class: 'small muted' }, 'Esperando a que escribas el código en WhatsApp… esta pantalla avanza sola.'))
+        : st.codeRequested
+          ? h('div', { class: 'wa-qr wa-loading' }, h('div', { class: 'spinner' }), h('p', { class: 'muted' }, 'Pidiendo tu código…'))
+          : h('div', { class: 'wa-code-box' },
+              field('Tu número de WhatsApp', input, 'El número del teléfono donde está el WhatsApp del negocio, con lada (México: 10 dígitos).'),
+              h('button', { class: 'primary', onclick: () => getCode() }, 'Obtener código')));
+  }
+
+  draw();
+  poll();
+  start();
+  return root;
 }

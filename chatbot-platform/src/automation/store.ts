@@ -335,6 +335,7 @@ export interface Campaign {
   scheduled_at: Date | null;
   status: 'draft' | 'scheduled' | 'sending' | 'sent' | 'cancelled';
   rate_per_minute: number;
+  business_hours_only: boolean;
   stats: Record<string, number>;
 }
 
@@ -348,17 +349,21 @@ export async function getCampaign(id: string) {
   return queryOne<Campaign>('SELECT * FROM campaigns WHERE id = $1', [id]);
 }
 
-export async function saveCampaign(accountId: string, c: Pick<Campaign, 'channel_id' | 'name' | 'message' | 'image_id' | 'audience' | 'scheduled_at' | 'rate_per_minute'>, id?: string) {
-  const params = [c.channel_id, c.name, c.message, c.image_id, JSON.stringify(c.audience), c.scheduled_at, c.rate_per_minute];
+export async function saveCampaign(
+  accountId: string,
+  c: Pick<Campaign, 'channel_id' | 'name' | 'message' | 'image_id' | 'audience' | 'scheduled_at' | 'rate_per_minute' | 'business_hours_only'>,
+  id?: string,
+) {
+  const params = [c.channel_id, c.name, c.message, c.image_id, JSON.stringify(c.audience), c.scheduled_at, c.rate_per_minute, c.business_hours_only];
   if (id) {
     return queryOne<Campaign>(
-      `UPDATE campaigns SET channel_id=$1, name=$2, message=$3, image_id=$4, audience=$5, scheduled_at=$6, rate_per_minute=$7, updated_at=now()
-       WHERE id = $8 RETURNING *`,
+      `UPDATE campaigns SET channel_id=$1, name=$2, message=$3, image_id=$4, audience=$5, scheduled_at=$6, rate_per_minute=$7, business_hours_only=$8, updated_at=now()
+       WHERE id = $9 RETURNING *`,
       [...params, id],
     );
   }
   return queryOne<Campaign>(
-    `INSERT INTO campaigns (channel_id, name, message, image_id, audience, scheduled_at, rate_per_minute, account_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+    `INSERT INTO campaigns (channel_id, name, message, image_id, audience, scheduled_at, rate_per_minute, business_hours_only, account_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
     [...params, accountId],
   );
 }

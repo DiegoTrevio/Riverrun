@@ -11,7 +11,8 @@ import { imageAbsolutePath } from '../engine/transport.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
-import { AiSettingsSchema, DataFieldSchema, FlowSchema, PersonalitySchema, RulesSchema, type Chatbot, type User } from '../types.js';
+import { AiSettingsSchema, DataFieldSchema, FlowSchema, ImageSendWhenSchema, PersonalitySchema, RulesSchema, type Chatbot, type User } from '../types.js';
+import { alignFixedMessages, chatbotFromTemplate } from '../templates/business.js';
 import { parse, readUpload, saveFile, type UploadFile } from './util.js';
 
 const ChatbotBody = z.object({
@@ -41,6 +42,17 @@ const ImageMeta = z.object({
   usage_rule: z.string().max(1000).optional(),
   caption: z.string().max(1000).optional(),
   active: z.boolean().optional(),
+  // En un formulario con archivo llega como texto JSON.
+  send_when: z
+    .preprocess((v) => {
+      if (typeof v !== 'string') return v;
+      try {
+        return JSON.parse(v);
+      } catch {
+        return v;
+      }
+    }, ImageSendWhenSchema)
+    .optional(),
 });
 
 /** Los agentes solo ven nombre y estado (para filtros); la configuración es de administradores. */
@@ -56,9 +68,23 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
   api.get('/api/chatbots', async (req: any) => (await store.listChatbots(scopeAccount(req.user, req.query.account_id))).map((b) => visibleBot(req.user, b)));
 
   api.post('/api/chatbots', admins, async (req: any) => {
-    const b = parse(ChatbotBody.extend({ account_id: z.string().uuid().optional() }), req.body);
+    const b = parse(ChatbotBody.extend({ account_id: z.string().uuid().optional(), template: z.string().max(40).optional() }), req.body);
     const accountId = await targetAccount(req.user, b.account_id);
-    const bot = await store.createChatbot(accountId, { name: 'Nuevo chatbot', ...b });
+    const { template, account_id, ...input } = b;
+    void account_id;
+    let base: Record<string, unknown> = {};
+    if (template) {
+      // Nace con la plantilla del giro: personalidad, reglas, flujo y datos a pedir ya listos para ajustar.
+      const acc = await store.getAccount(accountId);
+      const tpl = chatbotFromTemplate({ business_type: template, company: input.name || acc!.name, assistant_name: '', description: '' });
+      base = {
+        personality: PersonalitySchema.parse(tpl.personality),
+        rules: RulesSchema.parse(tpl.rules),
+        flow: FlowSchema.parse(tpl.flow),
+        data_fields: tpl.data_fields.map((f) => DataFieldSchema.parse(f)),
+      };
+    }
+    const bot = await store.createChatbot(accountId, { name: 'Nuevo chatbot', ...base, ...input });
     await logEvent({ level: 'info', source: 'admin', message: `Chatbot creado: ${bot.name}`, accountId, chatbotId: bot.id });
     return bot;
   });
@@ -78,6 +104,9 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
     for (const [key, schema] of Object.entries(sections)) {
       if (raw[key] && typeof raw[key] === 'object') data[key] = schema.parse({ ...(existing as any)[key], ...raw[key] });
     }
+    // Al cambiar el trato (tú/usted), los mensajes fijos de fábrica se ajustan para no mezclar tratos.
+    const formality = data.personality?.formality;
+    if (formality && formality !== existing.personality.formality) data.rules = alignFixedMessages(data.rules ?? existing.rules, formality);
     const bot = await store.updateChatbot(existing.id, data);
     await logEvent({ level: 'info', source: 'admin', message: `Configuración actualizada (${Object.keys(data).join(', ')})`, accountId: existing.account_id, chatbotId: existing.id });
     return bot;
@@ -155,7 +184,8 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
     return img;
   };
 
-  api.get('/api/chatbots/:id/images', admins, async (req: any) => store.listImages((await botFor(req.user, req.params.id)).id));
+  // Los agentes también la consultan (para enviar fotos a mano desde una conversación); editar es solo de administradores.
+  api.get('/api/chatbots/:id/images', async (req: any) => store.listImages((await botFor(req.user, req.params.id)).id));
 
   api.post('/api/chatbots/:id/images', admins, async (req: any) => {
     const bot = await botFor(req.user, req.params.id);
@@ -176,6 +206,7 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
         mime_type: upload.file.mime,
         size_bytes: upload.file.buffer.length,
         active: meta.active ?? true,
+        send_when: meta.send_when ?? {},
       });
       await logEvent({ level: 'info', source: 'admin', message: `Imagen agregada: ${img.code}`, accountId: bot.account_id, chatbotId: bot.id });
       return img;
@@ -225,6 +256,21 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
     const { session: sid, text } = (req.body ?? {}) as { session?: string; text?: string };
     if (!text?.trim()) throw new HttpError(400, 'Escribe un mensaje');
     return service.playground(bot, session(sid), text.trim().slice(0, 4000));
+  });
+
+  // Probador de palabras: qué reglas, activadores y desactivadores se dispararían, sin IA y sin enviar nada.
+  const TestMessageBody = z.object({
+    text: z.string().trim().min(1, 'Escribe un mensaje').max(4000),
+    first_message: z.boolean().default(false),
+    channel_type: z.string().max(20).default('whatsapp'),
+    agent: z.enum(['on', 'paused', 'waiting']).optional(),
+    tags: z.array(z.string().max(60)).max(20).default([]),
+  });
+  api.post('/api/chatbots/:id/test-message', admins, async (req: any) => {
+    const bot = await botFor(req.user, req.params.id);
+    const b = parse(TestMessageBody, req.body);
+    const agent = b.agent ?? (bot.rules.activation.mode === 'keywords' ? 'waiting' : 'on');
+    return service.automator.testMessage(bot, { text: b.text, firstMessage: b.first_message, channelType: b.channel_type, agent, tags: b.tags });
   });
 
   api.get('/api/chatbots/:id/playground/:session', admins, async (req: any) => {

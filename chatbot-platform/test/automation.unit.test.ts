@@ -41,8 +41,13 @@ test('secuencias: espera + hora del día + horario del negocio', () => {
   assert.equal(stepTime(from, step({ delay_value: 2 }), settings, false).toISOString(), zonedToUtc('2026-09-29', '19:30', MX).toISOString());
   // 2 h después serían 19:30 (cerrado) → siguiente apertura
   assert.equal(stepTime(from, step({ delay_value: 2 }), settings, true).toISOString(), zonedToUtc('2026-09-30', '09:00', MX).toISOString());
-  // 1 día después a las 10:00
-  assert.equal(stepTime(from, step({ delay_value: 1, delay_unit: 'days', at_time: '10:00' }), settings, true).toISOString(), zonedToUtc('2026-10-01', '10:00', MX).toISOString());
+  // 1 día después a las 10:00 = al día siguiente (miércoles 30) a las 10:00, no el jueves
+  assert.equal(stepTime(from, step({ delay_value: 1, delay_unit: 'days', at_time: '10:00' }), settings, true).toISOString(), zonedToUtc('2026-09-30', '10:00', MX).toISOString());
+  assert.equal(stepTime(from, step({ delay_value: 3, delay_unit: 'days', at_time: '09:30' }), settings, false).toISOString(), zonedToUtc('2026-10-02', '09:30', MX).toISOString());
+  // Sin espera, a las 10:00: hoy ya pasó → mañana a las 10:00
+  assert.equal(stepTime(from, step({ delay_value: 0, at_time: '10:00' }), settings, false).toISOString(), zonedToUtc('2026-09-30', '10:00', MX).toISOString());
+  // Viernes + 2 días a las 10:00 cae en domingo (cerrado) → siguiente apertura: lunes 9:00
+  assert.equal(stepTime(zonedToUtc('2026-10-02', '12:00', MX), step({ delay_value: 2, delay_unit: 'days', at_time: '10:00' }), settings, true).toISOString(), zonedToUtc('2026-10-05', '09:00', MX).toISOString());
 });
 
 const svc = (o: Partial<Service> = {}): Service => ({ id: 's1', account_id: 'a', ...ServiceBodySchema.parse({ name: 'Consulta', duration_minutes: 60, min_notice_minutes: 60, max_days_ahead: 7 }), ...o });
@@ -114,4 +119,11 @@ test('plantillas: {{cliente}} nunca queda vacío en alertas', () => {
   const anon = { name: '', push_name: '', phone: '', data: {} };
   assert.equal(renderTemplate('🚨 {{cliente}} escribió', { contact: anon, timezone: MX }), '🚨 Un cliente escribió');
   assert.equal(renderTemplate('{{cliente}}', { contact: { ...anon, phone: '5215511112222' }, timezone: MX }), '+5215511112222');
+});
+
+test('ajustes: se rechazan zonas horarias inexistentes y franjas invertidas (romperían agenda, secuencias y campañas)', () => {
+  assert.equal(AccountSettingsSchema.safeParse({ timezone: 'Marte/Olympus' }).success, false);
+  assert.equal(AccountSettingsSchema.safeParse({ business_hours: { mon: [['18:00', '09:00']] } }).success, false);
+  assert.equal(AccountSettingsSchema.safeParse({ timezone: 'America/Bogota', business_hours: { mon: [['09:00', '14:00'], ['16:00', '19:00']] } }).success, true);
+  assert.equal(ServiceBodySchema.safeParse({ name: 'X', hours: { tue: [['20:00', '19:00']] } }).success, false);
 });

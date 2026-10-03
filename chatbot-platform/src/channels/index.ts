@@ -38,8 +38,9 @@ export function webhookUrl(channel: Pick<Channel, 'type' | 'webhook_token'>) {
 export function publicChannel(channel: Channel) {
   const cfg: Record<string, unknown> = { ...channel.config };
   for (const k of SECRET_FIELDS) if (cfg[k]) cfg[k] = MASK;
-  const { webhook_token, account_active, ...rest } = channel;
-  void account_active;
+  // El QR y el código de vinculación solo los entrega la sesión de conexión.
+  const { webhook_token, account_active, qr_code, qr_at, pairing_code, pairing_number, pairing_at, ...rest } = channel;
+  void account_active, void qr_code, void qr_at, void pairing_code, void pairing_number, void pairing_at;
   return {
     ...rest,
     config: cfg,

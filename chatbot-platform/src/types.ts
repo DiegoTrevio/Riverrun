@@ -66,8 +66,30 @@ export const RulesSchema = z.object({
     'no dudes en contactarnos',
     'estimado cliente',
   ]),
+  /** Activadores y desactivadores del asistente (los aplica el sistema, no la IA). */
+  activation: z
+    .object({
+      /** always: responde siempre · keywords: solo después de que el cliente escriba una palabra de activación. */
+      mode: z.enum(['always', 'keywords']).default('always'),
+      /** Encienden al asistente (modo palabras) y lo reactivan si está en pausa (ambos modos). */
+      on_keywords: z.array(z.string()).default([]),
+      /** El cliente escribe una de estas: el asistente se apaga en esa conversación. */
+      off_keywords: z.array(z.string()).default([]),
+      /** Cuando el cliente ya dio TODOS estos datos, se apaga después de responder. */
+      off_when_fields: z.array(z.string()).default([]),
+      off_on_goal: z.boolean().default(false),
+      off_on_booking: z.boolean().default(false),
+      /** pause: deja de responder sin avisar · handoff: pasa a una persona · close: cierra la conversación. */
+      off_action: z.enum(['pause', 'handoff', 'close']).default('pause'),
+      /** Mensaje opcional que se envía al apagarse. */
+      off_message: z.string().max(1000).default(''),
+      /** Horas tras las que se reactiva solo (0 = solo con palabra de activación o a mano). */
+      resume_after_hours: z.number().min(0).max(720).default(0),
+    })
+    .default({ mode: 'always', on_keywords: [], off_keywords: [], off_when_fields: [], off_on_goal: false, off_on_booking: false, off_action: 'pause', off_message: '', resume_after_hours: 0 }),
 });
 export type Rules = z.infer<typeof RulesSchema>;
+export type Activation = Rules['activation'];
 
 export const DataFieldSchema = z.object({
   key: z.string().regex(/^[a-z0-9_]+$/, 'solo minúsculas, números y guion bajo'),
@@ -91,6 +113,8 @@ export const FlowSchema = z.object({
   on_goal_completed: z.string().default(''),
   /** Saludo sugerido para el primer mensaje (la IA lo adapta). */
   greeting: z.string().default(''),
+  /** Qué hace el sistema (no la IA) la primera vez que se cumple el objetivo. */
+  on_goal_action: z.enum(['none', 'handoff', 'notify']).default('none'),
 });
 export type Flow = z.infer<typeof FlowSchema>;
 
@@ -165,6 +189,29 @@ export interface KnowledgeItem {
   sort_order: number;
 }
 
+/** Cuándo se envía una foto. Los momentos marcados los garantiza el sistema (no dependen de la IA). */
+export const ImageSendWhenSchema = z.object({
+  /** ai: la IA decide (según "Cuándo enviarla") · rules: solo en los momentos marcados · both: ambos. */
+  mode: z.enum(['ai', 'rules', 'both']).default('ai'),
+  /** El cliente escribe alguna de estas palabras o frases. */
+  keywords: z.array(z.string().trim().min(1).max(80)).max(30).default([]),
+  /** Con la primera respuesta a un cliente nuevo (bienvenida). */
+  first_message: z.boolean().default(false),
+  /** Al llegar a estas etapas del recorrido (1..n). */
+  flow_steps: z.array(z.number().int().min(1).max(30)).max(30).default([]),
+  on_goal: z.boolean().default(false),
+  on_booking: z.boolean().default(false),
+  /** Una sola vez por conversación (las palabras clave sí la vuelven a enviar si el cliente la pide de nuevo). */
+  once: z.boolean().default(true),
+});
+export type ImageSendWhen = z.infer<typeof ImageSendWhenSchema>;
+
+/** Configuración "cuándo se envía" completa y válida (las fotos viejas quedan en "la IA decide"). */
+export function imageSendWhen(img: Pick<ImageAsset, 'send_when'>): ImageSendWhen {
+  const r = ImageSendWhenSchema.safeParse(img.send_when ?? {});
+  return r.success ? r.data : ImageSendWhenSchema.parse({});
+}
+
 export interface ImageAsset {
   id: string;
   chatbot_id: string;
@@ -177,6 +224,7 @@ export interface ImageAsset {
   mime_type: string;
   size_bytes: number;
   active: boolean;
+  send_when?: unknown;
 }
 
 export interface Contact {
@@ -209,6 +257,16 @@ export interface Conversation {
   summary: string;
   summary_until_id: number;
   last_message_at: Date;
+  /** Etapa del recorrido en la que va (1..n; 0 = sin etapa). */
+  flow_step?: number;
+  /** Cuándo se cumplió el objetivo de la conversación (null = aún no). */
+  goal_completed_at?: Date | null;
+  /** Asistente en pausa en esta conversación (null = no), por qué y hasta cuándo (null = hasta reactivarlo). */
+  agent_off_at?: Date | null;
+  agent_off_reason?: string;
+  agent_off_until?: Date | null;
+  /** Cuándo lo encendió una palabra de activación (modo "solo con palabras"). */
+  agent_on_at?: Date | null;
 }
 
 export interface Message {
@@ -230,10 +288,21 @@ export interface Message {
 
 export type Role = 'superadmin' | 'admin' | 'agent';
 
+export type AccountStatus = 'trial' | 'active' | 'paused';
+
 export interface Account {
   id: string;
   name: string;
   active: boolean;
+  status: AccountStatus;
+  plan: string;
+  trial_ends_at: Date | null;
+  trial_warned_at: Date | null;
+  business_type: string;
+  owner_user_id: string | null;
+  onboarding: Record<string, boolean>;
+  signup_source: string;
+  ai_alert_month: string;
   created_at: Date;
 }
 
@@ -246,6 +315,7 @@ export interface User {
   phone: string;
   notify_whatsapp: boolean;
   active: boolean;
+  email_verified_at: Date | null;
   last_login_at: Date | null;
   created_at: Date;
 }
@@ -269,6 +339,15 @@ export interface Channel {
   updated_at: Date;
   /** Viene de un JOIN con accounts. */
   account_active?: boolean;
+  /** Último estado de conexión conocido (WhatsApp: open | connecting | close). */
+  connection_state?: string;
+  connection_state_at?: Date | null;
+  /** Último QR / código de vinculación de WhatsApp (solo para la sesión de conexión; nunca al panel). */
+  qr_code?: string | null;
+  qr_at?: Date | null;
+  pairing_code?: string | null;
+  pairing_number?: string | null;
+  pairing_at?: Date | null;
 }
 
 const secret = z.string().max(1000);
@@ -278,6 +357,8 @@ export const ChannelConfigSchemas = {
   whatsapp: z.object({
     instance: z.string().regex(/^[A-Za-z0-9_-]*$/, 'Instancia: solo letras, números, guion y guion bajo').max(60).default(''),
     number: z.string().max(30).default(''),
+    /** Nombre del perfil de WhatsApp vinculado (lo guarda el sistema al conectar). */
+    profile_name: z.string().max(120).default(''),
     url: z.string().max(300).default(''),
     api_key: secret.default(''),
   }),

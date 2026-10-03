@@ -93,6 +93,8 @@ t('encadenado: etiqueta → secuencia con pasos programados; se detiene si el cl
     return auto.enrollments.length > 0;
   });
   assert.equal(auto.enrollments[0].status, 'active');
+  // La inscripción se guarda antes que su primer envío programado: esperar a ambos.
+  await waitFor(async () => (await pendingJobs('sequence_step')).length === 1);
   await h.service.scheduler.runDue();
   await waitFor(() => lastTexts().some((x) => x.startsWith('Paso 1')));
   // El paso 2 es mañana: no se envía todavía
@@ -138,6 +140,8 @@ t('seguimiento si el cliente no responde (una sola vez) y se cancela si responde
   await waitFor(() => h.sent.length === 1);
   await h.webhook('perdón, sigo aquí', { phone: '5215510001004' });
   await waitFor(() => h.sent.length === 2);
+  // El seguimiento se programa justo después del envío: se espera a que termine para no ganarle la carrera.
+  await h.idle();
   await pool.query(`UPDATE jobs SET payload = jsonb_set(payload, '{after_message_id}', '0') WHERE type = 'no_reply' AND status = 'pending'`);
   await h.fastForward();
   assert.ok(!h.sent.some((s) => s.text.startsWith('¿Sigues ahí') && s.to === '5215510001004'));
@@ -211,6 +215,8 @@ t('webhook saliente firmado (n8n/Zapier/CRM) y bloqueo de redes internas', async
   config.allowPrivateWebhooks = false;
   await assert.rejects(() => postWebhook(hookUrl, {}, 'x'), /red interna/);
   await assert.rejects(() => postWebhook('http://169.254.169.254/latest', {}, 'x'), /red interna/);
+  // Un dominio que resuelve a la red interna se bloquea al conectar (también protege contra "DNS rebinding").
+  await assert.rejects(() => postWebhook(hookUrl.replace('127.0.0.1', 'localhost'), {}, 'x'), /red interna/);
   config.allowPrivateWebhooks = true;
 });
 

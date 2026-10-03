@@ -61,7 +61,7 @@ h3 { font-size: 15px; margin: 16px 0 8px; }
 label.field { display: block; margin-bottom: 14px; }
 label.field > span { display: block; font-weight: 600; margin-bottom: 4px; }
 label.field > small { display: block; color: var(--muted); margin-top: 3px; font-weight: 400; }
-input[type=text], input[type=number], input[type=password], input[type=search], select, textarea {
+input[type=text], input[type=email], input:not([type]), input[type=number], input[type=password], input[type=search], select, textarea {
   width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
   background: var(--bg); color: var(--text); font: inherit;
 }
@@ -120,6 +120,10 @@ code { background: var(--accent-soft); color: var(--accent); padding: 1px 6px; b
 .bubble .meta { font-size: 11px; color: var(--muted); margin-top: 3px; text-align: right; }
 .composer { display: flex; gap: 8px; margin-top: 10px; }
 .composer textarea { min-height: 44px; height: 44px; }
+.gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; margin-top: 10px; max-height: 300px; overflow-y: auto; }
+.gallery[hidden] { display: none; }
+.gallery .thumb { display: flex; flex-direction: column; gap: 4px; padding: 4px; text-align: left; }
+.gallery .thumb img { width: 100%; height: 80px; object-fit: cover; border-radius: 6px; display: block; }
 
 .split { display: grid; grid-template-columns: 1fr 340px; gap: 16px; }
 @media (max-width: 1000px) { .split { grid-template-columns: 1fr; } }
@@ -136,3 +140,66 @@ details summary { cursor: pointer; color: var(--muted); }
 .account-switch { padding: 0 10px 12px; }
 .account-switch select { margin-top: 4px; }
 ol.small li { margin-bottom: 6px; }
+
+/* Avisos de la cuenta (prueba, pausa, correo sin confirmar) */
+.banner { padding: 10px 14px; border-radius: var(--radius); background: var(--accent-soft); border: 1px solid var(--border); font-size: 14px; }
+.banner.warn { background: #fdf0d8; color: #7a4f05; border-color: #f3d9a4; }
+.banner.danger { background: #fbe3e0; color: #8f2318; border-color: #f2c1bb; }
+.banner.ok { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+@media (prefers-color-scheme: dark) {
+  .banner.warn { background: #3d2f12; color: #f0c674; border-color: #5a461c; }
+  .banner.danger { background: #3f1e1a; color: #f2a59b; border-color: #5c2b25; }
+}
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* Primeros pasos */
+ol.steps { display: flex; gap: 8px; list-style: none; padding: 0; margin: 0 0 18px; flex-wrap: wrap; }
+ol.steps li a { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 99px; border: 1px solid var(--border); background: var(--panel); color: var(--muted); }
+ol.steps li .num { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--border); color: var(--text); font-size: 12px; font-weight: 700; }
+ol.steps li.done a { color: var(--text); }
+ol.steps li.done .num { background: var(--accent); color: #fff; }
+ol.steps li.current a { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+
+/* Gráfica de barras simple (consumo por día) */
+.bars { display: flex; align-items: flex-end; gap: 4px; height: 140px; }
+.bars .bar { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; height: 100%; min-width: 0; }
+.bars .bar span { display: block; width: 100%; background: var(--accent); border-radius: 3px 3px 0 0; }
+.bars .bar small { font-size: 10px; color: var(--muted); margin-top: 2px; }
+[hidden] { display: none !important; }
+
+/* Resumen del asistente y leyenda de reglas */
+ul.checklist { list-style: none; padding: 0; margin: 0 0 8px; }
+ul.checklist li { padding: 6px 0; }
+ul.checklist .mark { display: inline-block; width: 18px; color: var(--muted); font-weight: 700; }
+ul.checklist li.ok .mark { color: var(--accent); }
+.card.legend { background: var(--accent-soft); }
+ol.flow-steps { padding-left: 20px; margin: 0; }
+ol.flow-steps li { padding: 2px 0; color: var(--muted); }
+ol.flow-steps li.done { color: var(--text); }
+ol.flow-steps li.done::marker { content: '✓ '; color: var(--accent); }
+ol.flow-steps li.current { color: var(--accent); font-weight: 600; }
+
+/* Conectar WhatsApp */
+.wa-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px; }
+.wa-tab { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 10px 12px; text-align: left; }
+.wa-tab small { color: var(--muted); font-weight: 400; }
+.wa-tab.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.wa-main { min-height: 220px; }
+.wa-qr { position: relative; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.wa-qr .qr { width: min(300px, 78vw); max-width: none; }
+.wa-loading { justify-content: center; min-height: 220px; }
+.wa-ring { --p: 100; position: absolute; top: -6px; right: calc(50% - min(150px, 39vw) - 26px); width: 40px; height: 40px; border-radius: 50%;
+  background: conic-gradient(var(--accent) calc(var(--p) * 1%), var(--border) 0); display: grid; place-items: center; }
+.wa-ring span { background: var(--panel); border-radius: 50%; width: 30px; height: 30px; display: grid; place-items: center; font-size: 11px; font-weight: 600; }
+.wa-code-box { max-width: 420px; margin: 0 auto; text-align: center; }
+.wa-code-box .field { text-align: left; }
+.wa-code { font: 700 clamp(28px, 9vw, 40px) / 1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 4px; padding: 14px; margin: 6px 0 10px;
+  border: 2px dashed var(--accent); border-radius: var(--radius); background: var(--accent-soft); color: var(--accent); user-select: all; }
+.wa-steps { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.wa-steps ol { margin: 0; padding-left: 20px; }
+.wa-steps li { padding: 2px 0; }
+.wa-done { text-align: center; padding: 10px 0; }
+.wa-check { width: 64px; height: 64px; margin: 0 auto 8px; border-radius: 50%; background: var(--accent); color: #fff; font-size: 34px; display: grid; place-items: center; }
+.spinner { width: 34px; height: 34px; border-radius: 50%; border: 3px solid var(--border); border-top-color: var(--accent); animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (max-width: 600px) { .wa-tabs { grid-template-columns: 1fr; } .wa-ring { right: 8px; } }

@@ -7,10 +7,19 @@ import { config } from './config.js';
 // bigint (bigserial) -> number: los IDs de mensajes caben de sobra en un Number.
 pg.types.setTypeParser(20, (v) => Number(v));
 
-export let pool = new pg.Pool({ connectionString: config.databaseUrl, max: 10 });
+/**
+ * Si PostgreSQL se reinicia, las conexiones inactivas del pool emiten 'error'. Sin este manejador el
+ * proceso entero se cae; con él, la conexión rota se descarta y el pool abre otra en la siguiente consulta.
+ */
+function guard(p: pg.Pool) {
+  p.on('error', (err) => console.error(`[warn] [db] Conexión a PostgreSQL perdida (se reconecta sola): ${err.message}`));
+  return p;
+}
+
+export let pool = guard(new pg.Pool({ connectionString: config.databaseUrl, max: 10 }));
 
 export function setPool(p: pg.Pool) {
-  pool = p;
+  pool = guard(p);
 }
 
 export async function query<T extends pg.QueryResultRow = any>(text: string, params: unknown[] = []): Promise<T[]> {
@@ -26,16 +35,18 @@ export async function queryOne<T extends pg.QueryResultRow = any>(text: string, 
 /** Ejecuta `fn` en una transacción (con su propio cliente). */
 export async function withTransaction<T>(fn: (client: pg.PoolClient) => Promise<T>): Promise<T> {
   const client = await pool.connect();
+  let broken = false;
   try {
     await client.query('BEGIN');
     const r = await fn(client);
     await client.query('COMMIT');
     return r;
   } catch (e) {
-    await client.query('ROLLBACK');
+    // Si la conexión se cayó, el ROLLBACK también falla: se descarta la conexión en vez de devolverla rota al pool.
+    await client.query('ROLLBACK').catch(() => (broken = true));
     throw e;
   } finally {
-    client.release();
+    client.release(broken);
   }
 }
 

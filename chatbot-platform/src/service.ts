@@ -4,7 +4,11 @@ import { Automator } from './automation/automator.js';
 import { Campaigns } from './automation/campaigns.js';
 import { Outbound } from './automation/outbound.js';
 import { Scheduler } from './automation/scheduler.js';
+import * as astore from './automation/store.js';
+import { isOpen } from './automation/time.js';
 import { adapterFor } from './channels/index.js';
+import { config } from './config.js';
+import { gate } from './engine/activation.js';
 import { describeInbound, type InboundMessage } from './channels/types.js';
 import { query } from './db.js';
 import { Engine, type ProcessResult } from './engine/engine.js';
@@ -41,8 +45,13 @@ export class ChatService {
       agenda: this.agenda,
       onEvent: (e) => this.automator.emit(e),
       onOutbound: (conv, msg) => this.automator.onOutbound(conv, msg),
+      business: async (accountId) => {
+        const st = await astore.getSettings(accountId);
+        return { timezone: st.timezone, hours: st.business_hours, holidays: st.holidays, openNow: isOpen(st.business_hours, st.holidays, new Date(), st.timezone) };
+      },
+      alertTeam: (accountId, o) => this.automator.alertTeam(accountId, o),
     });
-    this.queue = new ConversationQueue((id, a) => this.runConversation(id, a.restarts));
+    this.queue = new ConversationQueue((id, a) => this.runConversation(id, a.restarts), 2, 60_000, (id) => void this.aiUnavailable(id));
     this.scheduler = new Scheduler({
       automation_send: (p) => this.automator.runDelayedSend(p),
       no_reply: (p) => this.automator.runNoReply(p),
@@ -97,6 +106,26 @@ export class ChatService {
     return this.engine.process(conversationId, transport, { allowRestart: this.queue.canRestart(restarts) });
   }
 
+  /** La IA falló dos veces seguidas en una conversación: se avisa al equipo para que no quede sin respuesta. */
+  private async aiUnavailable(conversationId: string) {
+    try {
+      const conv = await store.getConversation(conversationId);
+      if (!conv || conv.status !== 'bot') return;
+      const [contact, channel] = await Promise.all([store.getContact(conv.contact_id), store.getChannel(conv.channel_id)]);
+      if (!channel || channel.type === 'playground') return;
+      const who = contact?.name || contact?.push_name || (contact?.phone ? `+${contact.phone}` : 'Un cliente');
+      await logEvent({ level: 'error', source: 'ai', message: 'La IA no pudo responder tras reintentar; se avisó al equipo', accountId: conv.account_id, channelId: conv.channel_id, conversationId });
+      await this.automator.alertTeam(conv.account_id, {
+        title: '⚠️ Un cliente espera respuesta',
+        body: `${who} (${channel.name}) escribió y el asistente no pudo responder (servicio de IA no disponible). Contéstale desde el panel.`,
+        link: `#/conversation/${conversationId}`,
+        kind: 'ai_error',
+      });
+    } catch (e: any) {
+      await logEvent({ level: 'error', source: 'system', message: `No se pudo avisar de la falla de IA: ${e?.message ?? e}`, conversationId });
+    }
+  }
+
   /** Maneja un mensaje ya normalizado que llegó por cualquier canal. */
   async handleIncoming(channel: Channel, msg: InboundMessage): Promise<{ conversationId: string; messageId: number | null }> {
     const bot = channel.chatbot_id ? await store.getChatbot(channel.chatbot_id) : null;
@@ -115,8 +144,22 @@ export class ChatService {
       try {
         const audio = await adapter.downloadAudio(channel, msg);
         if (audio) {
+          const started = Date.now();
           const text = await this.ai.transcribe(audio.buffer, audio.mimeType);
           if (text) content = `[Nota de voz del cliente, transcrita]: "${text}"`;
+          // Se registra para el costo por cuenta. Sin duración de la plataforma, se estima (~2 KB por segundo de Opus).
+          await store.insertAiRun({
+            account_id: channel.account_id,
+            chatbot_id: bot.id,
+            conversation_id: conv.id,
+            kind: 'transcription',
+            model: config.openai.transcriptionModel,
+            input_tokens: 0,
+            cached_tokens: 0,
+            output_tokens: 0,
+            latency_ms: Date.now() - started,
+            audio_seconds: msg.media?.seconds ?? Math.max(1, Math.round(audio.buffer.length / 2000)),
+          });
         }
       } catch (e: any) {
         await logEvent({ level: 'warn', source: 'ai', message: `No se pudo transcribir la nota de voz: ${e?.message ?? e}`, ...logBase });
@@ -140,7 +183,8 @@ export class ChatService {
 
     let current = conv;
     if (conv.status === 'closed' && triggers) {
-      // El cliente vuelve a escribir: se reabre (la memoria se conserva).
+      // El cliente vuelve a escribir: se reabre (la memoria se conserva; el recorrido empieza de nuevo).
+      await store.resetFlowState(conv.id);
       current = (await store.setConversationStatus(conv.id, 'bot', '')) ?? conv;
     } else if (conv.status === 'human' && bot && bot.rules.auto_resume_minutes > 0) {
       const lastHuman = await store.lastHumanActivity(conv.id);
@@ -161,13 +205,35 @@ export class ChatService {
       if (stopAi) await store.markMessageProcessed(inserted.id);
       current = (await store.getConversation(conv.id)) ?? current;
     }
-    const canReply = current.status === 'bot' && bot && bot.active && channel.active && channel.account_active !== false;
+    let canReply = current.status === 'bot' && !!bot && bot.active && channel.active && channel.account_active !== false;
+    // Activadores y desactivadores del asistente (palabras que lo encienden o lo apagan en esta conversación).
+    if (canReply) canReply = await this.applyGate(bot!, channel, current, contact, content);
     if (!canReply) {
       await store.markProcessed(conv.id, inserted.id);
       return { conversationId: conv.id, messageId: inserted.id };
     }
     this.queue.schedule(conv.id, bot!.ai.debounce_seconds * 1000);
     return { conversationId: conv.id, messageId: inserted.id };
+  }
+
+  /** Aplica los activadores/desactivadores a un mensaje del cliente. Devuelve si la IA debe responder. */
+  private async applyGate(bot: Chatbot, channel: Channel, conv: Conversation, contact: Contact, text: string, transport?: Transport): Promise<boolean> {
+    const g = gate(bot.rules.activation, conv, text);
+    if (g.change === 'on') {
+      await store.setAgentOn(conv.id);
+      await logEvent({ level: 'info', source: 'engine', message: `Asistente activado: ${g.reason}`, accountId: conv.account_id, chatbotId: bot.id, channelId: channel.id, conversationId: conv.id });
+    } else if (g.change === 'off') {
+      let t = transport;
+      try {
+        t ??= this.transportFor(channel, contact);
+      } catch (e: any) {
+        await logEvent({ level: 'error', source: 'channel', message: e?.message ?? String(e), accountId: conv.account_id, channelId: channel.id, conversationId: conv.id });
+        await store.setAgentOff(conv.id, g.reason, null);
+        return false;
+      }
+      await this.engine.deactivate(bot, conv, contact, t, g.reason);
+    }
+    return g.reply;
   }
 
   /** Mensaje enviado desde la cuenta del negocio: eco de un envío nuestro o respuesta manual de una persona. */
@@ -209,7 +275,13 @@ export class ChatService {
   async playground(bot: Chatbot, session: string, text: string) {
     const channel = await store.getOrCreatePlaygroundChannel(bot);
     const contact = await store.upsertContact(channel, `playground:${session}`, '', 'Prueba');
-    const conv = await store.getOrCreateConversation(channel, contact.id);
+    let conv = await store.getOrCreateConversation(channel, contact.id);
+    const mark = await query<{ id: string }>(`SELECT coalesce(max(id), 0) AS id FROM event_logs WHERE conversation_id = $1`, [conv.id]);
+    if (conv.status === 'closed') {
+      // Como en un canal real: si el cliente vuelve a escribir, la conversación se reabre.
+      await store.resetFlowState(conv.id);
+      conv = (await store.setConversationStatus(conv.id, 'bot', '')) ?? conv;
+    }
     const inserted = await store.insertMessage({ conversation_id: conv.id, direction: 'in', sender: 'customer', type: 'text', content: text, processed: false });
     // Las reglas automáticas también se prueban en el simulador.
     if (inserted) {
@@ -217,10 +289,23 @@ export class ChatService {
       if (stopAi) await store.markMessageProcessed(inserted.id);
     }
     const transport = new PlaygroundTransport();
-    const result = await this.queue.exclusive(conv.id, () => this.engine.process(conv.id, transport, { ignoreInactive: true }));
+    // Igual que en un canal real: el mensaje puede encender o apagar al asistente antes de la IA.
+    const current = (await store.getConversation(conv.id)) ?? conv;
+    let replies = true;
+    if (inserted && current.status === 'bot') replies = await this.applyGate(bot, channel, current, contact, text, transport);
+    const result: ProcessResult = replies
+      ? await this.queue.exclusive(conv.id, () => this.engine.process(conv.id, transport, { ignoreInactive: true }))
+      : (await store.markAllProcessed(conv.id), { status: 'paused' });
     await this.automator.settle(conv.id);
     const [freshContact, freshConv] = await Promise.all([store.getContact(contact.id), store.getConversation(conv.id)]);
+    // Qué se activó en este turno (reglas, activación/pausa del asistente, objetivo, transferencias).
+    const events = await query<{ level: string; message: string; created_at: Date }>(
+      `SELECT level, message, created_at FROM event_logs WHERE conversation_id = $1 AND id > $2 ORDER BY id`,
+      [conv.id, mark[0].id],
+    );
     return {
+      events,
+      agent: freshConv ? this.engine.agentState(bot, freshConv) : null,
       outputs: transport.outputs,
       result: {
         status: result.status,
@@ -265,6 +350,24 @@ export class ChatService {
     const transport = channel.type === 'playground' ? new PlaygroundTransport() : this.transportFor(channel, contact);
     const sent = await this.engine.sendOut(bot, conv, transport, { sender: 'human', text, delay: 0, meta: { source: 'panel' } });
     if (!sent) throw new Error('No se pudo enviar el mensaje (revisa los registros)');
+    return sent;
+  }
+
+  /** Foto del catálogo enviada a mano desde el panel (por la misma plataforma de la conversación). */
+  async sendManualImage(conversationId: string, imageId: string, beforeSend?: () => Promise<void>) {
+    const conv = await store.getConversation(conversationId);
+    if (!conv) throw new Error('Conversación no encontrada');
+    const image = await store.getImage(imageId);
+    const owner = image ? await store.getChatbot(image.chatbot_id) : null;
+    if (!image || owner?.account_id !== conv.account_id) throw new Error('Foto no encontrada');
+    if (!image.active) throw new Error('La foto está desactivada; actívala en Fotos para poder enviarla');
+    const [channel, contact] = await Promise.all([store.getChannel(conv.channel_id), store.getContact(conv.contact_id)]);
+    if (!channel || !contact) throw new Error('Datos incompletos');
+    const bot = conv.chatbot_id ? await store.getChatbot(conv.chatbot_id) : null;
+    const transport = channel.type === 'playground' ? new PlaygroundTransport() : this.transportFor(channel, contact);
+    await beforeSend?.();
+    const sent = await this.engine.sendOut(bot, conv, transport, { sender: 'human', text: image.caption, image, delay: 0, meta: { source: 'panel' } });
+    if (!sent) throw new Error('No se pudo enviar la foto (revisa los registros)');
     return sent;
   }
 

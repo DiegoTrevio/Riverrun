@@ -1,13 +1,43 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import { config } from '../config.js';
 import { imageAbsolutePath, type Transport } from '../engine/transport.js';
 import { EvolutionClient } from '../evolution/client.js';
 import { parseWebhook } from '../evolution/parse.js';
+import { logEvent } from '../logs.js';
 import { ChannelConfigSchemas, type Channel, type Contact, type ImageAsset } from '../types.js';
 import type { ChannelAdapter } from './types.js';
 
+/**
+ * Cliente de Evolution del canal. Un servidor propio (solo lo define el superadmin) exige su propia llave:
+ * la llave global nunca se envía a otra URL.
+ */
 export function evolutionFor(channel: Channel) {
-  return new EvolutionClient(channel.config.url || config.evolution.url, channel.config.api_key || config.evolution.apiKey);
+  const url = String(channel.config.url ?? '').replace(/\/$/, '');
+  if (url && url !== config.evolution.url) {
+    if (!channel.config.api_key) throw new Error('El servidor de Evolution propio del canal no tiene API key');
+    return new EvolutionClient(url, channel.config.api_key);
+  }
+  return new EvolutionClient(config.evolution.url, channel.config.api_key || config.evolution.apiKey);
+}
+
+/** Nombre de instancia único generado por el servidor (el cliente no lo elige). */
+export function newInstanceName(accountId: string) {
+  return `acc${accountId.replace(/-/g, '').slice(0, 8)}_${crypto.randomBytes(3).toString('hex')}`;
+}
+
+/** Cierra y elimina la instancia de Evolution del canal (sin bloquear si Evolution no responde). */
+export async function releaseWhatsapp(ch: Channel) {
+  if (ch.type !== 'whatsapp' || !ch.config.instance) return;
+  try {
+    const evo = evolutionFor(ch);
+    await evo.logout(ch.config.instance).catch(() => undefined);
+    await evo.deleteInstance(ch.config.instance);
+    await logEvent({ level: 'info', source: 'evolution', message: `Instancia eliminada: ${ch.config.instance}`, accountId: ch.account_id });
+  } catch (e: any) {
+    if (e?.status === 404) return;
+    await logEvent({ level: 'warn', source: 'evolution', message: `No se pudo eliminar la instancia ${ch.config.instance}: ${e?.message ?? e}`, accountId: ch.account_id });
+  }
 }
 
 export class WhatsappTransport implements Transport {
@@ -49,16 +79,23 @@ export const whatsappAdapter: ChannelAdapter = {
   parse({ channel, body }) {
     const { event, instance, messages } = parseWebhook(body);
     const notices: { level: 'info' | 'warn'; message: string }[] = [];
-    if (event === 'connection.update') {
-      const state = body?.data?.state;
-      notices.push({ level: state === 'open' ? 'info' : 'warn', message: `Estado de conexión de WhatsApp: ${state}` });
-    }
     const expected = channel.config.instance;
     if (expected && instance && instance !== expected) {
       notices.push({ level: 'warn', message: `Webhook de la instancia "${instance}" no coincide con la del canal ("${expected}"); se ignora` });
       return { messages: [], notices };
     }
-    return { messages, notices };
+    if (event === 'qrcode.updated') {
+      const b64 = body?.data?.qrcode?.base64 ?? body?.data?.base64;
+      return { messages: [], qr: typeof b64 === 'string' && b64 ? (b64.startsWith('data:') ? b64 : `data:image/png;base64,${b64}`) : undefined };
+    }
+    let connection: string | undefined;
+    if (event === 'connection.update') {
+      connection = String(body?.data?.state ?? '') || undefined;
+      // "connecting" llega varias veces por minuto mientras se vincula o reconecta: no se registra (solo los cambios reales).
+      if (connection === 'open') notices.push({ level: 'info', message: 'WhatsApp conectado' });
+      else if (connection === 'close') notices.push({ level: 'warn', message: 'WhatsApp desconectado' });
+    }
+    return { messages, notices, connection };
   },
 
   transport: (channel, contact) => WhatsappTransport.forContact(channel, contact),

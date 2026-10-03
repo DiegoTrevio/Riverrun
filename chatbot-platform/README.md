@@ -49,27 +49,91 @@ docker compose up -d --build
 - Evolution API solo escucha en `127.0.0.1:8080` (no queda expuesta a internet). El backend y Evolution se hablan por la red interna de Docker (`WEBHOOK_BASE_URL=http://backend:3000`).
 - Se recomienda fijar la versión de Evolution con `EVOLUTION_IMAGE=evoapicloud/evolution-api:<versión>`.
 
+## Empresas que se registran solas (modo servicio)
+
+Así funciona para vender el servicio sin que tú entres a configurar nada:
+
+```
+Internet ──HTTPS──> Caddy (app.tudominio.com)
+                      └─> backend :3000   panel, registro, webhooks, tareas
+                            ├─> PostgreSQL   BD "chatbot" (todo) + BD "evolution"
+                            ├─> OpenAI       tu clave; el gasto se registra por cuenta
+                            └─> Evolution API :8080  (solo red interna, nunca expuesta)
+                                  ├─ Redis
+                                  └─ 1 instancia por canal de WhatsApp de cada empresa: "acc<id>_<aleatorio>"
+```
+
+1. **Registro** (`/#/registro`, enlazado desde el inicio de sesión): nombre, empresa, tipo de negocio, correo y contraseña. Se crea su cuenta en **prueba** (`TRIAL_DAYS`, 14 por defecto) con ella como administradora, y entra directo. Tú recibes un aviso (panel y `SUPERADMIN_EMAIL`).
+2. **Confirmar correo**: le llega un enlace (48 h, un solo uso). Mientras no lo confirme puede configurar y probar todo, pero **no puede conectar WhatsApp** ni otros canales reales.
+3. **Primeros pasos** (`/#/inicio`), un asistente de 5 pasos:
+   1. *Tu negocio*: zona horaria, horario y su WhatsApp para avisos.
+   2. *Tu asistente*: nombre, trato (tú/usted) y su información: productos/servicios con precios, horarios, ubicación, preguntas frecuentes. Se crea el chatbot con la **plantilla de su giro** (restaurante, salud, hotel, tienda, servicios, belleza u otro): personalidad, flujo, datos que pide y reglas (p.ej. "nunca des diagnósticos" en salud). Todo se puede afinar después en la configuración avanzada.
+   3. *Fotos* (opcional): catálogo de imágenes.
+   4. *Pruébalo*: el simulador.
+   5. *WhatsApp*: el código aparece solo (QR en computadora, "Con mi número" en celular) → se vincula desde *Dispositivos vinculados* → el panel detecta la conexión, muestra el número vinculado y avanza solo.
+4. **Si su WhatsApp se desconecta** (teléfono sin internet, sesión cerrada) se le avisa en el panel y por correo con un enlace que abre directo el código para volver a vincularlo.
+5. **Fin de la prueba**: 3 días antes se avisa a la empresa y a ti; al vencer la cuenta queda **en pausa**: puede entrar al panel, pero el bot no responde ni salen mensajes. Tú, en **Cuentas**, pulsas **Activar plan** (o **Extender prueba**). El cobro todavía es manual: `SUPPORT_CONTACT` es lo que ven para contratar.
+
+**WhatsApp por empresa, aislado.** Todas las empresas comparten tu servidor de Evolution, pero cada canal tiene su propia instancia (su sesión de WhatsApp, su QR, su webhook secreto). El nombre de la instancia lo genera el servidor y el cliente **no puede** cambiarlo, ni apuntar su canal a otro servidor de Evolution, ni ver tu `EVOLUTION_API_KEY`. Solo el superadministrador puede asignar a un canal otro servidor de Evolution (útil para repartir clientes grandes) y, en ese caso, debe darle su propia llave: la llave global nunca se envía a otra URL. Al borrar un canal o una cuenta, su instancia se cierra y se elimina de Evolution.
+
+**Gasto de IA por cuenta.** Cada llamada a OpenAI (respuestas, resúmenes y notas de voz) guarda su costo en USD calculado con la tabla de precios (**Consumo de IA → Precios por modelo**, editable; verifica en openai.com/api/pricing). Tú ves el gasto del mes por cuenta en **Cuentas** y **Consumo de IA**; cada empresa ve el suyo (por día, por tipo y costo promedio por conversación). No hay límite: con `AI_ALERT_USD_PER_ACCOUNT` recibes un aviso cuando una cuenta lo supera en el mes.
+
+**Para producción:**
+
+- Configura `SMTP_URL` (cualquier proveedor: tu hosting, Amazon SES, SendGrid, Brevo…). Sin SMTP los correos solo quedan en **Registros**; en ese caso usa `SIGNUP_REQUIRE_EMAIL=false` o nadie podrá conectar WhatsApp.
+- Servidor recomendado para empezar: 4 vCPU / 8 GB. Cada sesión de WhatsApp vive en Evolution; vigila su memoria (`docker stats`) conforme crecen las empresas.
+- **Respaldos diarios**: `docker compose exec postgres pg_dumpall -U chatbot > respaldo.sql` (incluye las dos bases) y el volumen `evolution_instances`. Sin ese volumen cada empresa tendría que volver a escanear su QR.
+- Fija la versión de Evolution (`EVOLUTION_IMAGE`) y pruébala antes de actualizar.
+- Evolution conecta WhatsApp como "dispositivo vinculado" (no es la API oficial de Meta). El registro lo advierte: las campañas masivas a números que no te escribieron pueden provocar el bloqueo del número.
+- Para cerrar el registro: `SIGNUP_ENABLED=false` (puedes seguir creando cuentas a mano en **Cuentas**).
+
 ## Cuentas, usuarios y roles
 
 | Rol | Qué puede hacer |
 |---|---|
-| **Superadministrador** | Todo, en todas las cuentas. Crea cuentas (con su primer administrador), las activa/desactiva o elimina. Tiene un selector de cuenta en el menú para trabajar dentro de una o ver todas. |
+| **Superadministrador** | Todo, en todas las cuentas. Crea cuentas (con su primer administrador), las activa/desactiva o elimina, activa planes, pausa o extiende pruebas y ve el gasto de IA de todas. Tiene un selector de cuenta en el menú para trabajar dentro de una o ver todas. |
 | **Administrador** | Todo dentro de su cuenta: chatbots, canales, usuarios, conversaciones y registros. |
 | **Agente** | Solo conversaciones de su cuenta: verlas, tomarlas, responder, devolverlas al bot y editar datos del cliente. No ve la configuración ni credenciales. |
 
-Al cambiar una contraseña, las demás sesiones abiertas de ese usuario se cierran. Desactivar un usuario le quita el acceso al instante.
+Al cambiar una contraseña, las demás sesiones abiertas de ese usuario se cierran. Desactivar un usuario le quita el acceso al instante. Cualquiera puede recuperar su contraseña con **¿Olvidaste tu contraseña?** (enlace por correo de 1 hora y un solo uso).
+
+*Desactivar* una cuenta le quita todo acceso; *pausarla* (o que venza su prueba) le deja el panel pero detiene el bot y los envíos.
 
 ## Primeros pasos en el panel
 
 1. **Cuentas** (superadministrador): crea la cuenta del cliente y, opcionalmente, su primer administrador.
-2. **Chatbots → Nuevo chatbot** y configúralo:
-   - **Personalidad**: prompt principal, tono, idioma, longitud, emojis, tú/usted, ejemplos de estilo.
-   - **Conocimiento**: información por categoría (servicios, precios, horarios, ubicaciones, condiciones, FAQ…). Es lo único que el bot puede afirmar.
-   - **Imágenes**: con un **ID** (`habitacion_doble`), qué muestran y **cuándo enviarlas**.
-   - **Reglas**, **Datos a recopilar** y **Flujo**.
-   - **Probar**: simulador con el mismo motor y validaciones, con panel de depuración. Funciona aunque el bot esté inactivo.
-3. **Canales → Nuevo canal**: elige la plataforma, asígnale el chatbot y sigue las instrucciones de conexión (abajo).
-4. **General → Activo** para que el chatbot empiece a responder en sus canales.
+2. **Asistentes → + Nuevo asistente**: nombre y **tipo de negocio** (nace con la forma de atender, reglas y datos típicos de ese giro). Luego, en este orden:
+   - **Resumen**: lista de lo que falta para que funcione (información, instrucciones, canal, encendido).
+   - **Lo que sabe**: precios, servicios, horarios, ubicación, políticas, preguntas frecuentes. Es lo único que puede afirmar.
+   - **Cómo habla**: instrucciones (quién es y qué debe lograr), trato tú/usted, largo de las respuestas, emojis y tono.
+   - **Reglas**: qué hacer si no tiene un dato, cuándo pasar con una persona, temas prohibidos, reglas del negocio y fotos.
+   - **Fotos**: catálogo de imágenes, cada una con su ID, qué muestra y **cuándo se envía**:
+     - *La IA decide* según "Cuándo enviarla" (el sistema verifica que exista y esté activa).
+     - *Solo en estos momentos* (garantizado por el sistema, aunque la IA no la elija): cuando el cliente escribe ciertas palabras ("menú", "ubicación"; si la vuelve a pedir se reenvía), en la bienvenida, al llegar a una etapa del recorrido, al cumplirse el objetivo o al agendar una cita. Opción "solo una vez por conversación". La IA sabe que esa foto sale sola y puede mencionarla.
+     - *Ambos*.
+     - Además, desde cualquier conversación el equipo puede mandar una foto del catálogo con **📷 Foto**, y las reglas pueden enviarla ("Enviar mensaje o foto"). El probador de palabras dice qué foto saldría con un mensaje.
+     - Si una plataforma rechaza la foto, el mensaje queda como fallido en la conversación y en Registros. Se recomiendan JPG o PNG (WhatsApp no siempre muestra bien WEBP).
+   - **Datos que pide**: nombre, teléfono, correo… y cuándo pedirlos.
+   - **Probar**: simulador con el mismo motor y las mismas reglas, con botones de preguntas de prueba y el panel **Qué revisó el sistema** (qué hizo, qué reglas obligaron a corregir la respuesta y qué datos guardó). Funciona aunque esté apagado.
+   - **Avanzado** (opcional): recorrido de la conversación y modelo de IA.
+3. **Canales → Nuevo canal**: elige la plataforma, asígnale el asistente y sigue las instrucciones de conexión (abajo).
+4. **Resumen → Encendido** para que empiece a responder.
+
+Cada ajuste del panel indica si está **✓ Garantizado** (el sistema lo revisa antes de enviar y, si no se cumple, corrige la respuesta o pide otra) o si es una **Guía** para la IA (la sigue casi siempre; compruébalo en Probar):
+
+| Garantizado por el sistema | Guía para la IA |
+|---|---|
+| No inventar precios, cantidades, teléfonos, correos ni enlaces · mensaje de respaldo · qué hacer si falta un dato | Instrucciones y tono |
+| Trato tú/usted · largo de las respuestas · emojis · número y tamaño de mensajes | Cuándo pasar con una persona (situaciones) |
+| Temas prohibidos (no los saca por su cuenta) · frases prohibidas | Reglas de tu negocio (texto libre) · de qué puede hablar |
+| Palabras que pasan con una persona · callarse si contesta el equipo | Cuándo mandar fotos |
+| Fotos solo del catálogo, sin repetir, con máximo por respuesta | Recorrido de la conversación |
+| Datos del cliente con formato válido · agenda solo con horarios reales | |
+| Recorrido: el objetivo solo cuenta con los datos "importantes" · acción al cumplirlo (pasar a una persona o avisar), una vez | |
+
+**Recorrido de la conversación** (Avanzado): objetivo, etapas y qué hacer al cumplirlo. En cada turno la IA indica en qué etapa queda y si se cumplió el objetivo; el sistema lo guarda y se lo recuerda en el siguiente turno, junto con los datos importantes que faltan, para que no repita etapas ni preguntas. El objetivo se acepta solo si ya están todos los datos marcados como "Importante"; entonces, una sola vez por conversación, el sistema **pasa la conversación a una persona** o **avisa al equipo** (según lo elegido) y dispara las reglas "Se cumple el objetivo de la conversación". La etapa y el objetivo se ven en cada conversación; al cerrarla y que el cliente vuelva a escribir, el recorrido empieza de nuevo. El asistente conoce el horario de atención y la zona horaria de **Horario y ajustes** (sabe si en este momento está abierto).
+
+Consejo: si una regla del negocio tiene cifra (precio, descuento, anticipo), escríbela también en **Lo que sabe**; así queda garantizada por la verificación de datos.
 
 Para ver un ejemplo completo: `npm run seed:demo` (o `docker compose exec backend node dist/cli/seed-demo.js`) crea la cuenta "Demo" con un chatbot de hotel y un canal de chat web.
 
@@ -77,7 +141,7 @@ Para ver un ejemplo completo: `npm run seed:demo` (o `docker compose exec backen
 
 | Plataforma | Qué necesitas | Cómo se conecta |
 |---|---|---|
-| **WhatsApp** | Un teléfono con WhatsApp | Escribe un nombre de instancia, guarda y pulsa **Conectar / mostrar QR**: se crea la instancia en Evolution, se configura el webhook y escaneas el QR desde *Dispositivos vinculados*. |
+| **WhatsApp** | Un teléfono con WhatsApp (normal o Business) | Al abrir el canal (o el paso 5 de Primeros pasos) el código **aparece solo** y se renueva solo, con cuenta regresiva: **Escanear código QR** desde la computadora, o **Con mi número** (predeterminado en celular): escribe tu número, recibes un código de 8 letras y en WhatsApp → Dispositivos vinculados → *Vincular con el número de teléfono* lo tecleas. El panel detecta la conexión y muestra "Conectado como …". Si la instancia de Evolution se traba, se recrea sola. |
 | **Telegram** | Un bot creado con **@BotFather** | Pega el token, guarda y pulsa **Conectar con Telegram**: se valida el token y se registra el webhook con un secreto (los mensajes sin ese secreto se rechazan). Solo chats privados. |
 | **Messenger** | Una app en Meta for Developers con el producto Messenger y una página de Facebook | Pega el token de la página y la clave secreta de la app. En la app de Meta configura el webhook con la **URL** y el **token de verificación** que muestra el panel, suscrito a `messages`, `messaging_postbacks` y `message_echoes`. Pulsa **Verificar y suscribir la página**. |
 | **Instagram** | Cuenta profesional de Instagram vinculada a la página, en la misma app de Meta | Igual que Messenger, en la sección Instagram de la app. |
@@ -99,7 +163,7 @@ Menú **Automatización** (administradores). Todo corre sobre tareas programadas
 
 | Cuándo (disparador) | Solo si (condiciones) | Hacer (acciones) |
 |---|---|---|
-| El cliente escribe (palabras clave, frase exacta, texto o cualquier mensaje; opcional: solo el primer mensaje) | Canal | Enviar mensaje (con imagen y espera opcional) |
+| El cliente escribe (palabras clave, frase exacta, texto o cualquier mensaje; opcional: solo el primer mensaje) | Canal | Enviar mensaje o foto (con espera opcional) |
 | Cliente nuevo | Dentro/fuera del horario del negocio | Alertar al equipo (panel + WhatsApp) |
 | **Intención detectada por la IA** ("quiere cotizar", "queja"… las defines tú) | Tiene / no tiene etiqueta | Agregar / quitar etiqueta |
 | Se guarda un dato (p. ej. correo) | Dato del cliente presente, vacío, igual o que contiene | Guardar un dato |
@@ -107,25 +171,39 @@ Menú **Automatización** (administradores). Todo corre sobre tareas programadas
 | **No responde en X minutos** (seguimiento automático, una sola vez por silencio) | | Iniciar / detener secuencias |
 | Pasa a una persona | | **Webhook** a otro sistema (n8n, Zapier, CRM), firmado con `X-Signature` |
 | Cita agendada / cancelada | | |
-| Se da de baja | | |
+| Se da de baja | Asistente activo / en pausa | Pausar al asistente (con reactivación opcional en N horas) / activarlo |
+| Se cumple el objetivo | | |
+| El asistente se desactiva | | |
 
-- **Plantillas rápidas:** bienvenida, fuera de horario, palabra urgente → alerta, seguimiento, queja → persona, listo para comprar → ventas, correo → CRM, agradecer cita.
+- **Plantillas rápidas:** bienvenida, fuera de horario, palabra urgente → alerta, seguimiento, queja → persona, listo para comprar → ventas, correo → CRM, palabra → pausar / activar al asistente, agradecer cita.
+- **🧪 Probar palabras:** escribe un mensaje de ejemplo y ve qué reglas se activarían (✅/❌ con el motivo), sin IA y sin enviar nada.
 - **Detener la IA:** una regla puede impedir que la IA responda el mensaje que la disparó.
 - **Variables en los textos:** `{{nombre}}`, `{{cliente}}`, `{{telefono}}`, `{{negocio}}`, `{{mensaje}}`, `{{link}}`, `{{dato.CAMPO}}`, `{{cita.servicio}}`, `{{cita.fecha}}`, `{{cita.hora}}`, `{{cita.lugar}}`.
 
+### Activadores y desactivadores del asistente
+
+Pestaña **Activación** de cada asistente. Lo aplica el sistema (no la IA), por conversación:
+
+- **Cuándo empieza a responder:** siempre, o **solo después de que el cliente escriba una palabra de activación** ("info", "hola asistente"…). Las mismas palabras lo **reactivan** si está en pausa.
+- **Cuándo se apaga:** si el cliente escribe ciertas palabras ("ya no", "gracias, es todo"), al **cumplirse el objetivo**, al **agendar una cita** o cuando el cliente **ya dio todos los datos elegidos** (p. ej. nombre y teléfono: responde ese mensaje y después se apaga).
+- **Qué pasa al apagarse:** pausa en silencio, pasar a una persona (con aviso al equipo) o cerrar la conversación; mensaje opcional; reactivación automática tras N horas (0 = solo con palabra, regla o el botón **Reactivar asistente** de la conversación).
+- **Cómo probarlo:** el **probador de palabras** (en la misma pestaña) dice, sin IA, si el asistente respondería y qué reglas se dispararían; el **Simulador** muestra en cada mensaje "Qué se activó" y el estado del asistente.
+
 ### Secuencias (flujos programados)
 
-- Serie de mensajes con espera entre ellos (minutos, horas o días) y hora del día opcional ("al día siguiente a las 10:00").
+- Serie de mensajes con espera entre ellos (minutos, horas o días) y hora del día opcional ("1 día después a las 10:00" = al día siguiente a las 10:00).
 - Cada paso puede tener condiciones propias.
 - Respetan el horario del negocio: lo que caiga fuera se pasa a la siguiente apertura.
 - Se detienen si el cliente responde, si se da de baja o si una persona toma la conversación.
+- Si la cuenta está en pausa o el canal apagado, esperan (reintentan cada hora hasta 7 días) en lugar de perderse.
 - Se inician con una regla o manualmente desde la conversación.
 
 ### Campañas
 
 - Mensaje a un segmento: con o sin ciertas etiquetas, o que escribieron en los últimos N días. Envío inmediato o programado.
 - Se envían a ritmo controlado (mensajes por minuto) para proteger el número.
-- Siempre excluyen a quien se dio de baja. Muestran vista previa de destinatarios y estadísticas por destinatario.
+- Por defecto solo se envían en horario de atención: lo que no alcance sale en la siguiente apertura, al mismo ritmo.
+- Siempre excluyen a quien se dio de baja y no interrumpen conversaciones que está atendiendo una persona. Muestran vista previa de destinatarios y estadísticas por destinatario.
 
 ### Horario y ajustes
 
@@ -192,12 +270,13 @@ El backend (`src/engine/validator.ts`) nunca confía en la propuesta:
 - Imágenes: solo IDs del catálogo del chatbot, activas, sin repetir, con límite por turno.
 - Datos: solo campos configurados; se validan y normalizan (correo, teléfono, nombre, número, opción de lista).
 - Hechos: precios/números/links/correos/teléfonos deben existir en las fuentes (dinero: solo fuentes del negocio).
-- Estilo: frases prohibidas, temas prohibidos, emojis según configuración, Markdown → formato WhatsApp, longitud y número de mensajes.
+- Estilo: frases prohibidas, temas prohibidos (si el cliente no los mencionó), trato tú/usted, emojis (máximo 2 en "pocos"), largo según la configuración, Markdown → formato WhatsApp, número y tamaño de mensajes.
+- Mensajes fijos (transferencia y respaldo): al cambiar el trato, los de fábrica se ajustan a tú/usted.
 - Coherencia: `no_reply` sin mensajes, respuestas vacías, promesas de foto sin imagen.
 
 Problemas corregibles → se reintenta **una vez** con la corrección. En el último intento:
 
-- Problemas de **estilo** (frase prohibida, prometer una foto inexistente, mensaje largo) se corrigen solos: se quitan las oraciones problemáticas y se envía el resto.
+- Problemas de **estilo** se corrigen solos: se quitan las oraciones con frases o temas prohibidos o con promesas de fotos inexistentes; el trato o el largo, si la IA insiste, se aceptan y quedan registrados para revisión (el cliente no se queda sin respuesta).
 - Datos **no verificables** → respuesta de respaldo o transferencia, según la regla configurada.
 - Respuesta **inválida** (JSON roto o vacía) → no se envía nada; se registra el error y se reintenta en 1 minuto.
 
@@ -237,7 +316,10 @@ src/
   channels/        un adaptador por plataforma (whatsapp, telegram, meta, webchat): webhook, firma, envío, conexión
   evolution/       cliente de Evolution API v2 y parser del webhook
   ai/provider.ts   cliente de OpenAI (chat + transcripción de notas de voz)
-  routes/          API del panel (cuentas, usuarios, chatbots, canales, conversaciones) y rutas públicas (webhooks, chat web, imágenes)
+  routes/          API del panel (cuentas, usuarios, chatbots, canales, conversaciones, primeros pasos, consumo) y rutas públicas (registro, webhooks, chat web, imágenes)
+  templates/       plantillas de chatbot por tipo de negocio (asistente de primeros pasos)
+  lifecycle.ts     fin de pruebas, avisos de gasto y de WhatsApp desconectado
+  mailer.ts        correo saliente (SMTP)
   access.ts        reglas de acceso por cuenta y rol
   auth.ts          usuarios, contraseñas (scrypt) y sesiones
   store/           acceso a PostgreSQL
@@ -250,12 +332,14 @@ test/              pruebas
 
 Panel (bajo `/api`, con sesión por cookie; todo se limita a la cuenta del usuario):
 
-- Sesión: `POST /api/login`, `GET /api/me`, `PUT /api/me/password`
+- Sesión: `POST /api/login`, `GET /api/me`, `PUT /api/me/password`, `POST /api/me/resend-verification`
+- Primeros pasos: `GET /api/onboarding`, `POST /api/onboarding/{business,assistant,step,whatsapp}`
+- Consumo de IA: `GET /api/usage?month=AAAA-MM`, `/api/ai-prices` (superadmin)
 - Cuentas: `/api/accounts`
 - Usuarios: `/api/users`
-- Chatbots: `/api/chatbots`, `/:id/duplicate`, `/:id/knowledge`, `/:id/images`, `/:id/playground`
-- Canales: `/api/channels`, `/:id/setup`, `/:id/status`, `/:id/rotate-token`, `/:id/whatsapp/{connect,logout,test}`
-- Conversaciones: `/api/conversations`, `/:id/{takeover,release,close,send,reset-memory,automation,sequences}`
+- Chatbots: `/api/chatbots`, `/:id/duplicate`, `/:id/knowledge`, `/:id/images`, `/:id/playground`, `/:id/test-message` (probador de palabras: reglas, activadores y desactivadores, sin IA)
+- Canales: `/api/channels`, `/:id/setup`, `/:id/status`, `/:id/rotate-token`, `/:id/whatsapp/{session,connect,logout,test}` (`session`: crea la instancia si hace falta y devuelve el QR vigente o el código por número; el panel la consulta cada 3 s)
+- Conversaciones: `/api/conversations`, `/:id/{takeover,release,close,send,send-image,reset-memory,automation,sequences}`
 - Automatización: `/api/automations`, `/api/sequences`, `/api/campaigns` (`/:id/{preview,launch,cancel,recipients}`), `/api/settings`
 - Agenda: `/api/services` (`/:id/slots`), `/api/appointments` (`/:id/cancel`), `/api/agenda/info`
 - Notificaciones: `/api/notifications`, `/api/notifications/read`
@@ -264,6 +348,7 @@ Panel (bajo `/api`, con sesión por cookie; todo se limita a la cuenta del usuar
 
 Públicas:
 
+- Registro y contraseñas: `GET /api/signup/info`, `POST /api/signup`, `POST /api/verify-email`, `POST /api/forgot-password`, `POST /api/reset-password` (con límite de intentos por IP).
 - Webhooks: `GET|POST /webhook/:token`. El token es una URL secreta por canal; `GET` sirve para la verificación de Meta.
 - Chat web: `/webchat/:token/{config,session,messages}`, con CORS y límite de 15 mensajes por minuto por sesión.
 - Imágenes firmadas: `GET /media/:id?e=…&s=…`.
@@ -271,11 +356,20 @@ Públicas:
 
 Actualización desde la versión anterior: la migración `002` pasa automáticamente todo a una "Cuenta principal" y convierte el WhatsApp de cada chatbot en un canal, **conservando la URL del webhook** para que Evolution siga funcionando sin reconfigurar.
 
+## Operación y resiliencia
+
+- Si PostgreSQL se reinicia, el backend se reconecta solo (no hace falta reiniciarlo).
+- Si el backend se reinicia a mitad de una conversación, al arrancar retoma los mensajes sin responder de los últimos 15 minutos.
+- Si la IA no responde ni al reintentar, el equipo recibe el aviso "⚠️ Un cliente espera respuesta" con el enlace a la conversación.
+- Los webhooks salientes validan la IP de destino al conectar (bloquean la red interna, también ante DNS cambiante) y no siguen redirecciones.
+- Detalles de la última auditoría y una lista de verificación para el servidor: [AUDITORIA.md](AUDITORIA.md).
+
 ## Notas y límites de esta versión
 
 - La cola vive en memoria: pensada para un proceso en un VPS. Al reiniciar, retoma los mensajes sin responder de los últimos 15 minutos.
 - La recuperación de conocimiento es por palabras clave (sin embeddings) y solo entra en juego si el conocimiento excede el presupuesto; para la mayoría de negocios se envía completo.
 - Se ignoran grupos, estados y canales de WhatsApp.
+- El cobro de las suscripciones todavía es manual (tú activas el plan en **Cuentas**); el campo `plan` y el estado `trial/active/paused` ya están listos para conectarlo a Stripe o Mercado Pago.
 - Los mensajes con más de 30 minutos de antigüedad (p. ej. al reconectar el teléfono) se guardan pero no se contestan automáticamente.
 - Una conversación **cerrada** se reabre (con su memoria) cuando el cliente vuelve a escribir.
 - La verificación de hechos cubre cifras, links, correos y teléfonos; afirmaciones sin números (p.ej. "sí tenemos alberca") dependen del prompt y la regla de cero invenciones.

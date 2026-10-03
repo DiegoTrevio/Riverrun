@@ -1,3 +1,4 @@
+import type { WeeklyHours } from '../automation/types.js';
 import type { ChatMessage } from '../ai/provider.js';
 import type { ChannelType, Chatbot, Contact, Conversation, DataField, ImageAsset, KnowledgeItem, Message } from '../types.js';
 import type { AgendaContext } from '../automation/agenda.js';
@@ -24,7 +25,33 @@ export interface ContextInput {
   intents?: { intent: string; description: string }[];
   /** Servicios, horarios libres y citas del cliente. */
   agenda?: AgendaContext | null;
+  /** Zona horaria y horario de atención de la cuenta (Horario y ajustes). Mandan sobre la zona del chatbot. */
+  business?: BusinessInfo | null;
+  /** Fotos que el sistema envía solo y cuándo (la IA no las elige). */
+  autoImages?: { image: ImageAsset; when: string }[];
+  /** Fotos que el sistema enviará con esta respuesta. */
+  imagesNow?: ImageAsset[];
 }
+
+export interface BusinessInfo {
+  timezone: string;
+  hours: WeeklyHours;
+  holidays: string[];
+  /** ¿Está abierto en este momento? */
+  openNow: boolean;
+}
+
+const DAY_ES: [string, string][] = [['mon', 'Lunes'], ['tue', 'Martes'], ['wed', 'Miércoles'], ['thu', 'Jueves'], ['fri', 'Viernes'], ['sat', 'Sábado'], ['sun', 'Domingo']];
+
+/** Horario de atención en texto (también cuenta como dato verificado del negocio). */
+export function hoursText(b: BusinessInfo): string {
+  const lines = DAY_ES.map(([k, label]) => `${label}: ${(b.hours[k as keyof WeeklyHours] ?? []).length ? b.hours[k as keyof WeeklyHours].map(([a, z]) => `${a} a ${z}`).join(' y ') : 'cerrado'}`);
+  const upcoming = b.holidays.filter((d) => d >= new Date().toISOString().slice(0, 10)).slice(0, 10);
+  if (upcoming.length) lines.push(`Días cerrados: ${upcoming.join(', ')}`);
+  return lines.join('\n');
+}
+
+const tzOf = (input: ContextInput) => input.business?.timezone || input.bot.ai.timezone;
 
 export interface BuiltContext {
   messages: ChatMessage[];
@@ -185,8 +212,17 @@ export function buildSystemPrompt(input: ContextInput, knowledge: KnowledgeItem[
 
   s.push('\n# Catálogo de imágenes');
   const active = input.images;
+  const auto = input.autoImages ?? [];
+  const sendingNow = input.imagesNow ?? [];
+  if (auto.length) {
+    s.push('El sistema envía estas fotos automáticamente (NO las pongas en image_ids):');
+    for (const a of auto) s.push(`- ${a.image.name}${a.image.description ? ` (muestra: ${a.image.description})` : ''}: ${a.when}`);
+  }
+  if (sendingNow.length) {
+    s.push(`En ESTA respuesta el sistema enviará: ${sendingNow.map((i) => i.name).join(', ')}. Puedes mencionarlo brevemente ("te comparto…"); no repitas su contenido con datos que no estén en la información del negocio.`);
+  }
   if (!active.length) {
-    s.push('No hay imágenes disponibles. Nunca digas que vas a enviar una foto o imagen.');
+    if (!sendingNow.length) s.push(auto.length ? 'No puedes enviar otras imágenes por tu cuenta. No prometas fotos fuera de esos momentos.' : 'No hay imágenes disponibles. Nunca digas que vas a enviar una foto o imagen.');
   } else {
     s.push('Solo puedes enviar estas imágenes, usando su ID exacto en image_ids. No existen otras.');
     for (const img of active) {
@@ -215,11 +251,24 @@ export function buildSystemPrompt(input: ContextInput, knowledge: KnowledgeItem[
   s.push('Al transferir, escribe un mensaje breve avisando que alguien del equipo lo atenderá (o deja messages vacío para usar el mensaje predeterminado).');
 
   if (flow.goal || flow.steps.length) {
-    s.push('\n# Objetivo de la conversación (guía flexible, NO un guion)');
+    s.push('\n# Recorrido de la conversación (guía flexible, NO un guion)');
     if (flow.goal) s.push(`Objetivo: ${flow.goal}`);
+    if (flow.steps.length) s.push('Etapas:');
     flow.steps.forEach((st, i) => s.push(`${i + 1}. ${st.title}${st.description ? `: ${st.description}` : ''}`));
     if (flow.on_goal_completed) s.push(`Cuando se cumpla el objetivo: ${flow.on_goal_completed}`);
-    s.push('El cliente puede saltar etapas, dar varios datos a la vez o preguntar otra cosa: adáptate, responde y continúa desde donde esté.');
+    s.push(
+      [
+        '- Avanza de etapa en etapa sin saltarte lo importante, pero el cliente puede adelantarse, dar varios datos a la vez o preguntar otra cosa: respóndele y continúa desde donde esté.',
+        '- No regreses a una etapa ya cubierta ni repitas preguntas ya respondidas.',
+        flow.steps.length ? '- En "flow_step" indica el número de la etapa en la que queda la conversación después de tu respuesta.' : '- Usa flow_step = 0.',
+        flow.goal
+          ? '- Marca "goal_completed" = true solo en el turno en que se cumple el objetivo y ya tienes los datos marcados como importantes; si falta alguno, pídelo primero.'
+          : '- Usa goal_completed = false.',
+        flow.on_goal_action === 'handoff' ? '- Al cumplirse el objetivo, el sistema pasará la conversación a una persona del equipo: despídete avisando que alguien le dará seguimiento.' : '',
+      ]
+        .filter(Boolean)
+        .join('\n'),
+    );
   }
 
   if (bot.data_fields.length) {
@@ -272,6 +321,21 @@ export function buildSystemPrompt(input: ContextInput, knowledge: KnowledgeItem[
     if (sent.length) s.push(`Imágenes ya enviadas en esta conversación: ${sent.join(', ')}`);
   }
 
+  if (flow.goal || flow.steps.length) {
+    const step = conversation.flow_step ?? 0;
+    const lines = [`Etapa actual: ${step && flow.steps[step - 1] ? `${step}. ${flow.steps[step - 1].title}` : 'aún no empieza'}.`];
+    if (conversation.goal_completed_at) lines.push('El objetivo YA se cumplió en esta conversación: no lo vuelvas a perseguir; atiende lo que el cliente necesite ahora (goal_completed = false).');
+    const importantMissing = bot.data_fields.filter((f) => f.required && !contact.data?.[f.key] && !(f.type === 'name' && contact.name));
+    if (flow.goal && !conversation.goal_completed_at && importantMissing.length) lines.push(`Datos importantes que faltan para cumplir el objetivo: ${importantMissing.map((f) => f.label).join(', ')}.`);
+    s.push(`\n# Avance del recorrido\n${lines.join('\n')}`);
+  }
+
+  if (input.business) {
+    s.push('\n# Horario de atención del negocio');
+    s.push(hoursText(input.business));
+    s.push(`En este momento el negocio está ${input.business.openNow ? 'ABIERTO' : 'CERRADO'}.`);
+  }
+
   if (input.agenda) s.push(agendaSection(input.agenda));
   if (input.intents?.length) {
     s.push('\n# Intenciones a detectar');
@@ -280,7 +344,7 @@ export function buildSystemPrompt(input: ContextInput, knowledge: KnowledgeItem[
   }
 
   s.push('\n# Momento actual');
-  s.push(`Fecha y hora del negocio: ${formatDate(now, bot.ai.timezone)} (${bot.ai.timezone}).`);
+  s.push(`Fecha y hora del negocio: ${formatDate(now, tzOf(input))} (${tzOf(input)}).`);
   if (input.channelType && input.channelType !== 'playground') s.push(`Canal de esta conversación: ${CHANNEL_NAMES[input.channelType]}.`);
   if (isFirstContact) {
     s.push(`Es el primer contacto con este cliente: saluda brevemente${flow.greeting ? ` (sugerencia de saludo: "${flow.greeting}")` : ''} y responde lo que pregunte.`);
@@ -375,7 +439,8 @@ export function buildContext(input: ContextInput): BuiltContext {
     Object.values(input.contact.data ?? {}).join('\n'),
     input.contact.phone,
     input.contact.notes?.join('\n') ?? '',
-    formatDate(input.now ?? new Date(), bot.ai.timezone),
+    formatDate(input.now ?? new Date(), tzOf(input)),
+    input.business ? hoursText(input.business) : '',
     bot.personality.prompt,
     bot.rules.custom_rules.join('\n'),
     bot.rules.handoff_message,

@@ -80,6 +80,15 @@ services:
       SESSION_SECRET: ${SESSION_SECRET}
       SECURE_COOKIES: ${SECURE_COOKIES:-false}
       UPLOADS_DIR: /data/uploads
+      # Autoregistro de empresas y correo saliente
+      SIGNUP_ENABLED: ${SIGNUP_ENABLED:-true}
+      TRIAL_DAYS: ${TRIAL_DAYS:-14}
+      SIGNUP_REQUIRE_EMAIL: ${SIGNUP_REQUIRE_EMAIL:-true}
+      SMTP_URL: ${SMTP_URL:-}
+      MAIL_FROM: ${MAIL_FROM:-}
+      SUPERADMIN_EMAIL: ${SUPERADMIN_EMAIL:-}
+      SUPPORT_CONTACT: ${SUPPORT_CONTACT:-}
+      AI_ALERT_USD_PER_ACCOUNT: ${AI_ALERT_USD_PER_ACCOUNT:-0}
     volumes:
       - uploads:/data/uploads
     ports:

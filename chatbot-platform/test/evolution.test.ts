@@ -42,7 +42,7 @@ test('EvolutionClient: rutas, apikey, cuerpo y reintento ante 5xx', async () => 
     assert.equal(seen[2].body.media, 'BASE64');
     const wh = seen.find((s) => s.url.startsWith('/webhook/set'))!;
     assert.equal(wh.body.webhook.url, 'http://backend:3000/webhook/abc');
-    assert.deepEqual(wh.body.webhook.events, ['MESSAGES_UPSERT', 'CONNECTION_UPDATE']);
+    assert.deepEqual(wh.body.webhook.events, ['MESSAGES_UPSERT', 'CONNECTION_UPDATE', 'QRCODE_UPDATED']);
   } finally {
     server.close();
   }

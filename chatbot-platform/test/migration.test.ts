@@ -46,12 +46,14 @@ after(async () => {
 });
 
 t('migra una instalación existente sin perder datos', async () => {
-  assert.deepEqual(await migrate(db), ['002_accounts_channels.sql', '003_automation.sql']);
+  assert.deepEqual(await migrate(db), ['002_accounts_channels.sql', '003_automation.sql', '004_signup.sql', '005_flow.sql', '006_whatsapp_qr.sql', '007_activation.sql', '008_image_triggers.sql']);
   const q = async (sql: string) => (await db.query(sql)).rows;
 
   const accounts = await q('SELECT * FROM accounts');
   assert.equal(accounts.length, 1);
   assert.equal(accounts[0].name, 'Cuenta principal');
+  assert.equal(accounts[0].status, 'active', 'las cuentas existentes no entran a prueba');
+  assert.equal((await q(`SELECT count(*)::int n FROM users WHERE email_verified_at IS NULL`))[0].n, 0, 'los usuarios existentes quedan verificados');
   const acc = accounts[0].id;
   assert.equal((await q(`SELECT count(*)::int n FROM chatbots WHERE account_id = '${acc}'`))[0].n, 2);
 
@@ -86,6 +88,6 @@ t('migra una instalación existente sin perder datos', async () => {
 t('una instalación nueva (sin datos) migra sin crear cuentas vacías', async () => {
   await db.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public;');
   const applied = await migrate(db);
-  assert.deepEqual(applied, ['001_init.sql', '002_accounts_channels.sql', '003_automation.sql']);
+  assert.deepEqual(applied, ['001_init.sql', '002_accounts_channels.sql', '003_automation.sql', '004_signup.sql', '005_flow.sql', '006_whatsapp_qr.sql', '007_activation.sql', '008_image_triggers.sql']);
   assert.equal((await db.query('SELECT count(*)::int n FROM accounts')).rows[0].n, 0);
 });

@@ -1,8 +1,12 @@
 import crypto from 'node:crypto';
 import dns from 'node:dns/promises';
+import http from 'node:http';
+import https from 'node:https';
 import net from 'node:net';
 import { config } from '../config.js';
+import { agentActive, gate } from '../engine/activation.js';
 import { matchKeyword } from '../engine/engine.js';
+import { imagesBeforeReply } from '../engine/images.js';
 import { normalize } from '../engine/text.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
@@ -10,7 +14,7 @@ import * as store from '../store/index.js';
 import type { Channel, Chatbot, Contact, Conversation, Message } from '../types.js';
 import * as astore from './store.js';
 import { renderTemplate } from './templates.js';
-import { isOpen, nextOpen, nextTimeOfDay } from './time.js';
+import { addDays, isOpen, localParts, nextOpen, nextTimeOfDay, zonedToUtc } from './time.js';
 import type { AccountSettings, Action, Automation, AutomationEvent, Condition, SequenceStep, Trigger } from './types.js';
 
 interface Ctx {
@@ -74,10 +78,27 @@ export function conditionsMatch(conditions: Condition[], ctx: Ctx, now = new Dat
       }
       case 'status':
         return ctx.conv.status === c.status;
+      case 'agent': {
+        const on = !!ctx.bot && agentActive(ctx.bot, ctx.conv, now);
+        return c.state === 'on' ? on : !on;
+      }
       default:
         return true;
     }
   });
+}
+
+/** Condición en palabras (para el probador). */
+export function describeCondition(c: Condition): string {
+  switch (c.type) {
+    case 'channel': return `canal ${c.channel_types.join(' o ') || 'cualquiera'}`;
+    case 'business_hours': return c.inside ? 'dentro del horario' : 'fuera del horario';
+    case 'has_tag': return `${c.negate ? 'no tiene' : 'tiene'} la etiqueta "${c.tag}"`;
+    case 'field': return `dato "${c.field}" ${({ present: 'tiene valor', absent: 'está vacío', equals: `es "${c.value}"`, contains: `contiene "${c.value}"` } as const)[c.op]}`;
+    case 'status': return `conversación ${({ bot: 'con el bot', human: 'con una persona', closed: 'cerrada' } as const)[c.status]}`;
+    case 'agent': return c.state === 'on' ? 'asistente activo' : 'asistente en pausa';
+    default: return 'condición';
+  }
 }
 
 /* ------------------------------ Webhooks salientes seguros ------------------------------ */
@@ -91,24 +112,46 @@ function isPrivateIp(ip: string) {
   return v === '::1' || v === '::' || v.startsWith('fc') || v.startsWith('fd') || v.startsWith('fe80') || v.startsWith('::ffff:127.') || v.startsWith('::ffff:10.') || v.startsWith('::ffff:192.168.');
 }
 
+/**
+ * Resolución DNS que rechaza direcciones internas. Se usa en la conexión misma (no antes), así un dominio
+ * que cambia de IP entre la revisión y la conexión ("DNS rebinding") tampoco llega a la red interna.
+ */
+function safeLookup(hostname: string, options: any, callback: (err: Error | null, address?: any, family?: number) => void) {
+  dns
+    .lookup(hostname, { all: true })
+    .then((addrs) => {
+      const bad = addrs.find((a) => isPrivateIp(a.address));
+      if (bad || !addrs.length) return callback(new Error('La URL apunta a una red interna; no está permitido'));
+      if (options?.all) return callback(null, addrs);
+      callback(null, addrs[0].address, addrs[0].family);
+    })
+    .catch((e) => callback(e));
+}
+
 /** POST firmado a un servicio externo (n8n, Zapier, CRM). Bloquea la red interna (evita SSRF). */
 export async function postWebhook(url: string, body: unknown, secret: string) {
   const u = new URL(url);
   if (!['http:', 'https:'].includes(u.protocol)) throw new Error('Solo se permiten URLs http(s)');
-  if (!config.allowPrivateWebhooks) {
-    const host = u.hostname.replace(/^\[|\]$/g, '');
-    const addrs = net.isIP(host) ? [{ address: host }] : await dns.lookup(host, { all: true });
-    if (addrs.some((a) => isPrivateIp(a.address))) throw new Error('La URL apunta a una red interna; no está permitido');
-  }
+  const host = u.hostname.replace(/^\[|\]$/g, '');
+  if (!config.allowPrivateWebhooks && net.isIP(host) && isPrivateIp(host)) throw new Error('La URL apunta a una red interna; no está permitido');
   const payload = JSON.stringify(body);
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-signature': `sha256=${crypto.createHmac('sha256', secret).update(payload).digest('hex')}` },
-    body: payload,
-    redirect: 'error',
-    signal: AbortSignal.timeout(10_000),
+  const headers = {
+    'content-type': 'application/json',
+    'content-length': Buffer.byteLength(payload),
+    'x-signature': `sha256=${crypto.createHmac('sha256', secret).update(payload).digest('hex')}`,
+  };
+  const mod = u.protocol === 'https:' ? https : http;
+  // Sin redirecciones (una redirección podría apuntar a la red interna) y con tiempo máximo de 10 s.
+  const status = await new Promise<number>((resolve, reject) => {
+    const req = mod.request(u, { method: 'POST', headers, timeout: 10_000, ...(config.allowPrivateWebhooks ? {} : { lookup: safeLookup as any }) }, (res) => {
+      res.resume();
+      resolve(res.statusCode ?? 0);
+    });
+    req.on('timeout', () => req.destroy(new Error('El webhook no respondió a tiempo')));
+    req.on('error', reject);
+    req.end(payload);
   });
-  if (!res.ok) throw new Error(`El webhook respondió ${res.status}`);
+  if (status < 200 || status >= 300) throw new Error(`El webhook respondió ${status}`);
 }
 
 /* ------------------------------ Automatizador ------------------------------ */
@@ -227,7 +270,8 @@ export class Automator {
       case 'add_tag':
       case 'remove_tag': {
         const tag = a.tag.trim();
-        const current = ctx.contact.tags ?? [];
+        // Se leen las etiquetas actuales: otra regla (disparada en cadena) pudo agregar alguna mientras tanto.
+        const current = (await store.getContact(ctx.contact.id))?.tags ?? ctx.contact.tags ?? [];
         const exists = current.some((t) => normalize(t) === normalize(tag));
         if (a.type === 'add_tag' && !exists) {
           ctx.contact.tags = [...current, tag];
@@ -267,10 +311,25 @@ export class Automator {
         if (depth <= MAX_DEPTH) await this.handle({ type: 'handoff', conversationId: ctx.conv.id, depth });
         return;
       }
-      case 'resume_bot':
+      case 'resume_bot': {
+        // Devuelve la conversación al asistente y lo enciende (quita la pausa y cuenta como activado).
         await store.setConversationStatus(ctx.conv.id, 'bot', '');
+        const on = await store.setAgentOn(ctx.conv.id);
+        if (on) Object.assign(ctx.conv, on);
         ctx.conv.status = 'bot';
+        await logEvent({ level: 'info', source: 'engine', message: `Asistente activado por la regla "${rule.name}"`, accountId: ctx.conv.account_id, conversationId: ctx.conv.id });
         return;
+      }
+      case 'pause_bot': {
+        const until = a.hours > 0 ? new Date(Date.now() + a.hours * 3600_000) : null;
+        const reason = a.reason.trim() || `regla "${rule.name}"`;
+        const off = await store.setAgentOff(ctx.conv.id, reason, until);
+        if (off) Object.assign(ctx.conv, off);
+        await store.markAllProcessed(ctx.conv.id);
+        await logEvent({ level: 'info', source: 'engine', message: `Asistente en pausa: ${reason}${until ? ` (se reactiva en ${a.hours} h)` : ''}`, accountId: ctx.conv.account_id, conversationId: ctx.conv.id });
+        if (depth <= MAX_DEPTH) await this.handle({ type: 'agent_off', conversationId: ctx.conv.id, text: reason, depth });
+        return;
+      }
       case 'close_conversation':
         await store.setConversationStatus(ctx.conv.id, 'closed', `Cerrada por la regla "${rule.name}"`);
         ctx.conv.status = 'closed';
@@ -369,6 +428,101 @@ export class Automator {
     }
   }
 
+  /* ------------------------------ Probador (sin IA, sin enviar nada) ------------------------------ */
+
+  /**
+   * Qué pasaría si un cliente escribe `text`: bajas, reglas por mensaje, activadores/desactivadores del
+   * asistente y palabras de transferencia, en el mismo orden que con un mensaje real. No guarda ni envía nada.
+   */
+  async testMessage(bot: Chatbot, o: { text: string; firstMessage: boolean; channelType: string; agent: 'on' | 'paused' | 'waiting'; tags: string[] }) {
+    const [settings, account] = await Promise.all([astore.getSettings(bot.account_id), store.getAccount(bot.account_id)]);
+    const now = new Date();
+    const conv = {
+      id: '', account_id: bot.account_id, channel_id: '', chatbot_id: bot.id, contact_id: '', status: 'bot', status_changed_at: now, handoff_reason: '',
+      summary: '', summary_until_id: 0, last_message_at: now,
+      agent_off_at: o.agent === 'paused' ? now : null, agent_off_reason: o.agent === 'paused' ? 'prueba' : '', agent_off_until: null,
+      agent_on_at: o.agent === 'on' ? now : null,
+    } as Conversation;
+    const contact = { id: '', tags: o.tags, data: {}, name: '', opted_out: false } as unknown as Contact;
+    const channel = { id: '', type: o.channelType, name: 'Prueba', active: true } as unknown as Channel;
+    const ctx: Ctx = { conv, contact, channel, bot, settings, accountName: account?.name ?? '' };
+    const steps: { kind: string; title: string; detail: string; ok: boolean }[] = [];
+    const verdict = (reply: boolean, why: string) => ({ steps, rules, ai_replies: reply, why });
+    const rules: { id: string; name: string; trigger: string; matched: boolean; reason: string; actions: string[]; stop_ai: boolean }[] = [];
+
+    // 1) Bajas de mensajes promocionales.
+    const norm = normalize(o.text).replace(/[^\p{L}\p{N} ]/gu, ' ').replace(/\s+/g, ' ').trim();
+    const oo = settings.opt_out;
+    const optOut = oo.enabled && norm ? oo.keywords.find((k) => normalize(k) === norm) : undefined;
+    if (optOut) {
+      steps.push({ kind: 'opt_out', title: 'Baja de mensajes', detail: `"${optOut}" da de baja al cliente: se le confirma y la IA no responde.`, ok: true });
+      return verdict(false, 'El cliente se da de baja de los mensajes promocionales.');
+    }
+
+    // 2) Reglas por mensaje (las de intención las decide la IA: se prueban en el simulador).
+    let stopAi = false;
+    let after: 'bot' | 'human' | 'closed' = 'bot';
+    let pausedByRule = false;
+    let resumedByRule = false;
+    const events: AutomationEvent[] = [
+      ...(o.firstMessage ? [{ type: 'new_contact' as const, conversationId: '', text: o.text }] : []),
+      { type: 'message_received', conversationId: '', text: o.text, isFirstMessage: o.firstMessage },
+    ];
+    for (const e of events) {
+      for (const rule of await astore.activeAutomations(bot.account_id, e.type, bot.id)) {
+        let reason = '';
+        if (!triggerMatches(rule.trigger, e)) {
+          const t = rule.trigger;
+          reason = t.type === 'message_received' && t.first_message_only && !o.firstMessage ? 'solo aplica en el primer mensaje del cliente' : t.type === 'message_received' ? `el mensaje no coincide con: ${t.keywords.join(', ') || '(sin palabras)'}` : 'no aplica';
+        } else {
+          const failed = rule.conditions.find((c) => !conditionsMatch([c], ctx, now));
+          if (failed) reason = `no se cumple la condición: ${describeCondition(failed)}`;
+        }
+        const matched = !reason;
+        rules.push({ id: rule.id, name: rule.name, trigger: e.type, matched, reason: matched ? 'se activaría' : reason, actions: rule.actions.map((a) => a.type), stop_ai: rule.stop_ai });
+        if (!matched) continue;
+        if (rule.stop_ai) stopAi = true;
+        for (const a of rule.actions) {
+          if (a.type === 'handoff') after = 'human';
+          if (a.type === 'close_conversation') after = 'closed';
+          if (a.type === 'pause_bot') { pausedByRule = true; resumedByRule = false; }
+          if (a.type === 'resume_bot') { after = 'bot'; pausedByRule = false; resumedByRule = true; }
+        }
+      }
+    }
+    const fired = rules.filter((r) => r.matched);
+    steps.push({ kind: 'rules', title: 'Reglas automáticas', detail: fired.length ? `Se activarían: ${fired.map((r) => `"${r.name}"`).join(', ')}.` : rules.length ? 'Ninguna regla coincide con este mensaje.' : 'No hay reglas activas por mensaje.', ok: fired.length > 0 });
+    if (after !== 'bot') return verdict(false, after === 'human' ? 'Una regla pasa la conversación a una persona.' : 'Una regla cierra la conversación.');
+    if (resumedByRule) Object.assign(conv, { agent_off_at: null, agent_off_until: null, agent_on_at: now });
+    if (pausedByRule) {
+      steps.push({ kind: 'agent', title: 'Asistente', detail: 'Una regla lo pone en pausa en esta conversación.', ok: false });
+      return verdict(false, 'Una regla pausa al asistente.');
+    }
+
+    // 3) Activadores y desactivadores del asistente.
+    const g = gate(bot.rules.activation, conv, o.text, now);
+    steps.push({
+      kind: 'agent',
+      title: 'Asistente',
+      detail: g.change === 'on' ? `Se activa: ${g.reason}.` : g.change === 'off' ? `Se apaga: ${g.reason} (${({ pause: 'queda en pausa', handoff: 'pasa a una persona', close: 'se cierra la conversación' } as const)[bot.rules.activation.off_action]}).` : g.reply ? 'Está activo y responde.' : `No responde: ${g.reason}.`,
+      ok: g.reply,
+    });
+    if (!g.reply) return verdict(false, g.change === 'off' ? 'El mensaje apaga al asistente.' : `El asistente no responde: ${g.reason}.`);
+
+    // 4) Transferencia inmediata por palabra (sin IA).
+    const kw = matchKeyword(o.text, bot.rules.handoff_keywords);
+    if (kw) {
+      steps.push({ kind: 'handoff', title: 'Pasar con una persona', detail: `"${kw}" pasa la conversación a una persona de inmediato.`, ok: true });
+      return verdict(false, 'Pasa con una persona sin consultar a la IA.');
+    }
+    if (stopAi) return verdict(false, 'Una regla indica que la IA no responda este mensaje.');
+    // 5) Fotos que el sistema envía solo junto con la respuesta (palabras del cliente o bienvenida).
+    const photos = imagesBeforeReply(await store.listImages(bot.id, true), { text: o.text, firstReply: o.firstMessage, sentIds: [] });
+    if (photos.length) steps.push({ kind: 'images', title: 'Fotos', detail: `Se enviarían: ${photos.map((p) => `"${p.image.name}" (${p.reason})`).join(', ')}.`, ok: true });
+    if (!bot.active) return verdict(true, 'La IA respondería, pero el asistente está apagado: en tus canales no contestará hasta que lo enciendas.');
+    return verdict(true, 'La IA respondería este mensaje.');
+  }
+
   /** Intenciones que la IA debe detectar (de las reglas activas). */
   async intentsFor(accountId: string, chatbotId: string | null) {
     const rules = await astore.activeAutomations(accountId, 'intent', chatbotId);
@@ -400,7 +554,7 @@ export class Automator {
   }
 
   /** Tarea programada: envía un paso de secuencia y programa el siguiente. */
-  async runSequenceStep(payload: { enrollment_id: string; step: number }) {
+  async runSequenceStep(payload: { enrollment_id: string; step: number; first_due?: string }) {
     const en = await astore.getEnrollment(payload.enrollment_id);
     if (!en || en.status !== 'active' || en.current_step !== payload.step) return;
     const seq = await astore.getSequence(en.sequence_id);
@@ -410,6 +564,20 @@ export class Automator {
     if (!ctx) return stop('conversación eliminada');
     if (ctx.contact.opted_out) return stop('el cliente se dio de baja');
     if (ctx.conv.status === 'human') return stop('una persona está atendiendo la conversación');
+    if (!ctx.channel.active || ctx.channel.account_active === false) {
+      // Canal apagado o cuenta en pausa: la secuencia espera (hasta 7 días) en lugar de perderse.
+      const firstDue = payload.first_due ? new Date(payload.first_due) : new Date();
+      if (Date.now() - firstDue.getTime() > 7 * 86400_000) return stop('el canal o la cuenta siguen inactivos después de 7 días');
+      const retryAt = new Date(Date.now() + 3600_000);
+      await astore.updateEnrollment(en.id, { next_run_at: retryAt });
+      await astore.scheduleJob({
+        account_id: ctx.conv.account_id,
+        type: 'sequence_step',
+        payload: { enrollment_id: en.id, conversation_id: ctx.conv.id, step: payload.step, first_due: firstDue.toISOString() },
+        run_at: retryAt,
+      });
+      return;
+    }
     if (seq.stop_on_reply) {
       const last = await astore.lastInbound(ctx.conv.id);
       if (last && last.id > en.last_inbound_id) return stop('el cliente respondió');
@@ -433,7 +601,7 @@ export class Automator {
     const last = await astore.lastInbound(payload.conversation_id);
     if (last && last.id > payload.after_message_id) return; // sí respondió
     const ctx = await this.loadCtx(payload.conversation_id);
-    if (!ctx || !conditionsMatch(rule.conditions, ctx)) return;
+    if (!ctx || ctx.channel.account_active === false || !conditionsMatch(rule.conditions, ctx)) return;
     await this.runRule(rule, ctx, { type: 'no_reply', conversationId: ctx.conv.id });
   }
 
@@ -451,7 +619,13 @@ export class Automator {
 export function stepTime(from: Date, step: SequenceStep, settings: AccountSettings, businessOnly: boolean): Date {
   const unit = step.delay_unit === 'days' ? 86400_000 : step.delay_unit === 'hours' ? 3600_000 : 60_000;
   let t = new Date(from.getTime() + step.delay_value * unit);
-  if (step.at_time) t = nextTimeOfDay(t, step.at_time, settings.timezone);
+  if (step.at_time && step.delay_unit === 'days' && step.delay_value > 0) {
+    // "N días después a las HH:MM" = ese día del calendario a esa hora (no la siguiente HH:MM después de N×24 h).
+    const day = zonedToUtc(addDays(localParts(from, settings.timezone).date, step.delay_value), step.at_time, settings.timezone);
+    t = day.getTime() > from.getTime() ? day : nextTimeOfDay(t, step.at_time, settings.timezone);
+  } else if (step.at_time) {
+    t = nextTimeOfDay(t, step.at_time, settings.timezone);
+  }
   if (businessOnly) t = nextOpen(settings.business_hours, settings.holidays, t, settings.timezone);
   return t;
 }

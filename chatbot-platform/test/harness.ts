@@ -8,6 +8,17 @@ import http from 'node:http';
 /* ---------- APIs externas simuladas (Telegram Bot API y Meta Graph API) ---------- */
 export interface ExtRequest { method: string; path: string; query: URLSearchParams; headers: http.IncomingHttpHeaders; body: any; raw: string }
 export const ext = { requests: [] as ExtRequest[], fail: new Set<string>(), n: 0 };
+/** Evolution API simulada: instancias con su estado, QR numerados y códigos de vinculación. */
+export const evo = {
+  instances: new Map<string, { state: string; qrN: number }>(),
+  /** Instancias "trabadas": connect no devuelve QR. */
+  stuck: new Set<string>(),
+  owner: { jid: '5218111112222@s.whatsapp.net', name: 'Clínica Sonrisa' },
+  down: false,
+  /** Como Evolution real: tras borrar una instancia, el nombre sigue ocupado unos instantes. */
+  slowDeleteMs: 0,
+  deleting: new Map<string, number>(),
+};
 const extServer = http.createServer((req, res) => {
   const chunks: Buffer[] = [];
   req.on('data', (c) => chunks.push(c));
@@ -22,6 +33,41 @@ const extServer = http.createServer((req, res) => {
     const method = path.split('/').pop()!;
     if ([...ext.fail].some((f) => path.includes(f))) return json(500, { ok: false, description: 'fallo simulado', error: { message: 'fallo simulado' } });
     if (path === '/hook') return json(200, { ok: true });
+    if (path.startsWith('/instance/') || path.startsWith('/webhook/set/')) {
+      if (evo.down) return json(503, { message: 'Service Unavailable' });
+      const name = decodeURIComponent(path.split('/').pop()!);
+      if (path.startsWith('/instance/connectionState/')) {
+        const i = evo.instances.get(name);
+        return i ? json(200, { instance: { instanceName: name, state: i.state } }) : json(404, { response: { message: ['not found'] } });
+      }
+      if (path === '/instance/create') {
+        if (evo.instances.has(body.instanceName) || (evo.deleting.get(body.instanceName) ?? 0) > Date.now()) {
+          return json(403, { response: { message: [`This name "${body.instanceName}" is already in use.`] } });
+        }
+        evo.instances.set(body.instanceName, { state: 'connecting', qrN: 1 });
+        return json(201, { instance: { instanceName: body.instanceName }, qrcode: { base64: 'data:image/png;base64,QR1', pairingCode: body.number ? 'NEWC0DE1' : null } });
+      }
+      if (path.startsWith('/instance/connect/')) {
+        const i = evo.instances.get(name);
+        if (!i) return json(404, { response: { message: ['not found'] } });
+        if (evo.stuck.has(name)) return json(200, { count: 0 });
+        i.qrN++;
+        const number = url.searchParams.get('number');
+        return json(200, { base64: `data:image/png;base64,QR${i.qrN}`, code: `2@${i.qrN}`, pairingCode: number ? `PAIR${String(i.qrN).padStart(4, '0')}` : null });
+      }
+      if (path.startsWith('/instance/fetchInstances')) {
+        const i = evo.instances.get(url.searchParams.get('instanceName') ?? '');
+        return json(200, i ? [{ name: url.searchParams.get('instanceName'), connectionStatus: i.state, ownerJid: evo.owner.jid, profileName: evo.owner.name }] : []);
+      }
+      if (path.startsWith('/instance/logout/')) { const i = evo.instances.get(name); if (i) i.state = 'close'; return json(200, { status: 'SUCCESS' }); }
+      if (path.startsWith('/instance/delete/')) {
+        evo.instances.delete(name);
+        evo.stuck.delete(name);
+        if (evo.slowDeleteMs) evo.deleting.set(name, Date.now() + evo.slowDeleteMs);
+        return json(200, { status: 'SUCCESS' });
+      }
+      if (path.startsWith('/webhook/set/')) return json(201, { webhook: body.webhook });
+    }
     if (path.startsWith('/file/')) { res.writeHead(200, { 'content-type': 'audio/ogg' }); return res.end(Buffer.from('OggS-audio')); }
     if (path.startsWith('/bot')) {
       if (method === 'getMe') return json(200, { ok: true, result: { id: 1, username: 'palmas_bot' } });
@@ -41,6 +87,8 @@ extServer.unref();
 const extUrl = `http://127.0.0.1:${(extServer.address() as any).port}`;
 process.env.TELEGRAM_API_URL = extUrl;
 process.env.META_GRAPH_URL = extUrl;
+process.env.EVOLUTION_URL = extUrl;
+process.env.EVOLUTION_API_KEY = 'llave-global-de-pruebas';
 process.env.PUBLIC_BASE_URL = 'https://bot.test';
 process.env.WEBHOOK_BASE_URL = 'http://backend:3000';
 process.env.ALLOW_PRIVATE_WEBHOOKS = 'true';
@@ -95,7 +143,7 @@ export async function createHarness() {
       return 'transcripción';
     },
   };
-  const failNext = { text: 0 };
+  const failNext = { text: 0, image: 0 };
   // WhatsApp se simula en memoria; Telegram y Meta usan sus adaptadores reales contra el servidor falso.
   const transportFactory = (channel: any, contact: any) => (channel.type !== 'whatsapp' ? defaultTransport(channel, contact) : {
     kind: 'whatsapp' as const,
@@ -108,6 +156,10 @@ export async function createHarness() {
       return `OUT-${++n}`;
     },
     async sendImage(image: any, caption: string) {
+      if (failNext.image > 0) {
+        failNext.image--;
+        throw new Error('Evolution sendMedia → HTTP 400: media inválido');
+      }
       sent.push({ kind: 'image', to: contact.phone, text: caption, image: image.code });
       return `OUT-${++n}`;
     },
@@ -142,14 +194,14 @@ export async function createHarness() {
     },
     /** Espera a que la cola termine todo lo pendiente (evita que una prueba contamine a la siguiente). */
     async idle() { await waitFor(() => service.queue.size === 0, 8000); },
-    webhook(text: string, opts: { fromMe?: boolean; phone?: string; id?: string; timestamp?: number } = {}) {
+    webhook(text: string, opts: { fromMe?: boolean; phone?: string; id?: string; timestamp?: number; instance?: string } = {}) {
       const phone = opts.phone ?? '5215511112222';
       return app.inject({
         method: 'POST',
         url: `/webhook/${h.token}`,
         payload: {
           event: 'messages.upsert',
-          instance: 'palmas',
+          instance: opts.instance ?? 'palmas',
           data: {
             key: { remoteJid: `${phone}@s.whatsapp.net`, fromMe: !!opts.fromMe, id: opts.id ?? `IN-${++msgN}-${Date.now()}` },
             pushName: 'Ana', message: { conversation: text },

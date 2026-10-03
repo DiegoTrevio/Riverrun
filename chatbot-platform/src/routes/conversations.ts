@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { assertAccount, conversationFor, HttpError, scopeAccount } from '../access.js';
 import { query } from '../db.js';
+import { agentStatus } from '../engine/activation.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
@@ -65,6 +66,8 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
       contact,
       messages: messages.reverse(),
       chatbot: bot ? { id: bot.id, name: bot.name, data_fields: bot.data_fields } : null,
+      /** Asistente en esta conversación: activo, en pausa (motivo) o esperando su palabra de activación. */
+      agent: bot ? agentStatus(bot, conv) : null,
       channel: channel ? { id: channel.id, name: channel.name, type: channel.type } : null,
     };
   });
@@ -84,8 +87,10 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
     const conv = await conversationFor(req.user, req.params.cid);
     // Los mensajes que llegaron mientras atendía una persona no se responden en automático.
     await store.markAllProcessed(conv.id);
-    const updated = await store.setConversationStatus(conv.id, 'bot', '');
-    await log(conv, `Conversación devuelta al bot por ${req.user.email}`);
+    await store.setConversationStatus(conv.id, 'bot', '');
+    // También quita la pausa del asistente (y lo cuenta como activado en el modo "solo con palabras").
+    const updated = await store.setAgentOn(conv.id);
+    await log(conv, `Conversación devuelta al asistente por ${req.user.email}`);
     return updated;
   });
 
@@ -108,10 +113,28 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
     }
   });
 
+  api.post('/api/conversations/:cid/send-image', async (req: any) => {
+    const conv = await conversationFor(req.user, req.params.cid);
+    const b = parse(z.object({ image_id: z.string().uuid('Elige una foto'), takeover: z.boolean().default(true) }), req.body);
+    try {
+      // La conversación se toma solo si la foto es válida (justo antes de enviarla).
+      return await service.sendManualImage(conv.id, b.image_id, async () => {
+        if (b.takeover && conv.status === 'bot') {
+          await store.setConversationStatus(conv.id, 'human', `${req.user.name || req.user.email} respondió desde el panel`);
+          await store.markAllProcessed(conv.id);
+        }
+      });
+    } catch (e: any) {
+      const msg = e?.message ?? String(e);
+      throw new HttpError(msg === 'Foto no encontrada' ? 404 : 400, msg);
+    }
+  });
+
   api.post('/api/conversations/:cid/reset-memory', async (req: any) => {
     const conv = await conversationFor(req.user, req.params.cid);
     await store.updateSummary(conv.id, '', 0);
     await store.updateContact(conv.contact_id, { data: {}, notes: [], name: '' });
+    await store.resetFlowState(conv.id);
     return { ok: true };
   });
 

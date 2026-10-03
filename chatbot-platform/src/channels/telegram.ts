@@ -87,7 +87,7 @@ function parseMessage(m: any): InboundMessage | null {
   if (m.photo) return { ...base, type: 'image', text: m.caption ?? '' };
   if (m.voice || m.audio) {
     const a = m.voice ?? m.audio;
-    return { ...base, type: 'audio', text: '', media: { id: a.file_id, mimeType: a.mime_type ?? 'audio/ogg' } };
+    return { ...base, type: 'audio', text: '', media: { id: a.file_id, mimeType: a.mime_type ?? 'audio/ogg', seconds: Number(a.duration) || undefined } };
   }
   if (m.video || m.video_note) return { ...base, type: 'video', text: m.caption ?? '' };
   if (m.document) return { ...base, type: 'document', text: m.caption ?? m.document.file_name ?? '' };

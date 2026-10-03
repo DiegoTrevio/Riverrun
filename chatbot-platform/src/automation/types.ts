@@ -7,9 +7,21 @@ export const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const;
 export type Day = (typeof DAYS)[number];
 
 /** Horario semanal: por día, lista de franjas [inicio, fin]. Día sin franjas = cerrado. */
+/** Franja de atención: la hora de cierre debe ser posterior a la de apertura (en el mismo día). */
+const Range = z.tuple([HHMM, HHMM]).refine(([a, b]) => a < b, 'La hora de cierre debe ser después de la de apertura (ej. 09:00-18:00)');
 export const WeeklyHoursSchema = z.object(
-  Object.fromEntries(DAYS.map((d) => [d, z.array(z.tuple([HHMM, HHMM])).default([])])) as Record<Day, z.ZodDefault<z.ZodArray<z.ZodTuple<[typeof HHMM, typeof HHMM]>>>>,
+  Object.fromEntries(DAYS.map((d) => [d, z.array(Range).default([])])) as Record<Day, z.ZodDefault<z.ZodArray<typeof Range>>>,
 );
+
+/** Zona horaria IANA que el sistema reconoce (p.ej. America/Mexico_City). */
+export const TimezoneSchema = z.string().refine((tz) => {
+  try {
+    new Intl.DateTimeFormat('es-MX', { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}, 'Zona horaria no válida (ej. America/Mexico_City)');
 export type WeeklyHours = z.infer<typeof WeeklyHoursSchema>;
 
 export const DEFAULT_HOURS: WeeklyHours = {
@@ -25,7 +37,7 @@ export const DEFAULT_HOURS: WeeklyHours = {
 /* ------------------------------ Configuración de la cuenta ------------------------------ */
 
 export const AccountSettingsSchema = z.object({
-  timezone: z.string().default('America/Mexico_City'),
+  timezone: TimezoneSchema.default('America/Mexico_City'),
   business_hours: WeeklyHoursSchema.default(DEFAULT_HOURS),
   /** Días cerrados (YYYY-MM-DD). */
   holidays: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).default([]),
@@ -73,6 +85,8 @@ export const TriggerSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('appointment_booked'), service_id: z.string().default('') }),
   z.object({ type: z.literal('appointment_cancelled'), service_id: z.string().default('') }),
   z.object({ type: z.literal('opt_out') }),
+  z.object({ type: z.literal('goal_completed') }),
+  z.object({ type: z.literal('agent_off') }),
 ]);
 export type Trigger = z.infer<typeof TriggerSchema>;
 export type TriggerType = Trigger['type'];
@@ -83,6 +97,8 @@ export const ConditionSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('has_tag'), tag: Slug, negate: z.boolean().default(false) }),
   z.object({ type: z.literal('field'), field: Slug, op: z.enum(['present', 'absent', 'equals', 'contains']).default('present'), value: z.string().default('') }),
   z.object({ type: z.literal('status'), status: z.enum(['bot', 'human', 'closed']) }),
+  /** on: el asistente atiende · off: en pausa o esperando su palabra de activación. */
+  z.object({ type: z.literal('agent'), state: z.enum(['on', 'off']).default('on') }),
 ]);
 export type Condition = z.infer<typeof ConditionSchema>;
 
@@ -100,6 +116,8 @@ export const ActionSchema = z.discriminatedUnion('type', [
   }),
   z.object({ type: z.literal('handoff'), reason: z.string().max(300).default('Regla automática') }),
   z.object({ type: z.literal('resume_bot') }),
+  /** Pausa al asistente en la conversación (0 h = hasta reactivarlo con palabra, regla o a mano). */
+  z.object({ type: z.literal('pause_bot'), hours: z.number().min(0).max(720).default(0), reason: z.string().max(300).default('') }),
   z.object({ type: z.literal('close_conversation') }),
   z.object({ type: z.literal('start_sequence'), sequence_id: z.string().uuid() }),
   z.object({ type: z.literal('stop_sequences') }),

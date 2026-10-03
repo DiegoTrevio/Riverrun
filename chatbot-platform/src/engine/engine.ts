@@ -3,7 +3,9 @@ import type { AiProvider } from '../ai/provider.js';
 import { logEvent } from '../logs.js';
 import * as store from '../store/index.js';
 import type { Chatbot, Contact, Conversation, ImageAsset, Message } from '../types.js';
-import { buildContext } from './context.js';
+import { agentActive, agentStatus, offAfterReply } from './activation.js';
+import { buildContext, type BusinessInfo } from './context.js';
+import { aiSelectableImages, automaticImages, imagesAfterReply, imagesBeforeReply, type ScheduledImage } from './images.js';
 import { DECISION_JSON_SCHEMA } from './decision.js';
 import { maybeSummarize } from './memory.js';
 import { normalize } from './text.js';
@@ -23,10 +25,14 @@ export interface EngineExtensions {
   };
   onEvent?(e: AutomationEvent): void;
   onOutbound?(conv: Conversation, msg: Message): Promise<void>;
+  /** Horario y zona horaria de la cuenta. */
+  business?(accountId: string): Promise<BusinessInfo | null>;
+  /** Avisa al equipo (panel y WhatsApp de quien lo tenga activado). */
+  alertTeam?(accountId: string, o: { title: string; body: string; link?: string; kind?: string }): Promise<void>;
 }
 
 export interface ProcessResult {
-  status: 'nothing' | 'inactive' | 'human' | 'handoff' | 'replied' | 'no_reply' | 'restart' | 'error';
+  status: 'nothing' | 'inactive' | 'human' | 'paused' | 'handoff' | 'replied' | 'no_reply' | 'restart' | 'error';
   plan?: ExecutionPlan;
   decision?: unknown;
   attempts?: { retryable: string[]; fixes: string[] }[];
@@ -89,6 +95,11 @@ export class Engine {
       await store.markProcessed(conv.id, lastPendingId);
       return { status: 'human' };
     }
+    // Asistente en pausa en esta conversación, o esperando su palabra de activación.
+    if (!agentActive(bot, conv)) {
+      await store.markProcessed(conv.id, lastPendingId);
+      return { status: 'paused' };
+    }
 
     const customerText = pending.map((m) => m.content).join('\n');
     const log = (level: 'info' | 'warn' | 'error', source: 'engine' | 'ai' | 'validator' | 'channel', message: string, details?: unknown) =>
@@ -113,9 +124,10 @@ export class Engine {
     ]);
     const images = allImages.filter((i) => i.active);
     // Automatización y agenda (si están conectadas).
-    const [intents, agendaCtx] = await Promise.all([
+    const [intents, agendaCtx, business] = await Promise.all([
       this.ext.intents ? this.ext.intents(conv.account_id, bot.id).catch(() => []) : Promise.resolve([]),
       this.ext.agenda && bot.rules.booking_enabled ? this.ext.agenda.contextFor(conv.account_id, contact, channel.type).catch(() => null) : Promise.resolve(null),
+      this.ext.business ? this.ext.business(conv.account_id).catch(() => null) : Promise.resolve(null),
     ]);
     const agendaVal: AgendaValidation | null = agendaCtx
       ? { slots: Object.fromEntries(Object.entries(agendaCtx.slots).map(([k, v]) => [k, v.map((x) => x.key)])), appointmentIds: agendaCtx.appointments.map((a) => a.id), needsPhoneFor: agendaCtx.needsPhoneFor }
@@ -123,6 +135,11 @@ export class Engine {
     const hasPhone = !!contact.phone || bot.data_fields.some((f) => f.type === 'phone' && !!contact.data?.[f.key]);
     const imagesById = new Map<string, ImageAsset>(allImages.map((i) => [i.id, i]));
     const model = bot.ai.model || config.openai.defaultModel;
+    // Fotos con momento fijo (las garantiza el sistema): por palabra del cliente o de bienvenida, se saben antes de la IA.
+    const firstReply = (await store.countInbound(conv.id)) <= pending.length;
+    const scheduledBefore = imagesBeforeReply(images, { text: customerText, firstReply, sentIds: sentImageIds });
+    const aiImages = aiSelectableImages(images);
+    const autoImages = automaticImages(images, bot.flow.steps.map((x) => x.title));
 
     // 3) La IA propone; el backend valida (con un reintento guiado).
     let correction: string | undefined;
@@ -134,7 +151,10 @@ export class Engine {
     let lastInput: ValidationInput | undefined;
     const attempts: ProcessResult['attempts'] = [];
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-      const ctx = buildContext({ bot, knowledge, images, contact, conversation: conv, channelType: channel.type, history, pending, sentImageIds, imagesById, correction, intents, agenda: agendaCtx });
+      const ctx = buildContext({
+        bot, knowledge, images: aiImages, contact, conversation: conv, channelType: channel.type, history, pending, sentImageIds, imagesById, correction, intents, agenda: agendaCtx, business,
+        autoImages, imagesNow: scheduledBefore.map((x) => x.image),
+      });
       let completion;
       try {
         completion = await this.ai.complete({
@@ -165,12 +185,14 @@ export class Engine {
       }
       lastRaw = raw;
       lastInput = {
-        raw, bot, images, sentImageIds, customerText,
+        raw, bot, images: aiImages, sentImageIds, customerText, scheduledImages: scheduledBefore.map((x) => x.image),
         groundingSources: ctx.groundingSources,
         customerSources: ctx.customerSources,
         allowedIntents: intents.map((i) => i.intent),
         agenda: agendaVal,
         hasPhone,
+        knownData: contact.data ?? {},
+        knownName: contact.name || undefined,
       };
       const v = validateDecision({ ...lastInput, final: attempt === MAX_ATTEMPTS });
       attempts.push({ retryable: v.retryable, fixes: v.fixes });
@@ -235,9 +257,15 @@ export class Engine {
       await store.markProcessed(conv.id, lastPendingId);
       return { status: 'human', plan, attempts };
     }
+    if (!agentActive(bot, fresh)) {
+      await store.markProcessed(conv.id, lastPendingId);
+      return { status: 'paused', plan, attempts };
+    }
 
     // 5) Ejecutar.
     const dataBefore = { ...(contact.data ?? {}) };
+    const nameBefore = contact.name;
+    let booked = false;
     await this.applyMemory(contact, plan);
     // Agenda: se ejecuta antes de enviar; si el horario se ocupó justo ahora, se avisa en vez de confirmar.
     if (plan.booking && this.ext.agenda) {
@@ -251,22 +279,59 @@ export class Engine {
             messages: [r.alternatives.length ? `Uy, ese horario se acaba de ocupar. Te puedo ofrecer ${joinOptions(r.alternatives)}. ¿Cuál te acomoda?` : 'Uy, ese horario se acaba de ocupar. ¿Te puedo ofrecer otro día?'],
           };
           await log('warn', 'engine', `No se pudo agendar: ${r.reason}`);
-        }
+        } else booked = true;
       } else {
         await this.ext.agenda.cancel(plan.booking.appointmentId, 'Cancelada por el cliente en el chat', 'bot');
       }
     }
     const meta = { action: plan.action, info_not_found: plan.infoNotFound, fallback: fallbackUsed };
+    // Recorrido: el objetivo solo cuenta una vez por conversación (hasta que se cierre y se reabra).
+    const goalReached = plan.goalCompleted && !conv.goal_completed_at;
+    const goalHandoff = goalReached && bot.flow.on_goal_action === 'handoff' && plan.action !== 'handoff';
+    // Fotos programadas: se suman a las que eligió la IA (sin repetir). En una transferencia no se envían.
+    if (plan.action !== 'handoff') {
+      const after = imagesAfterReply(images, {
+        stepReached: plan.flowStep && plan.flowStep !== (conv.flow_step ?? 0) ? plan.flowStep : 0,
+        goalReached,
+        booked,
+        sentIds: sentImageIds,
+        skip: scheduledBefore.map((x) => x.image.id),
+      });
+      const extra: ScheduledImage[] = [...scheduledBefore, ...after].filter((x, i, all) => !plan!.images.some((p) => p.id === x.image.id) && all.findIndex((y) => y.image.id === x.image.id) === i);
+      if (extra.length) {
+        plan = { ...plan, action: 'reply_with_image', images: [...plan.images, ...extra.map((x) => x.image)].slice(0, 5) };
+        await log('info', 'engine', `Foto enviada por regla: ${extra.map((x) => `${x.image.code} (${x.reason})`).join(', ')}`);
+      }
+    }
     if (plan.action === 'handoff') {
       await this.executeHandoff(bot, conv, contact, transport, plan.messages, plan.handoffReason || 'La IA decidió transferir');
     } else if (plan.action !== 'no_reply') {
       await this.sendPlan(bot, conv, transport, plan, meta);
+    }
+    if (plan.flowStep || goalReached) {
+      const reached = await store.setFlowState(conv.id, plan.flowStep, goalReached);
+      if (reached) {
+        await log('info', 'engine', `Objetivo de la conversación cumplido${plan.flowStep ? ` (etapa ${plan.flowStep})` : ''}`);
+        if (goalHandoff) {
+          // Ya se envió la respuesta de la IA (que se despide): solo se pasa a una persona, sin otro mensaje.
+          await this.executeHandoff(bot, conv, contact, transport, [], 'Se cumplió el objetivo de la conversación', { silent: true });
+        } else if (bot.flow.on_goal_action === 'notify' && channel.type !== 'playground' && this.ext.alertTeam) {
+          const who = contact.name || contact.push_name || contact.phone || 'Un cliente';
+          await this.ext.alertTeam(conv.account_id, { title: '🎯 Objetivo cumplido', body: `${who} (${channel.name}): ${bot.flow.goal}`, link: `#/conversation/${conv.id}`, kind: 'goal' });
+        }
+      }
+    }
+    // Desactivadores después de responder (objetivo, cita, datos completos).
+    if (plan.action !== 'handoff' && !goalHandoff) {
+      const why = offAfterReply(bot.rules.activation, { goalReached, booked, before: { name: nameBefore, data: dataBefore }, after: contact });
+      if (why) await this.deactivate(bot, conv, contact, transport, why);
     }
     await store.markProcessed(conv.id, lastPendingId);
 
     // Eventos para las reglas automáticas (se ejecutan después, sin bloquear la respuesta).
     if (this.ext.onEvent) {
       if (plan.intents.length) this.ext.onEvent({ type: 'intent', conversationId: conv.id, intents: plan.intents, text: customerText });
+      if (goalReached) this.ext.onEvent({ type: 'goal_completed', conversationId: conv.id, text: customerText });
       for (const [field, value] of Object.entries(contact.data ?? {})) {
         if (value && dataBefore[field] !== value) this.ext.onEvent({ type: 'data_captured', conversationId: conv.id, field, text: customerText });
       }
@@ -334,9 +399,9 @@ export class Engine {
     }
   }
 
-  async executeHandoff(bot: Chatbot, conv: Conversation, contact: Contact, transport: Transport, messages: string[], reason: string) {
+  async executeHandoff(bot: Chatbot, conv: Conversation, contact: Contact, transport: Transport, messages: string[], reason: string, opts: { silent?: boolean } = {}) {
     await store.setConversationStatus(conv.id, 'human', reason);
-    const texts = messages.length ? messages : bot.rules.handoff_message ? [bot.rules.handoff_message] : [];
+    const texts = messages.length ? messages : bot.rules.handoff_message && !opts.silent ? [bot.rules.handoff_message] : [];
     for (const text of texts) {
       await this.sendOut(bot, conv, transport, { sender: 'bot', text, delay: typingDelay(text, bot.ai.typing_simulation && hasTyping(transport)), meta: { action: 'handoff' } });
     }
@@ -351,6 +416,32 @@ export class Engine {
         await logEvent({ level: 'error', source: 'channel', message: `No se pudo avisar al encargado: ${e?.message ?? e}`, accountId: conv.account_id, chatbotId: bot.id, conversationId: conv.id });
       }
     }
+  }
+
+  /** Apaga al asistente en la conversación según lo configurado: pausa, pasa a una persona o cierra. */
+  async deactivate(bot: Chatbot, conv: Conversation, contact: Contact, transport: Transport, reason: string) {
+    const a = bot.rules.activation;
+    const msg = a.off_message.trim();
+    const log = (message: string) => logEvent({ level: 'info', source: 'engine', message, accountId: conv.account_id, chatbotId: bot.id, channelId: conv.channel_id, conversationId: conv.id });
+    if (a.off_action === 'handoff') {
+      await this.executeHandoff(bot, conv, contact, transport, msg ? [msg] : [], `Asistente desactivado: ${reason}`, { silent: !msg });
+    } else {
+      if (msg) await this.sendOut(bot, conv, transport, { sender: 'bot', text: msg, delay: typingDelay(msg, bot.ai.typing_simulation && hasTyping(transport)), meta: { action: 'agent_off' } });
+      if (a.off_action === 'close') {
+        await store.setConversationStatus(conv.id, 'closed', `Asistente desactivado: ${reason}`);
+        await log(`Conversación cerrada: ${reason}`);
+      } else {
+        const until = a.resume_after_hours > 0 ? new Date(Date.now() + a.resume_after_hours * 3600_000) : null;
+        await store.setAgentOff(conv.id, reason, until);
+        await log(`Asistente en pausa: ${reason}${until ? ` (se reactiva en ${a.resume_after_hours} h)` : ''}`);
+      }
+    }
+    this.ext.onEvent?.({ type: 'agent_off', conversationId: conv.id, text: reason });
+  }
+
+  /** Estado del asistente en una conversación (para el panel y el simulador). */
+  agentState(bot: Chatbot, conv: Conversation) {
+    return agentStatus(bot, conv);
   }
 
   async applyMemory(contact: Contact, plan: ExecutionPlan) {

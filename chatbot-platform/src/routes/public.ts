@@ -8,6 +8,7 @@ import { config } from '../config.js';
 import { query } from '../db.js';
 import { toPlainText } from '../engine/text.js';
 import { imageAbsolutePath } from '../engine/transport.js';
+import { recordConnectionState } from '../lifecycle.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
@@ -41,8 +42,10 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
     // Responder rápido a la plataforma y procesar en segundo plano.
     reply.send({ ok: true });
     try {
-      const { messages, notices } = adapter.parse(webhookReq);
+      const { messages, notices, connection, qr } = adapter.parse(webhookReq);
+      if (qr) await store.saveQr(channel.id, qr);
       for (const n of notices ?? []) await logEvent({ level: n.level, source: 'channel', message: n.message, accountId: channel.account_id, channelId: channel.id });
+      if (connection) await recordConnectionState(channel, connection);
       for (const m of messages) await service.handleIncoming(channel, m);
     } catch (e: any) {
       await logEvent({ level: 'error', source: 'webhook', message: `Error procesando webhook: ${e?.message ?? e}`, accountId: channel.account_id, channelId: channel.id, details: e });

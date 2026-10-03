@@ -116,3 +116,17 @@ export function registerLoginFailure(ip: string) {
   if (!a || a.until < now) attempts.set(ip, { n: 1, until: now + 15 * 60_000 });
   else a.n++;
 }
+
+/** Límite genérico por clave (registro, recuperación de contraseña): `max` intentos por ventana. */
+const buckets = new Map<string, { n: number; until: number }>();
+export function rateLimited(key: string, max: number, windowMs: number) {
+  const now = Date.now();
+  if (buckets.size > 10_000) for (const [k, v] of buckets) if (v.until < now) buckets.delete(k);
+  const b = buckets.get(key);
+  if (!b || b.until < now) {
+    buckets.set(key, { n: 1, until: now + windowMs });
+    return false;
+  }
+  b.n++;
+  return b.n > max;
+}

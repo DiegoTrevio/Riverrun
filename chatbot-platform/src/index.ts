@@ -4,6 +4,7 @@ import { buildApp } from './app.js';
 import { bootstrapSuperadmin } from './auth.js';
 import { assertProductionConfig, config } from './config.js';
 import { migrate } from './db.js';
+import { startLifecycle } from './lifecycle.js';
 import { logEvent, pruneLogs } from './logs.js';
 import { pruneAutomationData } from './automation/store.js';
 
@@ -20,6 +21,7 @@ async function main() {
   await logEvent({ level: 'info', source: 'system', message: `Servidor iniciado en el puerto ${config.port}` });
 
   service.scheduler.start(config.schedulerIntervalMs);
+  startLifecycle();
   const resumed = await service.resumePending();
   if (resumed) console.log(`Retomando ${resumed} conversaciones pendientes`);
 

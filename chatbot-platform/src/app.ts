@@ -13,7 +13,9 @@ import { automationRoutes } from './routes/automation.js';
 import { channelRoutes } from './routes/channels.js';
 import { chatbotRoutes } from './routes/chatbots.js';
 import { conversationRoutes } from './routes/conversations.js';
+import { onboardingRoutes } from './routes/onboarding.js';
 import { publicRoutes } from './routes/public.js';
+import { signupRoutes } from './routes/signup.js';
 import { installErrorHandler } from './routes/util.js';
 import { ChatService, type TransportFactory } from './service.js';
 
@@ -49,6 +51,7 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
 
   app.get('/health', async () => ({ ok: true }));
   await sessionRoutes(app);
+  await signupRoutes(app);
   await publicRoutes(app, service);
   await calendarRoutes(app);
 
@@ -61,6 +64,7 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
     await conversationRoutes(api, service);
     await automationRoutes(api, service);
     await agendaRoutes(api, service);
+    await onboardingRoutes(api);
   });
 
   return { app, service };
