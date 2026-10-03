@@ -353,6 +353,24 @@ export class ChatService {
     return sent;
   }
 
+  /** Foto del catálogo enviada a mano desde el panel (por la misma plataforma de la conversación). */
+  async sendManualImage(conversationId: string, imageId: string, beforeSend?: () => Promise<void>) {
+    const conv = await store.getConversation(conversationId);
+    if (!conv) throw new Error('Conversación no encontrada');
+    const image = await store.getImage(imageId);
+    const owner = image ? await store.getChatbot(image.chatbot_id) : null;
+    if (!image || owner?.account_id !== conv.account_id) throw new Error('Foto no encontrada');
+    if (!image.active) throw new Error('La foto está desactivada; actívala en Fotos para poder enviarla');
+    const [channel, contact] = await Promise.all([store.getChannel(conv.channel_id), store.getContact(conv.contact_id)]);
+    if (!channel || !contact) throw new Error('Datos incompletos');
+    const bot = conv.chatbot_id ? await store.getChatbot(conv.chatbot_id) : null;
+    const transport = channel.type === 'playground' ? new PlaygroundTransport() : this.transportFor(channel, contact);
+    await beforeSend?.();
+    const sent = await this.engine.sendOut(bot, conv, transport, { sender: 'human', text: image.caption, image, delay: 0, meta: { source: 'panel' } });
+    if (!sent) throw new Error('No se pudo enviar la foto (revisa los registros)');
+    return sent;
+  }
+
   /** Al arrancar: retoma conversaciones con mensajes sin responder de los últimos minutos. */
   async resumePending() {
     const rows = await query<{ conversation_id: string }>(

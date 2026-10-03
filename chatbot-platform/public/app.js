@@ -611,23 +611,65 @@ async function tabKnowledge(root, bot) {
   );
 }
 
+/** Valores de "¿Cuándo se envía?" de una foto (las viejas quedan en "La IA decide"). */
+const sendWhenDefaults = (w = {}) => ({ mode: 'ai', keywords: [], first_message: false, flow_steps: [], on_goal: false, on_booking: false, once: true, ...w });
+
+/** Editor de "¿Cuándo se envía?": la IA decide, o el sistema la envía en los momentos que marques. */
+function sendWhenEditor(w, bot) {
+  const box = h('div');
+  const steps = bot.flow?.steps || [];
+  const draw = () => fill(box,
+    field('¿Cuándo se envía?', select(w, 'mode', [['ai', 'La IA decide (según "Cuándo enviarla")'], ['rules', 'Solo en los momentos que marque aquí'], ['both', 'En estos momentos y también cuando la IA lo crea conveniente']], draw)),
+    w.mode === 'ai' ? null : h('div', { class: 'list-item' },
+      h('p', { class: 'small', style: 'margin-top:0' }, guaranteed(), ' El sistema la envía junto con la respuesta, aunque la IA no la elija.'),
+      field('Cuando el cliente escriba', lines(w, 'keywords', { placeholder: 'menú\nprecios\nubicación' }), 'Una por renglón. Si la vuelve a pedir, se reenvía.'),
+      check(w, 'first_message', 'En la bienvenida (primera respuesta a un cliente nuevo)'),
+      steps.length
+        ? h('div', {}, h('span', { class: 'small' }, 'Al llegar a la etapa del recorrido: '), steps.map((st, i) => h('label', { class: 'check' },
+            h('input', { type: 'checkbox', checked: w.flow_steps.includes(i + 1), onchange: (e) => { w.flow_steps = e.target.checked ? [...w.flow_steps, i + 1] : w.flow_steps.filter((x) => x !== i + 1); } }), `${i + 1}. ${st.title}`)))
+        : null,
+      check(w, 'on_goal', 'Al cumplirse el objetivo de la conversación'),
+      check(w, 'on_booking', 'Al agendar una cita (p. ej. mapa o indicaciones)'),
+      check(w, 'once', 'Solo una vez por conversación')));
+  draw();
+  return box;
+}
+
+/** Aviso de formato: WhatsApp muestra mejor JPG/PNG; las fotos pesadas tardan en llegar. */
+function imageFileHint(input) {
+  const hint = h('small', {}, 'JPG o PNG recomendados (máx. 5 MB).');
+  input.addEventListener('change', () => {
+    const f = input.files[0];
+    if (!f) return;
+    const warn = [];
+    if (f.type === 'image/webp') warn.push('WEBP: en algunos teléfonos WhatsApp no la muestra bien; mejor JPG o PNG.');
+    if (f.size > 5 * 1024 * 1024) warn.push('Pesa más de 5 MB: no se podrá subir; redúcela.');
+    else if (f.size > 2 * 1024 * 1024) warn.push('Pesa más de 2 MB: tardará más en llegar; conviene reducirla.');
+    hint.textContent = warn.join(' ') || 'Formato correcto.';
+    hint.className = warn.length ? 'error' : '';
+  });
+  return hint;
+}
+
 async function tabImages(root, bot) {
   const images = await api('GET', `/api/chatbots/${bot.id}/images`);
-  const n = { code: '', name: '', description: '', usage_rule: '', caption: '' };
+  const n = { code: '', name: '', description: '', usage_rule: '', caption: '', send_when: sendWhenDefaults() };
   const fileInput = h('input', { type: 'file', accept: 'image/jpeg,image/png,image/webp' });
   const upload = async () => {
     if (!fileInput.files[0]) return toast('Selecciona un archivo', true);
     const fd = new FormData();
-    for (const [k, v] of Object.entries(n)) fd.append(k, v);
+    for (const [k, v] of Object.entries(n)) fd.append(k, typeof v === 'object' ? JSON.stringify(v) : v);
     fd.append('file', fileInput.files[0]);
     if (await run(() => api('POST', `/api/chatbots/${bot.id}/images`, fd, true), 'Imagen agregada')) render();
   };
   const card = (img) => {
     const m = clone(img);
+    m.send_when = sendWhenDefaults(m.send_when);
     const replace = h('input', { type: 'file', accept: 'image/jpeg,image/png,image/webp' });
     const save = async () => {
       const fd = new FormData();
       for (const k of ['code', 'name', 'description', 'usage_rule', 'caption']) fd.append(k, m[k] ?? '');
+      fd.append('send_when', JSON.stringify(m.send_when));
       fd.append('active', String(m.active));
       if (replace.files[0]) fd.append('file', replace.files[0]);
       if (await run(() => api('PUT', `/api/images/${img.id}`, fd, true), 'Imagen actualizada')) render();
@@ -635,14 +677,16 @@ async function tabImages(root, bot) {
     return h('div', { class: 'img-card' },
       h('img', { src: `/api/images/${img.id}/file?v=${encodeURIComponent(img.file_path)}`, alt: img.name, loading: 'lazy' }),
       h('div', { class: 'body' },
-        h('div', { class: 'row between' }, h('code', {}, img.code), !img.active ? h('span', { class: 'badge orange' }, 'inactiva') : null),
+        h('div', { class: 'row between' }, h('code', {}, img.code),
+          h('span', {}, m.send_when.mode !== 'ai' ? h('span', { class: 'badge green' }, 'envío automático') : null, ' ', !img.active ? h('span', { class: 'badge orange' }, 'inactiva') : null)),
         field('ID (lo usa la IA)', text(m, 'code')),
         field('Nombre', text(m, 'name')),
         field('Qué muestra', area(m, 'description')),
-        field('Cuándo enviarla', area(m, 'usage_rule')),
+        field(tag('Cuándo enviarla', guide()), area(m, 'usage_rule'), 'Para la IA (modos "La IA decide" y "Ambos").'),
+        sendWhenEditor(m.send_when, bot),
         field('Pie de foto (opcional)', text(m, 'caption')),
         check(m, 'active', 'Activa'),
-        field('Reemplazar archivo', replace),
+        field('Reemplazar archivo', replace, imageFileHint(replace)),
         h('div', { class: 'row' },
           h('button', { class: 'primary small', onclick: save }, 'Guardar'),
           h('button', { class: 'small danger', onclick: async () => { if (confirm('¿Eliminar imagen?')) { await run(() => api('DELETE', `/api/images/${img.id}`), 'Eliminada'); render(); } } }, 'Eliminar'))),
@@ -650,14 +694,15 @@ async function tabImages(root, bot) {
   };
   root.append(
     h('div', { class: 'card' },
-      h('p', { class: 'muted' }, 'La IA solo puede elegir entre estas imágenes por su ID; el backend verifica que existan y estén activas antes de enviarlas. Describe bien qué muestra cada una y cuándo usarla.'),
+      h('p', { class: 'muted' }, 'Cada foto se puede enviar de tres formas: la IA la elige según "Cuándo enviarla" (el sistema verifica que exista y esté activa), el sistema la envía sola en los momentos que marques (', guaranteed(), '), o la mandas tú desde una conversación con el botón 📷 Foto. También puedes enviarla con una regla en Automatización.'),
       h('h3', {}, 'Agregar imagen'),
       h('div', { class: 'grid' },
         field('ID', text(n, 'code', { placeholder: 'habitacion_doble' }), 'Minúsculas, números, - y _'),
         field('Nombre', text(n, 'name', { placeholder: 'Foto habitación doble' })),
-        field('Archivo (JPG, PNG o WEBP, máx. 5 MB)', fileInput)),
+        field('Archivo', fileInput, imageFileHint(fileInput))),
       field('Qué muestra', area(n, 'description', { placeholder: 'Habitación doble con dos camas matrimoniales y vista al mar' })),
-      field('Cuándo enviarla', area(n, 'usage_rule', { placeholder: 'Cuando el cliente pregunte por la habitación doble o pida fotos de las habitaciones' })),
+      field(tag('Cuándo enviarla', guide()), area(n, 'usage_rule', { placeholder: 'Cuando el cliente pregunte por la habitación doble o pida fotos de las habitaciones' })),
+      sendWhenEditor(n.send_when, bot),
       field('Pie de foto (opcional)', text(n, 'caption')),
       h('button', { class: 'primary', onclick: upload }, 'Subir imagen'),
     ),
@@ -1081,6 +1126,20 @@ async function viewConversation(root, id) {
     if (ok) { input.value = ''; await load(true); }
   };
 
+  // Galería del catálogo para enviar una foto a mano.
+  const gallery = h('div', { class: 'gallery', hidden: true });
+  const togglePhotos = async () => {
+    if (!gallery.hidden) { gallery.hidden = true; return; }
+    if (!data?.chatbot) return toast('Esta conversación no tiene asistente: no hay catálogo de fotos', true);
+    const imgs = (await api('GET', `/api/chatbots/${data.chatbot.id}/images`)).filter((i) => i.active);
+    fill(gallery, imgs.length
+      ? imgs.map((img) => h('button', { class: 'thumb', title: `Enviar "${img.name}"`, onclick: async () => {
+          if (await run(() => api('POST', `/api/conversations/${id}/send-image`, { image_id: img.id }), 'Foto enviada')) { gallery.hidden = true; await load(true); }
+        } }, h('img', { src: `/api/images/${img.id}/file?v=${encodeURIComponent(img.file_path)}`, alt: img.name, loading: 'lazy' }), h('span', { class: 'small' }, img.name)))
+      : h('p', { class: 'muted small' }, 'No hay fotos activas. Súbelas en el asistente → Fotos.'));
+    gallery.hidden = false;
+  };
+
   const load = async (force = false) => {
     data = await api('GET', `/api/conversations/${id}`);
     const { conversation: c, contact: ct, messages } = data;
@@ -1187,8 +1246,9 @@ async function viewConversation(root, id) {
     h('a', { href: '#/conversations' }, '← Conversaciones'),
     header,
     h('div', { class: 'split' },
-      h('div', { class: 'card' }, chat, h('div', { class: 'composer' }, input, h('button', { class: 'primary', onclick: send }, 'Enviar')),
-        h('p', { class: 'muted small' }, 'Al enviar un mensaje manual, el bot se pausa en esta conversación hasta que la devuelvas.')),
+      h('div', { class: 'card' }, chat, h('div', { class: 'composer' }, input, h('button', { onclick: togglePhotos, title: 'Enviar una foto del catálogo' }, '📷 Foto'), h('button', { class: 'primary', onclick: send }, 'Enviar')),
+        gallery,
+        h('p', { class: 'muted small' }, 'Al enviar un mensaje o una foto a mano, el bot se pausa en esta conversación hasta que la devuelvas.')),
       side),
   );
   await load(true);
@@ -1648,7 +1708,7 @@ const TRIGGERS = {
   agent_off: 'El asistente se desactiva en una conversación',
 };
 const ACTIONS = {
-  send_message: 'Enviar mensaje',
+  send_message: 'Enviar mensaje o foto',
   alert_team: 'Alertar al equipo',
   add_tag: 'Agregar etiqueta',
   remove_tag: 'Quitar etiqueta',
@@ -1681,6 +1741,7 @@ const RULE_TEMPLATES = [
   { name: 'Correo capturado → CRM', trigger: { type: 'data_captured', field: 'correo' }, actions: [{ type: 'webhook', url: 'https://mi-crm.com/webhook' }] },
   { name: 'Palabra → pausar al asistente', trigger: { type: 'message_received', match: 'keywords', keywords: ['ya no', 'no me interesa'] }, actions: [{ type: 'pause_bot', hours: 0, reason: 'El cliente no quiere seguir' }, { type: 'add_tag', tag: 'no_interesado' }] },
   { name: 'Palabra → activar al asistente', trigger: { type: 'message_received', match: 'keywords', keywords: ['menu', 'hola asistente'] }, actions: [{ type: 'resume_bot' }] },
+  { name: 'Palabra → enviar foto', trigger: { type: 'message_received', match: 'keywords', keywords: ['menu', 'catalogo'] }, actions: [{ type: 'send_message', text: '', image_id: '' }] },
   { name: 'Agradecer cita agendada', trigger: { type: 'appointment_booked' }, actions: [{ type: 'send_message', text: 'Te esperamos el {{cita.fecha}} a las {{cita.hora}} 🙌', delay_minutes: 1 }] },
 ];
 
@@ -1750,9 +1811,9 @@ function actionFields(a, refs) {
     case 'send_message':
       a.text ??= ''; a.image_id ??= ''; a.delay_minutes ??= 0;
       return [
-        field('Mensaje', area(a, 'text'), VARS_HELP),
+        field('Mensaje (opcional si eliges una foto)', area(a, 'text'), VARS_HELP),
         h('div', { class: 'grid' },
-          field('Imagen (opcional)', select(a, 'image_id', [['', '— Sin imagen —'], ...refs.images.map((i) => [i.id, `${i.name} (${i.bot})`])])),
+          field('Foto (opcional)', select(a, 'image_id', [['', '— Sin imagen —'], ...refs.images.map((i) => [i.id, `${i.name} (${i.bot})`])])),
           field('Esperar antes de enviar (minutos)', num(a, 'delay_minutes', { min: 0 }), '0 = de inmediato')),
       ];
     case 'alert_team':
@@ -1857,6 +1918,7 @@ async function editRule(root, id) {
   };
   drawTrigger();
   const save = async () => {
+    if (r.actions.some((a) => a.type === 'send_message' && !a.text?.trim() && !a.image_id)) return toast('En "Enviar mensaje o foto" escribe un mensaje o elige una foto', true);
     const body = { ...r, chatbot_id: r.chatbot_id || null, account_id: state.accountId || undefined };
     const saved = await run(() => (existing ? api('PUT', `/api/automations/${id}`, body) : api('POST', '/api/automations', body)), 'Regla guardada ✅');
     if (saved) location.hash = '#/automation/rules';

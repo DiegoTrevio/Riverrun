@@ -143,7 +143,7 @@ export async function createHarness() {
       return 'transcripción';
     },
   };
-  const failNext = { text: 0 };
+  const failNext = { text: 0, image: 0 };
   // WhatsApp se simula en memoria; Telegram y Meta usan sus adaptadores reales contra el servidor falso.
   const transportFactory = (channel: any, contact: any) => (channel.type !== 'whatsapp' ? defaultTransport(channel, contact) : {
     kind: 'whatsapp' as const,
@@ -156,6 +156,10 @@ export async function createHarness() {
       return `OUT-${++n}`;
     },
     async sendImage(image: any, caption: string) {
+      if (failNext.image > 0) {
+        failNext.image--;
+        throw new Error('Evolution sendMedia → HTTP 400: media inválido');
+      }
       sent.push({ kind: 'image', to: contact.phone, text: caption, image: image.code });
       return `OUT-${++n}`;
     },

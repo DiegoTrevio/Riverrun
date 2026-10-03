@@ -11,7 +11,7 @@ import { imageAbsolutePath } from '../engine/transport.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
-import { AiSettingsSchema, DataFieldSchema, FlowSchema, PersonalitySchema, RulesSchema, type Chatbot, type User } from '../types.js';
+import { AiSettingsSchema, DataFieldSchema, FlowSchema, ImageSendWhenSchema, PersonalitySchema, RulesSchema, type Chatbot, type User } from '../types.js';
 import { alignFixedMessages, chatbotFromTemplate } from '../templates/business.js';
 import { parse, readUpload, saveFile, type UploadFile } from './util.js';
 
@@ -42,6 +42,17 @@ const ImageMeta = z.object({
   usage_rule: z.string().max(1000).optional(),
   caption: z.string().max(1000).optional(),
   active: z.boolean().optional(),
+  // En un formulario con archivo llega como texto JSON.
+  send_when: z
+    .preprocess((v) => {
+      if (typeof v !== 'string') return v;
+      try {
+        return JSON.parse(v);
+      } catch {
+        return v;
+      }
+    }, ImageSendWhenSchema)
+    .optional(),
 });
 
 /** Los agentes solo ven nombre y estado (para filtros); la configuración es de administradores. */
@@ -173,7 +184,8 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
     return img;
   };
 
-  api.get('/api/chatbots/:id/images', admins, async (req: any) => store.listImages((await botFor(req.user, req.params.id)).id));
+  // Los agentes también la consultan (para enviar fotos a mano desde una conversación); editar es solo de administradores.
+  api.get('/api/chatbots/:id/images', async (req: any) => store.listImages((await botFor(req.user, req.params.id)).id));
 
   api.post('/api/chatbots/:id/images', admins, async (req: any) => {
     const bot = await botFor(req.user, req.params.id);
@@ -194,6 +206,7 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
         mime_type: upload.file.mime,
         size_bytes: upload.file.buffer.length,
         active: meta.active ?? true,
+        send_when: meta.send_when ?? {},
       });
       await logEvent({ level: 'info', source: 'admin', message: `Imagen agregada: ${img.code}`, accountId: bot.account_id, chatbotId: bot.id });
       return img;

@@ -53,6 +53,8 @@ export interface ValidationInput {
   customerSources?: string[];
   /** Texto de los mensajes pendientes del cliente (para saber si pidió explícitamente una imagen). */
   customerText: string;
+  /** Fotos que el sistema enviará en este turno (la IA puede mencionarlas sin incluirlas en image_ids). */
+  scheduledImages?: ImageAsset[];
   /**
    * Último intento: los problemas de estilo (frases prohibidas, promesas de foto, largo)
    * se corrigen automáticamente en lugar de pedir otra respuesta a la IA.
@@ -322,7 +324,7 @@ export function validateDecision(input: ValidationInput): ValidationResult {
     action = 'reply';
   }
   if (images.length && action !== 'handoff') action = 'reply_with_image';
-  if (!images.length && IMAGE_PROMISE_RE.test(messages.join(' '))) {
+  if (!images.length && !input.scheduledImages?.length && IMAGE_PROMISE_RE.test(messages.join(' '))) {
     soft(
       'Dices que envías una imagen pero no incluiste ningún ID válido en image_ids. Incluye el ID correcto del catálogo o no menciones que envías imagen.',
       () => (messages = dropSentences(messages, (_n, x) => IMAGE_PROMISE_RE.test(x))),

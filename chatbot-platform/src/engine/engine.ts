@@ -5,6 +5,7 @@ import * as store from '../store/index.js';
 import type { Chatbot, Contact, Conversation, ImageAsset, Message } from '../types.js';
 import { agentActive, agentStatus, offAfterReply } from './activation.js';
 import { buildContext, type BusinessInfo } from './context.js';
+import { aiSelectableImages, automaticImages, imagesAfterReply, imagesBeforeReply, type ScheduledImage } from './images.js';
 import { DECISION_JSON_SCHEMA } from './decision.js';
 import { maybeSummarize } from './memory.js';
 import { normalize } from './text.js';
@@ -134,6 +135,11 @@ export class Engine {
     const hasPhone = !!contact.phone || bot.data_fields.some((f) => f.type === 'phone' && !!contact.data?.[f.key]);
     const imagesById = new Map<string, ImageAsset>(allImages.map((i) => [i.id, i]));
     const model = bot.ai.model || config.openai.defaultModel;
+    // Fotos con momento fijo (las garantiza el sistema): por palabra del cliente o de bienvenida, se saben antes de la IA.
+    const firstReply = (await store.countInbound(conv.id)) <= pending.length;
+    const scheduledBefore = imagesBeforeReply(images, { text: customerText, firstReply, sentIds: sentImageIds });
+    const aiImages = aiSelectableImages(images);
+    const autoImages = automaticImages(images, bot.flow.steps.map((x) => x.title));
 
     // 3) La IA propone; el backend valida (con un reintento guiado).
     let correction: string | undefined;
@@ -145,7 +151,10 @@ export class Engine {
     let lastInput: ValidationInput | undefined;
     const attempts: ProcessResult['attempts'] = [];
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-      const ctx = buildContext({ bot, knowledge, images, contact, conversation: conv, channelType: channel.type, history, pending, sentImageIds, imagesById, correction, intents, agenda: agendaCtx, business });
+      const ctx = buildContext({
+        bot, knowledge, images: aiImages, contact, conversation: conv, channelType: channel.type, history, pending, sentImageIds, imagesById, correction, intents, agenda: agendaCtx, business,
+        autoImages, imagesNow: scheduledBefore.map((x) => x.image),
+      });
       let completion;
       try {
         completion = await this.ai.complete({
@@ -176,7 +185,7 @@ export class Engine {
       }
       lastRaw = raw;
       lastInput = {
-        raw, bot, images, sentImageIds, customerText,
+        raw, bot, images: aiImages, sentImageIds, customerText, scheduledImages: scheduledBefore.map((x) => x.image),
         groundingSources: ctx.groundingSources,
         customerSources: ctx.customerSources,
         allowedIntents: intents.map((i) => i.intent),
@@ -279,6 +288,21 @@ export class Engine {
     // Recorrido: el objetivo solo cuenta una vez por conversación (hasta que se cierre y se reabra).
     const goalReached = plan.goalCompleted && !conv.goal_completed_at;
     const goalHandoff = goalReached && bot.flow.on_goal_action === 'handoff' && plan.action !== 'handoff';
+    // Fotos programadas: se suman a las que eligió la IA (sin repetir). En una transferencia no se envían.
+    if (plan.action !== 'handoff') {
+      const after = imagesAfterReply(images, {
+        stepReached: plan.flowStep && plan.flowStep !== (conv.flow_step ?? 0) ? plan.flowStep : 0,
+        goalReached,
+        booked,
+        sentIds: sentImageIds,
+        skip: scheduledBefore.map((x) => x.image.id),
+      });
+      const extra: ScheduledImage[] = [...scheduledBefore, ...after].filter((x, i, all) => !plan!.images.some((p) => p.id === x.image.id) && all.findIndex((y) => y.image.id === x.image.id) === i);
+      if (extra.length) {
+        plan = { ...plan, action: 'reply_with_image', images: [...plan.images, ...extra.map((x) => x.image)].slice(0, 5) };
+        await log('info', 'engine', `Foto enviada por regla: ${extra.map((x) => `${x.image.code} (${x.reason})`).join(', ')}`);
+      }
+    }
     if (plan.action === 'handoff') {
       await this.executeHandoff(bot, conv, contact, transport, plan.messages, plan.handoffReason || 'La IA decidió transferir');
     } else if (plan.action !== 'no_reply') {

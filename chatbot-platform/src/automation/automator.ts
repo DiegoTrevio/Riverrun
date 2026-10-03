@@ -6,6 +6,7 @@ import net from 'node:net';
 import { config } from '../config.js';
 import { agentActive, gate } from '../engine/activation.js';
 import { matchKeyword } from '../engine/engine.js';
+import { imagesBeforeReply } from '../engine/images.js';
 import { normalize } from '../engine/text.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
@@ -515,6 +516,9 @@ export class Automator {
       return verdict(false, 'Pasa con una persona sin consultar a la IA.');
     }
     if (stopAi) return verdict(false, 'Una regla indica que la IA no responda este mensaje.');
+    // 5) Fotos que el sistema envía solo junto con la respuesta (palabras del cliente o bienvenida).
+    const photos = imagesBeforeReply(await store.listImages(bot.id, true), { text: o.text, firstReply: o.firstMessage, sentIds: [] });
+    if (photos.length) steps.push({ kind: 'images', title: 'Fotos', detail: `Se enviarían: ${photos.map((p) => `"${p.image.name}" (${p.reason})`).join(', ')}.`, ok: true });
     if (!bot.active) return verdict(true, 'La IA respondería, pero el asistente está apagado: en tus canales no contestará hasta que lo enciendas.');
     return verdict(true, 'La IA respondería este mensaje.');
   }

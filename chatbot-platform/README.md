@@ -107,7 +107,12 @@ Al cambiar una contraseña, las demás sesiones abiertas de ese usuario se cierr
    - **Lo que sabe**: precios, servicios, horarios, ubicación, políticas, preguntas frecuentes. Es lo único que puede afirmar.
    - **Cómo habla**: instrucciones (quién es y qué debe lograr), trato tú/usted, largo de las respuestas, emojis y tono.
    - **Reglas**: qué hacer si no tiene un dato, cuándo pasar con una persona, temas prohibidos, reglas del negocio y fotos.
-   - **Fotos**: catálogo de imágenes, cada una con su ID, qué muestra y cuándo enviarla.
+   - **Fotos**: catálogo de imágenes, cada una con su ID, qué muestra y **cuándo se envía**:
+     - *La IA decide* según "Cuándo enviarla" (el sistema verifica que exista y esté activa).
+     - *Solo en estos momentos* (garantizado por el sistema, aunque la IA no la elija): cuando el cliente escribe ciertas palabras ("menú", "ubicación"; si la vuelve a pedir se reenvía), en la bienvenida, al llegar a una etapa del recorrido, al cumplirse el objetivo o al agendar una cita. Opción "solo una vez por conversación". La IA sabe que esa foto sale sola y puede mencionarla.
+     - *Ambos*.
+     - Además, desde cualquier conversación el equipo puede mandar una foto del catálogo con **📷 Foto**, y las reglas pueden enviarla ("Enviar mensaje o foto"). El probador de palabras dice qué foto saldría con un mensaje.
+     - Si una plataforma rechaza la foto, el mensaje queda como fallido en la conversación y en Registros. Se recomiendan JPG o PNG (WhatsApp no siempre muestra bien WEBP).
    - **Datos que pide**: nombre, teléfono, correo… y cuándo pedirlos.
    - **Probar**: simulador con el mismo motor y las mismas reglas, con botones de preguntas de prueba y el panel **Qué revisó el sistema** (qué hizo, qué reglas obligaron a corregir la respuesta y qué datos guardó). Funciona aunque esté apagado.
    - **Avanzado** (opcional): recorrido de la conversación y modelo de IA.
@@ -158,7 +163,7 @@ Menú **Automatización** (administradores). Todo corre sobre tareas programadas
 
 | Cuándo (disparador) | Solo si (condiciones) | Hacer (acciones) |
 |---|---|---|
-| El cliente escribe (palabras clave, frase exacta, texto o cualquier mensaje; opcional: solo el primer mensaje) | Canal | Enviar mensaje (con imagen y espera opcional) |
+| El cliente escribe (palabras clave, frase exacta, texto o cualquier mensaje; opcional: solo el primer mensaje) | Canal | Enviar mensaje o foto (con espera opcional) |
 | Cliente nuevo | Dentro/fuera del horario del negocio | Alertar al equipo (panel + WhatsApp) |
 | **Intención detectada por la IA** ("quiere cotizar", "queja"… las defines tú) | Tiene / no tiene etiqueta | Agregar / quitar etiqueta |
 | Se guarda un dato (p. ej. correo) | Dato del cliente presente, vacío, igual o que contiene | Guardar un dato |
@@ -334,7 +339,7 @@ Panel (bajo `/api`, con sesión por cookie; todo se limita a la cuenta del usuar
 - Usuarios: `/api/users`
 - Chatbots: `/api/chatbots`, `/:id/duplicate`, `/:id/knowledge`, `/:id/images`, `/:id/playground`, `/:id/test-message` (probador de palabras: reglas, activadores y desactivadores, sin IA)
 - Canales: `/api/channels`, `/:id/setup`, `/:id/status`, `/:id/rotate-token`, `/:id/whatsapp/{session,connect,logout,test}` (`session`: crea la instancia si hace falta y devuelve el QR vigente o el código por número; el panel la consulta cada 3 s)
-- Conversaciones: `/api/conversations`, `/:id/{takeover,release,close,send,reset-memory,automation,sequences}`
+- Conversaciones: `/api/conversations`, `/:id/{takeover,release,close,send,send-image,reset-memory,automation,sequences}`
 - Automatización: `/api/automations`, `/api/sequences`, `/api/campaigns` (`/:id/{preview,launch,cancel,recipients}`), `/api/settings`
 - Agenda: `/api/services` (`/:id/slots`), `/api/appointments` (`/:id/cancel`), `/api/agenda/info`
 - Notificaciones: `/api/notifications`, `/api/notifications/read`

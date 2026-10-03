@@ -113,6 +113,23 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
     }
   });
 
+  api.post('/api/conversations/:cid/send-image', async (req: any) => {
+    const conv = await conversationFor(req.user, req.params.cid);
+    const b = parse(z.object({ image_id: z.string().uuid('Elige una foto'), takeover: z.boolean().default(true) }), req.body);
+    try {
+      // La conversación se toma solo si la foto es válida (justo antes de enviarla).
+      return await service.sendManualImage(conv.id, b.image_id, async () => {
+        if (b.takeover && conv.status === 'bot') {
+          await store.setConversationStatus(conv.id, 'human', `${req.user.name || req.user.email} respondió desde el panel`);
+          await store.markAllProcessed(conv.id);
+        }
+      });
+    } catch (e: any) {
+      const msg = e?.message ?? String(e);
+      throw new HttpError(msg === 'Foto no encontrada' ? 404 : 400, msg);
+    }
+  });
+
   api.post('/api/conversations/:cid/reset-memory', async (req: any) => {
     const conv = await conversationFor(req.user, req.params.cid);
     await store.updateSummary(conv.id, '', 0);

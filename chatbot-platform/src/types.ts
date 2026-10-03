@@ -189,6 +189,29 @@ export interface KnowledgeItem {
   sort_order: number;
 }
 
+/** Cuándo se envía una foto. Los momentos marcados los garantiza el sistema (no dependen de la IA). */
+export const ImageSendWhenSchema = z.object({
+  /** ai: la IA decide (según "Cuándo enviarla") · rules: solo en los momentos marcados · both: ambos. */
+  mode: z.enum(['ai', 'rules', 'both']).default('ai'),
+  /** El cliente escribe alguna de estas palabras o frases. */
+  keywords: z.array(z.string().trim().min(1).max(80)).max(30).default([]),
+  /** Con la primera respuesta a un cliente nuevo (bienvenida). */
+  first_message: z.boolean().default(false),
+  /** Al llegar a estas etapas del recorrido (1..n). */
+  flow_steps: z.array(z.number().int().min(1).max(30)).max(30).default([]),
+  on_goal: z.boolean().default(false),
+  on_booking: z.boolean().default(false),
+  /** Una sola vez por conversación (las palabras clave sí la vuelven a enviar si el cliente la pide de nuevo). */
+  once: z.boolean().default(true),
+});
+export type ImageSendWhen = z.infer<typeof ImageSendWhenSchema>;
+
+/** Configuración "cuándo se envía" completa y válida (las fotos viejas quedan en "la IA decide"). */
+export function imageSendWhen(img: Pick<ImageAsset, 'send_when'>): ImageSendWhen {
+  const r = ImageSendWhenSchema.safeParse(img.send_when ?? {});
+  return r.success ? r.data : ImageSendWhenSchema.parse({});
+}
+
 export interface ImageAsset {
   id: string;
   chatbot_id: string;
@@ -201,6 +224,7 @@ export interface ImageAsset {
   mime_type: string;
   size_bytes: number;
   active: boolean;
+  send_when?: unknown;
 }
 
 export interface Contact {

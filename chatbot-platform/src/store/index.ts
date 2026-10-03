@@ -378,20 +378,20 @@ export async function getImage(id: string) {
 
 export async function insertImage(img: Omit<ImageAsset, 'id' | 'active'> & { active?: boolean }): Promise<ImageAsset> {
   const row = await queryOne<ImageAsset>(
-    `INSERT INTO images (chatbot_id, code, name, description, usage_rule, caption, file_path, mime_type, size_bytes, active)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
-    [img.chatbot_id, img.code, img.name, img.description, img.usage_rule, img.caption, img.file_path, img.mime_type, img.size_bytes, img.active ?? true],
+    `INSERT INTO images (chatbot_id, code, name, description, usage_rule, caption, file_path, mime_type, size_bytes, active, send_when)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+    [img.chatbot_id, img.code, img.name, img.description, img.usage_rule, img.caption, img.file_path, img.mime_type, img.size_bytes, img.active ?? true, JSON.stringify(img.send_when ?? {})],
   );
   return row!;
 }
 
 export async function updateImage(id: string, patch: Partial<ImageAsset>): Promise<ImageAsset | null> {
-  const allowed = ['code', 'name', 'description', 'usage_rule', 'caption', 'active', 'file_path', 'mime_type', 'size_bytes'] as const;
+  const allowed = ['code', 'name', 'description', 'usage_rule', 'caption', 'active', 'file_path', 'mime_type', 'size_bytes', 'send_when'] as const;
   const sets: string[] = [];
   const params: unknown[] = [];
   for (const k of allowed) {
     if (patch[k] !== undefined) {
-      params.push(patch[k]);
+      params.push(k === 'send_when' ? JSON.stringify(patch[k]) : patch[k]);
       sets.push(`${k} = $${params.length}`);
     }
   }

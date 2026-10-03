@@ -27,6 +27,10 @@ export interface ContextInput {
   agenda?: AgendaContext | null;
   /** Zona horaria y horario de atención de la cuenta (Horario y ajustes). Mandan sobre la zona del chatbot. */
   business?: BusinessInfo | null;
+  /** Fotos que el sistema envía solo y cuándo (la IA no las elige). */
+  autoImages?: { image: ImageAsset; when: string }[];
+  /** Fotos que el sistema enviará con esta respuesta. */
+  imagesNow?: ImageAsset[];
 }
 
 export interface BusinessInfo {
@@ -208,8 +212,17 @@ export function buildSystemPrompt(input: ContextInput, knowledge: KnowledgeItem[
 
   s.push('\n# Catálogo de imágenes');
   const active = input.images;
+  const auto = input.autoImages ?? [];
+  const sendingNow = input.imagesNow ?? [];
+  if (auto.length) {
+    s.push('El sistema envía estas fotos automáticamente (NO las pongas en image_ids):');
+    for (const a of auto) s.push(`- ${a.image.name}${a.image.description ? ` (muestra: ${a.image.description})` : ''}: ${a.when}`);
+  }
+  if (sendingNow.length) {
+    s.push(`En ESTA respuesta el sistema enviará: ${sendingNow.map((i) => i.name).join(', ')}. Puedes mencionarlo brevemente ("te comparto…"); no repitas su contenido con datos que no estén en la información del negocio.`);
+  }
   if (!active.length) {
-    s.push('No hay imágenes disponibles. Nunca digas que vas a enviar una foto o imagen.');
+    if (!sendingNow.length) s.push(auto.length ? 'No puedes enviar otras imágenes por tu cuenta. No prometas fotos fuera de esos momentos.' : 'No hay imágenes disponibles. Nunca digas que vas a enviar una foto o imagen.');
   } else {
     s.push('Solo puedes enviar estas imágenes, usando su ID exacto en image_ids. No existen otras.');
     for (const img of active) {
