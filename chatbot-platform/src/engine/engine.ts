@@ -75,6 +75,12 @@ export function typingDelay(text: string, enabled: boolean) {
 }
 
 export class Engine {
+  private background = new Set<Promise<unknown>>();
+
+  async settleBackground() {
+    while (this.background.size) await Promise.allSettled([...this.background]);
+  }
+
   constructor(private ai: AiProvider, private ext: EngineExtensions = {}) {}
 
   /** Procesa los mensajes pendientes de una conversación y ejecuta la acción validada. */
@@ -346,7 +352,9 @@ export class Engine {
     if (goalReached) await this.summarizeFinal(conv);
 
     // 6) Memoria de largo plazo (resumen) en segundo plano.
-    maybeSummarize(this.ai, bot, conv.id, conv.account_id).catch((e) => log('error', 'ai', `Error al resumir: ${e?.message ?? e}`, e));
+    const memory = maybeSummarize(this.ai, bot, conv.id, conv.account_id).catch((e) => log('error', 'ai', `Error al resumir: ${e?.message ?? e}`, e));
+    this.background.add(memory);
+    void memory.then(() => this.background.delete(memory), () => this.background.delete(memory));
 
     return {
       status: plan.action === 'handoff' ? 'handoff' : plan.action === 'no_reply' ? 'no_reply' : 'replied',

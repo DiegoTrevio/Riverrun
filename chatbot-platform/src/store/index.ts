@@ -467,17 +467,33 @@ export async function getContact(id: string) {
   return queryOne<Contact>('SELECT * FROM contacts WHERE id = $1', [id]);
 }
 
-export async function updateContact(id: string, patch: { name?: string; data?: Record<string, string>; notes?: string[] }) {
+type ContactPatch = { name?: string; data?: Record<string, string>; notes?: string[]; tags?: string[]; opted_out?: boolean };
+
+export async function updateContact(id: string, patch: Pick<ContactPatch, 'name' | 'data' | 'notes'>) {
+  return (await updateContactFromPanel(id, patch))?.contact ?? null;
+}
+
+/** Capture the previous values under the same lock as the write, so repeated edits emit no duplicate events. */
+export async function updateContactFromPanel(id: string, patch: ContactPatch) {
   return withTransaction(async (client) => {
-    const result = await client.query<Contact>(
-      `UPDATE contacts SET name = COALESCE($2, name), data = COALESCE($3, data), notes = COALESCE($4, notes), updated_at = now()
-       WHERE id = $1 RETURNING *`,
-      [id, patch.name ?? null, patch.data ? JSON.stringify(patch.data) : null, patch.notes ? JSON.stringify(patch.notes) : null],
-    );
-    if (result.rows.length && (patch.data !== undefined || patch.name !== undefined || patch.notes !== undefined)) {
+    const before = (await client.query<Contact>('SELECT * FROM contacts WHERE id = $1 FOR UPDATE', [id])).rows[0];
+    if (!before) return null;
+    const contact = (await client.query<Contact>(
+      `UPDATE contacts SET name = COALESCE($2, name), data = COALESCE($3, data), notes = COALESCE($4, notes),
+       tags = COALESCE($5, tags), opted_out = COALESCE($6, opted_out),
+       opted_out_at = CASE WHEN $6::boolean IS NULL OR $6 = opted_out THEN opted_out_at WHEN $6 THEN now() ELSE NULL END,
+       updated_at = now() WHERE id = $1 RETURNING *`,
+      [id, patch.name ?? null, patch.data !== undefined ? JSON.stringify(patch.data) : null,
+       patch.notes !== undefined ? JSON.stringify(patch.notes) : null,
+       patch.tags !== undefined ? JSON.stringify([...new Set(patch.tags)].slice(0, 50)) : null, patch.opted_out ?? null],
+    )).rows[0];
+    if (patch.data !== undefined || patch.name !== undefined || patch.notes !== undefined) {
       await client.query('UPDATE conversations SET data = COALESCE($2::jsonb, data), data_version = data_version + 1 WHERE contact_id = $1', [id, patch.data !== undefined ? JSON.stringify(patch.data) : null]);
     }
-    return result.rows[0] ?? null;
+    const fields = new Set(Object.entries(contact.data).filter(([field, value]) => value && value !== before.data[field]).map(([field]) => field));
+    if (contact.name && contact.name !== before.name) fields.add('nombre');
+    return { contact, changedFields: [...fields], optedOut: !before.opted_out && contact.opted_out,
+      addedTags: contact.tags.filter(tag => !before.tags.some(old => old.toLowerCase() === tag.toLowerCase())) };
   });
 }
 
@@ -545,6 +561,14 @@ export async function setConversationStatus(id: string, status: ConversationStat
   return queryOne<Conversation>(
     `UPDATE conversations SET status = $2, handoff_reason = $3, status_changed_at = now() WHERE id = $1 RETURNING *`,
     [id, status, reason],
+  );
+}
+
+/** Only one concurrent caller owns the transition and its handoff event. */
+export async function takeConversation(id: string, reason: string) {
+  return queryOne<Conversation>(
+    "UPDATE conversations SET status = 'human', handoff_reason = $2, status_changed_at = now() WHERE id = $1 AND status <> 'human' RETURNING *",
+    [id, reason],
   );
 }
 
@@ -674,6 +698,14 @@ export async function markMessageProcessed(id: number) {
 export async function countInbound(conversationId: string): Promise<number> {
   const r = await queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM messages WHERE conversation_id = $1 AND direction = 'in'`, [conversationId]);
   return r?.n ?? 0;
+}
+
+export async function isFirstLiveInbound(conversationId: string, messageId: number): Promise<boolean> {
+  const row = await queryOne<{ first: boolean }>(
+    `SELECT $2::bigint = min(id) AS first FROM messages WHERE conversation_id = $1 AND direction = 'in'
+     AND type <> 'reaction' AND COALESCE(meta->>'stale', 'false') <> 'true'`, [conversationId, messageId],
+  );
+  return row?.first === true;
 }
 
 export async function markAllProcessed(conversationId: string) {

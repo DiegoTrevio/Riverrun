@@ -7,7 +7,7 @@ import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
 import { parse } from './util.js';
-import { setOptOut, setTags } from '../automation/store.js';
+import { stopEnrollments } from '../automation/store.js';
 
 /** Conversaciones y contactos: disponible para administradores y agentes de la cuenta. */
 export async function conversationRoutes(api: FastifyInstance, service: ChatService) {
@@ -77,8 +77,7 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
 
   api.post('/api/conversations/:cid/takeover', async (req: any) => {
     const conv = await conversationFor(req.user, req.params.cid);
-    const updated = await store.setConversationStatus(conv.id, 'human', `Tomada por ${req.user.name || req.user.email}`);
-    await store.markAllProcessed(conv.id);
+    const updated = await service.takeover(conv.id, `Tomada por ${req.user.name || req.user.email}`);
     await log(conv, `Conversación tomada por ${req.user.email}`);
     return updated;
   });
@@ -111,8 +110,7 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
     const conv = await conversationFor(req.user, req.params.cid);
     const b = parse(z.object({ text: z.string().trim().min(1, 'Mensaje vacío').max(4000), takeover: z.boolean().default(true) }), req.body);
     if (b.takeover && conv.status === 'bot') {
-      await store.setConversationStatus(conv.id, 'human', `${req.user.name || req.user.email} respondió desde el panel`);
-      await store.markAllProcessed(conv.id);
+      await service.takeover(conv.id, `${req.user.name || req.user.email} respondió desde el panel`);
     }
     try {
       return await service.sendManual(conv.id, b.text);
@@ -128,8 +126,7 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
       // La conversación se toma solo si la foto es válida (justo antes de enviarla).
       return await service.sendManualImage(conv.id, b.image_id, async () => {
         if (b.takeover && conv.status === 'bot') {
-          await store.setConversationStatus(conv.id, 'human', `${req.user.name || req.user.email} respondió desde el panel`);
-          await store.markAllProcessed(conv.id);
+          await service.takeover(conv.id, `${req.user.name || req.user.email} respondió desde el panel`);
         }
       });
     } catch (e: any) {
@@ -156,16 +153,17 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
       }),
       req.body,
     );
-    const { tags, opted_out, ...rest } = b;
-    const updated = await store.updateContact(contact.id, rest);
-    if (opted_out !== undefined && opted_out !== contact.opted_out) await setOptOut(contact.id, opted_out);
-    if (tags) {
-      await setTags(contact.id, tags);
-      // Etiquetas nuevas disparan reglas "etiqueta agregada".
-      const added = tags.filter((t) => !(contact.tags ?? []).some((x) => x.toLowerCase() === t.toLowerCase()));
-      const conv = (await query<{ id: string }>(`SELECT id FROM conversations WHERE contact_id = $1`, [contact.id]))[0];
-      if (conv) for (const tag of added) service.automator.emit({ type: 'tag_added', conversationId: conv.id, tag });
+    const changes = await store.updateContactFromPanel(contact.id, b);
+    const conv = (await query<{ id: string }>('SELECT id FROM conversations WHERE contact_id = $1', [contact.id]))[0];
+    if (conv && changes) {
+      if (changes.optedOut) {
+        await stopEnrollments(conv.id, 'el cliente se dio de baja desde el panel');
+        service.automator.emit({ type: 'opt_out', conversationId: conv.id });
+      }
+      for (const field of changes.changedFields) service.automator.emit({ type: 'data_captured', conversationId: conv.id, field });
+      for (const tag of changes.addedTags) service.automator.emit({ type: 'tag_added', conversationId: conv.id, tag });
+      await service.automator.settle(conv.id);
     }
-    return (await store.getContact(contact.id)) ?? updated;
+    return (await store.getContact(contact.id)) ?? changes?.contact;
   });
 }

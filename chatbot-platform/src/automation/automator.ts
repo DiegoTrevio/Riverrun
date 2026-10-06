@@ -194,6 +194,10 @@ export class Automator {
     }
   }
 
+  async settleAll() {
+    while (this.inflight.size) await Promise.allSettled([...this.inflight.values()].flatMap(set => [...set]));
+  }
+
   /** Evalúa las reglas de un evento y ejecuta sus acciones. Devuelve si alguna pidió que la IA no responda. */
   async handle(e: AutomationEvent): Promise<{ stopAi: boolean; matched: string[] }> {
     const ctx = await this.loadCtx(e.conversationId);
@@ -404,11 +408,10 @@ export class Automator {
     }
     // Secuencias que se detienen cuando el cliente responde.
     await astore.stopEnrollmentsOnReply(conv.id);
-    const first = (await store.countInbound(conv.id)) === 1;
+    const first = await store.isFirstLiveInbound(conv.id, message.id);
     let stop = false;
     if (first) stop = (await this.handle({ type: 'new_contact', conversationId: conv.id, text })).stopAi || stop;
     stop = (await this.handle({ type: 'message_received', conversationId: conv.id, text, isFirstMessage: first })).stopAi || stop;
-    void message;
     return stop;
   }
 

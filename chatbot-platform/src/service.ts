@@ -253,6 +253,14 @@ export class ChatService {
     return g.reply;
   }
 
+  /** Manual ownership changes share the same handoff event as bot transfers. */
+  async takeover(conversationId: string, reason: string) {
+    const changed = await store.takeConversation(conversationId, reason);
+    await store.markAllProcessed(conversationId);
+    if (changed) this.automator.emit({ type: 'handoff', conversationId });
+    return changed ?? await store.getConversation(conversationId);
+  }
+
   /** Mensaje enviado desde la cuenta del negocio: eco de un envío nuestro o respuesta manual de una persona. */
   private async handleOwnMessage(bot: Chatbot | null, conv: Conversation, msg: InboundMessage) {
     const content = describeInbound(msg).replace(/^\[El cliente /, '[Se ');
@@ -274,8 +282,7 @@ export class ChatService {
       meta: { source: 'platform' },
     });
     if ((bot?.rules.pause_on_human_reply ?? true) && conv.status === 'bot') {
-      await store.setConversationStatus(conv.id, 'human', 'Una persona respondió desde la plataforma');
-      await store.markAllProcessed(conv.id);
+      await this.takeover(conv.id, 'Una persona respondió desde la plataforma');
       await logEvent({
         level: 'info',
         source: 'engine',
