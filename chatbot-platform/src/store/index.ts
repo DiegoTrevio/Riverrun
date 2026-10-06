@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { query, queryOne } from '../db.js';
+import { query, queryOne, withTransaction } from '../db.js';
 import {
   channelConfig,
   hydrateChatbot,
@@ -278,12 +278,30 @@ export async function getChannelByToken(token: string) {
   return hydrateChannel(await queryOne<Channel>(`${CHANNEL_SELECT} WHERE ch.webhook_token = $1`, [token]));
 }
 
+export const MAX_WHATSAPP_PROFILES = 4;
+
+export class WhatsappProfileLimitError extends Error {
+  readonly statusCode = 409;
+  constructor() {
+    super(`Esta cuenta ya tiene ${MAX_WHATSAPP_PROFILES} perfiles de WhatsApp. Elimina uno para conectar otro número.`);
+  }
+}
+
 export async function createChannel(c: { account_id: string; chatbot_id: string | null; type: ChannelType; name: string; active?: boolean; config: Record<string, unknown> }) {
-  const row = await queryOne<Channel>(
-    `INSERT INTO channels (account_id, chatbot_id, type, name, active, config, webhook_token) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-    [c.account_id, c.chatbot_id, c.type, c.name, c.active ?? true, JSON.stringify(c.config), newWebhookToken()],
-  );
-  return (await getChannel(row!.id))!;
+  const id = await withTransaction(async (client) => {
+    if (c.type === 'whatsapp') {
+      // Serialize reservations per account, including concurrent onboarding requests.
+      await client.query('SELECT id FROM accounts WHERE id = $1 FOR UPDATE', [c.account_id]);
+      const count = await client.query("SELECT count(*)::int AS total FROM channels WHERE account_id = $1 AND type = 'whatsapp'", [c.account_id]);
+      if (count.rows[0].total >= MAX_WHATSAPP_PROFILES) throw new WhatsappProfileLimitError();
+    }
+    const result = await client.query(
+      `INSERT INTO channels (account_id, chatbot_id, type, name, active, config, webhook_token) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+      [c.account_id, c.chatbot_id, c.type, c.name, c.active ?? true, JSON.stringify(c.config), newWebhookToken()],
+    );
+    return result.rows[0].id as string;
+  });
+  return (await getChannel(id))!;
 }
 
 export async function updateChannel(id: string, patch: { name?: string; active?: boolean; chatbot_id?: string | null; config?: Record<string, unknown> }) {

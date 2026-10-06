@@ -196,6 +196,8 @@ setInterval(() => { if (state.me) refreshBell(); }, 20000);
 function shell(active, content) {
   refreshBell();
   const link = (href, label, key) => h('a', { href, class: active === key ? 'active' : '' }, label);
+  const navGroup = (label, keys, links) => h('details', { class: 'nav-group', open: keys.includes(active) },
+    h('summary', { class: keys.includes(active) ? 'active' : '' }, label, label === 'Conversaciones' ? [' ', bell] : null), h('div', {}, links));
   const { user, account } = state.me;
   const switcher = isSuper()
     ? h('div', { class: 'account-switch' },
@@ -214,17 +216,25 @@ function shell(active, content) {
     h('nav', { class: 'sidebar' },
       h('div', { class: 'brand' }, '💬 Chatbots'),
       switcher,
-      isAdmin() && (!isSuper() || state.accountId) ? link('#/inicio', 'Primeros pasos', 'inicio') : null,
-      isAdmin() ? link('#/', 'Asistentes', 'home') : null,
-      isAdmin() ? link('#/channels', 'Canales', 'channels') : null,
-      link('#/conversations', 'Conversaciones', 'conversations'),
-      link('#/agenda', 'Agenda', 'agenda'),
-      isAdmin() ? link('#/automation', 'Automatización', 'automation') : null,
-      h('a', { href: '#/notifications', class: active === 'notifications' ? 'active' : '' }, 'Notificaciones ', bell),
-      isAdmin() ? link('#/users', 'Usuarios', 'users') : null,
-      isSuper() ? link('#/accounts', 'Cuentas', 'accounts') : null,
-      isAdmin() ? link('#/consumo', 'Consumo de IA', 'consumo') : null,
-      isAdmin() ? link('#/logs', 'Registros', 'logs') : null,
+      isAdmin() ? navGroup('Asistentes y conexiones', ['home', 'bot', 'channels', 'channel', 'inicio'], [
+        link('#/', 'Asistentes', 'home'),
+        link('#/channels', 'WhatsApp y otros canales', 'channels'),
+        (!isSuper() || state.accountId) ? link('#/inicio', 'Primeros pasos', 'inicio') : null,
+      ]) : null,
+      navGroup('Conversaciones', ['conversations', 'conversation', 'notifications'], [
+        link('#/conversations', 'Bandeja de entrada', 'conversations'),
+        h('a', { href: '#/notifications', class: active === 'notifications' ? 'active' : '' }, 'Notificaciones'),
+      ]),
+      navGroup('Operación', ['agenda', 'automation'], [
+        link('#/agenda', 'Agenda', 'agenda'),
+        isAdmin() ? link('#/automation', 'Automatización', 'automation') : null,
+      ]),
+      isAdmin() ? navGroup('Configuración', ['users', 'accounts', 'consumo', 'logs', 'password'], [
+        link('#/users', 'Usuarios', 'users'),
+        isSuper() ? link('#/accounts', 'Cuentas', 'accounts') : null,
+        link('#/consumo', 'Consumo de IA', 'consumo'),
+        link('#/logs', 'Registros', 'logs'),
+      ]) : null,
       h('div', { class: 'spacer' }),
       h('div', { class: 'small muted', style: 'padding:4px 10px' }, user.name || user.email, h('br'), ROLE_LABEL[user.role]),
       link('#/password', 'Mi perfil', 'password'),
@@ -491,8 +501,8 @@ async function tabGeneral(root, bot) {
       h('p', { class: 'muted small' }, 'El mismo asistente (información, reglas y fotos) responde igual en todos sus canales.'),
       channels.length
         ? h('table', {}, h('tbody', {}, channels.map((c) => h('tr', { class: 'click', onclick: () => (location.hash = `#/channel/${c.id}`) },
-            h('td', {}, channelIcon(c.type), ' ', h('strong', {}, c.name)), h('td', {}, c.label),
-            h('td', {}, h('span', { class: `badge ${c.active ? 'green' : ''}` }, c.active ? 'Activo' : 'Inactivo'))))))
+            h('td', {}, channelIcon(c.type), ' ', h('strong', {}, c.name), c.type === 'whatsapp' && c.config.number ? h('div', { class: 'small muted' }, `+${c.config.number}`) : null), h('td', {}, c.label),
+            channelStatusCell(c)))))
         : h('p', {}, 'Aún no tiene canales. Mientras tanto puedes probarlo en la pestaña ', h('a', { href: `#/bot/${bot.id}/probar` }, 'Probar'), '.'),
     ),
     saveBar(async () => { if (await saveBot(bot, m)) render(); },
@@ -1263,13 +1273,21 @@ const STATE_LABEL = {
   unknown: ['', 'Sin información'],
 };
 
+function channelStatusCell(c) {
+  const connected = c.type !== 'whatsapp' || c.connection_state === 'open';
+  return h('td', {},
+    h('span', { class: `badge ${c.active && connected ? 'green' : ''}` },
+      !c.active ? 'Inactivo' : c.type !== 'whatsapp' ? 'Activo' : connected ? 'Conectado' : 'Pendiente de conectar'),
+    c.type === 'whatsapp' ? h('a', { href: `#/channel/${c.id}`, class: 'btn small', style: 'margin-left:8px' }, connected ? 'Administrar' : 'Ver QR') : null);
+}
+
 async function viewChannels(root, params) {
   const [channels, bots] = await Promise.all([api('GET', `/api/channels${acct()}`), api('GET', `/api/chatbots${acct()}`)]);
   const types = state.meta.channel_types;
   const n = { type: 'whatsapp', name: '', chatbot_id: params.get('chatbot_id') || '' };
   const botOptions = () => [['', '— Sin chatbot (solo guarda mensajes) —'], ...bots.filter((b) => !isSuper() || !n.account_id || b.account_id === n.account_id).map((b) => [b.id, b.name])];
   const botSelect = h('div');
-  const drawBots = () => fill(botSelect, field('Chatbot que responde', select(n, 'chatbot_id', botOptions())));
+  const drawBots = () => fill(botSelect, field('Asistente que responde', select(n, 'chatbot_id', botOptions()), 'Puedes elegir el mismo asistente para varios teléfonos.'));
   const createBox = h('div', { class: 'card', hidden: params.get('new') !== '1' });
   const picker = isSuper() ? (() => {
     if (!n.account_id) n.account_id = bots.find((b) => b.id === n.chatbot_id)?.account_id || state.accountId || state.accounts[0]?.id || '';
@@ -1290,24 +1308,28 @@ async function viewChannels(root, params) {
     } }, 'Crear y configurar'));
 
   const botName = Object.fromEntries(bots.map((b) => [b.id, b.name]));
+  const limit = state.meta.max_whatsapp_profiles;
+  const selectedAccount = state.accountId || state.me.account?.id;
+  const profileCount = channels.filter((c) => c.type === 'whatsapp' && (!selectedAccount || c.account_id === selectedAccount)).length;
   root.append(
-    h('div', { class: 'row between' }, h('h1', {}, 'Canales'), h('button', { class: 'primary', onclick: () => (createBox.hidden = !createBox.hidden) }, '+ Nuevo canal')),
+    h('div', { class: 'row between' }, h('h1', {}, 'WhatsApp y otros canales'), h('button', { class: 'primary', onclick: () => (createBox.hidden = !createBox.hidden) }, '+ Nuevo canal')),
     h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' },
       'Cada canal es una conexión con una plataforma (un número de WhatsApp, un bot de Telegram, una página de Facebook, una cuenta de Instagram o el chat de un sitio web). ',
-      'Asígnale un chatbot para que responda; un mismo chatbot puede atender varios canales.')),
+      'Conecta hasta cuatro perfiles de WhatsApp por cuenta, cada uno con su propio QR. Asigna un asistente diferente a cada teléfono o comparte el mismo en varios. Las conversaciones de cada perfil se mantienen separadas.')),
     !state.meta.public_https ? h('div', { class: 'card' }, h('span', { class: 'badge orange' }, 'Aviso'), ' ',
       `La URL pública (${state.meta.public_base_url}) no es HTTPS. Telegram, Messenger e Instagram exigen HTTPS: define PUBLIC_BASE_URL con tu dominio.`) : null,
+    h('p', { class: 'muted small' }, selectedAccount ? `${profileCount} de ${limit} perfiles de WhatsApp. Los perfiles desconectados también ocupan un lugar.` : `Hasta ${limit} perfiles de WhatsApp por cuenta.`),
     createBox,
     h('div', { class: 'card' },
       channels.length
         ? h('table', {},
             h('thead', {}, h('tr', {}, h('th', {}, 'Canal'), h('th', {}, 'Plataforma'), h('th', {}, 'Chatbot'), isSuper() && !state.accountId ? h('th', {}, 'Cuenta') : null, h('th', {}, 'Estado'))),
             h('tbody', {}, channels.map((c) => h('tr', { class: 'click', onclick: () => (location.hash = `#/channel/${c.id}`) },
-              h('td', {}, channelIcon(c.type), ' ', h('strong', {}, c.name)),
+              h('td', {}, channelIcon(c.type), ' ', h('strong', {}, c.name), c.type === 'whatsapp' && c.config.number ? h('div', { class: 'small muted' }, `+${c.config.number}`) : null),
               h('td', {}, c.label),
               h('td', {}, c.chatbot_id ? botName[c.chatbot_id] || '—' : h('span', { class: 'badge orange' }, 'sin chatbot')),
               isSuper() && !state.accountId ? h('td', { class: 'small' }, accountName(c.account_id)) : null,
-              h('td', {}, h('span', { class: `badge ${c.active ? 'green' : ''}` }, c.active ? 'Activo' : 'Inactivo'))))))
+              channelStatusCell(c)))))
         : h('p', { class: 'muted' }, 'Aún no hay canales.')),
   );
 }
@@ -1448,9 +1470,11 @@ async function viewChannel(root, id) {
     h('div', { class: 'card' },
       h('h3', { style: 'margin-top:0' }, 'General'),
       field('Nombre', text(m, 'name')),
-      field('Chatbot que responde', select(m, 'chatbot_id', [['', '— Sin chatbot (solo guarda mensajes) —'], ...accountBots.map((b) => [b.id, b.name])])),
+      field('Asistente que responde', select(m, 'chatbot_id', [['', '— Sin asistente (solo guarda mensajes) —'], ...accountBots.map((b) => [b.id, b.name])]), 'Este asistente puede atender varios perfiles. Cambiarlo aquí solo afecta a este perfil.'),
       check(m, 'active', 'Activo (si se desactiva, los mensajes se guardan pero no se responden)')),
-    h('div', { class: 'card' }, h('h3', { style: 'margin-top:0' }, 'Configuración'), channelConfigFields(ch, cfg)),
+    ch.type === 'whatsapp'
+      ? h('details', { class: 'card' }, h('summary', {}, 'Configuración avanzada de WhatsApp'), h('div', { style: 'margin-top:12px' }, channelConfigFields(ch, cfg)))
+      : h('div', { class: 'card' }, h('h3', { style: 'margin-top:0' }, 'Configuración'), channelConfigFields(ch, cfg)),
     ch.type === 'whatsapp' ? '' : h('div', { class: 'card' },
       h('div', { class: 'row between' }, h('h3', { style: 'margin:0' }, 'Conexión'), h('span', {}, 'Estado: ', status)),
       ch.type !== 'webchat' ? h('p', { class: 'muted small' }, 'Guarda los cambios de configuración antes de conectar.') : null,

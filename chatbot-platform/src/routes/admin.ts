@@ -75,6 +75,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
 
   api.get('/api/meta', async () => ({
     knowledge_categories: KNOWLEDGE_CATEGORIES,
+    max_whatsapp_profiles: store.MAX_WHATSAPP_PROFILES,
     channel_types: CHANNEL_TYPES.map((t) => ({ type: t, label: adapterFor(t).label })),
     defaults: {
       personality: PersonalitySchema.parse({}),
