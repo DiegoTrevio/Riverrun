@@ -124,7 +124,7 @@ En una imagen de producción ya compilada: `docker compose exec backend node dis
 
 - Configura `SMTP_URL` (cualquier proveedor: tu hosting, Amazon SES, SendGrid, Brevo…). Sin SMTP los correos solo quedan en **Registros**; en ese caso usa `SIGNUP_REQUIRE_EMAIL=false` o nadie podrá conectar WhatsApp.
 - Servidor recomendado para empezar: 4 vCPU / 8 GB. Cada sesión de WhatsApp vive en Evolution; vigila su memoria (`docker stats`) conforme crecen las empresas.
-- **Respaldos diarios**: `docker compose exec postgres pg_dumpall -U chatbot > respaldo.sql` (incluye las dos bases) y el volumen `evolution_instances`. Sin ese volumen cada empresa tendría que volver a escanear su QR.
+- **Respaldos y restauración**: conservar las bases `chatbot` y `evolution`, archivos y sesiones. Consulta la [revisión inicial de producción y herramientas de respaldo](docs/production-review.md). Sin las sesiones de Evolution las empresas podrían necesitar volver a escanear sus QR; sin `uploads` se perderían fotos referenciadas en la base.
 - Fija la versión de Evolution (`EVOLUTION_IMAGE`) y pruébala antes de actualizar.
 - Evolution conecta WhatsApp como "dispositivo vinculado" (no es la API oficial de Meta). El registro lo advierte: las campañas masivas a números que no te escribieron pueden provocar el bloqueo del número.
 - Para cerrar el registro: `SIGNUP_ENABLED=false` (puedes seguir creando cuentas a mano en **Cuentas**).
