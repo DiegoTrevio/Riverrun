@@ -1,4 +1,5 @@
 import fsp from 'node:fs/promises';
+import { knowledgeMonitorReport } from '../engine/knowledge-monitor.js';
 import { operationalStatus } from '../engine/operations.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -379,6 +380,11 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
   );
 
   api.get('/api/ai-runs', admins, async (req: any) => filtered(req, 'ai_runs', ['chatbot_id', 'conversation_id'], 100));
+
+  api.get('/api/knowledge/monitor', { preHandler: requireRole('admin') }, async (req: any) => {
+    const requested = req.user.role === 'superadmin' && req.query.account_id ? parse(z.string().uuid(),req.query.account_id) : undefined;
+    return knowledgeMonitorReport(scopeAccount(req.user,requested));
+  });
 
   api.get('/api/health/operations', { preHandler: requireRole('superadmin') }, async () => operationalStatus());
 

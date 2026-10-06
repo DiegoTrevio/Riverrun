@@ -76,3 +76,5 @@ Si falla la revisión del backend, restaurar la **imagen/revisión anterior comp
 ## Evidencia
 
 Se prueban con PostgreSQL/pgvector local: exclusión del piloto en consultas/indexado/worker/API, rechazo de preparación global fuera del alcance, métricas de selección/degradación sin textos ni secretos, permisos del diagnóstico, desactivación sin pérdida de conocimiento/índices, ampliación sin reindexar documentos completos y rechazo de UUID inválidos/inexistentes. Los embeddings son sintéticos; esta evidencia no demuestra activación, calidad o recuperación del servidor de producción.
+
+El [punto 7](knowledge-supervision.md) añade revisiones automáticas, historial y avisos dentro del panel. La CLI de diagnóstico sigue siendo de solo lectura y no genera esos avisos.

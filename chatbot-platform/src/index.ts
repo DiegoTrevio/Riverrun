@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { KnowledgeMonitor } from './engine/knowledge-monitor.js';
 import { OpenAiProvider } from './ai/provider.js';
 import { buildApp } from './app.js';
 import { bootstrapSuperadmin } from './auth.js';
@@ -19,6 +20,8 @@ async function main() {
 
   const ai = new OpenAiProvider();
   const { app, service } = await buildApp({ ai, logger: process.env.HTTP_LOG === 'true' });
+  const knowledgeMonitor = new KnowledgeMonitor();
+  app.addHook('onClose', async () => knowledgeMonitor.stop());
   const knowledgeWorker = new KnowledgeWorker(ai);
   app.addHook('onClose', async () => knowledgeWorker.stop());
   await app.listen({ port: config.port, host: config.host });
@@ -26,6 +29,7 @@ async function main() {
 
   service.scheduler.start(config.schedulerIntervalMs);
   knowledgeWorker.start();
+  knowledgeMonitor.start();
   startLifecycle();
   const resumed = await service.resumePending();
   if (resumed) console.log(`Retomando ${resumed} conversaciones pendientes`);

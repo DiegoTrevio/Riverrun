@@ -36,11 +36,23 @@ export async function vectorAvailable(): Promise<boolean> {
 }
 
 async function embed(ai: AiProvider, bot: Chatbot, texts: string[], model = config.knowledgeSearch.model) {
-  if (!ai.embed) throw new Error('El proveedor no soporta embeddings.');
-  const result = await ai.embed(texts, model);
-  if (result.vectors.length !== texts.length || result.vectors.some((v) => !validEmbedding(v))) throw new Error('Embeddings inválidos.');
-  await store.insertAiRun({ account_id: bot.account_id, chatbot_id: bot.id, conversation_id: null, kind: 'embedding', model: result.model, input_tokens: result.input_tokens, cached_tokens: 0, output_tokens: 0, latency_ms: result.latency_ms, cost_usd: result.cost_usd });
-  return result.vectors;
+  const started = Date.now();
+  let stage = 'provider';
+  try {
+    if (!ai.embed) throw new Error('El proveedor no soporta embeddings.');
+    const result = await ai.embed(texts, model);
+    stage = 'validation';
+    if (result.vectors.length !== texts.length || result.vectors.some((v) => !validEmbedding(v))) throw new Error('Embeddings inválidos.');
+    stage = 'storage';
+    await store.insertAiRun({ account_id: bot.account_id, chatbot_id: bot.id, conversation_id: null, kind: 'embedding', model: result.model, input_tokens: result.input_tokens, cached_tokens: 0, output_tokens: 0, latency_ms: result.latency_ms, cost_usd: result.cost_usd });
+    await logEvent({ level: 'info', source: 'ai', message: 'knowledge_embedding', accountId: bot.account_id, chatbotId: bot.id,
+      details: { outcome: 'ok', duration_ms: Date.now()-started, model, inputs: texts.length, cost_reported: result.cost_usd !== undefined } }).catch(() => undefined);
+    return result.vectors;
+  } catch {
+    await logEvent({ level: 'error', source: 'ai', message: 'knowledge_embedding', accountId: bot.account_id, chatbotId: bot.id,
+      details: { outcome: 'error', stage, duration_ms: Date.now()-started, model, inputs: texts.length } }).catch(() => undefined);
+    throw new Error('No se pudo generar o guardar el embedding. Revisa el proveedor y los registros de supervisión.');
+  }
 }
 
 type IndexedItem = KnowledgeItem & { fragments: { chunk_no: number; content: string }[] | null };
@@ -141,5 +153,6 @@ export async function knowledgeIndexStatus(bot: Chatbot) {
   return { enabled: semanticEnabledFor(bot.account_id), available, model: config.knowledgeSearch.model,
     active_items: rows.filter(({item}) => item.active).length, essential_items: rows.filter(({item}) => item.active && item.always_include).length,
     inactive_items: rows.filter(({item}) => !item.active).length, indexed_items: indexed.length, pending_items: eligible.length-indexed.length,
+    pending_signature: createHash('sha256').update(config.knowledgeSearch.model+':'+bot.id+':'+eligible.filter(r=>!r.complete).map(r=>r.item.id+':'+knowledgeHash(r.item)).sort().join('|')).digest('hex'),
     expected_chunks: eligible.reduce((n,r) => n+r.expected,0), indexed_chunks: indexed.reduce((n,r) => n+r.expected,0), complete: available && eligible.length === indexed.length };
 }

@@ -12,6 +12,12 @@ function rolloutAccounts(value: string): string[] {
   return ids;
 }
 
+function monitorLimit(name: string, fallback: number, max: number) {
+  const value = Number(env(name,String(fallback)));
+  if (!Number.isFinite(value) || value < 0 || value > max) throw new Error('Umbral de supervisión inválido: '+name);
+  return value;
+}
+
 const aiBaseUrl = env('OPENROUTER_BASE_URL', env('OPENAI_BASE_URL', 'https://openrouter.ai/api/v1')).replace(/\/$/, '');
 const useOpenRouter = new URL(aiBaseUrl).hostname === 'openrouter.ai';
 
@@ -49,6 +55,14 @@ export const config = {
     enabled: env('KNOWLEDGE_SEARCH_ENABLED', 'false') === 'true',
     accountIds: rolloutAccounts(env('KNOWLEDGE_SEARCH_ACCOUNT_IDS')),
     model: env('OPENROUTER_EMBEDDING_MODEL', useOpenRouter ? 'openai/text-embedding-3-small' : 'text-embedding-3-small'),
+  },
+  knowledgeMonitor: {
+    enabled: env('KNOWLEDGE_MONITOR_ENABLED','true') === 'true',
+    pendingMinutes: monitorLimit('KNOWLEDGE_ALERT_PENDING_MINUTES',15,1440),
+    fallbackRatio: monitorLimit('KNOWLEDGE_ALERT_FALLBACK_RATIO',0.05,1),
+    minAttempts: monitorLimit('KNOWLEDGE_ALERT_MIN_ATTEMPTS',20,10000),
+    latencyMs: monitorLimit('KNOWLEDGE_ALERT_P95_MS',10000,300000),
+    hourlyUsd: monitorLimit('KNOWLEDGE_ALERT_HOURLY_USD',5,100000),
   },
   logRetentionDays: Number(env('LOG_RETENTION_DAYS', '30')),
   /**
