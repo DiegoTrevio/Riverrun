@@ -9,6 +9,7 @@ export type Runner = (conversationId: string, attempt: { restarts: number }) => 
 interface Slot {
   timer?: NodeJS.Timeout;
   running: boolean;
+  finished?: Promise<void>;
   rerun: boolean;
   restarts: number;
   errors: number;
@@ -16,6 +17,7 @@ interface Slot {
 
 export class ConversationQueue {
   private slots = new Map<string, Slot>();
+  private stopped = false;
 
   /**
    * @param onGiveUp se llama cuando el reintento también falló (p.ej. la IA no responde): el mensaje queda
@@ -38,6 +40,7 @@ export class ConversationQueue {
   }
 
   schedule(conversationId: string, delayMs: number) {
+    if (this.stopped) return;
     const s = this.slot(conversationId);
     if (s.running) {
       s.rerun = true;
@@ -49,18 +52,28 @@ export class ConversationQueue {
 
   /** Ejecuta una función con exclusión mutua para la conversación (p.ej. el simulador). */
   async exclusive<T>(conversationId: string, fn: () => Promise<T>): Promise<T> {
-    const s = this.slot(conversationId);
-    while (s.running) await new Promise((r) => setTimeout(r, 100));
+    if (this.stopped) throw new Error('La cola está cerrada');
+    let s = this.slot(conversationId);
+    while (s.running) {
+      await s.finished;
+      if (this.stopped) throw new Error('La cola está cerrada');
+      s = this.slot(conversationId);
+    }
+    if (this.stopped) throw new Error('La cola está cerrada');
     s.running = true;
+    let finish!: () => void;
+    s.finished = new Promise<void>(resolve => { finish = resolve; });
     try {
       return await fn();
     } finally {
       s.running = false;
+      finish();
       this.cleanup(conversationId);
     }
   }
 
   private async fire(conversationId: string) {
+    if (this.stopped) return;
     const s = this.slot(conversationId);
     s.timer = undefined;
     if (s.running) {
@@ -68,6 +81,8 @@ export class ConversationQueue {
       return;
     }
     s.running = true;
+    let finish!: () => void;
+    s.finished = new Promise<void>(resolve => { finish = resolve; });
     s.rerun = false;
     let status = 'error';
     try {
@@ -76,7 +91,9 @@ export class ConversationQueue {
       console.error('Error procesando conversación', conversationId, e);
     } finally {
       s.running = false;
+      finish();
     }
+    if (this.stopped) { this.slots.delete(conversationId); return; }
     if (status === 'restart') {
       s.restarts++;
       this.schedule(conversationId, 500);
@@ -107,6 +124,18 @@ export class ConversationQueue {
   private cleanup(id: string) {
     const s = this.slots.get(id);
     if (s && !s.running && !s.timer && !s.rerun && !s.errors) this.slots.delete(id);
+  }
+
+  /** Cancel timers and drain writes before the database or process closes. */
+  async stop() {
+    this.stopped = true;
+    const active: Promise<void>[] = [];
+    for (const slot of this.slots.values()) {
+      clearTimeout(slot.timer);
+      if (slot.running && slot.finished) active.push(slot.finished);
+    }
+    await Promise.all(active);
+    this.slots.clear();
   }
 
   get size() {

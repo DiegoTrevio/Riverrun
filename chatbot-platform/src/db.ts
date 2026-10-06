@@ -54,31 +54,38 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 export const migrationsDir = path.resolve(here, '..', 'migrations');
 
 export async function migrate(p: pg.Pool = pool): Promise<string[]> {
-  const collation = (await p.query('SELECT datcollversion AS recorded, pg_database_collation_actual_version(oid) AS actual FROM pg_database WHERE datname=current_database()')).rows[0];
-  if (collation.recorded !== collation.actual) throw new Error('La versión de collation de PostgreSQL no coincide con la imagen. Restaura en un volumen compatible o reconstruye los índices antes de actualizar la versión de collation.');
-  await p.query('CREATE EXTENSION IF NOT EXISTS pgcrypto');
-  await p.query(`CREATE TABLE IF NOT EXISTS schema_migrations (name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`);
-  const done = new Set((await p.query('SELECT name FROM schema_migrations')).rows.map((r) => r.name));
-  const files = fs.readdirSync(migrationsDir).filter((f) => f.endsWith('.sql')).sort();
-  const applied: string[] = [];
-  for (const f of files) {
-    if (done.has(f)) continue;
-    const sql = fs.readFileSync(path.join(migrationsDir, f), 'utf8');
-    const client = await p.connect();
-    try {
-      await client.query('BEGIN');
-      await client.query(sql);
-      await client.query('INSERT INTO schema_migrations(name) VALUES ($1)', [f]);
-      await client.query('COMMIT');
-      applied.push(f);
-    } catch (e) {
-      await client.query('ROLLBACK');
-      throw e;
-    } finally {
-      client.release();
+  // Keep the lock and all migration queries on the same connection, including
+  // bootstrap DDL and the optional vector upgrade on already migrated databases.
+  const client = await p.connect();
+  let broken = false;
+  try {
+    await client.query("SELECT pg_advisory_lock(hashtextextended('riverrun:schema-migrations', 0))");
+    const collation = (await client.query('SELECT datcollversion AS recorded, pg_database_collation_actual_version(oid) AS actual FROM pg_database WHERE datname=current_database()')).rows[0];
+    if (collation.recorded !== collation.actual) throw new Error('La versión de collation de PostgreSQL no coincide con la imagen. Restaura en un volumen compatible o reconstruye los índices antes de actualizar la versión de collation.');
+    await client.query('CREATE EXTENSION IF NOT EXISTS pgcrypto');
+    await client.query(`CREATE TABLE IF NOT EXISTS schema_migrations (name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`);
+    const done = new Set((await client.query('SELECT name FROM schema_migrations')).rows.map((r) => r.name));
+    const files = fs.readdirSync(migrationsDir).filter((f) => f.endsWith('.sql')).sort();
+    const applied: string[] = [];
+    for (const f of files) {
+      if (done.has(f)) continue;
+      const sql = fs.readFileSync(path.join(migrationsDir, f), 'utf8');
+      try {
+        await client.query('BEGIN');
+        await client.query(sql);
+        await client.query('INSERT INTO schema_migrations(name) VALUES ($1)', [f]);
+        await client.query('COMMIT');
+        applied.push(f);
+      } catch (e) {
+        await client.query('ROLLBACK').catch(() => { broken = true; });
+        throw e;
+      }
     }
+    // Plain PostgreSQL installations can gain pgvector without deleting history.
+    await client.query(fs.readFileSync(path.join(migrationsDir, '011_knowledge_vectors.sql'), 'utf8'));
+    return applied;
+  } finally {
+    await client.query("SELECT pg_advisory_unlock(hashtextextended('riverrun:schema-migrations', 0))").catch(() => { broken = true; });
+    client.release(broken);
   }
-  // A database migrated on plain PostgreSQL can gain pgvector later without deleting migration history.
-  await p.query(fs.readFileSync(path.join(migrationsDir, '011_knowledge_vectors.sql'), 'utf8'));
-  return applied;
 }
