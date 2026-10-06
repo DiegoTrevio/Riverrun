@@ -5,6 +5,7 @@ import { bootstrapSuperadmin } from './auth.js';
 import { assertProductionConfig, config } from './config.js';
 import { migrate } from './db.js';
 import { startLifecycle } from './lifecycle.js';
+import { startMonitor } from './monitor.js';
 import { logEvent, pruneLogs } from './logs.js';
 import { pruneAutomationData } from './automation/store.js';
 
@@ -22,6 +23,7 @@ async function main() {
 
   service.scheduler.start(config.schedulerIntervalMs);
   startLifecycle();
+  startMonitor();
   const resumed = await service.resumePending();
   if (resumed) console.log(`Retomando ${resumed} conversaciones pendientes`);
 

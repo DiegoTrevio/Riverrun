@@ -13,11 +13,13 @@ import { automationRoutes } from './routes/automation.js';
 import { channelRoutes } from './routes/channels.js';
 import { chatbotRoutes } from './routes/chatbots.js';
 import { conversationRoutes } from './routes/conversations.js';
+import { billingRoutes, billingWebhooks } from './routes/billing.js';
 import { knowledgeImportRoutes } from './routes/import.js';
 import { onboardingRoutes } from './routes/onboarding.js';
 import { publicRoutes } from './routes/public.js';
 import { signupRoutes } from './routes/signup.js';
 import { installErrorHandler } from './routes/util.js';
+import { overall, runChecks } from './monitor.js';
 import { ChatService, type TransportFactory } from './service.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -50,11 +52,18 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
   await app.register(multipart);
   await app.register(fastifyStatic, { root: path.resolve(here, '..', 'public'), prefix: '/' });
 
-  app.get('/health', async () => ({ ok: true }));
+  app.get('/health', async () => ({ ok: true, version: config.monitor.version }));
+  // Salud completa para monitores externos: 503 si algo esencial falla. No expone detalles internos.
+  app.get('/health/ready', async (_req, reply) => {
+    const checks = await runChecks();
+    const status = overall(checks);
+    return reply.code(status === 'fail' ? 503 : 200).send({ status, version: config.monitor.version, checks: checks.map((c) => ({ name: c.name, status: c.status })) });
+  });
   await sessionRoutes(app);
   await signupRoutes(app);
   await publicRoutes(app, service);
   await calendarRoutes(app);
+  await billingWebhooks(app);
 
   // Todo lo demás requiere sesión; cada ruta verifica además la cuenta y el rol.
   await app.register(async (api) => {
@@ -67,6 +76,7 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
     await agendaRoutes(api, service);
     await onboardingRoutes(api);
     await knowledgeImportRoutes(api, opts.ai);
+    await billingRoutes(api);
   });
 
   return { app, service };

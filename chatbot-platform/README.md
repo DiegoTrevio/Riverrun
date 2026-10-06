@@ -34,20 +34,67 @@ Chat web (widget)    ┘    │                             │
 
 ## Instalación en un VPS (Docker)
 
-Requisitos: VPS con Docker y Docker Compose (2 GB de RAM es suficiente para empezar).
+Requisitos: un VPS con Linux (2 GB de RAM alcanzan para empezar). Si no tiene Docker, el instalador ofrece instalarlo.
 
 ```bash
 git clone <este repo> && cd Riverrun/chatbot-platform
-cp .env.example .env
-nano .env        # contraseñas, EVOLUTION_API_KEY, OPENROUTER_API_KEY, ADMIN_PASSWORD, SESSION_SECRET
-docker compose up -d --build
+./riverrun install
 ```
 
-- El panel queda en `http://127.0.0.1:3000` del VPS. Para abrirlo desde tu computadora: `ssh -L 3000:127.0.0.1:3000 usuario@tu-vps` y visita `http://localhost:3000`.
-- **Con dominio y HTTPS** (necesario para Telegram, Messenger, Instagram y el chat web): apunta un dominio al VPS, define `DOMAIN` y `SECURE_COOKIES=true` en `.env` y ejecuta `docker compose --profile https up -d --build`. Caddy obtiene el certificado automáticamente. La URL pública (`PUBLIC_BASE_URL`, por defecto `https://$DOMAIN`) es la que usan esas plataformas para enviar mensajes y descargar imágenes.
-- Al arrancar se crea el **superadministrador** con `ADMIN_USER` (tu correo) y `ADMIN_PASSWORD`. Si olvidas la contraseña, cámbiala en `.env` y reinicia.
-- Evolution API solo escucha en `127.0.0.1:8080` (no queda expuesta a internet). El backend y Evolution se hablan por la red interna de Docker (`WEBHOOK_BASE_URL=http://backend:3000`).
-- Se recomienda fijar la versión de Evolution con `EVOLUTION_IMAGE=evoapicloud/evolution-api:<versión>`.
+El instalador hace las preguntas mínimas (dominio, tu correo y la clave de OpenRouter), **genera solo todas las contraseñas y claves**, levanta los servicios, espera a que respondan y te imprime la dirección del panel, el usuario y la contraseña. También se puede instalar sin preguntas con variables (`RIVERRUN_DOMAIN`, `RIVERRUN_ADMIN_EMAIL`, `OPENROUTER_API_KEY`, `SMTP_URL`) y `--non-interactive`.
+
+Un solo comando para todo lo que sigue:
+
+| Comando | Qué hace |
+|---|---|
+| `./riverrun status` | Servicios, salud, último respaldo y si hay versión nueva |
+| `./riverrun update` | Respalda, descarga la versión nueva, la construye y comprueba que quedó sana; **si no, vuelve sola a la anterior** |
+| `./riverrun backup` | Respaldo inmediato (también corre solo cada noche) |
+| `./riverrun restore [archivo]` | Restaura el último respaldo, o un archivo (por ejemplo en un servidor nuevo) |
+| `./riverrun logs [servicio]` | Registros en vivo |
+| `./riverrun restart` | Aplica cambios hechos a `.env` |
+
+- Con dominio, `install` activa HTTPS automático (Caddy). Antes apunta el dominio (registro DNS tipo A) a la IP del servidor y abre los puertos 80 y 443. HTTPS es necesario para Telegram, Messenger, Instagram y el chat web.
+- Sin dominio, el panel queda en `http://127.0.0.1:3000` del VPS; desde tu computadora: `ssh -L 3000:127.0.0.1:3000 usuario@tu-vps` y visita `http://localhost:3000`.
+- Al arrancar se crea el **superadministrador** (tu correo). Si olvidas la contraseña, cámbiala en `.env` y `./riverrun restart`.
+- Evolution API solo escucha en `127.0.0.1:8080` (no queda expuesta a internet). Se recomienda fijar su versión con `EVOLUTION_IMAGE=evoapicloud/evolution-api:<versión>`.
+- Instalación manual (sin el script): `cp .env.example .env`, edita los valores y `docker compose up -d --build`.
+
+## Respaldos
+
+Un contenedor (`backup`) respalda **cada noche** (03:30 UTC) lo que no se puede perder: la base del chatbot, la base de Evolution, las fotos subidas y las sesiones de WhatsApp. Cada respaldo es **un solo archivo cifrado** (AES-256 con `BACKUP_PASSPHRASE`, que `install` genera y te pide guardar fuera del servidor).
+
+- **Se verifica solo:** después de crear cada respaldo se abre, se comprueban sus sumas y se **restaura en una base temporal**. Si algo falla, el panel (Sistema) y las alertas lo avisan.
+- **Retención:** 7 diarios, 4 semanales y 6 mensuales (configurable con `BACKUP_KEEP_*`).
+- **Copia en la nube (recomendado):** si el servidor se pierde, los respaldos locales también. Define `BACKUP_S3_BUCKET`, `BACKUP_S3_ENDPOINT`, `BACKUP_S3_KEY` y `BACKUP_S3_SECRET` (Backblaze B2, Cloudflare R2, Wasabi, AWS S3…) y cada respaldo se copia ahí.
+- **Restaurar:** `./riverrun restore` (detiene el sistema, restaura, lo vuelve a levantar). En un servidor nuevo: `./riverrun install`, baja el archivo de la nube y `./riverrun restore ruta/riverrun-….tar.enc` con la misma `BACKUP_PASSPHRASE`. Antes de restaurar se hace un respaldo de seguridad de lo que hubiera.
+- Pruebas automáticas del ciclo completo (respaldar → destruir → restaurar → detectar archivos dañados): `scripts/test-backup.sh`.
+
+## Cobro automático (Stripe y Mercado Pago)
+
+Los clientes contratan y pagan solos desde **Ajustes → Mi plan y pagos**; tú no cobras ni activas nada a mano.
+
+1. **Claves:** en `.env` pon `STRIPE_SECRET_KEY` + `STRIPE_WEBHOOK_SECRET` y/o `MERCADOPAGO_ACCESS_TOKEN` + `MERCADOPAGO_WEBHOOK_SECRET`; `./riverrun restart`. Cada proveedor se activa solo con sus dos claves.
+2. **Webhooks:** en el panel, **Planes y cobro** muestra la dirección exacta que debes registrar en cada proveedor (`/webhook/billing/stripe` y `/webhook/billing/mercadopago`) y qué eventos activar.
+3. **Planes:** ahí mismo creas tus planes (nombre, precio mensual, moneda). Para Stripe pega el ID del precio (`price_…`) que creaste en su panel; un plan sin él solo se ofrece con Mercado Pago.
+
+Qué pasa solo: el pago **activa** la cuenta (sale de prueba o de pausa) y le asigna el plan; la renovación mensual la cobra el proveedor; si un cobro **falla**, la cuenta sigue funcionando `BILLING_GRACE_DAYS` (5 por defecto) mientras se avisa por correo y panel, y luego se **pausa sola**; al pagar, se **reactiva sola**. Al cancelar, el acceso dura hasta el final del periodo ya pagado. El cliente cambia su tarjeta y ve sus facturas en la página de Stripe ("Administrar pago") o cancela desde el panel. Si reactivas a mano una cuenta pausada por pago, el sistema respeta tu decisión. Los avisos de los proveedores se verifican con su firma, se consultan de nuevo al proveedor (llegan repetidos o desordenados sin problema) y las cuentas activadas a mano sin suscripción no se tocan. Nunca pasan datos de tarjeta por tu servidor: el pago ocurre en la página de Stripe / Mercado Pago.
+
+## Monitoreo y alertas
+
+- `GET /health` (el servicio vive) y `GET /health/ready` (salud completa: **503** si algo esencial falla; sin detalles internos) para cualquier monitor externo.
+- **Revisión cada minuto** de: base de datos, Evolution (y cuántos WhatsApp están desconectados), tareas programadas atrasadas, IA (clave y errores recientes), **antigüedad y éxito del último respaldo** (y su copia en la nube) y espacio en disco.
+- **Alertas:** un fallo avisa al segundo minuto seguido (evita falsas alarmas), se repite cada 6 h y avisa cuando se recupera. Llegan por correo (`SUPERADMIN_EMAIL` + SMTP) y, si quieres, a un webhook (`ALERT_WEBHOOK_URL`: Slack, Discord, ntfy.sh…).
+- **Latido externo (`HEARTBEAT_URL`):** el sistema visita esa dirección cada 5 minutos mientras está sano (healthchecks.io tiene plan gratuito; Uptime Kuma también). Si dejan de llegar, *ellos* te avisan, incluso si el servidor completo cayó, algo que el sistema no puede avisar por sí mismo.
+- **Panel → Sistema** (superadmin): todo lo anterior en una pantalla, con versión, tiempo encendido, errores de 24 h, WhatsApp por estado y suscripciones.
+
+## Actualizaciones
+
+`./riverrun update` hace, en orden: comprobar que no hay cambios locales → **respaldo** (si falla, no sigue) → descargar la versión → construir → levantar → esperar a que `/health` y `/health/ready` estén sanos. Si la versión nueva no queda sana, **vuelve sola** al código y a la imagen anteriores. Las migraciones de base de datos se aplican solas al arrancar y son aditivas, por lo que volver atrás es seguro; en el improbable caso contrario, `./riverrun restore latest`. `./riverrun status` avisa cuando hay cambios nuevos y el panel (Sistema) muestra la versión instalada. `scripts/test-cli.sh` prueba este flujo (actualización buena, versión enferma con vuelta atrás, sin respaldo, con cambios locales).
+
+## Integración continua
+
+`.github/workflows/ci.yml` corre en cada pull request y en `main`: revisión de tipos, sintaxis del panel, **todas las pruebas** (contra PostgreSQL real), auditoría de dependencias, `shellcheck` de los scripts, la prueba de respaldo y restauración de punta a punta, la del flujo de actualización, la validación del `docker-compose` y la construcción de las imágenes.
 
 ## IA con OpenRouter
 
@@ -357,10 +404,13 @@ Panel (bajo `/api`, con sesión por cookie; todo se limita a la cuenta del usuar
 - Notificaciones: `/api/notifications`, `/api/notifications/read`
 - Contactos: `/api/contacts/:id`
 - Registros, uso de IA y estadísticas: `/api/logs`, `/api/ai-runs`, `/api/stats`
+- Cobro: `GET /api/billing`, `POST /api/billing/{checkout,portal,cancel}`, `/api/plans` (crear/editar: superadmin), `GET /api/billing/overview` (superadmin)
+- Sistema: `GET /api/system/status` (superadmin)
 
 Públicas:
 
 - Registro y contraseñas: `GET /api/signup/info`, `POST /api/signup`, `POST /api/verify-email`, `POST /api/forgot-password`, `POST /api/reset-password` (con límite de intentos por IP).
+- Salud: `GET /health`, `GET /health/ready`. Cobro: `POST /webhook/billing/{stripe,mercadopago}` (firmados).
 - Webhooks: `GET|POST /webhook/:token`. El token es una URL secreta por canal; `GET` sirve para la verificación de Meta.
 - Chat web: `/webchat/:token/{config,session,messages}`, con CORS y límite de 15 mensajes por minuto por sesión.
 - Imágenes firmadas: `GET /media/:id?e=…&s=…`.
@@ -381,7 +431,7 @@ Actualización desde la versión anterior: la migración `002` pasa automáticam
 - La cola vive en memoria: pensada para un proceso en un VPS. Al reiniciar, retoma los mensajes sin responder de los últimos 15 minutos.
 - La recuperación de conocimiento es por palabras clave (sin embeddings) y solo entra en juego si el conocimiento excede el presupuesto; para la mayoría de negocios se envía completo.
 - Se ignoran grupos, estados y canales de WhatsApp.
-- El cobro de las suscripciones todavía es manual (tú activas el plan en **Cuentas**); el campo `plan` y el estado `trial/active/paused` ya están listos para conectarlo a Stripe o Mercado Pago.
+- El cobro es automático con Stripe y/o Mercado Pago (ver arriba). Sin ninguno configurado, sigue siendo manual: activas el plan en **Cuentas**.
 - Los mensajes con más de 30 minutos de antigüedad (p. ej. al reconectar el teléfono) se guardan pero no se contestan automáticamente.
 - Una conversación **cerrada** se reabre (con su memoria) cuando el cliente vuelve a escribir.
 - La verificación de hechos cubre cifras, links, correos y teléfonos; afirmaciones sin números (p.ej. "sí tenemos alberca") dependen del prompt y la regla de cero invenciones.

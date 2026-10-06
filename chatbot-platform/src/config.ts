@@ -64,6 +64,29 @@ export const config = {
     /** Contacto que ve el cliente cuando su cuenta está pausada. */
     supportContact: env('SUPPORT_CONTACT', ''),
   },
+  /** Cobro automático de suscripciones. Cada proveedor se activa con sus claves; si ninguno está, el cobro sigue siendo manual. */
+  billing: {
+    graceDays: Number(env('BILLING_GRACE_DAYS', '5')),
+    stripe: {
+      secretKey: env('STRIPE_SECRET_KEY', ''),
+      webhookSecret: env('STRIPE_WEBHOOK_SECRET', ''),
+      apiUrl: env('STRIPE_API_URL', 'https://api.stripe.com'),
+    },
+    mercadopago: {
+      accessToken: env('MERCADOPAGO_ACCESS_TOKEN', ''),
+      webhookSecret: env('MERCADOPAGO_WEBHOOK_SECRET', ''),
+      apiUrl: env('MERCADOPAGO_API_URL', 'https://api.mercadopago.com'),
+    },
+  },
+  /** Monitoreo: ping periódico (healthchecks.io, Uptime Kuma…) y aviso por webhook (Slack, ntfy, Telegram…) además del correo. */
+  monitor: {
+    heartbeatUrl: env('HEARTBEAT_URL', ''),
+    alertWebhookUrl: env('ALERT_WEBHOOK_URL', ''),
+    backupDir: env('BACKUP_DIR', '/backups'),
+    /** Horas sin respaldo nuevo antes de avisar. */
+    backupMaxAgeHours: Number(env('BACKUP_MAX_AGE_HOURS', '36')),
+    version: env('APP_VERSION', 'dev'),
+  },
   /** Aviso (sin bloqueo) cuando una cuenta supera este gasto de IA en el mes, en USD. 0 = sin aviso. */
   aiAlertUsdPerAccount: Number(env('AI_ALERT_USD_PER_ACCOUNT', '0')),
 };

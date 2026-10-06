@@ -5,6 +5,7 @@
 import { notifyUsers } from './automation/store.js';
 import { config } from './config.js';
 import { query, queryOne } from './db.js';
+import { enforceAccess } from './billing/service.js';
 import { logEvent } from './logs.js';
 import { sendMail } from './mailer.js';
 import * as store from './store/index.js';
@@ -87,6 +88,7 @@ export async function checkAiSpend(now = new Date()) {
 export function startLifecycle(intervalMs = 10 * 60_000) {
   const tick = () => {
     checkTrials().catch((e) => logEvent({ level: 'error', source: 'system', message: `Revisión de pruebas: ${e?.message ?? e}` }));
+    enforceAccess().catch((e) => logEvent({ level: 'error', source: 'system', message: `Revisión de pagos: ${e?.message ?? e}` }));
     checkAiSpend().catch((e) => logEvent({ level: 'error', source: 'system', message: `Revisión de gasto de IA: ${e?.message ?? e}` }));
   };
   tick();

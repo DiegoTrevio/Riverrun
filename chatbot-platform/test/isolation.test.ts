@@ -46,11 +46,13 @@ function fillParams(url: string): string | null {
     [/^\/api\/services\/:id/, 'service'],
     [/^\/api\/users\/:id/, 'user'],
     [/^\/api\/ai-prices\/:model/, 'model'],
+    // Los planes son globales (solo el superadmin los edita): la cuenta A debe recibir 403 sea cual sea la clave.
+    [/^\/api\/plans\/:key/, 'bot'],
   ];
   const hit = byPrefix.find(([re]) => re.test(url));
   if (!hit) return null;
   return url
-    .replace(/:(id|cid|iid|kid|model)\b/, B[hit[1]])
+    .replace(/:(id|cid|iid|kid|model|key)\b/, B[hit[1]])
     .replace(':session', 'sesion-b')
     .replace(':sid', B.sequence);
 }
