@@ -122,9 +122,10 @@ Al cambiar una contraseña, las demás sesiones abiertas de ese usuario se cierr
 1. **Cuentas** (superadministrador): crea la cuenta del cliente y, opcionalmente, su primer administrador.
 2. **Asistentes → + Nuevo asistente**: elige el nombre y tipo de negocio. La configuración tiene cuatro secciones:
    - **Instrucciones**: escribe cómo debe atender, qué debe preguntar y cuál es su objetivo. El estilo y las opciones avanzadas quedan plegados.
-   - **Conocimiento**: agrega productos, precios, horarios y preguntas frecuentes.
+   - **Conocimiento**: agrega productos, precios, horarios y preguntas frecuentes, o usa **⚡ Llena todo por mí**: pega la dirección de tu página (o un Google Sheets compartido), sube un PDF, una foto del menú o un CSV, o pega texto. La IA lo ordena en secciones, tú lo revisas y lo guardas; **🔄 Volver a sincronizar** lo actualiza desde la misma página. Solo se usa lo que está en la fuente (no inventa) y las páginas internas están bloqueadas. Excel y Word: guárdalos como CSV/PDF.
    - **Fotos**: sube imágenes y explica cuándo enviarlas; las reglas de envío son opcionales.
    - **Probar**: conversa como un cliente y revisa los datos guardados automáticamente. Los detalles técnicos de cada respuesta quedan plegados. Funciona aunque el asistente esté apagado.
+   Quien administra su propia cuenta ve un **menú simple** (Conversaciones, Mi asistente, Probar mi asistente, Agenda, Ajustes y Notificaciones); el resto vive en **Ajustes** o en «☰ Mostrar todas las opciones». El asistente de **Primeros pasos** tiene 4 pasos (negocio → asistente → prueba → WhatsApp); las fotos son opcionales y se agregan en el paso de prueba.
 3. **Canales → Nuevo canal**: elige la plataforma, asígnale el asistente y sigue las instrucciones de conexión (abajo).
 4. En **Instrucciones**, marca **Asistente encendido** y guarda.
 
@@ -344,11 +345,11 @@ test/              pruebas
 Panel (bajo `/api`, con sesión por cookie; todo se limita a la cuenta del usuario):
 
 - Sesión: `POST /api/login`, `GET /api/me`, `PUT /api/me/password`, `POST /api/me/resend-verification`
-- Primeros pasos: `GET /api/onboarding`, `POST /api/onboarding/{business,assistant,step,whatsapp}`
+- Primeros pasos: `GET /api/onboarding`, `POST /api/onboarding/{business,assistant,import,step,whatsapp}` (`import` lee una web, archivo o texto y devuelve la propuesta de conocimiento)
 - Consumo de IA: `GET /api/usage?month=AAAA-MM`, `/api/ai-prices` (superadmin)
 - Cuentas: `/api/accounts`
 - Usuarios: `/api/users`
-- Chatbots: `/api/chatbots`, `/:id/duplicate`, `/:id/knowledge`, `/:id/images`, `/:id/playground`, `/:id/test-message` (probador de palabras: reglas, activadores y desactivadores, sin IA)
+- Chatbots: `/api/chatbots`, `/:id/duplicate`, `/:id/knowledge` (`POST /:id/knowledge/import`: propuesta, o guardado con `save`), `/:id/images`, `/:id/playground`, `/:id/test-message` (probador de palabras: reglas, activadores y desactivadores, sin IA)
 - Canales: `/api/channels`, `/:id/setup`, `/:id/status`, `/:id/rotate-token`, `/:id/whatsapp/{session,connect,logout,test}` (`session`: crea la instancia si hace falta y devuelve el QR vigente o el código por número; el panel la consulta cada 3 s)
 - Conversaciones: `/api/conversations`, `/:id/{takeover,release,close,send,send-image,reset-memory,automation,sequences}`
 - Automatización: `/api/automations`, `/api/sequences`, `/api/campaigns` (`/:id/{preview,launch,cancel,recipients}`), `/api/settings`

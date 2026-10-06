@@ -109,6 +109,77 @@ function lines(obj, key, opts = {}) {
   });
 }
 
+
+/* ------------------------------ Importar información del negocio ------------------------------ */
+
+const SECTION_LABELS = { catalog: 'Productos o servicios con precios', hours: 'Horarios', location: 'Ubicación y contacto', faq: 'Preguntas frecuentes', other: 'Otra información' };
+
+/**
+ * Tarjeta "Llena todo por mí": la persona da su página web, sube un PDF, una foto o un CSV, o pega texto;
+ * la IA lo ordena en secciones y se devuelve a `onResult` para que lo revise antes de guardar.
+ */
+function importCard({ endpoint, url = '', onResult, title = '⚡ Llena todo por mí', intro, button = 'Leer mi información' }) {
+  const f = { url, text: '' };
+  let file = null;
+  const fileName = h('span', { class: 'small muted' });
+  const fileInput = h('input', {
+    type: 'file', hidden: true, accept: '.pdf,.csv,.tsv,.txt,.md,image/jpeg,image/png,image/webp',
+    onchange: (e) => { file = e.target.files[0] || null; fileName.textContent = file ? `📎 ${file.name}` : ''; },
+  });
+  const status = h('span', { class: 'small muted' });
+  const btn = h('button', { class: 'primary' }, button);
+  btn.addEventListener('click', async () => {
+    if (!file && !f.url.trim() && f.text.trim().length < 20) return toast('Pega la dirección de tu página, sube un archivo o pega tu información', true);
+    const form = new FormData();
+    if (file) form.append('file', file);
+    else if (f.url.trim()) form.append('url', f.url.trim());
+    else form.append('text', f.text);
+    btn.disabled = true;
+    status.textContent = 'Leyendo tu información… puede tardar hasta un minuto.';
+    const r = await run(() => api('POST', endpoint, form, true));
+    btn.disabled = false;
+    status.textContent = '';
+    if (r) { r.source_url = file ? null : f.url.trim() || null; await onResult(r); }
+  });
+  return h('div', { class: 'card import-card' },
+    h('h3', { style: 'margin-top:0' }, title),
+    h('p', { class: 'muted' }, intro || 'Pega la dirección de tu página web o de tu menú, o sube tu lista de precios (PDF, foto, CSV). Armamos la información por ti y tú solo la revisas.'),
+    field('Dirección web (página, menú, Google Sheets compartido)', text(f, 'url', { placeholder: 'https://www.minegocio.com' })),
+    h('div', { class: 'row' },
+      h('button', { onclick: () => fileInput.click() }, '📎 Subir PDF, foto o CSV'), fileInput, fileName),
+    h('details', {}, h('summary', {}, 'O pega aquí tu información'), area(f, 'text', { big: true, placeholder: 'Pega tu menú, lista de precios, horarios…' })),
+    h('div', { class: 'row', style: 'margin-top:10px' }, btn, status));
+}
+
+/** Propuesta de importación (en la pestaña Conocimiento): se revisa y se guarda con un clic. */
+function importPreview(box, bot, data) {
+  const sections = { ...data.sections };
+  fill(box, h('div', { class: 'card' },
+    h('h3', { style: 'margin-top:0' }, 'Revisa lo que encontramos'),
+    h('p', { class: 'muted' }, `Fuente: ${data.source}. Corrige lo que haga falta: al guardar reemplaza los temas con el mismo nombre. ${data.truncated ? 'La fuente era muy larga y solo se leyó el inicio. ' : ''}Nada se inventó: si falta algo, escríbelo aquí.`),
+    Object.entries(SECTION_LABELS).map(([k, label]) => field(label, area(sections, k, { big: k === 'catalog' }))),
+    h('div', { class: 'row' },
+      h('button', { class: 'primary', onclick: async () => {
+        // Se guarda tal como quedó revisado, sin volver a leer la página.
+        const saved = await run(() => saveImported(bot, sections, data.source_url), 'Información guardada ✅');
+        if (saved) render();
+      } }, 'Guardar'),
+      h('button', { onclick: () => fill(box) }, 'Descartar'))));
+}
+
+async function saveImported(bot, sections, sourceUrl) {
+  const cats = { catalog: ['precios', 'Productos, servicios y precios'], hours: ['horarios', 'Horarios'], location: ['ubicaciones', 'Ubicación y contacto'], faq: ['preguntas_frecuentes', 'Preguntas frecuentes'], other: ['general', 'Otra información'] };
+  const items = await api('GET', `/api/chatbots/${bot.id}/knowledge`);
+  for (const [k, [category, title]] of Object.entries(cats)) {
+    const content = (sections[k] || '').trim();
+    if (!content) continue;
+    const prev = items.find((i) => i.title === title);
+    const body = { category, title, content, active: true, always_include: k !== 'faq', source_url: sourceUrl || null };
+    await (prev ? api('PUT', `/api/knowledge/${prev.id}`, body) : api('POST', `/api/chatbots/${bot.id}/knowledge`, body));
+  }
+  return true;
+}
+
 /* ------------------------------ Router ------------------------------ */
 
 window.addEventListener('hashchange', render);
@@ -164,6 +235,8 @@ async function render() {
     if (!parts.length && needsOnboarding()) location.hash = '#/inicio';
     else if (!parts.length) await viewDashboard(content);
     else if (parts[0] === 'inicio') await viewOnboarding(content, parts[1]);
+    else if (parts[0] === 'asistente' || parts[0] === 'probar') await goMainBot(content, parts[0] === 'probar' ? 'probar' : 'conocimiento');
+    else if (parts[0] === 'ajustes') await viewSettingsHub(content);
     else if (parts[0] === 'consumo') await viewUsage(content, params);
     else if (parts[0] === 'bot') await viewBot(content, parts[1], parts[2] || 'general');
     else if (parts[0] === 'channels') await viewChannels(content, params);
@@ -193,8 +266,41 @@ async function refreshBell() {
 }
 setInterval(() => { if (state.me) refreshBell(); }, 20000);
 
+/** Menú simple (por defecto para quien administra su propia cuenta): lo cotidiano en seis opciones; el resto, en Ajustes. */
+const isAdvanced = () => { try { return localStorage.getItem('cp-advanced') === '1'; } catch { return false; } };
+const setAdvanced = (on) => { try { localStorage.setItem('cp-advanced', on ? '1' : '0'); } catch { /* sin storage */ } };
+
+function simpleLinks(link) {
+  return [
+    needsOnboarding() ? link('#/inicio', '🚀 Primeros pasos', 'inicio') : null,
+    link('#/conversations', '💬 Conversaciones', 'conversations'),
+    link('#/asistente', '🤖 Mi asistente', 'bot'),
+    link('#/probar', '🧪 Probar mi asistente', 'probar'),
+    link('#/agenda', '📅 Agenda', 'agenda'),
+    link('#/ajustes', '⚙️ Ajustes', 'ajustes'),
+    h('a', { href: '#/notifications', class: 'notifications' }, '🔔 Notificaciones ', bell),
+  ];
+}
+
+function fullLinks(link, active, bell) {
+  return [
+    isAdmin() && (!isSuper() || state.accountId) ? link('#/inicio', 'Primeros pasos', 'inicio') : null,
+    isAdmin() ? link('#/', 'Asistentes', 'home') : null,
+    isAdmin() ? link('#/channels', 'Canales', 'channels') : null,
+    link('#/conversations', 'Conversaciones', 'conversations'),
+    link('#/agenda', 'Agenda', 'agenda'),
+    isAdmin() ? link('#/automation', 'Automatización', 'automation') : null,
+    h('a', { href: '#/notifications', class: active === 'notifications' ? 'active' : '' }, 'Notificaciones ', bell),
+    isAdmin() ? link('#/users', 'Usuarios', 'users') : null,
+    isSuper() ? link('#/accounts', 'Cuentas', 'accounts') : null,
+    isAdmin() ? link('#/consumo', 'Consumo de IA', 'consumo') : null,
+    isAdmin() ? link('#/logs', 'Registros', 'logs') : null,
+  ];
+}
+
 function shell(active, content) {
   refreshBell();
+  const simple = isAdmin() && !isSuper() && !isAdvanced();
   const link = (href, label, key) => h('a', { href, class: active === key ? 'active' : '' }, label);
   const { user, account } = state.me;
   const switcher = isSuper()
@@ -214,20 +320,11 @@ function shell(active, content) {
     h('nav', { class: 'sidebar' },
       h('div', { class: 'brand' }, '💬 Chatbots'),
       switcher,
-      isAdmin() && (!isSuper() || state.accountId) ? link('#/inicio', 'Primeros pasos', 'inicio') : null,
-      isAdmin() ? link('#/', 'Asistentes', 'home') : null,
-      isAdmin() ? link('#/channels', 'Canales', 'channels') : null,
-      link('#/conversations', 'Conversaciones', 'conversations'),
-      link('#/agenda', 'Agenda', 'agenda'),
-      isAdmin() ? link('#/automation', 'Automatización', 'automation') : null,
-      h('a', { href: '#/notifications', class: active === 'notifications' ? 'active' : '' }, 'Notificaciones ', bell),
-      isAdmin() ? link('#/users', 'Usuarios', 'users') : null,
-      isSuper() ? link('#/accounts', 'Cuentas', 'accounts') : null,
-      isAdmin() ? link('#/consumo', 'Consumo de IA', 'consumo') : null,
-      isAdmin() ? link('#/logs', 'Registros', 'logs') : null,
+      simple ? simpleLinks(link) : fullLinks(link, active, bell),
       h('div', { class: 'spacer' }),
       h('div', { class: 'small muted', style: 'padding:4px 10px' }, user.name || user.email, h('br'), ROLE_LABEL[user.role]),
       link('#/password', 'Mi perfil', 'password'),
+      isAdmin() && !isSuper() ? h('a', { href: '#', class: 'small muted', onclick: (e) => { e.preventDefault(); setAdvanced(!isAdvanced()); render(); } }, isAdvanced() ? '☰ Menú simple' : '☰ Mostrar todas las opciones') : null,
       h('a', { href: '#', onclick: async (e) => { e.preventDefault(); await api('POST', '/api/logout'); state.me = null; location.hash = '#/login'; } }, 'Cerrar sesión'),
     ),
     h('main', { class: 'main' }, accountBanner(), content),
@@ -419,6 +516,32 @@ async function viewDashboard(root) {
   );
 }
 
+
+/** "Mi asistente" y "Probar": abren el asistente principal de la cuenta (el más antiguo). */
+async function goMainBot(root, tab) {
+  const bots = await api('GET', `/api/chatbots${acct()}`);
+  if (!bots.length) { location.hash = '#/inicio'; return; }
+  location.replace(`#/bot/${bots[0].id}/${tab}`);
+}
+
+/** Ajustes: todo lo que no es el día a día, con una explicación de una línea. */
+async function viewSettingsHub(root) {
+  const tile = (href, icon, title, text) => h('a', { class: 'card tile', href }, h('div', { style: 'font-size:28px' }, icon), h('h3', { style: 'margin:6px 0' }, title), h('p', { class: 'muted small', style: 'margin:0' }, text));
+  root.append(
+    h('h1', {}, 'Ajustes'),
+    h('div', { class: 'grid' },
+      tile('#/channels', '📱', 'Canales', 'Conecta o desconecta tu WhatsApp, Telegram, Instagram, Messenger o el chat de tu sitio web.'),
+      tile('#/automation/settings', '🕘', 'Horario y avisos', 'Tu horario de atención, zona horaria y a quién avisar.'),
+      tile('#/agenda/servicios', '🗓️', 'Servicios y citas', 'Qué servicios agenda tu asistente y cuánto dura cada uno.'),
+      tile('#/automation', '⚡', 'Respuestas automáticas', 'Recordatorios, seguimientos y campañas a tus clientes.'),
+      tile('#/users', '👥', 'Mi equipo', 'Invita a quienes atienden las conversaciones contigo.'),
+      tile('#/consumo', '💳', 'Consumo', 'Cuánto ha usado tu asistente este mes.'),
+      tile('#/logs', '🛠️', 'Registros', 'Si algo falla, aquí se ve qué pasó.'),
+      tile('#/password', '🔑', 'Mi perfil', 'Tu nombre, correo y contraseña.')),
+    h('p', { class: 'muted small' }, 'Si prefieres ver todas las opciones del panel, usa "☰ Mostrar todas las opciones" en el menú.'),
+  );
+}
+
 /* ------------------------------ Chatbot ------------------------------ */
 
 // La configuración cotidiana cabe en cuatro secciones.
@@ -590,7 +713,22 @@ async function tabKnowledge(root, bot) {
     return box;
   };
 
+  const preview = h('div');
+  const sources = [...new Set(items.map((i) => i.source_url).filter(Boolean))];
   root.append(
+    importCard({
+      endpoint: `/api/chatbots/${bot.id}/knowledge/import`,
+      url: sources[0] || '',
+      title: items.length ? '⚡ Actualizar desde mi página o archivo' : '⚡ Llena todo por mí',
+      button: 'Leer mi información',
+      onResult: (data) => importPreview(preview, bot, data),
+    }),
+    ...(sources.length ? [h('p', { class: 'small muted', style: 'margin:-8px 0 16px' }, 'Información importada de ',
+      sources.map((u) => [h('strong', {}, u), ' ', h('button', { class: 'small', onclick: async () => {
+        const r = await run(() => api('POST', `/api/chatbots/${bot.id}/knowledge/import`, { url: u, save: true }), 'Actualizado desde tu página ✅');
+        if (r) render();
+      } }, '🔄 Volver a sincronizar')]))] : []),
+    preview,
     h('div', { class: 'card' },
       h('p', { style: 'margin-top:0' },
         'Agrega la información que necesita para responder: productos, precios, horarios y preguntas frecuentes.'),
@@ -2270,7 +2408,6 @@ async function viewNotifications(root) {
 const ONB_STEPS = [
   ['negocio', 'business', 'Tu negocio'],
   ['asistente', 'assistant', 'Tu asistente'],
-  ['fotos', 'photos', 'Fotos'],
   ['prueba', 'test', 'Pruébalo'],
   ['whatsapp', 'whatsapp', 'WhatsApp'],
 ];
@@ -2305,24 +2442,21 @@ async function viewOnboarding(root, stepKey) {
   if (slug === 'asistente') return onbAssistant(box, ob, () => next(slug));
   if (!ob.chatbot_id) return box.append(h('div', { class: 'card' }, h('p', {}, 'Primero configura tu asistente.'), h('a', { class: 'btn primary', href: '#/inicio/asistente' }, 'Ir al paso 2')));
   const bot = await api('GET', `/api/chatbots/${ob.chatbot_id}`);
-  if (slug === 'fotos') {
-    box.append(h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, 'Fotos de tus productos o instalaciones (opcional)'),
-      h('p', { class: 'muted' }, 'El asistente solo envía fotos de este catálogo, y elige la correcta según lo que pregunte el cliente. Describe cada foto (qué es, precio si aplica) para que la use bien.')));
-    const imgs = h('div');
-    box.append(imgs, h('div', { class: 'row' },
-      h('button', { class: 'primary', onclick: async () => { await run(() => api('POST', withAcct('/api/onboarding/step'), { step: 'photos' })); next(slug); } }, 'Continuar'),
-      h('span', { class: 'muted small' }, 'Puedes agregar o cambiar fotos después en Chatbots → Imágenes.')));
-    return tabImages(imgs, bot);
-  }
   if (slug === 'prueba') {
     box.append(h('div', { class: 'card' },
       h('h3', { style: 'margin-top:0' }, 'Pruébalo como si fueras un cliente'),
       h('p', { class: 'muted' }, 'Pregunta precios, horarios o pide algo que no esté en tu información: debe decir que lo confirma con el equipo en lugar de inventar. Si algo no te gusta, regresa al paso 2 y ajusta la información.')));
     const pg = h('div');
-    box.append(pg, h('div', { class: 'row', style: 'margin-top:12px' },
-      h('button', { class: 'primary', onclick: async () => { await run(() => api('POST', withAcct('/api/onboarding/step'), { step: 'test' })); next(slug); } }, 'Me gusta, continuar'),
-      h('a', { class: 'btn', href: '#/inicio/asistente' }, 'Ajustar información')));
+    const photos = h('div');
+    box.append(pg,
+      h('details', { class: 'card', style: 'margin-top:12px' },
+        h('summary', {}, '📷 Agregar fotos de tus productos o instalaciones (opcional)'),
+        h('p', { class: 'muted' }, 'El asistente solo envía fotos de este catálogo y elige la correcta según lo que pregunte el cliente. Describe cada foto (qué es, precio si aplica). Puedes hacerlo después en Mi asistente → Fotos.'),
+        photos),
+      h('div', { class: 'row', style: 'margin-top:12px' },
+        h('button', { class: 'primary', onclick: async () => { await run(() => api('POST', withAcct('/api/onboarding/step'), { step: 'test' })); next(slug); } }, 'Me gusta, continuar'),
+        h('a', { class: 'btn', href: '#/inicio/asistente' }, 'Ajustar información')));
+    tabImages(photos, bot);
     return tabPlayground(pg, bot);
   }
   if (slug === 'whatsapp') return onbWhatsapp(box, ob, bot);
@@ -2347,24 +2481,41 @@ function onbAssistant(box, ob, done) {
   // Sin bot todavía, el trato lo decide la plantilla del giro (p.ej. "usted" en salud).
   const f = { assistant_name: a.assistant_name || '', formality: ob.assistant ? a.formality : '', description: '', knowledge: { catalog: '', hours: '', location: '', faq: '', other: '', ...a.knowledge } };
   const k = f.knowledge;
-  box.append(h('div', { class: 'card' },
-    h('h3', { style: 'margin-top:0' }, 'Lo que tu asistente sabe'),
-    h('p', { class: 'muted' }, 'Tu asistente responde únicamente con esta información: si un precio o dato no está aquí, dirá que lo confirma con tu equipo. Escribe como se lo explicarías a un empleado nuevo.'),
-    h('div', { class: 'grid' },
-      field('Nombre del asistente (opcional)', text(f, 'assistant_name', { placeholder: 'Sofi' })),
-      field('Cómo trata a tus clientes', select(f, 'formality', [...(f.formality ? [] : [['', 'Lo usual en tu tipo de negocio']]), ['tu', 'De tú'], ['usted', 'De usted']]))),
-    field('Describe tu negocio en una o dos frases', area(f, 'description', { placeholder: 'Clínica dental familiar en el centro de Monterrey, con 15 años de experiencia.' })),
-    field('Productos o servicios con precios *', area(k, 'catalog', { big: true, placeholder: 'Limpieza dental — $600 (45 min)\nResina — desde $900\nBlanqueamiento — $3,500\nConsulta de valoración — gratis' }), 'Uno por renglón. Incluye precios, duración, tamaños o lo que te pregunten.'),
-    h('div', { class: 'grid' },
-      field('Detalles de horario (opcional)', area(k, 'hours', { placeholder: 'Último turno a las 18:30\nDías festivos cerramos' }), 'Tu horario de atención del paso 1 ya lo conoce; aquí van solo detalles extra.'),
-      field('Ubicación y contacto', area(k, 'location', { placeholder: 'Av. Constitución 100, Centro, Monterrey\nEstacionamiento gratis\nTel. 81 1234 5678' }))),
-    field('Preguntas frecuentes', area(k, 'faq', { big: true, placeholder: '¿Aceptan tarjeta? Sí, todas las tarjetas y transferencia.\n¿Hay estacionamiento? Sí, gratuito.' })),
-    field('Otra información (promociones, políticas, formas de pago…)', area(k, 'other')),
-    h('button', { class: 'primary', onclick: async () => {
-      if (!k.catalog.trim()) return toast('Escribe al menos tus productos o servicios', true);
-      if (await run(() => api('POST', withAcct('/api/onboarding/assistant'), { ...f, formality: f.formality || undefined }), 'Asistente listo')) done();
-    } }, 'Guardar y continuar'),
-    ob.chatbot_id ? h('p', { class: 'small muted' }, 'Para cambiar cómo atiende y qué pregunta entra a ', h('a', { href: `#/bot/${ob.chatbot_id}/personalidad` }, 'la configuración avanzada'), '.') : null));
+  const hasInfo = () => Object.values(k).some((v) => v && v.trim());
+  let imported = null;
+  const draw = () => fill(box,
+    importCard({
+      endpoint: withAcct('/api/onboarding/import'),
+      title: hasInfo() ? '⚡ Leer otra fuente' : '⚡ Lo más rápido: llena todo por mí',
+      onResult: (data) => {
+        imported = data;
+        if (data.description && !f.description.trim()) f.description = data.description;
+        for (const key of Object.keys(k)) if (data.sections[key]) k[key] = data.sections[key];
+        toast('Listo: revisa lo que encontramos y corrige lo que haga falta');
+        draw();
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      },
+    }),
+    imported ? h('div', { class: 'banner' }, `Leímos ${imported.source}. Revisa abajo: es lo único que tu asistente podrá afirmar.${imported.truncated ? ' (La fuente era muy larga: solo se leyó el inicio.)' : ''}`) : null,
+    h('div', { class: 'card' },
+      h('h3', { style: 'margin-top:0' }, 'Lo que tu asistente sabe'),
+      h('p', { class: 'muted' }, 'Tu asistente responde únicamente con esta información: si un precio o dato no está aquí, dirá que lo confirma con tu equipo. Escribe como se lo explicarías a un empleado nuevo.'),
+      h('div', { class: 'grid' },
+        field('Nombre del asistente (opcional)', text(f, 'assistant_name', { placeholder: 'Sofi' })),
+        field('Cómo trata a tus clientes', select(f, 'formality', [...(f.formality ? [] : [['', 'Lo usual en tu tipo de negocio']]), ['tu', 'De tú'], ['usted', 'De usted']]))),
+      field('Describe tu negocio en una o dos frases', area(f, 'description', { placeholder: 'Clínica dental familiar en el centro de Monterrey, con 15 años de experiencia.' })),
+      field('Productos o servicios con precios *', area(k, 'catalog', { big: true, placeholder: 'Limpieza dental — $600 (45 min)\nResina — desde $900\nBlanqueamiento — $3,500\nConsulta de valoración — gratis' }), 'Uno por renglón. Incluye precios, duración, tamaños o lo que te pregunten.'),
+      h('div', { class: 'grid' },
+        field('Detalles de horario (opcional)', area(k, 'hours', { placeholder: 'Último turno a las 18:30\nDías festivos cerramos' }), 'Tu horario de atención del paso 1 ya lo conoce; aquí van solo detalles extra.'),
+        field('Ubicación y contacto', area(k, 'location', { placeholder: 'Av. Constitución 100, Centro, Monterrey\nEstacionamiento gratis\nTel. 81 1234 5678' }))),
+      field('Preguntas frecuentes', area(k, 'faq', { big: true, placeholder: '¿Aceptan tarjeta? Sí, todas las tarjetas y transferencia.\n¿Hay estacionamiento? Sí, gratuito.' })),
+      field('Otra información (promociones, políticas, formas de pago…)', area(k, 'other')),
+      h('button', { class: 'primary', onclick: async () => {
+        if (!k.catalog.trim()) return toast('Escribe al menos tus productos o servicios', true);
+        if (await run(() => api('POST', withAcct('/api/onboarding/assistant'), { ...f, formality: f.formality || undefined }), 'Asistente listo')) done();
+      } }, 'Guardar y continuar'),
+      ob.chatbot_id ? h('p', { class: 'small muted' }, 'Para cambiar cómo atiende y qué pregunta entra a ', h('a', { href: `#/bot/${ob.chatbot_id}/personalidad` }, 'la configuración avanzada'), '.') : null));
+  draw();
 }
 
 function onbWhatsapp(box, ob, bot) {

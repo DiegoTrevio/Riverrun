@@ -1,6 +1,6 @@
 /**
  * Asistente de configuración: la empresa que se registró deja su bot funcionando sin ayuda.
- * Pasos: negocio → asistente → fotos (opcional) → prueba → WhatsApp.
+ * Pasos: negocio → asistente (con importación automática) → prueba (con fotos opcionales) → WhatsApp.
  */
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -29,7 +29,7 @@ export function assertVerified(user: User) {
 /** Bot principal de la cuenta (el más antiguo): el que crea y edita el asistente. */
 const mainBot = (accountId: string) => queryOne<{ id: string }>(`SELECT id FROM chatbots WHERE account_id = $1 ORDER BY created_at LIMIT 1`, [accountId]);
 
-const KNOWLEDGE_TITLES = {
+export const KNOWLEDGE_TITLES = {
   catalog: ['precios', 'Productos, servicios y precios'],
   hours: ['horarios', 'Horarios'],
   location: ['ubicaciones', 'Ubicación y contacto'],
@@ -57,7 +57,8 @@ export async function onboardingRoutes(api: FastifyInstance) {
       test: !!acc.onboarding.test,
       whatsapp: !!acc.onboarding.whatsapp,
     };
-    const complete = ONBOARDING_STEPS.every((s) => done[s]);
+    // Las fotos son opcionales: no bloquean terminar la configuración.
+    const complete = ONBOARDING_STEPS.filter((s) => s !== 'photos').every((s) => done[s]);
     if (complete && !acc.onboarding.done) await store.markOnboarding(accountId, { done: true });
     const settings = await astore.getSettings(accountId);
     const answers = bot ? await store.getChatbot(bot.id) : null;

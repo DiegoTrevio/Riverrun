@@ -187,6 +187,8 @@ export interface KnowledgeItem {
   always_include: boolean;
   active: boolean;
   sort_order: number;
+  /** Página web de la que se importó (para volver a sincronizar). */
+  source_url?: string | null;
 }
 
 /** Cuándo se envía una foto. Los momentos marcados los garantiza el sistema (no dependen de la IA). */

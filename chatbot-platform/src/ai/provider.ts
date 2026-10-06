@@ -1,8 +1,14 @@
 import { config } from '../config.js';
 
+/** Parte de un mensaje con archivos (imagen o PDF) para los modelos que los leen directamente. */
+export type ContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } }
+  | { type: 'file'; file: { filename: string; file_data: string } };
+
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
-  content: string;
+  content: string | ContentPart[];
 }
 
 export interface Usage {

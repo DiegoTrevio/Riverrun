@@ -13,6 +13,7 @@ import { automationRoutes } from './routes/automation.js';
 import { channelRoutes } from './routes/channels.js';
 import { chatbotRoutes } from './routes/chatbots.js';
 import { conversationRoutes } from './routes/conversations.js';
+import { knowledgeImportRoutes } from './routes/import.js';
 import { onboardingRoutes } from './routes/onboarding.js';
 import { publicRoutes } from './routes/public.js';
 import { signupRoutes } from './routes/signup.js';
@@ -65,6 +66,7 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
     await automationRoutes(api, service);
     await agendaRoutes(api, service);
     await onboardingRoutes(api);
+    await knowledgeImportRoutes(api, opts.ai);
   });
 
   return { app, service };

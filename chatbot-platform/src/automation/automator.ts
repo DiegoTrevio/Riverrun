@@ -103,7 +103,7 @@ export function describeCondition(c: Condition): string {
 
 /* ------------------------------ Webhooks salientes seguros ------------------------------ */
 
-function isPrivateIp(ip: string) {
+export function isPrivateIp(ip: string) {
   if (net.isIPv4(ip)) {
     const [a, b] = ip.split('.').map(Number);
     return a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
@@ -116,7 +116,7 @@ function isPrivateIp(ip: string) {
  * Resolución DNS que rechaza direcciones internas. Se usa en la conexión misma (no antes), así un dominio
  * que cambia de IP entre la revisión y la conexión ("DNS rebinding") tampoco llega a la red interna.
  */
-function safeLookup(hostname: string, options: any, callback: (err: Error | null, address?: any, family?: number) => void) {
+export function safeLookup(hostname: string, options: any, callback: (err: Error | null, address?: any, family?: number) => void) {
   dns
     .lookup(hostname, { all: true })
     .then((addrs) => {

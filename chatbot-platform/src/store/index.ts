@@ -344,17 +344,18 @@ export async function upsertKnowledge(chatbotId: string, item: Partial<Knowledge
   if (item.id) {
     const row = await queryOne<KnowledgeItem>(
       `UPDATE knowledge_items SET category = COALESCE($2, category), title = COALESCE($3, title), content = COALESCE($4, content),
-         always_include = COALESCE($5, always_include), active = COALESCE($6, active), sort_order = COALESCE($7, sort_order), updated_at = now()
+         always_include = COALESCE($5, always_include), active = COALESCE($6, active), sort_order = COALESCE($7, sort_order),
+         source_url = CASE WHEN $9::boolean THEN $10 ELSE source_url END, updated_at = now()
        WHERE id = $1 AND chatbot_id = $8 RETURNING *`,
-      [item.id, item.category ?? null, item.title ?? null, item.content ?? null, item.always_include ?? null, item.active ?? null, item.sort_order ?? null, chatbotId],
+      [item.id, item.category ?? null, item.title ?? null, item.content ?? null, item.always_include ?? null, item.active ?? null, item.sort_order ?? null, chatbotId, item.source_url !== undefined, item.source_url ?? null],
     );
     if (!row) throw new Error('Elemento no encontrado');
     return row;
   }
   const row = await queryOne<KnowledgeItem>(
-    `INSERT INTO knowledge_items (chatbot_id, category, title, content, always_include, active, sort_order)
-     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-    [chatbotId, item.category ?? 'general', item.title ?? '', item.content ?? '', item.always_include ?? false, item.active ?? true, item.sort_order ?? 0],
+    `INSERT INTO knowledge_items (chatbot_id, category, title, content, always_include, active, sort_order, source_url)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+    [chatbotId, item.category ?? 'general', item.title ?? '', item.content ?? '', item.always_include ?? false, item.active ?? true, item.sort_order ?? 0, item.source_url ?? null],
   );
   return row!;
 }
@@ -662,7 +663,7 @@ export async function lastHumanActivity(conversationId: string): Promise<Date | 
 
 export async function insertAiRun(run: {
   account_id: string;
-  chatbot_id: string;
+  chatbot_id: string | null;
   conversation_id: string | null;
   kind: string;
   model: string;

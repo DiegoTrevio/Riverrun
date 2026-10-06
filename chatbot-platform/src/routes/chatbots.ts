@@ -33,6 +33,7 @@ const KnowledgeBody = z.object({
   always_include: z.boolean().optional(),
   active: z.boolean().optional(),
   sort_order: z.number().int().optional(),
+  source_url: z.string().max(2000).nullable().optional(),
 });
 
 const ImageMeta = z.object({
