@@ -133,7 +133,7 @@ export async function createHarness() {
   let summaryError: Error | null = null;
   let summaryFields: { field: string; value: string; source_message_id: number }[] = [];
   let n = 0;
-  const ai = {
+  const ai: import('../src/ai/provider.js').AiProvider = {
     async complete(req: Req) {
       if (!req.json_schema || req.json_schema.name === 'conversation_report') {
         summaryCalls.push(req);
@@ -191,7 +191,7 @@ export async function createHarness() {
 
   let msgN = 0;
   const h = {
-    app, service, calls, summaryCalls, sent, authed, loginAs, cookie: authed.cookie, failNext, token: '', botId: '', accountId: '', channelId: '',
+    app, service, ai, calls, summaryCalls, sent, authed, loginAs, cookie: authed.cookie, failNext, token: '', botId: '', accountId: '', channelId: '',
     setScript(s: Script) { script = s; },
     setSummary(s: string) { summary = s; },
     setSummaryError(error: Error | null) { summaryError = error; },

@@ -32,8 +32,21 @@ export interface CompletionRequest {
 
 /** Interfaz mínima del proveedor de IA: permite cambiar de proveedor o simularlo en pruebas. */
 export interface AiProvider {
+  embed?(texts: string[], model: string): Promise<EmbeddingResult>;
   complete(req: CompletionRequest): Promise<CompletionResult>;
   transcribe(audio: Buffer, mimeType: string): Promise<string | CompletionResult>;
+}
+
+export interface EmbeddingResult {
+  vectors: number[][];
+  model: string;
+  input_tokens: number;
+  latency_ms: number;
+  cost_usd?: number;
+}
+
+export function validEmbedding(v: unknown): v is number[] {
+  return Array.isArray(v) && v.length === 1536 && v.every((n) => typeof n === 'number' && Number.isFinite(n)) && v.some((n) => n !== 0);
 }
 
 export class AiError extends Error {
@@ -54,6 +67,19 @@ export class OpenAiProvider implements AiProvider {
     private timeoutMs = config.openai.timeoutMs,
     private provider: 'openrouter' | 'openai' = new URL(baseUrl).hostname === 'openrouter.ai' ? 'openrouter' : 'openai',
   ) {}
+
+  async embed(texts: string[], model: string): Promise<EmbeddingResult> {
+    if (!this.apiKey) throw new AiError('Configura la clave API para generar embeddings.');
+    if (!texts.length || texts.length > 64) throw new AiError('Lote de embeddings inválido.');
+    const started = Date.now();
+    const res = await this.post('/embeddings', JSON.stringify({ model: this.model(model), input: texts, encoding_format: 'float', dimensions: 1536 }), { 'content-type': 'application/json' });
+    const data: any = await res.json();
+    const rows = data.data;
+    if (!Array.isArray(rows) || rows.length !== texts.length) throw new AiError('Respuesta de embeddings inválida.');
+    rows.sort((a: any, b: any) => a.index - b.index);
+    if (rows.some((r: any, i: number) => r.index !== i || !validEmbedding(r.embedding))) throw new AiError('Dimensiones o índices de embeddings inválidos.');
+    return { vectors: rows.map((r: any) => r.embedding), model: data.model ?? model, input_tokens: data.usage?.prompt_tokens ?? data.usage?.total_tokens ?? 0, latency_ms: Date.now() - started, ...providerCost(data) };
+  }
 
   async complete(req: CompletionRequest): Promise<CompletionResult> {
     if (!this.apiKey) throw new AiError(this.provider === 'openrouter' ? 'Configura OPENROUTER_API_KEY para conectar el asistente con OpenRouter.' : 'OPENAI_API_KEY no configurado');

@@ -6,6 +6,7 @@ import type { Chatbot, Contact, Conversation, ImageAsset, Message } from '../typ
 import { agentActive, agentStatus, offAfterReply } from './activation.js';
 import { automaticField, customerProvided } from './customer-data.js';
 import { buildContext, type BusinessInfo } from './context.js';
+import { semanticKnowledge } from './knowledge.js';
 import { aiSelectableImages, automaticImages, imagesAfterReply, imagesBeforeReply, type ScheduledImage } from './images.js';
 import { DECISION_JSON_SCHEMA } from './decision.js';
 import { maybeSummarize } from './memory.js';
@@ -125,6 +126,7 @@ export class Engine {
       store.unsummarizedMessages(conv.id, conv.summary_until_id, bot.ai.recent_messages + bot.ai.summary_batch + pending.length + 4),
     ]);
     const images = allImages.filter((i) => i.active);
+    const semantic = await semanticKnowledge(bot, knowledge, [...history.slice(-4).filter((m) => m.direction === 'in').map((m) => m.content), customerText].join('\n'), this.ai);
     // Automatización y agenda (si están conectadas).
     const [intents, agendaCtx, business] = await Promise.all([
       this.ext.intents ? this.ext.intents(conv.account_id, bot.id).catch(() => []) : Promise.resolve([]),
@@ -154,7 +156,7 @@ export class Engine {
     const attempts: ProcessResult['attempts'] = [];
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       const ctx = buildContext({
-        bot, knowledge, images: aiImages, contact, conversation: conv, channelType: channel.type, history, pending, sentImageIds, imagesById, correction, intents, agenda: agendaCtx, business,
+        bot, knowledge: semantic ?? knowledge, knowledgeSelected: semantic !== null, images: aiImages, contact, conversation: conv, channelType: channel.type, history, pending, sentImageIds, imagesById, correction, intents, agenda: agendaCtx, business,
         autoImages, imagesNow: scheduledBefore.map((x) => x.image),
       });
       let completion;

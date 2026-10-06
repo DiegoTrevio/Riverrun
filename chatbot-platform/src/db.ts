@@ -76,5 +76,7 @@ export async function migrate(p: pg.Pool = pool): Promise<string[]> {
       client.release();
     }
   }
+  // A database migrated on plain PostgreSQL can gain pgvector later without deleting migration history.
+  await p.query(fs.readFileSync(path.join(migrationsDir, '011_knowledge_vectors.sql'), 'utf8'));
   return applied;
 }

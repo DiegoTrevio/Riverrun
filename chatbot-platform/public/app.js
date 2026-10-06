@@ -559,6 +559,11 @@ const catLabel = (c) => CAT_LABELS[c] || c.replace(/_/g, ' ');
 
 async function tabKnowledge(root, bot) {
   const items = await api('GET', `/api/chatbots/${bot.id}/knowledge`);
+  const search = await api('GET', `/api/chatbots/${bot.id}/knowledge/index`);
+  if (search.enabled) root.appendChild(h('div', { class: 'card' },
+    h('strong', {}, search.available ? 'Búsqueda por significado' : 'Búsqueda por palabras'),
+    h('p', { class: 'help' }, search.available ? `${search.indexed_items} documentos preparados. Los cambios se incorporan automáticamente al conversar.` : 'La búsqueda por significado no está disponible. El asistente sigue usando tu conocimiento.'),
+    search.available ? h('button', { class: 'small', onclick: async () => { if (await run(() => api('POST', `/api/chatbots/${bot.id}/knowledge/index`, {}), 'Conocimiento actualizado')) render(); } }, 'Preparar todo ahora') : null));
   const cats = state.meta.knowledge_categories;
   const catOptions = cats.map((c) => [c, catLabel(c)]);
   const newItem = { category: 'general', title: '', content: '', always_include: false };
@@ -2437,7 +2442,7 @@ function onbDone(box, ob) {
 /* ------------------------------ Consumo de IA ------------------------------ */
 
 const usd = (n) => `US$${(n || 0).toFixed(n < 1 ? 4 : 2)}`;
-const KIND_LABEL = { decision: 'Respuestas', summary: 'Resúmenes de memoria', transcription: 'Notas de voz' };
+const KIND_LABEL = { embedding: 'Búsqueda de conocimiento', decision: 'Respuestas', summary: 'Resúmenes de memoria', transcription: 'Notas de voz' };
 
 async function viewUsage(root, params) {
   const month = params.get('month') || new Date().toISOString().slice(0, 7);

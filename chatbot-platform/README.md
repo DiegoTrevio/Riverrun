@@ -19,6 +19,8 @@ Chat web (widget)    ┘    │                             │
 
 ## Lo que resuelve
 
+**Búsqueda semántica y evaluaciones.** pgvector permite recuperar conocimiento por significado y Promptfoo comprueba el contexto y las reglas del asistente. Consulta [configuración, funcionamiento, costos y pruebas](docs/knowledge-evaluations.md). El desarrollo requiere Node.js 22.22 o posterior; la búsqueda semántica se activa explícitamente y conserva la selección por palabras ante fallos.
+
 | Requisito | Cómo se cumple |
 |---|---|
 | **Conversación natural** | Guía de estilo de WhatsApp en el prompt (frases cortas, una pregunta por turno, no repetir saludo), tono/idioma/longitud/emojis/trato configurables, ejemplos de estilo, formato WhatsApp (`*negritas*`, sin Markdown), división en 1–N mensajes, "escribiendo…" proporcional, y agrupación de mensajes seguidos del cliente (debounce) para contestar una sola vez. |

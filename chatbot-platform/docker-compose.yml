@@ -4,7 +4,7 @@
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:0.8.2-pg16
     restart: unless-stopped
     environment:
       POSTGRES_USER: chatbot
@@ -77,6 +77,8 @@ services:
       OPENROUTER_MODEL: ${OPENROUTER_MODEL:-${OPENAI_MODEL:-openai/gpt-4.1-mini}}
       OPENROUTER_SUMMARY_MODEL: ${OPENROUTER_SUMMARY_MODEL:-${OPENAI_SUMMARY_MODEL:-openai/gpt-4.1-mini}}
       OPENROUTER_TRANSCRIPTION_MODEL: ${OPENROUTER_TRANSCRIPTION_MODEL:-${OPENAI_TRANSCRIPTION_MODEL:-google/gemini-2.5-flash}}
+      KNOWLEDGE_SEARCH_ENABLED: ${KNOWLEDGE_SEARCH_ENABLED:-false}
+      OPENROUTER_EMBEDDING_MODEL: ${OPENROUTER_EMBEDDING_MODEL:-openai/text-embedding-3-small}
       OPENROUTER_TIMEOUT_MS: ${OPENROUTER_TIMEOUT_MS:-${OPENAI_TIMEOUT_MS:-45000}}
       ADMIN_USER: ${ADMIN_USER:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}

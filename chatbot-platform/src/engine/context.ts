@@ -7,6 +7,8 @@ import { keywords } from './text.js';
 export interface ContextInput {
   bot: Chatbot;
   knowledge: KnowledgeItem[];
+  /** Already selected and budgeted by the semantic retriever. */
+  knowledgeSelected?: boolean;
   images: ImageAsset[];
   contact: Contact;
   conversation: Conversation;
@@ -413,7 +415,7 @@ export function buildContext(input: ContextInput): BuiltContext {
     ...input.history.slice(-6).map((m) => m.content),
     input.contact.notes?.join(' ') ?? '',
   ].join(' ');
-  const knowledge = selectKnowledge(input.knowledge, queryText, bot.ai.knowledge_char_budget);
+  const knowledge = input.knowledgeSelected ? input.knowledge : selectKnowledge(input.knowledge, queryText, bot.ai.knowledge_char_budget);
   const { prompt, isFirstContact } = buildSystemPrompt(input, knowledge);
 
   const messages: ChatMessage[] = [{ role: 'system', content: prompt }];

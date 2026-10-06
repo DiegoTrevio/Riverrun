@@ -38,6 +38,10 @@ export const config = {
     transcriptionModel: env('OPENROUTER_TRANSCRIPTION_MODEL', env('OPENAI_TRANSCRIPTION_MODEL', useOpenRouter ? 'google/gemini-2.5-flash' : 'gpt-4o-mini-transcribe')),
     timeoutMs: Number(env('OPENROUTER_TIMEOUT_MS', env('OPENAI_TIMEOUT_MS', '45000'))),
   },
+  knowledgeSearch: {
+    enabled: env('KNOWLEDGE_SEARCH_ENABLED', 'false') === 'true',
+    model: env('OPENROUTER_EMBEDDING_MODEL', useOpenRouter ? 'openai/text-embedding-3-small' : 'text-embedding-3-small'),
+  },
   logRetentionDays: Number(env('LOG_RETENTION_DAYS', '30')),
   /**
    * Proxies delante del backend en los que se confía para conocer la IP real (X-Forwarded-For).

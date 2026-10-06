@@ -1,0 +1,43 @@
+name: Chatbot quality
+on:
+  pull_request:
+    paths: ['chatbot-platform/**', '.github/workflows/chatbot-quality.yml']
+  push:
+    branches: [main]
+    paths: ['chatbot-platform/**', '.github/workflows/chatbot-quality.yml']
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.2-pg16
+        env:
+          POSTGRES_USER: chatbot
+          POSTGRES_PASSWORD: chatbot
+          POSTGRES_DB: chatbot_test
+        ports: ['5432:5432']
+        options: --health-cmd "pg_isready -U chatbot" --health-interval 5s --health-timeout 5s --health-retries 10
+    defaults:
+      run:
+        working-directory: chatbot-platform
+    env:
+      TEST_DATABASE_URL: postgres://chatbot:chatbot@127.0.0.1:5432/chatbot_test
+      REQUIRE_PGVECTOR: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: chatbot-platform/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      - run: mkdir -p evals/results && npm run eval -- --output evals/results/regression.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: promptfoo-regressions
+          path: chatbot-platform/evals/results/regression.json

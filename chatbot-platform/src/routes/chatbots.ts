@@ -7,6 +7,8 @@ import { z } from 'zod';
 import { assertAccount, botFor, HttpError, notFound, requireRole, scopeAccount, targetAccount } from '../access.js';
 import { publicChannel } from '../channels/index.js';
 import { config } from '../config.js';
+import { OpenAiProvider } from '../ai/provider.js';
+import { indexKnowledge, knowledgeIndexStatus } from '../engine/knowledge.js';
 import { imageAbsolutePath } from '../engine/transport.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
@@ -162,6 +164,15 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
   };
 
   api.get('/api/chatbots/:id/knowledge', admins, async (req: any) => store.listKnowledge((await botFor(req.user, req.params.id)).id));
+  api.get('/api/chatbots/:id/knowledge/index', admins, async (req: any) => knowledgeIndexStatus(await botFor(req.user, req.params.id)));
+  api.post('/api/chatbots/:id/knowledge/index', admins, async (req: any) => {
+    const bot = await botFor(req.user, req.params.id);
+    if (!config.knowledgeSearch.enabled) throw new HttpError(400, 'Activa KNOWLEDGE_SEARCH_ENABLED para indexar conocimiento.');
+    const status = await knowledgeIndexStatus(bot);
+    if (!status.available) throw new HttpError(400, 'Instala la extensión pgvector y reinicia el backend.');
+    await indexKnowledge(bot, new OpenAiProvider());
+    return knowledgeIndexStatus(bot);
+  });
 
   api.post('/api/chatbots/:id/knowledge', admins, async (req: any) => {
     const bot = await botFor(req.user, req.params.id);
