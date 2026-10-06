@@ -101,5 +101,13 @@
         }
       ]
     }
-  ]
+  ],
+  "defaultTest": {
+    "assert": [
+      {
+        "type": "javascript",
+        "value": "JSON.parse(output).budgetOk === true"
+      }
+    ]
+  }
 }

@@ -1,6 +1,7 @@
 import pg from 'pg';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
+import { LiveBudget } from '../evals/live-budget.mjs';
 import { fileURLToPath } from 'node:url';
 
 // Never migrate an existing database. The administrator connection is only used
@@ -16,6 +17,7 @@ export function adminUrl(value) {
 export async function run() {
   const live = process.argv.includes('--live');
   if (live && !process.env.OPENROUTER_API_KEY) throw new Error('Configura OPENROUTER_API_KEY de forma segura para evaluar OpenRouter.');
+  if (live) new LiveBudget(); // validate limits before connecting to PostgreSQL
   const url = adminUrl(process.env.EVAL_ADMIN_DATABASE_URL || process.env.TEST_DATABASE_URL || 'postgres://chatbot:chatbot@127.0.0.1:5433/postgres');
   const admin = new pg.Client({ connectionString: url.href });
   const name = `riverrun_eval_${randomUUID().replaceAll('-', '')}`;
@@ -45,4 +47,4 @@ export async function run() {
     finally { await admin.end(); }
   }
 }
-if (process.argv[1] === fileURLToPath(import.meta.url)) run().catch(() => { console.error('No se pudo completar la evaluación. Comprueba PostgreSQL local, permisos CREATEDB y la configuración del proveedor.'); process.exitCode = 1; });
+if (process.argv[1] === fileURLToPath(import.meta.url)) run().catch(() => { console.error('No se pudo completar la evaluación. Comprueba PostgreSQL local, permisos CREATEDB, OPENROUTER_API_KEY y límites de consumo.'); process.exitCode = 1; });

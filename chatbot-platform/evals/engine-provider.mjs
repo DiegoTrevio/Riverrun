@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { LiveBudget } from './live-budget.mjs';
 
 // Refuse direct Promptfoo invocation against the application's DATABASE_URL.
 const url = new URL(process.env.DATABASE_URL || 'postgres://localhost/invalid');
@@ -15,8 +15,8 @@ const { indexKnowledge } = await import('../dist/engine/knowledge.js');
 const { OpenAiProvider } = await import('../dist/ai/provider.js');
 await db.migrate();
 const live = process.env.RIVERRUN_EVAL_LIVE === 'true';
-const real = live ? new OpenAiProvider() : null;
-let calls = 0;
+const real = live ? new OpenAiProvider(config.openai.apiKey, config.openai.baseUrl, config.openai.timeoutMs, 'openrouter', 1) : null;
+const budget = live ? new LiveBudget() : null;
 
 export default class EngineProvider {
   id() { return live ? 'riverrun-engine-openrouter' : 'riverrun-engine-regression'; }
@@ -41,15 +41,13 @@ export default class EngineProvider {
     const ai = { async embed(texts, model) {
       embeddingCalls++;
       if (real) {
-        if (++calls > 40) throw new Error('Límite de solicitudes alcanzado.');
-        return record(await real.embed(texts, model));
+        return record(await budget.request('embedding', model, texts, () => real.embed(texts, model)));
       }
       return { vectors: texts.map(() => Array.from({ length: 1536 }, (_, i) => i === 0 ? 1 : 0)), model, input_tokens: 10, latency_ms: 1 };
     }, async complete(req) {
       requests.push(req);
       if (real) {
-        if (++calls > 40) throw new Error('Límite de 40 solicitudes alcanzado.');
-        return record(await real.complete({ ...req, temperature: 0, max_tokens: 2000 }));
+        return record(await budget.request('completion', req.model, { messages: req.messages, schema: req.json_schema }, () => real.complete({ ...req, temperature: 0, max_tokens: budget.maxTokens })));
       }
       const report = req.json_schema?.name === 'conversation_report';
       return { content: JSON.stringify(report ? { summary: 'Ana López solicitó información de la habitación doble y una reserva. Queda pendiente confirmar la fecha.', save_data: vars.reportCapture ? [{ ...vars.reportCapture, source_message_id: firstIncomingId }] : [] } : {
@@ -91,7 +89,7 @@ export default class EngineProvider {
       const conversation = await store.getConversation(f.conversation.id);
       const messages = await db.query('SELECT direction,content,status,meta FROM messages WHERE conversation_id=$1 ORDER BY id', [f.conversation.id]);
       const contextText = requests.filter(r => r.json_schema?.name === 'chatbot_decision').map(r => JSON.stringify(r.messages)).join('\n');
-      return { output: JSON.stringify({ results: results.map(({status, attempts, fallbackUsed}) => ({status, attempts, fallbackUsed})), indexed, embeddingCalls, outputs: transport.outputs, contactData: contact.data, conversationData: conversation.data,
+      return { output: JSON.stringify({ budgetOk: !budget?.blocked, results: results.map(({status, attempts, fallbackUsed}) => ({status, attempts, fallbackUsed})), indexed, embeddingCalls, outputs: transport.outputs, contactData: contact.data, conversationData: conversation.data,
         status: conversation.status, summary: conversation.report_summary, messages,
         summaryCalls: requests.filter(r => r.json_schema?.name === 'conversation_report').length,
         instructionsPresent: contextText.includes('Pregunta nombre y fecha de llegada'),

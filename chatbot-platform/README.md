@@ -19,7 +19,7 @@ Chat web (widget)    ┘    │                             │
 
 ## Lo que resuelve
 
-**Búsqueda semántica y evaluaciones.** pgvector permite recuperar conocimiento por significado y Promptfoo comprueba el contexto, las reglas y el motor completo con PostgreSQL temporal y transporte simulado. Consulta [configuración, funcionamiento, costos y pruebas](docs/knowledge-evaluations.md). El desarrollo requiere Node.js 22.22 o posterior; la búsqueda semántica se activa explícitamente y conserva la selección por palabras ante fallos.
+**Búsqueda semántica y evaluaciones.** pgvector permite recuperar conocimiento por significado y Promptfoo comprueba el contexto, las reglas y el motor completo con PostgreSQL temporal y transporte simulado. Consulta [configuración, funcionamiento, costos y pruebas](docs/knowledge-evaluations.md), y [CI protegido, límites y habilitación periódica](docs/quality-production.md). El desarrollo requiere Node.js 22.22 o posterior; la búsqueda semántica se activa explícitamente y conserva la selección por palabras ante fallos.
 
 | Requisito | Cómo se cumple |
 |---|---|

@@ -66,6 +66,7 @@ export class OpenAiProvider implements AiProvider {
     private baseUrl = config.openai.baseUrl,
     private timeoutMs = config.openai.timeoutMs,
     private provider: 'openrouter' | 'openai' = new URL(baseUrl).hostname === 'openrouter.ai' ? 'openrouter' : 'openai',
+    private maxAttempts = 3,
   ) {}
 
   async embed(texts: string[], model: string): Promise<EmbeddingResult> {
@@ -171,7 +172,7 @@ export class OpenAiProvider implements AiProvider {
 
   private async post(path: string, body: BodyInit, headers: Record<string, string> = {}): Promise<Response> {
     let lastErr: unknown;
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < this.maxAttempts; attempt++) {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
       try {
@@ -186,14 +187,14 @@ export class OpenAiProvider implements AiProvider {
         // Reintentar solo errores transitorios.
         if (res.status === 429 || res.status >= 500) {
           lastErr = this.apiError(res.status);
-          await sleep(800 * 2 ** attempt);
+          if (attempt + 1 < this.maxAttempts) await sleep(800 * 2 ** attempt);
           continue;
         }
         throw this.apiError(res.status);
       } catch (e: any) {
         if (e instanceof AiError && e.status && e.status < 500 && e.status !== 429) throw e;
         lastErr = e?.name === 'AbortError' ? new AiError(`Tiempo de espera agotado al llamar a ${this.label}`) : e;
-        await sleep(800 * 2 ** attempt);
+        if (attempt + 1 < this.maxAttempts) await sleep(800 * 2 ** attempt);
       } finally {
         clearTimeout(timer);
       }

@@ -1,10 +1,11 @@
 name: Chatbot quality
 on:
+  workflow_call:
   pull_request:
-    paths: ['chatbot-platform/**', '.github/workflows/chatbot-quality.yml']
+    paths: ['chatbot-platform/**', '.github/workflows/chatbot-quality.yml', '.github/workflows/chatbot-live-quality.yml']
   push:
     branches: [main]
-    paths: ['chatbot-platform/**', '.github/workflows/chatbot-quality.yml']
+    paths: ['chatbot-platform/**', '.github/workflows/chatbot-quality.yml', '.github/workflows/chatbot-live-quality.yml']
 permissions:
   contents: read
 jobs:

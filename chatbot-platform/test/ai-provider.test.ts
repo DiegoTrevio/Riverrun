@@ -102,3 +102,20 @@ test('OpenAI explícito conserva sus parámetros originales', async () => {
     assert.equal(seen[0].body.reasoning, undefined);
   });
 });
+
+test('evaluación: una solicitud contada no genera reintentos HTTP ocultos', async () => {
+  await withApi(async (url, seen, fail) => {
+    fail(503);
+    const client = new OpenAiProvider('TEST', url, 1000, 'openrouter', 1);
+    await assert.rejects(client.complete({ model: 'openai/gpt-4.1-mini', messages: [] }), /HTTP 503/);
+    assert.equal(seen.length, 1);
+  });
+});
+
+test('el proveedor conserva tres intentos por defecto ante errores transitorios', async () => {
+  await withApi(async (url, seen, fail) => {
+    fail(503);
+    await assert.rejects(new OpenAiProvider('TEST', url, 1000, 'openrouter').complete({ model: 'openai/gpt-4.1-mini', messages: [] }), /HTTP 503/);
+    assert.equal(seen.length, 3);
+  });
+});
