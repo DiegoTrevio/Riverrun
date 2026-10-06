@@ -256,6 +256,12 @@ export interface Conversation {
   handoff_reason: string;
   summary: string;
   summary_until_id: number;
+  data: Record<string, string>;
+  data_version: number;
+  report_summary: string;
+  report_until_id: number;
+  report_at: Date | null;
+  report_data_version: number;
   last_message_at: Date;
   /** Etapa del recorrido en la que va (1..n; 0 = sin etapa). */
   flow_step?: number;

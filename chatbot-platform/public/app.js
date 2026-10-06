@@ -1200,8 +1200,16 @@ async function viewConversation(root, id) {
       flowCard(data.chatbot?.flow, c),
       autoBox,
       h('div', { class: 'card' },
-        h('h3', { style: 'margin-top:0' }, 'Resumen de memoria'),
-        h('div', { class: 'small pre muted' }, c.summary || 'Aún no hay resumen (se genera cuando la conversación crece).'),
+        h('div', { class: 'row between' }, h('h3', { style: 'margin:0' }, 'Resumen de la conversación'),
+          h('button', { class: 'small primary', onclick: async (e) => {
+            e.target.disabled = true;
+            try { if (await run(() => api('POST', `/api/conversations/${id}/summary`), 'Resumen actualizado')) await load(true); }
+            finally { e.target.disabled = false; }
+          } }, c.report_summary ? 'Actualizar resumen' : 'Generar resumen')),
+        h('p', { class: 'small pre' }, c.report_summary || 'Se genera al cerrar, completar el objetivo o transferir la conversación. Puedes pedirlo en cualquier momento.'),
+        c.report_at ? h('p', { class: 'small muted' }, `Generado: ${fmtDate(c.report_at)}`, c.report_until_id < (data.messages.filter((m) => m.status === 'ok').at(-1)?.id || 0) || c.report_data_version !== c.data_version ? ' · Hay información nueva; actualiza el resumen.' : '') : null,
+        h('details', { class: 'small' }, h('summary', {}, 'Datos guardados en esta conversación'), h('div', { class: 'pre' }, Object.entries(c.data || {}).map(([key, value]) => `${key}: ${value}`).join('\n') || 'Aún no se han recopilado datos.')),
+        c.summary ? h('details', { class: 'small' }, h('summary', {}, 'Memoria del asistente'), h('div', { class: 'pre muted' }, c.summary)) : null,
         h('button', { class: 'small danger', style: 'margin-top:10px', onclick: async () => { if (confirm('¿Borrar memoria (resumen, datos y notas) de este cliente?')) { await run(() => api('POST', `/api/conversations/${id}/reset-memory`), 'Memoria borrada'); load(true); } } }, 'Borrar memoria')),
       isAdmin() ? h('div', { class: 'card' }, h('a', { href: `#/logs?conversation_id=${id}` }, 'Ver registros de esta conversación →')) : null,
     );

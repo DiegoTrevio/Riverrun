@@ -92,6 +92,8 @@ Internet ──HTTPS──> Caddy (app.tudominio.com)
 4. **Si su WhatsApp se desconecta** (teléfono sin internet, sesión cerrada) se le avisa en el panel y por correo con un enlace que abre directo el código para volver a vincularlo.
 5. **Fin de la prueba**: 3 días antes se avisa a la empresa y a ti; al vencer la cuenta queda **en pausa**: puede entrar al panel, pero el bot no responde ni salen mensajes. Tú, en **Cuentas**, pulsas **Activar plan** (o **Extender prueba**). El cobro todavía es manual: `SUPPORT_CONTACT` es lo que ven para contratar.
 
+**Resúmenes y respuestas del cliente.** El asistente guarda las respuestas clave del prompt en el contacto y la conversación, con referencia al mensaje original. Al cerrar, completar el objetivo o transferir a una persona se genera un resumen consultable. En **Conversaciones**, el botón *Generar/Actualizar resumen* lo obtiene en cualquier momento. Los datos se actualizan en una transacción y PostgreSQL impide mezclar cuentas, canales y contactos. Consulta [el esquema y las reglas de almacenamiento](docs/data-storage.md).
+
 **Usuarios y permisos por perfil (subcuentas).** Un perfil de negocio corresponde a una cuenta existente: conserva sus asistentes, hasta cuatro WhatsApps, conversaciones, contactos, agenda, automatizaciones, consumo y registros. No se duplican datos al presentar la cuenta como perfil.
 
 | Nivel | Alcance |

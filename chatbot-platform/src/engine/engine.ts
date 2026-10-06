@@ -4,10 +4,12 @@ import { logEvent } from '../logs.js';
 import * as store from '../store/index.js';
 import type { Chatbot, Contact, Conversation, ImageAsset, Message } from '../types.js';
 import { agentActive, agentStatus, offAfterReply } from './activation.js';
+import { automaticField, customerProvided } from './customer-data.js';
 import { buildContext, type BusinessInfo } from './context.js';
 import { aiSelectableImages, automaticImages, imagesAfterReply, imagesBeforeReply, type ScheduledImage } from './images.js';
 import { DECISION_JSON_SCHEMA } from './decision.js';
 import { maybeSummarize } from './memory.js';
+import { summarizeConversation } from './report.js';
 import { normalize } from './text.js';
 import type { Transport } from './transport.js';
 import { emptyPlan, validateDecision, type AgendaValidation, type ExecutionPlan, type ValidationInput } from './validator.js';
@@ -268,7 +270,7 @@ export class Engine {
     const dataBefore = { ...(contact.data ?? {}) };
     const nameBefore = contact.name;
     let booked = false;
-    await this.applyMemory(contact, plan);
+    await this.applyMemory(contact, plan, conv.id, lastPendingId, [...history, ...pending], bot);
     // Agenda: se ejecuta antes de enviar; si el horario se ocupó justo ahora, se avisa en vez de confirmar.
     if (plan.booking && this.ext.agenda) {
       if (plan.booking.action === 'book') {
@@ -339,6 +341,8 @@ export class Engine {
       }
     }
 
+    if (goalReached) await this.summarizeFinal(conv);
+
     // 6) Memoria de largo plazo (resumen) en segundo plano.
     maybeSummarize(this.ai, bot, conv.id, conv.account_id).catch((e) => log('error', 'ai', `Error al resumir: ${e?.message ?? e}`, e));
 
@@ -408,6 +412,7 @@ export class Engine {
       await this.sendOut(bot, conv, transport, { sender: 'bot', text, delay: typingDelay(text, bot.ai.typing_simulation && hasTyping(transport)), meta: { action: 'handoff' } });
     }
     await logEvent({ level: 'info', source: 'engine', message: `Conversación transferida a humano: ${reason}`, accountId: conv.account_id, chatbotId: bot.id, channelId: conv.channel_id, conversationId: conv.id });
+    await this.summarizeFinal(conv);
     this.ext.onEvent?.({ type: 'handoff', conversationId: conv.id });
     if (bot.rules.handoff_notify_number) {
       const who = contact.name || contact.push_name || contact.phone || contact.external_id;
@@ -431,6 +436,7 @@ export class Engine {
       if (msg) await this.sendOut(bot, conv, transport, { sender: 'bot', text: msg, delay: typingDelay(msg, bot.ai.typing_simulation && hasTyping(transport)), meta: { action: 'agent_off' } });
       if (a.off_action === 'close') {
         await store.setConversationStatus(conv.id, 'closed', `Asistente desactivado: ${reason}`);
+        await this.summarizeFinal(conv);
         await log(`Conversación cerrada: ${reason}`);
       } else {
         const until = a.resume_after_hours > 0 ? new Date(Date.now() + a.resume_after_hours * 3600_000) : null;
@@ -446,18 +452,24 @@ export class Engine {
     return agentStatus(bot, conv);
   }
 
-  async applyMemory(contact: Contact, plan: ExecutionPlan) {
-    const hasData = Object.keys(plan.saveData).length > 0;
-    if (!hasData && !plan.contactName && !plan.remember.length) return;
-    const data = { ...(contact.data ?? {}), ...plan.saveData };
-    const notes = [...(contact.notes ?? [])];
-    for (const r of plan.remember) {
-      const n = normalize(r);
-      if (!notes.some((x) => normalize(x) === n)) notes.push(r);
+  private async summarizeFinal(conv: Conversation) {
+    try { await summarizeConversation(this.ai, conv.id); }
+    catch (error) {
+      await logEvent({ level: 'error', source: 'ai', message: 'No se pudo generar el resumen final; se puede solicitar nuevamente desde la conversación', accountId: conv.account_id, chatbotId: conv.chatbot_id, conversationId: conv.id, details: { error: error instanceof Error ? error.message : String(error) } });
     }
-    while (notes.length > 30) notes.shift();
-    const updated = await store.updateContact(contact.id, { data, notes, name: plan.contactName ?? undefined });
-    if (updated) Object.assign(contact, updated);
+  }
+
+  async applyMemory(contact: Contact, plan: ExecutionPlan, conversationId: string, sourceMessageId: number, messages: Message[], bot: Chatbot) {
+    if (!Object.keys(plan.saveData).length && !plan.contactName && !plan.remember.length) return;
+    const sources: Record<string, number> = {};
+    for (const [key, value] of Object.entries(plan.saveData)) {
+      const field = bot.data_fields.find((f) => f.key === key) ?? automaticField(key);
+      if (!field) continue;
+      const source = [...messages].sort((a, b) => b.id - a.id).find((m) => m.direction === 'in' && customerProvided(field, value, [m.content]));
+      if (source) sources[key] = source.id;
+    }
+    const updated = await store.saveConversationMemory(conversationId, contact.id, { data: plan.saveData, name: plan.contactName ?? undefined, remember: plan.remember }, sourceMessageId, sources);
+    Object.assign(contact, updated);
   }
 }
 

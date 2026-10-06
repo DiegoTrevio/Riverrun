@@ -96,7 +96,15 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
 
   api.post('/api/conversations/:cid/close', async (req: any) => {
     const conv = await conversationFor(req.user, req.params.cid);
-    return store.setConversationStatus(conv.id, 'closed', `Cerrada por ${req.user.name || req.user.email}`);
+    return service.closeConversation(conv.id, `Cerrada por ${req.user.name || req.user.email}`);
+  });
+
+  api.post('/api/conversations/:cid/summary', async (req: any) => {
+    const conv = await conversationFor(req.user, req.params.cid);
+    try { return await service.summarize(conv.id); }
+    catch (error) {
+      throw new HttpError(400, error instanceof Error ? error.message : 'No se pudo generar el resumen');
+    }
   });
 
   api.post('/api/conversations/:cid/send', async (req: any) => {
@@ -132,9 +140,7 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
 
   api.post('/api/conversations/:cid/reset-memory', async (req: any) => {
     const conv = await conversationFor(req.user, req.params.cid);
-    await store.updateSummary(conv.id, '', 0);
-    await store.updateContact(conv.contact_id, { data: {}, notes: [], name: '' });
-    await store.resetFlowState(conv.id);
+    await store.resetConversationMemory(conv.id, conv.contact_id);
     return { ok: true };
   });
 

@@ -11,6 +11,7 @@ import { config } from './config.js';
 import { gate } from './engine/activation.js';
 import { describeInbound, type InboundMessage } from './channels/types.js';
 import { query } from './db.js';
+import { summarizeConversation } from './engine/report.js';
 import { Engine, type ProcessResult } from './engine/engine.js';
 import { ConversationQueue } from './engine/queue.js';
 import { PlaygroundTransport, type Transport } from './engine/transport.js';
@@ -60,6 +61,20 @@ export class ChatService {
       campaign_start: (p) => this.campaigns.start(p.campaign_id),
       campaign_send: (p) => this.campaigns.sendOne(p),
     });
+  }
+
+  summarize(conversationId: string) {
+    return summarizeConversation(this.ai, conversationId);
+  }
+
+  async closeConversation(conversationId: string, reason: string) {
+    const closed = await store.setConversationStatus(conversationId, 'closed', reason);
+    if (!closed) throw new Error('Conversación no encontrada');
+    try { return await this.summarize(conversationId); }
+    catch (error) {
+      await logEvent({ level: 'error', source: 'ai', message: 'Conversación cerrada; el resumen no pudo generarse y se puede volver a solicitar', accountId: closed.account_id, chatbotId: closed.chatbot_id, conversationId, details: { error: error instanceof Error ? error.message : String(error) } });
+      return (await store.getConversation(conversationId))!;
+    }
   }
 
   /** Aviso interno por WhatsApp (alertas al equipo), usando un WhatsApp activo de la cuenta. */

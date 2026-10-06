@@ -229,7 +229,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     const images = await query<{ file_path: string }>(`SELECT i.file_path FROM images i JOIN chatbots b ON b.id = i.chatbot_id WHERE b.account_id = $1`, [acc.id]);
     const whatsapps = (await store.listChannels(acc.id)).filter((c) => c.type === 'whatsapp');
     await store.deleteAccount(acc.id);
-    for (const ch of whatsapps) await releaseWhatsapp(ch);
+    for (const ch of whatsapps) await releaseWhatsapp(ch, { accountDeleted: true });
     for (const i of images) await fsp.rm(imageAbsolutePath(i), { force: true });
     await logEvent({ level: 'warn', source: 'admin', message: `Cuenta eliminada: ${acc.name}` });
     return { ok: true };
