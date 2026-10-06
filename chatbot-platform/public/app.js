@@ -161,7 +161,7 @@ async function render() {
   fill($app, shell(parts[0] || 'home', content));
   try {
     if (!parts.length && needsOnboarding()) location.hash = '#/inicio';
-    else if (!parts.length) await viewDashboard(content);
+    else if (!parts.length || parts[0] === 'asistentes') await viewDashboard(content, params);
     else if (parts[0] === 'inicio') await viewOnboarding(content, parts[1]);
     else if (parts[0] === 'consumo') await viewUsage(content, params);
     else if (parts[0] === 'bot') await viewBot(content, parts[1], parts[2] || 'general');
@@ -383,22 +383,34 @@ function accountPicker(obj) {
 
 /* ------------------------------ Dashboard ------------------------------ */
 
-async function viewDashboard(root) {
+async function viewDashboard(root, params = new URLSearchParams()) {
   const [bots, stats, channels] = await Promise.all([api('GET', `/api/chatbots${acct()}`), api('GET', `/api/stats${acct()}`), api('GET', `/api/channels${acct()}`)]);
   state.bots = bots;
   const byId = Object.fromEntries(stats.chatbots.map((s) => [s.id, s]));
-  const nb = { name: '', template: state.me.account?.business_type || 'otro' };
-  const createBox = h('div', { class: 'card', hidden: true },
-    h('h3', { style: 'margin-top:0' }, 'Nuevo asistente'),
-    h('div', { class: 'grid' },
-      field('Nombre del negocio', text(nb, 'name', { placeholder: 'Hotel Las Palmas' })),
-      field('Tipo de negocio', select(nb, 'template', (state.meta.business_types || []).map((b) => [b.key, b.label])), 'Nace con la forma de atender, reglas y datos típicos de ese giro. Todo se puede cambiar.')),
+  const nb = { name: '', template: state.me.account?.business_type || 'otro', setup: { goal: '', questions: '', knowledge: '' } };
+  const createBox = h('div', { class: 'card', hidden: params.get('new') !== '1' },
+    h('h3', { style: 'margin-top:0' }, 'Crea tu agente'),
+    h('p', { class: 'muted' }, 'Describe tu negocio y qué necesitas conseguir. Organizamos las instrucciones y guardamos las respuestas automáticamente.'),
     accountPicker(nb),
-    h('button', { class: 'primary', onclick: async () => {
-      if (!nb.name.trim()) return toast('Escribe un nombre', true);
-      const bot = await run(() => api('POST', '/api/chatbots', nb));
-      if (bot) location.hash = `#/bot/${bot.id}/conocimiento`;
-    } }, 'Crear y agregar su información'));
+    h('h4', {}, '1. Tu negocio'),
+    h('div', { class: 'grid' },
+      field('Nombre del negocio', text(nb, 'name', { placeholder: 'Los Trompitos', maxlength: 120 })),
+      field('Tipo de negocio', select(nb, 'template', (state.meta.business_types || []).map((b) => [b.key, b.label])))),
+    field('Información para responder', area(nb.setup, 'knowledge', { placeholder: 'Qué vendes, precios, horarios, ubicación y condiciones.', maxlength: 50000 }), 'Puedes pegar la información que ya tienes. Después podrás agregar documentos y fotos.'),
+    h('h4', {}, '2. Qué debe lograr'),
+    field('Objetivo', area(nb.setup, 'goal', { placeholder: 'Completar el pedido y pasarlo al equipo para confirmarlo.', maxlength: 2000 })),
+    h('h4', {}, '3. Qué debe preguntar'),
+    field('Preguntas clave', area(nb.setup, 'questions', { placeholder: 'Qué quiere pedir, cantidad y si recoge o necesita entrega. Para entrega: nombre y dirección.', maxlength: 4000 }), 'Escríbelas con tus palabras. El agente preguntará una a la vez y guardará las respuestas sin crear campos.'),
+    h('p', { class: 'help' }, 'Se crea apagado para que puedas probarlo antes de conectarlo a tus teléfonos.'),
+    h('button', { class: 'primary', onclick: async (event) => {
+      if (!nb.name.trim() || !nb.setup.goal.trim() || !nb.setup.questions.trim() || !nb.setup.knowledge.trim()) return toast('Completa el nombre, la información, el objetivo y las preguntas clave.', true);
+      const button = event.currentTarget;
+      button.disabled = true;
+      try {
+        const bot = await run(() => api('POST', '/api/chatbots', nb));
+        if (bot) location.hash = `#/bot/${bot.id}/probar`;
+      } finally { button.disabled = false; }
+    } }, 'Crear y probar'));
   const noAccounts = isSuper() && !state.accounts.length;
   root.append(
     h('div', { class: 'row between' }, h('h1', {}, 'Asistentes'),
@@ -457,7 +469,7 @@ async function viewBot(root, id, tab) {
   root.append(
     h('div', { class: 'row between' },
       h('h1', {}, bot.name, ' ', h('span', { class: `badge ${bot.active ? 'green' : ''}` }, bot.active ? 'Encendido' : 'Apagado')),
-      h('a', { href: `#/conversations?chatbot_id=${bot.id}` }, 'Ver conversaciones →')),
+      h('div', { class: 'row' }, h('a', { class: 'btn', href: `#/channels?new=1&chatbot_id=${bot.id}` }, 'Conectar teléfono / ver QR'), h('a', { href: `#/conversations?chatbot_id=${bot.id}` }, 'Ver conversaciones →'))),
     h('div', { class: 'tabs' }, TABS.map(([k, l]) => h('a', { href: `#/bot/${id}/${k}`, class: k === tab ? 'active' : '' }, l))),
   );
   const body = h('div');
@@ -488,7 +500,7 @@ async function tabGeneral(root, bot) {
   const ready = steps.every(([ok]) => ok);
   root.append(
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, ready ? '✅ Tu asistente está listo y respondiendo' : 'Para que tu asistente funcione'),
+      h('h3', { style: 'margin-top:0' }, ready ? '✅ Configuración básica completa' : 'Para que tu asistente funcione'),
       h('ul', { class: 'checklist' }, steps.map(([ok, label, tabKey, help]) =>
         h('li', { class: ok ? 'ok' : '' }, h('span', { class: 'mark' }, ok ? '✓' : '○'), ' ',
           tabKey ? h('a', { href: `#/bot/${bot.id}/${tabKey}` }, label) : label,
@@ -543,8 +555,14 @@ async function tabInstructions(root, bot) {
   const advanced = h('details', { class: 'card' }, h('summary', {}, 'Opciones avanzadas'));
   for (const [label, view] of [['Canales y administración', tabGeneral], ['Reglas y transferencia a una persona', tabRules], ['Activación y pausas', tabActivation], ['Recorrido y modelo de IA', tabAdvanced]]) {
     const content = h('div', { style: 'margin-top:14px' });
-    await view(content, bot);
-    advanced.append(h('details', { style: 'margin-top:14px' }, h('summary', {}, label), content));
+    let loaded = false;
+    const section = h('details', { style: 'margin-top:14px', ontoggle: async () => {
+      if (!section.open || loaded) return;
+      loaded = true;
+      try { fill(content); await view(content, bot); }
+      catch (error) { loaded = false; fill(content, h('p', { class: 'help' }, 'No se pudo cargar. Cierra y vuelve a abrir para reintentar.')); toast(error.message, true); }
+    } }, h('summary', {}, label), content);
+    advanced.append(section);
   }
   root.append(advanced);
 }
@@ -563,8 +581,7 @@ const CAT_LABELS = { general: 'General', servicios: 'Servicios', productos: 'Pro
 const catLabel = (c) => CAT_LABELS[c] || c.replace(/_/g, ' ');
 
 async function tabKnowledge(root, bot) {
-  const items = await api('GET', `/api/chatbots/${bot.id}/knowledge`);
-  const search = await api('GET', `/api/chatbots/${bot.id}/knowledge/index`);
+  const [items, search] = await Promise.all([api('GET', `/api/chatbots/${bot.id}/knowledge`), api('GET', `/api/chatbots/${bot.id}/knowledge/index`)]);
   if (search.enabled) root.appendChild(h('div', { class: 'card' },
     h('strong', {}, search.available ? 'Búsqueda por significado' : 'Búsqueda por palabras'),
     h('p', { class: 'help' }, search.available ? `${search.indexed_items} documentos preparados · ${search.pending_items ?? 0} pendientes · ${search.essential_items ?? 0} esenciales incluidos siempre. Los cambios se preparan automáticamente; puedes completar los pendientes ahora.` : 'La búsqueda por significado no está disponible. El asistente sigue usando tu conocimiento.'),
@@ -2356,6 +2373,7 @@ async function viewOnboarding(root, stepKey) {
 
   root.append(
     h('h1', {}, ob.complete ? '¡Tu asistente está listo! 🎉' : `Configura tu asistente`),
+    !ob.chatbot_id ? h('p', {}, h('a', { class: 'btn primary', href: '#/asistentes?new=1' }, 'Crear agente en 3 pasos')) : null,
     h('ol', { class: 'steps' }, ONB_STEPS.map(([slug, k, label], i) =>
       h('li', { class: `${ob.steps[k] ? 'done' : ''} ${current?.[0] === slug ? 'current' : ''}` },
         h('a', { href: `#/inicio/${slug}` }, h('span', { class: 'num' }, ob.steps[k] ? '✓' : i + 1), label)))),

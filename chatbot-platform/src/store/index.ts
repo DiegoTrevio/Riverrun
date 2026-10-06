@@ -218,8 +218,8 @@ export interface ChatbotInput {
 const CHATBOT_JSON_COLS = ['personality', 'rules', 'data_fields', 'flow', 'ai'] as const;
 const CHATBOT_PLAIN_COLS = ['name', 'active'] as const;
 
-export async function createChatbot(accountId: string, input: ChatbotInput): Promise<Chatbot> {
-  const row = await queryOne<ChatbotRow>(
+export async function createChatbot(accountId: string, input: ChatbotInput, client?: Queryable): Promise<Chatbot> {
+  const rows = await rowsOf(client,
     `INSERT INTO chatbots (account_id, name, active, personality, rules, data_fields, flow, ai)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
     [
@@ -233,7 +233,7 @@ export async function createChatbot(accountId: string, input: ChatbotInput): Pro
       JSON.stringify(input.ai ?? {}),
     ],
   );
-  return hydrateChatbot(row!);
+  return hydrateChatbot(rows[0]);
 }
 
 export async function updateChatbot(id: string, input: ChatbotInput): Promise<Chatbot | null> {
@@ -380,23 +380,23 @@ export async function getKnowledge(id: string) {
   return queryOne<KnowledgeItem>('SELECT * FROM knowledge_items WHERE id = $1', [id]);
 }
 
-export async function upsertKnowledge(chatbotId: string, item: Partial<KnowledgeItem> & { id?: string }): Promise<KnowledgeItem> {
+export async function upsertKnowledge(chatbotId: string, item: Partial<KnowledgeItem> & { id?: string }, client?: Queryable): Promise<KnowledgeItem> {
   if (item.id) {
-    const row = await queryOne<KnowledgeItem>(
+    const rows = await rowsOf(client,
       `UPDATE knowledge_items SET category = COALESCE($2, category), title = COALESCE($3, title), content = COALESCE($4, content),
          always_include = COALESCE($5, always_include), active = COALESCE($6, active), sort_order = COALESCE($7, sort_order), updated_at = now()
        WHERE id = $1 AND chatbot_id = $8 RETURNING *`,
       [item.id, item.category ?? null, item.title ?? null, item.content ?? null, item.always_include ?? null, item.active ?? null, item.sort_order ?? null, chatbotId],
     );
-    if (!row) throw new Error('Elemento no encontrado');
-    return row;
+    if (!rows[0]) throw new Error('Elemento no encontrado');
+    return rows[0];
   }
-  const row = await queryOne<KnowledgeItem>(
+  const rows = await rowsOf(client,
     `INSERT INTO knowledge_items (chatbot_id, category, title, content, always_include, active, sort_order)
      VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
     [chatbotId, item.category ?? 'general', item.title ?? '', item.content ?? '', item.always_include ?? false, item.active ?? true, item.sort_order ?? 0],
   );
-  return row!;
+  return rows[0];
 }
 
 export async function deleteKnowledge(id: string) {
