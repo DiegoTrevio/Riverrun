@@ -562,7 +562,7 @@ async function tabKnowledge(root, bot) {
   const search = await api('GET', `/api/chatbots/${bot.id}/knowledge/index`);
   if (search.enabled) root.appendChild(h('div', { class: 'card' },
     h('strong', {}, search.available ? 'Búsqueda por significado' : 'Búsqueda por palabras'),
-    h('p', { class: 'help' }, search.available ? `${search.indexed_items} documentos preparados. Los cambios se incorporan automáticamente al conversar.` : 'La búsqueda por significado no está disponible. El asistente sigue usando tu conocimiento.'),
+    h('p', { class: 'help' }, search.available ? `${search.indexed_items} documentos preparados · ${search.pending_items ?? 0} pendientes · ${search.essential_items ?? 0} esenciales incluidos siempre. Los cambios se preparan automáticamente; puedes completar los pendientes ahora.` : 'La búsqueda por significado no está disponible. El asistente sigue usando tu conocimiento.'),
     search.available ? h('button', { class: 'small', onclick: async () => { if (await run(() => api('POST', `/api/chatbots/${bot.id}/knowledge/index`, {}), 'Conocimiento actualizado')) render(); } }, 'Preparar todo ahora') : null));
   const cats = state.meta.knowledge_categories;
   const catOptions = cats.map((c) => [c, catLabel(c)]);

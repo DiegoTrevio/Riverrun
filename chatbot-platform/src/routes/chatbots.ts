@@ -171,7 +171,9 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
     const status = await knowledgeIndexStatus(bot);
     if (!status.available) throw new HttpError(400, 'Instala la extensión pgvector y reinicia el backend.');
     await indexKnowledge(bot, new OpenAiProvider());
-    return knowledgeIndexStatus(bot);
+    const result = await knowledgeIndexStatus(bot);
+    if (!result.complete) throw new HttpError(409, 'Quedan documentos pendientes. Otra preparación o edición puede estar en curso; vuelve a intentarlo.');
+    return result;
   });
 
   api.post('/api/chatbots/:id/knowledge', admins, async (req: any) => {
