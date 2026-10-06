@@ -22,7 +22,7 @@ cleanup() {
 }
 trap cleanup EXIT
 # No host ports, network or mounted production volumes. Trust auth exists only inside this container.
-docker run -d --name "$container" --network none -e POSTGRES_HOST_AUTH_METHOD=trust pgvector/pgvector:0.8.2-pg16 >/dev/null
+docker run -d --name "$container" --network none -e POSTGRES_HOST_AUTH_METHOD=trust pgvector/pgvector:0.8.7-pg16 >/dev/null
 for attempt in {1..60}; do
   if docker exec "$container" pg_isready -U postgres >/dev/null 2>&1; then break; fi
   sleep 1

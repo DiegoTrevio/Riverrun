@@ -54,6 +54,8 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 export const migrationsDir = path.resolve(here, '..', 'migrations');
 
 export async function migrate(p: pg.Pool = pool): Promise<string[]> {
+  const collation = (await p.query('SELECT datcollversion AS recorded, pg_database_collation_actual_version(oid) AS actual FROM pg_database WHERE datname=current_database()')).rows[0];
+  if (collation.recorded !== collation.actual) throw new Error('La versión de collation de PostgreSQL no coincide con la imagen. Restaura en un volumen compatible o reconstruye los índices antes de actualizar la versión de collation.');
   await p.query('CREATE EXTENSION IF NOT EXISTS pgcrypto');
   await p.query(`CREATE TABLE IF NOT EXISTS schema_migrations (name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`);
   const done = new Set((await p.query('SELECT name FROM schema_migrations')).rows.map((r) => r.name));

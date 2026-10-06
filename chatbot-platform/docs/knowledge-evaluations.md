@@ -4,7 +4,9 @@ pgvector mejora la selección de conocimiento por significado. Promptfoo mide re
 
 ## Búsqueda semántica
 
-Docker Compose utiliza `pgvector/pgvector:0.8.2-pg16`, conservando PostgreSQL 16 y el volumen existente. Antes de cambiar la imagen en una instalación real, respalda PostgreSQL y comprueba la restauración. No borres el volumen. En proveedores administrados instala/habilita `vector` con los permisos de ese proveedor.
+Para la activación verificable, consulta el [procedimiento del punto 2](semantic-activation.md), incluidos comandos, comprobación del proveedor y compatibilidad de volúmenes/collation.
+
+Docker Compose utiliza `pgvector/pgvector:0.8.7-pg16`, conservando PostgreSQL 16 y el volumen existente. Antes de cambiar la imagen en una instalación real, respalda PostgreSQL y comprueba la restauración. No borres el volumen. En proveedores administrados instala/habilita `vector` con los permisos de ese proveedor.
 
 La migración `011_knowledge_vectors.sql` instala la extensión y crea `knowledge_chunks` cuando el servidor la ofrece. Si el servidor es PostgreSQL sin pgvector, la migración conserva la app operativa; el arranque vuelve a comprobarlo para admitir una actualización posterior del servidor. La cuenta que ejecuta migraciones necesita permiso para crear la extensión disponible. Los errores de permisos no se silencian.
 
