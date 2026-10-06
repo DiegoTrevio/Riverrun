@@ -50,7 +50,7 @@ export const DECISION_JSON_SCHEMA = {
     },
     save_data: {
       type: 'array',
-      description: 'Datos del cliente que dio explícitamente en sus mensajes y que corresponden a los campos a recopilar.',
+      description: 'Respuestas útiles dadas explícitamente por el cliente. Usa claves de los datos conocidos o crea una clave descriptiva en español, sin acentos y con guion bajo. No requiere campos predefinidos.',
       items: {
         type: 'object',
         additionalProperties: false,

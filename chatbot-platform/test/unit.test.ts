@@ -188,3 +188,38 @@ test('parseWebhook: texto, @lid, grupos, ephemeral e imagen', () => {
   const p4 = parseWebhook({ ...base, data: { key: { remoteJid: '521@s.whatsapp.net', id: 'A4' }, message: { imageMessage: { caption: 'esta' } } } });
   assert.equal(describeIncoming(p4.messages[0]), '[El cliente envió una imagen con el texto: "esta"]');
 });
+
+test('datos automáticos: guarda respuestas sin campos, normaliza claves y valida correo y teléfono', () => {
+  const r = validateDecision({
+    raw: decision({ messages: ['Gracias, ya tengo tus datos.'], save_data: [
+      { field: 'Nombre completo', value: 'ana pérez' },
+      { field: 'Dirección de entrega', value: 'Av. Reforma 25' },
+      { field: 'email', value: 'ANA@MAIL.COM' },
+      { field: 'phone', value: '55 1234 5678' },
+      { field: 'pedido', value: 'tres tacos al pastor' },
+    ] }),
+    bot: bot({ data_fields: [] }), images: [], sentImageIds: [], groundingSources: [],
+    customerText: 'Soy Ana Pérez. Mi correo es ana@mail.com y mi teléfono 55 1234 5678. Quiero tres tacos al pastor.',
+    customerDataSources: ['Av. Reforma 25'],
+  });
+  assert.deepEqual(r.plan.saveData, { nombre: 'Ana Pérez', direccion_de_entrega: 'Av. Reforma 25', correo: 'ana@mail.com', telefono: '5512345678', pedido: 'tres tacos al pastor' });
+  assert.equal(r.plan.contactName, 'Ana Pérez');
+});
+
+test('datos automáticos: rechaza valores inventados, claves peligrosas y formatos inválidos', () => {
+  const r = validateDecision({
+    raw: decision({ messages: ['¿Cuál es tu dirección?'], save_data: [
+      { field: 'direccion', value: 'Av. Reforma 25' },
+      { field: '__proto__', value: 'Ana' },
+      { field: 'constructor', value: 'Ana' },
+      { field: 'email', value: 'Ana' },
+      { field: 'telefono', value: '123' },
+      { field: 'cantidad', value: '2' },
+    ] }),
+    bot: bot({ data_fields: [] }), images: [], sentImageIds: [],
+    groundingSources: ['Av. Reforma 25'], customerText: 'Soy Ana, necesito 12 tacos.',
+    customerSources: ['Resumen inventado: Av. Reforma 25'], customerDataSources: [],
+  });
+  assert.deepEqual(r.plan.saveData, {});
+  assert.equal(r.plan.contactName, null);
+});

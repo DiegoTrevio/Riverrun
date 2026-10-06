@@ -271,6 +271,16 @@ export function buildSystemPrompt(input: ContextInput, knowledge: KnowledgeItem[
     );
   }
 
+  s.push('\n# Guardado automático de datos del cliente');
+  s.push([
+    '- Guarda en save_data las respuestas útiles que el cliente dé a tus preguntas, aunque no haya campos configurados. Las preguntas se deciden según tus instrucciones y el objetivo.',
+    '- Usa una clave breve y estable en español, sin acentos y con guion bajo: nombre, correo, telefono, direccion, pedido, cantidad, fecha_entrega. Para otros datos, crea una clave descriptiva.',
+    '- Reutiliza las claves de los datos conocidos y los campos existentes; no crees sinónimos ni dupliques el mismo dato.',
+    '- Guarda solo valores que el cliente dijo explícitamente, tal como los dijo. No guardes tus preguntas, respuestas del negocio, suposiciones ni datos todavía pendientes. Si corrige un dato, actualízalo.',
+    '- Interpreta respuestas cortas con la pregunta anterior: si preguntaste la dirección y contesta "Av. Reforma 25", guarda direccion = "Av. Reforma 25".',
+    '- Nunca vuelvas a pedir un dato conocido. Pregunta de forma natural, una cosa a la vez, y responde sus dudas antes de continuar.',
+  ].join('\n'));
+
   if (bot.data_fields.length) {
     s.push('\n# Datos a recopilar');
     s.push(bot.data_fields.map(fieldLine).join('\n'));
@@ -293,7 +303,7 @@ export function buildSystemPrompt(input: ContextInput, knowledge: KnowledgeItem[
       '- "ask": haces una pregunta al cliente (para aclarar o pedir un dato).',
       '- "no_reply": no respondes (p.ej. el cliente solo mandó "ok", "👍" o una reacción y no hace falta contestar).',
       '- "handoff": pasas la conversación a una persona.',
-      'El backend valida tu propuesta: IDs de imagen inexistentes, datos no verificables o campos desconocidos serán rechazados.',
+      'El backend valida tu propuesta: IDs de imagen inexistentes, datos no verificables o datos del cliente inventados serán rechazados.',
     ].join('\n'),
   );
 
@@ -309,7 +319,7 @@ export function buildSystemPrompt(input: ContextInput, knowledge: KnowledgeItem[
     if (v) known.push(`${f.label} (\`${f.key}\`): ${v}`);
   }
   for (const [k, v] of Object.entries(contact.data ?? {})) {
-    if (!bot.data_fields.some((f) => f.key === k) && v) known.push(`${k}: ${v}`);
+    if (!bot.data_fields.some((f) => f.key === k) && !(contact.name && ['nombre', 'name'].includes(k)) && v) known.push(`${k}: ${v}`);
   }
   s.push(`Datos conocidos del cliente:\n${known.length ? known.map((x) => `- ${x}`).join('\n') : '- (ninguno todavía)'}`);
   const missing = bot.data_fields.filter((f) => !contact.data?.[f.key]);
