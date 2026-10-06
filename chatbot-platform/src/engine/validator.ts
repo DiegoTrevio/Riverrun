@@ -1,3 +1,4 @@
+import { imagesAfterReply, imagesForAssistant } from './images.js';
 import { automaticField, customerProvided } from './customer-data.js';
 import type { Chatbot, DataField, ImageAsset } from '../types.js';
 import { DecisionSchema, type Action, type Decision } from './decision.js';
@@ -58,6 +59,9 @@ export interface ValidationInput {
   customerText: string;
   /** Fotos que el sistema enviará en este turno (la IA puede mencionarlas sin incluirlas en image_ids). */
   scheduledImages?: ImageAsset[];
+  automaticImages?: ImageAsset[];
+  currentFlowStep?: number;
+  goalAlreadyCompleted?: boolean;
   /**
    * Último intento: los problemas de estilo (frases prohibidas, promesas de foto, largo)
    * se corrigen automáticamente en lugar de pedir otra respuesta a la IA.
@@ -327,13 +331,7 @@ export function validateDecision(input: ValidationInput): ValidationResult {
     action = 'reply';
   }
   if (images.length && action !== 'handoff') action = 'reply_with_image';
-  if (!images.length && !input.scheduledImages?.length && IMAGE_PROMISE_RE.test(messages.join(' '))) {
-    soft(
-      'Dices que envías una imagen pero no incluiste ningún ID válido en image_ids. Incluye el ID correcto del catálogo o no menciones que envías imagen.',
-      () => (messages = dropSentences(messages, (_n, x) => IMAGE_PROMISE_RE.test(x))),
-      'Se quitó la promesa de enviar una imagen inexistente',
-    );
-  }
+
 
   // ---------- Verificación de hechos (cero invenciones) ----------
   if (rules.verify_facts && messages.length) {
@@ -432,6 +430,22 @@ export function validateDecision(input: ValidationInput): ValidationResult {
       else if (action === 'no_reply') fixes.push('Objetivo marcado como cumplido sin responder: se ignoró');
       else goalCompleted = true;
     }
+  }
+
+  const scheduled = rules.max_images_per_reply > 0 && action !== 'handoff' ? [
+    ...(input.scheduledImages ?? []),
+    ...imagesForAssistant(input.automaticImages ?? [], messages.join(' '), input.sentImageIds).map(x => x.image),
+    ...imagesAfterReply(input.automaticImages ?? [], {
+      stepReached: flowStep !== (input.currentFlowStep ?? 0) ? flowStep : 0,
+      goalReached: goalCompleted && !input.goalAlreadyCompleted, booked: booking?.action === 'book', sentIds: input.sentImageIds, skip: [],
+    }).map(x => x.image),
+  ] : [];
+  if (!images.length && !scheduled.length && IMAGE_PROMISE_RE.test(messages.join(' '))) {
+    soft(
+      'Dices que envías una imagen pero no incluiste ningún ID válido en image_ids. Incluye el ID correcto del catálogo o no menciones que envías imagen.',
+      () => (messages = dropSentences(messages, (_n, x) => IMAGE_PROMISE_RE.test(x))),
+      'Se quitó la promesa de enviar una imagen inexistente',
+    );
   }
 
   const remember = d.remember

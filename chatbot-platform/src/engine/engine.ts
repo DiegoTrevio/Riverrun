@@ -7,7 +7,7 @@ import { agentActive, agentStatus, offAfterReply } from './activation.js';
 import { automaticField, customerProvided } from './customer-data.js';
 import { buildContext, type BusinessInfo } from './context.js';
 import { semanticKnowledge } from './knowledge.js';
-import { aiSelectableImages, automaticImages, imagesAfterReply, imagesBeforeReply, type ScheduledImage } from './images.js';
+import { aiSelectableImages, automaticImages, imagesAfterReply, imagesBeforeReply, imagesForAssistant, type ScheduledImage } from './images.js';
 import { DECISION_JSON_SCHEMA } from './decision.js';
 import { maybeSummarize } from './memory.js';
 import { summarizeConversation } from './report.js';
@@ -146,7 +146,7 @@ export class Engine {
     const imagesById = new Map<string, ImageAsset>(allImages.map((i) => [i.id, i]));
     const model = bot.ai.model || config.openai.defaultModel;
     // Fotos con momento fijo (las garantiza el sistema): por palabra del cliente o de bienvenida, se saben antes de la IA.
-    const firstReply = (await store.countInbound(conv.id)) <= pending.length;
+    const firstReply = await store.isFirstLiveInbound(conv.id, pending[0].id);
     const scheduledBefore = imagesBeforeReply(images, { text: customerText, firstReply, sentIds: sentImageIds });
     const aiImages = aiSelectableImages(images);
     const autoImages = automaticImages(images, bot.flow.steps.map((x) => x.title));
@@ -195,7 +195,7 @@ export class Engine {
       }
       lastRaw = raw;
       lastInput = {
-        raw, bot, images: aiImages, sentImageIds, customerText, scheduledImages: scheduledBefore.map((x) => x.image),
+        raw, bot, images: aiImages, sentImageIds, customerText, scheduledImages: scheduledBefore.map((x) => x.image), automaticImages: images, currentFlowStep: conv.flow_step ?? 0, goalAlreadyCompleted: !!conv.goal_completed_at,
         groundingSources: ctx.groundingSources,
         customerSources: ctx.customerSources,
         customerDataSources: history.filter((m) => m.direction === 'in').map((m) => m.content),
@@ -301,7 +301,9 @@ export class Engine {
     const goalReached = plan.goalCompleted && !conv.goal_completed_at;
     const goalHandoff = goalReached && bot.flow.on_goal_action === 'handoff' && plan.action !== 'handoff';
     // Fotos programadas: se suman a las que eligió la IA (sin repetir). En una transferencia no se envían.
+    let selectedRules: ScheduledImage[] = [];
     if (plan.action !== 'handoff') {
+      const assistant = imagesForAssistant(images, plan.messages.join(' '), sentImageIds);
       const after = imagesAfterReply(images, {
         stepReached: plan.flowStep && plan.flowStep !== (conv.flow_step ?? 0) ? plan.flowStep : 0,
         goalReached,
@@ -309,16 +311,18 @@ export class Engine {
         sentIds: sentImageIds,
         skip: scheduledBefore.map((x) => x.image.id),
       });
-      const extra: ScheduledImage[] = [...scheduledBefore, ...after].filter((x, i, all) => !plan!.images.some((p) => p.id === x.image.id) && all.findIndex((y) => y.image.id === x.image.id) === i);
-      if (extra.length) {
-        plan = { ...plan, action: 'reply_with_image', images: [...plan.images, ...extra.map((x) => x.image)].slice(0, 5) };
-        await log('info', 'engine', `Foto enviada por regla: ${extra.map((x) => `${x.image.code} (${x.reason})`).join(', ')}`);
-      }
+      const automatic = [...scheduledBefore, ...assistant, ...after].filter((x, i, all) => all.findIndex(y => y.image.id === x.image.id) === i);
+      const candidates = [...automatic.map(x => x.image), ...plan.images.filter(img => !automatic.some(x => x.image.id === img.id))];
+      const selected = candidates.slice(0, bot.rules.max_images_per_reply);
+      selectedRules = automatic.filter(x => selected.some(img => img.id === x.image.id));
+      if (candidates.length > selected.length) await log('warn', 'engine', `Fotos omitidas por el límite de ${bot.rules.max_images_per_reply} por respuesta: ${candidates.slice(selected.length).map(img => img.code).join(', ')}`);
+      if (selected.length) plan = { ...plan, action: 'reply_with_image', images: selected };
+
     }
     if (plan.action === 'handoff') {
       await this.executeHandoff(bot, conv, contact, transport, plan.messages, plan.handoffReason || 'La IA decidió transferir');
     } else if (plan.action !== 'no_reply') {
-      await this.sendPlan(bot, conv, transport, plan, meta);
+      await this.sendPlan(bot, conv, transport, plan, meta, selectedRules);
     }
     if (plan.flowStep || goalReached) {
       const reached = await store.setFlowState(conv.id, plan.flowStep, goalReached);
@@ -365,13 +369,15 @@ export class Engine {
     };
   }
 
-  async sendPlan(bot: Chatbot, conv: Conversation, transport: Transport, plan: ExecutionPlan, meta: Record<string, unknown>) {
+  async sendPlan(bot: Chatbot, conv: Conversation, transport: Transport, plan: ExecutionPlan, meta: Record<string, unknown>, scheduled: ScheduledImage[] = []) {
     const typing = bot.ai.typing_simulation && hasTyping(transport);
     for (const text of plan.messages) {
       await this.sendOut(bot, conv, transport, { sender: 'bot', text, delay: typingDelay(text, typing), meta });
     }
     for (const img of plan.images) {
-      await this.sendOut(bot, conv, transport, { sender: 'bot', text: img.caption, image: img, delay: typing ? 1200 : 0, meta });
+      const rule = scheduled.find(x => x.image.id === img.id);
+      const sent = await this.sendOut(bot, conv, transport, { sender: 'bot', text: img.caption, image: img, delay: typing ? 1200 : 0, meta: rule ? {...meta, image_trigger: rule.reason} : meta });
+      if (sent && rule) await logEvent({ level: 'info', source: 'engine', message: `Foto enviada por regla: ${img.code} (${rule.reason})`, accountId: conv.account_id, chatbotId: bot.id, channelId: conv.channel_id, conversationId: conv.id });
     }
   }
 

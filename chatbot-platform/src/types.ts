@@ -195,6 +195,8 @@ export const ImageSendWhenSchema = z.object({
   mode: z.enum(['ai', 'rules', 'both']).default('ai'),
   /** El cliente escribe alguna de estas palabras o frases. */
   keywords: z.array(z.string().trim().min(1).max(80)).max(30).default([]),
+  /** El asistente dice o pregunta alguna de estas frases en su respuesta validada. */
+  assistant_keywords: z.array(z.string().trim().min(1).max(80)).max(30).default([]),
   /** Con la primera respuesta a un cliente nuevo (bienvenida). */
   first_message: z.boolean().default(false),
   /** Al llegar a estas etapas del recorrido (1..n). */

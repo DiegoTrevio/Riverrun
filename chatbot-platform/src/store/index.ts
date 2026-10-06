@@ -744,7 +744,7 @@ export async function countMessagesAfter(conversationId: string, afterId: number
 
 export async function sentImageIds(conversationId: string): Promise<string[]> {
   const rows = await query<{ image_id: string }>(
-    `SELECT DISTINCT image_id FROM messages WHERE conversation_id = $1 AND image_id IS NOT NULL AND status <> 'failed'`,
+    `SELECT DISTINCT image_id FROM messages WHERE conversation_id = $1 AND direction = 'out' AND image_id IS NOT NULL AND status = 'ok'`,
     [conversationId],
   );
   return rows.map((r) => r.image_id);

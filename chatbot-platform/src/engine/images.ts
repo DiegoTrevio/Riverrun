@@ -24,6 +24,7 @@ export function automaticImages(images: ImageAsset[], stepTitles: string[] = [])
     const w = imageSendWhen(img);
     const when = [
       w.keywords.length ? `el cliente escribe ${w.keywords.map((k) => `"${k}"`).join(' o ')}` : '',
+      w.assistant_keywords.length ? `el asistente dice o pregunta ${w.assistant_keywords.map(k => `"${k}"`).join(' o ')}` : '',
       w.first_message ? 'en la bienvenida' : '',
       ...w.flow_steps.map((n) => `al llegar a la etapa ${n}${stepTitles[n - 1] ? ` (${stepTitles[n - 1]})` : ''}`),
       w.on_goal ? 'al cumplirse el objetivo' : '',
@@ -44,6 +45,15 @@ export function imagesBeforeReply(images: ImageAsset[], o: { text: string; first
     else if (w.first_message && o.firstReply && !(w.once && o.sentIds.includes(img.id))) out.push({ image: img, reason: 'bienvenida' });
   }
   return out;
+}
+
+export function imagesForAssistant(images: ImageAsset[], text: string, sentIds: string[]): ScheduledImage[] {
+  return images.filter(scheduled).flatMap(image => {
+    const w = imageSendWhen(image);
+    if (w.once && sentIds.includes(image.id)) return [];
+    const phrase = matchKeyword(text, w.assistant_keywords);
+    return phrase ? [{image, reason: `el asistente dijo o preguntó "${phrase}"`}] : [];
+  });
 }
 
 /** Después de la decisión de la IA: etapa alcanzada, objetivo cumplido o cita agendada. */
