@@ -231,6 +231,34 @@
           "value": "(() => { const r=JSON.parse(output); return !r.contactData.direccion && !r.conversationData.direccion; })()"
         }
       ]
+    },
+    {
+      "description": "Imagen contextual ante una paráfrasis sin términos exactos",
+      "vars": {
+        "query": "¿Me enseñas cómo es cada una para decidir dónde quedarnos?",
+        "contextPhoto": true,
+        "decision": "{\"messages\": [\"Te comparto las opciones.\"], \"context_image_ids\": [\"comparacion\"]}"
+      },
+      "assert": [
+        {
+          "type": "javascript",
+          "value": "(() => { const r=JSON.parse(output); return r.isolation && r.outputs.filter(x=>x.type === \"image\" && x.image.code === \"comparacion\").length === 1; })()"
+        }
+      ]
+    },
+    {
+      "description": "No envía imagen contextual ante saludo sin intención relacionada",
+      "vars": {
+        "query": "Hola, buenos días",
+        "contextPhoto": true,
+        "decision": "{\"messages\": [\"Hola.\"]}"
+      },
+      "assert": [
+        {
+          "type": "javascript",
+          "value": "JSON.parse(output).outputs.every(x=>x.type !== \"image\")"
+        }
+      ]
     }
   ]
 }

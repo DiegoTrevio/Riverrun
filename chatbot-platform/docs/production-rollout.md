@@ -4,7 +4,7 @@ Este procedimiento prepara una activación verificable de pgvector y calidad con
 
 ## Antes de activar
 
-- Integrar únicamente una revisión que haya pasado `Chatbot quality`; ejecutar y aprobar los siete casos OpenRouter del [punto 5](quality-production.md).
+- Integrar únicamente una revisión que haya pasado `Chatbot quality`; ejecutar y aprobar los nueve casos OpenRouter del [punto 5](quality-production.md).
 - Registrar commit e imágenes/digests actuales, PostgreSQL, collation y configuración anterior. No guardar valores de claves en reportes. Mantener una revisión anterior compatible del backend para recuperación.
 - Completar [respaldos y restauración](production-review.md) de ambas bases, uploads y sesiones Evolution. Validar una restauración aislada y definir una ventana operativa para el cambio del backend. No usar las suites `npm test` o Promptfoo contra una base de producción.
 - Elegir un perfil piloto activo y su UUID real. Preparar mensajes y contacto de prueba controlados, separados de clientes reales. Confirmar que el equipo puede atender las conversaciones si hay fallos.

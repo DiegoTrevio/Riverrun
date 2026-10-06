@@ -69,6 +69,9 @@ export default class EngineProvider {
       const f = await fixture();
       const other = await fixture(true);
       await store.updateContact(other.contact.id, { data: { secreto: 'ULTRASECRETO784' } });
+      if (vars.contextPhoto) {
+        await db.query("INSERT INTO images (chatbot_id,code,name,description,file_path,mime_type,send_when) VALUES ($1,'comparacion','Opciones de habitaciones','Comparación visual de habitaciones','synthetic.png','image/png',$2)", [f.bot.id, JSON.stringify({mode:'rules',context:'Cuando el cliente necesite comparar alternativas de alojamiento'})]);
+      }
       if (vars.semantic) { await indexKnowledge(other.bot, ai); await indexKnowledge(f.bot, ai); }
       const indexed = vars.semantic ? (await db.query('SELECT count(*)::int AS n FROM knowledge_chunks'))[0].n : 0;
       const transport = new PlaygroundTransport();
@@ -85,6 +88,7 @@ export default class EngineProvider {
         await summarizeConversation(ai, f.conversation.id);
         await summarizeConversation(ai, f.conversation.id); // same snapshot must use cache
       }
+      await engine.settleBackground();
       const contact = await store.getContact(f.contact.id);
       const conversation = await store.getConversation(f.conversation.id);
       const messages = await db.query('SELECT direction,content,status,meta FROM messages WHERE conversation_id=$1 ORDER BY id', [f.conversation.id]);

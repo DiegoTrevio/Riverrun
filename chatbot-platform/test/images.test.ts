@@ -292,3 +292,54 @@ t('contexto de cita: envía indicaciones solo cuando la reserva se confirma', as
   assert.ok(!photosTo('5215540000018').includes('indicaciones'));
   await h.authed('PUT',`/api/images/${IDS.indicaciones}`,{active:false});
 });
+
+t('contexto semántico en modo reglas: usa intención e historial sin coincidencia de términos', async () => {
+  const condition='Cuando el cliente necesite comparar alternativas de alojamiento';
+  await upload('comparacion','Comparación de opciones',{mode:'rules',context:condition});
+  h.reset(); const phone='5215540000020';
+  h.setScript(()=>({messages:['¿Cómo te ayudo?']})); await say('vamos dos parejas',phone);
+  h.setScript(req=>{
+    const system=req.messages[0].content;
+    assert.match(system,/Fotos por contexto \(usa context_image_ids, no image_ids\)/);
+    assert.ok(system.includes(condition));
+    assert.ok(JSON.stringify(req.messages).includes('vamos dos parejas'));
+    assert.ok(!system.includes('ID: `comparacion`'), 'no habilita libre elección para una foto solo por reglas');
+    return {action:'reply',messages:['Te comparto la imagen para que elijas.'],context_image_ids:['comparacion']};
+  });
+  await say('¿me enseñas cómo es cada una para decidir?',phone);
+  assert.deepEqual(photosTo(phone),['bienvenida','comparacion']);
+  const conv=await h.conversationFor(phone);
+  const image=(await pool.query('SELECT meta,status FROM messages WHERE conversation_id=$1 AND image_id=$2',[conv.id,IDS.comparacion])).rows[0];
+  assert.equal(image.status,'ok'); assert.equal(image.meta.image_trigger,`contexto: ${condition}`);
+  h.setScript(()=>({messages:['Claro.'],context_image_ids:['comparacion']})); await say('gracias',phone);
+  assert.deepEqual(photosTo(phone),['bienvenida','comparacion']);
+  await h.authed('PUT',`/api/images/${IDS.comparacion}`,{send_when:{mode:'rules',context:condition,once:false}});
+  await say('¿me las vuelves a enseñar?',phone);
+  assert.deepEqual(photosTo(phone),['bienvenida','comparacion','comparacion']);
+  await h.authed('PUT',`/api/images/${IDS.comparacion}`,{active:false});
+});
+
+t('contexto no coincidente no manda foto; selección contextual y otros disparadores no duplican', async () => {
+  await upload('situacion','Opciones',{mode:'both',context:'Al explicar opciones de habitaciones',assistant_keywords:['cuál prefieres'],once:false});
+  h.reset(); const phone='5215540000021';
+  h.setScript(()=>({messages:['Hola.']})); await say('hola',phone);
+  assert.deepEqual(photosTo(phone),['bienvenida']);
+  h.setScript(()=>({messages:['¿Cuál prefieres?'],context_image_ids:['situacion'],image_ids:['situacion']}));
+  await say('quiero elegir una',phone);
+  assert.deepEqual(photosTo(phone),['bienvenida','situacion']);
+  await h.authed('PUT',`/api/images/${IDS.situacion}`,{active:false});
+});
+
+t('contexto descarta fotos inexistentes, sin condición, inactivas o de otro agente', async () => {
+  await upload('contexto_off','Desactivada',{mode:'rules',context:'Al explicar opciones'});
+  await h.authed('PUT',`/api/images/${IDS.contexto_off}`,{active:false});
+  const account=(await h.authed('POST','/api/accounts',{name:'Otra cuenta de imágenes'})).json();
+  const bot=(await h.authed('POST','/api/chatbots',{account_id:account.id,name:'Otro'})).json();
+  await pool.query("INSERT INTO images (chatbot_id,code,name,file_path,mime_type,send_when) VALUES ($1,'privada','Privada','private.png','image/png',$2)",[bot.id,JSON.stringify({mode:'rules',context:'Al explicar opciones'})]);
+  h.reset(); const phone='5215540000022';
+  h.setScript(()=>({messages:['Hola.']})); await say('hola',phone);
+  h.setScript(()=>({messages:['¿Cómo te ayudo?'],context_image_ids:['privada','contexto_off','suite','desconocida']}));
+  await say('quiero ver opciones',phone);
+  assert.deepEqual(photosTo(phone),['bienvenida']);
+  assert.ok(!prompt().includes('ID de contexto: `privada`'));
+});

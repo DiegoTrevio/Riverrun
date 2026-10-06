@@ -7,7 +7,7 @@ import { agentActive, agentStatus, offAfterReply } from './activation.js';
 import { automaticField, customerProvided } from './customer-data.js';
 import { buildContext, type BusinessInfo } from './context.js';
 import { semanticKnowledge } from './knowledge.js';
-import { aiSelectableImages, automaticImages, imagesAfterReply, imagesBeforeReply, imagesForAssistant, type ScheduledImage } from './images.js';
+import { aiSelectableImages, automaticImages, contextualImages, imagesForContext, imagesAfterReply, imagesBeforeReply, imagesForAssistant, type ScheduledImage } from './images.js';
 import { DECISION_JSON_SCHEMA } from './decision.js';
 import { maybeSummarize } from './memory.js';
 import { summarizeConversation } from './report.js';
@@ -163,7 +163,7 @@ export class Engine {
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       const ctx = buildContext({
         bot, knowledge: semantic ?? knowledge, knowledgeSelected: semantic !== null, images: aiImages, contact, conversation: conv, channelType: channel.type, history, pending, sentImageIds, imagesById, correction, intents, agenda: agendaCtx, business,
-        autoImages, imagesNow: scheduledBefore.map((x) => x.image),
+        autoImages, contextImages: contextualImages(images), imagesNow: scheduledBefore.map((x) => x.image),
       });
       let completion;
       try {
@@ -241,7 +241,7 @@ export class Engine {
     if (retryable.length) {
       // Datos no verificables tras el reintento: respuesta segura según la regla configurada.
       fallbackUsed = true;
-      const base = { ...plan, booking: null };
+      const base = { ...plan, booking: null, contextImages: [] };
       if (bookingIssue && !factIssues) {
         // La IA insistió en un horario que no existe: se ofrecen horarios reales.
         plan = { ...base, action: 'reply', messages: [slotFallback(agendaCtx)], images: [] };
@@ -287,7 +287,7 @@ export class Engine {
           plan = {
             ...plan,
             action: 'reply',
-            images: [],
+            images: [], contextImages: [],
             messages: [r.alternatives.length ? `Uy, ese horario se acaba de ocupar. Te puedo ofrecer ${joinOptions(r.alternatives)}. ¿Cuál te acomoda?` : 'Uy, ese horario se acaba de ocupar. ¿Te puedo ofrecer otro día?'],
           };
           await log('warn', 'engine', `No se pudo agendar: ${r.reason}`);
@@ -311,7 +311,8 @@ export class Engine {
         sentIds: sentImageIds,
         skip: scheduledBefore.map((x) => x.image.id),
       });
-      const automatic = [...scheduledBefore, ...assistant, ...after].filter((x, i, all) => all.findIndex(y => y.image.id === x.image.id) === i);
+      const contextual = imagesForContext(images, plan.contextImages.map(img => img.code), sentImageIds);
+      const automatic = [...scheduledBefore, ...assistant, ...after, ...contextual].filter((x, i, all) => all.findIndex(y => y.image.id === x.image.id) === i);
       const candidates = [...automatic.map(x => x.image), ...plan.images.filter(img => !automatic.some(x => x.image.id === img.id))];
       const selected = candidates.slice(0, bot.rules.max_images_per_reply);
       selectedRules = automatic.filter(x => selected.some(img => img.id === x.image.id));

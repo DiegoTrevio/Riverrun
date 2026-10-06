@@ -189,10 +189,12 @@ export interface KnowledgeItem {
   sort_order: number;
 }
 
-/** Cuándo se envía una foto. Los momentos marcados los garantiza el sistema (no dependen de la IA). */
+/** Reglas de envío: momentos concretos y condiciones de contexto interpretadas por la IA. */
 export const ImageSendWhenSchema = z.object({
   /** ai: la IA decide (según "Cuándo enviarla") · rules: solo en los momentos marcados · both: ambos. */
   mode: z.enum(['ai', 'rules', 'both']).default('ai'),
+  /** Condición semántica evaluada con la conversación, sin exigir palabras exactas. */
+  context: z.string().trim().max(500).default(''),
   /** El cliente escribe alguna de estas palabras o frases. */
   keywords: z.array(z.string().trim().min(1).max(80)).max(30).default([]),
   /** El asistente dice o pregunta alguna de estas frases en su respuesta validada. */

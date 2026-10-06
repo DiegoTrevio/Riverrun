@@ -632,7 +632,7 @@ async function tabKnowledge(root, bot) {
 }
 
 /** Valores de "¿Cuándo se envía?" de una foto (las viejas quedan en "La IA decide"). */
-const sendWhenDefaults = (w = {}) => ({ mode: 'ai', keywords: [], assistant_keywords: [], first_message: false, flow_steps: [], on_goal: false, on_booking: false, once: true, ...w });
+const sendWhenDefaults = (w = {}) => ({ mode: 'ai', context: '', keywords: [], assistant_keywords: [], first_message: false, flow_steps: [], on_goal: false, on_booking: false, once: true, ...w });
 
 /** Editor de "¿Cuándo se envía?": la IA decide, o el sistema la envía en los momentos que marques. */
 function sendWhenEditor(w, bot) {
@@ -642,6 +642,7 @@ function sendWhenEditor(w, bot) {
     field('¿Cuándo se envía?', select(w, 'mode', [['ai', 'La IA decide (según "Cuándo enviarla")'], ['rules', 'Solo en los momentos que marque aquí'], ['both', 'En estos momentos y también cuando la IA lo crea conveniente']], draw)),
     w.mode === 'ai' ? null : h('div', { class: 'list-item' },
       h('p', { class: 'small', style: 'margin-top:0' }, guaranteed(), ' El sistema la envía junto con la respuesta, aunque la IA no la elija, respetando el máximo de fotos por respuesta.'),
+      field(tag('Enviar por contexto', guide()), area(w, 'context', { placeholder: 'Cuando el cliente quiera comparar habitaciones o el asistente le explique las opciones disponibles.' }), 'Describe la situación. La IA interpreta la conversación completa; no exige palabras exactas.'),
       field('Cuando el cliente escriba', lines(w, 'keywords', { placeholder: 'menú\nprecios\nubicación' }), 'Una por renglón. Si la vuelve a pedir, se reenvía.'),
       field('Cuando el asistente diga o pregunte', lines(w, 'assistant_keywords', { placeholder: 'qué tipo de habitación\ncuál prefieres' }), 'Una frase por renglón. Se comprueba en la respuesta que se envía al cliente.'),
       check(w, 'first_message', 'En la bienvenida (primera respuesta a un cliente nuevo)'),

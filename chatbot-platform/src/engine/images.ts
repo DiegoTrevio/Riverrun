@@ -18,6 +18,17 @@ export function aiSelectableImages(images: ImageAsset[]) {
   return images.filter((i) => imageSendWhen(i).mode !== 'rules');
 }
 
+/** Explicit semantic conditions are available even in rules-only mode. */
+export function contextualImages(images: ImageAsset[]) {
+  return images.filter(img => scheduled(img) && imageSendWhen(img).context);
+}
+
+export function imagesForContext(images: ImageAsset[], selectedCodes: string[], sentIds: string[]): ScheduledImage[] {
+  const selected = new Set(selectedCodes.map(code => code.trim().toLowerCase()));
+  return contextualImages(images).filter(img => selected.has(img.code.toLowerCase()) && !(imageSendWhen(img).once && sentIds.includes(img.id)))
+    .map(image => ({image, reason: `contexto: ${imageSendWhen(image).context}`}));
+}
+
 /** Fotos con envío automático, con la descripción de cuándo salen (para avisarle a la IA). */
 export function automaticImages(images: ImageAsset[], stepTitles: string[] = []) {
   return images.filter(scheduled).flatMap((img) => {
