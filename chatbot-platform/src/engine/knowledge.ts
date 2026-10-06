@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
-import { config } from '../config.js';
+import { config, semanticEnabledFor } from '../config.js';
 import { pool, query, queryOne, withTransaction } from '../db.js';
 import { validEmbedding, type AiProvider } from '../ai/provider.js';
+import { logEvent } from '../logs.js';
 import * as store from '../store/index.js';
 import type { Chatbot, KnowledgeItem } from '../types.js';
 import { selectKnowledge } from './context.js';
@@ -61,7 +62,7 @@ export async function indexKnowledge(bot: Chatbot, ai: AiProvider, limit = Infin
   const pending = indexing.get(key);
   if (pending) { await pending; return indexKnowledge(bot, ai, limit); }
   const work = (async () => {
-    if (!config.knowledgeSearch.enabled || !ai.embed || !await vectorAvailable()) return 0;
+    if (!semanticEnabledFor(bot.account_id) || !ai.embed || !await vectorAvailable()) return 0;
     const lock = await pool.connect();
     let acquired = false;
     let broken = false;
@@ -96,16 +97,20 @@ export async function indexKnowledge(bot: Chatbot, ai: AiProvider, limit = Infin
 
 /** Null means the caller should use the existing lexical selector. No provider failure blocks a reply. */
 export async function semanticKnowledge(bot: Chatbot, items: KnowledgeItem[], text: string, ai: AiProvider): Promise<KnowledgeItem[] | null> {
-  if (!config.knowledgeSearch.enabled || !ai.embed || !items.some((k) => !k.always_include)) return null;
+  if (!semanticEnabledFor(bot.account_id) || !items.some((k) => !k.always_include)) return null;
+  const started = Date.now();
+  const record = (outcome: 'selected' | 'fallback', reason: string) => logEvent({ level: outcome === 'selected' ? 'info' : 'warn', source: 'engine', message: 'knowledge_search', accountId: bot.account_id, chatbotId: bot.id,
+    details: { outcome, reason, duration_ms: Date.now()-started, model: config.knowledgeSearch.model } }).catch(() => undefined);
+  if (!ai.embed) { await record('fallback', 'unsupported_provider'); return null; }
   try {
-    if (!await vectorAvailable()) return null;
+    if (!await vectorAvailable()) { await record('fallback', 'schema_unavailable'); return null; }
     await indexKnowledge(bot, ai, 4);
     const [vector] = await embed(ai, bot, [text.slice(-6000) || 'Información del negocio']);
     const rows = await query<KnowledgeItem & { excerpt: string }>(`SELECT k.*, c.content AS excerpt FROM knowledge_chunks c
       JOIN knowledge_items k ON k.id=c.item_id JOIN chatbots b ON b.id=k.chatbot_id
       WHERE k.chatbot_id=$1 AND b.account_id=$2 AND k.active AND NOT k.always_include AND c.model=$3
       AND c.content_hash=${hashSql} ORDER BY c.embedding <=> $4::vector, k.id, c.chunk_no LIMIT 40`, [bot.id, bot.account_id, config.knowledgeSearch.model, vectorSql(vector)]);
-    if (!rows.length) return null;
+    if (!rows.length) { await record('fallback', 'no_matches'); return null; }
     const chosen = items.filter((k) => k.always_include);
     let used = chosen.reduce((n, k) => n + k.title.length + k.content.length + 30, 0);
     const selected = new Map<string, KnowledgeItem>();
@@ -119,8 +124,10 @@ export async function semanticKnowledge(bot: Chatbot, items: KnowledgeItem[], te
     // Partial indexing must not hide documents waiting for an embedding or always-include facts.
     const indexedIds = new Set(rows.map((k) => k.id));
     const rest = selectKnowledge(items.filter((k) => !k.always_include && !indexedIds.has(k.id)), text, Math.max(0, bot.ai.knowledge_char_budget - used));
+    await record(selected.size ? 'selected' : 'fallback', selected.size ? 'available' : 'context_budget');
     return [...chosen, ...selected.values(), ...rest];
   } catch {
+    await record('fallback', 'provider_or_query_failed');
     console.warn('[knowledge] Búsqueda semántica no disponible; se utiliza búsqueda por palabras.');
     return null;
   }
@@ -131,7 +138,7 @@ export async function knowledgeIndexStatus(bot: Chatbot) {
   const rows = await inventory(bot,config.knowledgeSearch.model,available);
   const eligible = rows.filter(({item}) => item.active && !item.always_include);
   const indexed = eligible.filter((r) => r.complete);
-  return { enabled: config.knowledgeSearch.enabled, available, model: config.knowledgeSearch.model,
+  return { enabled: semanticEnabledFor(bot.account_id), available, model: config.knowledgeSearch.model,
     active_items: rows.filter(({item}) => item.active).length, essential_items: rows.filter(({item}) => item.active && item.always_include).length,
     inactive_items: rows.filter(({item}) => !item.active).length, indexed_items: indexed.length, pending_items: eligible.length-indexed.length,
     expected_chunks: eligible.reduce((n,r) => n+r.expected,0), indexed_chunks: indexed.reduce((n,r) => n+r.expected,0), complete: available && eligible.length === indexed.length };

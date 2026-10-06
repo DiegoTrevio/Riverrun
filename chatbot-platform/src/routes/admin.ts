@@ -1,4 +1,5 @@
 import fsp from 'node:fs/promises';
+import { operationalStatus } from '../engine/operations.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { assertAccount, HttpError, notFound, requireRole, scopeAccount, targetAccount } from '../access.js';
@@ -378,6 +379,8 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
   );
 
   api.get('/api/ai-runs', admins, async (req: any) => filtered(req, 'ai_runs', ['chatbot_id', 'conversation_id'], 100));
+
+  api.get('/api/health/operations', { preHandler: requireRole('superadmin') }, async () => operationalStatus());
 
   api.get('/api/health/deep', { preHandler: requireRole('superadmin') }, async () => {
     const db = await queryOne('SELECT 1 AS ok').then(() => true).catch(() => false);

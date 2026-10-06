@@ -45,3 +45,5 @@ Los bloqueos de PostgreSQL por agente/modelo coordinan procesos del backend y CL
 ## Comprobación realizada
 
 Se probaron con PostgreSQL y pgvector reales: inventario sin llamadas IA, selección por perfil, preparación de todos los agentes, repetición sin gasto adicional, reparación de un índice parcial, cambios sin conversación, desactivación/esenciales/eliminación, conservación tras fallo parcial, bloqueo entre procesos y cambio de modelo. Los embeddings de pruebas son sintéticos y deterministas; no acreditan el proveedor ni la cobertura de una base de producción inaccesible.
+
+Si hay un piloto configurado mediante `KNOWLEDGE_SEARCH_ACCOUNT_IDS`, preparar solo sus perfiles con `--account UUID --apply`. La preparación global se rechaza si incluye cuentas fuera del piloto. Véase el [punto 6](production-rollout.md).

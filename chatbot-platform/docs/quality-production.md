@@ -54,3 +54,5 @@ La clave se suministra mediante variables privadas del servidor o `.env` ignorad
 Se comprueban localmente reservas previas, llamadas concurrentes, límites compartidos entre chat/resumen/embeddings, costos desconocidos, fallos, modelos no permitidos, reporte sin secretos, ausencia de reintentos ocultos y compatibilidad de los reintentos normales. También se ejecuta la suite integral con presupuesto insuficiente y red bloqueada para demostrar que falla sin enviar solicitudes.
 
 Para acreditar operación real faltan: configurar la clave y acceso a `openrouter.ai`, integrar el PR, configurar las protecciones de GitHub, ejecutar los siete casos con el proveedor real y completar activación/indexado/verificaciones en el servidor de producción. No marcar producción como plenamente activa hasta disponer de esa evidencia.
+
+El despliegue gradual por perfiles, diagnóstico sin gasto IA y recuperación están en el [punto 6](production-rollout.md).

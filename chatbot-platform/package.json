@@ -23,7 +23,8 @@
     "knowledge:activate": "tsx --env-file-if-exists=.env src/cli/knowledge-activate.ts --apply --verify-provider",
     "knowledge:prepare": "tsx --env-file-if-exists=.env src/cli/knowledge-prepare.ts",
     "eval:engine": "npm run build && node scripts/eval-engine.mjs",
-    "eval:engine:live": "npm run build && node --env-file-if-exists=.env scripts/eval-engine.mjs --live"
+    "eval:engine:live": "npm run build && node --env-file-if-exists=.env scripts/eval-engine.mjs --live",
+    "operations:check": "tsx --env-file-if-exists=.env src/cli/operations-check.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.2",

@@ -5,6 +5,13 @@ function env(name: string, fallback = ''): string {
   return v === undefined || v === '' ? fallback : v;
 }
 
+function rolloutAccounts(value: string): string[] {
+  if (!value.trim()) return [];
+  const ids = [...new Set(value.split(',').map(id => id.trim().toLowerCase()))];
+  if (ids.some(id => !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id))) throw new Error('KNOWLEDGE_SEARCH_ACCOUNT_IDS debe contener UUID separados por comas.');
+  return ids;
+}
+
 const aiBaseUrl = env('OPENROUTER_BASE_URL', env('OPENAI_BASE_URL', 'https://openrouter.ai/api/v1')).replace(/\/$/, '');
 const useOpenRouter = new URL(aiBaseUrl).hostname === 'openrouter.ai';
 
@@ -40,6 +47,7 @@ export const config = {
   },
   knowledgeSearch: {
     enabled: env('KNOWLEDGE_SEARCH_ENABLED', 'false') === 'true',
+    accountIds: rolloutAccounts(env('KNOWLEDGE_SEARCH_ACCOUNT_IDS')),
     model: env('OPENROUTER_EMBEDDING_MODEL', useOpenRouter ? 'openai/text-embedding-3-small' : 'text-embedding-3-small'),
   },
   logRetentionDays: Number(env('LOG_RETENTION_DAYS', '30')),
@@ -81,4 +89,9 @@ export function assertProductionConfig(): string[] {
   if (!config.evolution.apiKey) problems.push('EVOLUTION_API_KEY no está definido (no se podrán enviar mensajes)');
   if (config.signup.enabled && !config.mail.smtpUrl) problems.push('SMTP_URL no está definido: los correos de verificación y recuperación solo quedan en el registro');
   return problems;
+}
+
+/** Empty pilot list preserves the global rollout; false disables all accounts. */
+export function semanticEnabledFor(accountId: string) {
+  return config.knowledgeSearch.enabled && (!config.knowledgeSearch.accountIds.length || config.knowledgeSearch.accountIds.includes(accountId));
 }

@@ -169,6 +169,7 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
     const bot = await botFor(req.user, req.params.id);
     if (!config.knowledgeSearch.enabled) throw new HttpError(400, 'Activa KNOWLEDGE_SEARCH_ENABLED para indexar conocimiento.');
     const status = await knowledgeIndexStatus(bot);
+    if (!status.enabled) throw new HttpError(400, 'La búsqueda semántica aún no está habilitada para este perfil.');
     if (!status.available) throw new HttpError(400, 'Instala la extensión pgvector y reinicia el backend.');
     await indexKnowledge(bot, new OpenAiProvider());
     const result = await knowledgeIndexStatus(bot);

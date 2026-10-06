@@ -1,5 +1,5 @@
 import type { AiProvider } from '../ai/provider.js';
-import { config } from '../config.js';
+import { config, semanticEnabledFor } from '../config.js';
 import { query } from '../db.js';
 import * as store from '../store/index.js';
 import { hydrateChatbot, type ChatbotRow } from '../types.js';
@@ -12,6 +12,7 @@ export type PreparationResult = Awaited<ReturnType<typeof knowledgeIndexStatus>>
 export async function prepareKnowledge(scope: KnowledgeScope, options: { apply?: boolean; ai?: AiProvider; onProgress?: (result: PreparationResult) => void } = {}) {
   const bots = 'chatbotId' in scope ? [await store.getChatbot(scope.chatbotId)].filter((b) => b !== null) : await store.listChatbots('accountId' in scope ? scope.accountId : null);
   if (('chatbotId' in scope && !bots.length) || ('accountId' in scope && !await store.getAccount(scope.accountId))) throw new Error('Alcance no encontrado.');
+  if (options.apply && bots.some(bot => !semanticEnabledFor(bot.account_id))) throw new Error('El alcance incluye perfiles fuera del piloto semántico habilitado.');
   if (options.apply && (!config.knowledgeSearch.enabled || !options.ai?.embed || !await vectorAvailable())) throw new Error('La búsqueda semántica no está lista para preparar documentos.');
   const results: PreparationResult[] = [];
   for (const bot of bots) {
@@ -41,7 +42,7 @@ export class KnowledgeWorker {
   async runOnce() {
     if (!config.knowledgeSearch.enabled || !this.ai.embed || !await vectorAvailable()) return;
     const rows = await query<ChatbotRow>(`SELECT b.* FROM chatbots b JOIN accounts a ON a.id=b.account_id
-      WHERE a.active AND a.status IN ('active','trial') AND (a.status <> 'trial' OR a.trial_ends_at > now()) ORDER BY b.id`);
+      WHERE a.active AND a.status IN ('active','trial') AND (a.status <> 'trial' OR a.trial_ends_at > now()) AND ($1::uuid[] IS NULL OR a.id=ANY($1::uuid[])) ORDER BY b.id`, [config.knowledgeSearch.accountIds.length ? config.knowledgeSearch.accountIds : null]);
     for (let scanned = 0; scanned < rows.length; scanned++) {
       const bot = hydrateChatbot(rows[this.cursor++ % rows.length]);
       if (!(await knowledgeIndexStatus(bot)).pending_items) continue;

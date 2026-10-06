@@ -28,7 +28,7 @@ export async function run() {
     created = true;
     url.pathname = `/${name}`;
     const env = { ...process.env, DATABASE_URL: url.href, RIVERRUN_EVAL_DATABASE: name,
-      RIVERRUN_EVAL_LIVE: String(live), KNOWLEDGE_SEARCH_ENABLED: 'false',
+      RIVERRUN_EVAL_LIVE: String(live), KNOWLEDGE_SEARCH_ENABLED: 'false', KNOWLEDGE_SEARCH_ACCOUNT_IDS: '',
       OPENROUTER_BASE_URL: 'https://openrouter.ai/api/v1', PROMPTFOO_DISABLE_TELEMETRY: '1',
       PROMPTFOO_CONFIG_DIR: '/tmp/riverrun-promptfoo' };
     const extra = process.argv.slice(2).filter(x => x !== '--live');
