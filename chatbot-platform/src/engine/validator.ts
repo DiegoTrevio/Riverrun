@@ -1,3 +1,4 @@
+import { automaticField, customerProvided } from './customer-data.js';
 import type { Chatbot, DataField, ImageAsset } from '../types.js';
 import { DecisionSchema, type Action, type Decision } from './decision.js';
 import { countEmojis, FactCorpus, limitEmojis, normalize, stripEmojis, toWhatsappFormat } from './text.js';
@@ -51,6 +52,8 @@ export interface ValidationInput {
   groundingSources: string[];
   /** Lo que escribió el cliente (vale para nombres, fechas o cantidades, pero no para precios). */
   customerSources?: string[];
+  /** Mensajes originales del cliente para validar datos automáticos (sin resúmenes). */
+  customerDataSources?: string[];
   /** Texto de los mensajes pendientes del cliente (para saber si pidió explícitamente una imagen). */
   customerText: string;
   /** Fotos que el sistema enviará en este turno (la IA puede mencionarlas sin incluirlas en image_ids). */
@@ -194,7 +197,7 @@ function dropSentences(messages: string[], test: (sentenceNorm: string, sentence
 /**
  * Valida y sanea la propuesta de la IA. Nunca confía en ella:
  *  - Solo imágenes existentes y activas del chatbot.
- *  - Solo campos de datos configurados y con formato válido.
+ *  - Campos configurados o datos automáticos proporcionados por el cliente, con formato válido.
  *  - Precios, números, links, correos y teléfonos deben existir en el contexto.
  *  - Frases prohibidas, emojis, formato y longitud según configuración.
  */
@@ -348,10 +351,11 @@ export function validateDecision(input: ValidationInput): ValidationResult {
   // ---------- Datos del cliente ----------
   const saveData: Record<string, string> = {};
   let contactName: string | null = null;
-  for (const { field, value } of d.save_data) {
-    const f = bot.data_fields.find((x) => x.key === field) ?? (['nombre', 'name'].includes(field) ? ({ key: field, label: 'Nombre', type: 'name', options: [], description: '', required: false, ask_when: '' } as DataField) : undefined);
+  for (const { field, value } of d.save_data.slice(0, 30)) {
+    const configured = bot.data_fields.find((x) => x.key === field);
+    const f = configured ?? automaticField(field);
     if (!f) {
-      fixes.push(`Campo desconocido ignorado: ${field}`);
+      fixes.push(`Campo inválido ignorado: ${field}`);
       continue;
     }
     const clean = validateFieldValue(f, value);
@@ -359,8 +363,13 @@ export function validateDecision(input: ValidationInput): ValidationResult {
       fixes.push(`Valor inválido para ${field}: "${value}"`);
       continue;
     }
+    if (!configured && !customerProvided(f, clean, [input.customerText, ...(input.customerDataSources ?? input.customerSources ?? [])])) {
+      fixes.push(`Dato no proporcionado por el cliente ignorado: ${f.key}`);
+      continue;
+    }
+    if (!configured && !Object.hasOwn(input.knownData ?? {}, f.key) && Object.keys(input.knownData ?? {}).length + Object.keys(saveData).length >= 100) continue;
     if (f.type === 'name') contactName = clean;
-    if (bot.data_fields.some((x) => x.key === f.key)) saveData[f.key] = clean;
+    saveData[f.key] = clean;
   }
 
   // ---------- Coherencia de la acción ----------
@@ -392,7 +401,7 @@ export function validateDecision(input: ValidationInput): ValidationResult {
       } else if (!slots.includes(b.slot)) {
         bookingIssue = true;
         retryable.push(`El horario "${b.slot}" no está disponible para ese servicio. Ofrece solo horarios de la lista y agenda únicamente cuando el cliente elija uno.`);
-      } else if (agenda.needsPhoneFor.includes(b.service_id) && !input.hasPhone && !Object.keys(saveData).some((k) => bot.data_fields.find((f) => f.key === k)?.type === 'phone')) {
+      } else if (agenda.needsPhoneFor.includes(b.service_id) && !input.hasPhone && !Object.keys(saveData).some((k) => k === 'telefono' || bot.data_fields.find((f) => f.key === k)?.type === 'phone')) {
         bookingIssue = true;
         retryable.push('Para agendar la llamada primero pide el número de teléfono del cliente (no agendes todavía).');
       } else {

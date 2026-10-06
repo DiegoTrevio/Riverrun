@@ -65,7 +65,27 @@ async function friendly(ch: Channel, e: any): Promise<never> {
   throw new SessionError('WhatsApp no aceptó la solicitud. Vuelve a intentarlo; si sigue fallando, avísanos.');
 }
 
-export async function whatsappSession(ch: Channel, o: { mode: 'qr' | 'code'; number?: string; refresh?: boolean }): Promise<SessionResult> {
+const sessionLocks = new Map<string, Promise<void>>();
+type SessionOptions = { mode: 'qr' | 'code'; number?: string; refresh?: boolean };
+
+/** Serializa las consultas del mismo canal; otros canales conectan independientemente. */
+export async function whatsappSession(ch: Channel, o: SessionOptions): Promise<SessionResult> {
+  const previous = sessionLocks.get(ch.id) ?? Promise.resolve();
+  let release!: () => void;
+  const lock = new Promise<void>((resolve) => { release = resolve; });
+  sessionLocks.set(ch.id, lock);
+  await previous;
+  try {
+    const fresh = await store.getChannel(ch.id);
+    if (!fresh) throw new SessionError('El canal ya no está disponible.');
+    return await prepareSession(fresh, o);
+  } finally {
+    release();
+    if (sessionLocks.get(ch.id) === lock) sessionLocks.delete(ch.id);
+  }
+}
+
+async function prepareSession(ch: Channel, o: SessionOptions): Promise<SessionResult> {
   const instance = ch.config.instance;
   const evo = evolutionFor(ch);
   const number = o.mode === 'code' ? normalizePairingNumber(o.number ?? '') : '';
@@ -119,8 +139,17 @@ export async function whatsappSession(ch: Channel, o: { mode: 'qr' | 'code'; num
     t.connectAt = now;
 
     await evo.setWebhook(instance, webhookUrl(ch));
-    let c = await evo.connect(instance, number || undefined).catch(() => null);
+    let c;
+    try {
+      c = await evo.connect(instance, number || undefined);
+    } catch (e) {
+      t.connectAt = 0;
+      throw e;
+    }
+    if (c.state === 'open') return await connected(ch);
     if (!(o.mode === 'qr' ? c?.base64 : c?.pairingCode) && now - t.waitingSince > STUCK_AFTER_MS && now - t.recreateAt > RECREATE_EVERY_MS) {
+      // El escaneo pudo completarse mientras esperábamos el código.
+      if (await evo.connectionState(instance) === 'open') return await connected(ch);
       // Lleva rato sin generar código (instancia trabada o QR agotados): se recrea una vez con el mismo nombre.
       t.recreateAt = now;
       t.waitingSince = now;
@@ -161,7 +190,9 @@ async function createOrWait(ch: Channel, number: string) {
       await logEvent({ level: 'info', source: 'evolution', message: `Instancia creada: ${ch.config.instance}`, accountId: ch.account_id, channelId: ch.id });
       return created;
     } catch (e: any) {
-      if (e?.status !== 403 && e?.status !== 409) throw e;
+      const message = JSON.stringify(e?.body?.response?.message ?? e?.body?.message ?? '');
+      const nameConflict = e?.status === 409 || (e?.status === 403 && /already (?:in use|exists)/i.test(message));
+      if (!nameConflict) throw e;
       await new Promise((r) => setTimeout(r, 500));
     }
   }

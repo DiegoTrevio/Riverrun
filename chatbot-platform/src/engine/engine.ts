@@ -132,7 +132,7 @@ export class Engine {
     const agendaVal: AgendaValidation | null = agendaCtx
       ? { slots: Object.fromEntries(Object.entries(agendaCtx.slots).map(([k, v]) => [k, v.map((x) => x.key)])), appointmentIds: agendaCtx.appointments.map((a) => a.id), needsPhoneFor: agendaCtx.needsPhoneFor }
       : null;
-    const hasPhone = !!contact.phone || bot.data_fields.some((f) => f.type === 'phone' && !!contact.data?.[f.key]);
+    const hasPhone = !!contact.phone || !!contact.data?.telefono || bot.data_fields.some((f) => f.type === 'phone' && !!contact.data?.[f.key]);
     const imagesById = new Map<string, ImageAsset>(allImages.map((i) => [i.id, i]));
     const model = bot.ai.model || config.openai.defaultModel;
     // Fotos con momento fijo (las garantiza el sistema): por palabra del cliente o de bienvenida, se saben antes de la IA.
@@ -188,6 +188,7 @@ export class Engine {
         raw, bot, images: aiImages, sentImageIds, customerText, scheduledImages: scheduledBefore.map((x) => x.image),
         groundingSources: ctx.groundingSources,
         customerSources: ctx.customerSources,
+        customerDataSources: history.filter((m) => m.direction === 'in').map((m) => m.content),
         allowedIntents: intents.map((i) => i.intent),
         agenda: agendaVal,
         hasPhone,

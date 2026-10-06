@@ -25,7 +25,7 @@ Chat web (widget)    ┘    │                             │
 | **Contexto correcto** | Se envía: prompt + conocimiento (si excede el presupuesto, solo lo relevante + lo marcado como "siempre incluir") + catálogo de imágenes + datos del cliente + notas + resumen + últimos N mensajes. Nunca el historial completo. La parte fija va primero para aprovechar el caché de prompts de OpenAI (más barato). |
 | **Cero invenciones** | 1) Instrucción explícita de usar solo la información cargada. 2) El validador extrae **precios, números, URLs, correos y teléfonos** de la respuesta y verifica que existan en el conocimiento/configuración. Los **montos de dinero** solo se aceptan si vienen del negocio (el cliente no puede "dictar" un precio). 3) Si falla, se pide a la IA que corrija; si insiste, se envía un mensaje de respaldo o se transfiere, según la regla configurada. |
 | **Imágenes correctas** | La IA solo ve un catálogo con ID, nombre, qué muestra y cuándo usarla. El backend descarta IDs inexistentes o inactivos, evita reenviar la misma imagen, limita cuántas se envían y rechaza respuestas del tipo "te mando la foto" sin imagen válida. Los archivos se validan por su firma real (JPG/PNG/WEBP, máx. 5 MB). |
-| **Memoria** | Datos del cliente (campos configurables, validados: correo, teléfono, opciones…), notas de intereses, nombre, y un **resumen acumulado** de lo antiguo que se genera automáticamente. La IA recibe el resumen + todos los mensajes aún no resumidos (sin huecos), y ve qué datos ya tiene y cuáles faltan, así no vuelve a preguntar. |
+| **Memoria** | Datos del cliente guardados automáticamente a partir de sus respuestas (nombre, correo y teléfono validados), notas de intereses, nombre, y un **resumen acumulado** de lo antiguo que se genera automáticamente. La IA recibe el resumen + todos los mensajes aún no resumidos (sin huecos), y ve qué datos ya tiene y cuáles faltan, así no vuelve a preguntar. |
 | **Transferencia a humano** | Por palabras clave (sin gastar IA), por decisión de la IA según reglas, o manualmente desde el panel. Aviso opcional por WhatsApp a un encargado. Si alguien responde desde el teléfono, el bot se pausa en esa conversación. Retoma automática opcional tras X minutos. |
 | **Registros** | Cada error/evento de Evolution, IA, validador, webhook y panel queda en `event_logs` y se ve en el panel. Cada llamada a la IA queda en `ai_runs` con tokens (incluidos los cacheados), latencia, decisión y validación. |
 | **Cuentas y usuarios** | Cada cliente es una cuenta con sus usuarios (administradores y agentes). Solo ven lo suyo: cualquier intento de acceder a otra cuenta responde 404. El superadministrador ve y administra todas. Desactivar una cuenta corta el acceso de sus usuarios y detiene sus canales (los mensajes se siguen guardando). |
@@ -70,7 +70,7 @@ Internet ──HTTPS──> Caddy (app.tudominio.com)
    2. *Tu asistente*: nombre, trato (tú/usted) y su información: productos/servicios con precios, horarios, ubicación, preguntas frecuentes. Se crea el chatbot con la **plantilla de su giro** (restaurante, salud, hotel, tienda, servicios, belleza u otro): personalidad, flujo, datos que pide y reglas (p.ej. "nunca des diagnósticos" en salud). Todo se puede afinar después en la configuración avanzada.
    3. *Fotos* (opcional): catálogo de imágenes.
    4. *Pruébalo*: el simulador.
-   5. *WhatsApp*: el código aparece solo (QR en computadora, "Con mi número" en celular) → se vincula desde *Dispositivos vinculados* → el panel detecta la conexión, muestra el número vinculado y avanza solo.
+   5. *WhatsApp*: el QR aparece solo en cada cuenta/canal (también en celular; "Con mi número" queda como alternativa) → se vincula desde *Dispositivos vinculados* → el panel detecta la conexión, muestra el número vinculado y avanza solo.
 4. **Si su WhatsApp se desconecta** (teléfono sin internet, sesión cerrada) se le avisa en el panel y por correo con un enlace que abre directo el código para volver a vincularlo.
 5. **Fin de la prueba**: 3 días antes se avisa a la empresa y a ti; al vencer la cuenta queda **en pausa**: puede entrar al panel, pero el bot no responde ni salen mensajes. Tú, en **Cuentas**, pulsas **Activar plan** (o **Extender prueba**). El cobro todavía es manual: `SUPPORT_CONTACT` es lo que ven para contratar.
 
@@ -102,22 +102,15 @@ Al cambiar una contraseña, las demás sesiones abiertas de ese usuario se cierr
 ## Primeros pasos en el panel
 
 1. **Cuentas** (superadministrador): crea la cuenta del cliente y, opcionalmente, su primer administrador.
-2. **Asistentes → + Nuevo asistente**: nombre y **tipo de negocio** (nace con la forma de atender, reglas y datos típicos de ese giro). Luego, en este orden:
-   - **Resumen**: lista de lo que falta para que funcione (información, instrucciones, canal, encendido).
-   - **Lo que sabe**: precios, servicios, horarios, ubicación, políticas, preguntas frecuentes. Es lo único que puede afirmar.
-   - **Cómo habla**: instrucciones (quién es y qué debe lograr), trato tú/usted, largo de las respuestas, emojis y tono.
-   - **Reglas**: qué hacer si no tiene un dato, cuándo pasar con una persona, temas prohibidos, reglas del negocio y fotos.
-   - **Fotos**: catálogo de imágenes, cada una con su ID, qué muestra y **cuándo se envía**:
-     - *La IA decide* según "Cuándo enviarla" (el sistema verifica que exista y esté activa).
-     - *Solo en estos momentos* (garantizado por el sistema, aunque la IA no la elija): cuando el cliente escribe ciertas palabras ("menú", "ubicación"; si la vuelve a pedir se reenvía), en la bienvenida, al llegar a una etapa del recorrido, al cumplirse el objetivo o al agendar una cita. Opción "solo una vez por conversación". La IA sabe que esa foto sale sola y puede mencionarla.
-     - *Ambos*.
-     - Además, desde cualquier conversación el equipo puede mandar una foto del catálogo con **📷 Foto**, y las reglas pueden enviarla ("Enviar mensaje o foto"). El probador de palabras dice qué foto saldría con un mensaje.
-     - Si una plataforma rechaza la foto, el mensaje queda como fallido en la conversación y en Registros. Se recomiendan JPG o PNG (WhatsApp no siempre muestra bien WEBP).
-   - **Datos que pide**: nombre, teléfono, correo… y cuándo pedirlos.
-   - **Probar**: simulador con el mismo motor y las mismas reglas, con botones de preguntas de prueba y el panel **Qué revisó el sistema** (qué hizo, qué reglas obligaron a corregir la respuesta y qué datos guardó). Funciona aunque esté apagado.
-   - **Avanzado** (opcional): recorrido de la conversación y modelo de IA.
+2. **Asistentes → + Nuevo asistente**: elige el nombre y tipo de negocio. La configuración tiene cuatro secciones:
+   - **Instrucciones**: escribe cómo debe atender, qué debe preguntar y cuál es su objetivo. El estilo y las opciones avanzadas quedan plegados.
+   - **Conocimiento**: agrega productos, precios, horarios y preguntas frecuentes.
+   - **Fotos**: sube imágenes y explica cuándo enviarlas; las reglas de envío son opcionales.
+   - **Probar**: conversa como un cliente y revisa los datos guardados automáticamente. Los detalles técnicos de cada respuesta quedan plegados. Funciona aunque el asistente esté apagado.
 3. **Canales → Nuevo canal**: elige la plataforma, asígnale el asistente y sigue las instrucciones de conexión (abajo).
-4. **Resumen → Encendido** para que empiece a responder.
+4. En **Instrucciones**, marca **Asistente encendido** y guarda.
+
+No hay que crear campos para guardar las respuestas. Por ejemplo, si las instrucciones dicen «pregunta la dirección para entregar» y el cliente responde «Av. Reforma 25», el asistente propone guardar `direccion: Av. Reforma 25` y el backend verifica que ese valor aparezca en un mensaje del cliente. Los datos se ven en la ficha de la conversación y en **Probar**; se reutilizan para evitar preguntas repetidas y se actualizan cuando el cliente los corrige. Nombre, correo y teléfono se normalizan y validan. Los campos de configuraciones anteriores siguen siendo compatibles.
 
 Cada ajuste del panel indica si está **✓ Garantizado** (el sistema lo revisa antes de enviar y, si no se cumple, corrige la respuesta o pide otra) o si es una **Guía** para la IA (la sigue casi siempre; compruébalo en Probar):
 
@@ -131,9 +124,9 @@ Cada ajuste del panel indica si está **✓ Garantizado** (el sistema lo revisa 
 | Datos del cliente con formato válido · agenda solo con horarios reales | |
 | Recorrido: el objetivo solo cuenta con los datos "importantes" · acción al cumplirlo (pasar a una persona o avisar), una vez | |
 
-**Recorrido de la conversación** (Avanzado): objetivo, etapas y qué hacer al cumplirlo. En cada turno la IA indica en qué etapa queda y si se cumplió el objetivo; el sistema lo guarda y se lo recuerda en el siguiente turno, junto con los datos importantes que faltan, para que no repita etapas ni preguntas. El objetivo se acepta solo si ya están todos los datos marcados como "Importante"; entonces, una sola vez por conversación, el sistema **pasa la conversación a una persona** o **avisa al equipo** (según lo elegido) y dispara las reglas "Se cumple el objetivo de la conversación". La etapa y el objetivo se ven en cada conversación; al cerrarla y que el cliente vuelva a escribir, el recorrido empieza de nuevo. El asistente conoce el horario de atención y la zona horaria de **Horario y ajustes** (sabe si en este momento está abierto).
+**Recorrido de la conversación** (Opciones avanzadas): objetivo, etapas y qué hacer al cumplirlo. En cada turno la IA indica en qué etapa queda y si se cumplió el objetivo; el sistema lo guarda y se lo recuerda en el siguiente turno, junto con los datos importantes que faltan, para que no repita etapas ni preguntas. El objetivo se acepta solo si ya están todos los datos marcados como "Importante"; entonces, una sola vez por conversación, el sistema **pasa la conversación a una persona** o **avisa al equipo** (según lo elegido) y dispara las reglas "Se cumple el objetivo de la conversación". La etapa y el objetivo se ven en cada conversación; al cerrarla y que el cliente vuelva a escribir, el recorrido empieza de nuevo. El asistente conoce el horario de atención y la zona horaria de **Horario y ajustes** (sabe si en este momento está abierto).
 
-Consejo: si una regla del negocio tiene cifra (precio, descuento, anticipo), escríbela también en **Lo que sabe**; así queda garantizada por la verificación de datos.
+Consejo: si una regla del negocio tiene cifra (precio, descuento, anticipo), escríbela también en **Conocimiento**; así queda garantizada por la verificación de datos.
 
 Para ver un ejemplo completo: `npm run seed:demo` (o `docker compose exec backend node dist/cli/seed-demo.js`) crea la cuenta "Demo" con un chatbot de hotel y un canal de chat web.
 
@@ -141,7 +134,7 @@ Para ver un ejemplo completo: `npm run seed:demo` (o `docker compose exec backen
 
 | Plataforma | Qué necesitas | Cómo se conecta |
 |---|---|---|
-| **WhatsApp** | Un teléfono con WhatsApp (normal o Business) | Al abrir el canal (o el paso 5 de Primeros pasos) el código **aparece solo** y se renueva solo, con cuenta regresiva: **Escanear código QR** desde la computadora, o **Con mi número** (predeterminado en celular): escribe tu número, recibes un código de 8 letras y en WhatsApp → Dispositivos vinculados → *Vincular con el número de teléfono* lo tecleas. El panel detecta la conexión y muestra "Conectado como …". Si la instancia de Evolution se traba, se recrea sola. |
+| **WhatsApp** | Un teléfono con WhatsApp (normal o Business) | Al abrir el canal (o el paso 5 de Primeros pasos) el código **aparece solo** y se renueva solo, con cuenta regresiva: **Escanear código QR** es la opción inicial en todos los dispositivos; como alternativa, **Con mi número**: escribe tu número, recibes un código de 8 letras y en WhatsApp → Dispositivos vinculados → *Vincular con el número de teléfono* lo tecleas. El panel detecta la conexión y muestra "Conectado como …". Dos pestañas reutilizan el QR vigente sin reiniciar la vinculación. Si Evolution responde sin código durante un tiempo, se comprueba otra vez el estado antes de recuperar una instancia trabada; los fallos de autorización o de API se muestran como errores, sin eliminar la sesión. |
 | **Telegram** | Un bot creado con **@BotFather** | Pega el token, guarda y pulsa **Conectar con Telegram**: se valida el token y se registra el webhook con un secreto (los mensajes sin ese secreto se rechazan). Solo chats privados. |
 | **Messenger** | Una app en Meta for Developers con el producto Messenger y una página de Facebook | Pega el token de la página y la clave secreta de la app. En la app de Meta configura el webhook con la **URL** y el **token de verificación** que muestra el panel, suscrito a `messages`, `messaging_postbacks` y `message_echoes`. Pulsa **Verificar y suscribir la página**. |
 | **Instagram** | Cuenta profesional de Instagram vinculada a la página, en la misma app de Meta | Igual que Messenger, en la sección Instagram de la app. |
@@ -268,7 +261,7 @@ El backend (`src/engine/validator.ts`) nunca confía en la propuesta:
 
 - JSON válido y acción conocida.
 - Imágenes: solo IDs del catálogo del chatbot, activas, sin repetir, con límite por turno.
-- Datos: solo campos configurados; se validan y normalizan (correo, teléfono, nombre, número, opción de lista).
+- Datos: admite respuestas útiles sin campos predefinidos, siempre que el valor aparezca en los mensajes originales del cliente. Se normalizan las claves y se validan nombre, correo y teléfono. Los campos antiguos conservan su validación de formato.
 - Hechos: precios/números/links/correos/teléfonos deben existir en las fuentes (dinero: solo fuentes del negocio).
 - Estilo: frases prohibidas, temas prohibidos (si el cliente no los mencionó), trato tú/usted, emojis (máximo 2 en "pocos"), largo según la configuración, Markdown → formato WhatsApp, número y tamaño de mensajes.
 - Mensajes fijos (transferencia y respaldo): al cambiar el trato, los de fábrica se ajustan a tú/usted.

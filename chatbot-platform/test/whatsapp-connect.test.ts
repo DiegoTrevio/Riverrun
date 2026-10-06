@@ -43,6 +43,7 @@ t('la primera consulta crea la instancia y entrega el QR de inmediato (con la ll
   assert.equal(s.expires_in, 30);
   assert.ok(evo.instances.has(C.instance));
   const create = evoCalls('/instance/create')[0];
+  assert.equal(create.body.webhook.enabled, true, 'el webhook se activa al crear la instancia');
   assert.deepEqual(create.body.webhook.events, ['MESSAGES_UPSERT', 'CONNECTION_UPDATE', 'QRCODE_UPDATED'], 'escucha los QR nuevos');
   assert.ok(ext.requests.every((x) => x.headers.apikey === 'llave-global-de-pruebas'));
   // El QR no viaja en el listado de canales.
@@ -175,4 +176,92 @@ t('desconectar a propósito: sin alerta de "se desconectó"; otra cuenta no pued
   const again = (await session()).json();
   assert.equal(again.state, 'connecting');
   assert.ok(again.qr);
+});
+
+t('dos pestañas y el endpoint anterior reutilizan el mismo QR sin reiniciar la vinculación', async () => {
+  const ch = (await admin('POST', '/api/channels', { type: 'whatsapp', name: 'Dos pestañas' })).json();
+  ext.requests.length = 0;
+  const [a, b] = await Promise.all([
+    admin('POST', `/api/channels/${ch.id}/whatsapp/session`, {}),
+    admin('POST', `/api/channels/${ch.id}/whatsapp/session`, {}),
+  ]);
+  assert.equal(a.statusCode, 200, a.body);
+  assert.equal(b.statusCode, 200, b.body);
+  assert.equal(a.json().qr, b.json().qr);
+  assert.ok(a.json().qr);
+  assert.equal(evoCalls('/instance/create').length, 1);
+  assert.equal(evoCalls('/instance/connect/').length, 0);
+  const old = await admin('POST', `/api/channels/${ch.id}/whatsapp/connect`, {});
+  assert.equal(old.statusCode, 200, old.body);
+  assert.equal(old.json().qr, a.json().qr);
+  assert.equal(evoCalls('/instance/connect/').length, 0);
+});
+
+t('cada cuenta prepara su propia instancia y webhook; un QR nuevo no cambia el de otra cuenta', async () => {
+  const a = (await admin('POST', '/api/channels', { type: 'whatsapp', name: 'Cuenta A' })).json();
+  const b = (await other('POST', '/api/channels', { type: 'whatsapp', name: 'Cuenta B' })).json();
+  assert.notEqual(a.config.instance, b.config.instance);
+  ext.requests.length = 0;
+  const results = await Promise.all([
+    admin('POST', `/api/channels/${a.id}/whatsapp/session`, {}),
+    other('POST', `/api/channels/${b.id}/whatsapp/session`, {}),
+  ]);
+  assert.ok(results.every((r) => r.statusCode === 200 && r.json().qr));
+  const creates = evoCalls('/instance/create');
+  assert.equal(creates.length, 2);
+  assert.equal(creates.find((r) => r.body.instanceName === a.config.instance)?.body.webhook.url, `http://backend:3000/webhook/${a.webhook_token}`);
+  assert.equal(creates.find((r) => r.body.instanceName === b.config.instance)?.body.webhook.url, `http://backend:3000/webhook/${b.webhook_token}`);
+  const update = await h.app.inject({ method: 'POST', url: `/webhook/${a.webhook_token}`, payload: { instance: a.config.instance, event: 'qrcode.updated', data: { qrcode: { base64: 'QROFA' } } } });
+  assert.equal(update.statusCode, 200);
+  await waitFor(async () => (await admin('POST', `/api/channels/${a.id}/whatsapp/session`, {})).json().qr === 'data:image/png;base64,QROFA');
+  assert.equal((await other('POST', `/api/channels/${b.id}/whatsapp/session`, {})).json().qr, results[1].json().qr);
+  assert.equal((await other('POST', `/api/channels/${a.id}/whatsapp/session`, {})).statusCode, 404);
+});
+
+t('un error al pedir QR no se oculta ni elimina una instancia; el siguiente intento se recupera', async () => {
+  const ch = (await admin('POST', '/api/channels', { type: 'whatsapp', name: 'Fallo temporal' })).json();
+  await admin('POST', `/api/channels/${ch.id}/whatsapp/session`, {});
+  await pool.query('UPDATE channels SET qr_at = now() - interval \'1 minute\' WHERE id = $1', [ch.id]);
+  attempts.set(ch.id, { connectAt: 0, recreateAt: 0, waitingSince: Date.now() - 60_000 });
+  evo.connectErrors.set(ch.config.instance, 400);
+  ext.requests.length = 0;
+  try {
+    const r = await admin('POST', `/api/channels/${ch.id}/whatsapp/session`, {});
+    assert.equal(r.statusCode, 400);
+    assert.match(r.json().error, /WhatsApp no aceptó la solicitud/);
+    assert.equal(evoCalls('/instance/delete/').length, 0);
+    assert.equal(evoCalls('/instance/logout/').length, 0);
+  } finally { evo.connectErrors.delete(ch.config.instance); }
+  const recovered = await admin('POST', `/api/channels/${ch.id}/whatsapp/session`, {});
+  assert.equal(recovered.statusCode, 200, recovered.body);
+  assert.ok(recovered.json().qr);
+});
+
+t('si el escaneo termina durante connect, confirma la conexión sin recrear la instancia', async () => {
+  const ch = (await admin('POST', '/api/channels', { type: 'whatsapp', name: 'Escaneo terminado' })).json();
+  await admin('POST', `/api/channels/${ch.id}/whatsapp/session`, {});
+  await pool.query('UPDATE channels SET qr_at = now() - interval \'1 minute\' WHERE id = $1', [ch.id]);
+  attempts.set(ch.id, { connectAt: 0, recreateAt: 0, waitingSince: Date.now() - 60_000 });
+  evo.openOnConnect.add(ch.config.instance);
+  ext.requests.length = 0;
+  try {
+    const r = await admin('POST', `/api/channels/${ch.id}/whatsapp/session`, {});
+    assert.equal(r.statusCode, 200, r.body);
+    assert.equal(r.json().state, 'open');
+    assert.equal(r.json().qr, null);
+    assert.equal(evoCalls('/instance/delete/').length, 0);
+  } finally { evo.openOnConnect.delete(ch.config.instance); }
+});
+
+t('un 403 por autorización al crear la instancia no se confunde con un nombre ocupado', async () => {
+  const ch = (await admin('POST', '/api/channels', { type: 'whatsapp', name: 'Autorización' })).json();
+  ext.requests.length = 0;
+  evo.createDenied = true;
+  try {
+    const r = await admin('POST', `/api/channels/${ch.id}/whatsapp/session`, {});
+    assert.equal(r.statusCode, 400);
+    assert.match(r.json().error, /WhatsApp no aceptó la solicitud/);
+    assert.equal(evoCalls('/instance/create').length, 1);
+    assert.equal(evo.instances.has(ch.config.instance), false);
+  } finally { evo.createDenied = false; }
 });
