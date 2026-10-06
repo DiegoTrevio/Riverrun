@@ -92,6 +92,24 @@ Internet ──HTTPS──> Caddy (app.tudominio.com)
 4. **Si su WhatsApp se desconecta** (teléfono sin internet, sesión cerrada) se le avisa en el panel y por correo con un enlace que abre directo el código para volver a vincularlo.
 5. **Fin de la prueba**: 3 días antes se avisa a la empresa y a ti; al vencer la cuenta queda **en pausa**: puede entrar al panel, pero el bot no responde ni salen mensajes. Tú, en **Cuentas**, pulsas **Activar plan** (o **Extender prueba**). El cobro todavía es manual: `SUPPORT_CONTACT` es lo que ven para contratar.
 
+**Usuarios y permisos por perfil (subcuentas).** Un perfil de negocio corresponde a una cuenta existente: conserva sus asistentes, hasta cuatro WhatsApps, conversaciones, contactos, agenda, automatizaciones, consumo y registros. No se duplican datos al presentar la cuenta como perfil.
+
+| Nivel | Alcance |
+| --- | --- |
+| Maestro (`superadmin`) | Todos los perfiles; crea perfiles, asigna usuarios y concede acceso global. |
+| Administrador del perfil (`admin`) | Gestiona el perfil asignado y sus usuarios; no puede cambiar de perfil ni conceder acceso maestro. |
+| Operador del perfil (`agent`) | Conversaciones, contactos, agenda y notificaciones de su perfil. |
+
+En **Configuración → Perfiles**, el maestro crea el perfil junto con su primer administrador. En **Usuarios y permisos**, selecciona el perfil de cada usuario o concede acceso maestro. Cada usuario tiene un único perfil; varios usuarios pueden compartirlo. La reasignación se aplica a las sesiones ya abiertas en la siguiente petición y retira al usuario como propietario del perfil anterior para evitar sus alertas. Las rutas y las APIs conservan `account_id` por compatibilidad.
+
+La migración `009_master_access.sql` asigna una sola vez acceso maestro al usuario existente y verificado **diegoa.trevio@gmail.com**, conservando su contraseña. Si ese usuario aún no existe o su correo no está confirmado, no lo crea ni le concede acceso. Después de registrar y verificar el correo, el operador del servidor puede ejecutar:
+
+```bash
+npm run user:master -- diegoa.trevio@gmail.com
+```
+
+En una imagen de producción ya compilada: `docker compose exec backend node dist/cli/grant-master.js diegoa.trevio@gmail.com`. El comando usa la base de datos configurada y no cambia la contraseña. El registro público nunca concede acceso maestro por el correo enviado.
+
 **Navegación y perfiles.** El menú agrupa todas las herramientas en cuatro apartados: Asistentes y conexiones, Conversaciones, Operación y Configuración. En *Asistentes y conexiones → WhatsApp y otros canales*, cada cuenta puede crear hasta **cuatro perfiles de WhatsApp**, cada uno con instancia, QR y webhook propios. Cada perfil elige un asistente de su misma cuenta; varios perfiles pueden compartirlo. *Ver QR* abre la vinculación del teléfono elegido. Las conversaciones siguen separadas por canal. Desactivar o desconectar un perfil conserva su lugar; eliminarlo libera uno y elimina sus conversaciones. Los otros tipos de canal no consumen estos lugares. Las cuentas que ya tengan más de cuatro conservan sus perfiles, pero no pueden crear otros hasta quedar por debajo del límite.
 
 **WhatsApp por empresa, aislado.** Todas las empresas comparten tu servidor de Evolution, pero cada canal tiene su propia instancia (su sesión de WhatsApp, su QR, su webhook secreto). El nombre de la instancia lo genera el servidor y el cliente **no puede** cambiarlo, ni apuntar su canal a otro servidor de Evolution, ni ver tu `EVOLUTION_API_KEY`. Solo el superadministrador puede asignar a un canal otro servidor de Evolution (útil para repartir clientes grandes) y, en ese caso, debe darle su propia llave: la llave global nunca se envía a otra URL. Al borrar un canal o una cuenta, su instancia se cierra y se elimina de Evolution.

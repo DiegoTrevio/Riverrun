@@ -112,15 +112,36 @@ export async function createUser(
 
 export async function updateUser(
   id: string,
-  patch: { name?: string; role?: Role; active?: boolean; password_hash?: string; email?: string; phone?: string; notify_whatsapp?: boolean },
+  patch: { name?: string; role?: Role; account_id?: string | null; active?: boolean; password_hash?: string; email?: string; phone?: string; notify_whatsapp?: boolean },
+  expectedAccountId?: string,
 ) {
-  return queryOne<User>(
-    `UPDATE users SET name = COALESCE($2, name), role = COALESCE($3, role), active = COALESCE($4, active),
+  return withTransaction(async (client) => {
+    const result = await client.query<User>(
+      `UPDATE users SET name = COALESCE($2, name), role = COALESCE($3, role), active = COALESCE($4, active),
        password_hash = COALESCE($5, password_hash), email = COALESCE($6, email),
-       phone = COALESCE($7, phone), notify_whatsapp = COALESCE($8, notify_whatsapp), updated_at = now()
-     WHERE id = $1 RETURNING ${USER_COLS}`,
-    [id, patch.name ?? null, patch.role ?? null, patch.active ?? null, patch.password_hash ?? null, patch.email?.trim() ?? null, patch.phone?.replace(/\D/g, '') ?? null, patch.notify_whatsapp ?? null],
-  );
+       phone = COALESCE($7, phone), notify_whatsapp = COALESCE($8, notify_whatsapp),
+       account_id = CASE WHEN $9::boolean THEN $10::uuid ELSE account_id END, updated_at = now()
+     WHERE id = $1 AND ($11::uuid IS NULL OR account_id = $11) RETURNING ${USER_COLS}`,
+      [id, patch.name ?? null, patch.role ?? null, patch.active ?? null, patch.password_hash ?? null, patch.email?.trim() ?? null, patch.phone?.replace(/\D/g, '') ?? null, patch.notify_whatsapp ?? null, patch.account_id !== undefined, patch.account_id ?? null, expectedAccountId ?? null],
+    );
+    const user = result.rows[0] ?? null;
+    if (user && patch.account_id !== undefined && user.role !== 'superadmin') {
+      // A transferred user must no longer receive owner alerts from the old profile.
+      await client.query('UPDATE accounts SET owner_user_id = NULL WHERE owner_user_id = $1 AND id <> $2', [id, user.account_id]);
+    }
+    return user;
+  });
+}
+
+/** Trusted server-side provisioning. Never called by public registration or login. */
+export async function grantMasterAccess(email: string) {
+  return withTransaction(async (client) => {
+    const existing = await client.query('SELECT id, email_verified_at FROM users WHERE lower(email) = lower($1) FOR UPDATE', [email.trim()]);
+    if (!existing.rows.length) throw new Error('El usuario no existe. Regístralo y confirma su correo antes de asignar acceso maestro.');
+    if (!existing.rows[0].email_verified_at) throw new Error('Confirma el correo del usuario antes de asignar acceso maestro.');
+    const result = await client.query(`UPDATE users SET role = 'superadmin', account_id = NULL, active = true, updated_at = now() WHERE id = $1 RETURNING ${USER_COLS}`, [existing.rows[0].id]);
+    return result.rows[0] as User;
+  });
 }
 
 export async function markEmailVerified(id: string) {
@@ -157,8 +178,9 @@ export async function touchLogin(id: string) {
   await query('UPDATE users SET last_login_at = now() WHERE id = $1', [id]);
 }
 
-export async function deleteUser(id: string) {
-  await query('DELETE FROM users WHERE id = $1', [id]);
+export async function deleteUser(id: string, expectedAccountId?: string) {
+  const deleted = await query('DELETE FROM users WHERE id = $1 AND ($2::uuid IS NULL OR account_id = $2) RETURNING id', [id, expectedAccountId ?? null]);
+  return deleted.length > 0;
 }
 
 export async function countSuperadmins(): Promise<number> {

@@ -119,7 +119,7 @@ function clearTimers() {
   state.timers = [];
 }
 
-const ROLE_LABEL = { superadmin: 'Superadministrador', admin: 'Administrador', agent: 'Agente' };
+const ROLE_LABEL = { superadmin: 'Maestro · todos los perfiles', admin: 'Administrador del perfil', agent: 'Operador del perfil' };
 const isAdmin = () => state.me && state.me.user.role !== 'agent';
 const isSuper = () => state.me && state.me.user.role === 'superadmin';
 /** Filtro de cuenta para listados (el superadmin puede elegir una o ver todas). */
@@ -146,12 +146,11 @@ async function render() {
   if (parts[0] === 'olvide') return renderForgot();
   if (parts[0] === 'restablecer') return renderReset(params.get('token') || '');
   if (parts[0] === 'verificar') return renderVerify(params.get('token') || '');
-  if (!state.me) {
-    try {
-      await loadSession();
-    } catch {
-      return;
-    }
+  // Refresh profile and permissions on navigation; server-side reassignment also affects open sessions.
+  try {
+    await loadSession();
+  } catch {
+    return;
   }
   // Los agentes solo atienden conversaciones.
   if (!isAdmin() && !['conversations', 'conversation', 'password', 'agenda', 'notifications'].includes(parts[0])) {
@@ -201,7 +200,7 @@ function shell(active, content) {
   const { user, account } = state.me;
   const switcher = isSuper()
     ? h('div', { class: 'account-switch' },
-        h('label', { class: 'small muted' }, 'Cuenta'),
+        h('label', { class: 'small muted' }, 'Perfil'),
         h('select', {
           onchange: (e) => {
             state.accountId = e.target.value;
@@ -209,7 +208,7 @@ function shell(active, content) {
             render();
           },
         },
-        h('option', { value: '' }, 'Todas las cuentas'),
+        h('option', { value: '' }, 'Todos los perfiles'),
         state.accounts.map((a) => h('option', { value: a.id, selected: a.id === state.accountId }, a.name + (a.active ? '' : ' (inactiva)')))))
     : h('div', { class: 'account-switch small muted' }, account?.name);
   return h('div', { class: 'layout' },
@@ -231,7 +230,7 @@ function shell(active, content) {
       ]),
       isAdmin() ? navGroup('Configuración', ['users', 'accounts', 'consumo', 'logs', 'password'], [
         link('#/users', 'Usuarios', 'users'),
-        isSuper() ? link('#/accounts', 'Cuentas', 'accounts') : null,
+        isSuper() ? link('#/accounts', 'Perfiles', 'accounts') : null,
         link('#/consumo', 'Consumo de IA', 'consumo'),
         link('#/logs', 'Registros', 'logs'),
       ]) : null,
@@ -374,7 +373,7 @@ async function renderVerify(token) {
 function accountPicker(obj) {
   if (!isSuper()) return null;
   if (!obj.account_id) obj.account_id = state.accountId || state.accounts[0]?.id || '';
-  return field('Cuenta', select(obj, 'account_id', state.accounts.map((a) => [a.id, a.name])));
+  return field('Perfil asignado', select(obj, 'account_id', state.accounts.map((a) => [a.id, a.name])));
 }
 
 /* ------------------------------ Dashboard ------------------------------ */
@@ -1500,35 +1499,38 @@ async function viewChannel(root, id) {
 async function viewUsers(root) {
   const users = await api('GET', `/api/users${acct()}`);
   const n = { name: '', email: '', password: '', role: 'agent', phone: '', notify_whatsapp: false };
-  const roles = [['agent', 'Agente (solo conversaciones)'], ['admin', 'Administrador de la cuenta']];
-  if (isSuper()) roles.push(['superadmin', 'Superadministrador (todas las cuentas)']);
+  const roles = [['agent', 'Operador · conversaciones y agenda de su perfil'], ['admin', 'Administrador · gestiona su perfil completo']];
+  if (isSuper()) roles.push(['superadmin', 'Maestro · acceso a todos los perfiles']);
+  const assignedProfile = h('div', {}, accountPicker(n));
   const me = state.me.user;
   root.append(
-    h('h1', {}, 'Usuarios'),
+    h('h1', {}, 'Usuarios y permisos'),
+    h('p', { class: 'muted' }, 'Cada usuario pertenece a un perfil de negocio y solo puede gestionar sus datos. El maestro tiene acceso a todos los perfiles.'),
     h('div', { class: 'card' },
       h('h3', { style: 'margin-top:0' }, 'Nuevo usuario'),
       h('div', { class: 'grid' },
         field('Nombre', text(n, 'name')),
         field('Correo', text(n, 'email', { placeholder: 'persona@empresa.com' })),
         field('Contraseña inicial', text(n, 'password', { type: 'password' }), 'Mínimo 8 caracteres. Pídele que la cambie al entrar.'),
-        field('Rol', select(n, 'role', roles)),
+        field('Rol', select(n, 'role', roles, () => { assignedProfile.hidden = n.role === 'superadmin'; })),
         field('WhatsApp para alertas (opcional)', text(n, 'phone', { placeholder: '5215512345678' }))),
       check(n, 'notify_whatsapp', 'Enviarle las alertas también por WhatsApp'),
-      accountPicker(n),
-      h('button', { class: 'primary', onclick: async () => { if (await run(() => api('POST', '/api/users', n), 'Usuario creado')) render(); } }, 'Crear usuario')),
+      assignedProfile,
+      h('button', { class: 'primary', onclick: async () => { if (await run(() => api('POST', '/api/users', n.role === 'superadmin' ? { ...n, account_id: null } : n), 'Usuario creado')) render(); } }, 'Crear usuario')),
     h('div', { class: 'card' },
       h('table', {},
-        h('thead', {}, h('tr', {}, h('th', {}, 'Usuario'), h('th', {}, 'Rol'), isSuper() ? h('th', {}, 'Cuenta') : null, h('th', {}, 'Último acceso'), h('th', {}, ''))),
+        h('thead', {}, h('tr', {}, h('th', {}, 'Usuario'), h('th', {}, 'Rol'), isSuper() ? h('th', {}, 'Perfil asignado') : null, h('th', {}, 'Último acceso'), h('th', {}, ''))),
         h('tbody', {}, users.map((u) => {
           const self = u.id === me.id;
           return h('tr', {},
             h('td', {}, h('strong', {}, u.name || '—'), h('div', { class: 'muted small' }, u.email, u.phone ? ` · 📱 +${u.phone}${u.notify_whatsapp ? ' (alertas)' : ''}` : ''), !u.active ? h('span', { class: 'badge orange' }, 'desactivado') : null),
             h('td', {}, u.role === 'superadmin' || self ? ROLE_LABEL[u.role]
               : h('select', { onchange: async (e) => { if (await run(() => api('PUT', `/api/users/${u.id}`, { role: e.target.value }), 'Rol actualizado')) render(); } },
-                  [['agent', 'Agente'], ['admin', 'Administrador']].map(([v, l]) => h('option', { value: v, selected: u.role === v }, l)))),
-            isSuper() ? h('td', { class: 'small' }, u.account_id ? accountName(u.account_id) : '—') : null,
+                  [['agent', 'Operador del perfil'], ['admin', 'Administrador del perfil']].map(([v, l]) => h('option', { value: v, selected: u.role === v }, l)))),
+            isSuper() ? h('td', { class: 'small' }, u.role === 'superadmin' ? 'Todos los perfiles' : h('select', { 'aria-label': `Perfil de ${u.email}`, onchange: async (e) => { if (await run(() => api('PUT', `/api/users/${u.id}`, { account_id: e.target.value }), 'Perfil asignado')) render(); else e.target.value = u.account_id; } }, state.accounts.map((a) => h('option', { value: a.id, selected: u.account_id === a.id }, a.name)))) : null,
             h('td', { class: 'small muted' }, u.last_login_at ? fmtDate(u.last_login_at) : 'nunca'),
             h('td', {}, self ? h('span', { class: 'muted small' }, 'tú') : h('div', { class: 'row' },
+              isSuper() && u.role !== 'superadmin' ? h('button', { class: 'small', onclick: async () => { if (confirm(`¿Dar a ${u.email} acceso maestro a TODOS los perfiles?`)) { await run(() => api('PUT', `/api/users/${u.id}`, { role: 'superadmin' }), 'Acceso maestro asignado'); render(); } } }, 'Dar acceso maestro') : null,
               h('button', { class: 'small', onclick: async () => { if (await run(() => api('PUT', `/api/users/${u.id}`, { active: !u.active }), u.active ? 'Desactivado' : 'Activado')) render(); } }, u.active ? 'Desactivar' : 'Activar'),
               h('button', { class: 'small', onclick: async () => { const pw = prompt('Nueva contraseña (mínimo 8 caracteres)'); if (pw) await run(() => api('PUT', `/api/users/${u.id}`, { password: pw }), 'Contraseña actualizada'); } }, 'Restablecer contraseña'),
               h('button', { class: 'small', onclick: async () => {
@@ -1552,10 +1554,10 @@ async function viewAccounts(root) {
       field('Correo', text(n.admin, 'email', { placeholder: 'dueño@cliente.com' })),
       field('Contraseña inicial', text(n.admin, 'password', { type: 'password' }), 'Mínimo 8 caracteres.')));
   root.append(
-    h('h1', {}, 'Cuentas'),
+    h('h1', {}, 'Perfiles de negocio'),
     h('div', { class: 'card' },
-      h('p', { class: 'muted', style: 'margin-top:0' }, 'Cada cuenta es un cliente con sus propios usuarios, chatbots, canales y conversaciones. Sus usuarios solo ven lo de su cuenta.'),
-      h('h3', {}, 'Nueva cuenta'),
+      h('p', { class: 'muted', style: 'margin-top:0' }, 'Cada perfil funciona como una subcuenta: tiene sus propios usuarios, asistentes, canales, conversaciones y agenda. Sus usuarios solo gestionan ese perfil; el maestro puede abrirlos todos.'),
+      h('h3', {}, 'Nuevo perfil'),
       field('Nombre del cliente', text(n, 'name', { placeholder: 'Hotel Las Palmas' })),
       h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: true, onchange: (e) => { n.withAdmin = e.target.checked; adminBox.hidden = !n.withAdmin; } }), 'Crear también su primer administrador'),
       adminBox,
@@ -1563,10 +1565,10 @@ async function viewAccounts(root) {
         const body = { name: n.name, ...(n.withAdmin ? { admin: n.admin } : {}) };
         const acc = await run(() => api('POST', '/api/accounts', body), 'Cuenta creada');
         if (acc) { state.accountId = acc.id; try { localStorage.setItem('cp-account', acc.id); } catch { /* */ } state.me = null; render(); }
-      } }, 'Crear cuenta')),
+      } }, 'Crear perfil')),
     h('div', { class: 'card' },
       h('table', {},
-        h('thead', {}, h('tr', {}, h('th', {}, 'Cuenta'), h('th', {}, 'Estado'), h('th', {}, 'WhatsApp'), h('th', { class: 'num' }, 'Conversaciones (mes / total)'), h('th', { class: 'num' }, 'IA (mes)'), h('th', {}, 'Última actividad'), h('th', {}, ''))),
+        h('thead', {}, h('tr', {}, h('th', {}, 'Perfil'), h('th', {}, 'Estado'), h('th', {}, 'WhatsApp'), h('th', { class: 'num' }, 'Conversaciones (mes / total)'), h('th', { class: 'num' }, 'IA (mes)'), h('th', {}, 'Última actividad'), h('th', {}, ''))),
         h('tbody', {}, accounts.map((a) => h('tr', {},
           h('td', {}, h('strong', {}, a.name),
             a.owner_email ? h('div', { class: 'small muted' }, a.owner_email, a.owner_verified === false ? ' (sin confirmar)' : '') : null,
@@ -1577,7 +1579,8 @@ async function viewAccounts(root) {
           h('td', { class: 'num' }, usd(a.ai_cost_month)),
           h('td', { class: 'small' }, a.last_activity_at ? fmtDate(a.last_activity_at) : '—'),
           h('td', {}, h('div', { class: 'row' },
-            h('button', { class: 'small', onclick: () => { state.accountId = a.id; try { localStorage.setItem('cp-account', a.id); } catch { /* */ } location.hash = '#/'; } }, 'Abrir'),
+            h('button', { class: 'small', onclick: () => { state.accountId = a.id; try { localStorage.setItem('cp-account', a.id); } catch { /* */ } location.hash = '#/'; } }, 'Abrir perfil'),
+            h('a', { class: 'btn small', href: '#/users', onclick: () => { state.accountId = a.id; try { localStorage.setItem('cp-account', a.id); } catch { /* */ } if (location.hash === '#/users') render(); } }, 'Usuarios'),
             a.status !== 'active' ? h('button', { class: 'small primary', onclick: async () => {
               const plan = prompt('Plan contratado (opcional)', a.plan || '');
               if (plan === null) return;

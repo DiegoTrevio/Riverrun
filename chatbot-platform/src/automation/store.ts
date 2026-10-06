@@ -416,16 +416,16 @@ export async function campaignStats(id: string) {
 
 /* ------------------------------ Notificaciones del usuario ------------------------------ */
 
-export async function listNotifications(userId: string, limit = 50) {
-  return query(`SELECT * FROM notifications WHERE user_id = $1 ORDER BY id DESC LIMIT $2`, [userId, limit]);
+export async function listNotifications(userId: string, limit = 50, accountId: string | null = null) {
+  return query(`SELECT * FROM notifications WHERE user_id = $1 AND ($3::uuid IS NULL OR account_id = $3) ORDER BY id DESC LIMIT $2`, [userId, limit, accountId]);
 }
 
-export async function unreadCount(userId: string) {
-  return (await queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM notifications WHERE user_id = $1 AND read_at IS NULL`, [userId]))!.n;
+export async function unreadCount(userId: string, accountId: string | null = null) {
+  return (await queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM notifications WHERE user_id = $1 AND read_at IS NULL AND ($2::uuid IS NULL OR account_id = $2)`, [userId, accountId]))!.n;
 }
 
-export async function markNotificationsRead(userId: string, ids?: number[]) {
-  await query(`UPDATE notifications SET read_at = now() WHERE user_id = $1 AND read_at IS NULL AND ($2::bigint[] IS NULL OR id = ANY($2))`, [userId, ids?.length ? ids : null]);
+export async function markNotificationsRead(userId: string, ids?: number[], accountId: string | null = null) {
+  await query(`UPDATE notifications SET read_at = now() WHERE user_id = $1 AND read_at IS NULL AND ($2::bigint[] IS NULL OR id = ANY($2)) AND ($3::uuid IS NULL OR account_id = $3)`, [userId, ids?.length ? ids : null, accountId]);
 }
 
 export async function pruneAutomationData(days: number) {
