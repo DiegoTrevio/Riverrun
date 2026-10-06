@@ -1,6 +1,6 @@
 # pgvector y Promptfoo
 
-pgvector mejora la selección de conocimiento por significado. Promptfoo mide regresiones del contexto y las reglas. Son herramientas diferentes: ninguna sustituye PostgreSQL como fuente de verdad, las instrucciones del agente ni la validación de las respuestas.
+pgvector mejora la selección de conocimiento por significado. Promptfoo mide regresiones de los componentes y del motor completo, con almacenamiento real y transporte simulado. Son herramientas diferentes: ninguna sustituye PostgreSQL como fuente de verdad, las instrucciones del agente ni la validación de las respuestas.
 
 ## Búsqueda semántica
 
@@ -50,6 +50,32 @@ npm run eval:live
 
 La clave se lee del entorno o `.env`; nunca se coloca en YAML. Usa el modelo global `OPENROUTER_MODEL` y datos sintéticos, genera gasto y no envía WhatsApps ni correos. `evals/live.yaml` evalúa precio real, captura de nombre e intento de imponer un precio falso. No se ejecuta automáticamente en CI y no puede considerarse verificada sin credenciales válidas. Para evaluar instrucciones propias se amplían las fixtures del proveedor; no exportar contactos o conversaciones reales a reportes.
 
-La telemetría está desactivada y los resultados locales se guardan bajo `/tmp/riverrun-promptfoo`. Las evaluaciones fuerzan ejecución sin caché. La acción `Chatbot quality` ejecuta PostgreSQL con pgvector, toda la suite y las regresiones Promptfoo sin credenciales, y conserva un reporte sintético como artefacto. No ejecuta evaluaciones reales en pull requests.
+La telemetría está desactivada y los resultados locales se guardan bajo `/tmp/riverrun-promptfoo`. Las evaluaciones fuerzan ejecución sin caché. La acción `Chatbot quality` ejecuta PostgreSQL con pgvector, toda la suite y las regresiones Promptfoo sin credenciales, y conserva reportes sintéticos de componentes y motor como artefactos. No ejecuta evaluaciones reales en pull requests.
 
 Referencias: [pgvector](https://github.com/pgvector/pgvector), [proveedores personalizados de Promptfoo](https://www.promptfoo.dev/docs/providers/custom-api/), [SDK oficial de OpenRouter y contrato de embeddings](https://github.com/OpenRouterTeam/typescript-sdk). El endpoint y los campos se contrastaron con el paquete publicado `@openrouter/sdk@1.4.22`; no es una dependencia de la app.
+
+
+## Punto 4: evaluación integral del motor
+
+```bash
+npm run eval:engine -- --output evals/results/engine.json
+# Solo en un entorno autorizado con clave segura y acceso a openrouter.ai:
+npm run eval:engine:live -- --output evals/results/engine-live.json
+```
+
+La CLI crea una **base PostgreSQL nueva y temporal**, aplica las migraciones reales y la elimina al finalizar, también cuando las evaluaciones fallan o se interrumpen con SIGINT/SIGTERM. Requiere un servidor local con pgvector y un rol con CREATEDB. Lee `EVAL_ADMIN_DATABASE_URL`, luego `TEST_DATABASE_URL`, o usa PostgreSQL local en el puerto 5433. Nunca migra la base indicada: utiliza la conexión administrativa para crear una base `riverrun_eval_<UUID>`. Rechaza hosts remotos. Una terminación forzada del proceso o del equipo puede dejar esa base sintética; elimínala manualmente después de comprobar su nombre. El proveedor rechaza su ejecución directa sobre una base existente.
+
+`engine-provider.mjs` ejecuta `Engine.process`, `summarizeConversation`, los stores y las migraciones de la aplicación. Cada caso crea dos perfiles sintéticos con el mismo identificador externo de cliente. Todos los envíos se realizan mediante `PlaygroundTransport`; no arranca servidores, automatizaciones, notificaciones del equipo ni conexiones Evolution. Los registros y reportes contienen únicamente datos sintéticos. La suite evalúa:
+
+- Instrucciones guardadas, estilo sin emojis y conocimiento de precios.
+- Reintento y corrección antes de enviar una tarifa inventada; fotos inexistentes.
+- Captura en contacto, conversación y mensaje original; acumulación entre turnos; rechazo de valores inventados.
+- Resumen solicitado, persistencia, caché y recuperación de respuestas omitidas con referencia al mensaje; rechazo de capturas inventadas en el resumen; resumen automático al transferir o completar el objetivo.
+- Agente apagado: entrada guardada sin respuesta.
+- Separación de contactos y del contexto entre perfiles. El caso semántico indexa ambos perfiles en pgvector real y comprueba que el otro perfil no entra en el contexto ni en los datos capturados.
+
+Son **14 casos deterministas** con propuestas simuladas. El caso vectorial usa embeddings sintéticos: verifica PostgreSQL y el aislamiento del motor, sin medir la calidad semántica de un modelo. Los permisos HTTP entre perfiles se verifican en `test/profile-permissions.test.ts` dentro de `npm test`; esta suite Promptfoo no sustituye esas pruebas.
+
+La suite integral real contiene **7 casos**, llama al OpenRouter configurado para decisiones, resúmenes y embeddings, mantiene la misma base aislada y usa aserciones deterministas, sin otro modelo como juez. Limita la ejecución a 40 solicitudes y 2000 tokens de salida por completion; ese límite no constituye un presupuesto monetario. Consume crédito y puede fallar por diferencias de formato, contenido o comportamiento del modelo. No usa contactos reales y no modifica producción. No se ejecuta automáticamente en pull requests. `eval:live` sigue disponible para los tres casos del proveedor de componentes.
+
+**Estado de validación:** las suites deterministas se ejecutan localmente y en CI. La suite de OpenRouter real requiere una clave válida y acceso al dominio; tener el comando preparado no acredita que haya pasado ni que esté activa en producción.

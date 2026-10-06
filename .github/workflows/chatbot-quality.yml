@@ -36,8 +36,9 @@ jobs:
       - run: npm run build
       - run: npm test
       - run: mkdir -p evals/results && npm run eval -- --output evals/results/regression.json
+      - run: npm run eval:engine -- --output evals/results/engine.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: promptfoo-regressions
-          path: chatbot-platform/evals/results/regression.json
+          path: chatbot-platform/evals/results/*.json

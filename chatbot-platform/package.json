@@ -21,7 +21,9 @@
     "eval:live": "npm run build && RIVERRUN_EVAL_LIVE=true PROMPTFOO_DISABLE_TELEMETRY=1 PROMPTFOO_CONFIG_DIR=/tmp/riverrun-promptfoo node --env-file-if-exists=.env node_modules/promptfoo/dist/src/entrypoint.js eval -c evals/live.yaml --no-cache --max-concurrency 1",
     "knowledge:check": "tsx --env-file-if-exists=.env src/cli/knowledge-activate.ts",
     "knowledge:activate": "tsx --env-file-if-exists=.env src/cli/knowledge-activate.ts --apply --verify-provider",
-    "knowledge:prepare": "tsx --env-file-if-exists=.env src/cli/knowledge-prepare.ts"
+    "knowledge:prepare": "tsx --env-file-if-exists=.env src/cli/knowledge-prepare.ts",
+    "eval:engine": "npm run build && node scripts/eval-engine.mjs",
+    "eval:engine:live": "npm run build && node --env-file-if-exists=.env scripts/eval-engine.mjs --live"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.2",
