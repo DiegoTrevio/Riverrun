@@ -15,6 +15,9 @@ export const evo = {
   stuck: new Set<string>(),
   owner: { jid: '5218111112222@s.whatsapp.net', name: 'Clínica Sonrisa' },
   down: false,
+  connectErrors: new Map<string, number>(),
+  createDenied: false,
+  openOnConnect: new Set<string>(),
   /** Como Evolution real: tras borrar una instancia, el nombre sigue ocupado unos instantes. */
   slowDeleteMs: 0,
   deleting: new Map<string, number>(),
@@ -41,6 +44,7 @@ const extServer = http.createServer((req, res) => {
         return i ? json(200, { instance: { instanceName: name, state: i.state } }) : json(404, { response: { message: ['not found'] } });
       }
       if (path === '/instance/create') {
+        if (evo.createDenied) return json(403, { response: { message: 'Forbidden: invalid API key' } });
         if (evo.instances.has(body.instanceName) || (evo.deleting.get(body.instanceName) ?? 0) > Date.now()) {
           return json(403, { response: { message: [`This name "${body.instanceName}" is already in use.`] } });
         }
@@ -50,6 +54,8 @@ const extServer = http.createServer((req, res) => {
       if (path.startsWith('/instance/connect/')) {
         const i = evo.instances.get(name);
         if (!i) return json(404, { response: { message: ['not found'] } });
+        if (evo.connectErrors.has(name)) return json(evo.connectErrors.get(name)!, { message: 'Connect failed' });
+        if (evo.openOnConnect.has(name)) { i.state = 'open'; return json(200, { instance: { state: 'open' } }); }
         if (evo.stuck.has(name)) return json(200, { count: 0 });
         i.qrN++;
         const number = url.searchParams.get('number');

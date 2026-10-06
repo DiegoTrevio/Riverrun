@@ -89,7 +89,7 @@ export class EvolutionClient {
       qrcode: true,
       integration: 'WHATSAPP-BAILEYS',
       number: number || undefined,
-      webhook: { url: webhookUrl, byEvents: false, base64: false, events: WEBHOOK_EVENTS },
+      webhook: { enabled: true, url: webhookUrl, byEvents: false, base64: false, events: WEBHOOK_EVENTS },
     }, 0);
   }
 

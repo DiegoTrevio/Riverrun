@@ -151,32 +151,11 @@ export async function channelRoutes(api: FastifyInstance) {
   api.post('/api/channels/:id/whatsapp/connect', admins, async (req: any) => {
     assertVerified(req.user);
     const ch = await whatsapp(req.user, req.params.id);
-    const evo = evolutionFor(ch);
-    const url = webhookUrl(ch);
     try {
-      let state = 'not_found';
-      try {
-        state = await evo.connectionState(ch.config.instance);
-      } catch (e: any) {
-        if (e?.status !== 404) throw e;
-      }
-      if (state === 'not_found') {
-        const created = await evo.createInstance(ch.config.instance, url, ch.config.number.replace(/\D/g, '') || undefined);
-        await logEvent({ level: 'info', source: 'evolution', message: `Instancia creada: ${ch.config.instance}`, accountId: ch.account_id, channelId: ch.id });
-        const qr = created?.qrcode;
-        if (qr?.base64) return { state: 'connecting', qr: qr.base64, pairingCode: qr.pairingCode ?? null };
-      } else {
-        await evo.setWebhook(ch.config.instance, url);
-      }
-      if (state === 'open') {
-        await recordConnectionState(ch, 'open');
-        return { state };
-      }
-      const c = await evo.connect(ch.config.instance);
-      return { state: c.state ?? 'connecting', qr: c.base64 ?? null, pairingCode: c.pairingCode ?? null };
+      return await whatsappSession(ch, { mode: 'qr' });
     } catch (e: any) {
-      await logEvent({ level: 'error', source: 'evolution', message: `Error al conectar WhatsApp: ${e?.message ?? e}`, accountId: ch.account_id, channelId: ch.id });
-      throw new HttpError(400, e?.message ?? String(e));
+      if (e instanceof SessionError) throw new HttpError(400, e.message);
+      throw e;
     }
   });
 

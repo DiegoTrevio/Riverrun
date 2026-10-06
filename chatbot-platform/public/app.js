@@ -2465,17 +2465,13 @@ function statusBadge(a) {
 
 /* ------------------------------ Conectar WhatsApp (QR o código por número) ------------------------------ */
 
-const isPhoneDevice = () => {
-  try { return matchMedia('(pointer: coarse)').matches && Math.min(screen.width, screen.height) < 820; } catch { return window.innerWidth < 700; }
-};
-
 /**
  * Conector de WhatsApp: se pone en marcha solo, muestra un QR que se renueva solo (con cuenta regresiva)
  * o un código para "Vincular con número de teléfono" (lo más fácil si el panel está abierto en el mismo celular).
  */
 function whatsappConnector(channelId, { onConnected, onState } = {}) {
   const st = {
-    mode: isPhoneDevice() ? 'code' : 'qr',
+    mode: 'qr',
     os: /iPhone|iPad|iPod/i.test(navigator.userAgent) ? 'ios' : 'android',
     number: (state.me?.user?.phone || '').replace(/\D/g, ''),
     expiresAt: 0,
@@ -2506,9 +2502,12 @@ function whatsappConnector(channelId, { onConnected, onState } = {}) {
     if (st.done || inflight) return;
     if (st.mode === 'code' && !st.codeRequested) return;
     inflight = true;
+    const mode = st.mode;
+    const number = st.number;
     try {
-      const body = { mode: st.mode, refresh, ...(st.mode === 'code' ? { number: st.number } : {}) };
+      const body = { mode, refresh, ...(mode === 'code' ? { number } : {}) };
       const r = await api('POST', `/api/channels/${channelId}/whatsapp/session`, body);
+      if (mode !== st.mode || (mode === 'code' && number !== st.number)) return;
       st.error = '';
       st.data = r;
       st.ttl = st.mode === 'qr' ? 30 : 120;
@@ -2516,11 +2515,11 @@ function whatsappConnector(channelId, { onConnected, onState } = {}) {
       onState?.(r.state);
       if (r.state === 'open') { st.done = true; stop(); onConnected?.(r); }
     } catch (e) {
-      st.error = e.message;
-      if (st.mode === 'code') st.codeRequested = false;
+      if (mode === st.mode) st.error = e.message;
     } finally {
       inflight = false;
       draw();
+      if (mode !== st.mode) poll();
     }
   }
 
@@ -2538,7 +2537,7 @@ function whatsappConnector(channelId, { onConnected, onState } = {}) {
       class: `wa-tab ${st.mode === mode ? 'active' : ''}`,
       onclick: () => { if (st.mode === mode) return; st.mode = mode; st.data = null; st.error = ''; st.expiresAt = 0; draw(); if (mode === 'qr') poll(); },
     }, h('strong', {}, label), h('small', {}, sub));
-    fill(tabs, tab('qr', '📷 Escanear código QR', 'Si abriste esto en la computadora'), tab('code', '🔢 Con mi número', 'Si estás en el mismo celular'));
+    fill(tabs, tab('qr', '📷 Escanear código QR', 'Escanea desde WhatsApp en tu teléfono'), tab('code', '🔢 Con mi número', 'Si estás en el mismo celular'));
   }
 
   function drawSteps() {
@@ -2579,7 +2578,7 @@ function whatsappConnector(channelId, { onConnected, onState } = {}) {
     const code = st.data?.pairingCode;
     const getCode = async (refresh = true) => {
       st.number = st.number.replace(/\D/g, '');
-      if (st.number.length < 10) { st.error = 'Escribe tu número de WhatsApp con lada (10 dígitos en México).'; return draw(); }
+      if (st.number.length < 10 || st.number.length > 15) { st.error = 'Escribe tu número de WhatsApp con lada (10 dígitos en México).'; return draw(); }
       st.codeRequested = true;
       st.data = null;
       draw();
