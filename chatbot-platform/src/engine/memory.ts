@@ -61,6 +61,7 @@ export async function maybeSummarize(ai: AiProvider, bot: Chatbot, conversationI
       cached_tokens: res.usage.cached_tokens,
       output_tokens: res.usage.output_tokens,
       latency_ms: res.latency_ms,
+      cost_usd: res.cost_usd,
     });
     await store.updateSummary(conv.id, res.content.trim(), toSummarize[toSummarize.length - 1].id);
     return true;

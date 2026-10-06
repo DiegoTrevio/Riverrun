@@ -145,7 +145,8 @@ export class ChatService {
         const audio = await adapter.downloadAudio(channel, msg);
         if (audio) {
           const started = Date.now();
-          const text = await this.ai.transcribe(audio.buffer, audio.mimeType);
+          const result = await this.ai.transcribe(audio.buffer, audio.mimeType);
+          const text = typeof result === 'string' ? result : result.content;
           if (text) content = `[Nota de voz del cliente, transcrita]: "${text}"`;
           // Se registra para el costo por cuenta. Sin duración de la plataforma, se estima (~2 KB por segundo de Opus).
           await store.insertAiRun({
@@ -153,10 +154,11 @@ export class ChatService {
             chatbot_id: bot.id,
             conversation_id: conv.id,
             kind: 'transcription',
-            model: config.openai.transcriptionModel,
-            input_tokens: 0,
-            cached_tokens: 0,
-            output_tokens: 0,
+            model: typeof result === 'string' ? config.openai.transcriptionModel : result.model,
+            input_tokens: typeof result === 'string' ? 0 : result.usage.input_tokens,
+            cached_tokens: typeof result === 'string' ? 0 : result.usage.cached_tokens,
+            output_tokens: typeof result === 'string' ? 0 : result.usage.output_tokens,
+            cost_usd: typeof result === 'string' ? undefined : result.cost_usd,
             latency_ms: Date.now() - started,
             audio_seconds: msg.media?.seconds ?? Math.max(1, Math.round(audio.buffer.length / 2000)),
           });

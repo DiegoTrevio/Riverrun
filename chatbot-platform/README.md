@@ -11,7 +11,7 @@ Chat web (widget)    ┘    │                             │
                           │
                               ├─ Cola por conversación (agrupa mensajes seguidos)
                               ├─ Contexto controlado: prompt + conocimiento relevante + memoria + mensajes recientes
-                              ├─ OpenAI PROPONE una acción (JSON estricto)
+                              ├─ OpenRouter PROPONE una acción (JSON estricto)
                               ├─ El backend VALIDA: imágenes, datos, precios/links/teléfonos, frases, formato
                               ├─ Ejecuta: texto · texto+imagen · pregunta · guardar dato · no responder · transferir
                               └─ PostgreSQL: chatbots, conocimiento, imágenes, contactos, conversaciones, mensajes, uso de IA, registros
@@ -22,7 +22,7 @@ Chat web (widget)    ┘    │                             │
 | Requisito | Cómo se cumple |
 |---|---|
 | **Conversación natural** | Guía de estilo de WhatsApp en el prompt (frases cortas, una pregunta por turno, no repetir saludo), tono/idioma/longitud/emojis/trato configurables, ejemplos de estilo, formato WhatsApp (`*negritas*`, sin Markdown), división en 1–N mensajes, "escribiendo…" proporcional, y agrupación de mensajes seguidos del cliente (debounce) para contestar una sola vez. |
-| **Contexto correcto** | Se envía: prompt + conocimiento (si excede el presupuesto, solo lo relevante + lo marcado como "siempre incluir") + catálogo de imágenes + datos del cliente + notas + resumen + últimos N mensajes. Nunca el historial completo. La parte fija va primero para aprovechar el caché de prompts de OpenAI (más barato). |
+| **Contexto correcto** | Se envía: prompt + conocimiento (si excede el presupuesto, solo lo relevante + lo marcado como "siempre incluir") + catálogo de imágenes + datos del cliente + notas + resumen + últimos N mensajes. Nunca el historial completo. La parte fija va primero para aprovechar el caché de prompts del modelo (más barato). |
 | **Cero invenciones** | 1) Instrucción explícita de usar solo la información cargada. 2) El validador extrae **precios, números, URLs, correos y teléfonos** de la respuesta y verifica que existan en el conocimiento/configuración. Los **montos de dinero** solo se aceptan si vienen del negocio (el cliente no puede "dictar" un precio). 3) Si falla, se pide a la IA que corrija; si insiste, se envía un mensaje de respaldo o se transfiere, según la regla configurada. |
 | **Imágenes correctas** | La IA solo ve un catálogo con ID, nombre, qué muestra y cuándo usarla. El backend descarta IDs inexistentes o inactivos, evita reenviar la misma imagen, limita cuántas se envían y rechaza respuestas del tipo "te mando la foto" sin imagen válida. Los archivos se validan por su firma real (JPG/PNG/WEBP, máx. 5 MB). |
 | **Memoria** | Datos del cliente guardados automáticamente a partir de sus respuestas (nombre, correo y teléfono validados), notas de intereses, nombre, y un **resumen acumulado** de lo antiguo que se genera automáticamente. La IA recibe el resumen + todos los mensajes aún no resumidos (sin huecos), y ve qué datos ya tiene y cuáles faltan, así no vuelve a preguntar. |
@@ -30,7 +30,7 @@ Chat web (widget)    ┘    │                             │
 | **Registros** | Cada error/evento de Evolution, IA, validador, webhook y panel queda en `event_logs` y se ve en el panel. Cada llamada a la IA queda en `ai_runs` con tokens (incluidos los cacheados), latencia, decisión y validación. |
 | **Cuentas y usuarios** | Cada cliente es una cuenta con sus usuarios (administradores y agentes). Solo ven lo suyo: cualquier intento de acceder a otra cuenta responde 404. El superadministrador ve y administra todas. Desactivar una cuenta corta el acceso de sus usuarios y detiene sus canales (los mensajes se siguen guardando). |
 | **Multicanal** | WhatsApp, Telegram, Messenger, Instagram y chat web. Cada canal pertenece a una cuenta y se asigna a un chatbot; un chatbot puede atender varios canales con la misma configuración. Webhooks verificados por plataforma (secreto de Telegram, firma `X-Hub-Signature-256` de Meta, URL secreta de Evolution). Se puede duplicar un chatbot como plantilla, incluso en otra cuenta. |
-| **Económico** | Todo corre en un VPS con Docker (Evolution, Postgres, Redis, backend). Solo se paga la API de OpenAI; el contexto acotado, el caché de prompts y el modelo configurable por chatbot mantienen bajo el costo. |
+| **Económico** | Todo corre en un VPS con Docker (Evolution, Postgres, Redis, backend). Solo se paga la API de OpenRouter; el contexto acotado, el caché de prompts y el modelo configurable por chatbot mantienen bajo el costo. |
 
 ## Instalación en un VPS (Docker)
 
@@ -39,7 +39,7 @@ Requisitos: VPS con Docker y Docker Compose (2 GB de RAM es suficiente para empe
 ```bash
 git clone <este repo> && cd Riverrun/chatbot-platform
 cp .env.example .env
-nano .env        # contraseñas, EVOLUTION_API_KEY, OPENAI_API_KEY, ADMIN_PASSWORD, SESSION_SECRET
+nano .env        # contraseñas, EVOLUTION_API_KEY, OPENROUTER_API_KEY, ADMIN_PASSWORD, SESSION_SECRET
 docker compose up -d --build
 ```
 
@@ -49,6 +49,24 @@ docker compose up -d --build
 - Evolution API solo escucha en `127.0.0.1:8080` (no queda expuesta a internet). El backend y Evolution se hablan por la red interna de Docker (`WEBHOOK_BASE_URL=http://backend:3000`).
 - Se recomienda fijar la versión de Evolution con `EVOLUTION_IMAGE=evoapicloud/evolution-api:<versión>`.
 
+## IA con OpenRouter
+
+El proveedor predeterminado es OpenRouter. Configura en el servidor (no en el prompt):
+
+```dotenv
+OPENROUTER_API_KEY=<tu clave de OpenRouter>
+OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+OPENROUTER_MODEL=openai/gpt-4.1-mini
+OPENROUTER_SUMMARY_MODEL=openai/gpt-4.1-mini
+OPENROUTER_TRANSCRIPTION_MODEL=google/gemini-2.5-flash
+```
+
+`OPENAI_API_KEY` sigue funcionando como variable de compatibilidad; una clave existente de OpenRouter puede quedarse ahí. Las variables `OPENROUTER_*` tienen prioridad sobre las equivalentes `OPENAI_*`. Docker transmite la clave, la URL y los modelos al backend. Después de actualizar y configurar, ejecuta `docker compose up -d --build backend` para recrearlo con los nuevos valores. No basta reiniciar el proceso si cambió el entorno del contenedor.
+
+Los modelos antiguos de cada bot, como `gpt-4.1-mini`, se envían como `openai/gpt-4.1-mini` sin modificar su configuración guardada. Para otros proveedores usa el ID completo de OpenRouter. El modelo del agente debe admitir JSON Schema: se solicita `provider.require_parameters=true` para evitar rutas que ignoren este formato. Los resúmenes usan el modelo de resumen; las notas de voz, si se habilitan, se envían como `input_audio` al modelo de audio, que debe aceptar su formato (WhatsApp suele enviar OGG/Opus).
+
+El servidor necesita acceso HTTPS a `openrouter.ai`, una clave válida y saldo. Los errores de autenticación, saldo o modelo se muestran sin devolver el cuerpo técnico ni fragmentos de la clave. Para mantener OpenAI directo, configura explícitamente `OPENROUTER_BASE_URL=https://api.openai.com/v1`, una clave de OpenAI y los modelos sin prefijo.
+
 ## Empresas que se registran solas (modo servicio)
 
 Así funciona para vender el servicio sin que tú entres a configurar nada:
@@ -57,7 +75,7 @@ Así funciona para vender el servicio sin que tú entres a configurar nada:
 Internet ──HTTPS──> Caddy (app.tudominio.com)
                       └─> backend :3000   panel, registro, webhooks, tareas
                             ├─> PostgreSQL   BD "chatbot" (todo) + BD "evolution"
-                            ├─> OpenAI       tu clave; el gasto se registra por cuenta
+                            ├─> OpenRouter       tu clave; el gasto se registra por cuenta
                             └─> Evolution API :8080  (solo red interna, nunca expuesta)
                                   ├─ Redis
                                   └─ 1 instancia por canal de WhatsApp de cada empresa: "acc<id>_<aleatorio>"
@@ -76,7 +94,7 @@ Internet ──HTTPS──> Caddy (app.tudominio.com)
 
 **WhatsApp por empresa, aislado.** Todas las empresas comparten tu servidor de Evolution, pero cada canal tiene su propia instancia (su sesión de WhatsApp, su QR, su webhook secreto). El nombre de la instancia lo genera el servidor y el cliente **no puede** cambiarlo, ni apuntar su canal a otro servidor de Evolution, ni ver tu `EVOLUTION_API_KEY`. Solo el superadministrador puede asignar a un canal otro servidor de Evolution (útil para repartir clientes grandes) y, en ese caso, debe darle su propia llave: la llave global nunca se envía a otra URL. Al borrar un canal o una cuenta, su instancia se cierra y se elimina de Evolution.
 
-**Gasto de IA por cuenta.** Cada llamada a OpenAI (respuestas, resúmenes y notas de voz) guarda su costo en USD calculado con la tabla de precios (**Consumo de IA → Precios por modelo**, editable; verifica en openai.com/api/pricing). Tú ves el gasto del mes por cuenta en **Cuentas** y **Consumo de IA**; cada empresa ve el suyo (por día, por tipo y costo promedio por conversación). No hay límite: con `AI_ALERT_USD_PER_ACCOUNT` recibes un aviso cuando una cuenta lo supera en el mes.
+**Gasto de IA por cuenta.** Cada llamada a la IA vía OpenRouter (respuestas, resúmenes y notas de voz) guarda el costo en USD reportado por OpenRouter; si no lo reporta, lo estima con la tabla de precios (**Consumo de IA → Precios por modelo**, editable; verifica en openrouter.ai/models). Tú ves el gasto del mes por cuenta en **Cuentas** y **Consumo de IA**; cada empresa ve el suyo (por día, por tipo y costo promedio por conversación). No hay límite: con `AI_ALERT_USD_PER_ACCOUNT` recibes un aviso cuando una cuenta lo supera en el mes.
 
 **Para producción:**
 
@@ -242,7 +260,7 @@ Menú **Agenda**, para administradores y agentes.
 
 ## Cómo decide y valida (el núcleo)
 
-La IA responde siempre con este JSON (structured outputs estricto de OpenAI):
+La IA responde siempre con este JSON (structured outputs con JSON Schema vía OpenRouter):
 
 ```json
 {
@@ -308,7 +326,7 @@ src/
   automation/      reglas, secuencias, campañas, agenda, alertas, envíos proactivos y programador de tareas
   channels/        un adaptador por plataforma (whatsapp, telegram, meta, webchat): webhook, firma, envío, conexión
   evolution/       cliente de Evolution API v2 y parser del webhook
-  ai/provider.ts   cliente de OpenAI (chat + transcripción de notas de voz)
+  ai/provider.ts   cliente compatible con OpenRouter (chat, resúmenes y audio)
   routes/          API del panel (cuentas, usuarios, chatbots, canales, conversaciones, primeros pasos, consumo) y rutas públicas (registro, webhooks, chat web, imágenes)
   templates/       plantillas de chatbot por tipo de negocio (asistente de primeros pasos)
   lifecycle.ts     fin de pruebas, avisos de gasto y de WhatsApp desconectado

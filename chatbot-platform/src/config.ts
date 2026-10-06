@@ -5,6 +5,9 @@ function env(name: string, fallback = ''): string {
   return v === undefined || v === '' ? fallback : v;
 }
 
+const aiBaseUrl = env('OPENROUTER_BASE_URL', env('OPENAI_BASE_URL', 'https://openrouter.ai/api/v1')).replace(/\/$/, '');
+const useOpenRouter = new URL(aiBaseUrl).hostname === 'openrouter.ai';
+
 export const config = {
   port: Number(env('PORT', '3000')),
   host: env('HOST', '0.0.0.0'),
@@ -28,12 +31,12 @@ export const config = {
     apiKey: env('EVOLUTION_API_KEY', ''),
   },
   openai: {
-    apiKey: env('OPENAI_API_KEY', ''),
-    baseUrl: env('OPENAI_BASE_URL', 'https://api.openai.com/v1').replace(/\/$/, ''),
-    defaultModel: env('OPENAI_MODEL', 'gpt-4.1-mini'),
-    summaryModel: env('OPENAI_SUMMARY_MODEL', 'gpt-4.1-mini'),
-    transcriptionModel: env('OPENAI_TRANSCRIPTION_MODEL', 'gpt-4o-mini-transcribe'),
-    timeoutMs: Number(env('OPENAI_TIMEOUT_MS', '45000')),
+    apiKey: env('OPENROUTER_API_KEY', env('OPENAI_API_KEY', '')),
+    baseUrl: aiBaseUrl,
+    defaultModel: env('OPENROUTER_MODEL', env('OPENAI_MODEL', useOpenRouter ? 'openai/gpt-4.1-mini' : 'gpt-4.1-mini')),
+    summaryModel: env('OPENROUTER_SUMMARY_MODEL', env('OPENAI_SUMMARY_MODEL', useOpenRouter ? 'openai/gpt-4.1-mini' : 'gpt-4.1-mini')),
+    transcriptionModel: env('OPENROUTER_TRANSCRIPTION_MODEL', env('OPENAI_TRANSCRIPTION_MODEL', useOpenRouter ? 'google/gemini-2.5-flash' : 'gpt-4o-mini-transcribe')),
+    timeoutMs: Number(env('OPENROUTER_TIMEOUT_MS', env('OPENAI_TIMEOUT_MS', '45000'))),
   },
   logRetentionDays: Number(env('LOG_RETENTION_DAYS', '30')),
   /**
@@ -70,7 +73,7 @@ export function assertProductionConfig(): string[] {
   if (!config.adminPassword) problems.push('ADMIN_PASSWORD no está definido (no se creará el superadministrador inicial)');
   if (!config.publicBaseUrl.startsWith('https://')) problems.push('PUBLIC_BASE_URL no es HTTPS: Telegram, Messenger e Instagram no podrán enviar webhooks ni recibir imágenes');
   if (!config.sessionSecret || config.sessionSecret.length < 16) problems.push('SESSION_SECRET debe tener al menos 16 caracteres');
-  if (!config.openai.apiKey) problems.push('OPENAI_API_KEY no está definido (el bot no podrá responder)');
+  if (!config.openai.apiKey) problems.push('OPENROUTER_API_KEY (o OPENAI_API_KEY) no está definido (el bot no podrá responder)');
   if (!config.evolution.apiKey) problems.push('EVOLUTION_API_KEY no está definido (no se podrán enviar mensajes)');
   if (config.signup.enabled && !config.mail.smtpUrl) problems.push('SMTP_URL no está definido: los correos de verificación y recuperación solo quedan en el registro');
   return problems;

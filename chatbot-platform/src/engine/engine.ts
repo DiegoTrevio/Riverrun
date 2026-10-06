@@ -207,6 +207,7 @@ export class Engine {
         cached_tokens: completion.usage.cached_tokens,
         output_tokens: completion.usage.output_tokens,
         latency_ms: completion.latency_ms,
+        cost_usd: completion.cost_usd,
         attempt,
         decision: raw,
         validation: { retryable: v.retryable, fixes: v.fixes, action: v.plan.action },

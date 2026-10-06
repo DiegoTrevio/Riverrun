@@ -152,7 +152,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     return { month, account_id: accountId, total_usd: total, conversations, cost_per_conversation: conversations ? total / conversations : 0, days, kinds, models };
   });
 
-  /** Precios de OpenAI con los que se calcula el costo (solo superadmin). */
+  /** Precios por modelo para estimar el costo cuando el proveedor no lo reporta (solo superadmin). */
   api.get('/api/ai-prices', { preHandler: requireRole('superadmin') }, async () => query(`SELECT * FROM ai_prices ORDER BY model`));
 
   api.put('/api/ai-prices/:model', { preHandler: requireRole('superadmin') }, async (req: any) => {

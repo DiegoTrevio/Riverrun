@@ -880,7 +880,7 @@ function aiSection(a) {
     h('div', { class: 'card' },
       h('h3', { style: 'margin-top:0' }, 'Modelo de IA'),
       h('div', { class: 'grid' },
-        field('Modelo de OpenAI', text(a, 'model', { placeholder: state.meta.default_model }), `Vacío = ${state.meta.default_model}`),
+        field('Modelo de IA (OpenRouter)', text(a, 'model', { placeholder: state.meta.default_model }), `Vacío = ${state.meta.default_model}`),
         field('Temperatura', num(a, 'temperature', { step: 0.1, min: 0, max: 2, nullable: true }), 'Menor = más consistente. Se ignora en modelos de razonamiento.'),
         field('Esfuerzo de razonamiento', select(a, 'reasoning_effort', [['', 'Por defecto'], ['minimal', 'Mínimo'], ['low', 'Bajo'], ['medium', 'Medio'], ['high', 'Alto']]), 'Solo modelos gpt-5 / o-series.')),
     ),
@@ -2412,7 +2412,7 @@ async function viewUsage(root, params) {
   root.append(h('div', { class: 'row between' }, h('h1', {}, 'Consumo de IA'), pick));
   if (u.accounts) {
     root.append(
-      h('div', { class: 'card' }, h('div', { class: 'kpi' }, usd(u.total_usd)), h('div', { class: 'muted small' }, `Gasto total de OpenAI en ${month} (estimado con la tabla de precios)`)),
+      h('div', { class: 'card' }, h('div', { class: 'kpi' }, usd(u.total_usd)), h('div', { class: 'muted small' }, `Consumo de IA en ${month}`)),
       h('div', { class: 'card' }, h('table', {},
         h('thead', {}, h('tr', {}, h('th', {}, 'Cuenta'), h('th', {}, 'Estado'), h('th', { class: 'num' }, 'Gasto'), h('th', { class: 'num' }, 'Llamadas'), h('th', { class: 'num' }, 'Tokens entrada'), h('th', { class: 'num' }, 'Tokens salida'), h('th', { class: 'num' }, 'Audio (min)'))),
         h('tbody', {}, u.accounts.map((a) => h('tr', { class: 'click', onclick: () => { state.accountId = a.id; try { localStorage.setItem('cp-account', a.id); } catch { /* */ } render(); } },

@@ -1,6 +1,6 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createHarness, dbAvailable, pool, waitFor } from './harness.js';
+import { createHarness, dbAvailable, pool, waitFor, store } from './harness.js';
 
 const ok = await dbAvailable();
 const t = (name: string, fn: () => Promise<void>) => test(name, { skip: !ok && 'PostgreSQL de pruebas no disponible' }, fn);
@@ -77,4 +77,22 @@ t('el motor usa la configuración actual y el conocimiento activo; bloquea preci
   await h.idle();
   assert.equal(h.calls.length, 1);
   assert.equal(h.sent[0].text, 'El taco al pastor cuesta $30 MXN.');
+});
+
+
+t('el modelo con prefijo openai de OpenRouter mantiene el cálculo del consumo', async () => {
+  for (const model of ['gpt-4.1-mini', 'openai/gpt-4.1-mini']) {
+    await store.insertAiRun({ account_id: h.accountId, chatbot_id: h.botId, conversation_id: null, kind: 'chat', model, input_tokens: 1000, cached_tokens: 100, output_tokens: 200, latency_ms: 1 });
+  }
+  const rows = (await pool.query("SELECT model, cost_usd FROM ai_runs WHERE model IN ('gpt-4.1-mini', 'openai/gpt-4.1-mini') AND input_tokens = 1000 ORDER BY model")).rows;
+  assert.equal(rows.length, 2);
+  assert.ok(Number(rows[0].cost_usd) > 0);
+  assert.equal(Number(rows[0].cost_usd), Number(rows[1].cost_usd));
+});
+
+
+t('el costo reportado por OpenRouter se conserva aunque el modelo no esté en la tabla de precios', async () => {
+  await store.insertAiRun({ account_id: h.accountId, chatbot_id: h.botId, conversation_id: null, kind: 'transcription', model: 'google/modelo-de-prueba', input_tokens: 20, cached_tokens: 0, output_tokens: 10, latency_ms: 1, cost_usd: 0.00123 });
+  const row = (await pool.query("SELECT cost_usd FROM ai_runs WHERE model = 'google/modelo-de-prueba'")).rows[0];
+  assert.equal(Number(row.cost_usd), 0.00123);
 });
