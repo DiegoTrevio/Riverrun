@@ -102,7 +102,13 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
     // Las secciones se fusionan con lo guardado: enviar solo un campo no reinicia los demás.
     const sections = { personality: PersonalitySchema, rules: RulesSchema, flow: FlowSchema, ai: AiSettingsSchema } as const;
     for (const [key, schema] of Object.entries(sections)) {
-      if (raw[key] && typeof raw[key] === 'object') data[key] = schema.parse({ ...(existing as any)[key], ...raw[key] });
+      if (raw[key] && typeof raw[key] === 'object') {
+        const merged = { ...(existing as any)[key], ...raw[key] };
+        if (key === 'rules' && raw.rules.activation) {
+          merged.activation = { ...existing.rules.activation, ...raw.rules.activation };
+        }
+        data[key] = schema.parse(merged);
+      }
     }
     // Al cambiar el trato (tú/usted), los mensajes fijos de fábrica se ajustan para no mezclar tratos.
     const formality = data.personality?.formality;

@@ -674,15 +674,16 @@ export async function insertAiRun(run: {
   decision?: unknown;
   validation?: unknown;
   audio_seconds?: number;
+  cost_usd?: number;
 }) {
-  // El costo se calcula con el precio vigente del modelo (prefijo más largo: "gpt-4.1-mini-2025-04-14" → "gpt-4.1-mini").
+  // Se usa el costo reportado por el proveedor; si falta, el precio vigente del modelo (prefijo más largo: "gpt-4.1-mini-2025-04-14" → "gpt-4.1-mini").
   // input_tokens ya incluye los tokens en caché, que se cobran a su propio precio.
   await query(
     `INSERT INTO ai_runs (account_id, chatbot_id, conversation_id, kind, model, input_tokens, cached_tokens, output_tokens, latency_ms, attempt, decision, validation, audio_seconds, cost_usd)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, COALESCE((
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, COALESCE($14::numeric, (
        SELECT (greatest($6::int - $7::int, 0) * p.input_per_mtok + $7::int * p.cached_per_mtok + $8::int * p.output_per_mtok) / 1000000.0
               + $13::int / 60.0 * p.per_audio_minute
-       FROM ai_prices p WHERE starts_with($5::text, p.model) ORDER BY length(p.model) DESC LIMIT 1), 0))`,
+       FROM ai_prices p WHERE (starts_with($5::text, p.model) OR starts_with(regexp_replace($5::text, '^openai/', ''), p.model)) ORDER BY length(p.model) DESC LIMIT 1), 0))`,
     [
       run.account_id,
       run.chatbot_id,
@@ -697,6 +698,7 @@ export async function insertAiRun(run: {
       run.decision === undefined ? null : JSON.stringify(run.decision),
       run.validation === undefined ? null : JSON.stringify(run.validation),
       Math.round(run.audio_seconds ?? 0),
+      run.cost_usd ?? null,
     ],
   );
 }

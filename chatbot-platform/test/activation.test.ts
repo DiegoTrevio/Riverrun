@@ -11,7 +11,7 @@ const t = (name: string, fn: () => Promise<void>) => test(name, { skip: !ok && '
 let h: Awaited<ReturnType<typeof createHarness>>;
 
 const setActivation = async (activation: Record<string, unknown>) => {
-  const r = await h.authed('PUT', `/api/chatbots/${h.botId}`, { rules: { activation } });
+  const r = await h.authed('PUT', `/api/chatbots/${h.botId}`, { rules: { activation: RulesSchema.parse({ activation }).activation } });
   assert.equal(r.statusCode, 200, r.body);
 };
 const detail = async (phone: string) => (await h.authed('GET', `/api/conversations/${(await h.conversationFor(phone)).id}`)).json();
