@@ -23,6 +23,7 @@ const setAdvanced = (on) => { try { localStorage.setItem('cp-advanced', on ? '1'
 function simpleLinks(link) {
   return [
     needsOnboarding() ? link('#/inicio', '🚀 Primeros pasos', 'inicio') : null,
+    link('#/conectar', state.wa && !state.wa.connected ? '📱 Conectar WhatsApp ⚠️' : '📱 Mi WhatsApp', 'conectar'),
     link('#/conversations', '💬 Conversaciones', 'conversations'),
     link('#/asistente', '🤖 Mi asistente', 'bot'),
     link('#/probar', '🧪 Probar mi asistente', 'probar'),
@@ -62,7 +63,8 @@ export function shell(active, content) {
       h('div', { class: 'brand' }, brand.logo ? brandMark(32) : `💬 ${brand.name === 'Panel de Chatbots' ? 'Chatbots' : brand.name}`),
       switcher,
       simple ? simpleLinks(link) : [
-      isAdmin() ? navGroup('Asistentes y conexiones', ['home', 'bot', 'channels', 'channel', 'inicio'], [
+      isAdmin() ? navGroup('Asistentes y conexiones', ['home', 'bot', 'channels', 'channel', 'inicio', 'conectar'], [
+        link('#/conectar', '📱 Conectar WhatsApp (QR)', 'conectar'),
         link('#/', 'Asistentes', 'home'),
         link('#/channels', 'WhatsApp y otros canales', 'channels'),
         (!isSuper() || state.accountId) ? link('#/inicio', 'Primeros pasos', 'inicio') : null,
@@ -111,6 +113,11 @@ function accountBanner() {
     items.push(h('div', { class: `banner ${days <= 3 ? 'warn' : ''}` },
       `Periodo de prueba: ${days === 0 ? 'termina hoy' : days === 1 ? 'queda 1 día' : `quedan ${days} días`}.`,
       state.meta.billing_enabled && isAdmin() ? [' ', h('a', { class: 'btn primary', href: '#/plan' }, 'Contratar ahora')] : state.meta.support_contact ? [' Para contratar escribe a ', h('strong', {}, state.meta.support_contact), '.'] : ''));
+  }
+  const here = location.hash.split('?')[0];
+  if (state.wa && !state.wa.connected && isAdmin() && !['#/conectar', '#/inicio'].includes(here) && !here.startsWith('#/channel/')) {
+    items.push(h('div', { class: 'banner warn' }, h('strong', {}, state.wa.has ? 'Tu WhatsApp no está conectado. ' : 'Aún no conectas tu WhatsApp. '),
+      'Tu asistente no puede responder hasta que lo vincules. ', h('a', { class: 'btn primary', href: '#/conectar' }, 'Conectar con QR')));
   }
   if (!user.email_verified_at && state.meta.require_email) {
     items.push(h('div', { class: 'banner warn' },

@@ -27,7 +27,7 @@ export function channelStatusCell(c) {
   return h('td', {},
     h('span', { class: `badge ${c.active && connected ? 'green' : ''}` },
       !c.active ? 'Inactivo' : c.type !== 'whatsapp' ? 'Activo' : connected ? 'Conectado' : 'Pendiente de conectar'),
-    c.type === 'whatsapp' ? h('a', { href: `#/channel/${c.id}`, class: 'btn small', style: 'margin-left:8px' }, connected ? 'Administrar' : 'Ver QR') : null);
+    c.type === 'whatsapp' ? h('a', { href: connected ? `#/channel/${c.id}` : `#/conectar?channel=${c.id}`, class: 'btn small', style: 'margin-left:8px' }, connected ? 'Administrar' : 'Escanear QR') : null);
 }
 
 /** Enlace público que reparte a los clientes nuevos entre varios números de WhatsApp. */

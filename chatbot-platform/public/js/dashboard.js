@@ -86,6 +86,7 @@ export async function viewSettingsHub(root) {
   root.append(
     h('h1', {}, 'Ajustes'),
     h('div', { class: 'grid' },
+      tile('#/conectar', '📲', 'Conectar WhatsApp', 'Escanea el código QR para vincular el WhatsApp de tu negocio (o cámbialo por otro número).'),
       tile('#/channels', '📱', 'Canales', 'Conecta o desconecta tu WhatsApp, Telegram, Instagram, Messenger o el chat de tu sitio web.'),
       tile('#/automation/settings', '🕘', 'Horario y avisos', 'Tu horario de atención, zona horaria y a quién avisar.'),
       tile('#/agenda/servicios', '🗓️', 'Servicios y citas', 'Qué servicios agenda tu asistente y cuánto dura cada uno.'),

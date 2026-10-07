@@ -8,6 +8,7 @@ import { viewChannel, viewChannels } from './channels.js';
 import { viewConversation, viewConversations } from './conversations.js';
 import { $app, fill, h } from './core.js';
 import { ensureBrand } from './brand.js';
+import { loadWhatsappStatus, viewConnect } from './connect.js';
 import { viewBrands } from './brandadmin.js';
 import { viewIntegrations } from './integrations.js';
 import { goMainBot, viewDashboard, viewSettingsHub } from './dashboard.js';
@@ -44,6 +45,7 @@ export async function render() {
     return;
   }
   await ensureBrand('mine');
+  await loadWhatsappStatus();
   // Los agentes solo atienden conversaciones.
   if (!isAdmin() && !['conversations', 'conversation', 'password', 'agenda', 'notifications'].includes(parts[0])) {
     location.hash = '#/conversations';
@@ -56,6 +58,7 @@ export async function render() {
     else if (!parts.length || parts[0] === 'asistentes') await viewDashboard(content, params);
     else if (parts[0] === 'inicio') await viewOnboarding(content, parts[1]);
     else if (parts[0] === 'asistente' || parts[0] === 'probar') await goMainBot(content, parts[0] === 'probar' ? 'probar' : 'conocimiento');
+    else if (parts[0] === 'conectar') await viewConnect(content, params);
     else if (parts[0] === 'ajustes') await viewSettingsHub(content);
     else if (parts[0] === 'integraciones') await viewIntegrations(content, params);
     else if (parts[0] === 'marcas') await viewBrands(content);
