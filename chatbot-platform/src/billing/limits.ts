@@ -7,6 +7,7 @@
  *   3. los de la prueba gratuita (TRIAL_MAX_*), si está en prueba
  *   4. sin límite (cuentas activadas a mano, sin plan)
  */
+import { mailBrand } from '../brands.js';
 import { z } from 'zod';
 import { HttpError } from '../access.js';
 import { notifyUsers } from '../automation/store.js';
@@ -142,7 +143,8 @@ async function notifyLimit(accountId: string, notice: 'messages_80' | 'messages_
     ? `Tu asistente ya envió los ${max.toLocaleString('es-MX')} mensajes que incluye tu plan este mes, así que dejó de responder solo. Sube de plan para que siga atendiendo; el contador se reinicia el día 1.`
     : `Tu asistente lleva ${used.toLocaleString('es-MX')} de ${max.toLocaleString('es-MX')} mensajes de tu plan este mes (80 %). Cuando llegue al 100 % dejará de responder solo.`;
   await notifyUsers(accountId, admins.map((a) => a.id), { title, body, link: '#/plan', kind: 'billing' });
-  for (const a of admins) await sendMail({ to: a.email, subject: title, text: `${body}\n\n${config.publicBaseUrl}/#/plan` });
+  const mb = await mailBrand(accountId);
+  for (const a of admins) await sendMail({ fromName: mb.fromName, to: a.email, subject: title, text: `${body}\n\n${mb.base}/#/plan` });
 }
 
 /** Resumen para el panel: límite, uso y porcentaje de cada recurso. */

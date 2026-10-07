@@ -2,6 +2,7 @@
  * Lógica común de cobro: planes, estado de la suscripción de cada cuenta y su efecto en la cuenta
  * (activa, en gracia o pausada). Los proveedores solo informan el estado; aquí se decide qué hacer.
  */
+import { mailBrand } from '../brands.js';
 import { notifyUsers } from '../automation/store.js';
 import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
@@ -32,7 +33,8 @@ async function admins(accountId: string) {
 async function tell(accountId: string, title: string, body: string) {
   const list = await admins(accountId);
   await notifyUsers(accountId, list.map((a) => a.id), { title, body, link: '#/plan', kind: 'billing' });
-  for (const a of list) await sendMail({ to: a.email, subject: title, text: `${body}\n\n${config.publicBaseUrl}/#/plan` });
+  const mb = await mailBrand(accountId);
+  for (const a of list) await sendMail({ fromName: mb.fromName, to: a.email, subject: title, text: `${body}\n\n${mb.base}/#/plan` });
 }
 
 export async function recordEvent(provider: string, eventId: string, type: string, accountId: string | null): Promise<boolean> {

@@ -1,5 +1,21 @@
 # HTTPS automático para el panel y el webhook. Define DOMAIN en .env
+{
+	# Marca blanca: el certificado de un dominio de cliente solo se pide si está registrado en una marca.
+	on_demand_tls {
+		ask http://backend:3000/internal/domain-ok
+	}
+}
+
 {$DOMAIN} {
+	encode gzip
+	reverse_proxy backend:3000
+}
+
+# Dominios propios de marcas (panel.miagencia.com): el cliente apunta un registro DNS a este servidor.
+https:// {
+	tls {
+		on_demand
+	}
 	encode gzip
 	reverse_proxy backend:3000
 }

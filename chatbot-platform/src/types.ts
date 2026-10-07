@@ -313,6 +313,7 @@ export type Role = 'superadmin' | 'admin' | 'agent';
 export type AccountStatus = 'trial' | 'active' | 'paused';
 
 export interface Account {
+  brand_id?: string | null;
   id: string;
   name: string;
   active: boolean;

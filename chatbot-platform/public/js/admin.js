@@ -119,6 +119,16 @@ export async function viewAccounts(root) {
               }
               await run(() => api('PUT', `/api/accounts/${a.id}`, { limits_override }), 'Límites actualizados'); render();
             } }, 'Límites'),
+            h('button', { class: 'small', title: 'Marca blanca de esta cuenta', onclick: async () => {
+              const { brands } = await api('GET', '/api/brands');
+              if (!brands.length) return toast('Primero crea una marca en "Marca blanca"', true);
+              const cur = brands.find((b) => b.id === a.brand_id);
+              const txt = prompt(`Marca de "${a.name}". Escribe el nombre de una de estas, o déjalo vacío para usar la de la plataforma:\n${brands.map((b) => `• ${b.name}`).join('\n')}`, cur?.name || '');
+              if (txt === null) return;
+              const pick = brands.find((b) => b.name.toLowerCase() === txt.trim().toLowerCase());
+              if (txt.trim() && !pick) return toast(`No existe la marca "${txt}"`, true);
+              await run(() => api('PUT', `/api/accounts/${a.id}`, { brand_id: pick?.id ?? null }), 'Marca actualizada'); render();
+            } }, 'Marca'),
             h('button', { class: 'small', onclick: async () => { const name = prompt('Nuevo nombre', a.name); if (name) { await run(() => api('PUT', `/api/accounts/${a.id}`, { name }), 'Actualizada'); state.me = null; render(); } } }, 'Renombrar'),
             h('button', { class: 'small', onclick: async () => {
               if (a.active && !confirm(`Al desactivar "${a.name}", sus usuarios no podrán entrar y sus canales dejarán de responder (los mensajes se siguen guardando). ¿Continuar?`)) return;

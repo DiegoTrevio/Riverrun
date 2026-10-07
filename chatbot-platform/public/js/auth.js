@@ -1,3 +1,4 @@
+import { brand, brandMark } from './brand.js';
 import { $app, api, field, fill, h, run, select, state, text, toast } from './core.js';
 
 export function renderLogin() {
@@ -10,7 +11,8 @@ export function renderLogin() {
   };
   fill($app,
     h('form', { class: 'card login', onsubmit: submit },
-      h('h1', {}, 'Panel de Chatbots'),
+      brand.logo ? h('div', { style: 'text-align:center;margin-bottom:8px' }, brandMark(48)) : null,
+      h('h1', {}, brand.name),
       field('Correo', text(f, 'email', { placeholder: 'tu@correo.com' })),
       field('Contraseña', text(f, 'password', { type: 'password' })),
       h('button', { class: 'primary', type: 'submit' }, 'Entrar'),

@@ -100,6 +100,14 @@ services:
       # Autoregistro de empresas y correo saliente
       SIGNUP_ENABLED: ${SIGNUP_ENABLED:-true}
       TRIAL_DAYS: ${TRIAL_DAYS:-14}
+      # Límites de la prueba gratuita (0 = sin límite); los planes de pago llevan los suyos
+      TRIAL_MAX_MESSAGES: ${TRIAL_MAX_MESSAGES:-300}
+      TRIAL_MAX_CHANNELS: ${TRIAL_MAX_CHANNELS:-2}
+      TRIAL_MAX_USERS: ${TRIAL_MAX_USERS:-3}
+      TRIAL_MAX_CHATBOTS: ${TRIAL_MAX_CHATBOTS:-2}
+      # Google Calendar (opcional)
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
       SIGNUP_REQUIRE_EMAIL: ${SIGNUP_REQUIRE_EMAIL:-true}
       SMTP_URL: ${SMTP_URL:-}
       MAIL_FROM: ${MAIL_FROM:-}

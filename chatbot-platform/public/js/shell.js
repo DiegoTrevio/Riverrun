@@ -1,3 +1,4 @@
+import { brand, brandMark, resetBrand } from './brand.js';
 import { api, h, run, state } from './core.js';
 import { render } from './main.js';
 import { ROLE_LABEL, isAdmin, isSuper } from './session.js';
@@ -58,7 +59,7 @@ export function shell(active, content) {
     : h('div', { class: 'account-switch small muted' }, account?.name);
   return h('div', { class: 'layout' },
     h('nav', { class: 'sidebar' },
-      h('div', { class: 'brand' }, '💬 Chatbots'),
+      h('div', { class: 'brand' }, brand.logo ? brandMark(32) : `💬 ${brand.name === 'Panel de Chatbots' ? 'Chatbots' : brand.name}`),
       switcher,
       simple ? simpleLinks(link) : [
       isAdmin() ? navGroup('Asistentes y conexiones', ['home', 'bot', 'channels', 'channel', 'inicio'], [
@@ -78,6 +79,7 @@ export function shell(active, content) {
         link('#/users', 'Usuarios', 'users'),
         isSuper() ? link('#/accounts', 'Perfiles', 'accounts') : null,
         isSuper() ? link('#/planes', 'Planes y cobro', 'planes') : null,
+        isSuper() ? link('#/marcas', 'Marca blanca', 'marcas') : null,
         isSuper() ? link('#/sistema', 'Sistema', 'sistema') : null,
         !isSuper() ? link('#/plan', 'Mi plan y pagos', 'plan') : null,
         link('#/consumo', 'Consumo de IA', 'consumo'),
@@ -89,7 +91,7 @@ export function shell(active, content) {
       h('a', { href: '/ayuda.html', target: '_blank', rel: 'noopener' }, '❓ Ayuda'),
       link('#/password', 'Mi perfil', 'password'),
       isAdmin() && !isSuper() ? h('a', { href: '#', class: 'small muted', onclick: (e) => { e.preventDefault(); setAdvanced(!isAdvanced()); render(); } }, isAdvanced() ? '☰ Menú simple' : '☰ Mostrar todas las opciones') : null,
-      h('a', { href: '#', onclick: async (e) => { e.preventDefault(); await api('POST', '/api/logout'); state.me = null; location.hash = '#/login'; } }, 'Cerrar sesión'),
+      h('a', { href: '#', onclick: async (e) => { e.preventDefault(); await api('POST', '/api/logout'); state.me = null; resetBrand(); location.hash = '#/login'; } }, 'Cerrar sesión'),
     ),
     h('main', { class: 'main' }, accountBanner(), content),
   );

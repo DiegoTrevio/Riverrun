@@ -51,6 +51,7 @@ function fillParams(url: string): string | null {
     [/^\/api\/webhook-endpoints\/:id/, 'endpoint'],
     [/^\/api\/api-keys\/:id/, 'apikey'],
     [/^\/api\/wa-pools\/:id/, 'wapool'],
+    [/^\/api\/brands\/:id/, 'brand'],
   ];
   const hit = byPrefix.find(([re]) => re.test(url));
   if (!hit) return null;
@@ -104,6 +105,7 @@ before(async () => {
   B.endpoint = (await ok200(adminB('POST', '/api/webhook-endpoints', { url: 'https://example.com/hook', description: `Hook ${MARK}` }))).id;
   B.apikey = (await ok200(adminB('POST', '/api/api-keys', { name: `Llave ${MARK}` }))).id;
   B.wapool = (await pool.query(`INSERT INTO wa_pools (account_id, name, token) VALUES ($1, $2, 'tok-b-aislamiento') RETURNING id`, [B.account, `Grupo ${MARK}`])).rows[0].id;
+  B.brand = (await pool.query(`INSERT INTO brands (name) VALUES ('Marca B') RETURNING id`)).rows[0].id;
   B.model = 'gpt-4.1-mini';
   await h.idle();
 });

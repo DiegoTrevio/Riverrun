@@ -334,6 +334,32 @@ Menú **Agenda**, para administradores y agentes.
 - Detalle con el historial (imágenes incluidas), datos del cliente editables, notas y resumen de memoria.
 - **Tomar conversación** (el bot deja de responder), **responder manualmente** desde el panel, **devolver al bot** (los mensajes que llegaron mientras atendía una persona no se contestan en automático) y **borrar memoria**.
 
+- **Exportar a CSV**: menú **Exportar** en Conversaciones (contactos, conversaciones y mensajes; solo administradores, queda en el registro).
+
+## Planes y límites
+
+Cada plan define mensajes del mes, canales, usuarios y asistentes (0 o vacío = sin límite); la prueba gratuita usa `TRIAL_MAX_*`, y el superadmin puede dar una excepción por cuenta (**Cuentas → Límites**). Al llegar al 80 % y al 100 % de mensajes se avisa al administrador; al agotarse, el asistente deja de responder solo (sin llamar a la IA) hasta el mes siguiente o hasta subir de plan, y una campaña mayor al cupo restante no se lanza. El simulador no gasta cupo.
+
+## Varios números de WhatsApp
+
+Una cuenta puede conectar varios WhatsApp. Las **campañas** pueden salir de varios números a la vez (cada uno con su ritmo y su tope diario, **Ajustes → Horario y avisos**), y un **enlace de reparto** (`/wa/<token>`, en Canales) manda a cada cliente nuevo al número conectado menos ocupado o por turnos.
+
+## Cumplimiento
+
+- **Consentimiento**: las campañas y secuencias solo escriben a contactos con consentimiento (se registra la fecha y el origen; por palabra clave de alta, casilla en el contacto o al reanudar). Se puede desactivar por cuenta.
+- **Baja**: la palabra de baja ("STOP") ya existía; los mensajes promocionales llevan un pie configurable con las instrucciones.
+- **Retención**: borrado automático de mensajes y de contactos inactivos tras los días que elijas (cada 6 horas).
+- **Derechos del titular**: descarga de todos los datos de un contacto (JSON) y borrado definitivo desde el panel o `DELETE /api/contacts/:id`.
+- Los términos y el aviso de privacidad se enlazan desde el registro (`TERMS_URL`, `PRIVACY_URL`).
+
+## Integraciones
+
+Google Calendar, webhooks firmados (Zapier, Make, n8n) y API v1 con llaves: ver [docs/integraciones.md](docs/integraciones.md).
+
+## Marca blanca
+
+El superadmin crea **marcas** (**Marca blanca** en el menú) con nombre, color, logo, correo de soporte y, opcionalmente, un dominio propio (`panel.miagencia.com`). Se asigna a cada cuenta (**Cuentas → Marca**) y quien se registre desde ese dominio queda con ella. Cambia el nombre, el color y el logo del panel, del inicio de sesión y del registro, y el nombre del remitente y los enlaces de los correos. Para un dominio propio, el cliente apunta un registro DNS al servidor y Caddy genera el certificado HTTPS al primer acceso (solo para dominios registrados). Es marca blanca para **tus** clientes: no hay todavía un panel donde un revendedor administre sus propias cuentas (eso sigue siendo del superadmin).
+
 ## Cómo decide y valida (el núcleo)
 
 > **Nuevo — afirmaciones sin números.** Además de precios, teléfonos y enlaces, el sistema revisa lo que la respuesta *afirma que el negocio tiene o hace* ("sí tenemos alberca", "aceptamos mascotas", "incluye desayuno"): eso debe estar en la información cargada (o ser un sinónimo: alberca ≈ piscina, estacionamiento ≈ parking…). Lo que el cliente haya dicho **no** cuenta como respaldo, ni lo que el propio bot dijo antes. Si no está, se pide corregir y, si insiste, sale el mensaje seguro. Tres modos por asistente (*Reglas → No afirmar lo que no esté en tu información*): **rápido** (sin costo, por defecto), **estricto** (una segunda IA barata también juzga la respuesta; se registra como consumo `verify`) y **sin revisar**. Es deliberadamente conservador: prefiere dejar pasar una paráfrasis a bloquear una buena respuesta.

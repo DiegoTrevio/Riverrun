@@ -7,6 +7,8 @@ import { viewBot } from './bot.js';
 import { viewChannel, viewChannels } from './channels.js';
 import { viewConversation, viewConversations } from './conversations.js';
 import { $app, fill, h } from './core.js';
+import { ensureBrand } from './brand.js';
+import { viewBrands } from './brandadmin.js';
 import { viewIntegrations } from './integrations.js';
 import { goMainBot, viewDashboard, viewSettingsHub } from './dashboard.js';
 import { viewLogs } from './logs.js';
@@ -29,6 +31,7 @@ export async function render() {
   const parts = pathPart.split('/').filter(Boolean);
   const params = new URLSearchParams(qs || '');
 
+  if (['login', 'registro', 'olvide', 'restablecer', 'verificar'].includes(parts[0])) await ensureBrand('host');
   if (parts[0] === 'login') return renderLogin();
   if (parts[0] === 'registro') return renderSignup();
   if (parts[0] === 'olvide') return renderForgot();
@@ -40,6 +43,7 @@ export async function render() {
   } catch {
     return;
   }
+  await ensureBrand('mine');
   // Los agentes solo atienden conversaciones.
   if (!isAdmin() && !['conversations', 'conversation', 'password', 'agenda', 'notifications'].includes(parts[0])) {
     location.hash = '#/conversations';
@@ -54,6 +58,7 @@ export async function render() {
     else if (parts[0] === 'asistente' || parts[0] === 'probar') await goMainBot(content, parts[0] === 'probar' ? 'probar' : 'conocimiento');
     else if (parts[0] === 'ajustes') await viewSettingsHub(content);
     else if (parts[0] === 'integraciones') await viewIntegrations(content, params);
+    else if (parts[0] === 'marcas') await viewBrands(content);
     else if (parts[0] === 'sistema') await viewSystem(content);
     else if (parts[0] === 'plan') await viewPlan(content, params);
     else if (parts[0] === 'planes') await viewPlans(content);

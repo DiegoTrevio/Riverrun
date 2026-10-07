@@ -191,6 +191,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     extend_trial_days: z.number().int().min(1).max(365).optional(),
     /** Excepción de límites para esta cuenta (solo las claves indicadas; {} = quitar la excepción). */
     limits_override: LimitsSchema.optional(),
+    brand_id: z.string().uuid().nullable().optional(),
   });
 
   api.post('/api/accounts', { preHandler: requireRole('superadmin') }, async (req) => {
@@ -226,7 +227,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
       trialEnds = new Date(base + b.extend_trial_days * 86400_000);
       status = status ?? 'trial';
     }
-    const acc = (await store.updateAccount(before.id, { name: b.name, active: b.active, status, plan: b.plan, trial_ends_at: trialEnds, limits_override: b.limits_override ? (Object.fromEntries(Object.entries(b.limits_override).filter(([, v]) => v)) as Record<string, number>) : undefined }))!;
+    const acc = (await store.updateAccount(before.id, { name: b.name, active: b.active, status, plan: b.plan, trial_ends_at: trialEnds, limits_override: b.limits_override ? (Object.fromEntries(Object.entries(b.limits_override).filter(([, v]) => v)) as Record<string, number>) : undefined, brand_id: b.brand_id }))!;
     const changes = [b.active === false ? 'desactivada' : '', status && status !== before.status ? `estado: ${status}` : '', trialEnds !== undefined ? `prueba hasta ${trialEnds?.toISOString().slice(0, 10) ?? '—'}` : '']
       .filter(Boolean)
       .join(', ');
