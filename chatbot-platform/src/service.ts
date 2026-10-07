@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import type { AiProvider } from './ai/provider.js';
 import { Agenda } from './automation/agenda.js';
 import { Automator } from './automation/automator.js';
@@ -27,6 +28,8 @@ export type TransportFactory = (channel: Channel, contact: Contact) => Transport
 export const defaultTransport: TransportFactory = (channel, contact) => adapterFor(channel.type).transport(channel, contact);
 
 /** Orquesta: webhook → almacenamiento → cola → motor → envío, para cualquier canal. */
+const LEASE_SECONDS = 300;
+
 export class ChatService {
   engine: Engine;
   queue: ConversationQueue;
@@ -105,7 +108,42 @@ export class ChatService {
     return this.sendInternalWhatsapp(channel.account_id, number, text, channel.chatbot_id);
   }
 
+  /** Identifica a este proceso en los arrendamientos de conversaciones. */
+  readonly instanceId = crypto.randomUUID();
+  private sweeper?: NodeJS.Timeout;
+
+  /**
+   * Una conversación la atiende un solo proceso a la vez (arrendamiento en PostgreSQL), así que se pueden
+   * correr varios procesos sin respuestas dobles, y si uno muere a la mitad otro retoma el trabajo.
+   */
   private async runConversation(conversationId: string, restarts: number): Promise<ProcessResult> {
+    if (!(await store.claimConversation(conversationId, this.instanceId, LEASE_SECONDS))) return { status: 'busy' };
+    const renew = setInterval(() => void store.renewConversationLease(conversationId, this.instanceId, LEASE_SECONDS).catch(() => undefined), (LEASE_SECONDS / 3) * 1000);
+    try {
+      return await this.runClaimed(conversationId, restarts);
+    } finally {
+      clearInterval(renew);
+      await store.releaseConversation(conversationId, this.instanceId).catch(() => undefined);
+    }
+  }
+
+  /** Busca mensajes sin responder que nadie atiende (temporizador perdido o proceso caído) y los programa. */
+  async sweepPending(): Promise<number> {
+    const ids = (await store.recoverableConversations()).filter((id) => !this.queue.has(id));
+    for (const id of ids) this.queue.schedule(id, 0);
+    return ids.length;
+  }
+
+  startSweeper(intervalMs = 30_000) {
+    this.sweeper = setInterval(() => {
+      this.sweepPending()
+        .then(async (n) => { if (n) await logEvent({ level: 'warn', source: 'engine', message: `Se retomaron ${n} conversaciones con mensajes sin responder` }); })
+        .catch(() => undefined);
+    }, intervalMs);
+    this.sweeper.unref();
+  }
+
+  private async runClaimed(conversationId: string, restarts: number): Promise<ProcessResult> {
     const conv = await store.getConversation(conversationId);
     if (!conv) return { status: 'nothing' };
     const [channel, contact] = await Promise.all([store.getChannel(conv.channel_id), store.getContact(conv.contact_id)]);

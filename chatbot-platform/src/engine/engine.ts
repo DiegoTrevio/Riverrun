@@ -5,6 +5,7 @@ import * as store from '../store/index.js';
 import type { Chatbot, Contact, Conversation, ImageAsset, Message } from '../types.js';
 import { agentActive, agentStatus, offAfterReply } from './activation.js';
 import { automaticField, customerProvided } from './customer-data.js';
+import { CLAIM_JUDGE_PROMPT, CLAIM_JUDGE_SCHEMA } from './claims.js';
 import { buildContext, type BusinessInfo } from './context.js';
 import { semanticKnowledge } from './knowledge.js';
 import { aiSelectableImages, automaticImages, contextualImages, imagesForContext, imagesAfterReply, imagesBeforeReply, imagesForAssistant, type ScheduledImage } from './images.js';
@@ -35,7 +36,7 @@ export interface EngineExtensions {
 }
 
 export interface ProcessResult {
-  status: 'nothing' | 'inactive' | 'human' | 'paused' | 'handoff' | 'replied' | 'no_reply' | 'restart' | 'error';
+  status: 'nothing' | 'busy' | 'inactive' | 'human' | 'paused' | 'handoff' | 'replied' | 'no_reply' | 'restart' | 'error';
   plan?: ExecutionPlan;
   decision?: unknown;
   attempts?: { retryable: string[]; fixes: string[] }[];
@@ -84,6 +85,39 @@ export class Engine {
   constructor(private ai: AiProvider, private ext: EngineExtensions = {}) {}
 
   /** Procesa los mensajes pendientes de una conversación y ejecuta la acción validada. */
+  /**
+   * Juez de afirmaciones (modo estricto): un modelo barato dice qué de la respuesta no respalda la información del negocio.
+   * Si el juez falla no se bloquea la respuesta (las demás verificaciones siguen en pie).
+   */
+  private async judgeClaims(
+    accountId: string, chatbotId: string, conversationId: string, sources: string[], reply: string,
+    log: (level: 'info' | 'warn' | 'error', source: 'engine' | 'ai' | 'validator' | 'channel', message: string, details?: unknown) => Promise<unknown>,
+  ): Promise<string[]> {
+    try {
+      const info = sources.join('\n---\n').slice(0, 30_000);
+      const res = await this.ai.complete({
+        model: config.openai.summaryModel,
+        temperature: 0,
+        max_tokens: 500,
+        messages: [
+          { role: 'system', content: CLAIM_JUDGE_PROMPT },
+          { role: 'user', content: `<informacion>\n${info}\n</informacion>\n\n<respuesta>\n${reply}\n</respuesta>` },
+        ],
+        json_schema: { name: 'claim_check', schema: CLAIM_JUDGE_SCHEMA as unknown as Record<string, unknown> },
+      });
+      await store.insertAiRun({
+        account_id: accountId, chatbot_id: chatbotId, conversation_id: conversationId, kind: 'verify', model: res.model,
+        input_tokens: res.usage.input_tokens, cached_tokens: res.usage.cached_tokens, output_tokens: res.usage.output_tokens,
+        latency_ms: res.latency_ms, cost_usd: res.cost_usd,
+      });
+      const parsed = JSON.parse(res.content);
+      return Array.isArray(parsed.unsupported) ? parsed.unsupported.map((x: unknown) => String(x).slice(0, 120)).filter(Boolean).slice(0, 5) : [];
+    } catch (e: any) {
+      await log('warn', 'ai', `No se pudo verificar las afirmaciones con IA: ${e?.message ?? e}`);
+      return [];
+    }
+  }
+
   async process(conversationId: string, transport: Transport, opts: ProcessOptions = {}): Promise<ProcessResult> {
     const conv = await store.getConversation(conversationId);
     if (!conv) return { status: 'nothing' };
@@ -169,6 +203,7 @@ export class Engine {
       try {
         completion = await this.ai.complete({
           model,
+          fallback_models: bot.ai.fallback_models,
           messages: ctx.messages,
           temperature: bot.ai.temperature,
           reasoning_effort: bot.ai.reasoning_effort,
@@ -197,6 +232,7 @@ export class Engine {
       lastInput = {
         raw, bot, images: aiImages, sentImageIds, customerText, scheduledImages: scheduledBefore.map((x) => x.image), automaticImages: images, currentFlowStep: conv.flow_step ?? 0, goalAlreadyCompleted: !!conv.goal_completed_at,
         groundingSources: ctx.groundingSources,
+        claimSources: ctx.claimSources,
         customerSources: ctx.customerSources,
         customerDataSources: history.filter((m) => m.direction === 'in').map((m) => m.content),
         allowedIntents: intents.map((i) => i.intent),
@@ -206,6 +242,14 @@ export class Engine {
         knownName: contact.name || undefined,
       };
       const v = validateDecision({ ...lastInput, final: attempt === MAX_ATTEMPTS });
+      // Modo estricto: un modelo barato revisa que lo afirmado esté respaldado (solo si lo demás ya pasó).
+      if (!v.retryable.length && bot.rules.verify_claims === 'estricto' && v.plan.messages.length) {
+        const unsupported = await this.judgeClaims(conv.account_id, bot.id, conv.id, ctx.claimSources, v.plan.messages.join('\n'), log);
+        if (unsupported.length) {
+          v.factIssues = true;
+          v.retryable.push(`Afirmaste algo que la información del negocio no respalda o contradice: ${unsupported.join('; ')}. Quítalo o di con naturalidad que lo confirmas con el equipo.`);
+        }
+      }
       attempts.push({ retryable: v.retryable, fixes: v.fixes });
       await store.insertAiRun({
         account_id: conv.account_id,

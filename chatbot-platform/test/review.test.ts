@@ -12,6 +12,7 @@ before(async () => {
   h = await createHarness();
   await h.createBot();
   await h.authed('POST', `/api/chatbots/${h.botId}/knowledge`, { category: 'precios', title: 'Habitaciones', content: 'Doble: $1,650 MXN por noche. Suite: $2,900 MXN por noche.' });
+  await h.authed('POST', `/api/chatbots/${h.botId}/knowledge`, { category: 'general', title: 'Servicios', content: 'La doble tiene dos camas matrimoniales y vista al jardín. Incluye wifi y estacionamiento sin costo. El check-in es por la tarde y el check-out al mediodía.' });
 });
 after(async () => {
   if (h) await h.app.close();

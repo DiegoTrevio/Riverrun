@@ -5,6 +5,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { missingModels } from './ai/models.js';
 import { config } from './config.js';
 import { query, queryOne } from './db.js';
 import { logEvent } from './logs.js';
@@ -67,6 +68,18 @@ async function checkAi(): Promise<CheckResult> {
   }
 }
 
+async function checkModels(): Promise<CheckResult> {
+  const base = { name: 'models', label: 'Modelos de IA configurados' };
+  try {
+    const missing = await missingModels();
+    if (missing === null) return { ...base, status: 'na', detail: 'No se pudo consultar el catálogo de OpenRouter' };
+    if (!missing.length) return { ...base, status: 'ok', detail: 'Todos existen en OpenRouter' };
+    return { ...base, status: 'warn', detail: `No existen en OpenRouter: ${missing.slice(0, 4).map((m) => `${m.id} (${m.where})`).join(', ')}${missing.length > 4 ? '…' : ''}. Cámbialos antes de que dejen de responder.` };
+  } catch {
+    return { ...base, status: 'na', detail: '' };
+  }
+}
+
 export function readBackupStatus(dir = config.monitor.backupDir): any | null {
   try {
     return JSON.parse(fs.readFileSync(path.join(dir, 'status.json'), 'utf8'));
@@ -106,8 +119,8 @@ function checkDisk(): CheckResult {
 }
 
 export async function runChecks(now = new Date()): Promise<CheckResult[]> {
-  const [db, wa, sch, ai] = await Promise.all([checkDb(), checkEvolution(), checkScheduler(), checkAi()]);
-  return [db, wa, sch, ai, checkBackup(now), checkDisk()];
+  const [db, wa, sch, ai, models] = await Promise.all([checkDb(), checkEvolution(), checkScheduler(), checkAi(), checkModels()]);
+  return [db, wa, sch, ai, models, checkBackup(now), checkDisk()];
 }
 
 export const overall = (checks: CheckResult[]): 'ok' | 'warn' | 'fail' => (checks.some((c) => c.status === 'fail') ? 'fail' : checks.some((c) => c.status === 'warn') ? 'warn' : 'ok');

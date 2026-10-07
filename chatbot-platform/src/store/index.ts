@@ -709,6 +709,56 @@ export async function isFirstLiveInbound(conversationId: string, messageId: numb
   return row?.first === true;
 }
 
+/* ----------------------- Arrendamiento de conversaciones (cola durable) ----------------------- */
+
+/** Toma la conversación para este proceso. Falla si otro proceso la tiene y su arrendamiento sigue vigente. */
+export async function claimConversation(id: string, owner: string, ttlSeconds = 300): Promise<boolean> {
+  const row = await queryOne<{ id: string }>(
+    `UPDATE conversations SET lease_owner = $2, lease_until = now() + make_interval(secs => $3), last_attempt_at = now()
+     WHERE id = $1 AND (lease_until IS NULL OR lease_until < now() OR lease_owner = $2) RETURNING id`,
+    [id, owner, ttlSeconds],
+  );
+  return !!row;
+}
+
+export async function renewConversationLease(id: string, owner: string, ttlSeconds = 300) {
+  await query(`UPDATE conversations SET lease_until = now() + make_interval(secs => $3) WHERE id = $1 AND lease_owner = $2`, [id, owner, ttlSeconds]);
+}
+
+export async function releaseConversation(id: string, owner: string) {
+  await query(`UPDATE conversations SET lease_owner = NULL, lease_until = NULL WHERE id = $1 AND lease_owner = $2`, [id, owner]);
+}
+
+/**
+ * Conversaciones con mensajes sin responder que nadie está atendiendo:
+ *  - nunca se intentaron (se perdió el temporizador o llegaron a otro proceso que se cayó), o
+ *  - se interrumpieron (arrendamiento vencido sin liberar: el proceso murió a la mitad).
+ * Los errores de la IA no vuelven aquí: liberan el arrendamiento y ya se intentaron.
+ */
+export async function recoverableConversations(maxAgeMinutes = 15, limit = 50): Promise<string[]> {
+  const rows = await query<{ id: string }>(
+    `SELECT c.id FROM conversations c
+       JOIN channels ch ON ch.id = c.channel_id
+       LEFT JOIN chatbots b ON b.id = c.chatbot_id
+     WHERE ch.type <> 'playground'
+       AND EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id AND m.processed = false AND m.direction = 'in'
+                     AND m.created_at > now() - make_interval(mins => $1)
+                     AND m.created_at < now() - make_interval(secs => GREATEST(COALESCE((b.ai->>'debounce_seconds')::float, 3), 3) + 5)
+                     AND (c.last_attempt_at IS NULL OR m.created_at > c.last_attempt_at))
+       AND (c.lease_until IS NULL OR c.lease_until < now())
+     LIMIT $2`,
+    [maxAgeMinutes, limit],
+  );
+  const interrupted = await query<{ id: string }>(
+    `SELECT c.id FROM conversations c
+     WHERE c.lease_until IS NOT NULL AND c.lease_until < now()
+       AND EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id AND m.processed = false AND m.direction = 'in' AND m.created_at > now() - make_interval(mins => $1))
+     LIMIT $2`,
+    [maxAgeMinutes, limit],
+  );
+  return [...new Set([...rows, ...interrupted].map((r) => r.id))];
+}
+
 export async function markAllProcessed(conversationId: string) {
   await query(`UPDATE messages SET processed = true WHERE conversation_id = $1 AND processed = false`, [conversationId]);
 }

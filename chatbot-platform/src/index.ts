@@ -29,6 +29,7 @@ async function main() {
   await logEvent({ level: 'info', source: 'system', message: `Servidor iniciado en el puerto ${config.port}` });
 
   service.scheduler.start(config.schedulerIntervalMs);
+  service.startSweeper();
   knowledgeWorker.start();
   knowledgeMonitor.start();
   startLifecycle();

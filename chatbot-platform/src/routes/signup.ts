@@ -32,6 +32,9 @@ export async function signupRoutes(app: FastifyInstance) {
   app.get('/api/signup/info', async () => ({
     enabled: config.signup.enabled,
     trial_days: config.signup.trialDays,
+    support_contact: config.signup.supportContact,
+    terms_url: config.signup.termsUrl,
+    privacy_url: config.signup.privacyUrl,
     business_types: BUSINESS_TYPES.map(({ key, label }) => ({ key, label })),
   }));
 

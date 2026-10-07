@@ -114,6 +114,10 @@ OPENROUTER_TRANSCRIPTION_MODEL=google/gemini-2.5-flash
 
 Los modelos antiguos de cada bot, como `gpt-4.1-mini`, se envían como `openai/gpt-4.1-mini` sin modificar su configuración guardada. Para otros proveedores usa el ID completo de OpenRouter. El modelo del agente debe admitir JSON Schema: se solicita `provider.require_parameters=true` para evitar rutas que ignoren este formato. Los resúmenes usan el modelo de resumen; las notas de voz, si se habilitan, se envían como `input_audio` al modelo de audio, que debe aceptar su formato (WhatsApp suele enviar OGG/Opus).
 
+**Modelos de respaldo.** `OPENROUTER_FALLBACK_MODELS=google/gemini-2.5-flash,anthropic/claude-haiku-4.5` (máximo 2) hace que OpenRouter pruebe el siguiente modelo si el principal falla, está saturado o rechaza la petición; cada asistente puede definir los suyos en *Instrucciones → Opciones avanzadas*. Los modelos de respaldo deben soportar salidas estructuradas (JSON Schema). El consumo se registra con el modelo que realmente respondió. El panel (**Sistema**) consulta el catálogo público de OpenRouter y avisa si algún modelo configurado (global, de respaldo o de un asistente) **ya no existe**, antes de que los clientes se queden sin respuestas.
+
+**Elegir modelo con datos, no a ojo.** El modelo por defecto no se cambia sin medirlo. Las evaluaciones en vivo (`evals/`) están bloqueadas a propósito a `gpt-4.1-mini` para controlar el gasto: probar otro modelo ahí exige primero revisar su precio en `evals/live-budget.mjs`. Mientras tanto, compara con un asistente duplicado que use el candidato (*Asistentes → Duplicar*), las mismas conversaciones en **Probar** y el costo y la latencia por respuesta en **Consumo de IA**. Procedimiento completo en [escalar y modelos](docs/escalar-y-modelos.md).
+
 El servidor necesita acceso HTTPS a `openrouter.ai`, una clave válida y saldo. Los errores de autenticación, saldo o modelo se muestran sin devolver el cuerpo técnico ni fragmentos de la clave. Para mantener OpenAI directo, configura explícitamente `OPENROUTER_BASE_URL=https://api.openai.com/v1`, una clave de OpenAI y los modelos sin prefijo.
 
 ## Empresas que se registran solas (modo servicio)
@@ -332,6 +336,8 @@ Menú **Agenda**, para administradores y agentes.
 
 ## Cómo decide y valida (el núcleo)
 
+> **Nuevo — afirmaciones sin números.** Además de precios, teléfonos y enlaces, el sistema revisa lo que la respuesta *afirma que el negocio tiene o hace* ("sí tenemos alberca", "aceptamos mascotas", "incluye desayuno"): eso debe estar en la información cargada (o ser un sinónimo: alberca ≈ piscina, estacionamiento ≈ parking…). Lo que el cliente haya dicho **no** cuenta como respaldo, ni lo que el propio bot dijo antes. Si no está, se pide corregir y, si insiste, sale el mensaje seguro. Tres modos por asistente (*Reglas → No afirmar lo que no esté en tu información*): **rápido** (sin costo, por defecto), **estricto** (una segunda IA barata también juzga la respuesta; se registra como consumo `verify`) y **sin revisar**. Es deliberadamente conservador: prefiere dejar pasar una paráfrasis a bloquear una buena respuesta.
+
 La IA responde siempre con este JSON (structured outputs con JSON Schema vía OpenRouter):
 
 ```json
@@ -392,13 +398,18 @@ src/
     validator.ts   validación y saneamiento de la propuesta
     engine.ts      pipeline: IA → validar → reintentar → ejecutar → memoria
     memory.ts      resumen acumulado de la conversación
-    queue.ts       cola por conversación (agrupar mensajes, sin respuestas cruzadas)
+    queue.ts       cola por conversación (agrupar mensajes, sin respuestas cruzadas) + arrendamiento en PostgreSQL (varios procesos)
+    claims.ts      verificación de afirmaciones sin números ("sí tenemos alberca") y juez de IA opcional
     transport.ts   interfaz de salida común y simulador
     text.ts        normalización, extracción de hechos, formato WhatsApp / texto plano
   automation/      reglas, secuencias, campañas, agenda, alertas, envíos proactivos y programador de tareas
   channels/        un adaptador por plataforma (whatsapp, telegram, meta, webchat): webhook, firma, envío, conexión
   evolution/       cliente de Evolution API v2 y parser del webhook
-  ai/provider.ts   cliente compatible con OpenRouter (chat, resúmenes y audio)
+  ai/provider.ts   cliente compatible con OpenRouter (chat, resúmenes, audio, modelos de respaldo)
+  ai/models.ts     catálogo de OpenRouter: avisa de modelos configurados que ya no existen
+  billing/         cobro automático: Stripe y Mercado Pago (sin SDK), planes y estado de suscripciones
+  monitor.ts       salud del sistema, alertas, latido externo y estado para el panel
+  knowledge-import.ts   importar conocimiento desde web, PDF, foto, CSV o texto
   routes/          API del panel (cuentas, usuarios, chatbots, canales, conversaciones, primeros pasos, consumo) y rutas públicas (registro, webhooks, chat web, imágenes)
   templates/       plantillas de chatbot por tipo de negocio (asistente de primeros pasos)
   lifecycle.ts     fin de pruebas, avisos de gasto y de WhatsApp desconectado
@@ -407,7 +418,9 @@ src/
   auth.ts          usuarios, contraseñas (scrypt) y sesiones
   store/           acceso a PostgreSQL
 migrations/        esquema SQL
-public/            panel web (HTML/CSS/JS sin build) y widget del chat web (widget.js)
+public/            panel web: index.html + app.js (entrada) + js/*.js (20 módulos ES nativos, sin build: core, shell, bot, conversations, channels, automation, billing, …),
+                   styles.css, widget del chat web (widget.js) y la guía del cliente (ayuda.html)
+scripts/           check-frontend (imports del panel), test-backup, test-cli
 test/              pruebas
 ```
 
@@ -452,10 +465,10 @@ Actualización desde la versión anterior: la migración `002` pasa automáticam
 
 ## Notas y límites de esta versión
 
-- La cola vive en memoria: pensada para un proceso en un VPS. Al reiniciar, retoma los mensajes sin responder de los últimos 15 minutos.
-- La recuperación de conocimiento es por palabras clave (sin embeddings) y solo entra en juego si el conocimiento excede el presupuesto; para la mayoría de negocios se envía completo.
+- La cola es durable y segura con varios procesos, sin Redis: cada conversación se atiende con un arrendamiento (*lease*) en PostgreSQL (un solo proceso a la vez) y un barrido cada 30 s retoma mensajes sin responder si se perdió un temporizador o un proceso murió a la mitad (ventana de 15 min; los errores de la IA no se reintentan en bucle). Los límites de intentos (inicio de sesión, registro, chat web) siguen siendo por proceso; con varias réplicas, cada una aplica el suyo. Detalle en [escalar y modelos](docs/escalar-y-modelos.md).
+- La recuperación de conocimiento es por palabras clave por defecto y solo entra en juego si el conocimiento excede el presupuesto; con catálogos grandes activa la **búsqueda semántica** (pgvector) con `./riverrun semantic` (ver [activación](docs/semantic-activation.md)): conserva las palabras clave como respaldo si el proveedor falla.
 - Se ignoran grupos, estados y canales de WhatsApp.
 - El cobro es automático con Stripe y/o Mercado Pago (ver arriba). Sin ninguno configurado, sigue siendo manual: activas el plan en **Cuentas**.
 - Los mensajes con más de 30 minutos de antigüedad (p. ej. al reconectar el teléfono) se guardan pero no se contestan automáticamente.
 - Una conversación **cerrada** se reabre (con su memoria) cuando el cliente vuelve a escribir.
-- La verificación de hechos cubre cifras, links, correos y teléfonos; afirmaciones sin números (p.ej. "sí tenemos alberca") dependen del prompt y la regla de cero invenciones.
+- La verificación cubre cifras, links, correos, teléfonos y afirmaciones de "tenemos / ofrecemos / incluye / aceptamos" (ver *Cómo decide y valida*). Lo que no sea una afirmación de ese tipo (tono, recomendaciones, matices) sigue dependiendo del prompt; el modo estricto añade un juez de IA para esos casos.

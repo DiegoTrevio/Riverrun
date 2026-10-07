@@ -18,7 +18,7 @@ case "$*" in
   *"wget -qO-"*) [[ -f VERSION_MALA ]] && exit 1; echo '{"ok":true}' ;;
   *"backup.sh now"*) [[ -f FALLA_RESPALDO ]] && exit 1; exit 0 ;;
   *"images -q backend"*) echo "sha256:abc123" ;;
-  *"config --images"*) echo "plataforma-backend" ;;
+  *"config --images"*) echo "plataforma-backend"; cat PG_IMAGE 2>/dev/null || echo "postgres:16-alpine" ;;
 esac
 exit 0
 SHIM
@@ -67,6 +67,17 @@ if ./riverrun update >/dev/null 2>&1; then echo "ERROR: actualizó sin respaldo"
 [[ "$(cat VERSION)" == v2 ]]
 ! grep -q "up -d --build" "$LOG"
 rm -f FALLA_RESPALDO
+
+echo "== una versión que cambia la imagen de PostgreSQL no se aplica sola"
+: > "$LOG"
+git rm -q -f --ignore-unmatch FALLA_RESPALDO 2>/dev/null || true
+base="$(git rev-parse HEAD)"; git fetch -q origin; git reset -q --hard origin/main
+echo "pgvector/pgvector:0.8.7-pg16" > PG_IMAGE; echo v5 > VERSION; git add -A; git commit -qm v5; git push -q origin HEAD:main; git reset -q --hard "$base"
+if ./riverrun update >/dev/null 2>&1; then echo "ERROR: aplicó el cambio de imagen de base de datos"; exit 1; fi
+[[ "$(cat VERSION)" != v5 ]] || { echo "ERROR: no revirtió el código"; exit 1; }
+! grep -q "up -d --build" "$LOG"
+./riverrun update --accept-db-image-change >/dev/null
+[[ "$(cat VERSION)" == v5 ]]
 
 echo "== con cambios hechos a mano se niega"
 echo "cambio" >> VERSION

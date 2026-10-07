@@ -47,6 +47,8 @@ export const config = {
     apiKey: env('OPENROUTER_API_KEY', env('OPENAI_API_KEY', '')),
     baseUrl: aiBaseUrl,
     defaultModel: env('OPENROUTER_MODEL', env('OPENAI_MODEL', useOpenRouter ? 'openai/gpt-4.1-mini' : 'gpt-4.1-mini')),
+    /** Modelos de respaldo (separados por coma): si el principal falla o está saturado, OpenRouter prueba estos en orden. */
+    fallbackModels: env('OPENROUTER_FALLBACK_MODELS', '').split(',').map((m) => m.trim()).filter(Boolean),
     summaryModel: env('OPENROUTER_SUMMARY_MODEL', env('OPENAI_SUMMARY_MODEL', useOpenRouter ? 'openai/gpt-4.1-mini' : 'gpt-4.1-mini')),
     transcriptionModel: env('OPENROUTER_TRANSCRIPTION_MODEL', env('OPENAI_TRANSCRIPTION_MODEL', useOpenRouter ? 'google/gemini-2.5-flash' : 'gpt-4o-mini-transcribe')),
     timeoutMs: Number(env('OPENROUTER_TIMEOUT_MS', env('OPENAI_TIMEOUT_MS', '45000'))),
@@ -87,6 +89,9 @@ export const config = {
     requireEmail: env('SIGNUP_REQUIRE_EMAIL', 'true') === 'true',
     /** Correo del superadmin para avisos (cuentas nuevas, pruebas que vencen, gasto alto). */
     superadminEmail: env('SUPERADMIN_EMAIL', ''),
+    /** Direcciones públicas de tus términos y tu aviso de privacidad (se enlazan en el registro). */
+    termsUrl: env('TERMS_URL', ''),
+    privacyUrl: env('PRIVACY_URL', ''),
     /** Contacto que ve el cliente cuando su cuenta está pausada. */
     supportContact: env('SUPPORT_CONTACT', ''),
   },

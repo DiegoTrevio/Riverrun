@@ -86,6 +86,7 @@ export function shell(active, content) {
       ],
       h('div', { class: 'spacer' }),
       h('div', { class: 'small muted', style: 'padding:4px 10px' }, user.name || user.email, h('br'), ROLE_LABEL[user.role]),
+      h('a', { href: '/ayuda.html', target: '_blank', rel: 'noopener' }, '❓ Ayuda'),
       link('#/password', 'Mi perfil', 'password'),
       isAdmin() && !isSuper() ? h('a', { href: '#', class: 'small muted', onclick: (e) => { e.preventDefault(); setAdvanced(!isAdvanced()); render(); } }, isAdvanced() ? '☰ Menú simple' : '☰ Mostrar todas las opciones') : null,
       h('a', { href: '#', onclick: async (e) => { e.preventDefault(); await api('POST', '/api/logout'); state.me = null; location.hash = '#/login'; } }, 'Cerrar sesión'),

@@ -2,6 +2,7 @@ import { imagesAfterReply, imagesForAssistant, imagesForContext } from './images
 import { automaticField, customerProvided } from './customer-data.js';
 import type { Chatbot, DataField, ImageAsset } from '../types.js';
 import { DecisionSchema, type Action, type Decision } from './decision.js';
+import { unsupportedClaims } from './claims.js';
 import { countEmojis, FactCorpus, limitEmojis, normalize, stripEmojis, toWhatsappFormat } from './text.js';
 
 /** Plan final ya validado que el backend ejecutará. */
@@ -52,6 +53,8 @@ export interface ValidationInput {
   sentImageIds: string[];
   /** Fuentes del negocio: conocimiento, configuración, mensajes del bot/equipo. */
   groundingSources: string[];
+  /** Solo lo que el negocio afirma (conocimiento, reglas, agenda y mensajes del equipo): respalda "sí tenemos X". */
+  claimSources?: string[];
   /** Lo que escribió el cliente (vale para nombres, fechas o cantidades, pero no para precios). */
   customerSources?: string[];
   /** Mensajes originales del cliente para validar datos automáticos (sin resúmenes). */
@@ -343,6 +346,17 @@ export function validateDecision(input: ValidationInput): ValidationResult {
       factIssues = true;
       retryable.push(
         `Mencionaste datos que no están en la información del negocio ni en la conversación: ${unverified.join(', ')}. Elimina o corrige esos datos; si no los tienes, dilo con naturalidad.`,
+      );
+    }
+  }
+
+  // ---------- Afirmaciones sin números ("sí tenemos alberca") ----------
+  if (rules.verify_claims !== 'apagado' && messages.length && input.claimSources) {
+    const claims = unsupportedClaims(messages.join('\n'), input.claimSources);
+    if (claims.length) {
+      factIssues = true;
+      retryable.push(
+        `Afirmaste que el negocio tiene u ofrece: ${claims.join(', ')}. Eso no aparece en la información del negocio. Quítalo, o di con naturalidad que lo confirmas con el equipo.`,
       );
     }
   }

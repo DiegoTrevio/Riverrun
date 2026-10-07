@@ -50,7 +50,9 @@ export async function renderSignup() {
       // Campo trampa para bots: oculto para las personas.
       h('div', { style: 'position:absolute;left:-9999px', 'aria-hidden': 'true' }, h('input', { tabindex: '-1', autocomplete: 'off', oninput: (e) => (f.website = e.target.value) })),
       h('label', { class: 'check small' }, h('input', { type: 'checkbox', onchange: (e) => (f.accept_terms = e.target.checked) }),
-        'Acepto los términos del servicio. Entiendo que WhatsApp se conecta como "dispositivo vinculado" (no es la API oficial) y que los envíos masivos pueden provocar el bloqueo del número.'),
+        [info.terms_url ? ['Acepto los ', h('a', { href: info.terms_url, target: '_blank', rel: 'noopener' }, 'términos del servicio')] : 'Acepto los términos del servicio',
+          info.privacy_url ? [' y el ', h('a', { href: info.privacy_url, target: '_blank', rel: 'noopener' }, 'aviso de privacidad')] : '',
+          '. Entiendo que WhatsApp se conecta como "dispositivo vinculado" (no es la API oficial) y que los envíos masivos pueden provocar el bloqueo del número.']),
       h('button', { class: 'primary', type: 'submit' }, 'Crear mi cuenta'),
       h('p', { class: 'small', style: 'margin:0' }, '¿Ya tienes cuenta? ', h('a', { href: '#/login' }, 'Inicia sesión'))));
 }

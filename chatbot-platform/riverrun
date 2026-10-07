@@ -6,6 +6,7 @@
 #   ./riverrun status      estado de los servicios, salud, último respaldo y si hay versión nueva
 #   ./riverrun backup      respaldo inmediato (corre solo cada noche)
 #   ./riverrun restore [archivo|latest]   restaura un respaldo (en un servidor nuevo: pasa la ruta del archivo)
+#   ./riverrun semantic    activa la búsqueda semántica (pgvector) para catálogos grandes
 #   ./riverrun logs [servicio]            registros en vivo
 #   ./riverrun restart     aplica cambios hechos a .env
 #
@@ -50,6 +51,8 @@ app_url() {
   local d; d="$(env_get DOMAIN)"
   if [[ -n "$d" && "$(env_get COMPOSE_PROFILES)" == *https* ]]; then echo "https://$d"; else echo "http://127.0.0.1:3000"; fi
 }
+
+pg_image() { dc config --images 2>/dev/null | grep -iE 'postgres|pgvector' | head -n 1 || true; }
 
 version() { git rev-parse --short HEAD 2>/dev/null || echo dev; }
 
@@ -150,6 +153,13 @@ cmd_install() {
   wait_healthy 180 || { dc logs --tail 40 backend || true; die "El sistema no respondió a tiempo. Revisa los registros de arriba o corre ./riverrun logs backend"; }
   ok "El sistema está funcionando"
 
+  # Búsqueda semántica (pgvector): útil con catálogos grandes. Opcional; si falla, el asistente sigue con palabras clave.
+  if [[ -n "$(env_get OPENROUTER_API_KEY)" ]]; then
+    local sem="${RIVERRUN_SEMANTIC:-}"
+    if [[ -z "$sem" && "$INTERACTIVE" == "1" ]]; then sem="$(ask '¿Activar la búsqueda semántica? Mejora las respuestas con catálogos grandes (s/n)' s)"; fi
+    [[ "$sem" =~ ^([sSyY]|1|true)$ ]] && { cmd_semantic --no-backup || warn "No se activó la búsqueda semántica; puedes intentarlo después con ./riverrun semantic"; }
+  fi
+
   say; say "${B}Todo listo.${N}"
   say "  Panel:      $(app_url)"
   say "  Usuario:    $email"
@@ -218,7 +228,11 @@ cmd_restore() {
 cmd_update() {
   need_docker || die "Docker no está disponible"
   local backup=1
-  for a in "$@"; do [[ "$a" == "--no-backup" ]] && backup=0; done
+  local ACCEPT_DB_IMAGE=0
+  for a in "$@"; do
+    [[ "$a" == "--no-backup" ]] && backup=0
+    [[ "$a" == "--accept-db-image-change" ]] && ACCEPT_DB_IMAGE=1
+  done
   git rev-parse --git-dir >/dev/null 2>&1 || die "Esta instalación no es un repositorio git: descarga la versión nueva y copia tu .env (o clona de nuevo)."
   [[ -z "$(git status --porcelain --untracked-files=no)" ]] || die "Hay archivos modificados a mano: guárdalos (git stash) antes de actualizar."
   local old; old="$(git rev-parse HEAD)"
@@ -236,7 +250,15 @@ cmd_update() {
   local prev; prev="$(dc images -q backend 2>/dev/null | head -n 1 || true)"
   [[ -n "$prev" ]] && docker tag "$prev" riverrun-backend:previous
 
+  local pg_before; pg_before="$(pg_image)"
   git pull -q --ff-only
+  # Cambiar la imagen de PostgreSQL sobre un volumen existente puede dañar los índices de texto (otra versión de collation):
+  # se detiene aquí y se pide hacerlo con el procedimiento de docs/semantic-activation.md.
+  local pg_after; pg_after="$(pg_image)"
+  if [[ -n "$pg_before" && "$pg_before" != "$pg_after" && "$ACCEPT_DB_IMAGE" != "1" ]]; then
+    git reset -q --hard "$old"
+    die "Esta versión cambia la imagen de PostgreSQL ($pg_before → $pg_after). No se aplicó porque un volumen existente puede ser incompatible. Sigue docs/semantic-activation.md (respaldo, ensayo y restauración en un volumen nuevo) o, bajo tu riesgo y con respaldo, repite con --accept-db-image-change."
+  fi
   export APP_VERSION; APP_VERSION="$(version)"
   say "Construyendo la nueva versión ($APP_VERSION)…"
   if dc up -d --build && wait_healthy 180 && [[ "$(health_json)" != *'"status":"fail"'* ]]; then
@@ -259,10 +281,31 @@ cmd_update() {
   exit 1
 }
 
+# ------------------------------------------------------------------ búsqueda semántica
+cmd_semantic() {
+  need_docker || die "Docker no está disponible"
+  local backup=1
+  for a in "$@"; do [[ "$a" == "--no-backup" ]] && backup=0; done
+  [[ -n "$(env_get OPENROUTER_API_KEY)" ]] || die "Primero pon OPENROUTER_API_KEY en .env (los embeddings se generan con OpenRouter) y corre ./riverrun restart"
+  if (( backup )); then
+    say "Respaldo previo…"
+    dc exec -T backup /usr/local/bin/backup.sh now || die "El respaldo falló: no se activa sin respaldo."
+  fi
+  env_set KNOWLEDGE_SEARCH_ENABLED true
+  export APP_VERSION; APP_VERSION="$(version)"
+  dc up -d backend
+  wait_healthy 120 || die "El sistema no respondió: ./riverrun logs backend"
+  say "Comprobando PostgreSQL, pgvector y el proveedor de embeddings…"
+  dc exec -T backend node dist/cli/knowledge-activate.js --apply --verify-provider || die "La activación no se completó (revisa el resultado de arriba; ver docs/semantic-activation.md). El asistente sigue funcionando con búsqueda por palabras."
+  say "Preparando el conocimiento existente (se repite solo cuando cambia)…"
+  dc exec -T backend node dist/cli/knowledge-prepare.js --all --apply || warn "Quedaron documentos por preparar; el sistema los completa solo en segundo plano."
+  ok "Búsqueda semántica activada"
+}
+
 cmd_logs()    { need_docker || die "Docker no está disponible"; dc logs -f --tail 100 "$@"; }
 cmd_restart() { need_docker || die "Docker no está disponible"; export APP_VERSION; APP_VERSION="$(version)"; dc up -d; wait_healthy 120 && ok "Funcionando" || die "No respondió: ./riverrun logs backend"; }
 
-usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; }
 
 case "${1:-help}" in
   install) shift; cmd_install "$@" ;;
@@ -272,6 +315,7 @@ case "${1:-help}" in
   restore) shift; cmd_restore "$@" ;;
   logs) shift; cmd_logs "$@" ;;
   restart) cmd_restart ;;
+  semantic) shift; cmd_semantic "$@" ;;
   help|-h|--help) usage ;;
   *) usage; exit 1 ;;
 esac

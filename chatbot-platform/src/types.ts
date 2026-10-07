@@ -56,6 +56,11 @@ export const RulesSchema = z.object({
   booking_enabled: z.boolean().default(true),
   /** Verificar que precios, números, URLs, correos y teléfonos existan en el contexto. */
   verify_facts: z.boolean().default(true),
+  /**
+   * Afirmaciones sin números ("sí tenemos alberca"): deben aparecer en la información del negocio.
+   * 'reglas' = comprobación rápida y gratuita; 'estricto' = además un modelo barato juzga la respuesta; 'apagado' = no se revisa.
+   */
+  verify_claims: z.enum(['apagado', 'reglas', 'estricto']).default('reglas'),
   /** Frases prohibidas (suenan a robot). Si aparecen, se regenera la respuesta. */
   banned_phrases: z.array(z.string()).default([
     'como modelo de lenguaje',
@@ -120,6 +125,8 @@ export type Flow = z.infer<typeof FlowSchema>;
 
 export const AiSettingsSchema = z.object({
   model: z.string().default(''),
+  /** Modelos de respaldo de este asistente (vacío = los globales de OPENROUTER_FALLBACK_MODELS). */
+  fallback_models: z.array(z.string().trim().min(1).max(120)).max(2).default([]),
   temperature: z.number().min(0).max(2).nullable().default(0.4),
   reasoning_effort: z.enum(['', 'minimal', 'low', 'medium', 'high']).default(''),
   /** Mensajes recientes que se envían tal cual a la IA. */

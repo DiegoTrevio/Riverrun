@@ -62,6 +62,7 @@ export interface BuiltContext {
   knowledge: KnowledgeItem[];
   /** Textos del negocio que se consideran "verdad" para verificar datos de la respuesta. */
   groundingSources: string[];
+  claimSources: string[];
   /** Textos del cliente (sirven para repetir sus propios datos, no para precios). */
   customerSources: string[];
   isFirstContact: boolean;
@@ -480,6 +481,14 @@ export function buildContext(input: ContextInput): BuiltContext {
     input.agenda ? agendaSection(input.agenda) : '',
   ];
 
+  // Lo que el negocio realmente afirma: los mensajes anteriores del bot NO cuentan (una invención previa no respalda otra);
+  // los del equipo humano sí.
+  const claimSources = [
+    ...groundingSources.slice(0, knowledge.length),
+    ...input.history.filter((m) => m.direction === 'out' && m.sender === 'human').map((m) => m.content),
+    ...groundingSources.slice(knowledge.length + input.history.filter((m) => m.direction === 'out').length),
+  ];
+
   const customerSources = [
     ...input.history.filter((m) => m.direction === 'in').map((m) => m.content),
     ...input.pending.map((m) => m.content),
@@ -487,5 +496,5 @@ export function buildContext(input: ContextInput): BuiltContext {
     input.conversation.summary,
   ];
 
-  return { messages, knowledge, groundingSources, customerSources, isFirstContact };
+  return { messages, knowledge, groundingSources, claimSources, customerSources, isFirstContact };
 }

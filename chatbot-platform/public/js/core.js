@@ -30,6 +30,9 @@ export async function api(method, url, body, isForm = false) {
 
 export function h(tag, props = {}, ...children) {
   const el = document.createElement(tag);
+  // append() de los elementos que crea h() ignora null/false y aplana listas (igual que los hijos de h()); así
+  // `root.append(cond ? x : null, ...lista)` nunca escribe "null" ni "[object HTMLDivElement]" en la pantalla.
+  el.append = (...kids) => Element.prototype.append.call(el, ...kids.flat(Infinity).filter((c) => c !== null && c !== undefined && c !== false).map((c) => (c instanceof Node ? c : String(c))));
   for (const [k, v] of Object.entries(props || {})) {
     if (v === undefined || v === null || v === false) continue;
     if (k === 'class') el.className = v;
