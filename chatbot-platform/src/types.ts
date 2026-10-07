@@ -346,7 +346,7 @@ export interface User {
 
 /* ---------------------------------- Canales ---------------------------------- */
 
-export const CHANNEL_TYPES = ['whatsapp', 'telegram', 'messenger', 'instagram', 'webchat'] as const;
+export const CHANNEL_TYPES = ['whatsapp', 'telegram', 'messenger', 'instagram', 'webchat', 'email'] as const;
 export type PublicChannelType = (typeof CHANNEL_TYPES)[number];
 export type ChannelType = PublicChannelType | 'playground';
 
@@ -414,10 +414,29 @@ export const ChannelConfigSchemas = {
     /** Dominios que pueden insertar el chat (vacío = cualquiera). */
     allowed_origins: z.array(z.string().max(200)).default([]),
   }),
+  email: z.object({
+    /** gmail | outlook | otro: solo rellena servidores por defecto en el panel. */
+    provider: z.enum(['gmail', 'outlook', 'otro']).default('otro'),
+    imap_host: z.string().max(200).default(''),
+    imap_port: z.number().int().min(1).max(65535).default(993),
+    imap_user: z.string().max(200).default(''),
+    imap_password: secret.default(''),
+    smtp_host: z.string().max(200).default(''),
+    smtp_port: z.number().int().min(1).max(65535).default(587),
+    /** Vacíos = los mismos que IMAP. */
+    smtp_user: z.string().max(200).default(''),
+    smtp_password: secret.default(''),
+    from_address: z.string().max(200).default(''),
+    from_name: z.string().max(100).default(''),
+    /** Lo guarda el sistema: último correo ya leído. */
+    last_uid: z.number().int().min(0).default(0),
+    uid_validity: z.number().int().min(0).default(0),
+    last_error: z.string().max(300).default(''),
+  }),
   playground: z.object({}),
 } as const;
 
-export const SECRET_FIELDS = ['api_key', 'bot_token', 'page_access_token', 'app_secret'];
+export const SECRET_FIELDS = ['api_key', 'bot_token', 'page_access_token', 'app_secret', 'imap_password', 'smtp_password'];
 export const MASK = '••••••';
 
 export function channelConfig(type: ChannelType, config: unknown): Record<string, any> {

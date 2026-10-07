@@ -86,6 +86,23 @@ curl -H "Authorization: Bearer rr_xxx" "https://TU-DOMINIO/api/v1/contacts?updat
 
 La respuesta lleva `data` y, si hay más, `next_cursor` para la siguiente página.
 
+Especificación **OpenAPI 3.1** (sin llave): `https://TU-DOMINIO/api/v1/openapi.json`. Impórtala en Postman, Insomnia o un generador de clientes.
+
+## 4. Canal de correo electrónico (IMAP/SMTP)
+
+En **Canales → Nuevo canal → Correo electrónico**. Funciona con Gmail, Google Workspace, Outlook/Microsoft 365 o cualquier proveedor con IMAP y SMTP.
+
+1. En Gmail o Microsoft activa la verificación en dos pasos y crea una **contraseña de aplicación** (no uses tu contraseña normal).
+2. Elige el proveedor (rellena los servidores), escribe el correo y la contraseña de aplicación y pulsa **Probar y conectar el correo**.
+3. El buzón se revisa cada minuto (`EMAIL_POLL_SECONDS`, mínimo 15). Solo se contestan los correos **posteriores a la conexión**. Las respuestas salen por SMTP en el mismo hilo (`Re: asunto`, `In-Reply-To`) y varias burbujas de la IA se mandan como un solo correo.
+4. Se ignoran avisos automáticos, listas de correo, rebotes y los mensajes de la propia dirección; el texto citado de la respuesta no se envía a la IA.
+
+Los servidores en redes internas se rechazan. Si el acceso falla (contraseña revocada, etc.) el canal muestra el error y se reintenta solo.
+
+## 5. Iniciar sesión con Google
+
+Con `GOOGLE_CLIENT_ID` y `GOOGLE_CLIENT_SECRET` definidos aparece **Continuar con Google** en el inicio de sesión (solo en el dominio principal). Agrega `https://TU-DOMINIO/oauth/google/login/callback` a las URI de redireccionamiento autorizadas de las credenciales OAuth (además de la de Calendar, `/oauth/google/callback`). Quien ya tiene usuario entra con el mismo correo (Google debe haberlo verificado); un correo nuevo crea una cuenta de prueba si el registro está abierto. El superadministrador solo entra con su contraseña.
+
 ## Exportar a CSV
 
 En Conversaciones hay un menú **Exportar** (contactos, conversaciones y mensajes). Solo administradores; cada exportación queda en el registro.

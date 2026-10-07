@@ -417,7 +417,9 @@ export class Engine {
 
   async sendPlan(bot: Chatbot, conv: Conversation, transport: Transport, plan: ExecutionPlan, meta: Record<string, unknown>, scheduled: ScheduledImage[] = []) {
     const typing = bot.ai.typing_simulation && hasTyping(transport);
-    for (const text of plan.messages) {
+    // En correo, varias burbujas serían varios correos: se envían como uno solo.
+    const texts = transport.kind === 'email' && plan.messages.length > 1 ? [plan.messages.join('\n\n')] : plan.messages;
+    for (const text of texts) {
       await this.sendOut(bot, conv, transport, { sender: 'bot', text, delay: typingDelay(text, typing), meta });
     }
     for (const img of plan.images) {

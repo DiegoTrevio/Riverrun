@@ -1,3 +1,4 @@
+import { pollEmailChannels } from './channels/email.js';
 import fs from 'node:fs';
 import { KnowledgeMonitor } from './engine/knowledge-monitor.js';
 import { OpenAiProvider } from './ai/provider.js';
@@ -37,6 +38,8 @@ async function main() {
   startMonitor();
   const resumed = await service.resumePending();
   if (resumed) console.log(`Retomando ${resumed} conversaciones pendientes`);
+
+  setInterval(() => void pollEmailChannels(service).catch((e) => logEvent({ level: 'error', source: 'channel', message: `Lectura de correo: ${e?.message ?? e}` })), config.emailPollSeconds * 1000).unref();
 
   setInterval(() => {
     applyRetention().catch((e) => logEvent({ level: 'error', source: 'system', message: `Retención de datos: ${e?.message ?? e}` }));

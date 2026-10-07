@@ -74,6 +74,7 @@ export const config = {
    */
   trustProxyHops: Number(env('TRUST_PROXY_HOPS', '1')),
   /** Permitir webhooks salientes hacia redes internas (solo para pruebas o redes controladas). */
+  emailPollSeconds: Math.max(15, Number(env('EMAIL_POLL_SECONDS', '60'))),
   allowPrivateWebhooks: env('ALLOW_PRIVATE_WEBHOOKS', 'false') === 'true',
   schedulerIntervalMs: Number(env('SCHEDULER_INTERVAL_MS', '5000')),
   /** Correo saliente (verificación, recuperación de contraseña, avisos). Sin SMTP_URL, los correos van al registro. */

@@ -256,3 +256,15 @@ t('API: conversaciones, mensajes, envío (respeta bajas) y citas', async () => {
   await pool.query(`UPDATE accounts SET active = true WHERE id = $1`, [h.accountId]);
   void writeId;
 });
+
+t('la especificación OpenAPI es pública y cubre todas las rutas de la API v1', async () => {
+  const r = await h.app.inject({ method: 'GET', url: '/api/v1/openapi.json' });
+  assert.equal(r.statusCode, 200);
+  const spec = r.json();
+  assert.equal(spec.openapi, '3.1.0');
+  const fs = await import('node:fs');
+  const src = fs.readFileSync(new URL('../src/routes/api-v1.ts', import.meta.url), 'utf8');
+  const routes = [...src.matchAll(/v1\.(get|post|put|delete)\('([^']+)'/g)].map((m) => [m[1], m[2].replace(/:(\w+)/g, '{$1}')]);
+  assert.ok(routes.length >= 9);
+  for (const [method, path] of routes) assert.ok(spec.paths[path]?.[method], `falta ${method.toUpperCase()} ${path} en OpenAPI`);
+});

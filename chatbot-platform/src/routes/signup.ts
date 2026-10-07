@@ -1,3 +1,4 @@
+import { googleConfigured } from '../integrations/google.js';
 import { brandByDomain, hostOf, mailBrand } from '../brands.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -32,8 +33,10 @@ export async function sendVerification(user: Pick<User, 'id' | 'name' | 'email'>
 
 /** Rutas públicas: registro de empresas, verificación de correo y recuperación de contraseña. */
 export async function signupRoutes(app: FastifyInstance) {
-  app.get('/api/signup/info', async () => ({
+  app.get('/api/signup/info', async (req) => ({
     enabled: config.signup.enabled,
+    // Solo en el dominio principal: Google exige registrar la dirección de regreso.
+    google_login: googleConfigured() && hostOf(req) === new URL(config.publicBaseUrl).hostname,
     trial_days: config.signup.trialDays,
     support_contact: config.signup.supportContact,
     terms_url: config.signup.termsUrl,

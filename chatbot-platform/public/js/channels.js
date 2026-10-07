@@ -6,7 +6,7 @@ import { whatsappConnector } from './whatsapp.js';
 
 /* ------------------------------ Canales ------------------------------ */
 
-const CHANNEL_ICONS = { whatsapp: '🟢', telegram: '✈️', messenger: '💬', instagram: '📸', webchat: '🌐', playground: '🧪' };
+const CHANNEL_ICONS = { whatsapp: '🟢', telegram: '✈️', messenger: '💬', instagram: '📸', webchat: '🌐', email: '✉️', playground: '🧪' };
 
 export function channelIcon(type) {
   return h('span', { title: type }, CHANNEL_ICONS[type] || '•');
@@ -149,6 +149,27 @@ function channelConfigFields(ch, cfg) {
         secret('page_access_token', 'Token de acceso', 'Token de la página de Facebook vinculada a la cuenta profesional de Instagram.'),
         secret('app_secret', 'Clave secreta de la app', 'Configuración de la app → Básica.'),
       ];
+    case 'email': {
+      const num = (key, label, help) => field(label, h('input', { type: 'number', value: cfg[key] ?? '', oninput: (e) => (cfg[key] = Number(e.target.value) || 0) }), help);
+      const preset = (p) => {
+        cfg.provider = p;
+        if (p === 'gmail') Object.assign(cfg, { imap_host: 'imap.gmail.com', imap_port: 993, smtp_host: 'smtp.gmail.com', smtp_port: 587 });
+        if (p === 'outlook') Object.assign(cfg, { imap_host: 'outlook.office365.com', imap_port: 993, smtp_host: 'smtp.office365.com', smtp_port: 587 });
+        render();
+      };
+      return [
+        field('Proveedor', h('select', { onchange: (e) => preset(e.target.value) }, [['gmail', 'Gmail / Google Workspace'], ['outlook', 'Outlook / Microsoft 365'], ['otro', 'Otro (IMAP y SMTP)']].map(([v, l]) => h('option', { value: v, selected: cfg.provider === v }, l))), 'Elige uno para rellenar los servidores.'),
+        field('Correo (usuario)', text(cfg, 'imap_user', { placeholder: 'atencion@tuempresa.com' })),
+        secret('imap_password', 'Contraseña de aplicación', 'En Gmail y Microsoft crea una "contraseña de aplicación" (necesitas la verificación en dos pasos); no uses tu contraseña normal.'),
+        field('Nombre al responder', text(cfg, 'from_name', { placeholder: 'Atención Mi Empresa' })),
+        h('details', {}, h('summary', {}, 'Servidores'),
+          h('div', { class: 'grid', style: 'margin-top:10px' },
+            field('Servidor IMAP (recibir)', text(cfg, 'imap_host')), num('imap_port', 'Puerto IMAP'),
+            field('Servidor SMTP (enviar)', text(cfg, 'smtp_host')), num('smtp_port', 'Puerto SMTP', '465 usa SSL; 587 usa STARTTLS.'),
+            field('Usuario SMTP', text(cfg, 'smtp_user'), 'Vacío = el mismo correo.'), secret('smtp_password', 'Contraseña SMTP', 'Vacía = la misma.'),
+            field('Dirección de envío', text(cfg, 'from_address'), 'Vacía = el mismo correo.'))),
+      ];
+    }
     case 'webchat':
       return [
         h('div', { class: 'grid' },
@@ -233,6 +254,11 @@ export async function viewChannel(root, id) {
         h('li', {}, 'Suscríbete a los campos ', h('code', {}, 'messages'), ', ', h('code', {}, 'messaging_postbacks'), ' y ', h('code', {}, 'message_echoes'), '.'),
         h('li', {}, 'Guarda aquí el token y la clave secreta, y pulsa el botón:')),
       h('button', { class: 'primary', onclick: setup, disabled: !ch.config.page_access_token }, ch.type === 'messenger' ? 'Verificar y suscribir la página' : 'Verificar token'),
+    );
+  } else if (ch.type === 'email') {
+    connection.push(
+      h('p', { class: 'muted small' }, 'Al conectar se prueba el acceso de lectura y de envío. Solo se contestan los correos que lleguen después de conectar; avisos automáticos y listas de correo se ignoran. Se revisa el buzón cada minuto.'),
+      h('button', { class: 'primary', onclick: setup, disabled: !ch.config.imap_password }, 'Probar y conectar el correo'),
     );
   } else if (ch.type === 'webchat') {
     connection.push(

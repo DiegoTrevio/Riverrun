@@ -15,8 +15,10 @@ import { chatbotRoutes } from './routes/chatbots.js';
 import { conversationRoutes } from './routes/conversations.js';
 import { billingRoutes, billingWebhooks } from './routes/billing.js';
 import { poolAdminRoutes, poolPublicRoutes } from './routes/pools.js';
+import { googleLoginRoutes } from './routes/google-login.js';
 import { brandAdminRoutes, brandPublicRoutes } from './routes/brands.js';
 import { integrationRoutes, googleCallbackRoute } from './routes/integrations.js';
+import { openApiRoutes } from './routes/openapi.js';
 import { apiV1Routes } from './routes/api-v1.js';
 import { exportRoutes } from './routes/export.js';
 import { knowledgeImportRoutes } from './routes/import.js';
@@ -77,6 +79,8 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
   await poolPublicRoutes(app);
   await googleCallbackRoute(app);
   await brandPublicRoutes(app);
+  await googleLoginRoutes(app);
+  await openApiRoutes(app);
   await apiV1Routes(app, service);
 
   // Todo lo demás requiere sesión; cada ruta verifica además la cuenta y el rol.

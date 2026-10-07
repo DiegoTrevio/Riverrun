@@ -1,9 +1,23 @@
 import { brand, brandMark } from './brand.js';
 import { $app, api, field, fill, h, run, select, state, text, toast } from './core.js';
 
+const GOOGLE_MSG = {
+  cancelado: 'Cancelaste el acceso con Google.',
+  error: 'No se pudo iniciar sesión con Google. Intenta de nuevo.',
+  'sin-correo': 'Google no confirmó tu correo.',
+  desactivada: 'Esta cuenta está desactivada.',
+  'solo-contrasena': 'Esta cuenta solo entra con correo y contraseña.',
+  'sin-cuenta': 'No hay una cuenta con ese correo y el registro está cerrado.',
+  demasiados: 'Demasiados intentos, espera un poco.',
+  off: 'El acceso con Google no está activado.',
+};
+
 export function renderLogin() {
+  const flash = new URLSearchParams((location.hash.split('?')[1] || '')).get('google');
+  if (flash && GOOGLE_MSG[flash]) setTimeout(() => toast(GOOGLE_MSG[flash], true), 0);
   const f = { email: '', password: '' };
   const signupLink = h('p', { class: 'small', style: 'margin-bottom:0' });
+  const googleSlot = h('div', {});
   const submit = async (e) => {
     e.preventDefault();
     const ok = await run(() => api('POST', '/api/login', f));
@@ -18,9 +32,10 @@ export function renderLogin() {
       h('button', { class: 'primary', type: 'submit' }, 'Entrar'),
       h('p', { class: 'small', style: 'margin-bottom:0' }, h('a', { href: '#/olvide' }, '¿Olvidaste tu contraseña?')),
       signupLink,
+      googleSlot,
     ),
   );
-  api('GET', '/api/signup/info').then((i) => { if (i.enabled) fill(signupLink, '¿Aún no tienes cuenta? ', h('a', { href: '#/registro' }, `Crea una gratis (${i.trial_days} días de prueba)`)); }).catch(() => undefined);
+  api('GET', '/api/signup/info').then((i) => { if (i.google_login) fill(googleSlot, h('a', { class: 'btn', href: '/oauth/google/login', style: 'display:block;text-align:center;margin-top:12px' }, 'Continuar con Google'), h('p', { class: 'muted small' }, 'Si aún no tienes cuenta, se crea una con tu prueba gratuita y aceptas los términos del servicio.')); if (i.enabled) fill(signupLink, '¿Aún no tienes cuenta? ', h('a', { href: '#/registro' }, `Crea una gratis (${i.trial_days} días de prueba)`)); }).catch(() => undefined);
 }
 
 /* ------------------------------ Registro y recuperación (públicas) ------------------------------ */

@@ -354,7 +354,7 @@ Una cuenta puede conectar varios WhatsApp. Las **campañas** pueden salir de var
 
 ## Integraciones
 
-Google Calendar, webhooks firmados (Zapier, Make, n8n) y API v1 con llaves: ver [docs/integraciones.md](docs/integraciones.md).
+Canal de **correo electrónico** (IMAP/SMTP, Gmail y Outlook), inicio de sesión con Google, Google Calendar, webhooks firmados (Zapier, Make, n8n) y API v1 con llaves y especificación OpenAPI: ver [docs/integraciones.md](docs/integraciones.md).
 
 ## Marca blanca
 

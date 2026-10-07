@@ -74,6 +74,7 @@ const CHANNEL_NAMES: Record<ChannelType, string> = {
   messenger: 'Facebook Messenger',
   instagram: 'Instagram (mensajes directos)',
   webchat: 'chat del sitio web',
+  email: 'correo electrónico (responde como en un correo: completo y cordial, en un solo mensaje)',
   playground: 'simulador',
 };
 

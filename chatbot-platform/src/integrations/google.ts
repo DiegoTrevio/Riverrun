@@ -55,7 +55,7 @@ export function authUrl(accountId: string) {
   return `${AUTH_URL()}?${p}`;
 }
 
-async function tokenRequest(params: Record<string, string>) {
+export async function tokenRequest(params: Record<string, string>) {
   const r = await fetch(`${OAUTH_URL()}/token`, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
