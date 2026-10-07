@@ -49,7 +49,13 @@ t('descarga el catálogo una vez (con caché), tolera caídas y solo valida cont
   down = true;
   assert.equal(await models.fetchCatalog(t0, url), null, 'sin copia y sin respuesta: no se sabe');
   down = false;
-  assert.equal(await models.missingModels(), null, 'con un proveedor que no es OpenRouter no se valida');
+  const prev = config.openai.baseUrl;
+  config.openai.baseUrl = 'https://api.openai.com/v1'; // sin esto, con internet se consultaría el catálogo real de OpenRouter
+  try {
+    assert.equal(await models.missingModels(), null, 'con un proveedor que no es OpenRouter no se valida');
+  } finally {
+    config.openai.baseUrl = prev;
+  }
 });
 
 t('detecta los modelos configurados (global, de respaldo y de cada asistente) que ya no existen', async () => {

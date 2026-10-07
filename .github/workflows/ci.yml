@@ -25,7 +25,7 @@ jobs:
     timeout-minutes: 20
     services:
       postgres:
-        image: postgres:16
+        image: pgvector/pgvector:0.8.7-pg16
         env:
           POSTGRES_USER: chatbot
           POSTGRES_PASSWORD: chatbot
@@ -35,6 +35,7 @@ jobs:
           --health-cmd "pg_isready -U chatbot" --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       TEST_DATABASE_URL: postgres://chatbot:chatbot@localhost:5432/chatbot_test
+      REQUIRE_PGVECTOR: 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

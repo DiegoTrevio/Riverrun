@@ -1,8 +1,10 @@
 /** Cobro automático con Stripe y Mercado Pago (servicios simulados). */
-import { fake, mpEvent, stripeEvent, stripeSub } from './billing-fakes.js';
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createHarness, dbAvailable, pool } from './harness.js';
+// Orden obligatorio: los simulados fijan las claves y URLs ANTES de que el arnés cargue la configuración.
+// (Con import estático, ambos módulos con await de nivel superior se evalúan en paralelo.)
+const { fake, mpEvent, stripeEvent, stripeSub } = await import('./billing-fakes.js');
+const { createHarness, dbAvailable, pool } = await import('./harness.js');
 
 const ok = await dbAvailable();
 const t = (name: string, fn: () => Promise<void>) => test(name, { skip: !ok && 'PostgreSQL de pruebas no disponible' }, fn);
