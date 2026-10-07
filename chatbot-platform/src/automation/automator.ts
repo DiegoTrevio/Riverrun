@@ -260,7 +260,9 @@ export class Automator {
       const alert = { link: `#/conversation/${ctx.conv.id}`, body: `${who} (${ctx.channel.name}): ${ctx.conv.handoff_reason || 'transferida'}` };
       const asg = ctx.settings.assignment;
       let assigned: string | null = null;
-      if (asg.enabled && asg.on_handoff) {
+      if (e.byUserId && ctx.conv.assigned_user_id === e.byUserId) {
+        assigned = e.byUserId; // la persona que la tomó ya la atiende: no se reparte ni se le avisa a ella misma
+      } else if (asg.enabled && asg.on_handoff) {
         // Si ya tenía a alguien asignado (y sigue disponible) se le avisa a esa persona; si no, toca el siguiente turno.
         const current = ctx.conv.assigned_user_id ? (await assignment.eligibleUsers(ctx.conv.account_id, { roles: ['admin', 'agent'] })).find((u) => u.id === ctx.conv.assigned_user_id) : null;
         const user = current ?? (await assignment.assignRoundRobin(ctx.conv, { scope: 'handoff', roles: asg.roles, userIds: asg.user_ids, reason: 'transferencia a una persona' }));

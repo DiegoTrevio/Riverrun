@@ -281,4 +281,6 @@ export interface AutomationEvent {
   appointment?: Appointment;
   /** Evita bucles: acciones que disparan otros eventos. */
   depth?: number;
+  /** Transferencia hecha por una persona del equipo que tomó la conversación (ella ya la atiende: no se reparte). */
+  byUserId?: string;
 }

@@ -85,9 +85,9 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
 
   api.post('/api/conversations/:cid/takeover', async (req: any) => {
     const conv = await conversationFor(req.user, req.params.cid);
-    const updated = await service.takeover(conv.id, `Tomada por ${req.user.name || req.user.email}`);
-    // Quien toma una conversación sin dueño se queda con ella.
+    // Quien toma una conversación sin dueño se queda con ella (antes de la transferencia, para que no se reparta a otra persona).
     if (!conv.assigned_user_id && req.user.account_id) await assignment.setAssignee(conv.id, req.user.id);
+    const updated = await service.takeover(conv.id, `Tomada por ${req.user.name || req.user.email}`, req.user.id);
     await log(conv, `Conversación tomada por ${req.user.email}`);
     return updated;
   });

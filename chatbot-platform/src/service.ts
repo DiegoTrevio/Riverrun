@@ -304,10 +304,10 @@ export class ChatService {
   }
 
   /** Manual ownership changes share the same handoff event as bot transfers. */
-  async takeover(conversationId: string, reason: string) {
+  async takeover(conversationId: string, reason: string, byUserId?: string) {
     const changed = await store.takeConversation(conversationId, reason);
     await store.markAllProcessed(conversationId);
-    if (changed) this.automator.emit({ type: 'handoff', conversationId });
+    if (changed) this.automator.emit({ type: 'handoff', conversationId, byUserId });
     return changed ?? await store.getConversation(conversationId);
   }
 

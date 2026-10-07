@@ -170,8 +170,12 @@ t('tomar una conversación sin dueña te la asigna', async () => {
   await waitFor(async () => !!(await h.conversationFor(phone)), 8000);
   const c = await h.conversationFor(phone);
   assert.equal(c.assigned_user_id, null);
+  const selfBefore = (await notices(team[2].id, 'assignment')).length;
   assert.equal((await team[2].api('POST', `/api/conversations/${c.id}/takeover`)).statusCode, 200);
+  await h.service.automator.settleAll(); // la transferencia dispara el reparto en segundo plano: no debe quitársela
+  await new Promise((r) => setTimeout(r, 300));
   assert.equal((await h.conversationFor(phone)).assigned_user_id, team[2].id);
+  assert.equal((await notices(team[2].id, 'assignment')).length, selfBefore, 'no se le avisa de lo que ella misma tomó');
 });
 
 t('aviso interno manual: a todos, a un rol, a personas, por turnos; validaciones y permisos', async () => {
