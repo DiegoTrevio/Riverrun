@@ -8,6 +8,7 @@ import { agentActive, gate } from '../engine/activation.js';
 import { matchKeyword } from '../engine/engine.js';
 import { imagesBeforeReply } from '../engine/images.js';
 import { normalize } from '../engine/text.js';
+import { dispatchEvent, eventData, publicEventFor } from '../integrations/webhooks.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
@@ -130,6 +131,12 @@ export function safeLookup(hostname: string, options: any, callback: (err: Error
 
 /** POST firmado a un servicio externo (n8n, Zapier, CRM). Bloquea la red interna (evita SSRF). */
 export async function postWebhook(url: string, body: unknown, secret: string) {
+  const { status } = await postSigned(url, body, secret);
+  if (status < 200 || status >= 300) throw new Error(`El webhook respondió ${status}`);
+}
+
+/** Igual, pero devuelve el código de respuesta (sin lanzar por 4xx/5xx) y permite cabeceras extra. */
+export async function postSigned(url: string, body: unknown, secret: string, extraHeaders: Record<string, string> = {}): Promise<{ status: number }> {
   const u = new URL(url);
   if (!['http:', 'https:'].includes(u.protocol)) throw new Error('Solo se permiten URLs http(s)');
   const host = u.hostname.replace(/^\[|\]$/g, '');
@@ -139,6 +146,8 @@ export async function postWebhook(url: string, body: unknown, secret: string) {
     'content-type': 'application/json',
     'content-length': Buffer.byteLength(payload),
     'x-signature': `sha256=${crypto.createHmac('sha256', secret).update(payload).digest('hex')}`,
+    'x-riverrun-timestamp': String(Math.floor(Date.now() / 1000)),
+    ...extraHeaders,
   };
   const mod = u.protocol === 'https:' ? https : http;
   // Sin redirecciones (una redirección podría apuntar a la red interna) y con tiempo máximo de 10 s.
@@ -151,7 +160,7 @@ export async function postWebhook(url: string, body: unknown, secret: string) {
     req.on('error', reject);
     req.end(payload);
   });
-  if (status < 200 || status >= 300) throw new Error(`El webhook respondió ${status}`);
+  return { status };
 }
 
 /* ------------------------------ Automatizador ------------------------------ */
@@ -209,6 +218,11 @@ export class Automator {
         link: `#/conversation/${ctx.conv.id}`,
         kind: 'handoff',
       });
+    }
+    // Webhooks de eventos de la cuenta (Zapier, Make, CRM…). El simulador del panel no dispara avisos reales.
+    const publicEvent = publicEventFor(e);
+    if (publicEvent && ctx.channel.type !== 'playground') {
+      dispatchEvent(ctx.conv.account_id, publicEvent, eventData(e, ctx)).catch((err) => logEvent({ level: 'error', source: 'system', message: `Webhooks de eventos: ${err?.message ?? err}`, accountId: ctx.conv.account_id }));
     }
     const rules = await astore.activeAutomations(ctx.conv.account_id, e.type, ctx.conv.chatbot_id);
     const matched: string[] = [];

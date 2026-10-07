@@ -1,3 +1,4 @@
+import { syncAppointment } from './integrations/google.js';
 import crypto from 'node:crypto';
 import type { AiProvider } from './ai/provider.js';
 import { Agenda } from './automation/agenda.js';
@@ -14,6 +15,7 @@ import { describeInbound, type InboundMessage } from './channels/types.js';
 import { query } from './db.js';
 import { summarizeConversation } from './engine/report.js';
 import { Engine, type ProcessResult } from './engine/engine.js';
+import { deliver } from './integrations/webhooks.js';
 import { messageQuota, noticeMessagesReached } from './billing/limits.js';
 import { ConversationQueue } from './engine/queue.js';
 import { PlaygroundTransport, type Transport } from './engine/transport.js';
@@ -59,6 +61,8 @@ export class ChatService {
     this.queue = new ConversationQueue((id, a) => this.runConversation(id, a.restarts), 2, 60_000, (id) => void this.aiUnavailable(id));
     this.scheduler = new Scheduler({
       automation_send: (p) => this.automator.runDelayedSend(p),
+      webhook_delivery: (p, job) => deliver(p, job.attempts),
+      gcal_sync: (p) => syncAppointment(p),
       no_reply: (p) => this.automator.runNoReply(p),
       sequence_step: (p) => this.automator.runSequenceStep(p),
       appointment_reminder: (p) => this.agenda.sendReminder(p),

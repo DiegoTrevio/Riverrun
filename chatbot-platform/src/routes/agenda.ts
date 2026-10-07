@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { assertAccount, conversationFor, HttpError, requireRole, scopeAccount, targetAccount } from '../access.js';
-import { buildIcs, computeSlots } from '../automation/agenda.js';
+import { buildIcs, busyFor, computeSlots } from '../automation/agenda.js';
 import * as astore from '../automation/store.js';
 import { spanishDate, spanishTime } from '../automation/time.js';
 import { ServiceBodySchema, type ServiceBody } from '../automation/types.js';
@@ -54,12 +54,8 @@ export async function agendaRoutes(api: FastifyInstance, service: ChatService) {
     const settings = await astore.getSettings(s.account_id);
     const days = Math.min(Number(req.query.days) || 14, s.max_days_ahead);
     const now = new Date();
-    const busy = await query(
-      `SELECT service_id, assigned_user_id, starts_at, ends_at FROM appointments
-       WHERE status = 'confirmed' AND source <> 'simulador' AND starts_at < $3 AND ends_at > $2 AND (service_id = $1 OR assigned_user_id = ANY($4::uuid[]))`,
-      [s.id, now, new Date(now.getTime() + (days + 1) * 86400_000), s.assigned_user_ids],
-    );
-    return computeSlots(s, settings, busy as any, now, { days }).map((x) => ({
+    const busy = await busyFor(s, now, new Date(now.getTime() + (days + 1) * 86400_000));
+    return computeSlots(s, settings, busy, now, { days }).map((x) => ({
       key: x.key,
       date: x.key.slice(0, 10),
       label: `${spanishDate(x.start, settings.timezone)}, ${spanishTime(x.start, settings.timezone)}`,

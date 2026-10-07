@@ -48,6 +48,9 @@ function fillParams(url: string): string | null {
     [/^\/api\/ai-prices\/:model/, 'model'],
     // Los planes son globales (solo el superadmin los edita): la cuenta A debe recibir 403 sea cual sea la clave.
     [/^\/api\/plans\/:key/, 'bot'],
+    [/^\/api\/webhook-endpoints\/:id/, 'endpoint'],
+    [/^\/api\/api-keys\/:id/, 'apikey'],
+    [/^\/api\/wa-pools\/:id/, 'wapool'],
   ];
   const hit = byPrefix.find(([re]) => re.test(url));
   if (!hit) return null;
@@ -58,7 +61,7 @@ function fillParams(url: string): string | null {
 }
 
 /** Lo que nunca debe aparecer en una respuesta del panel. */
-const FORBIDDEN = [/password_hash/, /token_hash/, /"qr_code"/, /"pairing_code"/, /llave-global-de-pruebas/, /TG-SECRETO-123/, /APP-SECRETO-456/, /PAGE-SECRETO-789/];
+const FORBIDDEN = [/password_hash/, /key_hash/, /refresh_token/, /token_hash/, /"qr_code"/, /"pairing_code"/, /llave-global-de-pruebas/, /TG-SECRETO-123/, /APP-SECRETO-456/, /PAGE-SECRETO-789/];
 
 before(async () => {
   if (!ok) return;
@@ -98,6 +101,9 @@ before(async () => {
   const slot = (await adminB('GET', `/api/services/${B.service}/slots`)).json()[0];
   B.appointment = (await ok200(adminB('POST', '/api/appointments', { service_id: B.service, slot: slot.key, customer_name: `Cliente ${MARK}`, notify_customer: false }))).id;
   B.user = (await ok200(adminB('POST', '/api/users', { email: 'agente@b.mx', name: `Agente ${MARK}`, password: 'clave-segura-1', role: 'agent' }))).id;
+  B.endpoint = (await ok200(adminB('POST', '/api/webhook-endpoints', { url: 'https://example.com/hook', description: `Hook ${MARK}` }))).id;
+  B.apikey = (await ok200(adminB('POST', '/api/api-keys', { name: `Llave ${MARK}` }))).id;
+  B.wapool = (await pool.query(`INSERT INTO wa_pools (account_id, name, token) VALUES ($1, $2, 'tok-b-aislamiento') RETURNING id`, [B.account, `Grupo ${MARK}`])).rows[0].id;
   B.model = 'gpt-4.1-mini';
   await h.idle();
 });

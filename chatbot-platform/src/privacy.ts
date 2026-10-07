@@ -48,6 +48,7 @@ export async function eraseContact(contactId: string): Promise<{ conversations: 
  * Devuelve cuántos se borraron. Idempotente; se ejecuta periódicamente.
  */
 export async function applyRetention(now = new Date()): Promise<{ accounts: number; messages: number; contacts: number }> {
+  await query(`DELETE FROM webhook_deliveries WHERE created_at < $1`, [new Date(now.getTime() - 30 * 86400_000)]); // la bitácora de entregas dura 30 días
   const accounts = await query<{ id: string; name: string; settings: unknown }>(`SELECT id, name, settings FROM accounts WHERE active`);
   let messagesDeleted = 0, contactsDeleted = 0, touched = 0;
   for (const a of accounts) {

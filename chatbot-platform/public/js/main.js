@@ -7,6 +7,7 @@ import { viewBot } from './bot.js';
 import { viewChannel, viewChannels } from './channels.js';
 import { viewConversation, viewConversations } from './conversations.js';
 import { $app, fill, h } from './core.js';
+import { viewIntegrations } from './integrations.js';
 import { goMainBot, viewDashboard, viewSettingsHub } from './dashboard.js';
 import { viewLogs } from './logs.js';
 import { viewOnboarding } from './onboarding.js';
@@ -52,6 +53,7 @@ export async function render() {
     else if (parts[0] === 'inicio') await viewOnboarding(content, parts[1]);
     else if (parts[0] === 'asistente' || parts[0] === 'probar') await goMainBot(content, parts[0] === 'probar' ? 'probar' : 'conocimiento');
     else if (parts[0] === 'ajustes') await viewSettingsHub(content);
+    else if (parts[0] === 'integraciones') await viewIntegrations(content, params);
     else if (parts[0] === 'sistema') await viewSystem(content);
     else if (parts[0] === 'plan') await viewPlan(content, params);
     else if (parts[0] === 'planes') await viewPlans(content);
