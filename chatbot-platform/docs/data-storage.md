@@ -32,6 +32,26 @@ El cliente también puede pedir un resumen durante el chat: las instrucciones de
 
 Si el proveedor de IA falla, la conversación se puede cerrar conservando datos y mensajes. El error queda registrado y el operador puede volver a solicitar el resumen. No se envía el resumen interno del panel automáticamente por WhatsApp.
 
+## Análisis y reportes
+
+Cada mensaje (entrante, saliente, de persona o de campaña) se guarda siempre en `messages`; nada se descarta para ahorrar espacio. Lo que se mantiene pequeño es lo derivado:
+
+- `report_summary`: máximo 4000 caracteres (el modelo recibe la orden de no pasar de ~150 palabras).
+- `report_analysis` (jsonb): intención, ánimo (`positivo|neutral|negativo`), interés (`alto|medio|bajo|sin_dato`), hasta 6 acuerdos y 6 pendientes, de máx. 200 caracteres cada uno. Se genera junto con el resumen en la misma llamada y se borra con «Borrar memoria».
+- `ai_runs.decision` / `ai_runs.validation`: detalle técnico de cada respuesta de la IA. Pasados `AI_RUN_DETAIL_DAYS` (14 por defecto) se vacían; el consumo y el costo de cada ejecución se conservan para la contabilidad.
+
+**Consultar y descargar** (cualquier integrante con acceso a la conversación):
+`GET /api/conversations/:cid/report` devuelve el reporte (resumen, análisis, datos, notas, estadísticas y si está desactualizado). `?format=txt` lo descarga como texto plano (`&transcript=1` añade los últimos mensajes) y `?refresh=1` actualiza antes el resumen.
+
+**Enviar** `POST /api/conversations/:cid/report/send` `{ user_ids, emails, phones, note, include_transcript, refresh }`:
+- Personas del equipo: cualquier integrante. Reciben una notificación en el panel, un correo y, si lo tienen activado en su perfil, un WhatsApp.
+- Correos y WhatsApp fuera del equipo: solo administradores (máx. 5 de cada tipo).
+- Antes de enviar se actualiza el resumen; si la IA falla se envía el último disponible con una advertencia visible.
+- La respuesta detalla la entrega por canal (`ok` y motivo si falló). Un canal que falla no impide los demás; sin `SMTP_URL` el correo se reporta como no entregado, nunca como enviado.
+- Límite: 20 envíos cada 10 minutos por persona.
+
+**Automático**: la acción de regla «Enviar reporte de la conversación» (`send_report`) hace lo mismo con los destinatarios de la regla.
+
 ## Integridad y migración
 
 `010_conversation_records.sql` agrega las columnas de forma compatible y copia los datos existentes de los contactos a sus conversaciones. PostgreSQL valida que `data` sea un objeto con valores de texto y que las notas sean una lista de textos.

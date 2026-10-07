@@ -544,7 +544,7 @@ export async function resetConversationMemory(conversationId: string, contactId:
     if (!scope.rows.length) throw new Error('La conversación no pertenece al contacto');
     await client.query("UPDATE contacts SET data = '{}', notes = '[]', name = '', updated_at = now() WHERE id = $1", [contactId]);
     await client.query(`UPDATE conversations SET summary = '', summary_until_id = 0, data = '{}', data_version = data_version + 1,
-      report_summary = '', report_until_id = 0, report_at = NULL, report_data_version = -1, flow_step = 0, goal_completed_at = NULL
+      report_summary = '', report_analysis = '{}'::jsonb, report_until_id = 0, report_at = NULL, report_data_version = -1, flow_step = 0, goal_completed_at = NULL
       WHERE id = $1 AND contact_id = $2`, [conversationId, contactId]);
   });
 }
@@ -584,7 +584,7 @@ export async function updateSummary(id: string, summary: string, untilId: number
     AND summary_until_id <= $3 AND ($4::bigint IS NULL OR data_version = $4)`, [id, summary, untilId, expectedVersion ?? null]);
 }
 
-export async function saveConversationReport(id: string, summary: string, untilId: number, expectedVersion: number, captures: { field: string; value: string; messageId: number }[] = []) {
+export async function saveConversationReport(id: string, summary: string, untilId: number, expectedVersion: number, captures: { field: string; value: string; messageId: number }[] = [], analysis: Record<string, unknown> = {}) {
   return withTransaction(async (client) => {
     const link = (await client.query('SELECT contact_id FROM conversations WHERE id = $1', [id])).rows[0];
     if (!link) return null;
@@ -602,9 +602,9 @@ export async function saveConversationReport(id: string, summary: string, untilI
     }
     const changed = Object.keys(added).length > 0;
     if (changed) await client.query("UPDATE contacts SET data = data || $2::jsonb, name = CASE WHEN $3 <> '' THEN $3 ELSE name END, updated_at = now() WHERE id = $1", [contact.id, JSON.stringify(added), added.nombre ?? '']);
-    const result = await client.query<Conversation>(`UPDATE conversations SET report_summary = $2, report_until_id = $3, report_at = now(),
+    const result = await client.query<Conversation>(`UPDATE conversations SET report_summary = $2, report_until_id = $3, report_at = now(), report_analysis = $6::jsonb,
       data = data || $4::jsonb, data_version = data_version + $5, report_data_version = data_version + $5 WHERE id = $1 RETURNING *`,
-      [id, summary, untilId, JSON.stringify(added), changed ? 1 : 0]);
+      [id, summary, untilId, JSON.stringify(added), changed ? 1 : 0, JSON.stringify(analysis)]);
     return result.rows[0];
   });
 }

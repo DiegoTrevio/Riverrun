@@ -10,7 +10,7 @@ import { startLifecycle } from './lifecycle.js';
 import { startMonitor } from './monitor.js';
 import { logEvent, pruneLogs } from './logs.js';
 import { applyRetention } from './privacy.js';
-import { pruneAutomationData } from './automation/store.js';
+import { pruneAiRunDetail, pruneAutomationData } from './automation/store.js';
 import { KnowledgeWorker } from './engine/knowledge-preparation.js';
 
 async function main() {
@@ -45,6 +45,7 @@ async function main() {
     applyRetention().catch((e) => logEvent({ level: 'error', source: 'system', message: `Retención de datos: ${e?.message ?? e}` }));
     pruneLogs(config.logRetentionDays).catch(() => undefined);
     pruneAutomationData(config.logRetentionDays).catch(() => undefined);
+    pruneAiRunDetail(config.aiRunDetailDays).catch(() => undefined);
   }, 6 * 3600 * 1000).unref();
 
   const shutdown = async () => {

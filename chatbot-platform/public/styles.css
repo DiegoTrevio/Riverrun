@@ -229,3 +229,4 @@ details.menu > summary::-webkit-details-marker { display: none; }
 details.menu .menu-items { position: absolute; right: 0; top: 110%; z-index: 20; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,.12); min-width: 220px; padding: 4px; display: flex; flex-direction: column; }
 details.menu .menu-items a { padding: 8px 10px; border-radius: 6px; color: var(--text); text-decoration: none; }
 details.menu .menu-items a:hover { background: var(--accent-soft); color: var(--accent); }
+.chip { display: inline-block; padding: 2px 8px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg); font-size: 12px; }

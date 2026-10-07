@@ -154,6 +154,16 @@ export const ActionSchema = z.discriminatedUnion('type', [
     /** Avisar a una sola persona, por turnos, en lugar de a todas. */
     round_robin: z.boolean().default(false),
   }),
+  /** Envía el reporte de la conversación (resumen, análisis y datos) al equipo, por panel, correo y WhatsApp. */
+  z.object({
+    type: z.literal('send_report'),
+    note: z.string().max(500).default(''),
+    roles: z.array(z.enum(['admin', 'agent'])).default(['admin']),
+    user_ids: z.array(z.string()).default([]),
+    emails: z.array(z.string().trim().toLowerCase().email()).max(5).default([]),
+    phones: z.array(z.string()).max(5).default([]),
+    include_transcript: z.boolean().default(false),
+  }),
   /** Asigna la conversación a alguien del equipo por turnos y le avisa a esa persona. */
   z.object({
     type: z.literal('assign'),

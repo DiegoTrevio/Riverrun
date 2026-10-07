@@ -238,6 +238,23 @@ export async function viewConversation(root, id) {
           } }, c.report_summary ? 'Actualizar resumen' : 'Generar resumen')),
         h('p', { class: 'small pre' }, c.report_summary || 'Se genera al cerrar, completar el objetivo o transferir la conversación. Puedes pedirlo en cualquier momento.'),
         c.report_at ? h('p', { class: 'small muted' }, `Generado: ${fmtDate(c.report_at)}`, c.report_until_id < (data.messages.filter((m) => m.status === 'ok').at(-1)?.id || 0) || c.report_data_version !== c.data_version ? ' · Hay información nueva; actualiza el resumen.' : '') : null,
+        c.report_analysis && c.report_summary ? h('div', { class: 'row small', style: 'gap:6px;flex-wrap:wrap' },
+          c.report_analysis.intent ? h('span', { class: 'chip' }, `🎯 ${c.report_analysis.intent}`) : null,
+          h('span', { class: 'chip' }, `Ánimo: ${c.report_analysis.sentiment || 'neutral'}`),
+          h('span', { class: 'chip' }, `Interés: ${(c.report_analysis.interest || 'sin_dato').replace('_', ' ')}`),
+          ...(c.report_analysis.agreements || []).map((x) => h('span', { class: 'chip' }, `🤝 ${x}`)),
+          ...(c.report_analysis.next_steps || []).map((x) => h('span', { class: 'chip' }, `⏭ ${x}`))) : null,
+        h('div', { class: 'row', style: 'gap:6px;margin:8px 0' },
+          h('a', { class: 'btn small', href: `/api/conversations/${id}/report?format=txt&transcript=1`, download: '' }, '⬇ Descargar reporte'),
+          h('button', { class: 'small', onclick: async () => {
+            try {
+              const res = await fetch(`/api/conversations/${id}/report?format=txt`);
+              if (!res.ok) throw new Error('No se pudo obtener el reporte');
+              await navigator.clipboard.writeText(await res.text());
+              toast('Reporte copiado');
+            } catch (e) { toast(e.message || 'No se pudo copiar', true); }
+          } }, 'Copiar'),
+          h('button', { class: 'small primary', onclick: () => sendReportDialog(id, data) }, '✉ Enviar reporte')),
         h('details', { class: 'small' }, h('summary', {}, 'Datos guardados en esta conversación'), h('div', { class: 'pre' }, Object.entries(c.data || {}).map(([key, value]) => `${key}: ${value}`).join('\n') || 'Aún no se han recopilado datos.')),
         c.summary ? h('details', { class: 'small' }, h('summary', {}, 'Memoria del asistente'), h('div', { class: 'pre muted' }, c.summary)) : null,
         h('button', { class: 'small danger', style: 'margin-top:10px', onclick: async () => { if (confirm('¿Borrar memoria (resumen, datos y notas) de este cliente?')) { await run(() => api('POST', `/api/conversations/${id}/reset-memory`), 'Memoria borrada'); load(true); } } }, 'Borrar memoria')),
@@ -257,4 +274,37 @@ export async function viewConversation(root, id) {
   await load(true);
   drawAuto().catch(() => undefined);
   state.timers.push(setInterval(() => load().catch(() => undefined), 5000));
+}
+
+
+/** Ventana para enviar el reporte a personas del equipo (y, si es administrador, a correos o WhatsApp externos). */
+async function sendReportDialog(id) {
+  const people = await run(() => api('GET', `/api/conversations/${id}/report/recipients`));
+  if (!people) return;
+  const b = { user_ids: [], emails: [], phones: [], note: '', include_transcript: false, refresh: true };
+  const result = h('div', { class: 'small' });
+  const dlg = h('dialog', { class: 'card', style: 'max-width:520px;width:92vw' });
+  const close = () => { dlg.close(); dlg.remove(); };
+  const send = h('button', { class: 'primary', onclick: async () => {
+    send.disabled = true;
+    try {
+      const r = await run(() => api('POST', `/api/conversations/${id}/report/send`, b));
+      if (r) fill(result,
+        r.warning ? h('p', { class: 'muted' }, `⚠️ ${r.warning}`) : null,
+        r.deliveries.map((d) => h('div', {}, `${d.ok ? '✅' : '❌'} ${d.via}: ${d.to}${d.detail ? ` — ${d.detail}` : ''}`)));
+    } finally { send.disabled = false; }
+  } }, 'Enviar');
+  dlg.append(
+    h('h3', { style: 'margin-top:0' }, 'Enviar reporte de la conversación'),
+    h('p', { class: 'small muted' }, 'Se actualiza el resumen y se envía por el panel, y por correo o WhatsApp a quien lo tenga activado.'),
+    h('div', { class: 'row', style: 'flex-wrap:wrap' }, people.map((u) => h('label', { class: 'check' },
+      h('input', { type: 'checkbox', onchange: (e) => { b.user_ids = e.target.checked ? [...b.user_ids, u.id] : b.user_ids.filter((x) => x !== u.id); } }), u.name, u.whatsapp ? ' 📱' : ''))),
+    isAdmin() ? field('Correos externos (uno por línea)', lines(b, 'emails', { placeholder: 'direccion@empresa.com' })) : null,
+    isAdmin() ? field('WhatsApp externos (uno por línea)', lines(b, 'phones', { placeholder: '5215512345678' })) : null,
+    field('Nota (opcional)', text(b, 'note')),
+    check(b, 'include_transcript', 'Adjuntar los últimos mensajes'),
+    result,
+    h('div', { class: 'row', style: 'justify-content:flex-end;margin-top:10px' }, h('button', { onclick: close }, 'Cerrar'), send));
+  document.body.append(dlg);
+  dlg.showModal();
 }

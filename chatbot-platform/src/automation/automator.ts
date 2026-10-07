@@ -1,4 +1,5 @@
 import * as assignment from './assignment.js';
+import { deliverReport, reportRecipients } from './report-delivery.js';
 import crypto from 'node:crypto';
 import dns from 'node:dns/promises';
 import http from 'node:http';
@@ -382,6 +383,13 @@ export class Automator {
           roles: a.roles,
           phones: a.phones,
         });
+        return;
+      }
+      case 'send_report': {
+        if (isSim) return this.simulated(ctx, `📋 Enviaría el reporte de la conversación — ${rule.name}`);
+        const users = await reportRecipients(ctx.conv.account_id, { userIds: a.user_ids, roles: a.user_ids.length ? undefined : a.roles });
+        const r = await deliverReport(this.chat, ctx.conv.id, { users, emails: a.emails, phones: a.phones, note: a.note ? this.render(a.note, ctx, e) : `Regla "${rule.name}"`, includeTranscript: a.include_transcript, by: `regla "${rule.name}"` });
+        if (!r.ok) await logEvent({ level: 'warn', source: 'engine', message: `Regla "${rule.name}": el reporte no se pudo entregar a nadie`, accountId: ctx.conv.account_id, conversationId: ctx.conv.id });
         return;
       }
       case 'assign': {

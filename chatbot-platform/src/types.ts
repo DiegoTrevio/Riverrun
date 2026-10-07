@@ -275,6 +275,8 @@ export interface Conversation {
   data: Record<string, string>;
   data_version: number;
   report_summary: string;
+  /** Intención, ánimo, interés, acuerdos y pendientes de la conversación (compacto). */
+  report_analysis?: Record<string, unknown>;
   report_until_id: number;
   report_at: Date | null;
   report_data_version: number;

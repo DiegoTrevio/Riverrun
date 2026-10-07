@@ -7,6 +7,8 @@ import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
 import { parse } from './util.js';
+import { rateLimited } from '../auth.js';
+import { buildReport, deliverReport, renderReport, ReportSendSchema, reportRecipients, transcriptTail } from '../automation/report-delivery.js';
 import * as astore from '../automation/store.js';
 import * as assignment from '../automation/assignment.js';
 import { stopEnrollments } from '../automation/store.js';
@@ -153,6 +155,41 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
     catch (error) {
       throw new HttpError(400, error instanceof Error ? error.message : 'No se pudo generar el resumen');
     }
+  });
+
+  /** Reporte consultable: JSON, o texto plano para descargar (?format=txt). ?refresh=1 actualiza el resumen antes. */
+  api.get('/api/conversations/:cid/report', async (req: any, reply) => {
+    const conv = await conversationFor(req.user, req.params.cid);
+    let warning: string | null = null;
+    if (req.query?.refresh === '1') {
+      try { await service.summarize(conv.id); } catch (e: any) { warning = `No se pudo actualizar el resumen: ${String(e?.message ?? e).slice(0, 120)}`; }
+    }
+    const report = await buildReport(conv.id);
+    if (req.query?.format === 'txt') {
+      const text = renderReport(report, { transcript: req.query?.transcript === '1' ? await transcriptTail(conv.id) : '', warning: warning ?? undefined });
+      return reply.header('content-type', 'text/plain; charset=utf-8').header('content-disposition', `attachment; filename="reporte-${conv.id.slice(0, 8)}.txt"`).send(text);
+    }
+    return { ...report, warning };
+  });
+
+  /** Personas a las que se puede enviar el reporte (cualquier integrante del equipo puede verlas). */
+  api.get('/api/conversations/:cid/report/recipients', async (req: any) => {
+    const conv = await conversationFor(req.user, req.params.cid);
+    const team = await reportRecipients(conv.account_id, { roles: ['admin', 'agent'] });
+    return team.map((u) => ({ id: u.id, name: u.name || u.email, whatsapp: !!(u.notify_whatsapp && u.phone) }));
+  });
+
+  /** Envía el reporte al equipo (cualquier integrante) o a direcciones externas (solo administradores). */
+  api.post('/api/conversations/:cid/report/send', async (req: any) => {
+    const conv = await conversationFor(req.user, req.params.cid);
+    const b = parse(ReportSendSchema, req.body);
+    const external = b.emails.length + b.phones.length > 0;
+    if (external && req.user.role !== 'admin' && req.user.role !== 'superadmin') throw new HttpError(403, 'Solo un administrador puede enviar reportes fuera del equipo');
+    if (!b.user_ids.length && !external) throw new HttpError(400, 'Elige al menos un destinatario');
+    if (rateLimited(`report:${req.user.id}`, 20, 10 * 60_000)) throw new HttpError(429, 'Demasiados reportes enviados: espera unos minutos');
+    const users = await reportRecipients(conv.account_id, { userIds: b.user_ids });
+    if (users.length !== new Set(b.user_ids).size) throw new HttpError(400, 'Algún destinatario no pertenece a esta cuenta o está inactivo');
+    return deliverReport(service, conv.id, { users, emails: b.emails, phones: b.phones, note: b.note, includeTranscript: b.include_transcript, refresh: b.refresh, by: req.user.email });
   });
 
   api.post('/api/conversations/:cid/send', async (req: any) => {

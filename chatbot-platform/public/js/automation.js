@@ -51,6 +51,7 @@ const TRIGGERS = {
 export const ACTIONS = {
   send_message: 'Enviar mensaje o foto',
   alert_team: 'Alertar al equipo',
+  send_report: 'Enviar reporte de la conversación',
   assign: 'Asignar a alguien del equipo (por turnos)',
   add_tag: 'Agregar etiqueta',
   remove_tag: 'Quitar etiqueta',
@@ -171,6 +172,20 @@ function actionFields(a, refs) {
           h('input', { type: 'checkbox', checked: a.roles.includes(r), onchange: (e) => { a.roles = e.target.checked ? [...a.roles, r] : a.roles.filter((x) => x !== r); } }), l))),
         check(a, 'round_robin', 'Avisar a una sola persona, por turnos (la siguiente de los destinatarios que esté disponible), en lugar de a todas'),
         field('Además, avisar por WhatsApp a estos números', lines(a, 'phones', { placeholder: '5215512345678' }), '📱 = recibe también por WhatsApp (configurable en Usuarios).'),
+      ];
+    case 'send_report':
+      a.note ??= ''; a.roles ??= ['admin']; a.user_ids ??= []; a.emails ??= []; a.phones ??= []; a.include_transcript ??= false;
+      return [
+        h('p', { class: 'small muted', style: 'margin:0 0 6px' }, 'Envía el resumen, el análisis y los datos confirmados de la conversación (el resumen se actualiza antes de enviar). Destinatarios (si eliges personas, solo a ellas; si no, por rol):'),
+        h('div', { class: 'row' }, refs.users.map((u) => h('label', { class: 'check' },
+          h('input', { type: 'checkbox', checked: a.user_ids.includes(u.id), onchange: (e) => { a.user_ids = e.target.checked ? [...a.user_ids, u.id] : a.user_ids.filter((x) => x !== u.id); } }),
+          u.name || u.email, u.notify_whatsapp && u.phone ? ' 📱' : ''))),
+        h('div', { class: 'row' }, [['admin', 'Administradores'], ['agent', 'Agentes']].map(([r, l]) => h('label', { class: 'check' },
+          h('input', { type: 'checkbox', checked: a.roles.includes(r), onchange: (e) => { a.roles = e.target.checked ? [...a.roles, r] : a.roles.filter((x) => x !== r); } }), l))),
+        field('Además, enviar por correo a', lines(a, 'emails', { placeholder: 'direccion@empresa.com' }), 'Máximo 5. Requiere correo configurado en el servidor.'),
+        field('Además, enviar por WhatsApp a', lines(a, 'phones', { placeholder: '5215512345678' })),
+        field('Nota (opcional)', text(a, 'note', { placeholder: 'Cliente listo para cotizar' })),
+        check(a, 'include_transcript', 'Adjuntar los últimos mensajes'),
       ];
     case 'assign':
       a.message ??= 'Te asignaron a {{cliente}}: "{{mensaje}}"'; a.roles ??= ['agent', 'admin']; a.user_ids ??= []; a.take_over ??= false;

@@ -67,6 +67,8 @@ export const config = {
     hourlyUsd: monitorLimit('KNOWLEDGE_ALERT_HOURLY_USD',5,100000),
   },
   logRetentionDays: Number(env('LOG_RETENTION_DAYS', '30')),
+  /** Días que se conserva el detalle técnico de cada respuesta de la IA (después solo queda consumo y costo). */
+  aiRunDetailDays: Number(env('AI_RUN_DETAIL_DAYS', '14')),
   /**
    * Proxies delante del backend en los que se confía para conocer la IP real (X-Forwarded-For).
    * 1 = solo el proxy inmediato (Caddy). 0 = ninguno (backend expuesto directamente).

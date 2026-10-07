@@ -29,7 +29,7 @@ async function checkReferences(accountId: string, body: { chatbot_id?: string | 
       const seq = await astore.getSequence(a.sequence_id);
       if (!seq || seq.account_id !== accountId) throw new HttpError(400, 'La secuencia no pertenece a la cuenta');
     }
-    if (a.type === 'alert_team' && a.user_ids.length) {
+    if ((a.type === 'alert_team' || a.type === 'send_report') && a.user_ids.length) {
       const team = await astore.teamMembers(accountId);
       if (a.user_ids.some((id) => !team.some((u) => u.id === id))) throw new HttpError(400, 'Un usuario no pertenece a la cuenta');
     }

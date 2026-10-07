@@ -444,6 +444,11 @@ export async function pruneAutomationData(days: number) {
   await query(`DELETE FROM notifications WHERE created_at < now() - ($1 || ' days')::interval`, [String(Math.max(days, 60))]);
 }
 
+/** Borra el detalle técnico (decisión y validación completas) de respuestas viejas de la IA; conserva consumo y costo. */
+export async function pruneAiRunDetail(days: number) {
+  await query(`UPDATE ai_runs SET decision = NULL, validation = NULL WHERE created_at < now() - ($1 || ' days')::interval AND (decision IS NOT NULL OR validation IS NOT NULL)`, [String(days)]);
+}
+
 /** Cuántos del segmento quedan fuera por no haber aceptado recibir promociones. */
 export async function campaignExcludedNoConsent(c: Pick<Campaign, 'channel_id' | 'audience'> & { channel_ids?: string[] }) {
   const all = await campaignAudience(c);
