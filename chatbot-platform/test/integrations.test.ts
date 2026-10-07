@@ -117,10 +117,13 @@ t('webhook: si la URL falla se reintenta, queda en la bitácora y tras muchos fa
   const log = (await h.authed('GET', `/api/webhook-endpoints/${ep.id}/deliveries`)).json();
   assert.ok(log.every((d: any) => !d.ok && d.status_code === 500 && /500/.test(d.error)));
   assert.deepEqual(log.map((d: any) => d.attempt).sort(), [1, 2, 3]);
-  // Se pausa al llegar a 20 fallos seguidos
+  // Un evento cuenta como un solo fallo (tras sus 3 intentos); se pausa al llegar a 20 seguidos
+  assert.equal((await pool.query(`SELECT consecutive_failures n FROM webhook_endpoints WHERE id = $1`, [ep.id])).rows[0].n, 1);
   await pool.query(`UPDATE webhook_endpoints SET consecutive_failures = 19 WHERE id = $1`, [ep.id]);
   await h.authed('PUT', `/api/contacts/${contact.id}`, { tags: ['vip', 'nuevo'] });
   await until(() => received.filter((r) => r.path === '/falla').length >= 4);
+  await h.fastForward(); // reintento 2 del segundo evento
+  await h.fastForward(); // reintento 3: ahí cuenta como fallo del evento
   const paused = (await h.authed('GET', `/api/webhook-endpoints?account_id=${h.accountId}`)).json().find((e: any) => e.id === ep.id);
   assert.equal(paused.active, false);
   assert.match(paused.disabled_reason, /20 fallos seguidos/);

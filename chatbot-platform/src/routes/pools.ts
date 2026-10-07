@@ -103,7 +103,7 @@ export async function poolPublicRoutes(app: FastifyInstance) {
       `SELECT p.*, a.active AS account_active, a.status AS account_status FROM wa_pools p JOIN accounts a ON a.id = p.account_id WHERE p.token = $1`,
       [String(req.params.token).slice(0, 40)],
     );
-    if (!pool || !pool.active || !pool.account_active) return reply.code(404).type('text/html').send(page('Enlace no disponible', 'Este enlace ya no está activo.'));
+    if (!pool || !pool.active || !pool.account_active || pool.account_status === 'paused') return reply.code(404).type('text/html').send(page('Enlace no disponible', 'Este enlace ya no está activo.'));
     // Solo números conectados ahora, con teléfono conocido.
     const eligible = (
       await query<{ id: string; number: string; n24: number; hits_today: number }>(

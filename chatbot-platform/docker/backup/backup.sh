@@ -69,11 +69,12 @@ wait_for_db() {
   die "PostgreSQL no responde en $PGHOST"
 }
 
-latest_file() { ls -1 "$BACKUP_DIR"/riverrun-*.tar* 2>/dev/null | sort | tail -n 1; }
+latest_file() { { printf '%s\n' "$BACKUP_DIR"/riverrun-*.tar "$BACKUP_DIR"/riverrun-*.tar.enc | grep -v '[*]' || true; } | sort | tail -n 1; }
 
 make_backup() {
   need_passphrase
   mkdir -p "$BACKUP_DIR"
+  rm -f "$BACKUP_DIR"/*.partial # restos de un respaldo interrumpido
   wait_for_db
   local ts work out
   ts="$(date -u +%Y%m%d-%H%M%S)"
@@ -89,7 +90,7 @@ make_backup() {
   ( cd "$work" && sha256sum ./* > SHA256SUMS )
   echo "{\"created_at\": \"$(date -u +%FT%TZ)\", \"databases\": \"$DATABASES\", \"version\": \"${APP_VERSION:-unknown}\"}" > "$work/manifest.json"
   local suffix="tar.enc"; [[ -z "${BACKUP_PASSPHRASE:-}" ]] && suffix="tar"
-  out="$BACKUP_DIR/riverrun-$ts.$suffix"
+  out="$BACKUP_DIR/${BACKUP_PREFIX:-riverrun}-$ts.$suffix" # el respaldo previo a restaurar usa otro prefijo para que "latest" no lo elija
   tar -C "$work" -cf - . | encrypt > "$out.partial"
   mv "$out.partial" "$out"
   rm -rf "$work"
@@ -152,13 +153,13 @@ push_remote() { # FILE → nube (rclone). Devuelve 0 si salió bien o no hay nub
 
 run_now() {
   local file="" err="" verified=false remote_ok=null
-  if ! file="$(make_backup)"; then write_status false "" 0 false null "No se pudo crear el respaldo"; die "Falló el respaldo"; fi
+  if ! file="$(make_backup)"; then write_status false "" 0 false null "No se pudo crear el respaldo"; log "Falló el respaldo"; return 1; fi
   if verify_backup "$file"; then verified=true; else err="El respaldo se creó pero no pasó la verificación"; fi
   if [[ -n "$REMOTE" ]]; then if push_remote "$file"; then remote_ok=true; else remote_ok=false; err="${err:+$err; }No se pudo copiar a la nube"; fi; fi
   prune_local
   local size; size="$(stat -c %s "$file")"
   if [[ -z "$err" ]]; then write_status true "$(basename "$file")" "$size" true "$remote_ok" ""; log "Respaldo completo."
-  else write_status false "$(basename "$file")" "$size" "$verified" "$remote_ok" "$err"; die "$err"; fi
+  else write_status false "$(basename "$file")" "$size" "$verified" "$remote_ok" "$err"; log "$err"; return 1; fi
 }
 
 restore() {
@@ -195,7 +196,7 @@ case "${1:-daemon}" in
   now) run_now ;;
   verify) verify_backup "${2:-}" ;;
   restore) restore "${2:-}" ;;
-  list) ls -lh "$BACKUP_DIR"/riverrun-*.tar* 2>/dev/null || echo "Todavía no hay respaldos."; [[ -f "$STATUS" ]] && cat "$STATUS" ;;
+  list) { ls -lh "$BACKUP_DIR"/riverrun-*.tar "$BACKUP_DIR"/riverrun-*.tar.enc 2>/dev/null; true; } | grep . || echo "Todavía no hay respaldos."; [[ -f "$STATUS" ]] && cat "$STATUS" ;;
   daemon)
     need_passphrase
     log "Respaldos diarios a las $BACKUP_HOUR UTC (conserva ${KEEP_DAILY} diarios, ${KEEP_WEEKLY} semanales, ${KEEP_MONTHLY} mensuales)${REMOTE:+; copia en $REMOTE}."

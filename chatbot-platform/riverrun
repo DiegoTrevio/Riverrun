@@ -33,7 +33,7 @@ env_get() { sed -n "s/^$1=\\(.*\\)$/\\1/p" "$ENV_FILE" 2>/dev/null | tail -n 1; 
 env_set() { # clave valor — reemplaza (o agrega) sin interpretar caracteres especiales
   local k="$1" v="$2" tmp; tmp="$(mktemp)"
   if grep -q "^$k=" "$ENV_FILE" 2>/dev/null; then
-    awk -v k="$k" -v v="$v" 'BEGIN{FS=OFS="="} $1==k {print k "=" v; next} {print}' "$ENV_FILE" > "$tmp"
+    K="$k" V="$v" awk 'BEGIN{FS=OFS="="} $1==ENVIRON["K"] {print ENVIRON["K"] "=" ENVIRON["V"]; next} {print}' "$ENV_FILE" > "$tmp"
   else
     { cat "$ENV_FILE" 2>/dev/null; echo "$k=$v"; } > "$tmp"
   fi
@@ -142,8 +142,8 @@ cmd_install() {
 
   if (( ! START )); then
     say; ok "Listo (sin iniciar: usaste --no-start). Para arrancar: ./riverrun restart"
-    [[ -n "$shown" ]] && say "  Contraseña generada del administrador: ${B}$shown${N}"
-    return
+    if [[ -n "$shown" ]]; then say "  Contraseña generada del administrador: ${B}$shown${N}"; fi
+    return 0
   fi
 
   say; say "${B}Construyendo y arrancando (la primera vez tarda unos minutos)…${N}"
@@ -167,7 +167,8 @@ cmd_install() {
   say
   say "${B}Guarda esto fuera del servidor (gestor de contraseñas):${N}"
   say "  BACKUP_PASSPHRASE=$(env_get BACKUP_PASSPHRASE)"
-  say "  Sin esa clave no se pueden restaurar los respaldos."
+  say "  SESSION_SECRET=$(env_get SESSION_SECRET)"
+  say "  Sin la primera no se pueden restaurar los respaldos; sin la segunda, al restaurar en otro servidor hay que volver a conectar Google Calendar."
   say
   [[ "$(app_url)" == http://127.0.0.1* ]] && say "Para abrir el panel desde tu computadora: ssh -L 3000:127.0.0.1:3000 usuario@este-servidor  →  http://localhost:3000"
   [[ -n "$domain" ]] && say "Recuerda abrir los puertos 80 y 443 del servidor y apuntar $domain a esta IP."
@@ -215,7 +216,7 @@ cmd_restore() {
   local sure; read -r -p "Escribe RESTAURAR para continuar: " sure
   [[ "$sure" == "RESTAURAR" ]] || die "Cancelado."
   say "Haciendo un respaldo de seguridad de lo que hay ahora…"
-  dc exec -T backup /usr/local/bin/backup.sh now >/dev/null 2>&1 && ok "Respaldo de seguridad hecho" || warn "No se pudo (¿instalación nueva?). Continúo."
+  dc exec -T -e BACKUP_PREFIX=prerestore backup /usr/local/bin/backup.sh now >/dev/null 2>&1 && ok "Respaldo de seguridad hecho" || warn "No se pudo (¿instalación nueva?). Continúo."
   dc stop backend evolution >/dev/null 2>&1 || true
   dc up -d postgres >/dev/null
   dc run --rm "${extra[@]}" restore restore "$target"

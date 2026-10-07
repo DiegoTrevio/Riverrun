@@ -2,7 +2,7 @@ import { messageQuota } from '../billing/limits.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
 import * as astore from './store.js';
-import { query } from '../db.js';
+import { query, queryOne } from '../db.js';
 import { addDays, localParts, nextOpen, zonedToUtc } from './time.js';
 
 /** Campañas: envío programado a un segmento, espaciado para no parecer spam (y no arriesgar el número). */
@@ -27,6 +27,18 @@ export class Campaigns {
   async start(campaignId: string) {
     const c = await astore.getCampaign(campaignId);
     if (!c || !['draft', 'scheduled'].includes(c.status)) return { status: c?.status ?? 'cancelled' };
+    // Se reclama de forma atómica: dos clics (o un reintento) no programan dos veces cada mensaje.
+    const claimed = await queryOne<{ id: string }>(`UPDATE campaigns SET status = 'sending' WHERE id = $1 AND status IN ('draft', 'scheduled') RETURNING id`, [c.id]);
+    if (!claimed) return { status: 'sending' };
+    try {
+      return await this.startClaimed(c);
+    } catch (e) {
+      await astore.setCampaignStatus(c.id, 'draft');
+      throw e;
+    }
+  }
+
+  private async startClaimed(c: NonNullable<Awaited<ReturnType<typeof astore.getCampaign>>>) {
     const settingsNow = await astore.getSettings(c.account_id);
     const audience = await astore.campaignAudience(c, 100000, { requireConsent: settingsNow.consent.require_for_campaigns });
     const quota = await messageQuota(c.account_id);
@@ -79,6 +91,9 @@ export class Campaigns {
   async sendOne(payload: { campaign_id: string; conversation_id: string }) {
     const c = await astore.getCampaign(payload.campaign_id);
     if (!c || c.status !== 'sending') return;
+    // Un destinatario se envía una sola vez aunque haya tareas duplicadas.
+    const mine = await queryOne(`UPDATE campaign_recipients SET reason = 'enviando' WHERE campaign_id = $1 AND conversation_id = $2 AND status = 'pending' AND reason = '' RETURNING 1`, [c.id, payload.conversation_id]);
+    if (!mine) return;
     const r = await this.chat.outbound.send(payload.conversation_id, {
       text: c.message,
       imageId: c.image_id ?? undefined,

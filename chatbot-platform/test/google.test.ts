@@ -67,17 +67,24 @@ after(async () => {
 t('conectar: el estado va firmado, el código se canjea y el permiso queda cifrado', async () => {
   const before = (await h.authed('GET', `/api/integrations/google?account_id=${h.accountId}`)).json();
   assert.deepEqual([before.available, before.connected], [true, false]);
-  const url = new URL((await h.authed('POST', '/api/integrations/google/connect', { account_id: h.accountId })).json().url);
+  const conn = await h.authed('POST', '/api/integrations/google/connect', { account_id: h.accountId });
+  const url = new URL(conn.json().url);
+  const nonce = conn.cookies.find((c) => c.name === 'g_cal_nonce')!.value;
+  const jar = { cookie: `g_cal_nonce=${nonce}` };
   assert.equal(url.searchParams.get('client_id'), 'cid');
   assert.equal(url.searchParams.get('redirect_uri'), `${(await import('../src/config.js')).config.publicBaseUrl}/oauth/google/callback`);
   const state = url.searchParams.get('state')!;
-  assert.equal(google.readState(state), h.accountId);
-  assert.equal(google.readState(state.replace(/.$/, 'x')), null, 'firma alterada');
-  assert.equal(google.readState(state, Date.now() + 16 * 60_000), null, 'caduca a los 15 minutos');
+  assert.equal(google.readState(state, nonce), h.accountId);
+  assert.equal(google.readState(state, 'otra-persona'), null, 'el state solo sirve en el navegador que lo pidió');
+  assert.equal(google.readState(state, ''), null);
+  assert.equal(google.readState(state.replace(/.$/, 'x'), nonce), null, 'firma alterada');
+  assert.equal(google.readState(state, nonce, Date.now() + 16 * 60_000), null, 'caduca a los 15 minutos');
   // Estado inválido o usuario que cancela
-  assert.match(String((await h.app.inject({ method: 'GET', url: '/oauth/google/callback?code=c&state=malo' })).headers.location), /google=error/);
-  assert.match(String((await h.app.inject({ method: 'GET', url: `/oauth/google/callback?error=access_denied&state=${encodeURIComponent(state)}` })).headers.location), /google=cancelado/);
-  const r = await h.app.inject({ method: 'GET', url: `/oauth/google/callback?code=abc&state=${encodeURIComponent(state)}` });
+  assert.match(String((await h.app.inject({ method: 'GET', url: '/oauth/google/callback?code=c&state=malo', headers: jar })).headers.location), /google=error/);
+  assert.match(String((await h.app.inject({ method: 'GET', url: `/oauth/google/callback?error=access_denied&state=${encodeURIComponent(state)}`, headers: jar })).headers.location), /google=cancelado/);
+  // Otro navegador (sin la cookie) no puede completar una conexión que no inició
+  assert.match(String((await h.app.inject({ method: 'GET', url: `/oauth/google/callback?code=abc&state=${encodeURIComponent(state)}` })).headers.location), /google=error/);
+  const r = await h.app.inject({ method: 'GET', url: `/oauth/google/callback?code=abc&state=${encodeURIComponent(state)}`, headers: jar });
   assert.match(String(r.headers.location), /google=ok/);
   const stored = (await pool.query(`SELECT refresh_token, google_email FROM google_calendar WHERE account_id = $1`, [h.accountId])).rows[0];
   assert.equal(stored.google_email, 'dueno@gmail.com');

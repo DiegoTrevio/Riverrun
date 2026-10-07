@@ -1,3 +1,4 @@
+import { messageQuota } from '../billing/limits.js';
 import { PlaygroundTransport } from '../engine/transport.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
@@ -47,6 +48,8 @@ export class Outbound {
     if (!channel || !contact) return { sent: false, reason: 'conversación incompleta' };
     if (!channel.active || channel.account_active === false) return { sent: false, reason: 'canal o cuenta inactivos' };
     if (contact.opted_out && !o.transactional) return { sent: false, reason: 'el cliente se dio de baja' };
+    // Los envíos automáticos también gastan el cupo del plan (los recordatorios y confirmaciones no se cortan).
+    if (!o.transactional && ['automation', 'sequence', 'campaign', 'no_reply', 'api'].includes(o.source) && (await messageQuota(conv.account_id)).reached) return { sent: false, reason: 'se alcanzó el límite de mensajes de tu plan' };
     const promotional = !o.transactional && PROMOTIONAL_SOURCES.has(o.source);
     if (promotional) {
       const st = await astore.getSettings(conv.account_id);

@@ -319,6 +319,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     if (target.role === 'superadmin' && b.active === false && (await store.countSuperadmins()) <= 1) {
       throw new HttpError(400, 'Debe quedar al menos un superadministrador activo');
     }
+    if (b.active === true && !target.active && target.account_id) await assertWithinLimit(target.account_id, 'users');
     const patch: { name?: string; email?: string; role?: Role; account_id?: string | null; active?: boolean; password_hash?: string; phone?: string; notify_whatsapp?: boolean } = {
       name: b.name,
       email: b.email,

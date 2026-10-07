@@ -37,8 +37,15 @@ export async function billingWebhooks(app: FastifyInstance) {
       try {
         const result = await provider.handleWebhook({ rawBody: req.rawBody ?? Buffer.alloc(0), headers: req.headers, query: req.query as Record<string, string | undefined>, plans: await listPlans(true) });
         if (!result) return { ok: true };
-        const accountId = result.state ? await applyState(result.state) : null;
-        await recordEvent(name, result.eventId, result.type, accountId);
+        // Primero se anota el aviso: si ya se procesó, no se repite. Si falla el proceso, se libera para que el proveedor reintente.
+        if (!(await recordEvent(name, result.eventId, result.type, null))) return { ok: true };
+        try {
+          const accountId = result.state ? await applyState(result.state) : null;
+          if (accountId) await query(`UPDATE billing_events SET account_id = $3 WHERE provider = $1 AND event_id = $2`, [name, result.eventId, accountId]);
+        } catch (e) {
+          await query(`DELETE FROM billing_events WHERE provider = $1 AND event_id = $2`, [name, result.eventId]);
+          throw e;
+        }
         return { ok: true };
       } catch (e: any) {
         if (e instanceof WebhookError) return reply.code(400).send({ error: e.message });
@@ -74,6 +81,8 @@ export async function billingRoutes(api: FastifyInstance) {
   api.delete('/api/plans/:key', supers, async (req: any) => {
     const used = await queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM subscriptions WHERE plan_key = $1 AND status IN ('active', 'past_due')`, [req.params.key]);
     if (used?.n) throw new HttpError(409, `Hay ${used.n} suscripciones activas con este plan: desactívalo en lugar de borrarlo.`);
+    const assigned = await queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM accounts WHERE plan = $1`, [req.params.key]);
+    if (assigned?.n) throw new HttpError(409, `Hay ${assigned.n} cuentas asignadas a este plan: cámbiales el plan o desactívalo en lugar de borrarlo.`);
     await query(`DELETE FROM plans WHERE key = $1`, [req.params.key]);
     return { ok: true };
   });

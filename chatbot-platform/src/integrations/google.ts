@@ -29,20 +29,20 @@ export interface GoogleLink {
 
 export const getLink = (accountId: string) => queryOne<GoogleLink>(`SELECT * FROM google_calendar WHERE account_id = $1`, [accountId]);
 
-/** El parámetro "state" lleva la cuenta y una firma; caduca a los 15 minutos. */
-export function makeState(accountId: string, now = Date.now()) {
-  const body = `${accountId}.${now + 15 * 60_000}`;
+/** "state" lleva la cuenta, un valor aleatorio (que también va en una cookie del navegador que inició la conexión) y una firma; caduca a los 15 minutos. */
+export function makeState(accountId: string, nonce: string, now = Date.now()) {
+  const body = `${accountId}.${now + 15 * 60_000}.${nonce}`;
   return `${body}.${hmac(`gstate:${body}`)}`;
 }
-export function readState(state: string, now = Date.now()): string | null {
+export function readState(state: string, nonce: string, now = Date.now()): string | null {
   const parts = state.split('.');
-  if (parts.length !== 3) return null;
-  const body = `${parts[0]}.${parts[1]}`;
-  if (!safeEqual(parts[2], hmac(`gstate:${body}`)) || Number(parts[1]) < now) return null;
+  if (parts.length !== 4 || !nonce) return null;
+  const body = parts.slice(0, 3).join('.');
+  if (!safeEqual(parts[3], hmac(`gstate:${body}`)) || !safeEqual(parts[2], nonce) || Number(parts[1]) < now) return null;
   return parts[0];
 }
 
-export function authUrl(accountId: string) {
+export function authUrl(accountId: string, nonce: string) {
   const p = new URLSearchParams({
     client_id: process.env.GOOGLE_CLIENT_ID ?? '',
     redirect_uri: redirectUri(),
@@ -50,7 +50,7 @@ export function authUrl(accountId: string) {
     scope: SCOPE,
     access_type: 'offline',
     prompt: 'consent',
-    state: makeState(accountId),
+    state: makeState(accountId, nonce),
   });
   return `${AUTH_URL()}?${p}`;
 }
@@ -83,6 +83,8 @@ export async function connect(accountId: string, code: string) {
     [accountId, email, encryptSecret(t.refresh_token)],
   );
   await logEvent({ level: 'info', source: 'admin', message: `Google Calendar conectado${email ? ` (${email})` : ''}`, accountId });
+  tokenCache.delete(accountId); // otro Google = otro token; no reutilizar el anterior
+  busyCache.delete(accountId);
   // Copia las citas futuras que ya existían.
   const rows = await query<{ id: string }>(`SELECT id FROM appointments WHERE account_id = $1 AND status = 'confirmed' AND starts_at > now() AND google_event_id IS NULL AND source <> 'simulador'`, [accountId]);
   for (const r of rows) await queueSync(accountId, r.id);
@@ -96,6 +98,7 @@ export async function disconnect(accountId: string) {
   await query(`DELETE FROM google_calendar WHERE account_id = $1`, [accountId]);
   await query(`UPDATE appointments SET google_event_id = NULL WHERE account_id = $1`, [accountId]);
   busyCache.delete(accountId);
+  tokenCache.delete(accountId);
 }
 
 const tokenCache = new Map<string, { token: string; exp: number }>();

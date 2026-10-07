@@ -104,13 +104,54 @@ export function describeCondition(c: Condition): string {
 
 /* ------------------------------ Webhooks salientes seguros ------------------------------ */
 
-export function isPrivateIp(ip: string) {
-  if (net.isIPv4(ip)) {
-    const [a, b] = ip.split('.').map(Number);
-    return a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
+export function isPrivateIp(ip: string): boolean {
+  const v4 = net.isIPv4(ip) ? ip.split('.').map(Number) : null;
+  if (v4) {
+    const [a, b, c] = v4;
+    return (
+      a === 0 || a === 10 || a === 127 || a >= 224 || // "esta red", privada, loopback, multicast y reservadas
+      (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) || (a === 192 && b === 0 && c === 0) || (a === 198 && (b === 18 || b === 19))
+    );
   }
-  const v = ip.toLowerCase();
-  return v === '::1' || v === '::' || v.startsWith('fc') || v.startsWith('fd') || v.startsWith('fe80') || v.startsWith('::ffff:127.') || v.startsWith('::ffff:10.') || v.startsWith('::ffff:192.168.');
+  if (!net.isIPv6(ip)) return true; // lo que no se reconoce no se permite
+  const bytes = ipv6Bytes(ip);
+  if (!bytes) return true;
+  const zeros = (n: number) => bytes.slice(0, n).every((x) => x === 0);
+  const embedded = (at: number) => isPrivateIp(bytes.slice(at, at + 4).join('.'));
+  if (zeros(10) && bytes[10] === 0xff && bytes[11] === 0xff) return embedded(12); // ::ffff:a.b.c.d (cualquier escritura)
+  if (zeros(12)) return bytes[12] === 0 && bytes[13] === 0 && bytes[14] === 0 && bytes[15] <= 1 ? true : embedded(12); // ::, ::1 y ::a.b.c.d
+  if (bytes[0] === 0x00 && bytes[1] === 0x64 && bytes[2] === 0xff && bytes[3] === 0x9b && bytes.slice(4, 12).every((x) => x === 0)) return embedded(12); // 64:ff9b::/96
+  if (bytes[0] === 0x20 && bytes[1] === 0x02) return embedded(2); // 2002::/16 (6to4)
+  if ((bytes[0] & 0xfe) === 0xfc) return true; // fc00::/7
+  if (bytes[0] === 0xfe && (bytes[1] & 0xc0) >= 0x80) return true; // fe80::/10 y fec0::/10
+  if (bytes[0] === 0xff) return true; // multicast
+  return false;
+}
+
+/** Las 16 posiciones de una dirección IPv6 (acepta "::" y la cola con puntos). */
+function ipv6Bytes(ip: string): number[] | null {
+  let s = ip.toLowerCase().split('%')[0];
+  const tail = /(\d+\.\d+\.\d+\.\d+)$/.exec(s);
+  if (tail) {
+    const q = tail[1].split('.').map(Number);
+    if (q.some((n) => n > 255)) return null;
+    s = s.slice(0, -tail[1].length) + ((q[0] << 8) | q[1]).toString(16) + ':' + ((q[2] << 8) | q[3]).toString(16);
+  }
+  const [head, rest, extra] = s.split('::');
+  if (extra !== undefined) return null;
+  const h = head ? head.split(':') : [];
+  const r = rest === undefined ? [] : rest ? rest.split(':') : [];
+  if (rest === undefined && h.length !== 8) return null;
+  const groups = rest === undefined ? h : [...h, ...Array(8 - h.length - r.length).fill('0'), ...r];
+  if (groups.length !== 8) return null;
+  const out: number[] = [];
+  for (const g of groups) {
+    const n = parseInt(g, 16);
+    if (!/^[0-9a-f]{1,4}$/.test(g) || Number.isNaN(n)) return null;
+    out.push(n >> 8, n & 255);
+  }
+  return out;
 }
 
 /**
@@ -157,6 +198,8 @@ export async function postSigned(url: string, body: unknown, secret: string, ext
       resolve(res.statusCode ?? 0);
     });
     req.on('timeout', () => req.destroy(new Error('El webhook no respondió a tiempo')));
+    const deadline = setTimeout(() => req.destroy(new Error('El webhook no respondió a tiempo')), 10_000); // tope total, aunque el servidor gotee bytes
+    req.on('close', () => clearTimeout(deadline));
     req.on('error', reject);
     req.end(payload);
   });

@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { HttpError, requireRole, scopeAccount, targetAccount } from '../access.js';
+import { config } from '../config.js';
 import { EVENT_TYPES, deliver, eventBody, type Endpoint } from '../integrations/webhooks.js';
 import { query, queryOne } from '../db.js';
 import { logEvent } from '../logs.js';
@@ -125,10 +126,12 @@ export async function integrationRoutes(api: FastifyInstance) {
     return { available: googleConfigured(), connected: !!link, email: link?.google_email ?? '', block_busy: link?.block_busy ?? true, last_error: link?.last_error ?? '', connected_at: link?.connected_at ?? null };
   });
 
-  api.post('/api/integrations/google/connect', admins, async (req: any) => {
+  api.post('/api/integrations/google/connect', admins, async (req: any, reply) => {
     const accountId = await targetAccount(req.user, req.body?.account_id ?? req.query.account_id);
     if (!googleConfigured()) throw new HttpError(400, 'Esta instalación no tiene Google configurado (GOOGLE_CLIENT_ID y GOOGLE_CLIENT_SECRET)');
-    return { url: authUrl(accountId) };
+    const nonce = crypto.randomBytes(16).toString('hex');
+    reply.setCookie('g_cal_nonce', nonce, { httpOnly: true, sameSite: 'lax', secure: config.secureCookies, path: '/oauth/google', maxAge: 900 });
+    return { url: authUrl(accountId, nonce) };
   });
 
   api.put('/api/integrations/google', admins, async (req: any) => {
@@ -149,7 +152,9 @@ export async function integrationRoutes(api: FastifyInstance) {
 /** Regreso desde Google: no usa la sesión, la cuenta viaja firmada en "state". */
 export async function googleCallbackRoute(app: FastifyInstance) {
   app.get('/oauth/google/callback', async (req: any, reply) => {
-    const accountId = readState(String(req.query.state ?? ''));
+    const nonce = String(req.cookies?.g_cal_nonce ?? '');
+    reply.clearCookie('g_cal_nonce', { path: '/oauth/google' });
+    const accountId = readState(String(req.query.state ?? ''), nonce);
     if (!accountId) return reply.redirect('/#/integraciones?google=error');
     if (req.query.error || !req.query.code) return reply.redirect('/#/integraciones?google=cancelado');
     try {

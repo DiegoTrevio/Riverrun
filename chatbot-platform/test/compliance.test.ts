@@ -120,7 +120,12 @@ t('derecho de supresión: borra al contacto y su historial, anonimiza citas y co
   const cookie = String(other.headers['set-cookie']).split(';')[0];
   assert.equal((await h.app.inject({ method: 'DELETE', url: `/api/contacts/${c.id}`, headers: { cookie } })).statusCode, 404);
   // El administrador sí
+  // Entregas de webhook con sus datos y el hilo de correo también se borran
+  await pool.query(`INSERT INTO jobs (account_id, type, payload, run_at) VALUES ($1,'webhook_delivery',$2,now() + interval '1 hour')`, [h.accountId, JSON.stringify({ endpoint_id: 'x', event_id: 'e', event: 'contact.created', body: { data: { contact: { id: c.id, name: 'Dato privado' } } } })]);
+  await pool.query(`INSERT INTO email_threads (channel_id, address, subject) SELECT channel_id, lower(external_id), 'Asunto privado' FROM contacts WHERE id = $1`, [c.id]);
   const del = await h.authed('DELETE', `/api/contacts/${c.id}`);
+  assert.equal((await pool.query(`SELECT count(*)::int AS n FROM jobs WHERE type = 'webhook_delivery' AND payload::text LIKE '%Dato privado%'`)).rows[0].n, 0, 'las entregas pendientes con sus datos se borran');
+  assert.equal((await pool.query(`SELECT count(*)::int AS n FROM email_threads WHERE subject = 'Asunto privado'`)).rows[0].n, 0);
   assert.equal(del.statusCode, 200, del.body);
   assert.ok(del.json().messages >= 2);
   assert.equal((await pool.query(`SELECT count(*)::int AS n FROM contacts WHERE id = $1`, [c.id])).rows[0].n, 0);
@@ -144,6 +149,8 @@ t('retención: borra mensajes viejos y su resumen; borra contactos inactivos sal
     await pool.query(`UPDATE conversations SET last_message_at = now() - interval '400 days', summary = 'resumen con datos personales' WHERE id = $1`, [cv]);
   }
   await pool.query(`INSERT INTO appointments (account_id, contact_id, conversation_id, customer_name, starts_at, ends_at) VALUES ($1,$2,$3,'Con cita', now() + interval '3 days', now() + interval '3 days 1 hour')`, [h.accountId, ids['12'].id, cita]);
+  // Un contacto nuevo (importado hoy) sin conversaciones recientes no se borra: la inactividad se mide desde su creación
+  await pool.query(`UPDATE contacts SET created_at = now() - interval '500 days' WHERE id = ANY($1)`, [[ids['11'].id, ids['12'].id]]);
   // Sin política de retención no se borra nada
   assert.deepEqual(await applyRetention(), { accounts: 0, messages: 0, contacts: 0 });
   await settings({ retention: { messages_days: 365, inactive_contacts_days: 365 } });
@@ -155,4 +162,12 @@ t('retención: borra mensajes viejos y su resumen; borra contactos inactivos sal
   assert.equal((await pool.query(`SELECT summary FROM conversations WHERE id = $1`, [cita])).rows[0].summary, '', 'el resumen se limpia con los mensajes');
   assert.equal((await pool.query(`SELECT count(*)::int AS n FROM contacts WHERE id = $1`, [ids['13'].id])).rows[0].n, 1, 'el reciente no se toca');
   assert.deepEqual(await applyRetention(), { accounts: 0, messages: 0, contacts: 0 }, 'idempotente');
+  // Quien se dio de baja de promociones conserva su registro aunque esté inactivo (si no, podría volver a recibirlas)
+  await send('5215570000014', 'Hola, me di de baja');
+  const baja = await contactBy('5215570000014');
+  const cb = (await pool.query(`SELECT id FROM conversations WHERE contact_id = $1`, [baja.id])).rows[0].id;
+  await pool.query(`UPDATE contacts SET created_at = now() - interval '500 days', opted_out = true WHERE id = $1`, [baja.id]);
+  await pool.query(`UPDATE conversations SET last_message_at = now() - interval '400 days' WHERE id = $1`, [cb]);
+  await applyRetention();
+  assert.equal((await pool.query(`SELECT count(*)::int AS n FROM contacts WHERE id = $1`, [baja.id])).rows[0].n, 1, 'la baja se respeta');
 });

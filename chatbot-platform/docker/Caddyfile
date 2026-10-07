@@ -8,7 +8,13 @@
 
 {$DOMAIN} {
 	encode gzip
-	reverse_proxy backend:3000
+	# /internal/* es solo para Caddy (va directo al backend, sin pasar por aquí)
+	handle /internal/* {
+		respond 404
+	}
+	handle {
+		reverse_proxy backend:3000
+	}
 }
 
 # Dominios propios de marcas (panel.miagencia.com): el cliente apunta un registro DNS a este servidor.
@@ -17,5 +23,10 @@ https:// {
 		on_demand
 	}
 	encode gzip
-	reverse_proxy backend:3000
+	handle /internal/* {
+		respond 404
+	}
+	handle {
+		reverse_proxy backend:3000
+	}
 }

@@ -43,6 +43,7 @@ export async function apiV1Routes(app: FastifyInstance, service: ChatService) {
   await app.register(
     async (v1) => {
       v1.addHook('preHandler', async (req, reply) => {
+        if (rateLimited(`apiip:${req.ip}`, 600, 60_000)) return reply.code(429).header('retry-after', '60').send({ error: 'Demasiadas solicitudes desde esta conexión' });
         const m = /^Bearer\s+(rr_[\w-]{20,})$/.exec(String(req.headers.authorization ?? ''));
         if (!m) return reply.code(401).header('www-authenticate', 'Bearer').send({ error: 'Falta la llave: Authorization: Bearer rr_…' });
         const k = await queryOne<{ id: string; account_id: string; scope: 'read' | 'write'; name: string; active: boolean; status: string }>(

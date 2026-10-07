@@ -112,7 +112,7 @@ export async function viewChannels(root, params) {
               channelStatusCell(c)))))
         : h('p', { class: 'muted' }, 'Aún no hay canales.')),
     // Con 2 o más WhatsApp aparece el enlace que reparte clientes (solo para quien administra una cuenta concreta).
-    ...((selectedAccount && channels.filter((c) => c.type === 'whatsapp' && c.account_id === selectedAccount).length >= 2 && isAdmin()) ? [await poolsCard(channels.filter((c) => c.account_id === selectedAccount))] : []),
+    ...((selectedAccount && channels.filter((c) => c.type === 'whatsapp' && c.account_id === selectedAccount).length >= 2 && isAdmin()) ? [await poolsCard(channels.filter((c) => c.account_id === selectedAccount)).catch(() => null)] : []),
   );
 }
 

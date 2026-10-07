@@ -1,6 +1,7 @@
 /** Iniciar sesión o registrarse con Google (OpenID Connect). Solo funciona en el dominio principal. */
 import crypto from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
+import { brandByDomain, hostOf } from '../brands.js';
 import { hashPassword, rateLimited, setSessionCookie } from '../auth.js';
 import { config } from '../config.js';
 import { withTransaction } from '../db.js';
@@ -56,8 +57,15 @@ export async function googleLoginRoutes(app: FastifyInstance) {
         if (!user.active || (user.account_id && !user.account_active)) return fail('desactivada');
         // El superadministrador solo entra con su contraseña.
         if (user.role === 'superadmin') return fail('solo-contrasena');
-        await store.markEmailVerified(user.id);
-        setSessionCookie(reply, user.id, user.password_hash);
+        let hash = user.password_hash;
+        if (!user.email_verified_at) {
+          // Alguien pudo registrar este correo con una contraseña que solo él conoce (sin demostrar que es suyo):
+          // al probar con Google que el correo es de quien entra, esa contraseña se invalida.
+          hash = await hashPassword(crypto.randomBytes(24).toString('base64url'));
+          await store.updateUser(user.id, { password_hash: hash });
+          await store.markEmailVerified(user.id);
+        }
+        setSessionCookie(reply, user.id, hash);
         await logEvent({ level: 'info', source: 'admin', message: `Acceso con Google: ${email}`, accountId: user.account_id, details: { ip: req.ip } });
         return reply.redirect('/#/');
       }
@@ -65,10 +73,11 @@ export async function googleLoginRoutes(app: FastifyInstance) {
       if (rateLimited(`signup:${req.ip}`, 5, HOUR)) return fail('demasiados');
       const name = String(claims.name ?? email.split('@')[0]).slice(0, 120);
       const hash = await hashPassword(crypto.randomBytes(24).toString('base64url')); // sin contraseña: puede crear una con "Olvidé mi contraseña"
+      const brand = await brandByDomain(hostOf(req));
       const { account, created } = await withTransaction(async (client) => {
         const account = await store.createAccount(`Negocio de ${name}`.slice(0, 120), { status: 'trial', trialEndsAt: new Date(Date.now() + config.signup.trialDays * 24 * HOUR), businessType: 'otro', source: 'signup' }, client);
         const created = await store.createUser({ account_id: account.id, role: 'admin', name, email, password_hash: hash, verified: true }, client);
-        await client.query(`UPDATE accounts SET owner_user_id = $2 WHERE id = $1`, [account.id, created.id]);
+        await client.query(`UPDATE accounts SET owner_user_id = $2, brand_id = $3 WHERE id = $1`, [account.id, created.id, brand?.id ?? null]);
         return { account, created };
       });
       await logEvent({ level: 'info', source: 'admin', message: `Registro nuevo con Google: ${account.name} (${email})`, accountId: account.id, details: { ip: req.ip } });

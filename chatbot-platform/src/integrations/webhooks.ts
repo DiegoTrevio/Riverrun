@@ -115,6 +115,8 @@ export async function deliver(payload: { endpoint_id: string; event_id: string; 
     if (ep.consecutive_failures) await query(`UPDATE webhook_endpoints SET consecutive_failures = 0 WHERE id = $1`, [ep.id]);
     return;
   }
+  // Cada evento cuenta una vez (tras agotar sus reintentos), no una por intento.
+  if (attempt < 3) throw new Error(error);
   const failures = (await queryOne<{ consecutive_failures: number }>(`UPDATE webhook_endpoints SET consecutive_failures = consecutive_failures + 1 WHERE id = $1 RETURNING consecutive_failures`, [ep.id]))?.consecutive_failures ?? 0;
   if (failures >= MAX_CONSECUTIVE_FAILURES) await pauseEndpoint(ep, `Se pausó tras ${failures} fallos seguidos (último: ${error})`);
   throw new Error(error);

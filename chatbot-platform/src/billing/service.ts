@@ -5,7 +5,7 @@
 import { mailBrand } from '../brands.js';
 import { notifyUsers } from '../automation/store.js';
 import { config } from '../config.js';
-import { query, queryOne } from '../db.js';
+import { query, withTransaction, queryOne } from '../db.js';
 import { notifySuperadmins } from '../lifecycle.js';
 import { logEvent } from '../logs.js';
 import { sendMail } from '../mailer.js';
@@ -60,6 +60,15 @@ export async function beginCheckout(accountId: string, provider: ProviderName, p
  * Devuelve la cuenta afectada (o null si no se pudo asociar).
  */
 export async function applyState(state: SubscriptionState, now = new Date()): Promise<string | null> {
+  // Los avisos de un mismo cambio llegan casi juntos (p. ej. checkout y suscripción creada): se procesan uno a la vez
+  // para que los correos y avisos no se dupliquen.
+  return withTransaction(async (client) => {
+    await client.query(`SELECT pg_advisory_xact_lock(hashtext('billing-apply'))`);
+    return applyStateLocked(state, now);
+  });
+}
+
+async function applyStateLocked(state: SubscriptionState, now: Date): Promise<string | null> {
   let accountId = state.accountId;
   if (!accountId) {
     accountId = (await queryOne<{ account_id: string }>(`SELECT account_id FROM subscriptions WHERE provider = $1 AND provider_subscription_id = $2`, [state.provider, state.subscriptionId]))?.account_id ?? null;
@@ -90,7 +99,12 @@ export async function applyState(state: SubscriptionState, now = new Date()): Pr
 
   if (state.status === 'active') {
     // Cuenta al corriente: se activa (sale de prueba o de pausa) y se anota el plan contratado.
-    await query(`UPDATE accounts SET status = 'active', trial_ends_at = NULL, plan = COALESCE(NULLIF($2, ''), plan), updated_at = now() WHERE id = $1`, [accountId, planKey]);
+    // Solo al pasar a "al corriente" se reactiva la cuenta: una renovación mensual no deshace una pausa manual del superadmin.
+    await query(
+      `UPDATE accounts SET status = CASE WHEN $3::boolean THEN 'active' ELSE status END, trial_ends_at = CASE WHEN $3::boolean THEN NULL ELSE trial_ends_at END,
+         plan = COALESCE(NULLIF($2, ''), plan), updated_at = now() WHERE id = $1`,
+      [accountId, planKey, was !== 'active'],
+    );
     if (was !== 'active') {
       await logEvent({ level: 'info', source: 'admin', message: `Pago confirmado (${state.provider}): plan ${planKey || '—'}`, accountId });
       await tell(accountId, was === 'past_due' ? 'Recibimos tu pago, ¡gracias!' : '¡Tu plan está activo!', `Tu cuenta "${acc.name}" quedó al corriente${plan ? ` con el plan ${plan.name}` : ''}. Próxima renovación: ${fmt(periodEnd)}.`);

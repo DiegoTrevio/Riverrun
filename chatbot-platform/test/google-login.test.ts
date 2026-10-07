@@ -83,3 +83,17 @@ t('con el registro cerrado no crea cuentas nuevas, y el botón solo aparece en e
   assert.equal(await info(new URL(config.publicBaseUrl).host), true);
   assert.equal(await info('panel.otra-marca.com'), false);
 });
+
+t('registrar un correo ajeno con contraseña y luego entrar el dueño con Google invalida esa contraseña', async () => {
+  const { hashPassword } = await import('../src/auth.js');
+  const attacker = await hashPassword('clave-del-atacante-1');
+  await pool.query(`INSERT INTO accounts (name, status) VALUES ('Víctima SA', 'trial')`);
+  const acc = (await pool.query(`SELECT id FROM accounts WHERE name = 'Víctima SA'`)).rows[0].id;
+  await pool.query(`INSERT INTO users (account_id, role, name, email, password_hash) VALUES ($1, 'admin', 'Víctima', 'victima@empresa.mx', $2)`, [acc, attacker]); // sin verificar
+  const login = (pw: string) => h.app.inject({ method: 'POST', url: '/api/login', remoteAddress: '10.8.8.9', payload: { email: 'victima@empresa.mx', password: pw } });
+  assert.equal((await login('clave-del-atacante-1')).statusCode, 200, 'antes de Google la contraseña del atacante funciona');
+  const r = await flow({ email: 'victima@empresa.mx', email_verified: true, name: 'Víctima' });
+  assert.ok(r.session);
+  assert.equal((await login('clave-del-atacante-1')).statusCode, 401, 'tras entrar con Google, esa contraseña ya no sirve');
+  assert.ok((await pool.query(`SELECT email_verified_at FROM users WHERE email = 'victima@empresa.mx'`)).rows[0].email_verified_at);
+});

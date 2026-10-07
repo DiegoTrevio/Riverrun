@@ -100,6 +100,8 @@ services:
       # Autoregistro de empresas y correo saliente
       SIGNUP_ENABLED: ${SIGNUP_ENABLED:-true}
       TRIAL_DAYS: ${TRIAL_DAYS:-14}
+      TRUST_PROXY_HOPS: ${TRUST_PROXY_HOPS:-1}
+      DOMAIN: ${DOMAIN:-}
       # Límites de la prueba gratuita (0 = sin límite); los planes de pago llevan los suyos
       TRIAL_MAX_MESSAGES: ${TRIAL_MAX_MESSAGES:-300}
       TRIAL_MAX_CHANNELS: ${TRIAL_MAX_CHANNELS:-2}

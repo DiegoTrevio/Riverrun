@@ -132,3 +132,23 @@ t('una campaña más grande que el cupo restante no se lanza', async () => {
   assert.match(r.json().error, /Tu plan permite 1 mensajes más este mes/);
   assert.equal((await h.authed('GET', '/api/campaigns')).json().find((x: any) => x.id === camp.id).status, 'draft');
 });
+
+t('reactivar a un usuario también respeta el límite de usuarios', async () => {
+  const a = await signup('react@limites.mx');
+  await h.authed('PUT', `/api/accounts/${a.account}`, { limits_override: { users: 2 } });
+  const u1 = (await a.api('POST', '/api/users', { email: 'u1@limites.mx', password: 'clave-agente-1', role: 'agent' })).json();
+  assert.equal((await a.api('PUT', `/api/users/${u1.id}`, { active: false })).statusCode, 200);
+  assert.equal((await a.api('POST', '/api/users', { email: 'u2@limites.mx', password: 'clave-agente-2', role: 'agent' })).statusCode, 200);
+  const back = await a.api('PUT', `/api/users/${u1.id}`, { active: true });
+  assert.equal(back.statusCode, 403, 'ya hay 2 activos');
+});
+
+t('una campaña lanzada dos veces seguidas programa cada mensaje una sola vez', async () => {
+  await h.authed('PUT', `/api/settings?account_id=${h.accountId}`, { consent: { require_for_campaigns: false } });
+  await h.authed('PUT', `/api/accounts/${h.accountId}`, { limits_override: { messages_per_month: 100000 } });
+  const camp = (await h.authed('POST', '/api/campaigns', { account_id: h.accountId, channel_id: h.channelId, name: 'Doble', message: 'Promo doble', audience: {}, rate_per_minute: 60 })).json();
+  const [r1, r2] = await Promise.all([h.authed('POST', `/api/campaigns/${camp.id}/launch`), h.authed('POST', `/api/campaigns/${camp.id}/launch`)]);
+  assert.ok([r1.statusCode, r2.statusCode].includes(200));
+  const jobs = (await pool.query(`SELECT payload->>'conversation_id' AS c FROM jobs WHERE type = 'campaign_send' AND payload->>'campaign_id' = $1`, [camp.id])).rows;
+  assert.equal(new Set(jobs.map((j) => j.c)).size, jobs.length, 'sin tareas duplicadas');
+});

@@ -139,6 +139,23 @@ t('si el superadmin reactiva a mano una cuenta pausada por pago, no se vuelve a 
   await stripeHook('invoice.paid', { subscription: 'sub_1' }, 'evt_paid3');
 });
 
+t('una renovación (cuenta ya al corriente) no deshace una pausa manual, y repetir el mismo aviso no hace nada', async () => {
+  await h.authed('PUT', `/api/accounts/${B.account}`, { status: 'paused' });
+  const before = outbox.length;
+  await stripeHook('invoice.paid', { subscription: 'sub_1' }, 'evt_renov1');
+  assert.equal((await account()).status, 'paused', 'la pausa manual se respeta');
+  const again = await stripeHook('invoice.paid', { subscription: 'sub_1' }, 'evt_renov1');
+  assert.equal(again.statusCode, 200);
+  assert.equal(outbox.length, before, 'sin correos nuevos');
+  await h.authed('PUT', `/api/accounts/${B.account}`, { status: 'active' });
+});
+
+t('no se puede borrar un plan que tienen asignado cuentas', async () => {
+  await pool.query(`UPDATE accounts SET plan = 'pro' WHERE id = $1`, [B.account]);
+  const r = await h.authed('DELETE', '/api/plans/pro');
+  assert.equal(r.statusCode, 409, r.body);
+});
+
 t('Stripe: cancelar conserva el acceso hasta el fin del periodo pagado', async () => {
   const c = await B.api('POST', '/api/billing/cancel', {});
   assert.equal(c.statusCode, 200, c.body);

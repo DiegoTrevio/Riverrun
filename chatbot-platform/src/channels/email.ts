@@ -67,12 +67,13 @@ export function stripQuoted(text: string): string {
   return out.join('\n').replace(/\n{3,}/g, '\n\n').trim().slice(0, 4000);
 }
 
+const MAX_MAIL_BYTES = 10 * 1024 * 1024;
 const AUTOMATED_SENDER = /^(no-?reply|do-?not-?reply|mailer-daemon|postmaster|notifications?|bounce|alerts?)[+@._-]/i;
 
 const realBackend: MailBackend = {
   async fetchNew(cfg) {
     const ip = await publicAddress(cfg.imap_host);
-    const client = new ImapFlow({ host: ip, port: cfg.imap_port, secure: cfg.imap_port === 993, servername: cfg.imap_host, auth: { user: cfg.imap_user, pass: cfg.imap_password }, logger: false, socketTimeout: 30_000 } as any);
+    const client = new ImapFlow({ host: ip, port: cfg.imap_port, secure: cfg.imap_port === 993, servername: cfg.imap_host, auth: { user: cfg.imap_user, pass: cfg.imap_password }, logger: false, socketTimeout: 30_000, doSTARTTLS: cfg.imap_port !== 993 ? true : undefined } as any);
     await client.connect();
     try {
       const lock = await client.getMailboxLock('INBOX');
@@ -80,30 +81,39 @@ const realBackend: MailBackend = {
         const box: any = client.mailbox;
         const validity = Number(box.uidValidity);
         // Primera vez (o el buzón se reconstruyó): se parte de hoy, sin contestar el historial.
-        if (!cfg.last_uid || cfg.uid_validity !== validity) return { mails: [], lastUid: Math.max(0, Number(box.uidNext) - 1), uidValidity: validity };
+        if (!cfg.uid_validity || cfg.uid_validity !== validity) return { mails: [], lastUid: Math.max(0, Number(box.uidNext) - 1), uidValidity: validity };
         const mails: RawMail[] = [];
         let lastUid = cfg.last_uid;
-        for await (const m of client.fetch(`${cfg.last_uid + 1}:*`, { uid: true, source: true }, { uid: true })) {
-          if (m.uid <= cfg.last_uid) continue;
-          if (mails.length >= 20) break;
-          lastUid = Math.max(lastUid, m.uid);
-          const p = await simpleParser(m.source as Buffer);
-          const from = p.from?.value?.[0];
-          if (!from?.address) continue;
-          const h = p.headers;
-          const auto = String(h.get('auto-submitted') ?? '');
-          const automated = (!!auto && auto !== 'no') || /bulk|junk|list/i.test(String(h.get('precedence') ?? '')) || h.has('list-id') || h.has('x-auto-response-suppress') || AUTOMATED_SENDER.test(from.address);
-          mails.push({
-            uid: m.uid,
-            messageId: p.messageId ?? `uid-${m.uid}`,
-            address: from.address.toLowerCase(),
-            name: from.name ?? '',
-            subject: p.subject ?? '',
-            text: p.text ?? '',
-            date: p.date ?? new Date(),
-            references: [p.references].flat().filter(Boolean).join(' '),
-            automated,
-          });
+        // Primero solo tamaños: un correo enorme no se descarga (se salta) y uno dañado no bloquea los siguientes.
+        const pending: { uid: number; size: number }[] = [];
+        for await (const m of client.fetch(`${cfg.last_uid + 1}:*`, { uid: true, size: true }, { uid: true })) {
+          if (m.uid > cfg.last_uid && pending.length < 20) pending.push({ uid: m.uid, size: Number(m.size ?? 0) });
+        }
+        for (const { uid, size } of pending) {
+          lastUid = Math.max(lastUid, uid); // el cursor avanza siempre, aunque este correo falle
+          if (size > MAX_MAIL_BYTES) continue;
+          try {
+            const m: any = await client.fetchOne(String(uid), { source: true }, { uid: true });
+            const p = await simpleParser(m.source as Buffer, { skipImageLinks: true, skipHtmlToText: true, skipTextToHtml: true });
+            const from = p.from?.value?.[0];
+            if (!from?.address) continue;
+            const h = p.headers;
+            const auto = String(h.get('auto-submitted') ?? '');
+            const automated = (!!auto && auto !== 'no') || /bulk|junk|list/i.test(String(h.get('precedence') ?? '')) || h.has('list-id') || h.has('x-auto-response-suppress') || AUTOMATED_SENDER.test(from.address);
+            mails.push({
+              uid,
+              messageId: p.messageId ?? `uid-${cfg.uid_validity || validity}-${uid}`,
+              address: from.address.toLowerCase(),
+              name: from.name ?? '',
+              subject: p.subject ?? '',
+              text: p.text ?? '',
+              date: p.date ?? new Date(),
+              references: [p.references].flat().filter(Boolean).join(' '),
+              automated,
+            });
+          } catch {
+            /* correo ilegible: se omite y se sigue */
+          }
         }
         return { mails, lastUid, uidValidity: validity };
       } finally {
@@ -116,10 +126,12 @@ const realBackend: MailBackend = {
 
   async send(cfg, mail) {
     const ip = await publicAddress(cfg.smtp_host);
-    const t = nodemailer.createTransport({ host: ip, port: cfg.smtp_port, secure: cfg.smtp_port === 465, auth: { user: cfg.smtp_user || cfg.imap_user, pass: cfg.smtp_password || cfg.imap_password }, tls: { servername: cfg.smtp_host }, connectionTimeout: 15_000, socketTimeout: 30_000 });
+    const t = nodemailer.createTransport({ host: ip, port: cfg.smtp_port, secure: cfg.smtp_port === 465, requireTLS: cfg.smtp_port !== 465, auth: { user: cfg.smtp_user || cfg.imap_user, pass: cfg.smtp_password || cfg.imap_password }, tls: { servername: cfg.smtp_host }, connectionTimeout: 15_000, socketTimeout: 30_000 });
     const info = await t.sendMail({
       from: mail.from, to: mail.to, subject: mail.subject, text: mail.text,
       inReplyTo: mail.inReplyTo || undefined, references: mail.references || undefined,
+      // Evita bucles con otros contestadores automáticos
+      headers: { 'Auto-Submitted': 'auto-replied', 'X-Auto-Response-Suppress': 'All' },
       attachments: mail.attachment ? [mail.attachment] : undefined,
     });
     return String(info.messageId);
@@ -127,11 +139,11 @@ const realBackend: MailBackend = {
 
   async verify(cfg) {
     const ip = await publicAddress(cfg.imap_host);
-    const client = new ImapFlow({ host: ip, port: cfg.imap_port, secure: cfg.imap_port === 993, servername: cfg.imap_host, auth: { user: cfg.imap_user, pass: cfg.imap_password }, logger: false, socketTimeout: 20_000 } as any);
+    const client = new ImapFlow({ host: ip, port: cfg.imap_port, secure: cfg.imap_port === 993, servername: cfg.imap_host, auth: { user: cfg.imap_user, pass: cfg.imap_password }, logger: false, socketTimeout: 20_000, doSTARTTLS: cfg.imap_port !== 993 ? true : undefined } as any);
     await client.connect();
     await client.logout().catch(() => undefined);
     const sip = await publicAddress(cfg.smtp_host);
-    await nodemailer.createTransport({ host: sip, port: cfg.smtp_port, secure: cfg.smtp_port === 465, auth: { user: cfg.smtp_user || cfg.imap_user, pass: cfg.smtp_password || cfg.imap_password }, tls: { servername: cfg.smtp_host }, connectionTimeout: 15_000 }).verify();
+    await nodemailer.createTransport({ host: sip, port: cfg.smtp_port, secure: cfg.smtp_port === 465, requireTLS: cfg.smtp_port !== 465, auth: { user: cfg.smtp_user || cfg.imap_user, pass: cfg.smtp_password || cfg.imap_password }, tls: { servername: cfg.smtp_host }, connectionTimeout: 15_000 }).verify();
   },
 };
 
@@ -139,7 +151,11 @@ let backend: MailBackend = realBackend;
 /** Solo para pruebas. */
 export const setMailBackend = (b: MailBackend | null) => { backend = b ?? realBackend; };
 
-const cfgOf = (channel: Channel) => ChannelConfigSchemas.email.parse(channel.config ?? {}) as unknown as MailConfig;
+/** Si no se indicó el servidor SMTP se deduce del IMAP (imap.x.com → smtp.x.com). */
+const cfgOf = (channel: Channel) => {
+  const c = ChannelConfigSchemas.email.parse(channel.config ?? {}) as unknown as MailConfig;
+  return { ...c, smtp_host: c.smtp_host || c.imap_host.replace(/^imap\./, 'smtp.') };
+};
 
 class EmailTransport implements Transport {
   kind = 'email' as const;
@@ -180,7 +196,7 @@ export const emailAdapter: ChannelAdapter = {
     const cfg = cfgOf(channel);
     if (!cfg.imap_host || !cfg.imap_user || !cfg.imap_password) return { ok: false, message: 'Completa el servidor, el usuario y la contraseña de correo' };
     try {
-      await backend.verify({ ...cfg, smtp_host: cfg.smtp_host || cfg.imap_host.replace(/^imap\./, 'smtp.') });
+      await backend.verify(cfg);
     } catch (e: any) {
       return { ok: false, message: `No se pudo conectar: ${String(e?.message ?? e).slice(0, 200)}` };
     }
@@ -214,17 +230,28 @@ export async function pollEmailChannel(channel: Channel, deliver: (m: InboundMes
   const cfg = cfgOf(channel);
   let error = '';
   try {
-    const r = await backend.fetchNew({ ...cfg, smtp_host: cfg.smtp_host || cfg.imap_host.replace(/^imap\./, 'smtp.') });
+    const r = await backend.fetchNew(cfg);
     for (const mail of r.mails) {
-      const own = mail.address === addressOf(cfg);
-      if (mail.automated || own) continue;
-      const prior = await queryOne(`SELECT 1 FROM email_threads WHERE channel_id = $1 AND address = $2`, [channel.id, mail.address]);
-      await query(
-        `INSERT INTO email_threads (channel_id, address, subject, message_id, refs) VALUES ($1,$2,$3,$4,$5)
-         ON CONFLICT (channel_id, address) DO UPDATE SET subject = EXCLUDED.subject, message_id = EXCLUDED.message_id, refs = EXCLUDED.refs, updated_at = now()`,
-        [channel.id, mail.address, mail.subject.slice(0, 300), mail.messageId, mail.references.slice(-1500)],
-      );
-      await deliver(toInbound(mail, !prior));
+      try {
+        const own = mail.address === addressOf(cfg);
+        if (mail.automated || own) continue;
+        // Freno de bucles: más de 12 correos por hora de la misma dirección no se contestan.
+        const recent = (await queryOne<{ n: number }>(
+          `SELECT count(*)::int AS n FROM messages m JOIN conversations cv ON cv.id = m.conversation_id JOIN contacts ct ON ct.id = cv.contact_id
+            WHERE ct.channel_id = $1 AND ct.external_id = $2 AND m.direction = 'in' AND m.created_at > now() - interval '1 hour'`,
+          [channel.id, mail.address],
+        ))?.n ?? 0;
+        if (recent >= 12) continue;
+        const prior = await queryOne(`SELECT 1 FROM email_threads WHERE channel_id = $1 AND address = $2`, [channel.id, mail.address]);
+        await query(
+          `INSERT INTO email_threads (channel_id, address, subject, message_id, refs) VALUES ($1,$2,$3,$4,$5)
+           ON CONFLICT (channel_id, address) DO UPDATE SET subject = EXCLUDED.subject, message_id = EXCLUDED.message_id, refs = EXCLUDED.refs, updated_at = now()`,
+          [channel.id, mail.address, mail.subject.slice(0, 300), mail.messageId, mail.references.slice(-1500)],
+        );
+        await deliver(toInbound(mail, !prior));
+      } catch (e: any) {
+        await logEvent({ level: 'error', source: 'channel', message: `Correo de ${mail.address}: ${String(e?.message ?? e).slice(0, 200)}`, accountId: channel.account_id, channelId: channel.id });
+      }
     }
     await query(`UPDATE channels SET config = config || $2::jsonb WHERE id = $1`, [channel.id, JSON.stringify({ last_uid: r.lastUid, uid_validity: r.uidValidity, last_error: '' })]);
   } catch (e: any) {

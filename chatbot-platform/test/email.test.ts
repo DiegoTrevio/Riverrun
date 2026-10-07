@@ -16,16 +16,17 @@ let inbox: ReturnType<typeof mail>[] = [];
 let uid = 100;
 const sent: any[] = [];
 let verifyError: string | null = null;
-em.setMailBackend({
+const fakeBackend: import('../src/channels/email.js').MailBackend = {
   async fetchNew(cfg) {
     // Primera lectura: parte desde el final del buzón, sin devolver historial.
-    if (!cfg.last_uid) return { mails: [], lastUid: uid, uidValidity: 7 };
+    if (!cfg.uid_validity) return { mails: [], lastUid: uid, uidValidity: 7 };
     const mails = inbox.filter((m) => m.uid > cfg.last_uid);
     return { mails, lastUid: Math.max(cfg.last_uid, ...mails.map((m) => m.uid)), uidValidity: 7 };
   },
   async send(cfg, m) { sent.push({ cfg, ...m }); return `<out-${sent.length}@test>`; },
   async verify() { if (verifyError) throw new Error(verifyError); },
-});
+};
+em.setMailBackend(fakeBackend);
 
 let channelId = '';
 let channel: any;
@@ -70,6 +71,7 @@ t('al empezar no se contesta el historial; los correos nuevos se contestan en un
   assert.equal(await em.pollEmailChannels(h.service), 1);
   await waitFor(() => sent.length === 1, 8000);
   const m = sent[0];
+  assert.equal(m.cfg.smtp_host, 'smtp.gmail.com');
   assert.equal(m.to, 'ana@cliente.com');
   assert.equal(m.subject, 'Re: Precios de habitaciones');
   assert.equal(m.inReplyTo, '<m1@cliente.com>');
@@ -110,4 +112,36 @@ t('un servidor de correo en la red interna se rechaza', async () => {
   assert.equal(res.ok, false);
   assert.match(res.message, /red interna/);
   } finally { config.allowPrivateWebhooks = prev; }
+});
+
+t('si solo se llenó IMAP, las respuestas usan el SMTP deducido; y el primer correo de un buzón vacío sí se contesta', async () => {
+  em.setMailBackend(fakeBackend); // el test anterior dejó el backend real
+  const r = await h.authed('POST', '/api/channels', { account_id: h.accountId, type: 'email', name: 'Solo IMAP', chatbot_id: h.botId, config: { imap_host: 'imap.empresa.mx', imap_user: 'hola@empresa.mx', imap_password: 'p4ss' } });
+  const id = r.json().id;
+  uid = 0; // buzón vacío
+  inbox = [];
+  sent.length = 0;
+  await em.pollEmailChannels(h.service); // inicializa el cursor en 0 pero marca el buzón como conocido
+  assert.equal((await pool.query(`SELECT config->>'uid_validity' v FROM channels WHERE id = $1`, [id])).rows[0].v, '7');
+  h.setScript(() => ({ messages: ['Hola, ¿en qué te ayudo?'] }));
+  inbox = [mail({ uid: 1, messageId: '<primero@x>', address: 'bea@cliente.com', subject: 'Hola' })];
+  await em.pollEmailChannels(h.service);
+  await waitFor(() => sent.some((x) => x.to === 'bea@cliente.com'), 8000);
+  assert.equal(sent.find((x) => x.to === 'bea@cliente.com').cfg.smtp_host, 'smtp.empresa.mx');
+});
+
+t('un correo que falla no bloquea el buzón: el cursor avanza y los demás se procesan', async () => {
+  const before = sent.length;
+  inbox = [mail({ uid: 200, messageId: '<roto@x>', address: 'roto@cliente.com' }), mail({ uid: 201, messageId: '<ok@x>', address: 'ok@cliente.com' })];
+  const orig = h.service.handleIncoming.bind(h.service);
+  (h.service as any).handleIncoming = async (ch: any, m: any) => { if (m.externalId === 'roto@cliente.com') throw new Error('boom'); return orig(ch, m); };
+  try {
+    h.setScript(() => ({ messages: ['Listo'] }));
+    await em.pollEmailChannels(h.service);
+    await waitFor(() => sent.some((x) => x.to === 'ok@cliente.com'), 8000);
+  } finally { (h.service as any).handleIncoming = orig; }
+  assert.ok(sent.length > before);
+  assert.ok(!sent.some((x) => x.to === 'roto@cliente.com'));
+  const maxUid = Math.max(...(await pool.query(`SELECT (config->>'last_uid')::int u FROM channels WHERE type = 'email'`)).rows.map((x) => x.u));
+  assert.ok(maxUid >= 201, 'el cursor pasó el correo roto');
 });
