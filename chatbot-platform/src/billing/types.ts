@@ -10,6 +10,7 @@ export interface Plan {
   stripe_price_id: string;
   active: boolean;
   sort_order: number;
+  limits: Record<string, number | null>;
 }
 
 export interface Subscription {

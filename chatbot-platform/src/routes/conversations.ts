@@ -7,7 +7,9 @@ import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
 import { parse } from './util.js';
+import * as astore from '../automation/store.js';
 import { stopEnrollments } from '../automation/store.js';
+import { contactDataExport, eraseContact } from '../privacy.js';
 
 /** Conversaciones y contactos: disponible para administradores y agentes de la cuenta. */
 export async function conversationRoutes(api: FastifyInstance, service: ChatService) {
@@ -141,6 +143,24 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
     return { ok: true };
   });
 
+  /** Derecho de acceso / portabilidad: todo lo que se guarda de este contacto, en un archivo JSON. */
+  api.get('/api/contacts/:id/data', async (req: any, reply) => {
+    if (req.user.role === 'agent') throw new HttpError(403, 'Solo un administrador puede descargar los datos de un contacto');
+    const contact = assertAccount(req.user, await store.getContact(req.params.id), 'Contacto no encontrado');
+    const data = await contactDataExport(contact.id);
+    await logEvent({ level: 'info', source: 'admin', message: `Descarga de datos de un contacto por ${req.user.email}`, accountId: contact.account_id });
+    return reply.header('content-disposition', 'attachment; filename="datos-del-contacto.json"').header('cache-control', 'no-store').send(data);
+  });
+
+  /** Derecho de supresión: borra al contacto y todo su historial (no se puede deshacer). */
+  api.delete('/api/contacts/:id', async (req: any) => {
+    if (req.user.role === 'agent') throw new HttpError(403, 'Solo un administrador puede borrar los datos de un contacto');
+    const contact = assertAccount(req.user, await store.getContact(req.params.id), 'Contacto no encontrado');
+    const r = await eraseContact(contact.id);
+    await logEvent({ level: 'info', source: 'admin', message: `Datos de un contacto eliminados por ${req.user.email} (${r?.conversations ?? 0} conversaciones, ${r?.messages ?? 0} mensajes)`, accountId: contact.account_id });
+    return { ok: true, ...r };
+  });
+
   api.put('/api/contacts/:id', async (req: any) => {
     const contact = assertAccount(req.user, await store.getContact(req.params.id), 'Contacto no encontrado');
     const b = parse(
@@ -150,10 +170,14 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
         notes: z.array(z.string().max(300)).max(50).optional(),
         tags: z.array(z.string().trim().min(1).max(60)).max(50).optional(),
         opted_out: z.boolean().optional(),
+        /** El cliente aceptó (o ya no) recibir promociones. */
+        consent: z.boolean().optional(),
       }),
       req.body,
     );
-    const changes = await store.updateContactFromPanel(contact.id, b);
+    const { consent, ...patch } = b;
+    if (consent !== undefined && !!contact.consent_at !== consent) await astore.setConsent(contact.id, consent, 'panel');
+    const changes = await store.updateContactFromPanel(contact.id, patch);
     const conv = (await query<{ id: string }>('SELECT id FROM conversations WHERE contact_id = $1', [contact.id]))[0];
     if (conv && changes) {
       if (changes.optedOut) {

@@ -1,8 +1,9 @@
+import { messageQuota } from '../billing/limits.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
 import * as astore from './store.js';
 import { query } from '../db.js';
-import { nextOpen } from './time.js';
+import { addDays, localParts, nextOpen, zonedToUtc } from './time.js';
 
 /** Campañas: envío programado a un segmento, espaciado para no parecer spam (y no arriesgar el número). */
 export class Campaigns {
@@ -26,14 +27,40 @@ export class Campaigns {
   async start(campaignId: string) {
     const c = await astore.getCampaign(campaignId);
     if (!c || !['draft', 'scheduled'].includes(c.status)) return { status: c?.status ?? 'cancelled' };
-    const audience = await astore.campaignAudience(c);
+    const settingsNow = await astore.getSettings(c.account_id);
+    const audience = await astore.campaignAudience(c, 100000, { requireConsent: settingsNow.consent.require_for_campaigns });
+    const quota = await messageQuota(c.account_id);
+    if (quota.remaining !== null && audience.length > quota.remaining) {
+      await astore.setCampaignStatus(c.id, 'draft');
+      throw new Error(`Tu plan permite ${quota.remaining.toLocaleString('es-MX')} mensajes más este mes y esta campaña tiene ${audience.length.toLocaleString('es-MX')} destinatarios. Reduce el segmento o cambia de plan.`);
+    }
     await astore.setCampaignStatus(c.id, 'sending');
     const gapMs = Math.ceil(60_000 / Math.max(1, c.rate_per_minute));
     const settings = await astore.getSettings(c.account_id);
-    // Cada envío, a ritmo constante; con "solo en horario", lo que caiga fuera se pasa a la siguiente apertura.
-    let at = new Date();
+    const tz = settings.timezone;
+    const cap = settings.sending.daily_cap_per_number;
+    // Cada número lleva su propio ritmo (con varios números la campaña termina antes sin acelerar ninguno) y, si hay tope
+    // diario, lo que no cabe hoy pasa al día siguiente. Los ya enviados hoy por otras campañas cuentan para el tope.
+    const nextFree = new Map<string, Date>();
+    const used = new Map<string, number>();
+    if (cap) {
+      const midnight = zonedToUtc(localParts(new Date(), tz).date, '00:00', tz);
+      for (const r of await astore.campaignSentSince(c.account_id, midnight)) used.set(`${r.channel_id}|${localParts(new Date(), tz).date}`, r.n);
+    }
     for (const r of audience) {
-      if (c.business_hours_only) at = nextOpen(settings.business_hours, settings.holidays, at, settings.timezone);
+      let at = nextFree.get(r.channel_id) ?? new Date();
+      for (let guard = 0; guard < 400; guard++) {
+        if (c.business_hours_only) at = nextOpen(settings.business_hours, settings.holidays, at, tz);
+        if (!cap) break;
+        const day = localParts(at, tz).date;
+        const key = `${r.channel_id}|${day}`;
+        if ((used.get(key) ?? 0) >= cap) {
+          at = zonedToUtc(addDays(day, 1), '00:00', tz);
+          continue;
+        }
+        used.set(key, (used.get(key) ?? 0) + 1);
+        break;
+      }
       await query(`INSERT INTO campaign_recipients (campaign_id, conversation_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [c.id, r.conversation_id]);
       await astore.scheduleJob({
         account_id: c.account_id,
@@ -41,7 +68,7 @@ export class Campaigns {
         payload: { campaign_id: c.id, conversation_id: r.conversation_id },
         run_at: at,
       });
-      at = new Date(at.getTime() + gapMs);
+      nextFree.set(r.channel_id, new Date(at.getTime() + gapMs));
     }
     await astore.campaignStats(c.id);
     if (!audience.length) await astore.setCampaignStatus(c.id, 'sent');

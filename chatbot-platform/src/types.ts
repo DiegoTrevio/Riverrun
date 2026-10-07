@@ -253,6 +253,9 @@ export interface Contact {
   notes: string[];
   tags: string[];
   opted_out: boolean;
+  /** Cuándo aceptó recibir promociones (null = no ha aceptado). */
+  consent_at?: Date | null;
+  consent_source?: string;
 }
 
 export type ConversationStatus = 'bot' | 'human' | 'closed';
@@ -322,6 +325,7 @@ export interface Account {
   onboarding: Record<string, boolean>;
   signup_source: string;
   ai_alert_month: string;
+  limits_override?: Record<string, number>;
   created_at: Date;
 }
 

@@ -106,6 +106,19 @@ export async function viewAccounts(root) {
               const d = Number(prompt('¿Cuántos días más de prueba?', '7'));
               if (d > 0) { await run(() => api('PUT', `/api/accounts/${a.id}`, { extend_trial_days: d }), 'Prueba extendida'); render(); }
             } }, 'Extender prueba') : null,
+            h('button', { class: 'small', title: 'Excepción de límites para este perfil (sobre su plan)', onclick: async () => {
+              const keys = { mensajes: 'messages_per_month', canales: 'channels', usuarios: 'users', asistentes: 'chatbots' };
+              const cur = Object.entries(keys).filter(([, k]) => a.limits_override?.[k]).map(([n, k]) => `${n}=${a.limits_override[k]}`).join(' ');
+              const txt = prompt('Límites especiales de este perfil (se aplican en lugar de los de su plan).\nFormato: mensajes=1000 canales=2 usuarios=5 asistentes=3\nDéjalo vacío para quitar la excepción y usar los de su plan.', cur);
+              if (txt === null) return;
+              const limits_override = {};
+              for (const part of txt.split(/[\s,]+/).filter(Boolean)) {
+                const [n, v] = part.split('=');
+                if (!keys[n.toLowerCase()] || !(Number(v) > 0)) return toast(`No entendí "${part}". Usa, por ejemplo: mensajes=1000 canales=2`, true);
+                limits_override[keys[n.toLowerCase()]] = Math.floor(Number(v));
+              }
+              await run(() => api('PUT', `/api/accounts/${a.id}`, { limits_override }), 'Límites actualizados'); render();
+            } }, 'Límites'),
             h('button', { class: 'small', onclick: async () => { const name = prompt('Nuevo nombre', a.name); if (name) { await run(() => api('PUT', `/api/accounts/${a.id}`, { name }), 'Actualizada'); state.me = null; render(); } } }, 'Renombrar'),
             h('button', { class: 'small', onclick: async () => {
               if (a.active && !confirm(`Al desactivar "${a.name}", sus usuarios no podrán entrar y sus canales dejarán de responder (los mensajes se siguen guardando). ¿Continuar?`)) return;

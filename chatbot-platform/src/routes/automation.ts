@@ -41,6 +41,8 @@ const campaignFor = async (user: User, id: string) => assertAccount(user, await 
 
 const CampaignBody = z.object({
   channel_id: z.string().uuid(),
+  /** Números adicionales (mismo tipo de canal) desde los que también sale la campaña. */
+  channel_ids: z.array(z.string().uuid()).max(10).default([]),
   name: z.string().trim().min(1).max(120),
   message: z.string().max(4000).default(''),
   image_id: z.string().uuid().nullable().default(null),
@@ -175,9 +177,13 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
   });
 
   /* ------------------------------ Campañas ------------------------------ */
-  const checkChannel = async (user: User, accountId: string, channelId: string, imageId: string | null) => {
+  const checkChannel = async (user: User, accountId: string, channelId: string, imageId: string | null, extraIds: string[] = []) => {
     const ch = await store.getChannel(channelId);
     if (!ch || ch.account_id !== accountId || ch.type === 'playground') throw new HttpError(400, 'El canal no pertenece a la cuenta');
+    for (const extra of extraIds) {
+      const e = await store.getChannel(extra);
+      if (!e || e.account_id !== accountId || e.type !== ch.type) throw new HttpError(400, 'Los números adicionales deben ser canales de la cuenta del mismo tipo (p. ej. otros WhatsApp)');
+    }
     if (imageId) await checkReferences(accountId, { steps: [{ image_id: imageId }] });
     void user;
     return ch;
@@ -188,7 +194,8 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
   api.post('/api/campaigns', admins, async (req: any) => {
     const b = parse(CampaignBody, req.body);
     const accountId = await targetAccount(req.user, req.body?.account_id);
-    await checkChannel(req.user, accountId, b.channel_id, b.image_id);
+    b.channel_ids = [...new Set(b.channel_ids)].filter((x) => x !== b.channel_id);
+    await checkChannel(req.user, accountId, b.channel_id, b.image_id, b.channel_ids);
     return astore.saveCampaign(accountId, { ...b, scheduled_at: b.scheduled_at ? new Date(b.scheduled_at) : null });
   });
 
@@ -196,7 +203,8 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
     const c = await campaignFor(req.user, req.params.id);
     if (!['draft', 'scheduled'].includes(c.status)) throw new HttpError(400, 'Solo se editan campañas en borrador o programadas');
     const b = parse(CampaignBody, { ...c, scheduled_at: c.scheduled_at ? new Date(c.scheduled_at).toISOString() : null, ...(req.body ?? {}) });
-    await checkChannel(req.user, c.account_id, b.channel_id, b.image_id);
+    b.channel_ids = [...new Set(b.channel_ids)].filter((x) => x !== b.channel_id);
+    await checkChannel(req.user, c.account_id, b.channel_id, b.image_id, b.channel_ids);
     const saved = await astore.saveCampaign(c.account_id, { ...b, scheduled_at: b.scheduled_at ? new Date(b.scheduled_at) : null }, c.id);
     if (c.status === 'scheduled') {
       // Reprogramar con los datos nuevos.
@@ -217,10 +225,13 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
 
   api.post('/api/campaigns/:id/preview', admins, async (req: any) => {
     const c = await campaignFor(req.user, req.params.id);
-    const audience = await astore.campaignAudience(c);
+    const settings = await astore.getSettings(c.account_id);
+    const requireConsent = settings.consent.require_for_campaigns;
+    const audience = await astore.campaignAudience(c, 100000, { requireConsent });
     const ch = await store.getChannel(c.channel_id);
     return {
       count: audience.length,
+      excluded_no_consent: requireConsent ? await astore.campaignExcludedNoConsent(c) : 0,
       sample: audience.slice(0, 10).map((a) => a.name || a.push_name || (a.phone ? `+${a.phone}` : 'Cliente')),
       warning:
         ch?.type === 'messenger' || ch?.type === 'instagram'

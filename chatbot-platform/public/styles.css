@@ -215,3 +215,17 @@ a.tile:hover { border-color: var(--accent); background: var(--accent-soft); }
 .nav-group summary.active { background: var(--accent-soft); color: var(--accent); }
 .nav-group > div { display: flex; flex-direction: column; padding-left: 10px; }
 .nav-group a { font-size: 13px; }
+
+/* Barras de uso (límites del plan) */
+.bar { height: 8px; background: var(--border); border-radius: 99px; overflow: hidden; margin-top: 4px; }
+.bar-fill { height: 100%; background: var(--accent); border-radius: 99px; transition: width .3s; }
+.bar-fill.warn { background: #e0a31a; }
+.bar-fill.full { background: #d64545; }
+
+/* Menú desplegable simple (Exportar) */
+details.menu { position: relative; }
+details.menu > summary { list-style: none; cursor: pointer; }
+details.menu > summary::-webkit-details-marker { display: none; }
+details.menu .menu-items { position: absolute; right: 0; top: 110%; z-index: 20; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,.12); min-width: 220px; padding: 4px; display: flex; flex-direction: column; }
+details.menu .menu-items a { padding: 8px 10px; border-radius: 6px; color: var(--text); text-decoration: none; }
+details.menu .menu-items a:hover { background: var(--accent-soft); color: var(--accent); }

@@ -11,6 +11,7 @@ import { config } from '../config.js';
 import { OpenAiProvider } from '../ai/provider.js';
 import { indexKnowledge, knowledgeIndexStatus } from '../engine/knowledge.js';
 import { imageAbsolutePath } from '../engine/transport.js';
+import { assertWithinLimit } from '../billing/limits.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
@@ -78,6 +79,7 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
       knowledge: z.string().trim().min(1).max(50000),
     }).optional() }), req.body);
     const accountId = await targetAccount(req.user, b.account_id);
+    await assertWithinLimit(accountId, 'chatbots');
     const { template, account_id, setup, ...input } = b;
     void account_id;
     let base: Record<string, unknown> = {};
@@ -154,6 +156,7 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
     const src = await botFor(req.user, req.params.id);
     const { account_id } = parse(z.object({ account_id: z.string().uuid().optional() }), req.body);
     const accountId = await targetAccount(req.user, account_id ?? src.account_id);
+    await assertWithinLimit(accountId, 'chatbots');
     const copy = await store.createChatbot(accountId, {
       name: `${src.name} (copia)`,
       active: false,

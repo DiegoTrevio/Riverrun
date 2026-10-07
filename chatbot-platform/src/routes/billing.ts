@@ -6,6 +6,7 @@ import { providers, applyState, beginCheckout, enabledProviders, getPlan, getSub
 import { ProviderError, WebhookError, type ProviderName } from '../billing/types.js';
 import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
+import { limitsReport, LimitsSchema } from '../billing/limits.js';
 import { logEvent } from '../logs.js';
 import { parse } from './util.js';
 
@@ -18,6 +19,8 @@ const PlanBody = z.object({
   stripe_price_id: z.string().max(120).default(''),
   active: z.boolean().default(true),
   sort_order: z.number().int().default(0),
+  /** Límites del plan; vacío o ausente = sin límite. */
+  limits: LimitsSchema.default({}),
 });
 
 const publicSub = (s: any) =>
@@ -57,9 +60,9 @@ export async function billingRoutes(api: FastifyInstance) {
   const savePlan = async (b: z.infer<typeof PlanBody>) => {
     const cents = Math.round(b.price * 100);
     await query(
-      `INSERT INTO plans (key, name, description, price_cents, currency, stripe_price_id, active, sort_order) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-       ON CONFLICT (key) DO UPDATE SET name = $2, description = $3, price_cents = $4, currency = $5, stripe_price_id = $6, active = $7, sort_order = $8`,
-      [b.key, b.name, b.description, cents, b.currency, b.stripe_price_id.trim(), b.active, b.sort_order],
+      `INSERT INTO plans (key, name, description, price_cents, currency, stripe_price_id, active, sort_order, limits) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       ON CONFLICT (key) DO UPDATE SET name = $2, description = $3, price_cents = $4, currency = $5, stripe_price_id = $6, active = $7, sort_order = $8, limits = $9`,
+      [b.key, b.name, b.description, cents, b.currency, b.stripe_price_id.trim(), b.active, b.sort_order, JSON.stringify(Object.fromEntries(Object.entries(b.limits).filter(([, v]) => v)))],
     );
     return planOut(await getPlan(b.key));
   };
@@ -92,12 +95,13 @@ export async function billingRoutes(api: FastifyInstance) {
   /* ------------------------------ Cuenta ------------------------------ */
   api.get('/api/billing', admins, async (req: any) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
-    const [acc, plans, sub] = await Promise.all([queryOne<any>(`SELECT status, plan, trial_ends_at FROM accounts WHERE id = $1`, [accountId]), listPlans(), getSubscription(accountId)]);
+    const [acc, plans, sub, limits] = await Promise.all([queryOne<any>(`SELECT status, plan, trial_ends_at FROM accounts WHERE id = $1`, [accountId]), listPlans(), getSubscription(accountId), limitsReport(accountId)]);
     const on = enabledProviders();
     return {
       account: acc,
       plans: plans.map((p) => ({ ...planOut(p), providers: on.filter((x) => x.supportsPlan(p)).map((x) => ({ name: x.name, label: x.label })) })),
       subscription: publicSub(sub),
+      limits,
       grace_days: config.billing.graceDays,
       support_contact: config.signup.supportContact,
     };

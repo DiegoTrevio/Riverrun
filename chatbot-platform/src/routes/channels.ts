@@ -5,6 +5,7 @@ import { adapterFor, mergeChannelConfig, publicChannel, webhookUrl } from '../ch
 import { evolutionFor, newInstanceName, releaseWhatsapp } from '../channels/whatsapp.js';
 import { SessionError, whatsappSession } from '../channels/whatsapp-session.js';
 import { recordConnectionState } from '../lifecycle.js';
+import { assertWithinLimit } from '../billing/limits.js';
 import { logEvent } from '../logs.js';
 import * as store from '../store/index.js';
 import { CHANNEL_TYPES, type Channel, type User } from '../types.js';
@@ -52,6 +53,7 @@ export async function channelRoutes(api: FastifyInstance) {
     const b = parse(ChannelBody.extend({ type: z.enum(CHANNEL_TYPES), account_id: z.string().uuid().optional() }), req.body);
     const accountId = await targetAccount(req.user, b.account_id);
     await checkBot(req.user, accountId, b.chatbot_id);
+    await assertWithinLimit(accountId, 'channels');
     const adapter = adapterFor(b.type);
     const given = clientConfig(req.user, b.type, b.config) ?? {};
     if (b.type === 'whatsapp' && !given.instance) given.instance = newInstanceName(accountId);

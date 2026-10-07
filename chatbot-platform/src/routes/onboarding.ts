@@ -11,6 +11,7 @@ import { mergeChannelConfig, publicChannel } from '../channels/index.js';
 import { newInstanceName } from '../channels/whatsapp.js';
 import { config } from '../config.js';
 import { queryOne } from '../db.js';
+import { assertWithinLimit } from '../billing/limits.js';
 import { logEvent } from '../logs.js';
 import * as store from '../store/index.js';
 import { alignFixedMessages, BUSINESS_TYPES, chatbotFromTemplate } from '../templates/business.js';
@@ -145,6 +146,7 @@ export async function onboardingRoutes(api: FastifyInstance) {
       });
       botId = bot.id;
     } else {
+      await assertWithinLimit(accountId, 'chatbots');
       const bot = await store.createChatbot(accountId, {
         name: tpl.name,
         active: true,
@@ -188,6 +190,7 @@ export async function onboardingRoutes(api: FastifyInstance) {
       const updated = existing.chatbot_id ? existing : (await store.updateChannel(existing.id, { chatbot_id: bot.id }))!;
       return publicChannel(updated);
     }
+    await assertWithinLimit(accountId, 'channels');
     const ch = await store.createChannel({
       account_id: accountId,
       chatbot_id: bot.id,

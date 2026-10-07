@@ -28,6 +28,15 @@ const META_WINDOW_MS = 24 * 3600 * 1000;
  * Envío proactivo (no es respuesta a un mensaje): automatizaciones, secuencias, campañas y recordatorios.
  * Aplica las políticas antes de enviar: bajas, canal activo, conversación con humano y la ventana de 24 h de Meta.
  */
+/** Orígenes que son promoción (llevan pie de baja y exigen consentimiento): campañas y secuencias. */
+const PROMOTIONAL_SOURCES = new Set(['campaign', 'sequence']);
+
+/** "Responde {{palabra_baja}} …" → con la primera palabra de baja del negocio en mayúsculas. */
+export function optOutFooter(oo: { keywords: string[]; footer_text: string }) {
+  const word = (oo.keywords[0] ?? 'BAJA').toUpperCase();
+  return oo.footer_text.replace(/\{\{\s*palabra_baja\s*\}\}/gi, word).trim();
+}
+
 export class Outbound {
   constructor(private chat: ChatService) {}
 
@@ -38,6 +47,11 @@ export class Outbound {
     if (!channel || !contact) return { sent: false, reason: 'conversación incompleta' };
     if (!channel.active || channel.account_active === false) return { sent: false, reason: 'canal o cuenta inactivos' };
     if (contact.opted_out && !o.transactional) return { sent: false, reason: 'el cliente se dio de baja' };
+    const promotional = !o.transactional && PROMOTIONAL_SOURCES.has(o.source);
+    if (promotional) {
+      const st = await astore.getSettings(conv.account_id);
+      if (st.consent.require_for_campaigns && !contact.consent_at) return { sent: false, reason: 'el cliente no ha aceptado recibir promociones' };
+    }
     if (conv.status === 'human' && !o.allowWhenHuman) return { sent: false, reason: 'una persona está atendiendo la conversación' };
     if (channel.type === 'messenger' || channel.type === 'instagram') {
       // Meta solo permite escribir dentro de las 24 h posteriores al último mensaje del cliente.
@@ -68,17 +82,21 @@ export class Outbound {
       if (!image || !image.active || owner?.account_id !== conv.account_id) image = null;
     }
     if (!text && !image) return { sent: false, reason: 'mensaje vacío' };
+    // Pie de baja: toda promoción dice cómo dejar de recibirlas (se añade al texto, o a la leyenda de la foto).
+    const footer = promotional && settings.opt_out.enabled && settings.opt_out.footer_enabled ? optOutFooter(settings.opt_out) : '';
+    const textOut = footer && text ? `${text}\n\n${footer}` : text;
+    const captionFooter = footer && !text ? footer : '';
 
     const transport = channel.type === 'playground' ? new PlaygroundTransport() : this.chat.transportFor(channel, contact);
     const meta = { source: o.source, ...o.meta };
     // Nunca en paralelo con una respuesta del bot en la misma conversación.
     const ok = await this.chat.queue.exclusive(conv.id, async () => {
       if (text) {
-        const m = await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text, delay: 0, meta });
+        const m = await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text: textOut, delay: 0, meta });
         if (!m) return false;
       }
       if (image) {
-        const m = await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text: image.caption, image, delay: 0, meta });
+        const m = await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text: captionFooter ? `${image.caption}${image.caption ? '\n\n' : ''}${captionFooter}` : image.caption, image, delay: 0, meta });
         if (!m) return false;
       }
       return true;

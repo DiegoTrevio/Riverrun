@@ -24,6 +24,7 @@ import * as store from '../store/index.js';
 import { AiSettingsSchema, CHANNEL_TYPES, FlowSchema, KNOWLEDGE_CATEGORIES, PersonalitySchema, RulesSchema, type Role } from '../types.js';
 import { BUSINESS_TYPES } from '../templates/business.js';
 import { systemStatus } from '../monitor.js';
+import { assertWithinLimit, LimitsSchema } from '../billing/limits.js';
 import { billingEnabled } from '../billing/service.js';
 import { parse } from './util.js';
 
@@ -188,6 +189,8 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     trial_ends_at: z.string().datetime({ offset: true }).nullable().optional(),
     /** Atajo: extender la prueba N días desde hoy (o desde su vencimiento, si aún no vence). */
     extend_trial_days: z.number().int().min(1).max(365).optional(),
+    /** Excepción de límites para esta cuenta (solo las claves indicadas; {} = quitar la excepción). */
+    limits_override: LimitsSchema.optional(),
   });
 
   api.post('/api/accounts', { preHandler: requireRole('superadmin') }, async (req) => {
@@ -223,7 +226,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
       trialEnds = new Date(base + b.extend_trial_days * 86400_000);
       status = status ?? 'trial';
     }
-    const acc = (await store.updateAccount(before.id, { name: b.name, active: b.active, status, plan: b.plan, trial_ends_at: trialEnds }))!;
+    const acc = (await store.updateAccount(before.id, { name: b.name, active: b.active, status, plan: b.plan, trial_ends_at: trialEnds, limits_override: b.limits_override ? (Object.fromEntries(Object.entries(b.limits_override).filter(([, v]) => v)) as Record<string, number>) : undefined }))!;
     const changes = [b.active === false ? 'desactivada' : '', status && status !== before.status ? `estado: ${status}` : '', trialEnds !== undefined ? `prueba hasta ${trialEnds?.toISOString().slice(0, 10) ?? '—'}` : '']
       .filter(Boolean)
       .join(', ');
@@ -266,6 +269,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
       return store.createUser({ account_id: null, role: 'superadmin', name: b.name, email: b.email, password_hash: await hashPassword(b.password) });
     }
     const accountId = await targetAccount(req.user, b.account_id);
+    await assertWithinLimit(accountId, 'users');
     const created = await store.createUser({ account_id: accountId, role: b.role, name: b.name, email: b.email, password_hash: await hashPassword(b.password) });
     const user = b.phone || b.notify_whatsapp ? ((await store.updateUser(created.id, { phone: b.phone, notify_whatsapp: b.notify_whatsapp })) ?? created) : created;
     await logEvent({ level: 'info', source: 'admin', message: `Usuario creado: ${user.email} (${user.role})`, accountId });

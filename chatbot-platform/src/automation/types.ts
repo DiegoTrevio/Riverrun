@@ -36,20 +36,45 @@ export const DEFAULT_HOURS: WeeklyHours = {
 
 /* ------------------------------ Configuración de la cuenta ------------------------------ */
 
+export const OptOutSchema = z.object({
+  enabled: z.boolean().default(true),
+  keywords: z.array(z.string()).default(['baja', 'stop', 'alto', 'no quiero mensajes', 'cancelar suscripcion']),
+  confirm_message: z.string().default('Listo, ya no te enviaremos mensajes promocionales. Si quieres volver a recibirlos, escribe ALTA.'),
+  resume_keywords: z.array(z.string()).default(['alta', 'start']),
+  resume_message: z.string().default('¡Listo! Volverás a recibir nuestras novedades.'),
+  /** Pie que se agrega a campañas y secuencias para que siempre sepan cómo darse de baja. */
+  footer_enabled: z.boolean().default(true),
+  footer_text: z.string().max(200).default('Responde {{palabra_baja}} para dejar de recibir estos mensajes.'),
+});
+
+export const ConsentSchema = z.object({
+  require_for_campaigns: z.boolean().default(true),
+  /** Frases (el mensaje completo) con las que el cliente acepta recibir promociones. */
+  opt_in_keywords: z.array(z.string()).default(['acepto', 'si acepto', 'alta', 'quiero recibir promociones']),
+  opt_in_message: z.string().max(500).default('¡Gracias! Te enviaremos novedades y promociones. Responde BAJA cuando quieras dejar de recibirlas.'),
+});
+
+export const SendingSchema = z.object({ daily_cap_per_number: z.number().int().min(0).max(100000).default(0) });
+
+export const RetentionSchema = z.object({
+  /** Borrar mensajes con más de N días (0 = no borrar). */
+  messages_days: z.number().int().min(0).max(3650).default(0),
+  /** Borrar contactos (y sus conversaciones) sin actividad en N días y sin citas futuras (0 = no borrar). */
+  inactive_contacts_days: z.number().int().min(0).max(3650).default(0),
+});
+
 export const AccountSettingsSchema = z.object({
   timezone: TimezoneSchema.default('America/Mexico_City'),
   business_hours: WeeklyHoursSchema.default(DEFAULT_HOURS),
   /** Días cerrados (YYYY-MM-DD). */
   holidays: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).default([]),
-  opt_out: z
-    .object({
-      enabled: z.boolean().default(true),
-      keywords: z.array(z.string()).default(['baja', 'stop', 'alto', 'no quiero mensajes', 'cancelar suscripcion']),
-      confirm_message: z.string().default('Listo, ya no te enviaremos mensajes promocionales. Si quieres volver a recibirlos, escribe ALTA.'),
-      resume_keywords: z.array(z.string()).default(['alta', 'start']),
-      resume_message: z.string().default('¡Listo! Volverás a recibir nuestras novedades.'),
-    })
-    .default({ enabled: true, keywords: ['baja', 'stop', 'alto', 'no quiero mensajes', 'cancelar suscripcion'], confirm_message: 'Listo, ya no te enviaremos mensajes promocionales. Si quieres volver a recibirlos, escribe ALTA.', resume_keywords: ['alta', 'start'], resume_message: '¡Listo! Volverás a recibir nuestras novedades.' }),
+  opt_out: OptOutSchema.default(() => OptOutSchema.parse({})),
+  /** Consentimiento: para enviar promociones (campañas y secuencias) el cliente debe haber aceptado. */
+  consent: ConsentSchema.default(() => ConsentSchema.parse({})),
+  /** Envíos proactivos: tope diario de mensajes de campaña por número de WhatsApp (0 = sin tope; ayuda a no arriesgar el número). */
+  sending: SendingSchema.default(() => SendingSchema.parse({})),
+  /** Cuánto tiempo se conservan los datos (0 = para siempre). */
+  retention: RetentionSchema.default(() => RetentionSchema.parse({})),
   /** Notificar en el panel a todo el equipo cuando una conversación pasa a humano. */
   notify_team_on_handoff: z.boolean().default(true),
   /** Secreto para suscribirse al calendario (.ics) y firmar webhooks salientes. */

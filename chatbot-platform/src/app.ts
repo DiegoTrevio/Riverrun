@@ -14,6 +14,8 @@ import { channelRoutes } from './routes/channels.js';
 import { chatbotRoutes } from './routes/chatbots.js';
 import { conversationRoutes } from './routes/conversations.js';
 import { billingRoutes, billingWebhooks } from './routes/billing.js';
+import { poolAdminRoutes, poolPublicRoutes } from './routes/pools.js';
+import { exportRoutes } from './routes/export.js';
 import { knowledgeImportRoutes } from './routes/import.js';
 import { onboardingRoutes } from './routes/onboarding.js';
 import { publicRoutes } from './routes/public.js';
@@ -69,6 +71,7 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
   await publicRoutes(app, service);
   await calendarRoutes(app);
   await billingWebhooks(app);
+  await poolPublicRoutes(app);
 
   // Todo lo demás requiere sesión; cada ruta verifica además la cuenta y el rol.
   await app.register(async (api) => {
@@ -82,6 +85,8 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
     await onboardingRoutes(api);
     await knowledgeImportRoutes(api, opts.ai);
     await billingRoutes(api);
+    await exportRoutes(api);
+    await poolAdminRoutes(api);
   });
 
   return { app, service };

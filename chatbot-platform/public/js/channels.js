@@ -1,7 +1,7 @@
 import { saveBar } from './bot.js';
 import { api, area, check, clone, field, fill, h, lines, run, select, state, text, toast } from './core.js';
 import { render } from './main.js';
-import { accountName, acct, isSuper } from './session.js';
+import { accountName, acct, isSuper, isAdmin } from './session.js';
 import { whatsappConnector } from './whatsapp.js';
 
 /* ------------------------------ Canales ------------------------------ */
@@ -28,6 +28,37 @@ export function channelStatusCell(c) {
     h('span', { class: `badge ${c.active && connected ? 'green' : ''}` },
       !c.active ? 'Inactivo' : c.type !== 'whatsapp' ? 'Activo' : connected ? 'Conectado' : 'Pendiente de conectar'),
     c.type === 'whatsapp' ? h('a', { href: `#/channel/${c.id}`, class: 'btn small', style: 'margin-left:8px' }, connected ? 'Administrar' : 'Ver QR') : null);
+}
+
+/** Enlace público que reparte a los clientes nuevos entre varios números de WhatsApp. */
+async function poolsCard(channels) {
+  const wa = channels.filter((c) => c.type === 'whatsapp');
+  const pools = await api('GET', `/api/wa-pools${acct()}`);
+  const n = { name: '', strategy: 'least_busy', message: '', channel_ids: wa.map((c) => c.id) };
+  const copy = (v) => h('button', { class: 'small', onclick: async () => { try { await navigator.clipboard.writeText(v); toast('Copiado'); } catch { toast('Cópialo a mano', true); } } }, 'Copiar');
+  const chName = (id) => wa.find((c) => c.id === id)?.name || '—';
+  const picker = (obj) => h('div', { class: 'field' }, h('span', {}, 'Números que reciben clientes'), wa.map((c) => h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: obj.channel_ids.includes(c.id), onchange: (e) => { obj.channel_ids = e.target.checked ? [...obj.channel_ids, c.id] : obj.channel_ids.filter((x) => x !== c.id); } }), `${c.name}${c.config?.number ? ` (+${c.config.number})` : ' (sin conectar)'}`)));
+  return h('div', { class: 'card' },
+    h('h3', { style: 'margin-top:0' }, '🔀 Enlace que reparte clientes entre tus números'),
+    h('p', { class: 'muted' }, 'Pon este enlace en tu web, redes o anuncios: cada persona que lo abra se va a uno de tus números de WhatsApp conectados (los desconectados se saltan solos) y el chat se abre con tu mensaje listo para enviar.'),
+    pools.map((p) => h('div', { class: 'list-item' },
+      h('div', { class: 'row between' }, h('strong', {}, p.name, ' ', h('span', { class: `badge ${p.active ? 'green' : ''}` }, p.active ? 'activo' : 'pausado')),
+        h('div', { class: 'row' },
+          h('button', { class: 'small', onclick: async () => { await run(() => api('PUT', `/api/wa-pools/${p.id}`, { active: !p.active })); render(); } }, p.active ? 'Pausar' : 'Activar'),
+          h('button', { class: 'small danger', onclick: async () => { if (confirm('¿Borrar este enlace? Dejará de funcionar donde lo hayas publicado.')) { await run(() => api('DELETE', `/api/wa-pools/${p.id}`), 'Eliminado'); render(); } } }, 'Borrar'))),
+      h('div', { class: 'row' }, h('code', { style: 'word-break:break-all' }, p.url), copy(p.url)),
+      h('div', { class: 'small muted' }, `${p.strategy === 'round_robin' ? 'Por turnos' : 'Al que menos clientes lleva hoy'} · `, p.channel_ids.map((id) => `${chName(id)}: ${p.hits.find((x) => x.channel_id === id)?.today ?? 0} hoy`).join(' · ')))),
+    h('details', { open: !pools.length },
+      h('summary', {}, '+ Crear un enlace'),
+      h('div', { class: 'grid' },
+        field('Nombre', text(n, 'name', { placeholder: 'Anuncios de octubre' })),
+        field('Cómo repartir', select(n, 'strategy', [['least_busy', 'Al número que menos clientes lleva hoy'], ['round_robin', 'Por turnos, uno y uno']]))),
+      field('Mensaje con el que se abre el chat (opcional)', text(n, 'message', { placeholder: 'Hola, vi su anuncio y quiero información' })),
+      picker(n),
+      h('button', { class: 'primary', onclick: async () => {
+        if (!n.name.trim()) return toast('Ponle un nombre', true);
+        if (await run(() => api('POST', '/api/wa-pools', { ...n, account_id: state.accountId || undefined }), 'Enlace creado')) render();
+      } }, 'Crear enlace')));
 }
 
 export async function viewChannels(root, params) {
@@ -80,6 +111,8 @@ export async function viewChannels(root, params) {
               isSuper() && !state.accountId ? h('td', { class: 'small' }, accountName(c.account_id)) : null,
               channelStatusCell(c)))))
         : h('p', { class: 'muted' }, 'Aún no hay canales.')),
+    // Con 2 o más WhatsApp aparece el enlace que reparte clientes (solo para quien administra una cuenta concreta).
+    ...((selectedAccount && channels.filter((c) => c.type === 'whatsapp' && c.account_id === selectedAccount).length >= 2 && isAdmin()) ? [await poolsCard(channels.filter((c) => c.account_id === selectedAccount))] : []),
   );
 }
 

@@ -47,15 +47,15 @@ export async function createAccount(
 
 export async function updateAccount(
   id: string,
-  patch: { name?: string; active?: boolean; status?: AccountStatus; plan?: string; trial_ends_at?: Date | null; business_type?: string },
+  patch: { name?: string; active?: boolean; status?: AccountStatus; plan?: string; trial_ends_at?: Date | null; business_type?: string; limits_override?: Record<string, number> },
 ) {
   return queryOne<Account>(
     `UPDATE accounts SET name = COALESCE($2, name), active = COALESCE($3, active), status = COALESCE($4, status), plan = COALESCE($5, plan),
        trial_ends_at = CASE WHEN $6::boolean THEN $7::timestamptz ELSE trial_ends_at END,
        trial_warned_at = CASE WHEN $6::boolean THEN NULL ELSE trial_warned_at END,
-       business_type = COALESCE($8, business_type), updated_at = now()
+       business_type = COALESCE($8, business_type), limits_override = COALESCE($9::jsonb, limits_override), updated_at = now()
      WHERE id = $1 RETURNING *`,
-    [id, patch.name ?? null, patch.active ?? null, patch.status ?? null, patch.plan ?? null, patch.trial_ends_at !== undefined, patch.trial_ends_at ?? null, patch.business_type ?? null],
+    [id, patch.name ?? null, patch.active ?? null, patch.status ?? null, patch.plan ?? null, patch.trial_ends_at !== undefined, patch.trial_ends_at ?? null, patch.business_type ?? null, patch.limits_override ? JSON.stringify(patch.limits_override) : null],
   );
 }
 

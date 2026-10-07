@@ -304,6 +304,14 @@ export async function setOptOut(contactId: string, optedOut: boolean) {
   await query(`UPDATE contacts SET opted_out = $2, opted_out_at = CASE WHEN $2 THEN now() ELSE NULL END, updated_at = now() WHERE id = $1`, [contactId, optedOut]);
 }
 
+/** Registra (o retira) el consentimiento para recibir promociones. `source`: keyword | panel | api | import | legacy. */
+export async function setConsent(contactId: string, consent: boolean, source = 'panel') {
+  await query(
+    `UPDATE contacts SET consent_at = CASE WHEN $2 THEN COALESCE(consent_at, now()) ELSE NULL END, consent_source = CASE WHEN $2 THEN $3 ELSE '' END, updated_at = now() WHERE id = $1`,
+    [contactId, consent, source],
+  );
+}
+
 export async function lastInbound(conversationId: string) {
   return queryOne<{ id: number; created_at: Date }>(
     `SELECT id, created_at FROM messages WHERE conversation_id = $1 AND direction = 'in' ORDER BY id DESC LIMIT 1`,
@@ -328,6 +336,8 @@ export interface Campaign {
   id: string;
   account_id: string;
   channel_id: string;
+  /** Números adicionales (mismo tipo de canal) desde los que también sale la campaña. */
+  channel_ids: string[];
   name: string;
   message: string;
   image_id: string | null;
@@ -351,19 +361,19 @@ export async function getCampaign(id: string) {
 
 export async function saveCampaign(
   accountId: string,
-  c: Pick<Campaign, 'channel_id' | 'name' | 'message' | 'image_id' | 'audience' | 'scheduled_at' | 'rate_per_minute' | 'business_hours_only'>,
+  c: Pick<Campaign, 'channel_id' | 'channel_ids' | 'name' | 'message' | 'image_id' | 'audience' | 'scheduled_at' | 'rate_per_minute' | 'business_hours_only'>,
   id?: string,
 ) {
-  const params = [c.channel_id, c.name, c.message, c.image_id, JSON.stringify(c.audience), c.scheduled_at, c.rate_per_minute, c.business_hours_only];
+  const params = [c.channel_id, c.name, c.message, c.image_id, JSON.stringify(c.audience), c.scheduled_at, c.rate_per_minute, c.business_hours_only, JSON.stringify(c.channel_ids ?? [])];
   if (id) {
     return queryOne<Campaign>(
-      `UPDATE campaigns SET channel_id=$1, name=$2, message=$3, image_id=$4, audience=$5, scheduled_at=$6, rate_per_minute=$7, business_hours_only=$8, updated_at=now()
-       WHERE id = $9 RETURNING *`,
+      `UPDATE campaigns SET channel_id=$1, name=$2, message=$3, image_id=$4, audience=$5, scheduled_at=$6, rate_per_minute=$7, business_hours_only=$8, channel_ids=$9, updated_at=now()
+       WHERE id = $10 RETURNING *`,
       [...params, id],
     );
   }
   return queryOne<Campaign>(
-    `INSERT INTO campaigns (channel_id, name, message, image_id, audience, scheduled_at, rate_per_minute, business_hours_only, account_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+    `INSERT INTO campaigns (channel_id, name, message, image_id, audience, scheduled_at, rate_per_minute, business_hours_only, channel_ids, account_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
     [...params, accountId],
   );
 }
@@ -377,10 +387,11 @@ export async function deleteCampaign(id: string) {
 }
 
 /** Conversaciones del canal que cumplen el segmento (nunca incluye a quienes se dieron de baja). */
-export async function campaignAudience(c: Pick<Campaign, 'channel_id' | 'audience'>, limit = 100000) {
+export async function campaignAudience(c: Pick<Campaign, 'channel_id' | 'audience'> & { channel_ids?: string[] }, limit = 100000, opts: { requireConsent?: boolean } = {}) {
   const a = c.audience ?? {};
-  const params: unknown[] = [c.channel_id];
-  const where = ['cv.channel_id = $1', 'NOT ct.opted_out'];
+  const params: unknown[] = [[...new Set([c.channel_id, ...(c.channel_ids ?? [])])]];
+  const where = ['cv.channel_id = ANY($1::uuid[])', 'NOT ct.opted_out'];
+  if (opts.requireConsent) where.push('ct.consent_at IS NOT NULL');
   if (a.tags_any?.length) {
     params.push(a.tags_any.map((t) => t.toLowerCase()));
     where.push(`EXISTS (SELECT 1 FROM jsonb_array_elements_text(ct.tags) t WHERE lower(t) = ANY($${params.length}))`);
@@ -398,8 +409,8 @@ export async function campaignAudience(c: Pick<Campaign, 'channel_id' | 'audienc
     where.push(`cv.status = ANY($${params.length})`);
   }
   params.push(limit);
-  return query<{ conversation_id: string; name: string; push_name: string; phone: string }>(
-    `SELECT cv.id AS conversation_id, ct.name, ct.push_name, ct.phone FROM conversations cv JOIN contacts ct ON ct.id = cv.contact_id
+  return query<{ conversation_id: string; channel_id: string; name: string; push_name: string; phone: string }>(
+    `SELECT cv.id AS conversation_id, cv.channel_id, ct.name, ct.push_name, ct.phone FROM conversations cv JOIN contacts ct ON ct.id = cv.contact_id
      WHERE ${where.join(' AND ')} ORDER BY cv.last_message_at DESC LIMIT $${params.length}`,
     params,
   );
@@ -431,4 +442,20 @@ export async function markNotificationsRead(userId: string, ids?: number[], acco
 export async function pruneAutomationData(days: number) {
   await query(`DELETE FROM jobs WHERE status IN ('done','failed','cancelled') AND created_at < now() - ($1 || ' days')::interval`, [String(days)]);
   await query(`DELETE FROM notifications WHERE created_at < now() - ($1 || ' days')::interval`, [String(Math.max(days, 60))]);
+}
+
+/** Cuántos del segmento quedan fuera por no haber aceptado recibir promociones. */
+export async function campaignExcludedNoConsent(c: Pick<Campaign, 'channel_id' | 'audience'> & { channel_ids?: string[] }) {
+  const all = await campaignAudience(c);
+  const withConsent = await campaignAudience(c, 100000, { requireConsent: true });
+  return all.length - withConsent.length;
+}
+
+/** Mensajes de campaña ya enviados desde cada número desde `since` (para respetar el tope diario entre campañas). */
+export async function campaignSentSince(accountId: string, since: Date) {
+  return query<{ channel_id: string; n: number }>(
+    `SELECT cv.channel_id, count(*)::int AS n FROM campaign_recipients r JOIN conversations cv ON cv.id = r.conversation_id
+      WHERE cv.account_id = $1 AND r.status = 'sent' AND r.sent_at >= $2 GROUP BY cv.channel_id`,
+    [accountId, since],
+  );
 }

@@ -403,7 +403,16 @@ export class Automator {
     }
     if (oo.enabled && contact.opted_out && norm && oo.resume_keywords.some((k) => normalize(k) === norm)) {
       await astore.setOptOut(contact.id, false);
+      await astore.setConsent(contact.id, true, 'keyword'); // volver a pedir mensajes es aceptarlos
       await this.chat.outbound.send(conv.id, { text: oo.resume_message, source: 'opt_out', transactional: true, allowWhenHuman: true });
+      return true;
+    }
+    // Consentimiento: escribir "ACEPTO" (u otra frase configurada) autoriza recibir promociones.
+    const co = settings.consent;
+    if (norm && !contact.opted_out && !contact.consent_at && co.opt_in_keywords.some((k) => normalize(k) === norm)) {
+      await astore.setConsent(contact.id, true, 'keyword');
+      if (co.opt_in_message.trim()) await this.chat.outbound.send(conv.id, { text: co.opt_in_message, source: 'opt_out', transactional: true, allowWhenHuman: true });
+      await logEvent({ level: 'info', source: 'engine', message: 'El cliente aceptó recibir promociones', accountId: conv.account_id, conversationId: conv.id });
       return true;
     }
     // Secuencias que se detienen cuando el cliente responde.

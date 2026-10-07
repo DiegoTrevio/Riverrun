@@ -373,6 +373,18 @@ async function editCampaign(root, id) {
   const editable = ['draft', 'scheduled'].includes(c.status);
   const local = { when: c.scheduled_at ? new Date(new Date(c.scheduled_at).getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16) : '' };
   const previewBox = h('div');
+  // Varios números: la campaña también sale desde los otros canales del mismo tipo (cada cliente recibe desde el número que ya conoce).
+  c.channel_ids ??= [];
+  const extraBox = h('div');
+  const drawExtra = () => {
+    const prim = channels.find((ch) => ch.id === c.channel_id);
+    const others = channels.filter((ch) => ch.id !== c.channel_id && prim && ch.type === prim.type);
+    fill(extraBox, others.length ? h('div', { class: 'field' },
+      h('span', {}, 'También enviar desde (reparte la carga)'),
+      others.map((ch) => h('label', { class: 'check' }, h('input', { type: 'checkbox', disabled: !editable, checked: c.channel_ids.includes(ch.id), onchange: (e) => { c.channel_ids = e.target.checked ? [...c.channel_ids, ch.id] : c.channel_ids.filter((x) => x !== ch.id); } }), `${ch.name}${ch.config?.number ? ` (+${ch.config.number})` : ''}`)),
+      h('small', {}, 'Cada cliente recibe el mensaje desde el número con el que ya hablaba. Cada número lleva su propio ritmo, así la campaña termina antes sin arriesgar a ninguno.')) : null);
+  };
+  drawExtra();
   const body = () => ({ ...c, image_id: c.image_id || null, scheduled_at: local.when ? new Date(local.when).toISOString() : null, account_id: state.accountId || undefined });
   const save = async () => {
     const saved = await run(() => (existing ? api('PUT', `/api/campaigns/${id}`, body()) : api('POST', '/api/campaigns', body())), 'Campaña guardada');
@@ -386,7 +398,7 @@ async function editCampaign(root, id) {
     fill(statusBox, h('div', { class: 'card' },
       h('div', { class: 'row between' }, h('h3', { style: 'margin:0' }, 'Estado: ', h('span', { class: `badge ${cls}` }, label)),
         h('div', { class: 'row' },
-          editable ? h('button', { class: 'small', onclick: async () => { const p = await run(() => api('POST', `/api/campaigns/${id}/preview`)); if (p) fill(previewBox, h('p', {}, h('strong', {}, `${p.count} destinatarios`), p.sample.length ? `: ${p.sample.join(', ')}${p.count > p.sample.length ? '…' : ''}` : ''), p.warning ? h('p', { class: 'badge orange' }, p.warning) : null); } }, 'Ver destinatarios') : null,
+          editable ? h('button', { class: 'small', onclick: async () => { const p = await run(() => api('POST', `/api/campaigns/${id}/preview`)); if (p) fill(previewBox, h('p', {}, h('strong', {}, `${p.count} destinatarios`), p.sample.length ? `: ${p.sample.join(', ')}${p.count > p.sample.length ? '…' : ''}` : ''), p.excluded_no_consent ? h('p', { class: 'small' }, `⚠️ ${p.excluded_no_consent} cliente${p.excluded_no_consent === 1 ? '' : 's'} del segmento quedan fuera porque no han aceptado recibir promociones (se registra cuando escriben ACEPTO o tú lo marcas en su ficha).`) : null, p.warning ? h('p', { class: 'badge orange' }, p.warning) : null); } }, 'Ver destinatarios') : null,
           editable ? h('button', { class: 'primary small', onclick: async () => { if (!(await save())) return; if (!confirm(local.when ? 'Se programará el envío. ¿Continuar?' : 'Se enviará AHORA a todos los destinatarios. ¿Continuar?')) return; if (await run(() => api('POST', `/api/campaigns/${id}/launch`), 'Campaña en marcha')) render(); } }, local.when ? 'Programar envío' : 'Enviar ahora') : null,
           ['scheduled', 'sending'].includes(c.status) ? h('button', { class: 'small danger', onclick: async () => { if (confirm('¿Cancelar la campaña?')) { await run(() => api('POST', `/api/campaigns/${id}/cancel`), 'Cancelada'); render(); } } }, 'Cancelar') : null)),
       previewBox,
@@ -399,7 +411,8 @@ async function editCampaign(root, id) {
     h('div', { class: 'card' },
       h('div', { class: 'grid' },
         field('Nombre', text(c, 'name', { placeholder: 'Promoción de octubre' })),
-        field('Canal', select(c, 'channel_id', channels.map((ch) => [ch.id, `${ch.name} (${ch.label})`])))),
+        field('Canal', select(c, 'channel_id', channels.map((ch) => [ch.id, `${ch.name} (${ch.label})`]), () => { c.channel_ids = []; if (editable) { drawExtra(); } }))),
+      extraBox,
       field('Mensaje', area(c, 'message', { big: true }), VARS_HELP),
       field('Imagen (opcional)', select(c, 'image_id', [['', '— Sin imagen —'], ...refs.images.map((im) => [im.id, `${im.name} (${im.bot})`])]))),
     h('div', { class: 'card' },
@@ -457,7 +470,25 @@ async function editSettings(root) {
         field('Palabras para volver a recibir', lines(s.opt_out, 'resume_keywords'))),
       field('Respuesta al darse de baja', area(s.opt_out, 'confirm_message')),
       field('Respuesta al volver', area(s.opt_out, 'resume_message')),
+      check(s.opt_out, 'footer_enabled', 'Agregar a cada campaña y secuencia cómo darse de baja (recomendado; muchas leyes lo exigen)'),
+      field('Texto del pie', text(s.opt_out, 'footer_text'), '{{palabra_baja}} se reemplaza por la primera palabra de baja de arriba, en mayúsculas.'),
       h('p', { class: 'small muted' }, 'Quien se da de baja no recibe campañas, secuencias ni mensajes de reglas; sí recibe recordatorios de sus citas.')),
+    h('div', { class: 'card' },
+      h('h3', { style: 'margin-top:0' }, 'Protección del número de WhatsApp'),
+      field('Tope de mensajes de campaña por número y por día', num(s.sending, 'daily_cap_per_number', { min: 0 }), '0 = sin tope. Lo que no cabe hoy se envía al día siguiente. Para números nuevos, empezar con 50–100 al día reduce el riesgo de bloqueo.')),
+    h('div', { class: 'card' },
+      h('h3', { style: 'margin-top:0' }, 'Consentimiento para promociones'),
+      check(s.consent, 'require_for_campaigns', 'Enviar campañas y secuencias solo a quienes aceptaron recibirlas (recomendado)'),
+      h('div', { class: 'grid' },
+        field('Frases con las que aceptan', lines(s.consent, 'opt_in_keywords'), 'El mensaje debe ser exactamente una de ellas.'),
+        field('Respuesta al aceptar', area(s.consent, 'opt_in_message'))),
+      h('p', { class: 'small muted' }, 'Quien escribe una de esas frases queda registrado con fecha. También puedes marcarlo a mano en la ficha de cada cliente. Los mensajes de servicio (respuestas, recordatorios de citas) no necesitan este consentimiento. Los clientes anteriores a esta función quedaron como aceptados.')),
+    h('div', { class: 'card' },
+      h('h3', { style: 'margin-top:0' }, 'Privacidad: cuánto tiempo guardar los datos'),
+      h('div', { class: 'grid' },
+        field('Borrar mensajes con más de … días', num(s.retention, 'messages_days', { min: 0 }), '0 = conservarlos siempre. También se limpian los resúmenes de esas conversaciones.'),
+        field('Borrar contactos sin actividad en … días', num(s.retention, 'inactive_contacts_days', { min: 0 }), '0 = nunca. No se borran contactos con citas futuras.')),
+      h('p', { class: 'small muted' }, 'El borrado es automático (cada pocas horas) y no se puede deshacer; los respaldos antiguos pueden conservar los datos hasta que se renueven. Para atender la solicitud de una sola persona usa "Borrar todos sus datos" en su ficha.')),
     h('div', { class: 'card' },
       h('h3', { style: 'margin-top:0' }, 'Equipo'),
       check(s, 'notify_team_on_handoff', 'Avisar en el panel a todo el equipo cuando una conversación pasa a una persona')),

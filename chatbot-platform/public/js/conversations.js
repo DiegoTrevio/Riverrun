@@ -37,8 +37,25 @@ export async function viewConversations(root, params) {
     );
   };
   const types = state.meta.channel_types.map((t) => [t.type, t.label]);
+  // Exportar a CSV (se abre en Excel o Google Sheets); respeta los filtros de arriba cuando aplican.
+  const exportUrl = (kind) => {
+    const qs = new URLSearchParams();
+    if (isSuper() && state.accountId) qs.set('account_id', state.accountId);
+    if (f.channel_id) qs.set('channel_id', f.channel_id);
+    if (f.chatbot_id && kind === 'conversations') qs.set('chatbot_id', f.chatbot_id);
+    if (f.status && kind === 'conversations') qs.set('status', f.status);
+    return `/api/export/${kind}.csv?${qs}`;
+  };
+  const exportMenu = isAdmin()
+    ? h('details', { class: 'menu' },
+      h('summary', { class: 'btn' }, '⬇ Exportar'),
+      h('div', { class: 'menu-items' },
+        h('a', { href: exportUrl('contacts'), download: '' }, '👥 Contactos (CSV)'),
+        h('a', { href: exportUrl('conversations'), download: '' }, '💬 Conversaciones (CSV)'),
+        h('a', { href: exportUrl('messages'), download: '' }, '📝 Mensajes completos (CSV)')))
+    : null;
   root.append(
-    h('h1', {}, 'Conversaciones'),
+    h('div', { class: 'row between' }, h('h1', {}, 'Conversaciones'), exportMenu),
     h('div', { class: 'card row' },
       h('div', { style: 'min-width:170px' }, select(f, 'chatbot_id', [['', 'Todos los chatbots'], ...bots.map((b) => [b.id, b.name])], apply)),
       h('div', { style: 'min-width:150px' }, select(f, 'channel_type', [['', 'Todas las plataformas'], ...types], apply)),
@@ -158,7 +175,7 @@ export async function viewConversation(root, id) {
 
   const drawSide = () => {
     const { conversation: c, contact: ct } = data;
-    const m = { name: ct.name, data: { ...ct.data }, notes: [...(ct.notes || [])], tags: [...(ct.tags || [])], opted_out: !!ct.opted_out };
+    const m = { name: ct.name, data: { ...ct.data }, notes: [...(ct.notes || [])], tags: [...(ct.tags || [])], opted_out: !!ct.opted_out, consent: !!ct.consent_at };
     const fieldsDef = data.chatbot?.data_fields || [];
     // Los campos de tipo "nombre" se editan en el campo Nombre del contacto.
     const nameKeys = [...new Set([...fieldsDef.filter((f) => f.type === 'name').map((f) => f.key), ...['nombre', 'name'].filter((k) => Object.hasOwn(ct.data || {}, k))])];
@@ -171,7 +188,18 @@ export async function viewConversation(root, id) {
         field('Notas (memoria)', lines(m, 'notes')),
         field('Etiquetas', h('input', { type: 'text', value: m.tags.join(', '), placeholder: 'vip, interesado', oninput: (e) => (m.tags = e.target.value.split(',').map((x) => x.trim()).filter(Boolean)) }), 'Separadas por comas. Sirven para campañas y reglas.'),
         check(m, 'opted_out', 'Dado de baja (no recibe mensajes promocionales)'),
+        check(m, 'consent', 'Aceptó recibir promociones'),
+        ct.consent_at ? h('p', { class: 'small muted', style: 'margin:-4px 0 8px' }, `Consentimiento registrado el ${fmtDate(ct.consent_at)}${ct.consent_source ? ` (${{ keyword: 'lo escribió el cliente', panel: 'marcado por el equipo', legacy: 'cliente anterior a esta función', api: 'integración' }[ct.consent_source] || ct.consent_source})` : ''}.`) : null,
         h('button', { class: 'small', onclick: async () => { if (await run(() => api('PUT', `/api/contacts/${ct.id}`, { ...m, data: Object.fromEntries(Object.entries({ ...m.data, ...Object.fromEntries(nameKeys.map((k) => [k, m.name])) }).filter(([, v]) => v)) }), 'Datos guardados')) load(true); } }, 'Guardar datos')),
+      isAdmin() ? h('details', { class: 'card' },
+        h('summary', {}, '🔒 Privacidad de este cliente'),
+        h('p', { class: 'small muted' }, 'Para atender una solicitud de acceso o supresión de datos personales.'),
+        h('div', { class: 'row' },
+          h('a', { class: 'btn small', href: `/api/contacts/${ct.id}/data`, download: '' }, 'Descargar todos sus datos'),
+          h('button', { class: 'small danger', onclick: async () => {
+            if (prompt('Se borrará este cliente y TODA su conversación, de forma definitiva. Escribe BORRAR para confirmar') !== 'BORRAR') return;
+            if (await run(() => api('DELETE', `/api/contacts/${ct.id}`), 'Datos eliminados')) location.hash = '#/conversations';
+          } }, 'Borrar todos sus datos'))) : null,
       flowCard(data.chatbot?.flow, c),
       autoBox,
       h('div', { class: 'card' },

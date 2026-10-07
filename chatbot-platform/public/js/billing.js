@@ -10,6 +10,10 @@ const planPrice = (p) => `${new Intl.NumberFormat('es-MX', { maximumFractionDigi
 
 const longDate = (d) => (d ? new Date(d).toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric' }) : '');
 
+const LIMIT_SHORT = { messages_per_month: ['mensajes al mes', 'mensaje al mes'], channels: ['canales', 'canal'], users: ['usuarios', 'usuario'], chatbots: ['asistentes', 'asistente'] };
+/** "hasta 1,000 mensajes al mes · 1 canal · …" (vacío si el plan no tiene límites). */
+export const limitsText = (limits = {}) => Object.entries(LIMIT_SHORT).filter(([k]) => limits[k]).map(([k, [pl, sg]]) => `${limits[k].toLocaleString('es-MX')} ${limits[k] === 1 ? sg : pl}`).join(' · ');
+
 export async function viewPlan(root, params) {
   const b = await api('GET', withAcct('/api/billing'));
   const sub = b.subscription;
@@ -55,6 +59,7 @@ export async function viewPlan(root, params) {
         h('h3', { style: 'margin:0' }, p.name),
         h('div', { class: 'kpi', style: 'margin:8px 0' }, planPrice(p), h('span', { class: 'muted small' }, ' / mes')),
         p.description ? h('p', { class: 'muted' }, p.description) : null,
+        limitsText(p.limits) ? h('p', { class: 'small' }, '✓ Incluye ', limitsText(p.limits)) : h('p', { class: 'small' }, '✓ Sin límites de uso'),
         p.providers.length
           ? h('div', { class: 'stack' }, p.providers.map((pr) => h('button', { class: 'primary', onclick: async () => {
             const r = await run(() => api('POST', withAcct('/api/billing/checkout'), { plan: p.key, provider: pr.name }));
@@ -65,22 +70,30 @@ export async function viewPlan(root, params) {
     }
   }
 
+  const usage = b.limits.items.some((i) => i.max)
+    ? h('div', { class: 'card' },
+      h('h3', { style: 'margin-top:0' }, 'Tu uso', ' ', h('span', { class: 'muted small' }, b.limits.source === 'trial' ? '(periodo de prueba)' : b.limits.source === 'override' ? '(límites especiales)' : '')),
+      b.limits.items.filter((i) => i.max).map((i) => h('div', { style: 'margin:10px 0' },
+        h('div', { class: 'row between small' }, h('span', {}, i.label), h('span', { class: i.percent >= 100 ? 'error' : 'muted' }, `${i.used.toLocaleString('es-MX')} de ${i.max.toLocaleString('es-MX')}`)),
+        h('div', { class: 'bar' }, h('div', { class: `bar-fill ${i.percent >= 100 ? 'full' : i.percent >= 80 ? 'warn' : ''}`, style: `width:${i.percent}%` })))),
+      b.limits.items.some((i) => i.key === 'messages_per_month' && i.max) ? h('p', { class: 'muted small', style: 'margin-bottom:0' }, 'Los mensajes se cuentan cada mes (el día 1 vuelven a cero). Al llegar al límite el asistente deja de responder solo; las conversaciones se siguen guardando.') : null)
+    : null;
   root.append(
     h('h1', {}, 'Mi plan y pagos'),
     ...(paid ? [h('div', { class: 'banner' }, '¡Gracias! Estamos confirmando tu pago; en unos segundos tu plan aparece activo.',
       h('button', { class: 'small', style: 'margin-left:8px', onclick: () => { state.me = null; render(); } }, 'Actualizar'))] : []),
-    status, offer);
+    status, usage, offer);
   if (paid && !live) state.timers.push(setTimeout(() => { state.me = null; render(); }, 5000));
 }
 
 /** Superadmin: planes, claves configuradas y avisos de los proveedores. */
 export async function viewPlans(root) {
   const [plans, ov] = await Promise.all([api('GET', '/api/plans'), api('GET', '/api/billing/overview')]);
-  const blank = { key: '', name: '', description: '', price: 0, currency: 'MXN', stripe_price_id: '', active: true, sort_order: 0 };
+  const blank = { key: '', name: '', description: '', price: 0, currency: 'MXN', stripe_price_id: '', active: true, sort_order: 0, limits: {} };
   const count = (provider, status) => ov.counts.filter((c) => c.provider === provider && c.status === status).reduce((a, c) => a + c.n, 0);
 
   const editor = (p, isNew) => {
-    const m = { ...p };
+    const m = { ...p, limits: { ...(p.limits || {}) } };
     return h('div', { class: 'card' },
       h('div', { class: 'grid' },
         field(isNew ? 'Clave (minúsculas, sin espacios)' : 'Clave', isNew ? text(m, 'key', { placeholder: 'basico' }) : h('input', { value: p.key, disabled: true })),
@@ -90,10 +103,16 @@ export async function viewPlans(root) {
         field('Precio mensual', num(m, 'price', { step: 0.01, min: 0 })),
         field('Moneda', text(m, 'currency', { placeholder: 'MXN' })),
         field('ID de precio de Stripe (price_…)', text(m, 'stripe_price_id', { placeholder: 'price_1Abc…' }), 'Déjalo vacío si este plan solo se cobra con Mercado Pago.')),
+      h('h4', { style: 'margin:12px 0 4px' }, 'Límites del plan', h('span', { class: 'muted small' }, ' (vacío = sin límite)')),
+      h('div', { class: 'grid' },
+        field('Mensajes del asistente al mes', num(m.limits, 'messages_per_month', { min: 1, nullable: true, placeholder: 'Sin límite' })),
+        field('Canales', num(m.limits, 'channels', { min: 1, nullable: true, placeholder: 'Sin límite' })),
+        field('Usuarios', num(m.limits, 'users', { min: 1, nullable: true, placeholder: 'Sin límite' })),
+        field('Asistentes', num(m.limits, 'chatbots', { min: 1, nullable: true, placeholder: 'Sin límite' }))),
       check(m, 'active', 'Disponible para contratar'),
       h('div', { class: 'row' },
         h('button', { class: 'primary', onclick: async () => {
-          const body = { ...m, price: Number(m.price) };
+          const body = { ...m, price: Number(m.price), limits: Object.fromEntries(Object.entries(m.limits).filter(([, v]) => v)) };
           if (await run(() => (isNew ? api('POST', '/api/plans', body) : api('PUT', `/api/plans/${p.key}`, body)), 'Plan guardado')) render();
         } }, 'Guardar'),
         isNew ? null : h('button', { class: 'danger', onclick: async () => { if (confirm(`¿Borrar el plan ${p.name}?`) && await run(() => api('DELETE', `/api/plans/${p.key}`), 'Borrado')) render(); } }, 'Borrar')));

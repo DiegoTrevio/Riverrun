@@ -89,6 +89,13 @@ export const config = {
     requireEmail: env('SIGNUP_REQUIRE_EMAIL', 'true') === 'true',
     /** Correo del superadmin para avisos (cuentas nuevas, pruebas que vencen, gasto alto). */
     superadminEmail: env('SUPERADMIN_EMAIL', ''),
+    /** Límites de la prueba gratuita (0 = sin límite). Evitan que una prueba sin tarjeta gaste IA sin tope. */
+    trialLimits: {
+      messages: Number(env('TRIAL_MAX_MESSAGES', '300')),
+      channels: Number(env('TRIAL_MAX_CHANNELS', '2')),
+      users: Number(env('TRIAL_MAX_USERS', '3')),
+      chatbots: Number(env('TRIAL_MAX_CHATBOTS', '2')),
+    },
     /** Direcciones públicas de tus términos y tu aviso de privacidad (se enlazan en el registro). */
     termsUrl: env('TERMS_URL', ''),
     privacyUrl: env('PRIVACY_URL', ''),

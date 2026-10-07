@@ -14,6 +14,7 @@ import { describeInbound, type InboundMessage } from './channels/types.js';
 import { query } from './db.js';
 import { summarizeConversation } from './engine/report.js';
 import { Engine, type ProcessResult } from './engine/engine.js';
+import { messageQuota, noticeMessagesReached } from './billing/limits.js';
 import { ConversationQueue } from './engine/queue.js';
 import { PlaygroundTransport, type Transport } from './engine/transport.js';
 import { logEvent } from './logs.js';
@@ -154,6 +155,13 @@ export class ChatService {
     } catch (e: any) {
       await logEvent({ level: 'error', source: 'channel', message: e?.message ?? String(e), accountId: channel.account_id, channelId: channel.id, conversationId });
       await store.markAllProcessed(conversationId);
+      return { status: 'nothing' };
+    }
+    // Cupo mensual del plan: al agotarse el asistente deja de responder solo (y se avisa al equipo una vez al mes).
+    if (channel.type !== 'playground' && (await messageQuota(channel.account_id)).reached) {
+      await store.markAllProcessed(conversationId);
+      await noticeMessagesReached(channel.account_id).catch(() => undefined);
+      await logEvent({ level: 'warn', source: 'engine', message: 'Límite mensual de mensajes del plan alcanzado: el asistente no respondió', accountId: channel.account_id, channelId: channel.id, conversationId });
       return { status: 'nothing' };
     }
     return this.engine.process(conversationId, transport, { allowRestart: this.queue.canRestart(restarts) });

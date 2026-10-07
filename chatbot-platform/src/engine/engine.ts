@@ -1,5 +1,6 @@
 import { config } from '../config.js';
 import type { AiProvider } from '../ai/provider.js';
+import { recordMessage } from '../billing/limits.js';
 import { logEvent } from '../logs.js';
 import * as store from '../store/index.js';
 import type { Chatbot, Contact, Conversation, ImageAsset, Message } from '../types.js';
@@ -447,6 +448,8 @@ export class Engine {
     try {
       const extId = o.image ? await transport.sendImage(o.image, o.text, o.delay) : await transport.sendText(o.text, o.delay);
       await store.updateMessage(msg.id, { external_message_id: extId, status: 'ok' });
+      // Cuenta para el límite mensual del plan (las pruebas del simulador no cuentan).
+      if (o.sender === 'bot' && transport.kind !== 'playground') await recordMessage(conv.account_id).catch(() => undefined);
       const sent = { ...msg, status: 'ok', external_message_id: extId };
       if (this.ext.onOutbound) await this.ext.onOutbound(conv, sent).catch(() => undefined);
       return sent;

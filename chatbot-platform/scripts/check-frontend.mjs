@@ -19,6 +19,21 @@ for (const f of files) {
     for (const name of m[1].split(',').map((s) => s.trim()).filter(Boolean)) if (!exportsOf[m[2]].has(name)) problems.push(`${f}: importa ${name} de ${m[2]}, que no lo exporta`);
   }
 }
+// Nombres sin declarar o sin importar (el error clásico al editar un módulo): se detectan con el compilador de TypeScript.
+try {
+  const { default: ts } = await import('typescript');
+  const program = ts.createProgram(files.map((f) => path.join(dir, f)), { allowJs: true, checkJs: true, noEmit: true, target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext, moduleResolution: ts.ModuleResolutionKind.Bundler, lib: ['lib.es2023.d.ts', 'lib.dom.d.ts', 'lib.dom.iterable.d.ts'], skipLibCheck: true });
+  for (const f of files) {
+    const sf = program.getSourceFile(path.join(dir, f));
+    for (const d of program.getSemanticDiagnostics(sf)) {
+      if (![2304, 2552].includes(d.code)) continue; // "Cannot find name 'x'" (+ sugerencia)
+      const { line } = sf.getLineAndCharacterOfPosition(d.start);
+      problems.push(`${f}:${line + 1}: ${ts.flattenDiagnosticMessageText(d.messageText, ' ')}`);
+    }
+  }
+} catch (e) {
+  console.warn('No se pudo ejecutar la revisión de nombres (¿falta typescript?):', e.message);
+}
 if (/^import /m.test(src['core.js'])) problems.push('core.js no debe importar otros módulos (evita ciclos al arrancar)');
 if (problems.length) { console.error(problems.join('\n')); process.exit(1); }
 console.log(`Panel OK: ${files.length} módulos, ${Object.values(src).join('\n').split('\n').length} líneas`);
