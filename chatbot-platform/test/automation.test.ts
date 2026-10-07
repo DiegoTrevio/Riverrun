@@ -27,7 +27,7 @@ before(async () => {
   h = await createHarness();
   await h.createBot();
   convOf = async (phone: string) => (await h.authed('GET', `/api/conversations?chatbot_id=${h.botId}&search=${phone}`)).json()[0];
-  const s = await h.authed('PUT', `/api/settings?account_id=${h.accountId}`, { business_hours: ALL_DAY });
+  const s = await h.authed('PUT', `/api/settings?account_id=${h.accountId}`, { business_hours: ALL_DAY, consent: { require_for_campaigns: false } });
   assert.equal(s.statusCode, 200, s.body);
   // Miembro del equipo que recibe alertas por WhatsApp
   const u = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'lucia@hotel.mx', name: 'Lucía', password: 'clave-lucia-1', role: 'agent', phone: '5215588880000', notify_whatsapp: true });

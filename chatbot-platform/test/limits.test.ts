@@ -98,19 +98,21 @@ t('mensajes del mes: avisa al 80 % y al 100 %, y el asistente deja de responder 
   // El sexto mensaje ya no se responde (y no se queda en bucle)
   h.reset();
   await h.webhook('mensaje 6', { phone: phone(6) });
+  await waitFor(async () => (await pool.query(`SELECT count(*)::int AS n FROM messages WHERE content = 'mensaje 6' AND processed = true`)).rows[0].n === 1, 6000);
   await h.idle();
   assert.equal(h.sent.length, 0);
   assert.equal(h.calls.length, 0, 'ni siquiera se llamó a la IA');
-  assert.equal((await pool.query(`SELECT count(*)::int AS n FROM messages WHERE processed = false AND direction = 'in'`)).rows[0].n, 0);
   assert.equal((await notices()).filter((x: string) => /Llegaste al límite/.test(x)).length, 1, 'no repite el aviso');
   // Sube el límite: vuelve a responder
   await h.authed('PUT', `/api/accounts/${h.accountId}`, { limits_override: { messages_per_month: 50 } });
   await h.webhook('mensaje 7', { phone: phone(7) });
   await waitFor(() => h.sent.length === 1, 8000);
   // El simulador no cuenta
-  const before = await lim.messagesUsed(h.accountId);
+  await waitFor(async () => (await lim.messagesUsed(h.accountId)) === 6, 5000);
   await h.authed('POST', `/api/chatbots/${h.botId}/playground`, { session: 'abc', text: 'hola' });
-  assert.equal(await lim.messagesUsed(h.accountId), before);
+  await h.idle();
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(await lim.messagesUsed(h.accountId), 6, 'el simulador no gasta el cupo');
 });
 
 t('el contador es mensual: otro mes empieza en cero', async () => {
@@ -122,6 +124,7 @@ t('el contador es mensual: otro mes empieza en cero', async () => {
 });
 
 t('una campaña más grande que el cupo restante no se lanza', async () => {
+  await h.authed('PUT', `/api/settings?account_id=${h.accountId}`, { consent: { require_for_campaigns: false } });
   await h.authed('PUT', `/api/accounts/${h.accountId}`, { limits_override: { messages_per_month: await lim.messagesUsed(h.accountId) + 1 } });
   const camp = (await h.authed('POST', '/api/campaigns', { account_id: h.accountId, channel_id: h.channelId, name: 'Grande', message: 'Promo', audience: {}, rate_per_minute: 60 })).json();
   const r = await h.authed('POST', `/api/campaigns/${camp.id}/launch`);
