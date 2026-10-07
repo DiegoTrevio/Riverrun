@@ -70,7 +70,7 @@ export async function deleteAccount(id: string) {
 
 /* ------------------------------ Usuarios ------------------------------ */
 
-const USER_COLS = 'id, account_id, role, name, email, phone, notify_whatsapp, active, email_verified_at, last_login_at, created_at';
+const USER_COLS = 'id, account_id, role, name, email, phone, notify_whatsapp, available, active, email_verified_at, last_login_at, created_at';
 
 export async function listUsers(accountId: string | null): Promise<User[]> {
   return accountId
@@ -110,9 +110,11 @@ export async function createUser(
   return rows[0] as User;
 }
 
+export const getUserBasic = (id: string) => queryOne<{ id: string; name: string; email: string }>(`SELECT id, name, email FROM users WHERE id = $1`, [id]);
+
 export async function updateUser(
   id: string,
-  patch: { name?: string; role?: Role; account_id?: string | null; active?: boolean; password_hash?: string; email?: string; phone?: string; notify_whatsapp?: boolean },
+  patch: { name?: string; role?: Role; account_id?: string | null; active?: boolean; password_hash?: string; email?: string; phone?: string; notify_whatsapp?: boolean; available?: boolean },
   expectedAccountId?: string,
 ) {
   return withTransaction(async (client) => {
@@ -120,11 +122,15 @@ export async function updateUser(
       `UPDATE users SET name = COALESCE($2, name), role = COALESCE($3, role), active = COALESCE($4, active),
        password_hash = COALESCE($5, password_hash), email = COALESCE($6, email),
        phone = COALESCE($7, phone), notify_whatsapp = COALESCE($8, notify_whatsapp),
-       account_id = CASE WHEN $9::boolean THEN $10::uuid ELSE account_id END, updated_at = now()
+       account_id = CASE WHEN $9::boolean THEN $10::uuid ELSE account_id END, available = COALESCE($12, available), updated_at = now()
      WHERE id = $1 AND ($11::uuid IS NULL OR account_id = $11) RETURNING ${USER_COLS}`,
-      [id, patch.name ?? null, patch.role ?? null, patch.active ?? null, patch.password_hash ?? null, patch.email?.trim() ?? null, patch.phone?.replace(/\D/g, '') ?? null, patch.notify_whatsapp ?? null, patch.account_id !== undefined, patch.account_id ?? null, expectedAccountId ?? null],
+      [id, patch.name ?? null, patch.role ?? null, patch.active ?? null, patch.password_hash ?? null, patch.email?.trim() ?? null, patch.phone?.replace(/\D/g, '') ?? null, patch.notify_whatsapp ?? null, patch.account_id !== undefined, patch.account_id ?? null, expectedAccountId ?? null, patch.available ?? null],
     );
     const user = result.rows[0] ?? null;
+    // Quien se desactiva o cambia de perfil deja de tener conversaciones abiertas asignadas.
+    if (user && (patch.active === false || patch.account_id !== undefined)) {
+      await client.query(`UPDATE conversations SET assigned_user_id = NULL, assigned_at = NULL WHERE assigned_user_id = $1 AND status <> 'closed' AND ($2::uuid IS NULL OR account_id <> $2 OR $3::boolean)`, [id, user.account_id, patch.active === false]);
+    }
     if (user && patch.account_id !== undefined && user.role !== 'superadmin') {
       // A transferred user must no longer receive owner alerts from the old profile.
       await client.query('UPDATE accounts SET owner_user_id = NULL WHERE owner_user_id = $1 AND id <> $2', [id, user.account_id]);

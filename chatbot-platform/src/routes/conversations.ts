@@ -8,6 +8,7 @@ import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
 import { parse } from './util.js';
 import * as astore from '../automation/store.js';
+import * as assignment from '../automation/assignment.js';
 import { stopEnrollments } from '../automation/store.js';
 import { contactDataExport, eraseContact } from '../privacy.js';
 
@@ -28,6 +29,9 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
         where.push(`${col} = $${params.length}`);
       }
     }
+    if (q.assigned === 'me') { params.push(req.user.id); where.push(`c.assigned_user_id = $${params.length}`); }
+    else if (q.assigned === 'none') where.push(`c.assigned_user_id IS NULL`);
+    else if (q.assigned && /^[0-9a-f-]{36}$/i.test(q.assigned)) { params.push(q.assigned); where.push(`c.assigned_user_id = $${params.length}`); }
     if (q.include_playground !== 'true') where.push(`ch.type <> 'playground'`);
     if (q.search) {
       params.push(`%${q.search}%`);
@@ -35,7 +39,7 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
     }
     params.push(Math.min(Number(q.limit) || 100, 500));
     return query(
-      `SELECT c.id, c.account_id, c.chatbot_id, c.channel_id, c.status, c.handoff_reason, c.last_message_at, c.created_at,
+      `SELECT c.id, c.account_id, c.chatbot_id, c.channel_id, c.status, c.handoff_reason, c.last_message_at, c.created_at, c.assigned_user_id, au.name AS assigned_name, au.email AS assigned_email,
               ct.id AS contact_id, ct.name, ct.push_name, ct.phone, ct.external_id,
               ch.type AS channel_type, ch.name AS channel_name, b.name AS chatbot_name, a.name AS account_name,
               (SELECT content FROM messages m WHERE m.conversation_id = c.id ORDER BY id DESC LIMIT 1) AS last_message,
@@ -45,6 +49,7 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
          JOIN channels ch ON ch.id = c.channel_id
          JOIN accounts a ON a.id = c.account_id
          LEFT JOIN chatbots b ON b.id = c.chatbot_id
+         LEFT JOIN users au ON au.id = c.assigned_user_id
        ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
        ORDER BY c.last_message_at DESC LIMIT $${params.length}`,
       params,
@@ -71,6 +76,7 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
       /** Asistente en esta conversación: activo, en pausa (motivo) o esperando su palabra de activación. */
       agent: bot ? agentStatus(bot, conv) : null,
       channel: channel ? { id: channel.id, name: channel.name, type: channel.type } : null,
+      assignee: conv.assigned_user_id ? await store.getUserBasic(conv.assigned_user_id) : null,
     };
   });
 
@@ -80,8 +86,49 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
   api.post('/api/conversations/:cid/takeover', async (req: any) => {
     const conv = await conversationFor(req.user, req.params.cid);
     const updated = await service.takeover(conv.id, `Tomada por ${req.user.name || req.user.email}`);
+    // Quien toma una conversación sin dueño se queda con ella.
+    if (!conv.assigned_user_id && req.user.account_id) await assignment.setAssignee(conv.id, req.user.id);
     await log(conv, `Conversación tomada por ${req.user.email}`);
     return updated;
+  });
+
+  /**
+   * Asignar la conversación: a una persona concreta, a ti ("me"), al siguiente del turno ("next") o a nadie (null).
+   * Cualquiera del equipo puede quedársela; asignar a otras personas o repartir por turnos es de administradores.
+   */
+  api.put('/api/conversations/:cid/assign', async (req: any) => {
+    const conv = await conversationFor(req.user, req.params.cid);
+    const b = parse(z.object({ user_id: z.union([z.string().uuid(), z.literal('me'), z.literal('next'), z.null()]) }), req.body);
+    const isAdminUser = req.user.role === 'admin' || req.user.role === 'superadmin';
+    let target: assignment.Candidate | null = null;
+    if (b.user_id === 'next') {
+      if (!isAdminUser) throw new HttpError(403, 'Solo un administrador reparte por turnos');
+      const settings = await astore.getSettings(conv.account_id);
+      target = await assignment.assignRoundRobin(conv, { scope: 'manual', roles: settings.assignment.roles, userIds: settings.assignment.user_ids, reason: `repartida por ${req.user.email}` });
+      if (!target) throw new HttpError(409, 'No hay nadie disponible para recibirla');
+    } else if (b.user_id === null) {
+      if (!isAdminUser && conv.assigned_user_id !== req.user.id) throw new HttpError(403, 'Solo puedes soltar tus propias conversaciones');
+      await assignment.setAssignee(conv.id, null);
+    } else {
+      const uid = b.user_id === 'me' ? req.user.id : b.user_id;
+      if (uid !== req.user.id && !isAdminUser) throw new HttpError(403, 'Solo un administrador asigna a otras personas');
+      const user = (await query<assignment.Candidate & { active: boolean; account_id: string }>(`SELECT id, name, email, role, phone, notify_whatsapp, active, account_id FROM users WHERE id = $1`, [uid]))[0];
+      if (!user || user.account_id !== conv.account_id || !user.active || user.role === 'superadmin') throw new HttpError(400, 'Esa persona no pertenece a esta cuenta');
+      await assignment.setAssignee(conv.id, user.id);
+      target = user;
+    }
+    await log(conv, target ? `Conversación asignada a ${target.email} por ${req.user.email}` : `Conversación sin asignar (${req.user.email})`);
+    if (target && target.id !== req.user.id) {
+      const contact = await store.getContact(conv.contact_id);
+      await service.automator.alertTeam(conv.account_id, {
+        title: '📥 Te asignaron una conversación',
+        body: `${contact?.name || contact?.push_name || 'Cliente'}${b.user_id === 'next' ? ' (por turnos)' : ` · te la asignó ${req.user.name || req.user.email}`}`,
+        link: `#/conversation/${conv.id}`,
+        userIds: [target.id],
+        kind: 'assignment',
+      });
+    }
+    return { ok: true, assigned_user_id: target?.id ?? null, assigned_name: target ? target.name || target.email : null };
   });
 
   api.post('/api/conversations/:cid/release', async (req: any) => {

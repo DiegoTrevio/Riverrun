@@ -15,6 +15,7 @@ export async function viewConversations(root, params) {
     channel_type: params.get('channel_type') || '',
     status: params.get('status') || '',
     search: params.get('search') || '',
+    assigned: params.get('assigned') || '',
   };
   const apply = () => { location.hash = `#/conversations?${new URLSearchParams(Object.entries(f).filter(([, v]) => v))}`; };
   const table = h('tbody');
@@ -31,9 +32,10 @@ export async function viewConversations(root, params) {
           h('td', {}, channelIcon(c.channel_type), ' ', c.channel_name, h('div', { class: 'muted small' }, c.chatbot_name || 'sin chatbot')),
           showAccount ? h('td', { class: 'small' }, c.account_name) : null,
           h('td', {}, h('span', { class: `badge ${cls}` }, label), c.status === 'human' && c.handoff_reason ? h('div', { class: 'muted small' }, c.handoff_reason) : null),
+          h('td', { class: 'small' }, c.assigned_user_id ? `👤 ${c.assigned_name || c.assigned_email}` : h('span', { class: 'muted' }, '—')),
           h('td', { class: 'muted' }, (c.last_message || '').slice(0, 90)),
           h('td', { class: 'muted small' }, fmtDate(c.last_message_at)));
-      }) : [h('tr', {}, h('td', { colspan: 6, class: 'muted' }, 'No hay conversaciones.'))]),
+      }) : [h('tr', {}, h('td', { colspan: 7, class: 'muted' }, 'No hay conversaciones.'))]),
     );
   };
   const types = state.meta.channel_types.map((t) => [t.type, t.label]);
@@ -61,8 +63,9 @@ export async function viewConversations(root, params) {
       h('div', { style: 'min-width:150px' }, select(f, 'channel_type', [['', 'Todas las plataformas'], ...types], apply)),
       h('div', { style: 'min-width:150px' }, select(f, 'channel_id', [['', 'Todos los canales'], ...channels.map((c) => [c.id, c.name])], apply)),
       h('div', { style: 'min-width:150px' }, select(f, 'status', [['', 'Todos los estados'], ['bot', 'Atendidas por bot'], ['human', 'Con humano'], ['closed', 'Cerradas']], apply)),
+      h('div', { style: 'min-width:150px' }, select(f, 'assigned', [['', 'Todas las personas'], ['me', 'Asignadas a mí'], ['none', 'Sin asignar']], apply)),
       h('div', { style: 'flex:1;min-width:160px' }, h('input', { type: 'search', placeholder: 'Buscar nombre o teléfono…', value: f.search, onchange: (e) => { f.search = e.target.value; apply(); } }))),
-    h('div', { class: 'card' }, h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Cliente'), h('th', {}, 'Canal'), showAccount ? h('th', {}, 'Cuenta') : null, h('th', {}, 'Estado'), h('th', {}, 'Último mensaje'), h('th', {}, 'Fecha'))), table)),
+    h('div', { class: 'card' }, h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Cliente'), h('th', {}, 'Canal'), showAccount ? h('th', {}, 'Cuenta') : null, h('th', {}, 'Estado'), h('th', {}, 'Asignada a'), h('th', {}, 'Último mensaje'), h('th', {}, 'Fecha'))), table)),
   );
   await load();
   state.timers.push(setInterval(() => load().catch(() => undefined), 10000));
@@ -97,7 +100,30 @@ export async function viewConversation(root, id) {
     gallery.hidden = false;
   };
 
+  let team = null;
+  /** Quién atiende esta conversación y a quién pasársela (round robin o una persona concreta). */
+  const assignRow = (d) => {
+    const c = d.conversation;
+    const me = state.me.user;
+    const sel = h('select', { 'aria-label': 'Asignar conversación', style: 'width:auto;max-width:260px', onchange: async (e) => {
+      const v = e.target.value;
+      if (!v) return;
+      const r = await run(() => api('PUT', `/api/conversations/${id}/assign`, { user_id: v === 'none' ? null : v }), v === 'none' ? 'Sin asignar' : 'Asignada');
+      if (r) load(true);
+    } },
+      h('option', { value: '' }, 'Cambiar asignación…'),
+      isAdmin() ? h('option', { value: 'next' }, '🔄 Siguiente por turnos') : null,
+      isAdmin() ? (team || []).map((u) => h('option', { value: u.id }, `${u.name || u.email}${u.available === false ? ' (no disponible)' : ''}`)) : null,
+      c.assigned_user_id ? h('option', { value: 'none' }, 'Quitar asignación') : null);
+    return h('div', { class: 'row', style: 'margin:0 0 8px' },
+      h('span', { class: 'small muted' }, 'Atiende:'),
+      c.assigned_user_id ? h('span', { class: 'badge green' }, `👤 ${d.assignee?.name || d.assignee?.email || 'alguien'}${c.assigned_user_id === me.id ? ' (tú)' : ''}`) : h('span', { class: 'badge' }, 'sin asignar'),
+      c.assigned_user_id !== me.id ? h('button', { class: 'small', onclick: async () => { if (await run(() => api('PUT', `/api/conversations/${id}/assign`, { user_id: 'me' }), 'Es tuya')) load(true); } }, 'Quedármela') : null,
+      isAdmin() || c.assigned_user_id === me.id ? sel : null);
+  };
+
   const load = async (force = false) => {
+    if (team === null && isAdmin()) team = await api('GET', `/api/users${acct()}`).then((u) => u.filter((x) => x.account_id && x.active)).catch(() => []);
     data = await api('GET', `/api/conversations/${id}`);
     const { conversation: c, contact: ct, messages } = data;
     const [cls, label] = STATUS_BADGE[c.status] || ['', c.status];
@@ -108,6 +134,7 @@ export async function viewConversation(root, id) {
           c.status !== 'human' ? h('button', { class: 'primary', onclick: async () => { await run(() => api('POST', `/api/conversations/${id}/takeover`), 'Tomaste la conversación'); load(true); } }, 'Tomar conversación') : null,
           c.status !== 'bot' ? h('button', { class: 'primary', onclick: async () => { await run(() => api('POST', `/api/conversations/${id}/release`), 'El bot vuelve a responder'); load(true); } }, 'Devolver al bot') : null,
           c.status !== 'closed' ? h('button', { onclick: async () => { await run(() => api('POST', `/api/conversations/${id}/close`), 'Cerrada'); load(true); } }, 'Cerrar') : null)),
+      assignRow(data),
       h('p', { class: 'muted' }, channelIcon(data.channel?.type), ' ', data.channel?.name, ' · ', data.chatbot?.name || 'sin chatbot', ct.phone ? ` · +${ct.phone}` : '', c.status === 'human' && c.handoff_reason ? ` · Motivo: ${c.handoff_reason}` : ''),
       c.status === 'bot' && data.agent && !data.agent.on
         ? h('div', { class: 'card legend row between' },

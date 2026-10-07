@@ -63,6 +63,18 @@ export const RetentionSchema = z.object({
   inactive_contacts_days: z.number().int().min(0).max(3650).default(0),
 });
 
+/** Reparto de conversaciones al equipo por turnos (round robin). */
+export const AssignmentSchema = z.object({
+  enabled: z.boolean().default(false),
+  /** Asignar automáticamente cuando una conversación pasa a una persona. */
+  on_handoff: z.boolean().default(true),
+  roles: z.array(z.enum(['admin', 'agent'])).default(['agent', 'admin']),
+  /** Si se eligen personas, el turno es solo entre ellas (vacío = todas las de los roles). */
+  user_ids: z.array(z.string().uuid()).default([]),
+  /** Además del asignado, avisar a todo el equipo. */
+  notify_all: z.boolean().default(false),
+});
+
 export const AccountSettingsSchema = z.object({
   timezone: TimezoneSchema.default('America/Mexico_City'),
   business_hours: WeeklyHoursSchema.default(DEFAULT_HOURS),
@@ -75,6 +87,7 @@ export const AccountSettingsSchema = z.object({
   sending: SendingSchema.default(() => SendingSchema.parse({})),
   /** Cuánto tiempo se conservan los datos (0 = para siempre). */
   retention: RetentionSchema.default(() => RetentionSchema.parse({})),
+  assignment: AssignmentSchema.default(() => AssignmentSchema.parse({})),
   /** Notificar en el panel a todo el equipo cuando una conversación pasa a humano. */
   notify_team_on_handoff: z.boolean().default(true),
   /** Secreto para suscribirse al calendario (.ics) y firmar webhooks salientes. */
@@ -138,6 +151,17 @@ export const ActionSchema = z.discriminatedUnion('type', [
     roles: z.array(z.enum(['admin', 'agent'])).default(['admin', 'agent']),
     user_ids: z.array(z.string()).default([]),
     phones: z.array(z.string()).default([]),
+    /** Avisar a una sola persona, por turnos, en lugar de a todas. */
+    round_robin: z.boolean().default(false),
+  }),
+  /** Asigna la conversación a alguien del equipo por turnos y le avisa a esa persona. */
+  z.object({
+    type: z.literal('assign'),
+    message: z.string().max(2000).default('Te asignaron a {{cliente}}: "{{mensaje}}"'),
+    roles: z.array(z.enum(['admin', 'agent'])).default(['agent', 'admin']),
+    user_ids: z.array(z.string()).default([]),
+    /** Además, pasar la conversación a una persona (el asistente deja de responder). */
+    take_over: z.boolean().default(false),
   }),
   z.object({ type: z.literal('handoff'), reason: z.string().max(300).default('Regla automática') }),
   z.object({ type: z.literal('resume_bot') }),

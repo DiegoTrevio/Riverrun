@@ -279,6 +279,9 @@ export interface Conversation {
   report_at: Date | null;
   report_data_version: number;
   last_message_at: Date;
+  /** Persona del equipo a cargo (round robin o manual). */
+  assigned_user_id?: string | null;
+  assigned_at?: Date | null;
   /** Etapa del recorrido en la que va (1..n; 0 = sin etapa). */
   flow_step?: number;
   /** Cuándo se cumplió el objetivo de la conversación (null = aún no). */
@@ -338,6 +341,8 @@ export interface User {
   email: string;
   phone: string;
   notify_whatsapp: boolean;
+  /** Disponible para recibir conversaciones por turnos. */
+  available: boolean;
   active: boolean;
   email_verified_at: Date | null;
   last_login_at: Date | null;

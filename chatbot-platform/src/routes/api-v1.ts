@@ -12,6 +12,8 @@ import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
 import * as astore from '../automation/store.js';
+import * as assignment from '../automation/assignment.js';
+import { NoticeBody, sendNotice } from '../automation/notices.js';
 import { hashKey } from './integrations.js';
 import { parse } from './util.js';
 
@@ -149,7 +151,7 @@ export async function apiV1Routes(app: FastifyInstance, service: ChatService) {
         const q = parse(z.object({ limit: Limit, cursor: z.string().optional(), status: z.enum(['bot', 'human', 'closed']).optional(), channel_id: z.string().uuid().optional(), contact_id: z.string().uuid().optional(), updated_since: Iso.optional() }), req.query);
         const cur = dec(q.cursor);
         const rows = await query<any>(
-          `SELECT cv.id, cv.status, cv.handoff_reason, cv.summary, cv.data, cv.created_at, cv.last_message_at, cv.last_message_at::text AS cursor_at, cv.contact_id, cv.channel_id, ch.type AS channel_type, ch.name AS channel_name
+          `SELECT cv.id, cv.status, cv.handoff_reason, cv.summary, cv.data, cv.created_at, cv.last_message_at, cv.last_message_at::text AS cursor_at, cv.assigned_user_id, cv.contact_id, cv.channel_id, ch.type AS channel_type, ch.name AS channel_name
              FROM conversations cv JOIN channels ch ON ch.id = cv.channel_id
             WHERE cv.account_id = $1 AND ch.type <> 'playground' AND ($2::text IS NULL OR cv.status = $2) AND ($3::uuid IS NULL OR cv.channel_id = $3) AND ($4::uuid IS NULL OR cv.contact_id = $4)
               AND ($5::timestamptz IS NULL OR cv.last_message_at >= $5) AND ($6::timestamptz IS NULL OR (cv.last_message_at, cv.id) > ($6::timestamptz, $7::uuid))
@@ -159,7 +161,7 @@ export async function apiV1Routes(app: FastifyInstance, service: ChatService) {
         const page = rows.slice(0, q.limit);
         const last = page.at(-1);
         return {
-          data: page.map((c) => ({ id: c.id, status: c.status, handoff_reason: c.handoff_reason || null, summary: c.summary || null, data: c.data, contact_id: c.contact_id, channel: { id: c.channel_id, type: c.channel_type, name: c.channel_name }, created_at: c.created_at, last_message_at: c.last_message_at })),
+          data: page.map((c) => ({ id: c.id, status: c.status, assigned_user_id: c.assigned_user_id ?? null, handoff_reason: c.handoff_reason || null, summary: c.summary || null, data: c.data, contact_id: c.contact_id, channel: { id: c.channel_id, type: c.channel_type, name: c.channel_name }, created_at: c.created_at, last_message_at: c.last_message_at })),
           next_cursor: rows.length > q.limit && last ? enc({ at: last.cursor_at, id: last.id }) : null,
         };
       });
@@ -189,6 +191,42 @@ export async function apiV1Routes(app: FastifyInstance, service: ChatService) {
         const r = await service.outbound.send(convId, { text: b.text, source: 'api', allowWhenHuman: true });
         await logEvent({ level: 'info', source: 'admin', message: `Mensaje enviado por la API (${req.apiKey.name}): ${r.sent ? 'enviado' : r.reason}`, accountId: account(req), conversationId: convId });
         return reply.code(r.sent ? 200 : 422).send({ sent: r.sent, reason: r.sent ? null : r.reason, conversation_id: convId });
+      });
+
+      /* ------------------------------ Equipo, asignación y avisos internos ------------------------------ */
+      v1.get('/team', async (req: any) => ({
+        data: await query(`SELECT id, name, email, role, available FROM users WHERE account_id = $1 AND active AND role IN ('admin', 'agent') ORDER BY name, email`, [account(req)]),
+      }));
+
+      /** Avisa dentro del panel (campana y, si la persona lo activó, WhatsApp). A todos, a un rol, a personas o a quien toque por turnos. */
+      v1.post('/notifications', async (req: any) => {
+        const b = parse(NoticeBody, req.body);
+        const r = await sendNotice(service, account(req), b);
+        await logEvent({ level: 'info', source: 'admin', message: `Aviso interno enviado por la API (${req.apiKey.name}) a ${r.recipients.length} persona(s)`, accountId: account(req) });
+        return { ok: true, sent_to: r.recipients.length, recipients: r.recipients };
+      });
+
+      /** Asigna una conversación: user_id de una persona del equipo, "next" (siguiente por turnos) o null (sin asignar). */
+      v1.put('/conversations/:id/assign', async (req: any) => {
+        const b = parse(z.object({ user_id: z.union([z.string().uuid(), z.literal('next'), z.null()]) }), req.body);
+        const conv = await queryOne<{ id: string; account_id: string }>(`SELECT id, account_id FROM conversations WHERE id = $1 AND account_id = $2`, [req.params.id, account(req)]);
+        if (!conv) throw new HttpError(404, 'Conversación no encontrada');
+        let userId: string | null = null;
+        if (b.user_id === 'next') {
+          const s = await astore.getSettings(conv.account_id);
+          const u = await assignment.assignRoundRobin(conv, { scope: 'api', roles: s.assignment.roles, userIds: s.assignment.user_ids, reason: `API (${req.apiKey.name})` });
+          if (!u) throw new HttpError(409, 'No hay nadie disponible para recibirla');
+          userId = u.id;
+        } else if (b.user_id) {
+          const ok = await queryOne(`SELECT 1 FROM users WHERE id = $1 AND account_id = $2 AND active AND role IN ('admin', 'agent')`, [b.user_id, account(req)]);
+          if (!ok) throw new HttpError(400, 'Esa persona no pertenece a tu cuenta');
+          await assignment.setAssignee(conv.id, b.user_id);
+          userId = b.user_id;
+        } else {
+          await assignment.setAssignee(conv.id, null);
+        }
+        if (userId) await service.automator.alertTeam(account(req), { title: '📥 Te asignaron una conversación', body: 'Asignada desde un sistema externo', link: `#/conversation/${conv.id}`, userIds: [userId], kind: 'assignment' });
+        return { ok: true, assigned_user_id: userId };
       });
 
       /* ------------------------------ Citas ------------------------------ */

@@ -1,3 +1,4 @@
+import { NoticeBody, sendNotice } from '../automation/notices.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { assertAccount, conversationFor, HttpError, notFound, requireRole, scopeAccount, targetAccount } from '../access.js';
@@ -279,6 +280,15 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
     const { ids } = parse(z.object({ ids: z.array(z.number().int()).optional() }), req.body);
     await astore.markNotificationsRead(req.user.id, ids, scopeAccount(req.user));
     return { ok: true };
+  });
+
+  /** Aviso interno manual (a todo el equipo, a un rol, a personas o por turnos). Solo administradores. */
+  api.post('/api/notifications/send', { preHandler: requireRole('admin') }, async (req: any) => {
+    const accountId = await targetAccount(req.user, req.body?.account_id ?? req.query.account_id);
+    const b = parse(NoticeBody, req.body);
+    const r = await sendNotice(service, accountId, b);
+    await logEvent({ level: 'info', source: 'admin', message: `Aviso interno enviado por ${req.user.email} a ${r.recipients.length} persona(s)${b.round_robin ? ' (por turnos)' : ''}`, accountId });
+    return { ok: true, sent_to: r.recipients.length, recipients: r.recipients };
   });
 
   void notFound;

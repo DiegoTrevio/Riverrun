@@ -77,6 +77,9 @@ Base: `https://TU-DOMINIO/api/v1`. Autenticación: `Authorization: Bearer rr_…
 | `GET /conversations/:id/messages?after&limit` | Mensajes de una conversación |
 | `POST /messages` | Envía un texto (`conversation_id`, o `channel_id` + `phone`); respeta bajas y el límite del plan |
 | `GET /appointments` | Citas |
+| `GET /team` | Personas del equipo (id, nombre, rol, disponible) |
+| `POST /notifications` | Aviso interno en el panel: `title`, `body`, `link` (ruta del panel), `user_ids`, `roles`, `round_robin` (solo a quien siga en el turno) |
+| `PUT /conversations/:id/assign` | `user_id`: una persona, `"next"` (siguiente por turnos) o `null` (sin asignar) |
 
 Ejemplo:
 

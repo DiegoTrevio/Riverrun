@@ -354,6 +354,14 @@ Una cuenta puede conectar varios WhatsApp. Las **campañas** pueden salir de var
 - **Derechos del titular**: descarga de todos los datos de un contacto (JSON) y borrado definitivo desde el panel o `DELETE /api/contacts/:id`.
 - Los términos y el aviso de privacidad se enlazan desde el registro (`TERMS_URL`, `PRIVACY_URL`).
 
+## Asignación por turnos (round robin) y avisos internos
+
+- **Reparto automático** (Automatización → Ajustes → *Reparto de conversaciones por turnos*): cada conversación que pasa a una persona se asigna a la siguiente del turno entre los roles (y, si quieres, solo entre las personas que elijas). Solo esa persona recibe la notificación en el panel (y por WhatsApp si la tiene activada); puedes avisar además a todo el equipo. El turno recuerda a quién le tocó la última vez, así que si alguien se desactiva o se ausenta no se descompone, y es seguro con varias réplicas.
+- **Disponibilidad**: cada persona se marca *disponible / fuera de turno* en **Mi perfil** (o un administrador en **Usuarios**) y se salta en el reparto. Si nadie está disponible, la transferencia avisa a todo el equipo como antes.
+- **En las reglas**: la acción *Asignar a alguien del equipo (por turnos)* (con opción de pasar la conversación a una persona) y la opción *avisar a una sola persona, por turnos* en *Alertar al equipo*.
+- **A mano**: en cada conversación se ve quién atiende; cualquiera se la queda ("Quedármela"), y un administrador la pasa a una persona o a la siguiente del turno. Quien toma una conversación sin dueña se queda con ella. La lista filtra *Asignadas a mí / Sin asignar*.
+- **Avisos internos manuales**: en **Notificaciones → Enviar un aviso interno** (administradores) a todo el equipo, a un rol, a personas o a quien toque por turnos; también por API (`POST /api/v1/notifications`, `GET /api/v1/team`, `PUT /api/v1/conversations/:id/assign`) para que Zapier, Make o tu CRM avisen al equipo.
+
 ## Integraciones
 
 Canal de **correo electrónico** (IMAP/SMTP, Gmail y Outlook), inicio de sesión con Google, Google Calendar, webhooks firmados (Zapier, Make, n8n) y API v1 con llaves y especificación OpenAPI: ver [docs/integraciones.md](docs/integraciones.md).

@@ -1,3 +1,4 @@
+import * as assignment from './assignment.js';
 import crypto from 'node:crypto';
 import dns from 'node:dns/promises';
 import http from 'node:http';
@@ -254,13 +255,24 @@ export class Automator {
   async handle(e: AutomationEvent): Promise<{ stopAi: boolean; matched: string[] }> {
     const ctx = await this.loadCtx(e.conversationId);
     if (!ctx || ctx.channel.account_active === false) return { stopAi: false, matched: [] };
-    if (e.type === 'handoff' && ctx.settings.notify_team_on_handoff && ctx.channel.type !== 'playground') {
-      await this.alertTeam(ctx.conv.account_id, {
-        title: '🙋 Conversación esperando a una persona',
-        body: `${ctx.contact.name || ctx.contact.push_name || 'Cliente'} (${ctx.channel.name}): ${ctx.conv.handoff_reason || 'transferida'}`,
-        link: `#/conversation/${ctx.conv.id}`,
-        kind: 'handoff',
-      });
+    if (e.type === 'handoff' && ctx.channel.type !== 'playground') {
+      const who = ctx.contact.name || ctx.contact.push_name || 'Cliente';
+      const alert = { link: `#/conversation/${ctx.conv.id}`, body: `${who} (${ctx.channel.name}): ${ctx.conv.handoff_reason || 'transferida'}` };
+      const asg = ctx.settings.assignment;
+      let assigned: string | null = null;
+      if (asg.enabled && asg.on_handoff) {
+        // Si ya tenía a alguien asignado (y sigue disponible) se le avisa a esa persona; si no, toca el siguiente turno.
+        const current = ctx.conv.assigned_user_id ? (await assignment.eligibleUsers(ctx.conv.account_id, { roles: ['admin', 'agent'] })).find((u) => u.id === ctx.conv.assigned_user_id) : null;
+        const user = current ?? (await assignment.assignRoundRobin(ctx.conv, { scope: 'handoff', roles: asg.roles, userIds: asg.user_ids, reason: 'transferencia a una persona' }));
+        if (user) {
+          assigned = user.id;
+          ctx.conv.assigned_user_id = user.id;
+          await this.alertTeam(ctx.conv.account_id, { ...alert, title: '📥 Te asignaron una conversación', userIds: [user.id], kind: 'assignment' });
+        }
+      }
+      if (ctx.settings.notify_team_on_handoff && (!assigned || asg.notify_all)) {
+        await this.alertTeam(ctx.conv.account_id, { ...alert, title: '🙋 Conversación esperando a una persona', kind: 'handoff' });
+      }
     }
     // Webhooks de eventos de la cuenta (Zapier, Make, CRM…). El simulador del panel no dispara avisos reales.
     const publicEvent = publicEventFor(e);
@@ -352,15 +364,35 @@ export class Automator {
         return;
       }
       case 'alert_team': {
-        if (isSim) return this.simulated(ctx, `🔔 Alerta al equipo — ${rule.name}: ${this.render(a.message, ctx, e)}`);
+        if (isSim) return this.simulated(ctx, `🔔 Alerta al equipo${a.round_robin ? ' (a una persona, por turnos)' : ''} — ${rule.name}: ${this.render(a.message, ctx, e)}`);
+        let userIds = a.user_ids.length ? a.user_ids : undefined;
+        if (a.round_robin) {
+          // Un solo aviso por evento, para quien sigue en el turno (entre las personas elegidas o las del rol).
+          const pick = await assignment.nextInTurn(ctx.conv.account_id, `alert:${rule.id}`, await assignment.eligibleUsers(ctx.conv.account_id, { roles: a.roles, userIds: a.user_ids }));
+          if (!pick) return void (await logEvent({ level: 'warn', source: 'engine', message: `Regla "${rule.name}": nadie disponible para el aviso por turnos`, accountId: ctx.conv.account_id, conversationId: ctx.conv.id }));
+          userIds = [pick.id];
+        }
         await this.alertTeam(ctx.conv.account_id, {
           title: `🔔 ${rule.name}`,
           body: this.render(a.message, ctx, e),
           link: `#/conversation/${ctx.conv.id}`,
-          userIds: a.user_ids.length ? a.user_ids : undefined,
+          userIds,
           roles: a.roles,
           phones: a.phones,
         });
+        return;
+      }
+      case 'assign': {
+        if (isSim) return this.simulated(ctx, `📥 Asignaría la conversación a la siguiente persona del turno — ${rule.name}`);
+        const user = await assignment.assignRoundRobin(ctx.conv, { scope: `rule:${rule.id}`, roles: a.roles, userIds: a.user_ids, reason: `regla "${rule.name}"` });
+        if (!user) return;
+        ctx.conv.assigned_user_id = user.id;
+        await this.alertTeam(ctx.conv.account_id, { title: '📥 Te asignaron una conversación', body: this.render(a.message, ctx, e), link: `#/conversation/${ctx.conv.id}`, userIds: [user.id], kind: 'assignment' });
+        if (a.take_over && ctx.conv.status !== 'human') {
+          await store.setConversationStatus(ctx.conv.id, 'human', `Asignada a ${user.name || user.email}`);
+          await store.markAllProcessed(ctx.conv.id);
+          ctx.conv.status = 'human';
+        }
         return;
       }
       case 'handoff': {

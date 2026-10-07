@@ -1,7 +1,7 @@
-import { api, check, field, fmtDate, h, run, select, state, text, toast } from './core.js';
+import { api, area, check, field, fmtDate, h, run, select, state, text, toast } from './core.js';
 import { accountPicker } from './dashboard.js';
 import { render } from './main.js';
-import { ROLE_LABEL, acct, isSuper } from './session.js';
+import { ROLE_LABEL, acct, isAdmin, isSuper, withAcct } from './session.js';
 import { refreshBell } from './shell.js';
 import { usd } from './usage.js';
 
@@ -34,7 +34,7 @@ export async function viewUsers(root) {
         h('tbody', {}, users.map((u) => {
           const self = u.id === me.id;
           return h('tr', {},
-            h('td', {}, h('strong', {}, u.name || '—'), h('div', { class: 'muted small' }, u.email, u.phone ? ` · 📱 +${u.phone}${u.notify_whatsapp ? ' (alertas)' : ''}` : ''), !u.active ? h('span', { class: 'badge orange' }, 'desactivado') : null),
+            h('td', {}, h('strong', {}, u.name || '—'), h('div', { class: 'muted small' }, u.email, u.phone ? ` · 📱 +${u.phone}${u.notify_whatsapp ? ' (alertas)' : ''}` : ''), !u.active ? h('span', { class: 'badge orange' }, 'desactivado') : null, u.active && u.role !== 'superadmin' && u.available === false ? h('span', { class: 'badge' }, 'no disponible para turnos') : null),
             h('td', {}, u.role === 'superadmin' || self ? ROLE_LABEL[u.role]
               : h('select', { onchange: async (e) => { if (await run(() => api('PUT', `/api/users/${u.id}`, { role: e.target.value }), 'Rol actualizado')) render(); } },
                   [['agent', 'Operador del perfil'], ['admin', 'Administrador del perfil']].map(([v, l]) => h('option', { value: v, selected: u.role === v }, l)))),
@@ -42,6 +42,7 @@ export async function viewUsers(root) {
             h('td', { class: 'small muted' }, u.last_login_at ? fmtDate(u.last_login_at) : 'nunca'),
             h('td', {}, self ? h('span', { class: 'muted small' }, 'tú') : h('div', { class: 'row' },
               isSuper() && u.role !== 'superadmin' ? h('button', { class: 'small', onclick: async () => { if (confirm(`¿Dar a ${u.email} acceso maestro a TODOS los perfiles?`)) { await run(() => api('PUT', `/api/users/${u.id}`, { role: 'superadmin' }), 'Acceso maestro asignado'); render(); } } }, 'Dar acceso maestro') : null,
+              u.role !== 'superadmin' && u.active ? h('button', { class: 'small', title: 'Si no está disponible se salta en el reparto por turnos', onclick: async () => { if (await run(() => api('PUT', `/api/users/${u.id}`, { available: u.available === false }), u.available === false ? 'Disponible' : 'Fuera de turno')) render(); } }, u.available === false ? 'Marcar disponible' : 'Fuera de turno') : null,
               h('button', { class: 'small', onclick: async () => { if (await run(() => api('PUT', `/api/users/${u.id}`, { active: !u.active }), u.active ? 'Desactivado' : 'Activado')) render(); } }, u.active ? 'Desactivar' : 'Activar'),
               h('button', { class: 'small', onclick: async () => { const pw = prompt('Nueva contraseña (mínimo 8 caracteres)'); if (pw) await run(() => api('PUT', `/api/users/${u.id}`, { password: pw }), 'Contraseña actualizada'); } }, 'Restablecer contraseña'),
               h('button', { class: 'small', onclick: async () => {
@@ -151,13 +152,14 @@ export async function viewAccounts(root) {
 
 export async function viewPassword(root) {
   const f = { current: '', password: '', confirm: '' };
-  const me = { name: state.me.user.name, phone: state.me.user.phone || '', notify_whatsapp: !!state.me.user.notify_whatsapp };
+  const me = { name: state.me.user.name, phone: state.me.user.phone || '', notify_whatsapp: !!state.me.user.notify_whatsapp, available: state.me.user.available !== false };
   root.append(
     h('h1', {}, 'Mi perfil'),
     h('div', { class: 'card', style: 'max-width:420px' },
       field('Nombre', text(me, 'name')),
       field('WhatsApp para alertas', text(me, 'phone', { placeholder: '5215512345678' })),
       check(me, 'notify_whatsapp', 'Recibir las alertas del equipo por WhatsApp'),
+      state.me.user.account_id ? check(me, 'available', 'Estoy disponible: recibir conversaciones asignadas por turnos (desmárcalo si estás fuera de turno)') : null,
       h('button', { onclick: async () => { const u = await run(() => api('PUT', '/api/me', me), 'Perfil guardado'); if (u) state.me.user = { ...state.me.user, ...u }; } }, 'Guardar perfil')),
     h('h2', {}, 'Cambiar contraseña'),
     h('div', { class: 'card', style: 'max-width:420px' },
@@ -182,11 +184,33 @@ export function needAccount(root) {
 
 /* ============================== Notificaciones ============================== */
 
+/** Aviso interno manual: a todo el equipo, a un rol, a personas o a quien toque por turnos. */
+async function noticeCard() {
+  const users = (await api('GET', withAcct('/api/users')).catch(() => [])).filter((u) => u.account_id && u.active);
+  const n = { title: '', body: '', to: 'all', round_robin: false, user_ids: [] };
+  return h('details', { class: 'card' }, h('summary', {}, '📣 Enviar un aviso interno al equipo'),
+    h('div', { style: 'margin-top:10px' },
+      field('Título', text(n, 'title', { placeholder: 'Llegó un cliente importante' })),
+      field('Mensaje', area(n, 'body')),
+      field('Para', select(n, 'to', [['all', 'Todo el equipo'], ['admin', 'Administradores'], ['agent', 'Agentes'], ['people', 'Personas que elija']])),
+      h('div', { class: 'row' }, users.map((u) => h('label', { class: 'check' },
+        h('input', { type: 'checkbox', onchange: (e) => { n.user_ids = e.target.checked ? [...n.user_ids, u.id] : n.user_ids.filter((x) => x !== u.id); } }), u.name || u.email, u.available === false ? ' (no disponible)' : ''))),
+      check(n, 'round_robin', 'Enviarlo a una sola persona, por turnos (la siguiente disponible entre las elegidas)'),
+      h('button', { class: 'primary', onclick: async () => {
+        const body = { title: n.title, body: n.body, round_robin: n.round_robin, ...(withAcct('?').includes('account_id') ? { account_id: state.accountId } : {}) };
+        if (n.to === 'admin' || n.to === 'agent') body.roles = [n.to];
+        if (n.to === 'people') body.user_ids = n.user_ids;
+        const r = await run(() => api('POST', '/api/notifications/send', body));
+        if (r) { toast(`Aviso enviado a ${r.sent_to} persona(s)`); render(); }
+      } }, 'Enviar aviso')));
+}
+
 export async function viewNotifications(root) {
   const data = await api('GET', '/api/notifications?limit=100');
   root.append(
     h('div', { class: 'row between' }, h('h1', {}, 'Notificaciones'),
       data.unread ? h('button', { onclick: async () => { await run(() => api('POST', '/api/notifications/read', {})); render(); } }, 'Marcar todas como leídas') : null),
+    isAdmin() && (state.me.user.account_id || state.accountId) ? await noticeCard() : null,
     h('div', { class: 'card' },
       data.items.length ? h('table', {}, h('tbody', {}, data.items.map((n) => h('tr', { class: n.link ? 'click' : '', onclick: async () => {
         if (!n.read_at) await api('POST', '/api/notifications/read', { ids: [n.id] });

@@ -51,6 +51,7 @@ const TRIGGERS = {
 export const ACTIONS = {
   send_message: 'Enviar mensaje o foto',
   alert_team: 'Alertar al equipo',
+  assign: 'Asignar a alguien del equipo (por turnos)',
   add_tag: 'Agregar etiqueta',
   remove_tag: 'Quitar etiqueta',
   set_field: 'Guardar un dato',
@@ -168,7 +169,20 @@ function actionFields(a, refs) {
           u.name || u.email, u.notify_whatsapp && u.phone ? ' 📱' : ''))),
         h('div', { class: 'row' }, [['admin', 'Administradores'], ['agent', 'Agentes']].map(([r, l]) => h('label', { class: 'check' },
           h('input', { type: 'checkbox', checked: a.roles.includes(r), onchange: (e) => { a.roles = e.target.checked ? [...a.roles, r] : a.roles.filter((x) => x !== r); } }), l))),
+        check(a, 'round_robin', 'Avisar a una sola persona, por turnos (la siguiente de los destinatarios que esté disponible), en lugar de a todas'),
         field('Además, avisar por WhatsApp a estos números', lines(a, 'phones', { placeholder: '5215512345678' }), '📱 = recibe también por WhatsApp (configurable en Usuarios).'),
+      ];
+    case 'assign':
+      a.message ??= 'Te asignaron a {{cliente}}: "{{mensaje}}"'; a.roles ??= ['agent', 'admin']; a.user_ids ??= []; a.take_over ??= false;
+      return [
+        field('Aviso para la persona asignada', area(a, 'message'), VARS_HELP),
+        h('p', { class: 'small muted', style: 'margin:0 0 6px' }, 'Turno entre (si no eliges personas, entre todas las de estos roles que estén disponibles):'),
+        h('div', { class: 'row' }, refs.users.map((u) => h('label', { class: 'check' },
+          h('input', { type: 'checkbox', checked: a.user_ids.includes(u.id), onchange: (e) => { a.user_ids = e.target.checked ? [...a.user_ids, u.id] : a.user_ids.filter((x) => x !== u.id); } }),
+          u.name || u.email, u.available === false ? ' (no disponible)' : ''))),
+        h('div', { class: 'row' }, [['admin', 'Administradores'], ['agent', 'Agentes']].map(([r, l]) => h('label', { class: 'check' },
+          h('input', { type: 'checkbox', checked: a.roles.includes(r), onchange: (e) => { a.roles = e.target.checked ? [...a.roles, r] : a.roles.filter((x) => x !== r); } }), l))),
+        check(a, 'take_over', 'Además, pasar la conversación a una persona (el asistente deja de responder)'),
       ];
     case 'add_tag':
     case 'remove_tag':
@@ -454,6 +468,7 @@ export function hoursEditor(hours) {
 
 async function editSettings(root) {
   const s = await api('GET', withAcct('/api/settings'));
+  const team = (await api('GET', withAcct('/api/users')).catch(() => [])).filter((u) => u.account_id && u.active);
   const copy = (v) => h('button', { class: 'small', onclick: async () => { try { await navigator.clipboard.writeText(v); toast('Copiado'); } catch { toast('No se pudo copiar', true); } } }, 'Copiar');
   root.append(
     h('div', { class: 'card' },
@@ -489,6 +504,17 @@ async function editSettings(root) {
         field('Borrar mensajes con más de … días', num(s.retention, 'messages_days', { min: 0 }), '0 = conservarlos siempre. También se limpian los resúmenes de esas conversaciones.'),
         field('Borrar contactos sin actividad en … días', num(s.retention, 'inactive_contacts_days', { min: 0 }), '0 = nunca. No se borran contactos con citas futuras.')),
       h('p', { class: 'small muted' }, 'El borrado es automático (cada pocas horas) y no se puede deshacer; los respaldos antiguos pueden conservar los datos hasta que se renueven. Para atender la solicitud de una sola persona usa "Borrar todos sus datos" en su ficha.')),
+    h('div', { class: 'card' },
+      h('h3', { style: 'margin-top:0' }, 'Reparto de conversaciones por turnos (round robin)'),
+      check(s.assignment, 'enabled', 'Asignar automáticamente cada conversación que pasa a una persona, una a una, entre el equipo'),
+      h('div', { class: 'row' }, [['agent', 'Agentes'], ['admin', 'Administradores']].map(([r, l]) => h('label', { class: 'check' },
+        h('input', { type: 'checkbox', checked: s.assignment.roles.includes(r), onchange: (e) => { s.assignment.roles = e.target.checked ? [...s.assignment.roles, r] : s.assignment.roles.filter((x) => x !== r); } }), l))),
+      team.length ? h('div', {}, h('p', { class: 'small muted', style: 'margin:6px 0' }, 'Solo estas personas (si no marcas a nadie, todas las de los roles elegidos):'),
+        h('div', { class: 'row' }, team.map((u) => h('label', { class: 'check' },
+          h('input', { type: 'checkbox', checked: s.assignment.user_ids.includes(u.id), onchange: (e) => { s.assignment.user_ids = e.target.checked ? [...s.assignment.user_ids, u.id] : s.assignment.user_ids.filter((x) => x !== u.id); } }),
+          u.name || u.email, u.available === false ? ' (no disponible)' : '')))) : null,
+      check(s.assignment, 'notify_all', 'Además de la persona asignada, avisar a todo el equipo'),
+      h('p', { class: 'small muted' }, 'Cada persona recibe una notificación en el panel (y por WhatsApp si lo tiene activado). Quien esté marcado como "no disponible" se salta sin perder su lugar. También puedes asignar a mano desde cada conversación o con la acción "Asignar a alguien del equipo" en las reglas.')),
     h('div', { class: 'card' },
       h('h3', { style: 'margin-top:0' }, 'Equipo'),
       check(s, 'notify_team_on_handoff', 'Avisar en el panel a todo el equipo cuando una conversación pasa a una persona')),
