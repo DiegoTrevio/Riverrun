@@ -23,7 +23,7 @@ const setAdvanced = (on) => { try { localStorage.setItem('cp-advanced', on ? '1'
 function simpleLinks(link) {
   return [
     needsOnboarding() ? link('#/inicio', '🚀 Primeros pasos', 'inicio') : null,
-    link('#/conectar', state.wa && !state.wa.connected ? '📱 Conectar WhatsApp ⚠️' : '📱 Mi WhatsApp', 'conectar'),
+    link('#/conectar', state.wa && !state.wa.connected ? '📱 Conectar WhatsApp' : '📱 Mi WhatsApp', 'conectar'),
     link('#/conversations', '💬 Conversaciones', 'conversations'),
     link('#/asistente', '🤖 Mi asistente', 'bot'),
     link('#/probar', '🧪 Probar mi asistente', 'probar'),
