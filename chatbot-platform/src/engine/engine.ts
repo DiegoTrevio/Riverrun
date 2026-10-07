@@ -4,10 +4,13 @@ import { logEvent } from '../logs.js';
 import * as store from '../store/index.js';
 import type { Chatbot, Contact, Conversation, ImageAsset, Message } from '../types.js';
 import { agentActive, agentStatus, offAfterReply } from './activation.js';
+import { automaticField, customerProvided } from './customer-data.js';
 import { buildContext, type BusinessInfo } from './context.js';
-import { aiSelectableImages, automaticImages, imagesAfterReply, imagesBeforeReply, type ScheduledImage } from './images.js';
+import { semanticKnowledge } from './knowledge.js';
+import { aiSelectableImages, automaticImages, contextualImages, imagesForContext, imagesAfterReply, imagesBeforeReply, imagesForAssistant, type ScheduledImage } from './images.js';
 import { DECISION_JSON_SCHEMA } from './decision.js';
 import { maybeSummarize } from './memory.js';
+import { summarizeConversation } from './report.js';
 import { normalize } from './text.js';
 import type { Transport } from './transport.js';
 import { emptyPlan, validateDecision, type AgendaValidation, type ExecutionPlan, type ValidationInput } from './validator.js';
@@ -72,6 +75,12 @@ export function typingDelay(text: string, enabled: boolean) {
 }
 
 export class Engine {
+  private background = new Set<Promise<unknown>>();
+
+  async settleBackground() {
+    while (this.background.size) await Promise.allSettled([...this.background]);
+  }
+
   constructor(private ai: AiProvider, private ext: EngineExtensions = {}) {}
 
   /** Procesa los mensajes pendientes de una conversación y ejecuta la acción validada. */
@@ -123,6 +132,7 @@ export class Engine {
       store.unsummarizedMessages(conv.id, conv.summary_until_id, bot.ai.recent_messages + bot.ai.summary_batch + pending.length + 4),
     ]);
     const images = allImages.filter((i) => i.active);
+    const semantic = await semanticKnowledge(bot, knowledge, [...history.slice(-4).filter((m) => m.direction === 'in').map((m) => m.content), customerText].join('\n'), this.ai);
     // Automatización y agenda (si están conectadas).
     const [intents, agendaCtx, business] = await Promise.all([
       this.ext.intents ? this.ext.intents(conv.account_id, bot.id).catch(() => []) : Promise.resolve([]),
@@ -136,7 +146,7 @@ export class Engine {
     const imagesById = new Map<string, ImageAsset>(allImages.map((i) => [i.id, i]));
     const model = bot.ai.model || config.openai.defaultModel;
     // Fotos con momento fijo (las garantiza el sistema): por palabra del cliente o de bienvenida, se saben antes de la IA.
-    const firstReply = (await store.countInbound(conv.id)) <= pending.length;
+    const firstReply = await store.isFirstLiveInbound(conv.id, pending[0].id);
     const scheduledBefore = imagesBeforeReply(images, { text: customerText, firstReply, sentIds: sentImageIds });
     const aiImages = aiSelectableImages(images);
     const autoImages = automaticImages(images, bot.flow.steps.map((x) => x.title));
@@ -152,8 +162,8 @@ export class Engine {
     const attempts: ProcessResult['attempts'] = [];
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       const ctx = buildContext({
-        bot, knowledge, images: aiImages, contact, conversation: conv, channelType: channel.type, history, pending, sentImageIds, imagesById, correction, intents, agenda: agendaCtx, business,
-        autoImages, imagesNow: scheduledBefore.map((x) => x.image),
+        bot, knowledge: semantic ?? knowledge, knowledgeSelected: semantic !== null, images: aiImages, contact, conversation: conv, channelType: channel.type, history, pending, sentImageIds, imagesById, correction, intents, agenda: agendaCtx, business,
+        autoImages, contextImages: contextualImages(images), imagesNow: scheduledBefore.map((x) => x.image),
       });
       let completion;
       try {
@@ -185,7 +195,7 @@ export class Engine {
       }
       lastRaw = raw;
       lastInput = {
-        raw, bot, images: aiImages, sentImageIds, customerText, scheduledImages: scheduledBefore.map((x) => x.image),
+        raw, bot, images: aiImages, sentImageIds, customerText, scheduledImages: scheduledBefore.map((x) => x.image), automaticImages: images, currentFlowStep: conv.flow_step ?? 0, goalAlreadyCompleted: !!conv.goal_completed_at,
         groundingSources: ctx.groundingSources,
         customerSources: ctx.customerSources,
         customerDataSources: history.filter((m) => m.direction === 'in').map((m) => m.content),
@@ -231,7 +241,7 @@ export class Engine {
     if (retryable.length) {
       // Datos no verificables tras el reintento: respuesta segura según la regla configurada.
       fallbackUsed = true;
-      const base = { ...plan, booking: null };
+      const base = { ...plan, booking: null, contextImages: [] };
       if (bookingIssue && !factIssues) {
         // La IA insistió en un horario que no existe: se ofrecen horarios reales.
         plan = { ...base, action: 'reply', messages: [slotFallback(agendaCtx)], images: [] };
@@ -268,7 +278,7 @@ export class Engine {
     const dataBefore = { ...(contact.data ?? {}) };
     const nameBefore = contact.name;
     let booked = false;
-    await this.applyMemory(contact, plan);
+    await this.applyMemory(contact, plan, conv.id, lastPendingId, [...history, ...pending], bot);
     // Agenda: se ejecuta antes de enviar; si el horario se ocupó justo ahora, se avisa en vez de confirmar.
     if (plan.booking && this.ext.agenda) {
       if (plan.booking.action === 'book') {
@@ -277,7 +287,7 @@ export class Engine {
           plan = {
             ...plan,
             action: 'reply',
-            images: [],
+            images: [], contextImages: [],
             messages: [r.alternatives.length ? `Uy, ese horario se acaba de ocupar. Te puedo ofrecer ${joinOptions(r.alternatives)}. ¿Cuál te acomoda?` : 'Uy, ese horario se acaba de ocupar. ¿Te puedo ofrecer otro día?'],
           };
           await log('warn', 'engine', `No se pudo agendar: ${r.reason}`);
@@ -291,7 +301,9 @@ export class Engine {
     const goalReached = plan.goalCompleted && !conv.goal_completed_at;
     const goalHandoff = goalReached && bot.flow.on_goal_action === 'handoff' && plan.action !== 'handoff';
     // Fotos programadas: se suman a las que eligió la IA (sin repetir). En una transferencia no se envían.
+    let selectedRules: ScheduledImage[] = [];
     if (plan.action !== 'handoff') {
+      const assistant = imagesForAssistant(images, plan.messages.join(' '), sentImageIds);
       const after = imagesAfterReply(images, {
         stepReached: plan.flowStep && plan.flowStep !== (conv.flow_step ?? 0) ? plan.flowStep : 0,
         goalReached,
@@ -299,16 +311,19 @@ export class Engine {
         sentIds: sentImageIds,
         skip: scheduledBefore.map((x) => x.image.id),
       });
-      const extra: ScheduledImage[] = [...scheduledBefore, ...after].filter((x, i, all) => !plan!.images.some((p) => p.id === x.image.id) && all.findIndex((y) => y.image.id === x.image.id) === i);
-      if (extra.length) {
-        plan = { ...plan, action: 'reply_with_image', images: [...plan.images, ...extra.map((x) => x.image)].slice(0, 5) };
-        await log('info', 'engine', `Foto enviada por regla: ${extra.map((x) => `${x.image.code} (${x.reason})`).join(', ')}`);
-      }
+      const contextual = imagesForContext(images, plan.contextImages.map(img => img.code), sentImageIds);
+      const automatic = [...scheduledBefore, ...assistant, ...after, ...contextual].filter((x, i, all) => all.findIndex(y => y.image.id === x.image.id) === i);
+      const candidates = [...automatic.map(x => x.image), ...plan.images.filter(img => !automatic.some(x => x.image.id === img.id))];
+      const selected = candidates.slice(0, bot.rules.max_images_per_reply);
+      selectedRules = automatic.filter(x => selected.some(img => img.id === x.image.id));
+      if (candidates.length > selected.length) await log('warn', 'engine', `Fotos omitidas por el límite de ${bot.rules.max_images_per_reply} por respuesta: ${candidates.slice(selected.length).map(img => img.code).join(', ')}`);
+      if (selected.length) plan = { ...plan, action: 'reply_with_image', images: selected };
+
     }
     if (plan.action === 'handoff') {
       await this.executeHandoff(bot, conv, contact, transport, plan.messages, plan.handoffReason || 'La IA decidió transferir');
     } else if (plan.action !== 'no_reply') {
-      await this.sendPlan(bot, conv, transport, plan, meta);
+      await this.sendPlan(bot, conv, transport, plan, meta, selectedRules);
     }
     if (plan.flowStep || goalReached) {
       const reached = await store.setFlowState(conv.id, plan.flowStep, goalReached);
@@ -339,8 +354,12 @@ export class Engine {
       }
     }
 
+    if (goalReached) await this.summarizeFinal(conv);
+
     // 6) Memoria de largo plazo (resumen) en segundo plano.
-    maybeSummarize(this.ai, bot, conv.id, conv.account_id).catch((e) => log('error', 'ai', `Error al resumir: ${e?.message ?? e}`, e));
+    const memory = maybeSummarize(this.ai, bot, conv.id, conv.account_id).catch((e) => log('error', 'ai', `Error al resumir: ${e?.message ?? e}`, e));
+    this.background.add(memory);
+    void memory.then(() => this.background.delete(memory), () => this.background.delete(memory));
 
     return {
       status: plan.action === 'handoff' ? 'handoff' : plan.action === 'no_reply' ? 'no_reply' : 'replied',
@@ -351,13 +370,15 @@ export class Engine {
     };
   }
 
-  async sendPlan(bot: Chatbot, conv: Conversation, transport: Transport, plan: ExecutionPlan, meta: Record<string, unknown>) {
+  async sendPlan(bot: Chatbot, conv: Conversation, transport: Transport, plan: ExecutionPlan, meta: Record<string, unknown>, scheduled: ScheduledImage[] = []) {
     const typing = bot.ai.typing_simulation && hasTyping(transport);
     for (const text of plan.messages) {
       await this.sendOut(bot, conv, transport, { sender: 'bot', text, delay: typingDelay(text, typing), meta });
     }
     for (const img of plan.images) {
-      await this.sendOut(bot, conv, transport, { sender: 'bot', text: img.caption, image: img, delay: typing ? 1200 : 0, meta });
+      const rule = scheduled.find(x => x.image.id === img.id);
+      const sent = await this.sendOut(bot, conv, transport, { sender: 'bot', text: img.caption, image: img, delay: typing ? 1200 : 0, meta: rule ? {...meta, image_trigger: rule.reason} : meta });
+      if (sent && rule) await logEvent({ level: 'info', source: 'engine', message: `Foto enviada por regla: ${img.code} (${rule.reason})`, accountId: conv.account_id, chatbotId: bot.id, channelId: conv.channel_id, conversationId: conv.id });
     }
   }
 
@@ -408,6 +429,7 @@ export class Engine {
       await this.sendOut(bot, conv, transport, { sender: 'bot', text, delay: typingDelay(text, bot.ai.typing_simulation && hasTyping(transport)), meta: { action: 'handoff' } });
     }
     await logEvent({ level: 'info', source: 'engine', message: `Conversación transferida a humano: ${reason}`, accountId: conv.account_id, chatbotId: bot.id, channelId: conv.channel_id, conversationId: conv.id });
+    await this.summarizeFinal(conv);
     this.ext.onEvent?.({ type: 'handoff', conversationId: conv.id });
     if (bot.rules.handoff_notify_number) {
       const who = contact.name || contact.push_name || contact.phone || contact.external_id;
@@ -431,6 +453,7 @@ export class Engine {
       if (msg) await this.sendOut(bot, conv, transport, { sender: 'bot', text: msg, delay: typingDelay(msg, bot.ai.typing_simulation && hasTyping(transport)), meta: { action: 'agent_off' } });
       if (a.off_action === 'close') {
         await store.setConversationStatus(conv.id, 'closed', `Asistente desactivado: ${reason}`);
+        await this.summarizeFinal(conv);
         await log(`Conversación cerrada: ${reason}`);
       } else {
         const until = a.resume_after_hours > 0 ? new Date(Date.now() + a.resume_after_hours * 3600_000) : null;
@@ -446,18 +469,24 @@ export class Engine {
     return agentStatus(bot, conv);
   }
 
-  async applyMemory(contact: Contact, plan: ExecutionPlan) {
-    const hasData = Object.keys(plan.saveData).length > 0;
-    if (!hasData && !plan.contactName && !plan.remember.length) return;
-    const data = { ...(contact.data ?? {}), ...plan.saveData };
-    const notes = [...(contact.notes ?? [])];
-    for (const r of plan.remember) {
-      const n = normalize(r);
-      if (!notes.some((x) => normalize(x) === n)) notes.push(r);
+  private async summarizeFinal(conv: Conversation) {
+    try { await summarizeConversation(this.ai, conv.id); }
+    catch (error) {
+      await logEvent({ level: 'error', source: 'ai', message: 'No se pudo generar el resumen final; se puede solicitar nuevamente desde la conversación', accountId: conv.account_id, chatbotId: conv.chatbot_id, conversationId: conv.id, details: { error: error instanceof Error ? error.message : String(error) } });
     }
-    while (notes.length > 30) notes.shift();
-    const updated = await store.updateContact(contact.id, { data, notes, name: plan.contactName ?? undefined });
-    if (updated) Object.assign(contact, updated);
+  }
+
+  async applyMemory(contact: Contact, plan: ExecutionPlan, conversationId: string, sourceMessageId: number, messages: Message[], bot: Chatbot) {
+    if (!Object.keys(plan.saveData).length && !plan.contactName && !plan.remember.length) return;
+    const sources: Record<string, number> = {};
+    for (const [key, value] of Object.entries(plan.saveData)) {
+      const field = bot.data_fields.find((f) => f.key === key) ?? automaticField(key);
+      if (!field) continue;
+      const source = [...messages].sort((a, b) => b.id - a.id).find((m) => m.direction === 'in' && customerProvided(field, value, [m.content]));
+      if (source) sources[key] = source.id;
+    }
+    const updated = await store.saveConversationMemory(conversationId, contact.id, { data: plan.saveData, name: plan.contactName ?? undefined, remember: plan.remember }, sourceMessageId, sources);
+    Object.assign(contact, updated);
   }
 }
 

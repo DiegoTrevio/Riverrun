@@ -2,7 +2,7 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 // El arnés va primero: define las variables de entorno antes de que se cargue la configuración.
-import { createHarness, dbAvailable, pool, sleep } from './harness.js';
+import { createHarness, dbAvailable, pool, sleep, store } from './harness.js';
 const { imagesAfterReply } = await import('../src/engine/images.js');
 
 const ok = await dbAvailable();
@@ -180,4 +180,166 @@ t('si WhatsApp rechaza la foto: queda como fallida, en Registros, y el panel mue
 t('probador de palabras: dice qué foto se enviaría', async () => {
   const r = (await h.authed('POST', `/api/chatbots/${h.botId}/test-message`, { text: '¿tienen carta?', first_message: false })).json();
   assert.ok(r.steps.some((s: any) => s.kind === 'images' && /"Menú del día" \(el cliente escribió "carta"\)/.test(s.detail)), JSON.stringify(r.steps));
+});
+
+t('pregunta del asistente: guarda la regla, la aplica sin elección de IA y no duplica la foto', async () => {
+  await upload('opciones', 'Tipos de habitación', {mode:'both',assistant_keywords:['qué tipo de habitación'],once:true});
+  const saved = (await h.authed('GET',`/api/chatbots/${h.botId}/images`)).json().find((img:any)=>img.code==='opciones');
+  assert.deepEqual(saved.send_when.assistant_keywords,['qué tipo de habitación']);
+  h.reset(); const phone='5215540000010';
+  h.setScript(()=>({messages:['Hola.']})); await say('hola',phone);
+  h.setScript(()=>({action:'ask',messages:['¿Qué tipo de habitación prefieres? Te comparto la foto.'],image_ids:[]}));
+  await say('quiero reservar',phone);
+  assert.deepEqual(photosTo(phone),['bienvenida','opciones']);
+  assert.match(prompt(),/el asistente dice o pregunta "qué tipo de habitación"/);
+  h.setScript(()=>({action:'ask',messages:['¿Qué tipo de habitación prefieres?']}));
+  await say('todavía no sé',phone);
+  assert.deepEqual(photosTo(phone),['bienvenida','opciones']);
+  await h.authed('PUT',`/api/images/${IDS.opciones}`,{send_when:{mode:'rules',assistant_keywords:['qué tipo de habitación'],once:false}});
+  await say('sigo pensando',phone);
+  assert.deepEqual(photosTo(phone),['bienvenida','opciones','opciones']);
+  await h.authed('PUT',`/api/images/${IDS.opciones}`,{active:false});
+});
+
+t('pregunta del asistente no permite fotos por texto interno, no_reply o transferencia', async () => {
+  await upload('interno','Prueba interna',{mode:'rules',assistant_keywords:['qué tipo de habitación']});
+  h.reset(); const phone='5215540000011';
+  h.setScript(()=>({messages:['Hola.']})); await say('hola',phone);
+  h.setScript(()=>({thinking:'qué tipo de habitación',messages:['¿En qué te ayudo?']}));
+  await say('quiero información',phone);
+  h.setScript(()=>({action:'no_reply',messages:['qué tipo de habitación']})); await say('ok',phone);
+  h.setScript(()=>({action:'handoff',messages:['¿Qué tipo de habitación prefieres?'],handoff_reason:'Atención humana'})); await say('quiero pagar',phone);
+  assert.deepEqual(photosTo(phone),['bienvenida']);
+  await h.authed('PUT',`/api/images/${IDS.interno}`,{active:false});
+});
+
+t('contexto de etapa permite anunciar la foto automática y el contexto libre llega al modelo', async () => {
+  h.reset(); const phone='5215540000012';
+  h.setScript(()=>({messages:['Hola.']})); await say('hola',phone);
+  h.setScript(()=>({messages:['¿Para qué fechas? Te comparto la imagen.'],flow_step:2}));
+  await say('quiero reservar',phone);
+  assert.deepEqual(photosTo(phone),['bienvenida','mapa']);
+  h.setScript(req=>{
+    assert.match(req.messages[0].content,/ID: `suite`[\s\S]*enviar cuando: Cuando pregunten por la suite/);
+    return {action:'reply_with_image',messages:['Esta es la suite.'],image_ids:['suite']};
+  });
+  await say('¿cómo es la suite?',phone);
+  assert.deepEqual(photosTo(phone),['bienvenida','mapa','suite']);
+});
+
+t('solo confirma en registros fotos entregadas y una foto fallida puede pedirse otra vez', async () => {
+  h.reset(); const phone='5215540000013';
+  h.setScript(()=>({messages:['Hola.']})); await say('hola',phone);
+  h.failNext.image=1; h.setScript(()=>({messages:['Aquí está.']})); await say('menú',phone);
+  const conv=await h.conversationFor(phone);
+  let logs=(await pool.query('SELECT message FROM event_logs WHERE conversation_id=$1',[conv.id])).rows.map(r=>r.message);
+  assert.ok(!logs.some(msg=>msg.includes('Foto enviada por regla: menu')));
+  assert.ok(logs.some(msg=>msg.includes('No se pudo enviar la imagen menu')));
+  await say('carta',phone);
+  assert.equal(photosTo(phone).filter(code=>code==='menu').length,1);
+  logs=(await pool.query('SELECT message FROM event_logs WHERE conversation_id=$1',[conv.id])).rows.map(r=>r.message);
+  assert.equal(logs.filter(msg=>msg.includes('Foto enviada por regla: menu')).length,1);
+});
+
+t('la bienvenida ignora historial antiguo; el límite se aplica a fotos automáticas y de IA juntas', async () => {
+  h.reset(); const phone='5215540000014';
+  await h.webhook('histórico',{phone,timestamp:Math.floor(Date.now()/1000)-3600});
+  await sleep(100);
+  h.setScript(()=>({messages:['Hola.']})); await say('hola',phone);
+  assert.deepEqual(photosTo(phone),['bienvenida']);
+  await h.authed('PUT',`/api/chatbots/${h.botId}`,{rules:{max_images_per_reply:1}});
+  h.setScript(()=>({messages:['Aquí está.'],image_ids:['suite']})); await say('menú',phone);
+  assert.deepEqual(photosTo(phone),['bienvenida','menu']);
+  const logs=(await pool.query('SELECT message FROM event_logs WHERE conversation_id=$1',[(await h.conversationFor(phone)).id])).rows.map(r=>r.message);
+  assert.ok(logs.some(msg=>msg.includes('Fotos omitidas por el límite de 1')));
+  await h.authed('PUT',`/api/chatbots/${h.botId}`,{rules:{max_images_per_reply:2}});
+});
+
+t('una foto elegida por IA y por regla se envía una vez y solo en el contexto coincidente', async () => {
+  await upload('catalogo','Catálogo',{mode:'both',keywords:['catálogo']},{usage_rule:'Cuando el cliente pida ver el catálogo'});
+  h.reset(); const phone='5215540000015';
+  h.setScript(()=>({messages:['Hola.']})); await say('hola',phone);
+  h.setScript(()=>({messages:['Claro.'],image_ids:['catalogo']})); await say('catálogo',phone);
+  assert.deepEqual(photosTo(phone),['bienvenida','catalogo']);
+  h.setScript(()=>({messages:['¿En qué te ayudo?']})); await say('gracias',phone);
+  assert.deepEqual(photosTo(phone),['bienvenida','catalogo']);
+  await h.authed('PUT',`/api/images/${IDS.catalogo}`,{active:false});
+});
+
+t('una foto pendiente o fallida no cuenta como entregada', async () => {
+  h.reset(); const phone='5215540000016';
+  h.setScript(()=>({messages:['Hola.']})); await say('hola',phone);
+  const conv=await h.conversationFor(phone);
+  await pool.query("INSERT INTO messages (conversation_id,direction,sender,type,image_id,status) VALUES ($1,'out','bot','image',$2,'pending')",[conv.id,IDS.suite]);
+  assert.ok(!(await store.sentImageIds(conv.id)).includes(IDS.suite));
+  await pool.query("UPDATE messages SET status='ok' WHERE conversation_id=$1 AND image_id=$2",[conv.id,IDS.suite]);
+  assert.ok((await store.sentImageIds(conv.id)).includes(IDS.suite));
+});
+
+t('contexto de cita: envía indicaciones solo cuando la reserva se confirma', async () => {
+  await upload('indicaciones','Indicaciones de la cita',{mode:'rules',on_booking:true});
+  const service = (await h.authed('POST','/api/services',{account_id:h.accountId,name:'Visita',duration_minutes:30,min_notice_minutes:0,max_days_ahead:5,notify_team:false,reminders:[]})).json();
+  const slots=(await h.authed('GET',`/api/services/${service.id}/slots`)).json();
+  assert.ok(slots.length>0);
+  h.reset(); const phone='5215540000017';
+  h.setScript(()=>({messages:['Hola.']})); await say('hola',phone);
+  h.setScript(()=>({messages:['Listo. Te comparto la imagen.'],booking:{action:'book',service_id:service.id,slot:slots[0].key,appointment_id:''}}));
+  await say('quiero ese horario',phone);
+  assert.deepEqual(photosTo(phone),['bienvenida','indicaciones']);
+  const conv=await h.conversationFor(phone);
+  assert.equal((await pool.query("SELECT count(*)::int n FROM appointments WHERE conversation_id=$1 AND status='confirmed'",[conv.id])).rows[0].n,1);
+  await say('quiero ese mismo horario','5215540000018');
+  assert.ok(!photosTo('5215540000018').includes('indicaciones'));
+  await h.authed('PUT',`/api/images/${IDS.indicaciones}`,{active:false});
+});
+
+t('contexto semántico en modo reglas: usa intención e historial sin coincidencia de términos', async () => {
+  const condition='Cuando el cliente necesite comparar alternativas de alojamiento';
+  await upload('comparacion','Comparación de opciones',{mode:'rules',context:condition});
+  h.reset(); const phone='5215540000020';
+  h.setScript(()=>({messages:['¿Cómo te ayudo?']})); await say('vamos dos parejas',phone);
+  h.setScript(req=>{
+    const system=req.messages[0].content;
+    assert.match(system,/Fotos por contexto \(usa context_image_ids, no image_ids\)/);
+    assert.ok(system.includes(condition));
+    assert.ok(JSON.stringify(req.messages).includes('vamos dos parejas'));
+    assert.ok(!system.includes('ID: `comparacion`'), 'no habilita libre elección para una foto solo por reglas');
+    return {action:'reply',messages:['Te comparto la imagen para que elijas.'],context_image_ids:['comparacion']};
+  });
+  await say('¿me enseñas cómo es cada una para decidir?',phone);
+  assert.deepEqual(photosTo(phone),['bienvenida','comparacion']);
+  const conv=await h.conversationFor(phone);
+  const image=(await pool.query('SELECT meta,status FROM messages WHERE conversation_id=$1 AND image_id=$2',[conv.id,IDS.comparacion])).rows[0];
+  assert.equal(image.status,'ok'); assert.equal(image.meta.image_trigger,`contexto: ${condition}`);
+  h.setScript(()=>({messages:['Claro.'],context_image_ids:['comparacion']})); await say('gracias',phone);
+  assert.deepEqual(photosTo(phone),['bienvenida','comparacion']);
+  await h.authed('PUT',`/api/images/${IDS.comparacion}`,{send_when:{mode:'rules',context:condition,once:false}});
+  await say('¿me las vuelves a enseñar?',phone);
+  assert.deepEqual(photosTo(phone),['bienvenida','comparacion','comparacion']);
+  await h.authed('PUT',`/api/images/${IDS.comparacion}`,{active:false});
+});
+
+t('contexto no coincidente no manda foto; selección contextual y otros disparadores no duplican', async () => {
+  await upload('situacion','Opciones',{mode:'both',context:'Al explicar opciones de habitaciones',assistant_keywords:['cuál prefieres'],once:false});
+  h.reset(); const phone='5215540000021';
+  h.setScript(()=>({messages:['Hola.']})); await say('hola',phone);
+  assert.deepEqual(photosTo(phone),['bienvenida']);
+  h.setScript(()=>({messages:['¿Cuál prefieres?'],context_image_ids:['situacion'],image_ids:['situacion']}));
+  await say('quiero elegir una',phone);
+  assert.deepEqual(photosTo(phone),['bienvenida','situacion']);
+  await h.authed('PUT',`/api/images/${IDS.situacion}`,{active:false});
+});
+
+t('contexto descarta fotos inexistentes, sin condición, inactivas o de otro agente', async () => {
+  await upload('contexto_off','Desactivada',{mode:'rules',context:'Al explicar opciones'});
+  await h.authed('PUT',`/api/images/${IDS.contexto_off}`,{active:false});
+  const account=(await h.authed('POST','/api/accounts',{name:'Otra cuenta de imágenes'})).json();
+  const bot=(await h.authed('POST','/api/chatbots',{account_id:account.id,name:'Otro'})).json();
+  await pool.query("INSERT INTO images (chatbot_id,code,name,file_path,mime_type,send_when) VALUES ($1,'privada','Privada','private.png','image/png',$2)",[bot.id,JSON.stringify({mode:'rules',context:'Al explicar opciones'})]);
+  h.reset(); const phone='5215540000022';
+  h.setScript(()=>({messages:['Hola.']})); await say('hola',phone);
+  h.setScript(()=>({messages:['¿Cómo te ayudo?'],context_image_ids:['privada','contexto_off','suite','desconocida']}));
+  await say('quiero ver opciones',phone);
+  assert.deepEqual(photosTo(phone),['bienvenida']);
+  assert.ok(!prompt().includes('ID de contexto: `privada`'));
 });

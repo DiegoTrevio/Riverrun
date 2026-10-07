@@ -119,7 +119,7 @@ function clearTimers() {
   state.timers = [];
 }
 
-const ROLE_LABEL = { superadmin: 'Superadministrador', admin: 'Administrador', agent: 'Agente' };
+const ROLE_LABEL = { superadmin: 'Maestro · todos los perfiles', admin: 'Administrador del perfil', agent: 'Operador del perfil' };
 const isAdmin = () => state.me && state.me.user.role !== 'agent';
 const isSuper = () => state.me && state.me.user.role === 'superadmin';
 /** Filtro de cuenta para listados (el superadmin puede elegir una o ver todas). */
@@ -146,12 +146,11 @@ async function render() {
   if (parts[0] === 'olvide') return renderForgot();
   if (parts[0] === 'restablecer') return renderReset(params.get('token') || '');
   if (parts[0] === 'verificar') return renderVerify(params.get('token') || '');
-  if (!state.me) {
-    try {
-      await loadSession();
-    } catch {
-      return;
-    }
+  // Refresh profile and permissions on navigation; server-side reassignment also affects open sessions.
+  try {
+    await loadSession();
+  } catch {
+    return;
   }
   // Los agentes solo atienden conversaciones.
   if (!isAdmin() && !['conversations', 'conversation', 'password', 'agenda', 'notifications'].includes(parts[0])) {
@@ -162,7 +161,7 @@ async function render() {
   fill($app, shell(parts[0] || 'home', content));
   try {
     if (!parts.length && needsOnboarding()) location.hash = '#/inicio';
-    else if (!parts.length) await viewDashboard(content);
+    else if (!parts.length || parts[0] === 'asistentes') await viewDashboard(content, params);
     else if (parts[0] === 'inicio') await viewOnboarding(content, parts[1]);
     else if (parts[0] === 'consumo') await viewUsage(content, params);
     else if (parts[0] === 'bot') await viewBot(content, parts[1], parts[2] || 'general');
@@ -196,35 +195,50 @@ setInterval(() => { if (state.me) refreshBell(); }, 20000);
 function shell(active, content) {
   refreshBell();
   const link = (href, label, key) => h('a', { href, class: active === key ? 'active' : '' }, label);
+  const navGroup = (label, keys, links) => h('details', { class: 'nav-group', open: keys.includes(active) },
+    h('summary', { class: keys.includes(active) ? 'active' : '' }, label, label === 'Conversaciones' ? [' ', bell] : null), h('div', {}, links));
   const { user, account } = state.me;
   const switcher = isSuper()
     ? h('div', { class: 'account-switch' },
-        h('label', { class: 'small muted' }, 'Cuenta'),
+        h('label', { class: 'small muted' }, 'Perfil'),
         h('select', {
           onchange: (e) => {
             state.accountId = e.target.value;
+            if (location.hash.startsWith('#/logs?')) {
+              const filters = new URLSearchParams(location.hash.split('?')[1]);
+              filters.delete('account_id');
+              history.replaceState(null, '', '#/logs' + (filters.size ? '?' + filters : ''));
+            }
             try { localStorage.setItem('cp-account', state.accountId); } catch { /* */ }
             render();
           },
         },
-        h('option', { value: '' }, 'Todas las cuentas'),
+        h('option', { value: '' }, 'Todos los perfiles'),
         state.accounts.map((a) => h('option', { value: a.id, selected: a.id === state.accountId }, a.name + (a.active ? '' : ' (inactiva)')))))
     : h('div', { class: 'account-switch small muted' }, account?.name);
   return h('div', { class: 'layout' },
     h('nav', { class: 'sidebar' },
       h('div', { class: 'brand' }, '💬 Chatbots'),
       switcher,
-      isAdmin() && (!isSuper() || state.accountId) ? link('#/inicio', 'Primeros pasos', 'inicio') : null,
-      isAdmin() ? link('#/', 'Asistentes', 'home') : null,
-      isAdmin() ? link('#/channels', 'Canales', 'channels') : null,
-      link('#/conversations', 'Conversaciones', 'conversations'),
-      link('#/agenda', 'Agenda', 'agenda'),
-      isAdmin() ? link('#/automation', 'Automatización', 'automation') : null,
-      h('a', { href: '#/notifications', class: active === 'notifications' ? 'active' : '' }, 'Notificaciones ', bell),
-      isAdmin() ? link('#/users', 'Usuarios', 'users') : null,
-      isSuper() ? link('#/accounts', 'Cuentas', 'accounts') : null,
-      isAdmin() ? link('#/consumo', 'Consumo de IA', 'consumo') : null,
-      isAdmin() ? link('#/logs', 'Registros', 'logs') : null,
+      isAdmin() ? navGroup('Asistentes y conexiones', ['home', 'bot', 'channels', 'channel', 'inicio'], [
+        link('#/', 'Asistentes', 'home'),
+        link('#/channels', 'WhatsApp y otros canales', 'channels'),
+        (!isSuper() || state.accountId) ? link('#/inicio', 'Primeros pasos', 'inicio') : null,
+      ]) : null,
+      navGroup('Conversaciones', ['conversations', 'conversation', 'notifications'], [
+        link('#/conversations', 'Bandeja de entrada', 'conversations'),
+        h('a', { href: '#/notifications', class: active === 'notifications' ? 'active' : '' }, 'Notificaciones'),
+      ]),
+      navGroup('Operación', ['agenda', 'automation'], [
+        link('#/agenda', 'Agenda', 'agenda'),
+        isAdmin() ? link('#/automation', 'Automatización', 'automation') : null,
+      ]),
+      isAdmin() ? navGroup('Configuración', ['users', 'accounts', 'consumo', 'logs', 'password'], [
+        link('#/users', 'Usuarios', 'users'),
+        isSuper() ? link('#/accounts', 'Perfiles', 'accounts') : null,
+        link('#/consumo', 'Consumo de IA', 'consumo'),
+        link('#/logs', 'Registros', 'logs'),
+      ]) : null,
       h('div', { class: 'spacer' }),
       h('div', { class: 'small muted', style: 'padding:4px 10px' }, user.name || user.email, h('br'), ROLE_LABEL[user.role]),
       link('#/password', 'Mi perfil', 'password'),
@@ -364,27 +378,39 @@ async function renderVerify(token) {
 function accountPicker(obj) {
   if (!isSuper()) return null;
   if (!obj.account_id) obj.account_id = state.accountId || state.accounts[0]?.id || '';
-  return field('Cuenta', select(obj, 'account_id', state.accounts.map((a) => [a.id, a.name])));
+  return field('Perfil asignado', select(obj, 'account_id', state.accounts.map((a) => [a.id, a.name])));
 }
 
 /* ------------------------------ Dashboard ------------------------------ */
 
-async function viewDashboard(root) {
+async function viewDashboard(root, params = new URLSearchParams()) {
   const [bots, stats, channels] = await Promise.all([api('GET', `/api/chatbots${acct()}`), api('GET', `/api/stats${acct()}`), api('GET', `/api/channels${acct()}`)]);
   state.bots = bots;
   const byId = Object.fromEntries(stats.chatbots.map((s) => [s.id, s]));
-  const nb = { name: '', template: state.me.account?.business_type || 'otro' };
-  const createBox = h('div', { class: 'card', hidden: true },
-    h('h3', { style: 'margin-top:0' }, 'Nuevo asistente'),
-    h('div', { class: 'grid' },
-      field('Nombre del negocio', text(nb, 'name', { placeholder: 'Hotel Las Palmas' })),
-      field('Tipo de negocio', select(nb, 'template', (state.meta.business_types || []).map((b) => [b.key, b.label])), 'Nace con la forma de atender, reglas y datos típicos de ese giro. Todo se puede cambiar.')),
+  const nb = { name: '', template: state.me.account?.business_type || 'otro', setup: { goal: '', questions: '', knowledge: '' } };
+  const createBox = h('div', { class: 'card', hidden: params.get('new') !== '1' },
+    h('h3', { style: 'margin-top:0' }, 'Crea tu agente'),
+    h('p', { class: 'muted' }, 'Describe tu negocio y qué necesitas conseguir. Organizamos las instrucciones y guardamos las respuestas automáticamente.'),
     accountPicker(nb),
-    h('button', { class: 'primary', onclick: async () => {
-      if (!nb.name.trim()) return toast('Escribe un nombre', true);
-      const bot = await run(() => api('POST', '/api/chatbots', nb));
-      if (bot) location.hash = `#/bot/${bot.id}/conocimiento`;
-    } }, 'Crear y agregar su información'));
+    h('h4', {}, '1. Tu negocio'),
+    h('div', { class: 'grid' },
+      field('Nombre del negocio', text(nb, 'name', { placeholder: 'Los Trompitos', maxlength: 120 })),
+      field('Tipo de negocio', select(nb, 'template', (state.meta.business_types || []).map((b) => [b.key, b.label])))),
+    field('Información para responder', area(nb.setup, 'knowledge', { placeholder: 'Qué vendes, precios, horarios, ubicación y condiciones.', maxlength: 50000 }), 'Puedes pegar la información que ya tienes. Después podrás agregar documentos y fotos.'),
+    h('h4', {}, '2. Qué debe lograr'),
+    field('Objetivo', area(nb.setup, 'goal', { placeholder: 'Completar el pedido y pasarlo al equipo para confirmarlo.', maxlength: 2000 })),
+    h('h4', {}, '3. Qué debe preguntar'),
+    field('Preguntas clave', area(nb.setup, 'questions', { placeholder: 'Qué quiere pedir, cantidad y si recoge o necesita entrega. Para entrega: nombre y dirección.', maxlength: 4000 }), 'Escríbelas con tus palabras. El agente preguntará una a la vez y guardará las respuestas sin crear campos.'),
+    h('p', { class: 'help' }, 'Se crea apagado para que puedas probarlo antes de conectarlo a tus teléfonos.'),
+    h('button', { class: 'primary', onclick: async (event) => {
+      if (!nb.name.trim() || !nb.setup.goal.trim() || !nb.setup.questions.trim() || !nb.setup.knowledge.trim()) return toast('Completa el nombre, la información, el objetivo y las preguntas clave.', true);
+      const button = event.currentTarget;
+      button.disabled = true;
+      try {
+        const bot = await run(() => api('POST', '/api/chatbots', nb));
+        if (bot) location.hash = `#/bot/${bot.id}/probar`;
+      } finally { button.disabled = false; }
+    } }, 'Crear y probar'));
   const noAccounts = isSuper() && !state.accounts.length;
   root.append(
     h('div', { class: 'row between' }, h('h1', {}, 'Asistentes'),
@@ -443,7 +469,7 @@ async function viewBot(root, id, tab) {
   root.append(
     h('div', { class: 'row between' },
       h('h1', {}, bot.name, ' ', h('span', { class: `badge ${bot.active ? 'green' : ''}` }, bot.active ? 'Encendido' : 'Apagado')),
-      h('a', { href: `#/conversations?chatbot_id=${bot.id}` }, 'Ver conversaciones →')),
+      h('div', { class: 'row' }, h('a', { class: 'btn', href: `#/channels?new=1&chatbot_id=${bot.id}` }, 'Conectar teléfono / ver QR'), h('a', { href: `#/conversations?chatbot_id=${bot.id}` }, 'Ver conversaciones →'))),
     h('div', { class: 'tabs' }, TABS.map(([k, l]) => h('a', { href: `#/bot/${id}/${k}`, class: k === tab ? 'active' : '' }, l))),
   );
   const body = h('div');
@@ -474,7 +500,7 @@ async function tabGeneral(root, bot) {
   const ready = steps.every(([ok]) => ok);
   root.append(
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, ready ? '✅ Tu asistente está listo y respondiendo' : 'Para que tu asistente funcione'),
+      h('h3', { style: 'margin-top:0' }, ready ? '✅ Configuración básica completa' : 'Para que tu asistente funcione'),
       h('ul', { class: 'checklist' }, steps.map(([ok, label, tabKey, help]) =>
         h('li', { class: ok ? 'ok' : '' }, h('span', { class: 'mark' }, ok ? '✓' : '○'), ' ',
           tabKey ? h('a', { href: `#/bot/${bot.id}/${tabKey}` }, label) : label,
@@ -491,8 +517,8 @@ async function tabGeneral(root, bot) {
       h('p', { class: 'muted small' }, 'El mismo asistente (información, reglas y fotos) responde igual en todos sus canales.'),
       channels.length
         ? h('table', {}, h('tbody', {}, channels.map((c) => h('tr', { class: 'click', onclick: () => (location.hash = `#/channel/${c.id}`) },
-            h('td', {}, channelIcon(c.type), ' ', h('strong', {}, c.name)), h('td', {}, c.label),
-            h('td', {}, h('span', { class: `badge ${c.active ? 'green' : ''}` }, c.active ? 'Activo' : 'Inactivo'))))))
+            h('td', {}, channelIcon(c.type), ' ', h('strong', {}, c.name), c.type === 'whatsapp' && c.config.number ? h('div', { class: 'small muted' }, `+${c.config.number}`) : null), h('td', {}, c.label),
+            channelStatusCell(c)))))
         : h('p', {}, 'Aún no tiene canales. Mientras tanto puedes probarlo en la pestaña ', h('a', { href: `#/bot/${bot.id}/probar` }, 'Probar'), '.'),
     ),
     saveBar(async () => { if (await saveBot(bot, m)) render(); },
@@ -529,8 +555,14 @@ async function tabInstructions(root, bot) {
   const advanced = h('details', { class: 'card' }, h('summary', {}, 'Opciones avanzadas'));
   for (const [label, view] of [['Canales y administración', tabGeneral], ['Reglas y transferencia a una persona', tabRules], ['Activación y pausas', tabActivation], ['Recorrido y modelo de IA', tabAdvanced]]) {
     const content = h('div', { style: 'margin-top:14px' });
-    await view(content, bot);
-    advanced.append(h('details', { style: 'margin-top:14px' }, h('summary', {}, label), content));
+    let loaded = false;
+    const section = h('details', { style: 'margin-top:14px', ontoggle: async () => {
+      if (!section.open || loaded) return;
+      loaded = true;
+      try { fill(content); await view(content, bot); }
+      catch (error) { loaded = false; fill(content, h('p', { class: 'help' }, 'No se pudo cargar. Cierra y vuelve a abrir para reintentar.')); toast(error.message, true); }
+    } }, h('summary', {}, label), content);
+    advanced.append(section);
   }
   root.append(advanced);
 }
@@ -549,7 +581,11 @@ const CAT_LABELS = { general: 'General', servicios: 'Servicios', productos: 'Pro
 const catLabel = (c) => CAT_LABELS[c] || c.replace(/_/g, ' ');
 
 async function tabKnowledge(root, bot) {
-  const items = await api('GET', `/api/chatbots/${bot.id}/knowledge`);
+  const [items, search] = await Promise.all([api('GET', `/api/chatbots/${bot.id}/knowledge`), api('GET', `/api/chatbots/${bot.id}/knowledge/index`)]);
+  if (search.enabled) root.appendChild(h('div', { class: 'card' },
+    h('strong', {}, search.available ? 'Búsqueda por significado' : 'Búsqueda por palabras'),
+    h('p', { class: 'help' }, search.available ? `${search.indexed_items} documentos preparados · ${search.pending_items ?? 0} pendientes · ${search.essential_items ?? 0} esenciales incluidos siempre. Los cambios se preparan automáticamente; puedes completar los pendientes ahora.` : 'La búsqueda por significado no está disponible. El asistente sigue usando tu conocimiento.'),
+    search.available ? h('button', { class: 'small', onclick: async () => { if (await run(() => api('POST', `/api/chatbots/${bot.id}/knowledge/index`, {}), 'Conocimiento actualizado')) render(); } }, 'Preparar todo ahora') : null));
   const cats = state.meta.knowledge_categories;
   const catOptions = cats.map((c) => [c, catLabel(c)]);
   const newItem = { category: 'general', title: '', content: '', always_include: false };
@@ -613,7 +649,7 @@ async function tabKnowledge(root, bot) {
 }
 
 /** Valores de "¿Cuándo se envía?" de una foto (las viejas quedan en "La IA decide"). */
-const sendWhenDefaults = (w = {}) => ({ mode: 'ai', keywords: [], first_message: false, flow_steps: [], on_goal: false, on_booking: false, once: true, ...w });
+const sendWhenDefaults = (w = {}) => ({ mode: 'ai', context: '', keywords: [], assistant_keywords: [], first_message: false, flow_steps: [], on_goal: false, on_booking: false, once: true, ...w });
 
 /** Editor de "¿Cuándo se envía?": la IA decide, o el sistema la envía en los momentos que marques. */
 function sendWhenEditor(w, bot) {
@@ -622,8 +658,10 @@ function sendWhenEditor(w, bot) {
   const draw = () => fill(box,
     field('¿Cuándo se envía?', select(w, 'mode', [['ai', 'La IA decide (según "Cuándo enviarla")'], ['rules', 'Solo en los momentos que marque aquí'], ['both', 'En estos momentos y también cuando la IA lo crea conveniente']], draw)),
     w.mode === 'ai' ? null : h('div', { class: 'list-item' },
-      h('p', { class: 'small', style: 'margin-top:0' }, guaranteed(), ' El sistema la envía junto con la respuesta, aunque la IA no la elija.'),
+      h('p', { class: 'small', style: 'margin-top:0' }, guaranteed(), ' El sistema la envía junto con la respuesta, aunque la IA no la elija, respetando el máximo de fotos por respuesta.'),
+      field(tag('Enviar por contexto', guide()), area(w, 'context', { placeholder: 'Cuando el cliente quiera comparar habitaciones o el asistente le explique las opciones disponibles.' }), 'Describe la situación. La IA interpreta la conversación completa; no exige palabras exactas.'),
       field('Cuando el cliente escriba', lines(w, 'keywords', { placeholder: 'menú\nprecios\nubicación' }), 'Una por renglón. Si la vuelve a pedir, se reenvía.'),
+      field('Cuando el asistente diga o pregunte', lines(w, 'assistant_keywords', { placeholder: 'qué tipo de habitación\ncuál prefieres' }), 'Una frase por renglón. Se comprueba en la respuesta que se envía al cliente.'),
       check(w, 'first_message', 'En la bienvenida (primera respuesta a un cliente nuevo)'),
       steps.length
         ? h('div', {}, h('span', { class: 'small' }, 'Al llegar a la etapa del recorrido: '), steps.map((st, i) => h('label', { class: 'check' },
@@ -1191,8 +1229,16 @@ async function viewConversation(root, id) {
       flowCard(data.chatbot?.flow, c),
       autoBox,
       h('div', { class: 'card' },
-        h('h3', { style: 'margin-top:0' }, 'Resumen de memoria'),
-        h('div', { class: 'small pre muted' }, c.summary || 'Aún no hay resumen (se genera cuando la conversación crece).'),
+        h('div', { class: 'row between' }, h('h3', { style: 'margin:0' }, 'Resumen de la conversación'),
+          h('button', { class: 'small primary', onclick: async (e) => {
+            e.target.disabled = true;
+            try { if (await run(() => api('POST', `/api/conversations/${id}/summary`), 'Resumen actualizado')) await load(true); }
+            finally { e.target.disabled = false; }
+          } }, c.report_summary ? 'Actualizar resumen' : 'Generar resumen')),
+        h('p', { class: 'small pre' }, c.report_summary || 'Se genera al cerrar, completar el objetivo o transferir la conversación. Puedes pedirlo en cualquier momento.'),
+        c.report_at ? h('p', { class: 'small muted' }, `Generado: ${fmtDate(c.report_at)}`, c.report_until_id < (data.messages.filter((m) => m.status === 'ok').at(-1)?.id || 0) || c.report_data_version !== c.data_version ? ' · Hay información nueva; actualiza el resumen.' : '') : null,
+        h('details', { class: 'small' }, h('summary', {}, 'Datos guardados en esta conversación'), h('div', { class: 'pre' }, Object.entries(c.data || {}).map(([key, value]) => `${key}: ${value}`).join('\n') || 'Aún no se han recopilado datos.')),
+        c.summary ? h('details', { class: 'small' }, h('summary', {}, 'Memoria del asistente'), h('div', { class: 'pre muted' }, c.summary)) : null,
         h('button', { class: 'small danger', style: 'margin-top:10px', onclick: async () => { if (confirm('¿Borrar memoria (resumen, datos y notas) de este cliente?')) { await run(() => api('POST', `/api/conversations/${id}/reset-memory`), 'Memoria borrada'); load(true); } } }, 'Borrar memoria')),
       isAdmin() ? h('div', { class: 'card' }, h('a', { href: `#/logs?conversation_id=${id}` }, 'Ver registros de esta conversación →')) : null,
     );
@@ -1215,15 +1261,31 @@ async function viewConversation(root, id) {
 /* ------------------------------ Registros ------------------------------ */
 
 async function viewLogs(root, params) {
-  const bots = await api('GET', `/api/chatbots${acct()}`);
+  const selected = isSuper() ? params.get('account_id') || state.accountId || '' : '';
+  const scoped = selected ? `?account_id=${encodeURIComponent(selected)}` : '';
+  const bots = await api('GET', `/api/chatbots${scoped}`);
   const f = { chatbot_id: params.get('chatbot_id') || '', channel_id: params.get('channel_id') || '', level: params.get('level') || '', source: params.get('source') || '', conversation_id: params.get('conversation_id') || '' };
+  if (selected) f.account_id = selected;
   const apply = () => { location.hash = `#/logs?${new URLSearchParams(Object.entries(f).filter(([, v]) => v))}`; };
   const botName = Object.fromEntries(bots.map((b) => [b.id, b.name]));
   const qs = new URLSearchParams(Object.entries(f).filter(([, v]) => v));
-  if (isSuper() && state.accountId) qs.set('account_id', state.accountId);
+  if (selected) qs.set('account_id', selected);
   const rows = await api('GET', `/api/logs?${qs}`);
+  const supervision = await api('GET', `/api/knowledge/monitor${scoped}`);
+  const titles = {pending:'Pendientes sin avance',embedding:'Error de embeddings',fallback:'Búsqueda por palabras',latency:'Latencia alta',cost:'Revisar costos',delivery:'Entregas fallidas',configuration:'Revisar configuración'};
+  const monitorCard = h('details', {class:'card',open:true}, h('summary',{},'Supervisión del conocimiento'),
+    h('p',{class:'muted small'}, supervision.enabled ? 'Revisión cada 5 minutos · métricas de la última hora · avisos en Notificaciones.' : 'La supervisión automática está desactivada.'),
+    supervision.accounts.map(a => {
+      const m=a.metrics;
+      return h('div',{style:'margin-top:12px'}, h('strong',{},a.name),
+        a.checked_at ? h('div',{class:'muted small'},`Última revisión: ${fmtDate(a.checked_at)}`) : h('p',{class:'muted'},'Aún no se ha realizado una revisión.'),
+        m ? h('p',{},`Pendientes: ${m.pending_items} · Errores de embeddings: ${m.embedding_errors} · Búsqueda por palabras: ${m.attempts ? (m.fallback_ratio*100).toFixed(1)+'%' : 'sin consultas'} · p95 búsqueda: ${Math.round(m.p95_ms)} ms · p95 embeddings: ${Math.round(m.embedding_p95_ms || 0)} ms · IA registrada: US$${Number(m.recorded_usd).toFixed(4)}`) : null,
+        m?.unreported_embedding_costs ? h('p',{class:'muted small'},`${m.unreported_embedding_costs} embeddings sin costo reportado por el proveedor; el total puede incluir estimaciones.`) : null,
+        a.alerts.length ? h('div',{},a.alerts.map(alert=>h('span',{class:'badge orange',style:'margin-right:6px'},titles[alert.kind]||'Revisar supervisión'))) : null);
+    }));
   root.append(
     h('h1', {}, 'Registros'),
+    monitorCard,
     h('div', { class: 'card row' },
       h('div', { style: 'min-width:180px' }, select(f, 'chatbot_id', [['', 'Todos los chatbots'], ...bots.map((b) => [b.id, b.name])], apply)),
       h('div', { style: 'min-width:140px' }, select(f, 'level', [['', 'Todos los niveles'], ['error', 'Errores'], ['warn', 'Advertencias'], ['info', 'Información']], apply)),
@@ -1263,13 +1325,21 @@ const STATE_LABEL = {
   unknown: ['', 'Sin información'],
 };
 
+function channelStatusCell(c) {
+  const connected = c.type !== 'whatsapp' || c.connection_state === 'open';
+  return h('td', {},
+    h('span', { class: `badge ${c.active && connected ? 'green' : ''}` },
+      !c.active ? 'Inactivo' : c.type !== 'whatsapp' ? 'Activo' : connected ? 'Conectado' : 'Pendiente de conectar'),
+    c.type === 'whatsapp' ? h('a', { href: `#/channel/${c.id}`, class: 'btn small', style: 'margin-left:8px' }, connected ? 'Administrar' : 'Ver QR') : null);
+}
+
 async function viewChannels(root, params) {
   const [channels, bots] = await Promise.all([api('GET', `/api/channels${acct()}`), api('GET', `/api/chatbots${acct()}`)]);
   const types = state.meta.channel_types;
   const n = { type: 'whatsapp', name: '', chatbot_id: params.get('chatbot_id') || '' };
   const botOptions = () => [['', '— Sin chatbot (solo guarda mensajes) —'], ...bots.filter((b) => !isSuper() || !n.account_id || b.account_id === n.account_id).map((b) => [b.id, b.name])];
   const botSelect = h('div');
-  const drawBots = () => fill(botSelect, field('Chatbot que responde', select(n, 'chatbot_id', botOptions())));
+  const drawBots = () => fill(botSelect, field('Asistente que responde', select(n, 'chatbot_id', botOptions()), 'Puedes elegir el mismo asistente para varios teléfonos.'));
   const createBox = h('div', { class: 'card', hidden: params.get('new') !== '1' });
   const picker = isSuper() ? (() => {
     if (!n.account_id) n.account_id = bots.find((b) => b.id === n.chatbot_id)?.account_id || state.accountId || state.accounts[0]?.id || '';
@@ -1290,24 +1360,28 @@ async function viewChannels(root, params) {
     } }, 'Crear y configurar'));
 
   const botName = Object.fromEntries(bots.map((b) => [b.id, b.name]));
+  const limit = state.meta.max_whatsapp_profiles;
+  const selectedAccount = state.accountId || state.me.account?.id;
+  const profileCount = channels.filter((c) => c.type === 'whatsapp' && (!selectedAccount || c.account_id === selectedAccount)).length;
   root.append(
-    h('div', { class: 'row between' }, h('h1', {}, 'Canales'), h('button', { class: 'primary', onclick: () => (createBox.hidden = !createBox.hidden) }, '+ Nuevo canal')),
+    h('div', { class: 'row between' }, h('h1', {}, 'WhatsApp y otros canales'), h('button', { class: 'primary', onclick: () => (createBox.hidden = !createBox.hidden) }, '+ Nuevo canal')),
     h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' },
       'Cada canal es una conexión con una plataforma (un número de WhatsApp, un bot de Telegram, una página de Facebook, una cuenta de Instagram o el chat de un sitio web). ',
-      'Asígnale un chatbot para que responda; un mismo chatbot puede atender varios canales.')),
+      'Conecta hasta cuatro perfiles de WhatsApp por cuenta, cada uno con su propio QR. Asigna un asistente diferente a cada teléfono o comparte el mismo en varios. Las conversaciones de cada perfil se mantienen separadas.')),
     !state.meta.public_https ? h('div', { class: 'card' }, h('span', { class: 'badge orange' }, 'Aviso'), ' ',
       `La URL pública (${state.meta.public_base_url}) no es HTTPS. Telegram, Messenger e Instagram exigen HTTPS: define PUBLIC_BASE_URL con tu dominio.`) : null,
+    h('p', { class: 'muted small' }, selectedAccount ? `${profileCount} de ${limit} perfiles de WhatsApp. Los perfiles desconectados también ocupan un lugar.` : `Hasta ${limit} perfiles de WhatsApp por cuenta.`),
     createBox,
     h('div', { class: 'card' },
       channels.length
         ? h('table', {},
             h('thead', {}, h('tr', {}, h('th', {}, 'Canal'), h('th', {}, 'Plataforma'), h('th', {}, 'Chatbot'), isSuper() && !state.accountId ? h('th', {}, 'Cuenta') : null, h('th', {}, 'Estado'))),
             h('tbody', {}, channels.map((c) => h('tr', { class: 'click', onclick: () => (location.hash = `#/channel/${c.id}`) },
-              h('td', {}, channelIcon(c.type), ' ', h('strong', {}, c.name)),
+              h('td', {}, channelIcon(c.type), ' ', h('strong', {}, c.name), c.type === 'whatsapp' && c.config.number ? h('div', { class: 'small muted' }, `+${c.config.number}`) : null),
               h('td', {}, c.label),
               h('td', {}, c.chatbot_id ? botName[c.chatbot_id] || '—' : h('span', { class: 'badge orange' }, 'sin chatbot')),
               isSuper() && !state.accountId ? h('td', { class: 'small' }, accountName(c.account_id)) : null,
-              h('td', {}, h('span', { class: `badge ${c.active ? 'green' : ''}` }, c.active ? 'Activo' : 'Inactivo'))))))
+              channelStatusCell(c)))))
         : h('p', { class: 'muted' }, 'Aún no hay canales.')),
   );
 }
@@ -1448,9 +1522,11 @@ async function viewChannel(root, id) {
     h('div', { class: 'card' },
       h('h3', { style: 'margin-top:0' }, 'General'),
       field('Nombre', text(m, 'name')),
-      field('Chatbot que responde', select(m, 'chatbot_id', [['', '— Sin chatbot (solo guarda mensajes) —'], ...accountBots.map((b) => [b.id, b.name])])),
+      field('Asistente que responde', select(m, 'chatbot_id', [['', '— Sin asistente (solo guarda mensajes) —'], ...accountBots.map((b) => [b.id, b.name])]), 'Este asistente puede atender varios perfiles. Cambiarlo aquí solo afecta a este perfil.'),
       check(m, 'active', 'Activo (si se desactiva, los mensajes se guardan pero no se responden)')),
-    h('div', { class: 'card' }, h('h3', { style: 'margin-top:0' }, 'Configuración'), channelConfigFields(ch, cfg)),
+    ch.type === 'whatsapp'
+      ? h('details', { class: 'card' }, h('summary', {}, 'Configuración avanzada de WhatsApp'), h('div', { style: 'margin-top:12px' }, channelConfigFields(ch, cfg)))
+      : h('div', { class: 'card' }, h('h3', { style: 'margin-top:0' }, 'Configuración'), channelConfigFields(ch, cfg)),
     ch.type === 'whatsapp' ? '' : h('div', { class: 'card' },
       h('div', { class: 'row between' }, h('h3', { style: 'margin:0' }, 'Conexión'), h('span', {}, 'Estado: ', status)),
       ch.type !== 'webchat' ? h('p', { class: 'muted small' }, 'Guarda los cambios de configuración antes de conectar.') : null,
@@ -1476,35 +1552,38 @@ async function viewChannel(root, id) {
 async function viewUsers(root) {
   const users = await api('GET', `/api/users${acct()}`);
   const n = { name: '', email: '', password: '', role: 'agent', phone: '', notify_whatsapp: false };
-  const roles = [['agent', 'Agente (solo conversaciones)'], ['admin', 'Administrador de la cuenta']];
-  if (isSuper()) roles.push(['superadmin', 'Superadministrador (todas las cuentas)']);
+  const roles = [['agent', 'Operador · conversaciones y agenda de su perfil'], ['admin', 'Administrador · gestiona su perfil completo']];
+  if (isSuper()) roles.push(['superadmin', 'Maestro · acceso a todos los perfiles']);
+  const assignedProfile = h('div', {}, accountPicker(n));
   const me = state.me.user;
   root.append(
-    h('h1', {}, 'Usuarios'),
+    h('h1', {}, 'Usuarios y permisos'),
+    h('p', { class: 'muted' }, 'Cada usuario pertenece a un perfil de negocio y solo puede gestionar sus datos. El maestro tiene acceso a todos los perfiles.'),
     h('div', { class: 'card' },
       h('h3', { style: 'margin-top:0' }, 'Nuevo usuario'),
       h('div', { class: 'grid' },
         field('Nombre', text(n, 'name')),
         field('Correo', text(n, 'email', { placeholder: 'persona@empresa.com' })),
         field('Contraseña inicial', text(n, 'password', { type: 'password' }), 'Mínimo 8 caracteres. Pídele que la cambie al entrar.'),
-        field('Rol', select(n, 'role', roles)),
+        field('Rol', select(n, 'role', roles, () => { assignedProfile.hidden = n.role === 'superadmin'; })),
         field('WhatsApp para alertas (opcional)', text(n, 'phone', { placeholder: '5215512345678' }))),
       check(n, 'notify_whatsapp', 'Enviarle las alertas también por WhatsApp'),
-      accountPicker(n),
-      h('button', { class: 'primary', onclick: async () => { if (await run(() => api('POST', '/api/users', n), 'Usuario creado')) render(); } }, 'Crear usuario')),
+      assignedProfile,
+      h('button', { class: 'primary', onclick: async () => { if (await run(() => api('POST', '/api/users', n.role === 'superadmin' ? { ...n, account_id: null } : n), 'Usuario creado')) render(); } }, 'Crear usuario')),
     h('div', { class: 'card' },
       h('table', {},
-        h('thead', {}, h('tr', {}, h('th', {}, 'Usuario'), h('th', {}, 'Rol'), isSuper() ? h('th', {}, 'Cuenta') : null, h('th', {}, 'Último acceso'), h('th', {}, ''))),
+        h('thead', {}, h('tr', {}, h('th', {}, 'Usuario'), h('th', {}, 'Rol'), isSuper() ? h('th', {}, 'Perfil asignado') : null, h('th', {}, 'Último acceso'), h('th', {}, ''))),
         h('tbody', {}, users.map((u) => {
           const self = u.id === me.id;
           return h('tr', {},
             h('td', {}, h('strong', {}, u.name || '—'), h('div', { class: 'muted small' }, u.email, u.phone ? ` · 📱 +${u.phone}${u.notify_whatsapp ? ' (alertas)' : ''}` : ''), !u.active ? h('span', { class: 'badge orange' }, 'desactivado') : null),
             h('td', {}, u.role === 'superadmin' || self ? ROLE_LABEL[u.role]
               : h('select', { onchange: async (e) => { if (await run(() => api('PUT', `/api/users/${u.id}`, { role: e.target.value }), 'Rol actualizado')) render(); } },
-                  [['agent', 'Agente'], ['admin', 'Administrador']].map(([v, l]) => h('option', { value: v, selected: u.role === v }, l)))),
-            isSuper() ? h('td', { class: 'small' }, u.account_id ? accountName(u.account_id) : '—') : null,
+                  [['agent', 'Operador del perfil'], ['admin', 'Administrador del perfil']].map(([v, l]) => h('option', { value: v, selected: u.role === v }, l)))),
+            isSuper() ? h('td', { class: 'small' }, u.role === 'superadmin' ? 'Todos los perfiles' : h('select', { 'aria-label': `Perfil de ${u.email}`, onchange: async (e) => { if (await run(() => api('PUT', `/api/users/${u.id}`, { account_id: e.target.value }), 'Perfil asignado')) render(); else e.target.value = u.account_id; } }, state.accounts.map((a) => h('option', { value: a.id, selected: u.account_id === a.id }, a.name)))) : null,
             h('td', { class: 'small muted' }, u.last_login_at ? fmtDate(u.last_login_at) : 'nunca'),
             h('td', {}, self ? h('span', { class: 'muted small' }, 'tú') : h('div', { class: 'row' },
+              isSuper() && u.role !== 'superadmin' ? h('button', { class: 'small', onclick: async () => { if (confirm(`¿Dar a ${u.email} acceso maestro a TODOS los perfiles?`)) { await run(() => api('PUT', `/api/users/${u.id}`, { role: 'superadmin' }), 'Acceso maestro asignado'); render(); } } }, 'Dar acceso maestro') : null,
               h('button', { class: 'small', onclick: async () => { if (await run(() => api('PUT', `/api/users/${u.id}`, { active: !u.active }), u.active ? 'Desactivado' : 'Activado')) render(); } }, u.active ? 'Desactivar' : 'Activar'),
               h('button', { class: 'small', onclick: async () => { const pw = prompt('Nueva contraseña (mínimo 8 caracteres)'); if (pw) await run(() => api('PUT', `/api/users/${u.id}`, { password: pw }), 'Contraseña actualizada'); } }, 'Restablecer contraseña'),
               h('button', { class: 'small', onclick: async () => {
@@ -1528,10 +1607,10 @@ async function viewAccounts(root) {
       field('Correo', text(n.admin, 'email', { placeholder: 'dueño@cliente.com' })),
       field('Contraseña inicial', text(n.admin, 'password', { type: 'password' }), 'Mínimo 8 caracteres.')));
   root.append(
-    h('h1', {}, 'Cuentas'),
+    h('h1', {}, 'Perfiles de negocio'),
     h('div', { class: 'card' },
-      h('p', { class: 'muted', style: 'margin-top:0' }, 'Cada cuenta es un cliente con sus propios usuarios, chatbots, canales y conversaciones. Sus usuarios solo ven lo de su cuenta.'),
-      h('h3', {}, 'Nueva cuenta'),
+      h('p', { class: 'muted', style: 'margin-top:0' }, 'Cada perfil funciona como una subcuenta: tiene sus propios usuarios, asistentes, canales, conversaciones y agenda. Sus usuarios solo gestionan ese perfil; el maestro puede abrirlos todos.'),
+      h('h3', {}, 'Nuevo perfil'),
       field('Nombre del cliente', text(n, 'name', { placeholder: 'Hotel Las Palmas' })),
       h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: true, onchange: (e) => { n.withAdmin = e.target.checked; adminBox.hidden = !n.withAdmin; } }), 'Crear también su primer administrador'),
       adminBox,
@@ -1539,10 +1618,10 @@ async function viewAccounts(root) {
         const body = { name: n.name, ...(n.withAdmin ? { admin: n.admin } : {}) };
         const acc = await run(() => api('POST', '/api/accounts', body), 'Cuenta creada');
         if (acc) { state.accountId = acc.id; try { localStorage.setItem('cp-account', acc.id); } catch { /* */ } state.me = null; render(); }
-      } }, 'Crear cuenta')),
+      } }, 'Crear perfil')),
     h('div', { class: 'card' },
       h('table', {},
-        h('thead', {}, h('tr', {}, h('th', {}, 'Cuenta'), h('th', {}, 'Estado'), h('th', {}, 'WhatsApp'), h('th', { class: 'num' }, 'Conversaciones (mes / total)'), h('th', { class: 'num' }, 'IA (mes)'), h('th', {}, 'Última actividad'), h('th', {}, ''))),
+        h('thead', {}, h('tr', {}, h('th', {}, 'Perfil'), h('th', {}, 'Estado'), h('th', {}, 'WhatsApp'), h('th', { class: 'num' }, 'Conversaciones (mes / total)'), h('th', { class: 'num' }, 'IA (mes)'), h('th', {}, 'Última actividad'), h('th', {}, ''))),
         h('tbody', {}, accounts.map((a) => h('tr', {},
           h('td', {}, h('strong', {}, a.name),
             a.owner_email ? h('div', { class: 'small muted' }, a.owner_email, a.owner_verified === false ? ' (sin confirmar)' : '') : null,
@@ -1553,7 +1632,8 @@ async function viewAccounts(root) {
           h('td', { class: 'num' }, usd(a.ai_cost_month)),
           h('td', { class: 'small' }, a.last_activity_at ? fmtDate(a.last_activity_at) : '—'),
           h('td', {}, h('div', { class: 'row' },
-            h('button', { class: 'small', onclick: () => { state.accountId = a.id; try { localStorage.setItem('cp-account', a.id); } catch { /* */ } location.hash = '#/'; } }, 'Abrir'),
+            h('button', { class: 'small', onclick: () => { state.accountId = a.id; try { localStorage.setItem('cp-account', a.id); } catch { /* */ } location.hash = '#/'; } }, 'Abrir perfil'),
+            h('a', { class: 'btn small', href: '#/users', onclick: () => { state.accountId = a.id; try { localStorage.setItem('cp-account', a.id); } catch { /* */ } if (location.hash === '#/users') render(); } }, 'Usuarios'),
             a.status !== 'active' ? h('button', { class: 'small primary', onclick: async () => {
               const plan = prompt('Plan contratado (opcional)', a.plan || '');
               if (plan === null) return;
@@ -2293,6 +2373,7 @@ async function viewOnboarding(root, stepKey) {
 
   root.append(
     h('h1', {}, ob.complete ? '¡Tu asistente está listo! 🎉' : `Configura tu asistente`),
+    !ob.chatbot_id ? h('p', {}, h('a', { class: 'btn primary', href: '#/asistentes?new=1' }, 'Crear agente en 3 pasos')) : null,
     h('ol', { class: 'steps' }, ONB_STEPS.map(([slug, k, label], i) =>
       h('li', { class: `${ob.steps[k] ? 'done' : ''} ${current?.[0] === slug ? 'current' : ''}` },
         h('a', { href: `#/inicio/${slug}` }, h('span', { class: 'num' }, ob.steps[k] ? '✓' : i + 1), label)))),
@@ -2402,7 +2483,7 @@ function onbDone(box, ob) {
 /* ------------------------------ Consumo de IA ------------------------------ */
 
 const usd = (n) => `US$${(n || 0).toFixed(n < 1 ? 4 : 2)}`;
-const KIND_LABEL = { decision: 'Respuestas', summary: 'Resúmenes de memoria', transcription: 'Notas de voz' };
+const KIND_LABEL = { embedding: 'Búsqueda de conocimiento', decision: 'Respuestas', summary: 'Resúmenes de memoria', transcription: 'Notas de voz' };
 
 async function viewUsage(root, params) {
   const month = params.get('month') || new Date().toISOString().slice(0, 7);

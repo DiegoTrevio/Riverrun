@@ -5,6 +5,19 @@ function env(name: string, fallback = ''): string {
   return v === undefined || v === '' ? fallback : v;
 }
 
+function rolloutAccounts(value: string): string[] {
+  if (!value.trim()) return [];
+  const ids = [...new Set(value.split(',').map(id => id.trim().toLowerCase()))];
+  if (ids.some(id => !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id))) throw new Error('KNOWLEDGE_SEARCH_ACCOUNT_IDS debe contener UUID separados por comas.');
+  return ids;
+}
+
+function monitorLimit(name: string, fallback: number, max: number) {
+  const value = Number(env(name,String(fallback)));
+  if (!Number.isFinite(value) || value < 0 || value > max) throw new Error('Umbral de supervisión inválido: '+name);
+  return value;
+}
+
 const aiBaseUrl = env('OPENROUTER_BASE_URL', env('OPENAI_BASE_URL', 'https://openrouter.ai/api/v1')).replace(/\/$/, '');
 const useOpenRouter = new URL(aiBaseUrl).hostname === 'openrouter.ai';
 
@@ -37,6 +50,19 @@ export const config = {
     summaryModel: env('OPENROUTER_SUMMARY_MODEL', env('OPENAI_SUMMARY_MODEL', useOpenRouter ? 'openai/gpt-4.1-mini' : 'gpt-4.1-mini')),
     transcriptionModel: env('OPENROUTER_TRANSCRIPTION_MODEL', env('OPENAI_TRANSCRIPTION_MODEL', useOpenRouter ? 'google/gemini-2.5-flash' : 'gpt-4o-mini-transcribe')),
     timeoutMs: Number(env('OPENROUTER_TIMEOUT_MS', env('OPENAI_TIMEOUT_MS', '45000'))),
+  },
+  knowledgeSearch: {
+    enabled: env('KNOWLEDGE_SEARCH_ENABLED', 'false') === 'true',
+    accountIds: rolloutAccounts(env('KNOWLEDGE_SEARCH_ACCOUNT_IDS')),
+    model: env('OPENROUTER_EMBEDDING_MODEL', useOpenRouter ? 'openai/text-embedding-3-small' : 'text-embedding-3-small'),
+  },
+  knowledgeMonitor: {
+    enabled: env('KNOWLEDGE_MONITOR_ENABLED','true') === 'true',
+    pendingMinutes: monitorLimit('KNOWLEDGE_ALERT_PENDING_MINUTES',15,1440),
+    fallbackRatio: monitorLimit('KNOWLEDGE_ALERT_FALLBACK_RATIO',0.05,1),
+    minAttempts: monitorLimit('KNOWLEDGE_ALERT_MIN_ATTEMPTS',20,10000),
+    latencyMs: monitorLimit('KNOWLEDGE_ALERT_P95_MS',10000,300000),
+    hourlyUsd: monitorLimit('KNOWLEDGE_ALERT_HOURLY_USD',5,100000),
   },
   logRetentionDays: Number(env('LOG_RETENTION_DAYS', '30')),
   /**
@@ -77,4 +103,9 @@ export function assertProductionConfig(): string[] {
   if (!config.evolution.apiKey) problems.push('EVOLUTION_API_KEY no está definido (no se podrán enviar mensajes)');
   if (config.signup.enabled && !config.mail.smtpUrl) problems.push('SMTP_URL no está definido: los correos de verificación y recuperación solo quedan en el registro');
   return problems;
+}
+
+/** Empty pilot list preserves the global rollout; false disables all accounts. */
+export function semanticEnabledFor(accountId: string) {
+  return config.knowledgeSearch.enabled && (!config.knowledgeSearch.accountIds.length || config.knowledgeSearch.accountIds.includes(accountId));
 }

@@ -1,0 +1,61 @@
+name: Chatbot live quality
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '30 8 * * 1'
+permissions:
+  contents: read
+concurrency:
+  group: chatbot-live-quality
+  cancel-in-progress: false
+jobs:
+  regression:
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || vars.RIVERRUN_LIVE_EVAL_ENABLED == 'true')
+    uses: ./.github/workflows/chatbot-quality.yml
+  openrouter:
+    needs: regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: promptfoo-live
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.7-pg16
+        env:
+          POSTGRES_USER: chatbot
+          POSTGRES_PASSWORD: chatbot
+          POSTGRES_DB: chatbot_test
+        ports: ['5432:5432']
+        options: --health-cmd "pg_isready -U chatbot" --health-interval 5s --health-timeout 5s --health-retries 10
+    defaults:
+      run:
+        working-directory: chatbot-platform
+    env:
+      TEST_DATABASE_URL: postgres://chatbot:chatbot@127.0.0.1:5432/chatbot_test
+      OPENROUTER_MODEL: openai/gpt-4.1-mini
+      OPENROUTER_SUMMARY_MODEL: openai/gpt-4.1-mini
+      OPENROUTER_EMBEDDING_MODEL: openai/text-embedding-3-small
+      RIVERRUN_EVAL_MAX_USD: '1'
+      RIVERRUN_EVAL_MAX_CALLS: '40'
+      RIVERRUN_EVAL_MAX_OUTPUT_TOKENS: '2000'
+      RIVERRUN_EVAL_USAGE_FILE: evals/results/usage.json
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: chatbot-platform/package-lock.json
+      - run: npm ci
+      - name: Evaluate synthetic conversations with OpenRouter
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_EVAL_API_KEY }}
+        run: mkdir -p evals/results && npm run eval:engine:live -- --output evals/results/live.json
+      - name: Publish consumption summary
+        if: always()
+        run: node scripts/eval-summary.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: promptfoo-live-quality
+          path: chatbot-platform/evals/results/*.json
+          retention-days: 7

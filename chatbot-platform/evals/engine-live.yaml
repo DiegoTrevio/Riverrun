@@ -1,0 +1,141 @@
+{
+  "description": "Motor completo con OpenRouter real y datos sintéticos",
+  "prompts": [
+    "{{query}}"
+  ],
+  "providers": [
+    "file://engine-provider.mjs"
+  ],
+  "tests": [
+    {
+      "description": "Instrucciones persistidas y estilo sin emojis",
+      "vars": {
+        "query": "Hola",
+        "decision": "{\"messages\": [\"Hola 😊 ¿Cuál es tu nombre?\"]}"
+      },
+      "assert": [
+        {
+          "type": "javascript",
+          "value": "(() => { const r=JSON.parse(output); return r.instructionsPresent && r.isolation && r.outputs.length > 0 && !JSON.stringify(r.outputs).includes(\"😊\"); })()"
+        }
+      ]
+    },
+    {
+      "description": "Tarifa tomada del conocimiento",
+      "vars": {
+        "query": "¿Cuánto cuesta la doble?",
+        "decision": "{\"messages\": [\"La doble cuesta $1,650 MXN por noche.\"]}"
+      },
+      "assert": [
+        {
+          "type": "javascript",
+          "value": "(() => { const r=JSON.parse(output); return r.isolation && r.outputs.some(x=>x.text.includes(\"1,650\")) && r.messages.some(x=>x.direction === \"out\" && x.status === \"ok\"); })()"
+        }
+      ]
+    },
+    {
+      "description": "Captura automática en contacto, conversación y mensaje",
+      "vars": {
+        "query": "Mi nombre es Ana López.",
+        "decision": "{\"messages\": [\"¿Qué fecha llegas?\"], \"save_data\": [{\"field\": \"nombre\", \"value\": \"Ana López\"}]}"
+      },
+      "assert": [
+        {
+          "type": "javascript",
+          "value": "(() => { const r=JSON.parse(output); return r.contactData.nombre === \"Ana López\" && r.conversationData.nombre === \"Ana López\" && r.messages.some(x=>x.direction === \"in\" && x.meta.captured_data?.nombre === \"Ana López\"); })()"
+        }
+      ]
+    },
+    {
+      "description": "Resumen bajo demanda persistido y caché",
+      "vars": {
+        "query": "Soy Ana López, quiero reservar una habitación doble.",
+        "decision": "{\"messages\": [\"¿Qué fecha llegas?\"]}",
+        "summary": true
+      },
+      "assert": [
+        {
+          "type": "javascript",
+          "value": "(() => { const r=JSON.parse(output); return r.summary.includes(\"Ana López\") && r.summaryCalls === 1; })()"
+        }
+      ]
+    },
+    {
+      "description": "Transferencia por palabra clave y resumen automático",
+      "vars": {
+        "query": "Quiero un asesor humano",
+        "decision": "{}"
+      },
+      "assert": [
+        {
+          "type": "javascript",
+          "value": "(() => { const r=JSON.parse(output); return r.status === \"human\" && r.results[0].status === \"handoff\" && r.summary.length > 0 && r.summaryCalls === 1 && r.isolation; })()"
+        }
+      ]
+    },
+    {
+      "description": "Agente apagado guarda entrada sin responder",
+      "vars": {
+        "query": "Hola",
+        "decision": "{\"messages\": [\"Hola\"]}",
+        "active": false
+      },
+      "assert": [
+        {
+          "type": "javascript",
+          "value": "(() => { const r=JSON.parse(output); return r.results[0].status === \"inactive\" && r.outputs.length === 0 && r.messages.length === 1; })()"
+        }
+      ]
+    },
+    {
+      "description": "pgvector real: índices de dos perfiles y recuperación aislada",
+      "vars": {
+        "query": "¿Cuánto cuesta la doble?",
+        "decision": "{\"messages\": [\"La doble cuesta $1,650 MXN por noche.\"]}",
+        "semantic": true
+      },
+      "assert": [
+        {
+          "type": "javascript",
+          "value": "(() => { const r=JSON.parse(output); return r.indexed === 2 && r.embeddingCalls >= 3 && r.isolation && r.outputs.some(x=>x.text.includes(\"1,650\")) && r.messages.some(x=>x.direction === \"out\" && x.status === \"ok\"); })()"
+        }
+      ]
+    },
+    {
+      "description": "Imagen contextual ante una paráfrasis sin términos exactos",
+      "vars": {
+        "query": "¿Me enseñas cómo es cada una para decidir dónde quedarnos?",
+        "contextPhoto": true,
+        "decision": "{\"messages\": [\"Te comparto las opciones.\"], \"context_image_ids\": [\"comparacion\"]}"
+      },
+      "assert": [
+        {
+          "type": "javascript",
+          "value": "(() => { const r=JSON.parse(output); return r.isolation && r.outputs.filter(x=>x.type === \"image\" && x.image.code === \"comparacion\").length === 1; })()"
+        }
+      ]
+    },
+    {
+      "description": "No envía imagen contextual ante saludo sin intención relacionada",
+      "vars": {
+        "query": "Hola, buenos días",
+        "contextPhoto": true,
+        "decision": "{\"messages\": [\"Hola.\"]}"
+      },
+      "assert": [
+        {
+          "type": "javascript",
+          "value": "JSON.parse(output).outputs.every(x=>x.type !== \"image\")"
+        }
+      ]
+    }
+  ],
+  "defaultTest": {
+    "assert": [
+      {
+        "type": "javascript",
+        "value": "JSON.parse(output).budgetOk === true"
+      }
+    ]
+  }
+}

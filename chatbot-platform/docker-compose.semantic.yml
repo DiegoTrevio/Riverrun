@@ -1,0 +1,8 @@
+# Explicit production activation overlay; use only after a verified backup.
+services:
+  backend:
+    environment:
+      OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+      KNOWLEDGE_SEARCH_ENABLED: "true"
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?Configura OPENROUTER_API_KEY en el servidor}
+      OPENROUTER_EMBEDDING_MODEL: ${OPENROUTER_EMBEDDING_MODEL:-openai/text-embedding-3-small}

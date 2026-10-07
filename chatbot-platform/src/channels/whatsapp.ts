@@ -27,16 +27,16 @@ export function newInstanceName(accountId: string) {
 }
 
 /** Cierra y elimina la instancia de Evolution del canal (sin bloquear si Evolution no responde). */
-export async function releaseWhatsapp(ch: Channel) {
+export async function releaseWhatsapp(ch: Channel, opts: { accountDeleted?: boolean } = {}) {
   if (ch.type !== 'whatsapp' || !ch.config.instance) return;
   try {
     const evo = evolutionFor(ch);
     await evo.logout(ch.config.instance).catch(() => undefined);
     await evo.deleteInstance(ch.config.instance);
-    await logEvent({ level: 'info', source: 'evolution', message: `Instancia eliminada: ${ch.config.instance}`, accountId: ch.account_id });
+    await logEvent({ level: 'info', source: 'evolution', message: `Instancia eliminada: ${ch.config.instance}`, accountId: opts.accountDeleted ? null : ch.account_id });
   } catch (e: any) {
     if (e?.status === 404) return;
-    await logEvent({ level: 'warn', source: 'evolution', message: `No se pudo eliminar la instancia ${ch.config.instance}: ${e?.message ?? e}`, accountId: ch.account_id });
+    await logEvent({ level: 'warn', source: 'evolution', message: `No se pudo eliminar la instancia ${ch.config.instance}: ${e?.message ?? e}`, accountId: opts.accountDeleted ? null : ch.account_id });
   }
 }
 

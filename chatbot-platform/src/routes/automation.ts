@@ -260,13 +260,13 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
 
   /* ------------------------------ Notificaciones (todos los roles) ------------------------------ */
   api.get('/api/notifications', async (req: any) => {
-    const [items, unread] = await Promise.all([astore.listNotifications(req.user.id, Math.min(Number(req.query.limit) || 50, 200)), astore.unreadCount(req.user.id)]);
+    const [items, unread] = await Promise.all([astore.listNotifications(req.user.id, Math.min(Number(req.query.limit) || 50, 200), scopeAccount(req.user)), astore.unreadCount(req.user.id, scopeAccount(req.user))]);
     return { unread, items };
   });
 
   api.post('/api/notifications/read', async (req: any) => {
     const { ids } = parse(z.object({ ids: z.array(z.number().int()).optional() }), req.body);
-    await astore.markNotificationsRead(req.user.id, ids);
+    await astore.markNotificationsRead(req.user.id, ids, scopeAccount(req.user));
     return { ok: true };
   });
 

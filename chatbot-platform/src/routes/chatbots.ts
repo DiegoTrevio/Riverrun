@@ -6,7 +6,10 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { assertAccount, botFor, HttpError, notFound, requireRole, scopeAccount, targetAccount } from '../access.js';
 import { publicChannel } from '../channels/index.js';
+import { withTransaction } from '../db.js';
 import { config } from '../config.js';
+import { OpenAiProvider } from '../ai/provider.js';
+import { indexKnowledge, knowledgeIndexStatus } from '../engine/knowledge.js';
 import { imageAbsolutePath } from '../engine/transport.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
@@ -68,9 +71,13 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
   api.get('/api/chatbots', async (req: any) => (await store.listChatbots(scopeAccount(req.user, req.query.account_id))).map((b) => visibleBot(req.user, b)));
 
   api.post('/api/chatbots', admins, async (req: any) => {
-    const b = parse(ChatbotBody.extend({ account_id: z.string().uuid().optional(), template: z.string().max(40).optional() }), req.body);
+    const b = parse(ChatbotBody.extend({ account_id: z.string().uuid().optional(), template: z.string().max(40).optional(), setup: z.object({
+      goal: z.string().trim().min(1).max(2000),
+      questions: z.string().trim().min(1).max(4000),
+      knowledge: z.string().trim().min(1).max(50000),
+    }).optional() }), req.body);
     const accountId = await targetAccount(req.user, b.account_id);
-    const { template, account_id, ...input } = b;
+    const { template, account_id, setup, ...input } = b;
     void account_id;
     let base: Record<string, unknown> = {};
     if (template) {
@@ -84,7 +91,21 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
         data_fields: tpl.data_fields.map((f) => DataFieldSchema.parse(f)),
       };
     }
-    const bot = await store.createChatbot(accountId, { name: 'Nuevo chatbot', ...base, ...input });
+    const prepared = { name: 'Nuevo chatbot', ...base, ...input };
+    if (setup) {
+      prepared.active = false;
+      prepared.personality = PersonalitySchema.parse({
+        ...(base.personality as object), ...(input.personality ?? {}),
+        prompt: `Eres el asistente de ${prepared.name}.\n\nOBJETIVO\nCumple el objetivo configurado para este agente.\n\nPREGUNTAS CLAVE\n${setup.questions}\n\nFORMA DE ATENDER\nResponde de forma amable y breve. Haz una pregunta a la vez y no repitas datos que el cliente ya dio. Guarda automáticamente las respuestas y sus correcciones en el contacto y la conversación. Usa el conocimiento para responder; no inventes información. Si necesitas confirmación o el cliente pide una persona, transfiere al equipo.`,
+      });
+      prepared.flow = FlowSchema.parse({ ...(base.flow as object), ...(input.flow ?? {}), goal: setup.goal, steps: [] });
+      prepared.data_fields = [];
+    }
+    const bot = await withTransaction(async (client) => {
+      const created = await store.createChatbot(accountId, prepared, client);
+      if (setup) await store.upsertKnowledge(created.id, { title: 'Información del negocio', content: setup.knowledge, category: 'general' }, client);
+      return created;
+    });
     await logEvent({ level: 'info', source: 'admin', message: `Chatbot creado: ${bot.name}`, accountId, chatbotId: bot.id });
     return bot;
   });
@@ -162,6 +183,18 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
   };
 
   api.get('/api/chatbots/:id/knowledge', admins, async (req: any) => store.listKnowledge((await botFor(req.user, req.params.id)).id));
+  api.get('/api/chatbots/:id/knowledge/index', admins, async (req: any) => knowledgeIndexStatus(await botFor(req.user, req.params.id)));
+  api.post('/api/chatbots/:id/knowledge/index', admins, async (req: any) => {
+    const bot = await botFor(req.user, req.params.id);
+    if (!config.knowledgeSearch.enabled) throw new HttpError(400, 'Activa KNOWLEDGE_SEARCH_ENABLED para indexar conocimiento.');
+    const status = await knowledgeIndexStatus(bot);
+    if (!status.enabled) throw new HttpError(400, 'La búsqueda semántica aún no está habilitada para este perfil.');
+    if (!status.available) throw new HttpError(400, 'Instala la extensión pgvector y reinicia el backend.');
+    await indexKnowledge(bot, new OpenAiProvider());
+    const result = await knowledgeIndexStatus(bot);
+    if (!result.complete) throw new HttpError(409, 'Quedan documentos pendientes. Otra preparación o edición puede estar en curso; vuelve a intentarlo.');
+    return result;
+  });
 
   api.post('/api/chatbots/:id/knowledge', admins, async (req: any) => {
     const bot = await botFor(req.user, req.params.id);
