@@ -2,7 +2,7 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 // El arnés va primero: define las variables de entorno antes de que se cargue la configuración.
-import { createHarness, dbAvailable, pool, sleep } from './harness.js';
+import { createHarness, dbAvailable, pool, sleep, waitFor } from './harness.js';
 const { agentActive, gate, offAfterReply } = await import('../src/engine/activation.js');
 const { RulesSchema } = await import('../src/types.js');
 
@@ -21,6 +21,8 @@ const say = async (text: string, phone: string) => {
   const r = await h.webhook(text, { phone });
   assert.equal(r.statusCode, 200, r.body);
   await sleep(350); // más que la espera de agrupación (0.2 s)
+  // En un servidor lento el temporizador de agrupación puede tardar más: se espera a que no queden mensajes sin procesar.
+  await waitFor(async () => (await pool.query(`SELECT count(*)::int AS n FROM messages m JOIN conversations c ON c.id = m.conversation_id JOIN contacts ct ON ct.id = c.contact_id WHERE ct.phone = $1 AND m.direction = 'in' AND NOT m.processed`, [phone])).rows[0].n === 0, 8000);
   await h.idle();
 };
 
