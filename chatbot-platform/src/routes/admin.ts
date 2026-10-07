@@ -1,4 +1,6 @@
 import fsp from 'node:fs/promises';
+import { knowledgeMonitorReport } from '../engine/knowledge-monitor.js';
+import { operationalStatus } from '../engine/operations.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { assertAccount, HttpError, notFound, requireRole, scopeAccount, targetAccount } from '../access.js';
@@ -14,7 +16,7 @@ import {
 import { adapterFor } from '../channels/index.js';
 import { releaseWhatsapp } from '../channels/whatsapp.js';
 import { config } from '../config.js';
-import { query, queryOne } from '../db.js';
+import { query, queryOne, withTransaction } from '../db.js';
 import { imageAbsolutePath } from '../engine/transport.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
@@ -77,6 +79,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
 
   api.get('/api/meta', async () => ({
     knowledge_categories: KNOWLEDGE_CATEGORIES,
+    max_whatsapp_profiles: store.MAX_WHATSAPP_PROFILES,
     channel_types: CHANNEL_TYPES.map((t) => ({ type: t, label: adapterFor(t).label })),
     defaults: {
       personality: PersonalitySchema.parse({}),
@@ -195,11 +198,16 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
       }),
       req.body,
     );
-    const account = await store.createAccount(b.name);
-    let admin = null;
-    if (b.admin) {
-      admin = await store.createUser({ account_id: account.id, role: 'admin', name: b.admin.name, email: b.admin.email, password_hash: await hashPassword(b.admin.password) });
-    }
+    const passwordHash = b.admin ? await hashPassword(b.admin.password) : null;
+    const { account, admin } = await withTransaction(async (client) => {
+      const account = await store.createAccount(b.name, {}, client);
+      const admin = b.admin ? await store.createUser({ account_id: account.id, role: 'admin', name: b.admin.name, email: b.admin.email, password_hash: passwordHash! }, client) : null;
+      if (admin) {
+        await client.query('UPDATE accounts SET owner_user_id = $1 WHERE id = $2', [admin.id, account.id]);
+        account.owner_user_id = admin.id;
+      }
+      return { account, admin };
+    });
     await logEvent({ level: 'info', source: 'admin', message: `Cuenta creada: ${account.name}`, accountId: account.id });
     return { ...account, admin };
   });
@@ -229,7 +237,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     const images = await query<{ file_path: string }>(`SELECT i.file_path FROM images i JOIN chatbots b ON b.id = i.chatbot_id WHERE b.account_id = $1`, [acc.id]);
     const whatsapps = (await store.listChannels(acc.id)).filter((c) => c.type === 'whatsapp');
     await store.deleteAccount(acc.id);
-    for (const ch of whatsapps) await releaseWhatsapp(ch);
+    for (const ch of whatsapps) await releaseWhatsapp(ch, { accountDeleted: true });
     for (const i of images) await fsp.rm(imageAbsolutePath(i), { force: true });
     await logEvent({ level: 'warn', source: 'admin', message: `Cuenta eliminada: ${acc.name}` });
     return { ok: true };
@@ -278,7 +286,8 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
       z.object({
         name: z.string().trim().max(120).optional(),
         email: Email.optional(),
-        role: z.enum(['admin', 'agent']).optional(),
+        role: z.enum(['superadmin', 'admin', 'agent']).optional(),
+        account_id: z.string().uuid().nullable().optional(),
         active: z.boolean().optional(),
         password: Password.optional(),
         phone: z.string().max(30).optional(),
@@ -286,30 +295,50 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
       }),
       req.body,
     );
+    if (req.user.role !== 'superadmin' && (b.account_id !== undefined || b.role === 'superadmin')) {
+      throw new HttpError(403, 'Solo el maestro puede asignar perfiles o acceso global');
+    }
+    let accountId = target.account_id;
+    if (b.account_id !== undefined) accountId = b.account_id;
+    if (b.role === 'superadmin') accountId = null;
+    const nextRole = b.role ?? target.role;
+    if (nextRole === 'superadmin' && accountId !== null) throw new HttpError(400, 'El maestro tiene acceso global y no se limita a un perfil');
+    if (nextRole !== 'superadmin') {
+      if (!accountId) throw new HttpError(400, 'Asigna un perfil a este usuario');
+      if (!(await store.getAccount(accountId))) throw notFound('Perfil no encontrado');
+    }
     if (target.id === req.user.id && (b.active === false || (b.role && b.role !== req.user.role))) {
       throw new HttpError(400, 'No puedes desactivarte ni cambiar tu propio rol');
     }
-    if (target.role === 'superadmin' && b.role) throw new HttpError(400, 'El rol de superadministrador no se cambia');
+    if (target.role === 'superadmin' && b.role && b.role !== 'superadmin') throw new HttpError(400, 'El rol de superadministrador no se cambia');
     if (target.role === 'superadmin' && b.active === false && (await store.countSuperadmins()) <= 1) {
       throw new HttpError(400, 'Debe quedar al menos un superadministrador activo');
     }
-    const patch: { name?: string; email?: string; role?: Role; active?: boolean; password_hash?: string; phone?: string; notify_whatsapp?: boolean } = {
+    const patch: { name?: string; email?: string; role?: Role; account_id?: string | null; active?: boolean; password_hash?: string; phone?: string; notify_whatsapp?: boolean } = {
       name: b.name,
       email: b.email,
       role: b.role,
+      account_id: accountId !== target.account_id ? accountId : undefined,
       active: b.active,
       phone: b.phone,
       notify_whatsapp: b.notify_whatsapp,
     };
     if (b.password) patch.password_hash = await hashPassword(b.password);
-    return store.updateUser(target.id, patch);
+    const updated = await store.updateUser(target.id, patch, req.user.role === 'superadmin' ? undefined : scopeAccount(req.user)!);
+    if (!updated) throw notFound('Usuario no encontrado');
+    if (updated.role !== target.role || updated.account_id !== target.account_id) {
+      await logEvent({ level: 'info', source: 'admin', message: `Permisos de usuario actualizados: ${updated.email}`, accountId: updated.account_id ?? target.account_id ?? undefined,
+        details: { actor_id: req.user.id, user_id: updated.id, previous_role: target.role, role: updated.role, previous_account_id: target.account_id, account_id: updated.account_id } });
+    }
+    return updated;
   });
 
   api.delete('/api/users/:id', admins, async (req: any) => {
     const target = await manageable(req);
     if (target.id === req.user.id) throw new HttpError(400, 'No puedes eliminar tu propio usuario');
     if (target.role === 'superadmin' && (await store.countSuperadmins()) <= 1) throw new HttpError(400, 'Debe quedar al menos un superadministrador');
-    await store.deleteUser(target.id);
+    const deleted = await store.deleteUser(target.id, req.user.role === 'superadmin' ? undefined : scopeAccount(req.user)!);
+    if (!deleted) throw notFound('Usuario no encontrado');
     return { ok: true };
   });
 
@@ -357,6 +386,13 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
   );
 
   api.get('/api/ai-runs', admins, async (req: any) => filtered(req, 'ai_runs', ['chatbot_id', 'conversation_id'], 100));
+
+  api.get('/api/knowledge/monitor', { preHandler: requireRole('admin') }, async (req: any) => {
+    const requested = req.user.role === 'superadmin' && req.query.account_id ? parse(z.string().uuid(),req.query.account_id) : undefined;
+    return knowledgeMonitorReport(scopeAccount(req.user,requested));
+  });
+
+  api.get('/api/health/operations', { preHandler: requireRole('superadmin') }, async () => operationalStatus());
 
   api.get('/api/health/deep', { preHandler: requireRole('superadmin') }, async () => {
     const db = await queryOne('SELECT 1 AS ok').then(() => true).catch(() => false);

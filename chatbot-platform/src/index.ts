@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { KnowledgeMonitor } from './engine/knowledge-monitor.js';
 import { OpenAiProvider } from './ai/provider.js';
 import { buildApp } from './app.js';
 import { bootstrapSuperadmin } from './auth.js';
@@ -8,6 +9,7 @@ import { startLifecycle } from './lifecycle.js';
 import { startMonitor } from './monitor.js';
 import { logEvent, pruneLogs } from './logs.js';
 import { pruneAutomationData } from './automation/store.js';
+import { KnowledgeWorker } from './engine/knowledge-preparation.js';
 
 async function main() {
   for (const p of assertProductionConfig()) console.warn(`⚠️  ${p}`);
@@ -17,11 +19,18 @@ async function main() {
   if (applied.length) console.log(`Migraciones aplicadas: ${applied.join(', ')}`);
   await bootstrapSuperadmin();
 
-  const { app, service } = await buildApp({ ai: new OpenAiProvider(), logger: process.env.HTTP_LOG === 'true' });
+  const ai = new OpenAiProvider();
+  const { app, service } = await buildApp({ ai, logger: process.env.HTTP_LOG === 'true' });
+  const knowledgeMonitor = new KnowledgeMonitor();
+  app.addHook('onClose', async () => knowledgeMonitor.stop());
+  const knowledgeWorker = new KnowledgeWorker(ai);
+  app.addHook('onClose', async () => knowledgeWorker.stop());
   await app.listen({ port: config.port, host: config.host });
   await logEvent({ level: 'info', source: 'system', message: `Servidor iniciado en el puerto ${config.port}` });
 
   service.scheduler.start(config.schedulerIntervalMs);
+  knowledgeWorker.start();
+  knowledgeMonitor.start();
   startLifecycle();
   startMonitor();
   const resumed = await service.resumePending();

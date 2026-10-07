@@ -209,6 +209,8 @@ t('eliminar una cuenta borra todo lo suyo y nada de las demás', async () => {
   assert.equal((await h.authed('GET', `/api/conversations/${B.conv}`)).statusCode, 404);
   const a2 = await h.loginAs('admin@hotel.mx', 'nueva-clave-123');
   assert.equal((await a2('GET', `/api/chatbots/${A.bot}`)).statusCode, 200);
+  const cleanupLog = (await pool.query("SELECT id FROM event_logs WHERE source = 'evolution' AND account_id IS NULL AND message = $1", [`Instancia eliminada: ${B.instance}`])).rows;
+  assert.equal(cleanupLog.length, 1, 'la limpieza conserva el registro sin referenciar una cuenta eliminada');
 });
 
 t('falsear X-Forwarded-For no sirve para saltarse el límite de intentos de login', async () => {

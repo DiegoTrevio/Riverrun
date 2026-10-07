@@ -6,7 +6,7 @@
   "type": "module",
   "main": "dist/index.js",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.22.0"
   },
   "scripts": {
     "dev": "tsx watch --env-file-if-exists=.env src/index.ts",
@@ -15,7 +15,17 @@
     "migrate": "tsx --env-file-if-exists=.env src/cli/migrate.ts",
     "seed:demo": "tsx --env-file-if-exists=.env src/cli/seed-demo.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --import tsx --test --test-concurrency=1 test/*.test.ts"
+    "test": "node --import tsx --test --test-concurrency=1 test/*.test.ts",
+    "user:master": "tsx --env-file-if-exists=.env src/cli/grant-master.ts",
+    "eval": "npm run build && PROMPTFOO_DISABLE_TELEMETRY=1 PROMPTFOO_CONFIG_DIR=/tmp/riverrun-promptfoo promptfoo eval -c evals/promptfooconfig.yaml --no-cache --max-concurrency 1",
+    "eval:live": "npm run build && RIVERRUN_EVAL_LIVE=true PROMPTFOO_DISABLE_TELEMETRY=1 PROMPTFOO_CONFIG_DIR=/tmp/riverrun-promptfoo node --env-file-if-exists=.env node_modules/promptfoo/dist/src/entrypoint.js eval -c evals/live.yaml --no-cache --max-concurrency 1",
+    "knowledge:check": "tsx --env-file-if-exists=.env src/cli/knowledge-activate.ts",
+    "knowledge:activate": "tsx --env-file-if-exists=.env src/cli/knowledge-activate.ts --apply --verify-provider",
+    "knowledge:prepare": "tsx --env-file-if-exists=.env src/cli/knowledge-prepare.ts",
+    "eval:engine": "npm run build && node scripts/eval-engine.mjs",
+    "eval:engine:live": "npm run build && node --env-file-if-exists=.env scripts/eval-engine.mjs --live",
+    "operations:check": "tsx --env-file-if-exists=.env src/cli/operations-check.ts",
+    "check:frontend": "node scripts/check-frontend.mjs"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.2",
@@ -30,6 +40,7 @@
     "@types/node": "^22.18.0",
     "@types/nodemailer": "^8.0.2",
     "@types/pg": "^8.15.0",
+    "promptfoo": "0.124.0",
     "tsx": "^4.20.0",
     "typescript": "^5.9.3"
   }

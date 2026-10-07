@@ -209,3 +209,9 @@ a.tile { display: block; color: var(--text); text-decoration: none; margin-botto
 a.tile:hover { border-color: var(--accent); background: var(--accent-soft); }
 .import-card { border-color: var(--accent); background: var(--accent-soft); }
 .import-card h3 { color: var(--accent); }
+
+.nav-group { margin: 3px 0; }
+.nav-group summary { padding: 10px; border-radius: 8px; color: var(--text); font-weight: 600; }
+.nav-group summary.active { background: var(--accent-soft); color: var(--accent); }
+.nav-group > div { display: flex; flex-direction: column; padding-left: 10px; }
+.nav-group a { font-size: 13px; }

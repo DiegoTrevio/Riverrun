@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { query, queryOne } from '../db.js';
+import { query, queryOne, withTransaction } from '../db.js';
 import {
   channelConfig,
   hydrateChatbot,
@@ -112,15 +112,36 @@ export async function createUser(
 
 export async function updateUser(
   id: string,
-  patch: { name?: string; role?: Role; active?: boolean; password_hash?: string; email?: string; phone?: string; notify_whatsapp?: boolean },
+  patch: { name?: string; role?: Role; account_id?: string | null; active?: boolean; password_hash?: string; email?: string; phone?: string; notify_whatsapp?: boolean },
+  expectedAccountId?: string,
 ) {
-  return queryOne<User>(
-    `UPDATE users SET name = COALESCE($2, name), role = COALESCE($3, role), active = COALESCE($4, active),
+  return withTransaction(async (client) => {
+    const result = await client.query<User>(
+      `UPDATE users SET name = COALESCE($2, name), role = COALESCE($3, role), active = COALESCE($4, active),
        password_hash = COALESCE($5, password_hash), email = COALESCE($6, email),
-       phone = COALESCE($7, phone), notify_whatsapp = COALESCE($8, notify_whatsapp), updated_at = now()
-     WHERE id = $1 RETURNING ${USER_COLS}`,
-    [id, patch.name ?? null, patch.role ?? null, patch.active ?? null, patch.password_hash ?? null, patch.email?.trim() ?? null, patch.phone?.replace(/\D/g, '') ?? null, patch.notify_whatsapp ?? null],
-  );
+       phone = COALESCE($7, phone), notify_whatsapp = COALESCE($8, notify_whatsapp),
+       account_id = CASE WHEN $9::boolean THEN $10::uuid ELSE account_id END, updated_at = now()
+     WHERE id = $1 AND ($11::uuid IS NULL OR account_id = $11) RETURNING ${USER_COLS}`,
+      [id, patch.name ?? null, patch.role ?? null, patch.active ?? null, patch.password_hash ?? null, patch.email?.trim() ?? null, patch.phone?.replace(/\D/g, '') ?? null, patch.notify_whatsapp ?? null, patch.account_id !== undefined, patch.account_id ?? null, expectedAccountId ?? null],
+    );
+    const user = result.rows[0] ?? null;
+    if (user && patch.account_id !== undefined && user.role !== 'superadmin') {
+      // A transferred user must no longer receive owner alerts from the old profile.
+      await client.query('UPDATE accounts SET owner_user_id = NULL WHERE owner_user_id = $1 AND id <> $2', [id, user.account_id]);
+    }
+    return user;
+  });
+}
+
+/** Trusted server-side provisioning. Never called by public registration or login. */
+export async function grantMasterAccess(email: string) {
+  return withTransaction(async (client) => {
+    const existing = await client.query('SELECT id, email_verified_at FROM users WHERE lower(email) = lower($1) FOR UPDATE', [email.trim()]);
+    if (!existing.rows.length) throw new Error('El usuario no existe. Regístralo y confirma su correo antes de asignar acceso maestro.');
+    if (!existing.rows[0].email_verified_at) throw new Error('Confirma el correo del usuario antes de asignar acceso maestro.');
+    const result = await client.query(`UPDATE users SET role = 'superadmin', account_id = NULL, active = true, updated_at = now() WHERE id = $1 RETURNING ${USER_COLS}`, [existing.rows[0].id]);
+    return result.rows[0] as User;
+  });
 }
 
 export async function markEmailVerified(id: string) {
@@ -157,8 +178,9 @@ export async function touchLogin(id: string) {
   await query('UPDATE users SET last_login_at = now() WHERE id = $1', [id]);
 }
 
-export async function deleteUser(id: string) {
-  await query('DELETE FROM users WHERE id = $1', [id]);
+export async function deleteUser(id: string, expectedAccountId?: string) {
+  const deleted = await query('DELETE FROM users WHERE id = $1 AND ($2::uuid IS NULL OR account_id = $2) RETURNING id', [id, expectedAccountId ?? null]);
+  return deleted.length > 0;
 }
 
 export async function countSuperadmins(): Promise<number> {
@@ -196,8 +218,8 @@ export interface ChatbotInput {
 const CHATBOT_JSON_COLS = ['personality', 'rules', 'data_fields', 'flow', 'ai'] as const;
 const CHATBOT_PLAIN_COLS = ['name', 'active'] as const;
 
-export async function createChatbot(accountId: string, input: ChatbotInput): Promise<Chatbot> {
-  const row = await queryOne<ChatbotRow>(
+export async function createChatbot(accountId: string, input: ChatbotInput, client?: Queryable): Promise<Chatbot> {
+  const rows = await rowsOf(client,
     `INSERT INTO chatbots (account_id, name, active, personality, rules, data_fields, flow, ai)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
     [
@@ -211,7 +233,7 @@ export async function createChatbot(accountId: string, input: ChatbotInput): Pro
       JSON.stringify(input.ai ?? {}),
     ],
   );
-  return hydrateChatbot(row!);
+  return hydrateChatbot(rows[0]);
 }
 
 export async function updateChatbot(id: string, input: ChatbotInput): Promise<Chatbot | null> {
@@ -278,12 +300,30 @@ export async function getChannelByToken(token: string) {
   return hydrateChannel(await queryOne<Channel>(`${CHANNEL_SELECT} WHERE ch.webhook_token = $1`, [token]));
 }
 
+export const MAX_WHATSAPP_PROFILES = 4;
+
+export class WhatsappProfileLimitError extends Error {
+  readonly statusCode = 409;
+  constructor() {
+    super(`Esta cuenta ya tiene ${MAX_WHATSAPP_PROFILES} perfiles de WhatsApp. Elimina uno para conectar otro número.`);
+  }
+}
+
 export async function createChannel(c: { account_id: string; chatbot_id: string | null; type: ChannelType; name: string; active?: boolean; config: Record<string, unknown> }) {
-  const row = await queryOne<Channel>(
-    `INSERT INTO channels (account_id, chatbot_id, type, name, active, config, webhook_token) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-    [c.account_id, c.chatbot_id, c.type, c.name, c.active ?? true, JSON.stringify(c.config), newWebhookToken()],
-  );
-  return (await getChannel(row!.id))!;
+  const id = await withTransaction(async (client) => {
+    if (c.type === 'whatsapp') {
+      // Serialize reservations per account, including concurrent onboarding requests.
+      await client.query('SELECT id FROM accounts WHERE id = $1 FOR UPDATE', [c.account_id]);
+      const count = await client.query("SELECT count(*)::int AS total FROM channels WHERE account_id = $1 AND type = 'whatsapp'", [c.account_id]);
+      if (count.rows[0].total >= MAX_WHATSAPP_PROFILES) throw new WhatsappProfileLimitError();
+    }
+    const result = await client.query(
+      `INSERT INTO channels (account_id, chatbot_id, type, name, active, config, webhook_token) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+      [c.account_id, c.chatbot_id, c.type, c.name, c.active ?? true, JSON.stringify(c.config), newWebhookToken()],
+    );
+    return result.rows[0].id as string;
+  });
+  return (await getChannel(id))!;
 }
 
 export async function updateChannel(id: string, patch: { name?: string; active?: boolean; chatbot_id?: string | null; config?: Record<string, unknown> }) {
@@ -340,24 +380,24 @@ export async function getKnowledge(id: string) {
   return queryOne<KnowledgeItem>('SELECT * FROM knowledge_items WHERE id = $1', [id]);
 }
 
-export async function upsertKnowledge(chatbotId: string, item: Partial<KnowledgeItem> & { id?: string }): Promise<KnowledgeItem> {
+export async function upsertKnowledge(chatbotId: string, item: Partial<KnowledgeItem> & { id?: string }, client?: Queryable): Promise<KnowledgeItem> {
   if (item.id) {
-    const row = await queryOne<KnowledgeItem>(
+    const rows = await rowsOf(client,
       `UPDATE knowledge_items SET category = COALESCE($2, category), title = COALESCE($3, title), content = COALESCE($4, content),
          always_include = COALESCE($5, always_include), active = COALESCE($6, active), sort_order = COALESCE($7, sort_order),
          source_url = CASE WHEN $9::boolean THEN $10 ELSE source_url END, updated_at = now()
        WHERE id = $1 AND chatbot_id = $8 RETURNING *`,
       [item.id, item.category ?? null, item.title ?? null, item.content ?? null, item.always_include ?? null, item.active ?? null, item.sort_order ?? null, chatbotId, item.source_url !== undefined, item.source_url ?? null],
     );
-    if (!row) throw new Error('Elemento no encontrado');
-    return row;
+    if (!rows[0]) throw new Error('Elemento no encontrado');
+    return rows[0];
   }
-  const row = await queryOne<KnowledgeItem>(
+  const rows = await rowsOf(client,
     `INSERT INTO knowledge_items (chatbot_id, category, title, content, always_include, active, sort_order, source_url)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
     [chatbotId, item.category ?? 'general', item.title ?? '', item.content ?? '', item.always_include ?? false, item.active ?? true, item.sort_order ?? 0, item.source_url ?? null],
   );
-  return row!;
+  return rows[0];
 }
 
 export async function deleteKnowledge(id: string) {
@@ -428,18 +468,85 @@ export async function getContact(id: string) {
   return queryOne<Contact>('SELECT * FROM contacts WHERE id = $1', [id]);
 }
 
-export async function updateContact(id: string, patch: { name?: string; data?: Record<string, string>; notes?: string[] }) {
-  return queryOne<Contact>(
-    `UPDATE contacts SET name = COALESCE($2, name), data = COALESCE($3, data), notes = COALESCE($4, notes), updated_at = now()
-     WHERE id = $1 RETURNING *`,
-    [id, patch.name ?? null, patch.data ? JSON.stringify(patch.data) : null, patch.notes ? JSON.stringify(patch.notes) : null],
-  );
+type ContactPatch = { name?: string; data?: Record<string, string>; notes?: string[]; tags?: string[]; opted_out?: boolean };
+
+export async function updateContact(id: string, patch: Pick<ContactPatch, 'name' | 'data' | 'notes'>) {
+  return (await updateContactFromPanel(id, patch))?.contact ?? null;
+}
+
+/** Capture the previous values under the same lock as the write, so repeated edits emit no duplicate events. */
+export async function updateContactFromPanel(id: string, patch: ContactPatch) {
+  return withTransaction(async (client) => {
+    const before = (await client.query<Contact>('SELECT * FROM contacts WHERE id = $1 FOR UPDATE', [id])).rows[0];
+    if (!before) return null;
+    const contact = (await client.query<Contact>(
+      `UPDATE contacts SET name = COALESCE($2, name), data = COALESCE($3, data), notes = COALESCE($4, notes),
+       tags = COALESCE($5, tags), opted_out = COALESCE($6, opted_out),
+       opted_out_at = CASE WHEN $6::boolean IS NULL OR $6 = opted_out THEN opted_out_at WHEN $6 THEN now() ELSE NULL END,
+       updated_at = now() WHERE id = $1 RETURNING *`,
+      [id, patch.name ?? null, patch.data !== undefined ? JSON.stringify(patch.data) : null,
+       patch.notes !== undefined ? JSON.stringify(patch.notes) : null,
+       patch.tags !== undefined ? JSON.stringify([...new Set(patch.tags)].slice(0, 50)) : null, patch.opted_out ?? null],
+    )).rows[0];
+    if (patch.data !== undefined || patch.name !== undefined || patch.notes !== undefined) {
+      await client.query('UPDATE conversations SET data = COALESCE($2::jsonb, data), data_version = data_version + 1 WHERE contact_id = $1', [id, patch.data !== undefined ? JSON.stringify(patch.data) : null]);
+    }
+    const fields = new Set(Object.entries(contact.data).filter(([field, value]) => value && value !== before.data[field]).map(([field]) => field));
+    if (contact.name && contact.name !== before.name) fields.add('nombre');
+    return { contact, changedFields: [...fields], optedOut: !before.opted_out && contact.opted_out,
+      addedTags: contact.tags.filter(tag => !before.tags.some(old => old.toLowerCase() === tag.toLowerCase())) };
+  });
+}
+
+/** Merge only the new answers, atomically, into both records; never replace a stale snapshot. */
+export async function saveConversationMemory(conversationId: string, contactId: string, patch: { data: Record<string, string>; name?: string; remember: string[] }, sourceMessageId?: number, sourceMessageIds?: Record<string, number>) {
+  return withTransaction(async (client) => {
+    const contact = (await client.query<Contact>('SELECT * FROM contacts WHERE id = $1 FOR UPDATE', [contactId])).rows[0];
+    if (!contact) throw new Error('Contacto no encontrado');
+    const conversation = (await client.query<Conversation>('SELECT * FROM conversations WHERE id = $1 AND contact_id = $2 FOR UPDATE', [conversationId, contactId])).rows[0];
+    if (!conversation) throw new Error('La conversación no pertenece al contacto');
+    if (sourceMessageId !== undefined) {
+      const source = await client.query("SELECT id FROM messages WHERE id = $1 AND conversation_id = $2 AND direction = 'in'", [sourceMessageId, conversationId]);
+      if (!source.rows.length) throw new Error('El mensaje de origen no pertenece a esta conversación');
+    }
+    const notes = [...contact.notes];
+    for (const note of patch.remember) {
+      if (!notes.some((n) => n.trim().toLowerCase() === note.trim().toLowerCase())) notes.push(note);
+    }
+    const updated = await client.query<Contact>(
+      'UPDATE contacts SET data = data || $2::jsonb, name = COALESCE($3, name), notes = $4, updated_at = now() WHERE id = $1 RETURNING *',
+      [contactId, JSON.stringify(patch.data), patch.name ?? null, JSON.stringify(notes.slice(-30))],
+    );
+    await client.query('UPDATE conversations SET data = data || $2::jsonb, data_version = data_version + 1 WHERE id = $1', [conversationId, JSON.stringify(patch.data)]);
+    const provenance = sourceMessageIds ?? (sourceMessageId !== undefined ? Object.fromEntries(Object.keys(patch.data).map((key) => [key, sourceMessageId])) : {});
+    for (const messageId of new Set(Object.values(provenance))) {
+      const captured = Object.fromEntries(Object.entries(provenance).filter(([key, id]) => id === messageId && Object.hasOwn(patch.data, key)).map(([key]) => [key, patch.data[key]]));
+      if (!Object.keys(captured).length) continue;
+      const source = await client.query("SELECT id FROM messages WHERE id = $1 AND conversation_id = $2 AND direction = 'in'", [messageId, conversationId]);
+      if (!source.rows.length) throw new Error('El mensaje de origen no pertenece a esta conversación');
+      // Original questions and replies remain intact; each answer points to its actual message.
+      await client.query("UPDATE messages SET meta = meta || jsonb_build_object('captured_data', COALESCE(meta->'captured_data', '{}'::jsonb) || $2::jsonb) WHERE id = $1", [messageId, JSON.stringify(captured)]);
+    }
+    return updated.rows[0];
+  });
+}
+
+export async function resetConversationMemory(conversationId: string, contactId: string) {
+  await withTransaction(async (client) => {
+    await client.query('SELECT id FROM contacts WHERE id = $1 FOR UPDATE', [contactId]);
+    const scope = await client.query('SELECT id FROM conversations WHERE id = $1 AND contact_id = $2 FOR UPDATE', [conversationId, contactId]);
+    if (!scope.rows.length) throw new Error('La conversación no pertenece al contacto');
+    await client.query("UPDATE contacts SET data = '{}', notes = '[]', name = '', updated_at = now() WHERE id = $1", [contactId]);
+    await client.query(`UPDATE conversations SET summary = '', summary_until_id = 0, data = '{}', data_version = data_version + 1,
+      report_summary = '', report_until_id = 0, report_at = NULL, report_data_version = -1, flow_step = 0, goal_completed_at = NULL
+      WHERE id = $1 AND contact_id = $2`, [conversationId, contactId]);
+  });
 }
 
 /** Conversación del contacto; el chatbot que la atiende siempre es el asignado actualmente al canal. */
 export async function getOrCreateConversation(channel: Pick<Channel, 'id' | 'account_id' | 'chatbot_id'>, contactId: string): Promise<Conversation> {
   const row = await queryOne<Conversation>(
-    `INSERT INTO conversations (account_id, channel_id, chatbot_id, contact_id) VALUES ($1,$2,$3,$4)
+    `INSERT INTO conversations (account_id, channel_id, chatbot_id, contact_id, data) VALUES ($1,$2,$3,$4,(SELECT data FROM contacts WHERE id = $4))
      ON CONFLICT (contact_id) DO UPDATE SET chatbot_id = EXCLUDED.chatbot_id
      RETURNING *`,
     [channel.account_id, channel.id, channel.chatbot_id, contactId],
@@ -458,8 +565,42 @@ export async function setConversationStatus(id: string, status: ConversationStat
   );
 }
 
-export async function updateSummary(id: string, summary: string, untilId: number) {
-  await query('UPDATE conversations SET summary = $2, summary_until_id = $3 WHERE id = $1', [id, summary, untilId]);
+/** Only one concurrent caller owns the transition and its handoff event. */
+export async function takeConversation(id: string, reason: string) {
+  return queryOne<Conversation>(
+    "UPDATE conversations SET status = 'human', handoff_reason = $2, status_changed_at = now() WHERE id = $1 AND status <> 'human' RETURNING *",
+    [id, reason],
+  );
+}
+
+export async function updateSummary(id: string, summary: string, untilId: number, expectedVersion?: number) {
+  await query(`UPDATE conversations SET summary = $2, summary_until_id = $3 WHERE id = $1
+    AND summary_until_id <= $3 AND ($4::bigint IS NULL OR data_version = $4)`, [id, summary, untilId, expectedVersion ?? null]);
+}
+
+export async function saveConversationReport(id: string, summary: string, untilId: number, expectedVersion: number, captures: { field: string; value: string; messageId: number }[] = []) {
+  return withTransaction(async (client) => {
+    const link = (await client.query('SELECT contact_id FROM conversations WHERE id = $1', [id])).rows[0];
+    if (!link) return null;
+    const contact = (await client.query<Contact>('SELECT * FROM contacts WHERE id = $1 FOR UPDATE', [link.contact_id])).rows[0];
+    const conversation = (await client.query<Conversation>('SELECT * FROM conversations WHERE id = $1 FOR UPDATE', [id])).rows[0];
+    if (!contact || !conversation || conversation.data_version !== expectedVersion || conversation.report_until_id > untilId) return null;
+    const added: Record<string, string> = {};
+    for (const capture of captures) {
+      // Report extraction fills omitted answers; it never overwrites a later/manual correction.
+      if (Object.hasOwn(contact.data, capture.field) || Object.keys(contact.data).length + Object.keys(added).length >= 100) continue;
+      const source = await client.query("SELECT id FROM messages WHERE id = $1 AND conversation_id = $2 AND direction = 'in'", [capture.messageId, id]);
+      if (!source.rows.length) throw new Error('El dato no tiene un mensaje de origen válido');
+      added[capture.field] = capture.value;
+      await client.query("UPDATE messages SET meta = meta || jsonb_build_object('captured_data', COALESCE(meta->'captured_data', '{}'::jsonb) || $2::jsonb) WHERE id = $1", [capture.messageId, JSON.stringify({ [capture.field]: capture.value })]);
+    }
+    const changed = Object.keys(added).length > 0;
+    if (changed) await client.query("UPDATE contacts SET data = data || $2::jsonb, name = CASE WHEN $3 <> '' THEN $3 ELSE name END, updated_at = now() WHERE id = $1", [contact.id, JSON.stringify(added), added.nombre ?? '']);
+    const result = await client.query<Conversation>(`UPDATE conversations SET report_summary = $2, report_until_id = $3, report_at = now(),
+      data = data || $4::jsonb, data_version = data_version + $5, report_data_version = data_version + $5 WHERE id = $1 RETURNING *`,
+      [id, summary, untilId, JSON.stringify(added), changed ? 1 : 0]);
+    return result.rows[0];
+  });
 }
 
 /* -------------------------------- Mensajes ------------------------------- */
@@ -479,33 +620,43 @@ export interface NewMessage {
 
 /** Inserta un mensaje. Devuelve null si ya existía (webhook duplicado). */
 export async function insertMessage(m: NewMessage): Promise<Message | null> {
-  const row = await queryOne<Message>(
-    `INSERT INTO messages (conversation_id, direction, sender, type, content, image_id, external_message_id, processed, status, meta)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-     ON CONFLICT DO NOTHING RETURNING *`,
-    [
-      m.conversation_id,
-      m.direction,
-      m.sender,
-      m.type ?? 'text',
-      m.content,
-      m.image_id ?? null,
-      m.external_message_id ?? null,
-      m.processed ?? true,
-      m.status ?? 'ok',
-      JSON.stringify(m.meta ?? {}),
-    ],
-  );
-  if (row) await query('UPDATE conversations SET last_message_at = now() WHERE id = $1', [m.conversation_id]);
-  return row;
+  return withTransaction(async (client) => {
+    const result = await client.query<Message>(
+      `INSERT INTO messages (conversation_id, direction, sender, type, content, image_id, external_message_id, processed, status, meta)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       ON CONFLICT DO NOTHING RETURNING *`,
+      [
+        m.conversation_id,
+        m.direction,
+        m.sender,
+        m.type ?? 'text',
+        m.content,
+        m.image_id ?? null,
+        m.external_message_id ?? null,
+        m.processed ?? true,
+        m.status ?? 'ok',
+        JSON.stringify(m.meta ?? {}),
+      ],
+    );
+    const row = result.rows[0] ?? null;
+    if (row) await client.query('UPDATE conversations SET last_message_at = now() WHERE id = $1', [m.conversation_id]);
+    return row;
+  });
 }
 
 export async function updateMessage(id: number, patch: { external_message_id?: string | null; status?: string; meta?: Record<string, unknown> }) {
-  await query(
-    `UPDATE messages SET external_message_id = COALESCE($2, external_message_id), status = COALESCE($3, status),
-       meta = CASE WHEN $4::jsonb IS NULL THEN meta ELSE meta || $4::jsonb END WHERE id = $1`,
-    [id, patch.external_message_id ?? null, patch.status ?? null, patch.meta ? JSON.stringify(patch.meta) : null],
-  );
+  await withTransaction(async (client) => {
+    const previous = (await client.query<Message>('SELECT * FROM messages WHERE id = $1 FOR UPDATE', [id])).rows[0];
+    if (!previous) return;
+    await client.query(
+      `UPDATE messages SET external_message_id = COALESCE($2, external_message_id), status = COALESCE($3, status),
+         meta = CASE WHEN $4::jsonb IS NULL THEN meta ELSE meta || $4::jsonb END WHERE id = $1`,
+      [id, patch.external_message_id ?? null, patch.status ?? null, patch.meta ? JSON.stringify(patch.meta) : null],
+    );
+    if (patch.status !== undefined && patch.status !== previous.status) {
+      await client.query('UPDATE conversations SET data_version = data_version + 1 WHERE id = $1', [previous.conversation_id]);
+    }
+  });
 }
 
 export async function findMessageByExternalId(conversationId: string, externalId: string) {
@@ -550,6 +701,14 @@ export async function countInbound(conversationId: string): Promise<number> {
   return r?.n ?? 0;
 }
 
+export async function isFirstLiveInbound(conversationId: string, messageId: number): Promise<boolean> {
+  const row = await queryOne<{ first: boolean }>(
+    `SELECT $2::bigint = min(id) AS first FROM messages WHERE conversation_id = $1 AND direction = 'in'
+     AND type <> 'reaction' AND COALESCE(meta->>'stale', 'false') <> 'true'`, [conversationId, messageId],
+  );
+  return row?.first === true;
+}
+
 export async function markAllProcessed(conversationId: string) {
   await query(`UPDATE messages SET processed = true WHERE conversation_id = $1 AND processed = false`, [conversationId]);
 }
@@ -586,7 +745,7 @@ export async function countMessagesAfter(conversationId: string, afterId: number
 
 export async function sentImageIds(conversationId: string): Promise<string[]> {
   const rows = await query<{ image_id: string }>(
-    `SELECT DISTINCT image_id FROM messages WHERE conversation_id = $1 AND image_id IS NOT NULL AND status <> 'failed'`,
+    `SELECT DISTINCT image_id FROM messages WHERE conversation_id = $1 AND direction = 'out' AND image_id IS NOT NULL AND status = 'ok'`,
     [conversationId],
   );
   return rows.map((r) => r.image_id);

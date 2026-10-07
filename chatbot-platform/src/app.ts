@@ -33,6 +33,11 @@ declare module 'fastify' {
 export async function buildApp(opts: { ai: AiProvider; transportFactory?: TransportFactory; logger?: boolean }) {
   const app = Fastify({ logger: opts.logger ?? false, bodyLimit: 10 * 1024 * 1024, trustProxy: (_addr: string, hop: number) => hop < config.trustProxyHops });
   const service = new ChatService(opts.ai, opts.transportFactory);
+  app.addHook('onClose', async () => {
+    await service.queue.stop();
+    await service.engine.settleBackground();
+    await service.automator.settleAll();
+  });
 
   // JSON conservando el cuerpo original: Meta firma los webhooks sobre los bytes exactos.
   app.addContentTypeParser('application/json', { parseAs: 'buffer' }, (req, body: Buffer, done) => {
@@ -52,7 +57,7 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
   await app.register(multipart);
   await app.register(fastifyStatic, { root: path.resolve(here, '..', 'public'), prefix: '/' });
 
-  app.get('/health', async () => ({ ok: true, version: config.monitor.version }));
+  app.get('/health', async () => ({ ok: true }));
   // Salud completa para monitores externos: 503 si algo esencial falla. No expone detalles internos.
   app.get('/health/ready', async (_req, reply) => {
     const checks = await runChecks();

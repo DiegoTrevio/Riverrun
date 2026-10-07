@@ -11,6 +11,7 @@ import { config } from './config.js';
 import { gate } from './engine/activation.js';
 import { describeInbound, type InboundMessage } from './channels/types.js';
 import { query } from './db.js';
+import { summarizeConversation } from './engine/report.js';
 import { Engine, type ProcessResult } from './engine/engine.js';
 import { ConversationQueue } from './engine/queue.js';
 import { PlaygroundTransport, type Transport } from './engine/transport.js';
@@ -60,6 +61,20 @@ export class ChatService {
       campaign_start: (p) => this.campaigns.start(p.campaign_id),
       campaign_send: (p) => this.campaigns.sendOne(p),
     });
+  }
+
+  summarize(conversationId: string) {
+    return summarizeConversation(this.ai, conversationId);
+  }
+
+  async closeConversation(conversationId: string, reason: string) {
+    const closed = await store.setConversationStatus(conversationId, 'closed', reason);
+    if (!closed) throw new Error('Conversación no encontrada');
+    try { return await this.summarize(conversationId); }
+    catch (error) {
+      await logEvent({ level: 'error', source: 'ai', message: 'Conversación cerrada; el resumen no pudo generarse y se puede volver a solicitar', accountId: closed.account_id, chatbotId: closed.chatbot_id, conversationId, details: { error: error instanceof Error ? error.message : String(error) } });
+      return (await store.getConversation(conversationId))!;
+    }
   }
 
   /** Aviso interno por WhatsApp (alertas al equipo), usando un WhatsApp activo de la cuenta. */
@@ -238,6 +253,14 @@ export class ChatService {
     return g.reply;
   }
 
+  /** Manual ownership changes share the same handoff event as bot transfers. */
+  async takeover(conversationId: string, reason: string) {
+    const changed = await store.takeConversation(conversationId, reason);
+    await store.markAllProcessed(conversationId);
+    if (changed) this.automator.emit({ type: 'handoff', conversationId });
+    return changed ?? await store.getConversation(conversationId);
+  }
+
   /** Mensaje enviado desde la cuenta del negocio: eco de un envío nuestro o respuesta manual de una persona. */
   private async handleOwnMessage(bot: Chatbot | null, conv: Conversation, msg: InboundMessage) {
     const content = describeInbound(msg).replace(/^\[El cliente /, '[Se ');
@@ -259,8 +282,7 @@ export class ChatService {
       meta: { source: 'platform' },
     });
     if ((bot?.rules.pause_on_human_reply ?? true) && conv.status === 'bot') {
-      await store.setConversationStatus(conv.id, 'human', 'Una persona respondió desde la plataforma');
-      await store.markAllProcessed(conv.id);
+      await this.takeover(conv.id, 'Una persona respondió desde la plataforma');
       await logEvent({
         level: 'info',
         source: 'engine',

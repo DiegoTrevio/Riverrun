@@ -45,8 +45,8 @@ jobs:
       - run: npm ci
       - name: Revisión de tipos
         run: npm run typecheck
-      - name: Sintaxis del panel
-        run: for f in public/*.js; do node --check "$f"; done
+      - name: Panel (módulos, imports y sintaxis)
+        run: npm run check:frontend && node --check public/app.js
       - name: Pruebas
         run: npm test
       - name: Dependencias vulnerables (solo las de producción)

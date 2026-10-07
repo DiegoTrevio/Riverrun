@@ -1,5 +1,5 @@
 /** Conexión de WhatsApp: QR inmediato que se renueva solo, código por número, recuperación y confirmación del número. */
-import { after, before, test } from 'node:test';
+import { after, afterEach, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHarness, dbAvailable, evo, ext, pool, waitFor } from './harness.js';
 
@@ -28,6 +28,11 @@ before(async () => {
   const ch = (await admin('POST', '/api/channels', { type: 'whatsapp', name: 'WhatsApp' })).json();
   Object.assign(C, { id: ch.id, token: ch.webhook_token, instance: ch.config.instance });
 });
+// Session scenarios reserve temporary profiles; keep only the shared fixture between cases.
+afterEach(async () => {
+  if (h && C.id) await pool.query("DELETE FROM channels WHERE type = 'whatsapp' AND id <> $1 AND account_id = (SELECT account_id FROM channels WHERE id = $1)", [C.id]);
+});
+
 after(async () => {
   if (h) await h.app.close();
   await pool.end();

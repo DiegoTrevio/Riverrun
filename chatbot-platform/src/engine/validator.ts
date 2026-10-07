@@ -1,3 +1,4 @@
+import { imagesAfterReply, imagesForAssistant, imagesForContext } from './images.js';
 import { automaticField, customerProvided } from './customer-data.js';
 import type { Chatbot, DataField, ImageAsset } from '../types.js';
 import { DecisionSchema, type Action, type Decision } from './decision.js';
@@ -8,6 +9,7 @@ export interface ExecutionPlan {
   action: Action;
   messages: string[];
   images: ImageAsset[];
+  contextImages: ImageAsset[];
   saveData: Record<string, string>;
   contactName: string | null;
   remember: string[];
@@ -58,6 +60,9 @@ export interface ValidationInput {
   customerText: string;
   /** Fotos que el sistema enviará en este turno (la IA puede mencionarlas sin incluirlas en image_ids). */
   scheduledImages?: ImageAsset[];
+  automaticImages?: ImageAsset[];
+  currentFlowStep?: number;
+  goalAlreadyCompleted?: boolean;
   /**
    * Último intento: los problemas de estilo (frases prohibidas, promesas de foto, largo)
    * se corrigen automáticamente en lugar de pedir otra respuesta a la IA.
@@ -327,13 +332,7 @@ export function validateDecision(input: ValidationInput): ValidationResult {
     action = 'reply';
   }
   if (images.length && action !== 'handoff') action = 'reply_with_image';
-  if (!images.length && !input.scheduledImages?.length && IMAGE_PROMISE_RE.test(messages.join(' '))) {
-    soft(
-      'Dices que envías una imagen pero no incluiste ningún ID válido en image_ids. Incluye el ID correcto del catálogo o no menciones que envías imagen.',
-      () => (messages = dropSentences(messages, (_n, x) => IMAGE_PROMISE_RE.test(x))),
-      'Se quitó la promesa de enviar una imagen inexistente',
-    );
-  }
+
 
   // ---------- Verificación de hechos (cero invenciones) ----------
   if (rules.verify_facts && messages.length) {
@@ -434,6 +433,26 @@ export function validateDecision(input: ValidationInput): ValidationResult {
     }
   }
 
+  const contextual = action !== 'handoff' && action !== 'no_reply'
+    ? imagesForContext(input.automaticImages ?? [], d.context_image_ids, input.sentImageIds) : [];
+  if (d.context_image_ids.length > contextual.length) fixes.push('Fotos de contexto inválidas, repetidas o no permitidas descartadas');
+  const scheduled = rules.max_images_per_reply > 0 && action !== 'handoff' ? [
+    ...(input.scheduledImages ?? []),
+    ...contextual.map(x => x.image),
+    ...imagesForAssistant(input.automaticImages ?? [], messages.join(' '), input.sentImageIds).map(x => x.image),
+    ...imagesAfterReply(input.automaticImages ?? [], {
+      stepReached: flowStep !== (input.currentFlowStep ?? 0) ? flowStep : 0,
+      goalReached: goalCompleted && !input.goalAlreadyCompleted, booked: booking?.action === 'book', sentIds: input.sentImageIds, skip: [],
+    }).map(x => x.image),
+  ] : [];
+  if (!images.length && !scheduled.length && IMAGE_PROMISE_RE.test(messages.join(' '))) {
+    soft(
+      'Dices que envías una imagen pero no incluiste ningún ID válido en image_ids. Incluye el ID correcto del catálogo o no menciones que envías imagen.',
+      () => (messages = dropSentences(messages, (_n, x) => IMAGE_PROMISE_RE.test(x))),
+      'Se quitó la promesa de enviar una imagen inexistente',
+    );
+  }
+
   const remember = d.remember
     .map((x) => x.trim())
     .filter((x) => x.length > 2 && x.length < 200)
@@ -444,6 +463,7 @@ export function validateDecision(input: ValidationInput): ValidationResult {
       action,
       messages,
       images: action === 'reply_with_image' ? images : [],
+      contextImages: contextual.map(x => x.image),
       saveData,
       contactName,
       remember,
@@ -462,5 +482,5 @@ export function validateDecision(input: ValidationInput): ValidationResult {
 }
 
 export function emptyPlan(action: Action): ExecutionPlan {
-  return { action, messages: [], images: [], saveData: {}, contactName: null, remember: [], handoffReason: '', infoNotFound: false, intents: [], booking: null, flowStep: 0, goalCompleted: false };
+  return { action, messages: [], images: [], contextImages: [], saveData: {}, contactName: null, remember: [], handoffReason: '', infoNotFound: false, intents: [], booking: null, flowStep: 0, goalCompleted: false };
 }

@@ -130,12 +130,15 @@ export async function createHarness() {
   const sent: { kind: string; to: string; text: string; image?: string }[] = [];
   let script: Script = () => ({ messages: ['Ok'] });
   let summary = '- resumen de prueba';
+  let summaryError: Error | null = null;
+  let summaryFields: { field: string; value: string; source_message_id: number }[] = [];
   let n = 0;
-  const ai = {
+  const ai: import('../src/ai/provider.js').AiProvider = {
     async complete(req: Req) {
-      if (!req.json_schema) {
+      if (!req.json_schema || req.json_schema.name === 'conversation_report') {
         summaryCalls.push(req);
-        return { content: summary, model: req.model, latency_ms: 1, usage: { input_tokens: 50, cached_tokens: 0, output_tokens: 10 } };
+        if (summaryError && req.json_schema?.name === 'conversation_report') throw summaryError;
+        return { content: req.json_schema ? JSON.stringify({ summary, save_data: summaryFields }) : summary, model: req.model, latency_ms: 1, usage: { input_tokens: 50, cached_tokens: 0, output_tokens: 10 } };
       }
       calls.push(req);
       const out = await script(req, calls.length - 1);
@@ -188,9 +191,11 @@ export async function createHarness() {
 
   let msgN = 0;
   const h = {
-    app, service, calls, summaryCalls, sent, authed, loginAs, cookie: authed.cookie, failNext, token: '', botId: '', accountId: '', channelId: '',
+    app, service, ai, calls, summaryCalls, sent, authed, loginAs, cookie: authed.cookie, failNext, token: '', botId: '', accountId: '', channelId: '',
     setScript(s: Script) { script = s; },
     setSummary(s: string) { summary = s; },
+    setSummaryError(error: Error | null) { summaryError = error; },
+    setSummaryFields(fields: typeof summaryFields) { summaryFields = fields; },
     reset() { calls.length = 0; summaryCalls.length = 0; sent.length = 0; },
     /** Adelanta el reloj: todas las tareas pendientes vencen ya, y se ejecutan. */
     async fastForward() {

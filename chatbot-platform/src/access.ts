@@ -30,6 +30,7 @@ export function assertAccount<T extends { account_id: string | null }>(user: Use
 /** Cuenta a la que se limita un listado: la del usuario, o la elegida por el superadmin (null = todas). */
 export function scopeAccount(user: User, requested?: string | null): string | null {
   if (user.role === 'superadmin') return requested || null;
+  if (!user.account_id) throw new HttpError(403, 'Tu usuario no tiene un perfil asignado');
   return user.account_id;
 }
 
@@ -46,7 +47,7 @@ const RANK: Record<Role, number> = { agent: 1, admin: 2, superadmin: 3 };
 
 export function requireRole(min: Role) {
   return async (req: FastifyRequest, reply: FastifyReply) => {
-    if (RANK[req.user.role] < RANK[min]) return reply.code(403).send({ error: 'No tienes permiso para esta acción' });
+    if (!RANK[req.user.role] || RANK[req.user.role] < RANK[min]) return reply.code(403).send({ error: 'No tienes permiso para esta acción' });
   };
 }
 
