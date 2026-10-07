@@ -30,13 +30,8 @@ export function assertVerified(user: User) {
 /** Bot principal de la cuenta (el más antiguo): el que crea y edita el asistente. */
 const mainBot = (accountId: string) => queryOne<{ id: string }>(`SELECT id FROM chatbots WHERE account_id = $1 ORDER BY created_at LIMIT 1`, [accountId]);
 
-export const KNOWLEDGE_TITLES = {
-  catalog: ['precios', 'Productos, servicios y precios'],
-  hours: ['horarios', 'Horarios'],
-  location: ['ubicaciones', 'Ubicación y contacto'],
-  faq: ['preguntas_frecuentes', 'Preguntas frecuentes'],
-  other: ['general', 'Otra información'],
-} as const;
+export { KNOWLEDGE_TITLES } from '../templates/agent-builder.js';
+import { KNOWLEDGE_TITLES } from '../templates/agent-builder.js';
 
 export async function onboardingRoutes(api: FastifyInstance) {
   const admins = { preHandler: requireRole('admin') };

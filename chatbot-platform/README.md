@@ -354,6 +354,10 @@ Una cuenta puede conectar varios WhatsApp. Las **campañas** pueden salir de var
 - **Derechos del titular**: descarga de todos los datos de un contacto (JSON) y borrado definitivo desde el panel o `DELETE /api/contacts/:id`.
 - Los términos y el aviso de privacidad se enlazan desde el registro (`TERMS_URL`, `PRIVACY_URL`).
 
+## Crear un agente sin escribir un prompt
+
+En **Asistentes → + Nuevo asistente** hay un asistente de cuatro pasos: tu empresa, hasta dónde llega el agente (solo filtrar, agendar citas, atender o tomar pedidos; datos que pide; límites; cómo suena), tus documentos (web, PDF, foto, CSV o texto) y una revisión final. De ahí se genera solo el prompt con los lineamientos de siempre (natural, sin dar información de más, sin inventar y sin salirse de su papel), las reglas, el conocimiento y, si agenda, el servicio de la agenda. Detalle en [docs/agent-creation.md](docs/agent-creation.md).
+
 ## Asignación por turnos (round robin) y avisos internos
 
 - **Reparto automático** (Automatización → Ajustes → *Reparto de conversaciones por turnos*): cada conversación que pasa a una persona se asigna a la siguiente del turno entre los roles (y, si quieres, solo entre las personas que elijas). Solo esa persona recibe la notificación en el panel (y por WhatsApp si la tiene activada); puedes avisar además a todo el equipo. El turno recuerda a quién le tocó la última vez, así que si alguien se desactiva o se ausenta no se descompone, y es seguro con varias réplicas.

@@ -1,3 +1,4 @@
+import { agentWizard } from './agentwizard.js';
 import { channelIcon } from './channels.js';
 import { api, area, field, h, run, select, state, text, toast } from './core.js';
 import { accountName, acct, isSuper } from './session.js';
@@ -15,30 +16,7 @@ export async function viewDashboard(root, params = new URLSearchParams()) {
   const [bots, stats, channels] = await Promise.all([api('GET', `/api/chatbots${acct()}`), api('GET', `/api/stats${acct()}`), api('GET', `/api/channels${acct()}`)]);
   state.bots = bots;
   const byId = Object.fromEntries(stats.chatbots.map((s) => [s.id, s]));
-  const nb = { name: '', template: state.me.account?.business_type || 'otro', setup: { goal: '', questions: '', knowledge: '' } };
-  const createBox = h('div', { class: 'card', hidden: params.get('new') !== '1' },
-    h('h3', { style: 'margin-top:0' }, 'Crea tu agente'),
-    h('p', { class: 'muted' }, 'Describe tu negocio y qué necesitas conseguir. Organizamos las instrucciones y guardamos las respuestas automáticamente.'),
-    accountPicker(nb),
-    h('h4', {}, '1. Tu negocio'),
-    h('div', { class: 'grid' },
-      field('Nombre del negocio', text(nb, 'name', { placeholder: 'Los Trompitos', maxlength: 120 })),
-      field('Tipo de negocio', select(nb, 'template', (state.meta.business_types || []).map((b) => [b.key, b.label])))),
-    field('Información para responder', area(nb.setup, 'knowledge', { placeholder: 'Qué vendes, precios, horarios, ubicación y condiciones.', maxlength: 50000 }), 'Puedes pegar la información que ya tienes. Después podrás agregar documentos y fotos.'),
-    h('h4', {}, '2. Qué debe lograr'),
-    field('Objetivo', area(nb.setup, 'goal', { placeholder: 'Completar el pedido y pasarlo al equipo para confirmarlo.', maxlength: 2000 })),
-    h('h4', {}, '3. Qué debe preguntar'),
-    field('Preguntas clave', area(nb.setup, 'questions', { placeholder: 'Qué quiere pedir, cantidad y si recoge o necesita entrega. Para entrega: nombre y dirección.', maxlength: 4000 }), 'Escríbelas con tus palabras. El agente preguntará una a la vez y guardará las respuestas sin crear campos.'),
-    h('p', { class: 'help' }, 'Se crea apagado para que puedas probarlo antes de conectarlo a tus teléfonos.'),
-    h('button', { class: 'primary', onclick: async (event) => {
-      if (!nb.name.trim() || !nb.setup.goal.trim() || !nb.setup.questions.trim() || !nb.setup.knowledge.trim()) return toast('Completa el nombre, la información, el objetivo y las preguntas clave.', true);
-      const button = event.currentTarget;
-      button.disabled = true;
-      try {
-        const bot = await run(() => api('POST', '/api/chatbots', nb));
-        if (bot) location.hash = `#/bot/${bot.id}/probar`;
-      } finally { button.disabled = false; }
-    } }, 'Crear y probar'));
+  const createBox = agentWizard({ hidden: params.get('new') !== '1' });
   const noAccounts = isSuper() && !state.accounts.length;
   root.append(
     h('div', { class: 'row between' }, h('h1', {}, 'Asistentes'),

@@ -35,7 +35,7 @@ export async function viewOnboarding(root, stepKey) {
 
   root.append(
     h('h1', {}, ob.complete ? '¡Tu asistente está listo! 🎉' : `Configura tu asistente`),
-    !ob.chatbot_id ? h('p', {}, h('a', { class: 'btn primary', href: '#/asistentes?new=1' }, 'Crear agente en 3 pasos')) : null,
+    !ob.chatbot_id ? h('p', {}, h('a', { class: 'btn primary', href: '#/asistentes?new=1' }, 'Crear mi agente con el asistente')) : null,
     h('ol', { class: 'steps' }, ONB_STEPS.map(([slug, k, label], i) =>
       h('li', { class: `${ob.steps[k] ? 'done' : ''} ${current?.[0] === slug ? 'current' : ''}` },
         h('a', { href: `#/inicio/${slug}` }, h('span', { class: 'num' }, ob.steps[k] ? '✓' : i + 1), label)))),

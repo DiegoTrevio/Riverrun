@@ -1,3 +1,5 @@
+import { buildAgent, WizardSchema } from '../templates/agent-builder.js';
+import * as astore from '../automation/store.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
@@ -71,6 +73,46 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
 
   /* ------------------------------ Chatbots ------------------------------ */
   api.get('/api/chatbots', async (req: any) => (await store.listChatbots(scopeAccount(req.user, req.query.account_id))).map((b) => visibleBot(req.user, b)));
+
+  /**
+   * Vista previa del agente que se creará con el asistente (no guarda nada): el prompt armado con los lineamientos,
+   * lo que se aprenderá de los documentos y si se creará un servicio de la agenda.
+   */
+  api.post('/api/chatbots/draft', admins, async (req: any) => {
+    const w = parse(WizardSchema, req.body);
+    const built = buildAgent(w);
+    return {
+      name: built.name,
+      prompt: built.prompt,
+      goal: built.flow.goal,
+      knowledge: built.knowledge.map((k) => ({ title: k.title, chars: k.content.length })),
+      creates_service: built.service?.name ?? null,
+      enough_knowledge: built.enoughKnowledge,
+    };
+  });
+
+  /** Crea el agente completo a partir de las respuestas del asistente: prompt, reglas, recorrido, conocimiento y (si agenda) el servicio. */
+  api.post('/api/chatbots/wizard', admins, async (req: any) => {
+    const w = parse(WizardSchema, req.body);
+    const accountId = await targetAccount(req.user, req.body?.account_id ?? req.query.account_id);
+    const built = buildAgent(w);
+    if (!built.enoughKnowledge) throw new HttpError(400, 'Cuéntanos a qué se dedica tu empresa o sube un documento: el agente solo responde con la información que le des.');
+    await assertWithinLimit(accountId, 'chatbots');
+    const result = await withTransaction(async (client) => {
+      // Nace apagado para probarlo antes de conectarlo a un teléfono.
+      const bot = await store.createChatbot(accountId, { name: built.name, active: false, personality: built.personality, rules: built.rules, flow: built.flow, data_fields: built.data_fields }, client);
+      for (const [i, k] of built.knowledge.entries()) await store.upsertKnowledge(bot.id, { ...k, active: true, sort_order: i }, client);
+      return bot;
+    });
+    // La agenda se prepara aparte: si ya hay servicios, no se duplica.
+    let service: { id: string; name: string } | null = null;
+    if (built.service && !(await astore.listServices(accountId)).length) {
+      const s = await astore.saveService(accountId, built.service);
+      service = { id: s!.id, name: s!.name };
+    }
+    await logEvent({ level: 'info', source: 'admin', message: `Agente creado con el asistente: ${result.name} (${w.scope.role}${service ? `, servicio "${service.name}"` : ''})`, accountId, chatbotId: result.id });
+    return { ...result, service_created: service };
+  });
 
   api.post('/api/chatbots', admins, async (req: any) => {
     const b = parse(ChatbotBody.extend({ account_id: z.string().uuid().optional(), template: z.string().max(40).optional(), setup: z.object({
