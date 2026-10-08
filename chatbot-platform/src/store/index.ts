@@ -544,7 +544,7 @@ export async function resetConversationMemory(conversationId: string, contactId:
     if (!scope.rows.length) throw new Error('La conversación no pertenece al contacto');
     await client.query("UPDATE contacts SET data = '{}', notes = '[]', name = '', updated_at = now() WHERE id = $1", [contactId]);
     await client.query(`UPDATE conversations SET summary = '', summary_until_id = 0, data = '{}', data_version = data_version + 1,
-      report_summary = '', report_analysis = '{}'::jsonb, report_until_id = 0, report_at = NULL, report_data_version = -1, flow_step = 0, goal_completed_at = NULL
+      report_summary = '', report_analysis = '{}'::jsonb, report_until_id = 0, report_at = NULL, report_data_version = -1, flow_step = 0, goal_completed_at = NULL, flow_started_at = now()
       WHERE id = $1 AND contact_id = $2`, [conversationId, contactId]);
   });
 }
@@ -801,10 +801,22 @@ export async function countMessagesAfter(conversationId: string, afterId: number
 
 export async function sentImageIds(conversationId: string): Promise<string[]> {
   const rows = await query<{ image_id: string }>(
-    `SELECT DISTINCT image_id FROM messages WHERE conversation_id = $1 AND direction = 'out' AND image_id IS NOT NULL AND status = 'ok'`,
+    // Solo las del recorrido actual: al reabrir una conversación (flow_started_at) las fotos de etapa y objetivo vuelven a salir.
+    `SELECT DISTINCT m.image_id FROM messages m JOIN conversations c ON c.id = m.conversation_id
+     WHERE m.conversation_id = $1 AND m.direction = 'out' AND m.image_id IS NOT NULL AND m.status = 'ok'
+       AND (c.flow_started_at IS NULL OR m.created_at >= c.flow_started_at)`,
     [conversationId],
   );
   return rows.map((r) => r.image_id);
+}
+
+/** ¿Ya llegó esta foto (entregada) desde ese momento? Evita duplicar un reenvío pendiente. */
+export async function imageSentSince(conversationId: string, imageId: string, since: Date): Promise<boolean> {
+  const row = await queryOne<{ n: number }>(
+    `SELECT count(*)::int AS n FROM messages WHERE conversation_id = $1 AND image_id = $2 AND direction = 'out' AND status = 'ok' AND created_at >= $3`,
+    [conversationId, imageId, since],
+  );
+  return (row?.n ?? 0) > 0;
 }
 
 /**
@@ -845,7 +857,7 @@ export async function clearConnectionCodes(channelId: string) {
 /** Al reabrir: el recorrido empieza de nuevo y el asistente vuelve a su estado inicial (sin pausa ni activación). */
 export async function resetFlowState(conversationId: string) {
   await query(
-    `UPDATE conversations SET flow_step = 0, goal_completed_at = NULL, agent_off_at = NULL, agent_off_reason = '', agent_off_until = NULL, agent_on_at = NULL WHERE id = $1`,
+    `UPDATE conversations SET flow_step = 0, goal_completed_at = NULL, flow_started_at = now(), agent_off_at = NULL, agent_off_reason = '', agent_off_until = NULL, agent_on_at = NULL WHERE id = $1`,
     [conversationId],
   );
 }

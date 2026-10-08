@@ -45,6 +45,7 @@ const TRIGGERS = {
   appointment_cancelled: 'Se cancela una cita o llamada',
   opt_out: 'El cliente se da de baja',
   goal_completed: 'Se cumple el objetivo de la conversación',
+  stage_reached: 'El recorrido llega a una etapa',
   agent_off: 'El asistente se desactiva en una conversación',
 };
 
@@ -86,6 +87,7 @@ const RULE_TEMPLATES = [
   { name: 'Palabra → pausar al asistente', trigger: { type: 'message_received', match: 'keywords', keywords: ['ya no', 'no me interesa'] }, actions: [{ type: 'pause_bot', hours: 0, reason: 'El cliente no quiere seguir' }, { type: 'add_tag', tag: 'no_interesado' }] },
   { name: 'Palabra → activar al asistente', trigger: { type: 'message_received', match: 'keywords', keywords: ['menu', 'hola asistente'] }, actions: [{ type: 'resume_bot' }] },
   { name: 'Palabra → enviar foto', trigger: { type: 'message_received', match: 'keywords', keywords: ['menu', 'catalogo'] }, actions: [{ type: 'send_message', text: '', image_id: '' }] },
+  { name: 'Objetivo cumplido → reporte al equipo', trigger: { type: 'goal_completed' }, actions: [{ type: 'send_report', roles: ['admin'], note: 'Objetivo cumplido' }] },
   { name: 'Agradecer cita agendada', trigger: { type: 'appointment_booked' }, actions: [{ type: 'send_message', text: 'Te esperamos el {{cita.fecha}} a las {{cita.hora}} 🙌', delay_minutes: 1 }] },
 ];
 
@@ -97,6 +99,7 @@ function triggerSummary(t) {
     case 'no_reply': return `Sin respuesta en ${t.minutes >= 60 ? `${Math.round(t.minutes / 60 * 10) / 10} h` : `${t.minutes} min`}`;
     case 'data_captured': return `Dato guardado${t.field ? `: ${t.field}` : ''}`;
     case 'tag_added': return `Etiqueta: ${t.tag}`;
+    case 'stage_reached': return t.step ? `Llega a la etapa ${t.step}` : 'Llega a cualquier etapa';
     default: return TRIGGERS[t.type];
   }
 }
@@ -275,6 +278,13 @@ async function editRule(root, id) {
     } else if (t.type === 'data_captured') {
       t.field ??= '';
       f.push(field('Dato (vacío = cualquiera)', text(t, 'field', { placeholder: 'correo' })));
+    } else if (t.type === 'stage_reached') {
+      t.step ??= 0;
+      const steps = refs.bots.find((b) => b.id === r.chatbot_id)?.flow?.steps ?? [];
+      const n = Math.max(steps.length, 8);
+      f.push(field('Etapa del recorrido', h('select', { onchange: (e) => { t.step = Number(e.target.value); } },
+        [[0, 'Cualquier etapa'], ...Array.from({ length: n }, (_, i) => [i + 1, `Etapa ${i + 1}${steps[i]?.title ? `: ${steps[i].title}` : ''}`])].map(([v, l]) => h('option', { value: v, selected: v === t.step }, l))),
+        'Se dispara cuando el asistente marca que la conversación llegó a esa etapa (una vez por cambio de etapa). Elige el asistente en la regla para ver los nombres de sus etapas.'));
     } else if (t.type === 'tag_added') {
       t.tag ??= '';
       f.push(field('Etiqueta', text(t, 'tag')));
@@ -299,7 +309,7 @@ async function editRule(root, id) {
     h('div', { class: 'card' },
       h('div', { class: 'grid' },
         field('Nombre de la regla', text(r, 'name', { placeholder: 'Alerta de quejas' })),
-        field('Aplica a', select(r, 'chatbot_id', [['', 'Todos los chatbots de la cuenta'], ...refs.bots.map((b) => [b.id, b.name])]))),
+        field('Aplica a', select(r, 'chatbot_id', [['', 'Todos los chatbots de la cuenta'], ...refs.bots.map((b) => [b.id, b.name])], () => { if (r.trigger.type === 'stage_reached') drawTrigger(); }))),
       check(r, 'active', 'Activa'),
       check(r, 'stop_ai', 'Si se cumple, la IA no responde ese mensaje (la regla se encarga)')),
     h('div', { class: 'card' }, h('h3', { style: 'margin-top:0' }, '1. Cuándo'), trigBox),

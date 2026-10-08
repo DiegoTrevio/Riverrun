@@ -8,7 +8,8 @@ import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
 import { parse } from './util.js';
 import { rateLimited } from '../auth.js';
-import { buildReport, deliverReport, renderReport, ReportSendSchema, reportRecipients, transcriptTail } from '../automation/report-delivery.js';
+import { deliverReport, ReportSendSchema, reportRecipients } from '../automation/report-delivery.js';
+import { buildReport, renderReport, transcriptTail } from '../engine/report-format.js';
 import * as astore from '../automation/store.js';
 import * as assignment from '../automation/assignment.js';
 import { stopEnrollments } from '../automation/store.js';
@@ -74,7 +75,7 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
       conversation: conv,
       contact,
       messages: messages.reverse(),
-      chatbot: bot ? { id: bot.id, name: bot.name, data_fields: bot.data_fields } : null,
+      chatbot: bot ? { id: bot.id, name: bot.name, data_fields: bot.data_fields, flow: bot.flow } : null,
       /** Asistente en esta conversación: activo, en pausa (motivo) o esperando su palabra de activación. */
       agent: bot ? agentStatus(bot, conv) : null,
       channel: channel ? { id: channel.id, name: channel.name, type: channel.type } : null,

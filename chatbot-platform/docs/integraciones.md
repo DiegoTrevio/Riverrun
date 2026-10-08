@@ -33,10 +33,12 @@ Cada entrega es un `POST` con JSON:
 | `contact.data_captured` | El asistente capturó un dato (nombre, correo, fecha…) |
 | `contact.tag_added` | Se agregó una etiqueta |
 | `contact.opted_out` | El cliente se dio de baja de promociones |
-| `conversation.handoff` | La conversación pasó a una persona |
-| `goal.completed` | Se cumplió el objetivo de la conversación |
+| `conversation.handoff` | La conversación pasó a una persona (con el resumen y los datos capturados) |
+| `goal.completed` | Se cumplió el objetivo de la conversación (con el resumen, el análisis y los datos capturados) |
 | `appointment.booked` / `appointment.cancelled` | Cita agendada / cancelada (con conversación) |
 | `ping` | Botón "Enviar prueba" |
+
+En `conversation.handoff` y `goal.completed`, `data.conversation` incluye además `summary`, `analysis` (intención, ánimo, interés, acuerdos y pendientes), `data` (datos capturados), `flow_step` y `goal_completed_at`. Se generan antes de avisar, así que no hace falta pedirlos aparte; si la IA no pudo resumir, `summary` es `null` y `data` sigue completo.
 
 Cabeceras: `x-riverrun-event`, `x-riverrun-delivery` (id de la entrega), `x-riverrun-timestamp` y `x-signature: sha256=<HMAC-SHA256 del cuerpo exacto>`, con el secreto de webhooks de tu cuenta (Ajustes → Horario y avisos).
 

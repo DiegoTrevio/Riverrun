@@ -178,7 +178,7 @@ export async function viewConversation(root, id) {
     };
     const active = auto.enrollments.filter((e) => e.status === 'active');
     const upcoming = auto.appointments.filter((a) => a.status === 'confirmed' && new Date(a.starts_at) > new Date());
-    const JOB_LABEL = { sequence_step: 'Mensaje de secuencia', no_reply: 'Seguimiento si no responde', automation_send: 'Mensaje programado', appointment_reminder: 'Recordatorio de cita', campaign_send: 'Campaña' };
+    const JOB_LABEL = { sequence_step: 'Mensaje de secuencia', no_reply: 'Seguimiento si no responde', automation_send: 'Mensaje programado', appointment_reminder: 'Recordatorio de cita', campaign_send: 'Campaña', flow_image: 'Foto pendiente del recorrido' };
     fill(autoBox,
       h('div', { class: 'card' },
         h('h3', { style: 'margin-top:0' }, 'Citas'),

@@ -239,6 +239,22 @@ export async function createHarness() {
       h.token = ch.json().webhook_token;
       return r.json();
     },
+    /** Sube una foto del catálogo del chatbot de pruebas con su configuración "cuándo se envía". */
+    async uploadImage(code: string, name: string, sendWhen: Record<string, unknown>, extra: Record<string, string> = {}) {
+      const PNG = Buffer.from('89504E470D0A1A0A0000000D49484452000000010000000108060000001F15C4890000000D49444154789C6360000002000154A24F5D0000000049454E44AE426082', 'hex');
+      const b = '----x';
+      const part = (n: string, v: string) => `--${b}\r\nContent-Disposition: form-data; name="${n}"\r\n\r\n${v}\r\n`;
+      const fields = { code, name, caption: '', send_when: JSON.stringify(sendWhen), ...extra };
+      const body = Buffer.concat([
+        Buffer.from(Object.entries(fields).map(([k, v]) => part(k, v)).join('')),
+        Buffer.from(`--${b}\r\nContent-Disposition: form-data; name="file"; filename="${code}.png"\r\nContent-Type: image/png\r\n\r\n`),
+        PNG,
+        Buffer.from(`\r\n--${b}--\r\n`),
+      ]);
+      const r = await app.inject({ method: 'POST', url: `/api/chatbots/${h.botId}/images`, payload: body, headers: { cookie: authed.cookie, 'content-type': `multipart/form-data; boundary=${b}` } });
+      assert.equal(r.statusCode, 200, r.body);
+      return r.json();
+    },
     async conversationFor(phone = '5215511112222') {
       const list = (await authed('GET', `/api/conversations?chatbot_id=${h.botId}&search=${phone}`)).json();
       return list[0];

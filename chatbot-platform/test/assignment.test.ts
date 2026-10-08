@@ -117,7 +117,8 @@ t('regla "asignar": avisa a la persona del turno y puede pasar la conversación 
   await h.authed('POST', '/api/automations', { account_id: h.accountId, name: 'Ventas por turnos', trigger: { type: 'message_received', match: 'keywords', keywords: ['cotizar'] }, actions: [{ type: 'assign', message: 'Cotización para {{cliente}}', roles: ['agent'], take_over: true }] });
   const phone = '5215590000001';
   await h.webhook('quiero cotizar', { phone });
-  await waitFor(async () => !!(await h.conversationFor(phone))?.assigned_user_id, 8000);
+  // La asignación y el paso a una persona son dos pasos seguidos de la regla: se espera a ambos.
+  await waitFor(async () => { const x = await h.conversationFor(phone); return !!x?.assigned_user_id && x.status === 'human'; }, 8000);
   const c = await h.conversationFor(phone);
   assert.ok(team.some((u) => u.id === c.assigned_user_id));
   assert.equal(c.status, 'human', 'take_over pasó la conversación a una persona');

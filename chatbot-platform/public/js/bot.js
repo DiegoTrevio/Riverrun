@@ -138,7 +138,7 @@ export function flowCard(flow, c) {
     h('h3', { style: 'margin-top:0' }, 'Recorrido'),
     c.goal_completed_at ? h('p', {}, h('span', { class: 'badge green' }, '🎯 Objetivo cumplido'), ' ', h('span', { class: 'small muted' }, fmtDate(c.goal_completed_at))) : flow.goal ? h('p', { class: 'small' }, 'Objetivo: ', flow.goal) : null,
     flow.steps?.length ? h('ol', { class: 'small flow-steps' }, flow.steps.map((st, i) =>
-      h('li', { class: i + 1 < (c.flow_step || 0) ? 'done' : i + 1 === c.flow_step ? 'current' : '' }, st.title))) : null);
+      h('li', { class: i + 1 < (c.flow_step || 0) || (c.goal_completed_at && i + 1 <= (c.flow_step || 0)) ? 'done' : i + 1 === c.flow_step ? 'current' : '' }, st.title))) : null);
 }
 
 const CAT_LABELS = { general: 'General', servicios: 'Servicios', productos: 'Productos', precios: 'Precios', horarios: 'Horarios', ubicaciones: 'Ubicación y contacto', condiciones: 'Políticas y condiciones', preguntas_frecuentes: 'Preguntas frecuentes', promociones: 'Promociones', otro: 'Otro' };
@@ -489,8 +489,8 @@ function flowSection(f) {
       h('button', { onclick: () => { f.steps.push({ title: '', description: '' }); draw(); } }, '+ Agregar etapa'),
       h('div', { style: 'margin-top:14px' },
         field(tag('Cuando se cumpla el objetivo, el asistente…', guide()), area(f, 'on_goal_completed', { placeholder: 'Agradece y confirma los datos recibidos.' })),
-        field(tag('…y además el sistema', guaranteed()), select(f, 'on_goal_action', [['none', 'No hace nada más'], ['handoff', 'Pasa la conversación a una persona'], ['notify', 'Avisa al equipo (panel y WhatsApp)']]),
-          'El asistente reconoce cuándo se cumple el objetivo con las respuestas del cliente. Pasa una sola vez por conversación; también puedes usarlo como disparador en Automatización.')),
+        field(tag('…y además el sistema', guaranteed()), select(f, 'on_goal_action', [['none', 'No hace nada más'], ['handoff', 'Pasa la conversación a una persona'], ['notify', 'Avisa al equipo con el reporte completo (panel y WhatsApp)']]),
+          'El asistente reconoce cuándo se cumple el objetivo con las respuestas del cliente. Pasa una sola vez por recorrido. Al cumplirse, el equipo recibe el resumen, los datos confirmados y los pendientes; también puedes usarlo como disparador en Automatización (por ejemplo, para enviar el reporte por correo).')),
     ));
 }
 

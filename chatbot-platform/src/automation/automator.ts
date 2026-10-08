@@ -1,5 +1,7 @@
 import * as assignment from './assignment.js';
 import { deliverReport, reportRecipients } from './report-delivery.js';
+import { briefReport } from '../engine/report-format.js';
+import { imageSendWhen } from '../types.js';
 import crypto from 'node:crypto';
 import dns from 'node:dns/promises';
 import http from 'node:http';
@@ -51,6 +53,8 @@ export function triggerMatches(t: Trigger, e: AutomationEvent): boolean {
       return (e.intents ?? []).includes(t.intent);
     case 'data_captured':
       return !t.field || t.field === e.field;
+    case 'stage_reached':
+      return !t.step || t.step === e.step;
     case 'tag_added':
       return normalize(t.tag) === normalize(e.tag ?? '');
     case 'appointment_booked':
@@ -258,7 +262,9 @@ export class Automator {
     if (!ctx || ctx.channel.account_active === false) return { stopAi: false, matched: [] };
     if (e.type === 'handoff' && ctx.channel.type !== 'playground') {
       const who = ctx.contact.name || ctx.contact.push_name || 'Cliente';
-      const alert = { link: `#/conversation/${ctx.conv.id}`, body: `${who} (${ctx.channel.name}): ${ctx.conv.handoff_reason || 'transferida'}` };
+      // El aviso lleva el resumen y los datos ya capturados: quien atiende sabe de qué va antes de abrir la conversación.
+      const brief = await briefReport(ctx.conv.id, 1500, { customer: false }).catch(() => '');
+      const alert = { link: `#/conversation/${ctx.conv.id}`, body: `${who} (${ctx.channel.name}): ${ctx.conv.handoff_reason || 'transferida'}${brief ? `\n\n${brief}` : ''}` };
       const asg = ctx.settings.assignment;
       let assigned: string | null = null;
       if (e.byUserId && ctx.conv.assigned_user_id === e.byUserId) {
@@ -461,6 +467,34 @@ export class Automator {
           ctx.settings.webhook_secret,
         );
         return;
+    }
+  }
+
+  /**
+   * Tarea programada: foto que el sistema debía enviar al marcarse una etapa/objetivo (o por una regla del negocio) y que no
+   * salió en su momento. Se entrega si sigue vigente: el recorrido no se reinició, la foto no llegó ya, y ninguna persona
+   * ha respondido desde entonces. Si la plataforma la rechaza otra vez, lanza el error para que el programador reintente.
+   */
+  async runDeferredImage(p: { conversation_id: string; image_id: string; reason: string; journey: string | null; at: string; allow_ended: boolean }) {
+    const conv = await store.getConversation(p.conversation_id);
+    if (!conv) return;
+    const skip = (why: string) => logEvent({ level: 'info', source: 'engine', message: `Foto pendiente no enviada (${why})`, accountId: conv.account_id, chatbotId: conv.chatbot_id, conversationId: conv.id, details: { image_id: p.image_id, reason: p.reason } });
+    const journey = conv.flow_started_at ? new Date(conv.flow_started_at).toISOString() : null;
+    if (journey !== p.journey) return skip('el recorrido se reinició');
+    if (conv.status !== 'bot' && !p.allow_ended) return skip('ya no atiende el asistente');
+    const human = await store.lastHumanActivity(conv.id);
+    if (human && human.getTime() > new Date(p.at).getTime()) return skip('una persona respondió');
+    const image = await store.getImage(p.image_id);
+    if (!image || !image.active) return skip('la foto ya no está activa');
+    if (await store.imageSentSince(conv.id, image.id, new Date(p.at))) return; // ya llegó por otro camino desde que se programó
+    if (imageSendWhen(image).once && (await store.sentImageIds(conv.id)).includes(image.id)) return;
+    const r = await this.chat.outbound.send(conv.id, { imageId: image.id, source: 'flow', transactional: true, allowWhenHuman: p.allow_ended, meta: { image_trigger: p.reason, deferred: true } });
+    if (r.sent) {
+      await logEvent({ level: 'info', source: 'engine', message: `Foto enviada por regla (pendiente): ${image.code} (${p.reason})`, accountId: conv.account_id, chatbotId: conv.chatbot_id, channelId: conv.channel_id, conversationId: conv.id });
+    } else if (/rechaz/.test(r.reason)) {
+      throw new Error(`${image.code}: ${r.reason}`);
+    } else {
+      await skip(r.reason);
     }
   }
 

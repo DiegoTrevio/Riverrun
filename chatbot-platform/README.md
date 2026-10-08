@@ -220,7 +220,7 @@ Cada ajuste del panel indica si está **✓ Garantizado** (el sistema lo revisa 
 | Datos del cliente con formato válido · agenda solo con horarios reales | |
 | Recorrido: el objetivo solo cuenta con los datos "importantes" · acción al cumplirlo (pasar a una persona o avisar), una vez | |
 
-**Recorrido de la conversación** (Opciones avanzadas): objetivo, etapas y qué hacer al cumplirlo. En cada turno la IA indica en qué etapa queda y si se cumplió el objetivo; el sistema lo guarda y se lo recuerda en el siguiente turno, junto con los datos importantes que faltan, para que no repita etapas ni preguntas. El objetivo se acepta solo si ya están todos los datos marcados como "Importante"; entonces, una sola vez por conversación, el sistema **pasa la conversación a una persona** o **avisa al equipo** (según lo elegido) y dispara las reglas "Se cumple el objetivo de la conversación". La etapa y el objetivo se ven en cada conversación; al cerrarla y que el cliente vuelva a escribir, el recorrido empieza de nuevo. El asistente conoce el horario de atención y la zona horaria de **Horario y ajustes** (sabe si en este momento está abierto).
+**Recorrido de la conversación** (Opciones avanzadas): objetivo, etapas y qué hacer al cumplirlo. En cada turno la IA indica en qué etapa queda y si se cumplió el objetivo; el sistema lo guarda y se lo recuerda en el siguiente turno, junto con los datos importantes que faltan, para que no repita etapas ni preguntas. El objetivo se acepta solo si ya están todos los datos marcados como "Importante". Cuando se marca (una sola vez por recorrido) el sistema, en este orden: envía las fotos de objetivo, **genera el resumen y el análisis**, **pasa la conversación a una persona** o **avisa al equipo** (según lo elegido) —el aviso del panel y de WhatsApp lleva el resumen, los datos confirmados y los pendientes— y dispara las reglas «Se cumple el objetivo» (con el reporte ya listo, por ejemplo para `Enviar reporte`) y los webhooks `goal.completed` / `conversation.handoff`, que incluyen resumen, análisis y datos. Cada cambio de etapa dispara la regla «El recorrido llega a una etapa» (una etapa concreta o cualquiera) y envía las fotos de esa etapa. Las fotos que no cupieron en la respuesta o que la plataforma rechazó se reintentan solas (ver `docs/image-delivery.md`). La etapa y el objetivo se ven en cada conversación; al cerrarla y que el cliente vuelva a escribir, el recorrido empieza de nuevo (también las fotos «una sola vez»). El asistente conoce el horario de atención y la zona horaria de **Horario y ajustes** (sabe si en este momento está abierto).
 
 Consejo: si una regla del negocio tiene cifra (precio, descuento, anticipo), escríbela también en **Conocimiento**; así queda garantizada por la verificación de datos.
 
@@ -261,10 +261,11 @@ Menú **Automatización** (administradores). Todo corre sobre tareas programadas
 | Pasa a una persona | | **Webhook** a otro sistema (n8n, Zapier, CRM), firmado con `X-Signature` |
 | Cita agendada / cancelada | | |
 | Se da de baja | Asistente activo / en pausa | Pausar al asistente (con reactivación opcional en N horas) / activarlo |
-| Se cumple el objetivo | | |
+| Se cumple el objetivo | | **Enviar reporte de la conversación** (resumen, análisis y datos; panel, correo y WhatsApp) |
+| **El recorrido llega a una etapa** (una concreta o cualquiera) | | Asignar a alguien del equipo (por turnos) |
 | El asistente se desactiva | | |
 
-- **Plantillas rápidas:** bienvenida, fuera de horario, palabra urgente → alerta, seguimiento, queja → persona, listo para comprar → ventas, correo → CRM, palabra → pausar / activar al asistente, agradecer cita.
+- **Plantillas rápidas:** bienvenida, fuera de horario, palabra urgente → alerta, seguimiento, queja → persona, listo para comprar → ventas, correo → CRM, palabra → pausar / activar al asistente, agradecer cita, objetivo cumplido → reporte al equipo.
 - **🧪 Probar palabras:** escribe un mensaje de ejemplo y ve qué reglas se activarían (✅/❌ con el motivo), sin IA y sin enviar nada.
 - **Detener la IA:** una regla puede impedir que la IA responda el mensaje que la disparó.
 - **Variables en los textos:** `{{nombre}}`, `{{cliente}}`, `{{telefono}}`, `{{negocio}}`, `{{mensaje}}`, `{{link}}`, `{{dato.CAMPO}}`, `{{cita.servicio}}`, `{{cita.fecha}}`, `{{cita.hora}}`, `{{cita.lugar}}`.

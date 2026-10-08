@@ -124,6 +124,8 @@ export const TriggerSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('appointment_cancelled'), service_id: z.string().default('') }),
   z.object({ type: z.literal('opt_out') }),
   z.object({ type: z.literal('goal_completed') }),
+  /** El recorrido llega a una etapa (0 = cualquiera). */
+  z.object({ type: z.literal('stage_reached'), step: z.number().int().min(0).max(30).default(0) }),
   z.object({ type: z.literal('agent_off') }),
 ]);
 export type Trigger = z.infer<typeof TriggerSchema>;
@@ -287,6 +289,8 @@ export interface AutomationEvent {
   isFirstMessage?: boolean;
   intents?: string[];
   field?: string;
+  /** Etapa del recorrido a la que se llegó (stage_reached). */
+  step?: number;
   tag?: string;
   appointment?: Appointment;
   /** Evita bucles: acciones que disparan otros eventos. */

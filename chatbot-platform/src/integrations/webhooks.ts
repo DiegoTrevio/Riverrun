@@ -65,9 +65,14 @@ export function eventData(e: AutomationEvent, ctx: { conv: Conversation; contact
   const { conv, contact, channel } = ctx;
   return {
     contact: { id: contact.id, name: contact.name || contact.push_name || '', phone: contact.phone, tags: contact.tags, data: contact.data, consent: !!contact.consent_at, opted_out: contact.opted_out },
-    conversation: { id: conv.id, status: conv.status, handoff_reason: conv.handoff_reason || null, channel: { id: channel.id, type: channel.type, name: channel.name } },
+    conversation: {
+      id: conv.id, status: conv.status, handoff_reason: conv.handoff_reason || null, channel: { id: channel.id, type: channel.type, name: channel.name },
+      // Todo lo capturado hasta ahora (el resumen y el análisis se generan antes de avisar al cumplirse el objetivo o transferir).
+      summary: conv.report_summary || null, analysis: conv.report_analysis ?? {}, data: conv.data ?? {}, flow_step: conv.flow_step ?? 0, goal_completed_at: conv.goal_completed_at ?? null,
+    },
     ...(e.field ? { field: e.field, value: contact.data?.[e.field] ?? (e.field === 'nombre' ? contact.name : null) } : {}),
     ...(e.tag ? { tag: e.tag } : {}),
+    ...(e.step ? { stage: e.step } : {}),
     ...(e.text !== undefined ? { message: e.text } : {}),
     ...(e.appointment ? { appointment: e.appointment } : {}),
   };

@@ -288,6 +288,8 @@ export interface Conversation {
   flow_step?: number;
   /** Cuándo se cumplió el objetivo de la conversación (null = aún no). */
   goal_completed_at?: Date | null;
+  /** Inicio del recorrido actual (al reabrir o borrar la memoria); las fotos "una sola vez" se cuentan desde aquí. */
+  flow_started_at?: Date | null;
   /** Asistente en pausa en esta conversación (null = no), por qué y hasta cuándo (null = hasta reactivarlo). */
   agent_off_at?: Date | null;
   agent_off_reason?: string;

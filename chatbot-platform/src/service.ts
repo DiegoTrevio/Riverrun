@@ -57,10 +57,20 @@ export class ChatService {
         return { timezone: st.timezone, hours: st.business_hours, holidays: st.holidays, openNow: isOpen(st.business_hours, st.holidays, new Date(), st.timezone) };
       },
       alertTeam: (accountId, o) => this.automator.alertTeam(accountId, o),
+      deferImage: async (conv, image, o) => {
+        await astore.scheduleJob({
+          account_id: conv.account_id,
+          type: 'flow_image',
+          payload: { conversation_id: conv.id, image_id: image.id, reason: o.reason, journey: conv.flow_started_at ? new Date(conv.flow_started_at).toISOString() : null, at: new Date().toISOString(), allow_ended: o.allowEnded },
+          run_at: new Date(Date.now() + o.delaySeconds * 1000),
+          dedupe_key: `flow_image:${conv.id}:${image.id}`,
+        });
+      },
     });
     this.queue = new ConversationQueue((id, a) => this.runConversation(id, a.restarts), 2, 60_000, (id) => void this.aiUnavailable(id));
     this.scheduler = new Scheduler({
       automation_send: (p) => this.automator.runDelayedSend(p),
+      flow_image: (p) => this.automator.runDeferredImage(p),
       webhook_delivery: (p, job) => deliver(p, job.attempts),
       gcal_sync: (p) => syncAppointment(p),
       no_reply: (p) => this.automator.runNoReply(p),

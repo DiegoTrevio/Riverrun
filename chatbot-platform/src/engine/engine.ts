@@ -12,6 +12,7 @@ import { semanticKnowledge } from './knowledge.js';
 import { aiSelectableImages, automaticImages, contextualImages, imagesForContext, imagesAfterReply, imagesBeforeReply, imagesForAssistant, type ScheduledImage } from './images.js';
 import { DECISION_JSON_SCHEMA } from './decision.js';
 import { maybeSummarize } from './memory.js';
+import { briefReport } from './report-format.js';
 import { summarizeConversation } from './report.js';
 import { normalize } from './text.js';
 import type { Transport } from './transport.js';
@@ -34,6 +35,11 @@ export interface EngineExtensions {
   business?(accountId: string): Promise<BusinessInfo | null>;
   /** Avisa al equipo (panel y WhatsApp de quien lo tenga activado). */
   alertTeam?(accountId: string, o: { title: string; body: string; link?: string; kind?: string }): Promise<void>;
+  /**
+   * Programa el envío posterior de una foto que el sistema debía mandar (la plataforma la rechazó o no cupo en la
+   * respuesta). `allowEnded`: aunque la conversación ya pasó a una persona o se cerró en este mismo momento.
+   */
+  deferImage?(conv: Conversation, image: ImageAsset, o: { reason: string; delaySeconds: number; allowEnded: boolean }): Promise<void>;
 }
 
 export interface ProcessResult {
@@ -345,8 +351,12 @@ export class Engine {
     // Recorrido: el objetivo solo cuenta una vez por conversación (hasta que se cierre y se reabra).
     const goalReached = plan.goalCompleted && !conv.goal_completed_at;
     const goalHandoff = goalReached && bot.flow.on_goal_action === 'handoff' && plan.action !== 'handoff';
+    const stageChanged = !!plan.flowStep && plan.flowStep !== (conv.flow_step ?? 0);
     // Fotos programadas: se suman a las que eligió la IA (sin repetir). En una transferencia no se envían.
     let selectedRules: ScheduledImage[] = [];
+    // Fotos que el sistema debía enviar y no salieron en esta respuesta (límite por respuesta o rechazo de la plataforma):
+    // no se pierden, se reintentan enseguida.
+    const owed: { image: ImageAsset; reason: string; delaySeconds: number }[] = [];
     if (plan.action !== 'handoff') {
       const assistant = imagesForAssistant(images, plan.messages.join(' '), sentImageIds);
       const after = imagesAfterReply(images, {
@@ -361,45 +371,67 @@ export class Engine {
       const candidates = [...automatic.map(x => x.image), ...plan.images.filter(img => !automatic.some(x => x.image.id === img.id))];
       const selected = candidates.slice(0, bot.rules.max_images_per_reply);
       selectedRules = automatic.filter(x => selected.some(img => img.id === x.image.id));
-      if (candidates.length > selected.length) await log('warn', 'engine', `Fotos omitidas por el límite de ${bot.rules.max_images_per_reply} por respuesta: ${candidates.slice(selected.length).map(img => img.code).join(', ')}`);
+      if (candidates.length > selected.length) {
+        // Las que salen por una regla del negocio (etapa, objetivo, palabra…) se envían después; las que eligió la IA, no.
+        const over = candidates.slice(selected.length);
+        const later = over.filter((img) => automatic.some((x) => x.image.id === img.id));
+        const dropped = over.filter((img) => !later.includes(img));
+        if (dropped.length) await log('warn', 'engine', `Fotos omitidas por el límite de ${bot.rules.max_images_per_reply} por respuesta: ${dropped.map(img => img.code).join(', ')}`);
+        if (later.length) await log('info', 'engine', `Fotos del negocio que no caben en esta respuesta (límite de ${bot.rules.max_images_per_reply}); se envían enseguida: ${later.map(img => img.code).join(', ')}`);
+        for (const img of later) owed.push({ image: img, reason: automatic.find((x) => x.image.id === img.id)!.reason, delaySeconds: 5 });
+      }
       if (selected.length) plan = { ...plan, action: 'reply_with_image', images: selected };
 
     }
     if (plan.action === 'handoff') {
       await this.executeHandoff(bot, conv, contact, transport, plan.messages, plan.handoffReason || 'La IA decidió transferir');
     } else if (plan.action !== 'no_reply') {
-      await this.sendPlan(bot, conv, transport, plan, meta, selectedRules);
+      const failed = await this.sendPlan(bot, conv, transport, plan, meta, selectedRules);
+      for (const x of failed) owed.push({ image: x.image, reason: x.reason, delaySeconds: 45 });
     }
+    let summarized = false;
     if (plan.flowStep || goalReached) {
       const reached = await store.setFlowState(conv.id, plan.flowStep, goalReached);
       if (reached) {
         await log('info', 'engine', `Objetivo de la conversación cumplido${plan.flowStep ? ` (etapa ${plan.flowStep})` : ''}`);
+        // El reporte (resumen, análisis y datos) se arma ANTES de avisar y de emitir eventos: así el aviso, las reglas y
+        // los webhooks ya lo llevan completo. Si la IA falla, el aviso sale igual con los datos y los últimos mensajes.
+        await this.summarizeFinal(conv);
+        summarized = true;
         if (goalHandoff) {
           // Ya se envió la respuesta de la IA (que se despide): solo se pasa a una persona, sin otro mensaje.
           await this.executeHandoff(bot, conv, contact, transport, [], 'Se cumplió el objetivo de la conversación', { silent: true });
         } else if (bot.flow.on_goal_action === 'notify' && channel.type !== 'playground' && this.ext.alertTeam) {
           const who = contact.name || contact.push_name || contact.phone || 'Un cliente';
-          await this.ext.alertTeam(conv.account_id, { title: '🎯 Objetivo cumplido', body: `${who} (${channel.name}): ${bot.flow.goal}`, link: `#/conversation/${conv.id}`, kind: 'goal' });
+          const brief = await briefReport(conv.id, 1500, { customer: false }).catch(() => '');
+          await this.ext.alertTeam(conv.account_id, { title: '🎯 Objetivo cumplido', body: `${who} (${channel.name}): ${bot.flow.goal}${brief ? `\n\n${brief}` : ''}`, link: `#/conversation/${conv.id}`, kind: 'goal' });
         }
       }
     }
     // Desactivadores después de responder (objetivo, cita, datos completos).
+    let ended = goalHandoff;
     if (plan.action !== 'handoff' && !goalHandoff) {
       const why = offAfterReply(bot.rules.activation, { goalReached, booked, before: { name: nameBefore, data: dataBefore }, after: contact });
-      if (why) await this.deactivate(bot, conv, contact, transport, why);
+      if (why) {
+        ended = true;
+        await this.deactivate(bot, conv, contact, transport, why);
+      }
     }
+    // Las fotos que faltaron salen aunque la conversación haya pasado a una persona o se haya cerrado en este mismo momento.
+    for (const x of owed) await this.ext.deferImage?.(conv, x.image, { reason: x.reason, delaySeconds: x.delaySeconds, allowEnded: ended }).catch((e) => log('error', 'engine', `No se pudo programar el reenvío de la foto ${x.image.code}: ${e?.message ?? e}`));
     await store.markProcessed(conv.id, lastPendingId);
 
     // Eventos para las reglas automáticas (se ejecutan después, sin bloquear la respuesta).
     if (this.ext.onEvent) {
       if (plan.intents.length) this.ext.onEvent({ type: 'intent', conversationId: conv.id, intents: plan.intents, text: customerText });
+      if (stageChanged) this.ext.onEvent({ type: 'stage_reached', conversationId: conv.id, step: plan.flowStep, text: customerText });
       if (goalReached) this.ext.onEvent({ type: 'goal_completed', conversationId: conv.id, text: customerText });
       for (const [field, value] of Object.entries(contact.data ?? {})) {
         if (value && dataBefore[field] !== value) this.ext.onEvent({ type: 'data_captured', conversationId: conv.id, field, text: customerText });
       }
     }
 
-    if (goalReached) await this.summarizeFinal(conv);
+    if (goalReached && !summarized) await this.summarizeFinal(conv);
 
     // 6) Memoria de largo plazo (resumen) en segundo plano.
     const memory = maybeSummarize(this.ai, bot, conv.id, conv.account_id).catch((e) => log('error', 'ai', `Error al resumir: ${e?.message ?? e}`, e));
@@ -415,18 +447,22 @@ export class Engine {
     };
   }
 
-  async sendPlan(bot: Chatbot, conv: Conversation, transport: Transport, plan: ExecutionPlan, meta: Record<string, unknown>, scheduled: ScheduledImage[] = []) {
+  /** Envía el plan. Devuelve las fotos de reglas del negocio que la plataforma rechazó (para reintentarlas). */
+  async sendPlan(bot: Chatbot, conv: Conversation, transport: Transport, plan: ExecutionPlan, meta: Record<string, unknown>, scheduled: ScheduledImage[] = []): Promise<ScheduledImage[]> {
     const typing = bot.ai.typing_simulation && hasTyping(transport);
     // En correo, varias burbujas serían varios correos: se envían como uno solo.
     const texts = transport.kind === 'email' && plan.messages.length > 1 ? [plan.messages.join('\n\n')] : plan.messages;
     for (const text of texts) {
       await this.sendOut(bot, conv, transport, { sender: 'bot', text, delay: typingDelay(text, typing), meta });
     }
+    const failed: ScheduledImage[] = [];
     for (const img of plan.images) {
       const rule = scheduled.find(x => x.image.id === img.id);
       const sent = await this.sendOut(bot, conv, transport, { sender: 'bot', text: img.caption, image: img, delay: typing ? 1200 : 0, meta: rule ? {...meta, image_trigger: rule.reason} : meta });
       if (sent && rule) await logEvent({ level: 'info', source: 'engine', message: `Foto enviada por regla: ${img.code} (${rule.reason})`, accountId: conv.account_id, chatbotId: bot.id, channelId: conv.channel_id, conversationId: conv.id });
+      if (!sent && rule) failed.push(rule);
     }
+    return failed;
   }
 
   /** Guarda el mensaje ANTES de enviarlo (para reconocer el eco del webhook) y luego lo envía. */
@@ -482,7 +518,8 @@ export class Engine {
     this.ext.onEvent?.({ type: 'handoff', conversationId: conv.id });
     if (bot.rules.handoff_notify_number) {
       const who = contact.name || contact.push_name || contact.phone || contact.external_id;
-      const text = `🔔 *${bot.name}*: ${who}${contact.phone ? ` (+${contact.phone})` : ''} necesita atención.\nMotivo: ${reason}`;
+      const brief = await briefReport(conv.id, 1200, { customer: false }).catch(() => '');
+      const text = `🔔 *${bot.name}*: ${who}${contact.phone ? ` (+${contact.phone})` : ''} necesita atención.\nMotivo: ${reason}${brief ? `\n\n${brief}` : ''}`;
       try {
         await transport.notify(bot.rules.handoff_notify_number, text);
       } catch (e: any) {
