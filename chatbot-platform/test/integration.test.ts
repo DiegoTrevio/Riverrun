@@ -127,32 +127,22 @@ t('precio inventado: reintenta con corrección y envía la versión verificada',
   assert.equal(correction.role, 'system');
   assert.match(correction.content, /4500/);
   assert.match(sent[0].text, /1,650/);
+  // Una respuesta por mensaje: después de la corrección no sale nada más ni la IA se consulta otra vez.
+  await h.idle();
+  assert.equal(sent.length, 1, JSON.stringify(sent.map((s) => s.text)));
+  assert.equal(calls.length, 2, `llamadas a la IA: ${calls.length}`);
 });
 
 t('si insiste en inventar, usa el mensaje de respaldo', async () => {
+  // Lo que quedó de la prueba anterior termina antes de empezar: un envío tardío no debe contar aquí.
+  await h.idle();
   calls.length = 0;
   sent.length = 0;
-  // Diagnóstico: si falla, el mensaje de error lleva el estado completo (envíos, llamadas, tiempos y logs del validador).
-  const stamps: number[] = [];
-  const t0 = Date.now();
-  script = () => {
-    stamps.push(Date.now() - t0);
-    return { messages: ['El desayuno cuesta $350'] };
-  };
+  script = () => ({ messages: ['El desayuno cuesta $350'] });
   await webhook('cuanto cuesta el desayuno?');
   await waitFor(() => sent.length === 1);
-  const tSent = Date.now() - t0;
-  await new Promise((r) => setTimeout(r, 1500));
-  const vlogs = (await authed('GET', `/api/logs?chatbot_id=${botId}&source=validator`)).json();
-  const diag = JSON.stringify({
-    tSent,
-    stamps,
-    sent: sent.map((s) => [s.kind, s.text]),
-    calls: calls.map((c) => c.messages.filter((m) => m.role === 'user').pop()?.content.slice(0, 60)),
-    logs: vlogs.map((l: any) => [l.created_at, l.message.slice(0, 140)]),
-  });
-  assert.equal(calls.length, 2, diag);
-  assert.equal(sent[0].text, 'Déjame confirmarlo con el equipo.', diag);
+  assert.equal(calls.length, 2, JSON.stringify({ llamadas: calls.length, envios: sent.map((s) => s.text) }));
+  assert.equal(sent[0].text, 'Déjame confirmarlo con el equipo.');
   const logs = (await authed('GET', `/api/logs?chatbot_id=${botId}&source=validator`)).json();
   assert.ok(logs.some((l: any) => l.message.includes('respaldo')));
 });
