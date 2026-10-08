@@ -134,3 +134,27 @@ t('no se puede leer la red interna', async () => {
     config.allowPrivateWebhooks = true;
   }
 });
+
+t('dos guardados a la vez no duplican secciones: un solo título por sección', async () => {
+  // Sin secciones previas, dos guardados simultáneos leen "no existe" y crearían cada uno su copia.
+  // Un disparador lento al insertar agranda esa ventana para que la carrera se reproduzca siempre.
+  await pool.query('DELETE FROM knowledge_items WHERE chatbot_id = $1', [h.botId]);
+  await pool.query(`CREATE OR REPLACE FUNCTION riverrun_test_slow_knowledge() RETURNS trigger AS $$ BEGIN PERFORM pg_sleep(0.3); RETURN NEW; END $$ LANGUAGE plpgsql`);
+  await pool.query(`CREATE TRIGGER riverrun_test_slow BEFORE INSERT ON knowledge_items FOR EACH ROW EXECUTE FUNCTION riverrun_test_slow_knowledge()`);
+  try {
+    h.setScript(() => answer({ catalog: 'Limpieza dental — $800' }));
+    const url = `${base}/pagina`;
+    const [a, b] = await Promise.all([
+      h.authed('POST', `/api/chatbots/${h.botId}/knowledge/import`, { url, save: true }),
+      h.authed('POST', `/api/chatbots/${h.botId}/knowledge/import`, { url, save: true }),
+    ]);
+    assert.equal(a.statusCode, 200, a.body);
+    assert.equal(b.statusCode, 200, b.body);
+    const titles = (await h.authed('GET', `/api/chatbots/${h.botId}/knowledge`)).json().map((i: any) => i.title);
+    assert.ok(titles.length >= 2, `se guardaron las secciones: ${titles.join(' | ')}`);
+    assert.equal(new Set(titles).size, titles.length, `títulos repetidos: ${titles.join(' | ')}`);
+  } finally {
+    await pool.query('DROP TRIGGER IF EXISTS riverrun_test_slow ON knowledge_items');
+    await pool.query('DROP FUNCTION IF EXISTS riverrun_test_slow_knowledge()');
+  }
+});

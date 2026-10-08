@@ -9,6 +9,7 @@ PostgreSQL es la fuente de verdad. Un perfil de negocio es una cuenta (`accounts
 | `contacts` | Nombre, número, respuestas confirmadas en `data`, notas y etiquetas. `UNIQUE(channel_id, external_id)` evita duplicados por webhook. |
 | `conversations` | Contacto, cuenta, canal y asistente; estado, objetivo, respuestas en `data` y resúmenes. Una conversación por contacto, conservada al cerrar/reabrir. |
 | `messages` | Preguntas y respuestas originales en orden. `meta.captured_data` registra qué respuestas se extrajeron de ese mensaje. Se conserva el historial; cerrar no lo elimina. |
+| `message_media` | Foto o documento que envió el cliente (uno por mensaje): tipo, nombre, tamaño, SHA-256 y ruta del archivo. Se borra junto con su mensaje. |
 | `ai_runs` | Modelo, consumo y costo de cada respuesta, resumen o transcripción, asociados a la cuenta y conversación. |
 
 ## Captura automática
@@ -51,6 +52,27 @@ Cada mensaje (entrante, saliente, de persona o de campaña) se guarda siempre en
 - Límite: 20 envíos cada 10 minutos por persona.
 
 **Automático**: la acción de regla «Enviar reporte de la conversación» (`send_report`) hace lo mismo con los destinatarios de la regla.
+
+## Fotos y documentos de los clientes
+
+Las fotos y los documentos que un cliente envía por WhatsApp se descargan y se guardan tal como llegaron, sin recodificar. Quedan en `uploads/inbound/<cuenta>/` y su huella SHA-256 se registra en `message_media`. El equipo los ve en el panel y los descarga desde `GET /api/messages/:id/media`.
+
+- **Límite:** 16 MB por archivo. Cuando la plataforma declara el tamaño, se revisa antes de descargar. Si el archivo pesa más, o WhatsApp no lo entrega, el mensaje conserva su texto y `meta.media_error` explica el motivo en el panel.
+- **Integridad:** una foto o un PDF sin su final se marca como incompleto (`complete = false`) y el panel lo advierte. Un mensaje reenviado por la plataforma no deja archivos sueltos.
+- **Acceso:** solo quien puede ver la conversación. Las imágenes se sirven en línea con `X-Content-Type-Options: nosniff`; cualquier otro tipo se descarga como archivo adjunto.
+- **Borrado:** al borrar los datos de un contacto, al aplicar la retención de mensajes y al eliminar una cuenta, los archivos se borran del disco junto con sus filas.
+- **Respaldos:** `uploads/` va en el respaldo cifrado, igual que las fotos del catálogo.
+- **Pendiente:** Telegram y Messenger/Instagram todavía no descargan fotos (el mensaje indica el motivo). Los videos y los archivos originales de las notas de voz no se guardan.
+
+## Fidelidad de datos
+
+- **Notas:** el máximo es 50 por contacto. El panel rechaza una lista más larga (error de validación); al guardar desde la IA se conservan las 50 más recientes.
+- **Panel:** si la IA u otra persona cambió el contacto mientras se editaba, el guardado se rechaza con HTTP 409 y se pide recargar (`data_version`).
+- **Onboarding:** un solo proceso a la vez por cuenta. Un prompt ya escrito no se sobrescribe; solo se completa el conocimiento.
+- **Costos:** `ai_runs` conserva el costo aunque se borre el chatbot (`ON DELETE SET NULL`).
+- **Restricciones (migración 027):** la duración de los servicios es de al menos 5 minutos; una cita termina después de empezar; los contadores de uso no son negativos; la huella SHA-256 de las fotos del catálogo tiene formato válido (las subidas antes de esta migración quedan sin huella).
+- **Planes:** al guardar una cuenta, un plan inexistente se rechaza. Una cuenta cuyo plan no existe usa los límites de prueba y se registra un error.
+- **Texto:** los caracteres NUL y los surrogates sueltos se limpian antes de guardar; los recortes cuentan caracteres completos, no unidades de código.
 
 ## Integridad y migración
 

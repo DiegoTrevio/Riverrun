@@ -1,6 +1,7 @@
 /** Importar la información del negocio (web, PDF, foto, CSV o texto) para llenar el conocimiento sin escribirlo a mano. */
 import type { FastifyInstance } from 'fastify';
 import { HttpError, requireRole, targetAccount } from '../access.js';
+import { withTransaction } from '../db.js';
 import type { AiProvider } from '../ai/provider.js';
 import { checkImportRate, IMPORT_SECTIONS, importKnowledge, MAX_FILE_BYTES, sourceFromFile, sourceFromUrl, type ImportResult, type Source } from '../knowledge-import.js';
 import { logEvent } from '../logs.js';
@@ -86,16 +87,22 @@ export async function knowledgeImportRoutes(api: FastifyInstance, ai: AiProvider
     if (accountId !== bot.account_id) throw new HttpError(404, 'No encontrado');
     const { url, save, result } = await run(req, bot.account_id, bot.id);
     if (!save) return view(result, url);
-    const items = await store.listKnowledge(bot.id);
-    const saved: string[] = [];
-    for (const k of IMPORT_SECTIONS) {
-      const content = result.sections[k].trim();
-      if (!content) continue;
-      const [category, title] = KNOWLEDGE_TITLES[k];
-      const prev = items.find((i) => i.title === title);
-      await store.upsertKnowledge(bot.id, { id: prev?.id, category, title, content, active: true, always_include: k !== 'faq', source_url: url ?? null });
-      saved.push(title);
-    }
+    // Dos guardados a la vez (o uno mientras otro guarda) no pueden crear dos secciones con el mismo título:
+    // se turnan por asistente con un candado consultivo. No se bloquean filas: el resto del sistema las escribe sin ese candado.
+    const saved = await withTransaction(async (client) => {
+      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', ['knowledge:' + bot.id]);
+      const items = await store.listKnowledge(bot.id);
+      const titles: string[] = [];
+      for (const k of IMPORT_SECTIONS) {
+        const content = result.sections[k].trim();
+        if (!content) continue;
+        const [category, title] = KNOWLEDGE_TITLES[k];
+        const prev = items.find((i) => i.title === title);
+        await store.upsertKnowledge(bot.id, { id: prev?.id, category, title, content, active: true, always_include: k !== 'faq', source_url: url ?? null }, client);
+        titles.push(title);
+      }
+      return titles;
+    });
     await logEvent({ level: 'info', source: 'admin', message: `Conocimiento importado de ${result.source}: ${saved.join(', ')}`, accountId: bot.account_id, chatbotId: bot.id });
     return { ...view(result, url), saved };
   });

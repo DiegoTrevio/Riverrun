@@ -5,8 +5,11 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { HttpError } from '../access.js';
 import { config } from '../config.js';
+import { completeImage, sniffMime } from '../files.js';
 import { deepClean } from '../engine/text.js';
 import { logEvent } from '../logs.js';
+
+export { completeImage };
 
 export function parse<T>(schema: z.ZodType<T>, body: unknown): T {
   const r = schema.safeParse(deepClean(body ?? {}));
@@ -53,7 +56,7 @@ export async function readUpload(req: any): Promise<{ fields: Record<string, unk
     if (part.type === 'file') {
       const buffer: Buffer = await part.toBuffer();
       if (part.file.truncated) throw new HttpError(400, 'La imagen supera 5 MB');
-      const mime = sniffImage(buffer);
+      const mime = sniffMime(buffer);
       if (!mime || !ALLOWED_MIME.includes(mime)) throw new HttpError(400, 'Formato no válido: usa JPG, PNG o WEBP');
       if (!completeImage(buffer, mime)) throw new HttpError(400, 'La imagen llegó incompleta o dañada: vuelve a exportarla y súbela de nuevo');
       file = { buffer, mime, ext: mime === 'image/png' ? '.png' : mime === 'image/webp' ? '.webp' : '.jpg', sha256: crypto.createHash('sha256').update(buffer).digest('hex') };
@@ -63,25 +66,6 @@ export async function readUpload(req: any): Promise<{ fields: Record<string, unk
     }
   }
   return { fields, file };
-}
-
-/**
- * Una foto con cabecera válida pero cortada (subida interrumpida) no se acepta: WhatsApp no podría enviarla.
- * PNG termina en el bloque IEND, JPEG tiene el marcador de fin FFD9 y WEBP declara su tamaño en la cabecera.
- */
-export function completeImage(b: Buffer, mime: string): boolean {
-  if (mime === 'image/png') return b.length > 20 && b.subarray(-12).equals(Buffer.from('0000000049454e44ae426082', 'hex'));
-  if (mime === 'image/jpeg') return b.lastIndexOf(Buffer.from([0xff, 0xd9])) > 2;
-  if (mime === 'image/webp') return b.length >= 12 && b.readUInt32LE(4) === b.length - 8;
-  return false;
-}
-
-/** Detecta el tipo real por la firma del archivo (no confiar en la extensión). */
-function sniffImage(b: Buffer): string | null {
-  if (b.length > 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'image/jpeg';
-  if (b.length > 8 && b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
-  if (b.length > 12 && b.subarray(0, 4).toString() === 'RIFF' && b.subarray(8, 12).toString() === 'WEBP') return 'image/webp';
-  return null;
 }
 
 export async function saveFile(chatbotId: string, file: UploadFile) {

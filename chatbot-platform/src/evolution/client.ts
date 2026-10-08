@@ -80,7 +80,8 @@ export class EvolutionClient {
       message: { key: { id: messageId } },
       convertToMp4: false,
     });
-    return { base64: res?.base64 ?? '', mimetype: res?.mimetype ?? 'audio/ogg' };
+    // Algunas versiones de Evolution envían el base64 con prefijo "data:...;base64,". El tipo queda vacío si no llega: quien lo usa decide el de respaldo.
+    return { base64: String(res?.base64 ?? '').replace(/^data:[^;]*;base64,/, ''), mimetype: String(res?.mimetype ?? '') };
   }
 
   async createInstance(instance: string, webhookUrl: string, number?: string) {

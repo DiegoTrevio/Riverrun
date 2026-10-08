@@ -7,6 +7,17 @@ import { acct, isAdmin, isSuper, withAcct } from './session.js';
 
 const STATUS_BADGE = { bot: ['green', 'Bot'], human: ['orange', 'Humano'], closed: ['', 'Cerrada'] };
 
+/** Foto o documento del cliente: la imagen se ve en el chat y cualquier archivo se descarga tal como llegó. */
+const customerMedia = (m) => {
+  const url = `/api/messages/${m.id}/media`;
+  const name = m.media_name || (m.media_kind === 'image' ? 'foto' : 'documento');
+  const size = m.media_size ? (m.media_size >= 1048576 ? `${(m.media_size / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(m.media_size / 1024))} KB`) : '';
+  return h('div', { class: 'media' },
+    m.media_kind === 'image' ? h('a', { href: url, target: '_blank', rel: 'noopener' }, h('img', { src: url, alt: name })) : null,
+    h('a', { href: url, download: name }, `📎 ${name}${size ? ` · ${size}` : ''}`),
+    m.media_complete === false ? h('div', { class: 'small muted' }, '⚠️ El archivo llegó incompleto: pídele al cliente que lo envíe de nuevo.') : null);
+};
+
 export async function viewConversations(root, params) {
   const [bots, channels] = await Promise.all([api('GET', `/api/chatbots${acct()}`), api('GET', `/api/channels${acct()}`)]);
   const f = {
@@ -151,6 +162,8 @@ export async function viewConversation(root, id) {
         return h('div', { class: cls },
           m.image_id ? h('img', { src: `/api/images/${m.image_id}/file`, alt: m.image_name || '' }) : null,
           m.image_id ? h('div', { class: 'small muted' }, `🖼 ${m.image_code || ''}`) : null,
+          m.media_kind ? customerMedia(m) : null,
+          m.meta?.media_error ? h('div', { class: 'small muted' }, `⚠️ ${m.meta.media_error}`) : null,
           m.content || null,
           h('div', { class: 'meta' }, [who, fmtDate(m.created_at), m.status === 'failed' ? '⚠️ no enviado' : '', m.meta?.fallback ? 'respaldo' : ''].filter(Boolean).join(' · ')));
       }));

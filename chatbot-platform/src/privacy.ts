@@ -2,6 +2,7 @@
  * Privacidad: derechos de las personas (acceso/portabilidad y supresión) y retención automática de datos.
  */
 import { query, queryOne, withTransaction } from './db.js';
+import { removeInboundFiles } from './channels/media.js';
 import { logEvent } from './logs.js';
 import * as astore from './automation/store.js';
 
@@ -27,7 +28,7 @@ export async function contactDataExport(contactId: string) {
  * registros con su contenido). Las citas se anonimizan; el consumo de IA se conserva sin contenido (es contabilidad).
  */
 export async function eraseContact(contactId: string, guard: { accountId?: string; inactiveSince?: Date } = {}): Promise<{ conversations: number; messages: number } | null> {
-  return withTransaction(async (client) => {
+  const erased = await withTransaction(async (client) => {
     const contact = (await client.query<{ id: string; account_id: string; channel_id: string; external_id: string }>(`SELECT id, account_id, channel_id, external_id FROM contacts WHERE id = $1 FOR UPDATE`, [contactId])).rows[0];
     if (!contact || (guard.accountId && contact.account_id !== guard.accountId)) return null;
     // Desde la retención: si el contacto volvió a escribir mientras se decidía, no se borra.
@@ -46,9 +47,15 @@ export async function eraseContact(contactId: string, guard: { accountId?: strin
     );
     await client.query(`DELETE FROM email_threads WHERE channel_id = $1 AND address = lower($2)`, [contact.channel_id, contact.external_id]);
     await client.query(`UPDATE appointments SET customer_name = '', customer_phone = '', notes = '' WHERE contact_id = $1 OR conversation_id = ANY($2)`, [contactId, convIds]);
+    // Las rutas de sus archivos se leen antes de borrar el contacto: al borrarlo, esas filas desaparecen con los mensajes.
+    const files = convIds.length ? (await client.query<{ file_path: string }>(`SELECT mm.file_path FROM message_media mm JOIN messages m ON m.id = mm.message_id WHERE m.conversation_id = ANY($1)`, [convIds])).rows.map((r) => r.file_path) : [];
     await client.query(`DELETE FROM contacts WHERE id = $1`, [contactId]);
-    return { conversations: convIds.length, messages };
+    return { conversations: convIds.length, messages, files };
   });
+  if (!erased) return null;
+  // Los archivos se borran del disco solo después de confirmar la transacción.
+  await removeInboundFiles(erased.files);
+  return { conversations: erased.conversations, messages: erased.messages };
 }
 
 /**
@@ -69,12 +76,21 @@ export async function applyRetention(now = new Date()): Promise<{ accounts: numb
     if (days > 0) {
       const cutoff = new Date(now.getTime() - days * 86400_000);
       for (;;) {
-        const r = await query<{ id: string }>(
-          `DELETE FROM messages WHERE id IN (SELECT m.id FROM messages m JOIN conversations cv ON cv.id = m.conversation_id WHERE cv.account_id = $1 AND m.created_at < $2 LIMIT 5000) RETURNING id`,
+        // Las rutas de los archivos se leen en la misma sentencia que borra los mensajes; luego se borran del disco (no quedan archivos huérfanos).
+        const [r] = await query<{ deleted: number; files: string[] }>(
+          `WITH doomed AS (
+             SELECT m.id FROM messages m JOIN conversations cv ON cv.id = m.conversation_id WHERE cv.account_id = $1 AND m.created_at < $2 LIMIT 5000
+           ), files AS (
+             SELECT mm.file_path FROM message_media mm WHERE mm.message_id IN (SELECT id FROM doomed)
+           ), gone AS (
+             DELETE FROM messages WHERE id IN (SELECT id FROM doomed) RETURNING id
+           )
+           SELECT (SELECT count(*)::int FROM gone) AS deleted, COALESCE((SELECT array_agg(file_path) FROM files), '{}') AS files`,
           [a.id, cutoff],
         );
-        m += r.length;
-        if (r.length < 5000) break;
+        m += r.deleted;
+        await removeInboundFiles(r.files);
+        if (r.deleted < 5000) break;
       }
       // El resumen y los datos de la conversación también contienen lo que dijo el cliente: se limpian junto con los mensajes.
       await query(`UPDATE conversations SET summary = '', report_summary = '', data = '{}'::jsonb WHERE account_id = $1 AND last_message_at < $2 AND (summary <> '' OR report_summary <> '' OR data <> '{}'::jsonb)`, [a.id, cutoff]);

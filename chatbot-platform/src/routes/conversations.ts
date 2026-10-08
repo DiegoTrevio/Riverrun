@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { assertAccount, conversationFor, HttpError, scopeAccount } from '../access.js';
@@ -14,6 +15,7 @@ import * as astore from '../automation/store.js';
 import * as assignment from '../automation/assignment.js';
 import { stopEnrollments } from '../automation/store.js';
 import { contactDataExport, eraseContact } from '../privacy.js';
+import { inboundAbsolutePath, safeFileName } from '../channels/media.js';
 
 /** Conversaciones y contactos: disponible para administradores y agentes de la cuenta. */
 export async function conversationRoutes(api: FastifyInstance, service: ChatService) {
@@ -64,7 +66,9 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
     const [contact, messages, bot, channel] = await Promise.all([
       store.getContact(conv.contact_id),
       query(
-        `SELECT m.*, i.code AS image_code, i.name AS image_name FROM messages m LEFT JOIN images i ON i.id = m.image_id
+        `SELECT m.*, i.code AS image_code, i.name AS image_name,
+                mm.kind AS media_kind, mm.mime AS media_mime, mm.file_name AS media_name, mm.size_bytes AS media_size, mm.complete AS media_complete
+         FROM messages m LEFT JOIN images i ON i.id = m.image_id LEFT JOIN message_media mm ON mm.message_id = m.id
          WHERE m.conversation_id = $1 ORDER BY m.id DESC LIMIT 500`,
         [conv.id],
       ),
@@ -81,6 +85,29 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
       channel: channel ? { id: channel.id, name: channel.name, type: channel.type } : null,
       assignee: conv.assigned_user_id ? await store.getUserBasic(conv.assigned_user_id) : null,
     };
+  });
+
+  /** Foto o documento que envió el cliente, tal como llegó. Las imágenes se ven en el panel; el resto se descarga. */
+  api.get('/api/messages/:mid/media', async (req: any, reply) => {
+    const mid = Number(req.params.mid);
+    const [file] = Number.isSafeInteger(mid) && mid > 0
+      ? await query<{ conversation_id: string; file_path: string; mime: string; file_name: string }>(
+          `SELECT m.conversation_id, mm.file_path, mm.mime, mm.file_name FROM message_media mm JOIN messages m ON m.id = mm.message_id WHERE mm.message_id = $1`,
+          [mid],
+        )
+      : [];
+    if (!file) throw new HttpError(404, 'Archivo no encontrado');
+    // Quien puede ver la conversación puede ver sus archivos; nadie más, aunque conozca el número del mensaje.
+    await conversationFor(req.user, file.conversation_id);
+    const abs = inboundAbsolutePath(file.file_path);
+    if (!abs || !fs.existsSync(abs)) throw new HttpError(404, 'El archivo ya no está guardado');
+    const inline = ['image/jpeg', 'image/png', 'image/webp'].includes(file.mime);
+    reply
+      .header('content-type', inline ? file.mime : 'application/octet-stream')
+      .header('content-disposition', `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(safeFileName(file.file_name))}`)
+      .header('x-content-type-options', 'nosniff')
+      .header('cache-control', 'private, max-age=300');
+    return reply.send(fs.createReadStream(abs));
   });
 
   const log = (conv: { account_id: string; chatbot_id: string | null; channel_id: string; id: string }, message: string) =>

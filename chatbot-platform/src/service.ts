@@ -12,6 +12,7 @@ import { detectRisk, maskSensitive } from './engine/safety.js';
 import { customerLabel } from './engine/customer-data.js';
 import { cleanText, deepClean } from './engine/text.js';
 import { adapterFor } from './channels/index.js';
+import { INBOUND_MEDIA_MAX_BYTES, removeInboundFiles, saveInboundMedia, type StoredMedia } from './channels/media.js';
 import { config } from './config.js';
 import { gate } from './engine/activation.js';
 import { describeInbound, type InboundMessage } from './channels/types.js';
@@ -264,6 +265,21 @@ export class ChatService {
     // Mensajes viejos (reconexión, reenvíos de la plataforma) se guardan pero no se contestan.
     const stale = Date.now() / 1000 - msg.timestamp > MAX_MESSAGE_AGE_SECONDS;
     const triggers = msg.type !== 'reaction' && !stale && !msg.captureOnly;
+    // Foto o documento del cliente: se guarda tal como llegó. Si no se puede, el mensaje se guarda igual y el motivo queda visible en el panel.
+    let media: StoredMedia | undefined;
+    let mediaError = '';
+    if (msg.type === 'image' || msg.type === 'document') {
+      try {
+        const captured = await this.captureInboundMedia(channel, msg, msg.type);
+        media = captured.media;
+        mediaError = captured.error ?? '';
+      } catch (e: any) {
+        mediaError = `${msg.type === 'image' ? 'La foto' : 'El documento'} no se guardó: ${e?.message ?? e}`;
+        await logEvent({ level: 'warn', source: 'engine', message: `No se pudo guardar un archivo del cliente: ${e?.message ?? e}`, ...logBase });
+      }
+    }
+    const meta: Record<string, unknown> = stale ? { name: msg.displayName, stale: true } : msg.captureOnly ? { name: msg.displayName, held: 'limite_de_correos' } : { name: msg.displayName };
+    if (mediaError) meta.media_error = mediaError;
     const inserted = await store.insertMessage({
       conversation_id: conv.id,
       direction: 'in',
@@ -272,9 +288,17 @@ export class ChatService {
       content,
       external_message_id: msg.messageId,
       processed: !triggers,
-      meta: stale ? { name: msg.displayName, stale: true } : msg.captureOnly ? { name: msg.displayName, held: 'limite_de_correos' } : { name: msg.displayName },
+      meta,
+      media,
+    }).catch(async (e) => {
+      if (media) await removeInboundFiles([media.file_path]);
+      throw e;
     });
-    if (!inserted) return { conversationId: conv.id, messageId: null }; // duplicado
+    if (!inserted) {
+      // Duplicado: el archivo que se acaba de descargar no se conserva.
+      if (media) await removeInboundFiles([media.file_path]);
+      return { conversationId: conv.id, messageId: null };
+    }
 
     let current = conv;
     if (conv.status === 'closed' && triggers) {
@@ -319,6 +343,21 @@ export class ChatService {
     }
     this.queue.schedule(conv.id, bot!.ai.debounce_seconds * 1000);
     return { conversationId: conv.id, messageId: inserted.id };
+  }
+
+  /** Descarga la foto o el documento del cliente y lo guarda con sus bytes originales. Si el canal no puede o el archivo es muy grande, devuelve el motivo. */
+  private async captureInboundMedia(channel: Channel, msg: InboundMessage, kind: 'image' | 'document'): Promise<{ media?: StoredMedia; error?: string }> {
+    const label = kind === 'image' ? 'La foto' : 'El documento';
+    const limit = `${INBOUND_MEDIA_MAX_BYTES / 1024 / 1024} MB`;
+    const adapter = adapterFor(channel.type);
+    if (!adapter.downloadMedia) return { error: `${label} no se guardó: este canal todavía no permite descargar archivos` };
+    // Se revisa el tamaño que declara la plataforma antes de descargar: un documento de cientos de MB no se trae a memoria.
+    if ((msg.media?.size ?? 0) > INBOUND_MEDIA_MAX_BYTES) return { error: `${label} no se guardó: pesa más de ${limit}` };
+    const file = await adapter.downloadMedia(channel, msg);
+    if (!file) return { error: `${label} no se guardó: la plataforma no entregó el archivo` };
+    if (file.buffer.length > INBOUND_MEDIA_MAX_BYTES) return { error: `${label} no se guardó: pesa más de ${limit}` };
+    const media = await saveInboundMedia(channel.account_id, kind, file.buffer, file.fileName ?? msg.media?.filename ?? '');
+    return { media };
   }
 
   /** Aplica los activadores/desactivadores a un mensaje del cliente. Devuelve si la IA debe responder. */

@@ -13,6 +13,8 @@ export const evo = {
   instances: new Map<string, { state: string; qrN: number }>(),
   /** Instancias "trabadas": connect no devuelve QR. */
   stuck: new Set<string>(),
+  /** Archivos que Evolution entrega al pedir un medio recibido, por id del mensaje. */
+  media: new Map<string, { buffer: Buffer; mimetype: string }>(),
   owner: { jid: '5218111112222@s.whatsapp.net', name: 'Clínica Sonrisa' },
   down: false,
   connectErrors: new Map<string, number>(),
@@ -73,6 +75,10 @@ const extServer = http.createServer((req, res) => {
         return json(200, { status: 'SUCCESS' });
       }
       if (path.startsWith('/webhook/set/')) return json(201, { webhook: body.webhook });
+    }
+    if (path.startsWith('/chat/getBase64FromMediaMessage/')) {
+      const file = evo.media.get(body?.message?.key?.id);
+      return file ? json(200, { base64: file.buffer.toString('base64'), mimetype: file.mimetype }) : json(404, { response: { message: ['not found'] } });
     }
     if (path.startsWith('/file/')) { res.writeHead(200, { 'content-type': 'audio/ogg' }); return res.end(Buffer.from('OggS-audio')); }
     if (path.startsWith('/bot')) {
@@ -182,6 +188,13 @@ export async function createHarness() {
   await migrate();
   await bootstrapSuperadmin();
   const { app, service } = await buildApp({ ai: ai as any, transportFactory: transportFactory as any });
+  // El webhook responde antes de procesar el mensaje: se cuentan las llamadas en curso para que idle() espere también a ellas.
+  const inflight = { n: 0 };
+  const handleIncomingOriginal = service.handleIncoming.bind(service);
+  service.handleIncoming = (async (...args: Parameters<typeof handleIncomingOriginal>) => {
+    inflight.n++;
+    try { return await handleIncomingOriginal(...args); } finally { inflight.n--; }
+  }) as typeof service.handleIncoming;
   const loginAs = async (email: string, password: string) => {
     const login = await app.inject({ method: 'POST', url: '/api/login', payload: { email, password } });
     assert.equal(login.statusCode, 200, login.body);
@@ -206,7 +219,7 @@ export async function createHarness() {
       await h.idle();
     },
     /** Espera a que la cola termine todo lo pendiente (evita que una prueba contamine a la siguiente). */
-    async idle() { await waitFor(() => service.queue.size === 0, 8000); },
+    async idle() { await waitFor(() => service.queue.size === 0 && inflight.n === 0, 8000); },
     webhook(text: string, opts: { fromMe?: boolean; phone?: string; id?: string; timestamp?: number; instance?: string } = {}) {
       const phone = opts.phone ?? '5215511112222';
       return app.inject({

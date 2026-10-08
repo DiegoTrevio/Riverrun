@@ -102,7 +102,13 @@ export const whatsappAdapter: ChannelAdapter = {
 
   async downloadAudio(channel, msg) {
     const media = await evolutionFor(channel).getMediaBase64(channel.config.instance, msg.messageId);
-    return media.base64 ? { buffer: Buffer.from(media.base64, 'base64'), mimeType: media.mimetype } : null;
+    return media.base64 ? { buffer: Buffer.from(media.base64, 'base64'), mimeType: media.mimetype || 'audio/ogg' } : null;
+  },
+
+  /** Foto o documento del cliente: los bytes tal como los entregó Evolution (WhatsApp ya los desencriptó). */
+  async downloadMedia(channel, msg) {
+    const media = await evolutionFor(channel).getMediaBase64(channel.config.instance, msg.messageId);
+    return media.base64 ? { buffer: Buffer.from(media.base64, 'base64'), mimeType: media.mimetype, fileName: msg.media?.filename } : null;
   },
 
   async setup(channel, webhookUrl) {

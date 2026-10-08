@@ -18,7 +18,17 @@ export interface InboundMessage {
   /** Segundos Unix. */
   timestamp: number;
   /** Referencia para descargar audio (transcripción). */
-  media?: { id?: string; url?: string; mimeType?: string; /** Duración de la nota de voz (para el costo de la transcripción). */ seconds?: number };
+  media?: {
+    id?: string;
+    url?: string;
+    mimeType?: string;
+    /** Nombre del documento tal como lo envió el cliente. */
+    filename?: string;
+    /** Tamaño que declara la plataforma (se revisa antes de descargar). */
+    size?: number;
+    /** Duración de la nota de voz (para el costo de la transcripción). */
+    seconds?: number;
+  };
 }
 
 export interface WebhookRequest {
@@ -57,6 +67,8 @@ export interface ChannelAdapter {
   parse(req: WebhookRequest): ParseResult;
   transport(channel: Channel, contact: Contact): Transport;
   downloadAudio?(channel: Channel, msg: InboundMessage): Promise<{ buffer: Buffer; mimeType: string } | null>;
+  /** Foto o documento del cliente: los bytes tal como llegaron. Sin este método, el mensaje queda sin archivo y se indica el motivo. */
+  downloadMedia?(channel: Channel, msg: InboundMessage): Promise<{ buffer: Buffer; mimeType: string; fileName?: string } | null>;
   /** Conecta/valida el canal con la plataforma (registrar webhook, validar token...). */
   setup?(channel: Channel, webhookUrl: string): Promise<SetupResult>;
   status?(channel: Channel): Promise<{ state: string; details?: Record<string, unknown> }>;

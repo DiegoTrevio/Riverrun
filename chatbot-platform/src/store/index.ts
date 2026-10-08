@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { query, queryOne, withTransaction } from '../db.js';
+import { removeInboundAccountFiles, type StoredMedia } from '../channels/media.js';
 import {
   channelConfig,
   hydrateChatbot,
@@ -66,6 +67,7 @@ export async function markOnboarding(accountId: string, steps: Record<string, bo
 
 export async function deleteAccount(id: string) {
   await query('DELETE FROM accounts WHERE id = $1', [id]);
+  await removeInboundAccountFiles(id);
 }
 
 /* ------------------------------ Usuarios ------------------------------ */
@@ -632,6 +634,8 @@ export async function saveConversationReport(id: string, summary: string, untilI
 /* -------------------------------- Mensajes ------------------------------- */
 
 export interface NewMessage {
+  /** Foto o documento del cliente ya guardado en disco: se registra en la misma transacción que el mensaje. */
+  media?: StoredMedia;
   conversation_id: string;
   direction: 'in' | 'out';
   sender: Message['sender'];
@@ -666,6 +670,13 @@ export async function insertMessage(m: NewMessage): Promise<Message | null> {
     );
     const row = result.rows[0] ?? null;
     if (row) await client.query('UPDATE conversations SET last_message_at = now() WHERE id = $1', [m.conversation_id]);
+    if (row && m.media) {
+      // Si esto falla, se deshace también el mensaje: nunca queda un mensaje que diga "foto" sin su archivo.
+      await client.query(
+        `INSERT INTO message_media (message_id, kind, mime, file_name, size_bytes, sha256, file_path, complete) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [row.id, m.media.kind, m.media.mime, m.media.file_name, m.media.size_bytes, m.media.sha256, m.media.file_path, m.media.complete],
+      );
+    }
     return row;
   });
 }

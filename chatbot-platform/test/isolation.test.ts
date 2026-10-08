@@ -41,6 +41,7 @@ function fillParams(url: string): string | null {
     [/^\/api\/contacts\/:id/, 'contact'],
     [/^\/api\/conversations\/:cid/, 'conv'],
     [/^\/api\/images\/:iid/, 'image'],
+    [/^\/api\/messages\/:mid/, 'message'],
     [/^\/api\/knowledge\/:kid/, 'knowledge'],
     [/^\/api\/sequences\/:id/, 'sequence'],
     [/^\/api\/services\/:id/, 'service'],
@@ -56,7 +57,7 @@ function fillParams(url: string): string | null {
   const hit = byPrefix.find(([re]) => re.test(url));
   if (!hit) return null;
   return url
-    .replace(/:(id|cid|iid|kid|model|key)\b/, B[hit[1]])
+    .replace(/:(id|cid|iid|kid|model|key|mid)\b/, B[hit[1]])
     .replace(':session', 'sesion-b')
     .replace(':sid', B.sequence);
 }
@@ -95,6 +96,19 @@ before(async () => {
   const conv = (await adminB('GET', '/api/conversations')).json()[0];
   B.conv = conv.id;
   B.contact = conv.contact_id;
+  // Una foto del cliente de la cuenta B con su archivo real: si A la alcanzara, la descarga respondería 200 y la fuga se vería.
+  const photo = await pool.query(
+    `INSERT INTO messages (conversation_id, direction, sender, type, content, external_message_id, processed, status, meta)
+     VALUES ($1, 'in', 'customer', 'image', $2, 'FOTO-B', true, 'ok', '{}') RETURNING id`,
+    [conv.id, `Foto ${MARK}`],
+  );
+  B.message = String(photo.rows[0].id);
+  fs.mkdirSync(path.join(process.env.UPLOADS_DIR as string, 'inbound', B.account), { recursive: true });
+  fs.writeFileSync(path.join(process.env.UPLOADS_DIR as string, 'inbound', B.account, 'foto-b.png'), `PNG-${MARK}`);
+  await pool.query(
+    `INSERT INTO message_media (message_id, kind, mime, file_name, size_bytes, sha256, file_path) VALUES ($1, 'image', 'image/png', 'foto.png', $2, $3, $4)`,
+    [B.message, Buffer.byteLength(`PNG-${MARK}`), '0'.repeat(64), `inbound/${B.account}/foto-b.png`],
+  );
   B.automation = (await ok200(adminB('POST', '/api/automations', { name: `Regla ${MARK}`, trigger: { type: 'new_contact' }, actions: [{ type: 'add_tag', tag: 'b' }] }))).id;
   B.sequence = (await ok200(adminB('POST', '/api/sequences', { name: `Secuencia ${MARK}`, steps: [{ delay_value: 1, delay_unit: 'days', text: 'hola' }] }))).id;
   B.campaign = (await ok200(adminB('POST', '/api/campaigns', { name: `Campaña ${MARK}`, channel_id: B.channel, message: 'promo' }))).id;

@@ -248,3 +248,38 @@ t('correos por encima del freno: se guardan en el historial sin respuesta', asyn
   assert.equal(msg.processed, true);
   assert.equal(msg.meta.held, 'limite_de_correos');
 });
+
+t('lote del webhook: un mensaje que falla no detiene a los demás y el fallo queda registrado', async () => {
+  const original = h.service.handleIncoming;
+  const good = newPhone();
+  const bad = newPhone();
+  const now = Math.floor(Date.now() / 1000);
+  h.service.handleIncoming = (async (channel: any, m: any) => {
+    if (m.messageId === 'LOTE-MALO') throw new Error('fallo simulado al guardar');
+    return original.call(h.service, channel, m);
+  }) as any;
+  try {
+    h.setScript(() => ({ messages: ['Claro, ¿en qué te ayudo?'] }));
+    const r = await h.app.inject({
+      method: 'POST',
+      url: `/webhook/${h.token}`,
+      payload: {
+        event: 'messages.upsert',
+        instance: 'palmas',
+        data: [
+          { key: { remoteJid: `${bad}@s.whatsapp.net`, fromMe: false, id: 'LOTE-MALO' }, pushName: 'Luis', message: { conversation: 'Este mensaje falla' }, messageTimestamp: now },
+          { key: { remoteJid: `${good}@s.whatsapp.net`, fromMe: false, id: 'LOTE-BUENO' }, pushName: 'Ana', message: { conversation: 'Este sí debe guardarse' }, messageTimestamp: now },
+        ],
+      },
+    });
+    assert.equal(r.statusCode, 200);
+    await waitFor(() => h.sent.some((s) => s.to === good), 8000);
+    await h.idle();
+  } finally {
+    h.service.handleIncoming = original; // restaura el método envuelto por el arnés
+  }
+  const kept = await pool.query(`SELECT count(*)::int AS n FROM messages WHERE external_message_id = 'LOTE-BUENO'`);
+  assert.equal(kept.rows[0].n, 1, 'el mensaje sano se guardó pese al fallo de su compañero');
+  const logged = await pool.query(`SELECT count(*)::int AS n FROM event_logs WHERE level = 'error' AND message LIKE 'Mensaje no guardado (LOTE-MALO)%'`);
+  assert.equal(logged.rows[0].n, 1, 'el mensaje que falló queda en la bitácora con su identificador');
+});
