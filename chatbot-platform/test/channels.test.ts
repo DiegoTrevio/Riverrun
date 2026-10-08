@@ -204,7 +204,11 @@ t('Chat web: sesión, mensaje, "escribiendo…" y respuesta con imagen', async (
   const during = (await h.app.inject({ method: 'GET', url: `${base}/messages?session=${session}` })).json();
   assert.equal(during.typing, true);
   release();
-  await waitFor(async () => (await h.app.inject({ method: 'GET', url: `${base}/messages?session=${session}` })).json().messages.length === 3);
+  // Las respuestas aparecen antes de que la pregunta quede marcada como procesada: se espera a las dos cosas.
+  await waitFor(async () => {
+    const r = (await h.app.inject({ method: 'GET', url: `${base}/messages?session=${session}` })).json();
+    return r.messages.length === 3 && !r.typing;
+  });
   const after = (await h.app.inject({ method: 'GET', url: `${base}/messages?session=${session}` })).json();
   assert.equal(after.typing, false);
   assert.deepEqual(after.messages.map((m: any) => m.from), ['customer', 'bot', 'bot']);
