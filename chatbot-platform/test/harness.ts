@@ -36,6 +36,13 @@ const extServer = http.createServer((req, res) => {
     const method = path.split('/').pop()!;
     if ([...ext.fail].some((f) => path.includes(f))) return json(500, { ok: false, description: 'fallo simulado', error: { message: 'fallo simulado' } });
     if (path === '/hook') return json(200, { ok: true });
+    if (path.startsWith('/api/v1/')) {
+      const p = path.slice('/api/v1'.length);
+      if (p.startsWith('/connect/')) return json(200, { authUrl: `https://zernio.example/auth/${++ext.n}` });
+      if (p === '/webhooks/settings') return json(200, { ok: true });
+      if (p.endsWith('/messages')) return json(200, { id: `zm_${++ext.n}` });
+      return json(404, { error: { message: 'no simulado' } });
+    }
     if (path.startsWith('/instance/') || path.startsWith('/webhook/set/')) {
       if (evo.down) return json(503, { message: 'Service Unavailable' });
       const name = decodeURIComponent(path.split('/').pop()!);
@@ -93,6 +100,7 @@ extServer.unref();
 const extUrl = `http://127.0.0.1:${(extServer.address() as any).port}`;
 process.env.TELEGRAM_API_URL = extUrl;
 process.env.META_GRAPH_URL = extUrl;
+process.env.ZERNIO_API_URL = `${extUrl}/api/v1`;
 process.env.EVOLUTION_URL = extUrl;
 process.env.EVOLUTION_API_KEY = 'llave-global-de-pruebas';
 process.env.PUBLIC_BASE_URL = 'https://bot.test';

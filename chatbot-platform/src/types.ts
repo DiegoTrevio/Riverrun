@@ -332,7 +332,7 @@ export interface User {
 
 /* ---------------------------------- Canales ---------------------------------- */
 
-export const CHANNEL_TYPES = ['whatsapp', 'telegram', 'messenger', 'instagram', 'webchat'] as const;
+export const CHANNEL_TYPES = ['whatsapp', 'telegram', 'messenger', 'instagram', 'webchat', 'zernio'] as const;
 export type PublicChannelType = (typeof CHANNEL_TYPES)[number];
 export type ChannelType = PublicChannelType | 'playground';
 
@@ -400,10 +400,25 @@ export const ChannelConfigSchemas = {
     /** Dominios que pueden insertar el chat (vacío = cualquiera). */
     allowed_origins: z.array(z.string().max(200)).default([]),
   }),
+  /** Zernio: API unificada de mensajes. Las credenciales se usan solo en el servidor. */
+  zernio: z.object({
+    /** Red que se conecta (p.ej. bluesky, reddit, twitter), tal como la nombra Zernio. */
+    platform: z.string().trim().max(40).default(''),
+    /** Perfil de Zernio donde queda la cuenta conectada. */
+    profile_id: z.string().trim().max(100).default(''),
+    /** Cuenta conectada en Zernio (la llena el flujo de conexión). */
+    account_id: z.string().max(100).default(''),
+    username: z.string().max(120).default(''),
+    api_key: secret.default(''),
+    /** Secreto con el que se firman los webhooks de Zernio. Se genera al crear el canal. */
+    webhook_secret: secret.default(''),
+    /** Nonce de un solo uso del flujo de conexión; evita callbacks falsos. */
+    connect_state: z.string().max(200).default(''),
+  }),
   playground: z.object({}),
 } as const;
 
-export const SECRET_FIELDS = ['api_key', 'bot_token', 'page_access_token', 'app_secret'];
+export const SECRET_FIELDS = ['api_key', 'bot_token', 'page_access_token', 'app_secret', 'webhook_secret', 'connect_state'];
 export const MASK = '••••••';
 
 export function channelConfig(type: ChannelType, config: unknown): Record<string, any> {

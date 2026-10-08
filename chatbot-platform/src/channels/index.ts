@@ -6,6 +6,7 @@ import { telegramAdapter } from './telegram.js';
 import type { ChannelAdapter } from './types.js';
 import { webchatAdapter } from './webchat.js';
 import { whatsappAdapter } from './whatsapp.js';
+import { zernioAdapter } from './zernio.js';
 
 const playgroundAdapter: ChannelAdapter = {
   type: 'playground',
@@ -21,6 +22,7 @@ const ADAPTERS: Record<ChannelType, ChannelAdapter> = {
   messenger: messengerAdapter,
   instagram: instagramAdapter,
   webchat: webchatAdapter,
+  zernio: zernioAdapter,
   playground: playgroundAdapter,
 };
 

@@ -1,9 +1,12 @@
+import crypto from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { botFor, channelFor, HttpError, requireRole, scopeAccount, targetAccount } from '../access.js';
 import { adapterFor, mergeChannelConfig, publicChannel, webhookUrl } from '../channels/index.js';
 import { evolutionFor, newInstanceName, releaseWhatsapp } from '../channels/whatsapp.js';
 import { SessionError, whatsappSession } from '../channels/whatsapp-session.js';
+import { zernioAuthUrl } from '../channels/zernio.js';
+import { config } from '../config.js';
 import { recordConnectionState } from '../lifecycle.js';
 import { logEvent } from '../logs.js';
 import * as store from '../store/index.js';
@@ -121,6 +124,23 @@ export async function channelRoutes(api: FastifyInstance) {
       return { ...r, channel: publicChannel(updated) };
     } catch (e: any) {
       await logEvent({ level: 'error', source: 'channel', message: `${adapter.label}: no se pudo conectar: ${e?.message ?? e}`, accountId: ch.account_id, channelId: ch.id });
+      throw new HttpError(400, e?.message ?? String(e));
+    }
+  });
+
+  /** Zernio: genera el estado de un solo uso y devuelve la URL donde el usuario autoriza su cuenta. */
+  api.post('/api/channels/:id/zernio/connect', admins, async (req: any) => {
+    assertVerified(req.user);
+    const ch = await channelFor(req.user, req.params.id);
+    if (ch.type !== 'zernio') throw new HttpError(400, 'Este canal no es de Zernio');
+    if (!config.publicBaseUrl.startsWith('https://')) throw new HttpError(400, 'Zernio exige HTTPS: define PUBLIC_BASE_URL con tu dominio (https://...)');
+    const state = crypto.randomBytes(24).toString('base64url');
+    const saved = (await store.updateChannel(ch.id, { config: mergeChannelConfig('zernio', ch.config, { connect_state: state }) }))!;
+    try {
+      const authUrl = await zernioAuthUrl(saved, `${config.publicBaseUrl}/zernio/callback/${saved.webhook_token}/${state}`);
+      return { authUrl };
+    } catch (e: any) {
+      await logEvent({ level: 'error', source: 'channel', message: `Zernio: no se pudo iniciar la conexión: ${e?.message ?? e}`, accountId: ch.account_id, channelId: ch.id });
       throw new HttpError(400, e?.message ?? String(e));
     }
   });

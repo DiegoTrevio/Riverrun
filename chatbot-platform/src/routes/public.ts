@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { adapterFor } from '../channels/index.js';
+import { adapterFor, mergeChannelConfig } from '../channels/index.js';
 import { signedImageUrl, verifyImageSignature } from '../channels/media.js';
 import { WEBCHAT_SESSION_RE, newWebchatSession } from '../channels/webchat.js';
 import { config } from '../config.js';
@@ -10,6 +10,7 @@ import { toPlainText } from '../engine/text.js';
 import { imageAbsolutePath } from '../engine/transport.js';
 import { recordConnectionState } from '../lifecycle.js';
 import { logEvent } from '../logs.js';
+import { safeEqual } from '../secret.js';
 import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
 import type { Channel } from '../types.js';
@@ -54,6 +55,27 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
   // Evolution puede agregar el nombre del evento al final de la URL (webhook_by_events); lo aceptamos.
   app.post('/webhook/:token', handler);
   app.post('/webhook/:token/:event', handler);
+
+  // Zernio redirige aquí al terminar de autorizar la cuenta. El estado de un solo uso evita callbacks falsos.
+  app.get('/zernio/callback/:token/:state', async (req: any, reply) => {
+    const channel = await store.getChannelByToken(req.params.token);
+    const expected = channel?.type === 'zernio' ? String(channel.config.connect_state ?? '') : '';
+    if (!channel || !expected || !safeEqual(String(req.params.state), expected)) {
+      await logEvent({ level: 'warn', source: 'channel', message: 'Zernio: retorno de conexión con estado inválido; se rechaza', details: { ip: req.ip } });
+      return reply.code(403).send('forbidden');
+    }
+    const panel = `${config.publicBaseUrl}/#/channel/${channel.id}`;
+    const q = req.query as Record<string, string | undefined>;
+    if (!q.accountId || q.profileId !== channel.config.profile_id) {
+      await logEvent({ level: 'warn', source: 'channel', message: 'Zernio: la cuenta devuelta no corresponde al perfil del canal', accountId: channel.account_id, channelId: channel.id });
+      return reply.redirect(panel);
+    }
+    await store.updateChannel(channel.id, {
+      config: mergeChannelConfig('zernio', channel.config, { account_id: q.accountId, username: q.username ?? '', connect_state: '' }),
+    });
+    await logEvent({ level: 'info', source: 'channel', message: `Zernio: cuenta conectada${q.username ? ` (@${q.username})` : ''}`, accountId: channel.account_id, channelId: channel.id });
+    return reply.redirect(panel);
+  });
 
   /* ------------------------------ Chat web ------------------------------ */
 

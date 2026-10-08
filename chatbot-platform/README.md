@@ -31,7 +31,19 @@ Chat web (widget)    ┘    │                             │
 | **Transferencia a humano** | Por palabras clave (sin gastar IA), por decisión de la IA según reglas, o manualmente desde el panel. Aviso opcional por WhatsApp a un encargado. Si alguien responde desde el teléfono, el bot se pausa en esa conversación. Retoma automática opcional tras X minutos. |
 | **Registros** | Cada error/evento de Evolution, IA, validador, webhook y panel queda en `event_logs` y se ve en el panel. Cada llamada a la IA queda en `ai_runs` con tokens (incluidos los cacheados), latencia, decisión y validación. |
 | **Cuentas y usuarios** | Cada cliente es una cuenta con sus usuarios (administradores y agentes). Solo ven lo suyo: cualquier intento de acceder a otra cuenta responde 404. El superadministrador ve y administra todas. Desactivar una cuenta corta el acceso de sus usuarios y detiene sus canales (los mensajes se siguen guardando). |
-| **Multicanal** | WhatsApp, Telegram, Messenger, Instagram y chat web. Cada canal pertenece a una cuenta y se asigna a un chatbot; un chatbot puede atender varios canales con la misma configuración. Webhooks verificados por plataforma (secreto de Telegram, firma `X-Hub-Signature-256` de Meta, URL secreta de Evolution). Se puede duplicar un chatbot como plantilla, incluso en otra cuenta. |
+| **Multicanal** | WhatsApp, Telegram, Messenger, Instagram, chat web y Zernio (API unificada de mensajes directos). Cada canal pertenece a una cuenta y se asigna a un chatbot; un chatbot puede atender varios canales con la misma configuración. Webhooks verificados por plataforma (secreto de Telegram, firma `X-Hub-Signature-256` de Meta, firma `X-Zernio-Signature` de Zernio, URL secreta de Evolution). Se puede duplicar un chatbot como plantilla, incluso en otra cuenta. |
+
+### Zernio (backend)
+
+Zernio es un canal más, implementado en `src/channels/zernio.ts`. Todo ocurre en el servidor: la API key, el secreto del webhook y las llamadas a Zernio nunca salen al navegador. Para conectarlo:
+
+1. En el panel, crea un canal **Zernio** con la red (p.ej. `bluesky`), el ID del perfil de Zernio y la API key.
+2. Pulsa **Conectar cuenta**: Zernio pide la autorización y, al terminar, regresa al canal con la cuenta guardada. El retorno usa un estado de un solo uso.
+3. Pulsa **Registrar webhook**: el backend registra en Zernio la URL pública, el secreto del canal y los eventos `message.received` y `message.sent`.
+
+Variables: `ZERNIO_API_URL` (por defecto `https://zernio.com/api/v1`). Requiere `PUBLIC_BASE_URL` con HTTPS.
+
+> **Pendiente de verificar:** los nombres de los campos del cuerpo de los webhooks y de los endpoints de envío y suscripción se tomaron de documentación resumida. Están marcados con `VERIFICAR` en `src/channels/zernio.ts` y deben confirmarse contra la referencia oficial y un evento real antes de producción.
 | **Económico** | Todo corre en un VPS con Docker (Evolution, Postgres, Redis, backend). Solo se paga la API de OpenRouter; el contexto acotado, el caché de prompts y el modelo configurable por chatbot mantienen bajo el costo. |
 
 ## Instalación en un VPS (Docker)

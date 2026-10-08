@@ -73,6 +73,7 @@ const CHANNEL_NAMES: Record<ChannelType, string> = {
   messenger: 'Facebook Messenger',
   instagram: 'Instagram (mensajes directos)',
   webchat: 'chat del sitio web',
+  zernio: 'mensajes directos (Zernio)',
   playground: 'simulador',
 };
 

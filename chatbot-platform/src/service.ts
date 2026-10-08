@@ -152,6 +152,10 @@ export class ChatService {
       await this.handleOwnMessage(bot, conv, msg);
       return { conversationId: conv.id, messageId: null };
     }
+    // Zernio entrega al menos una vez: un reintento de un mensaje ya guardado no debe volver a responderse.
+    if (channel.type === 'zernio' && (await store.findMessageByExternalId(conv.id, msg.messageId))) {
+      return { conversationId: conv.id, messageId: null };
+    }
 
     let content = describeInbound(msg);
     const adapter = adapterFor(channel.type);
