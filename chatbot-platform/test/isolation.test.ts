@@ -35,6 +35,7 @@ function fillParams(url: string): string | null {
     [/^\/api\/accounts\/:id/, 'account'],
     [/^\/api\/appointments\/:id/, 'appointment'],
     [/^\/api\/automations\/:id/, 'automation'],
+    [/^\/api\/attachments\/:id/, 'attachment'],
     [/^\/api\/campaigns\/:id/, 'campaign'],
     [/^\/api\/channels\/:id/, 'channel'],
     [/^\/api\/chatbots\/:id/, 'bot'],
@@ -83,6 +84,8 @@ before(async () => {
   const ok200 = async (p: Promise<any>) => { const r = await p; assert.ok(r.statusCode < 300, r.body); return r.json(); };
   B.bot = (await ok200(adminB('POST', '/api/chatbots', { name: `Bot ${MARK}`, active: true, ai: { debounce_seconds: 0.1 } }))).id;
   B.knowledge = (await ok200(adminB('POST', `/api/chatbots/${B.bot}/knowledge`, { title: `Precios ${MARK}`, content: `Dato ${MARK}: $999` }))).id;
+  const att = await pool.query(`INSERT INTO attachments (account_id, name, mime, kind, size_bytes, file_path) VALUES ($1, $2, 'application/pdf', 'document', 10, 'b.pdf') RETURNING id`, [B.account, `Archivo ${MARK}.pdf`]);
+  B.attachment = att.rows[0].id;
   const img = await pool.query(`INSERT INTO images (chatbot_id, code, name, file_path, mime_type) VALUES ($1, 'foto_b', $2, 'x.jpg', 'image/jpeg') RETURNING id`, [B.bot, `Foto ${MARK}`]);
   B.image = img.rows[0].id;
   const wa = await ok200(adminB('POST', '/api/channels', { type: 'whatsapp', name: `WA ${MARK}`, chatbot_id: B.bot }));

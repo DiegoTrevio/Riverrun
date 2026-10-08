@@ -14,7 +14,7 @@ import { isPrivateIp } from '../automation/automator.js';
 import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
 import { htmlToText } from '../knowledge-import.js';
-import { imageAbsolutePath, type Transport } from '../engine/transport.js';
+import { imageAbsolutePath, type OutgoingFile, type Transport } from '../engine/transport.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
 import { ChannelConfigSchemas, type Channel, type ImageAsset } from '../types.js';
@@ -194,6 +194,12 @@ class EmailTransport implements Transport {
     const file = imageAbsolutePath(image);
     await fs.access(file);
     return this.deliver(caption || image.name, { path: file, filename: `${image.code}.${image.mime_type.split('/')[1] ?? 'jpg'}` });
+  }
+
+  /** El correo admite cualquier archivo como adjunto. */
+  async sendFile(file: OutgoingFile, caption: string) {
+    await fs.access(file.absPath);
+    return this.deliver(caption || file.name, { path: file.absPath, filename: file.name });
   }
 
   async notify() {

@@ -24,6 +24,7 @@ import { exportRoutes } from './routes/export.js';
 import { knowledgeImportRoutes } from './routes/import.js';
 import { onboardingRoutes } from './routes/onboarding.js';
 import { analyticsRoutes } from './routes/analytics.js';
+import { attachmentRoutes } from './routes/attachments.js';
 import { publicRoutes } from './routes/public.js';
 import { signupRoutes } from './routes/signup.js';
 import { installErrorHandler } from './routes/util.js';
@@ -95,6 +96,7 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
     await agendaRoutes(api, service);
     await onboardingRoutes(api);
     await analyticsRoutes(api);
+    await attachmentRoutes(api);
     await knowledgeImportRoutes(api, opts.ai);
     await billingRoutes(api);
     await exportRoutes(api);

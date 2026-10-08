@@ -1,5 +1,6 @@
 import { messageQuota } from '../billing/limits.js';
-import { PlaygroundTransport } from '../engine/transport.js';
+import { attachmentAbsolutePath } from '../attachments.js';
+import { PlaygroundTransport, type OutgoingFile } from '../engine/transport.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
@@ -10,6 +11,8 @@ import type { Appointment } from './types.js';
 export interface OutboundOptions {
   text?: string;
   imageId?: string;
+  /** Archivo de "Archivos" (PDF, Word, audio, video…). */
+  attachmentId?: string;
   /** automation | sequence | campaign | reminder | booking | no_reply | opt_out */
   source: string;
   /** Mensajes de servicio (recordatorios de cita, confirmaciones): se envían aunque el cliente se haya dado de baja de promociones. */
@@ -84,7 +87,13 @@ export class Outbound {
       const owner = image ? await store.getChatbot(image.chatbot_id) : null;
       if (!image || !image.active || owner?.account_id !== conv.account_id) image = null;
     }
-    if (!text && !image) return { sent: false, reason: 'mensaje vacío' };
+    let file: OutgoingFile | null = null;
+    if (o.attachmentId) {
+      const a = await astore.getAttachment(o.attachmentId);
+      if (!a || a.account_id !== conv.account_id) return { sent: false, reason: 'el archivo ya no existe (se borró en Archivos)' };
+      file = { id: a.id, name: a.name, mime: a.mime, kind: a.kind, absPath: attachmentAbsolutePath(a.file_path) };
+    }
+    if (!text && !image && !file) return { sent: false, reason: 'mensaje vacío' };
     // Pie de baja: toda promoción dice cómo dejar de recibirlas (se añade al texto, o a la leyenda de la foto).
     const footer = promotional && settings.opt_out.enabled && settings.opt_out.footer_enabled ? optOutFooter(settings.opt_out) : '';
     const textOut = footer && text ? `${text}\n\n${footer}` : text;
@@ -100,6 +109,10 @@ export class Outbound {
       }
       if (image) {
         const m = await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text: captionFooter ? `${image.caption}${image.caption ? '\n\n' : ''}${captionFooter}` : image.caption, image, delay: 0, meta });
+        if (!m) return false;
+      }
+      if (file) {
+        const m = await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text: captionFooter, file, delay: 0, meta });
         if (!m) return false;
       }
       return true;

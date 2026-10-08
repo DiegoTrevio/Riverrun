@@ -16,7 +16,7 @@ import { maybeSummarize } from './memory.js';
 import { briefReport } from './report-format.js';
 import { summarizeConversation } from './report.js';
 import { normalize } from './text.js';
-import type { Transport } from './transport.js';
+import type { OutgoingFile, Transport } from './transport.js';
 import { emptyPlan, validateDecision, type AgendaValidation, type ExecutionPlan, type ValidationInput } from './validator.js';
 import type { AgendaContext, BookResult } from '../automation/agenda.js';
 import type { AutomationEvent } from '../automation/types.js';
@@ -508,21 +508,27 @@ export class Engine {
     bot: Chatbot | null,
     conv: Conversation,
     transport: Transport,
-    o: { sender: 'bot' | 'human' | 'system'; text: string; image?: ImageAsset; delay: number; meta?: Record<string, unknown> },
+    o: { sender: 'bot' | 'human' | 'system'; text: string; image?: ImageAsset; file?: OutgoingFile; delay: number; meta?: Record<string, unknown> },
   ): Promise<Message | null> {
     const msg = await store.insertMessage({
       conversation_id: conv.id,
       direction: 'out',
       sender: o.sender,
-      type: o.image ? 'image' : 'text',
+      type: o.file ? o.file.kind : o.image ? 'image' : 'text',
       content: o.text,
       image_id: o.image?.id ?? null,
       status: 'pending',
-      meta: o.meta,
+      meta: o.file ? { ...o.meta, attachment_id: o.file.id, file_name: o.file.name } : o.meta,
     });
     if (!msg) return null;
     try {
-      const extId = o.image ? await transport.sendImage(o.image, o.text, o.delay) : await transport.sendText(o.text, o.delay);
+      let extId: string | null;
+      if (o.file) {
+        if (!transport.sendFile) throw new Error('Este canal todavía no envía archivos (PDF, Word, audio o video): usa texto o una foto');
+        extId = await transport.sendFile(o.file, o.text, o.delay);
+      } else {
+        extId = o.image ? await transport.sendImage(o.image, o.text, o.delay) : await transport.sendText(o.text, o.delay);
+      }
       await store.updateMessage(msg.id, { external_message_id: extId, status: 'ok' });
       // Cuenta para el límite mensual del plan (las pruebas del simulador no cuentan).
       if (o.sender === 'bot' && transport.kind !== 'playground') await recordMessage(conv.account_id).catch(() => undefined);
@@ -534,7 +540,7 @@ export class Engine {
       await logEvent({
         level: 'error',
         source: transport.kind === 'whatsapp' ? 'evolution' : 'channel',
-        message: `No se pudo enviar ${o.image ? `la imagen ${o.image.code}` : 'el mensaje'} (${transport.kind}): ${e?.message ?? e}`,
+        message: `No se pudo enviar ${o.file ? `el archivo ${o.file.name}` : o.image ? `la imagen ${o.image.code}` : 'el mensaje'} (${transport.kind}): ${e?.message ?? e}`,
         accountId: conv.account_id,
         chatbotId: bot?.id ?? null,
         channelId: conv.channel_id,

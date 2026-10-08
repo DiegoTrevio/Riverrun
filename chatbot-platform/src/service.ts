@@ -130,6 +130,7 @@ export class ChatService {
       kind: t.kind,
       sendText: (text, delay) => t.sendText(text, delay),
       sendImage: (img, caption, delay) => t.sendImage(img, caption, delay),
+      ...(t.sendFile ? { sendFile: (file, caption, delay) => t.sendFile!(file, caption, delay) } : {}),
       notify: (number, text) => this.notifyViaWhatsapp(channel, number, text),
     };
   }

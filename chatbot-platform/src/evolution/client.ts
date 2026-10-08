@@ -62,11 +62,16 @@ export class EvolutionClient {
 
   /** Envía una imagen (base64 sin prefijo data: o URL pública). */
   async sendImage(instance: string, number: string, media: string, mimeType: string, fileName: string, caption = '', delay = 0): Promise<string | null> {
+    return this.sendMedia(instance, number, media, mimeType, fileName, caption, delay, 'image');
+  }
+
+  /** Envía un archivo: imagen, documento (PDF, Word…), audio o video. El audio no lleva leyenda. */
+  async sendMedia(instance: string, number: string, media: string, mimeType: string, fileName: string, caption = '', delay = 0, mediatype: 'image' | 'document' | 'audio' | 'video' = 'image'): Promise<string | null> {
     const res = await this.request('POST', `/message/sendMedia/${encodeURIComponent(instance)}`, {
       number,
-      mediatype: 'image',
+      mediatype,
       mimetype: mimeType,
-      caption: caption || undefined,
+      caption: caption && mediatype !== 'audio' ? caption : undefined,
       media,
       fileName,
       delay: delay || undefined,

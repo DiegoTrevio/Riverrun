@@ -163,6 +163,7 @@ export async function viewConversation(root, id) {
         return h('div', { class: cls },
           m.image_id ? h('img', { src: `/api/images/${m.image_id}/file`, alt: m.image_name || '' }) : null,
           m.image_id ? h('div', { class: 'small muted' }, `🖼 ${m.image_code || ''}`) : null,
+          m.meta?.attachment_id ? h('a', { href: `/api/attachments/${m.meta.attachment_id}/file`, target: '_blank', rel: 'noopener' }, `📎 ${m.meta.file_name || 'Archivo'}`) : null,
           m.media_kind ? customerMedia(m) : null,
           m.meta?.media_error ? h('div', { class: 'small muted' }, `⚠️ ${m.meta.media_error}`) : null,
           m.content || null,

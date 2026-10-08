@@ -133,7 +133,7 @@ export type Script = (req: Req, callIndex: number) => Out | Promise<Out>;
 export async function createHarness() {
   const calls: Req[] = [];
   const summaryCalls: Req[] = [];
-  const sent: { kind: string; to: string; text: string; image?: string }[] = [];
+  const sent: { kind: string; to: string; text: string; image?: string; file?: string; mime?: string; fileKind?: string }[] = [];
   let script: Script = () => ({ messages: ['Ok'] });
   let summary = '- resumen de prueba';
   let summaryError: Error | null = null;
@@ -177,6 +177,10 @@ export async function createHarness() {
         throw new Error('Evolution sendMedia → HTTP 400: media inválido');
       }
       sent.push({ kind: 'image', to: contact.phone, text: caption, image: image.code });
+      return `OUT-${++n}`;
+    },
+    async sendFile(file: any, caption: string) {
+      sent.push({ kind: 'file', to: contact.phone, text: caption, file: file.name, mime: file.mime, fileKind: file.kind });
       return `OUT-${++n}`;
     },
     async notify(number: string, text: string) {

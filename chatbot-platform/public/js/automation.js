@@ -30,7 +30,8 @@ async function automationRefs() {
   ]);
   const images = [];
   for (const b of bots) for (const img of await api('GET', `/api/chatbots/${b.id}/images`)) images.push({ ...img, bot: b.name });
-  return { bots, sequences, users: users.filter((u) => u.account_id), services, images };
+  const files = await api('GET', withAcct('/api/attachments'));
+  return { bots, sequences, users: users.filter((u) => u.account_id), services, images, files };
 }
 
 const TRIGGERS = {
@@ -153,15 +154,45 @@ function typedList(list, types, fieldsFor, onChange) {
 
 export const VARS_HELP = 'Variables: {{nombre}}, {{cliente}}, {{telefono}}, {{negocio}}, {{mensaje}}, {{link}}, {{dato.CAMPO}}, {{cita.servicio}}, {{cita.fecha}}, {{cita.hora}}, {{cita.lugar}}';
 
+const ACCEPT_FILES = '.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.csv,.txt,.mp3,.ogg,.wav,.m4a,.mp4,.mov,.webm';
+const KIND_LABEL = { document: 'documento', audio: 'audio', video: 'video', image: 'imagen' };
+
+/** Elegir un archivo de la biblioteca o subir uno nuevo (PDF, Word, Excel, audio, video… hasta 16 MB). */
+function attachmentPicker(obj, refs) {
+  const sel = h('select', { onchange: (e) => { obj.attachment_id = e.target.value; } },
+    h('option', { value: '' }, '— Sin archivo —'),
+    ...refs.files.map((f) => h('option', { value: f.id }, `${f.name} (${KIND_LABEL[f.kind] || f.kind})`)));
+  sel.value = obj.attachment_id || '';
+  const up = h('input', { type: 'file', accept: ACCEPT_FILES, onchange: async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    const body = new FormData();
+    body.append('file', file);
+    try {
+      const created = await api('POST', withAcct('/api/attachments'), body, true);
+      refs.files.push(created);
+      sel.append(h('option', { value: created.id }, `${created.name} (${KIND_LABEL[created.kind] || created.kind})`));
+      sel.value = created.id;
+      obj.attachment_id = created.id;
+      toast('Archivo subido');
+    } catch (err) { toast(err.message, true); }
+  } });
+  return h('div', {}, sel,
+    h('div', { class: 'small muted' }, 'PDF, Word, Excel, PowerPoint, CSV, TXT, audio, video o foto. Máximo 16 MB. Se envía por WhatsApp y correo; los demás canales avisan que no lo admiten.'),
+    h('div', { style: 'margin-top:6px' }, up));
+}
+
 function actionFields(a, refs) {
   switch (a.type) {
     case 'send_message':
-      a.text ??= ''; a.image_id ??= ''; a.delay_minutes ??= 0;
+      a.text ??= ''; a.image_id ??= ''; a.attachment_id ??= ''; a.delay_minutes ??= 0;
       return [
         field('Mensaje (opcional si eliges una foto)', area(a, 'text'), VARS_HELP),
         h('div', { class: 'grid' },
           field('Foto (opcional)', select(a, 'image_id', [['', '— Sin imagen —'], ...refs.images.map((i) => [i.id, `${i.name} (${i.bot})`])])),
           field('Esperar antes de enviar (minutos)', num(a, 'delay_minutes', { min: 0 }), '0 = de inmediato')),
+        field('Archivo (opcional)', attachmentPicker(a, refs)),
       ];
     case 'alert_team':
       a.message ??= '{{cliente}} necesita atención: "{{mensaje}}"'; a.roles ??= ['admin', 'agent']; a.user_ids ??= []; a.phones ??= [];
@@ -299,7 +330,7 @@ async function editRule(root, id) {
   };
   drawTrigger();
   const save = async () => {
-    if (r.actions.some((a) => a.type === 'send_message' && !a.text?.trim() && !a.image_id)) return toast('En "Enviar mensaje o foto" escribe un mensaje o elige una foto', true);
+    if (r.actions.some((a) => a.type === 'send_message' && !a.text?.trim() && !a.image_id && !a.attachment_id)) return toast('En "Enviar mensaje" escribe un mensaje o elige una foto o un archivo', true);
     const body = { ...r, chatbot_id: r.chatbot_id || null, account_id: state.accountId || undefined };
     const saved = await run(() => (existing ? api('PUT', `/api/automations/${id}`, body) : api('POST', '/api/automations', body)), 'Regla guardada ✅');
     if (saved) location.hash = '#/automation/rules';
@@ -357,6 +388,7 @@ async function editSequence(root, id) {
       field('A esta hora (opcional)', h('input', { type: 'time', value: st.at_time, oninput: (e) => (st.at_time = e.target.value) }), 'Ej.: al día siguiente a las 10:00')),
     field('Mensaje', area(st, 'text'), VARS_HELP),
     field('Imagen (opcional)', select(st, 'image_id', [['', '— Sin imagen —'], ...refs.images.map((im) => [im.id, `${im.name} (${im.bot})`])])),
+    field('Archivo (opcional)', attachmentPicker(st, refs)),
     h('details', {}, h('summary', {}, `Enviar solo si… (${st.conditions.length})`), typedList(st.conditions, CONDITIONS, (c) => conditionFields(c))))));
   draw();
   const save = async () => {

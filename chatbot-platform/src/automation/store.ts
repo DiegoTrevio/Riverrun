@@ -292,6 +292,38 @@ export async function appointmentVisibleTo(appointmentId: string, userId: string
   ));
 }
 
+/* ------------------------------ Archivos de automatizaciones ------------------------------ */
+
+export interface AttachmentRow {
+  id: string;
+  account_id: string;
+  name: string;
+  mime: string;
+  kind: 'image' | 'document' | 'audio' | 'video';
+  size_bytes: number;
+  file_path: string;
+  created_at: Date;
+}
+
+export async function insertAttachment(row: Omit<AttachmentRow, 'created_at'>) {
+  return queryOne<AttachmentRow>(
+    `INSERT INTO attachments (id, account_id, name, mime, kind, size_bytes, file_path) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+    [row.id, row.account_id, row.name, row.mime, row.kind, row.size_bytes, row.file_path],
+  );
+}
+
+export async function getAttachment(id: string) {
+  return queryOne<AttachmentRow>(`SELECT * FROM attachments WHERE id = $1`, [id]);
+}
+
+export async function listAttachments(accountId: string | null) {
+  return query<AttachmentRow>(`SELECT * FROM attachments WHERE ($1::uuid IS NULL OR account_id = $1) ORDER BY created_at DESC LIMIT 500`, [accountId]);
+}
+
+export async function deleteAttachment(id: string) {
+  return queryOne<AttachmentRow>(`DELETE FROM attachments WHERE id = $1 RETURNING *`, [id]);
+}
+
 /* ------------------------------ Notificaciones ------------------------------ */
 
 export async function notifyUsers(accountId: string, userIds: string[], n: { title: string; body: string; link?: string; kind?: string }) {

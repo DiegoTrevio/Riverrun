@@ -104,6 +104,8 @@ export function accountSettings(raw: unknown): AccountSettings {
 /* ------------------------------ Reglas automáticas ------------------------------ */
 
 const Slug = z.string().trim().min(1).max(60);
+/** Archivo subido en "Archivos" (vacío = ninguno). */
+const AttachmentRef = z.union([z.string().uuid(), z.literal('')]).default('');
 
 export const TriggerSchema = z.discriminatedUnion('type', [
   z.object({
@@ -143,7 +145,7 @@ export const ConditionSchema = z.discriminatedUnion('type', [
 export type Condition = z.infer<typeof ConditionSchema>;
 
 export const ActionSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('send_message'), text: z.string().max(4000).default(''), image_id: z.string().default(''), delay_minutes: z.number().int().min(0).max(60 * 24 * 30).default(0) }),
+  z.object({ type: z.literal('send_message'), text: z.string().max(4000).default(''), image_id: z.string().default(''), attachment_id: AttachmentRef, delay_minutes: z.number().int().min(0).max(60 * 24 * 30).default(0) }),
   z.object({ type: z.literal('add_tag'), tag: Slug }),
   z.object({ type: z.literal('remove_tag'), tag: Slug }),
   z.object({ type: z.literal('set_field'), field: z.string().regex(/^[a-z0-9_]+$/), value: z.string().max(500) }),
@@ -219,6 +221,7 @@ export const SequenceStepSchema = z.object({
   at_time: z.union([HHMM, z.literal('')]).default(''),
   text: z.string().max(4000).default(''),
   image_id: z.string().default(''),
+  attachment_id: AttachmentRef,
   /** Solo se envía si se cumplen (si no, se salta el paso). */
   conditions: z.array(ConditionSchema).max(10).default([]),
 });
