@@ -142,6 +142,11 @@ details summary { cursor: pointer; color: var(--muted); }
 .account-switch select { margin-top: 4px; }
 ol.small li { margin-bottom: 6px; }
 
+/* Pendientes y notas del cliente, en la columna de la conversación */
+.task-row { display: flex; gap: 8px; align-items: flex-start; padding: 6px 0; }
+.task-row.done .task-text { text-decoration: line-through; opacity: .6; }
+.task-form { display: grid; gap: 6px; margin-top: 10px; }
+
 /* Avisos de la cuenta (prueba, pausa, correo sin confirmar) */
 .banner { padding: 10px 14px; border-radius: var(--radius); background: var(--accent-soft); border: 1px solid var(--border); font-size: 14px; }
 .banner.warn { background: #fdf0d8; color: #7a4f05; border-color: #f3d9a4; }

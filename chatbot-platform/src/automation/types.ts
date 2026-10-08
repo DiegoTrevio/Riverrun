@@ -182,6 +182,7 @@ export const ActionSchema = z.discriminatedUnion('type', [
   /** Pausa al asistente en la conversación (0 h = hasta reactivarlo con palabra, regla o a mano). */
   z.object({ type: z.literal('pause_bot'), hours: z.number().min(0).max(720).default(0), reason: z.string().max(300).default('') }),
   z.object({ type: z.literal('close_conversation') }),
+  z.object({ type: z.literal('create_task'), kind: z.enum(['pendiente', 'nota']).default('pendiente'), body: z.string().trim().min(1, 'Escribe el texto del pendiente o la nota').max(1000), due_days: z.number().int().min(0).max(365).default(0) }),
   z.object({ type: z.literal('start_sequence'), sequence_id: z.string().uuid() }),
   z.object({ type: z.literal('stop_sequences') }),
   z.object({ type: z.literal('webhook'), url: z.string().url().max(500) }),

@@ -384,10 +384,14 @@ export class ChatService {
   }
 
   /** Manual ownership changes share the same handoff event as bot transfers. */
-  async takeover(conversationId: string, reason: string, byUserId?: string) {
+  /** Pasa la conversación a una persona. Queda en el contacto quién la tomó y desde dónde (teléfono, panel…). */
+  async takeover(conversationId: string, reason: string, byUserId?: string, via: store.HandoffVia = byUserId ? 'panel' : 'telefono') {
     const changed = await store.takeConversation(conversationId, reason);
     await store.markAllProcessed(conversationId);
-    if (changed) this.automator.emit({ type: 'handoff', conversationId, byUserId });
+    if (changed) {
+      await store.markHandoff(changed.contact_id, byUserId ?? null, via);
+      this.automator.emit({ type: 'handoff', conversationId, byUserId });
+    }
     return changed ?? await store.getConversation(conversationId);
   }
 
@@ -407,12 +411,14 @@ export class ChatService {
       direction: 'out',
       sender: 'human',
       type: msg.type,
-      content: msg.type === 'text' ? msg.text : content,
+      // Lo que escribe una persona desde el teléfono también se enmascara (p. ej. números de tarjeta), como lo del cliente.
+      content: msg.type === 'text' ? maskSensitive(msg.text) : content,
       external_message_id: msg.messageId,
       meta: { source: 'platform' },
     });
-    if ((bot?.rules.pause_on_human_reply ?? true) && conv.status === 'bot') {
-      await this.takeover(conv.id, 'Una persona respondió desde la plataforma');
+    // Una persona que escribe desde el teléfono pausa al asistente aunque la conversación esté cerrada (la reabre con ella).
+    if ((bot?.rules.pause_on_human_reply ?? true) && conv.status !== 'human') {
+      await this.takeover(conv.id, 'Una persona respondió desde la plataforma', undefined, 'telefono');
       await logEvent({
         level: 'info',
         source: 'engine',

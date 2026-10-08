@@ -490,11 +490,15 @@ export class Engine {
     const typing = bot.ai.typing_simulation && hasTyping(transport);
     // En correo, varias burbujas serían varios correos: se envían como uno solo.
     const texts = transport.kind === 'email' && plan.messages.length > 1 ? [plan.messages.join('\n\n')] : plan.messages;
+    // Si una persona tomó la conversación mientras la IA respondía, lo que falta de la respuesta ya no sale.
+    const stillBot = async () => (await store.getConversation(conv.id))?.status === 'bot';
     for (const text of texts) {
+      if (!(await stillBot())) return [];
       await this.sendOut(bot, conv, transport, { sender: 'bot', text, delay: typingDelay(text, typing), meta });
     }
     const failed: ScheduledImage[] = [];
     for (const img of plan.images) {
+      if (!(await stillBot())) return failed;
       const rule = scheduled.find(x => x.image.id === img.id);
       const sent = await this.sendOut(bot, conv, transport, { sender: 'bot', text: img.caption, image: img, delay: typing ? 1200 : 0, meta: rule ? {...meta, image_trigger: rule.reason} : meta });
       if (sent && rule) await logEvent({ level: 'info', source: 'engine', message: `Foto enviada por regla: ${img.code} (${rule.reason})`, accountId: conv.account_id, chatbotId: bot.id, channelId: conv.channel_id, conversationId: conv.id });
@@ -565,8 +569,11 @@ export class Engine {
     await this.notify(conv, channel, '🚨 Posible emergencia en una conversación', `${customerLabel(contact)} (${channel.name}): "${text.slice(0, 200)}". Atiéndelo cuanto antes.`, 'safety');
   }
 
-  async executeHandoff(bot: Chatbot, conv: Conversation, contact: Contact, transport: Transport, messages: string[], reason: string, opts: { silent?: boolean } = {}) {
+  async executeHandoff(bot: Chatbot, conv: Conversation, contact: Contact, transport: Transport, messages: string[], reason: string, opts: { silent?: boolean; via?: 'bot' | 'regla' } = {}) {
+    const before = await store.getConversation(conv.id);
     await store.setConversationStatus(conv.id, 'human', reason);
+    // Queda en el contacto quién la pasó y desde dónde. Si una persona ya la atendía, no se pisa.
+    if (before?.status !== 'human') await store.markHandoff(contact.id, null, opts.via ?? 'bot');
     const texts = messages.length ? messages : bot.rules.handoff_message && !opts.silent ? [bot.rules.handoff_message] : [];
     for (const text of texts) {
       await this.sendOut(bot, conv, transport, { sender: 'bot', text, delay: typingDelay(text, bot.ai.typing_simulation && hasTyping(transport)), meta: { action: 'handoff' } });
@@ -592,7 +599,7 @@ export class Engine {
     const msg = a.off_message.trim();
     const log = (message: string) => logEvent({ level: 'info', source: 'engine', message, accountId: conv.account_id, chatbotId: bot.id, channelId: conv.channel_id, conversationId: conv.id });
     if (a.off_action === 'handoff') {
-      await this.executeHandoff(bot, conv, contact, transport, msg ? [msg] : [], `Asistente desactivado: ${reason}`, { silent: !msg });
+      await this.executeHandoff(bot, conv, contact, transport, msg ? [msg] : [], `Asistente desactivado: ${reason}`, { silent: !msg, via: 'regla' });
     } else {
       if (msg) await this.sendOut(bot, conv, transport, { sender: 'bot', text: msg, delay: typingDelay(msg, bot.ai.typing_simulation && hasTyping(transport)), meta: { action: 'agent_off' } });
       if (a.off_action === 'close') {

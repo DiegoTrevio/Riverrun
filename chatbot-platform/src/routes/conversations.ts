@@ -86,6 +86,10 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
       agent: bot ? agentStatus(bot, conv) : null,
       channel: channel ? { id: channel.id, name: channel.name, type: channel.type } : null,
       assignee: conv.assigned_user_id ? await store.getUserBasic(conv.assigned_user_id) : null,
+      /** Persona del equipo que tomó la conversación del contacto por última vez (si fue alguien). */
+      handoff_by_user: contact?.handoff_by ? await store.getUserBasic(contact.handoff_by) : null,
+      /** Pendientes y notas del contacto, para la tarjeta de la conversación. */
+      tasks: await store.listContactTasks(conv.contact_id),
     };
   });
 
@@ -226,7 +230,7 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
     const conv = await conversationFor(req.user, req.params.cid);
     const b = parse(z.object({ text: z.string().trim().min(1, 'Mensaje vacío').max(4000), takeover: z.boolean().default(true) }), req.body);
     if (b.takeover && conv.status === 'bot') {
-      await service.takeover(conv.id, `${req.user.name || req.user.email} respondió desde el panel`);
+      await service.takeover(conv.id, `${req.user.name || req.user.email} respondió desde el panel`, req.user.id);
     }
     try {
       return await service.sendManual(conv.id, b.text, req.user.id);
@@ -242,7 +246,7 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
       // La conversación se toma solo si la foto es válida (justo antes de enviarla).
       return await service.sendManualImage(conv.id, b.image_id, async () => {
         if (b.takeover && conv.status === 'bot') {
-          await service.takeover(conv.id, `${req.user.name || req.user.email} respondió desde el panel`);
+          await service.takeover(conv.id, `${req.user.name || req.user.email} respondió desde el panel`, req.user.id);
         }
       }, req.user.id);
     } catch (e: any) {

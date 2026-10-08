@@ -36,6 +36,7 @@ function fillParams(url: string): string | null {
     [/^\/api\/appointments\/:id/, 'appointment'],
     [/^\/api\/automations\/:id/, 'automation'],
     [/^\/api\/attachments\/:id/, 'attachment'],
+    [/^\/api\/tasks\/:id/, 'task'],
     [/^\/api\/campaigns\/:id/, 'campaign'],
     [/^\/api\/channels\/:id/, 'channel'],
     [/^\/api\/chatbots\/:id/, 'bot'],
@@ -99,6 +100,8 @@ before(async () => {
   const conv = (await adminB('GET', '/api/conversations')).json()[0];
   B.conv = conv.id;
   B.contact = conv.contact_id;
+  const task = await pool.query(`INSERT INTO contact_tasks (account_id, contact_id, kind, body) VALUES ($1, $2, 'nota', $3) RETURNING id`, [B.account, B.contact, `Nota ${MARK}`]);
+  B.task = task.rows[0].id;
   // Una foto del cliente de la cuenta B con su archivo real: si A la alcanzara, la descarga respondería 200 y la fuga se vería.
   const photo = await pool.query(
     `INSERT INTO messages (conversation_id, direction, sender, type, content, external_message_id, processed, status, meta)

@@ -1,11 +1,60 @@
 import { dataLabel, flowCard } from './bot.js';
 import { channelIcon } from './channels.js';
-import { api, check, field, fill, fmtDate, h, lines, run, select, state, text, toast } from './core.js';
+import { api, area, check, field, fill, fmtDate, h, lines, run, select, state, text, toast } from './core.js';
 import { acct, isAdmin, isSuper, withAcct } from './session.js';
 
 /* ------------------------------ Conversaciones ------------------------------ */
 
 const STATUS_BADGE = { bot: ['green', 'Bot'], human: ['orange', 'Humano'], closed: ['', 'Cerrada'] };
+
+/** Última vez que una persona tomó la conversación del contacto: desde dónde y quién (queda en el contacto). */
+function handoffLine(ct, by) {
+  if (!ct.handoff_at) return null;
+  const who = by ? by.name || by.email : '';
+  const phrase = {
+    telefono: 'Atendida desde el teléfono del negocio',
+    panel: `Atendida desde el panel${who ? ` por ${who}` : ''}`,
+    regla: who ? `Asignada por una regla a ${who}` : 'Pasada a una persona por una regla',
+    bot: 'Pasada a una persona por el asistente',
+  }[ct.handoff_via] || 'Atendida por una persona';
+  return h('p', { class: 'muted small' }, `${phrase} · ${fmtDate(ct.handoff_at)}`);
+}
+
+/** Pendientes y notas del cliente: lo que falta por hacer con esa persona, o dónde se quedó la conversación. */
+function tasksCard(data, c, ct, reload) {
+  const draft = { kind: 'pendiente', body: '', due_on: '' };
+  const tasks = data.tasks || [];
+  const open = tasks.filter((t) => t.kind === 'pendiente' && t.status === 'abierta').length;
+  const row = (t) => {
+    const meta = [
+      t.kind === 'pendiente' && t.due_on ? `vence ${t.due_on}` : '',
+      t.created_by_name ? `por ${t.created_by_name}` : t.created_via === 'regla' ? 'por una regla' : '',
+      t.conversation_id === c.id ? 'en esta conversación' : '',
+      t.kind === 'pendiente' && t.status === 'hecha' && t.done_at ? `hecho el ${fmtDate(t.done_at)}` : '',
+    ].filter(Boolean).join(' · ');
+    return h('div', { class: `task-row${t.status === 'hecha' ? ' done' : ''}` },
+      t.kind === 'pendiente'
+        ? h('input', { type: 'checkbox', checked: t.status === 'hecha', title: 'Marcar como hecho', onchange: async (e) => { if (await run(() => api('PATCH', `/api/tasks/${t.id}`, { status: e.target.checked ? 'hecha' : 'abierta' }))) reload(); } })
+        : h('span', { class: 'badge' }, 'nota'),
+      h('div', { style: 'flex:1' }, h('div', { class: 'task-text' }, t.body), meta ? h('div', { class: 'small muted' }, meta) : null),
+      h('button', { class: 'small', title: 'Borrar', onclick: async () => { if (await run(() => api('DELETE', `/api/tasks/${t.id}`), 'Borrado')) reload(); } }, '✕'));
+  };
+  const add = async () => {
+    if (!draft.body.trim()) return toast('Escribe el pendiente o la nota', true);
+    const body = { kind: draft.kind, body: draft.body.trim(), due_on: draft.kind === 'pendiente' && draft.due_on ? draft.due_on : null, conversation_id: c.id };
+    if (await run(() => api('POST', `/api/contacts/${ct.id}/tasks`, body), 'Guardado')) reload();
+  };
+  return h('div', { class: 'card' },
+    h('h3', { style: 'margin-top:0' }, 'Pendientes y notas', open ? h('span', { class: 'badge orange', style: 'margin-left:6px' }, `${open} abierto${open === 1 ? '' : 's'}`) : null),
+    h('p', { class: 'small muted', style: 'margin-top:0' }, 'Lo que falta por hacer con esta persona, o dónde se quedó la conversación.'),
+    tasks.length ? h('div', { class: 'tasks' }, tasks.map(row)) : h('p', { class: 'small muted' }, 'Todavía no hay pendientes ni notas.'),
+    h('div', { class: 'task-form' },
+      select(draft, 'kind', [['pendiente', 'Pendiente'], ['nota', 'Nota']]),
+      area(draft, 'body', { placeholder: 'Ej. Confirmar la cotización el jueves' }),
+      h('div', { class: 'row' },
+        h('input', { type: 'date', title: 'Fecha límite (opcional, solo pendientes)', value: draft.due_on, oninput: (e) => (draft.due_on = e.target.value) }),
+        h('button', { class: 'primary small', onclick: add }, 'Agregar'))));
+}
 
 /** Foto o documento del cliente: la imagen se ve en el chat y cualquier archivo se descarga tal como llegó. */
 const customerMedia = (m) => {
@@ -148,6 +197,7 @@ export async function viewConversation(root, id) {
           c.status !== 'closed' ? h('button', { onclick: async () => { await run(() => api('POST', `/api/conversations/${id}/close`), 'Cerrada'); load(true); } }, 'Cerrar') : null)),
       assignRow(data),
       h('p', { class: 'muted' }, channelIcon(data.channel?.type), ' ', data.channel?.name, ' · ', data.chatbot?.name || 'sin chatbot', ct.phone ? ` · +${ct.phone}` : '', c.status === 'human' && c.handoff_reason ? ` · Motivo: ${c.handoff_reason}` : ''),
+      handoffLine(ct, data.handoff_by_user),
       c.status === 'bot' && data.agent && !data.agent.on
         ? h('div', { class: 'card legend row between' },
             h('span', {}, h('span', { class: 'badge orange' }, data.agent.state === 'waiting' ? 'Asistente esperando su palabra de activación' : 'Asistente en pausa'), ' ',
@@ -233,6 +283,7 @@ export async function viewConversation(root, id) {
         check(m, 'consent', 'Aceptó recibir promociones'),
         ct.consent_at ? h('p', { class: 'small muted', style: 'margin:-4px 0 8px' }, `Consentimiento registrado el ${fmtDate(ct.consent_at)}${ct.consent_source ? ` (${{ keyword: 'lo escribió el cliente', panel: 'marcado por el equipo', legacy: 'cliente anterior a esta función', api: 'integración' }[ct.consent_source] || ct.consent_source})` : ''}.`) : null,
         h('button', { class: 'small', onclick: async () => { if (await run(() => api('PUT', `/api/contacts/${ct.id}`, { ...m, base_data_version: c.data_version, data: Object.fromEntries(Object.entries({ ...m.data, ...Object.fromEntries(nameKeys.map((k) => [k, m.name])) }).filter(([, v]) => v)) }), 'Datos guardados')) load(true); } }, 'Guardar datos')),
+      tasksCard(data, c, ct, () => load(true)),
       isAdmin() ? h('details', { class: 'card' },
         h('summary', {}, '🔒 Privacidad de este cliente'),
         h('p', { class: 'small muted' }, 'Para atender una solicitud de acceso o supresión de datos personales.'),

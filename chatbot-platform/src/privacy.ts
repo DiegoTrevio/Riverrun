@@ -20,7 +20,8 @@ export async function contactDataExport(contactId: string) {
     [contactId],
   );
   const appointments = await query<any>(`SELECT service_name, kind, starts_at, ends_at, status, customer_name, customer_phone, notes FROM appointments WHERE contact_id = $1 ORDER BY starts_at`, [contactId]).catch(() => []);
-  return { generated_at: new Date().toISOString(), contact, conversations, messages, appointments };
+  const tasks = await query<any>(`SELECT kind, body, status, to_char(due_on, 'YYYY-MM-DD') AS due_on, created_via, created_at, done_at FROM contact_tasks WHERE contact_id = $1 ORDER BY created_at`, [contactId]);
+  return { generated_at: new Date().toISOString(), contact, conversations, messages, appointments, tasks };
 }
 
 /**

@@ -13,6 +13,7 @@ import {
   type Chatbot,
   type ChatbotRow,
   type Contact,
+  type ContactTask,
   type Conversation,
   type ConversationStatus,
   type ImageAsset,
@@ -486,6 +487,38 @@ export async function getContact(id: string) {
   return queryOne<Contact>('SELECT * FROM contacts WHERE id = $1', [id]);
 }
 
+const TASK_SELECT = `SELECT t.id, t.account_id, t.contact_id, t.conversation_id, t.kind, t.body, t.status,
+  to_char(t.due_on, 'YYYY-MM-DD') AS due_on, t.created_by, u.name AS created_by_name, t.created_via, t.done_at, t.done_by, t.created_at, t.updated_at
+  FROM contact_tasks t LEFT JOIN users u ON u.id = t.created_by`;
+
+/** Pendientes y notas del contacto: las abiertas primero (por fecha límite); luego lo hecho y las notas, más recientes primero. */
+export function listContactTasks(contactId: string) {
+  return query<ContactTask>(`${TASK_SELECT} WHERE t.contact_id = $1 ORDER BY (t.status = 'abierta') DESC, t.due_on NULLS LAST, t.created_at DESC`, [contactId]);
+}
+
+export function getContactTask(id: string) {
+  return queryOne<ContactTask>(`${TASK_SELECT} WHERE t.id = $1`, [id]);
+}
+
+export async function insertContactTask(row: Pick<ContactTask, 'account_id' | 'contact_id' | 'conversation_id' | 'kind' | 'body' | 'due_on' | 'created_by' | 'created_via'>) {
+  const inserted = await queryOne<{ id: string }>(
+    `INSERT INTO contact_tasks (account_id, contact_id, conversation_id, kind, body, due_on, created_by, created_via) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+    [row.account_id, row.contact_id, row.conversation_id, row.kind, row.body, row.due_on, row.created_by, row.created_via],
+  );
+  return inserted!.id;
+}
+
+/** Cambia solo los campos indicados. Las columnas las fija el código que llama, nunca el cliente. */
+export async function updateContactTask(id: string, patch: Partial<Pick<ContactTask, 'body' | 'status' | 'due_on' | 'done_at' | 'done_by'>>) {
+  const entries = Object.entries(patch);
+  const sets = entries.map(([column], i) => `${column} = $${i + 2}`);
+  await query(`UPDATE contact_tasks SET ${[...sets, 'updated_at = now()'].join(', ')} WHERE id = $1`, [id, ...entries.map(([, value]) => value)]);
+}
+
+export async function deleteContactTask(id: string) {
+  await query('DELETE FROM contact_tasks WHERE id = $1', [id]);
+}
+
 type ContactPatch = { name?: string; data?: Record<string, string>; notes?: string[]; tags?: string[]; opted_out?: boolean; /** Versión de datos que vio el panel: si cambió, no se guarda. */ expectedDataVersion?: number };
 
 export async function updateContact(id: string, patch: Pick<ContactPatch, 'name' | 'data' | 'notes'>) {
@@ -604,6 +637,14 @@ export async function takeConversation(id: string, reason: string) {
     "UPDATE conversations SET status = 'human', handoff_reason = $2, status_changed_at = now() WHERE id = $1 AND status <> 'human' RETURNING *",
     [id, reason],
   );
+}
+
+/** Desde dónde tomó una persona la conversación: teléfono, panel… (vacío = nunca). */
+export type HandoffVia = 'telefono' | 'panel' | 'regla' | 'bot' | '';
+
+/** Queda en el contacto quién tomó su conversación y desde dónde. */
+export async function markHandoff(contactId: string, userId: string | null, via: HandoffVia) {
+  await query('UPDATE contacts SET handoff_at = now(), handoff_by = $2, handoff_via = $3 WHERE id = $1', [contactId, userId, via]);
 }
 
 export async function updateSummary(id: string, summary: string, untilId: number, expectedVersion?: number) {

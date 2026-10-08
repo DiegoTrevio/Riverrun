@@ -62,6 +62,7 @@ export const ACTIONS = {
   resume_bot: 'Activar / devolver al asistente',
   pause_bot: 'Pausar al asistente',
   close_conversation: 'Cerrar conversación',
+  create_task: 'Crear pendiente o nota',
   start_sequence: 'Iniciar secuencia',
   stop_sequences: 'Detener secuencias',
   webhook: 'Enviar a otro sistema (webhook)',
@@ -248,6 +249,14 @@ function actionFields(a, refs) {
       return [h('div', { class: 'grid' },
         field('Reactivar solo después de (horas)', num(a, 'hours', { min: 0, max: 720 }), '0 = hasta que lo reactive una palabra, una regla o una persona.'),
         field('Motivo (se ve en la conversación)', text(a, 'reason', { placeholder: 'El cliente pidió que no le escriban' })))];
+    case 'create_task':
+      a.kind ??= 'pendiente'; a.body ??= ''; a.due_days ??= 0;
+      return [
+        h('div', { class: 'grid' },
+          field('Qué se crea', select(a, 'kind', [['pendiente', 'Pendiente (se puede marcar como hecho)'], ['nota', 'Nota (solo informa)']])),
+          field('Vence en (días)', num(a, 'due_days', { min: 0, max: 365 }), '0 = sin fecha límite. Cuenta desde el día en que se dispara la regla.')),
+        field('Texto', area(a, 'body', { placeholder: 'Dar seguimiento a {{cliente}}: "{{mensaje}}"' }), VARS_HELP),
+      ];
     case 'start_sequence':
       a.sequence_id ??= refs.sequences[0]?.id || '';
       return [refs.sequences.length ? field('Secuencia', select(a, 'sequence_id', refs.sequences.map((s) => [s.id, s.name]))) : h('p', { class: 'muted' }, 'Primero crea una secuencia.')];

@@ -408,6 +408,7 @@ export class Automator {
         await this.alertTeam(ctx.conv.account_id, { title: '📥 Te asignaron una conversación', body: this.render(a.message, ctx, e), link: `#/conversation/${ctx.conv.id}`, userIds: [user.id], kind: 'assignment' });
         if (a.take_over && ctx.conv.status !== 'human') {
           await store.setConversationStatus(ctx.conv.id, 'human', `Asignada a ${user.name || user.email}`);
+          await store.markHandoff(ctx.conv.contact_id, user.id, 'regla');
           await store.markAllProcessed(ctx.conv.id);
           ctx.conv.status = 'human';
         }
@@ -416,6 +417,7 @@ export class Automator {
       case 'handoff': {
         if (ctx.conv.status === 'human') return;
         await store.setConversationStatus(ctx.conv.id, 'human', a.reason);
+        await store.markHandoff(ctx.conv.contact_id, null, 'regla');
         await store.markAllProcessed(ctx.conv.id);
         ctx.conv.status = 'human';
         ctx.conv.handoff_reason = a.reason;
@@ -439,6 +441,24 @@ export class Automator {
         await store.markAllProcessed(ctx.conv.id);
         await logEvent({ level: 'info', source: 'engine', message: `Asistente en pausa: ${reason}${until ? ` (se reactiva en ${a.hours} h)` : ''}`, accountId: ctx.conv.account_id, conversationId: ctx.conv.id });
         if (depth <= MAX_DEPTH) await this.handle({ type: 'agent_off', conversationId: ctx.conv.id, text: reason, depth });
+        return;
+      }
+      case 'create_task': {
+        // Se cuenta por caracteres (no por unidades de código) para no partir un emoji al recortar.
+        const body = [...this.render(a.body, ctx, e).trim()].slice(0, 1000).join('');
+        if (isSim) return this.simulated(ctx, `📝 Crearía ${a.kind === 'nota' ? 'una nota' : 'un pendiente'}: "${body}" — ${rule.name}`);
+        if (!body) return;
+        // Queda vinculado a la conversación donde se disparó la regla: así se sabe dónde se quedó.
+        await store.insertContactTask({
+          account_id: ctx.conv.account_id,
+          contact_id: ctx.contact.id,
+          conversation_id: ctx.conv.id,
+          kind: a.kind,
+          body,
+          due_on: a.due_days > 0 ? addDays(localParts(new Date(), ctx.settings.timezone).date, a.due_days) : null,
+          created_by: null,
+          created_via: 'regla',
+        });
         return;
       }
       case 'close_conversation':

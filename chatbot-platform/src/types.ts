@@ -258,6 +258,30 @@ export interface Contact {
   /** Cuándo aceptó recibir promociones (null = no ha aceptado). */
   consent_at?: Date | null;
   consent_source?: string;
+  /** Última vez que una persona tomó la conversación del contacto: cuándo, desde dónde y quién (migración 031). */
+  handoff_at?: Date | null;
+  handoff_by?: string | null;
+  handoff_via?: '' | 'telefono' | 'panel' | 'regla' | 'bot';
+}
+
+/** Pendiente (se marca como hecho) o nota (solo informa), de un contacto. Puede vincularse a la conversación donde se quedó. */
+export interface ContactTask {
+  id: string;
+  account_id: string;
+  contact_id: string;
+  conversation_id: string | null;
+  kind: 'pendiente' | 'nota';
+  body: string;
+  status: 'abierta' | 'hecha';
+  /** Fecha límite (AAAA-MM-DD); solo para pendientes. */
+  due_on: string | null;
+  created_by: string | null;
+  created_by_name?: string | null;
+  created_via: 'panel' | 'regla';
+  done_at: Date | null;
+  done_by: string | null;
+  created_at: Date;
+  updated_at: Date;
 }
 
 export type ConversationStatus = 'bot' | 'human' | 'closed';

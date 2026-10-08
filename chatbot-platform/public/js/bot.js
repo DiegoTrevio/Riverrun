@@ -348,7 +348,6 @@ function tabRules(root, bot) {
       field(tag('Cuándo pasar con una persona', guide()), lines(r, 'handoff_rules'), 'Situaciones, una por renglón: "El cliente quiere pagar", "Tiene una queja".'),
       field(tag('Mensaje al pasar con una persona', guaranteed()), area(r, 'handoff_message'), 'Se envía tal cual. Después el asistente deja de responder en esa conversación hasta que se la devuelvas.'),
       field('WhatsApp que recibe el aviso', text(r, 'handoff_notify_number', { placeholder: '5215512345678' }), 'Opcional, con lada. Además se avisa en el panel y por WhatsApp a quien lo tenga activado en "Mi perfil".'),
-      check(r, 'pause_on_human_reply', tag('Si alguien del equipo contesta desde el teléfono, el asistente se calla en esa conversación', guaranteed())),
       field('El asistente retoma la conversación después de (minutos)', num(r, 'auto_resume_minutes', { min: 0 }), '0 = nunca solo; se la devuelves desde Conversaciones.'),
     ),
     h('div', { class: 'card' },
@@ -404,6 +403,10 @@ function tabActivation(root, bot) {
       field('Qué pasa', select(a, 'off_action', [['pause', 'Se pone en pausa en silencio (no avisa a nadie)'], ['handoff', 'Pasa la conversación a una persona (avisa al equipo)'], ['close', 'Cierra la conversación (si el cliente vuelve a escribir, empieza de nuevo)']])),
       field('Mensaje al desactivarse (opcional)', area(a, 'off_message', { placeholder: 'Gracias, en breve una persona del equipo te contacta.' }), 'Se envía tal cual. Vacío = no se envía nada.'),
       h('div', { class: 'grid' }, field('Se reactiva solo después de (horas)', num(a, 'resume_after_hours', { min: 0, max: 720 }), '0 = solo con una palabra de activación, una regla o el botón "Reactivar asistente" en la conversación.'))),
+    h('div', { class: 'card' },
+      h('h3', { style: 'margin-top:0' }, '4. Cuando una persona escribe'),
+      check(r, 'pause_on_human_reply', tag('Si alguien del equipo contesta desde el teléfono, el asistente se calla en esa conversación', guaranteed())),
+      h('p', { class: 'small muted', style: 'margin:0' }, 'Aplica también si la conversación está cerrada, y queda registrado en el contacto quién la atendió y cuándo. Lo que escribes desde el panel siempre pausa al asistente.')),
     h('div', { class: 'card' }, h('h3', { style: 'margin-top:0' }, 'Probar palabras'), messageTester([bot], bot.id)),
     saveBar(async () => {
       a.on_keywords = a.on_keywords.filter((x) => x.trim());
