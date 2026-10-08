@@ -100,9 +100,15 @@ export function luhnValid(digits: string): boolean {
   return sum % 10 === 0;
 }
 
+/**
+ * Tarjeta: prefijo de emisor conocido (Amex: 15 dígitos que empiezan con 34 o 37; Visa, Mastercard, Discover y JCB:
+ * 16 dígitos) y Luhn. Un IMEI de 15 dígitos o un número de pedido que pasa Luhn por azar no es una tarjeta.
+ */
 function cardDigits(s: string): string | null {
   const d = s.replace(/\D/g, '');
-  return d.length >= 15 && d.length <= 16 && luhnValid(d) ? d : null;
+  const amex = d.length === 15 && /^3[47]/.test(d);
+  const other = d.length === 16 && /^(4|5[1-5]|2[2-7]|6011|65|35)/.test(d);
+  return (amex || other) && luhnValid(d) ? d : null;
 }
 
 export function cardNumbersIn(text: string): string[] {

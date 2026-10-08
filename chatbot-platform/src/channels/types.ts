@@ -5,6 +5,8 @@ import type { Channel, ChannelType, Contact } from '../types.js';
 /** Mensaje entrante normalizado, igual para todas las plataformas. */
 export interface InboundMessage {
   messageId: string;
+  /** Se guarda en el historial pero no se contesta (p. ej. correos por encima del freno de bucles). */
+  captureOnly?: boolean;
   /** Identificador del cliente en la plataforma. */
   externalId: string;
   phone: string;

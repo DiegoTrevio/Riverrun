@@ -227,6 +227,8 @@ export function imageSendWhen(img: Pick<ImageAsset, 'send_when'>): ImageSendWhen
 
 export interface ImageAsset {
   id: string;
+  /** Huella SHA-256 del archivo (vacía en fotos subidas antes de la verificación). */
+  sha256?: string;
   chatbot_id: string;
   code: string;
   name: string;

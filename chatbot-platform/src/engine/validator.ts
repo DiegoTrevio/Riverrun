@@ -4,7 +4,7 @@ import type { Chatbot, DataField, ImageAsset } from '../types.js';
 import { DecisionSchema, type Action, type Decision } from './decision.js';
 import { unsupportedClaims } from './claims.js';
 import { cardNumbersIn, isSensitiveField } from './safety.js';
-import { countEmojis, FactCorpus, limitEmojis, normalize, stripEmojis, toWhatsappFormat } from './text.js';
+import { countEmojis, deepClean, FactCorpus, limitEmojis, normalize, stripEmojis, toWhatsappFormat } from './text.js';
 
 /** Plan final ya validado que el backend ejecutará. */
 export interface ExecutionPlan {
@@ -135,7 +135,7 @@ export function parseDecision(raw: unknown): { decision: Decision | null; error?
       return { decision: null, error: 'La respuesta no es JSON válido' };
     }
   }
-  const r = DecisionSchema.safeParse(obj);
+  const r = DecisionSchema.safeParse(deepClean(obj));
   if (!r.success) return { decision: null, error: `JSON con formato inválido: ${r.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}` };
   return { decision: r.data };
 }

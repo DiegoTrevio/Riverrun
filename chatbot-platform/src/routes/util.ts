@@ -5,10 +5,11 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { HttpError } from '../access.js';
 import { config } from '../config.js';
+import { deepClean } from '../engine/text.js';
 import { logEvent } from '../logs.js';
 
 export function parse<T>(schema: z.ZodType<T>, body: unknown): T {
-  const r = schema.safeParse(body ?? {});
+  const r = schema.safeParse(deepClean(body ?? {}));
   if (!r.success) throw new HttpError(400, 'Datos inválidos', r.error.issues.map((i) => `${i.path.join('.') || 'valor'}: ${i.message}`));
   return r.data;
 }
@@ -41,6 +42,8 @@ export interface UploadFile {
   buffer: Buffer;
   mime: string;
   ext: string;
+  /** Huella SHA-256 de los bytes tal como se subieron. */
+  sha256: string;
 }
 
 export async function readUpload(req: any): Promise<{ fields: Record<string, unknown>; file?: UploadFile }> {
@@ -52,13 +55,25 @@ export async function readUpload(req: any): Promise<{ fields: Record<string, unk
       if (part.file.truncated) throw new HttpError(400, 'La imagen supera 5 MB');
       const mime = sniffImage(buffer);
       if (!mime || !ALLOWED_MIME.includes(mime)) throw new HttpError(400, 'Formato no válido: usa JPG, PNG o WEBP');
-      file = { buffer, mime, ext: mime === 'image/png' ? '.png' : mime === 'image/webp' ? '.webp' : '.jpg' };
+      if (!completeImage(buffer, mime)) throw new HttpError(400, 'La imagen llegó incompleta o dañada: vuelve a exportarla y súbela de nuevo');
+      file = { buffer, mime, ext: mime === 'image/png' ? '.png' : mime === 'image/webp' ? '.webp' : '.jpg', sha256: crypto.createHash('sha256').update(buffer).digest('hex') };
     } else {
       const v = part.value;
       fields[part.fieldname] = v === 'true' ? true : v === 'false' ? false : v;
     }
   }
   return { fields, file };
+}
+
+/**
+ * Una foto con cabecera válida pero cortada (subida interrumpida) no se acepta: WhatsApp no podría enviarla.
+ * PNG termina en el bloque IEND, JPEG tiene el marcador de fin FFD9 y WEBP declara su tamaño en la cabecera.
+ */
+export function completeImage(b: Buffer, mime: string): boolean {
+  if (mime === 'image/png') return b.length > 20 && b.subarray(-12).equals(Buffer.from('0000000049454e44ae426082', 'hex'));
+  if (mime === 'image/jpeg') return b.lastIndexOf(Buffer.from([0xff, 0xd9])) > 2;
+  if (mime === 'image/webp') return b.length >= 12 && b.readUInt32LE(4) === b.length - 8;
+  return false;
 }
 
 /** Detecta el tipo real por la firma del archivo (no confiar en la extensión). */

@@ -185,8 +185,18 @@ export async function touchLogin(id: string) {
 }
 
 export async function deleteUser(id: string, expectedAccountId?: string) {
-  const deleted = await query('DELETE FROM users WHERE id = $1 AND ($2::uuid IS NULL OR account_id = $2) RETURNING id', [id, expectedAccountId ?? null]);
-  return deleted.length > 0;
+  return withTransaction(async (client) => {
+    const deleted = await client.query<{ account_id: string }>('DELETE FROM users WHERE id = $1 AND ($2::uuid IS NULL OR account_id = $2) RETURNING account_id', [id, expectedAccountId ?? null]);
+    if (!deleted.rows.length) return false;
+    // Los servicios guardan a sus personas asignadas en jsonb (sin clave foránea): se quita la persona borrada para que
+    // reservar no intente usar un usuario que ya no existe.
+    await client.query(
+      `UPDATE services SET assigned_user_ids = COALESCE((SELECT jsonb_agg(x) FROM jsonb_array_elements_text(assigned_user_ids) x WHERE x <> $2), '[]'::jsonb)
+       WHERE account_id = $1 AND assigned_user_ids @> to_jsonb($2::text)`,
+      [deleted.rows[0].account_id, id],
+    );
+    return true;
+  });
 }
 
 export async function countSuperadmins(): Promise<number> {
@@ -423,17 +433,17 @@ export async function getImage(id: string) {
   return queryOne<ImageAsset>('SELECT * FROM images WHERE id = $1', [id]);
 }
 
-export async function insertImage(img: Omit<ImageAsset, 'id' | 'active'> & { active?: boolean }): Promise<ImageAsset> {
+export async function insertImage(img: Omit<ImageAsset, 'id' | 'active'> & { active?: boolean; sha256?: string }): Promise<ImageAsset> {
   const row = await queryOne<ImageAsset>(
-    `INSERT INTO images (chatbot_id, code, name, description, usage_rule, caption, file_path, mime_type, size_bytes, active, send_when)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
-    [img.chatbot_id, img.code, img.name, img.description, img.usage_rule, img.caption, img.file_path, img.mime_type, img.size_bytes, img.active ?? true, JSON.stringify(img.send_when ?? {})],
+    `INSERT INTO images (chatbot_id, code, name, description, usage_rule, caption, file_path, mime_type, size_bytes, active, send_when, sha256)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+    [img.chatbot_id, img.code, img.name, img.description, img.usage_rule, img.caption, img.file_path, img.mime_type, img.size_bytes, img.active ?? true, JSON.stringify(img.send_when ?? {}), img.sha256 ?? ''],
   );
   return row!;
 }
 
 export async function updateImage(id: string, patch: Partial<ImageAsset>): Promise<ImageAsset | null> {
-  const allowed = ['code', 'name', 'description', 'usage_rule', 'caption', 'active', 'file_path', 'mime_type', 'size_bytes', 'send_when'] as const;
+  const allowed = ['code', 'name', 'description', 'usage_rule', 'caption', 'active', 'file_path', 'mime_type', 'size_bytes', 'send_when', 'sha256'] as const;
   const sets: string[] = [];
   const params: unknown[] = [];
   for (const k of allowed) {
@@ -474,7 +484,7 @@ export async function getContact(id: string) {
   return queryOne<Contact>('SELECT * FROM contacts WHERE id = $1', [id]);
 }
 
-type ContactPatch = { name?: string; data?: Record<string, string>; notes?: string[]; tags?: string[]; opted_out?: boolean };
+type ContactPatch = { name?: string; data?: Record<string, string>; notes?: string[]; tags?: string[]; opted_out?: boolean; /** Versión de datos que vio el panel: si cambió, no se guarda. */ expectedDataVersion?: number };
 
 export async function updateContact(id: string, patch: Pick<ContactPatch, 'name' | 'data' | 'notes'>) {
   return (await updateContactFromPanel(id, patch))?.contact ?? null;
@@ -485,6 +495,10 @@ export async function updateContactFromPanel(id: string, patch: ContactPatch) {
   return withTransaction(async (client) => {
     const before = (await client.query<Contact>('SELECT * FROM contacts WHERE id = $1 FOR UPDATE', [id])).rows[0];
     if (!before) return null;
+    if (patch.expectedDataVersion !== undefined) {
+      const current = (await client.query<{ v: number }>('SELECT COALESCE(max(data_version), 0)::int AS v FROM conversations WHERE contact_id = $1', [id])).rows[0].v;
+      if (current !== patch.expectedDataVersion) throw new StaleDataError('Los datos cambiaron mientras los editabas');
+    }
     const contact = (await client.query<Contact>(
       `UPDATE contacts SET name = COALESCE($2, name), data = COALESCE($3, data), notes = COALESCE($4, notes),
        tags = COALESCE($5, tags), opted_out = COALESCE($6, opted_out),
@@ -505,6 +519,12 @@ export async function updateContactFromPanel(id: string, patch: ContactPatch) {
 }
 
 /** Merge only the new answers, atomically, into both records; never replace a stale snapshot. */
+/** Notas por cliente: el mismo límite que el panel y la API (50). Antes la IA recortaba a 30 y borraba notas guardadas. */
+export const MAX_NOTES = 50;
+
+/** Los datos cambiaron después de que la persona abrió el formulario: no se sobrescriben. */
+export class StaleDataError extends Error {}
+
 export async function saveConversationMemory(conversationId: string, contactId: string, patch: { data: Record<string, string>; name?: string; remember: string[] }, sourceMessageId?: number, sourceMessageIds?: Record<string, number>) {
   return withTransaction(async (client) => {
     const contact = (await client.query<Contact>('SELECT * FROM contacts WHERE id = $1 FOR UPDATE', [contactId])).rows[0];
@@ -521,7 +541,7 @@ export async function saveConversationMemory(conversationId: string, contactId: 
     }
     const updated = await client.query<Contact>(
       'UPDATE contacts SET data = data || $2::jsonb, name = COALESCE($3, name), notes = $4, updated_at = now() WHERE id = $1 RETURNING *',
-      [contactId, JSON.stringify(patch.data), patch.name ?? null, JSON.stringify(notes.slice(-30))],
+      [contactId, JSON.stringify(patch.data), patch.name ?? null, JSON.stringify(notes.slice(-MAX_NOTES))],
     );
     await client.query('UPDATE conversations SET data = data || $2::jsonb, data_version = data_version + 1 WHERE id = $1', [conversationId, JSON.stringify(patch.data)]);
     const provenance = sourceMessageIds ?? (sourceMessageId !== undefined ? Object.fromEntries(Object.keys(patch.data).map((key) => [key, sourceMessageId])) : {});

@@ -257,12 +257,18 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
         opted_out: z.boolean().optional(),
         /** El cliente aceptó (o ya no) recibir promociones. */
         consent: z.boolean().optional(),
+        /** Versión de datos que tenía el panel al abrir el formulario (conversación.data_version). */
+        base_data_version: z.number().int().min(0).optional(),
       }),
       req.body,
     );
-    const { consent, ...patch } = b;
+    const { consent, base_data_version, ...patch } = b;
+    // Si la IA o el equipo guardó datos después de abrir el formulario, no se sobrescriben: se pide revisar antes.
+    const changes = await store.updateContactFromPanel(contact.id, { ...patch, expectedDataVersion: base_data_version }).catch((e) => {
+      if (e instanceof store.StaleDataError) throw new HttpError(409, 'Los datos cambiaron mientras los editabas (la IA capturó algo nuevo). Recarga la conversación y revisa antes de guardar.');
+      throw e;
+    });
     if (consent !== undefined && !!contact.consent_at !== consent) await astore.setConsent(contact.id, consent, 'panel');
-    const changes = await store.updateContactFromPanel(contact.id, patch);
     const conv = (await query<{ id: string }>('SELECT id FROM conversations WHERE contact_id = $1', [contact.id]))[0];
     if (conv && changes) {
       if (changes.optedOut) {

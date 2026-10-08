@@ -288,9 +288,14 @@ t('fin de la prueba: aviso antes, pausa al vencer (panel sí, bot no) y reactiva
   const ext = await h.authed('PUT', `/api/accounts/${L.account}`, { extend_trial_days: 7 });
   assert.equal(ext.json().status, 'trial');
   assert.ok(new Date(ext.json().trial_ends_at).getTime() > Date.now() + 6.9 * 86400_000);
-  const act = await h.authed('PUT', `/api/accounts/${L.account}`, { status: 'active', plan: 'Básico' });
+  // Un plan que no existe se rechaza: antes se aceptaba y la cuenta quedaba con límites inventados.
+  const typo = await h.authed('PUT', `/api/accounts/${L.account}`, { status: 'active', plan: 'Básico' });
+  assert.equal(typo.statusCode, 400);
+  assert.match(typo.json().error, /no existe/);
+  assert.equal((await h.authed('POST', '/api/plans', { key: 'basico', name: 'Básico', price: 299, limits: { channels: 1, messages_per_month: 1000 } })).statusCode, 200);
+  const act = await h.authed('PUT', `/api/accounts/${L.account}`, { status: 'active', plan: 'basico' });
   assert.equal(act.json().status, 'active');
-  assert.equal(act.json().plan, 'Básico');
+  assert.equal(act.json().plan, 'basico');
   await h.webhook('hola de nuevo', { instance: L.instance, phone: '5218100000003' });
   await waitFor(() => h.sent.length === 1, 10_000);
   await h.idle();

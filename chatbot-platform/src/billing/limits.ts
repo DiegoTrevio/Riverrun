@@ -14,6 +14,7 @@ import { notifyUsers } from '../automation/store.js';
 import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
 import { sendMail } from '../mailer.js';
+import { logEvent } from '../logs.js';
 
 export const LIMIT_KEYS = ['messages_per_month', 'channels', 'users', 'chatbots'] as const;
 export type LimitKey = (typeof LIMIT_KEYS)[number];
@@ -57,8 +58,11 @@ export async function effectiveLimits(accountId: string): Promise<EffectiveLimit
   if (!acc) return { limits: {}, source: 'none', plan_key: '' };
   const override = clean(acc.limits_override);
   const plan = acc.plan ? await queryOne<{ limits: unknown }>(`SELECT limits FROM plans WHERE key = $1`, [acc.plan]) : null;
-  const base = plan ? clean(plan.limits) : acc.status === 'trial' ? trialLimits() : {};
-  const source = Object.keys(override).length ? 'override' : plan ? 'plan' : acc.status === 'trial' ? 'trial' : 'none';
+  // Un plan que ya no existe (clave mal escrita o borrada) no puede dejar a la cuenta sin límites: se aplican los de prueba.
+  const missingPlan = !!acc.plan && !plan;
+  if (missingPlan) await logEvent({ level: 'error', source: 'admin', message: `La cuenta tiene el plan "${acc.plan}", que no existe; se aplican límites restrictivos`, accountId });
+  const base = plan ? clean(plan.limits) : acc.status === 'trial' || missingPlan ? trialLimits() : {};
+  const source = Object.keys(override).length ? 'override' : plan ? 'plan' : acc.status === 'trial' || missingPlan ? 'trial' : 'none';
   // La excepción puede cambiar solo algunos límites: el resto sigue el plan.
   return { limits: { ...base, ...override }, source, plan_key: acc.plan };
 }

@@ -10,6 +10,7 @@ import * as astore from './automation/store.js';
 import { isOpen, nextOpen, spanishDate, spanishTime } from './automation/time.js';
 import { detectRisk, maskSensitive } from './engine/safety.js';
 import { customerLabel } from './engine/customer-data.js';
+import { cleanText, deepClean } from './engine/text.js';
 import { adapterFor } from './channels/index.js';
 import { config } from './config.js';
 import { gate } from './engine/activation.js';
@@ -216,6 +217,8 @@ export class ChatService {
 
   /** Maneja un mensaje ya normalizado que llegó por cualquier canal. */
   async handleIncoming(channel: Channel, msg: InboundMessage): Promise<{ conversationId: string; messageId: number | null }> {
+    // Lo que llega de la plataforma se limpia una vez aquí (NUL y surrogates sueltos no caben en PostgreSQL).
+    msg = deepClean(msg);
     const bot = channel.chatbot_id ? await store.getChatbot(channel.chatbot_id) : null;
     const contact = await store.upsertContact(channel, msg.externalId, msg.phone, msg.fromMe ? '' : msg.displayName);
     const conv = await store.getOrCreateConversation(channel, contact.id);
@@ -260,7 +263,7 @@ export class ChatService {
     content = maskSensitive(content);
     // Mensajes viejos (reconexión, reenvíos de la plataforma) se guardan pero no se contestan.
     const stale = Date.now() / 1000 - msg.timestamp > MAX_MESSAGE_AGE_SECONDS;
-    const triggers = msg.type !== 'reaction' && !stale;
+    const triggers = msg.type !== 'reaction' && !stale && !msg.captureOnly;
     const inserted = await store.insertMessage({
       conversation_id: conv.id,
       direction: 'in',
@@ -269,7 +272,7 @@ export class ChatService {
       content,
       external_message_id: msg.messageId,
       processed: !triggers,
-      meta: stale ? { name: msg.displayName, stale: true } : { name: msg.displayName },
+      meta: stale ? { name: msg.displayName, stale: true } : msg.captureOnly ? { name: msg.displayName, held: 'limite_de_correos' } : { name: msg.displayName },
     });
     if (!inserted) return { conversationId: conv.id, messageId: null }; // duplicado
 
@@ -382,6 +385,7 @@ export class ChatService {
 
   /** Simulador del panel: mismo motor, sin plataforma externa. */
   async playground(bot: Chatbot, session: string, text: string) {
+    text = cleanText(text);
     const channel = await store.getOrCreatePlaygroundChannel(bot);
     const contact = await store.upsertContact(channel, `playground:${session}`, '', 'Prueba');
     let conv = await store.getOrCreateConversation(channel, contact.id);
@@ -489,6 +493,17 @@ export class ChatService {
        WHERE m.processed = false AND m.direction = 'in' AND ch.type <> 'playground' AND m.created_at > now() - interval '15 minutes'`,
     );
     for (const r of rows) this.queue.schedule(r.conversation_id, 2000);
+    // Los mensajes de hace más de 15 minutos no se contestan (sería fuera de tiempo), pero el equipo sí debe enterarse.
+    const stale = await query<{ account_id: string; n: number }>(
+      `SELECT ch.account_id, count(*)::int AS n FROM messages m
+         JOIN conversations c ON c.id = m.conversation_id JOIN channels ch ON ch.id = c.channel_id
+       WHERE m.processed = false AND m.direction = 'in' AND ch.type <> 'playground' AND m.created_at <= now() - interval '15 minutes'
+       GROUP BY ch.account_id`,
+    );
+    for (const s of stale) {
+      await logEvent({ level: 'warn', source: 'engine', message: `Reinicio: ${s.n} mensajes llevan más de 15 minutos sin respuesta y no se contestarán automáticamente`, accountId: s.account_id, details: { count: s.n } });
+      await this.automator.alertTeam(s.account_id, { title: '⚠️ Mensajes sin respuesta tras un reinicio', body: `${s.n} mensajes de clientes llegaron hace más de 15 minutos y el asistente no los contestará. Revísalos en Conversaciones.`, kind: 'alert' }).catch(() => undefined);
+    }
     await query(`UPDATE messages SET processed = true WHERE processed = false AND created_at <= now() - interval '15 minutes'`);
     return rows.length;
   }

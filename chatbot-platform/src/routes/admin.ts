@@ -220,6 +220,8 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     const b = parse(AccountBody, req.body);
     const before = await store.getAccount(req.params.id);
     if (!before) throw notFound('Cuenta no encontrada');
+    // Un plan mal escrito dejaría a la cuenta con límites distintos a los que se vendieron: solo se aceptan planes existentes.
+    if (b.plan && !(await queryOne(`SELECT 1 FROM plans WHERE key = $1`, [b.plan]))) throw new HttpError(400, `El plan "${b.plan}" no existe`);
     let trialEnds: Date | null | undefined = b.trial_ends_at === undefined ? undefined : b.trial_ends_at ? new Date(b.trial_ends_at) : null;
     let status = b.status;
     if (b.extend_trial_days) {

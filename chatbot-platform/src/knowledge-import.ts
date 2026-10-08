@@ -118,6 +118,15 @@ const decode = (s: string) =>
     return ENTITIES[e] ?? ENTITIES[e.toLowerCase()] ?? m;
   });
 
+/** Texto de un archivo: UTF-8 si es válido; si no (p. ej. Excel en Windows, Windows-1252), se lee en Windows-1252. */
+export function decodeText(buf: Buffer): string {
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(buf).replace(/^\uFEFF/, '');
+  } catch {
+    return new TextDecoder('windows-1252').decode(buf);
+  }
+}
+
 export function htmlToText(html: string): string {
   const jsonLd = [...html.matchAll(/<script[^>]+application\/ld\+json[^>]*>([\s\S]*?)<\/script>/gi)].map((m) => m[1].trim()).filter((j) => j.length < 6000);
   const body = html
@@ -140,7 +149,7 @@ export async function sourceFromUrl(raw: string): Promise<Source> {
   const { url, mime, body } = await fetchPublic(raw);
   if (mime === 'application/pdf') return { kind: 'file', mime, buffer: body, filename: 'documento.pdf' };
   if (mime.startsWith('image/')) return { kind: 'file', mime, buffer: body, filename: 'imagen' };
-  const raw8 = body.toString('utf8');
+  const raw8 = decodeText(body);
   const text = mime.includes('html') || /^\s*<(!doctype|html)/i.test(raw8) ? htmlToText(raw8) : raw8;
   if (text.trim().length < 40) throw new HttpError(400, 'No encontramos texto en esa página (puede cargarse con JavaScript). Prueba subiendo un PDF o pegando el texto.');
   return { kind: 'text', text, label: url.hostname };
@@ -157,7 +166,7 @@ export function sourceFromFile(file: { buffer: Buffer; mime: string; filename: s
   }
   if (/\.(docx?|odt)$/.test(name) || mime.includes('word')) throw new HttpError(400, 'Guarda el documento de Word como PDF y súbelo de nuevo.');
   if (mime.startsWith('text/') || /\.(txt|csv|md|tsv|json)$/.test(name)) {
-    const text = file.buffer.toString('utf8');
+    const text = decodeText(file.buffer);
     if (text.includes('\u0000')) throw new HttpError(400, 'No se pudo leer el archivo como texto');
     return { kind: 'text', text: mime.includes('html') ? htmlToText(text) : text, label: file.filename };
   }

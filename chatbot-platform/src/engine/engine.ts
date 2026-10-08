@@ -628,11 +628,14 @@ export class Engine {
   }
 }
 
+/** Palabra o frase completa en el texto (sin distinguir acentos ni mayúsculas). Los emojis cuentan como palabras. */
 export function matchKeyword(text: string, keywords: string[]): string | null {
-  const t = ` ${normalize(text).replace(/[^a-z0-9ñ ]/g, ' ')} `;
+  const clean = (s: string) => normalize(s).replace(/[^\p{L}\p{N}\p{Extended_Pictographic}\u200d\ufe0f ]+/gu, ' ').replace(/\s+/g, ' ').trim();
+  const t = ` ${clean(text)} `;
   for (const k of keywords) {
-    const nk = normalize(k).replace(/[^a-z0-9ñ ]/g, ' ').trim();
-    if (nk && t.includes(` ${nk} `)) return k;
+    const nk = clean(k);
+    if (!nk) continue;
+    if (/[\p{L}\p{N}]/u.test(nk) ? t.includes(` ${nk} `) : normalize(text).includes(nk)) return k;
   }
   return null;
 }

@@ -10,7 +10,7 @@ import { AccountSettingsSchema, WeeklyHoursSchema } from '../automation/types.js
 import { mergeChannelConfig, publicChannel } from '../channels/index.js';
 import { newInstanceName } from '../channels/whatsapp.js';
 import { config } from '../config.js';
-import { queryOne } from '../db.js';
+import { queryOne, withTransaction } from '../db.js';
 import { assertWithinLimit } from '../billing/limits.js';
 import { logEvent } from '../logs.js';
 import * as store from '../store/index.js';
@@ -126,44 +126,56 @@ export async function onboardingRoutes(api: FastifyInstance) {
     const businessType = b.business_type ?? (acc.business_type || 'otro');
     const tpl = chatbotFromTemplate({ business_type: businessType, company: acc.name, assistant_name: b.assistant_name, description: b.description, formality: b.formality });
 
-    const existing = await mainBot(accountId);
-    let botId: string;
-    if (existing) {
-      const bot = (await store.getChatbot(existing.id))!;
-      await store.updateChatbot(bot.id, {
-        personality: PersonalitySchema.parse({ ...bot.personality, ...tpl.personality }),
-        flow: bot.flow.goal ? bot.flow : FlowSchema.parse({ ...bot.flow, ...tpl.flow }),
-        rules: alignFixedMessages(
-          bot.rules.custom_rules.length ? bot.rules : RulesSchema.parse({ ...bot.rules, ...tpl.rules }),
-          tpl.personality.formality ?? 'tu',
-        ),
-        data_fields: bot.data_fields.length ? bot.data_fields : tpl.data_fields.map((f) => DataFieldSchema.parse(f)),
-      });
-      botId = bot.id;
-    } else {
-      await assertWithinLimit(accountId, 'chatbots');
-      const bot = await store.createChatbot(accountId, {
-        name: tpl.name,
-        active: true,
-        personality: PersonalitySchema.parse(tpl.personality),
-        rules: RulesSchema.parse(tpl.rules),
-        flow: FlowSchema.parse(tpl.flow),
-        data_fields: tpl.data_fields.map((f) => DataFieldSchema.parse(f)),
-      });
-      botId = bot.id;
-      await logEvent({ level: 'info', source: 'admin', message: `Chatbot creado con el asistente (${businessType})`, accountId, chatbotId: bot.id });
-    }
+    // Un solo onboarding a la vez por cuenta: dos envíos seguidos no crean dos asistentes ni duplican el conocimiento.
+    // Si el asistente ya tiene un prompt escrito por la persona, su configuración se conserva; solo se completa el conocimiento.
+    const { botId, keptConfiguration } = await withTransaction(async (client) => {
+      // Candado consultivo de la transacción (no una fila): el resto del onboarding escribe en la cuenta desde otras conexiones,
+      // y bloquear la fila aquí provocaría un interbloqueo.
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", ['onboarding:' + accountId]);
+      const existing = await mainBot(accountId);
+      let botId: string;
+      let keptConfiguration = false;
+      if (existing) {
+        const bot = (await store.getChatbot(existing.id))!;
+        keptConfiguration = bot.personality.prompt.trim() !== '';
+        if (!keptConfiguration) {
+          await store.updateChatbot(bot.id, {
+            personality: PersonalitySchema.parse({ ...bot.personality, ...tpl.personality }),
+            flow: bot.flow.goal ? bot.flow : FlowSchema.parse({ ...bot.flow, ...tpl.flow }),
+            rules: alignFixedMessages(
+              bot.rules.custom_rules.length ? bot.rules : RulesSchema.parse({ ...bot.rules, ...tpl.rules }),
+              tpl.personality.formality ?? 'tu',
+            ),
+            data_fields: bot.data_fields.length ? bot.data_fields : tpl.data_fields.map((f) => DataFieldSchema.parse(f)),
+          });
+        }
+        botId = bot.id;
+      } else {
+        await assertWithinLimit(accountId, 'chatbots');
+        const bot = await store.createChatbot(accountId, {
+          name: tpl.name,
+          active: true,
+          personality: PersonalitySchema.parse(tpl.personality),
+          rules: RulesSchema.parse(tpl.rules),
+          flow: FlowSchema.parse(tpl.flow),
+          data_fields: tpl.data_fields.map((f) => DataFieldSchema.parse(f)),
+        });
+        botId = bot.id;
+        await logEvent({ level: 'info', source: 'admin', message: `Chatbot creado con el asistente (${businessType})`, accountId, chatbotId: bot.id });
+      }
 
-    const items = await store.listKnowledge(botId);
-    for (const [k, [category, title]] of Object.entries(KNOWLEDGE_TITLES)) {
-      const content = (b.knowledge as Record<string, string | undefined>)[k]?.trim();
-      const prev = items.find((i) => i.title === title);
-      if (content) await store.upsertKnowledge(botId, { id: prev?.id, category, title, content, active: true, always_include: k !== 'faq' });
-      else if (prev) await store.upsertKnowledge(botId, { id: prev.id, category, title, content: prev.content, active: false });
-    }
-    if (businessType !== acc.business_type) await store.updateAccount(accountId, { business_type: businessType });
-    await store.markOnboarding(accountId, { assistant: true });
-    return { ok: true, chatbot_id: botId };
+      const items = await store.listKnowledge(botId);
+      for (const [k, [category, title]] of Object.entries(KNOWLEDGE_TITLES)) {
+        const content = (b.knowledge as Record<string, string | undefined>)[k]?.trim();
+        const prev = items.find((i) => i.title === title);
+        if (content) await store.upsertKnowledge(botId, { id: prev?.id, category, title, content, active: true, always_include: k !== 'faq' });
+        else if (prev) await store.upsertKnowledge(botId, { id: prev.id, category, title, content: prev.content, active: false });
+      }
+      if (businessType !== acc.business_type) await store.updateAccount(accountId, { business_type: businessType });
+      await store.markOnboarding(accountId, { assistant: true });
+      return { botId, keptConfiguration };
+    });
+    return { ok: true, chatbot_id: botId, kept_configuration: keptConfiguration };
   });
 
   /** Pasos que se marcan a mano: fotos (omitido) y prueba en el simulador. */

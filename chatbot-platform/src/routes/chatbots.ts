@@ -211,11 +211,21 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
     for (const k of await store.listKnowledge(src.id)) {
       await store.upsertKnowledge(copy.id, { category: k.category, title: k.title, content: k.content, always_include: k.always_include, active: k.active, sort_order: k.sort_order });
     }
-    for (const img of await store.listImages(src.id)) {
-      const rel = path.join(copy.id, `${crypto.randomUUID()}${path.extname(img.file_path)}`);
-      await fsp.mkdir(path.join(config.uploadsDir, copy.id), { recursive: true });
-      await fsp.copyFile(imageAbsolutePath(img), path.join(config.uploadsDir, rel)).catch(() => undefined);
-      await store.insertImage({ ...img, chatbot_id: copy.id, file_path: rel });
+    // Una foto que no se puede copiar no deja una copia a medias (con una foto rota sin aviso): se deshace todo.
+    const copies: string[] = [];
+    try {
+      for (const img of await store.listImages(src.id)) {
+        const rel = path.join(copy.id, `${crypto.randomUUID()}${path.extname(img.file_path)}`);
+        await fsp.mkdir(path.join(config.uploadsDir, copy.id), { recursive: true });
+        await fsp.copyFile(imageAbsolutePath(img), path.join(config.uploadsDir, rel));
+        copies.push(path.join(config.uploadsDir, rel));
+        await store.insertImage({ ...img, chatbot_id: copy.id, file_path: rel, sha256: img.sha256 });
+      }
+    } catch (e: any) {
+      for (const f of copies) await fsp.rm(f, { force: true }).catch(() => undefined);
+      await store.deleteChatbot(copy.id);
+      await logEvent({ level: 'error', source: 'admin', message: `No se duplicó el asistente ${src.name}: falta una foto (${e?.message ?? e})`, accountId, chatbotId: src.id });
+      throw new HttpError(500, 'No se pudo copiar una de las fotos del asistente; la copia no se creó. Revisa las fotos del original.');
     }
     return copy;
   });
@@ -292,6 +302,7 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
         size_bytes: upload.file.buffer.length,
         active: meta.active ?? true,
         send_when: meta.send_when ?? {},
+        sha256: upload.file.sha256,
       });
       await logEvent({ level: 'info', source: 'admin', message: `Imagen agregada: ${img.code}`, accountId: bot.account_id, chatbotId: bot.id });
       return img;
@@ -311,8 +322,16 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
       patch.file_path = await saveFile(img.chatbot_id, file);
       patch.mime_type = file.mime;
       patch.size_bytes = file.buffer.length;
+      patch.sha256 = file.sha256;
     }
-    const updated = await store.updateImage(img.id, patch);
+    let updated;
+    try {
+      updated = await store.updateImage(img.id, patch);
+    } catch (e) {
+      // Si no se pudo guardar (p. ej. el código ya existe), el archivo nuevo no debe quedar huérfano.
+      if (file) await fsp.rm(path.join(config.uploadsDir, patch.file_path as string), { force: true });
+      throw e;
+    }
     if (file) await fsp.rm(imageAbsolutePath(img), { force: true });
     return updated;
   });

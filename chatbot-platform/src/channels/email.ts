@@ -13,6 +13,7 @@ import nodemailer from 'nodemailer';
 import { isPrivateIp } from '../automation/automator.js';
 import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
+import { htmlToText } from '../knowledge-import.js';
 import { imageAbsolutePath, type Transport } from '../engine/transport.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
@@ -55,16 +56,30 @@ async function publicAddress(host: string): Promise<string> {
 
 const addressOf = (c: MailConfig) => (c.from_address || c.imap_user).toLowerCase();
 
-/** Quita el texto citado de una respuesta ("El … escribió:", líneas con ">"). */
+/** Límite del texto de un correo que se guarda (lo que no cabe se corta; el resto del hilo sigue en el correo). */
+const MAX_MAIL_TEXT = 50_000;
+
+/** Primera línea no vacía después de la posición i. */
+function nextLine(lines: string[], i: number): string {
+  for (let j = i + 1; j < lines.length; j++) if (lines[j].trim()) return lines[j].trim();
+  return '';
+}
+
+/**
+ * Quita el texto citado de una respuesta: "El … escribió:", "On … wrote:", líneas con ">" y el bloque de un reenvío
+ * ("De: … / Enviado: …"). Una línea normal que empieza con "De:" (p. ej. "De: lunes a viernes") se conserva.
+ */
 export function stripQuoted(text: string): string {
   const lines = text.replace(/\r/g, '').split('\n');
   const out: string[] = [];
-  for (const line of lines) {
-    if (/^(on .+ wrote:|el .+ escribi[óo]:|-{2,}\s*(original message|mensaje original)|_{5,}$|de:\s.+|from:\s.+@)/i.test(line.trim())) break;
-    if (line.trim().startsWith('>')) continue;
-    out.push(line);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (/^(on .+ wrote:|el .+ escribi[óo]:|-{2,}\s*(original message|mensaje original)|_{5,}$)/i.test(line)) break;
+    if (/^(de|from):\s/i.test(line) && /^(enviado|sent|fecha|date|para|to|asunto|subject|cc):/i.test(nextLine(lines, i))) break;
+    if (line.startsWith('>')) continue;
+    out.push(lines[i]);
   }
-  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim().slice(0, 4000);
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
 const MAX_MAIL_BYTES = 10 * 1024 * 1024;
@@ -106,7 +121,8 @@ const realBackend: MailBackend = {
               address: from.address.toLowerCase(),
               name: from.name ?? '',
               subject: p.subject ?? '',
-              text: p.text ?? '',
+              // Correos solo en HTML: se convierte el HTML a texto en vez de guardar un mensaje vacío.
+              text: p.text || (typeof p.html === 'string' ? htmlToText(p.html) : ''),
               date: p.date ?? new Date(),
               references: [p.references].flat().filter(Boolean).join(' '),
               automated,
@@ -212,7 +228,7 @@ export const emailAdapter: ChannelAdapter = {
 };
 
 export function toInbound(m: RawMail, firstInThread: boolean): InboundMessage {
-  const body = stripQuoted(m.text) || m.text.trim().slice(0, 4000);
+  const body = stripQuoted(m.text) || m.text.trim().slice(0, MAX_MAIL_TEXT);
   return {
     messageId: m.messageId,
     externalId: m.address,
@@ -235,13 +251,17 @@ export async function pollEmailChannel(channel: Channel, deliver: (m: InboundMes
       try {
         const own = mail.address === addressOf(cfg);
         if (mail.automated || own) continue;
-        // Freno de bucles: más de 12 correos por hora de la misma dirección no se contestan.
+        // Freno de bucles: más de 12 correos por hora de la misma dirección no se contestan (ver abajo).
         const recent = (await queryOne<{ n: number }>(
           `SELECT count(*)::int AS n FROM messages m JOIN conversations cv ON cv.id = m.conversation_id JOIN contacts ct ON ct.id = cv.contact_id
             WHERE ct.channel_id = $1 AND ct.external_id = $2 AND m.direction = 'in' AND m.created_at > now() - interval '1 hour'`,
           [channel.id, mail.address],
         ))?.n ?? 0;
-        if (recent >= 12) continue;
+        if (recent >= 12) {
+          // Freno de bucles: se guarda pero no se contesta (nada se pierde del historial del cliente).
+          await deliver({ ...toInbound(mail, false), captureOnly: true });
+          continue;
+        }
         const prior = await queryOne(`SELECT 1 FROM email_threads WHERE channel_id = $1 AND address = $2`, [channel.id, mail.address]);
         await query(
           `INSERT INTO email_threads (channel_id, address, subject, message_id, refs) VALUES ($1,$2,$3,$4,$5)
