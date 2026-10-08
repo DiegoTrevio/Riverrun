@@ -46,7 +46,7 @@ after(async () => {
 });
 
 t('migra una instalación existente sin perder datos', async () => {
-  assert.deepEqual(await migrate(db), ['002_accounts_channels.sql', '003_automation.sql', '004_signup.sql', '005_flow.sql', '006_whatsapp_qr.sql', '007_activation.sql', '008_image_triggers.sql', '009_master_access.sql', '010_conversation_records.sql', '011_knowledge_vectors.sql', '012_knowledge_index_invalidation.sql', '013_knowledge_supervision.sql', '014_knowledge_source.sql', '015_billing.sql', '016_conversation_lease.sql', '017_limits.sql', '018_compliance.sql', '019_pools.sql', '020_integrations.sql', '021_brands.sql', '022_email.sql', '023_fk_indexes.sql', '024_assignment.sql', '025_report_analysis.sql', '026_flow_journey.sql', '027_data_integrity.sql', '028_inbound_media.sql']);
+  assert.deepEqual(await migrate(db), ['002_accounts_channels.sql', '003_automation.sql', '004_signup.sql', '005_flow.sql', '006_whatsapp_qr.sql', '007_activation.sql', '008_image_triggers.sql', '009_master_access.sql', '010_conversation_records.sql', '011_knowledge_vectors.sql', '012_knowledge_index_invalidation.sql', '013_knowledge_supervision.sql', '014_knowledge_source.sql', '015_billing.sql', '016_conversation_lease.sql', '017_limits.sql', '018_compliance.sql', '019_pools.sql', '020_integrations.sql', '021_brands.sql', '022_email.sql', '023_fk_indexes.sql', '024_assignment.sql', '025_report_analysis.sql', '026_flow_journey.sql', '027_data_integrity.sql', '028_inbound_media.sql', '029_analytics.sql']);
   const q = async (sql: string) => (await db.query(sql)).rows;
 
   const accounts = await q('SELECT * FROM accounts');
@@ -88,7 +88,7 @@ t('migra una instalación existente sin perder datos', async () => {
 t('una instalación nueva (sin datos) migra sin crear cuentas vacías', async () => {
   await db.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public;');
   const applied = await migrate(db);
-  assert.deepEqual(applied, ['001_init.sql', '002_accounts_channels.sql', '003_automation.sql', '004_signup.sql', '005_flow.sql', '006_whatsapp_qr.sql', '007_activation.sql', '008_image_triggers.sql', '009_master_access.sql', '010_conversation_records.sql', '011_knowledge_vectors.sql', '012_knowledge_index_invalidation.sql', '013_knowledge_supervision.sql', '014_knowledge_source.sql', '015_billing.sql', '016_conversation_lease.sql', '017_limits.sql', '018_compliance.sql', '019_pools.sql', '020_integrations.sql', '021_brands.sql', '022_email.sql', '023_fk_indexes.sql', '024_assignment.sql', '025_report_analysis.sql', '026_flow_journey.sql', '027_data_integrity.sql', '028_inbound_media.sql']);
+  assert.deepEqual(applied, ['001_init.sql', '002_accounts_channels.sql', '003_automation.sql', '004_signup.sql', '005_flow.sql', '006_whatsapp_qr.sql', '007_activation.sql', '008_image_triggers.sql', '009_master_access.sql', '010_conversation_records.sql', '011_knowledge_vectors.sql', '012_knowledge_index_invalidation.sql', '013_knowledge_supervision.sql', '014_knowledge_source.sql', '015_billing.sql', '016_conversation_lease.sql', '017_limits.sql', '018_compliance.sql', '019_pools.sql', '020_integrations.sql', '021_brands.sql', '022_email.sql', '023_fk_indexes.sql', '024_assignment.sql', '025_report_analysis.sql', '026_flow_journey.sql', '027_data_integrity.sql', '028_inbound_media.sql', '029_analytics.sql']);
   assert.equal((await db.query('SELECT count(*)::int n FROM accounts')).rows[0].n, 0);
   // Integridad: nada sin llave primaria, nada sin validar y toda llave foránea de una columna con índice (borrar cuentas no recorre tablas enteras)
   const noPk = (await db.query(`SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind = 'r' AND NOT EXISTS (SELECT 1 FROM pg_constraint k WHERE k.conrelid = c.oid AND k.contype = 'p')`)).rows;
@@ -104,7 +104,7 @@ t('varias réplicas pueden migrar simultáneamente una instalación nueva', asyn
   const results = await Promise.allSettled(Array.from({ length: 3 }, () => migrate(db)));
   assert.ok(results.every(r => r.status === 'fulfilled'), JSON.stringify(results));
   const counts = (await db.query('SELECT name, count(*)::int n FROM schema_migrations GROUP BY name')).rows;
-  assert.equal(counts.length, 28);
+  assert.equal(counts.length, 29);
   assert.ok(counts.every(r => r.n === 1));
 });
 

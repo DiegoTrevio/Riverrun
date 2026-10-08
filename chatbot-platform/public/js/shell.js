@@ -73,9 +73,10 @@ export function shell(active, content) {
         link('#/conversations', 'Bandeja de entrada', 'conversations'),
         h('a', { href: '#/notifications', class: active === 'notifications' ? 'active' : '' }, 'Notificaciones'),
       ]),
-      navGroup('Operación', ['agenda', 'automation'], [
+      navGroup('Operación', ['agenda', 'automation', 'estadisticas'], [
         link('#/agenda', 'Agenda', 'agenda'),
         isAdmin() ? link('#/automation', 'Automatización', 'automation') : null,
+        isAdmin() ? link('#/estadisticas', 'Estadísticas', 'estadisticas') : null,
       ]),
       isAdmin() ? navGroup('Configuración', ['users', 'accounts', 'planes', 'sistema', 'plan', 'consumo', 'logs', 'password'], [
         link('#/users', 'Usuarios', 'users'),

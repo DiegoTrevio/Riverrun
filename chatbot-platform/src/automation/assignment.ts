@@ -38,12 +38,29 @@ export async function nextInTurn(accountId: string, scope: string, candidates: C
   });
 }
 
-/** Deja la conversación asignada a esa persona. */
-export async function setAssignee(conversationId: string, userId: string | null) {
-  return queryOne<{ id: string; assigned_user_id: string | null }>(
-    `UPDATE conversations SET assigned_user_id = $2, assigned_at = CASE WHEN $2::uuid IS NULL THEN NULL ELSE now() END WHERE id = $1 RETURNING id, assigned_user_id`,
-    [conversationId, userId],
-  );
+/** Cómo llegó la conversación a la persona (se guarda en el historial para las estadísticas por persona). */
+export type AssignSource = 'round_robin' | 'manual' | 'takeover' | 'api';
+
+/**
+ * Deja la conversación asignada a esa persona. Solo cuenta cuando cambia de persona: cada cambio queda en el historial
+ * (quién, cuándo y cómo), así las estadísticas incluyen también las conversaciones que se reasignaron.
+ */
+export async function setAssignee(conversationId: string, userId: string | null, source: AssignSource = 'manual', reason = '') {
+  return withTransaction(async (client) => {
+    const row = (await client.query<{ id: string; account_id: string; assigned_user_id: string | null }>(
+      `UPDATE conversations SET assigned_user_id = $2, assigned_at = CASE WHEN $2::uuid IS NULL THEN NULL ELSE now() END
+        WHERE id = $1 AND assigned_user_id IS DISTINCT FROM $2::uuid
+        RETURNING id, account_id, assigned_user_id`,
+      [conversationId, userId],
+    )).rows[0] ?? null;
+    if (row?.assigned_user_id) {
+      await client.query(
+        `INSERT INTO conversation_assignments (account_id, conversation_id, user_id, source, reason) VALUES ($1, $2, $3, $4, $5)`,
+        [row.account_id, row.id, row.assigned_user_id, source, reason.slice(0, 200)],
+      );
+    }
+    return row;
+  });
 }
 
 /** Asigna por turnos. Devuelve a la persona (o null si no hay nadie disponible). */
@@ -53,7 +70,7 @@ export async function assignRoundRobin(conv: { id: string; account_id: string },
     await logEvent({ level: 'warn', source: 'engine', message: `Sin nadie disponible para asignar (${o.reason})`, accountId: conv.account_id, conversationId: conv.id });
     return null;
   }
-  await setAssignee(conv.id, user.id);
+  await setAssignee(conv.id, user.id, 'round_robin', o.reason);
   await logEvent({ level: 'info', source: 'engine', message: `Conversación asignada a ${user.name || user.email} por turnos (${o.reason})`, accountId: conv.account_id, conversationId: conv.id });
   return user;
 }

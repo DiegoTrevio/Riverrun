@@ -1,5 +1,6 @@
 import { viewAccounts, viewNotifications, viewPassword, viewUsers } from './admin.js';
 import { viewAgenda } from './agenda.js';
+import { viewAnalytics } from './analytics.js';
 import { renderForgot, renderLogin, renderReset, renderSignup, renderVerify } from './auth.js';
 import { viewAutomation } from './automation.js';
 import { viewPlan, viewPlans } from './billing.js';
@@ -65,6 +66,7 @@ export async function render() {
     else if (parts[0] === 'sistema') await viewSystem(content);
     else if (parts[0] === 'plan') await viewPlan(content, params);
     else if (parts[0] === 'planes') await viewPlans(content);
+    else if (parts[0] === 'estadisticas') await viewAnalytics(content, params);
     else if (parts[0] === 'consumo') await viewUsage(content, params);
     else if (parts[0] === 'bot') await viewBot(content, parts[1], parts[2] || 'general');
     else if (parts[0] === 'channels') await viewChannels(content, params);

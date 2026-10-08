@@ -220,7 +220,7 @@ export async function apiV1Routes(app: FastifyInstance, service: ChatService) {
         } else if (b.user_id) {
           const ok = await queryOne(`SELECT 1 FROM users WHERE id = $1 AND account_id = $2 AND active AND role IN ('admin', 'agent')`, [b.user_id, account(req)]);
           if (!ok) throw new HttpError(400, 'Esa persona no pertenece a tu cuenta');
-          await assignment.setAssignee(conv.id, b.user_id);
+          await assignment.setAssignee(conv.id, b.user_id, 'api', 'asignada desde la API');
           userId = b.user_id;
         } else {
           await assignment.setAssignee(conv.id, null);

@@ -493,20 +493,21 @@ export class ChatService {
   }
 
   /** Mensaje manual desde el panel (por la misma plataforma de la conversación). */
-  async sendManual(conversationId: string, text: string) {
+  async sendManual(conversationId: string, text: string, byUserId?: string) {
     const conv = await store.getConversation(conversationId);
     if (!conv) throw new Error('Conversación no encontrada');
     const [channel, contact] = await Promise.all([store.getChannel(conv.channel_id), store.getContact(conv.contact_id)]);
     if (!channel || !contact) throw new Error('Datos incompletos');
     const bot = conv.chatbot_id ? await store.getChatbot(conv.chatbot_id) : null;
     const transport = channel.type === 'playground' ? new PlaygroundTransport() : this.transportFor(channel, contact);
-    const sent = await this.engine.sendOut(bot, conv, transport, { sender: 'human', text, delay: 0, meta: { source: 'panel' } });
+    // Quién lo envió queda en el mensaje (las estadísticas por persona lo cuentan así).
+    const sent = await this.engine.sendOut(bot, conv, transport, { sender: 'human', text, delay: 0, meta: { source: 'panel', ...(byUserId ? { user_id: byUserId } : {}) } });
     if (!sent) throw new Error('No se pudo enviar el mensaje (revisa los registros)');
     return sent;
   }
 
   /** Foto del catálogo enviada a mano desde el panel (por la misma plataforma de la conversación). */
-  async sendManualImage(conversationId: string, imageId: string, beforeSend?: () => Promise<void>) {
+  async sendManualImage(conversationId: string, imageId: string, beforeSend?: () => Promise<void>, byUserId?: string) {
     const conv = await store.getConversation(conversationId);
     if (!conv) throw new Error('Conversación no encontrada');
     const image = await store.getImage(imageId);
@@ -518,7 +519,7 @@ export class ChatService {
     const bot = conv.chatbot_id ? await store.getChatbot(conv.chatbot_id) : null;
     const transport = channel.type === 'playground' ? new PlaygroundTransport() : this.transportFor(channel, contact);
     await beforeSend?.();
-    const sent = await this.engine.sendOut(bot, conv, transport, { sender: 'human', text: image.caption, image, delay: 0, meta: { source: 'panel' } });
+    const sent = await this.engine.sendOut(bot, conv, transport, { sender: 'human', text: image.caption, image, delay: 0, meta: { source: 'panel', ...(byUserId ? { user_id: byUserId } : {}) } });
     if (!sent) throw new Error('No se pudo enviar la foto (revisa los registros)');
     return sent;
   }

@@ -116,7 +116,7 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
   api.post('/api/conversations/:cid/takeover', async (req: any) => {
     const conv = await conversationFor(req.user, req.params.cid);
     // Quien toma una conversación sin dueño se queda con ella (antes de la transferencia, para que no se reparta a otra persona).
-    if (!conv.assigned_user_id && req.user.account_id) await assignment.setAssignee(conv.id, req.user.id);
+    if (!conv.assigned_user_id && req.user.account_id) await assignment.setAssignee(conv.id, req.user.id, 'takeover', 'la tomó desde el panel');
     const updated = await service.takeover(conv.id, `Tomada por ${req.user.name || req.user.email}`, req.user.id);
     await log(conv, `Conversación tomada por ${req.user.email}`);
     return updated;
@@ -144,7 +144,7 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
       if (uid !== req.user.id && !isAdminUser) throw new HttpError(403, 'Solo un administrador asigna a otras personas');
       const user = (await query<assignment.Candidate & { active: boolean; account_id: string }>(`SELECT id, name, email, role, phone, notify_whatsapp, active, account_id FROM users WHERE id = $1`, [uid]))[0];
       if (!user || user.account_id !== conv.account_id || !user.active || user.role === 'superadmin') throw new HttpError(400, 'Esa persona no pertenece a esta cuenta');
-      await assignment.setAssignee(conv.id, user.id);
+      await assignment.setAssignee(conv.id, user.id, 'manual', `asignada por ${req.user.email}`);
       target = user;
     }
     await log(conv, target ? `Conversación asignada a ${target.email} por ${req.user.email}` : `Conversación sin asignar (${req.user.email})`);
@@ -227,7 +227,7 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
       await service.takeover(conv.id, `${req.user.name || req.user.email} respondió desde el panel`);
     }
     try {
-      return await service.sendManual(conv.id, b.text);
+      return await service.sendManual(conv.id, b.text, req.user.id);
     } catch (e: any) {
       throw new HttpError(400, e?.message ?? String(e));
     }
@@ -242,7 +242,7 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
         if (b.takeover && conv.status === 'bot') {
           await service.takeover(conv.id, `${req.user.name || req.user.email} respondió desde el panel`);
         }
-      });
+      }, req.user.id);
     } catch (e: any) {
       const msg = e?.message ?? String(e);
       throw new HttpError(msg === 'Foto no encontrada' ? 404 : 400, msg);

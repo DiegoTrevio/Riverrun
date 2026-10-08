@@ -23,6 +23,7 @@ import { apiV1Routes } from './routes/api-v1.js';
 import { exportRoutes } from './routes/export.js';
 import { knowledgeImportRoutes } from './routes/import.js';
 import { onboardingRoutes } from './routes/onboarding.js';
+import { analyticsRoutes } from './routes/analytics.js';
 import { publicRoutes } from './routes/public.js';
 import { signupRoutes } from './routes/signup.js';
 import { installErrorHandler } from './routes/util.js';
@@ -93,6 +94,7 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
     await automationRoutes(api, service);
     await agendaRoutes(api, service);
     await onboardingRoutes(api);
+    await analyticsRoutes(api);
     await knowledgeImportRoutes(api, opts.ai);
     await billingRoutes(api);
     await exportRoutes(api);

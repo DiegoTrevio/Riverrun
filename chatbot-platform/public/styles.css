@@ -46,7 +46,8 @@ h3 { font-size: 15px; margin: 16px 0 8px; }
 .sidebar .spacer { flex: 1; }
 .main { padding: 24px 28px; max-width: 1200px; width: 100%; }
 @media (max-width: 800px) {
-  .layout { grid-template-columns: 1fr; }
+  .layout { grid-template-columns: minmax(0, 1fr); }
+  .layout > * { min-width: 0; }
   .sidebar { flex-direction: row; flex-wrap: wrap; border-right: 0; border-bottom: 1px solid var(--border); }
   .sidebar .spacer { display: none; }
   .main { padding: 16px; }
