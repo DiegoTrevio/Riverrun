@@ -250,7 +250,7 @@ export async function getAppointment(id: string) {
   return queryOne<Appointment>('SELECT * FROM appointments WHERE id = $1', [id]);
 }
 
-export async function listAppointments(accountId: string | null, opts: { from?: Date; to?: Date; contactId?: string; status?: string } = {}) {
+export async function listAppointments(accountId: string | null, opts: { from?: Date; to?: Date; contactId?: string; status?: string; visibleTo?: string } = {}) {
   const params: unknown[] = [];
   const where: string[] = [];
   const add = (sql: string, v: unknown) => {
@@ -262,6 +262,12 @@ export async function listAppointments(accountId: string | null, opts: { from?: 
   if (opts.to) add('a.starts_at < ?', opts.to);
   if (opts.contactId) add('a.contact_id = ?', opts.contactId);
   if (opts.status) add('a.status = ?', opts.status);
+  if (opts.visibleTo) {
+    // Un agente ve las citas asignadas a él y las de sus conversaciones o contactos.
+    params.push(opts.visibleTo);
+    const p = `$${params.length}`;
+    where.push(`(a.assigned_user_id = ${p} OR c.assigned_user_id = ${p} OR a.contact_id IN (SELECT contact_id FROM conversations WHERE assigned_user_id = ${p}))`);
+  }
   return query<Appointment & { assigned_user_name: string | null; channel_type: string | null }>(
     `SELECT a.*, u.name AS assigned_user_name, ch.type AS channel_type FROM appointments a
        LEFT JOIN users u ON u.id = a.assigned_user_id
@@ -270,6 +276,20 @@ export async function listAppointments(accountId: string | null, opts: { from?: 
      ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY a.starts_at LIMIT 1000`,
     params,
   );
+}
+
+/** Persona a la que está asignada una conversación (null = sin asignar). */
+export async function assigneeOf(conversationId: string): Promise<string | null> {
+  return (await queryOne<{ assigned_user_id: string | null }>(`SELECT assigned_user_id FROM conversations WHERE id = $1`, [conversationId]))?.assigned_user_id ?? null;
+}
+
+/** ¿Puede esta persona ver la cita? Lo mismo que el listado: asignada a ella, o de una conversación o contacto suyo. */
+export async function appointmentVisibleTo(appointmentId: string, userId: string) {
+  return !!(await queryOne(
+    `SELECT 1 FROM appointments a LEFT JOIN conversations c ON c.id = a.conversation_id
+     WHERE a.id = $1 AND (a.assigned_user_id = $2 OR c.assigned_user_id = $2 OR a.contact_id IN (SELECT contact_id FROM conversations WHERE assigned_user_id = $2))`,
+    [appointmentId, userId],
+  ));
 }
 
 /* ------------------------------ Notificaciones ------------------------------ */

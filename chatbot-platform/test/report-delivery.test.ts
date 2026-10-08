@@ -25,6 +25,8 @@ before(async () => {
   await waitFor(() => h.sent.length >= 1);
   await h.idle();
   convId = (await h.conversationFor()).id;
+  // Un agente solo ve las conversaciones que tiene asignadas: esta es de Ana.
+  assert.equal((await h.authed('PUT', `/api/conversations/${convId}/assign`, { user_id: ana.id })).statusCode, 200);
 });
 after(async () => { if (h) await h.app.close(); await pool.end(); });
 
@@ -55,6 +57,8 @@ t('un mensaje nuevo marca el resumen como desactualizado', async () => {
 });
 
 t('cualquier integrante envía al equipo; se informa el resultado de cada canal', async () => {
+  // Beto envía desde una conversación que tiene asignada (la de Ana vuelve a ella al terminar).
+  assert.equal((await h.authed('PUT', `/api/conversations/${convId}/assign`, { user_id: beto.id })).statusCode, 200);
   const before = h.sent.length;
   const res = await beto.api('POST', `/api/conversations/${convId}/report/send`, { user_ids: [ana.id], note: 'Revisar hoy' });
   assert.equal(res.statusCode, 200, res.body);
@@ -71,6 +75,7 @@ t('cualquier integrante envía al equipo; se informa el resultado de cada canal'
   assert.match(wa!.text, /20 tacos|tacos/);
   // El resumen se actualizó antes de enviar
   assert.equal(body.stale, false);
+  assert.equal((await h.authed('PUT', `/api/conversations/${convId}/assign`, { user_id: ana.id })).statusCode, 200);
 });
 
 t('si la IA falla se envía el último resumen con una advertencia', async () => {

@@ -209,6 +209,7 @@ export class ChatService {
         title: '⚠️ Un cliente espera respuesta',
         body: `${who} (${channel.name}) escribió y el asistente no pudo responder (servicio de IA no disponible). Contéstale desde el panel.`,
         link: `#/conversation/${conversationId}`,
+        conversationId,
         kind: 'ai_error',
       });
     } catch (e: any) {
@@ -335,6 +336,7 @@ export class ChatService {
           title: '🚨 Posible emergencia en una conversación',
           body: `${customerLabel(contact)} (${channel.name}): "${content.slice(0, 200)}". Atiéndelo cuanto antes.`,
           link: `#/conversation/${conv.id}`,
+          conversationId: conv.id,
           kind: 'safety',
         }).catch(() => undefined);
       }

@@ -105,6 +105,8 @@ t('reparto por turnos: cada persona recibe su parte y las reasignaciones no borr
 
 t('mensajes que una persona envía desde el panel se cuentan por esa persona', async () => {
   const conv = await chat(newPhone());
+  // Un agente solo escribe en las conversaciones que tiene asignadas.
+  assert.equal((await h.authed('PUT', `/api/conversations/${conv.id}/assign`, { user_id: anaId })).statusCode, 200);
   const before = await stats('range=today');
   const sent = await ana('POST', `/api/conversations/${conv.id}/send`, { text: 'Hola, soy Ana, te confirmo tu cita', takeover: true });
   assert.equal(sent.statusCode, 200, sent.body);

@@ -61,6 +61,25 @@ export async function channelFor(user: User, id: string) {
   return assertAccount(user, ch, 'Canal no encontrado');
 }
 
+/**
+ * Un agente solo ve las conversaciones que tiene asignadas: las demás no existen para él (404, igual que si fueran de otra cuenta).
+ * El administrador ve todas las de su cuenta.
+ */
+export function canSeeConversation(user: User, conv: { account_id: string; assigned_user_id?: string | null }): boolean {
+  if (!canAccessAccount(user, conv.account_id)) return false;
+  return user.role !== 'agent' || conv.assigned_user_id === user.id;
+}
+
 export async function conversationFor(user: User, id: string) {
-  return assertAccount(user, await store.getConversation(id), 'Conversación no encontrada');
+  const conv = await store.getConversation(id);
+  if (!conv || !canSeeConversation(user, conv)) throw notFound('Conversación no encontrada');
+  return conv;
+}
+
+/** Un contacto (uno por conversación) es visible si su conversación lo es para quien lo pide. */
+export async function contactFor(user: User, id: string) {
+  const contact = await store.getContact(id);
+  if (!contact || !canAccessAccount(user, contact.account_id)) throw notFound('Contacto no encontrado');
+  if (user.role === 'agent' && !(await store.contactAssignedTo(contact.id, user.id))) throw notFound('Contacto no encontrado');
+  return contact;
 }

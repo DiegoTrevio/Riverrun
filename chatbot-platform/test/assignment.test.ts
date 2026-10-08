@@ -9,6 +9,9 @@ let h: Awaited<ReturnType<typeof createHarness>>;
 const assignment = await import('../src/automation/assignment.js');
 
 const team: { id: string; email: string; api: Awaited<ReturnType<typeof h.loginAs>> }[] = [];
+/** Dueño (administrador): ve las conversaciones sin asignar y recibe sus avisos; los agentes solo las suyas. */
+let ownerId = '';
+let ownerApi: Awaited<ReturnType<typeof h.loginAs>>;
 let phoneN = 0;
 const settings = (assignmentPatch: Record<string, unknown>) => h.authed('PUT', `/api/settings?account_id=${h.accountId}`, { assignment: assignmentPatch });
 const notices = async (userId: string, kind?: string) => (await pool.query(`SELECT title, kind FROM notifications WHERE user_id = $1 ${kind ? `AND kind = '${kind}'` : ''} ORDER BY id`, [userId])).rows;
@@ -36,6 +39,10 @@ before(async () => {
     assert.equal(r.statusCode, 200, r.body);
     team.push({ id: r.json().id, email, api: await h.loginAs(email, 'clave-equipo-1') });
   }
+  const owner = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'dueno@equipo.mx', name: 'Dueño', password: 'clave-equipo-1', role: 'admin' });
+  assert.equal(owner.statusCode, 200, owner.body);
+  ownerId = owner.json().id;
+  ownerApi = await h.loginAs('dueno@equipo.mx', 'clave-equipo-1');
   const rule = await h.authed('POST', '/api/automations', { account_id: h.accountId, name: 'Quiere una persona', trigger: { type: 'message_received', match: 'keywords', keywords: ['humano'] }, actions: [{ type: 'handoff', reason: 'Lo pidió el cliente' }] });
   assert.equal(rule.statusCode, 200, rule.body);
 });
@@ -44,11 +51,13 @@ after(async () => {
   await pool.end();
 });
 
-t('sin reparto activado: la transferencia avisa a todo el equipo y nadie queda asignado', async () => {
+t('sin reparto activado: la transferencia avisa al dueño y nadie queda asignado; un agente no recibe lo que no tiene asignado', async () => {
+  const beforeOwner = (await notices(ownerId, 'handoff')).length;
   const c = await handoffConversation();
   assert.equal(c.status, 'human');
   assert.equal(c.assigned_user_id, null);
-  for (const u of team) assert.ok((await notices(u.id, 'handoff')).length >= 1, 'todos reciben el aviso general');
+  assert.equal((await notices(ownerId, 'handoff')).length, beforeOwner + 1, 'el dueño recibe el aviso general');
+  for (const u of team) assert.equal((await notices(u.id, 'handoff')).length, 0, 'un agente no recibe avisos de conversaciones que no tiene asignadas');
 });
 
 t('con round robin: cada transferencia va a la siguiente persona y solo a ella le llega el aviso', async () => {
@@ -92,24 +101,30 @@ t('turnos simultáneos: 12 reparticiones a la vez quedan parejas, sin repetir ni
   assert.deepEqual([...counts.values()].sort(), [4, 4, 4]);
 });
 
-t('si nadie está disponible, se avisa a todo el equipo como antes (no se pierde la transferencia)', async () => {
+t('si nadie está disponible, el aviso general llega al dueño (no se pierde la transferencia)', async () => {
   for (const u of team) await h.authed('PUT', `/api/users/${u.id}`, { available: false });
-  const before = (await notices(team[0].id, 'handoff')).length;
-  const c = await handoffConversation();
-  assert.equal(c.status, 'human');
-  assert.equal(c.assigned_user_id, null);
-  assert.equal((await notices(team[0].id, 'handoff')).length, before + 1);
-  for (const u of team) await h.authed('PUT', `/api/users/${u.id}`, { available: true });
+  try {
+    const before = (await notices(ownerId, 'handoff')).length;
+    const c = await handoffConversation();
+    assert.equal(c.status, 'human');
+    assert.equal(c.assigned_user_id, null);
+    assert.equal((await notices(ownerId, 'handoff')).length, before + 1);
+  } finally {
+    // Siempre se devuelve la disponibilidad: si falla, no debe contaminar las pruebas siguientes.
+    for (const u of team) await h.authed('PUT', `/api/users/${u.id}`, { available: true });
+  }
 });
 
-t('"avisar también a todo el equipo" y solo entre personas elegidas', async () => {
+t('"avisar también al dueño" y solo entre personas elegidas', async () => {
   await settings({ enabled: true, roles: ['agent'], user_ids: [team[0].id, team[2].id], notify_all: true });
-  const beforeBeto = (await notices(team[1].id)).length;
+  const beforeOwner = (await notices(ownerId, 'handoff')).length;
+  const beforeBeto = (await notices(team[1].id, 'handoff')).length;
   const picks = new Set<string>();
   for (let i = 0; i < 4; i++) picks.add((await handoffConversation()).assigned_user_id);
   assert.deepEqual([...picks].sort(), [team[0].id, team[2].id].sort(), 'solo entre las elegidas');
-  await waitFor(async () => (await notices(team[1].id)).length - beforeBeto >= 4, 5000); // el aviso general sale justo después del de la persona asignada
-  assert.equal((await notices(team[1].id)).length - beforeBeto, 4, 'Beto no recibe conversaciones, pero sí el aviso general');
+  await waitFor(async () => (await notices(ownerId, 'handoff')).length - beforeOwner >= 4, 5000); // el aviso general sale justo después del de la persona asignada
+  assert.equal((await notices(ownerId, 'handoff')).length - beforeOwner, 4, 'el dueño recibe el aviso general de cada transferencia');
+  assert.equal((await notices(team[1].id, 'handoff')).length - beforeBeto, 0, 'Beto no tiene estas conversaciones: no recibe ni el aviso general');
   await settings({ enabled: true, roles: ['agent'], user_ids: [], notify_all: false });
 });
 
@@ -126,31 +141,37 @@ t('regla "asignar": avisa a la persona del turno y puede pasar la conversación 
   assert.ok(n.some((x) => /Te asignaron/.test(x.title)));
 });
 
-t('regla "alertar" por turnos: un solo aviso por evento, rotando', async () => {
+t('regla "alertar" por turnos: el aviso de una conversación sin asignar llega al dueño, no a un agente que no la ve', async () => {
   await h.authed('POST', '/api/automations', { account_id: h.accountId, name: 'Aviso rotativo', trigger: { type: 'message_received', match: 'keywords', keywords: ['catalogo'] }, actions: [{ type: 'alert_team', message: 'Piden catálogo', roles: ['agent'], round_robin: true }] });
-  const before = Object.fromEntries(await Promise.all(team.map(async (u) => [u.id, (await notices(u.id, 'alert')).length])));
+  const before = Object.fromEntries(await Promise.all([...team, { id: ownerId }].map(async (u) => [u.id, (await notices(u.id, 'alert')).length])));
   for (let i = 0; i < 3; i++) await h.webhook('mándame el catalogo', { phone: `52155900001${i}` });
-  await waitFor(async () => { await h.service.automator.settleAll(); const tot = (await Promise.all(team.map(async (u) => (await notices(u.id, 'alert')).length - before[u.id]))).reduce((a, b) => a + b, 0); return tot >= 3; }, 8000);
-  for (const u of team) assert.equal((await notices(u.id, 'alert')).length - before[u.id], 1, 'cada persona recibió uno');
+  await waitFor(async () => { await h.service.automator.settleAll(); return (await notices(ownerId, 'alert')).length - before[ownerId] >= 3; }, 8000);
+  assert.equal((await notices(ownerId, 'alert')).length - before[ownerId], 3, 'el dueño recibe cada aviso');
+  for (const u of team) assert.equal((await notices(u.id, 'alert')).length - before[u.id], 0, 'un agente no recibe avisos de conversaciones sin asignar');
 });
 
 t('asignación manual: permisos, validaciones y filtros de la lista', async () => {
   const c = await h.conversationFor('5215590000001');
   const [ana, beto] = team;
+  // Sin asignar, el agente no la ve: ni siquiera puede asignársela a sí mismo
+  assert.equal((await h.authed('PUT', `/api/conversations/${c.id}/assign`, { user_id: null })).statusCode, 200);
+  assert.equal((await ana.api('PUT', `/api/conversations/${c.id}/assign`, { user_id: 'me' })).statusCode, 404);
+  assert.equal((await h.authed('PUT', `/api/conversations/${c.id}/assign`, { user_id: ana.id })).statusCode, 200);
   // Un agente solo se asigna a sí mismo
   assert.equal((await ana.api('PUT', `/api/conversations/${c.id}/assign`, { user_id: beto.id })).statusCode, 403);
   assert.equal((await ana.api('PUT', `/api/conversations/${c.id}/assign`, { user_id: 'next' })).statusCode, 403);
   assert.equal((await ana.api('PUT', `/api/conversations/${c.id}/assign`, { user_id: 'me' })).statusCode, 200);
   const mine = (await ana.api('GET', '/api/conversations?assigned=me')).json();
   assert.ok(mine.length >= 1 && mine.every((x: any) => x.assigned_user_id === ana.id));
-  assert.ok((await ana.api('GET', '/api/conversations?assigned=none')).json().every((x: any) => x.assigned_user_id === null));
+  // Un agente no amplía el listado con filtros por persona: solo ve las suyas.
+  assert.ok((await ana.api('GET', '/api/conversations?assigned=none')).json().every((x: any) => x.assigned_user_id === ana.id));
   const detail = (await ana.api('GET', `/api/conversations/${c.id}`)).json();
   assert.equal(detail.assignee.id, ana.id);
   // El administrador sí asigna a otros, y Beto recibe el aviso
   assert.equal((await h.authed('PUT', `/api/conversations/${c.id}/assign`, { user_id: beto.id })).statusCode, 200);
   assert.ok((await notices(beto.id, 'assignment')).length >= 1);
-  // Ana ya no es la dueña: no puede soltarla
-  assert.equal((await ana.api('PUT', `/api/conversations/${c.id}/assign`, { user_id: null })).statusCode, 403);
+  // Ana ya no es la dueña: ni la ve, así que no puede soltarla
+  assert.equal((await ana.api('PUT', `/api/conversations/${c.id}/assign`, { user_id: null })).statusCode, 404);
   // Una persona de otra cuenta no es válida
   const other = await h.authed('POST', '/api/accounts', { name: 'Otra', admin: { name: 'Otra', email: 'otra@otra.mx', password: 'clave-segura-1' } });
   const foreign = (await pool.query(`SELECT id FROM users WHERE email = 'otra@otra.mx'`)).rows[0].id;
@@ -165,18 +186,20 @@ t('asignación manual: permisos, validaciones y filtros de la lista', async () =
   await h.authed('PUT', `/api/users/${beto.id}`, { active: true });
 });
 
-t('tomar una conversación sin dueña te la asigna', async () => {
+t('tomar una conversación sin dueña: un agente no la ve; la toma el dueño y queda asignada a él', async () => {
   const phone = '5215590000099';
   await h.webhook('hola', { phone });
   await waitFor(async () => !!(await h.conversationFor(phone)), 8000);
   const c = await h.conversationFor(phone);
   assert.equal(c.assigned_user_id, null);
-  const selfBefore = (await notices(team[2].id, 'assignment')).length;
-  assert.equal((await team[2].api('POST', `/api/conversations/${c.id}/takeover`)).statusCode, 200);
+  const selfBefore = (await notices(ownerId, 'assignment')).length;
+  // Un agente no ve una conversación sin asignar: no puede tomarla. La toma el dueño.
+  assert.equal((await team[2].api('POST', `/api/conversations/${c.id}/takeover`)).statusCode, 404);
+  assert.equal((await ownerApi('POST', `/api/conversations/${c.id}/takeover`)).statusCode, 200);
   await h.service.automator.settleAll(); // la transferencia dispara el reparto en segundo plano: no debe quitársela
   await new Promise((r) => setTimeout(r, 300));
-  assert.equal((await h.conversationFor(phone)).assigned_user_id, team[2].id);
-  assert.equal((await notices(team[2].id, 'assignment')).length, selfBefore, 'no se le avisa de lo que ella misma tomó');
+  assert.equal((await h.conversationFor(phone)).assigned_user_id, ownerId);
+  assert.equal((await notices(ownerId, 'assignment')).length, selfBefore, 'no se le avisa de lo que ella misma tomó');
 });
 
 t('aviso interno manual: a todos, a un rol, a personas, por turnos; validaciones y permisos', async () => {

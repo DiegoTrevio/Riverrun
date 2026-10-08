@@ -212,6 +212,7 @@ export class Agenda {
         body: `${result.customer_name || 'Cliente'}${result.customer_phone ? ` (+${result.customer_phone.replace(/^\+/, '')})` : ''} · ${when}${o.source === 'bot' ? ' · agendada por el bot' : ''}`,
         link: o.conversation ? `#/conversation/${o.conversation.id}` : '#/agenda',
         userIds: result.assigned_user_id ? [result.assigned_user_id] : undefined,
+        staffId: result.assigned_user_id ?? null,
       });
     }
     if (!simulated) await syncIfLinked(o.accountId, result.id).catch(() => undefined);
@@ -231,6 +232,7 @@ export class Agenda {
       body: `${a.customer_name || 'Cliente'} · ${when} · ${by === 'bot' ? 'cancelada por el cliente en el chat' : reason}`,
       link: a.conversation_id ? `#/conversation/${a.conversation_id}` : '#/agenda',
       userIds: a.assigned_user_id ? [a.assigned_user_id] : undefined,
+      staffId: a.assigned_user_id ?? null,
     });
     await syncIfLinked(a.account_id, a.id).catch(() => undefined);
     const updated = { ...a, status: 'cancelled' as const, cancel_reason: reason };

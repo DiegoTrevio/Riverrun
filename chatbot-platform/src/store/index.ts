@@ -586,6 +586,11 @@ export async function getConversation(id: string) {
   return queryOne<Conversation>('SELECT * FROM conversations WHERE id = $1', [id]);
 }
 
+/** ¿La conversación de este contacto está asignada a esta persona? (Lo que un agente puede ver de un contacto.) */
+export async function contactAssignedTo(contactId: string, userId: string) {
+  return !!(await queryOne(`SELECT 1 FROM conversations WHERE contact_id = $1 AND assigned_user_id = $2`, [contactId, userId]));
+}
+
 export async function setConversationStatus(id: string, status: ConversationStatus, reason = '') {
   return queryOne<Conversation>(
     `UPDATE conversations SET status = $2, handoff_reason = $3, status_changed_at = now() WHERE id = $1 RETURNING *`,

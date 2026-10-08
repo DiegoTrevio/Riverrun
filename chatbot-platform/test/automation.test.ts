@@ -51,6 +51,14 @@ t('regla por palabra clave: responde sin IA, etiqueta y alerta al equipo (panel 
       { type: 'alert_team', message: '{{nombre}} pidió la lista de precios: "{{mensaje}}"', roles: ['agent'] },
     ],
   });
+  // Un agente solo recibe avisos de sus conversaciones: la conversación queda asignada a Lucía antes de la consulta.
+  h.setScript(() => ({ messages: ['Hola, ¿en qué te ayudo?'] }));
+  await h.webhook('hola', { phone: '5215510001001' });
+  await h.idle();
+  const luciaApi = await h.loginAs('lucia@hotel.mx', 'clave-lucia-1');
+  assert.equal((await h.authed('PUT', `/api/conversations/${(await convOf('5215510001001')).id}/assign`, { user_id: (await luciaApi('GET', '/api/me')).json().user.id })).statusCode, 200);
+  // El aviso de la asignación ya es de Lucía: se marca leído para contar solo el de la regla.
+  await luciaApi('POST', '/api/notifications/read', {});
   h.reset();
   h.setScript(() => ({ messages: ['respuesta de la IA'] }));
   await h.webhook('me pasas la lista de precios?', { phone: '5215510001001' });
@@ -150,6 +158,12 @@ t('seguimiento si el cliente no responde (una sola vez) y se cancela si responde
 
 t('intención detectada por la IA: queja → transferir y alertar', async () => {
   await rule({ name: 'Quejas', trigger: { type: 'intent', intent: 'queja', description: 'El cliente está molesto o reporta un problema' }, actions: [{ type: 'handoff', reason: 'Queja del cliente' }, { type: 'alert_team', message: 'Queja de {{nombre}}: {{mensaje}}' }] });
+  // Un agente solo recibe avisos de sus conversaciones: la conversación queda asignada a Lucía antes de la queja.
+  h.setScript(() => ({ messages: ['Hola, ¿en qué te ayudo?'] }));
+  await h.webhook('hola', { phone: '5215510001005' });
+  await h.idle();
+  const luciaApi = await h.loginAs('lucia@hotel.mx', 'clave-lucia-1');
+  assert.equal((await h.authed('PUT', `/api/conversations/${(await convOf('5215510001005')).id}/assign`, { user_id: (await luciaApi('GET', '/api/me')).json().user.id })).statusCode, 200);
   h.reset();
   h.setScript((req) => {
     assert.match(req.messages[0].content, /Intenciones a detectar[\s\S]*`queja`: El cliente está molesto/);
@@ -331,6 +345,8 @@ t('agenda desde el panel: agendar con confirmación, reprogramar, completar, can
   const slots = (await h.authed('GET', `/api/services/${serviceId}/slots`)).json();
   h.reset();
   const agent = await h.loginAs('lucia@hotel.mx', 'clave-lucia-1');
+  // Un agente solo agenda en sus conversaciones: esta es suya.
+  assert.equal((await h.authed('PUT', `/api/conversations/${conv.id}/assign`, { user_id: (await agent('GET', '/api/me')).json().user.id })).statusCode, 200);
   const r = await agent('POST', '/api/appointments', { service_id: serviceId, slot: slots[0].key, conversation_id: conv.id, notes: 'Trae identificación' });
   assert.equal(r.statusCode, 200, r.body);
   assert.match(h.sent.find((s) => s.to === '5215510002001')!.text, /quedó agendada para el .* Lugar: Recepción del hotel\./);

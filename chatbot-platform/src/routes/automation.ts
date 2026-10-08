@@ -117,6 +117,8 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
   /* ------------------------------ Secuencias ------------------------------ */
   api.get('/api/sequences', async (req: any) => {
     const list = await astore.listSequences(scopeAccount(req.user, req.query.account_id));
+    // Los totales de inscritos son de toda la cuenta: el agente no los ve.
+    if (req.user.role === 'agent') return list.map((s) => ({ ...s, enrollments: {} }));
     const counts = await query<{ sequence_id: string; status: string; n: number }>(
       `SELECT sequence_id, status, count(*)::int AS n FROM sequence_enrollments WHERE sequence_id = ANY($1::uuid[]) GROUP BY 1, 2`,
       [list.map((s) => s.id)],

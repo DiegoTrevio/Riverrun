@@ -27,6 +27,9 @@ before(async () => {
   await h.createBot();
   const u = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'equipo@clinica.mx', name: 'Equipo', password: 'clave-equipo-1', role: 'agent' });
   assert.equal(u.statusCode, 200, u.body);
+  // Las conversaciones sin asignar avisan a los administradores: los agentes solo reciben lo que tienen asignado.
+  const owner = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'dueno@clinica.mx', name: 'Dueño', password: 'clave-equipo-1', role: 'admin' });
+  assert.equal(owner.statusCode, 200, owner.body);
 });
 after(async () => {
   if (h) await h.app.close();

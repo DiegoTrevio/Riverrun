@@ -103,7 +103,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
   /* ------------------------------ Cuentas ------------------------------ */
   api.get('/api/accounts', async (req) => {
     const all = req.user.role === 'superadmin';
-    return query(
+    const rows = await query(
       `SELECT a.*,
          (SELECT count(*)::int FROM chatbots b WHERE b.account_id = a.id) AS chatbots,
          (SELECT count(*)::int FROM channels c WHERE c.account_id = a.id AND c.type <> 'playground') AS channels,
@@ -119,6 +119,10 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
        FROM accounts a ${all ? '' : 'WHERE a.id = $1'} ORDER BY a.created_at DESC`,
       all ? [] : [req.user.account_id],
     );
+    // El agente ve su cuenta sin los totales ni los datos del dueño: son de la cuenta entera.
+    if (req.user.role !== 'agent') return rows;
+    const hidden = ['users', 'conversations', 'conversations_month', 'ai_cost_month', 'last_activity_at', 'owner_email', 'owner_verified'];
+    return rows.map((r: Record<string, unknown>) => Object.fromEntries(Object.entries(r).filter(([k]) => !hidden.includes(k))));
   });
 
   /* ------------------------------ Consumo de IA ------------------------------ */
@@ -353,7 +357,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
   });
 
   /* ------------------------------ Estadísticas ------------------------------ */
-  api.get('/api/stats', async (req: any) => {
+  api.get('/api/stats', { preHandler: requireRole('admin') }, async (req: any) => {
     const account = scopeAccount(req.user, req.query.account_id);
     const rows = await query(
       `SELECT b.id, b.name, b.active, b.account_id,

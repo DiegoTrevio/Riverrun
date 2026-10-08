@@ -35,7 +35,7 @@ export interface EngineExtensions {
   /** Horario y zona horaria de la cuenta. */
   business?(accountId: string): Promise<BusinessInfo | null>;
   /** Avisa al equipo (panel y WhatsApp de quien lo tenga activado). */
-  alertTeam?(accountId: string, o: { title: string; body: string; link?: string; kind?: string }): Promise<void>;
+  alertTeam?(accountId: string, o: { title: string; body: string; link?: string; kind?: string; conversationId?: string }): Promise<void>;
   /**
    * Programa el envío posterior de una foto que el sistema debía mandar (la plataforma la rechazó o no cupo en la
    * respuesta). `allowEnded`: aunque la conversación ya pasó a una persona o se cerró en este mismo momento.
@@ -442,7 +442,7 @@ export class Engine {
         } else if (bot.flow.on_goal_action === 'notify' && channel.type !== 'playground' && this.ext.alertTeam) {
           const who = contact.name || contact.push_name || contact.phone || 'Un cliente';
           const brief = await briefReport(conv.id, 1500, { customer: false }).catch(() => '');
-          await this.ext.alertTeam(conv.account_id, { title: '🎯 Objetivo cumplido', body: `${who} (${channel.name}): ${bot.flow.goal}${brief ? `\n\n${brief}` : ''}`, link: `#/conversation/${conv.id}`, kind: 'goal' });
+          await this.ext.alertTeam(conv.account_id, { title: '🎯 Objetivo cumplido', body: `${who} (${channel.name}): ${bot.flow.goal}${brief ? `\n\n${brief}` : ''}`, link: `#/conversation/${conv.id}`, conversationId: conv.id, kind: 'goal' });
         }
       }
     }
@@ -548,7 +548,7 @@ export class Engine {
   /** Aviso al equipo (panel y WhatsApp de quien lo tenga activado). Nunca interrumpe la conversación si falla. */
   private async notify(conv: Conversation, channel: Channel, title: string, body: string, kind: string) {
     if (channel.type === 'playground' || !this.ext.alertTeam) return;
-    await this.ext.alertTeam(conv.account_id, { title, body, link: `#/conversation/${conv.id}`, kind }).catch((e) =>
+    await this.ext.alertTeam(conv.account_id, { title, body, link: `#/conversation/${conv.id}`, kind, conversationId: conv.id }).catch((e) =>
       logEvent({ level: 'error', source: 'channel', message: `No se pudo avisar al equipo: ${e?.message ?? e}`, accountId: conv.account_id, conversationId: conv.id }),
     );
   }

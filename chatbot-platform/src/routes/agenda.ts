@@ -12,7 +12,12 @@ import type { User } from '../types.js';
 import { parse } from './util.js';
 
 const serviceFor = async (user: User, id: string) => assertAccount(user, await astore.getService(id), 'Servicio no encontrado');
-const appointmentFor = async (user: User, id: string) => assertAccount(user, await astore.getAppointment(id), 'Cita no encontrada');
+/** Un agente solo ve sus citas (asignadas a él o de sus conversaciones o contactos); las demás no existen para él. */
+const appointmentFor = async (user: User, id: string) => {
+  const a = assertAccount(user, await astore.getAppointment(id), 'Cita no encontrada');
+  if (user.role === 'agent' && !(await astore.appointmentVisibleTo(a.id, user.id))) throw new HttpError(404, 'Cita no encontrada');
+  return a;
+};
 
 async function checkUsers(accountId: string, ids: string[]) {
   if (!ids.length) return;
@@ -76,7 +81,8 @@ export async function agendaRoutes(api: FastifyInstance, service: ChatService) {
     const from = q.from ? new Date(q.from) : new Date(Date.now() - 86400_000);
     const to = q.to ? new Date(q.to) : new Date(Date.now() + 60 * 86400_000);
     if (isNaN(from.getTime()) || isNaN(to.getTime())) throw new HttpError(400, 'Fechas inválidas');
-    return astore.listAppointments(scopeAccount(req.user, q.account_id), { from, to, status: q.status || undefined });
+    const visibleTo = req.user.role === 'agent' ? req.user.id : undefined;
+    return astore.listAppointments(scopeAccount(req.user, q.account_id), { from, to, status: q.status || undefined, visibleTo });
   });
 
   api.post('/api/appointments', async (req: any) => {
@@ -96,7 +102,10 @@ export async function agendaRoutes(api: FastifyInstance, service: ChatService) {
     );
     const svc = await serviceFor(req.user, b.service_id);
     if (b.force && req.user.role === 'agent') throw new HttpError(403, 'Solo un administrador puede agendar fuera de los horarios disponibles');
-    await checkUsers(svc.account_id, b.assigned_user_id ? [b.assigned_user_id] : []);
+    // Un agente solo agenda citas para sí mismo: así las ve después.
+    if (req.user.role === 'agent' && b.assigned_user_id && b.assigned_user_id !== req.user.id) throw new HttpError(403, 'Solo un administrador asigna citas a otras personas');
+    const assignedUserId = req.user.role === 'agent' ? req.user.id : b.assigned_user_id;
+    await checkUsers(svc.account_id, assignedUserId ? [assignedUserId] : []);
     const conv = b.conversation_id ? await conversationFor(req.user, b.conversation_id) : null;
     if (conv && conv.account_id !== svc.account_id) throw new HttpError(400, 'La conversación es de otra cuenta');
     const contact = conv ? await store.getContact(conv.contact_id) : null;
@@ -112,7 +121,7 @@ export async function agendaRoutes(api: FastifyInstance, service: ChatService) {
       notes: b.notes,
       source: 'panel',
       force: b.force,
-      assignedUserId: b.assigned_user_id,
+      assignedUserId,
     });
     if (!r.ok) throw new HttpError(409, `${r.reason}${r.alternatives.length ? `. Disponibles: ${r.alternatives.join('; ')}` : ''}`);
     const confirmation = b.notify_customer && conv ? await service.agenda.sendConfirmation(r.appointment) : null;
@@ -132,6 +141,7 @@ export async function agendaRoutes(api: FastifyInstance, service: ChatService) {
       req.body,
     );
     if (b.force && req.user.role === 'agent') throw new HttpError(403, 'Solo un administrador puede forzar un horario');
+    if (req.user.role === 'agent' && b.assigned_user_id !== undefined && b.assigned_user_id !== req.user.id) throw new HttpError(403, 'Solo un administrador asigna citas a otras personas');
     if (b.assigned_user_id) await checkUsers(a.account_id, [b.assigned_user_id]);
     if (b.slot) {
       const r = await service.agenda.reschedule(a.id, b.slot, b.force);

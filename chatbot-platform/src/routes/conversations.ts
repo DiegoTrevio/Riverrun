@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { assertAccount, conversationFor, HttpError, scopeAccount } from '../access.js';
+import { assertAccount, contactFor, conversationFor, HttpError, scopeAccount } from '../access.js';
 import { query } from '../db.js';
 import { agentStatus } from '../engine/activation.js';
 import { logEvent } from '../logs.js';
@@ -34,10 +34,12 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
         where.push(`${col} = $${params.length}`);
       }
     }
-    if (q.assigned === 'me') { params.push(req.user.id); where.push(`c.assigned_user_id = $${params.length}`); }
+    // El agente solo ve las conversaciones que tiene asignadas (y nunca el simulador): los filtros de persona no le amplían nada.
+    if (req.user.role === 'agent') { params.push(req.user.id); where.push(`c.assigned_user_id = $${params.length}`); }
+    else if (q.assigned === 'me') { params.push(req.user.id); where.push(`c.assigned_user_id = $${params.length}`); }
     else if (q.assigned === 'none') where.push(`c.assigned_user_id IS NULL`);
     else if (q.assigned && /^[0-9a-f-]{36}$/i.test(q.assigned)) { params.push(q.assigned); where.push(`c.assigned_user_id = $${params.length}`); }
-    if (q.include_playground !== 'true') where.push(`ch.type <> 'playground'`);
+    if (req.user.role === 'agent' || q.include_playground !== 'true') where.push(`ch.type <> 'playground'`);
     if (q.search) {
       params.push(`%${q.search}%`);
       where.push(`(ct.name ILIKE $${params.length} OR ct.push_name ILIKE $${params.length} OR ct.phone ILIKE $${params.length})`);
@@ -274,7 +276,7 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
   });
 
   api.put('/api/contacts/:id', async (req: any) => {
-    const contact = assertAccount(req.user, await store.getContact(req.params.id), 'Contacto no encontrado');
+    const contact = await contactFor(req.user, req.params.id);
     const b = parse(
       z.object({
         name: z.string().max(100).optional(),

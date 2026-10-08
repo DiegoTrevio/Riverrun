@@ -280,7 +280,7 @@ export class Automator {
         }
       }
       if (ctx.settings.notify_team_on_handoff && (!assigned || asg.notify_all)) {
-        await this.alertTeam(ctx.conv.account_id, { ...alert, title: '🙋 Conversación esperando a una persona', kind: 'handoff' });
+        await this.alertTeam(ctx.conv.account_id, { ...alert, title: '🙋 Conversación esperando a una persona', kind: 'handoff', conversationId: ctx.conv.id });
       }
     }
     // Webhooks de eventos de la cuenta (Zapier, Make, CRM…). El simulador del panel no dispara avisos reales.
@@ -385,6 +385,7 @@ export class Automator {
           title: `🔔 ${rule.name}`,
           body: this.render(a.message, ctx, e),
           link: `#/conversation/${ctx.conv.id}`,
+          conversationId: ctx.conv.id,
           userIds,
           roles: a.roles,
           phones: a.phones,
@@ -501,9 +502,15 @@ export class Automator {
   /* ------------------------------ Alertas al equipo ------------------------------ */
 
   /** Notificación en el panel y, a quien lo tenga activado, por WhatsApp. */
-  async alertTeam(accountId: string, o: { title: string; body: string; link?: string; userIds?: string[]; roles?: ('admin' | 'agent')[]; phones?: string[]; kind?: string }) {
+  /**
+   * Avisa al equipo. Un aviso de una conversación (conversationId) o de una cita (staffId) llega siempre a los administradores,
+   * y a un agente solo si tiene esa conversación o cita asignada: lo demás no lo puede abrir.
+   */
+  async alertTeam(accountId: string, o: { title: string; body: string; link?: string; userIds?: string[]; roles?: ('admin' | 'agent')[]; phones?: string[]; kind?: string; conversationId?: string; staffId?: string | null }) {
     const team = await astore.teamMembers(accountId, ['admin', 'agent']);
-    const recipients = o.userIds?.length ? team.filter((u) => o.userIds!.includes(u.id)) : team.filter((u) => (o.roles ?? ['admin', 'agent']).includes(u.role as 'admin'));
+    const picked = o.userIds?.length ? team.filter((u) => o.userIds!.includes(u.id)) : team.filter((u) => (o.roles ?? ['admin', 'agent']).includes(u.role as 'admin'));
+    const owner = o.conversationId ? await astore.assigneeOf(o.conversationId) : o.staffId;
+    const recipients = o.conversationId || o.staffId !== undefined ? team.filter((u) => u.role === 'admin' || (picked.includes(u) && u.id === owner)) : picked;
     await astore.notifyUsers(accountId, recipients.map((u) => u.id), { title: o.title, body: o.body, link: o.link, kind: o.kind });
     const link = o.link ? `\n${config.publicBaseUrl}/${o.link}` : '';
     const phones = new Set([...recipients.filter((u) => u.notify_whatsapp && u.phone).map((u) => u.phone), ...(o.phones ?? []).map((p) => p.replace(/\D/g, '')).filter(Boolean)]);
