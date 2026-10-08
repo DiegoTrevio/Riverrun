@@ -3,6 +3,7 @@ import type { ChatMessage } from '../ai/provider.js';
 import type { ChannelType, Chatbot, Contact, Conversation, DataField, ImageAsset, KnowledgeItem, Message } from '../types.js';
 import type { AgendaContext } from '../automation/agenda.js';
 import { imageSendWhen } from '../types.js';
+import { GENERAL_RULES } from './agent-rules.js';
 import { keywords } from './text.js';
 
 export interface ContextInput {
@@ -43,6 +44,8 @@ export interface BusinessInfo {
   holidays: string[];
   /** ¿Está abierto en este momento? */
   openNow: boolean;
+  /** Cuándo vuelve a abrir, ya en texto (p. ej. "miércoles 14 de octubre a las 10:00"). Solo si está cerrado. */
+  nextOpen?: string;
 }
 
 const DAY_ES: [string, string][] = [['mon', 'Lunes'], ['tue', 'Martes'], ['wed', 'Miércoles'], ['thu', 'Jueves'], ['fri', 'Viernes'], ['sat', 'Sábado'], ['sun', 'Domingo']];
@@ -210,6 +213,9 @@ export function buildSystemPrompt(input: ContextInput, knowledge: KnowledgeItem[
     ].join('\n'),
   );
 
+  s.push('\n# Reglas generales (aplican en todas las conversaciones)');
+  s.push(GENERAL_RULES.map((x) => `- ${x}`).join('\n'));
+
   s.push('\n# Información del negocio');
   if (!knowledge.length) s.push('(No hay información cargada. No des datos del negocio.)');
   for (const k of knowledge) {
@@ -362,7 +368,13 @@ export function buildSystemPrompt(input: ContextInput, knowledge: KnowledgeItem[
   if (input.business) {
     s.push('\n# Horario de atención del negocio');
     s.push(hoursText(input.business));
-    s.push(`En este momento el negocio está ${input.business.openNow ? 'ABIERTO' : 'CERRADO'}.`);
+    if (input.business.openNow) s.push('En este momento el negocio está ABIERTO.');
+    else {
+      const when = input.business.nextOpen ? `a partir del ${input.business.nextOpen}` : 'en su próximo horario de atención';
+      s.push(
+        `En este momento el negocio está CERRADO. Si el cliente escribe ahora: dilo con naturalidad, indica que el equipo le responde ${when}, y mientras tanto sigue atendiéndolo con la información disponible y tomando sus datos. No prometas una respuesta inmediata del equipo.`,
+      );
+    }
   }
 
   if (input.agenda) s.push(agendaSection(input.agenda));

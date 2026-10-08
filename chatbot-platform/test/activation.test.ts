@@ -67,7 +67,8 @@ test('gate: modo palabras, pausa, reactivación y vencimiento (función pura)', 
 t('modo "solo con palabras": no responde hasta la palabra de activación; después responde normal', async () => {
   await setActivation({ mode: 'keywords', on_keywords: ['quiero info'] });
   h.reset();
-  h.setScript(() => ({ messages: ['¡Hola! Con gusto te ayudo.'] }));
+  // Respuestas distintas según la pregunta: repetir el saludo a otra pregunta ya no está permitido.
+  h.setScript((req) => ({ messages: [/alberca/.test(String(req.messages.at(-1)?.content)) ? 'Con gusto te cuento; ¿para qué fecha lo necesitas?' : '¡Hola! Con gusto te ayudo.'] }));
   const phone = '5215530000001';
   await say('hola', phone);
   assert.equal(h.calls.length, 0, 'sin palabra de activación no se llama a la IA');

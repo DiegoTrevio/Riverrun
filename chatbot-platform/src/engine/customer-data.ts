@@ -7,6 +7,11 @@ const ALIASES: Record<string, string> = {
   phone: 'telefono', celular: 'telefono', numero_telefono: 'telefono',
 };
 
+/** Cómo se llama al cliente en los avisos al equipo. */
+export function customerLabel(c: { name?: string; push_name?: string; phone?: string }): string {
+  return c.name || c.push_name || c.phone || 'Un cliente';
+}
+
 /** Stable keys for answers discovered by the assistant, without a field editor. */
 export function automaticField(label: string): DataField | null {
   const raw = normalize(label).replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');

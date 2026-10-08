@@ -3,9 +3,10 @@ import type { AiProvider } from '../ai/provider.js';
 import { recordMessage } from '../billing/limits.js';
 import { logEvent } from '../logs.js';
 import * as store from '../store/index.js';
-import type { Chatbot, Contact, Conversation, ImageAsset, Message } from '../types.js';
+import type { Channel, Chatbot, Contact, Conversation, ImageAsset, Message } from '../types.js';
+import { detectRisk, isAutomatedMessage, promisesFollowUp, repeatedCustomerText, SAFETY_MESSAGES, type RiskHit } from './safety.js';
 import { agentActive, agentStatus, offAfterReply } from './activation.js';
-import { automaticField, customerProvided } from './customer-data.js';
+import { automaticField, customerLabel, customerProvided } from './customer-data.js';
 import { CLAIM_JUDGE_PROMPT, CLAIM_JUDGE_SCHEMA } from './claims.js';
 import { buildContext, type BusinessInfo } from './context.js';
 import { semanticKnowledge } from './knowledge.js';
@@ -155,6 +156,31 @@ export class Engine {
     const log = (level: 'info' | 'warn' | 'error', source: 'engine' | 'ai' | 'validator' | 'channel', message: string, details?: unknown) =>
       logEvent({ level, source, message, details, accountId: conv.account_id, chatbotId: bot.id, channelId: conv.channel_id, conversationId: conv.id });
 
+    // 0) Emergencia o riesgo para la vida: una persona atiende de inmediato, con un mensaje fijo y sin IA.
+    const risk = detectRisk(customerText);
+    if (risk) {
+      await this.escalateRisk(bot, conv, contact, channel, transport, risk, customerText);
+      await store.markProcessed(conv.id, lastPendingId);
+      return { status: 'handoff', plan: { ...emptyPlan('handoff'), handoffReason: `riesgo: ${risk.kind}` } };
+    }
+    // 0b) Contestadores y respuestas de ausencia: no se contestan (contestarlos produce bucles).
+    if (pending.every((m) => isAutomatedMessage(m.content))) {
+      await store.markProcessed(conv.id, lastPendingId);
+      return { status: 'no_reply' };
+    }
+    // 0c) El mismo texto del cliente repetido varias veces: suele ser un contestador o un bot atrapado en un bucle.
+    // El asistente se pausa y el equipo se entera. Solo cuenta lo de los últimos 30 minutos (los bucles ocurren en
+    // segundos) y la pausa dura 4 horas: un cliente real que vuelve a escribir más tarde sí recibe respuesta.
+    const since = Date.now() - 30 * 60_000;
+    const inbound = (await store.recentMessages(conv.id, 12)).filter((m) => m.direction === 'in' && new Date(m.created_at).getTime() >= since).map((m) => m.content);
+    if (repeatedCustomerText(inbound)) {
+      await store.setAgentOff(conv.id, 'posible bucle: el cliente repite el mismo mensaje', new Date(Date.now() + 4 * 3600_000));
+      await store.markProcessed(conv.id, lastPendingId);
+      await log('warn', 'engine', 'Asistente en pausa: el cliente repite el mismo mensaje (posible contestador o bot)');
+      await this.notify(conv, channel, '🔁 Asistente en pausa: posible bucle', `${customerLabel(contact)} (${channel.name}): el mismo mensaje llegó varias veces (¿un contestador o un bot?). Si es una persona, reactiva al asistente desde la conversación.`, 'automation');
+      return { status: 'paused' };
+    }
+
     // 1) Transferencia inmediata por palabra clave (sin gastar IA).
     const kw = matchKeyword(customerText, bot.rules.handoff_keywords);
     if (kw) {
@@ -191,6 +217,12 @@ export class Engine {
     const scheduledBefore = imagesBeforeReply(images, { text: customerText, firstReply, sentIds: sentImageIds });
     const aiImages = aiSelectableImages(images);
     const autoImages = automaticImages(images, bot.flow.steps.map((x) => x.title));
+
+    // Para el validador: no repetir la respuesta anterior salvo que el cliente repita su pregunta.
+    const pendingIds = new Set(pending.map((m) => m.id));
+    const previousCustomer = history.filter((m) => m.direction === 'in' && !pendingIds.has(m.id)).at(-1)?.content ?? '';
+    const customerRepeats = normalize(customerText) === normalize(previousCustomer);
+    const recentBotTexts = history.filter((m) => m.direction === 'out').slice(-3).map((m) => m.content);
 
     // 3) La IA propone; el backend valida (con un reintento guiado).
     let correction: string | undefined;
@@ -247,6 +279,8 @@ export class Engine {
         hasPhone,
         knownData: contact.data ?? {},
         knownName: contact.name || undefined,
+        recentBotTexts,
+        customerRepeats,
       };
       const v = validateDecision({ ...lastInput, final: attempt === MAX_ATTEMPTS });
       // Modo estricto: un modelo barato revisa que lo afirmado esté respaldado (solo si lo demás ya pasó).
@@ -389,6 +423,10 @@ export class Engine {
       const failed = await this.sendPlan(bot, conv, transport, plan, meta, selectedRules);
       for (const x of failed) owed.push({ image: x.image, reason: x.reason, delaySeconds: 45 });
     }
+    // Si el asistente dijo que el equipo dará seguimiento, el equipo se entera: no depende de que alguien lo recuerde.
+    if (plan.action !== 'handoff' && plan.messages.some((m) => promisesFollowUp(m))) {
+      await this.notify(conv, channel, '🕒 Seguimiento prometido al cliente', `${customerLabel(contact)} (${channel.name}): el asistente dijo "${plan.messages.join(' ').slice(0, 200)}"`, 'follow_up');
+    }
     let summarized = false;
     if (plan.flowStep || goalReached) {
       const reached = await store.setFlowState(conv.id, plan.flowStep, goalReached);
@@ -505,6 +543,20 @@ export class Engine {
       });
       return null;
     }
+  }
+
+  /** Aviso al equipo (panel y WhatsApp de quien lo tenga activado). Nunca interrumpe la conversación si falla. */
+  private async notify(conv: Conversation, channel: Channel, title: string, body: string, kind: string) {
+    if (channel.type === 'playground' || !this.ext.alertTeam) return;
+    await this.ext.alertTeam(conv.account_id, { title, body, link: `#/conversation/${conv.id}`, kind }).catch((e) =>
+      logEvent({ level: 'error', source: 'channel', message: `No se pudo avisar al equipo: ${e?.message ?? e}`, accountId: conv.account_id, conversationId: conv.id }),
+    );
+  }
+
+  /** Riesgo para la vida o emergencia: mensaje fijo, transferencia inmediata y aviso prioritario al equipo. */
+  private async escalateRisk(bot: Chatbot, conv: Conversation, contact: Contact, channel: Channel, transport: Transport, risk: RiskHit, text: string) {
+    await this.executeHandoff(bot, conv, contact, transport, [SAFETY_MESSAGES[risk.kind][risk.lang]], risk.kind === 'selfharm' ? 'Riesgo para la vida: el cliente lo mencionó' : 'Posible emergencia: el cliente lo mencionó');
+    await this.notify(conv, channel, '🚨 Posible emergencia en una conversación', `${customerLabel(contact)} (${channel.name}): "${text.slice(0, 200)}". Atiéndelo cuanto antes.`, 'safety');
   }
 
   async executeHandoff(bot: Chatbot, conv: Conversation, contact: Contact, transport: Transport, messages: string[], reason: string, opts: { silent?: boolean } = {}) {

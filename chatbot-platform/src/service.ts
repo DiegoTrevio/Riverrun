@@ -7,7 +7,9 @@ import { Campaigns } from './automation/campaigns.js';
 import { Outbound } from './automation/outbound.js';
 import { Scheduler } from './automation/scheduler.js';
 import * as astore from './automation/store.js';
-import { isOpen } from './automation/time.js';
+import { isOpen, nextOpen, spanishDate, spanishTime } from './automation/time.js';
+import { detectRisk, maskSensitive } from './engine/safety.js';
+import { customerLabel } from './engine/customer-data.js';
 import { adapterFor } from './channels/index.js';
 import { config } from './config.js';
 import { gate } from './engine/activation.js';
@@ -54,7 +56,18 @@ export class ChatService {
       onOutbound: (conv, msg) => this.automator.onOutbound(conv, msg),
       business: async (accountId) => {
         const st = await astore.getSettings(accountId);
-        return { timezone: st.timezone, hours: st.business_hours, holidays: st.holidays, openNow: isOpen(st.business_hours, st.holidays, new Date(), st.timezone) };
+        const now = new Date();
+        const openNow = isOpen(st.business_hours, st.holidays, now, st.timezone);
+        // Cuándo vuelve a abrir: el asistente lo dice al cliente en vez de prometer una respuesta inmediata.
+        const hasHours = Object.values(st.business_hours).some((w) => w.length > 0);
+        const next = !openNow && hasHours ? nextOpen(st.business_hours, st.holidays, now, st.timezone) : null;
+        return {
+          timezone: st.timezone,
+          hours: st.business_hours,
+          holidays: st.holidays,
+          openNow,
+          nextOpen: next ? `${spanishDate(next, st.timezone)} a las ${spanishTime(next, st.timezone)}` : undefined,
+        };
       },
       alertTeam: (accountId, o) => this.automator.alertTeam(accountId, o),
       deferImage: async (conv, image, o) => {
@@ -243,6 +256,8 @@ export class ChatService {
       }
     }
 
+    // Datos sensibles: el número de una tarjeta se guarda solo con sus últimos 4 dígitos.
+    content = maskSensitive(content);
     // Mensajes viejos (reconexión, reenvíos de la plataforma) se guardan pero no se contestan.
     const stale = Date.now() / 1000 - msg.timestamp > MAX_MESSAGE_AGE_SECONDS;
     const triggers = msg.type !== 'reaction' && !stale;
@@ -286,6 +301,16 @@ export class ChatService {
     // Activadores y desactivadores del asistente (palabras que lo encienden o lo apagan en esta conversación).
     if (canReply) canReply = await this.applyGate(bot!, channel, current, contact, content);
     if (!canReply) {
+      // El asistente no va a responder (pausa, palabra de activación o una persona atiende): si hay una emergencia,
+      // el equipo se entera igual. Con el asistente activo, el motor se encarga de responder y avisar.
+      if (triggers && channel.type !== 'playground' && detectRisk(content)) {
+        await this.automator.alertTeam(channel.account_id, {
+          title: '🚨 Posible emergencia en una conversación',
+          body: `${customerLabel(contact)} (${channel.name}): "${content.slice(0, 200)}". Atiéndelo cuanto antes.`,
+          link: `#/conversation/${conv.id}`,
+          kind: 'safety',
+        }).catch(() => undefined);
+      }
       await store.markProcessed(conv.id, inserted.id);
       return { conversationId: conv.id, messageId: inserted.id };
     }
@@ -366,7 +391,7 @@ export class ChatService {
       await store.resetFlowState(conv.id);
       conv = (await store.setConversationStatus(conv.id, 'bot', '')) ?? conv;
     }
-    const inserted = await store.insertMessage({ conversation_id: conv.id, direction: 'in', sender: 'customer', type: 'text', content: text, processed: false });
+    const inserted = await store.insertMessage({ conversation_id: conv.id, direction: 'in', sender: 'customer', type: 'text', content: maskSensitive(text), processed: false });
     // Las reglas automáticas también se prueban en el simulador.
     if (inserted) {
       const stopAi = await this.automator.onInbound(conv, contact, inserted, text).catch(() => false);
