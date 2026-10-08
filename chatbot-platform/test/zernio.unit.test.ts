@@ -189,3 +189,29 @@ test('configuración: los secretos de Zernio quedan enmascarados y los campos ti
   assert.equal(parsed.account_id, '');
   assert.equal(parsed.api_key, '');
 });
+
+test('límite de velocidad: un 429 se repite una vez tras Retry-After y el envío queda hecho', async () => {
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls++;
+    if (calls === 1) return new Response('{}', { status: 429, headers: { 'retry-after': '0', 'content-type': 'application/json' } });
+    return new Response(JSON.stringify({ id: 'msg_9' }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as unknown as typeof fetch;
+  const id = await zernioAdapter.transport(channel(), { external_id: 'conv_1' } as any).sendText('Hola', 0);
+  assert.equal(id, 'msg_9');
+  assert.equal(calls, 2);
+});
+
+test('errores 5xx no se repiten: el mensaje pudo haber llegado', async () => {
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls++;
+    return new Response('{"message":"caído"}', { status: 503, headers: { 'content-type': 'application/json' } });
+  }) as unknown as typeof fetch;
+  await assert.rejects(zernioAdapter.transport(channel(), { external_id: 'conv_1' } as any).sendText('Hola', 0), /503/);
+  assert.equal(calls, 1);
+});
+
+test('plataforma: se normaliza a minúsculas y sin espacios', () => {
+  assert.equal(ChannelConfigSchemas.zernio.parse({ platform: '  WhatsApp ' }).platform, 'whatsapp');
+});

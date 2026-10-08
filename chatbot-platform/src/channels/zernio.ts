@@ -23,15 +23,26 @@ export class ZernioClient {
 
   async call<T = any>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<T> {
     if (!this.apiKey) throw new Error('Falta la API key de Zernio');
-    const res = await fetch(`${this.base}${path}`, {
+    let res = await this.send(method, path, body);
+    // 429: la API rechazó la petición sin procesarla, así que repetirla una vez no duplica mensajes.
+    // Otros errores no se repiten: un 5xx puede haber llegado a enviarse.
+    if (res.status === 429) {
+      const s = Number(res.headers.get('retry-after'));
+      await sleep(Number.isFinite(s) && s >= 0 ? Math.min(s, 10) * 1000 : 2000);
+      res = await this.send(method, path, body);
+    }
+    const data: any = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(`Zernio ${path.split('?')[0]} → ${res.status}: ${data?.error?.message ?? data?.message ?? 'error'}`);
+    return data as T;
+  }
+
+  private send(method: 'GET' | 'POST', path: string, body?: unknown) {
+    return fetch(`${this.base}${path}`, {
       method,
       headers: { authorization: `Bearer ${this.apiKey}`, ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
       body: body !== undefined ? JSON.stringify(body) : undefined,
       signal: AbortSignal.timeout(30000),
     });
-    const data: any = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(`Zernio ${path.split('?')[0]} → ${res.status}: ${data?.error?.message ?? data?.message ?? 'error'}`);
-    return data as T;
   }
 }
 

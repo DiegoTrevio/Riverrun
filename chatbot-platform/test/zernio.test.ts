@@ -166,3 +166,11 @@ t('ventana de 24 h: fuera de ella no se escribe por Zernio', async () => {
     await pool.query(`UPDATE messages SET created_at = now() WHERE conversation_id = $1`, [convId]);
   }
 });
+
+t('convive con el WhatsApp por QR: el aviso al encargado sigue saliendo por la cuenta de WhatsApp', async () => {
+  const zernioChannel = await store.getChannel(channel.id);
+  h.reset();
+  await h.service.transportFor(zernioChannel!, { phone: '', external_id: 'conv_77' } as any).notify('5215599990000', 'Transferencia: revisar a Ana');
+  // El aviso sale como texto por el WhatsApp de QR de la cuenta, nunca por Zernio.
+  assert.ok(h.sent.some((s) => s.kind === 'text' && s.to === '5215599990000' && s.text.includes('Transferencia')), JSON.stringify(h.sent));
+});

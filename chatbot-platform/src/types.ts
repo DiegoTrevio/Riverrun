@@ -403,7 +403,7 @@ export const ChannelConfigSchemas = {
   /** Zernio: API unificada de mensajes. Las credenciales se usan solo en el servidor. */
   zernio: z.object({
     /** Red que se conecta (p.ej. bluesky, reddit, twitter), tal como la nombra Zernio. */
-    platform: z.string().trim().max(40).default(''),
+    platform: z.string().trim().toLowerCase().max(40).default(''),
     /** Perfil de Zernio donde queda la cuenta conectada. */
     profile_id: z.string().trim().max(100).default(''),
     /** Cuenta conectada en Zernio (la llena el flujo de conexión). */

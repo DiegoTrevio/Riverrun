@@ -1423,7 +1423,7 @@ function channelConfigFields(ch, cfg) {
       ];
     case 'zernio':
       return [
-        field('Red a conectar', text(cfg, 'platform', { placeholder: 'bluesky, reddit, twitter…' }), 'Nombre de la red tal como lo usa Zernio.'),
+        field('Red a conectar', text(cfg, 'platform', { placeholder: 'bluesky, reddit, twitter…' }), 'Nombre de la red tal como lo usa Zernio. Para WhatsApp oficial escribe whatsapp. El WhatsApp por QR sigue siendo su propio canal.'),
         field('ID del perfil en Zernio', text(cfg, 'profile_id', { placeholder: 'profile_…' }), 'Perfil de Zernio donde quedará la cuenta conectada.'),
         secret('api_key', 'API key de Zernio', 'Se guarda solo en el servidor; el navegador nunca la recibe completa.'),
         h('p', { class: 'small muted' }, 'Cuenta: ', cfg.account_id ? h('code', {}, cfg.account_id) : 'sin conectar', cfg.username ? ` · @${cfg.username}` : ''),
