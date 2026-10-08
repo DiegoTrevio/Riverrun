@@ -209,3 +209,11 @@ ol.flow-steps li.current { color: var(--accent); font-weight: 600; }
 .nav-group summary.active { background: var(--accent-soft); color: var(--accent); }
 .nav-group > div { display: flex; flex-direction: column; padding-left: 10px; }
 .nav-group a { font-size: 13px; }
+
+/* Móvil: la conversación ocupa el alto disponible en lugar de 520 px fijos */
+@media (max-width: 600px) {
+  .chat { height: 60vh; min-height: 320px; }
+  .bubble { max-width: 88%; }
+  .card { padding: 14px; }
+  h1 { font-size: 19px; }
+}

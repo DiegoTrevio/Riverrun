@@ -220,16 +220,16 @@ function shell(active, content) {
     h('nav', { class: 'sidebar' },
       h('div', { class: 'brand' }, '💬 Chatbots'),
       switcher,
-      isAdmin() ? navGroup('Asistentes y conexiones', ['home', 'bot', 'channels', 'channel', 'inicio'], [
-        link('#/', 'Asistentes', 'home'),
-        link('#/channels', 'WhatsApp y otros canales', 'channels'),
+      isAdmin() ? navGroup('Asistentes', ['home', 'bot', 'channels', 'channel', 'inicio'], [
+        link('#/', 'Mis asistentes', 'home'),
+        link('#/channels', 'Canales y WhatsApp', 'channels'),
         (!isSuper() || state.accountId) ? link('#/inicio', 'Primeros pasos', 'inicio') : null,
       ]) : null,
       navGroup('Conversaciones', ['conversations', 'conversation', 'notifications'], [
         link('#/conversations', 'Bandeja de entrada', 'conversations'),
         h('a', { href: '#/notifications', class: active === 'notifications' ? 'active' : '' }, 'Notificaciones'),
       ]),
-      navGroup('Operación', ['agenda', 'automation'], [
+      navGroup('Agenda y automatización', ['agenda', 'automation'], [
         link('#/agenda', 'Agenda', 'agenda'),
         isAdmin() ? link('#/automation', 'Automatización', 'automation') : null,
       ]),
@@ -433,8 +433,10 @@ async function viewDashboard(root, params = new URLSearchParams()) {
             h('div', {}, h('div', { class: 'kpi' }, s.waiting_human ?? 0), h('div', { class: 'muted small' }, 'con humano')),
             h('div', {}, h('div', { class: 'kpi' }, s.messages_24h ?? 0), h('div', { class: 'muted small' }, 'mensajes 24 h')),
           ),
-          h('p', { class: 'muted small' },
-            `Tokens 30 días: ${(s.input_tokens_30d ?? 0).toLocaleString()} entrada (${(s.cached_tokens_30d ?? 0).toLocaleString()} en caché) · ${(s.output_tokens_30d ?? 0).toLocaleString()} salida`),
+          h('details', { class: 'small' },
+            h('summary', {}, 'Uso de IA (30 días)'),
+            h('p', { class: 'muted small' },
+              `${(s.input_tokens_30d ?? 0).toLocaleString()} tokens de entrada (${(s.cached_tokens_30d ?? 0).toLocaleString()} en caché) · ${(s.output_tokens_30d ?? 0).toLocaleString()} de salida`)),
           s.errors_24h ? h('p', {}, h('a', { href: `#/logs?chatbot_id=${b.id}&level=error` }, h('span', { class: 'badge red' }, `${s.errors_24h} errores en 24 h`))) : null,
           h('div', { class: 'row' },
             h('a', { class: 'btn', href: `#/bot/${b.id}/probar` }, 'Probar'),
