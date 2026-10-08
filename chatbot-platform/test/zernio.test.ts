@@ -149,3 +149,20 @@ t('eco de una respuesta del bot no pausa la conversación', async () => {
   const status = (await pool.query('SELECT status FROM conversations WHERE channel_id = $1', [channel.id])).rows[0]?.status;
   assert.equal(status, 'bot');
 });
+
+t('ventana de 24 h: fuera de ella no se escribe por Zernio', async () => {
+  const { rows } = await pool.query(
+    `SELECT c.id FROM conversations c JOIN contacts k ON k.id = c.contact_id WHERE c.channel_id = $1 AND k.external_id = 'conv_77'`,
+    [channel.id],
+  );
+  const convId = rows[0].id as string;
+  await pool.query(`UPDATE messages SET created_at = now() - interval '25 hours' WHERE conversation_id = $1`, [convId]);
+  try {
+    const r = await h.service.outbound.send(convId, { text: 'Promoción de temporada', source: 'campaign' });
+    assert.equal(r.sent, false);
+    assert.match((r as any).reason, /24 h/);
+    assert.equal(sendsTo('conv_77').filter((x) => x.body.message === 'Promoción de temporada').length, 0);
+  } finally {
+    await pool.query(`UPDATE messages SET created_at = now() WHERE conversation_id = $1`, [convId]);
+  }
+});

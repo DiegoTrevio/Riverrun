@@ -225,6 +225,8 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
       warning:
         ch?.type === 'messenger' || ch?.type === 'instagram'
           ? 'Meta solo permite escribir a quienes enviaron un mensaje en las últimas 24 horas; el resto se omitirá.'
+          : ch?.type === 'zernio'
+            ? 'Solo se escribirá a quienes enviaron un mensaje en las últimas 24 horas; el resto se omitirá.'
           : ch?.type === 'whatsapp'
             ? 'Envía solo a clientes que esperan saber de ti y con ritmo moderado: WhatsApp puede bloquear números que envían mensajes masivos no deseados.'
             : null,

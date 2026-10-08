@@ -26,7 +26,7 @@ const META_WINDOW_MS = 24 * 3600 * 1000;
 
 /**
  * Envío proactivo (no es respuesta a un mensaje): automatizaciones, secuencias, campañas y recordatorios.
- * Aplica las políticas antes de enviar: bajas, canal activo, conversación con humano y la ventana de 24 h de Meta.
+ * Aplica las políticas antes de enviar: bajas, canal activo, conversación con humano y la ventana de 24 h (Meta y Zernio).
  */
 export class Outbound {
   constructor(private chat: ChatService) {}
@@ -39,11 +39,13 @@ export class Outbound {
     if (!channel.active || channel.account_active === false) return { sent: false, reason: 'canal o cuenta inactivos' };
     if (contact.opted_out && !o.transactional) return { sent: false, reason: 'el cliente se dio de baja' };
     if (conv.status === 'human' && !o.allowWhenHuman) return { sent: false, reason: 'una persona está atendiendo la conversación' };
-    if (channel.type === 'messenger' || channel.type === 'instagram') {
-      // Meta solo permite escribir dentro de las 24 h posteriores al último mensaje del cliente.
+    if (channel.type === 'messenger' || channel.type === 'instagram' || channel.type === 'zernio') {
+      // Meta solo permite escribir dentro de las 24 h posteriores al último mensaje del cliente. Zernio no documenta
+      // las reglas de cada red, así que se aplica la misma política por prudencia.
       const last = await astore.lastInbound(conv.id);
       if (!last || Date.now() - new Date(last.created_at).getTime() > META_WINDOW_MS) {
-        return { sent: false, reason: 'fuera de la ventana de 24 h de Meta (el cliente no ha escrito recientemente)' };
+        const reason = channel.type === 'zernio' ? 'fuera de la ventana de 24 h (el cliente no ha escrito recientemente)' : 'fuera de la ventana de 24 h de Meta (el cliente no ha escrito recientemente)';
+        return { sent: false, reason };
       }
     }
 

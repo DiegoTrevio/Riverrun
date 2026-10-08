@@ -1326,11 +1326,13 @@ const STATE_LABEL = {
 };
 
 function channelStatusCell(c) {
-  const connected = c.type !== 'whatsapp' || c.connection_state === 'open';
+  // WhatsApp (QR) y Zernio (autorización de cuenta) necesitan un paso de conexión antes de responder.
+  const needsConnection = c.type === 'whatsapp' || c.type === 'zernio';
+  const connected = !needsConnection || (c.type === 'zernio' ? !!c.config?.account_id : c.connection_state === 'open');
   return h('td', {},
     h('span', { class: `badge ${c.active && connected ? 'green' : ''}` },
-      !c.active ? 'Inactivo' : c.type !== 'whatsapp' ? 'Activo' : connected ? 'Conectado' : 'Pendiente de conectar'),
-    c.type === 'whatsapp' ? h('a', { href: `#/channel/${c.id}`, class: 'btn small', style: 'margin-left:8px' }, connected ? 'Administrar' : 'Ver QR') : null);
+      !c.active ? 'Inactivo' : !needsConnection ? 'Activo' : connected ? 'Conectado' : 'Pendiente de conectar'),
+    needsConnection ? h('a', { href: `#/channel/${c.id}`, class: 'btn small', style: 'margin-left:8px' }, connected ? 'Administrar' : c.type === 'whatsapp' ? 'Ver QR' : 'Conectar cuenta') : null);
 }
 
 async function viewChannels(root, params) {
