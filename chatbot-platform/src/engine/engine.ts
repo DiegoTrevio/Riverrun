@@ -202,7 +202,7 @@ export class Engine {
     const semantic = await semanticKnowledge(bot, knowledge, [...history.slice(-4).filter((m) => m.direction === 'in').map((m) => m.content), customerText].join('\n'), this.ai);
     // Automatización y agenda (si están conectadas).
     const [intents, agendaCtx, business] = await Promise.all([
-      this.ext.intents ? this.ext.intents(conv.account_id, bot.id).catch(() => []) : Promise.resolve([]),
+      this.ext.intents ? this.ext.intents(conv.account_id, bot.id).catch((e) => { log('error', 'engine', `No se pudieron cargar las intenciones de las reglas: ${e?.message ?? e}`); return []; }) : Promise.resolve([]),
       this.ext.agenda && bot.rules.booking_enabled ? this.ext.agenda.contextFor(conv.account_id, contact, channel.type).catch(() => null) : Promise.resolve(null),
       this.ext.business ? this.ext.business(conv.account_id).catch(() => null) : Promise.resolve(null),
     ]);

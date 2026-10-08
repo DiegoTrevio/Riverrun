@@ -176,6 +176,20 @@ t('intención detectada por la IA: queja → transferir y alertar', async () => 
   assert.ok(logs.some((l: any) => l.message.includes('Intenciones desconocidas ignoradas: inventada')));
 });
 
+t('intención con mayúsculas y acentos: la IA la devuelve normalizada y la regla se dispara igual', async () => {
+  await rule({ name: 'Cotización formal', trigger: { type: 'intent', intent: 'Cotización formal', description: 'Pide una cotización por escrito' }, actions: [{ type: 'add_tag', tag: 'cotiza' }] });
+  h.reset();
+  h.setScript((req) => {
+    assert.match(req.messages[0].content, /`Cotización formal`/);
+    return { messages: ['Claro, te preparo la cotización.'], intents: ['cotizacion formal'] };
+  });
+  await h.webhook('¿me mandas una cotización formal por escrito?', { phone: '5215510001010' });
+  await waitFor(async () => {
+    const c = await convOf('5215510001010');
+    return !!c && (await h.authed('GET', `/api/conversations/${c.id}`)).json().contact.tags.includes('cotiza');
+  }, 8000);
+});
+
 t('bajas: BAJA detiene mensajes promocionales; ALTA los reactiva; recordatorios sí llegan', async () => {
   h.reset();
   await h.webhook('BAJA', { phone: '5215510001006' });

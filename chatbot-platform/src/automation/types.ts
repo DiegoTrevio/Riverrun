@@ -195,6 +195,10 @@ export const AutomationBodySchema = z.object({
   actions: z.array(ActionSchema).min(1, 'Agrega al menos una acción').max(20),
   stop_ai: z.boolean().default(false),
   priority: z.number().int().default(0),
+}).refine((r) => !(r.trigger.type === 'intent' && r.stop_ai), {
+  // La IA ya respondió cuando se detecta la intención: una regla así no puede impedir esa respuesta.
+  message: 'Una regla por intención no puede detener al asistente: se detecta después de su respuesta.',
+  path: ['stop_ai'],
 });
 export type AutomationBody = z.infer<typeof AutomationBodySchema>;
 

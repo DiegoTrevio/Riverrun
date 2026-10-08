@@ -50,7 +50,8 @@ export function triggerMatches(t: Trigger, e: AutomationEvent): boolean {
       return words.some((w) => normalize(text).includes(normalize(w)));
     }
     case 'intent':
-      return (e.intents ?? []).includes(t.intent);
+      // La IA devuelve las intenciones normalizadas (minúsculas, sin acentos): se compara igual.
+      return (e.intents ?? []).some((i) => normalize(i) === normalize(t.intent));
     case 'data_captured':
       return !t.field || t.field === e.field;
     case 'stage_reached':
@@ -678,9 +679,10 @@ export class Automator {
   /** Intenciones que la IA debe detectar (de las reglas activas). */
   async intentsFor(accountId: string, chatbotId: string | null) {
     const rules = await astore.activeAutomations(accountId, 'intent', chatbotId);
-    const seen = new Map<string, string>();
-    for (const r of rules) if (r.trigger.type === 'intent' && !seen.has(r.trigger.intent)) seen.set(r.trigger.intent, r.trigger.description);
-    return [...seen].map(([intent, description]) => ({ intent, description }));
+    // Una intención por identificador normalizado: "Queja" y "queja" son la misma.
+    const seen = new Map<string, { intent: string; description: string }>();
+    for (const r of rules) if (r.trigger.type === 'intent' && !seen.has(normalize(r.trigger.intent))) seen.set(normalize(r.trigger.intent), { intent: r.trigger.intent, description: r.trigger.description });
+    return [...seen.values()];
   }
 
   /* ------------------------------ Secuencias ------------------------------ */

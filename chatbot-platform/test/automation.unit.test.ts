@@ -4,9 +4,26 @@ import { computeSlots, spreadSlots } from '../src/automation/agenda.js';
 import { conditionsMatch, stepTime, triggerMatches } from '../src/automation/automator.js';
 import { renderTemplate } from '../src/automation/templates.js';
 import { isOpen, localParts, nextOpen, nextTimeOfDay, slotKey, spanishDate, zonedToUtc } from '../src/automation/time.js';
-import { AccountSettingsSchema, ServiceBodySchema, TriggerSchema, type Service } from '../src/automation/types.js';
+import { AccountSettingsSchema, AutomationBodySchema, ServiceBodySchema, TriggerSchema, type Service } from '../src/automation/types.js';
 
 const MX = 'America/Mexico_City'; // UTC-6 sin horario de verano
+
+test('intenciones: "Queja" y "queja" son la misma; la IA devuelve la forma normalizada', () => {
+  const rule = (intent: string) => ({ type: 'intent' as const, intent, description: '' });
+  const ev = (intents: string[]) => ({ type: 'intent' as const, conversationId: 'c', intents });
+  assert.equal(triggerMatches(rule('Queja'), ev(['queja'])), true);
+  assert.equal(triggerMatches(rule('Cotización'), ev(['cotizacion'])), true);
+  assert.equal(triggerMatches(rule('quiero cotizar'), ev(['quiero cotizar'])), true);
+  assert.equal(triggerMatches(rule('queja'), ev(['otra'])), false);
+});
+
+test('intenciones: una regla por intención no puede detener al asistente (la IA ya respondió)', () => {
+  const body = (stop_ai: boolean) => ({ name: 'Quejas', trigger: { type: 'intent', intent: 'queja', description: '' }, stop_ai, actions: [{ type: 'handoff' }] });
+  assert.equal(AutomationBodySchema.safeParse(body(true)).success, false);
+  assert.equal(AutomationBodySchema.safeParse(body(false)).success, true);
+  const keyword = { name: 'Precios', trigger: { type: 'message_received', match: 'keywords', keywords: ['precio'] }, stop_ai: true, actions: [{ type: 'handoff' }] };
+  assert.equal(AutomationBodySchema.safeParse(keyword).success, true);
+});
 const settings = AccountSettingsSchema.parse({ timezone: MX, holidays: ['2026-10-12'] });
 
 test('zonas horarias: conversión local ↔ UTC, incluido horario de verano', () => {
