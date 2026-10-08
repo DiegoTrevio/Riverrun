@@ -119,13 +119,13 @@ export async function viewConversations(root, params) {
   root.append(
     h('div', { class: 'row between' }, h('h1', {}, 'Conversaciones'), exportMenu),
     h('div', { class: 'card row' },
-      h('div', { style: 'min-width:170px' }, select(f, 'chatbot_id', [['', 'Todos los chatbots'], ...bots.map((b) => [b.id, b.name])], apply)),
-      h('div', { style: 'min-width:150px' }, select(f, 'channel_type', [['', 'Todas las plataformas'], ...types], apply)),
-      h('div', { style: 'min-width:150px' }, select(f, 'channel_id', [['', 'Todos los canales'], ...channels.map((c) => [c.id, c.name])], apply)),
-      h('div', { style: 'min-width:150px' }, select(f, 'status', [['', 'Todos los estados'], ['bot', 'Atendidas por bot'], ['human', 'Con humano'], ['closed', 'Cerradas']], apply)),
+      h('div', { class: 'filter' }, select(f, 'chatbot_id', [['', 'Todos los chatbots'], ...bots.map((b) => [b.id, b.name])], apply)),
+      h('div', { class: 'filter' }, select(f, 'channel_type', [['', 'Todas las plataformas'], ...types], apply)),
+      h('div', { class: 'filter' }, select(f, 'channel_id', [['', 'Todos los canales'], ...channels.map((c) => [c.id, c.name])], apply)),
+      h('div', { class: 'filter' }, select(f, 'status', [['', 'Todos los estados'], ['bot', 'Atendidas por bot'], ['human', 'Con humano'], ['closed', 'Cerradas']], apply)),
       // El agente solo ve sus conversaciones: el filtro por persona no le sirve.
-      isAdmin() ? h('div', { style: 'min-width:150px' }, select(f, 'assigned', [['', 'Todas las personas'], ['me', 'Asignadas a mí'], ['none', 'Sin asignar']], apply)) : null,
-      h('div', { style: 'flex:1;min-width:160px' }, h('input', { type: 'search', placeholder: 'Buscar nombre o teléfono…', value: f.search, onchange: (e) => { f.search = e.target.value; apply(); } }))),
+      isAdmin() ? h('div', { class: 'filter' }, select(f, 'assigned', [['', 'Todas las personas'], ['me', 'Asignadas a mí'], ['none', 'Sin asignar']], apply)) : null,
+      h('div', { class: 'search-field' }, h('input', { type: 'search', placeholder: 'Buscar nombre o teléfono…', value: f.search, onchange: (e) => { f.search = e.target.value; apply(); } }))),
     h('div', { class: 'card' }, h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Cliente'), h('th', {}, 'Canal'), showAccount ? h('th', {}, 'Cuenta') : null, h('th', {}, 'Estado'), h('th', {}, 'Asignada a'), h('th', {}, 'Último mensaje'), h('th', {}, 'Fecha'))), table)),
   );
   await load();
@@ -273,6 +273,7 @@ export async function viewConversation(root, id) {
     const nameKeys = [...new Set([...fieldsDef.filter((f) => f.type === 'name').map((f) => f.key), ...['nombre', 'name'].filter((k) => Object.hasOwn(ct.data || {}, k))])];
     const keys = [...new Set([...fieldsDef.map((f) => f.key), ...Object.keys(ct.data || {})])].filter((k) => !nameKeys.includes(k) && !(ct.name && ['nombre', 'name'].includes(k)));
     fill(side, 
+      tasksCard(data, c, ct, () => load(true)),
       h('div', { class: 'card' },
         h('h3', { style: 'margin-top:0' }, 'Datos del cliente'),
         field('Nombre', text(m, 'name')),
@@ -283,7 +284,6 @@ export async function viewConversation(root, id) {
         check(m, 'consent', 'Aceptó recibir promociones'),
         ct.consent_at ? h('p', { class: 'small muted', style: 'margin:-4px 0 8px' }, `Consentimiento registrado el ${fmtDate(ct.consent_at)}${ct.consent_source ? ` (${{ keyword: 'lo escribió el cliente', panel: 'marcado por el equipo', legacy: 'cliente anterior a esta función', api: 'integración' }[ct.consent_source] || ct.consent_source})` : ''}.`) : null,
         h('button', { class: 'small', onclick: async () => { if (await run(() => api('PUT', `/api/contacts/${ct.id}`, { ...m, base_data_version: c.data_version, data: Object.fromEntries(Object.entries({ ...m.data, ...Object.fromEntries(nameKeys.map((k) => [k, m.name])) }).filter(([, v]) => v)) }), 'Datos guardados')) load(true); } }, 'Guardar datos')),
-      tasksCard(data, c, ct, () => load(true)),
       isAdmin() ? h('details', { class: 'card' },
         h('summary', {}, '🔒 Privacidad de este cliente'),
         h('p', { class: 'small muted' }, 'Para atender una solicitud de acceso o supresión de datos personales.'),
@@ -295,8 +295,9 @@ export async function viewConversation(root, id) {
           } }, 'Borrar todos sus datos'))) : null,
       flowCard(data.chatbot?.flow, c),
       autoBox,
-      h('div', { class: 'card' },
-        h('div', { class: 'row between' }, h('h3', { style: 'margin:0' }, 'Resumen de la conversación'),
+      h('details', { class: 'card', open: !!c.report_summary },
+        h('summary', {}, h('strong', {}, 'Resumen de la conversación'), c.report_summary ? null : h('span', { class: 'muted small' }, ' · sin generar')),
+        h('div', { class: 'row' },
           h('button', { class: 'small primary', onclick: async (e) => {
             e.target.disabled = true;
             try { if (await run(() => api('POST', `/api/conversations/${id}/summary`), 'Resumen actualizado')) await load(true); }

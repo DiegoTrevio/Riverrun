@@ -60,7 +60,8 @@ export function shell(active, content) {
     : h('div', { class: 'account-switch small muted' }, account?.name);
   return h('div', { class: 'layout' },
     h('nav', { class: 'sidebar' },
-      h('div', { class: 'brand' }, brand.logo ? brandMark(32) : `💬 ${brand.name === 'Panel de Chatbots' ? 'Chatbots' : brand.name}`),
+      h('div', { class: 'brand' }, brand.logo ? brandMark(32) : `💬 ${brand.name === 'Panel de Chatbots' ? 'Chatbots' : brand.name}`,
+        h('button', { class: 'nav-toggle', type: 'button', 'aria-label': 'Abrir o cerrar el menú', onclick: (e) => e.currentTarget.closest('.layout').classList.toggle('nav-open') }, '☰ Menú')),
       switcher,
       simple ? simpleLinks(link) : [
       isAdmin() ? navGroup('Asistentes y conexiones', ['home', 'bot', 'channels', 'channel', 'inicio', 'conectar'], [
