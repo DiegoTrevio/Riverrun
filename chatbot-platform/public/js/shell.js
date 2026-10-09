@@ -64,17 +64,17 @@ export function shell(active, content) {
         h('button', { class: 'nav-toggle', type: 'button', 'aria-label': 'Abrir o cerrar el menú', onclick: (e) => e.currentTarget.closest('.layout').classList.toggle('nav-open') }, '☰ Menú')),
       switcher,
       simple ? simpleLinks(link) : [
-      isAdmin() ? navGroup('Asistentes y conexiones', ['home', 'bot', 'channels', 'channel', 'inicio', 'conectar'], [
+      isAdmin() ? navGroup('Asistentes', ['home', 'bot', 'channels', 'channel', 'inicio', 'conectar'], [
         link('#/conectar', '📱 Conectar WhatsApp (QR)', 'conectar'),
-        link('#/', 'Asistentes', 'home'),
-        link('#/channels', 'WhatsApp y otros canales', 'channels'),
+        link('#/', 'Mis asistentes', 'home'),
+        link('#/channels', 'Canales y WhatsApp', 'channels'),
         (!isSuper() || state.accountId) ? link('#/inicio', 'Primeros pasos', 'inicio') : null,
       ]) : null,
       navGroup('Conversaciones', ['conversations', 'conversation', 'notifications'], [
         link('#/conversations', 'Bandeja de entrada', 'conversations'),
         h('a', { href: '#/notifications', class: active === 'notifications' ? 'active' : '' }, 'Notificaciones'),
       ]),
-      navGroup('Operación', ['agenda', 'automation', 'estadisticas'], [
+      navGroup('Agenda y automatización', ['agenda', 'automation', 'estadisticas'], [
         link('#/agenda', 'Agenda', 'agenda'),
         isAdmin() ? link('#/automation', 'Automatización', 'automation') : null,
         isAdmin() ? link('#/estadisticas', 'Estadísticas', 'estadisticas') : null,
