@@ -4,10 +4,15 @@ import type { ChannelType, Chatbot, Contact, Conversation, DataField, ImageAsset
 import type { AgendaContext } from '../automation/agenda.js';
 import { imageSendWhen } from '../types.js';
 import { GENERAL_RULES } from './agent-rules.js';
+import { contactNameKey, questionList, questionProgress, type Question } from './questions.js';
 import { keywords } from './text.js';
 
 export interface ContextInput {
   bot: Chatbot;
+  /** Veces que se hizo cada pregunta de la lista en el recorrido actual (para saber cuál sigue). */
+  questionAsked?: Record<string, number>;
+  /** Veces que se hizo cada pregunta en toda la conversación (una opcional sin respuesta no se repite al reabrir). */
+  questionAskedEver?: Record<string, number>;
   knowledge: KnowledgeItem[];
   /** Already selected and budgeted by the semantic retriever. */
   knowledgeSelected?: boolean;
@@ -77,6 +82,7 @@ const CHANNEL_NAMES: Record<ChannelType, string> = {
   messenger: 'Facebook Messenger',
   instagram: 'Instagram (mensajes directos)',
   webchat: 'chat del sitio web',
+  zernio: 'mensajes directos (Zernio)',
   email: 'correo electrónico (responde como en un correo: completo y cordial, en un solo mensaje)',
   playground: 'simulador',
 };
@@ -176,7 +182,12 @@ export function buildSystemPrompt(input: ContextInput, knowledge: KnowledgeItem[
   s.push('# Tu papel');
   const who = p.assistant_name ? `Te llamas ${p.assistant_name} y atiendes` : 'Atiendes';
   s.push(`${who} los mensajes de "${bot.name}". Conversas con clientes reales por chat (WhatsApp, redes sociales o el sitio web).`);
-  if (p.prompt.trim()) s.push(p.prompt.trim());
+  if (p.prompt.trim()) {
+    s.push(p.prompt.trim());
+    s.push('Estas instrucciones del negocio tienen prioridad sobre las guías de estilo y de conversación que siguen: si piden algo concreto (preguntas, orden, datos o mensajes), cúmplelo completo. La "Regla de oro: cero invenciones" y las "Reglas generales" (seguridad, pagos y datos personales) siempre están por encima.');
+  }
+  const questions = questionList(bot);
+  if (questions.length) s.push(questionsSection(questions));
 
   s.push('\n# Cómo escribes');
   s.push(
@@ -188,7 +199,7 @@ export function buildSystemPrompt(input: ContextInput, knowledge: KnowledgeItem[
       '- Escribe como una persona real por chat: frases simples, directas y cálidas. Nada de lenguaje de call center, frases de plantilla ni exceso de signos de exclamación.',
       '- Responde primero exactamente lo que el cliente preguntó. No repitas lo que el cliente acaba de decir ni lo que ya explicaste antes.',
       '- No saludes de nuevo si ya saludaste en la conversación. No te despidas en cada mensaje.',
-      '- Haz como máximo UNA pregunta por turno y solo si ayuda a avanzar.',
+      questions.length ? '- Haz como máximo UNA pregunta por turno: la siguiente de la lista de "Preguntas".' : '- Haz como máximo UNA pregunta por turno y solo si ayuda a avanzar.',
       '- Evita listas y viñetas salvo que el cliente pida varias opciones; aun así, que sean breves. Para negritas usa *texto* (formato WhatsApp), nunca Markdown.',
       '- Si el cliente escribió varios mensajes seguidos, respóndelos juntos de forma natural.',
       '- No digas que eres una IA, un bot o un asistente virtual a menos que el cliente lo pregunte directamente; si lo pregunta, sé honesto.',
@@ -261,6 +272,24 @@ export function buildSystemPrompt(input: ContextInput, knowledge: KnowledgeItem[
     if (r.avoid_repeating_images) s.push('- No reenvíes imágenes que ya se enviaron en esta conversación, salvo que el cliente lo pida.');
   }
 
+  // Una foto borrada o inactiva no se envía: el mensaje sale solo con su texto (y sin texto no se ofrece).
+  const photoOk = (m: { image_id: string }) => !!m.image_id && !!input.imagesById.get(m.image_id)?.active;
+  const savedList = bot.saved_messages.filter((m) => m.active && (m.text.trim() || photoOk(m)));
+  if (savedList.length) {
+    s.push('\n# Mensajes guardados');
+    s.push('Textos (y fotos) que escribió el negocio. Se envían tal cual: pon su código exacto en saved_message_codes y NO copies su texto en messages. Si tiene foto, el texto va como pie de la foto en un solo mensaje. Solo agrega algo en messages si hace falta una frase corta antes.');
+    for (const m of savedList) {
+      const bits = [`- Código: \`${m.code}\``];
+      if (m.title) bits.push(m.title);
+      if (m.when) bits.push(`usar cuando: ${m.when}`);
+      bits.push(photoOk(m) ? 'con foto' : 'solo texto');
+      if (m.flow_step && flow.steps[m.flow_step - 1]) bits.push(`deja la conversación en la etapa ${m.flow_step} (${flow.steps[m.flow_step - 1].title})`);
+      if (m.text) bits.push(`texto: "${m.text.length > 300 ? `${m.text.slice(0, 300)}…` : m.text}"`);
+      s.push(bits.join(' | '));
+    }
+    s.push('- Usa un mensaje guardado cuando se cumpla su "usar cuando" o cuando el recorrido lo pida. No lo reenvíes si ya se envió, salvo que el cliente lo pida.');
+  }
+
   s.push('\n# Reglas del negocio');
   const rules: string[] = [];
   if (r.allowed_topics) rules.push(`Temas que puedes atender: ${r.allowed_topics}. Si preguntan algo ajeno, redirige amablemente.`);
@@ -282,6 +311,7 @@ export function buildSystemPrompt(input: ContextInput, knowledge: KnowledgeItem[
       [
         '- Avanza de etapa en etapa sin saltarte lo importante, pero el cliente puede adelantarse, dar varios datos a la vez o preguntar otra cosa: respóndele y continúa desde donde esté.',
         '- No regreses a una etapa ya cubierta ni repitas preguntas ya respondidas.',
+        questions.length ? '- La lista de "Preguntas" no es flexible: se hacen todas, en su orden, aunque el recorrido sea una guía.' : '',
         flow.steps.length ? '- En "flow_step" indica el número de la etapa en la que queda la conversación después de tu respuesta.' : '- Usa flow_step = 0.',
         flow.goal
           ? '- Marca "goal_completed" = true solo en el turno en que se cumple el objetivo y ya tienes los datos marcados como importantes; si falta alguno, pídelo primero.'
@@ -296,7 +326,9 @@ export function buildSystemPrompt(input: ContextInput, knowledge: KnowledgeItem[
   s.push('\n# Guardado automático de datos del cliente');
   s.push([
     '- Todas las preguntas clave de tus instrucciones deben guardar automáticamente las respuestas explícitas en save_data, usando claves estables aunque el negocio no haya creado campos.',
-    '- Guarda en save_data las respuestas útiles que el cliente dé a tus preguntas, aunque no haya campos configurados. Las preguntas se deciden según tus instrucciones y el objetivo.',
+    questions.length
+      ? '- Guarda en save_data las respuestas útiles que el cliente dé. Las respuestas a la lista de "Preguntas" van con su clave exacta.'
+      : '- Guarda en save_data las respuestas útiles que el cliente dé a tus preguntas, aunque no haya campos configurados. Las preguntas se deciden según tus instrucciones y el objetivo.',
     '- Usa una clave breve y estable en español, sin acentos y con guion bajo: nombre, correo, telefono, direccion, pedido, cantidad, fecha_entrega. Para otros datos, crea una clave descriptiva.',
     '- Reutiliza las claves de los datos conocidos y los campos existentes; no crees sinónimos ni dupliques el mismo dato.',
     '- Guarda solo valores que el cliente dijo explícitamente, tal como los dijo. No guardes tus preguntas, respuestas del negocio, suposiciones ni datos todavía pendientes. Si corrige un dato, actualízalo.',
@@ -304,9 +336,11 @@ export function buildSystemPrompt(input: ContextInput, knowledge: KnowledgeItem[
     '- Nunca vuelvas a pedir un dato conocido. Pregunta de forma natural, una cosa a la vez, y responde sus dudas antes de continuar.',
   ].join('\n'));
 
-  if (bot.data_fields.length) {
+  // Los datos con pregunta van en "Preguntas" (en orden); aquí solo los que se piden cuando tenga sentido.
+  const freeFields = bot.data_fields.filter((f) => !f.question.trim());
+  if (freeFields.length) {
     s.push('\n# Datos a recopilar');
-    s.push(bot.data_fields.map(fieldLine).join('\n'));
+    s.push(freeFields.map(fieldLine).join('\n'));
     s.push(
       [
         '- Pídelos de forma natural, uno a la vez, cuando tenga sentido en la conversación; nunca como formulario.',
@@ -360,9 +394,31 @@ export function buildSystemPrompt(input: ContextInput, knowledge: KnowledgeItem[
     const step = conversation.flow_step ?? 0;
     const lines = [`Etapa actual: ${step && flow.steps[step - 1] ? `${step}. ${flow.steps[step - 1].title}` : 'aún no empieza'}.`];
     if (conversation.goal_completed_at) lines.push('El objetivo YA se cumplió en esta conversación: no lo vuelvas a perseguir; atiende lo que el cliente necesite ahora (goal_completed = false).');
-    const importantMissing = bot.data_fields.filter((f) => f.required && !contact.data?.[f.key] && !(f.type === 'name' && contact.name));
+    const nameKey = contactNameKey(bot.data_fields);
+    const importantMissing = bot.data_fields.filter((f) => f.required && !contact.data?.[f.key] && !(f.key === nameKey && contact.name));
     if (flow.goal && !conversation.goal_completed_at && importantMissing.length) lines.push(`Datos importantes que faltan para cumplir el objetivo: ${importantMissing.map((f) => f.label).join(', ')}.`);
     s.push(`\n# Avance del recorrido\n${lines.join('\n')}`);
+  }
+
+  if (questions.length) {
+    const data = contact.data ?? {};
+    const opts = { askedEver: input.questionAskedEver, nameKey: contactNameKey(bot.data_fields) };
+    const pr = questionProgress(questions, data, contact.name, input.questionAsked, opts);
+    const num = (q: Question) => questions.indexOf(q) + 1;
+    const ask = (q: Question) => `${num(q)}. «${q.question.trim()}» → guarda la respuesta en \`${q.key}\``;
+    const lines = [`Respondidas: ${pr.answered.length ? pr.answered.map(num).join(', ') : 'ninguna todavía'} (de ${questions.length}).`];
+    if (pr.skipped.length) lines.push(`Opcionales que ya hiciste sin respuesta (no las repitas; si el cliente responde alguna ahora, guárdala): ${pr.skipped.map(num).join(', ')}.`);
+    if (!pr.next) lines.push('Todas las preguntas de la lista ya están respondidas: no las vuelvas a hacer.');
+    else if ((input.questionAsked?.[pr.next.key] ?? 0) > 0) {
+      // Ya se hizo: lo más probable es que el cliente la esté contestando ahora. Si la contesta, sigue la próxima.
+      const after = questionProgress(questions, { ...data, [pr.next.key]: '✓' }, contact.name, input.questionAsked, opts).next;
+      lines.push(
+        `PREGUNTA EN CURSO (ya la hiciste): ${ask(pr.next)}.`,
+        `- Si el cliente la acaba de responder: guarda su respuesta en save_data y NO la vuelvas a hacer; ${after ? `haz la siguiente: ${ask(after)}.` : 'ya no quedan preguntas de la lista.'}`,
+        '- Si no la respondió: atiende lo que dijo y vuelve a hacerla al final.',
+      );
+    } else lines.push(`SIGUIENTE PREGUNTA (hazla en esta respuesta, después de atender lo que diga el cliente): ${ask(pr.next)}.`);
+    s.push(`\n# Avance de las preguntas\n${lines.join('\n')}`);
   }
 
   if (input.business) {
@@ -491,6 +547,11 @@ export function buildContext(input: ContextInput): BuiltContext {
     bot.flow.steps.map((s) => `${s.title} ${s.description}`).join('\n'),
     bot.personality.style_examples.join('\n'),
     input.images.map((i) => `${i.name} ${i.description} ${i.caption}`).join('\n'),
+    // Las preguntas y sus opciones las escribió el negocio: repetirlas no es inventar.
+    questionList(bot).map((q) => q.question).join('\n'),
+    bot.data_fields.flatMap((f) => f.options).join('\n'),
+    // Lo que el negocio escribió en sus mensajes guardados también es información verificada.
+    bot.saved_messages.filter((m) => m.active).map((m) => m.text).join('\n'),
     input.agenda ? agendaSection(input.agenda) : '',
   ];
 
@@ -511,3 +572,26 @@ export function buildContext(input: ContextInput): BuiltContext {
 
   return { messages, knowledge, groundingSources, claimSources, customerSources, isFirstContact };
 }
+
+const TYPE_LABEL: Record<Question['type'], string> = { text: 'texto', name: 'nombre', email: 'correo', phone: 'teléfono', date: 'fecha', number: 'número', option: 'opción' };
+
+/** Lista fija de preguntas: el texto exacto, su clave y cómo seguirla (parte estable del prompt). */
+function questionsSection(questions: Question[]): string {
+  const lines = questions.map((q, i) => {
+    const bits = [`${i + 1}. «${q.question.trim()}» → \`${q.key}\``];
+    if (q.type !== 'text') bits.push(`tipo: ${TYPE_LABEL[q.type]}`);
+    if (q.type === 'option' && q.options.length) bits.push(`opciones: ${q.options.join(', ')}`);
+    bits.push(q.required ? 'obligatoria' : 'opcional (si no la responde, sigue con la siguiente)');
+    return bits.join(' | ');
+  });
+  return [
+    '\n# Preguntas (en este orden)',
+    'Haz TODAS estas preguntas, una por turno y en este orden, con su texto tal cual (puedes poner antes una frase corta para conectar). Si las instrucciones del negocio mencionan preguntas, el orden de esta lista es el que manda.',
+    ...lines,
+    '- Si el cliente pregunta o comenta algo, respóndele primero y termina con la pregunta pendiente.',
+    '- Si el cliente ya dio una respuesta (aunque sea antes de que la preguntes), guárdala en save_data con su clave y no la vuelvas a hacer.',
+    '- Guarda la respuesta con las palabras del cliente; no la inventes ni la completes.',
+    '- No te adelantes a otras preguntas de la lista ni hagas varias a la vez. Mientras falten obligatorias, el objetivo no está cumplido.',
+  ].join('\n');
+}
+

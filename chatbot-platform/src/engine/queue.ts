@@ -68,6 +68,11 @@ export class ConversationQueue {
     } finally {
       s.running = false;
       finish();
+      // Un mensaje que llegó mientras tanto no puede quedarse sin respuesta: se programa su turno.
+      if (s.rerun) {
+        s.rerun = false;
+        this.schedule(conversationId, 300);
+      }
       this.cleanup(conversationId);
     }
   }

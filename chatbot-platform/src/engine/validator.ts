@@ -3,6 +3,7 @@ import { automaticField, customerProvided } from './customer-data.js';
 import type { Chatbot, DataField, ImageAsset } from '../types.js';
 import { DecisionSchema, type Action, type Decision } from './decision.js';
 import { unsupportedClaims } from './claims.js';
+import { asksQuestion, contactNameKey, declines, isAnswered, questionList, questionProgress, repeatsQuestion, type QuestionProgress } from './questions.js';
 import { cardNumbersIn, isSensitiveField } from './safety.js';
 import { countEmojis, deepClean, FactCorpus, limitEmojis, normalize, stripEmojis, toWhatsappFormat } from './text.js';
 
@@ -23,6 +24,14 @@ export interface ExecutionPlan {
   booking: { action: 'book'; serviceId: string; slot: string } | { action: 'cancel'; appointmentId: string } | null;
   /** Etapa del recorrido (0 = sin recorrido o sin cambio). */
   flowStep: number;
+  /** Mensajes guardados (activos y existentes) que se envían tal cual, en el orden que propuso la IA. */
+  savedCodes: string[];
+  /** Pregunta de la lista que se hace en esta respuesta (para marcar el mensaje que la lleva). */
+  question: { key: string; text: string } | null;
+  /** La pregunta no va en `messages`: se envía al final, después de los mensajes guardados y las fotos. */
+  questionLast: boolean;
+  /** En este turno se resolvió la última pregunta pendiente de la lista (respondida o, si es opcional, sin respuesta). */
+  questionsCompleted: boolean;
   /** La IA marcó el objetivo como cumplido y el backend lo aceptó (hay objetivo y no faltan datos importantes). */
   goalCompleted: boolean;
 }
@@ -84,6 +93,15 @@ export interface ValidationInput {
   recentBotTexts?: string[];
   /** El cliente repite exactamente su mensaje anterior: repetir la respuesta es lo esperado. */
   customerRepeats?: boolean;
+  /**
+   * Preguntas de la lista: veces que se hizo cada una en el recorrido actual (`asked`) y en toda la conversación
+   * (`askedEver`), y si ya se terminaron en este recorrido.
+   */
+  questionJourney?: { asked: Record<string, number>; askedEver?: Record<string, number>; done: boolean };
+  /** Teléfono del contacto en el canal (WhatsApp): "a este mismo número" es una respuesta válida. */
+  contactPhone?: string;
+  /** Fotos activas de este asistente (para saber si un mensaje guardado con foto se puede enviar). */
+  activeImageIds?: string[];
 }
 
 const IMAGE_PROMISE_RE = /\b(te|le|les)\s+(env[ií]o|mando|comparto|paso|dejo|adjunto)\b[^.?!\n]{0,40}\b(foto|fotos|imagen|imagenes|imágenes|men[uú]|cat[aá]logo|flyer|folleto)\b|\b(aqu[ií]|ah[ií])\s+(te|le)?\s*(va|van|est[aá]n?|tienes?)\b[^.?!\n]{0,30}\b(foto|fotos|imagen|imágenes|imagenes)\b/i;
@@ -235,6 +253,30 @@ export function validateDecision(input: ValidationInput): ValidationResult {
   const d = parsed.decision;
   let action: Action = d.action;
 
+  // ---------- Mensajes guardados: solo códigos activos de este asistente ----------
+  const savedByCode = new Map(bot.saved_messages.filter((m) => m.active).map((m) => [m.code, m]));
+  const proposedCodes = [...new Set(d.saved_message_codes.map((c) => c.trim().toLowerCase()).filter(Boolean))];
+  const known = proposedCodes.filter((c) => savedByCode.has(c));
+  if (proposedCodes.length > known.length) fixes.push('Mensajes guardados inexistentes o inactivos descartados');
+  // Como al enviarlos: cada foto ocupa un lugar del máximo por respuesta. Uno que se quedaría vacío (solo foto, y la
+  // foto ya no está o no cabe) no cuenta como respuesta.
+  const activeIds = input.activeImageIds ? new Set(input.activeImageIds) : null;
+  let savedSlots = rules.max_images_per_reply;
+  const savedCodes = known.filter((c) => {
+    const m = savedByCode.get(c)!;
+    const photo = !!m.image_id && (!activeIds || activeIds.has(m.image_id)) && savedSlots > 0;
+    if (photo) savedSlots--;
+    if (photo || m.text.trim()) return true;
+    fixes.push(`Mensaje guardado "${c}" descartado: solo tiene foto y no se puede enviar (inactiva o sin lugar)`);
+    return false;
+  });
+
+  // Preguntas de la lista: su texto lo escribió el negocio (no cuenta como trato ni como repetición de la IA).
+  const questions = questionList(bot);
+  const asksAnyQuestion = (text: string) => questions.some((q) => asksQuestion(text, q));
+  // Solo este dato es el nombre del contacto; otros de tipo nombre ("el festejado") son de otra persona.
+  const nameKey = contactNameKey(bot.data_fields);
+
   // ---------- Mensajes: formato, emojis, longitud ----------
   let messages = d.messages.map((m) => toWhatsappFormat(String(m ?? ''))).filter((m) => m.length > 0);
   if (bot.personality.emojis === 'none') {
@@ -269,14 +311,15 @@ export function validateDecision(input: ValidationInput): ValidationResult {
   const total = messages.join(' ').length;
   if (budget && total > budget * 1.3 && !tooLong) {
     soft(
-      `La respuesta es demasiado larga para el estilo configurado (${total} caracteres; máximo ~${budget}). Resume y responde solo lo que preguntó el cliente.`,
+      `La respuesta es demasiado larga para el estilo configurado (${total} caracteres; máximo ~${budget}). ${questions.length ? 'Resume: responde lo que preguntó el cliente y conserva la pregunta pendiente de la lista.' : 'Resume y responde solo lo que preguntó el cliente.'}`,
       () => undefined,
       `Se aceptó una respuesta larga (${total} caracteres) en el último intento`,
     );
   }
 
   // ---------- Trato: tú / usted ----------
-  const register = registerMismatch(messages.join(' '), bot.personality.formality);
+  const ownText = questions.length ? dropSentences(messages, (_n, x) => asksAnyQuestion(x)).join(' ') : messages.join(' ');
+  const register = registerMismatch(ownText, bot.personality.formality);
   if (register) {
     soft(
       bot.personality.formality === 'usted'
@@ -382,7 +425,9 @@ export function validateDecision(input: ValidationInput): ValidationResult {
   const saveData: Record<string, string> = {};
   let contactName: string | null = null;
   for (const { field, value } of d.save_data.slice(0, 30)) {
-    if (isSensitiveField(field) || cardNumbersIn(value).length) {
+    // Una opción de una lista fija ("¿Pagas con tarjeta o efectivo?") no es un dato sensible, aunque la clave lo parezca.
+    const fixedOption = bot.data_fields.some((x) => x.key === field && x.type === 'option' && x.options.length > 0);
+    if ((isSensitiveField(field) && !fixedOption) || cardNumbersIn(value).length) {
       fixes.push(`Dato sensible no guardado (${field}): no se guardan tarjetas, códigos ni contraseñas`);
       continue;
     }
@@ -397,12 +442,18 @@ export function validateDecision(input: ValidationInput): ValidationResult {
       fixes.push(`Valor inválido para ${field}: "${value}"`);
       continue;
     }
-    if (!configured && !customerProvided(f, clean, [input.customerText, ...(input.customerDataSources ?? input.customerSources ?? [])])) {
+    // Las respuestas libres a la lista de preguntas también deben salir de lo que escribió el cliente: si no, una
+    // respuesta inventada daría la pregunta por contestada y se la saltaría.
+    const freeAnswer = !!configured?.question.trim() && ['text', 'name', 'email', 'phone'].includes(f.type);
+    const sources = [input.customerText, ...(input.customerDataSources ?? input.customerSources ?? [])];
+    // "A este mismo número": el teléfono con el que escribe también lo dio el cliente.
+    if (f.type === 'phone' && input.contactPhone) sources.push(input.contactPhone);
+    if ((!configured || freeAnswer) && !customerProvided(f, clean, sources)) {
       fixes.push(`Dato no proporcionado por el cliente ignorado: ${f.key}`);
       continue;
     }
     if (!configured && !Object.hasOwn(input.knownData ?? {}, f.key) && Object.keys(input.knownData ?? {}).length + Object.keys(saveData).length >= 100) continue;
-    if (f.type === 'name') contactName = clean;
+    if (f.type === 'name' && (!configured || f.key === nameKey)) contactName = clean;
     saveData[f.key] = clean;
   }
 
@@ -418,10 +469,72 @@ export function validateDecision(input: ValidationInput): ValidationResult {
     );
   }
 
+  // ---------- Preguntas: la siguiente de la lista, en orden, una a la vez ----------
+  let question: ExecutionPlan['question'] = null;
+  let questionLast = false;
+  let questionsCompleted = false;
+  let questionsAfter: QuestionProgress | null = null;
+  if (questions.length) {
+    const journey = input.questionJourney ?? { asked: {}, done: false };
+    const known = input.knownData ?? {};
+    const data = { ...known, ...saveData };
+    const name = contactName || input.knownName;
+    questionsAfter = questionProgress(questions, data, name, journey.asked, { askedEver: journey.askedEver, nameKey });
+    const pending = questionsAfter.next;
+    const answeredNow = questions.some((q) => isAnswered(q, data, name, nameKey) && !isAnswered(q, known, input.knownName, nameKey));
+    // Terminó en este turno: ya no queda ninguna pendiente, se había hecho alguna en este recorrido (o se contestó
+    // una ahora) y no se registró antes. Un cliente que vuelve con todo respondido no lo dispara. También cuenta en
+    // una transferencia (el sistema lo registra sin apagar al asistente): así no se dispara después, al retomar.
+    const askedAny = Object.values(journey.asked).some((n) => n > 0);
+    questionsCompleted = !pending && !journey.done && (askedAny || answeredNow);
+    if (action !== 'handoff' && action !== 'no_reply') {
+      // Preguntas que no tocan: una ya respondida no se repite (se reconoce tal cual) y una posterior no se adelanta.
+      const offList = (x: string) =>
+        !(pending && asksQuestion(x, pending)) &&
+        questions.some((q) => q !== pending && (isAnswered(q, data, name, nameKey) || questionsAfter!.skipped.includes(q) ? repeatsQuestion(x, q) : asksQuestion(x, q)));
+      if (messages.some((m) => sentences(m).some(offList))) {
+        soft(
+          pending
+            ? `Hiciste una pregunta de la lista que no toca ahora (ya respondida o posterior). Pregunta solo la siguiente: «${pending.question.trim()}».`
+            : 'Volviste a hacer una pregunta de la lista que ya está respondida: no la repitas.',
+          () => (messages = dropSentences(messages, (_n, x) => offList(x))),
+          'Se quitó una pregunta de la lista que no tocaba (ya respondida o fuera de orden)',
+        );
+      }
+    }
+    if (pending && action !== 'handoff') {
+      const text = pending.question.trim();
+      question = { key: pending.key, text };
+      if (action === 'no_reply' && answeredNow) {
+        // Contestó una pregunta: el recorrido sigue con la siguiente en lugar de quedarse callado.
+        action = 'ask';
+        messages = [];
+        fixes.push('El cliente respondió una pregunta de la lista: se hace la siguiente en lugar de no responder');
+      }
+      // Si se despide o dice que no quiere seguir (sin responder nada ahora), no se le insiste en este turno.
+      const backOff = !answeredNow && declines(input.customerText);
+      const savedAsk = savedCodes.some((c) => asksQuestion(savedByCode.get(c)!.text, pending));
+      if (action !== 'no_reply' && !backOff && !savedAsk && !messages.some((m) => asksQuestion(m, pending))) {
+        if (savedCodes.length) {
+          // Con mensajes guardados la pregunta sale al final, después de ellos (sin pedir otra respuesta a la IA).
+          questionLast = true;
+          fixes.push(`La siguiente pregunta de la lista se envía después de los mensajes guardados (${pending.key})`);
+        } else {
+          soft(
+            `Te faltó la siguiente pregunta de la lista. Atiende lo que dijo el cliente y termina con esta pregunta, tal cual: «${text}».`,
+            () => (messages = appendQuestion(messages, text, bot.ai.max_bubbles)),
+            `Se agregó la siguiente pregunta de la lista (${pending.key})`,
+          );
+        }
+      }
+    }
+  }
+
   // ---------- No repetir: la misma respuesta a un mensaje distinto ----------
   if (!input.customerRepeats && input.recentBotTexts?.length && messages.length) {
     const sent = new Set(input.recentBotTexts.map((x) => normalize(x)));
-    if (messages.some((m) => m.length >= 25 && sent.has(normalize(m)))) {
+    // Volver a hacer una pregunta de la lista que sigue sin respuesta no es repetirse.
+    if (messages.some((m) => m.length >= 25 && sent.has(normalize(m)) && !asksAnyQuestion(m))) {
       soft(
         'Repites un mensaje que ya enviaste, aunque el cliente preguntó otra cosa. Contesta lo nuevo sin copiar tu respuesta anterior.',
         () => undefined,
@@ -434,7 +547,7 @@ export function validateDecision(input: ValidationInput): ValidationResult {
   if (action === 'no_reply') {
     if (messages.length) fixes.push('Acción no_reply con mensajes: se descartaron los mensajes');
     messages = [];
-  } else if (action !== 'handoff' && !messages.length) {
+  } else if (action !== 'handoff' && !messages.length && !savedCodes.length) {
     retryable.push('La acción requiere al menos un mensaje para el cliente.');
   }
 
@@ -485,8 +598,10 @@ export function validateDecision(input: ValidationInput): ValidationResult {
       fixes.push('Objetivo marcado como cumplido, pero el recorrido no tiene objetivo: se ignoró');
     } else {
       const have = { ...(input.knownData ?? {}), ...saveData };
-      const missing = bot.data_fields.filter((f) => f.required && !have[f.key] && !(f.type === 'name' && (contactName || input.knownName)));
+      const missing = bot.data_fields.filter((f) => f.required && !have[f.key] && !(f.key === nameKey && (contactName || input.knownName)));
+      const pendingQuestions = questionsAfter?.missingRequired ?? [];
       if (missing.length) fixes.push(`El objetivo aún no se cumple: faltan datos importantes (${missing.map((f) => f.label).join(', ')})`);
+      else if (pendingQuestions.length) fixes.push(`El objetivo aún no se cumple: faltan preguntas obligatorias (${pendingQuestions.map((q) => q.key).join(', ')})`);
       else if (action === 'no_reply') fixes.push('Objetivo marcado como cumplido sin responder: se ignoró');
       else goalCompleted = true;
     }
@@ -504,7 +619,8 @@ export function validateDecision(input: ValidationInput): ValidationResult {
       goalReached: goalCompleted && !input.goalAlreadyCompleted, booked: booking?.action === 'book', sentIds: input.sentImageIds, skip: [],
     }).map(x => x.image),
   ] : [];
-  if (!images.length && !scheduled.length && IMAGE_PROMISE_RE.test(messages.join(' '))) {
+  const savedWithImage = savedCodes.some((c) => savedByCode.get(c)?.image_id);
+  if (!images.length && !scheduled.length && !savedWithImage && IMAGE_PROMISE_RE.test(messages.join(' '))) {
     soft(
       'Dices que envías una imagen pero no incluiste ningún ID válido en image_ids. Incluye el ID correcto del catálogo o no menciones que envías imagen.',
       () => (messages = dropSentences(messages, (_n, x) => IMAGE_PROMISE_RE.test(x))),
@@ -532,6 +648,10 @@ export function validateDecision(input: ValidationInput): ValidationResult {
       booking,
       flowStep,
       goalCompleted,
+      savedCodes: action === 'handoff' || action === 'no_reply' ? [] : savedCodes,
+      question: action === 'handoff' || action === 'no_reply' ? null : question,
+      questionLast: !!question && questionLast && action !== 'handoff' && action !== 'no_reply',
+      questionsCompleted,
     },
     retryable,
     fixes,
@@ -541,5 +661,11 @@ export function validateDecision(input: ValidationInput): ValidationResult {
 }
 
 export function emptyPlan(action: Action): ExecutionPlan {
-  return { action, messages: [], images: [], contextImages: [], saveData: {}, contactName: null, remember: [], handoffReason: '', infoNotFound: false, intents: [], booking: null, flowStep: 0, goalCompleted: false };
+  return { action, messages: [], images: [], contextImages: [], saveData: {}, contactName: null, remember: [], handoffReason: '', infoNotFound: false, intents: [], booking: null, flowStep: 0, goalCompleted: false, savedCodes: [], question: null, questionLast: false, questionsCompleted: false };
+}
+
+/** Agrega la pregunta como último mensaje (o al final del último, si ya se llegó al máximo de mensajes). */
+function appendQuestion(messages: string[], text: string, maxBubbles: number): string[] {
+  if (messages.length < Math.max(1, maxBubbles)) return [...messages, text];
+  return [...messages.slice(0, -1), `${messages[messages.length - 1]}\n\n${text}`];
 }

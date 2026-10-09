@@ -84,6 +84,8 @@ export const RulesSchema = z.object({
       off_when_fields: z.array(z.string()).default([]),
       off_on_goal: z.boolean().default(false),
       off_on_booking: z.boolean().default(false),
+      /** Se apaga después de responder, en el turno en que el cliente contesta la última pregunta de la lista. */
+      off_on_questions: z.boolean().default(false),
       /** pause: deja de responder sin avisar · handoff: pasa a una persona · close: cierra la conversación. */
       off_action: z.enum(['pause', 'handoff', 'close']).default('pause'),
       /** Mensaje opcional que se envía al apagarse. */
@@ -91,7 +93,7 @@ export const RulesSchema = z.object({
       /** Horas tras las que se reactiva solo (0 = solo con palabra de activación o a mano). */
       resume_after_hours: z.number().min(0).max(720).default(0),
     })
-    .default({ mode: 'always', on_keywords: [], off_keywords: [], off_when_fields: [], off_on_goal: false, off_on_booking: false, off_action: 'pause', off_message: '', resume_after_hours: 0 }),
+    .default({ mode: 'always', on_keywords: [], off_keywords: [], off_when_fields: [], off_on_goal: false, off_on_booking: false, off_on_questions: false, off_action: 'pause', off_message: '', resume_after_hours: 0 }),
 });
 export type Rules = z.infer<typeof RulesSchema>;
 export type Activation = Rules['activation'];
@@ -105,6 +107,11 @@ export const DataFieldSchema = z.object({
   required: z.boolean().default(false),
   /** Cuándo pedir el dato, p.ej. "cuando el cliente quiera cotizar". */
   ask_when: z.string().default(''),
+  /**
+   * Pregunta exacta (apartado "Preguntas"). Los datos con pregunta forman una lista ordenada que el
+   * asistente sigue paso a paso, una a la vez; los que no tienen se piden cuando tenga sentido.
+   */
+  question: z.string().max(500).default(''),
 });
 export type DataField = z.infer<typeof DataFieldSchema>;
 export const DataFieldsSchema = z.array(DataFieldSchema).default([]);
@@ -146,6 +153,30 @@ export const AiSettingsSchema = z.object({
 });
 export type AiSettings = z.infer<typeof AiSettingsSchema>;
 
+/**
+ * Mensaje guardado: texto (y foto opcional) que se envía tal cual, sin que la IA lo reescriba.
+ * La IA lo elige por su código; si tiene foto, el texto va como pie de la foto en un solo mensaje.
+ */
+export const SavedMessageSchema = z
+  .object({
+    code: z.string().trim().toLowerCase().min(1, 'El código es obligatorio').max(40).regex(/^[a-z0-9_-]+$/, 'Código: solo letras, números, guion y guion bajo'),
+    title: z.string().trim().max(120).default(''),
+    text: z.string().trim().max(1000).default(''),
+    /** Foto del catálogo de este asistente ('' = sin foto). */
+    image_id: z.string().trim().max(60).default(''),
+    /** Cuándo debe usarlo la IA. */
+    when: z.string().trim().max(300).default(''),
+    /** Etapa del recorrido en la que queda la conversación al enviarlo (0 = no cambia). */
+    flow_step: z.number().int().min(0).max(50).default(0),
+    active: z.boolean().default(true),
+  })
+  .refine((m) => m.text || m.image_id, { message: 'El mensaje guardado necesita texto o foto' });
+export type SavedMessage = z.infer<typeof SavedMessageSchema>;
+export const SavedMessagesSchema = z
+  .array(SavedMessageSchema)
+  .max(40)
+  .refine((list) => new Set(list.map((m) => m.code)).size === list.length, { message: 'Hay mensajes guardados con el mismo código' });
+
 export interface ChatbotRow {
   id: string;
   account_id: string;
@@ -156,16 +187,18 @@ export interface ChatbotRow {
   data_fields: unknown;
   flow: unknown;
   ai: unknown;
+  saved_messages: unknown;
   created_at: Date;
   updated_at: Date;
 }
 
-export interface Chatbot extends Omit<ChatbotRow, 'personality' | 'rules' | 'data_fields' | 'flow' | 'ai'> {
+export interface Chatbot extends Omit<ChatbotRow, 'personality' | 'rules' | 'data_fields' | 'flow' | 'ai' | 'saved_messages'> {
   personality: Personality;
   rules: Rules;
   data_fields: DataField[];
   flow: Flow;
   ai: AiSettings;
+  saved_messages: SavedMessage[];
 }
 
 /** Normaliza una fila de la BD a una configuración completa y válida. */
@@ -177,7 +210,17 @@ export function hydrateChatbot(row: ChatbotRow): Chatbot {
     data_fields: safeFields(row.data_fields),
     flow: FlowSchema.parse(row.flow ?? {}),
     ai: AiSettingsSchema.parse(row.ai ?? {}),
+    saved_messages: safeSavedMessages(row.saved_messages),
   };
+}
+
+/** Un mensaje guardado inválido no rompe al asistente: se descarta solo ese. */
+function safeSavedMessages(v: unknown): SavedMessage[] {
+  if (!Array.isArray(v)) return [];
+  return v.flatMap((m) => {
+    const r = SavedMessageSchema.safeParse(m);
+    return r.success ? [r.data] : [];
+  });
 }
 
 function safeFields(v: unknown): DataField[] {
@@ -381,7 +424,7 @@ export interface User {
 
 /* ---------------------------------- Canales ---------------------------------- */
 
-export const CHANNEL_TYPES = ['whatsapp', 'telegram', 'messenger', 'instagram', 'webchat', 'email'] as const;
+export const CHANNEL_TYPES = ['whatsapp', 'telegram', 'messenger', 'instagram', 'webchat', 'email', 'zernio'] as const;
 export type PublicChannelType = (typeof CHANNEL_TYPES)[number];
 export type ChannelType = PublicChannelType | 'playground';
 
@@ -449,6 +492,21 @@ export const ChannelConfigSchemas = {
     /** Dominios que pueden insertar el chat (vacío = cualquiera). */
     allowed_origins: z.array(z.string().max(200)).default([]),
   }),
+  /** Zernio: API unificada de mensajes. Las credenciales se usan solo en el servidor. */
+  zernio: z.object({
+    /** Red que se conecta (p.ej. bluesky, reddit, twitter), tal como la nombra Zernio. */
+    platform: z.string().trim().toLowerCase().max(40).default(''),
+    /** Perfil de Zernio donde queda la cuenta conectada. */
+    profile_id: z.string().trim().max(100).default(''),
+    /** Cuenta conectada en Zernio (la llena el flujo de conexión). */
+    account_id: z.string().max(100).default(''),
+    username: z.string().max(120).default(''),
+    api_key: secret.default(''),
+    /** Secreto con el que se firman los webhooks de Zernio. Se genera al crear el canal. */
+    webhook_secret: secret.default(''),
+    /** Nonce de un solo uso del flujo de conexión; evita callbacks falsos. */
+    connect_state: z.string().max(200).default(''),
+  }),
   email: z.object({
     /** gmail | outlook | otro: solo rellena servidores por defecto en el panel. */
     provider: z.enum(['gmail', 'outlook', 'otro']).default('otro'),
@@ -471,7 +529,7 @@ export const ChannelConfigSchemas = {
   playground: z.object({}),
 } as const;
 
-export const SECRET_FIELDS = ['api_key', 'bot_token', 'page_access_token', 'app_secret', 'imap_password', 'smtp_password'];
+export const SECRET_FIELDS = ['api_key', 'bot_token', 'page_access_token', 'app_secret', 'imap_password', 'smtp_password', 'webhook_secret', 'connect_state'];
 export const MASK = '••••••';
 
 export function channelConfig(type: ChannelType, config: unknown): Record<string, any> {

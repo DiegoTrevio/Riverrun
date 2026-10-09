@@ -232,15 +232,16 @@ export interface ChatbotInput {
   data_fields?: unknown;
   flow?: unknown;
   ai?: unknown;
+  saved_messages?: unknown;
 }
 
-const CHATBOT_JSON_COLS = ['personality', 'rules', 'data_fields', 'flow', 'ai'] as const;
+const CHATBOT_JSON_COLS = ['personality', 'rules', 'data_fields', 'flow', 'ai', 'saved_messages'] as const;
 const CHATBOT_PLAIN_COLS = ['name', 'active'] as const;
 
 export async function createChatbot(accountId: string, input: ChatbotInput, client?: Queryable): Promise<Chatbot> {
   const rows = await rowsOf(client,
-    `INSERT INTO chatbots (account_id, name, active, personality, rules, data_fields, flow, ai)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+    `INSERT INTO chatbots (account_id, name, active, personality, rules, data_fields, flow, ai, saved_messages)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
     [
       accountId,
       input.name ?? 'Nuevo chatbot',
@@ -250,6 +251,7 @@ export async function createChatbot(accountId: string, input: ChatbotInput, clie
       JSON.stringify(input.data_fields ?? []),
       JSON.stringify(input.flow ?? {}),
       JSON.stringify(input.ai ?? {}),
+      JSON.stringify(input.saved_messages ?? []),
     ],
   );
   return hydrateChatbot(rows[0]);
@@ -599,7 +601,7 @@ export async function resetConversationMemory(conversationId: string, contactId:
     if (!scope.rows.length) throw new Error('La conversación no pertenece al contacto');
     await client.query("UPDATE contacts SET data = '{}', notes = '[]', name = '', updated_at = now() WHERE id = $1", [contactId]);
     await client.query(`UPDATE conversations SET summary = '', summary_until_id = 0, data = '{}', data_version = data_version + 1,
-      report_summary = '', report_analysis = '{}'::jsonb, report_until_id = 0, report_at = NULL, report_data_version = -1, flow_step = 0, goal_completed_at = NULL, flow_started_at = now()
+      report_summary = '', report_analysis = '{}'::jsonb, report_until_id = 0, report_at = NULL, report_data_version = -1, flow_step = 0, goal_completed_at = NULL, flow_started_at = now(), questions_done_at = NULL
       WHERE id = $1 AND contact_id = $2`, [conversationId, contactId]);
   });
 }
@@ -746,12 +748,39 @@ export async function findMessageByExternalId(conversationId: string, externalId
   return queryOne<Message>('SELECT * FROM messages WHERE conversation_id = $1 AND external_message_id = $2', [conversationId, externalId]);
 }
 
+/** Guarda un aviso interno que acabamos de enviar, para reconocer su eco aunque no pertenezca a ninguna conversación. */
+export async function recordInternalNotice(accountId: string, phone: string, content: string) {
+  await query(`DELETE FROM internal_notices WHERE created_at < now() - interval '1 day'`);
+  await query(`INSERT INTO internal_notices (account_id, phone, content) VALUES ($1,$2,$3)`, [accountId, phone, content.slice(0, 4000)]);
+}
+
+/** Consume el registro de un aviso interno cuyo eco acaba de llegar. Devuelve false si no fue un aviso nuestro. */
+export async function consumeInternalNotice(accountId: string, phone: string, content: string) {
+  const row = await queryOne<{ id: string }>(
+    `DELETE FROM internal_notices WHERE id = (
+       SELECT id FROM internal_notices WHERE account_id = $1 AND phone = $2 AND content = $3
+         AND created_at > now() - interval '10 minutes' ORDER BY created_at DESC LIMIT 1)
+     RETURNING id`,
+    [accountId, phone, content.slice(0, 4000)],
+  );
+  return !!row;
+}
+
 /** Busca un mensaje saliente reciente con el mismo texto (para reconocer ecos de nuestros propios envíos). */
 export async function findRecentOutgoingEcho(conversationId: string, content: string, seconds = 120) {
   return queryOne<Message>(
     `SELECT * FROM messages WHERE conversation_id = $1 AND direction = 'out' AND sender IN ('bot','human','system')
        AND content = $2 AND created_at > now() - ($3 || ' seconds')::interval ORDER BY id DESC LIMIT 1`,
     [conversationId, content, String(seconds)],
+  );
+}
+
+/** Mensajes enviados por nosotros hace poco (para reconocer un eco que la plataforma devuelve sin formato). */
+export async function recentOutgoing(conversationId: string, seconds = 120) {
+  return query<Message>(
+    `SELECT * FROM messages WHERE conversation_id = $1 AND direction = 'out' AND sender IN ('bot','human','system')
+       AND created_at > now() - ($2 || ' seconds')::interval ORDER BY id DESC LIMIT 20`,
+    [conversationId, String(seconds)],
   );
 }
 
@@ -887,6 +916,36 @@ export async function sentImageIds(conversationId: string): Promise<string[]> {
   return rows.map((r) => r.image_id);
 }
 
+/**
+ * Preguntas de la lista en la conversación: cuántas veces se hizo cada una en el recorrido actual (`asked`) y en
+ * toda la conversación (`askedEver`), y si ya se terminaron en este recorrido.
+ */
+export async function questionJourney(conversationId: string): Promise<{ asked: Record<string, number>; askedEver: Record<string, number>; done: boolean }> {
+  const [rows, conv] = await Promise.all([
+    query<{ key: string; n: number; ever: number }>(
+      `SELECT m.meta->>'question' AS key,
+              (count(*) FILTER (WHERE c.flow_started_at IS NULL OR m.created_at >= c.flow_started_at))::int AS n,
+              count(*)::int AS ever
+         FROM messages m JOIN conversations c ON c.id = m.conversation_id
+        WHERE m.conversation_id = $1 AND m.direction = 'out' AND m.status = 'ok' AND m.meta ? 'question'
+        GROUP BY 1`,
+      [conversationId],
+    ),
+    queryOne<{ done: boolean }>(`SELECT questions_done_at IS NOT NULL AS done FROM conversations WHERE id = $1`, [conversationId]),
+  ]);
+  return {
+    asked: Object.fromEntries(rows.filter((r) => r.n > 0).map((r) => [r.key, r.n])),
+    askedEver: Object.fromEntries(rows.map((r) => [r.key, r.ever])),
+    done: !!conv?.done,
+  };
+}
+
+/** Registra que se terminaron las preguntas en este recorrido. true solo la primera vez (no se dispara dos veces). */
+export async function markQuestionsDone(conversationId: string): Promise<boolean> {
+  const row = await queryOne<{ id: string }>(`UPDATE conversations SET questions_done_at = now() WHERE id = $1 AND questions_done_at IS NULL RETURNING id`, [conversationId]);
+  return !!row;
+}
+
 /** ¿Ya llegó esta foto (entregada) desde ese momento? Evita duplicar un reenvío pendiente. */
 export async function imageSentSince(conversationId: string, imageId: string, since: Date): Promise<boolean> {
   const row = await queryOne<{ n: number }>(
@@ -930,13 +989,28 @@ export async function clearConnectionCodes(channelId: string) {
   await query(`UPDATE channels SET qr_code = NULL, qr_at = NULL, pairing_code = NULL, pairing_number = NULL, pairing_at = NULL WHERE id = $1`, [channelId]);
 }
 
-/** Reinicia el recorrido (al reabrir una conversación cerrada, o desde el panel). */
-/** Al reabrir: el recorrido empieza de nuevo y el asistente vuelve a su estado inicial (sin pausa ni activación). */
-export async function resetFlowState(conversationId: string) {
+/**
+ * Al reabrir (o desde el panel): el recorrido empieza de nuevo y el asistente vuelve a su estado inicial (sin pausa
+ * ni activación). Con `keepCampaignStart`, un recorrido que una campaña empezó después de cerrarse la conversación
+ * se conserva (el cliente contesta a esa campaña: sigue desde la etapa que marcó).
+ */
+export async function resetFlowState(conversationId: string, opts: { keepCampaignStart?: boolean } = {}) {
+  const keep = opts.keepCampaignStart ? 'flow_started_at IS NOT NULL AND flow_started_at > status_changed_at' : 'false';
   await query(
-    `UPDATE conversations SET flow_step = 0, goal_completed_at = NULL, flow_started_at = now(), agent_off_at = NULL, agent_off_reason = '', agent_off_until = NULL, agent_on_at = NULL WHERE id = $1`,
+    `UPDATE conversations SET
+       flow_step = CASE WHEN ${keep} THEN flow_step ELSE 0 END,
+       goal_completed_at = CASE WHEN ${keep} THEN goal_completed_at ELSE NULL END,
+       questions_done_at = CASE WHEN ${keep} THEN questions_done_at ELSE NULL END,
+       flow_started_at = CASE WHEN ${keep} THEN flow_started_at ELSE now() END,
+       agent_off_at = NULL, agent_off_reason = '', agent_off_until = NULL, agent_on_at = NULL
+     WHERE id = $1`,
     [conversationId],
   );
+}
+
+/** Una campaña empieza un recorrido nuevo en esta etapa (objetivo y preguntas vuelven a contar desde ahora). */
+export async function startFlowAt(conversationId: string, step: number) {
+  await query(`UPDATE conversations SET flow_step = $2, goal_completed_at = NULL, questions_done_at = NULL, flow_started_at = now() WHERE id = $1`, [conversationId, step]);
 }
 
 /* ------------------------- Asistente encendido / en pausa ------------------------- */

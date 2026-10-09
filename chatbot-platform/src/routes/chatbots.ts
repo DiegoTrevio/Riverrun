@@ -12,12 +12,13 @@ import { withTransaction } from '../db.js';
 import { config } from '../config.js';
 import { OpenAiProvider } from '../ai/provider.js';
 import { indexKnowledge, knowledgeIndexStatus } from '../engine/knowledge.js';
+import { isSensitiveField } from '../engine/safety.js';
 import { imageAbsolutePath } from '../engine/transport.js';
 import { assertWithinLimit } from '../billing/limits.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
-import { AiSettingsSchema, DataFieldSchema, FlowSchema, ImageSendWhenSchema, PersonalitySchema, RulesSchema, type Chatbot, type User } from '../types.js';
+import { AiSettingsSchema, DataFieldSchema, FlowSchema, ImageSendWhenSchema, PersonalitySchema, RulesSchema, SavedMessagesSchema, type Chatbot, type SavedMessage, type User } from '../types.js';
 import { alignFixedMessages, chatbotFromTemplate } from '../templates/business.js';
 import { parse, readUpload, saveFile, type UploadFile } from './util.js';
 
@@ -27,10 +28,47 @@ const ChatbotBody = z.object({
   personality: PersonalitySchema.optional(),
   rules: RulesSchema.optional(),
   // Sin .default(): un PUT parcial no debe reiniciar los campos.
-  data_fields: z.array(DataFieldSchema).optional(),
+  // Datos a recopilar y apartado "Preguntas" (los datos con pregunta, en orden). La clave identifica la respuesta.
+  data_fields: z
+    .array(DataFieldSchema)
+    .refine((list) => new Set(list.map((f) => f.key)).size === list.length, { message: 'Hay dos preguntas o datos con la misma clave' })
+    // Una respuesta con clave de dato sensible nunca se guarda: la pregunta se repetiría para siempre. Una lista fija de
+    // opciones ("¿Tarjeta o efectivo?") sí se puede.
+    .superRefine((list, ctx) => {
+      const bad = list.find((f) => f.question.trim() && isSensitiveField(f.key) && !(f.type === 'option' && f.options.length));
+      if (bad) ctx.addIssue({ code: 'custom', message: `La clave "${bad.key}" parece de un dato sensible (tarjeta, NIP, contraseña): esa respuesta no se guardaría. Usa otra clave para esa pregunta.` });
+    })
+    .optional(),
   flow: FlowSchema.optional(),
   ai: AiSettingsSchema.optional(),
+  saved_messages: SavedMessagesSchema.optional(),
 });
+
+type ActivationRules = { activation: { mode: string; on_keywords: string[] } };
+const keywordsWithoutWords = (rules: ActivationRules | undefined) => rules?.activation.mode === 'keywords' && !rules.activation.on_keywords.some((k) => k.trim());
+
+/**
+ * En modo "solo con palabras" sin ninguna palabra, el asistente nunca respondería solo. Se avisa al configurarlo; un
+ * asistente que ya estaba así (se enciende con reglas o con el botón) puede seguir guardando lo demás.
+ */
+function checkActivation(rules: ActivationRules | undefined, before?: ActivationRules) {
+  if (keywordsWithoutWords(rules) && !keywordsWithoutWords(before)) {
+    throw new HttpError(400, 'Para que responda solo con palabras de activación, agrega al menos una palabra.');
+  }
+}
+
+/**
+ * La foto de un mensaje guardado debe ser del mismo asistente (nunca de otro ni de otra cuenta). Una que ya tenía
+ * guardada y se borró después no bloquea el guardado (al enviarlo, sale solo el texto).
+ */
+async function checkSavedImages(botId: string | null, list: SavedMessage[] | undefined, before: SavedMessage[] = []) {
+  const kept = new Set(before.map((m) => m.image_id).filter(Boolean));
+  const withImage = (list ?? []).filter((m) => m.image_id && !kept.has(m.image_id));
+  if (!withImage.length) return;
+  const own = new Set(botId ? (await store.listImages(botId)).map((i) => i.id) : []);
+  const bad = withImage.find((m) => !own.has(m.image_id));
+  if (bad) throw new HttpError(400, `La foto del mensaje guardado "${bad.code}" no pertenece a este asistente`);
+}
 
 const KnowledgeBody = z.object({
   category: z.string().max(60).optional(),
@@ -122,6 +160,9 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
     }).optional() }), req.body);
     const accountId = await targetAccount(req.user, b.account_id);
     await assertWithinLimit(accountId, 'chatbots');
+    // Un asistente nuevo todavía no tiene fotos.
+    await checkSavedImages(null, b.saved_messages);
+    checkActivation(b.rules);
     const { template, account_id, setup, ...input } = b;
     void account_id;
     let base: Record<string, unknown> = {};
@@ -157,7 +198,11 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
 
   api.get('/api/chatbots/:id', async (req: any) => {
     const bot = await botFor(req.user, req.params.id);
-    const channels = (await store.listChannels(bot.account_id, { chatbotId: bot.id })).map(publicChannel);
+    // El token del webhook y el código de inserción permiten enviar mensajes al canal: los agentes no los ven.
+    const channels = (await store.listChannels(bot.account_id, { chatbotId: bot.id })).map((c) => {
+      const view = publicChannel(c);
+      return req.user.role === 'agent' ? { ...view, webhook_token: undefined, webhook_url: undefined, embed_code: undefined } : view;
+    });
     return { ...visibleBot(req.user, bot), channels };
   });
 
@@ -165,6 +210,7 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
     const existing = await botFor(req.user, req.params.id);
     const raw = (req.body ?? {}) as Record<string, any>;
     const data: Record<string, any> = { ...parse(ChatbotBody, raw) };
+    await checkSavedImages(existing.id, data.saved_messages, existing.saved_messages);
     // Las secciones se fusionan con lo guardado: enviar solo un campo no reinicia los demás.
     const sections = { personality: PersonalitySchema, rules: RulesSchema, flow: FlowSchema, ai: AiSettingsSchema } as const;
     for (const [key, schema] of Object.entries(sections)) {
@@ -176,6 +222,7 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
         data[key] = schema.parse(merged);
       }
     }
+    checkActivation(data.rules, existing.rules);
     // Al cambiar el trato (tú/usted), los mensajes fijos de fábrica se ajustan para no mezclar tratos.
     const formality = data.personality?.formality;
     if (formality && formality !== existing.personality.formality) data.rules = alignFixedMessages(data.rules ?? existing.rules, formality);
@@ -213,19 +260,26 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
     }
     // Una foto que no se puede copiar no deja una copia a medias (con una foto rota sin aviso): se deshace todo.
     const copies: string[] = [];
+    const newImageId = new Map<string, string>();
     try {
       for (const img of await store.listImages(src.id)) {
         const rel = path.join(copy.id, `${crypto.randomUUID()}${path.extname(img.file_path)}`);
         await fsp.mkdir(path.join(config.uploadsDir, copy.id), { recursive: true });
         await fsp.copyFile(imageAbsolutePath(img), path.join(config.uploadsDir, rel));
         copies.push(path.join(config.uploadsDir, rel));
-        await store.insertImage({ ...img, chatbot_id: copy.id, file_path: rel, sha256: img.sha256 });
+        const created = await store.insertImage({ ...img, chatbot_id: copy.id, file_path: rel, sha256: img.sha256 });
+        newImageId.set(img.id, created.id);
       }
     } catch (e: any) {
       for (const f of copies) await fsp.rm(f, { force: true }).catch(() => undefined);
       await store.deleteChatbot(copy.id);
       await logEvent({ level: 'error', source: 'admin', message: `No se duplicó el asistente ${src.name}: falta una foto (${e?.message ?? e})`, accountId, chatbotId: src.id });
       throw new HttpError(500, 'No se pudo copiar una de las fotos del asistente; la copia no se creó. Revisa las fotos del original.');
+    }
+    // Los mensajes guardados apuntan a las fotos copiadas, nunca a las del asistente original.
+    if (src.saved_messages.length) {
+      const saved = src.saved_messages.map((m) => ({ ...m, image_id: m.image_id ? newImageId.get(m.image_id) ?? '' : '' })).filter((m) => m.text || m.image_id);
+      return (await store.updateChatbot(copy.id, { saved_messages: saved }))!;
     }
     return copy;
   });

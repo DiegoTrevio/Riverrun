@@ -6,7 +6,7 @@ import { whatsappConnector } from './whatsapp.js';
 
 /* ------------------------------ Canales ------------------------------ */
 
-const CHANNEL_ICONS = { whatsapp: '🟢', telegram: '✈️', messenger: '💬', instagram: '📸', webchat: '🌐', email: '✉️', playground: '🧪' };
+const CHANNEL_ICONS = { whatsapp: '🟢', telegram: '✈️', messenger: '💬', instagram: '📸', webchat: '🌐', email: '✉️', zernio: '🔗', playground: '🧪' };
 
 export function channelIcon(type) {
   return h('span', { title: type }, CHANNEL_ICONS[type] || '•');
@@ -23,11 +23,14 @@ const STATE_LABEL = {
 };
 
 export function channelStatusCell(c) {
-  const connected = c.type !== 'whatsapp' || c.connection_state === 'open';
+  // WhatsApp (QR) y Zernio (autorización de la cuenta) necesitan un paso de conexión antes de responder.
+  const needsConnection = c.type === 'whatsapp' || c.type === 'zernio';
+  const connected = !needsConnection || (c.type === 'zernio' ? !!c.config?.account_id : c.connection_state === 'open');
+  const link = c.type === 'whatsapp' && !connected ? `#/conectar?channel=${c.id}` : `#/channel/${c.id}`;
   return h('td', {},
     h('span', { class: `badge ${c.active && connected ? 'green' : ''}` },
-      !c.active ? 'Inactivo' : c.type !== 'whatsapp' ? 'Activo' : connected ? 'Conectado' : 'Pendiente de conectar'),
-    c.type === 'whatsapp' ? h('a', { href: connected ? `#/channel/${c.id}` : `#/conectar?channel=${c.id}`, class: 'btn small', style: 'margin-left:8px' }, connected ? 'Administrar' : 'Escanear QR') : null);
+      !c.active ? 'Inactivo' : !needsConnection ? 'Activo' : connected ? 'Conectado' : 'Pendiente de conectar'),
+    needsConnection ? h('a', { href: link, class: 'btn small', style: 'margin-left:8px' }, connected ? 'Administrar' : c.type === 'whatsapp' ? 'Escanear QR' : 'Conectar cuenta') : null);
 }
 
 /** Enlace público que reparte a los clientes nuevos entre varios números de WhatsApp. */
@@ -170,6 +173,13 @@ function channelConfigFields(ch, cfg) {
             field('Dirección de envío', text(cfg, 'from_address'), 'Vacía = el mismo correo.'))),
       ];
     }
+    case 'zernio':
+      return [
+        field('Red a conectar', text(cfg, 'platform', { placeholder: 'bluesky, reddit, twitter…' }), 'Nombre de la red tal como lo usa Zernio. Para WhatsApp oficial escribe whatsapp. El WhatsApp por QR sigue siendo su propio canal.'),
+        field('ID del perfil en Zernio', text(cfg, 'profile_id', { placeholder: 'profile_…' }), 'Perfil de Zernio donde quedará la cuenta conectada.'),
+        secret('api_key', 'API key de Zernio', 'Se guarda solo en el servidor; el navegador nunca la recibe completa.'),
+        h('p', { class: 'small muted' }, 'Cuenta: ', cfg.account_id ? h('code', {}, cfg.account_id) : 'sin conectar', cfg.username ? ` · @${cfg.username}` : ''),
+      ];
     case 'webchat':
       return [
         h('div', { class: 'grid' },
@@ -214,6 +224,10 @@ export async function viewChannel(root, id) {
     refresh();
   };
   const copyBtn = (value) => h('button', { class: 'small', onclick: async () => { try { await navigator.clipboard.writeText(value); toast('Copiado'); } catch { toast('No se pudo copiar', true); } } }, 'Copiar');
+  const connectZernio = () => run(async () => {
+    const r = await api('POST', `/api/channels/${id}/zernio/connect`);
+    location.href = r.authUrl;
+  }, 'Abriendo Zernio…');
 
   const connection = [];
   if (ch.type === 'whatsapp') {
@@ -244,6 +258,16 @@ export async function viewChannel(root, id) {
     connection.push(
       h('p', { class: 'muted small' }, 'Al conectar se valida el token y se registra el webhook en Telegram automáticamente.'),
       h('button', { class: 'primary', onclick: setup, disabled: !ch.config.bot_token }, 'Conectar con Telegram'),
+    );
+  } else if (ch.type === 'zernio') {
+    connection.push(
+      h('ol', { class: 'small' },
+        h('li', {}, 'Guarda la API key, la red y el perfil de Zernio en Configuración.'),
+        h('li', {}, 'Conecta la cuenta: se abre Zernio para autorizarla y al terminar regresas a este canal.'),
+        h('li', {}, 'Registra el webhook para recibir mensajes en ', h('code', {}, ch.webhook_url), ' ', copyBtn(ch.webhook_url), '.')),
+      h('div', { class: 'row' },
+        h('button', { class: 'primary', onclick: connectZernio, disabled: !ch.config.api_key || !ch.config.platform || !ch.config.profile_id }, ch.config.account_id ? 'Reconectar cuenta' : 'Conectar cuenta'),
+        h('button', { onclick: setup, disabled: !ch.config.api_key || !ch.config.webhook_secret }, 'Registrar webhook')),
     );
   } else if (ch.type === 'messenger' || ch.type === 'instagram') {
     connection.push(

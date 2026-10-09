@@ -100,6 +100,7 @@ export class Campaigns {
       source: 'campaign',
       // Una promoción no interrumpe una conversación que está atendiendo una persona.
       meta: { campaign_id: c.id },
+      flowStep: c.flow_step,
     });
     await query(
       `UPDATE campaign_recipients SET status = $3, reason = $4, sent_at = CASE WHEN $3 = 'sent' THEN now() ELSE NULL END

@@ -3,8 +3,9 @@ import type { AiProvider } from '../ai/provider.js';
 import { recordMessage } from '../billing/limits.js';
 import { logEvent } from '../logs.js';
 import * as store from '../store/index.js';
-import type { Channel, Chatbot, Contact, Conversation, ImageAsset, Message } from '../types.js';
+import type { Channel, Chatbot, Contact, Conversation, ImageAsset, Message, SavedMessage } from '../types.js';
 import { detectRisk, isAutomatedMessage, promisesFollowUp, repeatedCustomerText, SAFETY_MESSAGES, type RiskHit } from './safety.js';
+import { asksQuestion, contactNameKey } from './questions.js';
 import { agentActive, agentStatus, offAfterReply } from './activation.js';
 import { automaticField, customerLabel, customerProvided } from './customer-data.js';
 import { CLAIM_JUDGE_PROMPT, CLAIM_JUDGE_SCHEMA } from './claims.js';
@@ -16,7 +17,7 @@ import { maybeSummarize } from './memory.js';
 import { briefReport } from './report-format.js';
 import { summarizeConversation } from './report.js';
 import { normalize } from './text.js';
-import type { OutgoingFile, Transport } from './transport.js';
+import { CAPTION_MAX, type OutgoingFile, type Transport } from './transport.js';
 import { emptyPlan, validateDecision, type AgendaValidation, type ExecutionPlan, type ValidationInput } from './validator.js';
 import type { AgendaContext, BookResult } from '../automation/agenda.js';
 import type { AutomationEvent } from '../automation/types.js';
@@ -71,6 +72,24 @@ function slotFallback(agenda: AgendaContext | null): string {
   if (!agenda || !svc) return 'Por ahora no tengo horarios disponibles; déjame revisarlo con el equipo y te aviso.';
   const opts = agenda.slots[svc.id].slice(0, 3).map((x) => x.label);
   return `Ese horario no lo tengo disponible. Para ${svc.name} te puedo ofrecer ${joinOptions(opts)}. ¿Cuál te acomoda?`;
+}
+
+export interface SavedItem {
+  message: SavedMessage;
+  image: ImageAsset | null;
+  /** Tenía foto, pero ya no existe, está inactiva o es de otro asistente. */
+  missingImage: boolean;
+}
+
+/** Mensajes guardados de la propuesta (en su orden), con su foto si sigue activa y es de este asistente. */
+export function savedItems(bot: Chatbot, codes: string[], imagesById: Map<string, ImageAsset>): SavedItem[] {
+  return codes.flatMap((code) => {
+    const message = bot.saved_messages.find((m) => m.active && m.code === code);
+    if (!message) return [];
+    const img = message.image_id ? imagesById.get(message.image_id) : undefined;
+    const image = img && img.active && img.chatbot_id === bot.id ? img : null;
+    return [{ message, image, missingImage: !!message.image_id && !image }];
+  });
 }
 
 /** Plataformas donde tiene sentido simular "escribiendo…". */
@@ -190,13 +209,15 @@ export class Engine {
     }
 
     // 2) Contexto controlado.
-    const [knowledge, allImages, sentImageIds, history] = await Promise.all([
+    const [knowledge, allImages, sentImageIds, history, questionJourney] = await Promise.all([
       store.listKnowledge(bot.id, true),
       store.listImages(bot.id, false),
       store.sentImageIds(conv.id),
       // Todo lo que aún no está en el resumen (así no hay huecos de memoria). El resumidor
       // mantiene esto acotado a ~recent_messages + summary_batch mensajes.
       store.unsummarizedMessages(conv.id, conv.summary_until_id, bot.ai.recent_messages + bot.ai.summary_batch + pending.length + 4),
+      // Preguntas de la lista: cuáles ya se hicieron en este recorrido y si ya se terminaron.
+      store.questionJourney(conv.id),
     ]);
     const images = allImages.filter((i) => i.active);
     const semantic = await semanticKnowledge(bot, knowledge, [...history.slice(-4).filter((m) => m.direction === 'in').map((m) => m.content), customerText].join('\n'), this.ai);
@@ -237,6 +258,8 @@ export class Engine {
       const ctx = buildContext({
         bot, knowledge: semantic ?? knowledge, knowledgeSelected: semantic !== null, images: aiImages, contact, conversation: conv, channelType: channel.type, history, pending, sentImageIds, imagesById, correction, intents, agenda: agendaCtx, business,
         autoImages, contextImages: contextualImages(images), imagesNow: scheduledBefore.map((x) => x.image),
+        questionAsked: questionJourney.asked,
+        questionAskedEver: questionJourney.askedEver,
       });
       let completion;
       try {
@@ -281,6 +304,9 @@ export class Engine {
         knownName: contact.name || undefined,
         recentBotTexts,
         customerRepeats,
+        questionJourney,
+        contactPhone: contact.phone || undefined,
+        activeImageIds: images.map((i) => i.id),
       };
       const v = validateDecision({ ...lastInput, final: attempt === MAX_ATTEMPTS });
       // Modo estricto: un modelo barato revisa que lo afirmado esté respaldado (solo si lo demás ya pasó).
@@ -326,14 +352,15 @@ export class Engine {
     if (retryable.length) {
       // Datos no verificables tras el reintento: respuesta segura según la regla configurada.
       fallbackUsed = true;
-      const base = { ...plan, booking: null, contextImages: [] };
+      const base = { ...plan, booking: null, contextImages: [], savedCodes: [], questionLast: false };
       if (bookingIssue && !factIssues) {
         // La IA insistió en un horario que no existe: se ofrecen horarios reales.
         plan = { ...base, action: 'reply', messages: [slotFallback(agendaCtx)], images: [] };
       } else if (bot.rules.unknown_info_behavior === 'handoff') {
         plan = { ...base, action: 'handoff', messages: [], images: [], handoffReason: 'El bot no pudo dar una respuesta verificada' };
       } else {
-        plan = { ...base, action: 'reply', messages: [bot.rules.fallback_message], images: [] };
+        // La respuesta de respaldo no deja atrás la pregunta pendiente de la lista.
+        plan = { ...base, action: 'reply', messages: [bot.rules.fallback_message, ...(base.question ? [base.question.text] : [])], images: [] };
       }
       await log('warn', 'validator', 'Se usó la respuesta de respaldo tras fallar la validación', { issues: retryable, decision: lastRaw });
     }
@@ -372,7 +399,7 @@ export class Engine {
           plan = {
             ...plan,
             action: 'reply',
-            images: [], contextImages: [],
+            images: [], contextImages: [], savedCodes: [], questionLast: false,
             messages: [r.alternatives.length ? `Uy, ese horario se acaba de ocupar. Te puedo ofrecer ${joinOptions(r.alternatives)}. ¿Cuál te acomoda?` : 'Uy, ese horario se acaba de ocupar. ¿Te puedo ofrecer otro día?'],
           };
           await log('warn', 'engine', `No se pudo agendar: ${r.reason}`);
@@ -385,6 +412,22 @@ export class Engine {
     // Recorrido: el objetivo solo cuenta una vez por conversación (hasta que se cierre y se reabra).
     const goalReached = plan.goalCompleted && !conv.goal_completed_at;
     const goalHandoff = goalReached && bot.flow.on_goal_action === 'handoff' && plan.action !== 'handoff';
+    // Mensajes guardados: texto y foto juntos, tal cual los escribió el negocio. Sus fotos cuentan para el máximo por respuesta.
+    // En una transferencia o sin respuesta no se envían (ni cambian la etapa).
+    const saved = plan.action === 'handoff' || plan.action === 'no_reply' ? [] : savedItems(bot, plan.savedCodes, imagesById);
+    for (const x of saved) if (x.missingImage) await log('warn', 'engine', `La foto del mensaje guardado "${x.message.code}" no existe o está inactiva: se envía solo el texto`);
+    let photoSlots = bot.rules.max_images_per_reply;
+    for (const x of saved) {
+      if (x.image && photoSlots > 0) photoSlots--;
+      else if (x.image) {
+        await log('warn', 'engine', `Foto del mensaje guardado "${x.message.code}" omitida por el límite de ${bot.rules.max_images_per_reply} por respuesta`);
+        x.image = null;
+      }
+    }
+    const sendable = saved.filter((x) => x.image || x.message.text);
+    // Etapa del recorrido: la que marque la IA; si no marcó, la del último mensaje guardado que tenga una.
+    const savedStep = sendable.map((x) => x.message.flow_step).filter((n) => n > 0 && n <= bot.flow.steps.length).pop() ?? 0;
+    if (!plan.flowStep && savedStep) plan = { ...plan, flowStep: savedStep };
     const stageChanged = !!plan.flowStep && plan.flowStep !== (conv.flow_step ?? 0);
     // Fotos programadas: se suman a las que eligió la IA (sin repetir). En una transferencia no se envían.
     let selectedRules: ScheduledImage[] = [];
@@ -401,9 +444,11 @@ export class Engine {
         skip: scheduledBefore.map((x) => x.image.id),
       });
       const contextual = imagesForContext(images, plan.contextImages.map(img => img.code), sentImageIds);
-      const automatic = [...scheduledBefore, ...assistant, ...after, ...contextual].filter((x, i, all) => all.findIndex(y => y.image.id === x.image.id) === i);
-      const candidates = [...automatic.map(x => x.image), ...plan.images.filter(img => !automatic.some(x => x.image.id === img.id))];
-      const selected = candidates.slice(0, bot.rules.max_images_per_reply);
+      // Una foto que ya va en un mensaje guardado no sale otra vez en la misma respuesta.
+      const inSaved = new Set(sendable.flatMap((x) => (x.image ? [x.image.id] : [])));
+      const automatic = [...scheduledBefore, ...assistant, ...after, ...contextual].filter((x, i, all) => !inSaved.has(x.image.id) && all.findIndex(y => y.image.id === x.image.id) === i);
+      const candidates = [...automatic.map(x => x.image), ...plan.images.filter(img => !inSaved.has(img.id) && !automatic.some(x => x.image.id === img.id))];
+      const selected = candidates.slice(0, photoSlots);
       selectedRules = automatic.filter(x => selected.some(img => img.id === x.image.id));
       if (candidates.length > selected.length) {
         // Las que salen por una regla del negocio (etapa, objetivo, palabra…) se envían después; las que eligió la IA, no.
@@ -415,12 +460,14 @@ export class Engine {
         for (const img of later) owed.push({ image: img, reason: automatic.find((x) => x.image.id === img.id)!.reason, delaySeconds: 5 });
       }
       if (selected.length) plan = { ...plan, action: 'reply_with_image', images: selected };
+      // Sin lugar para fotos (p. ej. ya lo ocupó un mensaje guardado): no sale ninguna de las que propuso la IA.
+      else if (plan.images.length) plan = { ...plan, action: plan.action === 'reply_with_image' ? 'reply' : plan.action, images: [] };
 
     }
     if (plan.action === 'handoff') {
       await this.executeHandoff(bot, conv, contact, transport, plan.messages, plan.handoffReason || 'La IA decidió transferir');
     } else if (plan.action !== 'no_reply') {
-      const failed = await this.sendPlan(bot, conv, transport, plan, meta, selectedRules);
+      const failed = await this.sendPlan(bot, conv, transport, plan, meta, selectedRules, sendable);
       for (const x of failed) owed.push({ image: x.image, reason: x.reason, delaySeconds: 45 });
     }
     // Si el asistente dijo que el equipo dará seguimiento, el equipo se entera: no depende de que alguien lo recuerde.
@@ -446,10 +493,14 @@ export class Engine {
         }
       }
     }
-    // Desactivadores después de responder (objetivo, cita, datos completos).
+    // Fin de la lista de preguntas: se registra una sola vez por recorrido (aunque este turno sea una transferencia o
+    // no envíe nada), así no se vuelve a disparar cuando el asistente retome la conversación.
+    const questionsDone = plan.questionsCompleted && (await store.markQuestionsDone(conv.id));
+    if (questionsDone) await log('info', 'engine', 'El cliente terminó las preguntas de la lista');
+    // Desactivadores después de responder (objetivo, cita, preguntas, datos completos).
     let ended = goalHandoff;
     if (plan.action !== 'handoff' && !goalHandoff) {
-      const why = offAfterReply(bot.rules.activation, { goalReached, booked, before: { name: nameBefore, data: dataBefore }, after: contact });
+      const why = offAfterReply(bot.rules.activation, { goalReached, booked, questionsCompleted: questionsDone, nameKey: contactNameKey(bot.data_fields), before: { name: nameBefore, data: dataBefore }, after: contact });
       if (why) {
         ended = true;
         await this.deactivate(bot, conv, contact, transport, why);
@@ -486,15 +537,36 @@ export class Engine {
   }
 
   /** Envía el plan. Devuelve las fotos de reglas del negocio que la plataforma rechazó (para reintentarlas). */
-  async sendPlan(bot: Chatbot, conv: Conversation, transport: Transport, plan: ExecutionPlan, meta: Record<string, unknown>, scheduled: ScheduledImage[] = []): Promise<ScheduledImage[]> {
+  async sendPlan(bot: Chatbot, conv: Conversation, transport: Transport, plan: ExecutionPlan, meta: Record<string, unknown>, scheduled: ScheduledImage[] = [], saved: SavedItem[] = []): Promise<ScheduledImage[]> {
     const typing = bot.ai.typing_simulation && hasTyping(transport);
     // En correo, varias burbujas serían varios correos: se envían como uno solo.
     const texts = transport.kind === 'email' && plan.messages.length > 1 ? [plan.messages.join('\n\n')] : plan.messages;
     // Si una persona tomó la conversación mientras la IA respondía, lo que falta de la respuesta ya no sale.
     const stillBot = async () => (await store.getConversation(conv.id))?.status === 'bot';
+    // El mensaje que hace la pregunta pendiente de la lista queda marcado (así se sabe cuántas veces se hizo).
+    let questionTagged = false;
+    const tag = (text: string, m: Record<string, unknown>) => {
+      if (!plan.question || questionTagged || !asksQuestion(text, { question: plan.question.text })) return m;
+      questionTagged = true;
+      return { ...m, question: plan.question.key };
+    };
     for (const text of texts) {
       if (!(await stillBot())) return [];
-      await this.sendOut(bot, conv, transport, { sender: 'bot', text, delay: typingDelay(text, typing), meta });
+      await this.sendOut(bot, conv, transport, { sender: 'bot', text, delay: typingDelay(text, typing), meta: tag(text, meta) });
+    }
+    for (const { message: m, image } of saved) {
+      if (!(await stillBot())) return [];
+      const savedMeta = tag(m.text, { ...meta, saved_message: m.code });
+      if (image && m.text.length <= CAPTION_MAX) {
+        // Un solo mensaje: la foto con el texto como pie.
+        const sent = await this.sendOut(bot, conv, transport, { sender: 'bot', text: m.text, image, delay: typing ? 1200 : 0, meta: savedMeta });
+        // Si la plataforma rechaza la foto, el cliente igual recibe el texto.
+        if (!sent && m.text) await this.sendOut(bot, conv, transport, { sender: 'bot', text: m.text, delay: 0, meta: { ...savedMeta, image_failed: true } });
+      } else {
+        // Sin foto, o un texto que no cabe como pie: el texto y después la foto.
+        if (m.text) await this.sendOut(bot, conv, transport, { sender: 'bot', text: m.text, delay: typingDelay(m.text, typing), meta: savedMeta });
+        if (image) await this.sendOut(bot, conv, transport, { sender: 'bot', text: '', image, delay: typing ? 1200 : 0, meta: { ...meta, saved_message: m.code } });
+      }
     }
     const failed: ScheduledImage[] = [];
     for (const img of plan.images) {
@@ -503,6 +575,11 @@ export class Engine {
       const sent = await this.sendOut(bot, conv, transport, { sender: 'bot', text: img.caption, image: img, delay: typing ? 1200 : 0, meta: rule ? {...meta, image_trigger: rule.reason} : meta });
       if (sent && rule) await logEvent({ level: 'info', source: 'engine', message: `Foto enviada por regla: ${img.code} (${rule.reason})`, accountId: conv.account_id, chatbotId: bot.id, channelId: conv.channel_id, conversationId: conv.id });
       if (!sent && rule) failed.push(rule);
+    }
+    // La pregunta pendiente va al final cuando la respuesta lleva mensajes guardados.
+    if (plan.questionLast && plan.question && (await stillBot())) {
+      const text = plan.question.text;
+      await this.sendOut(bot, conv, transport, { sender: 'bot', text, delay: typingDelay(text, typing), meta: tag(text, meta) });
     }
     return failed;
   }

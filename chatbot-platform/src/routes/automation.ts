@@ -58,6 +58,8 @@ const CampaignBody = z.object({
   scheduled_at: z.string().datetime({ offset: true }).nullable().default(null),
   rate_per_minute: z.number().int().min(1).max(120).default(20),
   business_hours_only: z.boolean().default(true),
+  /** Etapa del recorrido en la que queda la conversación al recibirla: el asistente sigue el flujo desde ahí. */
+  flow_step: z.number().int().min(0).max(50).default(0),
 });
 
 export async function automationRoutes(api: FastifyInstance, service: ChatService) {
@@ -239,6 +241,8 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
       warning:
         ch?.type === 'messenger' || ch?.type === 'instagram'
           ? 'Meta solo permite escribir a quienes enviaron un mensaje en las últimas 24 horas; el resto se omitirá.'
+          : ch?.type === 'zernio'
+            ? 'Solo se escribirá a quienes enviaron un mensaje en las últimas 24 horas; el resto se omitirá.'
           : ch?.type === 'whatsapp'
             ? 'Envía solo a clientes que esperan saber de ti y con ritmo moderado: WhatsApp puede bloquear números que envían mensajes masivos no deseados.'
             : null,

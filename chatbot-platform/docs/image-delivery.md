@@ -17,10 +17,31 @@ El catálogo se limita a imágenes activas del agente. Una coincidencia de regla
 - La tarea se cancela si el recorrido se reinició, si la foto ya llegó, si ya no está activa o si una persona respondió desde que se programó. Si el asistente ya no atiende (pasó a una persona o se cerró), la foto pendiente solo sale cuando fue el propio asistente quien terminó la conversación en ese mismo turno (por ejemplo, al cumplir el objetivo).
 - «Una sola vez por conversación» se cuenta **por recorrido**: si la conversación se cierra y el cliente vuelve a escribir (o se borra su memoria), las fotos de etapa y de objetivo vuelven a enviarse.
 
-El texto se envía antes de las imágenes. Cada imagen se almacena como pendiente, se marca como entregada cuando el transporte confirma el envío y como fallida si la plataforma la rechaza. «Foto enviada por regla» solo se registra tras la confirmación. Una foto pendiente o fallida no cuenta como entregada para evitar repeticiones; una nueva petición del cliente puede volver a intentar un envío fallido.
+En las respuestas de la IA, su texto se envía antes de las imágenes del catálogo. Cada imagen se almacena como pendiente, se marca como entregada cuando el transporte confirma el envío y como fallida si la plataforma la rechaza. «Foto enviada por regla» solo se registra tras la confirmación. Una foto pendiente o fallida no cuenta como entregada para evitar repeticiones; una nueva petición del cliente puede volver a intentar un envío fallido.
 
 La confirmación del transporte no equivale a que el destinatario haya leído la imagen. Las pruebas locales usan transportes simulados; el envío real requiere una conexión activa y credenciales válidas de la plataforma.
 
 Validación local: compilación TypeScript y JavaScript aprobadas; 270 pruebas aprobadas con pgvector obligatorio y ninguna omitida; 6 evaluaciones de componentes y 16 del motor en Promptfoo aprobadas. El editor se comprobó en Chromium sin errores JavaScript.
 
 La evaluación del motor incluye una petición expresada con otras palabras y un saludo que no debe activar la foto. Los mismos casos se añadieron a la evaluación con OpenRouter real; requieren la clave protegida para ejecutarse.
+
+## Mensajes guardados (texto + foto)
+
+En **Asistentes → Fotos → Mensajes guardados** se escriben textos con una foto opcional del mismo asistente. Cada uno tiene un código, un «Cuándo enviarlo» y, si se quiere, la etapa del recorrido en la que deja la conversación.
+
+- La IA los ve en el prompt y los elige por su código; también puedes nombrarlos en el prompt («si piden precios, envía el mensaje precios»). El texto se envía tal cual, sin que la IA lo reescriba.
+- Con foto, salen en **un solo mensaje**: la foto con el texto como pie. Si la plataforma rechaza la foto, se envía el texto solo. Un texto de más de 1024 caracteres (el límite de pie de foto de Telegram y WhatsApp) sale aparte, antes de la foto.
+- Su foto cuenta para el máximo de fotos por respuesta; las fotos de la IA que no quepan se omiten y quedan en Registros. Si esa misma foto también la pide una regla o la IA, sale una sola vez.
+- Un mensaje guardado que es solo foto, y cuya foto ya no está o no cabe en el máximo, no cuenta como respuesta: el validador pide otra a la IA en lugar de dejar al cliente sin contestar. Si la foto se borró o se desactivó, el prompt lo presenta como «solo texto» (o no lo ofrece si no tiene texto) y la lista se puede seguir guardando; el panel marca la foto que falta.
+- Si una persona toma la conversación mientras se envía la respuesta, los mensajes guardados que faltan ya no salen.
+- Si la IA no marca otra etapa, la conversación queda en la etapa del mensaje guardado.
+- Su texto cuenta como información del negocio: la IA puede repetir sus datos sin que el validador los rechace.
+- Los códigos inexistentes o inactivos se descartan. En una transferencia a una persona no se envían.
+- Al duplicar un asistente, los mensajes guardados apuntan a las fotos copiadas.
+
+## Envíos programados (campañas, automatizaciones y secuencias)
+
+Si un envío lleva texto y foto, sale en un solo mensaje con el texto como pie de la foto; sin texto, se usa el pie de la foto. Si la foto falla, se envía el texto. Un texto de más de 1024 caracteres (con el pie de baja incluido) sale aparte y la foto después, con su propio pie.
+
+Para un primer mensaje que inicia un recorrido, indica en la campaña **«Etapa del recorrido al enviarla»**: cada conversación empieza un recorrido nuevo en esa etapa (el objetivo y las preguntas vuelven a contar desde ahí) y, cuando el cliente responda, el asistente sigue el flujo desde esa etapa, con el mensaje enviado ya en su historial. Funciona también con conversaciones cerradas: al reabrirse porque el cliente contesta la campaña, se conserva la etapa en lugar de empezar de cero.
+

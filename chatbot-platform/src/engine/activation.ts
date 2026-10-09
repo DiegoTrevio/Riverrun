@@ -57,9 +57,9 @@ export function gate(a: Activation, conv: ConvState, text: string, now = new Dat
   return { reply: true, reason: 'activo' };
 }
 
-/** Datos del cliente que cuentan para "ya tiene estos datos" (el nombre puede estar en la ficha). */
-function hasField(contact: Pick<Contact, 'name' | 'data'>, key: string) {
-  if (key === 'nombre' && contact.name) return true;
+/** Datos del cliente que cuentan para "ya tiene estos datos" (el dato del nombre puede estar en la ficha). */
+function hasField(contact: Pick<Contact, 'name' | 'data'>, key: string, nameKey: string) {
+  if ((key === 'nombre' || key === nameKey) && contact.name) return true;
   return !!contact.data?.[key];
 }
 
@@ -69,12 +69,14 @@ function hasField(contact: Pick<Contact, 'name' | 'data'>, key: string) {
  */
 export function offAfterReply(
   a: Activation,
-  o: { goalReached: boolean; booked: boolean; before: Pick<Contact, 'name' | 'data'>; after: Pick<Contact, 'name' | 'data'> },
+  o: { goalReached: boolean; booked: boolean; questionsCompleted?: boolean; nameKey?: string; before: Pick<Contact, 'name' | 'data'>; after: Pick<Contact, 'name' | 'data'> },
 ): string | null {
+  if (a.off_on_questions && o.questionsCompleted) return 'el cliente respondió todas las preguntas';
   if (a.off_on_goal && o.goalReached) return 'se cumplió el objetivo de la conversación';
   if (a.off_on_booking && o.booked) return 'el cliente agendó una cita';
   const keys = a.off_when_fields.filter(Boolean);
-  if (keys.length && keys.every((k) => hasField(o.after, k)) && !keys.every((k) => hasField(o.before, k))) {
+  const nameKey = o.nameKey ?? 'nombre';
+  if (keys.length && keys.every((k) => hasField(o.after, k, nameKey)) && !keys.every((k) => hasField(o.before, k, nameKey))) {
     return `el cliente ya dio: ${keys.join(', ')}`;
   }
   return null;
