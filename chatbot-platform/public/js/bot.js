@@ -38,6 +38,15 @@ export async function viewBot(root, id, tab) {
       h('div', { class: 'row' }, h('a', { class: 'btn', href: `#/channels?new=1&chatbot_id=${bot.id}` }, 'Conectar teléfono / ver QR'), h('a', { href: `#/conversations?chatbot_id=${bot.id}` }, 'Ver conversaciones →'))),
     h('div', { class: 'tabs' }, TABS.map(([k, l]) => h('a', { href: `#/bot/${id}/${k}`, class: k === tab ? 'active' : '' }, l))),
   );
+  const guidance = {
+    instrucciones: 'Define cómo atiende tu agente y qué debe lograr. Los ajustes adicionales están al final.',
+    preguntas: 'Define qué preguntas debe hacer el agente y en qué orden. Las respuestas se guardan automáticamente.',
+    activacion: 'Elige cuándo debe responder el agente y cuándo debe ponerse en pausa.',
+    conocimiento: 'Agrega la información que tu agente puede usar para responder: precios, servicios, horarios y condiciones.',
+    imagenes: 'Agrega tus fotos y elige cuándo debe enviarlas el agente.',
+    probar: 'Prueba una conversación antes de conectar el agente. Aquí puedes ver sus respuestas y los datos que guarda.',
+  };
+  root.append(h('p', { class: 'help', style: 'margin:0 0 24px' }, guidance[tab] || guidance.instrucciones));
   const body = h('div');
   root.append(body);
   const views = { instrucciones: tabInstructions, preguntas: tabQuestions, activacion: tabActivation, conocimiento: tabKnowledge, imagenes: tabImages, probar: tabPlayground };
@@ -102,10 +111,10 @@ async function tabInstructions(root, bot) {
   root.append(
     h('div', { class: 'card' },
       h('div', { class: 'grid' },
-        field('Nombre del bot', text(m, 'name')),
-        field('Se presenta como (opcional)', text(p, 'assistant_name', { placeholder: 'Mario' }))),
+        field('Nombre del agente', text(m, 'name')),
+        field('Nombre con el que se presenta (opcional)', text(p, 'assistant_name', { placeholder: 'Mario' }))),
       check(m, 'active', 'Asistente encendido'),
-      field('Instrucciones', area(p, 'prompt', { big: true, placeholder: 'Eres Mario, el asistente de Los Trompitos. Atiende de forma amable y breve. Ayuda a hacer pedidos. Pregunta qué quieren ordenar, la cantidad y si pasan a recoger o necesitan entrega. Para entrega, pide nombre y dirección. Haz una pregunta a la vez.' }),
+      field('Cómo debe atender', area(p, 'prompt', { big: true, placeholder: 'Eres Mario, el asistente de Los Trompitos. Atiende de forma amable y breve. Ayuda a hacer pedidos. Pregunta qué quieren ordenar, la cantidad y si pasan a recoger o necesitan entrega. Para entrega, pide nombre y dirección. Haz una pregunta a la vez.' }),
         ['Describe cómo debe atender. Las preguntas que debe hacer, en orden, van en ', h('a', { href: `#/bot/${bot.id}/preguntas` }, 'Preguntas'), '; los precios, horarios y productos, en Conocimiento.']),
       field('Objetivo', area(f, 'goal', { placeholder: 'Ayudar al cliente a completar su pedido y pasarlo al equipo para confirmarlo.' })),
       h('p', { class: 'small muted', style: 'margin-bottom:0' }, 'Los datos se guardan automáticamente cuando el cliente responde: nombre, dirección, pedido y cualquier otro dato útil. Para que pregunte algo siempre y en orden, agrégalo en ', h('a', { href: `#/bot/${bot.id}/preguntas` }, 'Preguntas'), '.')),
