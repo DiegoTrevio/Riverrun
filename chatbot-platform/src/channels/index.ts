@@ -1,6 +1,7 @@
 import { config } from '../config.js';
 import { PlaygroundTransport } from '../engine/transport.js';
 import { ChannelConfigSchemas, MASK, SECRET_FIELDS, type Channel, type ChannelType } from '../types.js';
+import { emailAdapter } from './email.js';
 import { instagramAdapter, messengerAdapter } from './meta.js';
 import { telegramAdapter } from './telegram.js';
 import type { ChannelAdapter } from './types.js';
@@ -21,6 +22,7 @@ const ADAPTERS: Record<ChannelType, ChannelAdapter> = {
   messenger: messengerAdapter,
   instagram: instagramAdapter,
   webchat: webchatAdapter,
+  email: emailAdapter,
   playground: playgroundAdapter,
 };
 

@@ -29,7 +29,7 @@ before(async () => {
       { key: 'correo', label: 'Correo', type: 'email', required: true },
     ],
   });
-  await h.authed('PUT', `/api/settings?account_id=${h.accountId}`, { business_hours: ALL_DAY, timezone: 'America/Bogota' });
+  await h.authed('PUT', `/api/settings?account_id=${h.accountId}`, { business_hours: ALL_DAY, timezone: 'America/Bogota', consent: { require_for_campaigns: false } });
   const u = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'equipo@hotel.mx', name: 'Equipo', password: 'clave-equipo-1', role: 'admin' });
   assert.equal(u.statusCode, 200, u.body);
 });
@@ -210,7 +210,7 @@ t('secuencias: con la cuenta en pausa esperan (no se pierden) y siguen al reacti
 
   await pool.query(`UPDATE accounts SET status = 'active' WHERE id = $1`, [h.accountId]);
   await h.fastForward();
-  assert.deepEqual(h.sent.map((m) => m.text), ['Seguimiento 1']);
+  assert.deepEqual(h.sent.map((m) => m.text.split('\n\n')[0]), ['Seguimiento 1'], 'el mensaje promocional lleva además el pie de baja');
   en = (await h.authed('GET', `/api/conversations/${c.id}/automation`)).json().enrollments.find((e: any) => e.sequence_id === seq.id);
   assert.equal(en.status, 'completed');
 });

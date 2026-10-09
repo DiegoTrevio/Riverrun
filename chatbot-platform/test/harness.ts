@@ -13,6 +13,8 @@ export const evo = {
   instances: new Map<string, { state: string; qrN: number }>(),
   /** Instancias "trabadas": connect no devuelve QR. */
   stuck: new Set<string>(),
+  /** Archivos que Evolution entrega al pedir un medio recibido, por id del mensaje. */
+  media: new Map<string, { buffer: Buffer; mimetype: string }>(),
   owner: { jid: '5218111112222@s.whatsapp.net', name: 'Clínica Sonrisa' },
   down: false,
   connectErrors: new Map<string, number>(),
@@ -74,6 +76,10 @@ const extServer = http.createServer((req, res) => {
       }
       if (path.startsWith('/webhook/set/')) return json(201, { webhook: body.webhook });
     }
+    if (path.startsWith('/chat/getBase64FromMediaMessage/')) {
+      const file = evo.media.get(body?.message?.key?.id);
+      return file ? json(200, { base64: file.buffer.toString('base64'), mimetype: file.mimetype }) : json(404, { response: { message: ['not found'] } });
+    }
     if (path.startsWith('/file/')) { res.writeHead(200, { 'content-type': 'audio/ogg' }); return res.end(Buffer.from('OggS-audio')); }
     if (path.startsWith('/bot')) {
       if (method === 'getMe') return json(200, { ok: true, result: { id: 1, username: 'palmas_bot' } });
@@ -127,10 +133,11 @@ export type Script = (req: Req, callIndex: number) => Out | Promise<Out>;
 export async function createHarness() {
   const calls: Req[] = [];
   const summaryCalls: Req[] = [];
-  const sent: { kind: string; to: string; text: string; image?: string }[] = [];
+  const sent: { kind: string; to: string; text: string; image?: string; file?: string; mime?: string; fileKind?: string }[] = [];
   let script: Script = () => ({ messages: ['Ok'] });
   let summary = '- resumen de prueba';
   let summaryError: Error | null = null;
+  let summaryAnalysis: Record<string, unknown> | undefined;
   let summaryFields: { field: string; value: string; source_message_id: number }[] = [];
   let n = 0;
   const ai: import('../src/ai/provider.js').AiProvider = {
@@ -138,7 +145,7 @@ export async function createHarness() {
       if (!req.json_schema || req.json_schema.name === 'conversation_report') {
         summaryCalls.push(req);
         if (summaryError && req.json_schema?.name === 'conversation_report') throw summaryError;
-        return { content: req.json_schema ? JSON.stringify({ summary, save_data: summaryFields }) : summary, model: req.model, latency_ms: 1, usage: { input_tokens: 50, cached_tokens: 0, output_tokens: 10 } };
+        return { content: req.json_schema ? JSON.stringify({ summary, save_data: summaryFields, ...(summaryAnalysis ? { analysis: summaryAnalysis } : {}) }) : summary, model: req.model, latency_ms: 1, usage: { input_tokens: 50, cached_tokens: 0, output_tokens: 10 } };
       }
       calls.push(req);
       const out = await script(req, calls.length - 1);
@@ -172,6 +179,10 @@ export async function createHarness() {
       sent.push({ kind: 'image', to: contact.phone, text: caption, image: image.code });
       return `OUT-${++n}`;
     },
+    async sendFile(file: any, caption: string) {
+      sent.push({ kind: 'file', to: contact.phone, text: caption, file: file.name, mime: file.mime, fileKind: file.kind });
+      return `OUT-${++n}`;
+    },
     async notify(number: string, text: string) {
       sent.push({ kind: 'notify', to: number, text });
     },
@@ -181,6 +192,13 @@ export async function createHarness() {
   await migrate();
   await bootstrapSuperadmin();
   const { app, service } = await buildApp({ ai: ai as any, transportFactory: transportFactory as any });
+  // El webhook responde antes de procesar el mensaje: se cuentan las llamadas en curso para que idle() espere también a ellas.
+  const inflight = { n: 0 };
+  const handleIncomingOriginal = service.handleIncoming.bind(service);
+  service.handleIncoming = (async (...args: Parameters<typeof handleIncomingOriginal>) => {
+    inflight.n++;
+    try { return await handleIncomingOriginal(...args); } finally { inflight.n--; }
+  }) as typeof service.handleIncoming;
   const loginAs = async (email: string, password: string) => {
     const login = await app.inject({ method: 'POST', url: '/api/login', payload: { email, password } });
     assert.equal(login.statusCode, 200, login.body);
@@ -194,6 +212,7 @@ export async function createHarness() {
     app, service, ai, calls, summaryCalls, sent, authed, loginAs, cookie: authed.cookie, failNext, token: '', botId: '', accountId: '', channelId: '',
     setScript(s: Script) { script = s; },
     setSummary(s: string) { summary = s; },
+    setAnalysis(a: Record<string, unknown> | undefined) { summaryAnalysis = a; },
     setSummaryError(error: Error | null) { summaryError = error; },
     setSummaryFields(fields: typeof summaryFields) { summaryFields = fields; },
     reset() { calls.length = 0; summaryCalls.length = 0; sent.length = 0; },
@@ -204,7 +223,7 @@ export async function createHarness() {
       await h.idle();
     },
     /** Espera a que la cola termine todo lo pendiente (evita que una prueba contamine a la siguiente). */
-    async idle() { await waitFor(() => service.queue.size === 0, 8000); },
+    async idle() { await waitFor(() => service.queue.size === 0 && inflight.n === 0, 8000); },
     webhook(text: string, opts: { fromMe?: boolean; phone?: string; id?: string; timestamp?: number; instance?: string } = {}) {
       const phone = opts.phone ?? '5215511112222';
       return app.inject({
@@ -235,6 +254,22 @@ export async function createHarness() {
       assert.equal(ch.statusCode, 200, ch.body);
       h.channelId = ch.json().id;
       h.token = ch.json().webhook_token;
+      return r.json();
+    },
+    /** Sube una foto del catálogo del chatbot de pruebas con su configuración "cuándo se envía". */
+    async uploadImage(code: string, name: string, sendWhen: Record<string, unknown>, extra: Record<string, string> = {}) {
+      const PNG = Buffer.from('89504E470D0A1A0A0000000D49484452000000010000000108060000001F15C4890000000D49444154789C6360000002000154A24F5D0000000049454E44AE426082', 'hex');
+      const b = '----x';
+      const part = (n: string, v: string) => `--${b}\r\nContent-Disposition: form-data; name="${n}"\r\n\r\n${v}\r\n`;
+      const fields = { code, name, caption: '', send_when: JSON.stringify(sendWhen), ...extra };
+      const body = Buffer.concat([
+        Buffer.from(Object.entries(fields).map(([k, v]) => part(k, v)).join('')),
+        Buffer.from(`--${b}\r\nContent-Disposition: form-data; name="file"; filename="${code}.png"\r\nContent-Type: image/png\r\n\r\n`),
+        PNG,
+        Buffer.from(`\r\n--${b}--\r\n`),
+      ]);
+      const r = await app.inject({ method: 'POST', url: `/api/chatbots/${h.botId}/images`, payload: body, headers: { cookie: authed.cookie, 'content-type': `multipart/form-data; boundary=${b}` } });
+      assert.equal(r.statusCode, 200, r.body);
       return r.json();
     },
     async conversationFor(phone = '5215511112222') {

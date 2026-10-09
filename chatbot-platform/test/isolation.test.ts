@@ -35,28 +35,37 @@ function fillParams(url: string): string | null {
     [/^\/api\/accounts\/:id/, 'account'],
     [/^\/api\/appointments\/:id/, 'appointment'],
     [/^\/api\/automations\/:id/, 'automation'],
+    [/^\/api\/attachments\/:id/, 'attachment'],
+    [/^\/api\/tasks\/:id/, 'task'],
     [/^\/api\/campaigns\/:id/, 'campaign'],
     [/^\/api\/channels\/:id/, 'channel'],
     [/^\/api\/chatbots\/:id/, 'bot'],
     [/^\/api\/contacts\/:id/, 'contact'],
     [/^\/api\/conversations\/:cid/, 'conv'],
     [/^\/api\/images\/:iid/, 'image'],
+    [/^\/api\/messages\/:mid/, 'message'],
     [/^\/api\/knowledge\/:kid/, 'knowledge'],
     [/^\/api\/sequences\/:id/, 'sequence'],
     [/^\/api\/services\/:id/, 'service'],
     [/^\/api\/users\/:id/, 'user'],
     [/^\/api\/ai-prices\/:model/, 'model'],
+    // Los planes son globales (solo el superadmin los edita): la cuenta A debe recibir 403 sea cual sea la clave.
+    [/^\/api\/plans\/:key/, 'bot'],
+    [/^\/api\/webhook-endpoints\/:id/, 'endpoint'],
+    [/^\/api\/api-keys\/:id/, 'apikey'],
+    [/^\/api\/wa-pools\/:id/, 'wapool'],
+    [/^\/api\/brands\/:id/, 'brand'],
   ];
   const hit = byPrefix.find(([re]) => re.test(url));
   if (!hit) return null;
   return url
-    .replace(/:(id|cid|iid|kid|model)\b/, B[hit[1]])
+    .replace(/:(id|cid|iid|kid|model|key|mid)\b/, B[hit[1]])
     .replace(':session', 'sesion-b')
     .replace(':sid', B.sequence);
 }
 
 /** Lo que nunca debe aparecer en una respuesta del panel. */
-const FORBIDDEN = [/password_hash/, /token_hash/, /"qr_code"/, /"pairing_code"/, /llave-global-de-pruebas/, /TG-SECRETO-123/, /APP-SECRETO-456/, /PAGE-SECRETO-789/];
+const FORBIDDEN = [/password_hash/, /key_hash/, /refresh_token/, /token_hash/, /"qr_code"/, /"pairing_code"/, /llave-global-de-pruebas/, /TG-SECRETO-123/, /APP-SECRETO-456/, /PAGE-SECRETO-789/];
 
 before(async () => {
   if (!ok) return;
@@ -76,6 +85,8 @@ before(async () => {
   const ok200 = async (p: Promise<any>) => { const r = await p; assert.ok(r.statusCode < 300, r.body); return r.json(); };
   B.bot = (await ok200(adminB('POST', '/api/chatbots', { name: `Bot ${MARK}`, active: true, ai: { debounce_seconds: 0.1 } }))).id;
   B.knowledge = (await ok200(adminB('POST', `/api/chatbots/${B.bot}/knowledge`, { title: `Precios ${MARK}`, content: `Dato ${MARK}: $999` }))).id;
+  const att = await pool.query(`INSERT INTO attachments (account_id, name, mime, kind, size_bytes, file_path) VALUES ($1, $2, 'application/pdf', 'document', 10, 'b.pdf') RETURNING id`, [B.account, `Archivo ${MARK}.pdf`]);
+  B.attachment = att.rows[0].id;
   const img = await pool.query(`INSERT INTO images (chatbot_id, code, name, file_path, mime_type) VALUES ($1, 'foto_b', $2, 'x.jpg', 'image/jpeg') RETURNING id`, [B.bot, `Foto ${MARK}`]);
   B.image = img.rows[0].id;
   const wa = await ok200(adminB('POST', '/api/channels', { type: 'whatsapp', name: `WA ${MARK}`, chatbot_id: B.bot }));
@@ -89,6 +100,21 @@ before(async () => {
   const conv = (await adminB('GET', '/api/conversations')).json()[0];
   B.conv = conv.id;
   B.contact = conv.contact_id;
+  const task = await pool.query(`INSERT INTO contact_tasks (account_id, contact_id, kind, body) VALUES ($1, $2, 'nota', $3) RETURNING id`, [B.account, B.contact, `Nota ${MARK}`]);
+  B.task = task.rows[0].id;
+  // Una foto del cliente de la cuenta B con su archivo real: si A la alcanzara, la descarga respondería 200 y la fuga se vería.
+  const photo = await pool.query(
+    `INSERT INTO messages (conversation_id, direction, sender, type, content, external_message_id, processed, status, meta)
+     VALUES ($1, 'in', 'customer', 'image', $2, 'FOTO-B', true, 'ok', '{}') RETURNING id`,
+    [conv.id, `Foto ${MARK}`],
+  );
+  B.message = String(photo.rows[0].id);
+  fs.mkdirSync(path.join(process.env.UPLOADS_DIR as string, 'inbound', B.account), { recursive: true });
+  fs.writeFileSync(path.join(process.env.UPLOADS_DIR as string, 'inbound', B.account, 'foto-b.png'), `PNG-${MARK}`);
+  await pool.query(
+    `INSERT INTO message_media (message_id, kind, mime, file_name, size_bytes, sha256, file_path) VALUES ($1, 'image', 'image/png', 'foto.png', $2, $3, $4)`,
+    [B.message, Buffer.byteLength(`PNG-${MARK}`), '0'.repeat(64), `inbound/${B.account}/foto-b.png`],
+  );
   B.automation = (await ok200(adminB('POST', '/api/automations', { name: `Regla ${MARK}`, trigger: { type: 'new_contact' }, actions: [{ type: 'add_tag', tag: 'b' }] }))).id;
   B.sequence = (await ok200(adminB('POST', '/api/sequences', { name: `Secuencia ${MARK}`, steps: [{ delay_value: 1, delay_unit: 'days', text: 'hola' }] }))).id;
   B.campaign = (await ok200(adminB('POST', '/api/campaigns', { name: `Campaña ${MARK}`, channel_id: B.channel, message: 'promo' }))).id;
@@ -96,6 +122,10 @@ before(async () => {
   const slot = (await adminB('GET', `/api/services/${B.service}/slots`)).json()[0];
   B.appointment = (await ok200(adminB('POST', '/api/appointments', { service_id: B.service, slot: slot.key, customer_name: `Cliente ${MARK}`, notify_customer: false }))).id;
   B.user = (await ok200(adminB('POST', '/api/users', { email: 'agente@b.mx', name: `Agente ${MARK}`, password: 'clave-segura-1', role: 'agent' }))).id;
+  B.endpoint = (await ok200(adminB('POST', '/api/webhook-endpoints', { url: 'https://example.com/hook', description: `Hook ${MARK}` }))).id;
+  B.apikey = (await ok200(adminB('POST', '/api/api-keys', { name: `Llave ${MARK}` }))).id;
+  B.wapool = (await pool.query(`INSERT INTO wa_pools (account_id, name, token) VALUES ($1, $2, 'tok-b-aislamiento') RETURNING id`, [B.account, `Grupo ${MARK}`])).rows[0].id;
+  B.brand = (await pool.query(`INSERT INTO brands (name) VALUES ('Marca B') RETURNING id`)).rows[0].id;
   B.model = 'gpt-4.1-mini';
   await h.idle();
 });

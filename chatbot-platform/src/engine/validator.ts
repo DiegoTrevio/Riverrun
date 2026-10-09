@@ -2,7 +2,9 @@ import { imagesAfterReply, imagesForAssistant, imagesForContext } from './images
 import { automaticField, customerProvided } from './customer-data.js';
 import type { Chatbot, DataField, ImageAsset } from '../types.js';
 import { DecisionSchema, type Action, type Decision } from './decision.js';
-import { countEmojis, FactCorpus, limitEmojis, normalize, stripEmojis, toWhatsappFormat } from './text.js';
+import { unsupportedClaims } from './claims.js';
+import { cardNumbersIn, isSensitiveField } from './safety.js';
+import { countEmojis, deepClean, FactCorpus, limitEmojis, normalize, stripEmojis, toWhatsappFormat } from './text.js';
 
 /** Plan final ya validado que el backend ejecutará. */
 export interface ExecutionPlan {
@@ -52,6 +54,8 @@ export interface ValidationInput {
   sentImageIds: string[];
   /** Fuentes del negocio: conocimiento, configuración, mensajes del bot/equipo. */
   groundingSources: string[];
+  /** Solo lo que el negocio afirma (conocimiento, reglas, agenda y mensajes del equipo): respalda "sí tenemos X". */
+  claimSources?: string[];
   /** Lo que escribió el cliente (vale para nombres, fechas o cantidades, pero no para precios). */
   customerSources?: string[];
   /** Mensajes originales del cliente para validar datos automáticos (sin resúmenes). */
@@ -76,6 +80,10 @@ export interface ValidationInput {
   knownData?: Record<string, string>;
   /** Nombre confirmado del cliente (cuenta como el dato "nombre"). */
   knownName?: string;
+  /** Últimos mensajes que el negocio envió en la conversación (para no repetir la misma respuesta). */
+  recentBotTexts?: string[];
+  /** El cliente repite exactamente su mensaje anterior: repetir la respuesta es lo esperado. */
+  customerRepeats?: boolean;
 }
 
 const IMAGE_PROMISE_RE = /\b(te|le|les)\s+(env[ií]o|mando|comparto|paso|dejo|adjunto)\b[^.?!\n]{0,40}\b(foto|fotos|imagen|imagenes|imágenes|men[uú]|cat[aá]logo|flyer|folleto)\b|\b(aqu[ií]|ah[ií])\s+(te|le)?\s*(va|van|est[aá]n?|tienes?)\b[^.?!\n]{0,30}\b(foto|fotos|imagen|imágenes|imagenes)\b/i;
@@ -127,7 +135,7 @@ export function parseDecision(raw: unknown): { decision: Decision | null; error?
       return { decision: null, error: 'La respuesta no es JSON válido' };
     }
   }
-  const r = DecisionSchema.safeParse(obj);
+  const r = DecisionSchema.safeParse(deepClean(obj));
   if (!r.success) return { decision: null, error: `JSON con formato inválido: ${r.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}` };
   return { decision: r.data };
 }
@@ -304,6 +312,18 @@ export function validateDecision(input: ValidationInput): ValidationResult {
   const declined = forbiddenOut.filter((t) => !unprompted.includes(t));
   if (declined.length) fixes.push(`Revisar: el cliente preguntó por un tema prohibido (${declined.join(', ')})`);
 
+  // ---------- Datos sensibles: ni números de tarjeta en la respuesta ----------
+  if (messages.some((m) => cardNumbersIn(m).length)) {
+    soft(
+      'Tu respuesta repite un número de tarjeta. No lo escribas: pide al cliente que no comparta datos de tarjetas por este chat.',
+      () => {
+        messages = dropSentences(messages, (_n, x) => cardNumbersIn(x).length > 0);
+        if (!messages.length) messages = [rules.fallback_message];
+      },
+      'Se quitó de la respuesta un número de tarjeta',
+    );
+  }
+
   // ---------- Imágenes: solo del catálogo ----------
   const byCode = new Map(input.images.filter((i) => i.active).map((i) => [normalize(i.code), i]));
   const images: ImageAsset[] = [];
@@ -347,10 +367,25 @@ export function validateDecision(input: ValidationInput): ValidationResult {
     }
   }
 
+  // ---------- Afirmaciones sin números ("sí tenemos alberca") ----------
+  if (rules.verify_claims !== 'apagado' && messages.length && input.claimSources) {
+    const claims = unsupportedClaims(messages.join('\n'), input.claimSources);
+    if (claims.length) {
+      factIssues = true;
+      retryable.push(
+        `Afirmaste que el negocio tiene u ofrece: ${claims.join(', ')}. Eso no aparece en la información del negocio. Quítalo, o di con naturalidad que lo confirmas con el equipo.`,
+      );
+    }
+  }
+
   // ---------- Datos del cliente ----------
   const saveData: Record<string, string> = {};
   let contactName: string | null = null;
   for (const { field, value } of d.save_data.slice(0, 30)) {
+    if (isSensitiveField(field) || cardNumbersIn(value).length) {
+      fixes.push(`Dato sensible no guardado (${field}): no se guardan tarjetas, códigos ni contraseñas`);
+      continue;
+    }
     const configured = bot.data_fields.find((x) => x.key === field);
     const f = configured ?? automaticField(field);
     if (!f) {
@@ -369,6 +404,30 @@ export function validateDecision(input: ValidationInput): ValidationResult {
     if (!configured && !Object.hasOwn(input.knownData ?? {}, f.key) && Object.keys(input.knownData ?? {}).length + Object.keys(saveData).length >= 100) continue;
     if (f.type === 'name') contactName = clean;
     saveData[f.key] = clean;
+  }
+
+  // ---------- Una pregunta nunca se queda sin respuesta ----------
+  if (action === 'no_reply' && /[?¿]/.test(input.customerText) && input.customerText.trim().length >= 12) {
+    soft(
+      'El cliente hizo una pregunta: respóndela (no_reply no aplica). Si no puedes contestarla con la información del negocio, dilo y di que el equipo lo revisa.',
+      () => {
+        action = 'handoff';
+        messages = [];
+      },
+      'Pregunta sin respuesta: se pasó a una persona en lugar de quedarse callado',
+    );
+  }
+
+  // ---------- No repetir: la misma respuesta a un mensaje distinto ----------
+  if (!input.customerRepeats && input.recentBotTexts?.length && messages.length) {
+    const sent = new Set(input.recentBotTexts.map((x) => normalize(x)));
+    if (messages.some((m) => m.length >= 25 && sent.has(normalize(m)))) {
+      soft(
+        'Repites un mensaje que ya enviaste, aunque el cliente preguntó otra cosa. Contesta lo nuevo sin copiar tu respuesta anterior.',
+        () => undefined,
+        'Se aceptó una respuesta repetida en el último intento',
+      );
+    }
   }
 
   // ---------- Coherencia de la acción ----------

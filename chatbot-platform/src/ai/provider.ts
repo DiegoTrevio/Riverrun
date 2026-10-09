@@ -1,8 +1,14 @@
 import { config } from '../config.js';
 
+/** Parte de un mensaje con archivos (imagen o PDF) para los modelos que los leen directamente. */
+export type ContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } }
+  | { type: 'file'; file: { filename: string; file_data: string } };
+
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
-  content: string;
+  content: string | ContentPart[];
 }
 
 export interface Usage {
@@ -22,6 +28,8 @@ export interface CompletionResult {
 
 export interface CompletionRequest {
   model: string;
+  /** Modelos de respaldo para esta llamada (solo OpenRouter); vacío = los de la configuración global. */
+  fallback_models?: string[];
   messages: ChatMessage[];
   temperature?: number | null;
   reasoning_effort?: string;
@@ -101,6 +109,16 @@ export class OpenAiProvider implements AiProvider {
         type: 'json_schema',
         json_schema: { name: req.json_schema.name, strict: true, schema: req.json_schema.schema },
       };
+    }
+    // Lista de respaldo: OpenRouter prueba el siguiente modelo si el principal falla, está saturado o rechaza la petición.
+    if (this.provider === 'openrouter') {
+      const primary = body.model as string;
+      const chosen = req.fallback_models?.length ? req.fallback_models : config.openai.fallbackModels;
+      const fallbacks = [...new Set(chosen.map((m) => this.model(m)))].filter((m) => m !== primary).slice(0, 2);
+      if (fallbacks.length) {
+        delete body.model;
+        body.models = [primary, ...fallbacks];
+      }
     }
     const started = Date.now();
     const res = await this.post('/chat/completions', JSON.stringify(body), { 'content-type': 'application/json' });

@@ -5,10 +5,14 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { HttpError } from '../access.js';
 import { config } from '../config.js';
+import { completeImage, sniffMime } from '../files.js';
+import { deepClean } from '../engine/text.js';
 import { logEvent } from '../logs.js';
 
+export { completeImage };
+
 export function parse<T>(schema: z.ZodType<T>, body: unknown): T {
-  const r = schema.safeParse(body ?? {});
+  const r = schema.safeParse(deepClean(body ?? {}));
   if (!r.success) throw new HttpError(400, 'Datos inválidos', r.error.issues.map((i) => `${i.path.join('.') || 'valor'}: ${i.message}`));
   return r.data;
 }
@@ -41,6 +45,8 @@ export interface UploadFile {
   buffer: Buffer;
   mime: string;
   ext: string;
+  /** Huella SHA-256 de los bytes tal como se subieron. */
+  sha256: string;
 }
 
 export async function readUpload(req: any): Promise<{ fields: Record<string, unknown>; file?: UploadFile }> {
@@ -50,23 +56,16 @@ export async function readUpload(req: any): Promise<{ fields: Record<string, unk
     if (part.type === 'file') {
       const buffer: Buffer = await part.toBuffer();
       if (part.file.truncated) throw new HttpError(400, 'La imagen supera 5 MB');
-      const mime = sniffImage(buffer);
+      const mime = sniffMime(buffer);
       if (!mime || !ALLOWED_MIME.includes(mime)) throw new HttpError(400, 'Formato no válido: usa JPG, PNG o WEBP');
-      file = { buffer, mime, ext: mime === 'image/png' ? '.png' : mime === 'image/webp' ? '.webp' : '.jpg' };
+      if (!completeImage(buffer, mime)) throw new HttpError(400, 'La imagen llegó incompleta o dañada: vuelve a exportarla y súbela de nuevo');
+      file = { buffer, mime, ext: mime === 'image/png' ? '.png' : mime === 'image/webp' ? '.webp' : '.jpg', sha256: crypto.createHash('sha256').update(buffer).digest('hex') };
     } else {
       const v = part.value;
       fields[part.fieldname] = v === 'true' ? true : v === 'false' ? false : v;
     }
   }
   return { fields, file };
-}
-
-/** Detecta el tipo real por la firma del archivo (no confiar en la extensión). */
-function sniffImage(b: Buffer): string | null {
-  if (b.length > 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'image/jpeg';
-  if (b.length > 8 && b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
-  if (b.length > 12 && b.subarray(0, 4).toString() === 'RIFF' && b.subarray(8, 12).toString() === 'WEBP') return 'image/webp';
-  return null;
 }
 
 export async function saveFile(chatbotId: string, file: UploadFile) {

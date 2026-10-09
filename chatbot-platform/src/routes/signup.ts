@@ -1,3 +1,5 @@
+import { googleConfigured } from '../integrations/google.js';
+import { brandByDomain, hostOf, mailBrand } from '../brands.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { hashPassword, rateLimited, setSessionCookie } from '../auth.js';
@@ -16,22 +18,29 @@ const Password = z.string().min(8, 'mínimo 8 caracteres').max(200);
 const Email = z.string().trim().toLowerCase().email('correo inválido').max(200);
 const HOUR = 3600_000;
 
-const link = (route: string, token: string) => `${config.publicBaseUrl}/#/${route}?token=${encodeURIComponent(token)}`;
+const link = (base: string, route: string, token: string) => `${base}/#/${route}?token=${encodeURIComponent(token)}`;
 
 export async function sendVerification(user: Pick<User, 'id' | 'name' | 'email'>) {
   const token = await store.createAuthToken(user.id, 'verify_email', 48 * 60);
+  const mb = await mailBrand((user as { account_id?: string | null }).account_id);
   await sendMail({
+    fromName: mb.fromName,
     to: user.email,
     subject: 'Confirma tu correo',
-    text: `Hola ${user.name || ''},\n\nConfirma tu correo para poder conectar tu WhatsApp y tus demás canales:\n\n${link('verificar', token)}\n\nEl enlace vence en 48 horas. Si no creaste esta cuenta, ignora este mensaje.`,
+    text: `Hola ${user.name || ''},\n\nConfirma tu correo para poder conectar tu WhatsApp y tus demás canales:\n\n${link(mb.base, 'verificar', token)}\n\nEl enlace vence en 48 horas. Si no creaste esta cuenta, ignora este mensaje.`,
   });
 }
 
 /** Rutas públicas: registro de empresas, verificación de correo y recuperación de contraseña. */
 export async function signupRoutes(app: FastifyInstance) {
-  app.get('/api/signup/info', async () => ({
+  app.get('/api/signup/info', async (req) => ({
     enabled: config.signup.enabled,
+    // Solo en el dominio principal: Google exige registrar la dirección de regreso.
+    google_login: googleConfigured() && hostOf(req) === new URL(config.publicBaseUrl).hostname,
     trial_days: config.signup.trialDays,
+    support_contact: config.signup.supportContact,
+    terms_url: config.signup.termsUrl,
+    privacy_url: config.signup.privacyUrl,
     business_types: BUSINESS_TYPES.map(({ key, label }) => ({ key, label })),
   }));
 
@@ -58,10 +67,11 @@ export async function signupRoutes(app: FastifyInstance) {
     const passwordHash = await hashPassword(b.password);
     const trialEndsAt = new Date(Date.now() + config.signup.trialDays * 24 * HOUR);
 
+    const brand = await brandByDomain(hostOf(req)); // quien se registra desde el dominio de una marca queda con esa marca
     const { account, user } = await withTransaction(async (client) => {
       const account = await store.createAccount(b.company, { status: 'trial', trialEndsAt, businessType, source: 'signup' }, client);
       const user = await store.createUser({ account_id: account.id, role: 'admin', name: b.name, email: b.email, password_hash: passwordHash, verified }, client);
-      await client.query(`UPDATE accounts SET owner_user_id = $2 WHERE id = $1`, [account.id, user.id]);
+      await client.query(`UPDATE accounts SET owner_user_id = $2, brand_id = $3 WHERE id = $1`, [account.id, user.id, brand?.id ?? null]);
       // Su WhatsApp recibe los avisos de "un cliente quiere hablar con una persona".
       if (b.phone) await client.query(`UPDATE users SET phone = $2, notify_whatsapp = true WHERE id = $1`, [user.id, b.phone.replace(/\D/g, '')]);
       return { account, user };
@@ -94,10 +104,12 @@ export async function signupRoutes(app: FastifyInstance) {
     const u = await store.getUserForLogin(email);
     if (u && u.active && (!u.account_id || u.account_active) && !rateLimited(`forgot-user:${u.id}`, 3, HOUR)) {
       const token = await store.createAuthToken(u.id, 'reset_password', 60);
+      const mb = await mailBrand(u.account_id);
       await sendMail({
+        fromName: mb.fromName,
         to: u.email,
         subject: 'Restablece tu contraseña',
-        text: `Hola ${u.name || ''},\n\nPara elegir una contraseña nueva abre este enlace (vence en 1 hora):\n\n${link('restablecer', token)}\n\nSi no lo pediste, ignora este mensaje: tu contraseña no cambia.`,
+        text: `Hola ${u.name || ''},\n\nPara elegir una contraseña nueva abre este enlace (vence en 1 hora):\n\n${link(mb.base, 'restablecer', token)}\n\nSi no lo pediste, ignora este mensaje: tu contraseña no cambia.`,
       });
     }
     return { ok: true };

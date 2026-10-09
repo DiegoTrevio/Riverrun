@@ -23,6 +23,9 @@ import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
 import { AiSettingsSchema, CHANNEL_TYPES, FlowSchema, KNOWLEDGE_CATEGORIES, PersonalitySchema, RulesSchema, type Role } from '../types.js';
 import { BUSINESS_TYPES } from '../templates/business.js';
+import { systemStatus } from '../monitor.js';
+import { assertWithinLimit, LimitsSchema } from '../billing/limits.js';
+import { billingEnabled } from '../billing/service.js';
 import { parse } from './util.js';
 
 const Password = z.string().min(8, 'mínimo 8 caracteres').max(200);
@@ -60,7 +63,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
   }));
 
   api.put('/api/me', async (req) => {
-    const b = parse(z.object({ name: z.string().trim().max(120).optional(), phone: z.string().max(30).optional(), notify_whatsapp: z.boolean().optional() }), req.body);
+    const b = parse(z.object({ name: z.string().trim().max(120).optional(), phone: z.string().max(30).optional(), notify_whatsapp: z.boolean().optional(), available: z.boolean().optional() }), req.body);
     return store.updateUser(req.user.id, b);
   });
 
@@ -91,12 +94,16 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     support_contact: config.signup.supportContact,
     business_types: BUSINESS_TYPES.map(({ key, label }) => ({ key, label })),
     require_email: config.signup.requireEmail,
+    billing_enabled: await billingEnabled(),
+    version: config.monitor.version,
   }));
+
+  api.get('/api/system/status', { preHandler: requireRole('superadmin') }, async () => systemStatus());
 
   /* ------------------------------ Cuentas ------------------------------ */
   api.get('/api/accounts', async (req) => {
     const all = req.user.role === 'superadmin';
-    return query(
+    const rows = await query(
       `SELECT a.*,
          (SELECT count(*)::int FROM chatbots b WHERE b.account_id = a.id) AS chatbots,
          (SELECT count(*)::int FROM channels c WHERE c.account_id = a.id AND c.type <> 'playground') AS channels,
@@ -112,6 +119,10 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
        FROM accounts a ${all ? '' : 'WHERE a.id = $1'} ORDER BY a.created_at DESC`,
       all ? [] : [req.user.account_id],
     );
+    // El agente ve su cuenta sin los totales ni los datos del dueño: son de la cuenta entera.
+    if (req.user.role !== 'agent') return rows;
+    const hidden = ['users', 'conversations', 'conversations_month', 'ai_cost_month', 'last_activity_at', 'owner_email', 'owner_verified'];
+    return rows.map((r: Record<string, unknown>) => Object.fromEntries(Object.entries(r).filter(([k]) => !hidden.includes(k))));
   });
 
   /* ------------------------------ Consumo de IA ------------------------------ */
@@ -182,6 +193,9 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     trial_ends_at: z.string().datetime({ offset: true }).nullable().optional(),
     /** Atajo: extender la prueba N días desde hoy (o desde su vencimiento, si aún no vence). */
     extend_trial_days: z.number().int().min(1).max(365).optional(),
+    /** Excepción de límites para esta cuenta (solo las claves indicadas; {} = quitar la excepción). */
+    limits_override: LimitsSchema.optional(),
+    brand_id: z.string().uuid().nullable().optional(),
   });
 
   api.post('/api/accounts', { preHandler: requireRole('superadmin') }, async (req) => {
@@ -210,6 +224,8 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     const b = parse(AccountBody, req.body);
     const before = await store.getAccount(req.params.id);
     if (!before) throw notFound('Cuenta no encontrada');
+    // Un plan mal escrito dejaría a la cuenta con límites distintos a los que se vendieron: solo se aceptan planes existentes.
+    if (b.plan && !(await queryOne(`SELECT 1 FROM plans WHERE key = $1`, [b.plan]))) throw new HttpError(400, `El plan "${b.plan}" no existe`);
     let trialEnds: Date | null | undefined = b.trial_ends_at === undefined ? undefined : b.trial_ends_at ? new Date(b.trial_ends_at) : null;
     let status = b.status;
     if (b.extend_trial_days) {
@@ -217,7 +233,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
       trialEnds = new Date(base + b.extend_trial_days * 86400_000);
       status = status ?? 'trial';
     }
-    const acc = (await store.updateAccount(before.id, { name: b.name, active: b.active, status, plan: b.plan, trial_ends_at: trialEnds }))!;
+    const acc = (await store.updateAccount(before.id, { name: b.name, active: b.active, status, plan: b.plan, trial_ends_at: trialEnds, limits_override: b.limits_override ? (Object.fromEntries(Object.entries(b.limits_override).filter(([, v]) => v)) as Record<string, number>) : undefined, brand_id: b.brand_id }))!;
     const changes = [b.active === false ? 'desactivada' : '', status && status !== before.status ? `estado: ${status}` : '', trialEnds !== undefined ? `prueba hasta ${trialEnds?.toISOString().slice(0, 10) ?? '—'}` : '']
       .filter(Boolean)
       .join(', ');
@@ -260,6 +276,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
       return store.createUser({ account_id: null, role: 'superadmin', name: b.name, email: b.email, password_hash: await hashPassword(b.password) });
     }
     const accountId = await targetAccount(req.user, b.account_id);
+    await assertWithinLimit(accountId, 'users');
     const created = await store.createUser({ account_id: accountId, role: b.role, name: b.name, email: b.email, password_hash: await hashPassword(b.password) });
     const user = b.phone || b.notify_whatsapp ? ((await store.updateUser(created.id, { phone: b.phone, notify_whatsapp: b.notify_whatsapp })) ?? created) : created;
     await logEvent({ level: 'info', source: 'admin', message: `Usuario creado: ${user.email} (${user.role})`, accountId });
@@ -286,6 +303,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
         password: Password.optional(),
         phone: z.string().max(30).optional(),
         notify_whatsapp: z.boolean().optional(),
+        available: z.boolean().optional(),
       }),
       req.body,
     );
@@ -308,7 +326,8 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     if (target.role === 'superadmin' && b.active === false && (await store.countSuperadmins()) <= 1) {
       throw new HttpError(400, 'Debe quedar al menos un superadministrador activo');
     }
-    const patch: { name?: string; email?: string; role?: Role; account_id?: string | null; active?: boolean; password_hash?: string; phone?: string; notify_whatsapp?: boolean } = {
+    if (b.active === true && !target.active && target.account_id) await assertWithinLimit(target.account_id, 'users');
+    const patch: { name?: string; email?: string; role?: Role; account_id?: string | null; active?: boolean; password_hash?: string; phone?: string; notify_whatsapp?: boolean; available?: boolean } = {
       name: b.name,
       email: b.email,
       role: b.role,
@@ -316,6 +335,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
       active: b.active,
       phone: b.phone,
       notify_whatsapp: b.notify_whatsapp,
+      available: b.available,
     };
     if (b.password) patch.password_hash = await hashPassword(b.password);
     const updated = await store.updateUser(target.id, patch, req.user.role === 'superadmin' ? undefined : scopeAccount(req.user)!);
@@ -337,7 +357,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
   });
 
   /* ------------------------------ Estadísticas ------------------------------ */
-  api.get('/api/stats', async (req: any) => {
+  api.get('/api/stats', { preHandler: requireRole('admin') }, async (req: any) => {
     const account = scopeAccount(req.user, req.query.account_id);
     const rows = await query(
       `SELECT b.id, b.name, b.active, b.account_id,

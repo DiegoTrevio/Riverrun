@@ -62,11 +62,16 @@ export class EvolutionClient {
 
   /** Envía una imagen (base64 sin prefijo data: o URL pública). */
   async sendImage(instance: string, number: string, media: string, mimeType: string, fileName: string, caption = '', delay = 0): Promise<string | null> {
+    return this.sendMedia(instance, number, media, mimeType, fileName, caption, delay, 'image');
+  }
+
+  /** Envía un archivo: imagen, documento (PDF, Word…), audio o video. El audio no lleva leyenda. */
+  async sendMedia(instance: string, number: string, media: string, mimeType: string, fileName: string, caption = '', delay = 0, mediatype: 'image' | 'document' | 'audio' | 'video' = 'image'): Promise<string | null> {
     const res = await this.request('POST', `/message/sendMedia/${encodeURIComponent(instance)}`, {
       number,
-      mediatype: 'image',
+      mediatype,
       mimetype: mimeType,
-      caption: caption || undefined,
+      caption: caption && mediatype !== 'audio' ? caption : undefined,
       media,
       fileName,
       delay: delay || undefined,
@@ -80,7 +85,8 @@ export class EvolutionClient {
       message: { key: { id: messageId } },
       convertToMp4: false,
     });
-    return { base64: res?.base64 ?? '', mimetype: res?.mimetype ?? 'audio/ogg' };
+    // Algunas versiones de Evolution envían el base64 con prefijo "data:...;base64,". El tipo queda vacío si no llega: quien lo usa decide el de respaldo.
+    return { base64: String(res?.base64 ?? '').replace(/^data:[^;]*;base64,/, ''), mimetype: String(res?.mimetype ?? '') };
   }
 
   async createInstance(instance: string, webhookUrl: string, number?: string) {

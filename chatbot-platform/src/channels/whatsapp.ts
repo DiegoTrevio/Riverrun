@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import { config } from '../config.js';
-import { imageAbsolutePath, type Transport } from '../engine/transport.js';
+import { imageAbsolutePath, type OutgoingFile, type Transport } from '../engine/transport.js';
 import { EvolutionClient } from '../evolution/client.js';
 import { parseWebhook } from '../evolution/parse.js';
 import { logEvent } from '../logs.js';
@@ -66,6 +66,12 @@ export class WhatsappTransport implements Transport {
     return this.client.sendImage(this.instance, this.number, buf.toString('base64'), image.mime_type, `${image.code}.${ext}`, caption, delayMs);
   }
 
+  /** PDF, Word, Excel, audio o video: WhatsApp los muestra como documento, nota de audio o video según el tipo. */
+  async sendFile(file: OutgoingFile, caption: string, delayMs: number) {
+    const buf = await fs.readFile(file.absPath);
+    return this.client.sendMedia(this.instance, this.number, buf.toString('base64'), file.mime, file.name, caption, delayMs, file.kind);
+  }
+
   async notify(number: string, text: string) {
     await this.client.sendText(this.instance, number.replace(/\D/g, ''), text, 0);
   }
@@ -102,7 +108,13 @@ export const whatsappAdapter: ChannelAdapter = {
 
   async downloadAudio(channel, msg) {
     const media = await evolutionFor(channel).getMediaBase64(channel.config.instance, msg.messageId);
-    return media.base64 ? { buffer: Buffer.from(media.base64, 'base64'), mimeType: media.mimetype } : null;
+    return media.base64 ? { buffer: Buffer.from(media.base64, 'base64'), mimeType: media.mimetype || 'audio/ogg' } : null;
+  },
+
+  /** Foto o documento del cliente: los bytes tal como los entregó Evolution (WhatsApp ya los desencriptó). */
+  async downloadMedia(channel, msg) {
+    const media = await evolutionFor(channel).getMediaBase64(channel.config.instance, msg.messageId);
+    return media.base64 ? { buffer: Buffer.from(media.base64, 'base64'), mimeType: media.mimetype, fileName: msg.media?.filename } : null;
   },
 
   async setup(channel, webhookUrl) {

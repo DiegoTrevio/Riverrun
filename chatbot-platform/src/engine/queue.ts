@@ -94,6 +94,11 @@ export class ConversationQueue {
       finish();
     }
     if (this.stopped) { this.slots.delete(conversationId); return; }
+    if (status === 'busy') {
+      // Otro proceso la está atendiendo: se vuelve a intentar sin contar como reinicio ni como error.
+      this.schedule(conversationId, 2000);
+      return;
+    }
     if (status === 'restart') {
       s.restarts++;
       this.schedule(conversationId, 500);
@@ -115,6 +120,11 @@ export class ConversationQueue {
       return;
     }
     this.cleanup(conversationId);
+  }
+
+  /** ¿Este proceso ya tiene la conversación programada o en curso? */
+  has(conversationId: string) {
+    return this.slots.has(conversationId);
   }
 
   canRestart(restarts: number) {

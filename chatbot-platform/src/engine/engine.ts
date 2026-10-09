@@ -1,18 +1,22 @@
 import { config } from '../config.js';
 import type { AiProvider } from '../ai/provider.js';
+import { recordMessage } from '../billing/limits.js';
 import { logEvent } from '../logs.js';
 import * as store from '../store/index.js';
-import type { Chatbot, Contact, Conversation, ImageAsset, Message } from '../types.js';
+import type { Channel, Chatbot, Contact, Conversation, ImageAsset, Message } from '../types.js';
+import { detectRisk, isAutomatedMessage, promisesFollowUp, repeatedCustomerText, SAFETY_MESSAGES, type RiskHit } from './safety.js';
 import { agentActive, agentStatus, offAfterReply } from './activation.js';
-import { automaticField, customerProvided } from './customer-data.js';
+import { automaticField, customerLabel, customerProvided } from './customer-data.js';
+import { CLAIM_JUDGE_PROMPT, CLAIM_JUDGE_SCHEMA } from './claims.js';
 import { buildContext, type BusinessInfo } from './context.js';
 import { semanticKnowledge } from './knowledge.js';
 import { aiSelectableImages, automaticImages, contextualImages, imagesForContext, imagesAfterReply, imagesBeforeReply, imagesForAssistant, type ScheduledImage } from './images.js';
 import { DECISION_JSON_SCHEMA } from './decision.js';
 import { maybeSummarize } from './memory.js';
+import { briefReport } from './report-format.js';
 import { summarizeConversation } from './report.js';
 import { normalize } from './text.js';
-import type { Transport } from './transport.js';
+import type { OutgoingFile, Transport } from './transport.js';
 import { emptyPlan, validateDecision, type AgendaValidation, type ExecutionPlan, type ValidationInput } from './validator.js';
 import type { AgendaContext, BookResult } from '../automation/agenda.js';
 import type { AutomationEvent } from '../automation/types.js';
@@ -31,11 +35,16 @@ export interface EngineExtensions {
   /** Horario y zona horaria de la cuenta. */
   business?(accountId: string): Promise<BusinessInfo | null>;
   /** Avisa al equipo (panel y WhatsApp de quien lo tenga activado). */
-  alertTeam?(accountId: string, o: { title: string; body: string; link?: string; kind?: string }): Promise<void>;
+  alertTeam?(accountId: string, o: { title: string; body: string; link?: string; kind?: string; conversationId?: string }): Promise<void>;
+  /**
+   * Programa el envío posterior de una foto que el sistema debía mandar (la plataforma la rechazó o no cupo en la
+   * respuesta). `allowEnded`: aunque la conversación ya pasó a una persona o se cerró en este mismo momento.
+   */
+  deferImage?(conv: Conversation, image: ImageAsset, o: { reason: string; delaySeconds: number; allowEnded: boolean }): Promise<void>;
 }
 
 export interface ProcessResult {
-  status: 'nothing' | 'inactive' | 'human' | 'paused' | 'handoff' | 'replied' | 'no_reply' | 'restart' | 'error';
+  status: 'nothing' | 'busy' | 'inactive' | 'human' | 'paused' | 'handoff' | 'replied' | 'no_reply' | 'restart' | 'error';
   plan?: ExecutionPlan;
   decision?: unknown;
   attempts?: { retryable: string[]; fixes: string[] }[];
@@ -84,6 +93,39 @@ export class Engine {
   constructor(private ai: AiProvider, private ext: EngineExtensions = {}) {}
 
   /** Procesa los mensajes pendientes de una conversación y ejecuta la acción validada. */
+  /**
+   * Juez de afirmaciones (modo estricto): un modelo barato dice qué de la respuesta no respalda la información del negocio.
+   * Si el juez falla no se bloquea la respuesta (las demás verificaciones siguen en pie).
+   */
+  private async judgeClaims(
+    accountId: string, chatbotId: string, conversationId: string, sources: string[], reply: string,
+    log: (level: 'info' | 'warn' | 'error', source: 'engine' | 'ai' | 'validator' | 'channel', message: string, details?: unknown) => Promise<unknown>,
+  ): Promise<string[]> {
+    try {
+      const info = sources.join('\n---\n').slice(0, 30_000);
+      const res = await this.ai.complete({
+        model: config.openai.summaryModel,
+        temperature: 0,
+        max_tokens: 500,
+        messages: [
+          { role: 'system', content: CLAIM_JUDGE_PROMPT },
+          { role: 'user', content: `<informacion>\n${info}\n</informacion>\n\n<respuesta>\n${reply}\n</respuesta>` },
+        ],
+        json_schema: { name: 'claim_check', schema: CLAIM_JUDGE_SCHEMA as unknown as Record<string, unknown> },
+      });
+      await store.insertAiRun({
+        account_id: accountId, chatbot_id: chatbotId, conversation_id: conversationId, kind: 'verify', model: res.model,
+        input_tokens: res.usage.input_tokens, cached_tokens: res.usage.cached_tokens, output_tokens: res.usage.output_tokens,
+        latency_ms: res.latency_ms, cost_usd: res.cost_usd,
+      });
+      const parsed = JSON.parse(res.content);
+      return Array.isArray(parsed.unsupported) ? parsed.unsupported.map((x: unknown) => String(x).slice(0, 120)).filter(Boolean).slice(0, 5) : [];
+    } catch (e: any) {
+      await log('warn', 'ai', `No se pudo verificar las afirmaciones con IA: ${e?.message ?? e}`);
+      return [];
+    }
+  }
+
   async process(conversationId: string, transport: Transport, opts: ProcessOptions = {}): Promise<ProcessResult> {
     const conv = await store.getConversation(conversationId);
     if (!conv) return { status: 'nothing' };
@@ -114,6 +156,31 @@ export class Engine {
     const log = (level: 'info' | 'warn' | 'error', source: 'engine' | 'ai' | 'validator' | 'channel', message: string, details?: unknown) =>
       logEvent({ level, source, message, details, accountId: conv.account_id, chatbotId: bot.id, channelId: conv.channel_id, conversationId: conv.id });
 
+    // 0) Emergencia o riesgo para la vida: una persona atiende de inmediato, con un mensaje fijo y sin IA.
+    const risk = detectRisk(customerText);
+    if (risk) {
+      await this.escalateRisk(bot, conv, contact, channel, transport, risk, customerText);
+      await store.markProcessed(conv.id, lastPendingId);
+      return { status: 'handoff', plan: { ...emptyPlan('handoff'), handoffReason: `riesgo: ${risk.kind}` } };
+    }
+    // 0b) Contestadores y respuestas de ausencia: no se contestan (contestarlos produce bucles).
+    if (pending.every((m) => isAutomatedMessage(m.content))) {
+      await store.markProcessed(conv.id, lastPendingId);
+      return { status: 'no_reply' };
+    }
+    // 0c) El mismo texto del cliente repetido varias veces: suele ser un contestador o un bot atrapado en un bucle.
+    // El asistente se pausa y el equipo se entera. Solo cuenta lo de los últimos 30 minutos (los bucles ocurren en
+    // segundos) y la pausa dura 4 horas: un cliente real que vuelve a escribir más tarde sí recibe respuesta.
+    const since = Date.now() - 30 * 60_000;
+    const inbound = (await store.recentMessages(conv.id, 12)).filter((m) => m.direction === 'in' && new Date(m.created_at).getTime() >= since).map((m) => m.content);
+    if (repeatedCustomerText(inbound)) {
+      await store.setAgentOff(conv.id, 'posible bucle: el cliente repite el mismo mensaje', new Date(Date.now() + 4 * 3600_000));
+      await store.markProcessed(conv.id, lastPendingId);
+      await log('warn', 'engine', 'Asistente en pausa: el cliente repite el mismo mensaje (posible contestador o bot)');
+      await this.notify(conv, channel, '🔁 Asistente en pausa: posible bucle', `${customerLabel(contact)} (${channel.name}): el mismo mensaje llegó varias veces (¿un contestador o un bot?). Si es una persona, reactiva al asistente desde la conversación.`, 'automation');
+      return { status: 'paused' };
+    }
+
     // 1) Transferencia inmediata por palabra clave (sin gastar IA).
     const kw = matchKeyword(customerText, bot.rules.handoff_keywords);
     if (kw) {
@@ -135,7 +202,7 @@ export class Engine {
     const semantic = await semanticKnowledge(bot, knowledge, [...history.slice(-4).filter((m) => m.direction === 'in').map((m) => m.content), customerText].join('\n'), this.ai);
     // Automatización y agenda (si están conectadas).
     const [intents, agendaCtx, business] = await Promise.all([
-      this.ext.intents ? this.ext.intents(conv.account_id, bot.id).catch(() => []) : Promise.resolve([]),
+      this.ext.intents ? this.ext.intents(conv.account_id, bot.id).catch((e) => { log('error', 'engine', `No se pudieron cargar las intenciones de las reglas: ${e?.message ?? e}`); return []; }) : Promise.resolve([]),
       this.ext.agenda && bot.rules.booking_enabled ? this.ext.agenda.contextFor(conv.account_id, contact, channel.type).catch(() => null) : Promise.resolve(null),
       this.ext.business ? this.ext.business(conv.account_id).catch(() => null) : Promise.resolve(null),
     ]);
@@ -150,6 +217,12 @@ export class Engine {
     const scheduledBefore = imagesBeforeReply(images, { text: customerText, firstReply, sentIds: sentImageIds });
     const aiImages = aiSelectableImages(images);
     const autoImages = automaticImages(images, bot.flow.steps.map((x) => x.title));
+
+    // Para el validador: no repetir la respuesta anterior salvo que el cliente repita su pregunta.
+    const pendingIds = new Set(pending.map((m) => m.id));
+    const previousCustomer = history.filter((m) => m.direction === 'in' && !pendingIds.has(m.id)).at(-1)?.content ?? '';
+    const customerRepeats = normalize(customerText) === normalize(previousCustomer);
+    const recentBotTexts = history.filter((m) => m.direction === 'out').slice(-3).map((m) => m.content);
 
     // 3) La IA propone; el backend valida (con un reintento guiado).
     let correction: string | undefined;
@@ -169,6 +242,7 @@ export class Engine {
       try {
         completion = await this.ai.complete({
           model,
+          fallback_models: bot.ai.fallback_models,
           messages: ctx.messages,
           temperature: bot.ai.temperature,
           reasoning_effort: bot.ai.reasoning_effort,
@@ -197,6 +271,7 @@ export class Engine {
       lastInput = {
         raw, bot, images: aiImages, sentImageIds, customerText, scheduledImages: scheduledBefore.map((x) => x.image), automaticImages: images, currentFlowStep: conv.flow_step ?? 0, goalAlreadyCompleted: !!conv.goal_completed_at,
         groundingSources: ctx.groundingSources,
+        claimSources: ctx.claimSources,
         customerSources: ctx.customerSources,
         customerDataSources: history.filter((m) => m.direction === 'in').map((m) => m.content),
         allowedIntents: intents.map((i) => i.intent),
@@ -204,8 +279,18 @@ export class Engine {
         hasPhone,
         knownData: contact.data ?? {},
         knownName: contact.name || undefined,
+        recentBotTexts,
+        customerRepeats,
       };
       const v = validateDecision({ ...lastInput, final: attempt === MAX_ATTEMPTS });
+      // Modo estricto: un modelo barato revisa que lo afirmado esté respaldado (solo si lo demás ya pasó).
+      if (!v.retryable.length && bot.rules.verify_claims === 'estricto' && v.plan.messages.length) {
+        const unsupported = await this.judgeClaims(conv.account_id, bot.id, conv.id, ctx.claimSources, v.plan.messages.join('\n'), log);
+        if (unsupported.length) {
+          v.factIssues = true;
+          v.retryable.push(`Afirmaste algo que la información del negocio no respalda o contradice: ${unsupported.join('; ')}. Quítalo o di con naturalidad que lo confirmas con el equipo.`);
+        }
+      }
       attempts.push({ retryable: v.retryable, fixes: v.fixes });
       await store.insertAiRun({
         account_id: conv.account_id,
@@ -300,8 +385,12 @@ export class Engine {
     // Recorrido: el objetivo solo cuenta una vez por conversación (hasta que se cierre y se reabra).
     const goalReached = plan.goalCompleted && !conv.goal_completed_at;
     const goalHandoff = goalReached && bot.flow.on_goal_action === 'handoff' && plan.action !== 'handoff';
+    const stageChanged = !!plan.flowStep && plan.flowStep !== (conv.flow_step ?? 0);
     // Fotos programadas: se suman a las que eligió la IA (sin repetir). En una transferencia no se envían.
     let selectedRules: ScheduledImage[] = [];
+    // Fotos que el sistema debía enviar y no salieron en esta respuesta (límite por respuesta o rechazo de la plataforma):
+    // no se pierden, se reintentan enseguida.
+    const owed: { image: ImageAsset; reason: string; delaySeconds: number }[] = [];
     if (plan.action !== 'handoff') {
       const assistant = imagesForAssistant(images, plan.messages.join(' '), sentImageIds);
       const after = imagesAfterReply(images, {
@@ -316,45 +405,71 @@ export class Engine {
       const candidates = [...automatic.map(x => x.image), ...plan.images.filter(img => !automatic.some(x => x.image.id === img.id))];
       const selected = candidates.slice(0, bot.rules.max_images_per_reply);
       selectedRules = automatic.filter(x => selected.some(img => img.id === x.image.id));
-      if (candidates.length > selected.length) await log('warn', 'engine', `Fotos omitidas por el límite de ${bot.rules.max_images_per_reply} por respuesta: ${candidates.slice(selected.length).map(img => img.code).join(', ')}`);
+      if (candidates.length > selected.length) {
+        // Las que salen por una regla del negocio (etapa, objetivo, palabra…) se envían después; las que eligió la IA, no.
+        const over = candidates.slice(selected.length);
+        const later = over.filter((img) => automatic.some((x) => x.image.id === img.id));
+        const dropped = over.filter((img) => !later.includes(img));
+        if (dropped.length) await log('warn', 'engine', `Fotos omitidas por el límite de ${bot.rules.max_images_per_reply} por respuesta: ${dropped.map(img => img.code).join(', ')}`);
+        if (later.length) await log('info', 'engine', `Fotos del negocio que no caben en esta respuesta (límite de ${bot.rules.max_images_per_reply}); se envían enseguida: ${later.map(img => img.code).join(', ')}`);
+        for (const img of later) owed.push({ image: img, reason: automatic.find((x) => x.image.id === img.id)!.reason, delaySeconds: 5 });
+      }
       if (selected.length) plan = { ...plan, action: 'reply_with_image', images: selected };
 
     }
     if (plan.action === 'handoff') {
       await this.executeHandoff(bot, conv, contact, transport, plan.messages, plan.handoffReason || 'La IA decidió transferir');
     } else if (plan.action !== 'no_reply') {
-      await this.sendPlan(bot, conv, transport, plan, meta, selectedRules);
+      const failed = await this.sendPlan(bot, conv, transport, plan, meta, selectedRules);
+      for (const x of failed) owed.push({ image: x.image, reason: x.reason, delaySeconds: 45 });
     }
+    // Si el asistente dijo que el equipo dará seguimiento, el equipo se entera: no depende de que alguien lo recuerde.
+    if (plan.action !== 'handoff' && plan.messages.some((m) => promisesFollowUp(m))) {
+      await this.notify(conv, channel, '🕒 Seguimiento prometido al cliente', `${customerLabel(contact)} (${channel.name}): el asistente dijo "${plan.messages.join(' ').slice(0, 200)}"`, 'follow_up');
+    }
+    let summarized = false;
     if (plan.flowStep || goalReached) {
       const reached = await store.setFlowState(conv.id, plan.flowStep, goalReached);
       if (reached) {
         await log('info', 'engine', `Objetivo de la conversación cumplido${plan.flowStep ? ` (etapa ${plan.flowStep})` : ''}`);
+        // El reporte (resumen, análisis y datos) se arma ANTES de avisar y de emitir eventos: así el aviso, las reglas y
+        // los webhooks ya lo llevan completo. Si la IA falla, el aviso sale igual con los datos y los últimos mensajes.
+        await this.summarizeFinal(conv);
+        summarized = true;
         if (goalHandoff) {
           // Ya se envió la respuesta de la IA (que se despide): solo se pasa a una persona, sin otro mensaje.
           await this.executeHandoff(bot, conv, contact, transport, [], 'Se cumplió el objetivo de la conversación', { silent: true });
         } else if (bot.flow.on_goal_action === 'notify' && channel.type !== 'playground' && this.ext.alertTeam) {
           const who = contact.name || contact.push_name || contact.phone || 'Un cliente';
-          await this.ext.alertTeam(conv.account_id, { title: '🎯 Objetivo cumplido', body: `${who} (${channel.name}): ${bot.flow.goal}`, link: `#/conversation/${conv.id}`, kind: 'goal' });
+          const brief = await briefReport(conv.id, 1500, { customer: false }).catch(() => '');
+          await this.ext.alertTeam(conv.account_id, { title: '🎯 Objetivo cumplido', body: `${who} (${channel.name}): ${bot.flow.goal}${brief ? `\n\n${brief}` : ''}`, link: `#/conversation/${conv.id}`, conversationId: conv.id, kind: 'goal' });
         }
       }
     }
     // Desactivadores después de responder (objetivo, cita, datos completos).
+    let ended = goalHandoff;
     if (plan.action !== 'handoff' && !goalHandoff) {
       const why = offAfterReply(bot.rules.activation, { goalReached, booked, before: { name: nameBefore, data: dataBefore }, after: contact });
-      if (why) await this.deactivate(bot, conv, contact, transport, why);
+      if (why) {
+        ended = true;
+        await this.deactivate(bot, conv, contact, transport, why);
+      }
     }
+    // Las fotos que faltaron salen aunque la conversación haya pasado a una persona o se haya cerrado en este mismo momento.
+    for (const x of owed) await this.ext.deferImage?.(conv, x.image, { reason: x.reason, delaySeconds: x.delaySeconds, allowEnded: ended }).catch((e) => log('error', 'engine', `No se pudo programar el reenvío de la foto ${x.image.code}: ${e?.message ?? e}`));
     await store.markProcessed(conv.id, lastPendingId);
 
     // Eventos para las reglas automáticas (se ejecutan después, sin bloquear la respuesta).
     if (this.ext.onEvent) {
       if (plan.intents.length) this.ext.onEvent({ type: 'intent', conversationId: conv.id, intents: plan.intents, text: customerText });
+      if (stageChanged) this.ext.onEvent({ type: 'stage_reached', conversationId: conv.id, step: plan.flowStep, text: customerText });
       if (goalReached) this.ext.onEvent({ type: 'goal_completed', conversationId: conv.id, text: customerText });
       for (const [field, value] of Object.entries(contact.data ?? {})) {
         if (value && dataBefore[field] !== value) this.ext.onEvent({ type: 'data_captured', conversationId: conv.id, field, text: customerText });
       }
     }
 
-    if (goalReached) await this.summarizeFinal(conv);
+    if (goalReached && !summarized) await this.summarizeFinal(conv);
 
     // 6) Memoria de largo plazo (resumen) en segundo plano.
     const memory = maybeSummarize(this.ai, bot, conv.id, conv.account_id).catch((e) => log('error', 'ai', `Error al resumir: ${e?.message ?? e}`, e));
@@ -370,16 +485,26 @@ export class Engine {
     };
   }
 
-  async sendPlan(bot: Chatbot, conv: Conversation, transport: Transport, plan: ExecutionPlan, meta: Record<string, unknown>, scheduled: ScheduledImage[] = []) {
+  /** Envía el plan. Devuelve las fotos de reglas del negocio que la plataforma rechazó (para reintentarlas). */
+  async sendPlan(bot: Chatbot, conv: Conversation, transport: Transport, plan: ExecutionPlan, meta: Record<string, unknown>, scheduled: ScheduledImage[] = []): Promise<ScheduledImage[]> {
     const typing = bot.ai.typing_simulation && hasTyping(transport);
-    for (const text of plan.messages) {
+    // En correo, varias burbujas serían varios correos: se envían como uno solo.
+    const texts = transport.kind === 'email' && plan.messages.length > 1 ? [plan.messages.join('\n\n')] : plan.messages;
+    // Si una persona tomó la conversación mientras la IA respondía, lo que falta de la respuesta ya no sale.
+    const stillBot = async () => (await store.getConversation(conv.id))?.status === 'bot';
+    for (const text of texts) {
+      if (!(await stillBot())) return [];
       await this.sendOut(bot, conv, transport, { sender: 'bot', text, delay: typingDelay(text, typing), meta });
     }
+    const failed: ScheduledImage[] = [];
     for (const img of plan.images) {
+      if (!(await stillBot())) return failed;
       const rule = scheduled.find(x => x.image.id === img.id);
       const sent = await this.sendOut(bot, conv, transport, { sender: 'bot', text: img.caption, image: img, delay: typing ? 1200 : 0, meta: rule ? {...meta, image_trigger: rule.reason} : meta });
       if (sent && rule) await logEvent({ level: 'info', source: 'engine', message: `Foto enviada por regla: ${img.code} (${rule.reason})`, accountId: conv.account_id, chatbotId: bot.id, channelId: conv.channel_id, conversationId: conv.id });
+      if (!sent && rule) failed.push(rule);
     }
+    return failed;
   }
 
   /** Guarda el mensaje ANTES de enviarlo (para reconocer el eco del webhook) y luego lo envía. */
@@ -387,22 +512,30 @@ export class Engine {
     bot: Chatbot | null,
     conv: Conversation,
     transport: Transport,
-    o: { sender: 'bot' | 'human' | 'system'; text: string; image?: ImageAsset; delay: number; meta?: Record<string, unknown> },
+    o: { sender: 'bot' | 'human' | 'system'; text: string; image?: ImageAsset; file?: OutgoingFile; delay: number; meta?: Record<string, unknown> },
   ): Promise<Message | null> {
     const msg = await store.insertMessage({
       conversation_id: conv.id,
       direction: 'out',
       sender: o.sender,
-      type: o.image ? 'image' : 'text',
+      type: o.file ? o.file.kind : o.image ? 'image' : 'text',
       content: o.text,
       image_id: o.image?.id ?? null,
       status: 'pending',
-      meta: o.meta,
+      meta: o.file ? { ...o.meta, attachment_id: o.file.id, file_name: o.file.name } : o.meta,
     });
     if (!msg) return null;
     try {
-      const extId = o.image ? await transport.sendImage(o.image, o.text, o.delay) : await transport.sendText(o.text, o.delay);
+      let extId: string | null;
+      if (o.file) {
+        if (!transport.sendFile) throw new Error('Este canal todavía no envía archivos (PDF, Word, audio o video): usa texto o una foto');
+        extId = await transport.sendFile(o.file, o.text, o.delay);
+      } else {
+        extId = o.image ? await transport.sendImage(o.image, o.text, o.delay) : await transport.sendText(o.text, o.delay);
+      }
       await store.updateMessage(msg.id, { external_message_id: extId, status: 'ok' });
+      // Cuenta para el límite mensual del plan (las pruebas del simulador no cuentan).
+      if (o.sender === 'bot' && transport.kind !== 'playground') await recordMessage(conv.account_id).catch(() => undefined);
       const sent = { ...msg, status: 'ok', external_message_id: extId };
       if (this.ext.onOutbound) await this.ext.onOutbound(conv, sent).catch(() => undefined);
       return sent;
@@ -411,7 +544,7 @@ export class Engine {
       await logEvent({
         level: 'error',
         source: transport.kind === 'whatsapp' ? 'evolution' : 'channel',
-        message: `No se pudo enviar ${o.image ? `la imagen ${o.image.code}` : 'el mensaje'} (${transport.kind}): ${e?.message ?? e}`,
+        message: `No se pudo enviar ${o.file ? `el archivo ${o.file.name}` : o.image ? `la imagen ${o.image.code}` : 'el mensaje'} (${transport.kind}): ${e?.message ?? e}`,
         accountId: conv.account_id,
         chatbotId: bot?.id ?? null,
         channelId: conv.channel_id,
@@ -422,8 +555,25 @@ export class Engine {
     }
   }
 
-  async executeHandoff(bot: Chatbot, conv: Conversation, contact: Contact, transport: Transport, messages: string[], reason: string, opts: { silent?: boolean } = {}) {
+  /** Aviso al equipo (panel y WhatsApp de quien lo tenga activado). Nunca interrumpe la conversación si falla. */
+  private async notify(conv: Conversation, channel: Channel, title: string, body: string, kind: string) {
+    if (channel.type === 'playground' || !this.ext.alertTeam) return;
+    await this.ext.alertTeam(conv.account_id, { title, body, link: `#/conversation/${conv.id}`, kind, conversationId: conv.id }).catch((e) =>
+      logEvent({ level: 'error', source: 'channel', message: `No se pudo avisar al equipo: ${e?.message ?? e}`, accountId: conv.account_id, conversationId: conv.id }),
+    );
+  }
+
+  /** Riesgo para la vida o emergencia: mensaje fijo, transferencia inmediata y aviso prioritario al equipo. */
+  private async escalateRisk(bot: Chatbot, conv: Conversation, contact: Contact, channel: Channel, transport: Transport, risk: RiskHit, text: string) {
+    await this.executeHandoff(bot, conv, contact, transport, [SAFETY_MESSAGES[risk.kind][risk.lang]], risk.kind === 'selfharm' ? 'Riesgo para la vida: el cliente lo mencionó' : 'Posible emergencia: el cliente lo mencionó');
+    await this.notify(conv, channel, '🚨 Posible emergencia en una conversación', `${customerLabel(contact)} (${channel.name}): "${text.slice(0, 200)}". Atiéndelo cuanto antes.`, 'safety');
+  }
+
+  async executeHandoff(bot: Chatbot, conv: Conversation, contact: Contact, transport: Transport, messages: string[], reason: string, opts: { silent?: boolean; via?: 'bot' | 'regla' } = {}) {
+    const before = await store.getConversation(conv.id);
     await store.setConversationStatus(conv.id, 'human', reason);
+    // Queda en el contacto quién la pasó y desde dónde. Si una persona ya la atendía, no se pisa.
+    if (before?.status !== 'human') await store.markHandoff(contact.id, null, opts.via ?? 'bot');
     const texts = messages.length ? messages : bot.rules.handoff_message && !opts.silent ? [bot.rules.handoff_message] : [];
     for (const text of texts) {
       await this.sendOut(bot, conv, transport, { sender: 'bot', text, delay: typingDelay(text, bot.ai.typing_simulation && hasTyping(transport)), meta: { action: 'handoff' } });
@@ -433,7 +583,8 @@ export class Engine {
     this.ext.onEvent?.({ type: 'handoff', conversationId: conv.id });
     if (bot.rules.handoff_notify_number) {
       const who = contact.name || contact.push_name || contact.phone || contact.external_id;
-      const text = `🔔 *${bot.name}*: ${who}${contact.phone ? ` (+${contact.phone})` : ''} necesita atención.\nMotivo: ${reason}`;
+      const brief = await briefReport(conv.id, 1200, { customer: false }).catch(() => '');
+      const text = `🔔 *${bot.name}*: ${who}${contact.phone ? ` (+${contact.phone})` : ''} necesita atención.\nMotivo: ${reason}${brief ? `\n\n${brief}` : ''}`;
       try {
         await transport.notify(bot.rules.handoff_notify_number, text);
       } catch (e: any) {
@@ -448,7 +599,7 @@ export class Engine {
     const msg = a.off_message.trim();
     const log = (message: string) => logEvent({ level: 'info', source: 'engine', message, accountId: conv.account_id, chatbotId: bot.id, channelId: conv.channel_id, conversationId: conv.id });
     if (a.off_action === 'handoff') {
-      await this.executeHandoff(bot, conv, contact, transport, msg ? [msg] : [], `Asistente desactivado: ${reason}`, { silent: !msg });
+      await this.executeHandoff(bot, conv, contact, transport, msg ? [msg] : [], `Asistente desactivado: ${reason}`, { silent: !msg, via: 'regla' });
     } else {
       if (msg) await this.sendOut(bot, conv, transport, { sender: 'bot', text: msg, delay: typingDelay(msg, bot.ai.typing_simulation && hasTyping(transport)), meta: { action: 'agent_off' } });
       if (a.off_action === 'close') {
@@ -490,11 +641,14 @@ export class Engine {
   }
 }
 
+/** Palabra o frase completa en el texto (sin distinguir acentos ni mayúsculas). Los emojis cuentan como palabras. */
 export function matchKeyword(text: string, keywords: string[]): string | null {
-  const t = ` ${normalize(text).replace(/[^a-z0-9ñ ]/g, ' ')} `;
+  const clean = (s: string) => normalize(s).replace(/[^\p{L}\p{N}\p{Extended_Pictographic}\u200d\ufe0f ]+/gu, ' ').replace(/\s+/g, ' ').trim();
+  const t = ` ${clean(text)} `;
   for (const k of keywords) {
-    const nk = normalize(k).replace(/[^a-z0-9ñ ]/g, ' ').trim();
-    if (nk && t.includes(` ${nk} `)) return k;
+    const nk = clean(k);
+    if (!nk) continue;
+    if (/[\p{L}\p{N}]/u.test(nk) ? t.includes(` ${nk} `) : normalize(text).includes(nk)) return k;
   }
   return null;
 }
