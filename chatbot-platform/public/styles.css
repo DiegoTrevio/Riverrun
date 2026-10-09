@@ -12,6 +12,7 @@
   --bubble-out: #dcf8c6;
   --chat-bg: #efeae2;
   --radius: 10px;
+  --shadow: 0 1px 2px rgba(16, 24, 40, .06);
   font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   font-size: 14px;
 }
@@ -27,6 +28,7 @@
     --bubble-in: #232a31;
     --bubble-out: #144d42;
     --chat-bg: #0e1215;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .35);
   }
 }
 * { box-sizing: border-box; }
@@ -40,22 +42,44 @@ h3 { font-size: 15px; margin: 16px 0 8px; }
 
 .layout { display: grid; grid-template-columns: 220px 1fr; min-height: 100vh; }
 .sidebar { background: var(--panel); border-right: 1px solid var(--border); padding: 18px 12px; display: flex; flex-direction: column; gap: 4px; }
-.sidebar .brand { font-weight: 700; font-size: 16px; padding: 4px 10px 16px; }
+.sidebar .brand { font-weight: 700; font-size: 16px; padding: 4px 10px 16px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.nav-toggle { display: none; padding: 6px 10px; font-size: 13px; }
 .sidebar a { color: var(--text); padding: 8px 10px; border-radius: 8px; }
 .sidebar a.active, .sidebar a:hover { background: var(--accent-soft); color: var(--accent); }
 .sidebar .spacer { flex: 1; }
 .main { padding: 24px 28px; max-width: 1200px; width: 100%; }
 @media (max-width: 800px) {
-  .layout { grid-template-columns: 1fr; }
-  .sidebar { flex-direction: row; flex-wrap: wrap; border-right: 0; border-bottom: 1px solid var(--border); }
+  .layout { grid-template-columns: minmax(0, 1fr); align-content: start; }
+  .layout > * { min-width: 0; }
+  /* En el teléfono, la barra superior muestra la marca y el botón del menú; el menú se despliega al tocarlo. */
+  .sidebar { position: sticky; top: 0; z-index: 30; border-right: 0; border-bottom: 1px solid var(--border); padding: 10px 14px; gap: 2px; }
+  .sidebar .brand { padding: 0; }
+  .sidebar > :not(.brand) { display: none; }
+  .layout.nav-open .sidebar { max-height: 88vh; overflow-y: auto; }
+  .layout.nav-open .sidebar > :not(.brand) { display: revert; }
+  .nav-toggle { display: inline-flex; }
   .sidebar .spacer { display: none; }
-  .main { padding: 16px; }
+  .main { padding: 14px; }
+  .card { padding: 14px; }
+  /* En el teléfono, el redactor ocupa todo el ancho y los botones van debajo. */
+  .composer { flex-wrap: wrap; }
+  .composer textarea { flex: 1 1 100%; }
+  .composer button { flex: 1 1 auto; }
+  h1 { font-size: 20px; }
+  .toast { left: 12px; right: 12px; bottom: 12px; max-width: none; }
 }
 
-.card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; margin-bottom: 16px; }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; margin-bottom: 16px; box-shadow: var(--shadow); }
+/* Una tabla ancha se desplaza dentro de su tarjeta, no en toda la página. */
+.card:has(> table) { overflow-x: auto; }
 .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
 .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .row.between { justify-content: space-between; }
+/* Los selectores de una fila (filtros) toman su ancho natural y se acomodan en varias columnas. */
+.row > select { width: auto; flex: 1 1 130px; max-width: 100%; }
+/* Filtros de la bandeja: cada uno toma su ancho y se acomoda en varias columnas. */
+.filter { flex: 1 1 150px; min-width: 0; max-width: 100%; }
+.search-field { flex: 1 1 100%; min-width: 0; }
 .stack > * + * { margin-top: 12px; }
 
 label.field { display: block; margin-bottom: 14px; }
@@ -72,10 +96,11 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
 
 button, .btn {
   display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 8px;
-  border: 1px solid var(--border); background: var(--panel); color: var(--text); font: inherit; cursor: pointer;
+  border: 1px solid var(--border); background: var(--panel); color: var(--text); font: inherit; cursor: pointer; white-space: nowrap;
 }
 button:hover { border-color: var(--accent); }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.primary:hover { filter: brightness(.94); }
 button.danger { color: var(--danger); }
 button.danger.solid { background: var(--danger); border-color: var(--danger); color: #fff; }
 button:disabled { opacity: .55; cursor: default; }
@@ -96,7 +121,7 @@ button.small { padding: 4px 9px; font-size: 12px; }
 
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
-th { font-size: 12px; color: var(--muted); font-weight: 600; }
+th { font-size: 12px; color: var(--muted); font-weight: 600; white-space: nowrap; }
 tr.click { cursor: pointer; }
 tr.click:hover td { background: var(--accent-soft); }
 
@@ -109,7 +134,8 @@ tr.click:hover td { background: var(--accent-soft); }
 .img-card .body { padding: 12px; }
 code { background: var(--accent-soft); color: var(--accent); padding: 1px 6px; border-radius: 5px; font-size: 12px; }
 
-.chat { background: var(--chat-bg); border-radius: var(--radius); padding: 14px; height: 520px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+/* El chat se ajusta a la pantalla: alto suficiente para leer, sin dejar un hueco vacío bajo el redactor. */
+.chat { background: var(--chat-bg); border-radius: var(--radius); padding: 14px; height: clamp(320px, 62vh, 640px); overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
 .bubble { max-width: 75%; padding: 7px 10px; border-radius: 9px; white-space: pre-wrap; word-wrap: break-word; box-shadow: 0 1px 0 rgba(0,0,0,.06); }
 .bubble.in { background: var(--bubble-in); align-self: flex-start; }
 .bubble.out { background: var(--bubble-out); align-self: flex-end; }
@@ -120,12 +146,14 @@ code { background: var(--accent-soft); color: var(--accent); padding: 1px 6px; b
 .bubble .meta { font-size: 11px; color: var(--muted); margin-top: 3px; text-align: right; }
 .composer { display: flex; gap: 8px; margin-top: 10px; }
 .composer textarea { min-height: 44px; height: 44px; }
+.composer button { flex: none; }
 .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; margin-top: 10px; max-height: 300px; overflow-y: auto; }
 .gallery[hidden] { display: none; }
 .gallery .thumb { display: flex; flex-direction: column; gap: 4px; padding: 4px; text-align: left; }
 .gallery .thumb img { width: 100%; height: 80px; object-fit: cover; border-radius: 6px; display: block; }
 
-.split { display: grid; grid-template-columns: 1fr 340px; gap: 16px; }
+/* La columna del chat y la lateral no se estiran una a la otra: cada una mide lo que necesita. */
+.split { display: grid; grid-template-columns: 1fr 340px; gap: 16px; align-items: start; }
 @media (max-width: 1000px) { .split { grid-template-columns: 1fr; } }
 
 .kpi { font-size: 26px; font-weight: 700; }
@@ -136,10 +164,16 @@ code { background: var(--accent-soft); color: var(--accent); padding: 1px 6px; b
 .log-error td { color: var(--danger); }
 .log-warn td { color: var(--warn); }
 details summary { cursor: pointer; color: var(--muted); }
+details.card > summary { color: var(--text); font-weight: 600; }
 .sticky-save { position: sticky; bottom: 0; background: var(--bg); padding: 12px 0; border-top: 1px solid var(--border); margin-top: 10px; z-index: 5; }
 .account-switch { padding: 0 10px 12px; }
 .account-switch select { margin-top: 4px; }
 ol.small li { margin-bottom: 6px; }
+
+/* Pendientes y notas del cliente, en la columna de la conversación */
+.task-row { display: flex; gap: 8px; align-items: flex-start; padding: 6px 0; }
+.task-row.done .task-text { text-decoration: line-through; opacity: .6; }
+.task-form { display: grid; gap: 6px; margin-top: 10px; }
 
 /* Avisos de la cuenta (prueba, pausa, correo sin confirmar) */
 .banner { padding: 10px 14px; border-radius: var(--radius); background: var(--accent-soft); border: 1px solid var(--border); font-size: 14px; }
@@ -204,16 +238,29 @@ ol.flow-steps li.current { color: var(--accent); font-weight: 600; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (max-width: 600px) { .wa-tabs { grid-template-columns: 1fr; } .wa-ring { right: 8px; } }
 
+/* Ajustes y tarjetas de importación */
+a.tile { display: block; color: var(--text); text-decoration: none; margin-bottom: 0; }
+a.tile:hover { border-color: var(--accent); background: var(--accent-soft); }
+.import-card { border-color: var(--accent); background: var(--accent-soft); }
+.import-card h3 { color: var(--accent); }
+
 .nav-group { margin: 3px 0; }
 .nav-group summary { padding: 10px; border-radius: 8px; color: var(--text); font-weight: 600; }
 .nav-group summary.active { background: var(--accent-soft); color: var(--accent); }
 .nav-group > div { display: flex; flex-direction: column; padding-left: 10px; }
 .nav-group a { font-size: 13px; }
 
-/* Móvil: la conversación ocupa el alto disponible en lugar de 520 px fijos */
-@media (max-width: 600px) {
-  .chat { height: 60vh; min-height: 320px; }
-  .bubble { max-width: 88%; }
-  .card { padding: 14px; }
-  h1 { font-size: 19px; }
-}
+/* Barras de uso (límites del plan) */
+.bar { height: 8px; background: var(--border); border-radius: 99px; overflow: hidden; margin-top: 4px; }
+.bar-fill { height: 100%; background: var(--accent); border-radius: 99px; transition: width .3s; }
+.bar-fill.warn { background: #e0a31a; }
+.bar-fill.full { background: #d64545; }
+
+/* Menú desplegable simple (Exportar) */
+details.menu { position: relative; }
+details.menu > summary { list-style: none; cursor: pointer; }
+details.menu > summary::-webkit-details-marker { display: none; }
+details.menu .menu-items { position: absolute; right: 0; top: 110%; z-index: 20; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,.12); min-width: 220px; padding: 4px; display: flex; flex-direction: column; }
+details.menu .menu-items a { padding: 8px 10px; border-radius: 6px; color: var(--text); text-decoration: none; }
+details.menu .menu-items a:hover { background: var(--accent-soft); color: var(--accent); }
+.chip { display: inline-block; padding: 2px 8px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg); font-size: 12px; }

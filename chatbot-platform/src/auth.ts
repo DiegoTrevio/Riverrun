@@ -92,6 +92,11 @@ export async function login(email: string, password: string): Promise<(User & { 
 /** Crea (o actualiza la contraseña de) el superadministrador definido en .env. */
 export async function bootstrapSuperadmin() {
   if (!config.adminPassword) return;
+  // En un servidor público no se acepta la contraseña de ejemplo de .env.example.
+  if (config.adminPassword.startsWith('cambia-') && config.publicBaseUrl.startsWith('https://')) {
+    await logEvent({ level: 'error', source: 'system', message: 'ADMIN_PASSWORD sigue siendo la de ejemplo ("cambia-…"): no se crea ni actualiza el superadministrador. Cámbiala en .env (o usa ./riverrun install).' });
+    return;
+  }
   const existing = await store.getUserForLogin(config.adminUser);
   if (!existing) {
     await store.createUser({ account_id: null, role: 'superadmin', name: 'Administrador', email: config.adminUser, password_hash: await hashPassword(config.adminPassword) });

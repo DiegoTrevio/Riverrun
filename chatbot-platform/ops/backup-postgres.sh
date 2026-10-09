@@ -11,7 +11,7 @@ database=$2
 destination=$3
 [[ $database =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]] || { echo 'Nombre de base inválido' >&2; exit 2; }
 [[ ! -e $destination ]] || { echo 'El destino ya existe; usa un directorio nuevo' >&2; exit 2; }
-mkdir -m 700 -p "$destination"
+mkdir -p "$destination" && chmod 700 "$destination"
 destination=$(cd "$destination" && pwd)
 ops_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 success=false

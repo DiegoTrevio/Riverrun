@@ -1,3 +1,4 @@
+import { truncateChars } from '../engine/text.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
@@ -46,7 +47,10 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
       if (qr) await store.saveQr(channel.id, qr);
       for (const n of notices ?? []) await logEvent({ level: n.level, source: 'channel', message: n.message, accountId: channel.account_id, channelId: channel.id });
       if (connection) await recordConnectionState(channel, connection);
-      for (const m of messages) await service.handleIncoming(channel, m);
+      // Un mensaje que no se pudo guardar no detiene al resto del lote: se registra y se siguen los demás.
+      for (const m of messages) {
+        await service.handleIncoming(channel, m).catch((e) => logEvent({ level: 'error', source: 'webhook', message: `Mensaje no guardado (${m.messageId}): ${e?.message ?? e}`, accountId: channel.account_id, channelId: channel.id, details: { messageId: m.messageId } }));
+      }
     } catch (e: any) {
       await logEvent({ level: 'error', source: 'webhook', message: `Error procesando webhook: ${e?.message ?? e}`, accountId: channel.account_id, channelId: channel.id, details: e });
     }
@@ -132,7 +136,7 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
     if (!ch) return;
     const { session, text, name } = (req.body ?? {}) as { session?: string; text?: string; name?: string };
     if (!session || !WEBCHAT_SESSION_RE.test(session)) return reply.code(400).send({ error: 'Sesión inválida' });
-    const clean = String(text ?? '').trim().slice(0, 2000);
+    const clean = truncateChars(String(text ?? '').trim(), 2000);
     if (!clean) return reply.code(400).send({ error: 'Mensaje vacío' });
     if (rateLimited(`${ch.id}:${session}`) || rateLimited(`msg-ip:${ch.id}:${req.ip}`, 40)) {
       return reply.code(429).send({ error: 'Demasiados mensajes, espera un momento' });
@@ -141,7 +145,7 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
       messageId: `web-${crypto.randomUUID()}`,
       externalId: session,
       phone: '',
-      displayName: String(name ?? '').slice(0, 80),
+      displayName: truncateChars(String(name ?? ''), 80),
       fromMe: false,
       type: 'text',
       text: clean,

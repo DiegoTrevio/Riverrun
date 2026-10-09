@@ -1,3 +1,7 @@
+import * as assignment from './assignment.js';
+import { deliverReport, reportRecipients } from './report-delivery.js';
+import { briefReport } from '../engine/report-format.js';
+import { imageSendWhen } from '../types.js';
 import crypto from 'node:crypto';
 import dns from 'node:dns/promises';
 import http from 'node:http';
@@ -8,6 +12,7 @@ import { agentActive, gate } from '../engine/activation.js';
 import { matchKeyword } from '../engine/engine.js';
 import { imagesBeforeReply } from '../engine/images.js';
 import { normalize } from '../engine/text.js';
+import { dispatchEvent, eventData, publicEventFor } from '../integrations/webhooks.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
@@ -45,9 +50,12 @@ export function triggerMatches(t: Trigger, e: AutomationEvent): boolean {
       return words.some((w) => normalize(text).includes(normalize(w)));
     }
     case 'intent':
-      return (e.intents ?? []).includes(t.intent);
+      // La IA devuelve las intenciones normalizadas (minúsculas, sin acentos): se compara igual.
+      return (e.intents ?? []).some((i) => normalize(i) === normalize(t.intent));
     case 'data_captured':
       return !t.field || t.field === e.field;
+    case 'stage_reached':
+      return !t.step || t.step === e.step;
     case 'tag_added':
       return normalize(t.tag) === normalize(e.tag ?? '');
     case 'appointment_booked':
@@ -103,20 +111,61 @@ export function describeCondition(c: Condition): string {
 
 /* ------------------------------ Webhooks salientes seguros ------------------------------ */
 
-function isPrivateIp(ip: string) {
-  if (net.isIPv4(ip)) {
-    const [a, b] = ip.split('.').map(Number);
-    return a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
+export function isPrivateIp(ip: string): boolean {
+  const v4 = net.isIPv4(ip) ? ip.split('.').map(Number) : null;
+  if (v4) {
+    const [a, b, c] = v4;
+    return (
+      a === 0 || a === 10 || a === 127 || a >= 224 || // "esta red", privada, loopback, multicast y reservadas
+      (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) || (a === 192 && b === 0 && c === 0) || (a === 198 && (b === 18 || b === 19))
+    );
   }
-  const v = ip.toLowerCase();
-  return v === '::1' || v === '::' || v.startsWith('fc') || v.startsWith('fd') || v.startsWith('fe80') || v.startsWith('::ffff:127.') || v.startsWith('::ffff:10.') || v.startsWith('::ffff:192.168.');
+  if (!net.isIPv6(ip)) return true; // lo que no se reconoce no se permite
+  const bytes = ipv6Bytes(ip);
+  if (!bytes) return true;
+  const zeros = (n: number) => bytes.slice(0, n).every((x) => x === 0);
+  const embedded = (at: number) => isPrivateIp(bytes.slice(at, at + 4).join('.'));
+  if (zeros(10) && bytes[10] === 0xff && bytes[11] === 0xff) return embedded(12); // ::ffff:a.b.c.d (cualquier escritura)
+  if (zeros(12)) return bytes[12] === 0 && bytes[13] === 0 && bytes[14] === 0 && bytes[15] <= 1 ? true : embedded(12); // ::, ::1 y ::a.b.c.d
+  if (bytes[0] === 0x00 && bytes[1] === 0x64 && bytes[2] === 0xff && bytes[3] === 0x9b && bytes.slice(4, 12).every((x) => x === 0)) return embedded(12); // 64:ff9b::/96
+  if (bytes[0] === 0x20 && bytes[1] === 0x02) return embedded(2); // 2002::/16 (6to4)
+  if ((bytes[0] & 0xfe) === 0xfc) return true; // fc00::/7
+  if (bytes[0] === 0xfe && (bytes[1] & 0xc0) >= 0x80) return true; // fe80::/10 y fec0::/10
+  if (bytes[0] === 0xff) return true; // multicast
+  return false;
+}
+
+/** Las 16 posiciones de una dirección IPv6 (acepta "::" y la cola con puntos). */
+function ipv6Bytes(ip: string): number[] | null {
+  let s = ip.toLowerCase().split('%')[0];
+  const tail = /(\d+\.\d+\.\d+\.\d+)$/.exec(s);
+  if (tail) {
+    const q = tail[1].split('.').map(Number);
+    if (q.some((n) => n > 255)) return null;
+    s = s.slice(0, -tail[1].length) + ((q[0] << 8) | q[1]).toString(16) + ':' + ((q[2] << 8) | q[3]).toString(16);
+  }
+  const [head, rest, extra] = s.split('::');
+  if (extra !== undefined) return null;
+  const h = head ? head.split(':') : [];
+  const r = rest === undefined ? [] : rest ? rest.split(':') : [];
+  if (rest === undefined && h.length !== 8) return null;
+  const groups = rest === undefined ? h : [...h, ...Array(8 - h.length - r.length).fill('0'), ...r];
+  if (groups.length !== 8) return null;
+  const out: number[] = [];
+  for (const g of groups) {
+    const n = parseInt(g, 16);
+    if (!/^[0-9a-f]{1,4}$/.test(g) || Number.isNaN(n)) return null;
+    out.push(n >> 8, n & 255);
+  }
+  return out;
 }
 
 /**
  * Resolución DNS que rechaza direcciones internas. Se usa en la conexión misma (no antes), así un dominio
  * que cambia de IP entre la revisión y la conexión ("DNS rebinding") tampoco llega a la red interna.
  */
-function safeLookup(hostname: string, options: any, callback: (err: Error | null, address?: any, family?: number) => void) {
+export function safeLookup(hostname: string, options: any, callback: (err: Error | null, address?: any, family?: number) => void) {
   dns
     .lookup(hostname, { all: true })
     .then((addrs) => {
@@ -130,6 +179,12 @@ function safeLookup(hostname: string, options: any, callback: (err: Error | null
 
 /** POST firmado a un servicio externo (n8n, Zapier, CRM). Bloquea la red interna (evita SSRF). */
 export async function postWebhook(url: string, body: unknown, secret: string) {
+  const { status } = await postSigned(url, body, secret);
+  if (status < 200 || status >= 300) throw new Error(`El webhook respondió ${status}`);
+}
+
+/** Igual, pero devuelve el código de respuesta (sin lanzar por 4xx/5xx) y permite cabeceras extra. */
+export async function postSigned(url: string, body: unknown, secret: string, extraHeaders: Record<string, string> = {}): Promise<{ status: number }> {
   const u = new URL(url);
   if (!['http:', 'https:'].includes(u.protocol)) throw new Error('Solo se permiten URLs http(s)');
   const host = u.hostname.replace(/^\[|\]$/g, '');
@@ -139,6 +194,8 @@ export async function postWebhook(url: string, body: unknown, secret: string) {
     'content-type': 'application/json',
     'content-length': Buffer.byteLength(payload),
     'x-signature': `sha256=${crypto.createHmac('sha256', secret).update(payload).digest('hex')}`,
+    'x-riverrun-timestamp': String(Math.floor(Date.now() / 1000)),
+    ...extraHeaders,
   };
   const mod = u.protocol === 'https:' ? https : http;
   // Sin redirecciones (una redirección podría apuntar a la red interna) y con tiempo máximo de 10 s.
@@ -148,10 +205,12 @@ export async function postWebhook(url: string, body: unknown, secret: string) {
       resolve(res.statusCode ?? 0);
     });
     req.on('timeout', () => req.destroy(new Error('El webhook no respondió a tiempo')));
+    const deadline = setTimeout(() => req.destroy(new Error('El webhook no respondió a tiempo')), 10_000); // tope total, aunque el servidor gotee bytes
+    req.on('close', () => clearTimeout(deadline));
     req.on('error', reject);
     req.end(payload);
   });
-  if (status < 200 || status >= 300) throw new Error(`El webhook respondió ${status}`);
+  return { status };
 }
 
 /* ------------------------------ Automatizador ------------------------------ */
@@ -202,13 +261,33 @@ export class Automator {
   async handle(e: AutomationEvent): Promise<{ stopAi: boolean; matched: string[] }> {
     const ctx = await this.loadCtx(e.conversationId);
     if (!ctx || ctx.channel.account_active === false) return { stopAi: false, matched: [] };
-    if (e.type === 'handoff' && ctx.settings.notify_team_on_handoff && ctx.channel.type !== 'playground') {
-      await this.alertTeam(ctx.conv.account_id, {
-        title: '🙋 Conversación esperando a una persona',
-        body: `${ctx.contact.name || ctx.contact.push_name || 'Cliente'} (${ctx.channel.name}): ${ctx.conv.handoff_reason || 'transferida'}`,
-        link: `#/conversation/${ctx.conv.id}`,
-        kind: 'handoff',
-      });
+    if (e.type === 'handoff' && ctx.channel.type !== 'playground') {
+      const who = ctx.contact.name || ctx.contact.push_name || 'Cliente';
+      // El aviso lleva el resumen y los datos ya capturados: quien atiende sabe de qué va antes de abrir la conversación.
+      const brief = await briefReport(ctx.conv.id, 1500, { customer: false }).catch(() => '');
+      const alert = { link: `#/conversation/${ctx.conv.id}`, body: `${who} (${ctx.channel.name}): ${ctx.conv.handoff_reason || 'transferida'}${brief ? `\n\n${brief}` : ''}` };
+      const asg = ctx.settings.assignment;
+      let assigned: string | null = null;
+      if (e.byUserId && ctx.conv.assigned_user_id === e.byUserId) {
+        assigned = e.byUserId; // la persona que la tomó ya la atiende: no se reparte ni se le avisa a ella misma
+      } else if (asg.enabled && asg.on_handoff) {
+        // Si ya tenía a alguien asignado (y sigue disponible) se le avisa a esa persona; si no, toca el siguiente turno.
+        const current = ctx.conv.assigned_user_id ? (await assignment.eligibleUsers(ctx.conv.account_id, { roles: ['admin', 'agent'] })).find((u) => u.id === ctx.conv.assigned_user_id) : null;
+        const user = current ?? (await assignment.assignRoundRobin(ctx.conv, { scope: 'handoff', roles: asg.roles, userIds: asg.user_ids, reason: 'transferencia a una persona' }));
+        if (user) {
+          assigned = user.id;
+          ctx.conv.assigned_user_id = user.id;
+          await this.alertTeam(ctx.conv.account_id, { ...alert, title: '📥 Te asignaron una conversación', userIds: [user.id], kind: 'assignment' });
+        }
+      }
+      if (ctx.settings.notify_team_on_handoff && (!assigned || asg.notify_all)) {
+        await this.alertTeam(ctx.conv.account_id, { ...alert, title: '🙋 Conversación esperando a una persona', kind: 'handoff', conversationId: ctx.conv.id });
+      }
+    }
+    // Webhooks de eventos de la cuenta (Zapier, Make, CRM…). El simulador del panel no dispara avisos reales.
+    const publicEvent = publicEventFor(e);
+    if (publicEvent && ctx.channel.type !== 'playground') {
+      dispatchEvent(ctx.conv.account_id, publicEvent, eventData(e, ctx)).catch((err) => logEvent({ level: 'error', source: 'system', message: `Webhooks de eventos: ${err?.message ?? err}`, accountId: ctx.conv.account_id }));
     }
     const rules = await astore.activeAutomations(ctx.conv.account_id, e.type, ctx.conv.chatbot_id);
     const matched: string[] = [];
@@ -261,13 +340,13 @@ export class Automator {
           await astore.scheduleJob({
             account_id: ctx.conv.account_id,
             type: 'automation_send',
-            payload: { automation_id: rule.id, conversation_id: ctx.conv.id, text: a.text, image_id: a.image_id, source, appointment_id: e.appointment?.id ?? null },
+            payload: { automation_id: rule.id, conversation_id: ctx.conv.id, text: a.text, image_id: a.image_id, attachment_id: a.attachment_id, source, appointment_id: e.appointment?.id ?? null },
             run_at: new Date(Date.now() + a.delay_minutes * 60_000),
             dedupe_key: `auto:${rule.id}:${index}:${ctx.conv.id}`,
           });
           return;
         }
-        const r = await this.chat.outbound.send(ctx.conv.id, { text: a.text, imageId: a.image_id || undefined, source, appointment: e.appointment, meta: { automation_id: rule.id } });
+        const r = await this.chat.outbound.send(ctx.conv.id, { text: a.text, imageId: a.image_id || undefined, attachmentId: a.attachment_id || undefined, source, appointment: e.appointment, meta: { automation_id: rule.id } });
         if (!r.sent) await logEvent({ level: 'info', source: 'engine', message: `Regla "${rule.name}": mensaje no enviado (${r.reason})`, accountId: ctx.conv.account_id, conversationId: ctx.conv.id });
         return;
       }
@@ -295,20 +374,50 @@ export class Automator {
         return;
       }
       case 'alert_team': {
-        if (isSim) return this.simulated(ctx, `🔔 Alerta al equipo — ${rule.name}: ${this.render(a.message, ctx, e)}`);
+        if (isSim) return this.simulated(ctx, `🔔 Alerta al equipo${a.round_robin ? ' (a una persona, por turnos)' : ''} — ${rule.name}: ${this.render(a.message, ctx, e)}`);
+        let userIds = a.user_ids.length ? a.user_ids : undefined;
+        if (a.round_robin) {
+          // Un solo aviso por evento, para quien sigue en el turno (entre las personas elegidas o las del rol).
+          const pick = await assignment.nextInTurn(ctx.conv.account_id, `alert:${rule.id}`, await assignment.eligibleUsers(ctx.conv.account_id, { roles: a.roles, userIds: a.user_ids }));
+          if (!pick) return void (await logEvent({ level: 'warn', source: 'engine', message: `Regla "${rule.name}": nadie disponible para el aviso por turnos`, accountId: ctx.conv.account_id, conversationId: ctx.conv.id }));
+          userIds = [pick.id];
+        }
         await this.alertTeam(ctx.conv.account_id, {
           title: `🔔 ${rule.name}`,
           body: this.render(a.message, ctx, e),
           link: `#/conversation/${ctx.conv.id}`,
-          userIds: a.user_ids.length ? a.user_ids : undefined,
+          conversationId: ctx.conv.id,
+          userIds,
           roles: a.roles,
           phones: a.phones,
         });
         return;
       }
+      case 'send_report': {
+        if (isSim) return this.simulated(ctx, `📋 Enviaría el reporte de la conversación — ${rule.name}`);
+        const users = await reportRecipients(ctx.conv.account_id, { userIds: a.user_ids, roles: a.user_ids.length ? undefined : a.roles });
+        const r = await deliverReport(this.chat, ctx.conv.id, { users, emails: a.emails, phones: a.phones, note: a.note ? this.render(a.note, ctx, e) : `Regla "${rule.name}"`, includeTranscript: a.include_transcript, by: `regla "${rule.name}"` });
+        if (!r.ok) await logEvent({ level: 'warn', source: 'engine', message: `Regla "${rule.name}": el reporte no se pudo entregar a nadie`, accountId: ctx.conv.account_id, conversationId: ctx.conv.id });
+        return;
+      }
+      case 'assign': {
+        if (isSim) return this.simulated(ctx, `📥 Asignaría la conversación a la siguiente persona del turno — ${rule.name}`);
+        const user = await assignment.assignRoundRobin(ctx.conv, { scope: `rule:${rule.id}`, roles: a.roles, userIds: a.user_ids, reason: `regla "${rule.name}"` });
+        if (!user) return;
+        ctx.conv.assigned_user_id = user.id;
+        await this.alertTeam(ctx.conv.account_id, { title: '📥 Te asignaron una conversación', body: this.render(a.message, ctx, e), link: `#/conversation/${ctx.conv.id}`, userIds: [user.id], kind: 'assignment' });
+        if (a.take_over && ctx.conv.status !== 'human') {
+          await store.setConversationStatus(ctx.conv.id, 'human', `Asignada a ${user.name || user.email}`);
+          await store.markHandoff(ctx.conv.contact_id, user.id, 'regla');
+          await store.markAllProcessed(ctx.conv.id);
+          ctx.conv.status = 'human';
+        }
+        return;
+      }
       case 'handoff': {
         if (ctx.conv.status === 'human') return;
         await store.setConversationStatus(ctx.conv.id, 'human', a.reason);
+        await store.markHandoff(ctx.conv.contact_id, null, 'regla');
         await store.markAllProcessed(ctx.conv.id);
         ctx.conv.status = 'human';
         ctx.conv.handoff_reason = a.reason;
@@ -332,6 +441,24 @@ export class Automator {
         await store.markAllProcessed(ctx.conv.id);
         await logEvent({ level: 'info', source: 'engine', message: `Asistente en pausa: ${reason}${until ? ` (se reactiva en ${a.hours} h)` : ''}`, accountId: ctx.conv.account_id, conversationId: ctx.conv.id });
         if (depth <= MAX_DEPTH) await this.handle({ type: 'agent_off', conversationId: ctx.conv.id, text: reason, depth });
+        return;
+      }
+      case 'create_task': {
+        // Se cuenta por caracteres (no por unidades de código) para no partir un emoji al recortar.
+        const body = [...this.render(a.body, ctx, e).trim()].slice(0, 1000).join('');
+        if (isSim) return this.simulated(ctx, `📝 Crearía ${a.kind === 'nota' ? 'una nota' : 'un pendiente'}: "${body}" — ${rule.name}`);
+        if (!body) return;
+        // Queda vinculado a la conversación donde se disparó la regla: así se sabe dónde se quedó.
+        await store.insertContactTask({
+          account_id: ctx.conv.account_id,
+          contact_id: ctx.contact.id,
+          conversation_id: ctx.conv.id,
+          kind: a.kind,
+          body,
+          due_on: a.due_days > 0 ? addDays(localParts(new Date(), ctx.settings.timezone).date, a.due_days) : null,
+          created_by: null,
+          created_via: 'regla',
+        });
         return;
       }
       case 'close_conversation':
@@ -365,12 +492,46 @@ export class Automator {
     }
   }
 
+  /**
+   * Tarea programada: foto que el sistema debía enviar al marcarse una etapa/objetivo (o por una regla del negocio) y que no
+   * salió en su momento. Se entrega si sigue vigente: el recorrido no se reinició, la foto no llegó ya, y ninguna persona
+   * ha respondido desde entonces. Si la plataforma la rechaza otra vez, lanza el error para que el programador reintente.
+   */
+  async runDeferredImage(p: { conversation_id: string; image_id: string; reason: string; journey: string | null; at: string; allow_ended: boolean }) {
+    const conv = await store.getConversation(p.conversation_id);
+    if (!conv) return;
+    const skip = (why: string) => logEvent({ level: 'info', source: 'engine', message: `Foto pendiente no enviada (${why})`, accountId: conv.account_id, chatbotId: conv.chatbot_id, conversationId: conv.id, details: { image_id: p.image_id, reason: p.reason } });
+    const journey = conv.flow_started_at ? new Date(conv.flow_started_at).toISOString() : null;
+    if (journey !== p.journey) return skip('el recorrido se reinició');
+    if (conv.status !== 'bot' && !p.allow_ended) return skip('ya no atiende el asistente');
+    const human = await store.lastHumanActivity(conv.id);
+    if (human && human.getTime() > new Date(p.at).getTime()) return skip('una persona respondió');
+    const image = await store.getImage(p.image_id);
+    if (!image || !image.active) return skip('la foto ya no está activa');
+    if (await store.imageSentSince(conv.id, image.id, new Date(p.at))) return; // ya llegó por otro camino desde que se programó
+    if (imageSendWhen(image).once && (await store.sentImageIds(conv.id)).includes(image.id)) return;
+    const r = await this.chat.outbound.send(conv.id, { imageId: image.id, source: 'flow', transactional: true, allowWhenHuman: p.allow_ended, meta: { image_trigger: p.reason, deferred: true } });
+    if (r.sent) {
+      await logEvent({ level: 'info', source: 'engine', message: `Foto enviada por regla (pendiente): ${image.code} (${p.reason})`, accountId: conv.account_id, chatbotId: conv.chatbot_id, channelId: conv.channel_id, conversationId: conv.id });
+    } else if (/rechaz/.test(r.reason)) {
+      throw new Error(`${image.code}: ${r.reason}`);
+    } else {
+      await skip(r.reason);
+    }
+  }
+
   /* ------------------------------ Alertas al equipo ------------------------------ */
 
   /** Notificación en el panel y, a quien lo tenga activado, por WhatsApp. */
-  async alertTeam(accountId: string, o: { title: string; body: string; link?: string; userIds?: string[]; roles?: ('admin' | 'agent')[]; phones?: string[]; kind?: string }) {
+  /**
+   * Avisa al equipo. Un aviso de una conversación (conversationId) o de una cita (staffId) llega siempre a los administradores,
+   * y a un agente solo si tiene esa conversación o cita asignada: lo demás no lo puede abrir.
+   */
+  async alertTeam(accountId: string, o: { title: string; body: string; link?: string; userIds?: string[]; roles?: ('admin' | 'agent')[]; phones?: string[]; kind?: string; conversationId?: string; staffId?: string | null }) {
     const team = await astore.teamMembers(accountId, ['admin', 'agent']);
-    const recipients = o.userIds?.length ? team.filter((u) => o.userIds!.includes(u.id)) : team.filter((u) => (o.roles ?? ['admin', 'agent']).includes(u.role as 'admin'));
+    const picked = o.userIds?.length ? team.filter((u) => o.userIds!.includes(u.id)) : team.filter((u) => (o.roles ?? ['admin', 'agent']).includes(u.role as 'admin'));
+    const owner = o.conversationId ? await astore.assigneeOf(o.conversationId) : o.staffId;
+    const recipients = o.conversationId || o.staffId !== undefined ? team.filter((u) => u.role === 'admin' || (picked.includes(u) && u.id === owner)) : picked;
     await astore.notifyUsers(accountId, recipients.map((u) => u.id), { title: o.title, body: o.body, link: o.link, kind: o.kind });
     const link = o.link ? `\n${config.publicBaseUrl}/${o.link}` : '';
     const phones = new Set([...recipients.filter((u) => u.notify_whatsapp && u.phone).map((u) => u.phone), ...(o.phones ?? []).map((p) => p.replace(/\D/g, '')).filter(Boolean)]);
@@ -403,7 +564,16 @@ export class Automator {
     }
     if (oo.enabled && contact.opted_out && norm && oo.resume_keywords.some((k) => normalize(k) === norm)) {
       await astore.setOptOut(contact.id, false);
+      await astore.setConsent(contact.id, true, 'keyword'); // volver a pedir mensajes es aceptarlos
       await this.chat.outbound.send(conv.id, { text: oo.resume_message, source: 'opt_out', transactional: true, allowWhenHuman: true });
+      return true;
+    }
+    // Consentimiento: escribir "ACEPTO" (u otra frase configurada) autoriza recibir promociones.
+    const co = settings.consent;
+    if (norm && !contact.opted_out && !contact.consent_at && co.opt_in_keywords.some((k) => normalize(k) === norm)) {
+      await astore.setConsent(contact.id, true, 'keyword');
+      if (co.opt_in_message.trim()) await this.chat.outbound.send(conv.id, { text: co.opt_in_message, source: 'opt_out', transactional: true, allowWhenHuman: true });
+      await logEvent({ level: 'info', source: 'engine', message: 'El cliente aceptó recibir promociones', accountId: conv.account_id, conversationId: conv.id });
       return true;
     }
     // Secuencias que se detienen cuando el cliente responde.
@@ -529,9 +699,10 @@ export class Automator {
   /** Intenciones que la IA debe detectar (de las reglas activas). */
   async intentsFor(accountId: string, chatbotId: string | null) {
     const rules = await astore.activeAutomations(accountId, 'intent', chatbotId);
-    const seen = new Map<string, string>();
-    for (const r of rules) if (r.trigger.type === 'intent' && !seen.has(r.trigger.intent)) seen.set(r.trigger.intent, r.trigger.description);
-    return [...seen].map(([intent, description]) => ({ intent, description }));
+    // Una intención por identificador normalizado: "Queja" y "queja" son la misma.
+    const seen = new Map<string, { intent: string; description: string }>();
+    for (const r of rules) if (r.trigger.type === 'intent' && !seen.has(normalize(r.trigger.intent))) seen.set(normalize(r.trigger.intent), { intent: r.trigger.intent, description: r.trigger.description });
+    return [...seen.values()];
   }
 
   /* ------------------------------ Secuencias ------------------------------ */
@@ -587,7 +758,7 @@ export class Automator {
     }
     const step = seq.steps[payload.step];
     if (step && conditionsMatch(step.conditions, ctx)) {
-      const r = await this.chat.outbound.send(ctx.conv.id, { text: step.text, imageId: step.image_id || undefined, source: 'sequence', meta: { sequence_id: seq.id, step: payload.step } });
+      const r = await this.chat.outbound.send(ctx.conv.id, { text: step.text, imageId: step.image_id || undefined, attachmentId: step.attachment_id || undefined, source: 'sequence', meta: { sequence_id: seq.id, step: payload.step } });
       if (!r.sent) return stop(r.reason);
     }
     const next = payload.step + 1;
@@ -609,11 +780,11 @@ export class Automator {
   }
 
   /** Tarea programada: mensaje de una regla con espera. */
-  async runDelayedSend(payload: { automation_id: string; conversation_id: string; text: string; image_id: string; source: string; appointment_id: string | null }) {
+  async runDelayedSend(payload: { automation_id: string; conversation_id: string; text: string; image_id: string; attachment_id?: string; source: string; appointment_id: string | null }) {
     const rule = await astore.getAutomation(payload.automation_id);
     if (!rule || !rule.active) return;
     const appointment = payload.appointment_id ? await astore.getAppointment(payload.appointment_id) : null;
-    const r = await this.chat.outbound.send(payload.conversation_id, { text: payload.text, imageId: payload.image_id || undefined, source: payload.source, appointment, meta: { automation_id: rule.id } });
+    const r = await this.chat.outbound.send(payload.conversation_id, { text: payload.text, imageId: payload.image_id || undefined, attachmentId: payload.attachment_id || undefined, source: payload.source, appointment, meta: { automation_id: rule.id } });
     if (!r.sent) await logEvent({ level: 'info', source: 'engine', message: `Regla "${rule.name}": mensaje programado no enviado (${r.reason})`, conversationId: payload.conversation_id, accountId: rule.account_id });
   }
 }

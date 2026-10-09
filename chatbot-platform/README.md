@@ -36,20 +36,67 @@ Chat web (widget)    ┘    │                             │
 
 ## Instalación en un VPS (Docker)
 
-Requisitos: VPS con Docker y Docker Compose (2 GB de RAM es suficiente para empezar).
+Requisitos: un VPS con Linux (2 GB de RAM alcanzan para empezar). Si no tiene Docker, el instalador ofrece instalarlo.
 
 ```bash
 git clone <este repo> && cd Riverrun/chatbot-platform
-cp .env.example .env
-nano .env        # contraseñas, EVOLUTION_API_KEY, OPENROUTER_API_KEY, ADMIN_PASSWORD, SESSION_SECRET
-docker compose up -d --build
+./riverrun install
 ```
 
-- El panel queda en `http://127.0.0.1:3000` del VPS. Para abrirlo desde tu computadora: `ssh -L 3000:127.0.0.1:3000 usuario@tu-vps` y visita `http://localhost:3000`.
-- **Con dominio y HTTPS** (necesario para Telegram, Messenger, Instagram y el chat web): apunta un dominio al VPS, define `DOMAIN` y `SECURE_COOKIES=true` en `.env` y ejecuta `docker compose --profile https up -d --build`. Caddy obtiene el certificado automáticamente. La URL pública (`PUBLIC_BASE_URL`, por defecto `https://$DOMAIN`) es la que usan esas plataformas para enviar mensajes y descargar imágenes.
-- Al arrancar se crea el **superadministrador** con `ADMIN_USER` (tu correo) y `ADMIN_PASSWORD`. Si olvidas la contraseña, cámbiala en `.env` y reinicia.
-- Evolution API solo escucha en `127.0.0.1:8080` (no queda expuesta a internet). El backend y Evolution se hablan por la red interna de Docker (`WEBHOOK_BASE_URL=http://backend:3000`).
-- Se recomienda fijar la versión de Evolution con `EVOLUTION_IMAGE=evoapicloud/evolution-api:<versión>`.
+El instalador hace las preguntas mínimas (dominio, tu correo y la clave de OpenRouter), **genera solo todas las contraseñas y claves**, levanta los servicios, espera a que respondan y te imprime la dirección del panel, el usuario y la contraseña. También se puede instalar sin preguntas con variables (`RIVERRUN_DOMAIN`, `RIVERRUN_ADMIN_EMAIL`, `OPENROUTER_API_KEY`, `SMTP_URL`) y `--non-interactive`.
+
+Un solo comando para todo lo que sigue:
+
+| Comando | Qué hace |
+|---|---|
+| `./riverrun status` | Servicios, salud, último respaldo y si hay versión nueva |
+| `./riverrun update` | Respalda, descarga la versión nueva, la construye y comprueba que quedó sana; **si no, vuelve sola a la anterior** |
+| `./riverrun backup` | Respaldo inmediato (también corre solo cada noche) |
+| `./riverrun restore [archivo]` | Restaura el último respaldo, o un archivo (por ejemplo en un servidor nuevo) |
+| `./riverrun logs [servicio]` | Registros en vivo |
+| `./riverrun restart` | Aplica cambios hechos a `.env` |
+
+- Con dominio, `install` activa HTTPS automático (Caddy). Antes apunta el dominio (registro DNS tipo A) a la IP del servidor y abre los puertos 80 y 443. HTTPS es necesario para Telegram, Messenger, Instagram y el chat web.
+- Sin dominio, el panel queda en `http://127.0.0.1:3000` del VPS; desde tu computadora: `ssh -L 3000:127.0.0.1:3000 usuario@tu-vps` y visita `http://localhost:3000`.
+- Al arrancar se crea el **superadministrador** (tu correo). Si olvidas la contraseña, cámbiala en `.env` y `./riverrun restart`.
+- Evolution API solo escucha en `127.0.0.1:8080` (no queda expuesta a internet). Se recomienda fijar su versión con `EVOLUTION_IMAGE=evoapicloud/evolution-api:<versión>`.
+- Instalación manual (sin el script): `cp .env.example .env`, edita los valores y `docker compose up -d --build`.
+
+## Respaldos
+
+Un contenedor (`backup`) respalda **cada noche** (03:30 UTC) lo que no se puede perder: la base del chatbot, la base de Evolution, las fotos subidas y las sesiones de WhatsApp. Cada respaldo es **un solo archivo cifrado** (AES-256 con `BACKUP_PASSPHRASE`, que `install` genera y te pide guardar fuera del servidor).
+
+- **Se verifica solo:** después de crear cada respaldo se abre, se comprueban sus sumas y se **restaura en una base temporal**. Si algo falla, el panel (Sistema) y las alertas lo avisan.
+- **Retención:** 7 diarios, 4 semanales y 6 mensuales (configurable con `BACKUP_KEEP_*`).
+- **Copia en la nube (recomendado):** si el servidor se pierde, los respaldos locales también. Define `BACKUP_S3_BUCKET`, `BACKUP_S3_ENDPOINT`, `BACKUP_S3_KEY` y `BACKUP_S3_SECRET` (Backblaze B2, Cloudflare R2, Wasabi, AWS S3…) y cada respaldo se copia ahí.
+- **Restaurar:** `./riverrun restore` (detiene el sistema, restaura, lo vuelve a levantar). En un servidor nuevo: `./riverrun install`, baja el archivo de la nube y `./riverrun restore ruta/riverrun-….tar.enc` con la misma `BACKUP_PASSPHRASE`. Antes de restaurar se hace un respaldo de seguridad de lo que hubiera.
+- Pruebas automáticas del ciclo completo (respaldar → destruir → restaurar → detectar archivos dañados): `scripts/test-backup.sh`.
+
+## Cobro automático (Stripe y Mercado Pago)
+
+Los clientes contratan y pagan solos desde **Ajustes → Mi plan y pagos**; tú no cobras ni activas nada a mano.
+
+1. **Claves:** en `.env` pon `STRIPE_SECRET_KEY` + `STRIPE_WEBHOOK_SECRET` y/o `MERCADOPAGO_ACCESS_TOKEN` + `MERCADOPAGO_WEBHOOK_SECRET`; `./riverrun restart`. Cada proveedor se activa solo con sus dos claves.
+2. **Webhooks:** en el panel, **Planes y cobro** muestra la dirección exacta que debes registrar en cada proveedor (`/webhook/billing/stripe` y `/webhook/billing/mercadopago`) y qué eventos activar.
+3. **Planes:** ahí mismo creas tus planes (nombre, precio mensual, moneda). Para Stripe pega el ID del precio (`price_…`) que creaste en su panel; un plan sin él solo se ofrece con Mercado Pago.
+
+Qué pasa solo: el pago **activa** la cuenta (sale de prueba o de pausa) y le asigna el plan; la renovación mensual la cobra el proveedor; si un cobro **falla**, la cuenta sigue funcionando `BILLING_GRACE_DAYS` (5 por defecto) mientras se avisa por correo y panel, y luego se **pausa sola**; al pagar, se **reactiva sola**. Al cancelar, el acceso dura hasta el final del periodo ya pagado. El cliente cambia su tarjeta y ve sus facturas en la página de Stripe ("Administrar pago") o cancela desde el panel. Si reactivas a mano una cuenta pausada por pago, el sistema respeta tu decisión. Los avisos de los proveedores se verifican con su firma, se consultan de nuevo al proveedor (llegan repetidos o desordenados sin problema) y las cuentas activadas a mano sin suscripción no se tocan. Nunca pasan datos de tarjeta por tu servidor: el pago ocurre en la página de Stripe / Mercado Pago.
+
+## Monitoreo y alertas
+
+- `GET /health` (el servicio vive) y `GET /health/ready` (salud completa: **503** si algo esencial falla; sin detalles internos) para cualquier monitor externo.
+- **Revisión cada minuto** de: base de datos, Evolution (y cuántos WhatsApp están desconectados), tareas programadas atrasadas, IA (clave y errores recientes), **antigüedad y éxito del último respaldo** (y su copia en la nube) y espacio en disco.
+- **Alertas:** un fallo avisa al segundo minuto seguido (evita falsas alarmas), se repite cada 6 h y avisa cuando se recupera. Llegan por correo (`SUPERADMIN_EMAIL` + SMTP) y, si quieres, a un webhook (`ALERT_WEBHOOK_URL`: Slack, Discord, ntfy.sh…).
+- **Latido externo (`HEARTBEAT_URL`):** el sistema visita esa dirección cada 5 minutos mientras está sano (healthchecks.io tiene plan gratuito; Uptime Kuma también). Si dejan de llegar, *ellos* te avisan, incluso si el servidor completo cayó, algo que el sistema no puede avisar por sí mismo.
+- **Panel → Sistema** (superadmin): todo lo anterior en una pantalla, con versión, tiempo encendido, errores de 24 h, WhatsApp por estado y suscripciones.
+
+## Actualizaciones
+
+`./riverrun update` hace, en orden: comprobar que no hay cambios locales → **respaldo** (si falla, no sigue) → descargar la versión → construir → levantar → esperar a que `/health` y `/health/ready` estén sanos. Si la versión nueva no queda sana, **vuelve sola** al código y a la imagen anteriores. Las migraciones de base de datos se aplican solas al arrancar y son aditivas, por lo que volver atrás es seguro; en el improbable caso contrario, `./riverrun restore latest`. `./riverrun status` avisa cuando hay cambios nuevos y el panel (Sistema) muestra la versión instalada. `scripts/test-cli.sh` prueba este flujo (actualización buena, versión enferma con vuelta atrás, sin respaldo, con cambios locales).
+
+## Integración continua
+
+`.github/workflows/ci.yml` corre en cada pull request y en `main`: revisión de tipos, sintaxis del panel, **todas las pruebas** (contra PostgreSQL real), auditoría de dependencias, `shellcheck` de los scripts, la prueba de respaldo y restauración de punta a punta, la del flujo de actualización, la validación del `docker-compose` y la construcción de las imágenes.
 
 ## IA con OpenRouter
 
@@ -66,6 +113,10 @@ OPENROUTER_TRANSCRIPTION_MODEL=google/gemini-2.5-flash
 `OPENAI_API_KEY` sigue funcionando como variable de compatibilidad; una clave existente de OpenRouter puede quedarse ahí. Las variables `OPENROUTER_*` tienen prioridad sobre las equivalentes `OPENAI_*`. Docker transmite la clave, la URL y los modelos al backend. Después de actualizar y configurar, ejecuta `docker compose up -d --build backend` para recrearlo con los nuevos valores. No basta reiniciar el proceso si cambió el entorno del contenedor.
 
 Los modelos antiguos de cada bot, como `gpt-4.1-mini`, se envían como `openai/gpt-4.1-mini` sin modificar su configuración guardada. Para otros proveedores usa el ID completo de OpenRouter. El modelo del agente debe admitir JSON Schema: se solicita `provider.require_parameters=true` para evitar rutas que ignoren este formato. Los resúmenes usan el modelo de resumen; las notas de voz, si se habilitan, se envían como `input_audio` al modelo de audio, que debe aceptar su formato (WhatsApp suele enviar OGG/Opus).
+
+**Modelos de respaldo.** `OPENROUTER_FALLBACK_MODELS=google/gemini-2.5-flash,anthropic/claude-haiku-4.5` (máximo 2) hace que OpenRouter pruebe el siguiente modelo si el principal falla, está saturado o rechaza la petición; cada asistente puede definir los suyos en *Instrucciones → Opciones avanzadas*. Los modelos de respaldo deben soportar salidas estructuradas (JSON Schema). El consumo se registra con el modelo que realmente respondió. El panel (**Sistema**) consulta el catálogo público de OpenRouter y avisa si algún modelo configurado (global, de respaldo o de un asistente) **ya no existe**, antes de que los clientes se queden sin respuestas.
+
+**Elegir modelo con datos, no a ojo.** El modelo por defecto no se cambia sin medirlo. Las evaluaciones en vivo (`evals/`) están bloqueadas a propósito a `gpt-4.1-mini` para controlar el gasto: probar otro modelo ahí exige primero revisar su precio en `evals/live-budget.mjs`. Mientras tanto, compara con un asistente duplicado que use el candidato (*Asistentes → Duplicar*), las mismas conversaciones en **Probar** y el costo y la latencia por respuesta en **Consumo de IA**. Procedimiento completo en [escalar y modelos](docs/escalar-y-modelos.md).
 
 El servidor necesita acceso HTTPS a `openrouter.ai`, una clave válida y saldo. Los errores de autenticación, saldo o modelo se muestran sin devolver el cuerpo técnico ni fragmentos de la clave. Para mantener OpenAI directo, configura explícitamente `OPENROUTER_BASE_URL=https://api.openai.com/v1`, una clave de OpenAI y los modelos sin prefijo.
 
@@ -114,6 +165,8 @@ npm run user:master -- diegoa.trevio@gmail.com
 
 En una imagen de producción ya compilada: `docker compose exec backend node dist/cli/grant-master.js diegoa.trevio@gmail.com`. El comando usa la base de datos configurada y no cambia la contraseña. El registro público nunca concede acceso maestro por el correo enviado.
 
+**Conectar WhatsApp (QR).** Tiene su propio botón en el menú (**📱 Conectar WhatsApp**, `#/conectar`), un mosaico en Ajustes y un aviso amarillo en todas las pantallas mientras el número no esté conectado. La página crea el canal si no existe, muestra el QR (o el código "Con mi número"), confirma la conexión, permite enviar un mensaje de prueba y desvincular para conectar otro número; con varios números lista cada uno con su estado.
+
 **Navegación y perfiles.** El menú agrupa todas las herramientas en cuatro apartados: Asistentes y conexiones, Conversaciones, Operación y Configuración. En *Asistentes y conexiones → WhatsApp y otros canales*, cada cuenta puede crear hasta **cuatro perfiles de WhatsApp**, cada uno con instancia, QR y webhook propios. Cada perfil elige un asistente de su misma cuenta; varios perfiles pueden compartirlo. *Ver QR* abre la vinculación del teléfono elegido. Las conversaciones siguen separadas por canal. Desactivar o desconectar un perfil conserva su lugar; eliminarlo libera uno y elimina sus conversaciones. Los otros tipos de canal no consumen estos lugares. Las cuentas que ya tengan más de cuatro conservan sus perfiles, pero no pueden crear otros hasta quedar por debajo del límite.
 
 **WhatsApp por empresa, aislado.** Todas las empresas comparten tu servidor de Evolution, pero cada canal tiene su propia instancia (su sesión de WhatsApp, su QR, su webhook secreto). El nombre de la instancia lo genera el servidor y el cliente **no puede** cambiarlo, ni apuntar su canal a otro servidor de Evolution, ni ver tu `EVOLUTION_API_KEY`. Solo el superadministrador puede asignar a un canal otro servidor de Evolution (útil para repartir clientes grandes) y, en ese caso, debe darle su propia llave: la llave global nunca se envía a otra URL. Al borrar un canal o una cuenta, su instancia se cierra y se elimina de Evolution.
@@ -146,9 +199,10 @@ Al cambiar una contraseña, las demás sesiones abiertas de ese usuario se cierr
 1. **Cuentas** (superadministrador): crea la cuenta del cliente y, opcionalmente, su primer administrador.
 2. **Asistentes → + Nuevo asistente**: elige el nombre y tipo de negocio. La configuración tiene cuatro secciones:
    - **Instrucciones**: escribe cómo debe atender, qué debe preguntar y cuál es su objetivo. El estilo y las opciones avanzadas quedan plegados.
-   - **Conocimiento**: agrega productos, precios, horarios y preguntas frecuentes.
+   - **Conocimiento**: agrega productos, precios, horarios y preguntas frecuentes, o usa **⚡ Llena todo por mí**: pega la dirección de tu página (o un Google Sheets compartido), sube un PDF, una foto del menú o un CSV, o pega texto. La IA lo ordena en secciones, tú lo revisas y lo guardas; **🔄 Volver a sincronizar** lo actualiza desde la misma página. Solo se usa lo que está en la fuente (no inventa) y las páginas internas están bloqueadas. Excel y Word: guárdalos como CSV/PDF.
    - **Fotos**: sube imágenes y explica cuándo enviarlas; las reglas de envío son opcionales.
    - **Probar**: conversa como un cliente y revisa los datos guardados automáticamente. Los detalles técnicos de cada respuesta quedan plegados. Funciona aunque el asistente esté apagado.
+   Quien administra su propia cuenta ve un **menú simple** (Conversaciones, Mi asistente, Probar mi asistente, Agenda, Ajustes y Notificaciones); el resto vive en **Ajustes** o en «☰ Mostrar todas las opciones». El asistente de **Primeros pasos** tiene 4 pasos (negocio → asistente → prueba → WhatsApp); las fotos son opcionales y se agregan en el paso de prueba.
 3. **Canales → Nuevo canal**: elige la plataforma, asígnale el asistente y sigue las instrucciones de conexión (abajo).
 4. En **Instrucciones**, marca **Asistente encendido** y guarda.
 
@@ -166,7 +220,9 @@ Cada ajuste del panel indica si está **✓ Garantizado** (el sistema lo revisa 
 | Datos del cliente con formato válido · agenda solo con horarios reales | |
 | Recorrido: el objetivo solo cuenta con los datos "importantes" · acción al cumplirlo (pasar a una persona o avisar), una vez | |
 
-**Recorrido de la conversación** (Opciones avanzadas): objetivo, etapas y qué hacer al cumplirlo. En cada turno la IA indica en qué etapa queda y si se cumplió el objetivo; el sistema lo guarda y se lo recuerda en el siguiente turno, junto con los datos importantes que faltan, para que no repita etapas ni preguntas. El objetivo se acepta solo si ya están todos los datos marcados como "Importante"; entonces, una sola vez por conversación, el sistema **pasa la conversación a una persona** o **avisa al equipo** (según lo elegido) y dispara las reglas "Se cumple el objetivo de la conversación". La etapa y el objetivo se ven en cada conversación; al cerrarla y que el cliente vuelva a escribir, el recorrido empieza de nuevo. El asistente conoce el horario de atención y la zona horaria de **Horario y ajustes** (sabe si en este momento está abierto).
+**Reglas generales del agente.** Todo asistente sigue las mismas reglas de seguridad y conversación, aplique o no el negocio: emergencias pasan a una persona con un mensaje fijo, los contestadores no se contestan, los bucles se pausan, los datos sensibles no se guardan y lo que el asistente promete le llega al equipo. Qué se garantiza, qué depende del modelo y cómo se prueba: [docs/agente.md](docs/agente.md).
+
+**Recorrido de la conversación** (Opciones avanzadas): objetivo, etapas y qué hacer al cumplirlo. En cada turno la IA indica en qué etapa queda y si se cumplió el objetivo; el sistema lo guarda y se lo recuerda en el siguiente turno, junto con los datos importantes que faltan, para que no repita etapas ni preguntas. El objetivo se acepta solo si ya están todos los datos marcados como "Importante". Cuando se marca (una sola vez por recorrido) el sistema, en este orden: envía las fotos de objetivo, **genera el resumen y el análisis**, **pasa la conversación a una persona** o **avisa al equipo** (según lo elegido) —el aviso del panel y de WhatsApp lleva el resumen, los datos confirmados y los pendientes— y dispara las reglas «Se cumple el objetivo» (con el reporte ya listo, por ejemplo para `Enviar reporte`) y los webhooks `goal.completed` / `conversation.handoff`, que incluyen resumen, análisis y datos. Cada cambio de etapa dispara la regla «El recorrido llega a una etapa» (una etapa concreta o cualquiera) y envía las fotos de esa etapa. Las fotos que no cupieron en la respuesta o que la plataforma rechazó se reintentan solas (ver `docs/image-delivery.md`). La etapa y el objetivo se ven en cada conversación; al cerrarla y que el cliente vuelva a escribir, el recorrido empieza de nuevo (también las fotos «una sola vez»). El asistente conoce el horario de atención y la zona horaria de **Horario y ajustes** (sabe si en este momento está abierto).
 
 Consejo: si una regla del negocio tiene cifra (precio, descuento, anticipo), escríbela también en **Conocimiento**; así queda garantizada por la verificación de datos.
 
@@ -207,10 +263,11 @@ Menú **Automatización** (administradores). Todo corre sobre tareas programadas
 | Pasa a una persona | | **Webhook** a otro sistema (n8n, Zapier, CRM), firmado con `X-Signature` |
 | Cita agendada / cancelada | | |
 | Se da de baja | Asistente activo / en pausa | Pausar al asistente (con reactivación opcional en N horas) / activarlo |
-| Se cumple el objetivo | | |
+| Se cumple el objetivo | | **Enviar reporte de la conversación** (resumen, análisis y datos; panel, correo y WhatsApp) |
+| **El recorrido llega a una etapa** (una concreta o cualquiera) | | Asignar a alguien del equipo (por turnos) |
 | El asistente se desactiva | | |
 
-- **Plantillas rápidas:** bienvenida, fuera de horario, palabra urgente → alerta, seguimiento, queja → persona, listo para comprar → ventas, correo → CRM, palabra → pausar / activar al asistente, agradecer cita.
+- **Plantillas rápidas:** bienvenida, fuera de horario, palabra urgente → alerta, seguimiento, queja → persona, listo para comprar → ventas, correo → CRM, palabra → pausar / activar al asistente, agradecer cita, objetivo cumplido → reporte al equipo.
 - **🧪 Probar palabras:** escribe un mensaje de ejemplo y ve qué reglas se activarían (✅/❌ con el motivo), sin IA y sin enviar nada.
 - **Detener la IA:** una regla puede impedir que la IA responda el mensaje que la disparó.
 - **Variables en los textos:** `{{nombre}}`, `{{cliente}}`, `{{telefono}}`, `{{negocio}}`, `{{mensaje}}`, `{{link}}`, `{{dato.CAMPO}}`, `{{cita.servicio}}`, `{{cita.fecha}}`, `{{cita.hora}}`, `{{cita.lugar}}`.
@@ -282,7 +339,47 @@ Menú **Agenda**, para administradores y agentes.
 - Detalle con el historial (imágenes incluidas), datos del cliente editables, notas y resumen de memoria.
 - **Tomar conversación** (el bot deja de responder), **responder manualmente** desde el panel, **devolver al bot** (los mensajes que llegaron mientras atendía una persona no se contestan en automático) y **borrar memoria**.
 
+- **Exportar a CSV**: menú **Exportar** en Conversaciones (contactos, conversaciones y mensajes; solo administradores, queda en el registro).
+
+## Planes y límites
+
+Cada plan define mensajes del mes, canales, usuarios y asistentes (0 o vacío = sin límite); la prueba gratuita usa `TRIAL_MAX_*`, y el superadmin puede dar una excepción por cuenta (**Cuentas → Límites**). Al llegar al 80 % y al 100 % de mensajes se avisa al administrador; al agotarse, el asistente deja de responder solo (sin llamar a la IA) hasta el mes siguiente o hasta subir de plan, y una campaña mayor al cupo restante no se lanza. El simulador no gasta cupo.
+
+## Varios números de WhatsApp
+
+Una cuenta puede conectar varios WhatsApp. Las **campañas** pueden salir de varios números a la vez (cada uno con su ritmo y su tope diario, **Ajustes → Horario y avisos**), y un **enlace de reparto** (`/wa/<token>`, en Canales) manda a cada cliente nuevo al número conectado menos ocupado o por turnos.
+
+## Cumplimiento
+
+- **Consentimiento**: las campañas y secuencias solo escriben a contactos con consentimiento (se registra la fecha y el origen; por palabra clave de alta, casilla en el contacto o al reanudar). Se puede desactivar por cuenta.
+- **Baja**: la palabra de baja ("STOP") ya existía; los mensajes promocionales llevan un pie configurable con las instrucciones.
+- **Retención**: borrado automático de mensajes y de contactos inactivos tras los días que elijas (cada 6 horas).
+- **Derechos del titular**: descarga de todos los datos de un contacto (JSON) y borrado definitivo desde el panel o `DELETE /api/contacts/:id`.
+- Los términos y el aviso de privacidad se enlazan desde el registro (`TERMS_URL`, `PRIVACY_URL`).
+
+## Crear un agente sin escribir un prompt
+
+En **Asistentes → + Nuevo asistente** hay un asistente de cuatro pasos: tu empresa, hasta dónde llega el agente (solo filtrar, agendar citas, atender o tomar pedidos; datos que pide; límites; cómo suena), tus documentos (web, PDF, foto, CSV o texto) y una revisión final. De ahí se genera solo el prompt con los lineamientos de siempre (natural, sin dar información de más, sin inventar y sin salirse de su papel), las reglas, el conocimiento y, si agenda, el servicio de la agenda. Detalle en [docs/agent-creation.md](docs/agent-creation.md).
+
+## Asignación por turnos (round robin) y avisos internos
+
+- **Reparto automático** (Automatización → Ajustes → *Reparto de conversaciones por turnos*): cada conversación que pasa a una persona se asigna a la siguiente del turno entre los roles (y, si quieres, solo entre las personas que elijas). Solo esa persona recibe la notificación en el panel (y por WhatsApp si la tiene activada); puedes avisar además a todo el equipo. El turno recuerda a quién le tocó la última vez, así que si alguien se desactiva o se ausenta no se descompone, y es seguro con varias réplicas.
+- **Disponibilidad**: cada persona se marca *disponible / fuera de turno* en **Mi perfil** (o un administrador en **Usuarios**) y se salta en el reparto. Si nadie está disponible, la transferencia avisa a todo el equipo como antes.
+- **En las reglas**: la acción *Asignar a alguien del equipo (por turnos)* (con opción de pasar la conversación a una persona) y la opción *avisar a una sola persona, por turnos* en *Alertar al equipo*.
+- **A mano**: en cada conversación se ve quién atiende; cualquiera se la queda ("Quedármela"), y un administrador la pasa a una persona o a la siguiente del turno. Quien toma una conversación sin dueña se queda con ella. La lista filtra *Asignadas a mí / Sin asignar*.
+- **Avisos internos manuales**: en **Notificaciones → Enviar un aviso interno** (administradores) a todo el equipo, a un rol, a personas o a quien toque por turnos; también por API (`POST /api/v1/notifications`, `GET /api/v1/team`, `PUT /api/v1/conversations/:id/assign`) para que Zapier, Make o tu CRM avisen al equipo.
+
+## Integraciones
+
+Canal de **correo electrónico** (IMAP/SMTP, Gmail y Outlook), inicio de sesión con Google, Google Calendar, webhooks firmados (Zapier, Make, n8n) y API v1 con llaves y especificación OpenAPI: ver [docs/integraciones.md](docs/integraciones.md).
+
+## Marca blanca
+
+El superadmin crea **marcas** (**Marca blanca** en el menú) con nombre, color, logo, correo de soporte y, opcionalmente, un dominio propio (`panel.miagencia.com`). Se asigna a cada cuenta (**Cuentas → Marca**) y quien se registre desde ese dominio queda con ella. Cambia el nombre, el color y el logo del panel, del inicio de sesión y del registro, y el nombre del remitente y los enlaces de los correos. Para un dominio propio, el cliente apunta un registro DNS al servidor y Caddy genera el certificado HTTPS al primer acceso (solo para dominios registrados). Es marca blanca para **tus** clientes: no hay todavía un panel donde un revendedor administre sus propias cuentas (eso sigue siendo del superadmin).
+
 ## Cómo decide y valida (el núcleo)
+
+> **Nuevo — afirmaciones sin números.** Además de precios, teléfonos y enlaces, el sistema revisa lo que la respuesta *afirma que el negocio tiene o hace* ("sí tenemos alberca", "aceptamos mascotas", "incluye desayuno"): eso debe estar en la información cargada (o ser un sinónimo: alberca ≈ piscina, estacionamiento ≈ parking…). Lo que el cliente haya dicho **no** cuenta como respaldo, ni lo que el propio bot dijo antes. Si no está, se pide corregir y, si insiste, sale el mensaje seguro. Tres modos por asistente (*Reglas → No afirmar lo que no esté en tu información*): **rápido** (sin costo, por defecto), **estricto** (una segunda IA barata también juzga la respuesta; se registra como consumo `verify`) y **sin revisar**. Es deliberadamente conservador: prefiere dejar pasar una paráfrasis a bloquear una buena respuesta.
 
 La IA responde siempre con este JSON (structured outputs con JSON Schema vía OpenRouter):
 
@@ -344,13 +441,18 @@ src/
     validator.ts   validación y saneamiento de la propuesta
     engine.ts      pipeline: IA → validar → reintentar → ejecutar → memoria
     memory.ts      resumen acumulado de la conversación
-    queue.ts       cola por conversación (agrupar mensajes, sin respuestas cruzadas)
+    queue.ts       cola por conversación (agrupar mensajes, sin respuestas cruzadas) + arrendamiento en PostgreSQL (varios procesos)
+    claims.ts      verificación de afirmaciones sin números ("sí tenemos alberca") y juez de IA opcional
     transport.ts   interfaz de salida común y simulador
     text.ts        normalización, extracción de hechos, formato WhatsApp / texto plano
   automation/      reglas, secuencias, campañas, agenda, alertas, envíos proactivos y programador de tareas
   channels/        un adaptador por plataforma (whatsapp, telegram, meta, webchat): webhook, firma, envío, conexión
   evolution/       cliente de Evolution API v2 y parser del webhook
-  ai/provider.ts   cliente compatible con OpenRouter (chat, resúmenes y audio)
+  ai/provider.ts   cliente compatible con OpenRouter (chat, resúmenes, audio, modelos de respaldo)
+  ai/models.ts     catálogo de OpenRouter: avisa de modelos configurados que ya no existen
+  billing/         cobro automático: Stripe y Mercado Pago (sin SDK), planes y estado de suscripciones
+  monitor.ts       salud del sistema, alertas, latido externo y estado para el panel
+  knowledge-import.ts   importar conocimiento desde web, PDF, foto, CSV o texto
   routes/          API del panel (cuentas, usuarios, chatbots, canales, conversaciones, primeros pasos, consumo) y rutas públicas (registro, webhooks, chat web, imágenes)
   templates/       plantillas de chatbot por tipo de negocio (asistente de primeros pasos)
   lifecycle.ts     fin de pruebas, avisos de gasto y de WhatsApp desconectado
@@ -359,7 +461,9 @@ src/
   auth.ts          usuarios, contraseñas (scrypt) y sesiones
   store/           acceso a PostgreSQL
 migrations/        esquema SQL
-public/            panel web (HTML/CSS/JS sin build) y widget del chat web (widget.js)
+public/            panel web: index.html + app.js (entrada) + js/*.js (20 módulos ES nativos, sin build: core, shell, bot, conversations, channels, automation, billing, …),
+                   styles.css, widget del chat web (widget.js) y la guía del cliente (ayuda.html)
+scripts/           check-frontend (imports del panel), test-backup, test-cli
 test/              pruebas
 ```
 
@@ -368,11 +472,11 @@ test/              pruebas
 Panel (bajo `/api`, con sesión por cookie; todo se limita a la cuenta del usuario):
 
 - Sesión: `POST /api/login`, `GET /api/me`, `PUT /api/me/password`, `POST /api/me/resend-verification`
-- Primeros pasos: `GET /api/onboarding`, `POST /api/onboarding/{business,assistant,step,whatsapp}`
+- Primeros pasos: `GET /api/onboarding`, `POST /api/onboarding/{business,assistant,import,step,whatsapp}` (`import` lee una web, archivo o texto y devuelve la propuesta de conocimiento)
 - Consumo de IA: `GET /api/usage?month=AAAA-MM`, `/api/ai-prices` (superadmin)
 - Cuentas: `/api/accounts`
 - Usuarios: `/api/users`
-- Chatbots: `/api/chatbots`, `/:id/duplicate`, `/:id/knowledge`, `/:id/images`, `/:id/playground`, `/:id/test-message` (probador de palabras: reglas, activadores y desactivadores, sin IA)
+- Chatbots: `/api/chatbots`, `/:id/duplicate`, `/:id/knowledge` (`POST /:id/knowledge/import`: propuesta, o guardado con `save`), `/:id/images`, `/:id/playground`, `/:id/test-message` (probador de palabras: reglas, activadores y desactivadores, sin IA)
 - Canales: `/api/channels`, `/:id/setup`, `/:id/status`, `/:id/rotate-token`, `/:id/whatsapp/{session,connect,logout,test}` (`session`: crea la instancia si hace falta y devuelve el QR vigente o el código por número; el panel la consulta cada 3 s)
 - Conversaciones: `/api/conversations`, `/:id/{takeover,release,close,send,send-image,reset-memory,automation,sequences}`
 - Automatización: `/api/automations`, `/api/sequences`, `/api/campaigns` (`/:id/{preview,launch,cancel,recipients}`), `/api/settings`
@@ -380,10 +484,13 @@ Panel (bajo `/api`, con sesión por cookie; todo se limita a la cuenta del usuar
 - Notificaciones: `/api/notifications`, `/api/notifications/read`
 - Contactos: `/api/contacts/:id`
 - Registros, uso de IA y estadísticas: `/api/logs`, `/api/ai-runs`, `/api/stats`
+- Cobro: `GET /api/billing`, `POST /api/billing/{checkout,portal,cancel}`, `/api/plans` (crear/editar: superadmin), `GET /api/billing/overview` (superadmin)
+- Sistema: `GET /api/system/status` (superadmin)
 
 Públicas:
 
 - Registro y contraseñas: `GET /api/signup/info`, `POST /api/signup`, `POST /api/verify-email`, `POST /api/forgot-password`, `POST /api/reset-password` (con límite de intentos por IP).
+- Salud: `GET /health`, `GET /health/ready`. Cobro: `POST /webhook/billing/{stripe,mercadopago}` (firmados).
 - Webhooks: `GET|POST /webhook/:token`. El token es una URL secreta por canal; `GET` sirve para la verificación de Meta.
 - Chat web: `/webchat/:token/{config,session,messages}`, con CORS y límite de 15 mensajes por minuto por sesión.
 - Imágenes firmadas: `GET /media/:id?e=…&s=…`.
@@ -401,10 +508,10 @@ Actualización desde la versión anterior: la migración `002` pasa automáticam
 
 ## Notas y límites de esta versión
 
-- La cola vive en memoria: pensada para un proceso en un VPS. Al reiniciar, retoma los mensajes sin responder de los últimos 15 minutos.
-- La recuperación de conocimiento es por palabras clave (sin embeddings) y solo entra en juego si el conocimiento excede el presupuesto; para la mayoría de negocios se envía completo.
+- La cola es durable y segura con varios procesos, sin Redis: cada conversación se atiende con un arrendamiento (*lease*) en PostgreSQL (un solo proceso a la vez) y un barrido cada 30 s retoma mensajes sin responder si se perdió un temporizador o un proceso murió a la mitad (ventana de 15 min; los errores de la IA no se reintentan en bucle). Los límites de intentos (inicio de sesión, registro, chat web) siguen siendo por proceso; con varias réplicas, cada una aplica el suyo. Detalle en [escalar y modelos](docs/escalar-y-modelos.md).
+- La recuperación de conocimiento es por palabras clave por defecto y solo entra en juego si el conocimiento excede el presupuesto; con catálogos grandes activa la **búsqueda semántica** (pgvector) con `./riverrun semantic` (ver [activación](docs/semantic-activation.md)): conserva las palabras clave como respaldo si el proveedor falla.
 - Se ignoran grupos, estados y canales de WhatsApp.
-- El cobro de las suscripciones todavía es manual (tú activas el plan en **Cuentas**); el campo `plan` y el estado `trial/active/paused` ya están listos para conectarlo a Stripe o Mercado Pago.
+- El cobro es automático con Stripe y/o Mercado Pago (ver arriba). Sin ninguno configurado, sigue siendo manual: activas el plan en **Cuentas**.
 - Los mensajes con más de 30 minutos de antigüedad (p. ej. al reconectar el teléfono) se guardan pero no se contestan automáticamente.
 - Una conversación **cerrada** se reabre (con su memoria) cuando el cliente vuelve a escribir.
-- La verificación de hechos cubre cifras, links, correos y teléfonos; afirmaciones sin números (p.ej. "sí tenemos alberca") dependen del prompt y la regla de cero invenciones.
+- La verificación cubre cifras, links, correos, teléfonos y afirmaciones de "tenemos / ofrecemos / incluye / aceptamos" (ver *Cómo decide y valida*). Lo que no sea una afirmación de ese tipo (tono, recomendaciones, matices) sigue dependiendo del prompt; el modo estricto añade un juez de IA para esos casos.

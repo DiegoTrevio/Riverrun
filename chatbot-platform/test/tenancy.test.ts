@@ -145,7 +145,8 @@ t('el agente solo atiende conversaciones: no ve ni cambia configuración', async
   ] as const) {
     assert.equal((await agent(method, url, payload)).statusCode, 403, `${method} ${url}`);
   }
-  // Pero sí atiende conversaciones de su cuenta
+  // Pero sí atiende las conversaciones que tiene asignadas de su cuenta
+  assert.equal((await h.authed('PUT', `/api/conversations/${A.conv}/assign`, { user_id: (await agent('GET', '/api/me')).json().user.id })).statusCode, 200);
   assert.equal((await agent('GET', `/api/conversations/${A.conv}`)).statusCode, 200);
   h.sent.length = 0;
   const send = await agent('POST', `/api/conversations/${A.conv}/send`, { text: 'Hola, soy del equipo' });

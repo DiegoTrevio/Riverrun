@@ -1,3 +1,4 @@
+import { pollEmailChannels } from './channels/email.js';
 import fs from 'node:fs';
 import { KnowledgeMonitor } from './engine/knowledge-monitor.js';
 import { OpenAiProvider } from './ai/provider.js';
@@ -6,8 +7,10 @@ import { bootstrapSuperadmin } from './auth.js';
 import { assertProductionConfig, config } from './config.js';
 import { migrate } from './db.js';
 import { startLifecycle } from './lifecycle.js';
+import { startMonitor } from './monitor.js';
 import { logEvent, pruneLogs } from './logs.js';
-import { pruneAutomationData } from './automation/store.js';
+import { applyRetention } from './privacy.js';
+import { pruneAiRunDetail, pruneAutomationData } from './automation/store.js';
 import { KnowledgeWorker } from './engine/knowledge-preparation.js';
 
 async function main() {
@@ -28,15 +31,21 @@ async function main() {
   await logEvent({ level: 'info', source: 'system', message: `Servidor iniciado en el puerto ${config.port}` });
 
   service.scheduler.start(config.schedulerIntervalMs);
+  service.startSweeper();
   knowledgeWorker.start();
   knowledgeMonitor.start();
   startLifecycle();
+  startMonitor();
   const resumed = await service.resumePending();
   if (resumed) console.log(`Retomando ${resumed} conversaciones pendientes`);
 
+  setInterval(() => void pollEmailChannels(service).catch((e) => logEvent({ level: 'error', source: 'channel', message: `Lectura de correo: ${e?.message ?? e}` })), config.emailPollSeconds * 1000).unref();
+
   setInterval(() => {
+    applyRetention().catch((e) => logEvent({ level: 'error', source: 'system', message: `Retención de datos: ${e?.message ?? e}` }));
     pruneLogs(config.logRetentionDays).catch(() => undefined);
     pruneAutomationData(config.logRetentionDays).catch(() => undefined);
+    pruneAiRunDetail(config.aiRunDetailDays).catch(() => undefined);
   }, 6 * 3600 * 1000).unref();
 
   const shutdown = async () => {

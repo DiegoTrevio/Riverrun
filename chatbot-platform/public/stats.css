@@ -1,0 +1,86 @@
+/* Estadísticas del panel (public/js/analytics.js).
+   Series: paleta categórica validada (blue, orange, aqua) con las superficies del panel, claro y oscuro.
+   Estados (bueno/aviso/grave/crítico) solo en iconos y deltas, siempre con texto o signo al lado. */
+:root {
+  --s1: #2a78d6;
+  --s2: #eb6834;
+  --s3: #1baf7a;
+  --st-good: #0ca30c;
+  --st-serious: #ec835a;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --s1: #3987e5;
+    --s2: #d95926;
+    --s3: #199e70;
+    --st-good: #0ca30c;
+    --st-serious: #ec835a;
+  }
+}
+
+.table-scroll { overflow-x: auto; max-width: 100%; }
+.stats-filters { margin-bottom: 14px; }
+.stats-filters select { width: auto; min-width: 230px; }
+.stats-filters label { display: inline-flex; align-items: center; gap: 6px; }
+.stats-section { font-size: 16px; margin: 22px 0 10px; }
+.stats-frame { transition: opacity 0.15s ease; }
+.stats-frame h2 { font-size: 15px; margin: 0; }
+.stats-frame h3 { font-size: 13px; margin: 14px 0 6px; color: var(--muted); }
+
+.stats-kpis { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(clamp(140px, 42vw, 190px), 1fr)); margin-bottom: 14px; }
+.stats-tile { margin: 0; }
+.stats-value { font-size: clamp(20px, 6vw, 26px); font-weight: 700; margin: 4px 0 2px; }
+.stats-delta { display: block; font-size: 12px; margin: 2px 0; }
+.stats-delta.is-good { color: #006300; }
+.stats-delta.is-bad { color: var(--danger); }
+@media (prefers-color-scheme: dark) {
+  .stats-delta.is-good { color: #0ca30c; }
+}
+.stats-warn { color: #9a6206; }
+
+.stats-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr)); margin-bottom: 14px; }
+.stats-chart-card { min-width: 0; margin-bottom: 0; }
+.stats-chart-card table { font-size: 13px; }
+
+.stats-chart { width: 100%; height: auto; display: block; }
+.stats-gridline { stroke: var(--border); stroke-width: 1; }
+.stats-axis { font-size: 11px; fill: var(--muted); }
+.stats-end { font-size: 12px; font-weight: 600; fill: var(--text); }
+.stats-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.stats-dot { stroke: var(--panel); stroke-width: 2; }
+.stats-cross { stroke: var(--muted); stroke-width: 1; }
+.stats-bar { transition: opacity 0.1s ease; }
+.stats-bar.is-hot { opacity: 0.75; }
+.stats-chart:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 4px; }
+
+.stats-legend { display: flex; gap: 14px; flex-wrap: wrap; margin: 6px 0 4px; font-size: 12px; color: var(--muted); }
+.stats-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.stats-key-line { display: inline-block; width: 14px; height: 2px; border-radius: 2px; }
+.stats-key-block { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
+.stats-key { display: inline-block; width: 12px; height: 2px; border-radius: 2px; vertical-align: middle; flex: none; }
+
+.stats-tip { position: fixed; z-index: 50; min-width: 150px; max-width: 260px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--panel); color: var(--text); box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12); font-size: 12px; pointer-events: none; }
+.stats-tip[hidden] { display: none; }
+.stats-tip-day { display: block; margin-bottom: 4px; }
+.stats-tip-row { display: flex; align-items: center; gap: 6px; }
+.stats-tip-row .muted { flex: 1; }
+
+.stats-hbars { display: grid; gap: 8px; margin: 8px 0 12px; }
+.stats-hbar-row { display: grid; grid-template-columns: minmax(90px, 170px) minmax(0, 1fr) auto; gap: 10px; align-items: center; }
+.stats-hbar-name { font-size: 13px; overflow-wrap: anywhere; }
+.stats-hbar-track { min-width: 0; }
+.stats-hbar-stack { display: flex; gap: 2px; height: 16px; }
+.stats-seg { display: block; height: 100%; min-width: 4px; border-radius: 4px; }
+.stats-seg:focus-visible { outline: 2px solid var(--text); outline-offset: 1px; }
+.stats-hbar-total { font-size: 13px; min-width: 2.5em; text-align: right; }
+
+.stats-status { display: grid; gap: 6px; margin: 8px 0 12px; }
+.stats-status-row { display: grid; grid-template-columns: 22px 1fr auto; gap: 8px; align-items: center; font-size: 13px; }
+.stats-icon { font-weight: 700; text-align: center; }
+.stats-status-row.is-ok .stats-icon { color: var(--st-good); }
+.stats-status-row.is-warn .stats-icon { color: var(--st-serious); }
+.stats-status-row.is-neutral .stats-icon { color: var(--muted); }
+
+.stats-data { margin-top: 10px; font-size: 12px; }
+.stats-data summary { color: var(--muted); cursor: pointer; }

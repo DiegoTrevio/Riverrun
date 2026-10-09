@@ -250,7 +250,7 @@ export async function getAppointment(id: string) {
   return queryOne<Appointment>('SELECT * FROM appointments WHERE id = $1', [id]);
 }
 
-export async function listAppointments(accountId: string | null, opts: { from?: Date; to?: Date; contactId?: string; status?: string } = {}) {
+export async function listAppointments(accountId: string | null, opts: { from?: Date; to?: Date; contactId?: string; status?: string; visibleTo?: string } = {}) {
   const params: unknown[] = [];
   const where: string[] = [];
   const add = (sql: string, v: unknown) => {
@@ -262,6 +262,12 @@ export async function listAppointments(accountId: string | null, opts: { from?: 
   if (opts.to) add('a.starts_at < ?', opts.to);
   if (opts.contactId) add('a.contact_id = ?', opts.contactId);
   if (opts.status) add('a.status = ?', opts.status);
+  if (opts.visibleTo) {
+    // Un agente ve las citas asignadas a él y las de sus conversaciones o contactos.
+    params.push(opts.visibleTo);
+    const p = `$${params.length}`;
+    where.push(`(a.assigned_user_id = ${p} OR c.assigned_user_id = ${p} OR a.contact_id IN (SELECT contact_id FROM conversations WHERE assigned_user_id = ${p}))`);
+  }
   return query<Appointment & { assigned_user_name: string | null; channel_type: string | null }>(
     `SELECT a.*, u.name AS assigned_user_name, ch.type AS channel_type FROM appointments a
        LEFT JOIN users u ON u.id = a.assigned_user_id
@@ -270,6 +276,52 @@ export async function listAppointments(accountId: string | null, opts: { from?: 
      ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY a.starts_at LIMIT 1000`,
     params,
   );
+}
+
+/** Persona a la que está asignada una conversación (null = sin asignar). */
+export async function assigneeOf(conversationId: string): Promise<string | null> {
+  return (await queryOne<{ assigned_user_id: string | null }>(`SELECT assigned_user_id FROM conversations WHERE id = $1`, [conversationId]))?.assigned_user_id ?? null;
+}
+
+/** ¿Puede esta persona ver la cita? Lo mismo que el listado: asignada a ella, o de una conversación o contacto suyo. */
+export async function appointmentVisibleTo(appointmentId: string, userId: string) {
+  return !!(await queryOne(
+    `SELECT 1 FROM appointments a LEFT JOIN conversations c ON c.id = a.conversation_id
+     WHERE a.id = $1 AND (a.assigned_user_id = $2 OR c.assigned_user_id = $2 OR a.contact_id IN (SELECT contact_id FROM conversations WHERE assigned_user_id = $2))`,
+    [appointmentId, userId],
+  ));
+}
+
+/* ------------------------------ Archivos de automatizaciones ------------------------------ */
+
+export interface AttachmentRow {
+  id: string;
+  account_id: string;
+  name: string;
+  mime: string;
+  kind: 'image' | 'document' | 'audio' | 'video';
+  size_bytes: number;
+  file_path: string;
+  created_at: Date;
+}
+
+export async function insertAttachment(row: Omit<AttachmentRow, 'created_at'>) {
+  return queryOne<AttachmentRow>(
+    `INSERT INTO attachments (id, account_id, name, mime, kind, size_bytes, file_path) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+    [row.id, row.account_id, row.name, row.mime, row.kind, row.size_bytes, row.file_path],
+  );
+}
+
+export async function getAttachment(id: string) {
+  return queryOne<AttachmentRow>(`SELECT * FROM attachments WHERE id = $1`, [id]);
+}
+
+export async function listAttachments(accountId: string | null) {
+  return query<AttachmentRow>(`SELECT * FROM attachments WHERE ($1::uuid IS NULL OR account_id = $1) ORDER BY created_at DESC LIMIT 500`, [accountId]);
+}
+
+export async function deleteAttachment(id: string) {
+  return queryOne<AttachmentRow>(`DELETE FROM attachments WHERE id = $1 RETURNING *`, [id]);
 }
 
 /* ------------------------------ Notificaciones ------------------------------ */
@@ -304,6 +356,14 @@ export async function setOptOut(contactId: string, optedOut: boolean) {
   await query(`UPDATE contacts SET opted_out = $2, opted_out_at = CASE WHEN $2 THEN now() ELSE NULL END, updated_at = now() WHERE id = $1`, [contactId, optedOut]);
 }
 
+/** Registra (o retira) el consentimiento para recibir promociones. `source`: keyword | panel | api | import | legacy. */
+export async function setConsent(contactId: string, consent: boolean, source = 'panel') {
+  await query(
+    `UPDATE contacts SET consent_at = CASE WHEN $2 THEN COALESCE(consent_at, now()) ELSE NULL END, consent_source = CASE WHEN $2 THEN $3 ELSE '' END, updated_at = now() WHERE id = $1`,
+    [contactId, consent, source],
+  );
+}
+
 export async function lastInbound(conversationId: string) {
   return queryOne<{ id: number; created_at: Date }>(
     `SELECT id, created_at FROM messages WHERE conversation_id = $1 AND direction = 'in' ORDER BY id DESC LIMIT 1`,
@@ -328,6 +388,8 @@ export interface Campaign {
   id: string;
   account_id: string;
   channel_id: string;
+  /** Números adicionales (mismo tipo de canal) desde los que también sale la campaña. */
+  channel_ids: string[];
   name: string;
   message: string;
   image_id: string | null;
@@ -351,19 +413,19 @@ export async function getCampaign(id: string) {
 
 export async function saveCampaign(
   accountId: string,
-  c: Pick<Campaign, 'channel_id' | 'name' | 'message' | 'image_id' | 'audience' | 'scheduled_at' | 'rate_per_minute' | 'business_hours_only'>,
+  c: Pick<Campaign, 'channel_id' | 'channel_ids' | 'name' | 'message' | 'image_id' | 'audience' | 'scheduled_at' | 'rate_per_minute' | 'business_hours_only'>,
   id?: string,
 ) {
-  const params = [c.channel_id, c.name, c.message, c.image_id, JSON.stringify(c.audience), c.scheduled_at, c.rate_per_minute, c.business_hours_only];
+  const params = [c.channel_id, c.name, c.message, c.image_id, JSON.stringify(c.audience), c.scheduled_at, c.rate_per_minute, c.business_hours_only, JSON.stringify(c.channel_ids ?? [])];
   if (id) {
     return queryOne<Campaign>(
-      `UPDATE campaigns SET channel_id=$1, name=$2, message=$3, image_id=$4, audience=$5, scheduled_at=$6, rate_per_minute=$7, business_hours_only=$8, updated_at=now()
-       WHERE id = $9 RETURNING *`,
+      `UPDATE campaigns SET channel_id=$1, name=$2, message=$3, image_id=$4, audience=$5, scheduled_at=$6, rate_per_minute=$7, business_hours_only=$8, channel_ids=$9, updated_at=now()
+       WHERE id = $10 RETURNING *`,
       [...params, id],
     );
   }
   return queryOne<Campaign>(
-    `INSERT INTO campaigns (channel_id, name, message, image_id, audience, scheduled_at, rate_per_minute, business_hours_only, account_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+    `INSERT INTO campaigns (channel_id, name, message, image_id, audience, scheduled_at, rate_per_minute, business_hours_only, channel_ids, account_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
     [...params, accountId],
   );
 }
@@ -377,10 +439,11 @@ export async function deleteCampaign(id: string) {
 }
 
 /** Conversaciones del canal que cumplen el segmento (nunca incluye a quienes se dieron de baja). */
-export async function campaignAudience(c: Pick<Campaign, 'channel_id' | 'audience'>, limit = 100000) {
+export async function campaignAudience(c: Pick<Campaign, 'channel_id' | 'audience'> & { channel_ids?: string[] }, limit = 100000, opts: { requireConsent?: boolean } = {}) {
   const a = c.audience ?? {};
-  const params: unknown[] = [c.channel_id];
-  const where = ['cv.channel_id = $1', 'NOT ct.opted_out'];
+  const params: unknown[] = [[...new Set([c.channel_id, ...(c.channel_ids ?? [])])]];
+  const where = ['cv.channel_id = ANY($1::uuid[])', 'NOT ct.opted_out'];
+  if (opts.requireConsent) where.push('ct.consent_at IS NOT NULL');
   if (a.tags_any?.length) {
     params.push(a.tags_any.map((t) => t.toLowerCase()));
     where.push(`EXISTS (SELECT 1 FROM jsonb_array_elements_text(ct.tags) t WHERE lower(t) = ANY($${params.length}))`);
@@ -398,8 +461,8 @@ export async function campaignAudience(c: Pick<Campaign, 'channel_id' | 'audienc
     where.push(`cv.status = ANY($${params.length})`);
   }
   params.push(limit);
-  return query<{ conversation_id: string; name: string; push_name: string; phone: string }>(
-    `SELECT cv.id AS conversation_id, ct.name, ct.push_name, ct.phone FROM conversations cv JOIN contacts ct ON ct.id = cv.contact_id
+  return query<{ conversation_id: string; channel_id: string; name: string; push_name: string; phone: string }>(
+    `SELECT cv.id AS conversation_id, cv.channel_id, ct.name, ct.push_name, ct.phone FROM conversations cv JOIN contacts ct ON ct.id = cv.contact_id
      WHERE ${where.join(' AND ')} ORDER BY cv.last_message_at DESC LIMIT $${params.length}`,
     params,
   );
@@ -431,4 +494,25 @@ export async function markNotificationsRead(userId: string, ids?: number[], acco
 export async function pruneAutomationData(days: number) {
   await query(`DELETE FROM jobs WHERE status IN ('done','failed','cancelled') AND created_at < now() - ($1 || ' days')::interval`, [String(days)]);
   await query(`DELETE FROM notifications WHERE created_at < now() - ($1 || ' days')::interval`, [String(Math.max(days, 60))]);
+}
+
+/** Borra el detalle técnico (decisión y validación completas) de respuestas viejas de la IA; conserva consumo y costo. */
+export async function pruneAiRunDetail(days: number) {
+  await query(`UPDATE ai_runs SET decision = NULL, validation = NULL WHERE created_at < now() - ($1 || ' days')::interval AND (decision IS NOT NULL OR validation IS NOT NULL)`, [String(days)]);
+}
+
+/** Cuántos del segmento quedan fuera por no haber aceptado recibir promociones. */
+export async function campaignExcludedNoConsent(c: Pick<Campaign, 'channel_id' | 'audience'> & { channel_ids?: string[] }) {
+  const all = await campaignAudience(c);
+  const withConsent = await campaignAudience(c, 100000, { requireConsent: true });
+  return all.length - withConsent.length;
+}
+
+/** Mensajes de campaña ya enviados desde cada número desde `since` (para respetar el tope diario entre campañas). */
+export async function campaignSentSince(accountId: string, since: Date) {
+  return query<{ channel_id: string; n: number }>(
+    `SELECT cv.channel_id, count(*)::int AS n FROM campaign_recipients r JOIN conversations cv ON cv.id = r.conversation_id
+      WHERE cv.account_id = $1 AND r.status = 'sent' AND r.sent_at >= $2 GROUP BY cv.channel_id`,
+    [accountId, since],
+  );
 }
