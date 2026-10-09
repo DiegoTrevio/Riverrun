@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { config } from '../config.js';
 import { toPlainText } from '../engine/text.js';
 import { sleep, type Transport } from '../engine/transport.js';
+import { logEvent } from '../logs.js';
 import { safeEqual } from '../secret.js';
 import { ChannelConfigSchemas, type Channel, type ChannelType, type ImageAsset } from '../types.js';
 import { signedImageUrl } from './media.js';
@@ -29,12 +30,40 @@ class GraphClient {
   }
 }
 
+/** Instagram rechaza textos de más de 1000 bytes (UTF-8): se dividen en partes por palabras. */
+const INSTAGRAM_TEXT_BYTES = 1000;
+
+export function splitByBytes(text: string, max: number): string[] {
+  if (Buffer.byteLength(text) <= max) return [text];
+  const out: string[] = [];
+  let cur = '';
+  for (const word of text.split(/(?<=\s)/)) {
+    if (Buffer.byteLength(cur + word) <= max) {
+      cur += word;
+      continue;
+    }
+    if (cur.trim()) out.push(cur.trim());
+    cur = '';
+    // Una "palabra" más larga que el límite se corta por caracteres.
+    let rest = word;
+    while (Buffer.byteLength(rest) > max) {
+      let n = rest.length;
+      while (Buffer.byteLength(rest.slice(0, n)) > max) n--;
+      out.push(rest.slice(0, n));
+      rest = rest.slice(n);
+    }
+    cur = rest;
+  }
+  if (cur.trim()) out.push(cur.trim());
+  return out;
+}
+
 const graphFor = (channel: Channel) => new GraphClient(channel.config.page_access_token, channel.config.graph_version || 'v21.0');
 
 class MetaTransport implements Transport {
   private graph: GraphClient;
 
-  constructor(public kind: ChannelType, channel: Channel, private recipientId: string) {
+  constructor(public kind: ChannelType, private channel: Channel, private recipientId: string) {
     this.graph = graphFor(channel);
   }
 
@@ -46,12 +75,18 @@ class MetaTransport implements Transport {
 
   async sendText(text: string, delayMs: number) {
     await this.typing(delayMs);
-    const r = await this.graph.call('POST', 'me/messages', {
-      recipient: { id: this.recipientId },
-      messaging_type: 'RESPONSE',
-      message: { text: toPlainText(text) },
-    });
-    return r.message_id ?? null;
+    const plain = toPlainText(text);
+    const parts = this.kind === 'instagram' ? splitByBytes(plain, INSTAGRAM_TEXT_BYTES) : [plain];
+    let first: string | null = null;
+    for (const part of parts) {
+      const r = await this.graph.call('POST', 'me/messages', {
+        recipient: { id: this.recipientId },
+        messaging_type: 'RESPONSE',
+        message: { text: part },
+      });
+      first ??= r.message_id ?? null;
+    }
+    return first;
   }
 
   async sendImage(image: ImageAsset, caption: string, delayMs: number) {
@@ -64,8 +99,13 @@ class MetaTransport implements Transport {
       messaging_type: 'RESPONSE',
       message: { attachment: { type: 'image', payload: { url: signedImageUrl(image.id), is_reusable: true } } },
     });
-    // Meta no admite pie de foto en imágenes: se manda como texto aparte.
-    if (caption) await this.sendText(caption, 0);
+    // Meta no admite pie de foto en imágenes: se manda como texto aparte. La foto ya llegó: si el texto falla, se registra
+    // pero la foto no cuenta como fallida (si no, se reintentaría y el cliente la recibiría repetida).
+    if (caption) {
+      await this.sendText(caption, 0).catch((e: any) =>
+        logEvent({ level: 'warn', source: 'channel', message: `Foto entregada, pero su texto no se pudo enviar (${this.kind}): ${e?.message ?? e}`, accountId: this.channel.account_id, channelId: this.channel.id }),
+      );
+    }
     return r.message_id ?? null;
   }
 

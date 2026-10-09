@@ -34,6 +34,16 @@ async function automationRefs() {
   return { bots, sequences, users: users.filter((u) => u.account_id), services, images, files };
 }
 
+/**
+ * Opciones de foto: las inactivas se marcan (al enviar se omiten) y una foto ya borrada aparece marcada para poder
+ * cambiarla o quitarla (si no, el selector mostraría "Sin imagen" con la foto vieja guardada).
+ */
+function photoOptions(refs, current) {
+  const opts = [['', '— Sin imagen —'], ...refs.images.map((i) => [i.id, `${i.name} (${i.bot})${i.active === false ? ' — inactiva: no se enviará' : ''}`])];
+  if (current && !refs.images.some((i) => i.id === current)) opts.push([current, '⚠ Foto borrada: elige otra o quítala']);
+  return opts;
+}
+
 const TRIGGERS = {
   message_received: 'El cliente escribe un mensaje',
   new_contact: 'Primer mensaje de un cliente nuevo',
@@ -191,7 +201,7 @@ function actionFields(a, refs) {
       return [
         field('Mensaje (opcional si eliges una foto)', area(a, 'text'), VARS_HELP),
         h('div', { class: 'grid' },
-          field('Foto (opcional)', select(a, 'image_id', [['', '— Sin imagen —'], ...refs.images.map((i) => [i.id, `${i.name} (${i.bot})`])])),
+          field('Foto (opcional)', select(a, 'image_id', photoOptions(refs, a.image_id))),
           field('Esperar antes de enviar (minutos)', num(a, 'delay_minutes', { min: 0 }), '0 = de inmediato')),
         field('Archivo (opcional)', attachmentPicker(a, refs)),
       ];
@@ -396,7 +406,7 @@ async function editSequence(root, id) {
       field(i === 0 ? 'Esperar desde que inicia' : 'Esperar desde el mensaje anterior', h('div', { class: 'row' }, h('div', { style: 'width:90px' }, num(st, 'delay_value', { min: 0 })), select(st, 'delay_unit', UNITS))),
       field('A esta hora (opcional)', h('input', { type: 'time', value: st.at_time, oninput: (e) => (st.at_time = e.target.value) }), 'Ej.: al día siguiente a las 10:00')),
     field('Mensaje', area(st, 'text'), VARS_HELP),
-    field('Imagen (opcional)', select(st, 'image_id', [['', '— Sin imagen —'], ...refs.images.map((im) => [im.id, `${im.name} (${im.bot})`])])),
+    field('Imagen (opcional)', select(st, 'image_id', photoOptions(refs, st.image_id))),
     field('Archivo (opcional)', attachmentPicker(st, refs)),
     h('details', {}, h('summary', {}, `Enviar solo si… (${st.conditions.length})`), typedList(st.conditions, CONDITIONS, (c) => conditionFields(c))))));
   draw();
@@ -495,7 +505,7 @@ async function editCampaign(root, id) {
         field('Canal', select(c, 'channel_id', channels.map((ch) => [ch.id, `${ch.name} (${ch.label})`]), () => { c.channel_ids = []; if (editable) { drawExtra(); } }))),
       extraBox,
       field('Mensaje', area(c, 'message', { big: true }), VARS_HELP),
-      field('Imagen (opcional)', select(c, 'image_id', [['', '— Sin imagen —'], ...refs.images.map((im) => [im.id, `${im.name} (${im.bot})`])]), 'Con texto, la foto sale con el mensaje como pie en un solo envío.'),
+      field('Imagen (opcional)', select(c, 'image_id', photoOptions(refs, c.image_id)), 'Con texto, la foto sale con el mensaje como pie en un solo envío.'),
       field('Etapa del recorrido al enviarla', num(c, 'flow_step', { min: 0, max: 50 }), 'Si es el primer mensaje de un recorrido, indica la etapa en la que queda cada conversación: el asistente sigue el flujo desde ahí cuando el cliente responda. 0 = no cambia.')),
     h('div', { class: 'card' },
       h('h3', { style: 'margin-top:0' }, 'A quién'),

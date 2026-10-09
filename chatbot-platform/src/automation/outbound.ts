@@ -105,6 +105,8 @@ export class Outbound {
 
     const transport = channel.type === 'playground' ? new PlaygroundTransport() : this.chat.transportFor(channel, contact);
     const meta = { source: o.source, ...o.meta };
+    // Un envío que empieza el recorrido en una etapa forma parte de ese recorrido (su foto cuenta como ya enviada).
+    const journeyStart = o.flowStep ? await store.dbNow() : undefined;
     // Nunca en paralelo con una respuesta del bot en la misma conversación.
     const ok = await this.chat.queue.exclusive(conv.id, async () => {
       if (image) {
@@ -115,8 +117,12 @@ export class Outbound {
           const t = await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text: textOut, delay: 0, meta });
           if (!t) return false;
         }
-        const caption = (together && textOut) || (captionFooter ? `${image.caption}${image.caption ? '\n\n' : ''}${captionFooter}` : image.caption);
+        const withFooter = captionFooter ? `${image.caption}${image.caption ? '\n\n' : ''}${captionFooter}` : image.caption;
+        // Solo foto: si su pie con el de baja no cabe, la foto va con su pie y el de baja como texto aparte.
+        const footerApart = !textOut && !!captionFooter && withFooter.length > CAPTION_MAX;
+        const caption = (together && textOut) || (footerApart ? image.caption : withFooter);
         const m = await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text: caption, image, delay: 0, meta });
+        if (m && footerApart) await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text: captionFooter, delay: 0, meta });
         if (!m) {
           // Si la plataforma rechaza la foto, el cliente igual recibe el texto.
           if (!textOut || !together) return !!textOut;
@@ -137,7 +143,7 @@ export class Outbound {
     // El asistente continúa el recorrido desde la etapa indicada cuando el cliente responda.
     const steps = bot?.flow.steps.length ?? 0;
     // Empieza un recorrido nuevo en esa etapa: si la conversación estaba cerrada, al contestar el cliente no se reinicia.
-    if (o.flowStep && o.flowStep <= steps) await store.startFlowAt(conv.id, o.flowStep);
+    if (o.flowStep && o.flowStep <= steps) await store.startFlowAt(conv.id, o.flowStep, journeyStart);
     await logEvent({ level: 'info', source: 'engine', message: `Mensaje programado enviado (${o.source})`, accountId: conv.account_id, channelId: conv.channel_id, conversationId: conv.id });
     return { sent: true };
   }

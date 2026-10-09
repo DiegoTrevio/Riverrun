@@ -497,19 +497,25 @@ export class Automator {
    * salió en su momento. Se entrega si sigue vigente: el recorrido no se reinició, la foto no llegó ya, y ninguna persona
    * ha respondido desde entonces. Si la plataforma la rechaza otra vez, lanza el error para que el programador reintente.
    */
-  async runDeferredImage(p: { conversation_id: string; image_id: string; reason: string; journey: string | null; at: string; allow_ended: boolean }) {
+  async runDeferredImage(p: { conversation_id: string; image_id: string; reason: string; journey: string | null; at: string; allow_ended: boolean; allow_repeat?: boolean }) {
     const conv = await store.getConversation(p.conversation_id);
     if (!conv) return;
     const skip = (why: string) => logEvent({ level: 'info', source: 'engine', message: `Foto pendiente no enviada (${why})`, accountId: conv.account_id, chatbotId: conv.chatbot_id, conversationId: conv.id, details: { image_id: p.image_id, reason: p.reason } });
     const journey = conv.flow_started_at ? new Date(conv.flow_started_at).toISOString() : null;
     if (journey !== p.journey) return skip('el recorrido se reinició');
     if (conv.status !== 'bot' && !p.allow_ended) return skip('ya no atiende el asistente');
+    // El cliente pausó al asistente (palabra de desactivación) después de programarse: ya no se envía.
+    if (!p.allow_ended && conv.chatbot_id) {
+      const bot = await store.getChatbot(conv.chatbot_id);
+      if (bot && !agentActive(bot, conv)) return skip('el asistente está en pausa');
+    }
     const human = await store.lastHumanActivity(conv.id);
     if (human && human.getTime() > new Date(p.at).getTime()) return skip('una persona respondió');
     const image = await store.getImage(p.image_id);
     if (!image || !image.active) return skip('la foto ya no está activa');
-    if (await store.imageSentSince(conv.id, image.id, new Date(p.at))) return; // ya llegó por otro camino desde que se programó
-    if (imageSendWhen(image).once && (await store.sentImageIds(conv.id)).includes(image.id)) return;
+    if (await store.imageSentSince(conv.id, image.id, new Date(p.at))) return skip('ya llegó desde que se programó');
+    // "Una sola vez" no aplica cuando el cliente la pidió de nuevo (por eso se programó).
+    if (!p.allow_repeat && imageSendWhen(image).once && (await store.sentImageIds(conv.id)).includes(image.id)) return skip('ya se había enviado (solo una vez por conversación)');
     const r = await this.chat.outbound.send(conv.id, { imageId: image.id, source: 'flow', transactional: true, allowWhenHuman: p.allow_ended, meta: { image_trigger: p.reason, deferred: true } });
     if (r.sent) {
       await logEvent({ level: 'info', source: 'engine', message: `Foto enviada por regla (pendiente): ${image.code} (${p.reason})`, accountId: conv.account_id, chatbotId: conv.chatbot_id, channelId: conv.channel_id, conversationId: conv.id });

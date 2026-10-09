@@ -12,15 +12,22 @@ import * as store from '../store/index.js';
 import type { User } from '../types.js';
 import { parse } from './util.js';
 
-/** Todo lo que una regla referencia debe ser de la misma cuenta. */
-async function checkReferences(accountId: string, body: { chatbot_id?: string | null; actions?: Action[]; steps?: { image_id: string }[] }) {
+/**
+ * Todo lo que una regla referencia debe ser de la misma cuenta. Con `clearMissing`, una foto que ya se borró se quita de
+ * la regla o secuencia (en lugar de impedir guardarla o desactivarla).
+ */
+async function checkReferences(accountId: string, body: { chatbot_id?: string | null; actions?: Action[]; steps?: { image_id: string }[] }, opts: { clearMissing?: boolean } = {}) {
   if (body.chatbot_id) {
     const bot = await store.getChatbot(body.chatbot_id);
     if (!bot || bot.account_id !== accountId) throw new HttpError(400, 'El chatbot no pertenece a la cuenta');
   }
-  const images = [...(body.actions ?? []).flatMap((a) => (a.type === 'send_message' && a.image_id ? [a.image_id] : [])), ...(body.steps ?? []).map((s) => s.image_id).filter(Boolean)];
-  for (const id of images) {
-    const img = await store.getImage(id);
+  const holders = [...(body.actions ?? []).filter((a) => a.type === 'send_message' && a.image_id), ...(body.steps ?? []).filter((s) => s.image_id)] as { image_id: string }[];
+  for (const holder of holders) {
+    const img = await store.getImage(holder.image_id);
+    if (!img && opts.clearMissing) {
+      holder.image_id = '';
+      continue;
+    }
     const owner = img ? await store.getChatbot(img.chatbot_id) : null;
     if (!owner || owner.account_id !== accountId) throw new HttpError(400, 'Una imagen no pertenece a la cuenta');
   }
@@ -105,7 +112,7 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
     const existing = await automationFor(req.user, req.params.id);
     const raw = (req.body ?? {}) as Partial<AutomationBody>;
     const body = parse(AutomationBodySchema, { ...existing, ...raw });
-    await checkReferences(existing.account_id, body);
+    await checkReferences(existing.account_id, body, { clearMissing: true });
     return astore.saveAutomation(existing.account_id, body, existing.id);
   });
 
@@ -138,7 +145,7 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
   api.put('/api/sequences/:id', admins, async (req: any) => {
     const existing = await sequenceFor(req.user, req.params.id);
     const body = parse(SequenceBodySchema, { ...existing, ...(req.body ?? {}) });
-    await checkReferences(existing.account_id, body);
+    await checkReferences(existing.account_id, body, { clearMissing: true });
     return astore.saveSequence(existing.account_id, body, existing.id);
   });
 
