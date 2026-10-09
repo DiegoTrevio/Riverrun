@@ -220,6 +220,12 @@ function shell(active, content) {
     h('nav', { class: 'sidebar' },
       h('div', { class: 'brand' }, '💬 Chatbots'),
       switcher,
+      h('button', { class: 'nav-toggle', 'aria-expanded': 'false', onclick: (event) => {
+        const button = event.currentTarget;
+        const open = button.closest('.sidebar').classList.toggle('mobile-nav-open');
+        button.setAttribute('aria-expanded', String(open));
+        button.textContent = open ? 'Cerrar menú' : 'Abrir menú';
+      } }, 'Abrir menú'),
       isAdmin() ? navGroup('Asistentes y conexiones', ['home', 'bot', 'channels', 'channel', 'inicio'], [
         link('#/', 'Asistentes', 'home'),
         link('#/channels', 'WhatsApp y otros canales', 'channels'),
@@ -388,19 +394,19 @@ async function viewDashboard(root, params = new URLSearchParams()) {
   state.bots = bots;
   const byId = Object.fromEntries(stats.chatbots.map((s) => [s.id, s]));
   const nb = { name: '', template: state.me.account?.business_type || 'otro', setup: { goal: '', questions: '', knowledge: '' } };
-  const createBox = h('div', { class: 'card', hidden: params.get('new') !== '1' },
+  const createBox = h('div', { class: 'card agent-setup', hidden: params.get('new') !== '1' },
     h('h3', { style: 'margin-top:0' }, 'Crea tu agente'),
     h('p', { class: 'muted' }, 'Describe tu negocio y qué necesitas conseguir. Organizamos las instrucciones y guardamos las respuestas automáticamente.'),
     accountPicker(nb),
-    h('h4', {}, '1. Tu negocio'),
+    h('section', { class: 'setup-section', 'aria-label': 'Tu negocio' }, h('h4', {}, '1. Tu negocio'),
     h('div', { class: 'grid' },
       field('Nombre del negocio', text(nb, 'name', { placeholder: 'Los Trompitos', maxlength: 120 })),
       field('Tipo de negocio', select(nb, 'template', (state.meta.business_types || []).map((b) => [b.key, b.label])))),
-    field('Información para responder', area(nb.setup, 'knowledge', { placeholder: 'Qué vendes, precios, horarios, ubicación y condiciones.', maxlength: 50000 }), 'Puedes pegar la información que ya tienes. Después podrás agregar documentos y fotos.'),
-    h('h4', {}, '2. Qué debe lograr'),
-    field('Objetivo', area(nb.setup, 'goal', { placeholder: 'Completar el pedido y pasarlo al equipo para confirmarlo.', maxlength: 2000 })),
-    h('h4', {}, '3. Qué debe preguntar'),
-    field('Preguntas clave', area(nb.setup, 'questions', { placeholder: 'Qué quiere pedir, cantidad y si recoge o necesita entrega. Para entrega: nombre y dirección.', maxlength: 4000 }), 'Escríbelas con tus palabras. El agente preguntará una a la vez y guardará las respuestas sin crear campos.'),
+    field('Información para responder', area(nb.setup, 'knowledge', { placeholder: 'Qué vendes, precios, horarios, ubicación y condiciones.', maxlength: 50000 }), 'Puedes pegar la información que ya tienes. Después podrás agregar documentos y fotos.')),
+    h('section', { class: 'setup-section', 'aria-label': 'Objetivo' }, h('h4', {}, '2. Qué debe lograr'),
+    field('Objetivo', area(nb.setup, 'goal', { placeholder: 'Completar el pedido y pasarlo al equipo para confirmarlo.', maxlength: 2000 }))),
+    h('section', { class: 'setup-section', 'aria-label': 'Preguntas clave' }, h('h4', {}, '3. Qué debe preguntar'),
+    field('Preguntas clave', area(nb.setup, 'questions', { placeholder: 'Qué quiere pedir, cantidad y si recoge o necesita entrega. Para entrega: nombre y dirección.', maxlength: 4000 }), 'Escríbelas con tus palabras. El agente preguntará una a la vez y guardará las respuestas sin crear campos.')),
     h('p', { class: 'help' }, 'Se crea apagado para que puedas probarlo antes de conectarlo a tus teléfonos.'),
     h('button', { class: 'primary', onclick: async (event) => {
       if (!nb.name.trim() || !nb.setup.goal.trim() || !nb.setup.questions.trim() || !nb.setup.knowledge.trim()) return toast('Completa el nombre, la información, el objetivo y las preguntas clave.', true);
@@ -472,6 +478,13 @@ async function viewBot(root, id, tab) {
       h('div', { class: 'row' }, h('a', { class: 'btn', href: `#/channels?new=1&chatbot_id=${bot.id}` }, 'Conectar teléfono / ver QR'), h('a', { href: `#/conversations?chatbot_id=${bot.id}` }, 'Ver conversaciones →'))),
     h('div', { class: 'tabs' }, TABS.map(([k, l]) => h('a', { href: `#/bot/${id}/${k}`, class: k === tab ? 'active' : '' }, l))),
   );
+  const guidance = {
+    instrucciones: 'Define cómo atiende tu agente y qué debe lograr. Los ajustes adicionales están al final.',
+    conocimiento: 'Agrega la información que tu agente puede usar para responder: precios, servicios, horarios y condiciones.',
+    imagenes: 'Agrega tus fotos y elige cuándo debe enviarlas el agente.',
+    probar: 'Prueba una conversación antes de conectar el agente. Aquí puedes ver sus respuestas y los datos que guarda.',
+  };
+  root.append(h('p', { class: 'help', style: 'margin:0 0 24px' }, guidance[tab] || guidance.instrucciones));
   const body = h('div');
   root.append(body);
   const views = { instrucciones: tabInstructions, conocimiento: tabKnowledge, imagenes: tabImages, probar: tabPlayground };
@@ -536,10 +549,10 @@ async function tabInstructions(root, bot) {
   root.append(
     h('div', { class: 'card' },
       h('div', { class: 'grid' },
-        field('Nombre del bot', text(m, 'name')),
-        field('Se presenta como (opcional)', text(p, 'assistant_name', { placeholder: 'Mario' }))),
+        field('Nombre del agente', text(m, 'name')),
+        field('Nombre con el que se presenta (opcional)', text(p, 'assistant_name', { placeholder: 'Mario' }))),
       check(m, 'active', 'Asistente encendido'),
-      field('Instrucciones', area(p, 'prompt', { big: true, placeholder: 'Eres Mario, el asistente de Los Trompitos. Atiende de forma amable y breve. Ayuda a hacer pedidos. Pregunta qué quieren ordenar, la cantidad y si pasan a recoger o necesitan entrega. Para entrega, pide nombre y dirección. Haz una pregunta a la vez.' }),
+      field('Cómo debe atender y qué debe preguntar', area(p, 'prompt', { big: true, placeholder: 'Eres Mario, el asistente de Los Trompitos. Atiende de forma amable y breve. Ayuda a hacer pedidos. Pregunta qué quieren ordenar, la cantidad y si pasan a recoger o necesitan entrega. Para entrega, pide nombre y dirección. Haz una pregunta a la vez.' }),
         'Describe cómo debe atender y qué debe preguntar. Los precios, horarios y productos van en Conocimiento.'),
       field('Objetivo', area(f, 'goal', { placeholder: 'Ayudar al cliente a completar su pedido y pasarlo al equipo para confirmarlo.' })),
       h('p', { class: 'small muted', style: 'margin-bottom:0' }, 'Los datos se guardan automáticamente cuando el cliente responde: nombre, dirección, pedido y cualquier otro dato útil. No necesitas crear campos.')),
