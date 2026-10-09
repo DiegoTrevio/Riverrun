@@ -889,6 +889,25 @@ export async function sentImageIds(conversationId: string): Promise<string[]> {
   return rows.map((r) => r.image_id);
 }
 
+/**
+ * Preguntas de la lista en el recorrido actual (se reinicia al reabrir o borrar la memoria): cuántas veces se hizo
+ * cada una y si ya se avisó que se terminaron (un mensaje marcado con questions_done).
+ */
+export async function questionJourney(conversationId: string): Promise<{ asked: Record<string, number>; done: boolean }> {
+  const rows = await query<{ key: string | null; n: number; done: boolean }>(
+    `SELECT m.meta->>'question' AS key, count(*)::int AS n, bool_or(m.meta ? 'questions_done') AS done
+       FROM messages m JOIN conversations c ON c.id = m.conversation_id
+      WHERE m.conversation_id = $1 AND m.direction = 'out' AND m.status = 'ok' AND (m.meta ? 'question' OR m.meta ? 'questions_done')
+        AND (c.flow_started_at IS NULL OR m.created_at >= c.flow_started_at)
+      GROUP BY 1`,
+    [conversationId],
+  );
+  return {
+    asked: Object.fromEntries(rows.filter((r) => r.key).map((r) => [r.key!, r.n])),
+    done: rows.some((r) => r.done),
+  };
+}
+
 /** ¿Ya llegó esta foto (entregada) desde ese momento? Evita duplicar un reenvío pendiente. */
 export async function imageSentSince(conversationId: string, imageId: string, since: Date): Promise<boolean> {
   const row = await queryOne<{ n: number }>(

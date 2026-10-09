@@ -69,8 +69,9 @@ function hasField(contact: Pick<Contact, 'name' | 'data'>, key: string) {
  */
 export function offAfterReply(
   a: Activation,
-  o: { goalReached: boolean; booked: boolean; before: Pick<Contact, 'name' | 'data'>; after: Pick<Contact, 'name' | 'data'> },
+  o: { goalReached: boolean; booked: boolean; questionsCompleted?: boolean; before: Pick<Contact, 'name' | 'data'>; after: Pick<Contact, 'name' | 'data'> },
 ): string | null {
+  if (a.off_on_questions && o.questionsCompleted) return 'el cliente respondió todas las preguntas';
   if (a.off_on_goal && o.goalReached) return 'se cumplió el objetivo de la conversación';
   if (a.off_on_booking && o.booked) return 'el cliente agendó una cita';
   const keys = a.off_when_fields.filter(Boolean);

@@ -8,15 +8,17 @@ import { accountName, isSuper } from './session.js';
 
 /* ------------------------------ Chatbot ------------------------------ */
 
-// La configuración cotidiana cabe en cuatro secciones.
+// La configuración cotidiana: instrucciones, preguntas en orden, cuándo se activa, conocimiento, fotos y pruebas.
 const TABS = [
   ['instrucciones', 'Instrucciones'],
+  ['preguntas', 'Preguntas'],
+  ['activacion', 'Activación'],
   ['conocimiento', 'Conocimiento'],
   ['imagenes', 'Fotos'],
   ['probar', 'Probar'],
 ];
 
-const TAB_ALIASES = { general: 'instrucciones', personalidad: 'instrucciones', datos: 'instrucciones', flujo: 'instrucciones', ia: 'instrucciones', avanzado: 'instrucciones', reglas: 'instrucciones', activacion: 'instrucciones' };
+const TAB_ALIASES = { general: 'instrucciones', personalidad: 'instrucciones', datos: 'preguntas', flujo: 'instrucciones', ia: 'instrucciones', avanzado: 'instrucciones', reglas: 'instrucciones' };
 
 export const dataLabel = (key) => key.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
 
@@ -38,7 +40,7 @@ export async function viewBot(root, id, tab) {
   );
   const body = h('div');
   root.append(body);
-  const views = { instrucciones: tabInstructions, conocimiento: tabKnowledge, imagenes: tabImages, probar: tabPlayground };
+  const views = { instrucciones: tabInstructions, preguntas: tabQuestions, activacion: tabActivation, conocimiento: tabKnowledge, imagenes: tabImages, probar: tabPlayground };
   await (views[tab] || tabInstructions)(body, bot);
 }
 
@@ -104,9 +106,9 @@ async function tabInstructions(root, bot) {
         field('Se presenta como (opcional)', text(p, 'assistant_name', { placeholder: 'Mario' }))),
       check(m, 'active', 'Asistente encendido'),
       field('Instrucciones', area(p, 'prompt', { big: true, placeholder: 'Eres Mario, el asistente de Los Trompitos. Atiende de forma amable y breve. Ayuda a hacer pedidos. Pregunta qué quieren ordenar, la cantidad y si pasan a recoger o necesitan entrega. Para entrega, pide nombre y dirección. Haz una pregunta a la vez.' }),
-        'Describe cómo debe atender y qué debe preguntar. Los precios, horarios y productos van en Conocimiento.'),
+        ['Describe cómo debe atender. Las preguntas que debe hacer, en orden, van en ', h('a', { href: `#/bot/${bot.id}/preguntas` }, 'Preguntas'), '; los precios, horarios y productos, en Conocimiento.']),
       field('Objetivo', area(f, 'goal', { placeholder: 'Ayudar al cliente a completar su pedido y pasarlo al equipo para confirmarlo.' })),
-      h('p', { class: 'small muted', style: 'margin-bottom:0' }, 'Los datos se guardan automáticamente cuando el cliente responde: nombre, dirección, pedido y cualquier otro dato útil. No necesitas crear campos.')),
+      h('p', { class: 'small muted', style: 'margin-bottom:0' }, 'Los datos se guardan automáticamente cuando el cliente responde: nombre, dirección, pedido y cualquier otro dato útil. Para que pregunte algo siempre y en orden, agrégalo en ', h('a', { href: `#/bot/${bot.id}/preguntas` }, 'Preguntas'), '.')),
     h('details', { class: 'card' }, h('summary', {}, 'Estilo de las respuestas'),
       h('div', { class: 'grid', style: 'margin-top:14px' },
         field('Trato', select(p, 'formality', [['tu', 'De tú'], ['usted', 'De usted']])),
@@ -117,7 +119,7 @@ async function tabInstructions(root, bot) {
     saveBar(async () => { if (await saveBot(bot, { ...m, personality: p, flow: f })) render(); }),
   );
   const advanced = h('details', { class: 'card' }, h('summary', {}, 'Opciones avanzadas'));
-  for (const [label, view] of [['Canales y administración', tabGeneral], ['Reglas y transferencia a una persona', tabRules], ['Activación y pausas', tabActivation], ['Recorrido y modelo de IA', tabAdvanced]]) {
+  for (const [label, view] of [['Canales y administración', tabGeneral], ['Reglas y transferencia a una persona', tabRules], ['Recorrido y modelo de IA', tabAdvanced]]) {
     const content = h('div', { style: 'margin-top:14px' });
     let loaded = false;
     const section = h('details', { style: 'margin-top:14px', ontoggle: async () => {
@@ -361,6 +363,71 @@ function savedMessagesCard(bot, images) {
     box);
 }
 
+const QUESTION_TYPES = [['text', 'Texto libre'], ['name', 'Nombre'], ['email', 'Correo'], ['phone', 'Teléfono'], ['date', 'Fecha'], ['number', 'Número'], ['option', 'Una de varias opciones']];
+
+/** Clave del dato a partir del texto de la pregunta ("¿Para qué fecha?" → para_que_fecha). */
+function questionKey(text) {
+  const base = (text || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40).replace(/_+$/g, '');
+  return /^[a-z]/.test(base) ? base : `pregunta${base ? `_${base}` : ''}`;
+}
+
+/** Apartado "Preguntas": lista ordenada que el asistente sigue paso a paso, una por mensaje (lo garantiza el sistema). */
+function tabQuestions(root, bot) {
+  const all = clone(bot.data_fields || []);
+  // Los datos sin pregunta (p. ej. de una plantilla) se conservan tal cual: se piden cuando tenga sentido.
+  const others = all.filter((f) => !f.question?.trim());
+  const qs = all.filter((f) => f.question?.trim());
+  const r = clone(bot.rules);
+  const a = r.activation;
+  const list = h('div');
+  const draw = () => fill(list,
+    qs.length
+      ? qs.map((q, i) => h('div', { class: 'list-item' },
+        h('div', { class: 'row between' }, h('strong', {}, `Pregunta ${i + 1}`),
+          h('div', { class: 'row' },
+            h('button', { class: 'small', disabled: i === 0, onclick: () => { [qs[i - 1], qs[i]] = [qs[i], qs[i - 1]]; draw(); } }, '↑'),
+            h('button', { class: 'small', disabled: i === qs.length - 1, onclick: () => { [qs[i + 1], qs[i]] = [qs[i], qs[i + 1]]; draw(); } }, '↓'),
+            h('button', { class: 'small danger', onclick: () => { qs.splice(i, 1); draw(); } }, 'Quitar'))),
+        field('Pregunta (se envía tal cual)', text(q, 'question', { placeholder: '¿Para qué fecha te gustaría reservar?' })),
+        h('div', { class: 'grid' },
+          field('Tipo de respuesta', select(q, 'type', QUESTION_TYPES, draw)),
+          field('Se guarda como', text(q, 'key', { placeholder: 'Se genera de la pregunta' }), 'Minúsculas, números y guion bajo (ej. fecha_llegada).')),
+        q.type === 'option' ? field('Opciones', lines(q, 'options', { placeholder: 'Sencilla\nDoble\nSuite' }), 'Una por renglón.') : null,
+        check(q, 'required', 'Obligatoria: si no la contesta, se le vuelve a preguntar (las opcionales se hacen una sola vez)')))
+      : h('p', { class: 'muted' }, 'Aún no hay preguntas. Agrégalas en el orden en que el asistente debe hacerlas.'));
+  draw();
+  const save = async () => {
+    const used = new Set(others.map((f) => f.key));
+    for (const q of qs) {
+      q.question = (q.question || '').trim();
+      if (!q.question) return toast('Escribe el texto de cada pregunta o quítala.', true);
+      let key = (q.key || '').trim();
+      if (!key) {
+        key = questionKey(q.question);
+        for (let n = 2; used.has(key); n++) key = `${questionKey(q.question)}_${n}`;
+      }
+      if (!/^[a-z0-9_]+$/.test(key)) return toast(`La clave "${key}" solo puede tener minúsculas, números y guion bajo.`, true);
+      if (used.has(key)) return toast(`La clave "${key}" se repite: cada pregunta guarda su respuesta en una clave distinta.`, true);
+      used.add(key);
+      Object.assign(q, { key, label: q.label || dataLabel(key), options: (q.options || []).filter((x) => x.trim()) });
+    }
+    if (await saveBot(bot, { data_fields: [...qs, ...others], rules: { activation: { off_on_questions: !!a.off_on_questions } } })) render();
+  };
+  root.append(
+    h('div', { class: 'card legend' }, h('p', { style: 'margin:0' }, guaranteed(), ' El asistente hace estas preguntas en orden, una por mensaje y con tu texto. Si el cliente pregunta otra cosa, le responde y retoma la pregunta pendiente; si ya dio un dato, no se lo vuelve a preguntar. Las respuestas se guardan en el contacto. Compruébalo en ', h('a', { href: `#/bot/${bot.id}/probar` }, 'Probar'), '.')),
+    h('div', { class: 'card' },
+      h('h3', { style: 'margin-top:0' }, 'Preguntas (en orden)'),
+      list,
+      h('button', { onclick: () => { qs.push({ key: '', label: '', type: 'text', description: '', options: [], required: true, ask_when: '', question: '' }); draw(); } }, '+ Agregar pregunta'),
+      others.length ? h('p', { class: 'small muted' }, `Además guarda estos datos cuando el cliente los mencione: ${others.map((f) => f.label || f.key).join(', ')}.`) : null),
+    h('div', { class: 'card' },
+      h('h3', { style: 'margin-top:0' }, 'Al terminar las preguntas'),
+      check(a, 'off_on_questions', tag('Apagar el asistente en esa conversación cuando el cliente responda todas las preguntas', guaranteed())),
+      h('p', { class: 'small muted', style: 'margin:0' }, 'Responde ese último mensaje y después se apaga. Qué pasa al apagarse (pausa, pasar a una persona o cerrar) y el mensaje de despedida se configuran en ', h('a', { href: `#/bot/${bot.id}/activacion` }, 'Activación'), '.')),
+    saveBar(save),
+  );
+}
+
 function tabRules(root, bot) {
   const r = clone(bot.rules);
   root.append(
@@ -407,6 +474,7 @@ function tabActivation(root, bot) {
   const r = clone(bot.rules);
   const a = r.activation;
   const fields = bot.data_fields || [];
+  const questionCount = fields.filter((f) => f.question?.trim()).length;
   const onBox = h('div');
   const drawOn = () => fill(onBox,
     field(tag('¿Cuándo empieza a responder?', guaranteed()), select(a, 'mode', [['always', 'Siempre: a cualquier mensaje'], ['keywords', 'Solo cuando el cliente escriba una de estas palabras']], drawOn)),
@@ -422,13 +490,14 @@ function tabActivation(root, bot) {
       h('h3', { style: 'margin-top:0' }, '2. Desactivadores'),
       h('p', { class: 'small muted', style: 'margin-top:0' }, 'El asistente se apaga solo en esa conversación (con los demás clientes sigue igual).'),
       field('Cuando el cliente escriba alguna de estas palabras', lines(a, 'off_keywords', { placeholder: 'ya no\ngracias es todo\nno me interesa' }), 'Una por renglón. No se le pregunta a la IA.'),
-      check(a, 'off_on_goal', ['Cuando se cumpla el objetivo de la conversación', bot.flow?.goal ? h('span', { class: 'muted small' }, ` (“${bot.flow.goal}”)`) : h('span', { class: 'muted small' }, ' (define el objetivo en Avanzado)')]),
+      check(a, 'off_on_goal', ['Cuando se cumpla el objetivo de la conversación', bot.flow?.goal ? h('span', { class: 'muted small' }, ` (“${bot.flow.goal}”)`) : h('span', { class: 'muted small' }, ' (define el objetivo en ', h('a', { href: `#/bot/${bot.id}/instrucciones` }, 'Instrucciones'), ')')]),
       check(a, 'off_on_booking', 'Cuando el cliente agende una cita o llamada'),
+      check(a, 'off_on_questions', ['Cuando el cliente responda todas las preguntas', questionCount ? h('span', { class: 'muted small' }, ` (${questionCount} en la lista)`) : h('span', { class: 'muted small' }, ' (agrégalas en ', h('a', { href: `#/bot/${bot.id}/preguntas` }, 'Preguntas'), ')')]),
       field('Cuando el cliente ya haya dado todos estos datos',
         fields.length
           ? h('div', { class: 'row' }, fields.map((f) => h('label', { class: 'check' },
               h('input', { type: 'checkbox', checked: a.off_when_fields.includes(f.key), onchange: (e) => { a.off_when_fields = e.target.checked ? [...a.off_when_fields, f.key] : a.off_when_fields.filter((k) => k !== f.key); } }), f.label)))
-          : h('p', { class: 'small muted', style: 'margin:0' }, 'Los datos se guardan al conversar. Configura las preguntas en ', h('a', { href: `#/bot/${bot.id}/datos` }, 'Instrucciones'), '.'),
+          : h('p', { class: 'small muted', style: 'margin:0' }, 'Los datos se guardan al conversar. Configura las preguntas en ', h('a', { href: `#/bot/${bot.id}/preguntas` }, 'Preguntas'), '.'),
         'Responde ese mensaje y después se apaga. Ej.: al tener nombre y teléfono, para que una persona continúe.')),
     h('div', { class: 'card' },
       h('h3', { style: 'margin-top:0' }, '3. Al desactivarse'),

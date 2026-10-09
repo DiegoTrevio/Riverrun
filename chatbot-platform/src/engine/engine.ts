@@ -5,6 +5,7 @@ import { logEvent } from '../logs.js';
 import * as store from '../store/index.js';
 import type { Channel, Chatbot, Contact, Conversation, ImageAsset, Message, SavedMessage } from '../types.js';
 import { detectRisk, isAutomatedMessage, promisesFollowUp, repeatedCustomerText, SAFETY_MESSAGES, type RiskHit } from './safety.js';
+import { asksQuestion } from './questions.js';
 import { agentActive, agentStatus, offAfterReply } from './activation.js';
 import { automaticField, customerLabel, customerProvided } from './customer-data.js';
 import { CLAIM_JUDGE_PROMPT, CLAIM_JUDGE_SCHEMA } from './claims.js';
@@ -208,13 +209,15 @@ export class Engine {
     }
 
     // 2) Contexto controlado.
-    const [knowledge, allImages, sentImageIds, history] = await Promise.all([
+    const [knowledge, allImages, sentImageIds, history, questionJourney] = await Promise.all([
       store.listKnowledge(bot.id, true),
       store.listImages(bot.id, false),
       store.sentImageIds(conv.id),
       // Todo lo que aún no está en el resumen (así no hay huecos de memoria). El resumidor
       // mantiene esto acotado a ~recent_messages + summary_batch mensajes.
       store.unsummarizedMessages(conv.id, conv.summary_until_id, bot.ai.recent_messages + bot.ai.summary_batch + pending.length + 4),
+      // Preguntas de la lista: cuáles ya se hicieron en este recorrido y si ya se terminaron.
+      store.questionJourney(conv.id),
     ]);
     const images = allImages.filter((i) => i.active);
     const semantic = await semanticKnowledge(bot, knowledge, [...history.slice(-4).filter((m) => m.direction === 'in').map((m) => m.content), customerText].join('\n'), this.ai);
@@ -255,6 +258,7 @@ export class Engine {
       const ctx = buildContext({
         bot, knowledge: semantic ?? knowledge, knowledgeSelected: semantic !== null, images: aiImages, contact, conversation: conv, channelType: channel.type, history, pending, sentImageIds, imagesById, correction, intents, agenda: agendaCtx, business,
         autoImages, contextImages: contextualImages(images), imagesNow: scheduledBefore.map((x) => x.image),
+        questionAsked: questionJourney.asked,
       });
       let completion;
       try {
@@ -299,6 +303,7 @@ export class Engine {
         knownName: contact.name || undefined,
         recentBotTexts,
         customerRepeats,
+        questionJourney,
       };
       const v = validateDecision({ ...lastInput, final: attempt === MAX_ATTEMPTS });
       // Modo estricto: un modelo barato revisa que lo afirmado esté respaldado (solo si lo demás ya pasó).
@@ -351,7 +356,8 @@ export class Engine {
       } else if (bot.rules.unknown_info_behavior === 'handoff') {
         plan = { ...base, action: 'handoff', messages: [], images: [], handoffReason: 'El bot no pudo dar una respuesta verificada' };
       } else {
-        plan = { ...base, action: 'reply', messages: [bot.rules.fallback_message], images: [] };
+        // La respuesta de respaldo no deja atrás la pregunta pendiente de la lista.
+        plan = { ...base, action: 'reply', messages: [bot.rules.fallback_message, ...(base.question ? [base.question.text] : [])], images: [] };
       }
       await log('warn', 'validator', 'Se usó la respuesta de respaldo tras fallar la validación', { issues: retryable, decision: lastRaw });
     }
@@ -399,7 +405,8 @@ export class Engine {
         await this.ext.agenda.cancel(plan.booking.appointmentId, 'Cancelada por el cliente en el chat', 'bot');
       }
     }
-    const meta = { action: plan.action, info_not_found: plan.infoNotFound, fallback: fallbackUsed };
+    // questions_done: marca el turno en que se terminó la lista de preguntas (no se vuelve a avisar en este recorrido).
+    const meta = { action: plan.action, info_not_found: plan.infoNotFound, fallback: fallbackUsed, ...(plan.questionsCompleted ? { questions_done: true } : {}) };
     // Recorrido: el objetivo solo cuenta una vez por conversación (hasta que se cierre y se reabra).
     const goalReached = plan.goalCompleted && !conv.goal_completed_at;
     const goalHandoff = goalReached && bot.flow.on_goal_action === 'handoff' && plan.action !== 'handoff';
@@ -485,7 +492,7 @@ export class Engine {
     // Desactivadores después de responder (objetivo, cita, datos completos).
     let ended = goalHandoff;
     if (plan.action !== 'handoff' && !goalHandoff) {
-      const why = offAfterReply(bot.rules.activation, { goalReached, booked, before: { name: nameBefore, data: dataBefore }, after: contact });
+      const why = offAfterReply(bot.rules.activation, { goalReached, booked, questionsCompleted: plan.questionsCompleted, before: { name: nameBefore, data: dataBefore }, after: contact });
       if (why) {
         ended = true;
         await this.deactivate(bot, conv, contact, transport, why);
@@ -528,9 +535,13 @@ export class Engine {
     const texts = transport.kind === 'email' && plan.messages.length > 1 ? [plan.messages.join('\n\n')] : plan.messages;
     // Si una persona tomó la conversación mientras la IA respondía, lo que falta de la respuesta ya no sale.
     const stillBot = async () => (await store.getConversation(conv.id))?.status === 'bot';
+    // El mensaje que hace la pregunta pendiente de la lista queda marcado (así se sabe cuántas veces se hizo).
+    let questionTagged = false;
     for (const text of texts) {
       if (!(await stillBot())) return [];
-      await this.sendOut(bot, conv, transport, { sender: 'bot', text, delay: typingDelay(text, typing), meta });
+      const asks = !!plan.question && !questionTagged && asksQuestion(text, { question: plan.question.text });
+      if (asks) questionTagged = true;
+      await this.sendOut(bot, conv, transport, { sender: 'bot', text, delay: typingDelay(text, typing), meta: asks ? { ...meta, question: plan.question!.key } : meta });
     }
     for (const { message: m, image } of saved) {
       const savedMeta = { ...meta, saved_message: m.code };

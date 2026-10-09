@@ -18,7 +18,7 @@ export function automaticField(label: string): DataField | null {
   const key = Object.hasOwn(ALIASES, raw) ? ALIASES[raw] : raw;
   if (!/^[a-z][a-z0-9_]{0,63}$/.test(key) || ['constructor', 'prototype', 'proto'].includes(key)) return null;
   const type = key === 'nombre' ? 'name' : key === 'correo' ? 'email' : key === 'telefono' ? 'phone' : 'text';
-  return { key, label: key.replace(/_/g, ' '), type, options: [], description: '', required: false, ask_when: '' };
+  return { key, label: key.replace(/_/g, ' '), type, options: [], description: '', required: false, ask_when: '', question: '' };
 }
 
 /** Palabras de un texto, sin mayúsculas, acentos ni puntuación ("Col. Centro," → col, centro). */

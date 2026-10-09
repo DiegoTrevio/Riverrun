@@ -84,6 +84,8 @@ export const RulesSchema = z.object({
       off_when_fields: z.array(z.string()).default([]),
       off_on_goal: z.boolean().default(false),
       off_on_booking: z.boolean().default(false),
+      /** Se apaga después de responder, en el turno en que el cliente contesta la última pregunta de la lista. */
+      off_on_questions: z.boolean().default(false),
       /** pause: deja de responder sin avisar · handoff: pasa a una persona · close: cierra la conversación. */
       off_action: z.enum(['pause', 'handoff', 'close']).default('pause'),
       /** Mensaje opcional que se envía al apagarse. */
@@ -91,7 +93,7 @@ export const RulesSchema = z.object({
       /** Horas tras las que se reactiva solo (0 = solo con palabra de activación o a mano). */
       resume_after_hours: z.number().min(0).max(720).default(0),
     })
-    .default({ mode: 'always', on_keywords: [], off_keywords: [], off_when_fields: [], off_on_goal: false, off_on_booking: false, off_action: 'pause', off_message: '', resume_after_hours: 0 }),
+    .default({ mode: 'always', on_keywords: [], off_keywords: [], off_when_fields: [], off_on_goal: false, off_on_booking: false, off_on_questions: false, off_action: 'pause', off_message: '', resume_after_hours: 0 }),
 });
 export type Rules = z.infer<typeof RulesSchema>;
 export type Activation = Rules['activation'];
@@ -105,6 +107,11 @@ export const DataFieldSchema = z.object({
   required: z.boolean().default(false),
   /** Cuándo pedir el dato, p.ej. "cuando el cliente quiera cotizar". */
   ask_when: z.string().default(''),
+  /**
+   * Pregunta exacta (apartado "Preguntas"). Los datos con pregunta forman una lista ordenada que el
+   * asistente sigue paso a paso, una a la vez; los que no tienen se piden cuando tenga sentido.
+   */
+  question: z.string().max(500).default(''),
 });
 export type DataField = z.infer<typeof DataFieldSchema>;
 export const DataFieldsSchema = z.array(DataFieldSchema).default([]);

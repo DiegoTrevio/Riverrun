@@ -27,11 +27,19 @@ const ChatbotBody = z.object({
   personality: PersonalitySchema.optional(),
   rules: RulesSchema.optional(),
   // Sin .default(): un PUT parcial no debe reiniciar los campos.
-  data_fields: z.array(DataFieldSchema).optional(),
+  // Datos a recopilar y apartado "Preguntas" (los datos con pregunta, en orden). La clave identifica la respuesta.
+  data_fields: z.array(DataFieldSchema).refine((list) => new Set(list.map((f) => f.key)).size === list.length, { message: 'Hay dos preguntas o datos con la misma clave' }).optional(),
   flow: FlowSchema.optional(),
   ai: AiSettingsSchema.optional(),
   saved_messages: SavedMessagesSchema.optional(),
 });
+
+/** En modo "solo con palabras" sin ninguna palabra, el asistente nunca respondería. */
+function checkActivation(rules: { activation: { mode: string; on_keywords: string[] } } | undefined) {
+  if (rules?.activation.mode === 'keywords' && !rules.activation.on_keywords.some((k) => k.trim())) {
+    throw new HttpError(400, 'Para que responda solo con palabras de activación, agrega al menos una palabra.');
+  }
+}
 
 /** La foto de un mensaje guardado debe ser del mismo asistente (nunca de otro ni de otra cuenta). */
 async function checkSavedImages(botId: string | null, list: SavedMessage[] | undefined) {
@@ -134,6 +142,7 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
     await assertWithinLimit(accountId, 'chatbots');
     // Un asistente nuevo todavía no tiene fotos.
     await checkSavedImages(null, b.saved_messages);
+    checkActivation(b.rules);
     const { template, account_id, setup, ...input } = b;
     void account_id;
     let base: Record<string, unknown> = {};
@@ -189,6 +198,7 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
         data[key] = schema.parse(merged);
       }
     }
+    checkActivation(data.rules);
     // Al cambiar el trato (tú/usted), los mensajes fijos de fábrica se ajustan para no mezclar tratos.
     const formality = data.personality?.formality;
     if (formality && formality !== existing.personality.formality) data.rules = alignFixedMessages(data.rules ?? existing.rules, formality);
