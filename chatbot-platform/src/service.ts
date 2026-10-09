@@ -10,7 +10,7 @@ import * as astore from './automation/store.js';
 import { isOpen, nextOpen, spanishDate, spanishTime } from './automation/time.js';
 import { detectRisk, maskSensitive } from './engine/safety.js';
 import { customerLabel } from './engine/customer-data.js';
-import { cleanText, deepClean } from './engine/text.js';
+import { cleanText, deepClean, toPlainText } from './engine/text.js';
 import { adapterFor } from './channels/index.js';
 import { INBOUND_MEDIA_MAX_BYTES, removeInboundFiles, saveInboundMedia, type StoredMedia } from './channels/media.js';
 import { config } from './config.js';
@@ -237,6 +237,10 @@ export class ChatService {
       await this.handleOwnMessage(bot, conv, msg);
       return { conversationId: conv.id, messageId: null };
     }
+    // Zernio entrega al menos una vez: un reintento de un mensaje ya guardado no debe volver a responderse.
+    if (channel.type === 'zernio' && (await store.findMessageByExternalId(conv.id, msg.messageId))) {
+      return { conversationId: conv.id, messageId: null };
+    }
 
     let content = describeInbound(msg);
     const adapter = adapterFor(channel.type);
@@ -310,8 +314,9 @@ export class ChatService {
 
     let current = conv;
     if (conv.status === 'closed' && triggers) {
-      // El cliente vuelve a escribir: se reabre (la memoria se conserva; el recorrido empieza de nuevo).
-      await store.resetFlowState(conv.id);
+      // El cliente vuelve a escribir: se reabre (la memoria se conserva; el recorrido empieza de nuevo, salvo que una
+      // campaña lo haya empezado en una etapa después del cierre: entonces sigue desde ahí).
+      await store.resetFlowState(conv.id, { keepCampaignStart: true });
       current = (await store.setConversationStatus(conv.id, 'bot', '')) ?? conv;
     } else if (conv.status === 'human' && bot && bot.rules.auto_resume_minutes > 0) {
       const lastHuman = await store.lastHumanActivity(conv.id);
@@ -407,6 +412,8 @@ export class ChatService {
     const known =
       (await store.findMessageByExternalId(conv.id, msg.messageId)) ??
       (msg.text ? await store.findRecentOutgoingEcho(conv.id, msg.text) : null) ??
+      // Algunas plataformas (Zernio) devuelven el eco sin formato: "*doble*" vuelve como "doble".
+      (msg.text ? (await store.recentOutgoing(conv.id)).find((m) => toPlainText(m.content).trim() === toPlainText(msg.text).trim()) ?? null : null) ??
       (msg.type === 'image' ? await store.findRecentOutgoingImageEcho(conv.id) : null);
     if (known) {
       if (!known.external_message_id) await store.updateMessage(known.id, { external_message_id: msg.messageId });

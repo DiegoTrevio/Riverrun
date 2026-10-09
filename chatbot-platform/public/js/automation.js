@@ -450,6 +450,7 @@ async function editCampaign(root, id) {
   if (id !== 'new' && !existing) throw new Error('Campaña no encontrada');
   const c = existing ? clone(existing) : { name: '', channel_id: channels[0]?.id || '', message: '', image_id: null, audience: { tags_any: [], tags_none: [], active_within_days: 0, statuses: [] }, scheduled_at: null, rate_per_minute: 20, business_hours_only: true, status: 'draft' };
   c.image_id ??= '';
+  c.flow_step ??= 0;
   const editable = ['draft', 'scheduled'].includes(c.status);
   const local = { when: c.scheduled_at ? new Date(new Date(c.scheduled_at).getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16) : '' };
   const previewBox = h('div');
@@ -494,7 +495,8 @@ async function editCampaign(root, id) {
         field('Canal', select(c, 'channel_id', channels.map((ch) => [ch.id, `${ch.name} (${ch.label})`]), () => { c.channel_ids = []; if (editable) { drawExtra(); } }))),
       extraBox,
       field('Mensaje', area(c, 'message', { big: true }), VARS_HELP),
-      field('Imagen (opcional)', select(c, 'image_id', [['', '— Sin imagen —'], ...refs.images.map((im) => [im.id, `${im.name} (${im.bot})`])]))),
+      field('Imagen (opcional)', select(c, 'image_id', [['', '— Sin imagen —'], ...refs.images.map((im) => [im.id, `${im.name} (${im.bot})`])]), 'Con texto, la foto sale con el mensaje como pie en un solo envío.'),
+      field('Etapa del recorrido al enviarla', num(c, 'flow_step', { min: 0, max: 50 }), 'Si es el primer mensaje de un recorrido, indica la etapa en la que queda cada conversación: el asistente sigue el flujo desde ahí cuando el cliente responda. 0 = no cambia.')),
     h('div', { class: 'card' },
       h('h3', { style: 'margin-top:0' }, 'A quién'),
       h('div', { class: 'grid' },

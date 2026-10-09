@@ -23,6 +23,12 @@ export interface Transport {
   notify(number: string, text: string): Promise<void>;
 }
 
+/**
+ * Largo máximo de un texto que va como pie de foto (Telegram y WhatsApp rechazan pies de más de 1024 caracteres).
+ * Un texto más largo se envía aparte, antes de la foto.
+ */
+export const CAPTION_MAX = 1024;
+
 export function imageAbsolutePath(img: Pick<ImageAsset, 'file_path'>) {
   return path.isAbsolute(img.file_path) ? img.file_path : path.join(config.uploadsDir, img.file_path);
 }

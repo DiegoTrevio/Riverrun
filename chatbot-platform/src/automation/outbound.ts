@@ -1,6 +1,6 @@
 import { messageQuota } from '../billing/limits.js';
 import { attachmentAbsolutePath } from '../attachments.js';
-import { PlaygroundTransport, type OutgoingFile } from '../engine/transport.js';
+import { CAPTION_MAX, PlaygroundTransport, type OutgoingFile } from '../engine/transport.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
@@ -22,6 +22,8 @@ export interface OutboundOptions {
   appointment?: Appointment | null;
   location?: string;
   meta?: Record<string, unknown>;
+  /** Etapa del recorrido en la que queda la conversación al enviarse (0 = no cambia). Así el asistente sigue el flujo desde ahí. */
+  flowStep?: number;
 }
 
 export type OutboundResult = { sent: true } | { sent: false; reason: string };
@@ -30,7 +32,7 @@ const META_WINDOW_MS = 24 * 3600 * 1000;
 
 /**
  * Envío proactivo (no es respuesta a un mensaje): automatizaciones, secuencias, campañas y recordatorios.
- * Aplica las políticas antes de enviar: bajas, canal activo, conversación con humano y la ventana de 24 h de Meta.
+ * Aplica las políticas antes de enviar: bajas, canal activo, conversación con humano y la ventana de 24 h (Meta y Zernio).
  */
 /** Orígenes que son promoción (llevan pie de baja y exigen consentimiento): campañas y secuencias. */
 const PROMOTIONAL_SOURCES = new Set(['campaign', 'sequence']);
@@ -59,11 +61,13 @@ export class Outbound {
       if (st.consent.require_for_campaigns && !contact.consent_at) return { sent: false, reason: 'el cliente no ha aceptado recibir promociones' };
     }
     if (conv.status === 'human' && !o.allowWhenHuman) return { sent: false, reason: 'una persona está atendiendo la conversación' };
-    if (channel.type === 'messenger' || channel.type === 'instagram') {
-      // Meta solo permite escribir dentro de las 24 h posteriores al último mensaje del cliente.
+    if (channel.type === 'messenger' || channel.type === 'instagram' || channel.type === 'zernio') {
+      // Meta solo permite escribir dentro de las 24 h posteriores al último mensaje del cliente. Zernio no documenta
+      // las reglas de cada red, así que se aplica la misma política por prudencia.
       const last = await astore.lastInbound(conv.id);
       if (!last || Date.now() - new Date(last.created_at).getTime() > META_WINDOW_MS) {
-        return { sent: false, reason: 'fuera de la ventana de 24 h de Meta (el cliente no ha escrito recientemente)' };
+        const reason = channel.type === 'zernio' ? 'fuera de la ventana de 24 h (el cliente no ha escrito recientemente)' : 'fuera de la ventana de 24 h de Meta (el cliente no ha escrito recientemente)';
+        return { sent: false, reason };
       }
     }
 
@@ -103,12 +107,24 @@ export class Outbound {
     const meta = { source: o.source, ...o.meta };
     // Nunca en paralelo con una respuesta del bot en la misma conversación.
     const ok = await this.chat.queue.exclusive(conv.id, async () => {
-      if (text) {
-        const m = await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text: textOut, delay: 0, meta });
-        if (!m) return false;
-      }
       if (image) {
-        const m = await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text: captionFooter ? `${image.caption}${image.caption ? '\n\n' : ''}${captionFooter}` : image.caption, image, delay: 0, meta });
+        // Texto y foto juntos: un solo mensaje con el texto como pie (sin texto, el pie de la foto). Un texto que no
+        // cabe como pie sale antes, aparte, y la foto después con su propio pie.
+        const together = textOut.length <= CAPTION_MAX;
+        if (textOut && !together) {
+          const t = await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text: textOut, delay: 0, meta });
+          if (!t) return false;
+        }
+        const caption = (together && textOut) || (captionFooter ? `${image.caption}${image.caption ? '\n\n' : ''}${captionFooter}` : image.caption);
+        const m = await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text: caption, image, delay: 0, meta });
+        if (!m) {
+          // Si la plataforma rechaza la foto, el cliente igual recibe el texto.
+          if (!textOut || !together) return !!textOut;
+          const t = await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text: textOut, delay: 0, meta: { ...meta, image_failed: true } });
+          if (!t) return false;
+        }
+      } else if (text) {
+        const m = await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text: textOut, delay: 0, meta });
         if (!m) return false;
       }
       if (file) {
@@ -118,6 +134,10 @@ export class Outbound {
       return true;
     });
     if (!ok) return { sent: false, reason: 'la plataforma rechazó el envío (ver registros)' };
+    // El asistente continúa el recorrido desde la etapa indicada cuando el cliente responda.
+    const steps = bot?.flow.steps.length ?? 0;
+    // Empieza un recorrido nuevo en esa etapa: si la conversación estaba cerrada, al contestar el cliente no se reinicia.
+    if (o.flowStep && o.flowStep <= steps) await store.startFlowAt(conv.id, o.flowStep);
     await logEvent({ level: 'info', source: 'engine', message: `Mensaje programado enviado (${o.source})`, accountId: conv.account_id, channelId: conv.channel_id, conversationId: conv.id });
     return { sent: true };
   }
