@@ -61,7 +61,7 @@ export function shell(active, content) {
   return h('div', { class: 'layout' },
     h('nav', { class: 'sidebar' },
       h('div', { class: 'brand' }, brand.logo ? brandMark(32) : `💬 ${brand.name === 'Panel de Chatbots' ? 'Chatbots' : brand.name}`,
-        h('button', { class: 'nav-toggle', type: 'button', 'aria-label': 'Abrir o cerrar el menú', onclick: (e) => e.currentTarget.closest('.layout').classList.toggle('nav-open') }, '☰ Menú')),
+        h('button', { class: 'nav-toggle', type: 'button', 'aria-label': 'Abrir o cerrar el menú', 'aria-expanded': 'false', onclick: (e) => { const open = e.currentTarget.closest('.layout').classList.toggle('nav-open'); e.currentTarget.setAttribute('aria-expanded', String(open)); } }, '☰ Menú')),
       switcher,
       simple ? simpleLinks(link) : [
       isAdmin() ? navGroup('Asistentes', ['home', 'bot', 'channels', 'channel', 'inicio', 'conectar'], [

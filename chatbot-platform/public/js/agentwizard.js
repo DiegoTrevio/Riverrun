@@ -127,7 +127,7 @@ export function agentWizard({ hidden }) {
 
   function draw() {
     drawSources();
-    fill(body, stepper(), h('div', { class: 'stack' }, views[step]()),
+    fill(body, stepper(), h('div', { class: 'stack wizard-step' }, views[step]()),
       h('div', { class: 'row between', style: 'margin-top:12px' },
         step > 0 ? h('button', { onclick: () => go(step - 1) }, '← Atrás') : h('span'),
         step < STEPS.length - 1
