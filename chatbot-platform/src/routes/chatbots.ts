@@ -12,13 +12,14 @@ import { withTransaction } from '../db.js';
 import { config } from '../config.js';
 import { OpenAiProvider } from '../ai/provider.js';
 import { indexKnowledge, knowledgeIndexStatus } from '../engine/knowledge.js';
+import { mentionsPhotoCode, photoWarnings } from '../engine/photo-check.js';
 import { isSensitiveField } from '../engine/safety.js';
 import { imageAbsolutePath } from '../engine/transport.js';
 import { assertWithinLimit } from '../billing/limits.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
-import { AiSettingsSchema, DataFieldSchema, FlowSchema, ImageSendWhenSchema, PersonalitySchema, RulesSchema, SavedMessagesSchema, type Chatbot, type SavedMessage, type User } from '../types.js';
+import { AiSettingsSchema, DataFieldSchema, FlowSchema, ImageSendWhenSchema, imageSendWhen, PersonalitySchema, RulesSchema, SavedMessagesSchema, type Chatbot, type SavedMessage, type User } from '../types.js';
 import { alignFixedMessages, chatbotFromTemplate } from '../templates/business.js';
 import { parse, readUpload, saveFile, type UploadFile } from './util.js';
 
@@ -42,6 +43,11 @@ const ChatbotBody = z.object({
   flow: FlowSchema.optional(),
   ai: AiSettingsSchema.optional(),
   saved_messages: SavedMessagesSchema.optional(),
+  /**
+   * Al quitar o reordenar etapas del recorrido: etapa anterior (posición + 1) → etapa nueva (0 = se quitó). Las fotos y
+   * los mensajes guardados que se envían en una etapa la siguen.
+   */
+  flow_step_map: z.array(z.number().int().min(0).max(50)).max(50).optional(),
 });
 
 type ActivationRules = { activation: { mode: string; on_keywords: string[] } };
@@ -203,7 +209,7 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
       const view = publicChannel(c);
       return req.user.role === 'agent' ? { ...view, webhook_token: undefined, webhook_url: undefined, embed_code: undefined } : view;
     });
-    return { ...visibleBot(req.user, bot), channels };
+    return { ...visibleBot(req.user, bot), channels, photo_warnings: photoWarnings(bot, await store.listImages(bot.id)) };
   });
 
   api.put('/api/chatbots/:id', admins, async (req: any) => {
@@ -223,6 +229,22 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
       }
     }
     checkActivation(data.rules, existing.rules);
+    const stepMap: number[] | undefined = data.flow_step_map;
+    delete data.flow_step_map;
+    if (stepMap && data.flow) {
+      // Una etapa que ya no existía antes (quedó de otro cambio) tampoco existe ahora: se quita.
+      const remap = (n: number) => (n >= 1 && n <= stepMap.length ? stepMap[n - 1] : 0);
+      for (const img of await store.listImages(existing.id)) {
+        const w = imageSendWhen(img);
+        if (!w.flow_steps.length) continue;
+        const steps = [...new Set(w.flow_steps.map(remap).filter((n) => n > 0))];
+        if (steps.join() !== w.flow_steps.join()) await store.updateImage(img.id, { send_when: { ...w, flow_steps: steps } });
+      }
+      const saved: SavedMessage[] = data.saved_messages ?? existing.saved_messages;
+      if (saved.some((m) => m.flow_step)) data.saved_messages = saved.map((m) => ({ ...m, flow_step: m.flow_step ? remap(m.flow_step) : 0 }));
+      // Las conversaciones en curso siguen en la misma etapa (con su nuevo número).
+      await store.remapFlowSteps(existing.id, stepMap);
+    }
     // Al cambiar el trato (tú/usted), los mensajes fijos de fábrica se ajustan para no mezclar tratos.
     const formality = data.personality?.formality;
     if (formality && formality !== existing.personality.formality) data.rules = alignFixedMessages(data.rules ?? existing.rules, formality);
@@ -387,14 +409,25 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
       throw e;
     }
     if (file) await fsp.rm(imageAbsolutePath(img), { force: true });
-    return updated;
+    // Cambió el ID y las instrucciones todavía piden la foto con el ID anterior: se avisa (la IA ya no la encontraría).
+    let warning = '';
+    if (typeof patch.code === 'string' && patch.code !== img.code) {
+      const bot = await store.getChatbot(img.chatbot_id);
+      if (bot && mentionsPhotoCode(bot, img.code)) warning = `Las instrucciones todavía mencionan «${img.code}»: cámbialo por «${patch.code}» para que el asistente la encuentre.`;
+    }
+    return warning ? { ...updated, warning } : updated;
   });
 
   api.delete('/api/images/:iid', admins, async (req: any) => {
     const img = await imageFor(req.user, req.params.iid);
-    await store.deleteImage(img.id);
+    const used = await store.deleteImage(img.id);
     await fsp.rm(imageAbsolutePath(img), { force: true });
-    return { ok: true };
+    const names = [...used.automations.map((n) => `regla «${n}»`), ...used.sequences.map((n) => `secuencia «${n}»`)];
+    if (names.length) {
+      const bot = await store.getChatbot(img.chatbot_id);
+      await logEvent({ level: 'warn', source: 'admin', message: `Foto ${img.code} eliminada: se quitó de ${names.join(', ')}`, accountId: bot?.account_id, chatbotId: img.chatbot_id });
+    }
+    return { ok: true, warning: names.length ? `La foto se quitó de: ${names.join(', ')}. Revisa que sigan enviando lo que esperas.` : '' };
   });
 
   // Los agentes también ven las imágenes (aparecen en las conversaciones).

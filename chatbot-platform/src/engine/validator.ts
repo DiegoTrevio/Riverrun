@@ -104,7 +104,45 @@ export interface ValidationInput {
   activeImageIds?: string[];
 }
 
-const IMAGE_PROMISE_RE = /\b(te|le|les)\s+(env[ií]o|mando|comparto|paso|dejo|adjunto)\b[^.?!\n]{0,40}\b(foto|fotos|imagen|imagenes|imágenes|men[uú]|cat[aá]logo|flyer|folleto)\b|\b(aqu[ií]|ah[ií])\s+(te|le)?\s*(va|van|est[aá]n?|tienes?)\b[^.?!\n]{0,30}\b(foto|fotos|imagen|imágenes|imagenes)\b/i;
+// Promesas de foto ("te mando la foto", "aquí está el menú", "te voy a compartir las fotos"…). Con la bandera u: sin ella,
+// \b no reconoce "menú" ni "está". Los sustantivos que pueden ser texto (menú, catálogo, folleto) solo cuentan si el
+// catálogo tiene una foto con ese nombre (ver promisesPhoto).
+const B = '(?<![\\p{L}\\p{N}])';
+const E = '(?![\\p{L}\\p{N}])';
+const PHOTO_NOUN = '(?:fotos?|fotograf[ií]as?|imagen|im[aá]genes)';
+const TEXT_NOUN = '(?:men[uú]s?|cat[aá]logos?|flyers?|folletos?)';
+const SEND_VERB = '(?:env[ií]o|reenv[ií]o|mando|comparto|paso|dejo|adjunto|muestro|enseño|enviar[eé]|mandar[eé]|compartir[eé]|pasar[eé]|mostrar[eé]|vuelvo\\s+a\\s+(?:enviar|mandar|pasar|compartir))';
+const promiseRe = (noun: string) =>
+  new RegExp(
+    [
+      `${B}(?:te|le|les)\\s+(?:(?:la|lo|las|los)\\s+)?${SEND_VERB}${E}[^.?!\\n]{0,40}${B}${noun}${E}`,
+      `${B}(?:te|le|les)\\s+voy\\s+a\\s+(?:enviar|mandar|compartir|pasar|mostrar|enseñar|reenviar)${E}[^.?!\\n]{0,40}${B}${noun}${E}`,
+      `${B}(?:enviarte|mandarte|compartirte|pasarte|mostrarte|enseñarte|enviarle|mandarle|compartirle|pasarle|mostrarle)${E}[^.?!\\n]{0,40}${B}${noun}${E}`,
+      `${B}(?:aqu[ií]|ah[ií]|ac[aá])\\s+(?:te\\s+|le\\s+)?(?:va|van|est[aá]n?|tienes?|tiene|dejo)${E}[^.?!\\n]{0,30}${B}${noun}${E}`,
+    ].join('|'),
+    'iu',
+  );
+const IMAGE_PROMISE_RE = promiseRe(PHOTO_NOUN);
+const TEXT_PROMISE_RE = promiseRe(TEXT_NOUN);
+// "Te la mando", "aquí la tienes de nuevo": solo cuenta si el cliente habla de una foto (si no, "la" puede ser otra cosa).
+const PRONOUN_PROMISE_RE = new RegExp(`${B}(?:(?:te|le)\\s+(?:la|las)\\s+${SEND_VERB}|(?:aqu[ií]|ah[ií])\\s+(?:te\\s+|le\\s+)?(?:la|las)\\s+(?:tienes|tiene|dejo|va|van))${E}`, 'iu');
+const CUSTOMER_PHOTO_RE = /(?<![\p{L}\p{N}])(?:fotos?|fotografias?|imagen|imagenes|otra\s+vez|de\s+nuevo|reenv\p{L}*|vuelv\p{L}*\s+a\s+(?:mandar|enviar|pasar|compartir)|volver\s+a\s+(?:mandar|enviar|pasar|compartir)|no\s+(?:me\s+)?(?:llego|abrio|abre|cargo|carga|se\s+ve|veo|aparece))(?![\p{L}\p{N}])/u;
+// El cliente pide que se la vuelvan a enviar (sin nombrar cuál).
+const RESEND_RE = /(?<![\p{L}\p{N}])(?:otra\s+vez|de\s+nuevo|reenv\p{L}*|vuelv\p{L}*\s+a\s+(?:mandar|enviar|pasar|compartir)|volver\s+a\s+(?:mandar|enviar|pasar|compartir)|no\s+(?:me\s+)?(?:llego|abrio|abre|cargo|carga|se\s+ve|veo|aparece))(?![\p{L}\p{N}])/u;
+const PHOTO_WORD_RE = /(?<![\p{L}\p{N}])(?:fotos?|fotografias?|imagen|imagenes)(?![\p{L}\p{N}])/u;
+
+/** ¿El texto (ya normalizado) nombra esta foto, por su ID o por su nombre? */
+function namesImage(textNorm: string, img: Pick<ImageAsset, 'code' | 'name'>): boolean {
+  const has = (term: string) => term.length >= 3 && new RegExp(`(?<![\\p{L}\\p{N}])${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}])`, 'u').test(textNorm);
+  return has(normalize(img.code).replace(/[_-]+/g, ' ')) || has(normalize(img.code)) || has(normalize(img.name));
+}
+
+/** Fotos del catálogo que nombra un texto (la más específica: "suite deluxe" gana sobre "suite"). */
+function namedImages(text: string, catalog: ImageAsset[]): ImageAsset[] {
+  const t = normalize(text);
+  const hits = catalog.filter((img) => namesImage(t, img));
+  return hits.filter((a) => !hits.some((b) => b !== a && normalize(b.name).includes(normalize(a.name)) && normalize(b.name) !== normalize(a.name)));
+}
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
@@ -262,10 +300,15 @@ export function validateDecision(input: ValidationInput): ValidationResult {
   // foto ya no está o no cabe) no cuenta como respuesta.
   const activeIds = input.activeImageIds ? new Set(input.activeImageIds) : null;
   let savedSlots = rules.max_images_per_reply;
+  // Fotos que realmente salen con los mensajes guardados (la misma foto en dos mensajes sale una sola vez).
+  const savedPhotoIds = new Set<string>();
   const savedCodes = known.filter((c) => {
     const m = savedByCode.get(c)!;
-    const photo = !!m.image_id && (!activeIds || activeIds.has(m.image_id)) && savedSlots > 0;
-    if (photo) savedSlots--;
+    const photo = !!m.image_id && (!activeIds || activeIds.has(m.image_id)) && !savedPhotoIds.has(m.image_id) && savedSlots > 0;
+    if (photo) {
+      savedSlots--;
+      savedPhotoIds.add(m.image_id);
+    }
     if (photo || m.text.trim()) return true;
     fixes.push(`Mensaje guardado "${c}" descartado: solo tiene foto y no se puede enviar (inactiva o sin lugar)`);
     return false;
@@ -369,33 +412,55 @@ export function validateDecision(input: ValidationInput): ValidationResult {
 
   // ---------- Imágenes: solo del catálogo ----------
   const byCode = new Map(input.images.filter((i) => i.active).map((i) => [normalize(i.code), i]));
+  // Todas las fotos activas del asistente (también las que solo envía el sistema): para reconocer las que se nombran.
+  const catalog = (input.automaticImages ?? input.images).filter((i) => i.active);
+  const catalogByCode = new Map(catalog.map((i) => [normalize(i.code), i]));
   const images: ImageAsset[] = [];
   const invalidIds: string[] = [];
+  /** Fotos automáticas ("solo en estos momentos") que la IA puso en image_ids: las envía el sistema, no la IA. */
+  const autoPicked: ImageAsset[] = [];
+  /** Fotos ya enviadas que el cliente no pidió de nuevo. */
+  const repeated: ImageAsset[] = [];
+  // ¿El cliente pidió volver a ver esta foto? Si nombra fotos, solo esas; si pide "otra vez" o "la foto" sin nombrar, cualquiera.
+  const customerPlain = normalize(input.customerText);
+  const mentioned = catalog.filter((img) => namesImage(customerPlain, img));
+  const askedAgain = (img: ImageAsset) =>
+    mentioned.length ? mentioned.some((m) => m.id === img.id) : RESEND_RE.test(customerPlain) || PHOTO_WORD_RE.test(customerPlain);
   for (const id of d.image_ids) {
     const img = byCode.get(normalize(id));
     if (!img) {
-      invalidIds.push(id);
+      const auto = catalogByCode.get(normalize(id));
+      if (auto) {
+        if (!autoPicked.includes(auto)) autoPicked.push(auto);
+      } else invalidIds.push(id);
       continue;
     }
     if (images.some((x) => x.id === img.id)) continue;
-    const customerAsked = /\b(foto|fotos|imagen|imagenes|imágenes|men[uú]|cat[aá]logo|otra vez|de nuevo|reenv)/i.test(input.customerText);
-    if (rules.avoid_repeating_images && input.sentImageIds.includes(img.id) && !customerAsked) {
+    if (rules.avoid_repeating_images && input.sentImageIds.includes(img.id) && !askedAgain(img)) {
       fixes.push(`Imagen "${img.code}" omitida: ya se había enviado`);
+      repeated.push(img);
       continue;
     }
     images.push(img);
   }
   if (invalidIds.length) fixes.push(`IDs de imagen inexistentes descartados: ${invalidIds.join(', ')}`);
+  if (autoPicked.length) fixes.push(`Fotos automáticas fuera de image_ids (las envía el sistema en su momento): ${autoPicked.map((i) => i.code).join(', ')}`);
   if (images.length > rules.max_images_per_reply) {
     fixes.push(`Se limitaron las imágenes a ${rules.max_images_per_reply}`);
     images.splice(rules.max_images_per_reply);
+  }
+  // Las fotos de los mensajes guardados ocupan primero su lugar en el máximo por respuesta.
+  const overLimit: ImageAsset[] = [];
+  const room = Math.max(0, rules.max_images_per_reply - savedPhotoIds.size);
+  if (images.length > room) {
+    overLimit.push(...images.splice(room));
+    fixes.push(`Fotos que no caben (los mensajes guardados ya ocupan el máximo de ${rules.max_images_per_reply}): ${overLimit.map((i) => i.code).join(', ')}`);
   }
   if (action === 'reply_with_image' && !images.length) {
     if (invalidIds.length) soft(`Los IDs de imagen ${invalidIds.join(', ')} no existen. Usa solo IDs del catálogo o responde sin imagen.`, () => undefined, 'Se respondió sin imagen');
     action = 'reply';
   }
   if (images.length && action !== 'handoff') action = 'reply_with_image';
-
 
   // ---------- Verificación de hechos (cero invenciones) ----------
   if (rules.verify_facts && messages.length) {
@@ -543,12 +608,10 @@ export function validateDecision(input: ValidationInput): ValidationResult {
     }
   }
 
-  // ---------- Coherencia de la acción ----------
+  // ---------- Coherencia de la acción (sin mensajes) ----------
   if (action === 'no_reply') {
     if (messages.length) fixes.push('Acción no_reply con mensajes: se descartaron los mensajes');
     messages = [];
-  } else if (action !== 'handoff' && !messages.length && !savedCodes.length) {
-    retryable.push('La acción requiere al menos un mensaje para el cliente.');
   }
 
   // ---------- Intenciones: solo las configuradas ----------
@@ -610,22 +673,64 @@ export function validateDecision(input: ValidationInput): ValidationResult {
   const contextual = action !== 'handoff' && action !== 'no_reply'
     ? imagesForContext(input.automaticImages ?? [], d.context_image_ids, input.sentImageIds) : [];
   if (d.context_image_ids.length > contextual.length) fixes.push('Fotos de contexto inválidas, repetidas o no permitidas descartadas');
-  const scheduled = rules.max_images_per_reply > 0 && action !== 'handoff' ? [
+  // Lo que realmente se enviará al cliente: también los mensajes guardados y la pregunta que va al final.
+  const outgoingText = [
+    ...messages,
+    ...(action === 'handoff' || action === 'no_reply' ? [] : savedCodes.map((c) => savedByCode.get(c)!.text)),
+    ...(questionLast && question ? [question.text] : []),
+  ].join(' ');
+  const scheduled = rules.max_images_per_reply > 0 && action !== 'handoff' && action !== 'no_reply' ? [
     ...(input.scheduledImages ?? []),
     ...contextual.map(x => x.image),
-    ...imagesForAssistant(input.automaticImages ?? [], messages.join(' '), input.sentImageIds).map(x => x.image),
+    ...imagesForAssistant(input.automaticImages ?? [], outgoingText, input.sentImageIds).map(x => x.image),
     ...imagesAfterReply(input.automaticImages ?? [], {
       stepReached: flowStep !== (input.currentFlowStep ?? 0) ? flowStep : 0,
       goalReached: goalCompleted && !input.goalAlreadyCompleted, booked: booking?.action === 'book', sentIds: input.sentImageIds, skip: [],
     }).map(x => x.image),
   ] : [];
-  const savedWithImage = savedCodes.some((c) => savedByCode.get(c)?.image_id);
-  if (!images.length && !scheduled.length && !savedWithImage && IMAGE_PROMISE_RE.test(messages.join(' '))) {
-    soft(
-      'Dices que envías una imagen pero no incluiste ningún ID válido en image_ids. Incluye el ID correcto del catálogo o no menciones que envías imagen.',
-      () => (messages = dropSentences(messages, (_n, x) => IMAGE_PROMISE_RE.test(x))),
-      'Se quitó la promesa de enviar una imagen inexistente',
-    );
+
+  // ---------- Promesas de foto: solo si esa foto sale de verdad en esta respuesta ----------
+  // Fotos que salen: las de la IA (no en una transferencia), las automáticas de este turno y las de mensajes guardados.
+  const outgoing = new Set<string>([
+    ...(action === 'reply_with_image' ? images : []).map((i) => i.id),
+    ...scheduled.map((i) => i.id),
+    ...(action === 'handoff' || action === 'no_reply' ? [] : [...savedPhotoIds]),
+  ]);
+  // "Menú" o "catálogo" pueden ser texto: solo son foto si el catálogo tiene una foto con ese nombre.
+  const textNounIsPhoto = catalog.some((i) => /(?<![\p{L}\p{N}])(?:menu|catalogo|flyer|folleto)/u.test(normalize(`${i.code} ${i.name}`)));
+  const customerTalksPhoto = CUSTOMER_PHOTO_RE.test(customerPlain);
+  const promisesPhoto = (x: string) =>
+    IMAGE_PROMISE_RE.test(x) || (textNounIsPhoto && TEXT_PROMISE_RE.test(x)) || (customerTalksPhoto && PRONOUN_PROMISE_RE.test(x));
+  /** La oración promete una foto que no sale: la que nombra (si nombra una del catálogo) o cualquiera (si no nombra ninguna). */
+  const brokenPromise = (x: string) => {
+    if (!promisesPhoto(x)) return false;
+    const named = namedImages(x, catalog);
+    return named.length ? !named.some((i) => outgoing.has(i.id)) : outgoing.size === 0;
+  };
+  const broken = messages.flatMap((m) => sentences(m)).filter(brokenPromise);
+  if (broken.length) {
+    const named = broken.flatMap((x) => namedImages(x, catalog));
+    const why = (img: ImageAsset) =>
+      repeated.includes(img) ? `«${img.code}» ya se envió y el cliente no pidió que se la reenvíes`
+      : autoPicked.includes(img) || !byCode.has(normalize(img.code)) ? `«${img.code}» solo la envía el sistema en sus momentos y ahora no le toca`
+      : overLimit.includes(img) ? `«${img.code}» no cabe: los mensajes guardados ya ocupan el máximo de ${rules.max_images_per_reply} fotos`
+      : action === 'handoff' ? `«${img.code}» no se envía al pasar con una persona`
+      : `«${img.code}» no va en esta respuesta (inclúyela en image_ids si es del catálogo y aplica)`;
+    const issue = named.length
+      ? `Dices que envías una foto que no sale en esta respuesta: ${[...new Set(named)].map(why).join('; ')}. No digas que la envías.`
+      : action === 'handoff'
+        ? 'Al pasar con una persona no se envían fotos: no digas que envías una.'
+        : 'Dices que envías una imagen pero no incluiste ningún ID válido en image_ids. Incluye el ID correcto del catálogo o no menciones que envías imagen.';
+    soft(issue, () => (messages = dropSentences(messages, (_n, x) => brokenPromise(x))), 'Se quitó la promesa de enviar una imagen que no sale');
+  }
+
+  // ---------- Coherencia de la acción: una respuesta nunca queda vacía ----------
+  if (action !== 'handoff' && action !== 'no_reply' && !messages.length && !savedCodes.length) {
+    if (input.final) {
+      // Las correcciones del último intento dejaron la respuesta vacía: sale la pregunta pendiente o el mensaje de respaldo.
+      messages = question && !questionLast ? [question.text] : [rules.fallback_message];
+      fixes.push('La respuesta quedó vacía tras las correcciones: se envió un mensaje de respaldo');
+    } else retryable.push('La acción requiere al menos un mensaje para el cliente.');
   }
 
   const remember = d.remember

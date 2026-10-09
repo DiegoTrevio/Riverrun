@@ -462,8 +462,20 @@ export async function updateImage(id: string, patch: Partial<ImageAsset>): Promi
   return queryOne<ImageAsset>(`UPDATE images SET ${sets.join(', ')}, updated_at = now() WHERE id = $${params.length} RETURNING *`, params);
 }
 
-export async function deleteImage(id: string) {
-  await query('DELETE FROM images WHERE id = $1', [id]);
+/**
+ * Borra una foto y la quita de las reglas automáticas y secuencias que la usaban (no tienen llave foránea): así siguen
+ * pudiéndose guardar y desactivar. Devuelve sus nombres para avisarle al negocio.
+ */
+export async function deleteImage(id: string): Promise<{ automations: string[]; sequences: string[] }> {
+  const strip = (col: string) =>
+    `${col} = (SELECT coalesce(jsonb_agg(CASE WHEN e->>'image_id' = $1 THEN jsonb_set(e, '{image_id}', '""') ELSE e END ORDER BY i), '[]'::jsonb)
+       FROM jsonb_array_elements(${col}) WITH ORDINALITY AS t(e, i))`;
+  return withTransaction(async (client) => {
+    const autos = await client.query<{ name: string }>(`UPDATE automations SET ${strip('actions')} WHERE actions @> jsonb_build_array(jsonb_build_object('image_id', $1::text)) RETURNING name`, [id]);
+    const seqs = await client.query<{ name: string }>(`UPDATE sequences SET ${strip('steps')} WHERE steps @> jsonb_build_array(jsonb_build_object('image_id', $1::text)) RETURNING name`, [id]);
+    await client.query('DELETE FROM images WHERE id = $1', [id]);
+    return { automations: autos.rows.map((r) => r.name), sequences: seqs.rows.map((r) => r.name) };
+  });
 }
 
 /* ------------------------- Contactos y conversaciones ------------------------- */
@@ -1008,9 +1020,19 @@ export async function resetFlowState(conversationId: string, opts: { keepCampaig
   );
 }
 
-/** Una campaña empieza un recorrido nuevo en esta etapa (objetivo y preguntas vuelven a contar desde ahora). */
-export async function startFlowAt(conversationId: string, step: number) {
-  await query(`UPDATE conversations SET flow_step = $2, goal_completed_at = NULL, questions_done_at = NULL, flow_started_at = now() WHERE id = $1`, [conversationId, step]);
+/** Etapas del recorrido renumeradas (se quitó o movió una): las conversaciones de ese asistente siguen en la misma. */
+export async function remapFlowSteps(chatbotId: string, map: number[]) {
+  await query(`UPDATE conversations SET flow_step = coalesce(($2::int[])[flow_step], 0) WHERE chatbot_id = $1 AND flow_step > 0 AND flow_step <= $3`, [chatbotId, map, map.length]);
+}
+
+/** Hora de la base de datos (la misma que usan created_at y flow_started_at). */
+export async function dbNow(): Promise<Date> {
+  return (await queryOne<{ now: Date }>('SELECT now() AS now'))!.now;
+}
+
+/** Una campaña empieza un recorrido nuevo en esta etapa (objetivo y preguntas vuelven a contar desde `since`, antes de su envío). */
+export async function startFlowAt(conversationId: string, step: number, since?: Date) {
+  await query(`UPDATE conversations SET flow_step = $2, goal_completed_at = NULL, questions_done_at = NULL, flow_started_at = coalesce($3::timestamptz, now()) WHERE id = $1`, [conversationId, step, since ?? null]);
 }
 
 /* ------------------------- Asistente encendido / en pausa ------------------------- */

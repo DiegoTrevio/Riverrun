@@ -37,6 +37,16 @@ export const defaultTransport: TransportFactory = (channel, contact) => adapterF
 /** Orquesta: webhook → almacenamiento → cola → motor → envío, para cualquier canal. */
 const LEASE_SECONDS = 300;
 
+/**
+ * ¿El eco corresponde a este mensaje enviado? Igual sin formato ("*doble*" vuelve como "doble"), o una de sus partes
+ * cuando la plataforma lo dividió (Instagram parte los textos largos).
+ */
+function sameText(sent: string, echo: string) {
+  const a = toPlainText(sent).trim();
+  const b = toPlainText(echo).trim();
+  return a === b || (b.length >= 20 && a.includes(b));
+}
+
 export class ChatService {
   engine: Engine;
   queue: ConversationQueue;
@@ -76,7 +86,7 @@ export class ChatService {
         await astore.scheduleJob({
           account_id: conv.account_id,
           type: 'flow_image',
-          payload: { conversation_id: conv.id, image_id: image.id, reason: o.reason, journey: conv.flow_started_at ? new Date(conv.flow_started_at).toISOString() : null, at: new Date().toISOString(), allow_ended: o.allowEnded },
+          payload: { conversation_id: conv.id, image_id: image.id, reason: o.reason, journey: conv.flow_started_at ? new Date(conv.flow_started_at).toISOString() : null, at: new Date().toISOString(), allow_ended: o.allowEnded, allow_repeat: !!o.allowRepeat },
           run_at: new Date(Date.now() + o.delaySeconds * 1000),
           dedupe_key: `flow_image:${conv.id}:${image.id}`,
         });
@@ -413,7 +423,7 @@ export class ChatService {
       (await store.findMessageByExternalId(conv.id, msg.messageId)) ??
       (msg.text ? await store.findRecentOutgoingEcho(conv.id, msg.text) : null) ??
       // Algunas plataformas (Zernio) devuelven el eco sin formato: "*doble*" vuelve como "doble".
-      (msg.text ? (await store.recentOutgoing(conv.id)).find((m) => toPlainText(m.content).trim() === toPlainText(msg.text).trim()) ?? null : null) ??
+      (msg.text ? (await store.recentOutgoing(conv.id)).find((m) => sameText(m.content, msg.text)) ?? null : null) ??
       (msg.type === 'image' ? await store.findRecentOutgoingImageEcho(conv.id) : null);
     if (known) {
       if (!known.external_message_id) await store.updateMessage(known.id, { external_message_id: msg.messageId });

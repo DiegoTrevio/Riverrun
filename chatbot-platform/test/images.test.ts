@@ -68,8 +68,9 @@ t('bienvenida: sale con la primera respuesta; la IA sabe cuáles se envían sola
   assert.deepEqual(h.sent.filter((s) => s.to === phone).map((s) => s.kind), ['text', 'image'], 'primero el texto y luego la foto');
   assert.deepEqual(photosTo(phone), ['bienvenida']);
   const p = prompt();
-  assert.match(p, /El sistema envía estas fotos automáticamente[\s\S]*Menú del día: el cliente escribe "menú" o "carta"/);
-  assert.match(p, /Mapa: al llegar a la etapa 2 \(Pedir fechas\)/);
+  assert.match(p, /El sistema envía estas fotos solo en sus momentos \(NO las pongas en image_ids\)[\s\S]*`menu` \| Menú del día: el cliente escribe "menú" o "carta"/);
+  // "Ambos": la IA puede elegirla y el prompt dice cuándo la envía sola (sin decirle que no la use).
+  assert.match(p, /ID: `mapa` \| Mapa[^\n]*además el sistema la envía sola al llegar a la etapa 2 \(Pedir fechas\)/);
   assert.match(p, /En ESTA respuesta el sistema enviará: Bienvenida/);
   assert.ok(!p.includes('ID: `menu`'), 'las de "solo en estos momentos" no están en el catálogo de la IA');
   assert.ok(p.includes('ID: `suite`') && p.includes('ID: `mapa`'));
@@ -250,10 +251,13 @@ t('la bienvenida ignora historial antiguo; el límite se aplica a fotos automát
   h.setScript(()=>({messages:['Hola.']})); await say('hola',phone);
   assert.deepEqual(photosTo(phone),['bienvenida']);
   await h.authed('PUT',`/api/chatbots/${h.botId}`,{rules:{max_images_per_reply:1}});
+  // La IA eligió y anunció la suite: sale en la respuesta; la foto de la regla (menú) no cabe y sale unos segundos después.
   h.setScript(()=>({messages:['Aquí está.'],image_ids:['suite']})); await say('menú',phone);
-  assert.deepEqual(photosTo(phone),['bienvenida','menu']);
+  assert.deepEqual(photosTo(phone),['bienvenida','suite']);
   const logs=(await pool.query('SELECT message FROM event_logs WHERE conversation_id=$1',[(await h.conversationFor(phone)).id])).rows.map(r=>r.message);
-  assert.ok(logs.some(msg=>msg.includes('Fotos omitidas por el límite de 1')));
+  assert.ok(logs.some(msg=>msg.includes('no caben en esta respuesta (límite de 1); se envían enseguida: menu')), logs.join(' | '));
+  await h.fastForward();
+  assert.deepEqual(photosTo(phone),['bienvenida','suite','menu']);
   await h.authed('PUT',`/api/chatbots/${h.botId}`,{rules:{max_images_per_reply:2}});
 });
 

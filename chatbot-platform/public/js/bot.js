@@ -104,10 +104,22 @@ async function tabGeneral(root, bot) {
   );
 }
 
+/** Avisos de fotos: lo que piden las instrucciones no coincide con cómo están configuradas las fotos. */
+function photoWarningsCard(bot) {
+  const list = bot.photo_warnings || [];
+  if (!list.length) return null;
+  return h('div', { class: 'card', style: 'border-left:4px solid var(--danger)' },
+    h('h3', { style: 'margin-top:0' }, '⚠ Revisa tus fotos'),
+    h('ul', { class: 'small', style: 'margin:0;padding-left:18px' }, list.map((w) => h('li', {}, w))),
+    h('p', { class: 'small muted', style: 'margin-bottom:0' }, 'Se corrige en ', h('a', { href: `#/bot/${bot.id}/imagenes` }, 'Fotos'), ' o en el texto de las instrucciones.'));
+}
+
 async function tabInstructions(root, bot) {
   const m = { name: bot.name, active: bot.active };
   const p = clone(bot.personality);
   const f = clone(bot.flow);
+  const warnings = photoWarningsCard(bot);
+  if (warnings) root.append(warnings);
   root.append(
     h('div', { class: 'card' },
       h('div', { class: 'grid' },
@@ -243,6 +255,9 @@ async function tabKnowledge(root, bot) {
 const sendWhenDefaults = (w = {}) => ({ mode: 'ai', context: '', keywords: [], assistant_keywords: [], first_message: false, flow_steps: [], on_goal: false, on_booking: false, once: true, ...w });
 
 /** Editor de "¿Cuándo se envía?": la IA decide, o el sistema la envía en los momentos que marques. */
+/** ¿La foto tiene algún momento o condición para enviarse sola? */
+const hasMoment = (w) => !!(w.context || w.keywords?.length || w.assistant_keywords?.length || w.first_message || w.flow_steps?.length || w.on_goal || w.on_booking);
+
 function sendWhenEditor(w, bot) {
   const box = h('div');
   const steps = bot.flow?.steps || [];
@@ -250,7 +265,8 @@ function sendWhenEditor(w, bot) {
     field('¿Cuándo se envía?', select(w, 'mode', [['ai', 'La IA decide (según "Cuándo enviarla")'], ['rules', 'Solo en los momentos que marque aquí'], ['both', 'En estos momentos y también cuando la IA lo crea conveniente']], draw)),
     w.mode === 'ai' ? null : h('div', { class: 'list-item' },
       h('p', { class: 'small', style: 'margin-top:0' }, guaranteed(), ' El sistema la envía junto con la respuesta, aunque la IA no la elija, respetando el máximo de fotos por respuesta.'),
-      field(tag('Enviar por contexto', guide()), area(w, 'context', { placeholder: 'Cuando el cliente quiera comparar habitaciones o el asistente le explique las opciones disponibles.' }), 'Describe la situación. La IA interpreta la conversación completa; no exige palabras exactas.'),
+      w.mode === 'rules' ? h('p', { class: 'small muted', style: 'margin-top:0' }, 'Con «Solo en los momentos que marque aquí» la IA no puede elegirla: marca al menos un momento. Si tus Instrucciones dicen cuándo enviarla, usa «La IA decide» o «Ambos».') : null,
+      field(tag('Enviar por contexto (la IA decide si se cumple)', guide()), area(w, 'context', { placeholder: 'Cuando el cliente quiera comparar habitaciones o el asistente le explique las opciones disponibles.' }), 'Describe la situación. La IA interpreta la conversación completa; no exige palabras exactas.'),
       field('Cuando el cliente escriba', lines(w, 'keywords', { placeholder: 'menú\nprecios\nubicación' }), 'Una por renglón. Si la vuelve a pedir, se reenvía.'),
       field('Cuando el asistente diga o pregunte', lines(w, 'assistant_keywords', { placeholder: 'qué tipo de habitación\ncuál prefieres' }), 'Una frase por renglón. Se comprueba en la respuesta que se envía al cliente.'),
       check(w, 'first_message', 'En la bienvenida (primera respuesta a un cliente nuevo)'),
@@ -283,6 +299,8 @@ function imageFileHint(input) {
 
 export async function tabImages(root, bot) {
   const images = await api('GET', `/api/chatbots/${bot.id}/images`);
+  const warnings = photoWarningsCard(bot);
+  if (warnings) root.append(warnings);
   const n = { code: '', name: '', description: '', usage_rule: '', caption: '', send_when: sendWhenDefaults() };
   const fileInput = h('input', { type: 'file', accept: 'image/jpeg,image/png,image/webp' });
   const upload = async () => {
@@ -302,13 +320,18 @@ export async function tabImages(root, bot) {
       fd.append('send_when', JSON.stringify(m.send_when));
       fd.append('active', String(m.active));
       if (replace.files[0]) fd.append('file', replace.files[0]);
-      if (await run(() => api('PUT', `/api/images/${img.id}`, fd, true), 'Imagen actualizada')) render();
+      const r = await run(() => api('PUT', `/api/images/${img.id}`, fd, true), 'Imagen actualizada');
+      if (r?.warning) toast(r.warning, true);
+      if (r) render();
     };
     return h('div', { class: 'img-card' },
       h('img', { src: `/api/images/${img.id}/file?v=${encodeURIComponent(img.file_path)}`, alt: img.name, loading: 'lazy' }),
       h('div', { class: 'body' },
         h('div', { class: 'row between' }, h('code', {}, img.code),
-          h('span', {}, m.send_when.mode !== 'ai' ? h('span', { class: 'badge green' }, 'envío automático') : null, ' ', !img.active ? h('span', { class: 'badge orange' }, 'inactiva') : null)),
+          h('span', {},
+            m.send_when.mode !== 'ai' && hasMoment(m.send_when) ? h('span', { class: 'badge green' }, 'envío automático') : null,
+            m.send_when.mode === 'rules' && !hasMoment(m.send_when) ? h('span', { class: 'badge orange', title: 'Marca al menos un momento en "Reglas de envío", o usa "La IA decide" o "Ambos".' }, 'sin momentos: nunca se envía') : null,
+            ' ', !img.active ? h('span', { class: 'badge orange' }, 'inactiva') : null)),
         field('ID (lo usa la IA)', text(m, 'code')),
         field('Nombre', text(m, 'name')),
         field('Qué muestra', area(m, 'description')),
@@ -319,7 +342,7 @@ export async function tabImages(root, bot) {
         field('Reemplazar archivo', replace, imageFileHint(replace)),
         h('div', { class: 'row' },
           h('button', { class: 'primary small', onclick: save }, 'Guardar'),
-          h('button', { class: 'small danger', onclick: async () => { if (confirm('¿Eliminar imagen?')) { await run(() => api('DELETE', `/api/images/${img.id}`), 'Eliminada'); render(); } } }, 'Eliminar'))),
+          h('button', { class: 'small danger', onclick: async () => { if (confirm('¿Eliminar imagen?')) { const r = await run(() => api('DELETE', `/api/images/${img.id}`), 'Eliminada'); if (r?.warning) toast(r.warning, true); render(); } } }, 'Eliminar'))),
     );
   };
   root.append(
@@ -331,7 +354,7 @@ export async function tabImages(root, bot) {
         field('Nombre', text(n, 'name', { placeholder: 'Foto habitación doble' })),
         field('Archivo', fileInput, imageFileHint(fileInput))),
       field('Qué muestra', area(n, 'description', { placeholder: 'Habitación doble con dos camas matrimoniales y vista al mar' })),
-      field(tag('Cuándo enviarla', guide()), area(n, 'usage_rule', { placeholder: 'Cuando el cliente pregunte por la habitación doble o pida fotos de las habitaciones' })),
+      field(tag('Cuándo enviarla', guide()), area(n, 'usage_rule', { placeholder: 'Cuando el cliente pregunte por la habitación doble o pida fotos de las habitaciones' }), 'Para la IA (modos "La IA decide" y "Ambos"). También puedes pedirla en tus Instrucciones por su ID.'),
       h('details', {}, h('summary', {}, 'Reglas de envío (opcional)'), sendWhenEditor(n.send_when, bot)),
       field('Pie de foto (opcional)', text(n, 'caption')),
       h('button', { class: 'primary', onclick: upload }, 'Subir imagen'),
@@ -602,11 +625,19 @@ export function messageTester(bots, botId) {
 function tabAdvanced(root, bot) {
   const f = clone(bot.flow);
   const a = clone(bot.ai);
+  // Posición original de cada etapa: al quitar o mover etapas, las fotos y mensajes guardados de esa etapa la siguen.
+  f.steps.forEach((st, i) => { st._from = i + 1; });
+  const stepMap = () => (bot.flow.steps || []).map((_, i) => f.steps.findIndex((st) => st._from === i + 1) + 1);
+  const flowBody = () => {
+    const map = stepMap();
+    const steps = f.steps.map(({ _from, ...st }) => st);
+    return map.every((n, i) => n === i + 1) ? { flow: { ...f, steps } } : { flow: { ...f, steps }, flow_step_map: map };
+  };
   root.append(
     h('div', { class: 'card legend' }, h('p', { style: 'margin:0' }, 'No necesitas cambiar nada aquí para que tu asistente funcione. Son ajustes finos del recorrido de la conversación y del modelo de IA.')),
     flowSection(f),
     aiSection(a),
-    saveBar(async () => { if (await saveBot(bot, { flow: f, ai: a })) render(); }),
+    saveBar(async () => { if (await saveBot(bot, { ...flowBody(), ai: a })) render(); }),
   );
 }
 
