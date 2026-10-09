@@ -344,7 +344,7 @@ function savedMessagesCard(bot, images) {
         h('div', { class: 'grid' },
           field('Código', text(m, 'code', { placeholder: 'precios' }), 'Con este código lo menciona el prompt y lo elige la IA.'),
           field('Título', text(m, 'title', { placeholder: 'Lista de precios' })),
-          field('Foto (opcional)', select(m, 'image_id', photos))),
+          field('Foto (opcional)', select(m, 'image_id', m.image_id && !photos.some(([id]) => id === m.image_id) ? [...photos, [m.image_id, '⚠ Foto borrada o inactiva: elige otra o quítala']] : photos))),
         field('Texto', area(m, 'text', { placeholder: 'Nuestras tarifas: habitación doble $1,650 MXN por noche, desayuno incluido.' }), 'Se envía tal cual. Si tiene foto, va como pie de la foto en un solo mensaje.'),
         field(tag('Cuándo enviarlo', guide()), text(m, 'when', { placeholder: 'Cuando el cliente pregunte por precios o tarifas' })),
         h('div', { class: 'grid' },
@@ -365,18 +365,24 @@ function savedMessagesCard(bot, images) {
 
 const QUESTION_TYPES = [['text', 'Texto libre'], ['name', 'Nombre'], ['email', 'Correo'], ['phone', 'Teléfono'], ['date', 'Fecha'], ['number', 'Número'], ['option', 'Una de varias opciones']];
 
+// Palabras que el sistema trata como dato sensible (nunca guarda la respuesta): no van en una clave generada.
+const SENSITIVE_WORDS = /^(tarjeta|tarjetas|card|cvv|cvc|contrasena|password|passwd|nip|pin|clave)$/;
+
 /** Clave del dato a partir del texto de la pregunta ("¿Para qué fecha?" → para_que_fecha). */
 function questionKey(text) {
-  const base = (text || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40).replace(/_+$/g, '');
+  const words = (text || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').split(/[^a-z0-9]+/).filter((w) => w && !SENSITIVE_WORDS.test(w));
+  const base = words.join('_').slice(0, 40).replace(/_+$/g, '');
   return /^[a-z]/.test(base) ? base : `pregunta${base ? `_${base}` : ''}`;
 }
 
 /** Apartado "Preguntas": lista ordenada que el asistente sigue paso a paso, una por mensaje (lo garantiza el sistema). */
 function tabQuestions(root, bot) {
   const all = clone(bot.data_fields || []);
-  // Los datos sin pregunta (p. ej. de una plantilla) se conservan tal cual: se piden cuando tenga sentido.
+  const originalKeys = new Set(all.map((f) => f.key));
+  // Los datos sin pregunta (p. ej. de una plantilla) se piden cuando tenga sentido; se pueden quitar aquí.
   const others = all.filter((f) => !f.question?.trim());
-  const qs = all.filter((f) => f.question?.trim());
+  // Clave con la que llegó cada pregunta: para seguir el cambio en el desactivador "ya dio estos datos".
+  const qs = all.filter((f) => f.question?.trim()).map((f) => ({ ...f, _from: f.key }));
   const r = clone(bot.rules);
   const a = r.activation;
   const list = h('div');
@@ -391,35 +397,63 @@ function tabQuestions(root, bot) {
         field('Pregunta (se envía tal cual)', text(q, 'question', { placeholder: '¿Para qué fecha te gustaría reservar?' })),
         h('div', { class: 'grid' },
           field('Tipo de respuesta', select(q, 'type', QUESTION_TYPES, draw)),
-          field('Se guarda como', text(q, 'key', { placeholder: 'Se genera de la pregunta' }), 'Minúsculas, números y guion bajo (ej. fecha_llegada).')),
+          field('Se guarda como', text(q, 'key', { placeholder: 'Se genera de la pregunta' }), 'Minúsculas, números y guion bajo (ej. fecha_llegada). Si coincide con un dato de abajo, la pregunta lo reemplaza.')),
         q.type === 'option' ? field('Opciones', lines(q, 'options', { placeholder: 'Sencilla\nDoble\nSuite' }), 'Una por renglón.') : null,
         check(q, 'required', 'Obligatoria: si no la contesta, se le vuelve a preguntar (las opcionales se hacen una sola vez)')))
       : h('p', { class: 'muted' }, 'Aún no hay preguntas. Agrégalas en el orden en que el asistente debe hacerlas.'));
   draw();
+  const otherBox = h('div');
+  const drawOthers = () => fill(otherBox, others.length
+    ? [h('p', { class: 'small muted', style: 'margin-bottom:4px' }, 'Además guarda estos datos cuando el cliente los mencione (sin pregunta fija):'),
+      h('div', { class: 'row' }, others.map((f, i) => h('span', { class: 'badge' }, f.label || f.key, ' ',
+        h('button', { class: 'small', title: 'Quitar este dato', onclick: () => { others.splice(i, 1); drawOthers(); } }, '×'))))]
+    : []);
+  drawOthers();
   const save = async () => {
-    const used = new Set(others.map((f) => f.key));
+    // 1) Textos y claves escritas a mano (se revisan antes de generar las demás).
+    const explicit = new Set();
     for (const q of qs) {
       q.question = (q.question || '').trim();
       if (!q.question) return toast('Escribe el texto de cada pregunta o quítala.', true);
-      let key = (q.key || '').trim();
-      if (!key) {
-        key = questionKey(q.question);
-        for (let n = 2; used.has(key); n++) key = `${questionKey(q.question)}_${n}`;
-      }
+      const key = (q.key || '').trim();
+      if (!key) continue;
       if (!/^[a-z0-9_]+$/.test(key)) return toast(`La clave "${key}" solo puede tener minúsculas, números y guion bajo.`, true);
-      if (used.has(key)) return toast(`La clave "${key}" se repite: cada pregunta guarda su respuesta en una clave distinta.`, true);
-      used.add(key);
-      Object.assign(q, { key, label: q.label || dataLabel(key), options: (q.options || []).filter((x) => x.trim()) });
+      if (explicit.has(key)) return toast(`La clave "${key}" se repite: cada pregunta guarda su respuesta en una clave distinta.`, true);
+      explicit.add(key);
     }
-    if (await saveBot(bot, { data_fields: [...qs, ...others], rules: { activation: { off_on_questions: !!a.off_on_questions } } })) render();
+    // 2) Claves generadas: nunca chocan con las escritas a mano ni con los demás datos.
+    const used = new Set([...explicit, ...others.map((f) => f.key)]);
+    const keys = qs.map((q) => {
+      const key = (q.key || '').trim();
+      if (key) return key;
+      const base = questionKey(q.question);
+      let k = base;
+      for (let n = 2; used.has(k); n++) k = `${base}_${n}`;
+      used.add(k);
+      return k;
+    });
+    // Una pregunta con la clave de un dato sin pregunta lo reemplaza: es el mismo dato, ahora en orden.
+    const rest = others.filter((f) => !keys.includes(f.key));
+    const fields = qs.map((q, i) => {
+      const { _from, ...f } = q;
+      const prev = others.find((x) => x.key === keys[i]);
+      // La etiqueta generada sigue a la clave; una escrita a propósito se respeta.
+      const autoLabel = !f.label || f.label === dataLabel(_from || '');
+      return { ...prev, ...f, key: keys[i], label: autoLabel ? prev?.label || dataLabel(keys[i]) : f.label, options: (f.options || []).filter((x) => x.trim()) };
+    });
+    // Desactivador "ya dio estos datos": sigue a las claves que cambiaron y suelta las de preguntas o datos quitados.
+    const renamed = new Map(qs.map((q, i) => [q._from, keys[i]]).filter(([from, to]) => from && from !== to));
+    const exists = new Set([...fields, ...rest].map((f) => f.key));
+    const offFields = [...new Set(a.off_when_fields.map((k) => renamed.get(k) ?? k))].filter((k) => exists.has(k) || !originalKeys.has(k));
+    if (await saveBot(bot, { data_fields: [...fields, ...rest], rules: { activation: { off_on_questions: !!a.off_on_questions, off_when_fields: offFields } } })) render();
   };
   root.append(
     h('div', { class: 'card legend' }, h('p', { style: 'margin:0' }, guaranteed(), ' El asistente hace estas preguntas en orden, una por mensaje y con tu texto. Si el cliente pregunta otra cosa, le responde y retoma la pregunta pendiente; si ya dio un dato, no se lo vuelve a preguntar. Las respuestas se guardan en el contacto. Compruébalo en ', h('a', { href: `#/bot/${bot.id}/probar` }, 'Probar'), '.')),
     h('div', { class: 'card' },
       h('h3', { style: 'margin-top:0' }, 'Preguntas (en orden)'),
       list,
-      h('button', { onclick: () => { qs.push({ key: '', label: '', type: 'text', description: '', options: [], required: true, ask_when: '', question: '' }); draw(); } }, '+ Agregar pregunta'),
-      others.length ? h('p', { class: 'small muted' }, `Además guarda estos datos cuando el cliente los mencione: ${others.map((f) => f.label || f.key).join(', ')}.`) : null),
+      h('button', { onclick: () => { qs.push({ key: '', label: '', type: 'text', description: '', options: [], required: true, ask_when: '', question: '', _from: '' }); draw(); } }, '+ Agregar pregunta'),
+      otherBox),
     h('div', { class: 'card' },
       h('h3', { style: 'margin-top:0' }, 'Al terminar las preguntas'),
       check(a, 'off_on_questions', tag('Apagar el asistente en esa conversación cuando el cliente responda todas las preguntas', guaranteed())),
@@ -475,6 +509,8 @@ function tabActivation(root, bot) {
   const a = r.activation;
   const fields = bot.data_fields || [];
   const questionCount = fields.filter((f) => f.question?.trim()).length;
+  // También los datos marcados que no están en la lista (automáticos como "telefono"), para poder desmarcarlos.
+  const dataChoices = [...fields, ...a.off_when_fields.filter((k) => !fields.some((f) => f.key === k)).map((k) => ({ key: k, label: dataLabel(k) }))];
   const onBox = h('div');
   const drawOn = () => fill(onBox,
     field(tag('¿Cuándo empieza a responder?', guaranteed()), select(a, 'mode', [['always', 'Siempre: a cualquier mensaje'], ['keywords', 'Solo cuando el cliente escriba una de estas palabras']], drawOn)),
@@ -494,8 +530,8 @@ function tabActivation(root, bot) {
       check(a, 'off_on_booking', 'Cuando el cliente agende una cita o llamada'),
       check(a, 'off_on_questions', ['Cuando el cliente responda todas las preguntas', questionCount ? h('span', { class: 'muted small' }, ` (${questionCount} en la lista)`) : h('span', { class: 'muted small' }, ' (agrégalas en ', h('a', { href: `#/bot/${bot.id}/preguntas` }, 'Preguntas'), ')')]),
       field('Cuando el cliente ya haya dado todos estos datos',
-        fields.length
-          ? h('div', { class: 'row' }, fields.map((f) => h('label', { class: 'check' },
+        dataChoices.length
+          ? h('div', { class: 'row' }, dataChoices.map((f) => h('label', { class: 'check' },
               h('input', { type: 'checkbox', checked: a.off_when_fields.includes(f.key), onchange: (e) => { a.off_when_fields = e.target.checked ? [...a.off_when_fields, f.key] : a.off_when_fields.filter((k) => k !== f.key); } }), f.label)))
           : h('p', { class: 'small muted', style: 'margin:0' }, 'Los datos se guardan al conversar. Configura las preguntas en ', h('a', { href: `#/bot/${bot.id}/preguntas` }, 'Preguntas'), '.'),
         'Responde ese mensaje y después se apaga. Ej.: al tener nombre y teléfono, para que una persona continúe.')),

@@ -73,6 +73,26 @@ t('retorno válido guarda la cuenta conectada, consume el estado y redirige al c
   assert.equal((await h.app.inject({ method: 'GET', url })).statusCode, 403, 'el mismo estado no sirve dos veces');
 });
 
+t('retorno de conexión: un enlace vencido o con otro perfil no sirve y el estado se consume igual', async () => {
+  const connect = async () => {
+    assert.equal((await h.authed('POST', `/api/channels/${channel.id}/zernio/connect`)).statusCode, 200);
+    return (await store.getChannel(channel.id))!.config.connect_state as string;
+  };
+  // Otro perfil: no cambia la cuenta y el mismo enlace ya no sirve.
+  let state = await connect();
+  const wrong = `/zernio/callback/${channel.webhook_token}/${state}?accountId=acc_intruso&profileId=prof_otro`;
+  assert.equal((await h.app.inject({ method: 'GET', url: wrong })).statusCode, 302);
+  assert.equal((await store.getChannel(channel.id))!.config.account_id, 'acc_zernio_1');
+  assert.equal((await h.app.inject({ method: 'GET', url: wrong.replace('prof_otro', 'prof_1') })).statusCode, 403, 'estado consumido');
+  // Vencido (generado hace más de 30 minutos): no guarda la cuenta.
+  state = await connect();
+  const old = `${(Date.now() - 31 * 60_000).toString(36)}.${state.split('.')[1]}`;
+  await store.updateChannel(channel.id, { config: { ...(await store.getChannel(channel.id))!.config, connect_state: old } });
+  const r = await h.app.inject({ method: 'GET', url: `/zernio/callback/${channel.webhook_token}/${old}?accountId=acc_tarde&profileId=prof_1` });
+  assert.equal(r.statusCode, 302);
+  assert.equal((await store.getChannel(channel.id))!.config.account_id, 'acc_zernio_1');
+});
+
 t('registro del webhook: Zernio recibe la URL pública, el secreto del canal y los eventos de mensajes', async () => {
   const r = await h.authed('POST', `/api/channels/${channel.id}/setup`);
   assert.equal(r.statusCode, 200, r.body);
@@ -148,6 +168,27 @@ t('eco de una respuesta del bot no pausa la conversación', async () => {
   await sleep(300);
   const status = (await pool.query('SELECT status FROM conversations WHERE channel_id = $1', [channel.id])).rows[0]?.status;
   assert.equal(status, 'bot');
+});
+
+t('eco sin formato ("*doble*" vuelve como "doble") no pausa la conversación', async () => {
+  const conv = (await pool.query(`SELECT c.* FROM conversations c JOIN contacts k ON k.id = c.contact_id WHERE c.channel_id = $1 AND k.external_id = 'conv_77'`, [channel.id])).rows[0];
+  await store.insertMessage({ conversation_id: conv.id, direction: 'out', sender: 'bot', type: 'text', content: 'La habitación *doble* cuesta lo de la lista.', status: 'ok' });
+  const raw = JSON.stringify({
+    event: 'message.sent',
+    payload: { id: 'evt_echo_2', conversationId: 'conv_77', message: { id: 'zm_echo_2', text: 'La habitación doble cuesta lo de la lista.' } },
+  });
+  const r = await h.app.inject({
+    method: 'POST',
+    url: `/webhook/${channel.webhook_token}`,
+    headers: { 'content-type': 'application/json', 'x-zernio-signature': sign(raw, await secretOf()) },
+    payload: raw,
+  });
+  assert.equal(r.statusCode, 200);
+  await h.idle();
+  await sleep(300);
+  assert.equal((await pool.query('SELECT status FROM conversations WHERE id = $1', [conv.id])).rows[0].status, 'bot');
+  const human = await pool.query(`SELECT count(*)::int AS n FROM messages WHERE conversation_id = $1 AND sender = 'human'`, [conv.id]);
+  assert.equal(human.rows[0].n, 0, 'no se registró como respuesta de una persona');
 });
 
 t('ventana de 24 h: fuera de ella no se escribe por Zernio', async () => {

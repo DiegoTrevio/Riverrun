@@ -27,7 +27,10 @@ export class ZernioClient {
     // 429: la API rechazó la petición sin procesarla, así que repetirla una vez no duplica mensajes.
     // Otros errores no se repiten: un 5xx puede haber llegado a enviarse.
     if (res.status === 429) {
-      const s = Number(res.headers.get('retry-after'));
+      // Sin Retry-After (o vacío) se esperan 2 s: Number(null) sería 0 y el reintento saldría de inmediato.
+      const header = res.headers.get('retry-after')?.trim();
+      const s = header ? Number(header) : NaN;
+      await res.body?.cancel().catch(() => undefined);
       await sleep(Number.isFinite(s) && s >= 0 ? Math.min(s, 10) * 1000 : 2000);
       res = await this.send(method, path, body);
     }
@@ -60,17 +63,32 @@ function verifyRequest({ channel, headers, rawBody }: WebhookRequest): boolean {
   return safeEqual(got, zernioSignature(rawBody, secret));
 }
 
+/** Tipo de archivo de un adjunto (VERIFICAR: Zernio puede nombrarlo `type` o `mimeType`). */
+function attachmentType(a: any): InboundMessage['type'] {
+  const t = String(a?.type ?? a?.mimeType ?? a?.mime_type ?? '').toLowerCase();
+  if (t.startsWith('image')) return 'image';
+  if (t.startsWith('video')) return 'video';
+  if (t.startsWith('audio')) return 'audio';
+  return 'document';
+}
+
 /**
- * VERIFICAR: forma del evento. Se espera { event, payload: { id, conversationId, message: { id, text, createdAt }, sender: { id, name } } }.
- * Un evento con otra forma no se descarta en silencio: queda un aviso con las claves recibidas.
+ * VERIFICAR: forma del evento. Se espera { event, payload: { id, accountId, conversationId, message: { id, text, createdAt,
+ * attachments: [{ type, url }] }, sender: { id, name } } }. Un evento con otra forma no se descarta en silencio: queda un
+ * aviso con las claves recibidas. Con `accountId`, los eventos de otra cuenta del mismo Zernio se ignoran (una API key
+ * puede tener varias cuentas conectadas y cada canal atiende solo la suya).
  */
-export function parseZernioEvent(body: any): ParseResult {
+export function parseZernioEvent(body: any, accountId = ''): ParseResult {
   const event = typeof body?.event === 'string' ? body.event : '';
   if (!EVENTS.includes(event)) {
     return { messages: [], notices: [{ level: 'info', message: `Zernio: evento ignorado (${event || 'sin nombre'})` }] };
   }
   const p = body?.payload ?? {};
   const m = p.message ?? {};
+  const eventAccount = p.accountId ?? p.account?.id ?? m.accountId ?? body?.accountId;
+  if (accountId && eventAccount != null && String(eventAccount) !== accountId) {
+    return { messages: [], notices: [{ level: 'info', message: `Zernio: evento de otra cuenta (${String(eventAccount)}) ignorado` }] };
+  }
   const conversationId = p.conversationId != null ? String(p.conversationId) : '';
   const messageId = m.id != null ? String(m.id) : '';
   if (!conversationId || !messageId) {
@@ -79,6 +97,10 @@ export function parseZernioEvent(body: any): ParseResult {
   const fromMe = event === 'message.sent';
   const text = typeof m.text === 'string' ? m.text : '';
   const created = Date.parse(typeof m.createdAt === 'string' ? m.createdAt : '');
+  // Foto, video, audio o documento: el tipo queda registrado (el texto es su pie) y el panel explica por qué no se guardó el archivo.
+  const files: any[] = Array.isArray(m.attachments) ? m.attachments : m.attachment ? [m.attachment] : m.attachmentUrl ? [{ url: m.attachmentUrl }] : [];
+  const file = files[0];
+  const type: InboundMessage['type'] = file ? attachmentType(file) : text ? 'text' : 'other';
   const msg: InboundMessage = {
     messageId,
     // La conversación de Zernio identifica al cliente y permite responder en el mismo hilo.
@@ -86,9 +108,10 @@ export function parseZernioEvent(body: any): ParseResult {
     phone: '',
     displayName: fromMe ? '' : String(p.sender?.name ?? ''),
     fromMe,
-    type: text ? 'text' : 'other',
+    type,
     text,
     timestamp: Number.isNaN(created) ? Math.floor(Date.now() / 1000) : Math.floor(created / 1000),
+    ...(file ? { media: { url: typeof file.url === 'string' ? file.url : undefined, mimeType: file.mimeType ?? file.type, filename: file.name ?? file.filename, size: Number(file.size) || undefined } } : {}),
   };
   return { messages: [msg] };
 }
@@ -165,7 +188,7 @@ export const zernioAdapter: ChannelAdapter = {
 
   verifyRequest,
 
-  parse: ({ body }) => parseZernioEvent(body),
+  parse: ({ body, channel }) => parseZernioEvent(body, channel.config.account_id ?? ''),
 
   transport: (channel, contact) => new ZernioTransport(channel, contact.external_id),
 

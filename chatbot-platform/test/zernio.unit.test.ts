@@ -215,3 +215,46 @@ test('errores 5xx no se repiten: el mensaje pudo haber llegado', async () => {
 test('plataforma: se normaliza a minúsculas y sin espacios', () => {
   assert.equal(ChannelConfigSchemas.zernio.parse({ platform: '  WhatsApp ' }).platform, 'whatsapp');
 });
+
+test('límite de velocidad: un 429 sin Retry-After espera 2 s antes de repetir (no reintenta de inmediato)', async () => {
+  const at: number[] = [];
+  globalThis.fetch = (async () => {
+    at.push(Date.now());
+    if (at.length === 1) return new Response('{}', { status: 429, headers: { 'content-type': 'application/json' } });
+    return new Response(JSON.stringify({ id: 'msg_10' }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as unknown as typeof fetch;
+  const id = await zernioAdapter.transport(channel(), { external_id: 'conv_1' } as any).sendText('Hola', 0);
+  assert.equal(id, 'msg_10');
+  assert.ok(at[1] - at[0] >= 1900, `esperó ${at[1] - at[0]} ms`);
+});
+
+test('parse: un evento de otra cuenta de la misma API key se ignora; los de la cuenta del canal (o sin cuenta) pasan', () => {
+  const event = (accountId?: string) => ({
+    event: 'message.received',
+    payload: { ...(accountId ? { accountId } : {}), conversationId: 'conv_9', message: { id: 'm1', text: 'hola' }, sender: { name: 'Ana' } },
+  });
+  const other = parseZernioEvent(event('acc_otra'), 'acc_zernio');
+  assert.equal(other.messages.length, 0);
+  assert.match(other.notices?.[0]?.message ?? '', /otra cuenta/);
+  assert.equal(parseZernioEvent(event('acc_zernio'), 'acc_zernio').messages.length, 1);
+  assert.equal(parseZernioEvent(event(), 'acc_zernio').messages.length, 1, 'sin cuenta en el evento no se descarta');
+  assert.equal(zernioAdapter.parse({ channel: channel(), headers: {}, query: {}, body: event('acc_otra') }).messages.length, 0, 'el adaptador usa la cuenta conectada del canal');
+});
+
+test('parse: foto o documento del cliente quedan con su tipo y su pie (no se pierden ni salen como "no compatible")', () => {
+  const photo = parseZernioEvent({
+    event: 'message.received',
+    payload: { conversationId: 'conv_9', message: { id: 'm2', text: '¿tienen esta talla?', attachments: [{ type: 'image/jpeg', url: 'https://cdn.example/p.jpg' }] }, sender: { name: 'Ana' } },
+  }).messages[0];
+  assert.equal(photo.type, 'image');
+  assert.equal(photo.text, '¿tienen esta talla?');
+  assert.equal(photo.media?.url, 'https://cdn.example/p.jpg');
+  const doc = parseZernioEvent({
+    event: 'message.received',
+    payload: { conversationId: 'conv_9', message: { id: 'm3', attachments: [{ type: 'application/pdf', url: 'https://cdn.example/c.pdf', name: 'cotizacion.pdf' }] } },
+  }).messages[0];
+  assert.equal(doc.type, 'document');
+  assert.equal(doc.media?.filename, 'cotizacion.pdf');
+  const echo = parseZernioEvent({ event: 'message.sent', payload: { conversationId: 'conv_9', message: { id: 'm4', text: '', attachments: [{ type: 'image' }] } } }).messages[0];
+  assert.equal(echo.type, 'image', 'el eco de una foto sin pie se reconoce como foto');
+});

@@ -1,6 +1,6 @@
 import { messageQuota } from '../billing/limits.js';
 import { attachmentAbsolutePath } from '../attachments.js';
-import { PlaygroundTransport, type OutgoingFile } from '../engine/transport.js';
+import { CAPTION_MAX, PlaygroundTransport, type OutgoingFile } from '../engine/transport.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
@@ -108,12 +108,18 @@ export class Outbound {
     // Nunca en paralelo con una respuesta del bot en la misma conversación.
     const ok = await this.chat.queue.exclusive(conv.id, async () => {
       if (image) {
-        // Texto y foto juntos: un solo mensaje con el texto como pie (sin texto, el pie de la foto).
-        const caption = textOut || (captionFooter ? `${image.caption}${image.caption ? '\n\n' : ''}${captionFooter}` : image.caption);
+        // Texto y foto juntos: un solo mensaje con el texto como pie (sin texto, el pie de la foto). Un texto que no
+        // cabe como pie sale antes, aparte, y la foto después con su propio pie.
+        const together = textOut.length <= CAPTION_MAX;
+        if (textOut && !together) {
+          const t = await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text: textOut, delay: 0, meta });
+          if (!t) return false;
+        }
+        const caption = (together && textOut) || (captionFooter ? `${image.caption}${image.caption ? '\n\n' : ''}${captionFooter}` : image.caption);
         const m = await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text: caption, image, delay: 0, meta });
         if (!m) {
           // Si la plataforma rechaza la foto, el cliente igual recibe el texto.
-          if (!textOut) return false;
+          if (!textOut || !together) return !!textOut;
           const t = await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text: textOut, delay: 0, meta: { ...meta, image_failed: true } });
           if (!t) return false;
         }
@@ -130,7 +136,8 @@ export class Outbound {
     if (!ok) return { sent: false, reason: 'la plataforma rechazó el envío (ver registros)' };
     // El asistente continúa el recorrido desde la etapa indicada cuando el cliente responda.
     const steps = bot?.flow.steps.length ?? 0;
-    if (o.flowStep && o.flowStep <= steps) await store.setFlowState(conv.id, o.flowStep, false);
+    // Empieza un recorrido nuevo en esa etapa: si la conversación estaba cerrada, al contestar el cliente no se reinicia.
+    if (o.flowStep && o.flowStep <= steps) await store.startFlowAt(conv.id, o.flowStep);
     await logEvent({ level: 'info', source: 'engine', message: `Mensaje programado enviado (${o.source})`, accountId: conv.account_id, channelId: conv.channel_id, conversationId: conv.id });
     return { sent: true };
   }

@@ -28,7 +28,9 @@ const words = (s: string) => normalize(s).split(/[^\p{L}\p{N}]+/u).filter(Boolea
 export function customerProvided(field: DataField, value: string, sources: string[]): boolean {
   if (field.type === 'phone') {
     const digits = value.replace(/\D/g, '');
-    return sources.some((s) => (s.match(/\+?\d[\d\s().-]{6,}\d/g) ?? []).some((p) => p.replace(/\D/g, '') === digits));
+    // La IA puede agregar la lada del país ("55 1234 5678" → "525512345678"): basta con que coincidan los últimos 8+ dígitos.
+    const same = (p: string) => p === digits || (Math.min(p.length, digits.length) >= 8 && (p.endsWith(digits) || digits.endsWith(p)));
+    return sources.some((s) => (s.match(/\+?\d[\d\s().-]{6,}\d/g) ?? []).some((p) => same(p.replace(/\D/g, ''))));
   }
   const wanted = words(value);
   if (!wanted.length) return false;

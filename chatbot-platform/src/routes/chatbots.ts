@@ -12,6 +12,7 @@ import { withTransaction } from '../db.js';
 import { config } from '../config.js';
 import { OpenAiProvider } from '../ai/provider.js';
 import { indexKnowledge, knowledgeIndexStatus } from '../engine/knowledge.js';
+import { isSensitiveField } from '../engine/safety.js';
 import { imageAbsolutePath } from '../engine/transport.js';
 import { assertWithinLimit } from '../billing/limits.js';
 import { logEvent } from '../logs.js';
@@ -28,22 +29,41 @@ const ChatbotBody = z.object({
   rules: RulesSchema.optional(),
   // Sin .default(): un PUT parcial no debe reiniciar los campos.
   // Datos a recopilar y apartado "Preguntas" (los datos con pregunta, en orden). La clave identifica la respuesta.
-  data_fields: z.array(DataFieldSchema).refine((list) => new Set(list.map((f) => f.key)).size === list.length, { message: 'Hay dos preguntas o datos con la misma clave' }).optional(),
+  data_fields: z
+    .array(DataFieldSchema)
+    .refine((list) => new Set(list.map((f) => f.key)).size === list.length, { message: 'Hay dos preguntas o datos con la misma clave' })
+    // Una respuesta con clave de dato sensible nunca se guarda: la pregunta se repetiría para siempre. Una lista fija de
+    // opciones ("¿Tarjeta o efectivo?") sí se puede.
+    .superRefine((list, ctx) => {
+      const bad = list.find((f) => f.question.trim() && isSensitiveField(f.key) && !(f.type === 'option' && f.options.length));
+      if (bad) ctx.addIssue({ code: 'custom', message: `La clave "${bad.key}" parece de un dato sensible (tarjeta, NIP, contraseña): esa respuesta no se guardaría. Usa otra clave para esa pregunta.` });
+    })
+    .optional(),
   flow: FlowSchema.optional(),
   ai: AiSettingsSchema.optional(),
   saved_messages: SavedMessagesSchema.optional(),
 });
 
-/** En modo "solo con palabras" sin ninguna palabra, el asistente nunca respondería. */
-function checkActivation(rules: { activation: { mode: string; on_keywords: string[] } } | undefined) {
-  if (rules?.activation.mode === 'keywords' && !rules.activation.on_keywords.some((k) => k.trim())) {
+type ActivationRules = { activation: { mode: string; on_keywords: string[] } };
+const keywordsWithoutWords = (rules: ActivationRules | undefined) => rules?.activation.mode === 'keywords' && !rules.activation.on_keywords.some((k) => k.trim());
+
+/**
+ * En modo "solo con palabras" sin ninguna palabra, el asistente nunca respondería solo. Se avisa al configurarlo; un
+ * asistente que ya estaba así (se enciende con reglas o con el botón) puede seguir guardando lo demás.
+ */
+function checkActivation(rules: ActivationRules | undefined, before?: ActivationRules) {
+  if (keywordsWithoutWords(rules) && !keywordsWithoutWords(before)) {
     throw new HttpError(400, 'Para que responda solo con palabras de activación, agrega al menos una palabra.');
   }
 }
 
-/** La foto de un mensaje guardado debe ser del mismo asistente (nunca de otro ni de otra cuenta). */
-async function checkSavedImages(botId: string | null, list: SavedMessage[] | undefined) {
-  const withImage = (list ?? []).filter((m) => m.image_id);
+/**
+ * La foto de un mensaje guardado debe ser del mismo asistente (nunca de otro ni de otra cuenta). Una que ya tenía
+ * guardada y se borró después no bloquea el guardado (al enviarlo, sale solo el texto).
+ */
+async function checkSavedImages(botId: string | null, list: SavedMessage[] | undefined, before: SavedMessage[] = []) {
+  const kept = new Set(before.map((m) => m.image_id).filter(Boolean));
+  const withImage = (list ?? []).filter((m) => m.image_id && !kept.has(m.image_id));
   if (!withImage.length) return;
   const own = new Set(botId ? (await store.listImages(botId)).map((i) => i.id) : []);
   const bad = withImage.find((m) => !own.has(m.image_id));
@@ -186,7 +206,7 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
     const existing = await botFor(req.user, req.params.id);
     const raw = (req.body ?? {}) as Record<string, any>;
     const data: Record<string, any> = { ...parse(ChatbotBody, raw) };
-    await checkSavedImages(existing.id, data.saved_messages);
+    await checkSavedImages(existing.id, data.saved_messages, existing.saved_messages);
     // Las secciones se fusionan con lo guardado: enviar solo un campo no reinicia los demás.
     const sections = { personality: PersonalitySchema, rules: RulesSchema, flow: FlowSchema, ai: AiSettingsSchema } as const;
     for (const [key, schema] of Object.entries(sections)) {
@@ -198,7 +218,7 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
         data[key] = schema.parse(merged);
       }
     }
-    checkActivation(data.rules);
+    checkActivation(data.rules, existing.rules);
     // Al cambiar el trato (tú/usted), los mensajes fijos de fábrica se ajustan para no mezclar tratos.
     const formality = data.personality?.formality;
     if (formality && formality !== existing.personality.formality) data.rules = alignFixedMessages(data.rules ?? existing.rules, formality);

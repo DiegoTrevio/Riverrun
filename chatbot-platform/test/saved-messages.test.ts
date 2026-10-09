@@ -157,6 +157,70 @@ t('envío programado: texto y foto en un solo mensaje y la conversación queda e
   assert.equal(await flowStepOf(conv.id), 2);
 });
 
+t('una foto que ya va en un mensaje guardado no sale dos veces en la misma respuesta', async () => {
+  h.reset();
+  h.setScript(() => ({ action: 'reply_with_image', messages: [], image_ids: ['doble'], saved_message_codes: ['precios'] }));
+  const out = await ask('5215520000008', '¿Precio de la doble? Mándame foto');
+  assert.deepEqual(out.map((s) => [s.kind, s.image ?? null]), [['image', 'doble']]);
+});
+
+t('un mensaje guardado de solo foto con la foto inactiva no deja al cliente sin respuesta; borrar la foto no bloquea guardar la lista', async () => {
+  await upload('menu', 'Menú');
+  const list = (await h.authed('GET', `/api/chatbots/${h.botId}`)).json().saved_messages;
+  const withMenu = [...list, { code: 'menu', text: '', image_id: imageIds.menu, when: 'Cuando pidan el menú' }];
+  assert.equal((await h.authed('PUT', `/api/chatbots/${h.botId}`, { saved_messages: withMenu })).statusCode, 200);
+  assert.equal((await h.authed('PUT', `/api/images/${imageIds.menu}`, { active: false })).statusCode, 200);
+  h.reset();
+  // La IA pide el mensaje de solo foto: no se puede enviar, el validador pide otra respuesta y esa sí sale.
+  h.setScript(() => (h.calls.length <= 1 ? { action: 'reply', messages: [], saved_message_codes: ['menu'] } : { action: 'reply', messages: ['Ahorita no tengo el menú a la mano, te lo comparte el equipo.'] }));
+  const out = await ask('5215520000009', 'Pásame el menú');
+  assert.equal(h.calls.length, 2, 'se pidió otra respuesta');
+  assert.deepEqual(out.map((s) => s.text), ['Ahorita no tengo el menú a la mano, te lo comparte el equipo.']);
+  const prompt = JSON.stringify(h.calls.at(-1));
+  assert.doesNotMatch(prompt, /`menu`/, 'sin texto y sin foto disponible no se ofrece');
+  // Borrar la foto no impide guardar la lista (el panel la marca como borrada).
+  assert.equal((await h.authed('DELETE', `/api/images/${imageIds.menu}`)).statusCode, 200);
+  const r = await h.authed('PUT', `/api/chatbots/${h.botId}`, { saved_messages: withMenu.map((m: any) => (m.code === 'horario' ? { ...m, title: 'Horario de recepción' } : m)) });
+  assert.equal(r.statusCode, 200, r.body);
+  // Otra foto que no es del asistente sí se rechaza.
+  const foreign = await h.authed('PUT', `/api/chatbots/${h.botId}`, { saved_messages: [...list, { code: 'ajena', text: 'x', image_id: crypto.randomUUID() }] });
+  assert.equal(foreign.statusCode, 400);
+  assert.equal((await h.authed('PUT', `/api/chatbots/${h.botId}`, { saved_messages: list })).statusCode, 200);
+});
+
+t('envío programado: un texto que no cabe como pie de foto sale aparte y la foto después', async () => {
+  const conv = await h.conversationFor('5215520000001');
+  h.reset();
+  const long = `Promoción de temporada. ${'Detalles de la oferta y condiciones. '.repeat(30)}`.trim();
+  assert.ok(long.length > 1024);
+  const r = await h.service.outbound.send(conv.id, { text: long, imageId: imageIds.suite, source: 'campaign' });
+  assert.equal(r.sent, true, JSON.stringify(r));
+  assert.deepEqual(h.sent.map((s) => [s.kind, s.image ?? null]), [['text', null], ['image', 'suite']]);
+  assert.ok(h.sent[0].text.startsWith('Promoción de temporada.'));
+  assert.ok(h.sent[1].text.length <= 1024);
+});
+
+t('campaña con etapa a una conversación cerrada: al contestar el cliente sigue desde esa etapa (no empieza de cero)', async () => {
+  const phone = '5215520000010';
+  h.reset();
+  h.setScript(() => ({ messages: ['Hola, ¿en qué te ayudo?'] }));
+  await ask(phone, 'Hola');
+  const conv = await h.conversationFor(phone);
+  const contactId = (await h.authed('GET', `/api/conversations/${conv.id}`)).json().contact.id;
+  assert.equal((await h.authed('PUT', `/api/contacts/${contactId}`, { consent: true })).statusCode, 200);
+  await pool.query(`UPDATE conversations SET status = 'closed', status_changed_at = now() - interval '1 minute', goal_completed_at = now() WHERE id = $1`, [conv.id]);
+  const r = await h.service.outbound.send(conv.id, { text: 'Seguimos con tu reservación', source: 'campaign', flowStep: 2 });
+  assert.equal(r.sent, true, JSON.stringify(r));
+  h.reset();
+  h.setScript(() => ({ messages: ['Perfecto, ¿qué fechas tienes en mente?'] }));
+  await ask(phone, 'Sí, me interesa');
+  assert.match(JSON.stringify(h.calls.at(-1)), /Etapa actual: 2\. Fechas/);
+  assert.equal(await flowStepOf(conv.id), 2);
+  const row = (await pool.query('SELECT status, goal_completed_at FROM conversations WHERE id = $1', [conv.id])).rows[0];
+  assert.equal(row.status, 'bot');
+  assert.equal(row.goal_completed_at, null, 'la campaña empezó un recorrido nuevo');
+});
+
 t('campañas: guardan la etapa del recorrido para el primer mensaje', async () => {
   const r = await h.authed('POST', '/api/campaigns', { account_id: h.accountId, channel_id: h.channelId, name: 'Bienvenida', message: 'Hola {{nombre}}', image_id: imageIds.doble, flow_step: 1 });
   assert.equal(r.statusCode, 200, r.body);

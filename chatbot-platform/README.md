@@ -39,10 +39,12 @@ Chat web (widget)    ┘    │                             │
 Zernio es un canal más, implementado en `src/channels/zernio.ts`. Todo ocurre en el servidor: la API key, el secreto del webhook y las llamadas a Zernio nunca salen al navegador. Para conectarlo:
 
 1. En el panel, crea un canal **Zernio** con la red (p.ej. `bluesky`), el ID del perfil de Zernio y la API key.
-2. Pulsa **Conectar cuenta**: Zernio pide la autorización y, al terminar, regresa al canal con la cuenta guardada. El retorno usa un estado de un solo uso.
+2. Pulsa **Conectar cuenta**: Zernio pide la autorización y, al terminar, regresa al canal con la cuenta guardada. El retorno usa un estado de un solo uso que vence a los 30 minutos.
 3. Pulsa **Registrar webhook**: el backend registra en Zernio la URL pública, el secreto del canal y los eventos `message.received` y `message.sent`.
 
 Variables: `ZERNIO_API_URL` (por defecto `https://zernio.com/api/v1`). Requiere `PUBLIC_BASE_URL` con HTTPS.
+
+Cada canal atiende solo la cuenta que conectó: si una misma API key tiene varias cuentas, los eventos que traen otra cuenta se ignoran. Las fotos, videos, audios y documentos del cliente quedan registrados con su tipo (el texto es su pie) y el panel explica que el archivo no se descarga. Los ecos de lo que envía el asistente se reconocen aunque Zernio los devuelva sin formato (sin `*negritas*`).
 
 > **Pendiente de verificar:** los nombres de los campos del cuerpo de los webhooks y de los endpoints de envío y suscripción se tomaron de documentación resumida. Están marcados con `VERIFICAR` en `src/channels/zernio.ts` y deben confirmarse contra la referencia oficial y un evento real antes de producción.
 | **Económico** | Todo corre en un VPS con Docker (Evolution, Postgres, Redis, backend). Solo se paga la API de OpenRouter; el contexto acotado, el caché de prompts y el modelo configurable por chatbot mantienen bajo el costo. |

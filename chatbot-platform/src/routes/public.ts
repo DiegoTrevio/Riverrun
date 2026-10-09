@@ -16,6 +16,9 @@ import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
 import type { Channel } from '../types.js';
 
+/** Tiempo para volver de Zernio después de pulsar "Conectar cuenta". */
+const ZERNIO_CONNECT_TTL_MS = 30 * 60_000;
+
 /** Webhooks de las plataformas, API del chat web e imágenes públicas firmadas. */
 export async function publicRoutes(app: FastifyInstance, service: ChatService) {
   /* ------------------------------ Webhooks ------------------------------ */
@@ -68,7 +71,14 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
       await logEvent({ level: 'warn', source: 'channel', message: 'Zernio: retorno de conexión con estado inválido; se rechaza', details: { ip: req.ip } });
       return reply.code(403).send('forbidden');
     }
+    // Un solo uso, salga bien o no: el enlace queda en el historial del navegador y no debe servir después.
+    await store.updateChannel(channel.id, { config: mergeChannelConfig('zernio', channel.config, { connect_state: '' }) });
     const panel = `${config.publicBaseUrl}/#/channel/${channel.id}`;
+    const issued = parseInt(expected.split('.')[0], 36);
+    if (!Number.isFinite(issued) || Date.now() - issued > ZERNIO_CONNECT_TTL_MS) {
+      await logEvent({ level: 'warn', source: 'channel', message: 'Zernio: el enlace de conexión venció; vuelve a pulsar "Conectar cuenta"', accountId: channel.account_id, channelId: channel.id });
+      return reply.redirect(panel);
+    }
     const q = req.query as Record<string, string | undefined>;
     if (!q.accountId || q.profileId !== channel.config.profile_id) {
       await logEvent({ level: 'warn', source: 'channel', message: 'Zernio: la cuenta devuelta no corresponde al perfil del canal', accountId: channel.account_id, channelId: channel.id });

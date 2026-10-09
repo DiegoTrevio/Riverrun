@@ -136,7 +136,8 @@ export async function channelRoutes(api: FastifyInstance) {
     const ch = await channelFor(req.user, req.params.id);
     if (ch.type !== 'zernio') throw new HttpError(400, 'Este canal no es de Zernio');
     if (!config.publicBaseUrl.startsWith('https://')) throw new HttpError(400, 'Zernio exige HTTPS: define PUBLIC_BASE_URL con tu dominio (https://...)');
-    const state = crypto.randomBytes(24).toString('base64url');
+    // El estado lleva la hora en que se generó: el retorno solo vale durante ZERNIO_CONNECT_TTL_MS.
+    const state = `${Date.now().toString(36)}.${crypto.randomBytes(24).toString('base64url')}`;
     const saved = (await store.updateChannel(ch.id, { config: mergeChannelConfig('zernio', ch.config, { connect_state: state }) }))!;
     try {
       const authUrl = await zernioAuthUrl(saved, `${config.publicBaseUrl}/zernio/callback/${saved.webhook_token}/${state}`);

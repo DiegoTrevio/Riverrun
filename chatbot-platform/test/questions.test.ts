@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 // El arnés va primero: define las variables de entorno antes de que se cargue la configuración.
 import { createHarness, dbAvailable, pool, sleep, waitFor } from './harness.js';
 const { validateDecision } = await import('../src/engine/validator.js');
-const { asksQuestion, questionProgress } = await import('../src/engine/questions.js');
+const { asksQuestion, declines, questionProgress } = await import('../src/engine/questions.js');
 const { hydrateChatbot, RulesSchema } = await import('../src/types.js');
 
 const ok = await dbAvailable();
@@ -57,10 +57,16 @@ test('validador: una pregunta de la lista fuera de orden se quita y se hace la q
   assert.deepEqual(last.plan.messages, ['Mucho gusto.', Q2]);
 });
 
-test('validador: con una pregunta pendiente no se queda callado', () => {
-  const last = validateDecision({ ...base, customerText: 'ok', raw: reply([], { action: 'no_reply' }), questionJourney: journey({ nombre: 1 }), final: true });
-  assert.equal(last.plan.action, 'ask');
-  assert.deepEqual(last.plan.messages, [Q1]);
+test('validador: si el cliente responde una pregunta no se queda callado; un "ok" sin respuesta sí puede quedar sin contestar', () => {
+  const answered = validateDecision({
+    ...base, customerText: 'Ana López', raw: reply([], { action: 'no_reply', save_data: [{ field: 'nombre', value: 'Ana López' }] }), questionJourney: journey({ nombre: 1 }), final: true,
+  });
+  assert.equal(answered.plan.action, 'ask');
+  assert.deepEqual(answered.plan.messages, [Q2]);
+  // Un "👍" o un mensaje automático: la IA puede no responder (no se le fuerza la pregunta).
+  const thumbs = validateDecision({ ...base, customerText: '👍', raw: reply([], { action: 'no_reply' }), questionJourney: journey({ nombre: 1 }), final: true });
+  assert.equal(thumbs.plan.action, 'no_reply');
+  assert.deepEqual(thumbs.plan.messages, []);
 });
 
 test('validador: una respuesta libre que el cliente no escribió no cuenta (la pregunta sigue pendiente)', () => {
@@ -102,6 +108,93 @@ test('validador: el texto de la pregunta lo escribió el negocio (no cuenta como
   assert.ok(!v.retryable.some((x) => /usted/.test(x)), v.retryable.join(' | '));
   const again = validateDecision({ ...base, knownName: 'Ana', customerText: '¿tienen alberca?', recentBotTexts: [Q2], raw: reply([Q2]), questionJourney: journey({ nombre: 1, fecha: 1 }), final: false });
   assert.ok(!again.retryable.some((x) => /Repites/.test(x)), again.retryable.join(' | '));
+});
+
+const botWith = (data_fields: unknown[], extra: Record<string, unknown> = {}) =>
+  hydrateChatbot({ ...bot, personality: {}, rules: {}, flow: { goal: 'Reservar' }, ai: {}, saved_messages: [], ...extra, data_fields } as any);
+
+test('preguntas: una afirmación no cuenta como hacer la pregunta; una petición sí', () => {
+  assert.ok(!asksQuestion('Sí, puedes reservar para esa fecha sin problema.', { question: Q2 }));
+  assert.ok(asksQuestion('Dime para qué fecha quieres reservar.', { question: Q2 }));
+  // El cliente pregunta algo; la respuesta de la IA lo menciona sin preguntarlo: no se le borra.
+  const v = validateDecision({
+    ...base, customerText: '¿Puedo reservar para el 15?', raw: reply(['Sí, puedes reservar para esa fecha sin problema. ¿Cuál es tu nombre?']), questionJourney: journey({ nombre: 1 }), final: false,
+  });
+  assert.deepEqual(v.retryable, []);
+  assert.deepEqual(v.plan.messages, ['Sí, puedes reservar para esa fecha sin problema. ¿Cuál es tu nombre?']);
+});
+
+test('validador: no repite la pregunta que el cliente acaba de responder', () => {
+  const raw = reply(['Gracias. ¿Cuál es tu nombre?'], { save_data: [{ field: 'nombre', value: 'Ana López' }] });
+  const first = validateDecision({ ...base, customerText: 'Ana López', raw, questionJourney: journey({ nombre: 1 }), final: false });
+  assert.ok(first.retryable.some((x) => /no toca ahora/.test(x)), first.retryable.join(' | '));
+  const last = validateDecision({ ...base, customerText: 'Ana López', raw, questionJourney: journey({ nombre: 1 }), final: true });
+  assert.deepEqual(last.plan.messages, ['Gracias.', Q2]);
+  // Confirmar un dato ya respondido (sin repetir la pregunta tal cual) sí se vale.
+  const confirm = validateDecision({ ...base, knownName: 'Ana', customerText: 'ok', raw: reply([`¿Confirmas que la fecha para reservar es el 15? ${Q3}`]), knownData: { fecha: '15' }, questionJourney: journey({ nombre: 1, fecha: 1 }), final: true });
+  assert.ok(confirm.plan.messages.join(' ').includes('¿Confirmas'), confirm.plan.messages.join(' | '));
+});
+
+test('validador: si el cliente se despide o no le interesa, no se le insiste con la pregunta', () => {
+  assert.ok(declines('Ya no me interesa, gracias. No me escriban más.'));
+  assert.ok(!declines('Me interesa la suite'));
+  const v = validateDecision({ ...base, customerText: 'Ya no me interesa, gracias.', raw: reply(['Entendido, gracias por avisarnos.']), questionJourney: journey({ nombre: 1 }), final: false });
+  assert.deepEqual(v.retryable, []);
+  assert.deepEqual(v.plan.messages, ['Entendido, gracias por avisarnos.']);
+});
+
+test('validador: con mensajes guardados la pregunta sale al final, sin pedir otra respuesta', () => {
+  const withSaved = botWith(QUESTIONS, { saved_messages: [{ code: 'precios', text: 'Doble: ver lista', image_id: '', active: true }] });
+  const v = validateDecision({ ...base, bot: withSaved, raw: reply([], { saved_message_codes: ['precios'] }), questionJourney: journey(), final: false });
+  assert.deepEqual(v.retryable, []);
+  assert.deepEqual(v.plan.messages, []);
+  assert.equal(v.plan.questionLast, true);
+  assert.deepEqual(v.plan.question, { key: 'nombre', text: Q1 });
+  // Un mensaje guardado de solo foto que ya no se puede enviar no cuenta como respuesta.
+  const photoOnly = botWith([], { saved_messages: [{ code: 'menu', text: '', image_id: 'img_borrada', active: true }] });
+  const p = validateDecision({ ...base, bot: photoOnly, raw: reply([], { saved_message_codes: ['menu'] }), activeImageIds: [], final: false });
+  assert.deepEqual(p.plan.savedCodes, []);
+  assert.ok(p.retryable.some((x) => /al menos un mensaje/.test(x)), p.retryable.join(' | '));
+});
+
+test('validador: teléfono "a este mismo número" vale, y la lada que agrega la IA no lo invalida', () => {
+  const phoneBot = botWith([{ key: 'tel_llamada', label: 'Teléfono', type: 'phone', required: true, question: '¿A qué número te podemos llamar?' }]);
+  const same = validateDecision({ ...base, bot: phoneBot, customerText: 'a este mismo', contactPhone: '5215512345678', raw: reply(['Perfecto, te llamamos ahí.'], { save_data: [{ field: 'tel_llamada', value: '5215512345678' }] }), questionJourney: journey({ tel_llamada: 1 }), final: true });
+  assert.equal(same.plan.saveData.tel_llamada, '5215512345678');
+  const lada = validateDecision({ ...base, bot: phoneBot, customerText: '55 1234 5678', raw: reply(['Anotado.'], { save_data: [{ field: 'tel_llamada', value: '+52 55 1234 5678' }] }), questionJourney: journey({ tel_llamada: 1 }), final: true });
+  assert.equal(lada.plan.saveData.tel_llamada, '+525512345678');
+});
+
+test('validador: otro dato de tipo nombre no se da por respondido con el nombre del cliente ni lo cambia', () => {
+  const party = botWith([
+    { key: 'nombre', label: 'Nombre', type: 'name', required: true, question: '¿Cómo te llamas?' },
+    { key: 'festejado', label: 'Festejado', type: 'name', required: true, question: '¿Cómo se llama el festejado?' },
+  ]);
+  const v = validateDecision({ ...base, bot: party, knownName: 'Ana', customerText: 'Se llama Luis', raw: reply(['¡Qué bonito nombre!'], { save_data: [{ field: 'festejado', value: 'Luis' }] }), questionJourney: journey({ nombre: 1, festejado: 1 }), final: true });
+  assert.equal(v.plan.saveData.festejado, 'Luis');
+  assert.equal(v.plan.contactName, null, 'el nombre del contacto no cambia');
+  const pending = validateDecision({ ...base, bot: party, knownName: 'Ana', raw: reply(['Mucho gusto.']), questionJourney: journey({ nombre: 1 }), final: true });
+  assert.equal(pending.plan.question?.key, 'festejado');
+});
+
+test('validador: una opción de una lista fija no es dato sensible aunque la clave diga "tarjeta"', () => {
+  const pay = botWith([{ key: 'pagaras_con_tarjeta', label: 'Pago', type: 'option', options: ['Tarjeta', 'Efectivo'], required: true, question: '¿Pagarás con tarjeta o en efectivo?' }]);
+  const v = validateDecision({ ...base, bot: pay, customerText: 'con tarjeta', raw: reply(['Perfecto.'], { save_data: [{ field: 'pagaras_con_tarjeta', value: 'Tarjeta' }] }), questionJourney: journey({ pagaras_con_tarjeta: 1 }), final: true });
+  assert.equal(v.plan.saveData.pagaras_con_tarjeta, 'Tarjeta');
+  // Un número de tarjeta nunca se guarda.
+  const card = validateDecision({ ...base, bot: pay, customerText: '4111 1111 1111 1111', raw: reply(['Ok.'], { save_data: [{ field: 'pagaras_con_tarjeta', value: '4111 1111 1111 1111' }] }), final: true });
+  assert.equal(card.plan.saveData.pagaras_con_tarjeta, undefined);
+});
+
+test('avance: una opcional que ya se hizo antes (al reabrir) no se repite; el fin de la lista también cuenta en una transferencia', () => {
+  const p = questionProgress(bot.data_fields, { nombre: 'Ana', fecha: 'mañana' }, '', {}, { askedEver: { origen: 1 } });
+  assert.equal(p.next, null);
+  const reopened = validateDecision({ ...base, knownName: 'Ana', knownData: { fecha: 'mañana' }, raw: reply(['¡Hola de nuevo!']), questionJourney: { asked: {}, askedEver: { nombre: 1, fecha: 1, origen: 1 }, done: false }, final: true });
+  assert.equal(reopened.plan.question, null);
+  assert.equal(reopened.plan.questionsCompleted, false, 'no se vuelve a disparar al reabrir');
+  const handoff = validateDecision({ ...base, knownName: 'Ana', knownData: { fecha: 'mañana' }, customerText: 'mejor que me llame alguien', raw: reply([], { action: 'handoff' }), questionJourney: journey({ nombre: 1, fecha: 1, origen: 1 }), final: true });
+  assert.equal(handoff.plan.action, 'handoff');
+  assert.equal(handoff.plan.questionsCompleted, true);
 });
 
 /* ------------------------------ De extremo a extremo (servidor y base de datos) ------------------------------ */
@@ -158,7 +251,7 @@ t('recorrido completo: pregunta en orden, agrega la que falta, quita la adelanta
   const prompt = JSON.stringify(h.calls.at(-1));
   assert.match(prompt, /# Preguntas \(en este orden\)/);
   assert.match(prompt, /SIGUIENTE PREGUNTA/);
-  assert.match(prompt, /tienen prioridad sobre las guías generales/);
+  assert.match(prompt, /tienen prioridad sobre las guías de estilo y de conversación/);
   const tagged = async () => (await pool.query(`SELECT m.meta->>'question' AS q FROM messages m JOIN conversations c ON c.id = m.conversation_id JOIN contacts ct ON ct.id = c.contact_id WHERE ct.phone = $1 AND m.meta ? 'question' ORDER BY m.id`, [P])).rows.map((r) => r.q);
   assert.deepEqual(await tagged(), ['nombre'], 'el mensaje con la pregunta queda marcado');
 
@@ -175,7 +268,8 @@ t('recorrido completo: pregunta en orden, agrega la que falta, quita la adelanta
   await say('ok', P);
   assert.equal((await detail(P)).contact.data?.fecha, undefined);
   assert.deepEqual(textsTo(P), [`Perfecto. ${Q2}`]);
-  assert.match(JSON.stringify(h.calls.at(-1)), /SIGUIENTE PREGUNTA[^"]*fecha/);
+  // Ya se hizo: el prompt la marca "en curso" y dice cuál sigue si el cliente la contesta ahora.
+  assert.match(JSON.stringify(h.calls.at(-1)), /PREGUNTA EN CURSO \(ya la hiciste\): 2\. [^"]*fecha[^"]*haz la siguiente: 3\./);
 
   // 4) Da la fecha: se guarda y la IA hace la 3 (opcional).
   h.reset();
@@ -206,6 +300,47 @@ t('objetivo: no se marca cumplido mientras falten preguntas obligatorias', async
   h.setScript(() => ({ messages: [Q1], goal_completed: true }));
   await say('Hola, quiero reservar', P);
   assert.equal((await detail(P)).conversation.goal_completed_at, null);
+});
+
+t('fin de la lista en una transferencia: se registra y no apaga al asistente cuando el equipo le devuelve la conversación', async () => {
+  const P = '5215530000004';
+  await setActivation({ off_on_questions: true, off_message: 'Gracias, en breve te contactamos.' });
+  h.reset();
+  h.setScript(() => ({ messages: [Q1] }));
+  await say('Hola', P);
+  h.setScript(() => ({ messages: [Q2], save_data: [{ field: 'nombre', value: 'Ana López' }] }));
+  await say('Soy Ana López', P);
+  h.setScript(() => ({ messages: [Q3], save_data: [{ field: 'fecha', value: '15 de octubre' }] }));
+  await say('El 15 de octubre', P);
+  // No contesta la opcional y pide una persona: la IA transfiere. La lista se terminó, pero no se apaga por eso.
+  h.setScript(() => ({ action: 'handoff', messages: [] }));
+  await say('mejor que me llame alguien', P);
+  let d = await detail(P);
+  assert.equal(d.conversation.status, 'human');
+  assert.ok((await pool.query('SELECT questions_done_at FROM conversations WHERE id = $1', [d.conversation.id])).rows[0].questions_done_at, 'quedó registrado');
+  // El equipo se la devuelve al asistente: el siguiente mensaje no lo apaga otra vez.
+  await pool.query(`UPDATE conversations SET status = 'bot' WHERE id = $1`, [d.conversation.id]);
+  h.reset();
+  h.setScript(() => ({ messages: ['Con gusto, aquí sigo para lo que necesites.'] }));
+  await say('gracias', P);
+  assert.deepEqual(textsTo(P), ['Con gusto, aquí sigo para lo que necesites.']);
+  d = await detail(P);
+  assert.equal(d.agent.state, 'on');
+  await setActivation({});
+});
+
+t('configuración: una clave de pregunta que parece dato sensible se rechaza; un asistente ya en modo por palabras sin palabras puede guardar lo demás', async () => {
+  const bad = await h.authed('PUT', `/api/chatbots/${h.botId}`, { data_fields: [...QUESTIONS, { key: 'numero_de_tarjeta', label: 'Tarjeta', type: 'text', question: '¿Número de tarjeta?' }] });
+  assert.equal(bad.statusCode, 400);
+  assert.match(bad.body, /dato sensible/);
+  const option = await h.authed('PUT', `/api/chatbots/${h.botId}`, { data_fields: [...QUESTIONS, { key: 'pago_tarjeta', label: 'Pago', type: 'option', options: ['Tarjeta', 'Efectivo'], question: '¿Tarjeta o efectivo?' }] });
+  assert.equal(option.statusCode, 200, option.body);
+  assert.equal((await h.authed('PUT', `/api/chatbots/${h.botId}`, { data_fields: QUESTIONS })).statusCode, 200);
+  // Estado creado fuera del panel: modo por palabras sin palabras (se enciende con reglas o con el botón).
+  await pool.query(`UPDATE chatbots SET rules = jsonb_set(rules, '{activation}', rules->'activation' || '{"mode":"keywords","on_keywords":[]}'::jsonb) WHERE id = $1`, [h.botId]);
+  const other = await h.authed('PUT', `/api/chatbots/${h.botId}`, { rules: { activation: { off_on_questions: true } } });
+  assert.equal(other.statusCode, 200, other.body);
+  await setActivation({});
 });
 
 t('activadores: con modo por palabras no responde hasta la palabra; al activarse empieza por la pregunta 1', async () => {
