@@ -56,6 +56,11 @@ export const RulesSchema = z.object({
   booking_enabled: z.boolean().default(true),
   /** Verificar que precios, números, URLs, correos y teléfonos existan en el contexto. */
   verify_facts: z.boolean().default(true),
+  /**
+   * Afirmaciones sin números ("sí tenemos alberca"): deben aparecer en la información del negocio.
+   * 'reglas' = comprobación rápida y gratuita; 'estricto' = además un modelo barato juzga la respuesta; 'apagado' = no se revisa.
+   */
+  verify_claims: z.enum(['apagado', 'reglas', 'estricto']).default('reglas'),
   /** Frases prohibidas (suenan a robot). Si aparecen, se regenera la respuesta. */
   banned_phrases: z.array(z.string()).default([
     'como modelo de lenguaje',
@@ -120,6 +125,8 @@ export type Flow = z.infer<typeof FlowSchema>;
 
 export const AiSettingsSchema = z.object({
   model: z.string().default(''),
+  /** Modelos de respaldo de este asistente (vacío = los globales de OPENROUTER_FALLBACK_MODELS). */
+  fallback_models: z.array(z.string().trim().min(1).max(120)).max(2).default([]),
   temperature: z.number().min(0).max(2).nullable().default(0.4),
   reasoning_effort: z.enum(['', 'minimal', 'low', 'medium', 'high']).default(''),
   /** Mensajes recientes que se envían tal cual a la IA. */
@@ -223,6 +230,8 @@ export interface KnowledgeItem {
   always_include: boolean;
   active: boolean;
   sort_order: number;
+  /** Página web de la que se importó (para volver a sincronizar). */
+  source_url?: string | null;
 }
 
 /** Reglas de envío: momentos concretos y condiciones de contexto interpretadas por la IA. */
@@ -254,6 +263,8 @@ export function imageSendWhen(img: Pick<ImageAsset, 'send_when'>): ImageSendWhen
 
 export interface ImageAsset {
   id: string;
+  /** Huella SHA-256 del archivo (vacía en fotos subidas antes de la verificación). */
+  sha256?: string;
   chatbot_id: string;
   code: string;
   name: string;
@@ -280,6 +291,33 @@ export interface Contact {
   notes: string[];
   tags: string[];
   opted_out: boolean;
+  /** Cuándo aceptó recibir promociones (null = no ha aceptado). */
+  consent_at?: Date | null;
+  consent_source?: string;
+  /** Última vez que una persona tomó la conversación del contacto: cuándo, desde dónde y quién (migración 031). */
+  handoff_at?: Date | null;
+  handoff_by?: string | null;
+  handoff_via?: '' | 'telefono' | 'panel' | 'regla' | 'bot';
+}
+
+/** Pendiente (se marca como hecho) o nota (solo informa), de un contacto. Puede vincularse a la conversación donde se quedó. */
+export interface ContactTask {
+  id: string;
+  account_id: string;
+  contact_id: string;
+  conversation_id: string | null;
+  kind: 'pendiente' | 'nota';
+  body: string;
+  status: 'abierta' | 'hecha';
+  /** Fecha límite (AAAA-MM-DD); solo para pendientes. */
+  due_on: string | null;
+  created_by: string | null;
+  created_by_name?: string | null;
+  created_via: 'panel' | 'regla';
+  done_at: Date | null;
+  done_by: string | null;
+  created_at: Date;
+  updated_at: Date;
 }
 
 export type ConversationStatus = 'bot' | 'human' | 'closed';
@@ -299,14 +337,21 @@ export interface Conversation {
   data: Record<string, string>;
   data_version: number;
   report_summary: string;
+  /** Intención, ánimo, interés, acuerdos y pendientes de la conversación (compacto). */
+  report_analysis?: Record<string, unknown>;
   report_until_id: number;
   report_at: Date | null;
   report_data_version: number;
   last_message_at: Date;
+  /** Persona del equipo a cargo (round robin o manual). */
+  assigned_user_id?: string | null;
+  assigned_at?: Date | null;
   /** Etapa del recorrido en la que va (1..n; 0 = sin etapa). */
   flow_step?: number;
   /** Cuándo se cumplió el objetivo de la conversación (null = aún no). */
   goal_completed_at?: Date | null;
+  /** Inicio del recorrido actual (al reabrir o borrar la memoria); las fotos "una sola vez" se cuentan desde aquí. */
+  flow_started_at?: Date | null;
   /** Asistente en pausa en esta conversación (null = no), por qué y hasta cuándo (null = hasta reactivarlo). */
   agent_off_at?: Date | null;
   agent_off_reason?: string;
@@ -337,6 +382,7 @@ export type Role = 'superadmin' | 'admin' | 'agent';
 export type AccountStatus = 'trial' | 'active' | 'paused';
 
 export interface Account {
+  brand_id?: string | null;
   id: string;
   name: string;
   active: boolean;
@@ -349,6 +395,7 @@ export interface Account {
   onboarding: Record<string, boolean>;
   signup_source: string;
   ai_alert_month: string;
+  limits_override?: Record<string, number>;
   created_at: Date;
 }
 
@@ -360,6 +407,8 @@ export interface User {
   email: string;
   phone: string;
   notify_whatsapp: boolean;
+  /** Disponible para recibir conversaciones por turnos. */
+  available: boolean;
   active: boolean;
   email_verified_at: Date | null;
   last_login_at: Date | null;
@@ -368,7 +417,7 @@ export interface User {
 
 /* ---------------------------------- Canales ---------------------------------- */
 
-export const CHANNEL_TYPES = ['whatsapp', 'telegram', 'messenger', 'instagram', 'webchat', 'zernio'] as const;
+export const CHANNEL_TYPES = ['whatsapp', 'telegram', 'messenger', 'instagram', 'webchat', 'email', 'zernio'] as const;
 export type PublicChannelType = (typeof CHANNEL_TYPES)[number];
 export type ChannelType = PublicChannelType | 'playground';
 
@@ -451,10 +500,29 @@ export const ChannelConfigSchemas = {
     /** Nonce de un solo uso del flujo de conexión; evita callbacks falsos. */
     connect_state: z.string().max(200).default(''),
   }),
+  email: z.object({
+    /** gmail | outlook | otro: solo rellena servidores por defecto en el panel. */
+    provider: z.enum(['gmail', 'outlook', 'otro']).default('otro'),
+    imap_host: z.string().max(200).default(''),
+    imap_port: z.number().int().min(1).max(65535).default(993),
+    imap_user: z.string().max(200).default(''),
+    imap_password: secret.default(''),
+    smtp_host: z.string().max(200).default(''),
+    smtp_port: z.number().int().min(1).max(65535).default(587),
+    /** Vacíos = los mismos que IMAP. */
+    smtp_user: z.string().max(200).default(''),
+    smtp_password: secret.default(''),
+    from_address: z.string().max(200).default(''),
+    from_name: z.string().max(100).default(''),
+    /** Lo guarda el sistema: último correo ya leído. */
+    last_uid: z.number().int().min(0).default(0),
+    uid_validity: z.number().int().min(0).default(0),
+    last_error: z.string().max(300).default(''),
+  }),
   playground: z.object({}),
 } as const;
 
-export const SECRET_FIELDS = ['api_key', 'bot_token', 'page_access_token', 'app_secret', 'webhook_secret', 'connect_state'];
+export const SECRET_FIELDS = ['api_key', 'bot_token', 'page_access_token', 'app_secret', 'imap_password', 'smtp_password', 'webhook_secret', 'connect_state'];
 export const MASK = '••••••';
 
 export function channelConfig(type: ChannelType, config: unknown): Record<string, any> {

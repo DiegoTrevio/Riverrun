@@ -59,13 +59,17 @@ services:
       - "127.0.0.1:8080:8080"
 
   backend:
-    build: .
+    build:
+      context: .
+      args:
+        APP_VERSION: ${APP_VERSION:-dev}
     restart: unless-stopped
     depends_on:
       postgres: { condition: service_healthy }
       evolution: { condition: service_started }
     environment:
       PORT: 3000
+      APP_VERSION: ${APP_VERSION:-dev}
       DATABASE_URL: postgres://chatbot:${POSTGRES_PASSWORD}@postgres:5432/chatbot
       WEBHOOK_BASE_URL: http://backend:3000
       # URL pública con HTTPS (Telegram, Messenger, Instagram, chat web e imágenes)
@@ -75,6 +79,7 @@ services:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-${OPENAI_API_KEY:-}}
       OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}}
       OPENROUTER_MODEL: ${OPENROUTER_MODEL:-${OPENAI_MODEL:-openai/gpt-4.1-mini}}
+      OPENROUTER_FALLBACK_MODELS: ${OPENROUTER_FALLBACK_MODELS:-}
       OPENROUTER_SUMMARY_MODEL: ${OPENROUTER_SUMMARY_MODEL:-${OPENAI_SUMMARY_MODEL:-openai/gpt-4.1-mini}}
       OPENROUTER_TRANSCRIPTION_MODEL: ${OPENROUTER_TRANSCRIPTION_MODEL:-${OPENAI_TRANSCRIPTION_MODEL:-google/gemini-2.5-flash}}
       KNOWLEDGE_MONITOR_ENABLED: ${KNOWLEDGE_MONITOR_ENABLED:-true}
@@ -95,16 +100,85 @@ services:
       # Autoregistro de empresas y correo saliente
       SIGNUP_ENABLED: ${SIGNUP_ENABLED:-true}
       TRIAL_DAYS: ${TRIAL_DAYS:-14}
+      TRUST_PROXY_HOPS: ${TRUST_PROXY_HOPS:-1}
+      DOMAIN: ${DOMAIN:-}
+      # Límites de la prueba gratuita (0 = sin límite); los planes de pago llevan los suyos
+      TRIAL_MAX_MESSAGES: ${TRIAL_MAX_MESSAGES:-300}
+      TRIAL_MAX_CHANNELS: ${TRIAL_MAX_CHANNELS:-2}
+      TRIAL_MAX_USERS: ${TRIAL_MAX_USERS:-3}
+      TRIAL_MAX_CHATBOTS: ${TRIAL_MAX_CHATBOTS:-2}
+      # Google Calendar (opcional)
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      EMAIL_POLL_SECONDS: ${EMAIL_POLL_SECONDS:-60}
       SIGNUP_REQUIRE_EMAIL: ${SIGNUP_REQUIRE_EMAIL:-true}
       SMTP_URL: ${SMTP_URL:-}
       MAIL_FROM: ${MAIL_FROM:-}
       SUPERADMIN_EMAIL: ${SUPERADMIN_EMAIL:-}
+      TERMS_URL: ${TERMS_URL:-}
+      PRIVACY_URL: ${PRIVACY_URL:-}
       SUPPORT_CONTACT: ${SUPPORT_CONTACT:-}
       AI_ALERT_USD_PER_ACCOUNT: ${AI_ALERT_USD_PER_ACCOUNT:-0}
+      # Cobro automático (cada proveedor se activa con sus claves)
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      MERCADOPAGO_ACCESS_TOKEN: ${MERCADOPAGO_ACCESS_TOKEN:-}
+      MERCADOPAGO_WEBHOOK_SECRET: ${MERCADOPAGO_WEBHOOK_SECRET:-}
+      BILLING_GRACE_DAYS: ${BILLING_GRACE_DAYS:-5}
+      # Monitoreo
+      HEARTBEAT_URL: ${HEARTBEAT_URL:-}
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+      BACKUP_DIR: /backups
+      BACKUP_MAX_AGE_HOURS: ${BACKUP_MAX_AGE_HOURS:-36}
     volumes:
       - uploads:/data/uploads
+      - backups:/backups:ro
     ports:
       - "${PANEL_BIND:-127.0.0.1}:3000:3000"
+
+  # Respaldo diario cifrado de las dos bases de datos, las fotos y las sesiones de WhatsApp (ver README → Respaldos).
+  backup:
+    build: ./docker/backup
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      PGHOST: postgres
+      PGUSER: chatbot
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      BACKUP_PASSPHRASE: ${BACKUP_PASSPHRASE:?Define BACKUP_PASSPHRASE en .env (ejecuta ./riverrun install)}
+      BACKUP_HOUR: ${BACKUP_HOUR:-03:30}
+      BACKUP_KEEP_DAILY: ${BACKUP_KEEP_DAILY:-7}
+      BACKUP_KEEP_WEEKLY: ${BACKUP_KEEP_WEEKLY:-4}
+      BACKUP_KEEP_MONTHLY: ${BACKUP_KEEP_MONTHLY:-6}
+      APP_VERSION: ${APP_VERSION:-dev}
+      BACKUP_S3_BUCKET: ${BACKUP_S3_BUCKET:-}
+      BACKUP_S3_ENDPOINT: ${BACKUP_S3_ENDPOINT:-}
+      BACKUP_S3_KEY: ${BACKUP_S3_KEY:-}
+      BACKUP_S3_SECRET: ${BACKUP_S3_SECRET:-}
+      BACKUP_S3_REGION: ${BACKUP_S3_REGION:-}
+      BACKUP_S3_PROVIDER: ${BACKUP_S3_PROVIDER:-Other}
+      BACKUP_REMOTE_KEEP_DAYS: ${BACKUP_REMOTE_KEEP_DAYS:-45}
+    volumes:
+      - backups:/backups
+      - uploads:/data/uploads:ro
+      - evolution_instances:/evolution/instances:ro
+
+  # Solo para restaurar: ./riverrun restore  (no arranca con el resto).
+  restore:
+    build: ./docker/backup
+    profiles: ["tools"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      PGHOST: postgres
+      PGUSER: chatbot
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      BACKUP_PASSPHRASE: ${BACKUP_PASSPHRASE:-}
+    volumes:
+      - backups:/backups
+      - uploads:/data/uploads
+      - evolution_instances:/evolution/instances
 
   caddy:
     image: caddy:2-alpine
@@ -125,4 +199,5 @@ volumes:
   redisdata:
   evolution_instances:
   uploads:
+  backups:
   caddy_data:

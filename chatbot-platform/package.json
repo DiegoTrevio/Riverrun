@@ -24,18 +24,22 @@
     "knowledge:prepare": "tsx --env-file-if-exists=.env src/cli/knowledge-prepare.ts",
     "eval:engine": "npm run build && node scripts/eval-engine.mjs",
     "eval:engine:live": "npm run build && node --env-file-if-exists=.env scripts/eval-engine.mjs --live",
-    "operations:check": "tsx --env-file-if-exists=.env src/cli/operations-check.ts"
+    "operations:check": "tsx --env-file-if-exists=.env src/cli/operations-check.ts",
+    "check:frontend": "node scripts/check-frontend.mjs"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.2",
     "@fastify/multipart": "^9.0.3",
     "@fastify/static": "^10.1.5",
     "fastify": "^5.6.0",
+    "imapflow": "^2.2.6",
+    "mailparser": "^3.9.36",
     "nodemailer": "^10.0.13",
     "pg": "^8.16.0",
     "zod": "^4.1.0"
   },
   "devDependencies": {
+    "@types/mailparser": "^3.9.0",
     "@types/node": "^22.18.0",
     "@types/nodemailer": "^8.0.2",
     "@types/pg": "^8.15.0",

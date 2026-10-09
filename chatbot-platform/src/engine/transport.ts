@@ -2,12 +2,23 @@ import path from 'node:path';
 import { config } from '../config.js';
 import type { ChannelType, ImageAsset } from '../types.js';
 
+/** Archivo listo para enviar (PDF, Word, audio, video…). La ruta ya se comprobó contra la cuenta. */
+export interface OutgoingFile {
+  id: string;
+  name: string;
+  mime: string;
+  kind: 'image' | 'document' | 'audio' | 'video';
+  absPath: string;
+}
+
 /** Canal de salida. El mismo motor funciona para todas las plataformas y para el simulador. */
 export interface Transport {
   kind: ChannelType;
   /** Envía texto. `delayMs` = tiempo de "escribiendo…" sugerido (cada plataforma lo aplica si puede). */
   sendText(text: string, delayMs: number): Promise<string | null>;
   sendImage(image: ImageAsset, caption: string, delayMs: number): Promise<string | null>;
+  /** Envía un archivo (PDF, audio, video…). Opcional: los canales que no lo admiten no lo implementan y el envío falla con un aviso claro. */
+  sendFile?(file: OutgoingFile, caption: string, delayMs: number): Promise<string | null>;
   /** Aviso interno (p.ej. al encargado cuando hay transferencia). */
   notify(number: string, text: string): Promise<void>;
 }
@@ -36,6 +47,11 @@ export class PlaygroundTransport implements Transport {
 
   async sendImage(image: ImageAsset, caption: string) {
     this.outputs.push({ type: 'image', text: caption, image: { id: image.id, code: image.code, name: image.name } });
+    return `playground-${Date.now()}-${this.n++}`;
+  }
+
+  async sendFile(file: OutgoingFile, caption: string) {
+    this.outputs.push({ type: 'text', text: `${caption ? `${caption}\n` : ''}📎 ${file.name}` });
     return `playground-${Date.now()}-${this.n++}`;
   }
 

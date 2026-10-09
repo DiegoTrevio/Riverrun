@@ -27,7 +27,7 @@ before(async () => {
   h = await createHarness();
   await h.createBot();
   convOf = async (phone: string) => (await h.authed('GET', `/api/conversations?chatbot_id=${h.botId}&search=${phone}`)).json()[0];
-  const s = await h.authed('PUT', `/api/settings?account_id=${h.accountId}`, { business_hours: ALL_DAY });
+  const s = await h.authed('PUT', `/api/settings?account_id=${h.accountId}`, { business_hours: ALL_DAY, consent: { require_for_campaigns: false } });
   assert.equal(s.statusCode, 200, s.body);
   // Miembro del equipo que recibe alertas por WhatsApp
   const u = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'lucia@hotel.mx', name: 'Lucía', password: 'clave-lucia-1', role: 'agent', phone: '5215588880000', notify_whatsapp: true });
@@ -51,6 +51,14 @@ t('regla por palabra clave: responde sin IA, etiqueta y alerta al equipo (panel 
       { type: 'alert_team', message: '{{nombre}} pidió la lista de precios: "{{mensaje}}"', roles: ['agent'] },
     ],
   });
+  // Un agente solo recibe avisos de sus conversaciones: la conversación queda asignada a Lucía antes de la consulta.
+  h.setScript(() => ({ messages: ['Hola, ¿en qué te ayudo?'] }));
+  await h.webhook('hola', { phone: '5215510001001' });
+  await h.idle();
+  const luciaApi = await h.loginAs('lucia@hotel.mx', 'clave-lucia-1');
+  assert.equal((await h.authed('PUT', `/api/conversations/${(await convOf('5215510001001')).id}/assign`, { user_id: (await luciaApi('GET', '/api/me')).json().user.id })).statusCode, 200);
+  // El aviso de la asignación ya es de Lucía: se marca leído para contar solo el de la regla.
+  await luciaApi('POST', '/api/notifications/read', {});
   h.reset();
   h.setScript(() => ({ messages: ['respuesta de la IA'] }));
   await h.webhook('me pasas la lista de precios?', { phone: '5215510001001' });
@@ -150,6 +158,12 @@ t('seguimiento si el cliente no responde (una sola vez) y se cancela si responde
 
 t('intención detectada por la IA: queja → transferir y alertar', async () => {
   await rule({ name: 'Quejas', trigger: { type: 'intent', intent: 'queja', description: 'El cliente está molesto o reporta un problema' }, actions: [{ type: 'handoff', reason: 'Queja del cliente' }, { type: 'alert_team', message: 'Queja de {{nombre}}: {{mensaje}}' }] });
+  // Un agente solo recibe avisos de sus conversaciones: la conversación queda asignada a Lucía antes de la queja.
+  h.setScript(() => ({ messages: ['Hola, ¿en qué te ayudo?'] }));
+  await h.webhook('hola', { phone: '5215510001005' });
+  await h.idle();
+  const luciaApi = await h.loginAs('lucia@hotel.mx', 'clave-lucia-1');
+  assert.equal((await h.authed('PUT', `/api/conversations/${(await convOf('5215510001005')).id}/assign`, { user_id: (await luciaApi('GET', '/api/me')).json().user.id })).statusCode, 200);
   h.reset();
   h.setScript((req) => {
     assert.match(req.messages[0].content, /Intenciones a detectar[\s\S]*`queja`: El cliente está molesto/);
@@ -160,6 +174,20 @@ t('intención detectada por la IA: queja → transferir y alertar', async () => 
   await waitFor(() => h.sent.some((s) => s.to === '5215588880000' && s.text.includes('Queja de Ana')));
   const logs = (await h.authed('GET', `/api/logs?conversation_id=${(await convOf('5215510001005')).id}`)).json();
   assert.ok(logs.some((l: any) => l.message.includes('Intenciones desconocidas ignoradas: inventada')));
+});
+
+t('intención con mayúsculas y acentos: la IA la devuelve normalizada y la regla se dispara igual', async () => {
+  await rule({ name: 'Cotización formal', trigger: { type: 'intent', intent: 'Cotización formal', description: 'Pide una cotización por escrito' }, actions: [{ type: 'add_tag', tag: 'cotiza' }] });
+  h.reset();
+  h.setScript((req) => {
+    assert.match(req.messages[0].content, /`Cotización formal`/);
+    return { messages: ['Claro, te preparo la cotización.'], intents: ['cotizacion formal'] };
+  });
+  await h.webhook('¿me mandas una cotización formal por escrito?', { phone: '5215510001010' });
+  await waitFor(async () => {
+    const c = await convOf('5215510001010');
+    return !!c && (await h.authed('GET', `/api/conversations/${c.id}`)).json().contact.tags.includes('cotiza');
+  }, 8000);
 });
 
 t('bajas: BAJA detiene mensajes promocionales; ALTA los reactiva; recordatorios sí llegan', async () => {
@@ -331,6 +359,8 @@ t('agenda desde el panel: agendar con confirmación, reprogramar, completar, can
   const slots = (await h.authed('GET', `/api/services/${serviceId}/slots`)).json();
   h.reset();
   const agent = await h.loginAs('lucia@hotel.mx', 'clave-lucia-1');
+  // Un agente solo agenda en sus conversaciones: esta es suya.
+  assert.equal((await h.authed('PUT', `/api/conversations/${conv.id}/assign`, { user_id: (await agent('GET', '/api/me')).json().user.id })).statusCode, 200);
   const r = await agent('POST', '/api/appointments', { service_id: serviceId, slot: slots[0].key, conversation_id: conv.id, notes: 'Trae identificación' });
   assert.equal(r.statusCode, 200, r.body);
   assert.match(h.sent.find((s) => s.to === '5215510002001')!.text, /quedó agendada para el .* Lugar: Recepción del hotel\./);

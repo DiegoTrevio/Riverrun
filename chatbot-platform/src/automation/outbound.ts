@@ -1,4 +1,6 @@
-import { PlaygroundTransport } from '../engine/transport.js';
+import { messageQuota } from '../billing/limits.js';
+import { attachmentAbsolutePath } from '../attachments.js';
+import { PlaygroundTransport, type OutgoingFile } from '../engine/transport.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
@@ -9,6 +11,8 @@ import type { Appointment } from './types.js';
 export interface OutboundOptions {
   text?: string;
   imageId?: string;
+  /** Archivo de "Archivos" (PDF, Word, audio, video…). */
+  attachmentId?: string;
   /** automation | sequence | campaign | reminder | booking | no_reply | opt_out */
   source: string;
   /** Mensajes de servicio (recordatorios de cita, confirmaciones): se envían aunque el cliente se haya dado de baja de promociones. */
@@ -30,6 +34,15 @@ const META_WINDOW_MS = 24 * 3600 * 1000;
  * Envío proactivo (no es respuesta a un mensaje): automatizaciones, secuencias, campañas y recordatorios.
  * Aplica las políticas antes de enviar: bajas, canal activo, conversación con humano y la ventana de 24 h (Meta y Zernio).
  */
+/** Orígenes que son promoción (llevan pie de baja y exigen consentimiento): campañas y secuencias. */
+const PROMOTIONAL_SOURCES = new Set(['campaign', 'sequence']);
+
+/** "Responde {{palabra_baja}} …" → con la primera palabra de baja del negocio en mayúsculas. */
+export function optOutFooter(oo: { keywords: string[]; footer_text: string }) {
+  const word = (oo.keywords[0] ?? 'BAJA').toUpperCase();
+  return oo.footer_text.replace(/\{\{\s*palabra_baja\s*\}\}/gi, word).trim();
+}
+
 export class Outbound {
   constructor(private chat: ChatService) {}
 
@@ -40,6 +53,13 @@ export class Outbound {
     if (!channel || !contact) return { sent: false, reason: 'conversación incompleta' };
     if (!channel.active || channel.account_active === false) return { sent: false, reason: 'canal o cuenta inactivos' };
     if (contact.opted_out && !o.transactional) return { sent: false, reason: 'el cliente se dio de baja' };
+    // Los envíos automáticos también gastan el cupo del plan (los recordatorios y confirmaciones no se cortan).
+    if (!o.transactional && ['automation', 'sequence', 'campaign', 'no_reply', 'api'].includes(o.source) && (await messageQuota(conv.account_id)).reached) return { sent: false, reason: 'se alcanzó el límite de mensajes de tu plan' };
+    const promotional = !o.transactional && PROMOTIONAL_SOURCES.has(o.source);
+    if (promotional) {
+      const st = await astore.getSettings(conv.account_id);
+      if (st.consent.require_for_campaigns && !contact.consent_at) return { sent: false, reason: 'el cliente no ha aceptado recibir promociones' };
+    }
     if (conv.status === 'human' && !o.allowWhenHuman) return { sent: false, reason: 'una persona está atendiendo la conversación' };
     if (channel.type === 'messenger' || channel.type === 'instagram' || channel.type === 'zernio') {
       // Meta solo permite escribir dentro de las 24 h posteriores al último mensaje del cliente. Zernio no documenta
@@ -71,7 +91,17 @@ export class Outbound {
       const owner = image ? await store.getChatbot(image.chatbot_id) : null;
       if (!image || !image.active || owner?.account_id !== conv.account_id) image = null;
     }
-    if (!text && !image) return { sent: false, reason: 'mensaje vacío' };
+    let file: OutgoingFile | null = null;
+    if (o.attachmentId) {
+      const a = await astore.getAttachment(o.attachmentId);
+      if (!a || a.account_id !== conv.account_id) return { sent: false, reason: 'el archivo ya no existe (se borró en Archivos)' };
+      file = { id: a.id, name: a.name, mime: a.mime, kind: a.kind, absPath: attachmentAbsolutePath(a.file_path) };
+    }
+    if (!text && !image && !file) return { sent: false, reason: 'mensaje vacío' };
+    // Pie de baja: toda promoción dice cómo dejar de recibirlas (se añade al texto, o a la leyenda de la foto).
+    const footer = promotional && settings.opt_out.enabled && settings.opt_out.footer_enabled ? optOutFooter(settings.opt_out) : '';
+    const textOut = footer && text ? `${text}\n\n${footer}` : text;
+    const captionFooter = footer && !text ? footer : '';
 
     const transport = channel.type === 'playground' ? new PlaygroundTransport() : this.chat.transportFor(channel, contact);
     const meta = { source: o.source, ...o.meta };
@@ -79,13 +109,23 @@ export class Outbound {
     const ok = await this.chat.queue.exclusive(conv.id, async () => {
       if (image) {
         // Texto y foto juntos: un solo mensaje con el texto como pie (sin texto, el pie de la foto).
-        const m = await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text: text || image.caption, image, delay: 0, meta });
-        if (m) return true;
-        // Si la plataforma rechaza la foto, el cliente igual recibe el texto.
-        if (!text) return false;
-        return !!(await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text, delay: 0, meta: { ...meta, image_failed: true } }));
+        const caption = textOut || (captionFooter ? `${image.caption}${image.caption ? '\n\n' : ''}${captionFooter}` : image.caption);
+        const m = await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text: caption, image, delay: 0, meta });
+        if (!m) {
+          // Si la plataforma rechaza la foto, el cliente igual recibe el texto.
+          if (!textOut) return false;
+          const t = await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text: textOut, delay: 0, meta: { ...meta, image_failed: true } });
+          if (!t) return false;
+        }
+      } else if (text) {
+        const m = await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text: textOut, delay: 0, meta });
+        if (!m) return false;
       }
-      return !!(await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text, delay: 0, meta }));
+      if (file) {
+        const m = await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text: captionFooter, file, delay: 0, meta });
+        if (!m) return false;
+      }
+      return true;
     });
     if (!ok) return { sent: false, reason: 'la plataforma rechazó el envío (ver registros)' };
     // El asistente continúa el recorrido desde la etapa indicada cuando el cliente responda.

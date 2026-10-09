@@ -141,6 +141,8 @@ t('envío manual desde la conversación: el agente manda una foto; otra cuenta o
   assert.equal((await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'agente@hotel.mx', name: 'Agente', password: 'clave-segura-1', role: 'agent' })).statusCode, 200);
   const agent = await h.loginAs('agente@hotel.mx', 'clave-segura-1');
   assert.equal((await agent('GET', `/api/chatbots/${h.botId}/images`)).statusCode, 200, 'el agente ve el catálogo');
+  // Un agente solo escribe en las conversaciones que tiene asignadas.
+  assert.equal((await h.authed('PUT', `/api/conversations/${conv.id}/assign`, { user_id: (await agent('GET', '/api/me')).json().user.id })).statusCode, 200);
   const r = await agent('POST', `/api/conversations/${conv.id}/send-image`, { image_id: IDS.suite });
   assert.equal(r.statusCode, 200, r.body);
   assert.equal(r.json().sender, 'human');

@@ -1,0 +1,322 @@
+#!/usr/bin/env bash
+# riverrun — instalar, actualizar, respaldar y vigilar la plataforma con un solo comando.
+#
+#   ./riverrun install     instala todo (genera claves, pregunta lo mínimo, levanta los servicios)
+#   ./riverrun update      actualiza con respaldo previo y vuelta atrás automática si algo falla
+#   ./riverrun status      estado de los servicios, salud, último respaldo y si hay versión nueva
+#   ./riverrun backup      respaldo inmediato (corre solo cada noche)
+#   ./riverrun restore [archivo|latest]   restaura un respaldo (en un servidor nuevo: pasa la ruta del archivo)
+#   ./riverrun semantic    activa la búsqueda semántica (pgvector) para catálogos grandes
+#   ./riverrun logs [servicio]            registros en vivo
+#   ./riverrun restart     aplica cambios hechos a .env
+#
+# Opciones de install (o variables de entorno, para instalar sin preguntas):
+#   --non-interactive  --no-start
+#   RIVERRUN_DOMAIN  RIVERRUN_ADMIN_EMAIL  RIVERRUN_ADMIN_PASSWORD  OPENROUTER_API_KEY  SMTP_URL
+set -Eeuo pipefail
+
+cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+ENV_FILE=".env"
+
+if [[ -t 1 ]]; then B=$'\033[1m'; G=$'\033[32m'; Y=$'\033[33m'; R=$'\033[31m'; N=$'\033[0m'; else B=''; G=''; Y=''; R=''; N=''; fi
+say()  { printf '%s\n' "$*"; }
+ok()   { printf '%s✓%s %s\n' "$G" "$N" "$*"; }
+warn() { printf '%s!%s %s\n' "$Y" "$N" "$*"; }
+die()  { printf '%s✕ %s%s\n' "$R" "$*" "$N" >&2; exit 1; }
+trap 'die "Algo salió mal en la línea $LINENO. Revisa el mensaje anterior o corre ./riverrun status."' ERR
+
+dc() { docker compose "$@"; }
+need_docker() { command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; }
+rand() { openssl rand -hex "${1:-24}"; }
+
+env_get() { sed -n "s/^$1=\\(.*\\)$/\\1/p" "$ENV_FILE" 2>/dev/null | tail -n 1; }
+env_set() { # clave valor — reemplaza (o agrega) sin interpretar caracteres especiales
+  local k="$1" v="$2" tmp; tmp="$(mktemp)"
+  if grep -q "^$k=" "$ENV_FILE" 2>/dev/null; then
+    K="$k" V="$v" awk 'BEGIN{FS=OFS="="} $1==ENVIRON["K"] {print ENVIRON["K"] "=" ENVIRON["V"]; next} {print}' "$ENV_FILE" > "$tmp"
+  else
+    { cat "$ENV_FILE" 2>/dev/null; echo "$k=$v"; } > "$tmp"
+  fi
+  cat "$tmp" > "$ENV_FILE"; rm -f "$tmp"; chmod 600 "$ENV_FILE"
+}
+ask() { # prompt default → respuesta
+  local prompt="$1" def="${2:-}" ans=""
+  if [[ "${INTERACTIVE:-1}" == "1" ]]; then
+    read -r -p "$prompt${def:+ [$def]}: " ans || true
+  fi
+  printf '%s' "${ans:-$def}"
+}
+
+app_url() {
+  local d; d="$(env_get DOMAIN)"
+  if [[ -n "$d" && "$(env_get COMPOSE_PROFILES)" == *https* ]]; then echo "https://$d"; else echo "http://127.0.0.1:3000"; fi
+}
+
+pg_image() { dc config --images 2>/dev/null | grep -iE 'postgres|pgvector' | head -n 1 || true; }
+
+version() { git rev-parse --short HEAD 2>/dev/null || echo dev; }
+
+wait_healthy() { # segundos (RIVERRUN_WAIT_SECONDS / RIVERRUN_POLL permiten acortarlo en pruebas)
+  local limit="${RIVERRUN_WAIT_SECONDS:-${1:-150}}" poll="${RIVERRUN_POLL:-3}" i=0
+  while (( i < limit )); do
+    if dc exec -T backend wget -qO- http://127.0.0.1:3000/health >/dev/null 2>&1; then return 0; fi
+    sleep "$poll"; i=$((i+poll))
+  done
+  return 1
+}
+
+health_json() { dc exec -T backend wget -qO- http://127.0.0.1:3000/health/ready 2>/dev/null || true; }
+
+# ------------------------------------------------------------------ install
+cmd_install() {
+  INTERACTIVE=1; START=1
+  for a in "$@"; do case "$a" in --non-interactive) INTERACTIVE=0 ;; --no-start) START=0 ;; *) die "Opción desconocida: $a" ;; esac; done
+  [[ -t 0 ]] || INTERACTIVE=0
+  say "${B}Instalación de Riverrun${N}"; say
+
+  if (( START )) && ! need_docker; then
+    warn "Docker (con el plugin compose) no está instalado."
+    if [[ "$INTERACTIVE" == "1" && "$(id -u)" == "0" ]]; then
+      if [[ "$(ask '¿Instalarlo ahora con el instalador oficial de Docker? (s/n)' s)" =~ ^[sSyY] ]]; then
+        curl -fsSL https://get.docker.com | sh
+      fi
+    fi
+    need_docker || die "Instala Docker (https://docs.docker.com/engine/install/) y vuelve a correr ./riverrun install"
+  fi
+  command -v openssl >/dev/null 2>&1 || die "Falta openssl (apt install openssl)"
+
+  [[ -f "$ENV_FILE" ]] || { cp .env.example "$ENV_FILE"; chmod 600 "$ENV_FILE"; NEW=1; }
+  : "${NEW:=0}"
+  [[ "$NEW" == "1" ]] && ok "Archivo .env creado" || warn "Ya existe .env: se conserva y solo se completa lo que falte"
+
+  # Claves internas: se generan una sola vez y nunca se pisan.
+  local gen=0 k
+  for k in POSTGRES_PASSWORD EVOLUTION_API_KEY SESSION_SECRET BACKUP_PASSPHRASE; do
+    local cur; cur="$(env_get "$k")"
+    if [[ -z "$cur" || "$cur" == cambia-esta-clave* ]]; then
+      case "$k" in POSTGRES_PASSWORD) env_set "$k" "$(rand 16)" ;; *) env_set "$k" "$(rand 32)" ;; esac
+      gen=1
+    fi
+  done
+  (( gen )) && ok "Claves internas generadas"
+
+  # Datos del negocio
+  local domain email pass
+  domain="${RIVERRUN_DOMAIN:-$(env_get DOMAIN)}"; [[ "$domain" == "chatbot.tudominio.com" ]] && domain=""
+  if [[ -z "${RIVERRUN_DOMAIN:-}" && "$NEW" == "1" && "$INTERACTIVE" == "1" ]]; then
+    say; say "Dominio (ej. bot.minegocio.com): necesario para HTTPS, Telegram, Instagram, Messenger y el chat web."
+    say "Apúntalo antes (registro DNS tipo A) a la IP de este servidor. Déjalo vacío para probar solo en este servidor."
+    domain="$(ask 'Dominio' "$domain")"
+  fi
+  email="${RIVERRUN_ADMIN_EMAIL:-$(env_get ADMIN_USER)}"; [[ "$email" == "tu@correo.com" ]] && email=""
+  if [[ -z "${RIVERRUN_ADMIN_EMAIL:-}" && ( "$NEW" == "1" || -z "$email" ) ]]; then email="$(ask 'Tu correo (será el usuario administrador)' "$email")"; fi
+  [[ -n "$email" ]] || die "Falta el correo del administrador (RIVERRUN_ADMIN_EMAIL)"
+  env_set ADMIN_USER "$email"; env_set SUPERADMIN_EMAIL "$email"
+
+  pass="${RIVERRUN_ADMIN_PASSWORD:-}"
+  local shown=""
+  if [[ "$(env_get ADMIN_PASSWORD)" == "" || "$(env_get ADMIN_PASSWORD)" == cambia-esta-clave* ]]; then
+    [[ -n "$pass" ]] || { pass="$(rand 9)"; shown="$pass"; }
+    env_set ADMIN_PASSWORD "$pass"
+  elif [[ -n "$pass" ]]; then env_set ADMIN_PASSWORD "$pass"; fi
+
+  if [[ -n "$domain" ]]; then
+    env_set DOMAIN "$domain"; env_set SECURE_COOKIES true; env_set COMPOSE_PROFILES https
+    env_set PUBLIC_BASE_URL "https://$domain"; env_set MAIL_FROM "Riverrun <no-responder@$domain>"
+  else
+    env_set SECURE_COOKIES false; env_set COMPOSE_PROFILES ""; env_set DOMAIN "localhost"; env_set PUBLIC_BASE_URL "http://127.0.0.1:3000"
+  fi
+
+  local key="${OPENROUTER_API_KEY:-$(env_get OPENROUTER_API_KEY)}"
+  if [[ -z "$key" && "$NEW" == "1" && "$INTERACTIVE" == "1" ]]; then
+    say; say "Clave de OpenRouter (https://openrouter.ai/keys): es lo que hace responder al asistente."
+    key="$(ask 'OPENROUTER_API_KEY (Enter para ponerla después)' '')"
+  fi
+  [[ -n "$key" ]] && env_set OPENROUTER_API_KEY "$key"
+  [[ -n "${SMTP_URL:-}" ]] && env_set SMTP_URL "$SMTP_URL"
+  if [[ -z "$(env_get SMTP_URL)" ]]; then
+    env_set SIGNUP_REQUIRE_EMAIL false
+    warn "Sin SMTP_URL no se envían correos: la confirmación de correo queda desactivada (puedes activarla después)."
+  fi
+  ok "Configuración guardada en .env"
+
+  if (( ! START )); then
+    say; ok "Listo (sin iniciar: usaste --no-start). Para arrancar: ./riverrun restart"
+    if [[ -n "$shown" ]]; then say "  Contraseña generada del administrador: ${B}$shown${N}"; fi
+    return 0
+  fi
+
+  say; say "${B}Construyendo y arrancando (la primera vez tarda unos minutos)…${N}"
+  export APP_VERSION; APP_VERSION="$(version)"
+  dc up -d --build
+  say "Esperando a que el sistema responda…"
+  wait_healthy 180 || { dc logs --tail 40 backend || true; die "El sistema no respondió a tiempo. Revisa los registros de arriba o corre ./riverrun logs backend"; }
+  ok "El sistema está funcionando"
+
+  # Búsqueda semántica (pgvector): útil con catálogos grandes. Opcional; si falla, el asistente sigue con palabras clave.
+  if [[ -n "$(env_get OPENROUTER_API_KEY)" ]]; then
+    local sem="${RIVERRUN_SEMANTIC:-}"
+    if [[ -z "$sem" && "$INTERACTIVE" == "1" ]]; then sem="$(ask '¿Activar la búsqueda semántica? Mejora las respuestas con catálogos grandes (s/n)' s)"; fi
+    [[ "$sem" =~ ^([sSyY]|1|true)$ ]] && { cmd_semantic --no-backup || warn "No se activó la búsqueda semántica; puedes intentarlo después con ./riverrun semantic"; }
+  fi
+
+  say; say "${B}Todo listo.${N}"
+  say "  Panel:      $(app_url)"
+  say "  Usuario:    $email"
+  [[ -n "$shown" ]] && say "  Contraseña: ${B}$shown${N}  (cámbiala en el panel → Mi perfil)"
+  say
+  say "${B}Guarda esto fuera del servidor (gestor de contraseñas):${N}"
+  say "  BACKUP_PASSPHRASE=$(env_get BACKUP_PASSPHRASE)"
+  say "  SESSION_SECRET=$(env_get SESSION_SECRET)"
+  say "  Sin la primera no se pueden restaurar los respaldos; sin la segunda, al restaurar en otro servidor hay que volver a conectar Google Calendar."
+  say
+  [[ "$(app_url)" == http://127.0.0.1* ]] && say "Para abrir el panel desde tu computadora: ssh -L 3000:127.0.0.1:3000 usuario@este-servidor  →  http://localhost:3000"
+  [[ -n "$domain" ]] && say "Recuerda abrir los puertos 80 y 443 del servidor y apuntar $domain a esta IP."
+  [[ -z "$(env_get OPENROUTER_API_KEY)" ]] && warn "Falta OPENROUTER_API_KEY en .env: sin ella el asistente no responde. Después: ./riverrun restart"
+  say "Otros comandos: ./riverrun status · update · backup · restore · logs"
+}
+
+# ------------------------------------------------------------------ status
+cmd_status() {
+  need_docker || die "Docker no está disponible"
+  say "${B}Servicios${N}"; dc ps --format 'table {{.Service}}\t{{.Status}}' 2>/dev/null || dc ps
+  say; say "${B}Salud${N}"
+  local j; j="$(health_json)"
+  if [[ -z "$j" ]]; then warn "El backend no responde"; else
+    say "$j" | sed 's/},{/}\n{/g; s/[][{}"]//g; s/checks://' | sed 's/^/  /'
+  fi
+  say; say "${B}Respaldos${N}"
+  dc exec -T backup /usr/local/bin/backup.sh list 2>/dev/null | tail -n 4 | sed 's/^/  /' || warn "El contenedor de respaldos no está activo"
+  say; say "${B}Versión${N}  $(version)"
+  if git rev-parse --git-dir >/dev/null 2>&1 && git fetch -q origin 2>/dev/null; then
+    local behind; behind="$(git rev-list --count HEAD..'@{u}' 2>/dev/null || echo 0)"
+    (( behind > 0 )) && warn "Hay $behind cambios nuevos disponibles: ./riverrun update" || ok "Estás en la última versión"
+  fi
+  df -h . | awk 'NR==2 {print "\nDisco: " $4 " libres (" $5 " usado)"}'
+}
+
+# ------------------------------------------------------------------ backup / restore
+cmd_backup() {
+  need_docker || die "Docker no está disponible"
+  dc exec -T backup /usr/local/bin/backup.sh now
+}
+
+cmd_restore() {
+  need_docker || die "Docker no está disponible"
+  local target="${1:-latest}" extra=()
+  say "${R}${B}Restaurar reemplaza TODOS los datos actuales (conversaciones, cuentas, fotos, sesiones de WhatsApp).${N}"
+  if [[ -f "$target" ]]; then
+    # Archivo traído de fuera (p. ej. bajado de la nube a un servidor nuevo).
+    local host; host="$(readlink -f "$target")"
+    target="/tmp/restore-input.tar"; [[ "$host" == *.enc ]] && target="/tmp/restore-input.tar.enc"
+    extra=(-v "$host:$target:ro")
+  else
+    say "Respaldos disponibles:"; dc run --rm --no-deps -T restore list 2>/dev/null | sed 's/^/  /' || true
+  fi
+  local sure; read -r -p "Escribe RESTAURAR para continuar: " sure
+  [[ "$sure" == "RESTAURAR" ]] || die "Cancelado."
+  say "Haciendo un respaldo de seguridad de lo que hay ahora…"
+  dc exec -T -e BACKUP_PREFIX=prerestore backup /usr/local/bin/backup.sh now >/dev/null 2>&1 && ok "Respaldo de seguridad hecho" || warn "No se pudo (¿instalación nueva?). Continúo."
+  dc stop backend evolution >/dev/null 2>&1 || true
+  dc up -d postgres >/dev/null
+  dc run --rm "${extra[@]}" restore restore "$target"
+  export APP_VERSION; APP_VERSION="$(version)"
+  dc up -d
+  wait_healthy 180 && ok "Restauración completa y sistema funcionando" || die "Se restauró pero el sistema no responde: ./riverrun logs backend"
+}
+
+# ------------------------------------------------------------------ update
+cmd_update() {
+  need_docker || die "Docker no está disponible"
+  local backup=1
+  local ACCEPT_DB_IMAGE=0
+  for a in "$@"; do
+    [[ "$a" == "--no-backup" ]] && backup=0
+    [[ "$a" == "--accept-db-image-change" ]] && ACCEPT_DB_IMAGE=1
+  done
+  git rev-parse --git-dir >/dev/null 2>&1 || die "Esta instalación no es un repositorio git: descarga la versión nueva y copia tu .env (o clona de nuevo)."
+  [[ -z "$(git status --porcelain --untracked-files=no)" ]] || die "Hay archivos modificados a mano: guárdalos (git stash) antes de actualizar."
+  local old; old="$(git rev-parse HEAD)"
+  git fetch -q origin
+  local behind; behind="$(git rev-list --count HEAD..'@{u}')"
+  if (( behind == 0 )); then ok "Ya tienes la última versión ($(version))."; return; fi
+  say "${B}Cambios nuevos ($behind):${N}"; git log --oneline HEAD..'@{u}' | head -n 15 | sed 's/^/  /'; say
+
+  if (( backup )); then
+    say "Respaldo previo a la actualización…"
+    dc exec -T backup /usr/local/bin/backup.sh now || die "El respaldo falló: no se actualiza sin respaldo (usa --no-backup bajo tu riesgo)."
+  fi
+
+  # Guarda la imagen actual para poder volver si la nueva falla.
+  local prev; prev="$(dc images -q backend 2>/dev/null | head -n 1 || true)"
+  [[ -n "$prev" ]] && docker tag "$prev" riverrun-backend:previous
+
+  local pg_before; pg_before="$(pg_image)"
+  git pull -q --ff-only
+  # Cambiar la imagen de PostgreSQL sobre un volumen existente puede dañar los índices de texto (otra versión de collation):
+  # se detiene aquí y se pide hacerlo con el procedimiento de docs/semantic-activation.md.
+  local pg_after; pg_after="$(pg_image)"
+  if [[ -n "$pg_before" && "$pg_before" != "$pg_after" && "$ACCEPT_DB_IMAGE" != "1" ]]; then
+    git reset -q --hard "$old"
+    die "Esta versión cambia la imagen de PostgreSQL ($pg_before → $pg_after). No se aplicó porque un volumen existente puede ser incompatible. Sigue docs/semantic-activation.md (respaldo, ensayo y restauración en un volumen nuevo) o, bajo tu riesgo y con respaldo, repite con --accept-db-image-change."
+  fi
+  export APP_VERSION; APP_VERSION="$(version)"
+  say "Construyendo la nueva versión ($APP_VERSION)…"
+  if dc up -d --build && wait_healthy 180 && [[ "$(health_json)" != *'"status":"fail"'* ]]; then
+    ok "Actualizado a $APP_VERSION"
+    docker image prune -f >/dev/null 2>&1 || true
+    return
+  fi
+
+  warn "La nueva versión no quedó sana. Volviendo a la anterior…"
+  dc logs --tail 30 backend || true
+  git reset -q --hard "$old"
+  if [[ -n "$prev" ]]; then
+    local img; img="$(dc config --images 2>/dev/null | grep -i backend | head -n 1)"
+    [[ -n "$img" ]] && docker tag riverrun-backend:previous "$img"
+    APP_VERSION="$(version)" dc up -d --no-build backend
+  else
+    APP_VERSION="$(version)" dc up -d --build
+  fi
+  wait_healthy 120 && warn "Volviste a la versión anterior ($(version)). Las migraciones nuevas, si se aplicaron, son compatibles hacia atrás; si ves datos raros: ./riverrun restore latest." || die "No se pudo volver a levantar. Corre ./riverrun restore latest o pide ayuda con los registros (./riverrun logs backend)."
+  exit 1
+}
+
+# ------------------------------------------------------------------ búsqueda semántica
+cmd_semantic() {
+  need_docker || die "Docker no está disponible"
+  local backup=1
+  for a in "$@"; do [[ "$a" == "--no-backup" ]] && backup=0; done
+  [[ -n "$(env_get OPENROUTER_API_KEY)" ]] || die "Primero pon OPENROUTER_API_KEY en .env (los embeddings se generan con OpenRouter) y corre ./riverrun restart"
+  if (( backup )); then
+    say "Respaldo previo…"
+    dc exec -T backup /usr/local/bin/backup.sh now || die "El respaldo falló: no se activa sin respaldo."
+  fi
+  env_set KNOWLEDGE_SEARCH_ENABLED true
+  export APP_VERSION; APP_VERSION="$(version)"
+  dc up -d backend
+  wait_healthy 120 || die "El sistema no respondió: ./riverrun logs backend"
+  say "Comprobando PostgreSQL, pgvector y el proveedor de embeddings…"
+  dc exec -T backend node dist/cli/knowledge-activate.js --apply --verify-provider || die "La activación no se completó (revisa el resultado de arriba; ver docs/semantic-activation.md). El asistente sigue funcionando con búsqueda por palabras."
+  say "Preparando el conocimiento existente (se repite solo cuando cambia)…"
+  dc exec -T backend node dist/cli/knowledge-prepare.js --all --apply || warn "Quedaron documentos por preparar; el sistema los completa solo en segundo plano."
+  ok "Búsqueda semántica activada"
+}
+
+cmd_logs()    { need_docker || die "Docker no está disponible"; dc logs -f --tail 100 "$@"; }
+cmd_restart() { need_docker || die "Docker no está disponible"; export APP_VERSION; APP_VERSION="$(version)"; dc up -d; wait_healthy 120 && ok "Funcionando" || die "No respondió: ./riverrun logs backend"; }
+
+usage() { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; }
+
+case "${1:-help}" in
+  install) shift; cmd_install "$@" ;;
+  update) shift; cmd_update "$@" ;;
+  status) cmd_status ;;
+  backup) cmd_backup ;;
+  restore) shift; cmd_restore "$@" ;;
+  logs) shift; cmd_logs "$@" ;;
+  restart) cmd_restart ;;
+  semantic) shift; cmd_semantic "$@" ;;
+  help|-h|--help) usage ;;
+  *) usage; exit 1 ;;
+esac

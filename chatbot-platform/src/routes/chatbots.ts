@@ -1,3 +1,5 @@
+import { buildAgent, WizardSchema } from '../templates/agent-builder.js';
+import * as astore from '../automation/store.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
@@ -11,6 +13,7 @@ import { config } from '../config.js';
 import { OpenAiProvider } from '../ai/provider.js';
 import { indexKnowledge, knowledgeIndexStatus } from '../engine/knowledge.js';
 import { imageAbsolutePath } from '../engine/transport.js';
+import { assertWithinLimit } from '../billing/limits.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
@@ -46,6 +49,7 @@ const KnowledgeBody = z.object({
   always_include: z.boolean().optional(),
   active: z.boolean().optional(),
   sort_order: z.number().int().optional(),
+  source_url: z.string().max(2000).nullable().optional(),
 });
 
 const ImageMeta = z.object({
@@ -80,6 +84,46 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
   /* ------------------------------ Chatbots ------------------------------ */
   api.get('/api/chatbots', async (req: any) => (await store.listChatbots(scopeAccount(req.user, req.query.account_id))).map((b) => visibleBot(req.user, b)));
 
+  /**
+   * Vista previa del agente que se creará con el asistente (no guarda nada): el prompt armado con los lineamientos,
+   * lo que se aprenderá de los documentos y si se creará un servicio de la agenda.
+   */
+  api.post('/api/chatbots/draft', admins, async (req: any) => {
+    const w = parse(WizardSchema, req.body);
+    const built = buildAgent(w);
+    return {
+      name: built.name,
+      prompt: built.prompt,
+      goal: built.flow.goal,
+      knowledge: built.knowledge.map((k) => ({ title: k.title, chars: k.content.length })),
+      creates_service: built.service?.name ?? null,
+      enough_knowledge: built.enoughKnowledge,
+    };
+  });
+
+  /** Crea el agente completo a partir de las respuestas del asistente: prompt, reglas, recorrido, conocimiento y (si agenda) el servicio. */
+  api.post('/api/chatbots/wizard', admins, async (req: any) => {
+    const w = parse(WizardSchema, req.body);
+    const accountId = await targetAccount(req.user, req.body?.account_id ?? req.query.account_id);
+    const built = buildAgent(w);
+    if (!built.enoughKnowledge) throw new HttpError(400, 'Cuéntanos a qué se dedica tu empresa o sube un documento: el agente solo responde con la información que le des.');
+    await assertWithinLimit(accountId, 'chatbots');
+    const result = await withTransaction(async (client) => {
+      // Nace apagado para probarlo antes de conectarlo a un teléfono.
+      const bot = await store.createChatbot(accountId, { name: built.name, active: false, personality: built.personality, rules: built.rules, flow: built.flow, data_fields: built.data_fields }, client);
+      for (const [i, k] of built.knowledge.entries()) await store.upsertKnowledge(bot.id, { ...k, active: true, sort_order: i }, client);
+      return bot;
+    });
+    // La agenda se prepara aparte: si ya hay servicios, no se duplica.
+    let service: { id: string; name: string } | null = null;
+    if (built.service && !(await astore.listServices(accountId)).length) {
+      const s = await astore.saveService(accountId, built.service);
+      service = { id: s!.id, name: s!.name };
+    }
+    await logEvent({ level: 'info', source: 'admin', message: `Agente creado con el asistente: ${result.name} (${w.scope.role}${service ? `, servicio "${service.name}"` : ''})`, accountId, chatbotId: result.id });
+    return { ...result, service_created: service };
+  });
+
   api.post('/api/chatbots', admins, async (req: any) => {
     const b = parse(ChatbotBody.extend({ account_id: z.string().uuid().optional(), template: z.string().max(40).optional(), setup: z.object({
       goal: z.string().trim().min(1).max(2000),
@@ -87,6 +131,7 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
       knowledge: z.string().trim().min(1).max(50000),
     }).optional() }), req.body);
     const accountId = await targetAccount(req.user, b.account_id);
+    await assertWithinLimit(accountId, 'chatbots');
     // Un asistente nuevo todavía no tiene fotos.
     await checkSavedImages(null, b.saved_messages);
     const { template, account_id, setup, ...input } = b;
@@ -166,6 +211,7 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
     const src = await botFor(req.user, req.params.id);
     const { account_id } = parse(z.object({ account_id: z.string().uuid().optional() }), req.body);
     const accountId = await targetAccount(req.user, account_id ?? src.account_id);
+    await assertWithinLimit(accountId, 'chatbots');
     const copy = await store.createChatbot(accountId, {
       name: `${src.name} (copia)`,
       active: false,
@@ -178,13 +224,23 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
     for (const k of await store.listKnowledge(src.id)) {
       await store.upsertKnowledge(copy.id, { category: k.category, title: k.title, content: k.content, always_include: k.always_include, active: k.active, sort_order: k.sort_order });
     }
+    // Una foto que no se puede copiar no deja una copia a medias (con una foto rota sin aviso): se deshace todo.
+    const copies: string[] = [];
     const newImageId = new Map<string, string>();
-    for (const img of await store.listImages(src.id)) {
-      const rel = path.join(copy.id, `${crypto.randomUUID()}${path.extname(img.file_path)}`);
-      await fsp.mkdir(path.join(config.uploadsDir, copy.id), { recursive: true });
-      await fsp.copyFile(imageAbsolutePath(img), path.join(config.uploadsDir, rel)).catch(() => undefined);
-      const created = await store.insertImage({ ...img, chatbot_id: copy.id, file_path: rel });
-      newImageId.set(img.id, created.id);
+    try {
+      for (const img of await store.listImages(src.id)) {
+        const rel = path.join(copy.id, `${crypto.randomUUID()}${path.extname(img.file_path)}`);
+        await fsp.mkdir(path.join(config.uploadsDir, copy.id), { recursive: true });
+        await fsp.copyFile(imageAbsolutePath(img), path.join(config.uploadsDir, rel));
+        copies.push(path.join(config.uploadsDir, rel));
+        const created = await store.insertImage({ ...img, chatbot_id: copy.id, file_path: rel, sha256: img.sha256 });
+        newImageId.set(img.id, created.id);
+      }
+    } catch (e: any) {
+      for (const f of copies) await fsp.rm(f, { force: true }).catch(() => undefined);
+      await store.deleteChatbot(copy.id);
+      await logEvent({ level: 'error', source: 'admin', message: `No se duplicó el asistente ${src.name}: falta una foto (${e?.message ?? e})`, accountId, chatbotId: src.id });
+      throw new HttpError(500, 'No se pudo copiar una de las fotos del asistente; la copia no se creó. Revisa las fotos del original.');
     }
     // Los mensajes guardados apuntan a las fotos copiadas, nunca a las del asistente original.
     if (src.saved_messages.length) {
@@ -266,6 +322,7 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
         size_bytes: upload.file.buffer.length,
         active: meta.active ?? true,
         send_when: meta.send_when ?? {},
+        sha256: upload.file.sha256,
       });
       await logEvent({ level: 'info', source: 'admin', message: `Imagen agregada: ${img.code}`, accountId: bot.account_id, chatbotId: bot.id });
       return img;
@@ -285,8 +342,16 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
       patch.file_path = await saveFile(img.chatbot_id, file);
       patch.mime_type = file.mime;
       patch.size_bytes = file.buffer.length;
+      patch.sha256 = file.sha256;
     }
-    const updated = await store.updateImage(img.id, patch);
+    let updated;
+    try {
+      updated = await store.updateImage(img.id, patch);
+    } catch (e) {
+      // Si no se pudo guardar (p. ej. el código ya existe), el archivo nuevo no debe quedar huérfano.
+      if (file) await fsp.rm(path.join(config.uploadsDir, patch.file_path as string), { force: true });
+      throw e;
+    }
     if (file) await fsp.rm(imageAbsolutePath(img), { force: true });
     return updated;
   });

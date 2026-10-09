@@ -136,10 +136,16 @@ t('límite de fotos por respuesta: la foto del mensaje guardado cuenta y las dem
 
 t('envío programado: texto y foto en un solo mensaje y la conversación queda en la etapa indicada', async () => {
   const conv = await h.conversationFor('5215520000001');
+  // Las promociones solo salen a quien aceptó recibirlas.
+  const contactId = (await h.authed('GET', `/api/conversations/${conv.id}`)).json().contact.id;
+  assert.equal((await h.authed('PUT', `/api/contacts/${contactId}`, { consent: true })).statusCode, 200);
   h.reset();
   const r = await h.service.outbound.send(conv.id, { text: 'Hola, te compartimos nuestra promoción de octubre', imageId: imageIds.suite, source: 'campaign', flowStep: 1 });
   assert.equal(r.sent, true, JSON.stringify(r));
-  assert.deepEqual(h.sent, [{ kind: 'image', to: '5215520000001', text: 'Hola, te compartimos nuestra promoción de octubre', image: 'suite' }]);
+  assert.equal(h.sent.length, 1, JSON.stringify(h.sent));
+  assert.deepEqual([h.sent[0].kind, h.sent[0].to, h.sent[0].image], ['image', '5215520000001', 'suite']);
+  // El texto (con su pie de baja, si aplica) va como pie de la foto.
+  assert.ok(h.sent[0].text.startsWith('Hola, te compartimos nuestra promoción de octubre'), h.sent[0].text);
   assert.equal(await flowStepOf(conv.id), 1);
 
   // El asistente continúa el recorrido desde esa etapa cuando el cliente responde.

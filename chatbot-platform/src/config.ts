@@ -49,6 +49,8 @@ export const config = {
     apiKey: env('OPENROUTER_API_KEY', env('OPENAI_API_KEY', '')),
     baseUrl: aiBaseUrl,
     defaultModel: env('OPENROUTER_MODEL', env('OPENAI_MODEL', useOpenRouter ? 'openai/gpt-4.1-mini' : 'gpt-4.1-mini')),
+    /** Modelos de respaldo (separados por coma): si el principal falla o está saturado, OpenRouter prueba estos en orden. */
+    fallbackModels: env('OPENROUTER_FALLBACK_MODELS', '').split(',').map((m) => m.trim()).filter(Boolean),
     summaryModel: env('OPENROUTER_SUMMARY_MODEL', env('OPENAI_SUMMARY_MODEL', useOpenRouter ? 'openai/gpt-4.1-mini' : 'gpt-4.1-mini')),
     transcriptionModel: env('OPENROUTER_TRANSCRIPTION_MODEL', env('OPENAI_TRANSCRIPTION_MODEL', useOpenRouter ? 'google/gemini-2.5-flash' : 'gpt-4o-mini-transcribe')),
     timeoutMs: Number(env('OPENROUTER_TIMEOUT_MS', env('OPENAI_TIMEOUT_MS', '45000'))),
@@ -67,6 +69,8 @@ export const config = {
     hourlyUsd: monitorLimit('KNOWLEDGE_ALERT_HOURLY_USD',5,100000),
   },
   logRetentionDays: Number(env('LOG_RETENTION_DAYS', '30')),
+  /** Días que se conserva el detalle técnico de cada respuesta de la IA (después solo queda consumo y costo). */
+  aiRunDetailDays: Number(env('AI_RUN_DETAIL_DAYS', '14')),
   /**
    * Proxies delante del backend en los que se confía para conocer la IP real (X-Forwarded-For).
    * 1 = solo el proxy inmediato (Caddy). 0 = ninguno (backend expuesto directamente).
@@ -74,6 +78,7 @@ export const config = {
    */
   trustProxyHops: Number(env('TRUST_PROXY_HOPS', '1')),
   /** Permitir webhooks salientes hacia redes internas (solo para pruebas o redes controladas). */
+  emailPollSeconds: Math.max(15, Number(env('EMAIL_POLL_SECONDS', '60'))),
   allowPrivateWebhooks: env('ALLOW_PRIVATE_WEBHOOKS', 'false') === 'true',
   schedulerIntervalMs: Number(env('SCHEDULER_INTERVAL_MS', '5000')),
   /** Correo saliente (verificación, recuperación de contraseña, avisos). Sin SMTP_URL, los correos van al registro. */
@@ -89,8 +94,41 @@ export const config = {
     requireEmail: env('SIGNUP_REQUIRE_EMAIL', 'true') === 'true',
     /** Correo del superadmin para avisos (cuentas nuevas, pruebas que vencen, gasto alto). */
     superadminEmail: env('SUPERADMIN_EMAIL', ''),
+    /** Límites de la prueba gratuita (0 = sin límite). Evitan que una prueba sin tarjeta gaste IA sin tope. */
+    trialLimits: {
+      messages: Number(env('TRIAL_MAX_MESSAGES', '300')),
+      channels: Number(env('TRIAL_MAX_CHANNELS', '2')),
+      users: Number(env('TRIAL_MAX_USERS', '3')),
+      chatbots: Number(env('TRIAL_MAX_CHATBOTS', '2')),
+    },
+    /** Direcciones públicas de tus términos y tu aviso de privacidad (se enlazan en el registro). */
+    termsUrl: env('TERMS_URL', ''),
+    privacyUrl: env('PRIVACY_URL', ''),
     /** Contacto que ve el cliente cuando su cuenta está pausada. */
     supportContact: env('SUPPORT_CONTACT', ''),
+  },
+  /** Cobro automático de suscripciones. Cada proveedor se activa con sus claves; si ninguno está, el cobro sigue siendo manual. */
+  billing: {
+    graceDays: Number(env('BILLING_GRACE_DAYS', '5')),
+    stripe: {
+      secretKey: env('STRIPE_SECRET_KEY', ''),
+      webhookSecret: env('STRIPE_WEBHOOK_SECRET', ''),
+      apiUrl: env('STRIPE_API_URL', 'https://api.stripe.com'),
+    },
+    mercadopago: {
+      accessToken: env('MERCADOPAGO_ACCESS_TOKEN', ''),
+      webhookSecret: env('MERCADOPAGO_WEBHOOK_SECRET', ''),
+      apiUrl: env('MERCADOPAGO_API_URL', 'https://api.mercadopago.com'),
+    },
+  },
+  /** Monitoreo: ping periódico (healthchecks.io, Uptime Kuma…) y aviso por webhook (Slack, ntfy, Telegram…) además del correo. */
+  monitor: {
+    heartbeatUrl: env('HEARTBEAT_URL', ''),
+    alertWebhookUrl: env('ALERT_WEBHOOK_URL', ''),
+    backupDir: env('BACKUP_DIR', '/backups'),
+    /** Horas sin respaldo nuevo antes de avisar. */
+    backupMaxAgeHours: Number(env('BACKUP_MAX_AGE_HOURS', '36')),
+    version: env('APP_VERSION', 'dev'),
   },
   /** Aviso (sin bloqueo) cuando una cuenta supera este gasto de IA en el mes, en USD. 0 = sin aviso. */
   aiAlertUsdPerAccount: Number(env('AI_ALERT_USD_PER_ACCOUNT', '0')),

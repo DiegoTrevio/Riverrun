@@ -24,7 +24,7 @@ before(async () => {
   if (!ok) return;
   h = await createHarness();
   await h.createBot();
-  h.setScript(() => ({ messages: ['Sí, tenemos habitaciones dobles'] }));
+  h.setScript(() => ({ messages: ['Hola, con gusto te ayudo'] }));
   const r = await h.authed('POST', '/api/channels', {
     account_id: h.accountId,
     type: 'zernio',
@@ -98,7 +98,7 @@ t('mensaje entrante firmado: el bot responde en el mismo hilo con la cuenta cone
   await h.idle();
   const sent = sendsTo('conv_77').at(-1)!;
   assert.equal(sent.body.accountId, 'acc_zernio_1');
-  assert.match(sent.body.message, /habitaciones/);
+  assert.match(sent.body.message, /con gusto te ayudo/);
 });
 
 t('entrega repetida del mismo mensaje no genera una segunda respuesta', async () => {
@@ -156,6 +156,9 @@ t('ventana de 24 h: fuera de ella no se escribe por Zernio', async () => {
     [channel.id],
   );
   const convId = rows[0].id as string;
+  // Con consentimiento de promociones, lo único que bloquea el envío es la ventana de 24 h.
+  const contactId = (await h.authed('GET', `/api/conversations/${convId}`)).json().contact.id;
+  assert.equal((await h.authed('PUT', `/api/contacts/${contactId}`, { consent: true })).statusCode, 200);
   await pool.query(`UPDATE messages SET created_at = now() - interval '25 hours' WHERE conversation_id = $1`, [convId]);
   try {
     const r = await h.service.outbound.send(convId, { text: 'Promoción de temporada', source: 'campaign' });

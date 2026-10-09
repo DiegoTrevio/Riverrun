@@ -217,3 +217,26 @@ export class FactCorpus {
     return [...new Set(bad)];
   }
 }
+
+/**
+ * PostgreSQL no admite el carácter NUL (\u0000) en texto ni en jsonb, y un "surrogate" suelto no es texto válido.
+ * Se guardan como texto visible en vez de romper la inserción (y con ella, el mensaje).
+ */
+export function cleanText(s: string): string {
+  return s.replace(/\u0000/g, '\\u0000').replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '\uFFFD');
+}
+
+/** Limpia recursivamente todas las cadenas de un valor (también las claves de los objetos). */
+export function deepClean<T>(v: T): T {
+  if (typeof v === 'string') return cleanText(v) as T;
+  if (Array.isArray(v)) return v.map((x) => deepClean(x)) as T;
+  if (v && typeof v === 'object' && Object.getPrototypeOf(v) === Object.prototype) {
+    return Object.fromEntries(Object.entries(v).map(([k, x]) => [cleanText(k), deepClean(x)])) as T;
+  }
+  return v;
+}
+
+/** Recorta por caracteres, no por unidades de código: nunca parte un emoji en dos. */
+export function truncateChars(s: string, max: number): string {
+  return Array.from(s).slice(0, max).join('');
+}

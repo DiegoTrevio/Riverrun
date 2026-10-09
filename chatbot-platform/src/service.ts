@@ -1,3 +1,5 @@
+import { syncAppointment } from './integrations/google.js';
+import crypto from 'node:crypto';
 import type { AiProvider } from './ai/provider.js';
 import { Agenda } from './automation/agenda.js';
 import { Automator } from './automation/automator.js';
@@ -5,14 +7,20 @@ import { Campaigns } from './automation/campaigns.js';
 import { Outbound } from './automation/outbound.js';
 import { Scheduler } from './automation/scheduler.js';
 import * as astore from './automation/store.js';
-import { isOpen } from './automation/time.js';
+import { isOpen, nextOpen, spanishDate, spanishTime } from './automation/time.js';
+import { detectRisk, maskSensitive } from './engine/safety.js';
+import { customerLabel } from './engine/customer-data.js';
+import { cleanText, deepClean } from './engine/text.js';
 import { adapterFor } from './channels/index.js';
+import { INBOUND_MEDIA_MAX_BYTES, removeInboundFiles, saveInboundMedia, type StoredMedia } from './channels/media.js';
 import { config } from './config.js';
 import { gate } from './engine/activation.js';
 import { describeInbound, type InboundMessage } from './channels/types.js';
 import { query } from './db.js';
 import { summarizeConversation } from './engine/report.js';
 import { Engine, type ProcessResult } from './engine/engine.js';
+import { deliver } from './integrations/webhooks.js';
+import { messageQuota, noticeMessagesReached } from './billing/limits.js';
 import { ConversationQueue } from './engine/queue.js';
 import { PlaygroundTransport, type Transport } from './engine/transport.js';
 import { logEvent } from './logs.js';
@@ -27,6 +35,8 @@ export type TransportFactory = (channel: Channel, contact: Contact) => Transport
 export const defaultTransport: TransportFactory = (channel, contact) => adapterFor(channel.type).transport(channel, contact);
 
 /** Orquesta: webhook → almacenamiento → cola → motor → envío, para cualquier canal. */
+const LEASE_SECONDS = 300;
+
 export class ChatService {
   engine: Engine;
   queue: ConversationQueue;
@@ -48,13 +58,36 @@ export class ChatService {
       onOutbound: (conv, msg) => this.automator.onOutbound(conv, msg),
       business: async (accountId) => {
         const st = await astore.getSettings(accountId);
-        return { timezone: st.timezone, hours: st.business_hours, holidays: st.holidays, openNow: isOpen(st.business_hours, st.holidays, new Date(), st.timezone) };
+        const now = new Date();
+        const openNow = isOpen(st.business_hours, st.holidays, now, st.timezone);
+        // Cuándo vuelve a abrir: el asistente lo dice al cliente en vez de prometer una respuesta inmediata.
+        const hasHours = Object.values(st.business_hours).some((w) => w.length > 0);
+        const next = !openNow && hasHours ? nextOpen(st.business_hours, st.holidays, now, st.timezone) : null;
+        return {
+          timezone: st.timezone,
+          hours: st.business_hours,
+          holidays: st.holidays,
+          openNow,
+          nextOpen: next ? `${spanishDate(next, st.timezone)} a las ${spanishTime(next, st.timezone)}` : undefined,
+        };
       },
       alertTeam: (accountId, o) => this.automator.alertTeam(accountId, o),
+      deferImage: async (conv, image, o) => {
+        await astore.scheduleJob({
+          account_id: conv.account_id,
+          type: 'flow_image',
+          payload: { conversation_id: conv.id, image_id: image.id, reason: o.reason, journey: conv.flow_started_at ? new Date(conv.flow_started_at).toISOString() : null, at: new Date().toISOString(), allow_ended: o.allowEnded },
+          run_at: new Date(Date.now() + o.delaySeconds * 1000),
+          dedupe_key: `flow_image:${conv.id}:${image.id}`,
+        });
+      },
     });
     this.queue = new ConversationQueue((id, a) => this.runConversation(id, a.restarts), 2, 60_000, (id) => void this.aiUnavailable(id));
     this.scheduler = new Scheduler({
       automation_send: (p) => this.automator.runDelayedSend(p),
+      flow_image: (p) => this.automator.runDeferredImage(p),
+      webhook_delivery: (p, job) => deliver(p, job.attempts),
+      gcal_sync: (p) => syncAppointment(p),
       no_reply: (p) => this.automator.runNoReply(p),
       sequence_step: (p) => this.automator.runSequenceStep(p),
       appointment_reminder: (p) => this.agenda.sendReminder(p),
@@ -97,6 +130,7 @@ export class ChatService {
       kind: t.kind,
       sendText: (text, delay) => t.sendText(text, delay),
       sendImage: (img, caption, delay) => t.sendImage(img, caption, delay),
+      ...(t.sendFile ? { sendFile: (file, caption, delay) => t.sendFile!(file, caption, delay) } : {}),
       notify: (number, text) => this.notifyViaWhatsapp(channel, number, text),
     };
   }
@@ -105,7 +139,42 @@ export class ChatService {
     return this.sendInternalWhatsapp(channel.account_id, number, text, channel.chatbot_id);
   }
 
+  /** Identifica a este proceso en los arrendamientos de conversaciones. */
+  readonly instanceId = crypto.randomUUID();
+  private sweeper?: NodeJS.Timeout;
+
+  /**
+   * Una conversación la atiende un solo proceso a la vez (arrendamiento en PostgreSQL), así que se pueden
+   * correr varios procesos sin respuestas dobles, y si uno muere a la mitad otro retoma el trabajo.
+   */
   private async runConversation(conversationId: string, restarts: number): Promise<ProcessResult> {
+    if (!(await store.claimConversation(conversationId, this.instanceId, LEASE_SECONDS))) return { status: 'busy' };
+    const renew = setInterval(() => void store.renewConversationLease(conversationId, this.instanceId, LEASE_SECONDS).catch(() => undefined), (LEASE_SECONDS / 3) * 1000);
+    try {
+      return await this.runClaimed(conversationId, restarts);
+    } finally {
+      clearInterval(renew);
+      await store.releaseConversation(conversationId, this.instanceId).catch(() => undefined);
+    }
+  }
+
+  /** Busca mensajes sin responder que nadie atiende (temporizador perdido o proceso caído) y los programa. */
+  async sweepPending(): Promise<number> {
+    const ids = (await store.recoverableConversations()).filter((id) => !this.queue.has(id));
+    for (const id of ids) this.queue.schedule(id, 0);
+    return ids.length;
+  }
+
+  startSweeper(intervalMs = 30_000) {
+    this.sweeper = setInterval(() => {
+      this.sweepPending()
+        .then(async (n) => { if (n) await logEvent({ level: 'warn', source: 'engine', message: `Se retomaron ${n} conversaciones con mensajes sin responder` }); })
+        .catch(() => undefined);
+    }, intervalMs);
+    this.sweeper.unref();
+  }
+
+  private async runClaimed(conversationId: string, restarts: number): Promise<ProcessResult> {
     const conv = await store.getConversation(conversationId);
     if (!conv) return { status: 'nothing' };
     const [channel, contact] = await Promise.all([store.getChannel(conv.channel_id), store.getContact(conv.contact_id)]);
@@ -116,6 +185,13 @@ export class ChatService {
     } catch (e: any) {
       await logEvent({ level: 'error', source: 'channel', message: e?.message ?? String(e), accountId: channel.account_id, channelId: channel.id, conversationId });
       await store.markAllProcessed(conversationId);
+      return { status: 'nothing' };
+    }
+    // Cupo mensual del plan: al agotarse el asistente deja de responder solo (y se avisa al equipo una vez al mes).
+    if (channel.type !== 'playground' && (await messageQuota(channel.account_id)).reached) {
+      await store.markAllProcessed(conversationId);
+      await noticeMessagesReached(channel.account_id).catch(() => undefined);
+      await logEvent({ level: 'warn', source: 'engine', message: 'Límite mensual de mensajes del plan alcanzado: el asistente no respondió', accountId: channel.account_id, channelId: channel.id, conversationId });
       return { status: 'nothing' };
     }
     return this.engine.process(conversationId, transport, { allowRestart: this.queue.canRestart(restarts) });
@@ -134,6 +210,7 @@ export class ChatService {
         title: '⚠️ Un cliente espera respuesta',
         body: `${who} (${channel.name}) escribió y el asistente no pudo responder (servicio de IA no disponible). Contéstale desde el panel.`,
         link: `#/conversation/${conversationId}`,
+        conversationId,
         kind: 'ai_error',
       });
     } catch (e: any) {
@@ -143,6 +220,8 @@ export class ChatService {
 
   /** Maneja un mensaje ya normalizado que llegó por cualquier canal. */
   async handleIncoming(channel: Channel, msg: InboundMessage): Promise<{ conversationId: string; messageId: number | null }> {
+    // Lo que llega de la plataforma se limpia una vez aquí (NUL y surrogates sueltos no caben en PostgreSQL).
+    msg = deepClean(msg);
     const bot = channel.chatbot_id ? await store.getChatbot(channel.chatbot_id) : null;
     const contact = await store.upsertContact(channel, msg.externalId, msg.phone, msg.fromMe ? '' : msg.displayName);
     const conv = await store.getOrCreateConversation(channel, contact.id);
@@ -187,9 +266,26 @@ export class ChatService {
       }
     }
 
+    // Datos sensibles: el número de una tarjeta se guarda solo con sus últimos 4 dígitos.
+    content = maskSensitive(content);
     // Mensajes viejos (reconexión, reenvíos de la plataforma) se guardan pero no se contestan.
     const stale = Date.now() / 1000 - msg.timestamp > MAX_MESSAGE_AGE_SECONDS;
-    const triggers = msg.type !== 'reaction' && !stale;
+    const triggers = msg.type !== 'reaction' && !stale && !msg.captureOnly;
+    // Foto o documento del cliente: se guarda tal como llegó. Si no se puede, el mensaje se guarda igual y el motivo queda visible en el panel.
+    let media: StoredMedia | undefined;
+    let mediaError = '';
+    if (msg.type === 'image' || msg.type === 'document') {
+      try {
+        const captured = await this.captureInboundMedia(channel, msg, msg.type);
+        media = captured.media;
+        mediaError = captured.error ?? '';
+      } catch (e: any) {
+        mediaError = `${msg.type === 'image' ? 'La foto' : 'El documento'} no se guardó: ${e?.message ?? e}`;
+        await logEvent({ level: 'warn', source: 'engine', message: `No se pudo guardar un archivo del cliente: ${e?.message ?? e}`, ...logBase });
+      }
+    }
+    const meta: Record<string, unknown> = stale ? { name: msg.displayName, stale: true } : msg.captureOnly ? { name: msg.displayName, held: 'limite_de_correos' } : { name: msg.displayName };
+    if (mediaError) meta.media_error = mediaError;
     const inserted = await store.insertMessage({
       conversation_id: conv.id,
       direction: 'in',
@@ -198,9 +294,17 @@ export class ChatService {
       content,
       external_message_id: msg.messageId,
       processed: !triggers,
-      meta: stale ? { name: msg.displayName, stale: true } : { name: msg.displayName },
+      meta,
+      media,
+    }).catch(async (e) => {
+      if (media) await removeInboundFiles([media.file_path]);
+      throw e;
     });
-    if (!inserted) return { conversationId: conv.id, messageId: null }; // duplicado
+    if (!inserted) {
+      // Duplicado: el archivo que se acaba de descargar no se conserva.
+      if (media) await removeInboundFiles([media.file_path]);
+      return { conversationId: conv.id, messageId: null };
+    }
 
     let current = conv;
     if (conv.status === 'closed' && triggers) {
@@ -230,11 +334,37 @@ export class ChatService {
     // Activadores y desactivadores del asistente (palabras que lo encienden o lo apagan en esta conversación).
     if (canReply) canReply = await this.applyGate(bot!, channel, current, contact, content);
     if (!canReply) {
+      // El asistente no va a responder (pausa, palabra de activación o una persona atiende): si hay una emergencia,
+      // el equipo se entera igual. Con el asistente activo, el motor se encarga de responder y avisar.
+      if (triggers && channel.type !== 'playground' && detectRisk(content)) {
+        await this.automator.alertTeam(channel.account_id, {
+          title: '🚨 Posible emergencia en una conversación',
+          body: `${customerLabel(contact)} (${channel.name}): "${content.slice(0, 200)}". Atiéndelo cuanto antes.`,
+          link: `#/conversation/${conv.id}`,
+          conversationId: conv.id,
+          kind: 'safety',
+        }).catch(() => undefined);
+      }
       await store.markProcessed(conv.id, inserted.id);
       return { conversationId: conv.id, messageId: inserted.id };
     }
     this.queue.schedule(conv.id, bot!.ai.debounce_seconds * 1000);
     return { conversationId: conv.id, messageId: inserted.id };
+  }
+
+  /** Descarga la foto o el documento del cliente y lo guarda con sus bytes originales. Si el canal no puede o el archivo es muy grande, devuelve el motivo. */
+  private async captureInboundMedia(channel: Channel, msg: InboundMessage, kind: 'image' | 'document'): Promise<{ media?: StoredMedia; error?: string }> {
+    const label = kind === 'image' ? 'La foto' : 'El documento';
+    const limit = `${INBOUND_MEDIA_MAX_BYTES / 1024 / 1024} MB`;
+    const adapter = adapterFor(channel.type);
+    if (!adapter.downloadMedia) return { error: `${label} no se guardó: este canal todavía no permite descargar archivos` };
+    // Se revisa el tamaño que declara la plataforma antes de descargar: un documento de cientos de MB no se trae a memoria.
+    if ((msg.media?.size ?? 0) > INBOUND_MEDIA_MAX_BYTES) return { error: `${label} no se guardó: pesa más de ${limit}` };
+    const file = await adapter.downloadMedia(channel, msg);
+    if (!file) return { error: `${label} no se guardó: la plataforma no entregó el archivo` };
+    if (file.buffer.length > INBOUND_MEDIA_MAX_BYTES) return { error: `${label} no se guardó: pesa más de ${limit}` };
+    const media = await saveInboundMedia(channel.account_id, kind, file.buffer, file.fileName ?? msg.media?.filename ?? '');
+    return { media };
   }
 
   /** Aplica los activadores/desactivadores a un mensaje del cliente. Devuelve si la IA debe responder. */
@@ -258,10 +388,14 @@ export class ChatService {
   }
 
   /** Manual ownership changes share the same handoff event as bot transfers. */
-  async takeover(conversationId: string, reason: string) {
+  /** Pasa la conversación a una persona. Queda en el contacto quién la tomó y desde dónde (teléfono, panel…). */
+  async takeover(conversationId: string, reason: string, byUserId?: string, via: store.HandoffVia = byUserId ? 'panel' : 'telefono') {
     const changed = await store.takeConversation(conversationId, reason);
     await store.markAllProcessed(conversationId);
-    if (changed) this.automator.emit({ type: 'handoff', conversationId });
+    if (changed) {
+      await store.markHandoff(changed.contact_id, byUserId ?? null, via);
+      this.automator.emit({ type: 'handoff', conversationId, byUserId });
+    }
     return changed ?? await store.getConversation(conversationId);
   }
 
@@ -281,12 +415,14 @@ export class ChatService {
       direction: 'out',
       sender: 'human',
       type: msg.type,
-      content: msg.type === 'text' ? msg.text : content,
+      // Lo que escribe una persona desde el teléfono también se enmascara (p. ej. números de tarjeta), como lo del cliente.
+      content: msg.type === 'text' ? maskSensitive(msg.text) : content,
       external_message_id: msg.messageId,
       meta: { source: 'platform' },
     });
-    if ((bot?.rules.pause_on_human_reply ?? true) && conv.status === 'bot') {
-      await this.takeover(conv.id, 'Una persona respondió desde la plataforma');
+    // Una persona que escribe desde el teléfono pausa al asistente aunque la conversación esté cerrada (la reabre con ella).
+    if ((bot?.rules.pause_on_human_reply ?? true) && conv.status !== 'human') {
+      await this.takeover(conv.id, 'Una persona respondió desde la plataforma', undefined, 'telefono');
       await logEvent({
         level: 'info',
         source: 'engine',
@@ -301,6 +437,7 @@ export class ChatService {
 
   /** Simulador del panel: mismo motor, sin plataforma externa. */
   async playground(bot: Chatbot, session: string, text: string) {
+    text = cleanText(text);
     const channel = await store.getOrCreatePlaygroundChannel(bot);
     const contact = await store.upsertContact(channel, `playground:${session}`, '', 'Prueba');
     let conv = await store.getOrCreateConversation(channel, contact.id);
@@ -310,7 +447,7 @@ export class ChatService {
       await store.resetFlowState(conv.id);
       conv = (await store.setConversationStatus(conv.id, 'bot', '')) ?? conv;
     }
-    const inserted = await store.insertMessage({ conversation_id: conv.id, direction: 'in', sender: 'customer', type: 'text', content: text, processed: false });
+    const inserted = await store.insertMessage({ conversation_id: conv.id, direction: 'in', sender: 'customer', type: 'text', content: maskSensitive(text), processed: false });
     // Las reglas automáticas también se prueban en el simulador.
     if (inserted) {
       const stopAi = await this.automator.onInbound(conv, contact, inserted, text).catch(() => false);
@@ -369,20 +506,21 @@ export class ChatService {
   }
 
   /** Mensaje manual desde el panel (por la misma plataforma de la conversación). */
-  async sendManual(conversationId: string, text: string) {
+  async sendManual(conversationId: string, text: string, byUserId?: string) {
     const conv = await store.getConversation(conversationId);
     if (!conv) throw new Error('Conversación no encontrada');
     const [channel, contact] = await Promise.all([store.getChannel(conv.channel_id), store.getContact(conv.contact_id)]);
     if (!channel || !contact) throw new Error('Datos incompletos');
     const bot = conv.chatbot_id ? await store.getChatbot(conv.chatbot_id) : null;
     const transport = channel.type === 'playground' ? new PlaygroundTransport() : this.transportFor(channel, contact);
-    const sent = await this.engine.sendOut(bot, conv, transport, { sender: 'human', text, delay: 0, meta: { source: 'panel' } });
+    // Quién lo envió queda en el mensaje (las estadísticas por persona lo cuentan así).
+    const sent = await this.engine.sendOut(bot, conv, transport, { sender: 'human', text, delay: 0, meta: { source: 'panel', ...(byUserId ? { user_id: byUserId } : {}) } });
     if (!sent) throw new Error('No se pudo enviar el mensaje (revisa los registros)');
     return sent;
   }
 
   /** Foto del catálogo enviada a mano desde el panel (por la misma plataforma de la conversación). */
-  async sendManualImage(conversationId: string, imageId: string, beforeSend?: () => Promise<void>) {
+  async sendManualImage(conversationId: string, imageId: string, beforeSend?: () => Promise<void>, byUserId?: string) {
     const conv = await store.getConversation(conversationId);
     if (!conv) throw new Error('Conversación no encontrada');
     const image = await store.getImage(imageId);
@@ -394,7 +532,7 @@ export class ChatService {
     const bot = conv.chatbot_id ? await store.getChatbot(conv.chatbot_id) : null;
     const transport = channel.type === 'playground' ? new PlaygroundTransport() : this.transportFor(channel, contact);
     await beforeSend?.();
-    const sent = await this.engine.sendOut(bot, conv, transport, { sender: 'human', text: image.caption, image, delay: 0, meta: { source: 'panel' } });
+    const sent = await this.engine.sendOut(bot, conv, transport, { sender: 'human', text: image.caption, image, delay: 0, meta: { source: 'panel', ...(byUserId ? { user_id: byUserId } : {}) } });
     if (!sent) throw new Error('No se pudo enviar la foto (revisa los registros)');
     return sent;
   }
@@ -408,6 +546,17 @@ export class ChatService {
        WHERE m.processed = false AND m.direction = 'in' AND ch.type <> 'playground' AND m.created_at > now() - interval '15 minutes'`,
     );
     for (const r of rows) this.queue.schedule(r.conversation_id, 2000);
+    // Los mensajes de hace más de 15 minutos no se contestan (sería fuera de tiempo), pero el equipo sí debe enterarse.
+    const stale = await query<{ account_id: string; n: number }>(
+      `SELECT ch.account_id, count(*)::int AS n FROM messages m
+         JOIN conversations c ON c.id = m.conversation_id JOIN channels ch ON ch.id = c.channel_id
+       WHERE m.processed = false AND m.direction = 'in' AND ch.type <> 'playground' AND m.created_at <= now() - interval '15 minutes'
+       GROUP BY ch.account_id`,
+    );
+    for (const s of stale) {
+      await logEvent({ level: 'warn', source: 'engine', message: `Reinicio: ${s.n} mensajes llevan más de 15 minutos sin respuesta y no se contestarán automáticamente`, accountId: s.account_id, details: { count: s.n } });
+      await this.automator.alertTeam(s.account_id, { title: '⚠️ Mensajes sin respuesta tras un reinicio', body: `${s.n} mensajes de clientes llegaron hace más de 15 minutos y el asistente no los contestará. Revísalos en Conversaciones.`, kind: 'alert' }).catch(() => undefined);
+    }
     await query(`UPDATE messages SET processed = true WHERE processed = false AND created_at <= now() - interval '15 minutes'`);
     return rows.length;
   }

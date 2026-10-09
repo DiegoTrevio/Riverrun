@@ -127,15 +127,21 @@ t('precio inventado: reintenta con corrección y envía la versión verificada',
   assert.equal(correction.role, 'system');
   assert.match(correction.content, /4500/);
   assert.match(sent[0].text, /1,650/);
+  // Una respuesta por mensaje: después de la corrección no sale nada más ni la IA se consulta otra vez.
+  await h.idle();
+  assert.equal(sent.length, 1, JSON.stringify(sent.map((s) => s.text)));
+  assert.equal(calls.length, 2, `llamadas a la IA: ${calls.length}`);
 });
 
 t('si insiste en inventar, usa el mensaje de respaldo', async () => {
+  // Lo que quedó de la prueba anterior termina antes de empezar: un envío tardío no debe contar aquí.
+  await h.idle();
   calls.length = 0;
   sent.length = 0;
   script = () => ({ messages: ['El desayuno cuesta $350'] });
   await webhook('cuanto cuesta el desayuno?');
   await waitFor(() => sent.length === 1);
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 2, JSON.stringify({ llamadas: calls.length, envios: sent.map((s) => s.text) }));
   assert.equal(sent[0].text, 'Déjame confirmarlo con el equipo.');
   const logs = (await authed('GET', `/api/logs?chatbot_id=${botId}&source=validator`)).json();
   assert.ok(logs.some((l: any) => l.message.includes('respaldo')));

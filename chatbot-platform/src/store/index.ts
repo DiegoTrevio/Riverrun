@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { query, queryOne, withTransaction } from '../db.js';
+import { removeInboundAccountFiles, type StoredMedia } from '../channels/media.js';
 import {
   channelConfig,
   hydrateChatbot,
@@ -12,6 +13,7 @@ import {
   type Chatbot,
   type ChatbotRow,
   type Contact,
+  type ContactTask,
   type Conversation,
   type ConversationStatus,
   type ImageAsset,
@@ -47,15 +49,15 @@ export async function createAccount(
 
 export async function updateAccount(
   id: string,
-  patch: { name?: string; active?: boolean; status?: AccountStatus; plan?: string; trial_ends_at?: Date | null; business_type?: string },
+  patch: { name?: string; active?: boolean; status?: AccountStatus; plan?: string; trial_ends_at?: Date | null; business_type?: string; limits_override?: Record<string, number>; brand_id?: string | null },
 ) {
   return queryOne<Account>(
     `UPDATE accounts SET name = COALESCE($2, name), active = COALESCE($3, active), status = COALESCE($4, status), plan = COALESCE($5, plan),
        trial_ends_at = CASE WHEN $6::boolean THEN $7::timestamptz ELSE trial_ends_at END,
        trial_warned_at = CASE WHEN $6::boolean THEN NULL ELSE trial_warned_at END,
-       business_type = COALESCE($8, business_type), updated_at = now()
+       business_type = COALESCE($8, business_type), limits_override = COALESCE($9::jsonb, limits_override), brand_id = CASE WHEN $10::boolean THEN $11::uuid ELSE brand_id END, updated_at = now()
      WHERE id = $1 RETURNING *`,
-    [id, patch.name ?? null, patch.active ?? null, patch.status ?? null, patch.plan ?? null, patch.trial_ends_at !== undefined, patch.trial_ends_at ?? null, patch.business_type ?? null],
+    [id, patch.name ?? null, patch.active ?? null, patch.status ?? null, patch.plan ?? null, patch.trial_ends_at !== undefined, patch.trial_ends_at ?? null, patch.business_type ?? null, patch.limits_override ? JSON.stringify(patch.limits_override) : null, patch.brand_id !== undefined, patch.brand_id ?? null],
   );
 }
 
@@ -66,11 +68,12 @@ export async function markOnboarding(accountId: string, steps: Record<string, bo
 
 export async function deleteAccount(id: string) {
   await query('DELETE FROM accounts WHERE id = $1', [id]);
+  await removeInboundAccountFiles(id);
 }
 
 /* ------------------------------ Usuarios ------------------------------ */
 
-const USER_COLS = 'id, account_id, role, name, email, phone, notify_whatsapp, active, email_verified_at, last_login_at, created_at';
+const USER_COLS = 'id, account_id, role, name, email, phone, notify_whatsapp, available, active, email_verified_at, last_login_at, created_at';
 
 export async function listUsers(accountId: string | null): Promise<User[]> {
   return accountId
@@ -110,9 +113,11 @@ export async function createUser(
   return rows[0] as User;
 }
 
+export const getUserBasic = (id: string) => queryOne<{ id: string; name: string; email: string }>(`SELECT id, name, email FROM users WHERE id = $1`, [id]);
+
 export async function updateUser(
   id: string,
-  patch: { name?: string; role?: Role; account_id?: string | null; active?: boolean; password_hash?: string; email?: string; phone?: string; notify_whatsapp?: boolean },
+  patch: { name?: string; role?: Role; account_id?: string | null; active?: boolean; password_hash?: string; email?: string; phone?: string; notify_whatsapp?: boolean; available?: boolean },
   expectedAccountId?: string,
 ) {
   return withTransaction(async (client) => {
@@ -120,11 +125,15 @@ export async function updateUser(
       `UPDATE users SET name = COALESCE($2, name), role = COALESCE($3, role), active = COALESCE($4, active),
        password_hash = COALESCE($5, password_hash), email = COALESCE($6, email),
        phone = COALESCE($7, phone), notify_whatsapp = COALESCE($8, notify_whatsapp),
-       account_id = CASE WHEN $9::boolean THEN $10::uuid ELSE account_id END, updated_at = now()
+       account_id = CASE WHEN $9::boolean THEN $10::uuid ELSE account_id END, available = COALESCE($12, available), updated_at = now()
      WHERE id = $1 AND ($11::uuid IS NULL OR account_id = $11) RETURNING ${USER_COLS}`,
-      [id, patch.name ?? null, patch.role ?? null, patch.active ?? null, patch.password_hash ?? null, patch.email?.trim() ?? null, patch.phone?.replace(/\D/g, '') ?? null, patch.notify_whatsapp ?? null, patch.account_id !== undefined, patch.account_id ?? null, expectedAccountId ?? null],
+      [id, patch.name ?? null, patch.role ?? null, patch.active ?? null, patch.password_hash ?? null, patch.email?.trim() ?? null, patch.phone?.replace(/\D/g, '') ?? null, patch.notify_whatsapp ?? null, patch.account_id !== undefined, patch.account_id ?? null, expectedAccountId ?? null, patch.available ?? null],
     );
     const user = result.rows[0] ?? null;
+    // Quien se desactiva o cambia de perfil deja de tener conversaciones abiertas asignadas.
+    if (user && (patch.active === false || patch.account_id !== undefined)) {
+      await client.query(`UPDATE conversations SET assigned_user_id = NULL, assigned_at = NULL WHERE assigned_user_id = $1 AND status <> 'closed' AND ($2::uuid IS NULL OR account_id <> $2 OR $3::boolean)`, [id, user.account_id, patch.active === false]);
+    }
     if (user && patch.account_id !== undefined && user.role !== 'superadmin') {
       // A transferred user must no longer receive owner alerts from the old profile.
       await client.query('UPDATE accounts SET owner_user_id = NULL WHERE owner_user_id = $1 AND id <> $2', [id, user.account_id]);
@@ -179,8 +188,18 @@ export async function touchLogin(id: string) {
 }
 
 export async function deleteUser(id: string, expectedAccountId?: string) {
-  const deleted = await query('DELETE FROM users WHERE id = $1 AND ($2::uuid IS NULL OR account_id = $2) RETURNING id', [id, expectedAccountId ?? null]);
-  return deleted.length > 0;
+  return withTransaction(async (client) => {
+    const deleted = await client.query<{ account_id: string }>('DELETE FROM users WHERE id = $1 AND ($2::uuid IS NULL OR account_id = $2) RETURNING account_id', [id, expectedAccountId ?? null]);
+    if (!deleted.rows.length) return false;
+    // Los servicios guardan a sus personas asignadas en jsonb (sin clave foránea): se quita la persona borrada para que
+    // reservar no intente usar un usuario que ya no existe.
+    await client.query(
+      `UPDATE services SET assigned_user_ids = COALESCE((SELECT jsonb_agg(x) FROM jsonb_array_elements_text(assigned_user_ids) x WHERE x <> $2), '[]'::jsonb)
+       WHERE account_id = $1 AND assigned_user_ids @> to_jsonb($2::text)`,
+      [deleted.rows[0].account_id, id],
+    );
+    return true;
+  });
 }
 
 export async function countSuperadmins(): Promise<number> {
@@ -386,17 +405,18 @@ export async function upsertKnowledge(chatbotId: string, item: Partial<Knowledge
   if (item.id) {
     const rows = await rowsOf(client,
       `UPDATE knowledge_items SET category = COALESCE($2, category), title = COALESCE($3, title), content = COALESCE($4, content),
-         always_include = COALESCE($5, always_include), active = COALESCE($6, active), sort_order = COALESCE($7, sort_order), updated_at = now()
+         always_include = COALESCE($5, always_include), active = COALESCE($6, active), sort_order = COALESCE($7, sort_order),
+         source_url = CASE WHEN $9::boolean THEN $10 ELSE source_url END, updated_at = now()
        WHERE id = $1 AND chatbot_id = $8 RETURNING *`,
-      [item.id, item.category ?? null, item.title ?? null, item.content ?? null, item.always_include ?? null, item.active ?? null, item.sort_order ?? null, chatbotId],
+      [item.id, item.category ?? null, item.title ?? null, item.content ?? null, item.always_include ?? null, item.active ?? null, item.sort_order ?? null, chatbotId, item.source_url !== undefined, item.source_url ?? null],
     );
     if (!rows[0]) throw new Error('Elemento no encontrado');
     return rows[0];
   }
   const rows = await rowsOf(client,
-    `INSERT INTO knowledge_items (chatbot_id, category, title, content, always_include, active, sort_order)
-     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-    [chatbotId, item.category ?? 'general', item.title ?? '', item.content ?? '', item.always_include ?? false, item.active ?? true, item.sort_order ?? 0],
+    `INSERT INTO knowledge_items (chatbot_id, category, title, content, always_include, active, sort_order, source_url)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+    [chatbotId, item.category ?? 'general', item.title ?? '', item.content ?? '', item.always_include ?? false, item.active ?? true, item.sort_order ?? 0, item.source_url ?? null],
   );
   return rows[0];
 }
@@ -418,17 +438,17 @@ export async function getImage(id: string) {
   return queryOne<ImageAsset>('SELECT * FROM images WHERE id = $1', [id]);
 }
 
-export async function insertImage(img: Omit<ImageAsset, 'id' | 'active'> & { active?: boolean }): Promise<ImageAsset> {
+export async function insertImage(img: Omit<ImageAsset, 'id' | 'active'> & { active?: boolean; sha256?: string }): Promise<ImageAsset> {
   const row = await queryOne<ImageAsset>(
-    `INSERT INTO images (chatbot_id, code, name, description, usage_rule, caption, file_path, mime_type, size_bytes, active, send_when)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
-    [img.chatbot_id, img.code, img.name, img.description, img.usage_rule, img.caption, img.file_path, img.mime_type, img.size_bytes, img.active ?? true, JSON.stringify(img.send_when ?? {})],
+    `INSERT INTO images (chatbot_id, code, name, description, usage_rule, caption, file_path, mime_type, size_bytes, active, send_when, sha256)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+    [img.chatbot_id, img.code, img.name, img.description, img.usage_rule, img.caption, img.file_path, img.mime_type, img.size_bytes, img.active ?? true, JSON.stringify(img.send_when ?? {}), img.sha256 ?? ''],
   );
   return row!;
 }
 
 export async function updateImage(id: string, patch: Partial<ImageAsset>): Promise<ImageAsset | null> {
-  const allowed = ['code', 'name', 'description', 'usage_rule', 'caption', 'active', 'file_path', 'mime_type', 'size_bytes', 'send_when'] as const;
+  const allowed = ['code', 'name', 'description', 'usage_rule', 'caption', 'active', 'file_path', 'mime_type', 'size_bytes', 'send_when', 'sha256'] as const;
   const sets: string[] = [];
   const params: unknown[] = [];
   for (const k of allowed) {
@@ -469,7 +489,39 @@ export async function getContact(id: string) {
   return queryOne<Contact>('SELECT * FROM contacts WHERE id = $1', [id]);
 }
 
-type ContactPatch = { name?: string; data?: Record<string, string>; notes?: string[]; tags?: string[]; opted_out?: boolean };
+const TASK_SELECT = `SELECT t.id, t.account_id, t.contact_id, t.conversation_id, t.kind, t.body, t.status,
+  to_char(t.due_on, 'YYYY-MM-DD') AS due_on, t.created_by, u.name AS created_by_name, t.created_via, t.done_at, t.done_by, t.created_at, t.updated_at
+  FROM contact_tasks t LEFT JOIN users u ON u.id = t.created_by`;
+
+/** Pendientes y notas del contacto: las abiertas primero (por fecha límite); luego lo hecho y las notas, más recientes primero. */
+export function listContactTasks(contactId: string) {
+  return query<ContactTask>(`${TASK_SELECT} WHERE t.contact_id = $1 ORDER BY (t.status = 'abierta') DESC, t.due_on NULLS LAST, t.created_at DESC`, [contactId]);
+}
+
+export function getContactTask(id: string) {
+  return queryOne<ContactTask>(`${TASK_SELECT} WHERE t.id = $1`, [id]);
+}
+
+export async function insertContactTask(row: Pick<ContactTask, 'account_id' | 'contact_id' | 'conversation_id' | 'kind' | 'body' | 'due_on' | 'created_by' | 'created_via'>) {
+  const inserted = await queryOne<{ id: string }>(
+    `INSERT INTO contact_tasks (account_id, contact_id, conversation_id, kind, body, due_on, created_by, created_via) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+    [row.account_id, row.contact_id, row.conversation_id, row.kind, row.body, row.due_on, row.created_by, row.created_via],
+  );
+  return inserted!.id;
+}
+
+/** Cambia solo los campos indicados. Las columnas las fija el código que llama, nunca el cliente. */
+export async function updateContactTask(id: string, patch: Partial<Pick<ContactTask, 'body' | 'status' | 'due_on' | 'done_at' | 'done_by'>>) {
+  const entries = Object.entries(patch);
+  const sets = entries.map(([column], i) => `${column} = $${i + 2}`);
+  await query(`UPDATE contact_tasks SET ${[...sets, 'updated_at = now()'].join(', ')} WHERE id = $1`, [id, ...entries.map(([, value]) => value)]);
+}
+
+export async function deleteContactTask(id: string) {
+  await query('DELETE FROM contact_tasks WHERE id = $1', [id]);
+}
+
+type ContactPatch = { name?: string; data?: Record<string, string>; notes?: string[]; tags?: string[]; opted_out?: boolean; /** Versión de datos que vio el panel: si cambió, no se guarda. */ expectedDataVersion?: number };
 
 export async function updateContact(id: string, patch: Pick<ContactPatch, 'name' | 'data' | 'notes'>) {
   return (await updateContactFromPanel(id, patch))?.contact ?? null;
@@ -480,6 +532,10 @@ export async function updateContactFromPanel(id: string, patch: ContactPatch) {
   return withTransaction(async (client) => {
     const before = (await client.query<Contact>('SELECT * FROM contacts WHERE id = $1 FOR UPDATE', [id])).rows[0];
     if (!before) return null;
+    if (patch.expectedDataVersion !== undefined) {
+      const current = (await client.query<{ v: number }>('SELECT COALESCE(max(data_version), 0)::int AS v FROM conversations WHERE contact_id = $1', [id])).rows[0].v;
+      if (current !== patch.expectedDataVersion) throw new StaleDataError('Los datos cambiaron mientras los editabas');
+    }
     const contact = (await client.query<Contact>(
       `UPDATE contacts SET name = COALESCE($2, name), data = COALESCE($3, data), notes = COALESCE($4, notes),
        tags = COALESCE($5, tags), opted_out = COALESCE($6, opted_out),
@@ -500,6 +556,12 @@ export async function updateContactFromPanel(id: string, patch: ContactPatch) {
 }
 
 /** Merge only the new answers, atomically, into both records; never replace a stale snapshot. */
+/** Notas por cliente: el mismo límite que el panel y la API (50). Antes la IA recortaba a 30 y borraba notas guardadas. */
+export const MAX_NOTES = 50;
+
+/** Los datos cambiaron después de que la persona abrió el formulario: no se sobrescriben. */
+export class StaleDataError extends Error {}
+
 export async function saveConversationMemory(conversationId: string, contactId: string, patch: { data: Record<string, string>; name?: string; remember: string[] }, sourceMessageId?: number, sourceMessageIds?: Record<string, number>) {
   return withTransaction(async (client) => {
     const contact = (await client.query<Contact>('SELECT * FROM contacts WHERE id = $1 FOR UPDATE', [contactId])).rows[0];
@@ -516,7 +578,7 @@ export async function saveConversationMemory(conversationId: string, contactId: 
     }
     const updated = await client.query<Contact>(
       'UPDATE contacts SET data = data || $2::jsonb, name = COALESCE($3, name), notes = $4, updated_at = now() WHERE id = $1 RETURNING *',
-      [contactId, JSON.stringify(patch.data), patch.name ?? null, JSON.stringify(notes.slice(-30))],
+      [contactId, JSON.stringify(patch.data), patch.name ?? null, JSON.stringify(notes.slice(-MAX_NOTES))],
     );
     await client.query('UPDATE conversations SET data = data || $2::jsonb, data_version = data_version + 1 WHERE id = $1', [conversationId, JSON.stringify(patch.data)]);
     const provenance = sourceMessageIds ?? (sourceMessageId !== undefined ? Object.fromEntries(Object.keys(patch.data).map((key) => [key, sourceMessageId])) : {});
@@ -539,7 +601,7 @@ export async function resetConversationMemory(conversationId: string, contactId:
     if (!scope.rows.length) throw new Error('La conversación no pertenece al contacto');
     await client.query("UPDATE contacts SET data = '{}', notes = '[]', name = '', updated_at = now() WHERE id = $1", [contactId]);
     await client.query(`UPDATE conversations SET summary = '', summary_until_id = 0, data = '{}', data_version = data_version + 1,
-      report_summary = '', report_until_id = 0, report_at = NULL, report_data_version = -1, flow_step = 0, goal_completed_at = NULL
+      report_summary = '', report_analysis = '{}'::jsonb, report_until_id = 0, report_at = NULL, report_data_version = -1, flow_step = 0, goal_completed_at = NULL, flow_started_at = now()
       WHERE id = $1 AND contact_id = $2`, [conversationId, contactId]);
   });
 }
@@ -559,6 +621,11 @@ export async function getConversation(id: string) {
   return queryOne<Conversation>('SELECT * FROM conversations WHERE id = $1', [id]);
 }
 
+/** ¿La conversación de este contacto está asignada a esta persona? (Lo que un agente puede ver de un contacto.) */
+export async function contactAssignedTo(contactId: string, userId: string) {
+  return !!(await queryOne(`SELECT 1 FROM conversations WHERE contact_id = $1 AND assigned_user_id = $2`, [contactId, userId]));
+}
+
 export async function setConversationStatus(id: string, status: ConversationStatus, reason = '') {
   return queryOne<Conversation>(
     `UPDATE conversations SET status = $2, handoff_reason = $3, status_changed_at = now() WHERE id = $1 RETURNING *`,
@@ -574,12 +641,20 @@ export async function takeConversation(id: string, reason: string) {
   );
 }
 
+/** Desde dónde tomó una persona la conversación: teléfono, panel… (vacío = nunca). */
+export type HandoffVia = 'telefono' | 'panel' | 'regla' | 'bot' | '';
+
+/** Queda en el contacto quién tomó su conversación y desde dónde. */
+export async function markHandoff(contactId: string, userId: string | null, via: HandoffVia) {
+  await query('UPDATE contacts SET handoff_at = now(), handoff_by = $2, handoff_via = $3 WHERE id = $1', [contactId, userId, via]);
+}
+
 export async function updateSummary(id: string, summary: string, untilId: number, expectedVersion?: number) {
   await query(`UPDATE conversations SET summary = $2, summary_until_id = $3 WHERE id = $1
     AND summary_until_id <= $3 AND ($4::bigint IS NULL OR data_version = $4)`, [id, summary, untilId, expectedVersion ?? null]);
 }
 
-export async function saveConversationReport(id: string, summary: string, untilId: number, expectedVersion: number, captures: { field: string; value: string; messageId: number }[] = []) {
+export async function saveConversationReport(id: string, summary: string, untilId: number, expectedVersion: number, captures: { field: string; value: string; messageId: number }[] = [], analysis: Record<string, unknown> = {}) {
   return withTransaction(async (client) => {
     const link = (await client.query('SELECT contact_id FROM conversations WHERE id = $1', [id])).rows[0];
     if (!link) return null;
@@ -597,9 +672,9 @@ export async function saveConversationReport(id: string, summary: string, untilI
     }
     const changed = Object.keys(added).length > 0;
     if (changed) await client.query("UPDATE contacts SET data = data || $2::jsonb, name = CASE WHEN $3 <> '' THEN $3 ELSE name END, updated_at = now() WHERE id = $1", [contact.id, JSON.stringify(added), added.nombre ?? '']);
-    const result = await client.query<Conversation>(`UPDATE conversations SET report_summary = $2, report_until_id = $3, report_at = now(),
+    const result = await client.query<Conversation>(`UPDATE conversations SET report_summary = $2, report_until_id = $3, report_at = now(), report_analysis = $6::jsonb,
       data = data || $4::jsonb, data_version = data_version + $5, report_data_version = data_version + $5 WHERE id = $1 RETURNING *`,
-      [id, summary, untilId, JSON.stringify(added), changed ? 1 : 0]);
+      [id, summary, untilId, JSON.stringify(added), changed ? 1 : 0, JSON.stringify(analysis)]);
     return result.rows[0];
   });
 }
@@ -607,6 +682,8 @@ export async function saveConversationReport(id: string, summary: string, untilI
 /* -------------------------------- Mensajes ------------------------------- */
 
 export interface NewMessage {
+  /** Foto o documento del cliente ya guardado en disco: se registra en la misma transacción que el mensaje. */
+  media?: StoredMedia;
   conversation_id: string;
   direction: 'in' | 'out';
   sender: Message['sender'];
@@ -641,6 +718,13 @@ export async function insertMessage(m: NewMessage): Promise<Message | null> {
     );
     const row = result.rows[0] ?? null;
     if (row) await client.query('UPDATE conversations SET last_message_at = now() WHERE id = $1', [m.conversation_id]);
+    if (row && m.media) {
+      // Si esto falla, se deshace también el mensaje: nunca queda un mensaje que diga "foto" sin su archivo.
+      await client.query(
+        `INSERT INTO message_media (message_id, kind, mime, file_name, size_bytes, sha256, file_path, complete) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [row.id, m.media.kind, m.media.mime, m.media.file_name, m.media.size_bytes, m.media.sha256, m.media.file_path, m.media.complete],
+      );
+    }
     return row;
   });
 }
@@ -710,6 +794,56 @@ export async function isFirstLiveInbound(conversationId: string, messageId: numb
   return row?.first === true;
 }
 
+/* ----------------------- Arrendamiento de conversaciones (cola durable) ----------------------- */
+
+/** Toma la conversación para este proceso. Falla si otro proceso la tiene y su arrendamiento sigue vigente. */
+export async function claimConversation(id: string, owner: string, ttlSeconds = 300): Promise<boolean> {
+  const row = await queryOne<{ id: string }>(
+    `UPDATE conversations SET lease_owner = $2, lease_until = now() + make_interval(secs => $3), last_attempt_at = now()
+     WHERE id = $1 AND (lease_until IS NULL OR lease_until < now() OR lease_owner = $2) RETURNING id`,
+    [id, owner, ttlSeconds],
+  );
+  return !!row;
+}
+
+export async function renewConversationLease(id: string, owner: string, ttlSeconds = 300) {
+  await query(`UPDATE conversations SET lease_until = now() + make_interval(secs => $3) WHERE id = $1 AND lease_owner = $2`, [id, owner, ttlSeconds]);
+}
+
+export async function releaseConversation(id: string, owner: string) {
+  await query(`UPDATE conversations SET lease_owner = NULL, lease_until = NULL WHERE id = $1 AND lease_owner = $2`, [id, owner]);
+}
+
+/**
+ * Conversaciones con mensajes sin responder que nadie está atendiendo:
+ *  - nunca se intentaron (se perdió el temporizador o llegaron a otro proceso que se cayó), o
+ *  - se interrumpieron (arrendamiento vencido sin liberar: el proceso murió a la mitad).
+ * Los errores de la IA no vuelven aquí: liberan el arrendamiento y ya se intentaron.
+ */
+export async function recoverableConversations(maxAgeMinutes = 15, limit = 50): Promise<string[]> {
+  const rows = await query<{ id: string }>(
+    `SELECT c.id FROM conversations c
+       JOIN channels ch ON ch.id = c.channel_id
+       LEFT JOIN chatbots b ON b.id = c.chatbot_id
+     WHERE ch.type <> 'playground'
+       AND EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id AND m.processed = false AND m.direction = 'in'
+                     AND m.created_at > now() - make_interval(mins => $1)
+                     AND m.created_at < now() - make_interval(secs => GREATEST(COALESCE((b.ai->>'debounce_seconds')::float, 3), 3) + 5)
+                     AND (c.last_attempt_at IS NULL OR m.created_at > c.last_attempt_at))
+       AND (c.lease_until IS NULL OR c.lease_until < now())
+     LIMIT $2`,
+    [maxAgeMinutes, limit],
+  );
+  const interrupted = await query<{ id: string }>(
+    `SELECT c.id FROM conversations c
+     WHERE c.lease_until IS NOT NULL AND c.lease_until < now()
+       AND EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id AND m.processed = false AND m.direction = 'in' AND m.created_at > now() - make_interval(mins => $1))
+     LIMIT $2`,
+    [maxAgeMinutes, limit],
+  );
+  return [...new Set([...rows, ...interrupted].map((r) => r.id))];
+}
+
 export async function markAllProcessed(conversationId: string) {
   await query(`UPDATE messages SET processed = true WHERE conversation_id = $1 AND processed = false`, [conversationId]);
 }
@@ -746,10 +880,22 @@ export async function countMessagesAfter(conversationId: string, afterId: number
 
 export async function sentImageIds(conversationId: string): Promise<string[]> {
   const rows = await query<{ image_id: string }>(
-    `SELECT DISTINCT image_id FROM messages WHERE conversation_id = $1 AND direction = 'out' AND image_id IS NOT NULL AND status = 'ok'`,
+    // Solo las del recorrido actual: al reabrir una conversación (flow_started_at) las fotos de etapa y objetivo vuelven a salir.
+    `SELECT DISTINCT m.image_id FROM messages m JOIN conversations c ON c.id = m.conversation_id
+     WHERE m.conversation_id = $1 AND m.direction = 'out' AND m.image_id IS NOT NULL AND m.status = 'ok'
+       AND (c.flow_started_at IS NULL OR m.created_at >= c.flow_started_at)`,
     [conversationId],
   );
   return rows.map((r) => r.image_id);
+}
+
+/** ¿Ya llegó esta foto (entregada) desde ese momento? Evita duplicar un reenvío pendiente. */
+export async function imageSentSince(conversationId: string, imageId: string, since: Date): Promise<boolean> {
+  const row = await queryOne<{ n: number }>(
+    `SELECT count(*)::int AS n FROM messages WHERE conversation_id = $1 AND image_id = $2 AND direction = 'out' AND status = 'ok' AND created_at >= $3`,
+    [conversationId, imageId, since],
+  );
+  return (row?.n ?? 0) > 0;
 }
 
 /**
@@ -790,7 +936,7 @@ export async function clearConnectionCodes(channelId: string) {
 /** Al reabrir: el recorrido empieza de nuevo y el asistente vuelve a su estado inicial (sin pausa ni activación). */
 export async function resetFlowState(conversationId: string) {
   await query(
-    `UPDATE conversations SET flow_step = 0, goal_completed_at = NULL, agent_off_at = NULL, agent_off_reason = '', agent_off_until = NULL, agent_on_at = NULL WHERE id = $1`,
+    `UPDATE conversations SET flow_step = 0, goal_completed_at = NULL, flow_started_at = now(), agent_off_at = NULL, agent_off_reason = '', agent_off_until = NULL, agent_on_at = NULL WHERE id = $1`,
     [conversationId],
   );
 }

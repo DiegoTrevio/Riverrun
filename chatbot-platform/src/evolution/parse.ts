@@ -53,7 +53,7 @@ function parseOne(d: any, instance: string): IncomingMessage | null {
   const msg = unwrap(d.message);
   let type: IncomingMessage['type'] = 'other';
   let text = '';
-  let seconds: number | undefined;
+  let media: IncomingMessage['media'];
   if (typeof msg.conversation === 'string') {
     type = 'text';
     text = msg.conversation;
@@ -63,15 +63,19 @@ function parseOne(d: any, instance: string): IncomingMessage | null {
   } else if (msg.imageMessage) {
     type = 'image';
     text = msg.imageMessage.caption ?? '';
+    media = { mimeType: msg.imageMessage.mimetype || undefined, size: Number(msg.imageMessage.fileLength) || undefined };
   } else if (msg.audioMessage) {
     type = 'audio';
-    seconds = Number(msg.audioMessage.seconds) || undefined;
+    const seconds = Number(msg.audioMessage.seconds) || undefined;
+    if (seconds) media = { seconds };
   } else if (msg.videoMessage) {
     type = 'video';
     text = msg.videoMessage.caption ?? '';
   } else if (msg.documentMessage) {
     type = 'document';
-    text = msg.documentMessage.caption ?? msg.documentMessage.fileName ?? '';
+    const fileName = msg.documentMessage.fileName ?? '';
+    text = msg.documentMessage.caption ?? fileName;
+    media = { mimeType: msg.documentMessage.mimetype || undefined, filename: fileName || undefined, size: Number(msg.documentMessage.fileLength) || undefined };
   } else if (msg.stickerMessage) {
     type = 'sticker';
   } else if (msg.locationMessage) {
@@ -105,7 +109,7 @@ function parseOne(d: any, instance: string): IncomingMessage | null {
     type,
     text: String(text ?? '').trim(),
     timestamp: Number(d.messageTimestamp ?? Math.floor(Date.now() / 1000)),
-    ...(seconds ? { media: { seconds } } : {}),
+    ...(media ? { media } : {}),
   };
 }
 

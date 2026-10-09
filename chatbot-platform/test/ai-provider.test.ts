@@ -119,3 +119,32 @@ test('el proveedor conserva tres intentos por defecto ante errores transitorios'
     assert.equal(seen.length, 3);
   });
 });
+
+test('OpenRouter: lista de respaldo — models en orden, sin repetir el principal y con tope de 2', async () => {
+  await withApi(async (url, seen) => {
+    const client = new OpenAiProvider('TEST-ROUTER', url, 1000, 'openrouter');
+    const messages = [{ role: 'user' as const, content: 'hola' }];
+    // Global (OPENROUTER_FALLBACK_MODELS)
+    const saved = config.openai.fallbackModels;
+    config.openai.fallbackModels = ['anthropic/claude-haiku-4.5', 'openai/gpt-4.1-mini', 'google/gemini-2.5-flash', 'x/otro'];
+    try {
+      await client.complete({ model: 'gpt-4.1-mini', messages });
+      assert.deepEqual(seen[0].body.models, ['openai/gpt-4.1-mini', 'anthropic/claude-haiku-4.5', 'google/gemini-2.5-flash']);
+      assert.equal(seen[0].body.model, undefined, 'con lista de respaldo se envía "models", no "model"');
+      // Los del asistente tienen prioridad sobre los globales
+      await client.complete({ model: 'openai/gpt-4.1-mini', fallback_models: ['mistralai/mistral-small'], messages });
+      assert.deepEqual(seen[1].body.models, ['openai/gpt-4.1-mini', 'mistralai/mistral-small']);
+    } finally {
+      config.openai.fallbackModels = saved;
+    }
+    // Sin respaldos: se comporta como antes
+    await client.complete({ model: 'gpt-4.1-mini', messages });
+    assert.equal(seen[2].body.model, 'openai/gpt-4.1-mini');
+    assert.equal(seen[2].body.models, undefined);
+    // Con OpenAI directo no se envía "models"
+    const direct = new OpenAiProvider('TEST-OPENAI', url, 1000, 'openai');
+    config.openai.fallbackModels = ['gpt-4o-mini'];
+    try { await direct.complete({ model: 'gpt-4.1-mini', messages }); } finally { config.openai.fallbackModels = saved; }
+    assert.equal(seen[3].body.models, undefined);
+  });
+});

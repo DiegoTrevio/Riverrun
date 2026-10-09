@@ -1,3 +1,4 @@
+import { NoticeBody, sendNotice } from '../automation/notices.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { assertAccount, conversationFor, HttpError, notFound, requireRole, scopeAccount, targetAccount } from '../access.js';
@@ -28,7 +29,7 @@ async function checkReferences(accountId: string, body: { chatbot_id?: string | 
       const seq = await astore.getSequence(a.sequence_id);
       if (!seq || seq.account_id !== accountId) throw new HttpError(400, 'La secuencia no pertenece a la cuenta');
     }
-    if (a.type === 'alert_team' && a.user_ids.length) {
+    if ((a.type === 'alert_team' || a.type === 'send_report') && a.user_ids.length) {
       const team = await astore.teamMembers(accountId);
       if (a.user_ids.some((id) => !team.some((u) => u.id === id))) throw new HttpError(400, 'Un usuario no pertenece a la cuenta');
     }
@@ -41,6 +42,8 @@ const campaignFor = async (user: User, id: string) => assertAccount(user, await 
 
 const CampaignBody = z.object({
   channel_id: z.string().uuid(),
+  /** Números adicionales (mismo tipo de canal) desde los que también sale la campaña. */
+  channel_ids: z.array(z.string().uuid()).max(10).default([]),
   name: z.string().trim().min(1).max(120),
   message: z.string().max(4000).default(''),
   image_id: z.string().uuid().nullable().default(null),
@@ -116,6 +119,8 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
   /* ------------------------------ Secuencias ------------------------------ */
   api.get('/api/sequences', async (req: any) => {
     const list = await astore.listSequences(scopeAccount(req.user, req.query.account_id));
+    // Los totales de inscritos son de toda la cuenta: el agente no los ve.
+    if (req.user.role === 'agent') return list.map((s) => ({ ...s, enrollments: {} }));
     const counts = await query<{ sequence_id: string; status: string; n: number }>(
       `SELECT sequence_id, status, count(*)::int AS n FROM sequence_enrollments WHERE sequence_id = ANY($1::uuid[]) GROUP BY 1, 2`,
       [list.map((s) => s.id)],
@@ -177,9 +182,13 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
   });
 
   /* ------------------------------ Campañas ------------------------------ */
-  const checkChannel = async (user: User, accountId: string, channelId: string, imageId: string | null) => {
+  const checkChannel = async (user: User, accountId: string, channelId: string, imageId: string | null, extraIds: string[] = []) => {
     const ch = await store.getChannel(channelId);
     if (!ch || ch.account_id !== accountId || ch.type === 'playground') throw new HttpError(400, 'El canal no pertenece a la cuenta');
+    for (const extra of extraIds) {
+      const e = await store.getChannel(extra);
+      if (!e || e.account_id !== accountId || e.type !== ch.type) throw new HttpError(400, 'Los números adicionales deben ser canales de la cuenta del mismo tipo (p. ej. otros WhatsApp)');
+    }
     if (imageId) await checkReferences(accountId, { steps: [{ image_id: imageId }] });
     void user;
     return ch;
@@ -190,7 +199,8 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
   api.post('/api/campaigns', admins, async (req: any) => {
     const b = parse(CampaignBody, req.body);
     const accountId = await targetAccount(req.user, req.body?.account_id);
-    await checkChannel(req.user, accountId, b.channel_id, b.image_id);
+    b.channel_ids = [...new Set(b.channel_ids)].filter((x) => x !== b.channel_id);
+    await checkChannel(req.user, accountId, b.channel_id, b.image_id, b.channel_ids);
     return astore.saveCampaign(accountId, { ...b, scheduled_at: b.scheduled_at ? new Date(b.scheduled_at) : null });
   });
 
@@ -198,7 +208,8 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
     const c = await campaignFor(req.user, req.params.id);
     if (!['draft', 'scheduled'].includes(c.status)) throw new HttpError(400, 'Solo se editan campañas en borrador o programadas');
     const b = parse(CampaignBody, { ...c, scheduled_at: c.scheduled_at ? new Date(c.scheduled_at).toISOString() : null, ...(req.body ?? {}) });
-    await checkChannel(req.user, c.account_id, b.channel_id, b.image_id);
+    b.channel_ids = [...new Set(b.channel_ids)].filter((x) => x !== b.channel_id);
+    await checkChannel(req.user, c.account_id, b.channel_id, b.image_id, b.channel_ids);
     const saved = await astore.saveCampaign(c.account_id, { ...b, scheduled_at: b.scheduled_at ? new Date(b.scheduled_at) : null }, c.id);
     if (c.status === 'scheduled') {
       // Reprogramar con los datos nuevos.
@@ -219,10 +230,13 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
 
   api.post('/api/campaigns/:id/preview', admins, async (req: any) => {
     const c = await campaignFor(req.user, req.params.id);
-    const audience = await astore.campaignAudience(c);
+    const settings = await astore.getSettings(c.account_id);
+    const requireConsent = settings.consent.require_for_campaigns;
+    const audience = await astore.campaignAudience(c, 100000, { requireConsent });
     const ch = await store.getChannel(c.channel_id);
     return {
       count: audience.length,
+      excluded_no_consent: requireConsent ? await astore.campaignExcludedNoConsent(c) : 0,
       sample: audience.slice(0, 10).map((a) => a.name || a.push_name || (a.phone ? `+${a.phone}` : 'Cliente')),
       warning:
         ch?.type === 'messenger' || ch?.type === 'instagram'
@@ -272,6 +286,15 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
     const { ids } = parse(z.object({ ids: z.array(z.number().int()).optional() }), req.body);
     await astore.markNotificationsRead(req.user.id, ids, scopeAccount(req.user));
     return { ok: true };
+  });
+
+  /** Aviso interno manual (a todo el equipo, a un rol, a personas o por turnos). Solo administradores. */
+  api.post('/api/notifications/send', { preHandler: requireRole('admin') }, async (req: any) => {
+    const accountId = await targetAccount(req.user, req.body?.account_id ?? req.query.account_id);
+    const b = parse(NoticeBody, req.body);
+    const r = await sendNotice(service, accountId, b);
+    await logEvent({ level: 'info', source: 'admin', message: `Aviso interno enviado por ${req.user.email} a ${r.recipients.length} persona(s)${b.round_robin ? ' (por turnos)' : ''}`, accountId });
+    return { ok: true, sent_to: r.recipients.length, recipients: r.recipients };
   });
 
   void notFound;

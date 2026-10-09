@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  pull_request:
+    paths: ['chatbot-platform/**', '.github/workflows/ci.yml']
+  push:
+    branches: [main]
+    paths: ['chatbot-platform/**', '.github/workflows/ci.yml']
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: chatbot-platform
+
+jobs:
+  test:
+    name: Tipos y pruebas
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.7-pg16
+        env:
+          POSTGRES_USER: chatbot
+          POSTGRES_PASSWORD: chatbot
+          POSTGRES_DB: chatbot_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U chatbot" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://chatbot:chatbot@localhost:5432/chatbot_test
+      REQUIRE_PGVECTOR: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: chatbot-platform/package-lock.json
+      - run: npm ci
+      - name: Revisión de tipos
+        run: npm run typecheck
+      - name: Panel (módulos, imports y sintaxis)
+        run: npm run check:frontend && node --check public/app.js
+      - name: Pruebas
+        run: npm test
+      - name: Dependencias vulnerables (solo las de producción)
+        run: npm audit --omit=dev --audit-level=high
+
+  scripts:
+    name: Scripts y respaldos
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: chatbot
+          POSTGRES_PASSWORD: chatbot
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U chatbot" --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Instalar cliente de PostgreSQL 16
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client-16 shellcheck || sudo apt-get install -y -qq postgresql-client shellcheck
+      - name: shellcheck
+        run: shellcheck -S warning riverrun docker/backup/backup.sh scripts/*.sh ops/*.sh
+      - name: Respaldo → destruir → restaurar (de punta a punta)
+        env:
+          PGHOST: localhost
+          PGUSER: chatbot
+          PGPASSWORD: chatbot
+        run: |
+          export PATH="/usr/lib/postgresql/16/bin:$PATH"
+          bash scripts/test-backup.sh
+      - name: Flujo de actualización con vuelta atrás (docker simulado)
+        run: bash scripts/test-cli.sh
+      - name: El instalador genera una configuración válida
+        run: |
+          d="$(mktemp -d)"; cp riverrun .env.example "$d/"; cp docker-compose.yml "$d/"; cp -r docker "$d/"
+          (cd "$d" && RIVERRUN_DOMAIN=bot.ejemplo.com RIVERRUN_ADMIN_EMAIL=yo@ejemplo.com ./riverrun install --non-interactive --no-start \
+            && grep -q '^BACKUP_PASSPHRASE=.\{20,\}' .env && grep -q '^COMPOSE_PROFILES=https' .env \
+            && docker compose --profile https --profile tools config -q)
+
+  docker:
+    name: Imágenes de Docker
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      POSTGRES_PASSWORD: x
+      EVOLUTION_API_KEY: x
+      BACKUP_PASSPHRASE: x
+      ADMIN_PASSWORD: x
+      SESSION_SECRET: 0123456789abcdef
+      DOMAIN: ejemplo.com
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validar docker-compose
+        run: docker compose --profile https --profile tools config -q
+      - name: Construir backend y respaldos
+        run: docker compose build backend backup
