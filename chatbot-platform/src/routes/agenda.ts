@@ -143,6 +143,8 @@ export async function agendaRoutes(api: FastifyInstance, service: ChatService) {
     if (b.force && req.user.role === 'agent') throw new HttpError(403, 'Solo un administrador puede forzar un horario');
     if (req.user.role === 'agent' && b.assigned_user_id !== undefined && b.assigned_user_id !== req.user.id) throw new HttpError(403, 'Solo un administrador asigna citas a otras personas');
     if (b.assigned_user_id) await checkUsers(a.account_id, [b.assigned_user_id]);
+    // Reactivar una cita cancelada la pondría de nuevo en el horario sin revisar si otra persona ya lo reservó.
+    if (b.status === 'confirmed' && a.status === 'cancelled') throw new HttpError(409, 'La cita está cancelada. Para ese horario, crea una nueva reserva.');
     if (b.slot) {
       const r = await service.agenda.reschedule(a.id, b.slot, b.force);
       if (!r.ok) throw new HttpError(409, r.reason);

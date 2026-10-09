@@ -58,3 +58,12 @@ test('cerrar impide que una operación exclusiva en espera empiece después', as
   assert.equal(called, false);
   assert.equal(queue.size, 0);
 });
+
+test('un mensaje que llega durante una operación exclusiva se procesa después de ella', async () => {
+  const runs: string[] = [];
+  const queue = new ConversationQueue(async (id) => { runs.push(id); return {status:'done'}; });
+  await queue.exclusive('chat', async () => { queue.schedule('chat', 0); });
+  await new Promise(resolve => setTimeout(resolve, 500));
+  assert.deepEqual(runs, ['chat']);
+  await queue.stop();
+});

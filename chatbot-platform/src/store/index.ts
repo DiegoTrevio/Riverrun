@@ -748,6 +748,24 @@ export async function findMessageByExternalId(conversationId: string, externalId
   return queryOne<Message>('SELECT * FROM messages WHERE conversation_id = $1 AND external_message_id = $2', [conversationId, externalId]);
 }
 
+/** Guarda un aviso interno que acabamos de enviar, para reconocer su eco aunque no pertenezca a ninguna conversación. */
+export async function recordInternalNotice(accountId: string, phone: string, content: string) {
+  await query(`DELETE FROM internal_notices WHERE created_at < now() - interval '1 day'`);
+  await query(`INSERT INTO internal_notices (account_id, phone, content) VALUES ($1,$2,$3)`, [accountId, phone, content.slice(0, 4000)]);
+}
+
+/** Consume el registro de un aviso interno cuyo eco acaba de llegar. Devuelve false si no fue un aviso nuestro. */
+export async function consumeInternalNotice(accountId: string, phone: string, content: string) {
+  const row = await queryOne<{ id: string }>(
+    `DELETE FROM internal_notices WHERE id = (
+       SELECT id FROM internal_notices WHERE account_id = $1 AND phone = $2 AND content = $3
+         AND created_at > now() - interval '10 minutes' ORDER BY created_at DESC LIMIT 1)
+     RETURNING id`,
+    [accountId, phone, content.slice(0, 4000)],
+  );
+  return !!row;
+}
+
 /** Busca un mensaje saliente reciente con el mismo texto (para reconocer ecos de nuestros propios envíos). */
 export async function findRecentOutgoingEcho(conversationId: string, content: string, seconds = 120) {
   return queryOne<Message>(

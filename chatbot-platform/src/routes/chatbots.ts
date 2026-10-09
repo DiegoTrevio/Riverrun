@@ -198,7 +198,11 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
 
   api.get('/api/chatbots/:id', async (req: any) => {
     const bot = await botFor(req.user, req.params.id);
-    const channels = (await store.listChannels(bot.account_id, { chatbotId: bot.id })).map(publicChannel);
+    // El token del webhook y el código de inserción permiten enviar mensajes al canal: los agentes no los ven.
+    const channels = (await store.listChannels(bot.account_id, { chatbotId: bot.id })).map((c) => {
+      const view = publicChannel(c);
+      return req.user.role === 'agent' ? { ...view, webhook_token: undefined, webhook_url: undefined, embed_code: undefined } : view;
+    });
     return { ...visibleBot(req.user, bot), channels };
   });
 
