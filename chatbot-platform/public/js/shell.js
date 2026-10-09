@@ -1,5 +1,6 @@
 import { brand, brandMark, resetBrand } from './brand.js';
 import { api, h, run, state } from './core.js';
+import { icon } from './icons.js';
 import { render } from './main.js';
 import { ROLE_LABEL, isAdmin, isSuper } from './session.js';
 
@@ -22,23 +23,23 @@ const setAdvanced = (on) => { try { localStorage.setItem('cp-advanced', on ? '1'
 
 function simpleLinks(link) {
   return [
-    needsOnboarding() ? link('#/inicio', '🚀 Primeros pasos', 'inicio') : null,
-    link('#/conectar', state.wa && !state.wa.connected ? '📱 Conectar WhatsApp' : '📱 Mi WhatsApp', 'conectar'),
-    link('#/conversations', '💬 Conversaciones', 'conversations'),
-    link('#/asistente', '🤖 Mi asistente', 'bot'),
-    link('#/probar', '🧪 Probar mi asistente', 'probar'),
-    link('#/agenda', '📅 Agenda', 'agenda'),
-    link('#/ajustes', '⚙️ Ajustes', 'ajustes'),
-    h('a', { href: '#/notifications', class: 'notifications' }, '🔔 Notificaciones ', bell),
+    needsOnboarding() ? link('#/inicio', 'Primeros pasos', 'inicio', 'flag') : null,
+    link('#/conectar', state.wa && !state.wa.connected ? 'Conectar WhatsApp' : 'Mi WhatsApp', 'conectar', 'smartphone'),
+    link('#/conversations', 'Conversaciones', 'conversations', 'chat'),
+    link('#/asistente', 'Mi asistente', 'bot', 'bot'),
+    link('#/probar', 'Probar mi asistente', 'probar', 'flask'),
+    link('#/agenda', 'Agenda', 'agenda', 'calendar'),
+    link('#/ajustes', 'Ajustes', 'ajustes', 'sliders'),
+    h('a', { href: '#/notifications', class: 'notifications' }, icon('bell'), 'Notificaciones', bell),
   ];
 }
 
 export function shell(active, content) {
   refreshBell();
   const simple = isAdmin() && !isSuper() && !isAdvanced();
-  const link = (href, label, key) => h('a', { href, class: active === key ? 'active' : '' }, label);
-  const navGroup = (label, keys, links) => h('details', { class: 'nav-group', open: keys.includes(active) },
-    h('summary', { class: keys.includes(active) ? 'active' : '' }, label, label === 'Conversaciones' ? [' ', bell] : null), h('div', {}, links));
+  const link = (href, label, key, iconName) => h('a', { href, class: active === key ? 'active' : '' }, iconName ? icon(iconName) : null, label);
+  const navGroup = (label, keys, links, iconName) => h('details', { class: 'nav-group', open: keys.includes(active) },
+    h('summary', { class: keys.includes(active) ? 'active' : '' }, icon(iconName), label, label === 'Conversaciones' ? [' ', bell] : null), h('div', {}, links));
   const { user, account } = state.me;
   const switcher = isSuper()
     ? h('div', { class: 'account-switch' },
@@ -58,27 +59,29 @@ export function shell(active, content) {
         h('option', { value: '' }, 'Todos los perfiles'),
         state.accounts.map((a) => h('option', { value: a.id, selected: a.id === state.accountId }, a.name + (a.active ? '' : ' (inactiva)')))))
     : h('div', { class: 'account-switch small muted' }, account?.name);
+  const brandName = brand.name === 'Panel de Chatbots' ? 'Chatbots' : brand.name;
   return h('div', { class: 'layout' },
     h('nav', { class: 'sidebar' },
-      h('div', { class: 'brand' }, brand.logo ? brandMark(32) : `💬 ${brand.name === 'Panel de Chatbots' ? 'Chatbots' : brand.name}`,
-        h('button', { class: 'nav-toggle', type: 'button', 'aria-label': 'Abrir o cerrar el menú', onclick: (e) => e.currentTarget.closest('.layout').classList.toggle('nav-open') }, '☰ Menú')),
+      h('div', { class: 'brand' },
+        h('span', { class: 'brand-name' }, brand.logo ? brandMark(28) : h('span', { class: 'brand-mark' }, icon('chat')), brand.logo ? null : brandName),
+        h('button', { class: 'nav-toggle', type: 'button', 'aria-label': 'Abrir o cerrar el menú', onclick: (e) => e.currentTarget.closest('.layout').classList.toggle('nav-open') }, icon('menu'), 'Menú')),
       switcher,
       simple ? simpleLinks(link) : [
       isAdmin() ? navGroup('Asistentes y conexiones', ['home', 'bot', 'channels', 'channel', 'inicio', 'conectar'], [
-        link('#/conectar', '📱 Conectar WhatsApp (QR)', 'conectar'),
+        link('#/conectar', 'Conectar WhatsApp (QR)', 'conectar'),
         link('#/', 'Asistentes', 'home'),
         link('#/channels', 'WhatsApp y otros canales', 'channels'),
         (!isSuper() || state.accountId) ? link('#/inicio', 'Primeros pasos', 'inicio') : null,
-      ]) : null,
+      ], 'bot') : null,
       navGroup('Conversaciones', ['conversations', 'conversation', 'notifications'], [
         link('#/conversations', 'Bandeja de entrada', 'conversations'),
         h('a', { href: '#/notifications', class: active === 'notifications' ? 'active' : '' }, 'Notificaciones'),
-      ]),
+      ], 'chat'),
       navGroup('Operación', ['agenda', 'automation', 'estadisticas'], [
         link('#/agenda', 'Agenda', 'agenda'),
         isAdmin() ? link('#/automation', 'Automatización', 'automation') : null,
         isAdmin() ? link('#/estadisticas', 'Estadísticas', 'estadisticas') : null,
-      ]),
+      ], 'zap'),
       isAdmin() ? navGroup('Configuración', ['users', 'accounts', 'planes', 'sistema', 'plan', 'consumo', 'logs', 'password'], [
         link('#/users', 'Usuarios', 'users'),
         isSuper() ? link('#/accounts', 'Perfiles', 'accounts') : null,
@@ -88,14 +91,14 @@ export function shell(active, content) {
         !isSuper() ? link('#/plan', 'Mi plan y pagos', 'plan') : null,
         link('#/consumo', 'Consumo de IA', 'consumo'),
         link('#/logs', 'Registros', 'logs'),
-      ]) : null,
+      ], 'sliders') : null,
       ],
       h('div', { class: 'spacer' }),
-      h('div', { class: 'small muted', style: 'padding:4px 10px' }, user.name || user.email, h('br'), ROLE_LABEL[user.role]),
-      h('a', { href: '/ayuda.html', target: '_blank', rel: 'noopener' }, '❓ Ayuda'),
-      link('#/password', 'Mi perfil', 'password'),
-      isAdmin() && !isSuper() ? h('a', { href: '#', class: 'small muted', onclick: (e) => { e.preventDefault(); setAdvanced(!isAdvanced()); render(); } }, isAdvanced() ? '☰ Menú simple' : '☰ Mostrar todas las opciones') : null,
-      h('a', { href: '#', onclick: async (e) => { e.preventDefault(); await api('POST', '/api/logout'); state.me = null; resetBrand(); location.hash = '#/login'; } }, 'Cerrar sesión'),
+      h('div', { class: 'who' }, h('strong', {}, user.name || user.email), h('span', { class: 'small muted' }, ROLE_LABEL[user.role])),
+      h('a', { href: '/ayuda.html', target: '_blank', rel: 'noopener' }, icon('help'), 'Ayuda'),
+      link('#/password', 'Mi perfil', 'password', 'user'),
+      isAdmin() && !isSuper() ? h('a', { href: '#', class: 'small muted', onclick: (e) => { e.preventDefault(); setAdvanced(!isAdvanced()); render(); } }, icon('sliders'), isAdvanced() ? 'Menú simple' : 'Mostrar todas las opciones') : null,
+      h('a', { href: '#', onclick: async (e) => { e.preventDefault(); await api('POST', '/api/logout'); state.me = null; resetBrand(); location.hash = '#/login'; } }, icon('logout'), 'Cerrar sesión'),
     ),
     h('main', { class: 'main' }, accountBanner(), content),
   );

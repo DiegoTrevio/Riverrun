@@ -29,7 +29,7 @@ function connectedCard(ch, onChange) {
       h('p', { class: 'small muted' }, 'Tu asistente responde los mensajes que lleguen a este número.')),
     h('details', {}, h('summary', {}, 'Enviarme un mensaje de prueba'),
       h('div', { class: 'grid', style: 'margin-top:10px' }, field('Número (con lada)', text(t, 'number', { placeholder: '5215512345678' })), field('Texto', text(t, 'text'))),
-      h('button', { onclick: () => run(() => api('POST', `/api/channels/${ch.id}/whatsapp/test`, { number: t.number, text: t.text }), 'Enviado ✅') }, 'Enviar')),
+      h('button', { onclick: () => run(() => api('POST', `/api/channels/${ch.id}/whatsapp/test`, { number: t.number, text: t.text }), 'Enviado') }, 'Enviar')),
     h('div', { class: 'row', style: 'margin-top:12px' },
       h('button', { class: 'small danger', onclick: async () => {
         if (!confirm('¿Desvincular este WhatsApp? Tu asistente dejará de responder hasta que vincules un número.')) return;
@@ -40,7 +40,7 @@ function connectedCard(ch, onChange) {
 }
 
 export async function viewConnect(root, params) {
-  root.append(h('h1', {}, '📱 Conectar WhatsApp'));
+  root.append(h('h1', {}, 'Conectar WhatsApp'));
   if (isSuper() && !state.accountId) return root.append(h('div', { class: 'card' }, h('p', {}, 'Elige un perfil arriba (menú lateral) para conectar su WhatsApp.')));
   const holder = h('div', { class: 'stack' });
   root.append(holder);

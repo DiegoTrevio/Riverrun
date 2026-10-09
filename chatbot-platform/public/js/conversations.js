@@ -1,6 +1,7 @@
 import { dataLabel, flowCard } from './bot.js';
 import { channelIcon } from './channels.js';
 import { api, area, check, field, fill, fmtDate, h, lines, run, select, state, text, toast } from './core.js';
+import { icon } from './icons.js';
 import { acct, isAdmin, isSuper, withAcct } from './session.js';
 
 /* ------------------------------ Conversaciones ------------------------------ */
@@ -37,7 +38,7 @@ function tasksCard(data, c, ct, reload) {
         ? h('input', { type: 'checkbox', checked: t.status === 'hecha', title: 'Marcar como hecho', onchange: async (e) => { if (await run(() => api('PATCH', `/api/tasks/${t.id}`, { status: e.target.checked ? 'hecha' : 'abierta' }))) reload(); } })
         : h('span', { class: 'badge' }, 'nota'),
       h('div', { style: 'flex:1' }, h('div', { class: 'task-text' }, t.body), meta ? h('div', { class: 'small muted' }, meta) : null),
-      h('button', { class: 'small', title: 'Borrar', onclick: async () => { if (await run(() => api('DELETE', `/api/tasks/${t.id}`), 'Borrado')) reload(); } }, '✕'));
+      h('button', { class: 'small', title: 'Borrar', onclick: async () => { if (await run(() => api('DELETE', `/api/tasks/${t.id}`), 'Borrado')) reload(); } }, icon('close')));
   };
   const add = async () => {
     if (!draft.body.trim()) return toast('Escribe el pendiente o la nota', true);
@@ -63,8 +64,8 @@ const customerMedia = (m) => {
   const size = m.media_size ? (m.media_size >= 1048576 ? `${(m.media_size / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(m.media_size / 1024))} KB`) : '';
   return h('div', { class: 'media' },
     m.media_kind === 'image' ? h('a', { href: url, target: '_blank', rel: 'noopener' }, h('img', { src: url, alt: name })) : null,
-    h('a', { href: url, download: name }, `📎 ${name}${size ? ` · ${size}` : ''}`),
-    m.media_complete === false ? h('div', { class: 'small muted' }, '⚠️ El archivo llegó incompleto: pídele al cliente que lo envíe de nuevo.') : null);
+    h('a', { href: url, download: name }, icon('paperclip'), ` ${name}${size ? ` · ${size}` : ''}`),
+    m.media_complete === false ? h('div', { class: 'small muted' }, icon('alert', 'bad'), ' El archivo llegó incompleto: pídele al cliente que lo envíe de nuevo.') : null);
 };
 
 export async function viewConversations(root, params) {
@@ -92,7 +93,7 @@ export async function viewConversations(root, params) {
           h('td', {}, channelIcon(c.channel_type), ' ', c.channel_name, h('div', { class: 'muted small' }, c.chatbot_name || 'sin chatbot')),
           showAccount ? h('td', { class: 'small' }, c.account_name) : null,
           h('td', {}, h('span', { class: `badge ${cls}` }, label), c.status === 'human' && c.handoff_reason ? h('div', { class: 'muted small' }, c.handoff_reason) : null),
-          h('td', { class: 'small' }, c.assigned_user_id ? `👤 ${c.assigned_name || c.assigned_email}` : h('span', { class: 'muted' }, '—')),
+          h('td', { class: 'small' }, c.assigned_user_id ? [icon('user'), ` ${c.assigned_name || c.assigned_email}`] : h('span', { class: 'muted' }, '—')),
           h('td', { class: 'muted' }, (c.last_message || '').slice(0, 90)),
           h('td', { class: 'muted small' }, fmtDate(c.last_message_at)));
       }) : [h('tr', {}, h('td', { colspan: 7, class: 'muted' }, 'No hay conversaciones.'))]),
@@ -110,11 +111,11 @@ export async function viewConversations(root, params) {
   };
   const exportMenu = isAdmin()
     ? h('details', { class: 'menu' },
-      h('summary', { class: 'btn' }, '⬇ Exportar'),
+      h('summary', { class: 'btn' }, icon('download'), 'Exportar'),
       h('div', { class: 'menu-items' },
-        h('a', { href: exportUrl('contacts'), download: '' }, '👥 Contactos (CSV)'),
-        h('a', { href: exportUrl('conversations'), download: '' }, '💬 Conversaciones (CSV)'),
-        h('a', { href: exportUrl('messages'), download: '' }, '📝 Mensajes completos (CSV)')))
+        h('a', { href: exportUrl('contacts'), download: '' }, icon('users'), 'Contactos (CSV)'),
+        h('a', { href: exportUrl('conversations'), download: '' }, icon('chat'), 'Conversaciones (CSV)'),
+        h('a', { href: exportUrl('messages'), download: '' }, icon('list'), 'Mensajes completos (CSV)')))
     : null;
   root.append(
     h('div', { class: 'row between' }, h('h1', {}, 'Conversaciones'), exportMenu),
@@ -173,12 +174,12 @@ export async function viewConversation(root, id) {
       if (r) load(true);
     } },
       h('option', { value: '' }, 'Cambiar asignación…'),
-      isAdmin() ? h('option', { value: 'next' }, '🔄 Siguiente por turnos') : null,
+      isAdmin() ? h('option', { value: 'next' }, 'Siguiente por turnos') : null,
       isAdmin() ? (team || []).map((u) => h('option', { value: u.id }, `${u.name || u.email}${u.available === false ? ' (no disponible)' : ''}`)) : null,
       c.assigned_user_id ? h('option', { value: 'none' }, 'Quitar asignación') : null);
     return h('div', { class: 'row', style: 'margin:0 0 8px' },
       h('span', { class: 'small muted' }, 'Atiende:'),
-      c.assigned_user_id ? h('span', { class: 'badge green' }, `👤 ${d.assignee?.name || d.assignee?.email || 'alguien'}${c.assigned_user_id === me.id ? ' (tú)' : ''}`) : h('span', { class: 'badge' }, 'sin asignar'),
+      c.assigned_user_id ? h('span', { class: 'badge green' }, [icon('user'), ` ${d.assignee?.name || d.assignee?.email || 'alguien'}${c.assigned_user_id === me.id ? ' (tú)' : ''}`]) : h('span', { class: 'badge' }, 'sin asignar'),
       c.assigned_user_id !== me.id ? h('button', { class: 'small', onclick: async () => { if (await run(() => api('PUT', `/api/conversations/${id}/assign`, { user_id: 'me' }), 'Es tuya')) load(true); } }, 'Quedármela') : null,
       isAdmin() || c.assigned_user_id === me.id ? sel : null);
   };
@@ -209,15 +210,15 @@ export async function viewConversation(root, id) {
       lastCount = messages.length;
       fill(chat, ...messages.map((m) => {
         const cls = ['bubble', m.direction === 'in' ? 'in' : 'out', m.sender === 'human' ? 'human' : '', m.status === 'failed' ? 'failed' : ''].join(' ');
-        const who = m.sender === 'human' ? '👤 equipo' : m.sender === 'bot' ? '🤖 bot' : '';
+        const who = m.sender === 'human' ? 'equipo' : m.sender === 'bot' ? 'bot' : '';
         return h('div', { class: cls },
           m.image_id ? h('img', { src: `/api/images/${m.image_id}/file`, alt: m.image_name || '' }) : null,
-          m.image_id ? h('div', { class: 'small muted' }, `🖼 ${m.image_code || ''}`) : null,
-          m.meta?.attachment_id ? h('a', { href: `/api/attachments/${m.meta.attachment_id}/file`, target: '_blank', rel: 'noopener' }, `📎 ${m.meta.file_name || 'Archivo'}`) : null,
+          m.image_id ? h('div', { class: 'small muted' }, `Foto ${m.image_code || ''}`.trim()) : null,
+          m.meta?.attachment_id ? h('a', { href: `/api/attachments/${m.meta.attachment_id}/file`, target: '_blank', rel: 'noopener' }, icon('paperclip'), ` ${m.meta.file_name || 'Archivo'}`) : null,
           m.media_kind ? customerMedia(m) : null,
-          m.meta?.media_error ? h('div', { class: 'small muted' }, `⚠️ ${m.meta.media_error}`) : null,
+          m.meta?.media_error ? h('div', { class: 'small muted' }, icon('alert', 'bad'), ` ${m.meta.media_error}`) : null,
           m.content || null,
-          h('div', { class: 'meta' }, [who, fmtDate(m.created_at), m.status === 'failed' ? '⚠️ no enviado' : '', m.meta?.fallback ? 'respaldo' : ''].filter(Boolean).join(' · ')));
+          h('div', { class: 'meta' }, [who, fmtDate(m.created_at), m.status === 'failed' ? 'no enviado' : '', m.meta?.fallback ? 'respaldo' : ''].filter(Boolean).join(' · ')));
       }));
       chat.scrollTop = chat.scrollHeight;
     }
@@ -247,7 +248,7 @@ export async function viewConversation(root, id) {
     fill(autoBox,
       h('div', { class: 'card' },
         h('h3', { style: 'margin-top:0' }, 'Citas'),
-        upcoming.length ? upcoming.map((a) => h('div', { class: 'small' }, a.kind === 'call' ? '📞 ' : '📅 ', h('strong', {}, a.service_name), ` · ${fmtDate(a.starts_at)}`)) : h('p', { class: 'small muted', style: 'margin:0' }, 'Sin citas próximas'),
+        upcoming.length ? upcoming.map((a) => h('div', { class: 'small' }, icon(a.kind === 'call' ? 'phone' : 'calendar'), ' ', h('strong', {}, a.service_name), ` · ${fmtDate(a.starts_at)}`)) : h('p', { class: 'small muted', style: 'margin:0' }, 'Sin citas próximas'),
         services.length ? h('details', { style: 'margin-top:8px' }, h('summary', {}, 'Agendar cita o llamada'),
           field('Servicio', select(book, 'service_id', services.filter((q) => q.active).map((q) => [q.id, q.name]), loadSlots)),
           slotBox,
@@ -285,7 +286,7 @@ export async function viewConversation(root, id) {
         ct.consent_at ? h('p', { class: 'small muted', style: 'margin:-4px 0 8px' }, `Consentimiento registrado el ${fmtDate(ct.consent_at)}${ct.consent_source ? ` (${{ keyword: 'lo escribió el cliente', panel: 'marcado por el equipo', legacy: 'cliente anterior a esta función', api: 'integración' }[ct.consent_source] || ct.consent_source})` : ''}.`) : null,
         h('button', { class: 'small', onclick: async () => { if (await run(() => api('PUT', `/api/contacts/${ct.id}`, { ...m, base_data_version: c.data_version, data: Object.fromEntries(Object.entries({ ...m.data, ...Object.fromEntries(nameKeys.map((k) => [k, m.name])) }).filter(([, v]) => v)) }), 'Datos guardados')) load(true); } }, 'Guardar datos')),
       isAdmin() ? h('details', { class: 'card' },
-        h('summary', {}, '🔒 Privacidad de este cliente'),
+        h('summary', {}, icon('lock'), 'Privacidad de este cliente'),
         h('p', { class: 'small muted' }, 'Para atender una solicitud de acceso o supresión de datos personales.'),
         h('div', { class: 'row' },
           h('a', { class: 'btn small', href: `/api/contacts/${ct.id}/data`, download: '' }, 'Descargar todos sus datos'),
@@ -306,13 +307,13 @@ export async function viewConversation(root, id) {
         h('p', { class: 'small pre' }, c.report_summary || 'Se genera al cerrar, completar el objetivo o transferir la conversación. Puedes pedirlo en cualquier momento.'),
         c.report_at ? h('p', { class: 'small muted' }, `Generado: ${fmtDate(c.report_at)}`, c.report_until_id < (data.messages.filter((m) => m.status === 'ok').at(-1)?.id || 0) || c.report_data_version !== c.data_version ? ' · Hay información nueva; actualiza el resumen.' : '') : null,
         c.report_analysis && c.report_summary ? h('div', { class: 'row small', style: 'gap:6px;flex-wrap:wrap' },
-          c.report_analysis.intent ? h('span', { class: 'chip' }, `🎯 ${c.report_analysis.intent}`) : null,
+          c.report_analysis.intent ? h('span', { class: 'chip' }, [icon('target'), ` ${c.report_analysis.intent}`]) : null,
           h('span', { class: 'chip' }, `Ánimo: ${c.report_analysis.sentiment || 'neutral'}`),
           h('span', { class: 'chip' }, `Interés: ${(c.report_analysis.interest || 'sin_dato').replace('_', ' ')}`),
-          ...(c.report_analysis.agreements || []).map((x) => h('span', { class: 'chip' }, `🤝 ${x}`)),
-          ...(c.report_analysis.next_steps || []).map((x) => h('span', { class: 'chip' }, `⏭ ${x}`))) : null,
+          ...(c.report_analysis.agreements || []).map((x) => h('span', { class: 'chip' }, [icon('check'), ` ${x}`])),
+          ...(c.report_analysis.next_steps || []).map((x) => h('span', { class: 'chip' }, `→ ${x}`))) : null,
         h('div', { class: 'row', style: 'gap:6px;margin:8px 0' },
-          h('a', { class: 'btn small', href: `/api/conversations/${id}/report?format=txt&transcript=1`, download: '' }, '⬇ Descargar reporte'),
+          h('a', { class: 'btn small', href: `/api/conversations/${id}/report?format=txt&transcript=1`, download: '' }, icon('download'), 'Descargar reporte'),
           h('button', { class: 'small', onclick: async () => {
             try {
               const res = await fetch(`/api/conversations/${id}/report?format=txt`);
@@ -321,7 +322,7 @@ export async function viewConversation(root, id) {
               toast('Reporte copiado');
             } catch (e) { toast(e.message || 'No se pudo copiar', true); }
           } }, 'Copiar'),
-          h('button', { class: 'small primary', onclick: () => sendReportDialog(id, data) }, '✉ Enviar reporte')),
+          h('button', { class: 'small primary', onclick: () => sendReportDialog(id, data) }, icon('send'), 'Enviar reporte')),
         h('details', { class: 'small' }, h('summary', {}, 'Datos guardados en esta conversación'), h('div', { class: 'pre' }, Object.entries(c.data || {}).map(([key, value]) => `${key}: ${value}`).join('\n') || 'Aún no se han recopilado datos.')),
         c.summary ? h('details', { class: 'small' }, h('summary', {}, 'Memoria del asistente'), h('div', { class: 'pre muted' }, c.summary)) : null,
         h('button', { class: 'small danger', style: 'margin-top:10px', onclick: async () => { if (confirm('¿Borrar memoria (resumen, datos y notas) de este cliente?')) { await run(() => api('POST', `/api/conversations/${id}/reset-memory`), 'Memoria borrada'); load(true); } } }, 'Borrar memoria')),
@@ -333,7 +334,7 @@ export async function viewConversation(root, id) {
     h('a', { href: '#/conversations' }, '← Conversaciones'),
     header,
     h('div', { class: 'split' },
-      h('div', { class: 'card' }, chat, h('div', { class: 'composer' }, input, h('button', { onclick: togglePhotos, title: 'Enviar una foto del catálogo' }, '📷 Foto'), h('button', { class: 'primary', onclick: send }, 'Enviar')),
+      h('div', { class: 'card' }, chat, h('div', { class: 'composer' }, input, h('button', { onclick: togglePhotos, title: 'Enviar una foto del catálogo' }, icon('image'), 'Foto'), h('button', { class: 'primary', onclick: send }, 'Enviar')),
         gallery,
         h('p', { class: 'muted small' }, 'Al enviar un mensaje o una foto a mano, el bot se pausa en esta conversación hasta que la devuelvas.')),
       side),
@@ -357,15 +358,15 @@ async function sendReportDialog(id) {
     try {
       const r = await run(() => api('POST', `/api/conversations/${id}/report/send`, b));
       if (r) fill(result,
-        r.warning ? h('p', { class: 'muted' }, `⚠️ ${r.warning}`) : null,
-        r.deliveries.map((d) => h('div', {}, `${d.ok ? '✅' : '❌'} ${d.via}: ${d.to}${d.detail ? ` — ${d.detail}` : ''}`)));
+        r.warning ? h('p', { class: 'muted' }, icon('alert', 'bad'), ` ${r.warning}`) : null,
+        r.deliveries.map((d) => h('div', {}, [icon(d.ok ? 'check' : 'close', d.ok ? 'ok' : 'bad'), ` ${d.via}: ${d.to}${d.detail ? ` — ${d.detail}` : ''}`])));
     } finally { send.disabled = false; }
   } }, 'Enviar');
   dlg.append(
     h('h3', { style: 'margin-top:0' }, 'Enviar reporte de la conversación'),
     h('p', { class: 'small muted' }, 'Se actualiza el resumen y se envía por el panel, y por correo o WhatsApp a quien lo tenga activado.'),
     h('div', { class: 'row', style: 'flex-wrap:wrap' }, people.map((u) => h('label', { class: 'check' },
-      h('input', { type: 'checkbox', onchange: (e) => { b.user_ids = e.target.checked ? [...b.user_ids, u.id] : b.user_ids.filter((x) => x !== u.id); } }), u.name, u.whatsapp ? ' 📱' : ''))),
+      h('input', { type: 'checkbox', onchange: (e) => { b.user_ids = e.target.checked ? [...b.user_ids, u.id] : b.user_ids.filter((x) => x !== u.id); } }), u.name, u.whatsapp ? ' · WhatsApp' : ''))),
     isAdmin() ? field('Correos externos (uno por línea)', lines(b, 'emails', { placeholder: 'direccion@empresa.com' })) : null,
     isAdmin() ? field('WhatsApp externos (uno por línea)', lines(b, 'phones', { placeholder: '5215512345678' })) : null,
     field('Nota (opcional)', text(b, 'note')),

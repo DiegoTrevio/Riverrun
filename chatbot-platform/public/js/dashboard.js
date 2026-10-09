@@ -1,6 +1,7 @@
 import { agentWizard } from './agentwizard.js';
 import { channelIcon } from './channels.js';
 import { api, area, field, h, run, select, state, text, toast } from './core.js';
+import { icon } from './icons.js';
 import { accountName, acct, isSuper } from './session.js';
 
 /** Selector de cuenta al crear algo (solo superadmin; los demás usan la suya). */
@@ -60,21 +61,21 @@ export async function goMainBot(root, tab) {
 
 /** Ajustes: todo lo que no es el día a día, con una explicación de una línea. */
 export async function viewSettingsHub(root) {
-  const tile = (href, icon, title, text) => h('a', { class: 'card tile', href }, h('div', { style: 'font-size:28px' }, icon), h('h3', { style: 'margin:6px 0' }, title), h('p', { class: 'muted small', style: 'margin:0' }, text));
+  const tile = (href, name, title, text) => h('a', { class: 'card tile', href }, h('span', { class: 'tile-ico' }, icon(name)), h('h3', {}, title), h('p', { class: 'muted small' }, text));
   root.append(
     h('h1', {}, 'Ajustes'),
     h('div', { class: 'grid' },
-      tile('#/conectar', '📲', 'Conectar WhatsApp', 'Escanea el código QR para vincular el WhatsApp de tu negocio (o cámbialo por otro número).'),
-      tile('#/channels', '📱', 'Canales', 'Conecta o desconecta tu WhatsApp, Telegram, Instagram, Messenger o el chat de tu sitio web.'),
-      tile('#/automation/settings', '🕘', 'Horario y avisos', 'Tu horario de atención, zona horaria y a quién avisar.'),
-      tile('#/agenda/servicios', '🗓️', 'Servicios y citas', 'Qué servicios agenda tu asistente y cuánto dura cada uno.'),
-      tile('#/automation', '⚡', 'Respuestas automáticas', 'Recordatorios, seguimientos y campañas a tus clientes.'),
-      tile('#/integraciones', '🔌', 'Integraciones', 'Google Calendar, webhooks para Zapier/Make y llaves de la API.'),
-      tile('#/users', '👥', 'Mi equipo', 'Invita a quienes atienden las conversaciones contigo.'),
-      tile('#/plan', '💳', 'Mi plan y pagos', 'Tu plan, próximo cobro, forma de pago y facturas.'),
-      tile('#/consumo', '📊', 'Consumo', 'Cuánto ha usado tu asistente este mes.'),
-      tile('#/logs', '🛠️', 'Registros', 'Si algo falla, aquí se ve qué pasó.'),
-      tile('#/password', '🔑', 'Mi perfil', 'Tu nombre, correo y contraseña.')),
-    h('p', { class: 'muted small' }, 'Si prefieres ver todas las opciones del panel, usa "☰ Mostrar todas las opciones" en el menú.'),
+      tile('#/conectar', 'smartphone', 'Conectar WhatsApp', 'Escanea el código QR para vincular el WhatsApp de tu negocio (o cámbialo por otro número).'),
+      tile('#/channels', 'plug', 'Canales', 'Conecta o desconecta tu WhatsApp, Telegram, Instagram, Messenger o el chat de tu sitio web.'),
+      tile('#/automation/settings', 'clock', 'Horario y avisos', 'Tu horario de atención, zona horaria y a quién avisar.'),
+      tile('#/agenda/servicios', 'calendar', 'Servicios y citas', 'Qué servicios agenda tu asistente y cuánto dura cada uno.'),
+      tile('#/automation', 'zap', 'Respuestas automáticas', 'Recordatorios, seguimientos y campañas a tus clientes.'),
+      tile('#/integraciones', 'link', 'Integraciones', 'Google Calendar, webhooks para Zapier/Make y llaves de la API.'),
+      tile('#/users', 'users', 'Mi equipo', 'Invita a quienes atienden las conversaciones contigo.'),
+      tile('#/plan', 'card', 'Mi plan y pagos', 'Tu plan, próximo cobro, forma de pago y facturas.'),
+      tile('#/consumo', 'chart', 'Consumo', 'Cuánto ha usado tu asistente este mes.'),
+      tile('#/logs', 'list', 'Registros', 'Si algo falla, aquí se ve qué pasó.'),
+      tile('#/password', 'user', 'Mi perfil', 'Tu nombre, correo y contraseña.')),
+    h('p', { class: 'muted small' }, 'Si prefieres ver todas las opciones del panel, usa "Mostrar todas las opciones" en el menú.'),
   );
 }

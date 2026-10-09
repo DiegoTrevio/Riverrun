@@ -2,6 +2,7 @@ import { needAccount } from './admin.js';
 import { VARS_HELP, hoursEditor } from './automation.js';
 import { saveBar } from './bot.js';
 import { api, area, check, clone, field, fill, h, num, run, select, state, text } from './core.js';
+import { icon } from './icons.js';
 import { render } from './main.js';
 import { isAdmin, withAcct } from './session.js';
 
@@ -62,7 +63,7 @@ async function agendaWeek(root, params) {
     h('div', { class: 'grid' }, field('Nombre del cliente', text(n, 'customer_name')), field('Teléfono', text(n, 'customer_phone', { placeholder: '5215512345678' }))),
     field('Notas', area(n, 'notes')),
     h('p', { class: 'small muted' }, 'Para avisar al cliente por su chat, agenda desde su conversación.'),
-    h('button', { class: 'primary', onclick: async () => { if (await run(() => api('POST', '/api/appointments', n), 'Agendada ✅')) render(); } }, 'Agendar'));
+    h('button', { class: 'primary', onclick: async () => { if (await run(() => api('POST', '/api/appointments', n), 'Agendada')) render(); } }, 'Agendar'));
 
   const byDay = new Map(days.map((d) => [d, []]));
   for (const a of appts) {
@@ -82,7 +83,7 @@ async function agendaWeek(root, params) {
         const [cls, label] = APPT_STATUS[a.status];
         return h('tr', {},
           h('td', { style: 'width:70px' }, h('strong', {}, hhmm(a.starts_at))),
-          h('td', {}, a.kind === 'call' ? '📞 ' : '📅 ', h('strong', {}, a.service_name), a.source === 'simulador' ? h('span', { class: 'badge' }, ' prueba') : null,
+          h('td', {}, icon(a.kind === 'call' ? 'phone' : 'calendar'), ' ', h('strong', {}, a.service_name), a.source === 'simulador' ? h('span', { class: 'badge' }, ' prueba') : null,
             h('div', { class: 'small muted' }, [a.customer_name || 'Cliente', a.customer_phone && `+${a.customer_phone.replace(/^\+/, '')}`, a.assigned_user_name && `atiende: ${a.assigned_user_name}`, a.notes].filter(Boolean).join(' · '))),
           h('td', {}, h('span', { class: `badge ${cls}` }, label)),
           h('td', {}, h('div', { class: 'row' },
@@ -110,7 +111,7 @@ async function listServices(root) {
       h('a', { class: 'btn primary', href: '#/agenda/servicios?id=new' }, '+ Nuevo servicio')),
     h('div', { class: 'card' }, services.length
       ? h('table', {}, h('tbody', {}, services.map((s) => h('tr', { class: 'click', onclick: () => (location.hash = `#/agenda/servicios?id=${s.id}`) },
-          h('td', {}, s.kind === 'call' ? '📞 ' : '📅 ', h('strong', {}, s.name), s.active ? null : h('span', { class: 'badge orange' }, ' inactivo')),
+          h('td', {}, icon(s.kind === 'call' ? 'phone' : 'calendar'), ' ', h('strong', {}, s.name), s.active ? null : h('span', { class: 'badge orange' }, ' inactivo')),
           h('td', { class: 'small' }, `${s.duration_minutes} min`, s.capacity > 1 ? ` · ${s.capacity} a la vez` : ''),
           h('td', { class: 'small muted' }, s.hours ? 'horario propio' : 'horario del negocio')))))
       : h('p', { class: 'muted' }, 'Aún no hay servicios.')),
@@ -130,7 +131,7 @@ async function editService(root, id) {
   const team = users.filter((u) => u.account_id);
   const save = async () => {
     const body = { ...s, hours: own.on ? s.hours : null, reminders: rem.text.split('\n').map((x) => Number(x.trim())).filter((x) => x > 0), account_id: state.accountId || undefined };
-    if (await run(() => (existing ? api('PUT', `/api/services/${id}`, body) : api('POST', '/api/services', body)), 'Servicio guardado ✅')) location.hash = '#/agenda/servicios';
+    if (await run(() => (existing ? api('PUT', `/api/services/${id}`, body) : api('POST', '/api/services', body)), 'Servicio guardado')) location.hash = '#/agenda/servicios';
   };
   root.append(
     h('a', { href: '#/agenda/servicios' }, '← Servicios'),

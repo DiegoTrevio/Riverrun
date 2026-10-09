@@ -1,6 +1,7 @@
 import { ACTIONS } from './automation.js';
 import { channelIcon, channelStatusCell } from './channels.js';
 import { api, area, check, clone, field, fill, fmtDate, h, lines, num, run, select, state, text, toast } from './core.js';
+import { icon } from './icons.js';
 import { importCard, importPreview } from './importer.js';
 import { render } from './main.js';
 import { tabPlayground } from './playground.js';
@@ -47,7 +48,7 @@ export function saveBar(onSave, extra) {
 }
 
 async function saveBot(bot, patch) {
-  return run(() => api('PUT', `/api/chatbots/${bot.id}`, patch), 'Guardado ✅');
+  return run(() => api('PUT', `/api/chatbots/${bot.id}`, patch), 'Guardado');
 }
 
 async function tabGeneral(root, bot) {
@@ -64,7 +65,7 @@ async function tabGeneral(root, bot) {
   const ready = steps.every(([ok]) => ok);
   root.append(
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, ready ? '✅ Configuración básica completa' : 'Para que tu asistente funcione'),
+      h('h3', { style: 'margin-top:0' }, ready ? 'Configuración básica completa' : 'Para que tu asistente funcione'),
       h('ul', { class: 'checklist' }, steps.map(([ok, label, tabKey, help]) =>
         h('li', { class: ok ? 'ok' : '' }, h('span', { class: 'mark' }, ok ? '✓' : '○'), ' ',
           tabKey ? h('a', { href: `#/bot/${bot.id}/${tabKey}` }, label) : label,
@@ -136,7 +137,7 @@ export function flowCard(flow, c) {
   if (!flow || (!flow.goal && !flow.steps?.length)) return null;
   return h('div', { class: 'card' },
     h('h3', { style: 'margin-top:0' }, 'Recorrido'),
-    c.goal_completed_at ? h('p', {}, h('span', { class: 'badge green' }, '🎯 Objetivo cumplido'), ' ', h('span', { class: 'small muted' }, fmtDate(c.goal_completed_at))) : flow.goal ? h('p', { class: 'small' }, 'Objetivo: ', flow.goal) : null,
+    c.goal_completed_at ? h('p', {}, h('span', { class: 'badge green' }, icon('target'), 'Objetivo cumplido'), ' ', h('span', { class: 'small muted' }, fmtDate(c.goal_completed_at))) : flow.goal ? h('p', { class: 'small' }, 'Objetivo: ', flow.goal) : null,
     flow.steps?.length ? h('ol', { class: 'small flow-steps' }, flow.steps.map((st, i) =>
       h('li', { class: i + 1 < (c.flow_step || 0) || (c.goal_completed_at && i + 1 <= (c.flow_step || 0)) ? 'done' : i + 1 === c.flow_step ? 'current' : '' }, st.title))) : null);
 }
@@ -197,15 +198,15 @@ async function tabKnowledge(root, bot) {
     importCard({
       endpoint: `/api/chatbots/${bot.id}/knowledge/import`,
       url: sources[0] || '',
-      title: items.length ? '⚡ Actualizar desde mi página o archivo' : '⚡ Llena todo por mí',
+      title: items.length ? 'Actualizar desde mi página o archivo' : 'Llena todo por mí',
       button: 'Leer mi información',
       onResult: (data) => importPreview(preview, bot, data),
     }),
     ...(sources.length ? [h('p', { class: 'small muted', style: 'margin:-8px 0 16px' }, 'Información importada de ',
       sources.map((u) => [h('strong', {}, u), ' ', h('button', { class: 'small', onclick: async () => {
-        const r = await run(() => api('POST', `/api/chatbots/${bot.id}/knowledge/import`, { url: u, save: true }), 'Actualizado desde tu página ✅');
+        const r = await run(() => api('POST', `/api/chatbots/${bot.id}/knowledge/import`, { url: u, save: true }), 'Actualizado desde tu página');
         if (r) render();
-      } }, '🔄 Volver a sincronizar')]))] : []),
+      } }, icon('refresh'), 'Volver a sincronizar')]))] : []),
     preview,
     h('div', { class: 'card' },
       h('p', { style: 'margin-top:0' },
@@ -433,7 +434,7 @@ export function messageTester(bots, botId) {
       r.rules.length
         ? h('table', { class: 'small' }, h('thead', {}, h('tr', {}, h('th', {}, ''), h('th', {}, 'Regla'), h('th', {}, 'Resultado'), h('th', {}, 'Acciones'))),
             h('tbody', {}, r.rules.map((x) => h('tr', {},
-              h('td', {}, x.matched ? '✅' : '❌'),
+              h('td', {}, icon(x.matched ? 'check' : 'close', x.matched ? 'ok' : 'bad')),
               h('td', {}, h('a', { href: `#/automation/rules/${x.id}` }, x.name)),
               h('td', { class: x.matched ? '' : 'muted' }, x.reason),
               h('td', { class: 'muted' }, x.actions.map((k) => ACTIONS[k] || k).join(' → '), x.stop_ai ? ' · la IA no responde' : '')))))

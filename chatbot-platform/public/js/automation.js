@@ -1,6 +1,7 @@
 import { needAccount } from './admin.js';
 import { messageTester, saveBar } from './bot.js';
 import { api, area, check, clone, field, fill, fmtDate, h, lines, num, run, select, state, text, toast } from './core.js';
+import { icon } from './icons.js';
 import { render } from './main.js';
 import { withAcct } from './session.js';
 
@@ -118,7 +119,7 @@ async function listRules(root) {
       h('div', { class: 'row' }, h('a', { class: 'btn primary', href: '#/automation/rules/new' }, '+ Regla en blanco')),
       h('h3', {}, 'Plantillas rápidas'),
       h('div', { class: 'row' }, RULE_TEMPLATES.map((t) => h('button', { class: 'small', onclick: () => create(t) }, t.name)))),
-    bots.length ? h('details', { class: 'card' }, h('summary', {}, h('strong', {}, '🧪 Probar palabras'), h('span', { class: 'small muted' }, ' — qué reglas se activan con un mensaje')), messageTester(bots)) : null,
+    bots.length ? h('details', { class: 'card' }, h('summary', {}, h('strong', {}, icon('flask'), 'Probar palabras'), h('span', { class: 'small muted' }, ' — qué reglas se activan con un mensaje')), messageTester(bots)) : null,
     h('div', { class: 'card' },
       rules.length
         ? h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Regla'), h('th', {}, 'Cuando'), h('th', {}, 'Acciones'), h('th', {}, 'Veces'), h('th', {}, ''))),
@@ -202,11 +203,11 @@ function actionFields(a, refs) {
         h('p', { class: 'small muted', style: 'margin:0 0 6px' }, 'Destinatarios (si eliges personas, solo a ellas; si no, por rol):'),
         h('div', { class: 'row' }, refs.users.map((u) => h('label', { class: 'check' },
           h('input', { type: 'checkbox', checked: a.user_ids.includes(u.id), onchange: (e) => { a.user_ids = e.target.checked ? [...a.user_ids, u.id] : a.user_ids.filter((x) => x !== u.id); } }),
-          u.name || u.email, u.notify_whatsapp && u.phone ? ' 📱' : ''))),
+          u.name || u.email, u.notify_whatsapp && u.phone ? ' · WhatsApp' : ''))),
         h('div', { class: 'row' }, [['admin', 'Administradores'], ['agent', 'Agentes']].map(([r, l]) => h('label', { class: 'check' },
           h('input', { type: 'checkbox', checked: a.roles.includes(r), onchange: (e) => { a.roles = e.target.checked ? [...a.roles, r] : a.roles.filter((x) => x !== r); } }), l))),
         check(a, 'round_robin', 'Avisar a una sola persona, por turnos (la siguiente de los destinatarios que esté disponible), en lugar de a todas'),
-        field('Además, avisar por WhatsApp a estos números', lines(a, 'phones', { placeholder: '5215512345678' }), '📱 = recibe también por WhatsApp (configurable en Usuarios).'),
+        field('Además, avisar por WhatsApp a estos números', lines(a, 'phones', { placeholder: '5215512345678' }), 'Las personas marcadas con «· WhatsApp» también reciben el aviso por ese medio (se configura en Usuarios).'),
       ];
     case 'send_report':
       a.note ??= ''; a.roles ??= ['admin']; a.user_ids ??= []; a.emails ??= []; a.phones ??= []; a.include_transcript ??= false;
@@ -214,7 +215,7 @@ function actionFields(a, refs) {
         h('p', { class: 'small muted', style: 'margin:0 0 6px' }, 'Envía el resumen, el análisis y los datos confirmados de la conversación (el resumen se actualiza antes de enviar). Destinatarios (si eliges personas, solo a ellas; si no, por rol):'),
         h('div', { class: 'row' }, refs.users.map((u) => h('label', { class: 'check' },
           h('input', { type: 'checkbox', checked: a.user_ids.includes(u.id), onchange: (e) => { a.user_ids = e.target.checked ? [...a.user_ids, u.id] : a.user_ids.filter((x) => x !== u.id); } }),
-          u.name || u.email, u.notify_whatsapp && u.phone ? ' 📱' : ''))),
+          u.name || u.email, u.notify_whatsapp && u.phone ? ' · WhatsApp' : ''))),
         h('div', { class: 'row' }, [['admin', 'Administradores'], ['agent', 'Agentes']].map(([r, l]) => h('label', { class: 'check' },
           h('input', { type: 'checkbox', checked: a.roles.includes(r), onchange: (e) => { a.roles = e.target.checked ? [...a.roles, r] : a.roles.filter((x) => x !== r); } }), l))),
         field('Además, enviar por correo a', lines(a, 'emails', { placeholder: 'direccion@empresa.com' }), 'Máximo 5. Requiere correo configurado en el servidor.'),
@@ -341,7 +342,7 @@ async function editRule(root, id) {
   const save = async () => {
     if (r.actions.some((a) => a.type === 'send_message' && !a.text?.trim() && !a.image_id && !a.attachment_id)) return toast('En "Enviar mensaje" escribe un mensaje o elige una foto o un archivo', true);
     const body = { ...r, chatbot_id: r.chatbot_id || null, account_id: state.accountId || undefined };
-    const saved = await run(() => (existing ? api('PUT', `/api/automations/${id}`, body) : api('POST', '/api/automations', body)), 'Regla guardada ✅');
+    const saved = await run(() => (existing ? api('PUT', `/api/automations/${id}`, body) : api('POST', '/api/automations', body)), 'Regla guardada');
     if (saved) location.hash = '#/automation/rules';
   };
   root.append(
@@ -401,7 +402,7 @@ async function editSequence(root, id) {
     h('details', {}, h('summary', {}, `Enviar solo si… (${st.conditions.length})`), typedList(st.conditions, CONDITIONS, (c) => conditionFields(c))))));
   draw();
   const save = async () => {
-    const saved = await run(() => (existing ? api('PUT', `/api/sequences/${id}`, q) : api('POST', '/api/sequences', { ...q, account_id: state.accountId || undefined })), 'Secuencia guardada ✅');
+    const saved = await run(() => (existing ? api('PUT', `/api/sequences/${id}`, q) : api('POST', '/api/sequences', { ...q, account_id: state.accountId || undefined })), 'Secuencia guardada');
     if (saved) location.hash = '#/automation/sequences';
   };
   root.append(
@@ -594,7 +595,7 @@ async function editSettings(root) {
     saveBar(async () => {
       const { ics_url, ...body } = s;
       void ics_url;
-      if (await run(() => api('PUT', withAcct('/api/settings'), body), 'Guardado ✅')) render();
+      if (await run(() => api('PUT', withAcct('/api/settings'), body), 'Guardado')) render();
     }),
   );
 }

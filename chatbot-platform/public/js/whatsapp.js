@@ -74,7 +74,7 @@ export function whatsappConnector(channelId, { onConnected, onState } = {}) {
       class: `wa-tab ${st.mode === mode ? 'active' : ''}`,
       onclick: () => { if (st.mode === mode) return; st.mode = mode; st.data = null; st.error = ''; st.expiresAt = 0; draw(); if (mode === 'qr') poll(); },
     }, h('strong', {}, label), h('small', {}, sub));
-    fill(tabs, tab('qr', '📷 Escanear código QR', 'Escanea desde WhatsApp en tu teléfono'), tab('code', '🔢 Con mi número', 'Si estás en el mismo celular'));
+    fill(tabs, tab('qr', 'Escanear código QR', 'Escanea desde WhatsApp en tu teléfono'), tab('code', 'Con mi número', 'Si estás en el mismo celular'));
   }
 
   function drawSteps() {
