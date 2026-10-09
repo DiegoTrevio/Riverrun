@@ -10,6 +10,7 @@ export const DecisionSchema = z.object({
   messages: z.array(z.string()).default([]),
   image_ids: z.array(z.string()).default([]),
   context_image_ids: z.array(z.string()).max(30).default([]),
+  saved_message_codes: z.array(z.string()).max(10).default([]),
   save_data: z.array(z.object({ field: z.string(), value: z.string() })).default([]),
   remember: z.array(z.string()).default([]),
   handoff_reason: z.string().default(''),
@@ -32,7 +33,7 @@ export type Decision = z.infer<typeof DecisionSchema>;
 export const DECISION_JSON_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['thinking', 'action', 'messages', 'image_ids', 'context_image_ids', 'save_data', 'remember', 'handoff_reason', 'info_not_found', 'intents', 'flow_step', 'goal_completed', 'booking'],
+  required: ['thinking', 'action', 'messages', 'image_ids', 'context_image_ids', 'saved_message_codes', 'save_data', 'remember', 'handoff_reason', 'info_not_found', 'intents', 'flow_step', 'goal_completed', 'booking'],
   properties: {
     thinking: {
       type: 'string',
@@ -52,6 +53,11 @@ export const DECISION_JSON_SCHEMA = {
     context_image_ids: {
       type: 'array',
       description: 'IDs exactos de fotos cuya condición de contexto se cumple en este intercambio. Evalúa intención, historial y respuesta propuesta, sin exigir palabras exactas. Vacío cuando ninguna aplica.',
+      items: { type: 'string' },
+    },
+    saved_message_codes: {
+      type: 'array',
+      description: 'Códigos EXACTOS de mensajes guardados que se envían tal cual (texto y foto juntos). No copies su texto en messages. Vacío si no aplica.',
       items: { type: 'string' },
     },
     save_data: {

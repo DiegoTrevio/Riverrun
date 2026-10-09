@@ -14,7 +14,7 @@ import { imageAbsolutePath } from '../engine/transport.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
-import { AiSettingsSchema, DataFieldSchema, FlowSchema, ImageSendWhenSchema, PersonalitySchema, RulesSchema, type Chatbot, type User } from '../types.js';
+import { AiSettingsSchema, DataFieldSchema, FlowSchema, ImageSendWhenSchema, PersonalitySchema, RulesSchema, SavedMessagesSchema, type Chatbot, type SavedMessage, type User } from '../types.js';
 import { alignFixedMessages, chatbotFromTemplate } from '../templates/business.js';
 import { parse, readUpload, saveFile, type UploadFile } from './util.js';
 
@@ -27,7 +27,17 @@ const ChatbotBody = z.object({
   data_fields: z.array(DataFieldSchema).optional(),
   flow: FlowSchema.optional(),
   ai: AiSettingsSchema.optional(),
+  saved_messages: SavedMessagesSchema.optional(),
 });
+
+/** La foto de un mensaje guardado debe ser del mismo asistente (nunca de otro ni de otra cuenta). */
+async function checkSavedImages(botId: string | null, list: SavedMessage[] | undefined) {
+  const withImage = (list ?? []).filter((m) => m.image_id);
+  if (!withImage.length) return;
+  const own = new Set(botId ? (await store.listImages(botId)).map((i) => i.id) : []);
+  const bad = withImage.find((m) => !own.has(m.image_id));
+  if (bad) throw new HttpError(400, `La foto del mensaje guardado "${bad.code}" no pertenece a este asistente`);
+}
 
 const KnowledgeBody = z.object({
   category: z.string().max(60).optional(),
@@ -77,6 +87,8 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
       knowledge: z.string().trim().min(1).max(50000),
     }).optional() }), req.body);
     const accountId = await targetAccount(req.user, b.account_id);
+    // Un asistente nuevo todavía no tiene fotos.
+    await checkSavedImages(null, b.saved_messages);
     const { template, account_id, setup, ...input } = b;
     void account_id;
     let base: Record<string, unknown> = {};
@@ -120,6 +132,7 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
     const existing = await botFor(req.user, req.params.id);
     const raw = (req.body ?? {}) as Record<string, any>;
     const data: Record<string, any> = { ...parse(ChatbotBody, raw) };
+    await checkSavedImages(existing.id, data.saved_messages);
     // Las secciones se fusionan con lo guardado: enviar solo un campo no reinicia los demás.
     const sections = { personality: PersonalitySchema, rules: RulesSchema, flow: FlowSchema, ai: AiSettingsSchema } as const;
     for (const [key, schema] of Object.entries(sections)) {
@@ -165,11 +178,18 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
     for (const k of await store.listKnowledge(src.id)) {
       await store.upsertKnowledge(copy.id, { category: k.category, title: k.title, content: k.content, always_include: k.always_include, active: k.active, sort_order: k.sort_order });
     }
+    const newImageId = new Map<string, string>();
     for (const img of await store.listImages(src.id)) {
       const rel = path.join(copy.id, `${crypto.randomUUID()}${path.extname(img.file_path)}`);
       await fsp.mkdir(path.join(config.uploadsDir, copy.id), { recursive: true });
       await fsp.copyFile(imageAbsolutePath(img), path.join(config.uploadsDir, rel)).catch(() => undefined);
-      await store.insertImage({ ...img, chatbot_id: copy.id, file_path: rel });
+      const created = await store.insertImage({ ...img, chatbot_id: copy.id, file_path: rel });
+      newImageId.set(img.id, created.id);
+    }
+    // Los mensajes guardados apuntan a las fotos copiadas, nunca a las del asistente original.
+    if (src.saved_messages.length) {
+      const saved = src.saved_messages.map((m) => ({ ...m, image_id: m.image_id ? newImageId.get(m.image_id) ?? '' : '' })).filter((m) => m.text || m.image_id);
+      return (await store.updateChatbot(copy.id, { saved_messages: saved }))!;
     }
     return copy;
   });

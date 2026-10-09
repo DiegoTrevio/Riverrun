@@ -2,7 +2,7 @@ import { config } from '../config.js';
 import type { AiProvider } from '../ai/provider.js';
 import { logEvent } from '../logs.js';
 import * as store from '../store/index.js';
-import type { Chatbot, Contact, Conversation, ImageAsset, Message } from '../types.js';
+import type { Chatbot, Contact, Conversation, ImageAsset, Message, SavedMessage } from '../types.js';
 import { agentActive, agentStatus, offAfterReply } from './activation.js';
 import { automaticField, customerProvided } from './customer-data.js';
 import { buildContext, type BusinessInfo } from './context.js';
@@ -62,6 +62,24 @@ function slotFallback(agenda: AgendaContext | null): string {
   if (!agenda || !svc) return 'Por ahora no tengo horarios disponibles; déjame revisarlo con el equipo y te aviso.';
   const opts = agenda.slots[svc.id].slice(0, 3).map((x) => x.label);
   return `Ese horario no lo tengo disponible. Para ${svc.name} te puedo ofrecer ${joinOptions(opts)}. ¿Cuál te acomoda?`;
+}
+
+export interface SavedItem {
+  message: SavedMessage;
+  image: ImageAsset | null;
+  /** Tenía foto, pero ya no existe, está inactiva o es de otro asistente. */
+  missingImage: boolean;
+}
+
+/** Mensajes guardados de la propuesta (en su orden), con su foto si sigue activa y es de este asistente. */
+export function savedItems(bot: Chatbot, codes: string[], imagesById: Map<string, ImageAsset>): SavedItem[] {
+  return codes.flatMap((code) => {
+    const message = bot.saved_messages.find((m) => m.active && m.code === code);
+    if (!message) return [];
+    const img = message.image_id ? imagesById.get(message.image_id) : undefined;
+    const image = img && img.active && img.chatbot_id === bot.id ? img : null;
+    return [{ message, image, missingImage: !!message.image_id && !image }];
+  });
 }
 
 /** Plataformas donde tiene sentido simular "escribiendo…". */
@@ -241,7 +259,7 @@ export class Engine {
     if (retryable.length) {
       // Datos no verificables tras el reintento: respuesta segura según la regla configurada.
       fallbackUsed = true;
-      const base = { ...plan, booking: null, contextImages: [] };
+      const base = { ...plan, booking: null, contextImages: [], savedCodes: [] };
       if (bookingIssue && !factIssues) {
         // La IA insistió en un horario que no existe: se ofrecen horarios reales.
         plan = { ...base, action: 'reply', messages: [slotFallback(agendaCtx)], images: [] };
@@ -287,7 +305,7 @@ export class Engine {
           plan = {
             ...plan,
             action: 'reply',
-            images: [], contextImages: [],
+            images: [], contextImages: [], savedCodes: [],
             messages: [r.alternatives.length ? `Uy, ese horario se acaba de ocupar. Te puedo ofrecer ${joinOptions(r.alternatives)}. ¿Cuál te acomoda?` : 'Uy, ese horario se acaba de ocupar. ¿Te puedo ofrecer otro día?'],
           };
           await log('warn', 'engine', `No se pudo agendar: ${r.reason}`);
@@ -300,6 +318,22 @@ export class Engine {
     // Recorrido: el objetivo solo cuenta una vez por conversación (hasta que se cierre y se reabra).
     const goalReached = plan.goalCompleted && !conv.goal_completed_at;
     const goalHandoff = goalReached && bot.flow.on_goal_action === 'handoff' && plan.action !== 'handoff';
+    // Mensajes guardados: texto y foto juntos, tal cual los escribió el negocio. Sus fotos cuentan para el máximo por respuesta.
+    // En una transferencia o sin respuesta no se envían (ni cambian la etapa).
+    const saved = plan.action === 'handoff' || plan.action === 'no_reply' ? [] : savedItems(bot, plan.savedCodes, imagesById);
+    for (const x of saved) if (x.missingImage) await log('warn', 'engine', `La foto del mensaje guardado "${x.message.code}" no existe o está inactiva: se envía solo el texto`);
+    let photoSlots = bot.rules.max_images_per_reply;
+    for (const x of saved) {
+      if (x.image && photoSlots > 0) photoSlots--;
+      else if (x.image) {
+        await log('warn', 'engine', `Foto del mensaje guardado "${x.message.code}" omitida por el límite de ${bot.rules.max_images_per_reply} por respuesta`);
+        x.image = null;
+      }
+    }
+    const sendable = saved.filter((x) => x.image || x.message.text);
+    // Etapa del recorrido: la que marque la IA; si no marcó, la del último mensaje guardado que tenga una.
+    const savedStep = sendable.map((x) => x.message.flow_step).filter((n) => n > 0 && n <= bot.flow.steps.length).pop() ?? 0;
+    if (!plan.flowStep && savedStep) plan = { ...plan, flowStep: savedStep };
     // Fotos programadas: se suman a las que eligió la IA (sin repetir). En una transferencia no se envían.
     let selectedRules: ScheduledImage[] = [];
     if (plan.action !== 'handoff') {
@@ -314,16 +348,18 @@ export class Engine {
       const contextual = imagesForContext(images, plan.contextImages.map(img => img.code), sentImageIds);
       const automatic = [...scheduledBefore, ...assistant, ...after, ...contextual].filter((x, i, all) => all.findIndex(y => y.image.id === x.image.id) === i);
       const candidates = [...automatic.map(x => x.image), ...plan.images.filter(img => !automatic.some(x => x.image.id === img.id))];
-      const selected = candidates.slice(0, bot.rules.max_images_per_reply);
+      const selected = candidates.slice(0, photoSlots);
       selectedRules = automatic.filter(x => selected.some(img => img.id === x.image.id));
       if (candidates.length > selected.length) await log('warn', 'engine', `Fotos omitidas por el límite de ${bot.rules.max_images_per_reply} por respuesta: ${candidates.slice(selected.length).map(img => img.code).join(', ')}`);
       if (selected.length) plan = { ...plan, action: 'reply_with_image', images: selected };
+      // Sin lugar para fotos (p. ej. ya lo ocupó un mensaje guardado): no sale ninguna de las que propuso la IA.
+      else if (plan.images.length) plan = { ...plan, action: plan.action === 'reply_with_image' ? 'reply' : plan.action, images: [] };
 
     }
     if (plan.action === 'handoff') {
       await this.executeHandoff(bot, conv, contact, transport, plan.messages, plan.handoffReason || 'La IA decidió transferir');
     } else if (plan.action !== 'no_reply') {
-      await this.sendPlan(bot, conv, transport, plan, meta, selectedRules);
+      await this.sendPlan(bot, conv, transport, plan, meta, selectedRules, sendable);
     }
     if (plan.flowStep || goalReached) {
       const reached = await store.setFlowState(conv.id, plan.flowStep, goalReached);
@@ -370,10 +406,21 @@ export class Engine {
     };
   }
 
-  async sendPlan(bot: Chatbot, conv: Conversation, transport: Transport, plan: ExecutionPlan, meta: Record<string, unknown>, scheduled: ScheduledImage[] = []) {
+  async sendPlan(bot: Chatbot, conv: Conversation, transport: Transport, plan: ExecutionPlan, meta: Record<string, unknown>, scheduled: ScheduledImage[] = [], saved: SavedItem[] = []) {
     const typing = bot.ai.typing_simulation && hasTyping(transport);
     for (const text of plan.messages) {
       await this.sendOut(bot, conv, transport, { sender: 'bot', text, delay: typingDelay(text, typing), meta });
+    }
+    for (const { message: m, image } of saved) {
+      const savedMeta = { ...meta, saved_message: m.code };
+      if (image) {
+        // Un solo mensaje: la foto con el texto como pie.
+        const sent = await this.sendOut(bot, conv, transport, { sender: 'bot', text: m.text, image, delay: typing ? 1200 : 0, meta: savedMeta });
+        // Si la plataforma rechaza la foto, el cliente igual recibe el texto.
+        if (!sent && m.text) await this.sendOut(bot, conv, transport, { sender: 'bot', text: m.text, delay: 0, meta: { ...savedMeta, image_failed: true } });
+      } else {
+        await this.sendOut(bot, conv, transport, { sender: 'bot', text: m.text, delay: typingDelay(m.text, typing), meta: savedMeta });
+      }
     }
     for (const img of plan.images) {
       const rule = scheduled.find(x => x.image.id === img.id);

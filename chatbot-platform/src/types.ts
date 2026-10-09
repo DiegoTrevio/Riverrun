@@ -139,6 +139,30 @@ export const AiSettingsSchema = z.object({
 });
 export type AiSettings = z.infer<typeof AiSettingsSchema>;
 
+/**
+ * Mensaje guardado: texto (y foto opcional) que se envía tal cual, sin que la IA lo reescriba.
+ * La IA lo elige por su código; si tiene foto, el texto va como pie de la foto en un solo mensaje.
+ */
+export const SavedMessageSchema = z
+  .object({
+    code: z.string().trim().toLowerCase().min(1, 'El código es obligatorio').max(40).regex(/^[a-z0-9_-]+$/, 'Código: solo letras, números, guion y guion bajo'),
+    title: z.string().trim().max(120).default(''),
+    text: z.string().trim().max(1000).default(''),
+    /** Foto del catálogo de este asistente ('' = sin foto). */
+    image_id: z.string().trim().max(60).default(''),
+    /** Cuándo debe usarlo la IA. */
+    when: z.string().trim().max(300).default(''),
+    /** Etapa del recorrido en la que queda la conversación al enviarlo (0 = no cambia). */
+    flow_step: z.number().int().min(0).max(50).default(0),
+    active: z.boolean().default(true),
+  })
+  .refine((m) => m.text || m.image_id, { message: 'El mensaje guardado necesita texto o foto' });
+export type SavedMessage = z.infer<typeof SavedMessageSchema>;
+export const SavedMessagesSchema = z
+  .array(SavedMessageSchema)
+  .max(40)
+  .refine((list) => new Set(list.map((m) => m.code)).size === list.length, { message: 'Hay mensajes guardados con el mismo código' });
+
 export interface ChatbotRow {
   id: string;
   account_id: string;
@@ -149,16 +173,18 @@ export interface ChatbotRow {
   data_fields: unknown;
   flow: unknown;
   ai: unknown;
+  saved_messages: unknown;
   created_at: Date;
   updated_at: Date;
 }
 
-export interface Chatbot extends Omit<ChatbotRow, 'personality' | 'rules' | 'data_fields' | 'flow' | 'ai'> {
+export interface Chatbot extends Omit<ChatbotRow, 'personality' | 'rules' | 'data_fields' | 'flow' | 'ai' | 'saved_messages'> {
   personality: Personality;
   rules: Rules;
   data_fields: DataField[];
   flow: Flow;
   ai: AiSettings;
+  saved_messages: SavedMessage[];
 }
 
 /** Normaliza una fila de la BD a una configuración completa y válida. */
@@ -170,7 +196,17 @@ export function hydrateChatbot(row: ChatbotRow): Chatbot {
     data_fields: safeFields(row.data_fields),
     flow: FlowSchema.parse(row.flow ?? {}),
     ai: AiSettingsSchema.parse(row.ai ?? {}),
+    saved_messages: safeSavedMessages(row.saved_messages),
   };
+}
+
+/** Un mensaje guardado inválido no rompe al asistente: se descarta solo ese. */
+function safeSavedMessages(v: unknown): SavedMessage[] {
+  if (!Array.isArray(v)) return [];
+  return v.flatMap((m) => {
+    const r = SavedMessageSchema.safeParse(m);
+    return r.success ? [r.data] : [];
+  });
 }
 
 function safeFields(v: unknown): DataField[] {

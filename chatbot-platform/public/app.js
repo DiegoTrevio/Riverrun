@@ -746,7 +746,39 @@ async function tabImages(root, bot) {
       h('button', { class: 'primary', onclick: upload }, 'Subir imagen'),
     ),
     h('div', { class: 'grid' }, images.map(card)),
+    savedMessagesCard(bot, images),
   );
+}
+
+/** Mensajes guardados: textos (y fotos) que el asistente envía tal cual; la IA los elige por su código. */
+function savedMessagesCard(bot, images) {
+  const list = clone(bot.saved_messages || []);
+  const steps = bot.flow?.steps || [];
+  const photos = [['', '— Sin foto —'], ...images.filter((im) => im.active).map((im) => [im.id, `${im.name} (${im.code})`])];
+  const box = h('div');
+  const draw = () => fill(box,
+    list.length
+      ? list.map((m, i) => h('div', { class: 'card', style: 'background:var(--bg)' },
+        h('div', { class: 'grid' },
+          field('Código', text(m, 'code', { placeholder: 'precios' }), 'Con este código lo menciona el prompt y lo elige la IA.'),
+          field('Título', text(m, 'title', { placeholder: 'Lista de precios' })),
+          field('Foto (opcional)', select(m, 'image_id', photos))),
+        field('Texto', area(m, 'text', { placeholder: 'Nuestras tarifas: habitación doble $1,650 MXN por noche, desayuno incluido.' }), 'Se envía tal cual. Si tiene foto, va como pie de la foto en un solo mensaje.'),
+        field(tag('Cuándo enviarlo', guide()), text(m, 'when', { placeholder: 'Cuando el cliente pregunte por precios o tarifas' })),
+        h('div', { class: 'grid' },
+          field('Etapa del recorrido al enviarlo', num(m, 'flow_step', { min: 0, max: steps.length }),
+            steps.length ? `0 = no cambia. ${steps.map((st, n) => `${n + 1}. ${st.title}`).join(' · ')}` : 'Define etapas en "Recorrido" para usar esta opción.'),
+          h('div', {}, check(m, 'active', 'Activo'), h('button', { class: 'small danger', onclick: () => { list.splice(i, 1); draw(); } }, 'Quitar'))),
+      ))
+      : h('p', { class: 'muted small' }, 'Aún no hay mensajes guardados.'),
+    h('div', { class: 'row' },
+      h('button', { class: 'small', onclick: () => { list.push({ code: '', title: '', text: '', image_id: '', when: '', flow_step: 0, active: true }); draw(); } }, '+ Agregar mensaje'),
+      h('button', { class: 'primary', onclick: async () => { if (await saveBot(bot, { saved_messages: list })) render(); } }, 'Guardar mensajes')));
+  draw();
+  return h('div', { class: 'card' },
+    h('h3', { style: 'margin-top:0' }, 'Mensajes guardados (texto + foto)'),
+    h('p', { class: 'small muted' }, 'El asistente los envía tal cual cuando se cumple su condición; con foto, salen juntos en un solo mensaje. En el prompt menciónalos por su código, por ejemplo: "si piden precios, envía el mensaje precios".'),
+    box);
 }
 
 function tabRules(root, bot) {
@@ -2086,7 +2118,8 @@ async function editCampaign(root, id) {
   const [refs, channels] = await Promise.all([automationRefs(), api('GET', withAcct('/api/channels'))]);
   const existing = id === 'new' ? null : (await api('GET', withAcct('/api/campaigns'))).find((c) => c.id === id);
   if (id !== 'new' && !existing) throw new Error('Campaña no encontrada');
-  const c = existing ? clone(existing) : { name: '', channel_id: channels[0]?.id || '', message: '', image_id: null, audience: { tags_any: [], tags_none: [], active_within_days: 0, statuses: [] }, scheduled_at: null, rate_per_minute: 20, business_hours_only: true, status: 'draft' };
+  const c = existing ? clone(existing) : { name: '', channel_id: channels[0]?.id || '', message: '', image_id: null, audience: { tags_any: [], tags_none: [], active_within_days: 0, statuses: [] }, scheduled_at: null, rate_per_minute: 20, business_hours_only: true, flow_step: 0, status: 'draft' };
+  c.flow_step ??= 0;
   c.image_id ??= '';
   const editable = ['draft', 'scheduled'].includes(c.status);
   const local = { when: c.scheduled_at ? new Date(new Date(c.scheduled_at).getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16) : '' };
@@ -2119,7 +2152,8 @@ async function editCampaign(root, id) {
         field('Nombre', text(c, 'name', { placeholder: 'Promoción de octubre' })),
         field('Canal', select(c, 'channel_id', channels.map((ch) => [ch.id, `${ch.name} (${ch.label})`])))),
       field('Mensaje', area(c, 'message', { big: true }), VARS_HELP),
-      field('Imagen (opcional)', select(c, 'image_id', [['', '— Sin imagen —'], ...refs.images.map((im) => [im.id, `${im.name} (${im.bot})`])]))),
+      field('Imagen (opcional)', select(c, 'image_id', [['', '— Sin imagen —'], ...refs.images.map((im) => [im.id, `${im.name} (${im.bot})`])]), 'Con texto, la foto sale con el mensaje como pie en un solo envío.'),
+      field('Etapa del recorrido al enviarla', num(c, 'flow_step', { min: 0, max: 50 }), 'Si es el primer mensaje de un recorrido, indica la etapa en la que queda cada conversación: el asistente sigue el flujo desde ahí cuando el cliente responda. 0 = no cambia.')),
     h('div', { class: 'card' },
       h('h3', { style: 'margin-top:0' }, 'A quién'),
       h('div', { class: 'grid' },

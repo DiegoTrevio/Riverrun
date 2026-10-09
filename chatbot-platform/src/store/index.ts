@@ -213,15 +213,16 @@ export interface ChatbotInput {
   data_fields?: unknown;
   flow?: unknown;
   ai?: unknown;
+  saved_messages?: unknown;
 }
 
-const CHATBOT_JSON_COLS = ['personality', 'rules', 'data_fields', 'flow', 'ai'] as const;
+const CHATBOT_JSON_COLS = ['personality', 'rules', 'data_fields', 'flow', 'ai', 'saved_messages'] as const;
 const CHATBOT_PLAIN_COLS = ['name', 'active'] as const;
 
 export async function createChatbot(accountId: string, input: ChatbotInput, client?: Queryable): Promise<Chatbot> {
   const rows = await rowsOf(client,
-    `INSERT INTO chatbots (account_id, name, active, personality, rules, data_fields, flow, ai)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+    `INSERT INTO chatbots (account_id, name, active, personality, rules, data_fields, flow, ai, saved_messages)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
     [
       accountId,
       input.name ?? 'Nuevo chatbot',
@@ -231,6 +232,7 @@ export async function createChatbot(accountId: string, input: ChatbotInput, clie
       JSON.stringify(input.data_fields ?? []),
       JSON.stringify(input.flow ?? {}),
       JSON.stringify(input.ai ?? {}),
+      JSON.stringify(input.saved_messages ?? []),
     ],
   );
   return hydrateChatbot(rows[0]);

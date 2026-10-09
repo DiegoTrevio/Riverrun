@@ -254,6 +254,22 @@ export function buildSystemPrompt(input: ContextInput, knowledge: KnowledgeItem[
     if (r.avoid_repeating_images) s.push('- No reenvíes imágenes que ya se enviaron en esta conversación, salvo que el cliente lo pida.');
   }
 
+  const savedList = bot.saved_messages.filter((m) => m.active);
+  if (savedList.length) {
+    s.push('\n# Mensajes guardados');
+    s.push('Textos (y fotos) que escribió el negocio. Se envían tal cual: pon su código exacto en saved_message_codes y NO copies su texto en messages. Si tiene foto, el texto va como pie de la foto en un solo mensaje. Solo agrega algo en messages si hace falta una frase corta antes.');
+    for (const m of savedList) {
+      const bits = [`- Código: \`${m.code}\``];
+      if (m.title) bits.push(m.title);
+      if (m.when) bits.push(`usar cuando: ${m.when}`);
+      bits.push(m.image_id ? 'con foto' : 'solo texto');
+      if (m.flow_step && flow.steps[m.flow_step - 1]) bits.push(`deja la conversación en la etapa ${m.flow_step} (${flow.steps[m.flow_step - 1].title})`);
+      if (m.text) bits.push(`texto: "${m.text.length > 300 ? `${m.text.slice(0, 300)}…` : m.text}"`);
+      s.push(bits.join(' | '));
+    }
+    s.push('- Usa un mensaje guardado cuando se cumpla su "usar cuando" o cuando el recorrido lo pida. No lo reenvíes si ya se envió, salvo que el cliente lo pida.');
+  }
+
   s.push('\n# Reglas del negocio');
   const rules: string[] = [];
   if (r.allowed_topics) rules.push(`Temas que puedes atender: ${r.allowed_topics}. Si preguntan algo ajeno, redirige amablemente.`);
@@ -478,6 +494,8 @@ export function buildContext(input: ContextInput): BuiltContext {
     bot.flow.steps.map((s) => `${s.title} ${s.description}`).join('\n'),
     bot.personality.style_examples.join('\n'),
     input.images.map((i) => `${i.name} ${i.description} ${i.caption}`).join('\n'),
+    // Lo que el negocio escribió en sus mensajes guardados también es información verificada.
+    bot.saved_messages.filter((m) => m.active).map((m) => m.text).join('\n'),
     input.agenda ? agendaSection(input.agenda) : '',
   ];
 

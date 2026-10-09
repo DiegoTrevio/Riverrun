@@ -21,6 +21,8 @@ export interface ExecutionPlan {
   booking: { action: 'book'; serviceId: string; slot: string } | { action: 'cancel'; appointmentId: string } | null;
   /** Etapa del recorrido (0 = sin recorrido o sin cambio). */
   flowStep: number;
+  /** Mensajes guardados (activos y existentes) que se envían tal cual, en el orden que propuso la IA. */
+  savedCodes: string[];
   /** La IA marcó el objetivo como cumplido y el backend lo aceptó (hay objetivo y no faltan datos importantes). */
   goalCompleted: boolean;
 }
@@ -227,6 +229,12 @@ export function validateDecision(input: ValidationInput): ValidationResult {
   const d = parsed.decision;
   let action: Action = d.action;
 
+  // ---------- Mensajes guardados: solo códigos activos de este asistente ----------
+  const savedByCode = new Map(bot.saved_messages.filter((m) => m.active).map((m) => [m.code, m]));
+  const proposedCodes = [...new Set(d.saved_message_codes.map((c) => c.trim().toLowerCase()).filter(Boolean))];
+  const savedCodes = proposedCodes.filter((c) => savedByCode.has(c));
+  if (proposedCodes.length > savedCodes.length) fixes.push('Mensajes guardados inexistentes o inactivos descartados');
+
   // ---------- Mensajes: formato, emojis, longitud ----------
   let messages = d.messages.map((m) => toWhatsappFormat(String(m ?? ''))).filter((m) => m.length > 0);
   if (bot.personality.emojis === 'none') {
@@ -375,7 +383,7 @@ export function validateDecision(input: ValidationInput): ValidationResult {
   if (action === 'no_reply') {
     if (messages.length) fixes.push('Acción no_reply con mensajes: se descartaron los mensajes');
     messages = [];
-  } else if (action !== 'handoff' && !messages.length) {
+  } else if (action !== 'handoff' && !messages.length && !savedCodes.length) {
     retryable.push('La acción requiere al menos un mensaje para el cliente.');
   }
 
@@ -445,7 +453,8 @@ export function validateDecision(input: ValidationInput): ValidationResult {
       goalReached: goalCompleted && !input.goalAlreadyCompleted, booked: booking?.action === 'book', sentIds: input.sentImageIds, skip: [],
     }).map(x => x.image),
   ] : [];
-  if (!images.length && !scheduled.length && IMAGE_PROMISE_RE.test(messages.join(' '))) {
+  const savedWithImage = savedCodes.some((c) => savedByCode.get(c)?.image_id);
+  if (!images.length && !scheduled.length && !savedWithImage && IMAGE_PROMISE_RE.test(messages.join(' '))) {
     soft(
       'Dices que envías una imagen pero no incluiste ningún ID válido en image_ids. Incluye el ID correcto del catálogo o no menciones que envías imagen.',
       () => (messages = dropSentences(messages, (_n, x) => IMAGE_PROMISE_RE.test(x))),
@@ -473,6 +482,7 @@ export function validateDecision(input: ValidationInput): ValidationResult {
       booking,
       flowStep,
       goalCompleted,
+      savedCodes: action === 'handoff' || action === 'no_reply' ? [] : savedCodes,
     },
     retryable,
     fixes,
@@ -482,5 +492,5 @@ export function validateDecision(input: ValidationInput): ValidationResult {
 }
 
 export function emptyPlan(action: Action): ExecutionPlan {
-  return { action, messages: [], images: [], contextImages: [], saveData: {}, contactName: null, remember: [], handoffReason: '', infoNotFound: false, intents: [], booking: null, flowStep: 0, goalCompleted: false };
+  return { action, messages: [], images: [], contextImages: [], saveData: {}, contactName: null, remember: [], handoffReason: '', infoNotFound: false, intents: [], booking: null, flowStep: 0, goalCompleted: false, savedCodes: [] };
 }

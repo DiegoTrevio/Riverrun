@@ -18,6 +18,8 @@ export interface OutboundOptions {
   appointment?: Appointment | null;
   location?: string;
   meta?: Record<string, unknown>;
+  /** Etapa del recorrido en la que queda la conversación al enviarse (0 = no cambia). Así el asistente sigue el flujo desde ahí. */
+  flowStep?: number;
 }
 
 export type OutboundResult = { sent: true } | { sent: false; reason: string };
@@ -75,17 +77,20 @@ export class Outbound {
     const meta = { source: o.source, ...o.meta };
     // Nunca en paralelo con una respuesta del bot en la misma conversación.
     const ok = await this.chat.queue.exclusive(conv.id, async () => {
-      if (text) {
-        const m = await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text, delay: 0, meta });
-        if (!m) return false;
-      }
       if (image) {
-        const m = await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text: image.caption, image, delay: 0, meta });
-        if (!m) return false;
+        // Texto y foto juntos: un solo mensaje con el texto como pie (sin texto, el pie de la foto).
+        const m = await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text: text || image.caption, image, delay: 0, meta });
+        if (m) return true;
+        // Si la plataforma rechaza la foto, el cliente igual recibe el texto.
+        if (!text) return false;
+        return !!(await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text, delay: 0, meta: { ...meta, image_failed: true } }));
       }
-      return true;
+      return !!(await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text, delay: 0, meta }));
     });
     if (!ok) return { sent: false, reason: 'la plataforma rechazó el envío (ver registros)' };
+    // El asistente continúa el recorrido desde la etapa indicada cuando el cliente responda.
+    const steps = bot?.flow.steps.length ?? 0;
+    if (o.flowStep && o.flowStep <= steps) await store.setFlowState(conv.id, o.flowStep, false);
     await logEvent({ level: 'info', source: 'engine', message: `Mensaje programado enviado (${o.source})`, accountId: conv.account_id, channelId: conv.channel_id, conversationId: conv.id });
     return { sent: true };
   }
