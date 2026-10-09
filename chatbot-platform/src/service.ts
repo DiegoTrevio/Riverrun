@@ -118,6 +118,8 @@ export class ChatService {
       channels.find((c) => c.type === 'whatsapp' && c.active && c.config.instance);
     if (!wa) throw new Error('La cuenta no tiene un canal de WhatsApp activo para enviar el aviso');
     const digits = number.replace(/\D/g, '');
+    // Se registra antes de enviar: el eco puede llegar antes de que responda el envío.
+    await store.recordInternalNotice(accountId, digits, text.trim());
     const t = this.transportFactory(wa, { phone: digits, external_id: digits } as Contact);
     await t.sendText(text, 0);
   }
@@ -219,9 +221,13 @@ export class ChatService {
   }
 
   /** Maneja un mensaje ya normalizado que llegó por cualquier canal. */
-  async handleIncoming(channel: Channel, msg: InboundMessage): Promise<{ conversationId: string; messageId: number | null }> {
+  async handleIncoming(channel: Channel, msg: InboundMessage): Promise<{ conversationId: string | null; messageId: number | null }> {
     // Lo que llega de la plataforma se limpia una vez aquí (NUL y surrogates sueltos no caben en PostgreSQL).
     msg = deepClean(msg);
+    // El eco de un aviso interno (alerta al equipo) no es una conversación: no crea contacto ni pausa al asistente.
+    if (msg.fromMe && msg.text && (await store.consumeInternalNotice(channel.account_id, (msg.phone || msg.externalId).replace(/\D/g, ''), msg.text))) {
+      return { conversationId: null, messageId: null };
+    }
     const bot = channel.chatbot_id ? await store.getChatbot(channel.chatbot_id) : null;
     const contact = await store.upsertContact(channel, msg.externalId, msg.phone, msg.fromMe ? '' : msg.displayName);
     const conv = await store.getOrCreateConversation(channel, contact.id);
