@@ -22,19 +22,26 @@ const STATE_LABEL = {
   unknown: ['', 'Sin información'],
 };
 
+export function connectionHref(c) {
+  return c.chatbot_id ? `#/bot/${c.chatbot_id}/conexiones/${c.id}` : `#/agentes/conexion/${c.id}`;
+}
+
+export function connectionBadge(c) {
+  let label = c.active ? 'Activo' : 'Inactivo';
+  let color = c.active ? 'green' : '';
+  if (c.active && c.type === 'whatsapp') [color, label] = STATE_LABEL[c.connection_state] || ['', 'Sin información'];
+  if (c.active && c.type === 'zernio' && !c.config?.account_id) { color = 'orange'; label = 'Pendiente de conectar'; }
+  return h('span', { class: `badge ${color}` }, label);
+}
+
 export function channelStatusCell(c) {
-  // WhatsApp (QR) y Zernio (autorización de la cuenta) necesitan un paso de conexión antes de responder.
   const needsConnection = c.type === 'whatsapp' || c.type === 'zernio';
-  const connected = !needsConnection || (c.type === 'zernio' ? !!c.config?.account_id : c.connection_state === 'open');
-  const link = c.type === 'whatsapp' && !connected ? `#/conectar?channel=${c.id}` : `#/channel/${c.id}`;
-  return h('td', {},
-    h('span', { class: `badge ${c.active && connected ? 'green' : ''}` },
-      !c.active ? 'Inactivo' : !needsConnection ? 'Activo' : connected ? 'Conectado' : 'Pendiente de conectar'),
-    needsConnection ? h('a', { href: link, class: 'btn small', style: 'margin-left:8px' }, connected ? 'Administrar' : c.type === 'whatsapp' ? 'Escanear QR' : 'Conectar cuenta') : null);
+  const connected = c.type === 'whatsapp' ? c.connection_state === 'open' : !!c.config?.account_id;
+  return h('td', {}, connectionBadge(c), needsConnection ? h('a', { href: connectionHref(c), class: 'btn small', style: 'margin-left:8px' }, connected ? 'Administrar' : c.type === 'whatsapp' ? 'Ver QR / reconectar' : 'Conectar cuenta') : null);
 }
 
 /** Enlace público que reparte a los clientes nuevos entre varios números de WhatsApp. */
-async function poolsCard(channels) {
+export async function poolsCard(channels) {
   const wa = channels.filter((c) => c.type === 'whatsapp');
   const pools = await api('GET', `/api/wa-pools${acct()}`);
   const n = { name: '', strategy: 'least_busy', message: '', channel_ids: wa.map((c) => c.id) };
@@ -195,8 +202,11 @@ function channelConfigFields(ch, cfg) {
   }
 }
 
-export async function viewChannel(root, id) {
+export async function viewChannel(root, id, parentId = null) {
   const [ch, bots] = await Promise.all([api('GET', `/api/channels/${id}`), api('GET', '/api/chatbots')]);
+  if (parentId && parentId !== ch.chatbot_id) { location.replace(connectionHref(ch)); return; }
+  const parent = bots.find((b) => b.id === ch.chatbot_id);
+  const back = parent ? `#/bot/${parent.id}/conexiones` : '#/agentes?connections=1';
   const m = { name: ch.name, active: ch.active, chatbot_id: ch.chatbot_id || '' };
   const cfg = clone(ch.config);
   const accountBots = bots.filter((b) => b.account_id === ch.account_id);
@@ -215,7 +225,7 @@ export async function viewChannel(root, id) {
   };
   const save = async () => {
     const updated = await run(() => api('PUT', `/api/channels/${id}`, { ...m, chatbot_id: m.chatbot_id || null, config: cfg }), 'Guardado ✅');
-    if (updated) render();
+    if (updated) { const target = connectionHref(updated); if (location.hash !== target) location.hash = target; else render(); }
   };
   const setup = async () => {
     const r = await run(() => api('POST', `/api/channels/${id}/setup`));
@@ -293,7 +303,7 @@ export async function viewChannel(root, id) {
   }
 
   root.append(
-    h('a', { href: '#/channels' }, '← Canales'),
+    h('nav', { class: 'breadcrumb', 'aria-label': 'Ubicación' }, h('a', { href: '#/agentes' }, 'Agentes'), ' / ', h('a', { href: back }, parent?.name || 'Conexiones pendientes de asignar'), ' / ', h('span', {}, ch.name)),
     h('div', { class: 'row between' },
       h('h1', {}, channelIcon(ch.type), ' ', ch.name, ' ', h('span', { class: `badge ${ch.active ? 'green' : ''}` }, ch.active ? 'Activo' : 'Inactivo')),
       h('a', { href: `#/conversations?channel_id=${ch.id}` }, 'Ver conversaciones →')),
@@ -302,7 +312,7 @@ export async function viewChannel(root, id) {
     h('div', { class: 'card' },
       h('h3', { style: 'margin-top:0' }, 'General'),
       field('Nombre', text(m, 'name')),
-      field('Asistente que responde', select(m, 'chatbot_id', [['', '— Sin asistente (solo guarda mensajes) —'], ...accountBots.map((b) => [b.id, b.name])]), 'Este asistente puede atender varios perfiles. Cambiarlo aquí solo afecta a este perfil.'),
+      field('Agente que responde', select(m, 'chatbot_id', [['', '— Sin asistente (solo guarda mensajes) —'], ...accountBots.map((b) => [b.id, b.name])]), 'Un agente puede atender varios teléfonos. Cambiar la asignación conserva los contactos y las conversaciones de esta conexión.'),
       check(m, 'active', 'Activo (si se desactiva, los mensajes se guardan pero no se responden)')),
     ch.type === 'whatsapp'
       ? h('details', { class: 'card' }, h('summary', {}, 'Configuración avanzada de WhatsApp'), h('div', { style: 'margin-top:12px' }, channelConfigFields(ch, cfg)))
@@ -319,7 +329,7 @@ export async function viewChannel(root, id) {
       h('button', { class: 'danger', onclick: async () => {
         if (prompt(`Escribe "${ch.name}" para eliminar el canal y todas sus conversaciones`) === ch.name) {
           await run(() => api('DELETE', `/api/channels/${id}`), 'Canal eliminado');
-          location.hash = '#/channels';
+          location.hash = back;
         }
       } }, 'Eliminar canal'))),
   );

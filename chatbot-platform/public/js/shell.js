@@ -22,11 +22,8 @@ const setAdvanced = (on) => { try { localStorage.setItem('cp-advanced', on ? '1'
 
 function simpleLinks(link) {
   return [
-    needsOnboarding() ? link('#/inicio', '🚀 Primeros pasos', 'inicio') : null,
-    link('#/conectar', state.wa && !state.wa.connected ? '📱 Conectar WhatsApp' : '📱 Mi WhatsApp', 'conectar'),
+    link('#/agentes', '🤖 Agentes', 'agentes'),
     link('#/conversations', '💬 Conversaciones', 'conversations'),
-    link('#/asistente', '🤖 Mi asistente', 'bot'),
-    link('#/probar', '🧪 Probar mi asistente', 'probar'),
     link('#/agenda', '📅 Agenda', 'agenda'),
     link('#/ajustes', '⚙️ Ajustes', 'ajustes'),
     h('a', { href: '#/notifications', class: 'notifications' }, '🔔 Notificaciones ', bell),
@@ -35,6 +32,7 @@ function simpleLinks(link) {
 
 export function shell(active, content) {
   refreshBell();
+  if (['home', 'asistentes', 'asistente', 'bot', 'channels', 'channel', 'conectar', 'inicio', 'probar'].includes(active)) active = 'agentes';
   const simple = isAdmin() && !isSuper() && !isAdvanced();
   const link = (href, label, key) => h('a', { href, class: active === key ? 'active' : '' }, label);
   const navGroup = (label, keys, links) => h('details', { class: 'nav-group', open: keys.includes(active) },
@@ -52,6 +50,7 @@ export function shell(active, content) {
               history.replaceState(null, '', '#/logs' + (filters.size ? '?' + filters : ''));
             }
             try { localStorage.setItem('cp-account', state.accountId); } catch { /* */ }
+            if (location.hash.startsWith('#/bot/') || location.hash.startsWith('#/channel/') || location.hash.startsWith('#/agentes/conexion/')) { location.hash = '#/agentes'; return; }
             render();
           },
         },
@@ -64,12 +63,7 @@ export function shell(active, content) {
         h('button', { class: 'nav-toggle', type: 'button', 'aria-label': 'Abrir o cerrar el menú', 'aria-expanded': 'false', onclick: (e) => { const open = e.currentTarget.closest('.layout').classList.toggle('nav-open'); e.currentTarget.setAttribute('aria-expanded', String(open)); } }, '☰ Menú')),
       switcher,
       simple ? simpleLinks(link) : [
-      isAdmin() ? navGroup('Asistentes', ['home', 'bot', 'channels', 'channel', 'inicio', 'conectar'], [
-        link('#/conectar', '📱 Conectar WhatsApp (QR)', 'conectar'),
-        link('#/', 'Mis asistentes', 'home'),
-        link('#/channels', 'Canales y WhatsApp', 'channels'),
-        (!isSuper() || state.accountId) ? link('#/inicio', 'Primeros pasos', 'inicio') : null,
-      ]) : null,
+      isAdmin() ? link('#/agentes', '🤖 Agentes', 'agentes') : null,
       navGroup('Conversaciones', ['conversations', 'conversation', 'notifications'], [
         link('#/conversations', 'Bandeja de entrada', 'conversations'),
         h('a', { href: '#/notifications', class: active === 'notifications' ? 'active' : '' }, 'Notificaciones'),
@@ -119,7 +113,7 @@ function accountBanner() {
   const here = location.hash.split('?')[0];
   if (state.wa && !state.wa.connected && isAdmin() && !['#/conectar', '#/inicio'].includes(here) && !here.startsWith('#/channel/')) {
     items.push(h('div', { class: 'banner warn' }, h('strong', {}, state.wa.has ? 'Tu WhatsApp no está conectado. ' : 'Aún no conectas tu WhatsApp. '),
-      'Tu asistente no puede responder hasta que lo vincules. ', h('a', { class: 'btn primary', href: '#/conectar' }, 'Conectar con QR')));
+      'Tu asistente no puede responder hasta que lo vincules. ', h('a', { class: 'btn primary', href: '#/agentes' }, 'Conectar desde mi agente')));
   }
   if (!user.email_verified_at && state.meta.require_email) {
     items.push(h('div', { class: 'banner warn' },

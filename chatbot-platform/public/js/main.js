@@ -1,3 +1,4 @@
+import { goLegacyConnections } from './agent-connections.js';
 import { viewAccounts, viewNotifications, viewPassword, viewUsers } from './admin.js';
 import { viewAgenda } from './agenda.js';
 import { viewAnalytics } from './analytics.js';
@@ -5,18 +6,18 @@ import { renderForgot, renderLogin, renderReset, renderSignup, renderVerify } fr
 import { viewAutomation } from './automation.js';
 import { viewPlan, viewPlans } from './billing.js';
 import { viewBot } from './bot.js';
-import { viewChannel, viewChannels } from './channels.js';
+import { viewChannel } from './channels.js';
 import { viewConversation, viewConversations } from './conversations.js';
 import { $app, fill, h } from './core.js';
 import { ensureBrand } from './brand.js';
-import { loadWhatsappStatus, viewConnect } from './connect.js';
+import { loadWhatsappStatus } from './connect.js';
 import { viewBrands } from './brandadmin.js';
 import { viewIntegrations } from './integrations.js';
 import { goMainBot, viewDashboard, viewSettingsHub } from './dashboard.js';
 import { viewLogs } from './logs.js';
 import { viewOnboarding } from './onboarding.js';
 import { clearTimers, isAdmin, loadSession } from './session.js';
-import { needsOnboarding, shell } from './shell.js';
+import { shell } from './shell.js';
 import { viewSystem } from './system.js';
 import { viewUsage } from './usage.js';
 
@@ -55,11 +56,11 @@ export async function render() {
   const content = h('div');
   fill($app, shell(parts[0] || 'home', content));
   try {
-    if (!parts.length && needsOnboarding()) location.hash = '#/inicio';
-    else if (!parts.length || parts[0] === 'asistentes') await viewDashboard(content, params);
+    if (parts[0] === 'agentes' && parts[1] === 'conexion') await viewChannel(content, parts[2]);
+    else if (!parts.length || ['agentes', 'asistentes'].includes(parts[0])) await viewDashboard(content, params);
     else if (parts[0] === 'inicio') await viewOnboarding(content, parts[1]);
     else if (parts[0] === 'asistente' || parts[0] === 'probar') await goMainBot(content, parts[0] === 'probar' ? 'probar' : 'conocimiento');
-    else if (parts[0] === 'conectar') await viewConnect(content, params);
+    else if (parts[0] === 'conectar') await goLegacyConnections(params);
     else if (parts[0] === 'ajustes') await viewSettingsHub(content);
     else if (parts[0] === 'integraciones') await viewIntegrations(content, params);
     else if (parts[0] === 'marcas') await viewBrands(content);
@@ -68,8 +69,9 @@ export async function render() {
     else if (parts[0] === 'planes') await viewPlans(content);
     else if (parts[0] === 'estadisticas') await viewAnalytics(content, params);
     else if (parts[0] === 'consumo') await viewUsage(content, params);
-    else if (parts[0] === 'bot') await viewBot(content, parts[1], parts[2] || 'general');
-    else if (parts[0] === 'channels') await viewChannels(content, params);
+    else if (parts[0] === 'bot' && parts[2] === 'conexiones' && parts[3]) await viewChannel(content, parts[3], parts[1]);
+    else if (parts[0] === 'bot') await viewBot(content, parts[1], parts[2] || 'general', params);
+    else if (parts[0] === 'channels') await goLegacyConnections(params);
     else if (parts[0] === 'channel') await viewChannel(content, parts[1]);
     else if (parts[0] === 'conversations') await viewConversations(content, params);
     else if (parts[0] === 'conversation') await viewConversation(content, parts[1]);

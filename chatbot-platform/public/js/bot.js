@@ -1,3 +1,4 @@
+import { tabConnections } from './agent-connections.js';
 import { ACTIONS } from './automation.js';
 import { channelIcon, channelStatusCell } from './channels.js';
 import { api, area, check, clone, field, fill, fmtDate, h, lines, num, run, select, state, text, toast } from './core.js';
@@ -15,6 +16,7 @@ const TABS = [
   ['activacion', 'Activación'],
   ['conocimiento', 'Conocimiento'],
   ['imagenes', 'Fotos'],
+  ['conexiones', 'Conexiones'],
   ['probar', 'Probar'],
 ];
 
@@ -29,17 +31,19 @@ const guide = () => h('span', { class: 'badge', title: 'Instrucción para la IA.
 
 const tag = (label, badge) => h('span', {}, label, ' ', badge);
 
-export async function viewBot(root, id, tab) {
+export async function viewBot(root, id, tab, params = new URLSearchParams()) {
   tab = TAB_ALIASES[tab] || tab || 'instrucciones';
   const bot = await api('GET', `/api/chatbots/${id}`);
   root.append(
+    h('a', { href: '#/agentes', class: 'breadcrumb' }, '← Agentes'),
     h('div', { class: 'row between' },
       h('h1', {}, bot.name, ' ', h('span', { class: `badge ${bot.active ? 'green' : ''}` }, bot.active ? 'Encendido' : 'Apagado')),
-      h('div', { class: 'row' }, h('a', { class: 'btn', href: `#/channels?new=1&chatbot_id=${bot.id}` }, 'Conectar teléfono / ver QR'), h('a', { href: `#/conversations?chatbot_id=${bot.id}` }, 'Ver conversaciones →'))),
+      h('div', { class: 'row' }, h('a', { class: 'btn', href: `#/bot/${bot.id}/conexiones?new=1` }, 'Conectar teléfono'), h('a', { href: `#/conversations?chatbot_id=${bot.id}` }, 'Ver conversaciones →'))),
     h('div', { class: 'tabs' }, TABS.map(([k, l]) => h('a', { href: `#/bot/${id}/${k}`, class: k === tab ? 'active' : '' }, l))),
   );
   const guidance = {
     instrucciones: 'Define cómo atiende tu agente y qué debe lograr. Los ajustes adicionales están al final.',
+    conexiones: 'Conecta tus teléfonos y canales a este agente. Cada teléfono tiene su propio QR.',
     preguntas: 'Define qué preguntas debe hacer el agente y en qué orden. Las respuestas se guardan automáticamente.',
     activacion: 'Elige cuándo debe responder el agente y cuándo debe ponerse en pausa.',
     conocimiento: 'Agrega la información que tu agente puede usar para responder: precios, servicios, horarios y condiciones.',
@@ -49,8 +53,8 @@ export async function viewBot(root, id, tab) {
   root.append(h('p', { class: 'help', style: 'margin:0 0 24px' }, guidance[tab] || guidance.instrucciones));
   const body = h('div');
   root.append(body);
-  const views = { instrucciones: tabInstructions, preguntas: tabQuestions, activacion: tabActivation, conocimiento: tabKnowledge, imagenes: tabImages, probar: tabPlayground };
-  await (views[tab] || tabInstructions)(body, bot);
+  const views = { instrucciones: tabInstructions, preguntas: tabQuestions, activacion: tabActivation, conocimiento: tabKnowledge, imagenes: tabImages, conexiones: tabConnections, probar: tabPlayground };
+  await (views[tab] || tabInstructions)(body, bot, params);
 }
 
 export function saveBar(onSave, extra) {
@@ -88,7 +92,7 @@ async function tabGeneral(root, bot) {
     ),
     h('div', { class: 'card' },
       h('div', { class: 'row between' }, h('h3', { style: 'margin:0' }, 'Canales que atiende'),
-        h('a', { class: 'btn', href: `#/channels?new=1&chatbot_id=${bot.id}` }, '+ Agregar canal')),
+        h('a', { class: 'btn', href: `#/bot/${bot.id}/conexiones?new=1` }, '+ Agregar canal')),
       h('p', { class: 'muted small' }, 'El mismo asistente (información, reglas y fotos) responde igual en todos sus canales.'),
       channels.length
         ? h('table', {}, h('tbody', {}, channels.map((c) => h('tr', { class: 'click', onclick: () => (location.hash = `#/channel/${c.id}`) },
