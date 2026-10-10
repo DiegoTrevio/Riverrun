@@ -1,6 +1,7 @@
 import nodemailer, { type Transporter } from 'nodemailer';
 import { config } from './config.js';
 import { logEvent } from './logs.js';
+import { outboundAllowed } from './outbound-guard.js';
 
 export interface Mail {
   to: string;
@@ -33,6 +34,11 @@ export function fromFor(name?: string) {
  * Nunca lanza: un fallo de correo no debe romper el registro ni las tareas.
  */
 export async function sendMail(mail: Mail): Promise<boolean> {
+  // Sandbox: solo a destinos de prueba. El registro no incluye el destinatario ni el asunto (pueden llevar datos de clientes).
+  if (!outboundAllowed(mail.to)) {
+    await logEvent({ level: 'warn', source: 'system', message: 'Correo bloqueado (OUTBOUND_MODE=sandbox): el destino no está permitido' });
+    return false;
+  }
   const t = transport();
   if (!t) {
     outbox.push(mail);

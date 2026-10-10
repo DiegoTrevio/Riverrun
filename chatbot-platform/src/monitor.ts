@@ -7,19 +7,26 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { missingModels } from './ai/models.js';
 import { config } from './config.js';
-import { query, queryOne } from './db.js';
+import { pool, query, queryOne } from './db.js';
 import { refreshDiagnostics } from './diagnostics.js';
 import { EVOLUTION_EXPECTED } from './evolution/compat.js';
 import { lastDeepCheck, probeService, recentVersionChange } from './evolution/status.js';
+import { functionalReport } from './observability/health.js';
+import { dueEscalations, markEscalated, openIncident, pruneIncidents, resolveIncident } from './observability/incidents.js';
+import { type CheckStatus, type ServiceState } from './observability/status.js';
 import { logEvent } from './logs.js';
 import { sendMail } from './mailer.js';
 
-export type CheckStatus = 'ok' | 'warn' | 'fail' | 'na';
+export type { CheckStatus } from './observability/status.js';
 export interface CheckResult {
   name: string;
   label: string;
   status: CheckStatus;
+  /** Solo cuando el estado por defecto (ok→operativo, warn→degradado, fail→no disponible, na→no configurado) no describe el caso. */
+  state?: ServiceState;
   detail: string;
+  /** Cifras para /metrics y el panel. Nunca texto de mensajes, teléfonos ni nombres. */
+  metrics?: Record<string, number | null>;
 }
 
 const withTimeout = <T>(p: Promise<T>, ms: number, what: string) =>
@@ -104,7 +111,7 @@ async function checkWhatsappSessions(now = Date.now()): Promise<CheckResult> {
     const sessions = deep ? `${deep.summary.open} de ${deep.summary.total} sesiones abiertas (revisado ${new Date(deep.checked_at).toLocaleTimeString('es-MX', { timeZone: 'America/Mexico_City', hour: '2-digit', minute: '2-digit' })})` : `${n} canal${n === 1 ? '' : 'es'}, sin desconexiones`;
     return { ...base, status: 'ok', detail: sessions };
   } catch (e: any) {
-    return { ...base, status: 'na', detail: e?.message ?? String(e) };
+    return { ...base, status: 'na', state: 'no_verificado', detail: e?.message ?? String(e) };
   }
 }
 
@@ -119,14 +126,31 @@ async function checkScheduler(): Promise<CheckResult> {
   }
 }
 
+/** Latencia p95 (ms) a partir de la cual las respuestas de IA se consideran lentas. */
+const AI_SLOW_P95_MS = 10_000;
+
+/**
+ * Funcionamiento real de la IA: se mide con las llamadas de los últimos 15 minutos (conteo, errores, reintentos y latencia),
+ * sin leer prompts ni respuestas. Sin llamadas recientes no hay nada que comprobar: "no verificado", no "operativo".
+ */
 async function checkAi(): Promise<CheckResult> {
   const base = { name: 'ai', label: 'IA (OpenRouter)' };
   if (!config.openai.apiKey) return { ...base, status: 'fail', detail: 'Falta OPENROUTER_API_KEY: el asistente no puede responder' };
   try {
-    const r = await queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM event_logs WHERE source = 'ai' AND level = 'error' AND created_at > now() - interval '15 minutes'`);
-    return r?.n && r.n >= 5 ? { ...base, status: 'warn', detail: `${r.n} errores de IA en los últimos 15 minutos` } : { ...base, status: 'ok', detail: 'Sin errores recientes' };
+    const r = await queryOne<{ runs: number; errors: number; retries: number; p95: number | null }>(`
+      SELECT (SELECT count(*)::int FROM ai_runs WHERE created_at > now() - interval '15 minutes') AS runs,
+             (SELECT count(*)::int FROM event_logs WHERE source = 'ai' AND level = 'error' AND created_at > now() - interval '15 minutes') AS errors,
+             (SELECT count(*)::int FROM ai_runs WHERE attempt > 1 AND created_at > now() - interval '15 minutes') AS retries,
+             (SELECT percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)::int FROM ai_runs WHERE created_at > now() - interval '15 minutes') AS p95`);
+    const runs = r?.runs ?? 0;
+    const errors = r?.errors ?? 0;
+    const metrics = { runs_15m: runs, errors_15m: errors, retries_15m: r?.retries ?? 0, p95_latency_ms_15m: r?.p95 ?? null };
+    if (!runs && !errors) return { ...base, status: 'ok', state: 'no_verificado', detail: 'Sin llamadas a la IA en los últimos 15 minutos: no hay forma de comprobarla ahora', metrics };
+    if (errors >= 5) return { ...base, status: 'warn', detail: `${errors} errores de IA en los últimos 15 minutos (de ${runs} llamadas)`, metrics };
+    if (r?.p95 && r.p95 > AI_SLOW_P95_MS) return { ...base, status: 'warn', detail: `Respuestas lentas: p95 de ${Math.round(r.p95 / 1000)} s en 15 minutos`, metrics };
+    return { ...base, status: 'ok', detail: `${runs} llamadas en 15 minutos, ${errors} con error`, metrics };
   } catch {
-    return { ...base, status: 'na', detail: '' };
+    return { ...base, status: 'na', state: 'no_verificado', detail: 'No se pudo consultar el registro de IA' };
   }
 }
 
@@ -134,11 +158,11 @@ async function checkModels(): Promise<CheckResult> {
   const base = { name: 'models', label: 'Modelos de IA configurados' };
   try {
     const missing = await missingModels();
-    if (missing === null) return { ...base, status: 'na', detail: 'No se pudo consultar el catálogo de OpenRouter' };
+    if (missing === null) return { ...base, status: 'na', state: 'no_verificado', detail: 'No se pudo consultar el catálogo de OpenRouter' };
     if (!missing.length) return { ...base, status: 'ok', detail: 'Todos existen en OpenRouter' };
     return { ...base, status: 'warn', detail: `No existen en OpenRouter: ${missing.slice(0, 4).map((m) => `${m.id} (${m.where})`).join(', ')}${missing.length > 4 ? '…' : ''}. Cámbialos antes de que dejen de responder.` };
   } catch {
-    return { ...base, status: 'na', detail: '' };
+    return { ...base, status: 'na', state: 'no_verificado', detail: 'No se pudo comprobar' };
   }
 }
 
@@ -176,13 +200,80 @@ function checkDisk(): CheckResult {
     if (pct < 10 || free < 1e9) return { ...base, status: 'warn', detail: `Poco espacio: ${gb} GB libres (${pct.toFixed(0)}%)` };
     return { ...base, status: 'ok', detail: `${gb} GB libres (${pct.toFixed(0)}%)` };
   } catch {
-    return { ...base, status: 'na', detail: '' };
+    return { ...base, status: 'na', state: 'no_verificado', detail: 'No se pudo medir el espacio libre' };
   }
 }
 
+/**
+ * Cola: trabajos marcados "en curso" desde hace más de 15 minutos (el ejecutor murió a mitad) y mensajes entrantes que
+ * llevan más de 5 minutos sin procesar. El procesamiento normal tarda segundos, así que esto indica un atasco.
+ */
+async function checkQueue(): Promise<CheckResult> {
+  const base = { name: 'queue', label: 'Cola de mensajes y trabajos' };
+  try {
+    const r = await queryOne<{ pending: number; stuck: number; inbound_waiting: number }>(`
+      SELECT (SELECT count(*)::int FROM jobs WHERE status = 'pending') AS pending,
+             (SELECT count(*)::int FROM jobs WHERE status = 'running' AND started_at < now() - interval '15 minutes') AS stuck,
+             (SELECT count(*)::int FROM messages m
+                JOIN conversations c ON c.id = m.conversation_id
+                JOIN channels ch ON ch.id = c.channel_id
+               WHERE m.processed = false AND m.direction = 'in' AND ch.type <> 'playground'
+                 AND m.created_at BETWEEN now() - interval '60 minutes' AND now() - interval '5 minutes') AS inbound_waiting`);
+    const metrics = { jobs_pending: r?.pending ?? 0, jobs_stuck: r?.stuck ?? 0, inbound_waiting: r?.inbound_waiting ?? 0 };
+    const problems: string[] = [];
+    if (metrics.jobs_stuck) problems.push(`${metrics.jobs_stuck} trabajo${metrics.jobs_stuck === 1 ? '' : 's'} atascado${metrics.jobs_stuck === 1 ? '' : 's'} (en curso desde hace más de 15 min)`);
+    if (metrics.inbound_waiting) problems.push(`${metrics.inbound_waiting} mensaje${metrics.inbound_waiting === 1 ? '' : 's'} entrante${metrics.inbound_waiting === 1 ? '' : 's'} sin procesar desde hace más de 5 min`);
+    if (problems.length) return { ...base, status: 'warn', detail: problems.join('; '), metrics };
+    return { ...base, status: 'ok', detail: `Sin trabajos atascados; ${metrics.jobs_pending} pendiente${metrics.jobs_pending === 1 ? '' : 's'}`, metrics };
+  } catch (e: any) {
+    return { ...base, status: 'na', state: 'no_verificado', detail: e?.message ?? 'No se pudo consultar la cola' };
+  }
+}
+
+/** Memoria del proceso, conexiones a PostgreSQL y tamaño de la base. Sin umbral de memoria, solo mide. */
+async function checkResources(): Promise<CheckResult> {
+  const base = { name: 'resources', label: 'Recursos del proceso' };
+  const rssMb = Math.round(process.memoryUsage().rss / 1048576);
+  let dbMb: number | null = null;
+  try {
+    const r = await queryOne<{ bytes: number }>('SELECT pg_database_size(current_database())::bigint AS bytes');
+    dbMb = r ? Math.round(Number(r.bytes) / 1048576) : null;
+  } catch {
+    dbMb = null;
+  }
+  const metrics = { rss_mb: rssMb, db_size_mb: dbMb, pool_total: pool.totalCount, pool_idle: pool.idleCount, pool_waiting: pool.waitingCount };
+  const detail = `Memoria ${rssMb} MB · base de datos ${dbMb ?? '?'} MB · conexiones ${pool.totalCount} (${pool.waitingCount} en espera)`;
+  if (pool.waitingCount > 0) return { ...base, status: 'warn', detail: `Consultas esperando una conexión a la base de datos: ${detail}`, metrics };
+  if (config.monitor.rssWarnMb && rssMb > config.monitor.rssWarnMb) return { ...base, status: 'warn', detail: `Memoria alta: ${detail}`, metrics };
+  return { ...base, status: 'ok', detail, metrics };
+}
+
 export async function runChecks(now = new Date()): Promise<CheckResult[]> {
-  const [db, wa, sessions, sch, ai, models] = await Promise.all([checkDb(), checkEvolution(), checkWhatsappSessions(now.getTime()), checkScheduler(), checkAi(), checkModels()]);
-  return [db, wa, sessions, sch, ai, models, checkBackup(now), checkDisk()];
+  const [db, wa, sessions, sch, ai, models, queue, resources] = await Promise.all([
+    checkDb(), checkEvolution(), checkWhatsappSessions(now.getTime()), checkScheduler(), checkAi(), checkModels(), checkQueue(), checkResources(),
+  ]);
+  return [db, wa, sessions, sch, ai, models, checkBackup(now), checkDisk(), queue, resources];
+}
+
+/**
+ * Para endpoints que un monitor externo consulta a menudo: reutiliza el resultado unos segundos, así no se repiten las
+ * consultas ni las llamadas a Evolution por cada petición. /health/ready siempre mide en el momento.
+ */
+let cache: { at: number; checks: CheckResult[] } | null = null;
+export async function cachedChecks(maxAgeMs = 15_000): Promise<CheckResult[]> {
+  if (cache && Date.now() - cache.at < maxAgeMs) return cache.checks;
+  const checks = await runChecks();
+  cache = { at: Date.now(), checks };
+  return checks;
+}
+export function resetChecksCache() {
+  cache = null;
+}
+
+/** Lo imprescindible para atender peticiones (ver READINESS_CHECKS). Mide en el momento: no usa caché. */
+export async function runReadiness(): Promise<CheckResult[]> {
+  const [db, sch] = await Promise.all([checkDb(), checkScheduler()]);
+  return [db, sch];
 }
 
 export const overall = (checks: CheckResult[]): 'ok' | 'warn' | 'fail' => (checks.some((c) => c.status === 'fail') ? 'fail' : checks.some((c) => c.status === 'warn') ? 'warn' : 'ok');
@@ -217,26 +308,65 @@ export async function sendAlert(title: string, body: string) {
 }
 
 const REALERT_MS = 6 * 3600_000;
-/** Un fallo avisa al segundo intento seguido (evita falsas alarmas), repite cada 6 h y avisa cuando se recupera. */
+/** Componentes con ALERT_MUTE: la incidencia se registra, pero no sale ningún aviso (ni de falla, ni de recuperación, ni de escalamiento). */
+const muted = (name: string) => config.monitor.alertMute.includes(name);
+
+/**
+ * Un fallo avisa al segundo intento seguido (evita falsas alarmas), repite cada 6 h y avisa cuando se recupera.
+ * Cada fallo confirmado queda en el historial de incidencias (una abierta por componente), aunque esté silenciado.
+ */
 export async function evaluateAlerts(checks: CheckResult[], st: AlertState, send: Sender = sendAlert, now = Date.now(), confirmAfter = 2) {
   for (const c of checks) {
     if (c.status === 'fail') {
       const n = (st.failures.get(c.name) ?? 0) + 1;
       st.failures.set(c.name, n);
+      if (n < confirmAfter) continue;
+      await recordIncident(c, now);
       const last = st.alertedAt.get(c.name);
-      if (n >= confirmAfter && (!last || now - last >= REALERT_MS)) {
-        st.alertedAt.set(c.name, now);
-        await logEvent({ level: 'error', source: 'system', message: `Alerta: ${c.label} — ${c.detail}` });
-        await send(`🔴 Riverrun: ${c.label}`, `${c.detail}\n\nRevisa el estado completo en el panel (Sistema) o con ./riverrun status.`);
-      }
+      if (last && now - last < REALERT_MS) continue;
+      st.alertedAt.set(c.name, now);
+      await logEvent({ level: 'error', source: 'system', message: `Alerta${muted(c.name) ? ' silenciada (ALERT_MUTE)' : ''}: ${c.label} — ${c.detail}` });
+      if (!muted(c.name)) await send(`🔴 Riverrun: ${c.label}`, `${c.detail}\n\nRevisa el estado completo en el panel (Sistema) o con ./riverrun status.`);
     } else {
       st.failures.delete(c.name);
+      await closeIncident(c.name);
       if (st.alertedAt.has(c.name)) {
         st.alertedAt.delete(c.name);
         await logEvent({ level: 'info', source: 'system', message: `Recuperado: ${c.label}` });
-        await send(`🟢 Riverrun: ${c.label} se recuperó`, c.detail);
+        if (!muted(c.name)) await send(`🟢 Riverrun: ${c.label} se recuperó`, c.detail);
       }
     }
+  }
+}
+
+/** El historial no debe impedir un aviso: si PostgreSQL falla, la alerta sale igual y el error queda en la consola. */
+async function recordIncident(c: CheckResult, now: number) {
+  try {
+    await openIncident(c.name, c.label, c.detail, new Date(now));
+  } catch (e: any) {
+    console.error('No se pudo registrar la incidencia', e?.message ?? e);
+  }
+}
+
+async function closeIncident(component: string) {
+  try {
+    await resolveIncident(component, new Date());
+  } catch (e: any) {
+    console.error('No se pudo cerrar la incidencia', e?.message ?? e);
+  }
+}
+
+/**
+ * Escalamiento: una incidencia que sigue abierta más de ALERT_ESCALATE_MINUTES se anuncia otra vez, una sola vez, con
+ * el aviso marcado. markEscalated es atómico: dos procesos no la envían dos veces.
+ */
+export async function escalateIncidents(send: Sender = sendAlert, now = Date.now()) {
+  const minutes = config.monitor.escalateMinutes;
+  for (const inc of await dueEscalations(minutes, new Date(now))) {
+    if (muted(inc.component)) continue;
+    if (!(await markEscalated(inc.id, new Date(now)))) continue;
+    await logEvent({ level: 'error', source: 'system', message: `Escalado: ${inc.title} sigue abierta desde hace más de ${minutes} min` });
+    await send(`🚨 Riverrun: ESCALADO — ${inc.title}`, `Lleva más de ${minutes} minutos sin resolverse.\n${inc.detail}\n\nRevisa el estado completo en el panel (Sistema) o con ./riverrun status.`);
   }
 }
 
@@ -259,6 +389,7 @@ export function startMonitor(intervalMs = 60_000, deepIntervalMs = 15 * 60_000) 
     try {
       const checks = await runChecks();
       await evaluateAlerts(checks, st);
+      await escalateIncidents();
       if (tick++ % 5 === 0) await heartbeat(checks);
     } catch (e: any) {
       console.error('Error en el monitoreo', e?.message ?? e);
@@ -267,7 +398,10 @@ export function startMonitor(intervalMs = 60_000, deepIntervalMs = 15 * 60_000) 
   setTimeout(run, 15_000).unref(); // deja que el arranque termine
   setInterval(run, intervalMs).unref();
   // Más profundo y menos frecuente: sesiones y webhooks de cada WhatsApp, versión de Evolution y credenciales.
-  const deep = () => void refreshDiagnostics({ force: true }).catch((e) => console.error('Error en el diagnóstico de servicios', e?.message ?? e));
+  const deep = () => {
+    void refreshDiagnostics({ force: true }).catch((e) => console.error('Error en el diagnóstico de servicios', e?.message ?? e));
+    void pruneIncidents().catch((e) => console.error('No se pudo limpiar el historial de incidencias', e?.message ?? e));
+  };
   setTimeout(deep, 30_000).unref();
   setInterval(deep, deepIntervalMs).unref();
 }
@@ -284,6 +418,7 @@ export async function systemStatus() {
   const mem = process.memoryUsage();
   return {
     status: overall(checks),
+    functional: functionalReport(checks),
     version: config.monitor.version,
     uptime_seconds: Math.round(process.uptime()),
     memory_mb: Math.round(mem.rss / 1048576),

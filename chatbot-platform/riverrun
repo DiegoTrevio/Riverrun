@@ -5,6 +5,7 @@
 #   ./riverrun update      actualiza con respaldo previo y vuelta atrás automática si algo falla
 #                          (si cambia Evolution: compatibilidad, respaldo verificado, confirmación y verificación de sesiones)
 #   ./riverrun status      estado de los servicios, salud, último respaldo y si hay versión nueva
+#   ./riverrun preflight [--offline]   revisión previa a producción: solo lectura; sin --offline también consulta el servidor y el HTTPS
 #   ./riverrun backup      respaldo inmediato (corre solo cada noche)
 #   ./riverrun restore [archivo|latest]   restaura un respaldo (en un servidor nuevo: pasa la ruta del archivo)
 #   ./riverrun semantic    activa la búsqueda semántica (pgvector) para catálogos grandes
@@ -68,23 +69,49 @@ wait_healthy() { # segundos (RIVERRUN_WAIT_SECONDS / RIVERRUN_POLL permiten acor
   return 1
 }
 
-# /health/ready completo. Con node (no wget): wget no imprime el cuerpo de un 503, justo cuando algo falla.
-health_json() { dc exec -T backend node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/health/ready').then(r=>r.text()).then(t=>process.stdout.write(t)).catch(()=>process.exit(1))" 2>/dev/null || true; }
+# Salud completa del backend (JSON) con node y no wget: wget no imprime el cuerpo de un 503, justo cuando algo falla.
+# Prefiere /health/functional (con HEALTH_TOKEN del propio contenedor). Un backend anterior, o uno sin token, no lo
+# tiene y responde otra cosa: entonces se usa /health/ready, que es el formato que ya conocían las versiones viejas.
+health_json() {
+  local j
+  j="$(dc exec -T backend node -e "const t=process.env.HEALTH_TOKEN||'';fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/health/functional',{headers:t?{authorization:'Bearer '+t}:{}}).then(r=>r.text()).then(x=>process.stdout.write(x)).catch(()=>process.exit(1))" 2>/dev/null || true)"
+  if [[ "$j" == *'"components"'* ]]; then printf '%s' "$j"; return 0; fi
+  dc exec -T backend node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/health/ready').then(r=>r.text()).then(t=>process.stdout.write(t)).catch(()=>process.exit(1))" 2>/dev/null || true
+}
+# Una línea "nombre ok|fail" por cada comprobación medida. Vacía si el backend no entrega un informe válido.
+health_snapshot() {
+  local j; j="$(health_json)"
+  [[ "$j" == *'"components"'* || "$j" == *'"checks"'* ]] || return 0
+  printf '%s' "$j" | grep -oE '"id":"[a-z_]*","state":"[a-z_]*"|"name":"[a-z_]*","status":"[a-z]*"' \
+    | sed -E 's/"(id|name)":"([a-z_]*)","(state|status)":"([a-z_]*)"/\2 \4/' \
+    | awk 'NF == 2 { print $1 ($2 == "no_disponible" || $2 == "fail" ? " fail" : " ok") }' || true
+}
 # Comprobaciones en falla ("ai whatsapp …"); "?" si el backend no responde.
 health_failing() {
-  local j; j="$(health_json)"
-  [[ -n "$j" ]] || { echo "?"; return 0; }
-  printf '%s' "$j" | grep -o '"name":"[a-z_]*","status":"fail"' | sed 's/"name":"\([a-z_]*\)".*/\1/' | tr '\n' ' ' || true
+  local snap; snap="$(health_snapshot)"
+  [[ -n "$snap" ]] || { echo "?"; return 0; }
+  printf '%s\n' "$snap" | awk '$2 == "fail" { print $1 }' | tr '\n' ' '
 }
-# Después de actualizar: ninguna comprobación que antes estaba bien queda en falla (lo que ya fallaba no bloquea).
+# Después de actualizar: ninguna comprobación que se midió antes y estaba bien queda en falla. Lo que ya fallaba no
+# bloquea, y una comprobación que no se midió antes no se puede atribuir a la actualización.
 no_new_failures() {
-  local now c new=""; now="$(health_failing)"
-  if [[ "$now" == "?" ]]; then warn "El backend no responde a /health/ready."; return 1; fi
+  local snap now c new=""; snap="$(health_snapshot)"
+  if [[ -z "$snap" ]]; then warn "El backend no responde a su comprobación de salud."; return 1; fi
   [[ "${HEALTH_BEFORE:-?}" == "?" ]] && return 0
-  for c in $now; do [[ " $HEALTH_BEFORE " == *" $c "* ]] || new="$new $c"; done
+  now="$(printf '%s\n' "$snap" | awk '$2 == "fail" { print $1 }')"
+  for c in $now; do
+    [[ " ${HEALTH_MEASURED:-} " == *" $c "* ]] || continue
+    [[ " $HEALTH_BEFORE " == *" $c "* ]] || new="$new $c"
+  done
   [[ -z "$new" ]] && return 0
   warn "Con la versión nueva falla (antes no):$new. Detalle: ./riverrun status o el panel (Sistema)."
   return 1
+}
+# Token de /health/functional y /metrics: se genera una vez y nunca se muestra.
+ensure_health_token() {
+  [[ -n "$(env_get HEALTH_TOKEN)" ]] && return 0
+  env_set HEALTH_TOKEN "$(rand 32)"
+  ok "Token de salud generado (HEALTH_TOKEN en .env; no se muestra)"
 }
 
 # ------------------------------------------------------------------ revisión previa y Evolution
@@ -222,7 +249,7 @@ cmd_install() {
 
   # Claves internas: se generan una sola vez y nunca se pisan.
   local gen=0 k
-  for k in POSTGRES_PASSWORD EVOLUTION_API_KEY SESSION_SECRET BACKUP_PASSPHRASE; do
+  for k in POSTGRES_PASSWORD EVOLUTION_API_KEY SESSION_SECRET BACKUP_PASSPHRASE HEALTH_TOKEN; do
     local cur; cur="$(env_get "$k")"
     if [[ -z "$cur" || "$cur" == cambia-esta-clave* ]]; then
       case "$k" in POSTGRES_PASSWORD) env_set "$k" "$(rand 16)" ;; *) env_set "$k" "$(rand 32)" ;; esac
@@ -407,9 +434,15 @@ update_fetch() {
 
 # Lo que corre hoy, antes de tocar nada: qué fallaba, la imagen de backend anterior y Evolution (versión y esquema).
 update_snapshot() {
-  # Después de actualizar, solo cuenta lo que la versión nueva rompa.
-  HEALTH_BEFORE="$(health_failing)"
-  [[ -n "${HEALTH_BEFORE// /}" && "$HEALTH_BEFORE" != "?" ]] && warn "Ya fallaba antes de actualizar: $HEALTH_BEFORE(no bloquea la actualización)."
+  # Después de actualizar, solo cuenta lo que la versión nueva rompa: se compara contra lo que se pudo medir antes.
+  local snap; snap="$(health_snapshot)"
+  if [[ -n "$snap" ]]; then
+    HEALTH_BEFORE=" $(printf '%s\n' "$snap" | awk '$2 == "fail" { print $1 }' | tr '\n' ' ')"
+    HEALTH_MEASURED=" $(printf '%s\n' "$snap" | awk '{ print $1 }' | tr '\n' ' ')"
+  else
+    HEALTH_BEFORE="?"; HEALTH_MEASURED=""
+  fi
+  [[ -n "${HEALTH_BEFORE// /}" && "$HEALTH_BEFORE" != "?" ]] && warn "Ya fallaba antes de actualizar:${HEALTH_BEFORE}(no bloquea la actualización)."
   # Guarda la imagen actual para poder volver si la nueva falla.
   PREV_BACKEND="$(dc images -q backend 2>/dev/null | head -n 1 || true)"
   [[ -n "$PREV_BACKEND" ]] && docker tag "$PREV_BACKEND" riverrun-backend:previous
@@ -512,6 +545,8 @@ cmd_update() {
   update_pull
   update_preflight
   update_backup
+  # Antes de levantar la versión nueva: así sus contenedores reciben HEALTH_TOKEN. La línea base ya se midió.
+  ensure_health_token
   if dc up -d --build && wait_healthy 180 && evolution_verify && no_new_failures; then
     ok "Actualizado a $APP_VERSION"
     (( EVO_CHANGES )) && ok "Evolution: $EVO_TARGET"
@@ -573,7 +608,122 @@ cmd_rotate_secret() {
   warn "Vuelve a iniciar sesión en el panel y reconecta Google Calendar si lo usas."
 }
 
-usage() { sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; }
+# ------------------------------------------------------------------ revisión previa a producción (solo lectura)
+# No cambia nada y no arranca nada. --offline no sale a internet. Lo que no se puede comprobar aquí (respaldos,
+# migraciones, HTTPS) se informa como "no verificado": nunca como aprobado.
+PF_BLOCK=0; PF_WARN=0; PF_UNVERIFIED=0
+pf_ok()         { ok "$*"; }
+pf_warn()       { PF_WARN=$((PF_WARN + 1)); warn "$*"; }
+pf_block()      { PF_BLOCK=$((PF_BLOCK + 1)); printf '%s✕%s %s\n' "$R" "$N" "$*"; }
+pf_rec()        { printf '%s·%s Recomendación: %s\n' "$B" "$N" "$*"; }
+pf_unverified() { PF_UNVERIFIED=$((PF_UNVERIFIED + 1)); printf '%s?%s No verificado: %s\n' "$Y" "$N" "$*"; }
+
+pf_online() {
+  local domain="$1" snap code
+  if need_docker && [[ -n "$(dc ps -q backend 2>/dev/null)" ]]; then
+    snap="$(health_snapshot)"
+    if [[ -z "$snap" ]]; then pf_block "El backend no responde a su comprobación de salud (./riverrun logs backend)."
+    elif printf '%s\n' "$snap" | grep -q ' fail$'; then pf_warn "Comprobaciones en falla: $(printf '%s\n' "$snap" | awk '$2 == "fail" { printf "%s ", $1 }')(./riverrun status)."
+    else pf_ok "Servicios en marcha sin fallos"; fi
+  else
+    pf_unverified "servicios en marcha (no están levantados: ./riverrun status)"
+  fi
+  if [[ -n "$domain" && "$domain" != "localhost" ]] && command -v curl >/dev/null 2>&1; then
+    code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "https://$domain/health" 2>/dev/null || echo 000)"
+    if [[ "$code" == "200" ]]; then pf_ok "HTTPS responde en https://$domain/health"; else pf_warn "https://$domain/health no responde 200 (código $code): revisa el DNS y el certificado."; fi
+  else
+    pf_unverified "HTTPS público (requiere un dominio y curl)"
+  fi
+}
+
+cmd_preflight() {
+  local offline=0 a
+  for a in "$@"; do
+    case "$a" in
+      --offline) offline=1 ;;
+      *) die "Opción desconocida: $a (uso: ./riverrun preflight [--offline])" ;;
+    esac
+  done
+  say "${B}Revisión previa a producción${N}$( (( offline )) && echo ' (sin red)' || true):"
+  PF_BLOCK=0; PF_WARN=0; PF_UNVERIFIED=0
+
+  # Máquina. /proc y df se pueden fijar con RIVERRUN_PREFLIGHT_* (las usan las pruebas).
+  if need_docker; then pf_ok "Docker y Compose disponibles"; else pf_block "Docker o Docker Compose no están disponibles: instálalos antes de publicar."; fi
+  local mem_kb disk_kb cpus mem_mb disk_gb
+  mem_kb="${RIVERRUN_PREFLIGHT_MEM_KB:-$(awk '/^MemTotal:/ { print $2 }' /proc/meminfo 2>/dev/null || true)}"
+  disk_kb="${RIVERRUN_PREFLIGHT_DISK_KB:-$(df -Pk . 2>/dev/null | awk 'NR == 2 { print $4 }' || true)}"
+  cpus="${RIVERRUN_PREFLIGHT_CPUS:-$(nproc 2>/dev/null || true)}"
+  if [[ "${mem_kb:-0}" =~ ^[0-9]+$ ]] && (( ${mem_kb:-0} > 0 )); then
+    mem_mb=$(( mem_kb / 1024 ))
+    if (( mem_mb < 1024 )); then pf_block "Memoria: ${mem_mb} MB. Con menos de 1 GB no caben PostgreSQL y Evolution."
+    elif (( mem_mb < 1800 )); then pf_warn "Memoria: ${mem_mb} MB. Funciona, pero deja poco margen en un VPS de 2 GB (límites en docs/produccion.md)."
+    else pf_ok "Memoria: ${mem_mb} MB"; fi
+  else
+    pf_unverified "memoria (no se pudo leer /proc/meminfo)"
+  fi
+  if [[ "${disk_kb:-0}" =~ ^[0-9]+$ ]] && (( ${disk_kb:-0} > 0 )); then
+    disk_gb=$(( disk_kb / 1048576 ))
+    if (( disk_gb < 2 )); then pf_block "Disco libre: ${disk_gb} GB. Los respaldos y las subidas van a fallar."
+    elif (( disk_gb < 5 )); then pf_warn "Disco libre: ${disk_gb} GB (recomendado: 5 GB o más)."
+    else pf_ok "Disco libre: ${disk_gb} GB"; fi
+  else
+    pf_unverified "disco (no se pudo leer el espacio libre)"
+  fi
+  if [[ "${cpus:-0}" =~ ^[0-9]+$ ]] && (( ${cpus:-0} < 2 )); then pf_rec "1 CPU: la IA y los respaldos compiten con la atención de mensajes. Lo recomendado son 2."; fi
+
+  # Configuración
+  if [[ -f "$ENV_FILE" ]]; then
+    pf_ok "Archivo .env presente"
+    local perm; perm="$(stat -c %a "$ENV_FILE" 2>/dev/null || stat -f %Lp "$ENV_FILE" 2>/dev/null || echo '?')"
+    case "$perm" in
+      600|400) pf_ok "Permisos de .env: $perm" ;;
+      '?') pf_unverified "permisos de .env" ;;
+      *) pf_warn "Permisos de .env demasiado abiertos ($perm). Corrígelos con: chmod 600 .env" ;;
+    esac
+  else
+    pf_block "Falta .env: instala con ./riverrun install."
+  fi
+  if need_docker && [[ -f "$ENV_FILE" ]]; then
+    if preflight_config; then pf_ok "Configuración: sin problemas críticos"; else pf_block "Configuración con problemas críticos: corrígelos (lista arriba) antes de publicar."; fi
+    if dc config -q >/dev/null 2>&1; then pf_ok "docker-compose.yml válido con el .env actual"; else pf_block "docker-compose.yml no es válido con el .env actual (variables obligatorias faltantes: ./riverrun status)."; fi
+  else
+    pf_unverified "configuración y docker-compose.yml (requieren Docker y .env)"
+  fi
+
+  local domain mode evo_img
+  domain="$(env_get DOMAIN)"; mode="$(env_get OUTBOUND_MODE)"
+  if [[ -z "$domain" || "$domain" == "localhost" ]]; then pf_warn "Sin dominio público (DOMAIN=${domain:-vacío}): todavía no es un servidor de producción."
+  else pf_ok "Dominio: $domain"; fi
+  if [[ "$mode" == "sandbox" ]]; then pf_warn "OUTBOUND_MODE=sandbox: los envíos reales están bloqueados (correcto en pruebas; en producción debe ser live)."
+  else pf_ok "Envíos reales habilitados (OUTBOUND_MODE=${mode:-live})"; fi
+  if [[ -n "$(env_get HEALTH_TOKEN)" ]]; then pf_ok "HEALTH_TOKEN definido (/health/functional y /metrics activos)"
+  else pf_warn "HEALTH_TOKEN vacío: /health/functional y /metrics no existen. Lo genera ./riverrun update."; fi
+
+  # Versiones
+  if need_docker && [[ -f "$ENV_FILE" ]]; then evo_img="$(evo_target_image || true)"; else evo_img=""; fi
+  if [[ "$evo_img" == *@sha256:* ]]; then pf_ok "Evolution fijada por digest"
+  elif [[ -n "$evo_img" ]]; then pf_warn "Evolution no está fijada por digest ($evo_img): una actualización puede cambiarla sin aviso."
+  else pf_unverified "imagen de Evolution (requiere Docker y .env)"; fi
+
+  # Lo que exige servicios en marcha, red o el contenedor de respaldos: se informa, no se da por bueno.
+  pf_unverified "último respaldo y su copia en la nube (./riverrun status)"
+  pf_unverified "migraciones de la base de datos pendientes (requieren PostgreSQL en marcha)"
+  if (( offline )); then pf_unverified "certificado HTTPS y DNS (revisión en línea: ./riverrun preflight sin --offline)"
+  else pf_online "$domain"; fi
+
+  say ""
+  if (( PF_BLOCK > 0 )); then
+    printf '%s✕ Estado final: BLOQUEADO%s: %d bloqueo(s), %d advertencia(s), %d sin verificar. Corrige los ✕ antes de publicar.\n' "$R" "$N" "$PF_BLOCK" "$PF_WARN" "$PF_UNVERIFIED"
+    return 1
+  fi
+  if (( PF_WARN > 0 )); then say "${Y}!${N} Estado final: APROBADO CON ADVERTENCIAS: $PF_WARN advertencia(s), $PF_UNVERIFIED sin verificar."
+  elif (( PF_UNVERIFIED > 0 )); then say "Estado final: SIN BLOQUEOS EN LO REVISADO: quedan $PF_UNVERIFIED comprobación(es) sin verificar (marcadas con ?). No es una aprobación completa."
+  else say "${G}✓${N} Estado final: APROBADO."
+  fi
+  return 0
+}
+
+usage() { awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; }
 
 case "${1:-help}" in
   install) shift; cmd_install "$@" ;;
@@ -584,6 +734,7 @@ case "${1:-help}" in
   logs) shift; cmd_logs "$@" ;;
   restart) cmd_restart ;;
   rotate-secret) cmd_rotate_secret ;;
+  preflight) shift; cmd_preflight "$@" ;;
   semantic) shift; cmd_semantic "$@" ;;
   help|-h|--help) usage ;;
   *) usage; exit 1 ;;

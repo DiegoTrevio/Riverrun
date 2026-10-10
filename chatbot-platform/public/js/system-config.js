@@ -64,6 +64,26 @@ function render(box, d) {
       evolutionCard(d.evolution)));
 }
 
+/* ------------------------------ Estado operativo (cinco estados) ------------------------------ */
+// Lo que comprobó el servidor, por componente. "No configurado" y "No verificado" no son fallos: se muestran como tales.
+const STATE_BADGE = { operativo: ['green', 'Operativo'], degradado: ['orange', 'Degradado'], no_disponible: ['red', 'No disponible'], no_configurado: ['', 'No configurado'], no_verificado: ['', 'No verificado'] };
+
+function componentRow(c) {
+  return h('div', { style: 'padding:10px 0;border-top:1px solid var(--border)' },
+    h('div', { class: 'row between' }, h('strong', {}, c.label), badge(STATE_BADGE[c.state] ?? ['', c.state])),
+    c.detail ? h('p', { class: 'small muted', style: 'margin:4px 0' }, c.detail) : null,
+    c.actions?.length ? h('ul', { class: 'small', style: 'margin:4px 0;padding-left:18px' }, c.actions.map((a) => h('li', {}, a))) : null);
+}
+
+/** Se llena con el informe funcional que ya trae /api/system/status: no hace una petición extra. */
+export function functionalSection(f) {
+  if (!f || !Array.isArray(f.components)) return h('div', {});
+  return h('div', { class: 'card', style: 'margin-top:16px' },
+    h('div', { class: 'row between' }, h('h2', { style: 'margin:0' }, 'Estado operativo'), badge(STATE_BADGE[f.status] ?? ['', f.status])),
+    h('p', { class: 'small muted' }, `Revisado ${fmtDate(f.checked_at)}. "No configurado" significa que la función no está activada; "No verificado", que no hay forma de comprobarla ahora. Ninguno de los dos es un fallo.`),
+    f.components.map(componentRow));
+}
+
 /** Sección que se agrega al final de Sistema. Si falla, no rompe el resto de la página. */
 export async function configSection() {
   const box = h('div', { style: 'margin-top:24px' }, h('p', { class: 'small muted' }, 'Cargando configuración…'));
