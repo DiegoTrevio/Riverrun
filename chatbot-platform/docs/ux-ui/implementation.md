@@ -87,6 +87,7 @@ La regresión utiliza Chromium real, PostgreSQL + pgvector y permisos reales del
 - Tras el ajuste defensivo final de fechas vacías/inválidas: **9 contratos UX aprobados** de nuevo.
 - Navegador final: **15 comprobaciones dirigidas, 44 pantallas/variantes de rol y 60 escenarios adaptables**. Cero errores JavaScript; cero hallazgos axe críticos/serios en las 44 pantallas examinadas.
 - `check:frontend`, compilación TypeScript, sintaxis del widget y `git diff --check`: correctos. `npm audit --omit=dev --audit-level=high`: cero vulnerabilidades.
+- Compatibilidad del lockfile comprobada con `npm ci --dry-run --ignore-scripts` usando npm 10.9.4 (serie utilizada por Node 22 en CI/Docker), tras restaurar dos dependencias opcionales requeridas.
 - [Resultados posteriores](verification/results.json), [agente en móvil](verification/bot-mobile.png) y [conversación en móvil](verification/conversation-mobile.png).
 
 Estos resultados son del entorno local aislado; la ejecución del CI de GitHub y el despliegue son verificaciones distintas. Los hallazgos axe moderados/menores, si los hay, se conservan en el JSON.
