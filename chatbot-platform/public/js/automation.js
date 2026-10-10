@@ -1,6 +1,7 @@
+import { discardDraft, draftModel, draftNotice, draftVersion, initializeDraftDefaults } from './editing.js';
 import { needAccount } from './admin.js';
 import { messageTester, saveBar } from './bot.js';
-import { api, area, check, clone, field, fill, fmtDate, h, lines, num, run, select, state, text, toast } from './core.js';
+import { api, area, check, clone, field, fill, fmtDate, h, dialog, localDateTime, lines, num, run, select, state, text, toast, confirmAction } from './core.js';
 import { render } from './main.js';
 import { withAcct } from './session.js';
 
@@ -28,10 +29,8 @@ async function automationRefs() {
     api('GET', withAcct('/api/users')),
     api('GET', withAcct('/api/services')),
   ]);
-  const images = [];
-  for (const b of bots) for (const img of await api('GET', `/api/chatbots/${b.id}/images`)) images.push({ ...img, bot: b.name });
   const files = await api('GET', withAcct('/api/attachments'));
-  return { bots, sequences, users: users.filter((u) => u.account_id), services, images, files };
+  return { bots, sequences, users: users.filter((u) => u.account_id), services, images: [], files, imagesLoaded: false, imageRequest: null };
 }
 
 /**
@@ -40,7 +39,7 @@ async function automationRefs() {
  */
 function photoOptions(refs, current) {
   const opts = [['', '— Sin imagen —'], ...refs.images.map((i) => [i.id, `${i.name} (${i.bot})${i.active === false ? ' — inactiva: no se enviará' : ''}`])];
-  if (current && !refs.images.some((i) => i.id === current)) opts.push([current, '⚠ Foto borrada: elige otra o quítala']);
+  if (current && !refs.images.some((i) => i.id === current)) opts.push([current, refs.imagesLoaded ? '⚠ Foto borrada: elige otra o quítala' : 'Foto guardada · abre el catálogo para ver su nombre']);
   return opts;
 }
 
@@ -87,6 +86,23 @@ const CONDITIONS = {
   agent: 'Asistente activo o en pausa',
 };
 
+function photoPicker(obj, key, refs) {
+  const control = select(obj, key, photoOptions(refs, obj[key]));
+  control.addEventListener('focus', async () => {
+    if (refs.imagesLoaded) return;
+    try {
+      refs.imageRequest ??= (async () => {
+        const result = [];
+        for (let i = 0; i < refs.bots.length; i += 3) { const batch = await Promise.all(refs.bots.slice(i, i + 3).map(async (bot) => (await api('GET', `/api/chatbots/${bot.id}/images`)).map((img) => ({ ...img, bot: bot.name })))); result.push(...batch.flat()); }
+        refs.images = result; refs.imagesLoaded = true;
+      })();
+      await refs.imageRequest;
+      fill(control, photoOptions(refs, obj[key]).map(([value, label]) => h('option', { value, selected: value === (obj[key] || '') }, label)));
+    } catch (error) { refs.imageRequest = null; toast('No pudimos cargar las fotos. Vuelve a abrir el catálogo para reintentar.', true); }
+  });
+  return control;
+}
+
 /** Plantillas para empezar rápido: cubren las necesidades más comunes. */
 const RULE_TEMPLATES = [
   { name: 'Bienvenida a clientes nuevos', trigger: { type: 'new_contact' }, actions: [{ type: 'add_tag', tag: 'nuevo' }] },
@@ -126,12 +142,12 @@ async function listRules(root) {
     h('div', { class: 'card' },
       h('p', { class: 'muted', style: 'margin-top:0' }, 'Una regla dice: ', h('strong', {}, 'cuando pase algo'), ', ', h('strong', {}, 'si se cumplen ciertas condiciones'), ', ', h('strong', {}, 'haz estas acciones'), '. Funcionan en todos los canales y junto con la IA.'),
       h('div', { class: 'row' }, h('a', { class: 'btn primary', href: '#/automation/rules/new' }, '+ Regla en blanco')),
-      h('h3', {}, 'Plantillas rápidas'),
+      h('h2', {}, 'Plantillas rápidas'),
       h('div', { class: 'row' }, RULE_TEMPLATES.map((t) => h('button', { class: 'small', onclick: () => create(t) }, t.name)))),
     bots.length ? h('details', { class: 'card' }, h('summary', {}, h('strong', {}, '🧪 Probar palabras'), h('span', { class: 'small muted' }, ' — qué reglas se activan con un mensaje')), messageTester(bots)) : null,
     h('div', { class: 'card' },
       rules.length
-        ? h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Regla'), h('th', {}, 'Cuando'), h('th', {}, 'Acciones'), h('th', {}, 'Veces'), h('th', {}, ''))),
+        ? h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Regla'), h('th', {}, 'Cuando'), h('th', {}, 'Acciones'), h('th', {}, 'Veces'), h('th', {}, 'Acciones'))),
             h('tbody', {}, rules.map((r) => h('tr', {},
               h('td', {}, h('a', { href: `#/automation/rules/${r.id}` }, h('strong', {}, r.name)), ' ', r.active ? null : h('span', { class: 'badge orange' }, 'inactiva'), r.stop_ai ? h('div', { class: 'small muted' }, 'la IA no responde') : null),
               h('td', { class: 'small' }, triggerSummary(r.trigger), r.conditions.length ? h('div', { class: 'muted' }, `+ ${r.conditions.length} condición(es)`) : null),
@@ -155,7 +171,7 @@ function typedList(list, types, fieldsFor, onChange) {
             h('button', { class: 'small danger', onclick: () => { list.splice(i, 1); draw(); onChange?.(); } }, 'Quitar'))),
         fieldsFor(item, draw))),
       h('div', { class: 'row' },
-        h('select', { onchange: (e) => { if (e.target.value) { list.push({ type: e.target.value }); e.target.value = ''; draw(); onChange?.(); } } },
+        h('select', { 'aria-label': 'Tipo de condición o acción', onchange: (e) => { if (e.target.value) { list.push({ type: e.target.value }); e.target.value = ''; draw(); onChange?.(); } } },
           h('option', { value: '' }, '+ Agregar…'),
           Object.entries(types).map(([k, l]) => h('option', { value: k }, l)))));
   };
@@ -170,7 +186,7 @@ const KIND_LABEL = { document: 'documento', audio: 'audio', video: 'video', imag
 
 /** Elegir un archivo de la biblioteca o subir uno nuevo (PDF, Word, Excel, audio, video… hasta 16 MB). */
 function attachmentPicker(obj, refs) {
-  const sel = h('select', { onchange: (e) => { obj.attachment_id = e.target.value; } },
+  const sel = h('select', { 'aria-label': 'Archivo de la biblioteca', onchange: (e) => { obj.attachment_id = e.target.value; } },
     h('option', { value: '' }, '— Sin archivo —'),
     ...refs.files.map((f) => h('option', { value: f.id }, `${f.name} (${KIND_LABEL[f.kind] || f.kind})`)));
   sel.value = obj.attachment_id || '';
@@ -201,7 +217,7 @@ function actionFields(a, refs) {
       return [
         field('Mensaje (opcional si eliges una foto)', area(a, 'text'), VARS_HELP),
         h('div', { class: 'grid' },
-          field('Foto (opcional)', select(a, 'image_id', photoOptions(refs, a.image_id))),
+          field('Foto (opcional)', photoPicker(a, 'image_id', refs)),
           field('Esperar antes de enviar (minutos)', num(a, 'delay_minutes', { min: 0 }), '0 = de inmediato')),
         field('Archivo (opcional)', attachmentPicker(a, refs)),
       ];
@@ -311,8 +327,9 @@ async function editRule(root, id) {
   const refs = await automationRefs();
   const existing = id === 'new' ? null : (await api('GET', withAcct('/api/automations'))).find((r) => r.id === id);
   if (id !== 'new' && !existing) throw new Error('Regla no encontrada');
-  const r = existing ? clone(existing) : { name: '', active: true, chatbot_id: null, stop_ai: false, priority: 0, trigger: { type: 'message_received', match: 'keywords', keywords: [] }, conditions: [], actions: [] };
-  r.chatbot_id ??= '';
+  const r = draftModel(`rule:${id}`, existing || { name: '', active: false, chatbot_id: null, stop_ai: false, priority: 0, trigger: { type: 'message_received', match: 'keywords', keywords: [] }, conditions: [], actions: [] }, false);
+  root.append(draftNotice([`rule:${id}`], render));
+  initializeDraftDefaults(`rule:${id}`, () => { r.chatbot_id ??= ''; });
   const trigBox = h('div');
   const drawTrigger = () => {
     const t = r.trigger;
@@ -332,7 +349,7 @@ async function editRule(root, id) {
       t.step ??= 0;
       const steps = refs.bots.find((b) => b.id === r.chatbot_id)?.flow?.steps ?? [];
       const n = Math.max(steps.length, 8);
-      f.push(field('Etapa del recorrido', h('select', { onchange: (e) => { t.step = Number(e.target.value); } },
+      f.push(field('Etapa del recorrido', h('select', { 'aria-label': 'Tipo de condición o acción', onchange: (e) => { t.step = Number(e.target.value); } },
         [[0, 'Cualquier etapa'], ...Array.from({ length: n }, (_, i) => [i + 1, `Etapa ${i + 1}${steps[i]?.title ? `: ${steps[i].title}` : ''}`])].map(([v, l]) => h('option', { value: v, selected: v === t.step }, l))),
         'Se dispara cuando el asistente marca que la conversación llegó a esa etapa (una vez por cambio de etapa). Elige el asistente en la regla para ver los nombres de sus etapas.'));
     } else if (t.type === 'tag_added') {
@@ -347,12 +364,13 @@ async function editRule(root, id) {
     }
     fill(trigBox, field('Cuando…', select(r.trigger, 'type', Object.entries(TRIGGERS), (v) => { r.trigger = { type: v }; drawTrigger(); })), ...f);
   };
-  drawTrigger();
+  initializeDraftDefaults(`rule:${id}`, drawTrigger);
   const save = async () => {
     if (r.actions.some((a) => a.type === 'send_message' && !a.text?.trim() && !a.image_id && !a.attachment_id)) return toast('En "Enviar mensaje" escribe un mensaje o elige una foto o un archivo', true);
     const body = { ...r, chatbot_id: r.chatbot_id || null, account_id: state.accountId || undefined };
+    const version = draftVersion(`rule:${id}`);
     const saved = await run(() => (existing ? api('PUT', `/api/automations/${id}`, body) : api('POST', '/api/automations', body)), 'Regla guardada ✅');
-    if (saved) location.hash = '#/automation/rules';
+    if (saved) { discardDraft(`rule:${id}`, version); location.hash = '#/automation/rules'; }
   };
   root.append(
     h('a', { href: '#/automation/rules' }, '← Reglas'),
@@ -362,11 +380,12 @@ async function editRule(root, id) {
         field('Aplica a', select(r, 'chatbot_id', [['', 'Todos los chatbots de la cuenta'], ...refs.bots.map((b) => [b.id, b.name])], () => { if (r.trigger.type === 'stage_reached') drawTrigger(); }))),
       check(r, 'active', 'Activa'),
       check(r, 'stop_ai', 'Si se cumple, la IA no responde ese mensaje (la regla se encarga)')),
-    h('div', { class: 'card' }, h('h3', { style: 'margin-top:0' }, '1. Cuándo'), trigBox),
-    h('div', { class: 'card' }, h('h3', { style: 'margin-top:0' }, '2. Solo si… (opcional)'), typedList(r.conditions, CONDITIONS, (c) => conditionFields(c))),
-    h('div', { class: 'card' }, h('h3', { style: 'margin-top:0' }, '3. Hacer'), typedList(r.actions, ACTIONS, (a) => actionFields(a, refs))),
+    h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, '1. Cuándo'), trigBox),
+    h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, '2. Solo si… (opcional)'), typedList(r.conditions, CONDITIONS, (c) => conditionFields(c))),
+    h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, '3. Hacer'), typedList(r.actions, ACTIONS, (a) => actionFields(a, refs))),
+    h('details', { class: 'card' }, h('summary', {}, 'Probar la configuración guardada'), h('p', { class: 'help' }, 'La prueba usa las reglas guardadas. Guarda tus cambios antes de probarlos.'), messageTester(refs.bots)),
     saveBar(save, existing ? h('span', { class: 'row', style: 'margin-left:auto' },
-      h('button', { class: 'danger', onclick: async () => { if (confirm('¿Eliminar la regla?')) { await run(() => api('DELETE', `/api/automations/${id}`), 'Eliminada'); location.hash = '#/automation/rules'; } } }, 'Eliminar')) : null),
+      h('button', { class: 'danger', onclick: async () => { if (await confirmAction('¿Eliminar la regla?')) { if (!(await run(() => api('DELETE', `/api/automations/${id}`), 'Eliminada'))) return; location.hash = '#/automation/rules'; } } }, 'Eliminar')) : null),
   );
 }
 
@@ -395,24 +414,28 @@ async function editSequence(root, id) {
   const refs = await automationRefs();
   const existing = id === 'new' ? null : refs.sequences.find((q) => q.id === id);
   if (id !== 'new' && !existing) throw new Error('Secuencia no encontrada');
-  const q = existing ? clone(existing) : { name: '', active: true, stop_on_reply: true, business_hours_only: true, steps: [{ delay_value: 0, delay_unit: 'minutes', at_time: '', text: '', image_id: '', conditions: [] }] };
+  const q = draftModel(`sequence:${id}`, existing || { name: '', active: false, stop_on_reply: true, business_hours_only: true, steps: [{ delay_value: 0, delay_unit: 'minutes', at_time: '', text: '', image_id: '', conditions: [] }] }, false);
+  root.append(draftNotice([`sequence:${id}`], render));
   const list = h('div');
+  const timeline = h('ol', { class: 'small' });
+  const drawTimeline = () => fill(timeline, q.steps.map((st, i) => h('li', {}, `Mensaje ${i + 1}: ${st.delay_value} ${Object.fromEntries(UNITS)[st.delay_unit]} ${i ? 'después del anterior' : 'desde el inicio'}${st.at_time ? `; siguiente ${st.at_time}` : ''}${q.business_hours_only ? '; respeta el horario del negocio' : ''}`)));
   const draw = () => fill(list, ...q.steps.map((st, i) => h('div', { class: 'list-item' },
     h('div', { class: 'row between' }, h('strong', {}, `Mensaje ${i + 1}`),
       h('div', { class: 'row' },
-        h('button', { class: 'small', disabled: i === 0, onclick: () => { [q.steps[i - 1], q.steps[i]] = [q.steps[i], q.steps[i - 1]]; draw(); } }, '↑'),
+        h('button', { class: 'small', disabled: i === 0, 'aria-label': `Mover mensaje ${i + 1} arriba`, onclick: () => { [q.steps[i - 1], q.steps[i]] = [q.steps[i], q.steps[i - 1]]; draw(); list.querySelectorAll('.list-item')[i - 1]?.querySelector('textarea')?.focus(); } }, '↑'),
         h('button', { class: 'small danger', disabled: q.steps.length === 1, onclick: () => { q.steps.splice(i, 1); draw(); } }, 'Quitar'))),
     h('div', { class: 'grid' },
       field(i === 0 ? 'Esperar desde que inicia' : 'Esperar desde el mensaje anterior', h('div', { class: 'row' }, h('div', { style: 'width:90px' }, num(st, 'delay_value', { min: 0 })), select(st, 'delay_unit', UNITS))),
       field('A esta hora (opcional)', h('input', { type: 'time', value: st.at_time, oninput: (e) => (st.at_time = e.target.value) }), 'Ej.: al día siguiente a las 10:00')),
     field('Mensaje', area(st, 'text'), VARS_HELP),
-    field('Imagen (opcional)', select(st, 'image_id', photoOptions(refs, st.image_id))),
+    field('Imagen (opcional)', photoPicker(st, 'image_id', refs)),
     field('Archivo (opcional)', attachmentPicker(st, refs)),
     h('details', {}, h('summary', {}, `Enviar solo si… (${st.conditions.length})`), typedList(st.conditions, CONDITIONS, (c) => conditionFields(c))))));
   draw();
   const save = async () => {
+    const version = draftVersion(`sequence:${id}`);
     const saved = await run(() => (existing ? api('PUT', `/api/sequences/${id}`, q) : api('POST', '/api/sequences', { ...q, account_id: state.accountId || undefined })), 'Secuencia guardada ✅');
-    if (saved) location.hash = '#/automation/sequences';
+    if (saved) { discardDraft(`sequence:${id}`, version); location.hash = '#/automation/sequences'; }
   };
   root.append(
     h('a', { href: '#/automation/sequences' }, '← Secuencias'),
@@ -421,10 +444,11 @@ async function editSequence(root, id) {
       check(q, 'active', 'Activa'),
       check(q, 'stop_on_reply', 'Detener si el cliente responde'),
       check(q, 'business_hours_only', 'Enviar solo en horario del negocio (lo que caiga fuera se pasa a la siguiente apertura)')),
-    h('div', { class: 'card' }, h('h3', { style: 'margin-top:0' }, 'Mensajes'), list,
+    h('details', { class: 'card', ontoggle: () => drawTimeline() }, h('summary', {}, 'Ver línea temporal del seguimiento'), timeline),
+    h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, 'Mensajes'), list,
       h('button', { onclick: () => { q.steps.push({ delay_value: 1, delay_unit: 'days', at_time: '', text: '', image_id: '', conditions: [] }); draw(); } }, '+ Agregar mensaje')),
     saveBar(save, existing ? h('span', { class: 'row', style: 'margin-left:auto' },
-      h('button', { class: 'danger', onclick: async () => { if (confirm('¿Eliminar la secuencia? Se detendrá para todos los inscritos.')) { await run(() => api('DELETE', `/api/sequences/${id}`), 'Eliminada'); location.hash = '#/automation/sequences'; } } }, 'Eliminar')) : null),
+      h('button', { class: 'danger', onclick: async () => { if (await confirmAction('¿Eliminar la secuencia? Se detendrá para todos los inscritos.')) { if (!(await run(() => api('DELETE', `/api/sequences/${id}`), 'Eliminada'))) return; location.hash = '#/automation/sequences'; } } }, 'Eliminar')) : null),
   );
 }
 
@@ -455,14 +479,15 @@ async function listCampaigns(root) {
 }
 
 async function editCampaign(root, id) {
-  const [refs, channels] = await Promise.all([automationRefs(), api('GET', withAcct('/api/channels'))]);
+  const [refs, channels, info] = await Promise.all([automationRefs(), api('GET', withAcct('/api/channels')), api('GET', withAcct('/api/agenda/info'))]);
+  state.timeZone = info.timezone;
   const existing = id === 'new' ? null : (await api('GET', withAcct('/api/campaigns'))).find((c) => c.id === id);
   if (id !== 'new' && !existing) throw new Error('Campaña no encontrada');
-  const c = existing ? clone(existing) : { name: '', channel_id: channels[0]?.id || '', message: '', image_id: null, audience: { tags_any: [], tags_none: [], active_within_days: 0, statuses: [] }, scheduled_at: null, rate_per_minute: 20, business_hours_only: true, status: 'draft' };
-  c.image_id ??= '';
-  c.flow_step ??= 0;
+  const c = draftModel(`campaign:${id}`, existing || { name: '', channel_id: channels[0]?.id || '', message: '', image_id: null, audience: { tags_any: [], tags_none: [], active_within_days: 0, statuses: [] }, scheduled_at: null, rate_per_minute: 20, business_hours_only: true, status: 'draft' }, false);
+  initializeDraftDefaults(`campaign:${id}`, () => { c.image_id ??= ''; c.flow_step ??= 0; c.channel_ids ??= []; });
   const editable = ['draft', 'scheduled'].includes(c.status);
-  const local = { when: c.scheduled_at ? new Date(new Date(c.scheduled_at).getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16) : '' };
+  const local = draftModel(`campaign-time:${id}`, { when: localDateTime(c.scheduled_at, info.timezone) }, false);
+  root.append(draftNotice([`campaign:${id}`, `campaign-time:${id}`], render));
   const previewBox = h('div');
   // Varios números: la campaña también sale desde los otros canales del mismo tipo (cada cliente recibe desde el número que ya conoce).
   c.channel_ids ??= [];
@@ -476,22 +501,41 @@ async function editCampaign(root, id) {
       h('small', {}, 'Cada cliente recibe el mensaje desde el número con el que ya hablaba. Cada número lleva su propio ritmo, así la campaña termina antes sin arriesgar a ninguno.')) : null);
   };
   drawExtra();
-  const body = () => ({ ...c, image_id: c.image_id || null, scheduled_at: local.when ? new Date(local.when).toISOString() : null, account_id: state.accountId || undefined });
+  const body = () => ({ ...c, image_id: c.image_id || null, scheduled_local: local.when || null, account_id: state.accountId || undefined });
   const save = async () => {
+    const versions = [`campaign:${id}`, `campaign-time:${id}`].map((key) => [key, draftVersion(key)]);
     const saved = await run(() => (existing ? api('PUT', `/api/campaigns/${id}`, body()) : api('POST', '/api/campaigns', body())), 'Campaña guardada');
+    if (saved) versions.forEach(([key, version]) => discardDraft(key, version));
     if (saved && !existing) location.hash = `#/automation/campaigns/${saved.id}`;
     return saved;
+  };
+  let launching = false;
+  const reviewAndLaunch = async () => {
+    if (launching) return; launching = true;
+    try {
+      const proposed = body(); const fingerprint = JSON.stringify(proposed);
+      const preview = await run(() => api('POST', `/api/campaigns/${id}/preview`, proposed));
+      if (!preview) return;
+      if (JSON.stringify(body()) !== fingerprint) return toast('Cambiaste la campaña. Revisa de nuevo los destinatarios.', true);
+      if (!preview.count) return toast('No hay destinatarios disponibles para esta campaña.', true);
+      const review = h('div', {}, h('p', {}, `${preview.count} destinatarios · ${preview.excluded_no_consent || 0} excluidos por falta de consentimiento`), h('p', {}, `Conexiones: ${[c.channel_id, ...c.channel_ids].map((key) => channels.find((ch) => ch.id === key)?.name || key).join(', ')}`), h('p', {}, local.when ? `Fecha: ${local.when.replace('T', ' ')} · ${info.timezone}` : 'Envío inmediato'), h('div', { class: 'pre' }, c.message), preview.warning ? h('p', { class: 'banner warn' }, preview.warning) : null);
+      if (!(await dialog('Revisa la campaña antes de enviarla', review, local.when ? 'Confirmar programación' : 'Confirmar envío ahora'))) return;
+      if (JSON.stringify(body()) !== fingerprint) return toast('Cambiaste la campaña. Revisa de nuevo antes de enviar.', true);
+      if (!(await save())) return;
+      // Guardar una campaña ya programada reprograma sus jobs en el servidor; no lanzarla dos veces.
+      if (c.status === 'scheduled' || await run(() => api('POST', `/api/campaigns/${id}/launch`), 'Campaña en marcha')) render();
+    } finally { launching = false; }
   };
   const statusBox = h('div');
   if (existing) {
     const [cls, label] = CAMPAIGN_STATUS[c.status];
     const recipients = await api('GET', `/api/campaigns/${id}/recipients`);
     fill(statusBox, h('div', { class: 'card' },
-      h('div', { class: 'row between' }, h('h3', { style: 'margin:0' }, 'Estado: ', h('span', { class: `badge ${cls}` }, label)),
+      h('div', { class: 'row between' }, h('h2', { style: 'margin:0' }, 'Estado: ', h('span', { class: `badge ${cls}` }, label)),
         h('div', { class: 'row' },
-          editable ? h('button', { class: 'small', onclick: async () => { const p = await run(() => api('POST', `/api/campaigns/${id}/preview`)); if (p) fill(previewBox, h('p', {}, h('strong', {}, `${p.count} destinatarios`), p.sample.length ? `: ${p.sample.join(', ')}${p.count > p.sample.length ? '…' : ''}` : ''), p.excluded_no_consent ? h('p', { class: 'small' }, `⚠️ ${p.excluded_no_consent} cliente${p.excluded_no_consent === 1 ? '' : 's'} del segmento quedan fuera porque no han aceptado recibir promociones (se registra cuando escriben ACEPTO o tú lo marcas en su ficha).`) : null, p.warning ? h('p', { class: 'badge orange' }, p.warning) : null); } }, 'Ver destinatarios') : null,
-          editable ? h('button', { class: 'primary small', onclick: async () => { if (!(await save())) return; if (!confirm(local.when ? 'Se programará el envío. ¿Continuar?' : 'Se enviará AHORA a todos los destinatarios. ¿Continuar?')) return; if (await run(() => api('POST', `/api/campaigns/${id}/launch`), 'Campaña en marcha')) render(); } }, local.when ? 'Programar envío' : 'Enviar ahora') : null,
-          ['scheduled', 'sending'].includes(c.status) ? h('button', { class: 'small danger', onclick: async () => { if (confirm('¿Cancelar la campaña?')) { await run(() => api('POST', `/api/campaigns/${id}/cancel`), 'Cancelada'); render(); } } }, 'Cancelar') : null)),
+          editable ? h('button', { class: 'small', onclick: async () => { const p = await run(() => api('POST', `/api/campaigns/${id}/preview`, body())); if (p) fill(previewBox, h('p', {}, h('strong', {}, `${p.count} destinatarios`), p.sample.length ? `: ${p.sample.join(', ')}${p.count > p.sample.length ? '…' : ''}` : ''), p.excluded_no_consent ? h('p', { class: 'small' }, `⚠️ ${p.excluded_no_consent} cliente${p.excluded_no_consent === 1 ? '' : 's'} del segmento quedan fuera porque no han aceptado recibir promociones (se registra cuando escriben ACEPTO o tú lo marcas en su ficha).`) : null, p.warning ? h('p', { class: 'badge orange' }, p.warning) : null); } }, 'Ver destinatarios') : null,
+          editable ? h('button', { class: 'primary small', onclick: () => reviewAndLaunch() }, local.when ? 'Revisar y programar' : 'Revisar y enviar') : null,
+          ['scheduled', 'sending'].includes(c.status) ? h('button', { class: 'small danger', onclick: async () => { if (await confirmAction('¿Cancelar la campaña?')) { if (!(await run(() => api('POST', `/api/campaigns/${id}/cancel`), 'Cancelada'))) return; render(); } } }, 'Cancelar') : null)),
       previewBox,
       recipients.length ? h('details', {}, h('summary', {}, `Destinatarios (${recipients.length}) · ${c.stats.sent ?? 0} enviados · ${c.stats.skipped ?? 0} omitidos`),
         h('table', {}, h('tbody', {}, recipients.map((r) => h('tr', {}, h('td', {}, r.name || r.push_name || (r.phone ? `+${r.phone}` : '—')), h('td', {}, r.status), h('td', { class: 'small muted' }, r.reason)))))) : null));
@@ -505,24 +549,24 @@ async function editCampaign(root, id) {
         field('Canal', select(c, 'channel_id', channels.map((ch) => [ch.id, `${ch.name} (${ch.label})`]), () => { c.channel_ids = []; if (editable) { drawExtra(); } }))),
       extraBox,
       field('Mensaje', area(c, 'message', { big: true }), VARS_HELP),
-      field('Imagen (opcional)', select(c, 'image_id', photoOptions(refs, c.image_id)), 'Con texto, la foto sale con el mensaje como pie en un solo envío.'),
+      field('Imagen (opcional)', photoPicker(c, 'image_id', refs), 'Con texto, la foto sale con el mensaje como pie en un solo envío.'),
       field('Etapa del recorrido al enviarla', num(c, 'flow_step', { min: 0, max: 50 }), 'Si es el primer mensaje de un recorrido, indica la etapa en la que queda cada conversación: el asistente sigue el flujo desde ahí cuando el cliente responda. 0 = no cambia.')),
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, 'A quién'),
+      h('h2', { style: 'margin-top:0' }, 'A quién'),
       h('div', { class: 'grid' },
         field('Con alguna de estas etiquetas', lines(c.audience, 'tags_any', { placeholder: 'interesado\nvip' }), 'Vacío = todos'),
         field('Sin estas etiquetas', lines(c.audience, 'tags_none', { placeholder: 'ya_compro' })),
         field('Que escribieron en los últimos (días)', num(c.audience, 'active_within_days', { min: 0 }), '0 = sin límite')),
     ),
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, 'Cuándo y a qué ritmo'),
+      h('h2', { style: 'margin-top:0' }, 'Cuándo y a qué ritmo'),
       h('div', { class: 'grid' },
-        field('Fecha y hora de envío', h('input', { type: 'datetime-local', value: local.when, oninput: (e) => (local.when = e.target.value) }), 'Vacío = al pulsar "Enviar ahora"'),
+        field('Fecha y hora de envío', h('input', { type: 'datetime-local', value: local.when, oninput: (e) => (local.when = e.target.value) }), `Zona del negocio: ${info.timezone}. Vacío = enviar ahora.`),
         field('Mensajes por minuto', num(c, 'rate_per_minute', { min: 1, max: 120 }), 'Recomendado para WhatsApp: 10–30')),
       check(c, 'business_hours_only', 'Enviar solo en horario de atención (lo que no alcance sale en la siguiente apertura)'),
       h('p', { class: 'small muted' }, 'No se envía a quien se dio de baja ni a conversaciones que está atendiendo una persona.')),
-    editable ? saveBar(save, existing ? h('span', { class: 'row', style: 'margin-left:auto' },
-      h('button', { class: 'danger', onclick: async () => { if (confirm('¿Eliminar la campaña?')) { await run(() => api('DELETE', `/api/campaigns/${id}`), 'Eliminada'); location.hash = '#/automation/campaigns'; } } }, 'Eliminar')) : null) : null,
+    editable ? saveBar(c.status === 'scheduled' ? reviewAndLaunch : save, existing ? h('span', { class: 'row', style: 'margin-left:auto' },
+      h('button', { class: 'danger', onclick: async () => { if (await confirmAction('¿Eliminar la campaña?')) { if (!(await run(() => api('DELETE', `/api/campaigns/${id}`), 'Eliminada'))) return; location.hash = '#/automation/campaigns'; } } }, 'Eliminar')) : null) : null,
   );
 }
 
@@ -545,18 +589,19 @@ export function hoursEditor(hours) {
 }
 
 async function editSettings(root) {
-  const s = await api('GET', withAcct('/api/settings'));
+  const s = draftModel('settings', await api('GET', withAcct('/api/settings')), false);
+  root.append(draftNotice(['settings'], render));
   const team = (await api('GET', withAcct('/api/users')).catch(() => [])).filter((u) => u.account_id && u.active);
   const copy = (v) => h('button', { class: 'small', onclick: async () => { try { await navigator.clipboard.writeText(v); toast('Copiado'); } catch { toast('No se pudo copiar', true); } } }, 'Copiar');
   root.append(
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, 'Horario del negocio'),
+      h('h2', { style: 'margin-top:0' }, 'Horario del negocio'),
       h('p', { class: 'small muted' }, 'Formato por día: 09:00-14:00, 16:00-19:00 (vacío = cerrado). Lo usan el asistente (para responder "¿están abiertos?"), la agenda, las secuencias, las campañas y la condición "horario del negocio".'),
       field('Zona horaria', text(s, 'timezone')),
       hoursEditor(s.business_hours),
       field('Días cerrados (festivos)', lines(s, 'holidays', { placeholder: '2026-12-25\n2027-01-01' }), 'Formato AAAA-MM-DD, uno por renglón.')),
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, 'Bajas (dejar de recibir mensajes)'),
+      h('h2', { style: 'margin-top:0' }, 'Bajas (dejar de recibir mensajes)'),
       check(s.opt_out, 'enabled', 'Permitir que el cliente se dé de baja escribiendo una palabra'),
       h('div', { class: 'grid' },
         field('Palabras para darse de baja', lines(s.opt_out, 'keywords'), 'El mensaje debe ser exactamente una de ellas.'),
@@ -567,23 +612,23 @@ async function editSettings(root) {
       field('Texto del pie', text(s.opt_out, 'footer_text'), '{{palabra_baja}} se reemplaza por la primera palabra de baja de arriba, en mayúsculas.'),
       h('p', { class: 'small muted' }, 'Quien se da de baja no recibe campañas, secuencias ni mensajes de reglas; sí recibe recordatorios de sus citas.')),
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, 'Protección del número de WhatsApp'),
+      h('h2', { style: 'margin-top:0' }, 'Protección del número de WhatsApp'),
       field('Tope de mensajes de campaña por número y por día', num(s.sending, 'daily_cap_per_number', { min: 0 }), '0 = sin tope. Lo que no cabe hoy se envía al día siguiente. Para números nuevos, empezar con 50–100 al día reduce el riesgo de bloqueo.')),
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, 'Consentimiento para promociones'),
+      h('h2', { style: 'margin-top:0' }, 'Consentimiento para promociones'),
       check(s.consent, 'require_for_campaigns', 'Enviar campañas y secuencias solo a quienes aceptaron recibirlas (recomendado)'),
       h('div', { class: 'grid' },
         field('Frases con las que aceptan', lines(s.consent, 'opt_in_keywords'), 'El mensaje debe ser exactamente una de ellas.'),
         field('Respuesta al aceptar', area(s.consent, 'opt_in_message'))),
       h('p', { class: 'small muted' }, 'Quien escribe una de esas frases queda registrado con fecha. También puedes marcarlo a mano en la ficha de cada cliente. Los mensajes de servicio (respuestas, recordatorios de citas) no necesitan este consentimiento. Los clientes anteriores a esta función quedaron como aceptados.')),
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, 'Privacidad: cuánto tiempo guardar los datos'),
+      h('h2', { style: 'margin-top:0' }, 'Privacidad: cuánto tiempo guardar los datos'),
       h('div', { class: 'grid' },
         field('Borrar mensajes con más de … días', num(s.retention, 'messages_days', { min: 0 }), '0 = conservarlos siempre. También se limpian los resúmenes de esas conversaciones.'),
         field('Borrar contactos sin actividad en … días', num(s.retention, 'inactive_contacts_days', { min: 0 }), '0 = nunca. No se borran contactos con citas futuras.')),
       h('p', { class: 'small muted' }, 'El borrado es automático (cada pocas horas) y no se puede deshacer; los respaldos antiguos pueden conservar los datos hasta que se renueven. Para atender la solicitud de una sola persona usa "Borrar todos sus datos" en su ficha.')),
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, 'Reparto de conversaciones por turnos (round robin)'),
+      h('h2', { style: 'margin-top:0' }, 'Reparto de conversaciones por turnos (round robin)'),
       check(s.assignment, 'enabled', 'Asignar automáticamente cada conversación que pasa a una persona, una a una, entre el equipo'),
       h('div', { class: 'row' }, [['agent', 'Agentes'], ['admin', 'Administradores']].map(([r, l]) => h('label', { class: 'check' },
         h('input', { type: 'checkbox', checked: s.assignment.roles.includes(r), onchange: (e) => { s.assignment.roles = e.target.checked ? [...s.assignment.roles, r] : s.assignment.roles.filter((x) => x !== r); } }), l))),
@@ -594,19 +639,20 @@ async function editSettings(root) {
       check(s.assignment, 'notify_all', 'Además de la persona asignada, avisar a todo el equipo'),
       h('p', { class: 'small muted' }, 'Cada persona recibe una notificación en el panel (y por WhatsApp si lo tiene activado). Quien esté marcado como "no disponible" se salta sin perder su lugar. También puedes asignar a mano desde cada conversación o con la acción "Asignar a alguien del equipo" en las reglas.')),
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, 'Equipo'),
+      h('h2', { style: 'margin-top:0' }, 'Equipo'),
       check(s, 'notify_team_on_handoff', 'Avisar en el panel a todo el equipo cuando una conversación pasa a una persona')),
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, 'Integraciones'),
+      h('h2', { style: 'margin-top:0' }, 'Integraciones'),
       h('p', {}, 'Calendario de citas para Google Calendar / Outlook / Apple (suscribirse por URL):'),
       h('p', {}, h('code', {}, s.ics_url), ' ', copy(s.ics_url)),
       h('p', {}, 'Clave para verificar los webhooks salientes (cabecera ', h('code', {}, 'X-Signature: sha256=HMAC'), '):'),
       h('p', {}, h('code', {}, s.webhook_secret), ' ', copy(s.webhook_secret)),
-      h('button', { class: 'small', onclick: async () => { if (confirm('Se generarán nuevas URL y claves; las anteriores dejarán de funcionar.')) { await run(() => api('POST', withAcct('/api/settings/rotate-secrets')), 'Claves regeneradas'); render(); } } }, 'Regenerar URL y claves')),
+      h('button', { class: 'small', onclick: async () => { if (await confirmAction('Se generarán nuevas URL y claves; las anteriores dejarán de funcionar.')) { if (!(await run(() => api('POST', withAcct('/api/settings/rotate-secrets')), 'Claves regeneradas'))) return; render(); } } }, 'Regenerar URL y claves')),
     saveBar(async () => {
       const { ics_url, ...body } = s;
       void ics_url;
-      if (await run(() => api('PUT', withAcct('/api/settings'), body), 'Guardado ✅')) render();
+      const version = draftVersion('settings');
+      if (await run(() => api('PUT', withAcct('/api/settings'), body), 'Guardado ✅')) { discardDraft('settings', version); render(); }
     }),
   );
 }

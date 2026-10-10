@@ -14,9 +14,10 @@ export function accountPicker(obj) {
 /* ------------------------------ Dashboard ------------------------------ */
 
 export async function viewDashboard(root, params = new URLSearchParams()) {
-  const [bots, stats, channels] = await Promise.all([api('GET', `/api/chatbots${acct()}`), api('GET', `/api/stats${acct()}`), api('GET', `/api/channels${acct()}`)]);
+  const [bots, stats, channels] = await Promise.all([api('GET', `/api/chatbots${acct()}`), api('GET', `/api/stats${acct()}`).catch(() => null), api('GET', `/api/channels${acct()}`)]);
+  if (!root.isConnected) return;
   state.bots = bots;
-  const byId = Object.fromEntries(stats.chatbots.map((s) => [s.id, s]));
+  const byId = Object.fromEntries((stats?.chatbots || []).map((s) => [s.id, s]));
   const createBox = agentWizard({ hidden: params.get('new') !== '1' });
   const noAccounts = isSuper() && !state.accounts.length;
   root.append(
@@ -24,6 +25,7 @@ export async function viewDashboard(root, params = new URLSearchParams()) {
       h('button', { class: 'primary', disabled: noAccounts, onclick: () => (createBox.hidden = !createBox.hidden) }, '+ Crear agente')),
     noAccounts ? h('div', { class: 'card' }, h('p', {}, 'Primero crea una cuenta (cliente) en ', h('a', { href: '#/accounts' }, 'Cuentas'), '.')) : null,
     h('p', { class: 'muted' }, 'Crea tu agente, pruébalo y conecta los teléfonos o canales que atenderá.'),
+    stats ? null : h('div', { class: 'banner warn', role: 'status' }, 'No pudimos cargar las estadísticas. Puedes configurar tus agentes; vuelve a entrar para actualizar las cifras.'),
     createBox,
     bots.length || noAccounts ? null : h('div', { class: 'card' }, h('p', {}, 'Aún no hay agentes. Crea el primero para empezar.')),
     h('div', { class: 'grid' },
@@ -32,10 +34,10 @@ export async function viewDashboard(root, params = new URLSearchParams()) {
         const mine = channels.filter((c) => c.chatbot_id === b.id);
         return h('div', { class: 'card' },
           h('div', { class: 'row between' },
-            h('h3', { style: 'margin:0' }, h('a', { href: `#/bot/${b.id}/general` }, b.name)),
+            h('h2', { style: 'margin:0' }, h('a', { href: `#/bot/${b.id}/general` }, b.name)),
             h('span', { class: `badge ${b.active ? 'green' : ''}` }, b.active ? 'Encendido' : 'Apagado')),
           isSuper() && !state.accountId ? h('p', { class: 'muted small', style: 'margin:4px 0 0' }, accountName(b.account_id)) : null,
-          h('p', { class: 'small' }, mine.length ? mine.map((c) => h('a', { class: 'agent-channel', href: `#/bot/${b.id}/conexiones` }, channelIcon(c.type), ' ', c.name, ' ', connectionBadge(c))) : h('span', { class: 'muted' }, 'Sin conexiones · puedes probarlo antes de conectar un teléfono')),
+          h('p', { class: 'small' }, mine.length ? mine.map((c) => h('a', { class: 'agent-channel', href: `#/bot/${b.id}/conexiones/${c.id}` }, channelIcon(c.type), ' ', c.name, ' ', connectionBadge(c))) : h('span', { class: 'muted' }, 'Sin conexiones · puedes probarlo antes de conectar un teléfono')),
           h('div', { class: 'row', style: 'gap:18px' },
             h('div', {}, h('div', { class: 'kpi' }, s.conversations ?? 0), h('div', { class: 'muted small' }, 'conversaciones')),
             h('div', {}, h('div', { class: 'kpi' }, s.waiting_human ?? 0), h('div', { class: 'muted small' }, 'con humano')),
@@ -76,13 +78,14 @@ export async function viewDashboard(root, params = new URLSearchParams()) {
 /** "Mi asistente" y "Probar": abren el asistente principal de la cuenta (el más antiguo). */
 export async function goMainBot(root, tab) {
   const bots = await api('GET', `/api/chatbots${acct()}`);
-  if (!bots.length) { location.hash = '#/inicio'; return; }
+  if (!root.isConnected) return;
+  if (!bots.length) { location.hash = '#/agentes?new=1'; return; }
   location.replace(`#/bot/${bots[0].id}/${tab}`);
 }
 
 /** Ajustes: todo lo que no es el día a día, con una explicación de una línea. */
 export async function viewSettingsHub(root) {
-  const tile = (href, icon, title, text) => h('a', { class: 'card tile', href }, h('div', { style: 'font-size:28px' }, icon), h('h3', { style: 'margin:6px 0' }, title), h('p', { class: 'muted small', style: 'margin:0' }, text));
+  const tile = (href, icon, title, text) => h('a', { class: 'card tile', href }, h('div', { style: 'font-size:28px' }, icon), h('h2', { style: 'margin:6px 0' }, title), h('p', { class: 'muted small', style: 'margin:0' }, text));
   root.append(
     h('h1', {}, 'Ajustes'),
     h('div', { class: 'grid' },
@@ -91,8 +94,8 @@ export async function viewSettingsHub(root) {
       tile('#/agenda/servicios', '🗓️', 'Servicios y citas', 'Qué servicios agenda tu asistente y cuánto dura cada uno.'),
       tile('#/automation', '⚡', 'Respuestas automáticas', 'Recordatorios, seguimientos y campañas a tus clientes.'),
       tile('#/integraciones', '🔌', 'Integraciones', 'Google Calendar, webhooks para Zapier/Make y llaves de la API.'),
-      tile('#/users', '👥', 'Mi equipo', 'Invita a quienes atienden las conversaciones contigo.'),
-      tile('#/plan', '💳', 'Mi plan y pagos', 'Tu plan, próximo cobro, forma de pago y facturas.'),
+      tile('#/users', '👥', 'Mi equipo', 'Crea usuarios para quienes atienden las conversaciones contigo.'),
+      !isSuper() ? tile('#/plan', '💳', 'Mi plan y pagos', 'Tu plan, próximo cobro, forma de pago y facturas.') : null,
       tile('#/consumo', '📊', 'Consumo', 'Cuánto ha usado tu asistente este mes.'),
       tile('#/logs', '🛠️', 'Registros', 'Si algo falla, aquí se ve qué pasó.'),
       tile('#/password', '🔑', 'Mi perfil', 'Tu nombre, correo y contraseña.')),

@@ -26,12 +26,15 @@ export function whatsappConnector(channelId, { onConnected, onState } = {}) {
   let poller = null;
   let ticker = null;
   let inflight = false;
+  let drawnMode = '';
+  let drawnOs = '';
+  let screenSignature = '';
 
   const stop = () => { clearInterval(poller); clearInterval(ticker); poller = ticker = null; };
   const start = () => {
     stop();
-    poller = setInterval(() => { if (!document.body.contains(root)) return stop(); poll(); }, 3000);
-    ticker = setInterval(() => { if (!document.body.contains(root)) return stop(); drawCountdown(); }, 1000);
+    poller = setInterval(() => { if (!document.body.contains(root)) return stop(); if (!document.hidden) poll(); }, 3000);
+    ticker = setInterval(() => { if (!document.body.contains(root)) return stop(); if (!document.hidden) drawCountdown(); }, 1000);
     state.timers.push(poller, ticker);
   };
 
@@ -50,6 +53,7 @@ export function whatsappConnector(channelId, { onConnected, onState } = {}) {
       st.ttl = st.mode === 'qr' ? 30 : 120;
       st.expiresAt = Date.now() + (r.expires_in || 0) * 1000;
       onState?.(r.state);
+      if (!root.isConnected) return;
       if (r.state === 'open') { st.done = true; stop(); onConnected?.(r); }
     } catch (e) {
       if (mode === st.mode) st.error = e.message;
@@ -70,14 +74,19 @@ export function whatsappConnector(channelId, { onConnected, onState } = {}) {
   }
 
   function drawTabs() {
+    if (drawnMode === st.mode) return;
+    drawnMode = st.mode;
     const tab = (mode, label, sub) => h('button', {
       class: `wa-tab ${st.mode === mode ? 'active' : ''}`,
+      'aria-pressed': st.mode === mode ? 'true' : 'false',
       onclick: () => { if (st.mode === mode) return; st.mode = mode; st.data = null; st.error = ''; st.expiresAt = 0; draw(); if (mode === 'qr') poll(); },
     }, h('strong', {}, label), h('small', {}, sub));
     fill(tabs, tab('qr', '📷 Escanear código QR', 'Escanea desde WhatsApp en tu teléfono'), tab('code', '🔢 Con mi número', 'Si estás en el mismo celular'));
   }
 
   function drawSteps() {
+    if (drawnOs === `${st.os}:${st.mode}`) return;
+    drawnOs = `${st.os}:${st.mode}`;
     const path = st.os === 'ios' ? ['Abre WhatsApp', 'Configuración', 'Dispositivos vinculados', 'Vincular un dispositivo'] : ['Abre WhatsApp', '⋮ (arriba a la derecha)', 'Dispositivos vinculados', 'Vincular un dispositivo'];
     const last = st.mode === 'qr' ? 'Apunta la cámara a este código' : 'Toca "Vincular con el número de teléfono" y escribe el código';
     fill(steps,
@@ -93,13 +102,16 @@ export function whatsappConnector(channelId, { onConnected, onState } = {}) {
       fill(steps);
       return fill(main,
         h('div', { class: 'wa-done' }, h('div', { class: 'wa-check' }, '✓'),
-          h('h3', {}, '¡WhatsApp conectado!'),
+          h('h2', {}, '¡WhatsApp conectado!'),
           p?.number ? h('p', {}, 'Conectado como ', h('strong', {}, p.name || 'tu cuenta'), ` · +${p.number}`) : null,
           st.data?.warning ? h('p', { class: 'banner warn' }, st.data.warning) : null,
-          h('p', { class: 'small muted' }, 'Desde ahora tu asistente responde los mensajes que lleguen a este número.')));
+          h('p', { class: 'small muted', role: 'status' }, 'Teléfono conectado. El agente responderá cuando esté encendido, el perfil esté activo y se cumplan sus reglas de activación.')));
     }
     drawTabs();
     drawSteps();
+    const signature = JSON.stringify([st.mode, st.error, st.data?.qr, st.data?.pairingCode, st.codeRequested, st.data?.waited_s > 60]);
+    if (signature === screenSignature) return void drawCountdown();
+    screenSignature = signature;
     const err = st.error ? h('div', { class: 'banner danger' }, st.error, ' ', h('button', { class: 'small', onclick: () => { st.error = ''; draw(); poll(true); } }, 'Reintentar')) : null;
     if (st.mode === 'qr') {
       const qr = st.data?.qr;

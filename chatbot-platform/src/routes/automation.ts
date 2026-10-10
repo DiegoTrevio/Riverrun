@@ -11,6 +11,7 @@ import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
 import type { User } from '../types.js';
 import { parse } from './util.js';
+import { localParts, zonedToUtc } from '../automation/time.js';
 
 /**
  * Todo lo que una regla referencia debe ser de la misma cuenta. Con `clearMissing`, una foto que ya se borró se quita de
@@ -71,6 +72,17 @@ const CampaignBody = z.object({
 
 export async function automationRoutes(api: FastifyInstance, service: ChatService) {
   const admins = { preHandler: requireRole('admin') };
+  const scheduleBody = async (body: any, accountId: string) => {
+    if (!body || typeof body !== 'object' || !Object.hasOwn(body, 'scheduled_local')) return body;
+    if (body.scheduled_local === null || body.scheduled_local === '') return { ...body, scheduled_at: null };
+    const value = parse(z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/), body.scheduled_local);
+    const { timezone } = await astore.getSettings(accountId);
+    const [date, time] = value.split('T');
+    const instant = zonedToUtc(date, time, timezone);
+    const actual = localParts(instant, timezone);
+    if (actual.date !== date || actual.time !== time) throw new HttpError(400, 'Esta fecha u hora no existe en la zona horaria del negocio. Elige otro horario.');
+    return { ...body, scheduled_at: instant.toISOString() };
+  };
 
   /* ------------------------------ Configuración de la cuenta ------------------------------ */
   api.get('/api/settings', admins, async (req: any) => {
@@ -204,8 +216,8 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
   api.get('/api/campaigns', admins, async (req: any) => astore.listCampaigns(scopeAccount(req.user, req.query.account_id)));
 
   api.post('/api/campaigns', admins, async (req: any) => {
-    const b = parse(CampaignBody, req.body);
     const accountId = await targetAccount(req.user, req.body?.account_id);
+    const b = parse(CampaignBody, await scheduleBody(req.body, accountId));
     b.channel_ids = [...new Set(b.channel_ids)].filter((x) => x !== b.channel_id);
     await checkChannel(req.user, accountId, b.channel_id, b.image_id, b.channel_ids);
     return astore.saveCampaign(accountId, { ...b, scheduled_at: b.scheduled_at ? new Date(b.scheduled_at) : null });
@@ -214,7 +226,7 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
   api.put('/api/campaigns/:id', admins, async (req: any) => {
     const c = await campaignFor(req.user, req.params.id);
     if (!['draft', 'scheduled'].includes(c.status)) throw new HttpError(400, 'Solo se editan campañas en borrador o programadas');
-    const b = parse(CampaignBody, { ...c, scheduled_at: c.scheduled_at ? new Date(c.scheduled_at).toISOString() : null, ...(req.body ?? {}) });
+    const b = parse(CampaignBody, await scheduleBody({ ...c, scheduled_at: c.scheduled_at ? new Date(c.scheduled_at).toISOString() : null, ...(req.body ?? {}) }, c.account_id));
     b.channel_ids = [...new Set(b.channel_ids)].filter((x) => x !== b.channel_id);
     await checkChannel(req.user, c.account_id, b.channel_id, b.image_id, b.channel_ids);
     const saved = await astore.saveCampaign(c.account_id, { ...b, scheduled_at: b.scheduled_at ? new Date(b.scheduled_at) : null }, c.id);
@@ -236,7 +248,10 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
   });
 
   api.post('/api/campaigns/:id/preview', admins, async (req: any) => {
-    const c = await campaignFor(req.user, req.params.id);
+    const stored = await campaignFor(req.user, req.params.id);
+    const body = req.body && Object.keys(req.body).length ? parse(CampaignBody, await scheduleBody({ ...stored, scheduled_at: stored.scheduled_at ? new Date(stored.scheduled_at).toISOString() : null, ...req.body }, stored.account_id)) : null;
+    const c = body ? { ...stored, ...body, scheduled_at: body.scheduled_at ? new Date(body.scheduled_at) : null } : stored;
+    if (body) await checkChannel(req.user, stored.account_id, body.channel_id, body.image_id, body.channel_ids);
     const settings = await astore.getSettings(c.account_id);
     const requireConsent = settings.consent.require_for_campaigns;
     const audience = await astore.campaignAudience(c, 100000, { requireConsent });

@@ -78,7 +78,7 @@ export async function tabConnections(root, bot, params = new URLSearchParams()) 
       // Leer el estado no prepara un QR ni cambia la asignación.
       refresh();
       return h('div', { class: 'card' },
-        h('div', { class: 'row between' }, h('h3', { style: 'margin:0' }, channelIcon(ch.type), ' ', ch.name), status),
+        h('div', { class: 'row between' }, h('h2', { style: 'margin:0' }, channelIcon(ch.type), ' ', ch.name), status),
         h('p', { class: 'muted' }, ch.label || ch.type, ch.config?.number ? ` · +${ch.config.number}` : ''),
         h('div', { class: 'row' },
           h('a', { class: 'btn primary', href: connectionHref(ch) }, ch.type === 'whatsapp' ? 'Ver QR / administrar' : 'Configurar conexión'),

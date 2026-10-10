@@ -1,4 +1,4 @@
-import { api, area, check, field, fmtDate, h, run, select, state, text, toast } from './core.js';
+import { api, area, check, field, fmtDate, h, run, select, state, text, toast, confirmAction, ask } from './core.js';
 import { accountPicker } from './dashboard.js';
 import { render } from './main.js';
 import { ROLE_LABEL, acct, isAdmin, isSuper, withAcct } from './session.js';
@@ -18,11 +18,11 @@ export async function viewUsers(root) {
     h('h1', {}, 'Usuarios y permisos'),
     h('p', { class: 'muted' }, 'Cada usuario pertenece a un perfil de negocio y solo puede gestionar sus datos. El maestro tiene acceso a todos los perfiles.'),
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, 'Nuevo usuario'),
+      h('h2', { style: 'margin-top:0' }, 'Nuevo usuario'),
       h('div', { class: 'grid' },
         field('Nombre', text(n, 'name')),
-        field('Correo', text(n, 'email', { placeholder: 'persona@empresa.com' })),
-        field('Contraseña inicial', text(n, 'password', { type: 'password' }), 'Mínimo 8 caracteres. Pídele que la cambie al entrar.'),
+        field('Correo', text(n, 'email', { type: 'email', autocomplete: 'off', placeholder: 'persona@empresa.com' })),
+        field('Contraseña inicial', text(n, 'password', { type: 'password', autocomplete: 'new-password', minlength: 8 }), 'Mínimo 8 caracteres. Pídele que la cambie al entrar.'),
         field('Rol', select(n, 'role', roles, () => { assignedProfile.hidden = n.role === 'superadmin'; })),
         field('WhatsApp para alertas (opcional)', text(n, 'phone', { placeholder: '5215512345678' }))),
       check(n, 'notify_whatsapp', 'Enviarle las alertas también por WhatsApp'),
@@ -30,26 +30,26 @@ export async function viewUsers(root) {
       h('button', { class: 'primary', onclick: async () => { if (await run(() => api('POST', '/api/users', n.role === 'superadmin' ? { ...n, account_id: null } : n), 'Usuario creado')) render(); } }, 'Crear usuario')),
     h('div', { class: 'card' },
       h('table', {},
-        h('thead', {}, h('tr', {}, h('th', {}, 'Usuario'), h('th', {}, 'Rol'), isSuper() ? h('th', {}, 'Perfil asignado') : null, h('th', {}, 'Último acceso'), h('th', {}, ''))),
+        h('thead', {}, h('tr', {}, h('th', {}, 'Usuario'), h('th', {}, 'Rol'), isSuper() ? h('th', {}, 'Perfil asignado') : null, h('th', {}, 'Último acceso'), h('th', {}, 'Acciones'))),
         h('tbody', {}, users.map((u) => {
           const self = u.id === me.id;
           return h('tr', {},
             h('td', {}, h('strong', {}, u.name || '—'), h('div', { class: 'muted small' }, u.email, u.phone ? ` · 📱 +${u.phone}${u.notify_whatsapp ? ' (alertas)' : ''}` : ''), !u.active ? h('span', { class: 'badge orange' }, 'desactivado') : null, u.active && u.role !== 'superadmin' && u.available === false ? h('span', { class: 'badge' }, 'no disponible para turnos') : null),
             h('td', {}, u.role === 'superadmin' || self ? ROLE_LABEL[u.role]
-              : h('select', { onchange: async (e) => { if (await run(() => api('PUT', `/api/users/${u.id}`, { role: e.target.value }), 'Rol actualizado')) render(); } },
+              : h('select', { 'aria-label': `Rol de ${u.email}`, onchange: async (e) => { if (await run(() => api('PUT', `/api/users/${u.id}`, { role: e.target.value }), 'Rol actualizado')) render(); } },
                   [['agent', 'Operador del perfil'], ['admin', 'Administrador del perfil']].map(([v, l]) => h('option', { value: v, selected: u.role === v }, l)))),
             isSuper() ? h('td', { class: 'small' }, u.role === 'superadmin' ? 'Todos los perfiles' : h('select', { 'aria-label': `Perfil de ${u.email}`, onchange: async (e) => { if (await run(() => api('PUT', `/api/users/${u.id}`, { account_id: e.target.value }), 'Perfil asignado')) render(); else e.target.value = u.account_id; } }, state.accounts.map((a) => h('option', { value: a.id, selected: u.account_id === a.id }, a.name)))) : null,
             h('td', { class: 'small muted' }, u.last_login_at ? fmtDate(u.last_login_at) : 'nunca'),
             h('td', {}, self ? h('span', { class: 'muted small' }, 'tú') : h('div', { class: 'row' },
-              isSuper() && u.role !== 'superadmin' ? h('button', { class: 'small', onclick: async () => { if (confirm(`¿Dar a ${u.email} acceso maestro a TODOS los perfiles?`)) { await run(() => api('PUT', `/api/users/${u.id}`, { role: 'superadmin' }), 'Acceso maestro asignado'); render(); } } }, 'Dar acceso maestro') : null,
+              isSuper() && u.role !== 'superadmin' ? h('button', { class: 'small', onclick: async () => { if (await confirmAction(`¿Dar a ${u.email} acceso maestro a TODOS los perfiles?`)) { if (!(await run(() => api('PUT', `/api/users/${u.id}`, { role: 'superadmin' }), 'Acceso maestro asignado'))) return; render(); } } }, 'Dar acceso maestro') : null,
               u.role !== 'superadmin' && u.active ? h('button', { class: 'small', title: 'Si no está disponible se salta en el reparto por turnos', onclick: async () => { if (await run(() => api('PUT', `/api/users/${u.id}`, { available: u.available === false }), u.available === false ? 'Disponible' : 'Fuera de turno')) render(); } }, u.available === false ? 'Marcar disponible' : 'Fuera de turno') : null,
               h('button', { class: 'small', onclick: async () => { if (await run(() => api('PUT', `/api/users/${u.id}`, { active: !u.active }), u.active ? 'Desactivado' : 'Activado')) render(); } }, u.active ? 'Desactivar' : 'Activar'),
-              h('button', { class: 'small', onclick: async () => { const pw = prompt('Nueva contraseña (mínimo 8 caracteres)'); if (pw) await run(() => api('PUT', `/api/users/${u.id}`, { password: pw }), 'Contraseña actualizada'); } }, 'Restablecer contraseña'),
+              h('button', { class: 'small', onclick: async () => { const pw = await ask('Nueva contraseña (mínimo 8 caracteres)', '', { type: 'password', minlength: 8, required: true }); if (pw) if (!(await run(() => api('PUT', `/api/users/${u.id}`, { password: pw }), 'Contraseña actualizada'))) return; } }, 'Restablecer contraseña'),
               h('button', { class: 'small', onclick: async () => {
-                const phone = prompt('WhatsApp para alertas (con lada; vacío para quitar)', u.phone || '');
+                const phone = await ask('WhatsApp para alertas (con lada; vacío para quitar)', u.phone || '');
                 if (phone !== null && (await run(() => api('PUT', `/api/users/${u.id}`, { phone, notify_whatsapp: !!phone.replace(/\D/g, '') }), 'Actualizado'))) render();
               } }, 'Alertas WhatsApp'),
-              h('button', { class: 'small danger', onclick: async () => { if (confirm(`¿Eliminar a ${u.email}?`)) { await run(() => api('DELETE', `/api/users/${u.id}`), 'Eliminado'); render(); } } }, 'Eliminar'))));
+              h('button', { class: 'small danger', onclick: async () => { if (await confirmAction(`¿Eliminar a ${u.email}?`)) { if (!(await run(() => api('DELETE', `/api/users/${u.id}`), 'Eliminado'))) return; render(); } } }, 'Eliminar'))));
         })))),
   );
 }
@@ -69,7 +69,7 @@ export async function viewAccounts(root) {
     h('h1', {}, 'Perfiles de negocio'),
     h('div', { class: 'card' },
       h('p', { class: 'muted', style: 'margin-top:0' }, 'Cada perfil funciona como una subcuenta: tiene sus propios usuarios, asistentes, canales, conversaciones y agenda. Sus usuarios solo gestionan ese perfil; el maestro puede abrirlos todos.'),
-      h('h3', {}, 'Nuevo perfil'),
+      h('h2', {}, 'Nuevo perfil'),
       field('Nombre del cliente', text(n, 'name', { placeholder: 'Hotel Las Palmas' })),
       h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: true, onchange: (e) => { n.withAdmin = e.target.checked; adminBox.hidden = !n.withAdmin; } }), 'Crear también su primer administrador'),
       adminBox,
@@ -80,7 +80,7 @@ export async function viewAccounts(root) {
       } }, 'Crear perfil')),
     h('div', { class: 'card' },
       h('table', {},
-        h('thead', {}, h('tr', {}, h('th', {}, 'Perfil'), h('th', {}, 'Estado'), h('th', {}, 'WhatsApp'), h('th', { class: 'num' }, 'Conversaciones (mes / total)'), h('th', { class: 'num' }, 'IA (mes)'), h('th', {}, 'Última actividad'), h('th', {}, ''))),
+        h('thead', {}, h('tr', {}, h('th', {}, 'Perfil'), h('th', {}, 'Estado'), h('th', {}, 'WhatsApp'), h('th', { class: 'num' }, 'Conversaciones (mes / total)'), h('th', { class: 'num' }, 'IA (mes)'), h('th', {}, 'Última actividad'), h('th', {}, 'Acciones'))),
         h('tbody', {}, accounts.map((a) => h('tr', {},
           h('td', {}, h('strong', {}, a.name),
             a.owner_email ? h('div', { class: 'small muted' }, a.owner_email, a.owner_verified === false ? ' (sin confirmar)' : '') : null,
@@ -94,23 +94,23 @@ export async function viewAccounts(root) {
             h('button', { class: 'small', onclick: () => { state.accountId = a.id; try { localStorage.setItem('cp-account', a.id); } catch { /* */ } location.hash = '#/'; } }, 'Abrir perfil'),
             h('a', { class: 'btn small', href: '#/users', onclick: () => { state.accountId = a.id; try { localStorage.setItem('cp-account', a.id); } catch { /* */ } if (location.hash === '#/users') render(); } }, 'Usuarios'),
             a.status !== 'active' ? h('button', { class: 'small primary', onclick: async () => {
-              const plan = prompt('Plan contratado (opcional)', a.plan || '');
+              const plan = await ask('Plan contratado (opcional)', a.plan || '');
               if (plan === null) return;
-              await run(() => api('PUT', `/api/accounts/${a.id}`, { status: 'active', plan }), 'Cuenta activada');
+              if (!(await run(() => api('PUT', `/api/accounts/${a.id}`, { status: 'active', plan }), 'Cuenta activada'))) return;
               render();
             } }, 'Activar plan') : h('button', { class: 'small', onclick: async () => {
-              if (!confirm(`¿Pausar "${a.name}"? Su asistente deja de responder, pero pueden entrar al panel.`)) return;
-              await run(() => api('PUT', `/api/accounts/${a.id}`, { status: 'paused' }), 'Cuenta en pausa');
+              if (!await confirmAction(`¿Pausar "${a.name}"? Su asistente deja de responder, pero pueden entrar al panel.`)) return;
+              if (!(await run(() => api('PUT', `/api/accounts/${a.id}`, { status: 'paused' }), 'Cuenta en pausa'))) return;
               render();
             } }, 'Pausar'),
             a.status !== 'active' ? h('button', { class: 'small', onclick: async () => {
-              const d = Number(prompt('¿Cuántos días más de prueba?', '7'));
-              if (d > 0) { await run(() => api('PUT', `/api/accounts/${a.id}`, { extend_trial_days: d }), 'Prueba extendida'); render(); }
+              const d = Number(await ask('¿Cuántos días más de prueba?', '7'));
+              if (d > 0) { if (!(await run(() => api('PUT', `/api/accounts/${a.id}`, { extend_trial_days: d }), 'Prueba extendida'))) return; render(); }
             } }, 'Extender prueba') : null,
             h('button', { class: 'small', title: 'Excepción de límites para este perfil (sobre su plan)', onclick: async () => {
               const keys = { mensajes: 'messages_per_month', canales: 'channels', usuarios: 'users', asistentes: 'chatbots' };
               const cur = Object.entries(keys).filter(([, k]) => a.limits_override?.[k]).map(([n, k]) => `${n}=${a.limits_override[k]}`).join(' ');
-              const txt = prompt('Límites especiales de este perfil (se aplican en lugar de los de su plan).\nFormato: mensajes=1000 canales=2 usuarios=5 asistentes=3\nDéjalo vacío para quitar la excepción y usar los de su plan.', cur);
+              const txt = await ask('Límites especiales de este perfil (se aplican en lugar de los de su plan).\nFormato: mensajes=1000 canales=2 usuarios=5 asistentes=3\nDéjalo vacío para quitar la excepción y usar los de su plan.', cur);
               if (txt === null) return;
               const limits_override = {};
               for (const part of txt.split(/[\s,]+/).filter(Boolean)) {
@@ -118,28 +118,28 @@ export async function viewAccounts(root) {
                 if (!keys[n.toLowerCase()] || !(Number(v) > 0)) return toast(`No entendí "${part}". Usa, por ejemplo: mensajes=1000 canales=2`, true);
                 limits_override[keys[n.toLowerCase()]] = Math.floor(Number(v));
               }
-              await run(() => api('PUT', `/api/accounts/${a.id}`, { limits_override }), 'Límites actualizados'); render();
+              if (!(await run(() => api('PUT', `/api/accounts/${a.id}`, { limits_override }), 'Límites actualizados'))) return; render();
             } }, 'Límites'),
             h('button', { class: 'small', title: 'Marca blanca de esta cuenta', onclick: async () => {
               const { brands } = await api('GET', '/api/brands');
               if (!brands.length) return toast('Primero crea una marca en "Marca blanca"', true);
               const cur = brands.find((b) => b.id === a.brand_id);
-              const txt = prompt(`Marca de "${a.name}". Escribe el nombre de una de estas, o déjalo vacío para usar la de la plataforma:\n${brands.map((b) => `• ${b.name}`).join('\n')}`, cur?.name || '');
+              const txt = await ask(`Marca de "${a.name}". Escribe el nombre de una de estas, o déjalo vacío para usar la de la plataforma:\n${brands.map((b) => `• ${b.name}`).join('\n')}`, cur?.name || '');
               if (txt === null) return;
               const pick = brands.find((b) => b.name.toLowerCase() === txt.trim().toLowerCase());
               if (txt.trim() && !pick) return toast(`No existe la marca "${txt}"`, true);
-              await run(() => api('PUT', `/api/accounts/${a.id}`, { brand_id: pick?.id ?? null }), 'Marca actualizada'); render();
+              if (!(await run(() => api('PUT', `/api/accounts/${a.id}`, { brand_id: pick?.id ?? null }), 'Marca actualizada'))) return; render();
             } }, 'Marca'),
-            h('button', { class: 'small', onclick: async () => { const name = prompt('Nuevo nombre', a.name); if (name) { await run(() => api('PUT', `/api/accounts/${a.id}`, { name }), 'Actualizada'); state.me = null; render(); } } }, 'Renombrar'),
+            h('button', { class: 'small', onclick: async () => { const name = await ask('Nuevo nombre', a.name); if (name) { if (!(await run(() => api('PUT', `/api/accounts/${a.id}`, { name }), 'Actualizada'))) return; state.me = null; render(); } } }, 'Renombrar'),
             h('button', { class: 'small', onclick: async () => {
-              if (a.active && !confirm(`Al desactivar "${a.name}", sus usuarios no podrán entrar y sus canales dejarán de responder (los mensajes se siguen guardando). ¿Continuar?`)) return;
-              await run(() => api('PUT', `/api/accounts/${a.id}`, { active: !a.active }), a.active ? 'Cuenta desactivada' : 'Cuenta activada');
+              if (a.active && !await confirmAction(`Al desactivar "${a.name}", sus usuarios no podrán entrar y sus canales dejarán de responder (los mensajes se siguen guardando). ¿Continuar?`)) return;
+              if (!(await run(() => api('PUT', `/api/accounts/${a.id}`, { active: !a.active }), a.active ? 'Cuenta desactivada' : 'Cuenta activada'))) return;
               state.me = null;
               render();
             } }, a.active ? 'Desactivar' : 'Activar'),
             h('button', { class: 'small danger', onclick: async () => {
-              if (prompt(`Esto borra TODO de "${a.name}" (chatbots, canales, usuarios y conversaciones). Escribe el nombre para confirmar`) === a.name) {
-                await run(() => api('DELETE', `/api/accounts/${a.id}`), 'Cuenta eliminada');
+              if (await ask(`Esto borra TODO de "${a.name}" (chatbots, canales, usuarios y conversaciones). Escribe el nombre para confirmar`) === a.name) {
+                if (!(await run(() => api('DELETE', `/api/accounts/${a.id}`), 'Cuenta eliminada'))) return;
                 if (state.accountId === a.id) state.accountId = '';
                 state.me = null;
                 render();
@@ -178,7 +178,8 @@ export async function viewPassword(root) {
 /** El superadmin debe elegir una cuenta para configurar automatización y agenda. */
 export function needAccount(root) {
   if (!isSuper() || state.accountId) return false;
-  root.append(h('div', { class: 'card' }, h('p', {}, 'Elige una cuenta en el selector del menú para configurar su automatización y agenda.')));
+  const choice = { account_id: state.accounts.find((a) => a.active)?.id || state.accounts[0]?.id || '' };
+  root.append(h('div', { class: 'card' }, h('h2', {}, '¿Qué perfil quieres gestionar?'), field('Perfil de negocio', select(choice, 'account_id', state.accounts.map((a) => [a.id, a.name]))), h('button', { class: 'primary', disabled: !choice.account_id, onclick: () => { state.accountId = choice.account_id; try { localStorage.setItem('cp-account', state.accountId); } catch { /* sin almacenamiento */ } render(); } }, 'Gestionar este perfil')));
   return true;
 }
 
@@ -209,7 +210,7 @@ export async function viewNotifications(root) {
   const data = await api('GET', '/api/notifications?limit=100');
   root.append(
     h('div', { class: 'row between' }, h('h1', {}, 'Notificaciones'),
-      data.unread ? h('button', { onclick: async () => { await run(() => api('POST', '/api/notifications/read', {})); render(); } }, 'Marcar todas como leídas') : null),
+      data.unread ? h('button', { onclick: async () => { if (!(await run(() => api('POST', '/api/notifications/read', {})))) return; render(); } }, 'Marcar todas como leídas') : null),
     isAdmin() && (state.me.user.account_id || state.accountId) ? await noticeCard() : null,
     h('div', { class: 'card' },
       data.items.length ? h('table', {}, h('tbody', {}, data.items.map((n) => h('tr', { class: n.link ? 'click' : '', onclick: async () => {

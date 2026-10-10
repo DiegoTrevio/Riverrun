@@ -1,5 +1,5 @@
 import { brand, brandMark, resetBrand } from './brand.js';
-import { api, h, run, state } from './core.js';
+import { api, h, invalidateReads, run, state } from './core.js';
 import { render } from './main.js';
 import { ROLE_LABEL, isAdmin, isSuper } from './session.js';
 
@@ -13,7 +13,7 @@ export async function refreshBell() {
   } catch { /* sin sesión */ }
 }
 
-setInterval(() => { if (state.me) refreshBell(); }, 20000);
+setInterval(() => { if (state.me && !document.hidden) refreshBell(); }, 20000);
 
 /** Menú simple (por defecto para quien administra su propia cuenta): lo cotidiano en seis opciones; el resto, en Ajustes. */
 const isAdvanced = () => { try { return localStorage.getItem('cp-advanced') === '1'; } catch { return false; } };
@@ -26,7 +26,6 @@ function simpleLinks(link) {
     link('#/conversations', '💬 Conversaciones', 'conversations'),
     link('#/agenda', '📅 Agenda', 'agenda'),
     link('#/ajustes', '⚙️ Ajustes', 'ajustes'),
-    h('a', { href: '#/notifications', class: 'notifications' }, '🔔 Notificaciones ', bell),
   ];
 }
 
@@ -34,16 +33,16 @@ export function shell(active, content) {
   refreshBell();
   if (['home', 'asistentes', 'asistente', 'bot', 'channels', 'channel', 'conectar', 'inicio', 'probar'].includes(active)) active = 'agentes';
   const simple = isAdmin() && !isSuper() && !isAdvanced();
-  const link = (href, label, key) => h('a', { href, class: active === key ? 'active' : '' }, label);
+  const link = (href, label, key) => h('a', { href, class: active === key ? 'active' : '', 'aria-current': active === key ? 'page' : null }, label);
   const navGroup = (label, keys, links) => h('details', { class: 'nav-group', open: keys.includes(active) },
     h('summary', { class: keys.includes(active) ? 'active' : '' }, label, label === 'Conversaciones' ? [' ', bell] : null), h('div', {}, links));
   const { user, account } = state.me;
   const switcher = isSuper()
     ? h('div', { class: 'account-switch' },
-        h('label', { class: 'small muted' }, 'Perfil'),
-        h('select', {
+        h('label', { class: 'small muted', for: 'profile-switch' }, 'Perfil'),
+        h('select', { id: 'profile-switch',
           onchange: (e) => {
-            state.accountId = e.target.value;
+            state.accountId = e.target.value; invalidateReads();
             if (location.hash.startsWith('#/logs?')) {
               const filters = new URLSearchParams(location.hash.split('?')[1]);
               filters.delete('account_id');
@@ -60,6 +59,7 @@ export function shell(active, content) {
   return h('div', { class: 'layout' },
     h('nav', { class: 'sidebar' },
       h('div', { class: 'brand' }, brand.logo ? brandMark(32) : `💬 ${brand.name === 'Panel de Chatbots' ? 'Chatbots' : brand.name}`,
+        simple ? h('a', { href: '#/notifications', class: 'notifications', 'aria-label': 'Notificaciones' }, '🔔 ', bell) : null,
         h('button', { class: 'nav-toggle', type: 'button', 'aria-label': 'Abrir o cerrar el menú', 'aria-expanded': 'false', onclick: (e) => { const open = e.currentTarget.closest('.layout').classList.toggle('nav-open'); e.currentTarget.setAttribute('aria-expanded', String(open)); } }, '☰ Menú')),
       switcher,
       simple ? simpleLinks(link) : [
@@ -89,7 +89,7 @@ export function shell(active, content) {
       h('a', { href: '/ayuda.html', target: '_blank', rel: 'noopener' }, '❓ Ayuda'),
       link('#/password', 'Mi perfil', 'password'),
       isAdmin() && !isSuper() ? h('a', { href: '#', class: 'small muted', onclick: (e) => { e.preventDefault(); setAdvanced(!isAdvanced()); render(); } }, isAdvanced() ? '☰ Menú simple' : '☰ Mostrar todas las opciones') : null,
-      h('a', { href: '#', onclick: async (e) => { e.preventDefault(); await api('POST', '/api/logout'); state.me = null; resetBrand(); location.hash = '#/login'; } }, 'Cerrar sesión'),
+      h('a', { href: '#', onclick: async (e) => { e.preventDefault(); await api('POST', '/api/logout'); state.me = null; state.ux = []; window.dispatchEvent(new Event('sessionended')); invalidateReads(); resetBrand(); location.hash = '#/login'; } }, 'Cerrar sesión'),
     ),
     h('main', { class: 'main' }, accountBanner(), content),
   );
@@ -118,7 +118,7 @@ function accountBanner() {
   if (!user.email_verified_at && state.meta.require_email) {
     items.push(h('div', { class: 'banner warn' },
       `Confirma tu correo (${user.email}) con el enlace que te enviamos para poder conectar tu WhatsApp. `,
-      h('a', { href: '#', onclick: async (e) => { e.preventDefault(); await run(() => api('POST', '/api/me/resend-verification'), 'Te enviamos un nuevo enlace'); } }, 'Reenviar correo')));
+      h('a', { href: '#', onclick: async (e) => { e.preventDefault(); if (!(await run(() => api('POST', '/api/me/resend-verification'), 'Te enviamos un nuevo enlace'))) return; } }, 'Reenviar correo')));
   }
   return items.length ? h('div', { class: 'stack', style: 'margin-bottom:16px' }, items) : null;
 }

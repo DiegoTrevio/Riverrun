@@ -1,4 +1,4 @@
-import { api, check, field, fill, h, num, run, state, text, toast } from './core.js';
+import { api, check, field, fill, h, num, run, state, text, toast, confirmAction } from './core.js';
 import { render } from './main.js';
 import { withAcct } from './session.js';
 
@@ -27,7 +27,7 @@ export async function viewPlan(root, params) {
     const plan = b.plans.find((p) => p.key === sub.plan_key);
     fill(status,
       h('div', { class: 'row between' },
-        h('h3', { style: 'margin:0' }, plan ? `Plan ${plan.name}` : 'Tu plan', ' ', h('span', { class: `badge ${SUB_LABEL[sub.status][0]}` }, SUB_LABEL[sub.status][1])),
+        h('h2', { style: 'margin:0' }, plan ? `Plan ${plan.name}` : 'Tu plan', ' ', h('span', { class: `badge ${SUB_LABEL[sub.status][0]}` }, SUB_LABEL[sub.status][1])),
         plan ? h('strong', {}, `${planPrice(plan)} / mes`) : null),
       sub.status === 'past_due'
         ? h('p', { class: 'banner warn' }, `No pudimos cobrar tu plan. Actualiza tu forma de pago${sub.provider === 'stripe' ? ' en "Administrar pago"' : ' en Mercado Pago'} en los próximos ${b.grace_days} días para que tu asistente siga respondiendo.`)
@@ -39,12 +39,12 @@ export async function viewPlan(root, params) {
         sub.cancel_at_period_end && sub.provider === 'stripe'
           ? h('button', { onclick: async () => { if (await run(() => api('POST', withAcct('/api/billing/cancel'), { resume: true }), 'Listo: tu plan sigue activo')) render(); } }, 'Mantener mi plan')
           : !sub.cancel_at_period_end ? h('button', { class: 'danger', onclick: async () => {
-            if (!confirm('¿Cancelar tu plan? Seguirás usándolo hasta el final del periodo ya pagado.')) return;
+            if (!await confirmAction('¿Cancelar tu plan? Seguirás usándolo hasta el final del periodo ya pagado.')) return;
             if (await run(() => api('POST', withAcct('/api/billing/cancel'), {}), 'Cancelación registrada')) render();
           } }, 'Cancelar plan') : null));
   } else {
     fill(status,
-      h('h3', { style: 'margin-top:0' }, acc.status === 'paused' ? 'Tu asistente está en pausa' : acc.status === 'trial' ? 'Estás en periodo de prueba' : 'Elige tu plan'),
+      h('h2', { style: 'margin-top:0' }, acc.status === 'paused' ? 'Tu asistente está en pausa' : acc.status === 'trial' ? 'Estás en periodo de prueba' : 'Elige tu plan'),
       acc.status === 'trial' && days !== null ? h('p', { class: 'muted' }, days === 0 ? 'Tu prueba termina hoy.' : `Te quedan ${days} ${days === 1 ? 'día' : 'días'} de prueba. Si contratas ahora, no pierdes nada: tu cuenta sigue exactamente igual.`) : null,
       acc.status === 'paused' ? h('p', { class: 'muted' }, 'Tu configuración y tus conversaciones se conservan. Elige un plan y tu asistente vuelve a responder en cuanto se confirme el pago.') : null,
       sub?.status === 'canceled' ? h('p', { class: 'muted' }, 'Tu plan anterior se canceló. Puedes contratar de nuevo cuando quieras.') : null);
@@ -56,7 +56,7 @@ export async function viewPlan(root, params) {
       fill(offer, h('div', { class: 'card' }, h('p', {}, 'El pago en línea todavía no está disponible.'), b.support_contact ? h('p', {}, 'Para contratar escríbenos a ', h('strong', {}, b.support_contact), '.') : null));
     } else {
       fill(offer, h('div', { class: 'grid' }, b.plans.map((p) => h('div', { class: 'card' },
-        h('h3', { style: 'margin:0' }, p.name),
+        h('h2', { style: 'margin:0' }, p.name),
         h('div', { class: 'kpi', style: 'margin:8px 0' }, planPrice(p), h('span', { class: 'muted small' }, ' / mes')),
         p.description ? h('p', { class: 'muted' }, p.description) : null,
         limitsText(p.limits) ? h('p', { class: 'small' }, '✓ Incluye ', limitsText(p.limits)) : h('p', { class: 'small' }, '✓ Sin límites de uso'),
@@ -72,7 +72,7 @@ export async function viewPlan(root, params) {
 
   const usage = b.limits.items.some((i) => i.max)
     ? h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, 'Tu uso', ' ', h('span', { class: 'muted small' }, b.limits.source === 'trial' ? '(periodo de prueba)' : b.limits.source === 'override' ? '(límites especiales)' : '')),
+      h('h2', { style: 'margin-top:0' }, 'Tu uso', ' ', h('span', { class: 'muted small' }, b.limits.source === 'trial' ? '(periodo de prueba)' : b.limits.source === 'override' ? '(límites especiales)' : '')),
       b.limits.items.filter((i) => i.max).map((i) => h('div', { style: 'margin:10px 0' },
         h('div', { class: 'row between small' }, h('span', {}, i.label), h('span', { class: i.percent >= 100 ? 'error' : 'muted' }, `${i.used.toLocaleString('es-MX')} de ${i.max.toLocaleString('es-MX')}`)),
         h('div', { class: 'bar' }, h('div', { class: `bar-fill ${i.percent >= 100 ? 'full' : i.percent >= 80 ? 'warn' : ''}`, style: `width:${i.percent}%` })))),
@@ -103,7 +103,7 @@ export async function viewPlans(root) {
         field('Precio mensual', num(m, 'price', { step: 0.01, min: 0 })),
         field('Moneda', text(m, 'currency', { placeholder: 'MXN' })),
         field('ID de precio de Stripe (price_…)', text(m, 'stripe_price_id', { placeholder: 'price_1Abc…' }), 'Déjalo vacío si este plan solo se cobra con Mercado Pago.')),
-      h('h4', { style: 'margin:12px 0 4px' }, 'Límites del plan', h('span', { class: 'muted small' }, ' (vacío = sin límite)')),
+      h('h3', { style: 'margin:12px 0 4px' }, 'Límites del plan', h('span', { class: 'muted small' }, ' (vacío = sin límite)')),
       h('div', { class: 'grid' },
         field('Mensajes del asistente al mes', num(m.limits, 'messages_per_month', { min: 1, nullable: true, placeholder: 'Sin límite' })),
         field('Canales', num(m.limits, 'channels', { min: 1, nullable: true, placeholder: 'Sin límite' })),
@@ -115,14 +115,14 @@ export async function viewPlans(root) {
           const body = { ...m, price: Number(m.price), limits: Object.fromEntries(Object.entries(m.limits).filter(([, v]) => v)) };
           if (await run(() => (isNew ? api('POST', '/api/plans', body) : api('PUT', `/api/plans/${p.key}`, body)), 'Plan guardado')) render();
         } }, 'Guardar'),
-        isNew ? null : h('button', { class: 'danger', onclick: async () => { if (confirm(`¿Borrar el plan ${p.name}?`) && await run(() => api('DELETE', `/api/plans/${p.key}`), 'Borrado')) render(); } }, 'Borrar')));
+        isNew ? null : h('button', { class: 'danger', onclick: async () => { if (await confirmAction(`¿Borrar el plan ${p.name}?`) && await run(() => api('DELETE', `/api/plans/${p.key}`), 'Borrado')) render(); } }, 'Borrar')));
   };
 
   const copy = (v) => h('button', { class: 'small', onclick: async () => { try { await navigator.clipboard.writeText(v); toast('Copiado'); } catch { toast('Cópialo a mano', true); } } }, 'Copiar');
   root.append(
     h('h1', {}, 'Planes y cobro'),
     h('div', { class: 'grid' }, ov.providers.map((pr) => h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, pr.label, ' ', h('span', { class: `badge ${pr.enabled ? 'green' : ''}` }, pr.enabled ? 'Conectado' : 'Sin configurar')),
+      h('h2', { style: 'margin-top:0' }, pr.label, ' ', h('span', { class: `badge ${pr.enabled ? 'green' : ''}` }, pr.enabled ? 'Conectado' : 'Sin configurar')),
       pr.enabled
         ? h('p', { class: 'small muted' }, `${count(pr.name, 'active')} al corriente · ${count(pr.name, 'past_due')} con pago pendiente · ${count(pr.name, 'canceled')} canceladas`)
         : h('p', { class: 'small muted' }, pr.name === 'stripe' ? 'Agrega STRIPE_SECRET_KEY y STRIPE_WEBHOOK_SECRET en .env y reinicia (./riverrun restart).' : 'Agrega MERCADOPAGO_ACCESS_TOKEN y MERCADOPAGO_WEBHOOK_SECRET en .env y reinicia (./riverrun restart).'),
@@ -133,6 +133,6 @@ export async function viewPlans(root) {
     h('h2', {}, 'Planes'),
     h('p', { class: 'muted' }, `Si un cobro falla, la cuenta sigue funcionando ${ov.grace_days} días y luego se pausa sola; al pagar, se reactiva sola.`),
     ...plans.map((p) => editor(p, false)),
-    h('h3', {}, 'Agregar plan'),
+    h('h2', {}, 'Agregar plan'),
     editor(blank, true));
 }

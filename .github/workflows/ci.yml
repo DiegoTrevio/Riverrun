@@ -50,6 +50,16 @@ jobs:
         run: npm run check:frontend && node --check public/app.js
       - name: Pruebas
         run: npm test
+      - name: Instalar navegador de pruebas
+        run: npx playwright install --with-deps chromium
+      - name: Regresión UX y accesibilidad
+        run: npm run test:ux
+      - name: Guardar evidencia UX
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ux-test-results
+          path: chatbot-platform/data/ux-test-results
       - name: Dependencias vulnerables (solo las de producción)
         run: npm audit --omit=dev --audit-level=high
 
