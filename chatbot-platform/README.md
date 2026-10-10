@@ -76,6 +76,7 @@ Un solo comando para todo lo que sigue:
 - Al arrancar se crea el **superadministrador** (tu correo). Si olvidas la contraseña, cámbiala en `.env` y `./riverrun restart`.
 - Evolution API solo escucha en `127.0.0.1:8080` (no queda expuesta a internet). Se recomienda fijar su versión con `EVOLUTION_IMAGE=evoapicloud/evolution-api:<versión>`.
 - Instalación manual (sin el script): `cp .env.example .env`, edita los valores y `docker compose up -d --build`.
+- **Validación de la configuración:** antes de arrancar, el servidor revisa `.env` y distingue problemas **críticos** (no arranca y dice cómo corregirlos), **avisos** (arranca con funciones limitadas) y servicios **opcionales** apagados. Revisión sin arrancar: `npm run config:check`. Ver [configuración](docs/configuracion.md).
 
 ## Respaldos
 

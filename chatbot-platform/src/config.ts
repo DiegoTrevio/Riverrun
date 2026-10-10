@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { validateConfig } from './config-check.js';
 
 function env(name: string, fallback = ''): string {
   const v = process.env[name];
@@ -134,15 +135,12 @@ export const config = {
   aiAlertUsdPerAccount: Number(env('AI_ALERT_USD_PER_ACCOUNT', '0')),
 };
 
+/**
+ * Compatibilidad: lista de problemas como texto. La validación completa (niveles, entorno y cómo corregir)
+ * está en config-check.ts; el arranque la aplica antes de importar este módulo.
+ */
 export function assertProductionConfig(): string[] {
-  const problems: string[] = [];
-  if (!config.adminPassword) problems.push('ADMIN_PASSWORD no está definido (no se creará el superadministrador inicial)');
-  if (!config.publicBaseUrl.startsWith('https://')) problems.push('PUBLIC_BASE_URL no es HTTPS: Telegram, Messenger e Instagram no podrán enviar webhooks ni recibir imágenes');
-  if (!config.sessionSecret || config.sessionSecret.length < 16) problems.push('SESSION_SECRET debe tener al menos 16 caracteres');
-  if (!config.openai.apiKey) problems.push('OPENROUTER_API_KEY (o OPENAI_API_KEY) no está definido (el bot no podrá responder)');
-  if (!config.evolution.apiKey) problems.push('EVOLUTION_API_KEY no está definido (no se podrán enviar mensajes)');
-  if (config.signup.enabled && !config.mail.smtpUrl) problems.push('SMTP_URL no está definido: los correos de verificación y recuperación solo quedan en el registro');
-  return problems;
+  return validateConfig({ ...process.env, RIVERRUN_ENV: 'production' }).issues.filter((i) => i.level !== 'optional').map((i) => i.message);
 }
 
 /** Empty pilot list preserves the global rollout; false disables all accounts. */

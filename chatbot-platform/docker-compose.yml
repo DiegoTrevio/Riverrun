@@ -76,6 +76,8 @@ services:
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://${DOMAIN}}
       EVOLUTION_URL: http://evolution:8080
       EVOLUTION_API_KEY: ${EVOLUTION_API_KEY}
+      # strict (por defecto): un problema crítico de configuración impide arrancar. warn: arranca igual (solo emergencias).
+      CONFIG_VALIDATION: ${CONFIG_VALIDATION:-strict}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-${OPENAI_API_KEY:-}}
       OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}}
       OPENROUTER_MODEL: ${OPENROUTER_MODEL:-${OPENAI_MODEL:-openai/gpt-4.1-mini}}
