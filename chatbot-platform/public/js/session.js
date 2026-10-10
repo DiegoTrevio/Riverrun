@@ -1,7 +1,7 @@
 import { api, state } from './core.js';
 
 export function clearTimers() {
-  state.timers.forEach(clearInterval);
+  state.timers.forEach((t) => typeof t === 'function' ? t() : clearInterval(t));
   state.timers = [];
 }
 
@@ -17,10 +17,14 @@ export const acct = (prefix = '?') => (isSuper() && state.accountId ? `${prefix}
 export const accountName = (id) => state.accounts.find((a) => a.id === id)?.name || '';
 
 export async function loadSession() {
-  const [meta, me, accounts] = await Promise.all([api('GET', '/api/meta'), api('GET', '/api/me'), api('GET', '/api/accounts')]);
+  const nav = state.navigation;
+  const [meta, me, accounts] = await Promise.all([api('GET', '/api/meta'), api('GET', '/api/me'), api('GET', '/api/accounts?view=selector')]);
+  if (nav !== state.navigation) return;
   state.meta = meta;
   state.me = me;
   state.accounts = accounts;
+  if (me.account) state.accountId = me.account.id;
+  state.timeZone = '';
   if (state.accountId && !accounts.some((a) => a.id === state.accountId)) state.accountId = '';
 }
 

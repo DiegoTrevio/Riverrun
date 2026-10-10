@@ -1,0 +1,31 @@
+{
+  "mobileStickyOverlap": [
+    {
+      "tag": "INPUT",
+      "type": "time",
+      "top": 829.875,
+      "bottom": 853.875,
+      "barTop": 829.75,
+      "barBottom": 900
+    }
+  ],
+  "manualChatConcurrentPosts": 2,
+  "manualChatFailureTextRetained": "duplicado",
+  "navigationRace": {
+    "hash": "#/agentes",
+    "heading": "Auditoría UX Encendido"
+  },
+  "sessionLoadFailure": {
+    "hash": "#/conversations",
+    "heading": "Agentes",
+    "visibleError": 0
+  },
+  "partialImport": {
+    "attemptedWrites": 3,
+    "persistedSections": [
+      "Productos, servicios y precios",
+      "Horarios"
+    ]
+  },
+  "synthetic200msApiDelayUntilAgentsHeadingMs": 1487
+}

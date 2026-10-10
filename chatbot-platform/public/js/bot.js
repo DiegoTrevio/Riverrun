@@ -1,6 +1,8 @@
+import { tabConnections } from './agent-connections.js';
 import { ACTIONS } from './automation.js';
 import { channelIcon, channelStatusCell } from './channels.js';
-import { api, area, check, clone, field, fill, fmtDate, h, lines, num, run, select, state, text, toast } from './core.js';
+import { api, area, check, clone, field, fill, fmtDate, h, lines, num, poll, run, select, state, text, toast, confirmAction, ask } from './core.js';
+import { discardDraft, draftModel, draftNotice, draftVersion } from './editing.js';
 import { importCard, importPreview } from './importer.js';
 import { render } from './main.js';
 import { tabPlayground } from './playground.js';
@@ -9,14 +11,9 @@ import { accountName, isSuper } from './session.js';
 /* ------------------------------ Chatbot ------------------------------ */
 
 // La configuración cotidiana: instrucciones, preguntas en orden, cuándo se activa, conocimiento, fotos y pruebas.
-const TABS = [
-  ['instrucciones', 'Instrucciones'],
-  ['preguntas', 'Preguntas'],
-  ['activacion', 'Activación'],
-  ['conocimiento', 'Conocimiento'],
-  ['imagenes', 'Fotos'],
-  ['probar', 'Probar'],
-];
+const TABS = [['instrucciones', 'Configurar'], ['conocimiento', 'Conocimiento'], ['conexiones', 'Conexiones'], ['probar', 'Probar']];
+const CONFIG_TABS = [['instrucciones', 'Instrucciones'], ['preguntas', 'Preguntas'], ['activacion', 'Activación']];
+const KNOWLEDGE_TABS = [['conocimiento', 'Información'], ['imagenes', 'Fotos y mensajes']];
 
 const TAB_ALIASES = { general: 'instrucciones', personalidad: 'instrucciones', datos: 'preguntas', flujo: 'instrucciones', ia: 'instrucciones', avanzado: 'instrucciones', reglas: 'instrucciones' };
 
@@ -29,17 +26,21 @@ const guide = () => h('span', { class: 'badge', title: 'Instrucción para la IA.
 
 const tag = (label, badge) => h('span', {}, label, ' ', badge);
 
-export async function viewBot(root, id, tab) {
+export async function viewBot(root, id, tab, params = new URLSearchParams()) {
   tab = TAB_ALIASES[tab] || tab || 'instrucciones';
   const bot = await api('GET', `/api/chatbots/${id}`);
+  if (!root.isConnected) return;
   root.append(
+    h('a', { href: '#/agentes', class: 'breadcrumb' }, '← Agentes'),
     h('div', { class: 'row between' },
       h('h1', {}, bot.name, ' ', h('span', { class: `badge ${bot.active ? 'green' : ''}` }, bot.active ? 'Encendido' : 'Apagado')),
-      h('div', { class: 'row' }, h('a', { class: 'btn', href: `#/channels?new=1&chatbot_id=${bot.id}` }, 'Conectar teléfono / ver QR'), h('a', { href: `#/conversations?chatbot_id=${bot.id}` }, 'Ver conversaciones →'))),
-    h('div', { class: 'tabs' }, TABS.map(([k, l]) => h('a', { href: `#/bot/${id}/${k}`, class: k === tab ? 'active' : '' }, l))),
+      h('div', { class: 'row' }, h('a', { class: 'btn', href: `#/bot/${bot.id}/conexiones?new=1` }, 'Conectar teléfono'), h('a', { href: `#/conversations?chatbot_id=${bot.id}` }, 'Ver conversaciones →'))),
+    h('div', { class: 'tabs agent-tabs', 'aria-label': 'Secciones del agente' }, TABS.map(([k, l]) => { const active = k === tab || (k === 'instrucciones' && ['preguntas', 'activacion'].includes(tab)) || (k === 'conocimiento' && tab === 'imagenes'); return h('a', { href: `#/bot/${id}/${k}`, class: active ? 'active' : '', 'aria-current': active ? 'page' : null }, l); })),
+    ['instrucciones', 'preguntas', 'activacion', 'conocimiento', 'imagenes'].includes(tab) ? h('div', { class: 'tabs sub-tabs', 'aria-label': 'Opciones de la sección' }, (['conocimiento', 'imagenes'].includes(tab) ? KNOWLEDGE_TABS : CONFIG_TABS).map(([k, l]) => h('a', { href: `#/bot/${id}/${k}`, class: k === tab ? 'active' : '', 'aria-current': k === tab ? 'page' : null }, l))) : null,
   );
   const guidance = {
     instrucciones: 'Define cómo atiende tu agente y qué debe lograr. Los ajustes adicionales están al final.',
+    conexiones: 'Conecta tus teléfonos y canales a este agente. Cada teléfono tiene su propio QR.',
     preguntas: 'Define qué preguntas debe hacer el agente y en qué orden. Las respuestas se guardan automáticamente.',
     activacion: 'Elige cuándo debe responder el agente y cuándo debe ponerse en pausa.',
     conocimiento: 'Agrega la información que tu agente puede usar para responder: precios, servicios, horarios y condiciones.',
@@ -49,20 +50,34 @@ export async function viewBot(root, id, tab) {
   root.append(h('p', { class: 'help', style: 'margin:0 0 24px' }, guidance[tab] || guidance.instrucciones));
   const body = h('div');
   root.append(body);
-  const views = { instrucciones: tabInstructions, preguntas: tabQuestions, activacion: tabActivation, conocimiento: tabKnowledge, imagenes: tabImages, probar: tabPlayground };
-  await (views[tab] || tabInstructions)(body, bot);
+  const views = { instrucciones: tabInstructions, preguntas: tabQuestions, activacion: tabActivation, conocimiento: tabKnowledge, imagenes: tabImages, conexiones: tabConnections, probar: tabPlayground };
+  await (views[tab] || tabInstructions)(body, bot, params);
+  if (tab !== 'probar' && tab !== 'conexiones') root.insertBefore(draftNotice(['general', 'personality', 'flow', 'rules', 'ai', 'questions', 'saved_messages', 'knowledge-new', 'photo-new'].map((key) => `${bot.id}:${key}`), render), body);
 }
 
 export function saveBar(onSave, extra) {
-  return h('div', { class: 'sticky-save row' }, h('button', { class: 'primary', onclick: onSave }, 'Guardar cambios'), extra);
+  let saving = false;
+  const status = h('span', { class: 'small muted', role: 'status' });
+  const button = h('button', { class: 'primary', onclick: async () => {
+    if (saving) return;
+    saving = true; button.disabled = true; status.textContent = 'Guardando…';
+    try { await onSave(); status.textContent = ''; }
+    catch (error) { status.textContent = 'No se guardó. Inténtalo de nuevo.'; toast(error.message, true); }
+    finally { saving = false; button.disabled = false; }
+  } }, 'Guardar cambios');
+  return h('div', { class: 'sticky-save row' }, button, status, extra);
 }
 
 async function saveBot(bot, patch) {
-  return run(() => api('PUT', `/api/chatbots/${bot.id}`, patch), 'Guardado ✅');
+  const keys = Object.keys(patch).filter((key) => key !== 'rules' || patch.rules.verify_facts !== undefined).map((key) => `${bot.id}:${key === 'name' || key === 'active' ? 'general' : key === 'data_fields' ? 'questions' : key}`);
+  const versions = keys.map((key) => [key, draftVersion(key)]);
+  const saved = await run(() => api('PUT', `/api/chatbots/${bot.id}`, patch), 'Guardado ✅');
+  if (saved) versions.forEach(([key, version]) => discardDraft(key, version));
+  return saved;
 }
 
 async function tabGeneral(root, bot) {
-  const m = { name: bot.name, active: bot.active };
+  const m = draftModel(`${bot.id}:general`, { name: bot.name, active: bot.active });
   const channels = bot.channels || [];
   const dup = { account_id: bot.account_id };
   const knowledge = await api('GET', `/api/chatbots/${bot.id}/knowledge`).catch(() => []);
@@ -75,32 +90,17 @@ async function tabGeneral(root, bot) {
   const ready = steps.every(([ok]) => ok);
   root.append(
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, ready ? '✅ Configuración básica completa' : 'Para que tu asistente funcione'),
+      h('h2', { style: 'margin-top:0' }, ready ? '✅ Configuración básica completa' : 'Para que tu asistente funcione'),
       h('ul', { class: 'checklist' }, steps.map(([ok, label, tabKey, help]) =>
         h('li', { class: ok ? 'ok' : '' }, h('span', { class: 'mark' }, ok ? '✓' : '○'), ' ',
           tabKey ? h('a', { href: `#/bot/${bot.id}/${tabKey}` }, label) : label,
           ok ? null : h('div', { class: 'small muted' }, help)))),
       h('p', { class: 'small muted', style: 'margin-bottom:0' }, 'Antes de encenderlo, ', h('a', { href: `#/bot/${bot.id}/probar` }, 'pruébalo como si fueras un cliente'), '.')),
-    h('div', { class: 'card' },
-      field('Nombre del asistente o negocio', text(m, 'name')),
-      check(m, 'active', 'Encendido (responde solo a los clientes en sus canales)'),
-      isSuper() ? h('p', { class: 'muted small' }, 'Cuenta: ', accountName(bot.account_id)) : null,
-    ),
-    h('div', { class: 'card' },
-      h('div', { class: 'row between' }, h('h3', { style: 'margin:0' }, 'Canales que atiende'),
-        h('a', { class: 'btn', href: `#/channels?new=1&chatbot_id=${bot.id}` }, '+ Agregar canal')),
-      h('p', { class: 'muted small' }, 'El mismo asistente (información, reglas y fotos) responde igual en todos sus canales.'),
-      channels.length
-        ? h('table', {}, h('tbody', {}, channels.map((c) => h('tr', { class: 'click', onclick: () => (location.hash = `#/channel/${c.id}`) },
-            h('td', {}, channelIcon(c.type), ' ', h('strong', {}, c.name), c.type === 'whatsapp' && c.config.number ? h('div', { class: 'small muted' }, `+${c.config.number}`) : null), h('td', {}, c.label),
-            channelStatusCell(c)))))
-        : h('p', {}, 'Aún no tiene canales. Mientras tanto puedes probarlo en la pestaña ', h('a', { href: `#/bot/${bot.id}/probar` }, 'Probar'), '.'),
-    ),
-    saveBar(async () => { if (await saveBot(bot, m)) render(); },
+    h('div', { class: 'row admin-actions' },
       h('span', { class: 'row', style: 'margin-left:auto' },
         isSuper() ? h('span', { style: 'min-width:180px' }, select(dup, 'account_id', state.accounts.map((a) => [a.id, a.name]))) : null,
         h('button', { onclick: async () => { const c = await run(() => api('POST', `/api/chatbots/${bot.id}/duplicate`, dup), 'Chatbot duplicado'); if (c) location.hash = `#/bot/${c.id}/general`; } }, isSuper() ? 'Duplicar en esa cuenta' : 'Duplicar'),
-        h('button', { class: 'danger', onclick: async () => { if (prompt(`Escribe "${bot.name}" para eliminarlo (sus canales quedarán sin chatbot)`) === bot.name) { await run(() => api('DELETE', `/api/chatbots/${bot.id}`), 'Eliminado'); location.hash = '#/'; } } }, 'Eliminar'))),
+        h('button', { class: 'danger', onclick: async () => { if (await ask(`Escribe "${bot.name}" para eliminarlo (sus canales quedarán sin chatbot)`) === bot.name) { if (!(await run(() => api('DELETE', `/api/chatbots/${bot.id}`), 'Eliminado'))) return; location.hash = '#/'; } } }, 'Eliminar'))),
   );
 }
 
@@ -109,15 +109,15 @@ function photoWarningsCard(bot) {
   const list = bot.photo_warnings || [];
   if (!list.length) return null;
   return h('div', { class: 'card', style: 'border-left:4px solid var(--danger)' },
-    h('h3', { style: 'margin-top:0' }, '⚠ Revisa tus fotos'),
+    h('h2', { style: 'margin-top:0' }, '⚠ Revisa tus fotos'),
     h('ul', { class: 'small', style: 'margin:0;padding-left:18px' }, list.map((w) => h('li', {}, w))),
     h('p', { class: 'small muted', style: 'margin-bottom:0' }, 'Se corrige en ', h('a', { href: `#/bot/${bot.id}/imagenes` }, 'Fotos'), ' o en el texto de las instrucciones.'));
 }
 
 async function tabInstructions(root, bot) {
-  const m = { name: bot.name, active: bot.active };
-  const p = clone(bot.personality);
-  const f = clone(bot.flow);
+  const m = draftModel(`${bot.id}:general`, { name: bot.name, active: bot.active });
+  const p = draftModel(`${bot.id}:personality`, bot.personality);
+  const f = draftModel(`${bot.id}:flow`, bot.flow);
   const warnings = photoWarningsCard(bot);
   if (warnings) root.append(warnings);
   root.append(
@@ -125,7 +125,11 @@ async function tabInstructions(root, bot) {
       h('div', { class: 'grid' },
         field('Nombre del agente', text(m, 'name')),
         field('Nombre con el que se presenta (opcional)', text(p, 'assistant_name', { placeholder: 'Mario' }))),
-      check(m, 'active', 'Asistente encendido'),
+      check(m, 'active', 'Agente encendido'),
+      h('details', { class: 'readiness' }, h('summary', {}, 'Revisar antes de encender'), h('ul', { class: 'checklist' },
+        h('li', {}, bot.personality.prompt.trim() ? '✓ Instrucciones configuradas' : '○ Completa las instrucciones'),
+        h('li', {}, bot.channels?.some((c) => c.active && (c.type !== 'whatsapp' || c.connection_state === 'open')) ? '✓ Tiene una conexión disponible' : ['○ Conecta un teléfono en ', h('a', { href: `#/bot/${bot.id}/conexiones` }, 'Conexiones')]),
+        h('li', {}, `Activación: ${bot.rules.activation.mode === 'always' ? 'cualquier mensaje' : 'espera palabras de activación'}`)), h('a', { href: `#/bot/${bot.id}/probar` }, 'Probar la configuración guardada antes de atender')),
       field('Cómo debe atender', area(p, 'prompt', { big: true, placeholder: 'Eres Mario, el asistente de Los Trompitos. Atiende de forma amable y breve. Ayuda a hacer pedidos. Pregunta qué quieren ordenar, la cantidad y si pasan a recoger o necesitan entrega. Para entrega, pide nombre y dirección. Haz una pregunta a la vez.' }),
         ['Describe cómo debe atender. Las preguntas que debe hacer, en orden, van en ', h('a', { href: `#/bot/${bot.id}/preguntas` }, 'Preguntas'), '; los precios, horarios y productos, en Conocimiento.']),
       field('Objetivo', area(f, 'goal', { placeholder: 'Ayudar al cliente a completar su pedido y pasarlo al equipo para confirmarlo.' })),
@@ -158,7 +162,7 @@ async function tabInstructions(root, bot) {
 export function flowCard(flow, c) {
   if (!flow || (!flow.goal && !flow.steps?.length)) return null;
   return h('div', { class: 'card' },
-    h('h3', { style: 'margin-top:0' }, 'Recorrido'),
+    h('h2', { style: 'margin-top:0' }, 'Recorrido'),
     c.goal_completed_at ? h('p', {}, h('span', { class: 'badge green' }, '🎯 Objetivo cumplido'), ' ', h('span', { class: 'small muted' }, fmtDate(c.goal_completed_at))) : flow.goal ? h('p', { class: 'small' }, 'Objetivo: ', flow.goal) : null,
     flow.steps?.length ? h('ol', { class: 'small flow-steps' }, flow.steps.map((st, i) =>
       h('li', { class: i + 1 < (c.flow_step || 0) || (c.goal_completed_at && i + 1 <= (c.flow_step || 0)) ? 'done' : i + 1 === c.flow_step ? 'current' : '' }, st.title))) : null);
@@ -170,19 +174,25 @@ const catLabel = (c) => CAT_LABELS[c] || c.replace(/_/g, ' ');
 
 async function tabKnowledge(root, bot) {
   const [items, search] = await Promise.all([api('GET', `/api/chatbots/${bot.id}/knowledge`), api('GET', `/api/chatbots/${bot.id}/knowledge/index`)]);
+  let index = search;
+  const indexStatus = h('p', { class: 'help', role: 'status' });
+  const updateIndex = () => { indexStatus.textContent = index.available ? `${index.indexed_items} temas preparados · ${index.pending_items ?? 0} pendientes · ${index.essential_items ?? 0} esenciales. Los cambios se preparan automáticamente.` : 'La preparación por significado no está disponible. Tu agente continúa usando la información por palabras.'; };
+  updateIndex();
+  poll(async () => { if (!index.enabled || !index.pending_items) return; index = await api('GET', `/api/chatbots/${bot.id}/knowledge/index`); updateIndex(); }, 10000, root);
   if (search.enabled) root.appendChild(h('div', { class: 'card' },
     h('strong', {}, search.available ? 'Búsqueda por significado' : 'Búsqueda por palabras'),
-    h('p', { class: 'help' }, search.available ? `${search.indexed_items} documentos preparados · ${search.pending_items ?? 0} pendientes · ${search.essential_items ?? 0} esenciales incluidos siempre. Los cambios se preparan automáticamente; puedes completar los pendientes ahora.` : 'La búsqueda por significado no está disponible. El asistente sigue usando tu conocimiento.'),
+    indexStatus,
+    h('a', { class: 'small', href: `#/logs?chatbot_id=${bot.id}` }, 'Ver detalles y errores de preparación'),
     search.available ? h('button', { class: 'small', onclick: async () => { if (await run(() => api('POST', `/api/chatbots/${bot.id}/knowledge/index`, {}), 'Conocimiento actualizado')) render(); } }, 'Preparar todo ahora') : null));
   const cats = state.meta.knowledge_categories;
   const catOptions = cats.map((c) => [c, catLabel(c)]);
-  const newItem = { category: 'general', title: '', content: '', always_include: false };
+  const newItem = draftModel(`${bot.id}:knowledge-new`, { category: 'general', title: '', content: '', always_include: false });
   const total = items.filter((i) => i.active).reduce((a, i) => a + i.title.length + i.content.length, 0);
 
   const itemView = (it) => {
-    const m = clone(it);
+    let m = draftModel(`${bot.id}:knowledge:${it.id}`, it);
     let editing = false;
-    const box = h('div', { class: 'list-item' });
+    const box = h('div', { class: 'list-item', 'data-search': `${it.title} ${it.content}`.toLocaleLowerCase('es') });
     const draw = () => {
       fill(box, );
       if (!editing) {
@@ -195,18 +205,19 @@ async function tabKnowledge(root, bot) {
               it.always_include ? h('span', { class: 'badge green' }, 'siempre incluido') : null),
             h('div', { class: 'row' },
               h('button', { class: 'small', onclick: () => { editing = true; draw(); } }, 'Editar'),
-              h('button', { class: 'small danger', onclick: async () => { if (confirm('¿Eliminar?')) { await run(() => api('DELETE', `/api/knowledge/${it.id}`), 'Eliminado'); render(); } } }, 'Eliminar'))),
-          h('div', { class: 'pre muted', style: 'margin-top:8px' }, it.content),
+              h('button', { class: 'small danger', onclick: async () => { if (await confirmAction('¿Eliminar?')) { if (!(await run(() => api('DELETE', `/api/knowledge/${it.id}`), 'Eliminado'))) return; render(); } } }, 'Eliminar'))),
+          h('details', { style: 'margin-top:8px' }, h('summary', {}, it.content.slice(0, 150) + (it.content.length > 150 ? '… · Ver contenido' : ' · Ver contenido')), h('div', { class: 'pre muted' }, it.content)),
         );
       } else {
         box.append(
+          draftNotice([`${bot.id}:knowledge:${it.id}`], render),
           h('div', { class: 'grid' }, field('Categoría', select(m, 'category', catOptions)), field('Título', text(m, 'title'))),
           field('Contenido', area(m, 'content', { big: true })),
           check(m, 'active', 'Activo'),
           check(m, 'always_include', 'Esencial: tenerlo siempre presente'),
           h('div', { class: 'row' },
-            h('button', { class: 'primary', onclick: async () => { if (await run(() => api('PUT', `/api/knowledge/${it.id}`, m), 'Guardado')) render(); } }, 'Guardar'),
-            h('button', { onclick: () => { editing = false; draw(); } }, 'Cancelar')),
+            h('button', { class: 'primary', onclick: async () => { const version = draftVersion(`${bot.id}:knowledge:${it.id}`); if (await run(() => api('PUT', `/api/knowledge/${it.id}`, m), 'Guardado')) { discardDraft(`${bot.id}:knowledge:${it.id}`, version); render(); } } }, 'Guardar'),
+            h('button', { onclick: () => { discardDraft(`${bot.id}:knowledge:${it.id}`); m = draftModel(`${bot.id}:knowledge:${it.id}`, it); editing = false; draw(); } }, 'Cancelar')),
         );
       }
     };
@@ -230,6 +241,7 @@ async function tabKnowledge(root, bot) {
         if (r) render();
       } }, '🔄 Volver a sincronizar')]))] : []),
     preview,
+    field('Buscar información cargada', h('input', { type: 'search', placeholder: 'Tema o contenido…', oninput: (e) => { const value = e.target.value.trim().toLocaleLowerCase('es'); root.querySelectorAll('[data-search]').forEach((item) => { item.hidden = !item.dataset.search.includes(value); }); } })),
     h('div', { class: 'card' },
       h('p', { style: 'margin-top:0' },
         'Agrega la información que necesita para responder: productos, precios, horarios y preguntas frecuentes.'),
@@ -239,15 +251,15 @@ async function tabKnowledge(root, bot) {
           : `${items.length} ${items.length === 1 ? 'tema' : 'temas'} cargados.`),
     ),
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, 'Agregar información'),
+      h('h2', { style: 'margin-top:0' }, 'Agregar información'),
       field('Tema', text(newItem, 'title', { placeholder: 'Ej.: Menú y precios' })),
       field('Contenido', area(newItem, 'content', { big: true, placeholder: 'Habitación sencilla: $1,200 MXN por noche...\nHabitación doble: $1,650 MXN por noche...' })),
       h('details', {}, h('summary', {}, 'Más opciones'), field('Categoría', select(newItem, 'category', catOptions)), check(newItem, 'always_include', 'Tenerlo siempre presente')),
-      h('button', { class: 'primary', onclick: async () => { if (await run(() => api('POST', `/api/chatbots/${bot.id}/knowledge`, newItem), 'Agregado')) render(); } }, 'Agregar'),
+      h('button', { class: 'primary', onclick: async () => { const version = draftVersion(`${bot.id}:knowledge-new`); if (await run(() => api('POST', `/api/chatbots/${bot.id}/knowledge`, newItem), 'Agregado')) { discardDraft(`${bot.id}:knowledge-new`, version); render(); } } }, 'Agregar'),
     ),
     ...cats.filter((c) => items.some((i) => i.category === c)).map((c) =>
-      h('div', { class: 'card' }, h('h3', { style: 'margin-top:0' }, catLabel(c)), items.filter((i) => i.category === c).map(itemView))),
-    ...(items.some((i) => !cats.includes(i.category)) ? [h('div', { class: 'card' }, h('h3', {}, 'Otras'), items.filter((i) => !cats.includes(i.category)).map(itemView))] : []),
+      h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, catLabel(c)), items.filter((i) => i.category === c).map(itemView))),
+    ...(items.some((i) => !cats.includes(i.category)) ? [h('div', { class: 'card' }, h('h2', {}, 'Otras'), items.filter((i) => !cats.includes(i.category)).map(itemView))] : []),
   );
 }
 
@@ -301,18 +313,20 @@ export async function tabImages(root, bot) {
   const images = await api('GET', `/api/chatbots/${bot.id}/images`);
   const warnings = photoWarningsCard(bot);
   if (warnings) root.append(warnings);
-  const n = { code: '', name: '', description: '', usage_rule: '', caption: '', send_when: sendWhenDefaults() };
+  const n = draftModel(`${bot.id}:photo-new`, { code: '', name: '', description: '', usage_rule: '', caption: '', send_when: sendWhenDefaults() });
   const fileInput = h('input', { type: 'file', accept: 'image/jpeg,image/png,image/webp' });
   const upload = async () => {
     if (!fileInput.files[0]) return toast('Selecciona un archivo', true);
+    if (!n.name.trim()) return toast('Escribe el nombre de la foto', true);
+    if (!n.code.trim()) { const base = questionKey(n.name); n.code = base; for (let i = 2; images.some((img) => img.code === n.code); i++) n.code = `${base}_${i}`; }
     const fd = new FormData();
     for (const [k, v] of Object.entries(n)) fd.append(k, typeof v === 'object' ? JSON.stringify(v) : v);
     fd.append('file', fileInput.files[0]);
-    if (await run(() => api('POST', `/api/chatbots/${bot.id}/images`, fd, true), 'Imagen agregada')) render();
+    const version = draftVersion(`${bot.id}:photo-new`);
+    if (await run(() => api('POST', `/api/chatbots/${bot.id}/images`, fd, true), 'Imagen agregada')) { discardDraft(`${bot.id}:photo-new`, version); render(); }
   };
   const card = (img) => {
-    const m = clone(img);
-    m.send_when = sendWhenDefaults(m.send_when);
+    const m = draftModel(`${bot.id}:photo:${img.id}`, { ...img, send_when: sendWhenDefaults(img.send_when) });
     const replace = h('input', { type: 'file', accept: 'image/jpeg,image/png,image/webp' });
     const save = async () => {
       const fd = new FormData();
@@ -320,19 +334,23 @@ export async function tabImages(root, bot) {
       fd.append('send_when', JSON.stringify(m.send_when));
       fd.append('active', String(m.active));
       if (replace.files[0]) fd.append('file', replace.files[0]);
+      const version = draftVersion(`${bot.id}:photo:${img.id}`);
       const r = await run(() => api('PUT', `/api/images/${img.id}`, fd, true), 'Imagen actualizada');
+      if (r) discardDraft(`${bot.id}:photo:${img.id}`, version);
       if (r?.warning) toast(r.warning, true);
       if (r) render();
     };
     return h('div', { class: 'img-card' },
       h('img', { src: `/api/images/${img.id}/file?v=${encodeURIComponent(img.file_path)}`, alt: img.name, loading: 'lazy' }),
-      h('div', { class: 'body' },
+      h('details', { class: 'body' },
+        h('summary', {}, h('strong', {}, img.name), ' · ', img.active ? 'Activa' : 'Inactiva', ' · Editar'),
+        draftNotice([`${bot.id}:photo:${img.id}`], render),
         h('div', { class: 'row between' }, h('code', {}, img.code),
           h('span', {},
             m.send_when.mode !== 'ai' && hasMoment(m.send_when) ? h('span', { class: 'badge green' }, 'envío automático') : null,
             m.send_when.mode === 'rules' && !hasMoment(m.send_when) ? h('span', { class: 'badge orange', title: 'Marca al menos un momento en "Reglas de envío", o usa "La IA decide" o "Ambos".' }, 'sin momentos: nunca se envía') : null,
             ' ', !img.active ? h('span', { class: 'badge orange' }, 'inactiva') : null)),
-        field('ID (lo usa la IA)', text(m, 'code')),
+        h('details', {}, h('summary', {}, 'Identificador avanzado'), field('ID (lo usa la IA)', text(m, 'code'))),
         field('Nombre', text(m, 'name')),
         field('Qué muestra', area(m, 'description')),
         field(tag('Cuándo enviarla', guide()), area(m, 'usage_rule'), 'Para la IA (modos "La IA decide" y "Ambos").'),
@@ -342,15 +360,15 @@ export async function tabImages(root, bot) {
         field('Reemplazar archivo', replace, imageFileHint(replace)),
         h('div', { class: 'row' },
           h('button', { class: 'primary small', onclick: save }, 'Guardar'),
-          h('button', { class: 'small danger', onclick: async () => { if (confirm('¿Eliminar imagen?')) { const r = await run(() => api('DELETE', `/api/images/${img.id}`), 'Eliminada'); if (r?.warning) toast(r.warning, true); render(); } } }, 'Eliminar'))),
+          h('button', { class: 'small danger', onclick: async () => { if (await confirmAction('¿Eliminar imagen?')) { const r = await run(() => api('DELETE', `/api/images/${img.id}`), 'Eliminada'); if (!r) return; if (r.warning) toast(r.warning, true); render(); } } }, 'Eliminar'))),
     );
   };
   root.append(
     h('div', { class: 'card' },
       h('p', { class: 'muted' }, 'Sube fotos y escribe cuándo debe enviarlas el asistente. Opcionalmente puedes definir reglas de envío (', guaranteed(), ').'),
-      h('h3', {}, 'Agregar imagen'),
+      h('h2', {}, 'Agregar imagen'),
       h('div', { class: 'grid' },
-        field('ID', text(n, 'code', { placeholder: 'habitacion_doble' }), 'Minúsculas, números, - y _'),
+        h('details', {}, h('summary', {}, 'Identificador avanzado (automático)'), field('ID', text(n, 'code', { placeholder: 'Se genera del nombre' }), 'Puedes personalizarlo antes de subir.')),
         field('Nombre', text(n, 'name', { placeholder: 'Foto habitación doble' })),
         field('Archivo', fileInput, imageFileHint(fileInput))),
       field('Qué muestra', area(n, 'description', { placeholder: 'Habitación doble con dos camas matrimoniales y vista al mar' })),
@@ -364,9 +382,14 @@ export async function tabImages(root, bot) {
   );
 }
 
+function withMessageCodes(list) {
+  const used = new Set(list.filter((item) => item.code).map((item) => item.code));
+  return list.map((item) => { if (item.code) return item; const base = questionKey(item.title || 'mensaje'); let code = base; for (let i = 2; used.has(code); i++) code = `${base}_${i}`; used.add(code); return { ...item, code }; });
+}
+
 /** Mensajes guardados: textos (y fotos) que el asistente envía tal cual; la IA los elige por su código. */
 function savedMessagesCard(bot, images) {
-  const list = clone(bot.saved_messages || []);
+  const list = draftModel(`${bot.id}:saved_messages`, bot.saved_messages || []);
   const steps = bot.flow?.steps || [];
   const photos = [['', '— Sin foto —'], ...images.filter((im) => im.active).map((im) => [im.id, `${im.name} (${im.code})`])];
   const box = h('div');
@@ -374,7 +397,7 @@ function savedMessagesCard(bot, images) {
     list.length
       ? list.map((m, i) => h('div', { class: 'card', style: 'background:var(--bg)' },
         h('div', { class: 'grid' },
-          field('Código', text(m, 'code', { placeholder: 'precios' }), 'Con este código lo menciona el prompt y lo elige la IA.'),
+          h('details', {}, h('summary', {}, 'Código avanzado (automático)'), field('Código', text(m, 'code', { placeholder: 'Se genera del título' }), 'Los códigos existentes se conservan.')),
           field('Título', text(m, 'title', { placeholder: 'Lista de precios' })),
           field('Foto (opcional)', select(m, 'image_id', m.image_id && !photos.some(([id]) => id === m.image_id) ? [...photos, [m.image_id, '⚠ Foto borrada o inactiva: elige otra o quítala']] : photos))),
         field('Texto', area(m, 'text', { placeholder: 'Nuestras tarifas: habitación doble $1,650 MXN por noche, desayuno incluido.' }), 'Se envía tal cual. Si tiene foto, va como pie de la foto en un solo mensaje.'),
@@ -387,10 +410,10 @@ function savedMessagesCard(bot, images) {
       : h('p', { class: 'muted small' }, 'Aún no hay mensajes guardados.'),
     h('div', { class: 'row' },
       h('button', { class: 'small', onclick: () => { list.push({ code: '', title: '', text: '', image_id: '', when: '', flow_step: 0, active: true }); draw(); } }, '+ Agregar mensaje'),
-      h('button', { class: 'primary', onclick: async () => { if (await saveBot(bot, { saved_messages: list })) render(); } }, 'Guardar mensajes')));
+      h('button', { class: 'primary', onclick: async () => { if (await saveBot(bot, { saved_messages: withMessageCodes(list) })) render(); } }, 'Guardar mensajes')));
   draw();
   return h('div', { class: 'card' },
-    h('h3', { style: 'margin-top:0' }, 'Mensajes guardados (texto + foto)'),
+    h('h2', { style: 'margin-top:0' }, 'Mensajes guardados (texto + foto)'),
     h('p', { class: 'small muted' }, 'El asistente los envía tal cual cuando se cumple su condición; con foto, salen juntos en un solo mensaje. En el prompt menciónalos por su código, por ejemplo: "si piden precios, envía el mensaje precios".'),
     box);
 }
@@ -412,11 +435,11 @@ function tabQuestions(root, bot) {
   const all = clone(bot.data_fields || []);
   const originalKeys = new Set(all.map((f) => f.key));
   // Los datos sin pregunta (p. ej. de una plantilla) se piden cuando tenga sentido; se pueden quitar aquí.
-  const others = all.filter((f) => !f.question?.trim());
+  const model = draftModel(`${bot.id}:questions`, { others: all.filter((f) => !f.question?.trim()), qs: all.filter((f) => f.question?.trim()).map((f) => ({ ...f, _from: f.key })), activation: clone(bot.rules.activation) });
+  const others = model.others;
   // Clave con la que llegó cada pregunta: para seguir el cambio en el desactivador "ya dio estos datos".
-  const qs = all.filter((f) => f.question?.trim()).map((f) => ({ ...f, _from: f.key }));
-  const r = clone(bot.rules);
-  const a = r.activation;
+  const qs = model.qs;
+  const a = model.activation;
   const list = h('div');
   const draw = () => fill(list,
     qs.length
@@ -429,7 +452,7 @@ function tabQuestions(root, bot) {
         field('Pregunta (se envía tal cual)', text(q, 'question', { placeholder: '¿Para qué fecha te gustaría reservar?' })),
         h('div', { class: 'grid' },
           field('Tipo de respuesta', select(q, 'type', QUESTION_TYPES, draw)),
-          field('Se guarda como', text(q, 'key', { placeholder: 'Se genera de la pregunta' }), 'Minúsculas, números y guion bajo (ej. fecha_llegada). Si coincide con un dato de abajo, la pregunta lo reemplaza.')),
+          h('details', {}, h('summary', {}, 'Opciones avanzadas del dato'), field('Se guarda como', text(q, 'key', { placeholder: 'Se genera automáticamente' }), 'Conserva las claves existentes para mantener tus reglas.'))),
         q.type === 'option' ? field('Opciones', lines(q, 'options', { placeholder: 'Sencilla\nDoble\nSuite' }), 'Una por renglón.') : null,
         check(q, 'required', 'Obligatoria: si no la contesta, se le vuelve a preguntar (las opcionales se hacen una sola vez)')))
       : h('p', { class: 'muted' }, 'Aún no hay preguntas. Agrégalas en el orden en que el asistente debe hacerlas.'));
@@ -482,12 +505,13 @@ function tabQuestions(root, bot) {
   root.append(
     h('div', { class: 'card legend' }, h('p', { style: 'margin:0' }, guaranteed(), ' El asistente hace estas preguntas en orden, una por mensaje y con tu texto. Si el cliente pregunta otra cosa, le responde y retoma la pregunta pendiente; si ya dio un dato, no se lo vuelve a preguntar. Las respuestas se guardan en el contacto. Compruébalo en ', h('a', { href: `#/bot/${bot.id}/probar` }, 'Probar'), '.')),
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, 'Preguntas (en orden)'),
+      h('h2', { style: 'margin-top:0' }, 'Preguntas (en orden)'),
       list,
       h('button', { onclick: () => { qs.push({ key: '', label: '', type: 'text', description: '', options: [], required: true, ask_when: '', question: '', _from: '' }); draw(); } }, '+ Agregar pregunta'),
-      otherBox),
+      otherBox,
+      others.length ? h('button', { class: 'small', onclick: () => { for (const f of [...others]) { qs.push({ ...f, question: f.description || `¿Cuál es tu ${f.label.toLowerCase()}?`, required: false, _from: f.key }); } others.splice(0); draw(); drawOthers(); } }, 'Convertir estos datos en preguntas para revisar') : null),
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, 'Al terminar las preguntas'),
+      h('h2', { style: 'margin-top:0' }, 'Al terminar las preguntas'),
       check(a, 'off_on_questions', tag('Apagar el asistente en esa conversación cuando el cliente responda todas las preguntas', guaranteed())),
       h('p', { class: 'small muted', style: 'margin:0' }, 'Responde ese último mensaje y después se apaga. Qué pasa al apagarse (pausa, pasar a una persona o cerrar) y el mensaje de despedida se configuran en ', h('a', { href: `#/bot/${bot.id}/activacion` }, 'Activación'), '.')),
     saveBar(save),
@@ -495,20 +519,20 @@ function tabQuestions(root, bot) {
 }
 
 function tabRules(root, bot) {
-  const r = clone(bot.rules);
+  const r = draftModel(`${bot.id}:rules`, bot.rules);
   root.append(
     h('div', { class: 'card legend' },
       h('p', { style: 'margin:0' }, guaranteed(), ' El sistema lo revisa antes de enviar cada respuesta; si no se cumple, la corrige o pide otra a la IA. ',
         guide(), ' Instrucción para la IA: la sigue casi siempre. Compruébalo en ', h('a', { href: `#/bot/${bot.id}/probar` }, 'Probar'), '.')),
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, 'Cuando no tiene un dato'),
+      h('h2', { style: 'margin-top:0' }, 'Cuando no tiene un dato'),
       check(r, 'verify_facts', tag('No inventar precios, cantidades, teléfonos, correos ni enlaces (recomendado)', guaranteed())),
       field('No afirmar lo que no esté en tu información (p. ej. "sí tenemos alberca")', select(r, 'verify_claims', [['reglas', 'Revisión rápida (recomendado)'], ['estricto', 'Estricta: una segunda IA lo revisa (más segura, cuesta un poco más)'], ['apagado', 'Sin revisar']]), 'Cuando el asistente asegura que tienes u ofreces algo que no está cargado, se corrige o dice que lo confirma con tu equipo.'),
       field(tag('Si le preguntan algo que no está en "Conocimiento"…', guaranteed()), select(r, 'unknown_info_behavior', [['say_unknown', 'Decir que no lo tiene confirmado'], ['ask', 'Hacer una pregunta para entender mejor'], ['handoff', 'Pasar con una persona del equipo']])),
       field(tag('Mensaje de respaldo', guaranteed()), area(r, 'fallback_message'), 'Se envía tal cual si la IA insiste en un dato que no puede comprobarse.'),
     ),
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, 'Pasar con una persona'),
+      h('h2', { style: 'margin-top:0' }, 'Pasar con una persona'),
       field(tag('Palabras que pasan con una persona de inmediato', guaranteed()), lines(r, 'handoff_keywords'), 'Si el cliente escribe alguna, se transfiere sin consultar a la IA.'),
       field(tag('Cuándo pasar con una persona', guide()), lines(r, 'handoff_rules'), 'Situaciones, una por renglón: "El cliente quiere pagar", "Tiene una queja".'),
       field(tag('Mensaje al pasar con una persona', guaranteed()), area(r, 'handoff_message'), 'Se envía tal cual. Después el asistente deja de responder en esa conversación hasta que se la devuelvas.'),
@@ -516,7 +540,7 @@ function tabRules(root, bot) {
       field('El asistente retoma la conversación después de (minutos)', num(r, 'auto_resume_minutes', { min: 0 }), '0 = nunca solo; se la devuelves desde Conversaciones.'),
     ),
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, 'Temas y reglas de tu negocio'),
+      h('h2', { style: 'margin-top:0' }, 'Temas y reglas de tu negocio'),
       field(tag('Temas de los que no debe hablar', guaranteed()), lines(r, 'forbidden_topics', { placeholder: 'Política\nCompetencia' }),
         'Si los menciona sin que el cliente pregunte, se quitan de la respuesta. Si el cliente pregunta, declina con amabilidad.'),
       field(tag('Reglas de tu negocio', guide()), lines(r, 'custom_rules', { big: true, placeholder: 'Nunca ofrezcas descuentos\nSiempre pregunta las fechas antes de hablar de disponibilidad\nNo confirmes reservaciones: eso lo hace una persona' }),
@@ -525,7 +549,7 @@ function tabRules(root, bot) {
       field(tag('Frases que nunca debe usar', guaranteed()), lines(r, 'banned_phrases'), 'Si aparece alguna, la respuesta se rehace.'),
     ),
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, 'Fotos'),
+      h('h2', { style: 'margin-top:0' }, 'Fotos'),
       field(tag('Cuándo mandar fotos', guide()), area(r, 'image_rules', { placeholder: 'Envía la foto de una habitación cuando el cliente pregunte por ella o quiera verla.' })),
       h('div', { class: 'grid' }, field(tag('Máximo de fotos por respuesta', guaranteed()), num(r, 'max_images_per_reply', { min: 0, max: 5 }))),
       check(r, 'avoid_repeating_images', tag('No reenviar fotos ya enviadas (salvo que el cliente las pida)', guaranteed())),
@@ -537,7 +561,7 @@ function tabRules(root, bot) {
 
 /** Activadores y desactivadores: cuándo empieza a responder el asistente y cuándo se apaga en una conversación. */
 function tabActivation(root, bot) {
-  const r = clone(bot.rules);
+  const r = draftModel(`${bot.id}:rules`, bot.rules);
   const a = r.activation;
   const fields = bot.data_fields || [];
   const questionCount = fields.filter((f) => f.question?.trim()).length;
@@ -553,9 +577,9 @@ function tabActivation(root, bot) {
   drawOn();
   root.append(
     h('div', { class: 'card legend' }, h('p', { style: 'margin:0' }, guaranteed(), ' Todo esto lo aplica el sistema, no la IA: funciona siempre igual. No distingue mayúsculas ni acentos, y busca palabras o frases completas. Pruébalo abajo o en ', h('a', { href: `#/bot/${bot.id}/probar` }, 'Probar'), '.')),
-    h('div', { class: 'card' }, h('h3', { style: 'margin-top:0' }, '1. Activadores'), onBox),
+    h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, '1. Activadores'), onBox),
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, '2. Desactivadores'),
+      h('h2', { style: 'margin-top:0' }, '2. Desactivadores'),
       h('p', { class: 'small muted', style: 'margin-top:0' }, 'El asistente se apaga solo en esa conversación (con los demás clientes sigue igual).'),
       field('Cuando el cliente escriba alguna de estas palabras', lines(a, 'off_keywords', { placeholder: 'ya no\ngracias es todo\nno me interesa' }), 'Una por renglón. No se le pregunta a la IA.'),
       check(a, 'off_on_goal', ['Cuando se cumpla el objetivo de la conversación', bot.flow?.goal ? h('span', { class: 'muted small' }, ` (“${bot.flow.goal}”)`) : h('span', { class: 'muted small' }, ' (define el objetivo en ', h('a', { href: `#/bot/${bot.id}/instrucciones` }, 'Instrucciones'), ')')]),
@@ -568,15 +592,15 @@ function tabActivation(root, bot) {
           : h('p', { class: 'small muted', style: 'margin:0' }, 'Los datos se guardan al conversar. Configura las preguntas en ', h('a', { href: `#/bot/${bot.id}/preguntas` }, 'Preguntas'), '.'),
         'Responde ese mensaje y después se apaga. Ej.: al tener nombre y teléfono, para que una persona continúe.')),
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, '3. Al desactivarse'),
+      h('h2', { style: 'margin-top:0' }, '3. Al desactivarse'),
       field('Qué pasa', select(a, 'off_action', [['pause', 'Se pone en pausa en silencio (no avisa a nadie)'], ['handoff', 'Pasa la conversación a una persona (avisa al equipo)'], ['close', 'Cierra la conversación (si el cliente vuelve a escribir, empieza de nuevo)']])),
       field('Mensaje al desactivarse (opcional)', area(a, 'off_message', { placeholder: 'Gracias, en breve una persona del equipo te contacta.' }), 'Se envía tal cual. Vacío = no se envía nada.'),
       h('div', { class: 'grid' }, field('Se reactiva solo después de (horas)', num(a, 'resume_after_hours', { min: 0, max: 720 }), '0 = solo con una palabra de activación, una regla o el botón "Reactivar asistente" en la conversación.'))),
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, '4. Cuando una persona escribe'),
+      h('h2', { style: 'margin-top:0' }, '4. Cuando una persona escribe'),
       check(r, 'pause_on_human_reply', tag('Si alguien del equipo contesta desde el teléfono, el asistente se calla en esa conversación', guaranteed())),
       h('p', { class: 'small muted', style: 'margin:0' }, 'Aplica también si la conversación está cerrada, y queda registrado en el contacto quién la atendió y cuándo. Lo que escribes desde el panel siempre pausa al asistente.')),
-    h('div', { class: 'card' }, h('h3', { style: 'margin-top:0' }, 'Probar palabras'), messageTester([bot], bot.id)),
+    h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, 'Probar palabras'), messageTester([bot], bot.id)),
     saveBar(async () => {
       a.on_keywords = a.on_keywords.filter((x) => x.trim());
       if (a.mode === 'keywords' && !a.on_keywords.length) return toast('Escribe al menos una palabra que active al asistente', true);
@@ -600,7 +624,7 @@ export function messageTester(bots, botId) {
       h('p', {}, h('span', { class: `badge ${r.ai_replies ? 'green' : 'orange'}` }, r.ai_replies ? 'La IA respondería' : 'La IA no responde'), ' ', r.why),
       h('ul', { class: 'small' }, r.steps.map((s) => h('li', {}, h('strong', {}, s.title, ': '), s.detail))),
       r.rules.length
-        ? h('table', { class: 'small' }, h('thead', {}, h('tr', {}, h('th', {}, ''), h('th', {}, 'Regla'), h('th', {}, 'Resultado'), h('th', {}, 'Acciones'))),
+        ? h('table', { class: 'small' }, h('thead', {}, h('tr', {}, h('th', {}, 'Acciones'), h('th', {}, 'Regla'), h('th', {}, 'Resultado'), h('th', {}, 'Acciones'))),
             h('tbody', {}, r.rules.map((x) => h('tr', {},
               h('td', {}, x.matched ? '✅' : '❌'),
               h('td', {}, h('a', { href: `#/automation/rules/${x.id}` }, x.name)),
@@ -623,8 +647,8 @@ export function messageTester(bots, botId) {
 }
 
 function tabAdvanced(root, bot) {
-  const f = clone(bot.flow);
-  const a = clone(bot.ai);
+  const f = draftModel(`${bot.id}:flow`, bot.flow);
+  const a = draftModel(`${bot.id}:ai`, bot.ai);
   // Posición original de cada etapa: al quitar o mover etapas, las fotos y mensajes guardados de esa etapa la siguen.
   f.steps.forEach((st, i) => { st._from = i + 1; });
   const stepMap = () => (bot.flow.steps || []).map((_, i) => f.steps.findIndex((st) => st._from === i + 1) + 1);
@@ -660,11 +684,11 @@ function flowSection(f) {
   draw();
   return h('div', {},
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, 'Recorrido de la conversación ', guide()),
+      h('h2', { style: 'margin-top:0' }, 'Recorrido de la conversación ', guide()),
       h('p', { class: 'muted' }, 'Es una guía, no un guion: el cliente puede saltar pasos o dar todo junto y el asistente se adapta.'),
       field('Objetivo de la conversación', area(f, 'goal', { placeholder: 'Que el cliente haga una reservación o deje sus datos para que un asesor lo contacte.' })),
       field('Saludo sugerido', text(f, 'greeting', { placeholder: '¡Hola! Gracias por escribir al Hotel Las Palmas 🌴' })),
-      h('h3', {}, 'Etapas sugeridas'),
+      h('h2', {}, 'Etapas sugeridas'),
       list,
       h('button', { onclick: () => { f.steps.push({ title: '', description: '' }); draw(); } }, '+ Agregar etapa'),
       h('div', { style: 'margin-top:14px' },
@@ -677,7 +701,7 @@ function flowSection(f) {
 function aiSection(a) {
   return h('div', {},
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, 'Modelo de IA'),
+      h('h2', { style: 'margin-top:0' }, 'Modelo de IA'),
       h('div', { class: 'grid' },
         field('Modelo de IA (OpenRouter)', text(a, 'model', { placeholder: state.meta.default_model }), `Vacío = ${state.meta.default_model}`),
         field('Modelos de respaldo (opcional)', lines(a, 'fallback_models', { placeholder: 'Uno por renglón (máx. 2)' }), 'Si el modelo principal falla o está saturado, se usa el siguiente. Vacío = los que configuró el administrador del servidor.'),
@@ -685,14 +709,14 @@ function aiSection(a) {
         field('Esfuerzo de razonamiento', select(a, 'reasoning_effort', [['', 'Por defecto'], ['minimal', 'Mínimo'], ['low', 'Bajo'], ['medium', 'Medio'], ['high', 'Alto']]), 'Solo modelos gpt-5 / o-series.')),
     ),
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, 'Memoria y contexto'),
+      h('h2', { style: 'margin-top:0' }, 'Memoria y contexto'),
       h('div', { class: 'grid' },
         field('Mensajes recientes enviados a la IA', num(a, 'recent_messages', { min: 2, max: 60 })),
         field('Resumir cada N mensajes adicionales', num(a, 'summary_batch', { min: 4, max: 100 }), 'Lo más antiguo se resume para no mandar todo el historial.'),
         field('Presupuesto de conocimiento (caracteres)', num(a, 'knowledge_char_budget', { min: 1000, step: 1000 }))),
     ),
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, 'Comportamiento en el chat'),
+      h('h2', { style: 'margin-top:0' }, 'Comportamiento en el chat'),
       h('div', { class: 'grid' },
         field('Esperar antes de responder (segundos)', num(a, 'debounce_seconds', { min: 0, max: 60, step: 0.5 }), 'Agrupa mensajes seguidos del cliente.'),
         field(tag('Máximo de mensajes por respuesta', guaranteed()), num(a, 'max_bubbles', { min: 1, max: 5 })),

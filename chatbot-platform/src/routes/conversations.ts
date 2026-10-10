@@ -44,11 +44,21 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
       params.push(`%${q.search}%`);
       where.push(`(ct.name ILIKE $${params.length} OR ct.push_name ILIKE $${params.length} OR ct.phone ILIKE $${params.length})`);
     }
-    params.push(Math.min(Number(q.limit) || 100, 500));
-    return query(
+    const limit = parse(z.coerce.number().int().min(1).max(500), q.limit ?? 100);
+    if (q.cursor) {
+      let raw: unknown;
+      try { raw = JSON.parse(Buffer.from(q.cursor.slice(0, 512), 'base64url').toString()); } catch { throw new HttpError(400, 'El cursor de conversaciones no es válido'); }
+      const cursor = parse(z.object({ at: z.string().datetime({ offset: true }), id: z.string().uuid() }), raw);
+      params.push(cursor.at, cursor.id);
+      where.push(`(coalesce(c.last_message_at, c.created_at), c.id) < ($${params.length - 1}::timestamptz, $${params.length}::uuid)`);
+    }
+    const paged = q.page === 'true';
+    params.push(limit + (paged ? 1 : 0));
+    const rows = await query<Record<string, any>>(
       `SELECT c.id, c.account_id, c.chatbot_id, c.channel_id, c.status, c.handoff_reason, c.last_message_at, c.created_at, c.assigned_user_id, au.name AS assigned_name, au.email AS assigned_email,
               ct.id AS contact_id, ct.name, ct.push_name, ct.phone, ct.external_id,
               ch.type AS channel_type, ch.name AS channel_name, b.name AS chatbot_name, a.name AS account_name,
+              ${paged ? `to_char(coalesce(c.last_message_at, c.created_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS page_cursor_at,` : ''}
               (SELECT content FROM messages m WHERE m.conversation_id = c.id ORDER BY id DESC LIMIT 1) AS last_message,
               (SELECT count(*)::int FROM messages m WHERE m.conversation_id = c.id) AS message_count
        FROM conversations c
@@ -58,21 +68,34 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
          LEFT JOIN chatbots b ON b.id = c.chatbot_id
          LEFT JOIN users au ON au.id = c.assigned_user_id
        ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-       ORDER BY c.last_message_at DESC LIMIT $${params.length}`,
+       ORDER BY coalesce(c.last_message_at, c.created_at) DESC, c.id DESC LIMIT $${params.length}`,
       params,
     );
+    if (!paged) return rows;
+    const pageRows = rows.slice(0, limit);
+    const items = pageRows.map(({ page_cursor_at, ...item }) => item);
+    const last = pageRows.at(-1);
+    return { items, has_more: rows.length > limit, next_cursor: rows.length > limit && last ? Buffer.from(JSON.stringify({ at: last.page_cursor_at, id: last.id })).toString('base64url') : null };
   });
 
   api.get('/api/conversations/:cid', async (req: any) => {
     const conv = await conversationFor(req.user, req.params.cid);
+    const options = parse(z.object({ before: z.coerce.number().int().positive().optional(), after: z.coerce.number().int().nonnegative().optional(), watch: z.string().regex(/^\d+(,\d+)*$/).max(2000).refine((value) => value.split(',').length <= 100, 'Como máximo 100 mensajes para actualizar estados').optional() }), req.query ?? {});
+    const messageParams: unknown[] = [conv.id];
+    let messageFilter = '';
+    if (options.before) { messageParams.push(options.before); messageFilter = ' AND m.id < $2'; }
+    else if (options.after !== undefined) {
+      messageParams.push(options.after, options.watch?.split(',') ?? []);
+      messageFilter = ` AND (m.id > $2 OR m.id = ANY($3::bigint[]))`;
+    }
     const [contact, messages, bot, channel] = await Promise.all([
       store.getContact(conv.contact_id),
       query(
         `SELECT m.*, i.code AS image_code, i.name AS image_name,
                 mm.kind AS media_kind, mm.mime AS media_mime, mm.file_name AS media_name, mm.size_bytes AS media_size, mm.complete AS media_complete
          FROM messages m LEFT JOIN images i ON i.id = m.image_id LEFT JOIN message_media mm ON mm.message_id = m.id
-         WHERE m.conversation_id = $1 ORDER BY m.id DESC LIMIT 500`,
-        [conv.id],
+         WHERE m.conversation_id = $1 ${messageFilter} ORDER BY m.id ${options.after !== undefined ? 'ASC' : 'DESC'} LIMIT 501`,
+        messageParams,
       ),
       conv.chatbot_id ? store.getChatbot(conv.chatbot_id) : null,
       store.getChannel(conv.channel_id),
@@ -80,7 +103,10 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
     return {
       conversation: conv,
       contact,
-      messages: messages.reverse(),
+      timezone: (await astore.getSettings(conv.account_id)).timezone,
+      messages: options.after !== undefined ? messages.slice(0, 500) : messages.slice(0, 500).reverse(),
+      has_more_messages: messages.length > 500,
+      messages_incremental: options.after !== undefined,
       chatbot: bot ? { id: bot.id, name: bot.name, data_fields: bot.data_fields, flow: bot.flow } : null,
       /** Asistente en esta conversación: activo, en pausa (motivo) o esperando su palabra de activación. */
       agent: bot ? agentStatus(bot, conv) : null,

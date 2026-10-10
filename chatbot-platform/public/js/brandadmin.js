@@ -1,4 +1,4 @@
-import { api, field, h, run, text } from './core.js';
+import { api, field, h, run, text, confirmAction } from './core.js';
 import { render } from './main.js';
 
 /* ------------------------------ Marca blanca (superadmin) ------------------------------ */
@@ -20,11 +20,11 @@ function brandForm(b, cname) {
   const save = async () => {
     const body = { name: f.name, color: f.color, domain: f.domain.trim() || null, support_email: f.support_email };
     if (logo !== undefined) body.logo = logo;
-    await run(() => (b.id ? api('PUT', `/api/brands/${b.id}`, body) : api('POST', '/api/brands', body)), 'Guardada');
+    if (!(await run(() => (b.id ? api('PUT', `/api/brands/${b.id}`, body) : api('POST', '/api/brands', body)), 'Guardada'))) return;
     render();
   };
   return h('div', { class: 'card' },
-    h('h3', {}, b.id ? b.name : 'Nueva marca'),
+    h('h2', {}, b.id ? b.name : 'Nueva marca'),
     field('Nombre que verá el cliente', text(f, 'name')),
     field('Color principal', color),
     field('Logo (PNG, JPG o WebP, máx. 256 KB)', h('div', {}, preview, file, b.logo ? h('button', { class: 'small', onclick: () => { logo = null; preview.replaceChildren(h('span', { class: 'muted small' }, 'Sin logo')); } }, 'Quitar logo') : null)),
@@ -32,7 +32,7 @@ function brandForm(b, cname) {
     field('Correo de soporte', text(f, 'support_email', { placeholder: 'soporte@miagencia.com' })),
     h('div', { class: 'row' },
       h('button', { class: 'primary', onclick: save }, 'Guardar'),
-      b.id ? h('button', { class: 'danger', onclick: async () => { if (confirm(`¿Borrar la marca "${b.name}"? Sus cuentas vuelven a la marca de la plataforma.`)) { await run(() => api('DELETE', `/api/brands/${b.id}`), 'Borrada'); render(); } } }, 'Borrar') : null),
+      b.id ? h('button', { class: 'danger', onclick: async () => { if (await confirmAction(`¿Borrar la marca "${b.name}"? Sus cuentas vuelven a la marca de la plataforma.`)) { if (!(await run(() => api('DELETE', `/api/brands/${b.id}`), 'Borrada'))) return; render(); } } }, 'Borrar') : null),
     b.id ? h('p', { class: 'muted small' }, `${b.accounts} cuenta(s) usan esta marca. Asigna la marca a una cuenta desde "Cuentas" → Marca. Quien se registre desde el dominio de la marca queda con ella automáticamente.`) : null);
 }
 

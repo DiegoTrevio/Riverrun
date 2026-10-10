@@ -1,6 +1,6 @@
 # Creación guiada del agente
 
-En **Asistentes → + Nuevo asistente** (o **Primeros pasos → Crear mi agente con el asistente**) la persona no escribe ningún prompt: responde cuatro pasos y el agente se arma solo.
+En **Agentes → + Crear agente** la persona responde cuatro pasos y el agente se arma solo. La creación, las pruebas y las conexiones se administran desde este mismo apartado.
 
 1. **Tu empresa:** nombre, giro, a qué se dedica, dirección (opcional) y nombre del agente (opcional).
 2. **Hasta dónde llega:**
@@ -36,4 +36,14 @@ El agente **nace apagado** para probarlo antes de conectarlo; no crear necesita 
 
 ## Conectar el teléfono
 
-Desde cualquier pestaña del agente, **Conectar teléfono / ver QR** abre **Conectar WhatsApp**. Cada perfil permite hasta cuatro conexiones; un mismo agente puede atender varias. Enciéndelo desde Instrucciones cuando hayas probado sus respuestas.
+Desde la tarjeta o cualquier pestaña del agente, **Conectar teléfono** abre **Conexiones**. Elige la plataforma y el nombre de la conexión: la cuenta y el agente se asignan automáticamente. **Crear y conectar** abre la conexión y, para WhatsApp, prepara su QR; al escanearlo se detecta la conexión automáticamente. Las conexiones existentes se abren con **Ver QR / administrar**.
+
+Cada cuenta permite hasta cuatro perfiles de WhatsApp entre todos sus agentes; desactivar o desconectar un teléfono no libera un lugar. Un agente puede atender varios teléfonos y cada conexión tiene un solo agente asignado. Los demás tipos de canales siguen disponibles y no consumen el límite de WhatsApp.
+
+En **Agentes → Conexiones pendientes de asignar** se conservan las conexiones que todavía no tienen agente. Puedes asignarlas a un agente de su misma cuenta o abrir su configuración. Al cambiar el agente de una conexión se conservan el contacto, los datos y los mensajes; el nuevo agente atiende los siguientes mensajes. Las otras conexiones del agente anterior mantienen su asignación.
+
+Los administradores gestionan únicamente su perfil. El maestro puede elegir el perfil desde el selector; las conexiones nuevas toman siempre la cuenta del agente abierto. Si cambias de perfil mientras editas un agente o una conexión, se vuelve al listado **Agentes**.
+
+Los enlaces para repartir clientes entre teléfonos están disponibles dentro de **Agentes**, en un bloque plegado cuando la cuenta tiene dos o más conexiones de WhatsApp. Los enlaces anteriores de Canales y Conectar WhatsApp siguen funcionando y llevan al nuevo recorrido. No se necesitan cambios de base de datos.
+
+Enciende el agente desde **Instrucciones** cuando hayas probado sus respuestas. Puedes crear y probar un agente antes de conectar un teléfono.

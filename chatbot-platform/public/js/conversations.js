@@ -1,6 +1,6 @@
 import { dataLabel, flowCard } from './bot.js';
 import { channelIcon } from './channels.js';
-import { api, area, check, field, fill, fmtDate, h, lines, run, select, state, text, toast } from './core.js';
+import { api, area, check, clone, dialog, field, fill, fmtDate, h, lines, poll, run, select, state, text, toast, confirmAction, ask } from './core.js';
 import { acct, isAdmin, isSuper, withAcct } from './session.js';
 
 /* ------------------------------ Conversaciones ------------------------------ */
@@ -21,8 +21,8 @@ function handoffLine(ct, by) {
 }
 
 /** Pendientes y notas del cliente: lo que falta por hacer con esa persona, o dónde se quedó la conversación. */
-function tasksCard(data, c, ct, reload) {
-  const draft = { kind: 'pendiente', body: '', due_on: '' };
+function tasksCard(data, c, ct, reload, draft) {
+  let adding = false;
   const tasks = data.tasks || [];
   const open = tasks.filter((t) => t.kind === 'pendiente' && t.status === 'abierta').length;
   const row = (t) => {
@@ -40,19 +40,21 @@ function tasksCard(data, c, ct, reload) {
       h('button', { class: 'small', title: 'Borrar', onclick: async () => { if (await run(() => api('DELETE', `/api/tasks/${t.id}`), 'Borrado')) reload(); } }, '✕'));
   };
   const add = async () => {
+    if (adding) return;
     if (!draft.body.trim()) return toast('Escribe el pendiente o la nota', true);
     const body = { kind: draft.kind, body: draft.body.trim(), due_on: draft.kind === 'pendiente' && draft.due_on ? draft.due_on : null, conversation_id: c.id };
-    if (await run(() => api('POST', `/api/contacts/${ct.id}/tasks`, body), 'Guardado')) reload();
+    adding = true;
+    try { if (await run(() => api('POST', `/api/contacts/${ct.id}/tasks`, body), 'Guardado')) { draft.body = ''; draft.due_on = ''; await reload(); } } finally { adding = false; }
   };
   return h('div', { class: 'card' },
-    h('h3', { style: 'margin-top:0' }, 'Pendientes y notas', open ? h('span', { class: 'badge orange', style: 'margin-left:6px' }, `${open} abierto${open === 1 ? '' : 's'}`) : null),
+    h('h2', { style: 'margin-top:0' }, 'Pendientes y notas', open ? h('span', { class: 'badge orange', style: 'margin-left:6px' }, `${open} abierto${open === 1 ? '' : 's'}`) : null),
     h('p', { class: 'small muted', style: 'margin-top:0' }, 'Lo que falta por hacer con esta persona, o dónde se quedó la conversación.'),
     tasks.length ? h('div', { class: 'tasks' }, tasks.map(row)) : h('p', { class: 'small muted' }, 'Todavía no hay pendientes ni notas.'),
     h('div', { class: 'task-form' },
-      select(draft, 'kind', [['pendiente', 'Pendiente'], ['nota', 'Nota']]),
-      area(draft, 'body', { placeholder: 'Ej. Confirmar la cotización el jueves' }),
+      field('Tipo de anotación', select(draft, 'kind', [['pendiente', 'Pendiente'], ['nota', 'Nota']])),
+      field('Pendiente o nota', area(draft, 'body', { placeholder: 'Ej. Confirmar la cotización el jueves' })),
       h('div', { class: 'row' },
-        h('input', { type: 'date', title: 'Fecha límite (opcional, solo pendientes)', value: draft.due_on, oninput: (e) => (draft.due_on = e.target.value) }),
+        h('input', { type: 'date', 'aria-label': 'Fecha límite (opcional, solo pendientes)', value: draft.due_on, oninput: (e) => (draft.due_on = e.target.value) }),
         h('button', { class: 'primary small', onclick: add }, 'Agregar'))));
 }
 
@@ -77,18 +79,30 @@ export async function viewConversations(root, params) {
     search: params.get('search') || '',
     assigned: params.get('assigned') || '',
   };
-  const apply = () => { location.hash = `#/conversations?${new URLSearchParams(Object.entries(f).filter(([, v]) => v))}`; };
+  const apply = () => { if (f.chatbot_id && f.channel_id && !channels.some((c) => c.id === f.channel_id && c.chatbot_id === f.chatbot_id)) f.channel_id = ''; if (f.channel_type && f.channel_id && !channels.some((c) => c.id === f.channel_id && c.type === f.channel_type)) f.channel_id = ''; location.hash = `#/conversations?${new URLSearchParams(Object.entries(f).filter(([, v]) => v))}`; };
   const table = h('tbody');
   const showAccount = isSuper() && !state.accountId;
-  const load = async () => {
+  let cursor = '';
+  let rowsSoFar = [];
+  let loading = false;
+  const more = h('button', { hidden: true, onclick: () => load(true) }, 'Cargar más conversaciones');
+  const load = async (append = false) => {
+    if (loading) return;
+    loading = true; more.disabled = true;
+    try {
     const qs = new URLSearchParams(Object.entries(f).filter(([, v]) => v));
     if (isSuper() && state.accountId) qs.set('account_id', state.accountId);
-    const rows = await api('GET', `/api/conversations?${qs}`);
+    qs.set('page', 'true');
+    if (append && cursor) qs.set('cursor', cursor);
+    const page = await api('GET', `/api/conversations?${qs}`);
+    cursor = page.next_cursor; more.hidden = !page.has_more;
+    rowsSoFar = append ? [...rowsSoFar, ...page.items.filter((r) => !rowsSoFar.some((old) => old.id === r.id))] : page.items;
+    const rows = rowsSoFar;
     fill(table,
       ...(rows.length ? rows.map((c) => {
         const [cls, label] = STATUS_BADGE[c.status] || ['', c.status];
         return h('tr', { class: 'click', onclick: () => (location.hash = `#/conversation/${c.id}`) },
-          h('td', {}, h('strong', {}, c.name || c.push_name || (c.channel_type === 'webchat' ? 'Visitante del sitio' : 'Sin nombre')), h('div', { class: 'muted small' }, c.phone ? `+${c.phone}` : '')),
+          h('td', {}, h('a', { href: `#/conversation/${c.id}` }, h('strong', {}, c.name || c.push_name || (c.channel_type === 'webchat' ? 'Visitante del sitio' : 'Sin nombre'))), h('div', { class: 'muted small' }, c.phone ? `+${c.phone}` : '')),
           h('td', {}, channelIcon(c.channel_type), ' ', c.channel_name, h('div', { class: 'muted small' }, c.chatbot_name || 'sin chatbot')),
           showAccount ? h('td', { class: 'small' }, c.account_name) : null,
           h('td', {}, h('span', { class: `badge ${cls}` }, label), c.status === 'human' && c.handoff_reason ? h('div', { class: 'muted small' }, c.handoff_reason) : null),
@@ -97,6 +111,7 @@ export async function viewConversations(root, params) {
           h('td', { class: 'muted small' }, fmtDate(c.last_message_at)));
       }) : [h('tr', {}, h('td', { colspan: 7, class: 'muted' }, 'No hay conversaciones.'))]),
     );
+    } finally { loading = false; more.disabled = false; }
   };
   const types = state.meta.channel_types.map((t) => [t.type, t.label]);
   // Exportar a CSV (se abre en Excel o Google Sheets); respeta los filtros de arriba cuando aplican.
@@ -119,32 +134,51 @@ export async function viewConversations(root, params) {
   root.append(
     h('div', { class: 'row between' }, h('h1', {}, 'Conversaciones'), exportMenu),
     h('div', { class: 'card row' },
-      h('div', { class: 'filter' }, select(f, 'chatbot_id', [['', 'Todos los chatbots'], ...bots.map((b) => [b.id, b.name])], apply)),
-      h('div', { class: 'filter' }, select(f, 'channel_type', [['', 'Todas las plataformas'], ...types], apply)),
-      h('div', { class: 'filter' }, select(f, 'channel_id', [['', 'Todos los canales'], ...channels.map((c) => [c.id, c.name])], apply)),
-      h('div', { class: 'filter' }, select(f, 'status', [['', 'Todos los estados'], ['bot', 'Atendidas por bot'], ['human', 'Con humano'], ['closed', 'Cerradas']], apply)),
+      h('div', { class: 'filter' }, field('Agente', select(f, 'chatbot_id', [['', 'Todos los chatbots'], ...bots.map((b) => [b.id, b.name])], apply))),
+      h('div', { class: 'filter' }, field('Plataforma', select(f, 'channel_type', [['', 'Todas las plataformas'], ...types], apply))),
+      h('div', { class: 'filter' }, field('Conexión', select(f, 'channel_id', [['', 'Todos los canales'], ...channels.map((c) => [c.id, c.name])], apply))),
+      h('div', { class: 'filter' }, field('Estado', select(f, 'status', [['', 'Todos los estados'], ['bot', 'Atendidas por bot'], ['human', 'Con humano'], ['closed', 'Cerradas']], apply))),
       // El agente solo ve sus conversaciones: el filtro por persona no le sirve.
-      isAdmin() ? h('div', { class: 'filter' }, select(f, 'assigned', [['', 'Todas las personas'], ['me', 'Asignadas a mí'], ['none', 'Sin asignar']], apply)) : null,
-      h('div', { class: 'search-field' }, h('input', { type: 'search', placeholder: 'Buscar nombre o teléfono…', value: f.search, onchange: (e) => { f.search = e.target.value; apply(); } }))),
-    h('div', { class: 'card' }, h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Cliente'), h('th', {}, 'Canal'), showAccount ? h('th', {}, 'Cuenta') : null, h('th', {}, 'Estado'), h('th', {}, 'Asignada a'), h('th', {}, 'Último mensaje'), h('th', {}, 'Fecha'))), table)),
+      isAdmin() ? h('div', { class: 'filter' }, field('Atiende', select(f, 'assigned', [['', 'Todas las personas'], ['me', 'Asignadas a mí'], ['none', 'Sin asignar']], apply))) : null,
+      h('div', { class: 'search-field' }, h('input', { type: 'search', 'aria-label': 'Buscar nombre o teléfono', placeholder: 'Buscar nombre o teléfono…', value: f.search, onchange: (e) => { f.search = e.target.value; apply(); } }))),
+    h('button', { class: 'small', onclick: () => { location.hash = '#/conversations'; } }, 'Limpiar filtros'),
+    h('div', { class: 'card' }, h('table', { class: 'responsive-table' }, h('thead', {}, h('tr', {}, h('th', {}, 'Cliente'), h('th', {}, 'Canal'), showAccount ? h('th', {}, 'Cuenta') : null, h('th', {}, 'Estado'), h('th', {}, 'Asignada a'), h('th', {}, 'Último mensaje'), h('th', {}, 'Fecha'))), table)),
   );
+  root.append(h('button', { class: 'small', onclick: () => load() }, 'Actualizar bandeja'), more);
   await load();
-  state.timers.push(setInterval(() => load().catch(() => undefined), 10000));
+  poll(() => { if (!rowsSoFar.length || rowsSoFar.length <= 100) return load(); }, 10000, root);
 }
 
 export async function viewConversation(root, id) {
-  const chat = h('div', { class: 'chat' });
+  const chat = h('div', { class: 'chat', id: 'conversation-messages', tabindex: '-1', 'aria-label': 'Mensajes de la conversación' });
   const side = h('div');
   const header = h('div');
-  const input = h('textarea', { placeholder: 'Escribe como persona del equipo… (Enter para enviar)', onkeydown: (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } } });
-  let lastCount = -1;
+  const input = h('textarea', { 'aria-label': 'Mensaje al cliente', placeholder: 'Escribe como persona del equipo… (Enter para enviar)', onkeydown: (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } } });
+  let messageSignature = '';
+  let headerSignature = '';
+  let firstMessageId = null;
+  const messageMap = new Map();
+  let sending = false;
+  let loadingChat = false;
+  let sideDirty = false;
+  let sideVersion = null;
+  const sideHint = h('p', { class: 'small', role: 'status', hidden: true }, 'Cambios sin guardar. La actualización automática no los modifica.');
+  const markContactDirty = (event) => { if (event.target.closest('#customer-data')) { sideDirty = true; sideHint.hidden = false; } };
+  side.addEventListener('input', markContactDirty);
+  side.addEventListener('change', markContactDirty);
+  const taskDraft = { kind: 'pendiente', body: '', due_on: '' };
+  const tasksBox = h('div');
+  const refreshTasks = () => fill(tasksBox, tasksCard(data, data.conversation, data.contact, async () => { await load(); refreshTasks(); }, taskDraft));
+  const older = h('button', { class: 'small', hidden: true, onclick: async () => { if (!messageMap.size) return; const d = await run(() => api('GET', `/api/conversations/${id}?before=${Math.min(...messageMap.keys())}`)); if (d) { older.hidden = !d.has_more_messages; d.messages.forEach((m) => messageMap.set(Number(m.id), m)); await load(); } } }, 'Cargar mensajes anteriores');
   let data;
 
   const send = async () => {
     const text = input.value.trim();
-    if (!text) return;
+    if (!text || sending) return;
+    sending = true; sendButton.disabled = true;
     const ok = await run(() => api('POST', `/api/conversations/${id}/send`, { text }));
-    if (ok) { input.value = ''; await load(true); }
+    sending = false; sendButton.disabled = false;
+    if (ok) { if (input.value.trim() === text) input.value = ''; await load(true); }
   };
 
   // Galería del catálogo para enviar una foto a mano.
@@ -154,8 +188,10 @@ export async function viewConversation(root, id) {
     if (!data?.chatbot) return toast('Esta conversación no tiene asistente: no hay catálogo de fotos', true);
     const imgs = (await api('GET', `/api/chatbots/${data.chatbot.id}/images`)).filter((i) => i.active);
     fill(gallery, imgs.length
-      ? imgs.map((img) => h('button', { class: 'thumb', title: `Enviar "${img.name}"`, onclick: async () => {
-          if (await run(() => api('POST', `/api/conversations/${id}/send-image`, { image_id: img.id }), 'Foto enviada')) { gallery.hidden = true; await load(true); }
+      ? imgs.map((img) => h('button', { class: 'thumb', title: `Enviar "${img.name}"`, onclick: async (event) => {
+          if (sending) return; sending = true; const button = event.currentTarget; button.disabled = true;
+          try { if (await run(() => api('POST', `/api/conversations/${id}/send-image`, { image_id: img.id }), 'Foto enviada')) { gallery.hidden = true; await load(true); } }
+          finally { sending = false; button.disabled = false; }
         } }, h('img', { src: `/api/images/${img.id}/file?v=${encodeURIComponent(img.file_path)}`, alt: img.name, loading: 'lazy' }), h('span', { class: 'small' }, img.name)))
       : h('p', { class: 'muted small' }, 'No hay fotos activas. Súbelas en el asistente → Fotos.'));
     gallery.hidden = false;
@@ -184,17 +220,29 @@ export async function viewConversation(root, id) {
   };
 
   const load = async (force = false) => {
+    if (loadingChat) return;
+    loadingChat = true;
+    try {
     if (team === null && isAdmin()) team = await api('GET', `/api/users${acct()}`).then((u) => u.filter((x) => x.account_id && x.active)).catch(() => []);
-    data = await api('GET', `/api/conversations/${id}`);
+    const recent = [...messageMap.values()].filter((m) => m.direction === 'out').slice(-100).map((m) => m.id);
+    const newest = messageMap.size ? Math.max(...messageMap.keys()) : null;
+    data = await api('GET', `/api/conversations/${id}${newest !== null && !force ? `?after=${newest}${recent.length ? '&watch=' + recent.join(',') : ''}` : ''}`);
+    if (!data.messages_incremental) older.hidden = !data.has_more_messages;
+    state.timeZone = data.timezone;
+    data.messages.forEach((m) => messageMap.set(Number(m.id), m));
+    data.messages = [...messageMap.values()].sort((a, b) => Number(a.id) - Number(b.id));
     const { conversation: c, contact: ct, messages } = data;
     const [cls, label] = STATUS_BADGE[c.status] || ['', c.status];
+    const nextHeader = JSON.stringify([c.status, c.handoff_reason, c.assigned_user_id, ct.name, ct.push_name, ct.phone, ct.handoff_at, data.handoff_by_user, data.channel?.name, data.chatbot?.name, data.agent]);
+    if (nextHeader !== headerSignature) {
+    headerSignature = nextHeader;
     fill(header, 
       h('div', { class: 'row between' },
         h('h1', {}, ct.name || ct.push_name || 'Cliente', ' ', h('span', { class: `badge ${cls}` }, label)),
         h('div', { class: 'row' },
-          c.status !== 'human' ? h('button', { class: 'primary', onclick: async () => { await run(() => api('POST', `/api/conversations/${id}/takeover`), 'Tomaste la conversación'); load(true); } }, 'Tomar conversación') : null,
-          c.status !== 'bot' ? h('button', { class: 'primary', onclick: async () => { await run(() => api('POST', `/api/conversations/${id}/release`), 'El bot vuelve a responder'); load(true); } }, 'Devolver al bot') : null,
-          c.status !== 'closed' ? h('button', { onclick: async () => { await run(() => api('POST', `/api/conversations/${id}/close`), 'Cerrada'); load(true); } }, 'Cerrar') : null)),
+          c.status !== 'human' ? h('button', { class: 'primary', onclick: async () => { if (!(await run(() => api('POST', `/api/conversations/${id}/takeover`), 'Tomaste la conversación'))) return; load(true); } }, 'Tomar conversación') : null,
+          c.status !== 'bot' ? h('button', { class: 'primary', onclick: async () => { if (!(await run(() => api('POST', `/api/conversations/${id}/release`), 'El bot vuelve a responder'))) return; load(true); } }, 'Devolver al bot') : null,
+          c.status !== 'closed' ? h('button', { onclick: async () => { if (!(await run(() => api('POST', `/api/conversations/${id}/close`), 'Cerrada'))) return; load(true); } }, 'Cerrar') : null)),
       assignRow(data),
       h('p', { class: 'muted' }, channelIcon(data.channel?.type), ' ', data.channel?.name, ' · ', data.chatbot?.name || 'sin chatbot', ct.phone ? ` · +${ct.phone}` : '', c.status === 'human' && c.handoff_reason ? ` · Motivo: ${c.handoff_reason}` : ''),
       handoffLine(ct, data.handoff_by_user),
@@ -202,11 +250,18 @@ export async function viewConversation(root, id) {
         ? h('div', { class: 'card legend row between' },
             h('span', {}, h('span', { class: 'badge orange' }, data.agent.state === 'waiting' ? 'Asistente esperando su palabra de activación' : 'Asistente en pausa'), ' ',
               data.agent.state === 'paused' ? `${data.agent.reason}${data.agent.until ? ` · se reactiva ${fmtDate(data.agent.until)}` : ''}` : 'Aún no responde en esta conversación.'),
-            h('button', { class: 'small', onclick: async () => { await run(() => api('POST', `/api/conversations/${id}/release`), 'El asistente vuelve a responder'); load(true); } }, 'Reactivar asistente'))
+            h('button', { class: 'small', onclick: async () => { if (!(await run(() => api('POST', `/api/conversations/${id}/release`), 'El asistente vuelve a responder'))) return; load(true); } }, 'Reactivar asistente'))
         : null,
     );
-    if (force || messages.length !== lastCount) {
-      lastCount = messages.length;
+    }
+    const signature = JSON.stringify(messages.map((m) => [m.id, m.status, m.meta, m.content]));
+    if (signature !== messageSignature) {
+      const atBottom = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 70;
+      const previousTop = chat.scrollTop; const previousHeight = chat.scrollHeight;
+      const firstRender = !messageSignature;
+      const prepended = firstMessageId !== null && Number(messages[0]?.id) < firstMessageId;
+      firstMessageId = Number(messages[0]?.id);
+      messageSignature = signature;
       fill(chat, ...messages.map((m) => {
         const cls = ['bubble', m.direction === 'in' ? 'in' : 'out', m.sender === 'human' ? 'human' : '', m.status === 'failed' ? 'failed' : ''].join(' ');
         const who = m.sender === 'human' ? '👤 equipo' : m.sender === 'bot' ? '🤖 bot' : '';
@@ -219,12 +274,13 @@ export async function viewConversation(root, id) {
           m.content || null,
           h('div', { class: 'meta' }, [who, fmtDate(m.created_at), m.status === 'failed' ? '⚠️ no enviado' : '', m.meta?.fallback ? 'respaldo' : ''].filter(Boolean).join(' · ')));
       }));
-      chat.scrollTop = chat.scrollHeight;
+      chat.scrollTop = prepended ? previousTop + Math.max(0, chat.scrollHeight - previousHeight) : atBottom || firstRender ? chat.scrollHeight : previousTop;
     }
-    if (force || !side.contains(document.activeElement)) drawSide();
+    if (!sideDirty && (force || !side.contains(document.activeElement))) drawSide();
+    } finally { loadingChat = false; }
   };
 
-  const autoBox = h('div');
+  const autoBox = h('div', { id: 'conversation-appointments', tabindex: '-1' });
   /** Secuencias, citas y envíos programados de esta conversación. */
   const drawAuto = async () => {
     const [auto, seqs, services] = await Promise.all([
@@ -246,7 +302,7 @@ export async function viewConversation(root, id) {
     const JOB_LABEL = { sequence_step: 'Mensaje de secuencia', no_reply: 'Seguimiento si no responde', automation_send: 'Mensaje programado', appointment_reminder: 'Recordatorio de cita', campaign_send: 'Campaña', flow_image: 'Foto pendiente del recorrido' };
     fill(autoBox,
       h('div', { class: 'card' },
-        h('h3', { style: 'margin-top:0' }, 'Citas'),
+        h('h2', { style: 'margin-top:0' }, 'Citas'),
         upcoming.length ? upcoming.map((a) => h('div', { class: 'small' }, a.kind === 'call' ? '📞 ' : '📅 ', h('strong', {}, a.service_name), ` · ${fmtDate(a.starts_at)}`)) : h('p', { class: 'small muted', style: 'margin:0' }, 'Sin citas próximas'),
         services.length ? h('details', { style: 'margin-top:8px' }, h('summary', {}, 'Agendar cita o llamada'),
           field('Servicio', select(book, 'service_id', services.filter((q) => q.active).map((q) => [q.id, q.name]), loadSlots)),
@@ -254,9 +310,9 @@ export async function viewConversation(root, id) {
           field('Notas', text(book, 'notes')),
           h('button', { class: 'small primary', onclick: async () => { if (await run(() => api('POST', '/api/appointments', { ...book, conversation_id: id }), 'Agendada: se envió la confirmación al cliente')) { drawAuto(); load(true); } } }, 'Agendar y avisar al cliente')) : null),
       h('div', { class: 'card' },
-        h('h3', { style: 'margin-top:0' }, 'Secuencias'),
+        h('h2', { style: 'margin-top:0' }, 'Secuencias'),
         active.length ? active.map((e) => h('div', { class: 'row between small' }, h('span', {}, `▶ ${e.sequence_name} (paso ${e.current_step + 1})`),
-          h('button', { class: 'small danger', onclick: async () => { await run(() => api('DELETE', `/api/conversations/${id}/sequences/${e.sequence_id}`), 'Detenida'); drawAuto(); } }, 'Detener'))) : h('p', { class: 'small muted', style: 'margin:0' }, 'Ninguna en curso'),
+          h('button', { class: 'small danger', onclick: async () => { if (!(await run(() => api('DELETE', `/api/conversations/${id}/sequences/${e.sequence_id}`), 'Detenida'))) return; drawAuto(); } }, 'Detener'))) : h('p', { class: 'small muted', style: 'margin:0' }, 'Ninguna en curso'),
         seqs.length ? h('div', { class: 'row', style: 'margin-top:8px' }, h('div', { style: 'flex:1' }, select(enr, 'sequence_id', seqs.filter((q) => q.active).map((q) => [q.id, q.name]))),
           h('button', { class: 'small', onclick: async () => { if (await run(() => api('POST', `/api/conversations/${id}/sequences`, enr), 'Inscrito en la secuencia')) drawAuto(); } }, 'Iniciar')) : null,
         auto.jobs.length ? h('details', { style: 'margin-top:8px' }, h('summary', {}, `Envíos programados (${auto.jobs.length})`),
@@ -267,15 +323,49 @@ export async function viewConversation(root, id) {
 
   const drawSide = () => {
     const { conversation: c, contact: ct } = data;
+    sideVersion = c.data_version;
     const m = { name: ct.name, data: { ...ct.data }, notes: [...(ct.notes || [])], tags: [...(ct.tags || [])], opted_out: !!ct.opted_out, consent: !!ct.consent_at };
     const fieldsDef = data.chatbot?.data_fields || [];
+    let savingContact = false;
+    const base = clone(m);
+    const contactError = h('div', { class: 'small', role: 'status' });
     // Los campos de tipo "nombre" se editan en el campo Nombre del contacto.
     const nameKeys = [...new Set([...fieldsDef.filter((f) => f.type === 'name').map((f) => f.key), ...['nombre', 'name'].filter((k) => Object.hasOwn(ct.data || {}, k))])];
     const keys = [...new Set([...fieldsDef.map((f) => f.key), ...Object.keys(ct.data || {})])].filter((k) => !nameKeys.includes(k) && !(ct.name && ['nombre', 'name'].includes(k)));
-    fill(side, 
-      tasksCard(data, c, ct, () => load(true)),
-      h('div', { class: 'card' },
-        h('h3', { style: 'margin-top:0' }, 'Datos del cliente'),
+    const payload = (model, version) => { const aliases = [...new Set([...nameKeys, ...['nombre', 'name'].filter((key) => Object.hasOwn(model.data, key))])]; return { ...model, base_data_version: version, data: Object.fromEntries(Object.entries({ ...model.data, ...Object.fromEntries(aliases.map((key) => [key, model.name])) }).filter(([, value]) => value)) }; };
+    const saveContact = async (model = m, version = sideVersion) => {
+      if (savingContact) return; savingContact = true;
+      const snapshot = JSON.stringify(m);
+      try {
+        await api('PUT', `/api/contacts/${ct.id}`, payload(model, version));
+        toast('Datos guardados');
+        if (snapshot === JSON.stringify(m)) { sideDirty = false; sideHint.hidden = true; await load(true); }
+        else { sideHint.textContent = 'Se guardó el envío anterior. Tienes cambios nuevos pendientes.'; }
+      } catch (error) {
+        fill(contactError, h('p', { class: 'error', role: 'alert' }, error.message), error.status === 409 ? h('button', { class: 'small', onclick: reviewContact }, 'Revisar cambios del cliente') : null);
+      } finally { savingContact = false; }
+    };
+    const reviewContact = async () => {
+      const current = await run(() => api('GET', `/api/conversations/${id}`));
+      if (!current) return;
+      const remote = { name: current.contact.name, data: { ...current.contact.data }, notes: [...current.contact.notes], tags: [...current.contact.tags], opted_out: !!current.contact.opted_out, consent: !!current.contact.consent_at };
+      const merged = clone(remote); const decisions = [];
+      const review = h('div', {}, h('p', {}, 'La conversación cambió. Conservamos los datos nuevos del cliente y te pedimos revisar los campos que también editaste.'));
+      const entries = [...Object.keys(base).filter((key) => key !== 'data').map((key) => [key, base[key], m[key], remote[key]]), ...new Set([...Object.keys(base.data), ...Object.keys(m.data), ...Object.keys(remote.data)])].map((entry) => typeof entry === 'string' ? [`data.${entry}`, base.data[entry], m.data[entry], remote.data[entry]] : entry);
+      for (const [key, previous, mine, server] of entries) {
+        if (JSON.stringify(mine) === JSON.stringify(previous)) continue;
+        const decision = { value: JSON.stringify(server) !== JSON.stringify(previous) && JSON.stringify(server) !== JSON.stringify(mine) ? 'server' : 'mine' };
+        review.append(field(dataLabel(key.replace('data.', '')), select(decision, 'value', [['server', `Dato actual: ${JSON.stringify(server) ?? '(vacío)'}`], ['mine', `Mi cambio: ${JSON.stringify(mine) ?? '(vacío)'}`]])));
+        decisions.push({ key, mine, decision });
+      }
+      if (!(await dialog('Revisar datos antes de guardar', review, 'Guardar cambios revisados'))) return;
+      for (const { key, mine, decision } of decisions) if (decision.value === 'mine') { if (key.startsWith('data.')) { if (mine === undefined) delete merged.data[key.slice(5)]; else merged.data[key.slice(5)] = mine; } else merged[key] = mine; }
+      await saveContact(merged, current.conversation.data_version);
+    };
+    fill(side, sideHint,
+      (refreshTasks(), tasksBox),
+      h('div', { class: 'card', id: 'customer-data', tabindex: '-1' },
+        h('h2', { style: 'margin-top:0' }, 'Datos del cliente'),
         field('Nombre', text(m, 'name')),
         ...keys.map((k) => field(fieldsDef.find((f) => f.key === k)?.label || dataLabel(k), text(m.data, k))),
         field('Notas (memoria)', lines(m, 'notes')),
@@ -283,19 +373,19 @@ export async function viewConversation(root, id) {
         check(m, 'opted_out', 'Dado de baja (no recibe mensajes promocionales)'),
         check(m, 'consent', 'Aceptó recibir promociones'),
         ct.consent_at ? h('p', { class: 'small muted', style: 'margin:-4px 0 8px' }, `Consentimiento registrado el ${fmtDate(ct.consent_at)}${ct.consent_source ? ` (${{ keyword: 'lo escribió el cliente', panel: 'marcado por el equipo', legacy: 'cliente anterior a esta función', api: 'integración' }[ct.consent_source] || ct.consent_source})` : ''}.`) : null,
-        h('button', { class: 'small', onclick: async () => { if (await run(() => api('PUT', `/api/contacts/${ct.id}`, { ...m, base_data_version: c.data_version, data: Object.fromEntries(Object.entries({ ...m.data, ...Object.fromEntries(nameKeys.map((k) => [k, m.name])) }).filter(([, v]) => v)) }), 'Datos guardados')) load(true); } }, 'Guardar datos')),
+        h('button', { class: 'small', onclick: () => saveContact() }, 'Guardar datos'), contactError),
       isAdmin() ? h('details', { class: 'card' },
         h('summary', {}, '🔒 Privacidad de este cliente'),
         h('p', { class: 'small muted' }, 'Para atender una solicitud de acceso o supresión de datos personales.'),
         h('div', { class: 'row' },
           h('a', { class: 'btn small', href: `/api/contacts/${ct.id}/data`, download: '' }, 'Descargar todos sus datos'),
           h('button', { class: 'small danger', onclick: async () => {
-            if (prompt('Se borrará este cliente y TODA su conversación, de forma definitiva. Escribe BORRAR para confirmar') !== 'BORRAR') return;
+            if (await ask('Se borrará este cliente y TODA su conversación, de forma definitiva. Escribe BORRAR para confirmar') !== 'BORRAR') return;
             if (await run(() => api('DELETE', `/api/contacts/${ct.id}`), 'Datos eliminados')) location.hash = '#/conversations';
           } }, 'Borrar todos sus datos'))) : null,
       flowCard(data.chatbot?.flow, c),
       autoBox,
-      h('details', { class: 'card', open: !!c.report_summary },
+      h('details', { class: 'card', id: 'conversation-summary', tabindex: '-1', open: !!c.report_summary },
         h('summary', {}, h('strong', {}, 'Resumen de la conversación'), c.report_summary ? null : h('span', { class: 'muted small' }, ' · sin generar')),
         h('div', { class: 'row' },
           h('button', { class: 'small primary', onclick: async (e) => {
@@ -324,23 +414,26 @@ export async function viewConversation(root, id) {
           h('button', { class: 'small primary', onclick: () => sendReportDialog(id, data) }, '✉ Enviar reporte')),
         h('details', { class: 'small' }, h('summary', {}, 'Datos guardados en esta conversación'), h('div', { class: 'pre' }, Object.entries(c.data || {}).map(([key, value]) => `${key}: ${value}`).join('\n') || 'Aún no se han recopilado datos.')),
         c.summary ? h('details', { class: 'small' }, h('summary', {}, 'Memoria del asistente'), h('div', { class: 'pre muted' }, c.summary)) : null,
-        h('button', { class: 'small danger', style: 'margin-top:10px', onclick: async () => { if (confirm('¿Borrar memoria (resumen, datos y notas) de este cliente?')) { await run(() => api('POST', `/api/conversations/${id}/reset-memory`), 'Memoria borrada'); load(true); } } }, 'Borrar memoria')),
+        h('button', { class: 'small danger', style: 'margin-top:10px', onclick: async () => { if (await confirmAction('¿Borrar memoria (resumen, datos y notas) de este cliente?')) { if (!(await run(() => api('POST', `/api/conversations/${id}/reset-memory`), 'Memoria borrada'))) return; load(true); } } }, 'Borrar memoria')),
       isAdmin() ? h('div', { class: 'card' }, h('a', { href: `#/logs?conversation_id=${id}` }, 'Ver registros de esta conversación →')) : null,
+      h('button', { class: 'small', onclick: () => { chat.scrollIntoView({ block: 'start' }); chat.focus(); } }, 'Volver a los mensajes'),
     );
   };
 
+  const sendButton = h('button', { class: 'primary', onclick: send }, 'Enviar');
   root.append(
     h('a', { href: '#/conversations' }, '← Conversaciones'),
     header,
+    h('div', { class: 'row chat-shortcuts' }, [['customer-data', 'Datos del cliente'], ['conversation-summary', 'Resumen'], ['conversation-appointments', 'Citas y seguimientos']].map(([target, label]) => h('button', { class: 'small', onclick: () => { const el = document.getElementById(target); if (!el) return; if (el.tagName === 'DETAILS') el.open = true; el.scrollIntoView({ block: 'start' }); el.focus({ preventScroll: true }); } }, label))),
     h('div', { class: 'split' },
-      h('div', { class: 'card' }, chat, h('div', { class: 'composer' }, input, h('button', { onclick: togglePhotos, title: 'Enviar una foto del catálogo' }, '📷 Foto'), h('button', { class: 'primary', onclick: send }, 'Enviar')),
+      h('div', { class: 'card' }, older, chat, h('div', { class: 'composer' }, input, h('button', { onclick: togglePhotos, title: 'Enviar una foto del catálogo' }, '📷 Foto'), sendButton),
         gallery,
         h('p', { class: 'muted small' }, 'Al enviar un mensaje o una foto a mano, el bot se pausa en esta conversación hasta que la devuelvas.')),
       side),
   );
   await load(true);
   drawAuto().catch(() => undefined);
-  state.timers.push(setInterval(() => load().catch(() => undefined), 5000));
+  poll(() => load(), 5000, root);
 }
 
 
@@ -362,7 +455,7 @@ async function sendReportDialog(id) {
     } finally { send.disabled = false; }
   } }, 'Enviar');
   dlg.append(
-    h('h3', { style: 'margin-top:0' }, 'Enviar reporte de la conversación'),
+    h('h2', { style: 'margin-top:0' }, 'Enviar reporte de la conversación'),
     h('p', { class: 'small muted' }, 'Se actualiza el resumen y se envía por el panel, y por correo o WhatsApp a quien lo tenga activado.'),
     h('div', { class: 'row', style: 'flex-wrap:wrap' }, people.map((u) => h('label', { class: 'check' },
       h('input', { type: 'checkbox', onchange: (e) => { b.user_ids = e.target.checked ? [...b.user_ids, u.id] : b.user_ids.filter((x) => x !== u.id); } }), u.name, u.whatsapp ? ' 📱' : ''))),

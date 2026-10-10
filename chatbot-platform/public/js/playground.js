@@ -1,5 +1,5 @@
 import { dataLabel } from './bot.js';
-import { api, fill, h, run } from './core.js';
+import { api, fill, h, run, toast } from './core.js';
 import { render } from './main.js';
 
 const ACTION_LABEL = { paused: 'No respondió: el asistente no está activo en esta conversación', reply: 'Respondió', reply_with_image: 'Respondió con foto', handoff: 'Pasó la conversación a una persona', no_reply: 'No respondió', human: 'No respondió: la conversación está con una persona', inactive: 'No respondió: el asistente está apagado', error: 'Error' };
@@ -28,35 +28,43 @@ function explainIssue(x) {
 const TEST_IDEAS = ['¿Cuánto cuesta?', '¿Qué horario tienen?', '¿Dónde están?', '¿Me haces un descuento?', '¿Tienen servicio a domicilio?', 'Quiero hablar con una persona'];
 
 export async function tabPlayground(root, bot) {
-  const session = localStorage.getItem('pg-session') || Math.random().toString(36).slice(2, 10);
+  let previousSession;
+  try { previousSession = localStorage.getItem('pg-session'); } catch { /* sin almacenamiento */ }
+  const session = previousSession || Math.random().toString(36).slice(2, 10);
+  let sending = false;
   try { localStorage.setItem('pg-session', session); } catch { /* sin storage */ }
   const chat = h('div', { class: 'chat' });
   const savedData = h('div', {}, h('p', { class: 'small muted' }, 'Aquí aparecerán los datos que el cliente comparta.'));
   const debug = h('div', { class: 'stack' }, h('p', { class: 'muted small' }, 'Después de cada respuesta verás qué hizo el asistente, si alguna regla obligó a corregirla y qué datos del cliente guardó.'));
-  const input = h('textarea', { placeholder: 'Escribe como si fueras el cliente…', onkeydown: (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } } });
+  const input = h('textarea', { placeholder: 'Escribe como si fueras el cliente…', 'aria-label': 'Mensaje de prueba', onkeydown: (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } } });
   const btn = h('button', { class: 'primary', onclick: () => send() }, 'Enviar');
 
   const bubble = (cls, content, img) =>
-    h('div', { class: `bubble ${cls}` }, img ? h('img', { src: `/api/images/${img.id}/file` }) : null, img ? h('div', { class: 'small muted' }, `🖼 ${img.code}`) : null, content || null);
+    h('div', { class: `bubble ${cls}` }, img ? h('img', { src: `/api/images/${img.id}/file`, alt: img.code || 'Foto del catálogo', loading: 'lazy' }) : null, img ? h('div', { class: 'small muted' }, `🖼 ${img.code}`) : null, content || null);
 
   const load = async () => {
     const d = await api('GET', `/api/chatbots/${bot.id}/playground/${session}`);
     fill(chat, ...d.messages.map((m) => bubble(m.sender === 'system' ? 'notify' : m.direction === 'in' ? 'in' : 'out', m.content, m.image_id ? { id: m.image_id, code: m.image_code } : null)));
     chat.scrollTop = chat.scrollHeight;
+    showData(d.contact || {});
   };
 
+  const showData = (c = {}) => { const labels = Object.fromEntries((bot.data_fields || []).map((f) => [f.key, f.label])); fill(savedData, c?.name || Object.keys(c?.data || {}).length ? h('ul', { class: 'small' }, c.name ? h('li', {}, `Nombre: ${c.name}`) : null, Object.entries(c.data || {}).filter(([k]) => !['nombre', 'name'].includes(k)).map(([k, v]) => h('li', {}, `${labels[k] || dataLabel(k)}: ${v}`))) : h('p', { class: 'small muted' }, 'Todavía no hay datos guardados.')); };
+
   const send = async () => {
+    if (sending) return;
     const text = input.value.trim();
     if (!text) return;
-    input.value = '';
-    chat.append(bubble('in', text));
+    sending = true;
     chat.scrollTop = chat.scrollHeight;
     btn.disabled = true;
     btn.textContent = 'Pensando…';
     const r = await run(() => api('POST', `/api/chatbots/${bot.id}/playground`, { session, text }));
+    sending = false;
     btn.disabled = false;
     btn.textContent = 'Enviar';
-    if (!r) return;
+    if (!r) { toast('No se completó el envío. Conservamos tu mensaje; revisa el historial antes de reintentar.', true); return; }
+    if (input.value.trim() === text) input.value = '';
     // Historial completo: incluye respuestas de reglas automáticas y notas del simulador.
     await load();
     for (const o of r.outputs.filter((x) => x.type === 'notify')) chat.append(bubble('notify', o.text));
@@ -96,7 +104,8 @@ export async function tabPlayground(root, bot) {
   };
 
   const reset = async () => {
-    await run(() => api('DELETE', `/api/chatbots/${bot.id}/playground/${session}`), 'Conversación reiniciada');
+    if (sending) return;
+    if (!(await run(() => api('DELETE', `/api/chatbots/${bot.id}/playground/${session}`), 'Conversación reiniciada'))) return;
     const ns = Math.random().toString(36).slice(2, 10);
     try { localStorage.setItem('pg-session', ns); } catch { /* */ }
     render();
@@ -105,15 +114,15 @@ export async function tabPlayground(root, bot) {
   root.append(
     h('div', { class: 'split' },
       h('div', { class: 'card' },
-        h('div', { class: 'row between' }, h('h3', { style: 'margin:0' }, 'Simulador'), h('button', { class: 'small', onclick: reset }, 'Reiniciar conversación')),
+        h('div', { class: 'row between' }, h('h2', { style: 'margin:0' }, 'Simulador'), h('button', { class: 'small', onclick: reset }, 'Reiniciar conversación')),
         h('p', { class: 'muted small' }, 'Escribe como si fueras un cliente. Responde exactamente igual que en WhatsApp, con las mismas reglas (funciona aunque esté apagado). Las fotos se muestran aquí en lugar de enviarse.'),
         chat,
         h('div', { class: 'row', style: 'margin:8px 0;gap:6px;flex-wrap:wrap' }, h('span', { class: 'small muted' }, 'Prueba:'),
-          TEST_IDEAS.map((q) => h('button', { class: 'small', onclick: () => { input.value = q; send(); } }, q))),
+          TEST_IDEAS.map((q) => h('button', { class: 'small', onclick: () => { if (!sending) { input.value = q; send(); } } }, q))),
         h('div', { class: 'composer' }, input, btn)),
-      h('div', { class: 'card' }, h('h3', { style: 'margin-top:0' }, 'Datos guardados automáticamente'), savedData, h('details', {}, h('summary', {}, 'Detalles de la respuesta'), debug)),
+      h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, 'Datos guardados automáticamente'), savedData, h('details', {}, h('summary', {}, 'Detalles de la respuesta'), debug)),
     ),
   );
   load().catch(() => undefined);
-  input.focus();
+
 }

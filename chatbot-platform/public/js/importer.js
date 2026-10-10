@@ -10,7 +10,8 @@ const SECTION_LABELS = { catalog: 'Productos o servicios con precios', hours: 'H
  * la IA lo ordena en secciones y se devuelve a `onResult` para que lo revise antes de guardar.
  */
 export function importCard({ endpoint, url = '', onResult, title = '⚡ Llena todo por mí', intro, button = 'Leer mi información' }) {
-  const f = { url, text: '' };
+  const f = { url, text: '', source: url ? 'url' : 'file' };
+  const source = h('select', { 'aria-label': 'Fuente de información', onchange: (e) => { f.source = e.target.value; updateSource(); } }, [['file', 'Archivo'], ['url', 'Página web'], ['text', 'Texto']].map(([v, label]) => h('option', { value: v, selected: v === f.source }, label)));
   let file = null;
   const fileName = h('span', { class: 'small muted' });
   const fileInput = h('input', {
@@ -20,33 +21,31 @@ export function importCard({ endpoint, url = '', onResult, title = '⚡ Llena to
   const status = h('span', { class: 'small muted' });
   const btn = h('button', { class: 'primary' }, button);
   btn.addEventListener('click', async () => {
-    if (!file && !f.url.trim() && f.text.trim().length < 20) return toast('Pega la dirección de tu página, sube un archivo o pega tu información', true);
+    if ((f.source === 'file' && !file) || (f.source === 'url' && !f.url.trim()) || (f.source === 'text' && f.text.trim().length < 20)) return toast('Pega la dirección de tu página, sube un archivo o pega tu información', true);
     const form = new FormData();
-    if (file) form.append('file', file);
-    else if (f.url.trim()) form.append('url', f.url.trim());
+    if (f.source === 'file') form.append('file', file);
+    else if (f.source === 'url') form.append('url', f.url.trim());
     else form.append('text', f.text);
     btn.disabled = true;
     status.textContent = 'Leyendo tu información… puede tardar hasta un minuto.';
     const r = await run(() => api('POST', endpoint, form, true));
     btn.disabled = false;
     status.textContent = '';
-    if (r) { r.source_url = file ? null : f.url.trim() || null; await onResult(r); }
+    if (r) { r.source_url = f.source === 'url' ? f.url.trim() : null; await onResult(r); }
   });
-  return h('div', { class: 'card import-card' },
-    h('h3', { style: 'margin-top:0' }, title),
-    h('p', { class: 'muted' }, intro || 'Pega la dirección de tu página web o de tu menú, o sube tu lista de precios (PDF, foto, CSV). Armamos la información por ti y tú solo la revisas.'),
-    field('Dirección web (página, menú, Google Sheets compartido)', text(f, 'url', { placeholder: 'https://www.minegocio.com' })),
-    h('div', { class: 'row' },
-      h('button', { onclick: () => fileInput.click() }, '📎 Subir PDF, foto o CSV'), fileInput, fileName),
-    h('details', {}, h('summary', {}, 'O pega aquí tu información'), area(f, 'text', { big: true, placeholder: 'Pega tu menú, lista de precios, horarios…' })),
-    h('div', { class: 'row', style: 'margin-top:10px' }, btn, status));
+  const website = field('Dirección web', text(f, 'url', { type: 'url', placeholder: 'https://www.minegocio.com' }));
+  const upload = h('div', { class: 'row' }, h('button', { onclick: () => fileInput.click() }, '📎 Elegir archivo'), fileInput, fileName, h('button', { class: 'small', onclick: () => { file = null; fileInput.value = ''; fileName.textContent = ''; } }, 'Quitar archivo'));
+  const pasted = field('Información del negocio', area(f, 'text', { big: true, placeholder: 'Pega tu menú, precios, horarios…', maxlength: 50000 }));
+  function updateSource() { website.hidden = f.source !== 'url'; upload.hidden = f.source !== 'file'; pasted.hidden = f.source !== 'text'; }
+  updateSource();
+  return h('div', { class: 'card import-card' }, h('h2', { style: 'margin-top:0' }, title), h('p', { class: 'muted' }, intro || 'Elige una fuente. Ordenamos la información para que la revises antes de guardarla.'), field('Leer información desde', source), website, upload, pasted, h('div', { class: 'row' }, btn, status));
 }
 
 /** Propuesta de importación (en la pestaña Conocimiento): se revisa y se guarda con un clic. */
 export function importPreview(box, bot, data) {
   const sections = { ...data.sections };
   fill(box, h('div', { class: 'card' },
-    h('h3', { style: 'margin-top:0' }, 'Revisa lo que encontramos'),
+    h('h2', { style: 'margin-top:0' }, 'Revisa lo que encontramos'),
     h('p', { class: 'muted' }, `Fuente: ${data.source}. Corrige lo que haga falta: al guardar reemplaza los temas con el mismo nombre. ${data.truncated ? 'La fuente era muy larga y solo se leyó el inicio. ' : ''}Nada se inventó: si falta algo, escríbelo aquí.`),
     Object.entries(SECTION_LABELS).map(([k, label]) => field(label, area(sections, k, { big: k === 'catalog' }))),
     h('div', { class: 'row' },
@@ -59,14 +58,5 @@ export function importPreview(box, bot, data) {
 }
 
 async function saveImported(bot, sections, sourceUrl) {
-  const cats = { catalog: ['precios', 'Productos, servicios y precios'], hours: ['horarios', 'Horarios'], location: ['ubicaciones', 'Ubicación y contacto'], faq: ['preguntas_frecuentes', 'Preguntas frecuentes'], other: ['general', 'Otra información'] };
-  const items = await api('GET', `/api/chatbots/${bot.id}/knowledge`);
-  for (const [k, [category, title]] of Object.entries(cats)) {
-    const content = (sections[k] || '').trim();
-    if (!content) continue;
-    const prev = items.find((i) => i.title === title);
-    const body = { category, title, content, active: true, always_include: k !== 'faq', source_url: sourceUrl || null };
-    await (prev ? api('PUT', `/api/knowledge/${prev.id}`, body) : api('POST', `/api/chatbots/${bot.id}/knowledge`, body));
-  }
-  return true;
+  return api('POST', `/api/chatbots/${bot.id}/knowledge/import-reviewed`, { sections, source_url: sourceUrl || null });
 }
