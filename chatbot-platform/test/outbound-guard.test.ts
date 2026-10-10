@@ -48,6 +48,8 @@ test('un destino se compara sin formato: teléfono por dígitos, correo sin may�
   assert.equal(guard.normalizeDestination('+52 55 1234-5678'), '525512345678');
   assert.equal(guard.normalizeDestination('Prueba@Ejemplo.MX '), 'prueba@ejemplo.mx');
   assert.equal(guard.normalizeDestination('https://Hooks.Ejemplo.mx/x/'), 'https://hooks.ejemplo.mx/x');
+  // Un JID de WhatsApp es el mismo teléfono que el número permitido, no un correo.
+  assert.equal(guard.normalizeDestination('5215512345678@s.whatsapp.net'), '5215512345678');
 });
 
 test('en live todo destino está permitido (producción no cambia)', () => {

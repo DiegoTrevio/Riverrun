@@ -255,6 +255,15 @@ t('escalamiento: no escala una incidencia silenciada ni una reciente', async () 
   assert.equal(sent.length, 0);
 });
 
+t('el historial de incidencias se ve solo con sesión de superadmin', async () => {
+  await incidents.openIncident('disk', 'Disco', 'Lleno');
+  const r = await h.authed('GET', '/api/system/incidents');
+  assert.equal(r.statusCode, 200, r.body);
+  assert.ok(r.json().some((i: any) => i.component === 'disk' && i.state === 'abierto'));
+  const anon = await h.app.inject({ method: 'GET', url: '/api/system/incidents' });
+  assert.notEqual(anon.statusCode, 200);
+});
+
 t('la poda borra solo incidencias cerradas hace mucho; las abiertas nunca', async () => {
   await incidents.openIncident('disk', 'Disco', 'Lleno');
   await pool.query(`INSERT INTO incidents (component, severity, state, title, opened_at, last_seen_at, resolved_at)

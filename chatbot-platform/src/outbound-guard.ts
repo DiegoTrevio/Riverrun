@@ -18,6 +18,8 @@ export class OutboundBlockedError extends Error {
 /** Teléfonos por dígitos (+52 55… = 5255…), correos en minúsculas y URLs tal cual, sin barra final. */
 export function normalizeDestination(destination: string): string {
   const v = destination.trim();
+  // WhatsApp identifica a los contactos con un JID ("5215…@s.whatsapp.net"): su parte numérica es el teléfono.
+  if (/@(s\.whatsapp\.net|c\.us|lid)$/i.test(v)) return v.split('@')[0].replace(/\D/g, '');
   if (/^https?:\/\//i.test(v)) return v.replace(/\/$/, '').toLowerCase();
   if (v.includes('@')) return v.toLowerCase();
   return v.replace(/\D/g, '');
