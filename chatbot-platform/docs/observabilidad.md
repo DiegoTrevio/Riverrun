@@ -92,6 +92,12 @@ Formato de texto de Prometheus. Las etiquetas son solo valores fijos o validados
 | `riverrun_check_value` | `component`, `metric` | Cifras de cada componente (`runs_15m`, `jobs_stuck`, `rss_mb`…). Una cifra desconocida **no se publica** (no hay 0 inventados). |
 | `riverrun_incidents_open` | `severity` | Incidencias abiertas por severidad. |
 | `riverrun_channels` | `type`, `connection` | Canales activos por tipo; en WhatsApp, `connection` es `open`, `close` o `sin_conectar`. |
+| `riverrun_channels_silent_24h` | `type` | Canales activos sin mensajes entrantes en 24 horas. |
+| `riverrun_channel_last_inbound_age_seconds` | `type` | Segundos desde el último mensaje entrante de cualquier canal de ese tipo (ventana de 7 días). Sin mensajes, no se publica. |
+| `riverrun_ai_runs_15m` | `model` | Llamadas a la IA en 15 minutos, por modelo. |
+| `riverrun_ai_tokens_15m` | `model`, `kind` (`input`/`output`) | Tokens en 15 minutos. |
+| `riverrun_ai_cost_usd_15m` | `model` | Costo en USD en 15 minutos (lo que guarda cada llamada en `ai_runs`). |
+| `riverrun_ai_latency_p95_ms_15m` | `model` | Latencia p95 en 15 minutos. |
 | `riverrun_db_pool_connections` | `state` | `total`, `idle`, `waiting` del pool de PostgreSQL. |
 | `riverrun_process_resident_memory_bytes` | — | Memoria residente del proceso. |
 | `riverrun_process_uptime_seconds` | — | Tiempo desde el arranque. |
@@ -102,9 +108,11 @@ Formato de texto de Prometheus. Las etiquetas son solo valores fijos o validados
 
 - **Confirmación.** Un fallo avisa al segundo chequeo seguido (cada minuto), no al primero: así un parpadeo no despierta a nadie.
 - **Una incidencia por componente.** La tabla `incidents` (migración 038) tiene un índice único parcial: si el mismo componente sigue fallando, se actualiza su detalle y "última vez visto"; no se duplica. Así una caída de cinco minutos es una incidencia, no cinco.
-- **Severidad.** `critica` para base de datos, tareas y WhatsApp (afectan a todos los clientes); `alta` para el resto. Un aviso (`degradado`) se muestra, pero no abre incidencia.
+- **Severidad.** `critica` para base de datos, tareas y WhatsApp (afectan a todos los clientes); `alta` para el resto. Un `degradado` que dura dos chequeos seguidos abre una incidencia `baja`: queda en el historial, pero no avisa ni escala. Si el mismo componente pasa a fallo, su severidad sube.
 - **Repetición.** Mientras siga fallando, se repite el aviso cada 6 horas. Al recuperarse, sale un aviso de recuperación y la incidencia se cierra con fecha.
-- **Silencio.** `ALERT_MUTE=backup,disk` registra las incidencias de esos componentes, pero no envía correo ni webhook (ni de falla, ni de recuperación, ni de escalamiento). Es una decisión que se olvida: revísala y quítala cuando acabe el motivo.
+- **Silencio.** `ALERT_MUTE=backup,disk` registra las incidencias de esos componentes, pero no envía correo ni webhook (ni de falla, ni de recuperación, ni de escalamiento). Con fecha vence sola: `ALERT_MUTE=backup=2026-10-12T18:00:00Z`, y después los avisos vuelven. Sin fecha no vence, y `./riverrun preflight` lo advierte. Una entrada que no se entiende no silencia nada.
+- **Base caída.** Mientras PostgreSQL no responde, las incidencias no se pueden guardar: se anotan en `incidencias-pendientes.jsonl`, en la carpeta de respaldos, y se vuelcan en orden cuando la base vuelve. Los avisos salen igual. El diario guarda cambios de estado, no cada minuto, y tiene como máximo 500 entradas.
+- **Dedupe tras reinicio.** El último aviso de cada incidencia queda en la base (migración 039). Tras un reinicio no se repite un aviso de hace menos de 6 horas, y la recuperación sí se anuncia.
 - **Escalamiento.** Si una incidencia sigue abierta más de `ALERT_ESCALATE_MINUTES` (60 por defecto), se envía **una** vez un aviso marcado como `ESCALADO`. Está marcada en la base con un UPDATE atómico, así dos procesos no la envían dos veces.
 - **Historial.** `GET /api/system/status` (superadmin) incluye `functional`. Las incidencias cerradas se borran después de 180 días; las abiertas nunca.
 
@@ -115,7 +123,7 @@ Canales: el correo a `SUPERADMIN_EMAIL` y el webhook `ALERT_WEBHOOK_URL` (Slack,
 | Variable | Por defecto | Para qué |
 |---|---|---|
 | `HEALTH_TOKEN` | generado por `install`/`update` | Acceso a `/health/functional` y `/metrics`. Vacío = 404. |
-| `ALERT_MUTE` | vacío | Componentes sin avisos externos (la incidencia se registra igual). |
+| `ALERT_MUTE` | vacío | Componentes sin avisos externos (la incidencia se registra igual). Con `=AAAA-MM-DDTHH:MM:SSZ`, el silencio vence solo. |
 | `ALERT_ESCALATE_MINUTES` | `60` | Minutos abiertos antes del aviso de escalamiento. |
 | `RESOURCE_WARN_RSS_MB` | `1024` | Memoria del proceso que dispara un aviso. `0` lo desactiva. |
 | `ALERT_WEBHOOK_URL`, `HEARTBEAT_URL`, `SUPERADMIN_EMAIL` | vacío | Destinos de los avisos (ya existían). |
@@ -124,20 +132,19 @@ Canales: el correo a `SUPERADMIN_EMAIL` y el webhook `ALERT_WEBHOOK_URL` (Slack,
 
 - `test/observability.test.ts`: estados, mapeo de comprobaciones, la preparación sin WhatsApp (con Evolution caída de verdad en el arnés), métricas sin datos personales y con etiquetas maliciosas, 401/404 del token, incidencias: deduplicación, silencio, escalamiento único, recuperación y poda.
 - `test/monitor.test.ts`: las comprobaciones existentes, con los nuevos nombres.
-- `test/fault-injection.test.ts`: fallos inyectados sobre la lógica real de monitoreo, con PostgreSQL real. Sin fallos, cuatro ciclos sin avisos ni incidencias (falsos positivos). Un fallo de un solo ciclo no avisa. Evolution caído, base de datos caída, IA sin clave e IA con clave inválida avisan en el segundo ciclo, y se recuperan. Un respaldo fallido y vencido avisa y se cierra con un respaldo correcto. Un disco casi lleno y la memoria sobre el aviso se miden con estado inyectado. La prueba de clave inválida fue la que destapó que una IA sin ninguna respuesta correcta aparecía como "operativo".
-- `scripts/fault-inject.sh` y `.github/workflows/fault-injection.yml`: fallos sobre el stack de staging real (Docker): Evolution caído, PostgreSQL caído y configuración crítica. Corre a mano o semanalmente, no en cada PR. **Todavía no se ha ejecutado**: la imagen del backend no se pudo construir en el entorno de desarrollo, así que su primer resultado llegará desde GitHub.
+- `test/fault-injection.test.ts`: fallos inyectados sobre la lógica real de monitoreo, con PostgreSQL real. Sin fallos, cuatro ciclos sin avisos ni incidencias (falsos positivos). Un fallo de un solo ciclo no avisa. Evolution caído, base de datos caída, IA sin clave e IA con clave inválida avisan en el segundo ciclo, y se recuperan. Un respaldo fallido y vencido avisa y se cierra con un respaldo correcto. Un disco casi lleno y la memoria sobre el aviso se miden con estado inyectado. La prueba de clave inválida fue la que destapó que una IA sin ninguna respuesta correcta aparecía como "operativo". Un degradado sostenido se anota con severidad baja y no escala. Tras un reinicio no se repite un aviso reciente, y la recuperación sí sale. Con la base caída, el diario se vuelca al volver. `ALERT_MUTE` con fecha vence solo.
+- `test/alert-mute.test.ts` y `test/incident-journal.test.ts`: el formato de `ALERT_MUTE`, y que el diario de la base caída no crezca mientras dura la caída. No necesitan base de datos.
+- `scripts/fault-inject.sh` y `.github/workflows/fault-injection.yml`: fallos sobre el stack de staging real (Docker): Evolution caído, PostgreSQL caído y configuración crítica. Corre a mano o semanalmente, no en cada PR. Se ejecutó por primera vez en GitHub, sobre `main`, y pasó los cuatro escenarios (sin fallos, Evolution caído, PostgreSQL caído y configuración crítica). La imagen del backend no se construye en el entorno de desarrollo, así que su resultado vive en GitHub.
+- `scripts/restore-drill.sh`: simulacro de restauración. Baja el último respaldo remoto (o recibe uno), lo abre con la clave y lo restaura en un PostgreSQL temporal con la misma imagen de producción. Ver [produccion.md](produccion.md#simulacro-de-restauración).
 - `scripts/test-cli.sh`: `./riverrun update` lee `/health/functional`, genera el token sin imprimirlo y, con un backend anterior que responde 404, cae a `/health/ready` y sigue revirtiendo ante una falla nueva.
 
 ## Lo que no está incluido todavía
 
 Sin esto, no conviene afirmar "observabilidad completa":
 
-- **El panel (Sistema) no muestra todavía los cinco estados.** La API sí los entrega (`functional`); el panel conserva la vista anterior de comprobaciones.
-- **Canales: solo WhatsApp tiene estado por sesión.** Para los demás tipos hay conteos y conexión, pero no "último mensaje recibido" ni latencia de respuesta por canal.
-- **Respuesta de IA: sin p95 por cuenta ni por chatbot**, solo global de 15 minutos.
-- **Dedupe tras reinicio.** El contador de "ya avisé" vive en memoria. Tras un reinicio, un fallo que sigue puede avisar una vez más. La incidencia no se duplica (está en la base).
-- **Los `degradado` no abren incidencia**, así que no escalan ni quedan en el historial.
-- **`ALERT_MUTE` no expira solo.**
+- **Canales: sin latencia de respuesta por canal.** Hay conteos, conexión, canales callados y hace cuánto llegó el último mensaje, pero por tipo de canal. Una etiqueta por cada ID de canal chocaría con la regla de privacidad de las métricas.
+- **Respuesta de IA: sin p95 por chatbot.** Hay p95, tokens y costo por modelo en 15 minutos. Por chatbot sería una etiqueta por cada uno.
+- **`ALERT_MUTE` sin fecha no vence.** `./riverrun preflight` lo advierte; con fecha, vence solo.
 - **Sin trazas de LLM ni tiempos por etapa** del motor.
 
 ## Herramientas externas: evaluación, no instaladas

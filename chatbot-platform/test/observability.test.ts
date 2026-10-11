@@ -107,7 +107,7 @@ test('OUTBOUND_MODE con un valor desconocido impide arrancar (no se envía nada 
 });
 
 function emptyExtra() {
-  return { incidents: {}, channels: [], uptimeSeconds: 1, rssBytes: 1, pool: { total: 0, idle: 0, waiting: 0 } };
+  return { incidents: {}, channels: [], ai: [], inbound: [], uptimeSeconds: 1, rssBytes: 1, pool: { total: 0, idle: 0, waiting: 0 } };
 }
 
 /* ------------------------------ Rutas y incidencias (con PostgreSQL) ------------------------------ */
@@ -193,8 +193,8 @@ t('la incidencia se abre una sola vez por componente y se cierra al recuperarse'
   assert.equal(rows.length, 1);
   assert.equal(rows[0].severity, 'critica');
   assert.equal(rows[0].detail, 'Sigue sin responder');
-  assert.equal(await incidents.resolveIncident('whatsapp'), true);
-  assert.equal(await incidents.resolveIncident('whatsapp'), false);
+  assert.notEqual(await incidents.resolveIncident('whatsapp'), null);
+  assert.equal(await incidents.resolveIncident('whatsapp'), null);
   assert.equal((await incidents.listIncidents())[0].state, 'resuelto');
 });
 
@@ -204,7 +204,7 @@ t('las incidencias de componentes no críticos se registran como altas', async (
 });
 
 t('con ALERT_MUTE el fallo queda en el historial, pero no sale ningún aviso', async () => {
-  config.monitor.alertMute = ['whatsapp'];
+  config.monitor.alertMute = [{ name: 'whatsapp', until: null }];
   const sent: string[] = [];
   const send = async (title: string) => void sent.push(title);
   const down = [check('whatsapp', 'fail', 'No responde')];
@@ -250,7 +250,7 @@ t('escalamiento: no escala una incidencia silenciada ni una reciente', async () 
   await mon.escalateIncidents(send); // reciente: todavía no
   assert.equal(sent.length, 0);
   await pool.query(`UPDATE incidents SET opened_at = now() - interval '2 hours'`);
-  config.monitor.alertMute = ['scheduler'];
+  config.monitor.alertMute = [{ name: 'scheduler', until: null }];
   await mon.escalateIncidents(send);
   assert.equal(sent.length, 0);
 });
@@ -271,4 +271,45 @@ t('la poda borra solo incidencias cerradas hace mucho; las abiertas nunca', asyn
   assert.equal(await incidents.pruneIncidents(180), 1);
   const left = (await incidents.listIncidents()).map((i) => i.component);
   assert.deepEqual(left, ['disk']);
+});
+
+test('métricas de IA y canales: por modelo y tipo de canal, sin IDs;', () => {
+  const text = renderMetrics([], {
+    ...emptyExtra(),
+    ai: [{ model: 'openai_gpt-4o-mini', runs: 3, input: 100, output: 20, cost: 0.0012, p95: 850 }],
+    inbound: [{ type: 'whatsapp', silent: 1, lastAgeSeconds: 42 }, { type: 'web', silent: 0, lastAgeSeconds: null }],
+  });
+  assert.match(text, /riverrun_ai_runs_15m\{model="openai_gpt-4o-mini"\} 3/);
+  assert.match(text, /riverrun_ai_tokens_15m\{model="openai_gpt-4o-mini",kind="input"\} 100/);
+  assert.match(text, /riverrun_ai_tokens_15m\{model="openai_gpt-4o-mini",kind="output"\} 20/);
+  assert.match(text, /riverrun_ai_cost_usd_15m\{model="openai_gpt-4o-mini"\} 0\.0012/);
+  assert.match(text, /riverrun_ai_latency_p95_ms_15m\{model="openai_gpt-4o-mini"\} 850/);
+  assert.match(text, /riverrun_channels_silent_24h\{type="whatsapp"\} 1/);
+  assert.match(text, /riverrun_channel_last_inbound_age_seconds\{type="whatsapp"\} 42/);
+  assert.doesNotMatch(text, /riverrun_channel_last_inbound_age_seconds\{type="web"\}/, 'sin mensajes no hay edad: no se inventa un valor');
+});
+
+test('métricas de IA: un nombre de modelo con comillas o espacios no abre otra etiqueta', () => {
+  const text = renderMetrics([], { ...emptyExtra(), ai: [{ model: 'x" evil="y', runs: 1, input: 0, output: 0, cost: 0, p95: 1 }] });
+  assert.match(text, /riverrun_ai_runs_15m\{model="otro"\} 1/);
+  assert.doesNotMatch(text, /evil=/);
+});
+
+test('nombres de modelo con "/" o ":" (OpenRouter) se convierten en etiquetas válidas', async () => {
+  const { modelLabel } = await import('../src/observability/metrics.js');
+  assert.equal(modelLabel('openai/gpt-4o-mini'), 'openai_gpt-4o-mini');
+  assert.equal(modelLabel('meta-llama/llama-3.1:free'), 'meta-llama_llama-3.1_free');
+});
+
+t('métricas: las consultas de IA y de canales funcionan contra la base (un error ahí no puede quedarse en silencio)', async () => {
+  await pool.query(`INSERT INTO ai_runs (kind, model, input_tokens, output_tokens, latency_ms, attempt, cost_usd) VALUES ('reply', 'openai/prueba-metricas', 5, 6, 300, 1, 0.001)`);
+  const { collectMetricsExtra, resetMetricsCache } = await import('../src/observability/metrics.js');
+  resetMetricsCache();
+  const extra = await collectMetricsExtra();
+  const row = extra.ai.find((m) => m.model === 'openai_prueba-metricas');
+  assert.ok(row, 'la fila reciente aparece en las métricas de IA (si la consulta fallara, la lista quedaría vacía sin error)');
+  assert.equal(row.input, 5);
+  assert.equal(row.output, 6);
+  assert.ok(Array.isArray(extra.inbound));
+  await pool.query(`DELETE FROM ai_runs WHERE model = 'openai/prueba-metricas'`);
 });

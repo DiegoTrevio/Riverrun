@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { validateConfig } from './config-check.js';
+import { parseAlertMute } from './alert-mute.js';
 
 function env(name: string, fallback = ''): string {
   const v = process.env[name];
@@ -144,8 +145,8 @@ export const config = {
     version: env('APP_VERSION', 'dev'),
     /** Token para /health/functional y /metrics (cabecera Authorization: Bearer). Vacío = esos endpoints no existen (404). */
     healthToken: env('HEALTH_TOKEN', ''),
-    /** Componentes cuyas alertas se registran pero no se envían (p. ej. ALERT_MUTE=backup,disk). Quítalos al terminar la silencia. */
-    alertMute: list(env('ALERT_MUTE', '')),
+    /** Componentes cuyas alertas se registran pero no se envían: ALERT_MUTE=backup,disk (sin fecha) o backup=AAAA-MM-DDTHH:MM:SSZ (vence). */
+    alertMute: parseAlertMute(env('ALERT_MUTE', '')).mutes,
     /** Minutos que una incidencia puede seguir abierta antes de enviar un aviso de escalamiento. */
     escalateMinutes: monitorLimit('ALERT_ESCALATE_MINUTES', 60, 10080),
     /** Memoria residente del proceso que avisa, en MB (0 = sin aviso). Pensado para un VPS de ~2 GB. */

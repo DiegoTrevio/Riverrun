@@ -229,3 +229,14 @@ test('9. el modo de salida solo acepta live o sandbox; en pruebas y en producci�
   assert.equal(blocksStartup(staging), false, formatReport(staging));
   assert.equal(staging.services.find((s) => s.id === 'outbound')?.state, 'configured');
 });
+
+test('ALERT_MUTE: sin fecha avisa de que no vence; una entrada que no se entiende avisa sin repetir su texto', () => {
+  const sinFecha = validateConfig(installed({ ALERT_MUTE: 'backup' }));
+  assert.ok(sinFecha.issues.some((i) => i.id === 'alert_mute.forever' && i.level === 'warning'));
+  const malo = validateConfig(installed({ ALERT_MUTE: 'backup=mañana' }));
+  const issue = malo.issues.find((i) => i.id === 'alert_mute.invalid');
+  assert.ok(issue, 'avisa de la entrada inválida');
+  assert.doesNotMatch(issue.message, /mañana/, 'no repite el valor escrito');
+  const bien = validateConfig(installed({ ALERT_MUTE: 'backup=2030-01-01T00:00:00Z' }));
+  assert.equal(bien.issues.filter((i) => i.id.startsWith('alert_mute')).length, 0);
+});
