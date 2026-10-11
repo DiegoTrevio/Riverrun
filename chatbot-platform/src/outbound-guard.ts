@@ -35,6 +35,15 @@ export function assertOutbound(destination: string | null | undefined) {
   if (!outboundAllowed(destination)) throw new OutboundBlockedError();
 }
 
+/**
+ * Credenciales de pago. En sandbox solo se aceptan claves de prueba, también para leer: una clave de producción en staging
+ * podría crear cobros reales o leer facturación de clientes. En live no cambia nada.
+ */
+export function credentialAllowed(key: string, testPrefixes: string[]): boolean {
+  if (config.outbound.mode === 'live') return true;
+  return testPrefixes.some((prefix) => key.startsWith(prefix));
+}
+
 /** Envuelve un transporte: cada envío comprueba su destino antes de salir. Ninguna llamada la evita. */
 export function guardTransport(t: Transport, destination: string): Transport {
   return {

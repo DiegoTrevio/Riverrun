@@ -1,8 +1,11 @@
 import crypto from 'node:crypto';
 import { config } from '../config.js';
+import { credentialAllowed } from '../outbound-guard.js';
 import { ProviderError, WebhookError, type BillingProvider, type Plan, type SubStatus, type SubscriptionState } from './types.js';
 
 const cfg = () => config.billing.stripe;
+/** Prefijos de las claves de prueba de Stripe (modo test). Las de producción empiezan por sk_live_ o rk_live_. */
+const TEST_KEYS = ['sk_test_', 'rk_test_'];
 
 /** Stripe recibe formularios con claves anidadas: a[b][0]=c. */
 export function form(obj: Record<string, unknown>, prefix = ''): string[] {
@@ -18,6 +21,7 @@ export function form(obj: Record<string, unknown>, prefix = ''): string[] {
 }
 
 async function call(method: 'GET' | 'POST', path: string, body?: Record<string, unknown>): Promise<any> {
+  if (!credentialAllowed(cfg().secretKey, TEST_KEYS)) throw new ProviderError('Stripe: en este entorno (OUTBOUND_MODE=sandbox) solo se usan claves de prueba');
   const res = await fetch(cfg().apiUrl + path, {
     method,
     headers: { authorization: `Bearer ${cfg().secretKey}`, ...(body ? { 'content-type': 'application/x-www-form-urlencoded' } : {}) },
@@ -71,7 +75,8 @@ const SUB_EVENTS = new Set(['checkout.session.completed', 'customer.subscription
 export const stripe: BillingProvider = {
   name: 'stripe',
   label: 'Tarjeta (Stripe)',
-  enabled: () => !!(cfg().secretKey && cfg().webhookSecret),
+  // Con una clave de producción en sandbox no se ofrece el pago: no se puede completar.
+  enabled: () => !!(cfg().secretKey && cfg().webhookSecret) && credentialAllowed(cfg().secretKey, TEST_KEYS),
   supportsPlan: (plan) => !!plan.stripe_price_id,
 
   async createCheckout({ accountId, email, plan, successUrl, cancelUrl, customerId }) {
