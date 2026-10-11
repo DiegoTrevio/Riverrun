@@ -50,7 +50,7 @@ case "$*" in
   "image inspect --format {{range .RepoDigests}}"*) echo "$(cat EVO_RUNNING)@sha256:anterior" ;;
   *"psql -U chatbot -d evolution"*) cat EVO_MIG 2>/dev/null || echo "-" ;;
   *"psql -U chatbot -d chatbot"*) echo "palmas,otra" ;;
-  *"config-check.js"*) echo "Configuración (producción): 0 crítico(s)"; [[ -f CONFIG_MALA ]] && { echo "✕ [CRÍTICO] SESSION_SECRET es demasiado corto"; exit 2; }; exit 0 ;;
+  *"config-check.js"*) [[ -f CONFIG_NO_CORRE ]] && exit 5; echo "Configuración (producción): 0 crítico(s)"; [[ -f CONFIG_MALA ]] && { echo "✕ [CRÍTICO] SESSION_SECRET es demasiado corto"; exit 2; }; exit 0 ;;
   *"evolution-check.js plan"*) echo "  plan simulado"; exit "$(cat EVO_PLAN_RC 2>/dev/null || echo 0)" ;;
   *"evolution-check.js verify"*) echo "  verificación simulada"; exit "$(cat EVO_VERIFY_RC 2>/dev/null || echo 0)" ;;
   "compose pull evolution") [[ -f PULL_FALLA ]] && exit 1; target > PULLED ;;
@@ -66,7 +66,7 @@ git init -q --bare "$work/origin.git"
 git clone -q "$work/origin.git" "$work/app" 2>/dev/null
 cd "$work/app"
 # Estado del docker simulado y .env: nunca entran en los commits de prueba (EVO_IMAGE sí: es "código").
-printf '%s\n' .env EVO_RUNNING EVO_MIG EVO_PLAN_RC EVO_VERIFY_RC PULLED MIGRA_AL_ARRANCAR CONFIG_MALA PULL_FALLA FALLA_RESPALDO FALLA_PREVIA SIN_FUNCIONAL > .gitignore
+printf '%s\n' .env EVO_RUNNING EVO_MIG EVO_PLAN_RC EVO_VERIFY_RC PULLED MIGRA_AL_ARRANCAR CONFIG_MALA PULL_FALLA FALLA_RESPALDO FALLA_PREVIA SIN_FUNCIONAL CONFIG_NO_CORRE > .gitignore
 cp "$here/riverrun" . && echo "v1" > VERSION && git add -A && git commit -qm "v1" && git push -q origin HEAD:main 2>/dev/null
 git branch -q --set-upstream-to=origin/main 2>/dev/null || git branch -q -u origin/main
 # Publica una versión nueva en el "origin" y deja la copia local donde estaba. $3 = imagen de Evolution del código nuevo.
@@ -304,5 +304,11 @@ grep -q "servicios en marcha (no están levantados" "$work/out" && grep -q "HTTP
 set +e; ./riverrun preflight --raro > "$work/out" 2>&1; rc=$?; set -e
 [[ "$rc" != 0 ]] && grep -q "Opción desconocida" "$work/out" || { echo "ERROR: aceptó una opción desconocida"; exit 1; }
 ./riverrun help | grep -q "preflight" || { echo "ERROR: la ayuda no menciona preflight"; exit 1; }
+
+echo "== preflight: si la herramienta de configuración no puede correr, no se afirma que la configuración está revisada"
+touch CONFIG_NO_CORRE
+set +e; ./riverrun preflight --offline > "$work/out" 2>&1; rc=$?; set -e
+[[ "$rc" == 0 ]] && grep -q "No verificado: configuración" "$work/out" && ! grep -q "Configuración: sin problemas críticos" "$work/out" || { cat "$work/out"; echo "ERROR: afirmó una configuración que no revisó"; exit 1; }
+rm -f CONFIG_NO_CORRE
 
 echo "OK: el flujo de actualización funciona"

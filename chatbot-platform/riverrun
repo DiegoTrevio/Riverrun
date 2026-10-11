@@ -126,11 +126,16 @@ backend_tool() {
   rm -f "$err"; return "$rc"
 }
 
+# CFG_VERIFIED=1 solo si la revisión corrió de verdad. Si el backend no pudo ejecutarla, no bloquea (como antes),
+# pero el preflight no debe decir "sin problemas críticos" sobre algo que no revisó.
+CFG_VERIFIED=0
 preflight_config() {
   local rc=0
+  CFG_VERIFIED=0
   backend_tool dist/cli/config-check.js || rc=$?
   if (( rc == 2 )); then say "$TOOL_OUT"; return 1; fi
   if (( rc != 0 )); then warn "No se pudo revisar la configuración antes de aplicar (código $rc); el arranque la revisará."; return 0; fi
+  CFG_VERIFIED=1
   say "$TOOL_OUT" | head -n 1 | sed 's/^/  /'
 }
 
@@ -684,7 +689,12 @@ cmd_preflight() {
     pf_block "Falta .env: instala con ./riverrun install."
   fi
   if need_docker && [[ -f "$ENV_FILE" ]]; then
-    if preflight_config; then pf_ok "Configuración: sin problemas críticos"; else pf_block "Configuración con problemas críticos: corrígelos (lista arriba) antes de publicar."; fi
+    if preflight_config; then
+      if (( CFG_VERIFIED )); then pf_ok "Configuración: sin problemas críticos"
+      else pf_unverified "configuración: el backend no pudo ejecutar la revisión (./riverrun logs backend)"; fi
+    else
+      pf_block "Configuración con problemas críticos: corrígelos (lista arriba) antes de publicar."
+    fi
     if dc config -q >/dev/null 2>&1; then pf_ok "docker-compose.yml válido con el .env actual"; else pf_block "docker-compose.yml no es válido con el .env actual (variables obligatorias faltantes: ./riverrun status)."; fi
   else
     pf_unverified "configuración y docker-compose.yml (requieren Docker y .env)"
