@@ -49,6 +49,7 @@ beforeEach(async () => {
   config.openai.apiKey = 'clave-de-prueba';
   setPool(pool);
   await pool.query(`DELETE FROM incidents; DELETE FROM event_logs WHERE source = 'ai'`);
+  fs.rmSync(path.join(backupDir, 'status.json'), { force: true });
   mon.resetChecksCache();
 });
 
@@ -168,4 +169,49 @@ t('IA con errores pero también con respuestas correctas: degradado, sin inciden
   assert.equal(check(c, 'ai').status, 'warn', 'errores con respuestas buenas siguen siendo aviso, no caída');
   assert.deepEqual(sent, []);
   assert.deepEqual(await openIncidents(), []);
+});
+
+const writeBackupStatus = (s: Record<string, unknown>) => fs.writeFileSync(path.join(backupDir, 'status.json'), JSON.stringify(s));
+
+t('respaldo fallido y vencido: aviso en el segundo ciclo, incidencia alta, y se cierra con un respaldo correcto', async () => {
+  const st = mon.newAlertState();
+  const sent: string[] = [];
+  const hace2Dias = new Date(Date.now() - 48 * 3600_000).toISOString();
+  writeBackupStatus({ ok: false, last_success_at: hace2Dias, error: 'pg_dump: no se pudo conectar' });
+  await cycle(st, sent, 0);
+  assert.equal(sent.length, 0);
+  const c = await cycle(st, sent, 1);
+  assert.equal(check(c, 'backup').status, 'fail');
+  assert.equal(sent.length, 1);
+  assert.deepEqual(await openIncidents(), ['backup']);
+  assert.equal((await incidents.listIncidents())[0].severity, 'alta');
+
+  writeBackupStatus({ ok: true, last_success_at: new Date().toISOString(), error: null });
+  await cycle(st, sent, 2);
+  assert.match(sent[1], /se recuperó/);
+  assert.deepEqual(await openIncidents(), []);
+});
+
+t('disco casi lleno: fallo; con espacio: operativo (se inyecta el estado del disco, no se llena uno de verdad)', () => {
+  const lleno = mon.checkDisk((() => ({ bavail: 1000, bsize: 4096, blocks: 100000 })) as any);
+  assert.equal(lleno.status, 'fail', lleno.detail);
+  assert.match(lleno.detail, /Casi sin espacio/);
+  const sano = mon.checkDisk((() => ({ bavail: 10_000_000, bsize: 4096, blocks: 20_000_000 })) as any);
+  assert.equal(sano.status, 'ok', sano.detail);
+});
+
+t('memoria del proceso sobre el aviso: degradado, sin incidencia y sin aviso externo', async () => {
+  const antes = config.monitor.rssWarnMb;
+  config.monitor.rssWarnMb = 1; // cualquier proceso real supera 1 MB
+  try {
+    const st = mon.newAlertState();
+    const sent: string[] = [];
+    await cycle(st, sent, 0);
+    const c = await cycle(st, sent, 1);
+    assert.equal(check(c, 'resources').status, 'warn', check(c, 'resources').detail);
+    assert.deepEqual(sent, []);
+    assert.deepEqual(await openIncidents(), []);
+  } finally {
+    config.monitor.rssWarnMb = antes;
+  }
 });

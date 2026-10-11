@@ -190,11 +190,12 @@ function checkBackup(now = new Date()): CheckResult {
   return { ...base, status: 'ok', detail: `Último correcto: ${last!.toISOString()}${s.remote ? ' (copiado a la nube)' : ' (solo local: configura la copia en la nube)'}` };
 }
 
-function checkDisk(): CheckResult {
+/** `statfs` se puede inyectar: las pruebas simulan un disco casi lleno sin llenar uno de verdad. */
+export function checkDisk(statfs: typeof fs.statfsSync = fs.statfsSync): CheckResult {
   const base = { name: 'disk', label: 'Espacio en disco' };
   try {
     fs.mkdirSync(config.uploadsDir, { recursive: true });
-    const s = fs.statfsSync(config.uploadsDir);
+    const s = statfs(config.uploadsDir);
     const free = Number(s.bavail) * Number(s.bsize);
     const total = Number(s.blocks) * Number(s.bsize);
     const pct = total ? (free / total) * 100 : 100;

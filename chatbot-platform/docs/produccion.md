@@ -128,7 +128,7 @@ El sistema hoy detecta y avisa; no se recupera solo, salvo la reversión de una 
 - `test/fault-injection.test.ts` (ejecutado): monitoreo real con PostgreSQL real. Cubre Evolution caído, base de datos caída (los avisos salen aunque el historial no pueda escribirse), IA sin clave, IA con clave inválida y un fallo que dura un solo ciclo.
 - `scripts/fault-inject.sh` (**no ejecutado todavía**): stack de staging real con Docker. Cubre Evolution caído, PostgreSQL caído y configuración crítica. Corre a mano o semanalmente en GitHub (`Fallos inyectados`). No se ha probado en este entorno porque la imagen del backend no se puede construir aquí.
 
-Quedan sin probar con fallos reales: disco lleno, respaldo fallido, falta de memoria y la reversión de una actualización cuando la nueva versión arranca pero falla después. La reversión se prueba con el docker simulado de `test-cli.sh`, no con un fallo real.
+En el monitoreo, probados con estado inyectado (no con un disco o un proceso realmente agotados): disco casi lleno, respaldo fallido y vencido, y memoria sobre el aviso. Quedan sin probar con un fallo real: un disco lleno de verdad, la memoria del sistema agotada, y la reversión de una actualización cuando la nueva versión arranca pero falla después. La reversión se prueba con el docker simulado de `test-cli.sh`, no con un fallo real.
 
 ## Límites de recursos para un VPS de ~2 GB
 
@@ -162,7 +162,7 @@ Lista para quien vaya a publicar. Mientras cualquiera esté pendiente, no declar
 
 - Overlay y guía de staging aislado, probados de extremo a extremo.
 - Panel (Sistema) que muestre los cinco estados; hoy la API los entrega, el panel no.
-- Fallos inyectados sobre el stack real, ejecutados en GitHub (`scripts/fault-inject.sh`): hoy no se han corrido. Y fallos todavía sin prueba: disco lleno, respaldo fallido, memoria y reversión tras un fallo real.
+- Fallos inyectados sobre el stack real, ejecutados en GitHub (`scripts/fault-inject.sh`): hoy no se han corrido. Y fallos todavía sin prueba con un fallo real: disco lleno de verdad, memoria del sistema agotada y reversión tras un fallo real.
 - Resultados medidos de la prueba de carga contra staging y ajuste de los límites de memoria del overlay con esos datos.
 - Límites de memoria en producción: decisión pendiente, no se aplican solos.
 - Prueba periódica de restauración en un servidor distinto.
