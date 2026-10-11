@@ -115,8 +115,10 @@ Panel → **Sistema → WhatsApp (Evolution API)** (solo superadmin), `./riverru
    recrea el contenedor con **los mismos volúmenes y la misma base**.
 9. **Verificación** (`evolution-check verify`, hasta 2 min): responde y **atiende la API**, acepta la llave, la versión es
    la configurada y compatible, las sesiones que estaban abiertas vuelven a conectarse y ninguna instancia vinculada
-   desapareció. Después, la salud general (`/health/ready`): falla si alguna comprobación que estaba bien antes de
-   actualizar queda en falla (lo que ya fallaba, como una clave de IA pendiente, no bloquea).
+   desapareció. Después, la salud funcional (`/health/functional` con `HEALTH_TOKEN`; sin token, `/health/ready`): falla
+   si una comprobación que se pudo medir antes de actualizar y estaba bien queda en falla. Lo que ya fallaba (como una
+   clave de IA pendiente) no bloquea, y lo que no se midió antes no se atribuye a la actualización. WhatsApp cuenta aquí.
+   `/health/ready` ya no incluye WhatsApp: una caída de Evolution no reinicia ni saca al backend del balanceador.
 10. **Vuelta atrás** si algo falla:
     - El backend siempre vuelve al código y la imagen anteriores (sus migraciones son aditivas).
     - Evolution vuelve a su imagen anterior **solo si su esquema no cambió** (es seguro).

@@ -135,6 +135,14 @@ services:
       # Monitoreo
       HEARTBEAT_URL: ${HEARTBEAT_URL:-}
       ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+      # Token para /health/functional y /metrics (vacío = desactivados). ./riverrun install lo genera.
+      HEALTH_TOKEN: ${HEALTH_TOKEN:-}
+      ALERT_MUTE: ${ALERT_MUTE:-}
+      ALERT_ESCALATE_MINUTES: ${ALERT_ESCALATE_MINUTES:-60}
+      RESOURCE_WARN_RSS_MB: ${RESOURCE_WARN_RSS_MB:-1024}
+      # live (producción) o sandbox (staging: bloquea envíos reales salvo OUTBOUND_SANDBOX_ALLOW).
+      OUTBOUND_MODE: ${OUTBOUND_MODE:-live}
+      OUTBOUND_SANDBOX_ALLOW: ${OUTBOUND_SANDBOX_ALLOW:-}
       BACKUP_DIR: /backups
       BACKUP_MAX_AGE_HOURS: ${BACKUP_MAX_AGE_HOURS:-36}
     volumes:

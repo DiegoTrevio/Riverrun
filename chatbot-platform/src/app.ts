@@ -1,6 +1,7 @@
+import { createHash, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import Fastify from 'fastify';
+import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import cookie from '@fastify/cookie';
 import multipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
@@ -29,10 +30,32 @@ import { taskRoutes } from './routes/tasks.js';
 import { publicRoutes } from './routes/public.js';
 import { signupRoutes } from './routes/signup.js';
 import { installErrorHandler } from './routes/util.js';
-import { overall, runChecks } from './monitor.js';
+import { cachedChecks, runReadiness } from './monitor.js';
+import { functionalReport, readinessReport } from './observability/health.js';
+import { collectMetricsExtra, renderMetrics } from './observability/metrics.js';
 import { ChatService, type TransportFactory } from './service.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Protege /health/functional y /metrics. Sin HEALTH_TOKEN el endpoint no existe (404), no "está abierto": así una
+ * instalación nueva no expone su estado interno por omisión. La comparación va por SHA-256 para que no dependa de la longitud.
+ */
+function healthGate(req: FastifyRequest, reply: FastifyReply): boolean {
+  const expected = config.monitor.healthToken;
+  if (!expected) {
+    reply.code(404).send({ error: 'No encontrado' });
+    return false;
+  }
+  const auth = req.headers.authorization;
+  const given = typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : String(req.headers['x-health-token'] ?? '');
+  const ok = timingSafeEqual(createHash('sha256').update(given).digest(), createHash('sha256').update(expected).digest());
+  if (!ok) {
+    reply.code(401).header('www-authenticate', 'Bearer').send({ error: 'Token requerido' });
+    return false;
+  }
+  return true;
+}
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -67,12 +90,22 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
   await app.register(multipart);
   await app.register(fastifyStatic, { root: path.resolve(here, '..', 'public'), prefix: '/' });
 
+  // Liveness: el proceso responde. No consulta nada, así un fallo externo no reinicia el contenedor en bucle.
   app.get('/health', async () => ({ ok: true }));
-  // Salud completa para monitores externos: 503 si algo esencial falla. No expone detalles internos.
+  // Readiness: puede atender peticiones. Público y sin detalles; 503 solo si la base de datos o las tareas fallan.
   app.get('/health/ready', async (_req, reply) => {
-    const checks = await runChecks();
-    const status = overall(checks);
-    return reply.code(status === 'fail' ? 503 : 200).send({ status, version: config.monitor.version, checks: checks.map((c) => ({ name: c.name, status: c.status })) });
+    const { code, body } = readinessReport(await runReadiness());
+    return reply.code(code).send(body);
+  });
+  // Funcional y métricas: requieren HEALTH_TOKEN. Sin token configurado, no existen (404).
+  app.get('/health/functional', async (req, reply) => {
+    if (!healthGate(req, reply)) return reply;
+    return functionalReport(await cachedChecks());
+  });
+  app.get('/metrics', async (req, reply) => {
+    if (!healthGate(req, reply)) return reply;
+    const text = renderMetrics(await cachedChecks(), await collectMetricsExtra());
+    return reply.type('text/plain; version=0.0.4; charset=utf-8').send(text);
   });
   await sessionRoutes(app);
   await signupRoutes(app);

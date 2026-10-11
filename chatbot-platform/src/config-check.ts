@@ -594,10 +594,48 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
   );
   services.push({ id: 'email', label: 'Correo saliente (SMTP)', area: 'email', state: !smtp ? 'disabled' : smtpValid ? 'configured' : 'invalid', detail: !smtp ? 'Opcional, apagado' : smtpValid ? 'Servidor definido' : 'Dirección no válida' });
 
+  /* ------------------------------ Salida de mensajes ------------------------------ */
+  // live: envíos reales (producción). sandbox: solo a OUTBOUND_SANDBOX_ALLOW (pruebas y staging).
+  const mode = get('OUTBOUND_MODE');
+  const sandbox = mode === 'sandbox';
+  const modeValid = !has('OUTBOUND_MODE') || ['live', 'sandbox'].includes(mode);
+  if (!modeValid) add(
+    'critical',
+    'core',
+    'outbound.invalid',
+    ['OUTBOUND_MODE'],
+    'OUTBOUND_MODE debe ser live o sandbox: la plataforma no arranca con otro valor, para que un error de escritura no deje envíos reales sin querer.',
+    'Usa live (producción) o sandbox (pruebas), o bórrala para live.',
+  );
+  if (sandbox && prod) add(
+    'critical',
+    'core',
+    'outbound.sandbox_in_production',
+    ['OUTBOUND_MODE', 'RIVERRUN_ENV'],
+    'Producción con OUTBOUND_MODE=sandbox: ningún mensaje, correo ni cobro saldría a los clientes.',
+    'En producción usa OUTBOUND_MODE=live (o bórrala). Si esto es staging, define RIVERRUN_ENV=test.',
+  );
+  services.push({
+    id: 'outbound',
+    label: 'Salida de mensajes',
+    area: 'core',
+    state: modeValid ? 'configured' : 'invalid',
+    detail: sandbox ? `Pruebas: ${get('OUTBOUND_SANDBOX_ALLOW').split(',').filter((s) => s.trim()).length} destino(s) permitido(s)` : 'Envíos reales',
+  });
+
   /* ------------------------------ Cobro ------------------------------ */
-  const provider = (id: string, label: string, keyVar: string, hookVar: string, keyOk: (s: string) => boolean, testKey: (s: string) => boolean, hookOk: (s: string) => boolean) => {
+  const provider = (id: string, label: string, keyVar: string, hookVar: string, keyOk: (s: string) => boolean, testKey: (s: string) => boolean, liveKey: (s: string) => boolean, hookOk: (s: string) => boolean) => {
     const key = get(keyVar);
     const hook = get(hookVar);
+    // Crítico aunque falte el aviso de pago: una clave de producción en sandbox nunca debe llegar a usarse.
+    if (sandbox && liveKey(key)) add(
+      'critical',
+      'billing',
+      `${id}.live_key_in_sandbox`,
+      [keyVar],
+      `${label}: este entorno es de pruebas (OUTBOUND_MODE=sandbox) y ${keyVar} es una clave de producción. Con ella se podrían crear cobros o leer facturación real.`,
+      `Usa una clave de pruebas de ${label} o quita ${keyVar} de este entorno.`,
+    );
     if (!key && !hook) {
       services.push({ id, label, area: 'billing', state: 'disabled', detail: 'Opcional, apagado' });
       return;
@@ -655,6 +693,7 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
     'STRIPE_WEBHOOK_SECRET',
     (s) => /^(sk|rk)_(live|test)_/.test(s),
     (s) => /^(sk|rk)_test_/.test(s),
+    (s) => /^(sk|rk)_live_/.test(s),
     (s) => s.startsWith('whsec_'),
   );
   provider(
@@ -664,6 +703,7 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
     'MERCADOPAGO_WEBHOOK_SECRET',
     (s) => /^(APP_USR|TEST)-/.test(s),
     (s) => s.startsWith('TEST-'),
+    (s) => s.startsWith('APP_USR-'),
     (s) => s.length >= 16,
   );
 

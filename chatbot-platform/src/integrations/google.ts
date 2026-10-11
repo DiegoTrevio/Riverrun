@@ -137,6 +137,8 @@ export async function syncIfLinked(accountId: string, appointmentId: string) {
 
 /** Tarea: deja el evento de Google igual a la cita (crea, actualiza o borra). Los errores reintentan por el planificador. */
 export async function syncAppointment(payload: { appointment_id: string }) {
+  // Sandbox: no se crean citas en un Google Calendar real desde staging.
+  if (config.outbound.mode === 'sandbox') return;
   const a = await getAppointment(payload.appointment_id);
   if (!a) return;
   const link = await getLink(a.account_id);

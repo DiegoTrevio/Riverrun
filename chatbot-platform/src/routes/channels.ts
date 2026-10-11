@@ -10,6 +10,7 @@ import { config } from '../config.js';
 import { recordConnectionState } from '../lifecycle.js';
 import { assertWithinLimit } from '../billing/limits.js';
 import { logEvent } from '../logs.js';
+import { outboundAllowed } from '../outbound-guard.js';
 import * as store from '../store/index.js';
 import { CHANNEL_TYPES, type Channel, type User } from '../types.js';
 import { assertVerified } from './onboarding.js';
@@ -212,7 +213,9 @@ export async function channelRoutes(api: FastifyInstance) {
     assertVerified(req.user);
     const ch = await whatsapp(req.user, req.params.id);
     const { number, text } = parse(z.object({ number: z.string().min(8), text: z.string().max(1000).default('Mensaje de prueba ✅') }), req.body);
-    await evolutionFor(ch).sendText(ch.config.instance, number.replace(/\D/g, ''), text).catch((e) => {
+    const digits = number.replace(/\D/g, '');
+    if (!outboundAllowed(digits)) throw new HttpError(403, 'Envío bloqueado: este entorno es de pruebas (OUTBOUND_MODE=sandbox) y el número no está en OUTBOUND_SANDBOX_ALLOW.');
+    await evolutionFor(ch).sendText(ch.config.instance, digits, text).catch((e) => {
       throw new HttpError(400, e?.message ?? String(e));
     });
     return { ok: true };

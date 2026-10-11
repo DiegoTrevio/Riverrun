@@ -19,6 +19,16 @@ function monitorLimit(name: string, fallback: number, max: number) {
   return value;
 }
 
+function list(value: string): string[] {
+  return value.split(',').map((s) => s.trim()).filter(Boolean);
+}
+
+/** Un valor desconocido se rechaza: un typo que dejara los envíos reales en una prueba sería peor que no arrancar. */
+function outboundMode(value: string): 'live' | 'sandbox' {
+  if (value === 'live' || value === 'sandbox') return value;
+  throw new Error('OUTBOUND_MODE debe ser "live" o "sandbox" (valor recibido: ' + JSON.stringify(value.slice(0, 20)) + ').');
+}
+
 const aiBaseUrl = env('OPENROUTER_BASE_URL', env('OPENAI_BASE_URL', 'https://openrouter.ai/api/v1')).replace(/\/$/, '');
 const useOpenRouter = new URL(aiBaseUrl).hostname === 'openrouter.ai';
 
@@ -132,6 +142,22 @@ export const config = {
     /** Horas sin respaldo nuevo antes de avisar. */
     backupMaxAgeHours: Number(env('BACKUP_MAX_AGE_HOURS', '36')),
     version: env('APP_VERSION', 'dev'),
+    /** Token para /health/functional y /metrics (cabecera Authorization: Bearer). Vacío = esos endpoints no existen (404). */
+    healthToken: env('HEALTH_TOKEN', ''),
+    /** Componentes cuyas alertas se registran pero no se envían (p. ej. ALERT_MUTE=backup,disk). Quítalos al terminar la silencia. */
+    alertMute: list(env('ALERT_MUTE', '')),
+    /** Minutos que una incidencia puede seguir abierta antes de enviar un aviso de escalamiento. */
+    escalateMinutes: monitorLimit('ALERT_ESCALATE_MINUTES', 60, 10080),
+    /** Memoria residente del proceso que avisa, en MB (0 = sin aviso). Pensado para un VPS de ~2 GB. */
+    rssWarnMb: monitorLimit('RESOURCE_WARN_RSS_MB', 1024, 65536),
+  },
+  /**
+   * Salida real de mensajes. `sandbox` (staging) bloquea todo envío a WhatsApp, correo o webhooks salvo a los destinos de
+   * OUTBOUND_SANDBOX_ALLOW (teléfonos o correos de prueba). El simulador del panel nunca se bloquea.
+   */
+  outbound: {
+    mode: outboundMode(env('OUTBOUND_MODE', 'live')),
+    allow: list(env('OUTBOUND_SANDBOX_ALLOW', '')),
   },
   /**
    * Umbrales de la vigilancia de WhatsApp (sesiones y entregas). Son heurísticas: ajústalas con datos de tu operación

@@ -1,0 +1,48 @@
+# Entorno de staging y pruebas. Se usa junto con el compose principal, nunca solo:
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.staging.yml docker compose up -d
+#
+# Garantías (scripts/test-staging-overlay.sh las comprueba con la configuración renderizada):
+#   - proyecto propio: volúmenes y redes con nombres distintos de producción (name abajo)
+#   - todo puerto publicado queda en 127.0.0.1, aunque .env diga otra cosa (PANEL_BIND)
+#   - sin HTTPS público: caddy no arranca aquí, ni con COMPOSE_PROFILES=https
+#   - OUTBOUND_MODE=sandbox: ningún envío real salvo los destinos de OUTBOUND_SANDBOX_ALLOW
+#   - sin alertas externas, sin latido y sin copia de respaldos a la nube
+#
+# Lo que el overlay NO puede garantizar: las claves (EVOLUTION_API_KEY, OPENROUTER_API_KEY, claves de pago) son las que
+# pongas en el .env de staging. Usa claves de prueba y nunca copies el .env de producción.
+name: riverrun-staging
+
+# Límites de memoria para comprobar el comportamiento en un VPS de ~2 GB. Son un punto de partida, NO medidos: ajústalos
+# con la prueba de carga (scripts/load-test.mjs) y con ./riverrun status. Producción no los tiene: ver docs/produccion.md.
+services:
+  postgres:
+    mem_limit: 384m
+
+  redis:
+    mem_limit: 128m
+
+  evolution:
+    mem_limit: 512m
+
+  backend:
+    mem_limit: 512m
+    ports: !override
+      - "127.0.0.1:3000:3000"
+    environment:
+      # test (no production): la imagen trae NODE_ENV=production, y con sandbox la validación lo rechazaría como producción.
+      RIVERRUN_ENV: test
+      OUTBOUND_MODE: sandbox
+      ALERT_WEBHOOK_URL: ""
+      HEARTBEAT_URL: ""
+
+  backup:
+    mem_limit: 256m
+    environment:
+      BACKUP_S3_BUCKET: ""
+      BACKUP_S3_ENDPOINT: ""
+      BACKUP_S3_KEY: ""
+      BACKUP_S3_SECRET: ""
+
+  caddy:
+    profiles: !override ["staging-sin-https"]
+    ports: !override []

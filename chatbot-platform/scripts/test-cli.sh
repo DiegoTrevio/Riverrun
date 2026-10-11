@@ -8,6 +8,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
 export RIVERRUN_WAIT_SECONDS=2 RIVERRUN_POLL=1
+export RIVERRUN_OBSERVE_SECONDS=3 RIVERRUN_OBSERVE_POLL=1
 LOG="$work/docker.log"; export LOG
 
 # docker simulado: registra cada llamada; la salud falla si existe VERSION_MALA en el directorio actual; el respaldo falla si existe FALLA_RESPALDO.
@@ -23,8 +24,28 @@ start_evolution() { [[ -f EVO_RUNNING ]] || return 0; local t; t="$(target)"; if
 case "$*" in
   "compose version") echo "Docker Compose version v2" ;;
   *"wget -qO-"*) [[ -f VERSION_MALA ]] && exit 1; echo '{"ok":true}' ;;
-  *"node -e"*"/health/ready"*) [[ -f VERSION_MALA ]] && exit 1; f="$(cat FALLA_NUEVA FALLA_PREVIA 2>/dev/null | tr '\n' ' ')"
-    printf '{"status":"%s","checks":[' "${f:+fail}"; for c in $f; do printf '{"name":"%s","status":"fail"},' "$c"; done; printf '{"name":"disk","status":"ok"}]}' ;;
+  # Salud funcional (backend nuevo con HEALTH_TOKEN). SIN_FUNCIONAL simula un backend anterior que responde 404.
+  *"node -e"*"/health/functional"*) [[ -f VERSION_MALA ]] && exit 1; [[ -f SIN_FUNCIONAL ]] && { echo '{"message":"Route GET:/health/functional not found","statusCode":404}'; exit 0; }
+    # Cada consulta cuenta. FALLA_TARDIA=N hace fallar la consulta N-ésima; con FALLA_SOSTENIDA, desde la N-ésima en adelante.
+    n=$(( $(cat HEALTH_N 2>/dev/null || echo 0) + 1 )); echo "$n" > HEALTH_N
+    extra=""
+    if [[ -f FALLA_TARDIA ]]; then
+      d="$(cat FALLA_TARDIA)"
+      if [[ -f FALLA_SOSTENIDA ]]; then (( n >= d )) && extra=whatsapp; else (( n == d )) && extra=whatsapp; fi
+    fi
+    f="$(cat FALLA_NUEVA FALLA_PREVIA 2>/dev/null | tr '\n' ' ') $extra"; first=1
+    printf '{"status":"%s","components":[' "${f:+no_disponible}"
+    for c in database whatsapp whatsapp_sessions scheduler ai models backup disk queue resources; do
+      s=operativo; [[ " $f " == *" $c "* ]] && s=no_disponible
+      (( first )) || printf ','; first=0; printf '{"id":"%s","state":"%s","label":"x","detail":"x","verified":true,"actions":[]}' "$c" "$s"
+    done; printf ']}' ;;
+  # Salud de preparación (formato anterior): lo que el backend anterior medía.
+  *"node -e"*"/health/ready"*) [[ -f VERSION_MALA ]] && exit 1; f="$(cat FALLA_NUEVA FALLA_PREVIA 2>/dev/null | tr '\n' ' ')"; first=1
+    printf '{"status":"%s","checks":[' "${f:+fail}"
+    for c in database whatsapp whatsapp_sessions scheduler ai models backup disk; do
+      s=ok; [[ " $f " == *" $c "* ]] && s=fail
+      (( first )) || printf ','; first=0; printf '{"name":"%s","status":"%s"}' "$c" "$s"
+    done; printf ']}' ;;
   *"backup.sh now"*) [[ -f FALLA_RESPALDO ]] && exit 1; exit 0 ;;
   *"backup sh -c"*) echo "/backups/riverrun-20261010-120000.tar.enc" ;;
   *"images -q backend"*) echo "sha256:abc123" ;;
@@ -37,7 +58,7 @@ case "$*" in
   "image inspect --format {{range .RepoDigests}}"*) echo "$(cat EVO_RUNNING)@sha256:anterior" ;;
   *"psql -U chatbot -d evolution"*) cat EVO_MIG 2>/dev/null || echo "-" ;;
   *"psql -U chatbot -d chatbot"*) echo "palmas,otra" ;;
-  *"config-check.js"*) echo "Configuración (producción): 0 crítico(s)"; [[ -f CONFIG_MALA ]] && { echo "✕ [CRÍTICO] SESSION_SECRET es demasiado corto"; exit 2; }; exit 0 ;;
+  *"config-check.js"*) [[ -f CONFIG_NO_CORRE ]] && exit 5; echo "Configuración (producción): 0 crítico(s)"; [[ -f CONFIG_MALA ]] && { echo "✕ [CRÍTICO] SESSION_SECRET es demasiado corto"; exit 2; }; exit 0 ;;
   *"evolution-check.js plan"*) echo "  plan simulado"; exit "$(cat EVO_PLAN_RC 2>/dev/null || echo 0)" ;;
   *"evolution-check.js verify"*) echo "  verificación simulada"; exit "$(cat EVO_VERIFY_RC 2>/dev/null || echo 0)" ;;
   "compose pull evolution") [[ -f PULL_FALLA ]] && exit 1; target > PULLED ;;
@@ -53,14 +74,14 @@ git init -q --bare "$work/origin.git"
 git clone -q "$work/origin.git" "$work/app" 2>/dev/null
 cd "$work/app"
 # Estado del docker simulado y .env: nunca entran en los commits de prueba (EVO_IMAGE sí: es "código").
-printf '%s\n' .env EVO_RUNNING EVO_MIG EVO_PLAN_RC EVO_VERIFY_RC PULLED MIGRA_AL_ARRANCAR CONFIG_MALA PULL_FALLA FALLA_RESPALDO FALLA_PREVIA > .gitignore
+printf '%s\n' .env EVO_RUNNING EVO_MIG EVO_PLAN_RC EVO_VERIFY_RC PULLED MIGRA_AL_ARRANCAR CONFIG_MALA PULL_FALLA FALLA_RESPALDO FALLA_PREVIA SIN_FUNCIONAL CONFIG_NO_CORRE HEALTH_N FALLA_TARDIA FALLA_SOSTENIDA > .gitignore
 cp "$here/riverrun" . && echo "v1" > VERSION && git add -A && git commit -qm "v1" && git push -q origin HEAD:main 2>/dev/null
 git branch -q --set-upstream-to=origin/main 2>/dev/null || git branch -q -u origin/main
 # Publica una versión nueva en el "origin" y deja la copia local donde estaba. $3 = imagen de Evolution del código nuevo.
 newcommit() {
   local base; base="$(git rev-parse HEAD)"
   git fetch -q origin; git reset -q --hard origin/main
-  git rm -q -f --ignore-unmatch VERSION_MALA
+  git rm -q -f --ignore-unmatch VERSION_MALA FALLA_NUEVA
   echo "$1" > VERSION
   if [[ -n "${2:-}" ]]; then touch "$2"; fi
   if [[ -n "${3:-}" ]]; then echo "$3" > EVO_IMAGE; fi
@@ -241,4 +262,81 @@ nuevo="$(sed -n 's/^SESSION_SECRET=//p' .env)"
 ! grep -q "$nuevo" "$work/out" || { echo "ERROR: el secreto nuevo se imprimió"; exit 1; }
 b="$(grep -n "backup.sh now" "$LOG" | head -n 1 | cut -d: -f1)"; u="$(grep -n "up -d backend" "$LOG" | head -n 1 | cut -d: -f1)"
 [[ -n "$b" && -n "$u" && "$b" -lt "$u" ]] || { echo "ERROR: el respaldo debe hacerse antes de reiniciar"; exit 1; }
+echo "== salud funcional: la actualización genera HEALTH_TOKEN (sin imprimirlo) y consulta /health/functional"
+: > "$LOG"; newcommit v12
+./riverrun update > "$work/out" 2>&1 || { cat "$work/out"; echo "ERROR: la actualización con salud funcional falló"; exit 1; }
+grep -Eq "^HEALTH_TOKEN=[0-9a-f]{64}$" .env || { echo "ERROR: falta HEALTH_TOKEN en .env"; exit 1; }
+tok="$(sed -n 's/^HEALTH_TOKEN=//p' .env)"
+! grep -q "$tok" "$work/out" || { echo "ERROR: el token se imprimió"; exit 1; }
+grep -q "/health/functional" "$LOG" || { echo "ERROR: no consultó /health/functional"; exit 1; }
+[[ "$(cat VERSION)" == v12 ]]
+
+echo "== backend anterior sin /health/functional: se compara con /health/ready y una falla nueva sí vuelve atrás"
+: > "$LOG"; touch SIN_FUNCIONAL; base="$(git rev-parse HEAD)"; git fetch -q origin; git reset -q --hard origin/main
+echo "database" > FALLA_NUEVA; echo v13 > VERSION; git add -A; git commit -qm v13; git push -q origin HEAD:main; git reset -q --hard "$base"
+if ./riverrun update > "$work/out" 2>&1; then echo "ERROR: aplicó una versión que rompe la base de datos (según /health/ready)"; exit 1; fi
+grep -q "falla (antes no): database" "$work/out"; [[ "$(cat VERSION)" == v12 ]]
+rm -f SIN_FUNCIONAL FALLA_NUEVA
+
+echo "== preflight: sin .env bloquea"
+mv .env .env.lejos
+set +e; ./riverrun preflight --offline > "$work/out" 2>&1; rc=$?; set -e
+[[ "$rc" == 1 ]] && grep -q "Falta .env" "$work/out" && grep -q "BLOQUEADO" "$work/out" || { cat "$work/out"; echo "ERROR: sin .env la revisión debía bloquear"; exit 1; }
+mv .env.lejos .env
+
+echo "== preflight: todo en orden aprueba lo revisado y deja sin verificar lo que requiere red o servicios"
+cp .env .env.keep
+printf 'DOMAIN=pms.ejemplo.mx\nEVOLUTION_IMAGE=evoapicloud/evolution-api:v2.3.7@sha256:abc\n' >> .env; chmod 600 .env
+grep -Eq "^HEALTH_TOKEN=.{16,}$" .env || { echo "ERROR: el .env de prueba no tiene HEALTH_TOKEN"; exit 1; }
+export RIVERRUN_PREFLIGHT_MEM_KB=2097152 RIVERRUN_PREFLIGHT_DISK_KB=20971520 RIVERRUN_PREFLIGHT_CPUS=2
+set +e; ./riverrun preflight --offline > "$work/out" 2>&1; rc=$?; set -e
+[[ "$rc" == 0 ]] && grep -q "SIN BLOQUEOS EN LO REVISADO" "$work/out" && grep -q "No verificado: último respaldo" "$work/out" && grep -q "Envíos reales habilitados" "$work/out" || { cat "$work/out"; echo "ERROR: con todo en orden debía pasar sin bloqueos"; exit 1; }
+! grep -q "APROBADO\." "$work/out" || { echo "ERROR: no debe afirmar aprobación completa con comprobaciones sin verificar"; exit 1; }
+
+echo "== preflight: modo sandbox avisa; disco insuficiente y configuración crítica bloquean"
+printf 'OUTBOUND_MODE=sandbox\n' >> .env
+set +e; ./riverrun preflight --offline > "$work/out" 2>&1; rc=$?; set -e
+[[ "$rc" == 0 ]] && grep -q "APROBADO CON ADVERTENCIAS" "$work/out" && grep -q "OUTBOUND_MODE=sandbox" "$work/out" || { cat "$work/out"; echo "ERROR: sandbox debía advertir"; exit 1; }
+export RIVERRUN_PREFLIGHT_DISK_KB=1048576
+set +e; ./riverrun preflight --offline > "$work/out" 2>&1; rc=$?; set -e
+[[ "$rc" == 1 ]] && grep -q "Disco libre: 1 GB" "$work/out" && grep -q "BLOQUEADO" "$work/out" || { cat "$work/out"; echo "ERROR: poco disco debía bloquear"; exit 1; }
+export RIVERRUN_PREFLIGHT_DISK_KB=20971520; touch CONFIG_MALA
+set +e; ./riverrun preflight --offline > "$work/out" 2>&1; rc=$?; set -e
+[[ "$rc" == 1 ]] && grep -q "Configuración con problemas críticos" "$work/out" || { cat "$work/out"; echo "ERROR: configuración crítica debía bloquear"; exit 1; }
+rm -f CONFIG_MALA
+mv -f .env.keep .env; unset RIVERRUN_PREFLIGHT_MEM_KB RIVERRUN_PREFLIGHT_DISK_KB RIVERRUN_PREFLIGHT_CPUS
+
+echo "== preflight en línea sin servicios levantados: lo que no se comprueba se dice; opción desconocida se rechaza"
+set +e; ./riverrun preflight > "$work/out" 2>&1; rc=$?; set -e
+grep -q "servicios en marcha (no están levantados" "$work/out" && grep -q "HTTPS público" "$work/out" || { cat "$work/out"; echo "ERROR: la revisión en línea no marcó lo no verificado"; exit 1; }
+set +e; ./riverrun preflight --raro > "$work/out" 2>&1; rc=$?; set -e
+[[ "$rc" != 0 ]] && grep -q "Opción desconocida" "$work/out" || { echo "ERROR: aceptó una opción desconocida"; exit 1; }
+./riverrun help | grep -q "preflight" || { echo "ERROR: la ayuda no menciona preflight"; exit 1; }
+
+echo "== preflight: si la herramienta de configuración no puede correr, no se afirma que la configuración está revisada"
+touch CONFIG_NO_CORRE
+set +e; ./riverrun preflight --offline > "$work/out" 2>&1; rc=$?; set -e
+[[ "$rc" == 0 ]] && grep -q "No verificado: configuración" "$work/out" && ! grep -q "Configuración: sin problemas críticos" "$work/out" || { cat "$work/out"; echo "ERROR: afirmó una configuración que no revisó"; exit 1; }
+rm -f CONFIG_NO_CORRE
+
+echo "== observación: un fallo aislado durante la ventana no revierte"
+: > "$LOG"; rm -f HEALTH_N; echo 4 > FALLA_TARDIA; newcommit v20
+./riverrun update > "$work/out" 2>&1 || { cat "$work/out"; echo "ERROR: un fallo aislado revirtió la actualización"; exit 1; }
+grep -q "Una comprobación falló" "$work/out" && grep -q "se mantuvo sana" "$work/out"
+[[ "$(cat VERSION)" == v20 ]]
+rm -f FALLA_TARDIA HEALTH_N
+
+echo "== observación: una falla sostenida durante la ventana sí revierte"
+: > "$LOG"; rm -f HEALTH_N; echo 4 > FALLA_TARDIA; touch FALLA_SOSTENIDA; newcommit v21
+if ./riverrun update > "$work/out" 2>&1; then echo "ERROR: aplicó una versión que falló durante la observación"; exit 1; fi
+grep -q "Falla sostenida durante la observación" "$work/out"; [[ "$(cat VERSION)" == v20 ]]
+rm -f FALLA_TARDIA FALLA_SOSTENIDA HEALTH_N FALLA_NUEVA
+
+echo "== observación: un valor inválido se rechaza antes de descargar, respaldar o tocar nada"
+: > "$LOG"; before="$(cat VERSION)"
+set +e; RIVERRUN_OBSERVE_SECONDS=abc ./riverrun update > "$work/out" 2>&1; rc=$?; set -e
+[[ "$rc" != 0 ]] && grep -q "RIVERRUN_OBSERVE_SECONDS" "$work/out" || { cat "$work/out"; echo "ERROR: aceptó un valor inválido"; exit 1; }
+! grep -q "backup.sh now\|compose up\|git pull\|up -d" "$LOG" || { echo "ERROR: hizo trabajo antes de validar"; exit 1; }
+[[ "$(cat VERSION)" == "$before" ]]
+
 echo "OK: el flujo de actualización funciona"
