@@ -14,6 +14,7 @@
 #   ./riverrun rotate-secret   cambia SESSION_SECRET (respaldo antes, confirmación, consecuencias avisadas)
 #
 # Opciones de update: --no-backup  --accept-db-image-change  --accept-evolution-change (confirma sin preguntar)
+#   RIVERRUN_OBSERVE_SECONDS  tiempo que la versión nueva se observa antes de dar por buena (120; 0 = no observar)
 # Opciones de install (o variables de entorno, para instalar sin preguntas):
 #   --non-interactive  --no-start
 #   RIVERRUN_DOMAIN  RIVERRUN_ADMIN_EMAIL  RIVERRUN_ADMIN_PASSWORD  OPENROUTER_API_KEY  SMTP_URL
@@ -107,6 +108,31 @@ no_new_failures() {
   warn "Con la versión nueva falla (antes no):$new. Detalle: ./riverrun status o el panel (Sistema)."
   return 1
 }
+# Ventana de observación: la versión nueva debe seguir sana durante RIVERRUN_OBSERVE_SECONDS (120 por defecto; 0 la apaga)
+# después de levantar. Un fallo que aparece minutos después (una conexión que se agota, un proveedor que cae) también
+# revierte. Un fallo aislado no basta: hacen falta dos comprobaciones seguidas malas, como en las alertas.
+observe_window() {
+  local total="${RIVERRUN_OBSERVE_SECONDS:-120}" poll="${RIVERRUN_OBSERVE_POLL:-15}" elapsed=0 strikes=0
+  [[ "$total" =~ ^[0-9]+$ && "$poll" =~ ^[1-9][0-9]*$ ]] || die "RIVERRUN_OBSERVE_SECONDS y RIVERRUN_OBSERVE_POLL deben ser números enteros (poll mayor que 0)."
+  (( total > 0 )) || return 0
+  say "Observando la versión nueva durante ${total} s (cada ${poll} s)…"
+  while (( elapsed < total )); do
+    sleep "$poll"
+    elapsed=$((elapsed + poll))
+    if no_new_failures; then
+      strikes=0
+      continue
+    fi
+    strikes=$((strikes + 1))
+    if (( strikes >= 2 )); then
+      warn "Falla sostenida durante la observación (a los ${elapsed} s): se vuelve a la versión anterior."
+      return 1
+    fi
+    warn "Una comprobación falló a los ${elapsed} s; se vuelve a medir antes de decidir."
+  done
+  ok "La versión nueva se mantuvo sana durante ${total} s"
+}
+
 # Token de /health/functional y /metrics: se genera una vez y nunca se muestra.
 ensure_health_token() {
   [[ -n "$(env_get HEALTH_TOKEN)" ]] && return 0
@@ -542,6 +568,9 @@ update_rollback() {
 # tardan unos segundos en reconectarse y la salud las vería cerradas.
 cmd_update() {
   need_docker || die "Docker no está disponible"
+  # Se valida al principio: un valor inválido no debe descubrirse después de haber descargado y respaldado.
+  [[ "${RIVERRUN_OBSERVE_SECONDS:-120}" =~ ^[0-9]+$ && "${RIVERRUN_OBSERVE_POLL:-15}" =~ ^[1-9][0-9]*$ ]] \
+    || die "RIVERRUN_OBSERVE_SECONDS y RIVERRUN_OBSERVE_POLL deben ser números enteros (poll mayor que 0)."
   update_args "$@"
   local rc=0
   update_fetch || rc=$?
@@ -552,7 +581,7 @@ cmd_update() {
   update_backup
   # Antes de levantar la versión nueva: así sus contenedores reciben HEALTH_TOKEN. La línea base ya se midió.
   ensure_health_token
-  if dc up -d --build && wait_healthy 180 && evolution_verify && no_new_failures; then
+  if dc up -d --build && wait_healthy 180 && evolution_verify && no_new_failures && observe_window; then
     ok "Actualizado a $APP_VERSION"
     (( EVO_CHANGES )) && ok "Evolution: $EVO_TARGET"
     docker image prune -f >/dev/null 2>&1 || true

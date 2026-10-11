@@ -84,7 +84,7 @@ Lo que fuerza, aunque el `.env` diga otra cosa: proyecto propio (`riverrun-stagi
 
 Hace, en orden: revisar cambios locales, descargar, construir **sin arrancar**, revisar la configuración para la versión nueva, respaldar (obligatorio), levantar, verificar Evolution si cambió, y comprobar la salud funcional. Cualquier problema antes de levantar deja todo como estaba. Si la versión nueva no queda sana, vuelve sola (ver la siguiente sección). El detalle de Evolution está en [evolution-api.md](evolution-api.md).
 
-**Ventana de observación tras actualizar: pendiente.** Hoy la comprobación posterior es una foto al terminar de levantar. No observa durante un tiempo para detectar fallos que aparecen minutos después.
+**Ventana de observación.** Después de levantar la versión nueva, `./riverrun update` la observa durante `RIVERRUN_OBSERVE_SECONDS` (120 por defecto; `0` la apaga), midiendo la salud funcional cada `RIVERRUN_OBSERVE_POLL` segundos (15 por defecto). Un fallo aislado no revierte: hacen falta dos comprobaciones seguidas malas, como en las alertas. Una falla sostenida vuelve a la versión anterior, igual que una falla al levantar. La ventana añade ese tiempo a cada actualización; si necesitas actualizar más rápido, bájala con cuidado. Lo verifica `scripts/test-cli.sh` (un fallo aislado no revierte; una falla sostenida sí; un valor inválido se rechaza antes de descargar). **Limitación:** la ventana observa la salud funcional, no el tráfico real: un fallo que solo aparece con mensajes reales no se detecta aquí.
 
 ## Revertir no es restaurar
 
@@ -161,7 +161,6 @@ Ninguna de ellas se ha ejecutado como parte de la revisión de observabilidad y 
 Lista para quien vaya a publicar. Mientras cualquiera esté pendiente, no declares la plataforma "lista para producción" sin decirlo:
 
 - Overlay y guía de staging aislado, probados de extremo a extremo.
-- Ventana de observación tras actualizar.
 - Panel (Sistema) que muestre los cinco estados; hoy la API los entrega, el panel no.
 - Fallos inyectados sobre el stack real, ejecutados en GitHub (`scripts/fault-inject.sh`): hoy no se han corrido. Y fallos todavía sin prueba: disco lleno, respaldo fallido, memoria y reversión tras un fallo real.
 - Resultados medidos de la prueba de carga contra staging y ajuste de los límites de memoria del overlay con esos datos.
