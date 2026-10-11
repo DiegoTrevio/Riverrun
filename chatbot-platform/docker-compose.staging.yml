@@ -17,6 +17,8 @@ services:
     ports: !override
       - "127.0.0.1:3000:3000"
     environment:
+      # test (no production): la imagen trae NODE_ENV=production, y con sandbox la validación lo rechazaría como producción.
+      RIVERRUN_ENV: test
       OUTBOUND_MODE: sandbox
       ALERT_WEBHOOK_URL: ""
       HEARTBEAT_URL: ""

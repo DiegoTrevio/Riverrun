@@ -197,3 +197,35 @@ test('6. compatibilidad: instalaciones existentes siguen arrancando', () => {
   // c) assertProductionConfig() se conserva para quien la usaba.
   assert.ok(Array.isArray(validateConfig(installed()).issues));
 });
+
+test('7. sandbox con claves de producción: crítico por proveedor; con claves de prueba, no', () => {
+  const sandboxEnv = { RIVERRUN_ENV: 'test', OUTBOUND_MODE: 'sandbox', STRIPE_WEBHOOK_SECRET: 'whsec_prueba_123456', MERCADOPAGO_WEBHOOK_SECRET: 'mp-prueba-secreto-123' };
+  const produccion = validateConfig(installed({ ...sandboxEnv, STRIPE_SECRET_KEY: 'sk_live_produccion', MERCADOPAGO_ACCESS_TOKEN: 'APP_USR-produccion-123' }));
+  const criticos = produccion.issues.filter((i) => i.level === 'critical').map((i) => i.id);
+  assert.ok(criticos.includes('stripe.live_key_in_sandbox'), formatReport(produccion));
+  assert.ok(criticos.includes('mercadopago.live_key_in_sandbox'), formatReport(produccion));
+  assert.equal(blocksStartup(produccion), true);
+  // La clave de producción se nombra, pero su valor nunca aparece en el reporte.
+  assert.doesNotMatch(formatReport(produccion), /sk_live_produccion|APP_USR-produccion/);
+
+  const pruebas = validateConfig(installed({ ...sandboxEnv, STRIPE_SECRET_KEY: 'sk_test_prueba', MERCADOPAGO_ACCESS_TOKEN: 'TEST-prueba-123' }));
+  assert.equal(pruebas.issues.some((i) => i.id.endsWith('live_key_in_sandbox')), false);
+  assert.equal(blocksStartup(pruebas), false, formatReport(pruebas));
+});
+
+test('8. producción con OUTBOUND_MODE=sandbox impide arrancar, también cuando el entorno viene de la imagen (NODE_ENV=production)', () => {
+  const r = validateConfig(installed({ OUTBOUND_MODE: 'sandbox' }));
+  assert.equal(r.env, 'production');
+  assert.ok(r.issues.some((i) => i.id === 'outbound.sandbox_in_production' && i.level === 'critical'), formatReport(r));
+  assert.equal(blocksStartup(r), true);
+});
+
+test('9. el modo de salida solo acepta live o sandbox; en pruebas y en producción live no hay avisos de salida', () => {
+  assert.ok(ids(installed({ OUTBOUND_MODE: 'sandboxx' }), 'critical').includes('outbound.invalid'));
+  assert.equal(validateConfig(installed({ OUTBOUND_MODE: 'live' })).issues.some((i) => i.id.startsWith('outbound.')), false);
+  // Staging con RIVERRUN_ENV=test puede usar sandbox sin bloquear el arranque.
+  const staging = validateConfig(installed({ RIVERRUN_ENV: 'test', OUTBOUND_MODE: 'sandbox' }));
+  assert.equal(staging.issues.some((i) => i.id === 'outbound.sandbox_in_production'), false);
+  assert.equal(blocksStartup(staging), false, formatReport(staging));
+  assert.equal(staging.services.find((s) => s.id === 'outbound')?.state, 'configured');
+});

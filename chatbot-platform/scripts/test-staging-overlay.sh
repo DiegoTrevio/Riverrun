@@ -67,6 +67,10 @@ check "OUTBOUND_MODE=sandbox gana sobre OUTBOUND_MODE=live del entorno" \
   "return cfg.services.backend.environment.OUTBOUND_MODE === 'sandbox';" \
   "$caso_hostil"
 
+check "staging no se declara producción (RIVERRUN_ENV=test), o la validación lo rechazaría con sandbox" \
+  "return cfg.services.backend.environment.RIVERRUN_ENV === 'test';" \
+  "$caso_hostil"
+
 check "sin alertas externas ni latido" \
   "const e = cfg.services.backend.environment; return e.ALERT_WEBHOOK_URL === '' && e.HEARTBEAT_URL === '';" \
   "$caso_base"

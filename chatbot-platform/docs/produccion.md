@@ -56,7 +56,13 @@ Qué **no** bloquea, y por eso staging debe configurarse aparte:
 - Llamadas a la IA (OpenRouter): cuestan dinero, pero no envían nada a un cliente.
 - **Evolution:** staging no debe tener vinculado un WhatsApp de cliente.
 
-Un valor de `OUTBOUND_MODE` distinto de `live` o `sandbox` impide arrancar: un error de escritura no puede dejar un entorno en modo real sin querer.
+La validación de configuración (`config-check`) hace críticos estos casos, y en modo estricto impiden arrancar:
+
+- `OUTBOUND_MODE` con un valor distinto de `live` o `sandbox`.
+- Producción con `OUTBOUND_MODE=sandbox`. Cuenta también cuando el entorno viene de la imagen (`NODE_ENV=production`). Por eso staging declara `RIVERRUN_ENV=test`: el overlay lo fija.
+- En sandbox, una clave de producción de Stripe (`sk_live_`, `rk_live_`) o de Mercado Pago (`APP_USR-`).
+
+Lo verifica `test/config-check.test.ts` (pruebas 7 a 9). El reporte nombra la variable, pero nunca muestra su valor.
 
 **Overlay de staging: `docker-compose.staging.yml`.** Se usa junto con el compose principal, nunca solo:
 
