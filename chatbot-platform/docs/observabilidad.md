@@ -72,7 +72,7 @@ Reglas que evitan falsa seguridad:
 | `whatsapp` | Evolution: responde, acepta la llave, no pide licencia, versión compatible. | No responde o rechaza la llave / versión incompatible o licencia |
 | `whatsapp_sessions` | Canales WhatsApp conectados, instancias perdidas, webhooks, envíos fallidos en 15 min. | Desconexiones (con umbral) / instancias perdidas o caída tras una actualización |
 | `scheduler` | Tareas pendientes atrasadas más de 5 min. | — / hay tareas atrasadas |
-| `ai` | Llamadas, errores, reintentos y latencia p95 de los últimos 15 min (sin prompts ni respuestas). | ≥ 5 errores (degradado) / falta `OPENROUTER_API_KEY` |
+| `ai` | Llamadas, errores, reintentos y latencia p95 de los últimos 15 min (sin prompts ni respuestas). | ≥ 5 errores con respuestas correctas (degradado) / ≥ 3 errores y ninguna respuesta correcta, o falta `OPENROUTER_API_KEY` (no disponible) |
 | `models` | Que los modelos configurados existen en OpenRouter. | Un modelo no existe (degradado) |
 | `backup` | Último respaldo correcto, copia en la nube. | Vencido (`BACKUP_MAX_AGE_HOURS`) / sin respaldo nunca |
 | `disk` | Espacio libre donde están las subidas. | Poco / casi sin espacio |
@@ -124,6 +124,8 @@ Canales: el correo a `SUPERADMIN_EMAIL` y el webhook `ALERT_WEBHOOK_URL` (Slack,
 
 - `test/observability.test.ts`: estados, mapeo de comprobaciones, la preparación sin WhatsApp (con Evolution caída de verdad en el arnés), métricas sin datos personales y con etiquetas maliciosas, 401/404 del token, incidencias: deduplicación, silencio, escalamiento único, recuperación y poda.
 - `test/monitor.test.ts`: las comprobaciones existentes, con los nuevos nombres.
+- `test/fault-injection.test.ts`: fallos inyectados sobre la lógica real de monitoreo, con PostgreSQL real. Sin fallos, cuatro ciclos sin avisos ni incidencias (falsos positivos). Un fallo de un solo ciclo no avisa. Evolution caído, base de datos caída, IA sin clave e IA con clave inválida avisan en el segundo ciclo, y se recuperan. La prueba de clave inválida fue la que destapó que una IA sin ninguna respuesta correcta aparecía como "operativo".
+- `scripts/fault-inject.sh` y `.github/workflows/fault-injection.yml`: fallos sobre el stack de staging real (Docker): Evolution caído, PostgreSQL caído y configuración crítica. Corre a mano o semanalmente, no en cada PR. **Todavía no se ha ejecutado**: la imagen del backend no se pudo construir en el entorno de desarrollo, así que su primer resultado llegará desde GitHub.
 - `scripts/test-cli.sh`: `./riverrun update` lee `/health/functional`, genera el token sin imprimirlo y, con un backend anterior que responde 404, cae a `/health/ready` y sigue revirtiendo ante una falla nueva.
 
 ## Lo que no está incluido todavía

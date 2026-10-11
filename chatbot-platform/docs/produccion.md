@@ -123,7 +123,12 @@ El sistema hoy detecta y avisa; no se recupera solo, salvo la reversión de una 
 | Respaldo vencido o fallido | `backup` en `degradado` o `no_disponible`, según la edad. | `./riverrun backup` y luego `./riverrun status`. |
 | Automatizaciones o mensajes atascados | `queue` en `degradado`. | Espera unos minutos; si no baja, `./riverrun restart`. |
 
-**Pruebas automatizadas de cada uno de estos fallos (inyectar la falla y comprobar la respuesta): pendiente.** Hoy solo están probadas la reversión de la actualización y la detección de cada fallo por separado.
+**Fallos inyectados, dos niveles:**
+
+- `test/fault-injection.test.ts` (ejecutado): monitoreo real con PostgreSQL real. Cubre Evolution caído, base de datos caída (los avisos salen aunque el historial no pueda escribirse), IA sin clave, IA con clave inválida y un fallo que dura un solo ciclo.
+- `scripts/fault-inject.sh` (**no ejecutado todavía**): stack de staging real con Docker. Cubre Evolution caído, PostgreSQL caído y configuración crítica. Corre a mano o semanalmente en GitHub (`Fallos inyectados`). No se ha probado en este entorno porque la imagen del backend no se puede construir aquí.
+
+Quedan sin probar con fallos reales: disco lleno, respaldo fallido, falta de memoria y la reversión de una actualización cuando la nueva versión arranca pero falla después. La reversión se prueba con el docker simulado de `test-cli.sh`, no con un fallo real.
 
 ## Límites de recursos para un VPS de ~2 GB
 
@@ -149,6 +154,6 @@ Lista para quien vaya a publicar. Mientras cualquiera esté pendiente, no declar
 - Overlay y guía de staging aislado, probados de extremo a extremo.
 - Ventana de observación tras actualizar.
 - Panel (Sistema) que muestre los cinco estados; hoy la API los entrega, el panel no.
-- Pruebas automatizadas de fallos inyectados (PostgreSQL, Evolution, IA, disco, arranque fallido, respaldo fallido).
+- Fallos inyectados sobre el stack real, ejecutados en GitHub (`scripts/fault-inject.sh`): hoy no se han corrido. Y fallos todavía sin prueba: disco lleno, respaldo fallido, memoria y reversión tras un fallo real.
 - Prueba de carga y límites de memoria por contenedor.
 - Prueba periódica de restauración en un servidor distinto.

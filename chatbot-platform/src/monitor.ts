@@ -147,6 +147,8 @@ async function checkAi(): Promise<CheckResult> {
     const errors = r?.errors ?? 0;
     const metrics = { runs_15m: runs, errors_15m: errors, retries_15m: r?.retries ?? 0, p95_latency_ms_15m: r?.p95 ?? null };
     if (!runs && !errors) return { ...base, status: 'ok', state: 'no_verificado', detail: 'Sin llamadas a la IA en los últimos 15 minutos: no hay forma de comprobarla ahora', metrics };
+    // Errores y ninguna respuesta correcta: la clave es inválida o el proveedor no responde. Eso es una caída, no un aviso.
+    if (!runs && errors >= 3) return { ...base, status: 'fail', detail: `Ningún intento de la IA funciona: ${errors} errores y 0 respuestas en 15 minutos (¿clave inválida o proveedor caído?)`, metrics };
     if (errors >= 5) return { ...base, status: 'warn', detail: `${errors} errores de IA en los últimos 15 minutos (de ${runs} llamadas)`, metrics };
     if (r?.p95 && r.p95 > AI_SLOW_P95_MS) return { ...base, status: 'warn', detail: `Respuestas lentas: p95 de ${Math.round(r.p95 / 1000)} s en 15 minutos`, metrics };
     return { ...base, status: 'ok', detail: `${runs} llamadas en 15 minutos, ${errors} con error`, metrics };

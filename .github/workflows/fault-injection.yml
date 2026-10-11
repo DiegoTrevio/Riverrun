@@ -1,0 +1,29 @@
+name: Fallos inyectados
+
+# Job costoso (≈20 minutos): levanta el stack de staging real e inyecta fallos. No corre en cada PR: se lanza a mano o
+# una vez por semana. No usa secretos del repositorio: scripts/fault-inject.sh genera valores falsos y solo usa el overlay
+# de staging (OUTBOUND_MODE=sandbox).
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  faults:
+    name: Fallos inyectados sobre staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: chatbot-platform
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inyectar fallos y comprobar detección y recuperación
+        run: bash scripts/fault-inject.sh
+      - name: Limpiar el proyecto de staging si quedó algo
+        if: always()
+        run: docker compose -p riverrun-staging down -v --remove-orphans || true
