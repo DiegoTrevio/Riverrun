@@ -16,6 +16,7 @@ import { dueEscalations, markEscalated, openIncident, pruneIncidents, resolveInc
 import { type CheckStatus, type ServiceState } from './observability/status.js';
 import { logEvent } from './logs.js';
 import { sendMail } from './mailer.js';
+import { outboundAllowed } from './outbound-guard.js';
 
 export type { CheckStatus } from './observability/status.js';
 export interface CheckResult {
@@ -292,11 +293,15 @@ export async function sendAlert(title: string, body: string) {
   const text = `${title}\n${body}`;
   const jobs: Promise<unknown>[] = [];
   if (config.signup.superadminEmail) jobs.push(sendMail({ to: config.signup.superadminEmail, subject: title, text: `${body}\n\n${config.publicBaseUrl}/#/sistema` }));
-  if (config.monitor.alertWebhookUrl) {
+  const webhook = config.monitor.alertWebhookUrl;
+  // Sandbox: el canal de producción no recibe avisos de pruebas. La incidencia sigue registrada en la base.
+  if (webhook && !outboundAllowed(webhook)) {
+    console.warn('Aviso al webhook omitido: OUTBOUND_MODE=sandbox y la URL no está en OUTBOUND_SANDBOX_ALLOW');
+  } else if (webhook) {
     // ntfy lee el cuerpo como texto; Slack/Mattermost usan "text" y Discord "content".
-    const ntfy = /ntfy/i.test(config.monitor.alertWebhookUrl);
+    const ntfy = /ntfy/i.test(webhook);
     jobs.push(
-      fetch(config.monitor.alertWebhookUrl, {
+      fetch(webhook, {
         method: 'POST',
         headers: { 'content-type': ntfy ? 'text/plain; charset=utf-8' : 'application/json' },
         body: ntfy ? text : JSON.stringify({ text, content: text, title, message: body }),
@@ -373,6 +378,8 @@ export async function escalateIncidents(send: Sender = sendAlert, now = Date.now
 /** Latido para servicios externos: solo se envía si lo esencial funciona; si deja de llegar, ellos avisan. */
 export async function heartbeat(checks: CheckResult[]) {
   if (!config.monitor.heartbeatUrl) return false;
+  // Sandbox: un latido de pruebas no debe marcar como "vivo" al servidor de producción en el servicio externo.
+  if (!outboundAllowed(config.monitor.heartbeatUrl)) return false;
   if (checks.some((c) => ['database', 'scheduler'].includes(c.name) && c.status === 'fail')) return false;
   try {
     const res = await fetch(config.monitor.heartbeatUrl, { signal: AbortSignal.timeout(8000) });

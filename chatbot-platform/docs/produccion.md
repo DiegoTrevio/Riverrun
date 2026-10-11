@@ -48,12 +48,12 @@ Qué bloquea el modo sandbox (lo verifican `test/outbound-guard.test.ts`):
 - Webhooks salientes hacia sistemas de clientes.
 - Citas en Google Calendar (no se crean).
 - Cobros (Stripe y Mercado Pago): con una clave o credencial de producción no se ofrece el pago y no sale ninguna petición al proveedor, ni para cobrar ni para leer facturación. Solo se aceptan claves de prueba (`sk_test_`, `rk_test_`, `TEST-`). Lo verifica `test/billing-guard.test.ts`.
+- Webhook de alertas (`ALERT_WEBHOOK_URL`) y latido (`HEARTBEAT_URL`): solo salen si su URL está en `OUTBOUND_SANDBOX_ALLOW`. Si no, se omiten, y la incidencia sigue registrada en la base. Lo verifica `test/alert-guard.test.ts`.
 
 Qué **no** bloquea, y por eso staging debe configurarse aparte:
 
 - El simulador del panel: nunca sale de la plataforma.
 - Llamadas a la IA (OpenRouter): cuestan dinero, pero no envían nada a un cliente.
-- **Alertas al superadmin** (correo y `ALERT_WEBHOOK_URL`): no hay freno todavía. Staging no debe apuntar `ALERT_WEBHOOK_URL` al canal de producción. Es el paso 3 del plan.
 - **Evolution:** staging no debe tener vinculado un WhatsApp de cliente.
 
 Un valor de `OUTBOUND_MODE` distinto de `live` o `sandbox` impide arrancar: un error de escritura no puede dejar un entorno en modo real sin querer.
