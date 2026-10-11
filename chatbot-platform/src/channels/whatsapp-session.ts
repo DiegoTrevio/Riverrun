@@ -3,6 +3,7 @@
  * Crea la instancia al instante, mantiene un QR vigente (sin reiniciar la vinculación en cada consulta),
  * ofrece el código para "Vincular con número de teléfono" y se recupera sola si la instancia quedó trabada.
  */
+import { recreateBlockedReason } from '../evolution/status.js';
 import { recordConnectionState } from '../lifecycle.js';
 import { logEvent } from '../logs.js';
 import * as store from '../store/index.js';
@@ -153,6 +154,13 @@ async function prepareSession(ch: Channel, o: SessionOptions): Promise<SessionRe
       // Lleva rato sin generar código (instancia trabada o QR agotados): se recrea una vez con el mismo nombre.
       t.recreateAt = now;
       t.waitingSince = now;
+      // Salvo justo después de actualizar Evolution (o con una versión incompatible): recrear borraría una sesión ya
+      // vinculada que quizá se recupera corrigiendo la versión. Se informa en vez de borrar.
+      const blocked = await recreateBlockedReason(ch);
+      if (blocked) {
+        await logEvent({ level: 'warn', source: 'evolution', message: `La instancia ${instance} no generó código y no se recrea automáticamente (${blocked}). Revisa Sistema antes de volver a vincular.`, accountId: ch.account_id, channelId: ch.id });
+        throw new SessionError('El servidor de WhatsApp se actualizó hace poco y esta conexión no respondió. Para no perder tu sesión no la reiniciamos automáticamente: avisa a soporte.');
+      }
       await logEvent({ level: 'warn', source: 'evolution', message: `La instancia ${instance} no generó código; se recrea`, accountId: ch.account_id, channelId: ch.id });
       await evo.logout(instance).catch(() => undefined);
       await evo.deleteInstance(instance).catch(() => undefined);

@@ -65,16 +65,18 @@ Un solo comando para todo lo que sigue:
 | Comando | Qué hace |
 |---|---|
 | `./riverrun status` | Servicios, salud, último respaldo y si hay versión nueva |
-| `./riverrun update` | Respalda, descarga la versión nueva, la construye y comprueba que quedó sana; **si no, vuelve sola a la anterior** |
+| `./riverrun update` | Revisa la configuración y la compatibilidad de Evolution, respalda, aplica y comprueba que quedó sana; **si no, vuelve sola a la anterior** (sin bajar Evolution si ya migró su base) |
 | `./riverrun backup` | Respaldo inmediato (también corre solo cada noche) |
 | `./riverrun restore [archivo]` | Restaura el último respaldo, o un archivo (por ejemplo en un servidor nuevo) |
 | `./riverrun logs [servicio]` | Registros en vivo |
-| `./riverrun restart` | Aplica cambios hechos a `.env` |
+| `./riverrun restart` | Aplica cambios hechos a `.env` (antes revisa que la configuración no tenga problemas críticos) |
+| `./riverrun rotate-secret` | Cambia `SESSION_SECRET` (respaldo verificado antes, confirmación escrita; cierra sesiones y pide reconectar Google Calendar) |
 
 - Con dominio, `install` activa HTTPS automático (Caddy). Antes apunta el dominio (registro DNS tipo A) a la IP del servidor y abre los puertos 80 y 443. HTTPS es necesario para Telegram, Messenger, Instagram y el chat web.
 - Sin dominio, el panel queda en `http://127.0.0.1:3000` del VPS; desde tu computadora: `ssh -L 3000:127.0.0.1:3000 usuario@tu-vps` y visita `http://localhost:3000`.
 - Al arrancar se crea el **superadministrador** (tu correo). Si olvidas la contraseña, cámbiala en `.env` y `./riverrun restart`.
-- Evolution API solo escucha en `127.0.0.1:8080` (no queda expuesta a internet). Se recomienda fijar su versión con `EVOLUTION_IMAGE=evoapicloud/evolution-api:<versión>`.
+- Evolution API solo escucha en `127.0.0.1:8080` (no queda expuesta a internet) y viene **fijada a una versión verificada** (2.3.7, por digest): una descarga futura nunca la cambia. Para cambiarla: `EVOLUTION_IMAGE` en `.env` y `./riverrun update`. Ver [Evolution API: versión, actualización y recuperación](docs/evolution-api.md).
+- **Validación de la configuración:** antes de arrancar, el servidor revisa `.env` y distingue problemas **críticos** (no arranca y dice cómo corregirlos), **avisos** (arranca con funciones limitadas) y servicios **opcionales** apagados. Revisión sin arrancar: `npm run config:check` o `docker compose run --rm --no-deps backend node dist/cli/config-check.js`. Ver [configuración](docs/configuracion.md).
 - Instalación manual (sin el script): `cp .env.example .env`, edita los valores y `docker compose up -d --build`.
 
 ## Respaldos
@@ -100,14 +102,14 @@ Qué pasa solo: el pago **activa** la cuenta (sale de prueba o de pausa) y le as
 ## Monitoreo y alertas
 
 - `GET /health` (el servicio vive) y `GET /health/ready` (salud completa: **503** si algo esencial falla; sin detalles internos) para cualquier monitor externo.
-- **Revisión cada minuto** de: base de datos, Evolution (y cuántos WhatsApp están desconectados), tareas programadas atrasadas, IA (clave y errores recientes), **antigüedad y éxito del último respaldo** (y su copia en la nube) y espacio en disco.
+- **Revisión cada minuto** de: base de datos, servicio de Evolution (responde, acepta la llave, versión compatible), **WhatsApp real** (sesiones desconectadas o perdidas, webhooks incorrectos, envíos fallidos y desconexiones tras actualizar Evolution), tareas programadas atrasadas, IA (clave y errores recientes), **antigüedad y éxito del último respaldo** (y su copia en la nube) y espacio en disco. Cada 15 minutos, una revisión más profunda (sesión y webhook de cada WhatsApp, credenciales de IA y correo).
 - **Alertas:** un fallo avisa al segundo minuto seguido (evita falsas alarmas), se repite cada 6 h y avisa cuando se recupera. Llegan por correo (`SUPERADMIN_EMAIL` + SMTP) y, si quieres, a un webhook (`ALERT_WEBHOOK_URL`: Slack, Discord, ntfy.sh…).
 - **Latido externo (`HEARTBEAT_URL`):** el sistema visita esa dirección cada 5 minutos mientras está sano (healthchecks.io tiene plan gratuito; Uptime Kuma también). Si dejan de llegar, *ellos* te avisan, incluso si el servidor completo cayó, algo que el sistema no puede avisar por sí mismo.
-- **Panel → Sistema** (superadmin): todo lo anterior en una pantalla, con versión, tiempo encendido, errores de 24 h, WhatsApp por estado y suscripciones.
+- **Panel → Sistema** (superadmin): todo lo anterior en una pantalla, con versión, tiempo encendido, errores de 24 h, WhatsApp por estado y suscripciones; además **Configuración** (críticos, avisos y opcionales con cómo corregirlos), **Servicios** por niveles (configurado → accesible → credenciales válidas → funcional → listo; sin mostrar nunca claves) y **Evolution API** (versión esperada, imagen configurada, versión detectada o "No verificada", compatibilidad y última verificación).
 
 ## Actualizaciones
 
-`./riverrun update` hace, en orden: comprobar que no hay cambios locales → **respaldo** (si falla, no sigue) → descargar la versión → construir → levantar → esperar a que `/health` y `/health/ready` estén sanos. Si la versión nueva no queda sana, **vuelve sola** al código y a la imagen anteriores. Las migraciones de base de datos se aplican solas al arrancar y son aditivas, por lo que volver atrás es seguro; en el improbable caso contrario, `./riverrun restore latest`. `./riverrun status` avisa cuando hay cambios nuevos y el panel (Sistema) muestra la versión instalada. `scripts/test-cli.sh` prueba este flujo (actualización buena, versión enferma con vuelta atrás, sin respaldo, con cambios locales).
+`./riverrun update` hace, en orden: comprobar que no hay cambios locales → descargar la versión → construirla **sin arrancarla** → revisar que la configuración no tenga problemas críticos para la versión nueva → si cambia Evolution, revisar su compatibilidad y si migrará su esquema (pide confirmación cuando hay riesgo y bloquea versiones incompatibles o bajadas de esquema) → **respaldo** (si falla, no sigue; si cambia Evolution es obligatorio y se verifica restaurando también su base) → levantar → verificar Evolution y que las sesiones abiertas vuelvan → esperar a que `/health` y `/health/ready` estén sanos. Cualquier problema antes de levantar deja todo como estaba. Si la versión nueva no queda sana, **vuelve sola** al código y a la imagen anteriores; Evolution solo vuelve a su imagen anterior si su esquema no cambió (si ya migró, se queda fijado en la versión nueva y se explica cómo recuperar desde el respaldo, sin borrar ni recrear sesiones). Las migraciones de base de datos de RiverRun se aplican solas al arrancar y son aditivas, por lo que volver atrás es seguro; en el improbable caso contrario, `./riverrun restore latest`. `./riverrun status` avisa cuando hay cambios nuevos y muestra la versión de Evolution. `scripts/test-cli.sh` prueba este flujo con un docker simulado y `scripts/evolution-compat.sh` corre la suite contra Evolution real (también en CI: `.github/workflows/evolution-compat.yml`). Detalle en [docs/evolution-api.md](docs/evolution-api.md).
 
 ## Integración continua
 
@@ -195,7 +197,7 @@ En una imagen de producción ya compilada: `docker compose exec backend node dis
 - Configura `SMTP_URL` (cualquier proveedor: tu hosting, Amazon SES, SendGrid, Brevo…). Sin SMTP los correos solo quedan en **Registros**; en ese caso usa `SIGNUP_REQUIRE_EMAIL=false` o nadie podrá conectar WhatsApp.
 - Servidor recomendado para empezar: 4 vCPU / 8 GB. Cada sesión de WhatsApp vive en Evolution; vigila su memoria (`docker stats`) conforme crecen las empresas.
 - **Respaldos y restauración**: conservar las bases `chatbot` y `evolution`, archivos y sesiones. Consulta la [revisión inicial de producción y herramientas de respaldo](docs/production-review.md). Sin las sesiones de Evolution las empresas podrían necesitar volver a escanear sus QR; sin `uploads` se perderían fotos referenciadas en la base.
-- Fija la versión de Evolution (`EVOLUTION_IMAGE`) y pruébala antes de actualizar.
+- Evolution ya viene fijado a una versión verificada. Antes de cambiarla, pruébala con `scripts/evolution-compat.sh <imagen>` y aplícala con `./riverrun update` ([docs/evolution-api.md](docs/evolution-api.md)).
 - Evolution conecta WhatsApp como "dispositivo vinculado" (no es la API oficial de Meta). El registro lo advierte: las campañas masivas a números que no te escribieron pueden provocar el bloqueo del número.
 - Para cerrar el registro: `SIGNUP_ENABLED=false` (puedes seguir creando cuentas a mano en **Cuentas**).
 

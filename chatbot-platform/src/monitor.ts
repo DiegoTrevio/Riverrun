@@ -8,6 +8,9 @@ import path from 'node:path';
 import { missingModels } from './ai/models.js';
 import { config } from './config.js';
 import { query, queryOne } from './db.js';
+import { refreshDiagnostics } from './diagnostics.js';
+import { EVOLUTION_EXPECTED } from './evolution/compat.js';
+import { lastDeepCheck, probeService, recentVersionChange } from './evolution/status.js';
 import { logEvent } from './logs.js';
 import { sendMail } from './mailer.js';
 
@@ -32,17 +35,76 @@ async function checkDb(): Promise<CheckResult> {
   }
 }
 
+async function whatsappChannels() {
+  return (await queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM channels WHERE type = 'whatsapp' AND active`))?.n ?? 0;
+}
+
+/**
+ * Recién arrancado el backend, Evolution puede estar arrancando también (al recrearlo con otra imagen aplica sus
+ * migraciones antes de escuchar): durante este margen, "no responde" es atención y no falla. Las alertas ya esperan dos
+ * fallos seguidos; esto evita además que /health/ready provoque una vuelta atrás mientras Evolution termina de iniciar.
+ */
+export const monitorTiming = { startupGraceMs: 180_000 };
+const starting = () => process.uptime() * 1000 < monitorTiming.startupGraceMs;
+
+/** Servicio de Evolution: responde, acepta la llave y su versión es compatible (no dice nada de las sesiones). */
 async function checkEvolution(): Promise<CheckResult> {
   const base = { name: 'whatsapp', label: 'Servicio de WhatsApp (Evolution)' };
   try {
-    const n = await queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM channels WHERE type = 'whatsapp' AND active`);
-    if (!n?.n) return { ...base, status: 'na', detail: 'No hay canales de WhatsApp' };
-    // Cualquier respuesta HTTP (aunque sea 401) indica que el servicio está vivo.
-    await fetch(config.evolution.url, { signal: AbortSignal.timeout(4000) });
-    const down = await queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM channels WHERE type = 'whatsapp' AND active AND connection_state = 'close'`);
-    return down?.n ? { ...base, status: 'warn', detail: `Evolution responde; ${down.n} WhatsApp desconectado${down.n === 1 ? '' : 's'}` } : { ...base, status: 'ok', detail: `Responde (${n.n} canal${n.n === 1 ? '' : 'es'})` };
+    const n = await whatsappChannels();
+    if (!n) return { ...base, status: 'na', detail: 'No hay canales de WhatsApp' };
+    const s = await probeService();
+    const boot = starting() ? ' (el servidor acaba de arrancar: Evolution puede estar iniciando)' : '';
+    if (!s.reachable) return { ...base, status: boot ? 'warn' : 'fail', detail: `No responde${boot}: ${s.error ?? 'sin respuesta'}` };
+    if (s.auth === false) return { ...base, status: 'fail', detail: 'Evolution rechaza la llave (EVOLUTION_API_KEY): no se pueden enviar ni recibir mensajes' };
+    if (s.blocked) return { ...base, status: 'fail', detail: `${s.error}. Vuelve a la versión verificada (${EVOLUTION_EXPECTED.version}): ver docs/evolution-api.md` };
+    // Respondió, pero con error (p. ej. 503 o su base de datos caída): el servicio no está funcionando.
+    if (s.auth === null) return { ...base, status: boot ? 'warn' : 'fail', detail: `Evolution responde con error${boot}: ${s.error ?? 'desconocido'}` };
+    const v = s.version ? `versión ${s.version}` : 'versión no verificada';
+    if (s.assessment.status === 'incompatible') return { ...base, status: 'fail', detail: `Responde, pero ${s.assessment.detail}` };
+    if (s.assessment.status !== 'verified') return { ...base, status: 'warn', detail: `Responde (${v}). ${s.assessment.detail}` };
+    return { ...base, status: 'ok', detail: `Responde (${v}, verificada; ${n} canal${n === 1 ? '' : 'es'})` };
   } catch (e: any) {
     return { ...base, status: 'fail', detail: `No responde: ${e?.cause?.code ?? e.message}` };
+  }
+}
+
+/**
+ * Funcionamiento real de WhatsApp: sesiones conectadas, instancias que desaparecieron, webhooks y entregas fallidas.
+ * Tras un cambio de versión de Evolution (24 h), las desconexiones masivas se tratan como fallo de la actualización.
+ */
+async function checkWhatsappSessions(now = Date.now()): Promise<CheckResult> {
+  const base = { name: 'whatsapp_sessions', label: 'WhatsApp: sesiones y entregas' };
+  try {
+    const n = await whatsappChannels();
+    if (!n) return { ...base, status: 'na', detail: 'No hay canales de WhatsApp' };
+    const [down, linked, failed] = await Promise.all([
+      queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM channels WHERE type = 'whatsapp' AND active AND connection_state = 'close'`),
+      queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM channels WHERE type = 'whatsapp' AND active AND connection_state IN ('open', 'close')`),
+      queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM event_logs WHERE source = 'evolution' AND level = 'error' AND message LIKE 'No se pudo enviar%' AND created_at > now() - interval '15 minutes'`),
+    ]);
+    const deep = lastDeepCheck();
+    const change = await recentVersionChange(now);
+    const after = change ? ` desde que Evolution cambió a ${change.to}` : '';
+    const fail: string[] = [];
+    const warn: string[] = [];
+    if (deep?.summary.missing) fail.push(`${deep.summary.missing} instancia${deep.summary.missing === 1 ? '' : 's'} ya vinculada${deep.summary.missing === 1 ? '' : 's'} no existe${deep.summary.missing === 1 ? '' : 'n'} en Evolution (sesión perdida: no la recrees sin revisar los respaldos)`);
+    const d = down?.n ?? 0;
+    if (d) {
+      const text = `${d} WhatsApp desconectado${d === 1 ? '' : 's'}${after}`;
+      // Con una actualización reciente, la mitad o más de los canales vinculados caídos apunta a la actualización.
+      if (change && d >= Math.max(1, Math.ceil((linked?.n ?? 0) * config.whatsappAlerts.downRatio))) fail.push(text);
+      else warn.push(text);
+    }
+    if (deep?.summary.webhook_problems) warn.push(`${deep.summary.webhook_problems} canal${deep.summary.webhook_problems === 1 ? '' : 'es'} con el webhook ausente o distinto (no llegarían los mensajes)`);
+    const f = failed?.n ?? 0;
+    if (f >= config.whatsappAlerts.sendFailures) (change ? fail : warn).push(`${f} envíos fallidos en 15 min${after}`);
+    if (fail.length) return { ...base, status: 'fail', detail: [...fail, ...warn].join('; ') };
+    if (warn.length) return { ...base, status: 'warn', detail: warn.join('; ') };
+    const sessions = deep ? `${deep.summary.open} de ${deep.summary.total} sesiones abiertas (revisado ${new Date(deep.checked_at).toLocaleTimeString('es-MX', { timeZone: 'America/Mexico_City', hour: '2-digit', minute: '2-digit' })})` : `${n} canal${n === 1 ? '' : 'es'}, sin desconexiones`;
+    return { ...base, status: 'ok', detail: sessions };
+  } catch (e: any) {
+    return { ...base, status: 'na', detail: e?.message ?? String(e) };
   }
 }
 
@@ -119,8 +181,8 @@ function checkDisk(): CheckResult {
 }
 
 export async function runChecks(now = new Date()): Promise<CheckResult[]> {
-  const [db, wa, sch, ai, models] = await Promise.all([checkDb(), checkEvolution(), checkScheduler(), checkAi(), checkModels()]);
-  return [db, wa, sch, ai, models, checkBackup(now), checkDisk()];
+  const [db, wa, sessions, sch, ai, models] = await Promise.all([checkDb(), checkEvolution(), checkWhatsappSessions(now.getTime()), checkScheduler(), checkAi(), checkModels()]);
+  return [db, wa, sessions, sch, ai, models, checkBackup(now), checkDisk()];
 }
 
 export const overall = (checks: CheckResult[]): 'ok' | 'warn' | 'fail' => (checks.some((c) => c.status === 'fail') ? 'fail' : checks.some((c) => c.status === 'warn') ? 'warn' : 'ok');
@@ -190,7 +252,7 @@ export async function heartbeat(checks: CheckResult[]) {
   }
 }
 
-export function startMonitor(intervalMs = 60_000) {
+export function startMonitor(intervalMs = 60_000, deepIntervalMs = 15 * 60_000) {
   const st = newAlertState();
   let tick = 0;
   const run = async () => {
@@ -204,6 +266,10 @@ export function startMonitor(intervalMs = 60_000) {
   };
   setTimeout(run, 15_000).unref(); // deja que el arranque termine
   setInterval(run, intervalMs).unref();
+  // Más profundo y menos frecuente: sesiones y webhooks de cada WhatsApp, versión de Evolution y credenciales.
+  const deep = () => void refreshDiagnostics({ force: true }).catch((e) => console.error('Error en el diagnóstico de servicios', e?.message ?? e));
+  setTimeout(deep, 30_000).unref();
+  setInterval(deep, deepIntervalMs).unref();
 }
 
 /** Resumen para el panel del superadmin. */
