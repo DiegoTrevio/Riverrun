@@ -136,6 +136,7 @@ Canales: el correo a `SUPERADMIN_EMAIL` y el webhook `ALERT_WEBHOOK_URL` (Slack,
 - `test/alert-mute.test.ts` y `test/incident-journal.test.ts`: el formato de `ALERT_MUTE`, y que el diario de la base caída no crezca mientras dura la caída. No necesitan base de datos.
 - `scripts/fault-inject.sh` y `.github/workflows/fault-injection.yml`: fallos sobre el stack de staging real (Docker): Evolution caído, PostgreSQL caído y configuración crítica. Corre a mano o semanalmente, no en cada PR. Se ejecutó por primera vez en GitHub, sobre `main`, y pasó los cuatro escenarios (sin fallos, Evolution caído, PostgreSQL caído y configuración crítica). La imagen del backend no se construye en el entorno de desarrollo, así que su resultado vive en GitHub.
 - `scripts/restore-drill.sh`: simulacro de restauración. Baja el último respaldo remoto (o recibe uno), lo abre con la clave y lo restaura en un PostgreSQL temporal con la misma imagen de producción. Ver [produccion.md](produccion.md#simulacro-de-restauración).
+- `scripts/test-restore-drill.sh`: la prueba del simulacro sin S3, en CI. Comprueba clave correcta, clave equivocada y una lista de bases que no coincide.
 - `scripts/test-cli.sh`: `./riverrun update` lee `/health/functional`, genera el token sin imprimirlo y, con un backend anterior que responde 404, cae a `/health/ready` y sigue revirtiendo ante una falla nueva.
 
 ## Lo que no está incluido todavía

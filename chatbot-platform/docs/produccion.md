@@ -123,6 +123,7 @@ BACKUP_PASSPHRASE=... BACKUP_DATABASES="chatbot evolution" scripts/restore-drill
 - `BACKUP_DATABASES` debe ser el de producción (por defecto, `chatbot evolution`). Si no coincide, el simulacro falla, con razón.
 - Sale con 0 solo si todas las bases se restauran y tienen tablas. Con clave equivocada, falla y lo dice.
 - Hazlo **al menos una vez al mes** y anota la fecha y el resultado. Un respaldo que nunca se ha restaurado en otro servidor se trata como no probado.
+- En CI (job «Imágenes de Docker») corre `scripts/test-restore-drill.sh`: la misma prueba sin S3. Crea dos bases con datos, las respalda con la imagen de producción y comprueba que el simulacro restaura ambas con clave correcta, rechaza la clave equivocada y rechaza una lista de bases que no coincide.
 - Lo que este script no prueba: que los archivos de subidas y de las sesiones de WhatsApp se puedan volver a montar en el servidor real. Eso sigue en el procedimiento de `./riverrun restore`.
 - **Estado: el script está probado con un respaldo real de una base de pruebas, con clave correcta y con clave incorrecta, y limpia lo que crea. No se ha corrido todavía desde una copia de S3 en otro servidor.**
 

@@ -78,7 +78,7 @@ done
 # 4. Abrir con la clave, comprobar sumas, restaurar cada base en una temporal y contar tablas. Es el "verify" de cada
 #    noche; si algo falla, el comando sale con código distinto de 0 y el simulacro falla.
 say "Restaurando todas las bases del respaldo y contando tablas"
-docker run --rm --network "$NET" \
+docker run --rm --user "$(id -u):$(id -g)" --network "$NET" \
   -v "$WORK:/backups" \
   -e BACKUP_DIR=/backups \
   -e BACKUP_VERIFY_ALL=true \
