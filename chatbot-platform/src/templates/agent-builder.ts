@@ -6,7 +6,8 @@
  */
 import { z } from 'zod';
 import type { ServiceBody } from '../automation/types.js';
-import { FlowSchema, PersonalitySchema, RulesSchema, type DataField } from '../types.js';
+import { DataFieldSchema, FlowSchema, PersonalitySchema, RulesSchema, type DataField } from '../types.js';
+import { isSensitiveField } from '../engine/safety.js';
 import { businessTemplate, FIXED_MESSAGES } from './business.js';
 
 export const KNOWLEDGE_TITLES = {
@@ -225,7 +226,11 @@ export function buildAgent(w: Wizard) {
     personality,
     rules,
     flow,
-    data_fields: [] as DataField[],
+    // Datos visibles y editables después de crear; sin preguntas obligatorias ni orden impuesto.
+    data_fields: [
+      ...w.scope.collect.map((key) => DataFieldSchema.parse({ key, label: COLLECT[key][1], type: ({ nombre: 'name', telefono: 'phone', correo: 'email', fecha: 'date', personas: 'number' } as Record<string, string>)[key] || 'text', description: COLLECT[key][0] })),
+      ...list(w.scope.collect_other).filter((label) => !isSensitiveField(label)).map((label, i) => DataFieldSchema.parse({ key: `dato_${i + 1}`, label, description: label })),
+    ] as DataField[],
     knowledge,
     service,
     prompt,

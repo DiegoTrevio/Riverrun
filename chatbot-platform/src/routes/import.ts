@@ -1,5 +1,7 @@
 /** Importar la información del negocio (web, PDF, foto, CSV o texto) para llenar el conocimiento sin escribirlo a mano. */
 import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
+import { parse } from './util.js';
 import { HttpError, requireRole, targetAccount } from '../access.js';
 import { withTransaction } from '../db.js';
 import type { AiProvider } from '../ai/provider.js';
@@ -41,6 +43,33 @@ async function readSource(req: any): Promise<{ source: Source; url?: string; hin
 
 export async function knowledgeImportRoutes(api: FastifyInstance, ai: AiProvider) {
   const admins = { preHandler: requireRole('admin') };
+
+  const saveSections = async (botId: string, sections: Record<string, string>, url?: string | null) => withTransaction(async (client) => {
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', ['knowledge:' + botId]);
+    const items = await store.listKnowledge(botId);
+    const titles: string[] = [];
+    for (const key of IMPORT_SECTIONS) {
+      const content = (sections[key] || '').trim();
+      if (!content) continue;
+      const [category, title] = KNOWLEDGE_TITLES[key];
+      const previous = items.find((item) => item.title === title);
+      await store.upsertKnowledge(botId, { id: previous?.id, category, title, content, active: true, always_include: key !== 'faq', source_url: url ?? null }, client);
+      titles.push(title);
+    }
+    return titles;
+  });
+
+  /** Guarda la propuesta editada de forma atómica; no vuelve a llamar al proveedor. */
+  api.post('/api/chatbots/:id/knowledge/import-reviewed', admins, async (req: any) => {
+    const bot = await store.getChatbot(req.params.id);
+    if (!bot || await targetAccount(req.user, bot.account_id) !== bot.account_id) throw new HttpError(404, 'No encontrado');
+    const body = parse(z.object({
+      sections: z.object(Object.fromEntries(IMPORT_SECTIONS.map((key) => [key, z.string().max(50000).default('')]))).strict(),
+      source_url: z.string().url().max(2000).nullable().optional(),
+    }), req.body);
+    const saved = await saveSections(bot.id, body.sections, body.source_url);
+    return { saved };
+  });
 
   const run = async (req: any, accountId: string, chatbotId: string | null) => {
     checkImportRate(accountId);
@@ -89,20 +118,7 @@ export async function knowledgeImportRoutes(api: FastifyInstance, ai: AiProvider
     if (!save) return view(result, url);
     // Dos guardados a la vez (o uno mientras otro guarda) no pueden crear dos secciones con el mismo título:
     // se turnan por asistente con un candado consultivo. No se bloquean filas: el resto del sistema las escribe sin ese candado.
-    const saved = await withTransaction(async (client) => {
-      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', ['knowledge:' + bot.id]);
-      const items = await store.listKnowledge(bot.id);
-      const titles: string[] = [];
-      for (const k of IMPORT_SECTIONS) {
-        const content = result.sections[k].trim();
-        if (!content) continue;
-        const [category, title] = KNOWLEDGE_TITLES[k];
-        const prev = items.find((i) => i.title === title);
-        await store.upsertKnowledge(bot.id, { id: prev?.id, category, title, content, active: true, always_include: k !== 'faq', source_url: url ?? null }, client);
-        titles.push(title);
-      }
-      return titles;
-    });
+    const saved = await saveSections(bot.id, result.sections, url);
     await logEvent({ level: 'info', source: 'admin', message: `Conocimiento importado de ${result.source}: ${saved.join(', ')}`, accountId: bot.account_id, chatbotId: bot.id });
     return { ...view(result, url), saved };
   });

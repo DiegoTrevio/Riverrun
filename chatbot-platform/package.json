@@ -25,7 +25,8 @@
     "eval:engine": "npm run build && node scripts/eval-engine.mjs",
     "eval:engine:live": "npm run build && node --env-file-if-exists=.env scripts/eval-engine.mjs --live",
     "operations:check": "tsx --env-file-if-exists=.env src/cli/operations-check.ts",
-    "check:frontend": "node scripts/check-frontend.mjs"
+    "check:frontend": "node scripts/check-frontend.mjs",
+    "test:ux": "node --import tsx scripts/test-ux.mts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.2",
@@ -43,6 +44,8 @@
     "@types/node": "^22.18.0",
     "@types/nodemailer": "^8.0.2",
     "@types/pg": "^8.15.0",
+    "axe-core": "4.11.0",
+    "playwright": "1.58.2",
     "promptfoo": "0.124.0",
     "tsx": "^4.20.0",
     "typescript": "^5.9.3"

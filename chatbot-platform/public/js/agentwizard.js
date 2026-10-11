@@ -1,3 +1,4 @@
+import { discardDraft, draftModel, draftNotice } from './editing.js';
 import { importCard } from './importer.js';
 import { api, area, check, field, fill, h, run, select, state, text, toast } from './core.js';
 import { accountPicker } from './dashboard.js';
@@ -17,16 +18,18 @@ const SECTION_LABELS = { catalog: 'Productos o servicios con precios', hours: 'H
 const STEPS = ['Tu empresa', 'Hasta dónde llega', 'Documentos', 'Revisar y crear'];
 
 export function agentWizard({ hidden }) {
-  const w = {
+  const w = draftModel('wizard', {
     account_id: '',
-    company: { name: '', business_type: state.me.account?.business_type || 'otro', description: '', location: '' },
+    company: { name: state.me.account?.name || (state.accounts.find((a) => a.id === state.accountId)?.name || ''), business_type: state.me.account?.business_type || 'otro', description: '', location: '' },
     scope: { role: 'assist', collect: ['nombre'], collect_other: '', prices: 'yes', unknown: 'confirm', forbidden: '', handoff_extra: '' },
     style: { assistant_name: '', formality: 'tu', tone: 'cercano', emojis: 'few', length: 'corta' },
     knowledge: { sections: { catalog: '', hours: '', location: '', faq: '', other: '' }, extra: '', sources: [] },
-  };
-  let step = 0;
+  });
+  const ui = draftModel('wizard-ui', { step: 0, editedPrompt: null });
+  let step = ui.step;
   let draft = null;
-  let editedPrompt = null;
+  let editedPrompt = ui.editedPrompt;
+  let reviewVersion = 0;
   const box = h('div', { class: 'card', hidden });
   const body = h('div');
   const body2 = () => ({ ...w, account_id: undefined, ...(editedPrompt ? { prompt_override: editedPrompt } : {}) });
@@ -65,24 +68,24 @@ export function agentWizard({ hidden }) {
       field('Nombre del agente (opcional)', text(w.style, 'assistant_name', { placeholder: 'Sofi' }), 'Si le pones nombre, se presenta con él.'),
     ],
     () => [
-      h('h4', { style: 'margin-top:0' }, '¿Cuál será su trabajo?'),
+      h('h3', { style: 'margin-top:0' }, '¿Cuál será su trabajo?'),
       ROLES.map(([v, l, d]) => radio(w.scope, 'role', v, l, d)),
-      h('h4', {}, '¿Qué datos debe pedir al cliente?'),
+      h('h3', {}, '¿Qué datos debe pedir al cliente?'),
       h('div', { class: 'row' }, COLLECT.map(([k, l]) => h('label', { class: 'check' },
         h('input', { type: 'checkbox', checked: w.scope.collect.includes(k), onchange: (e) => { w.scope.collect = e.target.checked ? [...w.scope.collect, k] : w.scope.collect.filter((x) => x !== k); } }), l))),
       field('Otros datos (uno por renglón)', area(w.scope, 'collect_other', { placeholder: 'Si es paciente nuevo\nMarca del auto' })),
-      h('h4', {}, 'Límites'),
+      h('h3', {}, 'Límites'),
       h('div', { class: 'grid' },
         field('¿Puede dar precios?', select(w.scope, 'prices', [['yes', 'Sí, los que estén en tus documentos'], ['no', 'No: una persona cotiza']])),
         field('Si no sabe algo…', select(w.scope, 'unknown', [['confirm', 'Dice que lo confirmará con el equipo'], ['handoff', 'Pasa la conversación a una persona']]))),
       field('Temas que NO debe tocar (opcional, separados por coma)', text(w.scope, 'forbidden', { placeholder: 'diagnósticos médicos, política' })),
       field('Otras situaciones en las que debe pasar con una persona (opcional)', area(w.scope, 'handoff_extra', { placeholder: 'Menciona una urgencia\nQuiere facturar' })),
-      h('h4', {}, 'Cómo debe sonar'),
+      h('details', {}, h('summary', {}, 'Estilo de las respuestas (opcional)'),
       h('div', { class: 'grid' },
         field('Trato', select(w.style, 'formality', [['tu', 'De tú'], ['usted', 'De usted']])),
         field('Tono', select(w.style, 'tone', [['cercano', 'Cercano'], ['profesional', 'Profesional']])),
         field('Emojis', select(w.style, 'emojis', [['few', 'Algunos'], ['none', 'Ninguno']])),
-        field('Largo de las respuestas', select(w.style, 'length', [['muy_corta', 'Muy cortas'], ['corta', 'Cortas'], ['media', 'Medias']]))),
+        field('Largo de las respuestas', select(w.style, 'length', [['muy_corta', 'Muy cortas'], ['corta', 'Cortas'], ['media', 'Medias']])))),
       h('p', { class: 'small muted' }, 'Siempre: suena natural, contesta solo lo que le preguntan, no inventa datos y no se sale de su papel aunque el cliente se lo pida.'),
     ],
     () => [
@@ -97,7 +100,9 @@ export function agentWizard({ hidden }) {
     ],
     () => {
       const out = h('div', {}, h('p', { class: 'muted' }, 'Preparando tu agente…'));
+      const version = ++reviewVersion;
       api('POST', '/api/chatbots/draft', { ...body2(), account_id: w.account_id || undefined }).then((d) => {
+        if (version !== reviewVersion || step !== 3) return;
         draft = d;
         const prompt = { v: editedPrompt ?? d.prompt };
         fill(out,
@@ -105,9 +110,10 @@ export function agentWizard({ hidden }) {
           h('p', { class: 'small' }, '📚 Aprenderá de: ', d.knowledge.map((k) => `${k.title} (${k.chars.toLocaleString('es-MX')} caracteres)`).join(' · ')),
           d.creates_service ? h('p', { class: 'small' }, `📅 También se creará el servicio de agenda "${d.creates_service}" (30 minutos) en tus horarios para que pueda agendar.`) : null,
           h('details', {}, h('summary', {}, 'Ver (y ajustar, si quieres) las instrucciones que se generaron'),
-            area(prompt, 'v', { big: true }),
+            area(prompt, 'v', { big: true, oninput: () => { editedPrompt = prompt.v; ui.editedPrompt = editedPrompt; } }),
+            h('p', { class: 'small muted' }, 'Las instrucciones que edites aquí se usarán al crear el agente.'),
             h('div', { class: 'row' }, h('button', { class: 'small', onclick: () => { editedPrompt = prompt.v === d.prompt ? null : prompt.v; toast(editedPrompt ? 'Usaremos tu versión de las instrucciones' : 'Sin cambios'); } }, 'Usar mi versión'),
-              h('button', { class: 'small', onclick: () => { editedPrompt = null; go(3); } }, 'Volver a generarlas'))),
+              h('button', { class: 'small', onclick: () => { editedPrompt = null; ui.editedPrompt = null; go(3); } }, 'Volver a generarlas'))),
           h('p', { class: 'help' }, 'Se crea apagado para que lo pruebes antes de conectarlo a un teléfono.'));
       }).catch((e) => fill(out, h('div', { class: 'banner danger' }, e.message)));
       return [out];
@@ -121,7 +127,7 @@ export function agentWizard({ hidden }) {
   }
 
   function go(i) {
-    step = i;
+    step = i; ui.step = i; reviewVersion++;
     draw();
   }
 
@@ -137,12 +143,13 @@ export function agentWizard({ hidden }) {
               btn.disabled = true;
               try {
                 const bot = await run(() => api('POST', '/api/chatbots/wizard', { ...body2(), account_id: w.account_id || undefined }));
-                if (bot) { state.bots = []; location.hash = `#/bot/${bot.id}/probar`; render(); }
+                if (bot) { discardDraft('wizard'); discardDraft('wizard-ui'); state.bots = []; location.hash = `#/bot/${bot.id}/probar`; }
               } finally { btn.disabled = false; }
             } }, 'Crear mi agente y probarlo')));
   }
 
-  fill(box, h('h3', { style: 'margin-top:0' }, 'Crea tu agente'), body);
+  fill(box, h('h2', { style: 'margin-top:0' }, 'Crea tu agente'), body);
   draw();
+  box.prepend(draftNotice(['wizard'], () => { discardDraft('wizard-ui'); render(); }));
   return box;
 }

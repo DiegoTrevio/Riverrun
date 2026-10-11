@@ -1,0 +1,605 @@
+{
+  "screens": [
+    {
+      "role": "admin",
+      "route": "agentes",
+      "violations": []
+    },
+    {
+      "role": "admin",
+      "route": "bot/5710954d-7bb3-49bb-a25f-b78b6c51b0bd/instrucciones",
+      "violations": []
+    },
+    {
+      "role": "admin",
+      "route": "bot/5710954d-7bb3-49bb-a25f-b78b6c51b0bd/preguntas",
+      "violations": []
+    },
+    {
+      "role": "admin",
+      "route": "bot/5710954d-7bb3-49bb-a25f-b78b6c51b0bd/activacion",
+      "violations": []
+    },
+    {
+      "role": "admin",
+      "route": "bot/5710954d-7bb3-49bb-a25f-b78b6c51b0bd/conocimiento",
+      "violations": []
+    },
+    {
+      "role": "admin",
+      "route": "bot/5710954d-7bb3-49bb-a25f-b78b6c51b0bd/imagenes",
+      "violations": []
+    },
+    {
+      "role": "admin",
+      "route": "bot/5710954d-7bb3-49bb-a25f-b78b6c51b0bd/conexiones",
+      "violations": []
+    },
+    {
+      "role": "admin",
+      "route": "bot/5710954d-7bb3-49bb-a25f-b78b6c51b0bd/probar",
+      "violations": []
+    },
+    {
+      "role": "admin",
+      "route": "bot/5710954d-7bb3-49bb-a25f-b78b6c51b0bd/conexiones/fca248f2-29ca-4eb8-9b33-ff705d869386",
+      "violations": []
+    },
+    {
+      "role": "admin",
+      "route": "conversations",
+      "violations": []
+    },
+    {
+      "role": "admin",
+      "route": "conversation/bfa2eb35-4b10-4fbd-af17-ddd9712278a4",
+      "violations": []
+    },
+    {
+      "role": "admin",
+      "route": "agenda",
+      "violations": []
+    },
+    {
+      "role": "admin",
+      "route": "agenda/servicios",
+      "violations": []
+    },
+    {
+      "role": "admin",
+      "route": "agenda/servicios?id=f4e41dec-b6b4-4d2f-b04e-26f2ecd0a798",
+      "violations": []
+    },
+    {
+      "role": "admin",
+      "route": "automation/rules",
+      "violations": []
+    },
+    {
+      "role": "admin",
+      "route": "automation/rules/new",
+      "violations": []
+    },
+    {
+      "role": "admin",
+      "route": "automation/sequences",
+      "violations": []
+    },
+    {
+      "role": "admin",
+      "route": "automation/sequences/new",
+      "violations": []
+    },
+    {
+      "role": "admin",
+      "route": "automation/campaigns",
+      "violations": []
+    },
+    {
+      "role": "admin",
+      "route": "automation/campaigns/new",
+      "violations": []
+    },
+    {
+      "role": "admin",
+      "route": "automation/settings",
+      "violations": []
+    },
+    {
+      "role": "admin",
+      "route": "ajustes",
+      "violations": []
+    },
+    {
+      "role": "admin",
+      "route": "integraciones",
+      "violations": []
+    },
+    {
+      "role": "admin",
+      "route": "users",
+      "violations": []
+    },
+    {
+      "role": "admin",
+      "route": "consumo",
+      "violations": []
+    },
+    {
+      "role": "admin",
+      "route": "logs",
+      "violations": []
+    },
+    {
+      "role": "admin",
+      "route": "plan",
+      "violations": []
+    },
+    {
+      "role": "admin",
+      "route": "estadisticas",
+      "violations": []
+    },
+    {
+      "role": "admin",
+      "route": "notifications",
+      "violations": []
+    },
+    {
+      "role": "admin",
+      "route": "password",
+      "violations": []
+    },
+    {
+      "role": "admin",
+      "route": "inicio",
+      "violations": []
+    },
+    {
+      "role": "superadmin",
+      "route": "agentes",
+      "violations": []
+    },
+    {
+      "role": "superadmin",
+      "route": "accounts",
+      "violations": []
+    },
+    {
+      "role": "superadmin",
+      "route": "planes",
+      "violations": []
+    },
+    {
+      "role": "superadmin",
+      "route": "marcas",
+      "violations": []
+    },
+    {
+      "role": "superadmin",
+      "route": "sistema",
+      "violations": []
+    },
+    {
+      "role": "superadmin",
+      "route": "users",
+      "violations": []
+    },
+    {
+      "role": "superadmin",
+      "route": "ajustes",
+      "violations": []
+    },
+    {
+      "role": "superadmin",
+      "route": "integraciones",
+      "violations": []
+    },
+    {
+      "role": "agent",
+      "route": "conversations",
+      "violations": []
+    },
+    {
+      "role": "agent",
+      "route": "conversation/bfa2eb35-4b10-4fbd-af17-ddd9712278a4",
+      "violations": []
+    },
+    {
+      "role": "agent",
+      "route": "agenda",
+      "violations": []
+    },
+    {
+      "role": "agent",
+      "route": "notifications",
+      "violations": []
+    },
+    {
+      "role": "agent",
+      "route": "password",
+      "violations": []
+    }
+  ],
+  "responsive": [
+    {
+      "width": 320,
+      "theme": "light",
+      "route": "agentes",
+      "overflow": false
+    },
+    {
+      "width": 320,
+      "theme": "light",
+      "route": "bot/5710954d-7bb3-49bb-a25f-b78b6c51b0bd/instrucciones",
+      "overflow": false
+    },
+    {
+      "width": 320,
+      "theme": "light",
+      "route": "conversation/bfa2eb35-4b10-4fbd-af17-ddd9712278a4",
+      "overflow": false
+    },
+    {
+      "width": 320,
+      "theme": "light",
+      "route": "conversations",
+      "overflow": false
+    },
+    {
+      "width": 320,
+      "theme": "light",
+      "route": "automation/sequences/new",
+      "overflow": false
+    },
+    {
+      "width": 320,
+      "theme": "light",
+      "route": "agenda",
+      "overflow": false
+    },
+    {
+      "width": 320,
+      "theme": "dark",
+      "route": "agentes",
+      "overflow": false
+    },
+    {
+      "width": 320,
+      "theme": "dark",
+      "route": "bot/5710954d-7bb3-49bb-a25f-b78b6c51b0bd/instrucciones",
+      "overflow": false
+    },
+    {
+      "width": 320,
+      "theme": "dark",
+      "route": "conversation/bfa2eb35-4b10-4fbd-af17-ddd9712278a4",
+      "overflow": false
+    },
+    {
+      "width": 320,
+      "theme": "dark",
+      "route": "conversations",
+      "overflow": false
+    },
+    {
+      "width": 320,
+      "theme": "dark",
+      "route": "automation/sequences/new",
+      "overflow": false
+    },
+    {
+      "width": 320,
+      "theme": "dark",
+      "route": "agenda",
+      "overflow": false
+    },
+    {
+      "width": 390,
+      "theme": "light",
+      "route": "agentes",
+      "overflow": false
+    },
+    {
+      "width": 390,
+      "theme": "light",
+      "route": "bot/5710954d-7bb3-49bb-a25f-b78b6c51b0bd/instrucciones",
+      "overflow": false
+    },
+    {
+      "width": 390,
+      "theme": "light",
+      "route": "conversation/bfa2eb35-4b10-4fbd-af17-ddd9712278a4",
+      "overflow": false
+    },
+    {
+      "width": 390,
+      "theme": "light",
+      "route": "conversations",
+      "overflow": false
+    },
+    {
+      "width": 390,
+      "theme": "light",
+      "route": "automation/sequences/new",
+      "overflow": false
+    },
+    {
+      "width": 390,
+      "theme": "light",
+      "route": "agenda",
+      "overflow": false
+    },
+    {
+      "width": 390,
+      "theme": "dark",
+      "route": "agentes",
+      "overflow": false
+    },
+    {
+      "width": 390,
+      "theme": "dark",
+      "route": "bot/5710954d-7bb3-49bb-a25f-b78b6c51b0bd/instrucciones",
+      "overflow": false
+    },
+    {
+      "width": 390,
+      "theme": "dark",
+      "route": "conversation/bfa2eb35-4b10-4fbd-af17-ddd9712278a4",
+      "overflow": false
+    },
+    {
+      "width": 390,
+      "theme": "dark",
+      "route": "conversations",
+      "overflow": false
+    },
+    {
+      "width": 390,
+      "theme": "dark",
+      "route": "automation/sequences/new",
+      "overflow": false
+    },
+    {
+      "width": 390,
+      "theme": "dark",
+      "route": "agenda",
+      "overflow": false
+    },
+    {
+      "width": 768,
+      "theme": "light",
+      "route": "agentes",
+      "overflow": false
+    },
+    {
+      "width": 768,
+      "theme": "light",
+      "route": "bot/5710954d-7bb3-49bb-a25f-b78b6c51b0bd/instrucciones",
+      "overflow": false
+    },
+    {
+      "width": 768,
+      "theme": "light",
+      "route": "conversation/bfa2eb35-4b10-4fbd-af17-ddd9712278a4",
+      "overflow": false
+    },
+    {
+      "width": 768,
+      "theme": "light",
+      "route": "conversations",
+      "overflow": false
+    },
+    {
+      "width": 768,
+      "theme": "light",
+      "route": "automation/sequences/new",
+      "overflow": false
+    },
+    {
+      "width": 768,
+      "theme": "light",
+      "route": "agenda",
+      "overflow": false
+    },
+    {
+      "width": 768,
+      "theme": "dark",
+      "route": "agentes",
+      "overflow": false
+    },
+    {
+      "width": 768,
+      "theme": "dark",
+      "route": "bot/5710954d-7bb3-49bb-a25f-b78b6c51b0bd/instrucciones",
+      "overflow": false
+    },
+    {
+      "width": 768,
+      "theme": "dark",
+      "route": "conversation/bfa2eb35-4b10-4fbd-af17-ddd9712278a4",
+      "overflow": false
+    },
+    {
+      "width": 768,
+      "theme": "dark",
+      "route": "conversations",
+      "overflow": false
+    },
+    {
+      "width": 768,
+      "theme": "dark",
+      "route": "automation/sequences/new",
+      "overflow": false
+    },
+    {
+      "width": 768,
+      "theme": "dark",
+      "route": "agenda",
+      "overflow": false
+    },
+    {
+      "width": 1024,
+      "theme": "light",
+      "route": "agentes",
+      "overflow": false
+    },
+    {
+      "width": 1024,
+      "theme": "light",
+      "route": "bot/5710954d-7bb3-49bb-a25f-b78b6c51b0bd/instrucciones",
+      "overflow": false
+    },
+    {
+      "width": 1024,
+      "theme": "light",
+      "route": "conversation/bfa2eb35-4b10-4fbd-af17-ddd9712278a4",
+      "overflow": false
+    },
+    {
+      "width": 1024,
+      "theme": "light",
+      "route": "conversations",
+      "overflow": false
+    },
+    {
+      "width": 1024,
+      "theme": "light",
+      "route": "automation/sequences/new",
+      "overflow": false
+    },
+    {
+      "width": 1024,
+      "theme": "light",
+      "route": "agenda",
+      "overflow": false
+    },
+    {
+      "width": 1024,
+      "theme": "dark",
+      "route": "agentes",
+      "overflow": false
+    },
+    {
+      "width": 1024,
+      "theme": "dark",
+      "route": "bot/5710954d-7bb3-49bb-a25f-b78b6c51b0bd/instrucciones",
+      "overflow": false
+    },
+    {
+      "width": 1024,
+      "theme": "dark",
+      "route": "conversation/bfa2eb35-4b10-4fbd-af17-ddd9712278a4",
+      "overflow": false
+    },
+    {
+      "width": 1024,
+      "theme": "dark",
+      "route": "conversations",
+      "overflow": false
+    },
+    {
+      "width": 1024,
+      "theme": "dark",
+      "route": "automation/sequences/new",
+      "overflow": false
+    },
+    {
+      "width": 1024,
+      "theme": "dark",
+      "route": "agenda",
+      "overflow": false
+    },
+    {
+      "width": 1440,
+      "theme": "light",
+      "route": "agentes",
+      "overflow": false
+    },
+    {
+      "width": 1440,
+      "theme": "light",
+      "route": "bot/5710954d-7bb3-49bb-a25f-b78b6c51b0bd/instrucciones",
+      "overflow": false
+    },
+    {
+      "width": 1440,
+      "theme": "light",
+      "route": "conversation/bfa2eb35-4b10-4fbd-af17-ddd9712278a4",
+      "overflow": false
+    },
+    {
+      "width": 1440,
+      "theme": "light",
+      "route": "conversations",
+      "overflow": false
+    },
+    {
+      "width": 1440,
+      "theme": "light",
+      "route": "automation/sequences/new",
+      "overflow": false
+    },
+    {
+      "width": 1440,
+      "theme": "light",
+      "route": "agenda",
+      "overflow": false
+    },
+    {
+      "width": 1440,
+      "theme": "dark",
+      "route": "agentes",
+      "overflow": false
+    },
+    {
+      "width": 1440,
+      "theme": "dark",
+      "route": "bot/5710954d-7bb3-49bb-a25f-b78b6c51b0bd/instrucciones",
+      "overflow": false
+    },
+    {
+      "width": 1440,
+      "theme": "dark",
+      "route": "conversation/bfa2eb35-4b10-4fbd-af17-ddd9712278a4",
+      "overflow": false
+    },
+    {
+      "width": 1440,
+      "theme": "dark",
+      "route": "conversations",
+      "overflow": false
+    },
+    {
+      "width": 1440,
+      "theme": "dark",
+      "route": "automation/sequences/new",
+      "overflow": false
+    },
+    {
+      "width": 1440,
+      "theme": "dark",
+      "route": "agenda",
+      "overflow": false
+    }
+  ],
+  "regressions": [
+    "60 escenarios adaptables sin desbordamiento",
+    "Borrador recuperable entre secciones y recarga; guardado real",
+    "Cancelar conocimiento descarta la edición también al volver a abrir",
+    "Polling conserva cambios del contacto sin persistir información personal en localStorage",
+    "Conflicto del contacto revisado conserva datos nuevos del cliente",
+    "Notas conservan borrador y muestran el guardado real",
+    "Campaña programada exige revisión, cancelar no modifica y confirmar programa una sola vez",
+    "manual: un envío pendiente por doble Enter y texto retenido ante fallo",
+    "simulator: un envío pendiente por doble Enter y texto retenido ante fallo",
+    "Borrado fallido conserva la ficha",
+    "Respuestas antiguas no cambian la última ruta",
+    "Fallo de sesión visible y recuperable",
+    "QR conserva foco y diferencia conexión de atención encendida",
+    "Conectar guarda antes de verificar, evita duplicados y conserva credenciales solo en memoria",
+    "Marca blanca mantiene el texto de la acción visible"
+  ],
+  "errors": [],
+  "serious": []
+}

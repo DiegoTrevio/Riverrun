@@ -27,8 +27,8 @@ export function renderLogin() {
     h('form', { class: 'card login', onsubmit: submit },
       brand.logo ? h('div', { style: 'text-align:center;margin-bottom:8px' }, brandMark(48)) : null,
       h('h1', {}, brand.name),
-      field('Correo', text(f, 'email', { placeholder: 'tu@correo.com' })),
-      field('Contraseña', text(f, 'password', { type: 'password' })),
+      field('Correo', text(f, 'email', { type: 'email', autocomplete: 'username', required: true, placeholder: 'tu@correo.com' })),
+      field('Contraseña', text(f, 'password', { type: 'password', autocomplete: 'current-password', required: true })),
       h('button', { class: 'primary', type: 'submit' }, 'Entrar'),
       h('p', { class: 'small', style: 'margin-bottom:0' }, h('a', { href: '#/olvide' }, '¿Olvidaste tu contraseña?')),
       signupLink,
@@ -45,25 +45,27 @@ function publicCard(title, ...kids) {
 }
 
 export async function renderSignup() {
+  const navigation = state.navigation;
   let info;
   try { info = await api('GET', '/api/signup/info'); } catch { info = { enabled: false, business_types: [] }; }
+  if (navigation !== state.navigation) return;
   if (!info.enabled) return publicCard('Registro cerrado', h('p', {}, 'Por ahora el registro no está disponible.'), h('a', { href: '#/login' }, 'Iniciar sesión'));
   const f = { name: '', company: '', business_type: 'otro', email: '', password: '', phone: '', accept_terms: false, website: '' };
   const submit = async (e) => {
     e.preventDefault();
     if (!f.accept_terms) return toast('Acepta los términos para continuar', true);
     const r = await run(() => api('POST', '/api/signup', f));
-    if (r) { state.me = null; location.hash = '#/inicio'; }
+    if (r) { state.me = null; location.hash = '#/agentes?new=1'; }
   };
   publicCard('Crea tu asistente',
     h('p', { class: 'muted', style: 'margin-top:0' }, `Prueba gratis ${info.trial_days} días. En unos minutos tu asistente responde por WhatsApp.`),
     h('form', { class: 'stack', onsubmit: submit },
-      field('Tu nombre', text(f, 'name')),
-      field('Nombre de tu negocio', text(f, 'company', { placeholder: 'Clínica Sonrisa' })),
+      field('Tu nombre', text(f, 'name', { required: true, autocomplete: 'name' })),
+      field('Nombre de tu negocio', text(f, 'company', { placeholder: 'Clínica Sonrisa', required: true, autocomplete: 'organization' })),
       field('Tipo de negocio', select(f, 'business_type', info.business_types.map((b) => [b.key, b.label]))),
-      field('Correo', text(f, 'email', { type: 'email', placeholder: 'tu@negocio.com' }), 'Te enviaremos un enlace para confirmarlo.'),
-      field('Contraseña', text(f, 'password', { type: 'password' }), 'Mínimo 8 caracteres.'),
-      field('WhatsApp para avisos (opcional)', text(f, 'phone', { placeholder: '5215512345678' }), 'Ahí te avisamos cuando un cliente pida hablar con una persona.'),
+      field('Correo', text(f, 'email', { type: 'email', required: true, autocomplete: 'email', placeholder: 'tu@negocio.com' }), 'Te enviaremos un enlace para confirmarlo.'),
+      field('Contraseña', text(f, 'password', { type: 'password', autocomplete: 'new-password', minlength: 8, required: true }), 'Mínimo 8 caracteres.'),
+      field('WhatsApp para avisos (opcional)', text(f, 'phone', { type: 'tel', autocomplete: 'tel', placeholder: '5215512345678' }), 'Ahí te avisamos cuando un cliente pida hablar con una persona.'),
       // Campo trampa para bots: oculto para las personas.
       h('div', { style: 'position:absolute;left:-9999px', 'aria-hidden': 'true' }, h('input', { tabindex: '-1', autocomplete: 'off', oninput: (e) => (f.website = e.target.value) })),
       h('label', { class: 'check small' }, h('input', { type: 'checkbox', onchange: (e) => (f.accept_terms = e.target.checked) }),
@@ -83,7 +85,7 @@ export function renderForgot() {
     const r = await run(() => api('POST', '/api/forgot-password', f));
     if (r) fill(box, h('p', {}, 'Si el correo está registrado, te enviamos un enlace para elegir una contraseña nueva. Vence en 1 hora.'), h('a', { href: '#/login' }, 'Volver a iniciar sesión'));
   } },
-    field('Correo', text(f, 'email', { type: 'email' })),
+    field('Correo', text(f, 'email', { type: 'email', required: true, autocomplete: 'email' })),
     h('button', { class: 'primary', type: 'submit' }, 'Enviar enlace'),
     h('a', { class: 'small', href: '#/login' }, 'Volver')));
 }
@@ -99,8 +101,8 @@ export function renderReset(token) {
     const r = await run(() => api('POST', '/api/reset-password', { token: f.token, password: f.password }));
     if (r) fill(box, h('p', {}, '✅ Listo, ya puedes entrar con tu contraseña nueva.'), h('a', { class: 'btn primary', href: '#/login' }, 'Iniciar sesión'));
   } },
-    field('Contraseña nueva', text(f, 'password', { type: 'password' }), 'Mínimo 8 caracteres.'),
-    field('Repítela', text(f, 'confirm', { type: 'password' })),
+    field('Contraseña nueva', text(f, 'password', { type: 'password', autocomplete: 'new-password', minlength: 8, required: true }), 'Mínimo 8 caracteres.'),
+    field('Repítela', text(f, 'confirm', { type: 'password', autocomplete: 'new-password', minlength: 8, required: true })),
     h('button', { class: 'primary', type: 'submit' }, 'Guardar')));
 }
 
@@ -110,8 +112,8 @@ export async function renderVerify(token) {
   try {
     await api('POST', '/api/verify-email', { token });
     state.me = null;
-    fill(box, '✅ Tu correo quedó confirmado. ', h('a', { href: '#/inicio' }, 'Continuar con la configuración →'));
+    fill(box, '✅ Tu correo quedó confirmado. ', h('a', { href: '#/agentes?new=1' }, 'Continuar con la configuración →'));
   } catch (e) {
-    fill(box, e.message, ' ', h('a', { href: '#/inicio' }, 'Ir al panel'));
+    fill(box, e.message, ' ', h('a', { href: '#/agentes?new=1' }, 'Ir al panel'));
   }
 }

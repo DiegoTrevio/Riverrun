@@ -113,6 +113,8 @@ Qué pasa solo: el pago **activa** la cuenta (sale de prueba o de pausa) y le as
 
 `.github/workflows/ci.yml` corre en cada pull request y en `main`: revisión de tipos, sintaxis del panel, **todas las pruebas** (contra PostgreSQL real), auditoría de dependencias, `shellcheck` de los scripts, la prueba de respaldo y restauración de punta a punta, la del flujo de actualización, la validación del `docker-compose` y la construcción de las imágenes.
 
+El panel también tiene regresión de navegador y accesibilidad: `npm run test:ux`, con Chromium y axe-core. Se ejecuta después de las pruebas del motor, contra una base aislada que el arnés reinicia. CI adjunta los resultados y las capturas. Consulta la [auditoría UX/UI](docs/ux-ui/audit.md) y su [cobertura de implementación, criterios y ejecución](docs/ux-ui/implementation.md).
+
 ## IA con OpenRouter
 
 El proveedor predeterminado es OpenRouter. Configura en el servidor (no en el prompt):

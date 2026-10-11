@@ -8,7 +8,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { assertAccount, botFor, HttpError, notFound, requireRole, scopeAccount, targetAccount } from '../access.js';
 import { publicChannel } from '../channels/index.js';
-import { withTransaction } from '../db.js';
+import { query, withTransaction } from '../db.js';
 import { config } from '../config.js';
 import { OpenAiProvider } from '../ai/provider.js';
 import { indexKnowledge, knowledgeIndexStatus } from '../engine/knowledge.js';
@@ -466,7 +466,9 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
 
   api.get('/api/chatbots/:id/playground/:session', admins, async (req: any) => {
     const bot = await botFor(req.user, req.params.id);
-    return { messages: await service.playgroundMessages(bot, session(req.params.session)) };
+    const key = session(req.params.session);
+    const [record] = await query<{ id: string; contact_id: string }>(`SELECT c.id, c.contact_id FROM conversations c JOIN contacts ct ON ct.id = c.contact_id JOIN channels ch ON ch.id = c.channel_id WHERE ch.chatbot_id = $1 AND ch.type = 'playground' AND ct.external_id = $2 ORDER BY c.created_at DESC LIMIT 1`, [bot.id, `playground:${key}`]);
+    return { messages: await service.playgroundMessages(bot, key), contact: record ? await store.getContact(record.contact_id) : null, conversation: record ? await store.getConversation(record.id) : null };
   });
 
   api.delete('/api/chatbots/:id/playground/:session', admins, async (req: any) => {

@@ -3,7 +3,7 @@
  * Gráficas en SVG hechas a mano (sin librerías). Cada gráfica tiene su tabla ("Ver datos") y se puede usar con el teclado.
  * Los nombres y textos que llegan del servidor se escriben con textContent, nunca como HTML.
  */
-import { api, fill, h, state } from './core.js';
+import { api, poll, fill, h, state } from './core.js';
 import { acct } from './session.js';
 
 const REFRESH_MS = 30000;
@@ -334,6 +334,15 @@ export async function viewAnalytics(root, params = new URLSearchParams()) {
       tile('Citas próximas 7 días', t.appointments_upcoming_7d, { sub: 'confirmadas' }),
       tile('Mensajes fallidos', t.messages_failed, { sub: 'en el periodo', alert: t.messages_failed > 0 }));
 
+    const allMetrics = h('div', { class: 'stats-kpis' });
+    const tiles = [...kpis.children];
+    const primary = new Set([0, 4, 5, 6]);
+    tiles.forEach((el, i) => { if (!primary.has(i)) allMetrics.append(el); });
+    let expanded = false;
+    const preference = `cp-stats-all:${state.me.user.id}:${state.accountId}`;
+    try { expanded = localStorage.getItem(preference) === '1'; } catch { /* sin almacenamiento */ }
+    const extraMetrics = h('details', { class: 'card', open: expanded, ontoggle: () => { try { localStorage.setItem(preference, extraMetrics.open ? '1' : '0'); } catch { /* sin almacenamiento */ } } }, h('summary', {}, 'Todas las métricas de operación'), allMetrics);
+    const attention = t.messages_failed || t.conversations_waiting_people_now ? h('div', { class: 'banner warn' }, `${fmt(t.conversations_waiting_people_now)} conversaciones esperan a una persona · ${fmt(t.messages_failed)} mensajes fallidos en el periodo`, ' ', h('a', { href: '#/conversations?status=human' }, 'Atender conversaciones')) : null;
     const lineSeries = [
       { key: 'received', label: 'Recibidos', css: '--s1', short: 'Recibidos' },
       { key: 'bot', label: 'Asistente', css: '--s2', short: 'Asistente' },
@@ -385,7 +394,7 @@ export async function viewAnalytics(root, params = new URLSearchParams()) {
         statusRow('ok', 'Confirmadas', t.appointments_confirmed),
         statusRow('warn', 'No llegaron', t.appointments_no_show),
         statusRow('neutral', 'Canceladas', t.appointments_cancelled)),
-      services ? h('h3', { class: 'small' }, 'Servicios más pedidos') : null,
+      services ? h('h2', { class: 'small' }, 'Servicios más pedidos') : null,
       services ? h('div', { class: 'table-scroll' }, h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Servicio'), h('th', { class: 'num' }, 'Citas'))), h('tbody', {}, d.services.map((s) => h('tr', {}, h('td', {}, s.name), h('td', { class: 'num' }, fmt(s.total))))))) : h('p', { class: 'muted' }, 'Sin citas en este periodo.'));
 
     const channelsCard = h('div', { class: 'card stats-chart-card' },
@@ -408,7 +417,7 @@ export async function viewAnalytics(root, params = new URLSearchParams()) {
     fill(frame,
       h('p', { class: 'small muted' }, `Periodo: ${shortDate(pl.from)} a ${shortDate(pl.to)} (${pl.days} ${pl.days === 1 ? 'día' : 'días'}) · comparado con ${prevLabel}`),
       h('h2', { class: 'stats-section' }, 'Periodo elegido'),
-      kpis,
+      attention, kpis, extraMetrics,
       h('div', { class: 'stats-grid' }, activity, newPerDay),
       h('h2', { class: 'stats-section' }, 'Equipo'),
       teamCard,
@@ -422,6 +431,5 @@ export async function viewAnalytics(root, params = new URLSearchParams()) {
   }
 
   await load(false);
-  const timer = setInterval(() => load(true), REFRESH_MS);
-  state.timers.push(timer);
+  poll(() => load(true), REFRESH_MS, root);
 }

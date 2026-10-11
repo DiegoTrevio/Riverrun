@@ -50,7 +50,7 @@ export async function viewOnboarding(root, stepKey) {
   const bot = await api('GET', `/api/chatbots/${ob.chatbot_id}`);
   if (slug === 'prueba') {
     box.append(h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, 'Pruébalo como si fueras un cliente'),
+      h('h2', { style: 'margin-top:0' }, 'Pruébalo como si fueras un cliente'),
       h('p', { class: 'muted' }, 'Pregunta precios, horarios o pide algo que no esté en tu información: debe decir que lo confirma con el equipo en lugar de inventar. Si algo no te gusta, regresa al paso 2 y ajusta la información.')));
     const pg = h('div');
     const photos = h('div');
@@ -60,7 +60,7 @@ export async function viewOnboarding(root, stepKey) {
         h('p', { class: 'muted' }, 'El asistente solo envía fotos de este catálogo y elige la correcta según lo que pregunte el cliente. Describe cada foto (qué es, precio si aplica). Puedes hacerlo después en Mi asistente → Fotos.'),
         photos),
       h('div', { class: 'row', style: 'margin-top:12px' },
-        h('button', { class: 'primary', onclick: async () => { await run(() => api('POST', withAcct('/api/onboarding/step'), { step: 'test' })); next(slug); } }, 'Me gusta, continuar'),
+        h('button', { class: 'primary', onclick: async () => { if (!(await run(() => api('POST', withAcct('/api/onboarding/step'), { step: 'test' })))) return; next(slug); } }, 'Me gusta, continuar'),
         h('a', { class: 'btn', href: '#/inicio/asistente' }, 'Ajustar información')));
     tabImages(photos, bot);
     return tabPlayground(pg, bot);
@@ -71,12 +71,12 @@ export async function viewOnboarding(root, stepKey) {
 function onbBusiness(box, ob, done) {
   const f = { business_type: state.me.account?.business_type || 'otro', timezone: ob.business.timezone, business_hours: clone(ob.business.business_hours), alert_phone: ob.business.alert_phone };
   box.append(h('div', { class: 'card' },
-    h('h3', { style: 'margin-top:0' }, 'Datos de tu negocio'),
+    h('h2', { style: 'margin-top:0' }, 'Datos de tu negocio'),
     h('div', { class: 'grid' },
       field('Tipo de negocio', select(f, 'business_type', ob.business_types.map((b) => [b.key, b.label])), 'Con esto preparamos a tu asistente: cómo atiende, qué datos pide y qué no debe decir.'),
       field('Zona horaria', select(f, 'timezone', TIMEZONES.some(([z]) => z === f.timezone) ? TIMEZONES : [[f.timezone, f.timezone], ...TIMEZONES])),
       field('Tu WhatsApp para avisos', text(f, 'alert_phone', { placeholder: '5215512345678' }), 'Con lada de país. Te avisamos ahí cuando un cliente pida hablar con una persona.')),
-    h('h4', {}, 'Horario de atención'),
+    h('h3', {}, 'Horario de atención'),
     h('p', { class: 'small muted' }, 'Por día: 09:00-14:00, 16:00-19:00 (vacío = cerrado). Se usa para agendar citas y para los mensajes fuera de horario.'),
     hoursEditor(f.business_hours),
     h('button', { class: 'primary', onclick: async () => { if (await run(() => api('POST', withAcct('/api/onboarding/business'), f), 'Guardado')) done(); } }, 'Guardar y continuar')));
@@ -104,7 +104,7 @@ function onbAssistant(box, ob, done) {
     }),
     imported ? h('div', { class: 'banner' }, `Leímos ${imported.source}. Revisa abajo: es lo único que tu asistente podrá afirmar.${imported.truncated ? ' (La fuente era muy larga: solo se leyó el inicio.)' : ''}`) : null,
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, 'Lo que tu asistente sabe'),
+      h('h2', { style: 'margin-top:0' }, 'Lo que tu asistente sabe'),
       h('p', { class: 'muted' }, 'Tu asistente responde únicamente con esta información: si un precio o dato no está aquí, dirá que lo confirma con tu equipo. Escribe como se lo explicarías a un empleado nuevo.'),
       h('div', { class: 'grid' },
         field('Nombre del asistente (opcional)', text(f, 'assistant_name', { placeholder: 'Sofi' })),
@@ -127,7 +127,7 @@ function onbAssistant(box, ob, done) {
 function onbWhatsapp(box, ob, bot) {
   if (!ob.email_verified) {
     return box.append(h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, 'Confirma tu correo para conectar WhatsApp'),
+      h('h2', { style: 'margin-top:0' }, 'Confirma tu correo para conectar WhatsApp'),
       h('p', {}, `Te enviamos un enlace a ${state.me.user.email}. Ábrelo y vuelve aquí.`),
       h('div', { class: 'row' },
         h('button', { onclick: () => run(() => api('POST', '/api/me/resend-verification'), 'Te enviamos un nuevo enlace') }, 'Reenviar correo'),
@@ -135,7 +135,7 @@ function onbWhatsapp(box, ob, bot) {
   }
   const area = h('div', {}, h('p', { class: 'muted' }, 'Preparando tu conexión…'));
   box.append(h('div', { class: 'card' },
-    h('h3', { style: 'margin-top:0' }, 'Conecta el WhatsApp de tu negocio'),
+    h('h2', { style: 'margin-top:0' }, 'Conecta el WhatsApp de tu negocio'),
     h('p', { class: 'muted' }, 'Puede ser WhatsApp normal o WhatsApp Business. Sigues usando WhatsApp en tu teléfono como siempre; si contestas tú, ',
       bot.personality?.assistant_name || 'tu asistente', ' se pausa en esa conversación.'),
     area));

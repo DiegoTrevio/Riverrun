@@ -1,7 +1,8 @@
+import { discardDraft, draftModel, draftNotice, draftVersion } from './editing.js';
 import { needAccount } from './admin.js';
 import { VARS_HELP, hoursEditor } from './automation.js';
 import { saveBar } from './bot.js';
-import { api, area, check, clone, field, fill, h, num, run, select, state, text } from './core.js';
+import { api, area, check, clone, field, fill, h, dialog, num, run, select, state, text, confirmAction, ask } from './core.js';
 import { render } from './main.js';
 import { isAdmin, withAcct } from './session.js';
 
@@ -32,6 +33,7 @@ const dayTitle = (iso) => capital(new Date(iso + 'T12:00:00Z').toLocaleDateStrin
 
 async function agendaWeek(root, params) {
   const { timezone: tz } = await api('GET', withAcct('/api/agenda/info'));
+  state.timeZone = tz;
   const today = tzDate(new Date(), tz);
   const dow = (new Date(today + 'T12:00:00Z').getUTCDay() + 6) % 7;
   const monday = params.get('week') || addDaysIso(today, -dow);
@@ -56,7 +58,7 @@ async function agendaWeek(root, params) {
     fill(slotBox, slots.length ? field('Horario disponible', select(n, 'slot', slots.map((x) => [x.key, x.label]))) : h('p', { class: 'muted' }, 'Sin horarios disponibles.'));
   };
   const createBox = h('div', { class: 'card', hidden: true },
-    h('h3', { style: 'margin-top:0' }, 'Nueva cita o llamada'),
+    h('h2', { style: 'margin-top:0' }, 'Nueva cita o llamada'),
     field('Servicio', select(n, 'service_id', services.filter((s) => s.active).map((s) => [s.id, `${s.name} (${s.kind === 'call' ? 'llamada' : 'cita'})`]), loadSlots)),
     slotBox,
     h('div', { class: 'grid' }, field('Nombre del cliente', text(n, 'customer_name')), field('Teléfono', text(n, 'customer_phone', { placeholder: '5215512345678' }))),
@@ -77,7 +79,7 @@ async function agendaWeek(root, params) {
       h('button', { class: 'primary', onclick: () => { createBox.hidden = !createBox.hidden; if (!createBox.hidden) loadSlots(); } }, '+ Nueva cita')),
     createBox,
     ...[...byDay].map(([day, list]) => h('div', { class: 'card' },
-      h('h3', { style: 'margin:0 0 8px' }, dayTitle(day), day === today ? h('span', { class: 'badge green' }, ' hoy') : null),
+      h('h2', { style: 'margin:0 0 8px' }, dayTitle(day), day === today ? h('span', { class: 'badge green' }, ' hoy') : null),
       list.length ? h('table', {}, h('tbody', {}, list.map((a) => {
         const [cls, label] = APPT_STATUS[a.status];
         return h('tr', {},
@@ -91,11 +93,14 @@ async function agendaWeek(root, params) {
             a.status === 'confirmed' ? action(a, 'No asistió', () => api('PUT', `/api/appointments/${a.id}`, { status: 'no_show' })) : null,
             a.status === 'confirmed' ? h('button', { class: 'small', onclick: async () => {
               const slots = a.service_id ? await api('GET', `/api/services/${a.service_id}/slots`) : [];
-              const pick = prompt(`Nuevo horario (AAAA-MM-DDTHH:MM). Disponibles:\n${slots.slice(0, 12).map((s) => `${s.key}  (${s.label})`).join('\n')}`, slots[0]?.key || '');
+              if (!slots.length) return run(() => { throw new Error('No hay horarios disponibles para este servicio.'); });
+              const choice = { slot: slots[0].key };
+              if (!(await dialog('Reprogramar cita', field('Nuevo horario disponible', select(choice, 'slot', slots.map((slot) => [slot.key, slot.label]))), 'Reprogramar y avisar al cliente'))) return;
+              const pick = choice.slot;
               if (pick && (await run(() => api('PUT', `/api/appointments/${a.id}`, { slot: pick.trim() }), 'Reprogramada'))) render();
             } }, 'Reprogramar') : null,
             a.status === 'confirmed' ? h('button', { class: 'small danger', onclick: async () => {
-              const reason = prompt('Motivo de la cancelación (se avisará al cliente si tiene chat)', 'Cancelada por el negocio');
+              const reason = await ask('Motivo de la cancelación (se avisará al cliente si tiene chat)', 'Cancelada por el negocio');
               if (reason !== null && (await run(() => api('POST', `/api/appointments/${a.id}/cancel`, { reason }), 'Cancelada'))) render();
             } }, 'Cancelar') : null)));
       }))) : h('p', { class: 'muted small', style: 'margin:0' }, 'Sin citas'))),
@@ -121,16 +126,27 @@ async function editService(root, id) {
   const [services, users] = await Promise.all([api('GET', withAcct('/api/services')), api('GET', withAcct('/api/users'))]);
   const existing = id === 'new' ? null : services.find((s) => s.id === id);
   if (id !== 'new' && !existing) throw new Error('Servicio no encontrado');
-  const s = existing ? clone(existing) : { name: '', kind: 'appointment', description: '', duration_minutes: 30, buffer_minutes: 0, capacity: 1, min_notice_minutes: 60, max_days_ahead: 30, location: '', hours: null, reminders: [1440, 60], reminder_message: '', assigned_user_ids: [], notify_team: true, active: true };
-  const own = { on: !!s.hours };
+  const s = draftModel(`service:${id}`, existing || { name: '', kind: 'appointment', description: '', duration_minutes: 30, buffer_minutes: 0, capacity: 1, min_notice_minutes: 60, max_days_ahead: 30, location: '', hours: null, reminders: [1440, 60], reminder_message: '', assigned_user_ids: [], notify_team: true, active: true }, false);
+  const own = draftModel(`service-hours:${id}`, { on: !!s.hours }, false);
   const hoursBox = h('div');
   const drawHours = () => fill(hoursBox, own.on ? hoursEditor((s.hours ||= { mon: [['09:00', '18:00']], tue: [['09:00', '18:00']], wed: [['09:00', '18:00']], thu: [['09:00', '18:00']], fri: [['09:00', '18:00']], sat: [], sun: [] })) : null);
   drawHours();
-  const rem = { text: (s.reminders || []).join('\n') };
+  const rem = draftModel(`reminders:${id}`, { text: (s.reminders || []).map((n) => n % 1440 === 0 ? `${n / 1440} días` : n % 60 === 0 ? `${n / 60} horas` : `${n} minutos`).join('\n') }, false);
+  root.append(draftNotice([`service:${id}`, `reminders:${id}`, `service-hours:${id}`], render));
   const team = users.filter((u) => u.account_id);
   const save = async () => {
-    const body = { ...s, hours: own.on ? s.hours : null, reminders: rem.text.split('\n').map((x) => Number(x.trim())).filter((x) => x > 0), account_id: state.accountId || undefined };
-    if (await run(() => (existing ? api('PUT', `/api/services/${id}`, body) : api('POST', '/api/services', body)), 'Servicio guardado ✅')) location.hash = '#/agenda/servicios';
+    const reminders = [];
+    for (const line of rem.text.split('\n').filter((x) => x.trim())) {
+      const match = line.trim().match(/^(\d+(?:\.\d+)?)\s*(minutos?|min|horas?|h|días?|dias?|d)?$/i);
+      if (!match) return run(() => { throw new Error('Escribe recordatorios como 1 día, 2 horas o 30 minutos.'); });
+      const unit = (match[2] || 'min').toLowerCase();
+      const n = Number(match[1]) * (/^(d|día|dia)/.test(unit) ? 1440 : /^(h|hora)/.test(unit) ? 60 : 1);
+      if (!Number.isInteger(n) || n <= 0) return run(() => { throw new Error('El recordatorio debe equivaler a minutos completos y ser mayor que cero.'); });
+      reminders.push(n);
+    }
+    const body = { ...s, hours: own.on ? s.hours : null, reminders, account_id: state.accountId || undefined };
+    const versions = [`service:${id}`, `reminders:${id}`, `service-hours:${id}`].map((key) => [key, draftVersion(key)]);
+    if (await run(() => (existing ? api('PUT', `/api/services/${id}`, body) : api('POST', '/api/services', body)), 'Servicio guardado ✅')) { versions.forEach(([key, version]) => discardDraft(key, version)); location.hash = '#/agenda/servicios'; }
   };
   root.append(
     h('a', { href: '#/agenda/servicios' }, '← Servicios'),
@@ -149,15 +165,15 @@ async function editService(root, id) {
       hoursBox,
       check(s, 'active', 'Activo (el bot puede agendarlo)')),
     h('div', { class: 'card' },
-      h('h3', { style: 'margin-top:0' }, 'Quién atiende y avisos'),
+      h('h2', { style: 'margin-top:0' }, 'Quién atiende y avisos'),
       h('p', { class: 'small muted' }, 'Si eliges personas, solo se ofrecen horarios en los que al menos una esté libre, y la cita se asigna a ella.'),
       h('div', { class: 'row' }, team.map((u) => h('label', { class: 'check' },
         h('input', { type: 'checkbox', checked: s.assigned_user_ids.includes(u.id), onchange: (e) => { s.assigned_user_ids = e.target.checked ? [...s.assigned_user_ids, u.id] : s.assigned_user_ids.filter((x) => x !== u.id); } }),
         u.name || u.email))),
       check(s, 'notify_team', 'Avisar al equipo cuando se agenda o cancela'),
-      field('Recordatorios al cliente (minutos antes)', h('textarea', { value: rem.text, oninput: (e) => (rem.text = e.target.value) }), '1440 = un día antes · 60 = una hora antes. Uno por renglón.'),
+      field('Recordatorios antes de la cita', h('textarea', { value: rem.text, oninput: (e) => (rem.text = e.target.value) }), 'Ej.: 1 día, 2 horas o 30 minutos. Uno por renglón. También acepta minutos sin unidad.'),
       field('Mensaje del recordatorio (opcional)', area(s, 'reminder_message', { placeholder: 'Hola {{nombre}}, te recordamos tu {{cita.tipo}} de {{cita.servicio}} el {{cita.fecha}} a las {{cita.hora}}.' }), VARS_HELP)),
     saveBar(save, existing ? h('span', { class: 'row', style: 'margin-left:auto' },
-      h('button', { class: 'danger', onclick: async () => { if (confirm('¿Eliminar el servicio? Las citas existentes se conservan.')) { await run(() => api('DELETE', `/api/services/${id}`), 'Eliminado'); location.hash = '#/agenda/servicios'; } } }, 'Eliminar')) : null),
+      h('button', { class: 'danger', onclick: async () => { if (await confirmAction('¿Eliminar el servicio? Las citas existentes se conservan.')) { if (!(await run(() => api('DELETE', `/api/services/${id}`), 'Eliminado'))) return; location.hash = '#/agenda/servicios'; } } }, 'Eliminar')) : null),
   );
 }

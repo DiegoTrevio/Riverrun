@@ -1,0 +1,4061 @@
+{
+  "commit": "b51afbe",
+  "screens": [
+    {
+      "role": "admin",
+      "route": "agentes",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/brand/mine"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        },
+        {
+          "method": "GET",
+          "path": "/api/chatbots"
+        },
+        {
+          "method": "GET",
+          "path": "/api/stats"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        }
+      ],
+      "a11y": [
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "description": "Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds",
+          "nodes": [
+            {
+              "target": [
+                "main > div:nth-child(2) > p"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ]
+        },
+        {
+          "id": "heading-order",
+          "impact": "moderate",
+          "description": "Ensure the order of headings is semantically correct",
+          "nodes": [
+            {
+              "target": [
+                ".between.row > h3"
+              ],
+              "summary": "Fix any of the following:\n  Heading order invalid"
+            }
+          ]
+        }
+      ],
+      "overflow": false,
+      "interactive": 18,
+      "tables": 0,
+      "height": 1000,
+      "toastsLive": false
+    },
+    {
+      "role": "admin",
+      "route": "bot/94245ae1-40b7-4843-8b95-e0b20bb72be6/instrucciones",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        },
+        {
+          "method": "GET",
+          "path": "/api/chatbots/94245ae1-40b7-4843-8b95-e0b20bb72be6"
+        }
+      ],
+      "a11y": [
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "description": "Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds",
+          "nodes": [
+            {
+              "target": [
+                ".breadcrumb"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 9.8pt (13px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".tabs > a:nth-child(2)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".tabs > a:nth-child(3)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".tabs > a:nth-child(4)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".tabs > a:nth-child(5)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".tabs > a:nth-child(6)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".tabs > a:nth-child(7)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".help"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 9.8pt (13px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ]
+        },
+        {
+          "id": "link-in-text-block",
+          "impact": "serious",
+          "description": "Ensure links are distinguished from surrounding text in a way that does not rely on color",
+          "nodes": [
+            {
+              "target": [
+                "small > a"
+              ],
+              "summary": "Fix any of the following:\n  The link has insufficient color contrast of 1.09:1 with the surrounding text. (Minimum contrast is 3:1, link text: #08796d, surrounding text: #6b7280)\n  The link has no styling (such as underline) to distinguish it from the surrounding text"
+            },
+            {
+              "target": [
+                "p > a"
+              ],
+              "summary": "Fix any of the following:\n  The link has insufficient color contrast of 1.09:1 with the surrounding text. (Minimum contrast is 3:1, link text: #08796d, surrounding text: #6b7280)\n  The link has no styling (such as underline) to distinguish it from the surrounding text"
+            }
+          ]
+        }
+      ],
+      "overflow": false,
+      "interactive": 24,
+      "tables": 0,
+      "height": 1384,
+      "toastsLive": false
+    },
+    {
+      "role": "admin",
+      "route": "bot/94245ae1-40b7-4843-8b95-e0b20bb72be6/preguntas",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        },
+        {
+          "method": "GET",
+          "path": "/api/chatbots/94245ae1-40b7-4843-8b95-e0b20bb72be6"
+        }
+      ],
+      "a11y": [
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "description": "Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds",
+          "nodes": [
+            {
+              "target": [
+                ".breadcrumb"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 9.8pt (13px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".tabs > a:nth-child(1)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".tabs > a:nth-child(3)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".tabs > a:nth-child(4)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".tabs > a:nth-child(5)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".tabs > a:nth-child(6)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".tabs > a:nth-child(7)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".help"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 9.8pt (13px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ]
+        },
+        {
+          "id": "heading-order",
+          "impact": "moderate",
+          "description": "Ensure the order of headings is semantically correct",
+          "nodes": [
+            {
+              "target": [
+                ".card:nth-child(2) > h3"
+              ],
+              "summary": "Fix any of the following:\n  Heading order invalid"
+            }
+          ]
+        },
+        {
+          "id": "link-in-text-block",
+          "impact": "serious",
+          "description": "Ensure links are distinguished from surrounding text in a way that does not rely on color",
+          "nodes": [
+            {
+              "target": [
+                ".card:nth-child(3) > p > a"
+              ],
+              "summary": "Fix any of the following:\n  The link has insufficient color contrast of 1.09:1 with the surrounding text. (Minimum contrast is 3:1, link text: #08796d, surrounding text: #6b7280)\n  The link has no styling (such as underline) to distinguish it from the surrounding text"
+            }
+          ]
+        }
+      ],
+      "overflow": false,
+      "interactive": 16,
+      "tables": 0,
+      "height": 1000,
+      "toastsLive": false
+    },
+    {
+      "role": "admin",
+      "route": "bot/94245ae1-40b7-4843-8b95-e0b20bb72be6/activacion",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        },
+        {
+          "method": "GET",
+          "path": "/api/chatbots/94245ae1-40b7-4843-8b95-e0b20bb72be6"
+        }
+      ],
+      "a11y": [
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "description": "Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds",
+          "nodes": [
+            {
+              "target": [
+                ".breadcrumb"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 9.8pt (13px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".tabs > a:nth-child(1)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".tabs > a:nth-child(2)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".tabs > a:nth-child(4)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".tabs > a:nth-child(5)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".tabs > a:nth-child(6)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".tabs > a:nth-child(7)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".help"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 9.8pt (13px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ]
+        },
+        {
+          "id": "heading-order",
+          "impact": "moderate",
+          "description": "Ensure the order of headings is semantically correct",
+          "nodes": [
+            {
+              "target": [
+                ".card:nth-child(2) > h3"
+              ],
+              "summary": "Fix any of the following:\n  Heading order invalid"
+            }
+          ]
+        },
+        {
+          "id": "link-in-text-block",
+          "impact": "serious",
+          "description": "Ensure links are distinguished from surrounding text in a way that does not rely on color",
+          "nodes": [
+            {
+              "target": [
+                ".check:nth-child(4) > .muted.small > a"
+              ],
+              "summary": "Fix any of the following:\n  The link has insufficient color contrast of 1.09:1 with the surrounding text. (Minimum contrast is 3:1, link text: #08796d, surrounding text: #6b7280)\n  The link has no styling (such as underline) to distinguish it from the surrounding text"
+            },
+            {
+              "target": [
+                ".check:nth-child(6) > .muted.small > a"
+              ],
+              "summary": "Fix any of the following:\n  The link has insufficient color contrast of 1.09:1 with the surrounding text. (Minimum contrast is 3:1, link text: #08796d, surrounding text: #6b7280)\n  The link has no styling (such as underline) to distinguish it from the surrounding text"
+            },
+            {
+              "target": [
+                ".field:nth-child(7) > p > a"
+              ],
+              "summary": "Fix any of the following:\n  The link has insufficient color contrast of 1.09:1 with the surrounding text. (Minimum contrast is 3:1, link text: #08796d, surrounding text: #6b7280)\n  The link has no styling (such as underline) to distinguish it from the surrounding text"
+            }
+          ]
+        }
+      ],
+      "overflow": false,
+      "interactive": 31,
+      "tables": 0,
+      "height": 2513,
+      "toastsLive": false
+    },
+    {
+      "role": "admin",
+      "route": "bot/94245ae1-40b7-4843-8b95-e0b20bb72be6/conocimiento",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        },
+        {
+          "method": "GET",
+          "path": "/api/chatbots/94245ae1-40b7-4843-8b95-e0b20bb72be6"
+        },
+        {
+          "method": "GET",
+          "path": "/api/chatbots/94245ae1-40b7-4843-8b95-e0b20bb72be6/knowledge"
+        },
+        {
+          "method": "GET",
+          "path": "/api/chatbots/94245ae1-40b7-4843-8b95-e0b20bb72be6/knowledge/index"
+        }
+      ],
+      "a11y": [
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "description": "Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds",
+          "nodes": [
+            {
+              "target": [
+                ".breadcrumb"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 9.8pt (13px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".tabs > a:nth-child(1)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".tabs > a:nth-child(2)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".tabs > a:nth-child(3)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".tabs > a:nth-child(5)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".tabs > a:nth-child(6)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".tabs > a:nth-child(7)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".help"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 9.8pt (13px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".import-card > p"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.25 (foreground color: #6b7280, background color: #e3f4f1, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ]
+        },
+        {
+          "id": "heading-order",
+          "impact": "moderate",
+          "description": "Ensure the order of headings is semantically correct",
+          "nodes": [
+            {
+              "target": [
+                ".import-card > h3"
+              ],
+              "summary": "Fix any of the following:\n  Heading order invalid"
+            }
+          ]
+        }
+      ],
+      "overflow": false,
+      "interactive": 21,
+      "tables": 0,
+      "height": 1452,
+      "toastsLive": false
+    },
+    {
+      "role": "admin",
+      "route": "bot/94245ae1-40b7-4843-8b95-e0b20bb72be6/imagenes",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        },
+        {
+          "method": "GET",
+          "path": "/api/chatbots/94245ae1-40b7-4843-8b95-e0b20bb72be6"
+        },
+        {
+          "method": "GET",
+          "path": "/api/chatbots/94245ae1-40b7-4843-8b95-e0b20bb72be6/images"
+        }
+      ],
+      "a11y": [
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "description": "Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds",
+          "nodes": [
+            {
+              "target": [
+                ".breadcrumb"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 9.8pt (13px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".tabs > a:nth-child(1)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".tabs > a:nth-child(2)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".tabs > a:nth-child(3)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".tabs > a:nth-child(4)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".tabs > a:nth-child(6)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".tabs > a:nth-child(7)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".help"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 9.8pt (13px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ]
+        },
+        {
+          "id": "heading-order",
+          "impact": "moderate",
+          "description": "Ensure the order of headings is semantically correct",
+          "nodes": [
+            {
+              "target": [
+                ".card:nth-child(1) > h3"
+              ],
+              "summary": "Fix any of the following:\n  Heading order invalid"
+            }
+          ]
+        }
+      ],
+      "overflow": false,
+      "interactive": 21,
+      "tables": 0,
+      "height": 1443,
+      "toastsLive": false
+    },
+    {
+      "role": "admin",
+      "route": "bot/94245ae1-40b7-4843-8b95-e0b20bb72be6/conexiones",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        },
+        {
+          "method": "GET",
+          "path": "/api/chatbots/94245ae1-40b7-4843-8b95-e0b20bb72be6"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels/3d2cf687-3c14-4f6d-babc-7ace64c63b93/status"
+        }
+      ],
+      "a11y": [
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "description": "Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds",
+          "nodes": [
+            {
+              "target": [
+                ".breadcrumb"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 9.8pt (13px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".tabs > a:nth-child(1)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".tabs > a:nth-child(2)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".tabs > a:nth-child(3)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".tabs > a:nth-child(4)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".tabs > a:nth-child(5)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".tabs > a:nth-child(7)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                "div:nth-child(2) > .help"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 9.8pt (13px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                "div:nth-child(5) > p"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                "span > .red.badge"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.44 (foreground color: #c0392b, background color: #fbe3e0, font size: 9.0pt (12px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ]
+        },
+        {
+          "id": "heading-order",
+          "impact": "moderate",
+          "description": "Ensure the order of headings is semantically correct",
+          "nodes": [
+            {
+              "target": [
+                "h3"
+              ],
+              "summary": "Fix any of the following:\n  Heading order invalid"
+            }
+          ]
+        }
+      ],
+      "overflow": false,
+      "interactive": 17,
+      "tables": 0,
+      "height": 1000,
+      "toastsLive": false
+    },
+    {
+      "role": "admin",
+      "route": "bot/94245ae1-40b7-4843-8b95-e0b20bb72be6/probar",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        },
+        {
+          "method": "GET",
+          "path": "/api/chatbots/94245ae1-40b7-4843-8b95-e0b20bb72be6"
+        },
+        {
+          "method": "GET",
+          "path": "/api/chatbots/94245ae1-40b7-4843-8b95-e0b20bb72be6/playground/u6mm1xn8"
+        }
+      ],
+      "a11y": [
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "description": "Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds",
+          "nodes": [
+            {
+              "target": [
+                ".breadcrumb"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 9.8pt (13px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".tabs > a:nth-child(1)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".tabs > a:nth-child(2)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".tabs > a:nth-child(3)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".tabs > a:nth-child(4)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".tabs > a:nth-child(5)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".tabs > a:nth-child(6)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".help"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 9.8pt (13px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ]
+        },
+        {
+          "id": "heading-order",
+          "impact": "moderate",
+          "description": "Ensure the order of headings is semantically correct",
+          "nodes": [
+            {
+              "target": [
+                ".between.row > h3"
+              ],
+              "summary": "Fix any of the following:\n  Heading order invalid"
+            }
+          ]
+        }
+      ],
+      "overflow": false,
+      "interactive": 20,
+      "tables": 0,
+      "height": 1323,
+      "toastsLive": false
+    },
+    {
+      "role": "admin",
+      "route": "bot/94245ae1-40b7-4843-8b95-e0b20bb72be6/conexiones/3d2cf687-3c14-4f6d-babc-7ace64c63b93",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels/3d2cf687-3c14-4f6d-babc-7ace64c63b93"
+        },
+        {
+          "method": "GET",
+          "path": "/api/chatbots"
+        },
+        {
+          "method": "POST",
+          "path": "/api/channels/3d2cf687-3c14-4f6d-babc-7ace64c63b93/whatsapp/session"
+        }
+      ],
+      "a11y": [
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "description": "Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds",
+          "nodes": [
+            {
+              "target": [
+                ".breadcrumb"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 9.8pt (13px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".breadcrumb > span"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 9.8pt (13px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                "main > div:nth-child(2) > p"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".wa-tab.active > small"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.25 (foreground color: #6b7280, background color: #e3f4f1, font size: 9.4pt (12.5px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ]
+        },
+        {
+          "id": "heading-order",
+          "impact": "moderate",
+          "description": "Ensure the order of headings is semantically correct",
+          "nodes": [
+            {
+              "target": [
+                ".between.row > h3"
+              ],
+              "summary": "Fix any of the following:\n  Heading order invalid"
+            }
+          ]
+        }
+      ],
+      "overflow": false,
+      "interactive": 18,
+      "tables": 0,
+      "height": 1564,
+      "toastsLive": false
+    },
+    {
+      "role": "admin",
+      "route": "conversations",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        },
+        {
+          "method": "GET",
+          "path": "/api/chatbots"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/conversations"
+        }
+      ],
+      "a11y": [
+        {
+          "id": "select-name",
+          "impact": "critical",
+          "description": "Ensure select element has an accessible name",
+          "nodes": [
+            {
+              "target": [
+                ".filter:nth-child(1) > select"
+              ],
+              "summary": "Fix any of the following:\n  Element does not have an implicit (wrapped) <label>\n  Element does not have an explicit <label>\n  aria-label attribute does not exist or is empty\n  aria-labelledby attribute does not exist, references elements that do not exist or references elements that are empty\n  Element has no title attribute\n  Element's default semantics were not overridden with role=\"none\" or role=\"presentation\""
+            },
+            {
+              "target": [
+                ".filter:nth-child(2) > select"
+              ],
+              "summary": "Fix any of the following:\n  Element does not have an implicit (wrapped) <label>\n  Element does not have an explicit <label>\n  aria-label attribute does not exist or is empty\n  aria-labelledby attribute does not exist, references elements that do not exist or references elements that are empty\n  Element has no title attribute\n  Element's default semantics were not overridden with role=\"none\" or role=\"presentation\""
+            },
+            {
+              "target": [
+                ".filter:nth-child(3) > select"
+              ],
+              "summary": "Fix any of the following:\n  Element does not have an implicit (wrapped) <label>\n  Element does not have an explicit <label>\n  aria-label attribute does not exist or is empty\n  aria-labelledby attribute does not exist, references elements that do not exist or references elements that are empty\n  Element has no title attribute\n  Element's default semantics were not overridden with role=\"none\" or role=\"presentation\""
+            },
+            {
+              "target": [
+                ".filter:nth-child(4) > select"
+              ],
+              "summary": "Fix any of the following:\n  Element does not have an implicit (wrapped) <label>\n  Element does not have an explicit <label>\n  aria-label attribute does not exist or is empty\n  aria-labelledby attribute does not exist, references elements that do not exist or references elements that are empty\n  Element has no title attribute\n  Element's default semantics were not overridden with role=\"none\" or role=\"presentation\""
+            },
+            {
+              "target": [
+                ".filter:nth-child(5) > select"
+              ],
+              "summary": "Fix any of the following:\n  Element does not have an implicit (wrapped) <label>\n  Element does not have an explicit <label>\n  aria-label attribute does not exist or is empty\n  aria-labelledby attribute does not exist, references elements that do not exist or references elements that are empty\n  Element has no title attribute\n  Element's default semantics were not overridden with role=\"none\" or role=\"presentation\""
+            }
+          ]
+        }
+      ],
+      "overflow": false,
+      "interactive": 10,
+      "tables": 1,
+      "height": 1000,
+      "toastsLive": false
+    },
+    {
+      "role": "admin",
+      "route": "conversation/91fca8ca-52b5-46dc-9087-ba7edbf5e9e4",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        },
+        {
+          "method": "GET",
+          "path": "/api/users"
+        },
+        {
+          "method": "GET",
+          "path": "/api/conversations/91fca8ca-52b5-46dc-9087-ba7edbf5e9e4"
+        },
+        {
+          "method": "GET",
+          "path": "/api/conversations/91fca8ca-52b5-46dc-9087-ba7edbf5e9e4/automation"
+        },
+        {
+          "method": "GET",
+          "path": "/api/sequences"
+        },
+        {
+          "method": "GET",
+          "path": "/api/services"
+        },
+        {
+          "method": "GET",
+          "path": "/api/services/bc10c04b-2910-4793-ac1d-41d8d757288b/slots"
+        }
+      ],
+      "a11y": [
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "description": "Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds",
+          "nodes": [
+            {
+              "target": [
+                ".row:nth-child(2) > span:nth-child(1)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 9.8pt (13px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                "div:nth-child(2) > div:nth-child(2) > p"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".out > .meta"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.2 (foreground color: #6b7280, background color: #dcf8c6, font size: 8.3pt (11px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ]
+        },
+        {
+          "id": "heading-order",
+          "impact": "moderate",
+          "description": "Ensure the order of headings is semantically correct",
+          "nodes": [
+            {
+              "target": [
+                "div:nth-child(2) > .card:nth-child(1) > h3"
+              ],
+              "summary": "Fix any of the following:\n  Heading order invalid"
+            }
+          ]
+        },
+        {
+          "id": "label-title-only",
+          "impact": "serious",
+          "description": "Ensure that every form element has a visible label and is not solely labeled using hidden labels, or the title or aria-describedby attributes",
+          "nodes": [
+            {
+              "target": [
+                "input[type=\"date\"]"
+              ],
+              "summary": "Fix all of the following:\n  Only title used to generate label for form element"
+            }
+          ]
+        },
+        {
+          "id": "select-name",
+          "impact": "critical",
+          "description": "Ensure select element has an accessible name",
+          "nodes": [
+            {
+              "target": [
+                ".task-form > select"
+              ],
+              "summary": "Fix any of the following:\n  Element does not have an implicit (wrapped) <label>\n  Element does not have an explicit <label>\n  aria-label attribute does not exist or is empty\n  aria-labelledby attribute does not exist, references elements that do not exist or references elements that are empty\n  Element has no title attribute\n  Element's default semantics were not overridden with role=\"none\" or role=\"presentation\""
+            }
+          ]
+        }
+      ],
+      "overflow": false,
+      "interactive": 31,
+      "tables": 0,
+      "height": 2079,
+      "toastsLive": false
+    },
+    {
+      "role": "admin",
+      "route": "agenda",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        },
+        {
+          "method": "GET",
+          "path": "/api/agenda/info"
+        },
+        {
+          "method": "GET",
+          "path": "/api/appointments"
+        },
+        {
+          "method": "GET",
+          "path": "/api/services"
+        }
+      ],
+      "a11y": [
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "description": "Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds",
+          "nodes": [
+            {
+              "target": [
+                "a[href$=\"#/agenda/servicios\"]"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ]
+        },
+        {
+          "id": "heading-order",
+          "impact": "moderate",
+          "description": "Ensure the order of headings is semantically correct",
+          "nodes": [
+            {
+              "target": [
+                ".card:nth-child(3) > h3"
+              ],
+              "summary": "Fix any of the following:\n  Heading order invalid"
+            }
+          ]
+        }
+      ],
+      "overflow": false,
+      "interactive": 12,
+      "tables": 0,
+      "height": 1358,
+      "toastsLive": false
+    },
+    {
+      "role": "admin",
+      "route": "agenda/servicios",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        },
+        {
+          "method": "GET",
+          "path": "/api/services"
+        }
+      ],
+      "a11y": [
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "description": "Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds",
+          "nodes": [
+            {
+              "target": [
+                "a[href$=\"#/agenda/citas\"]"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ]
+        }
+      ],
+      "overflow": false,
+      "interactive": 4,
+      "tables": 1,
+      "height": 1000,
+      "toastsLive": false
+    },
+    {
+      "role": "admin",
+      "route": "agenda/servicios?id=bc10c04b-2910-4793-ac1d-41d8d757288b",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        },
+        {
+          "method": "GET",
+          "path": "/api/services"
+        },
+        {
+          "method": "GET",
+          "path": "/api/users"
+        }
+      ],
+      "a11y": [
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "description": "Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds",
+          "nodes": [
+            {
+              "target": [
+                "a[href$=\"#/agenda/citas\"]"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ]
+        },
+        {
+          "id": "heading-order",
+          "impact": "moderate",
+          "description": "Ensure the order of headings is semantically correct",
+          "nodes": [
+            {
+              "target": [
+                "h3"
+              ],
+              "summary": "Fix any of the following:\n  Heading order invalid"
+            }
+          ]
+        }
+      ],
+      "overflow": false,
+      "interactive": 22,
+      "tables": 0,
+      "height": 1718,
+      "toastsLive": false
+    },
+    {
+      "role": "admin",
+      "route": "automation/rules",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        },
+        {
+          "method": "GET",
+          "path": "/api/automations"
+        },
+        {
+          "method": "GET",
+          "path": "/api/chatbots"
+        }
+      ],
+      "a11y": [
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "description": "Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds",
+          "nodes": [
+            {
+              "target": [
+                "a[href$=\"#/automation/sequences\"]"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                "a[href$=\"#/automation/campaigns\"]"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                "a[href$=\"#/automation/settings\"]"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ]
+        },
+        {
+          "id": "heading-order",
+          "impact": "moderate",
+          "description": "Ensure the order of headings is semantically correct",
+          "nodes": [
+            {
+              "target": [
+                "h3"
+              ],
+              "summary": "Fix any of the following:\n  Heading order invalid"
+            }
+          ]
+        }
+      ],
+      "overflow": false,
+      "interactive": 23,
+      "tables": 0,
+      "height": 1000,
+      "toastsLive": false
+    },
+    {
+      "role": "admin",
+      "route": "automation/rules/new",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        },
+        {
+          "method": "GET",
+          "path": "/api/chatbots"
+        },
+        {
+          "method": "GET",
+          "path": "/api/sequences"
+        },
+        {
+          "method": "GET",
+          "path": "/api/users"
+        },
+        {
+          "method": "GET",
+          "path": "/api/services"
+        },
+        {
+          "method": "GET",
+          "path": "/api/chatbots/94245ae1-40b7-4843-8b95-e0b20bb72be6/images"
+        },
+        {
+          "method": "GET",
+          "path": "/api/attachments"
+        }
+      ],
+      "a11y": [
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "description": "Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds",
+          "nodes": [
+            {
+              "target": [
+                "a[href$=\"#/automation/sequences\"]"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                "a[href$=\"#/automation/campaigns\"]"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                "a[href$=\"#/automation/settings\"]"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ]
+        },
+        {
+          "id": "heading-order",
+          "impact": "moderate",
+          "description": "Ensure the order of headings is semantically correct",
+          "nodes": [
+            {
+              "target": [
+                ".card:nth-child(3) > h3"
+              ],
+              "summary": "Fix any of the following:\n  Heading order invalid"
+            }
+          ]
+        },
+        {
+          "id": "select-name",
+          "impact": "critical",
+          "description": "Ensure select element has an accessible name",
+          "nodes": [
+            {
+              "target": [
+                ".card:nth-child(4) > div > .row > select"
+              ],
+              "summary": "Fix any of the following:\n  Element does not have an implicit (wrapped) <label>\n  Element does not have an explicit <label>\n  aria-label attribute does not exist or is empty\n  aria-labelledby attribute does not exist, references elements that do not exist or references elements that are empty\n  Element has no title attribute\n  Element's default semantics were not overridden with role=\"none\" or role=\"presentation\""
+            },
+            {
+              "target": [
+                ".card:nth-child(5) > div > .row > select"
+              ],
+              "summary": "Fix any of the following:\n  Element does not have an implicit (wrapped) <label>\n  Element does not have an explicit <label>\n  aria-label attribute does not exist or is empty\n  aria-labelledby attribute does not exist, references elements that do not exist or references elements that are empty\n  Element has no title attribute\n  Element's default semantics were not overridden with role=\"none\" or role=\"presentation\""
+            }
+          ]
+        }
+      ],
+      "overflow": false,
+      "interactive": 17,
+      "tables": 0,
+      "height": 1456,
+      "toastsLive": false
+    },
+    {
+      "role": "admin",
+      "route": "automation/sequences",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        },
+        {
+          "method": "GET",
+          "path": "/api/sequences"
+        }
+      ],
+      "a11y": [
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "description": "Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds",
+          "nodes": [
+            {
+              "target": [
+                "a[href$=\"#/automation/rules\"]"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                "a[href$=\"#/automation/campaigns\"]"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                "a[href$=\"#/automation/settings\"]"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ]
+        }
+      ],
+      "overflow": false,
+      "interactive": 6,
+      "tables": 0,
+      "height": 1000,
+      "toastsLive": false
+    },
+    {
+      "role": "admin",
+      "route": "automation/sequences/new",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        },
+        {
+          "method": "GET",
+          "path": "/api/chatbots"
+        },
+        {
+          "method": "GET",
+          "path": "/api/sequences"
+        },
+        {
+          "method": "GET",
+          "path": "/api/users"
+        },
+        {
+          "method": "GET",
+          "path": "/api/services"
+        },
+        {
+          "method": "GET",
+          "path": "/api/chatbots/94245ae1-40b7-4843-8b95-e0b20bb72be6/images"
+        },
+        {
+          "method": "GET",
+          "path": "/api/attachments"
+        }
+      ],
+      "a11y": [
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "description": "Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds",
+          "nodes": [
+            {
+              "target": [
+                "a[href$=\"#/automation/rules\"]"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                "a[href$=\"#/automation/campaigns\"]"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                "a[href$=\"#/automation/settings\"]"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".field:nth-child(2) > small"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 9.4pt (12.5px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".field:nth-child(3) > small"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 9.4pt (12.5px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                "div > .muted.small"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 9.8pt (13px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ]
+        },
+        {
+          "id": "heading-order",
+          "impact": "moderate",
+          "description": "Ensure the order of headings is semantically correct",
+          "nodes": [
+            {
+              "target": [
+                "h3"
+              ],
+              "summary": "Fix any of the following:\n  Heading order invalid"
+            }
+          ]
+        }
+      ],
+      "overflow": false,
+      "interactive": 22,
+      "tables": 0,
+      "height": 1469,
+      "toastsLive": false
+    },
+    {
+      "role": "admin",
+      "route": "automation/campaigns",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        },
+        {
+          "method": "GET",
+          "path": "/api/campaigns"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        }
+      ],
+      "a11y": [
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "description": "Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds",
+          "nodes": [
+            {
+              "target": [
+                "a[href$=\"#/automation/rules\"]"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                "a[href$=\"#/automation/sequences\"]"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                "a[href$=\"#/automation/settings\"]"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ]
+        }
+      ],
+      "overflow": false,
+      "interactive": 6,
+      "tables": 0,
+      "height": 1000,
+      "toastsLive": false
+    },
+    {
+      "role": "admin",
+      "route": "automation/campaigns/new",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        },
+        {
+          "method": "GET",
+          "path": "/api/chatbots"
+        },
+        {
+          "method": "GET",
+          "path": "/api/sequences"
+        },
+        {
+          "method": "GET",
+          "path": "/api/users"
+        },
+        {
+          "method": "GET",
+          "path": "/api/services"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/chatbots/94245ae1-40b7-4843-8b95-e0b20bb72be6/images"
+        },
+        {
+          "method": "GET",
+          "path": "/api/attachments"
+        }
+      ],
+      "a11y": [
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "description": "Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds",
+          "nodes": [
+            {
+              "target": [
+                "a[href$=\"#/automation/rules\"]"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                "a[href$=\"#/automation/sequences\"]"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                "a[href$=\"#/automation/settings\"]"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ]
+        },
+        {
+          "id": "heading-order",
+          "impact": "moderate",
+          "description": "Ensure the order of headings is semantically correct",
+          "nodes": [
+            {
+              "target": [
+                ".card:nth-child(4) > h3"
+              ],
+              "summary": "Fix any of the following:\n  Heading order invalid"
+            }
+          ]
+        }
+      ],
+      "overflow": false,
+      "interactive": 18,
+      "tables": 0,
+      "height": 1666,
+      "toastsLive": false
+    },
+    {
+      "role": "admin",
+      "route": "automation/settings",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        },
+        {
+          "method": "GET",
+          "path": "/api/settings"
+        },
+        {
+          "method": "GET",
+          "path": "/api/users"
+        }
+      ],
+      "a11y": [
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "description": "Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds",
+          "nodes": [
+            {
+              "target": [
+                "a[href$=\"#/automation/rules\"]"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                "a[href$=\"#/automation/sequences\"]"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                "a[href$=\"#/automation/campaigns\"]"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ]
+        },
+        {
+          "id": "heading-order",
+          "impact": "moderate",
+          "description": "Ensure the order of headings is semantically correct",
+          "nodes": [
+            {
+              "target": [
+                ".card:nth-child(1) > h3"
+              ],
+              "summary": "Fix any of the following:\n  Heading order invalid"
+            }
+          ]
+        }
+      ],
+      "overflow": false,
+      "interactive": 38,
+      "tables": 0,
+      "height": 3720,
+      "toastsLive": false
+    },
+    {
+      "role": "admin",
+      "route": "ajustes",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        }
+      ],
+      "a11y": [
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "description": "Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds",
+          "nodes": [
+            {
+              "target": [
+                "div:nth-child(2) > p"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 9.8pt (13px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ]
+        },
+        {
+          "id": "heading-order",
+          "impact": "moderate",
+          "description": "Ensure the order of headings is semantically correct",
+          "nodes": [
+            {
+              "target": [
+                ".card.tile[href$=\"#/agentes\"] > h3"
+              ],
+              "summary": "Fix any of the following:\n  Heading order invalid"
+            }
+          ]
+        }
+      ],
+      "overflow": false,
+      "interactive": 11,
+      "tables": 0,
+      "height": 1000,
+      "toastsLive": false
+    },
+    {
+      "role": "admin",
+      "route": "integraciones",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        },
+        {
+          "method": "GET",
+          "path": "/api/webhook-endpoints"
+        },
+        {
+          "method": "GET",
+          "path": "/api/webhook-events"
+        },
+        {
+          "method": "GET",
+          "path": "/api/api-keys"
+        },
+        {
+          "method": "GET",
+          "path": "/api/integrations/google"
+        }
+      ],
+      "a11y": [
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "description": "Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds",
+          "nodes": [
+            {
+              "target": [
+                "div:nth-child(2) > p:nth-child(2)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                "p:nth-child(5)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                "p:nth-child(8)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ]
+        }
+      ],
+      "overflow": false,
+      "interactive": 16,
+      "tables": 0,
+      "height": 1575,
+      "toastsLive": false
+    },
+    {
+      "role": "admin",
+      "route": "users",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        },
+        {
+          "method": "GET",
+          "path": "/api/users"
+        }
+      ],
+      "a11y": [
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "description": "Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds",
+          "nodes": [
+            {
+              "target": [
+                "p"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ]
+        },
+        {
+          "id": "empty-table-header",
+          "impact": "minor",
+          "description": "Ensure table headers have discernible text",
+          "nodes": [
+            {
+              "target": [
+                "th:nth-child(4)"
+              ],
+              "summary": "Fix any of the following:\n  Element does not have text that is visible to screen readers"
+            }
+          ]
+        },
+        {
+          "id": "heading-order",
+          "impact": "moderate",
+          "description": "Ensure the order of headings is semantically correct",
+          "nodes": [
+            {
+              "target": [
+                "h3"
+              ],
+              "summary": "Fix any of the following:\n  Heading order invalid"
+            }
+          ]
+        },
+        {
+          "id": "select-name",
+          "impact": "critical",
+          "description": "Ensure select element has an accessible name",
+          "nodes": [
+            {
+              "target": [
+                "td:nth-child(2) > select"
+              ],
+              "summary": "Fix any of the following:\n  Element does not have an implicit (wrapped) <label>\n  Element does not have an explicit <label>\n  aria-label attribute does not exist or is empty\n  aria-labelledby attribute does not exist, references elements that do not exist or references elements that are empty\n  Element has no title attribute\n  Element's default semantics were not overridden with role=\"none\" or role=\"presentation\""
+            }
+          ]
+        }
+      ],
+      "overflow": false,
+      "interactive": 14,
+      "tables": 1,
+      "height": 1028,
+      "toastsLive": false
+    },
+    {
+      "role": "admin",
+      "route": "consumo",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        },
+        {
+          "method": "GET",
+          "path": "/api/usage"
+        }
+      ],
+      "a11y": [
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "description": "Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds",
+          "nodes": [
+            {
+              "target": [
+                "small"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 3.83 (foreground color: #6b7280, background color: #e3e5e9, font size: 7.5pt (10px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ]
+        },
+        {
+          "id": "heading-order",
+          "impact": "moderate",
+          "description": "Ensure the order of headings is semantically correct",
+          "nodes": [
+            {
+              "target": [
+                "div:nth-child(2) > .card > h3"
+              ],
+              "summary": "Fix any of the following:\n  Heading order invalid"
+            }
+          ]
+        },
+        {
+          "id": "select-name",
+          "impact": "critical",
+          "description": "Ensure select element has an accessible name",
+          "nodes": [
+            {
+              "target": [
+                "select"
+              ],
+              "summary": "Fix any of the following:\n  Element does not have an implicit (wrapped) <label>\n  Element does not have an explicit <label>\n  aria-label attribute does not exist or is empty\n  aria-labelledby attribute does not exist, references elements that do not exist or references elements that are empty\n  Element has no title attribute\n  Element's default semantics were not overridden with role=\"none\" or role=\"presentation\""
+            }
+          ]
+        }
+      ],
+      "overflow": false,
+      "interactive": 2,
+      "tables": 2,
+      "height": 1000,
+      "toastsLive": false
+    },
+    {
+      "role": "admin",
+      "route": "logs",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        },
+        {
+          "method": "GET",
+          "path": "/api/chatbots"
+        },
+        {
+          "method": "GET",
+          "path": "/api/logs"
+        },
+        {
+          "method": "GET",
+          "path": "/api/knowledge/monitor"
+        }
+      ],
+      "a11y": [
+        {
+          "id": "select-name",
+          "impact": "critical",
+          "description": "Ensure select element has an accessible name",
+          "nodes": [
+            {
+              "target": [
+                "div:nth-child(1) > select"
+              ],
+              "summary": "Fix any of the following:\n  Element does not have an implicit (wrapped) <label>\n  Element does not have an explicit <label>\n  aria-label attribute does not exist or is empty\n  aria-labelledby attribute does not exist, references elements that do not exist or references elements that are empty\n  Element has no title attribute\n  Element's default semantics were not overridden with role=\"none\" or role=\"presentation\""
+            },
+            {
+              "target": [
+                "div:nth-child(2) > select"
+              ],
+              "summary": "Fix any of the following:\n  Element does not have an implicit (wrapped) <label>\n  Element does not have an explicit <label>\n  aria-label attribute does not exist or is empty\n  aria-labelledby attribute does not exist, references elements that do not exist or references elements that are empty\n  Element has no title attribute\n  Element's default semantics were not overridden with role=\"none\" or role=\"presentation\""
+            },
+            {
+              "target": [
+                "div:nth-child(3) > select"
+              ],
+              "summary": "Fix any of the following:\n  Element does not have an implicit (wrapped) <label>\n  Element does not have an explicit <label>\n  aria-label attribute does not exist or is empty\n  aria-labelledby attribute does not exist, references elements that do not exist or references elements that are empty\n  Element has no title attribute\n  Element's default semantics were not overridden with role=\"none\" or role=\"presentation\""
+            }
+          ]
+        }
+      ],
+      "overflow": false,
+      "interactive": 6,
+      "tables": 1,
+      "height": 1141,
+      "toastsLive": false
+    },
+    {
+      "role": "admin",
+      "route": "plan",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        },
+        {
+          "method": "GET",
+          "path": "/api/billing"
+        }
+      ],
+      "a11y": [
+        {
+          "id": "heading-order",
+          "impact": "moderate",
+          "description": "Ensure the order of headings is semantically correct",
+          "nodes": [
+            {
+              "target": [
+                "h3"
+              ],
+              "summary": "Fix any of the following:\n  Heading order invalid"
+            }
+          ]
+        }
+      ],
+      "overflow": false,
+      "interactive": 1,
+      "tables": 0,
+      "height": 1000,
+      "toastsLive": false
+    },
+    {
+      "role": "admin",
+      "route": "estadisticas",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        },
+        {
+          "method": "GET",
+          "path": "/api/analytics"
+        }
+      ],
+      "a11y": [
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "description": "Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds",
+          "nodes": [
+            {
+              "target": [
+                "span[aria-live=\"polite\"]"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 9.8pt (13px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".stats-frame > p"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 9.8pt (13px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ]
+        }
+      ],
+      "overflow": false,
+      "interactive": 6,
+      "tables": 5,
+      "height": 2154,
+      "toastsLive": false
+    },
+    {
+      "role": "admin",
+      "route": "notifications",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        },
+        {
+          "method": "GET",
+          "path": "/api/users"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        }
+      ],
+      "a11y": [],
+      "overflow": false,
+      "interactive": 8,
+      "tables": 0,
+      "height": 1000,
+      "toastsLive": false
+    },
+    {
+      "role": "admin",
+      "route": "password",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        }
+      ],
+      "a11y": [],
+      "overflow": false,
+      "interactive": 10,
+      "tables": 0,
+      "height": 1132,
+      "toastsLive": false
+    },
+    {
+      "role": "admin",
+      "route": "inicio",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        },
+        {
+          "method": "GET",
+          "path": "/api/onboarding"
+        }
+      ],
+      "a11y": [
+        {
+          "id": "heading-order",
+          "impact": "moderate",
+          "description": "Ensure the order of headings is semantically correct",
+          "nodes": [
+            {
+              "target": [
+                "h3"
+              ],
+              "summary": "Fix any of the following:\n  Heading order invalid"
+            }
+          ]
+        }
+      ],
+      "overflow": false,
+      "interactive": 15,
+      "tables": 0,
+      "height": 1000,
+      "toastsLive": false
+    },
+    {
+      "role": "superadmin",
+      "route": "agentes",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/brand/mine"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        },
+        {
+          "method": "GET",
+          "path": "/api/chatbots"
+        },
+        {
+          "method": "GET",
+          "path": "/api/stats"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        }
+      ],
+      "a11y": [
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "description": "Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds",
+          "nodes": [
+            {
+              "target": [
+                "main > div > p"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".agent-channel > .red.badge"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.44 (foreground color: #c0392b, background color: #fbe3e0, font size: 9.0pt (12px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ]
+        },
+        {
+          "id": "heading-order",
+          "impact": "moderate",
+          "description": "Ensure the order of headings is semantically correct",
+          "nodes": [
+            {
+              "target": [
+                ".between.row > h3"
+              ],
+              "summary": "Fix any of the following:\n  Heading order invalid"
+            }
+          ]
+        },
+        {
+          "id": "select-name",
+          "impact": "critical",
+          "description": "Ensure select element has an accessible name",
+          "nodes": [
+            {
+              "target": [
+                ".account-switch > select"
+              ],
+              "summary": "Fix any of the following:\n  Element does not have an implicit (wrapped) <label>\n  Element does not have an explicit <label>\n  aria-label attribute does not exist or is empty\n  aria-labelledby attribute does not exist, references elements that do not exist or references elements that are empty\n  Element has no title attribute\n  Element's default semantics were not overridden with role=\"none\" or role=\"presentation\""
+            }
+          ]
+        }
+      ],
+      "overflow": false,
+      "interactive": 18,
+      "tables": 0,
+      "height": 1000,
+      "toastsLive": false
+    },
+    {
+      "role": "superadmin",
+      "route": "accounts",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        }
+      ],
+      "a11y": [
+        {
+          "id": "empty-table-header",
+          "impact": "minor",
+          "description": "Ensure table headers have discernible text",
+          "nodes": [
+            {
+              "target": [
+                "th:nth-child(7)"
+              ],
+              "summary": "Fix any of the following:\n  Element does not have text that is visible to screen readers"
+            }
+          ]
+        },
+        {
+          "id": "heading-order",
+          "impact": "moderate",
+          "description": "Ensure the order of headings is semantically correct",
+          "nodes": [
+            {
+              "target": [
+                "h3"
+              ],
+              "summary": "Fix any of the following:\n  Heading order invalid"
+            }
+          ]
+        },
+        {
+          "id": "select-name",
+          "impact": "critical",
+          "description": "Ensure select element has an accessible name",
+          "nodes": [
+            {
+              "target": [
+                "select"
+              ],
+              "summary": "Fix any of the following:\n  Element does not have an implicit (wrapped) <label>\n  Element does not have an explicit <label>\n  aria-label attribute does not exist or is empty\n  aria-labelledby attribute does not exist, references elements that do not exist or references elements that are empty\n  Element has no title attribute\n  Element's default semantics were not overridden with role=\"none\" or role=\"presentation\""
+            }
+          ]
+        }
+      ],
+      "overflow": false,
+      "interactive": 14,
+      "tables": 1,
+      "height": 1000,
+      "toastsLive": false
+    },
+    {
+      "role": "superadmin",
+      "route": "planes",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        },
+        {
+          "method": "GET",
+          "path": "/api/plans"
+        },
+        {
+          "method": "GET",
+          "path": "/api/billing/overview"
+        }
+      ],
+      "a11y": [
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "description": "Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds",
+          "nodes": [
+            {
+              "target": [
+                "main > div > p"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ]
+        },
+        {
+          "id": "heading-order",
+          "impact": "moderate",
+          "description": "Ensure the order of headings is semantically correct",
+          "nodes": [
+            {
+              "target": [
+                ".card:nth-child(1) > h3"
+              ],
+              "summary": "Fix any of the following:\n  Heading order invalid"
+            }
+          ]
+        },
+        {
+          "id": "select-name",
+          "impact": "critical",
+          "description": "Ensure select element has an accessible name",
+          "nodes": [
+            {
+              "target": [
+                "select"
+              ],
+              "summary": "Fix any of the following:\n  Element does not have an implicit (wrapped) <label>\n  Element does not have an explicit <label>\n  aria-label attribute does not exist or is empty\n  aria-labelledby attribute does not exist, references elements that do not exist or references elements that are empty\n  Element has no title attribute\n  Element's default semantics were not overridden with role=\"none\" or role=\"presentation\""
+            }
+          ]
+        }
+      ],
+      "overflow": false,
+      "interactive": 14,
+      "tables": 0,
+      "height": 1294,
+      "toastsLive": false
+    },
+    {
+      "role": "superadmin",
+      "route": "marcas",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        },
+        {
+          "method": "GET",
+          "path": "/api/brands"
+        }
+      ],
+      "a11y": [
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "description": "Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds",
+          "nodes": [
+            {
+              "target": [
+                "p"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ]
+        },
+        {
+          "id": "heading-order",
+          "impact": "moderate",
+          "description": "Ensure the order of headings is semantically correct",
+          "nodes": [
+            {
+              "target": [
+                "h3"
+              ],
+              "summary": "Fix any of the following:\n  Heading order invalid"
+            }
+          ]
+        },
+        {
+          "id": "select-name",
+          "impact": "critical",
+          "description": "Ensure select element has an accessible name",
+          "nodes": [
+            {
+              "target": [
+                "select"
+              ],
+              "summary": "Fix any of the following:\n  Element does not have an implicit (wrapped) <label>\n  Element does not have an explicit <label>\n  aria-label attribute does not exist or is empty\n  aria-labelledby attribute does not exist, references elements that do not exist or references elements that are empty\n  Element has no title attribute\n  Element's default semantics were not overridden with role=\"none\" or role=\"presentation\""
+            }
+          ]
+        }
+      ],
+      "overflow": false,
+      "interactive": 6,
+      "tables": 0,
+      "height": 1000,
+      "toastsLive": false
+    },
+    {
+      "role": "superadmin",
+      "route": "sistema",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        },
+        {
+          "method": "GET",
+          "path": "/api/system/status"
+        }
+      ],
+      "a11y": [
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "description": "Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds",
+          "nodes": [
+            {
+              "target": [
+                "td:nth-child(2) > .red"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.44 (foreground color: #c0392b, background color: #fbe3e0, font size: 9.0pt (12px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ]
+        },
+        {
+          "id": "heading-order",
+          "impact": "moderate",
+          "description": "Ensure the order of headings is semantically correct",
+          "nodes": [
+            {
+              "target": [
+                ".card:nth-child(1) > h3"
+              ],
+              "summary": "Fix any of the following:\n  Heading order invalid"
+            }
+          ]
+        },
+        {
+          "id": "select-name",
+          "impact": "critical",
+          "description": "Ensure select element has an accessible name",
+          "nodes": [
+            {
+              "target": [
+                "select"
+              ],
+              "summary": "Fix any of the following:\n  Element does not have an implicit (wrapped) <label>\n  Element does not have an explicit <label>\n  aria-label attribute does not exist or is empty\n  aria-labelledby attribute does not exist, references elements that do not exist or references elements that are empty\n  Element has no title attribute\n  Element's default semantics were not overridden with role=\"none\" or role=\"presentation\""
+            }
+          ]
+        }
+      ],
+      "overflow": false,
+      "interactive": 2,
+      "tables": 1,
+      "height": 1173,
+      "toastsLive": false
+    },
+    {
+      "role": "superadmin",
+      "route": "users",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        },
+        {
+          "method": "GET",
+          "path": "/api/users"
+        }
+      ],
+      "a11y": [
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "description": "Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds",
+          "nodes": [
+            {
+              "target": [
+                "p"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ]
+        },
+        {
+          "id": "empty-table-header",
+          "impact": "minor",
+          "description": "Ensure table headers have discernible text",
+          "nodes": [
+            {
+              "target": [
+                "th:nth-child(5)"
+              ],
+              "summary": "Fix any of the following:\n  Element does not have text that is visible to screen readers"
+            }
+          ]
+        },
+        {
+          "id": "heading-order",
+          "impact": "moderate",
+          "description": "Ensure the order of headings is semantically correct",
+          "nodes": [
+            {
+              "target": [
+                "h3"
+              ],
+              "summary": "Fix any of the following:\n  Heading order invalid"
+            }
+          ]
+        },
+        {
+          "id": "select-name",
+          "impact": "critical",
+          "description": "Ensure select element has an accessible name",
+          "nodes": [
+            {
+              "target": [
+                ".account-switch > select"
+              ],
+              "summary": "Fix any of the following:\n  Element does not have an implicit (wrapped) <label>\n  Element does not have an explicit <label>\n  aria-label attribute does not exist or is empty\n  aria-labelledby attribute does not exist, references elements that do not exist or references elements that are empty\n  Element has no title attribute\n  Element's default semantics were not overridden with role=\"none\" or role=\"presentation\""
+            },
+            {
+              "target": [
+                "tr:nth-child(1) > td:nth-child(2) > select"
+              ],
+              "summary": "Fix any of the following:\n  Element does not have an implicit (wrapped) <label>\n  Element does not have an explicit <label>\n  aria-label attribute does not exist or is empty\n  aria-labelledby attribute does not exist, references elements that do not exist or references elements that are empty\n  Element has no title attribute\n  Element's default semantics were not overridden with role=\"none\" or role=\"presentation\""
+            },
+            {
+              "target": [
+                "tr:nth-child(2) > td:nth-child(2) > select"
+              ],
+              "summary": "Fix any of the following:\n  Element does not have an implicit (wrapped) <label>\n  Element does not have an explicit <label>\n  aria-label attribute does not exist or is empty\n  aria-labelledby attribute does not exist, references elements that do not exist or references elements that are empty\n  Element has no title attribute\n  Element's default semantics were not overridden with role=\"none\" or role=\"presentation\""
+            }
+          ]
+        }
+      ],
+      "overflow": false,
+      "interactive": 24,
+      "tables": 1,
+      "height": 1080,
+      "toastsLive": false
+    },
+    {
+      "role": "superadmin",
+      "route": "ajustes",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        }
+      ],
+      "a11y": [
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "description": "Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds",
+          "nodes": [
+            {
+              "target": [
+                "div > p"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 9.8pt (13px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ]
+        },
+        {
+          "id": "heading-order",
+          "impact": "moderate",
+          "description": "Ensure the order of headings is semantically correct",
+          "nodes": [
+            {
+              "target": [
+                ".card.tile[href$=\"#/agentes\"] > h3"
+              ],
+              "summary": "Fix any of the following:\n  Heading order invalid"
+            }
+          ]
+        },
+        {
+          "id": "select-name",
+          "impact": "critical",
+          "description": "Ensure select element has an accessible name",
+          "nodes": [
+            {
+              "target": [
+                "select"
+              ],
+              "summary": "Fix any of the following:\n  Element does not have an implicit (wrapped) <label>\n  Element does not have an explicit <label>\n  aria-label attribute does not exist or is empty\n  aria-labelledby attribute does not exist, references elements that do not exist or references elements that are empty\n  Element has no title attribute\n  Element's default semantics were not overridden with role=\"none\" or role=\"presentation\""
+            }
+          ]
+        }
+      ],
+      "overflow": false,
+      "interactive": 10,
+      "tables": 0,
+      "height": 1000,
+      "toastsLive": false
+    },
+    {
+      "role": "superadmin",
+      "route": "integraciones",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        },
+        {
+          "method": "GET",
+          "path": "/api/webhook-endpoints"
+        },
+        {
+          "method": "GET",
+          "path": "/api/webhook-events"
+        },
+        {
+          "method": "GET",
+          "path": "/api/api-keys"
+        },
+        {
+          "method": "GET",
+          "path": "/api/integrations/google"
+        }
+      ],
+      "a11y": [
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "description": "Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds",
+          "nodes": [
+            {
+              "target": [
+                "main > div > p:nth-child(2)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                "p:nth-child(5)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                "p:nth-child(8)"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ]
+        },
+        {
+          "id": "select-name",
+          "impact": "critical",
+          "description": "Ensure select element has an accessible name",
+          "nodes": [
+            {
+              "target": [
+                ".account-switch > select"
+              ],
+              "summary": "Fix any of the following:\n  Element does not have an implicit (wrapped) <label>\n  Element does not have an explicit <label>\n  aria-label attribute does not exist or is empty\n  aria-labelledby attribute does not exist, references elements that do not exist or references elements that are empty\n  Element has no title attribute\n  Element's default semantics were not overridden with role=\"none\" or role=\"presentation\""
+            }
+          ]
+        }
+      ],
+      "overflow": false,
+      "interactive": 15,
+      "tables": 0,
+      "height": 1493,
+      "toastsLive": false
+    },
+    {
+      "role": "agent",
+      "route": "conversations",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/brand/mine"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        },
+        {
+          "method": "GET",
+          "path": "/api/chatbots"
+        },
+        {
+          "method": "GET",
+          "path": "/api/channels"
+        },
+        {
+          "method": "GET",
+          "path": "/api/conversations"
+        }
+      ],
+      "a11y": [
+        {
+          "id": "select-name",
+          "impact": "critical",
+          "description": "Ensure select element has an accessible name",
+          "nodes": [
+            {
+              "target": [
+                ".filter:nth-child(1) > select"
+              ],
+              "summary": "Fix any of the following:\n  Element does not have an implicit (wrapped) <label>\n  Element does not have an explicit <label>\n  aria-label attribute does not exist or is empty\n  aria-labelledby attribute does not exist, references elements that do not exist or references elements that are empty\n  Element has no title attribute\n  Element's default semantics were not overridden with role=\"none\" or role=\"presentation\""
+            },
+            {
+              "target": [
+                ".filter:nth-child(2) > select"
+              ],
+              "summary": "Fix any of the following:\n  Element does not have an implicit (wrapped) <label>\n  Element does not have an explicit <label>\n  aria-label attribute does not exist or is empty\n  aria-labelledby attribute does not exist, references elements that do not exist or references elements that are empty\n  Element has no title attribute\n  Element's default semantics were not overridden with role=\"none\" or role=\"presentation\""
+            },
+            {
+              "target": [
+                ".filter:nth-child(3) > select"
+              ],
+              "summary": "Fix any of the following:\n  Element does not have an implicit (wrapped) <label>\n  Element does not have an explicit <label>\n  aria-label attribute does not exist or is empty\n  aria-labelledby attribute does not exist, references elements that do not exist or references elements that are empty\n  Element has no title attribute\n  Element's default semantics were not overridden with role=\"none\" or role=\"presentation\""
+            },
+            {
+              "target": [
+                ".filter:nth-child(4) > select"
+              ],
+              "summary": "Fix any of the following:\n  Element does not have an implicit (wrapped) <label>\n  Element does not have an explicit <label>\n  aria-label attribute does not exist or is empty\n  aria-labelledby attribute does not exist, references elements that do not exist or references elements that are empty\n  Element has no title attribute\n  Element's default semantics were not overridden with role=\"none\" or role=\"presentation\""
+            }
+          ]
+        }
+      ],
+      "overflow": false,
+      "interactive": 5,
+      "tables": 1,
+      "height": 1000,
+      "toastsLive": false
+    },
+    {
+      "role": "agent",
+      "route": "conversation/91fca8ca-52b5-46dc-9087-ba7edbf5e9e4",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        },
+        {
+          "method": "GET",
+          "path": "/api/conversations/91fca8ca-52b5-46dc-9087-ba7edbf5e9e4"
+        },
+        {
+          "method": "GET",
+          "path": "/api/conversations/91fca8ca-52b5-46dc-9087-ba7edbf5e9e4/automation"
+        },
+        {
+          "method": "GET",
+          "path": "/api/sequences"
+        },
+        {
+          "method": "GET",
+          "path": "/api/services"
+        },
+        {
+          "method": "GET",
+          "path": "/api/services/bc10c04b-2910-4793-ac1d-41d8d757288b/slots"
+        }
+      ],
+      "a11y": [
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "description": "Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds",
+          "nodes": [
+            {
+              "target": [
+                ".row:nth-child(2) > .muted"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 9.8pt (13px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                "main > div > div:nth-child(2) > p"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.47 (foreground color: #6b7280, background color: #f5f6f8, font size: 11.3pt (15px), font weight: normal). Expected contrast ratio of 4.5:1"
+            },
+            {
+              "target": [
+                ".out > .meta"
+              ],
+              "summary": "Fix any of the following:\n  Element has insufficient color contrast of 4.2 (foreground color: #6b7280, background color: #dcf8c6, font size: 8.3pt (11px), font weight: normal). Expected contrast ratio of 4.5:1"
+            }
+          ]
+        },
+        {
+          "id": "heading-order",
+          "impact": "moderate",
+          "description": "Ensure the order of headings is semantically correct",
+          "nodes": [
+            {
+              "target": [
+                "div:nth-child(2) > .card:nth-child(1) > h3"
+              ],
+              "summary": "Fix any of the following:\n  Heading order invalid"
+            }
+          ]
+        },
+        {
+          "id": "label-title-only",
+          "impact": "serious",
+          "description": "Ensure that every form element has a visible label and is not solely labeled using hidden labels, or the title or aria-describedby attributes",
+          "nodes": [
+            {
+              "target": [
+                "input[type=\"date\"]"
+              ],
+              "summary": "Fix all of the following:\n  Only title used to generate label for form element"
+            }
+          ]
+        },
+        {
+          "id": "select-name",
+          "impact": "critical",
+          "description": "Ensure select element has an accessible name",
+          "nodes": [
+            {
+              "target": [
+                ".task-form > select"
+              ],
+              "summary": "Fix any of the following:\n  Element does not have an implicit (wrapped) <label>\n  Element does not have an explicit <label>\n  aria-label attribute does not exist or is empty\n  aria-labelledby attribute does not exist, references elements that do not exist or references elements that are empty\n  Element has no title attribute\n  Element's default semantics were not overridden with role=\"none\" or role=\"presentation\""
+            }
+          ]
+        }
+      ],
+      "overflow": false,
+      "interactive": 26,
+      "tables": 0,
+      "height": 1774,
+      "toastsLive": false
+    },
+    {
+      "role": "agent",
+      "route": "agenda",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        },
+        {
+          "method": "GET",
+          "path": "/api/agenda/info"
+        },
+        {
+          "method": "GET",
+          "path": "/api/appointments"
+        },
+        {
+          "method": "GET",
+          "path": "/api/services"
+        }
+      ],
+      "a11y": [
+        {
+          "id": "heading-order",
+          "impact": "moderate",
+          "description": "Ensure the order of headings is semantically correct",
+          "nodes": [
+            {
+              "target": [
+                ".card:nth-child(3) > h3"
+              ],
+              "summary": "Fix any of the following:\n  Heading order invalid"
+            }
+          ]
+        }
+      ],
+      "overflow": false,
+      "interactive": 10,
+      "tables": 0,
+      "height": 1276,
+      "toastsLive": false
+    },
+    {
+      "role": "agent",
+      "route": "notifications",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        }
+      ],
+      "a11y": [],
+      "overflow": false,
+      "interactive": 1,
+      "tables": 1,
+      "height": 1000,
+      "toastsLive": false
+    },
+    {
+      "role": "agent",
+      "route": "password",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/meta"
+        },
+        {
+          "method": "GET",
+          "path": "/api/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/notifications"
+        }
+      ],
+      "a11y": [],
+      "overflow": false,
+      "interactive": 9,
+      "tables": 0,
+      "height": 1050,
+      "toastsLive": false
+    }
+  ],
+  "responsive": [
+    {
+      "width": 320,
+      "theme": "light",
+      "route": "agentes",
+      "overflow": false,
+      "mainHeight": 797,
+      "viewportHeight": 900
+    },
+    {
+      "width": 320,
+      "theme": "light",
+      "route": "bot/94245ae1-40b7-4843-8b95-e0b20bb72be6/instrucciones",
+      "overflow": false,
+      "mainHeight": 1883,
+      "viewportHeight": 900
+    },
+    {
+      "width": 320,
+      "theme": "light",
+      "route": "conversation/91fca8ca-52b5-46dc-9087-ba7edbf5e9e4",
+      "overflow": false,
+      "mainHeight": 2903,
+      "viewportHeight": 900
+    },
+    {
+      "width": 320,
+      "theme": "light",
+      "route": "conversations",
+      "overflow": false,
+      "mainHeight": 929,
+      "viewportHeight": 900
+    },
+    {
+      "width": 320,
+      "theme": "light",
+      "route": "automation/sequences/new",
+      "overflow": false,
+      "mainHeight": 1832,
+      "viewportHeight": 900
+    },
+    {
+      "width": 320,
+      "theme": "light",
+      "route": "agenda",
+      "overflow": false,
+      "mainHeight": 1375,
+      "viewportHeight": 900
+    },
+    {
+      "width": 320,
+      "theme": "dark",
+      "route": "agentes",
+      "overflow": false,
+      "mainHeight": 797,
+      "viewportHeight": 900
+    },
+    {
+      "width": 320,
+      "theme": "dark",
+      "route": "bot/94245ae1-40b7-4843-8b95-e0b20bb72be6/instrucciones",
+      "overflow": false,
+      "mainHeight": 1883,
+      "viewportHeight": 900
+    },
+    {
+      "width": 320,
+      "theme": "dark",
+      "route": "conversation/91fca8ca-52b5-46dc-9087-ba7edbf5e9e4",
+      "overflow": false,
+      "mainHeight": 2903,
+      "viewportHeight": 900
+    },
+    {
+      "width": 320,
+      "theme": "dark",
+      "route": "conversations",
+      "overflow": false,
+      "mainHeight": 929,
+      "viewportHeight": 900
+    },
+    {
+      "width": 320,
+      "theme": "dark",
+      "route": "automation/sequences/new",
+      "overflow": false,
+      "mainHeight": 1832,
+      "viewportHeight": 900
+    },
+    {
+      "width": 320,
+      "theme": "dark",
+      "route": "agenda",
+      "overflow": false,
+      "mainHeight": 1375,
+      "viewportHeight": 900
+    },
+    {
+      "width": 390,
+      "theme": "light",
+      "route": "agentes",
+      "overflow": false,
+      "mainHeight": 642,
+      "viewportHeight": 900
+    },
+    {
+      "width": 390,
+      "theme": "light",
+      "route": "bot/94245ae1-40b7-4843-8b95-e0b20bb72be6/instrucciones",
+      "overflow": false,
+      "mainHeight": 1765,
+      "viewportHeight": 900
+    },
+    {
+      "width": 390,
+      "theme": "light",
+      "route": "conversation/91fca8ca-52b5-46dc-9087-ba7edbf5e9e4",
+      "overflow": false,
+      "mainHeight": 2712,
+      "viewportHeight": 900
+    },
+    {
+      "width": 390,
+      "theme": "light",
+      "route": "conversations",
+      "overflow": false,
+      "mainHeight": 796,
+      "viewportHeight": 900
+    },
+    {
+      "width": 390,
+      "theme": "light",
+      "route": "automation/sequences/new",
+      "overflow": false,
+      "mainHeight": 1770,
+      "viewportHeight": 900
+    },
+    {
+      "width": 390,
+      "theme": "light",
+      "route": "agenda",
+      "overflow": false,
+      "mainHeight": 1330,
+      "viewportHeight": 900
+    },
+    {
+      "width": 390,
+      "theme": "dark",
+      "route": "agentes",
+      "overflow": false,
+      "mainHeight": 642,
+      "viewportHeight": 900
+    },
+    {
+      "width": 390,
+      "theme": "dark",
+      "route": "bot/94245ae1-40b7-4843-8b95-e0b20bb72be6/instrucciones",
+      "overflow": false,
+      "mainHeight": 1765,
+      "viewportHeight": 900
+    },
+    {
+      "width": 390,
+      "theme": "dark",
+      "route": "conversation/91fca8ca-52b5-46dc-9087-ba7edbf5e9e4",
+      "overflow": false,
+      "mainHeight": 2712,
+      "viewportHeight": 900
+    },
+    {
+      "width": 390,
+      "theme": "dark",
+      "route": "conversations",
+      "overflow": false,
+      "mainHeight": 796,
+      "viewportHeight": 900
+    },
+    {
+      "width": 390,
+      "theme": "dark",
+      "route": "automation/sequences/new",
+      "overflow": false,
+      "mainHeight": 1770,
+      "viewportHeight": 900
+    },
+    {
+      "width": 390,
+      "theme": "dark",
+      "route": "agenda",
+      "overflow": false,
+      "mainHeight": 1330,
+      "viewportHeight": 900
+    },
+    {
+      "width": 768,
+      "theme": "light",
+      "route": "agentes",
+      "overflow": false,
+      "mainHeight": 553,
+      "viewportHeight": 900
+    },
+    {
+      "width": 768,
+      "theme": "light",
+      "route": "bot/94245ae1-40b7-4843-8b95-e0b20bb72be6/instrucciones",
+      "overflow": false,
+      "mainHeight": 1407,
+      "viewportHeight": 900
+    },
+    {
+      "width": 768,
+      "theme": "light",
+      "route": "conversation/91fca8ca-52b5-46dc-9087-ba7edbf5e9e4",
+      "overflow": false,
+      "mainHeight": 2613,
+      "viewportHeight": 900
+    },
+    {
+      "width": 768,
+      "theme": "light",
+      "route": "conversations",
+      "overflow": false,
+      "mainHeight": 647,
+      "viewportHeight": 900
+    },
+    {
+      "width": 768,
+      "theme": "light",
+      "route": "automation/sequences/new",
+      "overflow": false,
+      "mainHeight": 1475,
+      "viewportHeight": 900
+    },
+    {
+      "width": 768,
+      "theme": "light",
+      "route": "agenda",
+      "overflow": false,
+      "mainHeight": 1229,
+      "viewportHeight": 900
+    },
+    {
+      "width": 768,
+      "theme": "dark",
+      "route": "agentes",
+      "overflow": false,
+      "mainHeight": 553,
+      "viewportHeight": 900
+    },
+    {
+      "width": 768,
+      "theme": "dark",
+      "route": "bot/94245ae1-40b7-4843-8b95-e0b20bb72be6/instrucciones",
+      "overflow": false,
+      "mainHeight": 1407,
+      "viewportHeight": 900
+    },
+    {
+      "width": 768,
+      "theme": "dark",
+      "route": "conversation/91fca8ca-52b5-46dc-9087-ba7edbf5e9e4",
+      "overflow": false,
+      "mainHeight": 2613,
+      "viewportHeight": 900
+    },
+    {
+      "width": 768,
+      "theme": "dark",
+      "route": "conversations",
+      "overflow": false,
+      "mainHeight": 647,
+      "viewportHeight": 900
+    },
+    {
+      "width": 768,
+      "theme": "dark",
+      "route": "automation/sequences/new",
+      "overflow": false,
+      "mainHeight": 1475,
+      "viewportHeight": 900
+    },
+    {
+      "width": 768,
+      "theme": "dark",
+      "route": "agenda",
+      "overflow": false,
+      "mainHeight": 1229,
+      "viewportHeight": 900
+    },
+    {
+      "width": 1024,
+      "theme": "light",
+      "route": "agentes",
+      "overflow": false,
+      "mainHeight": 900,
+      "viewportHeight": 900
+    },
+    {
+      "width": 1024,
+      "theme": "light",
+      "route": "bot/94245ae1-40b7-4843-8b95-e0b20bb72be6/instrucciones",
+      "overflow": false,
+      "mainHeight": 1479,
+      "viewportHeight": 900
+    },
+    {
+      "width": 1024,
+      "theme": "light",
+      "route": "conversation/91fca8ca-52b5-46dc-9087-ba7edbf5e9e4",
+      "overflow": false,
+      "mainHeight": 2764,
+      "viewportHeight": 900
+    },
+    {
+      "width": 1024,
+      "theme": "light",
+      "route": "conversations",
+      "overflow": false,
+      "mainHeight": 900,
+      "viewportHeight": 900
+    },
+    {
+      "width": 1024,
+      "theme": "light",
+      "route": "automation/sequences/new",
+      "overflow": false,
+      "mainHeight": 1530,
+      "viewportHeight": 900
+    },
+    {
+      "width": 1024,
+      "theme": "light",
+      "route": "agenda",
+      "overflow": false,
+      "mainHeight": 1413,
+      "viewportHeight": 900
+    },
+    {
+      "width": 1024,
+      "theme": "dark",
+      "route": "agentes",
+      "overflow": false,
+      "mainHeight": 900,
+      "viewportHeight": 900
+    },
+    {
+      "width": 1024,
+      "theme": "dark",
+      "route": "bot/94245ae1-40b7-4843-8b95-e0b20bb72be6/instrucciones",
+      "overflow": false,
+      "mainHeight": 1479,
+      "viewportHeight": 900
+    },
+    {
+      "width": 1024,
+      "theme": "dark",
+      "route": "conversation/91fca8ca-52b5-46dc-9087-ba7edbf5e9e4",
+      "overflow": false,
+      "mainHeight": 2764,
+      "viewportHeight": 900
+    },
+    {
+      "width": 1024,
+      "theme": "dark",
+      "route": "conversations",
+      "overflow": false,
+      "mainHeight": 900,
+      "viewportHeight": 900
+    },
+    {
+      "width": 1024,
+      "theme": "dark",
+      "route": "automation/sequences/new",
+      "overflow": false,
+      "mainHeight": 1530,
+      "viewportHeight": 900
+    },
+    {
+      "width": 1024,
+      "theme": "dark",
+      "route": "agenda",
+      "overflow": false,
+      "mainHeight": 1413,
+      "viewportHeight": 900
+    },
+    {
+      "width": 1440,
+      "theme": "light",
+      "route": "agentes",
+      "overflow": false,
+      "mainHeight": 900,
+      "viewportHeight": 900
+    },
+    {
+      "width": 1440,
+      "theme": "light",
+      "route": "bot/94245ae1-40b7-4843-8b95-e0b20bb72be6/instrucciones",
+      "overflow": false,
+      "mainHeight": 1384,
+      "viewportHeight": 900
+    },
+    {
+      "width": 1440,
+      "theme": "light",
+      "route": "conversation/91fca8ca-52b5-46dc-9087-ba7edbf5e9e4",
+      "overflow": false,
+      "mainHeight": 2079,
+      "viewportHeight": 900
+    },
+    {
+      "width": 1440,
+      "theme": "light",
+      "route": "conversations",
+      "overflow": false,
+      "mainHeight": 900,
+      "viewportHeight": 900
+    },
+    {
+      "width": 1440,
+      "theme": "light",
+      "route": "automation/sequences/new",
+      "overflow": false,
+      "mainHeight": 1469,
+      "viewportHeight": 900
+    },
+    {
+      "width": 1440,
+      "theme": "light",
+      "route": "agenda",
+      "overflow": false,
+      "mainHeight": 1358,
+      "viewportHeight": 900
+    },
+    {
+      "width": 1440,
+      "theme": "dark",
+      "route": "agentes",
+      "overflow": false,
+      "mainHeight": 900,
+      "viewportHeight": 900
+    },
+    {
+      "width": 1440,
+      "theme": "dark",
+      "route": "bot/94245ae1-40b7-4843-8b95-e0b20bb72be6/instrucciones",
+      "overflow": false,
+      "mainHeight": 1384,
+      "viewportHeight": 900
+    },
+    {
+      "width": 1440,
+      "theme": "dark",
+      "route": "conversation/91fca8ca-52b5-46dc-9087-ba7edbf5e9e4",
+      "overflow": false,
+      "mainHeight": 2079,
+      "viewportHeight": 900
+    },
+    {
+      "width": 1440,
+      "theme": "dark",
+      "route": "conversations",
+      "overflow": false,
+      "mainHeight": 900,
+      "viewportHeight": 900
+    },
+    {
+      "width": 1440,
+      "theme": "dark",
+      "route": "automation/sequences/new",
+      "overflow": false,
+      "mainHeight": 1469,
+      "viewportHeight": 900
+    },
+    {
+      "width": 1440,
+      "theme": "dark",
+      "route": "agenda",
+      "overflow": false,
+      "mainHeight": 1358,
+      "viewportHeight": 900
+    }
+  ],
+  "probes": {
+    "unsavedInstructionLost": true,
+    "formLimits": {
+      "maxlengthText": null,
+      "maxlengthArea": null
+    },
+    "unsavedContactLostOnPolling": true,
+    "simulatorConcurrentPosts": 2,
+    "simulatorTextOnFailure": "",
+    "failedDeleteNavigatesAway": true,
+    "inactiveAgentConnectionClaimsResponding": true,
+    "brandContrast": {
+      "foreground": "rgb(255, 255, 255)",
+      "background": "rgb(255, 255, 255)"
+    }
+  },
+  "errors": []
+}

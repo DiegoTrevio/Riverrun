@@ -103,6 +103,9 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
   /* ------------------------------ Cuentas ------------------------------ */
   api.get('/api/accounts', async (req) => {
     const all = req.user.role === 'superadmin';
+    if ((req.query as { view?: string }).view === 'selector') {
+      return query('SELECT id, name, active, business_type FROM accounts ' + (all ? '' : 'WHERE id = $1 ') + 'ORDER BY created_at DESC', all ? [] : [req.user.account_id]);
+    }
     const rows = await query(
       `SELECT a.*,
          (SELECT count(*)::int FROM chatbots b WHERE b.account_id = a.id) AS chatbots,
