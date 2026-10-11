@@ -1,0 +1,33 @@
+# Entorno de staging y pruebas. Se usa junto con el compose principal, nunca solo:
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.staging.yml docker compose up -d
+#
+# Garantías (scripts/test-staging-overlay.sh las comprueba con la configuración renderizada):
+#   - proyecto propio: volúmenes y redes con nombres distintos de producción (name abajo)
+#   - todo puerto publicado queda en 127.0.0.1, aunque .env diga otra cosa (PANEL_BIND)
+#   - sin HTTPS público: caddy no arranca aquí, ni con COMPOSE_PROFILES=https
+#   - OUTBOUND_MODE=sandbox: ningún envío real salvo los destinos de OUTBOUND_SANDBOX_ALLOW
+#   - sin alertas externas, sin latido y sin copia de respaldos a la nube
+#
+# Lo que el overlay NO puede garantizar: las claves (EVOLUTION_API_KEY, OPENROUTER_API_KEY, claves de pago) son las que
+# pongas en el .env de staging. Usa claves de prueba y nunca copies el .env de producción.
+name: riverrun-staging
+
+services:
+  backend:
+    ports: !override
+      - "127.0.0.1:3000:3000"
+    environment:
+      OUTBOUND_MODE: sandbox
+      ALERT_WEBHOOK_URL: ""
+      HEARTBEAT_URL: ""
+
+  backup:
+    environment:
+      BACKUP_S3_BUCKET: ""
+      BACKUP_S3_ENDPOINT: ""
+      BACKUP_S3_KEY: ""
+      BACKUP_S3_SECRET: ""
+
+  caddy:
+    profiles: !override ["staging-sin-https"]
+    ports: !override []

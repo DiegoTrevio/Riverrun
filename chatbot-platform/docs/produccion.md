@@ -58,7 +58,17 @@ Qué **no** bloquea, y por eso staging debe configurarse aparte:
 
 Un valor de `OUTBOUND_MODE` distinto de `live` o `sandbox` impide arrancar: un error de escritura no puede dejar un entorno en modo real sin querer.
 
-**Aislamiento completo de staging: pendiente.** Todavía no existe un `docker-compose.staging.yml`. Hoy, un staging aislado requiere otro servidor (o al menos otro proyecto de Compose con su propio `COMPOSE_PROJECT_NAME`, volúmenes, dominio, `.env` y claves). Esa combinación no se ha probado de extremo a extremo.
+**Overlay de staging: `docker-compose.staging.yml`.** Se usa junto con el compose principal, nunca solo:
+
+```bash
+COMPOSE_FILE=docker-compose.yml:docker-compose.staging.yml docker compose up -d
+```
+
+Lo que fuerza, aunque el `.env` diga otra cosa: proyecto propio (`riverrun-staging`, volúmenes separados de producción), todo puerto publicado en `127.0.0.1` (incluido `PANEL_BIND=0.0.0.0`), caddy sin HTTPS público, `OUTBOUND_MODE=sandbox`, sin alertas externas ni latido, y sin copia de respaldos a la nube.
+
+`scripts/test-staging-overlay.sh` comprueba esas garantías sobre la configuración que Compose renderiza, con un `.env` temporal de valores falsos. Verificado: las ocho comprobaciones pasan. Como control, el compose base sin overlay, con `PANEL_BIND=0.0.0.0` y `OUTBOUND_MODE=live`, publica el panel en `0.0.0.0` y envía en `live`: lo comprobé a mano, no con el script.
+
+**Lo que el overlay no garantiza:** las claves. Staging usa las que pongas en su `.env`: claves de prueba y nunca una copia del `.env` de producción. Tampoco está probado todavía que el stack de staging arranque de punta a punta con Docker; eso queda en el paso de CI del plan.
 
 ## Actualizar
 
