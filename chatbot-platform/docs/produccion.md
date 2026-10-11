@@ -132,9 +132,18 @@ Quedan sin probar con fallos reales: disco lleno, respaldo fallido, falta de mem
 
 ## Límites de recursos para un VPS de ~2 GB
 
-- **Medido en un servidor real: nada todavía.** No hay una prueba de carga ejecutada.
-- Configurado: `RESOURCE_WARN_RSS_MB=1024` avisa si el proceso del backend crece por encima de 1 GB. El pool de PostgreSQL usa como máximo 10 conexiones.
-- **Pendiente:** límites de memoria por contenedor en `docker-compose.yml` (hoy no están definidos) y un script de carga. No conviene ejecutar una carga contra producción.
+- **Medido: nada todavía.** Ninguna prueba de carga se ha ejecutado contra un servidor real, y los límites de abajo no están medidos.
+- Configurado en producción: `RESOURCE_WARN_RSS_MB=1024` avisa si el proceso del backend crece por encima de 1 GB. El pool de PostgreSQL usa como máximo 10 conexiones. Producción **no** tiene límites de memoria por contenedor: añadirlos cambiaría su comportamiento en el próximo `update`, así que es una decisión aparte.
+- En staging, el overlay fija límites de memoria para aproximar un VPS de ~2 GB: PostgreSQL 384 MB, Redis 128 MB, Evolution 512 MB, backend 512 MB y respaldos 256 MB. Son un punto de partida, no datos medidos.
+
+**Prueba de carga (`scripts/load-test.mjs`)**: solo lectura. Pega a `/health`, `/health/ready`, `/health/functional` y `/metrics`. No escribe, no envía mensajes y no llama a proveedores. Se niega a correr salvo que se cumplan tres cosas: la URL es loopback, `LOAD_TEST_TARGET=staging` y hay `HEALTH_TOKEN`. Para un staging remoto, con un túnel:
+
+```bash
+ssh -L 3000:127.0.0.1:3000 servidor-staging
+LOAD_TEST_TARGET=staging HEALTH_TOKEN=... node scripts/load-test.mjs --duration 60 --concurrency 10
+```
+
+Sale con código 1 si la tasa de errores supera 1% o el p95 supera `--max-p95-ms` (1000 por defecto). Limitación: mide la capa de salud y métricas, no el procesamiento de mensajes; probar ese camino exigiría escribir y gastar IA, y eso no entra en una prueba de solo lectura. Lo verifica `test/load-test.test.ts` (7 pruebas, con un servidor local). **No se ha corrido contra un staging real.**
 
 ## Pruebas que necesitan cuentas o teléfonos reales
 
@@ -155,5 +164,6 @@ Lista para quien vaya a publicar. Mientras cualquiera esté pendiente, no declar
 - Ventana de observación tras actualizar.
 - Panel (Sistema) que muestre los cinco estados; hoy la API los entrega, el panel no.
 - Fallos inyectados sobre el stack real, ejecutados en GitHub (`scripts/fault-inject.sh`): hoy no se han corrido. Y fallos todavía sin prueba: disco lleno, respaldo fallido, memoria y reversión tras un fallo real.
-- Prueba de carga y límites de memoria por contenedor.
+- Resultados medidos de la prueba de carga contra staging y ajuste de los límites de memoria del overlay con esos datos.
+- Límites de memoria en producción: decisión pendiente, no se aplican solos.
 - Prueba periódica de restauración en un servidor distinto.

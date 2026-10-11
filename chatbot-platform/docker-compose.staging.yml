@@ -12,8 +12,20 @@
 # pongas en el .env de staging. Usa claves de prueba y nunca copies el .env de producción.
 name: riverrun-staging
 
+# Límites de memoria para comprobar el comportamiento en un VPS de ~2 GB. Son un punto de partida, NO medidos: ajústalos
+# con la prueba de carga (scripts/load-test.mjs) y con ./riverrun status. Producción no los tiene: ver docs/produccion.md.
 services:
+  postgres:
+    mem_limit: 384m
+
+  redis:
+    mem_limit: 128m
+
+  evolution:
+    mem_limit: 512m
+
   backend:
+    mem_limit: 512m
     ports: !override
       - "127.0.0.1:3000:3000"
     environment:
@@ -24,6 +36,7 @@ services:
       HEARTBEAT_URL: ""
 
   backup:
+    mem_limit: 256m
     environment:
       BACKUP_S3_BUCKET: ""
       BACKUP_S3_ENDPOINT: ""

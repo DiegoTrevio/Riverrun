@@ -71,6 +71,10 @@ check "staging no se declara producción (RIVERRUN_ENV=test), o la validación l
   "return cfg.services.backend.environment.RIVERRUN_ENV === 'test';" \
   "$caso_hostil"
 
+check "staging limita la memoria del backend y de Evolution (comportamiento de un VPS de ~2 GB)" \
+  "return cfg.services.backend.mem_limit > 0 && cfg.services.evolution.mem_limit > 0;" \
+  "$caso_base"
+
 check "sin alertas externas ni latido" \
   "const e = cfg.services.backend.environment; return e.ALERT_WEBHOOK_URL === '' && e.HEARTBEAT_URL === '';" \
   "$caso_base"
