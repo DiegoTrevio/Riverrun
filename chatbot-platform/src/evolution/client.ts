@@ -1,6 +1,6 @@
 
 /** Eventos que Evolution envía al backend: mensajes, estado de conexión y QR nuevos. */
-const WEBHOOK_EVENTS = ['MESSAGES_UPSERT', 'CONNECTION_UPDATE', 'QRCODE_UPDATED'];
+export const WEBHOOK_EVENTS = ['MESSAGES_UPSERT', 'CONNECTION_UPDATE', 'QRCODE_UPDATED'];
 
 export class EvolutionError extends Error {
   constructor(message: string, public status?: number, public body?: unknown) {
@@ -123,6 +123,37 @@ export class EvolutionClient {
     const jid = String(data?.ownerJid ?? data?.owner ?? '');
     if (!data) return null;
     return { number: jid.split('@')[0].split(':')[0].replace(/\D/g, ''), profileName: String(data?.profileName ?? '') };
+  }
+
+  /* ---------- Solo lectura: diagnóstico (nunca crean, borran ni desconectan nada) ---------- */
+
+  /** Raíz de Evolution: responde sin clave e informa su versión (v2: { version, clientName, … }). */
+  async serverInfo(): Promise<{ version: string | null; clientName: string | null }> {
+    const res = await this.request('GET', '/', undefined, 0);
+    const version = typeof res?.version === 'string' && res.version ? res.version : null;
+    return { version, clientName: typeof res?.clientName === 'string' ? res.clientName : null };
+  }
+
+  /**
+   * Comprueba la llave global con una consulta que no devuelve datos (una instancia que no existe). En Evolution v2 la
+   * llave se valida antes de buscar la instancia: 401/403 = llave rechazada; 404 ("not found") = llave aceptada.
+   */
+  async checkApiKey(): Promise<boolean> {
+    try {
+      await this.request('GET', '/instance/fetchInstances?instanceName=__riverrun_probe__', undefined, 0);
+      return true;
+    } catch (e: any) {
+      if (e?.status === 404) return true;
+      if (e?.status === 401 || e?.status === 403) return false;
+      throw e;
+    }
+  }
+
+  /** Webhook configurado en la instancia (null si no tiene). */
+  async findWebhook(instance: string): Promise<{ url: string; enabled: boolean; events: string[] } | null> {
+    const res = await this.request('GET', `/webhook/find/${encodeURIComponent(instance)}`, undefined, 0);
+    if (!res || typeof res !== 'object' || !res.url) return null;
+    return { url: String(res.url), enabled: res.enabled !== false, events: Array.isArray(res.events) ? res.events.map(String) : [] };
   }
 
   async connectionState(instance: string): Promise<string> {

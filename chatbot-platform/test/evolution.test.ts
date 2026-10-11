@@ -47,3 +47,28 @@ test('EvolutionClient: rutas, apikey, cuerpo y reintento ante 5xx', async () => 
     server.close();
   }
 });
+
+test('EvolutionClient: la sonda de la llave distingue aceptada (200/404), rechazada (401/403) y error (5xx)', async () => {
+  let status = 404;
+  const server = http.createServer((req, res) => {
+    res.writeHead(req.url!.startsWith('/instance/fetchInstances') ? status : 200, { 'content-type': 'application/json' });
+    res.end(req.url === '/' ? JSON.stringify({ status: 200, version: '2.3.7', clientName: 'evolution' }) : JSON.stringify({ response: { message: ['x'] } }));
+  });
+  await new Promise<void>((r) => server.listen(0, r));
+  const evo = new EvolutionClient(`http://127.0.0.1:${(server.address() as any).port}`, 'KEY', 2000);
+  try {
+    // Evolution 2.3.7 real: valida la llave y después responde 404 porque la instancia de la sonda no existe.
+    assert.equal(await evo.checkApiKey(), true);
+    status = 200;
+    assert.equal(await evo.checkApiKey(), true);
+    status = 401;
+    assert.equal(await evo.checkApiKey(), false);
+    status = 403;
+    assert.equal(await evo.checkApiKey(), false);
+    status = 503;
+    await assert.rejects(() => evo.checkApiKey(), (e: any) => e.status === 503);
+    assert.deepEqual(await evo.serverInfo(), { version: '2.3.7', clientName: 'evolution' });
+  } finally {
+    server.close();
+  }
+});

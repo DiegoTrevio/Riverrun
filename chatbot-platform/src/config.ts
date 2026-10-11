@@ -45,6 +45,8 @@ export const config = {
   evolution: {
     url: env('EVOLUTION_URL', 'http://localhost:8080').replace(/\/$/, ''),
     apiKey: env('EVOLUTION_API_KEY', ''),
+    /** Imagen configurada en docker-compose.yml (la recibe también el backend para compararla con la versión que responde). */
+    image: env('EVOLUTION_IMAGE', ''),
   },
   openai: {
     apiKey: env('OPENROUTER_API_KEY', env('OPENAI_API_KEY', '')),
@@ -130,6 +132,18 @@ export const config = {
     /** Horas sin respaldo nuevo antes de avisar. */
     backupMaxAgeHours: Number(env('BACKUP_MAX_AGE_HOURS', '36')),
     version: env('APP_VERSION', 'dev'),
+  },
+  /**
+   * Umbrales de la vigilancia de WhatsApp (sesiones y entregas). Son heurísticas: ajústalas con datos de tu operación
+   * sin tocar código. Ver docs/evolution-api.md → Monitoreo preventivo.
+   */
+  whatsappAlerts: {
+    /** Fracción de los canales vinculados que, desconectados tras un cambio de versión, cuenta como falla. */
+    downRatio: Number(env('WHATSAPP_ALERT_DOWN_RATIO', '0.5')),
+    /** Envíos fallidos en 15 minutos que avisan. */
+    sendFailures: Number(env('WHATSAPP_ALERT_SEND_FAILURES', '5')),
+    /** Horas tras un cambio de versión de Evolution en las que se vigilan desconexiones y fallos. */
+    postUpdateHours: Number(env('WHATSAPP_POST_UPDATE_HOURS', '24')),
   },
   /** Aviso (sin bloqueo) cuando una cuenta supera este gasto de IA en el mes, en USD. 0 = sin aviso. */
   aiAlertUsdPerAccount: Number(env('AI_ALERT_USD_PER_ACCOUNT', '0')),

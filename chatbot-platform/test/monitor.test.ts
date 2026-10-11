@@ -44,7 +44,7 @@ t('/health/ready: 200 con el sistema sano y sin exponer detalles', async () => {
   assert.equal(r.statusCode, 200, r.body);
   const body = r.json();
   assert.ok(['ok', 'warn'].includes(body.status));
-  assert.deepEqual(body.checks.map((c: any) => c.name), ['database', 'whatsapp', 'scheduler', 'ai', 'models', 'backup', 'disk']);
+  assert.deepEqual(body.checks.map((c: any) => c.name), ['database', 'whatsapp', 'whatsapp_sessions', 'scheduler', 'ai', 'models', 'backup', 'disk']);
   assert.ok(body.checks.every((c: any) => !('detail' in c)));
   assert.equal((await h.app.inject({ method: 'GET', url: '/health' })).json().ok, true);
 });
@@ -145,7 +145,7 @@ t('estado del sistema: solo el superadmin', async () => {
   const r = await h.authed('GET', '/api/system/status');
   assert.equal(r.statusCode, 200, r.body);
   const body = r.json();
-  assert.ok(Array.isArray(body.checks) && body.checks.length === 7);
+  assert.ok(Array.isArray(body.checks) && body.checks.length === 8);
   assert.equal(typeof body.uptime_seconds, 'number');
   assert.ok(body.backup && body.backup.remote_ok === false);
   const signup = await h.app.inject({ method: 'POST', url: '/api/signup', remoteAddress: '10.8.8.8', payload: { name: 'Ana', company: 'Otra', business_type: 'otro', email: 'ana@otra.mx', password: 'clave-ana-123', accept_terms: true } });

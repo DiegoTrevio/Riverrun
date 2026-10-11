@@ -3,13 +3,16 @@
 #
 #   ./riverrun install     instala todo (genera claves, pregunta lo mínimo, levanta los servicios)
 #   ./riverrun update      actualiza con respaldo previo y vuelta atrás automática si algo falla
+#                          (si cambia Evolution: compatibilidad, respaldo verificado, confirmación y verificación de sesiones)
 #   ./riverrun status      estado de los servicios, salud, último respaldo y si hay versión nueva
 #   ./riverrun backup      respaldo inmediato (corre solo cada noche)
 #   ./riverrun restore [archivo|latest]   restaura un respaldo (en un servidor nuevo: pasa la ruta del archivo)
 #   ./riverrun semantic    activa la búsqueda semántica (pgvector) para catálogos grandes
 #   ./riverrun logs [servicio]            registros en vivo
 #   ./riverrun restart     aplica cambios hechos a .env
+#   ./riverrun rotate-secret   cambia SESSION_SECRET (respaldo antes, confirmación, consecuencias avisadas)
 #
+# Opciones de update: --no-backup  --accept-db-image-change  --accept-evolution-change (confirma sin preguntar)
 # Opciones de install (o variables de entorno, para instalar sin preguntas):
 #   --non-interactive  --no-start
 #   RIVERRUN_DOMAIN  RIVERRUN_ADMIN_EMAIL  RIVERRUN_ADMIN_PASSWORD  OPENROUTER_API_KEY  SMTP_URL
@@ -29,13 +32,13 @@ dc() { docker compose "$@"; }
 need_docker() { command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; }
 rand() { openssl rand -hex "${1:-24}"; }
 
-env_get() { sed -n "s/^$1=\\(.*\\)$/\\1/p" "$ENV_FILE" 2>/dev/null | tail -n 1; }
+env_get() { [[ -f "$ENV_FILE" ]] || return 0; sed -n "s/^$1=\\(.*\\)$/\\1/p" "$ENV_FILE" 2>/dev/null | tail -n 1; }
 env_set() { # clave valor — reemplaza (o agrega) sin interpretar caracteres especiales
   local k="$1" v="$2" tmp; tmp="$(mktemp)"
   if grep -q "^$k=" "$ENV_FILE" 2>/dev/null; then
     K="$k" V="$v" awk 'BEGIN{FS=OFS="="} $1==ENVIRON["K"] {print ENVIRON["K"] "=" ENVIRON["V"]; next} {print}' "$ENV_FILE" > "$tmp"
   else
-    { cat "$ENV_FILE" 2>/dev/null; echo "$k=$v"; } > "$tmp"
+    { if [[ -f "$ENV_FILE" ]]; then cat "$ENV_FILE"; fi; echo "$k=$v"; } > "$tmp"
   fi
   cat "$tmp" > "$ENV_FILE"; rm -f "$tmp"; chmod 600 "$ENV_FILE"
 }
@@ -65,7 +68,135 @@ wait_healthy() { # segundos (RIVERRUN_WAIT_SECONDS / RIVERRUN_POLL permiten acor
   return 1
 }
 
-health_json() { dc exec -T backend wget -qO- http://127.0.0.1:3000/health/ready 2>/dev/null || true; }
+# /health/ready completo. Con node (no wget): wget no imprime el cuerpo de un 503, justo cuando algo falla.
+health_json() { dc exec -T backend node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/health/ready').then(r=>r.text()).then(t=>process.stdout.write(t)).catch(()=>process.exit(1))" 2>/dev/null || true; }
+# Comprobaciones en falla ("ai whatsapp …"); "?" si el backend no responde.
+health_failing() {
+  local j; j="$(health_json)"
+  [[ -n "$j" ]] || { echo "?"; return 0; }
+  printf '%s' "$j" | grep -o '"name":"[a-z_]*","status":"fail"' | sed 's/"name":"\([a-z_]*\)".*/\1/' | tr '\n' ' ' || true
+}
+# Después de actualizar: ninguna comprobación que antes estaba bien queda en falla (lo que ya fallaba no bloquea).
+no_new_failures() {
+  local now c new=""; now="$(health_failing)"
+  if [[ "$now" == "?" ]]; then warn "El backend no responde a /health/ready."; return 1; fi
+  [[ "${HEALTH_BEFORE:-?}" == "?" ]] && return 0
+  for c in $now; do [[ " $HEALTH_BEFORE " == *" $c "* ]] || new="$new $c"; done
+  [[ -z "$new" ]] && return 0
+  warn "Con la versión nueva falla (antes no):$new. Detalle: ./riverrun status o el panel (Sistema)."
+  return 1
+}
+
+# ------------------------------------------------------------------ revisión previa y Evolution
+# Revisa la configuración con la imagen del backend ya construida, sin arrancarla (nada se conecta).
+# Devuelve 1 solo si hay problemas críticos; si la revisión no se puede correr (imagen anterior), no bloquea.
+# Corre una herramienta del backend en un contenedor de un solo uso (sin dependencias). La salida de Docker
+# ("Creating…") va a un archivo aparte: solo se muestra si la herramienta no pudo ni ejecutarse.
+backend_tool() {
+  local err rc=0; err="$(mktemp)"
+  TOOL_OUT="$(dc run --rm --no-deps -T backend node "$@" 2>"$err")" || rc=$?
+  if (( rc != 0 && rc != 2 && rc != 3 && rc != 4 )); then tail -n 5 "$err" >&2; fi
+  rm -f "$err"; return "$rc"
+}
+
+preflight_config() {
+  local rc=0
+  backend_tool dist/cli/config-check.js || rc=$?
+  if (( rc == 2 )); then say "$TOOL_OUT"; return 1; fi
+  if (( rc != 0 )); then warn "No se pudo revisar la configuración antes de aplicar (código $rc); el arranque la revisará."; return 0; fi
+  say "$TOOL_OUT" | head -n 1 | sed 's/^/  /'
+}
+
+evo_target_image() { dc config evolution 2>/dev/null | awk '/^  evolution:$/{f=1;next} f&&/^  [^ ]/{f=0} f&&/^    image:/{print $2; exit}'; }
+evo_container() { dc ps -q evolution 2>/dev/null | head -n 1; }
+evo_running_ref() { local c; c="$(evo_container)"; [[ -z "$c" ]] || docker inspect --format '{{.Config.Image}}' "$c" 2>/dev/null || true; }
+evo_running_id() { local c; c="$(evo_container)"; [[ -z "$c" ]] || docker inspect --format '{{.Image}}' "$c" 2>/dev/null || true; }
+evo_image_id() { docker image inspect --format '{{.Id}}' "$1" 2>/dev/null || true; }
+# La imagen que corre, por digest si se conoce: para volver a ella exactamente.
+evo_running_pin() {
+  local id d; id="$(evo_running_id)"; [[ -n "$id" ]] || return 0
+  d="$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$id" 2>/dev/null | head -n 1)"
+  if [[ -n "$d" ]]; then echo "$d"; else evo_running_ref; fi
+}
+# Última migración de la base de Evolution: "-" sin esquema todavía, "?" si no se pudo leer.
+evo_db_migration() {
+  local q="SELECT CASE WHEN to_regclass('public._prisma_migrations') IS NULL THEN '-' ELSE coalesce((SELECT max(migration_name) FROM _prisma_migrations WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL), '-') END"
+  local v; v="$(dc exec -T postgres psql -U chatbot -d evolution -Atc "$q" 2>/dev/null | tr -d '[:space:]')" || true
+  echo "${v:-?}"
+}
+# Instancias del servidor de Evolution propio de la instalación con la sesión abierta (para comprobar que vuelven).
+evo_open_instances() {
+  dc exec -T postgres psql -U chatbot -d chatbot -Atc "SELECT coalesce(string_agg(config->>'instance', ','), '') FROM channels WHERE type = 'whatsapp' AND active AND connection_state = 'open' AND coalesce(config->>'url', '') = ''" 2>/dev/null | tr -d '[:space:]' || true
+}
+# ¿La imagen configurada es distinta de la que corre? (sin contenedor todavía no hay nada que proteger)
+evo_change_pending() {
+  local target running tid; target="$(evo_target_image)"; running="$(evo_running_ref)"
+  [[ -n "$target" && -n "$running" && "$target" != "$running" ]] || return 1
+  tid="$(evo_image_id "$target")"
+  [[ -z "$tid" || "$tid" != "$(evo_running_id)" ]]
+}
+guard_evolution_change() {
+  evo_change_pending || return 0
+  die "La imagen de Evolution configurada ($(evo_target_image)) no es la que corre ($(evo_running_ref)). Cambiarla puede migrar su base de datos: aplícala con ./riverrun update (respaldo verificado, confirmación y verificación de sesiones)."
+}
+
+# Confirmación explícita para un cambio de Evolution con riesgo (migraciones o versión no verificada).
+confirm_evolution() {
+  if (( ACCEPT_EVO )); then warn "Cambio de Evolution aceptado con --accept-evolution-change."; return 0; fi
+  if [[ -t 0 ]]; then
+    local sure=""; read -r -p "Escribe ACTUALIZAR EVOLUTION para continuar (cualquier otra cosa cancela): " sure || true
+    [[ "$sure" == "ACTUALIZAR EVOLUTION" ]] && return 0
+    EVO_ABORT="Cancelado: no se aplicó nada."; return 1
+  fi
+  EVO_ABORT="Este cambio de Evolution requiere confirmación: léelo arriba y repite en una terminal interactiva o con --accept-evolution-change."
+  return 1
+}
+
+# Compatibilidad, efecto sobre el esquema, confirmación y descarga. No toca lo que corre. Deja EVO_CHANGES.
+evolution_preflight() {
+  say; say "${B}Evolution API cambia de imagen${N}"
+  say "  Ahora:   $EVO_BEFORE"; say "  Destino: $EVO_TARGET"; say "  Esquema actual de su base: $EVO_MIG_BEFORE"
+  local rc=0
+  backend_tool dist/cli/evolution-check.js plan --target "$EVO_TARGET" --db-migration "$EVO_MIG_BEFORE" || rc=$?
+  say "$TOOL_OUT"
+  case "$rc" in
+    0) ;;
+    3) confirm_evolution || return 1 ;;
+    4) EVO_ABORT="La versión destino de Evolution no es segura para esta instalación (arriba). No se aplicó nada."; return 1 ;;
+    *) EVO_ABORT="No se pudo evaluar la versión destino de Evolution (código $rc). No se aplicó nada."; return 1 ;;
+  esac
+  say "Descargando la imagen de Evolution…"
+  dc pull evolution || { EVO_ABORT="No se pudo descargar la imagen de Evolution. No se aplicó nada."; return 1; }
+  if [[ -n "$(evo_running_id)" && "$(evo_image_id "$EVO_TARGET")" == "$(evo_running_id)" ]]; then ok "Es la misma imagen que ya corre: Evolution no cambia."; return 0; fi
+  EVO_CHANGES=1
+}
+
+# Después de aplicar: Evolution responde con la versión configurada y vuelven las sesiones que estaban abiertas.
+evolution_verify() {
+  (( EVO_CHANGES )) || return 0
+  say "Verificando Evolution y las sesiones de WhatsApp (hasta ${RIVERRUN_EVO_WAIT:-120} s)…"
+  local rc=0
+  dc exec -T backend node dist/cli/evolution-check.js verify --previous-open "$EVO_OPEN" --wait "${RIVERRUN_EVO_WAIT:-120}" || rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    1) warn "Evolution funciona, con los avisos de arriba: revísalos en el panel (Sistema)."; return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+restore_backend_image() { # vuelve a etiquetar la imagen anterior del backend como la de compose
+  [[ -n "${PREV_BACKEND:-}" ]] || return 0
+  local img; img="$(dc config --images 2>/dev/null | grep -i backend | head -n 1)"
+  [[ -n "$img" ]] && docker tag riverrun-backend:previous "$img"
+  return 0
+}
+
+# Se detiene antes de aplicar nada: vuelve el código (y la imagen del backend ya construida) a como estaban.
+abort_update() {
+  git reset -q --hard "$OLD_HEAD"
+  restore_backend_image
+  die "$1"
+}
 
 # ------------------------------------------------------------------ install
 cmd_install() {
@@ -187,6 +318,11 @@ cmd_status() {
   fi
   say; say "${B}Respaldos${N}"
   dc exec -T backup /usr/local/bin/backup.sh list 2>/dev/null | tail -n 4 | sed 's/^/  /' || warn "El contenedor de respaldos no está activo"
+  say; say "${B}Evolution API${N}"
+  say "  Imagen en uso:      $(evo_running_ref)"
+  say "  Imagen configurada: $(evo_target_image)"
+  if evo_change_pending; then warn "La imagen configurada no es la que corre: aplícala con ./riverrun update"; fi
+  dc exec -T backend node dist/cli/evolution-check.js status 2>/dev/null || warn "No se pudo consultar Evolution desde el backend (revisa el panel → Sistema)"
   say; say "${B}Versión${N}  $(version)"
   if git rev-parse --git-dir >/dev/null 2>&1 && git fetch -q origin 2>/dev/null; then
     local behind; behind="$(git rev-list --count HEAD..'@{u}' 2>/dev/null || echo 0)"
@@ -211,9 +347,9 @@ cmd_restore() {
     target="/tmp/restore-input.tar"; [[ "$host" == *.enc ]] && target="/tmp/restore-input.tar.enc"
     extra=(-v "$host:$target:ro")
   else
-    say "Respaldos disponibles:"; dc run --rm --no-deps -T restore list 2>/dev/null | sed 's/^/  /' || true
+    say "Respaldos disponibles:"; dc run --rm --no-deps -T restore list 2>/dev/null </dev/null | sed 's/^/  /' || true
   fi
-  local sure; read -r -p "Escribe RESTAURAR para continuar: " sure
+  local sure=""; read -r -p "Escribe RESTAURAR para continuar: " sure || true
   [[ "$sure" == "RESTAURAR" ]] || die "Cancelado."
   say "Haciendo un respaldo de seguridad de lo que hay ahora…"
   dc exec -T -e BACKUP_PREFIX=prerestore backup /usr/local/bin/backup.sh now >/dev/null 2>&1 && ok "Respaldo de seguridad hecho" || warn "No se pudo (¿instalación nueva?). Continúo."
@@ -226,60 +362,163 @@ cmd_restore() {
 }
 
 # ------------------------------------------------------------------ update
-cmd_update() {
-  need_docker || die "Docker no está disponible"
-  local backup=1
-  local ACCEPT_DB_IMAGE=0
-  for a in "$@"; do
-    [[ "$a" == "--no-backup" ]] && backup=0
-    [[ "$a" == "--accept-db-image-change" ]] && ACCEPT_DB_IMAGE=1
+# 1) revisión previa sin tocar lo que corre (código nuevo, imagen construida, configuración, Evolution, respaldo);
+# 2) aplicar; 3) verificar; 4) si falla, volver atrás SIN bajar Evolution si ya migró su base (se explica cómo recuperar).
+# ------------------------------------------------------------------ update (fases)
+# Fases: opciones → código → qué corre hoy → pull (y relanzar si el procedimiento cambió) → revisión previa sin
+# arrancar → respaldo → aplicar y verificar → vuelta atrás si algo falla. Las variables UPD_* y EVO_* pasan los datos.
+update_args() {
+  UPD_BACKUP=1; ACCEPT_DB_IMAGE=0; ACCEPT_EVO=0; UPD_RESUME=""; UPD_PG_BEFORE=""; UPD_FORWARD=()
+  # --resume-from/--pg-before: uso interno, cuando el procedimiento se relanza con el riverrun recién descargado.
+  local args=("$@") i
+  for (( i = 0; i < ${#args[@]}; i++ )); do
+    case "${args[$i]}" in
+      --no-backup) UPD_BACKUP=0; UPD_FORWARD+=(--no-backup) ;;
+      --accept-db-image-change) ACCEPT_DB_IMAGE=1; UPD_FORWARD+=(--accept-db-image-change) ;;
+      --accept-evolution-change) ACCEPT_EVO=1; UPD_FORWARD+=(--accept-evolution-change) ;;
+      --resume-from) UPD_RESUME="${args[$((i + 1))]:-}"; i=$((i + 1)) ;;
+      --pg-before) UPD_PG_BEFORE="${args[$((i + 1))]:-}"; i=$((i + 1)) ;;
+    esac
   done
+}
+
+# Código: 0 si hay algo que aplicar; 3 si ya está todo al día (sin nada que hacer).
+update_fetch() {
   git rev-parse --git-dir >/dev/null 2>&1 || die "Esta instalación no es un repositorio git: descarga la versión nueva y copia tu .env (o clona de nuevo)."
   [[ -z "$(git status --porcelain --untracked-files=no)" ]] || die "Hay archivos modificados a mano: guárdalos (git stash) antes de actualizar."
-  local old; old="$(git rev-parse HEAD)"
-  git fetch -q origin
-  local behind; behind="$(git rev-list --count HEAD..'@{u}')"
-  if (( behind == 0 )); then ok "Ya tienes la última versión ($(version))."; return; fi
-  say "${B}Cambios nuevos ($behind):${N}"; git log --oneline HEAD..'@{u}' | head -n 15 | sed 's/^/  /'; say
-
-  if (( backup )); then
-    say "Respaldo previo a la actualización…"
-    dc exec -T backup /usr/local/bin/backup.sh now || die "El respaldo falló: no se actualiza sin respaldo (usa --no-backup bajo tu riesgo)."
+  UPD_BEHIND=0
+  if [[ -n "$UPD_RESUME" ]]; then
+    OLD_HEAD="$UPD_RESUME"
+    say "Continuando con el procedimiento de actualización nuevo…"
+    return 0
   fi
+  OLD_HEAD="$(git rev-parse HEAD)"
+  git fetch -q origin
+  UPD_BEHIND="$(git rev-list --count HEAD..'@{u}')"
+  if (( UPD_BEHIND == 0 )); then
+    # Sin código nuevo, pero EVOLUTION_IMAGE pudo cambiar en .env: se aplica con el mismo cuidado.
+    if ! evo_change_pending; then ok "Ya tienes la última versión ($(version))."; return 3; fi
+    say "No hay código nuevo, pero la imagen de Evolution configurada cambió."
+  else
+    say "${B}Cambios nuevos ($UPD_BEHIND):${N}"; git log --oneline HEAD..'@{u}' | head -n 15 | sed 's/^/  /'; say
+  fi
+  return 0
+}
 
+# Lo que corre hoy, antes de tocar nada: qué fallaba, la imagen de backend anterior y Evolution (versión y esquema).
+update_snapshot() {
+  # Después de actualizar, solo cuenta lo que la versión nueva rompa.
+  HEALTH_BEFORE="$(health_failing)"
+  [[ -n "${HEALTH_BEFORE// /}" && "$HEALTH_BEFORE" != "?" ]] && warn "Ya fallaba antes de actualizar: $HEALTH_BEFORE(no bloquea la actualización)."
   # Guarda la imagen actual para poder volver si la nueva falla.
-  local prev; prev="$(dc images -q backend 2>/dev/null | head -n 1 || true)"
-  [[ -n "$prev" ]] && docker tag "$prev" riverrun-backend:previous
+  PREV_BACKEND="$(dc images -q backend 2>/dev/null | head -n 1 || true)"
+  [[ -n "$PREV_BACKEND" ]] && docker tag "$PREV_BACKEND" riverrun-backend:previous
+  EVO_BEFORE="$(evo_running_ref)"; EVO_CHANGES=0; EVO_STAYS=0; EVO_ABORT=""; EVO_TARGET=""
+  EVO_PIN="$(evo_running_pin)"; EVO_ENV_BEFORE="$(env_get EVOLUTION_IMAGE)"
+  if [[ -n "$EVO_BEFORE" ]]; then EVO_MIG_BEFORE="$(evo_db_migration)"; EVO_OPEN="$(evo_open_instances)"; else EVO_MIG_BEFORE="-"; EVO_OPEN=""; fi
+  [[ -n "$UPD_RESUME" ]] || UPD_PG_BEFORE="$(pg_image)"
+}
 
-  local pg_before; pg_before="$(pg_image)"
-  git pull -q --ff-only
+# Pull del código. Si el procedimiento mismo cambió, se relanza con el nuevo (lo que corre no se toca hasta entonces).
+update_pull() {
+  if (( UPD_BEHIND > 0 )); then
+    git pull -q --ff-only
+    if ! git diff --quiet "$OLD_HEAD" HEAD -- riverrun; then
+      say "El procedimiento de actualización cambió: se continúa con el nuevo."
+      exec ./riverrun update --resume-from "$OLD_HEAD" --pg-before "$UPD_PG_BEFORE" "${UPD_FORWARD[@]}"
+    fi
+  fi
   # Cambiar la imagen de PostgreSQL sobre un volumen existente puede dañar los índices de texto (otra versión de collation):
   # se detiene aquí y se pide hacerlo con el procedimiento de docs/semantic-activation.md.
   local pg_after; pg_after="$(pg_image)"
-  if [[ -n "$pg_before" && "$pg_before" != "$pg_after" && "$ACCEPT_DB_IMAGE" != "1" ]]; then
-    git reset -q --hard "$old"
-    die "Esta versión cambia la imagen de PostgreSQL ($pg_before → $pg_after). No se aplicó porque un volumen existente puede ser incompatible. Sigue docs/semantic-activation.md (respaldo, ensayo y restauración en un volumen nuevo) o, bajo tu riesgo y con respaldo, repite con --accept-db-image-change."
+  if [[ -n "$UPD_PG_BEFORE" && "$UPD_PG_BEFORE" != "$pg_after" && "$ACCEPT_DB_IMAGE" != "1" ]]; then
+    abort_update "Esta versión cambia la imagen de PostgreSQL ($UPD_PG_BEFORE → $pg_after). No se aplicó porque un volumen existente puede ser incompatible. Sigue docs/semantic-activation.md (respaldo, ensayo y restauración en un volumen nuevo) o, bajo tu riesgo y con respaldo, repite con --accept-db-image-change."
   fi
+}
+
+# Revisión previa: se construye la versión nueva pero no se arranca. Cualquier fallo aquí deja todo como estaba.
+update_preflight() {
   export APP_VERSION; APP_VERSION="$(version)"
   say "Construyendo la nueva versión ($APP_VERSION)…"
-  if dc up -d --build && wait_healthy 180 && [[ "$(health_json)" != *'"status":"fail"'* ]]; then
-    ok "Actualizado a $APP_VERSION"
-    docker image prune -f >/dev/null 2>&1 || true
-    return
+  dc build backend || abort_update "No se pudo construir la versión nueva. No se aplicó nada."
+  say "Revisando la configuración con la versión nueva…"
+  preflight_config || abort_update "La versión nueva no arrancaría con esta configuración (problemas críticos arriba). Corrígelos en .env y repite ./riverrun update. No se aplicó nada."
+  EVO_TARGET="$(evo_target_image)"
+  if [[ -n "$EVO_BEFORE" && -n "$EVO_TARGET" && "$EVO_BEFORE" != "$EVO_TARGET" ]]; then
+    evolution_preflight || abort_update "$EVO_ABORT"
   fi
+  if (( EVO_CHANGES && ! UPD_BACKUP )); then abort_update "Cambiar la versión de Evolution exige un respaldo verificado de sus sesiones: repite sin --no-backup. No se aplicó nada."; fi
+}
 
+# Respaldo previo. Con un cambio de Evolution se verifica también su base (BACKUP_VERIFY_ALL).
+update_backup() {
+  UPD_BACKUP_FILE=""
+  (( UPD_BACKUP )) || return 0
+  say "Respaldo previo a la actualización…"
+  local verify_all=false; (( EVO_CHANGES )) && verify_all=true
+  dc exec -T -e BACKUP_VERIFY_ALL="$verify_all" backup /usr/local/bin/backup.sh now || abort_update "El respaldo falló: no se actualiza sin respaldo (usa --no-backup bajo tu riesgo). No se aplicó nada."
+  UPD_BACKUP_FILE="$(dc exec -T backup sh -c 'ls -1 /backups/riverrun-*.tar* 2>/dev/null | sort | tail -n 1' 2>/dev/null | tr -d '\r' || true)"
+}
+
+# Vuelta atrás. Evolution vuelve a su imagen anterior solo si su esquema no cambió; si ya migró, se queda fijado.
+update_rollback() {
   warn "La nueva versión no quedó sana. Volviendo a la anterior…"
   dc logs --tail 30 backend || true
-  git reset -q --hard "$old"
-  if [[ -n "$prev" ]]; then
-    local img; img="$(dc config --images 2>/dev/null | grep -i backend | head -n 1)"
-    [[ -n "$img" ]] && docker tag riverrun-backend:previous "$img"
-    APP_VERSION="$(version)" dc up -d --no-build backend
+  local evo_mig_after=""
+  if (( EVO_CHANGES )); then
+    evo_mig_after="$(evo_db_migration)"
+    if [[ "$evo_mig_after" != "$EVO_MIG_BEFORE" || "$evo_mig_after" == "?" ]]; then
+      # Evolution ya migró su base (o no se puede comprobar que no lo hizo): bajarlo podría dañar las sesiones.
+      # Se queda la nueva, fijada para que nada la cambie.
+      EVO_STAYS=1
+      env_set EVOLUTION_IMAGE "$EVO_TARGET"
+    elif [[ -n "$EVO_ENV_BEFORE" ]]; then
+      env_set EVOLUTION_IMAGE "$EVO_PIN" # el operador la había fijado en .env: se vuelve a la que corría
+    fi
+  fi
+  git reset -q --hard "$OLD_HEAD"
+  if [[ -n "$PREV_BACKEND" ]]; then
+    restore_backend_image
+    APP_VERSION="$(version)" dc up -d --no-build --no-deps backend
   else
     APP_VERSION="$(version)" dc up -d --build
   fi
+  if (( EVO_CHANGES && ! EVO_STAYS )); then
+    say "El esquema de Evolution no cambió: se vuelve a la imagen anterior (es seguro)."
+    APP_VERSION="$(version)" dc up -d --no-deps evolution || true
+  fi
+  if (( EVO_STAYS )); then
+    warn "Evolution se quedó en $EVO_TARGET: ya migró su base ($EVO_MIG_BEFORE → $evo_mig_after) y volver a la imagen anterior podría dañar las sesiones de WhatsApp. No se borró ni se recreó ninguna instancia."
+    say "  Se fijó EVOLUTION_IMAGE=$EVO_TARGET en .env para que ningún reinicio la cambie."
+    say "  Qué hacer:"
+    say "   1. Revisa ./riverrun logs evolution y el panel (Sistema → WhatsApp)."
+    say "   2. Si Evolution funciona y lo que falló fue el backend, corrige y vuelve a correr ./riverrun update."
+    say "   3. Si Evolution no funciona con esta versión, restaura el respaldo previo (incluye su base y las sesiones):"
+    say "      fija EVOLUTION_IMAGE=${EVO_PIN:-<imagen anterior>} en .env y ejecuta ./riverrun restore ${UPD_BACKUP_FILE:-<respaldo previo a la actualización>}"
+  fi
   wait_healthy 120 && warn "Volviste a la versión anterior ($(version)). Las migraciones nuevas, si se aplicaron, son compatibles hacia atrás; si ves datos raros: ./riverrun restore latest." || die "No se pudo volver a levantar. Corre ./riverrun restore latest o pide ayuda con los registros (./riverrun logs backend)."
   exit 1
+}
+
+# 1 comando, con las fases en orden. La versión nueva se aplica primero para Evolution: tras reiniciarlo, las sesiones
+# tardan unos segundos en reconectarse y la salud las vería cerradas.
+cmd_update() {
+  need_docker || die "Docker no está disponible"
+  update_args "$@"
+  local rc=0
+  update_fetch || rc=$?
+  (( rc == 3 )) && return 0
+  update_snapshot
+  update_pull
+  update_preflight
+  update_backup
+  if dc up -d --build && wait_healthy 180 && evolution_verify && no_new_failures; then
+    ok "Actualizado a $APP_VERSION"
+    (( EVO_CHANGES )) && ok "Evolution: $EVO_TARGET"
+    docker image prune -f >/dev/null 2>&1 || true
+    return 0
+  fi
+  update_rollback
 }
 
 # ------------------------------------------------------------------ búsqueda semántica
@@ -288,6 +527,7 @@ cmd_semantic() {
   local backup=1
   for a in "$@"; do [[ "$a" == "--no-backup" ]] && backup=0; done
   [[ -n "$(env_get OPENROUTER_API_KEY)" ]] || die "Primero pon OPENROUTER_API_KEY en .env (los embeddings se generan con OpenRouter) y corre ./riverrun restart"
+  guard_evolution_change
   if (( backup )); then
     say "Respaldo previo…"
     dc exec -T backup /usr/local/bin/backup.sh now || die "El respaldo falló: no se activa sin respaldo."
@@ -304,9 +544,36 @@ cmd_semantic() {
 }
 
 cmd_logs()    { need_docker || die "Docker no está disponible"; dc logs -f --tail 100 "$@"; }
-cmd_restart() { need_docker || die "Docker no está disponible"; export APP_VERSION; APP_VERSION="$(version)"; dc up -d; wait_healthy 120 && ok "Funcionando" || die "No respondió: ./riverrun logs backend"; }
+cmd_restart() {
+  need_docker || die "Docker no está disponible"
+  guard_evolution_change
+  # Un .env con problemas críticos dejaría el backend sin arrancar: se revisa antes de reiniciar lo que funciona.
+  preflight_config || die "No se reinició: la configuración tiene problemas críticos (arriba). Corrígelos en .env y repite."
+  export APP_VERSION; APP_VERSION="$(version)"; dc up -d; wait_healthy 120 && ok "Funcionando" || die "No respondió: ./riverrun logs backend"
+}
 
-usage() { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; }
+# Cambia SESSION_SECRET (firma sesiones y enlaces, y cifra los tokens de Google). Respaldo verificado antes, confirmación
+# escrita y el secreto nuevo no se imprime. Consecuencias que se avisan: cierra sesiones del panel y reconecta Google.
+cmd_rotate_secret() {
+  need_docker || die "Docker no está disponible"
+  [[ -f "$ENV_FILE" ]] || die "No hay .env: esta instalación no tiene secretos que cambiar."
+  say "${R}${B}Cambiar SESSION_SECRET${N}"
+  say "Consecuencias: se cierran todas las sesiones del panel; los enlaces firmados de fotos dejan de funcionar"
+  say "(se regeneran solos); las conexiones de Google Calendar hay que volver a conectarlas (sus tokens quedan cifrados"
+  say "con el secreto anterior). Los datos de conversaciones, cuentas, canales y WhatsApp no cambian."
+  local sure=""; read -r -p "Escribe ROTAR SESSION_SECRET para continuar (cualquier otra cosa cancela): " sure || true
+  [[ "$sure" == "ROTAR SESSION_SECRET" ]] || die "Cancelado: no se cambió nada."
+  say "Respaldo verificado antes de cambiar nada…"
+  dc exec -T backup /usr/local/bin/backup.sh now || die "El respaldo falló: no se cambia el secreto sin respaldo. No se cambió nada."
+  env_set SESSION_SECRET "$(rand 32)"
+  export APP_VERSION; APP_VERSION="$(version)"
+  dc up -d backend
+  wait_healthy 120 || die "El .env ya tiene el secreto nuevo pero el sistema no respondió: ./riverrun logs backend (luego ./riverrun restart). El respaldo previo está en /backups."
+  ok "SESSION_SECRET cambiado. Guarda el nuevo fuera del servidor: está en .env (no se muestra aquí)."
+  warn "Vuelve a iniciar sesión en el panel y reconecta Google Calendar si lo usas."
+}
+
+usage() { sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; }
 
 case "${1:-help}" in
   install) shift; cmd_install "$@" ;;
@@ -316,6 +583,7 @@ case "${1:-help}" in
   restore) shift; cmd_restore "$@" ;;
   logs) shift; cmd_logs "$@" ;;
   restart) cmd_restart ;;
+  rotate-secret) cmd_rotate_secret ;;
   semantic) shift; cmd_semantic "$@" ;;
   help|-h|--help) usage ;;
   *) usage; exit 1 ;;
