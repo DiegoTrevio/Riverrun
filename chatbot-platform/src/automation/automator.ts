@@ -297,6 +297,8 @@ export class Automator {
     let stopAi = false;
     for (const rule of rules) {
       if (!triggerMatches(rule.trigger, e) || !conditionsMatch(rule.conditions, ctx)) continue;
+      // «Una vez por conversación»: si ya se ejecutó en este recorrido, no se repite (ni detiene a la IA).
+      if (rule.once_per_conversation && !(await astore.claimConversationRun(rule.id, ctx.conv.id, ctx.conv.flow_started_at))) continue;
       matched.push(rule.name);
       if (rule.stop_ai) stopAi = true;
       await this.runRule(rule, ctx, e);

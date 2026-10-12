@@ -1,5 +1,5 @@
 import { tabConnections } from './agent-connections.js';
-import { ACTIONS } from './automation.js';
+import { ACTIONS, triggerSummary, VARS_HELP } from './automation.js';
 import { channelIcon, channelStatusCell } from './channels.js';
 import { api, area, check, clone, field, fill, fmtDate, h, lines, num, poll, run, select, state, text, toast, confirmAction, ask } from './core.js';
 import { discardDraft, draftModel, draftNotice, draftVersion } from './editing.js';
@@ -12,7 +12,7 @@ import { accountName, isSuper } from './session.js';
 
 // La configuración cotidiana: instrucciones, preguntas en orden, cuándo se activa, conocimiento, fotos y pruebas.
 const TABS = [['instrucciones', 'Configurar'], ['conocimiento', 'Conocimiento'], ['conexiones', 'Conexiones'], ['probar', 'Probar']];
-const CONFIG_TABS = [['instrucciones', 'Instrucciones'], ['preguntas', 'Preguntas'], ['activacion', 'Activación']];
+const CONFIG_TABS = [['instrucciones', 'Instrucciones'], ['preguntas', 'Preguntas'], ['activacion', 'Activación'], ['avisos', 'Avisos al equipo']];
 const KNOWLEDGE_TABS = [['conocimiento', 'Información'], ['imagenes', 'Fotos y mensajes']];
 
 const TAB_ALIASES = { general: 'instrucciones', personalidad: 'instrucciones', datos: 'preguntas', flujo: 'instrucciones', ia: 'instrucciones', avanzado: 'instrucciones', reglas: 'instrucciones' };
@@ -35,14 +35,15 @@ export async function viewBot(root, id, tab, params = new URLSearchParams()) {
     h('div', { class: 'row between' },
       h('h1', {}, bot.name, ' ', h('span', { class: `badge ${bot.active ? 'green' : ''}` }, bot.active ? 'Encendido' : 'Apagado')),
       h('div', { class: 'row' }, h('a', { class: 'btn', href: `#/bot/${bot.id}/conexiones?new=1` }, 'Conectar teléfono'), restartConversationsButton(bot), h('a', { href: `#/conversations?chatbot_id=${bot.id}` }, 'Ver conversaciones →'))),
-    h('div', { class: 'tabs agent-tabs', 'aria-label': 'Secciones del agente' }, TABS.map(([k, l]) => { const active = k === tab || (k === 'instrucciones' && ['preguntas', 'activacion'].includes(tab)) || (k === 'conocimiento' && tab === 'imagenes'); return h('a', { href: `#/bot/${id}/${k}`, class: active ? 'active' : '', 'aria-current': active ? 'page' : null }, l); })),
-    ['instrucciones', 'preguntas', 'activacion', 'conocimiento', 'imagenes'].includes(tab) ? h('div', { class: 'tabs sub-tabs', 'aria-label': 'Opciones de la sección' }, (['conocimiento', 'imagenes'].includes(tab) ? KNOWLEDGE_TABS : CONFIG_TABS).map(([k, l]) => h('a', { href: `#/bot/${id}/${k}`, class: k === tab ? 'active' : '', 'aria-current': k === tab ? 'page' : null }, l))) : null,
+    h('div', { class: 'tabs agent-tabs', 'aria-label': 'Secciones del agente' }, TABS.map(([k, l]) => { const active = k === tab || (k === 'instrucciones' && ['preguntas', 'activacion', 'avisos'].includes(tab)) || (k === 'conocimiento' && tab === 'imagenes'); return h('a', { href: `#/bot/${id}/${k}`, class: active ? 'active' : '', 'aria-current': active ? 'page' : null }, l); })),
+    ['instrucciones', 'preguntas', 'activacion', 'avisos', 'conocimiento', 'imagenes'].includes(tab) ? h('div', { class: 'tabs sub-tabs', 'aria-label': 'Opciones de la sección' }, (['conocimiento', 'imagenes'].includes(tab) ? KNOWLEDGE_TABS : CONFIG_TABS).map(([k, l]) => h('a', { href: `#/bot/${id}/${k}`, class: k === tab ? 'active' : '', 'aria-current': k === tab ? 'page' : null }, l))) : null,
   );
   const guidance = {
     instrucciones: 'Define cómo atiende tu agente y qué debe lograr. Los ajustes adicionales están al final.',
     conexiones: 'Conecta tus teléfonos y canales a este agente. Cada teléfono tiene su propio QR.',
     preguntas: 'Define qué preguntas debe hacer el agente y en qué orden. Las respuestas se guardan automáticamente.',
     activacion: 'Elige cuándo debe responder el agente y cuándo debe ponerse en pausa.',
+    avisos: 'Elige en qué momentos avisarle a tu equipo: al cumplirse el objetivo, en una etapa o en un contexto que tú describes.',
     conocimiento: 'Agrega la información que tu agente puede usar para responder: precios, servicios, horarios y condiciones.',
     imagenes: 'Agrega tus fotos y elige cuándo debe enviarlas el agente.',
     probar: 'Prueba una conversación antes de conectar el agente. Aquí puedes ver sus respuestas y los datos que guarda.',
@@ -50,9 +51,9 @@ export async function viewBot(root, id, tab, params = new URLSearchParams()) {
   root.append(h('p', { class: 'help', style: 'margin:0 0 24px' }, guidance[tab] || guidance.instrucciones));
   const body = h('div');
   root.append(body);
-  const views = { instrucciones: tabInstructions, preguntas: tabQuestions, activacion: tabActivation, conocimiento: tabKnowledge, imagenes: tabImages, conexiones: tabConnections, probar: tabPlayground };
+  const views = { instrucciones: tabInstructions, preguntas: tabQuestions, activacion: tabActivation, avisos: tabNotices, conocimiento: tabKnowledge, imagenes: tabImages, conexiones: tabConnections, probar: tabPlayground };
   await (views[tab] || tabInstructions)(body, bot, params);
-  if (tab !== 'probar' && tab !== 'conexiones') root.insertBefore(draftNotice(['general', 'personality', 'flow', 'rules', 'ai', 'questions', 'saved_messages', 'knowledge-new', 'photo-new'].map((key) => `${bot.id}:${key}`), render), body);
+  if (tab !== 'probar' && tab !== 'conexiones') root.insertBefore(draftNotice(['general', 'personality', 'flow', 'rules', 'ai', 'questions', 'saved_messages', 'knowledge-new', 'photo-new', 'notice-new'].map((key) => `${bot.id}:${key}`), render), body);
 }
 
 /** Tras actualizar el agente: sus conversaciones empiezan de cero con los cambios (la bienvenida y sus fotos vuelven a salir). */
@@ -543,6 +544,122 @@ function tabQuestions(root, bot) {
       h('h2', { style: 'margin-top:0' }, 'Al terminar las preguntas'),
       check(a, 'off_on_questions', tag('Apagar el asistente en esa conversación cuando el cliente responda todas las preguntas', guaranteed())),
       h('p', { class: 'small muted', style: 'margin:0' }, 'Responde ese último mensaje y después se apaga. Qué pasa al apagarse (pausa, pasar a una persona o cerrar) y el mensaje de despedida se configuran en ', h('a', { href: `#/bot/${bot.id}/activacion` }, 'Activación'), '.')),
+    saveBar(save),
+  );
+}
+
+/* ------------------------------ Avisos al equipo ------------------------------ */
+
+// Cada aviso es una regla de Automatización de este agente (cuándo → avisar o mandar el reporte); también se ve y edita allá.
+const NOTICE_ACTIONS = ['alert_team', 'send_report'];
+const isNotice = (rule, bot) => rule.chatbot_id === bot.id && rule.actions.some((a) => NOTICE_ACTIONS.includes(a.type));
+
+const noticeWhen = (bot) => [
+  ...(bot.flow.goal ? [['goal_completed', 'Se cumple el objetivo']] : []),
+  ...(bot.flow.steps.length ? [['stage_reached', 'Llega a una etapa del recorrido']] : []),
+  ['intent', 'En un contexto que describes (lo detecta la IA)'],
+  ['data_captured', 'El cliente da un dato'],
+  ['handoff', 'La conversación pasa a una persona'],
+  ['message_received', 'El cliente escribe ciertas palabras'],
+];
+
+/** Identificador estable para un contexto: «aviso_» y sus primeras palabras, sin repetir uno que ya exista. */
+function contextIntent(description, taken) {
+  const base = `aviso_${description.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(' ').filter((w) => w.length > 2).slice(0, 4).join('_') || 'contexto'}`.slice(0, 50);
+  let id = base;
+  for (let n = 2; taken.has(id); n++) id = `${base}_${n}`;
+  return id;
+}
+
+function noticeRecipients(rule) {
+  const a = rule.actions.find((x) => NOTICE_ACTIONS.includes(x.type));
+  if (!a) return '';
+  const who = [a.user_ids?.length ? `${a.user_ids.length} persona(s)` : (a.roles || []).map((r) => (r === 'admin' ? 'administradores' : 'agentes')).join(' y '), ...(a.phones || []), ...(a.emails || [])].filter(Boolean);
+  return `${a.type === 'send_report' ? 'Reporte' : 'Aviso'} a ${who.join(', ') || 'nadie'}`;
+}
+
+async function tabNotices(root, bot) {
+  const rules = await api('GET', `/api/automations?account_id=${bot.account_id}`);
+  const mine = rules.filter((r) => isNotice(r, bot));
+  const shared = rules.filter((r) => r.chatbot_id === null && r.active && r.actions.some((a) => NOTICE_ACTIONS.includes(a.type)));
+  const when = noticeWhen(bot);
+  const fields = bot.data_fields;
+  const m = draftModel(`${bot.id}:notice-new`, { when: when[0][0], step: '1', context: '', field: '', keywords: [], name: '', message: '', what: 'alert', admins: true, agents: false, phones: [], once: true });
+  const defaultMessage = () => ({
+    goal_completed: `🎯 {{cliente}} cumplió el objetivo: ${bot.flow.goal}`,
+    stage_reached: `{{cliente}} llegó a la etapa ${m.step}${bot.flow.steps[Number(m.step) - 1] ? ` (${bot.flow.steps[Number(m.step) - 1].title})` : ''}.`,
+    intent: `{{cliente}}: ${m.context || 'contexto detectado'}. Último mensaje: "{{mensaje}}"`,
+    data_captured: m.field ? `{{cliente}} dio su ${(fields.find((f) => f.key === m.field)?.label || m.field).toLowerCase()}: {{dato.${m.field}}}` : '{{cliente}} compartió un dato: "{{mensaje}}"',
+    handoff: '🙋 {{cliente}} pasó con una persona: "{{mensaje}}"',
+    message_received: '{{cliente}} escribió: "{{mensaje}}"',
+  })[m.when];
+
+  const list = h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, 'Avisos de este agente'),
+    mine.length
+      ? h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Aviso'), h('th', {}, 'Cuándo'), h('th', {}, 'A quién'), h('th', {}, ''))),
+          h('tbody', {}, mine.map((r) => h('tr', {},
+            h('td', {}, h('strong', {}, r.name), ' ', r.active ? null : h('span', { class: 'badge orange' }, 'inactivo'), r.once_per_conversation ? h('div', { class: 'small muted' }, 'una vez por conversación') : null),
+            h('td', { class: 'small' }, r.trigger.type === 'intent' && r.trigger.description ? `Contexto: ${r.trigger.description}` : triggerSummary(r.trigger), r.conditions.length ? h('div', { class: 'muted' }, `+ ${r.conditions.length} condición(es)`) : null),
+            h('td', { class: 'small' }, noticeRecipients(r), r.actions.length > 1 ? h('div', { class: 'muted' }, `+ ${r.actions.length - 1} acción(es) más`) : null, h('div', { class: 'muted' }, `Enviado ${r.run_count} ${r.run_count === 1 ? 'vez' : 'veces'}${r.last_run_at ? ` · último: ${fmtDate(r.last_run_at)}` : ''}`)),
+            h('td', {}, h('div', { class: 'row' },
+              h('button', { class: 'small', onclick: async () => { if (await run(() => api('PUT', `/api/automations/${r.id}`, { active: !r.active }), r.active ? 'Aviso desactivado' : 'Aviso activado')) render(); } }, r.active ? 'Desactivar' : 'Activar'),
+              h('a', { class: 'btn small', href: `#/automation/rules/${r.id}` }, 'Editar'),
+              h('button', { class: 'small danger', onclick: async () => { if (await confirmAction(`¿Quitar el aviso «${r.name}»?`)) { if (await run(() => api('DELETE', `/api/automations/${r.id}`), 'Aviso quitado')) render(); } } }, 'Quitar')))))))
+      : h('p', { class: 'muted' }, 'Aún no hay avisos para este agente.'),
+    bot.flow.on_goal_action === 'notify' ? h('p', { class: 'small muted' }, 'Además, al cumplirse el objetivo el equipo recibe el reporte completo (Instrucciones → Objetivo).') : null,
+    shared.length ? h('p', { class: 'small muted', style: 'margin-bottom:0' }, `También aplican ${shared.length} aviso(s) para todos los agentes de la cuenta: `, h('a', { href: '#/automation/rules' }, 'ver en Automatización'), '.') : null);
+
+  const whenBox = h('div');
+  const messageField = h('div');
+  const drawMessage = () => fill(messageField, field('Mensaje', area(m, 'message', { placeholder: defaultMessage() }), `Si lo dejas vacío se usa el de ejemplo. ${VARS_HELP}. El aviso lleva el enlace a la conversación.`));
+  const drawWhen = () => {
+    const parts = [field('Cuándo avisar', select(m, 'when', when, () => { drawWhen(); drawMessage(); }))];
+    if (m.when === 'stage_reached') parts.push(field('Etapa', select(m, 'step', bot.flow.steps.map((st, i) => [String(i + 1), `${i + 1}. ${st.title}`]), drawMessage)));
+    if (m.when === 'intent') parts.push(field('Describe el contexto', area(m, 'context', { placeholder: 'El cliente quiere cotizar un evento para más de 50 personas' }), 'Con tus palabras: la IA revisa cada mensaje del cliente y avisa cuando se cumple, aunque no use esas palabras exactas.'));
+    if (m.when === 'data_captured') parts.push(field('Qué dato', select(m, 'field', [['', 'Cualquier dato'], ...fields.map((f) => [f.key, f.label || f.key])], drawMessage)));
+    if (m.when === 'message_received') parts.push(field('Palabras o frases', lines(m, 'keywords', { placeholder: 'urgente\nfactura\nhablar con el gerente' }), 'Una por renglón. No distingue acentos ni mayúsculas.'));
+    fill(whenBox, parts);
+  };
+  drawWhen();
+  drawMessage();
+
+  const save = async () => {
+    const intents = new Set(rules.filter((r) => r.trigger.type === 'intent').map((r) => r.trigger.intent));
+    const context = m.context.trim();
+    if (m.when === 'intent' && !context) return toast('Describe el contexto en el que quieres el aviso.', true);
+    if (m.when === 'message_received' && !m.keywords.length) return toast('Escribe al menos una palabra o frase.', true);
+    const roles = [...(m.admins ? ['admin'] : []), ...(m.agents ? ['agent'] : [])];
+    const phones = m.phones.map((p) => p.replace(/\D/g, '')).filter(Boolean);
+    if (!roles.length && !phones.length) return toast('Elige a quién avisar: administradores, agentes o un teléfono.', true);
+    const trigger = {
+      goal_completed: { type: 'goal_completed' },
+      stage_reached: { type: 'stage_reached', step: Number(m.step) },
+      intent: { type: 'intent', intent: contextIntent(context, intents), description: context },
+      data_captured: { type: 'data_captured', field: m.field },
+      handoff: { type: 'handoff' },
+      message_received: { type: 'message_received', match: 'keywords', keywords: m.keywords },
+    }[m.when];
+    const message = m.message.trim() || defaultMessage();
+    const action = m.what === 'report' ? { type: 'send_report', note: message, roles, phones: phones.slice(0, 5) } : { type: 'alert_team', message, roles, phones };
+    const label = when.find(([k]) => k === m.when)?.[1] ?? 'Aviso';
+    const name = m.name.trim() || `Aviso: ${m.when === 'intent' ? context : m.when === 'stage_reached' ? `etapa ${m.step}` : label}`.slice(0, 120);
+    const body = { account_id: bot.account_id, chatbot_id: bot.id, name, active: true, trigger, conditions: [], actions: [action], once_per_conversation: !!m.once };
+    const version = draftVersion(`${bot.id}:notice-new`);
+    if (await run(() => api('POST', '/api/automations', body), 'Aviso creado ✅')) { discardDraft(`${bot.id}:notice-new`, version); render(); }
+  };
+
+  root.append(
+    h('div', { class: 'card legend' }, h('p', { style: 'margin:0' }, guaranteed(), ' Tu equipo recibe el aviso en el panel y, quien lo tenga activado, por WhatsApp. Cada aviso es una regla de ', h('a', { href: '#/automation/rules' }, 'Automatización'), ' de este agente: ahí puedes agregarle condiciones (horario, canal, etiquetas) u otras acciones.')),
+    list,
+    h('div', { class: 'card' },
+      h('h2', { style: 'margin-top:0' }, 'Nuevo aviso'),
+      whenBox,
+      field('Qué recibe el equipo', select(m, 'what', [['alert', 'Un aviso corto'], ['report', 'El reporte de la conversación (resumen, análisis y datos)']])),
+      messageField,
+      h('div', {}, h('span', { class: 'small' }, 'A quién: '), check(m, 'admins', 'Administradores'), check(m, 'agents', 'Agentes')),
+      field('Teléfonos adicionales (opcional)', lines(m, 'phones', { placeholder: '5215512345678' }), 'Uno por renglón, con lada. Reciben el aviso por WhatsApp.'),
+      field('Nombre del aviso (opcional)', text(m, 'name', { placeholder: 'Se genera solo' })),
+      check(m, 'once', 'Solo una vez por conversación (recomendado: evita avisos repetidos si el contexto vuelve a salir)')),
     saveBar(save),
   );
 }
