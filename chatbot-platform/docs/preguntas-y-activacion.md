@@ -13,6 +13,19 @@ Es un apartado separado del texto de instrucciones: una lista de preguntas en or
 - **Se guarda como**: la clave del dato en el contacto. Si se deja vacía, se genera a partir de la pregunta (sin palabras como «tarjeta» o «NIP», que el sistema trata como dato sensible y nunca guarda). Si coincide con un dato que ya existía sin pregunta (por ejemplo, de una plantilla), la pregunta lo reemplaza. Los datos sin pregunta se ven debajo de la lista y se pueden quitar.
 - **Obligatoria**: se vuelve a preguntar hasta tener respuesta. Una opcional se hace una sola vez; si el cliente no la contesta, se sigue con la siguiente.
 
+### Caminos por respuesta (el flujo lo marcan las preguntas)
+
+En una pregunta de tipo «opción», debajo de las opciones aparece **«Qué sigue según la respuesta»**. Para cada opción se elige:
+
+- **Sigue con la siguiente** (lo de siempre).
+- **Ir a la pregunta N**: se saltan las de en medio. Solo se puede ir hacia adelante, así el recorrido nunca da vueltas (el servidor rechaza un camino hacia atrás o desde una opción que no existe).
+- **Terminar las preguntas**: las que faltan ya no se hacen; cuenta como «terminó las preguntas» (y apaga al asistente si así está configurado).
+- **Pasar con una persona**: al responderla, la conversación pasa al equipo en ese mismo turno (una sola vez; si el equipo la devuelve, no se vuelve a transferir por la misma respuesta).
+
+Ejemplo: «¿Vienes a reservar o solo quieres informes?» → *Reservar*: sigue con la fecha y las personas; *Informes*: ir a «¿Te mando el folleto?»; *Hablar con alguien*: pasar con una persona.
+
+Las preguntas que un camino salta no se hacen (si la IA las hace, se quitan), no cuentan como obligatorias pendientes y el prompt las marca como «no aplican». Una respuesta que no coincide con ninguna opción con camino sigue en orden. Si cambias la clave de una pregunta, los caminos que llevan a ella la siguen.
+
 Lo que garantiza el sistema (no depende de la IA):
 
 - En cada turno calcula cuál es la siguiente pregunta con las respuestas guardadas.

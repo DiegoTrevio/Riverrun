@@ -39,6 +39,20 @@ const ChatbotBody = z.object({
       const bad = list.find((f) => f.question.trim() && isSensitiveField(f.key) && !(f.type === 'option' && f.options.length));
       if (bad) ctx.addIssue({ code: 'custom', message: `La clave "${bad.key}" parece de un dato sensible (tarjeta, NIP, contraseña): esa respuesta no se guardaría. Usa otra clave para esa pregunta.` });
     })
+    // Caminos por respuesta: solo hacia adelante (así el recorrido no puede dar vueltas) y desde una opción que existe.
+    .superRefine((list, ctx) => {
+      const questions = list.filter((f) => f.question.trim());
+      for (const [i, q] of questions.entries()) {
+        for (const b of q.branches) {
+          if (q.type !== 'option' || !q.options.some((o) => o.trim().toLowerCase() === b.option.trim().toLowerCase())) {
+            return ctx.addIssue({ code: 'custom', message: `La pregunta «${q.question.trim()}» tiene un camino para «${b.option}», que no es una de sus opciones.` });
+          }
+          if (b.goto !== 'end' && b.goto !== 'handoff' && !questions.slice(i + 1).some((x) => x.key === b.goto)) {
+            return ctx.addIssue({ code: 'custom', message: `En «${q.question.trim()}», la respuesta «${b.option}» lleva a una pregunta que no está después de ella. Un camino solo puede ir hacia adelante.` });
+          }
+        }
+      }
+    })
     .optional(),
   flow: FlowSchema.optional(),
   ai: AiSettingsSchema.optional(),

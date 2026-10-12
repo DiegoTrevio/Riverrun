@@ -539,6 +539,7 @@ export function validateDecision(input: ValidationInput): ValidationResult {
   let questionLast = false;
   let questionsCompleted = false;
   let questionsAfter: QuestionProgress | null = null;
+  let branchHandoff = '';
   if (questions.length) {
     const journey = input.questionJourney ?? { asked: {}, done: false };
     const known = input.knownData ?? {};
@@ -546,6 +547,15 @@ export function validateDecision(input: ValidationInput): ValidationResult {
     const name = contactName || input.knownName;
     questionsAfter = questionProgress(questions, data, name, journey.asked, { askedEver: journey.askedEver, nameKey });
     const pending = questionsAfter.next;
+    // Una respuesta cuyo camino es «pasar con una persona»: se transfiere en este turno (una sola vez, al responderla).
+    const route = questionsAfter.handoff;
+    if (route && action !== 'handoff' && !questionProgress(questions, known, input.knownName, journey.asked, { askedEver: journey.askedEver, nameKey }).handoff) {
+      action = 'handoff';
+      branchHandoff = `El cliente respondió «${route.answer}» a «${route.question.question.trim()}»`;
+      // Lo que dijo la IA se conserva, sin preguntas de la lista: ya no se siguen.
+      messages = dropSentences(messages, (_n, x) => asksAnyQuestion(x));
+      fixes.push(`${branchHandoff}: pasa con una persona (camino de la pregunta)`);
+    }
     const answeredNow = questions.some((q) => isAnswered(q, data, name, nameKey) && !isAnswered(q, known, input.knownName, nameKey));
     // Terminó en este turno: ya no queda ninguna pendiente, se había hecho alguna en este recorrido (o se contestó
     // una ahora) y no se registró antes. Un cliente que vuelve con todo respondido no lo dispara. También cuenta en
@@ -747,7 +757,7 @@ export function validateDecision(input: ValidationInput): ValidationResult {
       saveData,
       contactName,
       remember,
-      handoffReason: d.handoff_reason.trim(),
+      handoffReason: branchHandoff || d.handoff_reason.trim(),
       infoNotFound: d.info_not_found,
       intents,
       booking,
