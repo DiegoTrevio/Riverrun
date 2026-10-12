@@ -18,6 +18,7 @@ export const DecisionSchema = z.object({
   intents: z.array(z.string()).default([]),
   flow_step: z.number().int().default(0),
   goal_completed: z.boolean().default(false),
+  new_request: z.boolean().default(false),
   booking: z
     .object({
       action: z.enum(['none', 'book', 'cancel']).default('none'),
@@ -33,7 +34,7 @@ export type Decision = z.infer<typeof DecisionSchema>;
 export const DECISION_JSON_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['thinking', 'action', 'messages', 'image_ids', 'context_image_ids', 'saved_message_codes', 'save_data', 'remember', 'handoff_reason', 'info_not_found', 'intents', 'flow_step', 'goal_completed', 'booking'],
+  required: ['thinking', 'action', 'messages', 'image_ids', 'context_image_ids', 'saved_message_codes', 'save_data', 'remember', 'handoff_reason', 'info_not_found', 'intents', 'flow_step', 'goal_completed', 'new_request', 'booking'],
   properties: {
     thinking: {
       type: 'string',
@@ -89,6 +90,10 @@ export const DECISION_JSON_SCHEMA = {
     goal_completed: {
       type: 'boolean',
       description: 'true solo si con esta respuesta se cumple el objetivo de la conversación (y ya se tienen los datos importantes).',
+    },
+    new_request: {
+      type: 'boolean',
+      description: 'true solo si el cliente empieza otra vez una solicitud que ya terminó en esta conversación (vuelve a reservar, el problema regresó, pide de nuevo el mismo servicio). Repetir o seguir la solicitud actual no es una nueva.',
     },
     booking: {
       type: 'object',

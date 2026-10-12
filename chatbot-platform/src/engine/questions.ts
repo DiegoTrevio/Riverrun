@@ -12,6 +12,16 @@ export function questionList(bot: Pick<Chatbot, 'data_fields'>): Question[] {
   return bot.data_fields.filter((f) => !!f.question.trim());
 }
 
+/** ¿Se vuelve a preguntar en cada solicitud nueva? Por omisión sí, salvo nombre, correo y teléfono. */
+export function repeatsEachRequest(q: Pick<Question, 'type' | 'per_request'>): boolean {
+  return q.per_request ?? !['name', 'email', 'phone'].includes(q.type);
+}
+
+/** Claves de las preguntas que se vuelven a hacer en cada solicitud (sus respuestas se archivan al empezar otra). */
+export function perRequestKeys(bot: Pick<Chatbot, 'data_fields'>): string[] {
+  return questionList(bot).filter(repeatsEachRequest).map((q) => q.key);
+}
+
 /**
  * Dato que corresponde al nombre del contacto: `nombre` si existe; si no, el primer dato de tipo nombre.
  * Otros datos de tipo nombre ("¿Cómo se llama el festejado?") son de otra persona y no tocan la ficha.

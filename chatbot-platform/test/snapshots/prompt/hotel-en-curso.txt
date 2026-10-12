@@ -1,4 +1,4 @@
-# Prompt «hotel-en-curso»: 15055 caracteres de instrucciones, 5 mensajes en total
+# Prompt «hotel-en-curso»: 15084 caracteres de instrucciones, 5 mensajes en total
 
 ======== system ========
 # Quién eres
@@ -155,7 +155,7 @@ Resumen de la conversación anterior (mensajes más antiguos):
 ## Qué toca ahora
 - Etapa actual: 2. Fechas y huéspedes.
 - El objetivo se cumple cuando estén las preguntas obligatorias que faltan.
-- Preguntas respondidas: 1, 2 (de 4).
+- Preguntas de la lista ya respondidas: núm. 1, 2 (de 4 en total).
 - PREGUNTA EN CURSO (ya la hiciste): 3. «¿Qué día llegas?» → guarda la respuesta en `fecha_llegada`.
   - Si el cliente la acaba de responder: guarda su respuesta y NO la vuelvas a hacer; haz la siguiente: 4. «¿Cuántas personas se hospedan?» → guarda la respuesta en `huespedes`.
   - Si no la respondió: atiende lo que dijo y vuelve a hacerla al final.

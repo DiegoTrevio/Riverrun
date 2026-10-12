@@ -1,4 +1,4 @@
-# Prompt «hotel-primer-contacto»: 13853 caracteres de instrucciones, 2 mensajes en total
+# Prompt «hotel-primer-contacto»: 13877 caracteres de instrucciones, 2 mensajes en total
 
 ======== system ========
 # Quién eres
@@ -153,7 +153,7 @@ Alberca de 8:00 a 20:00. Estacionamiento gratuito. Wifi en todo el hotel.
 ## Qué toca ahora
 - Etapa actual: aún no empieza.
 - El objetivo se cumple cuando estén las preguntas obligatorias que faltan.
-- Preguntas respondidas: ninguna todavía (de 4).
+- Preguntas de la lista ya respondidas: ninguna todavía (de 4 en total).
 - SIGUIENTE PREGUNTA (hazla en esta respuesta, después de atender lo que diga el cliente): 1. «¿Vienes a reservar o quieres informes?» → guarda la respuesta en `motivo`.
 - Datos a recopilar que aún faltan: correo.
 - En ESTA respuesta el sistema enviará: Bienvenida. Puedes mencionarlo brevemente ("te comparto…"), sin describir su contenido con datos que no estén en la información del negocio.

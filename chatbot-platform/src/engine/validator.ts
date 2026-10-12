@@ -34,6 +34,8 @@ export interface ExecutionPlan {
   questionsCompleted: boolean;
   /** La IA marcó el objetivo como cumplido y el backend lo aceptó (hay objetivo y no faltan datos importantes). */
   goalCompleted: boolean;
+  /** La IA detectó que el cliente empieza otra vez una solicitud ya terminada (el motor decide si la abre). */
+  newRequest?: boolean;
 }
 
 export interface ValidationResult {
@@ -770,6 +772,7 @@ export function validateDecision(input: ValidationInput): ValidationResult {
       question: action === 'handoff' || action === 'no_reply' ? null : question,
       questionLast: !!question && questionLast && action !== 'handoff' && action !== 'no_reply',
       questionsCompleted,
+      newRequest: d.new_request,
     },
     retryable,
     fixes,

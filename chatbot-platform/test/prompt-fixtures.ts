@@ -107,6 +107,20 @@ export const CASES: Record<string, () => any> = {
     questionAsked: { motivo: 1, nombre: 1, fecha_llegada: 1 }, questionAskedEver: { motivo: 1, nombre: 1, fecha_llegada: 1 },
     correction: 'Te faltó la siguiente pregunta de la lista. Termina con esta pregunta, tal cual: «¿Qué día llegas?».',
   }),
+  // El cliente vuelve por tercera vez: la IA ve las solicitudes anteriores y vuelve a hacer las preguntas que se repiten.
+  'cliente-que-vuelve': () => ({
+    bot: hotel(), knowledge: KNOWLEDGE, images: aiImages,
+    contact: contact({ name: 'Ana López', data: { nombre: 'Ana López', correo: 'ana@correo.mx' } }),
+    conversation: conversation({ flow_step: 0, flow_started_at: NOW }), channelType: 'whatsapp',
+    history: [msg(40, 'in', 'Hola, quiero reservar otra vez para diciembre')], pending: [msg(40, 'in', 'Hola, quiero reservar otra vez para diciembre')],
+    sentImageIds: [], imagesById, now: NOW, autoImages: automatic, contextImages, imagesNow: [],
+    business: { ...openHours, openNow: true }, questionAsked: {}, questionAskedEver: { motivo: 2, nombre: 1, fecha_llegada: 2 },
+    requests: [
+      { number: 1, reason: 'inicio', started_at: new Date('2026-06-02T16:00:00Z'), ended_at: new Date('2026-06-03T16:00:00Z'), goal_completed_at: new Date('2026-06-02T17:00:00Z'), data: { motivo: 'Reservar', fecha_llegada: '20 de junio', huespedes: '2' } },
+      { number: 2, reason: 'tiempo', started_at: new Date('2026-08-15T16:00:00Z'), ended_at: new Date('2026-10-12T17:29:00Z'), goal_completed_at: null, data: { motivo: 'Informes' } },
+      { number: 3, reason: 'tiempo', started_at: NOW, ended_at: null, goal_completed_at: null, data: {} },
+    ],
+  }),
   // Camino «Informes» (terminan las preguntas), objetivo ya cumplido, por correo y de usted, sin emojis.
   'objetivo-cumplido-correo': () => {
     const bot = hydrateChatbot({ ...HOTEL, personality: { ...HOTEL.personality, formality: 'usted', emojis: 'none', style_examples: [] },

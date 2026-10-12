@@ -117,6 +117,11 @@ export const DataFieldSchema = z.object({
    * medio), `end` (terminan las preguntas) o `handoff` (pasa con una persona). Una opción sin camino sigue en orden.
    */
   branches: z.array(z.object({ option: z.string().max(200), goto: z.string().max(80) })).max(50).default([]),
+  /**
+   * Se vuelve a preguntar en cada solicitud nueva (otra reserva, el mismo problema otra vez…). Sin valor: sí, salvo los
+   * datos personales (nombre, correo y teléfono), que se conservan.
+   */
+  per_request: z.boolean().optional(),
 });
 export type DataField = z.infer<typeof DataFieldSchema>;
 export const DataFieldsSchema = z.array(DataFieldSchema).default([]);
@@ -132,6 +137,8 @@ export const FlowSchema = z.object({
   greeting: z.string().default(''),
   /** Qué hace el sistema (no la IA) la primera vez que se cumple el objetivo. */
   on_goal_action: z.enum(['none', 'handoff', 'notify']).default('none'),
+  /** Horas sin actividad tras las que un mensaje del cliente empieza una solicitud nueva (0 = solo cuando la IA lo detecta). */
+  new_request_after_hours: z.number().min(0).max(24 * 90).default(24),
 });
 export type Flow = z.infer<typeof FlowSchema>;
 

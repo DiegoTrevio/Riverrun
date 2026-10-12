@@ -143,6 +143,8 @@ async function tabInstructions(root, bot) {
       field('Cómo debe atender', area(p, 'prompt', { big: true, placeholder: 'Eres Mario, el asistente de Los Trompitos. Atiende de forma amable y breve. Ayuda a hacer pedidos. Pregunta qué quieren ordenar, la cantidad y si pasan a recoger o necesitan entrega. Para entrega, pide nombre y dirección. Haz una pregunta a la vez.' }),
         ['Describe cómo debe atender. Las preguntas que debe hacer, en orden, van en ', h('a', { href: `#/bot/${bot.id}/preguntas` }, 'Preguntas'), '; los precios, horarios y productos, en Conocimiento.']),
       field('Objetivo', area(f, 'goal', { placeholder: 'Ayudar al cliente a completar su pedido y pasarlo al equipo para confirmarlo.' })),
+      field(tag('Si el cliente vuelve por lo mismo, empezar una solicitud nueva después de (horas sin actividad)', guaranteed()), num(f, 'new_request_after_hours', { min: 0, max: 2160 }),
+        'Por omisión 24. Con 0, solo cuando el asistente detecte que pide otra vez lo que ya se le resolvió (otra reserva, el mismo problema), y nunca antes de 30 minutos si no se cumplió el objetivo. En cada solicitud nueva vuelven a contar el objetivo, las etapas, las preguntas que se repiten, las fotos y los avisos «una vez».'),
       h('p', { class: 'small muted', style: 'margin-bottom:0' }, 'Los datos se guardan automáticamente cuando el cliente responde: nombre, dirección, pedido y cualquier otro dato útil. Para que pregunte algo siempre y en orden, agrégalo en ', h('a', { href: `#/bot/${bot.id}/preguntas` }, 'Preguntas'), '.')),
     h('details', { class: 'card' }, h('summary', {}, 'Estilo de las respuestas'),
       h('div', { class: 'grid', style: 'margin-top:14px' },
@@ -473,7 +475,10 @@ function tabQuestions(root, bot) {
           h('details', {}, h('summary', {}, 'Opciones avanzadas del dato'), field('Se guarda como', text(q, 'key', { placeholder: 'Se genera automáticamente' }), 'Conserva las claves existentes para mantener tus reglas.'))),
         q.type === 'option' ? h('div', { onchange: draw }, field('Opciones', lines(q, 'options', { placeholder: 'Sencilla\nDoble\nSuite' }), 'Una por renglón.')) : null,
         q.type === 'option' && q.options?.some((o) => o.trim()) ? branchEditor(q, i) : null,
-        check(q, 'required', 'Obligatoria: si no la contesta, se le vuelve a preguntar (las opcionales se hacen una sola vez)')))
+        check(q, 'required', 'Obligatoria: si no la contesta, se le vuelve a preguntar (las opcionales se hacen una sola vez)'),
+        // Sin valor guardado: se repite salvo nombre, correo y teléfono (igual que en el servidor).
+        h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: q.per_request ?? !['name', 'email', 'phone'].includes(q.type), onchange: (e) => { q.per_request = e.target.checked; } }),
+          'Se vuelve a preguntar en cada solicitud nueva (si el cliente regresa por lo mismo)')))
       : h('p', { class: 'muted' }, 'Aún no hay preguntas. Agrégalas en el orden en que el asistente debe hacerlas.'));
   draw();
   const otherBox = h('div');
@@ -840,7 +845,7 @@ function flowSection(f) {
       h('div', { style: 'margin-top:14px' },
         field(tag('Cuando se cumpla el objetivo, el asistente…', guide()), area(f, 'on_goal_completed', { placeholder: 'Agradece y confirma los datos recibidos.' })),
         field(tag('…y además el sistema', guaranteed()), select(f, 'on_goal_action', [['none', 'No hace nada más'], ['handoff', 'Pasa la conversación a una persona'], ['notify', 'Avisa al equipo con el reporte completo (panel y WhatsApp)']]),
-          'El asistente reconoce cuándo se cumple el objetivo con las respuestas del cliente. Pasa una sola vez por recorrido. Al cumplirse, el equipo recibe el resumen, los datos confirmados y los pendientes; también puedes usarlo como disparador en Automatización (por ejemplo, para enviar el reporte por correo).')),
+          'El asistente reconoce cuándo se cumple el objetivo con las respuestas del cliente. Pasa una sola vez por solicitud. Al cumplirse, el equipo recibe el resumen, los datos confirmados y los pendientes; también puedes usarlo como disparador en Automatización (por ejemplo, para enviar el reporte por correo).')),
     ));
 }
 
