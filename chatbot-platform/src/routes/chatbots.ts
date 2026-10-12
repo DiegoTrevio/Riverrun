@@ -262,6 +262,14 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
     return { ok: true };
   });
 
+  /** Tras actualizar el agente: todas sus conversaciones empiezan de cero con la configuración nueva. */
+  api.post('/api/chatbots/:id/restart-conversations', admins, async (req: any) => {
+    const bot = await botFor(req.user, req.params.id);
+    const restarted = await store.restartChatbotConversations(bot.id);
+    await logEvent({ level: 'info', source: 'admin', message: `${req.user.email} reinició ${restarted} conversaciones del agente`, accountId: bot.account_id, chatbotId: bot.id });
+    return { restarted };
+  });
+
   /** Duplica un chatbot (configuración, conocimiento e imágenes), opcionalmente en otra cuenta. */
   api.post('/api/chatbots/:id/duplicate', admins, async (req: any) => {
     const src = await botFor(req.user, req.params.id);

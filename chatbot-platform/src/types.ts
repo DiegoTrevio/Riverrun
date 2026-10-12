@@ -341,6 +341,8 @@ export interface Conversation {
   handoff_reason: string;
   summary: string;
   summary_until_id: number;
+  /** Mensajes hasta este id son de antes de reiniciar la conversación: el asistente ya no los ve (0 = nunca se reinició). */
+  restarted_after_id?: number;
   data: Record<string, string>;
   data_version: number;
   report_summary: string;

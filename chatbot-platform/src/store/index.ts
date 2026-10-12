@@ -606,16 +606,36 @@ export async function saveConversationMemory(conversationId: string, contactId: 
   });
 }
 
+/**
+ * Reinicia la conversación: el asistente empieza de cero con este cliente. Olvida el resumen y el historial (que se
+ * conserva para el equipo), vuelve a la primera etapa y la siguiente respuesta cuenta como bienvenida (y sus fotos,
+ * las de etapa y objetivo vuelven a salir).
+ */
+const RESTART_SQL = `summary = '', restarted_after_id = GREATEST(restarted_after_id, COALESCE((SELECT max(id) FROM messages WHERE conversation_id = conversations.id), 0)),
+  summary_until_id = GREATEST(restarted_after_id, COALESCE((SELECT max(id) FROM messages WHERE conversation_id = conversations.id), 0)), data_version = data_version + 1,
+  flow_step = 0, goal_completed_at = NULL, flow_started_at = now(), questions_done_at = NULL`;
+
+/** Desde la conversación («Reiniciar conversación»): además borra lo que se sabe del cliente (datos, nombre y notas). */
 export async function resetConversationMemory(conversationId: string, contactId: string) {
   await withTransaction(async (client) => {
     await client.query('SELECT id FROM contacts WHERE id = $1 FOR UPDATE', [contactId]);
     const scope = await client.query('SELECT id FROM conversations WHERE id = $1 AND contact_id = $2 FOR UPDATE', [conversationId, contactId]);
     if (!scope.rows.length) throw new Error('La conversación no pertenece al contacto');
     await client.query("UPDATE contacts SET data = '{}', notes = '[]', name = '', updated_at = now() WHERE id = $1", [contactId]);
-    await client.query(`UPDATE conversations SET summary = '', summary_until_id = 0, data = '{}', data_version = data_version + 1,
-      report_summary = '', report_analysis = '{}'::jsonb, report_until_id = 0, report_at = NULL, report_data_version = -1, flow_step = 0, goal_completed_at = NULL, flow_started_at = now(), questions_done_at = NULL
+    await client.query(`UPDATE conversations SET ${RESTART_SQL},
+      report_summary = '', report_analysis = '{}'::jsonb, report_until_id = 0, report_at = NULL, report_data_version = -1, data = '{}'
       WHERE id = $1 AND contact_id = $2`, [conversationId, contactId]);
   });
+}
+
+/**
+ * Al actualizar un asistente: todas sus conversaciones empiezan de cero con la configuración nueva. Se conservan los
+ * datos de los clientes, su reporte, quién atiende cada una y si el asistente está en pausa o esperando su palabra de
+ * activación (así ningún cliente pierde la atención ni la recibe si la había pausado). Devuelve cuántas se reiniciaron.
+ */
+export async function restartChatbotConversations(chatbotId: string): Promise<number> {
+  const rows = await query<{ id: string }>(`UPDATE conversations SET ${RESTART_SQL} WHERE chatbot_id = $1 RETURNING id`, [chatbotId]);
+  return rows.length;
 }
 
 /** Conversación del contacto; el chatbot que la atiende siempre es el asignado actualmente al canal. */
@@ -827,8 +847,10 @@ export async function countInbound(conversationId: string): Promise<number> {
 
 export async function isFirstLiveInbound(conversationId: string, messageId: number): Promise<boolean> {
   const row = await queryOne<{ first: boolean }>(
-    `SELECT $2::bigint = min(id) AS first FROM messages WHERE conversation_id = $1 AND direction = 'in'
-     AND type <> 'reaction' AND COALESCE(meta->>'stale', 'false') <> 'true'`, [conversationId, messageId],
+    // Tras reiniciar la conversación, cuenta desde el reinicio (vuelve la bienvenida).
+    `SELECT $2::bigint = min(m.id) AS first FROM messages m JOIN conversations c ON c.id = m.conversation_id
+     WHERE m.conversation_id = $1 AND m.direction = 'in' AND m.id > COALESCE(c.restarted_after_id, 0)
+     AND m.type <> 'reaction' AND COALESCE(m.meta->>'stale', 'false') <> 'true'`, [conversationId, messageId],
   );
   return row?.first === true;
 }

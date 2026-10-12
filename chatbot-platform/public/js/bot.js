@@ -34,7 +34,7 @@ export async function viewBot(root, id, tab, params = new URLSearchParams()) {
     h('a', { href: '#/agentes', class: 'breadcrumb' }, '← Agentes'),
     h('div', { class: 'row between' },
       h('h1', {}, bot.name, ' ', h('span', { class: `badge ${bot.active ? 'green' : ''}` }, bot.active ? 'Encendido' : 'Apagado')),
-      h('div', { class: 'row' }, h('a', { class: 'btn', href: `#/bot/${bot.id}/conexiones?new=1` }, 'Conectar teléfono'), h('a', { href: `#/conversations?chatbot_id=${bot.id}` }, 'Ver conversaciones →'))),
+      h('div', { class: 'row' }, h('a', { class: 'btn', href: `#/bot/${bot.id}/conexiones?new=1` }, 'Conectar teléfono'), restartConversationsButton(bot), h('a', { href: `#/conversations?chatbot_id=${bot.id}` }, 'Ver conversaciones →'))),
     h('div', { class: 'tabs agent-tabs', 'aria-label': 'Secciones del agente' }, TABS.map(([k, l]) => { const active = k === tab || (k === 'instrucciones' && ['preguntas', 'activacion'].includes(tab)) || (k === 'conocimiento' && tab === 'imagenes'); return h('a', { href: `#/bot/${id}/${k}`, class: active ? 'active' : '', 'aria-current': active ? 'page' : null }, l); })),
     ['instrucciones', 'preguntas', 'activacion', 'conocimiento', 'imagenes'].includes(tab) ? h('div', { class: 'tabs sub-tabs', 'aria-label': 'Opciones de la sección' }, (['conocimiento', 'imagenes'].includes(tab) ? KNOWLEDGE_TABS : CONFIG_TABS).map(([k, l]) => h('a', { href: `#/bot/${id}/${k}`, class: k === tab ? 'active' : '', 'aria-current': k === tab ? 'page' : null }, l))) : null,
   );
@@ -53,6 +53,15 @@ export async function viewBot(root, id, tab, params = new URLSearchParams()) {
   const views = { instrucciones: tabInstructions, preguntas: tabQuestions, activacion: tabActivation, conocimiento: tabKnowledge, imagenes: tabImages, conexiones: tabConnections, probar: tabPlayground };
   await (views[tab] || tabInstructions)(body, bot, params);
   if (tab !== 'probar' && tab !== 'conexiones') root.insertBefore(draftNotice(['general', 'personality', 'flow', 'rules', 'ai', 'questions', 'saved_messages', 'knowledge-new', 'photo-new'].map((key) => `${bot.id}:${key}`), render), body);
+}
+
+/** Tras actualizar el agente: sus conversaciones empiezan de cero con los cambios (la bienvenida y sus fotos vuelven a salir). */
+function restartConversationsButton(bot) {
+  return h('button', { title: 'Úsalo después de guardar cambios: cada conversación empieza de cero con la configuración nueva.', onclick: async () => {
+    if (!(await confirmAction('¿Reiniciar las conversaciones de este agente? Cada una empieza de cero con la configuración nueva: el agente olvida lo platicado y vuelve a la primera etapa, y la bienvenida y sus fotos salen otra vez. Se conservan el historial, los datos de los clientes y quién atiende cada conversación.'))) return;
+    const r = await run(() => api('POST', `/api/chatbots/${bot.id}/restart-conversations`));
+    if (r) toast(r.restarted === 1 ? '1 conversación reiniciada' : `${r.restarted} conversaciones reiniciadas`);
+  } }, 'Reiniciar conversaciones');
 }
 
 export function saveBar(onSave, extra) {

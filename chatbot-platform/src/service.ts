@@ -220,6 +220,8 @@ export class ChatService {
       const [contact, channel] = await Promise.all([store.getContact(conv.contact_id), store.getChannel(conv.channel_id)]);
       if (!channel || channel.type === 'playground') return;
       const who = contact?.name || contact?.push_name || (contact?.phone ? `+${contact.phone}` : 'Un cliente');
+      // Las fotos por palabra del cliente o de bienvenida no dependen de la IA: salen aunque ella no responda.
+      await this.engine.sendRuleImagesWithoutAi(conversationId).catch((e) => logEvent({ level: 'error', source: 'engine', message: `No se pudieron programar las fotos por regla sin IA: ${e?.message ?? e}`, conversationId }));
       await logEvent({ level: 'error', source: 'ai', message: 'La IA no pudo responder tras reintentar; se avisó al equipo', accountId: conv.account_id, channelId: conv.channel_id, conversationId });
       await this.automator.alertTeam(conv.account_id, {
         title: '⚠️ Un cliente espera respuesta',

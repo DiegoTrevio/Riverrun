@@ -28,7 +28,7 @@ Lo que garantiza el sistema (no depende de la IA):
 - El objetivo de la conversación no se marca cumplido mientras falten preguntas obligatorias.
 - Si el cliente ya dio una respuesta (aunque sea antes de que se la pregunten), no se le vuelve a preguntar.
 
-Las respuestas se guardan en el contacto como cualquier otro dato: aparecen en Conversaciones, en los reportes y en las automatizaciones. «Borrar memoria» de una conversación vuelve a empezar la lista. Un cliente que regresa con todo respondido no vuelve a contestar, y una opcional que ya se le hizo sin respuesta no se repite al reabrir la conversación.
+Las respuestas se guardan en el contacto como cualquier otro dato: aparecen en Conversaciones, en los reportes y en las automatizaciones. «Reiniciar conversación» vuelve a empezar la lista. Un cliente que regresa con todo respondido no vuelve a contestar, y una opcional que ya se le hizo sin respuesta no se repite al reabrir la conversación.
 
 La IA reconoce una pregunta aunque la adapte un poco (al menos 70 % de sus palabras clave). Una pregunta muy corta solo cuenta completa.
 

@@ -38,7 +38,7 @@ Si el proveedor de IA falla, la conversación se puede cerrar conservando datos 
 Cada mensaje (entrante, saliente, de persona o de campaña) se guarda siempre en `messages`; nada se descarta para ahorrar espacio. Lo que se mantiene pequeño es lo derivado:
 
 - `report_summary`: máximo 4000 caracteres (el modelo recibe la orden de no pasar de ~150 palabras).
-- `report_analysis` (jsonb): intención, ánimo (`positivo|neutral|negativo`), interés (`alto|medio|bajo|sin_dato`), hasta 6 acuerdos y 6 pendientes, de máx. 200 caracteres cada uno. Se genera junto con el resumen en la misma llamada y se borra con «Borrar memoria».
+- `report_analysis` (jsonb): intención, ánimo (`positivo|neutral|negativo`), interés (`alto|medio|bajo|sin_dato`), hasta 6 acuerdos y 6 pendientes, de máx. 200 caracteres cada uno. Se genera junto con el resumen en la misma llamada y se borra con «Reiniciar conversación».
 - `ai_runs.decision` / `ai_runs.validation`: detalle técnico de cada respuesta de la IA. Pasados `AI_RUN_DETAIL_DAYS` (14 por defecto) se vacían; el consumo y el costo de cada ejecución se conservan para la contabilidad.
 
 **Consultar y descargar** (cualquier integrante con acceso a la conversación):

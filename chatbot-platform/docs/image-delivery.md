@@ -34,7 +34,14 @@ Puedes escribir en las Instrucciones cuándo enviar una foto, por su ID: «Cuand
 - *La plataforma la rechazó*: se reintenta a los ~45 segundos y, si vuelve a fallar, con espera creciente (hasta 3 intentos). Cada intento queda en Registros («Foto enviada por regla (pendiente)»). Esto aplica también a la foto que eligió la IA (y ya anunció) y a la foto de un mensaje guardado que además pide una regla.
 - Un reenvío que pidió el cliente se entrega aunque la foto sea «una sola vez».
 - La tarea se cancela (y queda en Registros con el motivo) si el recorrido se reinició, si la foto ya llegó, si ya no está activa, si una persona respondió desde que se programó o si el cliente pausó al asistente. Si el asistente ya no atiende (pasó a una persona o se cerró), la foto pendiente solo sale cuando fue el propio asistente quien terminó la conversación en ese mismo turno (por ejemplo, al cumplir el objetivo).
-- «Una sola vez por conversación» se cuenta **por recorrido**: si la conversación se cierra y el cliente vuelve a escribir (o se borra su memoria), las fotos de etapa y de objetivo vuelven a enviarse.
+- *La IA no respondió* (falló tras reintentar): las fotos por palabra del cliente y la de bienvenida no dependen de la IA, así que salen igual, como tarea pendiente (con las mismas comprobaciones). Si después la IA responde a esos mensajes, no las repite.
+- «Una sola vez por conversación» se cuenta **por recorrido**: si la conversación se cierra y el cliente vuelve a escribir (o se reinicia), las fotos de etapa y de objetivo vuelven a enviarse.
+
+## Reiniciar conversaciones al actualizar el agente
+
+- **Todas las del agente:** en el agente, «Reiniciar conversaciones» (después de guardar los cambios). Cada conversación empieza de cero con la configuración nueva: el agente olvida lo platicado (el historial se conserva en el panel), vuelve a la primera etapa, y la siguiente respuesta cuenta como bienvenida, así que sus fotos y las de etapa y objetivo vuelven a salir. Se conservan los datos de los clientes, su reporte, quién atiende cada conversación y si el asistente está en pausa o esperando su palabra de activación.
+- **Una sola:** en la conversación, «Reiniciar conversación». Igual que lo anterior y, además, borra los datos, el nombre y las notas de ese cliente.
+- Las fotos pendientes del recorrido anterior ya no salen.
 
 **Etapas del recorrido:** si quitas o reordenas etapas, las fotos y los mensajes guardados que se envían en una etapa la siguen (con su nuevo número), y las conversaciones en curso se quedan en la misma etapa. Una foto de una etapa que se quitó deja de tener ese momento.
 

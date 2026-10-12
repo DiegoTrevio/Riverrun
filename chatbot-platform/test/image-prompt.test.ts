@@ -459,3 +459,63 @@ t('borrar una foto usada en una regla automática la quita de la regla (que se p
   assert.equal(off.statusCode, 200, off.body);
   assert.equal(off.json().actions[0].image_id, '');
 });
+
+t('reiniciar las conversaciones al actualizar el agente: la bienvenida y su foto vuelven a salir, y el agente no ve lo anterior', async () => {
+  await h.authed('PUT', `/api/images/${IDS.bienvenida}`, { active: true });
+  try {
+    h.reset();
+    h.setScript(() => ({ action: 'reply', messages: ['¡Hola! ¿En qué te ayudo?'] }));
+    const phone = '5215560000020';
+    await say('Hola, buenas tardes', phone);
+    await say('Busco hospedaje para el puente', phone);
+    assert.deepEqual(photos(phone), ['bienvenida'], 'la bienvenida sale una vez');
+
+    // Se actualiza el agente y se reinician sus conversaciones.
+    const r = await h.authed('POST', `/api/chatbots/${h.botId}/restart-conversations`);
+    assert.equal(r.statusCode, 200, r.body);
+    assert.ok(r.json().restarted >= 1);
+    const c = await convOf(phone);
+    assert.equal(c.flow_step, 0);
+    assert.ok(Number(c.restarted_after_id) > 0);
+
+    h.reset();
+    await say('Hola otra vez', phone);
+    assert.deepEqual(photos(phone), ['bienvenida'], 'la bienvenida vuelve a salir tras reiniciar');
+    const context = JSON.stringify(h.calls[0].messages);
+    assert.doesNotMatch(context, /puente/, 'el agente no ve lo platicado antes del reinicio');
+    await say('¿Tienen estacionamiento?', phone);
+    assert.deepEqual(photos(phone), ['bienvenida'], 'y no se repite en la siguiente respuesta');
+
+    // Una sola conversación, desde el panel.
+    h.reset();
+    assert.equal((await h.authed('POST', `/api/conversations/${c.id}/reset-memory`)).statusCode, 200);
+    await say('Buenas noches', phone);
+    assert.deepEqual(photos(phone), ['bienvenida']);
+  } finally {
+    await h.authed('PUT', `/api/images/${IDS.bienvenida}`, { active: false });
+  }
+});
+
+t('si la IA no responde, la foto por palabra del cliente sale igual (y no se repite cuando la IA vuelve)', async () => {
+  const queue = h.service.queue as any;
+  const retry = queue.errorRetryMs;
+  queue.errorRetryMs = 50;
+  try {
+    h.reset();
+    h.setScript(() => new Error('IA no disponible'));
+    const phone = '5215560000021';
+    const r = await h.webhook('¿Me pasas el menú?', { phone });
+    assert.equal(r.statusCode, 200, r.body);
+    await sleep(600);
+    await h.idle();
+    await sleep(300);
+    await h.fastForward();
+    assert.deepEqual(to(phone), ['[FOTO menu]'], 'la foto de la regla sale aunque la IA no responda');
+
+    h.setScript(() => ({ action: 'reply', messages: ['Claro, ahí tienes el menú. ¿Algo más?'] }));
+    await say('¿Sigues ahí?', phone);
+    assert.deepEqual(photos(phone), ['menu'], 'no se repite cuando la IA responde esos mensajes');
+  } finally {
+    queue.errorRetryMs = retry;
+  }
+});
