@@ -163,14 +163,14 @@ test('buildContext: memoria, catálogo, datos faltantes y roles', () => {
     history: msgs, pending: [msgs[2]], sentImageIds: [], imagesById: new Map(), now,
   });
   const sys = ctx.messages[0].content;
-  assert.match(sys, /ID: `doble`/);
+  assert.match(sys, /- `doble`/);
   assert.match(sys, /\$1,650/);
   assert.match(sys, /nombre: Juan/);
-  assert.match(sys, /Datos que aún faltan: correo, habitacion/);
+  assert.match(sys, /Datos a recopilar que aún faltan: correo, habitacion/);
   assert.match(sys, /Viaja con su esposa/);
   assert.match(sys, /Preguntó por fechas de diciembre/);
   assert.match(sys, /no vuelvas a presentarte/);
-  assert.match(sys, /Canal de esta conversación: WhatsApp/);
+  assert.match(sys, /Canal: WhatsApp/);
   assert.match(sys, /teléfono de WhatsApp: 5215512345678/);
   assert.deepEqual(ctx.messages.slice(1).map((m) => m.role), ['user', 'assistant', 'user']);
 });

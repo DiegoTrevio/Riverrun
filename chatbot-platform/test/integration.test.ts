@@ -161,7 +161,7 @@ t('envía solo imágenes del catálogo', async () => {
   script = () => ({ messages: ['Claro'] });
   await webhook('gracias');
   await waitFor(() => sent.length === 1);
-  assert.match(calls[0].messages[0].content, /Imágenes ya enviadas en esta conversación: suite/);
+  assert.match(calls[0].messages[0].content, /Fotos ya enviadas: suite/);
 });
 
 t('memoria: resume lo antiguo y no manda todo el historial', async () => {

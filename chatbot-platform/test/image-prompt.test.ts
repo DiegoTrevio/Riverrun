@@ -114,21 +114,21 @@ test('prompt: cada foto aparece una vez y con instrucciones que no se contradice
     history: [], pending: [], sentImageIds: [], imagesById: new Map([menu, alberca, mapa, suite].map((i) => [i.id, i])),
     autoImages: [{ image: suite, when: 'el cliente escribe "suite"' }, { image: mapa, when: 'al agendar una cita' }], contextImages: [mapa, ctxOnly], imagesNow: [],
   } as any, []);
-  const catalog = prompt.slice(prompt.indexOf('# Catálogo de imágenes'), prompt.indexOf('# Mensajes guardados'));
-  assert.match(catalog, /solo en sus momentos \(NO las pongas en image_ids\):\n- `suite` \| Suite: el cliente escribe "suite"/);
-  assert.match(catalog, /Si las instrucciones del negocio piden enviar una de estas fotos, no la pongas en image_ids/);
+  const catalog = prompt.slice(prompt.indexOf('## Fotos'), prompt.indexOf('## Mensajes guardados'));
+  assert.match(catalog, /solo en sus momentos \(no las pongas en image_ids ni las prometas\)\n- `suite` \| Suite: el cliente escribe "suite"/);
+  assert.match(catalog, /Si las instrucciones del negocio piden una de estas fotos, no la prometas/);
   // "Ambos": solo en el catálogo de la IA, con su condición de contexto y sus momentos automáticos.
-  assert.match(catalog, /- ID: `mapa` \| Mapa \| enviar cuando: Cuando pidan la ubicación \| también cuando: Cuando pregunten cómo llegar \| además el sistema la envía sola al agendar una cita/);
+  assert.match(catalog, /- `mapa` \| Mapa \| enviar cuando: Cuando pidan la ubicación \| también cuando: Cuando pregunten cómo llegar \| además el sistema la envía sola al agendar una cita/);
   assert.equal(catalog.split('`mapa`').length - 1, 1, 'mapa aparece una sola vez');
-  assert.match(catalog, /ID de contexto: `comparar`/);
-  assert.match(catalog, /Máximo 2 por turno, contando las fotos de los mensajes guardados/);
-  assert.match(catalog, /Al pasar con una persona no se envían fotos/);
+  assert.match(catalog, /### Fotos por contexto[^#]*- `comparar` \| Comparativa/);
+  assert.match(catalog, /Máximo 2 por respuesta, contando las fotos de los mensajes guardados/);
+  assert.match(prompt, /al pasar con una persona no salen fotos/);
   // Con máximo 0 las fotos de mensajes guardados no se ofrecen.
   const zero = buildSystemPrompt({
     bot: bot({ rules: { max_images_per_reply: 0 }, saved_messages: [{ code: 'precios', text: 'Tarifas', image_id: 'id-alberca', active: true }] }), knowledge: [], images: [], contact: { data: {}, name: '', phone: '', notes: [] } as any,
     conversation: { flow_step: 0, summary: '' } as any, history: [], pending: [], sentImageIds: [], imagesById: new Map([[alberca.id, alberca]]),
   } as any, []).prompt;
-  assert.match(zero, /No hay imágenes disponibles/);
+  assert.match(zero, /No hay fotos disponibles/);
   assert.match(zero, /`precios`[^\n]*solo texto/);
 });
 
@@ -342,7 +342,7 @@ t('un envío programado con etapa cuenta su foto como enviada: la IA no la repit
   h.reset();
   h.setScript(() => ({ action: 'reply_with_image', messages: ['Así es la suite.'], image_ids: ['suite'] }));
   await say('Se ve bien, ¿cuánto cuesta?', phone);
-  assert.match(String(h.calls[0].messages[0].content), /Imágenes ya enviadas[^\n]*suite/);
+  assert.match(String(h.calls[0].messages[0].content), /Fotos ya enviadas[^\n]*suite/);
   assert.deepEqual(photos(phone), []);
 });
 
@@ -400,7 +400,7 @@ t('máximo de fotos en 0: no sale ninguna foto, ni automática ni después', asy
   await say('¿me pasas el menú?', phone);
   await h.fastForward();
   assert.deepEqual(photos(phone), []);
-  assert.match(String(h.calls[0].messages[0].content), /No hay imágenes disponibles/);
+  assert.match(String(h.calls[0].messages[0].content), /No hay fotos disponibles/);
 });
 
 t('una foto pendiente no sale si el cliente pausó al asistente', async () => {
