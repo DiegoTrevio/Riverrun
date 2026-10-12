@@ -119,7 +119,7 @@ const RULE_TEMPLATES = [
   { name: 'Agradecer cita agendada', trigger: { type: 'appointment_booked' }, actions: [{ type: 'send_message', text: 'Te esperamos el {{cita.fecha}} a las {{cita.hora}} 🙌', delay_minutes: 1 }] },
 ];
 
-function triggerSummary(t) {
+export function triggerSummary(t) {
   switch (t.type) {
     case 'message_received':
       return t.match === 'any' ? 'Cualquier mensaje' : `Mensaje ${t.match === 'exact' ? 'igual a' : 'con'}: ${t.keywords.join(', ')}`;
@@ -149,7 +149,7 @@ async function listRules(root) {
       rules.length
         ? h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Regla'), h('th', {}, 'Cuando'), h('th', {}, 'Acciones'), h('th', {}, 'Veces'), h('th', {}, 'Acciones'))),
             h('tbody', {}, rules.map((r) => h('tr', {},
-              h('td', {}, h('a', { href: `#/automation/rules/${r.id}` }, h('strong', {}, r.name)), ' ', r.active ? null : h('span', { class: 'badge orange' }, 'inactiva'), r.stop_ai ? h('div', { class: 'small muted' }, 'la IA no responde') : null),
+              h('td', {}, h('a', { href: `#/automation/rules/${r.id}` }, h('strong', {}, r.name)), ' ', r.active ? null : h('span', { class: 'badge orange' }, 'inactiva'), r.stop_ai ? h('div', { class: 'small muted' }, 'la IA no responde') : null, r.once_per_conversation ? h('div', { class: 'small muted' }, 'una vez por conversación') : null),
               h('td', { class: 'small' }, triggerSummary(r.trigger), r.conditions.length ? h('div', { class: 'muted' }, `+ ${r.conditions.length} condición(es)`) : null),
               h('td', { class: 'small' }, r.actions.map((a) => ACTIONS[a.type]).join(' → ')),
               h('td', { class: 'small muted' }, r.run_count, r.last_run_at ? h('div', {}, fmtDate(r.last_run_at)) : null),
@@ -327,7 +327,7 @@ async function editRule(root, id) {
   const refs = await automationRefs();
   const existing = id === 'new' ? null : (await api('GET', withAcct('/api/automations'))).find((r) => r.id === id);
   if (id !== 'new' && !existing) throw new Error('Regla no encontrada');
-  const r = draftModel(`rule:${id}`, existing || { name: '', active: false, chatbot_id: null, stop_ai: false, priority: 0, trigger: { type: 'message_received', match: 'keywords', keywords: [] }, conditions: [], actions: [] }, false);
+  const r = draftModel(`rule:${id}`, existing || { name: '', active: false, chatbot_id: null, stop_ai: false, once_per_conversation: false, priority: 0, trigger: { type: 'message_received', match: 'keywords', keywords: [] }, conditions: [], actions: [] }, false);
   root.append(draftNotice([`rule:${id}`], render));
   initializeDraftDefaults(`rule:${id}`, () => { r.chatbot_id ??= ''; });
   const trigBox = h('div');
@@ -379,7 +379,8 @@ async function editRule(root, id) {
         field('Nombre de la regla', text(r, 'name', { placeholder: 'Alerta de quejas' })),
         field('Aplica a', select(r, 'chatbot_id', [['', 'Todos los chatbots de la cuenta'], ...refs.bots.map((b) => [b.id, b.name])], () => { if (r.trigger.type === 'stage_reached') drawTrigger(); }))),
       check(r, 'active', 'Activa'),
-      check(r, 'stop_ai', 'Si se cumple, la IA no responde ese mensaje (la regla se encarga)')),
+      check(r, 'stop_ai', 'Si se cumple, la IA no responde ese mensaje (la regla se encarga)'),
+      check(r, 'once_per_conversation', 'Solo una vez por conversación (vuelve a contar si la conversación se reinicia o se reabre)')),
     h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, '1. Cuándo'), trigBox),
     h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, '2. Solo si… (opcional)'), typedList(r.conditions, CONDITIONS, (c) => conditionFields(c))),
     h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, '3. Hacer'), typedList(r.actions, ACTIONS, (a) => actionFields(a, refs))),
