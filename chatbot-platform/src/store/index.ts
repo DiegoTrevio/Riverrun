@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { query, queryOne, withTransaction } from '../db.js';
 import { removeInboundAccountFiles, type StoredMedia } from '../channels/media.js';
+import { perRequestKeys } from '../engine/questions.js';
 import {
   channelConfig,
   hydrateChatbot,
@@ -617,6 +618,7 @@ const RESTART_SQL = `summary = '', restarted_after_id = GREATEST(restarted_after
 
 /** Desde la conversación («Reiniciar conversación»): además borra lo que se sabe del cliente (datos, nombre y notas). */
 export async function resetConversationMemory(conversationId: string, contactId: string) {
+  await beginRequest(conversationId, { reason: 'reinicio' });
   await withTransaction(async (client) => {
     await client.query('SELECT id FROM contacts WHERE id = $1 FOR UPDATE', [contactId]);
     const scope = await client.query('SELECT id FROM conversations WHERE id = $1 AND contact_id = $2 FOR UPDATE', [conversationId, contactId]);
@@ -634,8 +636,73 @@ export async function resetConversationMemory(conversationId: string, contactId:
  * activación (así ningún cliente pierde la atención ni la recibe si la había pausado). Devuelve cuántas se reiniciaron.
  */
 export async function restartChatbotConversations(chatbotId: string): Promise<number> {
+  const ids = await query<{ id: string }>('SELECT id FROM conversations WHERE chatbot_id = $1', [chatbotId]);
+  for (const { id } of ids) await beginRequest(id, { reason: 'reinicio' });
   const rows = await query<{ id: string }>(`UPDATE conversations SET ${RESTART_SQL} WHERE chatbot_id = $1 RETURNING id`, [chatbotId]);
   return rows.length;
+}
+
+/* ------------------------------ Solicitudes ------------------------------ */
+
+/** Por qué empezó una solicitud: el cliente volvió tras un tiempo, la IA detectó que pide lo mismo otra vez, se reabrió… */
+export type RequestReason = 'tiempo' | 'contenido' | 'reapertura' | 'campaña' | 'reinicio';
+
+export interface ConversationRequest {
+  number: number;
+  reason: RequestReason | 'inicio';
+  started_at: Date;
+  ended_at: Date | null;
+  goal_completed_at: Date | null;
+  data: Record<string, string>;
+}
+
+/**
+ * El cliente empieza una solicitud nueva (otra reserva, el mismo problema otra vez…): se cierra la actual guardando si
+ * cumplió su objetivo y sus respuestas, y la conversación vuelve a la primera etapa (o a `step`), con objetivo, preguntas,
+ * fotos y avisos «una vez» contando de nuevo. Las respuestas a las preguntas que se repiten en cada solicitud se archivan
+ * y se borran de los datos del cliente para volver a preguntarlas; el nombre, el correo y el teléfono se conservan.
+ * Devuelve el número de la solicitud nueva.
+ */
+export async function beginRequest(conversationId: string, o: { reason: RequestReason; step?: number; since?: Date }): Promise<number> {
+  return withTransaction(async (client) => {
+    const conv = (await client.query('SELECT * FROM conversations WHERE id = $1 FOR UPDATE', [conversationId])).rows[0] as Conversation | undefined;
+    if (!conv) return 0;
+    const botRow = conv.chatbot_id ? (await client.query('SELECT * FROM chatbots WHERE id = $1', [conv.chatbot_id])).rows[0] : null;
+    const keys = botRow ? perRequestKeys(hydrateChatbot(botRow)) : [];
+    const contact = (await client.query('SELECT data FROM contacts WHERE id = $1 FOR UPDATE', [conv.contact_id])).rows[0] as { data: Record<string, string> } | undefined;
+    const data = contact?.data ?? {};
+    const answers = JSON.stringify(Object.fromEntries(keys.filter((k) => data[k]).map((k) => [k, data[k]])));
+    const last = ((await client.query('SELECT max(number)::int AS n FROM conversation_requests WHERE conversation_id = $1', [conv.id])).rows[0]?.n as number | null) ?? 0;
+    if (last) {
+      await client.query('UPDATE conversation_requests SET ended_at = now(), goal_completed_at = $3, data = $4 WHERE conversation_id = $1 AND number = $2', [conv.id, last, conv.goal_completed_at ?? null, answers]);
+    } else {
+      // La primera solicitud no tenía registro: empezó con la conversación (o en su último recorrido).
+      await client.query(
+        `INSERT INTO conversation_requests (conversation_id, number, reason, started_at, ended_at, goal_completed_at, data) VALUES ($1, 1, 'inicio', $2, now(), $3, $4)`,
+        [conv.id, conv.flow_started_at ?? (conv as Conversation & { created_at?: Date }).created_at ?? new Date(), conv.goal_completed_at ?? null, answers],
+      );
+    }
+    const number = Math.max(last, 1) + 1;
+    await client.query('INSERT INTO conversation_requests (conversation_id, number, reason, started_at) VALUES ($1, $2, $3, coalesce($4::timestamptz, now()))', [conv.id, number, o.reason, o.since ?? null]);
+    if (keys.length) await client.query('UPDATE contacts SET data = data - $2::text[], updated_at = now() WHERE id = $1', [conv.contact_id, keys]);
+    await client.query(
+      `UPDATE conversations SET data = data - $2::text[], data_version = data_version + 1, flow_step = $3, goal_completed_at = NULL,
+         questions_done_at = NULL, flow_started_at = coalesce($4::timestamptz, now()) WHERE id = $1`,
+      [conv.id, keys, o.step ?? 0, o.since ?? null],
+    );
+    return number;
+  });
+}
+
+/** Solicitudes de la conversación, de la primera a la actual (vacío si nunca empezó una segunda). */
+export async function listRequests(conversationId: string): Promise<ConversationRequest[]> {
+  return query<ConversationRequest>('SELECT number, reason, started_at, ended_at, goal_completed_at, data FROM conversation_requests WHERE conversation_id = $1 ORDER BY number', [conversationId]);
+}
+
+/** Cuándo fue el último mensaje (de cualquiera) antes de este: para saber si el cliente vuelve tras un tiempo. */
+export async function lastActivityBefore(conversationId: string, messageId: number): Promise<Date | null> {
+  const row = await queryOne<{ at: Date | null }>('SELECT max(created_at) AS at FROM messages WHERE conversation_id = $1 AND id < $2', [conversationId, messageId]);
+  return row?.at ?? null;
 }
 
 /** Conversación del contacto; el chatbot que la atiende siempre es el asignado actualmente al canal. */
@@ -1029,17 +1096,10 @@ export async function clearConnectionCodes(channelId: string) {
  * se conserva (el cliente contesta a esa campaña: sigue desde la etapa que marcó).
  */
 export async function resetFlowState(conversationId: string, opts: { keepCampaignStart?: boolean } = {}) {
-  const keep = opts.keepCampaignStart ? 'flow_started_at IS NOT NULL AND flow_started_at > status_changed_at' : 'false';
-  await query(
-    `UPDATE conversations SET
-       flow_step = CASE WHEN ${keep} THEN flow_step ELSE 0 END,
-       goal_completed_at = CASE WHEN ${keep} THEN goal_completed_at ELSE NULL END,
-       questions_done_at = CASE WHEN ${keep} THEN questions_done_at ELSE NULL END,
-       flow_started_at = CASE WHEN ${keep} THEN flow_started_at ELSE now() END,
-       agent_off_at = NULL, agent_off_reason = '', agent_off_until = NULL, agent_on_at = NULL
-     WHERE id = $1`,
-    [conversationId],
-  );
+  const kept = !!opts.keepCampaignStart && !!(await queryOne('SELECT 1 FROM conversations WHERE id = $1 AND flow_started_at IS NOT NULL AND flow_started_at > status_changed_at', [conversationId]));
+  // Al reabrirse empieza una solicitud nueva (salvo que la haya empezado una campaña después del cierre).
+  if (!kept) await beginRequest(conversationId, { reason: 'reapertura' });
+  await query(`UPDATE conversations SET agent_off_at = NULL, agent_off_reason = '', agent_off_until = NULL, agent_on_at = NULL WHERE id = $1`, [conversationId]);
 }
 
 /** Etapas del recorrido renumeradas (se quitó o movió una): las conversaciones de ese asistente siguen en la misma. */
@@ -1054,7 +1114,7 @@ export async function dbNow(): Promise<Date> {
 
 /** Una campaña empieza un recorrido nuevo en esta etapa (objetivo y preguntas vuelven a contar desde `since`, antes de su envío). */
 export async function startFlowAt(conversationId: string, step: number, since?: Date) {
-  await query(`UPDATE conversations SET flow_step = $2, goal_completed_at = NULL, questions_done_at = NULL, flow_started_at = coalesce($3::timestamptz, now()) WHERE id = $1`, [conversationId, step, since ?? null]);
+  await beginRequest(conversationId, { reason: 'campaña', step, since });
 }
 
 /* ------------------------- Asistente encendido / en pausa ------------------------- */

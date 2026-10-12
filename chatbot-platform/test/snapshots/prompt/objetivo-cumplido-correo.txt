@@ -1,4 +1,4 @@
-# Prompt «objetivo-cumplido-correo»: 10771 caracteres de instrucciones, 4 mensajes en total
+# Prompt «objetivo-cumplido-correo»: 10905 caracteres de instrucciones, 4 mensajes en total
 
 ======== system ========
 # Quién eres
@@ -123,8 +123,8 @@ Alberca de 8:00 a 20:00. Estacionamiento gratuito. Wifi en todo el hotel.
 - Correo (`correo`): luis@correo.mx
 
 ## Qué toca ahora
-- El objetivo YA se cumplió en esta conversación: no lo vuelvas a perseguir; atiende lo que el cliente necesite ahora (goal_completed = false).
-- Preguntas respondidas: 1 (de 4).
+- El objetivo YA se cumplió en esta solicitud: no lo vuelvas a perseguir; atiende lo que el cliente necesite ahora (goal_completed = false). Si pide otra vez lo mismo (otra reserva, el problema regresó, el mismo servicio), marca new_request = true.
+- Preguntas de la lista ya respondidas: núm. 1 (de 4 en total).
 - No aplican por lo que respondió el cliente (no las hagas): 2, 3, 4.
 - Todas las preguntas de la lista ya están resueltas: no las vuelvas a hacer.
 - En este momento el negocio está ABIERTO.

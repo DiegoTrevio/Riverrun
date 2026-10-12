@@ -4,6 +4,7 @@ import type { ChannelType, Chatbot, Contact, Conversation, DataField, ImageAsset
 import type { AgendaContext } from '../automation/agenda.js';
 import { imageSendWhen } from '../types.js';
 import { GENERAL_RULES } from './agent-rules.js';
+import type { ConversationRequest } from '../store/index.js';
 import { contactNameKey, questionList, questionProgress, type Question, type QuestionProgress } from './questions.js';
 import { keywords } from './text.js';
 
@@ -41,6 +42,8 @@ export interface ContextInput {
   /** Fotos que el sistema enviará con esta respuesta. */
   imagesNow?: ImageAsset[];
   contextImages?: ImageAsset[];
+  /** Solicitudes de la conversación (vacío si es la primera): la IA sabe que el cliente vuelve por lo mismo. */
+  requests?: ConversationRequest[];
 }
 
 export interface BusinessInfo {
@@ -407,7 +410,7 @@ function stateSection(input: ContextInput, questions: Question[], isFirstContact
   if (flow.goal || flow.steps.length) {
     const step = conversation.flow_step ?? 0;
     if (flow.steps.length) now.push(`Etapa actual: ${step && flow.steps[step - 1] ? `${step}. ${flow.steps[step - 1].title}` : 'aún no empieza'}.`);
-    if (conversation.goal_completed_at) now.push('El objetivo YA se cumplió en esta conversación: no lo vuelvas a perseguir; atiende lo que el cliente necesite ahora (goal_completed = false).');
+    if (conversation.goal_completed_at) now.push('El objetivo YA se cumplió en esta solicitud: no lo vuelvas a perseguir; atiende lo que el cliente necesite ahora (goal_completed = false). Si pide otra vez lo mismo (otra reserva, el problema regresó, el mismo servicio), marca new_request = true.');
     else if (flow.goal) {
       // Las preguntas que un camino por respuesta saltó no hacen falta para el objetivo.
       const skipped = new Set(progress.notApplicable.map((q) => q.key));
@@ -417,6 +420,7 @@ function stateSection(input: ContextInput, questions: Question[], isFirstContact
       else if (progress.missingRequired.length) now.push('El objetivo se cumple cuando estén las preguntas obligatorias que faltan.');
     }
   }
+  if ((input.requests?.length ?? 0) > 1) now.push(...requestLines(input));
   if (questions.length) now.push(...questionProgressLines(questions, progress, input));
   const freeMissing = bot.data_fields.filter((f) => !f.question.trim() && !data[f.key]);
   if (freeMissing.length) now.push(`Datos a recopilar que aún faltan: ${freeMissing.map((f) => f.key).join(', ')}.`);
@@ -443,12 +447,25 @@ function stateSection(input: ContextInput, questions: Question[], isFirstContact
   return s.join('\n');
 }
 
+/** El cliente vuelve por lo mismo: qué solicitud es y qué pasó en las anteriores (las dos últimas). */
+function requestLines(input: ContextInput): string[] {
+  const list = input.requests ?? [];
+  const current = list[list.length - 1];
+  const day = (d: Date) => new Date(d).toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric', timeZone: tzOf(input) });
+  const lines = [`Solicitud actual: la ${current.number}.ª de este cliente en esta conversación (empezó el ${day(current.started_at)}). Atiéndelo de nuevo con normalidad: vuelve a hacer las preguntas que correspondan y, si ayuda, menciona lo de la vez anterior para confirmarlo, sin darlo por hecho.`];
+  for (const r of list.slice(0, -1).slice(-2)) {
+    const answers = Object.entries(r.data ?? {}).map(([k, v]) => `${k}: ${v}`).join(', ');
+    lines.push(`  - Solicitud ${r.number}.ª (${day(r.started_at)}): ${r.goal_completed_at ? 'cumplió el objetivo' : 'sin cumplir el objetivo'}${answers ? `; sus respuestas: ${answers}` : ''}.`);
+  }
+  return lines;
+}
+
 /** Avance de la lista de preguntas: cuál toca, cuál está en curso y cuáles ya no aplican. */
 function questionProgressLines(questions: Question[], pr: QuestionProgress, input: ContextInput): string[] {
   const { contact } = input;
   const num = (q: Question) => questions.indexOf(q) + 1;
   const ask = (q: Question) => `${num(q)}. «${q.question.trim()}» → guarda la respuesta en \`${q.key}\``;
-  const lines = [`Preguntas respondidas: ${pr.answered.length ? pr.answered.map(num).join(', ') : 'ninguna todavía'} (de ${questions.length}).`];
+  const lines = [`Preguntas de la lista ya respondidas: ${pr.answered.length ? `núm. ${pr.answered.map(num).join(', ')}` : 'ninguna todavía'} (de ${questions.length} en total).`];
   if (pr.notApplicable.length) lines.push(`No aplican por lo que respondió el cliente (no las hagas): ${pr.notApplicable.map(num).join(', ')}.`);
   if (pr.skipped.length) lines.push(`Opcionales que ya hiciste sin respuesta (no las repitas; si el cliente responde alguna ahora, guárdala): ${pr.skipped.map(num).join(', ')}.`);
   if (!pr.next) lines.push('Todas las preguntas de la lista ya están resueltas: no las vuelvas a hacer.');

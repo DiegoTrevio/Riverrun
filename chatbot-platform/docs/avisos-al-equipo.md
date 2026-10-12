@@ -15,7 +15,7 @@ En **Agente → Configurar → Avisos al equipo** se elige en qué momentos avis
 - Lo reciben administradores y/o agentes en el panel y, quien lo tenga activado en su perfil, por WhatsApp. También se pueden agregar teléfonos sueltos. Un agente solo recibe avisos de las conversaciones que tiene asignadas.
 
 ## Solo una vez por conversación
-Viene marcado por omisión. El mismo aviso no se repite en la conversación aunque el contexto vuelva a salir en otros mensajes. Se cuenta **por recorrido**: si la conversación se reinicia o se cierra y se reabre, puede volver a avisar. Si dos mensajes llegan al mismo tiempo, solo uno dispara el aviso. La opción también está en el editor de cualquier regla de Automatización.
+Viene marcado por omisión. El mismo aviso no se repite en la conversación aunque el contexto vuelva a salir en otros mensajes. Se cuenta **por solicitud** (ver [solicitudes.md](solicitudes.md)): si el cliente vuelve por lo mismo, la conversación se reinicia o se cierra y se reabre, puede volver a avisar. Si dos mensajes llegan al mismo tiempo, solo uno dispara el aviso. La opción también está en el editor de cualquier regla de Automatización.
 
 ## Cómo funciona por dentro
 Cada aviso es una regla de **Automatización** limitada a ese agente, con la acción «Alertar al equipo» o «Enviar reporte». Por eso también aparece en Automatización → Reglas, donde se le pueden agregar condiciones (horario, canal, etiquetas, valor de un dato) u otras acciones. Desde el agente se puede activar, desactivar, editar o quitar.

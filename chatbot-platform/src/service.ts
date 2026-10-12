@@ -341,6 +341,17 @@ export class ChatService {
         await logEvent({ level: 'info', source: 'engine', message: 'El bot retomó la conversación automáticamente', ...logBase });
       }
     }
+    // El cliente vuelve tras un tiempo sin actividad: empieza una solicitud nueva (otra reserva, el mismo problema otra
+    // vez…) y se le atiende de nuevo. Cuenta desde este mensaje, así sus respuestas valen para la solicitud nueva.
+    const gapHours = bot?.flow.new_request_after_hours ?? 0;
+    if (triggers && conv.status !== 'closed' && current.status === 'bot' && gapHours > 0) {
+      const last = await store.lastActivityBefore(conv.id, inserted.id);
+      if (last && Date.now() - new Date(last).getTime() >= gapHours * 3600_000) {
+        const n = await store.beginRequest(conv.id, { reason: 'tiempo', since: inserted.created_at });
+        current = (await store.getConversation(conv.id)) ?? current;
+        await logEvent({ level: 'info', source: 'engine', message: `Solicitud nueva (${n}.ª): el cliente volvió después de más de ${gapHours} h sin actividad`, ...logBase });
+      }
+    }
 
     if (!triggers) return { conversationId: conv.id, messageId: inserted.id };
     // Automatizaciones (bajas, reglas por mensaje, secuencias): corren aunque atienda una persona o el bot esté apagado.
