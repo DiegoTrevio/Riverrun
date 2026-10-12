@@ -197,6 +197,8 @@ export const AutomationBodySchema = z.object({
   conditions: z.array(ConditionSchema).max(20).default([]),
   actions: z.array(ActionSchema).min(1, 'Agrega al menos una acción').max(20),
   stop_ai: z.boolean().default(false),
+  /** Se ejecuta una sola vez por conversación (por recorrido: vuelve a contar si se reinicia o se reabre). */
+  once_per_conversation: z.boolean().default(false),
   priority: z.number().int().default(0),
 }).refine((r) => !(r.trigger.type === 'intent' && r.stop_ai), {
   // La IA ya respondió cuando se detecta la intención: una regla así no puede impedir esa respuesta.
