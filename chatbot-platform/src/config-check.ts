@@ -13,6 +13,7 @@
  * datos, para poder correr primero. Nunca incluye valores de variables en los mensajes.
  */
 import { z } from 'zod';
+import { parseAlertMute } from './alert-mute.js';
 import { EVOLUTION_EXPECTED, assessVersion, imageVersion, isPinned, parseImageRef } from './evolution/compat.js';
 
 export type Level = 'critical' | 'warning' | 'optional';
@@ -753,6 +754,24 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
       `Corrige ${k}.`,
     );
   }
+  // ALERT_MUTE: una entrada mal escrita no silencia nada (el aviso sale); una sin fecha no vuelve a avisar sola.
+  const mute = parseAlertMute(get('ALERT_MUTE'));
+  if (mute.invalid.length) add(
+    'warning',
+    'monitoring',
+    'alert_mute.invalid',
+    ['ALERT_MUTE'],
+    `ALERT_MUTE tiene ${mute.invalid.length} entrada(s) que no se entienden y no silencian nada.`,
+    'Usa componente o componente=AAAA-MM-DDTHH:MM:SSZ.',
+  );
+  if (mute.forever.length) add(
+    'warning',
+    'monitoring',
+    'alert_mute.forever',
+    ['ALERT_MUTE'],
+    `ALERT_MUTE silencia sin fecha de fin: ${mute.forever.join(', ')}. No vuelven a avisar solos.`,
+    'Pon una fecha de fin: componente=AAAA-MM-DDTHH:MM:SSZ.',
+  );
   const alertEmail = has('SUPERADMIN_EMAIL') && !!smtp && smtpValid;
   const alertHook = has('ALERT_WEBHOOK_URL');
   if (prod && !alertEmail && !alertHook) add(

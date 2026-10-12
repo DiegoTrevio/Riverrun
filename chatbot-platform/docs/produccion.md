@@ -105,7 +105,27 @@ Si una migración de Evolution ya se aplicó, la vuelta atrás no baja su imagen
 - Verificar uno a mano (sin tocar la base principal): `docker compose exec backup backup.sh verify [archivo]`. Sin archivo, verifica el último.
 - Restaurar: `./riverrun restore latest`, o pasar la ruta de un archivo (por ejemplo, en un servidor nuevo). Pide escribir `RESTAURAR`.
 
-**Prueba periódica de restauración en otro servidor: pendiente.** La verificación automática prueba que el archivo se puede restaurar en ese mismo servidor; no prueba que se pueda recuperar si el servidor se pierde.
+La verificación automática prueba que el archivo se puede restaurar en ese mismo servidor; no prueba que se pueda recuperar si el servidor se pierde. Para eso está el simulacro de la sección siguiente, que hay que correr en otra máquina.
+
+## Simulacro de restauración
+
+`scripts/restore-drill.sh` comprueba que un respaldo se abre con la clave y se restaura en un servidor que no es el de producción. No toca el servidor de producción: levanta un PostgreSQL temporal, sin puertos publicados, usa la misma imagen de respaldos (`docker/backup`) y el mismo `verify` de cada noche, y borra lo que creó.
+
+```bash
+# En otro servidor (o en tu máquina), con docker, rclone y las mismas variables de la copia remota:
+BACKUP_PASSPHRASE=... BACKUP_S3_BUCKET=... BACKUP_S3_KEY=... BACKUP_S3_SECRET=... \
+BACKUP_S3_ENDPOINT=... BACKUP_DATABASES="chatbot evolution" scripts/restore-drill.sh
+
+# O con un respaldo que ya tienes:
+BACKUP_PASSPHRASE=... BACKUP_DATABASES="chatbot evolution" scripts/restore-drill.sh riverrun-AAAAMMDD-HHMMSS.tar.enc
+```
+
+- `BACKUP_DATABASES` debe ser el de producción (por defecto, `chatbot evolution`). Si no coincide, el simulacro falla, con razón.
+- Sale con 0 solo si todas las bases se restauran y tienen tablas. Con clave equivocada, falla y lo dice.
+- Hazlo **al menos una vez al mes** y anota la fecha y el resultado. Un respaldo que nunca se ha restaurado en otro servidor se trata como no probado.
+- En CI (job «Imágenes de Docker») corre `scripts/test-restore-drill.sh`: la misma prueba sin S3. Crea dos bases con datos, las respalda con la imagen de producción y comprueba que el simulacro restaura ambas con clave correcta, rechaza la clave equivocada y rechaza una lista de bases que no coincide.
+- Lo que este script no prueba: que los archivos de subidas y de las sesiones de WhatsApp se puedan volver a montar en el servidor real. Eso sigue en el procedimiento de `./riverrun restore`.
+- **Estado: el script está probado con un respaldo real de una base de pruebas, con clave correcta y con clave incorrecta, y limpia lo que crea. No se ha corrido todavía desde una copia de S3 en otro servidor.**
 
 ## Qué hacer ante cada fallo
 
@@ -164,4 +184,4 @@ Lista para quien vaya a publicar. Mientras cualquiera esté pendiente, no declar
 - Fallos reales todavía sin probar: disco lleno de verdad, memoria del sistema agotada y reversión tras un fallo posterior al arranque. (`scripts/fault-inject.sh` ya corrió en GitHub sobre `main`.)
 - Resultados medidos de la prueba de carga contra staging y ajuste de los límites de memoria del overlay con esos datos.
 - Límites de memoria en producción: decisión pendiente, no se aplican solos.
-- Prueba periódica de restauración en un servidor distinto.
+- Simulacro de restauración corrido en otro servidor, desde la copia de S3, con su fecha y resultado (el script existe; ver «Simulacro de restauración»).

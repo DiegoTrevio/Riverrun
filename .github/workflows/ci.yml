@@ -120,6 +120,8 @@ jobs:
         run: bash scripts/test-staging-overlay.sh
       - name: Construir backend y respaldos
         run: docker compose build backend backup
+      - name: Simulacro de restauración sin S3 (respaldo, clave correcta y equivocada, restauración)
+        run: bash scripts/test-restore-drill.sh
       - name: Preflight sin red con la configuración que genera el instalador
         run: |
           # Se limpian las variables del job: Compose las usaría en lugar del .env generado y la prueba no revisaría lo que dice.

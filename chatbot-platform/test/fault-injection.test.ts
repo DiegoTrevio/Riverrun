@@ -18,6 +18,7 @@ const { config } = await import('../src/config.js');
 const { setPool } = await import('../src/db.js');
 const mon = await import('../src/monitor.js');
 const incidents = await import('../src/observability/incidents.js');
+const { journalPath } = await import('../src/observability/journal.js');
 
 const MIN = 60_000;
 const T0 = Date.now();
@@ -50,6 +51,7 @@ beforeEach(async () => {
   setPool(pool);
   await pool.query(`DELETE FROM incidents; DELETE FROM event_logs WHERE source = 'ai'`);
   fs.rmSync(path.join(backupDir, 'status.json'), { force: true });
+  fs.rmSync(journalPath(), { force: true });
   mon.resetChecksCache();
 });
 
@@ -61,7 +63,9 @@ async function cycle(st: ReturnType<typeof mon.newAlertState>, sent: string[], m
   return checks;
 }
 const check = (checks: Awaited<ReturnType<typeof mon.runChecks>>, name: string) => checks.find((c) => c.name === name)!;
-const openIncidents = async () => (await incidents.listIncidents()).filter((i) => i.state === 'abierto').map((i) => i.component);
+/** Fallos abiertos: lo que avisa y escala. Los degradados (severidad baja) van aparte, en openDegraded. */
+const openIncidents = async () => (await incidents.listIncidents()).filter((i) => i.state === 'abierto' && i.severity !== 'baja').map((i) => i.component);
+const openDegraded = async () => (await incidents.listIncidents()).filter((i) => i.state === 'abierto' && i.severity === 'baja').map((i) => i.component);
 
 t('sin fallos: cuatro ciclos seguidos sin avisos, sin incidencias y sin ningún fallo medido (falsos positivos)', async () => {
   const st = mon.newAlertState();
@@ -157,7 +161,7 @@ t('IA con clave inválida: las llamadas fallan y no hay ninguna respuesta buena,
   assert.deepEqual(await openIncidents(), ['ai']);
 });
 
-t('IA con errores pero también con respuestas correctas: degradado, sin incidencia', async () => {
+t('IA con errores pero también con respuestas correctas: degradado, sin aviso; se anota con severidad baja', async () => {
   const st = mon.newAlertState();
   const sent: string[] = [];
   await pool.query(`INSERT INTO ai_runs (kind, model, input_tokens, output_tokens, latency_ms, attempt) VALUES ('reply', 'modelo-prueba', 10, 10, 800, 1)`);
@@ -168,7 +172,8 @@ t('IA con errores pero también con respuestas correctas: degradado, sin inciden
   const c = await cycle(st, sent, 1);
   assert.equal(check(c, 'ai').status, 'warn', 'errores con respuestas buenas siguen siendo aviso, no caída');
   assert.deepEqual(sent, []);
-  assert.deepEqual(await openIncidents(), []);
+  assert.ok((await openDegraded()).includes('ai'), 'el degradado de IA queda en el historial');
+  assert.equal((await incidents.listIncidents())[0].severity, 'baja');
 });
 
 const writeBackupStatus = (s: Record<string, unknown>) => fs.writeFileSync(path.join(backupDir, 'status.json'), JSON.stringify(s));
@@ -200,7 +205,7 @@ t('disco casi lleno: fallo; con espacio: operativo (se inyecta el estado del dis
   assert.equal(sano.status, 'ok', sano.detail);
 });
 
-t('memoria del proceso sobre el aviso: degradado, sin incidencia y sin aviso externo', async () => {
+t('memoria del proceso sobre el aviso: degradado, se anota con severidad baja y no avisa', async () => {
   const antes = config.monitor.rssWarnMb;
   config.monitor.rssWarnMb = 1; // cualquier proceso real supera 1 MB
   try {
@@ -210,8 +215,86 @@ t('memoria del proceso sobre el aviso: degradado, sin incidencia y sin aviso ext
     const c = await cycle(st, sent, 1);
     assert.equal(check(c, 'resources').status, 'warn', check(c, 'resources').detail);
     assert.deepEqual(sent, []);
-    assert.deepEqual(await openIncidents(), []);
+    assert.ok((await openDegraded()).includes('resources'), 'el degradado de memoria queda en el historial');
+    assert.equal((await incidents.listIncidents())[0].severity, 'baja');
   } finally {
     config.monitor.rssWarnMb = antes;
+  }
+});
+
+t('degradado sostenido: se anota con severidad baja, no avisa y no escala aunque pase la hora', async () => {
+  const antes = config.monitor.rssWarnMb;
+  config.monitor.rssWarnMb = 1;
+  try {
+    const st = mon.newAlertState();
+    const sent: string[] = [];
+    await cycle(st, sent, 0);
+    await cycle(st, sent, 1);
+    await mon.escalateIncidents(async (title) => void sent.push(title), T0 + 5 * 3600_000);
+    assert.deepEqual(sent, [], 'ni aviso al confirmarse ni escalamiento');
+    assert.ok((await openDegraded()).includes('resources'), 'el degradado de memoria queda en el historial');
+  } finally {
+    config.monitor.rssWarnMb = antes;
+  }
+});
+
+t('reinicio: no repite el aviso de un fallo que sigue, y la recuperación sí se anuncia', async () => {
+  const sent: string[] = [];
+  const antesDelReinicio = mon.newAlertState();
+  evo.down = true;
+  await cycle(antesDelReinicio, sent, 0);
+  await cycle(antesDelReinicio, sent, 1);
+  assert.equal(sent.length, 1, 'el primer aviso sale');
+  // Reinicio: memoria nueva. El historial de la base conserva cuándo salió el aviso.
+  const despuesDelReinicio = mon.newAlertState();
+  await cycle(despuesDelReinicio, sent, 2);
+  await cycle(despuesDelReinicio, sent, 3);
+  assert.equal(sent.length, 1, 'tras reiniciar no se repite el aviso');
+  evo.down = false;
+  await cycle(despuesDelReinicio, sent, 4);
+  assert.equal(sent.length, 2);
+  assert.match(sent[1], /se recuperó/, 'la recuperación se anuncia aunque el proceso se haya reiniciado');
+});
+
+t('base caída: lo decidido mientras no responde se anota en el diario y se vuelca al volver', async () => {
+  const st = mon.newAlertState();
+  const sent: string[] = [];
+  await cycle(st, sent, 0);
+  const caida = new pg.Pool({ connectionString: 'postgres://nadie:x@127.0.0.1:1/nada', connectionTimeoutMillis: 500 });
+  setPool(caida);
+  try {
+    await cycle(st, sent, 1);
+    await cycle(st, sent, 2);
+  } finally {
+    setPool(pool);
+    await caida.end().catch(() => undefined);
+  }
+  assert.ok(fs.existsSync(journalPath()), 'la incidencia de la base queda en el diario mientras no responde');
+  await cycle(st, sent, 3);
+  assert.equal(fs.existsSync(journalPath()), false, 'el diario se vacía al volver la base');
+  const rows = (await incidents.listIncidents()).filter((i) => i.component === 'database');
+  assert.equal(rows.length, 1, 'queda una sola incidencia de la base en el historial');
+  assert.equal(rows[0].state, 'resuelto', 'y se cierra al volver');
+});
+
+t('ALERT_MUTE con fecha: silencia hasta el vencimiento y después los avisos vuelven solos', async () => {
+  const antes = config.monitor.alertMute;
+  config.monitor.alertMute = [{ name: 'whatsapp', until: T0 + 2 * MIN + 30_000 }];
+  try {
+    const st = mon.newAlertState();
+    const sent: string[] = [];
+    await cycle(st, sent, 0);
+    evo.down = true;
+    await cycle(st, sent, 1);
+    await cycle(st, sent, 2);
+    assert.deepEqual(sent, [], 'silenciado: el fallo se registra pero no sale aviso');
+    assert.ok((await openIncidents()).includes('whatsapp'), 'la incidencia sí queda en el historial');
+    evo.down = false;
+    await cycle(st, sent, 4);
+    assert.equal(sent.length, 1, 'vencido el silencio, la recuperación sí sale');
+    assert.match(sent[0], /se recuperó/);
+  } finally {
+    config.monitor.alertMute = antes;
+    evo.down = false;
   }
 });

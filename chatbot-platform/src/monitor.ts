@@ -12,7 +12,9 @@ import { refreshDiagnostics } from './diagnostics.js';
 import { EVOLUTION_EXPECTED } from './evolution/compat.js';
 import { lastDeepCheck, probeService, recentVersionChange } from './evolution/status.js';
 import { functionalReport } from './observability/health.js';
-import { dueEscalations, markEscalated, openIncident, pruneIncidents, resolveIncident } from './observability/incidents.js';
+import { dueEscalations, markAlerted, markEscalated, openIncident, pruneIncidents, resolveIncident, type IncidentStatus } from './observability/incidents.js';
+import { appendJournal, flushJournal } from './observability/journal.js';
+import { isMuted } from './alert-mute.js';
 import { type CheckStatus, type ServiceState } from './observability/status.js';
 import { logEvent } from './logs.js';
 import { sendMail } from './mailer.js';
@@ -285,10 +287,16 @@ export const overall = (checks: CheckResult[]): 'ok' | 'warn' | 'fail' => (check
 /* ------------------------------ Alertas ------------------------------ */
 
 export interface AlertState {
+  /** Fallos seguidos por componente: avisan al confirmarse. */
   failures: Map<string, number>;
+  /** Degradados seguidos por componente: se anotan al confirmarse, nunca avisan. */
+  warnings: Map<string, number>;
+  /** Cuándo salió el último aviso de cada componente, en este proceso. */
   alertedAt: Map<string, number>;
+  /** Componentes con incidencia abierta que este proceso registró (para anotar su cierre si la base está caída). */
+  open: Set<string>;
 }
-export const newAlertState = (): AlertState => ({ failures: new Map(), alertedAt: new Map() });
+export const newAlertState = (): AlertState => ({ failures: new Map(), warnings: new Map(), alertedAt: new Map(), open: new Set() });
 
 export type Sender = (title: string, body: string) => Promise<void>;
 
@@ -317,51 +325,78 @@ export async function sendAlert(title: string, body: string) {
 
 const REALERT_MS = 6 * 3600_000;
 /** Componentes con ALERT_MUTE: la incidencia se registra, pero no sale ningún aviso (ni de falla, ni de recuperación, ni de escalamiento). */
-const muted = (name: string) => config.monitor.alertMute.includes(name);
+const muted = (name: string, now = Date.now()) => isMuted(config.monitor.alertMute, name, now);
+const toMs = (d: Date | string | null | undefined) => (d ? new Date(d).getTime() : undefined);
 
 /**
  * Un fallo avisa al segundo intento seguido (evita falsas alarmas), repite cada 6 h y avisa cuando se recupera.
  * Cada fallo confirmado queda en el historial de incidencias (una abierta por componente), aunque esté silenciado.
+ * Un degradado que persiste se anota con severidad baja: no avisa, no escala y no cierra una incidencia de fallo.
  */
 export async function evaluateAlerts(checks: CheckResult[], st: AlertState, send: Sender = sendAlert, now = Date.now(), confirmAfter = 2) {
+  // Lo anotado mientras la base estaba caída entra primero, para que el historial quede en orden.
+  await flushJournal().catch(() => undefined);
   for (const c of checks) {
     if (c.status === 'fail') {
+      st.warnings.delete(c.name);
       const n = (st.failures.get(c.name) ?? 0) + 1;
       st.failures.set(c.name, n);
       if (n < confirmAfter) continue;
-      await recordIncident(c, now);
-      const last = st.alertedAt.get(c.name);
+      const inc = await recordIncident(c, now, 'fail', st);
+      // Tras un reinicio no queda memoria del último aviso: el que salió antes está en el historial, así no se repite.
+      const last = st.alertedAt.get(c.name) ?? toMs(inc?.alerted_at);
       if (last && now - last < REALERT_MS) continue;
       st.alertedAt.set(c.name, now);
-      await logEvent({ level: 'error', source: 'system', message: `Alerta${muted(c.name) ? ' silenciada (ALERT_MUTE)' : ''}: ${c.label} — ${c.detail}` });
-      if (!muted(c.name)) await send(`🔴 Riverrun: ${c.label}`, `${c.detail}\n\nRevisa el estado completo en el panel (Sistema) o con ./riverrun status.`);
+      if (inc) await markAlertedSafe(inc.id, now);
+      const silenced = muted(c.name, now);
+      await logEvent({ level: 'error', source: 'system', message: `Alerta${silenced ? ' silenciada (ALERT_MUTE)' : ''}: ${c.label} — ${c.detail}` });
+      if (!silenced) await send(`🔴 Riverrun: ${c.label}`, `${c.detail}\n\nRevisa el estado completo en el panel (Sistema) o con ./riverrun status.`);
+    } else if (c.status === 'warn') {
+      st.failures.delete(c.name);
+      const n = (st.warnings.get(c.name) ?? 0) + 1;
+      st.warnings.set(c.name, n);
+      if (n >= confirmAfter) await recordIncident(c, now, 'warn', st);
     } else {
       st.failures.delete(c.name);
-      await closeIncident(c.name);
-      if (st.alertedAt.has(c.name)) {
-        st.alertedAt.delete(c.name);
+      st.warnings.delete(c.name);
+      const closed = await closeIncident(c.name, now, st);
+      // Se anuncia la recuperación si este proceso avisó, o si la incidencia tenía un aviso anterior a un reinicio.
+      const wasAlerted = st.alertedAt.has(c.name) || closed?.alerted_at != null;
+      st.alertedAt.delete(c.name);
+      if (wasAlerted) {
         await logEvent({ level: 'info', source: 'system', message: `Recuperado: ${c.label}` });
-        if (!muted(c.name)) await send(`🟢 Riverrun: ${c.label} se recuperó`, c.detail);
+        if (!muted(c.name, now)) await send(`🟢 Riverrun: ${c.label} se recuperó`, c.detail);
       }
     }
   }
 }
 
-/** El historial no debe impedir un aviso: si PostgreSQL falla, la alerta sale igual y el error queda en la consola. */
-async function recordIncident(c: CheckResult, now: number) {
+/** El historial no debe impedir un aviso: si PostgreSQL falla, la incidencia se anota en el diario pendiente y el aviso sale igual. */
+async function recordIncident(c: CheckResult, now: number, status: IncidentStatus, st: AlertState) {
+  st.open.add(c.name);
   try {
-    await openIncident(c.name, c.label, c.detail, new Date(now));
+    return await openIncident(c.name, c.label, c.detail, new Date(now), status);
   } catch (e: any) {
-    console.error('No se pudo registrar la incidencia', e?.message ?? e);
+    console.error('No se pudo registrar la incidencia; queda en el diario pendiente', e?.message ?? e);
+    appendJournal({ op: 'open', component: c.name, title: c.label, detail: c.detail, status, at: new Date(now).toISOString() });
+    return null;
   }
 }
 
-async function closeIncident(component: string) {
+async function closeIncident(component: string, now: number, st: AlertState) {
+  const wasOpen = st.open.has(component);
+  st.open.delete(component);
   try {
-    await resolveIncident(component, new Date());
+    return await resolveIncident(component, new Date(now));
   } catch (e: any) {
     console.error('No se pudo cerrar la incidencia', e?.message ?? e);
+    if (wasOpen) appendJournal({ op: 'resolve', component, at: new Date(now).toISOString() });
+    return null;
   }
+}
+
+async function markAlertedSafe(id: number, now: number) {
+  await markAlerted(id, new Date(now)).catch((e: any) => console.error('No se pudo anotar el aviso', e?.message ?? e));
 }
 
 /**
@@ -371,7 +406,7 @@ async function closeIncident(component: string) {
 export async function escalateIncidents(send: Sender = sendAlert, now = Date.now()) {
   const minutes = config.monitor.escalateMinutes;
   for (const inc of await dueEscalations(minutes, new Date(now))) {
-    if (muted(inc.component)) continue;
+    if (muted(inc.component, now)) continue;
     if (!(await markEscalated(inc.id, new Date(now)))) continue;
     await logEvent({ level: 'error', source: 'system', message: `Escalado: ${inc.title} sigue abierta desde hace más de ${minutes} min` });
     await send(`🚨 Riverrun: ESCALADO — ${inc.title}`, `Lleva más de ${minutes} minutos sin resolverse.\n${inc.detail}\n\nRevisa el estado completo en el panel (Sistema) o con ./riverrun status.`);

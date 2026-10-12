@@ -1,11 +1,13 @@
 /**
  * Historial de incidencias. Una incidencia abierta por componente: si el mismo componente sigue fallando, se actualiza
- * (última vez vista, detalle) en vez de crear otra. Los avisos (correo, webhook) los decide monitor.ts; aquí solo se guarda
- * qué pasó, cuándo y si ya se escaló.
+ * (última vez vista, detalle, severidad) en vez de crear otra. Los avisos (correo, webhook) los decide monitor.ts; aquí
+ * solo se guarda qué pasó, cuándo, si ya se escaló y cuándo salió el último aviso.
  */
 import { query } from '../db.js';
 
 export type Severity = 'critica' | 'alta' | 'media' | 'baja';
+/** 'fail' = falla confirmada (puede avisar y escalar); 'warn' = degradado (solo se anota, severidad baja). */
+export type IncidentStatus = 'fail' | 'warn';
 export interface Incident {
   id: number;
   component: string;
@@ -17,36 +19,61 @@ export interface Incident {
   last_seen_at: string;
   escalated_at: string | null;
   resolved_at: string | null;
+  alerted_at: string | null;
 }
 
 /** Componentes cuya falla afecta a todos los clientes: se registran como críticas. */
 const CRITICAL = new Set(['database', 'scheduler', 'whatsapp']);
-export const severityFor = (component: string): Severity => (CRITICAL.has(component) ? 'critica' : 'alta');
+export const severityFor = (component: string, status: IncidentStatus = 'fail'): Severity =>
+  status === 'warn' ? 'baja' : CRITICAL.has(component) ? 'critica' : 'alta';
 
-/** Abre la incidencia o, si ya hay una abierta para el componente, actualiza su detalle y la última vez vista. */
-export async function openIncident(component: string, title: string, detail: string, now = new Date()): Promise<{ id: number; created: boolean }> {
-  const [row] = await query<{ id: number; created: boolean }>(
+/**
+ * Abre la incidencia o, si ya hay una abierta para el componente, actualiza su detalle, su severidad (la del último
+ * estado visto) y la última vez vista. Devuelve también cuándo salió su último aviso, para no repetirlo tras un reinicio.
+ */
+export async function openIncident(
+  component: string,
+  title: string,
+  detail: string,
+  now = new Date(),
+  status: IncidentStatus = 'fail',
+): Promise<{ id: number; created: boolean; alerted_at: Date | null }> {
+  const [row] = await query<{ id: number; created: boolean; alerted_at: Date | null }>(
     `INSERT INTO incidents (component, severity, state, title, detail, opened_at, last_seen_at)
      VALUES ($1, $2, 'abierto', $3, $4, $5, $5)
      ON CONFLICT (component) WHERE state = 'abierto'
-     DO UPDATE SET detail = EXCLUDED.detail, last_seen_at = EXCLUDED.last_seen_at
-     RETURNING id, (xmax = 0) AS created`,
-    [component, severityFor(component), title, detail.slice(0, 1000), now],
+     DO UPDATE SET detail = EXCLUDED.detail, last_seen_at = EXCLUDED.last_seen_at, severity = EXCLUDED.severity
+     RETURNING id, (xmax = 0) AS created, alerted_at`,
+    [component, severityFor(component, status), title, detail.slice(0, 1000), now],
   );
-  return { id: row.id, created: row.created };
+  return row;
 }
 
-/** Cierra la incidencia abierta del componente, si la hay. Devuelve true si había una. */
-export async function resolveIncident(component: string, now = new Date()): Promise<boolean> {
-  const rows = await query(`UPDATE incidents SET state = 'resuelto', resolved_at = $2 WHERE component = $1 AND state = 'abierto' RETURNING id`, [component, now]);
-  return rows.length > 0;
+/**
+ * Cierra la incidencia abierta del componente, si la hay. Devuelve cuándo salió su último aviso (null si el componente
+ * no tenía incidencia abierta).
+ */
+export async function resolveIncident(component: string, now = new Date()): Promise<{ alerted_at: Date | null } | null> {
+  const [row] = await query<{ alerted_at: Date | null }>(
+    `UPDATE incidents SET state = 'resuelto', resolved_at = $2 WHERE component = $1 AND state = 'abierto' RETURNING alerted_at`,
+    [component, now],
+  );
+  return row ?? null;
 }
 
-/** Abiertas desde hace más de `minutes` y que todavía no se han escalado. */
+/** Anota cuándo salió el último aviso de la incidencia (así sobrevive a un reinicio). */
+export async function markAlerted(id: number, now = new Date()): Promise<void> {
+  await query(`UPDATE incidents SET alerted_at = $2 WHERE id = $1`, [id, now]);
+}
+
+/**
+ * Abiertas desde hace más de `minutes`, que todavía no se han escalado. Los degradados (baja) nunca escalan: no son un
+ * aviso externo.
+ */
 export async function dueEscalations(minutes: number, now = new Date()): Promise<Pick<Incident, 'id' | 'component' | 'title' | 'detail'>[]> {
   return query(
     `SELECT id, component, title, detail FROM incidents
-      WHERE state = 'abierto' AND escalated_at IS NULL AND opened_at <= $1
+      WHERE state = 'abierto' AND escalated_at IS NULL AND severity <> 'baja' AND opened_at <= $1
       ORDER BY opened_at`,
     [new Date(now.getTime() - minutes * 60_000)],
   );
@@ -63,7 +90,7 @@ export async function markEscalated(id: number, now = new Date()): Promise<boole
 
 export async function listIncidents(limit = 50): Promise<Incident[]> {
   return query<Incident>(
-    `SELECT id, component, severity, state, title, detail, opened_at, last_seen_at, escalated_at, resolved_at
+    `SELECT id, component, severity, state, title, detail, opened_at, last_seen_at, escalated_at, resolved_at, alerted_at
        FROM incidents ORDER BY opened_at DESC LIMIT $1`,
     [Math.min(Math.max(1, limit), 500)],
   );
