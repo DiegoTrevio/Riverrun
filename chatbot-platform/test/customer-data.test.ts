@@ -10,7 +10,7 @@ test('pregunta, guarda la respuesta automáticamente y reutiliza los datos sin c
   try {
     await h.createBot({ data_fields: [], personality: { prompt: 'Ayuda a tomar pedidos. Pregunta la dirección para entregar.' } });
     h.setScript((req) => {
-      assert.match(req.messages[0].content, /Guardado automático de datos/);
+      assert.match(req.messages[0].content, /save_data: lo que el cliente dijo explícitamente/);
       return { action: 'ask', messages: ['¿A qué dirección te lo enviamos?'] };
     });
     await h.webhook('Quiero hacer un pedido');
