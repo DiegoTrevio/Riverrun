@@ -2,7 +2,7 @@
 
 ## Instrucciones completas
 
-Las instrucciones del asistente (pestaña **Instrucciones**) llegan completas a la IA, sin recortes. Justo después se le indica que esas instrucciones del negocio tienen prioridad sobre las guías de estilo y de conversación: si piden algo concreto (preguntas, orden, datos o mensajes), lo cumple completo. La regla de no inventar datos y las reglas generales (seguridad, pagos y datos personales) siempre quedan por encima. Si las instrucciones mencionan preguntas en otro orden, manda el orden de la pestaña «Preguntas».
+Las instrucciones del asistente (pestaña **Instrucciones**) llegan completas a la IA, sin recortes, entre `<instrucciones>`. El prompt empieza con un orden de prioridad explícito y les indica que tienen prioridad sobre las guías de estilo y de conversación: si piden algo concreto (preguntas, orden, datos o mensajes), lo cumple completo. La regla de no inventar datos y las reglas generales (seguridad, pagos y datos personales) siempre quedan por encima. Si las instrucciones mencionan preguntas en otro orden, manda el orden de la pestaña «Preguntas».
 
 ## Preguntas (pestaña «Preguntas»)
 
