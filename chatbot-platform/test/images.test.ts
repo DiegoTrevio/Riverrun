@@ -68,12 +68,13 @@ t('bienvenida: sale con la primera respuesta; la IA sabe cuáles se envían sola
   assert.deepEqual(h.sent.filter((s) => s.to === phone).map((s) => s.kind), ['text', 'image'], 'primero el texto y luego la foto');
   assert.deepEqual(photosTo(phone), ['bienvenida']);
   const p = prompt();
-  assert.match(p, /El sistema envía estas fotos solo en sus momentos \(NO las pongas en image_ids\)[\s\S]*`menu` \| Menú del día: el cliente escribe "menú" o "carta"/);
+  assert.match(p, /Fotos que el sistema envía solo en sus momentos \(no las pongas en image_ids ni las prometas\)[\s\S]*`menu` \| Menú del día: el cliente escribe "menú" o "carta"/);
   // "Ambos": la IA puede elegirla y el prompt dice cuándo la envía sola (sin decirle que no la use).
-  assert.match(p, /ID: `mapa` \| Mapa[^\n]*además el sistema la envía sola al llegar a la etapa 2 \(Pedir fechas\)/);
+  assert.match(p, /- `mapa` \| Mapa[^\n]*además el sistema la envía sola al llegar a la etapa 2 \(Pedir fechas\)/);
   assert.match(p, /En ESTA respuesta el sistema enviará: Bienvenida/);
-  assert.ok(!p.includes('ID: `menu`'), 'las de "solo en estos momentos" no están en el catálogo de la IA');
-  assert.ok(p.includes('ID: `suite`') && p.includes('ID: `mapa`'));
+  const elegibles = p.slice(p.indexOf('### Fotos que puedes elegir'), p.indexOf('### Fotos que el sistema envía'));
+  assert.ok(!elegibles.includes('`menu`'), 'las de "solo en estos momentos" no están en el catálogo de la IA');
+  assert.ok(elegibles.includes('- `suite`') && elegibles.includes('- `mapa`'));
   await say('¿qué tal?', phone);
   assert.deepEqual(photosTo(phone), ['bienvenida'], 'solo en la primera respuesta');
 });
@@ -223,7 +224,7 @@ t('contexto de etapa permite anunciar la foto automática y el contexto libre ll
   await say('quiero reservar',phone);
   assert.deepEqual(photosTo(phone),['bienvenida','mapa']);
   h.setScript(req=>{
-    assert.match(req.messages[0].content,/ID: `suite`[\s\S]*enviar cuando: Cuando pregunten por la suite/);
+    assert.match(req.messages[0].content,/- `suite`[^\n]*enviar cuando: Cuando pregunten por la suite/);
     return {action:'reply_with_image',messages:['Esta es la suite.'],image_ids:['suite']};
   });
   await say('¿cómo es la suite?',phone);
@@ -306,10 +307,10 @@ t('contexto semántico en modo reglas: usa intención e historial sin coincidenc
   h.setScript(()=>({messages:['¿Cómo te ayudo?']})); await say('vamos dos parejas',phone);
   h.setScript(req=>{
     const system=req.messages[0].content;
-    assert.match(system,/Fotos por contexto \(usa context_image_ids, no image_ids\)/);
+    assert.match(system,/### Fotos por contexto \(context_image_ids\)/);
     assert.ok(system.includes(condition));
     assert.ok(JSON.stringify(req.messages).includes('vamos dos parejas'));
-    assert.ok(!system.includes('ID: `comparacion`'), 'no habilita libre elección para una foto solo por reglas');
+    assert.ok(!system.includes('### Fotos que puedes elegir') || !system.slice(system.indexOf('### Fotos que puedes elegir'), system.indexOf('### Fotos por contexto')).includes('`comparacion`'), 'no habilita libre elección para una foto solo por reglas');
     return {action:'reply',messages:['Te comparto la imagen para que elijas.'],context_image_ids:['comparacion']};
   });
   await say('¿me enseñas cómo es cada una para decidir?',phone);
@@ -347,5 +348,5 @@ t('contexto descarta fotos inexistentes, sin condición, inactivas o de otro age
   h.setScript(()=>({messages:['¿Cómo te ayudo?'],context_image_ids:['privada','contexto_off','suite','desconocida']}));
   await say('quiero ver opciones',phone);
   assert.deepEqual(photosTo(phone),['bienvenida']);
-  assert.ok(!prompt().includes('ID de contexto: `privada`'));
+  assert.ok(!prompt().includes('`privada`'));
 });
