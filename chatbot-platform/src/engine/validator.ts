@@ -671,7 +671,9 @@ export function validateDecision(input: ValidationInput): ValidationResult {
       fixes.push('Objetivo marcado como cumplido, pero el recorrido no tiene objetivo: se ignoró');
     } else {
       const have = { ...(input.knownData ?? {}), ...saveData };
-      const missing = bot.data_fields.filter((f) => f.required && !have[f.key] && !(f.key === nameKey && (contactName || input.knownName)));
+      // Las preguntas que un camino por respuesta saltó no aplican: no se exigen para cumplir el objetivo.
+      const notApplicable = new Set((questionsAfter?.notApplicable ?? []).map((q) => q.key));
+      const missing = bot.data_fields.filter((f) => f.required && !have[f.key] && !notApplicable.has(f.key) && !(f.key === nameKey && (contactName || input.knownName)));
       const pendingQuestions = questionsAfter?.missingRequired ?? [];
       if (missing.length) fixes.push(`El objetivo aún no se cumple: faltan datos importantes (${missing.map((f) => f.label).join(', ')})`);
       else if (pendingQuestions.length) fixes.push(`El objetivo aún no se cumple: faltan preguntas obligatorias (${pendingQuestions.map((q) => q.key).join(', ')})`);

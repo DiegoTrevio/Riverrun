@@ -405,7 +405,9 @@ export function buildSystemPrompt(input: ContextInput, knowledge: KnowledgeItem[
     const lines = [`Etapa actual: ${step && flow.steps[step - 1] ? `${step}. ${flow.steps[step - 1].title}` : 'aún no empieza'}.`];
     if (conversation.goal_completed_at) lines.push('El objetivo YA se cumplió en esta conversación: no lo vuelvas a perseguir; atiende lo que el cliente necesite ahora (goal_completed = false).');
     const nameKey = contactNameKey(bot.data_fields);
-    const importantMissing = bot.data_fields.filter((f) => f.required && !contact.data?.[f.key] && !(f.key === nameKey && contact.name));
+    // Las preguntas que un camino por respuesta saltó no hacen falta para el objetivo.
+    const notApplicable = new Set(questionProgress(questionList(bot), contact.data ?? {}, contact.name, input.questionAsked, { askedEver: input.questionAskedEver, nameKey }).notApplicable.map((q) => q.key));
+    const importantMissing = bot.data_fields.filter((f) => f.required && !contact.data?.[f.key] && !notApplicable.has(f.key) && !(f.key === nameKey && contact.name));
     if (flow.goal && !conversation.goal_completed_at && importantMissing.length) lines.push(`Datos importantes que faltan para cumplir el objetivo: ${importantMissing.map((f) => f.label).join(', ')}.`);
     s.push(`\n# Avance del recorrido\n${lines.join('\n')}`);
   }

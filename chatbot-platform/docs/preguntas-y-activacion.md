@@ -26,7 +26,7 @@ Ejemplo: «¿Vienes a reservar o solo quieres informes?» → *Reservar*: sigue 
 
 Una pregunta de la lista que ofrece fotos o un folleto («¿Te envío nuestro folleto con fotos?») es una oferta del negocio: no se trata como una promesa de foto que no sale.
 
-Las preguntas que un camino salta no se hacen (si la IA las hace, se quitan), no cuentan como obligatorias pendientes y el prompt las marca como «no aplican». Una respuesta que no coincide con ninguna opción con camino sigue en orden. Si cambias la clave de una pregunta, los caminos que llevan a ella la siguen.
+Las preguntas que un camino salta no se hacen (si la IA las hace, se quitan), no cuentan como obligatorias pendientes ni como datos que faltan para cumplir el objetivo y el prompt las marca como «no aplican». Una respuesta que no coincide con ninguna opción con camino sigue en orden. Si cambias la clave de una pregunta, los caminos que llevan a ella la siguen.
 
 Lo que garantiza el sistema (no depende de la IA):
 

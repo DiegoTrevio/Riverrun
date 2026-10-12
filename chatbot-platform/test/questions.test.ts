@@ -454,3 +454,13 @@ test('una pregunta de la lista que ofrece fotos («¿Te envío nuestro folleto c
   const promise = validateDecision({ bot: b, images: [], sentImageIds: [], groundingSources: [], customerText: 'Hola', raw: reply([`Te mando la foto de la alberca. ${ask}`]), questionJourney: journey(), final: true });
   assert.deepEqual(promise.plan.messages, [ask]);
 });
+
+test('objetivo con camino por respuesta: las obligatorias que el camino saltó no se exigen para cumplirlo', () => {
+  const b = hydrateChatbot({ id: 'b', account_id: 'a', name: 'Hotel', active: true, personality: {}, rules: {}, flow: { goal: 'Atender la solicitud' }, ai: {}, saved_messages: [], data_fields: BRANCHED, created_at: new Date(), updated_at: new Date() } as any);
+  const raw = reply(['Listo, gracias.'], { save_data: [{ field: 'folleto', value: 'Sí' }], goal_completed: true });
+  const informes = validateDecision({ bot: b, images: [], sentImageIds: [], groundingSources: [], customerText: 'Sí', knownData: { motivo: 'Informes' }, raw, questionJourney: journey({ motivo: 1, folleto: 1 }), final: true });
+  assert.equal(informes.plan.goalCompleted, true, informes.fixes.join(' | '));
+  // Por el camino de «Reservar» la fecha y las personas sí hacen falta.
+  const reservar = validateDecision({ bot: b, images: [], sentImageIds: [], groundingSources: [], customerText: 'Sí', knownData: { motivo: 'Reservar' }, raw, questionJourney: journey({ motivo: 1 }), final: true });
+  assert.equal(reservar.plan.goalCompleted, false);
+});

@@ -66,9 +66,12 @@ export default class EngineProvider {
     try {
       async function fixture(secret = false) {
         const account = await store.createAccount('Perfil sintético'); accounts.push(account.id);
+        // `vars.bot` ajusta las instrucciones, el objetivo, las reglas y los datos del caso (solo el agente evaluado).
+        const patch = secret ? {} : vars.bot || {};
         const bot = await store.createChatbot(account.id, { name: 'Hotel sintético', active: vars.active !== false,
-          personality: { prompt: 'Ayuda a reservar una habitación doble. Pregunta nombre y fecha de llegada, una pregunta a la vez. Si el cliente pide hablar con una persona, transfiere.', emojis: 'none' },
-          flow: { goal: 'Resolver la solicitud de reserva' }, rules: { verify_facts: true, handoff_keywords: ['asesor humano'] }, data_fields: vars.branching && !secret ? BRANCHED : [], ai: { typing_simulation: false } });
+          personality: { prompt: 'Ayuda a reservar una habitación doble. Pregunta nombre y fecha de llegada, una pregunta a la vez. Si el cliente pide hablar con una persona, transfiere.', emojis: 'none', ...patch.personality },
+          flow: { goal: 'Resolver la solicitud de reserva', ...patch.flow }, rules: { verify_facts: true, handoff_keywords: ['asesor humano'], ...patch.rules },
+          data_fields: patch.data_fields ?? (vars.branching && !secret ? BRANCHED : []), ai: { typing_simulation: false } });
         await db.query('INSERT INTO knowledge_items (chatbot_id,title,category,content,active) VALUES ($1,$2,$3,$4,true)', [bot.id, 'Tarifa', 'precios', secret ? 'Clave privada del otro perfil: ULTRASECRETO784.' : 'Habitación doble: $1,650 MXN por noche.']);
         const channel = await store.createChannel({ account_id: account.id, chatbot_id: bot.id, type: 'playground', name: 'Simulador', config: {} });
         const contact = await store.upsertContact(channel, 'synthetic-same-customer', '', '');
@@ -104,7 +107,8 @@ export default class EngineProvider {
         const calls = decisionsBefore();
         results.push(await engine.process(f.conversation.id, transport));
         perTurn.push({ texts: transport.outputs.slice(from).filter(x => x.type === 'text').map(x => x.text), photos: transport.outputs.slice(from).filter(x => x.type === 'image').map(x => x.image.code),
-          context: requests.filter(r => r.json_schema?.name === 'chatbot_decision').slice(calls).map(r => JSON.stringify(r.messages)).join('\n') });
+          context: requests.filter(r => r.json_schema?.name === 'chatbot_decision').slice(calls).map(r => JSON.stringify(r.messages)).join('\n'),
+          goalCompleted: !!(await store.getConversation(f.conversation.id)).goal_completed_at });
       }
       if (vars.summary) {
         await summarizeConversation(ai, f.conversation.id);
@@ -116,6 +120,7 @@ export default class EngineProvider {
       const messages = await db.query('SELECT direction,content,status,meta FROM messages WHERE conversation_id=$1 ORDER BY id', [f.conversation.id]);
       const contextText = requests.filter(r => r.json_schema?.name === 'chatbot_decision').map(r => JSON.stringify(r.messages)).join('\n');
       return { output: JSON.stringify({ budgetOk: !budget?.blocked, results: results.map(({status, attempts, fallbackUsed}) => ({status, attempts, fallbackUsed})), indexed, embeddingCalls, outputs: transport.outputs, contactData: contact.data, conversationData: conversation.data,
+        goalCompleted: !!conversation.goal_completed_at, flowStep: conversation.flow_step,
         status: conversation.status, handoffReason: conversation.handoff_reason, summary: conversation.report_summary, messages, perTurn,
         summaryCalls: requests.filter(r => r.json_schema?.name === 'conversation_report').length,
         instructionsPresent: contextText.includes('Pregunta nombre y fecha de llegada'),
