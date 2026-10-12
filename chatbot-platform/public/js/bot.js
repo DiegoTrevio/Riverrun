@@ -34,7 +34,7 @@ export async function viewBot(root, id, tab, params = new URLSearchParams()) {
     h('a', { href: '#/agentes', class: 'breadcrumb' }, '← Agentes'),
     h('div', { class: 'row between' },
       h('h1', {}, bot.name, ' ', h('span', { class: `badge ${bot.active ? 'green' : ''}` }, bot.active ? 'Encendido' : 'Apagado')),
-      h('div', { class: 'row' }, h('a', { class: 'btn', href: `#/bot/${bot.id}/conexiones?new=1` }, 'Conectar teléfono'), h('a', { href: `#/conversations?chatbot_id=${bot.id}` }, 'Ver conversaciones →'))),
+      h('div', { class: 'row' }, h('a', { class: 'btn', href: `#/bot/${bot.id}/conexiones?new=1` }, 'Conectar teléfono'), restartConversationsButton(bot), h('a', { href: `#/conversations?chatbot_id=${bot.id}` }, 'Ver conversaciones →'))),
     h('div', { class: 'tabs agent-tabs', 'aria-label': 'Secciones del agente' }, TABS.map(([k, l]) => { const active = k === tab || (k === 'instrucciones' && ['preguntas', 'activacion'].includes(tab)) || (k === 'conocimiento' && tab === 'imagenes'); return h('a', { href: `#/bot/${id}/${k}`, class: active ? 'active' : '', 'aria-current': active ? 'page' : null }, l); })),
     ['instrucciones', 'preguntas', 'activacion', 'conocimiento', 'imagenes'].includes(tab) ? h('div', { class: 'tabs sub-tabs', 'aria-label': 'Opciones de la sección' }, (['conocimiento', 'imagenes'].includes(tab) ? KNOWLEDGE_TABS : CONFIG_TABS).map(([k, l]) => h('a', { href: `#/bot/${id}/${k}`, class: k === tab ? 'active' : '', 'aria-current': k === tab ? 'page' : null }, l))) : null,
   );
@@ -53,6 +53,15 @@ export async function viewBot(root, id, tab, params = new URLSearchParams()) {
   const views = { instrucciones: tabInstructions, preguntas: tabQuestions, activacion: tabActivation, conocimiento: tabKnowledge, imagenes: tabImages, conexiones: tabConnections, probar: tabPlayground };
   await (views[tab] || tabInstructions)(body, bot, params);
   if (tab !== 'probar' && tab !== 'conexiones') root.insertBefore(draftNotice(['general', 'personality', 'flow', 'rules', 'ai', 'questions', 'saved_messages', 'knowledge-new', 'photo-new'].map((key) => `${bot.id}:${key}`), render), body);
+}
+
+/** Tras actualizar el agente: sus conversaciones empiezan de cero con los cambios (la bienvenida y sus fotos vuelven a salir). */
+function restartConversationsButton(bot) {
+  return h('button', { title: 'Úsalo después de guardar cambios: cada conversación empieza de cero con la configuración nueva.', onclick: async () => {
+    if (!(await confirmAction('¿Reiniciar las conversaciones de este agente? Cada una empieza de cero con la configuración nueva: el agente olvida lo platicado y vuelve a la primera etapa, y la bienvenida y sus fotos salen otra vez. Se conservan el historial, los datos de los clientes y quién atiende cada conversación.'))) return;
+    const r = await run(() => api('POST', `/api/chatbots/${bot.id}/restart-conversations`));
+    if (r) toast(r.restarted === 1 ? '1 conversación reiniciada' : `${r.restarted} conversaciones reiniciadas`);
+  } }, 'Reiniciar conversaciones');
 }
 
 export function saveBar(onSave, extra) {
@@ -435,12 +444,20 @@ function tabQuestions(root, bot) {
   const all = clone(bot.data_fields || []);
   const originalKeys = new Set(all.map((f) => f.key));
   // Los datos sin pregunta (p. ej. de una plantilla) se piden cuando tenga sentido; se pueden quitar aquí.
-  const model = draftModel(`${bot.id}:questions`, { others: all.filter((f) => !f.question?.trim()), qs: all.filter((f) => f.question?.trim()).map((f) => ({ ...f, _from: f.key })), activation: clone(bot.rules.activation) });
+  const model = draftModel(`${bot.id}:questions`, { others: all.filter((f) => !f.question?.trim()), qs: all.filter((f) => f.question?.trim()).map((f) => ({ ...f, _from: f.key, _id: f.key, _routes: Object.fromEntries((f.branches || []).map((b) => [b.option, b.goto])) })), activation: clone(bot.rules.activation) });
   const others = model.others;
   // Clave con la que llegó cada pregunta: para seguir el cambio en el desactivador "ya dio estos datos".
   const qs = model.qs;
   const a = model.activation;
   const list = h('div');
+  // Qué sigue según la respuesta: ir a una pregunta posterior, terminar o pasar con una persona.
+  const branchEditor = (q, i) => {
+    q._routes ??= {};
+    const targets = [['', 'Sigue con la siguiente'], ...qs.slice(i + 1).map((x, n) => [x._id, `Ir a la pregunta ${i + n + 2}: ${x.question || '(sin texto)'}`]), ['end', 'Terminar las preguntas'], ['handoff', 'Pasar con una persona']];
+    return h('div', { class: 'card', style: 'background:var(--bg);margin:8px 0' },
+      h('p', { class: 'small', style: 'margin-top:0' }, tag('Qué sigue según la respuesta', guaranteed())),
+      q.options.filter((o) => o.trim()).map((o) => h('div', { class: 'grid' }, h('span', { class: 'small' }, `Si responde «${o}»`), select(q._routes, o, targets))));
+  };
   const draw = () => fill(list,
     qs.length
       ? qs.map((q, i) => h('div', { class: 'list-item' },
@@ -453,7 +470,8 @@ function tabQuestions(root, bot) {
         h('div', { class: 'grid' },
           field('Tipo de respuesta', select(q, 'type', QUESTION_TYPES, draw)),
           h('details', {}, h('summary', {}, 'Opciones avanzadas del dato'), field('Se guarda como', text(q, 'key', { placeholder: 'Se genera automáticamente' }), 'Conserva las claves existentes para mantener tus reglas.'))),
-        q.type === 'option' ? field('Opciones', lines(q, 'options', { placeholder: 'Sencilla\nDoble\nSuite' }), 'Una por renglón.') : null,
+        q.type === 'option' ? h('div', { onchange: draw }, field('Opciones', lines(q, 'options', { placeholder: 'Sencilla\nDoble\nSuite' }), 'Una por renglón.')) : null,
+        q.type === 'option' && q.options?.some((o) => o.trim()) ? branchEditor(q, i) : null,
         check(q, 'required', 'Obligatoria: si no la contesta, se le vuelve a preguntar (las opcionales se hacen una sola vez)')))
       : h('p', { class: 'muted' }, 'Aún no hay preguntas. Agrégalas en el orden en que el asistente debe hacerlas.'));
   draw();
@@ -489,8 +507,19 @@ function tabQuestions(root, bot) {
     });
     // Una pregunta con la clave de un dato sin pregunta lo reemplaza: es el mismo dato, ahora en orden.
     const rest = others.filter((f) => !keys.includes(f.key));
+    // Caminos: de la pregunta (por su id en el panel) a su clave final; solo hacia adelante.
+    const position = new Map(qs.map((q, i) => [q._id, i]));
+    for (const [i, q] of qs.entries()) {
+      for (const [option, goto] of Object.entries(q._routes || {})) {
+        if (!goto || goto === 'end' || goto === 'handoff' || q.type !== 'option' || !q.options.includes(option)) continue;
+        if (!(position.get(goto) > i)) return toast(`En la pregunta ${i + 1}, la respuesta «${option}» lleva a una pregunta que ya no está después de ella. Elige otro camino.`, true);
+      }
+    }
     const fields = qs.map((q, i) => {
-      const { _from, ...f } = q;
+      const { _from, _id, _routes, ...f } = q;
+      f.branches = f.type === 'option'
+        ? (f.options || []).filter((o) => o.trim() && _routes?.[o]).map((o) => ({ option: o, goto: ['end', 'handoff'].includes(_routes[o]) ? _routes[o] : keys[position.get(_routes[o])] }))
+        : [];
       const prev = others.find((x) => x.key === keys[i]);
       // La etiqueta generada sigue a la clave; una escrita a propósito se respeta.
       const autoLabel = !f.label || f.label === dataLabel(_from || '');
@@ -503,11 +532,11 @@ function tabQuestions(root, bot) {
     if (await saveBot(bot, { data_fields: [...fields, ...rest], rules: { activation: { off_on_questions: !!a.off_on_questions, off_when_fields: offFields } } })) render();
   };
   root.append(
-    h('div', { class: 'card legend' }, h('p', { style: 'margin:0' }, guaranteed(), ' El asistente hace estas preguntas en orden, una por mensaje y con tu texto. Si el cliente pregunta otra cosa, le responde y retoma la pregunta pendiente; si ya dio un dato, no se lo vuelve a preguntar. Las respuestas se guardan en el contacto. Compruébalo en ', h('a', { href: `#/bot/${bot.id}/probar` }, 'Probar'), '.')),
+    h('div', { class: 'card legend' }, h('p', { style: 'margin:0' }, guaranteed(), ' El asistente hace estas preguntas en orden, una por mensaje y con tu texto. En una pregunta de opciones puedes marcar qué sigue según la respuesta: saltar a otra pregunta, terminar o pasar con una persona. Si el cliente pregunta otra cosa, le responde y retoma la pregunta pendiente; si ya dio un dato, no se lo vuelve a preguntar. Las respuestas se guardan en el contacto. Compruébalo en ', h('a', { href: `#/bot/${bot.id}/probar` }, 'Probar'), '.')),
     h('div', { class: 'card' },
       h('h2', { style: 'margin-top:0' }, 'Preguntas (en orden)'),
       list,
-      h('button', { onclick: () => { qs.push({ key: '', label: '', type: 'text', description: '', options: [], required: true, ask_when: '', question: '', _from: '' }); draw(); } }, '+ Agregar pregunta'),
+      h('button', { onclick: () => { qs.push({ key: '', label: '', type: 'text', description: '', options: [], required: true, ask_when: '', question: '', branches: [], _from: '', _id: `nueva_${Math.random().toString(36).slice(2, 10)}`, _routes: {} }); draw(); } }, '+ Agregar pregunta'),
       otherBox,
       others.length ? h('button', { class: 'small', onclick: () => { for (const f of [...others]) { qs.push({ ...f, question: f.description || `¿Cuál es tu ${f.label.toLowerCase()}?`, required: false, _from: f.key }); } others.splice(0); draw(); drawOthers(); } }, 'Convertir estos datos en preguntas para revisar') : null),
     h('div', { class: 'card' },

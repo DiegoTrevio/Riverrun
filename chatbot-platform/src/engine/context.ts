@@ -405,7 +405,9 @@ export function buildSystemPrompt(input: ContextInput, knowledge: KnowledgeItem[
     const lines = [`Etapa actual: ${step && flow.steps[step - 1] ? `${step}. ${flow.steps[step - 1].title}` : 'aún no empieza'}.`];
     if (conversation.goal_completed_at) lines.push('El objetivo YA se cumplió en esta conversación: no lo vuelvas a perseguir; atiende lo que el cliente necesite ahora (goal_completed = false).');
     const nameKey = contactNameKey(bot.data_fields);
-    const importantMissing = bot.data_fields.filter((f) => f.required && !contact.data?.[f.key] && !(f.key === nameKey && contact.name));
+    // Las preguntas que un camino por respuesta saltó no hacen falta para el objetivo.
+    const notApplicable = new Set(questionProgress(questionList(bot), contact.data ?? {}, contact.name, input.questionAsked, { askedEver: input.questionAskedEver, nameKey }).notApplicable.map((q) => q.key));
+    const importantMissing = bot.data_fields.filter((f) => f.required && !contact.data?.[f.key] && !notApplicable.has(f.key) && !(f.key === nameKey && contact.name));
     if (flow.goal && !conversation.goal_completed_at && importantMissing.length) lines.push(`Datos importantes que faltan para cumplir el objetivo: ${importantMissing.map((f) => f.label).join(', ')}.`);
     s.push(`\n# Avance del recorrido\n${lines.join('\n')}`);
   }
@@ -417,14 +419,18 @@ export function buildSystemPrompt(input: ContextInput, knowledge: KnowledgeItem[
     const num = (q: Question) => questions.indexOf(q) + 1;
     const ask = (q: Question) => `${num(q)}. «${q.question.trim()}» → guarda la respuesta en \`${q.key}\``;
     const lines = [`Respondidas: ${pr.answered.length ? pr.answered.map(num).join(', ') : 'ninguna todavía'} (de ${questions.length}).`];
+    if (pr.notApplicable.length) lines.push(`No aplican por lo que respondió el cliente (no las hagas): ${pr.notApplicable.map(num).join(', ')}.`);
     if (pr.skipped.length) lines.push(`Opcionales que ya hiciste sin respuesta (no las repitas; si el cliente responde alguna ahora, guárdala): ${pr.skipped.map(num).join(', ')}.`);
     if (!pr.next) lines.push('Todas las preguntas de la lista ya están respondidas: no las vuelvas a hacer.');
     else if ((input.questionAsked?.[pr.next.key] ?? 0) > 0) {
       // Ya se hizo: lo más probable es que el cliente la esté contestando ahora. Si la contesta, sigue la próxima.
       const after = questionProgress(questions, { ...data, [pr.next.key]: '✓' }, contact.name, input.questionAsked, opts).next;
+      // Con caminos, lo que sigue depende de la opción que elija: se dice para cada una.
+      const routes = pr.next.branches.length ? branchText(questions, pr.next) : '';
+      const nextText = routes ? `lo que sigue depende de su respuesta (${routes}${after ? `; en orden sería la ${num(after)}` : ''}).` : after ? `haz la siguiente: ${ask(after)}.` : 'ya no quedan preguntas de la lista.';
       lines.push(
         `PREGUNTA EN CURSO (ya la hiciste): ${ask(pr.next)}.`,
-        `- Si el cliente la acaba de responder: guarda su respuesta en save_data y NO la vuelvas a hacer; ${after ? `haz la siguiente: ${ask(after)}.` : 'ya no quedan preguntas de la lista.'}`,
+        `- Si el cliente la acaba de responder: guarda su respuesta en save_data (con el texto exacto de la opción) y NO la vuelvas a hacer; ${nextText}`,
         '- Si no la respondió: atiende lo que dijo y vuelve a hacerla al final.',
       );
     } else lines.push(`SIGUIENTE PREGUNTA (hazla en esta respuesta, después de atender lo que diga el cliente): ${ask(pr.next)}.`);
@@ -586,17 +592,27 @@ export function buildContext(input: ContextInput): BuiltContext {
 const TYPE_LABEL: Record<Question['type'], string> = { text: 'texto', name: 'nombre', email: 'correo', phone: 'teléfono', date: 'fecha', number: 'número', option: 'opción' };
 
 /** Lista fija de preguntas: el texto exacto, su clave y cómo seguirla (parte estable del prompt). */
+/** Caminos de una pregunta de opción, para la IA: «Reserva» → sigue con la 4; «Solo informes» → terminan las preguntas. */
+function branchText(questions: Question[], q: Question): string {
+  const to = (goto: string) => goto === 'end' ? 'terminan las preguntas' : goto === 'handoff' ? 'pasa con una persona del equipo' : `sigue con la ${questions.findIndex((x) => x.key === goto) + 1}`;
+  const routes = q.branches.filter((b) => b.goto).map((b) => `«${b.option}» → ${to(b.goto)}`);
+  return routes.length ? `según la respuesta: ${routes.join('; ')}; otra respuesta → sigue en orden` : '';
+}
+
 function questionsSection(questions: Question[]): string {
   const lines = questions.map((q, i) => {
     const bits = [`${i + 1}. «${q.question.trim()}» → \`${q.key}\``];
     if (q.type !== 'text') bits.push(`tipo: ${TYPE_LABEL[q.type]}`);
     if (q.type === 'option' && q.options.length) bits.push(`opciones: ${q.options.join(', ')}`);
     bits.push(q.required ? 'obligatoria' : 'opcional (si no la responde, sigue con la siguiente)');
+    const routes = branchText(questions, q);
+    if (routes) bits.push(routes);
     return bits.join(' | ');
   });
   return [
     '\n# Preguntas (en este orden)',
-    'Haz TODAS estas preguntas, una por turno y en este orden, con su texto tal cual (puedes poner antes una frase corta para conectar). Si las instrucciones del negocio mencionan preguntas, el orden de esta lista es el que manda.',
+    'Haz estas preguntas una por turno y en este orden, con su texto tal cual (puedes poner antes una frase corta para conectar). Si las instrucciones del negocio mencionan preguntas, el orden de esta lista es el que manda.',
+    ...(questions.some((q) => q.branches.length) ? ['Algunas respuestas marcan el camino: la siguiente pregunta depende de lo que conteste el cliente. El sistema te dice en "Avance de las preguntas" cuál toca; no hagas las que no aplican.'] : []),
     ...lines,
     '- Si el cliente pregunta o comenta algo, respóndele primero y termina con la pregunta pendiente.',
     '- Si el cliente ya dio una respuesta (aunque sea antes de que la preguntes), guárdala en save_data con su clave y no la vuelvas a hacer.',

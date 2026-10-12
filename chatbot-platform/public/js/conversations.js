@@ -414,7 +414,7 @@ export async function viewConversation(root, id) {
           h('button', { class: 'small primary', onclick: () => sendReportDialog(id, data) }, '✉ Enviar reporte')),
         h('details', { class: 'small' }, h('summary', {}, 'Datos guardados en esta conversación'), h('div', { class: 'pre' }, Object.entries(c.data || {}).map(([key, value]) => `${key}: ${value}`).join('\n') || 'Aún no se han recopilado datos.')),
         c.summary ? h('details', { class: 'small' }, h('summary', {}, 'Memoria del asistente'), h('div', { class: 'pre muted' }, c.summary)) : null,
-        h('button', { class: 'small danger', style: 'margin-top:10px', onclick: async () => { if (await confirmAction('¿Borrar memoria (resumen, datos y notas) de este cliente?')) { if (!(await run(() => api('POST', `/api/conversations/${id}/reset-memory`), 'Memoria borrada'))) return; load(true); } } }, 'Borrar memoria')),
+        h('button', { class: 'small danger', style: 'margin-top:10px', onclick: async () => { if (await confirmAction('¿Reiniciar esta conversación? El asistente empieza de cero con este cliente: olvida lo platicado, sus datos y notas, vuelve a la primera etapa, y la bienvenida y sus fotos salen otra vez. El historial se conserva aquí.')) { if (!(await run(() => api('POST', `/api/conversations/${id}/reset-memory`), 'Conversación reiniciada'))) return; load(true); } } }, 'Reiniciar conversación')),
       isAdmin() ? h('div', { class: 'card' }, h('a', { href: `#/logs?conversation_id=${id}` }, 'Ver registros de esta conversación →')) : null,
       h('button', { class: 'small', onclick: () => { chat.scrollIntoView({ block: 'start' }); chat.focus(); } }, 'Volver a los mensajes'),
     );

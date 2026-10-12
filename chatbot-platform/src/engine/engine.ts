@@ -238,7 +238,8 @@ export class Engine {
     // Fotos con momento fijo (las garantiza el sistema): por palabra del cliente o de bienvenida, se saben antes de la IA.
     // Bienvenida: el primer mensaje del cliente, o el primero que el asistente contesta (p. ej. tras una palabra de activación).
     const firstReply = (await store.isFirstLiveInbound(conv.id, pending[0].id)) || (!history.some((m) => m.direction === 'out') && !conv.summary);
-    const scheduledBefore = imagesBeforeReply(images, { text: customerText, firstReply, sentIds: sentImageIds });
+    // Una foto que ya salió para estos mensajes (p. ej. la envió el respaldo cuando la IA no respondía) no se repite.
+    const scheduledBefore = await this.notDeliveredSince(conv.id, pending[0].created_at, imagesBeforeReply(images, { text: customerText, firstReply, sentIds: sentImageIds }));
     const aiImages = aiSelectableImages(images);
     const autoImages = automaticImages(images, bot.flow.steps.map((x) => x.title));
 
@@ -557,6 +558,36 @@ export class Engine {
       attempts,
       fallbackUsed,
     };
+  }
+
+  /** Quita las fotos que ya llegaron al cliente desde ese momento. */
+  private async notDeliveredSince(conversationId: string, since: Date, list: ScheduledImage[]) {
+    const out: ScheduledImage[] = [];
+    for (const x of list) if (!(await store.imageSentSince(conversationId, x.image.id, since))) out.push(x);
+    return out;
+  }
+
+  /**
+   * La IA no pudo responder (tras reintentar): las fotos que el negocio programó para estos mensajes y no dependen de la
+   * IA (palabras del cliente y bienvenida) salen igual. Se programan como pendientes: así pasan por las mismas
+   * comprobaciones (una persona respondió, asistente en pausa, foto inactiva, ya enviada) y se reintentan si fallan.
+   */
+  async sendRuleImagesWithoutAi(conversationId: string): Promise<number> {
+    const conv = await store.getConversation(conversationId);
+    if (!conv?.chatbot_id || conv.status !== 'bot' || !this.ext.deferImage) return 0;
+    const bot = await store.getChatbot(conv.chatbot_id);
+    if (!bot || !agentActive(bot, conv) || bot.rules.max_images_per_reply <= 0) return 0;
+    const pending = await store.pendingInbound(conv.id);
+    if (!pending.length) return 0;
+    const [images, sentIds, history] = await Promise.all([
+      store.listImages(bot.id, true),
+      store.sentImageIds(conv.id),
+      store.unsummarizedMessages(conv.id, conv.summary_until_id, bot.ai.recent_messages + bot.ai.summary_batch + pending.length + 4),
+    ]);
+    const firstReply = (await store.isFirstLiveInbound(conv.id, pending[0].id)) || (!history.some((m) => m.direction === 'out') && !conv.summary);
+    const owed = await this.notDeliveredSince(conv.id, pending[0].created_at, imagesBeforeReply(images, { text: pending.map((m) => m.content).join('\n'), firstReply, sentIds }));
+    for (const x of owed) await this.ext.deferImage(conv, x.image, { reason: `${x.reason} (la IA no respondió)`, delaySeconds: 0, allowEnded: false, allowRepeat: sentIds.includes(x.image.id) });
+    return owed.length;
   }
 
   /** Envía el plan. Devuelve las fotos que la plataforma rechazó (de reglas del negocio o elegidas por la IA) para reintentarlas. */

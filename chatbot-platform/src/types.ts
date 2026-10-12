@@ -112,6 +112,11 @@ export const DataFieldSchema = z.object({
    * asistente sigue paso a paso, una a la vez; los que no tienen se piden cuando tenga sentido.
    */
   question: z.string().max(500).default(''),
+  /**
+   * Preguntas de opción: qué sigue según la respuesta. `goto` es la clave de una pregunta posterior (se saltan las de en
+   * medio), `end` (terminan las preguntas) o `handoff` (pasa con una persona). Una opción sin camino sigue en orden.
+   */
+  branches: z.array(z.object({ option: z.string().max(200), goto: z.string().max(80) })).max(50).default([]),
 });
 export type DataField = z.infer<typeof DataFieldSchema>;
 export const DataFieldsSchema = z.array(DataFieldSchema).default([]);
@@ -341,6 +346,8 @@ export interface Conversation {
   handoff_reason: string;
   summary: string;
   summary_until_id: number;
+  /** Mensajes hasta este id son de antes de reiniciar la conversación: el asistente ya no los ve (0 = nunca se reinició). */
+  restarted_after_id?: number;
   data: Record<string, string>;
   data_version: number;
   report_summary: string;

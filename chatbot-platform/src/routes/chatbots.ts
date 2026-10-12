@@ -39,6 +39,20 @@ const ChatbotBody = z.object({
       const bad = list.find((f) => f.question.trim() && isSensitiveField(f.key) && !(f.type === 'option' && f.options.length));
       if (bad) ctx.addIssue({ code: 'custom', message: `La clave "${bad.key}" parece de un dato sensible (tarjeta, NIP, contraseña): esa respuesta no se guardaría. Usa otra clave para esa pregunta.` });
     })
+    // Caminos por respuesta: solo hacia adelante (así el recorrido no puede dar vueltas) y desde una opción que existe.
+    .superRefine((list, ctx) => {
+      const questions = list.filter((f) => f.question.trim());
+      for (const [i, q] of questions.entries()) {
+        for (const b of q.branches) {
+          if (q.type !== 'option' || !q.options.some((o) => o.trim().toLowerCase() === b.option.trim().toLowerCase())) {
+            return ctx.addIssue({ code: 'custom', message: `La pregunta «${q.question.trim()}» tiene un camino para «${b.option}», que no es una de sus opciones.` });
+          }
+          if (b.goto !== 'end' && b.goto !== 'handoff' && !questions.slice(i + 1).some((x) => x.key === b.goto)) {
+            return ctx.addIssue({ code: 'custom', message: `En «${q.question.trim()}», la respuesta «${b.option}» lleva a una pregunta que no está después de ella. Un camino solo puede ir hacia adelante.` });
+          }
+        }
+      }
+    })
     .optional(),
   flow: FlowSchema.optional(),
   ai: AiSettingsSchema.optional(),
@@ -260,6 +274,14 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
     for (const i of imgs) await fsp.rm(imageAbsolutePath(i), { force: true });
     await logEvent({ level: 'warn', source: 'admin', message: `Chatbot eliminado: ${bot.name}`, accountId: bot.account_id });
     return { ok: true };
+  });
+
+  /** Tras actualizar el agente: todas sus conversaciones empiezan de cero con la configuración nueva. */
+  api.post('/api/chatbots/:id/restart-conversations', admins, async (req: any) => {
+    const bot = await botFor(req.user, req.params.id);
+    const restarted = await store.restartChatbotConversations(bot.id);
+    await logEvent({ level: 'info', source: 'admin', message: `${req.user.email} reinició ${restarted} conversaciones del agente`, accountId: bot.account_id, chatbotId: bot.id });
+    return { restarted };
   });
 
   /** Duplica un chatbot (configuración, conocimiento e imágenes), opcionalmente en otra cuenta. */

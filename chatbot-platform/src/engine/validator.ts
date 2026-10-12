@@ -539,6 +539,7 @@ export function validateDecision(input: ValidationInput): ValidationResult {
   let questionLast = false;
   let questionsCompleted = false;
   let questionsAfter: QuestionProgress | null = null;
+  let branchHandoff = '';
   if (questions.length) {
     const journey = input.questionJourney ?? { asked: {}, done: false };
     const known = input.knownData ?? {};
@@ -546,6 +547,15 @@ export function validateDecision(input: ValidationInput): ValidationResult {
     const name = contactName || input.knownName;
     questionsAfter = questionProgress(questions, data, name, journey.asked, { askedEver: journey.askedEver, nameKey });
     const pending = questionsAfter.next;
+    // Una respuesta cuyo camino es «pasar con una persona»: se transfiere en este turno (una sola vez, al responderla).
+    const route = questionsAfter.handoff;
+    if (route && action !== 'handoff' && !questionProgress(questions, known, input.knownName, journey.asked, { askedEver: journey.askedEver, nameKey }).handoff) {
+      action = 'handoff';
+      branchHandoff = `El cliente respondió «${route.answer}» a «${route.question.question.trim()}»`;
+      // Lo que dijo la IA se conserva, sin preguntas de la lista: ya no se siguen.
+      messages = dropSentences(messages, (_n, x) => asksAnyQuestion(x));
+      fixes.push(`${branchHandoff}: pasa con una persona (camino de la pregunta)`);
+    }
     const answeredNow = questions.some((q) => isAnswered(q, data, name, nameKey) && !isAnswered(q, known, input.knownName, nameKey));
     // Terminó en este turno: ya no queda ninguna pendiente, se había hecho alguna en este recorrido (o se contestó
     // una ahora) y no se registró antes. Un cliente que vuelve con todo respondido no lo dispara. También cuenta en
@@ -661,7 +671,9 @@ export function validateDecision(input: ValidationInput): ValidationResult {
       fixes.push('Objetivo marcado como cumplido, pero el recorrido no tiene objetivo: se ignoró');
     } else {
       const have = { ...(input.knownData ?? {}), ...saveData };
-      const missing = bot.data_fields.filter((f) => f.required && !have[f.key] && !(f.key === nameKey && (contactName || input.knownName)));
+      // Las preguntas que un camino por respuesta saltó no aplican: no se exigen para cumplir el objetivo.
+      const notApplicable = new Set((questionsAfter?.notApplicable ?? []).map((q) => q.key));
+      const missing = bot.data_fields.filter((f) => f.required && !have[f.key] && !notApplicable.has(f.key) && !(f.key === nameKey && (contactName || input.knownName)));
       const pendingQuestions = questionsAfter?.missingRequired ?? [];
       if (missing.length) fixes.push(`El objetivo aún no se cumple: faltan datos importantes (${missing.map((f) => f.label).join(', ')})`);
       else if (pendingQuestions.length) fixes.push(`El objetivo aún no se cumple: faltan preguntas obligatorias (${pendingQuestions.map((q) => q.key).join(', ')})`);
@@ -703,7 +715,8 @@ export function validateDecision(input: ValidationInput): ValidationResult {
     IMAGE_PROMISE_RE.test(x) || (textNounIsPhoto && TEXT_PROMISE_RE.test(x)) || (customerTalksPhoto && PRONOUN_PROMISE_RE.test(x));
   /** La oración promete una foto que no sale: la que nombra (si nombra una del catálogo) o cualquiera (si no nombra ninguna). */
   const brokenPromise = (x: string) => {
-    if (!promisesPhoto(x)) return false;
+    // Una pregunta de la lista la escribió el negocio y ofrece, no promete («¿Te envío nuestro folleto?»).
+    if (!promisesPhoto(x) || asksAnyQuestion(x)) return false;
     const named = namedImages(x, catalog);
     return named.length ? !named.some((i) => outgoing.has(i.id)) : outgoing.size === 0;
   };
@@ -747,7 +760,7 @@ export function validateDecision(input: ValidationInput): ValidationResult {
       saveData,
       contactName,
       remember,
-      handoffReason: d.handoff_reason.trim(),
+      handoffReason: branchHandoff || d.handoff_reason.trim(),
       infoNotFound: d.info_not_found,
       intents,
       booking,
