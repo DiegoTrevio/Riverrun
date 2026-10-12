@@ -18,6 +18,15 @@ const live = process.env.RIVERRUN_EVAL_LIVE === 'true';
 const real = live ? new OpenAiProvider(config.openai.apiKey, config.openai.baseUrl, config.openai.timeoutMs, 'openrouter', 1) : null;
 const budget = live ? new LiveBudget() : null;
 
+// Preguntas con caminos por respuesta: «Reservar» sigue en orden, «Informes» salta al folleto, «Hablar con alguien» transfiere.
+const BRANCHED = [
+  { key: 'motivo', label: 'Motivo', type: 'option', options: ['Reservar', 'Informes', 'Hablar con alguien'], required: true, question: '¿Vienes a reservar, quieres informes o prefieres hablar con alguien?',
+    branches: [{ option: 'Informes', goto: 'folleto' }, { option: 'Hablar con alguien', goto: 'handoff' }] },
+  { key: 'fecha_llegada', label: 'Fecha de llegada', type: 'text', required: true, question: '¿Qué día llegas?', options: [], branches: [] },
+  { key: 'huespedes', label: 'Huéspedes', type: 'number', required: true, question: '¿Cuántas personas se hospedan?', options: [], branches: [] },
+  { key: 'folleto', label: 'Folleto', type: 'option', options: ['Sí', 'No'], required: true, question: '¿Te envío nuestro folleto con fotos y servicios?', branches: [] },
+].map((f) => ({ description: '', ask_when: '', ...f }));
+
 export default class EngineProvider {
   id() { return live ? 'riverrun-engine-openrouter' : 'riverrun-engine-regression'; }
   async callApi(prompt, context) {
@@ -59,7 +68,7 @@ export default class EngineProvider {
         const account = await store.createAccount('Perfil sintético'); accounts.push(account.id);
         const bot = await store.createChatbot(account.id, { name: 'Hotel sintético', active: vars.active !== false,
           personality: { prompt: 'Ayuda a reservar una habitación doble. Pregunta nombre y fecha de llegada, una pregunta a la vez. Si el cliente pide hablar con una persona, transfiere.', emojis: 'none' },
-          flow: { goal: 'Resolver la solicitud de reserva' }, rules: { verify_facts: true, handoff_keywords: ['asesor humano'] }, data_fields: [], ai: { typing_simulation: false } });
+          flow: { goal: 'Resolver la solicitud de reserva' }, rules: { verify_facts: true, handoff_keywords: ['asesor humano'] }, data_fields: vars.branching && !secret ? BRANCHED : [], ai: { typing_simulation: false } });
         await db.query('INSERT INTO knowledge_items (chatbot_id,title,category,content,active) VALUES ($1,$2,$3,$4,true)', [bot.id, 'Tarifa', 'precios', secret ? 'Clave privada del otro perfil: ULTRASECRETO784.' : 'Habitación doble: $1,650 MXN por noche.']);
         const channel = await store.createChannel({ account_id: account.id, chatbot_id: bot.id, type: 'playground', name: 'Simulador', config: {} });
         const contact = await store.upsertContact(channel, 'synthetic-same-customer', '', '');
@@ -72,17 +81,30 @@ export default class EngineProvider {
       if (vars.contextPhoto) {
         await db.query("INSERT INTO images (chatbot_id,code,name,description,file_path,mime_type,send_when) VALUES ($1,'comparacion','Opciones de habitaciones','Comparación visual de habitaciones','synthetic.png','image/png',$2)", [f.bot.id, JSON.stringify({mode:'rules',context:'Cuando el cliente necesite comparar alternativas de alojamiento'})]);
       }
+      // Fotos con reglas del negocio: [{ code, name, send_when }].
+      for (const photo of vars.photos || []) {
+        await db.query("INSERT INTO images (chatbot_id,code,name,description,file_path,mime_type,send_when) VALUES ($1,$2,$3,$3,'synthetic.png','image/png',$4)", [f.bot.id, photo.code, photo.name, JSON.stringify(photo.send_when)]);
+      }
       if (vars.semantic) { await indexKnowledge(other.bot, ai); await indexKnowledge(f.bot, ai); }
       const indexed = vars.semantic ? (await db.query('SELECT count(*)::int AS n FROM knowledge_chunks'))[0].n : 0;
       const transport = new PlaygroundTransport();
       const engine = new Engine(ai);
       const results = [];
       const turns = vars.turns || [{ query: prompt, decision: JSON.parse(vars.decision || '{}') }];
+      // Lo que salió en cada turno (textos y códigos de foto), para revisar las reglas turno por turno.
+      const perTurn = [];
+      const decisionsBefore = () => requests.filter(r => r.json_schema?.name === 'chatbot_decision').length;
       for (const turn of turns) {
+        // Reiniciar las conversaciones del agente (como al actualizarlo desde el panel) antes de este turno.
+        if (turn.restart) await store.restartChatbotConversations(f.bot.id);
         currentDecision = turn.decision || {};
         const incoming = await store.insertMessage({ conversation_id: f.conversation.id, direction: 'in', sender: 'customer', content: turn.query, processed: false });
         firstIncomingId ??= incoming.id;
+        const from = transport.outputs.length;
+        const calls = decisionsBefore();
         results.push(await engine.process(f.conversation.id, transport));
+        perTurn.push({ texts: transport.outputs.slice(from).filter(x => x.type === 'text').map(x => x.text), photos: transport.outputs.slice(from).filter(x => x.type === 'image').map(x => x.image.code),
+          context: requests.filter(r => r.json_schema?.name === 'chatbot_decision').slice(calls).map(r => JSON.stringify(r.messages)).join('\n') });
       }
       if (vars.summary) {
         await summarizeConversation(ai, f.conversation.id);
@@ -94,7 +116,7 @@ export default class EngineProvider {
       const messages = await db.query('SELECT direction,content,status,meta FROM messages WHERE conversation_id=$1 ORDER BY id', [f.conversation.id]);
       const contextText = requests.filter(r => r.json_schema?.name === 'chatbot_decision').map(r => JSON.stringify(r.messages)).join('\n');
       return { output: JSON.stringify({ budgetOk: !budget?.blocked, results: results.map(({status, attempts, fallbackUsed}) => ({status, attempts, fallbackUsed})), indexed, embeddingCalls, outputs: transport.outputs, contactData: contact.data, conversationData: conversation.data,
-        status: conversation.status, summary: conversation.report_summary, messages,
+        status: conversation.status, handoffReason: conversation.handoff_reason, summary: conversation.report_summary, messages, perTurn,
         summaryCalls: requests.filter(r => r.json_schema?.name === 'conversation_report').length,
         instructionsPresent: contextText.includes('Pregunta nombre y fecha de llegada'),
         isolation: f.contact.id !== other.contact.id && !contextText.includes('ULTRASECRETO784') && !JSON.stringify(contact.data).includes('ULTRASECRETO784'),

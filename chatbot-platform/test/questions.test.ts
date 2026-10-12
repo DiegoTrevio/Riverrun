@@ -443,3 +443,14 @@ t('caminos por respuesta: se guardan y se validan; de extremo a extremo saltan p
     assert.equal((await put(QUESTIONS)).statusCode, 200);
   }
 });
+
+test('una pregunta de la lista que ofrece fotos («¿Te envío nuestro folleto con fotos?») no se trata como promesa rota', () => {
+  const ask = '¿Te envío nuestro folleto con fotos y servicios?';
+  const b = hydrateChatbot({ id: 'b', account_id: 'a', name: 'Hotel', active: true, personality: {}, rules: {}, flow: {}, ai: {}, saved_messages: [],
+    data_fields: [{ key: 'folleto', label: 'Folleto', type: 'option', options: ['Sí', 'No'], required: true, question: ask }], created_at: new Date(), updated_at: new Date() } as any);
+  const v = validateDecision({ bot: b, images: [], sentImageIds: [], groundingSources: [], customerText: 'Solo informes', raw: reply(['Claro.']), questionJourney: journey(), final: true });
+  assert.deepEqual(v.plan.messages, ['Claro.', ask]);
+  // Una promesa de la IA sigue revisándose.
+  const promise = validateDecision({ bot: b, images: [], sentImageIds: [], groundingSources: [], customerText: 'Hola', raw: reply([`Te mando la foto de la alberca. ${ask}`]), questionJourney: journey(), final: true });
+  assert.deepEqual(promise.plan.messages, [ask]);
+});

@@ -713,7 +713,8 @@ export function validateDecision(input: ValidationInput): ValidationResult {
     IMAGE_PROMISE_RE.test(x) || (textNounIsPhoto && TEXT_PROMISE_RE.test(x)) || (customerTalksPhoto && PRONOUN_PROMISE_RE.test(x));
   /** La oración promete una foto que no sale: la que nombra (si nombra una del catálogo) o cualquiera (si no nombra ninguna). */
   const brokenPromise = (x: string) => {
-    if (!promisesPhoto(x)) return false;
+    // Una pregunta de la lista la escribió el negocio y ofrece, no promete («¿Te envío nuestro folleto?»).
+    if (!promisesPhoto(x) || asksAnyQuestion(x)) return false;
     const named = namedImages(x, catalog);
     return named.length ? !named.some((i) => outgoing.has(i.id)) : outgoing.size === 0;
   };

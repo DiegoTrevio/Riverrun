@@ -128,6 +128,139 @@
           "value": "JSON.parse(output).outputs.every(x=>x.type !== \"image\")"
         }
       ]
+    },
+    {
+      "description": "Caminos por respuesta: «Informes» salta al folleto y no pregunta la fecha",
+      "vars": {
+        "query": "Hola",
+        "branching": true,
+        "turns": [
+          {
+            "query": "Hola",
+            "decision": {
+              "messages": [
+                "¡Hola! ¿Vienes a reservar, quieres informes o prefieres hablar con alguien?"
+              ]
+            }
+          },
+          {
+            "query": "Solo quiero informes",
+            "decision": {
+              "messages": [
+                "Claro. ¿Qué día llegas?"
+              ],
+              "save_data": [
+                {
+                  "field": "motivo",
+                  "value": "Informes"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "assert": [
+        {
+          "type": "javascript",
+          "value": "(() => { const r=JSON.parse(output); const t=r.perTurn[1].texts.join(' '); return r.contactData.motivo === 'Informes' && t.includes('folleto') && !r.perTurn.slice(1).some(x=>x.texts.join(' ').includes('¿Qué día llegas?')) && r.status === 'bot'; })()"
+        }
+      ]
+    },
+    {
+      "description": "Caminos por respuesta: «Hablar con alguien» pasa con una persona",
+      "vars": {
+        "query": "Hola",
+        "branching": true,
+        "turns": [
+          {
+            "query": "Hola",
+            "decision": {
+              "messages": [
+                "¡Hola! ¿Vienes a reservar, quieres informes o prefieres hablar con alguien?"
+              ]
+            }
+          },
+          {
+            "query": "Prefiero hablar con alguien",
+            "decision": {
+              "messages": [
+                "Va. ¿Qué día llegas?"
+              ],
+              "save_data": [
+                {
+                  "field": "motivo",
+                  "value": "Hablar con alguien"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "assert": [
+        {
+          "type": "javascript",
+          "value": "(() => { const r=JSON.parse(output); return r.status === 'human' && r.results[1].status === 'handoff' && /Hablar con alguien/.test(r.handoffReason) && !r.perTurn[1].texts.join(' ').includes('¿Qué día llegas?'); })()"
+        }
+      ]
+    },
+    {
+      "description": "Fotos por regla: bienvenida una vez, palabra del cliente, y al reiniciar vuelve la bienvenida sin historial anterior",
+      "vars": {
+        "query": "Hola",
+        "photos": [
+          {
+            "code": "bienvenida",
+            "name": "Bienvenida",
+            "send_when": {
+              "mode": "rules",
+              "first_message": true
+            }
+          },
+          {
+            "code": "menu",
+            "name": "Menú",
+            "send_when": {
+              "mode": "rules",
+              "keywords": [
+                "menú"
+              ]
+            }
+          }
+        ],
+        "turns": [
+          {
+            "query": "Hola, buenas tardes",
+            "decision": {
+              "messages": [
+                "¡Hola! ¿En qué te ayudo?"
+              ]
+            }
+          },
+          {
+            "query": "¿Me pasas el menú?",
+            "decision": {
+              "messages": [
+                "Claro."
+              ]
+            }
+          },
+          {
+            "query": "Hola de nuevo",
+            "restart": true,
+            "decision": {
+              "messages": [
+                "¡Hola! ¿En qué te ayudo?"
+              ]
+            }
+          }
+        ]
+      },
+      "assert": [
+        {
+          "type": "javascript",
+          "value": "(() => { const r=JSON.parse(output); const p=r.perTurn.map(x=>x.photos.join(',')); return p[0] === 'bienvenida' && p[1] === 'menu' && p[2] === 'bienvenida' && !r.perTurn[2].context.includes('Me pasas el men'); })()"
+        }
+      ]
     }
   ],
   "defaultTest": {
