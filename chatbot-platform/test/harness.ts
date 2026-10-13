@@ -171,6 +171,7 @@ export async function createHarness() {
   // WhatsApp se simula en memoria; Telegram y Meta usan sus adaptadores reales contra el servidor falso.
   const transportFactory = (channel: any, contact: any) => (channel.type !== 'whatsapp' ? defaultTransport(channel, contact) : {
     kind: 'whatsapp' as const,
+    typingSimulation: false,
     async sendText(text: string) {
       if (failNext.text > 0) {
         failNext.text--;
@@ -231,7 +232,7 @@ export async function createHarness() {
       await h.idle();
     },
     /** Espera a que la cola termine todo lo pendiente (evita que una prueba contamine a la siguiente). */
-    async idle() { await waitFor(() => service.queue.size === 0 && inflight.n === 0, 8000); },
+    async idle() { await waitFor(async () => service.queue.size === 0 && service.inbox.size === 0 && inflight.n === 0 && (await pool.query("SELECT count(*)::int AS n FROM conversation_work WHERE state IN ('pending','running')")).rows[0].n===0 && (await pool.query("SELECT count(*)::int AS n FROM inbound_receipts WHERE state IN ('pending','running')")).rows[0].n===0, 8000); },
     webhook(text: string, opts: { fromMe?: boolean; phone?: string; id?: string; timestamp?: number; instance?: string } = {}) {
       const phone = opts.phone ?? '5215511112222';
       return app.inject({

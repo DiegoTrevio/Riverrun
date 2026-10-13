@@ -7,6 +7,8 @@ import { evolutionFor, newInstanceName, releaseWhatsapp } from '../channels/what
 import { SessionError, whatsappSession } from '../channels/whatsapp-session.js';
 import { zernioAuthUrl } from '../channels/zernio.js';
 import { config } from '../config.js';
+import { query,withTransaction } from '../db.js';
+import { coordinated } from '../engine/coordination.js';
 import { recordConnectionState } from '../lifecycle.js';
 import { assertWithinLimit } from '../billing/limits.js';
 import { logEvent } from '../logs.js';
@@ -45,6 +47,27 @@ function configError(e: any): never {
 
 export async function channelRoutes(api: FastifyInstance) {
   const admins = { preHandler: requireRole('admin') };
+  api.get('/api/channels/:id/receipts',admins,async(req:any)=>{
+    const channel=await channelFor(req.user,req.params.id);
+    return query(`SELECT id,state,attempts,reason,created_at,run_at FROM inbound_receipts WHERE channel_id=$1 AND state IN ('pending','running','dead') ORDER BY created_at DESC LIMIT 50`,[channel.id]);
+  });
+  api.post('/api/channels/:id/receipts/:receipt/recover',admins,async(req:any)=>{
+    const channel=await channelFor(req.user,req.params.id);
+    const id=parse(z.coerce.number().int().positive(),req.params.receipt);
+    const body=parse(z.object({action:z.enum(['retry','acknowledge'])}),req.body);
+    const row=(await query('SELECT external_id FROM inbound_receipts WHERE id=$1 AND channel_id=$2',[id,channel.id]))[0];
+    if(!row) throw new HttpError(404,'Recepción no encontrada.');
+    const result=await coordinated(`inbound:${channel.id}:${row.external_id}`,`receipt-review:${id}`,()=>withTransaction(async client=>{
+      const receipt=(await client.query('SELECT * FROM inbound_receipts WHERE id=$1 AND channel_id=$2 FOR UPDATE',[id,channel.id])).rows[0];
+      if(receipt?.state!=='dead') throw new HttpError(409,'La recepción ya no está pendiente de revisión.');
+      if(body.action==='retry') {
+        if(receipt.reason!=='receipt_processing') throw new HttpError(409,'Una recepción interrumpida debe revisarse y atenderse a mano.');
+        await client.query(`UPDATE inbound_receipts SET state='pending',attempts=0,reason=NULL,run_at=now() WHERE id=$1`,[id]);
+      } else await client.query(`UPDATE inbound_receipts SET state='done',payload='{}',reason='reviewed_by_admin' WHERE id=$1`,[id]);
+    }));
+    if(!result.acquired) throw new HttpError(409,'La recepción todavía está en curso.');
+    return {ok:true};
+  });
 
   api.get('/api/channels', async (req: any) => {
     const channels = await store.listChannels(scopeAccount(req.user, req.query.account_id), { chatbotId: req.query.chatbot_id });

@@ -1,3 +1,4 @@
+import { semanticActivation } from './semantic-activation.js';
 import { tabConnections } from './agent-connections.js';
 import { ACTIONS } from './automation.js';
 import { channelIcon, channelStatusCell } from './channels.js';
@@ -184,6 +185,7 @@ async function tabKnowledge(root, bot) {
     indexStatus,
     h('a', { class: 'small', href: `#/logs?chatbot_id=${bot.id}` }, 'Ver detalles y errores de preparación'),
     search.available ? h('button', { class: 'small', onclick: async () => { if (await run(() => api('POST', `/api/chatbots/${bot.id}/knowledge/index`, {}), 'Conocimiento actualizado')) render(); } }, 'Preparar todo ahora') : null));
+  root.appendChild(await semanticActivation(bot));
   const cats = state.meta.knowledge_categories;
   const catOptions = cats.map((c) => [c, catLabel(c)]);
   const newItem = draftModel(`${bot.id}:knowledge-new`, { category: 'general', title: '', content: '', always_include: false });

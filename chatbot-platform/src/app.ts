@@ -44,6 +44,9 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
   const app = Fastify({ logger: opts.logger ?? false, bodyLimit: 10 * 1024 * 1024, trustProxy: (_addr: string, hop: number) => hop < config.trustProxyHops });
   const service = new ChatService(opts.ai, opts.transportFactory);
   app.addHook('onClose', async () => {
+    await service.inbox.stop();
+    await service.scheduler.stop();
+    service.stopSweeper();
     await service.queue.stop();
     await service.engine.settleBackground();
     await service.automator.settleAll();

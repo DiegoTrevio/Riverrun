@@ -73,6 +73,8 @@ class MetaTransport implements Transport {
     await sleep(Math.min(delayMs, 4000));
   }
 
+  async startTyping() { await this.graph.call('POST','me/messages',{recipient:{id:this.recipientId},sender_action:'typing_on'}); }
+
   async sendText(text: string, delayMs: number) {
     await this.typing(delayMs);
     const plain = toPlainText(text);

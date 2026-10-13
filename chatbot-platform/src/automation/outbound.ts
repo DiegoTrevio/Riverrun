@@ -1,3 +1,5 @@
+import { setControlVersion } from '../engine/coordination.js';
+import { queryOne } from '../db.js';
 import { messageQuota } from '../billing/limits.js';
 import { attachmentAbsolutePath } from '../attachments.js';
 import { CAPTION_MAX, PlaygroundTransport, type OutgoingFile } from '../engine/transport.js';
@@ -104,11 +106,13 @@ export class Outbound {
     const captionFooter = footer && !text ? footer : '';
 
     const transport = channel.type === 'playground' ? new PlaygroundTransport() : this.chat.transportFor(channel, contact);
-    const meta = { source: o.source, ...o.meta };
+    const meta = { source: o.source, ...o.meta, allow_when_human: o.allowWhenHuman === true };
     // Un envío que empieza el recorrido en una etapa forma parte de ese recorrido (su foto cuenta como ya enviada).
     const journeyStart = o.flowStep ? await store.dbNow() : undefined;
     // Nunca en paralelo con una respuesta del bot en la misma conversación.
     const ok = await this.chat.queue.exclusive(conv.id, async () => {
+      const fresh=await queryOne('SELECT control_version FROM conversations WHERE id=$1',[conv.id]);
+      if(fresh) setControlVersion(Number(fresh.control_version));
       if (image) {
         // Texto y foto juntos: un solo mensaje con el texto como pie (sin texto, el pie de la foto). Un texto que no
         // cabe como pie sale antes, aparte, y la foto después con su propio pie.

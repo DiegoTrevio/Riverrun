@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { enqueue } from '../engine/queue.js';
 import { query, queryOne, withTransaction } from '../db.js';
 import { removeInboundAccountFiles, type StoredMedia } from '../channels/media.js';
 import {
@@ -694,6 +695,7 @@ export async function saveConversationReport(id: string, summary: string, untilI
 /* -------------------------------- Mensajes ------------------------------- */
 
 export interface NewMessage {
+  queueDelayMs?: number;
   /** Foto o documento del cliente ya guardado en disco: se registra en la misma transacción que el mensaje. */
   media?: StoredMedia;
   conversation_id: string;
@@ -730,6 +732,7 @@ export async function insertMessage(m: NewMessage): Promise<Message | null> {
     );
     const row = result.rows[0] ?? null;
     if (row) await client.query('UPDATE conversations SET last_message_at = now() WHERE id = $1', [m.conversation_id]);
+    if (row && m.queueDelayMs !== undefined) await enqueue(m.conversation_id, m.queueDelayMs, client);
     if (row && m.media) {
       // Si esto falla, se deshace también el mensaje: nunca queda un mensaje que diga "foto" sin su archivo.
       await client.query(
@@ -890,7 +893,7 @@ export async function markAllProcessed(conversationId: string) {
 /** Últimos N mensajes (en orden cronológico) con id <= beforeOrEqualId si se indica. */
 export async function recentMessages(conversationId: string, limit: number): Promise<Message[]> {
   const rows = await query<Message>(
-    `SELECT * FROM messages WHERE conversation_id = $1 AND status <> 'failed' ORDER BY id DESC LIMIT $2`,
+    `SELECT * FROM messages WHERE conversation_id = $1 AND status NOT IN ('failed','uncertain','pending','cancelled') ORDER BY id DESC LIMIT $2`,
     [conversationId, limit],
   );
   return rows.reverse();
@@ -899,7 +902,7 @@ export async function recentMessages(conversationId: string, limit: number): Pro
 /** Últimos `limit` mensajes posteriores al resumen (lo que la IA aún no tiene resumido), en orden cronológico. */
 export async function unsummarizedMessages(conversationId: string, afterId: number, limit: number): Promise<Message[]> {
   const rows = await query<Message>(
-    `SELECT * FROM messages WHERE conversation_id = $1 AND id > $2 AND status <> 'failed' ORDER BY id DESC LIMIT $3`,
+    `SELECT * FROM messages WHERE conversation_id = $1 AND id > $2 AND status NOT IN ('failed','uncertain','pending','cancelled') ORDER BY id DESC LIMIT $3`,
     [conversationId, afterId, limit],
   );
   return rows.reverse();

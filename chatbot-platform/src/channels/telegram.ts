@@ -46,6 +46,8 @@ class TelegramTransport implements Transport {
     await sleep(Math.min(delayMs, 4000));
   }
 
+  async startTyping() { await this.client.call('sendChatAction',{chat_id:this.chatId,action:'typing'}); }
+
   async sendText(text: string, delayMs: number) {
     await this.typing(delayMs);
     const r = await this.client.call('sendMessage', { chat_id: this.chatId, text: toPlainText(text) });

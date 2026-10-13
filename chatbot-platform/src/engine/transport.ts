@@ -14,6 +14,9 @@ export interface OutgoingFile {
 /** Canal de salida. El mismo motor funciona para todas las plataformas y para el simulador. */
 export interface Transport {
   kind: ChannelType;
+  /** Adapters/tests that do not simulate typing can explicitly opt out of artificial waits. */
+  typingSimulation?: boolean;
+  startTyping?(): Promise<void>;
   /** Envía texto. `delayMs` = tiempo de "escribiendo…" sugerido (cada plataforma lo aplica si puede). */
   sendText(text: string, delayMs: number): Promise<string | null>;
   sendImage(image: ImageAsset, caption: string, delayMs: number): Promise<string | null>;

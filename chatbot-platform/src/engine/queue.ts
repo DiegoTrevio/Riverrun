@@ -1,159 +1,103 @@
-/**
- * Cola por conversación:
- *  - Agrupa mensajes seguidos del cliente (debounce) para responder una sola vez.
- *  - Garantiza que una conversación se procese de a una (sin respuestas cruzadas).
- * Pensada para un solo proceso en un VPS (sin dependencias externas).
- */
-export type Runner = (conversationId: string, attempt: { restarts: number }) => Promise<{ status: string }>;
-
-interface Slot {
-  timer?: NodeJS.Timeout;
-  running: boolean;
-  finished?: Promise<void>;
-  rerun: boolean;
-  restarts: number;
-  errors: number;
+import crypto from 'node:crypto';
+import { config } from '../config.js';
+import { query, queryOne } from '../db.js';
+import { coordinated, DeliveryUncertain,detached } from './coordination.js';
+export type Runner = (id: string, attempt: { restarts: number }) => Promise<{ status: string }>;
+export async function enqueue(id: string, delay: number, client?: { query: (...args: any[]) => Promise<any> }) {
+  const sql = `INSERT INTO conversation_work(conversation_id,run_at) VALUES($1,now()+$2*interval '1 millisecond')
+    ON CONFLICT(conversation_id) DO UPDATE SET run_at=EXCLUDED.run_at,revision=conversation_work.revision+1,
+    state=CASE WHEN conversation_work.state IN ('running','dead') THEN conversation_work.state ELSE 'pending' END,
+    attempts=CASE WHEN conversation_work.state='done' THEN 0 ELSE conversation_work.attempts END,updated_at=now()`;
+  if(client) await client.query(sql,[id,delay]); else await query(sql,[id,delay]);
 }
-
+/** Local state only tracks promises for shutdown; all eligibility, debounce and retries live in PostgreSQL. */
 export class ConversationQueue {
-  private slots = new Map<string, Slot>();
-  private stopped = false;
-
-  /**
-   * @param onGiveUp se llama cuando el reintento también falló (p.ej. la IA no responde): el mensaje queda
-   * pendiente (se contestará cuando el cliente vuelva a escribir) y alguien del equipo debe enterarse.
-   */
-  constructor(
-    private runner: Runner,
-    private maxRestarts = 2,
-    private errorRetryMs = 60_000,
-    private onGiveUp?: (conversationId: string) => void,
-  ) {}
-
-  private slot(id: string): Slot {
-    let s = this.slots.get(id);
-    if (!s) {
-      s = { running: false, rerun: false, restarts: 0, errors: 0 };
-      this.slots.set(id, s);
-    }
-    return s;
+  private stopped=false;
+  private active=new Set<Promise<unknown>>();
+  private hints=new Set<string>();
+  private timer?: NodeJS.Timeout;
+  private wake?: NodeJS.Timeout;
+  private wakeAt=Infinity;
+  private polling=false;
+  constructor(private runner: Runner,private maxRestarts=2,private errorRetryMs=config.queue.retryMs,
+    private onGiveUp?: (id:string)=>void|Promise<void>,private maxAttempts=config.queue.attempts) {
+    if(config.queue.role!=='http') this.start();
   }
-
-  schedule(conversationId: string, delayMs: number) {
-    if (this.stopped) return;
-    const s = this.slot(conversationId);
-    if (s.running) {
-      s.rerun = true;
-      return;
-    }
-    if (s.timer) clearTimeout(s.timer);
-    s.timer = setTimeout(() => void this.fire(conversationId), delayMs);
+  start() {
+    if(this.timer||this.stopped) return;
+    this.timer=setInterval(()=>{void this.runDue().catch(()=>console.warn('[queue] PostgreSQL no disponible; trabajos conservados.'));},config.queue.pollMs);
+    this.timer.unref();
   }
-
-  /** Ejecuta una función con exclusión mutua para la conversación (p.ej. el simulador). */
-  async exclusive<T>(conversationId: string, fn: () => Promise<T>): Promise<T> {
-    if (this.stopped) throw new Error('La cola está cerrada');
-    let s = this.slot(conversationId);
-    while (s.running) {
-      await s.finished;
-      if (this.stopped) throw new Error('La cola está cerrada');
-      s = this.slot(conversationId);
+  async schedule(id:string,delay:number) {
+    if(this.stopped) throw new Error('La cola está cerrada');
+    this.hints.add(id);
+    try {await enqueue(id,delay);} catch(e) {this.hints.delete(id);throw e;}
+    // Optional wakeup only: PostgreSQL remains authoritative if this timer is lost.
+    const at=Date.now()+delay+5;
+    if(config.queue.role!=='http' && at<this.wakeAt) {
+      clearTimeout(this.wake);this.wakeAt=at;
+      this.wake=setTimeout(()=>{this.wakeAt=Infinity;void detached(()=>this.runDue().catch(()=>undefined));},delay+5);
+      this.wake.unref();
     }
-    if (this.stopped) throw new Error('La cola está cerrada');
-    s.running = true;
-    let finish!: () => void;
-    s.finished = new Promise<void>(resolve => { finish = resolve; });
-    try {
-      return await fn();
-    } finally {
-      s.running = false;
-      finish();
-      // Un mensaje que llegó mientras tanto no puede quedarse sin respuesta: se programa su turno.
-      if (s.rerun) {
-        s.rerun = false;
-        this.schedule(conversationId, 300);
+  }
+  async exclusive<T>(id:string,fn:()=>Promise<T>):Promise<T> {
+    if(this.stopped) throw new Error('La cola está cerrada');
+    const task=(async()=>{
+      for(;;) {
+        if(this.stopped) throw new Error('La cola está cerrada');
+        const r=await coordinated(`conversation:${id}`,`manual:${crypto.randomUUID()}`,fn);
+        if(r.acquired) return r.value;
+        await new Promise(r=>setTimeout(r,100));
       }
-      this.cleanup(conversationId);
-    }
+    })();
+    this.active.add(task);
+    try {return await task;} finally {this.active.delete(task);}
   }
-
-  private async fire(conversationId: string) {
-    if (this.stopped) return;
-    const s = this.slot(conversationId);
-    s.timer = undefined;
-    if (s.running) {
-      s.rerun = true;
-      return;
-    }
-    s.running = true;
-    let finish!: () => void;
-    s.finished = new Promise<void>(resolve => { finish = resolve; });
-    s.rerun = false;
-    let status = 'error';
+  async runDue(limit=config.queue.concurrency) {
+    if(this.stopped||this.polling) return 0;
+    this.polling=true;
     try {
-      status = (await this.runner(conversationId, { restarts: s.restarts })).status;
-    } catch (e) {
-      console.error('Error procesando conversación', conversationId, e);
-    } finally {
-      s.running = false;
-      finish();
-    }
-    if (this.stopped) { this.slots.delete(conversationId); return; }
-    if (status === 'busy') {
-      // Otro proceso la está atendiendo: se vuelve a intentar sin contar como reinicio ni como error.
-      this.schedule(conversationId, 2000);
-      return;
-    }
-    if (status === 'restart') {
-      s.restarts++;
-      this.schedule(conversationId, 500);
-      return;
-    }
-    s.restarts = 0;
-    if (status === 'error') {
-      s.errors++;
-      if (s.errors <= 1) {
-        this.schedule(conversationId, this.errorRetryMs);
-        return;
+      const rows=await query(`SELECT conversation_id FROM conversation_work WHERE (state='pending' AND run_at<=now()) OR (state='running' AND lease_until<now()) ORDER BY run_at LIMIT $1`,[Math.min(24,limit*4)]);
+      if(this.stopped) return 0;
+      const tasks=rows.map(r=>this.run(r.conversation_id));
+      tasks.forEach(t=>this.active.add(t));
+      let n=0;
+      try {const results=await Promise.allSettled(tasks);n=results.filter(r=>r.status==='fulfilled'&&r.value).length;const error=results.find(r=>r.status==='rejected');if(error?.status==='rejected') throw error.reason;}
+      finally {tasks.forEach(t=>this.active.delete(t));}
+      if(this.hints.size) {
+        const live=await query(`SELECT conversation_id FROM conversation_work WHERE conversation_id=ANY($1::uuid[]) AND state IN ('pending','running')`,[[...this.hints]]);
+        this.hints=new Set(live.map(r=>r.conversation_id));
       }
-      this.onGiveUp?.(conversationId);
-    }
-    s.errors = 0;
-    if (s.rerun) {
-      s.rerun = false;
-      this.schedule(conversationId, 300);
-      return;
-    }
-    this.cleanup(conversationId);
+      return n;
+    } finally {this.polling=false;}
   }
-
-  /** ¿Este proceso ya tiene la conversación programada o en curso? */
-  has(conversationId: string) {
-    return this.slots.has(conversationId);
+  private async run(id:string) {
+    const r=await coordinated(`conversation:${id}`,`queue:${id}`,async()=>{
+      const token=crypto.randomUUID();
+      const job=await queryOne(`UPDATE conversation_work SET state='running',token=$2,claimed_revision=revision,lease_until=now()+interval '5 minutes',updated_at=now()
+        WHERE conversation_id=$1 AND ((state='pending' AND run_at<=now()) OR (state='running' AND lease_until<now())) RETURNING *`,[id,token]);
+      if(!job) return false;
+      const heartbeat=setInterval(()=>{void query(`UPDATE conversation_work SET lease_until=now()+interval '5 minutes' WHERE conversation_id=$1 AND token=$2`,[id,token]).catch(()=>undefined);},30_000);
+      heartbeat.unref();
+      let status='error';let reason='processing_error';
+      try {status=(await this.runner(id,{restarts:job.restarts})).status;}
+      catch(e) {if(e instanceof DeliveryUncertain) {status='uncertain';reason='delivery_uncertain';}}
+      finally {clearInterval(heartbeat);}
+      const errors=job.attempts+(status==='error'?1:0);
+      const dead=status==='uncertain'||(status==='error'&&errors>=this.maxAttempts);
+      const repeat=status==='error'||status==='restart'||status==='busy';
+      const delay=status==='error'?Math.min(config.queue.maxRetryMs,this.errorRetryMs*2**(errors-1)):status==='busy'?2000:500;
+      await query(`UPDATE conversation_work SET state=CASE WHEN $3 THEN 'dead' WHEN $4 OR revision<>claimed_revision THEN 'pending' ELSE 'done' END,
+        run_at=CASE WHEN $4 THEN now()+$5*interval '1 millisecond' ELSE run_at END,attempts=$6,
+        restarts=CASE WHEN $7='restart' THEN restarts+1 ELSE 0 END,reason=CASE WHEN $3 OR $7='error' THEN $8 ELSE NULL END,
+        token=NULL,lease_until=NULL,updated_at=now() WHERE conversation_id=$1 AND token=$2`,[id,token,dead,repeat,delay,errors,status,reason]);
+      if(dead) await this.onGiveUp?.(id);
+      return true;
+    },true);
+    return r.acquired&&r.value;
   }
-
-  canRestart(restarts: number) {
-    return restarts < this.maxRestarts;
-  }
-
-  private cleanup(id: string) {
-    const s = this.slots.get(id);
-    if (s && !s.running && !s.timer && !s.rerun && !s.errors) this.slots.delete(id);
-  }
-
-  /** Cancel timers and drain writes before the database or process closes. */
-  async stop() {
-    this.stopped = true;
-    const active: Promise<void>[] = [];
-    for (const slot of this.slots.values()) {
-      clearTimeout(slot.timer);
-      if (slot.running && slot.finished) active.push(slot.finished);
-    }
-    await Promise.all(active);
-    this.slots.clear();
-  }
-
-  get size() {
-    return this.slots.size;
-  }
+  has(id:string) {return this.hints.has(id);}
+  canRestart(n:number) {return n<this.maxRestarts;}
+  async stop() {this.stopped=true;clearInterval(this.timer);clearTimeout(this.wake);await Promise.allSettled([...this.active]);this.hints.clear();}
+  get size() {return this.hints.size+this.active.size;}
 }

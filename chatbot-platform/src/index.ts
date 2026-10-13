@@ -27,9 +27,13 @@ async function main() {
   app.addHook('onClose', async () => knowledgeMonitor.stop());
   const knowledgeWorker = new KnowledgeWorker(ai);
   app.addHook('onClose', async () => knowledgeWorker.stop());
-  await app.listen({ port: config.port, host: config.host });
-  await logEvent({ level: 'info', source: 'system', message: `Servidor iniciado en el puerto ${config.port}` });
+  if(!['all','http','worker'].includes(config.queue.role)) throw new Error('PROCESS_ROLE debe ser all, http o worker.');
+  if(config.queue.role!=='worker') {
+    await app.listen({ port: config.port, host: config.host });
+    await logEvent({ level: 'info', source: 'system', message: `Servidor iniciado en el puerto ${config.port}` });
+  } else { await app.ready(); console.log('Worker PostgreSQL iniciado'); }
 
+  if(config.queue.role!=='http') {
   service.scheduler.start(config.schedulerIntervalMs);
   service.startSweeper();
   knowledgeWorker.start();
@@ -47,9 +51,14 @@ async function main() {
     pruneAutomationData(config.logRetentionDays).catch(() => undefined);
     pruneAiRunDetail(config.aiRunDetailDays).catch(() => undefined);
   }, 6 * 3600 * 1000).unref();
+  }
+
+  // Keep a worker-only process alive; all regular maintenance timers deliberately use unref().
+  const workerKeepAlive=config.queue.role==='worker'?setInterval(()=>{},30_000):undefined;
 
   const shutdown = async () => {
     console.log('Cerrando...');
+    clearInterval(workerKeepAlive);
     await app.close();
     process.exit(0);
   };
