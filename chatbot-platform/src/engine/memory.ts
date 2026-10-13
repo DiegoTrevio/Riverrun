@@ -1,3 +1,4 @@
+import { accountAi } from '../ai/budget.js';
 import { config } from '../config.js';
 import type { AiProvider } from '../ai/provider.js';
 import * as store from '../store/index.js';
@@ -32,7 +33,7 @@ export async function maybeSummarize(ai: AiProvider, bot: Chatbot, conversationI
       .join('\n');
 
     const model = config.openai.summaryModel || bot.ai.model || config.openai.defaultModel;
-    const res = await ai.complete({
+    const res = await accountAi(ai, accountId, bot.id, 'summary').complete({
       model,
       temperature: 0.2,
       max_tokens: 700,

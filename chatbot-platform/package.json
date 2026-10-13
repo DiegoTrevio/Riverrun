@@ -30,7 +30,8 @@
     "check:frontend": "node scripts/check-frontend.mjs",
     "test:ux": "node --import tsx scripts/test-ux.mts",
     "test:semantic:ux": "node --import tsx scripts/test-semantic-ux.mts",
-    "test:agent:ux": "node --import tsx scripts/test-agent-quality-ux.mts"
+    "test:agent:ux": "node --import tsx scripts/test-agent-quality-ux.mts",
+    "test:contact:ux": "node --import tsx scripts/test-contact-budget-ux.mts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.2",

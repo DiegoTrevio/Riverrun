@@ -32,6 +32,8 @@ function routes() {
 /** Sustituye cada parámetro por el recurso equivalente de la cuenta B. */
 function fillParams(url: string): string | null {
   const byPrefix: [RegExp, string][] = [
+    [/^\/api\/ai-budget\/review\/:id/, 'budget_entry'],
+    [/^\/api\/contact-views\/:id/, 'contact_view'],
     [/^\/api\/accounts\/:id/, 'account'],
     [/^\/api\/appointments\/:id/, 'appointment'],
     [/^\/api\/automations\/:id/, 'automation'],
@@ -102,6 +104,8 @@ before(async () => {
   B.contact = conv.contact_id;
   const task = await pool.query(`INSERT INTO contact_tasks (account_id, contact_id, kind, body) VALUES ($1, $2, 'nota', $3) RETURNING id`, [B.account, B.contact, `Nota ${MARK}`]);
   B.task = task.rows[0].id;
+  B.budget_entry = (await pool.query("INSERT INTO ai_spend(account_id,kind,models,state,cost_source) VALUES($1,'decision',ARRAY['privado'],'unknown','unknown') RETURNING id",[B.account])).rows[0].id;
+  B.contact_view = (await ok200(adminB('POST','/api/contact-views',{name:`Vista ${MARK}`,filters:{view:'pending'}}))).id;
   // Una foto del cliente de la cuenta B con su archivo real: si A la alcanzara, la descarga respondería 200 y la fuga se vería.
   const photo = await pool.query(
     `INSERT INTO messages (conversation_id, direction, sender, type, content, external_message_id, processed, status, meta)
@@ -158,6 +162,8 @@ t('todas las rutas con :id de la cuenta B: el admin y el agente de A reciben 403
   assert.equal((await adminB('GET', '/api/sequences')).json().length, 1);
   assert.equal((await adminB('GET', `/api/appointments`)).json().find((a: any) => a.id === B.appointment).status, 'confirmed');
   assert.equal((await adminB('GET', '/api/users')).json().length, 2);
+  assert.equal((await adminB('GET','/api/contact-views')).json().length,1);
+  assert.equal((await pool.query('SELECT state FROM ai_spend WHERE id=$1',[B.budget_entry])).rows[0].state,'unknown');
   assert.equal((await adminB('GET', `/api/conversations/${B.conv}`)).json().conversation.status, 'bot');
 });
 
