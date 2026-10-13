@@ -15,7 +15,7 @@ let conv:string;
 before(async()=>{if(!ok)return;h=await createHarness();await h.createBot();await h.service.queue.stop();
  const ch=(await store.getChannel(h.channelId))!;const ct=await store.upsertContact(ch,'521555990001','521555990001','Prueba');conv=(await store.getOrCreateConversation(ch,ct.id)).id;});
 after(async()=>{await Promise.all(queues.map(q=>q.stop()));if(h)await h.app.close();await pool.end();});
-function queue(run:any,retry=50,attempts=3) {const q=new ConversationQueue(run,2,retry,undefined,attempts);queues.push(q);return q;}
+function queue(run:any,retry=50,attempts=3) {const q=new ConversationQueue(run,2,retry,undefined,attempts,{autoStart:false});queues.push(q);return q;}
 async function reset() {await pool.query('DELETE FROM conversation_work');}
 
 t('el debounce sobrevive al cierre y una segunda instancia ejecuta exactamente una vez',async()=>{
@@ -68,4 +68,12 @@ t('SIGKILL durante una respuesta libera el bloqueo y otro proceso recupera el tr
   let calls=0;const replacement=queue(async()=>{calls++;return {status:'replied'};});await replacement.runDue();await replacement.stop();
   assert.equal(calls,1);assert.equal((await pool.query('SELECT state FROM conversation_work')).rows[0].state,'done');
  } finally {if(child.exitCode===null&&!child.killed)child.kill('SIGKILL');}
+});
+
+t('una tarea en segundo plano no conserva permiso después de liberar la sesión propietaria',async()=>{
+ const {assertOwnership}=await import('../src/engine/coordination.js');
+ let background!:Promise<void>;let release!:()=>void;
+ const gate=new Promise<void>(resolve=>release=resolve);
+ await coordinated('test:lifetime','lifetime',async()=>{background=gate.then(()=>assertOwnership());});
+ release();await assert.rejects(background,/worker_ownership_lost/);
 });

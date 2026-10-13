@@ -39,9 +39,12 @@ CREATE TABLE delivery_attempts (
   PRIMARY KEY(operation_key,part)
 );
 CREATE INDEX delivery_attempts_conversation ON delivery_attempts(conversation_id,updated_at DESC);
+CREATE INDEX delivery_attempts_message ON delivery_attempts(message_id);
 ALTER TABLE conversations ADD COLUMN control_version bigint NOT NULL DEFAULT 0;
 CREATE FUNCTION bump_conversation_control() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
-  IF NEW.status IS DISTINCT FROM OLD.status OR NEW.agent_off_until IS DISTINCT FROM OLD.agent_off_until OR NEW.agent_off_reason IS DISTINCT FROM OLD.agent_off_reason THEN
+  IF NEW.status IS DISTINCT FROM OLD.status OR NEW.agent_off_until IS DISTINCT FROM OLD.agent_off_until OR NEW.agent_off_reason IS DISTINCT FROM OLD.agent_off_reason
+    OR NEW.agent_off_at IS DISTINCT FROM OLD.agent_off_at OR NEW.agent_on_at IS DISTINCT FROM OLD.agent_on_at
+    OR NEW.restarted_after_id IS DISTINCT FROM OLD.restarted_after_id OR NEW.chatbot_id IS DISTINCT FROM OLD.chatbot_id THEN
     NEW.control_version := OLD.control_version + 1;
   END IF;
   RETURN NEW;
@@ -57,6 +60,15 @@ CREATE TABLE semantic_settings (
   tested_at timestamptz,
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+CREATE FUNCTION invalidate_semantic_test() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE old_account uuid; new_account uuid;
+BEGIN
+  IF TG_OP<>'INSERT' THEN SELECT account_id INTO old_account FROM chatbots WHERE id=OLD.chatbot_id; END IF;
+  IF TG_OP<>'DELETE' THEN SELECT account_id INTO new_account FROM chatbots WHERE id=NEW.chatbot_id; END IF;
+  UPDATE semantic_settings SET tested_signature=NULL,tested_at=NULL WHERE account_id IN (old_account,new_account);
+  RETURN NULL;
+END $$;
+CREATE TRIGGER invalidate_semantic_test AFTER INSERT OR UPDATE OR DELETE ON knowledge_items FOR EACH ROW EXECUTE FUNCTION invalidate_semantic_test();
 CREATE TABLE embedding_usage (
   account_id uuid NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
   day date NOT NULL DEFAULT (now() AT TIME ZONE 'UTC')::date,
@@ -81,3 +93,4 @@ CREATE TABLE query_embedding_cache (
   expires_at timestamptz NOT NULL,
   PRIMARY KEY(account_id,model,query_hash)
 );
+CREATE INDEX query_embedding_cache_expiry ON query_embedding_cache(expires_at);

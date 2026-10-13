@@ -102,7 +102,7 @@ const KnowledgeBody = z.object({
   always_include: z.boolean().optional(),
   active: z.boolean().optional(),
   sort_order: z.number().int().optional(),
-  source_url: z.string().max(2000).nullable().optional(),
+  source_url: z.string().max(2000).url().refine(value=>['http:','https:'].includes(new URL(value).protocol),'La fuente debe usar HTTP o HTTPS').nullable().optional(),
 });
 
 const ImageMeta = z.object({
@@ -391,7 +391,10 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
     const body=parse(z.object({enabled:z.boolean()}),req.body);
     const status=await activationStatus(bot.account_id);
     if(body.enabled && (!status.ready || status.force_off)) throw new HttpError(409,'Comprueba, prepara y prueba el conocimiento antes de activarlo.');
-    await query(`INSERT INTO semantic_settings(account_id,enabled,preparing) VALUES($1,$2,$2) ON CONFLICT(account_id) DO UPDATE SET enabled=$2,preparing=$2,updated_at=now()`,[bot.account_id,body.enabled]);
+    if(body.enabled) {
+      const applied=await query(`UPDATE semantic_settings SET enabled=true,preparing=true,updated_at=now() WHERE account_id=$1 AND tested_signature=$2 AND verified_model=$3 RETURNING account_id`,[bot.account_id,status.signature,config.knowledgeSearch.model]);
+      if(!applied.length) throw new HttpError(409,'El conocimiento cambió durante la activación. Prueba la búsqueda de nuevo.');
+    } else await query(`INSERT INTO semantic_settings(account_id,enabled,preparing) VALUES($1,false,false) ON CONFLICT(account_id) DO UPDATE SET enabled=false,preparing=false,updated_at=now()`,[bot.account_id]);
     return activationStatus(bot.account_id);
   });
 

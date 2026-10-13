@@ -61,7 +61,7 @@ function fillParams(url: string): string | null {
   return url
     .replace(/:(id|cid|iid|kid|model|key|mid)\b/, B[hit[1]])
     .replace(':session', 'sesion-b')
-    .replace(':sid', B.sequence);
+    .replace(':sid', B.sequence).replace(':receipt','1');
 }
 
 /** Lo que nunca debe aparecer en una respuesta del panel. */

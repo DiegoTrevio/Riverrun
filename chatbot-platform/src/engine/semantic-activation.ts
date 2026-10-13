@@ -8,7 +8,7 @@ export async function activationStatus(accountId:string) {
   const bots=await store.listChatbots(accountId);
   const agents=await Promise.all(bots.map(async bot=>({id:bot.id,name:bot.name,...await knowledgeIndexStatus(bot)})));
   const items=(await Promise.all(bots.map(b=>store.listKnowledge(b.id,true)))).flat();
-  const signature=createHash('sha256').update(config.knowledgeSearch.model+':'+items.map(k=>k.id+':'+knowledgeHash(k)+':'+k.always_include).sort().join('|')).digest('hex');
+  const signature=createHash('sha256').update(config.knowledgeSearch.model+':'+items.map(k=>k.id+':'+knowledgeHash(k)+':'+k.always_include+':'+(k.source_url??'')).sort().join('|')).digest('hex');
   const pendingIds=new Set(agents.filter(a=>a.pending_items).map(a=>a.id));
   const pending=items.filter(k=>!k.always_include&&pendingIds.has(k.chatbot_id));
   const bytes=pending.reduce((n,k)=>n+knowledgeChunks(k.content).reduce((sum,text)=>sum+Buffer.byteLength(k.category+'\n'+k.title+'\n'+text),0),0);

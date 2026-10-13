@@ -33,6 +33,8 @@ export class TelegramClient {
 }
 
 class TelegramTransport implements Transport {
+  private dispatchGuard?:()=>Promise<void>;
+  setDispatchGuard(guard:()=>Promise<void>){this.dispatchGuard=guard;}
   kind = 'telegram' as const;
   private client: TelegramClient;
 
@@ -50,6 +52,7 @@ class TelegramTransport implements Transport {
 
   async sendText(text: string, delayMs: number) {
     await this.typing(delayMs);
+    await this.dispatchGuard?.();
     const r = await this.client.call('sendMessage', { chat_id: this.chatId, text: toPlainText(text) });
     return String(r.message_id);
   }
@@ -61,6 +64,7 @@ class TelegramTransport implements Transport {
     if (caption) form.append('caption', toPlainText(caption));
     const buf = await fs.readFile(imageAbsolutePath(image));
     form.append('photo', new Blob([new Uint8Array(buf)], { type: image.mime_type }), `${image.code}.${image.mime_type.split('/')[1] ?? 'jpg'}`);
+    await this.dispatchGuard?.();
     const r = await this.client.call('sendPhoto', form);
     return String(r.message_id);
   }

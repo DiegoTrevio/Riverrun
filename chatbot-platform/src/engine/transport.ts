@@ -17,6 +17,7 @@ export interface Transport {
   /** Adapters/tests that do not simulate typing can explicitly opt out of artificial waits. */
   typingSimulation?: boolean;
   startTyping?(): Promise<void>;
+  setDispatchGuard?(guard:()=>Promise<void>):void;
   /** Envía texto. `delayMs` = tiempo de "escribiendo…" sugerido (cada plataforma lo aplica si puede). */
   sendText(text: string, delayMs: number): Promise<string | null>;
   sendImage(image: ImageAsset, caption: string, delayMs: number): Promise<string | null>;

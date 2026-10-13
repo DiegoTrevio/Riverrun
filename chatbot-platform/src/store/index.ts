@@ -798,8 +798,8 @@ export interface NewMessage {
 }
 
 /** Inserta un mensaje. Devuelve null si ya existía (webhook duplicado). */
-export async function insertMessage(m: NewMessage): Promise<Message | null> {
-  return withTransaction(async (client) => {
+export async function insertMessage(m: NewMessage, transaction?: import('pg').PoolClient): Promise<Message | null> {
+  const insert = async (client: import('pg').PoolClient) => {
     const result = await client.query<Message>(
       `INSERT INTO messages (conversation_id, direction, sender, type, content, image_id, external_message_id, processed, status, meta)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
@@ -828,7 +828,8 @@ export async function insertMessage(m: NewMessage): Promise<Message | null> {
       );
     }
     return row;
-  });
+  };
+  return transaction ? insert(transaction) : withTransaction(insert);
 }
 
 export async function updateMessage(id: number, patch: { external_message_id?: string | null; status?: string; meta?: Record<string, unknown> }) {
@@ -999,7 +1000,7 @@ export async function unsummarizedMessages(conversationId: string, afterId: numb
 
 export async function messagesBetween(conversationId: string, afterId: number, upToId: number): Promise<Message[]> {
   return query<Message>(
-    `SELECT * FROM messages WHERE conversation_id = $1 AND id > $2 AND id <= $3 AND status <> 'failed' ORDER BY id`,
+    `SELECT * FROM messages WHERE conversation_id = $1 AND id > $2 AND id <= $3 AND status NOT IN ('failed','uncertain','pending','cancelled') ORDER BY id`,
     [conversationId, afterId, upToId],
   );
 }

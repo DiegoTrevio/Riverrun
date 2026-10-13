@@ -46,7 +46,7 @@ t('la preparación global rechaza perfiles fuera del piloto antes de generar emb
 
 t('selección y degradación quedan registradas sin texto del cliente ni errores sensibles', async () => {
   await semanticKnowledge(botA,await store.listKnowledge(botA.id,true),'CONSULTA-PRIVADA',fake);
-  await semanticKnowledge(botA,await store.listKnowledge(botA.id,true),'CONSULTA-PRIVADA',{...fake,embed:async()=>{throw new Error('SYNTHETIC-PRIVATE-KEY');}});
+  await semanticKnowledge(botA,await store.listKnowledge(botA.id,true),'CONSULTA-PRIVADA-NUEVA',{...fake,embed:async()=>{throw new Error('SYNTHETIC-PRIVATE-KEY');}});
   const result=await operationalStatus();
   assert.equal(result.search?.attempts,2); assert.equal(result.search?.fallbacks,1);
   assert.equal(result.search?.selected,1); assert.equal(result.search.fallback_ratio,0.5);

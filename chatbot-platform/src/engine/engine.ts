@@ -1,6 +1,7 @@
 import { knowledgeHash } from './knowledge.js';
-import { query, queryOne } from '../db.js';
-import { assertOwnership, controlVersion, currentOperation, DeliveryUncertain, interruptedOperation, nextDelivery, operationScope, setControlVersion } from './coordination.js';
+import { query, queryOne,withTransaction } from '../db.js';
+import { OutboundBlockedError } from '../outbound-guard.js';
+import { assertOwnership, controlVersion, currentOperation, DeliveryUncertain, OwnershipLost,interruptedOperation, nextDelivery, operationScope, setControlVersion } from './coordination.js';
 import { config } from '../config.js';
 import type { AiProvider } from '../ai/provider.js';
 import { recordMessage } from '../billing/limits.js';
@@ -35,6 +36,7 @@ export interface EngineExtensions {
     cancel(appointmentId: string, reason: string, by: 'bot'): Promise<unknown>;
   };
   onEvent?(e: AutomationEvent): void;
+  settleEvents?(conversationId:string):Promise<void>;
   onOutbound?(conv: Conversation, msg: Message): Promise<void>;
   /** Horario y zona horaria de la cuenta. */
   business?(accountId: string): Promise<BusinessInfo | null>;
@@ -408,7 +410,10 @@ export class Engine {
     // 4) ¿Llegaron mensajes nuevos mientras la IA pensaba? Mejor responder a todo junto.
     if (opts.allowRestart) {
       const nowPending = await store.pendingInbound(conv.id);
-      if (nowPending.some((m) => m.id > lastPendingId)) return { status: 'restart', attempts };
+      const queued=await queryOne(`SELECT EXISTS(SELECT 1 FROM inbound_receipts WHERE channel_id=$1 AND external_id=$2 AND NOT from_me
+        AND state IN ('pending','running') AND message_id<>ALL($3::text[]) AND payload->>'type'<>'reaction'
+        AND COALESCE(payload->>'captureOnly','false')<>'true' AND (payload->>'timestamp')::double precision>extract(epoch FROM now())-1800) AS pending`,[channel.id,contact.external_id,pending.map(m=>m.external_message_id??'')]);
+      if (queued?.pending || nowPending.some((m) => m.id > lastPendingId)) return { status: 'restart', attempts };
     }
     // ¿Un humano tomó la conversación mientras tanto?
     const fresh = await store.getConversation(conv.id);
@@ -424,7 +429,11 @@ export class Engine {
     await assertOwnership();
     const liveBot = await store.getChatbot(bot.id);
     const liveChannel = await store.getChannel(channel.id);
-    if (!opts.ignoreInactive && (!liveBot?.active || !liveChannel?.active || liveChannel.account_active === false)) return {status:'inactive'};
+    const control=await queryOne('SELECT control_version FROM conversations WHERE id=$1',[conv.id]);
+    if(controlVersion()!==undefined&&Number(control?.control_version)!==controlVersion()) return {status:'restart'};
+    if (!opts.ignoreInactive && (!liveBot?.active || !liveChannel?.active || liveChannel.account_active === false)) {
+      await store.markProcessed(conv.id,lastPendingId);return {status:'inactive'};
+    }
     const currentKnowledge=await store.listKnowledge(bot.id,true);
     const signature=(items:typeof knowledge)=>items.map(k=>k.id+':'+knowledgeHash(k)+':'+k.always_include).sort().join('|');
     const settings=(b:Chatbot)=>JSON.stringify([b.personality,b.rules,b.ai,b.flow,b.data_fields,b.saved_messages]);
@@ -588,8 +597,6 @@ export class Engine {
     }
     // Las fotos que faltaron salen aunque la conversación haya pasado a una persona o se haya cerrado en este mismo momento.
     for (const x of owed) await this.ext.deferImage?.(conv, x.image, { reason: x.reason, delaySeconds: x.delaySeconds, allowEnded: ended, allowRepeat: x.repeat }).catch((e) => log('error', 'engine', `No se pudo programar el reenvío de la foto ${x.image.code}: ${e?.message ?? e}`));
-    await store.markProcessed(conv.id, lastPendingId);
-
     // Eventos para las reglas automáticas (se ejecutan después, sin bloquear la respuesta).
     if (this.ext.onEvent) {
       if (plan.intents.length) this.ext.onEvent({ type: 'intent', conversationId: conv.id, intents: plan.intents, text: customerText });
@@ -599,6 +606,10 @@ export class Engine {
         if (value && dataBefore[field] !== value) this.ext.onEvent({ type: 'data_captured', conversationId: conv.id, field, text: customerText });
       }
     }
+
+    // Keep the ownership session alive until dependent events settle. A crash before this commit retains inbound work.
+    await this.ext.settleEvents?.(conv.id);
+    await store.markProcessed(conv.id,lastPendingId);
 
     if (goalReached && !summarized) await this.summarizeFinal(conv);
 
@@ -725,10 +736,12 @@ export class Engine {
       const version=await queryOne('SELECT control_version FROM conversations WHERE id=$1',[conv.id]);
       const ownHandoff=o.meta?.action==='handoff' && controlVersion()===Number(version?.control_version);
       const explicitHuman=o.meta?.allow_when_human===true;
+      const explicitClosed=fresh?.status==='closed' && o.meta?.allow_when_closed===true;
+      const assistantReply=!o.meta?.source || o.meta.source==='flow';
       if(controlVersion()!==undefined && controlVersion()!==Number(version?.control_version)) return null;
-      if(!fresh || (fresh.status!=='bot' && !ownHandoff && !explicitHuman) ||
-        (transport.kind!=='playground' && (!channel?.active || channel.account_active===false || (bot&&!latestBot?.active))) ||
-        (latestBot && fresh.status==='bot' && !agentActive(latestBot,fresh))) return null;
+      if(!fresh || (fresh.status!=='bot' && !ownHandoff && !explicitHuman && !explicitClosed) ||
+        (transport.kind!=='playground' && (!channel?.active || channel.account_active===false || (assistantReply && bot&&!latestBot?.active))) ||
+        (assistantReply && latestBot && fresh.status==='bot' && !agentActive(latestBot,fresh))) return null;
     }
     const old=await queryOne(`SELECT d.*,m.* FROM delivery_attempts d LEFT JOIN messages m ON m.id=d.message_id WHERE operation_key=$1 AND part=$2`,[delivery.operation,delivery.part]);
     if(old) {
@@ -736,13 +749,25 @@ export class Engine {
       if(['sending','uncertain'].includes(old.state)) throw new DeliveryUncertain();
       if(old.state==='rejected'||old.state==='cancelled') return null;
     }
-    const msg = await store.insertMessage({
-      conversation_id:conv.id,direction:'out',sender:o.sender,type:o.file?o.file.kind:o.image?'image':'text',content:o.text,
-      image_id:o.image?.id??null,status:'pending',meta:o.file?{...o.meta,attachment_id:o.file.id,file_name:o.file.name}:o.meta,
+    const msg=await withTransaction(async client=>{
+      const message=await store.insertMessage({
+        conversation_id:conv.id,direction:'out',sender:o.sender,type:o.file?o.file.kind:o.image?'image':'text',content:o.text,
+        image_id:o.image?.id??null,status:'pending',meta:o.file?{...o.meta,attachment_id:o.file.id,file_name:o.file.name}:o.meta,
+      },client);
+      if(!message) return null;
+      const reserved=await client.query(`INSERT INTO delivery_attempts(operation_key,part,conversation_id,message_id,state) VALUES($1,$2,$3,$4,'sending') ON CONFLICT DO NOTHING RETURNING part`,[delivery.operation,delivery.part,conv.id,message.id]);
+      if(!reserved.rowCount) throw new DeliveryUncertain();
+      return message;
     });
     if(!msg) return null;
-    const reserved=await query(`INSERT INTO delivery_attempts(operation_key,part,conversation_id,message_id,state) VALUES($1,$2,$3,$4,'sending') ON CONFLICT DO NOTHING RETURNING part`,[delivery.operation,delivery.part,conv.id,msg.id]);
-    if(!reserved.length) throw new DeliveryUncertain();
+    const expectedControl=controlVersion();
+    transport.setDispatchGuard?.(async()=>{
+      await assertOwnership();
+      if(o.sender==='bot') {
+        const current=await queryOne('SELECT control_version FROM conversations WHERE id=$1',[conv.id]);
+        if(expectedControl!==undefined&&Number(current?.control_version)!==expectedControl) throw new OwnershipLost();
+      }
+    });
     try {
       await assertOwnership();
       if(o.sender==='bot' && controlVersion()!==undefined) {
@@ -764,7 +789,7 @@ export class Engine {
       return sent;
     } catch(e:any) {
       // Only explicit client rejections are safe to treat as not delivered. Timeouts/5xx/network failures are ambiguous.
-      const rejected=/\bHTTP\s+4\d\d\b|→\s*4\d\d\b/.test(String(e?.message)) || e?.message==='unsupported_file';
+      const rejected=/\bHTTP\s+4\d\d\b|→\s*4\d\d\b/.test(String(e?.message)) || e?.message==='unsupported_file' || e instanceof OutboundBlockedError;
       const state=rejected?'rejected':'uncertain';
       await query(`UPDATE delivery_attempts SET state=$3,updated_at=now() WHERE operation_key=$1 AND part=$2`,[delivery.operation,delivery.part,state]).catch(()=>undefined);
       await store.updateMessage(msg.id,{status:rejected?'failed':'uncertain',meta:{error_code:state}}).catch(()=>undefined);

@@ -216,6 +216,8 @@ t('secuencias: con la cuenta en pausa esperan (no se pierden) y siguen al reacti
 });
 
 t('si la IA no responde ni al reintentar, el equipo recibe un aviso (el cliente no queda en el olvido)', async () => {
+  await h.service.inbox.stop();
+  await h.service.queue.stop();
   const { ConversationQueue } = await import('../src/engine/queue.js');
   // La cola: falla, reintenta una vez y entonces avisa.
   const gaveUp: string[] = [];

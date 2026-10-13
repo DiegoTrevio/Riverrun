@@ -71,6 +71,18 @@ t('transferencia humana mientras la IA piensa cancela los envíos pendientes',as
  let release!:()=>void;let start!:()=>void;const started=new Promise<void>(r=>start=r);h.setScript(async()=>{start();await new Promise<void>(r=>release=r);return {messages:['Respuesta tardía']};});
  const before=h.sent.length;await msg('521555880002');await started;const conv=await conversation('521555880002');await h.service.takeover(conv.id,'prueba de intervención humana');release();await h.idle();assert.equal(h.sent.length,before);assert.equal((await store.getConversation(conv.id))!.status,'human');
 });
+t('una respuesta humana desde WhatsApp toma prioridad aunque los dos workers de IA estén ocupados',async()=>{
+ let release!:()=>void;const held=new Promise<void>(r=>release=r);let started=0;
+ h.setScript(async()=>{started++;await held;return {messages:['No debe salir tras el humano']};});
+ const before=h.sent.length;
+ try {
+  await msg('521555880007');await msg('521555880008');await waitFor(()=>started===2);
+  await h.webhook('Yo te atiendo',{phone:'521555880007',fromMe:true,id:'human-control-priority'});
+  const first=await conversation('521555880007');await waitFor(async()=> (await store.getConversation(first.id))?.status==='human');
+  const second=await conversation('521555880008');await h.service.takeover(second.id,'detener la prueba');
+ } finally {release();}
+ await h.idle();assert.equal(h.sent.length,before);
+});
 t('pérdida de la sesión PostgreSQL durante la IA impide enviar con un worker sin propiedad',async()=>{
  let release!:()=>void;let start!:()=>void;const started=new Promise<void>(r=>start=r);h.setScript(async()=>{start();await new Promise<void>(r=>release=r);return {messages:['No debe salir con sesión perdida']};});
  const before=h.sent.length;await msg('521555880003');await started;
@@ -98,4 +110,23 @@ t('un fallo después de entregar una parte no repite mensajes ni se descarta sin
  const work=(await h.authed('GET',`/api/conversations/${conv.id}/work`)).json();assert.equal(work.work.reason,'delivery_uncertain');assert.ok(work.deliveries.length);assert.equal((await store.pendingInbound(conv.id)).length,1);
  assert.equal((await h.authed('POST',`/api/conversations/${conv.id}/work/recover`,{action:'retry'})).statusCode,409);
  const ack=await h.authed('POST',`/api/conversations/${conv.id}/work/recover`,{action:'acknowledge',review_up_to:work.review_up_to});assert.equal(ack.statusCode,200,ack.body);
+});
+
+t('una foto rechazada explícitamente puede reintentarse en el scheduler y solo se entrega una vez',async()=>{
+ const {Scheduler}=await import('../src/automation/scheduler.js');
+ const astore=await import('../src/automation/store.js');
+ const channel=(await store.getChannel(h.channelId))!;
+ const contact=await store.upsertContact(channel,'521555880009','521555880009','Prueba');
+ const conv=await store.getOrCreateConversation(channel,contact.id);
+ const photo=await h.uploadImage('scheduler_retry','Foto que se reintenta',{mode:'ai'});
+ const scheduler=new Scheduler({'retry-photo':async()=>{
+  const result=await h.service.outbound.send(conv.id,{imageId:photo.id,source:'automation'});
+  if(!result.sent) throw new Error('known-rejection');
+ }});
+ const job=await astore.scheduleJob({account_id:h.accountId,type:'retry-photo',payload:{},run_at:new Date()});
+ const before=h.sent.length;h.failNext.image=1;
+ await scheduler.runDue();assert.equal((await pool.query('SELECT status FROM jobs WHERE id=$1',[job!.id])).rows[0].status,'pending');
+ await pool.query('UPDATE jobs SET run_at=now() WHERE id=$1',[job!.id]);
+ await scheduler.runDue();assert.equal((await pool.query('SELECT status FROM jobs WHERE id=$1',[job!.id])).rows[0].status,'done');
+ assert.equal(h.sent.length,before+1);assert.equal(h.sent.at(-1)!.kind,'image');await scheduler.stop();
 });

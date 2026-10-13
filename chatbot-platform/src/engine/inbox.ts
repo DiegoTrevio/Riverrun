@@ -5,13 +5,14 @@ import type { Channel } from '../types.js';
 import * as store from '../store/index.js';
 import { maskSensitive } from './safety.js';
 import { deepClean } from './text.js';
-import { coordinated, DeliveryUncertain } from './coordination.js';
+import { coordinated, DeliveryUncertain,detached } from './coordination.js';
 
 /** The HTTP acknowledgement follows this commit, never an unpersisted background promise. */
 export class InboundQueue {
   private stopped=false;
   private timer?:NodeJS.Timeout;
   private running?:Promise<void>;
+  private controls?:Promise<void>;
   private hints=new Set<number>();
   constructor(private receive:(channel:Channel,msg:InboundMessage)=>Promise<unknown>,private failed:(channel:Channel)=>Promise<void>) {
     if(config.queue.role!=='http') {
@@ -34,13 +35,17 @@ export class InboundQueue {
     if(config.queue.role!=='http') setImmediate(()=>this.wake());
     return ids.length;
   }
-  private wake() {if(!this.running&&!this.stopped) this.running=this.runDue().catch(()=>console.warn('[inbox] Recepciones conservadas; PostgreSQL no disponible.')).finally(()=>{this.running=undefined;});}
-  async runDue() {
+  private wake() {
     if(this.stopped) return;
-    const rows=await query(`SELECT * FROM inbound_receipts WHERE (state='pending' AND run_at<=now()) OR (state='running' AND lease_until<now()) ORDER BY id LIMIT 10`);
+    if(!this.controls) this.controls=detached(()=>this.runDue(true)).catch(()=>console.warn('[inbox] Control conservado para recuperación.')).finally(()=>{this.controls=undefined;});
+    if(!this.running) this.running=detached(()=>this.runDue(false)).catch(()=>console.warn('[inbox] Recepciones conservadas; PostgreSQL no disponible.')).finally(()=>{this.running=undefined;});
+  }
+  async runDue(controlsOnly=false) {
+    if(this.stopped) return;
+    const rows=await query(`SELECT * FROM inbound_receipts WHERE ((state='pending' AND run_at<=now()) OR (state='running' AND lease_until<now())) AND from_me=$1 ORDER BY id LIMIT 10`,[controlsOnly]);
     for(const row of rows) {
       if(this.stopped) break;
-      await coordinated(`inbound:${row.channel_id}:${row.external_id}`,`receipt:${row.id}`,async()=>{
+      await coordinated(`${row.from_me?'control':'inbound'}:${row.channel_id}:${row.external_id}`,`receipt:${row.id}`,async()=>{
         const receipt=await queryOne(`UPDATE inbound_receipts SET state='running',lease_until=now()+interval '5 minutes',attempts=attempts+1
           WHERE id=$1 AND ((state='pending' AND run_at<=now()) OR (state='running' AND lease_until<now())) RETURNING *`,[row.id]);
         if(!receipt) return;
@@ -58,9 +63,9 @@ export class InboundQueue {
           await query(`UPDATE inbound_receipts SET state=$2,reason=$3,lease_until=NULL,run_at=now()+$4*interval '1 millisecond' WHERE id=$1`,[row.id,dead?'dead':'pending',e instanceof DeliveryUncertain?'receipt_interrupted':'receipt_processing',Math.min(config.queue.maxRetryMs,config.queue.retryMs*2**(receipt.attempts-1))]);
           if(dead) {this.hints.delete(row.id);await this.failed(channel);}
         }
-      });
+      },!row.from_me);
     }
   }
-  async stop() {this.stopped=true;clearInterval(this.timer);await this.running;this.hints.clear();}
-  get size() {return this.hints.size+(this.running?1:0);}
+  async stop() {this.stopped=true;clearInterval(this.timer);await Promise.allSettled([this.running,this.controls]);this.hints.clear();}
+  get size() {return this.hints.size+(this.running?1:0)+(this.controls?1:0);}
 }

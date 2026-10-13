@@ -19,15 +19,15 @@ import { inboundAbsolutePath, safeFileName } from '../channels/media.js';
 
 /** Conversaciones y contactos: disponible para administradores y agentes de la cuenta. */
 export async function conversationRoutes(api: FastifyInstance, service: ChatService) {
-  api.get('/api/conversations/:id/work',async(req:any)=>{
-    const conv=await conversationFor(req.user,req.params.id);
+  api.get('/api/conversations/:cid/work',async(req:any)=>{
+    const conv=await conversationFor(req.user,req.params.cid);
     const work=(await query('SELECT state,run_at,attempts,restarts,reason,updated_at FROM conversation_work WHERE conversation_id=$1',[conv.id]))[0]??null;
     const deliveries=await query(`SELECT message_id,state,updated_at FROM delivery_attempts WHERE conversation_id=$1 AND state IN ('sending','uncertain') ORDER BY updated_at DESC LIMIT 50`,[conv.id]);
     const pending=(await store.pendingInbound(conv.id)).map(m=>m.id);
     return {work,deliveries,review_up_to:pending.at(-1)??null};
   });
-  api.post('/api/conversations/:id/work/recover',{preHandler:requireRole('admin')},async(req:any)=>{
-    const conv=await conversationFor(req.user,req.params.id);
+  api.post('/api/conversations/:cid/work/recover',{preHandler:requireRole('admin')},async(req:any)=>{
+    const conv=await conversationFor(req.user,req.params.cid);
     const body=parse(z.object({action:z.enum(['retry','acknowledge']),review_up_to:z.number().int().positive().optional()}),req.body);
     await service.queue.exclusive(conv.id,()=>withTransaction(async client=>{
       const job=(await client.query('SELECT * FROM conversation_work WHERE conversation_id=$1 FOR UPDATE',[conv.id])).rows[0];

@@ -1,4 +1,3 @@
-import { detached } from '../engine/coordination.js';
 import * as assignment from './assignment.js';
 import { deliverReport, reportRecipients } from './report-delivery.js';
 import { briefReport } from '../engine/report-format.js';
@@ -236,7 +235,7 @@ export class Automator {
 
   /** Dispara un evento sin esperar (desde el motor de IA o la agenda). */
   emit(e: AutomationEvent) {
-    const p = detached(()=>this.handle(e)).catch((err) =>
+    const p = this.handle(e).catch((err) =>
       logEvent({ level: 'error', source: 'engine', message: `Error en automatización (${e.type}): ${err?.message ?? err}`, conversationId: e.conversationId, details: err }),
     );
     let set = this.inflight.get(e.conversationId);

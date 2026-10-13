@@ -61,6 +61,8 @@ export function splitByBytes(text: string, max: number): string[] {
 const graphFor = (channel: Channel) => new GraphClient(channel.config.page_access_token, channel.config.graph_version || 'v21.0');
 
 class MetaTransport implements Transport {
+  private dispatchGuard?:()=>Promise<void>;
+  setDispatchGuard(guard:()=>Promise<void>){this.dispatchGuard=guard;}
   private graph: GraphClient;
 
   constructor(public kind: ChannelType, private channel: Channel, private recipientId: string) {
@@ -81,6 +83,7 @@ class MetaTransport implements Transport {
     const parts = this.kind === 'instagram' ? splitByBytes(plain, INSTAGRAM_TEXT_BYTES) : [plain];
     let first: string | null = null;
     for (const part of parts) {
+      await this.dispatchGuard?.();
       const r = await this.graph.call('POST', 'me/messages', {
         recipient: { id: this.recipientId },
         messaging_type: 'RESPONSE',
@@ -96,6 +99,7 @@ class MetaTransport implements Transport {
       throw new Error('Para enviar imágenes por Messenger/Instagram define PUBLIC_BASE_URL con HTTPS (Meta descarga la imagen desde esa URL)');
     }
     await this.typing(Math.min(delayMs, 1500));
+    await this.dispatchGuard?.();
     const r = await this.graph.call('POST', 'me/messages', {
       recipient: { id: this.recipientId },
       messaging_type: 'RESPONSE',
@@ -105,7 +109,7 @@ class MetaTransport implements Transport {
     // pero la foto no cuenta como fallida (si no, se reintentaría y el cliente la recibiría repetida).
     if (caption) {
       await this.sendText(caption, 0).catch((e: any) =>
-        logEvent({ level: 'warn', source: 'channel', message: `Foto entregada, pero su texto no se pudo enviar (${this.kind}): ${e?.message ?? e}`, accountId: this.channel.account_id, channelId: this.channel.id }),
+        logEvent({ level: 'warn', source: 'channel', message: `Foto entregada, pero su texto no se pudo enviar (${this.kind})`, accountId: this.channel.account_id, channelId: this.channel.id }),
       );
     }
     return r.message_id ?? null;

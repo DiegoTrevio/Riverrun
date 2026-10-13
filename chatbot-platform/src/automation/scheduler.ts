@@ -15,7 +15,7 @@ export class Scheduler {
   private closing = false;
   private draining?: Promise<number>;
 
-  constructor(private handlers: Record<string, JobHandler>) {}
+  constructor(private handlers: Record<string, JobHandler>,private settle?:()=>Promise<void>) {}
 
   start(intervalMs: number) {
     this.timer = setInterval(() => void this.runDue(), intervalMs);
@@ -46,7 +46,7 @@ export class Scheduler {
         const jobs = await astore.claimDueJobs(1);
         if (!jobs.length) break;
         total += jobs.length;
-        for (const job of jobs) await operationScope(`job:${job.id}`,()=>this.execute(job));
+        for (const job of jobs) await operationScope(`job:${job.id}:attempt:${job.attempts}`,()=>this.execute(job));
       }
       });
       if(!result.acquired) return 0;
@@ -65,6 +65,7 @@ export class Scheduler {
       await assertOwnership();
       if(await interruptedOperation(`job:${job.id}`)) throw new DeliveryUncertain();
       await handler(job.payload, job);
+      await this.settle?.();
       await astore.finishJob(job.id, 'done');
     } catch (e: any) {
       const msg = e instanceof DeliveryUncertain ? 'delivery_uncertain' : 'job_execution_failed';

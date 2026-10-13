@@ -14,18 +14,19 @@ export async function enqueue(id: string, delay: number, client?: { query: (...a
 export class ConversationQueue {
   private stopped=false;
   private active=new Set<Promise<unknown>>();
+  private processing=new Map<string,Promise<boolean>>();
   private hints=new Set<string>();
   private timer?: NodeJS.Timeout;
   private wake?: NodeJS.Timeout;
   private wakeAt=Infinity;
   private polling=false;
   constructor(private runner: Runner,private maxRestarts=2,private errorRetryMs=config.queue.retryMs,
-    private onGiveUp?: (id:string)=>void|Promise<void>,private maxAttempts=config.queue.attempts) {
-    if(config.queue.role!=='http') this.start();
+    private onGiveUp?: (id:string)=>void|Promise<void>,private maxAttempts=config.queue.attempts,options:{autoStart?:boolean}={}) {
+    if(config.queue.role!=='http' && options.autoStart!==false) this.start();
   }
   start() {
     if(this.timer||this.stopped) return;
-    this.timer=setInterval(()=>{void this.runDue().catch(()=>console.warn('[queue] PostgreSQL no disponible; trabajos conservados.'));},config.queue.pollMs);
+    this.timer=setInterval(()=>{void this.runDue(config.queue.concurrency,false).catch(()=>console.warn('[queue] PostgreSQL no disponible; trabajos conservados.'));},config.queue.pollMs);
     this.timer.unref();
   }
   async schedule(id:string,delay:number) {
@@ -34,9 +35,9 @@ export class ConversationQueue {
     try {await enqueue(id,delay);} catch(e) {this.hints.delete(id);throw e;}
     // Optional wakeup only: PostgreSQL remains authoritative if this timer is lost.
     const at=Date.now()+delay+5;
-    if(config.queue.role!=='http' && at<this.wakeAt) {
+    if(this.timer && config.queue.role!=='http' && at<this.wakeAt) {
       clearTimeout(this.wake);this.wakeAt=at;
-      this.wake=setTimeout(()=>{this.wakeAt=Infinity;void detached(()=>this.runDue().catch(()=>undefined));},delay+5);
+      this.wake=setTimeout(()=>{this.wakeAt=Infinity;void detached(()=>this.runDue(config.queue.concurrency,false).catch(()=>undefined));},delay+5);
       this.wake.unref();
     }
   }
@@ -53,17 +54,26 @@ export class ConversationQueue {
     this.active.add(task);
     try {return await task;} finally {this.active.delete(task);}
   }
-  async runDue(limit=config.queue.concurrency) {
+  async runDue(limit=config.queue.concurrency,wait=true) {
+    limit=Math.max(1,Math.min(config.queue.concurrency,Math.trunc(limit)||1));
     if(this.stopped||this.polling) return 0;
     this.polling=true;
     try {
       const rows=await query(`SELECT conversation_id FROM conversation_work WHERE (state='pending' AND run_at<=now()) OR (state='running' AND lease_until<now()) ORDER BY run_at LIMIT $1`,[Math.min(24,limit*4)]);
       if(this.stopped) return 0;
-      const tasks=rows.map(r=>this.run(r.conversation_id));
-      tasks.forEach(t=>this.active.add(t));
-      let n=0;
-      try {const results=await Promise.allSettled(tasks);n=results.filter(r=>r.status==='fulfilled'&&r.value).length;const error=results.find(r=>r.status==='rejected');if(error?.status==='rejected') throw error.reason;}
-      finally {tasks.forEach(t=>this.active.delete(t));}
+      const tasks:Promise<boolean>[]=[];
+      for(const row of rows) {
+        if(this.stopped||this.processing.size>=limit) break;
+        if(this.processing.has(row.conversation_id)) continue;
+        const task=this.run(row.conversation_id);this.processing.set(row.conversation_id,task);this.active.add(task);tasks.push(task);
+        const finish=()=>{this.processing.delete(row.conversation_id);this.active.delete(task);};
+        void task.then(finish,()=>{finish();console.warn('[queue] Trabajo conservado para recuperación.');});
+      }
+      let n=tasks.length;
+      if(wait) {
+        const results=await Promise.allSettled(tasks);n=results.filter(r=>r.status==='fulfilled'&&r.value).length;
+        const error=results.find(r=>r.status==='rejected');if(error?.status==='rejected') throw error.reason;
+      }
       if(this.hints.size) {
         const live=await query(`SELECT conversation_id FROM conversation_work WHERE conversation_id=ANY($1::uuid[]) AND state IN ('pending','running')`,[[...this.hints]]);
         this.hints=new Set(live.map(r=>r.conversation_id));

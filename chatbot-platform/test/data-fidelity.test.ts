@@ -27,7 +27,7 @@ before(async () => {
   h = await createHarness();
   await h.createBot({ personality: { prompt: 'Eres Sofi, la asistente de un restaurante.' } });
   // Los avisos llegan al equipo de la cuenta: sin integrantes no hay a quién avisar.
-  const u = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'equipo@clinica.mx', name: 'Equipo', password: 'clave-equipo-1', role: 'agent' });
+  const u = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'equipo@clinica.mx', name: 'Equipo', password: 'clave-equipo-1', role: 'admin' });
   assert.equal(u.statusCode, 200, u.body);
 });
 after(async () => {

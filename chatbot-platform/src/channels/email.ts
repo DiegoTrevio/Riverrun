@@ -174,6 +174,8 @@ const cfgOf = (channel: Channel) => {
 };
 
 class EmailTransport implements Transport {
+  private dispatchGuard?:()=>Promise<void>;
+  setDispatchGuard(guard:()=>Promise<void>){this.dispatchGuard=guard;}
   kind = 'email' as const;
   constructor(private channel: Channel, private to: string) {}
 
@@ -183,6 +185,7 @@ class EmailTransport implements Transport {
     const base = (t?.subject || 'Tu consulta').trim();
     const subject = /^(re|rv):/i.test(base) ? base : `Re: ${base}`;
     const from = cfg.from_name ? `"${cfg.from_name.replace(/["\\\r\n<>]/g, '')}" <${addressOf(cfg)}>` : addressOf(cfg);
+    await this.dispatchGuard?.();
     return backend.send(cfg, { from, to: this.to, subject, text, inReplyTo: t?.message_id ?? '', references: [t?.refs, t?.message_id].filter(Boolean).join(' '), attachment });
   }
 

@@ -24,7 +24,7 @@ import { deliver } from './integrations/webhooks.js';
 import { messageQuota, noticeMessagesReached } from './billing/limits.js';
 import { ConversationQueue } from './engine/queue.js';
 import { InboundQueue } from './engine/inbox.js';
-import { DeliveryUncertain } from './engine/coordination.js';
+import { DeliveryUncertain,currentOperation } from './engine/coordination.js';
 import { PlaygroundTransport, type Transport } from './engine/transport.js';
 import { logEvent } from './logs.js';
 import * as store from './store/index.js';
@@ -70,6 +70,7 @@ export class ChatService {
       intents: (accountId, chatbotId) => this.automator.intentsFor(accountId, chatbotId),
       agenda: this.agenda,
       onEvent: (e) => this.automator.emit(e),
+      settleEvents: (id)=>this.automator.settle(id),
       onOutbound: (conv, msg) => this.automator.onOutbound(conv, msg),
       business: async (accountId) => {
         const st = await astore.getSettings(accountId);
@@ -109,7 +110,7 @@ export class ChatService {
       appointment_reminder: (p) => this.agenda.sendReminder(p),
       campaign_start: (p) => this.campaigns.start(p.campaign_id),
       campaign_send: (p) => this.campaigns.sendOne(p),
-    });
+    },()=>this.automator.settleAll());
   }
 
   summarize(conversationId: string) {
@@ -393,9 +394,12 @@ export class ChatService {
           kind: 'safety',
         }).catch(() => undefined);
       }
+      await this.automator.settle(conv.id);
       await store.markProcessed(conv.id, inserted.id);
+      await store.updateMessage(inserted.id,{meta:{receipt_ready:true}});
       return { conversationId: conv.id, messageId: inserted.id };
     }
+    await this.automator.settle(conv.id);
     await store.updateMessage(inserted.id, {meta:{receipt_ready:true}});
     await this.queue.schedule(conv.id, bot!.ai.debounce_seconds * 1000);
     return { conversationId: conv.id, messageId: inserted.id };
@@ -446,6 +450,7 @@ export class ChatService {
       await store.markHandoff(changed.contact_id, byUserId ?? null, via);
       this.automator.emit({ type: 'handoff', conversationId, byUserId });
     }
+    if(currentOperation()?.startsWith('receipt:')) await this.automator.settle(conversationId);
     return changed ?? await store.getConversation(conversationId);
   }
 
@@ -566,7 +571,7 @@ export class ChatService {
     const bot = conv.chatbot_id ? await store.getChatbot(conv.chatbot_id) : null;
     const transport = channel.type === 'playground' ? new PlaygroundTransport() : this.transportFor(channel, contact);
     // Quién lo envió queda en el mensaje (las estadísticas por persona lo cuentan así).
-    const sent = await this.queue.exclusive(conv.id,()=>this.engine.sendOut(bot, conv, transport, { sender: 'human', text, delay: 0, meta: { source: 'panel', ...(byUserId ? { user_id: byUserId } : {}) } }));
+    const sent = await this.queue.exclusive((await store.getConversation(conv.id))?.status==='human'?`human:${conv.id}`:conv.id,()=>this.engine.sendOut(bot, conv, transport, { sender: 'human', text, delay: 0, meta: { source: 'panel', ...(byUserId ? { user_id: byUserId } : {}) } }));
     if (!sent) throw new Error('No se pudo enviar el mensaje (revisa los registros)');
     return sent;
   }
@@ -584,7 +589,7 @@ export class ChatService {
     const bot = conv.chatbot_id ? await store.getChatbot(conv.chatbot_id) : null;
     const transport = channel.type === 'playground' ? new PlaygroundTransport() : this.transportFor(channel, contact);
     await beforeSend?.();
-    const sent = await this.queue.exclusive(conv.id,()=>this.engine.sendOut(bot, conv, transport, { sender: 'human', text: image.caption, image, delay: 0, meta: { source: 'panel', ...(byUserId ? { user_id: byUserId } : {}) } }));
+    const sent = await this.queue.exclusive((await store.getConversation(conv.id))?.status==='human'?`human:${conv.id}`:conv.id,()=>this.engine.sendOut(bot, conv, transport, { sender: 'human', text: image.caption, image, delay: 0, meta: { source: 'panel', ...(byUserId ? { user_id: byUserId } : {}) } }));
     if (!sent) throw new Error('No se pudo enviar la foto (revisa los registros)');
     return sent;
   }

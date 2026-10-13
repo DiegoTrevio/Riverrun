@@ -7,6 +7,7 @@ import { logEvent } from '../logs.js';
 import * as store from '../store/index.js';
 import type { Chatbot, KnowledgeItem } from '../types.js';
 import { selectKnowledge } from './context.js';
+import { keywords } from './text.js';
 
 export const knowledgeHash = (k: KnowledgeItem) => createHash('sha256').update(`${k.category}\n${k.title}\n${k.content}`).digest('hex');
 const hashSql = "encode(digest(k.category || E'\\n' || k.title || E'\\n' || k.content, 'sha256'), 'hex')";
@@ -41,7 +42,9 @@ async function embed(ai: AiProvider, bot: Chatbot, texts: string[], model = conf
   let stage = 'provider';
   try {
     if (!ai.embed) throw new Error('El proveedor no soporta embeddings.');
+    stage='budget';
     await reserveEmbeddingTokens(bot.account_id,texts);
+    stage='provider';
     const result = await ai.embed(texts, model);
     stage = 'validation';
     if (result.vectors.length !== texts.length || result.vectors.some((v) => !validEmbedding(v))) throw new Error('Embeddings inválidos.');
@@ -50,10 +53,11 @@ async function embed(ai: AiProvider, bot: Chatbot, texts: string[], model = conf
     await logEvent({ level: 'info', source: 'ai', message: 'knowledge_embedding', accountId: bot.account_id, chatbotId: bot.id,
       details: { outcome: 'ok', duration_ms: Date.now()-started, model, inputs: texts.length, cost_reported: result.cost_usd !== undefined } }).catch(() => undefined);
     return result.vectors;
-  } catch {
+  } catch(e:any) {
+    const code=stage==='budget'?'budget_exhausted':stage==='validation'?'invalid_embedding':stage==='storage'?'storage_failed':[401,403].includes(e?.status)?'provider_auth':e?.status===429?'provider_rate_limit':'provider_unavailable';
     await logEvent({ level: 'error', source: 'ai', message: 'knowledge_embedding', accountId: bot.account_id, chatbotId: bot.id,
-      details: { outcome: 'error', stage, duration_ms: Date.now()-started, model, inputs: texts.length } }).catch(() => undefined);
-    throw new Error('No se pudo generar o guardar el embedding. Revisa el proveedor y los registros de supervisión.');
+      details: { outcome: 'error', stage, error_code:code,duration_ms: Date.now()-started, model, inputs: texts.length } }).catch(() => undefined);
+    throw Object.assign(new Error('No se pudo generar o guardar el embedding. Revisa el proveedor y los registros de supervisión.'),{code});
   }
 }
 
@@ -62,8 +66,10 @@ async function cachedEmbed(ai:AiProvider,bot:Chatbot,texts:string[],purpose:'que
   const hashes=texts.map(text=>createHash('sha256').update(purpose+':'+text).digest('hex'));
   const key=`embedding:${bot.account_id}:${model}:${purpose}`;
   const lock=await pool.connect();let broken=false;
+  const onError=()=>{broken=true;};lock.on('error',onError);
   try {
-    await lock.query('SELECT pg_advisory_lock(hashtextextended($1,0))',[key]);
+    const claimed=(await lock.query('SELECT pg_try_advisory_lock(hashtextextended($1,0)) AS ok',[key])).rows[0].ok;
+    if(!claimed) throw new Error('embedding_busy');
     const rows=await query('SELECT query_hash,vectors FROM query_embedding_cache WHERE account_id=$1 AND model=$2 AND query_hash=ANY($3::text[]) AND expires_at>now()',[bot.account_id,model,hashes]);
     const vectors=new Map<string,number[]>(rows.filter(r=>validEmbedding(r.vectors)).map(r=>[r.query_hash,r.vectors]));
     const missing=new Map<string,string>();
@@ -83,6 +89,7 @@ async function cachedEmbed(ai:AiProvider,bot:Chatbot,texts:string[],purpose:'que
     return hashes.map(hash=>vectors.get(hash)!);
   } catch(e) {broken=true;throw e;} finally {
     await lock.query('SELECT pg_advisory_unlock(hashtextextended($1,0))',[key]).catch(()=>{broken=true;});
+    lock.removeListener('error',onError);
     lock.release(broken);
   }
 }
@@ -109,8 +116,12 @@ export async function indexKnowledge(bot: Chatbot, ai: AiProvider, limit = Infin
     if (!(await semanticPolicy(bot.account_id)).preparing || !ai.embed || !await vectorAvailable()) return 0;
     const lock = await pool.connect();
     let acquired = false;
+    let globalAcquired = false;
     let broken = false;
+    const onError=()=>{broken=true;};lock.on('error',onError);
     try {
+      globalAcquired=(await lock.query("SELECT pg_try_advisory_lock(hashtextextended('riverrun:knowledge-index',0)) AS locked")).rows[0].locked;
+      if(!globalAcquired) return 0;
       acquired = (await lock.query('SELECT pg_try_advisory_lock(hashtextextended($1,0)) AS locked', [key])).rows[0].locked;
       if (!acquired) return 0; // Another process is preparing this agent/model; retry on the next pass.
       const missing = (await inventory(bot,model,true)).filter(({ item, complete }) => item.active && !item.always_include && !complete);
@@ -136,8 +147,9 @@ export async function indexKnowledge(bot: Chatbot, ai: AiProvider, limit = Infin
         });
         if (saved) count++;
         await query('DELETE FROM knowledge_preparation_state WHERE item_id=$1 AND model=$2 AND content_hash=$3',[k.id,model,hash]);
-        } catch(e) {
-          await query(`UPDATE knowledge_preparation_state SET error_code='embedding_or_storage',retry_at=now()+LEAST(900,30*power(2,LEAST(attempts-1,5)))*interval '1 second',updated_at=now() WHERE item_id=$1 AND model=$2 AND content_hash=$3`,[k.id,model,hash]).catch(()=>undefined);
+        } catch(e:any) {
+          const code=['budget_exhausted','invalid_embedding','storage_failed','provider_auth','provider_rate_limit','provider_unavailable'].includes(e?.code)?e.code:e?.message==='embedding_busy'?'embedding_busy':'storage_failed';
+          await query(`UPDATE knowledge_preparation_state SET error_code=$4,retry_at=now()+LEAST(900,30*power(2,LEAST(attempts-1,5)))*interval '1 second',updated_at=now() WHERE item_id=$1 AND model=$2 AND content_hash=$3`,[k.id,model,hash,code]).catch(()=>undefined);
           failure=e;
         }
       }
@@ -145,6 +157,8 @@ export async function indexKnowledge(bot: Chatbot, ai: AiProvider, limit = Infin
       return count;
     } finally {
       if (acquired) await lock.query('SELECT pg_advisory_unlock(hashtextextended($1,0))',[key]).catch(() => { broken = true; });
+      if(globalAcquired) await lock.query("SELECT pg_advisory_unlock(hashtextextended('riverrun:knowledge-index',0))").catch(()=>{broken=true;});
+      lock.removeListener('error',onError);
       lock.release(broken);
     }
   })();
@@ -173,8 +187,9 @@ export async function semanticKnowledge(bot: Chatbot, items: KnowledgeItem[], te
     if(!(options.preview ? current.preparing : current.enabled)) return null;
     const chosen = freshItems.filter((k) => k.always_include);
     let used = chosen.reduce((n, k) => n + k.title.length + k.content.length + 30, 0);
-    const lexical=selectKnowledge(freshItems.filter(k=>!k.always_include),text,bot.ai.knowledge_char_budget).map(k=>k.id);
-    const rank=new Map(rows.map((r,i)=>[r.id,i]));
+    const terms=new Set(keywords(text));
+    const lexical=freshItems.filter(k=>!k.always_include).map(k=>({id:k.id,score:keywords(k.title).filter(t=>terms.has(t)).length*3+new Set(keywords(k.content).filter(t=>terms.has(t))).size})).filter(k=>k.score>0).sort((a,b)=>b.score-a.score||a.id.localeCompare(b.id)).map(k=>k.id);
+    const rank=new Map<string,number>();rows.forEach((r,i)=>{if(!rank.has(r.id))rank.set(r.id,i);});
     rows.sort((a,b)=>{
       const score=(r:typeof a)=>1/(60+(rank.get(r.id)??40))+(lexical.includes(r.id)?1/(60+lexical.indexOf(r.id)):0);
       return score(b)-score(a);
@@ -186,7 +201,7 @@ export async function semanticKnowledge(bot: Chatbot, items: KnowledgeItem[], te
       const old = selected.get(row.id);
       const size = row.excerpt.length + (old ? 2 : row.title.length + 30);
       if (used + size > bot.ai.knowledge_char_budget) continue;
-      selected.set(row.id, { ...row, content: old ? `${old.content}\n\n${row.excerpt}` : row.excerpt });
+      selected.set(row.id, { ...current, content: old ? `${old.content}\n\n${row.excerpt}` : row.excerpt });
       used += size;
     }
     // Partial indexing must not hide documents waiting for an embedding or always-include facts.
