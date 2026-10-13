@@ -82,7 +82,7 @@ t('Telegram: rechaza webhooks sin el secreto y responde a los válidos (texto pl
   assert.match(reqs('/sendPhoto')[0].raw, /name="photo"/);
   assert.ok(reqs('/sendChatAction').length >= 1, 'muestra "escribiendo…"');
   assert.match(h.calls[0].messages.filter((m) => m.role === 'user').pop()!.content, /inició la conversación/);
-  assert.match(h.calls[0].messages[0].content, /Canal de esta conversación: Telegram/);
+  assert.match(h.calls[0].messages[0].content, /Canal: Telegram/);
   const convs = (await h.authed('GET', `/api/conversations?channel_type=telegram`)).json();
   assert.equal(convs.length, 1);
   assert.equal(convs[0].push_name, 'Luis Pérez');

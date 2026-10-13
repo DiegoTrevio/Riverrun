@@ -1,4 +1,6 @@
 import path from 'node:path';
+import { validateConfig } from './config-check.js';
+import { parseAlertMute } from './alert-mute.js';
 
 function env(name: string, fallback = ''): string {
   const v = process.env[name];
@@ -16,6 +18,16 @@ function monitorLimit(name: string, fallback: number, max: number) {
   const value = Number(env(name,String(fallback)));
   if (!Number.isFinite(value) || value < 0 || value > max) throw new Error('Umbral de supervisión inválido: '+name);
   return value;
+}
+
+function list(value: string): string[] {
+  return value.split(',').map((s) => s.trim()).filter(Boolean);
+}
+
+/** Un valor desconocido se rechaza: un typo que dejara los envíos reales en una prueba sería peor que no arrancar. */
+function outboundMode(value: string): 'live' | 'sandbox' {
+  if (value === 'live' || value === 'sandbox') return value;
+  throw new Error('OUTBOUND_MODE debe ser "live" o "sandbox" (valor recibido: ' + JSON.stringify(value.slice(0, 20)) + ').');
 }
 
 const aiBaseUrl = env('OPENROUTER_BASE_URL', env('OPENAI_BASE_URL', 'https://openrouter.ai/api/v1')).replace(/\/$/, '');
@@ -44,6 +56,8 @@ export const config = {
   evolution: {
     url: env('EVOLUTION_URL', 'http://localhost:8080').replace(/\/$/, ''),
     apiKey: env('EVOLUTION_API_KEY', ''),
+    /** Imagen configurada en docker-compose.yml (la recibe también el backend para compararla con la versión que responde). */
+    image: env('EVOLUTION_IMAGE', ''),
   },
   openai: {
     apiKey: env('OPENROUTER_API_KEY', env('OPENAI_API_KEY', '')),
@@ -140,20 +154,45 @@ export const config = {
     /** Horas sin respaldo nuevo antes de avisar. */
     backupMaxAgeHours: Number(env('BACKUP_MAX_AGE_HOURS', '36')),
     version: env('APP_VERSION', 'dev'),
+    /** Token para /health/functional y /metrics (cabecera Authorization: Bearer). Vacío = esos endpoints no existen (404). */
+    healthToken: env('HEALTH_TOKEN', ''),
+    /** Componentes cuyas alertas se registran pero no se envían: ALERT_MUTE=backup,disk (sin fecha) o backup=AAAA-MM-DDTHH:MM:SSZ (vence). */
+    alertMute: parseAlertMute(env('ALERT_MUTE', '')).mutes,
+    /** Minutos que una incidencia puede seguir abierta antes de enviar un aviso de escalamiento. */
+    escalateMinutes: monitorLimit('ALERT_ESCALATE_MINUTES', 60, 10080),
+    /** Memoria residente del proceso que avisa, en MB (0 = sin aviso). Pensado para un VPS de ~2 GB. */
+    rssWarnMb: monitorLimit('RESOURCE_WARN_RSS_MB', 1024, 65536),
+  },
+  /**
+   * Salida real de mensajes. `sandbox` (staging) bloquea todo envío a WhatsApp, correo o webhooks salvo a los destinos de
+   * OUTBOUND_SANDBOX_ALLOW (teléfonos o correos de prueba). El simulador del panel nunca se bloquea.
+   */
+  outbound: {
+    mode: outboundMode(env('OUTBOUND_MODE', 'live')),
+    allow: list(env('OUTBOUND_SANDBOX_ALLOW', '')),
+  },
+  /**
+   * Umbrales de la vigilancia de WhatsApp (sesiones y entregas). Son heurísticas: ajústalas con datos de tu operación
+   * sin tocar código. Ver docs/evolution-api.md → Monitoreo preventivo.
+   */
+  whatsappAlerts: {
+    /** Fracción de los canales vinculados que, desconectados tras un cambio de versión, cuenta como falla. */
+    downRatio: Number(env('WHATSAPP_ALERT_DOWN_RATIO', '0.5')),
+    /** Envíos fallidos en 15 minutos que avisan. */
+    sendFailures: Number(env('WHATSAPP_ALERT_SEND_FAILURES', '5')),
+    /** Horas tras un cambio de versión de Evolution en las que se vigilan desconexiones y fallos. */
+    postUpdateHours: Number(env('WHATSAPP_POST_UPDATE_HOURS', '24')),
   },
   /** Aviso (sin bloqueo) cuando una cuenta supera este gasto de IA en el mes, en USD. 0 = sin aviso. */
   aiAlertUsdPerAccount: Number(env('AI_ALERT_USD_PER_ACCOUNT', '0')),
 };
 
+/**
+ * Compatibilidad: lista de problemas como texto. La validación completa (niveles, entorno y cómo corregir)
+ * está en config-check.ts; el arranque la aplica antes de importar este módulo.
+ */
 export function assertProductionConfig(): string[] {
-  const problems: string[] = [];
-  if (!config.adminPassword) problems.push('ADMIN_PASSWORD no está definido (no se creará el superadministrador inicial)');
-  if (!config.publicBaseUrl.startsWith('https://')) problems.push('PUBLIC_BASE_URL no es HTTPS: Telegram, Messenger e Instagram no podrán enviar webhooks ni recibir imágenes');
-  if (!config.sessionSecret || config.sessionSecret.length < 16) problems.push('SESSION_SECRET debe tener al menos 16 caracteres');
-  if (!config.openai.apiKey) problems.push('OPENROUTER_API_KEY (o OPENAI_API_KEY) no está definido (el bot no podrá responder)');
-  if (!config.evolution.apiKey) problems.push('EVOLUTION_API_KEY no está definido (no se podrán enviar mensajes)');
-  if (config.signup.enabled && !config.mail.smtpUrl) problems.push('SMTP_URL no está definido: los correos de verificación y recuperación solo quedan en el registro');
-  return problems;
+  return validateConfig({ ...process.env, RIVERRUN_ENV: 'production' }).issues.filter((i) => i.level !== 'optional').map((i) => i.message);
 }
 
 /** Empty pilot list preserves the global rollout; false disables all accounts. */

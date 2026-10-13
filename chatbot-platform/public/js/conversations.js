@@ -9,6 +9,19 @@ import { acct, isAdmin, isSuper, withAcct } from './session.js';
 const STATUS_BADGE = { bot: ['green', 'Bot'], human: ['orange', 'Humano'], closed: ['', 'Cerrada'] };
 
 /** Última vez que una persona tomó la conversación del contacto: desde dónde y quién (queda en el contacto). */
+
+const REQUEST_REASON = { inicio: 'primer contacto', tiempo: 'volvió después de un tiempo', contenido: 'pidió otra vez lo mismo', reapertura: 'se reabrió la conversación', campaña: 'una campaña', reinicio: 'se reinició' };
+
+/** Solicitudes del cliente en esta conversación: cada vez que volvió por lo mismo, con su resultado y sus respuestas. */
+function requestsCard(list = []) {
+  if (list.length < 2) return null;
+  return h('details', { class: 'small', open: true }, h('summary', {}, `Solicitudes: ${list.length} (la actual es la ${list.length}.ª)`),
+    h('ul', { style: 'margin:6px 0;padding-left:18px' }, [...list].reverse().map((r) => h('li', {},
+      h('strong', {}, `${r.number}.ª`), ` · ${fmtDate(r.started_at)} · ${REQUEST_REASON[r.reason] || r.reason}`,
+      r.ended_at ? ` · ${r.goal_completed_at ? '🎯 cumplió el objetivo' : 'sin cumplir el objetivo'}` : ' · en curso',
+      Object.keys(r.data || {}).length ? h('div', { class: 'muted' }, Object.entries(r.data).map(([k, v]) => `${k}: ${v}`).join(' · ')) : null))));
+}
+
 function handoffLine(ct, by) {
   if (!ct.handoff_at) return null;
   const who = by ? by.name || by.email : '';
@@ -413,9 +426,10 @@ export async function viewConversation(root, id) {
             } catch (e) { toast(e.message || 'No se pudo copiar', true); }
           } }, 'Copiar'),
           h('button', { class: 'small primary', onclick: () => sendReportDialog(id, data) }, '✉ Enviar reporte')),
+        requestsCard(data.requests),
         h('details', { class: 'small' }, h('summary', {}, 'Datos guardados en esta conversación'), h('div', { class: 'pre' }, Object.entries(c.data || {}).map(([key, value]) => `${key}: ${value}`).join('\n') || 'Aún no se han recopilado datos.')),
         c.summary ? h('details', { class: 'small' }, h('summary', {}, 'Memoria del asistente'), h('div', { class: 'pre muted' }, c.summary)) : null,
-        h('button', { class: 'small danger', style: 'margin-top:10px', onclick: async () => { if (await confirmAction('¿Borrar memoria (resumen, datos y notas) de este cliente?')) { if (!(await run(() => api('POST', `/api/conversations/${id}/reset-memory`), 'Memoria borrada'))) return; load(true); } } }, 'Borrar memoria')),
+        h('button', { class: 'small danger', style: 'margin-top:10px', onclick: async () => { if (await confirmAction('¿Reiniciar esta conversación? El asistente empieza de cero con este cliente: olvida lo platicado, sus datos y notas, vuelve a la primera etapa, y la bienvenida y sus fotos salen otra vez. El historial se conserva aquí.')) { if (!(await run(() => api('POST', `/api/conversations/${id}/reset-memory`), 'Conversación reiniciada'))) return; load(true); } } }, 'Reiniciar conversación')),
       isAdmin() ? h('div', { class: 'card' }, h('a', { href: `#/logs?conversation_id=${id}` }, 'Ver registros de esta conversación →')) : null,
       h('button', { class: 'small', onclick: () => { chat.scrollIntoView({ block: 'start' }); chat.focus(); } }, 'Volver a los mensajes'),
     );

@@ -172,8 +172,8 @@ t('reglas generales: la IA las recibe en cada turno', async () => {
   h.setScript(() => ({ messages: ['Hola'] }));
   await say('hola', '5215530000010');
   const prompt = String(h.calls.at(-1)!.messages[0].content);
-  assert.match(prompt, /# Reglas generales/);
-  assert.match(prompt, /idioma en que te escribe el cliente/);
+  assert.match(prompt, /# Reglas que nunca se rompen/);
+  assert.match(prompt, /Si el cliente te escribe en otro idioma, respóndele en el suyo/);
   assert.match(prompt, /Nunca confirmes que recibiste un pago/);
   assert.match(prompt, /números de tarjeta, CVV/);
   assert.match(prompt, /cualquier palabra/);

@@ -10,6 +10,7 @@ import * as astore from './automation/store.js';
 import { isOpen, nextOpen, spanishDate, spanishTime } from './automation/time.js';
 import { detectRisk, maskSensitive } from './engine/safety.js';
 import { customerLabel } from './engine/customer-data.js';
+import { assertOutbound, guardTransport } from './outbound-guard.js';
 import { cleanText, deepClean, toPlainText } from './engine/text.js';
 import { adapterFor } from './channels/index.js';
 import { INBOUND_MEDIA_MAX_BYTES, removeInboundFiles, saveInboundMedia, type StoredMedia } from './channels/media.js';
@@ -133,23 +134,25 @@ export class ChatService {
       channels.find((c) => c.type === 'whatsapp' && c.active && c.config.instance);
     if (!wa) throw new Error('La cuenta no tiene un canal de WhatsApp activo para enviar el aviso');
     const digits = number.replace(/\D/g, '');
+    // Antes de registrar nada: en sandbox un aviso a un número no permitido no debe quedar como enviado.
+    assertOutbound(digits);
     // Se registra antes de enviar: el eco puede llegar antes de que responda el envío.
     await store.recordInternalNotice(accountId, digits, text.trim());
     const t = this.transportFactory(wa, { phone: digits, external_id: digits } as Contact);
     await t.sendText(text, 0);
   }
 
-  /** Transporte del canal; los avisos al encargado salen siempre por un WhatsApp de la cuenta. */
+  /**
+   * Transporte del canal; los avisos al encargado salen siempre por un WhatsApp de la cuenta. Todo envío pasa por el freno
+   * de salida (outbound-guard): en producción no cambia nada, en sandbox solo salen los destinos permitidos.
+   * El simulador del panel no sale de la plataforma, así que queda fuera.
+   */
   transportFor(channel: Channel, contact: Contact): Transport {
     const t = this.transportFactory(channel, contact);
-    if (channel.type === 'whatsapp' || channel.type === 'playground') return t;
-    return {
-      kind: t.kind,
-      sendText: (text, delay) => t.sendText(text, delay),
-      sendImage: (img, caption, delay) => t.sendImage(img, caption, delay),
-      ...(t.sendFile ? { sendFile: (file, caption, delay) => t.sendFile!(file, caption, delay) } : {}),
-      notify: (number, text) => this.notifyViaWhatsapp(channel, number, text),
-    };
+    if (channel.type === 'playground') return t;
+    const guarded = guardTransport(t, contact.phone || contact.external_id);
+    if (channel.type === 'whatsapp') return guarded;
+    return { ...guarded, notify: (number, text) => this.notifyViaWhatsapp(channel, number, text) };
   }
 
   private notifyViaWhatsapp(channel: Channel, number: string, text: string) {
@@ -229,6 +232,8 @@ export class ChatService {
       const [contact, channel] = await Promise.all([store.getContact(conv.contact_id), store.getChannel(conv.channel_id)]);
       if (!channel || channel.type === 'playground') return;
       const who = contact?.name || contact?.push_name || (contact?.phone ? `+${contact.phone}` : 'Un cliente');
+      const work=(await query('SELECT reason FROM conversation_work WHERE conversation_id=$1',[conversationId]))[0];
+      if(!work || work.reason==='processing_error') await this.engine.sendRuleImagesWithoutAi(conversationId).catch(()=>undefined);
       await logEvent({ level: 'error', source: 'ai', message: 'Un cliente espera respuesta; se avisó al equipo', accountId: conv.account_id, channelId: conv.channel_id, conversationId });
       await this.automator.alertTeam(conv.account_id, {
         title: '⚠️ Un cliente espera respuesta',
@@ -349,6 +354,17 @@ export class ChatService {
       if (Date.now() - since > bot.rules.auto_resume_minutes * 60_000) {
         current = (await store.setConversationStatus(conv.id, 'bot', '')) ?? conv;
         await logEvent({ level: 'info', source: 'engine', message: 'El bot retomó la conversación automáticamente', ...logBase });
+      }
+    }
+    // El cliente vuelve tras un tiempo sin actividad: empieza una solicitud nueva (otra reserva, el mismo problema otra
+    // vez…) y se le atiende de nuevo. Cuenta desde este mensaje, así sus respuestas valen para la solicitud nueva.
+    const gapHours = bot?.flow.new_request_after_hours ?? 0;
+    if (triggers && conv.status !== 'closed' && current.status === 'bot' && gapHours > 0) {
+      const last = await store.lastActivityBefore(conv.id, inserted.id);
+      if (last && Date.now() - new Date(last).getTime() >= gapHours * 3600_000) {
+        const n = await store.beginRequest(conv.id, { reason: 'tiempo', since: inserted.created_at });
+        current = (await store.getConversation(conv.id)) ?? current;
+        await logEvent({ level: 'info', source: 'engine', message: `Solicitud nueva (${n}.ª): el cliente volvió después de más de ${gapHours} h sin actividad`, ...logBase });
       }
     }
 

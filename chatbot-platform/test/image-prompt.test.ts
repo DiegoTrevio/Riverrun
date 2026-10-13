@@ -114,21 +114,21 @@ test('prompt: cada foto aparece una vez y con instrucciones que no se contradice
     history: [], pending: [], sentImageIds: [], imagesById: new Map([menu, alberca, mapa, suite].map((i) => [i.id, i])),
     autoImages: [{ image: suite, when: 'el cliente escribe "suite"' }, { image: mapa, when: 'al agendar una cita' }], contextImages: [mapa, ctxOnly], imagesNow: [],
   } as any, []);
-  const catalog = prompt.slice(prompt.indexOf('# Catálogo de imágenes'), prompt.indexOf('# Mensajes guardados'));
-  assert.match(catalog, /solo en sus momentos \(NO las pongas en image_ids\):\n- `suite` \| Suite: el cliente escribe "suite"/);
-  assert.match(catalog, /Si las instrucciones del negocio piden enviar una de estas fotos, no la pongas en image_ids/);
+  const catalog = prompt.slice(prompt.indexOf('## Fotos'), prompt.indexOf('## Mensajes guardados'));
+  assert.match(catalog, /solo en sus momentos \(no las pongas en image_ids ni las prometas\)\n- `suite` \| Suite: el cliente escribe "suite"/);
+  assert.match(catalog, /Si las instrucciones del negocio piden una de estas fotos, no la prometas/);
   // "Ambos": solo en el catálogo de la IA, con su condición de contexto y sus momentos automáticos.
-  assert.match(catalog, /- ID: `mapa` \| Mapa \| enviar cuando: Cuando pidan la ubicación \| también cuando: Cuando pregunten cómo llegar \| además el sistema la envía sola al agendar una cita/);
+  assert.match(catalog, /- `mapa` \| Mapa \| enviar cuando: Cuando pidan la ubicación \| también cuando: Cuando pregunten cómo llegar \| además el sistema la envía sola al agendar una cita/);
   assert.equal(catalog.split('`mapa`').length - 1, 1, 'mapa aparece una sola vez');
-  assert.match(catalog, /ID de contexto: `comparar`/);
-  assert.match(catalog, /Máximo 2 por turno, contando las fotos de los mensajes guardados/);
-  assert.match(catalog, /Al pasar con una persona no se envían fotos/);
+  assert.match(catalog, /### Fotos por contexto[^#]*- `comparar` \| Comparativa/);
+  assert.match(catalog, /Máximo 2 por respuesta, contando las fotos de los mensajes guardados/);
+  assert.match(prompt, /al pasar con una persona no salen fotos/);
   // Con máximo 0 las fotos de mensajes guardados no se ofrecen.
   const zero = buildSystemPrompt({
     bot: bot({ rules: { max_images_per_reply: 0 }, saved_messages: [{ code: 'precios', text: 'Tarifas', image_id: 'id-alberca', active: true }] }), knowledge: [], images: [], contact: { data: {}, name: '', phone: '', notes: [] } as any,
     conversation: { flow_step: 0, summary: '' } as any, history: [], pending: [], sentImageIds: [], imagesById: new Map([[alberca.id, alberca]]),
   } as any, []).prompt;
-  assert.match(zero, /No hay imágenes disponibles/);
+  assert.match(zero, /No hay fotos disponibles/);
   assert.match(zero, /`precios`[^\n]*solo texto/);
 });
 
@@ -342,7 +342,7 @@ t('un envío programado con etapa cuenta su foto como enviada: la IA no la repit
   h.reset();
   h.setScript(() => ({ action: 'reply_with_image', messages: ['Así es la suite.'], image_ids: ['suite'] }));
   await say('Se ve bien, ¿cuánto cuesta?', phone);
-  assert.match(String(h.calls[0].messages[0].content), /Imágenes ya enviadas[^\n]*suite/);
+  assert.match(String(h.calls[0].messages[0].content), /Fotos ya enviadas[^\n]*suite/);
   assert.deepEqual(photos(phone), []);
 });
 
@@ -400,7 +400,7 @@ t('máximo de fotos en 0: no sale ninguna foto, ni automática ni después', asy
   await say('¿me pasas el menú?', phone);
   await h.fastForward();
   assert.deepEqual(photos(phone), []);
-  assert.match(String(h.calls[0].messages[0].content), /No hay imágenes disponibles/);
+  assert.match(String(h.calls[0].messages[0].content), /No hay fotos disponibles/);
 });
 
 t('una foto pendiente no sale si el cliente pausó al asistente', async () => {
@@ -458,4 +458,64 @@ t('borrar una foto usada en una regla automática la quita de la regla (que se p
   const off = await h.authed('PUT', `/api/automations/${rule.json().id}`, { active: false });
   assert.equal(off.statusCode, 200, off.body);
   assert.equal(off.json().actions[0].image_id, '');
+});
+
+t('reiniciar las conversaciones al actualizar el agente: la bienvenida y su foto vuelven a salir, y el agente no ve lo anterior', async () => {
+  await h.authed('PUT', `/api/images/${IDS.bienvenida}`, { active: true });
+  try {
+    h.reset();
+    h.setScript(() => ({ action: 'reply', messages: ['¡Hola! ¿En qué te ayudo?'] }));
+    const phone = '5215560000020';
+    await say('Hola, buenas tardes', phone);
+    await say('Busco hospedaje para el puente', phone);
+    assert.deepEqual(photos(phone), ['bienvenida'], 'la bienvenida sale una vez');
+
+    // Se actualiza el agente y se reinician sus conversaciones.
+    const r = await h.authed('POST', `/api/chatbots/${h.botId}/restart-conversations`);
+    assert.equal(r.statusCode, 200, r.body);
+    assert.ok(r.json().restarted >= 1);
+    const c = await convOf(phone);
+    assert.equal(c.flow_step, 0);
+    assert.ok(Number(c.restarted_after_id) > 0);
+
+    h.reset();
+    await say('Hola otra vez', phone);
+    assert.deepEqual(photos(phone), ['bienvenida'], 'la bienvenida vuelve a salir tras reiniciar');
+    const context = JSON.stringify(h.calls[0].messages);
+    assert.doesNotMatch(context, /puente/, 'el agente no ve lo platicado antes del reinicio');
+    await say('¿Tienen estacionamiento?', phone);
+    assert.deepEqual(photos(phone), ['bienvenida'], 'y no se repite en la siguiente respuesta');
+
+    // Una sola conversación, desde el panel.
+    h.reset();
+    assert.equal((await h.authed('POST', `/api/conversations/${c.id}/reset-memory`)).statusCode, 200);
+    await say('Buenas noches', phone);
+    assert.deepEqual(photos(phone), ['bienvenida']);
+  } finally {
+    await h.authed('PUT', `/api/images/${IDS.bienvenida}`, { active: false });
+  }
+});
+
+t('si la IA no responde, la foto por palabra del cliente sale igual (y no se repite cuando la IA vuelve)', async () => {
+  const queue = h.service.queue as any;
+  const retry = queue.errorRetryMs;
+  queue.errorRetryMs = 50;
+  try {
+    h.reset();
+    h.setScript(() => new Error('IA no disponible'));
+    const phone = '5215560000021';
+    const r = await h.webhook('¿Me pasas el menú?', { phone });
+    assert.equal(r.statusCode, 200, r.body);
+    await sleep(600);
+    await h.idle();
+    await sleep(300);
+    await h.fastForward();
+    assert.deepEqual(to(phone), ['[FOTO menu]'], 'la foto de la regla sale aunque la IA no responda');
+
+    h.setScript(() => ({ action: 'reply', messages: ['Claro, ahí tienes el menú. ¿Algo más?'] }));
+    await say('¿Sigues ahí?', phone);
+    assert.deepEqual(photos(phone), ['menu'], 'no se repite cuando la IA responde esos mensajes');
+  } finally {
+    queue.errorRetryMs = retry;
+  }
 });

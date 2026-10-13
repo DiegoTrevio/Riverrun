@@ -21,6 +21,7 @@ KEEP_MONTHLY="${BACKUP_KEEP_MONTHLY:-6}"
 REMOTE="${BACKUP_REMOTE:-}"
 REMOTE_KEEP_DAYS="${BACKUP_REMOTE_KEEP_DAYS:-45}"
 DATABASES="${BACKUP_DATABASES:-chatbot evolution}"
+EVOLUTION_DB="${BACKUP_EVOLUTION_DB:-evolution}" # base de Evolution dentro de DATABASES (sesiones de WhatsApp)
 export PGHOST="${PGHOST:-postgres}" PGUSER="${PGUSER:-chatbot}" PGPASSWORD="${PGPASSWORD:-${POSTGRES_PASSWORD:-}}"
 STATUS="$BACKUP_DIR/status.json"
 
@@ -69,6 +70,11 @@ wait_for_db() {
   die "PostgreSQL no responde en $PGHOST"
 }
 
+# Última migración de Evolution aplicada en una base (vacío si no existe o no es de Evolution).
+evolution_migration() { psql -At -d "$1" -c "SELECT max(migration_name) FROM _prisma_migrations WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL" 2>/dev/null || true; }
+image_digest() { if [[ "$1" == *@sha256:* ]]; then echo "${1##*@}"; else echo "$1"; fi; } # misma imagen escrita de dos formas
+manifest_field() { sed -n "s/.*\"$2\": *\"\([^\"]*\)\".*/\1/p" "$1" 2>/dev/null | head -n 1; }
+
 latest_file() { { printf '%s\n' "$BACKUP_DIR"/riverrun-*.tar "$BACKUP_DIR"/riverrun-*.tar.enc | grep -v '[*]' || true; } | sort | tail -n 1; }
 
 make_backup() {
@@ -88,7 +94,10 @@ make_backup() {
   if [[ -d "$UPLOADS_DIR" ]]; then tar -C "$UPLOADS_DIR" -czf "$work/uploads.tar.gz" .; else : > "$work/uploads.tar.gz"; fi
   if [[ -d "$EVOLUTION_DIR" ]]; then tar -C "$EVOLUTION_DIR" -czf "$work/evolution_instances.tar.gz" .; else : > "$work/evolution_instances.tar.gz"; fi
   ( cd "$work" && sha256sum ./* > SHA256SUMS )
-  echo "{\"created_at\": \"$(date -u +%FT%TZ)\", \"databases\": \"$DATABASES\", \"version\": \"${APP_VERSION:-unknown}\"}" > "$work/manifest.json"
+  # Con qué Evolution se hizo: restaurar su base en una versión más vieja que la que la migró puede dañarla.
+  local evo_mig=""
+  [[ " $DATABASES " == *" $EVOLUTION_DB "* ]] && evo_mig="$(evolution_migration "$EVOLUTION_DB")"
+  echo "{\"created_at\": \"$(date -u +%FT%TZ)\", \"databases\": \"$DATABASES\", \"version\": \"${APP_VERSION:-unknown}\", \"evolution_image\": \"$(json_escape "${EVOLUTION_IMAGE:-}")\", \"evolution_migration\": \"$(json_escape "$evo_mig")\"}" > "$work/manifest.json"
   local suffix="tar.enc"; [[ -z "${BACKUP_PASSPHRASE:-}" ]] && suffix="tar"
   out="$BACKUP_DIR/${BACKUP_PREFIX:-riverrun}-$ts.$suffix" # el respaldo previo a restaurar usa otro prefijo para que "latest" no lo elija
   tar -C "$work" -cf - . | encrypt > "$out.partial"
@@ -113,15 +122,21 @@ verify_backup() { # FILE → restaura en una base temporal y cuenta tablas
   done
   local dump
   for dump in "$work"/*.dump; do pg_restore --list "$dump" >/dev/null 2>&1 || { fail "$(basename "$dump") no es legible"; return 1; }; done
-  # Prueba real: restaurar la base principal en una base temporal.
-  local main="${DATABASES%% *}"
-  dropdb --if-exists riverrun_verify >/dev/null 2>&1 || true
-  createdb riverrun_verify
-  pg_restore --no-owner --exit-on-error --dbname=riverrun_verify "$work/$main.dump" >/dev/null 2>&1 || { fail "No se pudo restaurar la base $main en una base de prueba"; return 1; }
-  local tables; tables="$(psql -At -d riverrun_verify -c "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")"
-  dropdb --if-exists riverrun_verify >/dev/null 2>&1 || true
-  [[ "${tables:-0}" -gt 0 ]] || { fail "La base restaurada está vacía"; return 1; }
-  log "Verificado: $(basename "$file") — restauración de prueba correcta ($tables tablas)"
+  # Prueba real: restaurar la base principal en una base temporal. Con BACKUP_VERIFY_ALL=true (antes de cambiar la
+  # versión de Evolution), todas: también la de Evolution, que guarda las sesiones de WhatsApp.
+  local main="${DATABASES%% *}" targets db tables total=""
+  targets="$main"; [[ "${BACKUP_VERIFY_ALL:-false}" == "true" ]] && targets="$DATABASES"
+  for db in $targets; do
+    [[ -f "$work/$db.dump" ]] || { fail "Falta la base $db en el respaldo"; return 1; }
+    dropdb --if-exists riverrun_verify >/dev/null 2>&1 || true
+    createdb riverrun_verify
+    pg_restore --no-owner --exit-on-error --dbname=riverrun_verify "$work/$db.dump" >/dev/null 2>&1 || { fail "No se pudo restaurar la base $db en una base de prueba"; return 1; }
+    tables="$(psql -At -d riverrun_verify -c "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")"
+    dropdb --if-exists riverrun_verify >/dev/null 2>&1 || true
+    [[ "${tables:-0}" -gt 0 ]] || { fail "La base $db restaurada está vacía"; return 1; }
+    total="${total:+$total, }$db: $tables tablas"
+  done
+  log "Verificado: $(basename "$file") — restauración de prueba correcta ($total)"
 }
 
 weekly_key() { date -u -d "${1:0:4}-${1:4:2}-${1:6:2}" +%G-%V; }
@@ -173,6 +188,13 @@ restore() {
   log "Abriendo $(basename "$file")"
   decrypt "$file" | tar -C "$work" -xf - || die "No se pudo abrir el respaldo (¿clave incorrecta?)"
   ( cd "$work" && sha256sum -c SHA256SUMS >/dev/null ) || die "Respaldo dañado (las sumas no coinciden)"
+  local b_img b_mig
+  b_img="$(manifest_field "$work/manifest.json" evolution_image)"; b_mig="$(manifest_field "$work/manifest.json" evolution_migration)"
+  log "Respaldo del $(manifest_field "$work/manifest.json" created_at) (RiverRun $(manifest_field "$work/manifest.json" version); Evolution ${b_img:-no registrada}${b_mig:+, esquema $b_mig})"
+  if [[ -n "$b_img" && -n "${EVOLUTION_IMAGE:-}" && "$(image_digest "$b_img")" != "$(image_digest "$EVOLUTION_IMAGE")" ]]; then
+    log "ATENCIÓN: el respaldo es de Evolution $b_img y la instalación usa $EVOLUTION_IMAGE."
+    log "  Si la configurada es más vieja, fija EVOLUTION_IMAGE=$b_img en .env antes de arrancar (una versión vieja no entiende un esquema más nuevo)."
+  fi
   for dump in "$work"/*.dump; do
     local db; db="$(basename "$dump" .dump)"
     log "Restaurando base de datos: $db"

@@ -24,6 +24,8 @@ import * as store from '../store/index.js';
 import { AiSettingsSchema, CHANNEL_TYPES, FlowSchema, KNOWLEDGE_CATEGORIES, PersonalitySchema, RulesSchema, type Role } from '../types.js';
 import { BUSINESS_TYPES } from '../templates/business.js';
 import { systemStatus } from '../monitor.js';
+import { listIncidents } from '../observability/incidents.js';
+import { diagnosticsReport, refreshDiagnostics } from '../diagnostics.js';
 import { assertWithinLimit, LimitsSchema } from '../billing/limits.js';
 import { billingEnabled } from '../billing/service.js';
 import { parse } from './util.js';
@@ -99,6 +101,14 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
   }));
 
   api.get('/api/system/status', { preHandler: requireRole('superadmin') }, async () => systemStatus());
+  // Historial de incidencias, de la más reciente a la más antigua. Sin contenido de mensajes.
+  api.get('/api/system/incidents', { preHandler: requireRole('superadmin') }, async (req: any) => listIncidents(Number(req.query?.limit) || 50));
+  // Configuración y servicios externos por niveles (configurado → accesible → credenciales → funcional → listo). Sin secretos.
+  api.get('/api/system/diagnostics', { preHandler: requireRole('superadmin') }, async () => diagnosticsReport());
+  api.post('/api/system/diagnostics/run', { preHandler: requireRole('superadmin') }, async () => {
+    await refreshDiagnostics();
+    return diagnosticsReport();
+  });
 
   /* ------------------------------ Cuentas ------------------------------ */
   api.get('/api/accounts', async (req) => {

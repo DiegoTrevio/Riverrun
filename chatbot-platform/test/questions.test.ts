@@ -20,6 +20,20 @@ const QUESTIONS = [
   { key: 'origen', label: 'Origen', type: 'option', options: ['Instagram', 'Recomendación'], required: false, question: Q3 },
 ];
 
+
+// Caminos por respuesta: «Reservar» sigue en orden, «Informes» salta a la última, «Persona» pasa con alguien.
+const QB = '¿Vienes a reservar o solo quieres informes?';
+const QF = '¿Para qué fecha?';
+const QP = '¿Cuántas personas son?';
+const QM = '¿Te mando nuestro folleto por correo?';
+const BRANCHED = [
+  { key: 'motivo', label: 'Motivo', type: 'option', options: ['Reservar', 'Informes', 'Persona'], required: true, question: QB,
+    branches: [{ option: 'Informes', goto: 'folleto' }, { option: 'Persona', goto: 'handoff' }] },
+  { key: 'fecha', label: 'Fecha', type: 'text', required: true, question: QF },
+  { key: 'personas', label: 'Personas', type: 'number', required: true, question: QP, options: [], branches: [] },
+  { key: 'folleto', label: 'Folleto', type: 'option', options: ['Sí', 'No'], required: true, question: QM },
+];
+
 /* ------------------------------ Reglas puras (sin base de datos) ------------------------------ */
 
 const bot = hydrateChatbot({
@@ -354,4 +368,99 @@ t('activadores: con modo por palabras no responde hasta la palabra; al activarse
   await say('quiero reservar', P);
   assert.deepEqual(textsTo(P), ['¡Hola! Con gusto te ayudo.', Q1]);
   await setActivation({});
+});
+
+test('caminos por respuesta: saltan preguntas, terminan la lista o pasan con una persona', () => {
+  const b = hydrateChatbot({ id: 'b', account_id: 'a', name: 'Hotel', active: true, personality: {}, rules: {}, flow: {}, ai: {}, saved_messages: [], data_fields: BRANCHED, created_at: new Date(), updated_at: new Date() } as any);
+  const qs = b.data_fields;
+  assert.equal(questionProgress(qs, {}, '').next?.key, 'motivo');
+  const reservar = questionProgress(qs, { motivo: 'Reservar' }, '');
+  assert.equal(reservar.next?.key, 'fecha', 'sin camino sigue en orden');
+  const informes = questionProgress(qs, { motivo: 'informes' }, '');
+  assert.equal(informes.next?.key, 'folleto', 'salta a la pregunta que marca el camino');
+  assert.deepEqual(informes.notApplicable.map((q) => q.key), ['fecha', 'personas']);
+  assert.deepEqual(informes.missingRequired.map((q) => q.key), ['folleto'], 'las que se saltaron no cuentan como faltantes');
+  const persona = questionProgress(qs, { motivo: 'Persona' }, '');
+  assert.equal(persona.next, null);
+  assert.equal(persona.handoff?.question.key, 'motivo');
+  assert.deepEqual(persona.missingRequired, []);
+
+  // Al responder «Persona», el validador pasa la conversación con alguien (una sola vez) y no sigue con la lista.
+  const v = validateDecision({ bot: b, images: [], sentImageIds: [], groundingSources: [], customerText: 'Persona', raw: reply([`Va. ${QF}`], { save_data: [{ field: 'motivo', value: 'Persona' }] }), questionJourney: journey({ motivo: 1 }), final: false });
+  assert.equal(v.plan.action, 'handoff');
+  assert.match(v.plan.handoffReason, /respondió «Persona»/);
+  assert.deepEqual(v.plan.messages, ['Va.']);
+  const again = validateDecision({ bot: b, images: [], sentImageIds: [], groundingSources: [], customerText: 'Hola de nuevo', knownData: { motivo: 'Persona' }, raw: reply(['¡Hola de nuevo!']), questionJourney: journey({ motivo: 1 }), final: true });
+  assert.equal(again.plan.action, 'reply', 'una respuesta anterior no vuelve a transferir');
+
+  // «Informes»: preguntar la fecha (que ya no aplica) se quita y se hace la del folleto.
+  const info = validateDecision({ bot: b, images: [], sentImageIds: [], groundingSources: [], customerText: 'Informes', raw: reply([`Claro. ${QF}`], { save_data: [{ field: 'motivo', value: 'Informes' }] }), questionJourney: journey({ motivo: 1 }), final: true });
+  assert.deepEqual(info.plan.messages, ['Claro.', QM]);
+});
+
+t('caminos por respuesta: se guardan y se validan; de extremo a extremo saltan preguntas y pasan con una persona', async () => {
+  const put = (data_fields: unknown) => h.authed('PUT', `/api/chatbots/${h.botId}`, { data_fields });
+  try {
+    const back = await put([{ ...BRANCHED[1] }, { ...BRANCHED[0], branches: [{ option: 'Informes', goto: 'fecha' }] }]);
+    assert.equal(back.statusCode, 400);
+    assert.match(back.body, /solo puede ir hacia adelante/);
+    const unknown = await put([{ ...BRANCHED[0], branches: [{ option: 'Otra', goto: 'end' }] }, BRANCHED[1]]);
+    assert.equal(unknown.statusCode, 400);
+    assert.match(unknown.body, /no es una de sus opciones/);
+    const r = await put(BRANCHED);
+    assert.equal(r.statusCode, 200, r.body);
+    assert.deepEqual(r.json().data_fields[0].branches, BRANCHED[0].branches);
+
+    // «Informes»: la IA intenta preguntar la fecha; el sistema la quita y hace la del folleto.
+    const P = '5215530000050';
+    h.reset();
+    h.setScript(() => ({ messages: [`¡Hola! ${QB}`] }));
+    await say('Hola', P);
+    assert.deepEqual(textsTo(P), [`¡Hola! ${QB}`]);
+    assert.match(JSON.stringify(h.calls.at(-1)), /según la respuesta: «Informes» → sigue con la 4; «Persona» → pasa con una persona/);
+    h.reset();
+    h.setScript(() => ({ messages: [`Claro. ${QF}`], save_data: [{ field: 'motivo', value: 'Informes' }] }));
+    await say('Solo informes', P);
+    assert.deepEqual(textsTo(P), ['Claro.', QM]);
+    h.reset();
+    h.setScript(() => ({ messages: ['Perfecto.'] }));
+    await say('¿Y qué incluye?', P);
+    assert.match(JSON.stringify(h.calls.at(-1)), /No aplican por lo que respondió el cliente \(no las hagas\): 2, 3\./);
+
+    // «Persona»: pasa con alguien del equipo.
+    const P2 = '5215530000051';
+    h.reset();
+    h.setScript(() => ({ messages: [`¡Hola! ${QB}`] }));
+    await say('Buenas', P2);
+    h.reset();
+    h.setScript(() => ({ messages: [`Va. ${QF}`], save_data: [{ field: 'motivo', value: 'Persona' }] }));
+    await say('Quiero hablar con una persona', P2);
+    const d = await detail(P2);
+    assert.equal(d.conversation.status, 'human');
+    assert.match(d.conversation.handoff_reason, /respondió «Persona»/);
+    assert.ok(!textsTo(P2).includes(QF));
+  } finally {
+    assert.equal((await put(QUESTIONS)).statusCode, 200);
+  }
+});
+
+test('una pregunta de la lista que ofrece fotos («¿Te envío nuestro folleto con fotos?») no se trata como promesa rota', () => {
+  const ask = '¿Te envío nuestro folleto con fotos y servicios?';
+  const b = hydrateChatbot({ id: 'b', account_id: 'a', name: 'Hotel', active: true, personality: {}, rules: {}, flow: {}, ai: {}, saved_messages: [],
+    data_fields: [{ key: 'folleto', label: 'Folleto', type: 'option', options: ['Sí', 'No'], required: true, question: ask }], created_at: new Date(), updated_at: new Date() } as any);
+  const v = validateDecision({ bot: b, images: [], sentImageIds: [], groundingSources: [], customerText: 'Solo informes', raw: reply(['Claro.']), questionJourney: journey(), final: true });
+  assert.deepEqual(v.plan.messages, ['Claro.', ask]);
+  // Una promesa de la IA sigue revisándose.
+  const promise = validateDecision({ bot: b, images: [], sentImageIds: [], groundingSources: [], customerText: 'Hola', raw: reply([`Te mando la foto de la alberca. ${ask}`]), questionJourney: journey(), final: true });
+  assert.deepEqual(promise.plan.messages, [ask]);
+});
+
+test('objetivo con camino por respuesta: las obligatorias que el camino saltó no se exigen para cumplirlo', () => {
+  const b = hydrateChatbot({ id: 'b', account_id: 'a', name: 'Hotel', active: true, personality: {}, rules: {}, flow: { goal: 'Atender la solicitud' }, ai: {}, saved_messages: [], data_fields: BRANCHED, created_at: new Date(), updated_at: new Date() } as any);
+  const raw = reply(['Listo, gracias.'], { save_data: [{ field: 'folleto', value: 'Sí' }], goal_completed: true });
+  const informes = validateDecision({ bot: b, images: [], sentImageIds: [], groundingSources: [], customerText: 'Sí', knownData: { motivo: 'Informes' }, raw, questionJourney: journey({ motivo: 1, folleto: 1 }), final: true });
+  assert.equal(informes.plan.goalCompleted, true, informes.fixes.join(' | '));
+  // Por el camino de «Reservar» la fecha y las personas sí hacen falta.
+  const reservar = validateDecision({ bot: b, images: [], sentImageIds: [], groundingSources: [], customerText: 'Sí', knownData: { motivo: 'Reservar' }, raw, questionJourney: journey({ motivo: 1 }), final: true });
+  assert.equal(reservar.plan.goalCompleted, false);
 });

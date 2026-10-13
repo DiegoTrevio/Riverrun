@@ -141,6 +141,8 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
       handoff_by_user: contact?.handoff_by ? await store.getUserBasic(contact.handoff_by) : null,
       /** Pendientes y notas del contacto, para la tarjeta de la conversación. */
       tasks: await store.listContactTasks(conv.contact_id),
+      /** Solicitudes del cliente en esta conversación (vacío si nunca volvió por lo mismo). */
+      requests: await store.listRequests(conv.id),
     };
   });
 

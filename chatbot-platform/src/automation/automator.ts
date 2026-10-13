@@ -9,6 +9,7 @@ import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
 import { config } from '../config.js';
+import { assertOutbound } from '../outbound-guard.js';
 import { agentActive, gate } from '../engine/activation.js';
 import { matchKeyword } from '../engine/engine.js';
 import { imagesBeforeReply } from '../engine/images.js';
@@ -188,6 +189,8 @@ export async function postWebhook(url: string, body: unknown, secret: string) {
 export async function postSigned(url: string, body: unknown, secret: string, extraHeaders: Record<string, string> = {}): Promise<{ status: number }> {
   const u = new URL(url);
   if (!['http:', 'https:'].includes(u.protocol)) throw new Error('Solo se permiten URLs http(s)');
+  // Sandbox: los webhooks de clientes solo salen a las URLs de OUTBOUND_SANDBOX_ALLOW (también cubre integrations/webhooks).
+  assertOutbound(url);
   const host = u.hostname.replace(/^\[|\]$/g, '');
   if (!config.allowPrivateWebhooks && net.isIP(host) && isPrivateIp(host)) throw new Error('La URL apunta a una red interna; no está permitido');
   const payload = JSON.stringify(body);
@@ -295,6 +298,8 @@ export class Automator {
     let stopAi = false;
     for (const rule of rules) {
       if (!triggerMatches(rule.trigger, e) || !conditionsMatch(rule.conditions, ctx)) continue;
+      // «Una vez por conversación»: si ya se ejecutó en este recorrido, no se repite (ni detiene a la IA).
+      if (rule.once_per_conversation && !(await astore.claimConversationRun(rule.id, ctx.conv.id, ctx.conv.flow_started_at))) continue;
       matched.push(rule.name);
       if (rule.stop_ai) stopAi = true;
       await this.runRule(rule, ctx, e);

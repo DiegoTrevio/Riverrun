@@ -1,5 +1,6 @@
 import { api, fmtDate, h } from './core.js';
 import { render } from './main.js';
+import { configSection, functionalSection } from './system-config.js';
 
 /* ------------------------------ Sistema (superadmin) ------------------------------ */
 
@@ -40,4 +41,5 @@ export async function viewSystem(root) {
         h('p', { class: 'small' }, sys.alerts_configured.email ? '✓ Por correo (SUPERADMIN_EMAIL + SMTP)' : '✕ Por correo: falta SUPERADMIN_EMAIL o SMTP_URL'),
         h('p', { class: 'small' }, sys.alerts_configured.webhook ? '✓ Por webhook (Slack, Discord, ntfy…)' : '– Por webhook: opcional (ALERT_WEBHOOK_URL)'),
         h('p', { class: 'small' }, sys.heartbeat_configured ? '✓ Latido externo activo' : '⚠️ Sin latido externo: si el servidor entero cae, nadie se entera. Configura HEARTBEAT_URL (healthchecks.io es gratis).'))));
+  root.append(functionalSection(sys.functional), await configSection());
 }

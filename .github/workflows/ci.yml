@@ -116,5 +116,22 @@ jobs:
       - uses: actions/checkout@v4
       - name: Validar docker-compose
         run: docker compose --profile https --profile tools config -q
+      - name: Validar el overlay de staging (garantías de la configuración renderizada)
+        run: bash scripts/test-staging-overlay.sh
       - name: Construir backend y respaldos
         run: docker compose build backend backup
+      - name: Simulacro de restauración sin S3 (respaldo, clave correcta y equivocada, restauración)
+        run: bash scripts/test-restore-drill.sh
+      - name: Preflight sin red con la configuración que genera el instalador
+        run: |
+          # Se limpian las variables del job: Compose las usaría en lugar del .env generado y la prueba no revisaría lo que dice.
+          d="$(mktemp -d)"; cp riverrun .env.example docker-compose.yml "$d/"; cp -r docker "$d/"
+          (cd "$d" && env -u POSTGRES_PASSWORD -u EVOLUTION_API_KEY -u BACKUP_PASSPHRASE -u ADMIN_PASSWORD -u SESSION_SECRET -u DOMAIN \
+            RIVERRUN_DOMAIN=bot.ejemplo.com RIVERRUN_ADMIN_EMAIL=yo@ejemplo.com ./riverrun install --non-interactive --no-start >/dev/null)
+          cp "$d/.env" .env
+          out="$RUNNER_TEMP/preflight.txt"
+          env -u POSTGRES_PASSWORD -u EVOLUTION_API_KEY -u BACKUP_PASSPHRASE -u ADMIN_PASSWORD -u SESSION_SECRET -u DOMAIN \
+            ./riverrun preflight --offline > "$out" 2>&1 || { cat "$out"; echo "::error::El preflight bloqueó una configuración válida del instalador"; exit 1; }
+          cat "$out"
+          grep -q "Configuración: sin problemas críticos" "$out" || { echo "::error::El preflight no revisó la configuración"; exit 1; }
+          grep -q "No verificado: último respaldo" "$out" || { echo "::error::El preflight afirmó respaldos que no revisó"; exit 1; }

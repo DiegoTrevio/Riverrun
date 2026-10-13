@@ -46,19 +46,32 @@ export async function activeAutomations(accountId: string, triggerType: string, 
 }
 
 export async function saveAutomation(accountId: string, a: Omit<Automation, 'id' | 'account_id' | 'run_count' | 'last_run_at'>, id?: string) {
-  const params = [a.name, a.active, a.chatbot_id, JSON.stringify(a.trigger), JSON.stringify(a.conditions), JSON.stringify(a.actions), a.stop_ai, a.priority];
+  const params = [a.name, a.active, a.chatbot_id, JSON.stringify(a.trigger), JSON.stringify(a.conditions), JSON.stringify(a.actions), a.stop_ai, a.priority, a.once_per_conversation];
   if (id) {
     return queryOne<Automation>(
-      `UPDATE automations SET name=$1, active=$2, chatbot_id=$3, trigger=$4, conditions=$5, actions=$6, stop_ai=$7, priority=$8, updated_at=now()
-       WHERE id = $9 RETURNING *`,
+      `UPDATE automations SET name=$1, active=$2, chatbot_id=$3, trigger=$4, conditions=$5, actions=$6, stop_ai=$7, priority=$8, once_per_conversation=$9, updated_at=now()
+       WHERE id = $10 RETURNING *`,
       [...params, id],
     );
   }
   return queryOne<Automation>(
-    `INSERT INTO automations (name, active, chatbot_id, trigger, conditions, actions, stop_ai, priority, account_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+    `INSERT INTO automations (name, active, chatbot_id, trigger, conditions, actions, stop_ai, priority, once_per_conversation, account_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
     [...params, accountId],
   );
+}
+
+/**
+ * Una regla «una vez por conversación» se reserva para esta conversación y recorrido. true solo la primera vez: si dos
+ * eventos llegan a la vez, solo uno la ejecuta.
+ */
+export async function claimConversationRun(automationId: string, conversationId: string, journey: Date | null | undefined): Promise<boolean> {
+  const row = await queryOne<{ automation_id: string }>(
+    `INSERT INTO automation_conversation_runs (automation_id, conversation_id, journey) VALUES ($1, $2, coalesce($3::timestamptz, 'epoch'))
+     ON CONFLICT DO NOTHING RETURNING automation_id`,
+    [automationId, conversationId, journey ?? null],
+  );
+  return !!row;
 }
 
 export async function deleteAutomation(id: string) {

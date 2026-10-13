@@ -2,7 +2,7 @@
 
 ## Instrucciones completas
 
-Las instrucciones del asistente (pestaña **Instrucciones**) llegan completas a la IA, sin recortes. Justo después se le indica que esas instrucciones del negocio tienen prioridad sobre las guías de estilo y de conversación: si piden algo concreto (preguntas, orden, datos o mensajes), lo cumple completo. La regla de no inventar datos y las reglas generales (seguridad, pagos y datos personales) siempre quedan por encima. Si las instrucciones mencionan preguntas en otro orden, manda el orden de la pestaña «Preguntas».
+Las instrucciones del asistente (pestaña **Instrucciones**) llegan completas a la IA, sin recortes, entre `<instrucciones>`. El prompt empieza con un orden de prioridad explícito y les indica que tienen prioridad sobre las guías de estilo y de conversación: si piden algo concreto (preguntas, orden, datos o mensajes), lo cumple completo. La regla de no inventar datos y las reglas generales (seguridad, pagos y datos personales) siempre quedan por encima. Si las instrucciones mencionan preguntas en otro orden, manda el orden de la pestaña «Preguntas».
 
 ## Preguntas (pestaña «Preguntas»)
 
@@ -12,6 +12,21 @@ Es un apartado separado del texto de instrucciones: una lista de preguntas en or
 - **Tipo de respuesta**: texto libre, nombre, correo, teléfono, fecha, número o una de varias opciones.
 - **Se guarda como**: la clave del dato en el contacto. Si se deja vacía, se genera a partir de la pregunta (sin palabras como «tarjeta» o «NIP», que el sistema trata como dato sensible y nunca guarda). Si coincide con un dato que ya existía sin pregunta (por ejemplo, de una plantilla), la pregunta lo reemplaza. Los datos sin pregunta se ven debajo de la lista y se pueden quitar.
 - **Obligatoria**: se vuelve a preguntar hasta tener respuesta. Una opcional se hace una sola vez; si el cliente no la contesta, se sigue con la siguiente.
+
+### Caminos por respuesta (el flujo lo marcan las preguntas)
+
+En una pregunta de tipo «opción», debajo de las opciones aparece **«Qué sigue según la respuesta»**. Para cada opción se elige:
+
+- **Sigue con la siguiente** (lo de siempre).
+- **Ir a la pregunta N**: se saltan las de en medio. Solo se puede ir hacia adelante, así el recorrido nunca da vueltas (el servidor rechaza un camino hacia atrás o desde una opción que no existe).
+- **Terminar las preguntas**: las que faltan ya no se hacen; cuenta como «terminó las preguntas» (y apaga al asistente si así está configurado).
+- **Pasar con una persona**: al responderla, la conversación pasa al equipo en ese mismo turno (una sola vez; si el equipo la devuelve, no se vuelve a transferir por la misma respuesta).
+
+Ejemplo: «¿Vienes a reservar o solo quieres informes?» → *Reservar*: sigue con la fecha y las personas; *Informes*: ir a «¿Te mando el folleto?»; *Hablar con alguien*: pasar con una persona.
+
+Una pregunta de la lista que ofrece fotos o un folleto («¿Te envío nuestro folleto con fotos?») es una oferta del negocio: no se trata como una promesa de foto que no sale.
+
+Las preguntas que un camino salta no se hacen (si la IA las hace, se quitan), no cuentan como obligatorias pendientes ni como datos que faltan para cumplir el objetivo y el prompt las marca como «no aplican». Una respuesta que no coincide con ninguna opción con camino sigue en orden. Si cambias la clave de una pregunta, los caminos que llevan a ella la siguen.
 
 Lo que garantiza el sistema (no depende de la IA):
 
@@ -28,7 +43,7 @@ Lo que garantiza el sistema (no depende de la IA):
 - El objetivo de la conversación no se marca cumplido mientras falten preguntas obligatorias.
 - Si el cliente ya dio una respuesta (aunque sea antes de que se la pregunten), no se le vuelve a preguntar.
 
-Las respuestas se guardan en el contacto como cualquier otro dato: aparecen en Conversaciones, en los reportes y en las automatizaciones. «Borrar memoria» de una conversación vuelve a empezar la lista. Un cliente que regresa con todo respondido no vuelve a contestar, y una opcional que ya se le hizo sin respuesta no se repite al reabrir la conversación.
+Las respuestas se guardan en el contacto como cualquier otro dato: aparecen en Conversaciones, en los reportes y en las automatizaciones. «Reiniciar conversación» vuelve a empezar la lista. Cuando el cliente vuelve por lo mismo (una **solicitud nueva**, ver [solicitudes.md](solicitudes.md)), se le vuelven a hacer las preguntas marcadas «Se vuelve a preguntar en cada solicitud nueva» (por omisión, todas menos nombre, correo y teléfono); sus respuestas anteriores quedan en el historial de la solicitud. Una opcional que ya se le hizo sin respuesta no se repite.
 
 La IA reconoce una pregunta aunque la adapte un poco (al menos 70 % de sus palabras clave). Una pregunta muy corta solo cuenta completa.
 
@@ -40,4 +55,4 @@ Antes estaba dentro de «Opciones avanzadas»; ahora es una pestaña propia.
 - **Desactivadores**: palabras del cliente, objetivo cumplido, cita agendada, datos completos y, nuevo, **cuando el cliente responda todas las preguntas**. También se puede activar desde la pestaña «Preguntas». Al cambiar la clave de una pregunta o quitarla, «datos completos» se actualiza solo; los datos marcados que no están en la lista también se muestran para poder desmarcarlos.
 - **Al desactivarse**: pausa en silencio, pasar a una persona o cerrar, con un mensaje opcional.
 
-«Cuando el cliente responda todas las preguntas» se cumple una sola vez por recorrido, en el turno en que se resuelve la última pregunta pendiente (contestada o, si es opcional, sin respuesta). El asistente responde ese mensaje y después se apaga. No se dispara para un cliente que vuelve con todas las preguntas ya respondidas. El fin de la lista queda registrado en la conversación aunque ese turno sea una transferencia o no lleve respuesta: en una transferencia no apaga al asistente, y tampoco lo apaga después, cuando el equipo devuelve la conversación.
+«Cuando el cliente responda todas las preguntas» se cumple una sola vez por solicitud, en el turno en que se resuelve la última pregunta pendiente (contestada o, si es opcional, sin respuesta). El asistente responde ese mensaje y después se apaga. No se dispara para un cliente que vuelve con todas las preguntas ya respondidas. El fin de la lista queda registrado en la conversación aunque ese turno sea una transferencia o no lleve respuesta: en una transferencia no apaga al asistente, y tampoco lo apaga después, cuando el equipo devuelve la conversación.

@@ -1,0 +1,43 @@
+name: Evolution API (compatibilidad real)
+
+# Corre la suite contra Evolution API real (scripts/evolution-compat.sh) cuando cambia la imagen fijada, el cliente de
+# Evolution o la propia suite: incluye la actualización desde la versión anterior conservando instancias y webhooks.
+# Entorno aislado y desechable; sin teléfonos ni datos reales.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'chatbot-platform/docker-compose.yml'
+      - 'chatbot-platform/src/evolution/**'
+      - 'chatbot-platform/src/channels/whatsapp*.ts'
+      - 'chatbot-platform/test/evolution-live.test.ts'
+      - 'chatbot-platform/scripts/evolution-compat.sh'
+      - '.github/workflows/evolution-compat.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evolution-compat-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  live:
+    name: Evolution real (2.3.6 → fijada)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: chatbot-platform
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: chatbot-platform/package-lock.json
+      - run: npm ci
+      - name: Suite de compatibilidad (con actualización desde 2.3.6)
+        env:
+          EVOLUTION_FROM_IMAGE: evoapicloud/evolution-api:v2.3.6@sha256:93a836e788fa07d3057f13eafee342f365ae5653035ef811b28c188f4ddadb5e
+        run: bash scripts/evolution-compat.sh

@@ -23,6 +23,14 @@ export const evo = {
   /** Como Evolution real: tras borrar una instancia, el nombre sigue ocupado unos instantes. */
   slowDeleteMs: 0,
   deleting: new Map<string, number>(),
+  /** Versión que informa la raíz (como Evolution v2); null = no la informa. */
+  version: '2.3.7' as string | null,
+  /** La llave global es rechazada (401), como con una EVOLUTION_API_KEY equivocada. */
+  rejectKey: false,
+  /** Webhook guardado por instancia (lo devuelve /webhook/find). */
+  webhooks: new Map<string, { url: string; enabled: boolean; events: string[] }>(),
+  /** Como Evolution 2.4.0-rc2 sin licencia activada: la raíz responde, toda la API da 503 LICENSE_REQUIRED. */
+  licenseRequired: false,
 };
 const extServer = http.createServer((req, res) => {
   const chunks: Buffer[] = [];
@@ -45,9 +53,16 @@ const extServer = http.createServer((req, res) => {
       if (p.endsWith('/messages')) return json(200, { id: `zm_${++ext.n}` });
       return json(404, { error: { message: 'no simulado' } });
     }
-    if (path.startsWith('/instance/') || path.startsWith('/webhook/set/')) {
+    if (path === '/') {
       if (evo.down) return json(503, { message: 'Service Unavailable' });
+      return json(200, { status: 200, message: 'Welcome to the Evolution API, it is working!', ...(evo.version ? { version: evo.version } : {}) });
+    }
+    if (evo.licenseRequired && /^\/(instance|webhook|message|chat)\//.test(path)) return json(503, { error: 'service not activated', code: 'LICENSE_REQUIRED', message: 'This Evolution API instance is not activated.' });
+    if (path.startsWith('/instance/') || path.startsWith('/webhook/set/') || path.startsWith('/webhook/find/')) {
+      if (evo.down) return json(503, { message: 'Service Unavailable' });
+      if (evo.rejectKey) return json(401, { status: 401, error: 'Unauthorized', response: { message: 'Unauthorized' } });
       const name = decodeURIComponent(path.split('/').pop()!);
+      if (path.startsWith('/webhook/find/')) return evo.instances.has(name) ? json(200, evo.webhooks.get(name) ?? null) : json(404, { response: { message: ['not found'] } });
       if (path.startsWith('/instance/connectionState/')) {
         const i = evo.instances.get(name);
         return i ? json(200, { instance: { instanceName: name, state: i.state } }) : json(404, { response: { message: ['not found'] } });
@@ -58,6 +73,7 @@ const extServer = http.createServer((req, res) => {
           return json(403, { response: { message: [`This name "${body.instanceName}" is already in use.`] } });
         }
         evo.instances.set(body.instanceName, { state: 'connecting', qrN: 1 });
+        if (body.webhook) evo.webhooks.set(body.instanceName, body.webhook);
         return json(201, { instance: { instanceName: body.instanceName }, qrcode: { base64: 'data:image/png;base64,QR1', pairingCode: body.number ? 'NEWC0DE1' : null } });
       }
       if (path.startsWith('/instance/connect/')) {
@@ -71,17 +87,24 @@ const extServer = http.createServer((req, res) => {
         return json(200, { base64: `data:image/png;base64,QR${i.qrN}`, code: `2@${i.qrN}`, pairingCode: number ? `PAIR${String(i.qrN).padStart(4, '0')}` : null });
       }
       if (path.startsWith('/instance/fetchInstances')) {
-        const i = evo.instances.get(url.searchParams.get('instanceName') ?? '');
-        return json(200, i ? [{ name: url.searchParams.get('instanceName'), connectionStatus: i.state, ownerJid: evo.owner.jid, profileName: evo.owner.name }] : []);
+        const wanted = url.searchParams.get('instanceName');
+        const i = evo.instances.get(wanted ?? '');
+        // Como Evolution 2.3.7 real: pedir una instancia que no existe da 404 (después de validar la llave).
+        if (wanted && !i) return json(404, { status: 404, error: 'Not Found', response: { message: [`Instance "${wanted}" not found`] } });
+        return json(200, i ? [{ name: wanted, connectionStatus: i.state, ownerJid: evo.owner.jid, profileName: evo.owner.name }] : []);
       }
       if (path.startsWith('/instance/logout/')) { const i = evo.instances.get(name); if (i) i.state = 'close'; return json(200, { status: 'SUCCESS' }); }
       if (path.startsWith('/instance/delete/')) {
         evo.instances.delete(name);
+        evo.webhooks.delete(name);
         evo.stuck.delete(name);
         if (evo.slowDeleteMs) evo.deleting.set(name, Date.now() + evo.slowDeleteMs);
         return json(200, { status: 'SUCCESS' });
       }
-      if (path.startsWith('/webhook/set/')) return json(201, { webhook: body.webhook });
+      if (path.startsWith('/webhook/set/')) {
+        evo.webhooks.set(name, body.webhook);
+        return json(201, { webhook: body.webhook });
+      }
     }
     if (path.startsWith('/chat/getBase64FromMediaMessage/')) {
       const file = evo.media.get(body?.message?.key?.id);

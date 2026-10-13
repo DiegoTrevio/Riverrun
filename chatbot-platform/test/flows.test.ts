@@ -59,7 +59,7 @@ t('recorrido: la etapa avanza y la IA la recibe; el objetivo no se cumple si fal
   const prompt = lastSystemPrompt();
   assert.match(prompt, /Etapa actual: 2\. Pedir fechas/);
   assert.match(prompt, /Datos importantes que faltan para cumplir el objetivo: Fechas, Correo/);
-  assert.match(prompt, /# Horario de atención del negocio\nLunes: 00:00 a 23:59/);
+  assert.match(prompt, /## Horario de atención\nLunes: 00:00 a 23:59/);
   assert.match(prompt, /En este momento el negocio está ABIERTO/);
   assert.match(prompt, /\(America\/Bogota\)/, 'la hora sale de "Horario y ajustes", no del chatbot');
   assert.match(prompt, /pasará la conversación a una persona/);

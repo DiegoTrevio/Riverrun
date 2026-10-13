@@ -12,6 +12,16 @@ export function questionList(bot: Pick<Chatbot, 'data_fields'>): Question[] {
   return bot.data_fields.filter((f) => !!f.question.trim());
 }
 
+/** ¿Se vuelve a preguntar en cada solicitud nueva? Por omisión sí, salvo nombre, correo y teléfono. */
+export function repeatsEachRequest(q: Pick<Question, 'type' | 'per_request'>): boolean {
+  return q.per_request ?? !['name', 'email', 'phone'].includes(q.type);
+}
+
+/** Claves de las preguntas que se vuelven a hacer en cada solicitud (sus respuestas se archivan al empezar otra). */
+export function perRequestKeys(bot: Pick<Chatbot, 'data_fields'>): string[] {
+  return questionList(bot).filter(repeatsEachRequest).map((q) => q.key);
+}
+
 /**
  * Dato que corresponde al nombre del contacto: `nombre` si existe; si no, el primer dato de tipo nombre.
  * Otros datos de tipo nombre ("¿Cómo se llama el festejado?") son de otra persona y no tocan la ficha.
@@ -26,8 +36,19 @@ export function isAnswered(q: Pick<Question, 'key'>, data: Record<string, string
   return q.key === nameKey && !!name;
 }
 
+/** Camino que marca la respuesta a una pregunta de opción (null = sigue en orden). */
+export function branchFor(q: Question, answer: string): string | null {
+  const a = normalize(answer.trim());
+  if (!a || q.type !== 'option') return null;
+  return q.branches.find((b) => b.goto && normalize(b.option.trim()) === a)?.goto ?? null;
+}
+
 export interface QuestionProgress {
   answered: Question[];
+  /** No aplican por las respuestas del cliente (un camino las saltó o terminó las preguntas): no se hacen. */
+  notApplicable: Question[];
+  /** La respuesta a esta pregunta pasa la conversación a una persona. */
+  handoff: { question: Question; answer: string } | null;
   /** Opcionales que ya se preguntaron sin respuesta: se dejan pasar para no atorar el recorrido. */
   skipped: Question[];
   /** La que sigue (null = todas respondidas o saltadas). */
@@ -37,7 +58,8 @@ export interface QuestionProgress {
 }
 
 /**
- * Avance con los datos conocidos. `asked` = cuántas veces se hizo cada pregunta en el recorrido actual;
+ * Avance con los datos conocidos, siguiendo los caminos que marcan las respuestas. `asked` = cuántas veces se hizo cada
+ * pregunta en el recorrido actual;
  * `askedEver`, en toda la conversación. Una obligatoria se sigue preguntando hasta tener respuesta; una opcional,
  * una sola vez (aunque la conversación se reabra después).
  */
@@ -48,11 +70,25 @@ export function questionProgress(
   asked: Record<string, number> = {},
   opts: { askedEver?: Record<string, number>; nameKey?: string } = {},
 ): QuestionProgress {
-  const out: QuestionProgress = { answered: [], skipped: [], next: null, missingRequired: [] };
+  const out: QuestionProgress = { answered: [], notApplicable: [], handoff: null, skipped: [], next: null, missingRequired: [] };
   const ever = opts.askedEver ?? asked;
-  for (const q of questions) {
+  // Camino marcado por una respuesta: saltar hasta esa pregunta, o terminar (también al pasar con una persona).
+  let jumpTo: string | null = null;
+  let stopped = false;
+  for (const [i, q] of questions.entries()) {
+    if (stopped || (jumpTo && q.key !== jumpTo)) {
+      out.notApplicable.push(q);
+      continue;
+    }
+    jumpTo = null;
     if (isAnswered(q, data, name, opts.nameKey)) {
       out.answered.push(q);
+      const route = branchFor(q, String(data[q.key] ?? ''));
+      if (route === 'end') stopped = true;
+      else if (route === 'handoff') {
+        stopped = true;
+        out.handoff = { question: q, answer: String(data[q.key]) };
+      } else if (route && questions.slice(i + 1).some((x) => x.key === route)) jumpTo = route;
       continue;
     }
     if (q.required) out.missingRequired.push(q);

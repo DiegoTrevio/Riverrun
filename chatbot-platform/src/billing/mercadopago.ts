@@ -1,10 +1,14 @@
 import crypto from 'node:crypto';
 import { config } from '../config.js';
+import { credentialAllowed } from '../outbound-guard.js';
 import { ProviderError, WebhookError, type BillingProvider, type Plan, type SubStatus, type SubscriptionState } from './types.js';
 
 const cfg = () => config.billing.mercadopago;
+/** Prefijo de las credenciales de prueba de Mercado Pago. Las de producción empiezan por APP_USR-. */
+const TEST_TOKENS = ['TEST-'];
 
 async function call(method: 'GET' | 'POST' | 'PUT', path: string, body?: unknown): Promise<any> {
+  if (!credentialAllowed(cfg().accessToken, TEST_TOKENS)) throw new ProviderError('Mercado Pago: en este entorno (OUTBOUND_MODE=sandbox) solo se usan credenciales de prueba');
   const res = await fetch(cfg().apiUrl + path, {
     method,
     headers: { authorization: `Bearer ${cfg().accessToken}`, ...(body ? { 'content-type': 'application/json' } : {}) },
@@ -59,7 +63,8 @@ export function verifySignature(opts: { signature?: string; requestId?: string; 
 export const mercadopago: BillingProvider = {
   name: 'mercadopago',
   label: 'Mercado Pago',
-  enabled: () => !!(cfg().accessToken && cfg().webhookSecret),
+  // Con una credencial de producción en sandbox no se ofrece el pago: no se puede completar.
+  enabled: () => !!(cfg().accessToken && cfg().webhookSecret) && credentialAllowed(cfg().accessToken, TEST_TOKENS),
   supportsPlan: () => true,
 
   async createCheckout({ accountId, email, plan, successUrl }) {

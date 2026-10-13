@@ -62,9 +62,16 @@ export interface ProcessOptions {
   allowRestart?: boolean;
   /** Ignora el switch Activo/Inactivo (simulador). */
   ignoreInactive?: boolean;
+  /** Ya se abrió una solicitud nueva en este turno (no se abre otra). */
+  newRequestStarted?: boolean;
 }
 
 const MAX_ATTEMPTS = 2;
+/**
+ * Seguro contra repetir: la IA puede abrir una solicitud nueva si la actual ya cumplió su objetivo o empezó hace al menos
+ * este tiempo. Antes, repetir la pregunta es seguir la misma solicitud (se le recuerda lo que ya se le dijo).
+ */
+export const NEW_REQUEST_COOLDOWN_MINUTES = 30;
 
 function joinOptions(list: string[]) {
   return list.length > 1 ? `${list.slice(0, -1).join(', ')} o ${list[list.length - 1]}` : list[0];
@@ -228,7 +235,7 @@ export class Engine {
     }
 
     // 2) Contexto controlado.
-    const [knowledge, allImages, sentImageIds, history, questionJourney] = await Promise.all([
+    const [knowledge, allImages, sentImageIds, history, questionJourney, requests] = await Promise.all([
       store.listKnowledge(bot.id, true),
       store.listImages(bot.id, false),
       store.sentImageIds(conv.id),
@@ -237,6 +244,8 @@ export class Engine {
       store.unsummarizedMessages(conv.id, conv.summary_until_id, bot.ai.recent_messages + bot.ai.summary_batch + pending.length + 4),
       // Preguntas de la lista: cuáles ya se hicieron en este recorrido y si ya se terminaron.
       store.questionJourney(conv.id),
+      // Solicitudes anteriores del cliente en esta conversación (la IA sabe que vuelve por lo mismo).
+      store.listRequests(conv.id),
     ]);
     // "Máximo de fotos por respuesta" en 0: el asistente no envía fotos (ni las que elige la IA ni las automáticas).
     const images = bot.rules.max_images_per_reply > 0 ? allImages.filter((i) => i.active) : [];
@@ -256,7 +265,8 @@ export class Engine {
     // Fotos con momento fijo (las garantiza el sistema): por palabra del cliente o de bienvenida, se saben antes de la IA.
     // Bienvenida: el primer mensaje del cliente, o el primero que el asistente contesta (p. ej. tras una palabra de activación).
     const firstReply = (await store.isFirstLiveInbound(conv.id, pending[0].id)) || (!history.some((m) => m.direction === 'out') && !conv.summary);
-    const scheduledBefore = imagesBeforeReply(images, { text: customerText, firstReply, sentIds: sentImageIds });
+    // Una foto que ya salió para estos mensajes (p. ej. la envió el respaldo cuando la IA no respondía) no se repite.
+    const scheduledBefore = await this.notDeliveredSince(conv.id, pending[0].created_at, imagesBeforeReply(images, { text: customerText, firstReply, sentIds: sentImageIds }));
     const aiImages = aiSelectableImages(images);
     const autoImages = automaticImages(images, bot.flow.steps.map((x) => x.title));
 
@@ -281,6 +291,7 @@ export class Engine {
         autoImages, contextImages: contextualImages(images), imagesNow: scheduledBefore.map((x) => x.image),
         questionAsked: questionJourney.asked,
         questionAskedEver: questionJourney.askedEver,
+        requests,
       });
       let completion;
       try {
@@ -317,7 +328,9 @@ export class Engine {
         groundingSources: ctx.groundingSources,
         claimSources: ctx.claimSources,
         customerSources: ctx.customerSources,
-        customerDataSources: history.filter((m) => m.direction === 'in').map((m) => m.content),
+        // Solo lo que dijo en esta solicitud: una respuesta de una solicitud anterior (la fecha de la reserva pasada) no
+        // contesta la pregunta de nuevo.
+        customerDataSources: history.filter((m) => m.direction === 'in' && (!conv.flow_started_at || new Date(m.created_at) >= new Date(conv.flow_started_at))).map((m) => m.content),
         allowedIntents: intents.map((i) => i.intent),
         agenda: agendaVal,
         hasPhone,
@@ -416,6 +429,20 @@ export class Engine {
     const signature=(items:typeof knowledge)=>items.map(k=>k.id+':'+knowledgeHash(k)+':'+k.always_include).sort().join('|');
     const settings=(b:Chatbot)=>JSON.stringify([b.personality,b.rules,b.ai,b.flow,b.data_fields,b.saved_messages]);
     if(signature(currentKnowledge)!==signature(knowledge) || (liveBot&&settings(liveBot)!==settings(bot))) return {status:opts.allowRestart?'restart':'error'};
+    // 4b) El cliente pide otra vez lo que ya se le resolvió: se abre una solicitud nueva y se vuelve a responder con ella
+    // (preguntas, objetivo, etapas, fotos y avisos cuentan de nuevo). Con el seguro: solo si la actual ya cumplió su
+    // objetivo o empezó hace un rato; si no, repetir la pregunta es seguir la misma solicitud.
+    if (plan.newRequest && !opts.newRequestStarted && plan.action !== 'handoff') {
+      // Sin recorrido registrado, la solicitud empezó con la conversación.
+      const startedAt = new Date(conv.flow_started_at ?? (conv as typeof conv & { created_at: Date }).created_at).getTime();
+      if (conv.goal_completed_at || Date.now() - startedAt >= NEW_REQUEST_COOLDOWN_MINUTES * 60_000) {
+        const n = await store.beginRequest(conv.id, { reason: 'contenido', since: pending[0].created_at });
+        await log('info', 'engine', `Solicitud nueva (${n}.ª): el cliente pide otra vez lo que ya se le había resuelto`);
+        return this.process(conversationId, transport, { ...opts, newRequestStarted: true });
+      }
+      await log('info', 'engine', `La IA marcó una solicitud nueva, pero la actual empezó hace menos de ${NEW_REQUEST_COOLDOWN_MINUTES} min y no ha cumplido su objetivo: se sigue la misma`);
+    }
+
     // 5) Ejecutar.
     const dataBefore = { ...(contact.data ?? {}) };
     const nameBefore = contact.name;
@@ -587,6 +614,36 @@ export class Engine {
       attempts,
       fallbackUsed,
     };
+  }
+
+  /** Quita las fotos que ya llegaron al cliente desde ese momento. */
+  private async notDeliveredSince(conversationId: string, since: Date, list: ScheduledImage[]) {
+    const out: ScheduledImage[] = [];
+    for (const x of list) if (!(await store.imageSentSince(conversationId, x.image.id, since))) out.push(x);
+    return out;
+  }
+
+  /**
+   * La IA no pudo responder (tras reintentar): las fotos que el negocio programó para estos mensajes y no dependen de la
+   * IA (palabras del cliente y bienvenida) salen igual. Se programan como pendientes: así pasan por las mismas
+   * comprobaciones (una persona respondió, asistente en pausa, foto inactiva, ya enviada) y se reintentan si fallan.
+   */
+  async sendRuleImagesWithoutAi(conversationId: string): Promise<number> {
+    const conv = await store.getConversation(conversationId);
+    if (!conv?.chatbot_id || conv.status !== 'bot' || !this.ext.deferImage) return 0;
+    const bot = await store.getChatbot(conv.chatbot_id);
+    if (!bot || !agentActive(bot, conv) || bot.rules.max_images_per_reply <= 0) return 0;
+    const pending = await store.pendingInbound(conv.id);
+    if (!pending.length) return 0;
+    const [images, sentIds, history] = await Promise.all([
+      store.listImages(bot.id, true),
+      store.sentImageIds(conv.id),
+      store.unsummarizedMessages(conv.id, conv.summary_until_id, bot.ai.recent_messages + bot.ai.summary_batch + pending.length + 4),
+    ]);
+    const firstReply = (await store.isFirstLiveInbound(conv.id, pending[0].id)) || (!history.some((m) => m.direction === 'out') && !conv.summary);
+    const owed = await this.notDeliveredSince(conv.id, pending[0].created_at, imagesBeforeReply(images, { text: pending.map((m) => m.content).join('\n'), firstReply, sentIds }));
+    for (const x of owed) await this.ext.deferImage(conv, x.image, { reason: `${x.reason} (la IA no respondió)`, delaySeconds: 0, allowEnded: false, allowRepeat: sentIds.includes(x.image.id) });
+    return owed.length;
   }
 
   /** Envía el plan. Devuelve las fotos que la plataforma rechazó (de reglas del negocio o elegidas por la IA) para reintentarlas. */
