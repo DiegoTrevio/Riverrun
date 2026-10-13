@@ -1,3 +1,4 @@
+import { versionControls, agentTestsCard } from './agent-versions.js';
 import { semanticActivation } from './semantic-activation.js';
 import { tabConnections } from './agent-connections.js';
 import { ACTIONS, triggerSummary, VARS_HELP } from './automation.js';
@@ -29,7 +30,9 @@ const tag = (label, badge) => h('span', {}, label, ' ', badge);
 
 export async function viewBot(root, id, tab, params = new URLSearchParams()) {
   tab = TAB_ALIASES[tab] || tab || 'instrucciones';
-  const bot = await api('GET', `/api/chatbots/${id}`);
+  const published = await api('GET', `/api/chatbots/${id}`);
+  const versions = await api('GET', `/api/chatbots/${id}/versions`);
+  const bot = {...published,...versions.draft_bot,channels:published.channels,photo_warnings:versions.draft_photo_warnings,_draftRevision:versions.draft.revision};
   if (!root.isConnected) return;
   root.append(
     h('a', { href: '#/agentes', class: 'breadcrumb' }, '← Agentes'),
@@ -50,10 +53,12 @@ export async function viewBot(root, id, tab, params = new URLSearchParams()) {
     probar: 'Prueba una conversación antes de conectar el agente. Aquí puedes ver sus respuestas y los datos que guarda.',
   };
   root.append(h('p', { class: 'help', style: 'margin:0 0 24px' }, guidance[tab] || guidance.instrucciones));
+  root.append(versionControls(bot,versions));
   const body = h('div');
+  if(tab==='probar')body.append(agentTestsCard(bot,versions));
   root.append(body);
   const views = { instrucciones: tabInstructions, preguntas: tabQuestions, activacion: tabActivation, avisos: tabNotices, conocimiento: tabKnowledge, imagenes: tabImages, conexiones: tabConnections, probar: tabPlayground };
-  await (views[tab] || tabInstructions)(body, bot, params);
+  await (views[tab] || tabInstructions)(body, tab==='probar'?published:bot, params);
   if (tab !== 'probar' && tab !== 'conexiones') root.insertBefore(draftNotice(['general', 'personality', 'flow', 'rules', 'ai', 'questions', 'saved_messages', 'knowledge-new', 'photo-new', 'notice-new'].map((key) => `${bot.id}:${key}`), render), body);
 }
 
@@ -66,7 +71,7 @@ function restartConversationsButton(bot) {
   } }, 'Reiniciar conversaciones');
 }
 
-export function saveBar(onSave, extra) {
+export function saveBar(onSave, extra, label = 'Guardar cambios') {
   let saving = false;
   const status = h('span', { class: 'small muted', role: 'status' });
   const button = h('button', { class: 'primary', onclick: async () => {
@@ -75,14 +80,17 @@ export function saveBar(onSave, extra) {
     try { await onSave(); status.textContent = ''; }
     catch (error) { status.textContent = 'No se guardó. Inténtalo de nuevo.'; toast(error.message, true); }
     finally { saving = false; button.disabled = false; }
-  } }, 'Guardar cambios');
+  } }, label);
   return h('div', { class: 'sticky-save row' }, button, status, extra);
 }
+
+const draftSaveBar = (onSave, extra) => saveBar(onSave, extra, 'Guardar borrador');
 
 async function saveBot(bot, patch) {
   const keys = Object.keys(patch).filter((key) => key !== 'rules' || patch.rules.verify_facts !== undefined).map((key) => `${bot.id}:${key === 'name' || key === 'active' ? 'general' : key === 'data_fields' ? 'questions' : key}`);
   const versions = keys.map((key) => [key, draftVersion(key)]);
-  const saved = await run(() => api('PUT', `/api/chatbots/${bot.id}`, patch), 'Guardado ✅');
+  delete patch.active;
+  const saved = await run(() => api('PUT', `/api/chatbots/${bot.id}/version-draft`, {revision:bot._draftRevision,patch}), 'Borrador guardado ✅');
   if (saved) versions.forEach(([key, version]) => discardDraft(key, version));
   return saved;
 }
@@ -136,7 +144,7 @@ async function tabInstructions(root, bot) {
       h('div', { class: 'grid' },
         field('Nombre del agente', text(m, 'name')),
         field('Nombre con el que se presenta (opcional)', text(p, 'assistant_name', { placeholder: 'Mario' }))),
-      check(m, 'active', 'Agente encendido'),
+      h('div',{class:'row'},h('span',{class:'small'},'Estado de atención (se aplica de inmediato):'),h('button',{onclick:async()=>{if(await run(()=>api('PUT',`/api/chatbots/${bot.id}`,{active:!bot.active}),bot.active?'Agente pausado':'Agente encendido')) render();}},bot.active?'Pausar agente':'Encender agente')),
       h('details', { class: 'readiness' }, h('summary', {}, 'Revisar antes de encender'), h('ul', { class: 'checklist' },
         h('li', {}, bot.personality.prompt.trim() ? '✓ Instrucciones configuradas' : '○ Completa las instrucciones'),
         h('li', {}, bot.channels?.some((c) => c.active && (c.type !== 'whatsapp' || c.connection_state === 'open')) ? '✓ Tiene una conexión disponible' : ['○ Conecta un teléfono en ', h('a', { href: `#/bot/${bot.id}/conexiones` }, 'Conexiones')]),
@@ -154,7 +162,7 @@ async function tabInstructions(root, bot) {
         field('Emojis', select(p, 'emojis', [['none', 'Ninguno'], ['few', 'Pocos'], ['normal', 'Libre']]))),
       field('Tono', h('input', { value: p.tone.join(', '), oninput: (e) => { p.tone = e.target.value.split(',').map((x) => x.trim()).filter(Boolean); } })),
       field('Idioma', text(p, 'language'))),
-    saveBar(async () => { if (await saveBot(bot, { ...m, personality: p, flow: f })) render(); }),
+    draftSaveBar(async () => { if (await saveBot(bot, { ...m, personality: p, flow: f })) render(); }),
   );
   const advanced = h('details', { class: 'card' }, h('summary', {}, 'Opciones avanzadas'));
   for (const [label, view] of [['Canales y administración', tabGeneral], ['Reglas y transferencia a una persona', tabRules], ['Recorrido y modelo de IA', tabAdvanced]]) {
@@ -551,7 +559,7 @@ function tabQuestions(root, bot) {
       h('h2', { style: 'margin-top:0' }, 'Al terminar las preguntas'),
       check(a, 'off_on_questions', tag('Apagar el asistente en esa conversación cuando el cliente responda todas las preguntas', guaranteed())),
       h('p', { class: 'small muted', style: 'margin:0' }, 'Responde ese último mensaje y después se apaga. Qué pasa al apagarse (pausa, pasar a una persona o cerrar) y el mensaje de despedida se configuran en ', h('a', { href: `#/bot/${bot.id}/activacion` }, 'Activación'), '.')),
-    saveBar(save),
+    draftSaveBar(save),
   );
 }
 
@@ -708,7 +716,7 @@ function tabRules(root, bot) {
       check(r, 'avoid_repeating_images', tag('No reenviar fotos ya enviadas (salvo que el cliente las pida)', guaranteed())),
       h('p', { class: 'small muted' }, guaranteed(), ' Solo se envían fotos de tu catálogo; nunca promete una foto que no existe.'),
     ),
-    saveBar(async () => { if (await saveBot(bot, { rules: r })) render(); }),
+    draftSaveBar(async () => { if (await saveBot(bot, { rules: r })) render(); }),
   );
 }
 
@@ -754,7 +762,7 @@ function tabActivation(root, bot) {
       check(r, 'pause_on_human_reply', tag('Si alguien del equipo contesta desde el teléfono, el asistente se calla en esa conversación', guaranteed())),
       h('p', { class: 'small muted', style: 'margin:0' }, 'Aplica también si la conversación está cerrada, y queda registrado en el contacto quién la atendió y cuándo. Lo que escribes desde el panel siempre pausa al asistente.')),
     h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, 'Probar palabras'), messageTester([bot], bot.id)),
-    saveBar(async () => {
+    draftSaveBar(async () => {
       a.on_keywords = a.on_keywords.filter((x) => x.trim());
       if (a.mode === 'keywords' && !a.on_keywords.length) return toast('Escribe al menos una palabra que active al asistente', true);
       if (await saveBot(bot, { rules: r })) render();
@@ -814,7 +822,7 @@ function tabAdvanced(root, bot) {
     h('div', { class: 'card legend' }, h('p', { style: 'margin:0' }, 'No necesitas cambiar nada aquí para que tu asistente funcione. Son ajustes finos del recorrido de la conversación y del modelo de IA.')),
     flowSection(f),
     aiSection(a),
-    saveBar(async () => { if (await saveBot(bot, { ...flowBody(), ai: a })) render(); }),
+    draftSaveBar(async () => { if (await saveBot(bot, { ...flowBody(), ai: a })) render(); }),
   );
 }
 

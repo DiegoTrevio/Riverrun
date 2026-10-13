@@ -74,10 +74,11 @@ try {
   await page.getByRole('link', { name: 'Instrucciones', exact: true }).click();
   assert.equal(await instructions.inputValue(), 'BORRADOR_CONSERVADO');
   await page.reload(); assert.equal(await instructions.inputValue(), 'BORRADOR_CONSERVADO');
-  await page.getByRole('button', { name: 'Guardar cambios', exact: true }).first().click();
+  await page.getByRole('button', { name: 'Guardar borrador', exact: true }).first().click();
   await page.waitForTimeout(200);
-  assert.equal((await h.authed('GET', `/api/chatbots/${h.botId}`)).json().personality.prompt, 'BORRADOR_CONSERVADO');
-  checked('Borrador recuperable entre secciones y recarga; guardado real');
+  assert.equal((await h.authed('GET', `/api/chatbots/${h.botId}/versions`)).json().draft_bot.personality.prompt, 'BORRADOR_CONSERVADO');
+  assert.notEqual((await h.authed('GET', `/api/chatbots/${h.botId}`)).json().personality.prompt, 'BORRADOR_CONSERVADO');
+  checked('Borrador recuperable entre secciones y recarga; guardado en servidor sin alterar la versión publicada');
   await go(`bot/${h.botId}/conocimiento`);
   const knowledge = page.locator('.list-item[data-search]').first();
   await knowledge.getByRole('button', { name: 'Editar', exact: true }).click();

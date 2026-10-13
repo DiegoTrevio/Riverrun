@@ -1,3 +1,4 @@
+import { settleAgentTests } from './agent-quality.js';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -67,6 +68,7 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
   const app = Fastify({ logger: opts.logger ?? false, bodyLimit: 10 * 1024 * 1024, trustProxy: (_addr: string, hop: number) => hop < config.trustProxyHops });
   const service = new ChatService(opts.ai, opts.transportFactory);
   app.addHook('onClose', async () => {
+    await settleAgentTests();
     await service.inbox.stop();
     await service.scheduler.stop();
     service.stopSweeper();

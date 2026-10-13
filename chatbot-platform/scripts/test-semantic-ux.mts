@@ -21,7 +21,7 @@ try {
  const v=Array.from({length:1536},(_,i)=>i===0?1:0);h.ai.embed=async(texts,model)=>({vectors:texts.map(()=>v),model,input_tokens:10,latency_ms:1,cost_usd:0.00001});
  await store.upsertKnowledge(h.botId,{title:'Tarifa autorizada',content:'La habitación cuesta $1,650.',source_url:'https://example.com/tarifas'});
  await h.app.listen({host:'127.0.0.1',port:0});const base=`http://127.0.0.1:${(h.app.server.address() as any).port}`;
- browser=await chromium.launch({executablePath:process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE??'/usr/bin/chromium',args:['--no-sandbox']});
+ browser=await chromium.launch({...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE?{executablePath:process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE}:{}),args:['--no-sandbox']});
  const context=await browser.newContext({viewport:{width:1366,height:1000}});const ix=h.cookie.indexOf('=');
  await context.addCookies([{name:h.cookie.slice(0,ix),value:h.cookie.slice(ix+1),url:base}]);await context.addInitScript(id=>localStorage.setItem('cp-account',id),h.accountId);
  const page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));

@@ -421,7 +421,7 @@ export class ChatService {
   }
 
   /** Aplica los activadores/desactivadores a un mensaje del cliente. Devuelve si la IA debe responder. */
-  private async applyGate(bot: Chatbot, channel: Channel, conv: Conversation, contact: Contact, text: string, transport?: Transport): Promise<boolean> {
+  async applyGate(bot: Chatbot, channel: Channel, conv: Conversation, contact: Contact, text: string, transport?: Transport, engine = this.engine): Promise<boolean> {
     const g = gate(bot.rules.activation, conv, text);
     if (g.change === 'on') {
       await store.setAgentOn(conv.id);
@@ -435,7 +435,7 @@ export class ChatService {
         await store.setAgentOff(conv.id, g.reason, null);
         return false;
       }
-      await this.engine.deactivate(bot, conv, contact, t, g.reason);
+      await engine.deactivate(bot, conv, contact, t, g.reason);
     }
     return g.reply;
   }

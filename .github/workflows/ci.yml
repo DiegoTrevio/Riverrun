@@ -56,6 +56,8 @@ jobs:
         run: npm run test:ux
       - name: Activación semántica en navegador y aislamiento de base
         run: npm run test:semantic:ux
+      - name: Agent drafts, publication and Promptfoo UX
+        run: npm run test:agent:ux
       - name: Guardar evidencia UX
         if: always()
         uses: actions/upload-artifact@v4

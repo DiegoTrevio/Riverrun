@@ -124,6 +124,11 @@ export class Engine {
 
   constructor(private ai: AiProvider, private ext: EngineExtensions = {}) {}
 
+  /** Same decisions, validators and outbound planning; no automation delivery or external agenda writes. */
+  evaluationEngine(ai: AiProvider, agenda: EngineExtensions['agenda'], onEvent: NonNullable<EngineExtensions['onEvent']>) {
+    return new Engine(ai, { intents: this.ext.intents, business: this.ext.business, agenda, onEvent });
+  }
+
   /** Procesa los mensajes pendientes de una conversación y ejecuta la acción validada. */
   /**
    * Juez de afirmaciones (modo estricto): un modelo barato dice qué de la respuesta no respalda la información del negocio.

@@ -1,3 +1,5 @@
+import { agentVersionRoutes } from './agent-versions.js';
+import type { PoolClient } from 'pg';
 import { buildAgent, WizardSchema } from '../templates/agent-builder.js';
 import * as astore from '../automation/store.js';
 import crypto from 'node:crypto';
@@ -231,9 +233,8 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
     return { ...visibleBot(req.user, bot), channels, photo_warnings: photoWarnings(bot, await store.listImages(bot.id)) };
   });
 
-  api.put('/api/chatbots/:id', admins, async (req: any) => {
-    const existing = await botFor(req.user, req.params.id);
-    const raw = (req.body ?? {}) as Record<string, any>;
+  const normalizeConfiguration = async (existing: Chatbot, input: unknown): Promise<Record<string,any>> => {
+    const raw = (input ?? {}) as Record<string, any>;
     const data: Record<string, any> = { ...parse(ChatbotBody, raw) };
     await checkSavedImages(existing.id, data.saved_messages, existing.saved_messages);
     // Las secciones se fusionan con lo guardado: enviar solo un campo no reinicia los demás.
@@ -248,7 +249,13 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
       }
     }
     checkActivation(data.rules, existing.rules);
-    const stepMap: number[] | undefined = data.flow_step_map;
+    const formality = data.personality?.formality;
+    if (formality && formality !== existing.personality.formality) data.rules = alignFixedMessages(data.rules ?? existing.rules, formality);
+    return data;
+  };
+  const applyConfiguration = async (existing: Chatbot, patch: Record<string,any>, client: PoolClient, remapOnly = false) => {
+    const stepMap: number[] | undefined = patch.flow_step_map;
+    const data = { ...patch };
     delete data.flow_step_map;
     if (stepMap && data.flow) {
       // Una etapa que ya no existía antes (quedó de otro cambio) tampoco existe ahora: se quita.
@@ -257,18 +264,26 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
         const w = imageSendWhen(img);
         if (!w.flow_steps.length) continue;
         const steps = [...new Set(w.flow_steps.map(remap).filter((n) => n > 0))];
-        if (steps.join() !== w.flow_steps.join()) await store.updateImage(img.id, { send_when: { ...w, flow_steps: steps } });
+        if (steps.join() !== w.flow_steps.join()) await store.updateImage(img.id, { send_when: { ...w, flow_steps: steps } }, client);
       }
       const saved: SavedMessage[] = data.saved_messages ?? existing.saved_messages;
       if (saved.some((m) => m.flow_step)) data.saved_messages = saved.map((m) => ({ ...m, flow_step: m.flow_step ? remap(m.flow_step) : 0 }));
       // Las conversaciones en curso siguen en la misma etapa (con su nuevo número).
-      await store.remapFlowSteps(existing.id, stepMap);
+      await store.remapFlowSteps(existing.id, stepMap, client);
     }
-    // Al cambiar el trato (tú/usted), los mensajes fijos de fábrica se ajustan para no mezclar tratos.
-    const formality = data.personality?.formality;
-    if (formality && formality !== existing.personality.formality) data.rules = alignFixedMessages(data.rules ?? existing.rules, formality);
-    const bot = await store.updateChatbot(existing.id, data);
-    await logEvent({ level: 'info', source: 'admin', message: `Configuración actualizada (${Object.keys(data).join(', ')})`, accountId: existing.account_id, chatbotId: existing.id });
+    return remapOnly ? existing : store.updateChatbot(existing.id, data, client);
+  };
+  await agentVersionRoutes(api, service, normalizeConfiguration, applyConfiguration);
+  api.put('/api/chatbots/:id', admins, async (req: any) => {
+    await botFor(req.user, req.params.id);
+    const bot = await withTransaction(async client => {
+      const row = (await client.query('SELECT * FROM chatbots WHERE id=$1 FOR UPDATE',[req.params.id])).rows[0];
+      if(!row)throw notFound();
+      const existing = (await store.getChatbot(row.id))!;
+      await client.query("SELECT set_config('riverrun.author_id',$1,true),set_config('riverrun.author_name',$2,true)",[req.user.id,req.user.email]);
+      return applyConfiguration(existing, await normalizeConfiguration(existing, req.body), client);
+    });
+    if(bot)await logEvent({level:'info',source:'admin',message:`Configuración actualizada (${Object.keys(req.body??{}).join(', ')})`,accountId:bot.account_id,chatbotId:bot.id});
     return bot;
   });
 
