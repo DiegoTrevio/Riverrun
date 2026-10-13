@@ -46,14 +46,15 @@ export async function agentSuite(botId:string) {
   return (await queryOne<{revision:number;cases:AgentCase[]}>('SELECT revision,cases FROM agent_test_suites WHERE chatbot_id=$1',[botId]))!;
 }
 export async function qualitySignature(bot:Chatbot,draft:AgentDraft,suiteSnapshot?:{revision:number;cases:AgentCase[]}) {
-  const [suite,knowledge,images,services,settings,intents,policy] = await Promise.all([
+  const [suite,knowledge,images,services,settings,intents,policy,budget] = await Promise.all([
     suiteSnapshot??queryOne('SELECT revision,cases FROM agent_test_suites WHERE chatbot_id=$1',[bot.id]),store.listKnowledge(bot.id),store.listImages(bot.id),
     query('SELECT * FROM services WHERE account_id=$1 ORDER BY id',[bot.account_id]),
     query('SELECT settings FROM accounts WHERE id=$1',[bot.account_id]),
     query('SELECT * FROM automations WHERE account_id=$1 ORDER BY id',[bot.account_id]),
     query('SELECT * FROM semantic_settings WHERE account_id=$1',[bot.account_id]),
+    query('SELECT revision,settings FROM ai_budget_settings WHERE account_id=$1',[bot.account_id]),
   ]);
-  return crypto.createHash('sha256').update(canonical({engine:1,draft:{revision:draft.revision,configuration:draft.configuration,step_map:draft.step_map,image_rules:draft.image_rules},suite,knowledge,images,services,settings,intents,policy,
+  return crypto.createHash('sha256').update(canonical({engine:1,draft:{revision:draft.revision,configuration:draft.configuration,step_map:draft.step_map,image_rules:draft.image_rules},suite,knowledge,images,services,settings,intents,policy,budget,
     provider:{url:config.openai.baseUrl,model:config.openai.defaultModel,fallback:config.openai.fallbackModels,summary:config.openai.summaryModel},search:config.knowledgeSearch})).digest('hex');
 }
 

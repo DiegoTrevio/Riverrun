@@ -40,6 +40,8 @@ export interface CompletionRequest {
 
 /** Interfaz mínima del proveedor de IA: permite cambiar de proveedor o simularlo en pruebas. */
 export interface AiProvider {
+  /** Monetary budgets must not retry an ambiguous charged request inside the adapter. */
+  forBudget?(): AiProvider;
   embed?(texts: string[], model: string): Promise<EmbeddingResult>;
   complete(req: CompletionRequest): Promise<CompletionResult>;
   transcribe(audio: Buffer, mimeType: string): Promise<string | CompletionResult>;
@@ -58,7 +60,9 @@ export function validEmbedding(v: unknown): v is number[] {
 }
 
 export class AiError extends Error {
-  constructor(message: string, public status?: number, public body?: string) {
+  notDispatched=false;
+  static beforeDispatch(message:string) {const error=new AiError(message);error.notDispatched=true;return error;}
+  constructor(message: string, public status?: number, public body?: string, public definiteRejection = true) {
     super(message);
   }
 }
@@ -76,10 +80,11 @@ export class OpenAiProvider implements AiProvider {
     private provider: 'openrouter' | 'openai' = new URL(baseUrl).hostname === 'openrouter.ai' ? 'openrouter' : 'openai',
     private maxAttempts = 3,
   ) {}
+  forBudget():AiProvider {return new OpenAiProvider(this.apiKey,this.baseUrl,this.timeoutMs,this.provider,1);}
 
   async embed(texts: string[], model: string): Promise<EmbeddingResult> {
-    if (!this.apiKey) throw new AiError('Configura la clave API para generar embeddings.');
-    if (!texts.length || texts.length > 64) throw new AiError('Lote de embeddings inválido.');
+    if (!this.apiKey) throw AiError.beforeDispatch('Configura la clave API para generar embeddings.');
+    if (!texts.length || texts.length > 64) throw AiError.beforeDispatch('Lote de embeddings inválido.');
     const started = Date.now();
     const res = await this.post('/embeddings', JSON.stringify({ model: this.model(model), input: texts, encoding_format: 'float', dimensions: 1536 }), { 'content-type': 'application/json' });
     const data: any = await res.json();
@@ -91,7 +96,7 @@ export class OpenAiProvider implements AiProvider {
   }
 
   async complete(req: CompletionRequest): Promise<CompletionResult> {
-    if (!this.apiKey) throw new AiError(this.provider === 'openrouter' ? 'Configura OPENROUTER_API_KEY para conectar el asistente con OpenRouter.' : 'OPENAI_API_KEY no configurado');
+    if (!this.apiKey) throw AiError.beforeDispatch(this.provider === 'openrouter' ? 'Configura OPENROUTER_API_KEY para conectar el asistente con OpenRouter.' : 'OPENAI_API_KEY no configurado');
     const reasoning = isReasoningModel(req.model);
     const body: Record<string, unknown> = {
       model: this.model(req.model),
@@ -123,7 +128,7 @@ export class OpenAiProvider implements AiProvider {
     const started = Date.now();
     const res = await this.post('/chat/completions', JSON.stringify(body), { 'content-type': 'application/json' });
     const data: any = await res.json();
-    if (data.error) throw new AiError(`${this.label}: el proveedor no pudo generar una respuesta.`, data.error.code);
+    if (data.error) throw new AiError(`${this.label}: el proveedor no pudo generar una respuesta.`, data.error.code, undefined, false);
     const choice = data.choices?.[0];
     if (choice?.message?.refusal) throw new AiError(`El modelo se negó a responder: ${choice.message.refusal}`);
     const content: string = choice?.message?.content ?? '';
@@ -142,11 +147,11 @@ export class OpenAiProvider implements AiProvider {
   }
 
   async transcribe(audio: Buffer, mimeType: string): Promise<string | CompletionResult> {
-    if (!this.apiKey) throw new AiError(this.provider === 'openrouter' ? 'Configura OPENROUTER_API_KEY para conectar el asistente con OpenRouter.' : 'OPENAI_API_KEY no configurado');
+    if (!this.apiKey) throw AiError.beforeDispatch(this.provider === 'openrouter' ? 'Configura OPENROUTER_API_KEY para conectar el asistente con OpenRouter.' : 'OPENAI_API_KEY no configurado');
     if (this.provider === 'openrouter') {
       const formats: Record<string, string> = { 'audio/ogg': 'ogg', 'audio/opus': 'ogg', 'audio/mpeg': 'mp3', 'audio/mp3': 'mp3', 'audio/mp4': 'm4a', 'audio/x-m4a': 'm4a', 'audio/wav': 'wav', 'audio/x-wav': 'wav', 'audio/flac': 'flac', 'audio/aac': 'aac' };
       const format = formats[mimeType.split(';')[0].trim()];
-      if (!format) throw new AiError('Formato de audio no compatible con la transcripción.');
+      if (!format) throw AiError.beforeDispatch('Formato de audio no compatible con la transcripción.');
       const started = Date.now();
       const res = await this.post('/chat/completions', JSON.stringify({
         model: this.model(config.openai.transcriptionModel),

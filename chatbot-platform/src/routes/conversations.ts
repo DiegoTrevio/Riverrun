@@ -1,3 +1,4 @@
+import { contactWorkspaceRoutes } from './contact-workspace.js';
 import fs from 'node:fs';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -19,6 +20,7 @@ import { inboundAbsolutePath, safeFileName } from '../channels/media.js';
 
 /** Conversaciones y contactos: disponible para administradores y agentes de la cuenta. */
 export async function conversationRoutes(api: FastifyInstance, service: ChatService) {
+  await contactWorkspaceRoutes(api);
   api.get('/api/conversations/:cid/work',async(req:any)=>{
     const conv=await conversationFor(req.user,req.params.cid);
     const work=(await query('SELECT state,run_at,attempts,restarts,reason,updated_at FROM conversation_work WHERE conversation_id=$1',[conv.id]))[0]??null;

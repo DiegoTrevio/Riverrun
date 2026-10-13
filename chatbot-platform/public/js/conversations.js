@@ -1,3 +1,4 @@
+import { workspaceTabs } from './contact-workspace.js';
 import { workRecovery } from './work-recovery.js';
 import { dataLabel, flowCard } from './bot.js';
 import { channelIcon } from './channels.js';
@@ -13,7 +14,7 @@ const STATUS_BADGE = { bot: ['green', 'Bot'], human: ['orange', 'Humano'], close
 const REQUEST_REASON = { inicio: 'primer contacto', tiempo: 'volvió después de un tiempo', contenido: 'pidió otra vez lo mismo', reapertura: 'se reabrió la conversación', campaña: 'una campaña', reinicio: 'se reinició' };
 
 /** Solicitudes del cliente en esta conversación: cada vez que volvió por lo mismo, con su resultado y sus respuestas. */
-function requestsCard(list = []) {
+export function requestsCard(list = []) {
   if (list.length < 2) return null;
   return h('details', { class: 'small', open: true }, h('summary', {}, `Solicitudes: ${list.length} (la actual es la ${list.length}.ª)`),
     h('ul', { style: 'margin:6px 0;padding-left:18px' }, [...list].reverse().map((r) => h('li', {},
@@ -35,7 +36,7 @@ function handoffLine(ct, by) {
 }
 
 /** Pendientes y notas del cliente: lo que falta por hacer con esa persona, o dónde se quedó la conversación. */
-function tasksCard(data, c, ct, reload, draft) {
+export function tasksCard(data, c, ct, reload, draft) {
   let adding = false;
   const tasks = data.tasks || [];
   const open = tasks.filter((t) => t.kind === 'pendiente' && t.status === 'abierta').length;
@@ -147,6 +148,7 @@ export async function viewConversations(root, params) {
     : null;
   root.append(
     h('div', { class: 'row between' }, h('h1', {}, 'Conversaciones'), exportMenu),
+    workspaceTabs('inbox'),
     h('div', { class: 'card row' },
       h('div', { class: 'filter' }, field('Agente', select(f, 'chatbot_id', [['', 'Todos los chatbots'], ...bots.map((b) => [b.id, b.name])], apply))),
       h('div', { class: 'filter' }, field('Plataforma', select(f, 'channel_type', [['', 'Todas las plataformas'], ...types], apply))),
@@ -377,6 +379,7 @@ export async function viewConversation(root, id) {
       await saveContact(merged, current.conversation.data_version);
     };
     fill(side, sideHint,
+      h('a',{class:'btn',href:`#/contact/${ct.id}`},'Ver ficha del contacto'),
       (refreshTasks(), tasksBox),
       h('div', { class: 'card', id: 'customer-data', tabindex: '-1' },
         h('h2', { style: 'margin-top:0' }, 'Datos del cliente'),

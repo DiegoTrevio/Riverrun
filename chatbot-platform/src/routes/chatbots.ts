@@ -1,3 +1,4 @@
+import { accountAi } from '../ai/budget.js';
 import { agentVersionRoutes } from './agent-versions.js';
 import type { PoolClient } from 'pg';
 import { buildAgent, WizardSchema } from '../templates/agent-builder.js';
@@ -369,8 +370,7 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
     if(!(await knowledgeReadiness()).database_ready) throw new HttpError(409,'La base de datos no está lista para búsqueda semántica.');
     try {
       const text='Prueba sintética de conocimiento semántico.';
-      await reserveEmbeddingTokens(bot.account_id,[text]);
-      const result=await ai.embed([text],config.knowledgeSearch.model);
+      const result=await accountAi(ai,bot.account_id,bot.id,'embedding',()=>reserveEmbeddingTokens(bot.account_id,[text])).embed!([text],config.knowledgeSearch.model);
       if(result.vectors.length!==1||!validEmbedding(result.vectors[0])) throw new Error('invalid');
       await store.insertAiRun({account_id:bot.account_id,chatbot_id:bot.id,conversation_id:null,kind:'embedding',model:result.model,input_tokens:result.input_tokens,cached_tokens:0,output_tokens:0,latency_ms:result.latency_ms,cost_usd:result.cost_usd});
       await query(`INSERT INTO semantic_settings(account_id,verified_model) VALUES($1,$2) ON CONFLICT(account_id) DO UPDATE SET verified_model=$2,updated_at=now()`,[bot.account_id,config.knowledgeSearch.model]);

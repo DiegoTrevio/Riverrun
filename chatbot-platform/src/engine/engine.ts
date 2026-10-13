@@ -1,3 +1,4 @@
+import { accountAi, AiBudgetBlocked } from '../ai/budget.js';
 import { knowledgeHash } from './knowledge.js';
 import { query, queryOne,withTransaction } from '../db.js';
 import { OutboundBlockedError } from '../outbound-guard.js';
@@ -140,7 +141,7 @@ export class Engine {
   ): Promise<string[]> {
     try {
       const info = sources.join('\n---\n').slice(0, 30_000);
-      const res = await this.ai.complete({
+      const res = await accountAi(this.ai, accountId, chatbotId, 'decision').complete({
         model: config.openai.summaryModel,
         temperature: 0,
         max_tokens: 500,
@@ -302,7 +303,7 @@ export class Engine {
       });
       let completion;
       try {
-        completion = await this.ai.complete({
+        completion = await accountAi(this.ai, conv.account_id, bot.id, 'decision').complete({
           model,
           fallback_models: bot.ai.fallback_models,
           messages: ctx.messages,
@@ -311,6 +312,11 @@ export class Engine {
           json_schema: { name: 'chatbot_decision', schema: DECISION_JSON_SCHEMA as unknown as Record<string, unknown> },
         });
       } catch (e: any) {
+        if(e instanceof AiBudgetBlocked){
+          await this.executeHandoff(bot,conv,contact,transport,[bot.rules.handoff_message||'Una persona del equipo te ayudará a continuar.'],e.message);
+          await store.markProcessed(conv.id,lastPendingId);
+          return {status:'handoff',plan:emptyPlan('handoff'),fallbackUsed:true,attempts};
+        }
         await log('error', 'ai', 'ai_provider_failed', {reason:'provider_unavailable'});
         // Si ya hubo una propuesta (rechazada), se corrige/asegura en vez de quedarse callado.
         if (plan && lastInput) {

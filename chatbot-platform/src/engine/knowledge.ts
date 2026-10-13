@@ -1,3 +1,4 @@
+import { accountAi } from '../ai/budget.js';
 import { semanticPolicy, reserveEmbeddingTokens } from './semantic-policy.js';
 import { createHash } from 'node:crypto';
 import { config } from '../config.js';
@@ -43,9 +44,9 @@ async function embed(ai: AiProvider, bot: Chatbot, texts: string[], model = conf
   try {
     if (!ai.embed) throw new Error('El proveedor no soporta embeddings.');
     stage='budget';
-    await reserveEmbeddingTokens(bot.account_id,texts);
-    stage='provider';
-    const result = await ai.embed(texts, model);
+    const result = await accountAi(ai, bot.account_id, bot.id, 'embedding',async()=>{
+      await reserveEmbeddingTokens(bot.account_id,texts);stage='provider';
+    }).embed!(texts, model);
     stage = 'validation';
     if (result.vectors.length !== texts.length || result.vectors.some((v) => !validEmbedding(v))) throw new Error('Embeddings inválidos.');
     stage = 'storage';

@@ -1,3 +1,4 @@
+import { accountAi } from './ai/budget.js';
 import { syncAppointment } from './integrations/google.js';
 import crypto from 'node:crypto';
 import type { AiProvider } from './ai/provider.js';
@@ -278,7 +279,7 @@ export class ChatService {
         const audio = await adapter.downloadAudio(channel, msg);
         if (audio) {
           const started = Date.now();
-          const result = await this.ai.transcribe(audio.buffer, audio.mimeType);
+          const result = await accountAi(this.ai,channel.account_id,bot?.id??null,'transcription').transcribe(audio.buffer, audio.mimeType);
           const text = typeof result === 'string' ? result : result.content;
           if (text) content = `[Nota de voz del cliente, transcrita]: "${text}"`;
           // Se registra para el costo por cuenta. Sin duración de la plataforma, se estima (~2 KB por segundo de Opus).
