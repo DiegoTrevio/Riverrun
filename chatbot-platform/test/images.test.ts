@@ -176,7 +176,7 @@ t('si WhatsApp rechaza la foto: queda como fallida, en Registros, y el panel mue
   const msg = (await pool.query(`SELECT status FROM messages WHERE conversation_id = $1 AND image_id = $2`, [conv.id, IDS.suite])).rows[0];
   assert.equal(msg.status, 'failed');
   const logs = (await pool.query(`SELECT message FROM event_logs WHERE conversation_id = $1`, [conv.id])).rows.map((x) => x.message).join('\n');
-  assert.match(logs, /No se pudo enviar la imagen suite \(whatsapp\): Evolution sendMedia → HTTP 400/);
+  assert.match(logs,/delivery_failure/);
   // Una foto fallida no cuenta como enviada: la siguiente vez sí sale.
   assert.equal((await h.authed('POST', `/api/conversations/${conv.id}/send-image`, { image_id: IDS.suite, takeover: false })).statusCode, 200);
 });
@@ -238,7 +238,7 @@ t('solo confirma en registros fotos entregadas y una foto fallida puede pedirse 
   const conv=await h.conversationFor(phone);
   let logs=(await pool.query('SELECT message FROM event_logs WHERE conversation_id=$1',[conv.id])).rows.map(r=>r.message);
   assert.ok(!logs.some(msg=>msg.includes('Foto enviada por regla: menu')));
-  assert.ok(logs.some(msg=>msg.includes('No se pudo enviar la imagen menu')));
+  assert.ok(logs.some(msg=>msg==='delivery_failure'));
   await say('carta',phone);
   assert.equal(photosTo(phone).filter(code=>code==='menu').length,1);
   logs=(await pool.query('SELECT message FROM event_logs WHERE conversation_id=$1',[conv.id])).rows.map(r=>r.message);

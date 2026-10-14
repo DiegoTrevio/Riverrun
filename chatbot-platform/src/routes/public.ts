@@ -44,19 +44,17 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
       await logEvent({ level: 'warn', source: 'webhook', message: `${adapter.label}: firma o secreto inválido; se rechaza`, accountId: channel.account_id, channelId: channel.id, details: { ip: req.ip } });
       return reply.code(401).send({ ok: false });
     }
-    // Responder rápido a la plataforma y procesar en segundo plano.
-    reply.send({ ok: true });
+    // Commit normalized receipts before acknowledging; processing is owned by PostgreSQL workers.
     try {
       const { messages, notices, connection, qr } = adapter.parse(webhookReq);
       if (qr) await store.saveQr(channel.id, qr);
       for (const n of notices ?? []) await logEvent({ level: n.level, source: 'channel', message: n.message, accountId: channel.account_id, channelId: channel.id });
       if (connection) await recordConnectionState(channel, connection);
-      // Un mensaje que no se pudo guardar no detiene al resto del lote: se registra y se siguen los demás.
-      for (const m of messages) {
-        await service.handleIncoming(channel, m).catch((e) => logEvent({ level: 'error', source: 'webhook', message: `Mensaje no guardado (${m.messageId}): ${e?.message ?? e}`, accountId: channel.account_id, channelId: channel.id, details: { messageId: m.messageId } }));
-      }
+      await service.inbox.accept(channel,messages);
+      return reply.send({ok:true});
     } catch (e: any) {
-      await logEvent({ level: 'error', source: 'webhook', message: `Error procesando webhook: ${e?.message ?? e}`, accountId: channel.account_id, channelId: channel.id, details: e });
+      await logEvent({ level: 'error', source: 'webhook', message: 'webhook_receipt_failed', accountId: channel.account_id, channelId: channel.id, details: {reason:'parse_or_storage'} }).catch(()=>undefined);
+      return reply.code(503).send({ok:false,error:'No se pudo guardar la recepción. Reintenta.'});
     }
   };
   // Evolution puede agregar el nombre del evento al final de la URL (webhook_by_events); lo aceptamos.

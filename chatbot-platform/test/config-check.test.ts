@@ -240,3 +240,10 @@ test('ALERT_MUTE: sin fecha avisa de que no vence; una entrada que no se entiend
   const bien = validateConfig(installed({ ALERT_MUTE: 'backup=2030-01-01T00:00:00Z' }));
   assert.equal(bien.issues.filter((i) => i.id.startsWith('alert_mute')).length, 0);
 });
+
+test('rechaza rol, tiempos y límites inválidos de procesamiento durable antes de arrancar',()=>{
+ const report=validateConfig(installed({PROCESS_ROLE:'invalid',QUEUE_CONCURRENCY:'0',QUEUE_RETRY_MS:'Infinity',KNOWLEDGE_MIN_SIMILARITY:'2',KNOWLEDGE_SEARCH_FORCE_OFF:'yes'}));
+ for(const name of ['PROCESS_ROLE','QUEUE_CONCURRENCY','QUEUE_RETRY_MS','KNOWLEDGE_MIN_SIMILARITY','KNOWLEDGE_SEARCH_FORCE_OFF']) {
+  assert.ok(report.issues.some(issue=>issue.vars.includes(name)&&issue.level==='critical'),name);
+ }
+});

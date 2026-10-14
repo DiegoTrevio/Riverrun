@@ -217,16 +217,21 @@ export function checkDisk(statfs: typeof fs.statfsSync = fs.statfsSync): CheckRe
 async function checkQueue(): Promise<CheckResult> {
   const base = { name: 'queue', label: 'Cola de mensajes y trabajos' };
   try {
-    const r = await queryOne<{ pending: number; stuck: number; inbound_waiting: number }>(`
+    const r = await queryOne<{ pending: number; stuck: number; inbound_waiting: number; receipts_pending:number; receipts_dead:number; conversations_pending:number; conversations_dead:number }>(`
       SELECT (SELECT count(*)::int FROM jobs WHERE status = 'pending') AS pending,
              (SELECT count(*)::int FROM jobs WHERE status = 'running' AND started_at < now() - interval '15 minutes') AS stuck,
              (SELECT count(*)::int FROM messages m
                 JOIN conversations c ON c.id = m.conversation_id
                 JOIN channels ch ON ch.id = c.channel_id
                WHERE m.processed = false AND m.direction = 'in' AND ch.type <> 'playground'
-                 AND m.created_at BETWEEN now() - interval '60 minutes' AND now() - interval '5 minutes') AS inbound_waiting`);
-    const metrics = { jobs_pending: r?.pending ?? 0, jobs_stuck: r?.stuck ?? 0, inbound_waiting: r?.inbound_waiting ?? 0 };
+                 AND m.created_at BETWEEN now() - interval '60 minutes' AND now() - interval '5 minutes') AS inbound_waiting,
+             (SELECT count(*)::int FROM inbound_receipts WHERE state IN ('pending','running')) AS receipts_pending,
+             (SELECT count(*)::int FROM inbound_receipts WHERE state='dead') AS receipts_dead,
+             (SELECT count(*)::int FROM conversation_work WHERE state IN ('pending','running')) AS conversations_pending,
+             (SELECT count(*)::int FROM conversation_work WHERE state='dead') AS conversations_dead`);
+    const metrics = { jobs_pending: r?.pending ?? 0, jobs_stuck: r?.stuck ?? 0, inbound_waiting: r?.inbound_waiting ?? 0,receipts_pending:r?.receipts_pending??0,receipts_dead:r?.receipts_dead??0,conversations_pending:r?.conversations_pending??0,conversations_dead:r?.conversations_dead??0 };
     const problems: string[] = [];
+    if(metrics.receipts_dead||metrics.conversations_dead) problems.push(`Recepciones en revisión: ${metrics.receipts_dead}; conversaciones en revisión: ${metrics.conversations_dead}`);
     if (metrics.jobs_stuck) problems.push(`${metrics.jobs_stuck} trabajo${metrics.jobs_stuck === 1 ? '' : 's'} atascado${metrics.jobs_stuck === 1 ? '' : 's'} (en curso desde hace más de 15 min)`);
     if (metrics.inbound_waiting) problems.push(`${metrics.inbound_waiting} mensaje${metrics.inbound_waiting === 1 ? '' : 's'} entrante${metrics.inbound_waiting === 1 ? '' : 's'} sin procesar desde hace más de 5 min`);
     if (problems.length) return { ...base, status: 'warn', detail: problems.join('; '), metrics };

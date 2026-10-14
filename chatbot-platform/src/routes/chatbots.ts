@@ -1,3 +1,6 @@
+import { accountAi } from '../ai/budget.js';
+import { agentVersionRoutes } from './agent-versions.js';
+import type { PoolClient } from 'pg';
 import { buildAgent, WizardSchema } from '../templates/agent-builder.js';
 import * as astore from '../automation/store.js';
 import crypto from 'node:crypto';
@@ -10,8 +13,13 @@ import { assertAccount, botFor, HttpError, notFound, requireRole, scopeAccount, 
 import { publicChannel } from '../channels/index.js';
 import { query, withTransaction } from '../db.js';
 import { config } from '../config.js';
-import { OpenAiProvider } from '../ai/provider.js';
-import { indexKnowledge, knowledgeIndexStatus } from '../engine/knowledge.js';
+import { indexKnowledge, knowledgeIndexStatus, semanticKnowledge } from '../engine/knowledge.js';
+import { activationStatus } from '../engine/semantic-activation.js';
+import { knowledgeReadiness } from '../engine/knowledge-readiness.js';
+import { semanticPolicy } from '../engine/semantic-policy.js';
+import { validEmbedding } from '../ai/provider.js';
+import { selectKnowledge } from '../engine/context.js';
+import { reserveEmbeddingTokens } from '../engine/semantic-policy.js';
 import { mentionsPhotoCode, photoWarnings } from '../engine/photo-check.js';
 import { isSensitiveField } from '../engine/safety.js';
 import { imageAbsolutePath } from '../engine/transport.js';
@@ -97,7 +105,7 @@ const KnowledgeBody = z.object({
   always_include: z.boolean().optional(),
   active: z.boolean().optional(),
   sort_order: z.number().int().optional(),
-  source_url: z.string().max(2000).nullable().optional(),
+  source_url: z.string().max(2000).url().refine(value=>['http:','https:'].includes(new URL(value).protocol),'La fuente debe usar HTTP o HTTPS').nullable().optional(),
 });
 
 const ImageMeta = z.object({
@@ -226,9 +234,8 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
     return { ...visibleBot(req.user, bot), channels, photo_warnings: photoWarnings(bot, await store.listImages(bot.id)) };
   });
 
-  api.put('/api/chatbots/:id', admins, async (req: any) => {
-    const existing = await botFor(req.user, req.params.id);
-    const raw = (req.body ?? {}) as Record<string, any>;
+  const normalizeConfiguration = async (existing: Chatbot, input: unknown): Promise<Record<string,any>> => {
+    const raw = (input ?? {}) as Record<string, any>;
     const data: Record<string, any> = { ...parse(ChatbotBody, raw) };
     await checkSavedImages(existing.id, data.saved_messages, existing.saved_messages);
     // Las secciones se fusionan con lo guardado: enviar solo un campo no reinicia los demás.
@@ -243,7 +250,13 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
       }
     }
     checkActivation(data.rules, existing.rules);
-    const stepMap: number[] | undefined = data.flow_step_map;
+    const formality = data.personality?.formality;
+    if (formality && formality !== existing.personality.formality) data.rules = alignFixedMessages(data.rules ?? existing.rules, formality);
+    return data;
+  };
+  const applyConfiguration = async (existing: Chatbot, patch: Record<string,any>, client: PoolClient, remapOnly = false) => {
+    const stepMap: number[] | undefined = patch.flow_step_map;
+    const data = { ...patch };
     delete data.flow_step_map;
     if (stepMap && data.flow) {
       // Una etapa que ya no existía antes (quedó de otro cambio) tampoco existe ahora: se quita.
@@ -252,18 +265,26 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
         const w = imageSendWhen(img);
         if (!w.flow_steps.length) continue;
         const steps = [...new Set(w.flow_steps.map(remap).filter((n) => n > 0))];
-        if (steps.join() !== w.flow_steps.join()) await store.updateImage(img.id, { send_when: { ...w, flow_steps: steps } });
+        if (steps.join() !== w.flow_steps.join()) await store.updateImage(img.id, { send_when: { ...w, flow_steps: steps } }, client);
       }
       const saved: SavedMessage[] = data.saved_messages ?? existing.saved_messages;
       if (saved.some((m) => m.flow_step)) data.saved_messages = saved.map((m) => ({ ...m, flow_step: m.flow_step ? remap(m.flow_step) : 0 }));
       // Las conversaciones en curso siguen en la misma etapa (con su nuevo número).
-      await store.remapFlowSteps(existing.id, stepMap);
+      await store.remapFlowSteps(existing.id, stepMap, client);
     }
-    // Al cambiar el trato (tú/usted), los mensajes fijos de fábrica se ajustan para no mezclar tratos.
-    const formality = data.personality?.formality;
-    if (formality && formality !== existing.personality.formality) data.rules = alignFixedMessages(data.rules ?? existing.rules, formality);
-    const bot = await store.updateChatbot(existing.id, data);
-    await logEvent({ level: 'info', source: 'admin', message: `Configuración actualizada (${Object.keys(data).join(', ')})`, accountId: existing.account_id, chatbotId: existing.id });
+    return remapOnly ? existing : store.updateChatbot(existing.id, data, client);
+  };
+  await agentVersionRoutes(api, service, normalizeConfiguration, applyConfiguration);
+  api.put('/api/chatbots/:id', admins, async (req: any) => {
+    await botFor(req.user, req.params.id);
+    const bot = await withTransaction(async client => {
+      const row = (await client.query('SELECT * FROM chatbots WHERE id=$1 FOR UPDATE',[req.params.id])).rows[0];
+      if(!row)throw notFound();
+      const existing = (await store.getChatbot(row.id))!;
+      await client.query("SELECT set_config('riverrun.author_id',$1,true),set_config('riverrun.author_name',$2,true)",[req.user.id,req.user.email]);
+      return applyConfiguration(existing, await normalizeConfiguration(existing, req.body), client);
+    });
+    if(bot)await logEvent({level:'info',source:'admin',message:`Configuración actualizada (${Object.keys(req.body??{}).join(', ')})`,accountId:bot.account_id,chatbotId:bot.id});
     return bot;
   });
 
@@ -336,15 +357,71 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
     return k;
   };
 
+  // Account-wide activation, authorized through an agent owned by the caller's account.
+  api.get('/api/chatbots/:id/semantic', admins, async (req:any)=>{
+    const bot=await botFor(req.user,req.params.id);
+    const [status,database]=await Promise.all([activationStatus(bot.account_id),knowledgeReadiness()]);
+    return {...status,database:{ready:database.database_ready,vector_version:database.vector_version,pending_migrations:database.pending_migrations},provider_configured:!!config.openai.apiKey};
+  });
+  api.post('/api/chatbots/:id/semantic/verify', admins, async(req:any)=>{
+    const bot=await botFor(req.user,req.params.id);
+    const ai=service.aiProvider;
+    if(!ai.embed || !config.openai.apiKey) throw new HttpError(400,'Configura el proveedor de embeddings antes de comprobarlo.');
+    if(!(await knowledgeReadiness()).database_ready) throw new HttpError(409,'La base de datos no está lista para búsqueda semántica.');
+    try {
+      const text='Prueba sintética de conocimiento semántico.';
+      const result=await accountAi(ai,bot.account_id,bot.id,'embedding',()=>reserveEmbeddingTokens(bot.account_id,[text])).embed!([text],config.knowledgeSearch.model);
+      if(result.vectors.length!==1||!validEmbedding(result.vectors[0])) throw new Error('invalid');
+      await store.insertAiRun({account_id:bot.account_id,chatbot_id:bot.id,conversation_id:null,kind:'embedding',model:result.model,input_tokens:result.input_tokens,cached_tokens:0,output_tokens:0,latency_ms:result.latency_ms,cost_usd:result.cost_usd});
+      await query(`INSERT INTO semantic_settings(account_id,verified_model) VALUES($1,$2) ON CONFLICT(account_id) DO UPDATE SET verified_model=$2,updated_at=now()`,[bot.account_id,config.knowledgeSearch.model]);
+      return {verified:true,model:config.knowledgeSearch.model};
+    } catch { throw new HttpError(502,'No se pudo comprobar el proveedor. Revisa su configuración, saldo y presupuesto.'); }
+  });
+  api.post('/api/chatbots/:id/semantic/prepare', admins, async(req:any)=>{
+    const bot=await botFor(req.user,req.params.id);
+    const body=parse(z.object({daily_token_budget:z.number().int().min(100).max(10000000)}),req.body);
+    const status=await activationStatus(bot.account_id);
+    if(status.force_off || !status.available || status.verified_model!==config.knowledgeSearch.model) throw new HttpError(409,'Primero comprueba pgvector y el proveedor.');
+    await query(`INSERT INTO semantic_settings(account_id,preparing,daily_token_budget) VALUES($1,true,$2) ON CONFLICT(account_id) DO UPDATE SET preparing=true,daily_token_budget=$2,updated_at=now()`,[bot.account_id,body.daily_token_budget]);
+    // Bounded work here; the maintenance worker continues the rest without an open HTTP request.
+    const bots=await store.listChatbots(bot.account_id);
+    for(const item of bots) {if((await knowledgeIndexStatus(item)).pending_items) {await indexKnowledge(item,service.aiProvider,4).catch(()=>undefined);break;}}
+    return activationStatus(bot.account_id);
+  });
+  api.post('/api/chatbots/:id/semantic/test', admins, async(req:any)=>{
+    const bot=await botFor(req.user,req.params.id);
+    const body=parse(z.object({query:z.string().trim().min(2).max(3000)}),req.body);
+    const status=await activationStatus(bot.account_id);
+    if(!status.preparing || status.pending_items || !status.available) throw new HttpError(409,'Termina la preparación antes de probar la búsqueda.');
+    const items=await store.listKnowledge(bot.id,true);
+    const semantic=await semanticKnowledge(bot,items,body.query,service.aiProvider,{preview:true});
+    const current=await activationStatus(bot.account_id);
+    if(!semantic || current.signature!==status.signature) throw new HttpError(409,'No hubo coincidencias confiables o cambió el conocimiento. Revisa los documentos y prueba de nuevo.');
+    await query(`UPDATE semantic_settings SET tested_signature=$2,tested_at=now(),updated_at=now() WHERE account_id=$1`,[bot.account_id,status.signature]);
+    const visible=(list:typeof items)=>list.map(k=>({id:k.id,title:k.title,content:k.content,source_url:k.source_url}));
+    return {semantic:visible(semantic),lexical:visible(selectKnowledge(items,body.query,bot.ai.knowledge_char_budget)),ready:current.pending_items===0};
+  });
+  api.put('/api/chatbots/:id/semantic', admins, async(req:any)=>{
+    const bot=await botFor(req.user,req.params.id);
+    const body=parse(z.object({enabled:z.boolean()}),req.body);
+    const status=await activationStatus(bot.account_id);
+    if(body.enabled && (!status.ready || status.force_off)) throw new HttpError(409,'Comprueba, prepara y prueba el conocimiento antes de activarlo.');
+    if(body.enabled) {
+      const applied=await query(`UPDATE semantic_settings SET enabled=true,preparing=true,updated_at=now() WHERE account_id=$1 AND tested_signature=$2 AND verified_model=$3 RETURNING account_id`,[bot.account_id,status.signature,config.knowledgeSearch.model]);
+      if(!applied.length) throw new HttpError(409,'El conocimiento cambió durante la activación. Prueba la búsqueda de nuevo.');
+    } else await query(`INSERT INTO semantic_settings(account_id,enabled,preparing) VALUES($1,false,false) ON CONFLICT(account_id) DO UPDATE SET enabled=false,preparing=false,updated_at=now()`,[bot.account_id]);
+    return activationStatus(bot.account_id);
+  });
+
   api.get('/api/chatbots/:id/knowledge', admins, async (req: any) => store.listKnowledge((await botFor(req.user, req.params.id)).id));
   api.get('/api/chatbots/:id/knowledge/index', admins, async (req: any) => knowledgeIndexStatus(await botFor(req.user, req.params.id)));
   api.post('/api/chatbots/:id/knowledge/index', admins, async (req: any) => {
     const bot = await botFor(req.user, req.params.id);
-    if (!config.knowledgeSearch.enabled) throw new HttpError(400, 'Activa KNOWLEDGE_SEARCH_ENABLED para indexar conocimiento.');
+    if (!(await semanticPolicy(bot.account_id)).preparing) throw new HttpError(400, 'Prepara o activa la búsqueda semántica para este perfil.');
     const status = await knowledgeIndexStatus(bot);
-    if (!status.enabled) throw new HttpError(400, 'La búsqueda semántica aún no está habilitada para este perfil.');
+
     if (!status.available) throw new HttpError(400, 'Instala la extensión pgvector y reinicia el backend.');
-    await indexKnowledge(bot, new OpenAiProvider());
+    await indexKnowledge(bot, service.aiProvider,Infinity,{retryNow:true});
     const result = await knowledgeIndexStatus(bot);
     if (!result.complete) throw new HttpError(409, 'Quedan documentos pendientes. Otra preparación o edición puede estar en curso; vuelve a intentarlo.');
     return result;

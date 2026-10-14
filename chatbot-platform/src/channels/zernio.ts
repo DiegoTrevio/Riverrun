@@ -19,6 +19,7 @@ const EVENTS = ['message.received', 'message.sent'];
 
 /** Cliente mínimo. No reintenta: un envío que Zernio aceptó y luego falló podría duplicarse. */
 export class ZernioClient {
+  beforeRequest?:()=>Promise<void>;
   constructor(private apiKey: string, private base = config.zernioApiUrl) {}
 
   async call<T = any>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<T> {
@@ -39,7 +40,8 @@ export class ZernioClient {
     return data as T;
   }
 
-  private send(method: 'GET' | 'POST', path: string, body?: unknown) {
+  private async send(method: 'GET' | 'POST', path: string, body?: unknown) {
+    await this.beforeRequest?.();
     return fetch(`${this.base}${path}`, {
       method,
       headers: { authorization: `Bearer ${this.apiKey}`, ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
@@ -123,6 +125,7 @@ function messageRef(r: any): string | null {
 }
 
 class ZernioTransport implements Transport {
+  setDispatchGuard(guard:()=>Promise<void>){this.client.beforeRequest=guard;}
   kind = 'zernio' as const;
   private client: ZernioClient;
   private path: string;
