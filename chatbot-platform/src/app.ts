@@ -18,7 +18,7 @@ import { billingRoutes, billingWebhooks } from './routes/billing.js';
 import { poolAdminRoutes, poolPublicRoutes } from './routes/pools.js';
 import { googleLoginRoutes } from './routes/google-login.js';
 import { brandAdminRoutes, brandPublicRoutes } from './routes/brands.js';
-import { integrationRoutes, googleCallbackRoute, outlookCallbackRoute } from './routes/integrations.js';
+import { integrationRoutes, googleCallbackRoute, myCalendarRoutes, outlookCallbackRoute } from './routes/integrations.js';
 import { openApiRoutes } from './routes/openapi.js';
 import { apiV1Routes } from './routes/api-v1.js';
 import { exportRoutes } from './routes/export.js';
@@ -138,6 +138,7 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
     await exportRoutes(api);
     await poolAdminRoutes(api);
     await integrationRoutes(api);
+    await myCalendarRoutes(api);
     await brandAdminRoutes(api);
   });
 

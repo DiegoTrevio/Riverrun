@@ -4,10 +4,11 @@
  */
 import * as google from './google.js';
 import * as outlook from './outlook.js';
+import { syncStaffIfLinked } from './staff-calendars.js';
 
-/** Copia la cita (alta, cambio o cancelación) a cada calendario conectado. */
+/** Copia la cita (alta, cambio, reasignación o cancelación) a cada calendario conectado: el de la cuenta y el de la persona. */
 export async function syncCalendars(accountId: string, appointmentId: string) {
-  await Promise.all([google.syncIfLinked(accountId, appointmentId), outlook.syncIfLinked(accountId, appointmentId)]);
+  await Promise.all([google.syncIfLinked(accountId, appointmentId), outlook.syncIfLinked(accountId, appointmentId), syncStaffIfLinked(accountId, appointmentId)]);
 }
 
 /** Horarios ocupados en los calendarios conectados. Si uno falla, no bloquea nada de ese calendario (la agenda sigue). */

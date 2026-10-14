@@ -10,6 +10,7 @@ import { logEvent } from '../logs.js';
 import { parse } from './util.js';
 import { authUrl, connect, disconnect, getLink, googleConfigured, readState } from '../integrations/google.js';
 import * as outlook from '../integrations/outlook.js';
+import * as staffCal from '../integrations/staff-calendars.js';
 
 export const hashKey = (key: string) => crypto.createHash('sha256').update(key).digest('hex');
 
@@ -180,13 +181,65 @@ export async function integrationRoutes(api: FastifyInstance) {
   });
 }
 
-/** Regreso desde Google: no usa la sesión, la cuenta viaja firmada en "state". */
+/**
+ * Mi calendario: cada persona del equipo conecta su propio Google u Outlook. Sus eventos ocupados bloquean sus horarios en
+ * la agenda y las citas que se le asignan aparecen en su calendario.
+ */
+export async function myCalendarRoutes(api: FastifyInstance) {
+  const mine = (req: any) => {
+    if (!req.user.account_id) throw new HttpError(400, 'Tu usuario no pertenece a una cuenta');
+    return req.user.id as string;
+  };
+  api.get('/api/me/calendar', async (req: any) => ({
+    ...staffCal.publicView(await staffCal.getStaffCalendar(mine(req))),
+    available: { google: googleConfigured(), outlook: outlook.outlookConfigured() },
+  }));
+
+  api.post('/api/me/calendar/connect', async (req: any, reply) => {
+    const userId = mine(req);
+    const { provider } = parse(z.object({ provider: z.enum(['google', 'outlook']) }), req.body);
+    if (provider === 'google' && !googleConfigured()) throw new HttpError(400, 'Esta instalación no tiene Google configurado (GOOGLE_CLIENT_ID y GOOGLE_CLIENT_SECRET)');
+    if (provider === 'outlook' && !outlook.outlookConfigured()) throw new HttpError(400, 'Esta instalación no tiene Microsoft configurado (MICROSOFT_CLIENT_ID y MICROSOFT_CLIENT_SECRET)');
+    const nonce = crypto.randomBytes(16).toString('hex');
+    const [cookie, path] = provider === 'google' ? ['g_cal_nonce', '/oauth/google'] : ['o_cal_nonce', '/oauth/outlook'];
+    reply.setCookie(cookie, nonce, { httpOnly: true, sameSite: 'lax', secure: config.secureCookies, path, maxAge: 900 });
+    return { url: staffCal.authUrl(provider, userId, nonce) };
+  });
+
+  api.put('/api/me/calendar', async (req: any) => {
+    const b = parse(z.object({ block_busy: z.boolean() }), req.body);
+    if (!(await staffCal.setBlockBusy(mine(req), b.block_busy))) throw new HttpError(404, 'No tienes un calendario conectado');
+    return { ok: true };
+  });
+
+  api.delete('/api/me/calendar', async (req: any) => {
+    await staffCal.disconnectStaff(mine(req));
+    return { ok: true };
+  });
+}
+
+/** Regreso de OAuth para el calendario de una persona del equipo (el «state» empieza con u_). */
+async function staffCallback(provider: staffCal.Provider, target: string, req: any, reply: any) {
+  const userId = target.slice(staffCal.STATE_PREFIX.length);
+  const back = (q: string) => reply.redirect(`/#/agenda/equipo?calendario=${q}`);
+  if (req.query.error || !req.query.code) return back('cancelado');
+  try {
+    await staffCal.connectStaff(provider, userId, String(req.query.code));
+    return back('ok');
+  } catch (e: any) {
+    await logEvent({ level: 'error', source: 'admin', message: `Calendario de una persona (${provider}): ${e.message}` });
+    return reply.redirect(`/#/agenda/equipo?calendario=error&msg=${encodeURIComponent(e.message.slice(0, 120))}`);
+  }
+}
+
+/** Regreso desde Google: no usa la sesión, la cuenta (o la persona) viaja firmada en "state". */
 export async function googleCallbackRoute(app: FastifyInstance) {
   app.get('/oauth/google/callback', async (req: any, reply) => {
     const nonce = String(req.cookies?.g_cal_nonce ?? '');
     reply.clearCookie('g_cal_nonce', { path: '/oauth/google' });
     const accountId = readState(String(req.query.state ?? ''), nonce);
     if (!accountId) return reply.redirect('/#/integraciones?google=error');
+    if (accountId.startsWith(staffCal.STATE_PREFIX)) return staffCallback('google', accountId, req, reply);
     if (req.query.error || !req.query.code) return reply.redirect('/#/integraciones?google=cancelado');
     try {
       await connect(accountId, String(req.query.code));
@@ -205,6 +258,7 @@ export async function outlookCallbackRoute(app: FastifyInstance) {
     reply.clearCookie('o_cal_nonce', { path: '/oauth/outlook' });
     const accountId = outlook.readState(String(req.query.state ?? ''), nonce);
     if (!accountId) return reply.redirect('/#/integraciones?outlook=error');
+    if (accountId.startsWith(staffCal.STATE_PREFIX)) return staffCallback('outlook', accountId, req, reply);
     if (req.query.error || !req.query.code) return reply.redirect('/#/integraciones?outlook=cancelado');
     try {
       await outlook.connect(accountId, String(req.query.code));

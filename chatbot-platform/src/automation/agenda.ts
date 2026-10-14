@@ -4,6 +4,8 @@ import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
 import type { ChannelType, Contact, Conversation } from '../types.js';
+import { staffBusy } from '../integrations/staff-calendars.js';
+import { assignmentStats, isOff, pickStaff, staffInfo, worksDuring, type StaffInfo } from './staff.js';
 import * as astore from './store.js';
 import { renderTemplate } from './templates.js';
 import { addDays, dayOf, fromMinutes, localParts, slotKey, spanishDate, spanishTime, toMinutes, zonedToUtc } from './time.js';
@@ -14,48 +16,77 @@ export interface Slot {
   end: Date;
   /** Clave local "YYYY-MM-DDTHH:MM" que ve la IA. */
   key: string;
+  /** Personas del servicio libres en ese horario (vacío si el servicio no tiene personas asignadas). */
+  users: string[];
 }
 
-interface Busy {
+export interface Busy {
   service_id: string | null;
   assigned_user_id: string | null;
   starts_at: Date;
   ends_at: Date;
+  /** Ocupado en el calendario de la cuenta: bloquea el horario para todos. */
+  all?: boolean;
 }
 
 /**
- * Horarios libres de un servicio. Respeta horario (del servicio o de la cuenta), días festivos,
- * anticipación mínima, capacidad simultánea y disponibilidad de las personas asignadas.
+ * Horarios libres de un servicio. Respeta horario (del servicio o de la cuenta), días festivos, anticipación mínima y
+ * cuántas citas caben al mismo tiempo.
+ * - Sin personas asignadas: `capacity` citas del servicio al mismo tiempo.
+ * - Con personas: un horario sirve si al menos una está libre: dentro de su horario, sin días libres, sin citas de otros
+ *   servicios ni eventos ocupados en su calendario, y con menos de `capacity` citas de este servicio a esa hora (1 = una
+ *   persona atiende a un cliente a la vez). Sin horario propio del servicio, se ofrecen los horarios de las personas.
  */
-export function computeSlots(service: Service, settings: AccountSettings, busy: Busy[], now: Date, opts: { days?: number; onlyDate?: string } = {}): Slot[] {
+export function computeSlots(service: Service, settings: AccountSettings, busy: Busy[], now: Date, opts: { days?: number; onlyDate?: string } = {}, staff: StaffInfo[] = []): Slot[] {
   const tz = settings.timezone;
-  const hours = service.hours ?? settings.business_hours;
   const today = localParts(now, tz).date;
   const horizon = Math.min(service.max_days_ahead, opts.days ?? service.max_days_ahead);
   const earliest = now.getTime() + service.min_notice_minutes * 60_000;
   const step = service.duration_minutes + service.buffer_minutes;
   const bufferMs = service.buffer_minutes * 60_000;
   const users = service.assigned_user_ids;
+  const byId = new Map(staff.map((s) => [s.id, s]));
   const out: Slot[] = [];
   for (let i = 0; i <= horizon; i++) {
     const date = addDays(today, i);
     if (opts.onlyDate && date !== opts.onlyDate) continue;
     if (settings.holidays.includes(date)) continue;
-    for (const [s, e] of hours[dayOf(date)] ?? []) {
+    const day = dayOf(date);
+    // Rejilla de horarios: la del servicio; si no tiene y hay personas, la de cada una (o la del negocio).
+    const windows = service.hours
+      ? service.hours[day] ?? []
+      : users.length
+        ? users.flatMap((u) => (byId.get(u)?.hours ?? settings.business_hours)[day] ?? [])
+        : settings.business_hours[day] ?? [];
+    const seen = new Set<number>();
+    for (const [s, e] of windows) {
       for (let t = toMinutes(s); t + service.duration_minutes <= toMinutes(e); t += step) {
+        if (seen.has(t)) continue;
+        seen.add(t);
         const start = zonedToUtc(date, fromMinutes(t), tz);
         if (start.getTime() < earliest) continue;
         const end = new Date(start.getTime() + service.duration_minutes * 60_000);
         const overlapping = busy.filter(
           (b) => new Date(b.starts_at).getTime() < end.getTime() + bufferMs && new Date(b.ends_at).getTime() + bufferMs > start.getTime(),
         );
-        if (overlapping.filter((b) => b.service_id === service.id).length >= service.capacity) continue;
-        if (users.length && !users.some((u) => !overlapping.some((b) => b.assigned_user_id === u))) continue;
-        out.push({ start, end, key: slotKey(start, tz) });
+        if (overlapping.some((b) => b.all)) continue;
+        if (!users.length) {
+          if (overlapping.filter((b) => b.service_id === service.id).length >= service.capacity) continue;
+          out.push({ start, end, key: slotKey(start, tz), users: [] });
+          continue;
+        }
+        const free = users.filter((u) => {
+          const info = byId.get(u);
+          if (isOff(info, date) || !worksDuring(info, day, t, t + service.duration_minutes)) return false;
+          const mine = overlapping.filter((b) => b.assigned_user_id === u);
+          // Una cita de otro servicio o un evento de su calendario la ocupan; de este servicio caben `capacity`.
+          return !mine.some((b) => b.service_id !== service.id) && mine.length < service.capacity;
+        });
+        if (free.length) out.push({ start, end, key: slotKey(start, tz), users: free });
       }
     }
   }
-  return out;
+  return out.sort((a, b) => a.start.getTime() - b.start.getTime());
 }
 
 /** Reparte los horarios para mostrarlos a la IA: pocos por día, varios días. */
@@ -76,17 +107,35 @@ export function spreadSlots(slots: Slot[], perDay = 4, max = 20): Slot[] {
   return out.slice(0, max);
 }
 
-export async function busyFor(service: Service, from: Date, to: Date, client?: { query: (q: string, p: unknown[]) => Promise<{ rows: Busy[] }> }, excludeId?: string) {
+/** Citas que ocupan horarios del servicio o de sus personas (de la base de datos). */
+export async function appointmentBusy(service: Service, from: Date, to: Date, client?: { query: (q: string, p: unknown[]) => Promise<{ rows: Busy[] }> }, excludeId?: string): Promise<Busy[]> {
   const sql = `SELECT service_id, assigned_user_id, starts_at, ends_at FROM appointments
      WHERE status = 'confirmed' AND starts_at < $3 AND ends_at > $2
        AND (service_id = $1 OR assigned_user_id = ANY($4::uuid[])) AND ($5::uuid IS NULL OR id <> $5)
        AND source <> 'simulador'`;
   const params = [service.id, from, to, service.assigned_user_ids, excludeId ?? null];
-  if (client) return (await client.query(sql, params)).rows; // dentro de la transacción no se consultan calendarios (red lenta)
-  const rows = await query<Busy>(sql, params);
-  if (excludeId) return rows;
-  const g = await calendarBusy(service.account_id, from, to);
-  return rows.concat(g.filter((b) => b.starts_at < to && b.ends_at > from).map((b) => ({ service_id: service.id, assigned_user_id: null, starts_at: b.starts_at, ends_at: b.ends_at })));
+  return client ? (await client.query(sql, params)).rows : query<Busy>(sql, params);
+}
+
+/** Eventos ocupados de los calendarios conectados: el de la cuenta bloquea a todos; el de cada persona, solo a ella. */
+export async function calendarBusyFor(service: Service, from: Date, to: Date): Promise<Busy[]> {
+  const [account, people] = await Promise.all([calendarBusy(service.account_id, from, to), staffBusy(service.assigned_user_ids, from, to)]);
+  return [
+    ...account.filter((b) => b.starts_at < to && b.ends_at > from).map((b) => ({ service_id: null, assigned_user_id: null, starts_at: b.starts_at, ends_at: b.ends_at, all: true })),
+    ...people.map((b) => ({ service_id: null, assigned_user_id: b.user_id, starts_at: b.starts_at, ends_at: b.ends_at })),
+  ];
+}
+
+export async function busyFor(service: Service, from: Date, to: Date, excludeId?: string): Promise<Busy[]> {
+  const [rows, calendars] = await Promise.all([appointmentBusy(service, from, to, undefined, excludeId), calendarBusyFor(service, from, to)]);
+  return rows.concat(calendars);
+}
+
+/** Horarios libres del servicio con todo lo que los limita (citas, calendarios y disponibilidad de las personas). */
+export async function freeSlots(service: Service, settings: AccountSettings, now: Date, opts: { days?: number; onlyDate?: string } = {}) {
+  const days = opts.days ?? service.max_days_ahead;
+  const [busy, staff] = await Promise.all([busyFor(service, now, new Date(now.getTime() + (days + 1) * 86400_000)), staffInfo(service.assigned_user_ids)]);
+  return computeSlots(service, settings, busy, now, opts, staff);
 }
 
 export interface AgendaContext {
@@ -112,9 +161,7 @@ export class Agenda {
     const tz = settings.timezone;
     const slots: AgendaContext['slots'] = {};
     for (const s of services) {
-      const horizonEnd = new Date(now.getTime() + Math.min(s.max_days_ahead, 14) * 86400_000 + 86400_000);
-      const busy = await busyFor(s, now, horizonEnd);
-      slots[s.id] = spreadSlots(computeSlots(s, settings, busy, now, { days: 14 })).map((x) => ({
+      slots[s.id] = spreadSlots(await freeSlots(s, settings, now, { days: Math.min(s.max_days_ahead, 14) })).map((x) => ({
         key: x.key,
         label: `${spanishDate(x.start, tz)}, ${spanishTime(x.start, tz)}`,
       }));
@@ -158,19 +205,21 @@ export class Agenda {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date ?? '') || !/^\d{2}:\d{2}$/.test(time ?? '')) return { ok: false, reason: 'Horario inválido', alternatives: [] };
     const start = zonedToUtc(date, time, tz);
     const end = new Date(start.getTime() + service.duration_minutes * 60_000);
+    const dayStart = zonedToUtc(date, '00:00', tz);
+    const window = [new Date(dayStart.getTime() - 86400_000), new Date(dayStart.getTime() + 2 * 86400_000)] as const;
+    // Los calendarios (red) se consultan antes de bloquear; las citas, otra vez dentro de la transacción.
+    const [calendars, staff] = await Promise.all([calendarBusyFor(service, window[0], window[1]), staffInfo(service.assigned_user_ids)]);
 
     const result = await withTransaction(async (client) => {
       // Una reserva a la vez por cuenta: evita dobles reservas simultáneas.
       await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`agenda:${o.accountId}`]);
-      const dayStart = zonedToUtc(date, '00:00', tz);
-      const busy = await busyFor(service, new Date(dayStart.getTime() - 86400_000), new Date(dayStart.getTime() + 2 * 86400_000), client as any);
-      const free = computeSlots(service, settings, busy, new Date(), { onlyDate: date });
+      const busy = (await appointmentBusy(service, window[0], window[1], client as any)).concat(calendars);
+      const free = computeSlots(service, settings, busy, new Date(), { onlyDate: date }, staff);
       const slot = free.find((s) => s.key === o.slotKey);
       if (!slot && !o.force) return null;
-      const overlapping = busy.filter((b) => new Date(b.starts_at) < end && new Date(b.ends_at) > start);
-      const assigned =
-        o.assignedUserId ??
-        (service.assigned_user_ids.find((u) => !overlapping.some((b) => b.assigned_user_id === u)) || null);
+      // Quien se pidió debe estar libre (salvo que se fuerce); si no se pidió a nadie, le toca a quien corresponda.
+      if (o.assignedUserId && slot && service.assigned_user_ids.length && !slot.users.includes(o.assignedUserId) && !o.force) return null;
+      const assigned = o.assignedUserId ?? (slot?.users.length ? pickStaff(service, slot.users, await assignmentStats(service.id, slot.users, client)) : null);
       const row = await client.query(
         `INSERT INTO appointments (account_id, service_id, service_name, kind, contact_id, conversation_id, assigned_user_id,
            customer_name, customer_phone, starts_at, ends_at, source, notes)
@@ -195,8 +244,7 @@ export class Agenda {
     });
 
     if (!result) {
-      const busy = await busyFor(service, new Date(), new Date(Date.now() + 15 * 86400_000));
-      const alternatives = spreadSlots(computeSlots(service, settings, busy, new Date(), { days: 14 }), 3, 4).map(
+      const alternatives = spreadSlots(await freeSlots(service, settings, new Date(), { days: 14 }), 3, 4).map(
         (s) => `${spanishDate(s.start, tz)} a las ${spanishTime(s.start, tz)}`,
       );
       return { ok: false, reason: 'El horario ya no está disponible', alternatives };
@@ -250,12 +298,18 @@ export class Agenda {
     const [date, time] = slotKeyLocal.split('T');
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date ?? '') || !/^\d{2}:\d{2}$/.test(time ?? '')) return { ok: false, reason: 'Horario inválido', alternatives: [] };
     // Su propio lugar no cuenta como ocupado al validar el nuevo horario.
-    const busy = await busyFor(service, new Date(Date.now() - 86400_000), new Date(Date.now() + (service.max_days_ahead + 2) * 86400_000), undefined, a.id);
-    const ok = force || computeSlots(service, settings, busy, new Date(), { onlyDate: date }).some((s) => s.key === slotKeyLocal);
-    if (!ok) return { ok: false, reason: 'Ese horario no está disponible', alternatives: [] };
+    const [busy, staff] = await Promise.all([
+      busyFor(service, new Date(Date.now() - 86400_000), new Date(Date.now() + (service.max_days_ahead + 2) * 86400_000), a.id),
+      staffInfo(service.assigned_user_ids),
+    ]);
+    const slot = computeSlots(service, settings, busy, new Date(), { onlyDate: date }, staff).find((s) => s.key === slotKeyLocal);
+    if (!slot && !force) return { ok: false, reason: 'Ese horario no está disponible', alternatives: [] };
+    // Sigue con la misma persona si está libre a la nueva hora; si no, le toca a otra del servicio.
+    let assigned = a.assigned_user_id;
+    if (slot?.users.length && (!assigned || !slot.users.includes(assigned))) assigned = pickStaff(service, slot.users, await assignmentStats(service.id, slot.users));
     const start = zonedToUtc(date, time, settings.timezone);
     const end = new Date(start.getTime() + service.duration_minutes * 60_000);
-    await query(`UPDATE appointments SET starts_at = $2, ends_at = $3, updated_at = now() WHERE id = $1`, [a.id, start, end]);
+    await query(`UPDATE appointments SET starts_at = $2, ends_at = $3, assigned_user_id = $4, updated_at = now() WHERE id = $1`, [a.id, start, end, assigned]);
     await astore.cancelJobs('appointment_id', a.id);
     const updated = (await astore.getAppointment(a.id))!;
     await this.scheduleReminders(updated, service);
