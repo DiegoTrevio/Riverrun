@@ -40,6 +40,8 @@ export const PipelineBodySchema = z
     stages: z.array(StageSchema).min(2, 'Un pipeline necesita al menos dos columnas').max(15, 'Máximo 15 columnas'),
     chatbot_ids: z.array(z.string().uuid()).max(100).default([]),
     allow_backward: z.boolean().default(false),
+    /** Moneda del valor de las oportunidades (código ISO de 3 letras). */
+    currency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/, 'Moneda de 3 letras, por ejemplo MXN o USD').default('MXN'),
   })
   .superRefine((b, ctx) => {
     if (b.stages[0].kind !== 'open') ctx.addIssue({ code: 'custom', path: ['stages', 0, 'kind'], message: 'La primera columna es donde entran las solicitudes nuevas: no puede ser de ganadas ni perdidas' });
@@ -185,7 +187,7 @@ export class Pipelines {
       type: 'pipeline_stage',
       conversationId: conv.id,
       depth: depth + 1,
-      pipeline: { id: pipeline.id, name: pipeline.name, stage_id: to.id, stage_name: to.name, stage_kind: to.kind, from_stage_id: from?.id ?? null, from_stage_name: from?.name ?? null, reason },
+      pipeline: { id: pipeline.id, name: pipeline.name, stage_id: to.id, stage_name: to.name, stage_kind: to.kind, from_stage_id: from?.id ?? null, from_stage_name: from?.name ?? null, reason, value: Number(card.value ?? 0), currency: pipeline.currency },
     });
   }
 }

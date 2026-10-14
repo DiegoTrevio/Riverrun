@@ -312,7 +312,7 @@ export interface AutomationEvent {
   /** Evita bucles: acciones que disparan otros eventos. */
   depth?: number;
   /** Cambio de columna en un pipeline (pipeline_stage). */
-  pipeline?: { id: string; name: string; stage_id: string; stage_name: string; stage_kind: string; from_stage_id: string | null; from_stage_name: string | null; reason: string };
+  pipeline?: { id: string; name: string; stage_id: string; stage_name: string; stage_kind: string; from_stage_id: string | null; from_stage_name: string | null; reason: string; value: number; currency: string };
   /** Transferencia hecha por una persona del equipo que tomó la conversación (ella ya la atiende: no se reparte). */
   byUserId?: string;
 }

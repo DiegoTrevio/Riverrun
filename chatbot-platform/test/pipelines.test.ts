@@ -184,3 +184,22 @@ t('las columnas se pueden editar: una que se borra manda sus tarjetas a la prime
   const card = (await cardOf('5215510020002')).open;
   assert.equal((await agent('POST', `/api/pipeline-cards/${card.id}/move`, { stage_id: 'ganado' })).statusCode, 404);
 });
+
+t('oportunidades: cada tarjeta tiene su valor y el pipeline su moneda; quien atiende solo cambia las suyas', async () => {
+  const P = '5215510020001';
+  const { open } = await cardOf(P);
+  const bad = await h.authed('PATCH', `/api/pipeline-cards/${open.id}`, { value: -5 });
+  assert.equal(bad.statusCode, 400);
+  const r = await h.authed('PATCH', `/api/pipeline-cards/${open.id}`, { value: 1650.505 });
+  assert.equal(r.statusCode, 200, r.body);
+  assert.equal(Number(r.json().value), 1650.51);
+  const board = (await h.authed('GET', `/api/pipelines/${pipelineId}/board`)).json();
+  assert.equal(board.pipeline.currency, 'MXN', 'por omisión, pesos mexicanos');
+  assert.equal(Number(board.cards.find((c: any) => c.id === open.id).value), 1650.51);
+  // La moneda se cambia en el pipeline y se conserva al editar otras cosas.
+  assert.equal((await h.authed('PUT', `/api/pipelines/${pipelineId}`, { currency: 'usd' })).json().currency, 'USD');
+  assert.equal((await h.authed('PUT', `/api/pipelines/${pipelineId}`, { name: 'Ventas' })).json().currency, 'USD');
+  assert.equal((await h.authed('PUT', `/api/pipelines/${pipelineId}`, { currency: 'pesos' })).statusCode, 400);
+  const agent = await h.loginAs('agente-pipe@test.mx', 'secreto123');
+  assert.equal((await agent('PATCH', `/api/pipeline-cards/${open.id}`, { value: 1 })).statusCode, 404, 'una conversación que no tiene asignada');
+});

@@ -9,6 +9,7 @@ import type { User } from '../types.js';
 import { parse } from './util.js';
 
 const MoveBody = z.object({ stage_id: z.string().min(1).max(40), note: z.string().trim().max(300).default('') });
+const CardPatch = z.object({ value: z.number().min(0).max(999_999_999_999) });
 
 /** Pipelines de la cuenta: columnas personalizables por las que avanzan las solicitudes de los clientes. */
 export async function pipelineRoutes(api: FastifyInstance, service: ChatService) {
@@ -64,6 +65,16 @@ export async function pipelineRoutes(api: FastifyInstance, service: ChatService)
     const moved = await service.pipelines.moveManually(card, b.stage_id, req.user.id, b.note);
     if (!moved) throw new HttpError(409, 'La tarjeta cambió mientras la movías: actualiza el tablero');
     return moved;
+  });
+
+  /** Valor de la oportunidad: mismo permiso que su conversación. */
+  api.patch('/api/pipeline-cards/:id', async (req: any) => {
+    if (!/^\d+$/.test(String(req.params.id))) throw notFound('Tarjeta no encontrada');
+    const card = await pstore.getCard(req.params.id);
+    if (!card) throw notFound('Tarjeta no encontrada');
+    await conversationFor(req.user, card.conversation_id);
+    const b = parse(CardPatch, req.body);
+    return pstore.setCardValue(card.id, Math.round(b.value * 100) / 100);
   });
 
   api.get('/api/conversations/:cid/pipeline', async (req: any) => {

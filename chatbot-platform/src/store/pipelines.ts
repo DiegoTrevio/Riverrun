@@ -33,6 +33,7 @@ export interface Pipeline {
   stages: Stage[];
   chatbot_ids: string[];
   allow_backward: boolean;
+  currency: string;
   created_at: Date;
   updated_at: Date;
 }
@@ -47,6 +48,8 @@ export interface PipelineCard {
   stage_entered_at: Date;
   created_at: Date;
   closed_at: Date | null;
+  /** Valor de la oportunidad (en la moneda del pipeline). */
+  value: string | number;
 }
 
 export type MoveSource = 'inicio' | 'ia' | 'evento' | 'manual' | 'cierre';
@@ -88,14 +91,14 @@ export async function pipelineForBot(chatbotId: string): Promise<Pipeline | null
  */
 export async function savePipeline(
   accountId: string,
-  body: { name: string; stages: Stage[]; chatbot_ids: string[]; allow_backward: boolean },
+  body: { name: string; stages: Stage[]; chatbot_ids: string[]; allow_backward: boolean; currency: string },
   id?: string,
 ): Promise<Pipeline> {
   return withTransaction(async (client) => {
-    const params = [accountId, body.name, JSON.stringify(body.stages), body.chatbot_ids, body.allow_backward];
+    const params = [accountId, body.name, JSON.stringify(body.stages), body.chatbot_ids, body.allow_backward, body.currency];
     const row = (id
-      ? await client.query('UPDATE pipelines SET name = $2, stages = $3, chatbot_ids = $4, allow_backward = $5, updated_at = now() WHERE id = $6 AND account_id = $1 RETURNING *', [...params, id])
-      : await client.query('INSERT INTO pipelines (account_id, name, stages, chatbot_ids, allow_backward) VALUES ($1, $2, $3, $4, $5) RETURNING *', params)
+      ? await client.query('UPDATE pipelines SET name = $2, stages = $3, chatbot_ids = $4, allow_backward = $5, currency = $6, updated_at = now() WHERE id = $7 AND account_id = $1 RETURNING *', [...params, id])
+      : await client.query('INSERT INTO pipelines (account_id, name, stages, chatbot_ids, allow_backward, currency) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *', params)
     ).rows[0] as Pipeline;
     if (body.chatbot_ids.length) {
       await client.query(
@@ -112,6 +115,11 @@ export async function savePipeline(
     }
     return row;
   });
+}
+
+/** Valor de la oportunidad (lo que vale la venta o el servicio). */
+export async function setCardValue(id: string, value: number): Promise<PipelineCard | null> {
+  return queryOne<PipelineCard>('UPDATE pipeline_cards SET value = $2 WHERE id = $1 RETURNING *', [id, value]);
 }
 
 export async function deletePipeline(id: string) {
