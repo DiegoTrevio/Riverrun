@@ -13,7 +13,7 @@ const APPT_STATUS = { confirmed: ['green', 'Confirmada'], completed: ['', 'Compl
 export async function viewAgenda(root, tab, params) {
   root.append(
     h('h1', {}, 'Agenda'),
-    h('div', { class: 'tabs' }, [['citas', 'Citas y llamadas'], ...(isAdmin() ? [['servicios', 'Servicios']] : []), ['equipo', isAdmin() ? 'Equipo y disponibilidad' : 'Mi disponibilidad']].map(([k, l]) => h('a', { href: `#/agenda/${k}`, class: k === tab ? 'active' : '' }, l))),
+    h('div', { class: 'tabs' }, [['citas', 'Calendario'], ...(isAdmin() ? [['servicios', 'Servicios']] : []), ['equipo', isAdmin() ? 'Equipo y disponibilidad' : 'Mi disponibilidad']].map(([k, l]) => h('a', { href: `#/agenda/${k}`, class: k === tab ? 'active' : '' }, l))),
   );
   if (needAccount(root)) return;
   const body = h('div');
@@ -114,26 +114,61 @@ const capital = (x) => x.charAt(0).toUpperCase() + x.slice(1);
 
 const dayTitle = (iso) => capital(new Date(iso + 'T12:00:00Z').toLocaleDateString('es-MX', { timeZone: 'UTC', weekday: 'long', day: 'numeric', month: 'long' }));
 
+/** Partes de una fecha en la hora del negocio: día (AAAA-MM-DD) y minutos desde la medianoche. */
+const tzParts = (d, tz) => {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(d)).map((x) => [x.type, x.value]));
+  return { date: `${p.year}-${p.month}-${p.day}`, minutes: Number(p.hour) * 60 + Number(p.minute) };
+};
+const monthTitle = (iso) => capital(new Date(iso + 'T12:00:00Z').toLocaleDateString('es-MX', { timeZone: 'UTC', month: 'long', year: 'numeric' }));
+const shortMonth = (iso) => new Date(iso + 'T12:00:00Z').toLocaleDateString('es-MX', { timeZone: 'UTC', month: 'short' }).replace('.', '');
+const shortDay = (iso) => new Date(iso + 'T12:00:00Z').toLocaleDateString('es-MX', { timeZone: 'UTC', weekday: 'short' }).replace('.', '');
+const dayNum = (iso) => Number(iso.slice(8, 10));
+/** Colores de las personas (y gris para las citas sin persona). */
+const PALETTE = ['#155eef', '#12b76a', '#f79009', '#7a5af8', '#ee46bc', '#06aed4', '#f04438', '#669f2a'];
+const VIEWS = [['day', 'Día'], ['week', 'Semana'], ['month', 'Mes']];
+const HOUR_PX = 56;
+
+/**
+ * Calendario de citas al estilo de Go High Level: vistas de día, semana y mes; citas de color por persona; filtros por
+ * servicio y por persona; al hacer clic en una cita se abre su ficha con las acciones.
+ */
 async function agendaWeek(root, params) {
   const { timezone: tz } = await api('GET', withAcct('/api/agenda/info'));
   state.timeZone = tz;
   const today = tzDate(new Date(), tz);
-  const dow = (new Date(today + 'T12:00:00Z').getUTCDay() + 6) % 7;
-  const monday = params.get('week') || addDaysIso(today, -dow);
-  const days = [...Array(7)].map((_, i) => addDaysIso(monday, i));
+  const narrow = matchMedia('(max-width: 800px)').matches;
+  const view = ['day', 'week', 'month'].includes(params.get('view')) ? params.get('view') : narrow ? 'day' : 'week';
+  const anchor = /^\d{4}-\d{2}-\d{2}$/.test(params.get('date') || '') ? params.get('date') : params.get('week') || today;
+  const filter = { svc: params.get('svc') || '', user: params.get('user') || '' };
+  const dow = (iso) => (new Date(iso + 'T12:00:00Z').getUTCDay() + 6) % 7;
+  const monday = addDaysIso(anchor, -dow(anchor));
+  const monthStart = `${anchor.slice(0, 8)}01`;
+  const gridStart = view === 'month' ? addDaysIso(monthStart, -dow(monthStart)) : view === 'week' ? monday : anchor;
+  const days = [...Array(view === 'month' ? 42 : view === 'week' ? 7 : 1)].map((_, i) => addDaysIso(gridStart, i));
   // Rango amplio en UTC; luego se agrupa por día en la hora del negocio.
-  const from = new Date(monday + 'T00:00:00Z').getTime() - 86400000;
-  const to = new Date(days[6] + 'T00:00:00Z').getTime() + 2 * 86400000;
-  const [appts, services] = await Promise.all([
+  const from = new Date(days[0] + 'T00:00:00Z').getTime() - 86400000;
+  const to = new Date(days.at(-1) + 'T00:00:00Z').getTime() + 2 * 86400000;
+  const [appts, services, team] = await Promise.all([
     api('GET', withAcct(`/api/appointments?from=${new Date(from).toISOString()}&to=${new Date(to).toISOString()}`)),
     api('GET', withAcct('/api/services')),
+    api('GET', withAcct('/api/team/agenda')).catch(() => []),
   ]);
-  const go = (n) => (location.hash = `#/agenda/citas?week=${addDaysIso(monday, n)}`);
+  const go = (patch) => {
+    const q = new URLSearchParams({ view, date: anchor, svc: filter.svc, user: filter.user, ...patch });
+    for (const [k, v] of [...q]) if (!v) q.delete(k);
+    location.hash = `#/agenda/citas?${q}`;
+  };
+  const step = (n) => go({ date: view === 'month' ? `${addDaysIso(monthStart, n * 31).slice(0, 8)}01` : addDaysIso(anchor, n * (view === 'week' ? 7 : 1)) });
   const hhmm = (d) => new Date(d).toLocaleTimeString('es-MX', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false });
+
+  // Color de cada persona (por su orden en el equipo).
+  const people = new Map(team.map((p, i) => [p.id, { name: p.name || p.email, color: PALETTE[i % PALETTE.length] }]));
+  for (const a of appts) if (a.assigned_user_id && !people.has(a.assigned_user_id)) people.set(a.assigned_user_id, { name: a.assigned_user_name || 'Persona del equipo', color: PALETTE[people.size % PALETTE.length] });
+  const colorOf = (a) => people.get(a.assigned_user_id)?.color ?? '#667085';
+  const shown = appts.filter((a) => (!filter.svc || a.service_id === filter.svc) && (!filter.user || (filter.user === 'none' ? !a.assigned_user_id : a.assigned_user_id === filter.user)));
 
   // Nueva cita
   const n = { service_id: services.find((s) => s.active)?.id || '', slot: '', customer_name: '', customer_phone: '', notes: '', assigned_user_id: '' };
-  const team = isAdmin() ? await api('GET', withAcct('/api/team/agenda')).catch(() => []) : [];
   const slotBox = h('div');
   const loadSlots = async () => {
     if (!n.service_id) return fill(slotBox, h('p', { class: 'muted' }, 'Crea un servicio primero.'));
@@ -145,7 +180,7 @@ async function agendaWeek(root, params) {
     const drawWho = () => {
       const free = slots.find((x) => x.key === n.slot)?.users || [];
       if (!n.assigned_user_id || !free.includes(n.assigned_user_id)) n.assigned_user_id = '';
-      fill(whoBox, free.length > 1 && isAdmin() ? field('Atiende', select(n, 'assigned_user_id', [['', 'A quien le toque (turnos o porcentajes)'], ...free.map((u) => [u, team.find((p) => p.id === u)?.name || 'Persona del equipo'])])) : null);
+      fill(whoBox, free.length > 1 && isAdmin() ? field('Atiende', select(n, 'assigned_user_id', [['', 'A quien le toque (turnos o porcentajes)'], ...free.map((u) => [u, people.get(u)?.name || 'Persona del equipo'])])) : null);
     };
     fill(slotBox, slots.length ? [field('Horario disponible', select(n, 'slot', slots.map((x) => [x.key, x.label]), drawWho)), whoBox] : h('p', { class: 'muted' }, 'Sin horarios disponibles.'));
     drawWho();
@@ -159,45 +194,119 @@ async function agendaWeek(root, params) {
     h('p', { class: 'small muted' }, 'Para avisar al cliente por su chat, agenda desde su conversación.'),
     h('button', { class: 'primary', onclick: async () => { if (await run(() => api('POST', '/api/appointments', { ...n, assigned_user_id: n.assigned_user_id || null }), 'Agendada ✅')) render(); } }, 'Agendar'));
 
+  const title = view === 'month' ? monthTitle(anchor) : view === 'week'
+    ? `${dayNum(days[0])} ${shortMonth(days[0])} – ${dayNum(days[6])} ${shortMonth(days[6])} ${days[6].slice(0, 4)}`
+    : dayTitle(anchor);
+  const toolbar = h('div', { class: 'cal-toolbar' },
+    h('div', { class: 'row' },
+      h('button', { onclick: () => go({ date: today }) }, 'Hoy'),
+      h('div', { class: 'btn-group' },
+        h('button', { class: 'icon-only', 'aria-label': 'Periodo anterior', onclick: () => step(-1) }, '‹'),
+        h('button', { class: 'icon-only', 'aria-label': 'Periodo siguiente', onclick: () => step(1) }, '›')),
+      h('strong', { class: 'cal-title' }, title)),
+    h('div', { class: 'row' },
+      h('select', { 'aria-label': 'Servicio', onchange: (e) => go({ svc: e.target.value }) },
+        h('option', { value: '' }, 'Todos los servicios'), services.map((s) => h('option', { value: s.id, selected: s.id === filter.svc }, s.name))),
+      people.size ? h('select', { 'aria-label': 'Persona', onchange: (e) => go({ user: e.target.value }) },
+        h('option', { value: '' }, 'Todo el equipo'), [...people].map(([id, p]) => h('option', { value: id, selected: id === filter.user }, p.name)), h('option', { value: 'none', selected: filter.user === 'none' }, 'Sin asignar')) : null,
+      h('div', { class: 'btn-group', role: 'group', 'aria-label': 'Vista' }, VIEWS.map(([k, l]) => h('button', { class: k === view ? 'active' : '', 'aria-pressed': String(k === view), onclick: () => go({ view: k }) }, l))),
+      h('button', { class: 'primary', onclick: () => { createBox.hidden = !createBox.hidden; if (!createBox.hidden) loadSlots(); } }, '+ Nueva cita')));
+
+  const event = (a, extra = {}) => h('button', {
+    class: `cal-event status-${a.status}${a.source === 'simulador' ? ' test' : ''}`, type: 'button', style: `--ev:${colorOf(a)};${extra.style || ''}`,
+    'aria-label': `${hhmm(a.starts_at)}, ${a.service_name}, ${a.customer_name || 'cliente'}${a.status === 'cancelled' ? ' (cancelada)' : ''}`,
+    onclick: (e) => { e.stopPropagation(); openAppointment(a); },
+  }, h('span', { class: 'cal-event-time' }, hhmm(a.starts_at)), ' ', h('span', { class: 'cal-event-title' }, a.customer_name || 'Cliente'), extra.full ? h('span', { class: 'cal-event-sub' }, a.service_name) : null);
+
   const byDay = new Map(days.map((d) => [d, []]));
-  for (const a of appts) {
-    const k = tzDate(a.starts_at, tz);
-    if (byDay.has(k)) byDay.get(k).push(a);
+  for (const a of shown) byDay.get(tzParts(a.starts_at, tz).date)?.push(a);
+  for (const list of byDay.values()) list.sort((x, y) => new Date(x.starts_at) - new Date(y.starts_at));
+
+  let grid;
+  if (view === 'month') {
+    grid = h('div', { class: 'cal-month' },
+      ['lun', 'mar', 'mié', 'jue', 'vie', 'sáb', 'dom'].map((d) => h('div', { class: 'cal-month-head' }, d)),
+      days.map((d) => {
+        const list = byDay.get(d);
+        return h('div', { class: `cal-month-cell${d.slice(0, 7) === anchor.slice(0, 7) ? '' : ' other'}${d === today ? ' today' : ''}` },
+          h('button', { class: 'cal-daynum', 'aria-label': dayTitle(d), onclick: () => go({ view: 'day', date: d }) }, dayNum(d)),
+          list.slice(0, 3).map((a) => event(a)),
+          list.length > 3 ? h('button', { class: 'cal-more', onclick: () => go({ view: 'day', date: d }) }, `+${list.length - 3} más`) : null);
+      }));
+  } else {
+    // Rejilla de horas: de 7 a 21 h, o más si hay citas fuera de ese rango.
+    const mins = shown.filter((a) => byDay.has(tzParts(a.starts_at, tz).date)).flatMap((a) => [tzParts(a.starts_at, tz).minutes, tzParts(a.ends_at, tz).minutes || 1440]);
+    const startH = Math.min(7, ...mins.map((m) => Math.floor(m / 60)));
+    const endH = Math.max(21, ...mins.map((m) => Math.ceil(m / 60)));
+    const hours = [...Array(endH - startH)].map((_, i) => startH + i);
+    const top = (m) => ((m - startH * 60) / 60) * HOUR_PX;
+    const now = tzParts(new Date(), tz);
+    const column = (d) => {
+      const list = byDay.get(d);
+      // Citas que se enciman: se reparten en carriles lado a lado.
+      const lanes = [];
+      const placed = list.map((a) => {
+        const s = tzParts(a.starts_at, tz).minutes;
+        const endParts = tzParts(a.ends_at, tz);
+        const e = Math.max(s + 20, endParts.date === d ? endParts.minutes : 1440);
+        let lane = lanes.findIndex((end) => end <= s);
+        if (lane < 0) { lane = lanes.length; lanes.push(e); } else lanes[lane] = e;
+        return { a, s, e, lane };
+      });
+      const width = 100 / Math.max(1, lanes.length);
+      return h('div', { class: `cal-col${d === today ? ' today' : ''}`, style: `height:${hours.length * HOUR_PX}px` },
+        d === today && now.minutes >= startH * 60 && now.minutes <= endH * 60 ? h('div', { class: 'cal-now', style: `top:${top(now.minutes)}px` }) : null,
+        placed.map(({ a, s, e, lane }) => event(a, { full: true, style: `top:${top(s)}px;height:${Math.max(22, top(e) - top(s) - 2)}px;left:calc(${lane * width}% + 2px);width:calc(${width}% - 4px)` })));
+    };
+    grid = h('div', { class: `cal-grid cal-${view}`, style: `--cols:${days.length};--hour:${HOUR_PX}px` },
+      h('div', { class: 'cal-head' }, h('div', { class: 'cal-gutter' }),
+        days.map((d) => h('button', { class: `cal-dayhead${d === today ? ' today' : ''}`, 'aria-label': dayTitle(d), onclick: () => go({ view: 'day', date: d }) }, h('span', {}, shortDay(d)), h('strong', {}, dayNum(d))))),
+      h('div', { class: 'cal-body', tabindex: '0', role: 'region', 'aria-label': 'Horas del calendario' },
+        h('div', { class: 'cal-gutter' }, hours.map((hh) => h('div', { class: 'cal-hour', style: `height:${HOUR_PX}px` }, `${String(hh).padStart(2, '0')}:00`))),
+        days.map(column)));
   }
-  const action = (a, label, fn, cls = 'small') => h('button', { class: cls, onclick: async () => { if (await run(fn, 'Listo')) render(); } }, label);
-  root.append(
-    h('div', { class: 'card row between' },
-      h('div', { class: 'row' }, h('button', { onclick: () => go(-7) }, '← Semana anterior'), h('button', { onclick: () => (location.hash = '#/agenda/citas') }, 'Hoy'), h('button', { onclick: () => go(7) }, 'Semana siguiente →')),
-      h('strong', {}, `${dayTitle(days[0])} – ${dayTitle(days[6])}`, h('span', { class: 'small muted' }, ` · hora de ${tz}`)),
-      h('button', { class: 'primary', onclick: () => { createBox.hidden = !createBox.hidden; if (!createBox.hidden) loadSlots(); } }, '+ Nueva cita')),
-    createBox,
-    ...[...byDay].map(([day, list]) => h('div', { class: 'card' },
-      h('h2', { style: 'margin:0 0 8px' }, dayTitle(day), day === today ? h('span', { class: 'badge green' }, ' hoy') : null),
-      list.length ? h('table', {}, h('tbody', {}, list.map((a) => {
-        const [cls, label] = APPT_STATUS[a.status];
-        return h('tr', {},
-          h('td', { style: 'width:70px' }, h('strong', {}, hhmm(a.starts_at))),
-          h('td', {}, a.kind === 'call' ? '📞 ' : '📅 ', h('strong', {}, a.service_name), a.source === 'simulador' ? h('span', { class: 'badge' }, ' prueba') : null,
-            h('div', { class: 'small muted' }, [a.customer_name || 'Cliente', a.customer_phone && `+${a.customer_phone.replace(/^\+/, '')}`, a.assigned_user_name && `atiende: ${a.assigned_user_name}`, a.notes].filter(Boolean).join(' · '))),
-          h('td', {}, h('span', { class: `badge ${cls}` }, label)),
-          h('td', {}, h('div', { class: 'row' },
-            a.conversation_id ? h('a', { class: 'btn small', href: `#/conversation/${a.conversation_id}` }, 'Chat') : null,
-            a.status === 'confirmed' ? action(a, 'Completada', () => api('PUT', `/api/appointments/${a.id}`, { status: 'completed' })) : null,
-            a.status === 'confirmed' ? action(a, 'No asistió', () => api('PUT', `/api/appointments/${a.id}`, { status: 'no_show' })) : null,
-            a.status === 'confirmed' ? h('button', { class: 'small', onclick: async () => {
-              const slots = a.service_id ? await api('GET', `/api/services/${a.service_id}/slots`) : [];
-              if (!slots.length) return run(() => { throw new Error('No hay horarios disponibles para este servicio.'); });
-              const choice = { slot: slots[0].key };
-              if (!(await dialog('Reprogramar cita', field('Nuevo horario disponible', select(choice, 'slot', slots.map((slot) => [slot.key, slot.label]))), 'Reprogramar y avisar al cliente'))) return;
-              const pick = choice.slot;
-              if (pick && (await run(() => api('PUT', `/api/appointments/${a.id}`, { slot: pick.trim() }), 'Reprogramada'))) render();
-            } }, 'Reprogramar') : null,
-            a.status === 'confirmed' ? h('button', { class: 'small danger', onclick: async () => {
-              const reason = await ask('Motivo de la cancelación (se avisará al cliente si tiene chat)', 'Cancelada por el negocio');
-              if (reason !== null && (await run(() => api('POST', `/api/appointments/${a.id}/cancel`, { reason }), 'Cancelada'))) render();
-            } }, 'Cancelar') : null)));
-      }))) : h('p', { class: 'muted small', style: 'margin:0' }, 'Sin citas'))),
-  );
+  const legend = people.size ? h('div', { class: 'cal-legend' }, [...people].map(([, p]) => h('span', {}, h('i', { style: `background:${p.color}` }), p.name)), h('span', {}, h('i', { style: 'background:#667085' }), 'Sin asignar')) : null;
+  root.append(createBox, h('div', { class: 'card cal-card' }, toolbar, grid, legend,
+    h('p', { class: 'small muted', style: 'margin:8px 0 0' }, `Hora de ${tz} · ${shown.length} ${shown.length === 1 ? 'cita' : 'citas'} en este periodo`)));
+  // En la semana y el día, la vista empieza en la mañana.
+  const body = grid.querySelector('.cal-body');
+  if (body) requestAnimationFrame(() => { body.scrollTop = HOUR_PX - 12; });
+
+  /** Ficha de la cita (como el panel de cita de GHL): datos y acciones. */
+  function openAppointment(a) {
+    const [cls, label] = APPT_STATUS[a.status];
+    const previous = document.activeElement;
+    const box = h('dialog', { class: 'card app-dialog appt-panel', 'aria-label': `Cita de ${a.customer_name || 'cliente'}` });
+    const close = () => { box.close(); box.remove(); if (previous?.isConnected) previous.focus(); };
+    const act = (text, fn, cls2 = '') => h('button', { class: cls2, onclick: async () => { const r = await fn(); if (r) { close(); render(); } } }, text);
+    box.addEventListener('cancel', (e) => { e.preventDefault(); close(); });
+    box.append(
+      h('div', { class: 'row between' }, h('h2', { style: 'margin:0' }, a.kind === 'call' ? '📞 ' : '📅 ', a.service_name), h('button', { class: 'icon-only', 'aria-label': 'Cerrar', onclick: close }, '✕')),
+      h('p', {}, h('span', { class: `badge ${cls}` }, label), a.source === 'simulador' ? h('span', { class: 'badge' }, ' prueba') : null),
+      h('dl', { class: 'appt-facts' },
+        h('dt', {}, 'Cuándo'), h('dd', {}, `${dayTitle(tzParts(a.starts_at, tz).date)}, ${hhmm(a.starts_at)}–${hhmm(a.ends_at)}`),
+        h('dt', {}, 'Cliente'), h('dd', {}, a.customer_name || 'Cliente', a.customer_phone ? ` · +${a.customer_phone.replace(/^\+/, '')}` : ''),
+        h('dt', {}, 'Atiende'), h('dd', {}, h('i', { class: 'dot', style: `background:${colorOf(a)}` }), ' ', a.assigned_user_name || 'Sin asignar'),
+        a.notes ? [h('dt', {}, 'Notas'), h('dd', {}, a.notes)] : null,
+        a.cancel_reason ? [h('dt', {}, 'Motivo'), h('dd', {}, a.cancel_reason)] : null),
+      h('div', { class: 'row' },
+        a.conversation_id ? h('a', { class: 'btn', href: `#/conversation/${a.conversation_id}`, onclick: close }, 'Abrir chat') : null,
+        a.status === 'confirmed' ? act('Completada', () => run(() => api('PUT', `/api/appointments/${a.id}`, { status: 'completed' }), 'Listo')) : null,
+        a.status === 'confirmed' ? act('No asistió', () => run(() => api('PUT', `/api/appointments/${a.id}`, { status: 'no_show' }), 'Listo')) : null,
+        a.status === 'confirmed' ? act('Reprogramar', async () => {
+          const slots = a.service_id ? await api('GET', `/api/services/${a.service_id}/slots`) : [];
+          if (!slots.length) return run(() => { throw new Error('No hay horarios disponibles para este servicio.'); });
+          const choice = { slot: slots[0].key };
+          if (!(await dialog('Reprogramar cita', field('Nuevo horario disponible', select(choice, 'slot', slots.map((slot) => [slot.key, slot.label]))), 'Reprogramar y avisar al cliente'))) return null;
+          return run(() => api('PUT', `/api/appointments/${a.id}`, { slot: choice.slot.trim() }), 'Reprogramada');
+        }) : null,
+        a.status === 'confirmed' ? act('Cancelar cita', async () => {
+          const reason = await ask('Motivo de la cancelación (se avisará al cliente si tiene chat)', 'Cancelada por el negocio');
+          return reason !== null ? run(() => api('POST', `/api/appointments/${a.id}/cancel`, { reason }), 'Cancelada') : null;
+        }, 'danger') : null));
+    document.body.append(box);
+    box.showModal();
+  }
 }
 
 async function listServices(root) {
