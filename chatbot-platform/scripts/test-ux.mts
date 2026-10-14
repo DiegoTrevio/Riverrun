@@ -164,6 +164,7 @@ try {
   await page.getByText('Instagram · @hotelpalmas', { exact: true }).waitFor();
   await go(`bot/${h.botId}/conexiones/${socialNew.id}`);
   await page.getByRole('button', { name: 'Obtener código de Telegram', exact: true }).click();
+  await page.getByText(/ZRN-\d+/).first().waitFor({ timeout: 10000 }).catch(async () => { throw new Error(`Sin código de Telegram: ${await page.locator('.main').innerText()}`); });
   const code = (await page.locator('.social-connect').innerText()).match(/ZRN-\d+/)![0];
   zer.telegram.get(code)!.status = 'connected';
   await page.getByText('✓ Conectado', { exact: true }).waitFor({ timeout: 10000 });
