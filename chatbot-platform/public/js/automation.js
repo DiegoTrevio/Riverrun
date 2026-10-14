@@ -5,13 +5,13 @@ import { api, area, check, clone, field, fill, fmtDate, h, dialog, localDateTime
 import { render } from './main.js';
 import { withAcct } from './session.js';
 
-const AUTO_TABS = [['rules', 'Reglas'], ['sequences', 'Secuencias'], ['campaigns', 'Campañas'], ['settings', 'Horario y ajustes']];
+const AUTO_TABS = [['rules', 'Reglas'], ['sequences', 'Secuencias'], ['campaigns', 'Campañas']];
 
 export async function viewAutomation(root, tab, id) {
-  root.append(
-    h('h1', {}, 'Automatización'),
-    h('div', { class: 'tabs' }, AUTO_TABS.map(([k, l]) => h('a', { href: `#/automation/${k}`, class: k === tab ? 'active' : '' }, l))),
-  );
+  // El horario y los avisos viven en Ajustes (su propio título, sin las pestañas de automatización).
+  root.append(...(tab === 'settings'
+    ? [h('h1', {}, 'Horario y avisos')]
+    : [h('h1', {}, 'Automatización'), h('div', { class: 'tabs' }, AUTO_TABS.map(([k, l]) => h('a', { href: `#/automation/${k}`, class: k === tab ? 'active' : '' }, l)))]));
   if (needAccount(root)) return;
   const body = h('div');
   root.append(body);
@@ -290,7 +290,7 @@ function actionFields(a, refs) {
       return [refs.sequences.length ? field('Secuencia', select(a, 'sequence_id', refs.sequences.map((s) => [s.id, s.name]))) : h('p', { class: 'muted' }, 'Primero crea una secuencia.')];
     case 'webhook':
       a.url ??= '';
-      return [field('URL', text(a, 'url', { placeholder: 'https://hook.n8n.io/…' }), 'Se envía un POST con los datos del cliente, firmado con la cabecera X-Signature (clave en Horario y ajustes).')];
+      return [field('URL', text(a, 'url', { placeholder: 'https://hook.n8n.io/…' }), 'Se envía un POST con los datos del cliente, firmado con la cabecera X-Signature (clave en Ajustes → Horario y avisos).')];
     default:
       return [];
   }
