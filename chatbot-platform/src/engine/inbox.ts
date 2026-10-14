@@ -14,6 +14,8 @@ export class InboundQueue {
   private running?:Promise<void>;
   private controls?:Promise<void>;
   private hints=new Set<number>();
+  /** Llegó otra recepción mientras se procesaban las anteriores: se repasa al terminar, sin esperar al siguiente sondeo. */
+  private again=false;
   constructor(private receive:(channel:Channel,msg:InboundMessage)=>Promise<unknown>,private failed:(channel:Channel)=>Promise<void>) {
     if(config.queue.role!=='http') {
       this.timer=setInterval(()=>this.wake(),config.queue.pollMs);this.timer.unref();
@@ -38,7 +40,8 @@ export class InboundQueue {
   private wake() {
     if(this.stopped) return;
     if(!this.controls) this.controls=detached(()=>this.runDue(true)).catch(()=>console.warn('[inbox] Control conservado para recuperación.')).finally(()=>{this.controls=undefined;});
-    if(!this.running) this.running=detached(()=>this.runDue(false)).catch(()=>console.warn('[inbox] Recepciones conservadas; PostgreSQL no disponible.')).finally(()=>{this.running=undefined;});
+    if(this.running) {this.again=true;return;}
+    this.running=detached(()=>this.runDue(false)).catch(()=>console.warn('[inbox] Recepciones conservadas; PostgreSQL no disponible.')).finally(()=>{this.running=undefined;if(this.again) {this.again=false;this.wake();}});
   }
   async runDue(controlsOnly=false) {
     if(this.stopped) return;

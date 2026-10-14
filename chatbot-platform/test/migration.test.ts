@@ -104,7 +104,7 @@ t('varias réplicas pueden migrar simultáneamente una instalación nueva', asyn
   const results = await Promise.allSettled(Array.from({ length: 3 }, () => migrate(db)));
   assert.ok(results.every(r => r.status === 'fulfilled'), JSON.stringify(results));
   const counts = (await db.query('SELECT name, count(*)::int n FROM schema_migrations GROUP BY name')).rows;
-  assert.equal(counts.length, 45);
+  assert.equal(counts.length, 48);
   assert.ok(counts.every(r => r.n === 1));
 });
 
