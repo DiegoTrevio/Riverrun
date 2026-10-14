@@ -1,10 +1,13 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { assertAccount, conversationFor, HttpError, requireRole, scopeAccount, targetAccount } from '../access.js';
-import { buildIcs, busyFor, computeSlots } from '../automation/agenda.js';
+import { buildIcs, freeSlots } from '../automation/agenda.js';
 import * as astore from '../automation/store.js';
 import { spanishDate, spanishTime } from '../automation/time.js';
 import { ServiceBodySchema, type ServiceBody } from '../automation/types.js';
+import { StaffScheduleBodySchema, staffInfo, saveSchedule } from '../automation/staff.js';
+import { syncCalendars } from '../integrations/calendars.js';
+import { disconnectStaff, listStaffCalendars, publicView } from '../integrations/staff-calendars.js';
 import { query } from '../db.js';
 import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
@@ -58,11 +61,10 @@ export async function agendaRoutes(api: FastifyInstance, service: ChatService) {
     const s = await serviceFor(req.user, req.params.id);
     const settings = await astore.getSettings(s.account_id);
     const days = Math.min(Number(req.query.days) || 14, s.max_days_ahead);
-    const now = new Date();
-    const busy = await busyFor(s, now, new Date(now.getTime() + (days + 1) * 86400_000));
-    return computeSlots(s, settings, busy, now, { days }).map((x) => ({
+    return (await freeSlots(s, settings, new Date(), { days })).map((x) => ({
       key: x.key,
       date: x.key.slice(0, 10),
+      users: x.users,
       label: `${spanishDate(x.start, settings.timezone)}, ${spanishTime(x.start, settings.timezone)}`,
     }));
   });
@@ -73,6 +75,40 @@ export async function agendaRoutes(api: FastifyInstance, service: ChatService) {
     if (!accountId) return { timezone: 'America/Mexico_City' };
     const settings = await astore.getSettings(await targetAccount(req.user, accountId));
     return { timezone: settings.timezone };
+  });
+
+  /* ------------------------------ Disponibilidad del equipo ------------------------------ */
+
+  /** Horario, días libres y calendario de cada persona. Quien atiende (agente) solo se ve a sí mismo. */
+  api.get('/api/team/agenda', async (req: any) => {
+    const accountId = await targetAccount(req.user, req.query.account_id);
+    const team = (await astore.teamMembers(accountId)).filter((u) => req.user.role !== 'agent' || u.id === req.user.id);
+    const [schedules, calendars, services] = await Promise.all([staffInfo(team.map((u) => u.id)), listStaffCalendars(accountId), astore.listServices(accountId)]);
+    return team.map((u) => ({
+      id: u.id, name: u.name, email: u.email, role: u.role,
+      hours: schedules.find((s) => s.id === u.id)?.hours ?? null,
+      time_off: schedules.find((s) => s.id === u.id)?.time_off ?? [],
+      calendar: publicView(calendars.find((c) => c.user_id === u.id) ?? null),
+      services: services.filter((s) => s.assigned_user_ids.includes(u.id)).map((s) => ({ id: s.id, name: s.name })),
+    }));
+  });
+
+  /** Cada quien edita su disponibilidad; el administrador, la de cualquiera de su cuenta. */
+  api.put('/api/team/:userId/schedule', async (req: any) => {
+    const target = await store.getUser(req.params.userId);
+    if (!target?.account_id || (req.user.role !== 'superadmin' && target.account_id !== req.user.account_id)) throw new HttpError(404, 'Persona no encontrada');
+    if (req.user.role === 'agent' && target.id !== req.user.id) throw new HttpError(403, 'Solo puedes cambiar tu propia disponibilidad');
+    const body = parse(StaffScheduleBodySchema, req.body);
+    await saveSchedule(target.account_id, target.id, body);
+    return { ok: true };
+  });
+
+  /** El administrador puede desconectar el calendario de alguien (por ejemplo, si dejó el equipo). */
+  api.delete('/api/team/:userId/calendar', admins, async (req: any) => {
+    const target = await store.getUser(req.params.userId);
+    if (!target?.account_id || (req.user.role !== 'superadmin' && target.account_id !== req.user.account_id)) throw new HttpError(404, 'Persona no encontrada');
+    await disconnectStaff(target.id);
+    return { ok: true };
   });
 
   /* ------------------------------ Citas (administradores y agentes) ------------------------------ */
@@ -155,6 +191,8 @@ export async function agendaRoutes(api: FastifyInstance, service: ChatService) {
       [a.id, b.status ?? null, b.notes ?? null, b.assigned_user_id !== undefined, b.assigned_user_id ?? null],
     );
     if (b.status && b.status !== 'confirmed') await astore.cancelJobs('appointment_id', a.id);
+    // Reasignada: la cita pasa del calendario de la persona anterior al de la nueva.
+    if (b.assigned_user_id !== undefined && b.assigned_user_id !== a.assigned_user_id) await syncCalendars(a.account_id, a.id).catch(() => undefined);
     return astore.getAppointment(a.id);
   });
 
