@@ -61,6 +61,7 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
               ch.type AS channel_type, ch.name AS channel_name, b.name AS chatbot_name, a.name AS account_name,
               ${paged ? `to_char(coalesce(c.last_message_at, c.created_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS page_cursor_at,` : ''}
               (SELECT content FROM messages m WHERE m.conversation_id = c.id ORDER BY id DESC LIMIT 1) AS last_message,
+              (SELECT direction FROM messages m WHERE m.conversation_id = c.id ORDER BY id DESC LIMIT 1) AS last_direction,
               (SELECT count(*)::int FROM messages m WHERE m.conversation_id = c.id) AS message_count
        FROM conversations c
          JOIN contacts ct ON ct.id = c.contact_id
