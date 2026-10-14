@@ -57,6 +57,8 @@ export function triggerMatches(t: Trigger, e: AutomationEvent): boolean {
       return !t.field || t.field === e.field;
     case 'stage_reached':
       return !t.step || t.step === e.step;
+    case 'pipeline_stage':
+      return (!t.pipeline_id || t.pipeline_id === e.pipeline?.id) && (!t.stage_id || t.stage_id === e.pipeline?.stage_id);
     case 'tag_added':
       return normalize(t.tag) === normalize(e.tag ?? '');
     case 'appointment_booked':
@@ -287,6 +289,11 @@ export class Automator {
         await this.alertTeam(ctx.conv.account_id, { ...alert, title: '🙋 Conversación esperando a una persona', kind: 'handoff', conversationId: ctx.conv.id });
       }
     }
+    // Pipeline: la solicitud se crea en su primera columna y avanza según lo que pasa (antes de las reglas, que pueden
+    // reaccionar al cambio de columna).
+    await this.chat.pipelines.onEvent(e, ctx.conv, ctx.channel.type).catch((err) =>
+      logEvent({ level: 'error', source: 'engine', message: `Pipeline (${e.type}): ${err?.message ?? err}`, accountId: ctx.conv.account_id, conversationId: ctx.conv.id, details: err }),
+    );
     // Webhooks de eventos de la cuenta (Zapier, Make, CRM…). El simulador del panel no dispara avisos reales.
     const publicEvent = publicEventFor(e);
     if (publicEvent && ctx.channel.type !== 'playground') {

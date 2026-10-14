@@ -341,3 +341,14 @@ fieldset.field { border: 0; padding: 0; }
 
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 .row-link { display: block; min-height: 44px; padding: 0; background: transparent; border: 0; text-align: left; white-space: normal; color: var(--accent); }
+
+/* Pipeline: columnas con scroll horizontal; en el teléfono se recorren de lado. */
+.pipeline-board { display: flex; gap: 12px; overflow-x: auto; align-items: flex-start; padding-bottom: 12px; margin-top: 12px; }
+.pipeline-col { flex: 0 0 260px; background: var(--panel); border: 1px solid var(--border); border-top: 4px solid var(--stage, var(--border)); border-radius: var(--radius); padding: 10px; min-height: 120px; }
+.pipeline-col.drop { outline: 2px dashed var(--accent); outline-offset: 2px; }
+.pipeline-col > header { margin-bottom: 8px; }
+.pipeline-card { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; cursor: grab; display: grid; gap: 4px; }
+.pipeline-card-title { font-weight: 600; overflow-wrap: anywhere; }
+.pipeline-card select { min-height: 36px; padding: 4px 8px; }
+.pipeline-stage-edit h3 { margin: 0; }
+@media (max-width: 800px) { .pipeline-col { flex-basis: 78vw; } }

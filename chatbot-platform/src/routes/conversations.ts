@@ -7,6 +7,7 @@ import { agentStatus } from '../engine/activation.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
+import { cardsOfConversation } from '../store/pipelines.js';
 import { parse } from './util.js';
 import { rateLimited } from '../auth.js';
 import { deliverReport, ReportSendSchema, reportRecipients } from '../automation/report-delivery.js';
@@ -118,6 +119,8 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
       tasks: await store.listContactTasks(conv.contact_id),
       /** Solicitudes del cliente en esta conversación (vacío si nunca volvió por lo mismo). */
       requests: await store.listRequests(conv.id),
+      /** Tarjetas del pipeline (una por solicitud) con su historial de columnas. */
+      pipeline: await cardsOfConversation(conv.id),
     };
   });
 

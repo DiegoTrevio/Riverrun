@@ -24,6 +24,7 @@ function simpleLinks(link) {
   return [
     link('#/agentes', '🤖 Agentes', 'agentes'),
     link('#/conversations', '💬 Conversaciones', 'conversations'),
+    link('#/pipeline', '📊 Pipeline', 'pipeline'),
     link('#/agenda', '📅 Agenda', 'agenda'),
     link('#/ajustes', '⚙️ Ajustes', 'ajustes'),
   ];
@@ -64,8 +65,9 @@ export function shell(active, content) {
       switcher,
       simple ? simpleLinks(link) : [
       isAdmin() ? link('#/agentes', '🤖 Agentes', 'agentes') : null,
-      navGroup('Conversaciones', ['conversations', 'conversation', 'notifications'], [
+      navGroup('Conversaciones', ['conversations', 'conversation', 'notifications', 'pipeline'], [
         link('#/conversations', 'Bandeja de entrada', 'conversations'),
+        link('#/pipeline', 'Pipeline', 'pipeline'),
         h('a', { href: '#/notifications', class: active === 'notifications' ? 'active' : '' }, 'Notificaciones'),
       ]),
       navGroup('Agenda y automatización', ['agenda', 'automation', 'estadisticas'], [

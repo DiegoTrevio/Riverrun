@@ -129,6 +129,8 @@ export const TriggerSchema = z.discriminatedUnion('type', [
   /** El recorrido llega a una etapa (0 = cualquiera). */
   z.object({ type: z.literal('stage_reached'), step: z.number().int().min(0).max(30).default(0) }),
   z.object({ type: z.literal('agent_off') }),
+  /** Una solicitud entra a una columna de un pipeline (vacíos = cualquier pipeline o cualquier columna). */
+  z.object({ type: z.literal('pipeline_stage'), pipeline_id: z.union([z.string().uuid(), z.literal('')]).default(''), stage_id: z.string().max(40).default('') }),
 ]);
 export type Trigger = z.infer<typeof TriggerSchema>;
 export type TriggerType = Trigger['type'];
@@ -305,6 +307,8 @@ export interface AutomationEvent {
   appointment?: Appointment;
   /** Evita bucles: acciones que disparan otros eventos. */
   depth?: number;
+  /** Cambio de columna en un pipeline (pipeline_stage). */
+  pipeline?: { id: string; name: string; stage_id: string; stage_name: string; stage_kind: string; from_stage_id: string | null; from_stage_name: string | null; reason: string };
   /** Transferencia hecha por una persona del equipo que tomó la conversación (ella ya la atiende: no se reparte). */
   byUserId?: string;
 }
