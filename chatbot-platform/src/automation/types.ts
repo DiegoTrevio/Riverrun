@@ -261,6 +261,10 @@ export const ServiceBodySchema = z.object({
   reminders: z.array(z.number().int().min(5).max(60 * 24 * 14)).max(5).default([1440, 60]),
   reminder_message: z.string().max(1000).default(''),
   assigned_user_ids: z.array(z.string().uuid()).default([]),
+  /** Reparto entre las personas asignadas: por turnos o por porcentajes (`user_weights`). */
+  assignment_mode: z.enum(['round_robin', 'weighted']).default('round_robin'),
+  /** Porcentaje de citas de cada persona (por id). Sin valor = partes iguales; 0 = solo si nadie más puede. */
+  user_weights: z.record(z.string().uuid(), z.number().min(0).max(100)).default({}),
   notify_team: z.boolean().default(true),
   active: z.boolean().default(true),
 });

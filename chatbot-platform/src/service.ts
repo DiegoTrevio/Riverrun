@@ -1,3 +1,5 @@
+import { syncStaffEvent } from './integrations/staff-calendars.js';
+import { syncAppointment as syncOutlookAppointment } from './integrations/outlook.js';
 import { syncAppointment } from './integrations/google.js';
 import crypto from 'node:crypto';
 import type { AiProvider } from './ai/provider.js';
@@ -103,6 +105,8 @@ export class ChatService {
       flow_image: (p) => this.automator.runDeferredImage(p),
       webhook_delivery: (p, job) => deliver(p, job.attempts),
       gcal_sync: (p) => syncAppointment(p),
+      outlook_sync: (p) => syncOutlookAppointment(p),
+      staff_cal_sync: (p) => syncStaffEvent(p),
       no_reply: (p) => this.automator.runNoReply(p),
       sequence_step: (p) => this.automator.runSequenceStep(p),
       appointment_reminder: (p) => this.agenda.sendReminder(p),

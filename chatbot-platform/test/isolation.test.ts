@@ -57,11 +57,12 @@ function fillParams(url: string): string | null {
     [/^\/api\/brands\/:id/, 'brand'],
     [/^\/api\/pipelines\/:id/, 'pipeline'],
     [/^\/api\/pipeline-cards\/:id/, 'card'],
+    [/^\/api\/team\/:userId/, 'user'],
   ];
   const hit = byPrefix.find(([re]) => re.test(url));
   if (!hit) return null;
   return url
-    .replace(/:(id|cid|iid|kid|model|key|mid)\b/, B[hit[1]])
+    .replace(/:(id|cid|iid|kid|model|key|mid|userId)\b/, B[hit[1]])
     .replace(':session', 'sesion-b')
     .replace(':sid', B.sequence);
 }
