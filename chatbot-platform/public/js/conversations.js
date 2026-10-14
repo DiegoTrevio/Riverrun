@@ -119,7 +119,7 @@ export async function viewConversations(root, params) {
         const [cls, label] = STATUS_BADGE[c.status] || ['', c.status];
         return h('tr', { class: 'click', onclick: () => (location.hash = `#/conversation/${c.id}`) },
           h('td', {}, h('a', { href: `#/conversation/${c.id}` }, h('strong', {}, c.name || c.push_name || (c.channel_type === 'webchat' ? 'Visitante del sitio' : 'Sin nombre'))), h('div', { class: 'muted small' }, c.phone ? `+${c.phone}` : '')),
-          h('td', {}, channelIcon(c.channel_type), ' ', c.channel_name, h('div', { class: 'muted small' }, c.chatbot_name || 'sin chatbot')),
+          h('td', {}, channelIcon(c.channel_type, c.channel_platform), ' ', c.channel_name, h('div', { class: 'muted small' }, c.chatbot_name || 'sin chatbot')),
           showAccount ? h('td', { class: 'small' }, c.account_name) : null,
           h('td', {}, h('span', { class: `badge ${cls}` }, label), c.status === 'human' && c.handoff_reason ? h('div', { class: 'muted small' }, c.handoff_reason) : null),
           h('td', { class: 'small' }, c.assigned_user_id ? `👤 ${c.assigned_name || c.assigned_email}` : h('span', { class: 'muted' }, '—')),
@@ -261,7 +261,7 @@ export async function viewConversation(root, id) {
           c.status !== 'bot' ? h('button', { class: 'primary', onclick: async () => { if (!(await run(() => api('POST', `/api/conversations/${id}/release`), 'El bot vuelve a responder'))) return; load(true); } }, 'Devolver al bot') : null,
           c.status !== 'closed' ? h('button', { onclick: async () => { if (!(await run(() => api('POST', `/api/conversations/${id}/close`), 'Cerrada'))) return; load(true); } }, 'Cerrar') : null)),
       assignRow(data),
-      h('p', { class: 'muted' }, channelIcon(data.channel?.type), ' ', data.channel?.name, ' · ', data.chatbot?.name || 'sin chatbot', ct.phone ? ` · +${ct.phone}` : '', c.status === 'human' && c.handoff_reason ? ` · Motivo: ${c.handoff_reason}` : ''),
+      h('p', { class: 'muted' }, channelIcon(data.channel?.type, data.channel?.platform), ' ', data.channel?.name, ' · ', data.chatbot?.name || 'sin chatbot', ct.phone ? ` · +${ct.phone}` : '', c.status === 'human' && c.handoff_reason ? ` · Motivo: ${c.handoff_reason}` : ''),
       handoffLine(ct, data.handoff_by_user),
       c.status === 'bot' && data.agent && !data.agent.on
         ? h('div', { class: 'card legend row between' },

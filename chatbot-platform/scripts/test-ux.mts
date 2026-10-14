@@ -4,7 +4,7 @@ import path from 'node:path';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { chromium } from 'playwright';
-import { createHarness, pool, waitFor, evo } from '../test/harness.js';
+import { createHarness, pool, waitFor, evo, zer } from '../test/harness.js';
 
 assert.ok(process.env.TEST_DATABASE_URL, 'Define TEST_DATABASE_URL para una base de pruebas aislada; el arnés reinicia public.');
 const axe = fs.readFileSync(createRequire(import.meta.url).resolve('axe-core/axe.min.js'), 'utf8');
@@ -21,6 +21,10 @@ try {
   const conv = await h.conversationFor();
   await h.authed('PUT', `/api/chatbots/${h.botId}`, { active: false });
   const service = (await h.authed('POST', '/api/services', { account_id: h.accountId, name: 'Consulta inicial' })).json();
+  // Redes sociales (Zernio): una sin conectar y una conectada con su cuenta.
+  const socialNew = (await h.authed('POST', '/api/channels', { account_id: h.accountId, chatbot_id: h.botId, name: 'Telegram del hotel', type: 'zernio', config: { platform: 'telegram' } })).json();
+  const socialOn = (await h.authed('POST', '/api/channels', { account_id: h.accountId, chatbot_id: h.botId, name: 'Instagram del hotel', type: 'zernio', config: { platform: 'instagram', profile_id: 'prof_ux', account_id: 'acc_ux', username: 'hotelpalmas', display_name: 'Hotel Palmas' } })).json();
+  zer.accounts.set('acc_ux', { _id: 'acc_ux', platform: 'instagram', profileId: 'prof_ux', username: 'hotelpalmas', displayName: 'Hotel Palmas', isActive: true });
   const login: any = { superadmin: h.authed };
   for (const role of ['admin', 'agent']) {
     const user = (await h.authed('POST', '/api/users', { account_id: h.accountId, name: `Auditor ${role}`, email: `${role}@auditoria.test`, password: 'auditoria123', role })).json();
@@ -37,7 +41,7 @@ try {
     if (role === 'superadmin') await context.addInitScript((id: string) => localStorage.setItem('cp-account', id), h.accountId);
     return context;
   };
-  const routes = ['agentes', `bot/${h.botId}/instrucciones`, `bot/${h.botId}/preguntas`, `bot/${h.botId}/activacion`, `bot/${h.botId}/conocimiento`, `bot/${h.botId}/imagenes`, `bot/${h.botId}/conexiones`, `bot/${h.botId}/probar`, `bot/${h.botId}/conexiones/${h.channelId}`, 'conversations', `conversation/${conv.id}`, 'agenda', 'agenda/servicios', `agenda/servicios?id=${service.id}`, 'automation/rules', 'automation/rules/new', 'automation/sequences', 'automation/sequences/new', 'automation/campaigns', 'automation/campaigns/new', 'automation/settings', 'pipeline', 'pipeline/editar/nuevo', 'ajustes', 'integraciones', 'users', 'consumo', 'logs', 'plan', 'estadisticas', 'notifications', 'password', 'inicio'];
+  const routes = ['agentes', `bot/${h.botId}/instrucciones`, `bot/${h.botId}/preguntas`, `bot/${h.botId}/activacion`, `bot/${h.botId}/conocimiento`, `bot/${h.botId}/imagenes`, `bot/${h.botId}/conexiones`, `bot/${h.botId}/probar`, `bot/${h.botId}/conexiones/${h.channelId}`, `bot/${h.botId}/conexiones/${socialNew.id}`, `bot/${h.botId}/conexiones/${socialOn.id}`, 'conversations', `conversation/${conv.id}`, 'agenda', 'agenda/servicios', `agenda/servicios?id=${service.id}`, 'automation/rules', 'automation/rules/new', 'automation/sequences', 'automation/sequences/new', 'automation/campaigns', 'automation/campaigns/new', 'automation/settings', 'pipeline', 'pipeline/editar/nuevo', 'ajustes', 'integraciones', 'users', 'consumo', 'logs', 'plan', 'estadisticas', 'notifications', 'password', 'inicio'];
   const helpScreens: Record<string, string> = { [`bot/${h.botId}/conocimiento`]: '01-importar.jpg', [`bot/${h.botId}/probar`]: '03-probar.jpg', [`conversation/${conv.id}`]: '05-conversacion.jpg', ajustes: '06-ajustes.jpg' };
   for (const role of ['admin', 'superadmin', 'agent']) {
     const context = await contextFor(role); const page = await context.newPage();
@@ -156,6 +160,16 @@ try {
   evo.instances.get('palmas')!.state = 'open'; await page.getByText('¡WhatsApp conectado!', { exact: true }).waitFor();
   assert.equal(await page.getByText('Desde ahora tu asistente responde los mensajes que lleguen a este número.', { exact: true }).count(), 0);
   checked('QR conserva foco y diferencia conexión de atención encendida');
+  await go(`bot/${h.botId}/conexiones/${socialOn.id}`);
+  await page.getByText('✓ Conectado', { exact: true }).waitFor();
+  await page.getByText('Instagram · @hotelpalmas', { exact: true }).waitFor();
+  await go(`bot/${h.botId}/conexiones/${socialNew.id}`);
+  await page.getByRole('button', { name: 'Obtener código de Telegram', exact: true }).click();
+  await page.getByText(/ZRN-\d+/).first().waitFor({ timeout: 10000 }).catch(async () => { throw new Error(`Sin código de Telegram: ${await page.locator('.main').innerText()}`); });
+  const code = (await page.locator('.social-connect').innerText()).match(/ZRN-\d+/)![0];
+  zer.telegram.get(code)!.status = 'connected';
+  await page.getByText('✓ Conectado', { exact: true }).waitFor({ timeout: 10000 });
+  checked('Redes sociales: cuenta conectada visible y Telegram se conecta con código desde el panel');
   const telegram = (await h.authed('POST', '/api/channels', { account_id: h.accountId, chatbot_id: h.botId, name: 'Telegram UX', type: 'telegram' })).json();
   await page.route(`**/api/channels/${telegram.id}/status`, (route) => route.fulfill({ json: { state: 'open' } }));
   await go(`bot/${h.botId}/conexiones/${telegram.id}`);

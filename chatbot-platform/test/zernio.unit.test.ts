@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseZernioEvent, zernioAdapter, zernioAuthUrl, zernioSignature } from '../src/channels/zernio.js';
+import { ensurePlatformWebhook, parseZernioEvent, platformWebhookSecret, profileFor, ZernioClient, zernioAdapter, zernioAuthUrl, zernioSignature } from '../src/channels/zernio.js';
 import { config } from '../src/config.js';
 import { ChannelConfigSchemas, SECRET_FIELDS } from '../src/types.js';
 
@@ -10,7 +10,7 @@ let reply: { status: number; body: unknown } = { status: 200, body: {} };
 
 beforeEach(() => {
   calls = [];
-  reply = { status: 200, body: { id: 'msg_1' } };
+  reply = { status: 200, body: { success: true, data: { messageId: 'msg_1', conversationId: 'conv_9' } } };
   globalThis.fetch = (async (url: string | URL, init: RequestInit = {}) => {
     calls.push({ url: String(url), init });
     return new Response(JSON.stringify(reply.body), { status: reply.status, headers: { 'content-type': 'application/json' } });
@@ -29,7 +29,7 @@ const channel = (cfg: Record<string, unknown> = {}) =>
     config: {
       api_key: 'zk_test',
       account_id: 'acc_zernio',
-      platform: 'bluesky',
+      platform: 'instagram',
       profile_id: 'prof_1',
       webhook_secret: 'whsec',
       ...cfg,
@@ -49,7 +49,8 @@ test('firma del webhook: acepta solo el HMAC del cuerpo crudo con el secreto del
   assert.equal(verify({ 'x-zernio-signature': sig }, Buffer.from('{"event":"alterado"}')), false);
   assert.equal(verify({}, raw), false, 'sin firma se rechaza');
   assert.equal(verify({ 'x-zernio-signature': sig }, undefined), false, 'sin cuerpo crudo no se puede verificar');
-  assert.equal(verify({ 'x-zernio-signature': sig }, raw, channel({ webhook_secret: '' })), false, 'sin secreto se rechaza');
+  assert.equal(verify({ 'x-zernio-signature': sig }, raw, channel({ webhook_secret: '' })), false, 'sin el secreto del canal se rechaza');
+  assert.equal(verify({ 'x-zernio-signature': zernioSignature(raw, platformWebhookSecret()) }, raw, channel({ webhook_secret: '' })), true, 'el secreto de la plataforma vale');
 });
 
 test('parse: message.received se convierte en mensaje entrante con la conversación como contacto', () => {
@@ -140,50 +141,25 @@ test('errores de la API se propagan una sola vez: un envío no se reintenta', as
   assert.equal(calls.length, 1);
 });
 
-test('registro del webhook: envía la URL, el secreto y los eventos de mensajes', async () => {
-  const r = await zernioAdapter.setup!(channel(), 'https://bots.example.com/webhook/tok');
-  assert.equal(r.ok, true);
-  assert.match(calls[0].url, /\/webhooks\/settings$/);
-  assert.deepEqual(sentBody(), {
-    url: 'https://bots.example.com/webhook/tok',
-    secret: 'whsec',
-    events: ['message.received', 'message.sent'],
-  });
-});
-
-test('registro del webhook: exige HTTPS y no llama a Zernio si la URL no es segura', async () => {
-  const r = await zernioAdapter.setup!(channel(), 'http://localhost:3000/webhook/tok');
-  assert.equal(r.ok, false);
-  assert.match(r.message, /HTTPS/);
-  assert.equal(calls.length, 0);
-});
-
 test('conexión de cuenta: pide la autorización del perfil y devuelve la URL', async () => {
   reply = { status: 200, body: { authUrl: 'https://zernio.example/auth/abc' } };
-  const url = await zernioAuthUrl(channel(), 'https://bots.example.com/zernio/callback/tok/st');
+  const url = await zernioAuthUrl(channel({ platform: 'instagram' }), 'https://bots.example.com/zernio/callback/tok/st');
   assert.equal(url, 'https://zernio.example/auth/abc');
   const q = new URL(calls[0].url).searchParams;
-  assert.match(calls[0].url, /\/connect\/bluesky\?/);
+  assert.match(calls[0].url, /\/connect\/instagram\?/);
   assert.equal(calls[0].init.method, 'GET');
   assert.equal(q.get('profileId'), 'prof_1');
   assert.equal(q.get('redirect_url'), 'https://bots.example.com/zernio/callback/tok/st');
 });
 
-test('conexión de cuenta: sin red o perfil no llama a Zernio', async () => {
-  await assert.rejects(zernioAuthUrl(channel({ platform: '' }), 'https://bots.example.com/x'), /Indica la red/);
-  await assert.rejects(zernioAuthUrl(channel({ profile_id: '' }), 'https://bots.example.com/x'), /Indica la red/);
+test('conexión de cuenta: Bluesky y Telegram no usan la página de autorización', async () => {
+  await assert.rejects(zernioAuthUrl(channel({ platform: 'bluesky' }), 'https://bots.example.com/x'), /desde el panel/);
   assert.equal(calls.length, 0);
-});
-
-test('secreto del webhook: se genera distinto para cada canal', () => {
-  const a = zernioAdapter.initialConfig!().webhook_secret as string;
-  const b = zernioAdapter.initialConfig!().webhook_secret as string;
-  assert.match(a, /^[0-9a-f]{48}$/);
-  assert.notEqual(a, b);
 });
 
 test('configuración: los secretos de Zernio quedan enmascarados y los campos tienen valores por defecto', () => {
   for (const f of ['api_key', 'webhook_secret', 'connect_state']) assert.ok(SECRET_FIELDS.includes(f), f);
+  assert.equal(zernioAdapter.initialConfig, undefined, 'los canales nuevos no guardan secretos propios: firma la plataforma');
   const parsed = ChannelConfigSchemas.zernio.parse({});
   assert.equal(parsed.platform, '');
   assert.equal(parsed.account_id, '');
@@ -195,7 +171,7 @@ test('límite de velocidad: un 429 se repite una vez tras Retry-After y el enví
   globalThis.fetch = (async () => {
     calls++;
     if (calls === 1) return new Response('{}', { status: 429, headers: { 'retry-after': '0', 'content-type': 'application/json' } });
-    return new Response(JSON.stringify({ id: 'msg_9' }), { status: 200, headers: { 'content-type': 'application/json' } });
+    return new Response(JSON.stringify({ success: true, data: { messageId: 'msg_9' } }), { status: 200, headers: { 'content-type': 'application/json' } });
   }) as unknown as typeof fetch;
   const id = await zernioAdapter.transport(channel(), { external_id: 'conv_1' } as any).sendText('Hola', 0);
   assert.equal(id, 'msg_9');
@@ -221,7 +197,7 @@ test('límite de velocidad: un 429 sin Retry-After espera 2 s antes de repetir (
   globalThis.fetch = (async () => {
     at.push(Date.now());
     if (at.length === 1) return new Response('{}', { status: 429, headers: { 'content-type': 'application/json' } });
-    return new Response(JSON.stringify({ id: 'msg_10' }), { status: 200, headers: { 'content-type': 'application/json' } });
+    return new Response(JSON.stringify({ success: true, data: { messageId: 'msg_10' } }), { status: 200, headers: { 'content-type': 'application/json' } });
   }) as unknown as typeof fetch;
   const id = await zernioAdapter.transport(channel(), { external_id: 'conv_1' } as any).sendText('Hola', 0);
   assert.equal(id, 'msg_10');
@@ -257,4 +233,145 @@ test('parse: foto o documento del cliente quedan con su tipo y su pie (no se pie
   assert.equal(doc.media?.filename, 'cotizacion.pdf');
   const echo = parseZernioEvent({ event: 'message.sent', payload: { conversationId: 'conv_9', message: { id: 'm4', text: '', attachments: [{ type: 'image' }] } } }).messages[0];
   assert.equal(echo.type, 'image', 'el eco de una foto sin pie se reconoce como foto');
+});
+
+/* ------------------------------ Formato real de los eventos (plano) y de la API ------------------------------ */
+
+const flat = (over: Record<string, any> = {}, msg: Record<string, any> = {}) => ({
+  id: 'evt_9', event: 'message.received', timestamp: '2026-10-08T12:00:00Z',
+  message: {
+    id: 'zm_internal', conversationId: 'conv_9', platform: 'instagram', platformMessageId: 'ig_mid_1', direction: 'incoming', text: 'Hola',
+    attachments: [], sender: { id: 'u1', name: 'Ana López', username: 'ana', phoneNumber: null }, sentAt: '2026-10-08T12:00:00Z', ...msg,
+  },
+  conversation: { id: 'conv_9', participantName: 'Ana López' },
+  account: { id: 'acc_zernio', platform: 'instagram', username: 'hotel' },
+  ...over,
+});
+
+test('parse (formato actual): message.received plano usa el id de la plataforma, la conversación y el nombre del cliente', () => {
+  const [m] = parseZernioEvent(flat(), 'acc_zernio').messages;
+  assert.deepEqual(m, {
+    messageId: 'ig_mid_1', externalId: 'conv_9', phone: '', displayName: 'Ana López', fromMe: false, type: 'text', text: 'Hola',
+    timestamp: Date.parse('2026-10-08T12:00:00Z') / 1000,
+  });
+});
+
+test('parse (formato actual): WhatsApp trae el teléfono; direction outgoing y message.sent son ecos', () => {
+  assert.equal(parseZernioEvent(flat({}, { sender: { name: 'Ana', phoneNumber: '+52 1 55 1234 5678' } })).messages[0].phone, '5215512345678');
+  assert.equal(parseZernioEvent(flat({}, { direction: 'outgoing' })).messages[0].fromMe, true);
+  assert.equal(parseZernioEvent(flat({ event: 'message.sent' })).messages[0].fromMe, true);
+});
+
+test('parse (formato actual): nota de voz, foto y documento quedan con su tipo y su URL', () => {
+  const voice = parseZernioEvent(flat({}, { text: '', attachments: [{ type: 'audio', url: 'https://zernio.com/api/v1/whatsapp/media/77', payload: { voice: true } }] })).messages[0];
+  assert.equal(voice.type, 'audio');
+  assert.equal(voice.media?.url, 'https://zernio.com/api/v1/whatsapp/media/77');
+  assert.equal(parseZernioEvent(flat({}, { attachments: [{ type: 'image', url: 'https://cdn/x.jpg' }] })).messages[0].type, 'image');
+  assert.equal(parseZernioEvent(flat({}, { attachments: [{ type: 'file', mimeType: 'application/pdf', url: 'https://cdn/x.pdf' }] })).messages[0].type, 'document');
+});
+
+test('parse (formato actual): eventos de otra cuenta se ignoran; conexión y desconexión cambian el estado', () => {
+  assert.equal(parseZernioEvent(flat({ account: { id: 'acc_otra' } }), 'acc_zernio').messages.length, 0);
+  const down = parseZernioEvent({ event: 'account.disconnected', account: { accountId: 'acc_zernio', platform: 'instagram', reason: 'token expired', disconnectionType: 'unintentional' } }, 'acc_zernio');
+  assert.equal(down.connection, 'close');
+  assert.match(down.notices?.[0].message ?? '', /token expired/);
+  assert.equal(parseZernioEvent({ event: 'account.disconnected', account: { accountId: 'acc_otra' } }, 'acc_zernio').connection, undefined, 'la desconexión de otra cuenta no toca este canal');
+  assert.equal(parseZernioEvent({ event: 'account.connected', account: { accountId: 'acc_zernio' } }, 'acc_zernio').connection, 'open');
+  const failed = parseZernioEvent({ ...flat({ event: 'message.failed' }), error: { message: 'Fuera de la ventana de 24 h' } }, 'acc_zernio');
+  assert.equal(failed.messages.length, 0);
+  assert.match(failed.notices?.[0].message ?? '', /24 h/);
+});
+
+test('envío: «escribiendo…» antes del texto en las redes que lo permiten; el id es el de la plataforma', async () => {
+  const id = await zernioAdapter.transport(channel({ platform: 'instagram' }), { external_id: 'conv_9' } as any).sendText('Hola', 10);
+  assert.equal(id, 'msg_1');
+  assert.deepEqual(calls.map((c) => new URL(c.url).pathname.split('/').pop()), ['typing', 'messages']);
+  calls = [];
+  await zernioAdapter.transport(channel({ platform: 'reddit' }), { external_id: 'conv_9' } as any).sendText('Hola', 10);
+  assert.deepEqual(calls.map((c) => new URL(c.url).pathname.split('/').pop()), ['messages'], 'Reddit no tiene indicador de escritura');
+});
+
+test('envío de imagen: va como adjunto de tipo image', async () => {
+  const prev = config.publicBaseUrl;
+  config.publicBaseUrl = 'https://bots.example.com';
+  try {
+    await zernioAdapter.transport(channel({ platform: 'instagram' }), { external_id: 'conv_9' } as any).sendImage({ id: 'img_1' } as any, '', 0);
+    assert.equal(sentBody().attachmentType, 'image');
+  } finally { config.publicBaseUrl = prev; }
+  await assert.rejects(zernioAdapter.transport(channel({ platform: 'bluesky' }), { external_id: 'conv_9' } as any).sendImage({ id: 'img_1' } as any, '', 0), /no permite enviar fotos/);
+});
+
+test('llave: sin la del canal se usa ZERNIO_API_KEY de la plataforma; sin ninguna, no se llama a Zernio', async () => {
+  const prev = process.env.ZERNIO_API_KEY;
+  try {
+    process.env.ZERNIO_API_KEY = 'zk_plataforma';
+    await zernioAdapter.transport(channel({ api_key: '' }), { external_id: 'conv_9' } as any).sendText('Hola', 0);
+    assert.equal((calls[0].init.headers as Record<string, string>).authorization, 'Bearer zk_plataforma');
+    calls = [];
+    delete process.env.ZERNIO_API_KEY;
+    await assert.rejects(zernioAdapter.transport(channel({ api_key: '' }), { external_id: 'conv_9' } as any).sendText('Hola', 0), /ZERNIO_API_KEY/);
+    assert.equal(calls.length, 0);
+  } finally { if (prev === undefined) delete process.env.ZERNIO_API_KEY; else process.env.ZERNIO_API_KEY = prev; }
+});
+
+test('perfil del negocio: se reutiliza el que tiene su externalId; si no, se crea uno', async () => {
+  const client = new ZernioClient('zk_x', 'https://z.example/api/v1');
+  reply = { status: 200, body: { profiles: [{ _id: 'prof_a', externalId: 'otra' }, { _id: 'prof_b', externalId: 'acc_1' }] } };
+  assert.equal(await profileFor(client, { id: 'acc_1', name: 'Hotel' }), 'prof_b');
+  assert.equal(calls.length, 1);
+  calls = [];
+  let n = 0;
+  globalThis.fetch = (async (url: string, init: RequestInit = {}) => {
+    calls.push({ url: String(url), init });
+    const body = n++ === 0 ? { profiles: [] } : { message: 'ok', profile: { _id: 'prof_new' } };
+    return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as unknown as typeof fetch;
+  assert.equal(await profileFor(client, { id: 'acc_2', name: 'Clínica' }), 'prof_new');
+  assert.deepEqual(JSON.parse(String(calls[1].init.body)), { name: 'Clínica', externalId: 'acc_2' });
+});
+
+test('webhook de la plataforma: se crea uno solo con nombre, secreto derivado y eventos; si ya existe igual, no se toca', async () => {
+  const prev = config.publicBaseUrl;
+  config.publicBaseUrl = 'https://bots.example.com';
+  try {
+    const client = new ZernioClient('zk_x', 'https://z.example/api/v1');
+    reply = { status: 200, body: { webhooks: [{ _id: 'wh_otro', url: 'https://otra.app/hook', events: [] }] } };
+    globalThis.fetch = (async (url: string, init: RequestInit = {}) => {
+      calls.push({ url: String(url), init });
+      return new Response(JSON.stringify(init.method === 'GET' ? reply.body : { success: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as unknown as typeof fetch;
+    await ensurePlatformWebhook(client);
+    const created = calls.find((c) => c.init.method === 'POST')!;
+    const body = JSON.parse(String(created.init.body));
+    assert.equal(body.url, 'https://bots.example.com/zernio/events');
+    assert.equal(body.secret, platformWebhookSecret());
+    assert.ok(body.name);
+    assert.ok(body.events.includes('message.received') && body.events.includes('account.disconnected'));
+    calls = [];
+    reply = { status: 200, body: { webhooks: [{ _id: 'wh_1', ...body }] } };
+    await ensurePlatformWebhook(client);
+    assert.deepEqual(calls.map((c) => c.init.method), ['GET'], 'ya existe con los mismos eventos');
+    calls = [];
+    reply = { status: 200, body: { webhooks: [{ _id: 'wh_1', ...body, events: ['message.received'] }] } };
+    await ensurePlatformWebhook(client);
+    assert.equal(calls[1].init.method, 'PUT');
+    assert.equal(JSON.parse(String(calls[1].init.body)).webhookId, 'wh_1');
+    config.publicBaseUrl = 'http://localhost:3000';
+    calls = [];
+    await assert.rejects(ensurePlatformWebhook(client), /HTTPS/);
+    assert.equal(calls.length, 0);
+  } finally { config.publicBaseUrl = prev; }
+});
+
+test('descarga de adjuntos: los de la API de Zernio llevan la llave; los de la red, no', async () => {
+  const base = new URL(config.zernioApiUrl).origin;
+  await zernioAdapter.downloadMedia!(channel(), { media: { url: `${config.zernioApiUrl}/whatsapp/media/77` } } as any);
+  assert.equal((calls[0].init.headers as Record<string, string>).authorization, 'Bearer zk_test');
+  assert.ok(calls[0].url.startsWith(base));
+  calls = [];
+  await zernioAdapter.downloadAudio!(channel(), { media: { url: 'https://scontent.cdninstagram.com/v/a.mp4' } } as any);
+  assert.equal((calls[0].init.headers as Record<string, string>).authorization, undefined);
+  calls = [];
+  assert.equal(await zernioAdapter.downloadMedia!(channel(), { media: { url: 'http://169.254.169.254/latest' } } as any), null, 'solo HTTPS');
+  assert.equal(calls.length, 0);
 });

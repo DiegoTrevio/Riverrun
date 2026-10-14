@@ -1,5 +1,6 @@
 import { aiBudgetRoutes } from './ai-budget.js';
 import fsp from 'node:fs/promises';
+import { NETWORKS, zernioEnabled } from '../channels/zernio.js';
 import { knowledgeMonitorReport } from '../engine/knowledge-monitor.js';
 import { operationalStatus } from '../engine/operations.js';
 import type { FastifyInstance } from 'fastify';
@@ -99,6 +100,8 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     business_types: BUSINESS_TYPES.map(({ key, label }) => ({ key, label })),
     require_email: config.signup.requireEmail,
     billing_enabled: await billingEnabled(),
+    zernio_enabled: zernioEnabled(),
+    social_networks: NETWORKS.map(({ id, label, flow }) => ({ id, label, flow })),
     version: config.monitor.version,
   }));
 
