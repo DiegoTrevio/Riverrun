@@ -23,3 +23,5 @@ En la conversación, «Solicitudes»: cada una con su fecha, por qué empezó (v
 - Si llegan dos mensajes seguidos después del tiempo sin actividad, solo el primero abre la solicitud (el segundo ya tiene actividad reciente).
 
 Pruebas: `test/requests.test.ts` (tiempo, contenido, seguro, reapertura, preguntas que se repiten o no, respuestas anteriores, objetivo y avisos que vuelven a contar).
+
+Cada solicitud también es una tarjeta del [pipeline](pipeline.md): al empezar otra, la anterior se cierra como ganada o perdida.

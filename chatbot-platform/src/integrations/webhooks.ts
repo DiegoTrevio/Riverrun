@@ -24,6 +24,7 @@ export const EVENT_TYPES = {
   'goal.completed': 'El asistente cumplió el objetivo de la conversación',
   'appointment.booked': 'Se agendó una cita',
   'appointment.cancelled': 'Se canceló una cita',
+  'pipeline.stage_changed': 'Una solicitud cambió de columna en un pipeline',
   ping: 'Prueba de conexión',
 } as const;
 export type PublicEvent = keyof typeof EVENT_TYPES;
@@ -38,6 +39,7 @@ const FROM_INTERNAL: Partial<Record<AutomationEvent['type'], PublicEvent>> = {
   goal_completed: 'goal.completed',
   appointment_booked: 'appointment.booked',
   appointment_cancelled: 'appointment.cancelled',
+  pipeline_stage: 'pipeline.stage_changed',
 };
 
 export const MAX_CONSECUTIVE_FAILURES = 20;
@@ -75,6 +77,7 @@ export function eventData(e: AutomationEvent, ctx: { conv: Conversation; contact
     ...(e.step ? { stage: e.step } : {}),
     ...(e.text !== undefined ? { message: e.text } : {}),
     ...(e.appointment ? { appointment: e.appointment } : {}),
+    ...(e.pipeline ? { pipeline: e.pipeline } : {}),
   };
 }
 

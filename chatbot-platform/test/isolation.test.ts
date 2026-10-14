@@ -55,6 +55,8 @@ function fillParams(url: string): string | null {
     [/^\/api\/api-keys\/:id/, 'apikey'],
     [/^\/api\/wa-pools\/:id/, 'wapool'],
     [/^\/api\/brands\/:id/, 'brand'],
+    [/^\/api\/pipelines\/:id/, 'pipeline'],
+    [/^\/api\/pipeline-cards\/:id/, 'card'],
     [/^\/api\/team\/:userId/, 'user'],
   ];
   const hit = byPrefix.find(([re]) => re.test(url));
@@ -128,6 +130,8 @@ before(async () => {
   B.wapool = (await pool.query(`INSERT INTO wa_pools (account_id, name, token) VALUES ($1, $2, 'tok-b-aislamiento') RETURNING id`, [B.account, `Grupo ${MARK}`])).rows[0].id;
   B.brand = (await pool.query(`INSERT INTO brands (name) VALUES ('Marca B') RETURNING id`)).rows[0].id;
   B.model = 'gpt-4.1-mini';
+  B.pipeline = (await ok200(adminB('POST', '/api/pipelines', { name: `Pipeline ${MARK}`, stages: [{ name: 'Nuevo' }, { name: 'Ganado', kind: 'won' }] }))).id;
+  B.card = String((await pool.query(`INSERT INTO pipeline_cards (account_id, pipeline_id, conversation_id, stage_id) VALUES ($1, $2, $3, 'nuevo') RETURNING id`, [B.account, B.pipeline, B.conv])).rows[0].id);
   await h.idle();
 });
 after(async () => {

@@ -21,11 +21,14 @@ import { CAPTION_MAX, type OutgoingFile, type Transport } from './transport.js';
 import { emptyPlan, validateDecision, type AgendaValidation, type ExecutionPlan, type ValidationInput } from './validator.js';
 import type { AgendaContext, BookResult } from '../automation/agenda.js';
 import type { AutomationEvent } from '../automation/types.js';
+import type { PipelineContext } from '../automation/pipelines.js';
 import type { ChannelType } from '../types.js';
 
 /** Conexiones opcionales del motor con la automatización y la agenda. */
 export interface EngineExtensions {
   intents?(accountId: string, chatbotId: string): Promise<{ intent: string; description: string }[]>;
+  /** Pipeline del agente: columnas que la IA detecta por contexto y en cuál va la solicitud. */
+  pipeline?(conv: Conversation): Promise<PipelineContext | null>;
   agenda?: {
     contextFor(accountId: string, contact: Contact, channelType: ChannelType): Promise<AgendaContext | null>;
     book(o: { accountId: string; serviceId: string; slotKey: string; conversation: Conversation; contact: Contact; source: 'bot' }): Promise<BookResult>;
@@ -233,10 +236,11 @@ export class Engine {
     const images = bot.rules.max_images_per_reply > 0 ? allImages.filter((i) => i.active) : [];
     const semantic = await semanticKnowledge(bot, knowledge, [...history.slice(-4).filter((m) => m.direction === 'in').map((m) => m.content), customerText].join('\n'), this.ai);
     // Automatización y agenda (si están conectadas).
-    const [intents, agendaCtx, business] = await Promise.all([
+    const [intents, agendaCtx, business, pipeline] = await Promise.all([
       this.ext.intents ? this.ext.intents(conv.account_id, bot.id).catch((e) => { log('error', 'engine', `No se pudieron cargar las intenciones de las reglas: ${e?.message ?? e}`); return []; }) : Promise.resolve([]),
       this.ext.agenda && bot.rules.booking_enabled ? this.ext.agenda.contextFor(conv.account_id, contact, channel.type).catch(() => null) : Promise.resolve(null),
       this.ext.business ? this.ext.business(conv.account_id).catch(() => null) : Promise.resolve(null),
+      this.ext.pipeline ? this.ext.pipeline(conv).catch((e) => { log('error', 'engine', `No se pudo cargar el pipeline: ${e?.message ?? e}`); return null; }) : Promise.resolve(null),
     ]);
     const agendaVal: AgendaValidation | null = agendaCtx
       ? { slots: Object.fromEntries(Object.entries(agendaCtx.slots).map(([k, v]) => [k, v.map((x) => x.key)])), appointmentIds: agendaCtx.appointments.map((a) => a.id), needsPhoneFor: agendaCtx.needsPhoneFor }
@@ -269,7 +273,7 @@ export class Engine {
     const attempts: ProcessResult['attempts'] = [];
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       const ctx = buildContext({
-        bot, knowledge: semantic ?? knowledge, knowledgeSelected: semantic !== null, images: aiImages, contact, conversation: conv, channelType: channel.type, history, pending, sentImageIds, imagesById, correction, intents, agenda: agendaCtx, business,
+        bot, knowledge: semantic ?? knowledge, knowledgeSelected: semantic !== null, images: aiImages, contact, conversation: conv, channelType: channel.type, history, pending, sentImageIds, imagesById, correction, intents, agenda: agendaCtx, business, pipeline,
         autoImages, contextImages: contextualImages(images), imagesNow: scheduledBefore.map((x) => x.image),
         questionAsked: questionJourney.asked,
         questionAskedEver: questionJourney.askedEver,
@@ -313,7 +317,7 @@ export class Engine {
         // Solo lo que dijo en esta solicitud: una respuesta de una solicitud anterior (la fecha de la reserva pasada) no
         // contesta la pregunta de nuevo.
         customerDataSources: history.filter((m) => m.direction === 'in' && (!conv.flow_started_at || new Date(m.created_at) >= new Date(conv.flow_started_at))).map((m) => m.content),
-        allowedIntents: intents.map((i) => i.intent),
+        allowedIntents: [...intents.map((i) => i.intent), ...(pipeline?.stages.map((st) => st.intent) ?? [])],
         agenda: agendaVal,
         hasPhone,
         knownData: contact.data ?? {},
@@ -368,8 +372,10 @@ export class Engine {
     if (retryable.length) {
       // Datos no verificables tras el reintento: respuesta segura según la regla configurada.
       fallbackUsed = true;
-      // La propuesta no pasó la validación: no confirma el objetivo ni avanza la etapa (ni envía sus fotos).
-      const base = { ...plan, booking: null, contextImages: [], savedCodes: [], questionLast: false, goalCompleted: false, flowStep: 0 };
+      // La propuesta no pasó la validación: no confirma el objetivo ni avanza la etapa (ni envía sus fotos). Tampoco mueve
+      // la tarjeta del pipeline: su columna puede depender de la respuesta rechazada («ya se le dio un precio»).
+      const stageIntents = new Set(pipeline?.stages.map((st) => normalize(st.intent)) ?? []);
+      const base = { ...plan, booking: null, contextImages: [], savedCodes: [], questionLast: false, goalCompleted: false, flowStep: 0, intents: plan.intents.filter((i) => !stageIntents.has(normalize(i))) };
       if (bookingIssue && !factIssues) {
         // La IA insistió en un horario que no existe: se ofrecen horarios reales.
         plan = { ...base, action: 'reply', messages: [slotFallback(agendaCtx)], images: [] };

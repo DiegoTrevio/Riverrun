@@ -2,6 +2,7 @@ import { dataLabel, flowCard } from './bot.js';
 import { channelIcon } from './channels.js';
 import { api, area, check, clone, dialog, field, fill, fmtDate, h, lines, poll, run, select, state, text, toast, confirmAction, ask } from './core.js';
 import { acct, isAdmin, isSuper, withAcct } from './session.js';
+import { pipelineCard } from './pipeline.js';
 
 /* ------------------------------ Conversaciones ------------------------------ */
 
@@ -425,6 +426,7 @@ export async function viewConversation(root, id) {
             } catch (e) { toast(e.message || 'No se pudo copiar', true); }
           } }, 'Copiar'),
           h('button', { class: 'small primary', onclick: () => sendReportDialog(id, data) }, '✉ Enviar reporte')),
+        pipelineCard(data.pipeline),
         requestsCard(data.requests),
         h('details', { class: 'small' }, h('summary', {}, 'Datos guardados en esta conversación'), h('div', { class: 'pre' }, Object.entries(c.data || {}).map(([key, value]) => `${key}: ${value}`).join('\n') || 'Aún no se han recopilado datos.')),
         c.summary ? h('details', { class: 'small' }, h('summary', {}, 'Memoria del asistente'), h('div', { class: 'pre muted' }, c.summary)) : null,

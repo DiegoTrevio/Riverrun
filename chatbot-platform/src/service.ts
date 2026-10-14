@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import type { AiProvider } from './ai/provider.js';
 import { Agenda } from './automation/agenda.js';
 import { Automator } from './automation/automator.js';
+import { Pipelines } from './automation/pipelines.js';
 import { Campaigns } from './automation/campaigns.js';
 import { Outbound } from './automation/outbound.js';
 import { Scheduler } from './automation/scheduler.js';
@@ -55,6 +56,7 @@ export class ChatService {
   queue: ConversationQueue;
   outbound: Outbound;
   automator: Automator;
+  pipelines: Pipelines;
   agenda: Agenda;
   campaigns: Campaigns;
   scheduler: Scheduler;
@@ -62,10 +64,12 @@ export class ChatService {
   constructor(private ai: AiProvider, private transportFactory: TransportFactory = defaultTransport) {
     this.outbound = new Outbound(this);
     this.automator = new Automator(this);
+    this.pipelines = new Pipelines(this);
     this.agenda = new Agenda(this);
     this.campaigns = new Campaigns(this);
     this.engine = new Engine(ai, {
       intents: (accountId, chatbotId) => this.automator.intentsFor(accountId, chatbotId),
+      pipeline: (conv) => this.pipelines.contextFor(conv),
       agenda: this.agenda,
       onEvent: (e) => this.automator.emit(e),
       onOutbound: (conv, msg) => this.automator.onOutbound(conv, msg),

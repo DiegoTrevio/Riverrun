@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { query, queryOne, withTransaction } from '../db.js';
 import { removeInboundAccountFiles, type StoredMedia } from '../channels/media.js';
 import { perRequestKeys } from '../engine/questions.js';
+import { closeCardForRequest } from './pipelines.js';
 import {
   channelConfig,
   hydrateChatbot,
@@ -684,6 +685,9 @@ export async function beginRequest(conversationId: string, o: { reason: RequestR
     }
     const number = Math.max(last, 1) + 1;
     await client.query('INSERT INTO conversation_requests (conversation_id, number, reason, started_at) VALUES ($1, $2, $3, coalesce($4::timestamptz, now()))', [conv.id, number, o.reason, o.since ?? null]);
+    // La tarjeta del pipeline es de la solicitud: se cierra (como ganada o perdida) y la nueva empieza en la primera
+    // columna. Un reinicio por cambios en el agente no cambia lo que el cliente pidió: su tarjeta sigue abierta.
+    if (o.reason !== 'reinicio') await closeCardForRequest(client, conv.id, !!conv.goal_completed_at);
     if (keys.length) await client.query('UPDATE contacts SET data = data - $2::text[], updated_at = now() WHERE id = $1', [conv.contact_id, keys]);
     await client.query(
       `UPDATE conversations SET data = data - $2::text[], data_version = data_version + 1, flow_step = $3, goal_completed_at = NULL,

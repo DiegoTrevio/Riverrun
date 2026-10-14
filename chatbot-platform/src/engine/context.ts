@@ -2,6 +2,7 @@ import type { WeeklyHours } from '../automation/types.js';
 import type { ChatMessage } from '../ai/provider.js';
 import type { ChannelType, Chatbot, Contact, Conversation, DataField, ImageAsset, KnowledgeItem, Message } from '../types.js';
 import type { AgendaContext } from '../automation/agenda.js';
+import type { PipelineContext } from '../automation/pipelines.js';
 import { imageSendWhen } from '../types.js';
 import { GENERAL_RULES } from './agent-rules.js';
 import type { ConversationRequest } from '../store/index.js';
@@ -42,6 +43,8 @@ export interface ContextInput {
   /** Fotos que el sistema enviará con esta respuesta. */
   imagesNow?: ImageAsset[];
   contextImages?: ImageAsset[];
+  /** Pipeline del agente (columnas que se detectan por contexto y en cuál va la solicitud). */
+  pipeline?: PipelineContext | null;
   /** Solicitudes de la conversación (vacío si es la primera): la IA sabe que el cliente vuelve por lo mismo. */
   requests?: ConversationRequest[];
 }
@@ -303,6 +306,13 @@ function agentSection(input: ContextInput, questions: Question[]): string {
     s.push('\n## Intenciones a detectar');
     s.push(['Si el cliente expresa una de estas intenciones en sus mensajes nuevos, ponla en intents con su identificador exacto:', ...input.intents.map((it) => `- \`${it.intent}\`${it.description ? `: ${it.description}` : ''}`)].join('\n'));
   }
+  if (input.pipeline?.stages.length) {
+    s.push(`\n## Pipeline «${input.pipeline.name}»`);
+    s.push([
+      'Cuando con este intercambio (lo que dice el cliente y lo que le respondes) se cumpla la situación de una columna, pon su identificador en intents. Solo si se cumple de verdad; si no, no pongas ninguna:',
+      ...input.pipeline.stages.map((st) => `- \`${st.intent}\` (${st.name}): ${st.when}`),
+    ].join('\n'));
+  }
   return s.join('\n');
 }
 
@@ -420,6 +430,7 @@ function stateSection(input: ContextInput, questions: Question[], isFirstContact
       else if (progress.missingRequired.length) now.push('El objetivo se cumple cuando estén las preguntas obligatorias que faltan.');
     }
   }
+  if (input.pipeline?.stages.length) now.push(`Columna del pipeline: «${input.pipeline.current}»${input.pipeline.finished ? ' (ya terminó: no marques columnas)' : ''}.`);
   if ((input.requests?.length ?? 0) > 1) now.push(...requestLines(input));
   if (questions.length) now.push(...questionProgressLines(questions, progress, input));
   const freeMissing = bot.data_fields.filter((f) => !f.question.trim() && !data[f.key]);

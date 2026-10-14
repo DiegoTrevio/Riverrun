@@ -29,8 +29,8 @@ async function automationRefs() {
     api('GET', withAcct('/api/users')),
     api('GET', withAcct('/api/services')),
   ]);
-  const files = await api('GET', withAcct('/api/attachments'));
-  return { bots, sequences, users: users.filter((u) => u.account_id), services, images: [], files, imagesLoaded: false, imageRequest: null };
+  const [files, pipelines] = await Promise.all([api('GET', withAcct('/api/attachments')), api('GET', withAcct('/api/pipelines'))]);
+  return { bots, sequences, users: users.filter((u) => u.account_id), services, pipelines, images: [], files, imagesLoaded: false, imageRequest: null };
 }
 
 /**
@@ -57,6 +57,7 @@ const TRIGGERS = {
   goal_completed: 'Se cumple el objetivo de la conversación',
   stage_reached: 'El recorrido llega a una etapa',
   agent_off: 'El asistente se desactiva en una conversación',
+  pipeline_stage: 'Una solicitud cambia de columna en el pipeline',
 };
 
 export const ACTIONS = {
@@ -128,6 +129,7 @@ export function triggerSummary(t) {
     case 'data_captured': return `Dato guardado${t.field ? `: ${t.field}` : ''}`;
     case 'tag_added': return `Etiqueta: ${t.tag}`;
     case 'stage_reached': return t.step ? `Llega a la etapa ${t.step}` : 'Llega a cualquier etapa';
+    case 'pipeline_stage': return t.stage_id ? `Entra a la columna «${t.stage_id}» del pipeline` : 'Cambia de columna en el pipeline';
     default: return TRIGGERS[t.type];
   }
 }
@@ -352,6 +354,13 @@ async function editRule(root, id) {
       f.push(field('Etapa del recorrido', h('select', { 'aria-label': 'Tipo de condición o acción', onchange: (e) => { t.step = Number(e.target.value); } },
         [[0, 'Cualquier etapa'], ...Array.from({ length: n }, (_, i) => [i + 1, `Etapa ${i + 1}${steps[i]?.title ? `: ${steps[i].title}` : ''}`])].map(([v, l]) => h('option', { value: v, selected: v === t.step }, l))),
         'Se dispara cuando el asistente marca que la conversación llegó a esa etapa (una vez por cambio de etapa). Elige el asistente en la regla para ver los nombres de sus etapas.'));
+    } else if (t.type === 'pipeline_stage') {
+      t.pipeline_id ??= ''; t.stage_id ??= '';
+      const pipeline = refs.pipelines.find((p) => p.id === t.pipeline_id);
+      f.push(h('div', { class: 'grid' },
+        field('Pipeline', select(t, 'pipeline_id', [['', 'Cualquiera'], ...refs.pipelines.map((p) => [p.id, p.name])], () => { t.stage_id = ''; drawTrigger(); })),
+        field('Columna', select(t, 'stage_id', [['', 'Cualquiera'], ...(pipeline?.stages ?? []).map((s) => [s.id, s.name])]))),
+        h('p', { class: 'small muted' }, refs.pipelines.length ? 'Se dispara cada vez que una solicitud entra a esa columna (sola o movida a mano).' : 'Aún no tienes pipelines: créalos en Pipeline.'));
     } else if (t.type === 'tag_added') {
       t.tag ??= '';
       f.push(field('Etiqueta', text(t, 'tag')));

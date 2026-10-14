@@ -42,7 +42,7 @@ export async function render() {
   await loadWhatsappStatus();
   if (!current()) return;
   // Los agentes solo atienden conversaciones.
-  if (!isAdmin() && !['conversations', 'conversation', 'password', 'agenda', 'notifications'].includes(parts[0])) {
+  if (!isAdmin() && !['conversations', 'conversation', 'password', 'agenda', 'notifications', 'pipeline'].includes(parts[0])) {
     location.hash = '#/conversations';
     return;
   }
@@ -74,6 +74,7 @@ export async function render() {
     else if (parts[0] === 'logs') await view('logs', 'viewLogs', content, params);
     else if (parts[0] === 'password') await view('admin', 'viewPassword', content);
     else if (parts[0] === 'automation') await view('automation', 'viewAutomation', content, parts[1] || 'rules', parts[2]);
+    else if (parts[0] === 'pipeline') await view('pipeline', 'viewPipeline', content, parts[1], parts[2]);
     else if (parts[0] === 'agenda') await view('agenda', 'viewAgenda', content, parts[1] || 'citas', params);
     else if (parts[0] === 'notifications') await view('admin', 'viewNotifications', content);
     else content.append(h('p', {}, 'Página no encontrada'));

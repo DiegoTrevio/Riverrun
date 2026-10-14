@@ -80,7 +80,7 @@ export const DECISION_JSON_SCHEMA = {
     info_not_found: { type: 'boolean', description: 'true si el cliente pidió un dato que NO está en la información del negocio.' },
     intents: {
       type: 'array',
-      description: 'Intenciones de la lista "Intenciones a detectar" que expresa el cliente en sus mensajes nuevos. Vacío si ninguna.',
+      description: 'Identificadores de la lista "Intenciones a detectar" que expresa el cliente en sus mensajes nuevos, y de las columnas del "Pipeline" cuya situación se cumple con este intercambio. Vacío si ninguna.',
       items: { type: 'string' },
     },
     flow_step: {
