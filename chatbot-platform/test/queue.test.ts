@@ -40,6 +40,22 @@ t('reinicio interrumpido y revisión nueva recuperan trabajo; backoff y DLQ son 
  await pool.query('UPDATE conversation_work SET run_at=now()');await q.runDue();row=(await pool.query('SELECT * FROM conversation_work')).rows[0];assert.equal(row.state,'dead');assert.equal(n,2);
  await q.schedule(conv,0);assert.equal((await pool.query('SELECT state FROM conversation_work')).rows[0].state,'dead','un webhook nuevo no borra una entrega pendiente de revisión');await q.stop();
 });
+t('un mensaje nuevo saca de revisión una falla que se puede repetir, nunca un envío incierto',async()=>{
+ await reset();let n=0;const q=queue(async()=>{n++;return {status:'replied'};});await q.schedule(conv,0);
+ await pool.query(`UPDATE conversation_work SET state='dead',reason='processing_error',attempts=3,revivals=4`);
+ await q.schedule(conv,0,true);let row=(await pool.query('SELECT * FROM conversation_work')).rows[0];
+ assert.equal(row.state,'pending');assert.equal(row.reason,null);assert.equal(row.attempts,0);assert.equal(row.revivals,0);
+ await pool.query(`UPDATE conversation_work SET state='dead',reason='stale_pending'`);await q.schedule(conv,0,true);
+ assert.equal((await pool.query('SELECT state FROM conversation_work')).rows[0].state,'pending','un trabajo anterior a un reinicio se retoma');
+ await pool.query(`UPDATE conversation_work SET state='dead',reason='delivery_uncertain'`);await q.schedule(conv,0,true);
+ row=(await pool.query('SELECT * FROM conversation_work')).rows[0];assert.equal(row.state,'dead');assert.equal(row.reason,'delivery_uncertain');
+ await q.stop();
+});
+t('al apagar deja de tomar trabajo de inmediato, pero lo que llega queda guardado',async()=>{
+ await reset();let n=0;const q=queue(async()=>{n++;return {status:'replied'};});q.drain();
+ await q.schedule(conv,0);assert.equal(await q.runDue(),0);assert.equal(n,0);
+ assert.equal((await pool.query('SELECT state FROM conversation_work')).rows[0].state,'pending');await q.stop();
+});
 t('un envío incierto va a revisión y no se vuelve a ejecutar automáticamente',async()=>{
  await reset();let n=0;const q=queue(async()=>{n++;throw new DeliveryUncertain();});await q.schedule(conv,0);await q.runDue();await q.runDue();assert.equal(n,1);assert.equal((await pool.query('SELECT reason FROM conversation_work')).rows[0].reason,'delivery_uncertain');await q.stop();
 });

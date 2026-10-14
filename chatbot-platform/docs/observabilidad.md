@@ -81,6 +81,17 @@ Reglas que evitan falsa seguridad:
 
 Los umbrales de WhatsApp están en [evolution-api.md](evolution-api.md#monitoreo-preventivo). Los de IA (latencia p95 de 10 s, 5 errores) están en el código (`src/monitor.ts`); son razonables para empezar, no calibrados con datos de tu operación.
 
+## Ningún cliente sin respuesta
+
+Lo que pasa cuando el asistente no puede contestar:
+
+- **Falla la IA** (tras los reintentos de la cola): el cliente recibe una vez el **mensaje de demora** del agente (Instrucciones → Reglas; vacío = no se envía) y el equipo un aviso en el panel y por WhatsApp. Los mensajes quedan pendientes.
+- **Reintento automático**: si el cliente vuelve a escribir, la conversación sale de revisión y se le responde. Sin mensaje nuevo, una falla de la IA se reintenta cada 10 minutos, hasta 12 veces (unas 2 horas).
+- **Envío incierto** (el envío pudo haber llegado o no): nunca se repite solo para no duplicar mensajes. El equipo recibe un recordatorio cada 30 minutos mientras el cliente siga esperando, durante 24 horas, hasta que alguien lo atienda o lo confirme desde la conversación.
+- **Monitor**: un cliente con el asistente encendido que lleva más de 10 minutos sin respuesta pone la cola en **falla** (alerta al operador). Mientras eso pase, no se envía el latido (`HEARTBEAT_URL`), así que el servicio externo avisa aunque el servidor siga en pie. No cuentan las conversaciones que atiende una persona, los agentes apagados ni las cuentas en pausa.
+- **Reinicios y actualizaciones**: al apagarse, el servidor deja de tomar conversaciones nuevas de inmediato, y docker compose espera hasta 5 minutos (`stop_grace_period`) a que terminen las respuestas en curso. Lo que llegue mientras tanto queda guardado y se atiende al arrancar.
+- **Modelo de respaldo**: con OpenRouter, si el modelo principal falla, se usa `google/gemini-2.5-flash` (`OPENROUTER_FALLBACK_MODELS`; `none` lo desactiva).
+
 ## Métricas (`/metrics`)
 
 Formato de texto de Prometheus. Las etiquetas son solo valores fijos o validados.

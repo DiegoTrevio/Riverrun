@@ -24,6 +24,7 @@ import { describeInbound, type InboundMessage } from './channels/types.js';
 import { query } from './db.js';
 import { summarizeConversation } from './engine/report.js';
 import { Engine, type ProcessResult } from './engine/engine.js';
+import { RETRYABLE_DEAD } from './engine/queue.js';
 import { deliver } from './integrations/webhooks.js';
 import { messageQuota, noticeMessagesReached } from './billing/limits.js';
 import { ConversationQueue } from './engine/queue.js';
@@ -200,10 +201,54 @@ export class ChatService {
     return ids.length;
   }
 
+  /**
+   * Conversaciones en revisión: las que fallaron por la IA se reintentan cada 10 minutos (hasta 12 veces, unas 2 horas);
+   * las demás (envío incierto o reintentos agotados) vuelven a avisar al equipo cada 30 minutos mientras el cliente siga
+   * esperando, durante 24 horas.
+   */
+  async reviveFailed(): Promise<{ retried: number; reminded: number }> {
+    const retried = await query<{ conversation_id: string }>(`UPDATE conversation_work w SET state='pending',attempts=0,run_at=now(),reason=NULL,revivals=revivals+1,updated_at=now()
+      WHERE w.state='dead' AND w.reason='processing_error' AND w.revivals<12 AND w.updated_at<now()-interval '10 minutes'
+        AND EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id=w.conversation_id AND m.direction='in' AND NOT m.processed)
+      RETURNING w.conversation_id`);
+    const due = await query<{ conversation_id: string }>(`UPDATE conversation_work w SET alerted_at=now()
+      WHERE w.state='dead' AND (w.reason<>'processing_error' OR w.revivals>=12)
+        AND w.updated_at>now()-interval '24 hours' AND (w.alerted_at IS NULL OR w.alerted_at<now()-interval '30 minutes')
+        AND EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id=w.conversation_id AND m.direction='in' AND NOT m.processed)
+        AND EXISTS (SELECT 1 FROM conversations c WHERE c.id=w.conversation_id AND c.status='bot')
+      RETURNING w.conversation_id`);
+    for (const row of due) await this.remindWaiting(row.conversation_id);
+    return { retried: retried.length, reminded: due.length };
+  }
+
+  /** Recordatorio al equipo: un cliente sigue esperando y el asistente no puede responderle solo. */
+  private async remindWaiting(conversationId: string) {
+    try {
+      const conv = await store.getConversation(conversationId);
+      if (!conv) return;
+      const [contact, channel] = await Promise.all([store.getContact(conv.contact_id), store.getChannel(conv.channel_id)]);
+      if (!channel || channel.type === 'playground') return;
+      const who = contact?.name || contact?.push_name || (contact?.phone ? `+${contact.phone}` : 'Un cliente');
+      await this.automator.alertTeam(conv.account_id, {
+        title: '⏰ Un cliente sigue esperando respuesta',
+        body: `${who} (${channel.name}) sigue sin respuesta y el asistente no puede contestarle solo. Ábrelo y respóndele o confirma que ya se atendió.`,
+        link: `#/conversation/${conversationId}`,
+        conversationId,
+        kind: 'ai_error',
+        roles: ['admin','agent'],
+      });
+    } catch (e: any) {
+      await logEvent({ level: 'error', source: 'system', message: `No se pudo recordar al equipo un cliente en espera: ${e?.message ?? e}`, conversationId });
+    }
+  }
+
   startSweeper(intervalMs = 30_000) {
     this.sweeper = setInterval(() => {
       this.sweepPending()
         .then(async (n) => { if (n) await logEvent({ level: 'warn', source: 'engine', message: `Se retomaron ${n} conversaciones con mensajes sin responder` }); })
+        .catch(() => undefined);
+      this.reviveFailed()
+        .then(async (r) => { if (r.retried) await logEvent({ level: 'warn', source: 'engine', message: `Se reintentaron ${r.retried} conversaciones en las que el asistente no pudo responder` }); })
         .catch(() => undefined);
     }, intervalMs);
     this.sweeper.unref();
@@ -244,6 +289,14 @@ export class ChatService {
       const who = contact?.name || contact?.push_name || (contact?.phone ? `+${contact.phone}` : 'Un cliente');
       const work=(await query('SELECT reason FROM conversation_work WHERE conversation_id=$1',[conversationId]))[0];
       if(!work || work.reason==='processing_error') await this.engine.sendRuleImagesWithoutAi(conversationId).catch(()=>undefined);
+      // Si nada se envió a medias, el cliente sabe que se le atenderá (un envío incierto pudo haber llegado: no se agrega nada).
+      if(!work || RETRYABLE_DEAD.includes(work.reason)) {
+        const transport = contact ? this.transportFor(channel, contact) : null;
+        if (transport) await this.engine.sendUnavailableNotice(conversationId, transport).catch(async (e) => {
+          await logEvent({ level: 'warn', source: 'engine', message: `No se pudo enviar el mensaje de demora: ${e?.message ?? e}`, accountId: conv.account_id, channelId: conv.channel_id, conversationId });
+        });
+      }
+      await query('UPDATE conversation_work SET alerted_at=now() WHERE conversation_id=$1',[conversationId]);
       await logEvent({ level: 'error', source: 'ai', message: 'Un cliente espera respuesta; se avisó al equipo', accountId: conv.account_id, channelId: conv.channel_id, conversationId });
       await this.automator.alertTeam(conv.account_id, {
         title: '⚠️ Un cliente espera respuesta',
@@ -410,7 +463,8 @@ export class ChatService {
     }
     await this.automator.settle(conv.id);
     await store.updateMessage(inserted.id, {meta:{receipt_ready:true}});
-    await this.queue.schedule(conv.id, bot!.ai.debounce_seconds * 1000);
+    // El cliente volvió a escribir: si su conversación quedó en revisión por una falla que se puede repetir, se reintenta.
+    await this.queue.schedule(conv.id, bot!.ai.debounce_seconds * 1000, true);
     return { conversationId: conv.id, messageId: inserted.id };
   }
 

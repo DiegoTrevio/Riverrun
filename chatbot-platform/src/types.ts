@@ -28,6 +28,8 @@ export const RulesSchema = z.object({
   unknown_info_behavior: z.enum(['say_unknown', 'ask', 'handoff']).default('say_unknown'),
   /** Mensaje de respaldo si el validador bloquea una respuesta no verificable. */
   fallback_message: z.string().default('Ese dato no lo tengo confirmado, déjame revisarlo con el equipo y te aviso.'),
+  /** Si el asistente no puede responder (falla la IA), el cliente recibe esto una vez y el equipo recibe un aviso. Vacío = no se envía. */
+  unavailable_message: z.string().max(1000).default('¡Gracias por escribirnos! Tenemos una pequeña demora; en un momento te respondemos.'),
   /** Temas de los que sí puede hablar (texto libre). */
   allowed_topics: z.string().default(''),
   forbidden_topics: z.array(z.string()).default([]),

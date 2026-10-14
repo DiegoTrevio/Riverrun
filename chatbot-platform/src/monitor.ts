@@ -217,7 +217,7 @@ export function checkDisk(statfs: typeof fs.statfsSync = fs.statfsSync): CheckRe
 async function checkQueue(): Promise<CheckResult> {
   const base = { name: 'queue', label: 'Cola de mensajes y trabajos' };
   try {
-    const r = await queryOne<{ pending: number; stuck: number; inbound_waiting: number; receipts_pending:number; receipts_dead:number; conversations_pending:number; conversations_dead:number }>(`
+    const r = await queryOne<{ pending: number; stuck: number; inbound_waiting: number; receipts_pending:number; receipts_dead:number; conversations_pending:number; conversations_dead:number; customers_waiting:number }>(`
       SELECT (SELECT count(*)::int FROM jobs WHERE status = 'pending') AS pending,
              (SELECT count(*)::int FROM jobs WHERE status = 'running' AND started_at < now() - interval '15 minutes') AS stuck,
              (SELECT count(*)::int FROM messages m
@@ -228,12 +228,25 @@ async function checkQueue(): Promise<CheckResult> {
              (SELECT count(*)::int FROM inbound_receipts WHERE state IN ('pending','running')) AS receipts_pending,
              (SELECT count(*)::int FROM inbound_receipts WHERE state='dead') AS receipts_dead,
              (SELECT count(*)::int FROM conversation_work WHERE state IN ('pending','running')) AS conversations_pending,
-             (SELECT count(*)::int FROM conversation_work WHERE state='dead') AS conversations_dead`);
-    const metrics = { jobs_pending: r?.pending ?? 0, jobs_stuck: r?.stuck ?? 0, inbound_waiting: r?.inbound_waiting ?? 0,receipts_pending:r?.receipts_pending??0,receipts_dead:r?.receipts_dead??0,conversations_pending:r?.conversations_pending??0,conversations_dead:r?.conversations_dead??0 };
+             (SELECT count(*)::int FROM conversation_work WHERE state='dead') AS conversations_dead,
+             (SELECT count(DISTINCT m.conversation_id)::int FROM messages m
+                JOIN conversations c ON c.id = m.conversation_id
+                JOIN channels ch ON ch.id = c.channel_id
+                JOIN accounts a ON a.id = ch.account_id
+                JOIN chatbots b ON b.id = c.chatbot_id
+               WHERE m.processed = false AND m.direction = 'in' AND ch.type <> 'playground'
+                 AND c.status = 'bot' AND ch.active AND b.active AND a.active AND a.status <> 'paused'
+                 AND m.created_at BETWEEN now() - interval '24 hours' AND now() - interval '10 minutes') AS customers_waiting`);
+    const metrics = { jobs_pending: r?.pending ?? 0, jobs_stuck: r?.stuck ?? 0, inbound_waiting: r?.inbound_waiting ?? 0,receipts_pending:r?.receipts_pending??0,receipts_dead:r?.receipts_dead??0,conversations_pending:r?.conversations_pending??0,conversations_dead:r?.conversations_dead??0,customers_waiting:r?.customers_waiting??0 };
     const problems: string[] = [];
     if(metrics.receipts_dead||metrics.conversations_dead) problems.push(`Recepciones en revisión: ${metrics.receipts_dead}; conversaciones en revisión: ${metrics.conversations_dead}`);
     if (metrics.jobs_stuck) problems.push(`${metrics.jobs_stuck} trabajo${metrics.jobs_stuck === 1 ? '' : 's'} atascado${metrics.jobs_stuck === 1 ? '' : 's'} (en curso desde hace más de 15 min)`);
     if (metrics.inbound_waiting) problems.push(`${metrics.inbound_waiting} mensaje${metrics.inbound_waiting === 1 ? '' : 's'} entrante${metrics.inbound_waiting === 1 ? '' : 's'} sin procesar desde hace más de 5 min`);
+    // Clientes con el asistente encendido que llevan más de 10 minutos sin respuesta: eso es una falla, no un aviso.
+    if (metrics.customers_waiting) {
+      const n = metrics.customers_waiting;
+      return { ...base, status: 'fail', detail: [`${n} cliente${n === 1 ? '' : 's'} sin respuesta desde hace más de 10 min`, ...problems].join('; '), metrics };
+    }
     if (problems.length) return { ...base, status: 'warn', detail: problems.join('; '), metrics };
     return { ...base, status: 'ok', detail: `Sin trabajos atascados; ${metrics.jobs_pending} pendiente${metrics.jobs_pending === 1 ? '' : 's'}`, metrics };
   } catch (e: any) {
@@ -423,7 +436,8 @@ export async function heartbeat(checks: CheckResult[]) {
   if (!config.monitor.heartbeatUrl) return false;
   // Sandbox: un latido de pruebas no debe marcar como "vivo" al servidor de producción en el servicio externo.
   if (!outboundAllowed(config.monitor.heartbeatUrl)) return false;
-  if (checks.some((c) => ['database', 'scheduler'].includes(c.name) && c.status === 'fail')) return false;
+  // Si hay clientes sin respuesta, el latido no sale: el servicio externo avisa aunque el servidor siga "vivo".
+  if (checks.some((c) => ['database', 'scheduler', 'queue'].includes(c.name) && c.status === 'fail')) return false;
   try {
     const res = await fetch(config.monitor.heartbeatUrl, { signal: AbortSignal.timeout(8000) });
     return res.ok;
