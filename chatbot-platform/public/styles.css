@@ -395,16 +395,28 @@ fieldset.field { border: 0; padding: 0; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 .row-link { display: block; min-height: 44px; padding: 0; background: transparent; border: 0; text-align: left; white-space: normal; color: var(--accent); }
 
-/* Pipeline: columnas con scroll horizontal; en el teléfono se recorren de lado. */
-.pipeline-board { display: flex; gap: 12px; overflow-x: auto; align-items: flex-start; padding-bottom: 12px; margin-top: 12px; }
-.pipeline-col { flex: 0 0 260px; background: var(--panel); border: 1px solid var(--border); border-top: 4px solid var(--stage, var(--border)); border-radius: var(--radius); padding: 10px; min-height: 120px; }
+/* Oportunidades (pipeline): columnas con su total, tarjetas con valor; en el teléfono se recorren de lado. */
+.opp-head { align-items: flex-end; margin-bottom: 16px; }
+.opp-totals { margin-top: 4px; }
+.opp-toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; padding: 12px 16px; }
+.opp-toolbar select { width: auto; min-width: 160px; }
+.opp-search { width: 260px !important; max-width: 100%; }
+.pipeline-board { display: flex; gap: 12px; overflow-x: auto; align-items: flex-start; padding-bottom: 12px; }
+.pipeline-col { flex: 0 0 280px; background: color-mix(in srgb, var(--bg) 70%, var(--panel)); border: 1px solid var(--border); border-radius: var(--radius); min-height: 160px; }
+.pipeline-col > header { padding: 10px 12px; border-bottom: 1px solid var(--border); border-top: 3px solid var(--stage, var(--border)); border-radius: var(--radius) var(--radius) 0 0; background: var(--panel); }
+.pipeline-col-cards { padding: 8px; display: flex; flex-direction: column; gap: 8px; max-height: 68vh; overflow-y: auto; }
 .pipeline-col.drop { outline: 2px dashed var(--accent); outline-offset: 2px; }
-.pipeline-col > header { margin-bottom: 8px; }
-.pipeline-card { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; cursor: grab; display: grid; gap: 4px; }
-.pipeline-card-title { font-weight: 600; overflow-wrap: anywhere; }
-.pipeline-card select { min-height: 36px; padding: 4px 8px; }
+.pipeline-card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; cursor: pointer; display: grid; gap: 4px; box-shadow: var(--shadow); }
+.pipeline-card:hover { border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
+.pipeline-card:focus-visible { outline: 2px solid var(--accent); }
+.pipeline-card-title { overflow-wrap: anywhere; }
+.opp-value { font-weight: 600; color: var(--text); }
+.opp-reason { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; color: var(--muted); }
+.mini-avatar { flex: none; width: 26px; height: 26px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); font-size: 11px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }
+.stage-pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; }
+.stage-pill::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--stage); }
 .pipeline-stage-edit h3 { margin: 0; }
-@media (max-width: 800px) { .pipeline-col { flex-basis: 78vw; } }
+@media (max-width: 800px) { .pipeline-col { flex-basis: 82vw; } .opp-search { width: 100% !important; } .opp-toolbar select { flex: 1 1 140px; min-width: 0; } }
 
 /* El título recibe el foco al cambiar de página (para lectores de pantalla); no hace falta marcarlo a la vista. */
 .main h1[tabindex="-1"]:focus { outline: none; }

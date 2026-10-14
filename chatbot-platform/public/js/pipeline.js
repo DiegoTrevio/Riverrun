@@ -19,70 +19,162 @@ const timeAgo = (d) => {
   return `hace ${Math.round(min / 1440)} días`;
 };
 
-/** #/pipeline[/<id>] tablero · #/pipeline/editar/<id|nuevo> editor. */
+/** Valor en la moneda del pipeline (sin decimales si son cero). */
+const money = (n, currency) => {
+  const digits = Number(n) % 1 ? 2 : 0;
+  try { return new Intl.NumberFormat('es-MX', { style: 'currency', currency, minimumFractionDigits: digits, maximumFractionDigits: digits }).format(Number(n) || 0); }
+  catch { return `${Number(n) || 0} ${currency}`; }
+};
+const initialsOf = (name) => (name || '?').split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('');
+
+/** #/pipeline[/<id>] tablero · #/pipeline/editar/<id|nuevo> editor. Como «Oportunidades» de Go High Level. */
 export async function viewPipeline(root, a, b) {
   if (needAccount(root)) return;
   if (a === 'editar') return editPipeline(root, b);
   const pipelines = await api('GET', withAcct('/api/pipelines'));
   if (!pipelines.length) {
-    root.append(h('h1', {}, 'Pipeline'), h('div', { class: 'card' },
-      h('p', {}, 'Un pipeline muestra en columnas en qué va cada cliente (por ejemplo Nuevo → Interesado → Cotizado → Ganado o Perdido). Cada solicitud es una tarjeta que pasa sola de una columna a otra según lo que pasa en la conversación: la IA detecta la situación que describes para cada columna, o un evento como cumplir el objetivo o agendar una cita. También puedes moverlas a mano.'),
+    root.append(h('h1', {}, 'Oportunidades'), h('div', { class: 'card' },
+      h('p', {}, 'Un pipeline muestra en columnas en qué va cada cliente (por ejemplo Nuevo → Interesado → Cotizado → Ganado o Perdido). Cada solicitud es una oportunidad que pasa sola de una columna a otra según lo que pasa en la conversación: la IA detecta la situación que describes para cada columna, o un evento como cumplir el objetivo o agendar una cita. También puedes moverlas a mano y ponerles un valor.'),
       isAdmin() ? h('a', { class: 'btn primary', href: '#/pipeline/editar/nuevo' }, 'Crear mi pipeline') : h('p', { class: 'muted' }, 'Tu administrador aún no crea un pipeline.')));
     return;
   }
   const current = pipelines.find((p) => p.id === a) || pipelines[0];
-  const opts = { days: 30 };
-  const board = h('div', { class: 'pipeline-board', 'aria-busy': 'true' });
-  const head = h('div', { class: 'row between' },
-    h('h1', {}, 'Pipeline'),
+  const pref = (() => { try { return localStorage.getItem('cp-opps-view') || 'board'; } catch { return 'board'; } })();
+  const opts = { days: 30, q: '', user: '', view: pref };
+  const results = h('div', { 'aria-busy': 'true' });
+  const totals = h('div', { class: 'opp-totals small muted', role: 'status' });
+  const head = h('div', { class: 'row between opp-head' },
+    h('div', {}, h('h1', { style: 'margin:0' }, 'Oportunidades'), totals),
     h('div', { class: 'row' },
-      pipelines.length > 1 ? h('select', { 'aria-label': 'Pipeline', onchange: (e) => (location.hash = `#/pipeline/${e.target.value}`) }, pipelines.map((p) => h('option', { value: p.id, selected: p.id === current.id }, p.name))) : h('strong', {}, current.name),
-      h('select', { 'aria-label': 'Ganadas y perdidas de los últimos', onchange: (e) => { opts.days = Number(e.target.value); load(); } }, [[7, '7 días'], [30, '30 días'], [90, '90 días'], [365, '1 año']].map(([v, l]) => h('option', { value: v, selected: v === opts.days }, `Cerradas: ${l}`))),
-      isAdmin() ? h('a', { class: 'btn', href: `#/pipeline/editar/${current.id}` }, '⚙️ Configurar') : null,
-      isAdmin() ? h('a', { class: 'btn', href: '#/pipeline/editar/nuevo' }, '+ Nuevo pipeline') : null));
+      isAdmin() ? h('a', { class: 'btn', href: `#/pipeline/editar/${current.id}` }, 'Configurar') : null,
+      isAdmin() ? h('a', { class: 'btn primary', href: '#/pipeline/editar/nuevo' }, '+ Nuevo pipeline') : null));
+  const setView = (k) => {
+    opts.view = k;
+    try { localStorage.setItem('cp-opps-view', k); } catch { /* sin almacenamiento */ }
+    viewGroup.querySelectorAll('button').forEach((x) => { const on = x.dataset.view === k; x.classList.toggle('active', on); x.setAttribute('aria-pressed', String(on)); });
+    draw();
+  };
+  const viewGroup = h('div', { class: 'btn-group', role: 'group', 'aria-label': 'Vista' },
+    [['board', 'Tablero'], ['list', 'Lista']].map(([k, l]) => h('button', { 'data-view': k, class: opts.view === k ? 'active' : '', 'aria-pressed': String(opts.view === k), onclick: () => setView(k) }, l)));
+  const userSelect = h('select', { 'aria-label': 'Persona', onchange: (e) => { opts.user = e.target.value; draw(); } }, h('option', { value: '' }, 'Todo el equipo'));
+  const toolbar = h('div', { class: 'card opp-toolbar' },
+    h('div', { class: 'row' },
+      pipelines.length > 1
+        ? h('select', { 'aria-label': 'Pipeline', onchange: (e) => (location.hash = `#/pipeline/${e.target.value}`) }, pipelines.map((p) => h('option', { value: p.id, selected: p.id === current.id }, p.name)))
+        : h('strong', {}, current.name),
+      h('input', { type: 'search', class: 'opp-search', placeholder: 'Buscar por nombre o teléfono', 'aria-label': 'Buscar oportunidades', oninput: (e) => { opts.q = e.target.value.trim().toLowerCase(); draw(); } }),
+      userSelect,
+      h('select', { 'aria-label': 'Cerradas de los últimos', onchange: (e) => { opts.days = Number(e.target.value); load(); } }, [[7, '7 días'], [30, '30 días'], [90, '90 días'], [365, '1 año']].map(([v, l]) => h('option', { value: v, selected: v === opts.days }, `Cerradas: ${l}`)))),
+    viewGroup);
   const note = current.chatbot_ids.length ? null : h('div', { class: 'banner warn' }, 'Ningún agente usa este pipeline todavía: las solicitudes no entrarán solas hasta que lo asignes a un agente en ', isAdmin() ? h('a', { href: `#/pipeline/editar/${current.id}` }, 'Configurar') : 'Configurar', '.');
-  root.append(head, note, board);
+  root.append(head, note, toolbar, results);
 
   let data = null;
   let dragging = null;
+  const cur = () => data.pipeline.currency || 'MXN';
+  const stageOf = (id) => data.pipeline.stages.find((s) => s.id === id);
+  const sum = (list) => list.reduce((n, c) => n + Number(c.value || 0), 0);
   const move = async (card, stageId) => {
     if (!stageId || stageId === card.stage_id) return;
-    await run(() => api('POST', `/api/pipeline-cards/${card.id}/move`, { stage_id: stageId }), 'Tarjeta movida');
+    await run(() => api('POST', `/api/pipeline-cards/${card.id}/move`, { stage_id: stageId }), 'Oportunidad movida');
     load();
   };
-  const cardEl = (card) => h('article', { class: 'pipeline-card', draggable: 'true', ondragstart: (e) => { dragging = card; e.dataTransfer.setData('text/plain', String(card.id)); e.dataTransfer.effectAllowed = 'move'; }, ondragend: () => { dragging = null; } },
-    h('a', { href: `#/conversation/${card.conversation_id}`, class: 'pipeline-card-title', draggable: 'false' }, card.contact_name || card.contact_phone || 'Cliente'),
-    h('div', { class: 'small muted' }, [card.request_number > 1 ? `Solicitud ${card.request_number}.ª` : null, card.channel_name, card.assigned_name ? `👤 ${card.assigned_name}` : null, card.conversation_status === 'human' ? '🙋 con una persona' : null].filter(Boolean).join(' · ')),
-    card.last_reason ? h('div', { class: 'small', title: card.last_reason }, `${card.last_source === 'ia' ? '🤖 ' : card.last_source === 'manual' ? '✋ ' : ''}${card.last_reason.length > 90 ? card.last_reason.slice(0, 90) + '…' : card.last_reason}`) : null,
-    h('div', { class: 'row between small muted' }, h('span', {}, `En esta columna ${timeAgo(card.stage_entered_at)}`), card.closed_at ? h('span', { class: 'badge' }, 'Cerrada') : null),
-    h('select', { class: 'small', 'aria-label': `Mover a ${card.contact_name || 'cliente'} a otra columna`, onchange: (e) => move(card, e.target.value) },
-      h('option', { value: '' }, 'Mover a…'), data.pipeline.stages.filter((s) => s.id !== card.stage_id).map((s) => h('option', { value: s.id }, s.name))));
+  const visible = () => data.cards.filter((c) => (!opts.user || (opts.user === 'none' ? !c.assigned_user_id : c.assigned_user_id === opts.user))
+    && (!opts.q || `${c.contact_name} ${c.contact_phone}`.toLowerCase().includes(opts.q)));
+  const avatar = (c) => c.assigned_name ? h('span', { class: 'mini-avatar', title: `Atiende: ${c.assigned_name}`, 'aria-hidden': 'true' }, initialsOf(c.assigned_name)) : null;
+  const cardEl = (card) => h('article', { class: 'pipeline-card', draggable: 'true', tabindex: '0', role: 'button',
+    'aria-label': `${card.contact_name || 'Cliente'}, ${money(card.value, cur())}${card.assigned_name ? `, atiende ${card.assigned_name}` : ''}`,
+    ondragstart: (e) => { dragging = card; e.dataTransfer.setData('text/plain', String(card.id)); e.dataTransfer.effectAllowed = 'move'; }, ondragend: () => { dragging = null; },
+    onclick: () => openOpportunity(card), onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openOpportunity(card); } } },
+    h('div', { class: 'row between' }, h('strong', { class: 'pipeline-card-title' }, card.contact_name || card.contact_phone || 'Cliente'), avatar(card)),
+    h('div', { class: 'opp-value' }, money(card.value, cur())),
+    h('div', { class: 'small muted' }, [card.channel_name, card.request_number > 1 ? `Solicitud ${card.request_number}.ª` : null, card.conversation_status === 'human' ? '🙋 con una persona' : null].filter(Boolean).join(' · ')),
+    card.last_reason ? h('div', { class: 'small opp-reason', title: card.last_reason }, `${card.last_source === 'ia' ? '🤖 ' : card.last_source === 'manual' ? '✋ ' : ''}${card.last_reason}`) : null,
+    h('div', { class: 'row between small muted' }, h('span', {}, timeAgo(card.stage_entered_at)), card.closed_at ? h('span', { class: 'badge' }, 'Cerrada') : null));
   const draw = () => {
+    const cards = visible();
+    const open = cards.filter((c) => stageOf(c.stage_id)?.kind === 'open');
+    fill(totals, `${cards.length} ${cards.length === 1 ? 'oportunidad' : 'oportunidades'} · ${money(sum(cards), cur())} en total · ${money(sum(open), cur())} en curso`);
+    if (opts.view === 'list') {
+      fill(results, h('div', { class: 'card', style: 'padding:0' }, cards.length ? h('table', {},
+        h('thead', {}, h('tr', {}, ['Oportunidad', 'Columna', 'Valor', 'Atiende', 'Canal', 'En la columna'].map((t) => h('th', {}, t)))),
+        h('tbody', {}, cards.map((c) => {
+          const st = stageOf(c.stage_id);
+          return h('tr', { class: 'click', onclick: () => openOpportunity(c) },
+            h('td', {}, h('strong', {}, c.contact_name || c.contact_phone || 'Cliente'), h('div', { class: 'small muted' }, c.contact_phone ? `+${c.contact_phone}` : '')),
+            h('td', {}, h('span', { class: 'stage-pill', style: `--stage:${st?.color || '#667085'}` }, st?.name || c.stage_id)),
+            h('td', {}, money(c.value, cur())),
+            h('td', {}, c.assigned_name || h('span', { class: 'muted' }, 'Sin asignar')),
+            h('td', {}, c.channel_name),
+            h('td', {}, timeAgo(c.stage_entered_at)));
+        }))) : h('p', { class: 'muted', style: 'padding:16px' }, 'No hay oportunidades con estos filtros.')));
+      return;
+    }
     const byStage = new Map(data.pipeline.stages.map((s) => [s.id, []]));
-    for (const c of data.cards) byStage.get(c.stage_id)?.push(c);
-    fill(board, data.pipeline.stages.map((s) => {
-      const cards = byStage.get(s.id);
+    for (const c of cards) byStage.get(c.stage_id)?.push(c);
+    fill(results, h('div', { class: 'pipeline-board' }, data.pipeline.stages.map((s) => {
+      const list = byStage.get(s.id);
       const col = h('section', { class: 'pipeline-col', 'aria-label': s.name, style: `--stage:${s.color}`,
         ondragover: (e) => { e.preventDefault(); col.classList.add('drop'); },
         ondragleave: () => col.classList.remove('drop'),
         ondrop: (e) => { e.preventDefault(); col.classList.remove('drop'); const card = dragging; dragging = null; if (card) move(card, s.id); } },
-      h('header', {}, h('strong', {}, s.name), ' ', h('span', { class: 'badge' }, cards.length), s.kind !== 'open' ? h('div', { class: 'small muted' }, KIND[s.kind]) : null),
-      cards.length ? cards.map(cardEl) : h('p', { class: 'small muted' }, 'Sin tarjetas'));
+      h('header', {},
+        h('div', { class: 'row between' }, h('strong', {}, s.name), h('span', { class: 'badge' }, list.length)),
+        h('div', { class: 'small muted' }, money(sum(list), cur()), s.kind !== 'open' ? ` · ${KIND[s.kind]}` : '')),
+      h('div', { class: 'pipeline-col-cards' }, list.length ? list.map(cardEl) : h('p', { class: 'small muted' }, 'Sin oportunidades')));
       return col;
-    }));
+    })));
   };
   const load = async () => {
     data = await api('GET', `/api/pipelines/${current.id}/board?days=${opts.days}`);
-    board.removeAttribute('aria-busy');
+    results.removeAttribute('aria-busy');
+    // Personas que aparecen en el tablero (para el filtro).
+    const people = new Map(data.cards.filter((c) => c.assigned_user_id).map((c) => [c.assigned_user_id, c.assigned_name || 'Persona del equipo']));
+    fill(userSelect, h('option', { value: '' }, 'Todo el equipo'), [...people].map(([id, n]) => h('option', { value: id, selected: id === opts.user }, n)), h('option', { value: 'none', selected: opts.user === 'none' }, 'Sin asignar'));
     draw();
   };
+
+  /** Ficha de la oportunidad (como en GHL): valor, columna, quién atiende y su historial. */
+  async function openOpportunity(card) {
+    const previous = document.activeElement;
+    const box = h('dialog', { class: 'card app-dialog appt-panel', 'aria-label': `Oportunidad de ${card.contact_name || 'cliente'}` });
+    const close = () => { box.close(); box.remove(); if (previous?.isConnected) previous.focus(); };
+    box.addEventListener('cancel', (e) => { e.preventDefault(); close(); });
+    const v = { value: Number(card.value) || 0, stage: card.stage_id };
+    const history = h('div', { class: 'small muted' }, 'Cargando historial…');
+    box.append(
+      h('div', { class: 'row between' }, h('h2', { style: 'margin:0' }, card.contact_name || card.contact_phone || 'Cliente'), h('button', { class: 'icon-only', 'aria-label': 'Cerrar', onclick: close }, '✕')),
+      h('dl', { class: 'appt-facts' },
+        h('dt', {}, 'Teléfono'), h('dd', {}, card.contact_phone ? `+${card.contact_phone}` : '—'),
+        h('dt', {}, 'Atiende'), h('dd', {}, card.assigned_name || 'Sin asignar'),
+        h('dt', {}, 'Canal'), h('dd', {}, card.channel_name || '—')),
+      h('div', { class: 'grid', style: 'gap:12px' },
+        field(`Valor (${cur()})`, h('input', { type: 'number', min: 0, step: '0.01', value: v.value, oninput: (e) => (v.value = Number(e.target.value) || 0) })),
+        field('Columna', select(v, 'stage', data.pipeline.stages.map((s) => [s.id, s.name])))),
+      h('div', { class: 'row' },
+        h('button', { class: 'primary', onclick: async () => {
+          if (v.value !== Number(card.value) && !(await run(() => api('PATCH', `/api/pipeline-cards/${card.id}`, { value: v.value })))) return;
+          if (v.stage !== card.stage_id && !(await run(() => api('POST', `/api/pipeline-cards/${card.id}/move`, { stage_id: v.stage })))) return;
+          toast('Oportunidad guardada ✅'); close(); load();
+        } }, 'Guardar'),
+        h('a', { class: 'btn', href: `#/conversation/${card.conversation_id}`, onclick: close }, 'Abrir chat')),
+      h('h3', {}, 'Historial'), history);
+    document.body.append(box);
+    box.showModal();
+    try {
+      const cards = await api('GET', `/api/conversations/${card.conversation_id}/pipeline`);
+      const mine = cards.find((c) => String(c.id) === String(card.id));
+      fill(history, mine ? pipelineCard([mine]) : 'Sin movimientos.');
+    } catch { fill(history, 'No se pudo cargar el historial.'); }
+  }
+
   await load();
 }
 
 async function editPipeline(root, id) {
   const isNew = id === 'nuevo';
   const [bots, pipelines] = await Promise.all([api('GET', withAcct('/api/chatbots')), api('GET', withAcct('/api/pipelines'))]);
-  const p = isNew ? { ...(await api('GET', '/api/pipelines/template')), chatbot_ids: pipelines.length ? [] : bots.map((b) => b.id).slice(0, 1) } : clone(pipelines.find((x) => x.id === id) || {});
+  const p = isNew ? { currency: 'MXN', ...(await api('GET', '/api/pipelines/template')), chatbot_ids: pipelines.length ? [] : bots.map((b) => b.id).slice(0, 1) } : clone(pipelines.find((x) => x.id === id) || {});
   if (!isNew && !p.id) { root.append(h('p', {}, 'Pipeline no encontrado')); return; }
   const usedBy = (botId) => pipelines.find((x) => x.id !== p.id && x.chatbot_ids.includes(botId));
   const stagesBox = h('div', { class: 'stack' });
@@ -125,7 +217,7 @@ async function editPipeline(root, id) {
   drawStages();
 
   const save = async () => {
-    const body = { name: p.name, stages: p.stages, chatbot_ids: p.chatbot_ids, allow_backward: !!p.allow_backward };
+    const body = { name: p.name, stages: p.stages, chatbot_ids: p.chatbot_ids, allow_backward: !!p.allow_backward, currency: p.currency || 'MXN' };
     const saved = await run(() => (isNew ? api('POST', '/api/pipelines', { ...body, account_id: state.accountId || undefined }) : api('PUT', `/api/pipelines/${p.id}`, body)), 'Pipeline guardado');
     if (saved?.id) location.hash = `#/pipeline/${saved.id}`;
   };
@@ -138,6 +230,7 @@ async function editPipeline(root, id) {
         bots.length ? bots.map((b) => h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: p.chatbot_ids.includes(b.id), onchange: (e) => { p.chatbot_ids = e.target.checked ? [...p.chatbot_ids, b.id] : p.chatbot_ids.filter((x) => x !== b.id); } }),
           b.name, usedBy(b.id) ? h('span', { class: 'small muted' }, ` (ahora usa «${usedBy(b.id).name}»: se cambia a este)`) : null)) : h('p', { class: 'muted' }, 'Aún no tienes agentes.'),
         h('small', {}, 'Cada agente usa un solo pipeline. Las conversaciones de esos agentes entran solas en la primera columna.')),
+      field('Moneda del valor de las oportunidades', select(p, 'currency', [['MXN', 'Pesos mexicanos (MXN)'], ['USD', 'Dólares (USD)'], ['EUR', 'Euros (EUR)'], ['COP', 'Pesos colombianos (COP)'], ['ARS', 'Pesos argentinos (ARS)'], ['CLP', 'Pesos chilenos (CLP)'], ['PEN', 'Soles (PEN)'], ['GTQ', 'Quetzales (GTQ)']])),
       check(p, 'allow_backward', 'Permitir que una tarjeta regrese sola a una columna anterior'),
       h('p', { class: 'small muted' }, 'Las tarjetas avanzan solas; una vez en una columna de ganadas o perdidas ya no se mueven solas. A mano siempre puedes moverlas. Cuando el cliente vuelve por otra solicitud, la anterior se cierra (como ganada si cumplió el objetivo o perdida si no) y empieza una tarjeta nueva.')),
     h('h2', {}, 'Columnas'),
