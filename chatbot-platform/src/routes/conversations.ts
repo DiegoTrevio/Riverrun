@@ -58,7 +58,7 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
     const rows = await query<Record<string, any>>(
       `SELECT c.id, c.account_id, c.chatbot_id, c.channel_id, c.status, c.handoff_reason, c.last_message_at, c.created_at, c.assigned_user_id, au.name AS assigned_name, au.email AS assigned_email,
               ct.id AS contact_id, ct.name, ct.push_name, ct.phone, ct.external_id,
-              ch.type AS channel_type, ch.name AS channel_name, b.name AS chatbot_name, a.name AS account_name,
+              ch.type AS channel_type, ch.config->>'platform' AS channel_platform, ch.name AS channel_name, b.name AS chatbot_name, a.name AS account_name,
               ${paged ? `to_char(coalesce(c.last_message_at, c.created_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS page_cursor_at,` : ''}
               (SELECT content FROM messages m WHERE m.conversation_id = c.id ORDER BY id DESC LIMIT 1) AS last_message,
               (SELECT count(*)::int FROM messages m WHERE m.conversation_id = c.id) AS message_count
@@ -111,7 +111,7 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
       chatbot: bot ? { id: bot.id, name: bot.name, data_fields: bot.data_fields, flow: bot.flow } : null,
       /** Asistente en esta conversación: activo, en pausa (motivo) o esperando su palabra de activación. */
       agent: bot ? agentStatus(bot, conv) : null,
-      channel: channel ? { id: channel.id, name: channel.name, type: channel.type } : null,
+      channel: channel ? { id: channel.id, name: channel.name, type: channel.type, platform: channel.type === 'zernio' ? channel.config.platform : undefined } : null,
       assignee: conv.assigned_user_id ? await store.getUserBasic(conv.assigned_user_id) : null,
       /** Persona del equipo que tomó la conversación del contacto por última vez (si fue alguien). */
       handoff_by_user: contact?.handoff_by ? await store.getUserBasic(contact.handoff_by) : null,
