@@ -1,3 +1,4 @@
+import { accountAi } from '../ai/budget.js';
 /** Importar la información del negocio (web, PDF, foto, CSV o texto) para llenar el conocimiento sin escribirlo a mano. */
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -76,7 +77,7 @@ export async function knowledgeImportRoutes(api: FastifyInstance, ai: AiProvider
     const input = await readSource(req);
     let result: ImportResult;
     try {
-      result = await importKnowledge(ai, input.source, input.hint);
+      result = await importKnowledge(accountAi(ai, accountId, chatbotId, 'import'), input.source, input.hint);
     } catch (e: any) {
       await logEvent({ level: 'warn', source: 'ai', message: `No se pudo importar el conocimiento: ${e?.message ?? e}`, accountId, chatbotId: chatbotId ?? undefined });
       throw e;

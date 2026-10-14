@@ -1,4 +1,6 @@
+import { evaluatedChatbot, evaluatedImages } from '../engine/agent-snapshot.js';
 import crypto from 'node:crypto';
+import { enqueue } from '../engine/queue.js';
 import { query, queryOne, withTransaction } from '../db.js';
 import { removeInboundAccountFiles, type StoredMedia } from '../channels/media.js';
 import { perRequestKeys } from '../engine/questions.js';
@@ -218,6 +220,8 @@ export async function listChatbots(accountId: string | null = null): Promise<Cha
 }
 
 export async function getChatbot(id: string): Promise<Chatbot | null> {
+  const evaluated = evaluatedChatbot(id);
+  if (evaluated) return evaluated;
   const row = await queryOne<ChatbotRow>('SELECT * FROM chatbots WHERE id = $1', [id]);
   return row ? hydrateChatbot(row) : null;
 }
@@ -259,7 +263,7 @@ export async function createChatbot(accountId: string, input: ChatbotInput, clie
   return hydrateChatbot(rows[0]);
 }
 
-export async function updateChatbot(id: string, input: ChatbotInput): Promise<Chatbot | null> {
+export async function updateChatbot(id: string, input: ChatbotInput, client?: Queryable): Promise<Chatbot | null> {
   const sets: string[] = [];
   const params: unknown[] = [];
   for (const col of CHATBOT_PLAIN_COLS) {
@@ -276,7 +280,7 @@ export async function updateChatbot(id: string, input: ChatbotInput): Promise<Ch
   }
   if (!sets.length) return getChatbot(id);
   params.push(id);
-  const row = await queryOne<ChatbotRow>(
+  const [row] = await rowsOf(client,
     `UPDATE chatbots SET ${sets.join(', ')}, updated_at = now() WHERE id = $${params.length} RETURNING *`,
     params,
   );
@@ -430,6 +434,8 @@ export async function deleteKnowledge(id: string) {
 /* ------------------------------- Imágenes ------------------------------ */
 
 export async function listImages(chatbotId: string, onlyActive = false): Promise<ImageAsset[]> {
+  const evaluated=evaluatedImages(chatbotId);
+  if(evaluated) return onlyActive?evaluated.filter(i=>i.active):evaluated;
   return query<ImageAsset>(
     `SELECT * FROM images WHERE chatbot_id = $1 ${onlyActive ? 'AND active' : ''} ORDER BY created_at`,
     [chatbotId],
@@ -449,7 +455,7 @@ export async function insertImage(img: Omit<ImageAsset, 'id' | 'active'> & { act
   return row!;
 }
 
-export async function updateImage(id: string, patch: Partial<ImageAsset>): Promise<ImageAsset | null> {
+export async function updateImage(id: string, patch: Partial<ImageAsset>, client?: Queryable): Promise<ImageAsset | null> {
   const allowed = ['code', 'name', 'description', 'usage_rule', 'caption', 'active', 'file_path', 'mime_type', 'size_bytes', 'send_when', 'sha256'] as const;
   const sets: string[] = [];
   const params: unknown[] = [];
@@ -461,7 +467,7 @@ export async function updateImage(id: string, patch: Partial<ImageAsset>): Promi
   }
   if (!sets.length) return getImage(id);
   params.push(id);
-  return queryOne<ImageAsset>(`UPDATE images SET ${sets.join(', ')}, updated_at = now() WHERE id = $${params.length} RETURNING *`, params);
+  return (await rowsOf(client, `UPDATE images SET ${sets.join(', ')}, updated_at = now() WHERE id = $${params.length} RETURNING *`, params))[0] ?? null;
 }
 
 /**
@@ -785,6 +791,7 @@ export async function saveConversationReport(id: string, summary: string, untilI
 /* -------------------------------- Mensajes ------------------------------- */
 
 export interface NewMessage {
+  queueDelayMs?: number;
   /** Foto o documento del cliente ya guardado en disco: se registra en la misma transacción que el mensaje. */
   media?: StoredMedia;
   conversation_id: string;
@@ -800,8 +807,8 @@ export interface NewMessage {
 }
 
 /** Inserta un mensaje. Devuelve null si ya existía (webhook duplicado). */
-export async function insertMessage(m: NewMessage): Promise<Message | null> {
-  return withTransaction(async (client) => {
+export async function insertMessage(m: NewMessage, transaction?: import('pg').PoolClient): Promise<Message | null> {
+  const insert = async (client: import('pg').PoolClient) => {
     const result = await client.query<Message>(
       `INSERT INTO messages (conversation_id, direction, sender, type, content, image_id, external_message_id, processed, status, meta)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
@@ -821,6 +828,7 @@ export async function insertMessage(m: NewMessage): Promise<Message | null> {
     );
     const row = result.rows[0] ?? null;
     if (row) await client.query('UPDATE conversations SET last_message_at = now() WHERE id = $1', [m.conversation_id]);
+    if (row && m.queueDelayMs !== undefined) await enqueue(m.conversation_id, m.queueDelayMs, client);
     if (row && m.media) {
       // Si esto falla, se deshace también el mensaje: nunca queda un mensaje que diga "foto" sin su archivo.
       await client.query(
@@ -829,7 +837,8 @@ export async function insertMessage(m: NewMessage): Promise<Message | null> {
       );
     }
     return row;
-  });
+  };
+  return transaction ? insert(transaction) : withTransaction(insert);
 }
 
 export async function updateMessage(id: number, patch: { external_message_id?: string | null; status?: string; meta?: Record<string, unknown> }) {
@@ -983,7 +992,7 @@ export async function markAllProcessed(conversationId: string) {
 /** Últimos N mensajes (en orden cronológico) con id <= beforeOrEqualId si se indica. */
 export async function recentMessages(conversationId: string, limit: number): Promise<Message[]> {
   const rows = await query<Message>(
-    `SELECT * FROM messages WHERE conversation_id = $1 AND status <> 'failed' ORDER BY id DESC LIMIT $2`,
+    `SELECT * FROM messages WHERE conversation_id = $1 AND status NOT IN ('failed','uncertain','pending','cancelled') ORDER BY id DESC LIMIT $2`,
     [conversationId, limit],
   );
   return rows.reverse();
@@ -992,7 +1001,7 @@ export async function recentMessages(conversationId: string, limit: number): Pro
 /** Últimos `limit` mensajes posteriores al resumen (lo que la IA aún no tiene resumido), en orden cronológico. */
 export async function unsummarizedMessages(conversationId: string, afterId: number, limit: number): Promise<Message[]> {
   const rows = await query<Message>(
-    `SELECT * FROM messages WHERE conversation_id = $1 AND id > $2 AND status <> 'failed' ORDER BY id DESC LIMIT $3`,
+    `SELECT * FROM messages WHERE conversation_id = $1 AND id > $2 AND status NOT IN ('failed','uncertain','pending','cancelled') ORDER BY id DESC LIMIT $3`,
     [conversationId, afterId, limit],
   );
   return rows.reverse();
@@ -1000,7 +1009,7 @@ export async function unsummarizedMessages(conversationId: string, afterId: numb
 
 export async function messagesBetween(conversationId: string, afterId: number, upToId: number): Promise<Message[]> {
   return query<Message>(
-    `SELECT * FROM messages WHERE conversation_id = $1 AND id > $2 AND id <= $3 AND status <> 'failed' ORDER BY id`,
+    `SELECT * FROM messages WHERE conversation_id = $1 AND id > $2 AND id <= $3 AND status NOT IN ('failed','uncertain','pending','cancelled') ORDER BY id`,
     [conversationId, afterId, upToId],
   );
 }
@@ -1107,8 +1116,8 @@ export async function resetFlowState(conversationId: string, opts: { keepCampaig
 }
 
 /** Etapas del recorrido renumeradas (se quitó o movió una): las conversaciones de ese asistente siguen en la misma. */
-export async function remapFlowSteps(chatbotId: string, map: number[]) {
-  await query(`UPDATE conversations SET flow_step = coalesce(($2::int[])[flow_step], 0) WHERE chatbot_id = $1 AND flow_step > 0 AND flow_step <= $3`, [chatbotId, map, map.length]);
+export async function remapFlowSteps(chatbotId: string, map: number[], client?: Queryable) {
+  await rowsOf(client, `UPDATE conversations SET flow_step = coalesce(($2::int[])[flow_step], 0) WHERE chatbot_id = $1 AND flow_step > 0 AND flow_step <= $3`, [chatbotId, map, map.length]);
 }
 
 /** Hora de la base de datos (la misma que usan created_at y flow_started_at). */

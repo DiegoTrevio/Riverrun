@@ -1,3 +1,8 @@
+import { accountAi, AiBudgetBlocked } from '../ai/budget.js';
+import { knowledgeHash } from './knowledge.js';
+import { query, queryOne,withTransaction } from '../db.js';
+import { OutboundBlockedError } from '../outbound-guard.js';
+import { assertOwnership, controlVersion, currentOperation, DeliveryUncertain, OwnershipLost,interruptedOperation, nextDelivery, operationScope, setControlVersion } from './coordination.js';
 import { config } from '../config.js';
 import type { AiProvider } from '../ai/provider.js';
 import { recordMessage } from '../billing/limits.js';
@@ -35,6 +40,7 @@ export interface EngineExtensions {
     cancel(appointmentId: string, reason: string, by: 'bot'): Promise<unknown>;
   };
   onEvent?(e: AutomationEvent): void;
+  settleEvents?(conversationId:string):Promise<void>;
   onOutbound?(conv: Conversation, msg: Message): Promise<void>;
   /** Horario y zona horaria de la cuenta. */
   business?(accountId: string): Promise<BusinessInfo | null>;
@@ -105,7 +111,7 @@ export function savedItems(bot: Chatbot, codes: string[], imagesById: Map<string
 
 /** Plataformas donde tiene sentido simular "escribiendo…". */
 function hasTyping(t: Transport) {
-  return t.kind === 'whatsapp' || t.kind === 'telegram' || t.kind === 'messenger' || t.kind === 'instagram';
+  return t.typingSimulation !== false && (t.kind === 'whatsapp' || t.kind === 'telegram' || t.kind === 'messenger' || t.kind === 'instagram');
 }
 
 export function typingDelay(text: string, enabled: boolean) {
@@ -122,6 +128,11 @@ export class Engine {
 
   constructor(private ai: AiProvider, private ext: EngineExtensions = {}) {}
 
+  /** Same decisions, validators and outbound planning; no automation delivery or external agenda writes. */
+  evaluationEngine(ai: AiProvider, agenda: EngineExtensions['agenda'], onEvent: NonNullable<EngineExtensions['onEvent']>) {
+    return new Engine(ai, { intents: this.ext.intents, business: this.ext.business, agenda, onEvent });
+  }
+
   /** Procesa los mensajes pendientes de una conversación y ejecuta la acción validada. */
   /**
    * Juez de afirmaciones (modo estricto): un modelo barato dice qué de la respuesta no respalda la información del negocio.
@@ -133,7 +144,7 @@ export class Engine {
   ): Promise<string[]> {
     try {
       const info = sources.join('\n---\n').slice(0, 30_000);
-      const res = await this.ai.complete({
+      const res = await accountAi(this.ai, accountId, chatbotId, 'decision').complete({
         model: config.openai.summaryModel,
         temperature: 0,
         max_tokens: 500,
@@ -157,6 +168,21 @@ export class Engine {
   }
 
   async process(conversationId: string, transport: Transport, opts: ProcessOptions = {}): Promise<ProcessResult> {
+    const pending = await store.pendingInbound(conversationId);
+    // Also inspect earlier pending turns: a new webhook cannot bypass an interrupted delivery.
+    for (const message of pending) {
+      if (await interruptedOperation(`turn:${conversationId}:${message.id}`)) throw new DeliveryUncertain();
+    }
+    const operation = `turn:${conversationId}:${pending.at(-1)?.id ?? 'none'}`;
+    return operationScope(operation, async () => {
+      const row = await queryOne('SELECT control_version FROM conversations WHERE id=$1',[conversationId]);
+      if(row) setControlVersion(Number(row.control_version));
+      try { return await this.processTurn(conversationId,transport,opts); }
+      catch(e) { if(await interruptedOperation(operation)) throw new DeliveryUncertain(); throw e; }
+    });
+  }
+
+  private async processTurn(conversationId: string, transport: Transport, opts: ProcessOptions = {}): Promise<ProcessResult> {
     const conv = await store.getConversation(conversationId);
     if (!conv) return { status: 'nothing' };
     const [contact, channel] = await Promise.all([store.getContact(conv.contact_id), store.getChannel(conv.channel_id)]);
@@ -281,7 +307,7 @@ export class Engine {
       });
       let completion;
       try {
-        completion = await this.ai.complete({
+        completion = await accountAi(this.ai, conv.account_id, bot.id, 'decision').complete({
           model,
           fallback_models: bot.ai.fallback_models,
           messages: ctx.messages,
@@ -290,7 +316,12 @@ export class Engine {
           json_schema: { name: 'chatbot_decision', schema: DECISION_JSON_SCHEMA as unknown as Record<string, unknown> },
         });
       } catch (e: any) {
-        await log('error', 'ai', `Fallo al llamar a la IA: ${e?.message ?? e}`, e);
+        if(e instanceof AiBudgetBlocked){
+          await this.executeHandoff(bot,conv,contact,transport,[bot.rules.handoff_message||'Una persona del equipo te ayudará a continuar.'],e.message);
+          await store.markProcessed(conv.id,lastPendingId);
+          return {status:'handoff',plan:emptyPlan('handoff'),fallbackUsed:true,attempts};
+        }
+        await log('error', 'ai', 'ai_provider_failed', {reason:'provider_unavailable'});
         // Si ya hubo una propuesta (rechazada), se corrige/asegura en vez de quedarse callado.
         if (plan && lastInput) {
           const v = validateDecision({ ...lastInput, final: true });
@@ -396,7 +427,10 @@ export class Engine {
     // 4) ¿Llegaron mensajes nuevos mientras la IA pensaba? Mejor responder a todo junto.
     if (opts.allowRestart) {
       const nowPending = await store.pendingInbound(conv.id);
-      if (nowPending.some((m) => m.id > lastPendingId)) return { status: 'restart', attempts };
+      const queued=await queryOne(`SELECT EXISTS(SELECT 1 FROM inbound_receipts WHERE channel_id=$1 AND external_id=$2 AND NOT from_me
+        AND state IN ('pending','running') AND message_id<>ALL($3::text[]) AND payload->>'type'<>'reaction'
+        AND COALESCE(payload->>'captureOnly','false')<>'true' AND (payload->>'timestamp')::double precision>extract(epoch FROM now())-1800) AS pending`,[channel.id,contact.external_id,pending.map(m=>m.external_message_id??'')]);
+      if (queued?.pending || nowPending.some((m) => m.id > lastPendingId)) return { status: 'restart', attempts };
     }
     // ¿Un humano tomó la conversación mientras tanto?
     const fresh = await store.getConversation(conv.id);
@@ -409,6 +443,18 @@ export class Engine {
       return { status: 'paused', plan, attempts };
     }
 
+    await assertOwnership();
+    const liveBot = await store.getChatbot(bot.id);
+    const liveChannel = await store.getChannel(channel.id);
+    const control=await queryOne('SELECT control_version FROM conversations WHERE id=$1',[conv.id]);
+    if(controlVersion()!==undefined&&Number(control?.control_version)!==controlVersion()) return {status:'restart'};
+    if (!opts.ignoreInactive && (!liveBot?.active || !liveChannel?.active || liveChannel.account_active === false)) {
+      await store.markProcessed(conv.id,lastPendingId);return {status:'inactive'};
+    }
+    const currentKnowledge=await store.listKnowledge(bot.id,true);
+    const signature=(items:typeof knowledge)=>items.map(k=>k.id+':'+knowledgeHash(k)+':'+k.always_include).sort().join('|');
+    const settings=(b:Chatbot)=>JSON.stringify([b.personality,b.rules,b.ai,b.flow,b.data_fields,b.saved_messages]);
+    if(signature(currentKnowledge)!==signature(knowledge) || (liveBot&&settings(liveBot)!==settings(bot))) return {status:opts.allowRestart?'restart':'error'};
     // 4b) El cliente pide otra vez lo que ya se le resolvió: se abre una solicitud nueva y se vuelve a responder con ella
     // (preguntas, objetivo, etapas, fotos y avisos cuentan de nuevo). Con el seguro: solo si la actual ya cumplió su
     // objetivo o empezó hace un rato; si no, repetir la pregunta es seguir la misma solicitud.
@@ -430,6 +476,9 @@ export class Engine {
     await this.applyMemory(contact, plan, conv.id, lastPendingId, [...history, ...pending], bot);
     // Agenda: se ejecuta antes de enviar; si el horario se ocupó justo ahora, se avisa en vez de confirmar.
     if (plan.booking && this.ext.agenda) {
+      await assertOwnership();
+      // A restart after a booking begins requires review rather than booking again.
+      if(currentOperation()) await query(`INSERT INTO delivery_attempts(operation_key,part,conversation_id,state) VALUES($1,-1,$2,'sending') ON CONFLICT DO NOTHING`,[currentOperation(),conv.id]);
       if (plan.booking.action === 'book') {
         const r = await this.ext.agenda.book({ accountId: conv.account_id, serviceId: plan.booking.serviceId, slotKey: plan.booking.slot, conversation: conv, contact, source: 'bot' });
         if (!r.ok) {
@@ -448,6 +497,7 @@ export class Engine {
       }
     }
     const meta = { action: plan.action, info_not_found: plan.infoNotFound, fallback: fallbackUsed };
+    if(plan.booking && currentOperation()) await query(`UPDATE delivery_attempts SET state='sent',updated_at=now() WHERE operation_key=$1 AND part=-1`,[currentOperation()]);
     // Recorrido: el objetivo solo cuenta una vez por conversación (hasta que se cierre y se reabra).
     const goalReached = plan.goalCompleted && !conv.goal_completed_at;
     const goalHandoff = goalReached && bot.flow.on_goal_action === 'handoff' && plan.action !== 'handoff';
@@ -564,8 +614,6 @@ export class Engine {
     }
     // Las fotos que faltaron salen aunque la conversación haya pasado a una persona o se haya cerrado en este mismo momento.
     for (const x of owed) await this.ext.deferImage?.(conv, x.image, { reason: x.reason, delaySeconds: x.delaySeconds, allowEnded: ended, allowRepeat: x.repeat }).catch((e) => log('error', 'engine', `No se pudo programar el reenvío de la foto ${x.image.code}: ${e?.message ?? e}`));
-    await store.markProcessed(conv.id, lastPendingId);
-
     // Eventos para las reglas automáticas (se ejecutan después, sin bloquear la respuesta).
     if (this.ext.onEvent) {
       if (plan.intents.length) this.ext.onEvent({ type: 'intent', conversationId: conv.id, intents: plan.intents, text: customerText });
@@ -575,6 +623,10 @@ export class Engine {
         if (value && dataBefore[field] !== value) this.ext.onEvent({ type: 'data_captured', conversationId: conv.id, field, text: customerText });
       }
     }
+
+    // Keep the ownership session alive until dependent events settle. A crash before this commit retains inbound work.
+    await this.ext.settleEvents?.(conv.id);
+    await store.markProcessed(conv.id,lastPendingId);
 
     if (goalReached && !summarized) await this.summarizeFinal(conv);
 
@@ -682,43 +734,84 @@ export class Engine {
     transport: Transport,
     o: { sender: 'bot' | 'human' | 'system'; text: string; image?: ImageAsset; file?: OutgoingFile; delay: number; meta?: Record<string, unknown> },
   ): Promise<Message | null> {
-    const msg = await store.insertMessage({
-      conversation_id: conv.id,
-      direction: 'out',
-      sender: o.sender,
-      type: o.file ? o.file.kind : o.image ? 'image' : 'text',
-      content: o.text,
-      image_id: o.image?.id ?? null,
-      status: 'pending',
-      meta: o.file ? { ...o.meta, attachment_id: o.file.id, file_name: o.file.name } : o.meta,
+    const delivery=nextDelivery();
+    // Delay locally; check ownership/human control immediately before the transport, with no typing sleep inside it.
+    if(o.delay>0) {
+      await transport.startTyping?.().catch(()=>undefined);
+      await new Promise(r=>setTimeout(r,Math.min(o.delay,7000)));
+    }
+    await assertOwnership();
+    if(o.image) {
+      const image=await store.getImage(o.image.id);
+      const owner=image?await store.getChatbot(image.chatbot_id):null;
+      if(!image?.active || owner?.account_id!==conv.account_id) return null;
+    }
+    if(o.sender==='bot') {
+      const fresh=await store.getConversation(conv.id);
+      const latestBot=bot ? await store.getChatbot(bot.id) : null;
+      const channel=await store.getChannel(conv.channel_id);
+      const version=await queryOne('SELECT control_version FROM conversations WHERE id=$1',[conv.id]);
+      const ownHandoff=o.meta?.action==='handoff' && controlVersion()===Number(version?.control_version);
+      const explicitHuman=o.meta?.allow_when_human===true;
+      const explicitClosed=fresh?.status==='closed' && o.meta?.allow_when_closed===true;
+      const assistantReply=!o.meta?.source || o.meta.source==='flow';
+      if(controlVersion()!==undefined && controlVersion()!==Number(version?.control_version)) return null;
+      if(!fresh || (fresh.status!=='bot' && !ownHandoff && !explicitHuman && !explicitClosed) ||
+        (transport.kind!=='playground' && (!channel?.active || channel.account_active===false || (assistantReply && bot&&!latestBot?.active))) ||
+        (assistantReply && latestBot && fresh.status==='bot' && !agentActive(latestBot,fresh))) return null;
+    }
+    const old=await queryOne(`SELECT d.*,m.* FROM delivery_attempts d LEFT JOIN messages m ON m.id=d.message_id WHERE operation_key=$1 AND part=$2`,[delivery.operation,delivery.part]);
+    if(old) {
+      if(old.state==='sent') return old as Message;
+      if(['sending','uncertain'].includes(old.state)) throw new DeliveryUncertain();
+      if(old.state==='rejected'||old.state==='cancelled') return null;
+    }
+    const msg=await withTransaction(async client=>{
+      const message=await store.insertMessage({
+        conversation_id:conv.id,direction:'out',sender:o.sender,type:o.file?o.file.kind:o.image?'image':'text',content:o.text,
+        image_id:o.image?.id??null,status:'pending',meta:o.file?{...o.meta,attachment_id:o.file.id,file_name:o.file.name}:o.meta,
+      },client);
+      if(!message) return null;
+      const reserved=await client.query(`INSERT INTO delivery_attempts(operation_key,part,conversation_id,message_id,state) VALUES($1,$2,$3,$4,'sending') ON CONFLICT DO NOTHING RETURNING part`,[delivery.operation,delivery.part,conv.id,message.id]);
+      if(!reserved.rowCount) throw new DeliveryUncertain();
+      return message;
     });
-    if (!msg) return null;
-    try {
-      let extId: string | null;
-      if (o.file) {
-        if (!transport.sendFile) throw new Error('Este canal todavía no envía archivos (PDF, Word, audio o video): usa texto o una foto');
-        extId = await transport.sendFile(o.file, o.text, o.delay);
-      } else {
-        extId = o.image ? await transport.sendImage(o.image, o.text, o.delay) : await transport.sendText(o.text, o.delay);
+    if(!msg) return null;
+    const expectedControl=controlVersion();
+    transport.setDispatchGuard?.(async()=>{
+      await assertOwnership();
+      if(o.sender==='bot') {
+        const current=await queryOne('SELECT control_version FROM conversations WHERE id=$1',[conv.id]);
+        if(expectedControl!==undefined&&Number(current?.control_version)!==expectedControl) throw new OwnershipLost();
       }
-      await store.updateMessage(msg.id, { external_message_id: extId, status: 'ok' });
-      // Cuenta para el límite mensual del plan (las pruebas del simulador no cuentan).
-      if (o.sender === 'bot' && transport.kind !== 'playground') await recordMessage(conv.account_id).catch(() => undefined);
-      const sent = { ...msg, status: 'ok', external_message_id: extId };
-      if (this.ext.onOutbound) await this.ext.onOutbound(conv, sent).catch(() => undefined);
+    });
+    try {
+      await assertOwnership();
+      if(o.sender==='bot' && controlVersion()!==undefined) {
+        const control=await queryOne('SELECT control_version FROM conversations WHERE id=$1',[conv.id]);
+        if(Number(control?.control_version)!==controlVersion()) {
+          await query(`UPDATE delivery_attempts SET state='cancelled',updated_at=now() WHERE operation_key=$1 AND part=$2`,[delivery.operation,delivery.part]);
+          await store.updateMessage(msg.id,{status:'cancelled'});
+          return null;
+        }
+      }
+      const extId=o.file ? (transport.sendFile ? await transport.sendFile(o.file,o.text,0) : (()=>{throw new Error('unsupported_file');})())
+        : o.image ? await transport.sendImage(o.image,o.text,0) : await transport.sendText(o.text,0);
+      // Persist the receipt before usage/events. A DB failure here is an uncertain delivery.
+      await store.updateMessage(msg.id,{external_message_id:extId,status:'ok'});
+      await query(`UPDATE delivery_attempts SET state='sent',updated_at=now() WHERE operation_key=$1 AND part=$2`,[delivery.operation,delivery.part]);
+      if(o.sender==='bot' && transport.kind!=='playground') await recordMessage(conv.account_id).catch(()=>undefined);
+      const sent={...msg,status:'ok',external_message_id:extId};
+      if(this.ext.onOutbound) await this.ext.onOutbound(conv,sent).catch(()=>undefined);
       return sent;
-    } catch (e: any) {
-      await store.updateMessage(msg.id, { status: 'failed', meta: { error: String(e?.message ?? e) } });
-      await logEvent({
-        level: 'error',
-        source: transport.kind === 'whatsapp' ? 'evolution' : 'channel',
-        message: `No se pudo enviar ${o.file ? `el archivo ${o.file.name}` : o.image ? `la imagen ${o.image.code}` : 'el mensaje'} (${transport.kind}): ${e?.message ?? e}`,
-        accountId: conv.account_id,
-        chatbotId: bot?.id ?? null,
-        channelId: conv.channel_id,
-        conversationId: conv.id,
-        details: e,
-      });
+    } catch(e:any) {
+      // Only explicit client rejections are safe to treat as not delivered. Timeouts/5xx/network failures are ambiguous.
+      const rejected=/\bHTTP\s+4\d\d\b|→\s*4\d\d\b/.test(String(e?.message)) || e?.message==='unsupported_file' || e instanceof OutboundBlockedError;
+      const state=rejected?'rejected':'uncertain';
+      await query(`UPDATE delivery_attempts SET state=$3,updated_at=now() WHERE operation_key=$1 AND part=$2`,[delivery.operation,delivery.part,state]).catch(()=>undefined);
+      await store.updateMessage(msg.id,{status:rejected?'failed':'uncertain',meta:{error_code:state}}).catch(()=>undefined);
+      await logEvent({level:'error',source:'channel',message:'delivery_failure',accountId:conv.account_id,chatbotId:bot?.id??null,channelId:conv.channel_id,conversationId:conv.id,details:{state,kind:transport.kind}}).catch(()=>undefined);
+      if(!rejected) throw new DeliveryUncertain();
       return null;
     }
   }
@@ -739,9 +832,13 @@ export class Engine {
 
   async executeHandoff(bot: Chatbot, conv: Conversation, contact: Contact, transport: Transport, messages: string[], reason: string, opts: { silent?: boolean; via?: 'bot' | 'regla' } = {}) {
     const before = await store.getConversation(conv.id);
-    await store.setConversationStatus(conv.id, 'human', reason);
+    await assertOwnership();
+    if(before?.status==='human') return;
+    const control=await queryOne(`UPDATE conversations SET status='human',handoff_reason=$2,status_changed_at=now() WHERE id=$1 AND status='bot' AND ($3::bigint IS NULL OR control_version=$3) RETURNING control_version`,[conv.id,reason,controlVersion()??null]);
+    if(!control) return;
+    setControlVersion(Number(control.control_version));
     // Queda en el contacto quién la pasó y desde dónde. Si una persona ya la atendía, no se pisa.
-    if (before?.status !== 'human') await store.markHandoff(contact.id, null, opts.via ?? 'bot');
+    await store.markHandoff(contact.id, null, opts.via ?? 'bot');
     const texts = messages.length ? messages : bot.rules.handoff_message && !opts.silent ? [bot.rules.handoff_message] : [];
     for (const text of texts) {
       await this.sendOut(bot, conv, transport, { sender: 'bot', text, delay: typingDelay(text, bot.ai.typing_simulation && hasTyping(transport)), meta: { action: 'handoff' } });

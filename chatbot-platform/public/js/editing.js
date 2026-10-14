@@ -52,6 +52,10 @@ export function initializeDraftDefaults(key, apply) {
 }
 
 export function draftVersion(key) { return drafts.has(storageKey(key)) ? encode(drafts.get(storageKey(key)).value) : null; }
+
+export function hasUnsavedDrafts(keys) {
+  return keys.some(key=>{const record=drafts.get(storageKey(key));return record&&encode(record.value)!==record.base;});
+}
 // Para formularios que permanecen abiertos tras verificar: conservar el proxy y los cambios posteriores.
 export function markDraftSaved(key, expected, serverValue) {
   const id = storageKey(key); const record = drafts.get(id);

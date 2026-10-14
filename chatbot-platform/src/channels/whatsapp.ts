@@ -41,6 +41,8 @@ export async function releaseWhatsapp(ch: Channel, opts: { accountDeleted?: bool
 }
 
 export class WhatsappTransport implements Transport {
+  private dispatchGuard?:()=>Promise<void>;
+  setDispatchGuard(guard:()=>Promise<void>){this.dispatchGuard=guard;}
   kind = 'whatsapp' as const;
   private client: EvolutionClient;
   private instance: string;
@@ -56,19 +58,22 @@ export class WhatsappTransport implements Transport {
     return new WhatsappTransport(channel, contact.phone || contact.external_id);
   }
 
-  sendText(text: string, delayMs: number) {
+  async sendText(text: string, delayMs: number) {
+    await this.dispatchGuard?.();
     return this.client.sendText(this.instance, this.number, text, delayMs);
   }
 
   async sendImage(image: ImageAsset, caption: string, delayMs: number) {
     const buf = await fs.readFile(imageAbsolutePath(image));
     const ext = image.mime_type.split('/')[1] ?? 'jpg';
+    await this.dispatchGuard?.();
     return this.client.sendImage(this.instance, this.number, buf.toString('base64'), image.mime_type, `${image.code}.${ext}`, caption, delayMs);
   }
 
   /** PDF, Word, Excel, audio o video: WhatsApp los muestra como documento, nota de audio o video según el tipo. */
   async sendFile(file: OutgoingFile, caption: string, delayMs: number) {
     const buf = await fs.readFile(file.absPath);
+    await this.dispatchGuard?.();
     return this.client.sendMedia(this.instance, this.number, buf.toString('base64'), file.mime, file.name, caption, delayMs, file.kind);
   }
 

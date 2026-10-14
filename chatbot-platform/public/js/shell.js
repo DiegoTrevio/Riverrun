@@ -20,6 +20,7 @@ setInterval(() => { if (state.me && !document.hidden) refreshBell(); }, 20000);
 const SECTIONS = {
   agentes: ['home', 'agentes', 'asistentes', 'asistente', 'bot', 'channels', 'channel', 'conectar', 'inicio', 'probar'],
   conversations: ['conversations', 'conversation'],
+  contacts: ['contacts', 'contact'],
   agenda: ['agenda'],
   pipeline: ['pipeline'],
   automation: ['automation'],
@@ -94,6 +95,7 @@ export function shell(active, content) {
     h('div', { class: 'nav-list' },
       isAdmin() ? item('#/agentes', 'bot', 'Agentes', 'agentes') : null,
       item('#/conversations', 'chat', 'Conversaciones', 'conversations'),
+      item('#/contacts', 'contacts', 'Contactos', 'contacts'),
       item('#/agenda', 'calendar', 'Calendarios', 'agenda'),
       item('#/pipeline', 'pipeline', 'Oportunidades', 'pipeline'),
       isAdmin() ? item('#/automation', 'zap', 'Automatización', 'automation') : null,

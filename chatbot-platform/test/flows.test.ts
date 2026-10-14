@@ -216,17 +216,21 @@ t('secuencias: con la cuenta en pausa esperan (no se pierden) y siguen al reacti
 });
 
 t('si la IA no responde ni al reintentar, el equipo recibe un aviso (el cliente no queda en el olvido)', async () => {
+  await h.service.inbox.stop();
+  await h.service.queue.stop();
   const { ConversationQueue } = await import('../src/engine/queue.js');
   // La cola: falla, reintenta una vez y entonces avisa.
   const gaveUp: string[] = [];
   let runs = 0;
-  const q = new ConversationQueue(async () => { runs++; return { status: 'error' }; }, 2, 50, (id) => gaveUp.push(id));
-  q.schedule('conv-x', 0);
+  const q = new ConversationQueue(async () => { runs++; return { status: 'error' }; }, 2, 50, (id) => {gaveUp.push(id);}, 2);
+  const c = (await h.authed('GET', `/api/conversations?search=5215520000002`)).json()[0];
+  await q.schedule(c.id, 0);
   await waitFor(() => gaveUp.length === 1);
   assert.equal(runs, 2, 'un intento y un reintento');
+  await q.stop();
 
   // El servicio: aviso en el panel al equipo de la cuenta, con enlace a la conversación.
-  const c = (await h.authed('GET', `/api/conversations?search=5215520000002`)).json()[0];
+
   await pool.query(`UPDATE conversations SET status = 'bot' WHERE id = $1`, [c.id]);
   await (h.service as any).aiUnavailable(c.id);
   const equipo = await h.loginAs('equipo@hotel.mx', 'clave-equipo-1');

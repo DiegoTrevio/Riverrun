@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { config, semanticEnabledFor } from '../config.js';
+import { config } from '../config.js';
+import { semanticPolicy } from './semantic-policy.js';
 import { query, queryOne, withTransaction } from '../db.js';
 import { logEvent } from '../logs.js';
 import * as store from '../store/index.js';
@@ -11,7 +12,7 @@ const labels: Record<Kind,string> = { pending:'Documentos pendientes sin avance'
 export async function accountKnowledgeMetrics(accountId: string, now = new Date()) {
   const account = await store.getAccount(accountId);
   if (!account) throw new Error('Perfil no encontrado');
-  const enabled = semanticEnabledFor(accountId) && account.active && account.status !== 'paused' && (account.status !== 'trial' || !!account.trial_ends_at && new Date(account.trial_ends_at)>now);
+  const enabled = (await semanticPolicy(accountId)).preparing && account.active && account.status !== 'paused' && (account.status !== 'trial' || !!account.trial_ends_at && new Date(account.trial_ends_at)>now);
   const inventory = [];
   for (const bot of await store.listChatbots(accountId)) inventory.push(await knowledgeIndexStatus(bot));
   const pending = enabled ? inventory.reduce((n,r)=>n+r.pending_items,0) : 0;
@@ -27,9 +28,11 @@ export async function accountKnowledgeMetrics(accountId: string, now = new Date(
     FROM event_logs WHERE account_id=$1 AND message IN ('knowledge_search','knowledge_embedding') AND created_at > $2::timestamptz-interval '1 hour' AND created_at <= $2`,[accountId,now]);
   const usage = await queryOne(`SELECT count(*)::int AS runs, COALESCE(sum(cost_usd),0)::float8 AS recorded_usd,
     count(*) FILTER(WHERE cost_usd=0)::int AS zero_cost_runs FROM ai_runs WHERE account_id=$1 AND created_at > $2::timestamptz-interval '1 hour' AND created_at <= $2`,[accountId,now]);
-  const delivery = await queryOne(`SELECT count(*)::int AS failed_messages FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE c.account_id=$1 AND m.direction='out' AND m.status='failed' AND m.created_at > $2::timestamptz-interval '1 hour' AND m.created_at <= $2`,[accountId,now]);
+  const delivery = await queryOne(`SELECT count(*)::int AS failed_messages FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE c.account_id=$1 AND m.direction='out' AND m.status IN ('failed','uncertain') AND m.created_at > $2::timestamptz-interval '1 hour' AND m.created_at <= $2`,[accountId,now]);
+  const work=await queryOne(`SELECT count(*) FILTER(WHERE w.state='pending')::int AS queued_conversations,count(*) FILTER(WHERE w.state='dead')::int AS dead_conversations FROM conversation_work w JOIN conversations c ON c.id=w.conversation_id WHERE c.account_id=$1`,[accountId]);
+  const receipts=await queryOne(`SELECT count(*) FILTER(WHERE r.state='dead')::int AS dead_receipts FROM inbound_receipts r JOIN channels c ON c.id=r.channel_id WHERE c.account_id=$1`,[accountId]);
   return { enabled, available: inventory.every(r=>r.available), key_present: !!config.openai.apiKey, pending_items: pending, pending_signature: signature,
-    ...events, fallback_ratio: events!.attempts ? events!.fallbacks/events!.attempts : null, ...usage, ...delivery };
+    ...events, fallback_ratio: events!.attempts ? events!.fallbacks/events!.attempts : null, ...usage, ...delivery, ...work, ...receipts };
 }
 
 /** State, notifications and samples commit together. Row locks deduplicate replicas. */
@@ -47,7 +50,7 @@ async function recordAccount(accountId: string, metrics: Awaited<ReturnType<type
       fallback: metrics.enabled && metrics.attempts>=limits.minAttempts && metrics.attempts>0 && metrics.fallback_ratio!>limits.fallbackRatio,
       latency: metrics.enabled && ((metrics.attempts>=limits.minAttempts && metrics.attempts>0 && metrics.p95_ms>limits.latencyMs) || (metrics.embedding_attempts>=limits.minAttempts && metrics.embedding_attempts>0 && metrics.embedding_p95_ms>limits.latencyMs)),
       cost: (limits.hourlyUsd>0 && metrics.recorded_usd>limits.hourlyUsd) || metrics.unreported_embedding_costs>0,
-      delivery: metrics.failed_messages>0,
+      delivery: metrics.failed_messages>0 || metrics.dead_conversations>0 || metrics.dead_receipts>0,
       configuration: metrics.enabled && (!metrics.available || !metrics.key_present),
     };
     await client.query(`UPDATE knowledge_monitor_state SET checked_at=$2,pending_since=$3,pending_signature=$4,metrics=$5 WHERE account_id=$1`,[accountId,now,since,metrics.pending_signature,JSON.stringify(metrics)]);
@@ -61,7 +64,7 @@ async function recordAccount(accountId: string, metrics: Awaited<ReturnType<type
       let sent=0;
       if(due || recovered) {
         const title=(recovered?'Resuelto: ':'Aviso: ')+labels[kind];
-        const body=recovered ? 'La condición dejó de detectarse en la revisión actual. Consulta la supervisión para verificar el estado.' : `Pendientes: ${metrics.pending_items}. Errores de embeddings (1 h): ${metrics.embedding_errors}. Búsqueda por palabras: ${metrics.fallbacks}/${metrics.attempts}. p95 búsqueda: ${Math.round(metrics.p95_ms)} ms. p95 embeddings: ${Math.round(metrics.embedding_p95_ms)} ms. IA registrada (1 h): US$${Number(metrics.recorded_usd).toFixed(4)}. Embeddings sin costo reportado: ${metrics.unreported_embedding_costs}. Entregas fallidas: ${metrics.failed_messages}.`;
+        const body=recovered ? 'La condición dejó de detectarse en la revisión actual. Consulta la supervisión para verificar el estado.' : `Pendientes: ${metrics.pending_items}. Errores de embeddings (1 h): ${metrics.embedding_errors}. Búsqueda por palabras: ${metrics.fallbacks}/${metrics.attempts}. p95 búsqueda: ${Math.round(metrics.p95_ms)} ms. p95 embeddings: ${Math.round(metrics.embedding_p95_ms)} ms. IA registrada (1 h): US$${Number(metrics.recorded_usd).toFixed(4)}. Embeddings sin costo reportado: ${metrics.unreported_embedding_costs}. Entregas fallidas o inciertas: ${metrics.failed_messages}. Conversaciones en revisión: ${metrics.dead_conversations}. Recepciones en revisión: ${metrics.dead_receipts}.`;
         sent=(await client.query(`INSERT INTO notifications(account_id,user_id,kind,title,body,link)
           SELECT $1,id,'knowledge',$2,$3,$4 FROM users WHERE active AND (role='superadmin' OR (role='admin' AND account_id=$1)) RETURNING id`,[accountId,title,body,`#/logs?account_id=${accountId}`])).rowCount ?? 0;
       }

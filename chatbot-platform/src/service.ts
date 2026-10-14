@@ -1,5 +1,6 @@
 import { syncStaffEvent } from './integrations/staff-calendars.js';
 import { syncAppointment as syncOutlookAppointment } from './integrations/outlook.js';
+import { accountAi } from './ai/budget.js';
 import { syncAppointment } from './integrations/google.js';
 import crypto from 'node:crypto';
 import type { AiProvider } from './ai/provider.js';
@@ -26,6 +27,8 @@ import { Engine, type ProcessResult } from './engine/engine.js';
 import { deliver } from './integrations/webhooks.js';
 import { messageQuota, noticeMessagesReached } from './billing/limits.js';
 import { ConversationQueue } from './engine/queue.js';
+import { InboundQueue } from './engine/inbox.js';
+import { DeliveryUncertain,currentOperation } from './engine/coordination.js';
 import { PlaygroundTransport, type Transport } from './engine/transport.js';
 import { logEvent } from './logs.js';
 import * as store from './store/index.js';
@@ -52,6 +55,8 @@ function sameText(sent: string, echo: string) {
 }
 
 export class ChatService {
+  readonly inbox: InboundQueue;
+  get aiProvider() { return this.ai; }
   engine: Engine;
   queue: ConversationQueue;
   outbound: Outbound;
@@ -72,6 +77,7 @@ export class ChatService {
       pipeline: (conv) => this.pipelines.contextFor(conv),
       agenda: this.agenda,
       onEvent: (e) => this.automator.emit(e),
+      settleEvents: (id)=>this.automator.settle(id),
       onOutbound: (conv, msg) => this.automator.onOutbound(conv, msg),
       business: async (accountId) => {
         const st = await astore.getSettings(accountId);
@@ -99,7 +105,8 @@ export class ChatService {
         });
       },
     });
-    this.queue = new ConversationQueue((id, a) => this.runConversation(id, a.restarts), 2, 60_000, (id) => void this.aiUnavailable(id));
+    this.queue = new ConversationQueue((id, a) => this.runConversation(id, a.restarts), 2, config.queue.retryMs, (id) => this.aiUnavailable(id));
+    this.inbox = new InboundQueue((channel,msg)=>this.handleIncoming(channel,msg),channel=>this.automator.alertTeam(channel.account_id,{title:'⚠️ Recepción pendiente de revisión',body:'No se pudo completar la recepción de un mensaje. Revisa los trabajos pendientes de este perfil.',kind:'alert',link:'#/logs'}));
     this.scheduler = new Scheduler({
       automation_send: (p) => this.automator.runDelayedSend(p),
       flow_image: (p) => this.automator.runDeferredImage(p),
@@ -112,7 +119,7 @@ export class ChatService {
       appointment_reminder: (p) => this.agenda.sendReminder(p),
       campaign_start: (p) => this.campaigns.start(p.campaign_id),
       campaign_send: (p) => this.campaigns.sendOne(p),
-    });
+    },()=>this.automator.settleAll());
   }
 
   summarize(conversationId: string) {
@@ -171,6 +178,11 @@ export class ChatService {
    * correr varios procesos sin respuestas dobles, y si uno muere a la mitad otro retoma el trabajo.
    */
   private async runConversation(conversationId: string, restarts: number): Promise<ProcessResult> {
+    const incomplete = (await store.pendingInbound(conversationId)).filter(m=>m.meta?.receipt_ready === false);
+    if (incomplete.length) {
+      if (incomplete.some(m=>Date.now()-new Date(m.created_at).getTime()>30_000)) throw new DeliveryUncertain();
+      return {status:'busy'};
+    }
     if (!(await store.claimConversation(conversationId, this.instanceId, LEASE_SECONDS))) return { status: 'busy' };
     const renew = setInterval(() => void store.renewConversationLease(conversationId, this.instanceId, LEASE_SECONDS).catch(() => undefined), (LEASE_SECONDS / 3) * 1000);
     try {
@@ -184,7 +196,7 @@ export class ChatService {
   /** Busca mensajes sin responder que nadie atiende (temporizador perdido o proceso caído) y los programa. */
   async sweepPending(): Promise<number> {
     const ids = (await store.recoverableConversations()).filter((id) => !this.queue.has(id));
-    for (const id of ids) this.queue.schedule(id, 0);
+    for (const id of ids) await this.queue.schedule(id, 0);
     return ids.length;
   }
 
@@ -196,6 +208,8 @@ export class ChatService {
     }, intervalMs);
     this.sweeper.unref();
   }
+
+  stopSweeper() { clearInterval(this.sweeper); }
 
   private async runClaimed(conversationId: string, restarts: number): Promise<ProcessResult> {
     const conv = await store.getConversation(conversationId);
@@ -228,15 +242,16 @@ export class ChatService {
       const [contact, channel] = await Promise.all([store.getContact(conv.contact_id), store.getChannel(conv.channel_id)]);
       if (!channel || channel.type === 'playground') return;
       const who = contact?.name || contact?.push_name || (contact?.phone ? `+${contact.phone}` : 'Un cliente');
-      // Las fotos por palabra del cliente o de bienvenida no dependen de la IA: salen aunque ella no responda.
-      await this.engine.sendRuleImagesWithoutAi(conversationId).catch((e) => logEvent({ level: 'error', source: 'engine', message: `No se pudieron programar las fotos por regla sin IA: ${e?.message ?? e}`, conversationId }));
-      await logEvent({ level: 'error', source: 'ai', message: 'La IA no pudo responder tras reintentar; se avisó al equipo', accountId: conv.account_id, channelId: conv.channel_id, conversationId });
+      const work=(await query('SELECT reason FROM conversation_work WHERE conversation_id=$1',[conversationId]))[0];
+      if(!work || work.reason==='processing_error') await this.engine.sendRuleImagesWithoutAi(conversationId).catch(()=>undefined);
+      await logEvent({ level: 'error', source: 'ai', message: 'Un cliente espera respuesta; se avisó al equipo', accountId: conv.account_id, channelId: conv.channel_id, conversationId });
       await this.automator.alertTeam(conv.account_id, {
         title: '⚠️ Un cliente espera respuesta',
-        body: `${who} (${channel.name}) escribió y el asistente no pudo responder (servicio de IA no disponible). Contéstale desde el panel.`,
+        body: `${who} (${channel.name}) escribió y el asistente no pudo responder o se interrumpió una operación. Revisa la conversación y sus envíos pendientes desde el panel.`,
         link: `#/conversation/${conversationId}`,
         conversationId,
         kind: 'ai_error',
+        roles: ['admin','agent'],
       });
     } catch (e: any) {
       await logEvent({ level: 'error', source: 'system', message: `No se pudo avisar de la falla de IA: ${e?.message ?? e}`, conversationId });
@@ -272,7 +287,7 @@ export class ChatService {
         const audio = await adapter.downloadAudio(channel, msg);
         if (audio) {
           const started = Date.now();
-          const result = await this.ai.transcribe(audio.buffer, audio.mimeType);
+          const result = await accountAi(this.ai,channel.account_id,bot?.id??null,'transcription').transcribe(audio.buffer, audio.mimeType);
           const text = typeof result === 'string' ? result : result.content;
           if (text) content = `[Nota de voz del cliente, transcrita]: "${text}"`;
           // Se registra para el costo por cuenta. Sin duración de la plataforma, se estima (~2 KB por segundo de Opus).
@@ -315,6 +330,7 @@ export class ChatService {
     }
     const meta: Record<string, unknown> = stale ? { name: msg.displayName, stale: true } : msg.captureOnly ? { name: msg.displayName, held: 'limite_de_correos' } : { name: msg.displayName };
     if (mediaError) meta.media_error = mediaError;
+    if (triggers) meta.receipt_ready = false;
     const inserted = await store.insertMessage({
       conversation_id: conv.id,
       direction: 'in',
@@ -323,6 +339,7 @@ export class ChatService {
       content,
       external_message_id: msg.messageId,
       processed: !triggers,
+      queueDelayMs: triggers ? (bot?.ai.debounce_seconds ?? 3)*1000 : undefined,
       meta,
       media,
     }).catch(async (e) => {
@@ -386,10 +403,14 @@ export class ChatService {
           kind: 'safety',
         }).catch(() => undefined);
       }
+      await this.automator.settle(conv.id);
       await store.markProcessed(conv.id, inserted.id);
+      await store.updateMessage(inserted.id,{meta:{receipt_ready:true}});
       return { conversationId: conv.id, messageId: inserted.id };
     }
-    this.queue.schedule(conv.id, bot!.ai.debounce_seconds * 1000);
+    await this.automator.settle(conv.id);
+    await store.updateMessage(inserted.id, {meta:{receipt_ready:true}});
+    await this.queue.schedule(conv.id, bot!.ai.debounce_seconds * 1000);
     return { conversationId: conv.id, messageId: inserted.id };
   }
 
@@ -409,7 +430,7 @@ export class ChatService {
   }
 
   /** Aplica los activadores/desactivadores a un mensaje del cliente. Devuelve si la IA debe responder. */
-  private async applyGate(bot: Chatbot, channel: Channel, conv: Conversation, contact: Contact, text: string, transport?: Transport): Promise<boolean> {
+  async applyGate(bot: Chatbot, channel: Channel, conv: Conversation, contact: Contact, text: string, transport?: Transport, engine = this.engine): Promise<boolean> {
     const g = gate(bot.rules.activation, conv, text);
     if (g.change === 'on') {
       await store.setAgentOn(conv.id);
@@ -423,7 +444,7 @@ export class ChatService {
         await store.setAgentOff(conv.id, g.reason, null);
         return false;
       }
-      await this.engine.deactivate(bot, conv, contact, t, g.reason);
+      await engine.deactivate(bot, conv, contact, t, g.reason);
     }
     return g.reply;
   }
@@ -432,11 +453,13 @@ export class ChatService {
   /** Pasa la conversación a una persona. Queda en el contacto quién la tomó y desde dónde (teléfono, panel…). */
   async takeover(conversationId: string, reason: string, byUserId?: string, via: store.HandoffVia = byUserId ? 'panel' : 'telefono') {
     const changed = await store.takeConversation(conversationId, reason);
+    await query('UPDATE conversations SET control_version=control_version+1 WHERE id=$1',[conversationId]);
     await store.markAllProcessed(conversationId);
     if (changed) {
       await store.markHandoff(changed.contact_id, byUserId ?? null, via);
       this.automator.emit({ type: 'handoff', conversationId, byUserId });
     }
+    if(currentOperation()?.startsWith('receipt:')) await this.automator.settle(conversationId);
     return changed ?? await store.getConversation(conversationId);
   }
 
@@ -557,7 +580,7 @@ export class ChatService {
     const bot = conv.chatbot_id ? await store.getChatbot(conv.chatbot_id) : null;
     const transport = channel.type === 'playground' ? new PlaygroundTransport() : this.transportFor(channel, contact);
     // Quién lo envió queda en el mensaje (las estadísticas por persona lo cuentan así).
-    const sent = await this.engine.sendOut(bot, conv, transport, { sender: 'human', text, delay: 0, meta: { source: 'panel', ...(byUserId ? { user_id: byUserId } : {}) } });
+    const sent = await this.queue.exclusive((await store.getConversation(conv.id))?.status==='human'?`human:${conv.id}`:conv.id,()=>this.engine.sendOut(bot, conv, transport, { sender: 'human', text, delay: 0, meta: { source: 'panel', ...(byUserId ? { user_id: byUserId } : {}) } }));
     if (!sent) throw new Error('No se pudo enviar el mensaje (revisa los registros)');
     return sent;
   }
@@ -575,32 +598,21 @@ export class ChatService {
     const bot = conv.chatbot_id ? await store.getChatbot(conv.chatbot_id) : null;
     const transport = channel.type === 'playground' ? new PlaygroundTransport() : this.transportFor(channel, contact);
     await beforeSend?.();
-    const sent = await this.engine.sendOut(bot, conv, transport, { sender: 'human', text: image.caption, image, delay: 0, meta: { source: 'panel', ...(byUserId ? { user_id: byUserId } : {}) } });
+    const sent = await this.queue.exclusive((await store.getConversation(conv.id))?.status==='human'?`human:${conv.id}`:conv.id,()=>this.engine.sendOut(bot, conv, transport, { sender: 'human', text: image.caption, image, delay: 0, meta: { source: 'panel', ...(byUserId ? { user_id: byUserId } : {}) } }));
     if (!sent) throw new Error('No se pudo enviar la foto (revisa los registros)');
     return sent;
   }
 
   /** Al arrancar: retoma conversaciones con mensajes sin responder de los últimos minutos. */
   async resumePending() {
-    const rows = await query<{ conversation_id: string }>(
-      `SELECT DISTINCT m.conversation_id FROM messages m
-         JOIN conversations c ON c.id = m.conversation_id
-         JOIN channels ch ON ch.id = c.channel_id
-       WHERE m.processed = false AND m.direction = 'in' AND ch.type <> 'playground' AND m.created_at > now() - interval '15 minutes'`,
-    );
-    for (const r of rows) this.queue.schedule(r.conversation_id, 2000);
-    // Los mensajes de hace más de 15 minutos no se contestan (sería fuera de tiempo), pero el equipo sí debe enterarse.
-    const stale = await query<{ account_id: string; n: number }>(
-      `SELECT ch.account_id, count(*)::int AS n FROM messages m
-         JOIN conversations c ON c.id = m.conversation_id JOIN channels ch ON ch.id = c.channel_id
-       WHERE m.processed = false AND m.direction = 'in' AND ch.type <> 'playground' AND m.created_at <= now() - interval '15 minutes'
-       GROUP BY ch.account_id`,
-    );
-    for (const s of stale) {
-      await logEvent({ level: 'warn', source: 'engine', message: `Reinicio: ${s.n} mensajes llevan más de 15 minutos sin respuesta y no se contestarán automáticamente`, accountId: s.account_id, details: { count: s.n } });
-      await this.automator.alertTeam(s.account_id, { title: '⚠️ Mensajes sin respuesta tras un reinicio', body: `${s.n} mensajes de clientes llegaron hace más de 15 minutos y el asistente no los contestará. Revísalos en Conversaciones.`, kind: 'alert' }).catch(() => undefined);
-    }
-    await query(`UPDATE messages SET processed = true WHERE processed = false AND created_at <= now() - interval '15 minutes'`);
+    const rows = await query<{conversation_id:string;state:string}>(`INSERT INTO conversation_work(conversation_id,run_at,state,reason)
+      SELECT m.conversation_id,now()+interval '2 seconds',
+        CASE WHEN max(m.created_at)<now()-interval '15 minutes' THEN 'dead' ELSE 'pending' END,
+        CASE WHEN max(m.created_at)<now()-interval '15 minutes' THEN 'stale_pending' ELSE NULL END FROM messages m
+      JOIN conversations c ON c.id=m.conversation_id JOIN channels ch ON ch.id=c.channel_id
+      WHERE NOT m.processed AND m.direction='in' AND ch.type<>'playground'
+      GROUP BY m.conversation_id ON CONFLICT(conversation_id) DO UPDATE SET state=EXCLUDED.state,reason=EXCLUDED.reason,run_at=EXCLUDED.run_at WHERE conversation_work.state='done' RETURNING conversation_id,state`);
+    for(const row of rows.filter(r=>r.state==='dead')) await this.aiUnavailable(row.conversation_id);
     return rows.length;
   }
 }

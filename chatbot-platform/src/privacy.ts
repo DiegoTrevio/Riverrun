@@ -47,6 +47,8 @@ export async function eraseContact(contactId: string, guard: { accountId?: strin
       [contact.account_id, contactId, convIds],
     );
     await client.query(`DELETE FROM email_threads WHERE channel_id = $1 AND address = lower($2)`, [contact.channel_id, contact.external_id]);
+    await client.query('DELETE FROM inbound_receipts WHERE channel_id=$1 AND external_id=$2',[contact.channel_id,contact.external_id]);
+    await client.query('DELETE FROM query_embedding_cache WHERE account_id=$1',[contact.account_id]);
     await client.query(`UPDATE appointments SET customer_name = '', customer_phone = '', notes = '' WHERE contact_id = $1 OR conversation_id = ANY($2)`, [contactId, convIds]);
     // Las rutas de sus archivos se leen antes de borrar el contacto: al borrarlo, esas filas desaparecen con los mensajes.
     const files = convIds.length ? (await client.query<{ file_path: string }>(`SELECT mm.file_path FROM message_media mm JOIN messages m ON m.id = mm.message_id WHERE m.conversation_id = ANY($1)`, [convIds])).rows.map((r) => r.file_path) : [];
@@ -64,6 +66,9 @@ export async function eraseContact(contactId: string, guard: { accountId?: strin
  * Devuelve cuántos se borraron. Idempotente; se ejecuta periódicamente.
  */
 export async function applyRetention(now = new Date()): Promise<{ accounts: number; messages: number; contacts: number }> {
+  await query(`DELETE FROM query_embedding_cache WHERE ctid IN (SELECT ctid FROM query_embedding_cache WHERE expires_at<$1 LIMIT 10000)`,[now]);
+  await query(`DELETE FROM embedding_usage WHERE day<($1::timestamptz AT TIME ZONE 'UTC')::date-7`,[now]);
+  await query(`DELETE FROM inbound_receipts WHERE state='done' AND created_at<$1::timestamptz-interval '30 days'`,[now]);
   await query(`DELETE FROM webhook_deliveries WHERE created_at < $1`, [new Date(now.getTime() - 30 * 86400_000)]); // la bitácora de entregas dura 30 días
   const accounts = await query<{ id: string; name: string; settings: unknown }>(`SELECT id, name, settings FROM accounts WHERE active`);
   let messagesDeleted = 0, contactsDeleted = 0, touched = 0;
