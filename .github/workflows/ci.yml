@@ -54,12 +54,24 @@ jobs:
         run: npx playwright install --with-deps chromium
       - name: Regresión UX y accesibilidad
         run: npm run test:ux
+      - name: Activación semántica en navegador y aislamiento de base
+        run: npm run test:semantic:ux
+      - name: Agent drafts, publication and Promptfoo UX
+        run: npm run test:agent:ux
+      - name: Contact workspace and account AI budget UX
+        run: npm run test:contact:ux
       - name: Guardar evidencia UX
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ux-test-results
           path: chatbot-platform/data/ux-test-results
+      - name: Guardar evidencia de activación semántica
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: semantic-ux-results
+          path: chatbot-platform/data/semantic-ux-results
       - name: Dependencias vulnerables (solo las de producción)
         run: npm audit --omit=dev --audit-level=high
 

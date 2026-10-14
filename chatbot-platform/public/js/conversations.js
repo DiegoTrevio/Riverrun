@@ -1,3 +1,5 @@
+import { workspaceTabs } from './contact-workspace.js';
+import { workRecovery } from './work-recovery.js';
 import { dataLabel, flowCard } from './bot.js';
 import { channelIcon } from './channels.js';
 import { api, area, check, clone, dialog, field, fill, fmtDate, h, lines, poll, run, select, state, text, toast, confirmAction, ask } from './core.js';
@@ -13,7 +15,7 @@ const STATUS_BADGE = { bot: ['green', 'Bot'], human: ['orange', 'Humano'], close
 const REQUEST_REASON = { inicio: 'primer contacto', tiempo: 'volvió después de un tiempo', contenido: 'pidió otra vez lo mismo', reapertura: 'se reabrió la conversación', campaña: 'una campaña', reinicio: 'se reinició' };
 
 /** Solicitudes del cliente en esta conversación: cada vez que volvió por lo mismo, con su resultado y sus respuestas. */
-function requestsCard(list = []) {
+export function requestsCard(list = []) {
   if (list.length < 2) return null;
   return h('details', { class: 'small', open: true }, h('summary', {}, `Solicitudes: ${list.length} (la actual es la ${list.length}.ª)`),
     h('ul', { style: 'margin:6px 0;padding-left:18px' }, [...list].reverse().map((r) => h('li', {},
@@ -35,7 +37,7 @@ function handoffLine(ct, by) {
 }
 
 /** Pendientes y notas del cliente: lo que falta por hacer con esa persona, o dónde se quedó la conversación. */
-function tasksCard(data, c, ct, reload, draft) {
+export function tasksCard(data, c, ct, reload, draft) {
   let adding = false;
   const tasks = data.tasks || [];
   const open = tasks.filter((t) => t.kind === 'pendiente' && t.status === 'abierta').length;
@@ -117,7 +119,7 @@ export async function viewConversations(root, params) {
         const [cls, label] = STATUS_BADGE[c.status] || ['', c.status];
         return h('tr', { class: 'click', onclick: () => (location.hash = `#/conversation/${c.id}`) },
           h('td', {}, h('a', { href: `#/conversation/${c.id}` }, h('strong', {}, c.name || c.push_name || (c.channel_type === 'webchat' ? 'Visitante del sitio' : 'Sin nombre'))), h('div', { class: 'muted small' }, c.phone ? `+${c.phone}` : '')),
-          h('td', {}, channelIcon(c.channel_type), ' ', c.channel_name, h('div', { class: 'muted small' }, c.chatbot_name || 'sin chatbot')),
+          h('td', {}, channelIcon(c.channel_type, c.channel_platform), ' ', c.channel_name, h('div', { class: 'muted small' }, c.chatbot_name || 'sin chatbot')),
           showAccount ? h('td', { class: 'small' }, c.account_name) : null,
           h('td', {}, h('span', { class: `badge ${cls}` }, label), c.status === 'human' && c.handoff_reason ? h('div', { class: 'muted small' }, c.handoff_reason) : null),
           h('td', { class: 'small' }, c.assigned_user_id ? `👤 ${c.assigned_name || c.assigned_email}` : h('span', { class: 'muted' }, '—')),
@@ -147,6 +149,7 @@ export async function viewConversations(root, params) {
     : null;
   root.append(
     h('div', { class: 'row between' }, h('h1', {}, 'Conversaciones'), exportMenu),
+    workspaceTabs('inbox'),
     h('div', { class: 'card row' },
       h('div', { class: 'filter' }, field('Agente', select(f, 'chatbot_id', [['', 'Todos los chatbots'], ...bots.map((b) => [b.id, b.name])], apply))),
       h('div', { class: 'filter' }, field('Plataforma', select(f, 'channel_type', [['', 'Todas las plataformas'], ...types], apply))),
@@ -321,7 +324,7 @@ export async function viewConversation(root, id, opts = {}) {
           c.status !== 'bot' ? h('button', { class: 'primary', onclick: async () => { if (!(await run(() => api('POST', `/api/conversations/${id}/release`), 'El bot vuelve a responder'))) return; load(true); } }, 'Devolver al bot') : null,
           c.status !== 'closed' ? h('button', { onclick: async () => { if (!(await run(() => api('POST', `/api/conversations/${id}/close`), 'Cerrada'))) return; load(true); } }, 'Cerrar') : null)),
       assignRow(data),
-      h('p', { class: 'muted' }, channelIcon(data.channel?.type), ' ', data.channel?.name, ' · ', data.chatbot?.name || 'sin chatbot', ct.phone ? ` · +${ct.phone}` : '', c.status === 'human' && c.handoff_reason ? ` · Motivo: ${c.handoff_reason}` : ''),
+      h('p', { class: 'muted' }, channelIcon(data.channel?.type, data.channel?.platform), ' ', data.channel?.name, ' · ', data.chatbot?.name || 'sin chatbot', ct.phone ? ` · +${ct.phone}` : '', c.status === 'human' && c.handoff_reason ? ` · Motivo: ${c.handoff_reason}` : ''),
       handoffLine(ct, data.handoff_by_user),
       c.status === 'bot' && data.agent && !data.agent.on
         ? h('div', { class: 'card legend row between' },
@@ -340,7 +343,7 @@ export async function viewConversation(root, id, opts = {}) {
       firstMessageId = Number(messages[0]?.id);
       messageSignature = signature;
       fill(chat, ...messages.map((m) => {
-        const cls = ['bubble', m.direction === 'in' ? 'in' : 'out', m.sender === 'human' ? 'human' : '', m.status === 'failed' ? 'failed' : ''].join(' ');
+        const cls = ['bubble', m.direction === 'in' ? 'in' : 'out', m.sender === 'human' ? 'human' : '', ['failed','uncertain'].includes(m.status) ? 'failed' : ''].join(' ');
         const who = m.sender === 'human' ? '👤 equipo' : m.sender === 'bot' ? '🤖 bot' : '';
         return h('div', { class: cls },
           m.image_id ? h('img', { src: `/api/images/${m.image_id}/file`, alt: m.image_name || '' }) : null,
@@ -349,7 +352,7 @@ export async function viewConversation(root, id, opts = {}) {
           m.media_kind ? customerMedia(m) : null,
           m.meta?.media_error ? h('div', { class: 'small muted' }, `⚠️ ${m.meta.media_error}`) : null,
           m.content || null,
-          h('div', { class: 'meta' }, [who, fmtDate(m.created_at), m.status === 'failed' ? '⚠️ no enviado' : '', m.meta?.fallback ? 'respaldo' : ''].filter(Boolean).join(' · ')));
+          h('div', { class: 'meta' }, [who, fmtDate(m.created_at), m.status === 'failed' ? '⚠️ no enviado' : m.status==='uncertain'?'⚠️ entrega sin confirmar':m.status==='cancelled'?'cancelado':'', m.meta?.fallback ? 'respaldo' : ''].filter(Boolean).join(' · ')));
       }));
       chat.scrollTop = prepended ? previousTop + Math.max(0, chat.scrollHeight - previousHeight) : atBottom || firstRender ? chat.scrollHeight : previousTop;
     }
@@ -440,6 +443,7 @@ export async function viewConversation(root, id, opts = {}) {
       await saveContact(merged, current.conversation.data_version);
     };
     fill(side, sideHint,
+      h('a',{class:'btn',href:`#/contact/${ct.id}`},'Ver ficha del contacto'),
       (refreshTasks(), tasksBox),
       h('div', { class: 'card', id: 'customer-data', tabindex: '-1' },
         h('h2', { style: 'margin-top:0' }, 'Datos del cliente'),
@@ -503,6 +507,7 @@ export async function viewConversation(root, id, opts = {}) {
   root.append(
     opts.embedded ? null : h('a', { href: '#/conversations' }, '← Conversaciones'),
     header,
+    workRecovery(id),
     h('div', { class: 'row chat-shortcuts' }, [['customer-data', 'Datos del cliente'], ['conversation-summary', 'Resumen'], ['conversation-appointments', 'Citas y seguimientos']].map(([target, label]) => h('button', { class: 'small', onclick: () => { const el = document.getElementById(target); if (!el) return; if (el.tagName === 'DETAILS') el.open = true; el.scrollIntoView({ block: 'start' }); el.focus({ preventScroll: true }); } }, label))),
     h('div', { class: 'split' },
       h('div', { class: 'card' }, older, chat, h('div', { class: 'composer' }, input, h('button', { onclick: togglePhotos, title: 'Enviar una foto del catálogo' }, '📷 Foto'), sendButton),

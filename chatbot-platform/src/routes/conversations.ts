@@ -1,8 +1,9 @@
+import { contactWorkspaceRoutes } from './contact-workspace.js';
 import fs from 'node:fs';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { assertAccount, contactFor, conversationFor, HttpError, scopeAccount } from '../access.js';
-import { query } from '../db.js';
+import { assertAccount, contactFor, conversationFor, HttpError, scopeAccount, requireRole } from '../access.js';
+import { query, withTransaction } from '../db.js';
 import { agentStatus } from '../engine/activation.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
@@ -20,6 +21,32 @@ import { inboundAbsolutePath, safeFileName } from '../channels/media.js';
 
 /** Conversaciones y contactos: disponible para administradores y agentes de la cuenta. */
 export async function conversationRoutes(api: FastifyInstance, service: ChatService) {
+  await contactWorkspaceRoutes(api);
+  api.get('/api/conversations/:cid/work',async(req:any)=>{
+    const conv=await conversationFor(req.user,req.params.cid);
+    const work=(await query('SELECT state,run_at,attempts,restarts,reason,updated_at FROM conversation_work WHERE conversation_id=$1',[conv.id]))[0]??null;
+    const deliveries=await query(`SELECT message_id,state,updated_at FROM delivery_attempts WHERE conversation_id=$1 AND state IN ('sending','uncertain') ORDER BY updated_at DESC LIMIT 50`,[conv.id]);
+    const pending=(await store.pendingInbound(conv.id)).map(m=>m.id);
+    return {work,deliveries,review_up_to:pending.at(-1)??null};
+  });
+  api.post('/api/conversations/:cid/work/recover',{preHandler:requireRole('admin')},async(req:any)=>{
+    const conv=await conversationFor(req.user,req.params.cid);
+    const body=parse(z.object({action:z.enum(['retry','acknowledge']),review_up_to:z.number().int().positive().optional()}),req.body);
+    await service.queue.exclusive(conv.id,()=>withTransaction(async client=>{
+      const job=(await client.query('SELECT * FROM conversation_work WHERE conversation_id=$1 FOR UPDATE',[conv.id])).rows[0];
+      if(!job || job.state!=='dead') throw new HttpError(409,'El trabajo no está en la bandeja de fallos.');
+      const pending=(await client.query(`SELECT id FROM messages WHERE conversation_id=$1 AND direction='in' AND NOT processed ORDER BY id`,[conv.id])).rows;
+      if(body.action==='retry') {
+        if(job.reason!=='processing_error') throw new HttpError(409,'Revisa primero la conversación y confirma los mensajes atendidos; repetir este trabajo podría duplicar un envío.');
+        await client.query(`UPDATE conversation_work SET state='pending',attempts=0,restarts=0,run_at=now(),reason=NULL,updated_at=now() WHERE conversation_id=$1`,[conv.id]);
+      } else {
+        if(!body.review_up_to || body.review_up_to!==pending.at(-1)?.id) throw new HttpError(409,'Llegaron mensajes nuevos. Revisa la conversación de nuevo.');
+        await client.query(`UPDATE messages SET processed=true WHERE conversation_id=$1 AND direction='in' AND id<=$2`,[conv.id,body.review_up_to]);
+        await client.query(`UPDATE conversation_work SET state='done',reason='reviewed_by_admin',updated_at=now() WHERE conversation_id=$1`,[conv.id]);
+      }
+    }));
+    return {ok:true};
+  });
   api.get('/api/conversations', async (req: any) => {
     const q = req.query as Record<string, string | undefined>;
     const params: unknown[] = [];
@@ -58,7 +85,7 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
     const rows = await query<Record<string, any>>(
       `SELECT c.id, c.account_id, c.chatbot_id, c.channel_id, c.status, c.handoff_reason, c.last_message_at, c.created_at, c.assigned_user_id, au.name AS assigned_name, au.email AS assigned_email,
               ct.id AS contact_id, ct.name, ct.push_name, ct.phone, ct.external_id,
-              ch.type AS channel_type, ch.name AS channel_name, b.name AS chatbot_name, a.name AS account_name,
+              ch.type AS channel_type, ch.config->>'platform' AS channel_platform, ch.name AS channel_name, b.name AS chatbot_name, a.name AS account_name,
               ${paged ? `to_char(coalesce(c.last_message_at, c.created_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS page_cursor_at,` : ''}
               (SELECT content FROM messages m WHERE m.conversation_id = c.id ORDER BY id DESC LIMIT 1) AS last_message,
               (SELECT direction FROM messages m WHERE m.conversation_id = c.id ORDER BY id DESC LIMIT 1) AS last_direction,
@@ -112,7 +139,7 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
       chatbot: bot ? { id: bot.id, name: bot.name, data_fields: bot.data_fields, flow: bot.flow } : null,
       /** Asistente en esta conversación: activo, en pausa (motivo) o esperando su palabra de activación. */
       agent: bot ? agentStatus(bot, conv) : null,
-      channel: channel ? { id: channel.id, name: channel.name, type: channel.type } : null,
+      channel: channel ? { id: channel.id, name: channel.name, type: channel.type, platform: channel.type === 'zernio' ? channel.config.platform : undefined } : null,
       assignee: conv.assigned_user_id ? await store.getUserBasic(conv.assigned_user_id) : null,
       /** Persona del equipo que tomó la conversación del contacto por última vez (si fue alguien). */
       handoff_by_user: contact?.handoff_by ? await store.getUserBasic(contact.handoff_by) : null,

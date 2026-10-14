@@ -1,3 +1,4 @@
+import { accountAi } from '../ai/budget.js';
 import { z } from 'zod';
 import type { AiProvider } from '../ai/provider.js';
 import { config } from '../config.js';
@@ -75,7 +76,7 @@ async function generate(ai: AiProvider, id: string) {
     if (!messages.length && !first) break;
     first = false;
     const transcript = messages.map((m) => `[${m.id}] ${m.direction === 'in' ? 'Cliente' : m.sender === 'human' ? 'Asesor' : 'Asistente'} (${m.type}): ${m.content}`).join('\n');
-    const result = await ai.complete({
+    const result = await accountAi(ai, conv.account_id, conv.chatbot_id, 'summary').complete({
       model: config.openai.summaryModel || bot?.ai.model || config.openai.defaultModel,
       temperature: 0.2, max_tokens: 6000, json_schema: { name: 'conversation_report', schema: jsonSchema },
       messages: [

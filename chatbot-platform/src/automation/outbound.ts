@@ -1,3 +1,5 @@
+import { setControlVersion } from '../engine/coordination.js';
+import { queryOne } from '../db.js';
 import { messageQuota } from '../billing/limits.js';
 import { attachmentAbsolutePath } from '../attachments.js';
 import { CAPTION_MAX, PlaygroundTransport, type OutgoingFile } from '../engine/transport.js';
@@ -104,11 +106,20 @@ export class Outbound {
     const captionFooter = footer && !text ? footer : '';
 
     const transport = channel.type === 'playground' ? new PlaygroundTransport() : this.chat.transportFor(channel, contact);
-    const meta = { source: o.source, ...o.meta };
+    const meta = { ...o.meta,source: o.source,transactional:o.transactional===true, allow_when_human: o.allowWhenHuman === true, allow_when_closed: true };
     // Un envío que empieza el recorrido en una etapa forma parte de ese recorrido (su foto cuenta como ya enviada).
     const journeyStart = o.flowStep ? await store.dbNow() : undefined;
     // Nunca en paralelo con una respuesta del bot en la misma conversación.
+    let blocked='';
     const ok = await this.chat.queue.exclusive(conv.id, async () => {
+      const [latestConv,latestChannel,latestContact]=await Promise.all([store.getConversation(conv.id),store.getChannel(channel.id),store.getContact(contact.id)]);
+      if(!latestConv||!latestChannel?.active||latestChannel.account_active===false) blocked='canal o cuenta inactivos';
+      else if(latestConv.status==='human'&&!o.allowWhenHuman) blocked='una persona está atendiendo la conversación';
+      else if(latestContact?.opted_out&&!o.transactional) blocked='el cliente se dio de baja';
+      else if(promotional&&(await astore.getSettings(conv.account_id)).consent.require_for_campaigns&&!latestContact?.consent_at) blocked='el cliente no ha aceptado recibir promociones';
+      if(blocked) return false;
+      const fresh=await queryOne('SELECT control_version FROM conversations WHERE id=$1',[conv.id]);
+      if(fresh) setControlVersion(Number(fresh.control_version));
       if (image) {
         // Texto y foto juntos: un solo mensaje con el texto como pie (sin texto, el pie de la foto). Un texto que no
         // cabe como pie sale antes, aparte, y la foto después con su propio pie.
@@ -139,7 +150,7 @@ export class Outbound {
       }
       return true;
     });
-    if (!ok) return { sent: false, reason: 'la plataforma rechazó el envío (ver registros)' };
+    if (!ok) return { sent: false, reason: blocked||'la plataforma rechazó el envío (ver registros)' };
     // El asistente continúa el recorrido desde la etapa indicada cuando el cliente responda.
     const steps = bot?.flow.steps.length ?? 0;
     // Empieza un recorrido nuevo en esa etapa: si la conversación estaba cerrada, al contestar el cliente no se reinicia.
