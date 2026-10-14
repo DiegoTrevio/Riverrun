@@ -68,7 +68,7 @@ t('registra uso alternativo, latencia y costos; aplica mínimos de muestras',asy
 });
 
 t('costos no reportados provocan aviso aunque la contabilidad use una estimación',async()=>{
- await indexKnowledge(bot,{...fake,embed:async(texts:string[],model:string)=>{const r=await fake.embed(texts,model);return {...r,cost_usd:undefined};}});
+ await indexKnowledge(bot,{...fake,embed:async(texts:string[],model:string)=>{const r=await fake.embed(texts,model);return {...r,cost_usd:undefined};}},Infinity,{retryNow:true});
  const metrics=await accountKnowledgeMetrics(a.id,new Date(now.getTime()+22*60000));
  assert.equal(metrics.unreported_embedding_costs,1);
 });

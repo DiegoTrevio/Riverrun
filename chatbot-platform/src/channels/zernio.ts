@@ -44,6 +44,7 @@ type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
 /** Cliente mínimo. No reintenta envíos: uno que Zernio aceptó y luego falló podría duplicarse. */
 export class ZernioClient {
+  beforeRequest?:()=>Promise<void>;
   constructor(private apiKey: string, private base = config.zernioApiUrl) {}
 
   async call<T = any>(method: Method, path: string, body?: unknown): Promise<T> {
@@ -65,7 +66,8 @@ export class ZernioClient {
     return data as T;
   }
 
-  private send(method: Method, path: string, body?: unknown) {
+  private async send(method: Method, path: string, body?: unknown) {
+    await this.beforeRequest?.();
     return fetch(`${this.base}${path}`, {
       method,
       headers: { authorization: `Bearer ${this.apiKey}`, ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
@@ -193,6 +195,7 @@ async function download(channel: Channel, url: string | undefined): Promise<{ bu
 const ATTACHMENT_TYPE: Record<OutgoingFile['kind'], string> = { image: 'image', video: 'video', audio: 'audio', document: 'file' };
 
 class ZernioTransport implements Transport {
+  setDispatchGuard(guard:()=>Promise<void>){this.client.beforeRequest=guard;}
   kind = 'zernio' as const;
   private client: ZernioClient;
   private base: string;

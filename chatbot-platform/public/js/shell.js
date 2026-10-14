@@ -23,7 +23,7 @@ const setAdvanced = (on) => { try { localStorage.setItem('cp-advanced', on ? '1'
 function simpleLinks(link) {
   return [
     link('#/agentes', '🤖 Agentes', 'agentes'),
-    link('#/conversations', '💬 Conversaciones', 'conversations'),
+    link('#/conversations', '💬 Conversaciones', ['conversations','conversation','contacts','contact']),
     link('#/pipeline', '📊 Pipeline', 'pipeline'),
     link('#/agenda', '📅 Agenda', 'agenda'),
     link('#/ajustes', '⚙️ Ajustes', 'ajustes'),
@@ -34,7 +34,7 @@ export function shell(active, content) {
   refreshBell();
   if (['home', 'asistentes', 'asistente', 'bot', 'channels', 'channel', 'conectar', 'inicio', 'probar'].includes(active)) active = 'agentes';
   const simple = isAdmin() && !isSuper() && !isAdvanced();
-  const link = (href, label, key) => h('a', { href, class: active === key ? 'active' : '', 'aria-current': active === key ? 'page' : null }, label);
+  const link = (href, label, key) => h('a', { href, class: (Array.isArray(key)?key.includes(active):active===key) ? 'active' : '', 'aria-current': (Array.isArray(key)?key.includes(active):active===key) ? 'page' : null }, label);
   const navGroup = (label, keys, links) => h('details', { class: 'nav-group', open: keys.includes(active) },
     h('summary', { class: keys.includes(active) ? 'active' : '' }, label, label === 'Conversaciones' ? [' ', bell] : null), h('div', {}, links));
   const { user, account } = state.me;
@@ -44,10 +44,11 @@ export function shell(active, content) {
         h('select', { id: 'profile-switch',
           onchange: (e) => {
             state.accountId = e.target.value; invalidateReads();
-            if (location.hash.startsWith('#/logs?')) {
+            if (location.hash.startsWith('#/logs?')||location.hash.startsWith('#/consumo?')) {
+              const path=location.hash.split('?')[0];
               const filters = new URLSearchParams(location.hash.split('?')[1]);
               filters.delete('account_id');
-              history.replaceState(null, '', '#/logs' + (filters.size ? '?' + filters : ''));
+              history.replaceState(null, '', path + (filters.size ? '?' + filters : ''));
             }
             try { localStorage.setItem('cp-account', state.accountId); } catch { /* */ }
             if (location.hash.startsWith('#/bot/') || location.hash.startsWith('#/channel/') || location.hash.startsWith('#/agentes/conexion/')) { location.hash = '#/agentes'; return; }
@@ -65,8 +66,9 @@ export function shell(active, content) {
       switcher,
       simple ? simpleLinks(link) : [
       isAdmin() ? link('#/agentes', '🤖 Agentes', 'agentes') : null,
-      navGroup('Conversaciones', ['conversations', 'conversation', 'notifications', 'pipeline'], [
+      navGroup('Conversaciones', ['conversations', 'conversation', 'contacts', 'contact', 'notifications', 'pipeline'], [
         link('#/conversations', 'Bandeja de entrada', 'conversations'),
+        link('#/contacts', 'Contactos', ['contacts','contact']),
         link('#/pipeline', 'Pipeline', 'pipeline'),
         h('a', { href: '#/notifications', class: active === 'notifications' ? 'active' : '' }, 'Notificaciones'),
       ]),

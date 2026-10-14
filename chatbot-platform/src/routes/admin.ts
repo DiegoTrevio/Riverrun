@@ -1,3 +1,4 @@
+import { aiBudgetRoutes } from './ai-budget.js';
 import fsp from 'node:fs/promises';
 import { NETWORKS, zernioEnabled } from '../channels/zernio.js';
 import { knowledgeMonitorReport } from '../engine/knowledge-monitor.js';
@@ -60,6 +61,7 @@ export async function sessionRoutes(app: FastifyInstance) {
 
 /** Rutas autenticadas: perfil, cuentas, usuarios, estadísticas y registros. */
 export async function adminRoutes(api: FastifyInstance, service: ChatService) {
+  await aiBudgetRoutes(api);
   api.get('/api/me', async (req) => ({
     user: req.user,
     account: req.user.account_id ? await store.getAccount(req.user.account_id) : null,
@@ -155,6 +157,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     if (!accountId) {
       const accounts = await query(
         `SELECT a.id, a.name, a.status, coalesce(sum(r.cost_usd), 0)::float AS cost_usd, count(r.id)::int AS calls,
+           (SELECT count(*)::int FROM ai_spend s WHERE s.account_id=a.id AND s.created_at >= $1::timestamptz AND s.created_at < $1::timestamptz + interval '1 month' AND s.charged_usd IS NULL AND (s.reserved_usd IS NULL OR s.quote->>'model_mismatch'='true') AND s.state<>'rejected') AS unknown_costs,
            coalesce(sum(r.input_tokens), 0)::bigint AS input_tokens, coalesce(sum(r.output_tokens), 0)::bigint AS output_tokens,
            coalesce(sum(r.audio_seconds), 0)::int AS audio_seconds
          FROM accounts a LEFT JOIN ai_runs r ON r.account_id = a.id AND r.created_at >= $1::timestamptz AND r.created_at < $1::timestamptz + interval '1 month'
@@ -179,7 +182,8 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
       [from, accountId],
     ))!.n;
     const total = kinds.reduce((t: number, k: any) => t + k.cost_usd, 0);
-    return { month, account_id: accountId, total_usd: total, conversations, cost_per_conversation: conversations ? total / conversations : 0, days, kinds, models };
+    const costBreakdown=await queryOne(`SELECT count(*) FILTER(WHERE charged_usd IS NULL AND (reserved_usd IS NULL OR quote->>'model_mismatch'='true') AND state<>'rejected')::int AS unknown_costs,coalesce(sum(charged_usd) FILTER(WHERE cost_source='reported'),0) AS reported_usd,coalesce(sum(charged_usd) FILTER(WHERE cost_source IN ('estimated','legacy','confirmed')),0) AS estimated_usd FROM ai_spend WHERE account_id=$2 AND ${range}`,[from,accountId]);
+    return { month, account_id: accountId, cost_breakdown:costBreakdown, total_usd: total, conversations, cost_per_conversation: conversations ? total / conversations : 0, days, kinds, models };
   });
 
   /** Precios por modelo para estimar el costo cuando el proveedor no lo reporta (solo superadmin). */
@@ -187,12 +191,12 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
 
   api.put('/api/ai-prices/:model', { preHandler: requireRole('superadmin') }, async (req: any) => {
     const n = z.number().min(0).max(10000);
-    const b = parse(z.object({ input_per_mtok: n.default(0), cached_per_mtok: n.default(0), output_per_mtok: n.default(0), per_audio_minute: n.default(0) }), req.body);
+    const b = parse(z.object({ input_per_mtok: n.default(0), cached_per_mtok: n.default(0), output_per_mtok: n.default(0), per_audio_minute: n.default(0),is_free:z.boolean().default(false) }), req.body);
     const model = z.string().trim().min(1).max(100).parse(req.params.model);
     return queryOne(
-      `INSERT INTO ai_prices (model, input_per_mtok, cached_per_mtok, output_per_mtok, per_audio_minute) VALUES ($1,$2,$3,$4,$5)
-       ON CONFLICT (model) DO UPDATE SET input_per_mtok = $2, cached_per_mtok = $3, output_per_mtok = $4, per_audio_minute = $5, updated_at = now() RETURNING *`,
-      [model, b.input_per_mtok, b.cached_per_mtok, b.output_per_mtok, b.per_audio_minute],
+      `INSERT INTO ai_prices (model, input_per_mtok, cached_per_mtok, output_per_mtok, per_audio_minute,is_free) VALUES ($1,$2,$3,$4,$5,$6)
+       ON CONFLICT (model) DO UPDATE SET input_per_mtok = $2, cached_per_mtok = $3, output_per_mtok = $4, per_audio_minute = $5,is_free=$6, updated_at = now() RETURNING *`,
+      [model, b.input_per_mtok, b.cached_per_mtok, b.output_per_mtok, b.per_audio_minute,b.is_free],
     );
   });
 

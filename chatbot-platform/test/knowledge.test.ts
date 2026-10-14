@@ -47,6 +47,7 @@ t('pgvector busca por coseno dentro del agente, respeta presupuesto y datos obli
   const other = await store.createChatbot(otherAccount.id, { name: 'Otro agente' });
   await store.upsertKnowledge(other.id, { title: 'Tarifa secreta', content: 'No compartir $9,999.' });
   await indexKnowledge(other, fake);
+  await indexKnowledge(bot,fake);
   const found = await semanticKnowledge(bot, await store.listKnowledge(bot.id, true), 'hospedaje económico', fake);
   assert.ok(found);
   assert.ok(found.some((k) => k.id === rate.id));
@@ -71,6 +72,7 @@ t('editar, desactivar y borrar fuentes evita recuperar vectores obsoletos', asyn
   const bot = (await store.getChatbot(h.botId))!;
   const k = (await store.listKnowledge(bot.id, true)).find((x) => x.title === 'Tarifa')!;
   await store.upsertKnowledge(bot.id, { id: k.id, content: 'Nuevo precio $1,800.' });
+  await indexKnowledge(bot,fake);
   const updated = await semanticKnowledge(bot, await store.listKnowledge(bot.id, true), 'hospedaje', fake);
   assert.ok(updated?.some((x) => x.content.includes('1,800')));
   assert.ok(!updated?.some((x) => x.content.includes('1,650')));
@@ -98,6 +100,7 @@ t('motor real usa fragmentos semánticos como conocimiento verificado sin enviar
   await store.upsertKnowledge(h.botId, { title: 'Horario', content: 'Recepción. '.repeat(400) });
   await store.upsertKnowledge(h.botId, { title: 'Tarifa', content: 'Doble $1,650. ' + 'Detalles. '.repeat(400) });
   h.ai.embed = fake.embed;
+  await indexKnowledge((await store.getChatbot(h.botId))!,fake);
   h.setScript(() => ({ messages: ['La doble cuesta $1,650.'] }));
   await h.webhook('hospedaje económico');
   await waitFor(() => h.sent.some((m) => m.text.includes('1,650')));

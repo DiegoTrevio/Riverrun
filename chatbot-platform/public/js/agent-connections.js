@@ -1,3 +1,4 @@
+import { receiptRecovery } from './receipt-recovery.js';
 import { channelIcon, connectionBadge, connectionHref, networkLabel } from './channels.js';
 import { api, field, fill, h, run, select, state, text, toast } from './core.js';
 import { accountName, isSuper } from './session.js';
@@ -60,6 +61,7 @@ export async function tabConnections(root, bot, params = new URLSearchParams()) 
     fill(warning, button.disabled ? `Ya tienes ${limit} perfiles de WhatsApp en esta cuenta. Puedes asignar uno existente a este agente o administrar sus conexiones.` : draft.type.startsWith('zernio:') ? 'Al abrir la conexión autorizas tu cuenta de la red y los mensajes directos llegan aquí.' : 'La conexión queda asignada a este agente. Para WhatsApp, el QR se prepara al abrirla.');
   }
   updateLimit();
+  root.append(...mine.map(receiptRecovery));
   root.append(
     h('p', { class: 'muted' }, `${count} de ${limit} perfiles de WhatsApp en esta cuenta. El mismo agente puede atender varios teléfonos; cada conexión conserva sus conversaciones.`),
     h('details', { class: 'card', open: params.get('new') === '1' || !mine.length },

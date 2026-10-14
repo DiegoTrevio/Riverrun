@@ -47,26 +47,24 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
       await logEvent({ level: 'warn', source: 'webhook', message: `${adapter.label}: firma o secreto inválido; se rechaza`, accountId: channel.account_id, channelId: channel.id, details: { ip: req.ip } });
       return reply.code(401).send({ ok: false });
     }
-    // Responder rápido a la plataforma y procesar en segundo plano.
-    reply.send({ ok: true });
-    await processEvent(webhookReq);
+    // La recepción se guarda antes de responder; los workers de PostgreSQL la procesan.
+    try {
+      await processEvent(webhookReq);
+      return reply.send({ ok: true });
+    } catch {
+      await logEvent({ level: 'error', source: 'webhook', message: 'webhook_receipt_failed', accountId: channel.account_id, channelId: channel.id, details: { reason: 'parse_or_storage' } }).catch(() => undefined);
+      return reply.code(503).send({ ok: false, error: 'No se pudo guardar la recepción. Reintenta.' });
+    }
   };
 
-  /** Lo que llegó por el webhook de un canal: QR, estado de conexión, avisos y mensajes. */
+  /** Lo que llegó por el webhook de un canal: QR, estado de conexión, avisos y mensajes (guardados para los workers). */
   const processEvent = async (webhookReq: WebhookRequest) => {
     const { channel } = webhookReq;
-    try {
-      const { messages, notices, connection, qr } = adapterFor(channel.type).parse(webhookReq);
-      if (qr) await store.saveQr(channel.id, qr);
-      for (const n of notices ?? []) await logEvent({ level: n.level, source: 'channel', message: n.message, accountId: channel.account_id, channelId: channel.id });
-      if (connection) await recordConnectionState(channel, connection);
-      // Un mensaje que no se pudo guardar no detiene al resto del lote: se registra y se siguen los demás.
-      for (const m of messages) {
-        await service.handleIncoming(channel, m).catch((e) => logEvent({ level: 'error', source: 'webhook', message: `Mensaje no guardado (${m.messageId}): ${e?.message ?? e}`, accountId: channel.account_id, channelId: channel.id, details: { messageId: m.messageId } }));
-      }
-    } catch (e: any) {
-      await logEvent({ level: 'error', source: 'webhook', message: `Error procesando webhook: ${e?.message ?? e}`, accountId: channel.account_id, channelId: channel.id, details: e });
-    }
+    const { messages, notices, connection, qr } = adapterFor(channel.type).parse(webhookReq);
+    if (qr) await store.saveQr(channel.id, qr);
+    for (const n of notices ?? []) await logEvent({ level: n.level, source: 'channel', message: n.message, accountId: channel.account_id, channelId: channel.id });
+    if (connection) await recordConnectionState(channel, connection);
+    await service.inbox.accept(channel, messages);
   };
   // Evolution puede agregar el nombre del evento al final de la URL (webhook_by_events); lo aceptamos.
   app.post('/webhook/:token', handler);
@@ -81,17 +79,22 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
       await logEvent({ level: 'warn', source: 'webhook', message: 'Zernio: firma inválida en el webhook de la plataforma; se rechaza', details: { ip: req.ip } });
       return reply.code(401).send({ ok: false });
     }
-    reply.send({ ok: true });
     const accountId = eventAccountId(req.body);
-    if (!accountId) return;
+    if (!accountId) return reply.send({ ok: true });
     const rows = await query<{ id: string }>(`SELECT id FROM channels WHERE type = 'zernio' AND config->>'account_id' = $1`, [accountId]);
     if (!rows.length) {
       await logEvent({ level: 'info', source: 'webhook', message: `Zernio: evento ${String(req.body?.event ?? '')} de una cuenta sin canal (${accountId})` });
-      return;
+      return reply.send({ ok: true });
     }
-    for (const r of rows) {
-      const channel = await store.getChannel(r.id);
-      if (channel) await processEvent({ channel, headers: req.headers, query: req.query, body: req.body, rawBody: req.rawBody });
+    try {
+      for (const r of rows) {
+        const channel = await store.getChannel(r.id);
+        if (channel) await processEvent({ channel, headers: req.headers, query: req.query, body: req.body, rawBody: req.rawBody });
+      }
+      return reply.send({ ok: true });
+    } catch {
+      await logEvent({ level: 'error', source: 'webhook', message: 'webhook_receipt_failed', details: { reason: 'parse_or_storage', zernioAccount: accountId } }).catch(() => undefined);
+      return reply.code(503).send({ ok: false, error: 'No se pudo guardar la recepción. Reintenta.' });
     }
   });
 

@@ -1,0 +1,14 @@
+{
+  "checks": [
+    "Asistente desactivado accesible",
+    "Comprobación, preparación, comparación y activación funcionan desde navegador",
+    "Sin desbordamiento y accesible a 390px",
+    "Sin desbordamiento y accesible a 768px",
+    "Rollback del perfil desde navegador"
+  ],
+  "screens": [
+    "activated-desktop.png",
+    "activated-mobile.png"
+  ],
+  "errors": []
+}
