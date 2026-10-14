@@ -87,7 +87,7 @@ export async function goMainBot(root, tab) {
 export async function viewSettingsHub(root) {
   const tile = (href, icon, title, text) => h('a', { class: 'card tile', href }, h('div', { style: 'font-size:28px' }, icon), h('h2', { style: 'margin:6px 0' }, title), h('p', { class: 'muted small', style: 'margin:0' }, text));
   root.append(
-    h('h1', {}, 'Ajustes'),
+    h('h1', {}, 'Resumen de ajustes'),
     h('div', { class: 'grid' },
       tile('#/agentes', '🤖', 'Agentes y conexiones', 'Crea, configura y prueba tus agentes; conecta sus teléfonos y otros canales desde su ficha.'),
       tile('#/automation/settings', '🕘', 'Horario y avisos', 'Tu horario de atención, zona horaria y a quién avisar.'),
@@ -99,6 +99,5 @@ export async function viewSettingsHub(root) {
       tile('#/consumo', '📊', 'Consumo', 'Cuánto ha usado tu asistente este mes.'),
       tile('#/logs', '🛠️', 'Registros', 'Si algo falla, aquí se ve qué pasó.'),
       tile('#/password', '🔑', 'Mi perfil', 'Tu nombre, correo y contraseña.')),
-    h('p', { class: 'muted small' }, 'Si prefieres ver todas las opciones del panel, usa "☰ Mostrar todas las opciones" en el menú.'),
   );
 }

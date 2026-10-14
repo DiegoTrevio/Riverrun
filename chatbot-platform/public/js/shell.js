@@ -1,54 +1,84 @@
 import { brand, brandMark, resetBrand } from './brand.js';
 import { api, h, invalidateReads, run, state } from './core.js';
+import { icon } from './icons.js';
 import { render } from './main.js';
 import { ROLE_LABEL, isAdmin, isSuper } from './session.js';
 
-const bell = h('span', { class: 'badge red', hidden: true });
+const bell = h('span', { class: 'count', hidden: true });
 
 export async function refreshBell() {
   try {
     const n = await api('GET', '/api/notifications?limit=1');
-    bell.textContent = n.unread;
+    bell.textContent = n.unread > 99 ? '99+' : n.unread;
     bell.hidden = !n.unread;
   } catch { /* sin sesión */ }
 }
 
 setInterval(() => { if (state.me && !document.hidden) refreshBell(); }, 20000);
 
-/** Menú simple (por defecto para quien administra su propia cuenta): lo cotidiano en seis opciones; el resto, en Ajustes. */
-const isAdvanced = () => { try { return localStorage.getItem('cp-advanced') === '1'; } catch { return false; } };
+/** Rutas que pertenecen a cada opción del menú lateral. */
+const SECTIONS = {
+  agentes: ['home', 'agentes', 'asistentes', 'asistente', 'bot', 'channels', 'channel', 'conectar', 'inicio', 'probar'],
+  conversations: ['conversations', 'conversation'],
+  contacts: ['contacts', 'contact'],
+  agenda: ['agenda'],
+  pipeline: ['pipeline'],
+  automation: ['automation'],
+  estadisticas: ['estadisticas'],
+  ajustes: ['ajustes', 'users', 'accounts', 'planes', 'marcas', 'sistema', 'plan', 'consumo', 'logs', 'password', 'integraciones'],
+};
 
-const setAdvanced = (on) => { try { localStorage.setItem('cp-advanced', on ? '1' : '0'); } catch { /* sin storage */ } };
-
-function simpleLinks(link) {
+/** Opciones de Ajustes, agrupadas como un submenú (las de la plataforma solo las ve el superadministrador). */
+function settingsGroups() {
   return [
-    link('#/agentes', '🤖 Agentes', 'agentes'),
-    link('#/conversations', '💬 Conversaciones', ['conversations','conversation','contacts','contact']),
-    link('#/pipeline', '📊 Pipeline', 'pipeline'),
-    link('#/agenda', '📅 Agenda', 'agenda'),
-    link('#/ajustes', '⚙️ Ajustes', 'ajustes'),
-  ];
+    ['General', [['#/ajustes', 'Resumen', 'ajustes']]],
+    ['Mi negocio', [
+      ['#/automation/settings', 'Horario y avisos', 'automation/settings'],
+      ['#/users', 'Mi equipo', 'users'],
+      ['#/integraciones', 'Integraciones', 'integraciones'],
+    ]],
+    ['Cuenta', [
+      !isSuper() ? ['#/plan', 'Mi plan y pagos', 'plan'] : null,
+      ['#/consumo', 'Consumo de IA', 'consumo'],
+      ['#/logs', 'Registros', 'logs'],
+    ]],
+    ['Personal', [['#/password', 'Mi perfil', 'password']]],
+    isSuper() ? ['Plataforma', [
+      ['#/accounts', 'Perfiles de negocio', 'accounts'],
+      ['#/planes', 'Planes y cobro', 'planes'],
+      ['#/marcas', 'Marca blanca', 'marcas'],
+      ['#/sistema', 'Sistema', 'sistema'],
+    ]] : null,
+  ].filter(Boolean);
 }
+
+/** Página de Ajustes en la que se está (null si no es una de Ajustes). */
+function settingsPage(active) {
+  const path = location.hash.slice(2).split('?')[0];
+  if (path.startsWith('automation/settings')) return 'automation/settings';
+  return SECTIONS.ajustes.includes(active) ? active : null;
+}
+
+const closeNav = () => document.querySelector('.layout')?.classList.remove('nav-open');
 
 export function shell(active, content) {
   refreshBell();
-  if (['home', 'asistentes', 'asistente', 'bot', 'channels', 'channel', 'conectar', 'inicio', 'probar'].includes(active)) active = 'agentes';
-  const simple = isAdmin() && !isSuper() && !isAdvanced();
-  const link = (href, label, key) => h('a', { href, class: (Array.isArray(key)?key.includes(active):active===key) ? 'active' : '', 'aria-current': (Array.isArray(key)?key.includes(active):active===key) ? 'page' : null }, label);
-  const navGroup = (label, keys, links) => h('details', { class: 'nav-group', open: keys.includes(active) },
-    h('summary', { class: keys.includes(active) ? 'active' : '' }, label, label === 'Conversaciones' ? [' ', bell] : null), h('div', {}, links));
+  const page = isAdmin() ? settingsPage(active) : null;
+  const section = page ? 'ajustes' : Object.keys(SECTIONS).find((k) => SECTIONS[k].includes(active)) ?? active;
   const { user, account } = state.me;
+  const item = (href, iconName, label, key) => h('a', { href, class: `nav-item${section === key ? ' active' : ''}`, 'aria-current': section === key ? 'page' : null, onclick: closeNav },
+    icon(iconName), h('span', {}, label));
+
   const switcher = isSuper()
-    ? h('div', { class: 'account-switch' },
-        h('label', { class: 'small muted', for: 'profile-switch' }, 'Perfil'),
+    ? h('label', { class: 'account-switch' },
+        h('span', { class: 'sr-only' }, 'Perfil de negocio'),
         h('select', { id: 'profile-switch',
           onchange: (e) => {
             state.accountId = e.target.value; invalidateReads();
-            if (location.hash.startsWith('#/logs?')||location.hash.startsWith('#/consumo?')) {
-              const path=location.hash.split('?')[0];
+            if (location.hash.startsWith('#/logs?')) {
               const filters = new URLSearchParams(location.hash.split('?')[1]);
               filters.delete('account_id');
-              history.replaceState(null, '', path + (filters.size ? '?' + filters : ''));
+              history.replaceState(null, '', '#/logs' + (filters.size ? '?' + filters : ''));
             }
             try { localStorage.setItem('cp-account', state.accountId); } catch { /* */ }
             if (location.hash.startsWith('#/bot/') || location.hash.startsWith('#/channel/') || location.hash.startsWith('#/agentes/conexion/')) { location.hash = '#/agentes'; return; }
@@ -57,46 +87,57 @@ export function shell(active, content) {
         },
         h('option', { value: '' }, 'Todos los perfiles'),
         state.accounts.map((a) => h('option', { value: a.id, selected: a.id === state.accountId }, a.name + (a.active ? '' : ' (inactiva)')))))
-    : h('div', { class: 'account-switch small muted' }, account?.name);
-  return h('div', { class: 'layout' },
-    h('nav', { class: 'sidebar' },
-      h('div', { class: 'brand' }, brand.logo ? brandMark(32) : `💬 ${brand.name === 'Panel de Chatbots' ? 'Chatbots' : brand.name}`,
-        simple ? h('a', { href: '#/notifications', class: 'notifications', 'aria-label': 'Notificaciones' }, '🔔 ', bell) : null,
-        h('button', { class: 'nav-toggle', type: 'button', 'aria-label': 'Abrir o cerrar el menú', 'aria-expanded': 'false', onclick: (e) => { const open = e.currentTarget.closest('.layout').classList.toggle('nav-open'); e.currentTarget.setAttribute('aria-expanded', String(open)); } }, '☰ Menú')),
-      switcher,
-      simple ? simpleLinks(link) : [
-      isAdmin() ? link('#/agentes', '🤖 Agentes', 'agentes') : null,
-      navGroup('Conversaciones', ['conversations', 'conversation', 'contacts', 'contact', 'notifications', 'pipeline'], [
-        link('#/conversations', 'Bandeja de entrada', 'conversations'),
-        link('#/contacts', 'Contactos', ['contacts','contact']),
-        link('#/pipeline', 'Pipeline', 'pipeline'),
-        h('a', { href: '#/notifications', class: active === 'notifications' ? 'active' : '' }, 'Notificaciones'),
-      ]),
-      navGroup('Agenda y automatización', ['agenda', 'automation', 'estadisticas'], [
-        link('#/agenda', 'Agenda', 'agenda'),
-        isAdmin() ? link('#/automation', 'Automatización', 'automation') : null,
-        isAdmin() ? link('#/estadisticas', 'Estadísticas', 'estadisticas') : null,
-      ]),
-      isAdmin() ? navGroup('Configuración', ['users', 'accounts', 'planes', 'sistema', 'plan', 'consumo', 'logs', 'password'], [
-        link('#/users', 'Usuarios', 'users'),
-        isSuper() ? link('#/accounts', 'Perfiles', 'accounts') : null,
-        isSuper() ? link('#/planes', 'Planes y cobro', 'planes') : null,
-        isSuper() ? link('#/marcas', 'Marca blanca', 'marcas') : null,
-        isSuper() ? link('#/sistema', 'Sistema', 'sistema') : null,
-        !isSuper() ? link('#/plan', 'Mi plan y pagos', 'plan') : null,
-        link('#/consumo', 'Consumo de IA', 'consumo'),
-        link('#/logs', 'Registros', 'logs'),
-      ]) : null,
-      ],
-      h('div', { class: 'spacer' }),
-      h('div', { class: 'small muted', style: 'padding:4px 10px' }, user.name || user.email, h('br'), ROLE_LABEL[user.role]),
-      h('a', { href: '/ayuda.html', target: '_blank', rel: 'noopener' }, '❓ Ayuda'),
-      link('#/password', 'Mi perfil', 'password'),
-      isAdmin() && !isSuper() ? h('a', { href: '#', class: 'small muted', onclick: (e) => { e.preventDefault(); setAdvanced(!isAdvanced()); render(); } }, isAdvanced() ? '☰ Menú simple' : '☰ Mostrar todas las opciones') : null,
-      h('a', { href: '#', onclick: async (e) => { e.preventDefault(); await api('POST', '/api/logout'); state.me = null; state.ux = []; window.dispatchEvent(new Event('sessionended')); invalidateReads(); resetBrand(); location.hash = '#/login'; } }, 'Cerrar sesión'),
-    ),
-    h('main', { class: 'main' }, accountBanner(), content),
+    : h('div', { class: 'account-switch' }, h('strong', {}, account?.name || brand.name), h('span', {}, ROLE_LABEL[user.role]));
+
+  const sidebar = h('nav', { class: 'sidebar', 'aria-label': 'Menú principal' },
+    h('div', { class: 'brand' }, brand.logo ? brandMark(28) : h('span', { class: 'brand-name' }, brand.name === 'Panel de Chatbots' ? 'Chatbots' : brand.name)),
+    switcher,
+    h('div', { class: 'nav-list' },
+      isAdmin() ? item('#/agentes', 'bot', 'Agentes', 'agentes') : null,
+      item('#/conversations', 'chat', 'Conversaciones', 'conversations'),
+      item('#/contacts', 'contacts', 'Contactos', 'contacts'),
+      item('#/agenda', 'calendar', 'Calendarios', 'agenda'),
+      item('#/pipeline', 'pipeline', 'Oportunidades', 'pipeline'),
+      isAdmin() ? item('#/automation', 'zap', 'Automatización', 'automation') : null,
+      isAdmin() ? item('#/estadisticas', 'chart', 'Reportes', 'estadisticas') : null),
+    h('div', { class: 'spacer' }),
+    isAdmin() ? item('#/ajustes', 'settings', 'Ajustes', 'ajustes') : item('#/password', 'user', 'Mi perfil', 'ajustes'),
   );
+
+  const initials = (user.name || user.email || '?').split(/[\s@.]+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('');
+  const menu = h('div', { class: 'user-menu', hidden: true, role: 'menu' },
+    h('div', { class: 'user-menu-head' }, h('strong', {}, user.name || user.email), h('span', { class: 'small muted' }, `${user.email} · ${ROLE_LABEL[user.role]}`)),
+    h('a', { href: '#/password', role: 'menuitem' }, icon('user', 18), 'Mi perfil'),
+    h('a', { href: '#', role: 'menuitem', onclick: async (e) => { e.preventDefault(); await api('POST', '/api/logout'); state.me = null; state.ux = []; window.dispatchEvent(new Event('sessionended')); invalidateReads(); resetBrand(); location.hash = '#/login'; } }, icon('logout', 18), 'Cerrar sesión'));
+  const avatar = h('button', { class: 'avatar', type: 'button', 'aria-label': `Menú de ${user.name || user.email}`, 'aria-haspopup': 'menu', 'aria-expanded': 'false',
+    onclick: (e) => { e.stopPropagation(); menu.hidden = !menu.hidden; avatar.setAttribute('aria-expanded', String(!menu.hidden)); } }, initials);
+  const closeMenu = (e) => {
+    if (!avatar.isConnected) return document.removeEventListener('click', closeMenu);
+    if (!menu.hidden && !menu.contains(e.target)) { menu.hidden = true; avatar.setAttribute('aria-expanded', 'false'); }
+  };
+  document.addEventListener('click', closeMenu);
+
+  const topbar = h('header', { class: 'topbar' },
+    h('button', { class: 'icon-button nav-toggle', type: 'button', 'aria-label': 'Abrir el menú', onclick: () => document.querySelector('.layout').classList.add('nav-open') }, icon('menu')),
+    h('div', { class: 'topbar-title' }, page ? 'Ajustes' : ''),
+    h('div', { class: 'topbar-actions' },
+      h('a', { class: 'icon-button', href: '/ayuda.html', target: '_blank', rel: 'noopener', 'aria-label': 'Ayuda', title: 'Ayuda' }, icon('help')),
+      h('a', { class: `icon-button${active === 'notifications' ? ' active' : ''}`, href: '#/notifications', 'aria-label': 'Notificaciones', title: 'Notificaciones' }, icon('bell'), bell),
+      h('div', { class: 'user-menu-wrap' }, avatar, menu)));
+
+  const body = page ? h('div', { class: 'settings-layout' }, settingsNav(page), h('div', { class: 'settings-body' }, content)) : content;
+  return h('div', { class: 'layout' },
+    sidebar,
+    h('div', { class: 'scrim', onclick: closeNav }),
+    h('div', { class: 'content' }, topbar, h('main', { class: 'main' }, accountBanner(), body)));
+}
+
+/** Submenú de Ajustes (a la izquierda; en el teléfono, arriba). */
+function settingsNav(page) {
+  return h('nav', { class: 'settings-nav', 'aria-label': 'Ajustes' },
+    settingsGroups().map(([title, links]) => h('div', { class: 'settings-group' },
+      h('div', { class: 'settings-group-title' }, title),
+      links.filter(Boolean).map(([href, label, key]) => h('a', { href, class: page === key ? 'active' : '', 'aria-current': page === key ? 'page' : null }, label)))));
 }
 
 /** Aviso de la cuenta: días de prueba, cuenta en pausa o correo sin confirmar. */
