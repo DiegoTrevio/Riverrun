@@ -1,9 +1,10 @@
 import type { AiProvider } from '../ai/provider.js';
-import { config, semanticEnabledFor } from '../config.js';
+import { config } from '../config.js';
 import { query } from '../db.js';
 import * as store from '../store/index.js';
 import { hydrateChatbot, type ChatbotRow } from '../types.js';
 import { indexKnowledge, knowledgeIndexStatus, vectorAvailable } from './knowledge.js';
+import { semanticPolicy } from './semantic-policy.js';
 
 export type KnowledgeScope = { all: true } | { accountId: string } | { chatbotId: string };
 export type PreparationResult = Awaited<ReturnType<typeof knowledgeIndexStatus>> & { chatbot_id: string; account_id: string; processed_items: number; failed: boolean };
@@ -12,15 +13,15 @@ export type PreparationResult = Awaited<ReturnType<typeof knowledgeIndexStatus>>
 export async function prepareKnowledge(scope: KnowledgeScope, options: { apply?: boolean; ai?: AiProvider; onProgress?: (result: PreparationResult) => void } = {}) {
   const bots = 'chatbotId' in scope ? [await store.getChatbot(scope.chatbotId)].filter((b) => b !== null) : await store.listChatbots('accountId' in scope ? scope.accountId : null);
   if (('chatbotId' in scope && !bots.length) || ('accountId' in scope && !await store.getAccount(scope.accountId))) throw new Error('Alcance no encontrado.');
-  if (options.apply && bots.some(bot => !semanticEnabledFor(bot.account_id))) throw new Error('El alcance incluye perfiles fuera del piloto semántico habilitado.');
-  if (options.apply && (!config.knowledgeSearch.enabled || !options.ai?.embed || !await vectorAvailable())) throw new Error('La búsqueda semántica no está lista para preparar documentos.');
+  if (options.apply && (await Promise.all(bots.map(bot => semanticPolicy(bot.account_id)))).some(p=>!p.preparing)) throw new Error('El alcance incluye perfiles fuera del piloto semántico habilitado.');
+  if (options.apply && (!options.ai?.embed || !await vectorAvailable())) throw new Error('La búsqueda semántica no está lista para preparar documentos.');
   const results: PreparationResult[] = [];
   for (const bot of bots) {
     const before = await knowledgeIndexStatus(bot);
     let processed = 0;
     let failed = false;
     if (options.apply) {
-      try { processed = await indexKnowledge(bot, options.ai!); }
+      try { processed = await indexKnowledge(bot, options.ai!,Infinity,{retryNow:true}); }
       catch { failed = true; } // Preserve successful documents; continue with other agents and retry later.
     }
     const status = options.apply ? await knowledgeIndexStatus(bot) : before;
@@ -40,11 +41,12 @@ export class KnowledgeWorker {
   private cursor = 0;
   constructor(private ai: AiProvider) {}
   async runOnce() {
-    if (!config.knowledgeSearch.enabled || !this.ai.embed || !await vectorAvailable()) return;
+    if (!this.ai.embed || !await vectorAvailable()) return;
     const rows = await query<ChatbotRow>(`SELECT b.* FROM chatbots b JOIN accounts a ON a.id=b.account_id
-      WHERE a.active AND a.status IN ('active','trial') AND (a.status <> 'trial' OR a.trial_ends_at > now()) AND ($1::uuid[] IS NULL OR a.id=ANY($1::uuid[])) ORDER BY b.id`, [config.knowledgeSearch.accountIds.length ? config.knowledgeSearch.accountIds : null]);
+      WHERE a.active AND a.status IN ('active','trial') AND (a.status <> 'trial' OR a.trial_ends_at > now()) ORDER BY b.id`);
     for (let scanned = 0; scanned < rows.length; scanned++) {
       const bot = hydrateChatbot(rows[this.cursor++ % rows.length]);
+      if(!(await semanticPolicy(bot.account_id)).preparing) continue;
       if (!(await knowledgeIndexStatus(bot)).pending_items) continue;
       try { await indexKnowledge(bot,this.ai,4); }
       catch { console.warn('[knowledge] Preparación pendiente; se volverá a intentar sin perder documentos.'); }
@@ -52,7 +54,7 @@ export class KnowledgeWorker {
     }
   }
   start() {
-    if (!this.stopped || !config.knowledgeSearch.enabled || !config.openai.apiKey || !this.ai.embed) return;
+    if (!this.stopped || !config.openai.apiKey || !this.ai.embed) return;
     this.stopped = false;
     const schedule = () => {
       if (this.stopped) return;

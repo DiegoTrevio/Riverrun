@@ -1,0 +1,32 @@
+{
+  "base": "b82d8fa",
+  "suite": {
+    "tests": 772,
+    "pass": 759,
+    "fail": 0,
+    "skipped": 13
+  },
+  "delta": {
+    "tests": 70,
+    "pass": 70,
+    "fail": 0
+  },
+  "promptfoo": {
+    "context": {
+      "pass": 6,
+      "fail": 0
+    },
+    "engine": {
+      "pass": 24,
+      "fail": 0
+    }
+  },
+  "browser": {
+    "general_checks": 15,
+    "screens": 44,
+    "responsive": 60,
+    "semantic_checks": 5
+  },
+  "production_dependency_vulnerabilities": 0,
+  "live_provider_and_phone_tests": "not_run"
+}

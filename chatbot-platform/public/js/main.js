@@ -37,12 +37,20 @@ export async function render() {
     return;
   }
   if (!current()) return;
+  // A budget notice identifies its profile; validate against the authorized selector before switching.
+  if(parts[0]==='consumo'&&state.me?.user.role==='superadmin'&&params.get('account_id')){
+    const accountId=params.get('account_id');
+    if(!state.accounts.some(a=>a.id===accountId)){
+      fill($app,h('main',{class:'main'},errorCard(new Error('Perfil no encontrado'),render)));return;
+    }
+    state.accountId=accountId;try{localStorage.setItem('cp-account',accountId);}catch{/* optional storage */}
+  }
   await ensureBrand('mine');
   if (!current()) return;
   await loadWhatsappStatus();
   if (!current()) return;
   // Los agentes solo atienden conversaciones.
-  if (!isAdmin() && !['conversations', 'conversation', 'password', 'agenda', 'notifications', 'pipeline'].includes(parts[0])) {
+  if (!isAdmin() && !['conversations', 'conversation', 'contacts', 'contact', 'password', 'agenda', 'notifications', 'pipeline'].includes(parts[0])) {
     location.hash = '#/conversations';
     return;
   }
@@ -67,6 +75,8 @@ export async function render() {
     else if (parts[0] === 'bot') await view('bot', 'viewBot', content, parts[1], parts[2] || 'general', params);
     else if (parts[0] === 'channels') await view('agent-connections', 'goLegacyConnections', params);
     else if (parts[0] === 'channel') await view('channels', 'viewChannel', content, parts[1]);
+    else if (parts[0] === 'contacts') await view('contact-workspace', 'viewContacts', content, params);
+    else if (parts[0] === 'contact') await view('contact-workspace', 'viewContact', content, parts[1]);
     else if (parts[0] === 'conversations') await view('conversations', 'viewConversations', content, params);
     else if (parts[0] === 'conversation') await view('conversations', 'viewConversation', content, parts[1]);
     else if (parts[0] === 'users') await view('admin', 'viewUsers', content);

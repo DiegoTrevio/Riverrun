@@ -15,7 +15,9 @@ export async function operationalStatus(windowMinutes = 60) {
     FROM event_logs WHERE source='engine' AND message='knowledge_search' AND created_at >= now()-($1::int * interval '1 minute')`, [windowMinutes]);
   const usage = await queryOne(`SELECT count(*)::int AS runs, COALESCE(sum(cost_usd),0)::float8 AS recorded_usd,
     count(*) FILTER (WHERE cost_usd=0)::int AS zero_cost_runs FROM ai_runs WHERE created_at >= now()-($1::int * interval '1 minute')`, [windowMinutes]);
-  const failures = await queryOne(`SELECT count(*)::int AS failed_messages FROM messages WHERE direction='out' AND status='failed' AND created_at >= now()-($1::int * interval '1 minute')`, [windowMinutes]);
+  const failures = await queryOne(`SELECT count(*)::int AS failed_messages FROM messages WHERE direction='out' AND status IN ('failed','uncertain') AND created_at >= now()-($1::int * interval '1 minute')`, [windowMinutes]);
+  const queue=await queryOne(`SELECT count(*) FILTER(WHERE state='pending')::int AS pending,count(*) FILTER(WHERE state='running')::int AS running,count(*) FILTER(WHERE state='dead')::int AS dead,EXTRACT(epoch FROM now()-min(run_at) FILTER(WHERE state='pending')) AS oldest_pending_seconds FROM conversation_work`);
+  const receipts=await queryOne(`SELECT count(*) FILTER(WHERE state='pending')::int AS pending,count(*) FILTER(WHERE state='running')::int AS running,count(*) FILTER(WHERE state='dead')::int AS dead FROM inbound_receipts`);
   const pilot = inventory.results.filter(r => r.enabled);
   const known = config.knowledgeSearch.accountIds.length ? await query<{id:string}>('SELECT id FROM accounts WHERE id=ANY($1::uuid[])', [config.knowledgeSearch.accountIds]) : [];
   const unknown = config.knowledgeSearch.accountIds.filter(id => !known.some(account => account.id===id));
@@ -23,5 +25,5 @@ export async function operationalStatus(windowMinutes = 60) {
     database_ready: readiness.database_ready, provider: 'not_checked', key_present: readiness.key_present, issues: readiness.issues,
     rollout: { enabled: config.knowledgeSearch.enabled, mode: config.knowledgeSearch.accountIds.length ? 'pilot' : 'all', account_ids: config.knowledgeSearch.accountIds, valid: !unknown.length, unknown_account_ids: unknown },
     knowledge: { agents: inventory.agents, enabled_agents: pilot.length, pending_items: pilot.reduce((n,r)=>n+r.pending_items,0), complete: readiness.database_ready && !unknown.length && pilot.every(r=>r.complete) },
-    search: { ...search, fallback_ratio: search!.attempts ? search!.fallbacks/search!.attempts : null }, usage, delivery: failures };
+    queue,receipts,search: { ...search, fallback_ratio: search!.attempts ? search!.fallbacks/search!.attempts : null }, usage, delivery: failures };
 }

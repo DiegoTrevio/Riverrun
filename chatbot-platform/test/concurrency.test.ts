@@ -53,25 +53,14 @@ t('una persona toma la conversación mientras la IA piensa: el bot no envía nad
   assert.equal(h.sent.length, 0);
 });
 
-t('si Evolution falla al enviar: se registra, se marca como no enviado y no rompe la conversación', async () => {
-  h.reset();
-  const phone = '5215510000003';
-  h.failNext.text = 1;
-  h.setScript(() => ({ messages: ['Primer intento'] }));
-  await h.webhook('hola', { phone });
-  await waitFor(() => h.calls.length === 1);
-  await sleep(300);
-  const c = await h.conversationFor(phone);
-  const detail = (await h.authed('GET', `/api/conversations/${c.id}`)).json();
-  assert.equal(detail.messages.find((m: any) => m.direction === 'out').status, 'failed');
-  const logs = (await h.authed('GET', `/api/logs?source=evolution&conversation_id=${c.id}`)).json();
-  assert.match(logs[0].message, /No se pudo enviar/);
-  // El siguiente mensaje funciona y el fallido no aparece en el historial de la IA
-  h.reset();
-  h.setScript(() => ({ messages: ['Segundo'] }));
-  await h.webhook('sigues ahí?', { phone });
-  await waitFor(() => h.sent.length === 1);
-  assert.ok(!h.calls[0].messages.some((m) => m.content.includes('Primer intento')));
+t('si Evolution devuelve 500: entrega incierta requiere revisión y nunca se repite automáticamente', async () => {
+  h.reset();const phone='5215510000003';h.failNext.text=1;h.setScript(()=>({messages:['Primer intento']}));await h.webhook('hola',{phone});
+  await waitFor(()=>h.calls.length===1);await sleep(300);const c=await h.conversationFor(phone);
+  const detail=(await h.authed('GET',`/api/conversations/${c.id}`)).json();assert.equal(detail.messages.find((m:any)=>m.direction==='out').status,'uncertain');
+  const logs=(await h.authed('GET',`/api/logs?source=channel&conversation_id=${c.id}`)).json();assert.equal(logs[0].message,'delivery_failure');
+  const work=(await h.authed('GET',`/api/conversations/${c.id}/work`)).json();assert.equal(work.work.state,'dead');
+  const recover=await h.authed('POST',`/api/conversations/${c.id}/work/recover`,{action:'acknowledge',review_up_to:work.review_up_to});assert.equal(recover.statusCode,200,recover.body);
+  h.reset();h.setScript(()=>({messages:['Segundo']}));await h.webhook('sigues ahí?',{phone});await waitFor(()=>h.sent.length===1);assert.ok(!h.calls[0].messages.some(m=>m.content.includes('Primer intento')));
 });
 
 t('webhook de otra instancia se ignora (evita cruzar chatbots)', async () => {

@@ -53,7 +53,7 @@ export interface ConfigReport {
 export const SECRET_VARS = [
   'DATABASE_URL', 'POSTGRES_PASSWORD', 'SESSION_SECRET', 'ADMIN_PASSWORD', 'EVOLUTION_API_KEY', 'OPENROUTER_API_KEY', 'OPENAI_API_KEY',
   'SMTP_URL', 'STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'MERCADOPAGO_ACCESS_TOKEN', 'MERCADOPAGO_WEBHOOK_SECRET',
-  'GOOGLE_CLIENT_SECRET', 'MICROSOFT_CLIENT_SECRET', 'BACKUP_PASSPHRASE', 'BACKUP_S3_SECRET', 'HEARTBEAT_URL', 'ALERT_WEBHOOK_URL',
+  'GOOGLE_CLIENT_SECRET', 'MICROSOFT_CLIENT_SECRET', 'ZERNIO_API_KEY', 'BACKUP_PASSPHRASE', 'BACKUP_S3_SECRET', 'HEARTBEAT_URL', 'ALERT_WEBHOOK_URL',
 ] as const;
 
 /** Valores de ejemplo conocidos (completos, no prefijos: un secreto aleatorio puede empezar con "x" o "test"). */
@@ -98,6 +98,13 @@ const host = (url: string) => {
 const NUMBERS: { name: string; min: number; max: number; int?: boolean; area: Area; what: string }[] = [
   { name: 'PORT', min: 1, max: 65535, int: true, area: 'core', what: 'puerto del servidor' },
   { name: 'SCHEDULER_INTERVAL_MS', min: 500, max: 600000, int: true, area: 'core', what: 'intervalo de tareas programadas (ms)' },
+  {name:'QUEUE_CONCURRENCY',min:1,max:6,int:true,area:'core',what:'concurrencia inicial de workers'},
+  {name:'QUEUE_MAX_ATTEMPTS',min:1,max:20,int:true,area:'core',what:'intentos máximos de la cola'},
+  {name:'QUEUE_RETRY_MS',min:50,max:86400000,int:true,area:'core',what:'espera inicial de reintento (ms)'},
+  {name:'QUEUE_MAX_RETRY_MS',min:50,max:86400000,int:true,area:'core',what:'espera máxima de reintento (ms)'},
+  {name:'QUEUE_POLL_MS',min:50,max:60000,int:true,area:'core',what:'intervalo de revisión de cola (ms)'},
+  {name:'KNOWLEDGE_MIN_SIMILARITY',min:0,max:1,area:'knowledge',what:'confianza mínima de coincidencia'},
+  {name:'EMBEDDING_PRICE_PER_MILLION',min:0,max:10000,area:'knowledge',what:'precio estimado de embeddings'},
   { name: 'EMAIL_POLL_SECONDS', min: 1, max: 86400, int: true, area: 'email', what: 'revisión de buzones (s)' },
   { name: 'LOG_RETENTION_DAYS', min: 1, max: 3650, int: true, area: 'core', what: 'días de registros' },
   { name: 'AI_RUN_DETAIL_DAYS', min: 1, max: 3650, int: true, area: 'ai', what: 'días de detalle de IA' },
@@ -129,6 +136,7 @@ const BOOLEANS: { name: string; def: boolean; area: Area }[] = [
   { name: 'SIGNUP_ENABLED', def: true, area: 'core' },
   { name: 'SIGNUP_REQUIRE_EMAIL', def: true, area: 'email' },
   { name: 'KNOWLEDGE_SEARCH_ENABLED', def: false, area: 'knowledge' },
+  {name:'KNOWLEDGE_SEARCH_FORCE_OFF',def:false,area:'knowledge'},
   { name: 'KNOWLEDGE_MONITOR_ENABLED', def: true, area: 'knowledge' },
   { name: 'ALLOW_PRIVATE_WEBHOOKS', def: false, area: 'security' },
   { name: 'HTTP_LOG', def: false, area: 'core' },
@@ -166,7 +174,7 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
   for (const b of BOOLEANS) {
     if (!has(b.name) || get(b.name) === 'true' || get(b.name) === 'false') continue;
     add(
-      'warning',
+      b.name==='KNOWLEDGE_SEARCH_FORCE_OFF'?'critical':'warning',
       b.area,
       `boolean.${b.name}`,
       [b.name],
@@ -195,6 +203,7 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
     );
   }
 
+  if(has('PROCESS_ROLE')&&!['all','http','worker'].includes(get('PROCESS_ROLE'))) add('critical','core','process_role.invalid',['PROCESS_ROLE'],'PROCESS_ROLE debe ser all, http o worker.','Corrige el rol antes de arrancar.');
   /* ------------------------------ Base de datos ------------------------------ */
   if (has('DATABASE_URL') && !PG_URL.safeParse(get('DATABASE_URL')).success) {
     add(

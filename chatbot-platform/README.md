@@ -32,21 +32,29 @@ Chat web (widget)    ┘    │                             │
 | **Transferencia a humano** | Por palabras clave (sin gastar IA), por decisión de la IA según reglas, o manualmente desde el panel. Aviso opcional por WhatsApp a un encargado. Si alguien responde desde el teléfono, el bot se pausa en esa conversación. Retoma automática opcional tras X minutos. |
 | **Registros** | Cada error/evento de Evolution, IA, validador, webhook y panel queda en `event_logs` y se ve en el panel. Cada llamada a la IA queda en `ai_runs` con tokens (incluidos los cacheados), latencia, decisión y validación. |
 | **Cuentas y usuarios** | Cada cliente es una cuenta con sus usuarios (administradores y agentes). Solo ven lo suyo: cualquier intento de acceder a otra cuenta responde 404. El superadministrador ve y administra todas. Desactivar una cuenta corta el acceso de sus usuarios y detiene sus canales (los mensajes se siguen guardando). |
-| **Multicanal** | WhatsApp, Telegram, Messenger, Instagram, chat web y Zernio (API unificada de mensajes directos). Cada canal pertenece a una cuenta y se asigna a un chatbot; un chatbot puede atender varios canales con la misma configuración. Webhooks verificados por plataforma (secreto de Telegram, firma `X-Hub-Signature-256` de Meta, firma `X-Zernio-Signature` de Zernio, URL secreta de Evolution). Se puede duplicar un chatbot como plantilla, incluso en otra cuenta. |
+| **Multicanal** | WhatsApp, Telegram, Messenger, Instagram, chat web y redes sociales por Zernio (Instagram, Facebook, WhatsApp Business, Telegram, X, Bluesky y Reddit, conectadas desde el panel). Cada canal pertenece a una cuenta y se asigna a un chatbot; un chatbot puede atender varios canales con la misma configuración. Webhooks verificados por plataforma (secreto de Telegram, firma `X-Hub-Signature-256` de Meta, firma `X-Zernio-Signature` de Zernio, URL secreta de Evolution). Se puede duplicar un chatbot como plantilla, incluso en otra cuenta. |
 
-### Zernio (backend)
+### Redes sociales (Zernio)
 
-Zernio es un canal más, implementado en `src/channels/zernio.ts`. Todo ocurre en el servidor: la API key, el secreto del webhook y las llamadas a Zernio nunca salen al navegador. Para conectarlo:
+Instagram, Facebook Messenger, WhatsApp Business (API oficial), Telegram, X, Bluesky y Reddit llegan por [Zernio](https://zernio.com), una API unificada de **mensajes directos**. Implementación: `src/channels/zernio.ts` (API, eventos, envíos) y `src/channels/zernio-connect.ts` (conexión desde el panel).
 
-1. En el panel, crea un canal **Zernio** con la red (p.ej. `bluesky`), el ID del perfil de Zernio y la API key.
-2. Pulsa **Conectar cuenta**: Zernio pide la autorización y, al terminar, regresa al canal con la cuenta guardada. El retorno usa un estado de un solo uso que vence a los 30 minutos.
-3. Pulsa **Registrar webhook**: el backend registra en Zernio la URL pública, el secreto del canal y los eventos `message.received` y `message.sent`.
+**La plataforma tiene una sola llave; cada negocio solo conecta sus redes.**
 
-Variables: `ZERNIO_API_URL` (por defecto `https://zernio.com/api/v1`). Requiere `PUBLIC_BASE_URL` con HTTPS.
+1. El administrador de la instalación define `ZERNIO_API_KEY` (y `PUBLIC_BASE_URL` con HTTPS). Nunca sale al navegador.
+2. En su agente, el negocio pulsa **+ Conectar teléfono u otro canal**, elige la red (Instagram, Facebook, Telegram…) y la conecta desde el panel, sin ver llaves ni identificadores:
+   - **Instagram, Facebook, WhatsApp Business, X y Reddit:** se abre la autorización de la red (Zernio aloja la elección de página o número) y al terminar vuelve al canal con la cuenta conectada. El retorno usa un estado de un solo uso que vence a los 30 minutos y se valida contra el perfil del negocio.
+   - **Telegram:** el panel muestra un código; el negocio agrega el bot de conexión y le envía el código. El panel revisa cada 3 s hasta que queda conectado.
+   - **Bluesky:** usuario y contraseña de aplicación en el mismo panel (la contraseña no se guarda).
+3. El servidor crea un **perfil de Zernio por negocio** (se reconoce por `externalId` = id de la cuenta) y registra **un solo webhook** para toda la instalación en `/zernio/events`, firmado con un secreto derivado de `APP_SECRET`. Cada evento se entrega al canal que tiene esa cuenta conectada.
 
-Cada canal atiende solo la cuenta que conectó: si una misma API key tiene varias cuentas, los eventos que traen otra cuenta se ignoran. Las fotos, videos, audios y documentos del cliente quedan registrados con su tipo (el texto es su pie) y el panel explica que el archivo no se descarga. Los ecos de lo que envía el asistente se reconocen aunque Zernio los devuelva sin formato (sin `*negritas*`).
+Como con el QR de WhatsApp, el canal muestra la foto, el nombre y el usuario de la cuenta conectada, su estado, y botones para **Reconectar**, **Revisar conexión** y **Desconectar** (quita la cuenta en Zernio). Si Zernio avisa que la cuenta se desconectó (`account.disconnected`, p. ej. token vencido), el canal queda desconectado y los administradores reciben una notificación y un correo.
 
-> **Pendiente de verificar:** los nombres de los campos del cuerpo de los webhooks y de los endpoints de envío y suscripción se tomaron de documentación resumida. Están marcados con `VERIFICAR` en `src/channels/zernio.ts` y deben confirmarse contra la referencia oficial y un evento real antes de producción.
+Mensajes: el cliente se identifica por la conversación de Zernio; el agente contesta en el mismo hilo con «escribiendo…» donde la red lo permite (Instagram, Facebook, WhatsApp, Telegram). Envía texto, fotos y archivos (los archivos se suben a Zernio con URL firmada; Bluesky y Reddit solo admiten texto). Las fotos, notas de voz y documentos del cliente se descargan (los de WhatsApp con la llave de la plataforma) y las notas de voz se transcriben. Los ecos de lo que envía el agente (`message.sent`) se reconocen por el id de la plataforma y aunque vuelvan sin formato. Meta permite escribir solo dentro de la ventana de 24 h; fuera de ella no se envían campañas por estas redes.
+
+Variables: `ZERNIO_API_KEY` (obligatoria para activar las redes) y `ZERNIO_API_URL` (por defecto `https://zernio.com/api/v1`). Los canales creados antes con su propia llave y webhook siguen funcionando.
+
+> **WhatsApp:** la conexión por Zernio es la API oficial de WhatsApp Business (Meta); Zernio no ofrece vinculación por QR. El WhatsApp normal con QR sigue siendo su propio canal (Evolution).
+
 | **Económico** | Todo corre en un VPS con Docker (Evolution, Postgres, Redis, backend). Solo se paga la API de OpenRouter; el contexto acotado, el caché de prompts y el modelo configurable por chatbot mantienen bajo el costo. |
 
 ## Instalación en un VPS (Docker)

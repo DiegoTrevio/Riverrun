@@ -46,7 +46,7 @@ export const config = {
   publicBaseUrl: env('PUBLIC_BASE_URL', env('WEBHOOK_BASE_URL', 'http://localhost:3000')).replace(/\/$/, ''),
   telegramApiUrl: env('TELEGRAM_API_URL', 'https://api.telegram.org').replace(/\/$/, ''),
   metaGraphUrl: env('META_GRAPH_URL', 'https://graph.facebook.com').replace(/\/$/, ''),
-  /** Base de la API de Zernio. Confirmar la URL exacta en la referencia oficial antes de producción. */
+  /** Base de la API de Zernio (https://zernio.com/api + /v1). */
   zernioApiUrl: env('ZERNIO_API_URL', 'https://zernio.com/api/v1').replace(/\/$/, ''),
   uploadsDir: path.resolve(env('UPLOADS_DIR', './data/uploads')),
   adminUser: env('ADMIN_USER', 'admin'),
@@ -70,6 +70,9 @@ export const config = {
     timeoutMs: Number(env('OPENROUTER_TIMEOUT_MS', env('OPENAI_TIMEOUT_MS', '45000'))),
   },
   knowledgeSearch: {
+    forceOff: env('KNOWLEDGE_SEARCH_FORCE_OFF','false')==='true',
+    minSimilarity: monitorLimit('KNOWLEDGE_MIN_SIMILARITY',0.25,1),
+    pricePerMillion: env('EMBEDDING_PRICE_PER_MILLION') ? monitorLimit('EMBEDDING_PRICE_PER_MILLION',0,10000) : null as number|null,
     enabled: env('KNOWLEDGE_SEARCH_ENABLED', 'false') === 'true',
     accountIds: rolloutAccounts(env('KNOWLEDGE_SEARCH_ACCOUNT_IDS')),
     model: env('OPENROUTER_EMBEDDING_MODEL', useOpenRouter ? 'openai/text-embedding-3-small' : 'text-embedding-3-small'),
@@ -95,6 +98,14 @@ export const config = {
   emailPollSeconds: Math.max(15, Number(env('EMAIL_POLL_SECONDS', '60'))),
   allowPrivateWebhooks: env('ALLOW_PRIVATE_WEBHOOKS', 'false') === 'true',
   schedulerIntervalMs: Number(env('SCHEDULER_INTERVAL_MS', '5000')),
+  queue: {
+    concurrency: Math.max(1, Math.min(6, Number(env('QUEUE_CONCURRENCY', '2')) || 2)),
+    attempts: Math.max(1, Math.min(20, Number(env('QUEUE_MAX_ATTEMPTS', '3')) || 3)),
+    retryMs: Math.max(50, Number(env('QUEUE_RETRY_MS', '60000')) || 60000),
+    maxRetryMs: Math.max(50, Number(env('QUEUE_MAX_RETRY_MS', '900000')) || 900000),
+    pollMs: Math.max(50, Number(env('QUEUE_POLL_MS', '500')) || 500),
+    role: env('PROCESS_ROLE', 'all'),
+  },
   /** Correo saliente (verificación, recuperación de contraseña, avisos). Sin SMTP_URL, los correos van al registro. */
   mail: {
     smtpUrl: env('SMTP_URL', ''),

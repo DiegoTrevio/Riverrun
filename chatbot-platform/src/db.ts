@@ -16,7 +16,7 @@ function guard(p: pg.Pool) {
   return p;
 }
 
-export let pool = guard(new pg.Pool({ connectionString: config.databaseUrl, max: 10 }));
+export let pool = guard(new pg.Pool({ connectionString: config.databaseUrl, max: Math.max(10,config.queue.concurrency*3+4) }));
 
 export function setPool(p: pg.Pool) {
   pool = guard(p);

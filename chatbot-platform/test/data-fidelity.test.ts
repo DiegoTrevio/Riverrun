@@ -27,7 +27,7 @@ before(async () => {
   h = await createHarness();
   await h.createBot({ personality: { prompt: 'Eres Sofi, la asistente de un restaurante.' } });
   // Los avisos llegan al equipo de la cuenta: sin integrantes no hay a quién avisar.
-  const u = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'equipo@clinica.mx', name: 'Equipo', password: 'clave-equipo-1', role: 'agent' });
+  const u = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'equipo@clinica.mx', name: 'Equipo', password: 'clave-equipo-1', role: 'admin' });
   assert.equal(u.statusCode, 200, u.body);
 });
 after(async () => {
@@ -94,10 +94,12 @@ t('reinicio: los mensajes sin respuesta de hace más de 15 minutos avisan al equ
   await pool.query(`UPDATE messages SET created_at = now() - interval '1 hour' WHERE id = $1`, [old!.id]);
   await h.service.resumePending();
   const [row] = (await pool.query('SELECT processed FROM messages WHERE id = $1', [old!.id])).rows;
-  assert.equal(row.processed, true, 'ya no se contesta fuera de tiempo');
-  const alerts = (await pool.query(`SELECT title FROM notifications WHERE account_id = $1 AND title LIKE '%sin respuesta tras un reinicio%'`, [h.accountId])).rows;
+  assert.equal(row.processed, false, 'se conserva pendiente para revisión, sin contestarlo fuera de tiempo');
+  const work=(await pool.query('SELECT state FROM conversation_work WHERE conversation_id=$1',[conv.id])).rows[0];
+  assert.equal(work.state,'dead');
+  const alerts = (await pool.query(`SELECT title FROM notifications WHERE account_id = $1 AND title LIKE '%espera respuesta%'`, [h.accountId])).rows;
   assert.ok(alerts.length >= 1, 'el equipo se entera');
-  const logs = (await pool.query(`SELECT message FROM event_logs WHERE account_id = $1 AND message LIKE 'Reinicio:%'`, [h.accountId])).rows;
+  const logs = (await pool.query(`SELECT message FROM event_logs WHERE account_id = $1 AND message LIKE '%espera respuesta%'`, [h.accountId])).rows;
   assert.ok(logs.length >= 1, 'queda registrado');
 });
 
@@ -274,12 +276,15 @@ t('lote del webhook: un mensaje que falla no detiene a los demás y el fallo que
     });
     assert.equal(r.statusCode, 200);
     await waitFor(() => h.sent.some((s) => s.to === good), 8000);
+    await pool.query("UPDATE inbound_receipts SET attempts=3,run_at=now() WHERE message_id='LOTE-MALO'");
+    await waitFor(async()=> (await pool.query("SELECT state FROM inbound_receipts WHERE message_id='LOTE-MALO'")).rows[0]?.state==='dead');
     await h.idle();
   } finally {
     h.service.handleIncoming = original; // restaura el método envuelto por el arnés
   }
   const kept = await pool.query(`SELECT count(*)::int AS n FROM messages WHERE external_message_id = 'LOTE-BUENO'`);
   assert.equal(kept.rows[0].n, 1, 'el mensaje sano se guardó pese al fallo de su compañero');
-  const logged = await pool.query(`SELECT count(*)::int AS n FROM event_logs WHERE level = 'error' AND message LIKE 'Mensaje no guardado (LOTE-MALO)%'`);
-  assert.equal(logged.rows[0].n, 1, 'el mensaje que falló queda en la bitácora con su identificador');
+  const failed=(await pool.query("SELECT state,reason FROM inbound_receipts WHERE message_id='LOTE-MALO'")).rows[0];
+  assert.equal(failed.state,'dead');
+  assert.equal(failed.reason,'receipt_processing','se conserva para recuperación sin perder el contenido');
 });

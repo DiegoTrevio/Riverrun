@@ -4,7 +4,10 @@ import fs from 'node:fs';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { adapterFor, mergeChannelConfig } from '../channels/index.js';
 import { signedImageUrl, verifyImageSignature } from '../channels/media.js';
+import type { WebhookRequest } from '../channels/types.js';
 import { WEBCHAT_SESSION_RE, newWebchatSession } from '../channels/webchat.js';
+import { eventAccountId, platformWebhookSecret, verifySignature } from '../channels/zernio.js';
+import { saveZernioAccount } from '../channels/zernio-connect.js';
 import { config } from '../config.js';
 import { query } from '../db.js';
 import { toPlainText } from '../engine/text.js';
@@ -44,24 +47,56 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
       await logEvent({ level: 'warn', source: 'webhook', message: `${adapter.label}: firma o secreto inválido; se rechaza`, accountId: channel.account_id, channelId: channel.id, details: { ip: req.ip } });
       return reply.code(401).send({ ok: false });
     }
-    // Responder rápido a la plataforma y procesar en segundo plano.
-    reply.send({ ok: true });
+    // La recepción se guarda antes de responder; los workers de PostgreSQL la procesan.
     try {
-      const { messages, notices, connection, qr } = adapter.parse(webhookReq);
-      if (qr) await store.saveQr(channel.id, qr);
-      for (const n of notices ?? []) await logEvent({ level: n.level, source: 'channel', message: n.message, accountId: channel.account_id, channelId: channel.id });
-      if (connection) await recordConnectionState(channel, connection);
-      // Un mensaje que no se pudo guardar no detiene al resto del lote: se registra y se siguen los demás.
-      for (const m of messages) {
-        await service.handleIncoming(channel, m).catch((e) => logEvent({ level: 'error', source: 'webhook', message: `Mensaje no guardado (${m.messageId}): ${e?.message ?? e}`, accountId: channel.account_id, channelId: channel.id, details: { messageId: m.messageId } }));
-      }
-    } catch (e: any) {
-      await logEvent({ level: 'error', source: 'webhook', message: `Error procesando webhook: ${e?.message ?? e}`, accountId: channel.account_id, channelId: channel.id, details: e });
+      await processEvent(webhookReq);
+      return reply.send({ ok: true });
+    } catch {
+      await logEvent({ level: 'error', source: 'webhook', message: 'webhook_receipt_failed', accountId: channel.account_id, channelId: channel.id, details: { reason: 'parse_or_storage' } }).catch(() => undefined);
+      return reply.code(503).send({ ok: false, error: 'No se pudo guardar la recepción. Reintenta.' });
     }
+  };
+
+  /** Lo que llegó por el webhook de un canal: QR, estado de conexión, avisos y mensajes (guardados para los workers). */
+  const processEvent = async (webhookReq: WebhookRequest) => {
+    const { channel } = webhookReq;
+    const { messages, notices, connection, qr } = adapterFor(channel.type).parse(webhookReq);
+    if (qr) await store.saveQr(channel.id, qr);
+    for (const n of notices ?? []) await logEvent({ level: n.level, source: 'channel', message: n.message, accountId: channel.account_id, channelId: channel.id });
+    if (connection) await recordConnectionState(channel, connection);
+    await service.inbox.accept(channel, messages);
   };
   // Evolution puede agregar el nombre del evento al final de la URL (webhook_by_events); lo aceptamos.
   app.post('/webhook/:token', handler);
   app.post('/webhook/:token/:event', handler);
+
+  /**
+   * Webhook único de Zernio para toda la plataforma: el evento trae la cuenta conectada (account.id) y se entrega al
+   * canal que la tiene. Firmado con el secreto derivado de la clave del servidor.
+   */
+  app.post('/zernio/events', async (req: any, reply) => {
+    if (!verifySignature(req.headers, req.rawBody, [platformWebhookSecret()])) {
+      await logEvent({ level: 'warn', source: 'webhook', message: 'Zernio: firma inválida en el webhook de la plataforma; se rechaza', details: { ip: req.ip } });
+      return reply.code(401).send({ ok: false });
+    }
+    const accountId = eventAccountId(req.body);
+    if (!accountId) return reply.send({ ok: true });
+    const rows = await query<{ id: string }>(`SELECT id FROM channels WHERE type = 'zernio' AND config->>'account_id' = $1`, [accountId]);
+    if (!rows.length) {
+      await logEvent({ level: 'info', source: 'webhook', message: `Zernio: evento ${String(req.body?.event ?? '')} de una cuenta sin canal (${accountId})` });
+      return reply.send({ ok: true });
+    }
+    try {
+      for (const r of rows) {
+        const channel = await store.getChannel(r.id);
+        if (channel) await processEvent({ channel, headers: req.headers, query: req.query, body: req.body, rawBody: req.rawBody });
+      }
+      return reply.send({ ok: true });
+    } catch {
+      await logEvent({ level: 'error', source: 'webhook', message: 'webhook_receipt_failed', details: { reason: 'parse_or_storage', zernioAccount: accountId } }).catch(() => undefined);
+      return reply.code(503).send({ ok: false, error: 'No se pudo guardar la recepción. Reintenta.' });
+    }
+  });
 
   // Zernio redirige aquí al terminar de autorizar la cuenta. El estado de un solo uso evita callbacks falsos.
   app.get('/zernio/callback/:token/:state', async (req: any, reply) => {
@@ -84,10 +119,7 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
       await logEvent({ level: 'warn', source: 'channel', message: 'Zernio: la cuenta devuelta no corresponde al perfil del canal', accountId: channel.account_id, channelId: channel.id });
       return reply.redirect(panel);
     }
-    await store.updateChannel(channel.id, {
-      config: mergeChannelConfig('zernio', channel.config, { account_id: q.accountId, username: q.username ?? '', connect_state: '' }),
-    });
-    await logEvent({ level: 'info', source: 'channel', message: `Zernio: cuenta conectada${q.username ? ` (@${q.username})` : ''}`, accountId: channel.account_id, channelId: channel.id });
+    await saveZernioAccount(channel, { id: q.accountId, username: q.username ?? '' });
     return reply.redirect(panel);
   });
 
