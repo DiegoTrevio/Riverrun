@@ -475,3 +475,27 @@ button.icon-only { min-width: 40px; justify-content: center; font-size: 18px; li
   .cal-month-cell .cal-event-title { display: none; }
   .cal-grid { --gutter: 44px; }
 }
+
+/* ------------------------------ Conversaciones en tres paneles ------------------------------ */
+.inbox { display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 16px; align-items: start; }
+.inbox-list { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); position: sticky; top: calc(var(--topbar-h) + 16px); height: calc(100vh - var(--topbar-h) - 48px); display: flex; flex-direction: column; overflow: hidden; }
+.inbox-list-head { padding: 12px; border-bottom: 1px solid var(--border); display: grid; gap: 10px; }
+.inbox-tabs { display: flex; gap: 4px; overflow-x: auto; }
+.inbox-tabs button { min-height: 30px; padding: 4px 10px; border-radius: 99px; font-size: 12px; box-shadow: none; }
+.inbox-tabs button.active { background: var(--accent-soft); color: var(--accent); border-color: transparent; font-weight: 600; }
+.inbox-items { overflow-y: auto; flex: 1; list-style: none; margin: 0; padding: 0; }
+.inbox-item { display: flex; gap: 10px; padding: 12px; border-bottom: 1px solid var(--border); color: var(--text); text-decoration: none !important; border-left: 3px solid transparent; }
+.inbox-item:hover { background: var(--bg); }
+.inbox-item.active { background: var(--accent-soft); border-left-color: var(--accent); }
+.inbox-item.waiting strong { font-weight: 700; }
+.inbox-item.waiting .inbox-preview { color: var(--text); font-weight: 500; }
+.inbox-item.waiting .inbox-avatar { box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px #d92d20; }
+.inbox-avatar { flex: none; width: 36px; height: 36px; border-radius: 50%; color: #fff; font-size: 13px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }
+.inbox-item-body { min-width: 0; flex: 1; display: grid; gap: 3px; }
+.inbox-item-body strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inbox-preview { color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inbox-meta { display: flex; gap: 8px; align-items: center; }
+.inbox-meta .badge { font-size: 11px; }
+.inbox-detail { min-width: 0; }
+.inbox-detail .split { gap: 16px; }
+.inbox-empty { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); text-align: center; padding: 80px 24px; }

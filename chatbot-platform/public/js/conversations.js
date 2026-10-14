@@ -166,7 +166,70 @@ export async function viewConversations(root, params) {
   poll(() => { if (!rowsSoFar.length || rowsSoFar.length <= 100) return load(); }, 10000, root);
 }
 
-export async function viewConversation(root, id) {
+/* ============================== Bandeja en tres paneles ============================== */
+
+const INBOX_TABS = [['', 'Todas'], ['human', 'Con persona'], ['bot', 'Bot'], ['closed', 'Cerradas']];
+let inboxScroll = 0;
+const shortTime = (d) => {
+  if (!d) return '';
+  const t = new Date(d);
+  const mins = (Date.now() - t) / 60000;
+  if (mins < 1) return 'ahora';
+  if (mins < 60) return `${Math.round(mins)} min`;
+  if (new Date().toDateString() === t.toDateString()) return t.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit', ...(state.timeZone ? { timeZone: state.timeZone } : {}) });
+  return t.toLocaleDateString('es-MX', { day: 'numeric', month: 'short', ...(state.timeZone ? { timeZone: state.timeZone } : {}) });
+};
+const AVATAR_COLORS = ['#155eef', '#12b76a', '#f79009', '#7a5af8', '#ee46bc', '#06aed4', '#f04438', '#669f2a'];
+const avatarOf = (name, key) => {
+  const initials = (name || '?').split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('') || '?';
+  const color = AVATAR_COLORS[[...String(key)].reduce((n, ch) => n + ch.charCodeAt(0), 0) % AVATAR_COLORS.length];
+  return h('span', { class: 'inbox-avatar', style: `background:${color}`, 'aria-hidden': 'true' }, initials);
+};
+
+/**
+ * Conversaciones como en Go High Level: la lista a la izquierda, el chat al centro y la ficha del cliente a la derecha.
+ * En pantallas angostas (o con «vista de tabla») se usa la bandeja con filtros y la conversación a pantalla completa.
+ */
+export async function viewInbox(root, params, id) {
+  const wide = matchMedia('(min-width: 1100px)').matches;
+  if (!wide || params.get('vista') === 'tabla') return id ? viewConversation(root, id) : viewConversations(root, params);
+  const f = { status: params.get('status') || '', search: params.get('search') || '' };
+  const items = h('ul', { class: 'inbox-items', 'aria-label': 'Conversaciones' });
+  const list = h('aside', { class: 'inbox-list' },
+    h('div', { class: 'inbox-list-head' },
+      h('div', { class: 'row between' }, h('h1', { style: 'margin:0;font-size:18px' }, 'Conversaciones'), h('a', { class: 'small', href: '#/conversations?vista=tabla' }, 'Vista de tabla')),
+      h('input', { type: 'search', placeholder: 'Buscar nombre o teléfono…', 'aria-label': 'Buscar conversaciones', value: f.search, onchange: (e) => { f.search = e.target.value.trim(); load(); } }),
+      h('div', { class: 'inbox-tabs', role: 'tablist' }, INBOX_TABS.map(([k, l]) => h('button', { role: 'tab', 'aria-selected': String(f.status === k), class: f.status === k ? 'active' : '', onclick: (e) => { f.status = k; e.currentTarget.parentNode.querySelectorAll('button').forEach((b) => { const on = b === e.currentTarget; b.classList.toggle('active', on); b.setAttribute('aria-selected', String(on)); }); load(); } }, l)))),
+    items);
+  items.addEventListener('scroll', () => { inboxScroll = items.scrollTop; });
+  const detail = h('section', { class: 'inbox-detail' });
+  root.append(h('div', { class: 'inbox' }, list, detail));
+  const load = async () => {
+    const qs = new URLSearchParams({ page: 'true', ...(f.status ? { status: f.status } : {}), ...(f.search ? { search: f.search } : {}) });
+    if (isSuper() && state.accountId) qs.set('account_id', state.accountId);
+    const page = await api('GET', `/api/conversations?${qs}`);
+    fill(items, page.items.length ? page.items.map((c) => {
+      const name = c.name || c.push_name || (c.channel_type === 'webchat' ? 'Visitante del sitio' : c.phone ? `+${c.phone}` : 'Sin nombre');
+      const waiting = c.last_direction === 'in' && c.status !== 'closed';
+      return h('li', {}, h('a', { href: `#/conversation/${c.id}`, class: `inbox-item${c.id === id ? ' active' : ''}${waiting ? ' waiting' : ''}`, 'aria-current': c.id === id ? 'true' : null },
+        avatarOf(name, c.contact_id || c.id),
+        h('div', { class: 'inbox-item-body' },
+          h('div', { class: 'row between' }, h('strong', {}, name), h('span', { class: 'small muted' }, shortTime(c.last_message_at))),
+          h('div', { class: 'inbox-preview' }, channelIcon(c.channel_type), ' ', (c.last_message || '').slice(0, 120)),
+          h('div', { class: 'inbox-meta' },
+            c.status === 'human' ? h('span', { class: 'badge orange' }, 'Con persona') : c.status === 'closed' ? h('span', { class: 'badge' }, 'Cerrada') : h('span', { class: 'badge green' }, 'Bot'),
+            c.assigned_name ? h('span', { class: 'small muted' }, `👤 ${c.assigned_name}`) : null,
+            waiting ? h('span', { class: 'sr-only' }, 'Esperando respuesta') : null))));
+    }) : h('li', { class: 'muted small', style: 'padding:16px' }, 'No hay conversaciones.'));
+    items.scrollTop = inboxScroll;
+  };
+  await load();
+  poll(load, 10000, root);
+  if (id) await viewConversation(detail, id, { embedded: true });
+  else detail.append(h('div', { class: 'inbox-empty' }, h('div', { style: 'font-size:40px' }, '💬'), h('h2', {}, 'Elige una conversación'), h('p', { class: 'muted' }, 'Aquí ves el chat y, a la derecha, los datos del cliente, sus citas y sus pendientes.')));
+}
+
+export async function viewConversation(root, id, opts = {}) {
   const chat = h('div', { class: 'chat', id: 'conversation-messages', tabindex: '-1', 'aria-label': 'Mensajes de la conversación' });
   const side = h('div');
   const header = h('div');
@@ -442,7 +505,7 @@ export async function viewConversation(root, id) {
 
   const sendButton = h('button', { class: 'primary', onclick: send }, 'Enviar');
   root.append(
-    h('a', { href: '#/conversations' }, '← Conversaciones'),
+    opts.embedded ? null : h('a', { href: '#/conversations' }, '← Conversaciones'),
     header,
     workRecovery(id),
     h('div', { class: 'row chat-shortcuts' }, [['customer-data', 'Datos del cliente'], ['conversation-summary', 'Resumen'], ['conversation-appointments', 'Citas y seguimientos']].map(([target, label]) => h('button', { class: 'small', onclick: () => { const el = document.getElementById(target); if (!el) return; if (el.tagName === 'DETAILS') el.open = true; el.scrollIntoView({ block: 'start' }); el.focus({ preventScroll: true }); } }, label))),

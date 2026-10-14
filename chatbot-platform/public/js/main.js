@@ -77,8 +77,8 @@ export async function render() {
     else if (parts[0] === 'channel') await view('channels', 'viewChannel', content, parts[1]);
     else if (parts[0] === 'contacts') await view('contact-workspace', 'viewContacts', content, params);
     else if (parts[0] === 'contact') await view('contact-workspace', 'viewContact', content, parts[1]);
-    else if (parts[0] === 'conversations') await view('conversations', 'viewConversations', content, params);
-    else if (parts[0] === 'conversation') await view('conversations', 'viewConversation', content, parts[1]);
+    else if (parts[0] === 'conversations') await view('conversations', 'viewInbox', content, params, null);
+    else if (parts[0] === 'conversation') await view('conversations', 'viewInbox', content, params, parts[1]);
     else if (parts[0] === 'users') await view('admin', 'viewUsers', content);
     else if (parts[0] === 'accounts') await view('admin', 'viewAccounts', content);
     else if (parts[0] === 'logs') await view('logs', 'viewLogs', content, params);
