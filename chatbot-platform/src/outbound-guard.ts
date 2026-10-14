@@ -48,6 +48,9 @@ export function credentialAllowed(key: string, testPrefixes: string[]): boolean 
 export function guardTransport(t: Transport, destination: string): Transport {
   return {
     kind: t.kind,
+    typingSimulation: t.typingSimulation,
+    ...(t.setDispatchGuard?{setDispatchGuard:(guard:()=>Promise<void>)=>t.setDispatchGuard!(guard)}:{}),
+    ...(t.startTyping?{startTyping:async()=>{assertOutbound(destination);await t.startTyping!();}}:{}),
     sendText: async (text, delay) => {
       assertOutbound(destination);
       return t.sendText(text, delay);

@@ -508,13 +508,18 @@ export const ChannelConfigSchemas = {
   }),
   /** Zernio: API unificada de mensajes. Las credenciales se usan solo en el servidor. */
   zernio: z.object({
-    /** Red que se conecta (p.ej. bluesky, reddit, twitter), tal como la nombra Zernio. */
+    /** Red que se conecta (instagram, facebook, whatsapp, telegram, twitter, bluesky, reddit), tal como la nombra Zernio. */
     platform: z.string().trim().toLowerCase().max(40).default(''),
-    /** Perfil de Zernio donde queda la cuenta conectada. */
+    /** Perfil de Zernio del negocio (lo crea el servidor; uno por cuenta). */
     profile_id: z.string().trim().max(100).default(''),
     /** Cuenta conectada en Zernio (la llena el flujo de conexión). */
     account_id: z.string().max(100).default(''),
     username: z.string().max(120).default(''),
+    display_name: z.string().max(200).default(''),
+    picture: z.string().max(2000).default(''),
+    /** Telegram: código pendiente que el negocio envía a su bot. */
+    telegram_code: z.string().max(100).default(''),
+    /** Solo canales anteriores: la llave ahora es de la plataforma (ZERNIO_API_KEY). */
     api_key: secret.default(''),
     /** Secreto con el que se firman los webhooks de Zernio. Se genera al crear el canal. */
     webhook_secret: secret.default(''),

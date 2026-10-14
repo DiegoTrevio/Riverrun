@@ -5,8 +5,11 @@ import { botFor, channelFor, HttpError, requireRole, scopeAccount, targetAccount
 import { adapterFor, mergeChannelConfig, publicChannel, webhookUrl } from '../channels/index.js';
 import { evolutionFor, newInstanceName, releaseWhatsapp } from '../channels/whatsapp.js';
 import { SessionError, whatsappSession } from '../channels/whatsapp-session.js';
-import { zernioAuthUrl } from '../channels/zernio.js';
+import { networkOf, zernioKey } from '../channels/zernio.js';
+import { checkTelegram, disconnectZernio, startConnect } from '../channels/zernio-connect.js';
 import { config } from '../config.js';
+import { query,withTransaction } from '../db.js';
+import { coordinated } from '../engine/coordination.js';
 import { recordConnectionState } from '../lifecycle.js';
 import { assertWithinLimit } from '../billing/limits.js';
 import { logEvent } from '../logs.js';
@@ -33,8 +36,13 @@ async function checkBot(user: User, accountId: string, chatbotId: string | null 
 /** Campos de infraestructura de WhatsApp: solo el superadmin los define (el cliente no elige servidor, llave ni instancia). */
 const INFRA_FIELDS = ['url', 'api_key', 'instance', 'profile_name'];
 
+/** Redes sociales: el negocio solo elige la red; perfil, cuenta y llave los pone el servidor al conectar. */
+const ZERNIO_CLIENT_FIELDS = ['platform'];
+
 function clientConfig(user: User, type: string, cfg: Record<string, unknown> | undefined) {
-  if (!cfg || type !== 'whatsapp' || user.role === 'superadmin') return cfg;
+  if (!cfg || user.role === 'superadmin') return cfg;
+  if (type === 'zernio') return Object.fromEntries(Object.entries(cfg).filter(([k]) => ZERNIO_CLIENT_FIELDS.includes(k)));
+  if (type !== 'whatsapp') return cfg;
   // El formulario reenvía la configuración completa: estos campos se ignoran en silencio.
   return Object.fromEntries(Object.entries(cfg).filter(([k]) => !INFRA_FIELDS.includes(k)));
 }
@@ -46,6 +54,27 @@ function configError(e: any): never {
 
 export async function channelRoutes(api: FastifyInstance) {
   const admins = { preHandler: requireRole('admin') };
+  api.get('/api/channels/:id/receipts',admins,async(req:any)=>{
+    const channel=await channelFor(req.user,req.params.id);
+    return query(`SELECT id,state,attempts,reason,created_at,run_at FROM inbound_receipts WHERE channel_id=$1 AND state IN ('pending','running','dead') ORDER BY created_at DESC LIMIT 50`,[channel.id]);
+  });
+  api.post('/api/channels/:id/receipts/:receipt/recover',admins,async(req:any)=>{
+    const channel=await channelFor(req.user,req.params.id);
+    const id=parse(z.coerce.number().int().positive(),req.params.receipt);
+    const body=parse(z.object({action:z.enum(['retry','acknowledge'])}),req.body);
+    const row=(await query('SELECT external_id FROM inbound_receipts WHERE id=$1 AND channel_id=$2',[id,channel.id]))[0];
+    if(!row) throw new HttpError(404,'Recepción no encontrada.');
+    const result=await coordinated(`inbound:${channel.id}:${row.external_id}`,`receipt-review:${id}`,()=>withTransaction(async client=>{
+      const receipt=(await client.query('SELECT * FROM inbound_receipts WHERE id=$1 AND channel_id=$2 FOR UPDATE',[id,channel.id])).rows[0];
+      if(receipt?.state!=='dead') throw new HttpError(409,'La recepción ya no está pendiente de revisión.');
+      if(body.action==='retry') {
+        if(receipt.reason!=='receipt_processing') throw new HttpError(409,'Una recepción interrumpida debe revisarse y atenderse a mano.');
+        await client.query(`UPDATE inbound_receipts SET state='pending',attempts=0,reason=NULL,run_at=now() WHERE id=$1`,[id]);
+      } else await client.query(`UPDATE inbound_receipts SET state='done',payload='{}',reason='reviewed_by_admin' WHERE id=$1`,[id]);
+    }));
+    if(!result.acquired) throw new HttpError(409,'La recepción todavía está en curso.');
+    return {ok:true};
+  });
 
   api.get('/api/channels', async (req: any) => {
     const channels = await store.listChannels(scopeAccount(req.user, req.query.account_id), { chatbotId: req.query.chatbot_id });
@@ -61,6 +90,10 @@ export async function channelRoutes(api: FastifyInstance) {
     const adapter = adapterFor(b.type);
     const given = clientConfig(req.user, b.type, b.config) ?? {};
     if (b.type === 'whatsapp' && !given.instance) given.instance = newInstanceName(accountId);
+    if (b.type === 'zernio') {
+      if (!networkOf(String(given.platform ?? ''))) throw new HttpError(400, 'Elige la red que quieres conectar');
+      if (!zernioKey({ config: given })) throw new HttpError(400, 'Las redes sociales no están activadas en esta instalación (falta ZERNIO_API_KEY)');
+    }
     let cfg: Record<string, unknown>;
     try {
       cfg = mergeChannelConfig(b.type, adapter.initialConfig?.() ?? {}, given);
@@ -86,6 +119,10 @@ export async function channelRoutes(api: FastifyInstance) {
     const b = parse(ChannelBody, req.body);
     await checkBot(req.user, ch.account_id, b.chatbot_id);
     const given = clientConfig(req.user, ch.type, b.config);
+    if (ch.type === 'zernio' && given?.platform !== undefined && given.platform !== ch.config.platform) {
+      if (!networkOf(String(given.platform))) throw new HttpError(400, 'Elige la red que quieres conectar');
+      if (ch.config.account_id) throw new HttpError(400, 'Desconecta la cuenta antes de cambiar de red');
+    }
     let cfg: Record<string, unknown> | undefined;
     if (given) {
       try {
@@ -103,6 +140,7 @@ export async function channelRoutes(api: FastifyInstance) {
     const ch = await channelFor(req.user, req.params.id);
     await store.deleteChannel(ch.id);
     await releaseWhatsapp(ch);
+    if (ch.type === 'zernio' && ch.config.account_id) await disconnectZernio(ch);
     await logEvent({ level: 'warn', source: 'admin', message: `Canal eliminado: ${ch.name}`, accountId: ch.account_id });
     return { ok: true };
   });
@@ -131,22 +169,55 @@ export async function channelRoutes(api: FastifyInstance) {
     }
   });
 
-  /** Zernio: genera el estado de un solo uso y devuelve la URL donde el usuario autoriza su cuenta. */
+  /* ------------------------------ Redes sociales (Zernio) ------------------------------ */
+  const zernio = async (user: User, id: string) => {
+    const ch = await channelFor(user, id);
+    if (ch.type !== 'zernio') throw new HttpError(400, 'Este canal no es de redes sociales');
+    return ch;
+  };
+  const zernioError = async (ch: Channel, what: string, e: any): Promise<never> => {
+    await logEvent({ level: 'error', source: 'channel', message: `Zernio: ${what}: ${e?.message ?? e}`, accountId: ch.account_id, channelId: ch.id });
+    throw new HttpError(400, e?.message ?? String(e));
+  };
+
+  /**
+   * Conecta la red del canal. Instagram, Facebook, WhatsApp, X y Reddit: devuelve la página donde el negocio autoriza
+   * (Zernio vuelve a /zernio/callback). Telegram: devuelve el código para el bot. Bluesky: conecta con usuario y
+   * contraseña de aplicación.
+   */
   api.post('/api/channels/:id/zernio/connect', admins, async (req: any) => {
     assertVerified(req.user);
-    const ch = await channelFor(req.user, req.params.id);
-    if (ch.type !== 'zernio') throw new HttpError(400, 'Este canal no es de Zernio');
-    if (!config.publicBaseUrl.startsWith('https://')) throw new HttpError(400, 'Zernio exige HTTPS: define PUBLIC_BASE_URL con tu dominio (https://...)');
+    const ch = await zernio(req.user, req.params.id);
+    const network = networkOf(ch.config.platform);
+    if (network?.flow === 'oauth' && !config.publicBaseUrl.startsWith('https://')) throw new HttpError(400, 'Zernio exige HTTPS: define PUBLIC_BASE_URL con tu dominio (https://...)');
     // El estado lleva la hora en que se generó: el retorno solo vale durante ZERNIO_CONNECT_TTL_MS.
     const state = `${Date.now().toString(36)}.${crypto.randomBytes(24).toString('base64url')}`;
-    const saved = (await store.updateChannel(ch.id, { config: mergeChannelConfig('zernio', ch.config, { connect_state: state }) }))!;
+    const b = parse(z.object({ identifier: z.string().max(200).optional(), app_password: z.string().max(200).optional() }), req.body ?? {});
     try {
-      const authUrl = await zernioAuthUrl(saved, `${config.publicBaseUrl}/zernio/callback/${saved.webhook_token}/${state}`);
-      return { authUrl };
+      const r = await startConnect(ch, (st) => `${config.publicBaseUrl}/zernio/callback/${ch.webhook_token}/${st}`, state, b);
+      if (r.kind === 'connected') return { kind: r.kind, channel: publicChannel(r.channel) };
+      return r;
     } catch (e: any) {
-      await logEvent({ level: 'error', source: 'channel', message: `Zernio: no se pudo iniciar la conexión: ${e?.message ?? e}`, accountId: ch.account_id, channelId: ch.id });
-      throw new HttpError(400, e?.message ?? String(e));
+      return zernioError(ch, 'no se pudo iniciar la conexión', e);
     }
+  });
+
+  /** Telegram: el panel pregunta cada pocos segundos si el código ya llegó al bot. */
+  api.post('/api/channels/:id/zernio/telegram-check', admins, async (req: any) => {
+    const ch = await zernio(req.user, req.params.id);
+    try {
+      const r = await checkTelegram(ch);
+      return { status: r.status, channel: publicChannel(r.channel) };
+    } catch (e: any) {
+      return zernioError(ch, 'no se pudo revisar la conexión de Telegram', e);
+    }
+  });
+
+  api.post('/api/channels/:id/zernio/disconnect', admins, async (req: any) => {
+    const ch = await zernio(req.user, req.params.id);
+    const updated = await disconnectZernio(ch);
+    await logEvent({ level: 'warn', source: 'admin', message: `Zernio: cuenta desconectada desde el panel (${ch.name})`, accountId: ch.account_id, channelId: ch.id });
+    return { ok: true, channel: publicChannel(updated) };
   });
 
   api.get('/api/channels/:id/status', admins, async (req: any) => {
@@ -155,7 +226,7 @@ export async function channelRoutes(api: FastifyInstance) {
     if (!adapter.status) return { state: 'unknown' };
     try {
       const st = await adapter.status(ch);
-      if (ch.type === 'whatsapp' && st.state && st.state !== 'not_configured') await recordConnectionState(ch, st.state);
+      if ((ch.type === 'whatsapp' || ch.type === 'zernio') && st.state && st.state !== 'not_configured') await recordConnectionState(ch, st.state);
       return st;
     } catch (e: any) {
       return { state: 'error', details: { error: e?.message ?? String(e) } };

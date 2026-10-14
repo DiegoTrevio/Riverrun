@@ -32,6 +32,15 @@ export const evo = {
   /** Como Evolution 2.4.0-rc2 sin licencia activada: la raíz responde, toda la API da 503 LICENSE_REQUIRED. */
   licenseRequired: false,
 };
+/** Zernio simulado: perfiles, cuentas conectadas, webhooks y códigos de Telegram, con las respuestas de la API real. */
+export const zer = {
+  key: 'zk_plataforma',
+  unauthorized: false,
+  profiles: [] as any[],
+  accounts: new Map<string, any>(),
+  webhooks: [] as any[],
+  telegram: new Map<string, { status: 'pending' | 'connected' | 'expired'; profileId: string }>(),
+};
 const extServer = http.createServer((req, res) => {
   const chunks: Buffer[] = [];
   req.on('data', (c) => chunks.push(c));
@@ -46,11 +55,58 @@ const extServer = http.createServer((req, res) => {
     const method = path.split('/').pop()!;
     if ([...ext.fail].some((f) => path.includes(f))) return json(500, { ok: false, description: 'fallo simulado', error: { message: 'fallo simulado' } });
     if (path === '/hook') return json(200, { ok: true });
+    if (path.startsWith('/zernio-upload/')) return json(200, {});
     if (path.startsWith('/api/v1/')) {
       const p = path.slice('/api/v1'.length);
-      if (p.startsWith('/connect/')) return json(200, { authUrl: `https://zernio.example/auth/${++ext.n}` });
-      if (p === '/webhooks/settings') return json(200, { ok: true });
-      if (p.endsWith('/messages')) return json(200, { id: `zm_${++ext.n}` });
+      const m = req.method;
+      if (zer.unauthorized || !String(req.headers.authorization).startsWith('Bearer zk_')) return json(401, { error: 'Unauthorized' });
+      const account = (platform: string, profileId: string, username: string) => {
+        const a = { _id: `acc_${++ext.n}`, platform, profileId, username, displayName: `Negocio ${username}`, profilePicture: `https://cdn.zernio.example/${username}.jpg`, isActive: true };
+        zer.accounts.set(a._id, a);
+        return a;
+      };
+      if (p === '/profiles' && m === 'GET') return json(200, { profiles: zer.profiles, total: zer.profiles.length });
+      if (p === '/profiles' && m === 'POST') { const pr = { _id: `prof_${++ext.n}`, name: body.name, externalId: body.externalId }; zer.profiles.push(pr); return json(201, { message: 'ok', profile: pr }); }
+      if (p === '/accounts' && m === 'GET') return json(200, { accounts: [...zer.accounts.values()].filter((a) => a.profileId === url.searchParams.get('profileId')) });
+      if (p.startsWith('/accounts/') && m === 'DELETE') { zer.accounts.delete(decodeURIComponent(p.split('/')[2])); return json(200, { message: 'ok' }); }
+      if (p === '/webhooks/settings' && m === 'GET') return json(200, { webhooks: zer.webhooks });
+      if (p === '/webhooks/settings' && m === 'POST') {
+        if (!body.name) return json(400, { error: 'name is required' });
+        const w = { _id: `wh_${++ext.n}`, ...body };
+        zer.webhooks.push(w);
+        return json(200, { success: true, webhook: w });
+      }
+      if (p === '/webhooks/settings' && m === 'PUT') {
+        const w = zer.webhooks.find((x) => x._id === body.webhookId);
+        if (!w) return json(404, { error: 'not found' });
+        Object.assign(w, body);
+        return json(200, { success: true, webhook: w });
+      }
+      if (p === '/users') return json(200, { currentUserId: 'user_1', users: [] });
+      if (p === '/connect/bluesky/credentials') {
+        if (body.appPassword === 'mala') return json(400, { error: 'Invalid identifier or password' });
+        const profileId = String(body.state).split('-').slice(1).join('-');
+        if (!String(body.state).startsWith('user_1-')) return json(400, { error: 'bad state' });
+        return json(200, { message: 'ok', account: account('bluesky', profileId, body.identifier) });
+      }
+      if (p === '/connect/telegram' && m === 'GET') {
+        const code = `ZRN-${++ext.n}`;
+        zer.telegram.set(code, { status: 'pending', profileId: url.searchParams.get('profileId')! });
+        return json(200, { code, expiresAt: new Date(Date.now() + 900_000).toISOString(), expiresIn: 900, botUsername: 'ZernioConnectBot', instructions: ['Agrega el bot', 'Envía el código'] });
+      }
+      if (p === '/connect/telegram' && m === 'PATCH') {
+        const t = zer.telegram.get(url.searchParams.get('code') ?? '');
+        if (!t || t.status === 'expired') return json(200, { status: 'expired', message: 'Code expired' });
+        if (t.status === 'pending') return json(200, { status: 'pending', expiresIn: 800 });
+        const a = account('telegram', t.profileId, 'hotel_bot');
+        zer.telegram.delete(url.searchParams.get('code')!);
+        return json(200, { status: 'connected', chatId: '-100', chatTitle: 'Hotel', chatType: 'channel', account: { _id: a._id, platform: 'telegram', username: a.username, displayName: a.displayName } });
+      }
+      if (p.startsWith('/connect/')) return json(200, { authUrl: `https://zernio.example/auth/${++ext.n}`, state: 'st' });
+      if (p === '/media/presign') { const n = ++ext.n; return json(200, { uploadUrl: `${extUrl}/zernio-upload/${n}`, publicUrl: `https://cdn.zernio.example/up/${n}/${body.filename}`, key: `k${n}`, type: 'document' }); }
+      if (p.startsWith('/whatsapp/media/')) { res.writeHead(200, { 'content-type': 'audio/ogg' }); return res.end(Buffer.from('OggS-zernio')); }
+      if (p.endsWith('/typing')) return json(200, { success: true });
+      if (p.endsWith('/messages')) return json(200, { success: true, data: { messageId: `zm_${++ext.n}`, conversationId: p.split('/')[3] } });
       return json(404, { error: { message: 'no simulado' } });
     }
     if (path === '/') {
@@ -130,6 +186,7 @@ const extUrl = `http://127.0.0.1:${(extServer.address() as any).port}`;
 process.env.TELEGRAM_API_URL = extUrl;
 process.env.META_GRAPH_URL = extUrl;
 process.env.ZERNIO_API_URL = `${extUrl}/api/v1`;
+process.env.ZERNIO_API_KEY = zer.key;
 process.env.EVOLUTION_URL = extUrl;
 process.env.EVOLUTION_API_KEY = 'llave-global-de-pruebas';
 process.env.PUBLIC_BASE_URL = 'https://bot.test';
@@ -194,6 +251,7 @@ export async function createHarness() {
   // WhatsApp se simula en memoria; Telegram y Meta usan sus adaptadores reales contra el servidor falso.
   const transportFactory = (channel: any, contact: any) => (channel.type !== 'whatsapp' ? defaultTransport(channel, contact) : {
     kind: 'whatsapp' as const,
+    typingSimulation: false,
     async sendText(text: string) {
       if (failNext.text > 0) {
         failNext.text--;
@@ -254,7 +312,7 @@ export async function createHarness() {
       await h.idle();
     },
     /** Espera a que la cola termine todo lo pendiente (evita que una prueba contamine a la siguiente). */
-    async idle() { await waitFor(() => service.queue.size === 0 && inflight.n === 0, 8000); },
+    async idle() { await waitFor(async () => service.queue.size === 0 && service.inbox.size === 0 && inflight.n === 0 && (await pool.query("SELECT count(*)::int AS n FROM conversation_work WHERE state IN ('pending','running')")).rows[0].n===0 && (await pool.query("SELECT count(*)::int AS n FROM inbound_receipts WHERE state IN ('pending','running')")).rows[0].n===0, 8000); },
     webhook(text: string, opts: { fromMe?: boolean; phone?: string; id?: string; timestamp?: number; instance?: string } = {}) {
       const phone = opts.phone ?? '5215511112222';
       return app.inject({

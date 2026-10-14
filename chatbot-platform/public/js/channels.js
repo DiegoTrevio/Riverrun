@@ -3,13 +3,20 @@ import { saveBar } from './bot.js';
 import { api, area, check, clone, field, fill, h, lines, run, select, state, text, toast, confirmAction, ask } from './core.js';
 import { render } from './main.js';
 import { accountName, acct, isSuper, isAdmin } from './session.js';
+import { socialConnector } from './social.js';
 import { whatsappConnector } from './whatsapp.js';
 
 /* ------------------------------ Canales ------------------------------ */
 
 const CHANNEL_ICONS = { whatsapp: '🟢', telegram: '✈️', messenger: '💬', instagram: '📸', webchat: '🌐', email: '✉️', zernio: '🔗', playground: '🧪' };
+/** Redes conectadas por Zernio: cada una con su ícono. */
+const NETWORK_ICONS = { instagram: '📸', facebook: '💬', whatsapp: '🟢', telegram: '✈️', twitter: '𝕏', bluesky: '🦋', reddit: '👽' };
 
-export function channelIcon(type) {
+export const networkLabel = (platform) => (state.meta.social_networks || []).find((n) => n.id === platform)?.label || platform || 'Red social';
+
+/** Ícono del canal; para redes sociales, el de la red (Instagram, Facebook, Telegram…). */
+export function channelIcon(type, platform) {
+  if (type === 'zernio' && platform) return h('span', { title: networkLabel(platform) }, NETWORK_ICONS[platform] || '🔗');
   return h('span', { title: type }, CHANNEL_ICONS[type] || '•');
 }
 
@@ -31,13 +38,13 @@ export function connectionBadge(c) {
   let label = c.active ? 'Activo' : 'Inactivo';
   let color = c.active ? 'green' : '';
   if (c.active && c.type === 'whatsapp') [color, label] = STATE_LABEL[c.connection_state] || ['', 'Sin información'];
-  if (c.active && c.type === 'zernio' && !c.config?.account_id) { color = 'orange'; label = 'Pendiente de conectar'; }
+  if (c.active && c.type === 'zernio') [color, label] = !c.config?.account_id ? ['orange', 'Pendiente de conectar'] : c.connection_state === 'close' ? ['red', 'Desconectado'] : ['green', 'Conectado'];
   return h('span', { class: `badge ${color}` }, label);
 }
 
 export function channelStatusCell(c) {
   const needsConnection = c.type === 'whatsapp' || c.type === 'zernio';
-  const connected = c.type === 'whatsapp' ? c.connection_state === 'open' : !!c.config?.account_id;
+  const connected = c.type === 'whatsapp' ? c.connection_state === 'open' : !!c.config?.account_id && c.connection_state !== 'close';
   return h('td', {}, connectionBadge(c), needsConnection ? h('a', { href: connectionHref(c), class: 'btn small', style: 'margin-left:8px' }, connected ? 'Administrar' : c.type === 'whatsapp' ? 'Ver QR / reconectar' : 'Conectar cuenta') : null);
 }
 
@@ -116,7 +123,7 @@ export async function viewChannels(root, params) {
         ? h('table', {},
             h('thead', {}, h('tr', {}, h('th', {}, 'Canal'), h('th', {}, 'Plataforma'), h('th', {}, 'Chatbot'), isSuper() && !state.accountId ? h('th', {}, 'Cuenta') : null, h('th', {}, 'Estado'))),
             h('tbody', {}, channels.map((c) => h('tr', { class: 'click', onclick: () => (location.hash = `#/channel/${c.id}`) },
-              h('td', {}, channelIcon(c.type), ' ', h('strong', {}, c.name), c.type === 'whatsapp' && c.config.number ? h('div', { class: 'small muted' }, `+${c.config.number}`) : null),
+              h('td', {}, channelIcon(c.type, c.config?.platform), ' ', h('strong', {}, c.name), c.type === 'whatsapp' && c.config.number ? h('div', { class: 'small muted' }, `+${c.config.number}`) : null),
               h('td', {}, c.label),
               h('td', {}, c.chatbot_id ? botName[c.chatbot_id] || '—' : h('span', { class: 'badge orange' }, 'sin chatbot')),
               isSuper() && !state.accountId ? h('td', { class: 'small' }, accountName(c.account_id)) : null,
@@ -182,11 +189,14 @@ function channelConfigFields(ch, cfg) {
       ];
     }
     case 'zernio':
+      // El negocio solo elige la red; la llave, el perfil y la cuenta los pone el servidor al conectar.
       return [
-        field('Red a conectar', text(cfg, 'platform', { placeholder: 'bluesky, reddit, twitter…' }), 'Nombre de la red tal como lo usa Zernio. Para WhatsApp oficial escribe whatsapp. El WhatsApp por QR sigue siendo su propio canal.'),
-        field('ID del perfil en Zernio', text(cfg, 'profile_id', { placeholder: 'profile_…' }), 'Perfil de Zernio donde quedará la cuenta conectada.'),
-        secret('api_key', 'API key de Zernio', 'Se guarda solo en el servidor; el navegador nunca la recibe completa.'),
-        h('p', { class: 'small muted' }, 'Cuenta: ', cfg.account_id ? h('code', {}, cfg.account_id) : 'sin conectar', cfg.username ? ` · @${cfg.username}` : ''),
+        cfg.account_id
+          ? field('Red', h('p', {}, channelIcon('zernio', cfg.platform), ' ', networkLabel(cfg.platform)), 'Para cambiar de red, primero desconecta la cuenta.')
+          : field('Red', select(cfg, 'platform', (state.meta.social_networks || []).map((n) => [n.id, n.label]), () => document.dispatchEvent(new CustomEvent('cp-social-platform')))),
+        isSuper() ? h('details', {}, h('summary', {}, 'Datos técnicos (solo superadmin)'),
+          h('p', { class: 'small muted' }, 'Perfil: ', h('code', {}, cfg.profile_id || '—'), ' · Cuenta: ', h('code', {}, cfg.account_id || '—')),
+          secret('api_key', 'API key propia (opcional)', 'Vacía = la de la plataforma (ZERNIO_API_KEY). Solo para canales anteriores.')) : null,
       ];
     case 'webchat':
       return [
@@ -250,17 +260,6 @@ export async function viewChannel(root, id, parentId = null) {
     } finally { connecting = false; if (result.textContent === 'Guardando y verificando la conexión…') fill(result, h('p', { role: 'status' }, 'Verificación no completada. Revisa los datos y vuelve a intentar.')); }
   };
   const copyBtn = (value) => h('button', { class: 'small', onclick: async () => { try { await navigator.clipboard.writeText(value); toast('Copiado'); } catch { toast('No se pudo copiar', true); } } }, 'Copiar');
-  const connectZernio = () => run(async () => {
-    if (connecting) return; connecting = true;
-    try {
-    const snapshot = JSON.stringify(cfg);
-    if (!(await persist())) return;
-    if (JSON.stringify(cfg) !== snapshot) return toast('Cambiaste los datos. Guarda y conecta de nuevo.', true);
-    const r = await api('POST', `/api/channels/${id}/zernio/connect`);
-    location.href = r.authUrl;
-    } finally { connecting = false; }
-  }, 'Abriendo Zernio…');
-
   const connection = [];
   if (ch.type === 'whatsapp') {
     const test = { number: state.me.user.phone || '', text: 'Mensaje de prueba ✅' };
@@ -292,15 +291,7 @@ export async function viewChannel(root, id, parentId = null) {
       h('button', { class: 'primary', onclick: setup }, 'Guardar y conectar con Telegram'),
     );
   } else if (ch.type === 'zernio') {
-    connection.push(
-      h('ol', { class: 'small' },
-        h('li', {}, 'Completa la API key, la red y el perfil de Zernio en Configuración.'),
-        h('li', {}, 'Conecta la cuenta: se abre Zernio para autorizarla y al terminar regresas a este canal.'),
-        h('li', {}, 'Registra el webhook para recibir mensajes en ', h('code', {}, ch.webhook_url), ' ', copyBtn(ch.webhook_url), '.')),
-      h('div', { class: 'row' },
-        h('button', { class: 'primary', onclick: connectZernio }, ch.config.account_id ? 'Reconectar cuenta' : 'Conectar cuenta'),
-        h('button', { onclick: setup }, 'Registrar webhook')),
-    );
+    connection.push(socialConnector(ch, { persist, setup, cfg }));
   } else if (ch.type === 'messenger' || ch.type === 'instagram') {
     connection.push(
       h('ol', { class: 'small' },
@@ -327,7 +318,7 @@ export async function viewChannel(root, id, parentId = null) {
   root.append(
     h('nav', { class: 'breadcrumb', 'aria-label': 'Ubicación' }, h('a', { href: '#/agentes' }, 'Agentes'), ' / ', h('a', { href: back }, parent?.name || 'Conexiones pendientes de asignar'), ' / ', h('span', {}, ch.name)),
     h('div', { class: 'row between' },
-      h('h1', {}, channelIcon(ch.type), ' ', ch.name, ' ', h('span', { class: `badge ${ch.active ? 'green' : ''}` }, ch.active ? 'Activo' : 'Inactivo')),
+      h('h1', {}, channelIcon(ch.type, ch.config?.platform), ' ', ch.name, ' ', h('span', { class: `badge ${ch.active ? 'green' : ''}` }, ch.active ? 'Activo' : 'Inactivo')),
       h('a', { href: `#/conversations?channel_id=${ch.id}` }, 'Ver conversaciones →')),
     h('p', { class: 'muted' }, ch.label, isSuper() ? ` · ${accountName(ch.account_id)}` : ''),
     ch.type === 'whatsapp' ? h('div', { class: 'card' }, h('div', { class: 'row between' }, h('h2', { style: 'margin:0' }, 'Conexión'), h('span', {}, 'Estado: ', status)), connection, result) : '',

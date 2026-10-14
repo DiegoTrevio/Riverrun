@@ -115,8 +115,12 @@ export async function recordConnectionState(ch: Pick<Channel, 'id' | 'account_id
     }
   } else if (state === 'close' && row.prev === 'open') {
     const admins = await query<{ id: string; email: string }>(`SELECT id, email FROM users WHERE account_id = $1 AND role = 'admin' AND active`, [ch.account_id]);
-    const body = `El canal "${ch.name}" se desconectó y el asistente no está recibiendo mensajes. Vuelve a vincularlo en un minuto desde el panel: escanea el código QR o usa "Con mi número".`;
-    await notifyUsers(ch.account_id, admins.map((a) => a.id), { title: 'Tu WhatsApp se desconectó', body, link: `#/channel/${ch.id}?conectar=1`, kind: 'channel' });
-    for (const a of admins) await sendMail({ to: a.email, subject: 'Tu WhatsApp se desconectó', text: `${body}\n\n${config.publicBaseUrl}/#/channel/${ch.id}?conectar=1` });
+    const social = ch.type === 'zernio';
+    const title = social ? 'Tu red social se desconectó' : 'Tu WhatsApp se desconectó';
+    const body = social
+      ? `El canal "${ch.name}" se desconectó y el asistente no está recibiendo mensajes. Vuelve a conectarlo desde el panel con "Reconectar".`
+      : `El canal "${ch.name}" se desconectó y el asistente no está recibiendo mensajes. Vuelve a vincularlo en un minuto desde el panel: escanea el código QR o usa "Con mi número".`;
+    await notifyUsers(ch.account_id, admins.map((a) => a.id), { title, body, link: `#/channel/${ch.id}?conectar=1`, kind: 'channel' });
+    for (const a of admins) await sendMail({ to: a.email, subject: title, text: `${body}\n\n${config.publicBaseUrl}/#/channel/${ch.id}?conectar=1` });
   }
 }
