@@ -1,4 +1,4 @@
-import { googleBusy, syncIfLinked } from '../integrations/google.js';
+import { calendarBusy, syncCalendars } from '../integrations/calendars.js';
 import { query, withTransaction } from '../db.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
@@ -82,10 +82,10 @@ export async function busyFor(service: Service, from: Date, to: Date, client?: {
        AND (service_id = $1 OR assigned_user_id = ANY($4::uuid[])) AND ($5::uuid IS NULL OR id <> $5)
        AND source <> 'simulador'`;
   const params = [service.id, from, to, service.assigned_user_ids, excludeId ?? null];
-  if (client) return (await client.query(sql, params)).rows; // dentro de la transacción no se consulta a Google (red lenta)
+  if (client) return (await client.query(sql, params)).rows; // dentro de la transacción no se consultan calendarios (red lenta)
   const rows = await query<Busy>(sql, params);
   if (excludeId) return rows;
-  const g = await googleBusy(service.account_id, from, to);
+  const g = await calendarBusy(service.account_id, from, to);
   return rows.concat(g.filter((b) => b.starts_at < to && b.ends_at > from).map((b) => ({ service_id: service.id, assigned_user_id: null, starts_at: b.starts_at, ends_at: b.ends_at })));
 }
 
@@ -215,7 +215,7 @@ export class Agenda {
         staffId: result.assigned_user_id ?? null,
       });
     }
-    if (!simulated) await syncIfLinked(o.accountId, result.id).catch(() => undefined);
+    if (!simulated) await syncCalendars(o.accountId, result.id).catch(() => undefined);
     if (o.conversation) this.chat.automator.emit({ type: 'appointment_booked', conversationId: o.conversation.id, appointment: result });
     return { ok: true, appointment: result };
   }
@@ -234,7 +234,7 @@ export class Agenda {
       userIds: a.assigned_user_id ? [a.assigned_user_id] : undefined,
       staffId: a.assigned_user_id ?? null,
     });
-    await syncIfLinked(a.account_id, a.id).catch(() => undefined);
+    await syncCalendars(a.account_id, a.id).catch(() => undefined);
     const updated = { ...a, status: 'cancelled' as const, cancel_reason: reason };
     if (a.conversation_id) this.chat.automator.emit({ type: 'appointment_cancelled', conversationId: a.conversation_id, appointment: updated });
     return updated;
@@ -259,7 +259,7 @@ export class Agenda {
     await astore.cancelJobs('appointment_id', a.id);
     const updated = (await astore.getAppointment(a.id))!;
     await this.scheduleReminders(updated, service);
-    await syncIfLinked(a.account_id, a.id).catch(() => undefined);
+    await syncCalendars(a.account_id, a.id).catch(() => undefined);
     return { ok: true, appointment: updated };
   }
 

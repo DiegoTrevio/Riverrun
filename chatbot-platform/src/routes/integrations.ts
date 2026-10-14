@@ -9,6 +9,7 @@ import { query, queryOne } from '../db.js';
 import { logEvent } from '../logs.js';
 import { parse } from './util.js';
 import { authUrl, connect, disconnect, getLink, googleConfigured, readState } from '../integrations/google.js';
+import * as outlook from '../integrations/outlook.js';
 
 export const hashKey = (key: string) => crypto.createHash('sha256').update(key).digest('hex');
 
@@ -147,6 +148,36 @@ export async function integrationRoutes(api: FastifyInstance) {
     await disconnect(accountId);
     return { ok: true };
   });
+
+  /* ------------------------------ Outlook (Microsoft 365 / Outlook.com) ------------------------------ */
+  api.get('/api/integrations/outlook', admins, async (req: any) => {
+    const accountId = await targetAccount(req.user, req.query.account_id);
+    const link = await outlook.getLink(accountId);
+    return { available: outlook.outlookConfigured(), connected: !!link, email: link?.email ?? '', block_busy: link?.block_busy ?? true, last_error: link?.last_error ?? '', connected_at: link?.connected_at ?? null };
+  });
+
+  api.post('/api/integrations/outlook/connect', admins, async (req: any, reply) => {
+    const accountId = await targetAccount(req.user, req.body?.account_id ?? req.query.account_id);
+    if (!outlook.outlookConfigured()) throw new HttpError(400, 'Esta instalación no tiene Microsoft configurado (MICROSOFT_CLIENT_ID y MICROSOFT_CLIENT_SECRET)');
+    const nonce = crypto.randomBytes(16).toString('hex');
+    reply.setCookie('o_cal_nonce', nonce, { httpOnly: true, sameSite: 'lax', secure: config.secureCookies, path: '/oauth/outlook', maxAge: 900 });
+    return { url: outlook.authUrl(accountId, nonce) };
+  });
+
+  api.put('/api/integrations/outlook', admins, async (req: any) => {
+    const accountId = await targetAccount(req.user, req.body?.account_id ?? req.query.account_id);
+    const b = parse(z.object({ block_busy: z.boolean() }), req.body);
+    const r = await query(`UPDATE outlook_calendar SET block_busy = $2 WHERE account_id = $1 RETURNING 1`, [accountId, b.block_busy]);
+    if (!r.length) throw new HttpError(404, 'Outlook no está conectado');
+    outlook.clearBusyCache(accountId);
+    return { ok: true };
+  });
+
+  api.delete('/api/integrations/outlook', admins, async (req: any) => {
+    const accountId = await targetAccount(req.user, req.query.account_id);
+    await outlook.disconnect(accountId);
+    return { ok: true };
+  });
 }
 
 /** Regreso desde Google: no usa la sesión, la cuenta viaja firmada en "state". */
@@ -163,6 +194,24 @@ export async function googleCallbackRoute(app: FastifyInstance) {
     } catch (e: any) {
       await logEvent({ level: 'error', source: 'admin', message: `Google Calendar: ${e.message}`, accountId });
       return reply.redirect(`/#/integraciones?google=error&msg=${encodeURIComponent(e.message.slice(0, 120))}`);
+    }
+  });
+}
+
+/** Regreso desde Microsoft: no usa la sesión, la cuenta viaja firmada en "state". */
+export async function outlookCallbackRoute(app: FastifyInstance) {
+  app.get('/oauth/outlook/callback', async (req: any, reply) => {
+    const nonce = String(req.cookies?.o_cal_nonce ?? '');
+    reply.clearCookie('o_cal_nonce', { path: '/oauth/outlook' });
+    const accountId = outlook.readState(String(req.query.state ?? ''), nonce);
+    if (!accountId) return reply.redirect('/#/integraciones?outlook=error');
+    if (req.query.error || !req.query.code) return reply.redirect('/#/integraciones?outlook=cancelado');
+    try {
+      await outlook.connect(accountId, String(req.query.code));
+      return reply.redirect('/#/integraciones?outlook=ok');
+    } catch (e: any) {
+      await logEvent({ level: 'error', source: 'admin', message: `Outlook: ${e.message}`, accountId });
+      return reply.redirect(`/#/integraciones?outlook=error&msg=${encodeURIComponent(e.message.slice(0, 120))}`);
     }
   });
 }

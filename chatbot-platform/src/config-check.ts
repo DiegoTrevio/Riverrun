@@ -53,7 +53,7 @@ export interface ConfigReport {
 export const SECRET_VARS = [
   'DATABASE_URL', 'POSTGRES_PASSWORD', 'SESSION_SECRET', 'ADMIN_PASSWORD', 'EVOLUTION_API_KEY', 'OPENROUTER_API_KEY', 'OPENAI_API_KEY',
   'SMTP_URL', 'STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'MERCADOPAGO_ACCESS_TOKEN', 'MERCADOPAGO_WEBHOOK_SECRET',
-  'GOOGLE_CLIENT_SECRET', 'BACKUP_PASSPHRASE', 'BACKUP_S3_SECRET', 'HEARTBEAT_URL', 'ALERT_WEBHOOK_URL',
+  'GOOGLE_CLIENT_SECRET', 'MICROSOFT_CLIENT_SECRET', 'BACKUP_PASSPHRASE', 'BACKUP_S3_SECRET', 'HEARTBEAT_URL', 'ALERT_WEBHOOK_URL',
 ] as const;
 
 /** Valores de ejemplo conocidos (completos, no prefijos: un secreto aleatorio puede empezar con "x" o "test"). */
@@ -741,6 +741,39 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
       'Activa HTTPS.',
     );
     services.push({ id: 'google', label: 'Google (Calendar e inicio de sesión)', area: 'integrations', state: 'configured', detail: 'Credenciales definidas' });
+  }
+  const mid = get('MICROSOFT_CLIENT_ID');
+  const msecret = get('MICROSOFT_CLIENT_SECRET');
+  if (!mid && !msecret) {
+    services.push({ id: 'outlook', label: 'Outlook (calendario de Microsoft)', area: 'integrations', state: 'disabled', detail: 'Opcional, apagado' });
+  } else if (!mid || !msecret) {
+    add(
+      'warning',
+      'integrations',
+      'outlook.incomplete',
+      ['MICROSOFT_CLIENT_ID', 'MICROSOFT_CLIENT_SECRET'],
+      `Outlook está a medias: falta ${!mid ? 'MICROSOFT_CLIENT_ID' : 'MICROSOFT_CLIENT_SECRET'}, así que no se puede conectar el calendario de Microsoft.`,
+      'Define ambas o bórralas (ver docs/integraciones.md).',
+    );
+    services.push({ id: 'outlook', label: 'Outlook (calendario de Microsoft)', area: 'integrations', state: 'incomplete', detail: 'Falta una credencial' });
+  } else {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(mid)) add(
+      'warning',
+      'integrations',
+      'outlook.id_format',
+      ['MICROSOFT_CLIENT_ID'],
+      'MICROSOFT_CLIENT_ID no parece un identificador de aplicación de Microsoft (formato 00000000-0000-0000-0000-000000000000).',
+      'Cópialo de Azure → Registros de aplicaciones → «Id. de aplicación (cliente)».',
+    );
+    if (prod && !https) add(
+      'warning',
+      'integrations',
+      'outlook.needs_https',
+      ['PUBLIC_BASE_URL'],
+      'Microsoft exige una dirección HTTPS para volver al panel después de autorizar.',
+      'Activa HTTPS.',
+    );
+    services.push({ id: 'outlook', label: 'Outlook (calendario de Microsoft)', area: 'integrations', state: 'configured', detail: 'Credenciales definidas' });
   }
 
   /* ------------------------------ Monitoreo ------------------------------ */
