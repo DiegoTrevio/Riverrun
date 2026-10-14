@@ -6,27 +6,34 @@ import { withAcct } from './session.js';
 
 const acctBody = (b = {}) => ({ ...b, ...Object.fromEntries(new URLSearchParams(withAcct('?').slice(1))) });
 
-async function googleCard(params) {
-  const g = await api('GET', withAcct('/api/integrations/google'));
-  const flash = params.get('google');
-  const note = { ok: ['Google Calendar quedó conectado.', false], cancelado: ['Cancelaste la conexión con Google.', false], error: [params.get('msg') || 'No se pudo conectar con Google.', true] }[flash];
+/** Calendarios que se pueden conectar: las citas se copian ahí y sus horarios ocupados no se ofrecen. */
+const CALENDARS = {
+  google: { name: 'Google Calendar', env: 'GOOGLE_CLIENT_ID y GOOGLE_CLIENT_SECRET', disconnectNote: 'Los eventos ya creados se quedan en tu calendario.' },
+  outlook: { name: 'Outlook', env: 'MICROSOFT_CLIENT_ID y MICROSOFT_CLIENT_SECRET', disconnectNote: 'Los eventos ya creados se quedan en tu calendario. Para retirar el permiso por completo, hazlo también en tu cuenta de Microsoft (Aplicaciones y servicios).', hint: 'Microsoft 365 (cuentas de trabajo) u Outlook.com / Hotmail.' },
+};
+
+async function calendarCard(params, key) {
+  const c = CALENDARS[key];
+  const g = await api('GET', withAcct(`/api/integrations/${key}`));
+  const flash = params.get(key);
+  const note = { ok: [`${c.name} quedó conectado.`, false], cancelado: [`Cancelaste la conexión con ${c.name}.`, false], error: [params.get('msg') || `No se pudo conectar con ${c.name}.`, true] }[flash];
   if (note) toast(note[0], note[1]);
   const body = !g.available
-    ? [h('p', { class: 'muted' }, 'Esta instalación todavía no tiene Google configurado. Quien administra el servidor debe definir GOOGLE_CLIENT_ID y GOOGLE_CLIENT_SECRET (ver docs/integraciones.md).')]
+    ? [h('p', { class: 'muted' }, `Esta instalación todavía no tiene ${c.name} configurado. Quien administra el servidor debe definir ${c.env} (ver docs/integraciones.md).`)]
     : g.connected
       ? [
           h('p', {}, `Conectado${g.email ? ` como ${g.email}` : ''}. Cada cita que se agende, cambie o cancele aparece en tu calendario.`),
           g.last_error ? h('p', { class: 'badge red' }, `Último error: ${g.last_error}`) : null,
-          h('p', { class: 'muted small' }, g.block_busy ? 'Los horarios en que estás ocupado en Google no se ofrecen a los clientes.' : 'Los horarios ocupados en Google no se bloquean.'),
+          h('p', { class: 'muted small' }, g.block_busy ? `Los horarios en que estás ocupado en ${c.name} no se ofrecen a los clientes.` : `Los horarios ocupados en ${c.name} no se bloquean.`),
           h('div', { class: 'row' },
-            h('button', { onclick: async () => { const v = !g.block_busy; if (!(await run(() => api('PUT', '/api/integrations/google', acctBody({ block_busy: v })), 'Guardado'))) return; render(); } }, g.block_busy ? 'Dejar de bloquear horarios ocupados' : 'Bloquear horarios ocupados'),
-            h('button', { class: 'danger', onclick: async () => { if (await confirmAction('¿Desconectar Google Calendar? Los eventos ya creados se quedan en tu calendario.')) { if (!(await run(() => api('DELETE', withAcct('/api/integrations/google')), 'Desconectado'))) return; render(); } } }, 'Desconectar')),
+            h('button', { onclick: async () => { const v = !g.block_busy; if (!(await run(() => api('PUT', `/api/integrations/${key}`, acctBody({ block_busy: v })), 'Guardado'))) return; render(); } }, g.block_busy ? 'Dejar de bloquear horarios ocupados' : 'Bloquear horarios ocupados'),
+            h('button', { class: 'danger', onclick: async () => { if (await confirmAction(`¿Desconectar ${c.name}? ${c.disconnectNote}`)) { if (!(await run(() => api('DELETE', withAcct(`/api/integrations/${key}`)), 'Desconectado'))) return; render(); } } }, 'Desconectar')),
         ]
       : [
-          h('p', { class: 'muted' }, 'Copia tus citas a Google Calendar y evita que el asistente ofrezca horas en las que ya estás ocupado.'),
-          h('button', { class: 'primary', onclick: async () => { const r = await run(() => api('POST', '/api/integrations/google/connect', acctBody())); if (r) location.href = r.url; } }, 'Conectar Google Calendar'),
+          h('p', { class: 'muted' }, `Copia tus citas a ${c.name} y evita que el asistente ofrezca horas en las que ya estás ocupado.${c.hint ? ` ${c.hint}` : ''}`),
+          h('button', { class: 'primary', onclick: async () => { const r = await run(() => api('POST', `/api/integrations/${key}/connect`, acctBody())); if (r) location.href = r.url; } }, `Conectar ${c.name}`),
         ];
-  return h('div', { class: 'card' }, h('h2', {}, '📅 Google Calendar'), ...body);
+  return h('div', { class: 'card' }, h('h2', {}, `📅 ${c.name}`), ...body);
 }
 
 function endpointCard(ep, events) {
@@ -53,7 +60,7 @@ export async function viewIntegrations(root, params) {
     api('GET', '/api/webhook-events'),
     api('GET', withAcct('/api/api-keys')),
   ]);
-  root.append(h('h1', {}, 'Integraciones'), h('p', { class: 'muted' }, 'Conecta tu asistente con tu calendario, tu CRM, Zapier, Make o n8n. Guía completa en docs/integraciones.md.'), await googleCard(params));
+  root.append(h('h1', {}, 'Integraciones'), h('p', { class: 'muted' }, 'Conecta tu asistente con tu calendario (Google u Outlook), tu CRM, Zapier, Make o n8n. Guía completa en docs/integraciones.md.'), await calendarCard(params, 'google'), await calendarCard(params, 'outlook'));
 
   const draft = { url: '', description: '', events: ['*'] };
   const picked = new Set(['*']);

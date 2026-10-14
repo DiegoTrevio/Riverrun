@@ -2,7 +2,7 @@
 
 Riverrun se conecta con otros sistemas de tres formas. Todo se administra en **Ajustes → Integraciones**.
 
-1. **Google Calendar**: las citas aparecen en tu calendario y tus horas ocupadas no se ofrecen a los clientes.
+1. **Google Calendar y Outlook**: las citas aparecen en tu calendario y tus horas ocupadas no se ofrecen a los clientes. Se pueden conectar los dos a la vez.
 2. **Webhooks**: Riverrun avisa por `POST` firmado a la dirección que indiques cuando pasa algo (Zapier, Make, n8n, tu CRM).
 3. **API v1**: tu sistema consulta y escribe contactos, conversaciones, mensajes y citas con una llave.
 
@@ -17,6 +17,20 @@ Configuración del servidor (una sola vez, la hace quien instala):
 3. Define en `.env`: `GOOGLE_CLIENT_ID` y `GOOGLE_CLIENT_SECRET`, y reinicia.
 
 Para usarlo con clientes que no son tú, Google pide verificar la aplicación (permisos `calendar.events` y `calendar.freebusy`). El permiso permanente se guarda cifrado (AES-256-GCM con `SESSION_SECRET`: si lo cambias hay que volver a conectar).
+
+### Outlook (Microsoft 365 y Outlook.com)
+
+Funciona igual que Google Calendar: sentido único Riverrun → Outlook (alta, cambio y cancelación de cada cita), bloqueo opcional de horarios ocupados (cuentan «ocupado», «tentativo» y «fuera de la oficina»; no cuentan «libre» ni «trabajando en otro lugar») y, si Microsoft no responde, la agenda sigue y la copia se reintenta. Sirve para cuentas de trabajo (Microsoft 365) y personales (Outlook.com, Hotmail). Si Google y Outlook están conectados, la cita se copia a los dos y se respetan los ocupados de ambos.
+
+Configuración del servidor (una sola vez):
+
+1. En <https://portal.azure.com> → **Microsoft Entra ID → Registros de aplicaciones → Nuevo registro**. En «Tipos de cuenta compatibles» elige *Cuentas de cualquier directorio organizativo y cuentas personales de Microsoft*.
+2. En «URI de redirección» elige **Web** y pon `https://TU-DOMINIO/oauth/outlook/callback` (es `PUBLIC_BASE_URL` + `/oauth/outlook/callback`).
+3. En **Permisos de API → Microsoft Graph → Permisos delegados** agrega `Calendars.ReadWrite`, `User.Read` y `offline_access`.
+4. En **Certificados y secretos** crea un secreto de cliente y copia su **valor** (no el id; caduca, anota la fecha).
+5. Define en `.env`: `MICROSOFT_CLIENT_ID` (el «Id. de aplicación (cliente)») y `MICROSOFT_CLIENT_SECRET`, y reinicia. Opcional: `MICROSOFT_TENANT` con el id de tu organización para aceptar solo sus cuentas (por omisión `common`).
+
+El permiso permanente se guarda cifrado igual que el de Google; Microsoft lo renueva y Riverrun guarda el nuevo cada vez. Al desconectar, el permiso se borra de Riverrun; para retirarlo también de Microsoft, hazlo en la cuenta (Aplicaciones y servicios con acceso).
 
 ## 2. Webhooks
 
