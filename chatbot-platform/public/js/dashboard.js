@@ -37,7 +37,7 @@ export async function viewDashboard(root, params = new URLSearchParams()) {
             h('h2', { style: 'margin:0' }, h('a', { href: `#/bot/${b.id}/general` }, b.name)),
             h('span', { class: `badge ${b.active ? 'green' : ''}` }, b.active ? 'Encendido' : 'Apagado')),
           isSuper() && !state.accountId ? h('p', { class: 'muted small', style: 'margin:4px 0 0' }, accountName(b.account_id)) : null,
-          h('p', { class: 'small' }, mine.length ? mine.map((c) => h('a', { class: 'agent-channel', href: `#/bot/${b.id}/conexiones/${c.id}` }, channelIcon(c.type), ' ', c.name, ' ', connectionBadge(c))) : h('span', { class: 'muted' }, 'Sin conexiones · puedes probarlo antes de conectar un teléfono')),
+          h('p', { class: 'small' }, mine.length ? mine.map((c) => h('a', { class: 'agent-channel', href: `#/bot/${b.id}/conexiones/${c.id}` }, channelIcon(c.type, c.config?.platform), ' ', c.name, ' ', connectionBadge(c))) : h('span', { class: 'muted' }, 'Sin conexiones · puedes probarlo antes de conectar un teléfono')),
           h('div', { class: 'row', style: 'gap:18px' },
             h('div', {}, h('div', { class: 'kpi' }, s.conversations ?? 0), h('div', { class: 'muted small' }, 'conversaciones')),
             h('div', {}, h('div', { class: 'kpi' }, s.waiting_human ?? 0), h('div', { class: 'muted small' }, 'con humano')),

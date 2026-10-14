@@ -46,7 +46,7 @@ export const config = {
   publicBaseUrl: env('PUBLIC_BASE_URL', env('WEBHOOK_BASE_URL', 'http://localhost:3000')).replace(/\/$/, ''),
   telegramApiUrl: env('TELEGRAM_API_URL', 'https://api.telegram.org').replace(/\/$/, ''),
   metaGraphUrl: env('META_GRAPH_URL', 'https://graph.facebook.com').replace(/\/$/, ''),
-  /** Base de la API de Zernio. Confirmar la URL exacta en la referencia oficial antes de producción. */
+  /** Base de la API de Zernio (https://zernio.com/api + /v1). */
   zernioApiUrl: env('ZERNIO_API_URL', 'https://zernio.com/api/v1').replace(/\/$/, ''),
   uploadsDir: path.resolve(env('UPLOADS_DIR', './data/uploads')),
   adminUser: env('ADMIN_USER', 'admin'),
