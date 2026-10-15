@@ -8,6 +8,7 @@ import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
 import { config } from '../config.js';
+import { sendMail } from '../mailer.js';
 import { assertOutbound } from '../outbound-guard.js';
 import { agentActive, gate } from '../engine/activation.js';
 import { matchKeyword } from '../engine/engine.js';
@@ -219,6 +220,9 @@ export async function postSigned(url: string, body: unknown, secret: string, ext
 }
 
 /* ------------------------------ Automatizador ------------------------------ */
+
+/** Avisos urgentes que también se envían por correo (clientes sin respuesta, emergencias, fallas de recepción). */
+const EMAIL_KINDS = ['ai_error', 'safety', 'alert', 'handoff_wait'];
 
 export class Automator {
   /** Trabajo en curso por conversación (el simulador espera a que termine para mostrarlo). */
@@ -552,6 +556,12 @@ export class Automator {
     const recipients = o.conversationId || o.staffId !== undefined ? team.filter((u) => u.role === 'admin' || (picked.includes(u) && u.id === owner)) : picked;
     await astore.notifyUsers(accountId, recipients.map((u) => u.id), { title: o.title, body: o.body, link: o.link, kind: o.kind });
     const link = o.link ? `\n${config.publicBaseUrl}/${o.link}` : '';
+    // Lo urgente también llega por correo: el WhatsApp de la cuenta puede ser justo lo que está fallando.
+    if (o.kind && EMAIL_KINDS.includes(o.kind)) {
+      for (const u of recipients.filter((x) => x.email)) {
+        await sendMail({ to: u.email, subject: o.title.replace(/^\W+\s*/u, ''), text: `${o.body}${link}` }).catch(() => undefined);
+      }
+    }
     const phones = new Set([...recipients.filter((u) => u.notify_whatsapp && u.phone).map((u) => u.phone), ...(o.phones ?? []).map((p) => p.replace(/\D/g, '')).filter(Boolean)]);
     for (const phone of phones) {
       try {

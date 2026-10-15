@@ -322,7 +322,18 @@ cmd_install() {
     key="$(ask 'OPENROUTER_API_KEY (Enter para ponerla después)' '')"
   fi
   [[ -n "$key" ]] && env_set OPENROUTER_API_KEY "$key"
-  [[ -n "${SMTP_URL:-}" ]] && env_set SMTP_URL "$SMTP_URL"
+  # Alertas: sin ellas nadie se entera de noche si algo falla (servidor caído, WhatsApp desconectado, clientes sin respuesta).
+  local smtp="${SMTP_URL:-$(env_get SMTP_URL)}" hb="${HEARTBEAT_URL:-$(env_get HEARTBEAT_URL)}" hook="${ALERT_WEBHOOK_URL:-$(env_get ALERT_WEBHOOK_URL)}"
+  if [[ "$NEW" == "1" && "$INTERACTIVE" == "1" ]]; then
+    say; say "Alertas (recomendado): así te enteras aunque no tengas el panel abierto."
+    [[ -n "$smtp" ]] || { say "Correo para enviar avisos, formato smtps://usuario:clave@servidor:465 (Gmail: usa una contraseña de aplicación)."; smtp="$(ask 'SMTP_URL (Enter para omitir)' '')"; }
+    [[ -n "$hb" ]] || { say "Latido externo: crea un chequeo gratis en https://healthchecks.io y pega su URL; si el servidor se cae, te avisan."; hb="$(ask 'HEARTBEAT_URL (Enter para omitir)' '')"; }
+    [[ -n "$hook" ]] || hook="$(ask 'ALERT_WEBHOOK_URL de Slack, Discord o ntfy (Enter para omitir)' '')"
+  fi
+  [[ -n "$smtp" ]] && env_set SMTP_URL "$smtp"
+  [[ -n "$hb" ]] && env_set HEARTBEAT_URL "$hb"
+  [[ -n "$hook" ]] && env_set ALERT_WEBHOOK_URL "$hook"
+  if [[ -z "$(env_get HEARTBEAT_URL)" ]]; then warn "Sin HEARTBEAT_URL nadie te avisa si el servidor completo se cae (configúralo después en .env)."; fi
   if [[ -z "$(env_get SMTP_URL)" ]]; then
     env_set SIGNUP_REQUIRE_EMAIL false
     warn "Sin SMTP_URL no se envían correos: la confirmación de correo queda desactivada (puedes activarla después)."
@@ -735,6 +746,12 @@ cmd_preflight() {
   else pf_ok "Dominio: $domain"; fi
   if [[ "$mode" == "sandbox" ]]; then pf_warn "OUTBOUND_MODE=sandbox: los envíos reales están bloqueados (correcto en pruebas; en producción debe ser live)."
   else pf_ok "Envíos reales habilitados (OUTBOUND_MODE=${mode:-live})"; fi
+  # Alertas fuera del panel: sin ellas una falla de noche pasa inadvertida.
+  if [[ -n "$(env_get SMTP_URL)" && -n "$(env_get SUPERADMIN_EMAIL)" ]]; then pf_ok "Alertas por correo (SMTP_URL y SUPERADMIN_EMAIL)"
+  elif [[ -n "$(env_get ALERT_WEBHOOK_URL)" ]]; then pf_warn "Sin correo (SMTP_URL): las alertas salen solo por ALERT_WEBHOOK_URL y los avisos al equipo solo por el panel y WhatsApp."
+  else pf_warn "Ninguna alerta sale del servidor: define SMTP_URL (correo) o ALERT_WEBHOOK_URL (Slack, Discord, ntfy)."; fi
+  if [[ -n "$(env_get HEARTBEAT_URL)" ]]; then pf_ok "Latido externo configurado (HEARTBEAT_URL)"
+  else pf_warn "Sin HEARTBEAT_URL: si el servidor completo se cae, nadie avisa (crea un chequeo en healthchecks.io)."; fi
   if [[ -n "$(env_get HEALTH_TOKEN)" ]]; then pf_ok "HEALTH_TOKEN definido (/health/functional y /metrics activos)"
   else pf_warn "HEALTH_TOKEN vacío: /health/functional y /metrics no existen. Lo genera ./riverrun update."; fi
 

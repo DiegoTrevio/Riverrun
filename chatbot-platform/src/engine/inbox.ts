@@ -1,4 +1,5 @@
 import { config } from '../config.js';
+import { tick } from '../watchdog.js';
 import { query, queryOne, withTransaction } from '../db.js';
 import type { InboundMessage } from '../channels/types.js';
 import type { Channel } from '../types.js';
@@ -46,7 +47,9 @@ export class InboundQueue {
   async runDue(controlsOnly=false) {
     if(this.stopped) return;
     const rows=await query(`SELECT * FROM inbound_receipts WHERE ((state='pending' AND run_at<=now()) OR (state='running' AND lease_until<now())) AND from_me=$1 ORDER BY id LIMIT 10`,[controlsOnly]);
+    tick('inbox');
     for(const row of rows) {
+      tick('inbox');
       if(this.stopped) break;
       await coordinated(`${row.from_me?'control':'inbound'}:${row.channel_id}:${row.external_id}`,`receipt:${row.id}`,async()=>{
         const receipt=await queryOne(`UPDATE inbound_receipts SET state='running',lease_until=now()+interval '5 minutes',attempts=attempts+1

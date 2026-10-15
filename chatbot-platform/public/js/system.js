@@ -40,6 +40,8 @@ export async function viewSystem(root) {
       h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, 'Alertas'),
         h('p', { class: 'small' }, sys.alerts_configured.email ? '✓ Por correo (SUPERADMIN_EMAIL + SMTP)' : '✕ Por correo: falta SUPERADMIN_EMAIL o SMTP_URL'),
         h('p', { class: 'small' }, sys.alerts_configured.webhook ? '✓ Por webhook (Slack, Discord, ntfy…)' : '– Por webhook: opcional (ALERT_WEBHOOK_URL)'),
+        h('p', { class: 'small' }, sys.alerts_configured.heartbeat ? '✓ Latido externo (HEARTBEAT_URL): si el servidor cae, el servicio externo avisa' : '✕ Latido externo: falta HEARTBEAT_URL (por ejemplo healthchecks.io); sin él nadie avisa si el servidor completo se cae'),
+        !sys.alerts_configured.email && !sys.alerts_configured.webhook ? h('p', { class: 'banner danger', role: 'alert' }, 'Ninguna alerta sale del panel: si algo falla de noche, nadie se entera. Configura SMTP_URL o ALERT_WEBHOOK_URL.') : null,
         h('p', { class: 'small' }, sys.heartbeat_configured ? '✓ Latido externo activo' : '⚠️ Sin latido externo: si el servidor entero cae, nadie se entera. Configura HEARTBEAT_URL (healthchecks.io es gratis).'))));
   root.append(functionalSection(sys.functional), await configSection());
 }

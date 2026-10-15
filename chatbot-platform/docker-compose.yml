@@ -70,6 +70,8 @@ services:
     restart: unless-stopped
     # Al actualizar o reiniciar, deja terminar las respuestas en curso (una puede tardar minutos) antes de cortar.
     stop_grace_period: 300s
+    # Un init como PID 1: reenvía las señales a node y permite que el vigilante termine un proceso bloqueado.
+    init: true
     depends_on:
       postgres: { condition: service_healthy }
       evolution: { condition: service_started }

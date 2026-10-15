@@ -54,6 +54,8 @@ export const RulesSchema = z.object({
   pause_on_human_reply: z.boolean().default(true),
   /** Minutos tras los cuales el bot retoma una conversación transferida (0 = nunca). */
   auto_resume_minutes: z.number().int().min(0).default(0),
+  /** Recordar al equipo si el cliente espera a una persona más de estos minutos (se repite cada 2 h). 0 = no recordar. */
+  handoff_reminder_minutes: z.number().int().min(0).max(1440).default(30),
   /** Permitir que la IA agende y cancele citas/llamadas con los servicios de la agenda. */
   booking_enabled: z.boolean().default(true),
   /** Verificar que precios, números, URLs, correos y teléfonos existan en el contexto. */

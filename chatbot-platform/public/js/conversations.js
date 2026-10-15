@@ -318,7 +318,8 @@ export async function viewConversation(root, id, opts = {}) {
     headerSignature = nextHeader;
     fill(header, 
       h('div', { class: 'row between' },
-        h('h1', {}, ct.name || ct.push_name || 'Cliente', ' ', h('span', { class: `badge ${cls}` }, label)),
+        // En la vista de tres paneles el título de la página es «Conversaciones»: el del cliente es un subtítulo (un solo h1).
+        h(opts.embedded ? 'h2' : 'h1', { style: opts.embedded ? 'margin:0' : null }, ct.name || ct.push_name || 'Cliente', ' ', h('span', { class: `badge ${cls}` }, label)),
         h('div', { class: 'row' },
           c.status !== 'human' ? h('button', { class: 'primary', onclick: async () => { if (!(await run(() => api('POST', `/api/conversations/${id}/takeover`), 'Tomaste la conversación'))) return; load(true); } }, 'Tomar conversación') : null,
           c.status !== 'bot' ? h('button', { class: 'primary', onclick: async () => { if (!(await run(() => api('POST', `/api/conversations/${id}/release`), 'El bot vuelve a responder'))) return; load(true); } }, 'Devolver al bot') : null,

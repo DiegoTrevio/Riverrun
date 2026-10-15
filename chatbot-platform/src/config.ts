@@ -99,6 +99,14 @@ export const config = {
   emailPollSeconds: Math.max(15, Number(env('EMAIL_POLL_SECONDS', '60'))),
   allowPrivateWebhooks: env('ALLOW_PRIVATE_WEBHOOKS', 'false') === 'true',
   schedulerIntervalMs: Number(env('SCHEDULER_INTERVAL_MS', '5000')),
+  /** Tiempo máximo de una tarea programada (recordatorio, campaña, sincronización…) antes de cortarla y reintentarla. */
+  jobTimeoutMs: Math.max(1000, Number(env('JOB_TIMEOUT_MS', '180000')) || 180000),
+  /** Vigilante: un bucle de trabajo sin avanzar este tiempo, o el proceso bloqueado, hacen que se reinicie. WATCHDOG=off lo apaga. */
+  watchdog: {
+    enabled: env('WATCHDOG', 'on') !== 'off',
+    stallMs: Math.max(60_000, Number(env('WATCHDOG_STALL_MS', '600000')) || 600000),
+    blockMs: Math.max(10_000, Number(env('WATCHDOG_BLOCK_MS', '60000')) || 60000),
+  },
   queue: {
     concurrency: Math.max(1, Math.min(6, Number(env('QUEUE_CONCURRENCY', '2')) || 2)),
     attempts: Math.max(1, Math.min(20, Number(env('QUEUE_MAX_ATTEMPTS', '3')) || 3)),

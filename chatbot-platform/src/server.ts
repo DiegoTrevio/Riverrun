@@ -13,6 +13,8 @@ import { logEvent, pruneLogs } from './logs.js';
 import { applyRetention } from './privacy.js';
 import { pruneAiRunDetail, pruneAutomationData } from './automation/store.js';
 import { KnowledgeWorker } from './engine/knowledge-preparation.js';
+import { startWatchdog } from './watchdog.js';
+import { startWhatsappWatch } from './whatsapp-watch.js';
 
 async function main() {
   fs.mkdirSync(config.uploadsDir, { recursive: true });
@@ -40,6 +42,7 @@ async function main() {
   knowledgeMonitor.start();
   startLifecycle();
   startMonitor();
+  startWhatsappWatch();
   const resumed = await service.resumePending();
   if (resumed) console.log(`Retomando ${resumed} conversaciones pendientes`);
 
@@ -51,6 +54,21 @@ async function main() {
     pruneAutomationData(config.logRetentionDays).catch(() => undefined);
     pruneAiRunDetail(config.aiRunDetailDays).catch(() => undefined);
   }, 6 * 3600 * 1000).unref();
+  }
+  // Vigilante: si la cola, las recepciones o las tareas programadas dejan de avanzar, o el proceso se bloquea, sale para
+  // que Docker lo reinicie (los mensajes y trabajos están en PostgreSQL y se retoman al arrancar).
+  if (config.watchdog.enabled) {
+    startWatchdog({
+      loops: config.queue.role === 'http' ? [] : ['queue', 'inbox', 'scheduler'],
+      stallMs: config.watchdog.stallMs,
+      blockMs: config.watchdog.blockMs,
+      onStall: async (stalled) => {
+        const detail = stalled.map((l) => `${l.name} (${Math.round(l.ms / 60000)} min)`).join(', ');
+        console.error(`[vigilante] Sin avance: ${detail}. Se reinicia el proceso.`);
+        await Promise.race([logEvent({ level: 'error', source: 'system', message: `Proceso reiniciado por el vigilante: sin avance en ${detail}` }), new Promise((r) => setTimeout(r, 3000))]).catch(() => undefined);
+        process.exit(1);
+      },
+    });
   }
   const workerKeepAlive=config.queue.role==='worker'?setInterval(()=>{},30_000):undefined;
 
