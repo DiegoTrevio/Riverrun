@@ -98,7 +98,9 @@ function cleanUrl(u: string) {
 export function canonicalNumber(n: string) {
   let s = n.replace(/[.,]0{1,2}$/, ''); // quita decimales .00 / ,0
   s = s.replace(/[.,](?=\d{3}(\D|$))/g, ''); // separadores de miles
-  return s.replace(/,/g, '.');
+  s = s.replace(/,/g, '.');
+  // "99.50" y "99.5" son la misma cifra.
+  return s.includes('.') ? s.replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '') : s;
 }
 
 export function extractFacts(text: string): Facts {
@@ -196,9 +198,9 @@ export class FactCorpus {
    * acepta una ruta inventada sobre un dominio real ("hotel.mx/promo-50") ni un dominio que solo empieza o termina igual.
    */
   hasUrl(u: string) {
-    if (this.urls.some((k) => k === u || k.startsWith(`${u}/`))) return true;
+    if (this.urls.some((k) => k === u || ['/', '?', '#'].some((c) => k.startsWith(`${u}${c}`)))) return true;
     const esc = u.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    return new RegExp(`(^|[^a-z0-9.@-])(?:https?://)?(?:www\\.)?${esc}(?=$|[/\\s"'<>)\\]]|[.,;:!?](?:\\s|$))`).test(this.text);
+    return new RegExp(`(^|[^a-z0-9.@-])(?:https?://)?(?:www\\.)?${esc}(?=$|[/?#\\s"'<>)\\]]|[.,;:!?](?:\\s|$))`).test(this.text);
   }
 
   hasEmail(e: string) {
@@ -229,6 +231,11 @@ export class FactCorpus {
     for (const u of f.urls) if (!this.hasUrl(u)) bad.push(u);
     for (const e of f.emails) if (!this.hasEmail(e)) bad.push(e);
     for (const p of f.phones) if (!this.hasPhone(p)) bad.push(p);
+    // El número local de un teléfono conocido escrito con separadores ("123-4567") se separa en dos números: se valida junto.
+    for (const m of reply.matchAll(/(?<![\d])\d{2,4}(?:[\s.-]\d{2,4}){1,2}(?![\d])/g)) {
+      const d = m[0].replace(/\D/g, '');
+      if (d.length >= 7 && this.phoneDigits.some((p) => p.endsWith(d))) for (const part of m[0].split(/[\s.-]/)) computed.add(canonicalNumber(part));
+    }
     for (const n of f.numbers) if (!computed.has(n) && !this.hasNumber(n)) bad.push(n);
     return [...new Set(bad)];
   }

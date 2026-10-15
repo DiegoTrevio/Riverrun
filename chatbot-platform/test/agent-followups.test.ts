@@ -70,6 +70,24 @@ t('si alguien del equipo escribió en esos minutos, la conversación sigue con l
   assert.equal(h.sent.filter((s) => s.to === PHONE).length, 0, 'el último mensaje fue del equipo: no hay a quién contestar');
 });
 
+t('una emergencia nunca vuelve sola al asistente', async () => {
+  await h.webhook('quiero hablar con un asesor');
+  await waitFor(async () => (await status()) === 'human');
+  await h.idle();
+  const conv = await h.conversationFor(PHONE);
+  await pool.query(`UPDATE conversations SET handoff_reason = 'Posible emergencia: el cliente lo mencionó' WHERE id = $1`, [conv.id]);
+  await ago(conv.id, 60);
+  assert.equal(await (h.service as any).autoResumeIdle(), 0);
+  assert.equal(await status(), 'human');
+  // Un valor guardado de otra forma (no numérico) no rompe la revisión de las demás conversaciones.
+  await pool.query(`UPDATE chatbots SET rules = rules || '{"auto_resume_minutes": "abc"}'::jsonb WHERE id = $1`, [h.botId]);
+  assert.equal(await (h.service as any).autoResumeIdle(), 0);
+  await pool.query(`UPDATE chatbots SET rules = rules || '{"auto_resume_minutes": 10}'::jsonb WHERE id = $1`, [h.botId]);
+  await pool.query(`UPDATE conversations SET handoff_reason = '' WHERE id = $1`, [conv.id]);
+  assert.equal(await (h.service as any).autoResumeIdle(), 1);
+  await h.idle();
+});
+
 t('notas de voz: con presupuesto de IA se transcriben y se cobran por la duración', async () => {
   const current = (await h.authed('GET', `/api/ai-budget?account_id=${h.accountId}`)).json();
   const put = await h.authed('PUT', `/api/ai-budget?account_id=${h.accountId}`, { revision: current.revision, settings: { monthly_usd: 5 } });

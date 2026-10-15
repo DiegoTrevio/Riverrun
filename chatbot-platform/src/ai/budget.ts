@@ -106,8 +106,11 @@ async function invoke<T extends CompletionResult|EmbeddingResult|string>(account
 }
 
 /** Every application call has an explicit tenant, including summaries, imports and evaluations. */
-/** Duración aproximada de una nota de voz por su tamaño (~2 KB por segundo de Opus), al menos 1 segundo. */
-export const audioSeconds=(audio:Buffer)=>Math.max(1,Math.round(audio.length/2000));
+/** Duración aproximada de un audio por su tamaño y formato (Opus ~2 KB/s, MP3/M4A ~16 KB/s, WAV ~32 KB/s), al menos 1 s. */
+export const audioSeconds=(audio:Buffer,mimeType='')=>{
+ const perSecond=/mpeg|mp3|mp4|m4a|aac/i.test(mimeType)?16000:/wav|wave|pcm/i.test(mimeType)?32000:2000;
+ return Math.max(1,Math.round(audio.length/perSecond));
+};
 export function accountAi(ai:AiProvider,accountId:string,chatbotId:string|null=null,kind='decision',beforeEmbed?:()=>Promise<void>):AiProvider {
  const wrapper:AiProvider={
   async complete(req:CompletionRequest){
@@ -120,7 +123,7 @@ export function accountAi(ai:AiProvider,accountId:string,chatbotId:string|null=n
   async transcribe(audio,mimeType,seconds){
    const model=normalize(config.openai.transcriptionModel);
    // Sin duración no se puede reservar el costo de un modelo que cobra por minuto: se estima por el tamaño (~2 KB por segundo de Opus).
-   const duration=seconds&&seconds>0?seconds:audioSeconds(audio);
+   const duration=seconds&&seconds>0?seconds:audioSeconds(audio,mimeType);
    return invoke(accountId,chatbotId,{kind:'transcription',models:[model],input:Math.ceil(audio.length*4/3)+1024,output:4096,seconds:duration},r=>(r.limited?ai.forBudget?.()??ai:ai).transcribe(audio,mimeType,duration));
   },
  };

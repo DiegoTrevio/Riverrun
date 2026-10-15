@@ -162,8 +162,11 @@ test('solicitud nueva: también se reinician los datos sin pregunta (salvo nombr
     { key: 'telefono', label: 'Teléfono', type: 'phone' },
     { key: 'fecha', label: 'Fecha', type: 'date', question: '¿Para qué fecha?' },
     { key: 'vip', label: 'VIP', type: 'option', options: ['Sí', 'No'], per_request: false },
+    { key: 'direccion', label: 'Dirección', type: 'text' },
+    { key: 'rfc', label: 'RFC', type: 'text', required: true },
+    { key: 'promo', label: 'Promoción', type: 'text', per_request: true },
   ] });
-  assert.deepEqual(perRequestKeys(b).sort(), ['fecha', 'huespedes', 'llegada']);
+  assert.deepEqual(perRequestKeys(b).sort(), ['fecha', 'huespedes', 'llegada', 'promo'], 'dirección y RFC se conservan');
 });
 
 const saveRun = (b: any, save: Record<string, string>, customer: string, sources: string[] = []) =>
@@ -197,4 +200,45 @@ test('datos obligatorios: la IA no puede inventarlos para cumplir el objetivo', 
   const texto = bot({ data_fields: [{ key: 'fechas', label: 'Fechas', type: 'text', required: true }] });
   assert.deepEqual(saveRun(texto, { fechas: '1 al 3 de noviembre' }, '1 al 3 de nov').plan.saveData, { fechas: '1 al 3 de noviembre' });
   assert.deepEqual(saveRun(texto, { fechas: '5 al 7 de noviembre' }, '1 al 3 de nov').plan.saveData, {});
+});
+
+test('temas prohibidos: la raíz no confunde palabras distintas', () => {
+  const b = bot({ rules: { forbidden_topics: ['precios de la competencia', 'drogas', 'alcohol'] } });
+  for (const text of ['Precisamente por eso abrimos temprano.', 'La droguería está a una cuadra.', 'Tenemos alcoholímetro en recepción.', 'Nuestros precios son los mejores.']) {
+    assert.deepEqual(run(b, [text]).retryable, [], text);
+  }
+  assert.match(run(b, ['Los precios de la competencia son más altos.']).retryable.join(), /precios de la competencia/);
+  assert.match(run(b, ['Aquí no se permiten drogas.']).retryable.join(), /drogas/);
+});
+
+test('último intento: al quitar oraciones se conservan los saltos de línea de las listas', () => {
+  const b = bot({ rules: { banned_phrases: ['con gusto'] } });
+  const last = run(b, ['Opciones:\n• Sencilla $900\n• Doble $1,650\nCon gusto te ayudo.'], { final: true });
+  assert.deepEqual(last.plan.messages, ['Opciones:\n• Sencilla $900\n• Doble $1,650']);
+  const emoji = bot({ rules: { banned_phrases: ['🎉'] } });
+  assert.match(run(emoji, ['¡Listo! 🎉']).retryable.join(), /🎉/, 'una frase prohibida de solo emojis se sigue detectando');
+});
+
+test('datos obligatorios: se aceptan sumas, miles, ordinales, opciones con sí y la confirmación del cliente', () => {
+  const b = bot({
+    flow: { goal: 'Reservar', steps: [{ title: 'Datos' }] },
+    data_fields: [
+      { key: 'personas', label: 'Personas', type: 'number', required: true },
+      { key: 'presupuesto', label: 'Presupuesto', type: 'number', required: true },
+      { key: 'factura', label: 'Factura', type: 'option', options: ['Sí, quiero factura', 'No'], required: true },
+      { key: 'plan', label: 'Plan', type: 'option', options: ['Básico', 'Premium', 'Empresarial'], required: true },
+    ],
+  });
+  const ok = saveRun(b, { personas: '3', presupuesto: '1500', factura: 'Sí, quiero factura', plan: 'Premium' }, 'somos 2 adultos y 1 niño', ['tengo unos 1,500', 'sí', 'la segunda']);
+  assert.deepEqual(ok.plan.saveData, { personas: '3', presupuesto: '1500', factura: 'Sí, quiero factura', plan: 'Premium' }, JSON.stringify(ok.fixes));
+  // Lo propuso el asistente y el cliente dijo que sí.
+  const fecha = bot({ data_fields: [{ key: 'llegada', label: 'Llegada', type: 'date', required: true }] });
+  const confirmed = validateDecision({
+    raw: { ...decision(['¡Listo!']), save_data: [{ field: 'llegada', value: '15 de noviembre' }] },
+    bot: fecha, images: [], sentImageIds: [], groundingSources: [], customerText: 'sí, perfecto', recentBotTexts: ['¿Le reservo el 15 de noviembre?'], final: true,
+  });
+  assert.deepEqual(confirmed.plan.saveData, { llegada: '15 de noviembre' });
+  // Si la IA lo inventa, no se descarta en silencio: se le pide confirmarlo con el cliente.
+  const invented = validateDecision({ raw: { ...decision(['¡Listo!']), save_data: [{ field: 'llegada', value: '15 de noviembre' }] }, bot: fecha, images: [], sentImageIds: [], groundingSources: [], customerText: 'quiero reservar' });
+  assert.match(invented.retryable.join(), /confírmalo con él/);
 });

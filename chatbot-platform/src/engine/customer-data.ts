@@ -30,12 +30,37 @@ const NUMBER_WORDS: Record<string, number> = {
   veinte: 20, treinta: 30, cuarenta: 40, cincuenta: 50, cien: 100,
 };
 const DATE_CUES = new Set([
-  'hoy', 'manana', 'pasado', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado', 'domingo', 'semana', 'mes',
+  'hoy', 'manana', 'pasado', 'dia', 'dias', 'noche', 'tarde', 'finde', 'ahorita', 'ahora', 'temprano', 'madrugada', 'fecha', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado', 'domingo', 'semana', 'mes',
   'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'setiembre', 'octubre',
   'noviembre', 'diciembre', 'proximo', 'proxima', 'siguiente', 'quincena', 'navidad',
 ]);
-const YES = new Set(['si', 'claro', 'correcto', 'exacto', 'ok', 'va', 'dale', 'afirmativo', 'sip', 'obvio', 'perfecto', 'sale']);
+const YES = new Set(['si', 'claro', 'correcto', 'exacto', 'ok', 'va', 'dale', 'afirmativo', 'sip', 'obvio', 'perfecto', 'sale', 'confirmo', 'esa', 'ese']);
 const NO = new Set(['no', 'nunca', 'tampoco', 'ninguno', 'ninguna', 'negativo', 'jamas', 'nop', 'nel']);
+const ORDINALS: Record<string, number> = { primera: 1, primero: 1, segunda: 2, segundo: 2, tercera: 3, tercero: 3, cuarta: 4, cuarto: 4, quinta: 5, quinto: 5, ultima: -1, ultimo: -1 };
+
+/** ¿El cliente dijo que sí? ("sí", "claro, esa", "ok perfecto"). */
+export const affirms = (text: string) => words(text).some((w) => YES.has(w)) && !words(text).some((w) => NO.has(w));
+
+/** Números que dijo el cliente en un mensaje: cifras (sin separadores de miles), palabras ("dos", "docena") y "mil". */
+function numbersIn(text: string): number[] {
+  const ws = words(normalize(text).replace(/(\d)[.,](?=\d{3}(?!\d))/g, '$1'));
+  const out: number[] = [];
+  for (let i = 0; i < ws.length; i++) {
+    const w = ws[i];
+    if (w === 'docena') {
+      // "media docena" = 6, "dos docenas" = 24, "docena" = 12.
+      const prev = NUMBER_WORDS[ws[i - 1]];
+      if (prev !== undefined && out.length) out.pop();
+      out.push(ws[i - 1] === 'media' ? 6 : (prev ?? 1) * 12);
+      continue;
+    }
+    let n = /^\d+$/.test(w) ? Number(w) : NUMBER_WORDS[w];
+    if (n === undefined) continue;
+    if (ws[i + 1] === 'mil') n *= 1000;
+    out.push(n);
+  }
+  return out;
+}
 
 /**
  * ¿El cliente dio este dato? Para los obligatorios: la IA no puede inventarlos para cumplir el objetivo, pero sí
@@ -46,16 +71,27 @@ export function customerGave(field: DataField, value: string, sources: string[])
   const said = sources.map(words);
   switch (field.type) {
     case 'number': {
+      // Una cifra que dijo, o la suma de las que dijo en un mensaje ("2 adultos y 1 niño" → 3).
       const n = Number(value);
-      return Number.isFinite(n) && said.some((ws) => ws.some((w) => (/^\d+(?:\.\d+)?$/.test(w) && Number(w) === n) || NUMBER_WORDS[w] === n));
+      return Number.isFinite(n) && sources.some((s) => {
+        const ns = numbersIn(s);
+        return ns.includes(n) || (ns.length > 1 && ns.reduce((a, b) => a + b, 0) === n);
+      });
     }
     case 'date':
       // Las fechas se escriben de muchas formas ("mañana", "el 1 de noviembre", "15/11"): basta con que el cliente
       // haya dicho alguna fecha; si no dijo ninguna, la IA la inventó.
       return said.some((ws) => ws.some((w) => /\d/.test(w) || DATE_CUES.has(w)));
     case 'option': {
-      const kind = normalize(value);
-      if (kind === 'si' || kind === 'no') return said.some((ws) => ws.some((w) => (kind === 'si' ? YES : NO).has(w)));
+      // Opciones de sí o no ("Sí, quiero factura", "No"): basta con el sí o el no del cliente.
+      const first = words(value)[0];
+      if ((first === 'si' || first === 'no') && said.some((ws) => ws.some((w) => (first === 'si' ? YES : NO).has(w)))) return true;
+      // Por su número u orden en la lista ("la segunda", "opción 2").
+      const index = field.options.findIndex((o) => normalize(o) === normalize(value)) + 1;
+      if (index > 0 && field.options.length > 1 && said.some((ws) => ws.some((w) => {
+        const o = ORDINALS[w];
+        return (o === -1 ? field.options.length : o) === index || (/^\d+$/.test(w) && Number(w) === index);
+      }))) return true;
       return sameMeaning(value, said);
     }
     case 'phone':

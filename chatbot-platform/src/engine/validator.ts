@@ -1,5 +1,5 @@
 import { imagesAfterReply, imagesForAssistant, imagesForContext } from './images.js';
-import { automaticField, customerGave, customerProvided } from './customer-data.js';
+import { affirms, automaticField, customerGave, customerProvided } from './customer-data.js';
 import type { Chatbot, DataField, ImageAsset } from '../types.js';
 import { DecisionSchema, type Action, type Decision } from './decision.js';
 import { unsupportedClaims } from './claims.js';
@@ -258,23 +258,39 @@ export function splitLongMessage(text: string, max: number): string[] {
   return byParagraph.flatMap((p) => (p.length <= max ? [p] : pack(sentences(p), max, ' ')));
 }
 
+/** Oraciones con el separador que las sigue (espacio o salto de línea): al quitar o recortar se conservan las listas. */
+function sentencePieces(text: string): { s: string; sep: string }[] {
+  const parts = text.split(/((?<=[.!?…])[ \t]+|\n+)/);
+  const out: { s: string; sep: string }[] = [];
+  for (let i = 0; i < parts.length; i += 2) {
+    const s = parts[i].trim();
+    const sep = parts[i + 1] ?? '';
+    if (s) out.push({ s, sep: sep.includes('\n') ? sep : ' ' });
+    else if (out.length && sep.includes('\n')) out[out.length - 1].sep = sep;
+  }
+  return out;
+}
+const joinPieces = (ps: { s: string; sep: string }[]) => ps.map((p, i) => (i < ps.length - 1 ? p.s + p.sep : p.s)).join('').trim();
+
 /** Recorta un texto a `max` caracteres por oraciones completas; si ni la primera cabe, por palabras con "…". */
 function clipText(text: string, max: number): string {
   if (text.length <= max) return text;
-  let out = '';
-  for (const s of sentences(text)) {
-    const next = out ? `${out} ${s}` : s;
-    if (next.length > max) break;
-    out = next;
+  const kept: { s: string; sep: string }[] = [];
+  for (const p of sentencePieces(text)) {
+    if (joinPieces([...kept, p]).length > max) break;
+    kept.push(p);
   }
-  if (out) return out;
+  if (kept.length) return joinPieces(kept);
   let words = '';
   for (const w of text.split(/\s+/)) {
     const next = words ? `${words} ${w}` : w;
     if (next.length > max - 1) break;
     words = next;
   }
-  return `${words || truncateChars(text, max - 1)}…`;
+  let out = words || truncateChars(text, max - 1);
+  // Un *negrita* cortado a la mitad no se envía abierto.
+  if ((out.match(/\*/g) ?? []).length % 2) out = out.replace(/\*(?=[^*]*$)/, '');
+  return `${out}…`;
 }
 
 /** Deja la respuesta en `max` caracteres en total, quitando del final (los primeros mensajes son la respuesta). */
@@ -298,6 +314,11 @@ function clipTotal(messages: string[], max: number): string[] {
  */
 const phraseKey = (s: string) => normalize(s).replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 const hasPhrase = (text: string, key: string) => !!key && ` ${phraseKey(text)} `.includes(` ${key} `);
+/** ¿El texto tiene la frase prohibida? Las que son solo símbolos o emojis ("🎉", "!!!") se buscan tal cual. */
+const hasBanned = (text: string, phrase: string) => {
+  const key = phraseKey(phrase);
+  return key ? hasPhrase(text, key) : !!phrase.trim() && normalize(text).includes(normalize(phrase));
+};
 
 const TOPIC_STOPWORDS = new Set(['de', 'del', 'la', 'el', 'los', 'las', 'y', 'o', 'en', 'al', 'un', 'una', 'con', 'por', 'para', 'sobre', 'tema', 'temas']);
 
@@ -306,26 +327,26 @@ const TOPIC_STOPWORDS = new Set(['de', 'del', 'la', 'el', 'los', 'las', 'y', 'o'
  * "armas" encuentra "arma". Si el tema tiene varias palabras, deben aparecer todas. null = tema sin palabras útiles.
  */
 export function topicMatcher(topic: string): ((text: string) => boolean) | null {
-  const parts = normalize(topic).split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 2 && !TOPIC_STOPWORDS.has(w));
-  if (!parts.length) return null;
-  const tests = parts.map((w) => {
-    if (w.length >= 6) {
-      const stem = w.slice(0, w.length - 2);
-      return (t: string) => t.startsWith(stem);
-    }
-    const base = w.endsWith('s') ? w.slice(0, -1) : w;
-    return (t: string) => t === base || t === `${base}s` || t === `${base}es`;
+  const roots = normalize(topic).split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 2 && !TOPIC_STOPWORDS.has(w)).map(wordRoot);
+  if (!roots.length) return null;
+  // Todas las palabras del tema en una misma oración (así se puede quitar justo esa oración).
+  return (text) => sentences(text).some((s) => {
+    const words = new Set(normalize(s).split(/[^\p{L}\p{N}]+/u).filter(Boolean).map(wordRoot));
+    return roots.every((r) => words.has(r));
   });
-  return (text) => {
-    const words = normalize(text).split(/[^\p{L}\p{N}]+/u).filter(Boolean);
-    return tests.every((test) => words.some(test));
-  };
+}
+
+/** Terminaciones de género, número y derivadas comunes ("política", "políticos", "religiosas" → misma raíz). */
+const SUFFIXES = ['aciones', 'acion', 'iones', 'iosos', 'iosas', 'ioso', 'iosa', 'ion', 'icos', 'icas', 'ico', 'ica', 'os', 'as', 'es', 'o', 'a', 'e', 's'];
+function wordRoot(w: string): string {
+  for (const suf of SUFFIXES) if (w.endsWith(suf) && w.length - suf.length >= 3) return w.slice(0, -suf.length);
+  return w;
 }
 
 /** Quita las oraciones que cumplen `test`; devuelve los mensajes que aún tienen contenido. */
 function dropSentences(messages: string[], test: (sentenceNorm: string, sentence: string) => boolean): string[] {
   return messages
-    .map((m) => sentences(m).filter((x) => !test(normalize(x), x)).join(' ').trim())
+    .map((m) => joinPieces(sentencePieces(m).filter((p) => !test(normalize(p.s), p.s))))
     .filter((m) => /[\p{L}\p{N}]/u.test(m));
 }
 
@@ -448,12 +469,11 @@ export function validateDecision(input: ValidationInput): ValidationResult {
   }
 
   // ---------- Frases prohibidas ----------
-  const banned = rules.banned_phrases.filter((p) => hasPhrase(messages.join(' '), phraseKey(p)));
-  const bannedKeys = banned.map(phraseKey);
+  const banned = rules.banned_phrases.filter((p) => hasBanned(messages.join(' '), p));
   if (banned.length) {
     soft(
       `No uses estas frases: ${banned.map((b) => `"${b}"`).join(', ')}.`,
-      () => (messages = dropSentences(messages, (_n, x) => bannedKeys.some((k) => hasPhrase(x, k)))),
+      () => (messages = dropSentences(messages, (_n, x) => banned.some((p) => hasBanned(x, p)))),
       `Se quitaron oraciones con frases prohibidas: ${banned.join(', ')}`,
     );
   }
@@ -600,8 +620,12 @@ export function validateDecision(input: ValidationInput): ValidationResult {
     }
     // Un dato obligatorio bloquea el objetivo: la IA no puede inventar una fecha, una cantidad o una opción que el
     // cliente nunca dio para darlo por cumplido.
-    if (configured?.required && !freeAnswer && !customerGave(f, clean, sources)) {
+    // También vale si el asistente lo propuso y el cliente dijo que sí ("¿Le reservo el 15 de noviembre?" → "sí").
+    const confirmed = affirms(input.customerText) && (input.recentBotTexts ?? []).some((t) => customerGave(f, clean, [t]));
+    if (configured?.required && !freeAnswer && !confirmed && !customerGave(f, clean, sources)) {
       fixes.push(`Dato obligatorio no proporcionado por el cliente ignorado: ${f.key}`);
+      // Sin descartarlo en silencio (el objetivo se quedaría esperando): se pide confirmarlo con el cliente.
+      if (!input.final) retryable.push(`No guardes "${configured.label || f.key}" = "${clean}": el cliente no lo dijo. Pregúntaselo o confírmalo con él antes de guardarlo.`);
       continue;
     }
     if (!configured && !Object.hasOwn(input.knownData ?? {}, f.key) && Object.keys(input.knownData ?? {}).length + Object.keys(saveData).length >= 100) continue;
