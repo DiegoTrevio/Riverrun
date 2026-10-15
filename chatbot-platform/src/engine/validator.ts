@@ -1,5 +1,5 @@
 import { imagesAfterReply, imagesForAssistant, imagesForContext } from './images.js';
-import { automaticField, customerProvided } from './customer-data.js';
+import { automaticField, customerGave, customerProvided } from './customer-data.js';
 import type { Chatbot, DataField, ImageAsset } from '../types.js';
 import { DecisionSchema, type Action, type Decision } from './decision.js';
 import { unsupportedClaims } from './claims.js';
@@ -299,6 +299,29 @@ function clipTotal(messages: string[], max: number): string[] {
 const phraseKey = (s: string) => normalize(s).replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 const hasPhrase = (text: string, key: string) => !!key && ` ${phraseKey(text)} `.includes(` ${key} `);
 
+const TOPIC_STOPWORDS = new Set(['de', 'del', 'la', 'el', 'los', 'las', 'y', 'o', 'en', 'al', 'un', 'una', 'con', 'por', 'para', 'sobre', 'tema', 'temas']);
+
+/**
+ * Coincidencia de un tema prohibido por la raíz de sus palabras: "política" encuentra "políticos" y "politizar",
+ * "armas" encuentra "arma". Si el tema tiene varias palabras, deben aparecer todas. null = tema sin palabras útiles.
+ */
+export function topicMatcher(topic: string): ((text: string) => boolean) | null {
+  const parts = normalize(topic).split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 2 && !TOPIC_STOPWORDS.has(w));
+  if (!parts.length) return null;
+  const tests = parts.map((w) => {
+    if (w.length >= 6) {
+      const stem = w.slice(0, w.length - 2);
+      return (t: string) => t.startsWith(stem);
+    }
+    const base = w.endsWith('s') ? w.slice(0, -1) : w;
+    return (t: string) => t === base || t === `${base}s` || t === `${base}es`;
+  });
+  return (text) => {
+    const words = normalize(text).split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+    return tests.every((test) => words.some(test));
+  };
+}
+
 /** Quita las oraciones que cumplen `test`; devuelve los mensajes que aún tienen contenido. */
 function dropSentences(messages: string[], test: (sentenceNorm: string, sentence: string) => boolean): string[] {
   return messages
@@ -436,17 +459,24 @@ export function validateDecision(input: ValidationInput): ValidationResult {
   }
   // Temas prohibidos: el bot no puede sacarlos por su cuenta. Si el cliente los mencionó, sí puede
   // nombrarlos para declinar con amabilidad (se registra para revisión).
-  const customerNorm = normalize(input.customerText);
-  const forbiddenOut = rules.forbidden_topics.map((t) => t.trim()).filter((t) => t.length > 2 && normalize(messages.join(' ')).includes(normalize(t)));
-  const unprompted = forbiddenOut.filter((t) => !customerNorm.includes(normalize(t)));
+  const topics = rules.forbidden_topics
+    .map((t) => t.trim())
+    .filter((t) => t.length > 2)
+    .flatMap((t) => {
+      const match = topicMatcher(t);
+      return match ? [{ t, match }] : [];
+    });
+  const forbiddenOut = topics.filter((x) => x.match(messages.join(' ')));
+  const unpromptedTopics = forbiddenOut.filter((x) => !x.match(input.customerText));
+  const unprompted = unpromptedTopics.map((x) => x.t);
   if (unprompted.length) {
     soft(
       `No hables de estos temas: ${unprompted.map((t) => `"${t}"`).join(', ')}. El cliente no los mencionó; quítalos de la respuesta.`,
-      () => (messages = dropSentences(messages, (n) => unprompted.some((t) => n.includes(normalize(t))))),
+      () => (messages = dropSentences(messages, (_n, s) => unpromptedTopics.some((x) => x.match(s)))),
       `Se quitaron oraciones con temas prohibidos: ${unprompted.join(', ')}`,
     );
   }
-  const declined = forbiddenOut.filter((t) => !unprompted.includes(t));
+  const declined = forbiddenOut.map((x) => x.t).filter((t) => !unprompted.includes(t));
   if (declined.length) fixes.push(`Revisar: el cliente preguntó por un tema prohibido (${declined.join(', ')})`);
 
   // ---------- Datos sensibles: ni números de tarjeta en la respuesta ----------
@@ -566,6 +596,12 @@ export function validateDecision(input: ValidationInput): ValidationResult {
     if (f.type === 'phone' && input.contactPhone) sources.push(input.contactPhone);
     if ((!configured || freeAnswer) && !customerProvided(f, clean, sources)) {
       fixes.push(`Dato no proporcionado por el cliente ignorado: ${f.key}`);
+      continue;
+    }
+    // Un dato obligatorio bloquea el objetivo: la IA no puede inventar una fecha, una cantidad o una opción que el
+    // cliente nunca dio para darlo por cumplido.
+    if (configured?.required && !freeAnswer && !customerGave(f, clean, sources)) {
+      fixes.push(`Dato obligatorio no proporcionado por el cliente ignorado: ${f.key}`);
       continue;
     }
     if (!configured && !Object.hasOwn(input.knownData ?? {}, f.key) && Object.keys(input.knownData ?? {}).length + Object.keys(saveData).length >= 100) continue;
