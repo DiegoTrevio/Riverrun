@@ -152,7 +152,8 @@ t('por porcentajes: 70 / 30 entre Ana y Beto', async () => {
 
 t('horario y días libres de cada persona: el servicio solo ofrece lo que alguien puede atender', async () => {
   const svc = await createService({ name: 'Revisión' });
-  const day = (await slotsOf(svc.id)).at(-1)!.date;
+  // El último día entre semana que ofrece el servicio (Beto no trabaja sábado ni domingo; depende de la fecha de hoy).
+  const day = (await slotsOf(svc.id)).map((s) => s.date).filter((d) => ![0, 6].includes(new Date(`${d}T12:00:00Z`).getUTCDay())).at(-1)!;
   const mornings = Object.fromEntries(['mon', 'tue', 'wed', 'thu', 'fri'].map((d) => [d, [['09:00', '12:00']]]));
   // Beto solo trabaja en las mañanas; Ana tiene ese día libre.
   assert.equal((await people.beto.api('PUT', `/api/team/${people.beto.id}/schedule`, { hours: { ...mornings, sat: [], sun: [] }, time_off: [] })).statusCode, 200);

@@ -204,21 +204,24 @@ async function sendConnectionAlert(ch: Pick<Channel, 'id' | 'account_id' | 'name
 
 /** Aviso de que un canal se desconectó; `hours` si sigue así desde hace horas. El motivo dice si hay que escanear el QR. */
 export async function notifyDisconnected(ch: Pick<Channel, 'id' | 'account_id' | 'name' | 'type'>, hours = 0) {
-  const social = ch.type === 'zernio';
+  const social = ch.type !== 'whatsapp';
   const still = hours > 0 ? ` (sigue así desde hace ${hours} h)` : '';
-  const reason = social ? '' : String((await queryOne<{ r: string }>(`SELECT disconnect_reason AS r FROM channels WHERE id = $1`, [ch.id]))?.r ?? '');
+  const reason = String((await queryOne<{ r: string }>(`SELECT disconnect_reason AS r FROM channels WHERE id = $1`, [ch.id]))?.r ?? '');
   const relink = NEEDS_RELINK.includes(reason);
-  const title = (social ? 'Tu red social se desconectó' : relink ? 'Hay que volver a vincular tu WhatsApp' : 'Tu WhatsApp se desconectó') + still;
-  const body = social
-    ? `El canal "${ch.name}" se desconectó y el asistente no está recibiendo mensajes. Vuelve a conectarlo desde el panel con "Reconectar".`
-    : `El canal "${ch.name}" no está conectado y el asistente no está recibiendo mensajes. ${REASON_TEXT[reason] ?? REASON_TEXT.connection_lost}`;
+  const facebook = ch.type === 'messenger' || ch.type === 'instagram';
+  const title = (facebook ? `Tu ${ch.type === 'instagram' ? 'Instagram' : 'Messenger'} se desconectó` : social ? 'Tu red social se desconectó' : relink ? 'Hay que volver a vincular tu WhatsApp' : 'Tu WhatsApp se desconectó') + still;
+  const body = facebook
+    ? `El canal "${ch.name}" no está conectado y el asistente no está recibiendo mensajes. ${reason === 'token_revoked' ? 'Facebook retiró el permiso (por ejemplo, se cambió la contraseña o se quitó el acceso a la página). ' : ''}Vuelve a conectarlo desde el panel con «Conectar con Facebook».`
+    : social
+      ? `El canal "${ch.name}" se desconectó y el asistente no está recibiendo mensajes. Vuelve a conectarlo desde el panel con "Reconectar".`
+      : `El canal "${ch.name}" no está conectado y el asistente no está recibiendo mensajes. ${REASON_TEXT[reason] ?? REASON_TEXT.connection_lost}`;
   await sendConnectionAlert(ch, title, body);
 }
 
 export async function notifyReconnected(ch: Pick<Channel, 'id' | 'account_id' | 'name' | 'type'>) {
   const s = await connectionAlerts(ch.account_id);
   if (!s.notify_reconnected) return;
-  const what = ch.type === 'zernio' ? 'Tu red social' : 'Tu WhatsApp';
+  const what = ch.type === 'whatsapp' ? 'Tu WhatsApp' : ch.type === 'messenger' ? 'Tu Messenger' : ch.type === 'instagram' ? 'Tu Instagram' : 'Tu red social';
   await sendConnectionAlert(ch, `${what} volvió a conectarse`, `El canal "${ch.name}" está conectado otra vez y el asistente ya responde los mensajes nuevos.`);
 }
 

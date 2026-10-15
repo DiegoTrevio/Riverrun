@@ -4,7 +4,8 @@ import { api, area, clone, field, fill, h, run, select, state, text, toast } fro
 import { importCard } from './importer.js';
 import { render } from './main.js';
 import { tabPlayground } from './playground.js';
-import { withAcct } from './session.js';
+import { metaConnectButton } from './meta.js';
+import { isSuper, withAcct } from './session.js';
 import { whatsappConnector } from './whatsapp.js';
 
 /* ------------------------------ Primeros pasos (asistente de configuración) ------------------------------ */
@@ -13,6 +14,7 @@ const ONB_STEPS = [
   ['negocio', 'business', 'Tu negocio'],
   ['asistente', 'assistant', 'Tu asistente'],
   ['prueba', 'test', 'Pruébalo'],
+  ['redes', 'networks', 'Redes (opcional)'],
   ['whatsapp', 'whatsapp', 'WhatsApp'],
 ];
 
@@ -65,7 +67,43 @@ export async function viewOnboarding(root, stepKey) {
     tabImages(photos, bot);
     return tabPlayground(pg, bot);
   }
+  if (slug === 'redes') return onbNetworks(box, ob, bot, () => next(slug));
   if (slug === 'whatsapp') return onbWhatsapp(box, ob, bot);
+}
+
+/** Paso opcional: Facebook e Instagram con un botón y las demás redes (Zernio) una por una. Se puede omitir. */
+async function onbNetworks(box, ob, bot, done) {
+  const metaDirect = !!state.meta.meta_connect_enabled;
+  const networks = state.meta.zernio_enabled ? (state.meta.social_networks || []).filter((n) => !(metaDirect && ['facebook', 'instagram'].includes(n.id))) : [];
+  const channels = (await api('GET', `/api/channels${isSuper() ? `?account_id=${bot.account_id}` : ''}`)).filter((c) => c.account_id === bot.account_id && ['messenger', 'instagram', 'zernio'].includes(c.type));
+  const finish = async () => { if (await run(() => api('POST', withAcct('/api/onboarding/step'), { step: 'networks' }))) done(); };
+  const connectNetwork = (n) => h('button', { onclick: async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      // La red se autoriza en su ficha; al volver, la conexión ya responde con el asistente.
+      const created = await run(() => api('POST', '/api/channels', { type: 'zernio', config: { platform: n.id }, name: n.label, chatbot_id: bot.id, ...(isSuper() ? { account_id: bot.account_id } : {}) }));
+      if (created) location.hash = `#/bot/${bot.id}/conexiones/${created.id}`;
+    } finally { button.disabled = false; }
+  } }, n.label);
+  if (!ob.email_verified) {
+    box.append(h('div', { class: 'card' }, h('p', {}, `Confirma tu correo (${state.me.user.email}) para conectar redes. Puedes hacerlo después desde Conexiones.`), h('button', { class: 'primary', onclick: finish }, 'Omitir por ahora')));
+    return;
+  }
+  box.append(h('div', { class: 'card' },
+    h('h2', { style: 'margin-top:0' }, 'Conecta tus redes sociales'),
+    h('p', { class: 'muted' }, 'Los mensajes directos de tus redes llegan a las mismas conversaciones y ', bot.personality?.assistant_name || 'tu asistente', ' los contesta. Es opcional: puedes hacerlo después desde Conexiones.'),
+    channels.length ? h('ul', {}, channels.map((c) => h('li', {}, c.name, ' ', h('span', { class: `badge ${c.connection_state === 'close' ? 'red' : 'green'}` }, c.connection_state === 'close' ? 'Desconectado' : 'Conectado')))) : null,
+    metaDirect ? h('div', { class: 'list-item' },
+      h('h3', { style: 'margin:0' }, '💬📸 Facebook e Instagram'),
+      h('p', { class: 'help' }, 'Inicia sesión con Facebook y elige tus páginas y tu Instagram profesional.'),
+      metaConnectButton({ chatbotId: bot.id, accountId: bot.account_id })) : null,
+    networks.length ? h('div', { class: 'list-item' },
+      h('h3', { style: 'margin:0' }, 'Otras redes'),
+      h('div', { class: 'row' }, networks.map(connectNetwork))) : null,
+    !metaDirect && !networks.length ? h('p', { class: 'help' }, 'Las redes sociales todavía no están activadas en esta plataforma.') : null,
+    h('div', { class: 'row', style: 'margin-top:12px' },
+      h('button', { class: 'primary', onclick: finish }, channels.length ? 'Continuar' : 'Omitir por ahora'))));
 }
 
 function onbBusiness(box, ob, done) {
@@ -152,6 +190,7 @@ function onbDone(box, ob) {
       h('li', {}, h('a', { href: '#/conversations' }, 'Ver las conversaciones'), ' y tomar el control cuando quieras.'),
       ob.chatbot_id ? h('li', {}, h('a', { href: `#/bot/${ob.chatbot_id}/conocimiento` }, 'Agregar más información'), ' o ', h('a', { href: `#/bot/${ob.chatbot_id}/imagenes` }, 'más fotos'), '.') : null,
       h('li', {}, h('a', { href: '#/agenda/servicios' }, 'Configurar tu agenda'), ' para que agende citas solo.'),
+      h('li', {}, h('a', { href: '#/inicio/redes' }, 'Conectar Facebook, Instagram y otras redes'), '.'),
       h('li', {}, h('a', { href: '#/automation' }, 'Crear respuestas automáticas y recordatorios'), '.'),
       h('li', {}, h('a', { href: '#/users' }, 'Invitar a tu equipo'), '.'))));
 }

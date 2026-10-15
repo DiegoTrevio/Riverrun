@@ -19,7 +19,9 @@ import { DataFieldSchema, FlowSchema, PersonalitySchema, RulesSchema, type User 
 import { sendVerification } from './signup.js';
 import { parse } from './util.js';
 
-export const ONBOARDING_STEPS = ['business', 'assistant', 'photos', 'test', 'whatsapp'] as const;
+export const ONBOARDING_STEPS = ['business', 'assistant', 'photos', 'test', 'networks', 'whatsapp'] as const;
+/** Pasos opcionales: no impiden terminar la configuración. */
+const OPTIONAL_STEPS: readonly string[] = ['photos', 'networks'];
 
 /** Las cuentas del autoregistro deben confirmar su correo antes de conectar canales reales. */
 export function assertVerified(user: User) {
@@ -41,20 +43,23 @@ export async function onboardingRoutes(api: FastifyInstance) {
     const accountId = await targetAccount(req.user, req.query.account_id);
     const acc = (await store.getAccount(accountId))!;
     const bot = await mainBot(accountId);
-    const [knowledge, images, wa] = await Promise.all([
+    const [knowledge, images, wa, social] = await Promise.all([
       bot ? store.listKnowledge(bot.id) : [],
       bot ? store.listImages(bot.id) : [],
       queryOne<{ id: string }>(`SELECT id FROM channels WHERE account_id = $1 AND type = 'whatsapp' ORDER BY created_at LIMIT 1`, [accountId]),
+      queryOne<{ id: string }>(`SELECT id FROM channels WHERE account_id = $1 AND connection_state = 'open'
+        AND (type = 'zernio' OR (type IN ('messenger', 'instagram') AND config->>'connected_via' = 'facebook')) LIMIT 1`, [accountId]),
     ]);
     const done = {
       business: !!acc.onboarding.business,
       assistant: !!bot && knowledge.length > 0,
       photos: images.length > 0 || !!acc.onboarding.photos,
       test: !!acc.onboarding.test,
+      networks: !!social || !!acc.onboarding.networks,
       whatsapp: !!acc.onboarding.whatsapp,
     };
-    // Las fotos son opcionales: no bloquean terminar la configuración.
-    const complete = ONBOARDING_STEPS.filter((s) => s !== 'photos').every((s) => done[s]);
+    // Las fotos y las redes son opcionales: no bloquean terminar la configuración.
+    const complete = ONBOARDING_STEPS.filter((s) => !OPTIONAL_STEPS.includes(s)).every((s) => done[s]);
     if (complete && !acc.onboarding.done) await store.markOnboarding(accountId, { done: true });
     const settings = await astore.getSettings(accountId);
     const answers = bot ? await store.getChatbot(bot.id) : null;
@@ -178,10 +183,10 @@ export async function onboardingRoutes(api: FastifyInstance) {
     return { ok: true, chatbot_id: botId, kept_configuration: keptConfiguration };
   });
 
-  /** Pasos que se marcan a mano: fotos (omitido) y prueba en el simulador. */
+  /** Pasos que se marcan a mano: fotos y redes (omitidos o hechos) y prueba en el simulador. */
   api.post('/api/onboarding/step', admins, async (req: any) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
-    const { step } = parse(z.object({ step: z.enum(['photos', 'test']) }), req.body);
+    const { step } = parse(z.object({ step: z.enum(['photos', 'test', 'networks']) }), req.body);
     await store.markOnboarding(accountId, { [step]: true });
     return { ok: true };
   });

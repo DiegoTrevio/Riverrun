@@ -3,6 +3,7 @@ import { saveBar } from './bot.js';
 import { api, area, check, clone, field, fill, h, lines, run, select, state, text, toast, confirmAction, ask } from './core.js';
 import { render } from './main.js';
 import { accountName, acct, isSuper, isAdmin } from './session.js';
+import { metaChannelPanel } from './meta.js';
 import { socialConnector } from './social.js';
 import { whatsappConnector } from './whatsapp.js';
 
@@ -38,6 +39,7 @@ export function connectionBadge(c) {
   let label = c.active ? 'Activo' : 'Inactivo';
   let color = c.active ? 'green' : '';
   if (c.active && c.type === 'whatsapp') [color, label] = STATE_LABEL[c.connection_state] || ['', 'Sin información'];
+  if (c.active && c.config?.connected_via === 'facebook') [color, label] = c.connection_state === 'close' ? ['red', 'Desconectado'] : ['green', 'Conectado'];
   if (c.active && c.type === 'zernio') [color, label] = !c.config?.account_id ? ['orange', 'Pendiente de conectar'] : c.connection_state === 'close' ? ['red', 'Desconectado'] : ['green', 'Conectado'];
   return h('span', { class: `badge ${color}` }, label);
 }
@@ -261,7 +263,11 @@ export async function viewChannel(root, id, parentId = null) {
   };
   const copyBtn = (value) => h('button', { class: 'small', onclick: async () => { try { await navigator.clipboard.writeText(value); toast('Copiado'); } catch { toast('No se pudo copiar', true); } } }, 'Copiar');
   const connection = [];
-  if (ch.type === 'whatsapp') {
+  // Conectado con «Conectar con Facebook»: no hay tokens que copiar ni webhook que configurar.
+  const viaFacebook = (ch.type === 'messenger' || ch.type === 'instagram') && ch.config.connected_via === 'facebook';
+  if (viaFacebook) {
+    connection.push(metaChannelPanel(ch, { onChange: render }));
+  } else if (ch.type === 'whatsapp') {
     const test = { number: state.me.user.phone || '', text: 'Mensaje de prueba ✅' };
     const box = h('div');
     const setStatus = (s) => { const [cls, label] = STATE_LABEL[s] || ['', s]; status.textContent = label; status.className = `badge ${cls}`; };
@@ -340,13 +346,15 @@ export async function viewChannel(root, id, parentId = null) {
       check(m, 'active', 'Activo (si se desactiva, los mensajes se guardan pero no se responden)')),
     ch.type === 'whatsapp'
       ? h('details', { class: 'card' }, h('summary', {}, 'Configuración avanzada de WhatsApp'), h('div', { style: 'margin-top:12px' }, channelConfigFields(ch, cfg)))
-      : h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, 'Configuración'), channelConfigFields(ch, cfg)),
+      : viaFacebook
+        ? (isSuper() ? h('details', { class: 'card' }, h('summary', {}, 'Datos técnicos de Meta'), h('div', { style: 'margin-top:12px' }, channelConfigFields(ch, cfg))) : '')
+        : h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, 'Configuración'), channelConfigFields(ch, cfg)),
     ch.type === 'whatsapp' ? '' : h('div', { class: 'card' },
       h('div', { class: 'row between' }, h('h2', { style: 'margin:0' }, 'Conexión'), h('span', {}, 'Estado: ', status)),
-      ch.type !== 'webchat' ? h('p', { class: 'muted small' }, 'Completa los datos necesarios. Al verificar o conectar, primero se guardan y después se valida la conexión.') : null,
+      ch.type !== 'webchat' && !viaFacebook ? h('p', { class: 'muted small' }, 'Completa los datos necesarios. Al verificar o conectar, primero se guardan y después se valida la conexión.') : null,
       connection,
       result,
-      ch.type !== 'webchat' ? h('details', { style: 'margin-top:12px' }, h('summary', {}, 'URL del webhook'),
+      ch.type !== 'webchat' && !viaFacebook ? h('details', { style: 'margin-top:12px' }, h('summary', {}, 'URL del webhook'),
         h('p', {}, h('code', {}, ch.webhook_url), ' ', copyBtn(ch.webhook_url)),
         h('button', { class: 'small', onclick: async () => { if (await confirmAction('¿Generar una nueva URL? La anterior dejará de funcionar y tendrás que volver a conectar.')) { if (!(await run(() => api('POST', `/api/channels/${id}/rotate-token`), 'Nueva URL generada'))) return; render(); } } }, 'Regenerar URL secreta')) : null),
     saveBar(save, h('span', { class: 'row', style: 'margin-left:auto' },

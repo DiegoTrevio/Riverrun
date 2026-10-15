@@ -46,6 +46,17 @@ export const config = {
   publicBaseUrl: env('PUBLIC_BASE_URL', env('WEBHOOK_BASE_URL', 'http://localhost:3000')).replace(/\/$/, ''),
   telegramApiUrl: env('TELEGRAM_API_URL', 'https://api.telegram.org').replace(/\/$/, ''),
   metaGraphUrl: env('META_GRAPH_URL', 'https://graph.facebook.com').replace(/\/$/, ''),
+  /** App de Meta de la plataforma: cada negocio conecta Facebook e Instagram con un botón. */
+  meta: {
+    appId: env('META_APP_ID', ''),
+    appSecret: env('META_APP_SECRET', ''),
+    /** Configuración de «Facebook Login for Business» (opcional; si falta se piden los permisos uno por uno). */
+    configId: env('META_CONFIG_ID', ''),
+    /** Token que Meta envía al verificar el webhook; vacío = derivado de la clave del servidor. */
+    verifyToken: env('META_VERIFY_TOKEN', ''),
+    graphVersion: env('META_GRAPH_VERSION', 'v21.0'),
+    dialogUrl: env('META_DIALOG_URL', 'https://www.facebook.com').replace(/\/$/, ''),
+  },
   /** Base de la API de Zernio (https://zernio.com/api + /v1). */
   zernioApiUrl: env('ZERNIO_API_URL', 'https://zernio.com/api/v1').replace(/\/$/, ''),
   uploadsDir: path.resolve(env('UPLOADS_DIR', './data/uploads')),
