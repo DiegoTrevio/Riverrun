@@ -132,6 +132,8 @@ export function extractMoney(text: string): string[] {
 export class FactCorpus {
   private text: string;
   private digitsJoined: string;
+  private phoneDigits: string[];
+  private moneyDigits: Set<string>;
   private numbers: Set<string>;
   private urls: string[];
   private emails: Set<string>;
@@ -145,18 +147,26 @@ export class FactCorpus {
     this.numbers = new Set(f.numbers);
     for (const p of f.phones) this.numbers.add(p);
     this.digitsJoined = '|' + [...f.phones, ...f.numbers.map((n) => n.replace(/\D/g, ''))].join('|') + '|';
+    this.phoneDigits = f.phones;
+    // Los teléfonos no son precios: "$234" no se valida porque esos dígitos estén en el número del cliente.
+    this.moneyDigits = new Set(f.numbers.map((n) => n.replace(/\D/g, '')));
   }
 
+  /**
+   * Un número debe aparecer completo en las fuentes: "650" no se valida porque exista "1,650" ni porque esté dentro
+   * de un teléfono o de la fecha. Única excepción: el número local de un teléfono conocido (7+ dígitos, sin lada).
+   */
   hasNumber(n: string) {
-    if (n.replace(/\D/g, '').length < 2) return true; // un dígito suelto no se verifica
-    if (this.numbers.has(n)) return true;
     const d = n.replace(/\D/g, '');
-    return d.length >= 3 && this.digitsJoined.includes(d);
+    if (d.length < 2) return true; // un dígito suelto no se verifica
+    if (this.numbers.has(n) || this.digitsJoined.includes(`|${d}|`)) return true;
+    return d.length >= 7 && this.phoneDigits.some((p) => p.endsWith(d));
   }
 
-  /** Montos de dinero: siempre se verifican, aunque sean de un dígito ("$1" no es un detalle menor). */
+  /** Montos de dinero: siempre se verifican y deben coincidir con una cifra del negocio, nunca con parte de otra. */
   hasMoney(n: string) {
-    return this.numbers.has(n) || (this.hasNumber(n) && n.replace(/\D/g, '').length >= 2);
+    const d = n.replace(/\D/g, '');
+    return this.numbers.has(n) || (d.length >= 2 && this.moneyDigits.has(d));
   }
 
   /** ¿`amount` = número del corpus × k, con k entre 2 y 60 y k aceptado por `quantityOk`? */
@@ -181,8 +191,14 @@ export class FactCorpus {
     return false;
   }
 
+  /**
+   * Un enlace debe estar en las fuentes, o ser una parte de uno de ellos (el dominio de una página conocida). No se
+   * acepta una ruta inventada sobre un dominio real ("hotel.mx/promo-50") ni un dominio que solo empieza o termina igual.
+   */
   hasUrl(u: string) {
-    return this.urls.some((k) => k === u || k.startsWith(u) || u.startsWith(k)) || this.text.includes(u);
+    if (this.urls.some((k) => k === u || k.startsWith(`${u}/`))) return true;
+    const esc = u.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`(^|[^a-z0-9.@-])(?:https?://)?(?:www\\.)?${esc}(?=$|[/\\s"'<>)\\]]|[.,;:!?](?:\\s|$))`).test(this.text);
   }
 
   hasEmail(e: string) {
