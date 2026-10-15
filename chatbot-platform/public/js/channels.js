@@ -266,6 +266,16 @@ export async function viewChannel(root, id, parentId = null) {
     const box = h('div');
     const setStatus = (s) => { const [cls, label] = STATE_LABEL[s] || ['', s]; status.textContent = label; status.className = `badge ${cls}`; };
     const showConnector = () => fill(box, whatsappConnector(id, { onState: setStatus, onConnected: () => { const nav = state.navigation; const timer = setTimeout(() => { if (nav === state.navigation && root.isConnected) render(); }, 2500); state.timers.push(timer); } }));
+    // Por qué se desconectó (si estaba conectado): dice si se reconecta solo o hay que volver a escanear el QR.
+    const reasons = {
+      logged_out: 'Se cerró la sesión desde el teléfono (se quitó el dispositivo vinculado, o el teléfono estuvo sin internet más de 14 días). Escanea el código QR de nuevo.',
+      banned: 'WhatsApp bloqueó o restringió este número. Revisa el teléfono antes de volver a vincularlo.',
+      replaced: 'La sesión se abrió en otro lugar (WhatsApp Web u otro servidor). Ciérrala allá y vuelve a vincularlo aquí.',
+      connection_lost: 'Se perdió la conexión. Se está intentando recuperar sola; si no vuelve en unos minutos, vincúlalo de nuevo.',
+    };
+    const downNote = ch.connection_state !== 'open' && ch.down_since
+      ? h('p', { class: 'banner warn', role: 'status' }, h('strong', {}, `Desconectado desde ${new Date(ch.down_since).toLocaleString()}. `), reasons[ch.disconnect_reason] || reasons.connection_lost)
+      : null;
     if (ch.connection_state === 'open') {
       fill(box,
         h('p', {}, h('span', { class: 'badge green' }, '✓ Conectado'), ' ',
@@ -275,6 +285,7 @@ export async function viewChannel(root, id, parentId = null) {
           h('button', { class: 'danger', onclick: async () => { if (await confirmAction('¿Desconectar este WhatsApp? El asistente dejará de responder por aquí.')) { if (!(await run(() => api('POST', `/api/channels/${id}/whatsapp/logout`), 'Desconectado'))) return; render(); } } }, 'Desconectar')));
     } else {
       showConnector();
+      if (downNote) box.prepend(downNote);
     }
     connection.push(
       box,

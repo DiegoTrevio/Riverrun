@@ -1,6 +1,6 @@
 import { evolutionFor } from './channels/whatsapp.js';
 import { query } from './db.js';
-import { notifyDisconnected, recordConnectionState } from './lifecycle.js';
+import { claimDisconnectNotice, connectionAlerts, NEEDS_RELINK, notifyDisconnected, recordConnectionState } from './lifecycle.js';
 import { logEvent } from './logs.js';
 import * as store from './store/index.js';
 
@@ -15,7 +15,7 @@ import * as store from './store/index.js';
  */
 const misses = new Map<string, number>();
 const lastReconnect = new Map<string, number>();
-export const WATCH = { reconnectEveryMs: 15 * 60_000, reconnectForHours: 24, renotifyHours: 6, renotifyForDays: 7, freshCodeSeconds: 180 };
+export const WATCH = { reconnectEveryMs: 15 * 60_000, reconnectForHours: 24, freshCodeSeconds: 180 };
 
 const ageS = (at: unknown, now: number) => (at ? (now - new Date(String(at)).getTime()) / 1000 : Infinity);
 
@@ -43,14 +43,17 @@ export async function watchWhatsapp(now = Date.now()): Promise<{ checked: number
     if (n < (state === 'connecting' ? 3 : 2)) continue;
     r.down++;
     if (ch.connection_state !== 'close') await recordConnectionState(ch, 'close');
-    const fresh = (await query<{ down_since: string | null; qr_at: string | null; pairing_at: string | null }>(
-      `SELECT down_since, qr_at, pairing_at FROM channels WHERE id = $1`, [id]))[0];
+    const fresh = (await query<{ down_since: string | null; qr_at: string | null; pairing_at: string | null; disconnect_reason: string }>(
+      `SELECT down_since, qr_at, pairing_at, disconnect_reason FROM channels WHERE id = $1`, [id]))[0];
     if (!fresh?.down_since) continue;
     const downMs = now - new Date(fresh.down_since).getTime();
     // Reconectar solo una sesión cerrada, no una que ya se está reconectando, y nunca encima de un QR o código que alguien
     // esté escaneando en el panel (pedir otro lo invalidaría).
     const codeInUse = Math.min(ageS(fresh.qr_at, now), ageS(fresh.pairing_at, now)) < WATCH.freshCodeSeconds;
-    if (state === 'close' && !codeInUse && downMs <= WATCH.reconnectForHours * 3600_000 && now - (lastReconnect.get(id) ?? 0) >= WATCH.reconnectEveryMs) {
+    // Con la sesión cerrada en el teléfono, el número bloqueado o la sesión abierta en otro lugar, reconectar no sirve
+    // (solo generaría códigos QR nuevos): hace falta que alguien la vincule de nuevo.
+    const relink = NEEDS_RELINK.includes(fresh.disconnect_reason);
+    if (state === 'close' && !relink && !codeInUse && downMs <= WATCH.reconnectForHours * 3600_000 && now - (lastReconnect.get(id) ?? 0) >= WATCH.reconnectEveryMs) {
       lastReconnect.set(id, now);
       try {
         const res = await evolutionFor(ch).connect(ch.config.instance);
@@ -66,12 +69,10 @@ export async function watchWhatsapp(now = Date.now()): Promise<{ checked: number
         await logEvent({ level: 'warn', source: 'evolution', message: `No se pudo reconectar WhatsApp automáticamente (${ch.name}): ${e?.message ?? e}`, accountId: ch.account_id, channelId: ch.id });
       }
     }
-    // Primer aviso de esta caída (si el webhook no lo dio, p. ej. pasó por "connecting") o recordatorio cada 6 horas.
-    const claimed = await query(`UPDATE channels SET disconnect_notified_at = now() WHERE id = $1 AND down_since IS NOT NULL
-        AND down_since > now() - make_interval(days => $2)
-        AND (disconnect_notified_at IS NULL OR disconnect_notified_at < down_since OR disconnect_notified_at < now() - make_interval(hours => $3))
-      RETURNING id`, [id, WATCH.renotifyForDays, WATCH.renotifyHours]);
-    if (claimed.length) {
+    // Aviso según lo que definió el negocio: tras la espera, y luego cada N horas mientras siga caído (7 días).
+    const alerts = await connectionAlerts(ch.account_id);
+    if (!alerts.enabled) continue;
+    if (await claimDisconnectNotice(id, alerts.after_minutes, alerts.repeat_hours)) {
       await notifyDisconnected(ch, Math.floor(downMs / 3600_000));
       r.notified++;
     }
@@ -79,7 +80,7 @@ export async function watchWhatsapp(now = Date.now()): Promise<{ checked: number
   return r;
 }
 
-export function startWhatsappWatch(intervalMs = 5 * 60_000) {
+export function startWhatsappWatch(intervalMs = 60_000) {
   const run = () => void watchWhatsapp().catch((e) => logEvent({ level: 'error', source: 'evolution', message: `Vigilancia de WhatsApp: ${e?.message ?? e}` }));
   setTimeout(run, 60_000).unref();
   setInterval(run, intervalMs).unref();

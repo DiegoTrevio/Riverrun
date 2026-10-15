@@ -190,6 +190,9 @@ t('estado de conexión: el primer "open" completa el asistente; si se cae, se av
   assert.equal((await L.api('GET', '/api/onboarding')).json().complete, true);
   assert.equal((await h.authed('GET', '/api/accounts')).json().find((a: any) => a.id === L.account).whatsapp_state, 'open');
 
+  // Aviso inmediato (por defecto se espera 5 minutos a que se recupere solo; eso lo cubre test/resilience.test.ts).
+  const settings = (await L.api('GET', '/api/settings')).json();
+  assert.equal((await L.api('PUT', '/api/settings', { ...settings, connection_alerts: { ...settings.connection_alerts, after_minutes: 0 } })).statusCode, 200);
   outbox.length = 0;
   await send('close');
   await waitFor(async () => (await L.api('GET', '/api/notifications')).json().items.some((n: any) => n.title === 'Tu WhatsApp se desconectó'));

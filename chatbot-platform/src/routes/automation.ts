@@ -1,4 +1,5 @@
 import { NoticeBody, sendNotice } from '../automation/notices.js';
+import { testConnectionAlert } from '../lifecycle.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { assertAccount, conversationFor, HttpError, notFound, requireRole, scopeAccount, targetAccount } from '../access.js';
@@ -100,6 +101,14 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
     await astore.saveSettings(accountId, next);
     await logEvent({ level: 'info', source: 'admin', message: 'Configuración de la cuenta actualizada', accountId });
     return { ...next, ics_url: `${config.publicBaseUrl}/calendar/${next.calendar_token}.ics` };
+  });
+
+  /** Envía una alerta de desconexión de prueba a quienes se definió en los ajustes guardados. */
+  api.post('/api/settings/test-connection-alert', admins, async (req: any) => {
+    const accountId = await targetAccount(req.user, req.query.account_id);
+    const r = await testConnectionAlert(accountId);
+    await logEvent({ level: 'info', source: 'admin', message: 'Alerta de desconexión de prueba enviada', accountId });
+    return r;
   });
 
   api.post('/api/settings/rotate-secrets', admins, async (req: any) => {

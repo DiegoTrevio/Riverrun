@@ -102,6 +102,32 @@ Lo que pasa cuando el asistente no puede contestar:
 - **Cliente esperando a una persona**: si el último mensaje es del cliente y nadie del equipo responde en 30 minutos (regla del agente `handoff_reminder_minutes`; 0 lo apaga), el equipo recibe un recordatorio que se repite cada 2 horas durante 24 horas.
 - **Instalación y revisión previa**: `./riverrun install` pide `SMTP_URL`, `HEARTBEAT_URL` y `ALERT_WEBHOOK_URL`; `./riverrun preflight` advierte si ninguna alerta sale del servidor o si falta el latido externo. El panel (Sistema) muestra el estado de los tres y un aviso si no hay ningún canal de alerta.
 
+## Sesión de WhatsApp duradera y avisos de desconexión
+
+**La sesión se conserva.** Lo que se vincula con el código QR queda guardado en PostgreSQL (`DATABASE_SAVE_DATA_INSTANCE`) y en el volumen `evolution_instances`, ambos incluidos en los respaldos. Un reinicio del servidor, de Evolution o una actualización no obligan a escanear de nuevo: Evolution reabre las sesiones al arrancar, y la vigilancia de WhatsApp (cada minuto) confirma el estado real y reconecta si hace falta.
+
+**Por qué se cae** (`channels.disconnect_reason`, del código que manda Evolution):
+
+| Motivo | Qué pasó | Qué se hace |
+| --- | --- | --- |
+| `connection_lost` | Se perdió la conexión (internet, reinicio de Evolution) | Se reconecta solo cada 15 min durante 24 h; se avisa si no vuelve en el tiempo definido |
+| `logged_out` (401) | Se quitó el dispositivo vinculado en el teléfono, o el teléfono estuvo sin internet más de 14 días | Aviso inmediato: hay que escanear el QR otra vez. No se intenta reconectar (solo generaría QR nuevos) |
+| `banned` (403) | WhatsApp bloqueó o restringió el número | Aviso inmediato |
+| `replaced` (440) | La sesión se abrió en otro lugar (WhatsApp Web u otro servidor) | Aviso inmediato |
+
+El panel muestra en el canal desde cuándo está desconectado y el motivo.
+
+**Avisos según lo que defina cada negocio** (Ajustes → Horario y avisos → «Avisos si se desconecta un WhatsApp»):
+
+- Activarlos o no (la reconexión automática sigue aunque estén apagados).
+- **Esperar N minutos** antes de avisar (5 por defecto; 0 = de inmediato): evita avisos por cortes breves que se recuperan solos. Si hay que volver a escanear el QR, se avisa de inmediato.
+- **Repetir cada N horas** mientras siga desconectado (6 por defecto; 0 = una sola vez), hasta 7 días.
+- **A quién**: administradores (panel y correo), correos adicionales (hasta 10) y WhatsApp adicionales (hasta 5; se envían desde otro WhatsApp conectado de la cuenta, porque el desconectado no puede enviar).
+- Avisar también cuando **vuelve a conectarse**.
+- Botón **Enviar alerta de prueba** con lo guardado.
+
+Cada aviso se reclama con una actualización atómica en PostgreSQL, así que con varios procesos sale una sola vez.
+
 ## Métricas (`/metrics`)
 
 Formato de texto de Prometheus. Las etiquetas son solo valores fijos o validados.
