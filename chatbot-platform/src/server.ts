@@ -15,6 +15,7 @@ import { pruneAiRunDetail, pruneAutomationData } from './automation/store.js';
 import { KnowledgeWorker } from './engine/knowledge-preparation.js';
 import { startWatchdog } from './watchdog.js';
 import { startWhatsappWatch } from './whatsapp-watch.js';
+import { startMetaTokenWatch } from './channels/meta-connect.js';
 
 async function main() {
   fs.mkdirSync(config.uploadsDir, { recursive: true });
@@ -43,6 +44,7 @@ async function main() {
   startLifecycle();
   startMonitor();
   startWhatsappWatch();
+  startMetaTokenWatch();
   const resumed = await service.resumePending();
   if (resumed) console.log(`Retomando ${resumed} conversaciones pendientes`);
 

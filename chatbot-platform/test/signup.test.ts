@@ -86,7 +86,7 @@ t('asistente: negocio y asistente desde la plantilla del giro', async () => {
   let st = (await L.api('GET', '/api/onboarding')).json();
   assert.equal(st.complete, false);
   assert.equal(st.email_verified, false);
-  assert.deepEqual(st.steps, { business: false, assistant: false, photos: false, test: false, whatsapp: false });
+  assert.deepEqual(st.steps, { business: false, assistant: false, photos: false, test: false, networks: false, whatsapp: false });
 
   const b = await L.api('POST', '/api/onboarding/business', { timezone: 'America/Monterrey', alert_phone: '+52 81 1111 2222' });
   assert.equal(b.statusCode, 200, b.body);
@@ -121,7 +121,7 @@ t('asistente: negocio y asistente desde la plantilla del giro', async () => {
   await L.api('POST', '/api/onboarding/step', { step: 'photos' });
   await L.api('POST', '/api/onboarding/step', { step: 'test' });
   st = (await L.api('GET', '/api/onboarding')).json();
-  assert.deepEqual(st.steps, { business: true, assistant: true, photos: true, test: true, whatsapp: false });
+  assert.deepEqual(st.steps, { business: true, assistant: true, photos: true, test: true, networks: false, whatsapp: false });
   assert.equal(st.business.timezone, 'America/Monterrey');
   assert.equal(st.business.alert_phone, '528111112222');
   assert.equal(st.assistant.knowledge.catalog, 'Limpieza dental: $650');

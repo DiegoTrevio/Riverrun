@@ -41,6 +41,14 @@ export const zer = {
   webhooks: [] as any[],
   telegram: new Map<string, { status: 'pending' | 'connected' | 'expired'; profileId: string }>(),
 };
+/** Graph de Meta simulado para «Conectar con Facebook»: páginas que devuelve me/accounts y tokens que Meta retiró. */
+export const metaFake = {
+  pages: [
+    { id: 'PAGE1', name: 'Hotel Palmas', access_token: 'page_tok_1', picture: { data: { url: 'https://img.test/p1.jpg' } }, instagram_business_account: { id: 'IG1', username: 'hotelpalmas', profile_picture_url: 'https://img.test/ig1.jpg' } },
+    { id: 'PAGE2', name: 'Spa Palmas', access_token: 'page_tok_2', picture: { data: { url: '' } } },
+  ] as any[],
+  revoked: new Set<string>(),
+};
 const extServer = http.createServer((req, res) => {
   const chunks: Buffer[] = [];
   req.on('data', (c) => chunks.push(c));
@@ -174,6 +182,13 @@ const extServer = http.createServer((req, res) => {
       if (method === 'sendMessage' || method === 'sendPhoto') return json(200, { ok: true, result: { message_id: ++ext.n } });
       return json(200, { ok: true, result: true });
     }
+    if (path.endsWith('/oauth/access_token')) {
+      if (url.searchParams.get('client_secret') !== 'meta-app-secret-pruebas') return json(400, { error: { message: 'Invalid client_secret', code: 1 } });
+      if (url.searchParams.get('fb_exchange_token')) return json(200, { access_token: `long_${url.searchParams.get('fb_exchange_token')}`, token_type: 'bearer' });
+      return url.searchParams.get('code') === 'bad' ? json(400, { error: { message: 'Invalid verification code', code: 100 } }) : json(200, { access_token: 'short_user_tok' });
+    }
+    if (path.endsWith('/me/accounts')) return json(200, { data: metaFake.pages });
+    if (path.endsWith('/me') && metaFake.revoked.has(url.searchParams.get('access_token') ?? '')) return json(400, { error: { message: 'Error validating access token', code: 190 } });
     if (path.endsWith('/me/messages')) return json(200, { recipient_id: body?.recipient?.id, message_id: `m_${++ext.n}` });
     if (path.endsWith('/subscribed_apps')) return json(200, { success: true });
     if (path.endsWith('/me')) return json(200, { id: 'PAGE1', name: 'Hotel Palmas' });
@@ -185,6 +200,9 @@ extServer.unref();
 const extUrl = `http://127.0.0.1:${(extServer.address() as any).port}`;
 process.env.TELEGRAM_API_URL = extUrl;
 process.env.META_GRAPH_URL = extUrl;
+process.env.META_APP_ID = 'meta-app-pruebas';
+process.env.META_APP_SECRET = 'meta-app-secret-pruebas';
+process.env.META_VERIFY_TOKEN = 'verificacion-meta-pruebas';
 process.env.ZERNIO_API_URL = `${extUrl}/api/v1`;
 process.env.ZERNIO_API_KEY = zer.key;
 process.env.EVOLUTION_URL = extUrl;

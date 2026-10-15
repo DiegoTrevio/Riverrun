@@ -10,6 +10,7 @@ import { notifySuperadmins } from '../lifecycle.js';
 import { logEvent } from '../logs.js';
 import { hmac, safeEqual } from '../secret.js';
 import * as store from '../store/index.js';
+import { prepareAccountProfile } from '../channels/zernio-connect.js';
 
 const HOUR = 3600_000;
 const redirectUri = () => `${config.publicBaseUrl}/oauth/google/login/callback`;
@@ -80,6 +81,7 @@ export async function googleLoginRoutes(app: FastifyInstance) {
         await client.query(`UPDATE accounts SET owner_user_id = $2, brand_id = $3 WHERE id = $1`, [account.id, created.id, brand?.id ?? null]);
         return { account, created };
       });
+      prepareAccountProfile(account.id);
       await logEvent({ level: 'info', source: 'admin', message: `Registro nuevo con Google: ${account.name} (${email})`, accountId: account.id, details: { ip: req.ip } });
       await notifySuperadmins(account.id, `Nueva empresa registrada: ${account.name}`, `${name} <${email}> se registró con Google.`);
       setSessionCookie(reply, created.id, hash);

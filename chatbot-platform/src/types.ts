@@ -493,6 +493,10 @@ export const ChannelConfigSchemas = {
     app_secret: secret.default(''),
     verify_token: z.string().max(200).default(''),
     graph_version: z.string().max(10).default('v21.0'),
+    /** facebook = conectado con el botón (webhook de la plataforma); manual = tokens propios. */
+    connected_via: z.enum(['manual', 'facebook']).default('manual'),
+    page_name: z.string().max(200).default(''),
+    picture: z.string().max(2000).default(''),
   }),
   instagram: z.object({
     account_id: z.string().max(60).default(''),
@@ -500,6 +504,12 @@ export const ChannelConfigSchemas = {
     app_secret: secret.default(''),
     verify_token: z.string().max(200).default(''),
     graph_version: z.string().max(10).default('v21.0'),
+    connected_via: z.enum(['manual', 'facebook']).default('manual'),
+    /** Página de Facebook vinculada (la que da el token y la suscripción a los mensajes). */
+    page_id: z.string().max(60).default(''),
+    page_name: z.string().max(200).default(''),
+    username: z.string().max(120).default(''),
+    picture: z.string().max(2000).default(''),
   }),
   webchat: z.object({
     title: z.string().max(80).default('¿En qué te ayudamos?'),

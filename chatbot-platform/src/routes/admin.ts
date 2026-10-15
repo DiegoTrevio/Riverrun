@@ -31,6 +31,8 @@ import { diagnosticsReport, refreshDiagnostics } from '../diagnostics.js';
 import { assertWithinLimit, LimitsSchema } from '../billing/limits.js';
 import { billingEnabled } from '../billing/service.js';
 import { parse } from './util.js';
+import { metaConnectEnabled } from '../channels/meta-connect.js';
+import { prepareAccountProfile } from '../channels/zernio-connect.js';
 
 const Password = z.string().min(8, 'mínimo 8 caracteres').max(200);
 const Email = z.string().trim().toLowerCase().email('correo inválido').max(200);
@@ -101,6 +103,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     require_email: config.signup.requireEmail,
     billing_enabled: await billingEnabled(),
     zernio_enabled: zernioEnabled(),
+    meta_connect_enabled: metaConnectEnabled(),
     social_networks: NETWORKS.map(({ id, label, flow }) => ({ id, label, flow })),
     version: config.monitor.version,
   }));
@@ -236,6 +239,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
       }
       return { account, admin };
     });
+    prepareAccountProfile(account.id);
     await logEvent({ level: 'info', source: 'admin', message: `Cuenta creada: ${account.name}`, accountId: account.id });
     return { ...account, admin };
   });
