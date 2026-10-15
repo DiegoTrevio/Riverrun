@@ -22,6 +22,10 @@ const ok = await dbAvailable();
 const t = (name: string, fn: () => Promise<void>) => test(name, { skip: !ok && 'PostgreSQL de pruebas no disponible' }, fn);
 let h: Awaited<ReturnType<typeof createHarness>>;
 const ADMIN = 'dueno@resiliencia.mx';
+const setAlerts = async (patch: Record<string, unknown>) => {
+  const s = await astore.getSettings(h.accountId);
+  await astore.saveSettings(h.accountId, { ...s, connection_alerts: { ...s.connection_alerts, ...patch } });
+};
 const notices = async (like: string) => (await pool.query(`SELECT count(*)::int AS n FROM notifications WHERE account_id = $1 AND title LIKE $2`, [h.accountId, like])).rows[0].n;
 
 before(async () => {
@@ -29,6 +33,8 @@ before(async () => {
   h = await createHarness();
   await h.createBot();
   assert.equal((await h.authed('POST', '/api/users', { account_id: h.accountId, email: ADMIN, name: 'Dueño', password: 'clave-dueno-1', role: 'admin' })).statusCode, 200);
+  // Estas pruebas avisan de inmediato; la espera configurable tiene sus propias pruebas al final.
+  await setAlerts({ after_minutes: 0 });
 });
 after(async () => {
   if (h) await h.app.close();
@@ -225,4 +231,94 @@ t('cliente esperando a una persona: el equipo recibe un recordatorio y se repite
   await pool.query(`UPDATE conversations SET human_reminded_at = NULL WHERE id = $1`, [conv.id]);
   await pool.query(`INSERT INTO messages (conversation_id, direction, sender, type, content, processed) VALUES ($1, 'out', 'human', 'text', 'Hola, ¿en qué te ayudo?', true)`, [conv.id]);
   assert.equal(await h.service.remindHumanWaiting(), 0);
+});
+
+/* ------------------------------ Avisos de desconexión según lo que define el negocio ------------------------------ */
+
+const close = (reason?: number) => h.app.inject({ method: 'POST', url: `/webhook/${h.token}`, payload: { event: 'connection.update', instance: 'palmas', data: { state: 'close', ...(reason ? { statusReason: reason } : {}) } } });
+const open = () => h.app.inject({ method: 'POST', url: `/webhook/${h.token}`, payload: { event: 'connection.update', instance: 'palmas', data: { state: 'open' } } });
+
+t('espera definida: no se avisa de un corte breve; si sigue caído al cumplirse los minutos, sí', async () => {
+  await linked();
+  await setAlerts({ after_minutes: 5, enabled: true, notify_admins: true });
+  evo.instances.get('palmas')!.state = 'close';
+  assert.equal((await close()).statusCode, 200);
+  await waitFor(async () => (await waState()).connection_state === 'close', 5000);
+  const now = Date.now();
+  await watchWhatsapp(now);
+  await watchWhatsapp(now + 60_000);
+  assert.equal(await notices('Tu WhatsApp se desconectó%'), 0, 'antes de 5 minutos no se avisa');
+  await pool.query(`UPDATE channels SET down_since = now() - interval '6 minutes' WHERE id = $1`, [h.channelId]);
+  assert.equal((await watchWhatsapp(now + 120_000)).notified, 1);
+  assert.equal(await notices('Tu WhatsApp se desconectó%'), 1);
+  // Vuelve: se avisa que regresó.
+  evo.instances.get('palmas')!.state = 'open';
+  await open();
+  await waitFor(async () => (await notices('Tu WhatsApp volvió a conectarse')) === 1, 5000);
+  await setAlerts({ after_minutes: 0 });
+});
+
+t('sesión cerrada desde el teléfono: se avisa de inmediato que hay que escanear el QR y no se intenta reconectar', async () => {
+  await linked();
+  await setAlerts({ after_minutes: 30 });
+  evo.instances.get('palmas')!.state = 'close';
+  await close(401);
+  await waitFor(async () => (await notices('Hay que volver a vincular tu WhatsApp')) === 1, 5000);
+  assert.equal((await waState()).connection_state, 'close');
+  assert.equal((await pool.query(`SELECT disconnect_reason FROM channels WHERE id = $1`, [h.channelId])).rows[0].disconnect_reason, 'logged_out');
+  const mail = outbox.filter((m) => m.to === ADMIN && /volver a vincular/.test(m.subject)).at(-1);
+  assert.match(mail?.text ?? '', /escanear el código QR/);
+  const before = connects();
+  const now = Date.now() + 1000;
+  await watchWhatsapp(now);
+  await watchWhatsapp(now + 1000);
+  assert.equal(connects(), before, 'reconectar no sirve: solo generaría QR nuevos');
+  await setAlerts({ after_minutes: 0 });
+  evo.instances.get('palmas')!.state = 'open';
+  await open();
+});
+
+t('a quién avisar: correos y WhatsApp adicionales (desde otro WhatsApp conectado); sin administradores si así se define', async () => {
+  await linked();
+  const other = (await h.authed('POST', '/api/channels', { account_id: h.accountId, type: 'whatsapp', name: 'WhatsApp recepción', chatbot_id: h.botId, config: { instance: 'recepcion' } })).json();
+  evo.instances.set('recepcion', { state: 'open', qrN: 1 });
+  await pool.query(`UPDATE channels SET connection_state = 'open' WHERE id = $1`, [other.id]);
+  await setAlerts({ after_minutes: 0, notify_admins: false, emails: ['soporte@resiliencia.mx'], phones: ['5215566667777'] });
+  h.reset();
+  const mails = outbox.length;
+  await close();
+  await waitFor(async () => outbox.slice(mails).some((m) => m.to === 'soporte@resiliencia.mx'), 5000);
+  await waitFor(() => h.sent.some((s) => s.to === '5215566667777' && /se desconectó/.test(s.text)), 5000);
+  assert.equal(await notices('Tu WhatsApp se desconectó%'), 0, 'sin aviso en el panel a los administradores');
+  assert.ok(!outbox.slice(mails).some((m) => m.to === ADMIN), 'ni por correo');
+  // La alerta de prueba llega a los mismos destinatarios.
+  const test = (await h.authed('POST', `/api/settings/test-connection-alert?account_id=${h.accountId}`)).json();
+  assert.deepEqual({ admins: test.admins, emails: test.emails, phones: test.phones, failed: test.failed }, { admins: 0, emails: 1, phones: 1, failed: [] });
+  await setAlerts({ notify_admins: true, emails: [], phones: [] });
+  await pool.query(`UPDATE channels SET active = false WHERE id = $1`, [other.id]);
+  await open();
+});
+
+t('avisos apagados: no se envía nada, pero se sigue intentando reconectar', async () => {
+  await linked();
+  await setAlerts({ enabled: false, after_minutes: 0 });
+  evo.instances.get('palmas')!.state = 'close';
+  await close();
+  const before = connects();
+  const now = Date.now() + 10 * 3600_000; // después de los intentos de las pruebas anteriores (cada 15 min)
+  await watchWhatsapp(now);
+  await watchWhatsapp(now + 1000);
+  assert.equal(await notices('Tu WhatsApp se desconectó%'), 0);
+  assert.equal(connects(), before + 1, 'la reconexión automática sigue');
+  await setAlerts({ enabled: true });
+  evo.instances.get('palmas')!.state = 'open';
+  await open();
+});
+
+t('ajustes: un correo o número inválido no se guarda', async () => {
+  const s = (await h.authed('GET', `/api/settings?account_id=${h.accountId}`)).json();
+  const bad = await h.authed('PUT', `/api/settings?account_id=${h.accountId}`, { ...s, connection_alerts: { ...s.connection_alerts, emails: ['no-es-correo'] } });
+  assert.equal(bad.statusCode, 400);
+  const badPhone = await h.authed('PUT', `/api/settings?account_id=${h.accountId}`, { ...s, connection_alerts: { ...s.connection_alerts, phones: ['abc'] } });
+  assert.equal(badPhone.statusCode, 400);
 });

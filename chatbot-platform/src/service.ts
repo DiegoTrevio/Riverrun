@@ -24,6 +24,7 @@ import { describeInbound, type InboundMessage } from './channels/types.js';
 import { query } from './db.js';
 import { summarizeConversation } from './engine/report.js';
 import { Engine, type ProcessResult } from './engine/engine.js';
+import { setAlertWhatsapp } from './lifecycle.js';
 import { RETRYABLE_DEAD } from './engine/queue.js';
 import { deliver } from './integrations/webhooks.js';
 import { messageQuota, noticeMessagesReached } from './billing/limits.js';
@@ -106,6 +107,8 @@ export class ChatService {
         });
       },
     });
+    // Los avisos de desconexión a WhatsApp adicionales salen por otro WhatsApp conectado de la cuenta.
+    setAlertWhatsapp((accountId, phone, text, excludeChannelId) => this.sendInternalWhatsapp(accountId, phone, text, null, excludeChannelId));
     this.queue = new ConversationQueue((id, a) => this.runConversation(id, a.restarts), 2, config.queue.retryMs, (id) => this.aiUnavailable(id));
     this.inbox = new InboundQueue((channel,msg)=>this.handleIncoming(channel,msg),channel=>this.automator.alertTeam(channel.account_id,{title:'⚠️ Recepción pendiente de revisión',body:'No se pudo completar la recepción de un mensaje. Revisa los trabajos pendientes de este perfil.',kind:'alert',link:'#/logs'}));
     this.scheduler = new Scheduler({
@@ -138,12 +141,13 @@ export class ChatService {
   }
 
   /** Aviso interno por WhatsApp (alertas al equipo), usando un WhatsApp activo de la cuenta. */
-  async sendInternalWhatsapp(accountId: string, number: string, text: string, preferChatbotId?: string | null) {
-    const channels = await store.listChannels(accountId);
-    const wa =
-      channels.find((c) => c.type === 'whatsapp' && c.active && c.chatbot_id === preferChatbotId && c.config.instance) ??
-      channels.find((c) => c.type === 'whatsapp' && c.active && c.config.instance);
-    if (!wa) throw new Error('La cuenta no tiene un canal de WhatsApp activo para enviar el aviso');
+  async sendInternalWhatsapp(accountId: string, number: string, text: string, preferChatbotId?: string | null, excludeChannelId?: string) {
+    // Primero los WhatsApp conectados: un aviso por uno desconectado no llegaría.
+    const channels = (await store.listChannels(accountId))
+      .filter((c) => c.type === 'whatsapp' && c.active && c.config.instance && c.id !== excludeChannelId)
+      .sort((a, b) => Number(b.connection_state === 'open') - Number(a.connection_state === 'open'));
+    const wa = channels.find((c) => c.chatbot_id === preferChatbotId && c.connection_state === 'open') ?? channels[0];
+    if (!wa) throw new Error(excludeChannelId ? 'La cuenta no tiene otro WhatsApp conectado para enviar el aviso' : 'La cuenta no tiene un canal de WhatsApp activo para enviar el aviso');
     const digits = number.replace(/\D/g, '');
     // Antes de registrar nada: en sandbox un aviso a un número no permitido no debe quedar como enviado.
     assertOutbound(digits);

@@ -652,6 +652,24 @@ async function editSettings(root) {
       h('h2', { style: 'margin-top:0' }, 'Equipo'),
       check(s, 'notify_team_on_handoff', 'Avisar en el panel a todo el equipo cuando una conversación pasa a una persona')),
     h('div', { class: 'card' },
+      h('h2', { style: 'margin-top:0' }, 'Avisos si se desconecta un WhatsApp'),
+      h('p', { class: 'small muted' }, 'La sesión que vinculas con el código QR se conserva aunque se reinicie el servidor. Si se pierde la conexión, se intenta recuperar sola; si no vuelve, se avisa según lo que definas aquí. Si se cerró la sesión desde el teléfono, el aviso dice que hay que volver a escanear el QR.'),
+      check(s.connection_alerts, 'enabled', 'Enviar avisos cuando un WhatsApp se desconecta'),
+      h('div', { class: 'grid' },
+        field('Avisar después de (minutos)', num(s.connection_alerts, 'after_minutes', { min: 0, max: 1440 }), '0 = de inmediato. Unos minutos evitan avisos por cortes breves que se recuperan solos.'),
+        field('Repetir el aviso cada (horas)', num(s.connection_alerts, 'repeat_hours', { min: 0, max: 168 }), 'Mientras siga desconectado, hasta 7 días. 0 = avisar una sola vez.')),
+      check(s.connection_alerts, 'notify_admins', 'Avisar a los administradores (en el panel y por correo)'),
+      h('div', { class: 'grid' },
+        field('Correos adicionales', lines(s.connection_alerts, 'emails', { placeholder: 'dueno@minegocio.com' }), 'Uno por renglón (máximo 10).'),
+        field('WhatsApp adicionales', lines(s.connection_alerts, 'phones', { placeholder: '5215512345678' }), 'Con lada, uno por renglón (máximo 5). Se envía desde otro WhatsApp conectado de la cuenta: el que se desconectó no puede enviar.')),
+      check(s.connection_alerts, 'notify_reconnected', 'Avisar también cuando vuelva a conectarse'),
+      h('button', { class: 'small', onclick: async () => {
+        const r = await run(() => api('POST', withAcct('/api/settings/test-connection-alert')));
+        if (!r) return;
+        const parts = [r.admins ? `${r.admins} administrador(es)` : '', r.emails ? `${r.emails} correo(s)` : '', r.phones ? `${r.phones} WhatsApp` : ''].filter(Boolean);
+        toast(parts.length ? `Alerta de prueba enviada a ${parts.join(', ')}${r.failed.length ? `; no se pudo enviar a ${r.failed.join(', ')}` : ''}` : 'No hay a quién avisar: activa a los administradores o agrega correos o WhatsApp.', !parts.length || r.failed.length > 0);
+      } }, 'Enviar alerta de prueba (con lo guardado)')),
+    h('div', { class: 'card' },
       h('h2', { style: 'margin-top:0' }, 'Integraciones'),
       h('p', {}, 'Calendario de citas para Google Calendar / Outlook / Apple (suscribirse por URL):'),
       h('p', {}, h('code', {}, s.ics_url), ' ', copy(s.ics_url)),

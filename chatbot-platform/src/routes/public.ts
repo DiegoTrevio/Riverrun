@@ -60,10 +60,10 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
   /** Lo que llegó por el webhook de un canal: QR, estado de conexión, avisos y mensajes (guardados para los workers). */
   const processEvent = async (webhookReq: WebhookRequest) => {
     const { channel } = webhookReq;
-    const { messages, notices, connection, qr } = adapterFor(channel.type).parse(webhookReq);
+    const { messages, notices, connection, connectionReason, qr } = adapterFor(channel.type).parse(webhookReq);
     if (qr) await store.saveQr(channel.id, qr);
     for (const n of notices ?? []) await logEvent({ level: n.level, source: 'channel', message: n.message, accountId: channel.account_id, channelId: channel.id });
-    if (connection) await recordConnectionState(channel, connection);
+    if (connection) await recordConnectionState(channel, connection, connectionReason);
     await service.inbox.accept(channel, messages);
   };
   // Evolution puede agregar el nombre del evento al final de la URL (webhook_by_events); lo aceptamos.
