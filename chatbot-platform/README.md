@@ -454,6 +454,11 @@ Problemas corregibles → se reintenta **una vez** con la corrección. En el úl
 
 - Problemas de **estilo** se corrigen solos: se quitan las oraciones con frases o temas prohibidos, con promesas de fotos inexistentes o con el trato equivocado (tú/usted), y una respuesta demasiado larga se recorta por oraciones completas al máximo por mensaje y al largo configurado. Si las correcciones vacían la respuesta, sale la pregunta pendiente o el mensaje de respaldo (el cliente no se queda sin respuesta).
 - Las **frases prohibidas** se buscan como palabras completas, sin importar acentos, mayúsculas ni signos ("ia" no coincide dentro de "día"; "¿En qué más puedo ayudarte?" se detecta aunque la IA agregue ", Juan").
+- Los **temas prohibidos** se reconocen por la raíz de sus palabras: "política" también detecta "políticos" y "armas" detecta "arma".
+- Un **dato obligatorio** (los marcados "Importante", que bloquean el objetivo) solo se acepta si el cliente lo dio o confirmó lo que propuso el asistente ("¿Le reservo el 15?" → "sí"): la IA puede normalizarlo ("el 1 de noviembre" → fecha, "2 adultos y 1 niño" → 3, "1,500" → 1500, "la segunda" → la segunda opción), pero no inventarlo. Si lo intenta, se le pide confirmarlo con el cliente.
+- En cada **solicitud nueva** se vuelven a pedir las preguntas (salvo nombre, correo y teléfono) y, de los datos sin pregunta, las fechas y cantidades: una segunda reserva no se cumple con las fechas de la anterior, y la dirección, la empresa o el RFC se conservan. `per_request` en cada dato siempre manda.
+- **Devolver al asistente después de N minutos**: si nadie del equipo escribe en ese tiempo, la conversación vuelve al asistente aunque el cliente no escriba otra vez, y si el cliente quedó esperando (en las últimas 24 h) se le contesta. Se revisa cada minuto. Una transferencia por emergencia o riesgo para la vida nunca vuelve sola al asistente.
+- Las **notas de voz** se transcriben aunque la cuenta tenga presupuesto de IA: se reserva y cobra por la duración que informa la plataforma (o estimada por el tamaño del audio).
 - Datos **no verificables** → respuesta de respaldo o transferencia, según la regla configurada.
 - Respuesta **inválida** (JSON roto o vacía) → no se envía nada; se registra el error y se reintenta en 1 minuto.
 

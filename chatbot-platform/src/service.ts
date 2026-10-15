@@ -1,6 +1,6 @@
 import { syncStaffEvent } from './integrations/staff-calendars.js';
 import { syncAppointment as syncOutlookAppointment } from './integrations/outlook.js';
-import { accountAi } from './ai/budget.js';
+import { accountAi, audioSeconds } from './ai/budget.js';
 import { syncAppointment } from './integrations/google.js';
 import crypto from 'node:crypto';
 import type { AiProvider } from './ai/provider.js';
@@ -21,7 +21,7 @@ import { INBOUND_MEDIA_MAX_BYTES, removeInboundFiles, saveInboundMedia, type Sto
 import { config } from './config.js';
 import { gate } from './engine/activation.js';
 import { describeInbound, type InboundMessage } from './channels/types.js';
-import { query } from './db.js';
+import { query, queryOne } from './db.js';
 import { summarizeConversation } from './engine/report.js';
 import { Engine, type ProcessResult } from './engine/engine.js';
 import { setAlertWhatsapp } from './lifecycle.js';
@@ -40,6 +40,10 @@ import type { Channel, Chatbot, Contact, Conversation } from './types.js';
 const MAX_MESSAGE_AGE_SECONDS = 30 * 60;
 
 export type TransportFactory = (channel: Channel, contact: Contact) => Transport;
+
+/** Transferencias por emergencia o riesgo para la vida (engine.ts): no vuelven solas al asistente. */
+const isSafetyHandoff = (reason?: string | null) => /^(Riesgo para la vida|Posible emergencia)/.test(reason ?? '');
+const SAFETY_HANDOFF_SQL = `coalesce(c.handoff_reason, '') ~ '^(Riesgo para la vida|Posible emergencia)'`;
 
 export const defaultTransport: TransportFactory = (channel, contact) => adapterFor(channel.type).transport(channel, contact);
 
@@ -284,9 +288,45 @@ export class ChatService {
     return n;
   }
 
+  /**
+   * «Devolver al asistente después de N minutos sin actividad humana»: si nadie del equipo escribió en ese tiempo, la
+   * conversación vuelve al asistente aunque el cliente no escriba otra vez; y si el cliente quedó esperando (mensajes
+   * suyos sin respuesta de las últimas 24 h), el asistente le contesta.
+   */
+  async autoResumeIdle(): Promise<number> {
+    // Una emergencia o un riesgo para la vida nunca vuelve solo al asistente: lo atiende una persona.
+    const rows = await query<{ id: string; minutes: number }>(`SELECT c.id, r.minutes
+      FROM conversations c
+      JOIN chatbots b ON b.id = c.chatbot_id
+      JOIN channels ch ON ch.id = c.channel_id AND ch.active AND ch.type <> 'playground'
+      CROSS JOIN LATERAL (SELECT CASE WHEN jsonb_typeof(b.rules->'auto_resume_minutes') = 'number'
+        THEN floor((b.rules->>'auto_resume_minutes')::numeric)::int ELSE 0 END AS minutes) r
+      WHERE c.status = 'human' AND b.active AND r.minutes > 0
+        AND c.status_changed_at < now() - make_interval(mins => r.minutes)
+        AND NOT (${SAFETY_HANDOFF_SQL})
+      LIMIT 200`);
+    let n = 0;
+    for (const row of rows) {
+      // Atómico y solo si nadie del equipo escribió en esos minutos (otro proceso o una persona pudo adelantarse).
+      const resumed = await queryOne<{ id: string; account_id: string }>(`UPDATE conversations c SET status = 'bot', handoff_reason = '', status_changed_at = now()
+        WHERE c.id = $1 AND c.status = 'human' AND c.status_changed_at < now() - make_interval(mins => $2) AND NOT (${SAFETY_HANDOFF_SQL})
+          AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id AND m.sender = 'human' AND m.created_at > now() - make_interval(mins => $2))
+        RETURNING c.id, c.account_id`, [row.id, row.minutes]);
+      if (!resumed) continue;
+      n++;
+      await logEvent({ level: 'info', source: 'engine', message: `El bot retomó la conversación: nadie del equipo respondió en ${row.minutes} min`, accountId: resumed.account_id, conversationId: row.id });
+      const waiting = await query(`UPDATE messages SET processed = false WHERE conversation_id = $1 AND direction = 'in' AND processed
+          AND created_at > now() - interval '24 hours'
+          AND id > coalesce((SELECT max(id) FROM messages WHERE conversation_id = $1 AND direction = 'out'), 0) RETURNING id`, [row.id]);
+      if (waiting.length) await this.queue.schedule(row.id, 0, true);
+    }
+    return n;
+  }
+
   startSweeper(intervalMs = 30_000) {
     let laps = 0;
     this.sweeper = setInterval(() => {
+      if (laps % 2 === 0) this.autoResumeIdle().catch(() => undefined);
       if (laps++ % 10 === 0) this.remindHumanWaiting().catch(() => undefined);
       this.sweepPending()
         .then(async (n) => { if (n) await logEvent({ level: 'warn', source: 'engine', message: `Se retomaron ${n} conversaciones con mensajes sin responder` }); })
@@ -388,7 +428,8 @@ export class ChatService {
         const audio = await adapter.downloadAudio(channel, msg);
         if (audio) {
           const started = Date.now();
-          const result = await accountAi(this.ai,channel.account_id,bot?.id??null,'transcription').transcribe(audio.buffer, audio.mimeType);
+          const seconds = msg.media?.seconds || audioSeconds(audio.buffer, audio.mimeType);
+          const result = await accountAi(this.ai,channel.account_id,bot?.id??null,'transcription').transcribe(audio.buffer, audio.mimeType, seconds);
           const text = typeof result === 'string' ? result : result.content;
           if (text) content = `[Nota de voz del cliente, transcrita]: "${text}"`;
           // Se registra para el costo por cuenta. Sin duración de la plataforma, se estima (~2 KB por segundo de Opus).
@@ -403,7 +444,7 @@ export class ChatService {
             output_tokens: typeof result === 'string' ? 0 : result.usage.output_tokens,
             cost_usd: typeof result === 'string' ? undefined : result.cost_usd,
             latency_ms: Date.now() - started,
-            audio_seconds: msg.media?.seconds ?? Math.max(1, Math.round(audio.buffer.length / 2000)),
+            audio_seconds: seconds,
           });
         }
       } catch (e: any) {
@@ -459,7 +500,7 @@ export class ChatService {
       // campaña lo haya empezado en una etapa después del cierre: entonces sigue desde ahí).
       await store.resetFlowState(conv.id, { keepCampaignStart: true });
       current = (await store.setConversationStatus(conv.id, 'bot', '')) ?? conv;
-    } else if (conv.status === 'human' && bot && bot.rules.auto_resume_minutes > 0) {
+    } else if (conv.status === 'human' && bot && bot.rules.auto_resume_minutes > 0 && !isSafetyHandoff(conv.handoff_reason)) {
       const lastHuman = await store.lastHumanActivity(conv.id);
       const since = Math.max(new Date(conv.status_changed_at).getTime(), lastHuman ? new Date(lastHuman).getTime() : 0);
       if (Date.now() - since > bot.rules.auto_resume_minutes * 60_000) {

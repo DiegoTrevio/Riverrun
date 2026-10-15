@@ -17,9 +17,15 @@ export function repeatsEachRequest(q: Pick<Question, 'type' | 'per_request'>): b
   return q.per_request ?? !['name', 'email', 'phone'].includes(q.type);
 }
 
-/** Claves de las preguntas que se vuelven a hacer en cada solicitud (sus respuestas se archivan al empezar otra). */
+/**
+ * Datos que se vuelven a pedir en cada solicitud (sus respuestas se archivan al empezar otra). Las preguntas, salvo
+ * nombre, correo y teléfono. Los datos sin pregunta, solo fechas y cantidades (una segunda reserva no se cumple con las
+ * fechas de la anterior); la dirección, la empresa o el RFC se conservan. `per_request` siempre manda.
+ */
 export function perRequestKeys(bot: Pick<Chatbot, 'data_fields'>): string[] {
-  return questionList(bot).filter(repeatsEachRequest).map((q) => q.key);
+  return bot.data_fields
+    .filter((f) => (f.question.trim() ? repeatsEachRequest(f) : f.per_request ?? ['date', 'number'].includes(f.type)))
+    .map((f) => f.key);
 }
 
 /**

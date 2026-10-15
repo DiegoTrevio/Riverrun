@@ -1,4 +1,4 @@
-import { api, confirmAction, field, fill, fmtDate, h, run } from './core.js';
+import { api, confirmAction, field, fill, fmtDate, h, run, toast } from './core.js';
 import { render } from './main.js';
 import { configSection, functionalSection } from './system-config.js';
 
@@ -66,7 +66,10 @@ async function zernioCard() {
         field(s.source === 'panel' ? 'Reemplazar llave' : 'Llave de Zernio', input),
         h('button', { class: 'primary', onclick: (e) => busy(e.currentTarget, () => {
           if (!form.api_key.trim()) { input.focus(); return null; }
-          return run(() => api('PUT', '/api/system/zernio', { api_key: form.api_key.trim() }), 'Llave guardada y verificada');
+          return run(() => api('PUT', '/api/system/zernio', { api_key: form.api_key.trim() })).then((r) => {
+            if (r) toast(r.webhook?.ok === false ? `Llave guardada, pero no se pudo registrar el webhook: ${r.webhook.error}` : 'Llave guardada y verificada', r.webhook?.ok === false);
+            return r;
+          });
         }) }, 'Guardar y probar')) : null,
       h('div', { class: 'row' },
         s.enabled ? h('button', { onclick: (e) => busy(e.currentTarget, () => run(() => api('POST', '/api/system/zernio/check'), 'Llave y webhook verificados')) }, 'Probar y reparar') : null,

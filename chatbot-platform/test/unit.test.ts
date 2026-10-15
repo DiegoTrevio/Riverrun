@@ -247,3 +247,13 @@ test('FactCorpus: un enlace inventado sobre un dominio real no se valida', async
   assert.deepEqual(kb.unverified('Entra a hotelpalmas.mx.ofertas.com'), ['hotelpalmas.mx.ofertas.com'], 'un dominio que solo empieza igual');
   assert.deepEqual(kb.unverified('Entra a palmas.mx'), ['palmas.mx'], 'ni uno que solo termina igual');
 });
+
+test('FactCorpus: enlaces con parámetros, teléfono local con guion y decimales equivalentes', async () => {
+  const { FactCorpus } = await import('../src/engine/text.js');
+  const kb = new FactCorpus(['Reserva en https://hotel.mx/reservas?id=5&x=1 o https://hotel.mx/info#faq. Tel 55 1234 5678. Desayuno $99.5']);
+  assert.deepEqual(kb.unverified('Reserva en hotel.mx/reservas'), []);
+  assert.deepEqual(kb.unverified('Mira hotel.mx/info'), []);
+  assert.deepEqual(kb.unverified('Llámanos al 1234-5678'), []);
+  assert.deepEqual(kb.unverified('El desayuno cuesta $99.50', kb), []);
+  assert.deepEqual(kb.unverified('El desayuno cuesta $99.75', kb), ['99.75']);
+});
