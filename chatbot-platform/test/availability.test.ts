@@ -19,9 +19,11 @@ const work = async () => (await pool.query('SELECT * FROM conversation_work WHER
 const pendingCount = async () => (await pool.query(`SELECT count(*)::int AS n FROM messages WHERE conversation_id = $1 AND direction = 'in' AND NOT processed`, [convId])).rows[0].n;
 const notices = async (title: string) => (await pool.query(`SELECT count(*)::int AS n FROM notifications WHERE account_id = $1 AND title = $2`, [h.accountId, title])).rows[0].n;
 const toCustomer = (text: string) => h.sent.filter((s) => s.to === PHONE && s.text === text).length;
-/** Deja la conversación en revisión como lo haría la cola al agotar sus intentos. */
+/** Deja el trabajo como recién terminado: así la espera de abajo mide el intento de este mensaje, no uno anterior. */
+const freshWork = () => pool.query(`UPDATE conversation_work SET state = 'done', attempts = 0, revivals = 0, reason = NULL WHERE conversation_id = $1`, [convId]);
+/** Deja la conversación en revisión como lo haría la cola al agotar sus intentos (sin dueño: un reintento en curso ya no la sobrescribe). */
 const markDead = (reason: string, minutesAgo = 0) =>
-  pool.query(`UPDATE conversation_work SET state = 'dead', reason = $2, attempts = 3, updated_at = now() - make_interval(mins => $3), alerted_at = NULL WHERE conversation_id = $1`, [convId, reason, minutesAgo]);
+  pool.query(`UPDATE conversation_work SET state = 'dead', reason = $2, attempts = 3, updated_at = now() - make_interval(mins => $3), alerted_at = NULL, token = NULL, lease_until = NULL WHERE conversation_id = $1`, [convId, reason, minutesAgo]);
 
 before(async () => {
   if (!ok) return;
@@ -120,6 +122,7 @@ t('monitor: un cliente con el asistente encendido sin respuesta por más de 10 m
 
 t('los reintentos automáticos no repiten el aviso al equipo; el último sí', async () => {
   await pool.query(`UPDATE messages SET processed = true WHERE conversation_id = $1`, [convId]);
+  await freshWork();
   aiDown = true;
   await h.webhook('¿hay lugar el sábado?');
   await waitFor(async () => (await work())?.attempts >= 1 && (await pendingCount()) >= 1, 20000);
@@ -138,6 +141,7 @@ t('mensaje de demora vacío: no se envía nada al cliente, pero el equipo sí re
   const bot = (await h.authed('GET', `/api/chatbots/${h.botId}`)).json();
   assert.equal((await h.authed('PUT', `/api/chatbots/${h.botId}`, { rules: { ...bot.rules, unavailable_message: '' } })).statusCode, 200);
   await pool.query(`UPDATE messages SET processed = true WHERE conversation_id = $1`, [convId]);
+  await freshWork();
   aiDown = true;
   await h.webhook('otra pregunta');
   await waitFor(async () => (await work())?.attempts >= 1 && (await pendingCount()) >= 1, 20000);

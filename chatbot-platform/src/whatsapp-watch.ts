@@ -21,7 +21,7 @@ const ageS = (at: unknown, now: number) => (at ? (now - new Date(String(at)).get
 
 export async function watchWhatsapp(now = Date.now()): Promise<{ checked: number; down: number; reconnected: number; notified: number }> {
   const rows = await query<{ id: string }>(`SELECT id FROM channels WHERE type = 'whatsapp' AND active AND coalesce(config->>'instance','') <> ''
-    AND (connection_state = 'open' OR down_since IS NOT NULL) ORDER BY created_at LIMIT 300`);
+    AND (connection_state = 'open' OR down_since > now() - interval '7 days') ORDER BY created_at LIMIT 300`);
   const r = { checked: 0, down: 0, reconnected: 0, notified: 0 };
   for (const { id } of rows) {
     const ch = await store.getChannel(id);
