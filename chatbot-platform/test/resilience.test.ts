@@ -16,7 +16,7 @@ const { Scheduler } = await import('../src/automation/scheduler.js');
 const astore = await import('../src/automation/store.js');
 const { config } = await import('../src/config.js');
 const { outbox } = await import('../src/mailer.js');
-const { watchWhatsapp, WATCH } = await import('../src/whatsapp-watch.js');
+const { watchWhatsapp } = await import('../src/whatsapp-watch.js');
 
 const ok = await dbAvailable();
 const t = (name: string, fn: () => Promise<void>) => test(name, { skip: !ok && 'PostgreSQL de pruebas no disponible' }, fn);
@@ -103,46 +103,96 @@ t('una tarea programada colgada se corta y se reintenta sin detener a las demás
 
 /* ------------------------------ WhatsApp ------------------------------ */
 
-t('WhatsApp: una sesión caída se detecta, se intenta reconectar, se avisa y vuelve a quedar en línea', async () => {
+const waState = async () => (await pool.query(`SELECT connection_state, down_since, disconnect_notified_at FROM channels WHERE id = $1`, [h.channelId])).rows[0];
+const connects = () => ext.requests.filter((r) => r.path === '/instance/connect/palmas').length;
+/** Canal conectado y en línea, sin avisos previos. */
+async function linked() {
   evo.instances.set('palmas', { state: 'open', qrN: 1 });
   const ch = (await store.getChannel(h.channelId))!;
   await store.updateChannel(ch.id, { config: { ...ch.config, number: '5218111112222' } });
-  await pool.query(`UPDATE channels SET connection_state = 'open', connection_state_at = now() WHERE id = $1`, [ch.id]);
-  let now = Date.now();
+  await pool.query(`UPDATE channels SET connection_state = 'open', connection_state_at = now(), down_since = NULL, disconnect_notified_at = NULL, qr_at = NULL, pairing_at = NULL WHERE id = $1`, [ch.id]);
+  await pool.query(`DELETE FROM notifications WHERE account_id = $1 AND title LIKE 'Tu WhatsApp%'`, [h.accountId]);
+  await watchWhatsapp(Date.now()); // limpia el conteo de revisiones fallidas
+  return ch;
+}
+
+t('WhatsApp: una sesión caída se detecta, se avisa una vez, se intenta reconectar y vuelve a quedar en línea', async () => {
+  await linked();
+  let now = Date.now() + 3600_000;
   evo.instances.get('palmas')!.state = 'close';
-  const connects = () => ext.requests.filter((r) => r.path === '/instance/connect/palmas').length;
   const before = connects();
   const first = await watchWhatsapp(now);
   assert.equal(first.down, 0, 'una sola revisión no basta (Evolution puede estar reconectando)');
-  assert.equal((await store.getChannel(ch.id))!.connection_state, 'open');
+  assert.equal((await waState()).connection_state, 'open');
   now += 5 * 60_000;
   const second = await watchWhatsapp(now);
   assert.equal(second.down, 1);
-  assert.equal((await store.getChannel(ch.id))!.connection_state, 'close');
-  assert.equal(await notices('Tu WhatsApp se desconectó'), 1);
+  const st = await waState();
+  assert.equal(st.connection_state, 'close');
+  assert.ok(st.down_since, 'se marca desde cuándo está caído');
+  assert.equal(await notices('Tu WhatsApp se desconectó'), 1, 'un solo aviso');
   assert.ok(outbox.some((m) => m.to === ADMIN && /WhatsApp se desconectó/.test(m.subject)), 'aviso por correo');
   assert.equal(connects(), before + 1, 'se intentó reconectar');
   now += 5 * 60_000;
   await watchWhatsapp(now);
   assert.equal(connects(), before + 1, 'el siguiente intento espera 15 minutos');
+  assert.equal(await notices('Tu WhatsApp se desconectó%'), 1, 'sin avisos repetidos antes de 6 horas');
   evo.instances.get('palmas')!.state = 'open';
   await watchWhatsapp(now + 60_000);
-  assert.equal((await store.getChannel(ch.id))!.connection_state, 'open');
+  const back = await waState();
+  assert.equal(back.connection_state, 'open');
+  assert.equal(back.down_since, null);
 });
 
-t('WhatsApp: si sigue desconectado se vuelve a avisar cada 6 horas', async () => {
+t('WhatsApp: los eventos repetidos de Evolution no reinician la cuenta; si sigue caído se avisa cada 6 horas', async () => {
+  const ch = await linked();
   evo.instances.get('palmas')!.state = 'close';
-  const ch = (await store.getChannel(h.channelId))!;
-  await pool.query(`UPDATE channels SET connection_state = 'close', connection_state_at = now() - interval '7 hours', disconnect_notified_at = now() - interval '7 hours' WHERE id = $1`, [ch.id]);
-  const now = Date.now() + WATCH.reconnectEveryMs * 10;
+  await pool.query(`UPDATE channels SET connection_state = 'close', down_since = now() - interval '7 hours', disconnect_notified_at = now() - interval '7 hours' WHERE id = $1`, [ch.id]);
+  // Evolution vuelve a mandar "close" (por ejemplo, tras un intento de reconexión): no cambia desde cuándo está caído.
+  const { recordConnectionState } = await import('../src/lifecycle.js');
+  await recordConnectionState(ch, 'close');
+  assert.ok(Date.now() - new Date((await waState()).down_since).getTime() > 6.9 * 3600_000);
+  const now = Date.now() + 1000;
   await watchWhatsapp(now);
   const r = await watchWhatsapp(now + 1000);
-  assert.equal(r.renotified, 1);
-  assert.equal(await notices('%sigue así desde hace%'), 1);
-  const again = await watchWhatsapp(now + 2000);
-  assert.equal(again.renotified, 0, 'no se repite antes de 6 horas');
+  assert.equal(r.notified, 1);
+  assert.equal(await notices('%sigue así desde hace 7 h%'), 1);
+  assert.equal((await watchWhatsapp(now + 2000)).notified, 0, 'no se repite antes de 6 horas');
+});
+
+t('WhatsApp: si la caída pasa por "connecting" (sin aviso del webhook), la vigilancia avisa', async () => {
+  const ch = await linked();
+  const { recordConnectionState } = await import('../src/lifecycle.js');
+  await recordConnectionState(ch, 'connecting');
+  await recordConnectionState(ch, 'close');
+  assert.equal(await notices('Tu WhatsApp se desconectó%'), 0, 'el webhook no avisó');
+  evo.instances.get('palmas')!.state = 'close';
+  const now = Date.now() + 1000;
+  await watchWhatsapp(now);
+  assert.equal((await watchWhatsapp(now + 1000)).notified, 1);
+  assert.equal(await notices('Tu WhatsApp se desconectó%'), 1);
+});
+
+t('WhatsApp: no se toca un canal desconectado a propósito ni se pide otro QR mientras alguien escanea', async () => {
+  const ch = await linked();
+  evo.instances.get('palmas')!.state = 'close';
+  await store.setConnectionStateQuiet(ch.id, 'close');
+  const before = connects();
+  let now = Date.now() + 1000;
+  await watchWhatsapp(now);
+  await watchWhatsapp(now + 1000);
+  assert.equal(connects(), before, 'sin reconexión');
+  assert.equal(await notices('Tu WhatsApp se desconectó%'), 0, 'sin avisos');
+  // Caída real, pero con un QR recién mostrado en el panel: no se pide otro.
+  await linked();
+  evo.instances.get('palmas')!.state = 'close';
+  await pool.query(`UPDATE channels SET qr_at = now() WHERE id = $1`, [ch.id]);
+  now = Date.now() + 2000;
+  await watchWhatsapp(now);
+  await watchWhatsapp(now + 1000);
+  assert.equal(connects(), before, 'no se invalida el QR que se está escaneando');
   evo.instances.get('palmas')!.state = 'open';
-  await watchWhatsapp(now + 3000);
+  await watchWhatsapp(now + 2000);
 });
 
 /* ------------------------------ Avisos por correo y espera de una persona ------------------------------ */

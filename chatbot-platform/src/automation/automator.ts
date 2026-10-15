@@ -559,7 +559,7 @@ export class Automator {
     // Lo urgente también llega por correo: el WhatsApp de la cuenta puede ser justo lo que está fallando.
     if (o.kind && EMAIL_KINDS.includes(o.kind)) {
       for (const u of recipients.filter((x) => x.email)) {
-        await sendMail({ to: u.email, subject: o.title.replace(/^\W+\s*/u, ''), text: `${o.body}${link}` }).catch(() => undefined);
+        await sendMail({ to: u.email, subject: o.title.replace(/^[^\p{L}\p{N}]+/u, ''), text: `${o.body}${link}` }).catch(() => undefined);
       }
     }
     const phones = new Set([...recipients.filter((u) => u.notify_whatsapp && u.phone).map((u) => u.phone), ...(o.phones ?? []).map((p) => p.replace(/\D/g, '')).filter(Boolean)]);
@@ -615,7 +615,8 @@ export class Automator {
 
   /** Después de cada mensaje enviado: programa los seguimientos por falta de respuesta. */
   async onOutbound(conv: Conversation, msg: Message) {
-    if (msg.meta?.source === 'no_reply' || msg.meta?.source === 'opt_out') return;
+    // El aviso de demora no es una respuesta: el cliente espera la nuestra, no se le pregunta si sigue interesado.
+    if (msg.meta?.source === 'no_reply' || msg.meta?.source === 'opt_out' || msg.meta?.source === 'unavailable') return;
     const rules = await astore.activeAutomations(conv.account_id, 'no_reply', conv.chatbot_id);
     for (const rule of rules) {
       if (rule.trigger.type !== 'no_reply') continue;

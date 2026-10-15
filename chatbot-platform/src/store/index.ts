@@ -1096,7 +1096,8 @@ export async function savePairingCode(channelId: string, code: string, number: s
 
 /** Cambia el estado de conexión sin avisos (p.ej. al desconectar a propósito desde el panel). */
 export async function setConnectionStateQuiet(channelId: string, state: string) {
-  await query(`UPDATE channels SET connection_state = $2, connection_state_at = now() WHERE id = $1`, [channelId, state]);
+  // Desconexión a propósito: no cuenta como caída (sin avisos ni reconexión automática).
+  await query(`UPDATE channels SET connection_state = $2, connection_state_at = now(), down_since = NULL WHERE id = $1`, [channelId, state]);
 }
 
 export async function clearConnectionCodes(channelId: string) {

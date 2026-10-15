@@ -57,8 +57,7 @@ async function main() {
   }
   // Vigilante: si la cola, las recepciones o las tareas programadas dejan de avanzar, o el proceso se bloquea, sale para
   // que Docker lo reinicie (los mensajes y trabajos están en PostgreSQL y se retoman al arrancar).
-  if (config.watchdog.enabled) {
-    startWatchdog({
+  const watchdog = !config.watchdog.enabled ? null : startWatchdog({
       loops: config.queue.role === 'http' ? [] : ['queue', 'inbox', 'scheduler'],
       stallMs: config.watchdog.stallMs,
       blockMs: config.watchdog.blockMs,
@@ -69,11 +68,11 @@ async function main() {
         process.exit(1);
       },
     });
-  }
   const workerKeepAlive=config.queue.role==='worker'?setInterval(()=>{},30_000):undefined;
 
   const shutdown = async () => {
     console.log('Cerrando...');
+    watchdog?.stop();
     clearInterval(workerKeepAlive);
     await app.close();
     process.exit(0);

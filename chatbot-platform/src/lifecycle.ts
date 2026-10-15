@@ -100,9 +100,15 @@ export function startLifecycle(intervalMs = 10 * 60_000) {
  * si un WhatsApp que estaba conectado se cae, se avisa a los administradores de la cuenta (panel y correo).
  */
 export async function recordConnectionState(ch: Pick<Channel, 'id' | 'account_id' | 'name' | 'type'>, state: string) {
+  // FOR UPDATE: dos procesos que reciben el mismo cambio no ven ambos el estado anterior (no se avisa dos veces).
+  // connection_state_at solo cambia si cambia el estado (Evolution repite eventos); down_since marca desde cuándo está
+  // caído un canal que estaba conectado.
   const row = await queryOne<{ prev: string }>(
-    `WITH old AS (SELECT connection_state FROM channels WHERE id = $1)
-     UPDATE channels SET connection_state = $2, connection_state_at = now() WHERE id = $1 RETURNING (SELECT connection_state FROM old) AS prev`,
+    `WITH old AS (SELECT id, connection_state FROM channels WHERE id = $1 FOR UPDATE)
+     UPDATE channels c SET connection_state = $2,
+       connection_state_at = CASE WHEN old.connection_state IS DISTINCT FROM $2 THEN now() ELSE c.connection_state_at END,
+       down_since = CASE WHEN $2 = 'open' THEN NULL WHEN old.connection_state = 'open' THEN now() ELSE c.down_since END
+     FROM old WHERE c.id = old.id RETURNING old.connection_state AS prev`,
     [ch.id, state],
   );
   if (state === 'open') await store.clearConnectionCodes(ch.id);
