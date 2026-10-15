@@ -1,4 +1,4 @@
-import { api, fmtDate, h } from './core.js';
+import { api, confirmAction, field, fill, fmtDate, h, run } from './core.js';
 import { render } from './main.js';
 import { configSection, functionalSection } from './system-config.js';
 
@@ -43,5 +43,36 @@ export async function viewSystem(root) {
         h('p', { class: 'small' }, sys.alerts_configured.heartbeat ? '✓ Latido externo (HEARTBEAT_URL): si el servidor cae, el servicio externo avisa' : '✕ Latido externo: falta HEARTBEAT_URL (por ejemplo healthchecks.io); sin él nadie avisa si el servidor completo se cae'),
         !sys.alerts_configured.email && !sys.alerts_configured.webhook ? h('p', { class: 'banner danger', role: 'alert' }, 'Ninguna alerta sale del panel: si algo falla de noche, nadie se entera. Configura SMTP_URL o ALERT_WEBHOOK_URL.') : null,
         h('p', { class: 'small' }, sys.heartbeat_configured ? '✓ Latido externo activo' : '⚠️ Sin latido externo: si el servidor entero cae, nadie se entera. Configura HEARTBEAT_URL (healthchecks.io es gratis).'))));
-  root.append(functionalSection(sys.functional), await configSection());
+  root.append(await zernioCard(), functionalSection(sys.functional), await configSection());
+}
+
+/** Una sola llave de Zernio para todas las cuentas: se pega aquí, se prueba y queda activa sin reiniciar. */
+async function zernioCard() {
+  const card = h('div', { class: 'card', id: 'zernio-key' });
+  const draw = (s) => {
+    const form = { api_key: '' };
+    const input = h('input', { type: 'password', autocomplete: 'off', placeholder: s.source === 'panel' ? 'Pega una llave nueva para reemplazarla' : 'sk_…', oninput: (e) => (form.api_key = e.target.value) });
+    const busy = async (button, fn) => { button.disabled = true; try { const r = await fn(); if (r) draw(r); } finally { button.disabled = false; } };
+    fill(card,
+      h('div', { class: 'row between' }, h('h2', { style: 'margin:0' }, 'Redes sociales (Zernio)'),
+        h('span', { class: `badge ${s.enabled ? 'green' : 'orange'}` }, s.enabled ? '✓ Activa' : 'Sin llave')),
+      h('p', { class: 'small muted' }, 'Una sola llave para toda la plataforma: con ella cada negocio conecta Instagram, Facebook, Telegram, X, Bluesky, Reddit y WhatsApp Business desde su panel, con su propio perfil de Zernio. Los negocios nunca ven la llave.'),
+      s.source === 'env' ? h('p', { class: 'small' }, `Definida en el servidor (ZERNIO_API_KEY), termina en …${s.hint}. Se administra en el .env.`)
+        : s.source === 'panel' ? h('p', { class: 'small' }, `Guardada en el panel (cifrada), termina en …${s.hint}`, s.updated_at ? ` · ${fmtDate(s.updated_at)}` : '', '.')
+          : h('p', { class: 'small' }, 'Crea una llave en zernio.com → Settings → API Keys y pégala aquí.'),
+      s.enabled ? h('p', { class: 'small' }, `Cuentas con perfil de Zernio: ${s.accounts_with_profile} de ${s.accounts_total}`, s.creating_profiles ? ` (creando ${s.creating_profiles}…)` : '', ` · redes conectadas: ${s.connected_channels}`) : null,
+      s.webhook ? h('p', { class: `small ${s.webhook.ok ? '' : 'error'}` }, s.webhook.ok ? '✓ Webhook registrado en Zernio: ' : '✕ No se pudo registrar el webhook: ', s.webhook.ok ? h('code', {}, s.webhook_url) : s.webhook.error) : null,
+      s.source !== 'env' ? h('div', { class: 'row', style: 'align-items:flex-end' },
+        field(s.source === 'panel' ? 'Reemplazar llave' : 'Llave de Zernio', input),
+        h('button', { class: 'primary', onclick: (e) => busy(e.currentTarget, () => {
+          if (!form.api_key.trim()) { input.focus(); return null; }
+          return run(() => api('PUT', '/api/system/zernio', { api_key: form.api_key.trim() }), 'Llave guardada y verificada');
+        }) }, 'Guardar y probar')) : null,
+      h('div', { class: 'row' },
+        s.enabled ? h('button', { onclick: (e) => busy(e.currentTarget, () => run(() => api('POST', '/api/system/zernio/check'), 'Llave y webhook verificados')) }, 'Probar y reparar') : null,
+        s.source === 'panel' ? h('button', { class: 'danger', onclick: (e) => busy(e.currentTarget, async () =>
+          (await confirmAction('¿Quitar la llave de Zernio? Las redes sociales de todas las cuentas dejarán de recibir y enviar mensajes.')) ? run(() => api('DELETE', '/api/system/zernio'), 'Llave quitada') : null) }, 'Quitar llave') : null));
+  };
+  try { draw(await api('GET', '/api/system/zernio')); } catch (e) { fill(card, h('h2', { style: 'margin-top:0' }, 'Redes sociales (Zernio)'), h('p', { class: 'error' }, e.message)); }
+  return card;
 }
