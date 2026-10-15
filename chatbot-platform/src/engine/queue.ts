@@ -3,16 +3,29 @@ import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
 import { coordinated, DeliveryUncertain,detached } from './coordination.js';
 export type Runner = (id: string, attempt: { restarts: number }) => Promise<{ status: string }>;
-export async function enqueue(id: string, delay: number, client?: { query: (...args: any[]) => Promise<any> }) {
+/** Fallos que se pueden repetir sin riesgo de duplicar un envío (la IA falló, o el trabajo era de antes de un reinicio). */
+export const RETRYABLE_DEAD = ['processing_error', 'stale_pending'];
+
+/**
+ * Programa la conversación. Con `revive` (mensaje nuevo del cliente), un trabajo en revisión por un fallo que se puede
+ * repetir vuelve a la cola: el cliente no se queda sin respuesta para siempre. Un envío incierto nunca se repite solo.
+ */
+export async function enqueue(id: string, delay: number, client?: { query: (...args: any[]) => Promise<any> }, revive = false) {
   const sql = `INSERT INTO conversation_work(conversation_id,run_at) VALUES($1,now()+$2*interval '1 millisecond')
     ON CONFLICT(conversation_id) DO UPDATE SET run_at=EXCLUDED.run_at,revision=conversation_work.revision+1,
-    state=CASE WHEN conversation_work.state IN ('running','dead') THEN conversation_work.state ELSE 'pending' END,
-    attempts=CASE WHEN conversation_work.state='done' THEN 0 ELSE conversation_work.attempts END,updated_at=now()`;
-  if(client) await client.query(sql,[id,delay]); else await query(sql,[id,delay]);
+    state=CASE WHEN $3 AND conversation_work.state='dead' AND conversation_work.reason=ANY($4::text[]) THEN 'pending'
+      WHEN conversation_work.state IN ('running','dead') THEN conversation_work.state ELSE 'pending' END,
+    reason=CASE WHEN $3 AND conversation_work.state='dead' AND conversation_work.reason=ANY($4::text[]) THEN NULL ELSE conversation_work.reason END,
+    revivals=CASE WHEN $3 AND conversation_work.state='dead' AND conversation_work.reason=ANY($4::text[]) THEN 0 ELSE conversation_work.revivals END,
+    attempts=CASE WHEN conversation_work.state='done' OR ($3 AND conversation_work.state='dead' AND conversation_work.reason=ANY($4::text[])) THEN 0 ELSE conversation_work.attempts END,updated_at=now()`;
+  const args = [id, delay, revive, RETRYABLE_DEAD];
+  if(client) await client.query(sql,args); else await query(sql,args);
 }
 /** Local state only tracks promises for shutdown; all eligibility, debounce and retries live in PostgreSQL. */
 export class ConversationQueue {
   private stopped=false;
+  /** Apagándose: ya no toma trabajo nuevo, pero sí guarda lo que llegue (otro proceso o el reinicio lo atiende). */
+  private draining=false;
   private active=new Set<Promise<unknown>>();
   private processing=new Map<string,Promise<boolean>>();
   private hints=new Set<string>();
@@ -29,13 +42,13 @@ export class ConversationQueue {
     this.timer=setInterval(()=>{void this.runDue(config.queue.concurrency,false).catch(()=>console.warn('[queue] PostgreSQL no disponible; trabajos conservados.'));},config.queue.pollMs);
     this.timer.unref();
   }
-  async schedule(id:string,delay:number) {
+  async schedule(id:string,delay:number,revive=false) {
     if(this.stopped) throw new Error('La cola está cerrada');
     this.hints.add(id);
-    try {await enqueue(id,delay);} catch(e) {this.hints.delete(id);throw e;}
+    try {await enqueue(id,delay,undefined,revive);} catch(e) {this.hints.delete(id);throw e;}
     // Optional wakeup only: PostgreSQL remains authoritative if this timer is lost.
     const at=Date.now()+delay+5;
-    if(this.timer && config.queue.role!=='http' && at<this.wakeAt) {
+    if(this.timer && !this.draining && config.queue.role!=='http' && at<this.wakeAt) {
       clearTimeout(this.wake);this.wakeAt=at;
       this.wake=setTimeout(()=>{this.wakeAt=Infinity;void detached(()=>this.runDue(config.queue.concurrency,false).catch(()=>undefined));},delay+5);
       this.wake.unref();
@@ -56,7 +69,7 @@ export class ConversationQueue {
   }
   async runDue(limit=config.queue.concurrency,wait=true) {
     limit=Math.max(1,Math.min(config.queue.concurrency,Math.trunc(limit)||1));
-    if(this.stopped||this.polling) return 0;
+    if(this.stopped||this.draining||this.polling) return 0;
     this.polling=true;
     try {
       const rows=await query(`SELECT conversation_id FROM conversation_work WHERE (state='pending' AND run_at<=now()) OR (state='running' AND lease_until<now()) ORDER BY run_at LIMIT $1`,[Math.min(24,limit*4)]);
@@ -108,6 +121,8 @@ export class ConversationQueue {
   }
   has(id:string) {return this.hints.has(id);}
   canRestart(n:number) {return n<this.maxRestarts;}
+  /** Deja de tomar trabajo nuevo (al apagar): lo que ya corre termina y lo pendiente queda en PostgreSQL. */
+  drain() {this.draining=true;clearInterval(this.timer);clearTimeout(this.wake);}
   async stop() {this.stopped=true;clearInterval(this.timer);clearTimeout(this.wake);await Promise.allSettled([...this.active]);this.hints.clear();}
   get size() {return this.hints.size+this.active.size;}
 }

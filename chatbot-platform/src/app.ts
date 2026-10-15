@@ -69,6 +69,9 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
   const app = Fastify({ logger: opts.logger ?? false, bodyLimit: 10 * 1024 * 1024, trustProxy: (_addr: string, hop: number) => hop < config.trustProxyHops });
   const service = new ChatService(opts.ai, opts.transportFactory);
   app.addHook('onClose', async () => {
+    // Primero se deja de tomar conversaciones nuevas; lo que ya corre termina (docker-compose da 5 min para ello).
+    service.queue.drain();
+    service.stopSweeper();
     await settleAgentTests();
     await service.inbox.stop();
     await service.scheduler.stop();

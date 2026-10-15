@@ -510,7 +510,8 @@ t('si la IA no responde, la foto por palabra del cliente sale igual (y no se rep
     await h.idle();
     await sleep(300);
     await h.fastForward();
-    assert.deepEqual(to(phone), ['[FOTO menu]'], 'la foto de la regla sale aunque la IA no responda');
+    assert.deepEqual(to(phone).filter((x) => x.startsWith('[FOTO')), ['[FOTO menu]'], 'la foto de la regla sale aunque la IA no responda');
+    assert.deepEqual(to(phone).filter((x) => !x.startsWith('[FOTO')), ['¡Gracias por escribirnos! Tenemos una pequeña demora; en un momento te respondemos.'], 'y el cliente sabe que se le atenderá');
 
     h.setScript(() => ({ action: 'reply', messages: ['Claro, ahí tienes el menú. ¿Algo más?'] }));
     await say('¿Sigues ahí?', phone);

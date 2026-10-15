@@ -68,6 +68,8 @@ services:
       args:
         APP_VERSION: ${APP_VERSION:-dev}
     restart: unless-stopped
+    # Al actualizar o reiniciar, deja terminar las respuestas en curso (una puede tardar minutos) antes de cortar.
+    stop_grace_period: 300s
     depends_on:
       postgres: { condition: service_healthy }
       evolution: { condition: service_started }
@@ -86,7 +88,8 @@ services:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-${OPENAI_API_KEY:-}}
       OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}}
       OPENROUTER_MODEL: ${OPENROUTER_MODEL:-${OPENAI_MODEL:-openai/gpt-4.1-mini}}
-      OPENROUTER_FALLBACK_MODELS: ${OPENROUTER_FALLBACK_MODELS:-}
+      # Modelo de respaldo si el principal falla (OpenRouter lo usa solo entonces). "none" lo desactiva.
+      OPENROUTER_FALLBACK_MODELS: ${OPENROUTER_FALLBACK_MODELS:-google/gemini-2.5-flash}
       OPENROUTER_SUMMARY_MODEL: ${OPENROUTER_SUMMARY_MODEL:-${OPENAI_SUMMARY_MODEL:-openai/gpt-4.1-mini}}
       OPENROUTER_TRANSCRIPTION_MODEL: ${OPENROUTER_TRANSCRIPTION_MODEL:-${OPENAI_TRANSCRIPTION_MODEL:-google/gemini-2.5-flash}}
       KNOWLEDGE_MONITOR_ENABLED: ${KNOWLEDGE_MONITOR_ENABLED:-true}

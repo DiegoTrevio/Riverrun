@@ -674,6 +674,27 @@ export class Engine {
     return owed.length;
   }
 
+  /**
+   * El asistente no pudo responder: el cliente recibe el mensaje de cortesía una sola vez por grupo de mensajes sin
+   * responder (la operación es idempotente) y no se repite mientras el último mensaje enviado siga siendo ese aviso.
+   */
+  async sendUnavailableNotice(conversationId: string, transport: Transport): Promise<boolean> {
+    const conv = await store.getConversation(conversationId);
+    if (!conv?.chatbot_id || conv.status !== 'bot') return false;
+    const bot = await store.getChatbot(conv.chatbot_id);
+    const text = bot?.rules.unavailable_message?.trim();
+    if (!bot || !text || !bot.active || !agentActive(bot, conv)) return false;
+    const pending = await store.pendingInbound(conv.id);
+    if (!pending.length) return false;
+    // «Una pequeña demora» no tiene sentido para un mensaje de hace horas (p. ej. tras un apagón largo): ahí solo se avisa al equipo.
+    if (Date.now() - new Date(pending.at(-1)!.created_at).getTime() > 6 * 3600_000) return false;
+    const last = await queryOne(`SELECT meta FROM messages WHERE conversation_id=$1 AND direction='out' ORDER BY id DESC LIMIT 1`, [conv.id]);
+    if (last?.meta?.source === 'unavailable') return false;
+    const sent = await operationScope(`unavailable:${conv.id}:${pending.at(-1)!.id}`, () =>
+      this.sendOut(bot, conv, transport, { sender: 'bot', text, delay: 0, meta: { source: 'unavailable' } }));
+    return !!sent;
+  }
+
   /** Envía el plan. Devuelve las fotos que la plataforma rechazó (de reglas del negocio o elegidas por la IA) para reintentarlas. */
   async sendPlan(bot: Chatbot, conv: Conversation, transport: Transport, plan: ExecutionPlan, meta: Record<string, unknown>, scheduled: ScheduledImage[] = [], saved: SavedItem[] = []): Promise<ScheduledImage[]> {
     const typing = bot.ai.typing_simulation && hasTyping(transport);

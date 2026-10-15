@@ -691,6 +691,7 @@ function tabRules(root, bot) {
       field('No afirmar lo que no esté en tu información (p. ej. "sí tenemos alberca")', select(r, 'verify_claims', [['reglas', 'Revisión rápida (recomendado)'], ['estricto', 'Estricta: una segunda IA lo revisa (más segura, cuesta un poco más)'], ['apagado', 'Sin revisar']]), 'Cuando el asistente asegura que tienes u ofreces algo que no está cargado, se corrige o dice que lo confirma con tu equipo.'),
       field(tag('Si le preguntan algo que no está en "Conocimiento"…', guaranteed()), select(r, 'unknown_info_behavior', [['say_unknown', 'Decir que no lo tiene confirmado'], ['ask', 'Hacer una pregunta para entender mejor'], ['handoff', 'Pasar con una persona del equipo']])),
       field(tag('Mensaje de respaldo', guaranteed()), area(r, 'fallback_message'), 'Se envía tal cual si la IA insiste en un dato que no puede comprobarse.'),
+      field(tag('Mensaje si hay una demora', guaranteed()), area(r, 'unavailable_message'), 'Se envía una vez si el asistente no puede responder (por ejemplo, si falla el servicio de IA); al mismo tiempo se avisa al equipo y se reintenta solo. Déjalo vacío para no enviarlo.'),
     ),
     h('div', { class: 'card' },
       h('h2', { style: 'margin-top:0' }, 'Pasar con una persona'),
