@@ -36,6 +36,7 @@ import { cachedChecks, runReadiness } from './monitor.js';
 import { functionalReport, readinessReport } from './observability/health.js';
 import { collectMetricsExtra, renderMetrics } from './observability/metrics.js';
 import { ChatService, type TransportFactory } from './service.js';
+import { loadPlatformSecrets, startPlatformSecretsRefresh, stopPlatformSecretsRefresh } from './platform-secrets.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -68,7 +69,11 @@ declare module 'fastify' {
 export async function buildApp(opts: { ai: AiProvider; transportFactory?: TransportFactory; logger?: boolean }) {
   const app = Fastify({ logger: opts.logger ?? false, bodyLimit: 10 * 1024 * 1024, trustProxy: (_addr: string, hop: number) => hop < config.trustProxyHops });
   const service = new ChatService(opts.ai, opts.transportFactory);
+  // Llaves guardadas desde el panel (Zernio): disponibles desde el arranque y al día en todos los procesos.
+  await loadPlatformSecrets();
+  startPlatformSecretsRefresh();
   app.addHook('onClose', async () => {
+    stopPlatformSecretsRefresh();
     // Primero se deja de tomar conversaciones nuevas; lo que ya corre termina (docker-compose da 5 min para ello).
     service.queue.drain();
     service.stopSweeper();

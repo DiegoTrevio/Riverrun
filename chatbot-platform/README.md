@@ -40,7 +40,7 @@ Instagram, Facebook Messenger, WhatsApp Business (API oficial), Telegram, X, Blu
 
 **La plataforma tiene una sola llave; cada negocio solo conecta sus redes.**
 
-1. El administrador de la instalación define `ZERNIO_API_KEY` (y `PUBLIC_BASE_URL` con HTTPS). Nunca sale al navegador.
+1. El superadministrador pega la llave en **Sistema → Redes sociales (Zernio)** (o define `ZERNIO_API_KEY` en el `.env`, que tiene prioridad), con `PUBLIC_BASE_URL` en HTTPS. La llave se prueba con Zernio antes de guardarse, se guarda cifrada con la clave del servidor, queda activa sin reiniciar en todos los procesos (en menos de un minuto) y nunca sale al navegador: el panel solo muestra sus últimos 4 caracteres. Al guardarla se registra el webhook único y se crea el perfil de las cuentas que aún no lo tienen; **Probar y reparar** repite ambas cosas.
 2. En su agente, el negocio pulsa **+ Conectar teléfono u otro canal**, elige la red (Instagram, Facebook, Telegram…) y la conecta desde el panel, sin ver llaves ni identificadores:
    - **Instagram, Facebook, WhatsApp Business, X y Reddit:** se abre la autorización de la red (Zernio aloja la elección de página o número) y al terminar vuelve al canal con la cuenta conectada. El retorno usa un estado de un solo uso que vence a los 30 minutos y se valida contra el perfil del negocio.
    - **Telegram:** el panel muestra un código; el negocio agrega el bot de conexión y le envía el código. El panel revisa cada 3 s hasta que queda conectado.
