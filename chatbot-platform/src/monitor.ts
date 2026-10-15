@@ -493,6 +493,6 @@ export async function systemStatus() {
     subscriptions: subs,
     backup: readBackupStatus(),
     heartbeat_configured: !!config.monitor.heartbeatUrl,
-    alerts_configured: { email: !!config.signup.superadminEmail && !!config.mail.smtpUrl, webhook: !!config.monitor.alertWebhookUrl },
+    alerts_configured: { email: !!config.signup.superadminEmail && !!config.mail.smtpUrl, webhook: !!config.monitor.alertWebhookUrl, heartbeat: !!config.monitor.heartbeatUrl },
   };
 }

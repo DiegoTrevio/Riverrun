@@ -92,6 +92,16 @@ Lo que pasa cuando el asistente no puede contestar:
 - **Reinicios y actualizaciones**: al apagarse, el servidor deja de tomar conversaciones nuevas de inmediato, y docker compose espera hasta 5 minutos (`stop_grace_period`) a que terminen las respuestas en curso. Lo que llegue mientras tanto queda guardado y se atiende al arrancar.
 - **Modelo de respaldo**: con OpenRouter, si el modelo principal falla, se usa `google/gemini-2.5-flash` (`OPENROUTER_FALLBACK_MODELS`; `none` lo desactiva).
 
+## Que nada quede colgado ni desatendido
+
+- **Vigilante del proceso** (`src/watchdog.ts`): si la cola, las recepciones o las tareas programadas dejan de avanzar 10 minutos (`WATCHDOG_STALL_MS`), el proceso registra el motivo y sale; si el bucle de eventos se bloquea 60 s (`WATCHDOG_BLOCK_MS`), un hilo aparte lo termina. Docker lo reinicia (`restart: unless-stopped`, con `init: true` para que la señal funcione) y todo lo pendiente está en PostgreSQL. `WATCHDOG=off` lo apaga.
+- **Tareas programadas con límite**: una tarea que tarda más de 3 minutos (`JOB_TIMEOUT_MS`) se corta y se reintenta; si alcanzó a enviar algo, el reintento no lo duplica.
+- **Conexiones a PostgreSQL**: esperar una conexión libre tiene un límite de 30 s (antes podía esperar para siempre).
+- **WhatsApp vigilado** (`src/whatsapp-watch.ts`, cada 5 minutos): se lee el estado real de cada sesión vinculada aunque Evolution no avise; si se cae (dos revisiones seguidas), se avisa a los administradores, se intenta reconectar cada 15 minutos y, si sigue desconectado, se vuelve a avisar cada 6 horas durante 7 días.
+- **Avisos urgentes también por correo**: cliente sin respuesta, emergencias, fallas de recepción y clientes que esperan a una persona llegan al panel, por WhatsApp y por correo (el WhatsApp de la cuenta puede ser justo lo que falla). Requiere `SMTP_URL`.
+- **Cliente esperando a una persona**: si el último mensaje es del cliente y nadie del equipo responde en 30 minutos (regla del agente `handoff_reminder_minutes`; 0 lo apaga), el equipo recibe un recordatorio que se repite cada 2 horas durante 24 horas.
+- **Instalación y revisión previa**: `./riverrun install` pide `SMTP_URL`, `HEARTBEAT_URL` y `ALERT_WEBHOOK_URL`; `./riverrun preflight` advierte si ninguna alerta sale del servidor o si falta el latido externo. El panel (Sistema) muestra el estado de los tres y un aviso si no hay ningún canal de alerta.
+
 ## Métricas (`/metrics`)
 
 Formato de texto de Prometheus. Las etiquetas son solo valores fijos o validados.

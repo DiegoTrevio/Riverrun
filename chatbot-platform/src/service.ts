@@ -242,8 +242,48 @@ export class ChatService {
     }
   }
 
+  /**
+   * Clientes que esperan a una persona del equipo: si el último mensaje es del cliente y lleva más de
+   * `handoff_reminder_minutes`, se recuerda al equipo (y se repite cada 2 horas, durante 24 horas).
+   */
+  async remindHumanWaiting(): Promise<number> {
+    const rows = await query<{ id: string; chatbot_id: string | null; waiting_min: number }>(`SELECT c.id, c.chatbot_id, floor(extract(epoch FROM now() - m.created_at) / 60)::int AS waiting_min
+      FROM conversations c
+      JOIN LATERAL (SELECT direction, created_at FROM messages WHERE conversation_id = c.id ORDER BY id DESC LIMIT 1) m ON true
+      WHERE c.status = 'human' AND m.direction = 'in' AND m.created_at > now() - interval '24 hours'
+        AND (c.human_reminded_at IS NULL OR c.human_reminded_at < m.created_at OR c.human_reminded_at < now() - interval '2 hours')
+      LIMIT 200`);
+    let n = 0;
+    for (const row of rows) {
+      const bot = row.chatbot_id ? await store.getChatbot(row.chatbot_id) : null;
+      const minutes = bot?.rules.handoff_reminder_minutes ?? 30;
+      if (!minutes || row.waiting_min < minutes) continue;
+      const claimed = await query(`UPDATE conversations SET human_reminded_at = now() WHERE id = $1 AND status = 'human'
+        AND (human_reminded_at IS NULL OR human_reminded_at < now() - interval '2 hours' OR human_reminded_at < (SELECT max(created_at) FROM messages WHERE conversation_id = $1 AND direction = 'in')) RETURNING id`, [row.id]);
+      if (!claimed.length) continue;
+      const conv = await store.getConversation(row.id);
+      if (!conv) continue;
+      const [contact, channel] = await Promise.all([store.getContact(conv.contact_id), store.getChannel(conv.channel_id)]);
+      if (!channel || channel.type === 'playground') continue;
+      const who = contact?.name || contact?.push_name || (contact?.phone ? `+${contact.phone}` : 'Un cliente');
+      const resume = bot?.rules.auto_resume_minutes ? '' : ' Si nadie puede atenderlo, devuelve la conversación al asistente desde Conversaciones.';
+      await this.automator.alertTeam(conv.account_id, {
+        title: '⏳ Un cliente espera a una persona',
+        body: `${who} (${channel.name}) espera respuesta de alguien del equipo desde hace ${row.waiting_min} min.${resume}`,
+        link: `#/conversation/${conv.id}`,
+        conversationId: conv.id,
+        kind: 'handoff_wait',
+        roles: ['admin', 'agent'],
+      }).catch(() => undefined);
+      n++;
+    }
+    return n;
+  }
+
   startSweeper(intervalMs = 30_000) {
+    let laps = 0;
     this.sweeper = setInterval(() => {
+      if (laps++ % 10 === 0) this.remindHumanWaiting().catch(() => undefined);
       this.sweepPending()
         .then(async (n) => { if (n) await logEvent({ level: 'warn', source: 'engine', message: `Se retomaron ${n} conversaciones con mensajes sin responder` }); })
         .catch(() => undefined);

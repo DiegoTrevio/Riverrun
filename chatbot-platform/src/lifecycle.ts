@@ -100,9 +100,15 @@ export function startLifecycle(intervalMs = 10 * 60_000) {
  * si un WhatsApp que estaba conectado se cae, se avisa a los administradores de la cuenta (panel y correo).
  */
 export async function recordConnectionState(ch: Pick<Channel, 'id' | 'account_id' | 'name' | 'type'>, state: string) {
+  // FOR UPDATE: dos procesos que reciben el mismo cambio no ven ambos el estado anterior (no se avisa dos veces).
+  // connection_state_at solo cambia si cambia el estado (Evolution repite eventos); down_since marca desde cuándo está
+  // caído un canal que estaba conectado.
   const row = await queryOne<{ prev: string }>(
-    `WITH old AS (SELECT connection_state FROM channels WHERE id = $1)
-     UPDATE channels SET connection_state = $2, connection_state_at = now() WHERE id = $1 RETURNING (SELECT connection_state FROM old) AS prev`,
+    `WITH old AS (SELECT id, connection_state FROM channels WHERE id = $1 FOR UPDATE)
+     UPDATE channels c SET connection_state = $2,
+       connection_state_at = CASE WHEN old.connection_state IS DISTINCT FROM $2 THEN now() ELSE c.connection_state_at END,
+       down_since = CASE WHEN $2 = 'open' THEN NULL WHEN old.connection_state = 'open' THEN now() ELSE c.down_since END
+     FROM old WHERE c.id = old.id RETURNING old.connection_state AS prev`,
     [ch.id, state],
   );
   if (state === 'open') await store.clearConnectionCodes(ch.id);
@@ -114,13 +120,20 @@ export async function recordConnectionState(ch: Pick<Channel, 'id' | 'account_id
       await logEvent({ level: 'info', source: 'evolution', message: `Primer WhatsApp conectado: ${ch.name}`, accountId: acc.id, channelId: ch.id });
     }
   } else if (state === 'close' && row.prev === 'open') {
-    const admins = await query<{ id: string; email: string }>(`SELECT id, email FROM users WHERE account_id = $1 AND role = 'admin' AND active`, [ch.account_id]);
-    const social = ch.type === 'zernio';
-    const title = social ? 'Tu red social se desconectó' : 'Tu WhatsApp se desconectó';
-    const body = social
-      ? `El canal "${ch.name}" se desconectó y el asistente no está recibiendo mensajes. Vuelve a conectarlo desde el panel con "Reconectar".`
-      : `El canal "${ch.name}" se desconectó y el asistente no está recibiendo mensajes. Vuelve a vincularlo en un minuto desde el panel: escanea el código QR o usa "Con mi número".`;
-    await notifyUsers(ch.account_id, admins.map((a) => a.id), { title, body, link: `#/channel/${ch.id}?conectar=1`, kind: 'channel' });
-    for (const a of admins) await sendMail({ to: a.email, subject: title, text: `${body}\n\n${config.publicBaseUrl}/#/channel/${ch.id}?conectar=1` });
+    await notifyDisconnected(ch);
   }
+}
+
+/** Aviso a los administradores (panel y correo) de que un canal se desconectó; `hours` si sigue así desde hace horas. */
+export async function notifyDisconnected(ch: Pick<Channel, 'id' | 'account_id' | 'name' | 'type'>, hours = 0) {
+  const admins = await query<{ id: string; email: string }>(`SELECT id, email FROM users WHERE account_id = $1 AND role = 'admin' AND active`, [ch.account_id]);
+  const social = ch.type === 'zernio';
+  const still = hours > 0 ? ` (sigue así desde hace ${hours} h)` : '';
+  const title = (social ? 'Tu red social se desconectó' : 'Tu WhatsApp se desconectó') + still;
+  const body = social
+    ? `El canal "${ch.name}" se desconectó y el asistente no está recibiendo mensajes. Vuelve a conectarlo desde el panel con "Reconectar".`
+    : `El canal "${ch.name}" se desconectó y el asistente no está recibiendo mensajes. Vuelve a vincularlo en un minuto desde el panel: escanea el código QR o usa "Con mi número".`;
+  await notifyUsers(ch.account_id, admins.map((a) => a.id), { title, body, link: `#/channel/${ch.id}?conectar=1`, kind: 'channel' });
+  for (const a of admins) await sendMail({ to: a.email, subject: title, text: `${body}\n\n${config.publicBaseUrl}/#/channel/${ch.id}?conectar=1` });
+  await query('UPDATE channels SET disconnect_notified_at = now() WHERE id = $1', [ch.id]);
 }

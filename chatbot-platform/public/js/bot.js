@@ -700,6 +700,7 @@ function tabRules(root, bot) {
       field(tag('Mensaje al pasar con una persona', guaranteed()), area(r, 'handoff_message'), 'Se envía tal cual. Después el asistente deja de responder en esa conversación hasta que se la devuelvas.'),
       field('WhatsApp que recibe el aviso', text(r, 'handoff_notify_number', { placeholder: '5215512345678' }), 'Opcional, con lada. Además se avisa en el panel y por WhatsApp a quien lo tenga activado en "Mi perfil".'),
       field('El asistente retoma la conversación después de (minutos)', num(r, 'auto_resume_minutes', { min: 0 }), '0 = nunca solo; se la devuelves desde Conversaciones.'),
+      field('Recordar al equipo si el cliente espera a una persona más de (minutos)', num(r, 'handoff_reminder_minutes', { min: 0, max: 1440 }), 'Aviso en el panel, por WhatsApp y por correo; se repite cada 2 horas. 0 = no recordar.'),
     ),
     h('div', { class: 'card' },
       h('h2', { style: 'margin-top:0' }, 'Temas y reglas de tu negocio'),
