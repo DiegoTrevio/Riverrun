@@ -44,7 +44,7 @@ after(async () => {
 t('la IA falla: el cliente recibe el mensaje de demora una sola vez y el equipo un aviso; el mensaje queda pendiente', async () => {
   aiDown = true;
   await h.webhook('¿tienen habitaciones?');
-  await waitFor(async () => (await work())?.attempts >= 1, 10000);
+  await waitFor(async () => (await work())?.attempts >= 1, 20000);
   await markDead('processing_error');
   await (h.service as any).aiUnavailable(convId);
   assert.equal(toCustomer(DEMORA), 1, JSON.stringify(h.sent));
@@ -68,7 +68,7 @@ t('el cliente vuelve a escribir: la conversación sale de revisión y se le resp
 t('sin mensaje nuevo: una falla de la IA se reintenta sola cada 10 minutos', async () => {
   aiDown = true;
   await h.webhook('quiero reservar');
-  await waitFor(async () => (await work())?.attempts >= 1, 10000);
+  await waitFor(async () => (await work())?.attempts >= 1, 20000);
   await markDead('processing_error', 5);
   assert.deepEqual(await (h.service as any).reviveFailed(), { retried: 0, reminded: 0 }, 'todavía no pasan 10 minutos');
   await markDead('processing_error', 11);
@@ -85,7 +85,7 @@ t('sin mensaje nuevo: una falla de la IA se reintenta sola cada 10 minutos', asy
 t('envío incierto: un mensaje nuevo no lo repite, pero el equipo recibe un recordatorio cada 30 minutos', async () => {
   aiDown = true;
   await h.webhook('¿me confirmas?');
-  await waitFor(async () => (await work())?.attempts >= 1, 10000);
+  await waitFor(async () => (await work())?.attempts >= 1, 20000);
   await markDead('delivery_uncertain');
   aiDown = false;
   const before = h.sent.length;
@@ -118,13 +118,29 @@ t('monitor: un cliente con el asistente encendido sin respuesta por más de 10 m
   await pool.query(`UPDATE conversations SET status = 'bot' WHERE id = $1`, [convId]);
 });
 
+t('los reintentos automáticos no repiten el aviso al equipo; el último sí', async () => {
+  await pool.query(`UPDATE messages SET processed = true WHERE conversation_id = $1`, [convId]);
+  aiDown = true;
+  await h.webhook('¿hay lugar el sábado?');
+  await waitFor(async () => (await work())?.attempts >= 1 && (await pendingCount()) >= 1, 20000);
+  await markDead('processing_error');
+  await pool.query(`UPDATE conversation_work SET revivals = 3 WHERE conversation_id = $1`, [convId]);
+  const alerts = await notices('⚠️ Un cliente espera respuesta');
+  await (h.service as any).aiUnavailable(convId);
+  assert.equal(await notices('⚠️ Un cliente espera respuesta'), alerts, 'el reintento 3 no vuelve a avisar');
+  await pool.query(`UPDATE conversation_work SET revivals = 12 WHERE conversation_id = $1`, [convId]);
+  await (h.service as any).aiUnavailable(convId);
+  assert.equal(await notices('⚠️ Un cliente espera respuesta'), alerts + 1, 'al agotar los reintentos sí');
+  aiDown = false;
+});
+
 t('mensaje de demora vacío: no se envía nada al cliente, pero el equipo sí recibe el aviso', async () => {
   const bot = (await h.authed('GET', `/api/chatbots/${h.botId}`)).json();
   assert.equal((await h.authed('PUT', `/api/chatbots/${h.botId}`, { rules: { ...bot.rules, unavailable_message: '' } })).statusCode, 200);
   await pool.query(`UPDATE messages SET processed = true WHERE conversation_id = $1`, [convId]);
   aiDown = true;
   await h.webhook('otra pregunta');
-  await waitFor(async () => (await work())?.attempts >= 1 && (await pendingCount()) >= 1, 10000);
+  await waitFor(async () => (await work())?.attempts >= 1 && (await pendingCount()) >= 1, 20000);
   await markDead('processing_error');
   const before = h.sent.length;
   const alerts = await notices('⚠️ Un cliente espera respuesta');

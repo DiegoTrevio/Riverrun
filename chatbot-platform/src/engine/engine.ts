@@ -686,6 +686,8 @@ export class Engine {
     if (!bot || !text || !bot.active || !agentActive(bot, conv)) return false;
     const pending = await store.pendingInbound(conv.id);
     if (!pending.length) return false;
+    // «Una pequeña demora» no tiene sentido para un mensaje de hace horas (p. ej. tras un apagón largo): ahí solo se avisa al equipo.
+    if (Date.now() - new Date(pending.at(-1)!.created_at).getTime() > 6 * 3600_000) return false;
     const last = await queryOne(`SELECT meta FROM messages WHERE conversation_id=$1 AND direction='out' ORDER BY id DESC LIMIT 1`, [conv.id]);
     if (last?.meta?.source === 'unavailable') return false;
     const sent = await operationScope(`unavailable:${conv.id}:${pending.at(-1)!.id}`, () =>

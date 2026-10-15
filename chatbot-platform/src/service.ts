@@ -287,15 +287,19 @@ export class ChatService {
       const [contact, channel] = await Promise.all([store.getContact(conv.contact_id), store.getChannel(conv.channel_id)]);
       if (!channel || channel.type === 'playground') return;
       const who = contact?.name || contact?.push_name || (contact?.phone ? `+${contact.phone}` : 'Un cliente');
-      const work=(await query('SELECT reason FROM conversation_work WHERE conversation_id=$1',[conversationId]))[0];
+      const work=(await query('SELECT reason,revivals FROM conversation_work WHERE conversation_id=$1',[conversationId]))[0];
       if(!work || work.reason==='processing_error') await this.engine.sendRuleImagesWithoutAi(conversationId).catch(()=>undefined);
       // Si nada se envió a medias, el cliente sabe que se le atenderá (un envío incierto pudo haber llegado: no se agrega nada).
       if(!work || RETRYABLE_DEAD.includes(work.reason)) {
-        const transport = contact ? this.transportFor(channel, contact) : null;
-        if (transport) await this.engine.sendUnavailableNotice(conversationId, transport).catch(async (e) => {
+        try {
+          if (contact) await this.engine.sendUnavailableNotice(conversationId, this.transportFor(channel, contact));
+        } catch (e: any) {
           await logEvent({ level: 'warn', source: 'engine', message: `No se pudo enviar el mensaje de demora: ${e?.message ?? e}`, accountId: conv.account_id, channelId: conv.channel_id, conversationId });
-        });
+        }
       }
+      // Los reintentos automáticos (cada 10 min) no repiten el aviso: el equipo ya lo tiene, y si sigue sin resolverse
+      // recibe los recordatorios cada 30 minutos.
+      if (work && Number(work.revivals) > 0 && work.reason === 'processing_error' && Number(work.revivals) < 12) return;
       await query('UPDATE conversation_work SET alerted_at=now() WHERE conversation_id=$1',[conversationId]);
       await logEvent({ level: 'error', source: 'ai', message: 'Un cliente espera respuesta; se avisó al equipo', accountId: conv.account_id, channelId: conv.channel_id, conversationId });
       await this.automator.alertTeam(conv.account_id, {
