@@ -52,9 +52,48 @@ test('trato: "usted" rechaza el tuteo y "tú" rechaza el usted', () => {
   const formal = bot({ personality: { formality: 'usted' } });
   assert.match(run(formal, ['¿Te gustaría agendar?']).retryable.join(), /usted/);
   assert.deepEqual(run(formal, ['¿Le gustaría agendar?']).retryable, []);
-  const last = run(formal, ['¿Te gustaría agendar?'], { final: true });
+  // Último intento: el tuteo no llega al cliente. Se quitan esas oraciones y queda lo que sí respeta el trato; si no
+  // queda nada, sale el mensaje de respaldo (nunca un silencio).
+  const last = run(formal, ['Claro, con gusto le ayudo. ¿Te gustaría agendar?'], { final: true });
   assert.deepEqual(last.retryable, [], 'en el último intento no se deja al cliente sin respuesta');
-  assert.ok(last.fixes.some((f) => f.startsWith('Revisar trato')));
+  assert.deepEqual(last.plan.messages, ['Claro, con gusto le ayudo.']);
+  assert.ok(last.fixes.some((f) => f.includes('no usan "usted"')));
+  const only = run(formal, ['¿Te gustaría agendar?'], { final: true });
+  assert.equal(only.plan.messages.length, 1);
+  assert.equal(registerMismatch(only.plan.messages[0], 'tu'), null);
+  assert.doesNotMatch(only.plan.messages[0], /gustaría/, 'el tuteo no se envía');
+});
+
+test('último intento: un mensaje más largo que el máximo por mensaje se recorta por oraciones completas', () => {
+  const one = bot({ ai: { max_bubbles: 1, max_chars_per_bubble: 200 }, personality: { response_length: 'media' } });
+  const long = 'Claro. ' + 'Tenemos alberca, gimnasio y restaurante abierto todo el día. '.repeat(10);
+  assert.match(run(one, [long]).retryable.join(), /demasiado largo/);
+  const last = run(one, [long], { final: true });
+  assert.deepEqual(last.retryable, []);
+  assert.equal(last.plan.messages.length, 1);
+  assert.ok(last.plan.messages[0].length <= 200, `${last.plan.messages[0].length} caracteres`);
+  assert.match(last.plan.messages[0], /día\.$/, 'termina en una oración completa');
+  // Una sola oración enorme se corta por palabras, con puntos suspensivos.
+  const word = run(one, ['Tenemos ' + 'muchas opciones '.repeat(40)], { final: true }).plan.messages[0];
+  assert.ok(word.length <= 200 && word.endsWith('…'));
+});
+
+test('último intento: una respuesta más larga que el estilo configurado se recorta desde el final', () => {
+  const brief = bot({ personality: { response_length: 'muy_corta' }, ai: { max_chars_per_bubble: 2000 } });
+  const long = 'Tenemos limpieza dental, resinas, blanqueamiento y ortodoncia. '.repeat(6);
+  const last = run(brief, [long, 'Otro dato más.'], { final: true });
+  assert.deepEqual(last.retryable, []);
+  assert.ok(last.plan.messages.join(' ').length <= Math.round(220 * 1.3));
+  assert.match(last.plan.messages[0], /^Tenemos limpieza dental/, 'se conserva el inicio de la respuesta');
+});
+
+test('frases prohibidas: palabras completas, sin importar signos ni mayúsculas', () => {
+  const b = bot({ rules: { banned_phrases: ['ia', '¿En qué más puedo ayudarte?'] } });
+  assert.deepEqual(run(b, ['Abrimos todo el día.', 'Te esperamos.']).retryable, [], '"ia" no está dentro de "día"');
+  assert.match(run(b, ['Listo. ¿En qué más puedo ayudarte, Juan?']).retryable.join(), /En qué más puedo ayudarte/);
+  assert.deepEqual(run(b, ['Listo. ¿En qué más puedo ayudarte, Juan?'], { final: true }).plan.messages, ['Listo.']);
+  assert.match(run(b, ['Soy una IA, pero con gusto te ayudo.']).retryable.join(), /"ia"/);
+  assert.deepEqual(run(b, ['EN QUE MAS PUEDO AYUDARTE']).retryable.length, 1);
 });
 
 test('largo de las respuestas: "muy corta" pide resumir una respuesta larga', () => {

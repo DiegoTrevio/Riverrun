@@ -5,7 +5,7 @@ import { DecisionSchema, type Action, type Decision } from './decision.js';
 import { unsupportedClaims } from './claims.js';
 import { asksQuestion, contactNameKey, declines, isAnswered, questionList, questionProgress, repeatsQuestion, type QuestionProgress } from './questions.js';
 import { cardNumbersIn, isSensitiveField } from './safety.js';
-import { countEmojis, deepClean, FactCorpus, limitEmojis, normalize, stripEmojis, toWhatsappFormat } from './text.js';
+import { countEmojis, deepClean, FactCorpus, limitEmojis, normalize, stripEmojis, toWhatsappFormat, truncateChars } from './text.js';
 
 /** Plan final ya validado que el backend ejecutará. */
 export interface ExecutionPlan {
@@ -258,6 +258,47 @@ export function splitLongMessage(text: string, max: number): string[] {
   return byParagraph.flatMap((p) => (p.length <= max ? [p] : pack(sentences(p), max, ' ')));
 }
 
+/** Recorta un texto a `max` caracteres por oraciones completas; si ni la primera cabe, por palabras con "…". */
+function clipText(text: string, max: number): string {
+  if (text.length <= max) return text;
+  let out = '';
+  for (const s of sentences(text)) {
+    const next = out ? `${out} ${s}` : s;
+    if (next.length > max) break;
+    out = next;
+  }
+  if (out) return out;
+  let words = '';
+  for (const w of text.split(/\s+/)) {
+    const next = words ? `${words} ${w}` : w;
+    if (next.length > max - 1) break;
+    words = next;
+  }
+  return `${words || truncateChars(text, max - 1)}…`;
+}
+
+/** Deja la respuesta en `max` caracteres en total, quitando del final (los primeros mensajes son la respuesta). */
+function clipTotal(messages: string[], max: number): string[] {
+  const out: string[] = [];
+  let used = 0;
+  for (const m of messages) {
+    const room = max - used - (out.length ? 1 : 0);
+    if (room < 20) break;
+    const piece = clipText(m, room);
+    out.push(piece);
+    used += piece.length + (out.length > 1 ? 1 : 0);
+    if (piece !== m) break;
+  }
+  return out;
+}
+
+/**
+ * Forma comparable de una frase prohibida: sin acentos, mayúsculas ni signos. Se busca como palabras completas, así
+ * "¿En qué más puedo ayudarte?" se detecta aunque la IA agregue ", Juan" y "ia" no coincide dentro de "día".
+ */
+const phraseKey = (s: string) => normalize(s).replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+const hasPhrase = (text: string, key: string) => !!key && ` ${phraseKey(text)} `.includes(` ${key} `);
+
 /** Quita las oraciones que cumplen `test`; devuelve los mensajes que aún tienen contenido. */
 function dropSentences(messages: string[], test: (sentenceNorm: string, sentence: string) => boolean): string[] {
   return messages
@@ -347,9 +388,15 @@ export function validateDecision(input: ValidationInput): ValidationResult {
       fixes.push(fixNote);
     } else retryable.push(issue);
   };
-  const tooLong = messages.some((m) => m.length > bot.ai.max_chars_per_bubble * 1.6);
+  // En el último intento no se envía algo fuera de lo configurado: se recorta por oraciones completas.
+  const maxChars = bot.ai.max_chars_per_bubble;
+  const tooLong = messages.some((m) => m.length > maxChars * 1.6);
   if (tooLong && bot.personality.response_length !== 'detallada') {
-    soft(`Un mensaje es demasiado largo; resume a menos de ${bot.ai.max_chars_per_bubble} caracteres por mensaje.`, () => undefined, 'Se aceptó un mensaje largo en el último intento');
+    soft(
+      `Un mensaje es demasiado largo; resume a menos de ${maxChars} caracteres por mensaje.`,
+      () => (messages = messages.map((m) => (m.length > maxChars ? clipText(m, maxChars) : m))),
+      `Se recortaron mensajes a ${maxChars} caracteres en el último intento`,
+    );
   }
   // Largo total según "Largo de las respuestas" (con margen: listas de precios pueden pedirlo).
   const budget = LENGTH_BUDGET[bot.personality.response_length];
@@ -357,8 +404,8 @@ export function validateDecision(input: ValidationInput): ValidationResult {
   if (budget && total > budget * 1.3 && !tooLong) {
     soft(
       `La respuesta es demasiado larga para el estilo configurado (${total} caracteres; máximo ~${budget}). ${questions.length ? 'Resume: responde lo que preguntó el cliente y conserva la pregunta pendiente de la lista.' : 'Resume y responde solo lo que preguntó el cliente.'}`,
-      () => undefined,
-      `Se aceptó una respuesta larga (${total} caracteres) en el último intento`,
+      () => (messages = clipTotal(messages, Math.round(budget * 1.3))),
+      `Se recortó una respuesta larga (${total} caracteres) en el último intento`,
     );
   }
 
@@ -370,18 +417,20 @@ export function validateDecision(input: ValidationInput): ValidationResult {
       bot.personality.formality === 'usted'
         ? `Trata al cliente de "usted", no de "tú" (encontré: ${register}). Ejemplo: "¿Le gustaría agendar?" en lugar de "¿Te gustaría agendar?".`
         : `Trata al cliente de "tú", no de "usted" (encontré: ${register}).`,
-      () => undefined,
-      `Revisar trato: la respuesta no usa "${bot.personality.formality === 'usted' ? 'usted' : 'tú'}" (${register})`,
+      // Se quitan las oraciones con el trato equivocado (las preguntas de la lista las escribió el negocio). Si no queda
+      // nada, sale el mensaje de respaldo.
+      () => (messages = dropSentences(messages, (_n, x) => !asksAnyQuestion(x) && !!registerMismatch(x, bot.personality.formality))),
+      `Se quitaron oraciones que no usan "${bot.personality.formality === 'usted' ? 'usted' : 'tú'}" (${register}) en el último intento`,
     );
   }
 
   // ---------- Frases prohibidas ----------
-  const bannedList = rules.banned_phrases.map((p) => normalize(p)).filter(Boolean);
-  const banned = rules.banned_phrases.filter((p) => p.trim() && normalize(messages.join(' ')).includes(normalize(p)));
+  const banned = rules.banned_phrases.filter((p) => hasPhrase(messages.join(' '), phraseKey(p)));
+  const bannedKeys = banned.map(phraseKey);
   if (banned.length) {
     soft(
       `No uses estas frases: ${banned.map((b) => `"${b}"`).join(', ')}.`,
-      () => (messages = dropSentences(messages, (n) => bannedList.some((b) => n.includes(b)))),
+      () => (messages = dropSentences(messages, (_n, x) => bannedKeys.some((k) => hasPhrase(x, k)))),
       `Se quitaron oraciones con frases prohibidas: ${banned.join(', ')}`,
     );
   }

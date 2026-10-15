@@ -223,3 +223,27 @@ test('datos automáticos: rechaza valores inventados, claves peligrosas y format
   assert.deepEqual(r.plan.saveData, {});
   assert.equal(r.plan.contactName, null);
 });
+
+test('FactCorpus: un precio o número solo vale si aparece completo en las fuentes', async () => {
+  const { FactCorpus } = await import('../src/engine/text.js');
+  const kb = new FactCorpus(['Habitación doble: $1,650 por noche. Tel. 81 1234 5678. Sitio: https://hotelpalmas.mx/reservas']);
+  const trusted = new FactCorpus(['Habitación doble: $1,650 por noche.', 'Cliente: 5215598765432', 'Hoy es 15/10/2026']);
+  assert.deepEqual(kb.unverified('La doble cuesta $1,650 por noche.', trusted), []);
+  assert.deepEqual(kb.unverified('La doble cuesta 1650 pesos.', trusted), []);
+  assert.deepEqual(kb.unverified('La sencilla cuesta $650.', trusted), ['650'], '"650" no se valida por estar dentro de "1,650"');
+  assert.deepEqual(kb.unverified('Son $987.', trusted), ['987'], 'tampoco por estar dentro del teléfono del cliente');
+  assert.deepEqual(kb.unverified('Son $202.', trusted), ['202'], 'ni por estar dentro de la fecha de hoy');
+  assert.deepEqual(kb.unverified('La sencilla cuesta 650 por noche.'), ['650'], 'sin signo de pesos tampoco');
+  assert.deepEqual(kb.unverified('Llámanos al 1234 5678.'), [], 'el número local de un teléfono conocido sí');
+  assert.deepEqual(kb.unverified('2 noches en doble: $3,300.', trusted), [], 'una cotización (precio × cantidad) sí');
+});
+
+test('FactCorpus: un enlace inventado sobre un dominio real no se valida', async () => {
+  const { FactCorpus } = await import('../src/engine/text.js');
+  const kb = new FactCorpus(['Reserva en https://hotelpalmas.mx/reservas o escribe a hola@hotelpalmas.mx']);
+  assert.deepEqual(kb.unverified('Reserva en https://hotelpalmas.mx/reservas'), []);
+  assert.deepEqual(kb.unverified('Visita hotelpalmas.mx'), [], 'el dominio de una página conocida sí');
+  assert.deepEqual(kb.unverified('Aprovecha en https://hotelpalmas.mx/promo-50'), ['hotelpalmas.mx/promo-50']);
+  assert.deepEqual(kb.unverified('Entra a hotelpalmas.mx.ofertas.com'), ['hotelpalmas.mx.ofertas.com'], 'un dominio que solo empieza igual');
+  assert.deepEqual(kb.unverified('Entra a palmas.mx'), ['palmas.mx'], 'ni uno que solo termina igual');
+});
