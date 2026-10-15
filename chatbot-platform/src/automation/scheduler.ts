@@ -1,9 +1,19 @@
+import { config } from '../config.js';
 import { logEvent } from '../logs.js';
+import { tick } from '../watchdog.js';
 import * as astore from './store.js';
 import type { Job } from './store.js';
 import { assertOwnership, coordinated, DeliveryUncertain, interruptedOperation, operationScope } from '../engine/coordination.js';
 
 export type JobHandler = (payload: any, job: Job) => Promise<unknown>;
+
+class JobTimeout extends Error { constructor() { super('job_timeout'); } }
+
+function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const limit = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new JobTimeout()), ms); });
+  return Promise.race([work, limit]).finally(() => clearTimeout(timer));
+}
 
 /**
  * Ejecuta las tareas programadas guardadas en PostgreSQL (sobreviven a reinicios).
@@ -41,14 +51,16 @@ export class Scheduler {
     try {
       const result=await coordinated('scheduler','scheduler',async()=>{
       await astore.recoverStaleJobs();
+      tick('scheduler');
       for (let i=0; i<limit && !this.closing; i++) {
         await assertOwnership();
         const jobs = await astore.claimDueJobs(1);
         if (!jobs.length) break;
         total += jobs.length;
-        for (const job of jobs) await operationScope(`job:${job.id}:attempt:${job.attempts}`,()=>this.execute(job));
+        for (const job of jobs) { await operationScope(`job:${job.id}:attempt:${job.attempts}`,()=>this.execute(job)); tick('scheduler'); }
       }
       });
+      tick('scheduler');
       if(!result.acquired) return 0;
     } catch (e: any) {
       await logEvent({ level: 'error', source: 'system', message: 'scheduler_error',details:{reason:'database_or_execution'} }).catch(()=>undefined);
@@ -64,11 +76,13 @@ export class Scheduler {
     try {
       await assertOwnership();
       if(await interruptedOperation(`job:${job.id}`)) throw new DeliveryUncertain();
-      await handler(job.payload, job);
+      // Una tarea colgada no detiene a las demás: se corta y se reintenta. Si alcanzó a enviar algo, el reintento lo
+      // detecta (operación interrumpida) y no lo duplica; la tarea original pierde el permiso al cerrarse la sesión.
+      await withTimeout(handler(job.payload, job), config.jobTimeoutMs);
       await this.settle?.();
       await astore.finishJob(job.id, 'done');
     } catch (e: any) {
-      const msg = e instanceof DeliveryUncertain ? 'delivery_uncertain' : 'job_execution_failed';
+      const msg = e instanceof DeliveryUncertain ? 'delivery_uncertain' : e instanceof JobTimeout ? 'job_timeout' : 'job_execution_failed';
       if (!(e instanceof DeliveryUncertain) && job.attempts < 3) {
         await astore.retryJob(job.id, new Date(Date.now() + 60_000 * 2 ** (job.attempts-1)), msg);
       } else {

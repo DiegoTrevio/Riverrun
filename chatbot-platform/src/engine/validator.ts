@@ -1,11 +1,11 @@
 import { imagesAfterReply, imagesForAssistant, imagesForContext } from './images.js';
-import { automaticField, customerProvided } from './customer-data.js';
+import { affirms, automaticField, customerGave, customerProvided } from './customer-data.js';
 import type { Chatbot, DataField, ImageAsset } from '../types.js';
 import { DecisionSchema, type Action, type Decision } from './decision.js';
 import { unsupportedClaims } from './claims.js';
 import { asksQuestion, contactNameKey, declines, isAnswered, questionList, questionProgress, repeatsQuestion, type QuestionProgress } from './questions.js';
 import { cardNumbersIn, isSensitiveField } from './safety.js';
-import { countEmojis, deepClean, FactCorpus, limitEmojis, normalize, stripEmojis, toWhatsappFormat } from './text.js';
+import { countEmojis, deepClean, FactCorpus, limitEmojis, normalize, stripEmojis, toWhatsappFormat, truncateChars } from './text.js';
 
 /** Plan final ya validado que el backend ejecutará. */
 export interface ExecutionPlan {
@@ -258,10 +258,95 @@ export function splitLongMessage(text: string, max: number): string[] {
   return byParagraph.flatMap((p) => (p.length <= max ? [p] : pack(sentences(p), max, ' ')));
 }
 
+/** Oraciones con el separador que las sigue (espacio o salto de línea): al quitar o recortar se conservan las listas. */
+function sentencePieces(text: string): { s: string; sep: string }[] {
+  const parts = text.split(/((?<=[.!?…])[ \t]+|\n+)/);
+  const out: { s: string; sep: string }[] = [];
+  for (let i = 0; i < parts.length; i += 2) {
+    const s = parts[i].trim();
+    const sep = parts[i + 1] ?? '';
+    if (s) out.push({ s, sep: sep.includes('\n') ? sep : ' ' });
+    else if (out.length && sep.includes('\n')) out[out.length - 1].sep = sep;
+  }
+  return out;
+}
+const joinPieces = (ps: { s: string; sep: string }[]) => ps.map((p, i) => (i < ps.length - 1 ? p.s + p.sep : p.s)).join('').trim();
+
+/** Recorta un texto a `max` caracteres por oraciones completas; si ni la primera cabe, por palabras con "…". */
+function clipText(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const kept: { s: string; sep: string }[] = [];
+  for (const p of sentencePieces(text)) {
+    if (joinPieces([...kept, p]).length > max) break;
+    kept.push(p);
+  }
+  if (kept.length) return joinPieces(kept);
+  let words = '';
+  for (const w of text.split(/\s+/)) {
+    const next = words ? `${words} ${w}` : w;
+    if (next.length > max - 1) break;
+    words = next;
+  }
+  let out = words || truncateChars(text, max - 1);
+  // Un *negrita* cortado a la mitad no se envía abierto.
+  if ((out.match(/\*/g) ?? []).length % 2) out = out.replace(/\*(?=[^*]*$)/, '');
+  return `${out}…`;
+}
+
+/** Deja la respuesta en `max` caracteres en total, quitando del final (los primeros mensajes son la respuesta). */
+function clipTotal(messages: string[], max: number): string[] {
+  const out: string[] = [];
+  let used = 0;
+  for (const m of messages) {
+    const room = max - used - (out.length ? 1 : 0);
+    if (room < 20) break;
+    const piece = clipText(m, room);
+    out.push(piece);
+    used += piece.length + (out.length > 1 ? 1 : 0);
+    if (piece !== m) break;
+  }
+  return out;
+}
+
+/**
+ * Forma comparable de una frase prohibida: sin acentos, mayúsculas ni signos. Se busca como palabras completas, así
+ * "¿En qué más puedo ayudarte?" se detecta aunque la IA agregue ", Juan" y "ia" no coincide dentro de "día".
+ */
+const phraseKey = (s: string) => normalize(s).replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+const hasPhrase = (text: string, key: string) => !!key && ` ${phraseKey(text)} `.includes(` ${key} `);
+/** ¿El texto tiene la frase prohibida? Las que son solo símbolos o emojis ("🎉", "!!!") se buscan tal cual. */
+const hasBanned = (text: string, phrase: string) => {
+  const key = phraseKey(phrase);
+  return key ? hasPhrase(text, key) : !!phrase.trim() && normalize(text).includes(normalize(phrase));
+};
+
+const TOPIC_STOPWORDS = new Set(['de', 'del', 'la', 'el', 'los', 'las', 'y', 'o', 'en', 'al', 'un', 'una', 'con', 'por', 'para', 'sobre', 'tema', 'temas']);
+
+/**
+ * Coincidencia de un tema prohibido por la raíz de sus palabras: "política" encuentra "políticos" y "politizar",
+ * "armas" encuentra "arma". Si el tema tiene varias palabras, deben aparecer todas. null = tema sin palabras útiles.
+ */
+export function topicMatcher(topic: string): ((text: string) => boolean) | null {
+  const roots = normalize(topic).split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 2 && !TOPIC_STOPWORDS.has(w)).map(wordRoot);
+  if (!roots.length) return null;
+  // Todas las palabras del tema en una misma oración (así se puede quitar justo esa oración).
+  return (text) => sentences(text).some((s) => {
+    const words = new Set(normalize(s).split(/[^\p{L}\p{N}]+/u).filter(Boolean).map(wordRoot));
+    return roots.every((r) => words.has(r));
+  });
+}
+
+/** Terminaciones de género, número y derivadas comunes ("política", "políticos", "religiosas" → misma raíz). */
+const SUFFIXES = ['aciones', 'acion', 'iones', 'iosos', 'iosas', 'ioso', 'iosa', 'ion', 'icos', 'icas', 'ico', 'ica', 'os', 'as', 'es', 'o', 'a', 'e', 's'];
+function wordRoot(w: string): string {
+  for (const suf of SUFFIXES) if (w.endsWith(suf) && w.length - suf.length >= 3) return w.slice(0, -suf.length);
+  return w;
+}
+
 /** Quita las oraciones que cumplen `test`; devuelve los mensajes que aún tienen contenido. */
 function dropSentences(messages: string[], test: (sentenceNorm: string, sentence: string) => boolean): string[] {
   return messages
-    .map((m) => sentences(m).filter((x) => !test(normalize(x), x)).join(' ').trim())
+    .map((m) => joinPieces(sentencePieces(m).filter((p) => !test(normalize(p.s), p.s))))
     .filter((m) => /[\p{L}\p{N}]/u.test(m));
 }
 
@@ -347,9 +432,15 @@ export function validateDecision(input: ValidationInput): ValidationResult {
       fixes.push(fixNote);
     } else retryable.push(issue);
   };
-  const tooLong = messages.some((m) => m.length > bot.ai.max_chars_per_bubble * 1.6);
+  // En el último intento no se envía algo fuera de lo configurado: se recorta por oraciones completas.
+  const maxChars = bot.ai.max_chars_per_bubble;
+  const tooLong = messages.some((m) => m.length > maxChars * 1.6);
   if (tooLong && bot.personality.response_length !== 'detallada') {
-    soft(`Un mensaje es demasiado largo; resume a menos de ${bot.ai.max_chars_per_bubble} caracteres por mensaje.`, () => undefined, 'Se aceptó un mensaje largo en el último intento');
+    soft(
+      `Un mensaje es demasiado largo; resume a menos de ${maxChars} caracteres por mensaje.`,
+      () => (messages = messages.map((m) => (m.length > maxChars ? clipText(m, maxChars) : m))),
+      `Se recortaron mensajes a ${maxChars} caracteres en el último intento`,
+    );
   }
   // Largo total según "Largo de las respuestas" (con margen: listas de precios pueden pedirlo).
   const budget = LENGTH_BUDGET[bot.personality.response_length];
@@ -357,8 +448,8 @@ export function validateDecision(input: ValidationInput): ValidationResult {
   if (budget && total > budget * 1.3 && !tooLong) {
     soft(
       `La respuesta es demasiado larga para el estilo configurado (${total} caracteres; máximo ~${budget}). ${questions.length ? 'Resume: responde lo que preguntó el cliente y conserva la pregunta pendiente de la lista.' : 'Resume y responde solo lo que preguntó el cliente.'}`,
-      () => undefined,
-      `Se aceptó una respuesta larga (${total} caracteres) en el último intento`,
+      () => (messages = clipTotal(messages, Math.round(budget * 1.3))),
+      `Se recortó una respuesta larga (${total} caracteres) en el último intento`,
     );
   }
 
@@ -370,34 +461,42 @@ export function validateDecision(input: ValidationInput): ValidationResult {
       bot.personality.formality === 'usted'
         ? `Trata al cliente de "usted", no de "tú" (encontré: ${register}). Ejemplo: "¿Le gustaría agendar?" en lugar de "¿Te gustaría agendar?".`
         : `Trata al cliente de "tú", no de "usted" (encontré: ${register}).`,
-      () => undefined,
-      `Revisar trato: la respuesta no usa "${bot.personality.formality === 'usted' ? 'usted' : 'tú'}" (${register})`,
+      // Se quitan las oraciones con el trato equivocado (las preguntas de la lista las escribió el negocio). Si no queda
+      // nada, sale el mensaje de respaldo.
+      () => (messages = dropSentences(messages, (_n, x) => !asksAnyQuestion(x) && !!registerMismatch(x, bot.personality.formality))),
+      `Se quitaron oraciones que no usan "${bot.personality.formality === 'usted' ? 'usted' : 'tú'}" (${register}) en el último intento`,
     );
   }
 
   // ---------- Frases prohibidas ----------
-  const bannedList = rules.banned_phrases.map((p) => normalize(p)).filter(Boolean);
-  const banned = rules.banned_phrases.filter((p) => p.trim() && normalize(messages.join(' ')).includes(normalize(p)));
+  const banned = rules.banned_phrases.filter((p) => hasBanned(messages.join(' '), p));
   if (banned.length) {
     soft(
       `No uses estas frases: ${banned.map((b) => `"${b}"`).join(', ')}.`,
-      () => (messages = dropSentences(messages, (n) => bannedList.some((b) => n.includes(b)))),
+      () => (messages = dropSentences(messages, (_n, x) => banned.some((p) => hasBanned(x, p)))),
       `Se quitaron oraciones con frases prohibidas: ${banned.join(', ')}`,
     );
   }
   // Temas prohibidos: el bot no puede sacarlos por su cuenta. Si el cliente los mencionó, sí puede
   // nombrarlos para declinar con amabilidad (se registra para revisión).
-  const customerNorm = normalize(input.customerText);
-  const forbiddenOut = rules.forbidden_topics.map((t) => t.trim()).filter((t) => t.length > 2 && normalize(messages.join(' ')).includes(normalize(t)));
-  const unprompted = forbiddenOut.filter((t) => !customerNorm.includes(normalize(t)));
+  const topics = rules.forbidden_topics
+    .map((t) => t.trim())
+    .filter((t) => t.length > 2)
+    .flatMap((t) => {
+      const match = topicMatcher(t);
+      return match ? [{ t, match }] : [];
+    });
+  const forbiddenOut = topics.filter((x) => x.match(messages.join(' ')));
+  const unpromptedTopics = forbiddenOut.filter((x) => !x.match(input.customerText));
+  const unprompted = unpromptedTopics.map((x) => x.t);
   if (unprompted.length) {
     soft(
       `No hables de estos temas: ${unprompted.map((t) => `"${t}"`).join(', ')}. El cliente no los mencionó; quítalos de la respuesta.`,
-      () => (messages = dropSentences(messages, (n) => unprompted.some((t) => n.includes(normalize(t))))),
+      () => (messages = dropSentences(messages, (_n, s) => unpromptedTopics.some((x) => x.match(s)))),
       `Se quitaron oraciones con temas prohibidos: ${unprompted.join(', ')}`,
     );
   }
-  const declined = forbiddenOut.filter((t) => !unprompted.includes(t));
+  const declined = forbiddenOut.map((x) => x.t).filter((t) => !unprompted.includes(t));
   if (declined.length) fixes.push(`Revisar: el cliente preguntó por un tema prohibido (${declined.join(', ')})`);
 
   // ---------- Datos sensibles: ni números de tarjeta en la respuesta ----------
@@ -517,6 +616,16 @@ export function validateDecision(input: ValidationInput): ValidationResult {
     if (f.type === 'phone' && input.contactPhone) sources.push(input.contactPhone);
     if ((!configured || freeAnswer) && !customerProvided(f, clean, sources)) {
       fixes.push(`Dato no proporcionado por el cliente ignorado: ${f.key}`);
+      continue;
+    }
+    // Un dato obligatorio bloquea el objetivo: la IA no puede inventar una fecha, una cantidad o una opción que el
+    // cliente nunca dio para darlo por cumplido.
+    // También vale si el asistente lo propuso y el cliente dijo que sí ("¿Le reservo el 15 de noviembre?" → "sí").
+    const confirmed = affirms(input.customerText) && (input.recentBotTexts ?? []).some((t) => customerGave(f, clean, [t]));
+    if (configured?.required && !freeAnswer && !confirmed && !customerGave(f, clean, sources)) {
+      fixes.push(`Dato obligatorio no proporcionado por el cliente ignorado: ${f.key}`);
+      // Sin descartarlo en silencio (el objetivo se quedaría esperando): se pide confirmarlo con el cliente.
+      if (!input.final) retryable.push(`No guardes "${configured.label || f.key}" = "${clean}": el cliente no lo dijo. Pregúntaselo o confírmalo con él antes de guardarlo.`);
       continue;
     }
     if (!configured && !Object.hasOwn(input.knownData ?? {}, f.key) && Object.keys(input.knownData ?? {}).length + Object.keys(saveData).length >= 100) continue;

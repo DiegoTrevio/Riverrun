@@ -1,11 +1,12 @@
-import { query } from '../db.js';
+import { query, queryOne, withTransaction } from '../db.js';
 import { recordConnectionState } from '../lifecycle.js';
 import { logEvent } from '../logs.js';
 import * as store from '../store/index.js';
 import type { Channel } from '../types.js';
 import { mergeChannelConfig } from './index.js';
+import { platformSecretInfo } from '../platform-secrets.js';
 import {
-  accountInfo, blueskyConnect, clientFor, disconnectAccount, ensurePlatformWebhook, networkOf, profileFor, telegramCheck, telegramCode,
+  accountInfo, blueskyConnect, clientFor, platformWebhookUrl, ZERNIO_SECRET, ZernioClient, zernioEnabled, zernioKey, zernioKeySource, disconnectAccount, ensurePlatformWebhook, networkOf, profileFor, telegramCheck, telegramCode,
   zernioAuthUrl, type ZernioAccount,
 } from './zernio.js';
 
@@ -14,12 +15,95 @@ import {
 const save = async (channel: Channel, values: Record<string, unknown>) =>
   (await store.updateChannel(channel.id, { config: mergeChannelConfig('zernio', channel.config, values) }))!;
 
-/** Perfil de Zernio del negocio: se crea la primera vez y se guarda en el canal. */
+/**
+ * Perfil de Zernio del negocio: uno por cuenta, guardado en la cuenta. Se crea al dar de alta la cuenta (o la primera vez
+ * que se necesita); un candado por cuenta evita crear dos si coinciden el alta y la primera conexión.
+ */
+export async function accountProfile(accountId: string, channel?: Pick<Channel, 'config'>): Promise<string> {
+  return withTransaction(async (db) => {
+    await db.query(`SELECT pg_advisory_xact_lock(hashtext('zernio-profile:' || $1))`, [accountId]);
+    const acc = (await db.query(`SELECT name, zernio_profile_id FROM accounts WHERE id = $1`, [accountId])).rows[0];
+    if (!acc) throw new Error('La cuenta no existe');
+    if (acc.zernio_profile_id) return String(acc.zernio_profile_id);
+    // Cuentas anteriores: el perfil que ya usan sus canales (sin buscarlo en Zernio ni crear otro).
+    const legacy = (await db.query(`SELECT config->>'profile_id' AS p FROM channels WHERE account_id = $1 AND type = 'zernio' AND coalesce(config->>'profile_id','') <> '' ORDER BY created_at LIMIT 1`, [accountId])).rows[0]?.p;
+    // La llamada a Zernio tiene límite de 30 s; el candado de la cuenta evita crear dos perfiles si coinciden el alta y la primera conexión.
+    const profileId = legacy || await profileFor(clientFor(channel), { id: accountId, name: String(acc.name ?? '') });
+    await db.query(`UPDATE accounts SET zernio_profile_id = $2 WHERE id = $1`, [accountId, profileId]);
+    return profileId;
+  });
+}
+
+/** El canal usa el perfil de su cuenta (los canales anteriores conservan el que ya tenían). */
 export async function withProfile(channel: Channel): Promise<Channel> {
   if (channel.config.profile_id) return channel;
-  const account = await store.getAccount(channel.account_id);
-  const profileId = await profileFor(clientFor(channel), { id: channel.account_id, name: account?.name ?? channel.name });
-  return save(channel, { profile_id: profileId });
+  return save(channel, { profile_id: await accountProfile(channel.account_id, channel) });
+}
+
+/** Cuentas que todavía no tienen perfil (creadas antes de activar Zernio): se crean de una en una, en segundo plano. */
+export async function prepareMissingProfiles(limit = 500): Promise<number> {
+  if (!zernioEnabled()) return 0;
+  const rows = await query<{ id: string }>(`SELECT id FROM accounts WHERE zernio_profile_id = '' ORDER BY created_at LIMIT $1`, [limit]);
+  void (async () => {
+    for (const r of rows) {
+      await accountProfile(r.id).catch((e) =>
+        logEvent({ level: 'warn', source: 'channel', message: `Zernio: el perfil se creará al conectar la primera red (${e?.message ?? e})`, accountId: r.id }).catch(() => undefined));
+    }
+  })();
+  return rows.length;
+}
+
+/**
+ * Estado de la llave de la plataforma para Sistema. Con `repair`, además registra (o corrige) el webhook único y crea los
+ * perfiles que falten. Nunca devuelve la llave: solo sus últimos 4 caracteres.
+ */
+export async function zernioSystemStatus(repair = false) {
+  const source = zernioKeySource();
+  const key = zernioKey();
+  const counts = await queryOne<{ total: number; with_profile: number; channels: number }>(`SELECT
+      (SELECT count(*)::int FROM accounts) AS total,
+      (SELECT count(*)::int FROM accounts WHERE zernio_profile_id <> '') AS with_profile,
+      (SELECT count(*)::int FROM channels WHERE type = 'zernio' AND coalesce(config->>'account_id','') <> '') AS channels`);
+  const out = {
+    enabled: source !== 'none',
+    source,
+    hint: key ? key.slice(-4) : '',
+    updated_at: source === 'panel' ? (await platformSecretInfo(ZERNIO_SECRET)).updated_at : null,
+    webhook_url: platformWebhookUrl(),
+    webhook: null as null | { ok: boolean; error?: string },
+    accounts_total: counts?.total ?? 0,
+    accounts_with_profile: counts?.with_profile ?? 0,
+    connected_channels: counts?.channels ?? 0,
+    creating_profiles: 0,
+  };
+  if (repair && key) {
+    try {
+      await ensurePlatformWebhook(new ZernioClient(key));
+      out.webhook = { ok: true };
+    } catch (e: any) {
+      out.webhook = { ok: false, error: e?.message ?? String(e) };
+    }
+    out.creating_profiles = await prepareMissingProfiles();
+  }
+  return out;
+}
+
+/** Comprueba la llave con Zernio antes de guardarla (una llave equivocada no apaga las redes que ya funcionan). */
+export async function verifyZernioKey(key: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    await new ZernioClient(key).call('GET', '/profiles?limit=1');
+    return { ok: true };
+  } catch (e: any) {
+    const msg = String(e?.message ?? e);
+    return { ok: false, error: /→ 40[13]/.test(msg) ? 'Zernio rechazó la llave. Cópiala de nuevo desde zernio.com → API Keys.' : `No se pudo comprobar la llave con Zernio: ${msg}` };
+  }
+}
+
+/** Al crear una cuenta: su perfil de Zernio queda listo (si las redes sociales están activadas). No detiene el alta. */
+export function prepareAccountProfile(accountId: string) {
+  if (!zernioEnabled()) return;
+  void accountProfile(accountId).catch((e) =>
+    logEvent({ level: 'warn', source: 'channel', message: `Zernio: el perfil se creará al conectar la primera red (${e?.message ?? e})`, accountId }).catch(() => undefined));
 }
 
 /** El webhook de la plataforma se revisa en cada conexión; si falla, se registra sin detener la conexión. */

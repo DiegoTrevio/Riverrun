@@ -7,6 +7,7 @@ import { hmac, safeEqual } from '../secret.js';
 import { ChannelConfigSchemas, type Channel, type ImageAsset } from '../types.js';
 import { signedImageUrl } from './media.js';
 import type { ChannelAdapter, InboundMessage, ParseResult, WebhookRequest } from './types.js';
+import { platformSecret } from '../platform-secrets.js';
 
 /**
  * Zernio: una sola API para los mensajes directos de varias redes (Instagram, Facebook, WhatsApp Business, Telegram, X,
@@ -33,9 +34,14 @@ export const networkOf = (platform: string): Network | undefined => NETWORKS.fin
 /** Eventos que recibe el webhook de la plataforma. */
 export const EVENTS = ['message.received', 'message.sent', 'message.failed', 'account.connected', 'account.disconnected'];
 
-/** Llave de Zernio: la de la plataforma (o, en canales creados antes, la que se guardó en el canal). */
-export const zernioKey = (channel?: Pick<Channel, 'config'> | null) => String(channel?.config?.api_key || process.env.ZERNIO_API_KEY || '');
-export const zernioEnabled = () => Boolean(process.env.ZERNIO_API_KEY);
+/** Nombre con el que se guarda la llave de Zernio desde el panel (Sistema → Redes sociales). */
+export const ZERNIO_SECRET = 'zernio_api_key';
+/** De dónde sale la llave de la plataforma: el .env del servidor (manda) o la guardada en el panel. */
+export const zernioKeySource = (): 'env' | 'panel' | 'none' => (process.env.ZERNIO_API_KEY ? 'env' : platformSecret(ZERNIO_SECRET) ? 'panel' : 'none');
+/** Llave de Zernio: la de la plataforma, una sola para todas las cuentas (o, en canales creados antes, la que se guardó en el canal). */
+export const zernioKey = (channel?: Pick<Channel, 'config'> | null) =>
+  String(channel?.config?.api_key || process.env.ZERNIO_API_KEY || platformSecret(ZERNIO_SECRET) || '');
+export const zernioEnabled = () => zernioKeySource() !== 'none';
 /** Secreto con el que Zernio firma el webhook de la plataforma (derivado de la clave del servidor: no se guarda). */
 export const platformWebhookSecret = () => hmac('zernio-webhook');
 export const platformWebhookUrl = () => `${config.publicBaseUrl}/zernio/events`;

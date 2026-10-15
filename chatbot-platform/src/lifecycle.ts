@@ -2,7 +2,7 @@
  * Ciclo de vida de las cuentas del autoregistro: fin de la prueba y avisos al superadmin.
  * Se ejecuta periódicamente; cada paso es idempotente (se puede correr las veces que sea).
  */
-import { notifyUsers } from './automation/store.js';
+import { getSettings, notifyUsers } from './automation/store.js';
 import { config } from './config.js';
 import { query, queryOne } from './db.js';
 import { enforceAccess } from './billing/service.js';
@@ -99,28 +99,135 @@ export function startLifecycle(intervalMs = 10 * 60_000) {
  * Guarda el último estado de conexión del canal. Al conectar por primera vez se completa el paso del asistente;
  * si un WhatsApp que estaba conectado se cae, se avisa a los administradores de la cuenta (panel y correo).
  */
-export async function recordConnectionState(ch: Pick<Channel, 'id' | 'account_id' | 'name' | 'type'>, state: string) {
-  const row = await queryOne<{ prev: string }>(
-    `WITH old AS (SELECT connection_state FROM channels WHERE id = $1)
-     UPDATE channels SET connection_state = $2, connection_state_at = now() WHERE id = $1 RETURNING (SELECT connection_state FROM old) AS prev`,
-    [ch.id, state],
+export async function recordConnectionState(ch: Pick<Channel, 'id' | 'account_id' | 'name' | 'type'>, state: string, reason = '') {
+  // FOR UPDATE: dos procesos que reciben el mismo cambio no ven ambos el estado anterior (no se avisa dos veces).
+  // connection_state_at solo cambia si cambia el estado (Evolution repite eventos); down_since marca desde cuándo está
+  // caído un canal que estaba conectado; disconnect_reason, por qué (decide si se reconecta solo o hace falta el QR).
+  const row = await queryOne<{ prev: string; was_down: string | null; was_notified: string | null }>(
+    `WITH old AS (SELECT id, connection_state, down_since, disconnect_notified_at FROM channels WHERE id = $1 FOR UPDATE)
+     UPDATE channels c SET connection_state = $2,
+       connection_state_at = CASE WHEN old.connection_state IS DISTINCT FROM $2 THEN now() ELSE c.connection_state_at END,
+       down_since = CASE WHEN $2 = 'open' THEN NULL WHEN old.connection_state = 'open' THEN now() ELSE c.down_since END,
+       disconnect_reason = CASE WHEN $2 = 'open' THEN '' WHEN $3 <> '' THEN $3 ELSE c.disconnect_reason END
+     FROM old WHERE c.id = old.id
+     RETURNING old.connection_state AS prev, old.down_since AS was_down, old.disconnect_notified_at AS was_notified`,
+    [ch.id, state, reason ?? ''],
   );
   if (state === 'open') await store.clearConnectionCodes(ch.id);
-  if (!row || row.prev === state) return;
+  if (!row) return;
   if (state === 'open') {
+    if (row.prev === 'open') return;
     const acc = await queryOne<Account>(`SELECT * FROM accounts WHERE id = $1`, [ch.account_id]);
     if (acc && !acc.onboarding?.whatsapp) {
       await query(`UPDATE accounts SET onboarding = onboarding || '{"whatsapp": true}'::jsonb WHERE id = $1`, [acc.id]);
       await logEvent({ level: 'info', source: 'evolution', message: `Primer WhatsApp conectado: ${ch.name}`, accountId: acc.id, channelId: ch.id });
     }
-  } else if (state === 'close' && row.prev === 'open') {
-    const admins = await query<{ id: string; email: string }>(`SELECT id, email FROM users WHERE account_id = $1 AND role = 'admin' AND active`, [ch.account_id]);
-    const social = ch.type === 'zernio';
-    const title = social ? 'Tu red social se desconectó' : 'Tu WhatsApp se desconectó';
-    const body = social
-      ? `El canal "${ch.name}" se desconectó y el asistente no está recibiendo mensajes. Vuelve a conectarlo desde el panel con "Reconectar".`
-      : `El canal "${ch.name}" se desconectó y el asistente no está recibiendo mensajes. Vuelve a vincularlo en un minuto desde el panel: escanea el código QR o usa "Con mi número".`;
-    await notifyUsers(ch.account_id, admins.map((a) => a.id), { title, body, link: `#/channel/${ch.id}?conectar=1`, kind: 'channel' });
-    for (const a of admins) await sendMail({ to: a.email, subject: title, text: `${body}\n\n${config.publicBaseUrl}/#/channel/${ch.id}?conectar=1` });
+    // Volvió después de una caída de la que ya se avisó: se avisa que regresó (si así se definió).
+    if (row.was_down && row.was_notified && new Date(row.was_notified) >= new Date(row.was_down)) await notifyReconnected(ch);
+    return;
   }
+  if (state !== 'close') return;
+  // Se avisa ya si así se definió (0 minutos), si no es un WhatsApp (sus caídas no las vigila el reloj) o si hace falta
+  // volver a vincular (esperar no sirve). Si no, la vigilancia avisa al cumplirse la espera, si sigue caído.
+  const alerts = await connectionAlerts(ch.account_id);
+  if (!alerts.enabled) return;
+  const needsRelink = NEEDS_RELINK.includes(reason);
+  if (row.prev === 'open' || (needsRelink && row.was_down)) {
+    if (ch.type !== 'whatsapp' || alerts.after_minutes === 0 || needsRelink) {
+      if (await claimDisconnectNotice(ch.id, 0, alerts.repeat_hours)) await notifyDisconnected(ch);
+    }
+  }
+}
+
+/** Motivos con los que la sesión no vuelve sola: hay que escanear el QR otra vez. */
+export const NEEDS_RELINK = ['logged_out', 'banned', 'replaced'];
+
+const REASON_TEXT: Record<string, string> = {
+  logged_out: 'Se cerró la sesión desde el teléfono (se quitó el dispositivo vinculado, o el teléfono estuvo sin internet más de 14 días). Hay que volver a escanear el código QR.',
+  banned: 'WhatsApp bloqueó o restringió este número. Revisa el teléfono; cuando se resuelva, vuelve a vincularlo con el código QR.',
+  replaced: 'La sesión se abrió en otro lugar (WhatsApp Web u otro servidor) y esta se cerró. Cierra la otra y vuelve a vincularlo con el código QR.',
+  connection_lost: 'Se perdió la conexión con WhatsApp y no se ha podido recuperar sola. Si no vuelve en unos minutos, vincúlalo de nuevo desde el panel.',
+};
+
+export async function connectionAlerts(accountId: string) {
+  return (await getSettings(accountId)).connection_alerts;
+}
+
+/**
+ * Reclama el aviso de desconexión (una sola vez con varios procesos): el primero, cuando la caída ya cumplió la espera,
+ * y los siguientes, cada `repeatHours` (0 = no se repite), durante 7 días.
+ */
+export async function claimDisconnectNotice(channelId: string, afterMinutes: number, repeatHours: number): Promise<boolean> {
+  const rows = await query(`UPDATE channels SET disconnect_notified_at = now() WHERE id = $1 AND down_since IS NOT NULL
+      AND down_since <= now() - make_interval(mins => $2) AND down_since > now() - interval '7 days'
+      AND (disconnect_notified_at IS NULL OR disconnect_notified_at < down_since
+        OR ($3 > 0 AND disconnect_notified_at < now() - make_interval(hours => $3)))
+    RETURNING id`, [channelId, afterMinutes, repeatHours]);
+  return rows.length > 0;
+}
+
+/** Envío de avisos por WhatsApp a números adicionales (lo registra el servicio: usa otro WhatsApp conectado de la cuenta). */
+let alertWhatsapp: ((accountId: string, phone: string, text: string, excludeChannelId?: string) => Promise<void>) | null = null;
+export function setAlertWhatsapp(fn: typeof alertWhatsapp) {
+  alertWhatsapp = fn;
+}
+
+/** Envía un aviso de conexión a quienes se definió: administradores (panel y correo), correos y WhatsApp adicionales. */
+async function sendConnectionAlert(ch: Pick<Channel, 'id' | 'account_id' | 'name' | 'type'>, title: string, body: string, force = false) {
+  const s = await connectionAlerts(ch.account_id);
+  const sent = { admins: 0, emails: 0, phones: 0, failed: [] as string[] };
+  if (!s.enabled && !force) return sent;
+  const link = ch.id ? `#/channel/${ch.id}?conectar=1` : '#/agentes';
+  const url = `${config.publicBaseUrl}/${link}`;
+  if (s.notify_admins) {
+    const admins = await query<{ id: string; email: string }>(`SELECT id, email FROM users WHERE account_id = $1 AND role = 'admin' AND active`, [ch.account_id]);
+    await notifyUsers(ch.account_id, admins.map((a) => a.id), { title, body, link, kind: 'channel' });
+    for (const a of admins) await sendMail({ to: a.email, subject: title, text: `${body}\n\n${url}` });
+    sent.admins = admins.length;
+  }
+  for (const to of s.emails) {
+    await sendMail({ to, subject: title, text: `${body}\n\n${url}` });
+    sent.emails++;
+  }
+  for (const phone of s.phones) {
+    try {
+      if (!alertWhatsapp) throw new Error('sin envío de WhatsApp disponible');
+      await alertWhatsapp(ch.account_id, phone, `*${title}*\n${body}\n${url}`, ch.id || undefined);
+      sent.phones++;
+    } catch (e: any) {
+      sent.failed.push(phone);
+      await logEvent({ level: 'warn', source: 'channel', message: `Aviso de desconexión no enviado por WhatsApp a ${phone}: ${e?.message ?? e}`, accountId: ch.account_id, channelId: ch.id || null });
+    }
+  }
+  return sent;
+}
+
+/** Aviso de que un canal se desconectó; `hours` si sigue así desde hace horas. El motivo dice si hay que escanear el QR. */
+export async function notifyDisconnected(ch: Pick<Channel, 'id' | 'account_id' | 'name' | 'type'>, hours = 0) {
+  const social = ch.type !== 'whatsapp';
+  const still = hours > 0 ? ` (sigue así desde hace ${hours} h)` : '';
+  const reason = String((await queryOne<{ r: string }>(`SELECT disconnect_reason AS r FROM channels WHERE id = $1`, [ch.id]))?.r ?? '');
+  const relink = NEEDS_RELINK.includes(reason);
+  const facebook = ch.type === 'messenger' || ch.type === 'instagram';
+  const title = (facebook ? `Tu ${ch.type === 'instagram' ? 'Instagram' : 'Messenger'} se desconectó` : social ? 'Tu red social se desconectó' : relink ? 'Hay que volver a vincular tu WhatsApp' : 'Tu WhatsApp se desconectó') + still;
+  const body = facebook
+    ? `El canal "${ch.name}" no está conectado y el asistente no está recibiendo mensajes. ${reason === 'token_revoked' ? 'Facebook retiró el permiso (por ejemplo, se cambió la contraseña o se quitó el acceso a la página). ' : ''}Vuelve a conectarlo desde el panel con «Conectar con Facebook».`
+    : social
+      ? `El canal "${ch.name}" se desconectó y el asistente no está recibiendo mensajes. Vuelve a conectarlo desde el panel con "Reconectar".`
+      : `El canal "${ch.name}" no está conectado y el asistente no está recibiendo mensajes. ${REASON_TEXT[reason] ?? REASON_TEXT.connection_lost}`;
+  await sendConnectionAlert(ch, title, body);
+}
+
+export async function notifyReconnected(ch: Pick<Channel, 'id' | 'account_id' | 'name' | 'type'>) {
+  const s = await connectionAlerts(ch.account_id);
+  if (!s.notify_reconnected) return;
+  const what = ch.type === 'whatsapp' ? 'Tu WhatsApp' : ch.type === 'messenger' ? 'Tu Messenger' : ch.type === 'instagram' ? 'Tu Instagram' : 'Tu red social';
+  await sendConnectionAlert(ch, `${what} volvió a conectarse`, `El canal "${ch.name}" está conectado otra vez y el asistente ya responde los mensajes nuevos.`);
+}
+
+/** Alerta de prueba con los ajustes guardados (aunque los avisos estén apagados): para comprobar que llegan. */
+export async function testConnectionAlert(accountId: string) {
+  const ch = (await query<Pick<Channel, 'id' | 'account_id' | 'name' | 'type'>>(`SELECT id, account_id, name, type FROM channels WHERE account_id = $1 AND type = 'whatsapp' ORDER BY created_at LIMIT 1`, [accountId]))[0]
+    ?? { id: '', account_id: accountId, name: 'WhatsApp', type: 'whatsapp' as const };
+  return sendConnectionAlert(ch, 'Prueba: aviso de desconexión de WhatsApp', `Así te avisaremos si el canal "${ch.name}" se desconecta. No tienes que hacer nada.`, true);
 }

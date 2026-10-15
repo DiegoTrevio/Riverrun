@@ -54,6 +54,8 @@ export const RulesSchema = z.object({
   pause_on_human_reply: z.boolean().default(true),
   /** Minutos tras los cuales el bot retoma una conversación transferida (0 = nunca). */
   auto_resume_minutes: z.number().int().min(0).default(0),
+  /** Recordar al equipo si el cliente espera a una persona más de estos minutos (se repite cada 2 h). 0 = no recordar. */
+  handoff_reminder_minutes: z.number().int().min(0).max(1440).default(30),
   /** Permitir que la IA agende y cancele citas/llamadas con los servicios de la agenda. */
   booking_enabled: z.boolean().default(true),
   /** Verificar que precios, números, URLs, correos y teléfonos existan en el contexto. */
@@ -491,6 +493,10 @@ export const ChannelConfigSchemas = {
     app_secret: secret.default(''),
     verify_token: z.string().max(200).default(''),
     graph_version: z.string().max(10).default('v21.0'),
+    /** facebook = conectado con el botón (webhook de la plataforma); manual = tokens propios. */
+    connected_via: z.enum(['manual', 'facebook']).default('manual'),
+    page_name: z.string().max(200).default(''),
+    picture: z.string().max(2000).default(''),
   }),
   instagram: z.object({
     account_id: z.string().max(60).default(''),
@@ -498,6 +504,12 @@ export const ChannelConfigSchemas = {
     app_secret: secret.default(''),
     verify_token: z.string().max(200).default(''),
     graph_version: z.string().max(10).default('v21.0'),
+    connected_via: z.enum(['manual', 'facebook']).default('manual'),
+    /** Página de Facebook vinculada (la que da el token y la suscripción a los mensajes). */
+    page_id: z.string().max(60).default(''),
+    page_name: z.string().max(200).default(''),
+    username: z.string().max(120).default(''),
+    picture: z.string().max(2000).default(''),
   }),
   webchat: z.object({
     title: z.string().max(80).default('¿En qué te ayudamos?'),

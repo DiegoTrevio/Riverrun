@@ -75,6 +75,24 @@ export const AssignmentSchema = z.object({
   notify_all: z.boolean().default(false),
 });
 
+/** Avisos cuando un WhatsApp se desconecta: cuándo, cada cuánto y a quién (lo define cada negocio). */
+export const ConnectionAlertsSchema = z.object({
+  enabled: z.boolean().default(true),
+  /** Minutos de espera antes de avisar (da tiempo a la reconexión automática). 0 = de inmediato. */
+  after_minutes: z.number().int().min(0).max(1440).default(5),
+  /** Repetir el aviso cada N horas mientras siga desconectado (máximo 7 días). 0 = avisar una sola vez. */
+  repeat_hours: z.number().int().min(0).max(168).default(6),
+  /** Administradores de la cuenta: panel y correo. */
+  notify_admins: z.boolean().default(true),
+  /** Correos adicionales (por ejemplo, el dueño o soporte). */
+  emails: z.array(z.string().trim().toLowerCase().email('Correo inválido en los avisos de desconexión')).max(10).default([]),
+  /** WhatsApp adicionales (se envía desde otro WhatsApp conectado de la cuenta). */
+  phones: z.array(z.string().trim().regex(/^\+?[\d\s()-]{8,20}$/, 'Número inválido en los avisos de desconexión')).max(5).default([]),
+  /** Avisar también cuando vuelve a conectarse (si antes se avisó de la desconexión). */
+  notify_reconnected: z.boolean().default(true),
+});
+export type ConnectionAlerts = z.infer<typeof ConnectionAlertsSchema>;
+
 export const AccountSettingsSchema = z.object({
   timezone: TimezoneSchema.default('America/Mexico_City'),
   business_hours: WeeklyHoursSchema.default(DEFAULT_HOURS),
@@ -90,6 +108,7 @@ export const AccountSettingsSchema = z.object({
   assignment: AssignmentSchema.default(() => AssignmentSchema.parse({})),
   /** Notificar en el panel a todo el equipo cuando una conversación pasa a humano. */
   notify_team_on_handoff: z.boolean().default(true),
+  connection_alerts: ConnectionAlertsSchema.default(() => ConnectionAlertsSchema.parse({})),
   /** Secreto para suscribirse al calendario (.ics) y firmar webhooks salientes. */
   calendar_token: z.string().default(''),
   webhook_secret: z.string().default(''),

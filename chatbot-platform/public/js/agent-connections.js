@@ -1,6 +1,7 @@
 import { receiptRecovery } from './receipt-recovery.js';
 import { channelIcon, connectionBadge, connectionHref, networkLabel } from './channels.js';
 import { api, field, fill, h, run, select, state, text, toast } from './core.js';
+import { metaConnectButton } from './meta.js';
 import { accountName, isSuper } from './session.js';
 
 /** Las conexiones conservan su cuenta, número y conversaciones; solo cambia su agente. */
@@ -38,8 +39,11 @@ export async function tabConnections(root, bot, params = new URLSearchParams()) 
   const mine = accountChannels.filter((c) => c.chatbot_id === bot.id);
   const pending = accountChannels.filter((c) => !c.chatbot_id);
   // Las redes sociales (Zernio) aparecen una por una: el negocio elige la red y la autoriza al abrir la conexión.
-  const social = state.meta.zernio_enabled ? (state.meta.social_networks || []).map((n) => ({ type: `zernio:${n.id}`, label: n.label })) : [];
-  const types = [...state.meta.channel_types.filter((t) => t.type !== 'playground' && t.type !== 'zernio'), ...social];
+  // Con la app de Meta de la plataforma, Facebook e Instagram se conectan con el botón (sin tokens ni Zernio); los
+  // tokens manuales quedan solo para el superadministrador.
+  const metaDirect = !!state.meta.meta_connect_enabled;
+  const social = state.meta.zernio_enabled ? (state.meta.social_networks || []).filter((n) => !(metaDirect && ['facebook', 'instagram'].includes(n.id))).map((n) => ({ type: `zernio:${n.id}`, label: n.label })) : [];
+  const types = [...state.meta.channel_types.filter((t) => t.type !== 'playground' && t.type !== 'zernio' && !(metaDirect && !isSuper() && ['messenger', 'instagram'].includes(t.type))), ...social];
   const limit = state.meta.max_whatsapp_profiles || 4;
   const count = accountChannels.filter((c) => c.type === 'whatsapp').length;
   const draft = { type: 'whatsapp', name: '' };
@@ -70,6 +74,10 @@ export async function tabConnections(root, bot, params = new URLSearchParams()) 
         field('Plataforma', select(draft, 'type', types.map((t) => [t.type, t.label]), updateLimit)),
         field('Nombre de la conexión', text(draft, 'name', { placeholder: 'WhatsApp ventas, recepción…', maxlength: 120 }))),
       warning, button),
+    metaDirect ? h('div', { class: 'card' },
+      h('h2', { style: 'margin-top:0' }, '💬📸 Facebook e Instagram'),
+      h('p', { class: 'help' }, 'Inicia sesión con Facebook, elige tus páginas y tu Instagram profesional, y sus mensajes llegan a este agente. Sin copiar tokens.'),
+      metaConnectButton({ chatbotId: bot.id, accountId: bot.account_id })) : null,
     pending.length ? pendingConnections(pending, [bot]) : null,
     mine.length ? h('div', { class: 'grid' }, mine.map((ch) => {
       const status = h('span', {}, connectionBadge(ch));
@@ -86,7 +94,7 @@ export async function tabConnections(root, bot, params = new URLSearchParams()) 
         h('div', { class: 'row between' }, h('h2', { style: 'margin:0' }, channelIcon(ch.type, ch.config?.platform), ' ', ch.name), status),
         h('p', { class: 'muted' }, ch.type === 'zernio' ? networkLabel(ch.config?.platform) : ch.label || ch.type, ch.config?.number ? ` · +${ch.config.number}` : '', ch.config?.username ? ` · @${ch.config.username}` : ''),
         h('div', { class: 'row' },
-          h('a', { class: 'btn primary', href: connectionHref(ch) }, ch.type === 'whatsapp' ? 'Ver QR / administrar' : ch.type === 'zernio' ? (ch.config?.account_id ? 'Administrar' : 'Conectar cuenta') : 'Configurar conexión'),
+          h('a', { class: 'btn primary', href: connectionHref(ch) }, ch.type === 'whatsapp' ? 'Ver QR / administrar' : ch.type === 'zernio' ? (ch.config?.account_id ? 'Administrar' : 'Conectar cuenta') : ch.config?.connected_via === 'facebook' ? 'Administrar' : 'Configurar conexión'),
           h('a', { class: 'btn', href: `#/conversations?channel_id=${ch.id}` }, 'Conversaciones'),
           ch.type === 'whatsapp' ? h('button', { class: 'small', onclick: refresh }, 'Actualizar estado') : null));
     })) : h('div', { class: 'card' }, h('p', {}, 'Este agente todavía no tiene conexiones. Puedes probarlo antes de conectar un teléfono.'), h('a', { class: 'btn', href: `#/bot/${bot.id}/probar` }, 'Probar agente')),

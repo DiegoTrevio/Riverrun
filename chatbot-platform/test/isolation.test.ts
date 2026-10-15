@@ -41,6 +41,7 @@ function fillParams(url: string): string | null {
     [/^\/api\/tasks\/:id/, 'task'],
     [/^\/api\/campaigns\/:id/, 'campaign'],
     [/^\/api\/channels\/:id/, 'channel'],
+    [/^\/api\/meta\/sessions\/:id/, 'meta_session'],
     [/^\/api\/chatbots\/:id/, 'bot'],
     [/^\/api\/contacts\/:id/, 'contact'],
     [/^\/api\/conversations\/:cid/, 'conv'],
@@ -131,6 +132,9 @@ before(async () => {
   B.user = (await ok200(adminB('POST', '/api/users', { email: 'agente@b.mx', name: `Agente ${MARK}`, password: 'clave-segura-1', role: 'agent' }))).id;
   B.endpoint = (await ok200(adminB('POST', '/api/webhook-endpoints', { url: 'https://example.com/hook', description: `Hook ${MARK}` }))).id;
   B.apikey = (await ok200(adminB('POST', '/api/api-keys', { name: `Llave ${MARK}` }))).id;
+  // Sesión de «Conectar con Facebook» de B, con una página y su token: A no la ve ni la aplica.
+  B.meta_session = (await pool.query(`INSERT INTO meta_connect_sessions (account_id, pages, expires_at) VALUES ($1, $2, now() + interval '30 minutes') RETURNING id`,
+    [B.account, JSON.stringify([{ id: 'PAGEB', name: `Página ${MARK}`, picture: '', access_token: `tok-${MARK}`, instagram: null }])])).rows[0].id;
   B.wapool = (await pool.query(`INSERT INTO wa_pools (account_id, name, token) VALUES ($1, $2, 'tok-b-aislamiento') RETURNING id`, [B.account, `Grupo ${MARK}`])).rows[0].id;
   B.brand = (await pool.query(`INSERT INTO brands (name) VALUES ('Marca B') RETURNING id`)).rows[0].id;
   B.model = 'gpt-4.1-mini';

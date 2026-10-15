@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { config } from '../config.js';
+import { tick } from '../watchdog.js';
 import { query, queryOne } from '../db.js';
 import { coordinated, DeliveryUncertain,detached } from './coordination.js';
 export type Runner = (id: string, attempt: { restarts: number }) => Promise<{ status: string }>;
@@ -87,6 +88,7 @@ export class ConversationQueue {
         const results=await Promise.allSettled(tasks);n=results.filter(r=>r.status==='fulfilled'&&r.value).length;
         const error=results.find(r=>r.status==='rejected');if(error?.status==='rejected') throw error.reason;
       }
+      tick('queue');
       if(this.hints.size) {
         const live=await query(`SELECT conversation_id FROM conversation_work WHERE conversation_id=ANY($1::uuid[]) AND state IN ('pending','running')`,[[...this.hints]]);
         this.hints=new Set(live.map(r=>r.conversation_id));

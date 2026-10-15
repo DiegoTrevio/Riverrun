@@ -44,7 +44,8 @@ export interface AiProvider {
   forBudget?(): AiProvider;
   embed?(texts: string[], model: string): Promise<EmbeddingResult>;
   complete(req: CompletionRequest): Promise<CompletionResult>;
-  transcribe(audio: Buffer, mimeType: string): Promise<string | CompletionResult>;
+  /** `seconds`: duración del audio (la de la plataforma o estimada); el presupuesto cobra la transcripción por minuto. */
+  transcribe(audio: Buffer, mimeType: string, seconds?: number): Promise<string | CompletionResult>;
 }
 
 export interface EmbeddingResult {

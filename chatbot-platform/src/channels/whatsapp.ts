@@ -12,6 +12,19 @@ import type { ChannelAdapter } from './types.js';
  * Cliente de Evolution del canal. Un servidor propio (solo lo define el superadmin) exige su propia llave:
  * la llave global nunca se envía a otra URL.
  */
+/**
+ * Código de cierre de WhatsApp (Baileys) → motivo. 401: la sesión se cerró desde el teléfono (o el teléfono estuvo sin
+ * conexión demasiado tiempo); 403: número bloqueado; 440: la sesión se abrió en otro lugar. Con esos tres hay que volver a
+ * vincular; cualquier otro es una conexión perdida que se recupera sola.
+ */
+export function disconnectReason(code: unknown): string {
+  const n = Number(code);
+  if (n === 401) return 'logged_out';
+  if (n === 403) return 'banned';
+  if (n === 440) return 'replaced';
+  return 'connection_lost';
+}
+
 export function evolutionFor(channel: Channel) {
   const url = String(channel.config.url ?? '').replace(/\/$/, '');
   if (url && url !== config.evolution.url) {
@@ -100,13 +113,15 @@ export const whatsappAdapter: ChannelAdapter = {
       return { messages: [], qr: typeof b64 === 'string' && b64 ? (b64.startsWith('data:') ? b64 : `data:image/png;base64,${b64}`) : undefined };
     }
     let connection: string | undefined;
+    let connectionReason: string | undefined;
     if (event === 'connection.update') {
       connection = String(body?.data?.state ?? '') || undefined;
+      if (connection === 'close') connectionReason = disconnectReason(body?.data?.statusReason ?? body?.data?.lastDisconnect?.error?.output?.statusCode);
       // "connecting" llega varias veces por minuto mientras se vincula o reconecta: no se registra (solo los cambios reales).
       if (connection === 'open') notices.push({ level: 'info', message: 'WhatsApp conectado' });
       else if (connection === 'close') notices.push({ level: 'warn', message: 'WhatsApp desconectado' });
     }
-    return { messages, notices, connection };
+    return { messages, notices, connection, connectionReason };
   },
 
   transport: (channel, contact) => WhatsappTransport.forContact(channel, contact),

@@ -46,6 +46,17 @@ export const config = {
   publicBaseUrl: env('PUBLIC_BASE_URL', env('WEBHOOK_BASE_URL', 'http://localhost:3000')).replace(/\/$/, ''),
   telegramApiUrl: env('TELEGRAM_API_URL', 'https://api.telegram.org').replace(/\/$/, ''),
   metaGraphUrl: env('META_GRAPH_URL', 'https://graph.facebook.com').replace(/\/$/, ''),
+  /** App de Meta de la plataforma: cada negocio conecta Facebook e Instagram con un botón. */
+  meta: {
+    appId: env('META_APP_ID', ''),
+    appSecret: env('META_APP_SECRET', ''),
+    /** Configuración de «Facebook Login for Business» (opcional; si falta se piden los permisos uno por uno). */
+    configId: env('META_CONFIG_ID', ''),
+    /** Token que Meta envía al verificar el webhook; vacío = derivado de la clave del servidor. */
+    verifyToken: env('META_VERIFY_TOKEN', ''),
+    graphVersion: env('META_GRAPH_VERSION', 'v21.0'),
+    dialogUrl: env('META_DIALOG_URL', 'https://www.facebook.com').replace(/\/$/, ''),
+  },
   /** Base de la API de Zernio (https://zernio.com/api + /v1). */
   zernioApiUrl: env('ZERNIO_API_URL', 'https://zernio.com/api/v1').replace(/\/$/, ''),
   uploadsDir: path.resolve(env('UPLOADS_DIR', './data/uploads')),
@@ -99,6 +110,14 @@ export const config = {
   emailPollSeconds: Math.max(15, Number(env('EMAIL_POLL_SECONDS', '60'))),
   allowPrivateWebhooks: env('ALLOW_PRIVATE_WEBHOOKS', 'false') === 'true',
   schedulerIntervalMs: Number(env('SCHEDULER_INTERVAL_MS', '5000')),
+  /** Tiempo máximo de una tarea programada (recordatorio, campaña, sincronización…) antes de cortarla y reintentarla. */
+  jobTimeoutMs: Math.max(1000, Number(env('JOB_TIMEOUT_MS', '180000')) || 180000),
+  /** Vigilante: un bucle de trabajo sin avanzar este tiempo, o el proceso bloqueado, hacen que se reinicie. WATCHDOG=off lo apaga. */
+  watchdog: {
+    enabled: env('WATCHDOG', 'on') !== 'off',
+    stallMs: Math.max(60_000, Number(env('WATCHDOG_STALL_MS', '600000')) || 600000),
+    blockMs: Math.max(10_000, Number(env('WATCHDOG_BLOCK_MS', '60000')) || 60000),
+  },
   queue: {
     concurrency: Math.max(1, Math.min(6, Number(env('QUEUE_CONCURRENCY', '2')) || 2)),
     attempts: Math.max(1, Math.min(20, Number(env('QUEUE_MAX_ATTEMPTS', '3')) || 3)),

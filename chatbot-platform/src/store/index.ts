@@ -48,7 +48,11 @@ export async function createAccount(
     'INSERT INTO accounts (name, status, trial_ends_at, business_type, signup_source) VALUES ($1, $2, $3, $4, $5) RETURNING *',
     [name, opts.status ?? 'active', opts.trialEndsAt ?? null, opts.businessType ?? '', opts.source ?? 'admin'],
   );
-  return rows[0] as Account;
+  const account = rows[0] as Account;
+  // Su perfil de Zernio queda listo para conectar redes (en segundo plano: el alta no espera a Zernio). Dentro de una
+  // transacción lo pide quien la confirma (prepareAccountProfile después del commit).
+  if (!client) void import('../channels/zernio-connect.js').then((m) => m.prepareAccountProfile(account.id)).catch(() => undefined);
+  return account;
 }
 
 export async function updateAccount(
@@ -1096,7 +1100,8 @@ export async function savePairingCode(channelId: string, code: string, number: s
 
 /** Cambia el estado de conexión sin avisos (p.ej. al desconectar a propósito desde el panel). */
 export async function setConnectionStateQuiet(channelId: string, state: string) {
-  await query(`UPDATE channels SET connection_state = $2, connection_state_at = now() WHERE id = $1`, [channelId, state]);
+  // Desconexión a propósito: no cuenta como caída (sin avisos ni reconexión automática).
+  await query(`UPDATE channels SET connection_state = $2, connection_state_at = now(), down_since = NULL WHERE id = $1`, [channelId, state]);
 }
 
 export async function clearConnectionCodes(channelId: string) {

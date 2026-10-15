@@ -62,6 +62,7 @@ export async function render() {
     else if (!parts.length || ['agentes', 'asistentes'].includes(parts[0])) await view('dashboard', 'viewDashboard', content, params);
     else if (parts[0] === 'inicio') await view('onboarding', 'viewOnboarding', content, parts[1]);
     else if (parts[0] === 'asistente' || parts[0] === 'probar') await view('dashboard', 'goMainBot', content, parts[0] === 'probar' ? 'probar' : 'conocimiento');
+    else if (parts[0] === 'conectar-facebook') await view('meta', 'viewMetaConnect', content, parts[1] || '', params);
     else if (parts[0] === 'conectar') await view('agent-connections', 'goLegacyConnections', params);
     else if (parts[0] === 'ajustes') await view('dashboard', 'viewSettingsHub', content);
     else if (parts[0] === 'integraciones') await view('integrations', 'viewIntegrations', content, params);

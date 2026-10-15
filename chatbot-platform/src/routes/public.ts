@@ -18,6 +18,7 @@ import { safeEqual } from '../secret.js';
 import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
 import type { Channel } from '../types.js';
+import { channelsForEntry, finishMetaConnect, META_NONCE_COOKIE, metaVerifyToken, verifyMetaSignature } from '../channels/meta-connect.js';
 
 /** Tiempo para volver de Zernio después de pulsar "Conectar cuenta". */
 const ZERNIO_CONNECT_TTL_MS = 30 * 60_000;
@@ -60,10 +61,10 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
   /** Lo que llegó por el webhook de un canal: QR, estado de conexión, avisos y mensajes (guardados para los workers). */
   const processEvent = async (webhookReq: WebhookRequest) => {
     const { channel } = webhookReq;
-    const { messages, notices, connection, qr } = adapterFor(channel.type).parse(webhookReq);
+    const { messages, notices, connection, connectionReason, qr } = adapterFor(channel.type).parse(webhookReq);
     if (qr) await store.saveQr(channel.id, qr);
     for (const n of notices ?? []) await logEvent({ level: n.level, source: 'channel', message: n.message, accountId: channel.account_id, channelId: channel.id });
-    if (connection) await recordConnectionState(channel, connection);
+    if (connection) await recordConnectionState(channel, connection, connectionReason);
     await service.inbox.accept(channel, messages);
   };
   // Evolution puede agregar el nombre del evento al final de la URL (webhook_by_events); lo aceptamos.
@@ -94,6 +95,47 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
       return reply.send({ ok: true });
     } catch {
       await logEvent({ level: 'error', source: 'webhook', message: 'webhook_receipt_failed', details: { reason: 'parse_or_storage', zernioAccount: accountId } }).catch(() => undefined);
+      return reply.code(503).send({ ok: false, error: 'No se pudo guardar la recepción. Reintenta.' });
+    }
+  });
+
+  /* ------------------------------ Facebook e Instagram con un botón (app de Meta de la plataforma) ------------------------------ */
+  app.get('/meta/callback', async (req: any, reply) => {
+    const q = req.query as Record<string, string | undefined>;
+    const fail = (msg: string) => reply.redirect(`${config.publicBaseUrl}/#/conectar-facebook?error=${encodeURIComponent(msg)}`);
+    const nonce = String(req.cookies?.[META_NONCE_COOKIE] ?? '');
+    reply.clearCookie(META_NONCE_COOKIE, { path: '/meta' });
+    // El texto de error de la URL no se muestra (cualquiera puede armar el enlace): solo un mensaje fijo.
+    if (q.error || !q.code || !q.state) return fail('Se canceló la conexión con Facebook o no se aceptaron los permisos.');
+    const r = await finishMetaConnect(String(q.state), String(q.code), nonce);
+    if ('error' in r) return fail(r.error);
+    return reply.redirect(`${config.publicBaseUrl}/#/conectar-facebook/${r.sessionId}?account_id=${r.accountId}`);
+  });
+
+  // Meta verifica el webhook de la app una vez (lo configura el administrador de la plataforma en Meta for Developers).
+  app.get('/meta/webhook', async (req: any, reply) => {
+    const q = req.query as Record<string, string | undefined>;
+    if (q['hub.mode'] === 'subscribe' && q['hub.verify_token'] && safeEqual(String(q['hub.verify_token']), metaVerifyToken())) return reply.type('text/plain').send(String(q['hub.challenge'] ?? ''));
+    return reply.code(403).send('forbidden');
+  });
+
+  /** Mensajes de todas las páginas e Instagram conectados con el botón: cada evento va al canal de su página o cuenta. */
+  app.post('/meta/webhook', async (req: any, reply) => {
+    if (!verifyMetaSignature(req.headers['x-hub-signature-256'], req.rawBody)) {
+      await logEvent({ level: 'warn', source: 'webhook', message: 'Facebook: firma inválida en el webhook de la plataforma; se rechaza', details: { ip: req.ip } });
+      return reply.code(401).send({ ok: false });
+    }
+    const object = String(req.body?.object ?? '');
+    const ids = [...new Set<string>((req.body?.entry ?? []).map((e: any) => String(e?.id ?? '')).filter(Boolean))];
+    try {
+      for (const id of ids) {
+        for (const channel of await channelsForEntry(object, id)) {
+          await processEvent({ channel, headers: req.headers, query: req.query, body: req.body, rawBody: req.rawBody });
+        }
+      }
+      return reply.send({ ok: true });
+    } catch {
+      await logEvent({ level: 'error', source: 'webhook', message: 'webhook_receipt_failed', details: { reason: 'parse_or_storage', meta: object } }).catch(() => undefined);
       return reply.code(503).send({ ok: false, error: 'No se pudo guardar la recepción. Reintenta.' });
     }
   });

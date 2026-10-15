@@ -18,6 +18,7 @@ import * as store from '../store/index.js';
 import { CHANNEL_TYPES, type Channel, type User } from '../types.js';
 import { assertVerified } from './onboarding.js';
 import { parse } from './util.js';
+import { applyMetaSelection, disconnectMetaChannel, META_NONCE_COOKIE, sessionPages, startMetaConnect } from '../channels/meta-connect.js';
 
 const ChannelBody = z.object({
   name: z.string().trim().min(1).max(120).optional(),
@@ -167,6 +168,56 @@ export async function channelRoutes(api: FastifyInstance) {
       await logEvent({ level: 'error', source: 'channel', message: `${adapter.label}: no se pudo conectar: ${e?.message ?? e}`, accountId: ch.account_id, channelId: ch.id });
       throw new HttpError(400, e?.message ?? String(e));
     }
+  });
+
+  /* ------------------------------ Facebook e Instagram con un botón ------------------------------ */
+  /** Devuelve la URL de Facebook donde el negocio inicia sesión y elige sus páginas. */
+  api.post('/api/meta/connect', admins, async (req: any, reply) => {
+    assertVerified(req.user);
+    const b = parse(z.object({ account_id: z.string().uuid().optional(), chatbot_id: z.string().uuid().nullable().optional() }), req.body ?? {});
+    const accountId = await targetAccount(req.user, b.account_id);
+    await checkBot(req.user, accountId, b.chatbot_id);
+    try {
+      const { url, nonce } = await startMetaConnect(accountId, req.user.id, b.chatbot_id ?? null);
+      reply.setCookie(META_NONCE_COOKIE, nonce, { httpOnly: true, sameSite: 'lax', secure: config.secureCookies, path: '/meta', maxAge: 30 * 60 });
+      return { url };
+    } catch (e: any) {
+      throw new HttpError(400, e?.message ?? String(e));
+    }
+  });
+
+  const metaSession = async (req: any) => {
+    const accountId = await targetAccount(req.user, req.query.account_id);
+    const s = await sessionPages(req.params.id, accountId);
+    if (!s) throw new HttpError(404, 'La sesión de Facebook venció. Vuelve a pulsar «Conectar con Facebook».');
+    return { accountId, s };
+  };
+  api.get('/api/meta/sessions/:id', admins, async (req: any) => (await metaSession(req)).s);
+
+  /** Conecta las páginas e Instagram elegidos al agente indicado. */
+  api.post('/api/meta/sessions/:id/apply', admins, async (req: any) => {
+    const { accountId, s } = await metaSession(req);
+    const b = parse(z.object({
+      chatbot_id: z.string().uuid().nullable().optional(),
+      pages: z.array(z.object({ page_id: z.string().min(1).max(60), messenger: z.boolean().default(false), instagram: z.boolean().default(false) })).min(1).max(50),
+    }), req.body);
+    const chatbotId = b.chatbot_id === undefined ? s.chatbot_id : b.chatbot_id;
+    await checkBot(req.user, accountId, chatbotId);
+    try {
+      const channels = await applyMetaSelection(req.params.id, accountId, chatbotId ?? null, b.pages);
+      return { channels: channels.map(publicChannel) };
+    } catch (e: any) {
+      if (e instanceof HttpError) throw e;
+      throw new HttpError(400, e?.message ?? String(e));
+    }
+  });
+
+  api.post('/api/channels/:id/meta/disconnect', admins, async (req: any) => {
+    const ch = await channelFor(req.user, req.params.id);
+    if (ch.type !== 'messenger' && ch.type !== 'instagram') throw new HttpError(400, 'Este canal no es de Facebook ni de Instagram');
+    const updated = await disconnectMetaChannel(ch);
+    await logEvent({ level: 'warn', source: 'admin', message: `Facebook: ${ch.name} desconectado desde el panel`, accountId: ch.account_id, channelId: ch.id });
+    return { ok: true, channel: publicChannel(updated) };
   });
 
   /* ------------------------------ Redes sociales (Zernio) ------------------------------ */

@@ -1,6 +1,6 @@
 import { aiBudgetRoutes } from './ai-budget.js';
 import fsp from 'node:fs/promises';
-import { NETWORKS, zernioEnabled } from '../channels/zernio.js';
+import { NETWORKS, ZERNIO_SECRET, zernioEnabled, zernioKey, zernioKeySource } from '../channels/zernio.js';
 import { knowledgeMonitorReport } from '../engine/knowledge-monitor.js';
 import { operationalStatus } from '../engine/operations.js';
 import type { FastifyInstance } from 'fastify';
@@ -31,6 +31,9 @@ import { diagnosticsReport, refreshDiagnostics } from '../diagnostics.js';
 import { assertWithinLimit, LimitsSchema } from '../billing/limits.js';
 import { billingEnabled } from '../billing/service.js';
 import { parse } from './util.js';
+import { metaConnectEnabled } from '../channels/meta-connect.js';
+import { prepareAccountProfile, verifyZernioKey, zernioSystemStatus } from '../channels/zernio-connect.js';
+import { removePlatformSecret, savePlatformSecret } from '../platform-secrets.js';
 
 const Password = z.string().min(8, 'mínimo 8 caracteres').max(200);
 const Email = z.string().trim().toLowerCase().email('correo inválido').max(200);
@@ -101,12 +104,39 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     require_email: config.signup.requireEmail,
     billing_enabled: await billingEnabled(),
     zernio_enabled: zernioEnabled(),
+    meta_connect_enabled: metaConnectEnabled(),
     social_networks: NETWORKS.map(({ id, label, flow }) => ({ id, label, flow })),
     version: config.monitor.version,
   }));
 
   api.get('/api/system/status', { preHandler: requireRole('superadmin') }, async () => systemStatus());
   // Historial de incidencias, de la más reciente a la más antigua. Sin contenido de mensajes.
+  /* Llave de Zernio de la plataforma: una sola para todas las cuentas. */
+  const superadmin = { preHandler: requireRole('superadmin') };
+  const envOwned = () => new HttpError(409, 'La llave está definida en el servidor (ZERNIO_API_KEY en el .env). Para administrarla desde aquí, quítala de allí y reinicia.');
+  api.get('/api/system/zernio', superadmin, async () => zernioSystemStatus(false));
+  api.post('/api/system/zernio/check', superadmin, async () => {
+    if (!zernioEnabled()) throw new HttpError(400, 'Primero guarda la llave de Zernio.');
+    const v = await verifyZernioKey(zernioKey());
+    if (!v.ok) throw new HttpError(400, v.error);
+    return zernioSystemStatus(true);
+  });
+  api.put('/api/system/zernio', superadmin, async (req: any) => {
+    if (zernioKeySource() === 'env') throw envOwned();
+    const { api_key } = parse(z.object({ api_key: z.string().trim().min(8, 'Pega la llave completa').max(500) }), req.body);
+    const v = await verifyZernioKey(api_key);
+    if (!v.ok) throw new HttpError(400, v.error);
+    await savePlatformSecret(ZERNIO_SECRET, api_key, req.user.id);
+    await logEvent({ level: 'info', source: 'admin', message: `Llave de Zernio guardada desde el panel por ${req.user.email} (termina en ${api_key.slice(-4)})` });
+    return zernioSystemStatus(true);
+  });
+  api.delete('/api/system/zernio', superadmin, async (req: any) => {
+    if (zernioKeySource() === 'env') throw envOwned();
+    await removePlatformSecret(ZERNIO_SECRET);
+    await logEvent({ level: 'warn', source: 'admin', message: `Llave de Zernio quitada desde el panel por ${req.user.email}: las redes sociales dejan de funcionar` });
+    return zernioSystemStatus(false);
+  });
+
   api.get('/api/system/incidents', { preHandler: requireRole('superadmin') }, async (req: any) => listIncidents(Number(req.query?.limit) || 50));
   // Configuración y servicios externos por niveles (configurado → accesible → credenciales → funcional → listo). Sin secretos.
   api.get('/api/system/diagnostics', { preHandler: requireRole('superadmin') }, async () => diagnosticsReport());
@@ -236,6 +266,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
       }
       return { account, admin };
     });
+    prepareAccountProfile(account.id);
     await logEvent({ level: 'info', source: 'admin', message: `Cuenta creada: ${account.name}`, accountId: account.id });
     return { ...account, admin };
   });
