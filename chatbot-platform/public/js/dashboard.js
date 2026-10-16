@@ -24,7 +24,7 @@ export async function viewDashboard(root, params = new URLSearchParams()) {
     h('div', { class: 'row between' }, h('h1', {}, 'Agentes'),
       h('button', { class: 'primary', disabled: noAccounts, onclick: () => (createBox.hidden = !createBox.hidden) }, '+ Crear agente')),
     noAccounts ? h('div', { class: 'card' }, h('p', {}, 'Primero crea una cuenta (cliente) en ', h('a', { href: '#/accounts' }, 'Cuentas'), '.')) : null,
-    h('p', { class: 'muted' }, 'Crea tu agente, pruébalo y conecta los teléfonos o canales que atenderá.'),
+    h('p', { class: 'muted' }, 'Tu agente atiende a tus clientes por WhatsApp y otras redes. Ábrelo para configurarlo, probarlo y conectarlo.'),
     stats ? null : h('div', { class: 'banner warn', role: 'status' }, 'No pudimos cargar las estadísticas. Puedes configurar tus agentes; vuelve a entrar para actualizar las cifras.'),
     createBox,
     bots.length || noAccounts ? null : h('div', { class: 'card' }, h('p', {}, 'Aún no hay agentes. Crea el primero para empezar.')),
@@ -32,25 +32,22 @@ export async function viewDashboard(root, params = new URLSearchParams()) {
       bots.map((b) => {
         const s = byId[b.id] || {};
         const mine = channels.filter((c) => c.chatbot_id === b.id);
-        return h('div', { class: 'card' },
+        const live = mine.some((c) => c.active && (c.type === 'whatsapp' ? c.connection_state === 'open' : c.type === 'zernio' ? !!c.config?.account_id && c.connection_state !== 'close' : c.connection_state !== 'close'));
+        // El siguiente paso, uno solo y en lenguaje simple.
+        const next = !live ? ['Conecta WhatsApp u otro canal para que empiece a atender.', `#/bot/${b.id}/conexiones?new=1`, 'Conectar']
+          : !b.active ? ['Está en pausa: no responde a tus clientes.', `#/bot/${b.id}/instrucciones`, 'Abrir'] : null;
+        return h('div', { class: 'card agent-card' },
           h('div', { class: 'row between' },
-            h('h2', { style: 'margin:0' }, h('a', { href: `#/bot/${b.id}/general` }, b.name)),
-            h('span', { class: `badge ${b.active ? 'green' : ''}` }, b.active ? 'Encendido' : 'Apagado')),
+            h('h2', { style: 'margin:0' }, h('a', { href: `#/bot/${b.id}/instrucciones` }, b.name)),
+            h('span', { class: `badge ${b.active ? 'green' : ''}` }, b.active ? 'Encendido' : 'En pausa')),
           isSuper() && !state.accountId ? h('p', { class: 'muted small', style: 'margin:4px 0 0' }, accountName(b.account_id)) : null,
-          h('p', { class: 'small' }, mine.length ? mine.map((c) => h('a', { class: 'agent-channel', href: `#/bot/${b.id}/conexiones/${c.id}` }, channelIcon(c.type, c.config?.platform), ' ', c.name, ' ', connectionBadge(c))) : h('span', { class: 'muted' }, 'Sin conexiones · puedes probarlo antes de conectar un teléfono')),
-          h('div', { class: 'row', style: 'gap:18px' },
-            h('div', {}, h('div', { class: 'kpi' }, s.conversations ?? 0), h('div', { class: 'muted small' }, 'conversaciones')),
-            h('div', {}, h('div', { class: 'kpi' }, s.waiting_human ?? 0), h('div', { class: 'muted small' }, 'con humano')),
-            h('div', {}, h('div', { class: 'kpi' }, s.messages_24h ?? 0), h('div', { class: 'muted small' }, 'mensajes 24 h')),
-          ),
-          h('details', { class: 'small' },
-            h('summary', {}, 'Uso de IA (30 días)'),
-            h('p', { class: 'muted small' },
-              `${(s.input_tokens_30d ?? 0).toLocaleString()} tokens de entrada (${(s.cached_tokens_30d ?? 0).toLocaleString()} en caché) · ${(s.output_tokens_30d ?? 0).toLocaleString()} de salida`)),
+          mine.length ? h('p', { class: 'small' }, mine.map((c) => h('a', { class: 'agent-channel', href: `#/bot/${b.id}/conexiones/${c.id}` }, channelIcon(c.type, c.config?.platform), ' ', c.name, ' ', connectionBadge(c)))) : null,
+          next ? h('p', { class: 'banner warn small', style: 'margin:8px 0' }, next[0], ' ', h('a', { href: next[1] }, `${next[2]} →`)) : null,
+          h('p', { class: 'small muted' }, `${s.conversations ?? 0} conversaciones · ${s.messages_24h ?? 0} mensajes hoy`,
+            s.waiting_human ? [' · ', h('a', { href: `#/conversations?chatbot_id=${b.id}&status=human` }, h('strong', {}, `${s.waiting_human} esperan a una persona`))] : ''),
           s.errors_24h ? h('p', {}, h('a', { href: `#/logs?chatbot_id=${b.id}&level=error` }, h('span', { class: 'badge red' }, `${s.errors_24h} errores en 24 h`))) : null,
           h('div', { class: 'row' },
-            h('a', { class: 'btn', href: `#/bot/${b.id}/instrucciones` }, 'Configurar'),
-            h('a', { class: 'btn primary', href: `#/bot/${b.id}/conexiones?new=1` }, 'Conectar teléfono'),
+            h('a', { class: 'btn primary', href: `#/bot/${b.id}/instrucciones` }, 'Abrir'),
             h('a', { class: 'btn', href: `#/bot/${b.id}/probar` }, 'Probar'),
             h('a', { class: 'btn', href: `#/conversations?chatbot_id=${b.id}` }, 'Conversaciones')),
         );

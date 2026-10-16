@@ -38,12 +38,8 @@ export async function agentVersionRoutes(api:FastifyInstance,service:ChatService
     const draftBot=hydrateChatbot({...bot,...draft.configuration});
     return {draft,draft_bot:draftBot,draft_photo_warnings:photoWarnings(draftBot,images),live:live.configuration,releases,runs,suite,changed:imageChanges||!equalConfiguration(draft.configuration,live.configuration),conflict:!equalConfiguration(draft.base_configuration,live.configuration),can_publish:!!passed,tested_run:passed?.id??null};
   });
-  api.put('/api/chatbots/:id/version-draft',admin,async(req:any)=>{
-    const bot=await botFor(req.user,req.params.id);
-    const {revision,patch}=parse(Revision.extend({patch:z.record(z.string(),z.unknown())}),req.body);
-    await agentDraft(bot);
-    return withTransaction(async(client)=>{
-      const draft=await locked(client,bot,revision);
+  /** Mezcla cambios en el borrador (etapas reordenadas: fotos y mensajes guardados se mueven con ellas). */
+  const mergeDraft=async(client:PoolClient,bot:Chatbot,draft:AgentDraft,patch:Record<string,unknown>,userId:string):Promise<AgentDraft>=>{
       const merged=await normalize(hydrateChatbot({...bot,...draft.configuration}),patch);
       delete merged.active;
       let map=draft.step_map;
@@ -56,8 +52,65 @@ export async function agentVersionRoutes(api:FastifyInstance,service:ChatService
         merged.saved_messages=(merged.saved_messages??draft.configuration.saved_messages).map((m:any)=>({...m,flow_step:remap(m.flow_step)}));
       }
       delete merged.flow_step_map;
-      return (await client.query(`UPDATE agent_drafts SET revision=revision+1,configuration=$2,step_map=$3,image_rules=$5,author_id=$4,updated_at=now() WHERE chatbot_id=$1 RETURNING *`,[bot.id,JSON.stringify({...draft.configuration,...merged}),map?JSON.stringify(map):null,req.user.id,imageRules?JSON.stringify(imageRules):null])).rows[0];
+      return (await client.query(`UPDATE agent_drafts SET revision=revision+1,configuration=$2,step_map=$3,image_rules=$5,author_id=$4,updated_at=now() WHERE chatbot_id=$1 RETURNING *`,[bot.id,JSON.stringify({...draft.configuration,...merged}),map?JSON.stringify(map):null,userId,imageRules?JSON.stringify(imageRules):null])).rows[0];
+  };
+
+  /**
+   * Publica el borrador en todos los canales y lo deja en el historial de versiones. `check` corre después de comprobar
+   * que nadie publicó otra cosa (p. ej. exigir pruebas aprobadas).
+   */
+  const publishDraft=async(client:PoolClient,bot:Chatbot,draft:AgentDraft,user:{id:string;email:string},reason:string,check?:()=>Promise<void>)=>{
+      // Prevent a catalog/rule edit from racing the final signature check and commit.
+      await client.query('LOCK TABLE knowledge_items,images,services,automations,semantic_settings,agent_test_suites IN SHARE ROW EXCLUSIVE MODE');
+      await client.query('SELECT id FROM accounts WHERE id=$1 FOR SHARE',[bot.account_id]);
+      const live=(await client.query('SELECT agent_configuration(chatbots) AS configuration FROM chatbots WHERE id=$1',[bot.id])).rows[0].configuration;
+      if(!equalConfiguration(live,draft.base_configuration)) throw new HttpError(409,'La versión publicada cambió. Restaura la versión actual y vuelve a integrar tus cambios.');
+      await check?.();
+      const ready=await normalize(bot,draft.configuration);
+      const beforeRelease=(await client.query('SELECT max(id) AS id FROM agent_releases WHERE chatbot_id=$1',[bot.id])).rows[0].id;
+      await client.query("SELECT set_config('riverrun.author_id',$1,true),set_config('riverrun.author_name',$2,true),set_config('riverrun.release_reason',$3,true)",[user.id,user.email,reason]);
+      // Saved messages were already remapped while drafting; only images/conversation stages remain to move.
+      const saved=ready.saved_messages;
+      if(draft.step_map) await apply(bot,{...ready,flow_step_map:draft.step_map,saved_messages:[]},client,true);
+      for(const image of draft.image_rules??[]) {
+        await client.query('UPDATE images SET send_when=$3,updated_at=now() WHERE id=$1 AND chatbot_id=$2',[image.id,bot.id,JSON.stringify(image.send_when)]);
+      }
+      const published=await store.updateChatbot(bot.id,{...ready,saved_messages:saved},client);
+      const afterRelease=(await client.query('SELECT max(id) AS id FROM agent_releases WHERE chatbot_id=$1',[bot.id])).rows[0].id;
+      if(beforeRelease===afterRelease) await client.query(`INSERT INTO agent_releases(chatbot_id,configuration,image_rules,author_id,author_name,reason) SELECT id,agent_configuration(chatbots),coalesce((SELECT jsonb_agg(jsonb_build_object('id',i.id,'send_when',i.send_when)) FROM images i WHERE i.chatbot_id=chatbots.id),'[]'),$2,$3,$4 FROM chatbots WHERE id=$1`,[bot.id,user.id,user.email,reason]);
+      const fresh=(await client.query('SELECT agent_configuration(chatbots) AS configuration FROM chatbots WHERE id=$1',[bot.id])).rows[0].configuration;
+      await client.query('UPDATE agent_drafts SET configuration=$2,base_configuration=$2,step_map=NULL,image_rules=NULL,revision=revision+1,updated_at=now() WHERE chatbot_id=$1',[bot.id,JSON.stringify(fresh)]);
+      return published;
+  };
+
+  api.put('/api/chatbots/:id/version-draft',admin,async(req:any)=>{
+    const bot=await botFor(req.user,req.params.id);
+    const {revision,patch}=parse(Revision.extend({patch:z.record(z.string(),z.unknown())}),req.body);
+    await agentDraft(bot);
+    return withTransaction(async(client)=>mergeDraft(client,bot,await locked(client,bot,revision),patch,req.user.id));
+  });
+
+  /**
+   * Guardar = aplicar (lo que usa el panel): el cambio llega de inmediato a los canales y queda en el historial de
+   * versiones para volver atrás. Las pruebas automáticas son opcionales. Si la configuración cambió por otra vía (asistente
+   * de creación, primeros pasos) y no hay cambios pendientes en el borrador, se parte de la configuración actual.
+   */
+  api.post('/api/chatbots/:id/version-apply',admin,async(req:any)=>{
+    const bot=await botFor(req.user,req.params.id);
+    const {revision,patch}=parse(Revision.extend({patch:z.record(z.string(),z.unknown()).default({})}),req.body);
+    await agentDraft(bot);
+    const published=await withTransaction(async(client)=>{
+      let draft=await locked(client,bot,revision);
+      const live=(await client.query('SELECT agent_configuration(chatbots) AS configuration FROM chatbots WHERE id=$1',[bot.id])).rows[0].configuration;
+      if(!equalConfiguration(live,draft.base_configuration)) {
+        if(!equalConfiguration(draft.configuration,draft.base_configuration)) throw new HttpError(409,'La configuración del agente cambió en otra sesión. Recarga la página y vuelve a hacer tus cambios.');
+        draft=(await client.query<AgentDraft>('UPDATE agent_drafts SET configuration=$2,base_configuration=$2,step_map=NULL,image_rules=NULL,revision=revision+1,updated_at=now() WHERE chatbot_id=$1 RETURNING *',[bot.id,JSON.stringify(live)])).rows[0];
+      }
+      if(Object.keys(patch).length) draft=await mergeDraft(client,bot,draft,patch,req.user.id);
+      return publishDraft(client,bot,draft,req.user,'Guardado desde el panel');
     });
+    await logEvent({level:'info',source:'admin',message:`Cambios del agente guardados y aplicados por ${req.user.email}`,accountId:bot.account_id,chatbotId:bot.id});
+    return published;
   });
   // Restoring creates a new draft. Live channels keep the current published release until tests pass again.
   api.post('/api/chatbots/:id/version-restore',admin,async(req:any)=>{
@@ -79,28 +132,10 @@ export async function agentVersionRoutes(api:FastifyInstance,service:ChatService
     const {revision,run_id}=parse(Revision.extend({run_id:z.string().uuid()}),req.body);
     const published=await withTransaction(async(client)=>{
       const draft=await locked(client,bot,revision);
-      // Prevent a catalog/rule edit from racing the final signature check and commit.
-      await client.query('LOCK TABLE knowledge_items,images,services,automations,semantic_settings,agent_test_suites IN SHARE ROW EXCLUSIVE MODE');
-      await client.query('SELECT id FROM accounts WHERE id=$1 FOR SHARE',[bot.account_id]);
-      const live=(await client.query('SELECT agent_configuration(chatbots) AS configuration FROM chatbots WHERE id=$1',[bot.id])).rows[0].configuration;
-      if(!equalConfiguration(live,draft.base_configuration)) throw new HttpError(409,'La versión publicada cambió. Restaura la versión actual y vuelve a integrar tus cambios.');
-      const run=await queryOne('SELECT * FROM agent_test_runs WHERE id=$1 AND chatbot_id=$2',[run_id,bot.id]);
-      if(!run||run.status!=='passed'||Date.now()-new Date(run.created_at).getTime()>=86400000||run.signature!==await qualitySignature(bot,draft)) throw new HttpError(409,'Ejecuta y aprueba las pruebas del borrador actual antes de publicar.');
-      const ready=await normalize(bot,draft.configuration);
-      const beforeRelease=(await client.query('SELECT max(id) AS id FROM agent_releases WHERE chatbot_id=$1',[bot.id])).rows[0].id;
-      await client.query("SELECT set_config('riverrun.author_id',$1,true),set_config('riverrun.author_name',$2,true),set_config('riverrun.release_reason',$3,true)",[req.user.id,req.user.email,`Publicada tras pruebas ${run.id}`]);
-      // Saved messages were already remapped while drafting; only images/conversation stages remain to move.
-      const saved=ready.saved_messages;
-      if(draft.step_map) await apply(bot,{...ready,flow_step_map:draft.step_map,saved_messages:[]},client,true);
-      for(const image of draft.image_rules??[]) {
-        await client.query('UPDATE images SET send_when=$3,updated_at=now() WHERE id=$1 AND chatbot_id=$2',[image.id,bot.id,JSON.stringify(image.send_when)]);
-      }
-      const published=await store.updateChatbot(bot.id,{...ready,saved_messages:saved},client);
-      const afterRelease=(await client.query('SELECT max(id) AS id FROM agent_releases WHERE chatbot_id=$1',[bot.id])).rows[0].id;
-      if(beforeRelease===afterRelease) await client.query(`INSERT INTO agent_releases(chatbot_id,configuration,image_rules,author_id,author_name,reason) SELECT id,agent_configuration(chatbots),coalesce((SELECT jsonb_agg(jsonb_build_object('id',i.id,'send_when',i.send_when)) FROM images i WHERE i.chatbot_id=chatbots.id),'[]'),$2,$3,$4 FROM chatbots WHERE id=$1`,[bot.id,req.user.id,req.user.email,`Publicada tras pruebas ${run.id}`]);
-      const fresh=(await client.query('SELECT agent_configuration(chatbots) AS configuration FROM chatbots WHERE id=$1',[bot.id])).rows[0].configuration;
-      await client.query('UPDATE agent_drafts SET configuration=$2,base_configuration=$2,step_map=NULL,image_rules=NULL,revision=revision+1,updated_at=now() WHERE chatbot_id=$1',[bot.id,JSON.stringify(fresh)]);
-      return published;
+      return publishDraft(client,bot,draft,req.user,`Publicada tras pruebas ${run_id}`,async()=>{
+        const run=await queryOne('SELECT * FROM agent_test_runs WHERE id=$1 AND chatbot_id=$2',[run_id,bot.id]);
+        if(!run||run.status!=='passed'||Date.now()-new Date(run.created_at).getTime()>=86400000||run.signature!==await qualitySignature(bot,draft)) throw new HttpError(409,'Ejecuta y aprueba las pruebas del borrador actual antes de publicar.');
+      });
     });
     await logEvent({level:'info',source:'admin',message:`Versión del agente publicada por ${req.user.email}`,accountId:bot.account_id,chatbotId:bot.id});
     return published;

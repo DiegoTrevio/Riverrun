@@ -74,15 +74,16 @@ try {
   await go(`bot/${h.botId}/instrucciones`);
   const instructions = page.getByLabel('Cómo debe atender', { exact: true });
   await instructions.fill('BORRADOR_CONSERVADO');
-  await page.getByRole('link', { name: 'Preguntas', exact: true }).first().click();
+  await page.getByRole('link', { name: 'Más ajustes', exact: true }).first().click();
   await page.getByRole('link', { name: 'Instrucciones', exact: true }).click();
   assert.equal(await instructions.inputValue(), 'BORRADOR_CONSERVADO');
   await page.reload(); assert.equal(await instructions.inputValue(), 'BORRADOR_CONSERVADO');
-  await page.getByRole('button', { name: 'Guardar borrador', exact: true }).first().click();
-  await page.waitForTimeout(200);
-  assert.equal((await h.authed('GET', `/api/chatbots/${h.botId}/versions`)).json().draft_bot.personality.prompt, 'BORRADOR_CONSERVADO');
-  assert.notEqual((await h.authed('GET', `/api/chatbots/${h.botId}`)).json().personality.prompt, 'BORRADOR_CONSERVADO');
-  checked('Borrador recuperable entre secciones y recarga; guardado en servidor sin alterar la versión publicada');
+  await page.getByRole('button', { name: 'Guardar cambios', exact: true }).first().click();
+  await page.getByText('Cambios guardados ✅', { exact: true }).waitFor();
+  // Guardar = aplicar: el agente usa el cambio de inmediato y queda en el historial.
+  assert.equal((await h.authed('GET', `/api/chatbots/${h.botId}`)).json().personality.prompt, 'BORRADOR_CONSERVADO');
+  assert.ok((await h.authed('GET', `/api/chatbots/${h.botId}/versions`)).json().releases.length >= 1);
+  checked('Cambios sin guardar se conservan entre secciones y recarga; guardar los aplica de inmediato');
   await go(`bot/${h.botId}/conocimiento`);
   const knowledge = page.locator('.list-item[data-search]').first();
   await knowledge.getByRole('button', { name: 'Editar', exact: true }).click();
@@ -140,7 +141,7 @@ try {
     checked(`${kind}: un envío pendiente por doble Enter y texto retenido ante fallo`);
   }
   await go(`bot/${h.botId}/instrucciones`);
-  await page.getByText('Opciones avanzadas', { exact: true }).click(); await page.getByText('Canales y administración', { exact: true }).click();
+  await page.getByText('Opciones avanzadas', { exact: true }).click(); await page.getByText('Duplicar, reiniciar o eliminar', { exact: true }).click();
   await page.route(`**/api/chatbots/${h.botId}`, (route) => route.request().method() === 'DELETE' ? route.fulfill({ status: 503, json: { error: 'No se pudo eliminar' } }) : route.continue());
   await page.getByRole('button', { name: 'Eliminar', exact: true }).click(); await page.locator('dialog input').fill('Ventas y reservas'); await page.locator('dialog').getByRole('button', { name: 'Guardar', exact: true }).click();
   await page.waitForTimeout(200); assert.ok(page.url().includes(`/bot/${h.botId}/`)); await page.unrouteAll({ behavior: 'wait' });

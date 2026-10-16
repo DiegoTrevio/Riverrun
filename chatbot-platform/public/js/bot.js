@@ -1,4 +1,4 @@
-import { versionControls, agentTestsCard } from './agent-versions.js';
+import { agentTestsCard, pendingChanges, versionHistory } from './agent-versions.js';
 import { semanticActivation } from './semantic-activation.js';
 import { tabConnections } from './agent-connections.js';
 import { ACTIONS, triggerSummary, VARS_HELP } from './automation.js';
@@ -12,10 +12,9 @@ import { accountName, isSuper } from './session.js';
 
 /* ------------------------------ Chatbot ------------------------------ */
 
-// La configuración cotidiana: instrucciones, preguntas en orden, cuándo se activa, conocimiento, fotos y pruebas.
-const TABS = [['instrucciones', 'Configurar'], ['conocimiento', 'Conocimiento'], ['conexiones', 'Conexiones'], ['probar', 'Probar']];
-const CONFIG_TABS = [['instrucciones', 'Instrucciones'], ['preguntas', 'Preguntas'], ['activacion', 'Activación'], ['avisos', 'Avisos al equipo']];
-const KNOWLEDGE_TABS = [['conocimiento', 'Información'], ['imagenes', 'Fotos y mensajes']];
+// Una sola fila en el orden en que se usa: qué hace, qué sabe, sus fotos, probarlo y conectarlo. Lo demás, en "Más ajustes".
+const TABS = [['instrucciones', 'Instrucciones'], ['conocimiento', 'Información'], ['imagenes', 'Fotos'], ['probar', 'Probar'], ['conexiones', 'Conexiones'], ['preguntas', 'Más ajustes']];
+const MORE_TABS = [['preguntas', 'Preguntas en orden'], ['activacion', 'Cuándo responde'], ['avisos', 'Avisos al equipo']];
 
 const TAB_ALIASES = { general: 'instrucciones', personalidad: 'instrucciones', datos: 'preguntas', flujo: 'instrucciones', ia: 'instrucciones', avanzado: 'instrucciones', reglas: 'instrucciones' };
 
@@ -34,32 +33,64 @@ export async function viewBot(root, id, tab, params = new URLSearchParams()) {
   const versions = await api('GET', `/api/chatbots/${id}/versions`);
   const bot = {...published,...versions.draft_bot,channels:published.channels,photo_warnings:versions.draft_photo_warnings,_draftRevision:versions.draft.revision};
   if (!root.isConnected) return;
+  bot._versions = versions;
+  const more = MORE_TABS.some(([k]) => k === tab);
   root.append(
     h('a', { href: '#/agentes', class: 'breadcrumb' }, '← Agentes'),
-    h('div', { class: 'row between' },
-      h('h1', {}, bot.name, ' ', h('span', { class: `badge ${bot.active ? 'green' : ''}` }, bot.active ? 'Encendido' : 'Apagado')),
-      h('div', { class: 'row' }, h('a', { class: 'btn', href: `#/bot/${bot.id}/conexiones?new=1` }, 'Conectar teléfono'), restartConversationsButton(bot), h('a', { href: `#/conversations?chatbot_id=${bot.id}` }, 'Ver conversaciones →'))),
-    h('div', { class: 'tabs agent-tabs', 'aria-label': 'Secciones del agente' }, TABS.map(([k, l]) => { const active = k === tab || (k === 'instrucciones' && ['preguntas', 'activacion', 'avisos'].includes(tab)) || (k === 'conocimiento' && tab === 'imagenes'); return h('a', { href: `#/bot/${id}/${k}`, class: active ? 'active' : '', 'aria-current': active ? 'page' : null }, l); })),
-    ['instrucciones', 'preguntas', 'activacion', 'avisos', 'conocimiento', 'imagenes'].includes(tab) ? h('div', { class: 'tabs sub-tabs', 'aria-label': 'Opciones de la sección' }, (['conocimiento', 'imagenes'].includes(tab) ? KNOWLEDGE_TABS : CONFIG_TABS).map(([k, l]) => h('a', { href: `#/bot/${id}/${k}`, class: k === tab ? 'active' : '', 'aria-current': k === tab ? 'page' : null }, l))) : null,
+    h('div', { class: 'row between agent-head' },
+      h('div', { class: 'row', style: 'gap:12px' }, h('h1', { style: 'margin:0' }, bot.name), statusSwitch(bot)),
+      h('div', { class: 'row' },
+        tab === 'probar' ? null : h('a', { class: 'btn primary', href: `#/bot/${bot.id}/probar` }, 'Probar'),
+        h('a', { class: 'btn', href: `#/conversations?chatbot_id=${bot.id}` }, 'Conversaciones'))),
+    await setupSteps(bot),
+    pendingChanges(bot, versions),
+    h('nav', { class: 'tabs agent-tabs', 'aria-label': 'Secciones del agente' }, TABS.map(([k, l]) => { const active = k === tab || (k === 'preguntas' && more); return h('a', { href: `#/bot/${id}/${k}`, class: active ? 'active' : '', 'aria-current': active ? 'page' : null }, l); })),
+    more ? h('nav', { class: 'tabs sub-tabs', 'aria-label': 'Más ajustes' }, MORE_TABS.map(([k, l]) => h('a', { href: `#/bot/${id}/${k}`, class: k === tab ? 'active' : '', 'aria-current': k === tab ? 'page' : null }, l))) : null,
   );
   const guidance = {
-    instrucciones: 'Define cómo atiende tu agente y qué debe lograr. Los ajustes adicionales están al final.',
-    conexiones: 'Conecta tus teléfonos y canales a este agente. Cada teléfono tiene su propio QR.',
-    preguntas: 'Define qué preguntas debe hacer el agente y en qué orden. Las respuestas se guardan automáticamente.',
-    activacion: 'Elige cuándo debe responder el agente y cuándo debe ponerse en pausa.',
-    avisos: 'Elige en qué momentos avisarle a tu equipo: al cumplirse el objetivo, en una etapa o en un contexto que tú describes.',
-    conocimiento: 'Agrega la información que tu agente puede usar para responder: precios, servicios, horarios y condiciones.',
-    imagenes: 'Agrega tus fotos y elige cuándo debe enviarlas el agente.',
-    probar: 'Prueba una conversación antes de conectar el agente. Aquí puedes ver sus respuestas y los datos que guarda.',
+    instrucciones: 'Escribe cómo debe atender tu agente, como se lo explicarías a un empleado nuevo.',
+    conexiones: 'Conecta WhatsApp u otros canales. Cada teléfono tiene su propio código QR.',
+    preguntas: 'Preguntas que el agente hace siempre y en orden (opcional). Las respuestas se guardan solas.',
+    activacion: 'Cuándo responde el agente y cuándo se pone en pausa (opcional).',
+    avisos: 'Cuándo avisarle a tu equipo (opcional).',
+    conocimiento: 'Lo que tu agente sabe: precios, servicios, horarios y condiciones. Solo afirma lo que esté aquí.',
+    imagenes: 'Fotos que el agente puede enviar y cuándo.',
+    probar: '',
   };
-  root.append(h('p', { class: 'help', style: 'margin:0 0 24px' }, guidance[tab] || guidance.instrucciones));
-  root.append(versionControls(bot,versions));
+  if (guidance[tab] !== '') root.append(h('p', { class: 'help', style: 'margin:0 0 20px' }, guidance[tab] || guidance.instrucciones));
   const body = h('div');
-  if(tab==='probar')body.append(agentTestsCard(bot,versions));
   root.append(body);
   const views = { instrucciones: tabInstructions, preguntas: tabQuestions, activacion: tabActivation, avisos: tabNotices, conocimiento: tabKnowledge, imagenes: tabImages, conexiones: tabConnections, probar: tabPlayground };
   await (views[tab] || tabInstructions)(body, tab==='probar'?published:bot, params);
+  // Pruebas automáticas: opcionales, después del simulador.
+  if (tab === 'probar') body.append(h('details', { class: 'card' }, h('summary', {}, 'Pruebas automáticas (opcional)'), h('div', { style: 'margin-top:14px' }, agentTestsCard(bot, versions))));
   if (tab !== 'probar' && tab !== 'conexiones') root.insertBefore(draftNotice(['general', 'personality', 'flow', 'rules', 'ai', 'questions', 'saved_messages', 'knowledge-new', 'photo-new', 'notice-new'].map((key) => `${bot.id}:${key}`), render), body);
+}
+
+/** Encendido o en pausa, con un clic (se aplica de inmediato en todas sus conexiones). */
+function statusSwitch(bot) {
+  return h('button', { class: `status-switch ${bot.active ? 'on' : ''}`, role: 'switch', 'aria-checked': String(!!bot.active), title: bot.active ? 'Pausar: deja de responder en todas sus conexiones' : 'Encender: empieza a responder', onclick: async () => {
+    if (bot.active && !(await confirmAction('¿Pausar el agente? Dejará de responder en todas sus conexiones hasta que lo enciendas.'))) return;
+    if (await run(() => api('PUT', `/api/chatbots/${bot.id}`, { active: !bot.active }), bot.active ? 'Agente en pausa' : 'Agente encendido')) render();
+  } }, h('span', { class: 'dot', 'aria-hidden': 'true' }), bot.active ? 'Encendido' : 'En pausa');
+}
+
+/** Lo que falta para que el agente atienda, en orden. Desaparece cuando todo está listo. */
+async function setupSteps(bot) {
+  const knowledge = await api('GET', `/api/chatbots/${bot.id}/knowledge`).catch(() => null);
+  const connected = (bot.channels || []).some((c) => c.active && (c.type === 'whatsapp' ? c.connection_state === 'open' : c.type === 'zernio' ? !!c.config?.account_id && c.connection_state !== 'close' : c.connection_state !== 'close'));
+  const steps = [
+    [!!bot.personality.prompt.trim(), 'Escribe cómo atiende', `#/bot/${bot.id}/instrucciones`],
+    [knowledge === null || knowledge.some((k) => k.active), 'Agrega tu información', `#/bot/${bot.id}/conocimiento`],
+    [connected, 'Conecta WhatsApp u otro canal', `#/bot/${bot.id}/conexiones?new=1`],
+    [!!bot.active, 'Enciéndelo', null],
+  ];
+  if (steps.every(([ok]) => ok)) return null;
+  return h('div', { class: 'card setup-steps', 'aria-label': 'Para empezar a atender' },
+    h('strong', {}, 'Para empezar a atender:'),
+    h('ol', {}, steps.map(([ok, label, href], i) => h('li', { class: ok ? 'ok' : '' },
+      h('span', { class: 'mark', 'aria-hidden': 'true' }, ok ? '✓' : String(i + 1)),
+      ok || !href ? h('span', {}, label, ok ? h('span', { class: 'sr-only' }, ' (listo)') : '') : h('a', { href }, label)))));
 }
 
 /** Tras actualizar el agente: sus conversaciones empiezan de cero con los cambios (la bienvenida y sus fotos vuelven a salir). */
@@ -84,13 +115,14 @@ export function saveBar(onSave, extra, label = 'Guardar cambios') {
   return h('div', { class: 'sticky-save row' }, button, status, extra);
 }
 
-const draftSaveBar = (onSave, extra) => saveBar(onSave, extra, 'Guardar borrador');
+const draftSaveBar = (onSave, extra) => saveBar(onSave, extra, 'Guardar cambios');
 
 async function saveBot(bot, patch) {
   const keys = Object.keys(patch).filter((key) => key !== 'rules' || patch.rules.verify_facts !== undefined).map((key) => `${bot.id}:${key === 'name' || key === 'active' ? 'general' : key === 'data_fields' ? 'questions' : key}`);
   const versions = keys.map((key) => [key, draftVersion(key)]);
   delete patch.active;
-  const saved = await run(() => api('PUT', `/api/chatbots/${bot.id}/version-draft`, {revision:bot._draftRevision,patch}), 'Borrador guardado ✅');
+  // Guardar = aplicar: el cambio llega de inmediato a todas sus conexiones (y queda en el historial de versiones).
+  const saved = await run(() => api('POST', `/api/chatbots/${bot.id}/version-apply`, {revision:bot._draftRevision,patch}), 'Cambios guardados ✅');
   if (saved) versions.forEach(([key, version]) => discardDraft(key, version));
   return saved;
 }
@@ -106,16 +138,11 @@ async function tabGeneral(root, bot) {
     [channels.some((c) => c.active), 'Está en al menos un canal', null, 'Conéctalo a WhatsApp u otro canal con "+ Agregar canal".'],
     [bot.active, 'Está encendido', null, 'Marca "Encendido" abajo y guarda.'],
   ];
-  const ready = steps.every(([ok]) => ok);
+  void steps; void m;
   root.append(
-    h('div', { class: 'card' },
-      h('h2', { style: 'margin-top:0' }, ready ? '✅ Configuración básica completa' : 'Para que tu asistente funcione'),
-      h('ul', { class: 'checklist' }, steps.map(([ok, label, tabKey, help]) =>
-        h('li', { class: ok ? 'ok' : '' }, h('span', { class: 'mark' }, ok ? '✓' : '○'), ' ',
-          tabKey ? h('a', { href: `#/bot/${bot.id}/${tabKey}` }, label) : label,
-          ok ? null : h('div', { class: 'small muted' }, help)))),
-      h('p', { class: 'small muted', style: 'margin-bottom:0' }, 'Antes de encenderlo, ', h('a', { href: `#/bot/${bot.id}/probar` }, 'pruébalo como si fueras un cliente'), '.')),
+    h('p', { class: 'help' }, '«Reiniciar conversaciones» hace que cada conversación de este agente empiece de cero con tu configuración actual.'),
     h('div', { class: 'row admin-actions' },
+      restartConversationsButton(bot),
       h('span', { class: 'row', style: 'margin-left:auto' },
         isSuper() ? h('span', { style: 'min-width:180px' }, select(dup, 'account_id', state.accounts.map((a) => [a.id, a.name]))) : null,
         h('button', { onclick: async () => { const c = await run(() => api('POST', `/api/chatbots/${bot.id}/duplicate`, dup), 'Chatbot duplicado'); if (c) location.hash = `#/bot/${c.id}/general`; } }, isSuper() ? 'Duplicar en esa cuenta' : 'Duplicar'),
@@ -144,17 +171,12 @@ async function tabInstructions(root, bot) {
       h('div', { class: 'grid' },
         field('Nombre del agente', text(m, 'name')),
         field('Nombre con el que se presenta (opcional)', text(p, 'assistant_name', { placeholder: 'Mario' }))),
-      h('div',{class:'row'},h('span',{class:'small'},'Estado de atención (se aplica de inmediato):'),h('button',{onclick:async()=>{if(await run(()=>api('PUT',`/api/chatbots/${bot.id}`,{active:!bot.active}),bot.active?'Agente pausado':'Agente encendido')) render();}},bot.active?'Pausar agente':'Encender agente')),
-      h('details', { class: 'readiness' }, h('summary', {}, 'Revisar antes de encender'), h('ul', { class: 'checklist' },
-        h('li', {}, bot.personality.prompt.trim() ? '✓ Instrucciones configuradas' : '○ Completa las instrucciones'),
-        h('li', {}, bot.channels?.some((c) => c.active && (c.type !== 'whatsapp' || c.connection_state === 'open')) ? '✓ Tiene una conexión disponible' : ['○ Conecta un teléfono en ', h('a', { href: `#/bot/${bot.id}/conexiones` }, 'Conexiones')]),
-        h('li', {}, `Activación: ${bot.rules.activation.mode === 'always' ? 'cualquier mensaje' : 'espera palabras de activación'}`)), h('a', { href: `#/bot/${bot.id}/probar` }, 'Probar la configuración guardada antes de atender')),
       field('Cómo debe atender', area(p, 'prompt', { big: true, placeholder: 'Eres Mario, el asistente de Los Trompitos. Atiende de forma amable y breve. Ayuda a hacer pedidos. Pregunta qué quieren ordenar, la cantidad y si pasan a recoger o necesitan entrega. Para entrega, pide nombre y dirección. Haz una pregunta a la vez.' }),
-        ['Describe cómo debe atender. Las preguntas que debe hacer, en orden, van en ', h('a', { href: `#/bot/${bot.id}/preguntas` }, 'Preguntas'), '; los precios, horarios y productos, en Conocimiento.']),
-      field('Objetivo', area(f, 'goal', { placeholder: 'Ayudar al cliente a completar su pedido y pasarlo al equipo para confirmarlo.' })),
-      field(tag('Si el cliente vuelve por lo mismo, empezar una solicitud nueva después de (horas sin actividad)', guaranteed()), num(f, 'new_request_after_hours', { min: 0, max: 2160 }),
-        'Por omisión 24. Con 0, solo cuando el asistente detecte que pide otra vez lo que ya se le resolvió (otra reserva, el mismo problema), y nunca antes de 30 minutos si no se cumplió el objetivo. En cada solicitud nueva vuelven a contar el objetivo, las etapas, las preguntas que se repiten, las fotos y los avisos «una vez».'),
-      h('p', { class: 'small muted', style: 'margin-bottom:0' }, 'Los datos se guardan automáticamente cuando el cliente responde: nombre, dirección, pedido y cualquier otro dato útil. Para que pregunte algo siempre y en orden, agrégalo en ', h('a', { href: `#/bot/${bot.id}/preguntas` }, 'Preguntas'), '.')),
+        ['Los precios, horarios y productos van en ', h('a', { href: `#/bot/${bot.id}/conocimiento` }, 'Información'), '. Los datos del cliente (nombre, dirección, pedido…) se guardan solos.']),
+      field('¿Qué debe lograr? (opcional)', area(f, 'goal', { placeholder: 'Ayudar al cliente a completar su pedido y pasarlo al equipo para confirmarlo.' })),
+      h('details', {}, h('summary', { class: 'small' }, 'Clientes que regresan'),
+        field(tag('Empezar una solicitud nueva después de (horas sin actividad)', guaranteed()), num(f, 'new_request_after_hours', { min: 0, max: 2160 }),
+          'Por omisión 24. Con 0, solo cuando el asistente detecte que pide otra vez lo que ya se le resolvió (otra reserva, el mismo problema), y nunca antes de 30 minutos si no se cumplió el objetivo. En cada solicitud nueva vuelven a contar el objetivo, las etapas, las preguntas que se repiten, las fotos y los avisos «una vez».'))),
     h('details', { class: 'card' }, h('summary', {}, 'Estilo de las respuestas'),
       h('div', { class: 'grid', style: 'margin-top:14px' },
         field('Trato', select(p, 'formality', [['tu', 'De tú'], ['usted', 'De usted']])),
@@ -165,7 +187,7 @@ async function tabInstructions(root, bot) {
     draftSaveBar(async () => { if (await saveBot(bot, { ...m, personality: p, flow: f })) render(); }),
   );
   const advanced = h('details', { class: 'card' }, h('summary', {}, 'Opciones avanzadas'));
-  for (const [label, view] of [['Canales y administración', tabGeneral], ['Reglas y transferencia a una persona', tabRules], ['Recorrido y modelo de IA', tabAdvanced]]) {
+  for (const [label, view] of [['Reglas y pasar con una persona', tabRules], ['Recorrido y modelo de IA', tabAdvanced], ['Historial de versiones', (el, b) => el.append(versionHistory(b, b._versions))], ['Duplicar, reiniciar o eliminar', tabGeneral]]) {
     const content = h('div', { style: 'margin-top:14px' });
     let loaded = false;
     const section = h('details', { style: 'margin-top:14px', ontoggle: async () => {
