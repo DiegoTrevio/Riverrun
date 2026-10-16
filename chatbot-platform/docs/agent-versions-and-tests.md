@@ -1,14 +1,15 @@
 # Versiones y pruebas propias de agentes
 
-La configuración del agente sigue el flujo **guardar borrador → ejecutar casos del negocio → publicar**. Los canales y teléfonos comparten la versión publicada. Guardar instrucciones, preguntas, activación, objetivo, recorrido, reglas, mensajes guardados o modelo desde el editor ya no modifica esa versión en vivo.
+En el panel, **guardar es aplicar**: al pulsar **Guardar cambios** en cualquier sección del agente (instrucciones, preguntas, activación, avisos, estilo, recorrido, reglas, mensajes guardados o modelo), el cambio llega de inmediato a todas sus conexiones y queda una **versión** en el historial con su autor. Las pruebas automáticas son opcionales.
 
 ## Uso en el panel
 
-1. En **Agentes → Configurar**, ajusta la configuración y pulsa **Guardar borrador**. El borrador se guarda en PostgreSQL y está disponible en otros dispositivos del mismo perfil. La revisión detecta cambios concurrentes y devuelve un aviso para recargar.
-2. En **Probar → Pruebas de tu agente**, añade ejemplos del negocio: mensajes del cliente y resultados esperados. Puedes comprobar texto que debe aparecer o evitarse, acción, códigos de fotos, datos del contacto y reserva simulada. El editor comprueba el último turno; la API admite expectativas en cualquier turno.
-3. Pulsa **Guardar y ejecutar pruebas**. Se usa el proveedor/modelo configurado, el mismo motor, validadores, reglas de activación, recorrido y planificación de envíos. Los errores y respuestas de respaldo no aprueban los casos. Se muestran respuestas, motivos de fallo, modelos realmente usados, llamadas, tokens y costo informado por el proveedor. Un costo no informado aparece como tal.
-4. Cuando todos los casos pasan, actualiza el estado y pulsa **Publicar**. Se verifica nuevamente la revisión, la configuración de origen y la firma de las pruebas dentro de una transacción. Una aprobación dura hasta 24 horas y se invalida por cambios del borrador, suite, fuentes, catálogo, servicios, reglas, ajustes de la cuenta, proveedor o modelo.
-5. En **Historial y cambios**, compara el borrador con la configuración publicada. **Preparar esta versión** recupera una versión anterior como un nuevo borrador; revisa, prueba y publica para revertir. No hay un cambio inmediato ni se elimina el historial.
+1. En la ficha del agente, ajusta lo que necesites y pulsa **Guardar cambios** (`POST /api/chatbots/:id/version-apply`). Se aplica en una transacción y queda en el historial. La revisión detecta cambios concurrentes (otra pestaña) y pide recargar. Si la configuración cambió por otra vía (asistente de creación, primeros pasos o la API compatible) y no había cambios pendientes, se parte de la configuración actual sin perder ese cambio.
+2. En **Opciones avanzadas → Historial de versiones** aparece cada versión con fecha y autor; **Volver a esta versión** la aplica de inmediato (recupera la configuración y las reglas de envío de fotos; no el conocimiento, los archivos ni las conexiones).
+3. **Probar** usa siempre lo último que guardaste. En **Probar → Pruebas automáticas (opcional)** puedes guardar ejemplos del negocio: mensajes del cliente y resultados esperados (texto que debe aparecer o evitarse, acción, códigos de fotos, datos del contacto y reserva simulada). **Guardar y ejecutar pruebas** usa el proveedor/modelo configurado y el mismo motor; los errores y respuestas de respaldo no aprueban los casos. Se muestran respuestas, motivos de fallo, modelos, llamadas, tokens y costo informado por el proveedor.
+4. Si un agente tenía cambios guardados como borrador con la versión anterior del panel, la ficha muestra **Aplicar cambios** o **Descartar**.
+
+Para integraciones que quieran exigir pruebas antes de publicar, la API conserva el flujo anterior: `PUT /api/chatbots/:id/version-draft` guarda un borrador sin tocar la versión en vivo y `POST /api/chatbots/:id/version-publish` lo publica solo con una ejecución aprobada (válida 24 horas e invalidada por cambios del borrador, suite, fuentes, catálogo, servicios, reglas, ajustes de la cuenta, proveedor o modelo).
 
 **Alcance:** encender/pausar el agente sigue siendo una operación inmediata. Conocimiento, archivos del catálogo, avisos al equipo, automatizaciones y conexiones conservan sus editores actuales y se actualizan al guardarlos; invalidan las pruebas cuando forman parte de su firma. Las versiones recuperan la configuración y las reglas de envío de fotos incluidas en la versión. No recuperan archivos eliminados, no revierten datos de clientes ni citas y no cambian los QRs. Al restaurar etapas se conservan las que coinciden exactamente; las que desaparecen vuelven a etapa 0.
 
@@ -47,11 +48,11 @@ Aplicar la migración mediante el proceso normal antes de servir la nueva interf
 
 ## Criterios de aceptación
 
-- Guardar desde el editor deja idéntica la configuración publicada hasta aprobar y publicar.
-- Dos sesiones no pueden sobrescribirse ni publicar una revisión antigua.
-- Una suite fallida, vacía, obsoleta o con fallos de IA impide publicar.
-- Todas las conexiones del agente reciben la misma versión publicada.
-- Recuperar una versión requiere nuevamente las pruebas y deja un nuevo registro histórico.
+- Guardar desde el panel aplica el cambio de inmediato y deja una versión en el historial con su autor.
+- Dos sesiones no pueden sobrescribirse ni aplicar una revisión antigua.
+- Por la API de borrador, una suite fallida, vacía, obsoleta o con fallos de IA impide publicar.
+- Todas las conexiones del agente reciben la misma versión.
+- Volver a una versión la aplica de inmediato y deja un nuevo registro histórico.
 - Las pruebas pueden verificar preguntas, datos, fotos, transferencias y reservas sin mensajes ni citas de producción.
 - Un caso exportado a Promptfoo devuelve el mismo resultado que el panel.
 - Los controles son utilizables con teclado y no generan incidencias graves de accesibilidad ni desbordamiento en los anchos verificados.

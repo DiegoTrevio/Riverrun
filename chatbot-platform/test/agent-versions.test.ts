@@ -170,3 +170,36 @@ t('guardar casos idénticos conserva su revisión y una aprobación vigente',asy
  await suite();const result=await evaluate();assert.equal(result.status,'passed');
  const v=await versions(),r=await h.authed('PUT',endpoint('tests'),v.suite);assert.equal(r.statusCode,200,r.body);assert.equal(r.json().revision,v.suite.revision);assert.equal((await versions()).can_publish,true);
 });
+
+async function applyChanges(patch:unknown={}){const v=await versions();return h.authed('POST',endpoint('version-apply'),{revision:v.draft.revision,patch});}
+t('guardar y aplicar: el cambio llega de inmediato, sin pruebas, y queda en el historial con su autor',async()=>{
+ const initial=await versions();
+ const r=await applyChanges({name:'Aplicado al guardar',personality:{prompt:'INSTRUCCION APLICADA'}});assert.equal(r.statusCode,200,r.body);
+ const live=(await store.getChatbot(h.botId))!;assert.equal(live.name,'Aplicado al guardar');assert.equal(live.personality.prompt,'INSTRUCCION APLICADA');
+ const fresh=await versions();assert.equal(fresh.changed,false);assert.equal(fresh.releases.length,initial.releases.length+1);assert.equal(fresh.releases[0].author_name,'admin@test.mx');
+ // Una revisión vieja (otra pestaña) no sobrescribe.
+ assert.equal((await h.authed('POST',endpoint('version-apply'),{revision:initial.draft.revision,patch:{name:'Pestaña vieja'}})).statusCode,409);
+ assert.equal((await store.getChatbot(h.botId))!.name,'Aplicado al guardar');
+});
+t('guardar y aplicar parte de la configuración actual si cambió por otra vía y no había cambios pendientes',async()=>{
+ await versions(); // el panel ya estaba abierto
+ assert.equal((await h.authed('PUT',`/api/chatbots/${h.botId}`,{name:'Desde el asistente de creación'})).statusCode,200);
+ assert.equal((await versions()).conflict,true);
+ const r=await applyChanges({personality:{prompt:'SOLO CAMBIO LAS INSTRUCCIONES'}});assert.equal(r.statusCode,200,r.body);
+ const live=(await store.getChatbot(h.botId))!;assert.equal(live.name,'Desde el asistente de creación','no se pierde el cambio hecho por otra vía');assert.equal(live.personality.prompt,'SOLO CAMBIO LAS INSTRUCCIONES');
+ assert.equal((await versions()).conflict,false);
+});
+t('cambios pendientes de un borrador anterior: se aplican con un clic o chocan si la configuración cambió',async()=>{
+ await draft({name:'Pendiente de antes'});
+ assert.equal((await applyChanges()).statusCode,200);assert.equal((await store.getChatbot(h.botId))!.name,'Pendiente de antes');
+ await draft({name:'Otro pendiente'});
+ assert.equal((await h.authed('PUT',`/api/chatbots/${h.botId}`,{name:'Cambio directo'})).statusCode,200);
+ assert.equal((await applyChanges({personality:{prompt:'x'}})).statusCode,409);assert.equal((await store.getChatbot(h.botId))!.name,'Cambio directo');
+});
+t('volver a una versión del historial la aplica de inmediato',async()=>{
+ assert.equal((await applyChanges({name:'Versión A'})).statusCode,200);const a=(await versions()).releases[0];
+ assert.equal((await applyChanges({name:'Versión B'})).statusCode,200);
+ const v=await versions(),restored=await h.authed('POST',endpoint('version-restore'),{revision:v.draft.revision,release_id:a.id});assert.equal(restored.statusCode,200,restored.body);
+ assert.equal((await h.authed('POST',endpoint('version-apply'),{revision:restored.json().revision})).statusCode,200);
+ assert.equal((await store.getChatbot(h.botId))!.name,'Versión A');
+});
