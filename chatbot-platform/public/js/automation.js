@@ -4,6 +4,7 @@ import { messageTester, saveBar } from './bot.js';
 import { api, area, check, clone, field, fill, fmtDate, h, dialog, localDateTime, lines, num, run, select, state, text, toast, confirmAction } from './core.js';
 import { render } from './main.js';
 import { withAcct } from './session.js';
+import { waTemplateField } from './wa-template-field.js';
 
 const AUTO_TABS = [['rules', 'Reglas'], ['sequences', 'Secuencias'], ['campaigns', 'Campañas']];
 
@@ -29,13 +30,15 @@ async function automationRefs() {
     api('GET', withAcct('/api/users')),
     api('GET', withAcct('/api/services')),
   ]);
-  const [files, pipelines, apps] = await Promise.all([
+  const [files, pipelines, apps, waTemplates] = await Promise.all([
     api('GET', withAcct('/api/attachments')),
     api('GET', withAcct('/api/pipelines')),
     // Apps conectadas (webhooks) para "Enviar la conversación a tu app"; sin perfil elegido no hay lista.
     api('GET', withAcct('/api/webhook-endpoints')).catch(() => []),
+    // Plantillas de WhatsApp oficial (para escribir pasadas las 24 h); sin redes conectadas, ninguna.
+    state.meta.zernio_enabled ? api('GET', withAcct('/api/wa-templates')).catch(() => []) : [],
   ]);
-  return { bots, sequences, users: users.filter((u) => u.account_id), services, pipelines, apps, images: [], files, imagesLoaded: false, imageRequest: null };
+  return { bots, sequences, users: users.filter((u) => u.account_id), services, pipelines, apps, images: [], files, imagesLoaded: false, imageRequest: null, waTemplates };
 }
 
 /**
@@ -235,6 +238,7 @@ function actionFields(a, refs) {
           field('Foto (opcional)', photoPicker(a, 'image_id', refs)),
           field('Esperar antes de enviar (minutos)', num(a, 'delay_minutes', { min: 0 }), '0 = de inmediato')),
         field('Archivo (opcional)', attachmentPicker(a, refs)),
+        waTemplateField(a, refs.waTemplates),
       ];
     case 'alert_team':
       a.message ??= '{{cliente}} necesita atención: "{{mensaje}}"'; a.roles ??= ['admin', 'agent']; a.user_ids ??= []; a.phones ??= [];
@@ -400,7 +404,7 @@ async function editRule(root, id) {
   };
   initializeDraftDefaults(`rule:${id}`, drawTrigger);
   const save = async () => {
-    if (r.actions.some((a) => a.type === 'send_message' && !a.text?.trim() && !a.image_id && !a.attachment_id)) return toast('En "Enviar mensaje" escribe un mensaje o elige una foto o un archivo', true);
+    if (r.actions.some((a) => a.type === 'send_message' && !a.text?.trim() && !a.image_id && !a.attachment_id && !a.wa_template)) return toast('En "Enviar mensaje" escribe un mensaje o elige una foto o un archivo', true);
     const body = { ...r, chatbot_id: r.chatbot_id || null, account_id: state.accountId || undefined };
     const version = draftVersion(`rule:${id}`);
     const saved = await run(() => (existing ? api('PUT', `/api/automations/${id}`, body) : api('POST', '/api/automations', body)), 'Regla guardada ✅');
@@ -465,6 +469,7 @@ async function editSequence(root, id) {
     field('Mensaje', area(st, 'text'), VARS_HELP),
     field('Imagen (opcional)', photoPicker(st, 'image_id', refs)),
     field('Archivo (opcional)', attachmentPicker(st, refs)),
+    waTemplateField(st, refs.waTemplates),
     h('details', {}, h('summary', {}, `Enviar solo si… (${st.conditions.length})`), typedList(st.conditions, CONDITIONS, (c) => conditionFields(c))))));
   draw();
   const save = async () => {
@@ -585,6 +590,7 @@ async function editCampaign(root, id) {
       extraBox,
       field('Mensaje', area(c, 'message', { big: true }), VARS_HELP),
       field('Imagen (opcional)', photoPicker(c, 'image_id', refs), 'Con texto, la foto sale con el mensaje como pie en un solo envío.'),
+      waTemplateField(c, refs.waTemplates),
       field('Etapa del recorrido al enviarla', num(c, 'flow_step', { min: 0, max: 50 }), 'Si es el primer mensaje de un recorrido, indica la etapa en la que queda cada conversación: el asistente sigue el flujo desde ahí cuando el cliente responda. 0 = no cambia.')),
     h('div', { class: 'card' },
       h('h2', { style: 'margin-top:0' }, 'A quién'),

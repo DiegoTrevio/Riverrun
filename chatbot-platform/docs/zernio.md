@@ -80,6 +80,41 @@ reparte entre todos los procesos con una cubeta en la base (`rate_buckets`), al 
 
 `ZERNIO_RATE_PER_MIN` fija el número a mano.
 
+## WhatsApp Business (API oficial)
+
+**Conectar (alta guiada).** En **Redes sociales → WhatsApp Business** el panel explica qué se necesita y pregunta si el
+negocio quiere **seguir usando la app WhatsApp Business en su teléfono**:
+
+- *Sí* (`onboarding=business_app`, coexistencia): contesta desde el teléfono y el agente también responde en el panel.
+- *No* (`onboarding=api`): el número queda solo en la API oficial (un número nuevo o que ya está en otra plataforma).
+
+La autorización es la página de Zernio en español (`signup=hosted`, Embedded Signup de Meta) con la marca del negocio.
+**Zernio permite un WhatsApp por perfil**: el segundo número de un negocio se conecta en un perfil adicional suyo
+(`zernio_profiles`, `externalId` = `<negocio>:wa2`…); los mensajes de ese número llegan a su conexión.
+
+**PIN de verificación en dos pasos.** Si el número tiene un PIN propio, Meta no deja enviar mensajes hasta registrarlo
+(error 133005, o "(#200) You do not have the necessary permission"): botón **PIN** en la tarjeta del número
+(`POST /accounts/{id}/whatsapp/register`). El PIN no se guarda.
+
+**Plantillas** (**Redes sociales → Plantillas** del número):
+
+- Se crean en el panel (tipo *Avisos y seguimiento* o *Promoción*, idioma, encabezado, mensaje con `{{1}}`, `{{2}}`…, un
+  ejemplo por variable, pie y hasta 3 botones) y van a revisión de Meta (de minutos a 24 h).
+- El aviso `whatsapp.template.status_updated` actualiza su estado (*Aprobada*, *Rechazada* con el motivo, *Pausada*…) y
+  notifica a los administradores del negocio.
+- **Traer de Meta** agrega las creadas fuera del panel y quita las borradas allá. **Borrar** la quita en Meta (el nombre
+  no se puede reusar por 30 días).
+- Las que tienen foto, video o documento en el encabezado, o variables con nombre, se ven pero se envían desde Meta.
+
+**Fuera de las 24 h** solo se puede enviar una plantilla aprobada:
+
+- Cada mensaje de una regla, una secuencia o una campaña puede llevar *Plantilla de WhatsApp si pasaron 24 h*. Dentro
+  de la ventana sale el mensaje normal; fuera, la plantilla, con sus variables llenas con los datos del contacto
+  (`{{nombre}}`, `{{telefono}}`…). Sin plantilla, el envío se omite con el motivo "elige una plantilla aprobada".
+- En la conversación, el botón **📄 Plantilla** la envía a mano (la persona toma la conversación) y un aviso indica
+  cuándo pasaron las 24 h.
+- La plantilla debe ser del mismo número de la conversación.
+
 ## Ventana de 24 horas
 
 Solo Meta la exige: Instagram, Messenger y WhatsApp oficial. Fuera de las 24 h desde el último mensaje del cliente no se

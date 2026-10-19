@@ -321,6 +321,19 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
     }
   });
 
+  /** WhatsApp oficial: plantilla aprobada (fuera de las 24 h es lo único que se puede enviar). */
+  api.post('/api/conversations/:cid/send-template', async (req: any) => {
+    const conv = await conversationFor(req.user, req.params.cid);
+    const b = parse(z.object({ template_id: z.string().uuid('Elige una plantilla'), params: z.array(z.string().max(1000)).max(20).default([]), takeover: z.boolean().default(true) }), req.body);
+    try {
+      return await service.sendManualTemplate(conv.id, b.template_id, b.params, async () => {
+        if (b.takeover && conv.status === 'bot') await service.takeover(conv.id, `${req.user.name || req.user.email} respondió desde el panel`, req.user.id);
+      }, req.user.id);
+    } catch (e: any) {
+      throw new HttpError(400, e?.message ?? String(e));
+    }
+  });
+
   api.post('/api/conversations/:cid/send-image', async (req: any) => {
     const conv = await conversationFor(req.user, req.params.cid);
     const b = parse(z.object({ image_id: z.string().uuid('Elige una foto'), takeover: z.boolean().default(true) }), req.body);

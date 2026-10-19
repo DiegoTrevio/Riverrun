@@ -3,14 +3,14 @@ import { HttpError } from '../access.js';
 import { assertWithinLimit } from '../billing/limits.js';
 import { brandOfAccount, DEFAULT_BRAND } from '../brands.js';
 import { config } from '../config.js';
-import { query, queryOne } from '../db.js';
+import { query, queryOne, withTransaction } from '../db.js';
 import { recordConnectionState } from '../lifecycle.js';
 import { logEvent } from '../logs.js';
 import * as store from '../store/index.js';
 import type { Channel } from '../types.js';
 import { mergeChannelConfig } from './index.js';
 import { metaConnectEnabled } from './meta-connect.js';
-import { accountInfo, clientFor, disconnectAccount, dmNetworkOf, ensurePlatformWebhook, idOf, networkOf, ZernioError } from './zernio.js';
+import { accountInfo, clientFor, disconnectAccount, dmNetworkOf, ensurePlatformWebhook, idOf, networkOf, profileFor, ZernioError } from './zernio.js';
 import { accountProfile, assertSocialRoom, disconnectZernio, ZernioDisconnectError, ZernioOwnershipError } from './zernio-connect.js';
 
 /**
@@ -28,6 +28,12 @@ const META_DIRECT = new Set(['facebook', 'instagram']);
 /** ¿Los mensajes directos de esta red los atiende la plataforma por Zernio? */
 export const zernioHandlesDm = (platform: string) => !!dmNetworkOf(platform) && !(metaConnectEnabled() && META_DIRECT.has(platform));
 
+/** Opciones de la conexión: WhatsApp elige el perfil (uno por número) y si sigue usando la app en el teléfono. */
+export interface ConnectOptions {
+  profile_id?: string;
+  onboarding?: 'api' | 'business_app';
+}
+
 export interface ConnectSession {
   id: string;
   account_id: string;
@@ -35,6 +41,7 @@ export interface ConnectSession {
   chatbot_id: string | null;
   kind: 'panel' | 'link';
   reconnect_account_id: string;
+  options: ConnectOptions;
   expires_at: string;
   used_at: string | null;
   fresh: boolean;
@@ -47,27 +54,32 @@ export interface ConnectSession {
 export async function createConnectSession(
   accountId: string,
   platform: string,
-  opts: { kind: 'panel' | 'link'; chatbotId?: string | null; userId?: string | null; reconnect?: string },
+  opts: { kind: 'panel' | 'link'; chatbotId?: string | null; userId?: string | null; reconnect?: string; onboarding?: 'api' | 'business_app' },
 ): Promise<{ token: string; expires_at: string }> {
   const network = networkOf(platform);
   if (!network) throw new HttpError(400, 'Elige una red válida');
   if (network.flow !== 'oauth') throw new HttpError(400, `${network.label} se conecta desde su conexión de mensajes (con código o contraseña de aplicación), no con un enlace`);
   if (!config.publicBaseUrl.startsWith('https://')) throw new HttpError(400, 'Zernio exige HTTPS: define PUBLIC_BASE_URL con tu dominio (https://...)');
   let reconnect = '';
+  const options: ConnectOptions = {};
   if (opts.reconnect) {
-    const row = await queryOne<{ zernio_account_id: string; platform: string }>(`SELECT zernio_account_id, platform FROM social_accounts WHERE id = $1 AND account_id = $2`, [opts.reconnect, accountId]);
+    const row = await queryOne<{ zernio_account_id: string; platform: string; profile_id: string }>(`SELECT zernio_account_id, platform, profile_id FROM social_accounts WHERE id = $1 AND account_id = $2`, [opts.reconnect, accountId]);
     if (!row || row.platform !== platform) throw new HttpError(404, 'Esa red no está en este negocio');
     reconnect = row.zernio_account_id;
+    // Se reconecta en el perfil donde ya está (WhatsApp puede estar en un perfil adicional del negocio).
+    if (await tenantProfile(accountId, row.profile_id)) options.profile_id = row.profile_id;
   } else {
     await assertWithinLimit(accountId, 'social_accounts');
+    if (platform === 'whatsapp') options.profile_id = await whatsappProfileFor(accountId);
   }
+  if (platform === 'whatsapp' && opts.onboarding) options.onboarding = opts.onboarding;
   await query(`DELETE FROM zernio_connect_sessions WHERE expires_at < now() - interval '1 day'`);
   const token = crypto.randomBytes(24).toString('base64url');
   const ttl = opts.kind === 'link' ? LINK_TTL_DAYS * 86400_000 : PANEL_TTL_MS;
   const row = await queryOne<{ expires_at: string }>(
-    `INSERT INTO zernio_connect_sessions (state_hash, account_id, platform, chatbot_id, created_by, kind, reconnect_account_id, expires_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8)) RETURNING expires_at`,
-    [hashOf(token), accountId, platform, opts.chatbotId ?? null, opts.userId ?? null, opts.kind, reconnect, ttl / 1000]);
+    `INSERT INTO zernio_connect_sessions (state_hash, account_id, platform, chatbot_id, created_by, kind, reconnect_account_id, options, expires_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now() + make_interval(secs => $9)) RETURNING expires_at`,
+    [hashOf(token), accountId, platform, opts.chatbotId ?? null, opts.userId ?? null, opts.kind, reconnect, JSON.stringify(options), ttl / 1000]);
   return { token, expires_at: new Date(row!.expires_at).toISOString() };
 }
 
@@ -79,7 +91,7 @@ export async function connectSession(token: string): Promise<ConnectSession | nu
 
 /** Página de Zernio donde se autoriza la red. Con un enlace para el cliente, Zernio muestra antes la marca del negocio. */
 export async function connectAuthUrl(session: ConnectSession, token: string): Promise<string> {
-  const profileId = await accountProfile(session.account_id);
+  const profileId = session.options?.profile_id || (await accountProfile(session.account_id));
   const q = new URLSearchParams({ profileId, redirect_url: `${config.publicBaseUrl}/zernio/return/${token}` });
   if (session.reconnect_account_id) q.set('reconnectAccountId', session.reconnect_account_id);
   const brand = await brandOfAccount(session.account_id);
@@ -89,6 +101,8 @@ export async function connectAuthUrl(session: ConnectSession, token: string): Pr
     // Alta de WhatsApp en una página de Zernio (Embedded Signup de Meta), en español.
     q.set('signup', 'hosted');
     q.set('language', 'es');
+    // business_app: el número sigue funcionando en la app WhatsApp Business del teléfono (coexistencia).
+    if (session.options?.onboarding) q.set('onboarding', session.options.onboarding);
   } else if (session.kind === 'link') {
     q.set('welcome', 'true');
     if (brand?.logo_type && config.publicBaseUrl.startsWith('https://')) q.set('logoUrl', `${config.publicBaseUrl}/brand/${brand.id}/logo?v=${brand.logo_version}`);
@@ -97,6 +111,35 @@ export async function connectAuthUrl(session: ConnectSession, token: string): Pr
   const url = r?.authUrl ?? r?.url ?? r?.data?.authUrl;
   if (!url) throw new Error('Zernio no devolvió la URL de autorización');
   return url;
+}
+
+/** ¿El perfil de Zernio es de este negocio (el principal o uno adicional)? */
+async function tenantProfile(accountId: string, profileId: string): Promise<boolean> {
+  if (!profileId) return false;
+  return !!(await queryOne(`SELECT 1 FROM zernio_profiles WHERE profile_id = $1 AND account_id = $2 UNION SELECT 1 FROM accounts WHERE id = $2 AND zernio_profile_id = $1`, [profileId, accountId]));
+}
+
+/**
+ * Perfil donde se conecta un número de WhatsApp: Zernio permite uno por perfil, así que el segundo número de un negocio
+ * va en un perfil adicional suyo (externalId "<negocio>:wa2"…). Se usa el primero que no tenga WhatsApp.
+ */
+export async function whatsappProfileFor(accountId: string): Promise<string> {
+  const primary = await accountProfile(accountId);
+  return withTransaction(async (db) => {
+    await db.query(`SELECT pg_advisory_xact_lock(hashtext('zernio-wa-profile:' || $1))`, [accountId]);
+    const profiles = (await db.query<{ profile_id: string }>(
+      `SELECT $2::text AS profile_id, 0 AS ord UNION ALL SELECT profile_id, 1 FROM zernio_profiles WHERE account_id = $1 AND profile_id <> $2 ORDER BY ord, profile_id`, [accountId, primary])).rows;
+    for (const p of profiles) {
+      const busy = await db.query(`SELECT 1 FROM social_accounts WHERE account_id = $1 AND profile_id = $2 AND platform = 'whatsapp' AND status <> 'disconnected' LIMIT 1`, [accountId, p.profile_id]);
+      if (!busy.rowCount) return p.profile_id;
+    }
+    const n = profiles.length + 1;
+    const name = (await db.query<{ name: string }>(`SELECT name FROM accounts WHERE id = $1`, [accountId])).rows[0]?.name ?? 'Negocio';
+    const externalId = `${accountId}:wa${n}`;
+    const profileId = await profileFor(clientFor(), { id: externalId, name: `${name} · WhatsApp ${n}` });
+    await db.query(`INSERT INTO zernio_profiles (profile_id, account_id, external_id, is_primary) VALUES ($1, $2, $3, false) ON CONFLICT DO NOTHING`, [profileId, accountId, externalId]);
+    return profileId;
+  });
 }
 
 export type FinishCode = 'ok' | 'not_yours' | 'in_use' | 'cancelled' | 'expired' | 'limit' | 'error' | 'invalid';
@@ -118,7 +161,7 @@ export async function finishConnect(token: string, q: Record<string, string | un
     return { code: q.error ? 'cancelled' : 'error', session };
   }
   try {
-    await adoptAccount(session.account_id, session.platform, String(q.accountId), { chatbotId: session.chatbot_id, via: session.kind });
+    await adoptAccount(session.account_id, session.platform, String(q.accountId), { chatbotId: session.chatbot_id, via: session.kind, profileId: session.options?.profile_id });
   } catch (e: any) {
     if (e instanceof ZernioOwnershipError) return { code: e.code, session };
     if (e instanceof HttpError && e.issues?.includes('limit_reached')) return { code: 'limit', session };
@@ -133,8 +176,8 @@ export async function finishConnect(token: string, q: Record<string, string | un
  * Guarda una cuenta conectada como del negocio (si Zernio confirma que está en su perfil y es de esa red) y, si la red
  * tiene mensajes directos, la deja en una conexión para que el agente conteste.
  */
-export async function adoptAccount(accountId: string, platform: string, zernioAccountId: string, opts: { chatbotId?: string | null; via: 'panel' | 'link' | 'sync' }) {
-  const profileId = await accountProfile(accountId);
+export async function adoptAccount(accountId: string, platform: string, zernioAccountId: string, opts: { chatbotId?: string | null; via: 'panel' | 'link' | 'sync'; profileId?: string }) {
+  const profileId = opts.profileId && (await tenantProfile(accountId, opts.profileId)) ? opts.profileId : await accountProfile(accountId);
   const info = await accountInfo(clientFor(), profileId, zernioAccountId);
   if (!info || (info.platform && info.platform !== platform)) {
     await logEvent({ level: 'warn', source: 'channel', message: 'Zernio: la cuenta devuelta no pertenece al perfil de este negocio; no se conectó', accountId, details: { account: zernioAccountId } });

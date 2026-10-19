@@ -2,14 +2,15 @@ import { setControlVersion } from '../engine/coordination.js';
 import { queryOne } from '../db.js';
 import { messageQuota } from '../billing/limits.js';
 import { attachmentAbsolutePath } from '../attachments.js';
-import { CAPTION_MAX, PlaygroundTransport, type OutgoingFile } from '../engine/transport.js';
+import { CAPTION_MAX, PlaygroundTransport, type OutgoingFile, type OutgoingTemplate } from '../engine/transport.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
 import * as astore from './store.js';
 import { renderTemplate } from './templates.js';
 import { zernioNeedsWindow } from '../channels/zernio.js';
-import type { Appointment } from './types.js';
+import { fillBody, outgoingTemplate, templateBody, templateForChannel, templateVarCount, type WaTemplate } from '../channels/zernio-templates.js';
+import type { Appointment, WaTemplateRef } from './types.js';
 
 export interface OutboundOptions {
   text?: string;
@@ -27,6 +28,8 @@ export interface OutboundOptions {
   meta?: Record<string, unknown>;
   /** Etapa del recorrido en la que queda la conversación al enviarse (0 = no cambia). Así el asistente sigue el flujo desde ahí. */
   flowStep?: number;
+  /** WhatsApp oficial: plantilla aprobada que se envía si el cliente no escribió en las últimas 24 h. */
+  waTemplate?: WaTemplateRef | null;
 }
 
 export type OutboundResult = { sent: true } | { sent: false; reason: string };
@@ -64,30 +67,48 @@ export class Outbound {
       if (st.consent.require_for_campaigns && !contact.consent_at) return { sent: false, reason: 'el cliente no ha aceptado recibir promociones' };
     }
     if (conv.status === 'human' && !o.allowWhenHuman) return { sent: false, reason: 'una persona está atendiendo la conversación' };
+    // WhatsApp oficial fuera de las 24 h: solo con una plantilla aprobada.
+    let template: WaTemplate | null = null;
     if (channel.type === 'messenger' || channel.type === 'instagram' || (channel.type === 'zernio' && zernioNeedsWindow(channel.config.platform))) {
       // Meta (Messenger, Instagram y WhatsApp oficial) solo permite escribir dentro de las 24 h posteriores al último
       // mensaje del cliente. Telegram, X, Bluesky y Reddit no tienen esa regla.
       const last = await astore.lastInbound(conv.id);
       if (!last || Date.now() - new Date(last.created_at).getTime() > META_WINDOW_MS) {
-        const reason = channel.type === 'zernio' ? 'fuera de la ventana de 24 h (el cliente no ha escrito recientemente)' : 'fuera de la ventana de 24 h de Meta (el cliente no ha escrito recientemente)';
-        return { sent: false, reason };
+        const officialWa = channel.type === 'zernio' && channel.config.platform === 'whatsapp';
+        if (officialWa && o.waTemplate) {
+          const t = await templateForChannel(conv.account_id, channel, o.waTemplate.template_id);
+          if (typeof t === 'string') return { sent: false, reason: `fuera de la ventana de 24 h y ${t}` };
+          template = t;
+        } else {
+          const reason = officialWa ? 'fuera de la ventana de 24 h: elige una plantilla aprobada de WhatsApp'
+            : channel.type === 'zernio' ? 'fuera de la ventana de 24 h (el cliente no ha escrito recientemente)' : 'fuera de la ventana de 24 h de Meta (el cliente no ha escrito recientemente)';
+          return { sent: false, reason };
+        }
       }
     }
 
     const bot = conv.chatbot_id ? await store.getChatbot(conv.chatbot_id) : null;
     const settings = await astore.getSettings(conv.account_id);
     const account = await store.getAccount(conv.account_id);
-    const text = o.text
-      ? renderTemplate(o.text, {
-          contact,
-          conversation: conv,
-          businessName: bot?.name ?? account?.name ?? '',
-          channelName: channel.name,
-          appointment: o.appointment,
-          location: o.location,
-          timezone: settings.timezone,
-        })
-      : '';
+    const render = (s: string) => renderTemplate(s, {
+      contact,
+      conversation: conv,
+      businessName: bot?.name ?? account?.name ?? '',
+      channelName: channel.name,
+      appointment: o.appointment,
+      location: o.location,
+      timezone: settings.timezone,
+    });
+    const text = o.text ? render(o.text) : '';
+    // La plantilla lleva sus variables con los datos del contacto; Meta no acepta una vacía.
+    let wa: { out: OutgoingTemplate; preview: string; name: string } | null = null;
+    if (template) {
+      const params = (o.waTemplate?.params ?? []).map((p) => render(p).trim());
+      const n = templateVarCount(template.components);
+      const empty = Array.from({ length: n }, (_, i) => i).find((i) => !params[i]);
+      if (empty !== undefined) return { sent: false, reason: `fuera de la ventana de 24 h y la variable {{${empty + 1}}} de la plantilla quedó vacía` };
+      wa = { out: outgoingTemplate(template, params), preview: fillBody(templateBody(template.components), params), name: template.name };
+    }
     let image = null;
     if (o.imageId) {
       image = await store.getImage(o.imageId);
@@ -100,7 +121,7 @@ export class Outbound {
       if (!a || a.account_id !== conv.account_id) return { sent: false, reason: 'el archivo ya no existe (se borró en Archivos)' };
       file = { id: a.id, name: a.name, mime: a.mime, kind: a.kind, absPath: attachmentAbsolutePath(a.file_path) };
     }
-    if (!text && !image && !file) return { sent: false, reason: 'mensaje vacío' };
+    if (!text && !image && !file && !wa) return { sent: false, reason: 'mensaje vacío' };
     // Pie de baja: toda promoción dice cómo dejar de recibirlas (se añade al texto, o a la leyenda de la foto).
     const footer = promotional && settings.opt_out.enabled && settings.opt_out.footer_enabled ? optOutFooter(settings.opt_out) : '';
     const textOut = footer && text ? `${text}\n\n${footer}` : text;
@@ -121,6 +142,8 @@ export class Outbound {
       if(blocked) return false;
       const fresh=await queryOne('SELECT control_version FROM conversations WHERE id=$1',[conv.id]);
       if(fresh) setControlVersion(Number(fresh.control_version));
+      // Fuera de las 24 h en WhatsApp oficial sale solo la plantilla (fotos y archivos no se pueden enviar ahí).
+      if (wa) return !!(await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text: wa.preview, template: wa.out, delay: 0, meta: { ...meta, wa_template: wa.name } }));
       if (image) {
         // Texto y foto juntos: un solo mensaje con el texto como pie (sin texto, el pie de la foto). Un texto que no
         // cabe como pie sale antes, aparte, y la foto después con su propio pie.

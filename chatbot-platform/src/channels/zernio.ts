@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fsp from 'node:fs/promises';
 import { config } from '../config.js';
 import { toPlainText } from '../engine/text.js';
-import { sleep, type OutgoingFile, type Transport } from '../engine/transport.js';
+import { sleep, type OutgoingFile, type OutgoingTemplate, type Transport } from '../engine/transport.js';
 import { decryptSecret, hmac, safeEqual } from '../secret.js';
 import { ChannelConfigSchemas, type Channel, type ImageAsset } from '../types.js';
 import { signedImageUrl } from './media.js';
@@ -47,7 +47,7 @@ export const dmNetworkOf = (platform: string): Network | undefined => NETWORKS.f
 export const zernioNeedsWindow = (platform: string) => networkOf(platform)?.window24h ?? true;
 
 /** Eventos que recibe el webhook de la plataforma. */
-export const EVENTS = ['message.received', 'message.sent', 'message.failed', 'message.delivered', 'message.read', 'account.connected', 'account.disconnected'];
+export const EVENTS = ['message.received', 'message.sent', 'message.failed', 'message.delivered', 'message.read', 'account.connected', 'account.disconnected', 'whatsapp.template.status_updated'];
 
 /** Nombre con el que se guarda la llave de Zernio desde el panel (Sistema → Redes sociales). */
 export const ZERNIO_SECRET = 'zernio_api_key';
@@ -338,6 +338,15 @@ class ZernioTransport implements Transport {
       attachmentUrl: url,
       attachmentType: ATTACHMENT_TYPE[file.kind],
       attachmentName: file.name,
+    }));
+  }
+
+  /** Plantilla aprobada de WhatsApp (la única forma de escribir fuera de las 24 h). */
+  async sendTemplate(t: OutgoingTemplate) {
+    if (this.channel.config.platform !== 'whatsapp') throw new Error('Las plantillas solo existen en WhatsApp');
+    return messageRef(await this.client.call<any>('POST', `${this.base}/messages`, {
+      accountId: this.accountId(),
+      template: { elements: [{ name: t.name, language: t.language, components: t.components }] },
     }));
   }
 

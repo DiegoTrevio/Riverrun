@@ -29,6 +29,10 @@ try {
   const onCfg = (await pool.query(`SELECT config FROM channels WHERE id = $1`, [socialOn.id])).rows[0].config;
   zer.accounts.set('acc_ux', { _id: 'acc_ux', platform: 'instagram', profileId: onCfg.profile_id, username: 'hotelpalmas', displayName: 'Hotel Palmas', isActive: true });
   assert.equal((await h.app.inject({ method: 'GET', url: `/zernio/callback/${socialOn.webhook_token}/${onCfg.connect_state}?accountId=acc_ux&username=hotelpalmas` })).statusCode, 302);
+  // WhatsApp oficial con una plantilla aprobada y otra rechazada (pantalla de plantillas).
+  const waSocial = (await pool.query(`INSERT INTO social_accounts (account_id, zernio_account_id, profile_id, platform, username, display_name) VALUES ($1, 'acc_ux_wa', $2, 'whatsapp', '+52 81 1234 5678', 'Hotel Palmas WhatsApp') RETURNING id`, [h.accountId, onCfg.profile_id])).rows[0].id;
+  await pool.query(`INSERT INTO wa_templates (account_id, social_account_id, name, language, category, status, components) VALUES ($1, $2, 'recordatorio_cita', 'es_MX', 'UTILITY', 'APPROVED', $3)`, [h.accountId, waSocial, JSON.stringify([{ type: 'BODY', text: 'Hola {{1}}, te esperamos el {{2}}.' }])]);
+  await pool.query(`INSERT INTO wa_templates (account_id, social_account_id, name, language, category, status, rejection_reason, components) VALUES ($1, $2, 'promo_octubre', 'es_MX', 'MARKETING', 'REJECTED', 'El contenido parece engañoso', $3)`, [h.accountId, waSocial, JSON.stringify([{ type: 'BODY', text: '¡Gana un premio!' }])]);
   const login: any = { superadmin: h.authed };
   for (const role of ['admin', 'agent']) {
     const user = (await h.authed('POST', '/api/users', { account_id: h.accountId, name: `Auditor ${role}`, email: `${role}@auditoria.test`, password: 'auditoria123', role })).json();
@@ -45,7 +49,7 @@ try {
     if (role === 'superadmin') await context.addInitScript((id: string) => localStorage.setItem('cp-account', id), h.accountId);
     return context;
   };
-  const routes = ['agentes', `bot/${h.botId}/instrucciones`, `bot/${h.botId}/preguntas`, `bot/${h.botId}/activacion`, `bot/${h.botId}/conocimiento`, `bot/${h.botId}/imagenes`, `bot/${h.botId}/conexiones`, `bot/${h.botId}/probar`, `bot/${h.botId}/conexiones/${h.channelId}`, `bot/${h.botId}/conexiones/${socialNew.id}`, `bot/${h.botId}/conexiones/${socialOn.id}`, 'conversations', `conversation/${conv.id}`, 'agenda', 'agenda/servicios', `agenda/servicios?id=${service.id}`, 'automation/rules', 'automation/rules/new', 'automation/sequences', 'automation/sequences/new', 'automation/campaigns', 'automation/campaigns/new', 'automation/settings', 'pipeline', 'pipeline/editar/nuevo', 'ajustes', 'integraciones', 'redes', 'users', 'consumo', 'logs', 'plan', 'estadisticas', 'notifications', 'password', 'inicio', 'agentes/nuevo', `bot/${h.botId}/empezar`];
+  const routes = ['agentes', `bot/${h.botId}/instrucciones`, `bot/${h.botId}/preguntas`, `bot/${h.botId}/activacion`, `bot/${h.botId}/conocimiento`, `bot/${h.botId}/imagenes`, `bot/${h.botId}/conexiones`, `bot/${h.botId}/probar`, `bot/${h.botId}/conexiones/${h.channelId}`, `bot/${h.botId}/conexiones/${socialNew.id}`, `bot/${h.botId}/conexiones/${socialOn.id}`, 'conversations', `conversation/${conv.id}`, 'agenda', 'agenda/servicios', `agenda/servicios?id=${service.id}`, 'automation/rules', 'automation/rules/new', 'automation/sequences', 'automation/sequences/new', 'automation/campaigns', 'automation/campaigns/new', 'automation/settings', 'pipeline', 'pipeline/editar/nuevo', 'ajustes', 'integraciones', 'redes', `redes/whatsapp/${waSocial}`, 'users', 'consumo', 'logs', 'plan', 'estadisticas', 'notifications', 'password', 'inicio', 'agentes/nuevo', `bot/${h.botId}/empezar`];
   const helpScreens: Record<string, string> = { [`bot/${h.botId}/conocimiento`]: '01-importar.jpg', [`bot/${h.botId}/probar`]: '03-probar.jpg', [`conversation/${conv.id}`]: '05-conversacion.jpg', ajustes: '06-ajustes.jpg' };
   for (const role of ['admin', 'superadmin', 'agent']) {
     const context = await contextFor(role); const page = await context.newPage();
@@ -63,7 +67,7 @@ try {
   console.log('Pantallas examinadas:', results.screens.length);
   for (const width of [320, 390, 768, 1024, 1440]) for (const theme of ['light', 'dark'] as const) {
     const context = await contextFor('admin', { viewport: { width, height: 900 }, colorScheme: theme }); const page = await context.newPage();
-    for (const route of ['agentes', 'agentes/nuevo', `bot/${h.botId}/empezar`, `bot/${h.botId}/instrucciones`, `conversation/${conv.id}`, 'conversations', 'automation/sequences/new', 'agenda', 'redes']) {
+    for (const route of ['agentes', 'agentes/nuevo', `bot/${h.botId}/empezar`, `bot/${h.botId}/instrucciones`, `conversation/${conv.id}`, 'conversations', 'automation/sequences/new', 'agenda', 'redes', `redes/whatsapp/${waSocial}`]) {
       await page.goto(`${base}/#/${route}`); await page.locator('.main h1').waitFor(); await page.waitForTimeout(80);
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1);
       results.responsive.push({ width, theme, route, overflow });

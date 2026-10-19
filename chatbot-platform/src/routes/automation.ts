@@ -4,7 +4,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { assertAccount, conversationFor, HttpError, notFound, requireRole, scopeAccount, targetAccount } from '../access.js';
 import * as astore from '../automation/store.js';
-import { AccountSettingsSchema, AutomationBodySchema, SequenceBodySchema, type Action, type AutomationBody } from '../automation/types.js';
+import { AccountSettingsSchema, AutomationBodySchema, SequenceBodySchema, WaTemplateRefSchema, type Action, type AutomationBody, type WaTemplateRef } from '../automation/types.js';
 import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
 import { logEvent } from '../logs.js';
@@ -18,7 +18,20 @@ import { localParts, zonedToUtc } from '../automation/time.js';
  * Todo lo que una regla referencia debe ser de la misma cuenta. Con `clearMissing`, una foto que ya se borró se quita de
  * la regla o secuencia (en lugar de impedir guardarla o desactivarla).
  */
-async function checkReferences(accountId: string, body: { chatbot_id?: string | null; actions?: Action[]; steps?: { image_id: string }[] }, opts: { clearMissing?: boolean } = {}) {
+async function checkReferences(
+  accountId: string,
+  body: { chatbot_id?: string | null; actions?: Action[]; steps?: { image_id: string; wa_template?: WaTemplateRef | null }[]; wa_template?: WaTemplateRef | null },
+  opts: { clearMissing?: boolean } = {},
+) {
+  // Plantillas de WhatsApp: del mismo negocio (una que ya se borró se quita con `clearMissing`).
+  const templated = [body, ...(body.actions ?? []).filter((a) => a.type === 'send_message'), ...(body.steps ?? [])] as { wa_template?: WaTemplateRef | null }[];
+  for (const holder of templated) {
+    if (!holder.wa_template) continue;
+    const t = await queryOne(`SELECT 1 FROM wa_templates WHERE id = $1 AND account_id = $2`, [holder.wa_template.template_id, accountId]);
+    if (t) continue;
+    if (opts.clearMissing) holder.wa_template = null;
+    else throw new HttpError(400, 'La plantilla de WhatsApp no pertenece a la cuenta');
+  }
   if (body.chatbot_id) {
     const bot = await store.getChatbot(body.chatbot_id);
     if (!bot || bot.account_id !== accountId) throw new HttpError(400, 'El chatbot no pertenece a la cuenta');
@@ -73,6 +86,8 @@ const CampaignBody = z.object({
   business_hours_only: z.boolean().default(true),
   /** Etapa del recorrido en la que queda la conversación al recibirla: el asistente sigue el flujo desde ahí. */
   flow_step: z.number().int().min(0).max(50).default(0),
+  /** WhatsApp oficial: plantilla aprobada para quien no escribió en las últimas 24 h. */
+  wa_template: WaTemplateRefSchema,
 });
 
 export async function automationRoutes(api: FastifyInstance, service: ChatService) {
@@ -233,6 +248,7 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
     const b = parse(CampaignBody, await scheduleBody(req.body, accountId));
     b.channel_ids = [...new Set(b.channel_ids)].filter((x) => x !== b.channel_id);
     await checkChannel(req.user, accountId, b.channel_id, b.image_id, b.channel_ids);
+    await checkReferences(accountId, { wa_template: b.wa_template });
     return astore.saveCampaign(accountId, { ...b, scheduled_at: b.scheduled_at ? new Date(b.scheduled_at) : null });
   });
 
@@ -242,6 +258,7 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
     const b = parse(CampaignBody, await scheduleBody({ ...c, scheduled_at: c.scheduled_at ? new Date(c.scheduled_at).toISOString() : null, ...(req.body ?? {}) }, c.account_id));
     b.channel_ids = [...new Set(b.channel_ids)].filter((x) => x !== b.channel_id);
     await checkChannel(req.user, c.account_id, b.channel_id, b.image_id, b.channel_ids);
+    await checkReferences(c.account_id, { wa_template: b.wa_template }, { clearMissing: true });
     const saved = await astore.saveCampaign(c.account_id, { ...b, scheduled_at: b.scheduled_at ? new Date(b.scheduled_at) : null }, c.id);
     if (c.status === 'scheduled') {
       // Reprogramar con los datos nuevos.

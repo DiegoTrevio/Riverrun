@@ -7,6 +7,7 @@ import { logEvent } from '../logs.js';
 import * as store from '../store/index.js';
 import type { Channel } from '../types.js';
 import { eventAccountId, eventProfileId, networkOf } from './zernio.js';
+import { handleTemplateStatus } from './zernio-templates.js';
 
 /**
  * Eventos del webhook único de Zernio. Cada evento se guarda una sola vez por su id: Zernio reintenta hasta 7 veces con
@@ -18,7 +19,7 @@ import { eventAccountId, eventProfileId, networkOf } from './zernio.js';
 /** Más viejo que esto no se acepta (y los ids se conservan este tiempo). */
 export const EVENT_RETENTION_DAYS = 35;
 const MESSAGE_EVENTS = new Set(['message.received', 'message.sent']);
-const QUEUED_EVENTS = new Set(['account.connected', 'account.disconnected', 'message.failed', 'message.delivered', 'message.read']);
+const QUEUED_EVENTS = new Set(['account.connected', 'account.disconnected', 'message.failed', 'message.delivered', 'message.read', 'whatsapp.template.status_updated']);
 const MAX_ATTEMPTS = 6;
 
 /** Id del evento: el de Zernio (cabecera o cuerpo) o, si no viene, la huella del cuerpo firmado. */
@@ -173,6 +174,7 @@ async function handleMessageStatus(body: any, event: string) {
 export async function handleZernioEvent(event: string, body: any) {
   if (event === 'account.connected' || event === 'account.disconnected') return handleAccount(body, event === 'account.connected');
   if (event === 'message.failed' || event === 'message.delivered' || event === 'message.read') return handleMessageStatus(body, event);
+  if (event === 'whatsapp.template.status_updated') return handleTemplateStatus(body);
 }
 
 /** Cola de los eventos que no son mensajes: varios procesos no toman el mismo (SKIP LOCKED) y lo que falla se reintenta. */

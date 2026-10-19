@@ -47,6 +47,8 @@ export const zer = {
   redelivered: [] as Array<{ webhookId: string; eventId: string }>,
   /** Las siguientes N llamadas responden 429 (límite de la llave). */
   rateLimited: 0,
+  /** Plantillas de WhatsApp por cuenta conectada (las aprueba la prueba cambiando su estado). */
+  templates: [] as any[],
 };
 /** Graph de Meta simulado para «Conectar con Facebook»: páginas que devuelve me/accounts y tokens que Meta retiró. */
 export const metaFake = {
@@ -123,6 +125,23 @@ const extServer = http.createServer((req, res) => {
         if (!w) return json(404, { error: 'not found' });
         Object.assign(w, body);
         return json(200, { success: true, webhook: w });
+      }
+      if (p === '/whatsapp/templates' && m === 'GET') return json(200, { success: true, templates: zer.templates.filter((t) => t.accountId === url.searchParams.get('accountId')) });
+      if (p === '/whatsapp/templates' && m === 'POST') {
+        if (!/^[a-z][a-z0-9_]*$/.test(String(body.name)) || !Array.isArray(body.components)) return json(400, { error: 'Invalid template' });
+        if (zer.templates.some((t) => t.accountId === body.accountId && t.name === body.name && t.language === body.language)) return json(400, { error: { message: 'Template name already exists' } });
+        const t = { id: `tpl_${++ext.n}`, accountId: body.accountId, name: body.name, language: body.language, category: body.category, status: 'PENDING', components: body.components };
+        zer.templates.push(t);
+        return json(200, { success: true, template: { id: t.id, name: t.name, status: t.status, category: t.category, language: t.language } });
+      }
+      if (p.startsWith('/whatsapp/templates/') && m === 'DELETE') {
+        const name = decodeURIComponent(p.split('/')[3]);
+        zer.templates = zer.templates.filter((t) => !(t.accountId === url.searchParams.get('accountId') && t.name === name && (!url.searchParams.get('language') || t.language === url.searchParams.get('language'))));
+        return json(200, { success: true });
+      }
+      if (/^\/accounts\/[^/]+\/whatsapp\/register$/.test(p) && m === 'POST') {
+        if (body?.pin === '000000') return json(422, { error: 'PIN mismatch' });
+        return json(200, { registered: true, accountId: decodeURIComponent(p.split('/')[2]), phoneNumberId: 'pn_1' });
       }
       if (p === '/webhooks/logs' && m === 'GET') return json(200, { logs: zer.logs, pagination: { total: zer.logs.length, limit: 50, skip: 0, pages: 1, hasMore: false } });
       if (p === '/webhooks/logs/redeliver' && m === 'POST') {

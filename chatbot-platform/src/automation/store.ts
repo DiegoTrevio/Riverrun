@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { query, queryOne } from '../db.js';
-import { accountSettings, type AccountSettings, type Appointment, type Automation, type Sequence, type Service } from './types.js';
+import { accountSettings, type AccountSettings, type Appointment, type Automation, type Sequence, type Service, type WaTemplateRef } from './types.js';
 
 /* ------------------------------ Configuración de la cuenta ------------------------------ */
 
@@ -413,6 +413,8 @@ export interface Campaign {
   business_hours_only: boolean;
   /** Etapa del recorrido en la que queda cada conversación al recibir la campaña (0 = no cambia). */
   flow_step: number;
+  /** WhatsApp oficial: plantilla para quien no escribió en las últimas 24 h. */
+  wa_template: WaTemplateRef | null;
   stats: Record<string, number>;
 }
 
@@ -428,19 +430,19 @@ export async function getCampaign(id: string) {
 
 export async function saveCampaign(
   accountId: string,
-  c: Pick<Campaign, 'channel_id' | 'channel_ids' | 'name' | 'message' | 'image_id' | 'audience' | 'scheduled_at' | 'rate_per_minute' | 'business_hours_only' | 'flow_step'>,
+  c: Pick<Campaign, 'channel_id' | 'channel_ids' | 'name' | 'message' | 'image_id' | 'audience' | 'scheduled_at' | 'rate_per_minute' | 'business_hours_only' | 'flow_step'> & { wa_template?: WaTemplateRef | null },
   id?: string,
 ) {
-  const params = [c.channel_id, c.name, c.message, c.image_id, JSON.stringify(c.audience), c.scheduled_at, c.rate_per_minute, c.business_hours_only, JSON.stringify(c.channel_ids ?? []), c.flow_step ?? 0];
+  const params = [c.channel_id, c.name, c.message, c.image_id, JSON.stringify(c.audience), c.scheduled_at, c.rate_per_minute, c.business_hours_only, JSON.stringify(c.channel_ids ?? []), c.flow_step ?? 0, c.wa_template ? JSON.stringify(c.wa_template) : null];
   if (id) {
     return queryOne<Campaign>(
-      `UPDATE campaigns SET channel_id=$1, name=$2, message=$3, image_id=$4, audience=$5, scheduled_at=$6, rate_per_minute=$7, business_hours_only=$8, channel_ids=$9, flow_step=$10, updated_at=now()
-       WHERE id = $11 RETURNING *`,
+      `UPDATE campaigns SET channel_id=$1, name=$2, message=$3, image_id=$4, audience=$5, scheduled_at=$6, rate_per_minute=$7, business_hours_only=$8, channel_ids=$9, flow_step=$10, wa_template=$11, updated_at=now()
+       WHERE id = $12 RETURNING *`,
       [...params, id],
     );
   }
   return queryOne<Campaign>(
-    `INSERT INTO campaigns (channel_id, name, message, image_id, audience, scheduled_at, rate_per_minute, business_hours_only, channel_ids, flow_step, account_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+    `INSERT INTO campaigns (channel_id, name, message, image_id, audience, scheduled_at, rate_per_minute, business_hours_only, channel_ids, flow_step, wa_template, account_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
     [...params, accountId],
   );
 }

@@ -1,4 +1,4 @@
-import { api, confirmAction, field, fill, h, run, state, toast } from './core.js';
+import { api, ask, confirmAction, dialog, field, h, run, state, toast } from './core.js';
 import { render } from './main.js';
 import { isSuper, withAcct } from './session.js';
 
@@ -34,8 +34,34 @@ export async function viewSocialAccounts(root, params = new URLSearchParams()) {
   const notice = RETURN[code] ? h('p', { class: `banner ${code === 'ok' ? '' : 'warn'}`, role: code === 'ok' ? 'status' : 'alert' }, RETURN[code]) : null;
   const byId = Object.fromEntries(networks.map((n) => [n.id, n]));
 
+  /**
+   * WhatsApp oficial, guiado: qué se necesita y si el número sigue en la app WhatsApp Business del teléfono
+   * (coexistencia). Devuelve la opción elegida, o null si se canceló.
+   */
+  const whatsappSteps = async () => {
+    const choice = { onboarding: 'business_app' };
+    const option = (value, title, help) => h('label', { class: 'check', style: 'align-items:flex-start;margin:8px 0' },
+      h('input', { type: 'radio', name: 'wa-onboarding', value, checked: choice.onboarding === value, onchange: () => (choice.onboarding = value) }),
+      h('span', {}, h('strong', {}, title), h('br'), h('span', { class: 'small muted' }, help)));
+    const ok = await dialog('Conectar WhatsApp Business (API oficial)', h('div', {},
+      h('p', {}, 'Vas a iniciar sesión con Facebook y elegir tu número. Ten a la mano:'),
+      h('ul', { class: 'small' },
+        h('li', {}, 'El celular con el número, para recibir el código de verificación.'),
+        h('li', {}, 'Acceso de administrador a la cuenta de Meta Business de tu negocio (o se crea una en el proceso).'),
+        h('li', {}, 'Si tu número tiene PIN de verificación en dos pasos, tenlo listo: te lo pediremos después.')),
+      h('fieldset', { class: 'field' }, h('legend', {}, '¿Quieres seguir usando la app WhatsApp Business en tu teléfono?'),
+        option('business_app', 'Sí, sigo usándola', 'Contestas desde el teléfono y tu agente también responde aquí (los mensajes se ven en los dos lados).'),
+        option('api', 'No, solo desde aquí', 'El número queda solo en la API oficial; úsalo si ya está en otra plataforma o es un número nuevo.'))), 'Continuar');
+    return ok ? choice.onboarding : null;
+  };
+
   const connect = async (platform, chatbotId = '', reconnect = '') => {
-    const r = await run(() => api('POST', withAcct('/api/social-accounts/connect'), { platform, chatbot_id: chatbotId || null, ...(reconnect ? { reconnect } : {}) }));
+    let onboarding;
+    if (platform === 'whatsapp' && !reconnect) {
+      onboarding = await whatsappSteps();
+      if (!onboarding) return;
+    }
+    const r = await run(() => api('POST', withAcct('/api/social-accounts/connect'), { platform, chatbot_id: chatbotId || null, ...(reconnect ? { reconnect } : {}), ...(onboarding ? { onboarding } : {}) }));
     if (!r) return;
     // Mensajes directos con Telegram o Bluesky: se termina en su conexión (código para el bot o contraseña de aplicación).
     if (r.kind === 'channel') { location.hash = `#/agentes/conexion/${r.channel_id}`; return; }
@@ -60,6 +86,12 @@ export async function viewSocialAccounts(root, params = new URLSearchParams()) {
           h('span', { class: `badge ${color}` }, label)),
         h('div', { class: 'row' },
           a.status !== 'active' ? h('button', { class: 'small primary', onclick: () => connect(a.platform, a.chatbot_id, a.id) }, 'Reconectar') : null,
+          a.platform === 'whatsapp' ? h('a', { class: 'btn small', href: `#/redes/whatsapp/${a.id}` }, 'Plantillas') : null,
+          a.platform === 'whatsapp' ? h('button', { class: 'small', title: 'Si tu número tiene verificación en dos pasos y no salen los mensajes', onclick: async () => {
+            const pin = await ask('PIN de verificación en dos pasos de tu número (6 dígitos)', '', { title: 'PIN de WhatsApp', accept: 'Registrar' });
+            if (pin === null) return;
+            await run(() => api('POST', withAcct(`/api/social-accounts/${a.id}/whatsapp-pin`), { pin: pin.trim() }), 'Número registrado con tu PIN');
+          } }, 'PIN') : null,
           h('button', { class: 'small danger', onclick: async () => {
             if (!(await confirmAction(`¿Desconectar ${n.label}${a.username ? ` (@${a.username})` : ''}? Dejarás de recibir sus mensajes y comentarios aquí.`))) return;
             if (await run(() => api('POST', withAcct(`/api/social-accounts/${a.id}/disconnect`)), 'Desconectada')) render();

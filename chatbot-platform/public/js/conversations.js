@@ -277,6 +277,33 @@ export async function viewConversation(root, id, opts = {}) {
     gallery.hidden = false;
   };
 
+  // WhatsApp oficial: pasadas 24 h desde el último mensaje del cliente solo se puede enviar una plantilla aprobada.
+  const windowNote = h('p', { class: 'banner warn small', hidden: true });
+  const templateButton = h('button', { hidden: true, title: 'Enviar una plantilla aprobada de WhatsApp', onclick: async () => {
+    const list = (await api('GET', withAcct('/api/wa-templates'))).filter((t) => t.sendable);
+    if (!list.length) return toast('No hay plantillas aprobadas. Créalas en Ajustes → Redes sociales → Plantillas.', true);
+    const pick = { template_id: list[0].id, params: [] };
+    const box = h('div');
+    const draw = () => {
+      const t = list.find((x) => x.id === pick.template_id);
+      fill(box,
+        field('Plantilla', h('select', { onchange: (e) => { pick.template_id = e.target.value; pick.params = []; draw(); } }, list.map((x) => h('option', { value: x.id, selected: x.id === pick.template_id }, `${x.name} (${x.language})`)))),
+        h('p', { class: 'small muted', style: 'white-space:pre-wrap' }, t?.body || ''),
+        t?.variables ? Array.from({ length: t.variables }, (_, i) => field(`Variable {{${i + 1}}}`, h('input', { value: pick.params[i] ?? '', placeholder: '{{nombre}} o un texto', oninput: (e) => (pick.params[i] = e.target.value) }))) : null);
+    };
+    draw();
+    if (!(await dialog('Enviar una plantilla de WhatsApp', box, 'Enviar'))) return;
+    if (await run(() => api('POST', `/api/conversations/${id}/send-template`, pick), 'Plantilla enviada')) await load(true);
+  } }, '📄 Plantilla');
+  const drawWindow = (d) => {
+    const official = d.channel?.type === 'zernio' && d.channel?.platform === 'whatsapp';
+    templateButton.hidden = !official;
+    const lastIn = [...d.messages].reverse().find((m) => m.direction === 'in');
+    const closed = official && (!lastIn || Date.now() - new Date(lastIn.created_at).getTime() > 24 * 3600 * 1000);
+    windowNote.hidden = !closed;
+    fill(windowNote, closed ? 'Pasaron más de 24 h desde el último mensaje del cliente: WhatsApp solo deja enviarle una plantilla aprobada (botón "📄 Plantilla"). Cuando te responda, vuelves a escribir libre.' : '');
+  };
+
   let team = null;
   /** Quién atiende esta conversación y a quién pasársela (round robin o una persona concreta). */
   const assignRow = (d) => {
@@ -311,6 +338,7 @@ export async function viewConversation(root, id, opts = {}) {
     state.timeZone = data.timezone;
     data.messages.forEach((m) => messageMap.set(Number(m.id), m));
     data.messages = [...messageMap.values()].sort((a, b) => Number(a.id) - Number(b.id));
+    drawWindow(data);
     const { conversation: c, contact: ct, messages } = data;
     const [cls, label] = STATUS_BADGE[c.status] || ['', c.status];
     const nextHeader = JSON.stringify([c.status, c.handoff_reason, c.assigned_user_id, ct.name, ct.push_name, ct.phone, ct.handoff_at, data.handoff_by_user, data.channel?.name, data.chatbot?.name, data.agent]);
@@ -512,7 +540,7 @@ export async function viewConversation(root, id, opts = {}) {
     workRecovery(id),
     h('div', { class: 'row chat-shortcuts' }, [['customer-data', 'Datos del cliente'], ['conversation-summary', 'Resumen'], ['conversation-appointments', 'Citas y seguimientos']].map(([target, label]) => h('button', { class: 'small', onclick: () => { const el = document.getElementById(target); if (!el) return; if (el.tagName === 'DETAILS') el.open = true; el.scrollIntoView({ block: 'start' }); el.focus({ preventScroll: true }); } }, label))),
     h('div', { class: 'split' },
-      h('div', { class: 'card' }, older, chat, h('div', { class: 'composer' }, input, h('button', { onclick: togglePhotos, title: 'Enviar una foto del catálogo' }, '📷 Foto'), sendButton),
+      h('div', { class: 'card' }, older, chat, windowNote, h('div', { class: 'composer' }, input, h('button', { onclick: togglePhotos, title: 'Enviar una foto del catálogo' }, '📷 Foto'), templateButton, sendButton),
         gallery,
         h('p', { class: 'muted small' }, 'Al enviar un mensaje o una foto a mano, el bot se pausa en esta conversación hasta que la devuelvas.')),
       side),

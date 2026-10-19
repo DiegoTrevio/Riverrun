@@ -23,7 +23,7 @@ import type { Channel, Chatbot, Contact, Conversation, Message } from '../types.
 import * as astore from './store.js';
 import { renderTemplate } from './templates.js';
 import { addDays, isOpen, localParts, nextOpen, nextTimeOfDay, zonedToUtc } from './time.js';
-import type { AccountSettings, Action, Automation, AutomationEvent, Condition, SequenceStep, Trigger } from './types.js';
+import type { AccountSettings, Action, Automation, AutomationEvent, Condition, SequenceStep, Trigger, WaTemplateRef } from './types.js';
 
 interface Ctx {
   conv: Conversation;
@@ -357,13 +357,13 @@ export class Automator {
           await astore.scheduleJob({
             account_id: ctx.conv.account_id,
             type: 'automation_send',
-            payload: { automation_id: rule.id, conversation_id: ctx.conv.id, text: a.text, image_id: a.image_id, attachment_id: a.attachment_id, source, appointment_id: e.appointment?.id ?? null },
+            payload: { automation_id: rule.id, conversation_id: ctx.conv.id, text: a.text, image_id: a.image_id, attachment_id: a.attachment_id, wa_template: a.wa_template ?? null, source, appointment_id: e.appointment?.id ?? null },
             run_at: new Date(Date.now() + a.delay_minutes * 60_000),
             dedupe_key: `auto:${rule.id}:${index}:${ctx.conv.id}`,
           });
           return;
         }
-        const r = await this.chat.outbound.send(ctx.conv.id, { text: a.text, imageId: a.image_id || undefined, attachmentId: a.attachment_id || undefined, source, appointment: e.appointment, meta: { automation_id: rule.id } });
+        const r = await this.chat.outbound.send(ctx.conv.id, { text: a.text, imageId: a.image_id || undefined, attachmentId: a.attachment_id || undefined, waTemplate: a.wa_template, source, appointment: e.appointment, meta: { automation_id: rule.id } });
         if (!r.sent) await logEvent({ level: 'info', source: 'engine', message: `Regla "${rule.name}": mensaje no enviado (${r.reason})`, accountId: ctx.conv.account_id, conversationId: ctx.conv.id });
         return;
       }
@@ -796,7 +796,7 @@ export class Automator {
     }
     const step = seq.steps[payload.step];
     if (step && conditionsMatch(step.conditions, ctx)) {
-      const r = await this.chat.outbound.send(ctx.conv.id, { text: step.text, imageId: step.image_id || undefined, attachmentId: step.attachment_id || undefined, source: 'sequence', meta: { sequence_id: seq.id, step: payload.step } });
+      const r = await this.chat.outbound.send(ctx.conv.id, { text: step.text, imageId: step.image_id || undefined, attachmentId: step.attachment_id || undefined, waTemplate: step.wa_template, source: 'sequence', meta: { sequence_id: seq.id, step: payload.step } });
       if (!r.sent) return stop(r.reason);
     }
     const next = payload.step + 1;
@@ -818,11 +818,11 @@ export class Automator {
   }
 
   /** Tarea programada: mensaje de una regla con espera. */
-  async runDelayedSend(payload: { automation_id: string; conversation_id: string; text: string; image_id: string; attachment_id?: string; source: string; appointment_id: string | null }) {
+  async runDelayedSend(payload: { automation_id: string; conversation_id: string; text: string; image_id: string; attachment_id?: string; wa_template?: WaTemplateRef | null; source: string; appointment_id: string | null }) {
     const rule = await astore.getAutomation(payload.automation_id);
     if (!rule || !rule.active) return;
     const appointment = payload.appointment_id ? await astore.getAppointment(payload.appointment_id) : null;
-    const r = await this.chat.outbound.send(payload.conversation_id, { text: payload.text, imageId: payload.image_id || undefined, attachmentId: payload.attachment_id || undefined, source: payload.source, appointment, meta: { automation_id: rule.id } });
+    const r = await this.chat.outbound.send(payload.conversation_id, { text: payload.text, imageId: payload.image_id || undefined, attachmentId: payload.attachment_id || undefined, waTemplate: payload.wa_template, source: payload.source, appointment, meta: { automation_id: rule.id } });
     if (!r.sent) await logEvent({ level: 'info', source: 'engine', message: `Regla "${rule.name}": mensaje programado no enviado (${r.reason})`, conversationId: payload.conversation_id, accountId: rule.account_id });
   }
 }

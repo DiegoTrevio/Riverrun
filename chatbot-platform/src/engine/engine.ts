@@ -22,7 +22,7 @@ import { maybeSummarize } from './memory.js';
 import { briefReport } from './report-format.js';
 import { summarizeConversation } from './report.js';
 import { normalize } from './text.js';
-import { CAPTION_MAX, type OutgoingFile, type Transport } from './transport.js';
+import { CAPTION_MAX, type OutgoingFile, type OutgoingTemplate, type Transport } from './transport.js';
 import { emptyPlan, validateDecision, type AgendaValidation, type ExecutionPlan, type ValidationInput } from './validator.js';
 import type { AgendaContext, BookResult } from '../automation/agenda.js';
 import type { AutomationEvent } from '../automation/types.js';
@@ -753,7 +753,7 @@ export class Engine {
     bot: Chatbot | null,
     conv: Conversation,
     transport: Transport,
-    o: { sender: 'bot' | 'human' | 'system'; text: string; image?: ImageAsset; file?: OutgoingFile; delay: number; meta?: Record<string, unknown> },
+    o: { sender: 'bot' | 'human' | 'system'; text: string; image?: ImageAsset; file?: OutgoingFile; template?: OutgoingTemplate; delay: number; meta?: Record<string, unknown> },
   ): Promise<Message | null> {
     const delivery=nextDelivery();
     // Delay locally; check ownership/human control immediately before the transport, with no typing sleep inside it.
@@ -816,7 +816,8 @@ export class Engine {
           return null;
         }
       }
-      const extId=o.file ? (transport.sendFile ? await transport.sendFile(o.file,o.text,0) : (()=>{throw new Error('unsupported_file');})())
+      const extId=o.template ? (transport.sendTemplate ? await transport.sendTemplate(o.template) : (()=>{throw new Error('unsupported_template');})())
+        : o.file ? (transport.sendFile ? await transport.sendFile(o.file,o.text,0) : (()=>{throw new Error('unsupported_file');})())
         : o.image ? await transport.sendImage(o.image,o.text,0) : await transport.sendText(o.text,0);
       // Persist the receipt before usage/events. A DB failure here is an uncertain delivery.
       await store.updateMessage(msg.id,{external_message_id:extId,status:'ok'});
@@ -827,7 +828,7 @@ export class Engine {
       return sent;
     } catch(e:any) {
       // Only explicit client rejections are safe to treat as not delivered. Timeouts/5xx/network failures are ambiguous.
-      const rejected=/\bHTTP\s+4\d\d\b|→\s*4\d\d\b/.test(String(e?.message)) || e?.message==='unsupported_file' || e instanceof OutboundBlockedError;
+      const rejected=/\bHTTP\s+4\d\d\b|→\s*4\d\d\b/.test(String(e?.message)) || e?.message==='unsupported_file' || e?.message==='unsupported_template' || e instanceof OutboundBlockedError;
       const state=rejected?'rejected':'uncertain';
       await query(`UPDATE delivery_attempts SET state=$3,updated_at=now() WHERE operation_key=$1 AND part=$2`,[delivery.operation,delivery.part,state]).catch(()=>undefined);
       await store.updateMessage(msg.id,{status:rejected?'failed':'uncertain',meta:{error_code:state}}).catch(()=>undefined);

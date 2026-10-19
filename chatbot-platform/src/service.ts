@@ -32,6 +32,8 @@ import { ConversationQueue } from './engine/queue.js';
 import { InboundQueue } from './engine/inbox.js';
 import { ZernioEventQueue } from './channels/zernio-events.js';
 import { zernioCleanup } from './channels/zernio-connect.js';
+import { fillBody, outgoingTemplate, templateBody, templateForChannel, templateVarCount } from './channels/zernio-templates.js';
+import { renderTemplate } from './automation/templates.js';
 import { DeliveryUncertain,currentOperation } from './engine/coordination.js';
 import { PlaygroundTransport, type Transport } from './engine/transport.js';
 import { logEvent } from './logs.js';
@@ -730,6 +732,33 @@ export class ChatService {
     // Quién lo envió queda en el mensaje (las estadísticas por persona lo cuentan así).
     const sent = await this.queue.exclusive((await store.getConversation(conv.id))?.status==='human'?`human:${conv.id}`:conv.id,()=>this.engine.sendOut(bot, conv, transport, { sender: 'human', text, delay: 0, meta: { source: 'panel', ...(byUserId ? { user_id: byUserId } : {}) } }));
     if (!sent) throw new Error('No se pudo enviar el mensaje (revisa los registros)');
+    return sent;
+  }
+
+  /**
+   * Plantilla de WhatsApp enviada a mano (WhatsApp oficial; fuera de las 24 h es lo único que se puede enviar). Las
+   * variables aceptan los datos del contacto ({{nombre}}…).
+   */
+  async sendManualTemplate(conversationId: string, templateId: string, params: string[], beforeSend?: () => Promise<void>, byUserId?: string) {
+    const conv = await store.getConversation(conversationId);
+    if (!conv) throw new Error('Conversación no encontrada');
+    const [channel, contact] = await Promise.all([store.getChannel(conv.channel_id), store.getContact(conv.contact_id)]);
+    if (!channel || !contact) throw new Error('Datos incompletos');
+    const t = await templateForChannel(conv.account_id, channel, templateId);
+    if (typeof t === 'string') throw new Error(`No se puede enviar: ${t}`);
+    const settings = await astore.getSettings(conv.account_id);
+    const values = params.map((p) => renderTemplate(p, { contact, conversation: conv, businessName: '', channelName: channel.name, timezone: settings.timezone }).trim());
+    const n = templateVarCount(t.components);
+    const empty = Array.from({ length: n }, (_, i) => i).find((i) => !values[i]);
+    if (empty !== undefined) throw new Error(`Escribe el valor de la variable {{${empty + 1}}}`);
+    const bot = conv.chatbot_id ? await store.getChatbot(conv.chatbot_id) : null;
+    const transport = this.transportFor(channel, contact);
+    await beforeSend?.();
+    const sent = await this.queue.exclusive((await store.getConversation(conv.id))?.status==='human'?`human:${conv.id}`:conv.id,()=>this.engine.sendOut(bot, conv, transport, {
+      sender: 'human', text: fillBody(templateBody(t.components), values), template: outgoingTemplate(t, values), delay: 0,
+      meta: { source: 'panel', wa_template: t.name, ...(byUserId ? { user_id: byUserId } : {}) },
+    }));
+    if (!sent) throw new Error('No se pudo enviar la plantilla (revisa los registros)');
     return sent;
   }
 

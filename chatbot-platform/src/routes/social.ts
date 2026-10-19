@@ -12,6 +12,7 @@ import {
 } from '../channels/zernio-accounts.js';
 import { ZernioBusyError, zernioBudgetStatus } from '../channels/zernio-budget.js';
 import { accountProfile } from '../channels/zernio-connect.js';
+import { createTemplate, deleteTemplate, listTemplates, registerWhatsappPin, syncTemplates, TemplateInputSchema } from '../channels/zernio-templates.js';
 import { config } from '../config.js';
 import { query } from '../db.js';
 import { logEvent } from '../logs.js';
@@ -68,7 +69,11 @@ export async function socialRoutes(api: FastifyInstance) {
   api.post('/api/social-accounts/connect', admins, async (req: any) => {
     assertVerified(req.user);
     zernioOn();
-    const b = parse(z.object({ platform: z.string().max(40), chatbot_id: z.string().uuid().nullable().optional(), reconnect: z.string().uuid().optional(), account_id: z.string().uuid().optional() }), req.body ?? {});
+    const b = parse(z.object({
+      platform: z.string().max(40), chatbot_id: z.string().uuid().nullable().optional(), reconnect: z.string().uuid().optional(), account_id: z.string().uuid().optional(),
+      /** WhatsApp: business_app = seguir usando la app WhatsApp Business en el teléfono; api = solo por la plataforma. */
+      onboarding: z.enum(['api', 'business_app']).optional(),
+    }), req.body ?? {});
     const accountId = await targetAccount(req.user, b.account_id ?? req.query?.account_id);
     await checkBot(req.user, accountId, b.chatbot_id);
     const network = networkOf(b.platform);
@@ -95,7 +100,7 @@ export async function socialRoutes(api: FastifyInstance) {
       }
       return { kind: 'channel', channel_id: channelId };
     }
-    const { token } = await createConnectSession(accountId, network.id, { kind: 'panel', chatbotId: b.chatbot_id ?? null, userId: req.user.id, reconnect: b.reconnect });
+    const { token } = await viaZernio(() => createConnectSession(accountId, network.id, { kind: 'panel', chatbotId: b.chatbot_id ?? null, userId: req.user.id, reconnect: b.reconnect, onboarding: b.onboarding }));
     const session = (await connectSession(token))!;
     try {
       return { kind: 'oauth', authUrl: await viaZernio(() => connectAuthUrl(session, token)) };
@@ -116,6 +121,45 @@ export async function socialRoutes(api: FastifyInstance) {
   api.post('/api/social-accounts/:id/disconnect', admins, async (req: any) => {
     const accountId = await targetAccount(req.user, req.body?.account_id ?? req.query?.account_id);
     await viaZernio(() => disconnectSocialAccount(accountId, idParam(req)));
+    return { ok: true };
+  });
+
+  /** WhatsApp: PIN de verificación en dos pasos del número (si tiene uno propio, sin él Meta no deja enviar). */
+  api.post('/api/social-accounts/:id/whatsapp-pin', admins, async (req: any) => {
+    const b = parse(z.object({ pin: z.string().regex(/^\d{6}$/, 'El PIN tiene 6 dígitos'), account_id: z.string().uuid().optional() }), req.body ?? {});
+    const accountId = await targetAccount(req.user, b.account_id ?? req.query?.account_id);
+    await viaZernio(() => registerWhatsappPin(accountId, idParam(req), b.pin));
+    return { ok: true };
+  });
+
+  /* ------------------------------ Plantillas de WhatsApp ------------------------------ */
+
+  // Quien atiende conversaciones (también el agente) puede ver las plantillas para enviarlas.
+  api.get('/api/wa-templates', { preHandler: requireRole('agent') }, async (req: any) => {
+    const accountId = await targetAccount(req.user, req.query?.account_id);
+    const social = req.query?.social_account_id ? parse(z.string().uuid(), req.query.social_account_id) : undefined;
+    return listTemplates(accountId, social);
+  });
+
+  api.post('/api/wa-templates', admins, async (req: any) => {
+    const accountId = await targetAccount(req.user, req.body?.account_id ?? req.query?.account_id);
+    zernioOn();
+    const { account_id: _, ...body } = req.body ?? {};
+    return viaZernio(() => createTemplate(accountId, parse(TemplateInputSchema, body)));
+  });
+
+  /** Trae de Meta las plantillas del número (las creadas en Meta o en Zernio también aparecen). */
+  api.post('/api/wa-templates/sync', admins, async (req: any) => {
+    const b = parse(z.object({ social_account_id: z.string().uuid(), account_id: z.string().uuid().optional() }), req.body ?? {});
+    const accountId = await targetAccount(req.user, b.account_id ?? req.query?.account_id);
+    zernioOn();
+    const n = await viaZernio(() => syncTemplates(accountId, b.social_account_id));
+    return { templates: n };
+  });
+
+  api.delete('/api/wa-templates/:id', admins, async (req: any) => {
+    const accountId = await targetAccount(req.user, req.query?.account_id);
+    await viaZernio(() => deleteTemplate(accountId, idParam(req)));
     return { ok: true };
   });
 

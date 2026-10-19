@@ -23,8 +23,17 @@ export interface Transport {
   sendImage(image: ImageAsset, caption: string, delayMs: number): Promise<string | null>;
   /** Envía un archivo (PDF, audio, video…). Opcional: los canales que no lo admiten no lo implementan y el envío falla con un aviso claro. */
   sendFile?(file: OutgoingFile, caption: string, delayMs: number): Promise<string | null>;
+  /** Plantilla aprobada de WhatsApp oficial (lo único que se puede enviar fuera de las 24 h). Solo WhatsApp por Zernio. */
+  sendTemplate?(template: OutgoingTemplate): Promise<string | null>;
   /** Aviso interno (p.ej. al encargado cuando hay transferencia). */
   notify(number: string, text: string): Promise<void>;
+}
+
+/** Plantilla de WhatsApp lista para enviar: nombre, idioma y componentes con sus variables (forma de la Cloud API de Meta). */
+export interface OutgoingTemplate {
+  name: string;
+  language: string;
+  components: unknown[];
 }
 
 /**
