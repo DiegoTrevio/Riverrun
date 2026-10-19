@@ -23,8 +23,12 @@ try {
   const service = (await h.authed('POST', '/api/services', { account_id: h.accountId, name: 'Consulta inicial' })).json();
   // Redes sociales (Zernio): una sin conectar y una conectada con su cuenta.
   const socialNew = (await h.authed('POST', '/api/channels', { account_id: h.accountId, chatbot_id: h.botId, name: 'Telegram del hotel', type: 'zernio', config: { platform: 'telegram' } })).json();
-  const socialOn = (await h.authed('POST', '/api/channels', { account_id: h.accountId, chatbot_id: h.botId, name: 'Instagram del hotel', type: 'zernio', config: { platform: 'instagram', profile_id: 'prof_ux', account_id: 'acc_ux', username: 'hotelpalmas', display_name: 'Hotel Palmas' } })).json();
-  zer.accounts.set('acc_ux', { _id: 'acc_ux', platform: 'instagram', profileId: 'prof_ux', username: 'hotelpalmas', displayName: 'Hotel Palmas', isActive: true });
+  // La conectada pasa por el flujo real: pedir la autorización y volver de Zernio con una cuenta del perfil del negocio.
+  const socialOn = (await h.authed('POST', '/api/channels', { account_id: h.accountId, chatbot_id: h.botId, name: 'Instagram del hotel', type: 'zernio', config: { platform: 'instagram' } })).json();
+  assert.equal((await h.authed('POST', `/api/channels/${socialOn.id}/zernio/connect`)).statusCode, 200);
+  const onCfg = (await pool.query(`SELECT config FROM channels WHERE id = $1`, [socialOn.id])).rows[0].config;
+  zer.accounts.set('acc_ux', { _id: 'acc_ux', platform: 'instagram', profileId: onCfg.profile_id, username: 'hotelpalmas', displayName: 'Hotel Palmas', isActive: true });
+  assert.equal((await h.app.inject({ method: 'GET', url: `/zernio/callback/${socialOn.webhook_token}/${onCfg.connect_state}?accountId=acc_ux&username=hotelpalmas` })).statusCode, 302);
   const login: any = { superadmin: h.authed };
   for (const role of ['admin', 'agent']) {
     const user = (await h.authed('POST', '/api/users', { account_id: h.accountId, name: `Auditor ${role}`, email: `${role}@auditoria.test`, password: 'auditoria123', role })).json();

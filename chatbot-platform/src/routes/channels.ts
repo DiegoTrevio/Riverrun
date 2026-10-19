@@ -40,7 +40,11 @@ const INFRA_FIELDS = ['url', 'api_key', 'instance', 'profile_name'];
 /** Redes sociales: el negocio solo elige la red; perfil, cuenta y llave los pone el servidor al conectar. */
 const ZERNIO_CLIENT_FIELDS = ['platform'];
 
+/** Perfil y cuenta de Zernio: solo los escribe el servidor al conectar (nadie los puede poner desde el panel). */
+const ZERNIO_SERVER_FIELDS = ['profile_id', 'account_id', 'username', 'display_name', 'picture', 'telegram_code', 'connect_state', 'webhook_secret', 'connected'];
+
 function clientConfig(user: User, type: string, cfg: Record<string, unknown> | undefined) {
+  if (cfg && type === 'zernio' && user.role === 'superadmin') return Object.fromEntries(Object.entries(cfg).filter(([k]) => !ZERNIO_SERVER_FIELDS.includes(k)));
   if (!cfg || user.role === 'superadmin') return cfg;
   if (type === 'zernio') return Object.fromEntries(Object.entries(cfg).filter(([k]) => ZERNIO_CLIENT_FIELDS.includes(k)));
   if (type !== 'whatsapp') return cfg;
@@ -80,7 +84,7 @@ export async function channelRoutes(api: FastifyInstance) {
   api.get('/api/channels', async (req: any) => {
     const channels = await store.listChannels(scopeAccount(req.user, req.query.account_id), { chatbotId: req.query.chatbot_id });
     if (req.user.role === 'agent') return channels.map(({ id, account_id, chatbot_id, type, name, active }) => ({ id, account_id, chatbot_id, type, name, active }));
-    return channels.map(publicChannel);
+    return channels.map((c) => publicChannel(c, req.user));
   });
 
   api.post('/api/channels', admins, async (req: any) => {
@@ -110,10 +114,10 @@ export async function channelRoutes(api: FastifyInstance) {
       config: cfg!,
     });
     await logEvent({ level: 'info', source: 'admin', message: `Canal creado: ${ch.name} (${adapter.label})`, accountId, channelId: ch.id });
-    return publicChannel(ch);
+    return publicChannel(ch, req.user);
   });
 
-  api.get('/api/channels/:id', admins, async (req: any) => publicChannel(await channelFor(req.user, req.params.id)));
+  api.get('/api/channels/:id', admins, async (req: any) => publicChannel(await channelFor(req.user, req.params.id), req.user));
 
   api.put('/api/channels/:id', admins, async (req: any) => {
     const ch = await channelFor(req.user, req.params.id);
@@ -138,14 +142,17 @@ export async function channelRoutes(api: FastifyInstance) {
     if (b.chatbot_id || b.active) {
       await startAgentOnConnect(updated!).catch((e) => logEvent({ level: 'error', source: 'channel', message: `No se pudo encender el agente al conectar: ${e?.message ?? e}`, accountId: ch.account_id, channelId: ch.id }));
     }
-    return publicChannel(updated!);
+    return publicChannel(updated!, req.user);
   });
 
   api.delete('/api/channels/:id', admins, async (req: any) => {
     const ch = await channelFor(req.user, req.params.id);
     await store.deleteChannel(ch.id);
     await releaseWhatsapp(ch);
-    if (ch.type === 'zernio' && ch.config.account_id) await disconnectZernio(ch);
+    if (ch.type === 'zernio' && ch.config.account_id) {
+      const shared = await query(`SELECT 1 FROM channels WHERE type = 'zernio' AND config->>'account_id' = $1 LIMIT 1`, [ch.config.account_id]);
+      if (!shared.length) await disconnectZernio(ch);
+    }
     await logEvent({ level: 'warn', source: 'admin', message: `Canal eliminado: ${ch.name}`, accountId: ch.account_id });
     return { ok: true };
   });
@@ -153,7 +160,7 @@ export async function channelRoutes(api: FastifyInstance) {
   api.post('/api/channels/:id/rotate-token', admins, async (req: any) => {
     const ch = await channelFor(req.user, req.params.id);
     await store.rotateChannelToken(ch.id);
-    return publicChannel((await store.getChannel(ch.id))!);
+    return publicChannel((await store.getChannel(ch.id))!, req.user);
   });
 
   /** Conecta el canal con su plataforma (webhook, validación de credenciales). */
@@ -161,13 +168,13 @@ export async function channelRoutes(api: FastifyInstance) {
     const ch = await channelFor(req.user, req.params.id);
     const adapter = adapterFor(ch.type);
     if (adapter.setup) assertVerified(req.user);
-    if (!adapter.setup) return { ok: true, message: 'Este canal no requiere conexión', channel: publicChannel(ch) };
+    if (!adapter.setup) return { ok: true, message: 'Este canal no requiere conexión', channel: publicChannel(ch, req.user) };
     try {
       const r = await adapter.setup(ch, webhookUrl(ch));
       let updated: Channel = ch;
       if (r.config && Object.keys(r.config).length) updated = (await store.updateChannel(ch.id, { config: mergeChannelConfig(ch.type, ch.config, r.config) }))!;
       await logEvent({ level: r.ok ? 'info' : 'warn', source: 'channel', message: `${adapter.label}: ${r.message}`, accountId: ch.account_id, channelId: ch.id });
-      return { ...r, channel: publicChannel(updated) };
+      return { ...r, channel: publicChannel(updated, req.user) };
     } catch (e: any) {
       await logEvent({ level: 'error', source: 'channel', message: `${adapter.label}: no se pudo conectar: ${e?.message ?? e}`, accountId: ch.account_id, channelId: ch.id });
       throw new HttpError(400, e?.message ?? String(e));
@@ -209,7 +216,7 @@ export async function channelRoutes(api: FastifyInstance) {
     await checkBot(req.user, accountId, chatbotId);
     try {
       const channels = await applyMetaSelection(req.params.id, accountId, chatbotId ?? null, b.pages);
-      return { channels: channels.map(publicChannel) };
+      return { channels: channels.map((c) => publicChannel(c, req.user)) };
     } catch (e: any) {
       if (e instanceof HttpError) throw e;
       throw new HttpError(400, e?.message ?? String(e));
@@ -221,7 +228,7 @@ export async function channelRoutes(api: FastifyInstance) {
     if (ch.type !== 'messenger' && ch.type !== 'instagram') throw new HttpError(400, 'Este canal no es de Facebook ni de Instagram');
     const updated = await disconnectMetaChannel(ch);
     await logEvent({ level: 'warn', source: 'admin', message: `Facebook: ${ch.name} desconectado desde el panel`, accountId: ch.account_id, channelId: ch.id });
-    return { ok: true, channel: publicChannel(updated) };
+    return { ok: true, channel: publicChannel(updated, req.user) };
   });
 
   /* ------------------------------ Redes sociales (Zernio) ------------------------------ */
@@ -250,7 +257,7 @@ export async function channelRoutes(api: FastifyInstance) {
     const b = parse(z.object({ identifier: z.string().max(200).optional(), app_password: z.string().max(200).optional() }), req.body ?? {});
     try {
       const r = await startConnect(ch, (st) => `${config.publicBaseUrl}/zernio/callback/${ch.webhook_token}/${st}`, state, b);
-      if (r.kind === 'connected') return { kind: r.kind, channel: publicChannel(r.channel) };
+      if (r.kind === 'connected') return { kind: r.kind, channel: publicChannel(r.channel, req.user) };
       return r;
     } catch (e: any) {
       return zernioError(ch, 'no se pudo iniciar la conexión', e);
@@ -262,7 +269,7 @@ export async function channelRoutes(api: FastifyInstance) {
     const ch = await zernio(req.user, req.params.id);
     try {
       const r = await checkTelegram(ch);
-      return { status: r.status, channel: publicChannel(r.channel) };
+      return { status: r.status, channel: publicChannel(r.channel, req.user) };
     } catch (e: any) {
       return zernioError(ch, 'no se pudo revisar la conexión de Telegram', e);
     }
@@ -272,7 +279,7 @@ export async function channelRoutes(api: FastifyInstance) {
     const ch = await zernio(req.user, req.params.id);
     const updated = await disconnectZernio(ch);
     await logEvent({ level: 'warn', source: 'admin', message: `Zernio: cuenta desconectada desde el panel (${ch.name})`, accountId: ch.account_id, channelId: ch.id });
-    return { ok: true, channel: publicChannel(updated) };
+    return { ok: true, channel: publicChannel(updated, req.user) };
   });
 
   api.get('/api/channels/:id/status', admins, async (req: any) => {

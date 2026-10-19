@@ -112,14 +112,37 @@ async function webhookReady(channel: Channel) {
     logEvent({ level: 'error', source: 'channel', message: `Zernio: no se pudo registrar el webhook de la plataforma: ${e?.message ?? e}`, accountId: channel.account_id, channelId: channel.id }));
 }
 
-/** Guarda la cuenta recién conectada (con su usuario, nombre y foto) y deja el canal en línea. */
+/** La cuenta conectada no es de este negocio, o ya la usa otro canal: no se guarda. */
+export class ZernioOwnershipError extends Error {
+  constructor(public code: 'not_yours' | 'in_use', message: string) {
+    super(message);
+  }
+}
+
+/**
+ * Guarda la cuenta recién conectada (con su usuario, nombre y foto) y deja el canal en línea. Solo si Zernio confirma que
+ * la cuenta está en el perfil de ESTE negocio (leído de la base, nunca de la URL) y es de la red del canal: así nadie
+ * puede quedarse con la cuenta de otro negocio, aunque arme el enlace de retorno a mano.
+ */
 export async function saveZernioAccount(channel: Channel, acc: Partial<ZernioAccount> & { id: string }): Promise<Channel> {
-  const info = await accountInfo(clientFor(channel), channel.config.profile_id, acc.id).catch(() => null);
-  const username = info?.username || acc.username || '';
-  const updated = await save(channel, {
-    account_id: acc.id, username, display_name: info?.displayName || acc.displayName || '', picture: info?.picture || acc.picture || '',
-    connect_state: '', telegram_code: '',
-  });
+  const own = await withProfile(channel);
+  const info = await accountInfo(clientFor(own), own.config.profile_id, acc.id);
+  if (!info || (info.platform && own.config.platform && info.platform !== own.config.platform)) {
+    await logEvent({ level: 'warn', source: 'channel', message: 'Zernio: la cuenta devuelta no pertenece al perfil de este negocio; no se conectó', accountId: channel.account_id, channelId: channel.id, details: { account: acc.id } });
+    throw new ZernioOwnershipError('not_yours', 'Esa cuenta no pertenece a este negocio. Vuelve a pulsar "Conectar" e inicia sesión con la cuenta correcta.');
+  }
+  const username = info.username || acc.username || '';
+  let updated: Channel;
+  try {
+    updated = await save(own, {
+      account_id: acc.id, username, display_name: info.displayName || acc.displayName || '', picture: info.picture || acc.picture || '',
+      connect_state: '', telegram_code: '',
+    });
+  } catch (e: any) {
+    // Índice único: una cuenta de Zernio solo puede estar en un canal.
+    if (e?.code === '23505') throw new ZernioOwnershipError('in_use', 'Esta cuenta ya está conectada en otra conexión. Desconéctala ahí primero.');
+    throw e;
+  }
   await recordConnectionState(updated, 'open');
   await logEvent({ level: 'info', source: 'channel', message: `Zernio: ${networkOf(channel.config.platform)?.label ?? 'cuenta'} conectada${username ? ` (@${username})` : ''}`, accountId: channel.account_id, channelId: channel.id });
   await webhookReady(updated);

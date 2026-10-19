@@ -6,8 +6,8 @@ import { adapterFor, mergeChannelConfig } from '../channels/index.js';
 import { signedImageUrl, verifyImageSignature } from '../channels/media.js';
 import type { WebhookRequest } from '../channels/types.js';
 import { WEBCHAT_SESSION_RE, newWebchatSession } from '../channels/webchat.js';
-import { eventAccountId, platformWebhookSecret, verifySignature } from '../channels/zernio.js';
-import { saveZernioAccount } from '../channels/zernio-connect.js';
+import { eventAccountId, eventProfileId, platformWebhookSecret, verifySignature } from '../channels/zernio.js';
+import { saveZernioAccount, ZernioOwnershipError } from '../channels/zernio-connect.js';
 import { config } from '../config.js';
 import { query } from '../db.js';
 import { toPlainText } from '../engine/text.js';
@@ -82,9 +82,14 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
     }
     const accountId = eventAccountId(req.body);
     if (!accountId) return reply.send({ ok: true });
-    const rows = await query<{ id: string }>(`SELECT id FROM channels WHERE type = 'zernio' AND config->>'account_id' = $1`, [accountId]);
+    const found = await query<{ id: string; profile: string }>(`SELECT id, coalesce(config->>'profile_id', '') AS profile FROM channels WHERE type = 'zernio' AND config->>'account_id' = $1`, [accountId]);
+    // Si el evento dice de qué perfil es, solo cuenta el canal de ese perfil (nunca el de otro negocio).
+    const eventProfile = eventProfileId(req.body);
+    const rows = eventProfile ? found.filter((r) => !r.profile || r.profile === eventProfile) : found;
     if (!rows.length) {
-      await logEvent({ level: 'info', source: 'webhook', message: `Zernio: evento ${String(req.body?.event ?? '')} de una cuenta sin canal (${accountId})` });
+      await logEvent({ level: found.length ? 'warn' : 'info', source: 'webhook', message: found.length
+        ? `Zernio: evento ${String(req.body?.event ?? '')} de otro perfil (${eventProfile}) para la cuenta ${accountId}; se ignora`
+        : `Zernio: evento ${String(req.body?.event ?? '')} de una cuenta sin canal (${accountId})` });
       return reply.send({ ok: true });
     }
     try {
@@ -157,11 +162,18 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
       return reply.redirect(panel);
     }
     const q = req.query as Record<string, string | undefined>;
-    if (!q.accountId || q.profileId !== channel.config.profile_id) {
-      await logEvent({ level: 'warn', source: 'channel', message: 'Zernio: la cuenta devuelta no corresponde al perfil del canal', accountId: channel.account_id, channelId: channel.id });
-      return reply.redirect(panel);
+    // El texto de error de la URL no se muestra (cualquiera puede armar el enlace): solo un código fijo.
+    if (q.error || !q.accountId) {
+      await logEvent({ level: 'warn', source: 'channel', message: `Zernio: la conexión no se completó${q.error ? ` (${String(q.error).slice(0, 80)})` : ''}`, accountId: channel.account_id, channelId: channel.id });
+      return reply.redirect(`${panel}?zernio=${q.error ? 'cancelled' : 'error'}`);
     }
-    await saveZernioAccount(channel, { id: q.accountId, username: q.username ?? '' });
+    try {
+      await saveZernioAccount(channel, { id: String(q.accountId), username: String(q.username ?? '') });
+    } catch (e: any) {
+      if (e instanceof ZernioOwnershipError) return reply.redirect(`${panel}?zernio=${e.code}`);
+      await logEvent({ level: 'error', source: 'channel', message: `Zernio: no se pudo guardar la cuenta conectada: ${e?.message ?? e}`, accountId: channel.account_id, channelId: channel.id });
+      return reply.redirect(`${panel}?zernio=error`);
+    }
     return reply.redirect(panel);
   });
 

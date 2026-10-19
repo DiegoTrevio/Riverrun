@@ -128,6 +128,12 @@ export function eventAccountId(body: any): string {
   return id == null ? '' : String(id);
 }
 
+/** Perfil de Zernio al que pertenece un evento, si lo dice (account.profileId o profiles[0].id). */
+export function eventProfileId(body: any): string {
+  const id = body?.account?.profileId ?? body?.message?.profileId ?? (Array.isArray(body?.profiles) ? body.profiles[0]?.id : undefined);
+  return id == null ? '' : String(id);
+}
+
 /**
  * Evento de Zernio → mensajes normalizados. Formato actual (plano):
  * { event, message: { id, conversationId, platformMessageId, direction, text, attachments[], sender{...}, sentAt },
