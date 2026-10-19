@@ -299,6 +299,12 @@ export const ServiceBodySchema = z.object({
   assignment_mode: z.enum(['round_robin', 'weighted']).default('round_robin'),
   /** Porcentaje de citas de cada persona (por id). Sin valor = partes iguales; 0 = solo si nadie más puede. */
   user_weights: z.record(z.string().uuid(), z.number().min(0).max(100)).default({}),
+  /** Llamadas: telefónica (la persona le marca al cliente) o videollamada (con enlace de Meet, Teams o el suyo). */
+  call_mode: z.enum(['phone', 'video']).default('phone'),
+  /** Primero con quien ya atiende al cliente en la conversación (si está libre); si no, según el reparto. */
+  prefer_owner: z.boolean().default(false),
+  /** El cliente puede pedir una persona por su nombre (el agente le ofrece sus horarios). */
+  customer_choice: z.boolean().default(false),
   notify_team: z.boolean().default(true),
   active: z.boolean().default(true),
 });
@@ -325,6 +331,12 @@ export interface Appointment {
   source: string;
   notes: string;
   cancel_reason: string;
+  /** Videollamada: enlace para entrar (de Meet, Teams o el enlace fijo de la persona). */
+  meeting_url?: string;
+  /** Reservas desde la página pública: correo del cliente para confirmarle. */
+  customer_email?: string;
+  /** Nombre de la persona asignada (en las consultas que lo traen). */
+  assigned_user_name?: string | null;
 }
 
 export const DEFAULT_REMINDER = 'Hola {{nombre}}, te recordamos tu {{cita.tipo}} de {{cita.servicio}} el {{cita.fecha}} a las {{cita.hora}}. Si necesitas cambiarla, responde a este mensaje.';

@@ -1,11 +1,15 @@
 import { calendarBusy, syncCalendars } from '../integrations/calendars.js';
-import { query, withTransaction } from '../db.js';
+import { query, queryOne, withTransaction } from '../db.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
 import type { ChannelType, Contact, Conversation } from '../types.js';
-import { staffBusy } from '../integrations/staff-calendars.js';
-import { assignmentStats, isOff, pickStaff, staffInfo, worksDuring, type StaffInfo } from './staff.js';
+import { staffBusy, syncStaffEvent } from '../integrations/staff-calendars.js';
+import * as googleCal from '../integrations/google.js';
+import * as outlookCal from '../integrations/outlook.js';
+import { mailBrand } from '../brands.js';
+import { sendMail } from '../mailer.js';
+import { activeStaff, assignmentStats, isOff, pickStaff, staffInfo, staffNames, worksDuring, type StaffInfo } from './staff.js';
 import * as astore from './store.js';
 import { renderTemplate } from './templates.js';
 import { addDays, dayOf, fromMinutes, localParts, slotKey, spanishDate, spanishTime, toMinutes, zonedToUtc } from './time.js';
@@ -77,7 +81,10 @@ export function computeSlots(service: Service, settings: AccountSettings, busy: 
         }
         const free = users.filter((u) => {
           const info = byId.get(u);
-          if (isOff(info, date) || !worksDuring(info, day, t, t + service.duration_minutes)) return false;
+          // Sin horario propio, la persona trabaja en el horario del servicio o, si el servicio no tiene, en el del
+          // negocio (no en el horario extendido de otra persona).
+          const own = info?.hours ?? (service.hours ? null : settings.business_hours);
+          if (isOff(info, date) || !worksDuring({ id: u, hours: own, time_off: [] }, day, t, t + service.duration_minutes)) return false;
           const mine = overlapping.filter((b) => b.assigned_user_id === u);
           // Una cita de otro servicio o un evento de su calendario la ocupan; de este servicio caben `capacity`.
           return !mine.some((b) => b.service_id !== service.id) && mine.length < service.capacity;
@@ -132,7 +139,9 @@ export async function busyFor(service: Service, from: Date, to: Date, excludeId?
 }
 
 /** Horarios libres del servicio con todo lo que los limita (citas, calendarios y disponibilidad de las personas). */
-export async function freeSlots(service: Service, settings: AccountSettings, now: Date, opts: { days?: number; onlyDate?: string } = {}) {
+export async function freeSlots(input: Service, settings: AccountSettings, now: Date, opts: { days?: number; onlyDate?: string } = {}) {
+  const service = await activeStaff(input);
+  if (service.none) return [];
   const days = opts.days ?? service.max_days_ahead;
   const [busy, staff] = await Promise.all([busyFor(service, now, new Date(now.getTime() + (days + 1) * 86400_000)), staffInfo(service.assigned_user_ids)]);
   return computeSlots(service, settings, busy, now, opts, staff);
@@ -140,8 +149,10 @@ export async function freeSlots(service: Service, settings: AccountSettings, now
 
 export interface AgendaContext {
   timezone: string;
-  services: { id: string; name: string; kind: string; duration: number; description: string; location: string }[];
+  services: { id: string; name: string; kind: string; duration: number; description: string; location: string; call_mode?: string }[];
   slots: Record<string, { key: string; label: string }[]>;
+  /** Servicios donde el cliente puede pedir a una persona: cada una con sus horarios libres. */
+  people?: Record<string, { userId: string; name: string; slots: { key: string; label: string }[] }[]>;
   appointments: { id: string; service_name: string; kind: string; label: string }[];
   /** Para llamadas fuera de WhatsApp hace falta pedir un teléfono. */
   needsPhoneFor: string[];
@@ -160,16 +171,27 @@ export class Agenda {
     const settings = await astore.getSettings(accountId);
     const tz = settings.timezone;
     const slots: AgendaContext['slots'] = {};
+    const people: NonNullable<AgendaContext['people']> = {};
+    const label = (x: Slot) => ({ key: x.key, label: `${spanishDate(x.start, tz)}, ${spanishTime(x.start, tz)}` });
     for (const s of services) {
-      slots[s.id] = spreadSlots(await freeSlots(s, settings, now, { days: Math.min(s.max_days_ahead, 14) })).map((x) => ({
-        key: x.key,
-        label: `${spanishDate(x.start, tz)}, ${spanishTime(x.start, tz)}`,
-      }));
+      const all = await freeSlots(s, settings, now, { days: Math.min(s.max_days_ahead, 14) });
+      slots[s.id] = spreadSlots(all).map(label);
+      // El cliente puede pedir a una persona: se le ofrecen los horarios de esa persona.
+      if (s.customer_choice && s.assigned_user_ids.length) {
+        const active = await activeStaff(s);
+        const names = await staffNames(active.assigned_user_ids);
+        people[s.id] = active.assigned_user_ids.slice(0, 8).map((userId) => ({
+          userId,
+          name: names.get(userId) ?? 'Persona',
+          slots: spreadSlots(all.filter((x) => x.users.includes(userId)), 3, 8).map(label),
+        }));
+      }
     }
     return {
       timezone: tz,
-      services: services.map((s) => ({ id: s.id, name: s.name, kind: s.kind, duration: s.duration_minutes, description: s.description, location: s.location })),
+      services: services.map((s) => ({ id: s.id, name: s.name, kind: s.kind, duration: s.duration_minutes, description: s.description, location: s.location, call_mode: s.call_mode })),
       slots,
+      people,
       appointments: upcoming.map((a) => ({
         id: a.id,
         service_name: a.service_name,
@@ -189,13 +211,19 @@ export class Agenda {
     contact?: Contact | null;
     customerName?: string;
     customerPhone?: string;
+    customerEmail?: string;
     notes?: string;
-    source: 'bot' | 'panel';
+    /** bot: el agente en el chat; panel: el equipo; pagina: el cliente en la página pública para reservar. */
+    source: 'bot' | 'panel' | 'pagina';
     force?: boolean;
+    /** Persona pedida (por el cliente o el equipo). Si no, primero quien atiende la conversación (si el servicio lo pide) o el reparto. */
     assignedUserId?: string | null;
   }): Promise<BookResult> {
-    const service = await astore.getService(o.serviceId);
-    if (!service || service.account_id !== o.accountId || !service.active) return { ok: false, reason: 'Servicio no disponible', alternatives: [] };
+    const raw = await astore.getService(o.serviceId);
+    if (!raw || raw.account_id !== o.accountId || !raw.active) return { ok: false, reason: 'Servicio no disponible', alternatives: [] };
+    // Solo las personas activas del servicio.
+    const service = await activeStaff(raw);
+    if (service.none) return { ok: false, reason: 'No hay personas activas para este servicio', alternatives: [] };
     const settings = await astore.getSettings(o.accountId);
     const tz = settings.timezone;
     // Citas creadas desde el simulador: se marcan, no ocupan horarios reales ni avisan al equipo.
@@ -219,11 +247,15 @@ export class Agenda {
       if (!slot && !o.force) return null;
       // Quien se pidió debe estar libre (salvo que se fuerce); si no se pidió a nadie, le toca a quien corresponda.
       if (o.assignedUserId && slot && service.assigned_user_ids.length && !slot.users.includes(o.assignedUserId) && !o.force) return null;
-      const assigned = o.assignedUserId ?? (slot?.users.length ? pickStaff(service, slot.users, await assignmentStats(service.id, slot.users, client)) : null);
+      // Primero con quien ya atiende al cliente (si el servicio lo pide y esa persona está libre); si no, el reparto.
+      const owner = service.prefer_owner ? o.conversation?.assigned_user_id ?? null : null;
+      const assigned = o.assignedUserId
+        ?? (owner && slot?.users.includes(owner) ? owner : null)
+        ?? (slot?.users.length ? pickStaff(service, slot.users, await assignmentStats(service.id, slot.users, client)) : null);
       const row = await client.query(
         `INSERT INTO appointments (account_id, service_id, service_name, kind, contact_id, conversation_id, assigned_user_id,
-           customer_name, customer_phone, starts_at, ends_at, source, notes)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
+           customer_name, customer_phone, starts_at, ends_at, source, notes, customer_email)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
         [
           o.accountId,
           service.id,
@@ -238,6 +270,7 @@ export class Agenda {
           end,
           source,
           o.notes ?? '',
+          (o.customerEmail ?? '').trim().toLowerCase(),
         ],
       );
       return row.rows[0] as Appointment;
@@ -251,6 +284,9 @@ export class Agenda {
     }
 
     if (!simulated) await this.scheduleReminders(result, service);
+    // Videollamada: el enlace queda listo antes de confirmar (Meet o Teams del calendario, o el enlace fijo).
+    if (!simulated && service.kind === 'call' && service.call_mode === 'video') result.meeting_url = await this.meetingFor(result, service);
+    result.assigned_user_name = result.assigned_user_id ? (await staffNames([result.assigned_user_id])).get(result.assigned_user_id) ?? null : null;
     const when = `${spanishDate(new Date(result.starts_at), tz)} a las ${spanishTime(new Date(result.starts_at), tz)}`;
     const kindName = service.kind === 'call' ? 'Llamada' : 'Cita';
     await logEvent({ level: 'info', source: 'engine', message: `${kindName} agendada: ${service.name}, ${when} (${source})`, accountId: o.accountId, conversationId: o.conversation?.id ?? null });
@@ -264,20 +300,93 @@ export class Agenda {
       });
     }
     if (!simulated) await syncCalendars(o.accountId, result.id).catch(() => undefined);
+    if (!simulated) await this.mailStaff(result, service, 'booked', when).catch(() => undefined);
     if (o.conversation) this.chat.automator.emit({ type: 'appointment_booked', conversationId: o.conversation.id, appointment: result });
     return { ok: true, appointment: result };
   }
 
-  async cancel(appointmentId: string, reason: string, by: 'bot' | 'panel') {
+  /**
+   * Enlace de la videollamada: la sala de Meet o Teams que crea el calendario de la persona (o el del negocio, si la cita
+   * no tiene persona); si no hay calendario, el enlace fijo de la persona o el lugar del servicio si es un enlace.
+   */
+  private async meetingFor(a: Appointment, service: Service): Promise<string> {
+    try {
+      if (a.assigned_user_id) await syncStaffEvent({ appointment_id: a.id });
+      else {
+        await googleCal.syncAppointment({ appointment_id: a.id });
+        await outlookCal.syncAppointment({ appointment_id: a.id });
+      }
+    } catch (e: any) {
+      await logEvent({ level: 'warn', source: 'engine', message: `No se pudo crear la sala de la videollamada en el calendario: ${e?.message ?? e}`, accountId: a.account_id });
+    }
+    const made = (await queryOne<{ meeting_url: string }>(`SELECT meeting_url FROM appointments WHERE id = $1`, [a.id]))?.meeting_url ?? '';
+    if (made) return made;
+    const fixed = a.assigned_user_id ? (await queryOne<{ meeting_url: string }>(`SELECT meeting_url FROM staff_schedules WHERE user_id = $1`, [a.assigned_user_id]))?.meeting_url ?? '' : '';
+    const url = fixed || (/^https:\/\//.test(service.location) ? service.location : '');
+    if (url) await query(`UPDATE appointments SET meeting_url = $2 WHERE id = $1`, [a.id, url]);
+    else await logEvent({ level: 'warn', source: 'engine', message: `Videollamada sin enlace: conecta el calendario de la persona o pon su enlace fijo en Agenda → Equipo (${service.name})`, accountId: a.account_id });
+    return url;
+  }
+
+  /** Correo al cliente que reservó en la página pública (sin conversación): confirmación o recordatorio. */
+  async mailCustomer(a: Appointment, what: 'booked' | 'reminder' | 'cancelled') {
+    if (!a.customer_email) return;
+    const settings = await astore.getSettings(a.account_id);
+    const acc = await store.getAccount(a.account_id);
+    const mb = await mailBrand(a.account_id);
+    const business = mb.fromName || acc?.name || 'tu reservación';
+    const when = `${spanishDate(new Date(a.starts_at), settings.timezone)} a las ${spanishTime(new Date(a.starts_at), settings.timezone)}`;
+    const call = a.kind === 'call';
+    const kind = call ? (a.meeting_url ? 'videollamada' : 'llamada') : 'cita';
+    const subject = what === 'booked' ? `Tu ${kind} quedó agendada: ${a.service_name} · ${when}`
+      : what === 'reminder' ? `Recordatorio: tu ${kind} de ${a.service_name} · ${when}` : `Tu ${kind} se canceló: ${a.service_name} · ${when}`;
+    const service = a.service_id ? await astore.getService(a.service_id) : null;
+    const first = (a.customer_name || '').split(/\s+/)[0];
+    const main = what === 'cancelled'
+      ? [`Tu ${kind} de ${a.service_name} del ${when} se canceló.`]
+      : [
+          `Tu ${kind} de ${a.service_name} es el ${when}${a.assigned_user_name ? ` con ${a.assigned_user_name}` : ''}.`,
+          a.meeting_url ? `Entra a la videollamada aquí: ${a.meeting_url}` : '',
+          call && !a.meeting_url && a.customer_phone ? `Te llamaremos al +${a.customer_phone.replace(/^\+/, '')}.` : '',
+          !call && service?.location ? `Lugar: ${service.location}` : '',
+        ].filter(Boolean);
+    const text = [first ? `Hola ${first},` : 'Hola,', '', ...main, '', `— ${business}`].join('\n');
+    await sendMail({ fromName: mb.fromName, to: a.customer_email, subject, text });
+  }
+
+  /** Correo a la persona que atiende la cita o llamada (agendada o cancelada), con lo que necesita para atenderla. */
+  private async mailStaff(a: Appointment, service: Pick<Service, 'kind' | 'call_mode'> | null, what: 'booked' | 'cancelled', when: string) {
+    if (!a.assigned_user_id) return;
+    const user = await queryOne<{ email: string; name: string; active: boolean }>(`SELECT email, name, active FROM users WHERE id = $1`, [a.assigned_user_id]);
+    if (!user?.email || !user.active) return;
+    const mb = await mailBrand(a.account_id);
+    const call = a.kind === 'call';
+    const video = call && service?.call_mode === 'video';
+    const what1 = call ? (video ? 'videollamada' : 'llamada') : 'cita';
+    const subject = what === 'booked' ? `Nueva ${what1} contigo: ${a.service_name} · ${when}` : `Se canceló tu ${what1}: ${a.service_name} · ${when}`;
+    const details = [
+      `${what === 'booked' ? 'Te toca atender' : 'Se canceló'} esta ${what1}:`,
+      `· ${a.service_name}, ${when}`,
+      `· Cliente: ${a.customer_name || 'sin nombre'}`,
+      a.customer_phone ? `· Teléfono: +${a.customer_phone.replace(/^\+/, '')}${call && !video ? ' (márcale a esa hora)' : ''}` : '',
+      a.customer_email ? `· Correo: ${a.customer_email}` : '',
+      video && a.meeting_url ? `· Enlace de la videollamada: ${a.meeting_url}` : '',
+      a.notes ? `· Notas: ${a.notes}` : '',
+    ].filter(Boolean);
+    await sendMail({ fromName: mb.fromName, to: user.email, subject, text: [...details, '', `Agenda: ${mb.base}/#/agenda`].join('\n') });
+  }
+
+  async cancel(appointmentId: string, reason: string, by: 'bot' | 'panel' | 'pagina') {
     const a = await astore.getAppointment(appointmentId);
     if (!a || a.status !== 'confirmed') return null;
     await query(`UPDATE appointments SET status = 'cancelled', cancel_reason = $2, updated_at = now() WHERE id = $1`, [a.id, reason]);
     await astore.cancelJobs('appointment_id', a.id);
     const settings = await astore.getSettings(a.account_id);
     const when = `${spanishDate(new Date(a.starts_at), settings.timezone)} a las ${spanishTime(new Date(a.starts_at), settings.timezone)}`;
+    if (a.source !== 'simulador') await this.mailStaff(a, a.service_id ? await astore.getService(a.service_id) : null, 'cancelled', when).catch(() => undefined);
     await this.chat.automator.alertTeam(a.account_id, {
       title: `❌ ${a.kind === 'call' ? 'Llamada' : 'Cita'} cancelada: ${a.service_name}`,
-      body: `${a.customer_name || 'Cliente'} · ${when} · ${by === 'bot' ? 'cancelada por el cliente en el chat' : reason}`,
+      body: `${a.customer_name || 'Cliente'} · ${when} · ${by === 'bot' ? 'cancelada por el cliente en el chat' : by === 'pagina' ? 'cancelada por el cliente' : reason}`,
       link: a.conversation_id ? `#/conversation/${a.conversation_id}` : '#/agenda',
       userIds: a.assigned_user_id ? [a.assigned_user_id] : undefined,
       staffId: a.assigned_user_id ?? null,
@@ -320,7 +429,8 @@ export class Agenda {
   async scheduleReminders(a: Appointment, service: Service) {
     for (const minutes of service.reminders) {
       const runAt = new Date(new Date(a.starts_at).getTime() - minutes * 60_000);
-      if (runAt.getTime() < Date.now() + 60_000 || !a.conversation_id) continue;
+      // Sin conversación (reservas de la página pública), el recordatorio va por correo.
+      if (runAt.getTime() < Date.now() + 60_000 || (!a.conversation_id && !a.customer_email)) continue;
       await astore.scheduleJob({
         account_id: a.account_id,
         type: 'appointment_reminder',
@@ -334,10 +444,14 @@ export class Agenda {
   /** Tarea programada: recordatorio al cliente (mensaje de servicio, se envía aunque se haya dado de baja de promociones). */
   async sendReminder(payload: { appointment_id: string }) {
     const a = await astore.getAppointment(payload.appointment_id);
-    if (!a || a.status !== 'confirmed' || !a.conversation_id) return;
+    if (!a || a.status !== 'confirmed') return;
     const service = a.service_id ? await astore.getService(a.service_id) : null;
+    if (!a.conversation_id) {
+      if (a.customer_email) await this.mailCustomer(a, 'reminder');
+      return;
+    }
     const r = await this.chat.outbound.send(a.conversation_id, {
-      text: service?.reminder_message || DEFAULT_REMINDER,
+      text: withLink(service?.reminder_message || DEFAULT_REMINDER, a),
       source: 'reminder',
       transactional: true,
       allowWhenHuman: true,
@@ -354,7 +468,7 @@ export class Agenda {
     if (!a.conversation_id) return { sent: false, reason: 'sin conversación' };
     const service = a.service_id ? await astore.getService(a.service_id) : null;
     return this.chat.outbound.send(a.conversation_id, {
-      text: `Hola {{nombre}}, tu {{cita.tipo}} de {{cita.servicio}} quedó agendada para el {{cita.fecha}} a las {{cita.hora}}.${service?.location ? ' Lugar: {{cita.lugar}}.' : ''}`,
+      text: withLink(`Hola {{nombre}}, tu {{cita.tipo}} de {{cita.servicio}} quedó agendada para el {{cita.fecha}} a las {{cita.hora}}${a.assigned_user_name ? ' con {{cita.persona}}' : ''}.${service?.location && !/^https:\/\//.test(service.location) ? ' Lugar: {{cita.lugar}}.' : ''}`, a),
       source: 'booking',
       transactional: true,
       allowWhenHuman: true,
@@ -362,6 +476,12 @@ export class Agenda {
       location: service?.location,
     });
   }
+}
+
+/** Un mensaje al cliente de una videollamada lleva su enlace (si el texto no lo trae ya con {{cita.enlace}}). */
+export function withLink(text: string, a: Pick<Appointment, 'meeting_url'>): string {
+  if (!a.meeting_url || /\{\{\s*cita\.enlace\s*\}\}/i.test(text)) return text;
+  return `${text}\n\nEnlace para la videollamada: {{cita.enlace}}`;
 }
 
 /* ------------------------------ Calendario .ics ------------------------------ */

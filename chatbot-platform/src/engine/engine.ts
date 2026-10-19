@@ -36,7 +36,7 @@ export interface EngineExtensions {
   pipeline?(conv: Conversation): Promise<PipelineContext | null>;
   agenda?: {
     contextFor(accountId: string, contact: Contact, channelType: ChannelType): Promise<AgendaContext | null>;
-    book(o: { accountId: string; serviceId: string; slotKey: string; conversation: Conversation; contact: Contact; source: 'bot' }): Promise<BookResult>;
+    book(o: { accountId: string; serviceId: string; slotKey: string; conversation: Conversation; contact: Contact; source: 'bot'; assignedUserId?: string | null }): Promise<BookResult>;
     cancel(appointmentId: string, reason: string, by: 'bot'): Promise<unknown>;
   };
   onEvent?(e: AutomationEvent): void;
@@ -269,7 +269,10 @@ export class Engine {
       this.ext.pipeline ? this.ext.pipeline(conv).catch((e) => { log('error', 'engine', `No se pudo cargar el pipeline: ${e?.message ?? e}`); return null; }) : Promise.resolve(null),
     ]);
     const agendaVal: AgendaValidation | null = agendaCtx
-      ? { slots: Object.fromEntries(Object.entries(agendaCtx.slots).map(([k, v]) => [k, v.map((x) => x.key)])), appointmentIds: agendaCtx.appointments.map((a) => a.id), needsPhoneFor: agendaCtx.needsPhoneFor }
+      ? {
+          slots: Object.fromEntries(Object.entries(agendaCtx.slots).map(([k, v]) => [k, v.map((x) => x.key)])), appointmentIds: agendaCtx.appointments.map((a) => a.id), needsPhoneFor: agendaCtx.needsPhoneFor,
+          people: Object.fromEntries(Object.entries(agendaCtx.people ?? {}).map(([k, v]) => [k, v.map((p) => ({ userId: p.userId, name: p.name, slots: p.slots.map((x) => x.key) }))])),
+        }
       : null;
     const hasPhone = !!contact.phone || !!contact.data?.telefono || bot.data_fields.some((f) => f.type === 'phone' && !!contact.data?.[f.key]);
     const imagesById = new Map<string, ImageAsset>(allImages.map((i) => [i.id, i]));
@@ -480,7 +483,7 @@ export class Engine {
       // A restart after a booking begins requires review rather than booking again.
       if(currentOperation()) await query(`INSERT INTO delivery_attempts(operation_key,part,conversation_id,state) VALUES($1,-1,$2,'sending') ON CONFLICT DO NOTHING`,[currentOperation(),conv.id]);
       if (plan.booking.action === 'book') {
-        const r = await this.ext.agenda.book({ accountId: conv.account_id, serviceId: plan.booking.serviceId, slotKey: plan.booking.slot, conversation: conv, contact, source: 'bot' });
+        const r = await this.ext.agenda.book({ accountId: conv.account_id, serviceId: plan.booking.serviceId, slotKey: plan.booking.slot, conversation: conv, contact, source: 'bot', assignedUserId: plan.booking.userId });
         if (!r.ok) {
           plan = {
             ...plan,
@@ -491,7 +494,15 @@ export class Engine {
             messages: [r.alternatives.length ? `Uy, ese horario se acaba de ocupar. Te puedo ofrecer ${joinOptions(r.alternatives)}. ¿Cuál te acomoda?` : 'Uy, ese horario se acaba de ocupar. ¿Te puedo ofrecer otro día?'],
           };
           await log('warn', 'engine', `No se pudo agendar: ${r.reason}`);
-        } else booked = true;
+        } else {
+          booked = true;
+          // Llamadas: con quién y, si es videollamada, el enlace (la IA no lo conoce al escribir).
+          const ap = r.appointment;
+          const extra = ap.meeting_url
+            ? `📹 Este es el enlace para la videollamada${ap.assigned_user_name ? ` con ${ap.assigned_user_name}` : ''}: ${ap.meeting_url}`
+            : ap.kind === 'call' && ap.assigned_user_name ? `📞 Te llamará ${ap.assigned_user_name} a esa hora.` : '';
+          if (extra) plan = { ...plan, messages: [...plan.messages, extra] };
+        }
       } else {
         await this.ext.agenda.cancel(plan.booking.appointmentId, 'Cancelada por el cliente en el chat', 'bot');
       }

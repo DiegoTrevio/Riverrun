@@ -21,7 +21,7 @@ export interface ExecutionPlan {
   /** Intenciones detectadas (solo de la lista permitida). */
   intents: string[];
   /** Propuesta de agenda ya validada contra los horarios reales. */
-  booking: { action: 'book'; serviceId: string; slot: string } | { action: 'cancel'; appointmentId: string } | null;
+  booking: { action: 'book'; serviceId: string; slot: string; userId?: string } | { action: 'cancel'; appointmentId: string } | null;
   /** Etapa del recorrido (0 = sin recorrido o sin cambio). */
   flowStep: number;
   /** Mensajes guardados (activos y existentes) que se envían tal cual, en el orden que propuso la IA. */
@@ -56,6 +56,8 @@ export interface AgendaValidation {
   appointmentIds: string[];
   /** Servicios para los que falta pedir teléfono antes de agendar. */
   needsPhoneFor: string[];
+  /** Servicios donde el cliente puede pedir persona: cada una con sus horarios. */
+  people?: Record<string, { userId: string; name: string; slots: string[] }[]>;
 }
 
 export interface ValidationInput {
@@ -759,6 +761,22 @@ export function validateDecision(input: ValidationInput): ValidationResult {
       } else if (agenda.needsPhoneFor.includes(b.service_id) && !input.hasPhone && !Object.keys(saveData).some((k) => k === 'telefono' || bot.data_fields.find((f) => f.key === k)?.type === 'phone')) {
         bookingIssue = true;
         retryable.push('Para agendar la llamada primero pide el número de teléfono del cliente (no agendes todavía).');
+      } else if (b.person.trim() && agenda.people?.[b.service_id]?.length) {
+        // El cliente pidió a una persona: debe ser de la lista y estar libre en ese horario.
+        const want = normalize(b.person);
+        const list = agenda.people[b.service_id];
+        const exact = list.filter((p) => normalize(p.name) === want);
+        const loose = exact.length ? exact : list.filter((p) => normalize(p.name).split(/\s+/).includes(want.split(/\s+/)[0] ?? ''));
+        const person = loose.length === 1 ? loose[0] : null;
+        if (!person) {
+          bookingIssue = true;
+          retryable.push(`"${b.person}" no está en la lista de personas de ese servicio (${list.map((p) => p.name).join(', ')}). Pon el nombre exacto o deja booking.person vacío.`);
+        } else if (!person.slots.includes(b.slot)) {
+          bookingIssue = true;
+          retryable.push(`${person.name} no está libre el ${b.slot}. Ofrece solo sus horarios: ${person.slots.slice(0, 6).join(', ') || 'no tiene horarios por ahora'}.`);
+        } else {
+          booking = { action: 'book', serviceId: b.service_id, slot: b.slot, userId: person.userId };
+        }
       } else {
         booking = { action: 'book', serviceId: b.service_id, slot: b.slot };
       }

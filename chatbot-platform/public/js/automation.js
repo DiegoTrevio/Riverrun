@@ -197,7 +197,7 @@ function typedList(list, types, fieldsFor, onChange) {
   return box;
 }
 
-export const VARS_HELP = 'Variables: {{nombre}}, {{cliente}}, {{telefono}}, {{negocio}}, {{mensaje}}, {{link}}, {{dato.CAMPO}}, {{cita.servicio}}, {{cita.fecha}}, {{cita.hora}}, {{cita.lugar}}';
+export const VARS_HELP = 'Variables: {{nombre}}, {{cliente}}, {{telefono}}, {{negocio}}, {{mensaje}}, {{link}}, {{dato.CAMPO}}, {{cita.servicio}}, {{cita.fecha}}, {{cita.hora}}, {{cita.lugar}}, {{cita.persona}} (quién atiende), {{cita.enlace}} (enlace de la videollamada)';
 
 const ACCEPT_FILES = '.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.csv,.txt,.mp3,.ogg,.wav,.m4a,.mp4,.mov,.webm';
 const KIND_LABEL = { document: 'documento', audio: 'audio', video: 'video', image: 'imagen' };

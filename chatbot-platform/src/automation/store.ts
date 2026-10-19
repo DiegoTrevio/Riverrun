@@ -244,7 +244,7 @@ export async function getService(id: string) {
 }
 
 export async function saveService(accountId: string, s: Omit<Service, 'id' | 'account_id'>, id?: string) {
-  const cols = ['name', 'kind', 'description', 'duration_minutes', 'buffer_minutes', 'capacity', 'min_notice_minutes', 'max_days_ahead', 'location', 'hours', 'reminders', 'reminder_message', 'assigned_user_ids', 'assignment_mode', 'user_weights', 'notify_team', 'active'] as const;
+  const cols = ['name', 'kind', 'description', 'duration_minutes', 'buffer_minutes', 'capacity', 'min_notice_minutes', 'max_days_ahead', 'location', 'hours', 'reminders', 'reminder_message', 'assigned_user_ids', 'assignment_mode', 'user_weights', 'call_mode', 'prefer_owner', 'customer_choice', 'notify_team', 'active'] as const;
   const values = cols.map((c) => (['hours', 'reminders', 'assigned_user_ids', 'user_weights'].includes(c) ? (s[c] === null ? null : JSON.stringify(s[c])) : s[c]));
   if (id) {
     return queryOne<Service>(`UPDATE services SET ${cols.map((c, i) => `${c} = $${i + 1}`).join(', ')}, updated_at = now() WHERE id = $${cols.length + 1} RETURNING *`, [...values, id]);
@@ -259,8 +259,14 @@ export async function deleteService(id: string) {
   await query('DELETE FROM services WHERE id = $1', [id]);
 }
 
+/** ¿La cita es una videollamada (servicio de llamada en modo video)? */
+export async function isVideoCall(a: Pick<Appointment, 'kind' | 'service_id'>): Promise<boolean> {
+  if (a.kind !== 'call' || !a.service_id) return false;
+  return (await queryOne<{ call_mode: string }>(`SELECT call_mode FROM services WHERE id = $1`, [a.service_id]))?.call_mode === 'video';
+}
+
 export async function getAppointment(id: string) {
-  return queryOne<Appointment>('SELECT * FROM appointments WHERE id = $1', [id]);
+  return queryOne<Appointment>(`SELECT a.*, coalesce(nullif(u.name, ''), u.email) AS assigned_user_name FROM appointments a LEFT JOIN users u ON u.id = a.assigned_user_id WHERE a.id = $1`, [id]);
 }
 
 export async function listAppointments(accountId: string | null, opts: { from?: Date; to?: Date; contactId?: string; status?: string; visibleTo?: string } = {}) {

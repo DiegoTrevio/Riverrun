@@ -25,8 +25,9 @@ export const DecisionSchema = z.object({
       service_id: z.string().default(''),
       slot: z.string().default(''),
       appointment_id: z.string().default(''),
+      person: z.string().default(''),
     })
-    .default({ action: 'none', service_id: '', slot: '', appointment_id: '' }),
+    .default({ action: 'none', service_id: '', slot: '', appointment_id: '', person: '' }),
 });
 export type Decision = z.infer<typeof DecisionSchema>;
 
@@ -98,13 +99,14 @@ export const DECISION_JSON_SCHEMA = {
     booking: {
       type: 'object',
       additionalProperties: false,
-      required: ['action', 'service_id', 'slot', 'appointment_id'],
+      required: ['action', 'service_id', 'slot', 'appointment_id', 'person'],
       description: 'Agenda: "book" solo cuando el cliente ya eligió explícitamente un horario de la lista; "cancel" si pide cancelar una cita suya; si no, "none".',
       properties: {
         action: { type: 'string', enum: ['none', 'book', 'cancel'] },
         service_id: { type: 'string', description: 'ID exacto del servicio (book).' },
         slot: { type: 'string', description: 'Horario exacto de la lista, formato AAAA-MM-DDTHH:MM (book).' },
         appointment_id: { type: 'string', description: 'ID de la cita a cancelar (cancel).' },
+        person: { type: 'string', description: 'Nombre exacto de la persona que pidió el cliente, de la lista del servicio (book); vacío si no pidió a nadie.' },
       },
     },
   },

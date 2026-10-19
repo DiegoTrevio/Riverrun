@@ -398,13 +398,24 @@ export async function viewConversation(root, id, opts = {}) {
       api('GET', withAcct('/api/services')).catch(() => []),
     ]);
     const enr = { sequence_id: seqs.find((q) => q.active)?.id || '' };
-    const book = { service_id: services.find((q) => q.active)?.id || '', slot: '', notes: '' };
+    const book = { service_id: services.find((q) => q.active)?.id || '', slot: '', notes: '', assigned_user_id: '' };
     const slotBox = h('div');
+    const personBox = h('div');
+    let slotList = [];
+    // Con quién: automático (turnos, porcentajes o quien ya atiende) o una persona libre a esa hora.
+    const drawPerson = () => {
+      const free = slotList.find((x) => x.key === book.slot)?.users || [];
+      if (!free.includes(book.assigned_user_id)) book.assigned_user_id = '';
+      fill(personBox, isAdmin() && free.length > 1
+        ? field('Con quién', select(book, 'assigned_user_id', [['', 'Automático (según el servicio)'], ...free.map((u) => [u, (team || []).find((x) => x.id === u)?.name || 'Persona del equipo'])]))
+        : null);
+    };
     const loadSlots = async () => {
       if (!book.service_id) return;
-      const slots = await api('GET', `/api/services/${book.service_id}/slots`);
-      book.slot = slots[0]?.key || '';
-      fill(slotBox, slots.length ? select(book, 'slot', slots.map((x) => [x.key, x.label])) : h('p', { class: 'small muted' }, 'Sin horarios disponibles'));
+      slotList = await api('GET', `/api/services/${book.service_id}/slots`);
+      book.slot = slotList[0]?.key || '';
+      fill(slotBox, slotList.length ? select(book, 'slot', slotList.map((x) => [x.key, x.label]), drawPerson) : h('p', { class: 'small muted' }, 'Sin horarios disponibles'));
+      drawPerson();
     };
     const active = auto.enrollments.filter((e) => e.status === 'active');
     const upcoming = auto.appointments.filter((a) => a.status === 'confirmed' && new Date(a.starts_at) > new Date());
@@ -416,8 +427,9 @@ export async function viewConversation(root, id, opts = {}) {
         services.length ? h('details', { style: 'margin-top:8px' }, h('summary', {}, 'Agendar cita o llamada'),
           field('Servicio', select(book, 'service_id', services.filter((q) => q.active).map((q) => [q.id, q.name]), loadSlots)),
           slotBox,
+          personBox,
           field('Notas', text(book, 'notes')),
-          h('button', { class: 'small primary', onclick: async () => { if (await run(() => api('POST', '/api/appointments', { ...book, conversation_id: id }), 'Agendada: se envió la confirmación al cliente')) { drawAuto(); load(true); } } }, 'Agendar y avisar al cliente')) : null),
+          h('button', { class: 'small primary', onclick: async () => { if (await run(() => api('POST', '/api/appointments', { ...book, assigned_user_id: book.assigned_user_id || null, conversation_id: id }), 'Agendada: se envió la confirmación al cliente')) { drawAuto(); load(true); } } }, 'Agendar y avisar al cliente')) : null),
       h('div', { class: 'card' },
         h('h2', { style: 'margin-top:0' }, 'Secuencias'),
         active.length ? active.map((e) => h('div', { class: 'row between small' }, h('span', {}, `▶ ${e.sequence_name} (paso ${e.current_step + 1})`),

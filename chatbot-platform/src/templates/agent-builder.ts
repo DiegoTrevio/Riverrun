@@ -255,7 +255,7 @@ export function buildAgent(w: Wizard) {
       .map((k) => ({ category: KNOWLEDGE_TITLES[k][0], title: KNOWLEDGE_TITLES[k][1], content: sections[k].trim(), always_include: k !== 'faq' })),
   ];
   const service: ServiceBody | null = w.scope.role === 'book'
-    ? { name: `Cita en ${w.company.name}`.slice(0, 120), kind: 'appointment', description: '', duration_minutes: 30, buffer_minutes: 0, capacity: 1, min_notice_minutes: 60, max_days_ahead: 30, location: w.company.location, hours: null, reminders: [1440, 60], reminder_message: '', assigned_user_ids: [], assignment_mode: 'round_robin', user_weights: {}, notify_team: true, active: true }
+    ? { name: `Cita en ${w.company.name}`.slice(0, 120), kind: 'appointment', description: '', duration_minutes: 30, buffer_minutes: 0, capacity: 1, min_notice_minutes: 60, max_days_ahead: 30, location: w.company.location, hours: null, reminders: [1440, 60], reminder_message: '', assigned_user_ids: [], assignment_mode: 'round_robin', user_weights: {}, call_mode: 'phone', prefer_owner: false, customer_choice: false, notify_team: true, active: true }
     : null;
   return {
     name: w.style.assistant_name ? `${w.style.assistant_name} · ${w.company.name}` : `Asistente de ${w.company.name}`,

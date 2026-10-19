@@ -45,7 +45,7 @@ async function viewTeam(root, params) {
 }
 
 function personCard(p, mine) {
-  const m = { own: !!p.hours, hours: p.hours || { mon: [['09:00', '18:00']], tue: [['09:00', '18:00']], wed: [['09:00', '18:00']], thu: [['09:00', '18:00']], fri: [['09:00', '18:00']], sat: [], sun: [] }, time_off: clone(p.time_off) };
+  const m = { own: !!p.hours, hours: p.hours || { mon: [['09:00', '18:00']], tue: [['09:00', '18:00']], wed: [['09:00', '18:00']], thu: [['09:00', '18:00']], fri: [['09:00', '18:00']], sat: [], sun: [] }, time_off: clone(p.time_off), meeting_url: p.meeting_url || '' };
   const hoursBox = h('div');
   const drawHours = () => fill(hoursBox, m.own ? hoursEditor(m.hours) : h('p', { class: 'small muted' }, 'Sigue el horario del negocio (o el del servicio, si tiene uno).'));
   drawHours();
@@ -65,7 +65,7 @@ function personCard(p, mine) {
         drawOff();
       } }, '+ Agregar')));
   drawOff();
-  const save = () => run(() => api('PUT', `/api/team/${p.id}/schedule`, { hours: m.own ? m.hours : null, time_off: m.time_off }), 'Disponibilidad guardada ✅');
+  const save = () => run(() => api('PUT', `/api/team/${p.id}/schedule`, { hours: m.own ? m.hours : null, time_off: m.time_off, meeting_url: m.meeting_url.trim() }), 'Disponibilidad guardada ✅');
   return h('div', { class: 'card' },
     h('div', { class: 'row between' }, h('h2', { style: 'margin:0' }, p.name || p.email),
       h('span', { class: 'small muted' }, p.services.length ? `Atiende: ${p.services.map((s) => s.name).join(', ')}` : 'No está asignada a ningún servicio')),
@@ -75,6 +75,9 @@ function personCard(p, mine) {
     hoursBox,
     h('h3', {}, 'Días libres'),
     offBox,
+    h('h3', {}, 'Videollamadas'),
+    field('Enlace fijo de videollamada (opcional)', text(m, 'meeting_url', { type: 'url', placeholder: 'https://zoom.us/j/… o https://meet.google.com/…' }),
+      'Con el calendario conectado se crea una sala de Meet o Teams para cada videollamada; si no, se usa este enlace.'),
     h('button', { class: 'primary', onclick: save }, 'Guardar disponibilidad'));
 }
 
@@ -180,7 +183,7 @@ async function agendaWeek(root, params) {
     const drawWho = () => {
       const free = slots.find((x) => x.key === n.slot)?.users || [];
       if (!n.assigned_user_id || !free.includes(n.assigned_user_id)) n.assigned_user_id = '';
-      fill(whoBox, free.length > 1 && isAdmin() ? field('Atiende', select(n, 'assigned_user_id', [['', 'A quien le toque (turnos o porcentajes)'], ...free.map((u) => [u, people.get(u)?.name || 'Persona del equipo'])])) : null);
+      fill(whoBox, free.length > 1 && isAdmin() ? field('Atiende', select(n, 'assigned_user_id', [['', 'Automático (según el reparto del servicio)'], ...free.map((u) => [u, people.get(u)?.name || 'Persona del equipo'])])) : null);
     };
     fill(slotBox, slots.length ? [field('Horario disponible', select(n, 'slot', slots.map((x) => [x.key, x.label]), drawWho)), whoBox] : h('p', { class: 'muted' }, 'Sin horarios disponibles.'));
     drawWho();
@@ -285,8 +288,10 @@ async function agendaWeek(root, params) {
       h('p', {}, h('span', { class: `badge ${cls}` }, label), a.source === 'simulador' ? h('span', { class: 'badge' }, ' prueba') : null),
       h('dl', { class: 'appt-facts' },
         h('dt', {}, 'Cuándo'), h('dd', {}, `${dayTitle(tzParts(a.starts_at, tz).date)}, ${hhmm(a.starts_at)}–${hhmm(a.ends_at)}`),
-        h('dt', {}, 'Cliente'), h('dd', {}, a.customer_name || 'Cliente', a.customer_phone ? ` · +${a.customer_phone.replace(/^\+/, '')}` : ''),
+        h('dt', {}, 'Cliente'), h('dd', {}, a.customer_name || 'Cliente', a.customer_phone ? ` · +${a.customer_phone.replace(/^\+/, '')}` : '', a.customer_email ? ` · ${a.customer_email}` : ''),
         h('dt', {}, 'Atiende'), h('dd', {}, h('i', { class: 'dot', style: `background:${colorOf(a)}` }), ' ', a.assigned_user_name || 'Sin asignar'),
+        a.meeting_url ? [h('dt', {}, 'Videollamada'), h('dd', {}, h('a', { href: a.meeting_url, target: '_blank', rel: 'noopener' }, 'Entrar a la videollamada'))] : null,
+        a.source === 'pagina' ? [h('dt', {}, 'Origen'), h('dd', {}, 'Reservó en tu página para agendar')] : null,
         a.notes ? [h('dt', {}, 'Notas'), h('dd', {}, a.notes)] : null,
         a.cancel_reason ? [h('dt', {}, 'Motivo'), h('dd', {}, a.cancel_reason)] : null),
       h('div', { class: 'row' },
@@ -319,7 +324,7 @@ async function listServices(root) {
       ? h('table', {}, h('tbody', {}, services.map((s) => h('tr', { class: 'click', onclick: () => (location.hash = `#/agenda/servicios?id=${s.id}`) },
           h('td', {}, s.kind === 'call' ? '📞 ' : '📅 ', h('strong', {}, s.name), s.active ? null : h('span', { class: 'badge orange' }, ' inactivo')),
           h('td', { class: 'small' }, `${s.duration_minutes} min`, s.capacity > 1 ? ` · ${s.capacity} a la vez${s.assigned_user_ids.length ? ' por persona' : ''}` : ''),
-          h('td', { class: 'small' }, s.assigned_user_ids.length ? `${s.assigned_user_ids.length} ${s.assigned_user_ids.length === 1 ? 'persona' : 'personas'}${s.assigned_user_ids.length > 1 ? ` · ${s.assignment_mode === 'weighted' ? 'por porcentajes' : 'por turnos'}` : ''}` : 'Sin personas asignadas'),
+          h('td', { class: 'small' }, s.assigned_user_ids.length ? `${s.assigned_user_ids.length} ${s.assigned_user_ids.length === 1 ? 'persona' : 'personas'}${s.assigned_user_ids.length > 1 ? ` · ${s.assignment_mode === 'weighted' ? 'por porcentajes' : 'por turnos'}` : ''}${s.prefer_owner ? ' · primero quien atiende' : ''}${s.customer_choice ? ' · el cliente elige' : ''}` : 'Sin personas asignadas', s.kind === 'call' ? ` · ${s.call_mode === 'video' ? '📹 videollamada' : '📞 telefónica'}` : ''),
           h('td', { class: 'small muted' }, s.hours ? 'horario propio' : 'horario del negocio')))))
       : h('p', { class: 'muted' }, 'Aún no hay servicios.')),
   );
@@ -329,9 +334,21 @@ async function editService(root, id) {
   const [services, users] = await Promise.all([api('GET', withAcct('/api/services')), api('GET', withAcct('/api/users'))]);
   const existing = id === 'new' ? null : services.find((s) => s.id === id);
   if (id !== 'new' && !existing) throw new Error('Servicio no encontrado');
-  const s = draftModel(`service:${id}`, existing || { name: '', kind: 'appointment', description: '', duration_minutes: 30, buffer_minutes: 0, capacity: 1, min_notice_minutes: 60, max_days_ahead: 30, location: '', hours: null, reminders: [1440, 60], reminder_message: '', assigned_user_ids: [], assignment_mode: 'round_robin', user_weights: {}, notify_team: true, active: true }, false);
+  const s = draftModel(`service:${id}`, existing || { name: '', kind: 'appointment', description: '', duration_minutes: 30, buffer_minutes: 0, capacity: 1, min_notice_minutes: 60, max_days_ahead: 30, location: '', hours: null, reminders: [1440, 60], reminder_message: '', assigned_user_ids: [], assignment_mode: 'round_robin', user_weights: {}, call_mode: 'phone', prefer_owner: false, customer_choice: false, notify_team: true, active: true }, false);
   s.assignment_mode ||= 'round_robin';
   s.user_weights ||= {};
+  s.call_mode ||= 'phone';
+  s.prefer_owner ??= false;
+  s.customer_choice ??= false;
+  // Tipo de llamada: solo en servicios de llamada.
+  const callBox = h('div');
+  const drawCall = () => fill(callBox, s.kind === 'call'
+    ? field('Cómo es la llamada', select(s, 'call_mode', [['phone', 'Telefónica: la persona le marca al cliente'], ['video', 'Videollamada: se le envía un enlace (Meet, Teams o el de la persona)']]),
+      s.call_mode === 'video'
+        ? 'Con el calendario de la persona conectado (Google u Outlook) se crea una sala para cada llamada; si no, se usa su enlace fijo (Agenda → Equipo). El enlace le llega al cliente al agendar y en los recordatorios.'
+        : 'El agente pide el teléfono del cliente si no escribe por WhatsApp; a la persona le llega con quién y a qué número marcar.')
+    : null);
+  drawCall();
   const own = draftModel(`service-hours:${id}`, { on: !!s.hours }, false);
   const hoursBox = h('div');
   const drawHours = () => fill(hoursBox, own.on ? hoursEditor((s.hours ||= { mon: [['09:00', '18:00']], tue: [['09:00', '18:00']], wed: [['09:00', '18:00']], thu: [['09:00', '18:00']], fri: [['09:00', '18:00']], sat: [], sun: [] })) : null);
@@ -348,6 +365,9 @@ async function editService(root, id) {
         h('input', { type: 'checkbox', checked: s.assigned_user_ids.includes(u.id), onchange: (e) => { s.assigned_user_ids = e.target.checked ? [...s.assigned_user_ids, u.id] : s.assigned_user_ids.filter((x) => x !== u.id); drawPeople(); } }),
         u.name || u.email))),
       chosen.length > 1 ? field('Cómo se reparten las citas', select(s, 'assignment_mode', [['round_robin', 'Por turnos (round robin): a cada quien le toca en orden'], ['weighted', 'Por porcentajes: a cada quien su parte']], drawPeople)) : null,
+      chosen.length ? h('div', { class: 'stack', style: 'margin:6px 0' },
+        check(s, 'prefer_owner', 'Primero con quien ya atiende al cliente (si la conversación tiene una persona asignada y está libre)'),
+        check(s, 'customer_choice', 'El cliente puede pedir con quién (el agente le ofrece los horarios de esa persona)')) : null,
       chosen.length > 1 && s.assignment_mode === 'weighted' ? h('div', {},
         h('div', { class: 'row' }, chosen.map((u) => field(`${u.name || u.email} (%)`, h('input', { type: 'number', min: 0, max: 100, step: 1, value: Math.round(s.user_weights[u.id] ?? 100 / chosen.length), oninput: (e) => { s.user_weights = { ...s.user_weights, [u.id]: Number(e.target.value) || 0 }; } })))),
         h('p', { class: 'small muted' }, `Suma actual: ${Math.round(total)} %. Se reparte en proporción (no hace falta que sume 100). Con 0 % la persona solo recibe citas cuando nadie más está libre. Si a quien le toca no está libre en ese horario, se le asigna a otra persona.`)) : null);
@@ -373,12 +393,13 @@ async function editService(root, id) {
     h('div', { class: 'card' },
       h('div', { class: 'grid' },
         field('Nombre', text(s, 'name', { placeholder: 'Consulta inicial' })),
-        field('Tipo', select(s, 'kind', [['appointment', 'Cita'], ['call', 'Llamada']])),
+        field('Tipo', select(s, 'kind', [['appointment', 'Cita'], ['call', 'Llamada']], drawCall)),
         field('Duración (min)', num(s, 'duration_minutes', { min: 5 })),
         field('Descanso entre citas (min)', num(s, 'buffer_minutes', { min: 0 })),
         field('Citas al mismo tiempo', num(s, 'capacity', { min: 1 }), 'Con personas asignadas: cuántos clientes atiende cada persona a la misma hora (1 = uno a la vez; más para clases o grupos). Sin personas: cuántas citas caben en total.'),
         field('Anticipación mínima (min)', num(s, 'min_notice_minutes', { min: 0 })),
         field('Agendar hasta (días)', num(s, 'max_days_ahead', { min: 1 }))),
+      callBox,
       field('Descripción (para que el bot la explique)', area(s, 'description')),
       field('Lugar o indicaciones', text(s, 'location', { placeholder: 'Av. Reforma 123, piso 2 · o · Te llamamos a tu número' })),
       h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: own.on, onchange: (e) => { own.on = e.target.checked; drawHours(); } }), 'Usar un horario distinto al del negocio'),

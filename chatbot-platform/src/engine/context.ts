@@ -504,9 +504,15 @@ export function agendaSection(a: AgendaContext): string {
   if (a.services.length) {
     s.push('Servicios que se pueden agendar:');
     for (const sv of a.services) {
-      s.push(`- ID \`${sv.id}\` | ${sv.name} (${KIND(sv.kind)}, ${sv.duration} min)${sv.description ? ` | ${sv.description}` : ''}${sv.location ? ` | lugar: ${sv.location}` : ''}`);
+      const how = sv.kind === 'call' ? (sv.call_mode === 'video' ? 'videollamada; el enlace se le envía al agendar' : 'llamada telefónica; una persona del equipo le marca') : '';
+      s.push(`- ID \`${sv.id}\` | ${sv.name} (${KIND(sv.kind)}, ${sv.duration} min${how ? `, ${how}` : ''})${sv.description ? ` | ${sv.description}` : ''}${sv.location && sv.call_mode !== 'video' ? ` | lugar: ${sv.location}` : ''}`);
       const slots = a.slots[sv.id] ?? [];
       s.push(slots.length ? `  Horarios disponibles: ${slots.map((x) => `\`${x.key}\` (${x.label})`).join('; ')}` : '  Sin horarios disponibles por ahora.');
+      const people = a.people?.[sv.id] ?? [];
+      if (people.length) {
+        s.push('  El cliente puede pedir con quién. Personas y sus horarios:');
+        for (const p of people) s.push(`  · ${p.name}: ${p.slots.length ? p.slots.map((x) => `\`${x.key}\` (${x.label})`).join('; ') : 'sin horarios por ahora'}`);
+      }
     }
   }
   if (a.appointments.length) {
@@ -521,6 +527,9 @@ export function agendaSection(a: AgendaContext): string {
       '- Antes de agendar necesitas el nombre del cliente' + (a.needsPhoneFor.length ? ' (y su teléfono si es una llamada)' : '') + '.',
       '- Agenda (booking.action = "book" con service_id y slot exactos) solo cuando el cliente ya eligió un horario concreto; en ese mismo mensaje confirma servicio, día y hora.',
       '- Para cancelar usa booking.action = "cancel" con el ID de su cita. Para cambiar de horario: cancela la actual y agenda la nueva cuando elija.',
+      ...(Object.values(a.people ?? {}).some((p) => p.length)
+        ? ['- Si el cliente pide a una persona de la lista, ofrécele solo los horarios de esa persona y pon su nombre exacto en booking.person. Si no pide a nadie, deja booking.person vacío (el sistema asigna a quien le toque). Nunca menciones personas que no estén en la lista.']
+        : []),
     ].join('\n'),
   );
   return s.join('\n');

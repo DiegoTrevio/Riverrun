@@ -8,7 +8,7 @@ import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
 import { logEvent } from '../logs.js';
 import { decryptSecret, encryptSecret, hmac, safeEqual } from '../secret.js';
-import { getAppointment, scheduleJob } from '../automation/store.js';
+import { getAppointment, isVideoCall, scheduleJob } from '../automation/store.js';
 import type { Appointment } from '../automation/types.js';
 
 const LOGIN_URL = () => (process.env.MICROSOFT_LOGIN_URL || 'https://login.microsoftonline.com').replace(/\/$/, '');
@@ -183,7 +183,10 @@ export async function syncAppointment(payload: { appointment_id: string }) {
         await query(`UPDATE appointments SET outlook_event_id = NULL WHERE id = $1`, [a.id]);
       }
     } else {
-      const id = await upsertEvent(auth(link), eventId ?? null, a);
+      const conference = !a.assigned_user_id && (await isVideoCall(a));
+      const ev = await upsertEvent(auth(link), eventId ?? null, a, { conference });
+      const id = ev.id;
+      if (ev.meetingUrl) await query(`UPDATE appointments SET meeting_url = $2 WHERE id = $1 AND meeting_url = ''`, [a.id, ev.meetingUrl]);
       await query(`UPDATE appointments SET outlook_event_id = $2 WHERE id = $1`, [a.id, id]);
     }
     if (link.last_error) await markError(a.account_id, '');
@@ -193,23 +196,27 @@ export async function syncAppointment(payload: { appointment_id: string }) {
   }
 }
 
-type EventSource = Pick<Appointment, 'id' | 'service_name' | 'customer_name' | 'customer_phone' | 'notes' | 'starts_at' | 'ends_at'>;
+type EventSource = Pick<Appointment, 'id' | 'service_name' | 'customer_name' | 'customer_phone' | 'notes' | 'starts_at' | 'ends_at' | 'customer_email'>;
 
-/** Crea o actualiza el evento de la cita. Devuelve su id. */
-export async function upsertEvent(link: OutlookAuth, eventId: string | null, a: EventSource): Promise<string> {
+/**
+ * Crea o actualiza el evento de la cita. Con `conference`, Outlook crea la reunión de Teams de la videollamada. Devuelve el
+ * id del evento y el enlace para entrar (si hay).
+ */
+export async function upsertEvent(link: OutlookAuth, eventId: string | null, a: EventSource, opts: { conference?: boolean } = {}): Promise<{ id: string; meetingUrl: string }> {
   const event = {
     subject: `${a.service_name}${a.customer_name ? ` · ${a.customer_name}` : ''}`,
-    body: { contentType: 'text', content: [a.customer_phone && `Teléfono: +${a.customer_phone.replace(/^\+/, '')}`, a.notes, 'Agendada desde Riverrun'].filter(Boolean).join('\n') },
+    body: { contentType: 'text', content: [a.customer_phone && `Teléfono: +${a.customer_phone.replace(/^\+/, '')}`, a.customer_email && `Correo: ${a.customer_email}`, a.notes, 'Agendada desde Riverrun'].filter(Boolean).join('\n') },
     start: graphTime(a.starts_at),
     end: graphTime(a.ends_at),
     showAs: 'busy',
     // Si Outlook recibe dos veces la misma cita (un reintento), no la duplica.
     transactionId: `riverrun-${a.id}`,
+    ...(opts.conference ? { isOnlineMeeting: true, onlineMeetingProvider: 'teamsForBusiness' } : {}),
   };
   let r = eventId ? await api(link, 'PATCH', `/v1.0/me/events/${encodeURIComponent(eventId)}`, event) : null;
   if (!r || r.status === 404 || r.status === 410) r = await api(link, 'POST', '/v1.0/me/events', event);
   if (!r.ok) throw new Error(graphError(r));
-  return r.data.id ?? eventId;
+  return { id: r.data.id ?? eventId, meetingUrl: String(r.data?.onlineMeeting?.joinUrl ?? '') };
 }
 
 /** Quita el evento (si ya no existía, no es error). */
