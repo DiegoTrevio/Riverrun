@@ -286,7 +286,8 @@ mv .env.lejos .env
 
 echo "== preflight: todo en orden aprueba lo revisado y deja sin verificar lo que requiere red o servicios"
 cp .env .env.keep
-printf 'DOMAIN=pms.ejemplo.mx\nEVOLUTION_IMAGE=evoapicloud/evolution-api:v2.3.7@sha256:abc\n' >> .env; chmod 600 .env
+# «Todo en orden» incluye las alertas fuera del panel (correo y latido); sin ellas el preflight avisa, como debe.
+printf 'DOMAIN=pms.ejemplo.mx\nEVOLUTION_IMAGE=evoapicloud/evolution-api:v2.3.7@sha256:abc\nSMTP_URL=smtp://avisos:clave@smtp.ejemplo.mx:587\nSUPERADMIN_EMAIL=dueno@ejemplo.mx\nHEARTBEAT_URL=https://hc-ping.com/0000\n' >> .env; chmod 600 .env
 grep -Eq "^HEALTH_TOKEN=.{16,}$" .env || { echo "ERROR: el .env de prueba no tiene HEALTH_TOKEN"; exit 1; }
 export RIVERRUN_PREFLIGHT_MEM_KB=2097152 RIVERRUN_PREFLIGHT_DISK_KB=20971520 RIVERRUN_PREFLIGHT_CPUS=2
 set +e; ./riverrun preflight --offline > "$work/out" 2>&1; rc=$?; set -e
