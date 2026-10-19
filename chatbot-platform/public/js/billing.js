@@ -63,8 +63,11 @@ export async function viewPlan(root, params) {
       sub?.status === 'canceled' ? h('p', { class: 'muted' }, 'Tu plan anterior se canceló. Puedes contratar de nuevo cuando quieras.') : null);
   }
 
+  const waiting = paid && !live;
+  const gaveUp = waiting && confirmTries >= MAX_CONFIRM_TRIES;
   const offer = h('div');
-  if (!live || sub.cancel_at_period_end) {
+  // Mientras se confirma un pago no se ofrece contratar otra vez: un segundo clic abriría otra suscripción.
+  if ((!live || sub.cancel_at_period_end) && !(waiting && !gaveUp)) {
     if (!b.plans.length) {
       fill(offer, h('div', { class: 'card' }, h('p', {}, 'El pago en línea todavía no está disponible.'), b.support_contact ? h('p', {}, 'Para contratar escríbenos a ', h('strong', {}, b.support_contact), '.') : null));
     } else {
@@ -91,8 +94,6 @@ export async function viewPlan(root, params) {
         h('div', { class: 'bar' }, h('div', { class: `bar-fill ${i.percent >= 100 ? 'full' : i.percent >= 80 ? 'warn' : ''}`, style: `width:${i.percent}%` })))),
       b.limits.items.some((i) => i.key === 'messages_per_month' && i.max) ? h('p', { class: 'muted small', style: 'margin-bottom:0' }, 'Los mensajes se cuentan cada mes (el día 1 vuelven a cero). Al llegar al límite el asistente deja de responder solo; las conversaciones se siguen guardando.') : null)
     : null;
-  const waiting = paid && !live;
-  const gaveUp = waiting && confirmTries >= MAX_CONFIRM_TRIES;
   const notice = paid && live
     ? h('div', { class: 'banner' }, h('strong', {}, '¡Listo, tu plan está activo! '), 'Te enviamos la confirmación por correo.',
       needsOnboarding() ? [' ', h('a', { class: 'btn primary', href: '#/empezar' }, 'Termina de configurar tu agente →')] : null)

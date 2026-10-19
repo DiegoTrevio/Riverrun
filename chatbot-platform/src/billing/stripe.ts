@@ -27,6 +27,9 @@ async function call(method: 'GET' | 'POST', path: string, body?: Record<string, 
     headers: { authorization: `Bearer ${cfg().secretKey}`, ...(body ? { 'content-type': 'application/x-www-form-urlencoded' } : {}) },
     body: body ? form(body).join('&') : undefined,
     signal: AbortSignal.timeout(15_000),
+  }).catch((e) => {
+    // Sin respuesta (red, DNS o tiempo agotado): se informa como falla del proveedor, igual que un error HTTP.
+    throw new ProviderError(e?.name === 'TimeoutError' ? 'Stripe no respondió a tiempo' : 'No se pudo conectar con Stripe');
   });
   const data: any = await res.json().catch(() => ({}));
   if (!res.ok) throw new ProviderError(`Stripe: ${data?.error?.message ?? `HTTP ${res.status}`}`, res.status);

@@ -9,6 +9,8 @@ export const fake = {
     sessions: {} as Record<string, any>,
     products: {} as Record<string, any>,
     fail: false,
+    /** Corta la conexión sin responder (red caída). */
+    drop: false,
     n: 0,
   },
   mp: { requests: [] as { method: string; path: string; body: any }[], preapprovals: {} as Record<string, any>, payments: {} as Record<string, any> },
@@ -29,6 +31,7 @@ const stripeUrl = await serve((req, raw, res) => {
   const path = req.url!.split('?')[0];
   const body = new URLSearchParams(raw);
   fake.stripe.requests.push({ method: req.method!, path, body });
+  if (fake.stripe.drop) return void req.socket.destroy();
   if (fake.stripe.fail) return json(res, 402, { error: { message: 'Tu tarjeta fue rechazada' } });
   if (path === '/v1/checkout/sessions' && req.method === 'POST') {
     const id = `cs_${++fake.stripe.n}`;

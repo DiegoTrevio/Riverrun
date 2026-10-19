@@ -2,7 +2,7 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 // Orden obligatorio: los simulados fijan las claves y URLs ANTES de que el arnés cargue la configuración.
-const { fake, stripeEvent, stripeSub } = await import('./billing-fakes.js');
+const { fake, mpEvent, stripeEvent, stripeSub } = await import('./billing-fakes.js');
 const { createHarness, dbAvailable, pool } = await import('./harness.js');
 
 const ok = await dbAvailable();
@@ -183,6 +183,53 @@ t('si el proveedor falla al registrarse, la cuenta queda creada y puede reintent
   } finally {
     fake.stripe.fail = false;
   }
+});
+
+t('si el proveedor no responde (red caída) al registrarse, la cuenta queda creada y el reintento avisa sin romperse', async () => {
+  fake.stripe.drop = true;
+  try {
+    const r = await signup({ email: 'ivan@red.mx', company: 'Red Iván', plan: 'pro', provider: 'stripe' });
+    assert.equal(r.statusCode, 200, r.body);
+    assert.equal(r.json().checkout_url, undefined);
+    assert.match(r.json().checkout_error, /cuenta quedó creada.*No se pudo conectar con Stripe/);
+    const retry = await as(r)('POST', '/api/billing/checkout', { plan: 'pro', provider: 'stripe' });
+    assert.equal(retry.statusCode, 502, retry.body);
+  } finally {
+    fake.stripe.drop = false;
+  }
+});
+
+t('Mercado Pago: un cobro rechazado que ya informó el aviso no se deshace en la revisión periódica', async () => {
+  const r = await signup({ email: 'hugo@pan.mx', company: 'Pan Hugo', plan: 'basico', provider: 'mercadopago' });
+  const accountId = r.json().account.id;
+  // El simulado siempre crea "pre_new" (ya usado por otra cuenta): esta cuenta tiene su propia suscripción.
+  await pool.query(`UPDATE subscriptions SET checkout_ref = 'pre_hugo' WHERE account_id = $1`, [accountId]);
+  fake.mp.preapprovals.pre_hugo = { id: 'pre_hugo', status: 'authorized', external_reference: `${accountId}:basico`, payer_id: 11, next_payment_date: new Date(Date.now() + 30 * 86400_000).toISOString() };
+  const post = (e: { url: string; payload: string; headers: Record<string, string> }) => h.app.inject({ method: 'POST', url: e.url, payload: e.payload, headers: e.headers });
+  assert.equal((await post(mpEvent('subscription_preapproval', 'pre_hugo'))).statusCode, 200);
+  assert.equal((await subOf(accountId)).status, 'active');
+  // El primer cobro se rechaza: Mercado Pago deja la suscripción "autorizada" mientras reintenta.
+  fake.mp.payments.pay_hugo = { id: 'pay_hugo', preapproval_id: 'pre_hugo', status: 'rejected' };
+  assert.equal((await post(mpEvent('subscription_authorized_payment', 'pay_hugo'))).statusCode, 200);
+  assert.equal((await subOf(accountId)).status, 'past_due');
+
+  await syncPendingCheckouts();
+  const s = await subOf(accountId);
+  assert.equal(s.status, 'past_due', 'la revisión no vuelve a activar un cobro rechazado');
+  assert.equal(s.checkout_ref, '', 'ya no queda como pago pendiente');
+});
+
+t('el aviso tardío de un plan reemplazado (que se cancela al final del periodo) no se toma como cobro duplicado', async () => {
+  const r = await signup({ email: 'jose@libros.mx', company: 'Libros José', plan: 'pro', provider: 'stripe' });
+  const accountId = r.json().account.id;
+  payStripe(r.json().checkout_url.split('/').pop(), accountId, 'sub_jose_nuevo');
+  assert.equal((await as(r)('POST', '/api/billing/confirm')).json().confirmed, true);
+  const old = stripeSub({ id: 'sub_jose_viejo', customer: 'cus_jose', cancel_at_period_end: true, metadata: { account_id: accountId, plan_key: 'pro' } });
+  fake.stripe.subs.sub_jose_viejo = old;
+  const e = stripeEvent('customer.subscription.updated', old);
+  assert.equal((await h.app.inject({ method: 'POST', url: '/webhook/billing/stripe', payload: e.payload, headers: e.headers })).statusCode, 200);
+  assert.equal((await subOf(accountId)).provider_subscription_id, 'sub_jose_nuevo', 'se conserva el plan vigente');
+  assert.equal(await superNotices('Cobro duplicado: Libros José'), 0);
 });
 
 t('con dominio de marca, el pago regresa a ese dominio; con uno desconocido, al principal', async () => {

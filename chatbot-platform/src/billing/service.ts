@@ -89,7 +89,8 @@ export async function startCheckout(o: { accountId: string; email: string; plan:
 /**
  * Confirma el último pago iniciado preguntándole al proveedor: al volver de la página de pago y en la revisión periódica.
  * Así la cuenta se activa aunque el aviso del proveedor (webhook) tarde o no llegue. Solo aplica pagos ya confirmados;
- * cobros fallidos y cancelaciones los siguen informando los avisos. Devuelve true si aplicó un pago.
+ * cobros fallidos y cancelaciones los siguen informando los avisos. Devuelve true si el pago quedó confirmado (ahora o
+ * antes, por el aviso).
  */
 export async function confirmCheckout(accountId: string): Promise<boolean> {
   const sub = await getSubscription(accountId);
@@ -98,7 +99,10 @@ export async function confirmCheckout(accountId: string): Promise<boolean> {
   if (!provider.enabled()) return false;
   const state = await provider.checkoutState(sub.checkout_ref, await listPlans(true));
   if (!state || state.status !== 'active' || state.accountId !== accountId) return false;
-  await applyState(state);
+  // Si el aviso ya aplicó esta suscripción, no se vuelve a aplicar: Mercado Pago la sigue mostrando "autorizada" mientras
+  // reintenta un cobro rechazado, y aplicarla de nuevo desharía ese aviso (la cuenta volvería a activa).
+  const applied = sub.provider === state.provider && sub.provider_subscription_id === state.subscriptionId && sub.status !== 'incomplete';
+  if (!applied) await applyState(state);
   await query(`UPDATE subscriptions SET checkout_ref = '' WHERE account_id = $1 AND checkout_ref = $2`, [accountId, sub.checkout_ref]);
   return true;
 }
@@ -149,7 +153,8 @@ async function applyStateLocked(state: SubscriptionState, now: Date): Promise<st
   // y se avisa al superadmin, una sola vez, para que cancele y reembolse la otra. Sin esto se cobraría dos veces sin que nadie lo note.
   if (state.status === 'active' && prev?.provider_subscription_id && ['active', 'past_due'].includes(prev.status) && !prev.cancel_at_period_end
     && (prev.provider !== state.provider || prev.provider_subscription_id !== state.subscriptionId)) {
-    if (await recordEvent(state.provider, `duplicate:${state.subscriptionId}`, 'duplicate_subscription', accountId)) {
+    // Si la otra ya se cancela al final de su periodo (un plan reemplazado), no seguirá cobrando: solo se ignora.
+    if (!state.cancelAtPeriodEnd && await recordEvent(state.provider, `duplicate:${state.subscriptionId}`, 'duplicate_subscription', accountId)) {
       await logEvent({ level: 'error', source: 'admin', message: `Suscripción duplicada (${state.provider} ${state.subscriptionId}): la cuenta ya paga ${prev.provider} ${prev.provider_subscription_id}`, accountId });
       await notifySuperadmins(accountId, `Cobro duplicado: ${acc.name}`,
         `"${acc.name}" tiene dos suscripciones cobrando: ${prev.provider} ${prev.provider_subscription_id} (la vigente) y ${state.provider} ${state.subscriptionId}. Cancela y reembolsa la segunda desde ${providers[state.provider].label}.`);

@@ -135,7 +135,9 @@ export async function channelRoutes(api: FastifyInstance) {
     const updated = await store.updateChannel(ch.id, { name: b.name, active: b.active, chatbot_id: b.chatbot_id, config: cfg });
     await logEvent({ level: 'info', source: 'admin', message: `Canal actualizado: ${updated!.name}`, accountId: ch.account_id, channelId: ch.id });
     // Una conexión que ya estaba conectada y ahora atiende a un agente nuevo lo enciende (si espera su primera conexión).
-    if (b.chatbot_id || b.active) await startAgentOnConnect(updated!);
+    if (b.chatbot_id || b.active) {
+      await startAgentOnConnect(updated!).catch((e) => logEvent({ level: 'error', source: 'channel', message: `No se pudo encender el agente al conectar: ${e?.message ?? e}`, accountId: ch.account_id, channelId: ch.id }));
+    }
     return publicChannel(updated!);
   });
 

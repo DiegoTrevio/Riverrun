@@ -14,6 +14,9 @@ async function call(method: 'GET' | 'POST' | 'PUT', path: string, body?: unknown
     headers: { authorization: `Bearer ${cfg().accessToken}`, ...(body ? { 'content-type': 'application/json' } : {}) },
     body: body ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(15_000),
+  }).catch((e) => {
+    // Sin respuesta (red, DNS o tiempo agotado): se informa como falla del proveedor, igual que un error HTTP.
+    throw new ProviderError(e?.name === 'TimeoutError' ? 'Mercado Pago no respondió a tiempo' : 'No se pudo conectar con Mercado Pago');
   });
   const data: any = await res.json().catch(() => ({}));
   if (!res.ok) throw new ProviderError(`Mercado Pago: ${data?.message ?? `HTTP ${res.status}`}`, res.status);
