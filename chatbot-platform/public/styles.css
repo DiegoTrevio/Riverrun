@@ -504,3 +504,7 @@ button.icon-only { min-width: 40px; justify-content: center; font-size: 18px; li
 .inbox-detail { min-width: 0; }
 .inbox-detail .split { gap: 16px; }
 .inbox-empty { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); text-align: center; padding: 80px 24px; }
+
+/* Redes sociales: botón de cada red para conectar. */
+.social-network { display: flex; gap: 10px; align-items: center; text-align: left; padding: 12px; min-height: 64px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: inherit; }
+.social-network:hover { border-color: var(--accent); }

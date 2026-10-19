@@ -42,6 +42,11 @@ export const zer = {
   accounts: new Map<string, any>(),
   webhooks: [] as any[],
   telegram: new Map<string, { status: 'pending' | 'connected' | 'expired'; profileId: string }>(),
+  /** Registro de entregas del webhook (GET /webhooks/logs) y los reenvíos pedidos. */
+  logs: [] as any[],
+  redelivered: [] as Array<{ webhookId: string; eventId: string }>,
+  /** Las siguientes N llamadas responden 429 (límite de la llave). */
+  rateLimited: 0,
 };
 /** Graph de Meta simulado para «Conectar con Facebook»: páginas que devuelve me/accounts y tokens que Meta retiró. */
 export const metaFake = {
@@ -70,6 +75,11 @@ const extServer = http.createServer((req, res) => {
       const p = path.slice('/api/v1'.length);
       const m = req.method;
       if (zer.unauthorized || !String(req.headers.authorization).startsWith('Bearer zk_')) return json(401, { error: 'Unauthorized' });
+      if (zer.rateLimited > 0) {
+        zer.rateLimited--;
+        res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '0' });
+        return res.end(JSON.stringify({ error: 'Rate limit exceeded' }));
+      }
       const account = (platform: string, profileId: string, username: string) => {
         const a = { _id: `acc_${++ext.n}`, platform, profileId, username, displayName: `Negocio ${username}`, profilePicture: `https://cdn.zernio.example/${username}.jpg`, isActive: true };
         zer.accounts.set(a._id, a);
@@ -113,6 +123,12 @@ const extServer = http.createServer((req, res) => {
         if (!w) return json(404, { error: 'not found' });
         Object.assign(w, body);
         return json(200, { success: true, webhook: w });
+      }
+      if (p === '/webhooks/logs' && m === 'GET') return json(200, { logs: zer.logs, pagination: { total: zer.logs.length, limit: 50, skip: 0, pages: 1, hasMore: false } });
+      if (p === '/webhooks/logs/redeliver' && m === 'POST') {
+        if (!zer.logs.some((l) => l.webhookId === body.webhookId && l.eventId === body.eventId)) return json(422, { error: 'No delivery matches this event' });
+        zer.redelivered.push({ webhookId: body.webhookId, eventId: body.eventId });
+        return json(200, { success: true, message: 'Webhook re-delivered' });
       }
       if (p === '/users') return json(200, { currentUserId: zer.userId, users: [] });
       if (p === '/connect/bluesky/credentials') {
@@ -229,6 +245,8 @@ process.env.META_APP_SECRET = 'meta-app-secret-pruebas';
 process.env.META_VERIFY_TOKEN = 'verificacion-meta-pruebas';
 process.env.ZERNIO_API_URL = `${extUrl}/api/v1`;
 process.env.ZERNIO_API_KEY = zer.key;
+// Presupuesto de llamadas a Zernio holgado en las pruebas (la prueba del presupuesto lo baja).
+process.env.ZERNIO_RATE_PER_MIN = process.env.ZERNIO_RATE_PER_MIN || '100000';
 process.env.EVOLUTION_URL = extUrl;
 process.env.EVOLUTION_API_KEY = 'llave-global-de-pruebas';
 process.env.PUBLIC_BASE_URL = 'https://bot.test';

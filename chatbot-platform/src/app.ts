@@ -32,6 +32,7 @@ import { taskRoutes } from './routes/tasks.js';
 import { pipelineRoutes } from './routes/pipelines.js';
 import { publicRoutes } from './routes/public.js';
 import { signupRoutes } from './routes/signup.js';
+import { socialPublicRoutes, socialRoutes } from './routes/social.js';
 import { installErrorHandler } from './routes/util.js';
 import { cachedChecks, runReadiness } from './monitor.js';
 import { functionalReport, readinessReport } from './observability/health.js';
@@ -128,6 +129,7 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
   await sessionRoutes(app);
   await signupRoutes(app);
   await publicRoutes(app, service);
+  await socialPublicRoutes(app);
   await calendarRoutes(app);
   await billingWebhooks(app);
   await poolPublicRoutes(app);
@@ -144,6 +146,7 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
     await adminRoutes(api, service);
     await chatbotRoutes(api, service);
     await channelRoutes(api);
+    await socialRoutes(api);
     await conversationRoutes(api, service);
     await automationRoutes(api, service);
     await pipelineRoutes(api, service);

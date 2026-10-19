@@ -8,6 +8,7 @@ import { ChannelConfigSchemas, type Channel, type ImageAsset } from '../types.js
 import { signedImageUrl } from './media.js';
 import type { ChannelAdapter, InboundMessage, ParseResult, WebhookRequest } from './types.js';
 import { platformSecret } from '../platform-secrets.js';
+import { drainZernioBudget, noteZernioLimit, takeZernioBudget, type ZernioPriority } from './zernio-budget.js';
 
 /**
  * Zernio: una sola API para los mensajes directos de varias redes (Instagram, Facebook, WhatsApp Business, Telegram, X,
@@ -77,10 +78,12 @@ export class ZernioError extends Error {
 
 /**
  * Cliente mínimo. No reintenta envíos: uno que Zernio aceptó y luego falló podría duplicarse. Las consultas (GET) sí se
- * repiten una vez ante un error del servidor, y las altas pueden llevar Idempotency-Key.
+ * repiten una vez ante un error del servidor, y las altas pueden llevar Idempotency-Key. Cada llamada toma su lugar en
+ * el presupuesto compartido de la llave (lo que corre solo, con prioridad baja).
  */
 export class ZernioClient {
   beforeRequest?:()=>Promise<void>;
+  priority: ZernioPriority = 'interactive';
   constructor(private apiKey: string, private base = config.zernioApiUrl) {}
 
   async call<T = any>(method: Method, path: string, body?: unknown, opts: { idempotencyKey?: string } = {}): Promise<T> {
@@ -89,6 +92,8 @@ export class ZernioClient {
     // 429: la API rechazó la petición sin procesarla, así que repetirla una vez no duplica mensajes. Una consulta que
     // falló en el servidor de Zernio tampoco cambia nada al repetirla.
     if (res.status === 429 || (method === 'GET' && res.status >= 500)) {
+      // Zernio dice que se pasó el límite de la llave: todos los procesos esperan a que se reponga.
+      if (res.status === 429) await drainZernioBudget();
       const header = res.headers.get('retry-after')?.trim();
       const s = header ? Number(header) : NaN;
       await res.body?.cancel().catch(() => undefined);
@@ -118,7 +123,8 @@ export class ZernioClient {
 
   private async send(method: Method, path: string, body?: unknown, opts: { idempotencyKey?: string } = {}) {
     await this.beforeRequest?.();
-    return fetch(`${this.base}${path}`, {
+    await takeZernioBudget(this.priority);
+    const res = await fetch(`${this.base}${path}`, {
       method,
       headers: {
         authorization: `Bearer ${this.apiKey}`,
@@ -128,6 +134,8 @@ export class ZernioClient {
       body: body !== undefined ? JSON.stringify(body) : undefined,
       signal: AbortSignal.timeout(30000),
     });
+    noteZernioLimit(Number(res.headers.get('x-ratelimit-limit')));
+    return res;
   }
 
   /** Sube un archivo a Zernio (URL firmada) y devuelve su dirección pública para enviarlo como adjunto. */
@@ -142,7 +150,11 @@ export class ZernioClient {
   }
 }
 
-export const clientFor = (channel?: Pick<Channel, 'config'> | null) => new ZernioClient(zernioKey(channel));
+export const clientFor = (channel?: Pick<Channel, 'config'> | null, priority: ZernioPriority = 'interactive') => {
+  const client = new ZernioClient(zernioKey(channel));
+  client.priority = priority;
+  return client;
+};
 
 /** Firma de los webhooks: HMAC-SHA256 en hexadecimal del cuerpo crudo. */
 export function zernioSignature(rawBody: Buffer, secret: string) {
@@ -409,7 +421,11 @@ export async function zernioAuthUrl(channel: Channel, redirectUrl: string): Prom
   const platform = String(channel.config.platform ?? '');
   if (networkOf(platform)?.flow !== 'oauth') throw new Error('Esta red se conecta desde el panel, sin salir a otra página');
   const q = new URLSearchParams({ profileId: channel.config.profile_id, redirect_url: redirectUrl });
-  if (platform === 'whatsapp') q.set('language', 'es');
+  // WhatsApp: alta en una página de Zernio (Embedded Signup de Meta), en español; `language` solo se acepta así.
+  if (platform === 'whatsapp') {
+    q.set('signup', 'hosted');
+    q.set('language', 'es');
+  }
   const r = await clientFor(channel).call<any>('GET', `/connect/${encodeURIComponent(platform)}?${q}`);
   const url = r?.authUrl ?? r?.url ?? r?.data?.authUrl;
   if (!url) throw new Error('Zernio no devolvió la URL de autorización');

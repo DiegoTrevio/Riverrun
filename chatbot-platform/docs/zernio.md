@@ -18,6 +18,11 @@ minutos. La cuenta solo se guarda si Zernio confirma que está en el perfil de *
 la URL) y es de la red elegida. Armar el retorno a mano con la cuenta de otro negocio responde "no pertenece a este
 negocio".
 
+**Desde "Redes sociales"** (o con el enlace que le mandas al cliente) el retorno es `/zernio/return/<estado>`: el estado
+se guarda solo como huella en `zernio_connect_sessions`. El del panel sirve una vez y vence a los 30 minutos; el del
+enlace sirve 7 días y solo hasta que el cliente conecta (si cancela, puede volver a abrirlo). La regla de propiedad es la
+misma: Zernio confirma que la cuenta está en el perfil del negocio y es de la red elegida.
+
 **El negocio nunca ve identificadores**: la API devuelve `config.connected` y oculta `profile_id` y `account_id` (solo el
 superadmin los ve). Nadie los puede escribir desde el formulario: solo el flujo de conexión.
 
@@ -40,6 +45,36 @@ firmado con `X-Zernio-Signature` (HMAC-SHA256 del cuerpo, con un secreto derivad
 Una cuenta conectada **directamente en Zernio** (por ti, en su panel) en el perfil de un negocio se **adopta**: aparece
 como de ese negocio. Una de un perfil que no es de nadie se ignora.
 
+## Redes sociales del negocio
+
+En **Ajustes → Redes sociales** el negocio ve todas sus redes conectadas (foto, usuario y estado) y conecta otras:
+
+- **Con mensajes directos** (X, Reddit, WhatsApp, Telegram, Bluesky, y Facebook e Instagram si no usas "Conectar con
+  Facebook"): elige qué agente contesta. Se crea (o se reutiliza) su conexión de mensajes; al desconectar la red, la
+  conexión se conserva con su historial y se vuelve a usar si la conecta de nuevo.
+- **Sin mensajes directos** (LinkedIn, TikTok, YouTube, Threads, Pinterest, Google): quedan para comentarios,
+  publicaciones y estadísticas.
+- Con **"Conectar con Facebook"** activo (app de Meta propia), Facebook e Instagram por Zernio no contestan mensajes, para
+  que no haya respuestas dobles.
+- **Reconectar** usa `reconnectAccountId`: Zernio conserva la misma cuenta y su historial.
+- Telegram y Bluesky terminan en su conexión (código para el bot o contraseña de aplicación).
+
+Cada plan limita cuántas redes se conectan (`social_accounts` en **Planes y cobro**; en la prueba, `TRIAL_MAX_SOCIAL_ACCOUNTS`,
+2 por omisión). Reconectar una que ya tiene no cuenta como nueva.
+
+## Llamadas por minuto compartidas
+
+El límite de Zernio es de la llave (60 por minuto con 2 cuentas o menos, 600 hasta 2000 y 1200 con más), así que se
+reparte entre todos los procesos con una cubeta en la base (`rate_buckets`), al 90 %. Si Zernio informa el límite real
+(`X-RateLimit-Limit`), se usa ese:
+
+- Lo que pide una persona (enviar, conectar) espera hasta 10 s si no hay lugar y luego sigue.
+- Lo que corre solo (revisar perfiles, limpiar, sincronizar) deja siempre libre el 30 %; si no alcanza en 60 s, se
+  reintenta después.
+- Un 429 de Zernio vacía la cubeta: todos esperan a que se reponga.
+
+`ZERNIO_RATE_PER_MIN` fija el número a mano.
+
 ## Ventana de 24 horas
 
 Solo Meta la exige: Instagram, Messenger y WhatsApp oficial. Fuera de las 24 h desde el último mensaje del cliente no se
@@ -54,8 +89,21 @@ envían campañas ni avisos por esas redes. Telegram, X, Bluesky y Reddit no la 
   existiendo; los que ya no existan quedan sin perfil y sus redes, por reconectar (el negocio recibe el aviso).
 - **Cambiar la llave a la de otra cuenta de Zernio:** el panel avisa cuántos negocios tienen redes y pide confirmar.
   Al confirmar, esos negocios quedan sin perfil y sus redes, por reconectar.
-- **Conectar una red por un cliente:** puedes conectarla tú en el panel de Zernio, dentro del perfil del negocio
-  (`externalId` = id del negocio). Se adopta sola en cuanto Zernio avisa.
+- **Página Zernio (Sistema → Zernio → "Negocios, enlaces y webhook"):** cada negocio con su perfil, sus redes (con su
+  estado) y los mensajes que envió este mes por Zernio, más el costo estimado y las llamadas disponibles ahora.
+- **Crear el perfil de un negocio** antes de que conecte nada: botón *Crear perfil*.
+- **Mandarle un enlace al cliente:** *Enlace de conexión* → elige la red → *Crear enlace* y cópialo. El cliente lo abre
+  sin iniciar sesión, ve tu marca (nombre, color y logo de su marca blanca) y autoriza su red. Sirve 7 días y deja de
+  servir al conectar. Telegram y Bluesky no se conectan con enlace (necesitan su conexión de mensajes).
+- **Conectar una red tú mismo:** en el panel de Zernio, dentro del perfil del negocio (`externalId` = id del negocio).
+  Se adopta sola en cuanto Zernio avisa, o al pulsar *Sincronizar*.
+- **Sincronizar:** trae de Zernio las cuentas del perfil; adopta las nuevas y marca *desconectadas* las que ya no están
+  (avisando en su conexión de mensajes).
+- **Desconectar todo:** quita en Zernio todas las redes del negocio (p. ej. si dejó de pagar). El perfil se conserva.
+- **Webhook:** *Ver entregas* muestra lo que Zernio intentó enviar en los últimos 30 días; *Reenviar* repite una entrega
+  fallida (con el mismo id: si ya se había procesado, no se duplica).
+- **Perfiles sin dueño:** perfiles de tu cuenta de Zernio que no son de ningún negocio (de negocios borrados o creados a
+  mano). Revísalos en Zernio si cuestan.
 - **Borrar un negocio:** sus redes y su perfil se quitan de Zernio en un trabajo aparte (`zernio_cleanup`), con
   reintentos, para no seguir pagando por ellas.
 - **Costos:** Zernio cobra por cuenta conectada (las 2 primeras, gratis) y por mensajes salientes (10 000 al mes

@@ -72,7 +72,9 @@ export async function render() {
     else if (parts[0] === 'ajustes') await view('dashboard', 'viewSettingsHub', content);
     else if (parts[0] === 'integraciones') await view('integrations', 'viewIntegrations', content, params);
     else if (parts[0] === 'marcas') await view('brandadmin', 'viewBrands', content);
+    else if (parts[0] === 'sistema' && parts[1] === 'zernio') await view('zernio-admin', 'viewZernioAdmin', content);
     else if (parts[0] === 'sistema') await view('system', 'viewSystem', content);
+    else if (parts[0] === 'redes') await view('social-accounts', 'viewSocialAccounts', content, params);
     else if (parts[0] === 'plan') await view('billing', 'viewPlan', content, params);
     else if (parts[0] === 'planes') await view('billing', 'viewPlans', content);
     else if (parts[0] === 'estadisticas') await view('analytics', 'viewAnalytics', content, params);

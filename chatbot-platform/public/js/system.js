@@ -81,6 +81,7 @@ async function zernioCard() {
           });
         }) }, 'Guardar y probar')) : null,
       h('div', { class: 'row' },
+        s.enabled ? h('a', { class: 'btn primary', href: '#/sistema/zernio' }, 'Negocios, enlaces y webhook') : null,
         s.enabled ? h('button', { onclick: (e) => busy(e.currentTarget, () => run(() => api('POST', '/api/system/zernio/check'), 'Llave y webhook verificados')) }, 'Probar y reparar') : null,
         s.source === 'panel' ? h('button', { class: 'danger', onclick: (e) => busy(e.currentTarget, async () =>
           (await confirmAction('¿Quitar la llave de Zernio? Las redes sociales de todas las cuentas dejarán de recibir y enviar mensajes.')) ? run(() => api('DELETE', '/api/system/zernio'), 'Llave quitada') : null) }, 'Quitar llave') : null));

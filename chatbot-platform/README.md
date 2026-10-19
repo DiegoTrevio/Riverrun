@@ -36,7 +36,7 @@ Chat web (widget)    ┘    │                             │
 
 ### Redes sociales (Zernio)
 
-Instagram, Facebook Messenger, WhatsApp Business (API oficial), Telegram, X, Bluesky y Reddit llegan por [Zernio](https://zernio.com), una API unificada de **mensajes directos**. Implementación: `src/channels/zernio.ts` (API, envíos y qué permite cada red), `src/channels/zernio-connect.ts` (conexión, perfiles y ciclo de vida) y `src/channels/zernio-events.ts` (webhook y cola de eventos). Arquitectura, separación entre negocios y el manual del administrador: [docs/zernio.md](docs/zernio.md).
+Instagram, Facebook Messenger, WhatsApp Business (API oficial), Telegram, X, Bluesky y Reddit llegan por [Zernio](https://zernio.com), una API unificada de **mensajes directos**; LinkedIn, TikTok, YouTube, Threads, Pinterest y Google (perfil de negocio) se conectan para comentarios, publicaciones y estadísticas. Implementación: `src/channels/zernio.ts` (API, envíos y qué permite cada red), `src/channels/zernio-connect.ts` (conexión, perfiles y ciclo de vida), `src/channels/zernio-accounts.ts` (redes del negocio, enlace para el cliente y página del administrador), `src/channels/zernio-events.ts` (webhook y cola de eventos) y `src/channels/zernio-budget.ts` (llamadas por minuto compartidas). Arquitectura, separación entre negocios y el manual del administrador: [docs/zernio.md](docs/zernio.md).
 
 **La plataforma tiene una sola llave; cada negocio solo conecta sus redes.**
 
@@ -51,7 +51,9 @@ Como con el QR de WhatsApp, el canal muestra la foto, el nombre y el usuario de 
 
 Mensajes: el cliente se identifica por la conversación de Zernio; el agente contesta en el mismo hilo con «escribiendo…» donde la red lo permite (Instagram, Facebook, WhatsApp, Telegram). Envía texto, fotos y archivos (los archivos se suben a Zernio con URL firmada; Bluesky y Reddit solo admiten texto). Las fotos, notas de voz y documentos del cliente se descargan (los de WhatsApp con la llave de la plataforma) y las notas de voz se transcriben. Los ecos de lo que envía el agente (`message.sent`) se reconocen por el id de la plataforma y aunque vuelvan sin formato. Cada mensaje enviado guarda si se **entregó**, se **leyó** o **falló** (con el código, p. ej. `TEMPLATE_REQUIRED`). Meta (Instagram, Messenger y WhatsApp oficial) permite escribir solo dentro de la ventana de 24 h; fuera de ella no se envían campañas por esas redes. Telegram, X, Bluesky y Reddit no tienen esa regla.
 
-Variables: `ZERNIO_API_KEY` (obligatoria para activar las redes) y `ZERNIO_API_URL` (por defecto `https://zernio.com/api/v1`). Los canales creados antes con su propia llave y webhook siguen funcionando (esa llave se guarda cifrada).
+**Redes sociales** (Ajustes → Redes sociales) muestra al negocio todas sus redes conectadas, con su estado, quién contesta los mensajes de cada una y un botón para conectar otra. **Sistema → Zernio** es la página del superadministrador: cada negocio con su perfil y sus redes, crear el perfil, sincronizar con Zernio (adopta lo que conectaste allá), **enlace de conexión** para mandarle al cliente (sirve 7 días, sin iniciar sesión, hasta que conecta), desconectar todo, el registro de entregas del webhook con **Reenviar**, perfiles sin dueño, el costo estimado y las llamadas disponibles. Cada plan limita cuántas redes se conectan (`social_accounts`; en la prueba, `TRIAL_MAX_SOCIAL_ACCOUNTS`).
+
+Variables: `ZERNIO_API_KEY` (obligatoria para activar las redes), `ZERNIO_API_URL` (por defecto `https://zernio.com/api/v1`) y `ZERNIO_RATE_PER_MIN` (opcional: llamadas por minuto de toda la instalación; si no, según las cuentas conectadas). Los canales creados antes con su propia llave y webhook siguen funcionando (esa llave se guarda cifrada).
 
 ### Facebook e Instagram con un botón (app de Meta de la plataforma)
 

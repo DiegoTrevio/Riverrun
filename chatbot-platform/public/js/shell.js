@@ -25,7 +25,7 @@ const SECTIONS = {
   pipeline: ['pipeline'],
   automation: ['automation'],
   estadisticas: ['estadisticas'],
-  ajustes: ['ajustes', 'users', 'accounts', 'planes', 'marcas', 'sistema', 'plan', 'consumo', 'logs', 'password', 'integraciones'],
+  ajustes: ['ajustes', 'users', 'accounts', 'planes', 'marcas', 'sistema', 'plan', 'consumo', 'logs', 'password', 'integraciones', 'redes'],
 };
 
 /** Opciones de Ajustes, agrupadas como un submenú (las de la plataforma solo las ve el superadministrador). */
@@ -36,6 +36,7 @@ function settingsGroups() {
       ['#/automation/settings', 'Horario y avisos', 'automation/settings'],
       ['#/users', 'Mi equipo', 'users'],
       ['#/integraciones', 'Integraciones', 'integraciones'],
+      state.meta.zernio_enabled ? ['#/redes', 'Redes sociales', 'redes'] : null,
     ]],
     ['Cuenta', [
       !isSuper() ? ['#/plan', 'Mi plan y pagos', 'plan'] : null,

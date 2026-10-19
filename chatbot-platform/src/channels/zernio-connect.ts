@@ -65,7 +65,7 @@ export async function verifyProfiles(limit = 500): Promise<number> {
   if (!zernioEnabled()) return 0;
   const rows = await query<{ id: string; zernio_profile_id: string }>(`SELECT id, zernio_profile_id FROM accounts WHERE zernio_profile_id <> '' ORDER BY created_at LIMIT $1`, [limit]);
   void (async () => {
-    const client = clientFor();
+    const client = clientFor(null, 'background');
     for (const r of rows) {
       try {
         if (!(await profileExists(client, r.zernio_profile_id))) {
@@ -106,7 +106,7 @@ export async function workspaceChange(newKey: string, apply: boolean): Promise<{
  */
 export async function zernioCleanup(p: { accounts?: string[]; profiles?: string[] }) {
   if (!zernioEnabled()) return;
-  const client = clientFor();
+  const client = clientFor(null, 'background');
   const gone = (e: unknown) => e instanceof ZernioError && e.status === 404;
   for (const id of p.accounts ?? []) await disconnectAccount(client, id).catch((e) => { if (!gone(e)) throw e; });
   for (const id of p.profiles ?? []) await deleteProfile(client, id).catch((e) => { if (!gone(e)) throw e; });
