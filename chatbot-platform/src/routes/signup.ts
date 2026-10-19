@@ -15,7 +15,6 @@ import { BUSINESS_TYPES } from '../templates/business.js';
 import type { User } from '../types.js';
 import { HttpError } from '../access.js';
 import { parse } from './util.js';
-import { prepareAccountProfile } from '../channels/zernio-connect.js';
 import { offeredPlans } from './billing.js';
 
 const Password = z.string().min(8, 'mínimo 8 caracteres').max(200);
@@ -97,7 +96,6 @@ export async function signupRoutes(app: FastifyInstance) {
       return { account, user };
     });
 
-    prepareAccountProfile(account.id);
     await logEvent({ level: 'info', source: 'admin', message: `Registro nuevo: ${account.name} (${user.email})`, accountId: account.id, details: { ip: req.ip, business_type: businessType, plan: purchase?.plan.key } });
     if (!verified) await sendVerification(user);
     await notifySuperadmins(

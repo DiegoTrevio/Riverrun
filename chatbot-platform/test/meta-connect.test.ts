@@ -6,7 +6,7 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
-import { createHarness, dbAvailable, ext, metaFake, pool, store, waitFor, zer } from './harness.js';
+import { createHarness, dbAvailable, ext, metaFake, pool, sleep, store, waitFor, zer } from './harness.js';
 // Después del arnés (que define las variables de entorno con await de nivel superior).
 const { checkMetaTokens } = await import('../src/channels/meta-connect.js');
 
@@ -233,19 +233,26 @@ t('desconectar desde el panel borra el token; la suscripción de la página se q
   assert.equal(reqs('/PAGE1/subscribed_apps').filter((x) => x.method === 'DELETE').length, 1);
 });
 
-t('Zernio: el perfil del negocio se crea al dar de alta la cuenta, una sola vez', async () => {
+t('Zernio: el perfil del negocio se crea al conectar su primera red (no al darse de alta), una sola vez', async () => {
   const acc = (await h.authed('POST', '/api/accounts', { name: 'Florería Luna' })).json();
   const profileOf = async () => (await pool.query('SELECT zernio_profile_id FROM accounts WHERE id = $1', [acc.id])).rows[0].zernio_profile_id;
-  await waitFor(async () => !!(await profileOf()), 5000);
-  const profileId = await profileOf();
-  assert.equal(zer.profiles.filter((p) => p.externalId === acc.id).length, 1);
-  // La primera red usa ese mismo perfil: no se crea otro.
+  await sleep(300);
+  assert.equal(await profileOf(), '', 'darse de alta no crea nada en Zernio');
+  assert.equal(zer.profiles.filter((p) => p.externalId === acc.id).length, 0);
   const created = await h.authed('POST', '/api/channels', { account_id: acc.id, type: 'zernio', name: 'X del negocio', config: { platform: 'twitter' } });
   assert.equal(created.statusCode, 200, created.body);
   const ch = created.json();
   const c = await h.authed('POST', `/api/channels/${ch.id}/zernio/connect`, {});
   assert.equal(c.statusCode, 200, c.body);
+  const profileId = await profileOf();
+  assert.ok(profileId);
   assert.equal((await store.getChannel(ch.id))!.config.profile_id, profileId);
+  assert.equal((await pool.query('SELECT account_id FROM zernio_profiles WHERE profile_id = $1', [profileId])).rows[0].account_id, acc.id);
+  // Otra conexión (aunque se haya perdido el dato local) reutiliza el mismo perfil: Zernio lo encuentra por externalId.
+  await pool.query(`UPDATE accounts SET zernio_profile_id = '' WHERE id = $1`, [acc.id]);
+  await pool.query(`UPDATE channels SET config = config || '{"profile_id":""}'::jsonb WHERE id = $1`, [ch.id]);
+  assert.equal((await h.authed('POST', `/api/channels/${ch.id}/zernio/connect`, {})).statusCode, 200);
+  assert.equal(await profileOf(), profileId);
   assert.equal(zer.profiles.filter((p) => p.externalId === acc.id).length, 1);
 });
 

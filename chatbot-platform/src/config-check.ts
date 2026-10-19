@@ -301,9 +301,10 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
   /* ------------------------------ Seguridad ------------------------------ */
   const secret = get('SESSION_SECRET');
   if (!secret) {
-    // Sin secreto se usa uno aleatorio por arranque (secret.ts): no es inseguro, pero degrada funciones. No bloquea.
+    // Sin secreto se usa uno aleatorio por arranque (secret.ts): no es inseguro, pero degrada funciones. Con Zernio sí es
+    // crítico: el webhook se firma con un secreto derivado de él y cada proceso tendría uno distinto.
     add(
-      'warning',
+      get('ZERNIO_API_KEY') ? 'critical' : 'warning',
       'security',
       'session_secret.missing',
       ['SESSION_SECRET'],

@@ -33,7 +33,8 @@ import { assertWithinLimit, LimitsSchema } from '../billing/limits.js';
 import { billingEnabled } from '../billing/service.js';
 import { parse } from './util.js';
 import { metaConnectEnabled } from '../channels/meta-connect.js';
-import { prepareAccountProfile, verifyZernioKey, zernioSystemStatus } from '../channels/zernio-connect.js';
+import { verifyZernioKey, workspaceChange, zernioFootprint, zernioSystemStatus } from '../channels/zernio-connect.js';
+import { scheduleJob } from '../automation/store.js';
 import { removePlatformSecret, savePlatformSecret } from '../platform-secrets.js';
 
 const Password = z.string().min(8, 'mínimo 8 caracteres').max(200);
@@ -107,7 +108,9 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     billing_enabled: await billingEnabled(),
     zernio_enabled: zernioEnabled(),
     meta_connect_enabled: metaConnectEnabled(),
-    social_networks: NETWORKS.map(({ id, label, flow }) => ({ id, label, flow })),
+    // Redes para una conexión de mensajes; y lo que permite cada red de Zernio (comentarios, posts, estadísticas…).
+    social_networks: NETWORKS.filter((n) => n.dm).map(({ id, label, flow }) => ({ id, label, flow })),
+    social_capabilities: NETWORKS.map(({ id, label, flow, dm, comments, reviews, posts, analytics, privateReply, interactive, window24h }) => ({ id, label, flow, dm, comments, reviews, posts, analytics, privateReply, interactive, window24h })),
     version: config.monitor.version,
   }));
 
@@ -125,9 +128,15 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
   });
   api.put('/api/system/zernio', superadmin, async (req: any) => {
     if (zernioKeySource() === 'env') throw envOwned();
-    const { api_key } = parse(z.object({ api_key: z.string().trim().min(8, 'Pega la llave completa').max(500) }), req.body);
+    const { api_key, confirm_workspace_change } = parse(z.object({ api_key: z.string().trim().min(8, 'Pega la llave completa').max(500), confirm_workspace_change: z.boolean().optional() }), req.body);
     const v = await verifyZernioKey(api_key);
     if (!v.ok) throw new HttpError(400, v.error);
+    // Una llave de OTRA cuenta de Zernio: los perfiles y redes de los negocios no existen allá (hay que reconectarlas).
+    const ws = await workspaceChange(api_key, false);
+    if (ws.changed && ws.affected && !confirm_workspace_change) {
+      throw new HttpError(409, `Esta llave es de otra cuenta de Zernio. Los ${ws.affected} negocios con redes conectadas tendrán que volver a conectarlas. Confírmalo para continuar.`, ['confirm_workspace_change']);
+    }
+    await workspaceChange(api_key, true);
     await savePlatformSecret(ZERNIO_SECRET, api_key, req.user.id);
     await logEvent({ level: 'info', source: 'admin', message: `Llave de Zernio guardada desde el panel por ${req.user.email} (termina en ${api_key.slice(-4)})` });
     return zernioSystemStatus(true);
@@ -268,7 +277,6 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
       }
       return { account, admin };
     });
-    prepareAccountProfile(account.id);
     await logEvent({ level: 'info', source: 'admin', message: `Cuenta creada: ${account.name}`, accountId: account.id });
     return { ...account, admin };
   });
@@ -299,7 +307,10 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     if (!acc) throw notFound('Cuenta no encontrada');
     const images = await query<{ file_path: string }>(`SELECT i.file_path FROM images i JOIN chatbots b ON b.id = i.chatbot_id WHERE b.account_id = $1`, [acc.id]);
     const whatsapps = (await store.listChannels(acc.id)).filter((c) => c.type === 'whatsapp');
+    const zernio = await zernioFootprint(acc.id);
     await store.deleteAccount(acc.id);
+    // Sus redes y su perfil se quitan de Zernio aparte (con reintentos): el negocio ya no existe.
+    if (zernio.accounts.length || zernio.profiles.length) await scheduleJob({ account_id: null, type: 'zernio_cleanup', payload: zernio, run_at: new Date() });
     for (const ch of whatsapps) await releaseWhatsapp(ch, { accountDeleted: true });
     for (const i of images) await fsp.rm(imageAbsolutePath(i), { force: true });
     await logEvent({ level: 'warn', source: 'admin', message: `Cuenta eliminada: ${acc.name}` });

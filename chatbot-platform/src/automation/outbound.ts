@@ -8,6 +8,7 @@ import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
 import * as astore from './store.js';
 import { renderTemplate } from './templates.js';
+import { zernioNeedsWindow } from '../channels/zernio.js';
 import type { Appointment } from './types.js';
 
 export interface OutboundOptions {
@@ -63,9 +64,9 @@ export class Outbound {
       if (st.consent.require_for_campaigns && !contact.consent_at) return { sent: false, reason: 'el cliente no ha aceptado recibir promociones' };
     }
     if (conv.status === 'human' && !o.allowWhenHuman) return { sent: false, reason: 'una persona está atendiendo la conversación' };
-    if (channel.type === 'messenger' || channel.type === 'instagram' || channel.type === 'zernio') {
-      // Meta solo permite escribir dentro de las 24 h posteriores al último mensaje del cliente. Zernio no documenta
-      // las reglas de cada red, así que se aplica la misma política por prudencia.
+    if (channel.type === 'messenger' || channel.type === 'instagram' || (channel.type === 'zernio' && zernioNeedsWindow(channel.config.platform))) {
+      // Meta (Messenger, Instagram y WhatsApp oficial) solo permite escribir dentro de las 24 h posteriores al último
+      // mensaje del cliente. Telegram, X, Bluesky y Reddit no tienen esa regla.
       const last = await astore.lastInbound(conv.id);
       if (!last || Date.now() - new Date(last.created_at).getTime() > META_WINDOW_MS) {
         const reason = channel.type === 'zernio' ? 'fuera de la ventana de 24 h (el cliente no ha escrito recientemente)' : 'fuera de la ventana de 24 h de Meta (el cliente no ha escrito recientemente)';

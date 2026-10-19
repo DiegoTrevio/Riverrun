@@ -3,7 +3,7 @@ import fsp from 'node:fs/promises';
 import { config } from '../config.js';
 import { toPlainText } from '../engine/text.js';
 import { sleep, type OutgoingFile, type Transport } from '../engine/transport.js';
-import { hmac, safeEqual } from '../secret.js';
+import { decryptSecret, hmac, safeEqual } from '../secret.js';
 import { ChannelConfigSchemas, type Channel, type ImageAsset } from '../types.js';
 import { signedImageUrl } from './media.js';
 import type { ChannelAdapter, InboundMessage, ParseResult, WebhookRequest } from './types.js';
@@ -18,29 +18,49 @@ import { platformSecret } from '../platform-secrets.js';
  * conversation, account }, firma HMAC-SHA256 hexadecimal en X-Zernio-Signature, id del envío en data.messageId).
  */
 
-/** Redes con mensajes directos y cómo se conectan desde el panel. */
+/**
+ * Redes de Zernio y lo que permite cada una: mensajes directos (dm), comentarios, reseñas, publicaciones, estadísticas,
+ * respuesta privada a un comentario, botones (interactive) y si solo se puede escribir dentro de las 24 h posteriores al
+ * último mensaje del cliente (window24h). Las que no tienen mensajes directos sirven para comentarios, posts y estadísticas.
+ */
 export const NETWORKS = [
-  { id: 'instagram', label: 'Instagram', flow: 'oauth', media: true, typing: true },
-  { id: 'facebook', label: 'Facebook Messenger', flow: 'oauth', media: true, typing: true },
-  { id: 'whatsapp', label: 'WhatsApp Business (API oficial)', flow: 'oauth', media: true, typing: true },
-  { id: 'telegram', label: 'Telegram', flow: 'code', media: true, typing: true },
-  { id: 'twitter', label: 'X (Twitter)', flow: 'oauth', media: true, typing: false },
-  { id: 'bluesky', label: 'Bluesky', flow: 'credentials', media: false, typing: false },
-  { id: 'reddit', label: 'Reddit', flow: 'oauth', media: false, typing: false },
+  { id: 'instagram', label: 'Instagram', flow: 'oauth', dm: true, media: true, typing: true, comments: true, reviews: false, posts: true, analytics: true, privateReply: true, interactive: true, window24h: true },
+  { id: 'facebook', label: 'Facebook Messenger', flow: 'oauth', dm: true, media: true, typing: true, comments: true, reviews: true, posts: true, analytics: true, privateReply: true, interactive: true, window24h: true },
+  { id: 'whatsapp', label: 'WhatsApp Business (API oficial)', flow: 'oauth', dm: true, media: true, typing: true, comments: false, reviews: false, posts: false, analytics: false, privateReply: false, interactive: true, window24h: true },
+  { id: 'telegram', label: 'Telegram', flow: 'code', dm: true, media: true, typing: true, comments: false, reviews: false, posts: true, analytics: false, privateReply: false, interactive: true, window24h: false },
+  { id: 'twitter', label: 'X (Twitter)', flow: 'oauth', dm: true, media: true, typing: false, comments: true, reviews: false, posts: true, analytics: true, privateReply: false, interactive: false, window24h: false },
+  { id: 'bluesky', label: 'Bluesky', flow: 'credentials', dm: true, media: false, typing: false, comments: true, reviews: false, posts: true, analytics: false, privateReply: false, interactive: false, window24h: false },
+  { id: 'reddit', label: 'Reddit', flow: 'oauth', dm: true, media: false, typing: false, comments: true, reviews: false, posts: true, analytics: false, privateReply: false, interactive: false, window24h: false },
+  { id: 'linkedin', label: 'LinkedIn', flow: 'oauth', dm: false, media: true, typing: false, comments: true, reviews: false, posts: true, analytics: true, privateReply: false, interactive: false, window24h: false },
+  { id: 'tiktok', label: 'TikTok', flow: 'oauth', dm: false, media: true, typing: false, comments: true, reviews: false, posts: true, analytics: true, privateReply: false, interactive: false, window24h: false },
+  { id: 'youtube', label: 'YouTube', flow: 'oauth', dm: false, media: true, typing: false, comments: true, reviews: false, posts: true, analytics: true, privateReply: false, interactive: false, window24h: false },
+  { id: 'threads', label: 'Threads', flow: 'oauth', dm: false, media: true, typing: false, comments: true, reviews: false, posts: true, analytics: true, privateReply: false, interactive: false, window24h: false },
+  { id: 'pinterest', label: 'Pinterest', flow: 'oauth', dm: false, media: true, typing: false, comments: false, reviews: false, posts: true, analytics: true, privateReply: false, interactive: false, window24h: false },
+  { id: 'googlebusiness', label: 'Google (perfil de negocio)', flow: 'oauth', dm: false, media: true, typing: false, comments: false, reviews: true, posts: true, analytics: true, privateReply: false, interactive: false, window24h: false },
 ] as const;
 export type Network = (typeof NETWORKS)[number];
 export const networkOf = (platform: string): Network | undefined => NETWORKS.find((n) => n.id === platform);
+/** Red que sirve para una conexión de mensajes (las demás solo para comentarios, posts y estadísticas). */
+export const dmNetworkOf = (platform: string): Network | undefined => NETWORKS.find((n) => n.id === platform && n.dm);
+/** ¿Esta red de Zernio solo permite escribir dentro de las 24 h posteriores al último mensaje del cliente? */
+export const zernioNeedsWindow = (platform: string) => networkOf(platform)?.window24h ?? true;
 
 /** Eventos que recibe el webhook de la plataforma. */
-export const EVENTS = ['message.received', 'message.sent', 'message.failed', 'account.connected', 'account.disconnected'];
+export const EVENTS = ['message.received', 'message.sent', 'message.failed', 'message.delivered', 'message.read', 'account.connected', 'account.disconnected'];
 
 /** Nombre con el que se guarda la llave de Zernio desde el panel (Sistema → Redes sociales). */
 export const ZERNIO_SECRET = 'zernio_api_key';
 /** De dónde sale la llave de la plataforma: el .env del servidor (manda) o la guardada en el panel. */
 export const zernioKeySource = (): 'env' | 'panel' | 'none' => (process.env.ZERNIO_API_KEY ? 'env' : platformSecret(ZERNIO_SECRET) ? 'panel' : 'none');
-/** Llave de Zernio: la de la plataforma, una sola para todas las cuentas (o, en canales creados antes, la que se guardó en el canal). */
-export const zernioKey = (channel?: Pick<Channel, 'config'> | null) =>
-  String(channel?.config?.api_key || process.env.ZERNIO_API_KEY || platformSecret(ZERNIO_SECRET) || '');
+/**
+ * Llave de Zernio: la de la plataforma, una sola para todas las cuentas (o, en canales creados antes, la que se guardó en
+ * el canal; esas se guardan cifradas desde migrateLegacyZernioKeys).
+ */
+export const zernioKey = (channel?: Pick<Channel, 'config'> | null) => {
+  const own = String(channel?.config?.api_key ?? '');
+  const legacy = own.startsWith('v1.') ? decryptSecret(own) ?? '' : own;
+  return String(legacy || process.env.ZERNIO_API_KEY || platformSecret(ZERNIO_SECRET) || '');
+};
 export const zernioEnabled = () => zernioKeySource() !== 'none';
 /** Secreto con el que Zernio firma el webhook de la plataforma (derivado de la clave del servidor: no se guarda). */
 export const platformWebhookSecret = () => hmac('zernio-webhook');
@@ -48,35 +68,63 @@ export const platformWebhookUrl = () => `${config.publicBaseUrl}/zernio/events`;
 
 type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
-/** Cliente mínimo. No reintenta envíos: uno que Zernio aceptó y luego falló podría duplicarse. */
+/** Error de la API de Zernio con su código HTTP y el cuerpo (p. ej. existingProfileId en un 409). */
+export class ZernioError extends Error {
+  constructor(message: string, public status: number, public data: any) {
+    super(message);
+  }
+}
+
+/**
+ * Cliente mínimo. No reintenta envíos: uno que Zernio aceptó y luego falló podría duplicarse. Las consultas (GET) sí se
+ * repiten una vez ante un error del servidor, y las altas pueden llevar Idempotency-Key.
+ */
 export class ZernioClient {
   beforeRequest?:()=>Promise<void>;
   constructor(private apiKey: string, private base = config.zernioApiUrl) {}
 
-  async call<T = any>(method: Method, path: string, body?: unknown): Promise<T> {
+  async call<T = any>(method: Method, path: string, body?: unknown, opts: { idempotencyKey?: string } = {}): Promise<T> {
     if (!this.apiKey) throw new Error('Zernio no está configurado en esta instalación (falta ZERNIO_API_KEY)');
-    let res = await this.send(method, path, body);
-    // 429: la API rechazó la petición sin procesarla, así que repetirla una vez no duplica mensajes.
-    if (res.status === 429) {
+    let res = await this.send(method, path, body, opts);
+    // 429: la API rechazó la petición sin procesarla, así que repetirla una vez no duplica mensajes. Una consulta que
+    // falló en el servidor de Zernio tampoco cambia nada al repetirla.
+    if (res.status === 429 || (method === 'GET' && res.status >= 500)) {
       const header = res.headers.get('retry-after')?.trim();
       const s = header ? Number(header) : NaN;
       await res.body?.cancel().catch(() => undefined);
-      await sleep(Number.isFinite(s) && s >= 0 ? Math.min(s, 10) * 1000 : 2000);
-      res = await this.send(method, path, body);
+      await sleep(Number.isFinite(s) && s >= 0 ? Math.min(s, 10) * 1000 : res.status === 429 ? 2000 : 500);
+      res = await this.send(method, path, body, opts);
     }
     const data: any = await res.json().catch(() => ({}));
     if (!res.ok) {
       const why = data?.error?.message ?? data?.message ?? (typeof data?.error === 'string' ? data.error : 'error');
-      throw new Error(`Zernio ${path.split('?')[0]} → ${res.status}: ${why}`);
+      throw new ZernioError(`Zernio ${path.split('?')[0]} → ${res.status}: ${why}`, res.status, data);
     }
     return data as T;
   }
 
-  private async send(method: Method, path: string, body?: unknown) {
+  /** Todas las páginas de una lista (Zernio pagina con cursor); como máximo `maxPages`. */
+  async listAll(path: string, key: string, maxPages = 50): Promise<any[]> {
+    const out: any[] = [];
+    let cursor = '';
+    for (let page = 0; page < maxPages; page++) {
+      const r = await this.call<any>('GET', cursor ? `${path}${path.includes('?') ? '&' : '?'}cursor=${encodeURIComponent(cursor)}` : path);
+      out.push(...listOf(r, key));
+      cursor = String(r?.nextCursor ?? r?.pagination?.nextCursor ?? r?.cursor?.next ?? '');
+      if (!cursor) break;
+    }
+    return out;
+  }
+
+  private async send(method: Method, path: string, body?: unknown, opts: { idempotencyKey?: string } = {}) {
     await this.beforeRequest?.();
     return fetch(`${this.base}${path}`, {
       method,
-      headers: { authorization: `Bearer ${this.apiKey}`, ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
+      headers: {
+        authorization: `Bearer ${this.apiKey}`,
+        ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
+        ...(opts.idempotencyKey ? { 'idempotency-key': opts.idempotencyKey } : {}),
+      },
       body: body !== undefined ? JSON.stringify(body) : undefined,
       signal: AbortSignal.timeout(30000),
     });
@@ -274,17 +322,50 @@ class ZernioTransport implements Transport {
 
 /* ------------------------------ Perfil, cuentas, conexión y webhook de la plataforma ------------------------------ */
 
-const listOf = (r: any, key: string): any[] => (Array.isArray(r) ? r : Array.isArray(r?.[key]) ? r[key] : Array.isArray(r?.data) ? r.data : []);
-const idOf = (x: any) => String(x?._id ?? x?.id ?? '');
+export const listOf = (r: any, key: string): any[] => (Array.isArray(r) ? r : Array.isArray(r?.[key]) ? r[key] : Array.isArray(r?.data) ? r.data : []);
+export const idOf = (x: any) => String(x?._id ?? x?.id ?? '');
 
-/** Perfil de Zernio del negocio (uno por cuenta; se crea la primera vez y se reconoce por externalId). */
+/**
+ * Perfil de Zernio del negocio (uno por cuenta; se reconoce por externalId = id del negocio, sin recorrer la lista de
+ * perfiles). Se crea con Idempotency-Key: si dos procesos lo piden a la vez, Zernio responde 409 con el que ya existe.
+ */
 export async function profileFor(client: ZernioClient, account: { id: string; name: string }): Promise<string> {
-  const found = listOf(await client.call('GET', '/profiles?limit=100'), 'profiles').find((p) => p.externalId === account.id);
+  const found = listOf(await client.call('GET', `/profiles?externalId=${encodeURIComponent(account.id)}`), 'profiles').find((p) => p.externalId === account.id);
   if (found) return idOf(found);
-  const r = await client.call<any>('POST', '/profiles', { name: (account.name || 'Negocio').slice(0, 100), externalId: account.id });
-  const id = idOf(r?.profile ?? r?.data ?? r);
-  if (!id) throw new Error('Zernio no devolvió el perfil creado');
-  return id;
+  try {
+    const r = await client.call<any>('POST', '/profiles', { name: (account.name || 'Negocio').slice(0, 100), externalId: account.id }, { idempotencyKey: `profile-${account.id}` });
+    const id = idOf(r?.profile ?? r?.data ?? r);
+    if (!id) throw new Error('Zernio no devolvió el perfil creado');
+    return id;
+  } catch (e) {
+    if (e instanceof ZernioError && e.status === 409 && e.data?.existingProfileId) return String(e.data.existingProfileId);
+    if (e instanceof ZernioError && e.status === 403 && /PROFILE_OVER_LIMIT|limit/i.test(JSON.stringify(e.data ?? {}))) {
+      throw new Error('Tu plan de Zernio no permite más perfiles (uno por negocio). Amplía el plan en zernio.com o pásate a precios por uso.');
+    }
+    throw e;
+  }
+}
+
+/** ¿El perfil sigue existiendo en Zernio? (false si se borró o la llave es de otra cuenta de Zernio). */
+export async function profileExists(client: ZernioClient, profileId: string): Promise<boolean> {
+  try {
+    await client.call('GET', `/profiles/${encodeURIComponent(profileId)}`);
+    return true;
+  } catch (e) {
+    if (e instanceof ZernioError && (e.status === 404 || e.status === 403)) return false;
+    throw e;
+  }
+}
+
+/** Borra el perfil en Zernio (Zernio lo impide mientras tenga cuentas conectadas). */
+export async function deleteProfile(client: ZernioClient, profileId: string): Promise<void> {
+  await client.call('DELETE', `/profiles/${encodeURIComponent(profileId)}`);
+}
+
+/** Cuenta de Zernio de la plataforma (para saber si cambió la llave a la de otra cuenta). */
+export async function zernioWorkspace(client: ZernioClient): Promise<string> {
+  const me = await client.call<any>('GET', '/users');
+  return String(me?.currentUserId ?? me?.data?.currentUserId ?? '');
 }
 
 export interface ZernioAccount { id: string; platform: string; username: string; displayName: string; picture: string; active: boolean }
@@ -308,16 +389,17 @@ export async function disconnectAccount(client: ZernioClient, accountId: string)
 
 /**
  * Webhook de la plataforma: uno solo para todos los negocios (Zernio permite 50 por llave). Se crea, o se corrige si
- * está apagado o le faltan eventos. El secreto se vuelve a enviar siempre: se deriva de la clave del servidor.
+ * está apagado o le faltan eventos. Con `force` ("Probar y reparar") se vuelve a enviar siempre, con el secreto actual:
+ * si cambió SESSION_SECRET, los avisos vuelven a validar sin tocar nada en Zernio.
  */
-export async function ensurePlatformWebhook(client: ZernioClient): Promise<void> {
+export async function ensurePlatformWebhook(client: ZernioClient, { force = false } = {}): Promise<void> {
   const url = platformWebhookUrl();
   if (!url.startsWith('https://')) throw new Error('Zernio exige HTTPS: define PUBLIC_BASE_URL con tu dominio (https://...)');
   const hooks = listOf(await client.call('GET', '/webhooks/settings'), 'webhooks');
   const mine = hooks.find((w) => w.url === url);
   const body = { name: 'Panel de chatbots', url, secret: platformWebhookSecret(), events: EVENTS, isActive: true };
   if (!mine) await client.call('POST', '/webhooks/settings', body);
-  else if (mine.isActive === false || EVENTS.some((e) => !(mine.events ?? []).includes(e))) {
+  else if (force || mine.isActive === false || EVENTS.some((e) => !(mine.events ?? []).includes(e))) {
     await client.call('PUT', '/webhooks/settings', { webhookId: idOf(mine), ...body });
   }
 }

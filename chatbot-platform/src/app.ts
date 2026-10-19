@@ -1,4 +1,5 @@
 import { settleAgentTests } from './agent-quality.js';
+import { migrateLegacyZernioKeys } from './channels/zernio-connect.js';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -72,6 +73,8 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
   // Llaves guardadas desde el panel (Zernio): disponibles desde el arranque y al día en todos los procesos.
   await loadPlatformSecrets();
   startPlatformSecretsRefresh();
+  // Canales de antes con su propia llave de Zernio en texto: quedan cifrados.
+  await migrateLegacyZernioKeys().catch(() => undefined);
   app.addHook('onClose', async () => {
     stopPlatformSecretsRefresh();
     // Primero se deja de tomar conversaciones nuevas; lo que ya corre termina (docker-compose da 5 min para ello).
@@ -79,6 +82,7 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
     service.stopSweeper();
     await settleAgentTests();
     await service.inbox.stop();
+    await service.zernioEvents.stop();
     await service.scheduler.stop();
     service.stopSweeper();
     await service.queue.stop();

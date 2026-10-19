@@ -6,7 +6,8 @@ import { adapterFor, mergeChannelConfig } from '../channels/index.js';
 import { signedImageUrl, verifyImageSignature } from '../channels/media.js';
 import type { WebhookRequest } from '../channels/types.js';
 import { WEBCHAT_SESSION_RE, newWebchatSession } from '../channels/webchat.js';
-import { eventAccountId, eventProfileId, platformWebhookSecret, verifySignature } from '../channels/zernio.js';
+import { eventAccountId, platformWebhookSecret, verifySignature } from '../channels/zernio.js';
+import { receiveZernioEvent } from '../channels/zernio-events.js';
 import { saveZernioAccount, ZernioOwnershipError } from '../channels/zernio-connect.js';
 import { config } from '../config.js';
 import { query } from '../db.js';
@@ -72,34 +73,22 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
   app.post('/webhook/:token/:event', handler);
 
   /**
-   * Webhook único de Zernio para toda la plataforma: el evento trae la cuenta conectada (account.id) y se entrega al
-   * canal que la tiene. Firmado con el secreto derivado de la clave del servidor.
+   * Webhook único de Zernio para toda la plataforma. Firmado con el secreto derivado de la clave del servidor. Cada
+   * evento se acepta una sola vez (por su id) y solo llega al canal del perfil que dice el evento; los mensajes se
+   * guardan al momento y lo demás se procesa después (src/channels/zernio-events.ts).
    */
   app.post('/zernio/events', async (req: any, reply) => {
     if (!verifySignature(req.headers, req.rawBody, [platformWebhookSecret()])) {
       await logEvent({ level: 'warn', source: 'webhook', message: 'Zernio: firma inválida en el webhook de la plataforma; se rechaza', details: { ip: req.ip } });
       return reply.code(401).send({ ok: false });
     }
-    const accountId = eventAccountId(req.body);
-    if (!accountId) return reply.send({ ok: true });
-    const found = await query<{ id: string; profile: string }>(`SELECT id, coalesce(config->>'profile_id', '') AS profile FROM channels WHERE type = 'zernio' AND config->>'account_id' = $1`, [accountId]);
-    // Si el evento dice de qué perfil es, solo cuenta el canal de ese perfil (nunca el de otro negocio).
-    const eventProfile = eventProfileId(req.body);
-    const rows = eventProfile ? found.filter((r) => !r.profile || r.profile === eventProfile) : found;
-    if (!rows.length) {
-      await logEvent({ level: found.length ? 'warn' : 'info', source: 'webhook', message: found.length
-        ? `Zernio: evento ${String(req.body?.event ?? '')} de otro perfil (${eventProfile}) para la cuenta ${accountId}; se ignora`
-        : `Zernio: evento ${String(req.body?.event ?? '')} de una cuenta sin canal (${accountId})` });
-      return reply.send({ ok: true });
-    }
     try {
-      for (const r of rows) {
-        const channel = await store.getChannel(r.id);
-        if (channel) await processEvent({ channel, headers: req.headers, query: req.query, body: req.body, rawBody: req.rawBody });
-      }
-      return reply.send({ ok: true });
+      const code = await receiveZernioEvent(req,
+        (channel) => processEvent({ channel, headers: req.headers, query: req.query, body: req.body, rawBody: req.rawBody }),
+        () => service.zernioEvents.wake());
+      return reply.code(code).send({ ok: true });
     } catch {
-      await logEvent({ level: 'error', source: 'webhook', message: 'webhook_receipt_failed', details: { reason: 'parse_or_storage', zernioAccount: accountId } }).catch(() => undefined);
+      await logEvent({ level: 'error', source: 'webhook', message: 'webhook_receipt_failed', details: { reason: 'parse_or_storage', zernioAccount: eventAccountId(req.body) } }).catch(() => undefined);
       return reply.code(503).send({ ok: false, error: 'No se pudo guardar la recepción. Reintenta.' });
     }
   });

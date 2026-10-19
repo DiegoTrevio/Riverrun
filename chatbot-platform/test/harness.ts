@@ -35,6 +35,8 @@ export const evo = {
 /** Zernio simulado: perfiles, cuentas conectadas, webhooks y códigos de Telegram, con las respuestas de la API real. */
 export const zer = {
   key: 'zk_plataforma',
+  /** Usuario dueño de la llave (cambia si la llave es de otra cuenta de Zernio). */
+  userId: 'user_1',
   unauthorized: false,
   profiles: [] as any[],
   accounts: new Map<string, any>(),
@@ -73,8 +75,30 @@ const extServer = http.createServer((req, res) => {
         zer.accounts.set(a._id, a);
         return a;
       };
-      if (p === '/profiles' && m === 'GET') return json(200, { profiles: zer.profiles, total: zer.profiles.length });
-      if (p === '/profiles' && m === 'POST') { const pr = { _id: `prof_${++ext.n}`, name: body.name, externalId: body.externalId }; zer.profiles.push(pr); return json(201, { message: 'ok', profile: pr }); }
+      if (p === '/profiles' && m === 'GET') {
+        const ext_ = url.searchParams.get('externalId');
+        const list = ext_ ? zer.profiles.filter((x) => x.externalId === ext_) : zer.profiles;
+        return json(200, { profiles: list, total: list.length });
+      }
+      if (p === '/profiles' && m === 'POST') {
+        const dup = zer.profiles.find((x) => x.externalId === body.externalId);
+        if (dup) return json(409, { error: 'A profile with this externalId already exists', existingProfileId: dup._id });
+        const pr = { _id: `prof_${++ext.n}`, name: body.name, externalId: body.externalId };
+        zer.profiles.push(pr);
+        return json(201, { message: 'ok', profile: pr });
+      }
+      if (p.startsWith('/profiles/') && m === 'GET') {
+        const pr = zer.profiles.find((x) => x._id === decodeURIComponent(p.split('/')[2]));
+        return pr ? json(200, { profile: pr }) : json(404, { error: 'Profile not found' });
+      }
+      if (p.startsWith('/profiles/') && m === 'DELETE') {
+        const id = decodeURIComponent(p.split('/')[2]);
+        if ([...zer.accounts.values()].some((a) => a.profileId === id)) return json(400, { error: 'Profile has active accounts' });
+        const i = zer.profiles.findIndex((x) => x._id === id);
+        if (i < 0) return json(404, { error: 'Profile not found' });
+        zer.profiles.splice(i, 1);
+        return json(200, { message: 'ok' });
+      }
       if (p === '/accounts' && m === 'GET') return json(200, { accounts: [...zer.accounts.values()].filter((a) => a.profileId === url.searchParams.get('profileId')) });
       if (p.startsWith('/accounts/') && m === 'DELETE') { zer.accounts.delete(decodeURIComponent(p.split('/')[2])); return json(200, { message: 'ok' }); }
       if (p === '/webhooks/settings' && m === 'GET') return json(200, { webhooks: zer.webhooks });
@@ -90,7 +114,7 @@ const extServer = http.createServer((req, res) => {
         Object.assign(w, body);
         return json(200, { success: true, webhook: w });
       }
-      if (p === '/users') return json(200, { currentUserId: 'user_1', users: [] });
+      if (p === '/users') return json(200, { currentUserId: zer.userId, users: [] });
       if (p === '/connect/bluesky/credentials') {
         if (body.appPassword === 'mala') return json(400, { error: 'Invalid identifier or password' });
         const profileId = String(body.state).split('-').slice(1).join('-');
@@ -330,7 +354,7 @@ export async function createHarness() {
       await h.idle();
     },
     /** Espera a que la cola termine todo lo pendiente (evita que una prueba contamine a la siguiente). */
-    async idle() { await waitFor(async () => service.queue.size === 0 && service.inbox.size === 0 && inflight.n === 0 && (await pool.query("SELECT count(*)::int AS n FROM conversation_work WHERE state IN ('pending','running')")).rows[0].n===0 && (await pool.query("SELECT count(*)::int AS n FROM inbound_receipts WHERE state IN ('pending','running')")).rows[0].n===0, 8000); },
+    async idle() { await waitFor(async () => service.queue.size === 0 && service.inbox.size === 0 && service.zernioEvents.size === 0 && inflight.n === 0 && (await pool.query("SELECT count(*)::int AS n FROM zernio_events WHERE state IN ('pending','running')")).rows[0].n===0 && (await pool.query("SELECT count(*)::int AS n FROM conversation_work WHERE state IN ('pending','running')")).rows[0].n===0 && (await pool.query("SELECT count(*)::int AS n FROM inbound_receipts WHERE state IN ('pending','running')")).rows[0].n===0, 8000); },
     webhook(text: string, opts: { fromMe?: boolean; phone?: string; id?: string; timestamp?: number; instance?: string } = {}) {
       const phone = opts.phone ?? '5215511112222';
       return app.inject({

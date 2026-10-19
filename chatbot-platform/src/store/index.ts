@@ -49,9 +49,7 @@ export async function createAccount(
     [name, opts.status ?? 'active', opts.trialEndsAt ?? null, opts.businessType ?? '', opts.source ?? 'admin'],
   );
   const account = rows[0] as Account;
-  // Su perfil de Zernio queda listo para conectar redes (en segundo plano: el alta no espera a Zernio). Dentro de una
-  // transacción lo pide quien la confirma (prepareAccountProfile después del commit).
-  if (!client) void import('../channels/zernio-connect.js').then((m) => m.prepareAccountProfile(account.id)).catch(() => undefined);
+  // Su perfil de Zernio se crea cuando conecte su primera red (accountProfile), no al darse de alta.
   return account;
 }
 

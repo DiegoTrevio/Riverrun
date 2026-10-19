@@ -30,6 +30,8 @@ import { deliver } from './integrations/webhooks.js';
 import { messageQuota, noticeMessagesReached } from './billing/limits.js';
 import { ConversationQueue } from './engine/queue.js';
 import { InboundQueue } from './engine/inbox.js';
+import { ZernioEventQueue } from './channels/zernio-events.js';
+import { zernioCleanup } from './channels/zernio-connect.js';
 import { DeliveryUncertain,currentOperation } from './engine/coordination.js';
 import { PlaygroundTransport, type Transport } from './engine/transport.js';
 import { logEvent } from './logs.js';
@@ -62,6 +64,8 @@ function sameText(sent: string, echo: string) {
 
 export class ChatService {
   readonly inbox: InboundQueue;
+  /** Eventos de Zernio que no son mensajes (conexión, entregado, leído, fallido). */
+  readonly zernioEvents = new ZernioEventQueue();
   get aiProvider() { return this.ai; }
   engine: Engine;
   queue: ConversationQueue;
@@ -127,6 +131,7 @@ export class ChatService {
       appointment_reminder: (p) => this.agenda.sendReminder(p),
       campaign_start: (p) => this.campaigns.start(p.campaign_id),
       campaign_send: (p) => this.campaigns.sendOne(p),
+      zernio_cleanup: (p) => zernioCleanup(p),
     },()=>this.automator.settleAll());
   }
 

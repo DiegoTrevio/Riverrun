@@ -60,13 +60,22 @@ async function zernioCard() {
       s.source === 'env' ? h('p', { class: 'small' }, `Definida en el servidor (ZERNIO_API_KEY), termina en …${s.hint}. Se administra en el .env.`)
         : s.source === 'panel' ? h('p', { class: 'small' }, `Guardada en el panel (cifrada), termina en …${s.hint}`, s.updated_at ? ` · ${fmtDate(s.updated_at)}` : '', '.')
           : h('p', { class: 'small' }, 'Crea una llave en zernio.com → Settings → API Keys y pégala aquí.'),
-      s.enabled ? h('p', { class: 'small' }, `Cuentas con perfil de Zernio: ${s.accounts_with_profile} de ${s.accounts_total}`, s.creating_profiles ? ` (creando ${s.creating_profiles}…)` : '', ` · redes conectadas: ${s.connected_channels}`) : null,
+      s.enabled ? h('p', { class: 'small' }, `Negocios con perfil de Zernio: ${s.accounts_with_profile} de ${s.accounts_total} (se crea al conectar su primera red)`, s.checking_profiles ? ` · revisando ${s.checking_profiles} perfiles…` : '', ` · redes conectadas: ${s.connected_channels}`) : null,
       s.webhook ? h('p', { class: `small ${s.webhook.ok ? '' : 'error'}` }, s.webhook.ok ? '✓ Webhook registrado en Zernio: ' : '✕ No se pudo registrar el webhook: ', s.webhook.ok ? h('code', {}, s.webhook_url) : s.webhook.error) : null,
       s.source !== 'env' ? h('div', { class: 'row', style: 'align-items:flex-end' },
         field(s.source === 'panel' ? 'Reemplazar llave' : 'Llave de Zernio', input),
         h('button', { class: 'primary', onclick: (e) => busy(e.currentTarget, () => {
           if (!form.api_key.trim()) { input.focus(); return null; }
-          return run(() => api('PUT', '/api/system/zernio', { api_key: form.api_key.trim() })).then((r) => {
+          const save = (confirm_workspace_change) => api('PUT', '/api/system/zernio', { api_key: form.api_key.trim(), ...(confirm_workspace_change ? { confirm_workspace_change } : {}) });
+          return run(async () => {
+            try {
+              return await save(false);
+            } catch (e) {
+              // Llave de otra cuenta de Zernio: se pide confirmar (los negocios tendrán que reconectar sus redes).
+              if (e.status !== 409 || !/otra cuenta de Zernio/.test(e.message)) throw e;
+              return (await confirmAction(e.message)) ? save(true) : null;
+            }
+          }).then((r) => {
             if (r) toast(r.webhook?.ok === false ? `Llave guardada, pero no se pudo registrar el webhook: ${r.webhook.error}` : 'Llave guardada y verificada', r.webhook?.ok === false);
             return r;
           });

@@ -5,7 +5,7 @@ import { botFor, channelFor, HttpError, requireRole, scopeAccount, targetAccount
 import { adapterFor, mergeChannelConfig, publicChannel, webhookUrl } from '../channels/index.js';
 import { evolutionFor, newInstanceName, releaseWhatsapp } from '../channels/whatsapp.js';
 import { SessionError, whatsappSession } from '../channels/whatsapp-session.js';
-import { networkOf, zernioKey } from '../channels/zernio.js';
+import { dmNetworkOf, networkOf, zernioKey } from '../channels/zernio.js';
 import { checkTelegram, disconnectZernio, startConnect } from '../channels/zernio-connect.js';
 import { config } from '../config.js';
 import { query,withTransaction } from '../db.js';
@@ -15,7 +15,8 @@ import { assertWithinLimit } from '../billing/limits.js';
 import { logEvent } from '../logs.js';
 import { outboundAllowed } from '../outbound-guard.js';
 import * as store from '../store/index.js';
-import { CHANNEL_TYPES, type Channel, type User } from '../types.js';
+import { CHANNEL_TYPES, MASK, type Channel, type User } from '../types.js';
+import { encryptSecret } from '../secret.js';
 import { assertVerified } from './onboarding.js';
 import { parse } from './util.js';
 import { applyMetaSelection, disconnectMetaChannel, META_NONCE_COOKIE, sessionPages, startMetaConnect } from '../channels/meta-connect.js';
@@ -44,7 +45,12 @@ const ZERNIO_CLIENT_FIELDS = ['platform'];
 const ZERNIO_SERVER_FIELDS = ['profile_id', 'account_id', 'username', 'display_name', 'picture', 'telegram_code', 'connect_state', 'webhook_secret', 'connected'];
 
 function clientConfig(user: User, type: string, cfg: Record<string, unknown> | undefined) {
-  if (cfg && type === 'zernio' && user.role === 'superadmin') return Object.fromEntries(Object.entries(cfg).filter(([k]) => !ZERNIO_SERVER_FIELDS.includes(k)));
+  if (cfg && type === 'zernio' && user.role === 'superadmin') {
+    const out = Object.fromEntries(Object.entries(cfg).filter(([k]) => !ZERNIO_SERVER_FIELDS.includes(k)));
+    // La llave propia de un canal de antes se guarda cifrada (zernioKey la descifra al usarla).
+    if (typeof out.api_key === 'string' && out.api_key && out.api_key !== MASK && !out.api_key.startsWith('v1.')) out.api_key = encryptSecret(out.api_key);
+    return out;
+  }
   if (!cfg || user.role === 'superadmin') return cfg;
   if (type === 'zernio') return Object.fromEntries(Object.entries(cfg).filter(([k]) => ZERNIO_CLIENT_FIELDS.includes(k)));
   if (type !== 'whatsapp') return cfg;
@@ -96,7 +102,7 @@ export async function channelRoutes(api: FastifyInstance) {
     const given = clientConfig(req.user, b.type, b.config) ?? {};
     if (b.type === 'whatsapp' && !given.instance) given.instance = newInstanceName(accountId);
     if (b.type === 'zernio') {
-      if (!networkOf(String(given.platform ?? ''))) throw new HttpError(400, 'Elige la red que quieres conectar');
+      if (!dmNetworkOf(String(given.platform ?? ''))) throw new HttpError(400, 'Elige la red que quieres conectar');
       if (!zernioKey({ config: given })) throw new HttpError(400, 'Las redes sociales no están activadas en esta instalación (falta ZERNIO_API_KEY)');
     }
     let cfg: Record<string, unknown>;
@@ -125,7 +131,7 @@ export async function channelRoutes(api: FastifyInstance) {
     await checkBot(req.user, ch.account_id, b.chatbot_id);
     const given = clientConfig(req.user, ch.type, b.config);
     if (ch.type === 'zernio' && given?.platform !== undefined && given.platform !== ch.config.platform) {
-      if (!networkOf(String(given.platform))) throw new HttpError(400, 'Elige la red que quieres conectar');
+      if (!dmNetworkOf(String(given.platform))) throw new HttpError(400, 'Elige la red que quieres conectar');
       if (ch.config.account_id) throw new HttpError(400, 'Desconecta la cuenta antes de cambiar de red');
     }
     let cfg: Record<string, unknown> | undefined;
