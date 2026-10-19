@@ -2,8 +2,10 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { HttpError, requireRole, targetAccount } from '../access.js';
-import { providers, applyState, beginCheckout, enabledProviders, getPlan, getSubscription, listPlans, recordEvent } from '../billing/service.js';
-import { ProviderError, WebhookError, type ProviderName } from '../billing/types.js';
+import { rateLimited } from '../auth.js';
+import { baseFor } from '../brands.js';
+import { providers, applyState, confirmCheckout, enabledProviders, getPlan, getSubscription, listPlans, payable, recordEvent, startCheckout } from '../billing/service.js';
+import { ProviderError, WebhookError, type Plan, type ProviderName } from '../billing/types.js';
 import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
 import { limitsReport, LimitsSchema } from '../billing/limits.js';
@@ -28,8 +30,21 @@ const publicSub = (s: any) =>
 
 const planOut = (p: any) => ({ ...p, price: p.price_cents / 100 });
 
+/** Planes que se pueden contratar, con los proveedores que los cobran (para "Mi plan" y el registro). */
+export async function offeredPlans() {
+  const on = enabledProviders();
+  return (await listPlans()).map((p: Plan) => ({ ...planOut(p), providers: on.filter((x) => x.supportsPlan(p)).map((x) => ({ name: x.name, label: x.label })) }));
+}
+
 /** Rutas públicas: los proveedores avisan aquí. La firma se verifica sobre el cuerpo original. */
 export async function billingWebhooks(app: FastifyInstance) {
+  // Regreso desde la página de pago. Va al panel en el mismo dominio (y con la misma sesión) desde el que se pagó; el
+  // panel confirma el pago con el proveedor. Una ruta sin "#" evita que el proveedor rompa la dirección al agregarle datos.
+  app.get('/pago/:provider', async (req: any, reply) => {
+    const canceled = req.query?.estado === 'cancelado';
+    return reply.redirect(canceled ? '/#/plan?pago=cancelado' : '/#/plan?pago=ok');
+  });
+
   for (const name of Object.keys(providers) as ProviderName[]) {
     app.post(`/webhook/billing/${name}`, async (req, reply) => {
       const provider = providers[name];
@@ -104,11 +119,10 @@ export async function billingRoutes(api: FastifyInstance) {
   /* ------------------------------ Cuenta ------------------------------ */
   api.get('/api/billing', admins, async (req: any) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
-    const [acc, plans, sub, limits] = await Promise.all([queryOne<any>(`SELECT status, plan, trial_ends_at FROM accounts WHERE id = $1`, [accountId]), listPlans(), getSubscription(accountId), limitsReport(accountId)]);
-    const on = enabledProviders();
+    const [acc, plans, sub, limits] = await Promise.all([queryOne<any>(`SELECT status, plan, trial_ends_at FROM accounts WHERE id = $1`, [accountId]), offeredPlans(), getSubscription(accountId), limitsReport(accountId)]);
     return {
       account: acc,
-      plans: plans.map((p) => ({ ...planOut(p), providers: on.filter((x) => x.supportsPlan(p)).map((x) => ({ name: x.name, label: x.label })) })),
+      plans,
       subscription: publicSub(sub),
       limits,
       grace_days: config.billing.graceDays,
@@ -119,25 +133,30 @@ export async function billingRoutes(api: FastifyInstance) {
   api.post('/api/billing/checkout', admins, async (req: any) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
     const b = parse(z.object({ plan: z.string().max(40), provider: z.enum(['stripe', 'mercadopago']) }), req.body);
-    const provider = providers[b.provider];
-    const plan = await getPlan(b.plan);
-    if (!plan || !plan.active) throw new HttpError(404, 'Ese plan no está disponible');
-    if (!provider.enabled() || !provider.supportsPlan(plan)) throw new HttpError(400, `Este plan no se puede pagar con ${provider.label}`);
+    const { plan, provider } = await payable(b.plan, b.provider);
     const sub = await getSubscription(accountId);
     if (sub && ['active', 'past_due'].includes(sub.status) && !sub.cancel_at_period_end && sub.provider_subscription_id) throw new HttpError(409, 'Ya tienes un plan activo. Para cambiar la tarjeta o cancelar usa "Administrar pago".');
     try {
-      const { url } = await provider.createCheckout({
-        accountId, email: req.user.email, plan,
-        successUrl: `${config.publicBaseUrl}/#/plan?pago=ok`, cancelUrl: `${config.publicBaseUrl}/#/plan?pago=cancelado`,
-        customerId: sub?.provider === b.provider ? sub.provider_customer_id || undefined : undefined,
-      });
-      await beginCheckout(accountId, b.provider, plan.key);
-      await logEvent({ level: 'info', source: 'admin', message: `Pago iniciado: plan ${plan.key} con ${b.provider}`, accountId });
-      return { url };
+      return { url: await startCheckout({ accountId, email: req.user.email, plan, provider, base: await baseFor(req) }) };
     } catch (e: any) {
       if (e instanceof ProviderError) throw new HttpError(502, `${e.message}. Intenta de nuevo o escríbenos.`);
       throw e;
     }
+  });
+
+  /** Al volver de la página de pago: se pregunta al proveedor por el pago iniciado y, si ya se cobró, la cuenta se activa. */
+  api.post('/api/billing/confirm', admins, async (req: any, reply) => {
+    const accountId = await targetAccount(req.user, req.query.account_id);
+    if (rateLimited(`billing-confirm:${accountId}`, 60, 3600_000)) return reply.code(429).send({ error: 'Demasiadas consultas, espera un momento' });
+    let confirmed = false;
+    try {
+      confirmed = await confirmCheckout(accountId);
+    } catch (e: any) {
+      // El proveedor no respondió: el aviso o la revisión periódica lo confirmarán.
+      await logEvent({ level: 'warn', source: 'admin', message: `No se pudo confirmar el pago al volver: ${e?.message ?? e}`, accountId });
+    }
+    const [acc, sub] = await Promise.all([queryOne<{ status: string }>(`SELECT status FROM accounts WHERE id = $1`, [accountId]), getSubscription(accountId)]);
+    return { confirmed, account_status: acc?.status, subscription: publicSub(sub) };
   });
 
   /** Stripe: página para cambiar tarjeta, ver facturas y cancelar. */
@@ -147,7 +166,7 @@ export async function billingRoutes(api: FastifyInstance) {
     const provider = sub && providers[sub.provider];
     if (!sub || !provider?.portal || !sub.provider_customer_id) throw new HttpError(400, 'Tu plan no tiene página de administración: cancélalo desde aquí.');
     try {
-      return await provider.portal(sub.provider_customer_id, `${config.publicBaseUrl}/#/plan`);
+      return await provider.portal(sub.provider_customer_id, `${await baseFor(req)}/#/plan`);
     } catch (e: any) {
       throw new HttpError(502, e.message);
     }

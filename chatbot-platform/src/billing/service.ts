@@ -2,6 +2,7 @@
  * Lógica común de cobro: planes, estado de la suscripción de cada cuenta y su efecto en la cuenta
  * (activa, en gracia o pausada). Los proveedores solo informan el estado; aquí se decide qué hacer.
  */
+import { HttpError } from '../access.js';
 import { mailBrand } from '../brands.js';
 import { notifyUsers } from '../automation/store.js';
 import { config } from '../config.js';
@@ -45,14 +46,78 @@ export async function recordEvent(provider: string, eventId: string, type: strin
   return !!r;
 }
 
-/** Inicia (o reinicia) el registro de pago de una cuenta antes de mandarla al proveedor. */
-export async function beginCheckout(accountId: string, provider: ProviderName, planKey: string) {
+/**
+ * Anota el pago que se acaba de abrir: su referencia en el proveedor (para confirmarlo sin esperar el aviso) y, si la
+ * cuenta no tiene un plan vigente, el plan y el proveedor elegidos.
+ */
+export async function beginCheckout(accountId: string, provider: ProviderName, planKey: string, ref = '') {
   await query(
-    `INSERT INTO subscriptions (account_id, provider, plan_key, status) VALUES ($1,$2,$3,'incomplete')
-     ON CONFLICT (account_id) DO UPDATE SET provider = $2, plan_key = $3, updated_at = now()
-       WHERE subscriptions.status IN ('incomplete', 'canceled')`,
-    [accountId, provider, planKey],
+    `INSERT INTO subscriptions (account_id, provider, plan_key, status, checkout_provider, checkout_ref, checkout_at) VALUES ($1,$2,$3,'incomplete',$2,$4,now())
+     ON CONFLICT (account_id) DO UPDATE SET checkout_provider = $2, checkout_ref = $4, checkout_at = now(), updated_at = now(),
+       provider = CASE WHEN subscriptions.status IN ('incomplete', 'canceled') THEN $2 ELSE subscriptions.provider END,
+       plan_key = CASE WHEN subscriptions.status IN ('incomplete', 'canceled') THEN $3 ELSE subscriptions.plan_key END`,
+    [accountId, provider, planKey, ref],
   );
+}
+
+/** Plan y proveedor con los que se puede pagar ahora. Sin proveedor elegido, el primero disponible para ese plan. */
+export async function payable(planKey: string, providerName?: ProviderName): Promise<{ plan: Plan; provider: ProviderName }> {
+  const plan = await getPlan(planKey);
+  if (!plan || !plan.active) throw new HttpError(404, 'Ese plan no está disponible');
+  const options = enabledProviders().filter((p) => p.supportsPlan(plan));
+  const provider = providerName ? options.find((p) => p.name === providerName) : options[0];
+  if (!provider) throw new HttpError(400, providerName ? `Este plan no se puede pagar con ${providers[providerName].label}` : 'El pago en línea no está disponible por ahora');
+  return { plan, provider: provider.name };
+}
+
+/**
+ * Abre la página de pago del proveedor y anota el pago como pendiente. `base` es la dirección del panel (la principal o
+ * el dominio de la marca) a la que vuelve el cliente al pagar o cancelar. Puede lanzar `ProviderError`.
+ */
+export async function startCheckout(o: { accountId: string; email: string; plan: Plan; provider: ProviderName; base: string }): Promise<string> {
+  const sub = await getSubscription(o.accountId);
+  const { url, ref } = await providers[o.provider].createCheckout({
+    accountId: o.accountId, email: o.email, plan: o.plan,
+    successUrl: `${o.base}/pago/${o.provider}`, cancelUrl: `${o.base}/pago/${o.provider}?estado=cancelado`,
+    customerId: sub?.provider === o.provider ? sub.provider_customer_id || undefined : undefined,
+  });
+  await beginCheckout(o.accountId, o.provider, o.plan.key, ref);
+  await logEvent({ level: 'info', source: 'admin', message: `Pago iniciado: plan ${o.plan.key} con ${o.provider}`, accountId: o.accountId });
+  return url;
+}
+
+/**
+ * Confirma el último pago iniciado preguntándole al proveedor: al volver de la página de pago y en la revisión periódica.
+ * Así la cuenta se activa aunque el aviso del proveedor (webhook) tarde o no llegue. Solo aplica pagos ya confirmados;
+ * cobros fallidos y cancelaciones los siguen informando los avisos. Devuelve true si aplicó un pago.
+ */
+export async function confirmCheckout(accountId: string): Promise<boolean> {
+  const sub = await getSubscription(accountId);
+  if (!sub?.checkout_ref || !sub.checkout_provider) return false;
+  const provider = providers[sub.checkout_provider];
+  if (!provider.enabled()) return false;
+  const state = await provider.checkoutState(sub.checkout_ref, await listPlans(true));
+  if (!state || state.status !== 'active' || state.accountId !== accountId) return false;
+  await applyState(state);
+  await query(`UPDATE subscriptions SET checkout_ref = '' WHERE account_id = $1 AND checkout_ref = $2`, [accountId, sub.checkout_ref]);
+  return true;
+}
+
+/** Revisión periódica: confirma los pagos iniciados en los últimos 2 días que todavía no se reflejan en la cuenta. */
+export async function syncPendingCheckouts(now = new Date()): Promise<number> {
+  const rows = await query<{ account_id: string }>(
+    `SELECT account_id FROM subscriptions WHERE checkout_ref <> '' AND checkout_at > $1::timestamptz - interval '2 days'`,
+    [now],
+  );
+  let applied = 0;
+  for (const r of rows) {
+    try {
+      if (await confirmCheckout(r.account_id)) applied++;
+    } catch (e: any) {
+      await logEvent({ level: 'warn', source: 'system', message: `No se pudo consultar un pago pendiente: ${e?.message ?? e}`, accountId: r.account_id });
+    }
+  }
+  return applied;
 }
 
 /**
@@ -80,6 +145,17 @@ async function applyStateLocked(state: SubscriptionState, now: Date): Promise<st
   const prev = await getSubscription(accountId);
   // Un aviso de una suscripción vieja (ya reemplazada) no debe pisar a la actual.
   if (prev && prev.provider_subscription_id && prev.provider_subscription_id !== state.subscriptionId && prev.provider === state.provider && ['active', 'past_due'].includes(prev.status) && !['active', 'incomplete'].includes(state.status)) return accountId;
+  // Una segunda suscripción pagada mientras la vigente sigue cobrando (p. ej. dos pestañas de pago): se conserva la vigente
+  // y se avisa al superadmin, una sola vez, para que cancele y reembolse la otra. Sin esto se cobraría dos veces sin que nadie lo note.
+  if (state.status === 'active' && prev?.provider_subscription_id && ['active', 'past_due'].includes(prev.status) && !prev.cancel_at_period_end
+    && (prev.provider !== state.provider || prev.provider_subscription_id !== state.subscriptionId)) {
+    if (await recordEvent(state.provider, `duplicate:${state.subscriptionId}`, 'duplicate_subscription', accountId)) {
+      await logEvent({ level: 'error', source: 'admin', message: `Suscripción duplicada (${state.provider} ${state.subscriptionId}): la cuenta ya paga ${prev.provider} ${prev.provider_subscription_id}`, accountId });
+      await notifySuperadmins(accountId, `Cobro duplicado: ${acc.name}`,
+        `"${acc.name}" tiene dos suscripciones cobrando: ${prev.provider} ${prev.provider_subscription_id} (la vigente) y ${state.provider} ${state.subscriptionId}. Cancela y reembolsa la segunda desde ${providers[state.provider].label}.`);
+    }
+    return accountId;
+  }
   const planKey = state.planKey || prev?.plan_key || '';
 
   const pastDueSince = state.status === 'past_due' ? prev?.past_due_since ?? now : null;

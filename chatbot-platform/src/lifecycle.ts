@@ -3,9 +3,10 @@
  * Se ejecuta periódicamente; cada paso es idempotente (se puede correr las veces que sea).
  */
 import { getSettings, notifyUsers } from './automation/store.js';
+import { mailBrand } from './brands.js';
 import { config } from './config.js';
 import { query, queryOne } from './db.js';
-import { enforceAccess } from './billing/service.js';
+import { billingEnabled, enforceAccess, syncPendingCheckouts } from './billing/service.js';
 import { logEvent } from './logs.js';
 import { sendMail } from './mailer.js';
 import * as store from './store/index.js';
@@ -28,6 +29,13 @@ export async function notifySuperadmins(accountId: string, title: string, body: 
   if (config.signup.superadminEmail) await sendMail({ to: config.signup.superadminEmail, subject: title, text: body });
 }
 
+/** Qué hacer para seguir: pagar en línea (si hay cobro automático) o escribir al contacto de soporte. */
+async function howToContinue(accountId: string) {
+  const mb = await mailBrand(accountId);
+  if (await billingEnabled()) return { mb, text: `Elige tu plan y paga en línea aquí:\n${mb.base}/#/plan\n\n` };
+  return { mb, text: `${config.signup.supportContact ? `Para continuar, escríbenos: ${config.signup.supportContact}\n\n` : ''}${mb.base}` };
+}
+
 export async function checkTrials(now = new Date()) {
   // 1) Aviso unos días antes de que termine la prueba.
   const warn = await query<Account>(
@@ -38,10 +46,12 @@ export async function checkTrials(now = new Date()) {
   for (const acc of warn) {
     const o = await owner(acc);
     if (o) {
+      const next = await howToContinue(acc.id);
       await sendMail({
+        fromName: next.mb.fromName,
         to: o.email,
         subject: 'Tu periodo de prueba está por terminar',
-        text: `Hola ${o.name || ''},\n\nTu prueba de "${acc.name}" termina el ${fmt(acc.trial_ends_at!)}. Después de esa fecha tu asistente dejará de responder hasta que se active tu plan.\n\n${config.signup.supportContact ? `Para continuar, escríbenos: ${config.signup.supportContact}\n\n` : ''}${config.publicBaseUrl}`,
+        text: `Hola ${o.name || ''},\n\nTu prueba de "${acc.name}" termina el ${fmt(acc.trial_ends_at!)}. Después de esa fecha tu asistente dejará de responder hasta que se active tu plan.\n\n${next.text}`,
       });
     }
     await notifySuperadmins(acc.id, `Prueba por vencer: ${acc.name}`, `La prueba de "${acc.name}" termina el ${fmt(acc.trial_ends_at!)}${o ? ` (${o.email})` : ''}.`);
@@ -55,14 +65,17 @@ export async function checkTrials(now = new Date()) {
   for (const acc of expired) {
     await logEvent({ level: 'warn', source: 'admin', message: `Prueba terminada: la cuenta "${acc.name}" quedó en pausa`, accountId: acc.id });
     const o = await owner(acc);
+    const next = await howToContinue(acc.id);
     if (o) {
       await sendMail({
+        fromName: next.mb.fromName,
         to: o.email,
         subject: 'Tu periodo de prueba terminó',
-        text: `Hola ${o.name || ''},\n\nLa prueba de "${acc.name}" terminó y tu asistente está en pausa. Tu configuración y tus conversaciones se conservan.\n\n${config.signup.supportContact ? `Para activar tu plan, escríbenos: ${config.signup.supportContact}\n\n` : ''}${config.publicBaseUrl}`,
+        text: `Hola ${o.name || ''},\n\nLa prueba de "${acc.name}" terminó y tu asistente está en pausa. Tu configuración y tus conversaciones se conservan; se reactiva en cuanto se active tu plan.\n\n${next.text}`,
       });
     }
-    await notifySuperadmins(acc.id, `Prueba terminada: ${acc.name}`, `La cuenta "${acc.name}" quedó en pausa${o ? ` (${o.email})` : ''}. Actívala desde Cuentas si ya pagó.`);
+    const paysOnline = await billingEnabled();
+    await notifySuperadmins(acc.id, `Prueba terminada: ${acc.name}`, `La cuenta "${acc.name}" quedó en pausa${o ? ` (${o.email})` : ''}. ${paysOnline ? 'Se reactiva sola cuando pague en línea.' : 'Actívala desde Cuentas si ya pagó.'}`);
   }
   return { warned: warn.length, paused: expired.length };
 }
@@ -88,7 +101,11 @@ export async function checkAiSpend(now = new Date()) {
 export function startLifecycle(intervalMs = 10 * 60_000) {
   const tick = () => {
     checkTrials().catch((e) => logEvent({ level: 'error', source: 'system', message: `Revisión de pruebas: ${e?.message ?? e}` }));
-    enforceAccess().catch((e) => logEvent({ level: 'error', source: 'system', message: `Revisión de pagos: ${e?.message ?? e}` }));
+    // Primero se confirman los pagos pendientes: un pago ya hecho no debe esperar al aviso del proveedor.
+    syncPendingCheckouts()
+      .catch((e) => logEvent({ level: 'error', source: 'system', message: `Revisión de pagos pendientes: ${e?.message ?? e}` }))
+      .then(() => enforceAccess())
+      .catch((e) => logEvent({ level: 'error', source: 'system', message: `Revisión de pagos: ${e?.message ?? e}` }));
     checkAiSpend().catch((e) => logEvent({ level: 'error', source: 'system', message: `Revisión de gasto de IA: ${e?.message ?? e}` }));
   };
   tick();

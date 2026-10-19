@@ -145,6 +145,11 @@ textarea.big { min-height: 200px; }
 input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; box-shadow: 0 0 0 4px var(--accent-soft); }
 @media (prefers-color-scheme: dark) { input, select, textarea { border-color: var(--border) !important; } }
 .check { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; cursor: pointer; }
+/* Opciones de plan (registro) y plan elegido (Mi plan). */
+.plan-option { align-items: flex-start; margin: 0 0 8px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius); }
+.plan-option:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.plan-option .plan-price { margin-left: auto; padding-left: 8px; white-space: nowrap; font-weight: 600; }
+.card.chosen { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
 
 button, .btn {
   display: inline-flex; align-items: center; gap: 8px; min-height: 40px; padding: 8px 14px; border-radius: 8px;

@@ -1,12 +1,13 @@
 import { api, check, field, fill, h, num, run, state, text, toast, confirmAction } from './core.js';
 import { render } from './main.js';
 import { withAcct } from './session.js';
+import { needsOnboarding } from './shell.js';
 
 /* ------------------------------ Mi plan y pagos ------------------------------ */
 
 const SUB_LABEL = { incomplete: ['', 'Pago pendiente'], active: ['green', 'Al corriente'], past_due: ['orange', 'Pago pendiente'], canceled: ['red', 'Cancelado'] };
 
-const planPrice = (p) => `${new Intl.NumberFormat('es-MX', { maximumFractionDigits: 2 }).format(p.price)} ${p.currency}`;
+export const planPrice = (p) => `${new Intl.NumberFormat('es-MX', { maximumFractionDigits: 2 }).format(p.price)} ${p.currency}`;
 
 const longDate = (d) => (d ? new Date(d).toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric' }) : '');
 
@@ -14,10 +15,22 @@ const LIMIT_SHORT = { messages_per_month: ['mensajes al mes', 'mensaje al mes'],
 /** "hasta 1,000 mensajes al mes · 1 canal · …" (vacío si el plan no tiene límites). */
 export const limitsText = (limits = {}) => Object.entries(LIMIT_SHORT).filter(([k]) => limits[k]).map(([k, [pl, sg]]) => `${limits[k].toLocaleString('es-MX')} ${limits[k] === 1 ? sg : pl}`).join(' · ');
 
+/** Consultas al proveedor tras volver del pago (cada 4 s, hasta 1 minuto); luego lo confirma la revisión periódica. */
+let confirmTries = 0;
+const MAX_CONFIRM_TRIES = 15;
+
 export async function viewPlan(root, params) {
+  const paid = params.get('pago') === 'ok';
+  if (!paid) confirmTries = 0;
+  if (paid && confirmTries < MAX_CONFIRM_TRIES) {
+    confirmTries++;
+    // Se pregunta al proveedor por el pago: la cuenta se activa sin esperar su aviso.
+    const c = await api('POST', withAcct('/api/billing/confirm')).catch(() => null);
+    // Recién activada: se vuelve a dibujar todo (menú y avisos incluidos) con la cuenta al día.
+    if (c?.confirmed) { state.me = null; render(); return; }
+  }
   const b = await api('GET', withAcct('/api/billing'));
   const sub = b.subscription;
-  const paid = params.get('pago') === 'ok';
   const live = sub && ['active', 'past_due'].includes(sub.status);
   const acc = b.account;
   const days = acc.trial_ends_at ? Math.max(0, Math.ceil((new Date(acc.trial_ends_at) - Date.now()) / 86400000)) : null;
@@ -55,7 +68,7 @@ export async function viewPlan(root, params) {
     if (!b.plans.length) {
       fill(offer, h('div', { class: 'card' }, h('p', {}, 'El pago en línea todavía no está disponible.'), b.support_contact ? h('p', {}, 'Para contratar escríbenos a ', h('strong', {}, b.support_contact), '.') : null));
     } else {
-      fill(offer, h('div', { class: 'grid' }, b.plans.map((p) => h('div', { class: 'card' },
+      fill(offer, h('div', { class: 'grid' }, b.plans.map((p) => h('div', { class: p.key === params.get('plan') ? 'card chosen' : 'card' },
         h('h2', { style: 'margin:0' }, p.name),
         h('div', { class: 'kpi', style: 'margin:8px 0' }, planPrice(p), h('span', { class: 'muted small' }, ' / mes')),
         p.description ? h('p', { class: 'muted' }, p.description) : null,
@@ -78,12 +91,21 @@ export async function viewPlan(root, params) {
         h('div', { class: 'bar' }, h('div', { class: `bar-fill ${i.percent >= 100 ? 'full' : i.percent >= 80 ? 'warn' : ''}`, style: `width:${i.percent}%` })))),
       b.limits.items.some((i) => i.key === 'messages_per_month' && i.max) ? h('p', { class: 'muted small', style: 'margin-bottom:0' }, 'Los mensajes se cuentan cada mes (el día 1 vuelven a cero). Al llegar al límite el asistente deja de responder solo; las conversaciones se siguen guardando.') : null)
     : null;
-  root.append(
-    h('h1', {}, 'Mi plan y pagos'),
-    ...(paid ? [h('div', { class: 'banner' }, '¡Gracias! Estamos confirmando tu pago; en unos segundos tu plan aparece activo.',
-      h('button', { class: 'small', style: 'margin-left:8px', onclick: () => { state.me = null; render(); } }, 'Actualizar'))] : []),
-    status, usage, offer);
-  if (paid && !live) state.timers.push(setTimeout(() => { state.me = null; render(); }, 5000));
+  const waiting = paid && !live;
+  const gaveUp = waiting && confirmTries >= MAX_CONFIRM_TRIES;
+  const notice = paid && live
+    ? h('div', { class: 'banner' }, h('strong', {}, '¡Listo, tu plan está activo! '), 'Te enviamos la confirmación por correo.',
+      needsOnboarding() ? [' ', h('a', { class: 'btn primary', href: '#/agentes?new=1' }, 'Configura tu asistente →')] : null)
+    : waiting
+      ? h('div', { class: 'banner', role: 'status' }, gaveUp
+        ? 'Tu pago se está procesando. En cuanto el banco lo confirme tu plan se activa solo y te avisamos por correo; mientras, puedes seguir configurando tu asistente.'
+        : '¡Gracias! Estamos confirmando tu pago; en unos segundos tu plan aparece activo.',
+      h('button', { class: 'small', style: 'margin-left:8px', onclick: () => { confirmTries = 0; state.me = null; render(); } }, 'Actualizar'))
+      : params.get('pago') === 'cancelado'
+        ? h('div', { class: 'banner warn' }, 'No se completó el pago y no se te cobró nada. Puedes intentarlo de nuevo cuando quieras.')
+        : null;
+  root.append(h('h1', {}, 'Mi plan y pagos'), notice, status, usage, offer);
+  if (waiting && !gaveUp) state.timers.push(setTimeout(() => { state.me = null; render(); }, 4000));
 }
 
 /** Superadmin: planes, claves configuradas y avisos de los proveedores. */
@@ -102,7 +124,7 @@ export async function viewPlans(root) {
       h('div', { class: 'grid' },
         field('Precio mensual', num(m, 'price', { step: 0.01, min: 0 })),
         field('Moneda', text(m, 'currency', { placeholder: 'MXN' })),
-        field('ID de precio de Stripe (price_…)', text(m, 'stripe_price_id', { placeholder: 'price_1Abc…' }), 'Déjalo vacío si este plan solo se cobra con Mercado Pago.')),
+        field('ID de precio de Stripe (opcional)', text(m, 'stripe_price_id', { placeholder: 'price_1Abc…' }), 'Déjalo vacío: Stripe cobra el precio y la moneda de este plan automáticamente. Úsalo solo si ya tienes un precio mensual creado en Stripe por el mismo monto.')),
       h('h3', { style: 'margin:12px 0 4px' }, 'Límites del plan', h('span', { class: 'muted small' }, ' (vacío = sin límite)')),
       h('div', { class: 'grid' },
         field('Mensajes del asistente al mes', num(m.limits, 'messages_per_month', { min: 1, nullable: true, placeholder: 'Sin límite' })),

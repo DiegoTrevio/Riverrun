@@ -148,7 +148,7 @@ function accountBanner() {
   if (account.status === 'paused') {
     items.push(h('div', { class: 'banner danger' }, h('strong', {}, 'Tu cuenta está en pausa. '),
       'Tu asistente no está respondiendo ni enviando mensajes; tu configuración y tus conversaciones se conservan.',
-      state.meta.billing_enabled && isAdmin() ? [' ', h('a', { class: 'btn primary', href: '#/plan' }, 'Reactivar mi plan')] : state.meta.support_contact ? [' Para activarla escribe a ', h('strong', {}, state.meta.support_contact), '.'] : ''));
+      state.meta.billing_enabled && isAdmin() ? [' ', h('a', { class: 'btn primary', href: '#/plan' }, 'Activar mi plan')] : state.meta.support_contact ? [' Para activarla escribe a ', h('strong', {}, state.meta.support_contact), '.'] : ''));
   } else if (account.status === 'trial' && account.trial_ends_at) {
     const days = Math.max(0, Math.ceil((new Date(account.trial_ends_at) - Date.now()) / 86400000));
     items.push(h('div', { class: `banner ${days <= 3 ? 'warn' : ''}` },

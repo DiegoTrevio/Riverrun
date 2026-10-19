@@ -3,7 +3,14 @@ import crypto from 'node:crypto';
 import http from 'node:http';
 
 export const fake = {
-  stripe: { requests: [] as { method: string; path: string; body: URLSearchParams }[], subs: {} as Record<string, any>, fail: false },
+  stripe: {
+    requests: [] as { method: string; path: string; body: URLSearchParams }[],
+    subs: {} as Record<string, any>,
+    sessions: {} as Record<string, any>,
+    products: {} as Record<string, any>,
+    fail: false,
+    n: 0,
+  },
   mp: { requests: [] as { method: string; path: string; body: any }[], preapprovals: {} as Record<string, any>, payments: {} as Record<string, any> },
 };
 export const SECRETS = { stripe: 'whsec_prueba', mp: 'mp_secreto_prueba' };
@@ -23,8 +30,27 @@ const stripeUrl = await serve((req, raw, res) => {
   const body = new URLSearchParams(raw);
   fake.stripe.requests.push({ method: req.method!, path, body });
   if (fake.stripe.fail) return json(res, 402, { error: { message: 'Tu tarjeta fue rechazada' } });
-  if (path === '/v1/checkout/sessions') return json(res, 200, { id: 'cs_1', url: 'https://checkout.stripe.test/c/cs_1' });
+  if (path === '/v1/checkout/sessions' && req.method === 'POST') {
+    const id = `cs_${++fake.stripe.n}`;
+    fake.stripe.sessions[id] = { id, url: `https://checkout.stripe.test/c/${id}`, status: 'open', subscription: null, client_reference_id: body.get('client_reference_id') };
+    return json(res, 200, fake.stripe.sessions[id]);
+  }
+  const cs = path.match(/^\/v1\/checkout\/sessions\/([\w-]+)$/);
+  if (cs) return fake.stripe.sessions[cs[1]] ? json(res, 200, fake.stripe.sessions[cs[1]]) : json(res, 404, { error: { message: 'No such checkout.session' } });
   if (path === '/v1/billing_portal/sessions') return json(res, 200, { url: 'https://billing.stripe.test/p/1' });
+  if (path === '/v1/products' && req.method === 'POST') {
+    const id = body.get('id')!;
+    if (fake.stripe.products[id]) return json(res, 400, { error: { message: `Product already exists: ${id}` } });
+    fake.stripe.products[id] = { id, name: body.get('name'), active: true, metadata: { plan_key: body.get('metadata[plan_key]') } };
+    return json(res, 200, fake.stripe.products[id]);
+  }
+  const prod = path.match(/^\/v1\/products\/([\w-]+)$/);
+  if (prod) {
+    const p = fake.stripe.products[prod[1]];
+    if (!p) return json(res, 404, { error: { message: 'No such product' } });
+    if (req.method === 'POST') Object.assign(p, { name: body.get('name') ?? p.name, active: body.get('active') !== 'false' });
+    return json(res, 200, p);
+  }
   const m = path.match(/^\/v1\/subscriptions\/([\w-]+)$/);
   if (m) {
     const sub = fake.stripe.subs[m[1]];

@@ -21,6 +21,13 @@ export function hostOf(req: FastifyRequest): string {
   return String(req.headers.host ?? '').toLowerCase().replace(/:\d+$/, '');
 }
 
+/** Dirección con la que el visitante usa el panel: la principal o el dominio propio de una marca registrada (para regresarlo ahí). */
+export async function baseFor(req: FastifyRequest): Promise<string> {
+  const host = hostOf(req);
+  if (!host || host === new URL(config.publicBaseUrl).hostname) return config.publicBaseUrl;
+  return (await brandByDomain(host)) ? `https://${host}` : config.publicBaseUrl;
+}
+
 export const brandByDomain = (host: string) => (host ? queryOne<Brand>(`SELECT ${COLS} FROM brands WHERE domain = $1`, [host]) : Promise.resolve(null));
 export const brandById = (id: string | null | undefined) => (id ? queryOne<Brand>(`SELECT ${COLS} FROM brands WHERE id = $1`, [id]) : Promise.resolve(null));
 export const brandOfAccount = (accountId: string) => queryOne<Brand>(`SELECT ${COLS.split(', ').map((c) => `b.${c}`).join(', ')} FROM brands b JOIN accounts a ON a.brand_id = b.id WHERE a.id = $1`, [accountId]);

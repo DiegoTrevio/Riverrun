@@ -113,11 +113,17 @@ Un contenedor (`backup`) respalda **cada noche** (03:30 UTC) lo que no se puede 
 
 ## Cobro automático (Stripe y Mercado Pago)
 
-Los clientes contratan y pagan solos desde **Ajustes → Mi plan y pagos**; tú no cobras ni activas nada a mano.
+Los clientes contratan y pagan solos: **al crear su cuenta** (eligen el plan en el registro y pasan directo al pago) o después desde **Ajustes → Mi plan y pagos**. Tú no cobras ni activas nada a mano.
 
 1. **Claves:** en `.env` pon `STRIPE_SECRET_KEY` + `STRIPE_WEBHOOK_SECRET` y/o `MERCADOPAGO_ACCESS_TOKEN` + `MERCADOPAGO_WEBHOOK_SECRET`; `./riverrun restart`. Cada proveedor se activa solo con sus dos claves.
-2. **Webhooks:** en el panel, **Planes y cobro** muestra la dirección exacta que debes registrar en cada proveedor (`/webhook/billing/stripe` y `/webhook/billing/mercadopago`) y qué eventos activar.
-3. **Planes:** ahí mismo creas tus planes (nombre, precio mensual, moneda). Para Stripe pega el ID del precio (`price_…`) que creaste en su panel; un plan sin él solo se ofrece con Mercado Pago.
+2. **Webhooks:** en el panel, **Planes y cobro** muestra la dirección exacta que debes registrar en cada proveedor (`/webhook/billing/stripe` y `/webhook/billing/mercadopago`) y qué eventos activar. Siguen siendo necesarios para renovaciones, cobros fallidos y cancelaciones.
+3. **Planes:** ahí mismo creas tus planes (nombre, precio mensual, moneda). **No hace falta crear nada en Stripe:** al primer pago de cada plan se crea su producto en Stripe (`riverrun_<clave>`) y se cobra el precio y la moneda del plan; si cambias el precio, los nuevos clientes pagan el nuevo y los que ya pagaban conservan el suyo. Si ya tienes un precio en Stripe (`price_…`), pégalo y se usa ese.
+
+**Registro con pago:** con cobro configurado, el registro (`/#/registro`) muestra tus planes y, si hay prueba gratis, la opción de probar sin tarjeta. Quien elige un plan crea su cuenta y pasa directo a la página de pago; al volver, la cuenta ya está activa. Para enlazar desde tu página de precios usa `https://tu-dominio/#/registro?plan=<clave>` (deja ese plan elegido). Con `TRIAL_DAYS=0` no hay prueba gratis: la cuenta nace en pausa (puede entrar y configurar todo, pero el asistente no responde) y se activa al pagar.
+
+**El pago se confirma aunque el aviso no llegue:** al abrir el pago se guarda su referencia; al volver de la página de pago el panel le pregunta al proveedor y, si ya se cobró, activa la cuenta en ese momento. Si la persona cierra la ventana, la revisión de cada 10 minutos hace lo mismo durante 2 días. El aviso del proveedor (webhook) sigue funcionando igual y nada se aplica dos veces. El regreso del pago (`/pago/stripe`, `/pago/mercadopago`) vuelve al mismo dominio desde el que se pagó (también el de una marca blanca), con la sesión abierta.
+
+**Cobro duplicado:** si alguien paga dos veces (por ejemplo, en dos pestañas), se conserva la suscripción vigente y te llega un aviso (panel y `SUPERADMIN_EMAIL`) para cancelar y reembolsar la otra desde el proveedor.
 
 Qué pasa solo: el pago **activa** la cuenta (sale de prueba o de pausa) y le asigna el plan; la renovación mensual la cobra el proveedor; si un cobro **falla**, la cuenta sigue funcionando `BILLING_GRACE_DAYS` (5 por defecto) mientras se avisa por correo y panel, y luego se **pausa sola**; al pagar, se **reactiva sola**. Al cancelar, el acceso dura hasta el final del periodo ya pagado. El cliente cambia su tarjeta y ve sus facturas en la página de Stripe ("Administrar pago") o cancela desde el panel. Si reactivas a mano una cuenta pausada por pago, el sistema respeta tu decisión. Los avisos de los proveedores se verifican con su firma, se consultan de nuevo al proveedor (llegan repetidos o desordenados sin problema) y las cuentas activadas a mano sin suscripción no se tocan. Nunca pasan datos de tarjeta por tu servidor: el pago ocurre en la página de Stripe / Mercado Pago.
 
@@ -177,7 +183,7 @@ Internet ──HTTPS──> Caddy (app.tudominio.com)
                                   └─ 1 instancia por canal de WhatsApp de cada empresa: "acc<id>_<aleatorio>"
 ```
 
-1. **Registro** (`/#/registro`, enlazado desde el inicio de sesión): nombre, empresa, tipo de negocio, correo y contraseña. Se crea su cuenta en **prueba** (`TRIAL_DAYS`, 14 por defecto) con ella como administradora, y entra directo. Tú recibes un aviso (panel y `SUPERADMIN_EMAIL`).
+1. **Registro** (`/#/registro`, enlazado desde el inicio de sesión): nombre, empresa, tipo de negocio, correo y contraseña. Se crea su cuenta en **prueba** (`TRIAL_DAYS`, 14 por defecto; con `0`, en pausa hasta que pague) con ella como administradora, y entra directo. Con cobro en línea configurado también elige su plan: si elige uno, pasa a pagarlo en ese momento (ver [Cobro automático](#cobro-automático-stripe-y-mercado-pago)). Tú recibes un aviso (panel y `SUPERADMIN_EMAIL`).
 2. **Confirmar correo**: le llega un enlace (48 h, un solo uso). Mientras no lo confirme puede configurar y probar todo, pero **no puede conectar WhatsApp** ni otros canales reales.
 3. **Primeros pasos** (`/#/inicio`), un asistente de 5 pasos:
    1. *Tu negocio*: zona horaria, horario y su WhatsApp para avisos.
@@ -186,7 +192,7 @@ Internet ──HTTPS──> Caddy (app.tudominio.com)
    4. *Pruébalo*: el simulador.
    5. *WhatsApp*: el QR aparece solo en cada cuenta/canal (también en celular; "Con mi número" queda como alternativa) → se vincula desde *Dispositivos vinculados* → el panel detecta la conexión, muestra el número vinculado y avanza solo.
 4. **Si su WhatsApp se desconecta** (teléfono sin internet, sesión cerrada) se le avisa en el panel y por correo con un enlace que abre directo el código para volver a vincularlo.
-5. **Fin de la prueba**: 3 días antes se avisa a la empresa y a ti; al vencer la cuenta queda **en pausa**: puede entrar al panel, pero el bot no responde ni salen mensajes. Tú, en **Cuentas**, pulsas **Activar plan** (o **Extender prueba**). El cobro todavía es manual: `SUPPORT_CONTACT` es lo que ven para contratar.
+5. **Fin de la prueba**: 3 días antes se avisa a la empresa y a ti; al vencer la cuenta queda **en pausa**: puede entrar al panel, pero el bot no responde ni salen mensajes. Con cobro en línea, los correos llevan el enlace para pagar y la cuenta se reactiva sola al pagar. Sin cobro en línea, tú, en **Cuentas**, pulsas **Activar plan** (o **Extender prueba**) y `SUPPORT_CONTACT` es lo que ven para contratar.
 
 **Resúmenes y respuestas del cliente.** El asistente guarda las respuestas clave del prompt en el contacto y la conversación, con referencia al mensaje original. Al cerrar, completar el objetivo o transferir a una persona se genera un resumen consultable. En **Conversaciones**, el botón *Generar/Actualizar resumen* lo obtiene en cualquier momento. Los datos se actualizan en una transacción y PostgreSQL impide mezclar cuentas, canales y contactos. Consulta [el esquema y las reglas de almacenamiento](docs/data-storage.md).
 
@@ -534,13 +540,13 @@ Panel (bajo `/api`, con sesión por cookie; todo se limita a la cuenta del usuar
 - Notificaciones: `/api/notifications`, `/api/notifications/read`
 - Contactos: `/api/contacts/:id`
 - Registros, uso de IA y estadísticas: `/api/logs`, `/api/ai-runs`, `/api/stats`
-- Cobro: `GET /api/billing`, `POST /api/billing/{checkout,portal,cancel}`, `/api/plans` (crear/editar: superadmin), `GET /api/billing/overview` (superadmin)
+- Cobro: `GET /api/billing`, `POST /api/billing/{checkout,confirm,portal,cancel}`, `/api/plans` (crear/editar: superadmin), `GET /api/billing/overview` (superadmin)
 - Sistema: `GET /api/system/status` (superadmin)
 
 Públicas:
 
-- Registro y contraseñas: `GET /api/signup/info`, `POST /api/signup`, `POST /api/verify-email`, `POST /api/forgot-password`, `POST /api/reset-password` (con límite de intentos por IP).
-- Salud: `GET /health`, `GET /health/ready`. Cobro: `POST /webhook/billing/{stripe,mercadopago}` (firmados).
+- Registro y contraseñas: `GET /api/signup/info` (incluye los planes que se pueden pagar), `POST /api/signup` (con `plan` y `provider` opcionales: devuelve `checkout_url` para pagar en ese momento), `POST /api/verify-email`, `POST /api/forgot-password`, `POST /api/reset-password` (con límite de intentos por IP).
+- Salud: `GET /health`, `GET /health/ready`. Cobro: `POST /webhook/billing/{stripe,mercadopago}` (firmados) y `GET /pago/{stripe,mercadopago}` (regreso desde la página de pago al panel).
 - Webhooks: `GET|POST /webhook/:token`. El token es una URL secreta por canal; `GET` sirve para la verificación de Meta.
 - Chat web: `/webchat/:token/{config,session,messages}`, con CORS y límite de 15 mensajes por minuto por sesión.
 - Imágenes firmadas: `GET /media/:id?e=…&s=…`.

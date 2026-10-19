@@ -25,7 +25,7 @@ export async function render() {
   if (['login', 'registro', 'olvide', 'restablecer', 'verificar'].includes(parts[0])) await ensureBrand('host');
   if (!current()) return;
   if (parts[0] === 'login') return view('auth', 'renderLogin');
-  if (parts[0] === 'registro') return view('auth', 'renderSignup');
+  if (parts[0] === 'registro') return view('auth', 'renderSignup', params);
   if (parts[0] === 'olvide') return view('auth', 'renderForgot');
   if (parts[0] === 'restablecer') return view('auth', 'renderReset', params.get('token') || '');
   if (parts[0] === 'verificar') return view('auth', 'renderVerify', params.get('token') || '');
