@@ -12,6 +12,7 @@ import { mergeChannelConfig } from './index.js';
 import { metaConnectEnabled } from './meta-connect.js';
 import { accountInfo, clientFor, disconnectAccount, dmNetworkOf, ensurePlatformWebhook, idOf, networkOf, profileFor, ZernioError } from './zernio.js';
 import { accountProfile, assertSocialRoom, disconnectZernio, ZernioDisconnectError, ZernioOwnershipError } from './zernio-connect.js';
+import { publicHealth } from '../social/health.js';
 
 /**
  * Redes sociales del negocio (por Zernio), sin pasar por una conexión de mensajes: el negocio conecta su red desde
@@ -255,9 +256,10 @@ async function linkChannel(
 /** Redes del negocio para "Redes sociales" (sin identificadores de Zernio). */
 export async function listSocialAccounts(accountId: string) {
   const rows = await query<any>(
-    `SELECT s.id, s.platform, s.username, s.display_name, s.picture, s.status, s.channel_id, COALESCE(c.chatbot_id, s.chatbot_id) AS chatbot_id, s.comment_settings, s.connected_at
+    `SELECT s.id, s.platform, s.username, s.display_name, s.picture, s.status, s.channel_id, COALESCE(c.chatbot_id, s.chatbot_id) AS chatbot_id, s.comment_settings, s.connected_at,
+            s.health, s.token_expires_at
        FROM social_accounts s LEFT JOIN channels c ON c.id = s.channel_id WHERE s.account_id = $1 ORDER BY s.connected_at, s.id`, [accountId]);
-  return rows.map((r) => ({ ...r, dm: zernioHandlesDm(r.platform) }));
+  return rows.map(({ health, token_expires_at, ...r }) => ({ ...r, dm: zernioHandlesDm(r.platform), health: publicHealth({ status: r.status, health, token_expires_at }) }));
 }
 
 const socialRow = async (accountId: string, id: string) => {

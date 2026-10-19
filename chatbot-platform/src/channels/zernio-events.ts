@@ -10,6 +10,7 @@ import { eventAccountId, eventProfileId, networkOf } from './zernio.js';
 import { handleTemplateStatus } from './zernio-templates.js';
 import { handleCommentEvent, handleReviewEvent } from '../social/engagement.js';
 import { handlePostEvent } from '../social/posts.js';
+import { notifyDown } from '../social/health.js';
 
 /**
  * Eventos del webhook único de Zernio. Cada evento se guarda una sola vez por su id: Zernio reintenta hasta 7 veces con
@@ -125,7 +126,13 @@ async function handleAccount(body: any, connected: boolean) {
     const why = !connected && body?.account?.reason ? `: ${String(body.account.reason).slice(0, 200)}` : '';
     await logEvent({ level: connected ? 'info' : 'warn', source: 'channel', message: connected ? 'Zernio: la cuenta quedó conectada' : `Zernio: la cuenta se desconectó${why}; hay que volver a conectarla`, accountId: ch.account_id, channelId: ch.id });
   }
-  const updated = await query(`UPDATE social_accounts SET status = $2, updated_at = now() WHERE zernio_account_id = $1 RETURNING id`, [zid, connected ? 'active' : 'needs_reconnect']);
+  const updated = await query<{ id: string; account_id: string; platform: string; username: string; display_name: string }>(
+    `UPDATE social_accounts SET status = $2, updated_at = now(),
+        down_since = CASE WHEN $2 = 'needs_reconnect' THEN coalesce(down_since, now()) ELSE NULL END,
+        down_notified_at = CASE WHEN $2 = 'active' THEN NULL ELSE down_notified_at END
+      WHERE zernio_account_id = $1 RETURNING id, account_id, platform, username, display_name`, [zid, connected ? 'active' : 'needs_reconnect']);
+  // Una red sin canal de mensajes (LinkedIn, Google…) no tiene quién avise de su desconexión: se avisa aquí (una vez).
+  if (!connected && !channels.length && updated.length) await notifyDown(updated[0].account_id, updated);
   if (!connected || updated.length || channels.length) return;
   const tenant = await tenantOf(body, channels);
   const platform = String(body?.account?.platform ?? '');

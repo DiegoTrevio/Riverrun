@@ -17,6 +17,8 @@ import { startWatchdog } from './watchdog.js';
 import { startWhatsappWatch } from './whatsapp-watch.js';
 import { startMetaTokenWatch } from './channels/meta-connect.js';
 import { startSocialSync } from './social/engagement.js';
+import { startZernioHealthWatch } from './social/health.js';
+import { startSocialStats } from './social/stats.js';
 
 async function main() {
   fs.mkdirSync(config.uploadsDir, { recursive: true });
@@ -47,6 +49,8 @@ async function main() {
   startWhatsappWatch();
   startMetaTokenWatch();
   startSocialSync();
+  startZernioHealthWatch();
+  startSocialStats();
   const resumed = await service.resumePending();
   if (resumed) console.log(`Retomando ${resumed} conversaciones pendientes`);
 

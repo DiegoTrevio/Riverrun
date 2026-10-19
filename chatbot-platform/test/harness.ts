@@ -59,6 +59,12 @@ export const zer = {
   publications: new Map<string, any>(),
   idem: new Map<string, string>(),
   postFail: new Map<string, string>(),
+  /** Salud por cuenta (GET /accounts/health) y estadísticas: seguidores, métricas diarias y Google; sin el complemento, 402/403. */
+  health: new Map<string, any>(),
+  followers: new Map<string, any[]>(),
+  metrics: new Map<string, any[]>(),
+  gbp: new Map<string, any>(),
+  analyticsAddon: true,
 };
 /** Graph de Meta simulado para «Conectar con Facebook»: páginas que devuelve me/accounts y tokens que Meta retiró. */
 export const metaFake = {
@@ -122,6 +128,21 @@ const extServer = http.createServer((req, res) => {
         return json(200, { message: 'ok' });
       }
       if (p === '/accounts' && m === 'GET') return json(200, { accounts: [...zer.accounts.values()].filter((a) => a.profileId === url.searchParams.get('profileId')) });
+      if (p === '/accounts/health' && m === 'GET') return json(200, { summary: { total: zer.health.size }, accounts: [...zer.health.entries()].map(([accountId, x]) => ({ accountId, ...x })) });
+      if (p === '/accounts/follower-stats' && m === 'GET') {
+        if (!zer.analyticsAddon) return json(403, { error: 'Analytics add-on required', requiresAddon: true });
+        const ids = (url.searchParams.get('accountIds') ?? '').split(',').filter(Boolean);
+        return json(200, { stats: Object.fromEntries(ids.map((id) => [id, zer.followers.get(id) ?? []])), accounts: [] });
+      }
+      if (p === '/analytics/daily-metrics' && m === 'GET') {
+        if (!zer.analyticsAddon) return json(402, { error: 'analytics_addon_required' });
+        const from = url.searchParams.get('fromDate') ?? '';
+        return json(200, { dailyData: (zer.metrics.get(url.searchParams.get('accountId') ?? '') ?? []).filter((d) => !from || d.date >= from) });
+      }
+      if (p === '/analytics/googlebusiness/performance' && m === 'GET') {
+        if (!zer.analyticsAddon) return json(402, { error: 'analytics_addon_required' });
+        return json(200, { metrics: zer.gbp.get(url.searchParams.get('accountId') ?? '') ?? {} });
+      }
       if (p.startsWith('/accounts/') && m === 'DELETE') { zer.accounts.delete(decodeURIComponent(p.split('/')[2])); return json(200, { message: 'ok' }); }
       if (p === '/webhooks/settings' && m === 'GET') return json(200, { webhooks: zer.webhooks });
       if (p === '/webhooks/settings' && m === 'POST') {

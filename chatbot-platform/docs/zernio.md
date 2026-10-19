@@ -186,6 +186,36 @@ administradores), con lista por día y calendario del mes.
   al equipo. La revisión de cada publicación queda anotada antes de llamar a Zernio y no se rinde si Zernio falla.
 - En `OUTBOUND_MODE=sandbox` solo se guardan borradores. Un negocio suspendido o en pausa no publica.
 
+## Estadísticas y salud
+
+`src/social/stats.ts` y `src/social/health.ts`; en el panel, **Reportes → Redes sociales** (`#/estadisticas/redes`,
+administradores), el estado de cada red en **Ajustes → Redes sociales** y la tarjeta *Salud de las redes* en
+**Sistema → Zernio**.
+
+- **Salud (cada 6 h, una réplica por vuelta):** una sola llamada a `GET /accounts/health` para todas las cuentas.
+  - Una cuenta que Zernio marca para reconectar queda *Hay que reconectarla*. Si tiene canal de mensajes, el canal se
+    cierra y avisa como cualquier desconexión; si no, los administradores del negocio reciben **un** aviso (notificación
+    con enlace a Redes sociales y correo) que agrupa las redes caídas.
+  - Al recuperarse vuelve a *Conectada* y el canal se reabre. Las cuentas que Zernio no menciona no se tocan.
+  - Meta a veces marca un permiso como vencido sin serlo: hace falta verlo **dos veces seguidas** para darlo por caído.
+  - Si se caen más de 5 cuentas y más de la mitad a la vez, parece un problema de Zernio: no se marca ninguna y se
+    abre una incidencia para el superadministrador.
+  - **Permiso por vencer** (Instagram, Facebook, Threads y LinkedIn, que no lo renuevan solos): un aviso entre 7 y 1 días
+    antes, una vez por fecha de vencimiento. La red muestra *Su permiso vence pronto* y el botón *Reconectar*.
+  - **Webhook:** Zernio lo apaga tras días de fallas. La revisión lo reactiva (con su secreto) y abre una incidencia con
+    aviso al superadministrador; al verlo bien la cierra y avisa que se recuperó.
+- **Estadísticas (una vez al día por cuenta, repartidas en el día y con prioridad baja):**
+  - Seguidores con `GET /accounts/follower-stats` (hasta 50 cuentas por llamada) y, por día, impresiones, alcance,
+    interacciones (me gusta + comentarios + compartidos + guardados), vistas, clics y publicaciones con
+    `GET /analytics/daily-metrics?attribution=received` (lo que pasó ese día, no lo de los posts de ese día). Google
+    usa `GET /analytics/googlebusiness/performance` (impresiones en Búsqueda y Maps; llamadas, sitio web y rutas como
+    interacción).
+  - La primera vez trae 35 días; después, los últimos 7 (las redes corrigen cifras unos días). Los días son UTC y se
+    guardan por cuenta y día (`social_account_stats`, 400 días); repetir no duplica ni borra lo que ya estaba.
+  - Las estadísticas de Zernio son un complemento de pago: si la llave no lo tiene, se anota, no se vuelve a intentar en
+    24 h y el panel lo explica. Si Zernio está ocupado, la cuenta queda para la siguiente vuelta.
+- El negocio solo ve sus redes, en palabras (sin ids de Zernio ni detalles técnicos).
+
 ## Ventana de 24 horas
 
 Solo Meta la exige: Instagram, Messenger y WhatsApp oficial. Fuera de las 24 h desde el último mensaje del cliente no se
@@ -195,6 +225,9 @@ envían campañas ni avisos por esas redes. Telegram, X, Bluesky y Reddit no la 
 
 - **Activar las redes:** pega la llave en **Sistema → Redes sociales (Zernio)** y pulsa *Guardar y probar*. Se prueba
   con Zernio antes de guardarla y se registra el webhook (requiere `PUBLIC_BASE_URL` en HTTPS y `SESSION_SECRET`).
+- **Salud de las redes** (Sistema → Zernio): cuántas cuentas están bien, con aviso o con problema, cuáles hay que
+  reconectar y desde cuándo, el estado del webhook y si la llave tiene el complemento de estadísticas. *Revisar ahora*
+  no espera la vuelta de 6 h (máximo 6 por minuto).
 - **Probar y reparar:** vuelve a enviar el webhook completo (URL, eventos y secreto). Úsalo si cambiaste
   `SESSION_SECRET` o el dominio, o si Zernio apagó el webhook. También revisa que los perfiles de los negocios sigan
   existiendo; los que ya no existan quedan sin perfil y sus redes, por reconectar (el negocio recibe el aviso).

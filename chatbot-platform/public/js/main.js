@@ -80,6 +80,7 @@ export async function render() {
     else if (parts[0] === 'publicaciones') await view('social-posts', 'viewSocialPosts', content, parts[1], params);
     else if (parts[0] === 'plan') await view('billing', 'viewPlan', content, params);
     else if (parts[0] === 'planes') await view('billing', 'viewPlans', content);
+    else if (parts[0] === 'estadisticas' && parts[1] === 'redes') await view('analytics', 'viewSocialStats', content, params);
     else if (parts[0] === 'estadisticas') await view('analytics', 'viewAnalytics', content, params);
     else if (parts[0] === 'consumo') await view('usage', 'viewUsage', content, params);
     else if (parts[0] === 'bot' && parts[2] === 'conexiones' && parts[3]) await view('channels', 'viewChannel', content, parts[3], parts[1]);

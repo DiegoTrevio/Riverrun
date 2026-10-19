@@ -219,11 +219,11 @@ export function setAlertWhatsapp(fn: typeof alertWhatsapp) {
 }
 
 /** Envía un aviso de conexión a quienes se definió: administradores (panel y correo), correos y WhatsApp adicionales. */
-async function sendConnectionAlert(ch: Pick<Channel, 'id' | 'account_id' | 'name' | 'type'>, title: string, body: string, force = false) {
+async function sendConnectionAlert(ch: Pick<Channel, 'id' | 'account_id' | 'name' | 'type'>, title: string, body: string, force = false, linkTo?: string) {
   const s = await connectionAlerts(ch.account_id);
   const sent = { admins: 0, emails: 0, phones: 0, failed: [] as string[] };
   if (!s.enabled && !force) return sent;
-  const link = ch.id ? `#/channel/${ch.id}?conectar=1` : '#/agentes';
+  const link = linkTo ?? (ch.id ? `#/channel/${ch.id}?conectar=1` : '#/agentes');
   const url = `${config.publicBaseUrl}/${link}`;
   if (s.notify_admins) {
     const admins = await query<{ id: string; email: string }>(`SELECT id, email FROM users WHERE account_id = $1 AND role = 'admin' AND active`, [ch.account_id]);
@@ -246,6 +246,14 @@ async function sendConnectionAlert(ch: Pick<Channel, 'id' | 'account_id' | 'name
     }
   }
   return sent;
+}
+
+/**
+ * Redes de Zernio sin canal de mensajes (LinkedIn, YouTube, Google…) que hay que reconectar o cuyo permiso vence: un
+ * aviso por negocio, con los mismos ajustes de avisos de desconexión y enlace a Redes sociales.
+ */
+export async function notifySocialAccounts(accountId: string, title: string, body: string) {
+  return sendConnectionAlert({ id: '', account_id: accountId, name: '', type: 'zernio' }, title, body, false, '#/redes');
 }
 
 /** Aviso de que un canal se desconectó; `hours` si sigue así desde hace horas. El motivo dice si hay que escanear el QR. */

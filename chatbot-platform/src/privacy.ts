@@ -72,6 +72,8 @@ export async function applyRetention(now = new Date()): Promise<{ accounts: numb
   // Ids de eventos de Zernio: se guardan lo mismo que se aceptan (35 días) para que un evento repetido no cuente dos veces.
   await query(`DELETE FROM zernio_events WHERE state IN ('done','ignored','dead') AND received_at<$1::timestamptz-interval '35 days'`,[now]);
   await query(`DELETE FROM webhook_deliveries WHERE created_at < $1`, [new Date(now.getTime() - 30 * 86400_000)]); // la bitácora de entregas dura 30 días
+  // Estadísticas de las redes (totales por día, sin datos de personas): poco más de un año.
+  await query(`DELETE FROM social_account_stats WHERE day < ($1::timestamptz AT TIME ZONE 'UTC')::date - 400`, [now]);
   const accounts = await query<{ id: string; name: string; settings: unknown }>(`SELECT id, name, settings FROM accounts WHERE active`);
   let messagesDeleted = 0, contactsDeleted = 0, touched = 0;
   for (const a of accounts) {

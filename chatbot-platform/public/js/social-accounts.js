@@ -83,9 +83,10 @@ export async function viewSocialAccounts(root, params = new URLSearchParams()) {
         h('div', { style: 'flex:1;min-width:0' },
           h('strong', {}, a.display_name || a.username || n.label),
           h('div', { class: 'small muted' }, n.label, a.username ? ` · @${a.username}` : ''),
-          h('span', { class: `badge ${color}` }, label)),
+          h('span', { class: `badge ${color}` }, label),
+          a.status === 'active' && a.health?.problem ? h('div', { class: 'small stats-warn' }, '⚠ ', a.health.problem) : null),
         h('div', { class: 'row' },
-          a.status !== 'active' ? h('button', { class: 'small primary', onclick: () => connect(a.platform, a.chatbot_id, a.id) }, 'Reconectar') : null,
+          a.status !== 'active' || a.health?.reconnect ? h('button', { class: 'small primary', onclick: () => connect(a.platform, a.chatbot_id, a.id) }, 'Reconectar') : null,
           a.platform === 'whatsapp' ? h('a', { class: 'btn small', href: `#/redes/whatsapp/${a.id}` }, 'Plantillas') : null,
           a.platform === 'whatsapp' ? h('button', { class: 'small', title: 'Si tu número tiene verificación en dos pasos y no salen los mensajes', onclick: async () => {
             const pin = await ask('PIN de verificación en dos pasos de tu número (6 dígitos)', '', { title: 'PIN de WhatsApp', accept: 'Registrar' });
@@ -125,7 +126,8 @@ export async function viewSocialAccounts(root, params = new URLSearchParams()) {
     h('div', { class: 'card' },
       h('h2', { style: 'margin-top:0' }, 'Tus redes conectadas'),
       data.accounts.length ? data.accounts.map(accountCard) : h('p', { class: 'muted' }, 'Todavía no conectas ninguna red.'),
-      data.limit?.max ? h('p', { class: 'small muted', style: 'margin-bottom:0' }, `Usas ${data.limit.used} de ${data.limit.max} redes que incluye tu plan.`) : null),
+      data.limit?.max ? h('p', { class: 'small muted', style: 'margin-bottom:0' }, `Usas ${data.limit.used} de ${data.limit.max} redes que incluye tu plan.`) : null,
+      data.accounts.length ? h('p', { class: 'small', style: 'margin-bottom:0' }, h('a', { href: '#/estadisticas/redes' }, 'Ver sus estadísticas →')) : null),
     h('div', { class: 'card' },
       h('h2', { style: 'margin-top:0' }, 'Conectar otra red'),
       data.meta_direct ? h('p', { class: 'small muted' }, 'Facebook e Instagram ya se conectan con el botón "Conectar con Facebook" en las conexiones de tu agente; aquí solo se usan para comentarios, publicaciones y estadísticas.') : null,

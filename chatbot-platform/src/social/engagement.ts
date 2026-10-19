@@ -5,7 +5,7 @@ import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
 import { detectRisk } from '../engine/safety.js';
 import { logEvent } from '../logs.js';
-import { clientFor, ensurePlatformWebhook, eventAccountId, eventProfileId, listOf, NETWORKS, networkOf, ZernioError, zernioEnabled, type ZernioClient } from '../channels/zernio.js';
+import { clientFor, eventAccountId, eventProfileId, listOf, NETWORKS, networkOf, ZernioError, zernioEnabled, type ZernioClient } from '../channels/zernio.js';
 import { ZernioBusyError, type ZernioPriority } from '../channels/zernio-budget.js';
 
 /**
@@ -490,16 +490,13 @@ export async function syncDue(limit = 20) {
 const networkIds = (pick: (n: NonNullable<ReturnType<typeof networkOf>>) => boolean) => NETWORK_IDS.filter((id) => pick(networkOf(id)!));
 
 /**
- * Revisión de cada hora: unas cuantas cuentas a la vez, cada una una vez al día. Antes, el webhook de la plataforma se
- * pone al día (las instalaciones anteriores no recibían comentarios ni reseñas).
+ * Revisión de cada hora: unas cuantas cuentas a la vez, cada una una vez al día. El webhook de la plataforma (y sus
+ * eventos nuevos) lo pone al día la revisión de salud, que además avisa si Zernio lo había apagado.
  */
 export function startSocialSync(intervalMs = 3600_000) {
   const run = () => {
     if (!zernioEnabled()) return;
-    void (async () => {
-      await ensurePlatformWebhook(zclient('background')).catch(() => undefined);
-      await syncDue();
-    })().catch((e) => logEvent({ level: 'error', source: 'channel', message: `Revisión de comentarios y reseñas: ${e?.message ?? e}` }));
+    void syncDue().catch((e) => logEvent({ level: 'error', source: 'channel', message: `Revisión de comentarios y reseñas: ${e?.message ?? e}` }));
   };
   setTimeout(run, 10 * 60_000).unref();
   setInterval(run, intervalMs).unref();

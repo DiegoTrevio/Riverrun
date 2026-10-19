@@ -155,6 +155,7 @@ before(async () => {
   B.social_review = (await pool.query(`INSERT INTO social_reviews (account_id, social_account_id, platform, review_id, rating, text) VALUES ($1, $2, 'googlebusiness', 'rb1', 5, $3) RETURNING id`, [B.account, B.social, `Reseña ${MARK}`])).rows[0].id;
   B.social_publication = (await pool.query(`INSERT INTO social_publications (account_id, text, status) VALUES ($1, $2, 'borrador') RETURNING id`, [B.account, `Publicación ${MARK}`])).rows[0].id;
   await pool.query(`INSERT INTO social_publication_targets (publication_id, account_id, social_account_id, zernio_account_id, platform, username) VALUES ($1, $2, $3, 'acc_b_aislamiento', 'linkedin', $4)`, [B.social_publication, B.account, B.social, `b_${MARK}`]);
+  await pool.query(`INSERT INTO social_account_stats (social_account_id, account_id, day, followers, impressions) VALUES ($1, $2, current_date - 1, 4321, 98765)`, [B.social, B.account]);
   B.booking_link = (await pool.query(`INSERT INTO booking_links (account_id, token, name) VALUES ($1, 'tok-b-reservas', $2) RETURNING id`, [B.account, `Reservas ${MARK}`])).rows[0].id;
   B.card = String((await pool.query(`INSERT INTO pipeline_cards (account_id, pipeline_id, conversation_id, stage_id) VALUES ($1, $2, $3, 'nuevo') RETURNING id`, [B.account, B.pipeline, B.conv])).rows[0].id);
   await h.idle();

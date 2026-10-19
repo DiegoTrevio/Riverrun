@@ -24,10 +24,11 @@ export async function viewZernioAdmin(root) {
     root.append(h('p', { class: 'banner warn' }, 'Primero guarda la llave de Zernio en Sistema → Redes sociales (Zernio).'));
     return;
   }
-  const [tenants, budget, networks] = await Promise.all([
+  const [tenants, budget, networks, health] = await Promise.all([
     api('GET', '/api/system/zernio/tenants'),
     api('GET', '/api/system/zernio/budget').catch(() => null),
     api('GET', '/api/meta').then((m) => m.social_capabilities || []).catch(() => []),
+    api('GET', '/api/system/zernio/health').catch(() => null),
   ]);
   if (!root.isConnected) return;
   const label = (p) => networks.find((n) => n.id === p)?.label || p;
@@ -85,6 +86,27 @@ export async function viewZernioAdmin(root) {
   const refresh = async () => fill(table, tableOf(await api('GET', '/api/system/zernio/tenants')));
   fill(table, tableOf(tenants));
 
+  /** Salud de todas las redes y del webhook (se revisa sola cada 6 h; "Revisar ahora" no espera). */
+  const healthBox = h('div');
+  const healthOf = (x) => {
+    const c = x.counts || {};
+    const hook = x.webhook;
+    return [
+      h('p', {}, `✔ ${c.ok || 0} bien · ⚠ ${c.warning || 0} con aviso · ✕ ${c.error || 0} con problema`),
+      hook ? h('p', { class: `small ${hook.active ? '' : 'stats-warn'}` },
+        hook.active ? '✔ Webhook activo' : '✕ Webhook apagado por Zernio',
+        hook.repaired ? ' · se reactivó en la última revisión' : '',
+        hook.failure_count ? ` · ${hook.failure_count} entregas fallidas seguidas` : '',
+        hook.last_fired_at ? ` · último evento ${fmtDate(hook.last_fired_at)}` : '',
+        hook.checked_at ? ` · revisado ${fmtDate(hook.checked_at)}` : '') : h('p', { class: 'small muted' }, 'El webhook todavía no se ha revisado.'),
+      x.analytics_available === false ? h('p', { class: 'small stats-warn' }, '⚠ Tu cuenta de Zernio no tiene el complemento de estadísticas: los negocios no ven cifras nuevas de sus redes. Se vuelve a intentar cada día.') : null,
+      x.broken.length ? h('div', { class: 'table-scroll' }, h('table', {},
+        h('thead', {}, h('tr', {}, h('th', {}, 'Negocio'), h('th', {}, 'Red'), h('th', {}, 'Desde'))),
+        h('tbody', {}, x.broken.map((b) => h('tr', {}, h('td', {}, b.business), h('td', {}, ICONS[b.platform] || '🔗', ' ', label(b.platform), b.username ? ` · @${b.username}` : ''), h('td', { class: 'small' }, b.since ? fmtDate(b.since) : '—'))))))
+        : h('p', { class: 'small muted' }, 'Ninguna red necesita reconectarse.'),
+    ];
+  };
+  if (health) fill(healthBox, healthOf(health));
   const orphans = h('div');
   root.append(
     h('div', { class: 'card' },
@@ -92,6 +114,15 @@ export async function viewZernioAdmin(root) {
       h('p', {}, `Cuentas conectadas: ${totalAccounts} · Mensajes salientes este mes: ${totalOutbound.toLocaleString('es-MX')}`),
       h('p', { class: 'small muted' }, `Costo estimado de Zernio: ~${estimate(totalAccounts, totalOutbound)} USD al mes (según su tabla pública: 2 cuentas gratis, luego por cuenta; 10 000 mensajes salientes gratis). Lo cobra Zernio a la llave de la plataforma.`),
       budget ? h('p', { class: 'small' }, `Llamadas a Zernio disponibles ahora: ${Math.floor(budget.tokens)} de ${budget.capacity} por minuto (compartidas entre todos los negocios).`) : null),
+    h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, 'Salud de las redes'),
+      h('p', { class: 'small muted' }, 'Se revisa sola cada 6 horas: a cada negocio se le avisa cuando una red se cae o su permiso está por vencer, y si Zernio apaga el webhook se reactiva y te avisamos.'),
+      healthBox,
+      h('button', { class: 'small', onclick: async () => {
+        const r = await run(() => api('POST', '/api/system/zernio/health/check'));
+        if (!r) return;
+        fill(healthBox, healthOf(r.summary));
+        toast(`Revisado: ${r.down} caída(s) nueva(s), ${r.back} recuperada(s), ${r.warned} aviso(s) de permiso`);
+      } }, 'Revisar ahora')),
     h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, 'Negocios'),
       h('p', { class: 'small muted' }, 'Cada negocio tiene su propio perfil de Zernio (se crea al conectar su primera red). Puedes conectar redes por un cliente con un enlace, o directo en el panel de Zernio dentro de su perfil: se adoptan solas.'),
       table),

@@ -5,7 +5,8 @@ import { rateLimited } from '../auth.js';
 import { assertWithinLimit, effectiveLimits, usageOf } from '../billing/limits.js';
 import { mergeChannelConfig } from '../channels/index.js';
 import { metaConnectEnabled } from '../channels/meta-connect.js';
-import { networkOf, ZernioError, zernioEnabled } from '../channels/zernio.js';
+import { clientFor, networkOf, ZernioError, zernioEnabled } from '../channels/zernio.js';
+import { checkZernioHealth, zernioHealthSummary } from '../social/health.js';
 import {
   connectAuthUrl, connectSession, createConnectSession, disconnectAllTenant, disconnectSocialAccount, finishConnect, listSocialAccounts, orphanProfiles,
   redeliverWebhook, setSocialAgent, syncTenant, webhookLogs, zernioHandlesDm, zernioTenants, type FinishCode,
@@ -173,6 +174,15 @@ export async function socialRoutes(api: FastifyInstance) {
   };
 
   api.get('/api/system/zernio/tenants', superadmin, async () => zernioTenants());
+
+  /** Salud de las redes de todos los negocios y del webhook de la plataforma; "Revisar ahora" no espera la vuelta de 6 h. */
+  api.get('/api/system/zernio/health', superadmin, async () => zernioHealthSummary());
+  api.post('/api/system/zernio/health/check', superadmin, async () => {
+    zernioOn();
+    if (rateLimited('zernio-health-check', 6, 60_000)) throw new HttpError(429, 'Espera un minuto antes de volver a revisar.');
+    const r = await viaZernio(() => checkZernioHealth({ force: true, client: clientFor(null) }));
+    return { ...r, summary: await zernioHealthSummary() };
+  });
 
   api.post('/api/system/zernio/tenants/:id/profile', superadmin, async (req: any) => {
     const acc = await tenant(req);
