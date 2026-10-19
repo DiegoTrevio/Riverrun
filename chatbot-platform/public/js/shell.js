@@ -75,10 +75,14 @@ export function shell(active, content) {
         h('select', { id: 'profile-switch',
           onchange: (e) => {
             state.accountId = e.target.value; invalidateReads();
-            if (location.hash.startsWith('#/logs?')) {
-              const filters = new URLSearchParams(location.hash.split('?')[1]);
-              filters.delete('account_id');
-              history.replaceState(null, '', '#/logs' + (filters.size ? '?' + filters : ''));
+            // Un enlace que abrió otro perfil (?account_id=, p. ej. desde un aviso de Consumo o Registros) no debe dejarlo fijo.
+            if (location.hash.includes('?')) {
+              const [route, query] = location.hash.split('?');
+              const filters = new URLSearchParams(query);
+              if (filters.has('account_id')) {
+                filters.delete('account_id');
+                history.replaceState(null, '', route + (filters.size ? '?' + filters : ''));
+              }
             }
             try { localStorage.setItem('cp-account', state.accountId); } catch { /* */ }
             if (location.hash.startsWith('#/bot/') || location.hash.startsWith('#/channel/') || location.hash.startsWith('#/agentes/conexion/')) { location.hash = '#/agentes'; return; }
