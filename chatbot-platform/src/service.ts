@@ -1,6 +1,6 @@
 import { syncStaffEvent } from './integrations/staff-calendars.js';
 import { syncAppointment as syncOutlookAppointment } from './integrations/outlook.js';
-import { accountAi, audioSeconds } from './ai/budget.js';
+import { accountAi, AiBudgetBlocked, audioSeconds } from './ai/budget.js';
 import { syncAppointment } from './integrations/google.js';
 import crypto from 'node:crypto';
 import type { AiProvider } from './ai/provider.js';
@@ -32,6 +32,8 @@ import { ConversationQueue } from './engine/queue.js';
 import { InboundQueue } from './engine/inbox.js';
 import { ZernioEventQueue } from './channels/zernio-events.js';
 import { zernioCleanup } from './channels/zernio-connect.js';
+import { configureEngagement, isPrivateReplyEcho, runAutoReply, runDigest, syncEngagement } from './social/engagement.js';
+import { suggestReply } from './social/replies.js';
 import { fillBody, outgoingTemplate, templateBody, templateForChannel, templateVarCount } from './channels/zernio-templates.js';
 import { renderTemplate } from './automation/templates.js';
 import { DeliveryUncertain,currentOperation } from './engine/coordination.js';
@@ -119,6 +121,7 @@ export class ChatService {
     });
     // Los avisos de desconexión a WhatsApp adicionales salen por otro WhatsApp conectado de la cuenta.
     setAlertWhatsapp((accountId, phone, text, excludeChannelId) => this.sendInternalWhatsapp(accountId, phone, text, null, excludeChannelId));
+    configureEngagement({ alertTeam: (accountId, o) => this.automator.alertTeam(accountId, o) });
     this.queue = new ConversationQueue((id, a) => this.runConversation(id, a.restarts), 2, config.queue.retryMs, (id) => this.aiUnavailable(id));
     this.inbox = new InboundQueue((channel,msg)=>this.handleIncoming(channel,msg),channel=>this.automator.alertTeam(channel.account_id,{title:'⚠️ Recepción pendiente de revisión',body:'No se pudo completar la recepción de un mensaje. Revisa los trabajos pendientes de este perfil.',kind:'alert',link:'#/logs'}));
     this.scheduler = new Scheduler({
@@ -134,6 +137,13 @@ export class ChatService {
       campaign_start: (p) => this.campaigns.start(p.campaign_id),
       campaign_send: (p) => this.campaigns.sendOne(p),
       zernio_cleanup: (p) => zernioCleanup(p),
+      social_sync: (p) => syncEngagement(String(p.social_account_id ?? '')),
+      social_digest: (p) => runDigest(p),
+      social_autoreply: (p) => runAutoReply(p, (accountId, kind, id) => suggestReply(this.ai, accountId, kind, id)).catch((e) => {
+        // Sin presupuesto de IA no se reintenta: lo contesta una persona.
+        if (e instanceof AiBudgetBlocked) return;
+        throw e;
+      }),
     },()=>this.automator.settleAll());
   }
 
@@ -626,6 +636,8 @@ export class ChatService {
       if (!known.external_message_id) await store.updateMessage(known.id, { external_message_id: msg.messageId });
       return;
     }
+    // Respuesta privada a un comentario (la mandó el negocio desde Comentarios): queda en la conversación sin pausar al asistente.
+    const privateReply = msg.type === 'text' && (await isPrivateReplyEcho(conv.account_id, msg.messageId, msg.text));
     await store.insertMessage({
       conversation_id: conv.id,
       direction: 'out',
@@ -634,8 +646,9 @@ export class ChatService {
       // Lo que escribe una persona desde el teléfono también se enmascara (p. ej. números de tarjeta), como lo del cliente.
       content: msg.type === 'text' ? maskSensitive(msg.text) : content,
       external_message_id: msg.messageId,
-      meta: { source: 'platform' },
+      meta: { source: privateReply ? 'private_reply' : 'platform' },
     });
+    if (privateReply) return;
     // Una persona que escribe desde el teléfono pausa al asistente aunque la conversación esté cerrada (la reabre con ella).
     if ((bot?.rules.pause_on_human_reply ?? true) && conv.status !== 'human') {
       await this.takeover(conv.id, 'Una persona respondió desde la plataforma', undefined, 'telefono');

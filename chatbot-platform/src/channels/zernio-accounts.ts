@@ -196,6 +196,12 @@ export async function adoptAccount(accountId: string, platform: string, zernioAc
   if (zernioHandlesDm(platform)) await linkChannel(accountId, row, { platform, zid: zernioAccountId, profileId, info, chatbotId: opts.chatbotId ?? row.chatbot_id });
   await ensurePlatformWebhook(clientFor()).catch((e) =>
     logEvent({ level: 'error', source: 'channel', message: `Zernio: no se pudo registrar el webhook de la plataforma: ${e?.message ?? e}`, accountId }));
+  // Comentarios y reseñas de los últimos días: se traen en segundo plano (no retrasan la conexión).
+  const net = networkOf(platform);
+  if (net?.comments || net?.reviews) {
+    await query(`INSERT INTO jobs (account_id, type, payload, run_at, dedupe_key) VALUES ($1, 'social_sync', $2, now() + interval '1 minute', $3) ON CONFLICT DO NOTHING`,
+      [accountId, JSON.stringify({ social_account_id: row.id }), `social_sync:${row.id}`]);
+  }
   const how = opts.via === 'link' ? ' con el enlace de conexión' : opts.via === 'sync' ? ' (sincronizada desde Zernio)' : '';
   await logEvent({ level: 'info', source: 'channel', message: `Zernio: ${label} conectada${info.username ? ` (@${info.username})` : ''}${how}`, accountId });
   return row.id;
@@ -249,7 +255,7 @@ async function linkChannel(
 /** Redes del negocio para "Redes sociales" (sin identificadores de Zernio). */
 export async function listSocialAccounts(accountId: string) {
   const rows = await query<any>(
-    `SELECT s.id, s.platform, s.username, s.display_name, s.picture, s.status, s.channel_id, COALESCE(c.chatbot_id, s.chatbot_id) AS chatbot_id, s.connected_at
+    `SELECT s.id, s.platform, s.username, s.display_name, s.picture, s.status, s.channel_id, COALESCE(c.chatbot_id, s.chatbot_id) AS chatbot_id, s.comment_settings, s.connected_at
        FROM social_accounts s LEFT JOIN channels c ON c.id = s.channel_id WHERE s.account_id = $1 ORDER BY s.connected_at, s.id`, [accountId]);
   return rows.map((r) => ({ ...r, dm: zernioHandlesDm(r.platform) }));
 }

@@ -115,6 +115,40 @@ La autorización es la página de Zernio en español (`signup=hosted`, Embedded 
   cuándo pasaron las 24 h.
 - La plantilla debe ser del mismo número de la conversación.
 
+## Comentarios y reseñas
+
+`src/social/engagement.ts` (eventos, revisión, acciones y respuesta automática), `src/social/replies.ts` (sugerencia de
+la IA) y `src/routes/social-inbox.ts`; en el panel, **Comentarios** (`#/comentarios`), también para los agentes.
+
+- **Llegan** por el webhook único (`comment.received`, `review.new`, `review.updated`) y por una **revisión diaria**
+  (al conectar la red y luego una vez al día por cuenta, con prioridad baja): trae las publicaciones con comentarios de
+  los últimos 30 días (solo abre las que cambiaron, hasta 5) y las reseñas. X no avisa de comentarios por webhook y las
+  reseñas de Facebook tampoco: esas llegan solo por la revisión (o con **Revisar ahora**).
+- **De quién son:** el evento se guarda solo si la cuenta conectada es de un negocio y el perfil (y su `externalId`, si
+  viene) es del mismo negocio. Un comentario nunca adopta una cuenta. Cada comentario o reseña se guarda una vez; lo que
+  ya se respondió, ocultó o ignoró no cambia al volver a llegar. Los comentarios del propio negocio no aparecen en la
+  bandeja; si el negocio contesta desde la red, el comentario queda *respondido (desde la red)*.
+- **Acciones** según la red: responder (todas las de comentarios), ocultar (Facebook, Instagram, Threads, X, TikTok),
+  me gusta (Facebook, X, Bluesky, Reddit, LinkedIn; Instagram no lo permite por la API), eliminar (solo administradores)
+  y **responder en privado** (Instagram y Facebook, una vez por comentario y hasta 7 días después). La respuesta privada
+  llega a la conversación del cliente sin pausar al agente. Una respuesta no sale dos veces aunque se pulse dos veces
+  (se aparta antes de llamar a la red y lleva `Idempotency-Key`). En `OUTBOUND_MODE=sandbox` no se publica nada.
+- **IA:** *Sugerir respuesta* usa el conocimiento y la personalidad del agente (el de los ajustes de la cuenta, el de su
+  canal o el primero activo) y cobra en Consumo de IA como «Respuestas a comentarios». Si la sugerencia trae una cifra,
+  un enlace o un teléfono que no está en la información del negocio, se marca para revisión. Un mensaje delicado
+  (riesgo de daño) no va a la IA: avisa al equipo al momento.
+- **Respuesta automática** (por cuenta, en *Redes sociales → Respuestas a comentarios*; por omisión solo sugiere):
+  contesta sola solo lo positivo, reciente (menos de 7 días), sin cifras inventadas, reseñas de 4 o 5 estrellas, con
+  un tope de respuestas por hora (10 por omisión). Nunca contesta quejas, mensajes delicados ni lo que llega por la
+  revisión diaria.
+- **Avisos:** un resumen cada 15 minutos como máximo con lo nuevo (se puede apagar); una reseña de 3 estrellas o menos
+  avisa al momento. La primera revisión al conectar no avisa de lo viejo.
+- **Datos:** los comentarios y reseñas se borran con la retención de mensajes del negocio y al desconectar la red se
+  conservan hasta que se borra la cuenta conectada. El panel nunca ve ids de Zernio ni de la red.
+- **Zernio:** necesita el complemento *Inbox* en la cuenta de Zernio de la plataforma (sin él, Zernio responde 403 y el
+  panel lo explica). Las lecturas de comentarios y reseñas tienen su propio tope en Zernio (1800 por hora por cuenta de
+  Zernio); por eso la revisión diaria va de pocas cuentas a la vez y el panel lee de la base, no de Zernio.
+
 ## Ventana de 24 horas
 
 Solo Meta la exige: Instagram, Messenger y WhatsApp oficial. Fuera de las 24 h desde el último mensaje del cliente no se

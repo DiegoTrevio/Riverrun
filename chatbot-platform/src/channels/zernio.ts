@@ -47,7 +47,10 @@ export const dmNetworkOf = (platform: string): Network | undefined => NETWORKS.f
 export const zernioNeedsWindow = (platform: string) => networkOf(platform)?.window24h ?? true;
 
 /** Eventos que recibe el webhook de la plataforma. */
-export const EVENTS = ['message.received', 'message.sent', 'message.failed', 'message.delivered', 'message.read', 'account.connected', 'account.disconnected', 'whatsapp.template.status_updated'];
+export const EVENTS = [
+  'message.received', 'message.sent', 'message.failed', 'message.delivered', 'message.read', 'account.connected', 'account.disconnected', 'whatsapp.template.status_updated',
+  'comment.received', 'review.new', 'review.updated',
+];
 
 /** Nombre con el que se guarda la llave de Zernio desde el panel (Sistema → Redes sociales). */
 export const ZERNIO_SECRET = 'zernio_api_key';
@@ -129,7 +132,9 @@ export class ZernioClient {
       const r = await this.call<any>('GET', cursor ? `${path}${path.includes('?') ? '&' : '?'}cursor=${encodeURIComponent(cursor)}` : path);
       if (!Array.isArray(r) && !Array.isArray(r?.[key]) && !Array.isArray(r?.data)) complete = false;
       items.push(...listOf(r, key));
-      cursor = String(r?.nextCursor ?? r?.pagination?.nextCursor ?? r?.cursor?.next ?? '');
+      // Las listas de Zernio dicen la página siguiente de varias formas (los comentarios de un post: pagination.cursor).
+      const next = r?.nextCursor ?? r?.pagination?.nextCursor ?? r?.cursor?.next ?? (r?.pagination?.hasMore ? r?.pagination?.cursor : undefined);
+      cursor = next == null ? '' : String(next);
       if (!cursor) break;
     }
     return { items, complete };

@@ -64,6 +64,8 @@ function fillParams(url: string): string | null {
     [/^\/api\/social-accounts\/:id/, 'social'],
     [/^\/api\/wa-templates\/:id/, 'wa_template'],
     [/^\/api\/booking-links\/:id/, 'booking_link'],
+    [/^\/api\/social-comments\/:id/, 'social_comment'],
+    [/^\/api\/social-reviews\/:id/, 'social_review'],
     // Solo el superadmin: la cuenta A debe recibir 403.
     [/^\/api\/system\/zernio\/tenants\/:id/, 'account'],
     [/^\/api\/system\/zernio\/webhook-logs\/:id/, 'bot'],
@@ -147,6 +149,9 @@ before(async () => {
   B.pipeline = (await ok200(adminB('POST', '/api/pipelines', { name: `Pipeline ${MARK}`, stages: [{ name: 'Nuevo' }, { name: 'Ganado', kind: 'won' }] }))).id;
   B.social = (await pool.query(`INSERT INTO social_accounts (account_id, zernio_account_id, profile_id, platform, username, display_name) VALUES ($1, 'acc_b_aislamiento', 'prof_b', 'linkedin', 'b', $2) RETURNING id`, [B.account, `Red ${MARK}`])).rows[0].id;
   B.wa_template = (await pool.query(`INSERT INTO wa_templates (account_id, social_account_id, name, language, status, components) VALUES ($1, $2, 'aviso_b', 'es_MX', 'APPROVED', $3) RETURNING id`, [B.account, B.social, JSON.stringify([{ type: 'BODY', text: `Hola ${MARK}` }])])).rows[0].id;
+  const postB = (await pool.query(`INSERT INTO social_posts (account_id, social_account_id, platform_post_id, caption) VALUES ($1, $2, 'post_b', $3) RETURNING id`, [B.account, B.social, `Post ${MARK}`])).rows[0].id;
+  B.social_comment = (await pool.query(`INSERT INTO social_comments (account_id, social_account_id, post_id, platform, platform_post_id, comment_id, text) VALUES ($1, $2, $3, 'linkedin', 'post_b', 'cb1', $4) RETURNING id`, [B.account, B.social, postB, `Comentario ${MARK}`])).rows[0].id;
+  B.social_review = (await pool.query(`INSERT INTO social_reviews (account_id, social_account_id, platform, review_id, rating, text) VALUES ($1, $2, 'googlebusiness', 'rb1', 5, $3) RETURNING id`, [B.account, B.social, `Reseña ${MARK}`])).rows[0].id;
   B.booking_link = (await pool.query(`INSERT INTO booking_links (account_id, token, name) VALUES ($1, 'tok-b-reservas', $2) RETURNING id`, [B.account, `Reservas ${MARK}`])).rows[0].id;
   B.card = String((await pool.query(`INSERT INTO pipeline_cards (account_id, pipeline_id, conversation_id, stage_id) VALUES ($1, $2, $3, 'nuevo') RETURNING id`, [B.account, B.pipeline, B.conv])).rows[0].id);
   await h.idle();

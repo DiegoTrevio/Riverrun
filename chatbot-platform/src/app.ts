@@ -34,6 +34,7 @@ import { publicRoutes } from './routes/public.js';
 import { signupRoutes } from './routes/signup.js';
 import { socialPublicRoutes, socialRoutes } from './routes/social.js';
 import { bookingPublicRoutes, bookingRoutes } from './routes/booking.js';
+import { socialInboxRoutes } from './routes/social-inbox.js';
 import { installErrorHandler } from './routes/util.js';
 import { cachedChecks, runReadiness } from './monitor.js';
 import { functionalReport, readinessReport } from './observability/health.js';
@@ -150,6 +151,7 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
     await channelRoutes(api);
     await socialRoutes(api);
     await bookingRoutes(api);
+    await socialInboxRoutes(api, service);
     await conversationRoutes(api, service);
     await automationRoutes(api, service);
     await pipelineRoutes(api, service);

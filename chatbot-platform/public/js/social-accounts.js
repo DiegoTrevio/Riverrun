@@ -1,4 +1,4 @@
-import { api, ask, confirmAction, dialog, field, h, run, state, toast } from './core.js';
+import { api, ask, confirmAction, dialog, field, h, run, select, state, toast } from './core.js';
 import { render } from './main.js';
 import { isSuper, withAcct } from './session.js';
 
@@ -96,7 +96,26 @@ export async function viewSocialAccounts(root, params = new URLSearchParams()) {
             if (!(await confirmAction(`¿Desconectar ${n.label}${a.username ? ` (@${a.username})` : ''}? Dejarás de recibir sus mensajes y comentarios aquí.`))) return;
             if (await run(() => api('POST', withAcct(`/api/social-accounts/${a.id}/disconnect`)), 'Desconectada')) render();
           } }, 'Desconectar'))),
-      a.dm ? field('Contesta sus mensajes', agent, a.chatbot_id ? 'Tu agente responde los mensajes directos de esta cuenta.' : 'Elige un agente para que conteste los mensajes directos.') : null);
+      a.dm ? field('Contesta sus mensajes', agent, a.chatbot_id ? 'Tu agente responde los mensajes directos de esta cuenta.' : 'Elige un agente para que conteste los mensajes directos.') : null,
+      n.comments || n.reviews ? commentSettings(a, n) : null);
+  };
+
+  /** Comentarios y reseñas de la cuenta: qué hace la IA y cómo avisa al equipo. */
+  const commentSettings = (a, n) => {
+    const s = { mode: 'suggest', chatbot_id: '', max_per_hour: 10, alerts: 'digest', ...(a.comment_settings || {}) };
+    s.chatbot_id = s.chatbot_id || '';
+    const what = n.comments && n.reviews ? 'comentarios y reseñas' : n.comments ? 'comentarios' : 'reseñas';
+    return h('details', { class: 'social-comments-settings', style: 'margin-top:8px' },
+      h('summary', {}, `Respuestas a ${what}`),
+      h('div', { class: 'stack', style: 'margin-top:8px' },
+        field('La IA', select(s, 'mode', [['suggest', 'Sugiere la respuesta cuando la pides'], ['auto', 'Contesta sola lo positivo (lo demás te lo deja)'], ['off', 'No hace nada: solo se guardan']]),
+          'Nunca contesta sola quejas, reseñas de 3 estrellas o menos, mensajes delicados ni lo que lleva más de 7 días.'),
+        field('Con la información y el estilo de', select(s, 'chatbot_id', [['', 'El agente de esta cuenta (o el primero)'], ...bots.map((b) => [b.id, b.name])])),
+        field('Máximo de respuestas automáticas por hora', h('input', { type: 'number', min: 1, max: 30, value: s.max_per_hour, oninput: (e) => (s.max_per_hour = Number(e.target.value) || 1) })),
+        field('Avisos al equipo', select(s, 'alerts', [['digest', 'Un resumen cada 15 minutos con lo nuevo'], ['off', 'Sin resumen (las reseñas malas siempre avisan)']])),
+        h('div', { class: 'row' },
+          h('button', { class: 'small', onclick: () => run(() => api('PUT', withAcct(`/api/social-accounts/${a.id}/comment-settings`), { ...s, chatbot_id: s.chatbot_id || null }), 'Guardado') }, 'Guardar'),
+          h('a', { href: `#/comentarios?red=${encodeURIComponent(a.platform)}`, class: 'small' }, 'Ver comentarios →'))));
   };
 
   root.append(

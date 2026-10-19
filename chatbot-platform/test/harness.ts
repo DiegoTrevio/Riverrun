@@ -49,6 +49,12 @@ export const zer = {
   rateLimited: 0,
   /** Plantillas de WhatsApp por cuenta conectada (las aprueba la prueba cambiando su estado). */
   templates: [] as any[],
+  /** Comentarios y reseñas (Inbox): publicaciones con comentarios por cuenta, comentarios por publicación y reseñas. */
+  posts: [] as any[],
+  comments: new Map<string, any[]>(),
+  reviews: [] as any[],
+  /** Comentarios que ya recibieron su respuesta privada (la red permite una). */
+  privateReplied: new Set<string>(),
 };
 /** Graph de Meta simulado para «Conectar con Facebook»: páginas que devuelve me/accounts y tokens que Meta retiró. */
 export const metaFake = {
@@ -149,6 +155,31 @@ const extServer = http.createServer((req, res) => {
         zer.redelivered.push({ webhookId: body.webhookId, eventId: body.eventId });
         return json(200, { success: true, message: 'Webhook re-delivered' });
       }
+      // Comentarios y reseñas: ids de la red codificados en la ruta (los de Google llevan "/").
+      const seg = p.split('/').map((x) => decodeURIComponent(x));
+      const platformOf = (id: unknown) => zer.accounts.get(String(id ?? ''))?.platform;
+      if (p === '/inbox/comments' && m === 'GET') {
+        return json(200, { success: true, data: zer.posts.filter((x) => x.accountId === url.searchParams.get('accountId')), pagination: { hasMore: false, nextCursor: null } });
+      }
+      if (seg[1] === 'inbox' && seg[2] === 'comments' && seg.length === 4) {
+        const post = zer.posts.find((x) => x.id === seg[3]);
+        if (m === 'GET') return json(200, { comments: zer.comments.get(seg[3]) ?? [], post: post ? { permalink: post.permalink, text: post.content, thumbnailUrl: post.picture } : {}, pagination: { hasMore: false } });
+        if (m === 'POST') return json(200, { success: true, data: { commentId: `zc_${++ext.n}`, isReply: !!body.commentId } });
+        if (m === 'DELETE') return json(200, { success: true });
+      }
+      if (seg[1] === 'inbox' && seg[2] === 'comments' && seg.length === 6) {
+        const platform = platformOf(body?.accountId ?? url.searchParams.get('accountId'));
+        if (seg[5] === 'hide' && !['facebook', 'instagram', 'threads', 'twitter', 'tiktok'].includes(platform)) return json(400, { error: { code: 'PLATFORM_LIMITATION', message: 'Hide is not supported' } });
+        if (seg[5] === 'like' && platform === 'instagram') return json(403, { error: { code: 'PLATFORM_BETA_RESTRICTED', message: 'Instagram comment likes are in beta' } });
+        if (seg[5] === 'private-reply') {
+          if (zer.privateReplied.has(seg[4])) return json(400, { error: 'Private reply already sent', details: { privateReplyConsumed: true } });
+          zer.privateReplied.add(seg[4]);
+          return json(200, { success: true, messageId: `pr_${++ext.n}`, commentId: seg[4], platform });
+        }
+        return json(200, { success: true, ...(seg[5] === 'like' && m === 'POST' ? { likeUri: `at://like/${++ext.n}` } : {}) });
+      }
+      if (p === '/inbox/reviews' && m === 'GET') return json(200, { success: true, data: zer.reviews.filter((r) => r.accountId === url.searchParams.get('accountId')), pagination: { hasMore: false } });
+      if (seg[1] === 'inbox' && seg[2] === 'reviews' && seg[4] === 'reply' && m === 'POST') return json(200, { success: true, reply: { id: `rr_${++ext.n}`, text: body.message } });
       if (p === '/users') return json(200, { currentUserId: zer.userId, users: [] });
       if (p === '/connect/bluesky/credentials') {
         if (body.appPassword === 'mala') return json(400, { error: 'Invalid identifier or password' });

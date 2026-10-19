@@ -8,7 +8,7 @@ import { withAcct } from './session.js';
 
 export const usd = (n) => n>0&&n<0.0001?'US$<0.0001':`US$${(n || 0).toFixed(n < 1 ? 4 : 2)}`;
 
-const KIND_LABEL = { embedding: 'Búsqueda de conocimiento', decision: 'Respuestas', summary: 'Resúmenes de memoria', transcription: 'Notas de voz' };
+const KIND_LABEL = { embedding: 'Búsqueda de conocimiento', decision: 'Respuestas', summary: 'Resúmenes de memoria', transcription: 'Notas de voz', social_reply: 'Respuestas a comentarios' };
 
 export async function viewUsage(root, params) {
   const month = params.get('month') || new Date().toISOString().slice(0, 7);

@@ -18,7 +18,7 @@ const PRESETS = [
   ['custom', 'Rango de fechas'],
 ];
 const CHANNEL_NAMES = { whatsapp: 'WhatsApp', webchat: 'Chat web', email: 'Correo', telegram: 'Telegram', messenger: 'Messenger', instagram: 'Instagram' };
-const KIND_NAMES = { decision: 'Respuestas', summary: 'Resúmenes', transcription: 'Transcripciones', import: 'Importaciones de conocimiento', report: 'Reportes' };
+const KIND_NAMES = { decision: 'Respuestas', summary: 'Resúmenes', transcription: 'Transcripciones', import: 'Importaciones de conocimiento', report: 'Reportes', social_reply: 'Respuestas a comentarios' };
 const ROLE_NAMES = { admin: 'Administrador', agent: 'Operador' };
 
 const nf = new Intl.NumberFormat('es-MX');

@@ -100,6 +100,10 @@ export async function applyRetention(now = new Date()): Promise<{ accounts: numb
         await removeInboundFiles(r.files);
         if (r.deleted < 5000) break;
       }
+      // Comentarios y reseñas de las redes: lo que escribieron los clientes se guarda lo mismo que sus mensajes.
+      await query(`DELETE FROM social_comments WHERE account_id = $1 AND coalesce(created_at_platform, received_at) < $2`, [a.id, cutoff]);
+      await query(`DELETE FROM social_reviews WHERE account_id = $1 AND coalesce(created_at_platform, received_at) < $2`, [a.id, cutoff]);
+      await query(`DELETE FROM social_posts p WHERE p.account_id = $1 AND p.updated_at < $2 AND NOT EXISTS (SELECT 1 FROM social_comments c WHERE c.post_id = p.id)`, [a.id, cutoff]);
       // El resumen y los datos de la conversación también contienen lo que dijo el cliente: se limpian junto con los mensajes.
       await query(`UPDATE conversations SET summary = '', report_summary = '', data = '{}'::jsonb WHERE account_id = $1 AND last_message_at < $2 AND (summary <> '' OR report_summary <> '' OR data <> '{}'::jsonb)`, [a.id, cutoff]);
     }
