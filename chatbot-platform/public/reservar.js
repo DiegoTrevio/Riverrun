@@ -127,8 +127,9 @@
     var r = st.done;
     return el('div', { class: 'card', role: 'status' }, el('h2', { text: '¡Listo! Quedó agendada.' }),
       el('p', { text: (r.service || st.service.name) + ' · ' + (r.when || '') + (r.person ? ' con ' + r.person : '') }),
-      r.meeting_url ? el('p', {}, 'Enlace para la videollamada: ', el('a', { href: r.meeting_url, rel: 'noopener', target: '_blank', text: r.meeting_url })) : null,
-      el('p', { class: 'small muted', text: 'Te enviamos la confirmación a ' + (r.email || 'tu correo') + ' y un recordatorio antes de la hora.' }));
+      r.meeting_url && /^https:\/\//.test(r.meeting_url) ? el('p', {}, 'Enlace para la videollamada: ', el('a', { href: r.meeting_url, rel: 'noopener', target: '_blank', text: r.meeting_url })) : null,
+      el('p', { class: 'small muted', text: r.email_sent ? 'Te enviamos la confirmación a ' + (r.email || 'tu correo') + ' y un recordatorio antes de la hora.'
+        : 'Guarda estos datos: no pudimos enviarte la confirmación por correo, pero el negocio ya tiene tu reserva.' }));
   }
 
   call('GET', base).then(function (info) {

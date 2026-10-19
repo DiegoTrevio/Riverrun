@@ -85,10 +85,13 @@ redes, la firma de correo o el sitio, como Calendly:
 - El cliente deja su nombre, su correo y su teléfono (obligatorio en llamadas telefónicas). No necesita cuenta.
 - La reserva entra a la agenda (origen «página») con las mismas reglas: horarios realmente libres, la misma revisión
   dentro de la transacción, avisos al equipo, correo a la persona, evento en su calendario y sala de videollamada.
-- Al cliente le llega la **confirmación por correo** (con el enlace de la videollamada si aplica) y los
-  **recordatorios** del servicio por correo.
-- Protecciones: límite de visitas y reservas por IP, campo trampa para robots, enlaces que se pausan o borran, y la
-  página no muestra correos ni datos del equipo (solo nombres).
+- Al cliente le llega la **confirmación por correo** (con el enlace de la videollamada si aplica), los
+  **recordatorios** del servicio por correo y, si la cita se cancela desde el panel, el **aviso de cancelación**. Si el
+  correo no se pudo enviar, la página se lo dice para que guarde los datos.
+- Protecciones: límite de visitas y reservas por IP y por enlace, **máximo 3 reservas próximas por correo** en cada
+  negocio (nadie acapara la agenda ni recibe correos sin fin), campo trampa para robots, enlaces que se pausan o borran,
+  y la página no muestra correos ni datos del equipo (solo nombres).
+- Al borrar a una persona del equipo, su enlace se borra con ella (no queda como enlace de todo el negocio).
 
 ## Al agendar a mano
 

@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS booking_links (
   token       text NOT NULL UNIQUE,
   name        text NOT NULL,
   service_ids uuid[] NOT NULL DEFAULT '{}',
-  user_id     uuid REFERENCES users(id) ON DELETE SET NULL,
+  user_id     uuid REFERENCES users(id) ON DELETE CASCADE,
   active      boolean NOT NULL DEFAULT true,
   created_at  timestamptz NOT NULL DEFAULT now()
 );

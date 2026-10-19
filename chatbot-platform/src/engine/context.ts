@@ -505,7 +505,7 @@ export function agendaSection(a: AgendaContext): string {
     s.push('Servicios que se pueden agendar:');
     for (const sv of a.services) {
       const how = sv.kind === 'call' ? (sv.call_mode === 'video' ? 'videollamada; el enlace se le envía al agendar' : 'llamada telefónica; una persona del equipo le marca') : '';
-      s.push(`- ID \`${sv.id}\` | ${sv.name} (${KIND(sv.kind)}, ${sv.duration} min${how ? `, ${how}` : ''})${sv.description ? ` | ${sv.description}` : ''}${sv.location && sv.call_mode !== 'video' ? ` | lugar: ${sv.location}` : ''}`);
+      s.push(`- ID \`${sv.id}\` | ${sv.name} (${KIND(sv.kind)}, ${sv.duration} min${how ? `, ${how}` : ''})${sv.description ? ` | ${sv.description}` : ''}${sv.location && !(sv.kind === 'call' && sv.call_mode === 'video') ? ` | lugar: ${sv.location}` : ''}`);
       const slots = a.slots[sv.id] ?? [];
       s.push(slots.length ? `  Horarios disponibles: ${slots.map((x) => `\`${x.key}\` (${x.label})`).join('; ')}` : '  Sin horarios disponibles por ahora.');
       const people = a.people?.[sv.id] ?? [];

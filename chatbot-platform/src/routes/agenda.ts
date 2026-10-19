@@ -166,7 +166,7 @@ export async function agendaRoutes(api: FastifyInstance, service: ChatService) {
     // Confirmación al cliente: por su conversación o, si no hay, por correo.
     const confirmation = !b.notify_customer ? null
       : conv ? await service.agenda.sendConfirmation(r.appointment)
-      : r.appointment.customer_email ? await service.agenda.mailCustomer(r.appointment, 'booked').then(() => ({ sent: true })).catch(() => ({ sent: false, reason: 'no se pudo enviar el correo' })) : null;
+      : r.appointment.customer_email ? await service.agenda.mailCustomer(r.appointment, 'booked').catch(() => false).then((sent) => (sent ? { sent: true } : { sent: false, reason: 'no se pudo enviar el correo' })) : null;
     return { ...r.appointment, confirmation };
   });
 
@@ -215,6 +215,9 @@ export async function agendaRoutes(api: FastifyInstance, service: ChatService) {
         allowWhenHuman: true,
         appointment: a,
       });
+    } else if (b.notify_customer && a.customer_email) {
+      // Reservó en la página (sin conversación): se le avisa por correo, igual que se le confirmó.
+      await service.agenda.mailCustomer(a, 'cancelled').catch(() => false);
     }
     return cancelled;
   });

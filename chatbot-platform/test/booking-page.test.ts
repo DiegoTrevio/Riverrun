@@ -121,3 +121,31 @@ t('enlace de una persona: solo sus servicios y siempre con ella; la videollamada
   assert.equal((await pub('GET', `/api/public/booking/${token}`)).statusCode, 404);
   assert.equal((await h.authed('DELETE', `/api/booking-links/${mine.id}?account_id=${h.accountId}`)).statusCode, 200);
 });
+
+t('límites y avisos: un correo no acapara la agenda; cancelar le avisa por correo; la persona borrada se lleva su enlace', async () => {
+  const token = tokenOf(link.url);
+  // Cada intento desde otra IP: el tope es por correo, no por IP.
+  const from = (ip: string, payload: unknown) => h.app.inject({ method: 'POST', url: `/api/public/booking/${token}`, payload: payload as any, remoteAddress: ip });
+  const slots = (await pub('GET', `/api/public/booking/${token}/slots?service_id=${call.id}`)).json();
+  const body = (slot: string) => ({ service_id: call.id, slot, name: 'Alguien', email: 'Victima@Correo.mx', phone: '5512345678' });
+  for (const [i, s] of slots.slice(0, 3).entries()) {
+    const r = await from(`10.0.0.${i + 1}`, body(s.key));
+    assert.equal(r.statusCode, 200, r.body);
+    assert.equal(r.json().email_sent, false, 'sin SMTP no se dice que el correo salió');
+  }
+  const fourth = await from('10.0.0.9', body(slots[3].key));
+  assert.equal(fourth.statusCode, 429);
+  assert.match(fourth.json().error, /varias reservas próximas/);
+
+  // Cancelar desde el panel una reserva de la página (sin conversación): el cliente recibe el aviso por correo.
+  const a = (await pool.query(`SELECT id FROM appointments WHERE customer_email = 'victima@correo.mx' ORDER BY starts_at LIMIT 1`)).rows[0];
+  outbox.length = 0;
+  assert.equal((await h.authed('POST', `/api/appointments/${a.id}/cancel`, { reason: 'Prueba' })).statusCode, 200);
+  assert.match(outbox.find((m) => m.to === 'victima@correo.mx')!.subject, /Tu llamada se canceló: Llamada de diagnóstico/);
+
+  // El enlace de una persona no queda como enlace de todo el negocio cuando se borra a esa persona.
+  const personal = (await h.authed('POST', '/api/booking-links', { account_id: h.accountId, name: 'Con Beto', user_id: people.beto.id })).json();
+  assert.equal((await h.authed('DELETE', `/api/users/${people.beto.id}`)).statusCode, 200);
+  assert.equal((await pub('GET', `/api/public/booking/${tokenOf(personal.url)}`)).statusCode, 404);
+  assert.equal((await pool.query(`SELECT count(*)::int AS n FROM booking_links WHERE name = 'Con Beto'`)).rows[0].n, 0);
+});

@@ -266,7 +266,7 @@ export async function isVideoCall(a: Pick<Appointment, 'kind' | 'service_id'>): 
 }
 
 export async function getAppointment(id: string) {
-  return queryOne<Appointment>(`SELECT a.*, coalesce(nullif(u.name, ''), u.email) AS assigned_user_name FROM appointments a LEFT JOIN users u ON u.id = a.assigned_user_id WHERE a.id = $1`, [id]);
+  return queryOne<Appointment>(`SELECT a.*, coalesce(nullif(u.name, ''), split_part(u.email, '@', 1)) AS assigned_user_name FROM appointments a LEFT JOIN users u ON u.id = a.assigned_user_id WHERE a.id = $1`, [id]);
 }
 
 export async function listAppointments(accountId: string | null, opts: { from?: Date; to?: Date; contactId?: string; status?: string; visibleTo?: string } = {}) {

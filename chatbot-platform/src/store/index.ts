@@ -195,6 +195,9 @@ export async function touchLogin(id: string) {
 
 export async function deleteUser(id: string, expectedAccountId?: string) {
   return withTransaction(async (client) => {
+    // Su enlace para reservar se va con ella (si quedara sin persona, ofrecería todos los servicios del negocio). Va antes
+    // de borrarla: en bases con la versión anterior de la 062 la llave foránea deja el enlace sin persona.
+    await client.query('DELETE FROM booking_links WHERE user_id = $1 AND ($2::uuid IS NULL OR account_id = $2)', [id, expectedAccountId ?? null]);
     const deleted = await client.query<{ account_id: string }>('DELETE FROM users WHERE id = $1 AND ($2::uuid IS NULL OR account_id = $2) RETURNING account_id', [id, expectedAccountId ?? null]);
     if (!deleted.rows.length) return false;
     // Los servicios guardan a sus personas asignadas en jsonb (sin clave foránea): se quita la persona borrada para que

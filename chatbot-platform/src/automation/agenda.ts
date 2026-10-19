@@ -328,9 +328,9 @@ export class Agenda {
     return url;
   }
 
-  /** Correo al cliente que reservó en la página pública (sin conversación): confirmación o recordatorio. */
-  async mailCustomer(a: Appointment, what: 'booked' | 'reminder' | 'cancelled') {
-    if (!a.customer_email) return;
+  /** Correo al cliente que reservó sin conversación (página pública o panel): confirmación, recordatorio o cancelación. Dice si salió. */
+  async mailCustomer(a: Appointment, what: 'booked' | 'reminder' | 'cancelled'): Promise<boolean> {
+    if (!a.customer_email) return false;
     const settings = await astore.getSettings(a.account_id);
     const acc = await store.getAccount(a.account_id);
     const mb = await mailBrand(a.account_id);
@@ -348,10 +348,11 @@ export class Agenda {
           `Tu ${kind} de ${a.service_name} es el ${when}${a.assigned_user_name ? ` con ${a.assigned_user_name}` : ''}.`,
           a.meeting_url ? `Entra a la videollamada aquí: ${a.meeting_url}` : '',
           call && !a.meeting_url && a.customer_phone ? `Te llamaremos al +${a.customer_phone.replace(/^\+/, '')}.` : '',
+          call && !a.meeting_url && !a.customer_phone ? 'Antes de la hora te enviaremos el enlace o los datos para la llamada.' : '',
           !call && service?.location ? `Lugar: ${service.location}` : '',
         ].filter(Boolean);
     const text = [first ? `Hola ${first},` : 'Hola,', '', ...main, '', `— ${business}`].join('\n');
-    await sendMail({ fromName: mb.fromName, to: a.customer_email, subject, text });
+    return sendMail({ fromName: mb.fromName, to: a.customer_email, subject, text });
   }
 
   /** Correo a la persona que atiende la cita o llamada (agendada o cancelada), con lo que necesita para atenderla. */
@@ -371,6 +372,7 @@ export class Agenda {
       a.customer_phone ? `· Teléfono: +${a.customer_phone.replace(/^\+/, '')}${call && !video ? ' (márcale a esa hora)' : ''}` : '',
       a.customer_email ? `· Correo: ${a.customer_email}` : '',
       video && a.meeting_url ? `· Enlace de la videollamada: ${a.meeting_url}` : '',
+      video && !a.meeting_url && what === 'booked' ? '· No se pudo crear el enlace de la videollamada: envíale uno al cliente.' : '',
       a.notes ? `· Notas: ${a.notes}` : '',
     ].filter(Boolean);
     await sendMail({ fromName: mb.fromName, to: user.email, subject, text: [...details, '', `Agenda: ${mb.base}/#/agenda`].join('\n') });

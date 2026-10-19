@@ -569,7 +569,7 @@ export function validateDecision(input: ValidationInput): ValidationResult {
   if (rules.verify_facts && messages.length) {
     const trusted = new FactCorpus(input.groundingSources);
     const all = new FactCorpus([...input.groundingSources, ...(input.customerSources ?? [])]);
-    const unverified = all.unverified(messages.join('\n'), trusted);
+    const unverified = all.unverified(messages.join('\n'), trusted, new FactCorpus(input.customerSources ?? []));
     if (unverified.length) {
       factIssues = true;
       retryable.push(
@@ -752,33 +752,31 @@ export function validateDecision(input: ValidationInput): ValidationResult {
       fixes.push('Propuesta de agenda ignorada: la agenda no está disponible');
     } else if (b.action === 'book') {
       const slots = agenda.slots[b.service_id];
+      // El cliente pidió a una persona: debe ser de la lista y estar libre en ese horario. Sus horarios son otra selección
+      // (no siempre están entre los generales), así que se revisan contra los suyos.
+      const list = b.person.trim() ? agenda.people?.[b.service_id] ?? [] : [];
+      const want = normalize(b.person).split(/\s+/).filter(Boolean);
+      const exact = list.filter((p) => normalize(p.name) === want.join(' '));
+      // "Ana" vale por "Ana García"; "Ana López" no vale por "Ana García".
+      const loose = exact.length ? exact : list.filter((p) => { const words = normalize(p.name).split(/\s+/); return want.every((w) => words.includes(w)); });
+      const person = loose.length === 1 ? loose[0] : null;
       if (!slots) {
         bookingIssue = true;
         retryable.push(`El servicio "${b.service_id}" no existe. Usa el ID exacto de la sección Agenda.`);
-      } else if (!slots.includes(b.slot)) {
+      } else if (list.length && !person) {
+        bookingIssue = true;
+        retryable.push(`"${b.person}" no está en la lista de personas de ese servicio (${list.map((p) => p.name).join(', ')}). Pon el nombre exacto o deja booking.person vacío.`);
+      } else if (person && !person.slots.includes(b.slot)) {
+        bookingIssue = true;
+        retryable.push(`${person.name} no está libre el ${b.slot}. Ofrece solo sus horarios: ${person.slots.slice(0, 6).join(', ') || 'no tiene horarios por ahora'}.`);
+      } else if (!person && !slots.includes(b.slot)) {
         bookingIssue = true;
         retryable.push(`El horario "${b.slot}" no está disponible para ese servicio. Ofrece solo horarios de la lista y agenda únicamente cuando el cliente elija uno.`);
       } else if (agenda.needsPhoneFor.includes(b.service_id) && !input.hasPhone && !Object.keys(saveData).some((k) => k === 'telefono' || bot.data_fields.find((f) => f.key === k)?.type === 'phone')) {
         bookingIssue = true;
         retryable.push('Para agendar la llamada primero pide el número de teléfono del cliente (no agendes todavía).');
-      } else if (b.person.trim() && agenda.people?.[b.service_id]?.length) {
-        // El cliente pidió a una persona: debe ser de la lista y estar libre en ese horario.
-        const want = normalize(b.person);
-        const list = agenda.people[b.service_id];
-        const exact = list.filter((p) => normalize(p.name) === want);
-        const loose = exact.length ? exact : list.filter((p) => normalize(p.name).split(/\s+/).includes(want.split(/\s+/)[0] ?? ''));
-        const person = loose.length === 1 ? loose[0] : null;
-        if (!person) {
-          bookingIssue = true;
-          retryable.push(`"${b.person}" no está en la lista de personas de ese servicio (${list.map((p) => p.name).join(', ')}). Pon el nombre exacto o deja booking.person vacío.`);
-        } else if (!person.slots.includes(b.slot)) {
-          bookingIssue = true;
-          retryable.push(`${person.name} no está libre el ${b.slot}. Ofrece solo sus horarios: ${person.slots.slice(0, 6).join(', ') || 'no tiene horarios por ahora'}.`);
-        } else {
-          booking = { action: 'book', serviceId: b.service_id, slot: b.slot, userId: person.userId };
-        }
       } else {
-        booking = { action: 'book', serviceId: b.service_id, slot: b.slot };
+        booking = person ? { action: 'book', serviceId: b.service_id, slot: b.slot, userId: person.userId } : { action: 'book', serviceId: b.service_id, slot: b.slot };
       }
     } else if (b.action === 'cancel') {
       if (!agenda.appointmentIds.includes(b.appointment_id)) {

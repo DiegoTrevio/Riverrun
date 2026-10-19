@@ -136,6 +136,8 @@ export class FactCorpus {
   private digitsJoined: string;
   private phoneDigits: string[];
   private moneyDigits: Set<string>;
+  /** Cifras escritas como dinero ("$1,650", "1650 MXN"): las únicas que sirven de precio base en una cotización. */
+  private moneyAmounts: Set<string>;
   private numbers: Set<string>;
   private urls: string[];
   private emails: Set<string>;
@@ -152,6 +154,7 @@ export class FactCorpus {
     this.phoneDigits = f.phones;
     // Los teléfonos no son precios: "$234" no se valida porque esos dígitos estén en el número del cliente.
     this.moneyDigits = new Set(f.numbers.map((n) => n.replace(/\D/g, '')));
+    this.moneyAmounts = new Set(extractMoney(all));
   }
 
   /**
@@ -171,11 +174,14 @@ export class FactCorpus {
     return this.numbers.has(n) || (d.length >= 2 && this.moneyDigits.has(d));
   }
 
-  /** ¿`amount` = número del corpus × k, con k entre 2 y 60 y k aceptado por `quantityOk`? */
+  /**
+   * ¿`amount` = precio del corpus × k, con k entre 2 y 60 y k aceptado por `quantityOk`? El precio base debe estar escrito
+   * como dinero: con cualquier número, la fecha y la hora de hoy (15:20 → 15 × 20) validarían un "$300" inventado.
+   */
   isProductOf(amount: string, quantityOk: (k: string) => boolean): boolean {
     const a = Number(amount);
     if (!Number.isFinite(a) || a <= 0) return false;
-    for (const n of this.numbers) {
+    for (const n of this.moneyAmounts) {
       const base = Number(n);
       if (!Number.isFinite(base) || base <= 0) continue;
       const k = a / base;
@@ -212,7 +218,7 @@ export class FactCorpus {
    * Si se pasa `trusted`, los montos de dinero deben venir de ahí (fuentes del negocio),
    * para que el cliente no pueda "dictar" un precio.
    */
-  unverified(reply: string, trusted?: FactCorpus): string[] {
+  unverified(reply: string, trusted?: FactCorpus, customer?: FactCorpus): string[] {
     const f = extractFacts(reply);
     const bad: string[] = [];
     const replyNumbers = new Set(f.numbers);
@@ -223,8 +229,10 @@ export class FactCorpus {
           computed.add(m);
           continue;
         }
-        // Cotización: precio del negocio × una cantidad que aparece en la respuesta o la dijo el cliente.
-        if (trusted.isProductOf(m, (k) => replyNumbers.has(k) || this.numbers.has(k))) computed.add(m);
+        // Cotización: precio del negocio × una cantidad que aparece en la respuesta o la dijo el cliente (no un número
+        // que solo está en las fuentes del negocio, como la fecha, la hora o el horario).
+        const said = (k: string) => (customer ? customer.numbers.has(k) : this.numbers.has(k) && !trusted.numbers.has(k));
+        if (trusted.isProductOf(m, (k) => replyNumbers.has(k) || said(k))) computed.add(m);
         else bad.push(m);
       }
     }

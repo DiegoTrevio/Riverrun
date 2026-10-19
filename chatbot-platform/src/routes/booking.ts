@@ -36,6 +36,12 @@ interface BookingLink {
 }
 
 const linkUrl = (token: string) => `${config.publicBaseUrl}/reservar/${token}`;
+/** Un mismo correo no acapara la agenda ni recibe correos sin fin: reservas próximas por negocio. */
+const MAX_UPCOMING_PER_EMAIL = 3;
+/** Reservas por enlace y hora (además del límite por IP). */
+const MAX_PER_LINK_HOUR = 60;
+/** Horarios que devuelve la página (alcanza para 30 días de un servicio corto). */
+const MAX_SLOTS = 1500;
 
 const LinkBody = z.object({
   name: z.string().trim().min(1).max(120),
@@ -189,7 +195,7 @@ export async function bookingPublicRoutes(app: FastifyInstance, service: ChatSer
     const settings = await astore.getSettings(found.link.account_id);
     const all = await freeSlots(svc, settings, new Date(), { days: Math.min(svc.max_days_ahead, 30) });
     const tz = settings.timezone;
-    return all.filter((s) => !person || s.users.includes(person)).slice(0, 400).map((s) => ({
+    return all.filter((s) => !person || s.users.includes(person)).slice(0, MAX_SLOTS).map((s) => ({
       key: s.key, date: s.key.slice(0, 10), time: s.key.slice(11), day: spanishDate(s.start, tz), label: spanishTime(s.start, tz),
     }));
   });
@@ -208,6 +214,11 @@ export async function bookingPublicRoutes(app: FastifyInstance, service: ChatSer
     if (svc.kind === 'call' && svc.call_mode !== 'video' && phone.length < 8) throw new HttpError(400, 'Escribe tu teléfono: te llamaremos a ese número');
     const person = found.link.user_id ?? b.person_id;
     if (person && !found.link.user_id && !(await choosable(svc, found.link)).some((p) => p.id === person)) throw new HttpError(400, 'Esa persona no atiende este servicio');
+    if (rateLimited(`booking-link:${found.link.id}`, MAX_PER_LINK_HOUR, 60 * 60_000)) return reply.code(429).send({ error: 'Este enlace recibió muchas reservas seguidas; intenta más tarde.' });
+    const upcoming = await queryOne<{ n: number }>(
+      `SELECT count(*)::int AS n FROM appointments WHERE account_id = $1 AND customer_email = $2 AND status = 'confirmed' AND starts_at > now()`,
+      [found.link.account_id, b.email.toLowerCase()]);
+    if (upcoming!.n >= MAX_UPCOMING_PER_EMAIL) return reply.code(429).send({ error: 'Ya tienes varias reservas próximas con este negocio. Si necesitas otra, escríbeles directamente.' });
     const r = await service.agenda.book({
       accountId: found.link.account_id, serviceId: svc.id, slotKey: b.slot, customerName: b.name, customerPhone: phone || undefined,
       customerEmail: b.email, notes: b.notes ? `${b.notes}\n(Reservó en la página: ${found.link.name})` : `Reservó en la página: ${found.link.name}`,
@@ -215,11 +226,11 @@ export async function bookingPublicRoutes(app: FastifyInstance, service: ChatSer
     });
     if (!r.ok) return reply.code(409).send({ error: r.alternatives.length ? `Ese horario ya se ocupó. Elige otro: ${r.alternatives.join('; ')}` : 'Ese horario ya se ocupó. Elige otro.' });
     const a = r.appointment;
-    await service.agenda.mailCustomer(a, 'booked').catch(() => undefined);
+    const emailSent = await service.agenda.mailCustomer(a, 'booked').catch(() => false);
     const tz = (await astore.getSettings(a.account_id)).timezone;
     return {
       ok: true, service: a.service_name, kind: a.kind, when: `${spanishDate(new Date(a.starts_at), tz)} a las ${spanishTime(new Date(a.starts_at), tz)}`,
-      person: a.assigned_user_name ?? null, meeting_url: a.meeting_url || null, email: a.customer_email,
+      person: a.assigned_user_name ?? null, meeting_url: a.meeting_url || null, email: a.customer_email, email_sent: emailSent,
     };
   });
 }
