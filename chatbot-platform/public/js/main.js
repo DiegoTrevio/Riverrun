@@ -54,13 +54,18 @@ export async function render() {
     location.hash = '#/conversations';
     return;
   }
+  // Crear un agente tiene su propia página (antes era una tarjeta dentro de la lista).
+  if (['agentes', 'asistentes'].includes(parts[0]) && !parts[1] && params.get('new') === '1') { location.replace('#/agentes/nuevo'); return; }
   const pending = h('p', { class: 'help', role: 'status' }, 'Cargando información…');
   const content = h('div', { 'aria-busy': 'true' }, pending);
   fill($app, shell(parts[0] || 'home', content));
   try {
     if (parts[0] === 'agentes' && parts[1] === 'conexion') await view('channels', 'viewChannel', content, parts[2]);
-    else if (!parts.length || ['agentes', 'asistentes'].includes(parts[0])) await view('dashboard', 'viewDashboard', content, params);
-    else if (parts[0] === 'inicio') await view('onboarding', 'viewOnboarding', content, parts[1]);
+    else if (parts[0] === 'agentes' && parts[1] === 'nuevo') await view('agentwizard', 'viewNewAgent', content, params);
+    else if (!parts.length || ['agentes', 'asistentes'].includes(parts[0])) await view('dashboard', 'viewDashboard', content, params, !parts.length);
+    // «Empezar» (y los antiguos Primeros pasos): a lo que falta para que el agente responda.
+    else if (parts[0] === 'empezar' || parts[0] === 'inicio') await view('agentstart', 'goStart', content);
+    else if (parts[0] === 'bot' && parts[2] === 'empezar') await view('agentstart', 'viewAgentStart', content, parts[1]);
     else if (parts[0] === 'asistente' || parts[0] === 'probar') await view('dashboard', 'goMainBot', content, parts[0] === 'probar' ? 'probar' : 'conocimiento');
     else if (parts[0] === 'conectar-facebook') await view('meta', 'viewMetaConnect', content, parts[1] || '', params);
     else if (parts[0] === 'conectar') await view('agent-connections', 'goLegacyConnections', params);

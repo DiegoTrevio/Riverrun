@@ -204,6 +204,10 @@ export interface ChatbotRow {
   flow: unknown;
   ai: unknown;
   saved_messages: unknown;
+  /** Se enciende solo la primera vez que una de sus conexiones queda conectada (agentes del asistente de creación). */
+  start_on_connect: boolean;
+  /** Identificador de la solicitud que lo creó (evita duplicados por reintentos). */
+  creation_ref: string | null;
   created_at: Date;
   updated_at: Date;
 }

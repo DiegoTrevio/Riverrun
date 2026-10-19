@@ -250,11 +250,11 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 
 /* Primeros pasos */
 ol.steps { display: flex; gap: 8px; list-style: none; padding: 0; margin: 0 0 18px; flex-wrap: wrap; }
-ol.steps li a { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 99px; border: 1px solid var(--border); background: var(--panel); color: var(--muted); }
+ol.steps li :is(a, .step) { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 99px; border: 1px solid var(--border); background: var(--panel); color: var(--muted); }
 ol.steps li .num { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--border); color: var(--text); font-size: 12px; font-weight: 700; }
-ol.steps li.done a { color: var(--text); }
+ol.steps li.done :is(a, .step) { color: var(--text); }
 ol.steps li.done .num { background: var(--accent); color: #fff; }
-ol.steps li.current a { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+ol.steps li.current :is(a, .step) { border-color: var(--accent); color: var(--accent); font-weight: 600; }
 
 /* Gráfica de barras simple (consumo por día) */
 .bars { display: flex; align-items: flex-end; gap: 4px; height: 140px; }

@@ -14,7 +14,8 @@ export async function loadWhatsappStatus() {
   try {
     const list = (await api('GET', withAcct('/api/channels'))).filter((c) => c.type === 'whatsapp');
     if (nav !== state.navigation) return;
-    state.wa = { has: list.length > 0, connected: list.some((c) => c.connection_state === 'open'), id: list[0]?.id };
+    // id: el que hay que reconectar (el primero sin conexión).
+    state.wa = { has: list.length > 0, connected: list.some((c) => c.connection_state === 'open'), id: (list.find((c) => c.connection_state !== 'open') || list[0])?.id };
   } catch { /* sin aviso */ }
 }
 
@@ -64,7 +65,7 @@ export async function viewConnect(root, params) {
         h('p', {}, 'Conecta el WhatsApp de tu negocio para que tu asistente responda a tus clientes. Te mostraremos un código QR para escanearlo desde tu teléfono; toma menos de un minuto.'),
         h('button', { class: 'primary', onclick: async () => {
           const ch = await run(() => api('POST', withAcct('/api/onboarding/whatsapp')));
-          if (!ch) return fill(msg, h('p', { class: 'small' }, 'Si te pide configurar tu asistente, hazlo primero en ', h('a', { href: '#/inicio' }, 'Primeros pasos'), '.'));
+          if (!ch) return fill(msg, h('p', { class: 'small' }, 'Si te pide configurar tu agente, ', h('a', { href: '#/empezar' }, 'créalo primero'), '.'));
           state.me = null; render();
         } }, 'Conectar mi WhatsApp'),
         msg));

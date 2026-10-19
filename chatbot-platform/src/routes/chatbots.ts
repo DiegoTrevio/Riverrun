@@ -1,7 +1,7 @@
 import { accountAi } from '../ai/budget.js';
 import { agentVersionRoutes } from './agent-versions.js';
 import type { PoolClient } from 'pg';
-import { buildAgent, WizardSchema } from '../templates/agent-builder.js';
+import { buildAgent, withTemplateDefaults, WizardSchema } from '../templates/agent-builder.js';
 import * as astore from '../automation/store.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -145,7 +145,7 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
    * lo que se aprenderá de los documentos y si se creará un servicio de la agenda.
    */
   api.post('/api/chatbots/draft', admins, async (req: any) => {
-    const w = parse(WizardSchema, req.body);
+    const w = parse(WizardSchema, withTemplateDefaults(req.body));
     const built = buildAgent(w);
     return {
       name: built.name,
@@ -159,24 +159,35 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
 
   /** Crea el agente completo a partir de las respuestas del asistente: prompt, reglas, recorrido, conocimiento y (si agenda) el servicio. */
   api.post('/api/chatbots/wizard', admins, async (req: any) => {
-    const w = parse(WizardSchema, req.body);
+    const w = parse(WizardSchema, withTemplateDefaults(req.body));
     const accountId = await targetAccount(req.user, req.body?.account_id ?? req.query.account_id);
     const built = buildAgent(w);
     if (!built.enoughKnowledge) throw new HttpError(400, 'Cuéntanos a qué se dedica tu empresa o sube un documento: el agente solo responde con la información que le des.');
-    await assertWithinLimit(accountId, 'chatbots');
-    const result = await withTransaction(async (client) => {
-      // Nace apagado para probarlo antes de conectarlo a un teléfono.
-      const bot = await store.createChatbot(accountId, { name: built.name, active: false, personality: built.personality, rules: built.rules, flow: built.flow, data_fields: built.data_fields }, client);
+    const created = await withTransaction(async (client) => {
+      // La misma solicitud repetida (reintento, doble clic) devuelve el agente que ya creó, sin crear otro.
+      if (w.request_id) {
+        await client.query(`SELECT pg_advisory_xact_lock(hashtextextended('wizard:' || $1 || ':' || $2, 0))`, [accountId, w.request_id]);
+        const prev = (await client.query(`SELECT id FROM chatbots WHERE account_id = $1 AND creation_ref = $2`, [accountId, w.request_id])).rows[0];
+        if (prev) return { bot: null, repeatedId: prev.id as string };
+      }
+      await assertWithinLimit(accountId, 'chatbots');
+      // Nace apagado para probarlo en el simulador; se enciende solo al conectar su WhatsApp (start_on_connect).
+      const bot = await store.createChatbot(accountId, {
+        name: built.name, active: false, personality: built.personality, rules: built.rules, flow: built.flow, data_fields: built.data_fields,
+        start_on_connect: w.start_on_connect, creation_ref: w.request_id ?? null,
+      }, client);
       for (const [i, k] of built.knowledge.entries()) await store.upsertKnowledge(bot.id, { ...k, active: true, sort_order: i }, client);
-      return bot;
+      return { bot, repeatedId: null };
     });
+    if (created.repeatedId) return { ...(await store.getChatbot(created.repeatedId))!, service_created: null, repeated: true };
+    const result = created.bot!;
     // La agenda se prepara aparte: si ya hay servicios, no se duplica.
     let service: { id: string; name: string } | null = null;
     if (built.service && !(await astore.listServices(accountId)).length) {
       const s = await astore.saveService(accountId, built.service);
       service = { id: s!.id, name: s!.name };
     }
-    await logEvent({ level: 'info', source: 'admin', message: `Agente creado con el asistente: ${result.name} (${w.scope.role}${service ? `, servicio "${service.name}"` : ''})`, accountId, chatbotId: result.id });
+    await logEvent({ level: 'info', source: 'admin', message: `Agente creado con el asistente: ${result.name} (${w.scope.role}${service ? `, servicio "${service.name}"` : ''}${w.start_on_connect ? '; se encenderá al conectar su WhatsApp' : ''})`, accountId, chatbotId: result.id });
     return { ...result, service_created: service };
   });
 
@@ -282,7 +293,10 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
       if(!row)throw notFound();
       const existing = (await store.getChatbot(row.id))!;
       await client.query("SELECT set_config('riverrun.author_id',$1,true),set_config('riverrun.author_name',$2,true)",[req.user.id,req.user.email]);
-      return applyConfiguration(existing, await normalizeConfiguration(existing, req.body), client);
+      const patch = await normalizeConfiguration(existing, req.body);
+      // Encender o apagar a mano manda: ya no se enciende solo al conectar (nunca vuelve a encender uno que alguien apagó).
+      if (typeof patch.active === 'boolean') patch.start_on_connect = false;
+      return applyConfiguration(existing, patch, client);
     });
     if(bot)await logEvent({level:'info',source:'admin',message:`Configuración actualizada (${Object.keys(req.body??{}).join(', ')})`,accountId:bot.account_id,chatbotId:bot.id});
     return bot;

@@ -41,12 +41,12 @@ try {
     if (role === 'superadmin') await context.addInitScript((id: string) => localStorage.setItem('cp-account', id), h.accountId);
     return context;
   };
-  const routes = ['agentes', `bot/${h.botId}/instrucciones`, `bot/${h.botId}/preguntas`, `bot/${h.botId}/activacion`, `bot/${h.botId}/conocimiento`, `bot/${h.botId}/imagenes`, `bot/${h.botId}/conexiones`, `bot/${h.botId}/probar`, `bot/${h.botId}/conexiones/${h.channelId}`, `bot/${h.botId}/conexiones/${socialNew.id}`, `bot/${h.botId}/conexiones/${socialOn.id}`, 'conversations', `conversation/${conv.id}`, 'agenda', 'agenda/servicios', `agenda/servicios?id=${service.id}`, 'automation/rules', 'automation/rules/new', 'automation/sequences', 'automation/sequences/new', 'automation/campaigns', 'automation/campaigns/new', 'automation/settings', 'pipeline', 'pipeline/editar/nuevo', 'ajustes', 'integraciones', 'users', 'consumo', 'logs', 'plan', 'estadisticas', 'notifications', 'password', 'inicio'];
+  const routes = ['agentes', `bot/${h.botId}/instrucciones`, `bot/${h.botId}/preguntas`, `bot/${h.botId}/activacion`, `bot/${h.botId}/conocimiento`, `bot/${h.botId}/imagenes`, `bot/${h.botId}/conexiones`, `bot/${h.botId}/probar`, `bot/${h.botId}/conexiones/${h.channelId}`, `bot/${h.botId}/conexiones/${socialNew.id}`, `bot/${h.botId}/conexiones/${socialOn.id}`, 'conversations', `conversation/${conv.id}`, 'agenda', 'agenda/servicios', `agenda/servicios?id=${service.id}`, 'automation/rules', 'automation/rules/new', 'automation/sequences', 'automation/sequences/new', 'automation/campaigns', 'automation/campaigns/new', 'automation/settings', 'pipeline', 'pipeline/editar/nuevo', 'ajustes', 'integraciones', 'users', 'consumo', 'logs', 'plan', 'estadisticas', 'notifications', 'password', 'inicio', 'agentes/nuevo', `bot/${h.botId}/empezar`];
   const helpScreens: Record<string, string> = { [`bot/${h.botId}/conocimiento`]: '01-importar.jpg', [`bot/${h.botId}/probar`]: '03-probar.jpg', [`conversation/${conv.id}`]: '05-conversacion.jpg', ajustes: '06-ajustes.jpg' };
   for (const role of ['admin', 'superadmin', 'agent']) {
     const context = await contextFor(role); const page = await context.newPage();
     page.on('pageerror', (error) => results.errors.push({ role, message: error.message }));
-    const selected = role === 'admin' ? routes : role === 'agent' ? ['conversations', `conversation/${conv.id}`, 'agenda', 'notifications', 'pipeline', 'password'] : ['agentes', 'accounts', 'planes', 'marcas', 'sistema', 'users', 'ajustes', 'integraciones'];
+    const selected = role === 'admin' ? routes : role === 'agent' ? ['conversations', `conversation/${conv.id}`, 'agenda', 'notifications', 'pipeline', 'password'] : ['agentes', 'agentes/nuevo', 'accounts', 'planes', 'marcas', 'sistema', 'users', 'ajustes', 'integraciones'];
     for (const route of selected) {
       await page.goto(`${base}/#/${route}`); await page.locator('.main h1').waitFor(); await page.locator('.main [aria-busy="true"]').waitFor({ state: 'hidden' }); await page.waitForTimeout(100);
       await page.addScriptTag({ content: axe });
@@ -59,7 +59,7 @@ try {
   console.log('Pantallas examinadas:', results.screens.length);
   for (const width of [320, 390, 768, 1024, 1440]) for (const theme of ['light', 'dark'] as const) {
     const context = await contextFor('admin', { viewport: { width, height: 900 }, colorScheme: theme }); const page = await context.newPage();
-    for (const route of ['agentes', `bot/${h.botId}/instrucciones`, `conversation/${conv.id}`, 'conversations', 'automation/sequences/new', 'agenda']) {
+    for (const route of ['agentes', 'agentes/nuevo', `bot/${h.botId}/empezar`, `bot/${h.botId}/instrucciones`, `conversation/${conv.id}`, 'conversations', 'automation/sequences/new', 'agenda']) {
       await page.goto(`${base}/#/${route}`); await page.locator('.main h1').waitFor(); await page.waitForTimeout(80);
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1);
       results.responsive.push({ width, theme, route, overflow });
@@ -199,6 +199,29 @@ try {
   const brandColors = await page.locator('.primary').first().evaluate((el) => ({ color: getComputedStyle(el).color, background: getComputedStyle(el).backgroundColor }));
   assert.notEqual(brandColors.color, brandColors.background);
   await context.close(); checked('Marca blanca mantiene el texto de la acción visible');
+  {
+    // Crear un agente en 3 pantallas: aprende, elige qué hará, se prueba y se enciende solo al conectar su WhatsApp.
+    const context = await contextFor('admin'); const page = await context.newPage();
+    page.on('pageerror', (error) => results.errors.push({ role: 'admin', message: error.message }));
+    await page.route('**/api/onboarding/import**', (route) => route.fulfill({ contentType: 'application/json', body: JSON.stringify({ description: 'Hotel boutique en Mazatlán frente al mar.', sections: { catalog: 'Habitación doble — $1,800 por noche', hours: 'Recepción 24 horas', location: 'Av. del Mar 100, Mazatlán', faq: '', other: '' }, source: 'hotelpalmas.mx', truncated: false }) }));
+    await page.goto(`${base}/#/agentes?new=1`); await page.waitForURL('**/#/agentes/nuevo');
+    await page.getByRole('heading', { name: 'Crea tu agente' }).waitFor();
+    await page.getByText('✍️ Lo escribo yo').click();
+    await page.getByLabel('Tu información').fill('Hotel boutique en Mazatlán. Habitación doble $1,800 por noche. Recepción 24 horas.');
+    await page.getByRole('button', { name: 'Siguiente →' }).click(); await page.waitForURL('**/#/agentes/nuevo?paso=2');
+    await page.getByRole('heading', { name: /Esto aprendió de/ }).waitFor();
+    await page.locator('label.plan-option', { hasText: 'Agendar citas' }).click();
+    await page.getByRole('button', { name: 'Crear mi agente' }).click(); await page.waitForURL(/#\/bot\/[0-9a-f-]+\/empezar$/);
+    const created = page.url().split('/bot/')[1].split('/')[0];
+    await page.locator('.composer textarea').waitFor();
+    assert.deepEqual((await pool.query(`SELECT active, start_on_connect FROM chatbots WHERE id = $1`, [created])).rows[0], { active: false, start_on_connect: true });
+    await page.getByRole('button', { name: 'Conectar mi WhatsApp', exact: true }).click(); await page.locator('.wa-connect').waitFor();
+    const instance = (await pool.query(`SELECT config->>'instance' AS i FROM channels WHERE chatbot_id = $1 AND type = 'whatsapp'`, [created])).rows[0].i;
+    await waitFor(() => evo.instances.has(instance), 10000); evo.instances.get(instance)!.state = 'open';
+    await page.getByRole('heading', { name: '¡Listo! Tu agente ya responde en tu WhatsApp' }).waitFor({ timeout: 20000 });
+    assert.deepEqual((await pool.query(`SELECT active, start_on_connect FROM chatbots WHERE id = $1`, [created])).rows[0], { active: true, start_on_connect: false });
+    await context.close(); checked('Crear un agente en 3 pantallas y se enciende solo al conectar su WhatsApp');
+  }
   assert.equal(results.errors.length, 0, JSON.stringify(results.errors));
   const serious = results.screens.flatMap((screen: any) => screen.violations.filter((v: any) => ['critical', 'serious'].includes(v.impact)).map((v: any) => ({ role: screen.role, route: screen.route, ...v })));
   results.serious = serious;

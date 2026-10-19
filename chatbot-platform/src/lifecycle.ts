@@ -133,6 +133,9 @@ export async function recordConnectionState(ch: Pick<Channel, 'id' | 'account_id
   if (state === 'open') await store.clearConnectionCodes(ch.id);
   if (!row) return;
   if (state === 'open') {
+    // En cada «conectado» (no solo el primero: una conexión ya conectada puede cambiar de agente). Un fallo aquí no
+    // debe hacer fallar el aviso de conexión.
+    await startAgentOnConnect(ch).catch((e) => logEvent({ level: 'error', source: 'channel', message: `No se pudo encender el agente al conectar ${ch.name}: ${e?.message ?? e}`, accountId: ch.account_id, channelId: ch.id }));
     if (row.prev === 'open') return;
     const acc = await queryOne<Account>(`SELECT * FROM accounts WHERE id = $1`, [ch.account_id]);
     if (acc && !acc.onboarding?.whatsapp) {
@@ -154,6 +157,32 @@ export async function recordConnectionState(ch: Pick<Channel, 'id' | 'account_id
       if (await claimDisconnectNotice(ch.id, 0, alerts.repeat_hours)) await notifyDisconnected(ch);
     }
   }
+}
+
+/**
+ * Agentes del asistente de creación: se encienden solos la primera vez que una de sus conexiones queda conectada.
+ * Una sola actualización condicional decide: con avisos simultáneos solo una la gana (un aviso y un registro); si alguien
+ * lo encendió o apagó a mano, la marca ya no está y no se toca.
+ */
+export async function startAgentOnConnect(ch: Pick<Channel, 'id' | 'account_id' | 'name'>) {
+  const bot = await queryOne<{ id: string; name: string }>(
+    `UPDATE chatbots b SET active = true, start_on_connect = false, updated_at = now()
+       FROM channels c
+      WHERE c.id = $1 AND c.chatbot_id = b.id AND c.connection_state = 'open' AND c.active AND c.type <> 'playground'
+        AND b.start_on_connect AND NOT b.active
+      RETURNING b.id, b.name`,
+    [ch.id],
+  );
+  if (!bot) return null;
+  await logEvent({ level: 'info', source: 'channel', message: `Agente encendido al conectar ${ch.name}: ${bot.name}`, accountId: ch.account_id, chatbotId: bot.id, channelId: ch.id });
+  const admins = await query<{ id: string }>(`SELECT id FROM users WHERE account_id = $1 AND role = 'admin' AND active`, [ch.account_id]);
+  await notifyUsers(ch.account_id, admins.map((a) => a.id), {
+    title: 'Tu agente ya está respondiendo',
+    body: `«${bot.name}» se encendió solo al conectar «${ch.name}». Si quieres pausarlo, entra a Agentes → ${bot.name} → Configurar.`,
+    link: `#/bot/${bot.id}/empezar`,
+    kind: 'channel',
+  });
+  return bot;
 }
 
 /** Motivos con los que la sesión no vuelve sola: hay que escanear el QR otra vez. */

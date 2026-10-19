@@ -101,7 +101,7 @@ export async function renderSignup(params = new URLSearchParams()) {
     state.me = null;
     if (r.checkout_url) { button.textContent = 'Abriendo el pago seguro…'; location.href = r.checkout_url; return; }
     if (r.checkout_error) { toast(r.checkout_error, true); location.hash = `#/plan?plan=${encodeURIComponent(plan)}`; return; }
-    location.hash = '#/agentes?new=1';
+    location.hash = '#/agentes/nuevo';
   };
   const intro = info.plans.length
     ? (trial ? `Prueba gratis ${info.trial_days} días o contrata tu plan desde hoy.` : 'Crea tu cuenta y activa tu plan en un solo paso.')
@@ -163,8 +163,8 @@ export async function renderVerify(token) {
   try {
     await api('POST', '/api/verify-email', { token });
     state.me = null;
-    fill(box, '✅ Tu correo quedó confirmado. ', h('a', { href: '#/agentes?new=1' }, 'Continuar con la configuración →'));
+    fill(box, '✅ Tu correo quedó confirmado. ', h('a', { href: '#/empezar' }, 'Continuar →'));
   } catch (e) {
-    fill(box, e.message, ' ', h('a', { href: '#/agentes?new=1' }, 'Ir al panel'));
+    fill(box, e.message, ' ', h('a', { href: '#/empezar' }, 'Ir al panel'));
   }
 }

@@ -25,6 +25,7 @@ import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
 import { AiSettingsSchema, CHANNEL_TYPES, FlowSchema, KNOWLEDGE_CATEGORIES, PersonalitySchema, RulesSchema, type Role } from '../types.js';
 import { BUSINESS_TYPES } from '../templates/business.js';
+import { wizardDefaults } from '../templates/agent-builder.js';
 import { systemStatus } from '../monitor.js';
 import { listIncidents } from '../observability/incidents.js';
 import { diagnosticsReport, refreshDiagnostics } from '../diagnostics.js';
@@ -100,7 +101,8 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     public_base_url: config.publicBaseUrl,
     public_https: config.publicBaseUrl.startsWith('https://'),
     support_contact: config.signup.supportContact,
-    business_types: BUSINESS_TYPES.map(({ key, label }) => ({ key, label })),
+    // Con lo que el asistente de creación propone para cada tipo (trabajo, datos que pide y trato).
+    business_types: BUSINESS_TYPES.map(({ key, label }) => ({ key, label, defaults: wizardDefaults(key) })),
     require_email: config.signup.requireEmail,
     billing_enabled: await billingEnabled(),
     zernio_enabled: zernioEnabled(),

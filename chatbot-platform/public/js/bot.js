@@ -37,7 +37,7 @@ export async function viewBot(root, id, tab, params = new URLSearchParams()) {
   root.append(
     h('a', { href: '#/agentes', class: 'breadcrumb' }, '← Agentes'),
     h('div', { class: 'row between' },
-      h('h1', {}, bot.name, ' ', h('span', { class: `badge ${bot.active ? 'green' : ''}` }, bot.active ? 'Encendido' : 'Apagado')),
+      h('h1', {}, bot.name, ' ', h('span', { class: `badge ${bot.active ? 'green' : ''}` }, bot.active ? 'Encendido' : bot.start_on_connect ? 'Se enciende al conectar' : 'Apagado')),
       h('div', { class: 'row' }, h('a', { class: 'btn', href: `#/bot/${bot.id}/conexiones?new=1` }, 'Conectar teléfono'), restartConversationsButton(bot), h('a', { href: `#/conversations?chatbot_id=${bot.id}` }, 'Ver conversaciones →'))),
     h('div', { class: 'tabs agent-tabs', 'aria-label': 'Secciones del agente' }, TABS.map(([k, l]) => { const active = k === tab || (k === 'instrucciones' && ['preguntas', 'activacion', 'avisos'].includes(tab)) || (k === 'conocimiento' && tab === 'imagenes'); return h('a', { href: `#/bot/${id}/${k}`, class: active ? 'active' : '', 'aria-current': active ? 'page' : null }, l); })),
     ['instrucciones', 'preguntas', 'activacion', 'avisos', 'conocimiento', 'imagenes'].includes(tab) ? h('div', { class: 'tabs sub-tabs', 'aria-label': 'Opciones de la sección' }, (['conocimiento', 'imagenes'].includes(tab) ? KNOWLEDGE_TABS : CONFIG_TABS).map(([k, l]) => h('a', { href: `#/bot/${id}/${k}`, class: k === tab ? 'active' : '', 'aria-current': k === tab ? 'page' : null }, l))) : null,
@@ -103,8 +103,8 @@ async function tabGeneral(root, bot) {
   const steps = [
     [knowledge.some((k) => k.active), 'Tiene la información de tu negocio', 'conocimiento', 'Agrega precios, servicios, horarios y preguntas frecuentes: es lo único que puede afirmar.'],
     [!!bot.personality.prompt.trim(), 'Sabe quién es y a quién atiende', 'personalidad', 'Escribe en "Instrucciones" qué hace tu negocio y qué debe lograr el asistente.'],
-    [channels.some((c) => c.active), 'Está en al menos un canal', null, 'Conéctalo a WhatsApp u otro canal con "+ Agregar canal".'],
-    [bot.active, 'Está encendido', null, 'Marca "Encendido" abajo y guarda.'],
+    [channels.some((c) => c.active), 'Está en al menos un canal', 'conexiones', 'Conéctalo a tu WhatsApp u otro canal en "Conexiones".'],
+    [bot.active, 'Está encendido', null, bot.start_on_connect ? 'Se encenderá solo al conectar su WhatsApp, o enciéndelo arriba con "Encender agente".' : 'Enciéndelo arriba con "Encender agente".'],
   ];
   const ready = steps.every(([ok]) => ok);
   root.append(
@@ -145,6 +145,7 @@ async function tabInstructions(root, bot) {
         field('Nombre del agente', text(m, 'name')),
         field('Nombre con el que se presenta (opcional)', text(p, 'assistant_name', { placeholder: 'Mario' }))),
       h('div',{class:'row'},h('span',{class:'small'},'Estado de atención (se aplica de inmediato):'),h('button',{onclick:async()=>{if(await run(()=>api('PUT',`/api/chatbots/${bot.id}`,{active:!bot.active}),bot.active?'Agente pausado':'Agente encendido')) render();}},bot.active?'Pausar agente':'Encender agente')),
+      !bot.active && bot.start_on_connect ? h('p',{class:'help',style:'margin:0'},'Se encenderá solo al conectar su WhatsApp. Si lo enciendes o lo pausas a mano, ya no lo hará.') : null,
       h('details', { class: 'readiness' }, h('summary', {}, 'Revisar antes de encender'), h('ul', { class: 'checklist' },
         h('li', {}, bot.personality.prompt.trim() ? '✓ Instrucciones configuradas' : '○ Completa las instrucciones'),
         h('li', {}, bot.channels?.some((c) => c.active && (c.type !== 'whatsapp' || c.connection_state === 'open')) ? '✓ Tiene una conexión disponible' : ['○ Conecta un teléfono en ', h('a', { href: `#/bot/${bot.id}/conexiones` }, 'Conexiones')]),

@@ -85,8 +85,44 @@ export const WizardSchema = z.object({
     .default(() => ({ sections: { catalog: '', hours: '', location: '', faq: '', other: '' }, extra: '', sources: [] })),
   /** Si la persona editó el prompt generado, se respeta tal cual. */
   prompt_override: z.string().trim().min(40).max(12000).optional(),
+  /** Identificador de este intento de creación: repetir la solicitud (reintento, doble clic) no crea otro agente. */
+  request_id: z.string().regex(/^[A-Za-z0-9-]{8,64}$/, 'request_id inválido').optional(),
+  /** Nace apagado y se enciende solo la primera vez que se conecta su WhatsApp (o canal). */
+  start_on_connect: z.boolean().default(true),
 });
 export type Wizard = z.infer<typeof WizardSchema>;
+
+/**
+ * Lo que el asistente propone para cada tipo de negocio: su trabajo, los datos que pide y el trato. La persona lo ve
+ * ya elegido y lo cambia en «Personalizar» solo si quiere.
+ */
+export function wizardDefaults(businessType: string) {
+  const tpl = businessTemplate(businessType);
+  const formality = tpl.formality ?? 'tu';
+  const collect = (tpl.wizard?.collect ?? ['nombre']).filter((k): k is CollectKey => k in COLLECT);
+  return {
+    scope: {
+      role: (tpl.wizard?.role ?? (tpl.booking ? 'book' : 'assist')) as Role,
+      collect,
+      collect_other: tpl.wizard?.collect_other ?? '',
+      prices: 'yes' as const,
+      unknown: 'confirm' as const,
+      forbidden: '',
+      handoff_extra: tpl.wizard?.handoff_extra ?? '',
+    },
+    style: { assistant_name: '', formality, tone: formality === 'usted' ? ('profesional' as const) : ('cercano' as const), emojis: 'few' as const, length: 'corta' as const },
+  };
+}
+
+/** Completa lo que no se mandó con lo que corresponde a su tipo de negocio (lo que sí se mandó siempre gana). */
+export function withTemplateDefaults(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object') return raw;
+  const body = raw as Record<string, any>;
+  const type = typeof body.company?.business_type === 'string' ? body.company.business_type : 'otro';
+  const d = wizardDefaults(type);
+  const obj = (v: unknown) => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
+  return { ...body, scope: { ...d.scope, ...obj(body.scope) }, style: { ...d.style, ...obj(body.style) } };
+}
 
 const list = (s: string) => s.split(/[\n;,]+/).map((x) => x.trim()).filter(Boolean).slice(0, 20);
 const bullets = (items: string[]) => items.map((x) => `- ${x}`).join('\n');

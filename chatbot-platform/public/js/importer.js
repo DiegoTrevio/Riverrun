@@ -3,7 +3,20 @@ import { render } from './main.js';
 
 /* ------------------------------ Importar información del negocio ------------------------------ */
 
-const SECTION_LABELS = { catalog: 'Productos o servicios con precios', hours: 'Horarios', location: 'Ubicación y contacto', faq: 'Preguntas frecuentes', other: 'Otra información' };
+export const SECTION_LABELS = { catalog: 'Productos o servicios con precios', hours: 'Horarios', location: 'Ubicación y contacto', faq: 'Preguntas frecuentes', other: 'Otra información' };
+
+/** Archivos que se pueden leer (Excel y Word no: se piden como CSV o PDF). */
+export const IMPORT_ACCEPT = '.pdf,.csv,.tsv,.txt,.md,image/jpeg,image/png,image/webp';
+
+/** Lee una fuente (página, archivo o texto) y devuelve la propuesta ordenada en secciones, sin guardar nada. */
+export async function importFrom(endpoint, { url = '', file = null, text = '' }) {
+  const form = new FormData();
+  if (file) form.append('file', file);
+  else if (url.trim()) form.append('url', url.trim());
+  else form.append('text', text);
+  const r = await api('POST', endpoint, form, true);
+  return { ...r, source_url: !file && url.trim() ? url.trim() : null };
+}
 
 /**
  * Tarjeta "Llena todo por mí": la persona da su página web, sube un PDF, una foto o un CSV, o pega texto;
@@ -15,23 +28,19 @@ export function importCard({ endpoint, url = '', onResult, title = '⚡ Llena to
   let file = null;
   const fileName = h('span', { class: 'small muted' });
   const fileInput = h('input', {
-    type: 'file', hidden: true, accept: '.pdf,.csv,.tsv,.txt,.md,image/jpeg,image/png,image/webp',
+    type: 'file', hidden: true, accept: IMPORT_ACCEPT,
     onchange: (e) => { file = e.target.files[0] || null; fileName.textContent = file ? `📎 ${file.name}` : ''; },
   });
   const status = h('span', { class: 'small muted' });
   const btn = h('button', { class: 'primary' }, button);
   btn.addEventListener('click', async () => {
     if ((f.source === 'file' && !file) || (f.source === 'url' && !f.url.trim()) || (f.source === 'text' && f.text.trim().length < 20)) return toast('Pega la dirección de tu página, sube un archivo o pega tu información', true);
-    const form = new FormData();
-    if (f.source === 'file') form.append('file', file);
-    else if (f.source === 'url') form.append('url', f.url.trim());
-    else form.append('text', f.text);
     btn.disabled = true;
     status.textContent = 'Leyendo tu información… puede tardar hasta un minuto.';
-    const r = await run(() => api('POST', endpoint, form, true));
+    const r = await run(() => importFrom(endpoint, f.source === 'file' ? { file } : f.source === 'url' ? { url: f.url } : { text: f.text }));
     btn.disabled = false;
     status.textContent = '';
-    if (r) { r.source_url = f.source === 'url' ? f.url.trim() : null; await onResult(r); }
+    if (r) await onResult(r);
   });
   const website = field('Dirección web', text(f, 'url', { type: 'url', placeholder: 'https://www.minegocio.com' }));
   const upload = h('div', { class: 'row' }, h('button', { onclick: () => fileInput.click() }, '📎 Elegir archivo'), fileInput, fileName, h('button', { class: 'small', onclick: () => { file = null; fileInput.value = ''; fileName.textContent = ''; } }, 'Quitar archivo'));

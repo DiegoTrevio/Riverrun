@@ -57,7 +57,7 @@ Variables: `ZERNIO_API_KEY` (obligatoria para activar las redes) y `ZERNIO_API_U
 
 Con `META_APP_ID` y `META_APP_SECRET` definidos, cada negocio conecta su página de Facebook (Messenger) y su Instagram profesional con **Conectar con Facebook**, sin copiar tokens ni configurar webhooks. Implementación: `src/channels/meta-connect.ts`.
 
-1. El negocio pulsa **Conectar con Facebook** (en las conexiones del agente o en el paso **Redes** de Primeros pasos), inicia sesión y acepta los permisos. El regreso (`/meta/callback`) usa un estado de un solo uso que vence a los 30 minutos.
+1. El negocio pulsa **Conectar con Facebook** (en las conexiones del agente), inicia sesión y acepta los permisos. El regreso (`/meta/callback`) usa un estado de un solo uso que vence a los 30 minutos.
 2. El servidor cambia el código por un token de larga duración y lee las páginas con su Instagram vinculado. El negocio elige qué conectar (Messenger, Instagram o ambos) y el agente que responde; los tokens nunca llegan al navegador.
 3. Cada página elegida se suscribe a la app (`subscribed_apps`) y queda **en línea**. Todos los eventos llegan a **un solo webhook** de la plataforma, `/meta/webhook`, firmado con `X-Hub-Signature-256` usando `META_APP_SECRET`, y se entregan al canal de esa página o cuenta de Instagram. Volver a conectar renueva el token sin duplicar canales; una página ya atendida por otro negocio de la plataforma no se conecta dos veces.
 4. Cada 6 horas se revisan los tokens: si Meta los invalidó (contraseña cambiada, permiso retirado), el canal queda **Desconectado** y el negocio recibe el aviso (según sus **alertas de conexión**) con el botón para volver a conectar. **Desconectar** quita la suscripción de la página y borra el token.
@@ -185,12 +185,11 @@ Internet ──HTTPS──> Caddy (app.tudominio.com)
 
 1. **Registro** (`/#/registro`, enlazado desde el inicio de sesión): nombre, empresa, tipo de negocio, correo y contraseña. Se crea su cuenta en **prueba** (`TRIAL_DAYS`, 14 por defecto; con `0`, en pausa hasta que pague) con ella como administradora, y entra directo. Con cobro en línea configurado también elige su plan: si elige uno, pasa a pagarlo en ese momento (ver [Cobro automático](#cobro-automático-stripe-y-mercado-pago)). Tú recibes un aviso (panel y `SUPERADMIN_EMAIL`).
 2. **Confirmar correo**: le llega un enlace (48 h, un solo uso). Mientras no lo confirme puede configurar y probar todo, pero **no puede conectar WhatsApp** ni otros canales reales.
-3. **Primeros pasos** (`/#/inicio`), un asistente de 5 pasos:
-   1. *Tu negocio*: zona horaria, horario y su WhatsApp para avisos.
-   2. *Tu asistente*: nombre, trato (tú/usted) y su información: productos/servicios con precios, horarios, ubicación, preguntas frecuentes. Se crea el chatbot con la **plantilla de su giro** (restaurante, salud, hotel, tienda, servicios, belleza u otro): personalidad, flujo, datos que pide y reglas (p.ej. "nunca des diagnósticos" en salud). Todo se puede afinar después en la configuración avanzada.
-   3. *Fotos* (opcional): catálogo de imágenes.
-   4. *Pruébalo*: el simulador.
-   5. *WhatsApp*: el QR aparece solo en cada cuenta/canal (también en celular; "Con mi número" queda como alternativa) → se vincula desde *Dispositivos vinculados* → el panel detecta la conexión, muestra el número vinculado y avanza solo.
+3. **Crea tu agente** (`/#/agentes/nuevo`), 3 pantallas (detalle en [docs/agent-creation.md](docs/agent-creation.md)):
+   1. *Tu negocio*: nombre, tipo de negocio y de dónde aprende (su página web, un archivo o lo escribe); al pulsar *Siguiente* la IA lo lee y lo ordena.
+   2. *Qué hará*: resolver dudas, agendar citas, tomar pedidos o solo tomar datos, ya elegido y ajustado según su **tipo de negocio** (trato, datos que pide, agenda). Lo demás va plegado en *Personalizar (opcional)*. *Crear mi agente* lo crea apagado.
+   3. *Pruébalo y conéctalo* (`/#/bot/:id/empezar`): el simulador y *Conectar mi WhatsApp* (el QR aparece en la misma pantalla; "Con mi número" queda como alternativa). **Al conectarse por primera vez, el agente se enciende solo** y la pantalla dice "¡Listo! Tu agente ya responde en tu WhatsApp".
+   `#/empezar` lleva siempre a lo que falta (y los enlaces viejos de Primeros pasos, `#/inicio`, también).
 4. **Si su WhatsApp se desconecta** (teléfono sin internet, sesión cerrada) se le avisa en el panel y por correo con un enlace que abre directo el código para volver a vincularlo.
 5. **Fin de la prueba**: 3 días antes se avisa a la empresa y a ti; al vencer la cuenta queda **en pausa**: puede entrar al panel, pero el bot no responde ni salen mensajes. Con cobro en línea, los correos llevan el enlace para pagar y la cuenta se reactiva sola al pagar. Sin cobro en línea, tú, en **Cuentas**, pulsas **Activar plan** (o **Extender prueba**) y `SUPPORT_CONTACT` es lo que ven para contratar.
 
@@ -214,7 +213,7 @@ npm run user:master -- diegoa.trevio@gmail.com
 
 En una imagen de producción ya compilada: `docker compose exec backend node dist/cli/grant-master.js diegoa.trevio@gmail.com`. El comando usa la base de datos configurada y no cambia la contraseña. El registro público nunca concede acceso maestro por el correo enviado.
 
-**Conectar WhatsApp (QR).** Tiene su propio botón en el menú (**📱 Conectar WhatsApp**, `#/conectar`), un mosaico en Ajustes y un aviso amarillo en todas las pantallas mientras el número no esté conectado. La página crea el canal si no existe, muestra el QR (o el código "Con mi número"), confirma la conexión, permite enviar un mensaje de prueba y desvincular para conectar otro número; con varios números lista cada uno con su estado.
+**Conectar WhatsApp (QR).** Se conecta en la pantalla **Prueba tu agente y conéctalo** (`#/empezar`) o en **Agentes → tu agente → Conexiones**. Mientras el número no esté conectado, un aviso amarillo en las demás pantallas lleva a conectarlo (o a reconectar el que se cayó); no aparece en las pantallas donde ya se está conectando. La conexión muestra el QR (o el código "Con mi número"), confirma la conexión, permite enviar un mensaje de prueba y desvincular para conectar otro número.
 
 **Navegación y perfiles.** El menú agrupa todas las herramientas en cuatro apartados: Asistentes y conexiones, Conversaciones, Operación y Configuración. En *Asistentes y conexiones → WhatsApp y otros canales*, cada cuenta puede crear hasta **cuatro perfiles de WhatsApp**, cada uno con instancia, QR y webhook propios. Cada perfil elige un asistente de su misma cuenta; varios perfiles pueden compartirlo. *Ver QR* abre la vinculación del teléfono elegido. Las conversaciones siguen separadas por canal. Desactivar o desconectar un perfil conserva su lugar; eliminarlo libera uno y elimina sus conversaciones. Los otros tipos de canal no consumen estos lugares. Las cuentas que ya tengan más de cuatro conservan sus perfiles, pero no pueden crear otros hasta quedar por debajo del límite.
 
@@ -246,14 +245,14 @@ Al cambiar una contraseña, las demás sesiones abiertas de ese usuario se cierr
 ## Primeros pasos en el panel
 
 1. **Cuentas** (superadministrador): crea la cuenta del cliente y, opcionalmente, su primer administrador.
-2. **Asistentes → + Nuevo asistente**: elige el nombre y tipo de negocio. La configuración tiene cuatro secciones:
+2. **Agentes → + Crear agente** abre **Crea tu agente**, 3 pantallas: tu negocio y de dónde aprende → qué hará (ya elegido según el tipo de negocio, con lo demás plegado en *Personalizar*) → pruébalo y conéctalo. Al conectar su WhatsApp por primera vez el agente **se enciende solo** ([docs/agent-creation.md](docs/agent-creation.md)). Después, cada agente se ajusta en cuatro secciones:
    - **Instrucciones**: escribe cómo debe atender, qué debe preguntar y cuál es su objetivo. El estilo y las opciones avanzadas quedan plegados.
    - **Conocimiento**: agrega productos, precios, horarios y preguntas frecuentes, o usa **⚡ Llena todo por mí**: pega la dirección de tu página (o un Google Sheets compartido), sube un PDF, una foto del menú o un CSV, o pega texto. La IA lo ordena en secciones, tú lo revisas y lo guardas; **🔄 Volver a sincronizar** lo actualiza desde la misma página. Solo se usa lo que está en la fuente (no inventa) y las páginas internas están bloqueadas. Excel y Word: guárdalos como CSV/PDF.
    - **Fotos**: sube imágenes y explica cuándo enviarlas; las reglas de envío son opcionales.
    - **Probar**: conversa como un cliente y revisa los datos guardados automáticamente. Los detalles técnicos de cada respuesta quedan plegados. Funciona aunque el asistente esté apagado.
-   Quien administra su propia cuenta ve un **menú simple** (Conversaciones, Mi asistente, Probar mi asistente, Agenda, Ajustes y Notificaciones); el resto vive en **Ajustes** o en «☰ Mostrar todas las opciones». El asistente de **Primeros pasos** tiene 5 pasos (negocio → asistente → prueba → redes → WhatsApp); las fotos y las redes son opcionales. En **Redes** el negocio conecta Facebook e Instagram con un botón y las demás redes (X, Telegram, Bluesky, Reddit, WhatsApp Business) por Zernio, o lo omite.
-3. **Canales → Nuevo canal**: elige la plataforma, asígnale el asistente y sigue las instrucciones de conexión (abajo).
-4. En **Instrucciones**, marca **Asistente encendido** y guarda.
+   Quien administra su propia cuenta ve un **menú simple** (Conversaciones, Mi asistente, Probar mi asistente, Agenda, Ajustes y Notificaciones); el resto vive en **Ajustes** o en «☰ Mostrar todas las opciones». Facebook, Instagram y las demás redes (X, Telegram, Bluesky, Reddit, WhatsApp Business por Zernio) se conectan en **Conexiones** del agente.
+3. Para más teléfonos u otras redes: **Agentes → tu agente → Conexiones**, elige la plataforma y sigue las instrucciones de conexión (abajo).
+4. Para pausarlo o encenderlo a mano: en **Configurar**, **Pausar agente** o **Encender agente**. Hacerlo a mano quita el encendido automático.
 
 No hay que crear campos para guardar las respuestas. Por ejemplo, si las instrucciones dicen «pregunta la dirección para entregar» y el cliente responde «Av. Reforma 25», el asistente propone guardar `direccion: Av. Reforma 25` y el backend verifica que ese valor aparezca en un mensaje del cliente. Los datos se ven en la ficha de la conversación y en **Probar**; se reutilizan para evitar preguntas repetidas y se actualizan cuando el cliente los corrige. Nombre, correo y teléfono se normalizan y validan. Los campos de configuraciones anteriores siguen siendo compatibles.
 
@@ -281,7 +280,7 @@ Para ver un ejemplo completo: `npm run seed:demo` (o `docker compose exec backen
 
 | Plataforma | Qué necesitas | Cómo se conecta |
 |---|---|---|
-| **WhatsApp** | Un teléfono con WhatsApp (normal o Business) | Al abrir el canal (o el paso 5 de Primeros pasos) el código **aparece solo** y se renueva solo, con cuenta regresiva: **Escanear código QR** es la opción inicial en todos los dispositivos; como alternativa, **Con mi número**: escribe tu número, recibes un código de 8 letras y en WhatsApp → Dispositivos vinculados → *Vincular con el número de teléfono* lo tecleas. El panel detecta la conexión y muestra "Conectado como …". Dos pestañas reutilizan el QR vigente sin reiniciar la vinculación. Si Evolution responde sin código durante un tiempo, se comprueba otra vez el estado antes de recuperar una instancia trabada; los fallos de autorización o de API se muestran como errores, sin eliminar la sesión. |
+| **WhatsApp** | Un teléfono con WhatsApp (normal o Business) | Al abrir el canal (o al pulsar **Conectar mi WhatsApp** en la pantalla de crear el agente) el código **aparece solo** y se renueva solo, con cuenta regresiva: **Escanear código QR** es la opción inicial en todos los dispositivos; como alternativa, **Con mi número**: escribe tu número, recibes un código de 8 letras y en WhatsApp → Dispositivos vinculados → *Vincular con el número de teléfono* lo tecleas. El panel detecta la conexión y muestra "Conectado como …". Dos pestañas reutilizan el QR vigente sin reiniciar la vinculación. Si Evolution responde sin código durante un tiempo, se comprueba otra vez el estado antes de recuperar una instancia trabada; los fallos de autorización o de API se muestran como errores, sin eliminar la sesión. |
 | **Telegram** | Un bot creado con **@BotFather** | Pega el token, guarda y pulsa **Conectar con Telegram**: se valida el token y se registra el webhook con un secreto (los mensajes sin ese secreto se rechazan). Solo chats privados. |
 | **Facebook e Instagram (botón)** | Ser administrador de la página; Instagram profesional vinculado a ella | **Conectar con Facebook**: inicia sesión, elige páginas e Instagram y el agente. Requiere que la plataforma tenga su app de Meta (ver arriba). |
 | **Messenger (manual)** | Una app en Meta for Developers con el producto Messenger y una página de Facebook | Pega el token de la página y la clave secreta de la app. En la app de Meta configura el webhook con la **URL** y el **token de verificación** que muestra el panel, suscrito a `messages`, `messaging_postbacks` y `message_echoes`. Pulsa **Verificar y suscribir la página**. |
@@ -409,7 +408,7 @@ Una cuenta puede conectar varios WhatsApp. Las **campañas** pueden salir de var
 
 ## Crear un agente sin escribir un prompt
 
-En **Asistentes → + Nuevo asistente** hay un asistente de cuatro pasos: tu empresa, hasta dónde llega el agente (solo filtrar, agendar citas, atender o tomar pedidos; datos que pide; límites; cómo suena), tus documentos (web, PDF, foto, CSV o texto) y una revisión final. De ahí se genera solo el prompt con los lineamientos de siempre (natural, sin dar información de más, sin inventar y sin salirse de su papel), las reglas, el conocimiento y, si agenda, el servicio de la agenda. Detalle en [docs/agent-creation.md](docs/agent-creation.md).
+En **Agentes → + Crear agente** (`#/agentes/nuevo`) hay 3 pantallas: tu negocio y de dónde aprende (web, PDF, foto, CSV o texto), qué hará (resolver dudas, agendar citas, tomar pedidos o solo tomar datos, ya elegido según el tipo de negocio; datos que pide, límites y cómo suena quedan plegados en *Personalizar*) y pruébalo y conéctalo, donde al conectar su WhatsApp se enciende solo. De ahí se genera solo el prompt con los lineamientos de siempre (natural, sin dar información de más, sin inventar y sin salirse de su papel), las reglas, el conocimiento y, si agenda, el servicio de la agenda. Detalle en [docs/agent-creation.md](docs/agent-creation.md).
 
 ## Asignación por turnos (round robin) y avisos internos
 
@@ -528,7 +527,7 @@ test/              pruebas
 Panel (bajo `/api`, con sesión por cookie; todo se limita a la cuenta del usuario):
 
 - Sesión: `POST /api/login`, `GET /api/me`, `PUT /api/me/password`, `POST /api/me/resend-verification`
-- Primeros pasos: `GET /api/onboarding`, `POST /api/onboarding/{business,assistant,import,step,whatsapp}` (`import` lee una web, archivo o texto y devuelve la propuesta de conocimiento)
+- Crear agente: `POST /api/chatbots/draft` y `/wizard` (con `request_id` para no duplicar y `start_on_connect`), `POST /api/chatbots/:id/whatsapp` (su WhatsApp, creado una sola vez), `POST /api/onboarding/import` (lee una web, archivo o texto y devuelve la propuesta de conocimiento). Los demás `/api/onboarding/*` siguen funcionando por compatibilidad.
 - Consumo de IA: `GET /api/usage?month=AAAA-MM`, `/api/ai-prices` (superadmin)
 - Cuentas: `/api/accounts`
 - Usuarios: `/api/users`

@@ -95,7 +95,7 @@ export async function viewPlan(root, params) {
   const gaveUp = waiting && confirmTries >= MAX_CONFIRM_TRIES;
   const notice = paid && live
     ? h('div', { class: 'banner' }, h('strong', {}, '¡Listo, tu plan está activo! '), 'Te enviamos la confirmación por correo.',
-      needsOnboarding() ? [' ', h('a', { class: 'btn primary', href: '#/agentes?new=1' }, 'Configura tu asistente →')] : null)
+      needsOnboarding() ? [' ', h('a', { class: 'btn primary', href: '#/empezar' }, 'Termina de configurar tu agente →')] : null)
     : waiting
       ? h('div', { class: 'banner', role: 'status' }, gaveUp
         ? 'Tu pago se está procesando. En cuanto el banco lo confirme tu plan se activa solo y te avisamos por correo; mientras, puedes seguir configurando tu asistente.'
