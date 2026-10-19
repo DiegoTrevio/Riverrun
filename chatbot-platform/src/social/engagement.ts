@@ -5,8 +5,8 @@ import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
 import { detectRisk } from '../engine/safety.js';
 import { logEvent } from '../logs.js';
-import { clientFor, ensurePlatformWebhook, eventAccountId, eventProfileId, listOf, networkOf, ZernioError, zernioEnabled, type ZernioClient } from '../channels/zernio.js';
-import type { ZernioPriority } from '../channels/zernio-budget.js';
+import { clientFor, ensurePlatformWebhook, eventAccountId, eventProfileId, listOf, NETWORKS, networkOf, ZernioError, zernioEnabled, type ZernioClient } from '../channels/zernio.js';
+import { ZernioBusyError, type ZernioPriority } from '../channels/zernio-budget.js';
 
 /**
  * Comentarios y reseñas de las redes conectadas por Zernio. Llegan por el webhook de la plataforma (comment.received,
@@ -101,6 +101,13 @@ export const CommentSettingsSchema = z.object({
 export type CommentSettings = z.infer<typeof CommentSettingsSchema>;
 export const settingsOf = (sa: Pick<SocialAccountRow, 'comment_settings'>): CommentSettings => CommentSettingsSchema.parse(sa.comment_settings ?? {});
 
+/** Valida datos del panel: un dato inválido es un 400 con su motivo (no un error interno). */
+function valid<T>(schema: z.ZodType<T>, input: unknown): T {
+  const r = schema.safeParse(input);
+  if (!r.success) throw new HttpError(400, r.error.issues[0]?.message || 'Datos inválidos', r.error.issues.map((i) => `${i.path.join('.') || 'valor'}: ${i.message}`));
+  return r.data;
+}
+
 /* ------------------------------ Dependencias (las pone ChatService) ------------------------------ */
 
 type AlertTeam = (accountId: string, o: { title: string; body: string; link?: string; kind?: string }) => Promise<void>;
@@ -139,6 +146,7 @@ const AUTO_MAX_DAYS = 7;
 /* ------------------------------ Llamadas a Zernio ------------------------------ */
 
 const enc = encodeURIComponent;
+const NETWORK_IDS: string[] = NETWORKS.map((n) => n.id);
 const zclient = (priority: ZernioPriority = 'interactive') => clientFor(null, priority);
 
 /** Un error de Zernio llega como un aviso claro para el panel. */
@@ -254,7 +262,8 @@ export async function handleCommentEvent(body: any) {
     ownFlag: !!c.author?.isOwnAccount, text: str(c.text), createdAt: when(c.createdAt),
     meta: { ...(c.ad ? { ad: true } : {}), ...(c.attachment ? { attachment: c.attachment } : {}) },
   }, { notified: false });
-  if (inserted) await afterComment(sa, row, { synced: false });
+  // También en un reintento del evento si lo de después no terminó (los avisos y tareas no se repiten: llevan su marca).
+  if (inserted || !row.notified_at) await afterComment(sa, row, { synced: false });
 }
 
 /** review.new / review.updated (Google): review{ id, rating, text, reviewer{…}, createdAt, hasReply, reply{ text } }. */
@@ -270,7 +279,7 @@ export async function handleReviewEvent(body: any) {
     id: String(r.id), author: authorOf(r.reviewer), rating: r.rating, text: r.text, createdAt: when(r.createdAt), reply: r.hasReply ? str(r.reply?.text) : '',
     recommendation: '', locationName: '', url: '',
   }, { notified: false });
-  if (inserted) await afterReview(sa, row, { synced: false });
+  if (inserted || !row.notified_at) await afterReview(sa, row, { synced: false });
 }
 
 interface ReviewInput { id: string; author: ReviewRow['author']; rating: unknown; text: unknown; createdAt: string | null; reply: string; recommendation: string; locationName: string; url: string }
@@ -380,43 +389,65 @@ export async function runDigest(p: { account_id?: string }) {
  * Trae lo de los últimos 30 días: las publicaciones con comentarios (solo se abren las que cambiaron, hasta 5) y las
  * reseñas. Lo que ya estaba no cambia de estado. X no avisa de comentarios por webhook: solo llegan por aquí.
  */
-export async function syncEngagement(socialAccountId: string) {
-  const sa = await queryOne<SocialAccountRow>(`SELECT * FROM social_accounts WHERE id = $1`, [socialAccountId]);
+export async function syncEngagement(socialAccountId: string, opts: { first?: boolean } = {}) {
+  const sa = await queryOne<SocialAccountRow & { messages_days: string | null }>(
+    `SELECT s.*, a.settings->'retention'->>'messages_days' AS messages_days FROM social_accounts s JOIN accounts a ON a.id = s.account_id WHERE s.id = $1`, [socialAccountId]);
   if (!sa || sa.status === 'disconnected') return;
   const net = networkOf(sa.platform);
   if (!net || (!net.comments && !net.reviews)) return;
+  // La primera revisión (al conectar) no avisa de lo viejo.
+  const first = opts.first ?? !sa.engagement_synced_at;
+  if (first) sa.engagement_synced_at = null;
+  // Lo que la retención del negocio ya borró no se vuelve a traer.
+  const keepDays = Math.min(30, Number(sa.messages_days) > 0 ? Number(sa.messages_days) : 30);
+  const since = new Date(Date.now() - keepDays * 86400_000);
   const client = zclient('background');
   const zid = enc(sa.zernio_account_id);
-  if (net.comments) {
-    const since = new Date(Date.now() - 30 * 86400_000).toISOString();
-    const posts = listOf(await client.call('GET', `/inbox/comments?accountId=${zid}&since=${enc(since)}&limit=50`), 'data');
-    let opened = 0;
-    for (const p of posts) {
-      const platformPostId = str(p?.platformPostId ?? p?.id, 500);
-      if (!platformPostId) continue;
-      const count = Number(p?.commentCount ?? 0);
-      const before = await queryOne<{ comment_count: number }>(`SELECT comment_count FROM social_posts WHERE social_account_id = $1 AND platform_post_id = $2`, [sa.id, platformPostId]);
-      const postId = await upsertPost(sa, { platformPostId, url: p?.permalink, caption: p?.content, thumbnail: p?.picture, commentCount: count, createdAt: when(p?.createdTime) });
-      if (!count || before?.comment_count === count || opened >= 5) continue;
-      opened++;
-      await syncPostComments(client, sa, postId, platformPostId);
+  try {
+    if (net.comments) {
+      const posts = listOf(await client.call('GET', `/inbox/comments?accountId=${zid}&since=${enc(since.toISOString())}&limit=50`), 'data');
+      let opened = 0;
+      for (const p of posts) {
+        // Los anuncios (complemento de Ads de Zernio) no son publicaciones que se abran aquí.
+        if (p?.isAd) continue;
+        const platformPostId = str(p?.platformPostId ?? p?.id, 500);
+        if (!platformPostId) continue;
+        const count = Number(p?.commentCount ?? 0);
+        const before = await queryOne<{ comment_count: number }>(`SELECT comment_count FROM social_posts WHERE social_account_id = $1 AND platform_post_id = $2`, [sa.id, platformPostId]);
+        // El número de comentarios se guarda hasta que se trajeron: una publicación que no se abrió (tope o error) se
+        // abre en la siguiente revisión.
+        const postId = await upsertPost(sa, { platformPostId, url: p?.permalink, caption: p?.content, thumbnail: p?.picture, commentCount: before ? null : 0, createdAt: when(p?.createdTime) });
+        if (!count || before?.comment_count === count || opened >= 5) continue;
+        opened++;
+        await syncPostComments(client, sa, postId, platformPostId, since);
+        await query(`UPDATE social_posts SET comment_count = $2 WHERE id = $1`, [postId, count]);
+      }
     }
-  }
-  if (net.reviews) {
-    const r = await client.call('GET', `/inbox/reviews?accountId=${zid}&limit=50`);
-    for (const x of listOf(r, 'data')) {
-      if (!x?.id) continue;
-      const { row, inserted } = await storeReview(sa, {
+    if (net.reviews) {
+      const r = await client.call('GET', `/inbox/reviews?accountId=${zid}&limit=50`);
+      for (const x of listOf(r, 'data')) {
+        if (!x?.id) continue;
+        if (when(x.created) && Date.parse(when(x.created)!) < since.getTime()) continue;
+        const { row, inserted } = await storeReview(sa, {
         id: String(x.id), author: authorOf(x.reviewer), rating: x.rating, text: x.text, createdAt: when(x.created), reply: x.hasReply ? str(x.reply?.text) : '',
         recommendation: str(x.recommendationType, 40), locationName: str(x.locationName, 300), url: str(x.reviewUrl, 2000),
-      }, { notified: !sa.engagement_synced_at });
-      if (inserted) await afterReview(sa, row, { synced: true });
+        }, { notified: first });
+        if (inserted) await afterReview(sa, row, { synced: true });
+      }
     }
+  } catch (e) {
+    // Sin el complemento Inbox en Zernio no hay comentarios ni reseñas: se avisa sin reintentar cada hora.
+    if (e instanceof ZernioError && e.status === 403) {
+      await query(`UPDATE social_accounts SET engagement_synced_at = now() WHERE id = $1`, [sa.id]);
+      await logEvent({ level: 'warn', source: 'channel', message: 'Zernio no permite leer comentarios ni reseñas (¿falta el complemento Inbox en la cuenta de Zernio de la plataforma?)', accountId: sa.account_id });
+      return;
+    }
+    throw e;
   }
   await query(`UPDATE social_accounts SET engagement_synced_at = now() WHERE id = $1`, [sa.id]);
 }
 
-async function syncPostComments(client: ZernioClient, sa: SocialAccountRow, postId: string, platformPostId: string) {
+async function syncPostComments(client: ZernioClient, sa: SocialAccountRow, postId: string, platformPostId: string, since: Date) {
   const r = await client.call<any>('GET', `/inbox/comments/${enc(platformPostId)}?accountId=${enc(sa.zernio_account_id)}&limit=100`);
   const post = r?.post ?? {};
   if (post.permalink || post.text || post.thumbnailUrl) await upsertPost(sa, { platformPostId, url: post.permalink, caption: post.text, thumbnail: post.thumbnailUrl });
@@ -427,6 +458,8 @@ async function syncPostComments(client: ZernioClient, sa: SocialAccountRow, post
   }
   for (const c of flat) {
     if (!c?.id) continue;
+    const created = when(c.createdTime);
+    if (created && Date.parse(created) < since.getTime()) continue;
     const { row, inserted } = await storeComment(sa, postId, {
       commentId: String(c.id), platformPostId, parentId: str(c.parentId, 500), author: authorOf(c.from), ownFlag: !!c.from?.isOwner, text: str(c.message ?? c.text),
       createdAt: when(c.createdTime), meta: {
@@ -441,20 +474,20 @@ async function syncPostComments(client: ZernioClient, sa: SocialAccountRow, post
 
 /** Cuentas por revisar (una vez al día cada una), pocas a la vez para no gastar el límite de la llave. */
 export async function syncDue(limit = 20) {
-  const rows = await query<{ id: string; platform: string }>(
-    `SELECT id, platform FROM social_accounts WHERE status = 'active' AND (engagement_synced_at IS NULL OR engagement_synced_at < now() - interval '24 hours')
-      ORDER BY engagement_synced_at NULLS FIRST LIMIT 200`);
-  let done = 0;
+  const platforms = networkIds((n) => n.comments || n.reviews);
+  // Se apartan antes de revisarlas: varias réplicas no revisan las mismas cuentas.
+  const rows = await query<{ id: string; prev: string | null }>(
+    `WITH due AS (
+       SELECT id, engagement_synced_at AS prev FROM social_accounts
+        WHERE status = 'active' AND platform = ANY($1::text[]) AND (engagement_synced_at IS NULL OR engagement_synced_at < now() - interval '24 hours')
+        ORDER BY engagement_synced_at NULLS FIRST LIMIT $2 FOR UPDATE SKIP LOCKED)
+     UPDATE social_accounts s SET engagement_synced_at = now() FROM due WHERE s.id = due.id RETURNING s.id, due.prev`, [platforms, limit]);
   for (const r of rows) {
-    const net = networkOf(r.platform);
-    if (!net?.comments && !net?.reviews) continue;
-    if (done++ >= limit) break;
-    await syncEngagement(r.id).catch(async (e) => {
-      await query(`UPDATE social_accounts SET engagement_synced_at = now() WHERE id = $1`, [r.id]);
-      await logEvent({ level: 'warn', source: 'channel', message: `Zernio: no se pudieron revisar comentarios y reseñas: ${e?.message ?? e}` });
-    });
+    await syncEngagement(r.id, { first: r.prev === null }).catch((e) =>
+      logEvent({ level: 'warn', source: 'channel', message: `Zernio: no se pudieron revisar comentarios y reseñas: ${e?.message ?? e}` }));
   }
 }
+const networkIds = (pick: (n: NonNullable<ReturnType<typeof networkOf>>) => boolean) => NETWORK_IDS.filter((id) => pick(networkOf(id)!));
 
 /**
  * Revisión de cada hora: unas cuantas cuentas a la vez, cada una una vez al día. Antes, el webhook de la plataforma se
@@ -497,12 +530,18 @@ function assertLive() {
   if (config.outbound.mode !== 'live') throw new HttpError(403, 'OUTBOUND_MODE=sandbox: en modo de prueba no se publica nada en las redes.');
 }
 
-const ReplyText = z.string().trim().min(1, 'Escribe la respuesta').max(2000);
+const ReplyText = z.string().trim().min(1, 'Escribe la respuesta').max(2000, 'La respuesta es muy larga (máximo 2000 caracteres)');
+/**
+ * ¿La red seguro no publicó? Un rechazo (4xx) o el límite propio (no se llamó). Con un error del servidor o sin respuesta
+ * no se sabe: la respuesta queda apartada hasta que llegue su eco o pasen 10 minutos (reintentarla podría duplicarla).
+ */
+const surelyNotSent = (e: unknown) => e instanceof ZernioBusyError || (e instanceof ZernioError && e.status >= 400 && e.status < 500);
+const UNCERTAIN = 'La red no confirmó si se publicó. Si salió, aparecerá como respondido en unos minutos; si no, podrás intentarlo de nuevo en 10 minutos.';
 const keyOf = (prefix: string, id: string, text: string) => `${prefix}-${id}-${crypto.createHash('sha256').update(text).digest('hex').slice(0, 16)}`;
 
 /** Responde un comentario en público (una sola respuesta por comentario; dos clics no la duplican). */
 export async function replyComment(accountId: string, id: string, text: string, source: 'human' | 'suggested' | 'auto', userId: string | null) {
-  const message = ReplyText.parse(text);
+  const message = valid(ReplyText, text);
   const c = await loadComment(accountId, id);
   if (c.is_own) throw new HttpError(400, 'Es un comentario del propio negocio');
   if (!commentCapabilities(c.platform).reply) throw new HttpError(400, 'Esta red no permite responder comentarios');
@@ -510,7 +549,8 @@ export async function replyComment(accountId: string, id: string, text: string, 
   assertLive();
   // Se aparta antes de llamar a la red: otra respuesta al mismo tiempo (o un reintento) no sale dos veces.
   const claimed = await query(
-    `UPDATE social_comments SET replied_at = now() WHERE id = $1 AND reply_comment_id = '' AND (replied_at IS NULL OR replied_at < now() - interval '2 minutes') RETURNING id`, [c.id]);
+    `UPDATE social_comments SET replied_at = now(), meta = meta - 'reply_uncertain' WHERE id = $1 AND reply_comment_id = ''
+        AND (replied_at IS NULL OR replied_at < now() - CASE WHEN meta ? 'reply_uncertain' THEN interval '10 minutes' ELSE interval '2 minutes' END) RETURNING id`, [c.id]);
   if (!claimed.length) throw new HttpError(409, 'Este comentario ya se respondió');
   try {
     const r = await zclient().call<any>('POST', `/inbox/comments/${enc(c.platform_post_id)}`, {
@@ -522,6 +562,10 @@ export async function replyComment(accountId: string, id: string, text: string, 
       `UPDATE social_comments SET status = CASE WHEN status = 'oculto' THEN status ELSE 'respondido' END, reply_text = $2, reply_comment_id = $3, reply_source = $4,
          replied_by = $5, replied_at = now(), updated_at = now() WHERE id = $1`, [c.id, message, replyId, source, userId]);
   } catch (e) {
+    if (!surelyNotSent(e)) {
+      await query(`UPDATE social_comments SET meta = meta || '{"reply_uncertain": true}'::jsonb WHERE id = $1`, [c.id]);
+      throw new HttpError(502, UNCERTAIN);
+    }
     await query(`UPDATE social_comments SET replied_at = NULL WHERE id = $1 AND reply_comment_id = ''`, [c.id]);
     explain(e);
   }
@@ -533,7 +577,7 @@ export async function replyComment(accountId: string, id: string, text: string, 
  * Si la red dice que ya se usó (o no se sabe si salió), queda gastada: repetirla podría mandar dos mensajes.
  */
 export async function privateReply(accountId: string, id: string, text: string) {
-  const message = ReplyText.parse(text);
+  const message = valid(ReplyText, text);
   const c = await loadComment(accountId, id);
   if (c.is_own) throw new HttpError(400, 'Es un comentario del propio negocio');
   if (!commentCapabilities(c.platform).privateReply) throw new HttpError(400, 'Esta red no permite responder en privado a un comentario');
@@ -548,7 +592,7 @@ export async function privateReply(accountId: string, id: string, text: string) 
   } catch (e: any) {
     const spent = e instanceof ZernioError && (e.data?.details?.privateReplyConsumed === true || e.data?.error?.details?.privateReplyConsumed === true
       || e.data?.details?.privateReplyOutcome === 'unknown' || e.data?.error?.details?.privateReplyOutcome === 'unknown');
-    if (spent) throw new HttpError(409, 'La red indica que la respuesta privada de este comentario ya se usó (o no se sabe si salió); no se volvió a enviar.');
+    if (spent || !surelyNotSent(e)) throw new HttpError(409, 'La red indica que la respuesta privada de este comentario ya se usó (o no se sabe si salió); no se volvió a enviar.');
     await query(`UPDATE social_comments SET private_reply_at = NULL WHERE id = $1 AND private_reply_message_id = ''`, [c.id]);
     explain(e);
   }
@@ -557,10 +601,14 @@ export async function privateReply(accountId: string, id: string, text: string) 
 
 /** ¿Este mensaje directo enviado es una respuesta privada a un comentario (la mandó la plataforma, no una persona)? */
 export async function isPrivateReplyEcho(accountId: string, messageId: string, text: string): Promise<boolean> {
-  return !!(await queryOne(
-    `SELECT 1 FROM social_comments WHERE account_id = $1 AND private_reply_at > now() - interval '1 day'
-        AND ((private_reply_message_id <> '' AND private_reply_message_id = $2) OR meta->>'private_reply_text' = $3) LIMIT 1`,
-    [accountId, messageId, text.trim()]));
+  if (messageId && (await queryOne(`SELECT 1 FROM social_comments WHERE account_id = $1 AND private_reply_message_id = $2 LIMIT 1`, [accountId, messageId]))) return true;
+  // Por el texto (el eco puede llegar con el id de la red): una sola vez, para no confundir después a una persona que
+  // escribe lo mismo desde el teléfono.
+  const hit = await query(
+    `UPDATE social_comments SET meta = meta - 'private_reply_text'
+      WHERE id = (SELECT id FROM social_comments WHERE account_id = $1 AND private_reply_at > now() - interval '1 day' AND meta->>'private_reply_text' = $2 LIMIT 1)
+      RETURNING id`, [accountId, text.trim()]);
+  return hit.length > 0;
 }
 
 export async function setHidden(accountId: string, id: string, hidden: boolean) {
@@ -631,16 +679,18 @@ export async function ignore(accountId: string, kind: Kind, id: string, ignored 
 
 /** Responde una reseña (Google o Facebook). Google acepta cambiar la respuesta; aquí se responde una vez. */
 export async function replyReview(accountId: string, id: string, text: string, source: 'human' | 'suggested' | 'auto', userId: string | null) {
-  const message = ReplyText.max(4000).parse(text);
+  const message = valid(ReplyText, text);
   const r = await loadReview(accountId, id);
   assertLive();
+  // Sin columna de "no se sabe": una respuesta sin confirmar queda apartada 10 minutos (review.updated la confirma).
   const claimed = await query(
-    `UPDATE social_reviews SET replied_at = now() WHERE id = $1 AND reply_text = '' AND (replied_at IS NULL OR replied_at < now() - interval '2 minutes') RETURNING id`, [r.id]);
+    `UPDATE social_reviews SET replied_at = now() WHERE id = $1 AND reply_text = '' AND (replied_at IS NULL OR replied_at < now() - interval '10 minutes') RETURNING id`, [r.id]);
   if (!claimed.length) throw new HttpError(409, 'Esta reseña ya se respondió');
   try {
     // Los ids de Google llevan "/": van codificados.
     await zclient().call('POST', `/inbox/reviews/${enc(r.review_id)}/reply`, { accountId: r.zernio_account_id, message }, { idempotencyKey: keyOf('review-reply', r.id, message) });
   } catch (e) {
+    if (!surelyNotSent(e)) throw new HttpError(502, UNCERTAIN);
     await query(`UPDATE social_reviews SET replied_at = NULL WHERE id = $1 AND reply_text = ''`, [r.id]);
     explain(e);
   }
@@ -730,7 +780,7 @@ export async function listInbox(accountId: string, f: z.infer<typeof InboxFilter
 
 /** Guarda los ajustes de respuestas de una cuenta conectada (el agente debe ser del negocio). */
 export async function saveCommentSettings(accountId: string, socialAccountId: string, input: unknown) {
-  const s = CommentSettingsSchema.parse(input ?? {});
+  const s = valid(CommentSettingsSchema, input ?? {});
   if (s.chatbot_id && !(await queryOne(`SELECT 1 FROM chatbots WHERE id = $1 AND account_id = $2`, [s.chatbot_id, accountId]))) throw new HttpError(400, 'El agente pertenece a otro negocio');
   const row = await queryOne<SocialAccountRow>(`UPDATE social_accounts SET comment_settings = $3, updated_at = now() WHERE id = $1 AND account_id = $2 RETURNING *`,
     [socialAccountId, accountId, JSON.stringify(s)]);
@@ -749,11 +799,18 @@ export async function runAutoReply(p: { kind?: string; id?: string }, suggest: (
   const kind: Kind = p.kind === 'review' ? 'review' : 'comment';
   const id = String(p.id ?? '');
   const table = kind === 'comment' ? 'social_comments' : 'social_reviews';
-  const row = await queryOne<any>(`SELECT x.*, s.comment_settings, s.status AS sa_status FROM ${table} x JOIN social_accounts s ON s.id = x.social_account_id WHERE x.id = $1`, [id]);
+  const row = await queryOne<any>(
+    `SELECT x.*, s.comment_settings, s.status AS sa_status, a.active AS account_active, a.status AS account_status
+       FROM ${table} x JOIN social_accounts s ON s.id = x.social_account_id JOIN accounts a ON a.id = x.account_id WHERE x.id = $1`, [id]);
   if (!row || row.sa_status !== 'active' || row.status !== 'nuevo' || row.needs_human) return;
+  // Un negocio suspendido o en pausa no publica (ni gasta IA), como con los mensajes.
+  if (!row.account_active || row.account_status === 'paused') return;
   const settings = settingsOf(row);
   if (settings.mode !== 'auto' || config.outbound.mode !== 'live') return;
   if (kind === 'comment' && (row.is_own || row.reply_comment_id || !commentCapabilities(row.platform).reply)) return;
+  // Solo comentarios a la publicación o respuestas a un comentario del negocio (no conversaciones entre clientes, ni
+  // un eco propio que no se reconoció: eso haría una cadena de respuestas a sí mismo).
+  if (kind === 'comment' && row.parent_id && !(await queryOne(`SELECT 1 FROM social_comments WHERE social_account_id = $1 AND comment_id = $2 AND is_own`, [row.social_account_id, row.parent_id]))) return;
   if (kind === 'review' && (row.reply_text || row.rating === null || row.rating < 4)) return;
   if (ageDays(row.created_at_platform, row.received_at) > AUTO_MAX_DAYS || detectRisk(row.text)) return;
   const recent = await queryOne<{ n: number }>(
@@ -764,8 +821,12 @@ export async function runAutoReply(p: { kind?: string; id?: string }, suggest: (
     await logEvent({ level: 'info', source: 'channel', message: `Comentarios: se llegó al tope de ${settings.max_per_hour} respuestas automáticas por hora; el resto espera a una persona`, accountId: row.account_id });
     return;
   }
+  // La IA también tiene tope: muchas quejas seguidas no gastan una sugerencia automática cada una sin fin (cuenta esta).
+  const tried = await queryOne<{ n: number }>(
+    `SELECT count(*)::int AS n FROM jobs WHERE account_id = $1 AND type = 'social_autoreply' AND started_at > now() - interval '1 hour'`, [row.account_id]);
+  if ((tried?.n ?? 0) > settings.max_per_hour * 3) return;
   const s = await suggest(row.account_id, kind, id);
-  if (!s.reply || s.needs_human || s.sentiment === 'negative' || s.unverified.length) return;
+  if (!s.reply || s.needs_human || s.sentiment !== 'positive' || s.unverified.length) return;
   try {
     if (kind === 'comment') await replyComment(row.account_id, id, s.reply, 'auto', null);
     else await replyReview(row.account_id, id, s.reply, 'auto', null);

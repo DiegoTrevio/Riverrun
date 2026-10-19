@@ -64,8 +64,10 @@ export async function socialInboxRoutes(api: FastifyInstance, service: ChatServi
     const accountId = await targetAccount(req.user, req.body?.account_id ?? req.query?.account_id);
     if (rateLimited(`social-sync:${accountId}`, 3, 10 * 60_000)) throw new HttpError(429, 'Ya se revisó hace poco; espera unos minutos.');
     const accounts = await query<{ id: string }>(`SELECT id FROM social_accounts WHERE account_id = $1 AND status = 'active'`, [accountId]);
-    for (const a of accounts) await busy(() => syncEngagement(a.id)).catch(() => undefined);
-    return { ok: true };
+    let failed = 0;
+    for (const a of accounts) await busy(() => syncEngagement(a.id)).catch(() => failed++);
+    if (failed && failed === accounts.length) throw new HttpError(502, 'No se pudieron revisar tus redes en este momento; inténtalo más tarde.');
+    return { ok: true, failed };
   });
 
   /* ------------------------------ Comentarios ------------------------------ */

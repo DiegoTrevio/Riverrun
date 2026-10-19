@@ -13,6 +13,8 @@ const SENTIMENT = { positive: ['green', 'Positivo'], neutral: ['', 'Neutral'], n
 const SOURCE = { human: 'por una persona', suggested: 'con la sugerencia de la IA', auto: 'automáticamente', external: 'desde la red' };
 const label = (platform) => (state.meta.social_capabilities || []).find((n) => n.id === platform)?.label || platform;
 const stars = (n) => (n ? '★'.repeat(n) + '☆'.repeat(5 - n) : 'Sin calificación');
+/** Enlaces de la red: solo http(s). */
+const safeUrl = (u) => (/^https?:\/\//i.test(u || '') ? u : '');
 
 export async function viewSocialInbox(root, params) {
   root.append(h('h1', {}, 'Comentarios y reseñas'));
@@ -35,7 +37,12 @@ export async function viewSocialInbox(root, params) {
       field('Qué ver', select(f, 'tipo', [['all', 'Todo'], ['comment', 'Comentarios'], ['review', 'Reseñas']], go)),
       field('Estado', select(f, 'estado', [['pendientes', 'Pendientes'], ['respondido', 'Respondidos'], ['oculto', 'Ocultos'], ['ignorado', 'Ignorados'], ['eliminado', 'Eliminados'], ['todos', 'Todos']], go)),
       field('Red', select(f, 'red', [['', 'Todas'], ...nets.map((n) => [n.id, n.label])], go)),
-      isAdmin() ? h('button', { class: 'secondary', onclick: async () => { if (await run(() => api('POST', withAcct('/api/social-inbox/sync')), 'Listo: se revisaron tus redes')) render(); } }, 'Revisar ahora') : null,
+      isAdmin() ? h('button', { class: 'secondary', onclick: async () => {
+        const r = await run(() => api('POST', withAcct('/api/social-inbox/sync')));
+        if (!r) return;
+        toast(r.failed ? `Se revisaron tus redes, menos ${r.failed} que no respondieron` : 'Listo: se revisaron tus redes', !!r.failed);
+        render();
+      } }, 'Revisar ahora') : null,
       isAdmin() ? h('a', { href: '#/redes', class: 'small' }, 'Respuestas automáticas y avisos →') : null));
   if (!data.items.length) {
     root.append(h('div', { class: 'card empty' }, h('p', {}, f.estado === 'pendientes' ? 'No hay nada pendiente. 🎉' : 'No hay nada con estos filtros.'),
@@ -78,12 +85,12 @@ function content(it, redraw) {
         sentiment && sentiment[1] !== 'Neutral' ? h('span', { class: `badge ${sentiment[0]}` }, sentiment[1]) : null,
         h('span', { class: `badge ${color}` }, status))),
     comment && (it.post.caption || it.post.url) ? h('div', { class: 'row social-post', style: 'gap:10px;margin-top:8px' },
-      it.post.thumbnail ? h('img', { src: it.post.thumbnail, alt: '', width: 48, height: 48, loading: 'lazy', style: 'object-fit:cover;border-radius:6px;flex:none', referrerpolicy: 'no-referrer' }) : null,
+      safeUrl(it.post.thumbnail) ? h('img', { src: safeUrl(it.post.thumbnail), alt: '', width: 48, height: 48, loading: 'lazy', style: 'object-fit:cover;border-radius:6px;flex:none', referrerpolicy: 'no-referrer' }) : null,
       h('div', { style: 'min-width:0' },
         h('p', { class: 'small muted', style: 'margin:0;overflow-wrap:anywhere' }, it.post.caption ? `En: ${it.post.caption.slice(0, 140)}${it.post.caption.length > 140 ? '…' : ''}` : 'En una publicación'),
-        it.post.url ? h('a', { href: it.post.url, target: '_blank', rel: 'noopener noreferrer', class: 'small' }, 'Ver en la red') : null)) : null,
+        safeUrl(it.post.url) ? h('a', { href: safeUrl(it.post.url), target: '_blank', rel: 'noopener noreferrer', class: 'small' }, 'Ver en la red') : null)) : null,
     !comment ? h('p', { class: 'small', 'aria-label': `${it.rating ?? 'sin'} estrellas` }, h('span', { style: 'color:#d97706' }, stars(it.rating)), it.location ? h('span', { class: 'muted' }, ` · ${it.location}`) : null,
-      it.url ? h('span', {}, ' · ', h('a', { href: it.url, target: '_blank', rel: 'noopener noreferrer' }, 'Ver en la red')) : null) : null,
+      safeUrl(it.url) ? h('span', {}, ' · ', h('a', { href: safeUrl(it.url), target: '_blank', rel: 'noopener noreferrer' }, 'Ver en la red')) : null) : null,
     h('p', { style: 'white-space:pre-wrap;margin:10px 0;overflow-wrap:anywhere' }, h('strong', {}, `${author}: `), it.text || '(sin texto)'),
     it.reply_text ? h('div', { class: 'note' }, h('span', { class: 'small muted' }, `Respuesta ${SOURCE[it.reply_source] || ''}${it.replied_by ? ` (${it.replied_by})` : ''}${it.replied_at ? ` · ${fmtDate(it.replied_at)}` : ''}`),
       h('p', { style: 'white-space:pre-wrap;margin:4px 0 0;overflow-wrap:anywhere' }, it.reply_text)) : null,

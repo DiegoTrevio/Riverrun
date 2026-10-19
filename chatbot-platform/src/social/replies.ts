@@ -42,7 +42,7 @@ async function botFor(accountId: string, sa: { chatbot_id: string | null; commen
   for (const id of [settingsOf(sa).chatbot_id, sa.chatbot_id]) {
     if (!id) continue;
     const bot = await store.getChatbot(id);
-    if (bot && bot.account_id === accountId) return bot;
+    if (bot && bot.account_id === accountId && bot.active) return bot;
   }
   const bot = (await store.listChatbots(accountId)).find((b) => b.active);
   if (!bot) throw new HttpError(409, 'Crea un agente para que la IA pueda sugerir respuestas');
@@ -68,6 +68,9 @@ function systemPrompt(bot: Chatbot, where: string, review: boolean, knowledge: s
   ].filter(Boolean).join('\n');
 }
 
+/** Texto ajeno dentro de las etiquetas: sin "<" ni ">" no puede cerrar <comentario> y dar órdenes fuera de él. */
+const inert = (s: unknown, max: number) => String(s ?? '').slice(0, max).replace(/</g, '‹').replace(/>/g, '›');
+
 /** Sugiere (y guarda) la respuesta. Con algo riesgoso no se llama a la IA: lo atiende una persona. */
 export async function suggestReply(ai: AiProvider, accountId: string, kind: Kind, id: string): Promise<Suggestion> {
   const table = kind === 'comment' ? 'social_comments' : 'social_reviews';
@@ -89,8 +92,8 @@ export async function suggestReply(ai: AiProvider, accountId: string, kind: Kind
   const where = networkOf(row.platform)?.label ?? row.platform;
   const author = String(row.author?.name || row.author?.username || 'cliente').replace(/[<>"]/g, '');
   const user = kind === 'comment'
-    ? `${row.post_caption ? `Publicación: <publicacion>${String(row.post_caption).slice(0, 600)}</publicacion>\n` : ''}<comentario autor="${author}">${text.slice(0, 2000)}</comentario>`
-    : `<reseña autor="${author}" estrellas="${row.rating ?? 'sin calificación'}">${text.slice(0, 3000) || '(sin texto)'}</reseña>`;
+    ? `${row.post_caption ? `Publicación: <publicacion>${inert(row.post_caption, 600)}</publicacion>\n` : ''}<comentario autor="${author}">${inert(text, 2000)}</comentario>`
+    : `<reseña autor="${author}" estrellas="${row.rating ?? 'sin calificación'}">${inert(text, 3000) || '(sin texto)'}</reseña>`;
   const model = bot.ai.model || config.openai.defaultModel;
   const completion = await accountAi(ai, accountId, bot.id, 'social_reply').complete({
     model, fallback_models: bot.ai.fallback_models, temperature: 0.4, max_tokens: 400,
@@ -109,9 +112,12 @@ export async function suggestReply(ai: AiProvider, accountId: string, kind: Kind
     latency_ms: completion.latency_ms, cost_usd: completion.cost_usd,
   });
   const reply = parsed.reply.trim().slice(0, 1500);
-  // Cifras, enlaces y teléfonos solo si están en la información del negocio (o los dijo quien comentó, salvo precios).
+  // Es pública y a nombre del negocio: cifras, enlaces, correos y teléfonos solo si están en la información del negocio.
+  // Lo que escribió quien comentó no cuenta (un comentario no puede hacer que el negocio publique su enlace o su número);
+  // solo sirve como cantidad de una cotización ("somos 4" → 4 × precio).
   const sources = [...chosen.map((k) => `${k.title}\n${k.content}`), bot.personality.prompt, bot.name];
-  const unverified = reply ? new FactCorpus([...sources, text]).unverified(reply, new FactCorpus(sources), new FactCorpus([text])) : [];
+  const trusted = new FactCorpus(sources);
+  const unverified = reply ? trusted.unverified(reply, trusted, new FactCorpus([text])) : [];
   const needsHuman = parsed.needs_human || !reply || unverified.length > 0;
   await query(`UPDATE ${table} SET ai_suggestion = $2, sentiment = $3, needs_human = needs_human OR $4, updated_at = now() WHERE id = $1`,
     [id, reply, parsed.sentiment, parsed.needs_human]);

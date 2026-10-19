@@ -139,8 +139,12 @@ la IA) y `src/routes/social-inbox.ts`; en el panel, **Comentarios** (`#/comentar
   (riesgo de daño) no va a la IA: avisa al equipo al momento.
 - **Respuesta automática** (por cuenta, en *Redes sociales → Respuestas a comentarios*; por omisión solo sugiere):
   contesta sola solo lo positivo, reciente (menos de 7 días), sin cifras inventadas, reseñas de 4 o 5 estrellas, con
-  un tope de respuestas por hora (10 por omisión). Nunca contesta quejas, mensajes delicados ni lo que llega por la
-  revisión diaria.
+  un tope de respuestas por hora (10 por omisión). Solo contesta comentarios a la publicación o respuestas a un
+  comentario del negocio (no conversaciones entre clientes). Nunca contesta quejas, lo neutral, mensajes delicados, lo
+  que llega por la revisión diaria ni si el negocio está suspendido. La respuesta pública no puede llevar enlaces,
+  correos ni teléfonos que no estén en la información del negocio (aunque los traiga el comentario).
+- **Si la red no contesta** (error del servidor o sin respuesta) no se sabe si la respuesta se publicó: queda apartada
+  10 minutos (si salió, su eco la marca como respondida) y solo después se puede intentar otra vez.
 - **Avisos:** un resumen cada 15 minutos como máximo con lo nuevo (se puede apagar); una reseña de 3 estrellas o menos
   avisa al momento. La primera revisión al conectar no avisa de lo viejo.
 - **Datos:** los comentarios y reseñas se borran con la retención de mensajes del negocio y al desconectar la red se
