@@ -174,16 +174,23 @@ async function compose(root, id, params) {
   const m = {
     client_ref: crypto.randomUUID(),
     text: existing?.text || '',
-    media: [...(existing?.media || [])],
+    // Zernio borra los archivos de una publicación cancelada: al duplicarla hay que volver a subirlos.
+    media: existing?.status === 'cancelada' && !editing ? [] : [...(existing?.media || [])],
     selected: new Set((existing?.targets || []).map((t) => t.social_account_id).filter((x) => data.accounts.some((a) => a.id === x))),
     custom: Object.fromEntries((existing?.targets || []).map((t) => [t.social_account_id, t.text || ''])),
     options: Object.fromEntries((existing?.targets || []).map((t) => [t.social_account_id, { ...(t.options || {}) }])),
     mode: editing && existing.status === 'programada' ? 'schedule' : 'now',
+    // Un borrador guarda su fecha solo si se eligió una (al programar o porque ya la tenía).
+    keepDate: !!(editing && existing.scheduled_for),
+    uploading: 0,
     date: local ? inTz(local, { year: 'numeric', month: '2-digit', day: '2-digit' }) : inTz(new Date(Date.now() + 86400_000), { year: 'numeric', month: '2-digit', day: '2-digit' }),
     time: local ? `${pad(Number(inTz(local, { hour: '2-digit', hour12: false })) % 24)}:${inTz(local, { minute: '2-digit' }).padStart(2, '0')}` : '10:00',
   };
   if (!m.selected.size && data.accounts.length === 1) m.selected.add(data.accounts[0].id);
   root.append(h('a', { href: '#/publicaciones', class: 'breadcrumb' }, '← Publicaciones'), h('h1', {}, editing ? 'Editar publicación' : 'Nueva publicación'));
+  const gone = (existing?.targets || []).filter((t) => !data.accounts.some((a) => a.id === t.social_account_id));
+  if (gone.length) root.append(h('p', { class: 'banner warn' }, `Ya no está conectada: ${gone.map((t) => `${label(t.platform)}${t.username ? ` @${t.username}` : ''}`).join(', ')}. Se quitará de esta publicación.`));
+  if (copyFrom && existing?.status === 'cancelada' && existing.media.length) root.append(h('p', { class: 'small muted' }, 'Vuelve a subir las fotos o el video: los de una publicación cancelada ya no están disponibles.'));
   if (!data.accounts.length) {
     root.append(h('p', { class: 'banner warn' }, 'Primero conecta una red en Ajustes → Redes sociales.'));
     return;
@@ -220,11 +227,19 @@ async function compose(root, id, params) {
     h('button', { class: 'small secondary', 'aria-label': `Quitar ${x.name || 'archivo'}`, onclick: () => { m.media.splice(i, 1); drawMedia(); drawCounters(); } }, '✕'))));
 
   const fileInput = h('input', { type: 'file', accept: 'image/jpeg,image/png,image/webp,video/mp4', multiple: true, onchange: async (e) => {
-    for (const file of [...e.target.files]) {
-      const fd = new FormData();
-      fd.append('file', file, file.name);
-      const r = await run(() => api('POST', withAcct('/api/social-media'), fd, true));
-      if (r) m.media.push(r);
+    // Mientras sube no se puede publicar (saldría sin ese archivo).
+    m.uploading++;
+    save.disabled = true;
+    try {
+      for (const file of [...e.target.files]) {
+        const fd = new FormData();
+        fd.append('file', file, file.name);
+        const r = await run(() => api('POST', withAcct('/api/social-media'), fd, true));
+        if (r) m.media.push(r);
+      }
+    } finally {
+      m.uploading--;
+      save.disabled = m.uploading > 0;
     }
     e.target.value = '';
     drawMedia();
@@ -242,7 +257,7 @@ async function compose(root, id, params) {
     fill(whenBox,
       h('div', { class: 'row wrap', role: 'radiogroup', 'aria-label': 'Cuándo', style: 'gap:12px' },
         [['now', 'Publicar ahora'], ['schedule', 'Programar'], ['draft', 'Guardar como borrador']].map(([v, l]) => h('label', { class: 'check' },
-          h('input', { type: 'radio', name: 'mode', value: v, checked: m.mode === v, onchange: () => { m.mode = v; drawWhen(); } }), ` ${l}`))),
+          h('input', { type: 'radio', name: 'mode', value: v, checked: m.mode === v, onchange: () => { m.mode = v; if (v === 'schedule') m.keepDate = true; drawWhen(); } }), ` ${l}`))),
       m.mode === 'schedule' ? h('div', { class: 'row wrap', style: 'gap:12px' },
         field('Fecha', h('input', { type: 'date', value: m.date, oninput: (e) => (m.date = e.target.value) })),
         field(`Hora (${tz})`, h('input', { type: 'time', value: m.time, oninput: (e) => (m.time = e.target.value) }))) : null,
@@ -251,10 +266,11 @@ async function compose(root, id, params) {
   save.onclick = async () => {
     fill(issues);
     const body = {
-      client_ref: m.client_ref, mode: m.mode, text: m.text, media: m.media, ...(m.mode === 'schedule' ? { date: m.date, time: m.time } : {}),
+      client_ref: m.client_ref, mode: m.mode, text: m.text, media: m.media, ...(m.mode === 'schedule' || (m.mode === 'draft' && m.keepDate) ? { date: m.date, time: m.time } : {}),
       targets: chosen().map((a) => ({ social_account_id: a.id, text: (m.custom[a.id] || '').trim() ? m.custom[a.id] : null, options: m.options[a.id] || {} })),
       ...(editing ? { version: existing.version } : {}),
     };
+    if (m.uploading) return toast('Espera a que terminen de subir los archivos', true);
     save.disabled = true;
     try {
       const r = await api(editing ? 'PUT' : 'POST', withAcct(editing ? `/api/social-publications/${id}` : '/api/social-publications'), body);
@@ -275,7 +291,7 @@ async function compose(root, id, params) {
     field('Dónde', accountsBox),
     field('Texto', textBox, 'Cada red tiene su límite; el contador se pone en rojo si te pasas.'),
     counters,
-    field('Fotos o video', fileInput, 'JPG, PNG, WEBP o MP4. Instagram y TikTok necesitan al menos una; YouTube, un video.'),
+    field('Fotos o video', fileInput, 'JPG, PNG, WEBP o MP4 (hasta 16 MB cada uno). Instagram y TikTok necesitan al menos una; YouTube, un video.'),
     mediaList,
     extras,
     whenBox,

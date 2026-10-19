@@ -90,12 +90,12 @@ export class ZernioClient {
   priority: ZernioPriority = 'interactive';
   constructor(private apiKey: string, private base = config.zernioApiUrl) {}
 
-  async call<T = any>(method: Method, path: string, body?: unknown, opts: { idempotencyKey?: string; timeoutMs?: number } = {}): Promise<T> {
+  async call<T = any>(method: Method, path: string, body?: unknown, opts: { idempotencyKey?: string; timeoutMs?: number; scopedLimits?: boolean } = {}): Promise<T> {
     if (!this.apiKey) throw new Error('Zernio no está configurado en esta instalación (falta ZERNIO_API_KEY)');
     let res = await this.send(method, path, body, opts);
-    // Un límite de una cuenta o de la red (p. ej. 25 publicaciones por hora en una cuenta) trae detalles: no es el de la
-    // llave, así que no se frena a todos los negocios ni se repite.
-    const scoped = res.status === 429 && (await res.clone().json().then((d: any) => !!(d?.details ?? d?.error?.details)).catch(() => false));
+    // Publicaciones: un límite de una cuenta o de la red (p. ej. 25 por hora en una cuenta) trae detalles y no es el de la
+    // llave, así que no se frena a todos los negocios ni se repite. Solo quien lo pide (las publicaciones) lo distingue.
+    const scoped = !!opts.scopedLimits && res.status === 429 && (await res.clone().json().then((d: any) => !!(d?.details ?? d?.error?.details)).catch(() => false));
     // 429: la API rechazó la petición sin procesarla, así que repetirla una vez no duplica mensajes. Una consulta que
     // falló en el servidor de Zernio tampoco cambia nada al repetirla.
     if ((res.status === 429 && !scoped) || (method === 'GET' && res.status >= 500)) {

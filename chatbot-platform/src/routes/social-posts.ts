@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { HttpError, requireRole, targetAccount } from '../access.js';
+import { rateLimited } from '../auth.js';
 import { ATTACHMENT_MAX_BYTES } from '../attachments.js';
 import { ZernioBusyError } from '../channels/zernio-budget.js';
 import { ZernioError, zernioEnabled } from '../channels/zernio.js';
@@ -77,6 +78,8 @@ export async function socialPostRoutes(api: FastifyInstance) {
     on();
     const accountId = await targetAccount(req.user, req.query?.account_id);
     if (!req.isMultipart?.()) throw new HttpError(400, 'Sube un archivo');
+    // Cada archivo ocupa lugar en el límite compartido de Zernio: un tope por negocio.
+    if (rateLimited(`social-media:${accountId}`, 60, 60 * 60_000)) throw new HttpError(429, 'Subiste muchos archivos en la última hora; espera un poco.');
     let file: { buffer: Buffer; name: string } | null = null;
     for await (const part of req.parts({ limits: { fileSize: ATTACHMENT_MAX_BYTES } })) {
       if (part.type !== 'file') continue;

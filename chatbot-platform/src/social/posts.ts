@@ -139,7 +139,10 @@ const mediaToken = (accountId: string, url: string, type: string) => hmac(`socia
 /** Sube una foto o un video a Zernio (con la extensión de su tipo real) y devuelve su dirección firmada para este negocio. */
 export async function uploadMedia(accountId: string, buffer: Buffer, fileName: string) {
   const type = identifyAttachment(buffer, fileName);
-  if (!type || (type.kind !== 'image' && type.kind !== 'video')) throw new HttpError(400, 'Sube una foto (JPG, PNG o WEBP) o un video (MP4)');
+  // HEIC y AVIF también empiezan con "ftyp": no son video, y las redes no los aceptan.
+  const brand = buffer.subarray(8, 12).toString('latin1');
+  const okVideo = type?.kind === 'video' && !/^(heic|heix|hevc|mif1|msf1|avif|avis)$/.test(brand);
+  if (!type || !(['image/jpeg', 'image/png', 'image/webp'].includes(type.mime) || okVideo)) throw new HttpError(400, 'Sube una foto (JPG, PNG o WEBP) o un video (MP4)');
   const url = await clientFor(null).upload(buffer, `publicacion-${crypto.randomUUID()}${type.ext}`, type.mime);
   const kind = type.kind as 'image' | 'video';
   return { url, type: kind, name: fileName.slice(0, 200), size: buffer.length, token: mediaToken(accountId, url, kind) };
@@ -174,7 +177,7 @@ function publicView(p: PublicationRow, targets: TargetRow[]) {
     can: {
       edit: p.status === 'borrador' || (p.status === 'programada' && soon > margin),
       cancel: p.status === 'borrador' || (p.status === 'programada' && soon > margin),
-      retry: p.status === 'fallida' || p.status === 'parcial',
+      retry: (p.status === 'fallida' || p.status === 'parcial') && !!p.zernio_post_id,
       delete: p.status === 'borrador' || FINAL.includes(p.status),
     },
   };
@@ -252,7 +255,9 @@ async function prepare(accountId: string, input: PublicationInput) {
   if (input.mode === 'schedule' || (input.mode === 'draft' && input.date && input.time)) {
     if (!input.date || !input.time) throw new HttpError(400, 'Elige la fecha y la hora');
     scheduledFor = zonedToUtc(input.date, input.time, tz);
-    if (Number.isNaN(scheduledFor.getTime())) throw new HttpError(400, 'Fecha u hora no válida');
+    // "31 de febrero" o "25:00" no se corren al día siguiente: la fecha debe existir tal cual en el horario del negocio.
+    const back = Number.isNaN(scheduledFor.getTime()) ? '' : new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(scheduledFor).replace(', ', 'T');
+    if (back !== `${input.date}T${input.time}`) throw new HttpError(400, 'Fecha u hora no válida');
     const margin = Math.max(...accounts.map((a) => EDIT_MARGIN_MIN(a.platform))) * 60_000;
     if (input.mode === 'schedule' && scheduledFor.getTime() < Date.now() + margin) throw new HttpError(400, `Programa al menos ${margin / 60_000} minutos después de ahora`);
     if (scheduledFor.getTime() > Date.now() + 366 * 86400_000) throw new HttpError(400, 'Se puede programar hasta un año adelante');
@@ -294,65 +299,81 @@ export async function createPublication(accountId: string, userId: string | null
     await insertTargets(client, accountId, row.rows[0].id, input, accounts);
     return row.rows[0].id;
   });
-  // El mismo formulario enviado dos veces: la misma publicación.
   if (!created) {
-    const existing = await queryOne<{ id: string }>(`SELECT id FROM social_publications WHERE account_id = $1 AND client_ref = $2`, [accountId, input.client_ref]);
-    return { ...(await getPublication(accountId, existing!.id)), warnings };
+    const existing = (await queryOne<PublicationRow>(`SELECT * FROM social_publications WHERE account_id = $1 AND client_ref = $2`, [accountId, input.client_ref]))!;
+    // El mismo formulario otra vez después de que la red lo rechazó (y quizá con cambios): se guarda y se envía de nuevo.
+    if (existing.status === 'borrador' && existing.error && !existing.busy_until) return updatePublication(accountId, userId, existing.id, { ...input, version: existing.version });
+    // Si no, es el mismo envío dos veces: la misma publicación.
+    return { ...(await getPublication(accountId, existing.id)), warnings };
   }
   await logEvent({ level: 'info', source: 'admin', message: `Publicación ${input.mode === 'draft' ? 'guardada como borrador' : input.mode === 'now' ? 'enviada a publicar' : 'programada'} (${accounts.length} red${accounts.length === 1 ? '' : 'es'})`, accountId });
   if (input.mode !== 'draft') await send(accountId, created, input.mode === 'now');
   return { ...(await getPublication(accountId, created)), warnings };
 }
 
+/** Destinos tal como se mandan a Zernio, a partir de lo que llegó del panel. */
+const inputTargets = (input: PublicationInput, accounts: TargetAccount[]): BodyTarget[] => input.targets.map((t) => {
+  const a = accounts.find((x) => x.id === t.social_account_id)!;
+  return { platform: a.platform, zernio_account_id: a.zernio_account_id, text_override: (t.text ?? '').trim() ? t.text! : null, options: Object.fromEntries(Object.entries(t.options ?? {}).filter(([, v]) => typeof v === 'string' && v.trim())) as Record<string, string> };
+});
+
+/**
+ * Cambia una publicación. Si ya está en Zernio (programada, o borrador que estuvo programado), primero se cambia allá
+ * (PUT con todo: texto, archivos, redes y hora, o "publicar ya", o pasarla a borrador) y solo si Zernio la acepta se
+ * guarda aquí: si falla, la publicación queda como estaba en los dos lados. No se borra para volver a crearla (Zernio
+ * borraría también sus archivos).
+ */
 export async function updatePublication(accountId: string, userId: string | null, id: string, raw: unknown) {
   const input = valid(PublicationInputSchema, raw);
   const { p, targets } = await loadPublication(accountId, id);
   if (input.version !== undefined && input.version !== p.version) throw new HttpError(409, 'Alguien más cambió esta publicación: recarga la página');
   if (!publicView(p, targets).can.edit) throw new HttpError(409, p.status === 'programada' ? 'Ya está por publicarse: no se puede cambiar' : 'Esta publicación ya no se puede cambiar');
   await assertActiveAccount(accountId);
-  if (input.mode !== 'draft' || p.status === 'programada') assertLive();
+  if (input.mode !== 'draft' || p.zernio_post_id) assertLive();
   const { accounts, warnings, scheduledFor, tz } = await prepare(accountId, input);
-  // Apartada mientras se cambia (y se avisa a Zernio): dos cambios a la vez no se pisan.
-  const claimed = await query(
-    `UPDATE social_publications SET busy_until = now() + interval '3 minutes', version = version + 1, updated_at = now()
-      WHERE id = $1 AND version = $2 AND status IN ('borrador', 'programada') AND (busy_until IS NULL OR busy_until < now()) RETURNING id`, [p.id, p.version]);
-  if (!claimed.length) throw new HttpError(409, 'Esta publicación se está enviando o alguien más la cambió: recarga la página');
+  // Apartada mientras se cambia: dos cambios a la vez (o un cambio y un envío) no se pisan.
+  const claimed = await queryOne<PublicationRow>(
+    `UPDATE social_publications SET busy_until = now() + interval '3 minutes'
+      WHERE id = $1 AND version = $2 AND status IN ('borrador', 'programada') AND (busy_until IS NULL OR busy_until < now()) RETURNING *`, [p.id, p.version]);
+  if (!claimed) throw new HttpError(409, 'Esta publicación se está enviando o alguien más la cambió: recarga la página');
+  const saveLocal = () => withTransaction(async (client) => {
+    await client.query(`UPDATE social_publications SET text = $2, media = $3, scheduled_for = $4, timezone = $5, error = '', version = version + 1, updated_at = now() WHERE id = $1`,
+      [p.id, input.text, JSON.stringify(input.media), scheduledFor, tz]);
+    await client.query(`DELETE FROM social_publication_targets WHERE publication_id = $1`, [p.id]);
+    await insertTargets(client, accountId, p.id, input, accounts);
+  });
+  let sendAfter = false;
   try {
-    await withTransaction(async (client) => {
-      await client.query(`UPDATE social_publications SET text = $2, media = $3, scheduled_for = $4, timezone = $5, error = '' WHERE id = $1`,
-        [p.id, input.text, JSON.stringify(input.media), scheduledFor, tz]);
-      await client.query(`DELETE FROM social_publication_targets WHERE publication_id = $1`, [p.id]);
-      await insertTargets(client, accountId, p.id, input, accounts);
-    });
-    if (p.status === 'programada' && p.zernio_post_id) {
-      if (input.mode === 'schedule') {
-        // Lo programado se cambia en Zernio con todo (texto, archivos, redes y hora).
-        const body = await buildBody(p.id, false);
-        const r = await zcall(() => clientFor(null).call<any>('PUT', `/posts/${enc(p.zernio_post_id!)}`, body, { timeoutMs: 60_000 }));
-        await applyPost(p.id, r?.post ?? r, { event: 'update' });
-      } else {
-        // A borrador o a publicar ya: se quita de Zernio y, si se publica, sale como envío nuevo.
-        await zcall(() => clientFor(null).call('DELETE', `/posts/${enc(p.zernio_post_id!)}`).catch((e) => { if (!(e instanceof ZernioError && e.status === 404)) throw e; }));
-        await query(`UPDATE social_publications SET status = 'borrador', zernio_post_id = NULL WHERE id = $1`, [p.id]);
-        await query(`UPDATE social_publication_targets SET status = 'pendiente' WHERE publication_id = $1`, [p.id]);
-      }
+    if (claimed.zernio_post_id) {
+      const when = input.mode === 'now' ? 'now' : input.mode === 'schedule' ? 'schedule' : 'draft';
+      const body = { ...bodyOf({ ...claimed, text: input.text, media: input.media, scheduled_for: scheduledFor, timezone: tz }, inputTargets(input, accounts), when), isDraft: when === 'draft' };
+      const r = await zcall(() => clientFor(null).call<any>('PUT', `/posts/${enc(claimed.zernio_post_id!)}`, body, { timeoutMs: 120_000, scopedLimits: true }));
+      await saveLocal();
+      await applyPost(p.id, r?.post ?? r, { event: 'update' });
+      if (when === 'draft') await query(`UPDATE social_publications SET status = 'borrador' WHERE id = $1`, [p.id]);
+    } else {
+      await saveLocal();
+      sendAfter = input.mode !== 'draft';
     }
   } finally {
     await query(`UPDATE social_publications SET busy_until = NULL WHERE id = $1`, [p.id]);
   }
-  const now = await queryOne<{ status: string }>(`SELECT status FROM social_publications WHERE id = $1`, [p.id]);
-  if (now?.status === 'borrador' && input.mode !== 'draft') await send(accountId, p.id, input.mode === 'now');
+  if (sendAfter) await send(accountId, p.id, input.mode === 'now');
+  else await scheduleFollowUp(p.id);
   return { ...(await getPublication(accountId, p.id)), warnings };
 }
 
 export async function cancelPublication(accountId: string, id: string) {
   const { p, targets } = await loadPublication(accountId, id);
   if (!publicView(p, targets).can.cancel) throw new HttpError(409, 'Ya no se puede cancelar: está publicándose o ya salió');
-  const claimed = await query(`UPDATE social_publications SET busy_until = now() + interval '3 minutes' WHERE id = $1 AND (busy_until IS NULL OR busy_until < now()) RETURNING id`, [p.id]);
-  if (!claimed.length) throw new HttpError(409, 'Esta publicación se está enviando; inténtalo en un momento');
+  // Se vuelve a revisar el estado al apartarla: un envío que terminó entre medio no se cancela solo aquí.
+  const claimed = await queryOne<PublicationRow>(
+    `UPDATE social_publications SET busy_until = now() + interval '3 minutes'
+      WHERE id = $1 AND status IN ('borrador', 'programada') AND (busy_until IS NULL OR busy_until < now()) RETURNING *`, [p.id]);
+  if (!claimed) throw new HttpError(409, 'Esta publicación se está enviando; inténtalo en un momento');
   try {
-    if (p.zernio_post_id) {
-      await zcall(() => clientFor(null).call('DELETE', `/posts/${enc(p.zernio_post_id!)}`).catch((e) => { if (!(e instanceof ZernioError && e.status === 404)) throw e; }));
+    if (claimed.zernio_post_id) {
+      await zcall(() => clientFor(null).call('DELETE', `/posts/${enc(claimed.zernio_post_id!)}`).catch((e) => { if (!(e instanceof ZernioError && e.status === 404)) throw e; }));
     }
     await query(`UPDATE social_publications SET status = 'cancelada', updated_at = now(), version = version + 1 WHERE id = $1`, [p.id]);
     await query(`UPDATE social_publication_targets SET status = 'cancelada', updated_at = now() WHERE publication_id = $1 AND status IN ('pendiente', 'publicando')`, [p.id]);
@@ -371,7 +392,7 @@ export async function retryPublication(accountId: string, id: string) {
   const claimed = await query(`UPDATE social_publications SET busy_until = now() + interval '3 minutes', notified_at = NULL WHERE id = $1 AND status IN ('fallida', 'parcial') AND (busy_until IS NULL OR busy_until < now()) RETURNING id`, [p.id]);
   if (!claimed.length) throw new HttpError(409, 'Ya se está reintentando');
   try {
-    const r = await zcall(() => clientFor(null).call<any>('POST', `/posts/${enc(p.zernio_post_id!)}/retry`, {}, { timeoutMs: 120_000 }));
+    const r = await zcall(() => clientFor(null).call<any>('POST', `/posts/${enc(p.zernio_post_id!)}/retry`, {}, { timeoutMs: 120_000, scopedLimits: true }));
     await applyPost(p.id, r?.post ?? r, { event: 'retry' });
   } finally {
     await query(`UPDATE social_publications SET busy_until = NULL WHERE id = $1`, [p.id]);
@@ -380,11 +401,15 @@ export async function retryPublication(accountId: string, id: string) {
   return getPublication(accountId, p.id);
 }
 
-/** Quita la publicación de la lista (lo programado primero se cancela). */
+/** Quita la publicación de la lista (lo programado primero se cancela; un borrador que estuvo en Zernio se quita allá). */
 export async function deletePublication(accountId: string, id: string) {
   const { p, targets } = await loadPublication(accountId, id);
   if (!publicView(p, targets).can.delete) throw new HttpError(409, p.status === 'programada' ? 'Primero cancélala' : 'Espera a que termine de publicarse');
-  await query(`DELETE FROM social_publications WHERE id = $1 AND account_id = $2`, [p.id, accountId]);
+  if (p.status === 'borrador' && p.zernio_post_id) {
+    await zcall(() => clientFor(null).call('DELETE', `/posts/${enc(p.zernio_post_id!)}`).catch((e) => { if (!(e instanceof ZernioError && e.status === 404)) throw e; }));
+  }
+  const gone = await query(`DELETE FROM social_publications WHERE id = $1 AND account_id = $2 AND status IN ('borrador', 'publicada', 'parcial', 'fallida', 'cancelada') AND (busy_until IS NULL OR busy_until < now()) RETURNING id`, [p.id, accountId]);
+  if (!gone.length) throw new HttpError(409, 'Esta publicación se está enviando; inténtalo en un momento');
   return { ok: true };
 }
 
@@ -392,10 +417,13 @@ export async function deletePublication(accountId: string, id: string) {
 
 const enc = encodeURIComponent;
 
-/** Cuerpo de Zernio: texto, archivos, una entrada por cuenta (con su texto y opciones) y la hora o "ya". */
-async function buildBody(pubId: string, now: boolean) {
-  const p = (await queryOne<PublicationRow>(`SELECT * FROM social_publications WHERE id = $1`, [pubId]))!;
-  const targets = await query<TargetRow>(`SELECT * FROM social_publication_targets WHERE publication_id = $1 AND status <> 'cancelada' ORDER BY created_at`, [pubId]);
+interface BodyTarget { platform: string; zernio_account_id: string; text_override: string | null; options: Record<string, string> }
+
+/**
+ * Cuerpo de Zernio: texto, archivos, una entrada por cuenta (con su texto y opciones), la hora (o "ya") y en metadata el
+ * id de la publicación con su número de envío (así un evento de un envío anterior no se confunde con el actual).
+ */
+function bodyOf(p: { id: string; text: string; media: any[]; scheduled_for: string | Date | null; timezone: string; send_seq: number }, targets: BodyTarget[], when: 'now' | 'schedule' | 'draft') {
   return {
     content: p.text,
     mediaItems: (p.media ?? []).map((m) => ({ url: m.url, type: m.type })),
@@ -408,9 +436,15 @@ async function buildBody(pubId: string, now: boolean) {
       if (t.platform === 'tiktok') data.draft = true;
       return { platform: t.platform, accountId: t.zernio_account_id, ...(t.text_override ? { customContent: t.text_override } : {}), ...(Object.keys(data).length ? { platformSpecificData: data } : {}) };
     }),
-    metadata: { publication_id: p.id },
-    ...(now ? { publishNow: true } : { scheduledFor: new Date(p.scheduled_for!).toISOString(), timezone: p.timezone || 'UTC' }),
+    metadata: { publication_id: p.id, send_seq: p.send_seq },
+    ...(when === 'now' ? { publishNow: true } : when === 'schedule' && p.scheduled_for ? { scheduledFor: new Date(p.scheduled_for).toISOString(), timezone: p.timezone || 'UTC' } : {}),
   };
+}
+
+async function buildBody(pubId: string, now: boolean) {
+  const p = (await queryOne<PublicationRow>(`SELECT * FROM social_publications WHERE id = $1`, [pubId]))!;
+  const targets = await query<TargetRow>(`SELECT * FROM social_publication_targets WHERE publication_id = $1 AND status <> 'cancelada' ORDER BY created_at`, [pubId]);
+  return bodyOf(p, targets, now || !p.scheduled_for ? 'now' : 'schedule');
 }
 
 /** ¿La red seguro no recibió la publicación? (un rechazo claro o el límite propio, que no llamó). */
@@ -418,71 +452,90 @@ const surelyNotSent = (e: unknown) =>
   e instanceof ZernioBusyError || (e instanceof ZernioError && e.status >= 400 && e.status < 500 && !(e.status === 409 && /idempotency/i.test(JSON.stringify(e.data ?? {}))));
 
 /** Un error de Zernio llega como un aviso claro para el panel. */
+function explain(e: unknown): HttpError | unknown {
+  if (e instanceof ZernioBusyError) return new HttpError(503, 'Zernio está ocupado en este momento; inténtalo de nuevo en un minuto.');
+  if (e instanceof ZernioError) {
+    const code = String(e.data?.error?.code ?? e.data?.code ?? '');
+    if (e.status === 409 && e.data?.details?.existingPostId) return new HttpError(409, 'Ya publicaste lo mismo en esa cuenta en las últimas 24 horas');
+    if (code === 'ACCOUNT_DISCONNECTED') return new HttpError(409, 'Una de las cuentas está desconectada: vuelve a conectarla en Redes sociales');
+    if (e.status === 429) return new HttpError(429, 'La red no acepta más publicaciones por ahora en esa cuenta; inténtalo más tarde');
+    return new HttpError(e.status >= 400 && e.status < 500 ? 400 : 502, `La red no aceptó la publicación: ${String(e.data?.error?.message ?? e.data?.message ?? e.data?.error ?? e.message).slice(0, 300)}`);
+  }
+  return e;
+}
 async function zcall<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
   } catch (e) {
-    if (e instanceof ZernioBusyError) throw new HttpError(503, 'Zernio está ocupado en este momento; inténtalo de nuevo en un minuto.');
-    if (e instanceof ZernioError) {
-      const code = String(e.data?.error?.code ?? e.data?.code ?? '');
-      if (e.status === 409 && e.data?.details?.existingPostId) throw new HttpError(409, 'Ya publicaste lo mismo en esa cuenta en las últimas 24 horas');
-      if (code === 'ACCOUNT_DISCONNECTED') throw new HttpError(409, 'Una de las cuentas está desconectada: vuelve a conectarla en Redes sociales');
-      if (e.status === 429) throw new HttpError(429, 'La red no acepta más publicaciones por ahora en esa cuenta; inténtalo más tarde');
-      throw new HttpError(e.status >= 400 && e.status < 500 ? 400 : 502, `La red no aceptó la publicación: ${String(e.data?.error?.message ?? e.data?.message ?? e.data?.error ?? e.message).slice(0, 300)}`);
-    }
-    throw e;
+    throw explain(e);
   }
 }
 
 /**
- * Envía a Zernio. Se aparta primero (dos clics o dos réplicas no la envían dos veces) y lleva Idempotency-Key: si la
- * respuesta no llega (error del servidor o tiempo), queda "enviando" y la revisión la vuelve a mandar con la misma
- * llave, que Zernio reconoce y no duplica.
+ * Envía a Zernio. Se aparta primero (dos clics o dos réplicas no la envían dos veces), se deja anotada la revisión antes
+ * de llamar (si el proceso se reinicia a medio envío, la revisión lo retoma) y lleva Idempotency-Key: si la respuesta no
+ * llega, queda "enviando" y la revisión la vuelve a mandar con la misma llave, que Zernio reconoce y no duplica.
  */
 async function send(accountId: string, pubId: string, now: boolean, resend = false) {
   const claimed = await queryOne<PublicationRow>(
     `UPDATE social_publications SET busy_until = now() + interval '3 minutes', status = 'enviando', error = '',
         send_seq = CASE WHEN $2::boolean THEN send_seq ELSE send_seq + 1 END, sent_at = CASE WHEN $2::boolean THEN sent_at ELSE now() END,
         scheduled_for = CASE WHEN $3::boolean THEN NULL ELSE scheduled_for END, updated_at = now()
-      WHERE id = $1 AND status = CASE WHEN $2::boolean THEN 'enviando' ELSE 'borrador' END AND (busy_until IS NULL OR busy_until < now()) RETURNING *`,
+      WHERE id = $1 AND status = CASE WHEN $2::boolean THEN 'enviando' ELSE 'borrador' END AND zernio_post_id IS NULL AND (busy_until IS NULL OR busy_until < now()) RETURNING *`,
     [pubId, resend, now]);
   if (!claimed) throw new HttpError(409, 'Esta publicación ya se está enviando');
+  await scheduleCheck(pubId, new Date(Date.now() + 5 * 60_000));
   try {
-    const body = await buildBody(pubId, now || !claimed.scheduled_for);
-    const r = await clientFor(null).call<any>('POST', '/posts', body, { idempotencyKey: `pub-${pubId}-${claimed.send_seq}`, timeoutMs: 120_000 });
+    const body = await buildBody(pubId, now);
+    const r = await clientFor(null).call<any>('POST', '/posts', body, { idempotencyKey: `pub-${pubId}-${claimed.send_seq}`, timeoutMs: 120_000, scopedLimits: true });
     await applyPost(pubId, r?.post ?? r, { event: 'create' });
   } catch (e) {
+    await query(`UPDATE social_publications SET busy_until = NULL WHERE id = $1`, [pubId]);
     if (surelyNotSent(e)) {
-      await query(`UPDATE social_publications SET status = 'borrador', error = $2, busy_until = NULL WHERE id = $1`, [pubId, String((e as any)?.data?.error?.message ?? (e as any)?.message ?? e).slice(0, 500)]);
-      await zcall(() => Promise.reject(e));
+      const why = String((e as any)?.data?.error?.message ?? (e as any)?.data?.error ?? (e as any)?.message ?? e).slice(0, 500);
+      await query(`UPDATE social_publications SET status = 'borrador', error = $2 WHERE id = $1`, [pubId, why]);
+      // Lo rechazó la red sin que nadie esté mirando (reenvío de la revisión): se avisa al equipo.
+      if (resend) {
+        await deps.alertTeam(accountId, { title: '⚠️ Una publicación no salió', body: `La red la rechazó: ${why}. Quedó como borrador en Publicaciones para corregirla.`, link: '#/publicaciones', kind: 'alert' });
+      }
+      throw explain(e);
     }
     // No se sabe si llegó: la revisión lo confirma o lo vuelve a mandar con la misma llave.
-    await query(`UPDATE social_publications SET busy_until = NULL WHERE id = $1`, [pubId]);
     await scheduleCheck(pubId, new Date(Date.now() + 2 * 60_000));
     await logEvent({ level: 'warn', source: 'channel', message: `Zernio no confirmó una publicación; se revisará en unos minutos: ${(e as any)?.message ?? e}`, accountId });
     return;
-  } finally {
-    await query(`UPDATE social_publications SET busy_until = NULL WHERE id = $1`, [pubId]);
   }
+  await query(`UPDATE social_publications SET busy_until = NULL WHERE id = $1`, [pubId]);
+  await scheduleFollowUp(pubId);
+}
+
+/** Lo que sigue en Zernio (programado o publicándose) se revisa después de su hora, por si el webhook no avisa. */
+async function scheduleFollowUp(pubId: string) {
   const p = await queryOne<{ status: string; scheduled_for: string | null }>(`SELECT status, scheduled_for FROM social_publications WHERE id = $1`, [pubId]);
-  if (p && !FINAL.includes(p.status)) await scheduleCheck(pubId, new Date(Math.max(Date.now(), p.scheduled_for ? Date.parse(p.scheduled_for) : 0) + 10 * 60_000));
+  if (p && ['programada', 'publicando', 'enviando'].includes(p.status)) {
+    await scheduleCheck(pubId, new Date(Math.max(Date.now(), p.scheduled_for ? Date.parse(p.scheduled_for) : 0) + 10 * 60_000));
+  }
 }
 
 const POST_STATUS: Record<string, string> = { draft: 'borrador', scheduled: 'programada', publishing: 'publicando', published: 'publicada', partial: 'parcial', failed: 'fallida', cancelled: 'cancelada' };
 const TARGET_STATUS: Record<string, string> = { pending: 'pendiente', processing: 'publicando', uploading: 'publicando', published: 'publicada', failed: 'fallida', cancelled: 'cancelada', deleted: 'eliminada' };
 
 /**
- * Guarda lo que dice Zernio de la publicación (respuesta o evento). Una red publicada solo pasa a fallida con
- * post.platform.failed (Zernio revisó después); un evento más viejo que lo guardado no cambia nada.
+ * Guarda lo que dice Zernio de la publicación (respuesta o evento). Un evento no regresa una publicación terminada a
+ * "programada" o "publicando" (llegó tarde); una respuesta a un envío, cambio o reintento sí manda.
  */
 async function applyPost(pubId: string, post: any, o: { event: string; at?: string | null }) {
   if (!post || typeof post !== 'object') return;
   const zid = idOf(post);
   const status = POST_STATUS[String(post.status ?? '')];
+  const fromResponse = ['create', 'update', 'retry', 'check'].includes(o.event);
   await query(
-    `UPDATE social_publications SET zernio_post_id = coalesce(zernio_post_id, nullif($2, '')), status = coalesce($3, status),
+    `UPDATE social_publications SET zernio_post_id = coalesce(zernio_post_id, nullif($2, '')),
+        status = CASE WHEN $3::text IS NULL THEN status
+                      WHEN NOT $4::boolean AND status IN ('publicada', 'parcial', 'fallida') AND $3 IN ('programada', 'publicando', 'borrador') THEN status
+                      ELSE $3 END,
         published_at = CASE WHEN $3 IN ('publicada', 'parcial') THEN coalesce(published_at, now()) ELSE published_at END, updated_at = now()
-      WHERE id = $1 AND status <> 'cancelada'`, [pubId, zid, status ?? null]);
+      WHERE id = $1 AND status <> 'cancelada'`, [pubId, zid, status ?? null, fromResponse]);
   for (const t of Array.isArray(post.platforms) ? post.platforms : []) {
     await applyTarget(pubId, String(t?.platform ?? ''), idOf(t?.accountId) || String(t?.accountId ?? ''), {
       status: TARGET_STATUS[String(t?.status ?? '')], url: t?.platformPostUrl ?? t?.publishedUrl, postId: t?.platformPostId, error: t?.errorMessage ?? t?.error,
@@ -491,6 +544,11 @@ async function applyPost(pubId: string, post: any, o: { event: string; at?: stri
   await afterStatus(pubId);
 }
 
+/**
+ * Estado de una red. La hora del evento ordena los eventos entre sí (uno más viejo no cambia lo guardado); las
+ * respuestas a nuestras llamadas no la mueven. Una red publicada solo pasa a fallida o eliminada si Zernio lo dice
+ * después (post.platform.failed o deleted).
+ */
 async function applyTarget(pubId: string, platform: string, zernioAccountId: string, v: { status?: string; url?: unknown; postId?: unknown; error?: unknown }, o: { downgrade: boolean; at: string | null }) {
   if (!v.status) return;
   const err = typeof v.error === 'string' ? v.error : v.error ? JSON.stringify(v.error) : '';
@@ -499,7 +557,7 @@ async function applyTarget(pubId: string, platform: string, zernioAccountId: str
         status = CASE WHEN status = 'publicada' AND $4 IN ('fallida', 'pendiente', 'publicando') AND NOT $9::boolean THEN status ELSE $4 END,
         url = coalesce(nullif($5, ''), url), platform_post_id = coalesce(nullif($6, ''), platform_post_id), error = CASE WHEN $4 = 'fallida' THEN $7 ELSE '' END,
         published_at = CASE WHEN $4 = 'publicada' THEN coalesce(published_at, now()) ELSE published_at END,
-        status_at = coalesce($8::timestamptz, now()), updated_at = now()
+        status_at = coalesce($8::timestamptz, status_at), updated_at = now()
       WHERE publication_id = $1 AND platform = $2 AND ($3 = '' OR zernio_account_id = $3)
         AND ($8::timestamptz IS NULL OR status_at IS NULL OR status_at <= $8::timestamptz)`,
     [pubId, platform, zernioAccountId, v.status, String(v.url ?? '').slice(0, 2000), String(v.postId ?? '').slice(0, 500), err.slice(0, 500), o.at, o.downgrade]);
@@ -522,14 +580,16 @@ async function afterStatus(pubId: string) {
 
 /**
  * post.* del webhook. No traen la cuenta arriba: se ubica la publicación por el id de Zernio (o, si la respuesta aún no
- * llega, por metadata.publication_id) y se exige que el perfil del evento sea del mismo negocio.
+ * llega, por metadata con el mismo número de envío) y se exige que el perfil del evento sea del mismo negocio.
  */
 export async function handlePostEvent(event: string, body: any) {
   const post = body?.post ?? {};
   const zid = idOf(post);
   let p = zid ? await queryOne<PublicationRow>(`SELECT * FROM social_publications WHERE zernio_post_id = $1`, [zid]) : null;
-  if (!p && post?.metadata?.publication_id && /^[0-9a-f-]{36}$/i.test(String(post.metadata.publication_id))) {
-    p = await queryOne<PublicationRow>(`SELECT * FROM social_publications WHERE id = $1 AND zernio_post_id IS NULL AND status = 'enviando'`, [String(post.metadata.publication_id)]);
+  const meta = post?.metadata ?? {};
+  if (!p && /^[0-9a-f-]{36}$/i.test(String(meta.publication_id ?? '')) && Number.isInteger(Number(meta.send_seq))) {
+    p = await queryOne<PublicationRow>(`SELECT * FROM social_publications WHERE id = $1 AND zernio_post_id IS NULL AND status = 'enviando' AND send_seq = $2`,
+      [String(meta.publication_id), Number(meta.send_seq)]);
   }
   if (!p) return;
   const external = (Array.isArray(body?.profiles) ? body.profiles : []).map((x: any) => String(x?.externalId ?? '')).filter(Boolean);
@@ -560,36 +620,42 @@ async function scheduleCheck(pubId: string, at: Date) {
   await astore.scheduleJob({ account_id: p.account_id, type: 'social_post_check', payload: { publication_id: pubId }, run_at: at, dedupe_key: `social_post_check:${pubId}` });
 }
 
-/** Revisión de una publicación: reenvía lo que no se confirmó (misma llave) o pregunta a Zernio cómo va. */
+/**
+ * Revisión de una publicación: reenvía lo que no se confirmó (misma llave) o pregunta a Zernio cómo va. Nunca se rinde
+ * en silencio: si algo falla, se vuelve a anotar (hasta un día después de su hora).
+ */
 export async function checkPublication(payload: { publication_id?: string }) {
   const p = await queryOne<PublicationRow>(`SELECT * FROM social_publications WHERE id = $1`, [String(payload.publication_id ?? '')]);
   if (!p || FINAL.includes(p.status) || p.status === 'borrador') return;
-  if (p.status === 'enviando' && !p.zernio_post_id) {
-    // Zernio recuerda la llave 24 h: dentro de ese plazo, reenviar no duplica.
-    if (p.sent_at && Date.now() - Date.parse(p.sent_at) < 23 * 3600_000) {
-      await send(p.account_id, p.id, !p.scheduled_for, true).catch(async (e) => {
-        await logEvent({ level: 'warn', source: 'channel', message: `Zernio: no se pudo confirmar una publicación: ${e?.message ?? e}`, accountId: p.account_id });
-      });
-    } else {
-      await query(`UPDATE social_publications SET status = 'fallida', error = 'Zernio no confirmó la publicación' WHERE id = $1 AND status = 'enviando'`, [p.id]);
-      await afterStatus(p.id);
-    }
-    return;
-  }
-  if (!p.zernio_post_id) return;
+  const until = (p.scheduled_for ? Date.parse(p.scheduled_for) : Date.parse(p.sent_at ?? p.created_at)) + 24 * 3600_000;
+  const again = () => (Date.now() < until ? scheduleCheck(p.id, new Date(Date.now() + 10 * 60_000)) : Promise.resolve());
   try {
+    if (p.status === 'enviando' && !p.zernio_post_id) {
+      // Zernio recuerda la llave 24 h: dentro de ese plazo, reenviar no duplica.
+      if (p.sent_at && Date.now() - Date.parse(p.sent_at) < 23 * 3600_000) {
+        if (p.busy_until && Date.parse(p.busy_until) > Date.now()) return again();
+        await send(p.account_id, p.id, !p.scheduled_for, true);
+      } else {
+        await query(`UPDATE social_publications SET status = 'fallida', error = 'Zernio no confirmó la publicación: revisa en tus redes antes de volver a publicarla' WHERE id = $1 AND status = 'enviando'`, [p.id]);
+        await afterStatus(p.id);
+      }
+      return;
+    }
+    if (!p.zernio_post_id) return;
     const r = await clientFor(null, 'background').call<any>('GET', `/posts/${enc(p.zernio_post_id)}`);
     await applyPost(p.id, r?.post ?? r, { event: 'check' });
   } catch (e) {
     if (e instanceof ZernioError && e.status === 404) {
-      await query(`UPDATE social_publications SET status = 'cancelada' WHERE id = $1`, [p.id]);
+      await query(`UPDATE social_publications SET status = 'cancelada' WHERE id = $1 AND status <> 'publicada'`, [p.id]);
       return;
     }
-    throw e;
+    // Rechazada al reenviar: ya quedó como borrador y se avisó.
+    if (e instanceof HttpError && e.statusCode < 500 && e.statusCode !== 409) return;
+    await logEvent({ level: 'warn', source: 'channel', message: `Zernio: no se pudo revisar una publicación; se reintentará: ${(e as any)?.message ?? e}`, accountId: p.account_id });
+    return again();
   }
   const after = await queryOne<{ status: string; scheduled_for: string | null }>(`SELECT status, scheduled_for FROM social_publications WHERE id = $1`, [p.id]);
-  const until = (after?.scheduled_for ? Date.parse(after.scheduled_for) : Date.parse(p.created_at)) + 24 * 3600_000;
-  if (after && !FINAL.includes(after.status) && Date.now() < until) {
+  if (after && !FINAL.includes(after.status) && after.status !== 'borrador' && Date.now() < until) {
     await scheduleCheck(p.id, new Date(Math.max(Date.now() + 10 * 60_000, after.scheduled_for ? Date.parse(after.scheduled_for) + 5 * 60_000 : 0)));
   }
 }

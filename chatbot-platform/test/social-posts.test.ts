@@ -121,7 +121,7 @@ t('programar: el cuerpo exacto (hora del negocio, texto por red, título), la ll
       { platform: 'linkedin', accountId: 'acc_pl', customContent: 'Abrimos nuestra nueva suite. ¡Te esperamos!' },
       { platform: 'youtube', accountId: 'acc_py', platformSpecificData: { title: 'Tour por la suite' } },
     ],
-    metadata: { publication_id: scheduled.id }, scheduledFor: zonedToUtc(date, '10:30', tz).toISOString(), timezone: tz,
+    metadata: { publication_id: scheduled.id, send_seq: 1 }, scheduledFor: zonedToUtc(date, '10:30', tz).toISOString(), timezone: tz,
   });
   assert.deepEqual(scheduled.targets.map((x: any) => [x.platform, x.status]), [['instagram', 'pendiente'], ['linkedin', 'pendiente'], ['youtube', 'pendiente']]);
 });
@@ -181,21 +181,59 @@ t('si Zernio no contesta, queda "enviando" y la revisión la reenvía con la mis
   assert.equal((await owner('GET', `/api/social-publications/${id}`)).json().status, 'publicada');
 });
 
-t('cambiar lo programado: se cambia en Zernio; con versión vieja o pasándola a borrador', async () => {
+t('cambiar lo programado: primero en Zernio (si falla, nada cambia aquí); versión vieja 409; a borrador sin borrarla', async () => {
   const body = (extra: Record<string, unknown>) => ({
     mode: 'schedule', date: tomorrow(), time: '12:00', text: 'Nueva suite: ¡reserva ya!', media: [video],
     targets: [{ social_account_id: nets.instagram.socialId }, { social_account_id: nets.youtube.socialId, options: { title: 'Tour por la suite' } }], ...extra,
   });
+  const zid = [...zer.publications.values()].find((x) => x.metadata?.publication_id === scheduled.id)._id;
+  // Zernio falla: la publicación queda igual aquí (texto, versión y redes) y se puede volver a intentar.
+  ext.fail.add(`/posts/${zid}`);
+  try {
+    assert.equal((await owner('PUT', `/api/social-publications/${scheduled.id}`, body({ version: scheduled.version }))).statusCode, 502);
+  } finally {
+    ext.fail.delete(`/posts/${zid}`);
+  }
+  const same = (await owner('GET', `/api/social-publications/${scheduled.id}`)).json();
+  assert.deepEqual([same.text, same.version, same.targets.length], [scheduled.text, scheduled.version, 3]);
   const r = await owner('PUT', `/api/social-publications/${scheduled.id}`, body({ version: scheduled.version }));
   assert.equal(r.statusCode, 200, r.body);
-  const put = ext.requests.filter((x) => x.method === 'PUT' && x.path.startsWith('/api/v1/posts/')).pop()!;
+  const put = ext.requests.filter((x) => x.method === 'PUT' && x.path === `/api/v1/posts/${zid}`).pop()!;
   assert.equal(put.body.content, 'Nueva suite: ¡reserva ya!');
+  assert.equal(put.body.isDraft, false);
   assert.equal(put.body.scheduledFor, zonedToUtc(tomorrow(), '12:00', tz).toISOString());
   assert.deepEqual(put.body.platforms.map((x: any) => x.platform), ['instagram', 'youtube']);
   assert.equal((await owner('PUT', `/api/social-publications/${scheduled.id}`, body({ version: scheduled.version }))).statusCode, 409, 'versión vieja');
+  // A borrador: se queda en Zernio como borrador (no se borra: Zernio borraría también sus archivos).
   const draft = await owner('PUT', `/api/social-publications/${scheduled.id}`, body({ mode: 'draft', version: r.json().version }));
   assert.equal(draft.json().status, 'borrador');
-  assert.ok(ext.requests.some((x) => x.method === 'DELETE' && x.path === put.path), 'se quitó de Zernio');
+  assert.equal(ext.requests.filter((x) => x.method === 'PUT' && x.path === `/api/v1/posts/${zid}`).pop()!.body.isDraft, true);
+  assert.ok(!ext.requests.some((x) => x.method === 'DELETE' && x.path === `/api/v1/posts/${zid}`));
+  // Y de borrador a "publicar ya": el mismo post de Zernio, con publishNow.
+  const now = await owner('PUT', `/api/social-publications/${scheduled.id}`, body({ mode: 'now', version: draft.json().version }));
+  assert.equal(now.statusCode, 200, now.body);
+  assert.equal(ext.requests.filter((x) => x.method === 'PUT' && x.path === `/api/v1/posts/${zid}`).pop()!.body.publishNow, true);
+});
+
+t('rechazada por la red: se puede corregir y volver a enviar con el mismo formulario', async () => {
+  const ref = crypto.randomUUID();
+  const saved = zer.accounts.get('acc_pl');
+  zer.accounts.delete('acc_pl');
+  let first: any;
+  try {
+    first = await owner('POST', '/api/social-publications', { client_ref: ref, mode: 'now', text: 'Texto con error', targets: [{ social_account_id: nets.linkedin.socialId }] });
+    assert.equal(first.statusCode, 409);
+    assert.match(first.json().error, /desconectada/);
+  } finally {
+    zer.accounts.set('acc_pl', saved);
+  }
+  const again = await owner('POST', '/api/social-publications', { client_ref: ref, mode: 'now', text: 'Texto corregido', targets: [{ social_account_id: nets.linkedin.socialId }] });
+  assert.equal(again.statusCode, 200, again.body);
+  assert.deepEqual([again.json().status, again.json().text], ['publicada', 'Texto corregido']);
+  assert.equal(posts().filter((x) => x.body?.content === 'Texto corregido').length, 1);
+  // Una fecha que no existe no se corre al día siguiente.
+  const bad = await owner('POST', '/api/social-publications', { mode: 'schedule', date: '2030-02-31', time: '10:00', text: 'x', targets: [{ social_account_id: nets.linkedin.socialId }] });
+  assert.equal(bad.statusCode, 400);
 });
 
 t('cancelar: se quita de Zernio; lo publicado no se cancela', async () => {
@@ -221,6 +259,19 @@ t('webhook: enlace por red, un evento viejo no baja el estado y el de otro negoc
   await h.idle();
   const p = (await owner('GET', `/api/social-publications/${id}`)).json();
   assert.deepEqual(p.targets.map((x: any) => [x.platform, x.status, x.url]), [['instagram', 'publicada', 'https://instagram.test/p/desayuno'], ['linkedin', 'pendiente', '']]);
+});
+
+t('la revisión no se rinde: si Zernio falla al preguntarle, se vuelve a anotar', async () => {
+  const r = await owner('POST', '/api/social-publications', { mode: 'schedule', date: tomorrow(), time: '21:00', text: 'Karaoke', targets: [{ social_account_id: nets.linkedin.socialId }] });
+  const zid = [...zer.publications.values()].find((x) => x.metadata?.publication_id === r.json().id)._id;
+  ext.fail.add(`/posts/${zid}`);
+  try {
+    await h.fastForward();
+  } finally {
+    ext.fail.delete(`/posts/${zid}`);
+  }
+  const job = (await pool.query(`SELECT status FROM jobs WHERE dedupe_key = $1 AND status = 'pending'`, [`social_post_check:${r.json().id}`])).rows;
+  assert.equal(job.length, 1, 'quedó otra revisión anotada');
 });
 
 t('sin webhook: la revisión pregunta a Zernio cómo va', async () => {

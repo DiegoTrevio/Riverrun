@@ -176,8 +176,14 @@ administradores), con lista por día y calendario del mes.
   la publicación y se exige que el perfil del evento sea del negocio) y, si no avisa, una revisión le pregunta. Un
   evento más viejo no cambia lo guardado; una red publicada solo pasa a fallida si Zernio lo dice después. Si falla
   alguna red, el equipo recibe un aviso (una vez) y se puede **reintentar**.
-- **Cambiar o cancelar** lo programado (hasta 2 minutos antes): se cambia o se quita en Zernio. Lo publicado no se
-  cancela; se puede quitar de la lista (en la red sigue). Al borrar un negocio, lo programado se quita de Zernio.
+- **Cambiar o cancelar** lo programado (hasta 2 minutos antes): primero se cambia en Zernio (`PUT` con todo, o con
+  "publicar ya", o como borrador) y solo si Zernio lo acepta se guarda aquí; si falla, queda como estaba. No se borra
+  para volver a crearla: Zernio borraría también sus archivos. Cancelar sí la quita de Zernio (y sus archivos: al
+  duplicar una cancelada hay que volver a subirlos). Lo publicado no se cancela; se puede quitar de la lista (en la red
+  sigue). Al borrar un negocio, lo programado se quita de Zernio.
+- **Si la red la rechaza** (cuenta desconectada, contenido repetido…), queda como borrador con el motivo; corregirla y
+  volver a enviarla desde el mismo formulario la manda de nuevo. Si el rechazo llega en un reenvío automático, se avisa
+  al equipo. La revisión de cada publicación queda anotada antes de llamar a Zernio y no se rinde si Zernio falla.
 - En `OUTBOUND_MODE=sandbox` solo se guardan borradores. Un negocio suspendido o en pausa no publica.
 
 ## Ventana de 24 horas
