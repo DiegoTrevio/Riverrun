@@ -13,14 +13,57 @@ const APPT_STATUS = { confirmed: ['green', 'Confirmada'], completed: ['', 'Compl
 export async function viewAgenda(root, tab, params) {
   root.append(
     h('h1', {}, 'Agenda'),
-    h('div', { class: 'tabs' }, [['citas', 'Calendario'], ...(isAdmin() ? [['servicios', 'Servicios']] : []), ['equipo', isAdmin() ? 'Equipo y disponibilidad' : 'Mi disponibilidad']].map(([k, l]) => h('a', { href: `#/agenda/${k}`, class: k === tab ? 'active' : '' }, l))),
+    h('div', { class: 'tabs' }, [['citas', 'Calendario'], ...(isAdmin() ? [['servicios', 'Servicios']] : []), ['equipo', isAdmin() ? 'Equipo y disponibilidad' : 'Mi disponibilidad'], ...(isAdmin() ? [['enlaces', 'Enlaces para reservar']] : [])].map(([k, l]) => h('a', { href: `#/agenda/${k}`, class: k === tab ? 'active' : '' }, l))),
   );
   if (needAccount(root)) return;
   const body = h('div');
   root.append(body);
   if (tab === 'servicios') return params.get('id') ? editService(body, params.get('id')) : listServices(body);
   if (tab === 'equipo') return viewTeam(body, params);
+  if (tab === 'enlaces' && isAdmin()) return viewLinks(body);
   return agendaWeek(body, params);
+}
+
+/* ============================== Enlaces para reservar ============================== */
+
+/**
+ * Enlaces públicos para que el cliente reserve solo (como Calendly): de todo el negocio o de una persona. La reserva entra
+ * a la agenda con el mismo reparto y avisos; el cliente recibe la confirmación y los recordatorios por correo.
+ */
+async function viewLinks(root) {
+  const [links, services, users] = await Promise.all([api('GET', withAcct('/api/booking-links')), api('GET', withAcct('/api/services')), api('GET', withAcct('/api/users'))]);
+  if (!root.isConnected) return;
+  const team = users.filter((u) => u.account_id && u.active !== false);
+  const active = services.filter((s) => s.active);
+  const card = (l) => {
+    const url = h('input', { value: l.url, readonly: true, 'aria-label': `Enlace de ${l.name}` });
+    return h('div', { class: 'list-item' },
+      h('div', { class: 'row between' }, h('strong', {}, l.name), l.active ? h('span', { class: 'badge green' }, 'Activo') : h('span', { class: 'badge orange' }, 'Pausado')),
+      h('p', { class: 'small muted', style: 'margin:4px 0' }, l.person ? `Con ${l.person} · ` : 'De todo el negocio · ', l.services.length ? l.services.join(', ') : 'Todos los servicios activos'),
+      h('div', { class: 'row' }, h('div', { style: 'flex:1;min-width:0' }, url),
+        h('button', { class: 'small', onclick: async () => { try { await navigator.clipboard.writeText(l.url); toast('Enlace copiado'); } catch { url.select(); } } }, 'Copiar'),
+        h('a', { class: 'btn small', href: l.url, target: '_blank', rel: 'noopener' }, 'Abrir'),
+        h('button', { class: 'small', onclick: async () => { if (await run(() => api('PUT', withAcct(`/api/booking-links/${l.id}`), { active: !l.active }), l.active ? 'Pausado' : 'Activado')) render(); } }, l.active ? 'Pausar' : 'Activar'),
+        h('button', { class: 'small danger', onclick: async () => { if (!(await confirmAction(`¿Borrar el enlace "${l.name}"? Quien lo tenga ya no podrá reservar con él.`))) return; if (await run(() => api('DELETE', withAcct(`/api/booking-links/${l.id}`)), 'Borrado')) render(); } }, 'Borrar')));
+  };
+  const m = { name: '', service_ids: [], user_id: '' };
+  root.append(
+    h('div', { class: 'card' },
+      h('p', { class: 'muted', style: 'margin-top:0' }, 'Comparte un enlace (en redes, tu firma de correo o tu sitio) para que tus clientes elijan servicio, día y hora sin escribir al chat. Las reservas aparecen en tu calendario, se reparten como el servicio indica y al cliente le llega la confirmación y los recordatorios por correo.'),
+      links.length ? links.map(card) : h('p', { class: 'muted' }, 'Todavía no hay enlaces.')),
+    h('div', { class: 'card' },
+      h('h2', { style: 'margin-top:0' }, 'Nuevo enlace'),
+      active.length ? [
+        field('Nombre', text(m, 'name', { placeholder: 'Agenda una llamada con nosotros' }), 'Es el título que ve el cliente.'),
+        field('Servicios', h('div', { class: 'row' }, active.map((s) => h('label', { class: 'check' },
+          h('input', { type: 'checkbox', onchange: (e) => { m.service_ids = e.target.checked ? [...m.service_ids, s.id] : m.service_ids.filter((x) => x !== s.id); } }), s.name))), 'Sin marcar ninguno = todos los servicios activos.'),
+        field('¿De una persona?', select(m, 'user_id', [['', 'No: de todo el negocio (se reparte como diga el servicio)'], ...team.map((u) => [u.id, `Sí: con ${u.name || u.email} (solo sus servicios)`])])),
+        h('button', { class: 'primary', onclick: async () => {
+          if (!m.name.trim()) return toast('Escribe el nombre del enlace', true);
+          if (await run(() => api('POST', withAcct('/api/booking-links'), { name: m.name.trim(), service_ids: m.service_ids, user_id: m.user_id || null }), 'Enlace creado')) render();
+        } }, 'Crear enlace'),
+      ] : h('p', { class: 'muted' }, 'Primero crea un servicio activo en la pestaña Servicios.')),
+  );
 }
 
 /* ============================== Equipo y disponibilidad ============================== */

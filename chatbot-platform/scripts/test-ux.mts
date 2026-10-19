@@ -49,7 +49,7 @@ try {
     if (role === 'superadmin') await context.addInitScript((id: string) => localStorage.setItem('cp-account', id), h.accountId);
     return context;
   };
-  const routes = ['agentes', `bot/${h.botId}/instrucciones`, `bot/${h.botId}/preguntas`, `bot/${h.botId}/activacion`, `bot/${h.botId}/conocimiento`, `bot/${h.botId}/imagenes`, `bot/${h.botId}/conexiones`, `bot/${h.botId}/probar`, `bot/${h.botId}/conexiones/${h.channelId}`, `bot/${h.botId}/conexiones/${socialNew.id}`, `bot/${h.botId}/conexiones/${socialOn.id}`, 'conversations', `conversation/${conv.id}`, 'agenda', 'agenda/servicios', `agenda/servicios?id=${service.id}`, 'agenda/equipo', 'automation/rules', 'automation/rules/new', 'automation/sequences', 'automation/sequences/new', 'automation/campaigns', 'automation/campaigns/new', 'automation/settings', 'pipeline', 'pipeline/editar/nuevo', 'ajustes', 'integraciones', 'redes', `redes/whatsapp/${waSocial}`, 'users', 'consumo', 'logs', 'plan', 'estadisticas', 'notifications', 'password', 'inicio', 'agentes/nuevo', `bot/${h.botId}/empezar`];
+  const routes = ['agentes', `bot/${h.botId}/instrucciones`, `bot/${h.botId}/preguntas`, `bot/${h.botId}/activacion`, `bot/${h.botId}/conocimiento`, `bot/${h.botId}/imagenes`, `bot/${h.botId}/conexiones`, `bot/${h.botId}/probar`, `bot/${h.botId}/conexiones/${h.channelId}`, `bot/${h.botId}/conexiones/${socialNew.id}`, `bot/${h.botId}/conexiones/${socialOn.id}`, 'conversations', `conversation/${conv.id}`, 'agenda', 'agenda/servicios', `agenda/servicios?id=${service.id}`, 'agenda/equipo', 'agenda/enlaces', 'automation/rules', 'automation/rules/new', 'automation/sequences', 'automation/sequences/new', 'automation/campaigns', 'automation/campaigns/new', 'automation/settings', 'pipeline', 'pipeline/editar/nuevo', 'ajustes', 'integraciones', 'redes', `redes/whatsapp/${waSocial}`, 'users', 'consumo', 'logs', 'plan', 'estadisticas', 'notifications', 'password', 'inicio', 'agentes/nuevo', `bot/${h.botId}/empezar`];
   const helpScreens: Record<string, string> = { [`bot/${h.botId}/conocimiento`]: '01-importar.jpg', [`bot/${h.botId}/probar`]: '03-probar.jpg', [`conversation/${conv.id}`]: '05-conversacion.jpg', ajustes: '06-ajustes.jpg' };
   for (const role of ['admin', 'superadmin', 'agent']) {
     const context = await contextFor(role); const page = await context.newPage();
@@ -77,6 +77,22 @@ try {
     await context.close();
   }
   checked('60 escenarios adaptables sin desbordamiento');
+  // Página pública para reservar: sin sesión, accesible y sin desbordamiento (celular y escritorio, claro y oscuro).
+  const bookingLink = (await h.authed('POST', '/api/booking-links', { account_id: h.accountId, name: 'Agenda con nosotros' })).json();
+  for (const width of [320, 390, 1024]) for (const theme of ['light', 'dark'] as const) {
+    const ctx = await browser!.newContext({ viewport: { width, height: 900 }, colorScheme: theme }); const pg = await ctx.newPage();
+    pg.on('pageerror', (error) => results.errors.push({ role: 'público', message: error.message }));
+    await pg.goto(bookingLink.url.replace('https://bot.test', base)); await pg.locator('main h2').first().waitFor();
+    await pg.addScriptTag({ content: axe });
+    const violations = await pg.evaluate(async () => (await (window as any).axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa', 'best-practice'] } })).violations.map((v: any) => ({ id: v.id, impact: v.impact, nodes: v.nodes.map((n: any) => ({ target: n.target, summary: n.failureSummary })) })));
+    if (width === 390 && theme === 'light') results.screens.push({ role: 'público', route: 'reservar', violations });
+    const overflow = await pg.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1);
+    results.responsive.push({ width, theme, route: 'reservar', overflow });
+    assert.equal(overflow, false, `Desbordamiento en la página para reservar ${width} ${theme}`);
+    if (width === 390 && theme === 'dark') await pg.screenshot({ path: `${output}/reservar-mobile.png`, fullPage: true });
+    await ctx.close();
+  }
+  checked('Página pública para reservar accesible y sin desbordamiento');
   const context = await contextFor('admin'); const page = await context.newPage(); page.setDefaultTimeout(10000);
   const go = async (route: string) => { await page.goto(`${base}/#/${route}`); await page.locator('.main h1').waitFor(); await page.locator('.main [aria-busy="true"]').waitFor({ state: 'hidden' }); };
   await go(`bot/${h.botId}/instrucciones`);

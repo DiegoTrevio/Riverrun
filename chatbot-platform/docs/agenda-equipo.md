@@ -74,6 +74,22 @@ cuando le agendan o cancelan una cita o llamada, con el cliente, su teléfono o 
 **Variables** para mensajes y recordatorios: `{{cita.persona}}` (quién atiende) y `{{cita.enlace}}` (enlace de la
 videollamada). Si el recordatorio no usa `{{cita.enlace}}`, el enlace se agrega al final.
 
+## Página para reservar (enlaces)
+
+En **Agenda → Enlaces para reservar** el administrador crea enlaces públicos (`/reservar/<código>`) para compartir en
+redes, la firma de correo o el sitio, como Calendly:
+
+- **Del negocio:** el cliente elige el servicio (todos los activos o los que marques), la persona si el servicio permite
+  elegir («El cliente puede pedir con quién»), el día y la hora. Si no elige persona, se reparte como dice el servicio.
+- **De una persona** («Agenda con Ana»): solo sus servicios y siempre con ella.
+- El cliente deja su nombre, su correo y su teléfono (obligatorio en llamadas telefónicas). No necesita cuenta.
+- La reserva entra a la agenda (origen «página») con las mismas reglas: horarios realmente libres, la misma revisión
+  dentro de la transacción, avisos al equipo, correo a la persona, evento en su calendario y sala de videollamada.
+- Al cliente le llega la **confirmación por correo** (con el enlace de la videollamada si aplica) y los
+  **recordatorios** del servicio por correo.
+- Protecciones: límite de visitas y reservas por IP, campo trampa para robots, enlaces que se pausan o borran, y la
+  página no muestra correos ni datos del equipo (solo nombres).
+
 ## Al agendar a mano
 
 En *Nueva cita* (y al agendar desde una conversación) se puede elegir quién atiende entre las personas libres en ese
