@@ -92,7 +92,7 @@ try {
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1);
       results.responsive.push({ width, theme, route, overflow });
       assert.equal(overflow, false, `Desbordamiento en ${route} ${width} ${theme}`);
-      if (width === 390 && theme === 'dark') await page.screenshot({ path: `${output}/${route.split('/')[0]}-mobile.png`, fullPage: true });
+      if (width === 390 && theme === 'dark') await page.screenshot({ path: `${output}/${route.split(/[/?]/)[0]}-mobile.png`, fullPage: true });
     }
     await context.close();
   }
@@ -166,8 +166,12 @@ try {
   let actualCampaign = (await h.authed('GET', `/api/campaigns?account_id=${h.accountId}`)).json().find((c: any) => c.id === campaign.id);
   assert.equal(actualCampaign.message, 'Mensaje anterior');
   await page.getByRole('button', { name: 'Guardar cambios', exact: true }).click();
-  await page.locator('dialog').getByRole('button', { name: 'Confirmar programación', exact: true }).click();
-  await page.waitForTimeout(250);
+  // Se espera la respuesta del guardado (que cambia el mensaje y vuelve a programar): un tiempo fijo no alcanza en una
+  // máquina lenta y la cuenta de tareas se haría a medio guardar.
+  await Promise.all([
+    page.waitForResponse((r) => r.url().includes(`/api/campaigns/${campaign.id}`) && r.request().method() === 'PUT'),
+    page.locator('dialog').getByRole('button', { name: 'Confirmar programación', exact: true }).click(),
+  ]);
   actualCampaign = (await h.authed('GET', `/api/campaigns?account_id=${h.accountId}`)).json().find((c: any) => c.id === campaign.id);
   assert.equal(actualCampaign.message, 'Mensaje revisado');
   assert.equal((await pool.query("SELECT count(*)::int AS n FROM jobs WHERE payload->>'campaign_id' = $1 AND status = 'pending'", [campaign.id])).rows[0].n, 1);
