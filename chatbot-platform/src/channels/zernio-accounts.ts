@@ -313,13 +313,21 @@ export async function zernioTenants() {
  * no están (avisando en su conexión de mensajes).
  */
 export async function syncTenant(accountId: string): Promise<{ accounts: number }> {
-  const profileId = await accountProfile(accountId);
+  const primary = await accountProfile(accountId);
+  // Todos sus perfiles: el principal y los adicionales (un número de WhatsApp por perfil).
+  const profiles = [primary, ...(await query<{ profile_id: string }>(`SELECT profile_id FROM zernio_profiles WHERE account_id = $1 AND profile_id <> $2`, [accountId, primary])).map((r) => r.profile_id)];
   // Lo pide una persona desde el panel: prioridad normal.
   const client = clientFor();
   const startedAt = (await queryOne<{ now: string }>(`SELECT now() AS now`))!.now;
-  const { items: remote, complete } = await client.listPages(`/accounts?profileId=${encodeURIComponent(profileId)}`, 'accounts', 10);
+  let complete = true;
+  const remote: { a: any; profileId: string }[] = [];
+  for (const profileId of profiles) {
+    const page = await client.listPages(`/accounts?profileId=${encodeURIComponent(profileId)}`, 'accounts', 10);
+    complete &&= page.complete;
+    remote.push(...page.items.map((a) => ({ a, profileId })));
+  }
   const ids = new Set<string>();
-  for (const a of remote) {
+  for (const { a, profileId } of remote) {
     const zid = idOf(a);
     const platform = String(a.platform ?? '');
     if (!zid || !networkOf(platform)) continue;
@@ -345,8 +353,8 @@ export async function syncTenant(accountId: string): Promise<{ accounts: number 
   if (!complete) return { accounts: ids.size };
   const gone = await query<{ id: string; channel_id: string | null }>(
     `UPDATE social_accounts SET status = 'disconnected', updated_at = now()
-      WHERE account_id = $1 AND profile_id = $2 AND status <> 'disconnected' AND NOT (zernio_account_id = ANY($3::text[])) AND updated_at < $4
-     RETURNING id, channel_id`, [accountId, profileId, [...ids], startedAt]);
+      WHERE account_id = $1 AND profile_id = ANY($2::text[]) AND status <> 'disconnected' AND NOT (zernio_account_id = ANY($3::text[])) AND updated_at < $4
+     RETURNING id, channel_id`, [accountId, profiles, [...ids], startedAt]);
   for (const g of gone) {
     const ch = g.channel_id ? await store.getChannel(g.channel_id) : null;
     if (ch) await recordConnectionState(ch, 'close', 'zernio_account_missing');

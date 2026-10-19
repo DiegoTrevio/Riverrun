@@ -248,7 +248,8 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
     const b = parse(CampaignBody, await scheduleBody(req.body, accountId));
     b.channel_ids = [...new Set(b.channel_ids)].filter((x) => x !== b.channel_id);
     await checkChannel(req.user, accountId, b.channel_id, b.image_id, b.channel_ids);
-    await checkReferences(accountId, { wa_template: b.wa_template });
+    const refs = { wa_template: b.wa_template };
+    await checkReferences(accountId, refs);
     return astore.saveCampaign(accountId, { ...b, scheduled_at: b.scheduled_at ? new Date(b.scheduled_at) : null });
   });
 
@@ -258,7 +259,9 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
     const b = parse(CampaignBody, await scheduleBody({ ...c, scheduled_at: c.scheduled_at ? new Date(c.scheduled_at).toISOString() : null, ...(req.body ?? {}) }, c.account_id));
     b.channel_ids = [...new Set(b.channel_ids)].filter((x) => x !== b.channel_id);
     await checkChannel(req.user, c.account_id, b.channel_id, b.image_id, b.channel_ids);
-    await checkReferences(c.account_id, { wa_template: b.wa_template }, { clearMissing: true });
+    const refs = { wa_template: b.wa_template };
+    await checkReferences(c.account_id, refs, { clearMissing: true });
+    b.wa_template = refs.wa_template ?? null;
     const saved = await astore.saveCampaign(c.account_id, { ...b, scheduled_at: b.scheduled_at ? new Date(b.scheduled_at) : null }, c.id);
     if (c.status === 'scheduled') {
       // Reprogramar con los datos nuevos.
@@ -293,7 +296,9 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
       warning:
         ch?.type === 'messenger' || ch?.type === 'instagram'
           ? 'Meta solo permite escribir a quienes enviaron un mensaje en las últimas 24 horas; el resto se omitirá.'
-          : ch?.type === 'zernio'
+          : ch?.type === 'zernio' && ch.config.platform === 'whatsapp'
+            ? (c.wa_template ? 'A quienes no escribieron en las últimas 24 horas se les enviará la plantilla elegida.' : 'Solo se escribirá a quienes enviaron un mensaje en las últimas 24 horas; para el resto elige una plantilla de WhatsApp aprobada.')
+          : ch?.type === 'zernio' && ['instagram', 'facebook'].includes(ch.config.platform)
             ? 'Solo se escribirá a quienes enviaron un mensaje en las últimas 24 horas; el resto se omitirá.'
           : ch?.type === 'whatsapp'
             ? 'Envía solo a clientes que esperan saber de ti y con ritmo moderado: WhatsApp puede bloquear números que envían mensajes masivos no deseados.'

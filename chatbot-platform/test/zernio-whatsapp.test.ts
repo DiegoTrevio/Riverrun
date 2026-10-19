@@ -208,3 +208,48 @@ t('desde la conversación: una persona envía la plantilla a mano; una regla o c
   assert.equal(mine.statusCode, 200, mine.body);
   assert.deepEqual(mine.json().actions[0].wa_template, { template_id: templateId, params: ['{{nombre}}', 'mañana'] });
 });
+
+t('revisión: promociones con plantilla dicen cómo darse de baja; aviso adelantado; solo plantilla dentro de 24 h; sincronizar perfiles adicionales', async () => {
+  // Promoción (campaña) fuera de 24 h: una plantilla sin la palabra de baja no sale; la que la dice, sí.
+  const promo = (await pool.query(`INSERT INTO wa_templates (account_id, social_account_id, name, language, category, status, components) VALUES ($1, $2, 'promo_sin_baja', 'es_MX', 'MARKETING', 'APPROVED', $3) RETURNING id`,
+    [h.accountId, wa.id, JSON.stringify([{ type: 'BODY', text: 'Promo para {{1}}' }])])).rows[0].id;
+  await pool.query(`UPDATE contacts SET consent_at = now() WHERE id = (SELECT contact_id FROM conversations WHERE id = $1)`, [conv.id]);
+  await pool.query(`UPDATE conversations SET status = 'bot' WHERE id = $1`, [conv.id]);
+  await pool.query(`UPDATE messages SET created_at = now() - interval '3 days' WHERE conversation_id = $1 AND direction = 'in'`, [conv.id]);
+  let r: any = await h.service.outbound.send(conv.id, { text: 'Promo', source: 'campaign', waTemplate: { template_id: promo, params: ['{{nombre}}'] } });
+  assert.equal(r.sent, false);
+  assert.match(r.reason, /no dice cómo darse de baja/);
+  r = await h.service.outbound.send(conv.id, { text: 'Promo', source: 'campaign', waTemplate: { template_id: templateId, params: ['{{nombre}}', 'el lunes'] } });
+  assert.equal(r.sent, true, JSON.stringify(r));
+
+  // Dentro de 24 h, un mensaje que solo tiene plantilla sale con ella (no queda "vacío").
+  await pool.query(`UPDATE messages SET created_at = now() WHERE conversation_id = $1 AND direction = 'in'`, [conv.id]);
+  const before = ext.requests.filter((x) => x.path === '/api/v1/inbox/conversations/conv_wa1/messages').length;
+  r = await h.service.outbound.send(conv.id, { text: '', source: 'automation', waTemplate: { template_id: templateId, params: ['{{nombre}}', 'hoy'] } });
+  assert.equal(r.sent, true, JSON.stringify(r));
+  assert.equal(ext.requests.filter((x) => x.path === '/api/v1/inbox/conversations/conv_wa1/messages')[before].body.template.elements[0].name, 'recordatorio');
+
+  // Meta avisa de una plantilla que todavía no estaba guardada: se traen las del número. Las de código no se envían.
+  zer.templates.push({ id: 'tpl_nueva', accountId: 'acc_wa1', name: 'nueva', language: 'es_MX', category: 'UTILITY', status: 'APPROVED', components: [{ type: 'BODY', text: 'Hola' }] });
+  zer.templates.push({ id: 'tpl_codigo', accountId: 'acc_wa1', name: 'codigo', language: 'es_MX', category: 'AUTHENTICATION', status: 'APPROVED', components: [{ type: 'BODY', text: 'Tu código es {{1}}' }, { type: 'BUTTONS', buttons: [{ type: 'OTP', otp_type: 'COPY_CODE' }] }] });
+  const profileId = (await store.getChannel(wa.channel_id))!.config.profile_id;
+  await deliver({ id: `evt_${crypto.randomUUID()}`, event: 'whatsapp.template.status_updated', timestamp: new Date().toISOString(),
+    account: { accountId: 'acc_wa1', profileId, platform: 'whatsapp', username: 'x' }, template: { templateId: 'tpl_nueva', name: 'nueva', language: 'es_MX', status: 'APPROVED', reason: 'NONE' } });
+  // Un aviso sin estado no cambia nada.
+  await deliver({ id: `evt_${crypto.randomUUID()}`, event: 'whatsapp.template.status_updated', timestamp: new Date().toISOString(),
+    account: { accountId: 'acc_wa1', profileId, platform: 'whatsapp', username: 'x' }, template: { name: 'recordatorio', language: 'es_MX' } });
+  await h.idle();
+  const list = Object.fromEntries((await owner('GET', `/api/wa-templates?social_account_id=${wa.id}`)).json().map((x: any) => [x.name, [x.status, x.sendable]]));
+  assert.deepEqual(list.nueva, ['APPROVED', true]);
+  assert.deepEqual(list.codigo, ['APPROVED', false]);
+  assert.deepEqual(list.recordatorio, ['APPROVED', true]);
+
+  // Sincronizar revisa también el perfil adicional: un número conectado allá en Zernio se adopta.
+  const extraProfile = (await store.getChannel(wa2.channel_id))!.config.profile_id;
+  zer.accounts.set('acc_wa2_ig', { _id: 'acc_wa2_ig', platform: 'linkedin', profileId: extraProfile, username: 'otra', displayName: 'Otra', isActive: true });
+  const sync = (await h.authed('POST', `/api/system/zernio/tenants/${h.accountId}/sync`)).json();
+  assert.ok(sync.accounts >= 3, JSON.stringify(sync));
+  const rows = Object.fromEntries((await pool.query(`SELECT zernio_account_id, status FROM social_accounts WHERE account_id = $1`, [h.accountId])).rows.map((x) => [x.zernio_account_id, x.status]));
+  assert.equal(rows.acc_wa2_ig, 'active');
+  assert.equal(rows.acc_wa2, 'active');
+});

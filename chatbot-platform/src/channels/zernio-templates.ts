@@ -39,12 +39,18 @@ export function templateVarCount(components: any[]): number {
  * ¿Se puede enviar desde el panel? Aprobada, con encabezado de texto fijo (sin foto, video o documento, ni variables) y
  * variables numeradas en el cuerpo. Las demás se usan desde Meta o Zernio.
  */
-export function templateSendable(t: Pick<WaTemplate, 'status' | 'components'>): boolean {
-  if (t.status !== 'APPROVED') return false;
+export function templateSendable(t: Pick<WaTemplate, 'status' | 'components'> & { category?: string }): boolean {
+  if (t.status !== 'APPROVED' || upper(t.category) === 'AUTHENTICATION') return false;
   const header = (t.components ?? []).find((c) => upper(c?.type) === 'HEADER');
   if (header && (upper(header.format || 'TEXT') !== 'TEXT' || /\{\{/.test(String(header.text ?? '')))) return false;
+  // Botones que piden datos al enviar (enlace con variable, copiar código, catálogo…): se usan desde Meta.
+  const buttons = (t.components ?? []).find((c) => upper(c?.type) === 'BUTTONS')?.buttons ?? [];
+  if (buttons.some((b: any) => !['QUICK_REPLY', 'URL', 'PHONE_NUMBER'].includes(upper(b?.type)) || /\{\{/.test(String(b?.url ?? '')))) return false;
   return !/\{\{\s*[a-z_]/i.test(templateBody(t.components));
 }
+
+/** Todo el texto que ve el cliente (cuerpo, pie y botones), para revisar que diga cómo darse de baja. */
+export const templateText = (components: any[]) => (components ?? []).flatMap((c) => [c?.text, ...(c?.buttons ?? []).map((b: any) => b?.text)]).filter(Boolean).join('\n');
 /** El cuerpo con sus variables puestas (lo que se guarda en la conversación). */
 export const fillBody = (body: string, params: string[]) => body.replace(/\{\{\s*(\d+)\s*\}\}/g, (_, n) => params[Number(n) - 1] ?? '');
 
@@ -204,6 +210,7 @@ export async function handleTemplateStatus(body: any) {
   const zid = String(body?.account?.accountId ?? body?.account?.id ?? '');
   const t = body?.template ?? {};
   const status = upper(t.status);
+  if (!status) return;
   const reason = String(t.reason ?? '');
   const rows = await query<{ account_id: string; name: string }>(
     `UPDATE wa_templates w SET status = $4, rejection_reason = CASE WHEN $4 = 'REJECTED' AND $5 <> 'NONE' THEN $5 ELSE '' END,
@@ -211,6 +218,12 @@ export async function handleTemplateStatus(body: any) {
        FROM social_accounts s WHERE s.id = w.social_account_id AND s.zernio_account_id = $1 AND w.name = $2 AND w.language = $3
      RETURNING w.account_id, w.name`,
     [zid, String(t.name ?? ''), String(t.language ?? ''), status, reason.slice(0, 500), String(t.templateId ?? '')]);
+  // El aviso llegó antes de guardarla (o se creó fuera del panel): se traen las del número.
+  if (!rows.length) {
+    const sa = await queryOne<{ id: string; account_id: string }>(`SELECT id, account_id FROM social_accounts WHERE zernio_account_id = $1 AND platform = 'whatsapp'`, [zid]);
+    if (sa) await syncTemplates(sa.account_id, sa.id).catch((e) => logEvent({ level: 'warn', source: 'channel', message: `WhatsApp: no se pudieron traer las plantillas: ${e?.message ?? e}`, accountId: sa.account_id }));
+    return;
+  }
   for (const r of rows) {
     const text = STATUS_TEXT[status];
     if (!text) continue;

@@ -9,7 +9,7 @@ import * as store from '../store/index.js';
 import * as astore from './store.js';
 import { renderTemplate } from './templates.js';
 import { zernioNeedsWindow } from '../channels/zernio.js';
-import { fillBody, outgoingTemplate, templateBody, templateForChannel, templateVarCount, type WaTemplate } from '../channels/zernio-templates.js';
+import { fillBody, outgoingTemplate, templateBody, templateForChannel, templateText, templateVarCount, type WaTemplate } from '../channels/zernio-templates.js';
 import type { Appointment, WaTemplateRef } from './types.js';
 
 export interface OutboundOptions {
@@ -86,6 +86,12 @@ export class Outbound {
         }
       }
     }
+    // Dentro de la ventana, un mensaje que solo tiene plantilla (sin texto, foto ni archivo) también sale con ella.
+    if (!template && o.waTemplate && !o.text?.trim() && !o.imageId && !o.attachmentId && channel.type === 'zernio' && channel.config.platform === 'whatsapp') {
+      const t = await templateForChannel(conv.account_id, channel, o.waTemplate.template_id);
+      if (typeof t === 'string') return { sent: false, reason: t };
+      template = t;
+    }
 
     const bot = conv.chatbot_id ? await store.getChatbot(conv.chatbot_id) : null;
     const settings = await astore.getSettings(conv.account_id);
@@ -124,6 +130,13 @@ export class Outbound {
     if (!text && !image && !file && !wa) return { sent: false, reason: 'mensaje vacío' };
     // Pie de baja: toda promoción dice cómo dejar de recibirlas (se añade al texto, o a la leyenda de la foto).
     const footer = promotional && settings.opt_out.enabled && settings.opt_out.footer_enabled ? optOutFooter(settings.opt_out) : '';
+    // A una plantilla no se le puede agregar texto: una promoción solo sale si ella misma dice cómo darse de baja.
+    if (wa && footer && template) {
+      const said = templateText(template.components).toLowerCase();
+      if (!settings.opt_out.keywords.some((k) => k && said.includes(k.toLowerCase()))) {
+        return { sent: false, reason: `la plantilla "${template.name}" no dice cómo darse de baja (agrega en su pie "Responde ${(settings.opt_out.keywords[0] ?? 'BAJA').toUpperCase()} para no recibir más")` };
+      }
+    }
     const textOut = footer && text ? `${text}\n\n${footer}` : text;
     const captionFooter = footer && !text ? footer : '';
 
