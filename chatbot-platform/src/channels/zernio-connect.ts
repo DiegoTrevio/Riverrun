@@ -105,22 +105,26 @@ export async function workspaceChange(newKey: string, apply: boolean): Promise<{
  * Al borrar un negocio: sus cuentas y su perfil se quitan de Zernio (para no seguir pagando por ellas). Se hace en un
  * trabajo aparte, sin cuenta (la cuenta ya no existe), con reintentos.
  */
-export async function zernioCleanup(p: { accounts?: string[]; profiles?: string[] }) {
+export async function zernioCleanup(p: { accounts?: string[]; profiles?: string[]; posts?: string[] }) {
   if (!zernioEnabled()) return;
   const client = clientFor(null, 'background');
   const gone = (e: unknown) => e instanceof ZernioError && e.status === 404;
+  // Lo programado de un negocio borrado no debe salir.
+  for (const id of p.posts ?? []) await client.call('DELETE', `/posts/${encodeURIComponent(id)}`).catch((e) => { if (!gone(e) && !(e instanceof ZernioError && e.status === 400)) throw e; });
   for (const id of p.accounts ?? []) await disconnectAccount(client, id).catch((e) => { if (!gone(e)) throw e; });
   for (const id of p.profiles ?? []) await deleteProfile(client, id).catch((e) => { if (!gone(e)) throw e; });
 }
 
 /** Lo que hay en Zernio de un negocio (antes de borrarlo). */
-export async function zernioFootprint(accountId: string): Promise<{ accounts: string[]; profiles: string[] }> {
+export async function zernioFootprint(accountId: string): Promise<{ accounts: string[]; profiles: string[]; posts: string[] }> {
   const accounts = await query<{ id: string }>(
     `SELECT zernio_account_id AS id FROM social_accounts WHERE account_id = $1
      UNION SELECT config->>'account_id' FROM channels WHERE account_id = $1 AND type = 'zernio' AND coalesce(config->>'account_id', '') <> ''`, [accountId]);
   const profiles = await query<{ id: string }>(
     `SELECT profile_id AS id FROM zernio_profiles WHERE account_id = $1 UNION SELECT zernio_profile_id FROM accounts WHERE id = $1 AND zernio_profile_id <> ''`, [accountId]);
-  return { accounts: accounts.map((r) => r.id), profiles: profiles.map((r) => r.id) };
+  const posts = await query<{ id: string }>(
+    `SELECT zernio_post_id AS id FROM social_publications WHERE account_id = $1 AND zernio_post_id IS NOT NULL AND status IN ('enviando', 'programada', 'publicando')`, [accountId]);
+  return { accounts: accounts.map((r) => r.id), profiles: profiles.map((r) => r.id), posts: posts.map((r) => r.id) };
 }
 
 /**

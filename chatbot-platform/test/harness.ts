@@ -55,6 +55,10 @@ export const zer = {
   reviews: [] as any[],
   /** Comentarios que ya recibieron su respuesta privada (la red permite una). */
   privateReplied: new Set<string>(),
+  /** Publicaciones (POST /posts) por id, llaves de idempotencia ya vistas y redes que fallan al publicar (con su error). */
+  publications: new Map<string, any>(),
+  idem: new Map<string, string>(),
+  postFail: new Map<string, string>(),
 };
 /** Graph de Meta simulado para «Conectar con Facebook»: páginas que devuelve me/accounts y tokens que Meta retiró. */
 export const metaFake = {
@@ -180,6 +184,50 @@ const extServer = http.createServer((req, res) => {
       }
       if (p === '/inbox/reviews' && m === 'GET') return json(200, { success: true, data: zer.reviews.filter((r) => r.accountId === url.searchParams.get('accountId')), pagination: { hasMore: false } });
       if (seg[1] === 'inbox' && seg[2] === 'reviews' && seg[4] === 'reply' && m === 'POST') return json(200, { success: true, reply: { id: `rr_${++ext.n}`, text: body.message } });
+      // Publicaciones: crear (ya o programada; la misma llave devuelve la misma), consultar, cambiar, borrar y reintentar.
+      if (p === '/posts' && m === 'POST') {
+        const key = String(req.headers['idempotency-key'] ?? '');
+        if (key && zer.idem.has(key)) return json(200, { post: zer.publications.get(zer.idem.get(key)!), message: 'Idempotent replay' });
+        for (const pl of body.platforms ?? []) {
+          if (!zer.accounts.get(pl.accountId)) return json(403, { error: { code: 'ACCOUNT_DISCONNECTED', message: 'Account disconnected' } });
+          if (['instagram', 'tiktok', 'youtube', 'pinterest'].includes(pl.platform) && !(body.mediaItems ?? []).length) return json(400, { error: `${pl.platform} requires media` });
+        }
+        const id = `zp_${++ext.n}`;
+        const now = !!body.publishNow;
+        const platforms = (body.platforms ?? []).map((pl: any) => {
+          const fail = zer.postFail.get(pl.platform);
+          const n = ++ext.n;
+          return {
+            platform: pl.platform, accountId: { _id: pl.accountId, platform: pl.platform, username: zer.accounts.get(pl.accountId)?.username }, status: !now ? 'pending' : fail ? 'failed' : 'published',
+            ...(now && !fail ? { platformPostId: `pp_${n}`, platformPostUrl: `https://${pl.platform}.test/p/${n}` } : {}), ...(now && fail ? { errorMessage: fail } : {}),
+          };
+        });
+        const status = !now ? 'scheduled' : platforms.every((x: any) => x.status === 'published') ? 'published' : platforms.some((x: any) => x.status === 'published') ? 'partial' : 'failed';
+        const post = { _id: id, content: body.content, status, scheduledFor: body.scheduledFor ?? null, timezone: body.timezone ?? null, platforms, metadata: body.metadata ?? {} };
+        zer.publications.set(id, post);
+        if (key) zer.idem.set(key, id);
+        return json(status === 'partial' || status === 'failed' ? 207 : 201, { post, message: 'ok' });
+      }
+      if (seg[1] === 'posts' && seg[2]) {
+        const post = zer.publications.get(seg[2]);
+        if (!post) return json(404, { error: 'Post not found' });
+        if (seg[3] === 'retry' && m === 'POST') {
+          post.platforms = post.platforms.map((x: any) => (x.status === 'failed' ? { ...x, status: 'published', platformPostUrl: `https://${x.platform}.test/p/r${++ext.n}`, errorMessage: undefined } : x));
+          post.status = 'published';
+          return json(200, { post });
+        }
+        if (m === 'GET') return json(200, { post });
+        if (m === 'PUT') {
+          if (post.status === 'published') return json(400, { error: 'Published posts cannot be edited' });
+          Object.assign(post, { content: body.content, scheduledFor: body.scheduledFor, timezone: body.timezone });
+          return json(200, { post });
+        }
+        if (m === 'DELETE') {
+          if (post.status === 'published') return json(400, { error: 'Published posts cannot be deleted' });
+          zer.publications.delete(seg[2]);
+          return json(200, { message: 'Post deleted' });
+        }
+      }
       if (p === '/users') return json(200, { currentUserId: zer.userId, users: [] });
       if (p === '/connect/bluesky/credentials') {
         if (body.appPassword === 'mala') return json(400, { error: 'Invalid identifier or password' });

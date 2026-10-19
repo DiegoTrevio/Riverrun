@@ -50,6 +50,7 @@ export const zernioNeedsWindow = (platform: string) => networkOf(platform)?.wind
 export const EVENTS = [
   'message.received', 'message.sent', 'message.failed', 'message.delivered', 'message.read', 'account.connected', 'account.disconnected', 'whatsapp.template.status_updated',
   'comment.received', 'review.new', 'review.updated',
+  'post.scheduled', 'post.published', 'post.failed', 'post.partial', 'post.cancelled', 'post.platform.published', 'post.platform.failed', 'post.platform.deleted',
 ];
 
 /** Nombre con el que se guarda la llave de Zernio desde el panel (Sistema → Redes sociales). */
@@ -89,12 +90,15 @@ export class ZernioClient {
   priority: ZernioPriority = 'interactive';
   constructor(private apiKey: string, private base = config.zernioApiUrl) {}
 
-  async call<T = any>(method: Method, path: string, body?: unknown, opts: { idempotencyKey?: string } = {}): Promise<T> {
+  async call<T = any>(method: Method, path: string, body?: unknown, opts: { idempotencyKey?: string; timeoutMs?: number } = {}): Promise<T> {
     if (!this.apiKey) throw new Error('Zernio no está configurado en esta instalación (falta ZERNIO_API_KEY)');
     let res = await this.send(method, path, body, opts);
+    // Un límite de una cuenta o de la red (p. ej. 25 publicaciones por hora en una cuenta) trae detalles: no es el de la
+    // llave, así que no se frena a todos los negocios ni se repite.
+    const scoped = res.status === 429 && (await res.clone().json().then((d: any) => !!(d?.details ?? d?.error?.details)).catch(() => false));
     // 429: la API rechazó la petición sin procesarla, así que repetirla una vez no duplica mensajes. Una consulta que
     // falló en el servidor de Zernio tampoco cambia nada al repetirla.
-    if (res.status === 429 || (method === 'GET' && res.status >= 500)) {
+    if ((res.status === 429 && !scoped) || (method === 'GET' && res.status >= 500)) {
       const header = res.headers.get('retry-after')?.trim();
       const s = header ? Number(header) : NaN;
       // Zernio dice que se pasó el límite de la llave: todos los procesos esperan a que se reponga.
@@ -140,7 +144,7 @@ export class ZernioClient {
     return { items, complete };
   }
 
-  private async send(method: Method, path: string, body?: unknown, opts: { idempotencyKey?: string } = {}) {
+  private async send(method: Method, path: string, body?: unknown, opts: { idempotencyKey?: string; timeoutMs?: number } = {}) {
     await this.beforeRequest?.();
     await takeZernioBudget(this.priority);
     const res = await fetch(`${this.base}${path}`, {
@@ -151,7 +155,7 @@ export class ZernioClient {
         ...(opts.idempotencyKey ? { 'idempotency-key': opts.idempotencyKey } : {}),
       },
       body: body !== undefined ? JSON.stringify(body) : undefined,
-      signal: AbortSignal.timeout(30000),
+      signal: AbortSignal.timeout(opts.timeoutMs ?? 30000),
     });
     noteZernioLimit(Number(res.headers.get('x-ratelimit-limit')));
     return res;

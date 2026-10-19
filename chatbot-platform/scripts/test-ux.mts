@@ -41,6 +41,18 @@ try {
     [h.accountId, igSocial, uxPost, JSON.stringify({ name: 'Lucía Hernández', username: 'lucia.hdz' }), '¿Cuánto cuesta la suite para el fin de semana largo de noviembre? Somos dos adultos y queremos llevar a nuestro perrito, ¿lo aceptan?']);
   await pool.query(`INSERT INTO social_reviews (account_id, social_account_id, platform, review_id, author, rating, text, created_at_platform) VALUES ($1, $2, 'googlebusiness', 'accounts/1/locations/2/reviews/ux', $3, 2, 'El cuarto estaba sucio y nadie contestó en recepción.', now())`,
     [h.accountId, gbSocial, JSON.stringify({ name: 'Mario' })]);
+  // Publicaciones: una programada para mañana con dos redes y una que salió solo en una.
+  const pubA = (await pool.query(`INSERT INTO social_publications (account_id, status, text, scheduled_for, timezone) VALUES ($1, 'programada', $2, now() + interval '1 day', 'America/Mexico_City') RETURNING id`,
+    [h.accountId, 'Este fin de semana: brunch con música en vivo en la terraza. ¡Reserva tu mesa! #HotelPalmas #Cancún'])).rows[0].id;
+  const pubB = (await pool.query(`INSERT INTO social_publications (account_id, status, text, published_at, timezone) VALUES ($1, 'parcial', $2, now() - interval '2 hours', 'America/Mexico_City') RETURNING id`,
+    [h.accountId, 'Nueva suite con vista al mar'])).rows[0].id;
+  for (const [pub, status, url, error] of [[pubA, 'pendiente', '', ''], [pubB, 'publicada', 'https://instagram.test/p/suite', '']]) {
+    await pool.query(`INSERT INTO social_publication_targets (publication_id, account_id, social_account_id, zernio_account_id, platform, username, status, url, error) VALUES ($1, $2, $3, 'acc_ux_ig', 'instagram', 'hotelpalmas', $4, $5, $6)`,
+      [pub, h.accountId, igSocial, status, url, error]);
+  }
+  await pool.query(`INSERT INTO social_publication_targets (publication_id, account_id, social_account_id, zernio_account_id, platform, username, status, error) VALUES ($1, $2, $3, 'acc_ux_gb', 'googlebusiness', '', 'fallida', 'La imagen no cumple el tamaño mínimo de Google')`,
+    [pubB, h.accountId, gbSocial]);
+  const uxMonth = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Mexico_City', year: 'numeric', month: '2-digit' }).format(new Date());
   const login: any = { superadmin: h.authed };
   for (const role of ['admin', 'agent']) {
     const user = (await h.authed('POST', '/api/users', { account_id: h.accountId, name: `Auditor ${role}`, email: `${role}@auditoria.test`, password: 'auditoria123', role })).json();
@@ -57,7 +69,7 @@ try {
     if (role === 'superadmin') await context.addInitScript((id: string) => localStorage.setItem('cp-account', id), h.accountId);
     return context;
   };
-  const routes = ['agentes', `bot/${h.botId}/instrucciones`, `bot/${h.botId}/preguntas`, `bot/${h.botId}/activacion`, `bot/${h.botId}/conocimiento`, `bot/${h.botId}/imagenes`, `bot/${h.botId}/conexiones`, `bot/${h.botId}/probar`, `bot/${h.botId}/conexiones/${h.channelId}`, `bot/${h.botId}/conexiones/${socialNew.id}`, `bot/${h.botId}/conexiones/${socialOn.id}`, 'conversations', `conversation/${conv.id}`, 'agenda', 'agenda/servicios', `agenda/servicios?id=${service.id}`, 'agenda/equipo', 'agenda/enlaces', 'automation/rules', 'automation/rules/new', 'automation/sequences', 'automation/sequences/new', 'automation/campaigns', 'automation/campaigns/new', 'automation/settings', 'pipeline', 'pipeline/editar/nuevo', 'ajustes', 'integraciones', 'redes', `redes/whatsapp/${waSocial}`, 'comentarios', 'comentarios?tipo=review', 'users', 'consumo', 'logs', 'plan', 'estadisticas', 'notifications', 'password', 'inicio', 'agentes/nuevo', `bot/${h.botId}/empezar`];
+  const routes = ['agentes', `bot/${h.botId}/instrucciones`, `bot/${h.botId}/preguntas`, `bot/${h.botId}/activacion`, `bot/${h.botId}/conocimiento`, `bot/${h.botId}/imagenes`, `bot/${h.botId}/conexiones`, `bot/${h.botId}/probar`, `bot/${h.botId}/conexiones/${h.channelId}`, `bot/${h.botId}/conexiones/${socialNew.id}`, `bot/${h.botId}/conexiones/${socialOn.id}`, 'conversations', `conversation/${conv.id}`, 'agenda', 'agenda/servicios', `agenda/servicios?id=${service.id}`, 'agenda/equipo', 'agenda/enlaces', 'automation/rules', 'automation/rules/new', 'automation/sequences', 'automation/sequences/new', 'automation/campaigns', 'automation/campaigns/new', 'automation/settings', 'pipeline', 'pipeline/editar/nuevo', 'ajustes', 'integraciones', 'redes', `redes/whatsapp/${waSocial}`, 'comentarios', 'comentarios?tipo=review', 'publicaciones', `publicaciones?vista=calendario&mes=${uxMonth}`, 'publicaciones/nueva', `publicaciones/${pubA}`, 'users', 'consumo', 'logs', 'plan', 'estadisticas', 'notifications', 'password', 'inicio', 'agentes/nuevo', `bot/${h.botId}/empezar`];
   const helpScreens: Record<string, string> = { [`bot/${h.botId}/conocimiento`]: '01-importar.jpg', [`bot/${h.botId}/probar`]: '03-probar.jpg', [`conversation/${conv.id}`]: '05-conversacion.jpg', ajustes: '06-ajustes.jpg' };
   for (const role of ['admin', 'superadmin', 'agent']) {
     const context = await contextFor(role); const page = await context.newPage();
@@ -75,7 +87,7 @@ try {
   console.log('Pantallas examinadas:', results.screens.length);
   for (const width of [320, 390, 768, 1024, 1440]) for (const theme of ['light', 'dark'] as const) {
     const context = await contextFor('admin', { viewport: { width, height: 900 }, colorScheme: theme }); const page = await context.newPage();
-    for (const route of ['agentes', 'agentes/nuevo', `bot/${h.botId}/empezar`, `bot/${h.botId}/instrucciones`, `conversation/${conv.id}`, 'conversations', 'automation/sequences/new', 'agenda', 'redes', `redes/whatsapp/${waSocial}`, 'comentarios']) {
+    for (const route of ['agentes', 'agentes/nuevo', `bot/${h.botId}/empezar`, `bot/${h.botId}/instrucciones`, `conversation/${conv.id}`, 'conversations', 'automation/sequences/new', 'agenda', 'redes', `redes/whatsapp/${waSocial}`, 'comentarios', 'publicaciones', `publicaciones?vista=calendario&mes=${uxMonth}`, 'publicaciones/nueva']) {
       await page.goto(`${base}/#/${route}`); await page.locator('.main h1').waitFor(); await page.waitForTimeout(80);
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1);
       results.responsive.push({ width, theme, route, overflow });

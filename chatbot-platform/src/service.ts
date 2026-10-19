@@ -34,6 +34,7 @@ import { ZernioEventQueue } from './channels/zernio-events.js';
 import { zernioCleanup } from './channels/zernio-connect.js';
 import { configureEngagement, isPrivateReplyEcho, runAutoReply, runDigest, syncEngagement } from './social/engagement.js';
 import { suggestReply } from './social/replies.js';
+import { checkPublication, configurePosts } from './social/posts.js';
 import { fillBody, outgoingTemplate, templateBody, templateForChannel, templateVarCount } from './channels/zernio-templates.js';
 import { renderTemplate } from './automation/templates.js';
 import { DeliveryUncertain,currentOperation } from './engine/coordination.js';
@@ -122,6 +123,7 @@ export class ChatService {
     // Los avisos de desconexión a WhatsApp adicionales salen por otro WhatsApp conectado de la cuenta.
     setAlertWhatsapp((accountId, phone, text, excludeChannelId) => this.sendInternalWhatsapp(accountId, phone, text, null, excludeChannelId));
     configureEngagement({ alertTeam: (accountId, o) => this.automator.alertTeam(accountId, o) });
+    configurePosts({ alertTeam: (accountId, o) => this.automator.alertTeam(accountId, o) });
     this.queue = new ConversationQueue((id, a) => this.runConversation(id, a.restarts), 2, config.queue.retryMs, (id) => this.aiUnavailable(id));
     this.inbox = new InboundQueue((channel,msg)=>this.handleIncoming(channel,msg),channel=>this.automator.alertTeam(channel.account_id,{title:'⚠️ Recepción pendiente de revisión',body:'No se pudo completar la recepción de un mensaje. Revisa los trabajos pendientes de este perfil.',kind:'alert',link:'#/logs'}));
     this.scheduler = new Scheduler({
@@ -139,6 +141,7 @@ export class ChatService {
       zernio_cleanup: (p) => zernioCleanup(p),
       social_sync: (p) => syncEngagement(String(p.social_account_id ?? '')),
       social_digest: (p) => runDigest(p),
+      social_post_check: (p) => checkPublication(p),
       social_autoreply: (p) => runAutoReply(p, (accountId, kind, id) => suggestReply(this.ai, accountId, kind, id)).catch((e) => {
         // Sin presupuesto de IA no se reintenta: lo contesta una persona.
         if (e instanceof AiBudgetBlocked) return;

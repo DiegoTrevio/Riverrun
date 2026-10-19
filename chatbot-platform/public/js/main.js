@@ -77,6 +77,7 @@ export async function render() {
     else if (parts[0] === 'redes' && parts[1] === 'whatsapp' && parts[2]) await view('wa-templates', 'viewWaTemplates', content, parts[2]);
     else if (parts[0] === 'redes') await view('social-accounts', 'viewSocialAccounts', content, params);
     else if (parts[0] === 'comentarios') await view('social-inbox', 'viewSocialInbox', content, params);
+    else if (parts[0] === 'publicaciones') await view('social-posts', 'viewSocialPosts', content, parts[1], params);
     else if (parts[0] === 'plan') await view('billing', 'viewPlan', content, params);
     else if (parts[0] === 'planes') await view('billing', 'viewPlans', content);
     else if (parts[0] === 'estadisticas') await view('analytics', 'viewAnalytics', content, params);

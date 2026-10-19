@@ -310,7 +310,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     const zernio = await zernioFootprint(acc.id);
     await store.deleteAccount(acc.id);
     // Sus redes y su perfil se quitan de Zernio aparte (con reintentos): el negocio ya no existe.
-    if (zernio.accounts.length || zernio.profiles.length) await scheduleJob({ account_id: null, type: 'zernio_cleanup', payload: zernio, run_at: new Date() });
+    if (zernio.accounts.length || zernio.profiles.length || zernio.posts.length) await scheduleJob({ account_id: null, type: 'zernio_cleanup', payload: zernio, run_at: new Date() });
     for (const ch of whatsapps) await releaseWhatsapp(ch, { accountDeleted: true });
     for (const i of images) await fsp.rm(imageAbsolutePath(i), { force: true });
     await logEvent({ level: 'warn', source: 'admin', message: `Cuenta eliminada: ${acc.name}` });

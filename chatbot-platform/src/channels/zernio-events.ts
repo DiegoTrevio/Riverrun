@@ -9,6 +9,7 @@ import type { Channel } from '../types.js';
 import { eventAccountId, eventProfileId, networkOf } from './zernio.js';
 import { handleTemplateStatus } from './zernio-templates.js';
 import { handleCommentEvent, handleReviewEvent } from '../social/engagement.js';
+import { handlePostEvent } from '../social/posts.js';
 
 /**
  * Eventos del webhook único de Zernio. Cada evento se guarda una sola vez por su id: Zernio reintenta hasta 7 veces con
@@ -23,6 +24,7 @@ const MESSAGE_EVENTS = new Set(['message.received', 'message.sent']);
 const QUEUED_EVENTS = new Set([
   'account.connected', 'account.disconnected', 'message.failed', 'message.delivered', 'message.read', 'whatsapp.template.status_updated',
   'comment.received', 'review.new', 'review.updated',
+  'post.scheduled', 'post.published', 'post.failed', 'post.partial', 'post.cancelled', 'post.platform.published', 'post.platform.failed', 'post.platform.deleted',
 ]);
 const MAX_ATTEMPTS = 6;
 
@@ -181,6 +183,7 @@ export async function handleZernioEvent(event: string, body: any) {
   if (event === 'whatsapp.template.status_updated') return handleTemplateStatus(body);
   if (event === 'comment.received') return handleCommentEvent(body);
   if (event === 'review.new' || event === 'review.updated') return handleReviewEvent(body);
+  if (event.startsWith('post.')) return handlePostEvent(event, body);
 }
 
 /** Cola de los eventos que no son mensajes: varios procesos no toman el mismo (SKIP LOCKED) y lo que falla se reintenta. */

@@ -153,6 +153,33 @@ la IA) y `src/routes/social-inbox.ts`; en el panel, **Comentarios** (`#/comentar
   panel lo explica). Las lecturas de comentarios y reseñas tienen su propio tope en Zernio (1800 por hora por cuenta de
   Zernio); por eso la revisión diaria va de pocas cuentas a la vez y el panel lee de la base, no de Zernio.
 
+## Publicaciones
+
+`src/social/posts.ts` y `src/routes/social-posts.ts`; en el panel, **Publicaciones** (`#/publicaciones`, solo
+administradores), con lista por día y calendario del mes.
+
+- **Escribir una vez:** texto general, fotos o video y las cuentas donde sale; cada cuenta puede llevar su propio texto
+  y, según la red, título (YouTube, Pinterest, Reddit) o enlace (Pinterest). El contador de cada red se pone en rojo si
+  se pasa (X 280 sin cuenta de pago, Bluesky 300, Threads 500, LinkedIn 3000, Google 1500, Instagram y TikTok 2200…) y
+  avisa si falta la foto (Instagram, TikTok, Pinterest) o el video (YouTube). El servidor valida lo mismo antes de
+  llamar a Zernio; un borrador puede quedar incompleto.
+- **Archivos:** se suben al servidor, se revisa su tipo real (JPG, PNG, WEBP o MP4) y se pasan a Zernio con la extensión
+  correcta. Cada archivo queda firmado para el negocio: una publicación no puede usar archivos de otro ni direcciones
+  inventadas.
+- **Publicar ya o programar** a una hora del horario del negocio (al menos 2 minutos adelante; 20 con YouTube, que sube
+  el video antes). TikTok llega a la bandeja de la cuenta (Creator Inbox) y se termina en la app. Zernio acepta 25
+  publicaciones por hora en cada cuenta; el panel lo avisa antes.
+- **Un solo envío:** el formulario lleva un id (enviarlo dos veces devuelve la misma publicación), la publicación se
+  aparta mientras se habla con Zernio y cada envío lleva `Idempotency-Key`. Si Zernio no contesta, queda *Enviando…* y
+  la revisión la vuelve a mandar con la misma llave (Zernio no la duplica) o, pasadas 23 h, la marca como fallida.
+- **Estado por red:** Zernio avisa por el webhook (`post.*` y `post.platform.*`, sin cuenta arriba: se ubica por el id de
+  la publicación y se exige que el perfil del evento sea del negocio) y, si no avisa, una revisión le pregunta. Un
+  evento más viejo no cambia lo guardado; una red publicada solo pasa a fallida si Zernio lo dice después. Si falla
+  alguna red, el equipo recibe un aviso (una vez) y se puede **reintentar**.
+- **Cambiar o cancelar** lo programado (hasta 2 minutos antes): se cambia o se quita en Zernio. Lo publicado no se
+  cancela; se puede quitar de la lista (en la red sigue). Al borrar un negocio, lo programado se quita de Zernio.
+- En `OUTBOUND_MODE=sandbox` solo se guardan borradores. Un negocio suspendido o en pausa no publica.
+
 ## Ventana de 24 horas
 
 Solo Meta la exige: Instagram, Messenger y WhatsApp oficial. Fuera de las 24 h desde el último mensaje del cliente no se

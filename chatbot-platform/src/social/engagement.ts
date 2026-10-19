@@ -526,7 +526,7 @@ async function loadReview(accountId: string, id: string) {
 }
 
 /** En modo de prueba (OUTBOUND_MODE=sandbox) nada se publica en las redes. */
-function assertLive() {
+export function assertLive() {
   if (config.outbound.mode !== 'live') throw new HttpError(403, 'OUTBOUND_MODE=sandbox: en modo de prueba no se publica nada en las redes.');
 }
 
