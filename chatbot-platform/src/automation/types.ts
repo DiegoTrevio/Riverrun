@@ -207,6 +207,13 @@ export const ActionSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('start_sequence'), sequence_id: z.string().uuid() }),
   z.object({ type: z.literal('stop_sequences') }),
   z.object({ type: z.literal('webhook'), url: z.string().url().max(500) }),
+  /** Envía la conversación a la app del cliente (sus webhooks de Integraciones): el resumen, completa o ambos. */
+  z.object({
+    type: z.literal('send_conversation'),
+    content: z.enum(['summary', 'full', 'both']).default('summary'),
+    /** Webhook de destino ('' = todas las apps conectadas que reciben conversaciones). */
+    endpoint_id: z.union([z.string().uuid(), z.literal('')]).default(''),
+  }),
 ]);
 export type Action = z.infer<typeof ActionSchema>;
 

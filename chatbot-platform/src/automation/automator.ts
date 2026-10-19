@@ -15,6 +15,7 @@ import { matchKeyword } from '../engine/engine.js';
 import { imagesBeforeReply } from '../engine/images.js';
 import { normalize } from '../engine/text.js';
 import { dispatchEvent, eventData, publicEventFor } from '../integrations/webhooks.js';
+import { CONTENT_LABEL, sendConversation } from '../integrations/conversation-export.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
@@ -486,6 +487,14 @@ export class Automator {
         return;
       case 'stop_sequences':
         await astore.stopEnrollments(ctx.conv.id, `regla "${rule.name}"`);
+        return;
+      case 'send_conversation':
+        if (isSim) return this.simulated(ctx, `📤 Enviaría ${CONTENT_LABEL[a.content]} a tu app — ${rule.name}`);
+        await sendConversation(ctx.conv.account_id, ctx.conv.id, {
+          content: a.content, endpointId: a.endpoint_id, refresh: (id) => this.chat.summarize(id), reason: `regla "${rule.name}"`,
+          // Qué la disparó: la app puede decidir qué hacer según el motivo (etiqueta, intención, objetivo…).
+          trigger: { rule: rule.name, event: e.type, ...(e.tag ? { tag: e.tag } : {}), ...(e.field ? { field: e.field } : {}), ...(e.intents?.length ? { intents: e.intents } : {}), ...(e.step ? { step: e.step } : {}) },
+        });
         return;
       case 'webhook':
         if (isSim) return this.simulated(ctx, `🔗 Se llamaría al webhook ${a.url}`);

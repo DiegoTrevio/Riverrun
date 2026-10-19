@@ -29,8 +29,13 @@ async function automationRefs() {
     api('GET', withAcct('/api/users')),
     api('GET', withAcct('/api/services')),
   ]);
-  const [files, pipelines] = await Promise.all([api('GET', withAcct('/api/attachments')), api('GET', withAcct('/api/pipelines'))]);
-  return { bots, sequences, users: users.filter((u) => u.account_id), services, pipelines, images: [], files, imagesLoaded: false, imageRequest: null };
+  const [files, pipelines, apps] = await Promise.all([
+    api('GET', withAcct('/api/attachments')),
+    api('GET', withAcct('/api/pipelines')),
+    // Apps conectadas (webhooks) para "Enviar la conversación a tu app"; sin perfil elegido no hay lista.
+    api('GET', withAcct('/api/webhook-endpoints')).catch(() => []),
+  ]);
+  return { bots, sequences, users: users.filter((u) => u.account_id), services, pipelines, apps, images: [], files, imagesLoaded: false, imageRequest: null };
 }
 
 /**
@@ -75,8 +80,14 @@ export const ACTIONS = {
   create_task: 'Crear pendiente o nota',
   start_sequence: 'Iniciar secuencia',
   stop_sequences: 'Detener secuencias',
+  send_conversation: 'Enviar la conversación a tu app',
   webhook: 'Enviar a otro sistema (webhook)',
 };
+
+/** Qué se envía a la app: el resumen, todos los mensajes o ambos. */
+const CONTENT_OPTIONS = [['summary', 'El resumen (con análisis y datos del cliente)'], ['full', 'La conversación completa (todos los mensajes)'], ['both', 'Ambos: resumen y conversación completa']];
+const appLabel = (ep) => { try { return ep.description || new URL(ep.url).host; } catch { return ep.description || ep.url; } };
+const receivesConversations = (ep) => ep.active && (ep.events.includes('*') || ep.events.includes('conversation.sent'));
 
 const CONDITIONS = {
   channel: 'Canal',
@@ -117,6 +128,8 @@ const RULE_TEMPLATES = [
   { name: 'Palabra → activar al asistente', trigger: { type: 'message_received', match: 'keywords', keywords: ['menu', 'hola asistente'] }, actions: [{ type: 'resume_bot' }] },
   { name: 'Palabra → enviar foto', trigger: { type: 'message_received', match: 'keywords', keywords: ['menu', 'catalogo'] }, actions: [{ type: 'send_message', text: '', image_id: '' }] },
   { name: 'Objetivo cumplido → reporte al equipo', trigger: { type: 'goal_completed' }, actions: [{ type: 'send_report', roles: ['admin'], note: 'Objetivo cumplido' }] },
+  { name: 'Objetivo cumplido → resumen a mi app', trigger: { type: 'goal_completed' }, actions: [{ type: 'send_conversation', content: 'summary', endpoint_id: '' }] },
+  { name: 'Marcada por el equipo → conversación completa a mi app', trigger: { type: 'tag_added', tag: 'enviar-a-mi-app' }, actions: [{ type: 'send_conversation', content: 'full', endpoint_id: '' }] },
   { name: 'Agradecer cita agendada', trigger: { type: 'appointment_booked' }, actions: [{ type: 'send_message', text: 'Te esperamos el {{cita.fecha}} a las {{cita.hora}} 🙌', delay_minutes: 1 }] },
 ];
 
@@ -288,6 +301,18 @@ function actionFields(a, refs) {
     case 'start_sequence':
       a.sequence_id ??= refs.sequences[0]?.id || '';
       return [refs.sequences.length ? field('Secuencia', select(a, 'sequence_id', refs.sequences.map((s) => [s.id, s.name]))) : h('p', { class: 'muted' }, 'Primero crea una secuencia.')];
+    case 'send_conversation': {
+      a.content ??= 'summary'; a.endpoint_id ??= '';
+      const apps = refs.apps || [];
+      const none = a.endpoint_id ? !apps.some((ep) => ep.id === a.endpoint_id && ep.active) : !apps.some(receivesConversations);
+      return [
+        h('div', { class: 'grid' },
+          field('Qué enviar', select(a, 'content', CONTENT_OPTIONS)),
+          field('A qué app', select(a, 'endpoint_id', [['', 'Todas las conectadas que reciben conversaciones'], ...apps.map((ep) => [ep.id, `${appLabel(ep)}${ep.active ? '' : ' (apagada)'}`])]))),
+        none ? h('p', { class: 'banner warn', style: 'margin:0 0 8px' }, 'Todavía no hay una app conectada que reciba conversaciones. ', h('a', { href: '#/integraciones' }, 'Conéctala en Integraciones'), ' (webhook con el evento «Conversación enviada a tu app»).') : null,
+        h('p', { class: 'small muted', style: 'margin:0' }, 'Llega a tu app como el evento conversation.sent, firmado y con reintentos, e incluye qué lo disparó. Tú decides cuándo con el disparador y las condiciones: una etiqueta que pone tu equipo, una intención del cliente, el objetivo cumplido o el paso a una persona. Si incluye el resumen, se actualiza antes de enviar.'),
+      ];
+    }
     case 'webhook':
       a.url ??= '';
       return [field('URL', text(a, 'url', { placeholder: 'https://hook.n8n.io/…' }), 'Se envía un POST con los datos del cliente, firmado con la cabecera X-Signature (clave en Ajustes → Horario y avisos).')];

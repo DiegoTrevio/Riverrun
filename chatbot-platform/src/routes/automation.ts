@@ -6,7 +6,7 @@ import { assertAccount, conversationFor, HttpError, notFound, requireRole, scope
 import * as astore from '../automation/store.js';
 import { AccountSettingsSchema, AutomationBodySchema, SequenceBodySchema, type Action, type AutomationBody } from '../automation/types.js';
 import { config } from '../config.js';
-import { query } from '../db.js';
+import { query, queryOne } from '../db.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
@@ -41,6 +41,10 @@ async function checkReferences(accountId: string, body: { chatbot_id?: string | 
     if ((a.type === 'alert_team' || a.type === 'send_report') && a.user_ids.length) {
       const team = await astore.teamMembers(accountId);
       if (a.user_ids.some((id) => !team.some((u) => u.id === id))) throw new HttpError(400, 'Un usuario no pertenece a la cuenta');
+    }
+    if (a.type === 'send_conversation' && a.endpoint_id) {
+      const ep = await queryOne(`SELECT 1 FROM webhook_endpoints WHERE id = $1 AND account_id = $2`, [a.endpoint_id, accountId]);
+      if (!ep) throw new HttpError(400, 'La app elegida no pertenece a la cuenta');
     }
   }
 }

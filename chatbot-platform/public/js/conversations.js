@@ -493,7 +493,8 @@ export async function viewConversation(root, id, opts = {}) {
               toast('Reporte copiado');
             } catch (e) { toast(e.message || 'No se pudo copiar', true); }
           } }, 'Copiar'),
-          h('button', { class: 'small primary', onclick: () => sendReportDialog(id, data) }, '✉ Enviar reporte')),
+          h('button', { class: 'small primary', onclick: () => sendReportDialog(id, data) }, '✉ Enviar reporte'),
+          h('button', { class: 'small', onclick: () => sendToAppDialog(id) }, '↗ Enviar a mi app')),
         pipelineCard(data.pipeline),
         requestsCard(data.requests),
         h('details', { class: 'small' }, h('summary', {}, 'Datos guardados en esta conversación'), h('div', { class: 'pre' }, Object.entries(c.data || {}).map(([key, value]) => `${key}: ${value}`).join('\n') || 'Aún no se han recopilado datos.')),
@@ -521,6 +522,37 @@ export async function viewConversation(root, id, opts = {}) {
   poll(() => load(), 5000, root);
 }
 
+
+/** Ventana para enviar la conversación a la app del negocio (sus webhooks): el resumen, completa o ambos. */
+async function sendToAppDialog(id) {
+  const apps = await run(() => api('GET', `/api/conversations/${id}/app-destinations`));
+  if (!apps) return;
+  const receiving = apps.filter((a) => a.receives_conversations);
+  const b = { content: 'summary', endpoint_id: '' };
+  if (!receiving.length) {
+    await dialog('Enviar a mi app', h('div', {},
+      h('p', {}, 'Todavía no hay una app conectada que reciba conversaciones.'),
+      isAdmin() ? h('p', { class: 'small muted' }, 'Conéctala en ', h('a', { href: '#/integraciones' }, 'Ajustes → Integraciones'), ': agrega un webhook con el evento «Conversación enviada a tu app».') : h('p', { class: 'small muted' }, 'Pídele a un administrador que la conecte en Integraciones.')), 'Cerrar');
+    return;
+  }
+  const dlg = h('dialog', { class: 'card', style: 'max-width:520px;width:92vw' });
+  const close = () => { dlg.close(); dlg.remove(); };
+  const send = h('button', { class: 'primary', onclick: async () => {
+    send.disabled = true;
+    try {
+      const r = await run(() => api('POST', `/api/conversations/${id}/send-to-app`, b));
+      if (r) { toast(r.sent === 1 ? 'Enviada a tu app' : `Enviada a ${r.sent} apps`); close(); }
+    } finally { send.disabled = false; }
+  } }, 'Enviar');
+  dlg.append(
+    h('h2', { style: 'margin-top:0' }, 'Enviar la conversación a tu app'),
+    field('Qué enviar', select(b, 'content', [['summary', 'El resumen (con análisis y datos del cliente)'], ['full', 'La conversación completa (todos los mensajes)'], ['both', 'Ambos']])),
+    receiving.length > 1 ? field('A qué app', select(b, 'endpoint_id', [['', 'Todas las conectadas'], ...receiving.map((a) => [a.id, a.label])])) : h('p', { class: 'small muted' }, `Se envía a: ${receiving[0].label}`),
+    h('p', { class: 'small muted' }, 'Si eliges el resumen, se actualiza antes de enviar. Para que se envíe solo, crea una regla en Automatización con la acción «Enviar la conversación a tu app».'),
+    h('div', { class: 'row', style: 'justify-content:flex-end;margin-top:10px' }, h('button', { onclick: close }, 'Cancelar'), send));
+  document.body.append(dlg);
+  dlg.showModal();
+}
 
 /** Ventana para enviar el reporte a personas del equipo (y, si es administrador, a correos o WhatsApp externos). */
 async function sendReportDialog(id) {
