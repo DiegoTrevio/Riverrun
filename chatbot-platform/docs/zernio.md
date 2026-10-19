@@ -60,7 +60,12 @@ En **Ajustes → Redes sociales** el negocio ve todas sus redes conectadas (foto
 - Telegram y Bluesky terminan en su conexión (código para el bot o contraseña de aplicación).
 
 Cada plan limita cuántas redes se conectan (`social_accounts` en **Planes y cobro**; en la prueba, `TRIAL_MAX_SOCIAL_ACCOUNTS`,
-2 por omisión). Reconectar una que ya tiene no cuenta como nueva.
+2 por omisión), por cualquier camino: "Redes sociales", la conexión de un agente o el enlace. Una red que ya no cabe se
+quita de Zernio en el momento (para no pagar por ella) y el negocio ve el aviso de su plan. Reconectar una que ya tiene
+no cuenta como nueva.
+
+**Desconectar** quita la red primero en Zernio: si Zernio falla, se avisa y la red sigue como estaba (nunca queda
+"desconectada" en el panel mientras sigue activa y cobrándose en Zernio).
 
 ## Llamadas por minuto compartidas
 
@@ -98,7 +103,8 @@ envían campañas ni avisos por esas redes. Telegram, X, Bluesky y Reddit no la 
 - **Conectar una red tú mismo:** en el panel de Zernio, dentro del perfil del negocio (`externalId` = id del negocio).
   Se adopta sola en cuanto Zernio avisa, o al pulsar *Sincronizar*.
 - **Sincronizar:** trae de Zernio las cuentas del perfil; adopta las nuevas y marca *desconectadas* las que ya no están
-  (avisando en su conexión de mensajes).
+  (avisando en su conexión de mensajes). Solo marca desconectadas con la lista completa de Zernio, y nunca las que
+  cambiaron mientras sincronizaba.
 - **Desconectar todo:** quita en Zernio todas las redes del negocio (p. ej. si dejó de pagar). El perfil se conserva.
 - **Webhook:** *Ver entregas* muestra lo que Zernio intentó enviar en los últimos 30 días; *Reenviar* repite una entrega
   fallida (con el mismo id: si ya se había procesado, no se duplica).

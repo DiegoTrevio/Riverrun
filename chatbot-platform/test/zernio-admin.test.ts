@@ -267,3 +267,66 @@ t('presupuesto compartido: lo de segundo plano deja libre el 30 %; un 429 de Zer
   assert.equal(me.currentUserId, zer.userId);
   assert.equal(ext.requests.filter((r) => r.path === '/api/v1/users').length - before, 2);
 });
+
+t('si Zernio no quita la cuenta, no se dice "desconectada"; un error de Zernio llega como aviso claro', async () => {
+  const li = (await owner('GET', '/api/social-accounts')).json().accounts.find((a: any) => a.platform === 'linkedin');
+  ext.fail.add('/api/v1/accounts/acc_palmas_li');
+  try {
+    const r = await owner('POST', `/api/social-accounts/${li.id}/disconnect`);
+    assert.equal(r.statusCode, 502);
+    assert.match(r.json().error, /No se pudo desconectar en Zernio/);
+    assert.equal((await pool.query(`SELECT status FROM social_accounts WHERE id = $1`, [li.id])).rows[0].status, 'active');
+    assert.ok(zer.accounts.has('acc_palmas_li'));
+  } finally {
+    ext.fail.delete('/api/v1/accounts/acc_palmas_li');
+  }
+  // Sincronizar con Zernio caído: aviso claro y nada se marca como desconectado.
+  ext.fail.add('/api/v1/accounts');
+  try {
+    const r = await h.authed('POST', `/api/system/zernio/tenants/${h.accountId}/sync`);
+    assert.equal(r.statusCode, 502);
+    assert.match(r.json().error, /Zernio respondió con un error/);
+    assert.equal((await pool.query(`SELECT count(*)::int AS n FROM social_accounts WHERE account_id = $1 AND status = 'disconnected'`, [h.accountId])).rows[0].n, 0);
+  } finally {
+    ext.fail.delete('/api/v1/accounts');
+  }
+  assert.equal((await owner('POST', '/api/social-accounts/no-es-un-id/disconnect')).statusCode, 400);
+  assert.equal((await h.authed('POST', '/api/system/zernio/tenants/no-es-un-id/sync')).statusCode, 400);
+});
+
+t('el límite de redes también se respeta al conectar desde la conexión del agente (y la que no cabe se quita de Zernio)', async () => {
+  const used = (await owner('GET', '/api/social-accounts')).json().limit.used;
+  await pool.query(`UPDATE accounts SET limits_override = $2 WHERE id = $1`, [h.accountId, { social_accounts: used }]);
+  try {
+    const c = (await owner('POST', '/api/channels', { type: 'zernio', name: 'Reddit', config: { platform: 'reddit' } })).json();
+    assert.equal((await owner('POST', `/api/channels/${c.id}/zernio/connect`, {})).statusCode, 200);
+    const cfg = (await store.getChannel(c.id))!.config;
+    zAccount('acc_palmas_rd', cfg.profile_id, 'reddit');
+    const r = await h.app.inject({ method: 'GET', url: `/zernio/callback/${c.webhook_token}/${cfg.connect_state}?accountId=acc_palmas_rd` });
+    assert.match(String(r.headers.location), /zernio=limit$/);
+    assert.ok(!zer.accounts.has('acc_palmas_rd'), 'se quitó de Zernio para no pagar por ella');
+    assert.equal((await pool.query(`SELECT 1 FROM social_accounts WHERE zernio_account_id = 'acc_palmas_rd'`)).rowCount, 0);
+    assert.equal((await store.getChannel(c.id))!.config.account_id, '');
+  } finally {
+    await pool.query(`UPDATE accounts SET limits_override = '{}' WHERE id = $1`, [h.accountId]);
+  }
+});
+
+t('Reconectar Telegram vuelve a su misma conexión (no crea otra ni cuenta como red nueva)', async () => {
+  const tg = (await owner('POST', '/api/social-accounts/connect', { platform: 'telegram' })).json();
+  await pool.query(`UPDATE channels SET config = config || '{"account_id":"acc_palmas_tg"}'::jsonb WHERE id = $1`, [tg.channel_id]);
+  const row = (await pool.query(
+    `INSERT INTO social_accounts (account_id, zernio_account_id, profile_id, platform, status, channel_id) VALUES ($1, 'acc_palmas_tg', $2, 'telegram', 'needs_reconnect', $3) RETURNING id`,
+    [h.accountId, await profileOf(h.accountId), tg.channel_id])).rows[0];
+  const channels = (await pool.query(`SELECT count(*)::int AS n FROM channels WHERE account_id = $1`, [h.accountId])).rows[0].n;
+  const used = (await owner('GET', '/api/social-accounts')).json().limit.used;
+  await pool.query(`UPDATE accounts SET limits_override = $2 WHERE id = $1`, [h.accountId, { social_accounts: used }]);
+  try {
+    const r = await owner('POST', '/api/social-accounts/connect', { platform: 'telegram', reconnect: row.id });
+    assert.equal(r.statusCode, 200, r.body);
+    assert.deepEqual(r.json(), { kind: 'channel', channel_id: tg.channel_id });
+    assert.equal((await pool.query(`SELECT count(*)::int AS n FROM channels WHERE account_id = $1`, [h.accountId])).rows[0].n, channels);
+  } finally {
+    await pool.query(`UPDATE accounts SET limits_override = '{}' WHERE id = $1`, [h.accountId]);
+  }
+});

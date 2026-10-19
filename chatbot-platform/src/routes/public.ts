@@ -9,6 +9,7 @@ import { WEBCHAT_SESSION_RE, newWebchatSession } from '../channels/webchat.js';
 import { eventAccountId, platformWebhookSecret, verifySignature } from '../channels/zernio.js';
 import { receiveZernioEvent } from '../channels/zernio-events.js';
 import { saveZernioAccount, ZernioOwnershipError } from '../channels/zernio-connect.js';
+import { HttpError } from '../access.js';
 import { config } from '../config.js';
 import { query } from '../db.js';
 import { toPlainText } from '../engine/text.js';
@@ -160,6 +161,7 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
       await saveZernioAccount(channel, { id: String(q.accountId), username: String(q.username ?? '') });
     } catch (e: any) {
       if (e instanceof ZernioOwnershipError) return reply.redirect(`${panel}?zernio=${e.code}`);
+      if (e instanceof HttpError && e.issues?.includes('limit_reached')) return reply.redirect(`${panel}?zernio=limit`);
       await logEvent({ level: 'error', source: 'channel', message: `Zernio: no se pudo guardar la cuenta conectada: ${e?.message ?? e}`, accountId: channel.account_id, channelId: channel.id });
       return reply.redirect(`${panel}?zernio=error`);
     }

@@ -5,12 +5,12 @@ import { rateLimited } from '../auth.js';
 import { assertWithinLimit, effectiveLimits, usageOf } from '../billing/limits.js';
 import { mergeChannelConfig } from '../channels/index.js';
 import { metaConnectEnabled } from '../channels/meta-connect.js';
-import { networkOf, zernioEnabled } from '../channels/zernio.js';
+import { networkOf, ZernioError, zernioEnabled } from '../channels/zernio.js';
 import {
   connectAuthUrl, connectSession, createConnectSession, disconnectAllTenant, disconnectSocialAccount, finishConnect, listSocialAccounts, orphanProfiles,
   redeliverWebhook, setSocialAgent, syncTenant, webhookLogs, zernioHandlesDm, zernioTenants, type FinishCode,
 } from '../channels/zernio-accounts.js';
-import { zernioBudgetStatus } from '../channels/zernio-budget.js';
+import { ZernioBusyError, zernioBudgetStatus } from '../channels/zernio-budget.js';
 import { accountProfile } from '../channels/zernio-connect.js';
 import { config } from '../config.js';
 import { query } from '../db.js';
@@ -28,6 +28,19 @@ import { parse } from './util.js';
 const zernioOn = () => {
   if (!zernioEnabled()) throw new HttpError(400, 'Las redes sociales no están activadas en esta instalación. Pide al administrador que configure Zernio.');
 };
+
+/** Un error de Zernio llega como un aviso claro (no como "error interno"). */
+async function viaZernio<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (e: any) {
+    if (e instanceof ZernioBusyError) throw new HttpError(503, 'Zernio está ocupado en este momento; inténtalo de nuevo en un minuto.');
+    if (e instanceof ZernioError) throw new HttpError(502, `Zernio respondió con un error: ${e.message}`);
+    throw e;
+  }
+}
+
+const idParam = (req: any) => parse(z.object({ id: z.string().uuid() }), req.params).id;
 
 /** El agente elegido debe ser del mismo negocio. */
 async function checkBot(user: User, accountId: string, chatbotId: string | null | undefined) {
@@ -62,7 +75,14 @@ export async function socialRoutes(api: FastifyInstance) {
     if (!network) throw new HttpError(400, 'Elige una red válida');
     if (network.flow !== 'oauth') {
       if (!zernioHandlesDm(network.id)) throw new HttpError(400, `${network.label} no se puede conectar aquí`);
-      await assertWithinLimit(accountId, 'social_accounts');
+      // Reconectar: se vuelve a su misma conexión de mensajes (no cuenta como una red nueva).
+      if (b.reconnect) {
+        const own = (await query<{ channel_id: string | null; platform: string }>(`SELECT channel_id, platform FROM social_accounts WHERE id = $1 AND account_id = $2`, [b.reconnect, accountId]))[0];
+        if (!own || own.platform !== network.id) throw new HttpError(404, 'Esa red no está en este negocio');
+        if (own.channel_id) return { kind: 'channel', channel_id: own.channel_id };
+      } else {
+        await assertWithinLimit(accountId, 'social_accounts');
+      }
       // Una conexión de esa red que espera cuenta se reutiliza; si no, se crea.
       const waiting = await query<{ id: string }>(
         `SELECT id FROM channels WHERE account_id = $1 AND type = 'zernio' AND config->>'platform' = $2 AND coalesce(config->>'account_id', '') = '' ORDER BY created_at LIMIT 1`, [accountId, network.id]);
@@ -78,7 +98,7 @@ export async function socialRoutes(api: FastifyInstance) {
     const { token } = await createConnectSession(accountId, network.id, { kind: 'panel', chatbotId: b.chatbot_id ?? null, userId: req.user.id, reconnect: b.reconnect });
     const session = (await connectSession(token))!;
     try {
-      return { kind: 'oauth', authUrl: await connectAuthUrl(session, token) };
+      return { kind: 'oauth', authUrl: await viaZernio(() => connectAuthUrl(session, token)) };
     } catch (e: any) {
       await logEvent({ level: 'error', source: 'channel', message: `Zernio: no se pudo iniciar la conexión de ${network.label}: ${e?.message ?? e}`, accountId });
       throw new HttpError(400, e?.message ?? String(e));
@@ -89,20 +109,20 @@ export async function socialRoutes(api: FastifyInstance) {
     const b = parse(z.object({ chatbot_id: z.string().uuid().nullable(), account_id: z.string().uuid().optional() }), req.body ?? {});
     const accountId = await targetAccount(req.user, b.account_id ?? req.query?.account_id);
     await checkBot(req.user, accountId, b.chatbot_id);
-    await setSocialAgent(accountId, String(req.params.id), b.chatbot_id);
+    await setSocialAgent(accountId, idParam(req), b.chatbot_id);
     return { ok: true };
   });
 
   api.post('/api/social-accounts/:id/disconnect', admins, async (req: any) => {
     const accountId = await targetAccount(req.user, req.body?.account_id ?? req.query?.account_id);
-    await disconnectSocialAccount(accountId, String(req.params.id));
+    await viaZernio(() => disconnectSocialAccount(accountId, idParam(req)));
     return { ok: true };
   });
 
   /* ------------------------------ Zernio del administrador de la plataforma ------------------------------ */
 
-  const tenant = async (id: string) => {
-    const acc = await store.getAccount(id);
+  const tenant = async (req: any) => {
+    const acc = await store.getAccount(idParam(req));
     if (!acc) throw new HttpError(404, 'Negocio no encontrado');
     zernioOn();
     return acc;
@@ -111,27 +131,27 @@ export async function socialRoutes(api: FastifyInstance) {
   api.get('/api/system/zernio/tenants', superadmin, async () => zernioTenants());
 
   api.post('/api/system/zernio/tenants/:id/profile', superadmin, async (req: any) => {
-    const acc = await tenant(req.params.id);
-    const profileId = await accountProfile(acc.id);
+    const acc = await tenant(req);
+    const profileId = await viaZernio(() => accountProfile(acc.id));
     await logEvent({ level: 'info', source: 'admin', message: `Zernio: perfil del negocio listo (lo pidió ${req.user.email})`, accountId: acc.id });
     return { profile_id: profileId };
   });
 
   api.post('/api/system/zernio/tenants/:id/sync', superadmin, async (req: any) => {
-    const acc = await tenant(req.params.id);
-    return syncTenant(acc.id);
+    const acc = await tenant(req);
+    return viaZernio(() => syncTenant(acc.id));
   });
 
   api.post('/api/system/zernio/tenants/:id/disconnect-all', superadmin, async (req: any) => {
-    const acc = await tenant(req.params.id);
-    const n = await disconnectAllTenant(acc.id);
+    const acc = await tenant(req);
+    const n = await viaZernio(() => disconnectAllTenant(acc.id));
     await logEvent({ level: 'warn', source: 'admin', message: `Zernio: ${n} red(es) del negocio desconectadas por ${req.user.email}`, accountId: acc.id });
     return { disconnected: n };
   });
 
   /** Enlace para que el cliente conecte su red sin entrar al panel (7 días; deja de servir en cuanto la conecta). */
   api.post('/api/system/zernio/tenants/:id/connect-link', superadmin, async (req: any) => {
-    const acc = await tenant(req.params.id);
+    const acc = await tenant(req);
     const b = parse(z.object({ platform: z.string().max(40) }), req.body ?? {});
     const s = await createConnectSession(acc.id, b.platform, { kind: 'link', userId: req.user.id });
     await logEvent({ level: 'info', source: 'admin', message: `Zernio: enlace para conectar ${networkOf(b.platform)?.label} creado por ${req.user.email}`, accountId: acc.id });
@@ -140,19 +160,19 @@ export async function socialRoutes(api: FastifyInstance) {
 
   api.get('/api/system/zernio/webhook-logs', superadmin, async (req: any) => {
     zernioOn();
-    return webhookLogs({ failed: req.query?.failed === '1' });
+    return viaZernio(() => webhookLogs({ failed: req.query?.failed === '1' }));
   });
 
   api.post('/api/system/zernio/webhook-logs/:id/redeliver', superadmin, async (req: any) => {
     zernioOn();
     const b = parse(z.object({ webhook_id: z.string().min(1).max(100) }), req.body ?? {});
-    await redeliverWebhook(b.webhook_id, String(req.params.id));
+    await viaZernio(() => redeliverWebhook(b.webhook_id, String(req.params.id).slice(0, 200)));
     return { ok: true };
   });
 
   api.get('/api/system/zernio/orphans', superadmin, async () => {
     zernioOn();
-    return orphanProfiles();
+    return viaZernio(() => orphanProfiles());
   });
 
   api.get('/api/system/zernio/budget', superadmin, async () => zernioBudgetStatus());

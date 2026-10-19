@@ -6,7 +6,7 @@ import { adapterFor, mergeChannelConfig, publicChannel, webhookUrl } from '../ch
 import { evolutionFor, newInstanceName, releaseWhatsapp } from '../channels/whatsapp.js';
 import { SessionError, whatsappSession } from '../channels/whatsapp-session.js';
 import { dmNetworkOf, networkOf, zernioKey } from '../channels/zernio.js';
-import { checkTelegram, disconnectZernio, startConnect } from '../channels/zernio-connect.js';
+import { checkTelegram, disconnectZernio, startConnect, ZernioDisconnectError } from '../channels/zernio-connect.js';
 import { config } from '../config.js';
 import { query,withTransaction } from '../db.js';
 import { coordinated } from '../engine/coordination.js';
@@ -283,7 +283,11 @@ export async function channelRoutes(api: FastifyInstance) {
 
   api.post('/api/channels/:id/zernio/disconnect', admins, async (req: any) => {
     const ch = await zernio(req.user, req.params.id);
-    const updated = await disconnectZernio(ch);
+    // Si Zernio no la quita, no se marca como desconectada (seguiría activa y cobrándose).
+    const updated = await disconnectZernio(ch, 'strict').catch((e) => {
+      if (e instanceof ZernioDisconnectError) throw new HttpError(502, e.message);
+      throw e;
+    });
     await logEvent({ level: 'warn', source: 'admin', message: `Zernio: cuenta desconectada desde el panel (${ch.name})`, accountId: ch.account_id, channelId: ch.id });
     return { ok: true, channel: publicChannel(updated, req.user) };
   });

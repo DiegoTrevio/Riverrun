@@ -19,8 +19,8 @@ const RETURN = {
   error: 'No se pudo completar la conexión. Inténtalo de nuevo; si sigue fallando, avísanos.',
 };
 
-/** Lo que permite una red, en palabras simples. */
-const can = (n) => [n.dm ? 'mensajes' : null, n.comments ? 'comentarios' : null, n.reviews ? 'reseñas' : null, n.posts ? 'publicaciones' : null, n.analytics ? 'estadísticas' : null].filter(Boolean).join(' · ');
+/** Lo que permite una red, en palabras simples (con "Conectar con Facebook", los mensajes de Facebook e Instagram van por ahí). */
+const can = (n, metaDirect) => [n.dm && !(metaDirect && ['facebook', 'instagram'].includes(n.id)) ? 'mensajes' : null, n.comments ? 'comentarios' : null, n.reviews ? 'reseñas' : null, n.posts ? 'publicaciones' : null, n.analytics ? 'estadísticas' : null].filter(Boolean).join(' · ');
 
 export async function viewSocialAccounts(root, params = new URLSearchParams()) {
   const networks = state.meta.social_capabilities || [];
@@ -59,7 +59,7 @@ export async function viewSocialAccounts(root, params = new URLSearchParams()) {
           h('div', { class: 'small muted' }, n.label, a.username ? ` · @${a.username}` : ''),
           h('span', { class: `badge ${color}` }, label)),
         h('div', { class: 'row' },
-          a.status !== 'active' ? h('button', { class: 'small primary', onclick: () => connect(a.platform, a.chatbot_id, n.flow === 'oauth' ? a.id : '') }, 'Reconectar') : null,
+          a.status !== 'active' ? h('button', { class: 'small primary', onclick: () => connect(a.platform, a.chatbot_id, a.id) }, 'Reconectar') : null,
           h('button', { class: 'small danger', onclick: async () => {
             if (!(await confirmAction(`¿Desconectar ${n.label}${a.username ? ` (@${a.username})` : ''}? Dejarás de recibir sus mensajes y comentarios aquí.`))) return;
             if (await run(() => api('POST', withAcct(`/api/social-accounts/${a.id}/disconnect`)), 'Desconectada')) render();
@@ -80,7 +80,7 @@ export async function viewSocialAccounts(root, params = new URLSearchParams()) {
       data.meta_direct ? h('p', { class: 'small muted' }, 'Facebook e Instagram ya se conectan con el botón "Conectar con Facebook" en las conexiones de tu agente; aquí solo se usan para comentarios, publicaciones y estadísticas.') : null,
       h('div', { class: 'grid' }, networks.map((n) => h('button', { class: 'social-network', onclick: () => connect(n.id) },
         h('span', { style: 'font-size:24px', 'aria-hidden': 'true' }, ICONS[n.id] || '🔗'),
-        h('span', {}, h('strong', {}, n.label), h('br'), h('span', { class: 'small muted' }, can(n))))))),
+        h('span', {}, h('strong', {}, n.label), h('br'), h('span', { class: 'small muted' }, can(n, data.meta_direct))))))),
     isSuper() ? h('p', { class: 'small muted' }, 'Como superadmin también puedes administrar los perfiles de todos los negocios en Sistema → Zernio.') : null,
   );
   if (code) history.replaceState(null, '', '#/redes');

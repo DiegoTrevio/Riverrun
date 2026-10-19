@@ -1,3 +1,4 @@
+import { assertWithinLimit } from '../billing/limits.js';
 import { query, queryOne, withTransaction } from '../db.js';
 import { recordConnectionState } from '../lifecycle.js';
 import { logEvent } from '../logs.js';
@@ -191,6 +192,29 @@ async function webhookReady(channel: Channel) {
     logEvent({ level: 'error', source: 'channel', message: `Zernio: no se pudo registrar el webhook de la plataforma: ${e?.message ?? e}`, accountId: channel.account_id, channelId: channel.id }));
 }
 
+/**
+ * Una cuenta nueva para el negocio respeta el límite de redes de su plan (la que ya tiene, al reconectarse, no cuenta).
+ * Si no cabe, se quita de Zernio para no pagar por ella, y falla con el aviso del plan.
+ */
+export async function assertSocialRoom(accountId: string, zernioAccountId: string) {
+  const known = await queryOne(`SELECT 1 FROM social_accounts WHERE zernio_account_id = $1 AND account_id = $2 AND status <> 'disconnected'`, [zernioAccountId, accountId]);
+  if (known) return;
+  try {
+    await assertWithinLimit(accountId, 'social_accounts');
+  } catch (e) {
+    await disconnectAccount(clientFor(), zernioAccountId).catch(() => undefined);
+    await logEvent({ level: 'warn', source: 'channel', message: 'Zernio: la red no se conectó porque el plan no permite más redes sociales; se quitó de Zernio', accountId });
+    throw e;
+  }
+}
+
+/** Zernio no quitó la cuenta: no se marca como desconectada. */
+export class ZernioDisconnectError extends Error {
+  constructor(cause: unknown) {
+    super(`No se pudo desconectar en Zernio; inténtalo de nuevo en unos minutos (${(cause as any)?.message ?? cause})`);
+  }
+}
+
 /** La cuenta conectada no es de este negocio, o ya la usa otro canal: no se guarda. */
 export class ZernioOwnershipError extends Error {
   constructor(public code: 'not_yours' | 'in_use', message: string) {
@@ -210,6 +234,7 @@ export async function saveZernioAccount(channel: Channel, acc: Partial<ZernioAcc
     await logEvent({ level: 'warn', source: 'channel', message: 'Zernio: la cuenta devuelta no pertenece al perfil de este negocio; no se conectó', accountId: channel.account_id, channelId: channel.id, details: { account: acc.id } });
     throw new ZernioOwnershipError('not_yours', 'Esa cuenta no pertenece a este negocio. Vuelve a pulsar "Conectar" e inicia sesión con la cuenta correcta.');
   }
+  await assertSocialRoom(own.account_id, acc.id);
   const username = info.username || acc.username || '';
   let updated: Channel;
   try {
@@ -277,11 +302,18 @@ export async function checkTelegram(channel: Channel): Promise<{ status: 'pendin
   return { status: 'pending', channel };
 }
 
-/** Desconecta la cuenta en Zernio y limpia el canal (sin avisar de una desconexión: la pidió el negocio). */
-export async function disconnectZernio(channel: Channel): Promise<Channel> {
-  if (channel.config.account_id) {
-    await disconnectAccount(clientFor(channel), channel.config.account_id).catch((e) =>
-      logEvent({ level: 'warn', source: 'channel', message: `Zernio: no se pudo desconectar la cuenta en Zernio: ${e?.message ?? e}`, accountId: channel.account_id, channelId: channel.id }));
+/**
+ * Desconecta la cuenta en Zernio y limpia el canal (sin avisar de una desconexión: la pidió el negocio). `strict`: si
+ * Zernio falla (salvo que ya no exista), no se toca nada y falla, para no decir "desconectada" de una cuenta que sigue
+ * activa (y cobrándose). `skip`: quien llama ya la quitó de Zernio.
+ */
+export async function disconnectZernio(channel: Channel, remote: 'best_effort' | 'strict' | 'skip' = 'best_effort'): Promise<Channel> {
+  if (channel.config.account_id && remote !== 'skip') {
+    await disconnectAccount(clientFor(channel), channel.config.account_id).catch((e) => {
+      if (e instanceof ZernioError && e.status === 404) return;
+      if (remote === 'strict') throw new ZernioDisconnectError(e);
+      return logEvent({ level: 'warn', source: 'channel', message: `Zernio: no se pudo desconectar la cuenta en Zernio: ${e?.message ?? e}`, accountId: channel.account_id, channelId: channel.id });
+    });
   }
   await query(`UPDATE channels SET connection_state = 'close', connection_state_at = now() WHERE id = $1`, [channel.id]);
   if (channel.config.account_id) await query(`DELETE FROM social_accounts WHERE zernio_account_id = $1 AND account_id = $2`, [channel.config.account_id, channel.account_id]);

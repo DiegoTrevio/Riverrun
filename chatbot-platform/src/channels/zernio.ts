@@ -92,10 +92,10 @@ export class ZernioClient {
     // 429: la API rechazó la petición sin procesarla, así que repetirla una vez no duplica mensajes. Una consulta que
     // falló en el servidor de Zernio tampoco cambia nada al repetirla.
     if (res.status === 429 || (method === 'GET' && res.status >= 500)) {
-      // Zernio dice que se pasó el límite de la llave: todos los procesos esperan a que se reponga.
-      if (res.status === 429) await drainZernioBudget();
       const header = res.headers.get('retry-after')?.trim();
       const s = header ? Number(header) : NaN;
+      // Zernio dice que se pasó el límite de la llave: todos los procesos esperan a que se reponga.
+      if (res.status === 429) await drainZernioBudget(Number.isFinite(s) && s > 0 ? Math.min(s, 60) : 15);
       await res.body?.cancel().catch(() => undefined);
       await sleep(Number.isFinite(s) && s >= 0 ? Math.min(s, 10) * 1000 : res.status === 429 ? 2000 : 500);
       res = await this.send(method, path, body, opts);
@@ -110,15 +110,29 @@ export class ZernioClient {
 
   /** Todas las páginas de una lista (Zernio pagina con cursor); como máximo `maxPages`. */
   async listAll(path: string, key: string, maxPages = 50): Promise<any[]> {
-    const out: any[] = [];
+    return (await this.listPages(path, key, maxPages)).items;
+  }
+
+  /**
+   * Como listAll, y además dice si la lista está completa: no lo está si se cortó en `maxPages` o si alguna página no
+   * traía la lista (forma desconocida). Quien borra lo que "ya no está" solo debe hacerlo con una lista completa.
+   */
+  async listPages(path: string, key: string, maxPages = 50): Promise<{ items: any[]; complete: boolean }> {
+    const items: any[] = [];
     let cursor = '';
-    for (let page = 0; page < maxPages; page++) {
+    let complete = true;
+    for (let page = 0; ; page++) {
+      if (page >= maxPages) {
+        complete = false;
+        break;
+      }
       const r = await this.call<any>('GET', cursor ? `${path}${path.includes('?') ? '&' : '?'}cursor=${encodeURIComponent(cursor)}` : path);
-      out.push(...listOf(r, key));
+      if (!Array.isArray(r) && !Array.isArray(r?.[key]) && !Array.isArray(r?.data)) complete = false;
+      items.push(...listOf(r, key));
       cursor = String(r?.nextCursor ?? r?.pagination?.nextCursor ?? r?.cursor?.next ?? '');
       if (!cursor) break;
     }
-    return out;
+    return { items, complete };
   }
 
   private async send(method: Method, path: string, body?: unknown, opts: { idempotencyKey?: string } = {}) {

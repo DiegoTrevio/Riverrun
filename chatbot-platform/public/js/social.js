@@ -120,6 +120,7 @@ export function socialConnector(ch, { persist, setup, cfg }) {
       not_yours: 'Esa cuenta no pertenece a este negocio. Vuelve a pulsar "Conectar" e inicia sesión con la cuenta correcta.',
       in_use: 'Esa cuenta ya está conectada en otra conexión. Desconéctala ahí primero.',
       cancelled: 'No se terminó la autorización. Puedes intentarlo de nuevo cuando quieras.',
+      limit: 'Tu plan no permite más redes sociales conectadas. Cámbialo en Ajustes → Mi plan y pagos.',
       error: 'No se pudo completar la conexión. Inténtalo de nuevo; si sigue fallando, avísanos.',
     }[code];
     return why ? h('p', { class: 'banner warn', role: 'alert' }, why) : null;

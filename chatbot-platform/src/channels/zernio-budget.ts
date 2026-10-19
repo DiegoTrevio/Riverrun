@@ -71,9 +71,12 @@ export async function takeZernioBudget(priority: ZernioPriority = 'interactive')
   }
 }
 
-/** Zernio respondió 429: la cubeta queda vacía para que todos los procesos esperen a que se llene. */
-export async function drainZernioBudget(): Promise<void> {
-  await query(`UPDATE rate_buckets SET tokens = 0, updated_at = now() WHERE key = $1`, [KEY]).catch(() => undefined);
+/**
+ * Zernio respondió 429: la cubeta queda en negativo por `seconds` (lo que pide Retry-After), así todos los procesos
+ * pausan ese tiempo en vez de seguir al ritmo normal de reposición.
+ */
+export async function drainZernioBudget(seconds = 15): Promise<void> {
+  await query(`UPDATE rate_buckets SET tokens = -($2::float8 * per_sec), updated_at = now() WHERE key = $1`, [KEY, seconds]).catch(() => undefined);
 }
 
 /** Fichas disponibles ahora (para el panel del administrador). */

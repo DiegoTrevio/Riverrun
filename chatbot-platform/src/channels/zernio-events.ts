@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { assertWithinLimit } from '../billing/limits.js';
 import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
 import { recordConnectionState } from '../lifecycle.js';
@@ -123,6 +124,13 @@ async function handleAccount(body: any, connected: boolean) {
   const platform = String(body?.account?.platform ?? '');
   if (!tenant || !networkOf(platform)) {
     await logEvent({ level: 'info', source: 'webhook', message: `Zernio: se conectó una cuenta (${zid}) de un perfil que no es de ningún negocio; no se adopta` });
+    return;
+  }
+  // Sin lugar en el plan no se adopta: el retorno de la conexión la quita de Zernio y avisa al negocio.
+  try {
+    await assertWithinLimit(tenant, 'social_accounts');
+  } catch {
+    await logEvent({ level: 'info', source: 'webhook', message: `Zernio: se conectó una cuenta (${zid}), pero el plan del negocio no permite más redes; no se adopta`, accountId: tenant });
     return;
   }
   const adopted = await query(

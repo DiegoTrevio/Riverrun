@@ -11,7 +11,7 @@ import type { Channel } from '../types.js';
 import { mergeChannelConfig } from './index.js';
 import { metaConnectEnabled } from './meta-connect.js';
 import { accountInfo, clientFor, disconnectAccount, dmNetworkOf, ensurePlatformWebhook, idOf, networkOf, ZernioError } from './zernio.js';
-import { accountProfile, disconnectZernio, ZernioOwnershipError } from './zernio-connect.js';
+import { accountProfile, assertSocialRoom, disconnectZernio, ZernioDisconnectError, ZernioOwnershipError } from './zernio-connect.js';
 
 /**
  * Redes sociales del negocio (por Zernio), sin pasar por una conexión de mensajes: el negocio conecta su red desde
@@ -140,8 +140,7 @@ export async function adoptAccount(accountId: string, platform: string, zernioAc
     await logEvent({ level: 'warn', source: 'channel', message: 'Zernio: la cuenta devuelta no pertenece al perfil de este negocio; no se conectó', accountId, details: { account: zernioAccountId } });
     throw new ZernioOwnershipError('not_yours', 'Esa cuenta no pertenece a este negocio. Vuelve a pulsar "Conectar" e inicia sesión con la cuenta correcta.');
   }
-  const known = await queryOne(`SELECT 1 FROM social_accounts WHERE zernio_account_id = $1 AND account_id = $2 AND status <> 'disconnected'`, [zernioAccountId, accountId]);
-  if (!known) await assertWithinLimit(accountId, 'social_accounts');
+  await assertSocialRoom(accountId, zernioAccountId);
   const row = await queryOne<{ id: string; channel_id: string | null; chatbot_id: string | null }>(
     `INSERT INTO social_accounts (account_id, zernio_account_id, profile_id, platform, username, display_name, picture, status, chatbot_id)
      VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', $8)
@@ -229,23 +228,23 @@ export async function setSocialAgent(accountId: string, id: string, chatbotId: s
     if (ch?.connection_state === 'open') await recordConnectionState(ch, 'open');
     return;
   }
-  await assertWithinLimit(accountId, 'channels');
+  // linkChannel reutiliza una conexión que espera cuenta o crea otra (y ahí revisa el límite de conexiones del plan).
   const ch = await linkChannel(accountId, row, { platform: row.platform, zid: row.zernio_account_id, profileId: row.profile_id, info: { username: row.username, displayName: row.display_name, picture: row.picture }, chatbotId });
   if (!ch) throw new HttpError(403, 'Tu plan no permite más conexiones de mensajes', ['limit_reached']);
 }
 
-/** Desconecta la red en Zernio. Su conexión de mensajes se conserva (con su historial) para cuando se vuelva a conectar. */
+/**
+ * Desconecta la red en Zernio. Primero se quita allá: si Zernio falla, no se toca nada (no se dice "desconectada" de una
+ * cuenta que sigue activa y cobrándose). Su conexión de mensajes se conserva, con su historial, para cuando vuelva.
+ */
 export async function disconnectSocialAccount(accountId: string, id: string) {
   const row = await socialRow(accountId, id);
+  await disconnectAccount(clientFor(), row.zernio_account_id).catch((e) => {
+    if (e instanceof ZernioError && e.status === 404) return;
+    throw new HttpError(502, new ZernioDisconnectError(e).message);
+  });
   const ch = row.channel_id ? await store.getChannel(row.channel_id) : null;
-  if (ch && ch.config.account_id === row.zernio_account_id) {
-    await disconnectZernio(ch);
-  } else {
-    await disconnectAccount(clientFor(), row.zernio_account_id).catch((e) => {
-      if (e instanceof ZernioError && e.status === 404) return;
-      throw new HttpError(502, `No se pudo desconectar en Zernio; inténtalo de nuevo (${e?.message ?? e})`);
-    });
-  }
+  if (ch && ch.config.account_id === row.zernio_account_id) await disconnectZernio(ch, 'skip');
   await query(`DELETE FROM social_accounts WHERE id = $1 AND account_id = $2`, [row.id, accountId]);
   await logEvent({ level: 'warn', source: 'admin', message: `Zernio: ${networkOf(row.platform)?.label ?? row.platform}${row.username ? ` (@${row.username})` : ''} desconectada desde Redes sociales`, accountId });
 }
@@ -272,8 +271,10 @@ export async function zernioTenants() {
  */
 export async function syncTenant(accountId: string): Promise<{ accounts: number }> {
   const profileId = await accountProfile(accountId);
-  const client = clientFor(null, 'background');
-  const remote = await client.listAll(`/accounts?profileId=${encodeURIComponent(profileId)}`, 'accounts', 10);
+  // Lo pide una persona desde el panel: prioridad normal.
+  const client = clientFor();
+  const startedAt = (await queryOne<{ now: string }>(`SELECT now() AS now`))!.now;
+  const { items: remote, complete } = await client.listPages(`/accounts?profileId=${encodeURIComponent(profileId)}`, 'accounts', 10);
   const ids = new Set<string>();
   for (const a of remote) {
     const zid = idOf(a);
@@ -296,9 +297,13 @@ export async function syncTenant(accountId: string): Promise<{ accounts: number 
         [accountId, zid, profileId, platform, String(a.username ?? ''), String(a.displayName ?? ''), String(a.profilePicture ?? ''), active ? 'active' : 'needs_reconnect']);
     }
   }
+  // Lo que ya no está en Zernio queda desconectado, solo con la lista completa y sin tocar lo que cambió mientras tanto
+  // (p. ej. una red que el cliente terminó de conectar durante la sincronización).
+  if (!complete) return { accounts: ids.size };
   const gone = await query<{ id: string; channel_id: string | null }>(
-    `UPDATE social_accounts SET status = 'disconnected', updated_at = now() WHERE account_id = $1 AND profile_id = $2 AND status <> 'disconnected' AND NOT (zernio_account_id = ANY($3::text[]))
-     RETURNING id, channel_id`, [accountId, profileId, [...ids]]);
+    `UPDATE social_accounts SET status = 'disconnected', updated_at = now()
+      WHERE account_id = $1 AND profile_id = $2 AND status <> 'disconnected' AND NOT (zernio_account_id = ANY($3::text[])) AND updated_at < $4
+     RETURNING id, channel_id`, [accountId, profileId, [...ids], startedAt]);
   for (const g of gone) {
     const ch = g.channel_id ? await store.getChannel(g.channel_id) : null;
     if (ch) await recordConnectionState(ch, 'close', 'zernio_account_missing');
@@ -341,7 +346,7 @@ export async function redeliverWebhook(webhookId: string, eventId: string) {
 
 /** Perfiles de la cuenta de Zernio que no son de ningún negocio (de negocios borrados o creados a mano en Zernio). */
 export async function orphanProfiles() {
-  const client = clientFor(null, 'background');
+  const client = clientFor();
   const profiles = await client.listAll('/profiles', 'profiles', 20);
   const known = new Set((await query<{ id: string }>(`SELECT profile_id AS id FROM zernio_profiles UNION SELECT zernio_profile_id FROM accounts WHERE zernio_profile_id <> ''`)).map((r) => r.id));
   const accounts = new Set((await query<{ id: string }>(`SELECT id::text AS id FROM accounts`)).map((r) => r.id));
