@@ -61,6 +61,10 @@ function fillParams(url: string): string | null {
     [/^\/api\/pipelines\/:id/, 'pipeline'],
     [/^\/api\/pipeline-cards\/:id/, 'card'],
     [/^\/api\/team\/:userId/, 'user'],
+    [/^\/api\/social-accounts\/:id/, 'social'],
+    // Solo el superadmin: la cuenta A debe recibir 403.
+    [/^\/api\/system\/zernio\/tenants\/:id/, 'account'],
+    [/^\/api\/system\/zernio\/webhook-logs\/:id/, 'bot'],
   ];
   const hit = byPrefix.find(([re]) => re.test(url));
   if (!hit) return null;
@@ -139,6 +143,7 @@ before(async () => {
   B.brand = (await pool.query(`INSERT INTO brands (name) VALUES ('Marca B') RETURNING id`)).rows[0].id;
   B.model = 'gpt-4.1-mini';
   B.pipeline = (await ok200(adminB('POST', '/api/pipelines', { name: `Pipeline ${MARK}`, stages: [{ name: 'Nuevo' }, { name: 'Ganado', kind: 'won' }] }))).id;
+  B.social = (await pool.query(`INSERT INTO social_accounts (account_id, zernio_account_id, profile_id, platform, username, display_name) VALUES ($1, 'acc_b_aislamiento', 'prof_b', 'linkedin', 'b', $2) RETURNING id`, [B.account, `Red ${MARK}`])).rows[0].id;
   B.card = String((await pool.query(`INSERT INTO pipeline_cards (account_id, pipeline_id, conversation_id, stage_id) VALUES ($1, $2, $3, 'nuevo') RETURNING id`, [B.account, B.pipeline, B.conv])).rows[0].id);
   await h.idle();
 });
