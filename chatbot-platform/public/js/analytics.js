@@ -489,7 +489,10 @@ export async function viewSocialStats(root, params = new URLSearchParams()) {
       render(d);
       stamp.textContent = 'Se actualizan una vez al día';
     } catch (e) {
-      if (mine === seq) stamp.textContent = `No se pudieron cargar las estadísticas: ${e?.message ?? e}`;
+      if (mine !== seq) return;
+      stamp.textContent = '';
+      fill(frame, h('div', { class: 'banner warn', role: 'alert' }, `No se pudieron cargar las estadísticas de tus redes: ${e?.message ?? e} `,
+        h('button', { class: 'small', onclick: () => load() }, 'Reintentar')));
     } finally {
       if (mine === seq) frame.style.opacity = '';
     }

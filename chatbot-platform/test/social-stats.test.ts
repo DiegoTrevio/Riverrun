@@ -5,11 +5,12 @@
  */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import { createHarness, dbAvailable, ext, pool, zer } from './harness.js';
 const { config } = await import('../src/config.js');
 const { checkZernioHealth } = await import('../src/social/health.js');
 const { setStatsSpacing, syncStatsDue } = await import('../src/social/stats.js');
-const { platformWebhookUrl } = await import('../src/channels/zernio.js');
+const { platformWebhookSecret, platformWebhookUrl } = await import('../src/channels/zernio.js');
 
 const ok = await dbAvailable();
 const t = (name: string, fn: () => Promise<void>) => test(name, { skip: !ok && 'PostgreSQL de pruebas no disponible' }, fn);
@@ -22,6 +23,11 @@ const day = (offset: number) => new Date(Date.now() + offset * 86400_000).toISOS
 const healthy = { status: 'healthy', tokenValid: true, needsReconnect: false, canPost: true, canFetchAnalytics: true };
 const notes = async (like: string) => (await pool.query(`SELECT count(*)::int AS n FROM notifications WHERE account_id = $1 AND title LIKE $2`, [h.accountId, like])).rows[0].n;
 const run = () => checkZernioHealth({ force: true });
+const deliver = (body: Record<string, unknown>) => {
+  const raw = JSON.stringify(body);
+  const sig = crypto.createHmac('sha256', platformWebhookSecret()).update(raw).digest('hex');
+  return h.app.inject({ method: 'POST', url: '/zernio/events', headers: { 'content-type': 'application/json', 'x-zernio-signature': sig }, payload: raw });
+};
 
 async function connect(platform: string, zid: string) {
   const r = await owner('POST', '/api/social-accounts/connect', { platform, ...(platform === 'instagram' ? { chatbot_id: h.botId } : {}) });
@@ -113,6 +119,7 @@ t('permiso por vencer: un aviso por fecha (Instagram y LinkedIn); Google no', as
   assert.equal(await notes('El permiso de LinkedIn%'), 2, 'una fecha nueva sí');
   const list = (await owner('GET', '/api/social-accounts')).json();
   assert.match(list.accounts.find((a: any) => a.platform === 'linkedin').health.problem, /vence pronto/);
+  assert.equal(list.accounts.find((a: any) => a.platform === 'googlebusiness').health.problem, '', 'Google renueva su permiso sola: no se le pide reconectar');
   zer.health.set('acc_hl', healthy);
   await pool.query(`UPDATE social_accounts SET token_expires_at = NULL WHERE id = $1`, [nets.linkedin]);
 });
@@ -125,12 +132,33 @@ t('muchas caídas a la vez parecen un problema de Zernio: no se marca ninguna y 
     zer.health.set(zid, { status: 'error', needsReconnect: true });
   }
   await run();
-  assert.equal((await pool.query(`SELECT count(*)::int AS n FROM social_accounts WHERE id = ANY($1::uuid[]) AND status = 'active'`, [ids])).rows[0].n, 6);
+  assert.equal((await pool.query(`SELECT count(*)::int AS n FROM social_accounts WHERE id = ANY($1::uuid[]) AND status = 'active' AND health = '{}'::jsonb`, [ids])).rows[0].n, 6, 'ni caídas ni avisos de salud');
   assert.equal((await pool.query(`SELECT count(*)::int AS n FROM incidents WHERE component = 'zernio_health_mass' AND state = 'abierto'`)).rows[0].n, 1);
   for (let i = 0; i < 6; i++) zer.health.delete(`acc_mass_${i}`);
   await pool.query(`DELETE FROM social_accounts WHERE id = ANY($1::uuid[])`, [ids]);
   await run();
   assert.equal((await pool.query(`SELECT count(*)::int AS n FROM incidents WHERE component = 'zernio_health_mass' AND state = 'abierto'`)).rows[0].n, 0);
+});
+
+t('reconectar borra la caída anterior: una caída nueva (por el webhook) vuelve a avisar', async () => {
+  const before = await notes('%volver a conectar LinkedIn%');
+  zer.health.set('acc_hl', { status: 'error', needsReconnect: true });
+  await run();
+  assert.equal(await notes('%volver a conectar LinkedIn%'), before + 1);
+  // El negocio la vuelve a conectar desde el panel.
+  zer.health.set('acc_hl', healthy);
+  await connect('linkedin', 'acc_hl');
+  const row = (await pool.query(`SELECT status, health, down_since, down_notified_at, profile_id FROM social_accounts WHERE id = $1`, [nets.linkedin])).rows[0];
+  assert.deepEqual([row.status, row.health, row.down_since, row.down_notified_at], ['active', {}, null, null]);
+  assert.equal((await owner('GET', '/api/social-accounts')).json().accounts.find((a: any) => a.platform === 'linkedin').health.problem, '');
+  // Se cae otra vez y Zernio lo avisa por el webhook: llega un aviso nuevo.
+  const ev = { id: `evt_${crypto.randomUUID()}`, event: 'account.disconnected', timestamp: new Date().toISOString(), account: { accountId: 'acc_hl', profileId: row.profile_id, platform: 'linkedin' } };
+  assert.equal((await deliver(ev)).statusCode, 200);
+  await h.idle();
+  assert.equal(await notes('%volver a conectar LinkedIn%'), before + 2);
+  // Y al recuperarse queda como antes para las demás pruebas.
+  await run();
+  assert.equal((await pool.query(`SELECT status FROM social_accounts WHERE id = $1`, [nets.linkedin])).rows[0].status, 'active');
 });
 
 t('webhook de la plataforma: si Zernio lo apagó se reactiva y se abre una incidencia; al estar bien se cierra', async () => {
@@ -178,6 +206,18 @@ t('estadísticas: seguidores, alcance e interacción por día (UTC), sin duplica
   const again = (await owner('GET', '/api/analytics/social?days=30')).json().accounts.find((a: any) => a.platform === 'instagram');
   assert.deepEqual([again.series.length, again.totals.impressions], [2, 5000]);
   assert.equal((await agent('GET', '/api/analytics/social')).statusCode, 403);
+  // Si Zernio rechaza los seguidores, las cuentas siguen con lo demás y no se quedan atoradas al inicio de la fila.
+  ext.fail.add('/accounts/follower-stats');
+  try {
+    zer.metrics.set('acc_hl', [{ date: day(-1), postCount: 1, metrics: { impressions: 900, reach: 500, likes: 30, comments: 2, shares: 1, saves: 0 } }]);
+    await pool.query(`UPDATE social_accounts SET stats_synced_at = NULL WHERE account_id = $1`, [h.accountId]);
+    assert.equal(await syncStatsDue(10), 3);
+    assert.equal((await pool.query(`SELECT count(*)::int AS n FROM social_accounts WHERE account_id = $1 AND platform IN ('instagram', 'linkedin', 'googlebusiness') AND stats_synced_at IS NOT NULL`, [h.accountId])).rows[0].n, 3);
+    const li = (await owner('GET', '/api/analytics/social?days=30')).json().accounts.find((a: any) => a.platform === 'linkedin');
+    assert.equal(li.totals.impressions, 900, 'las demás cifras sí llegan');
+  } finally {
+    ext.fail.delete('/accounts/follower-stats');
+  }
 });
 
 t('sin el complemento de estadísticas en Zernio: se anota y no se vuelve a intentar hasta el día siguiente', async () => {

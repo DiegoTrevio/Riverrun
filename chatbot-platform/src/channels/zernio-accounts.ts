@@ -11,7 +11,7 @@ import type { Channel } from '../types.js';
 import { mergeChannelConfig } from './index.js';
 import { metaConnectEnabled } from './meta-connect.js';
 import { accountInfo, clientFor, disconnectAccount, dmNetworkOf, ensurePlatformWebhook, idOf, networkOf, profileFor, ZernioError } from './zernio.js';
-import { accountProfile, assertSocialRoom, disconnectZernio, ZernioDisconnectError, ZernioOwnershipError } from './zernio-connect.js';
+import { accountProfile, assertSocialRoom, disconnectZernio, FRESH_CONNECTION, ZernioDisconnectError, ZernioOwnershipError } from './zernio-connect.js';
 import { publicHealth } from '../social/health.js';
 
 /**
@@ -189,7 +189,7 @@ export async function adoptAccount(accountId: string, platform: string, zernioAc
     `INSERT INTO social_accounts (account_id, zernio_account_id, profile_id, platform, username, display_name, picture, status, chatbot_id)
      VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', $8)
      ON CONFLICT (zernio_account_id) DO UPDATE SET profile_id = $3, platform = $4, username = $5, display_name = $6, picture = $7, status = 'active',
-       chatbot_id = COALESCE($8, social_accounts.chatbot_id), updated_at = now()
+       chatbot_id = COALESCE($8, social_accounts.chatbot_id), updated_at = now(), ${FRESH_CONNECTION}
      WHERE social_accounts.account_id = $1 RETURNING id, channel_id, chatbot_id`,
     [accountId, zernioAccountId, profileId, platform, info.username, info.displayName, info.picture, opts.chatbotId ?? null]);
   if (!row) throw new ZernioOwnershipError('in_use', 'Esta cuenta ya está conectada en otro negocio.');
@@ -259,7 +259,7 @@ export async function listSocialAccounts(accountId: string) {
     `SELECT s.id, s.platform, s.username, s.display_name, s.picture, s.status, s.channel_id, COALESCE(c.chatbot_id, s.chatbot_id) AS chatbot_id, s.comment_settings, s.connected_at,
             s.health, s.token_expires_at
        FROM social_accounts s LEFT JOIN channels c ON c.id = s.channel_id WHERE s.account_id = $1 ORDER BY s.connected_at, s.id`, [accountId]);
-  return rows.map(({ health, token_expires_at, ...r }) => ({ ...r, dm: zernioHandlesDm(r.platform), health: publicHealth({ status: r.status, health, token_expires_at }) }));
+  return rows.map(({ health, token_expires_at, ...r }) => ({ ...r, dm: zernioHandlesDm(r.platform), health: publicHealth({ platform: r.platform, status: r.status, health, token_expires_at }) }));
 }
 
 const socialRow = async (accountId: string, id: string) => {
@@ -344,7 +344,12 @@ export async function syncTenant(accountId: string): Promise<{ accounts: number 
     const known = await queryOne<{ id: string; account_id: string; status: string; channel_id: string | null }>(`SELECT id, account_id, status, channel_id FROM social_accounts WHERE zernio_account_id = $1`, [zid]);
     if (known && known.account_id !== accountId) continue;
     if (known) {
-      await query(`UPDATE social_accounts SET username = $2, display_name = $3, picture = $4, status = $5, last_checked_at = now(), updated_at = now() WHERE id = $1`,
+      // Al volver a estar activa se olvida la salud de la caída (la próxima revisión la vuelve a leer).
+      await query(`UPDATE social_accounts SET username = $2, display_name = $3, picture = $4, status = $5, last_checked_at = now(), updated_at = now(),
+          health = CASE WHEN status <> 'active' AND $5 = 'active' THEN '{}'::jsonb ELSE health END,
+          down_since = CASE WHEN $5 = 'active' THEN NULL WHEN status = 'needs_reconnect' THEN coalesce(down_since, now()) ELSE now() END,
+          down_notified_at = CASE WHEN $5 = 'active' THEN NULL ELSE down_notified_at END
+        WHERE id = $1`,
         [known.id, String(a.username ?? ''), String(a.displayName ?? ''), String(a.profilePicture ?? ''), active ? 'active' : 'needs_reconnect']);
       // Volvió a aparecer en Zernio: su conexión de mensajes vuelve a quedar en línea.
       const ch = known.status !== 'active' && active && known.channel_id ? await store.getChannel(known.channel_id) : null;

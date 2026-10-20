@@ -12,6 +12,9 @@ import {
   disconnectAccount, ensurePlatformWebhook, networkOf, profileFor, telegramCheck, telegramCode, zernioAuthUrl, type ZernioAccount,
 } from './zernio.js';
 
+/** Una cuenta recién (re)conectada empieza sin la salud ni la caída anteriores (la próxima revisión las vuelve a leer). */
+export const FRESH_CONNECTION = `health = '{}'::jsonb, down_since = NULL, down_notified_at = NULL, token_expires_at = NULL`;
+
 /** Conexión de redes por Zernio desde el panel: el negocio elige la red y autoriza; el servidor hace lo demás. */
 
 const save = async (channel: Channel, values: Record<string, unknown>) =>
@@ -257,7 +260,7 @@ export async function saveZernioAccount(channel: Channel, acc: Partial<ZernioAcc
     `INSERT INTO social_accounts (account_id, zernio_account_id, profile_id, platform, username, display_name, picture, status, channel_id, chatbot_id)
      VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', $8, $9)
      ON CONFLICT (zernio_account_id) DO UPDATE SET profile_id = $3, platform = $4, username = $5, display_name = $6, picture = $7, status = 'active',
-       channel_id = $8, chatbot_id = $9, updated_at = now()
+       channel_id = $8, chatbot_id = $9, updated_at = now(), ${FRESH_CONNECTION}
      WHERE social_accounts.account_id = $1 RETURNING id`,
     [own.account_id, acc.id, own.config.profile_id, info.platform || own.config.platform, username, info.displayName || '', info.picture || '', own.id, own.chatbot_id]);
   if (!owned.length) await logEvent({ level: 'error', source: 'channel', message: 'Zernio: la cuenta conectada figura como de otro negocio; revisa en Sistema → Zernio', accountId: own.account_id, channelId: own.id });

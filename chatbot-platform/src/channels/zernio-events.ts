@@ -128,8 +128,9 @@ async function handleAccount(body: any, connected: boolean) {
   }
   const updated = await query<{ id: string; account_id: string; platform: string; username: string; display_name: string }>(
     `UPDATE social_accounts SET status = $2, updated_at = now(),
-        down_since = CASE WHEN $2 = 'needs_reconnect' THEN coalesce(down_since, now()) ELSE NULL END,
-        down_notified_at = CASE WHEN $2 = 'active' THEN NULL ELSE down_notified_at END
+        down_since = CASE WHEN $2 = 'active' THEN NULL WHEN status = 'needs_reconnect' THEN coalesce(down_since, now()) ELSE now() END,
+        down_notified_at = CASE WHEN $2 = 'active' THEN NULL ELSE down_notified_at END,
+        health = CASE WHEN $2 = 'active' AND status <> 'active' THEN '{}'::jsonb ELSE health END
       WHERE zernio_account_id = $1 RETURNING id, account_id, platform, username, display_name`, [zid, connected ? 'active' : 'needs_reconnect']);
   // Una red sin canal de mensajes (LinkedIn, Google…) no tiene quién avise de su desconexión: se avisa aquí (una vez).
   if (!connected && !channels.length && updated.length) await notifyDown(updated[0].account_id, updated);

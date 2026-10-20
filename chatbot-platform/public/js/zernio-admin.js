@@ -121,7 +121,8 @@ export async function viewZernioAdmin(root) {
         const r = await run(() => api('POST', '/api/system/zernio/health/check'));
         if (!r) return;
         fill(healthBox, healthOf(r.summary));
-        toast(`Revisado: ${r.down} caída(s) nueva(s), ${r.back} recuperada(s), ${r.warned} aviso(s) de permiso`);
+        toast(r.mass ? 'Muchas cuentas aparecen caídas a la vez: parece un problema de Zernio, no se marcó ninguna. Revisa su estado.'
+          : `Revisado: ${r.down} caída(s) nueva(s), ${r.back} recuperada(s), ${r.warned} aviso(s) de permiso`, r.mass);
       } }, 'Revisar ahora')),
     h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, 'Negocios'),
       h('p', { class: 'small muted' }, 'Cada negocio tiene su propio perfil de Zernio (se crea al conectar su primera red). Puedes conectar redes por un cliente con un enlace, o directo en el panel de Zernio dentro de su perfil: se adoptan solas.'),

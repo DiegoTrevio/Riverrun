@@ -70,10 +70,17 @@ async function claimRun(key: string, minutes: number) {
  * Devuelve cuántas cuentas cayeron y cuántas volvieron.
  */
 export async function checkZernioHealth(o: { force?: boolean; client?: ZernioClient } = {}) {
-  if (!zernioEnabled()) return { down: 0, back: 0, warned: 0, skipped: true };
-  if (!o.force && !(await claimRun('zernio_health_run', 350))) return { down: 0, back: 0, warned: 0, skipped: true };
+  if (!zernioEnabled()) return { down: 0, back: 0, warned: 0, mass: false, skipped: true };
+  if (!o.force && !(await claimRun('zernio_health_run', 350))) return { down: 0, back: 0, warned: 0, mass: false, skipped: true };
   const client = o.client ?? clientFor(null, 'background');
-  const r = await client.call<any>('GET', '/accounts/health');
+  let r: any;
+  try {
+    r = await client.call<any>('GET', '/accounts/health');
+  } catch (e) {
+    // Sin respuesta de Zernio la vuelta no cuenta: la siguiente (en una hora) lo vuelve a intentar.
+    if (!o.force) await query(`UPDATE system_state SET updated_at = now() - interval '300 minutes' WHERE key = 'zernio_health_run'`);
+    throw e;
+  }
   const list = listOf(r, 'accounts');
   const byId = new Map(list.map((x: any) => [String(x?.accountId ?? x?.id ?? x?._id ?? ''), x]));
   const rows = await query<Row>(`SELECT * FROM social_accounts WHERE status IN ('active', 'needs_reconnect')`);
@@ -106,9 +113,10 @@ export async function checkZernioHealth(o: { force?: boolean; client?: ZernioCli
   let back = 0;
   const notices = new Map<string, Row[]>();
   for (const p of plan) {
+    // En una caída masiva no se cree lo que dice Zernio: no se guarda nada (el negocio no ve avisos falsos).
+    if (mass) continue;
     await query(`UPDATE social_accounts SET health = $2, token_expires_at = coalesce($3::timestamptz, token_expires_at), last_checked_at = now() WHERE id = $1`,
       [p.row.id, JSON.stringify({ level: p.snap.level, reconnect: p.snap.reconnect, token_valid: p.snap.tokenValid, token_invalid_count: p.invalid, can_post: p.snap.canPost, can_fetch_analytics: p.snap.canFetchAnalytics, issues: p.snap.issues }), p.snap.tokenExpiresAt]);
-    if (mass) continue;
     if (p.broken && p.row.status === 'active') {
       const claimed = await queryOne(`UPDATE social_accounts SET status = 'needs_reconnect', down_since = now(), updated_at = now() WHERE id = $1 AND status = 'active' RETURNING id`, [p.row.id]);
       if (!claimed) continue;
@@ -127,7 +135,7 @@ export async function checkZernioHealth(o: { force?: boolean; client?: ZernioCli
   for (const [accountId, list] of notices) await notifyDown(accountId, list);
   const warned = await warnExpiring();
   await checkPlatformWebhook(client).catch((e) => logEvent({ level: 'warn', source: 'channel', message: `Zernio: no se pudo revisar el webhook de la plataforma: ${e?.message ?? e}` }));
-  return { down, back, warned, skipped: false };
+  return { down, back, warned, mass, skipped: false };
 }
 
 /** Un aviso por negocio con sus redes caídas (sin canal de mensajes); una vez por caída. */
@@ -176,7 +184,8 @@ export async function checkPlatformWebhook(client: ZernioClient) {
   if (problem) {
     const title = 'Zernio: el webhook de la plataforma tiene problemas';
     const detail = `El webhook (${platformWebhookUrl()}) ${problem}. Mientras falla no llegan mensajes, comentarios ni avisos de las redes. Revisa que el servidor responda en ${config.publicBaseUrl}.`;
-    const inc = await openIncident('zernio_webhook', title, detail, new Date(), state.active ? 'warn' : 'fail');
+    // Ya reparado (o solo con fallas) es un aviso; no se escala como si siguiera caído.
+    const inc = await openIncident('zernio_webhook', title, detail, new Date(), state.active || state.repaired ? 'warn' : 'fail');
     if (inc.created || !inc.alerted_at) {
       await sendAlert(title, detail).catch(() => undefined);
       await markAlerted(inc.id);
@@ -207,13 +216,14 @@ export async function zernioHealthSummary() {
 }
 
 /** Lo que ve el negocio de la salud de una cuenta (en palabras). */
-export function publicHealth(r: { status: string; health: any; token_expires_at: string | null }) {
+export function publicHealth(r: { platform: string; status: string; health: any; token_expires_at: string | null }) {
   const h = r.health ?? {};
-  const soon = r.token_expires_at && Date.parse(r.token_expires_at) - Date.now() < 7 * 86400_000 && Date.parse(r.token_expires_at) > Date.now();
+  // Solo avisan las redes cuyo permiso hay que renovar a mano, y el de estadísticas solo donde hay estadísticas.
+  const soon = EXPIRY_WARN.has(r.platform) && r.token_expires_at && Date.parse(r.token_expires_at) - Date.now() < 7 * 86400_000 && Date.parse(r.token_expires_at) > Date.now();
   const problem = r.status !== 'active' ? 'Hay que volver a conectarla'
     : h.level === 'error' ? 'Zernio reporta un problema con la cuenta'
       : soon ? 'Su permiso vence pronto: vuelve a conectarla'
-        : h.can_fetch_analytics === false ? 'Falta el permiso de estadísticas: vuelve a conectarla'
+        : h.can_fetch_analytics === false && networkOf(r.platform)?.analytics ? 'Falta el permiso de estadísticas: vuelve a conectarla'
           : h.level === 'warning' ? 'Zernio reporta un aviso' : '';
   return { level: r.status !== 'active' ? 'error' : h.level ?? 'ok', problem, reconnect: !!problem && problem !== 'Zernio reporta un aviso', token_expires_at: r.token_expires_at };
 }

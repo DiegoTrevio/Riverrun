@@ -66,7 +66,8 @@ export async function syncStatsBatch(rows: DueRow[], client: ZernioClient = clie
     const m = data.get(id)!;
     m.set(day, { ...m.get(day), ...Object.fromEntries(Object.entries(v).filter(([, x]) => x !== undefined)), raw: { ...(m.get(day)?.raw ?? {}), ...(v.raw ?? {}) } });
   };
-  const windowOf = (r: DueRow) => (r.prev ? 7 : 35);
+  // La primera vez, 35 días; después, desde la última vuelta (mínimo 7: las redes corrigen cifras unos días).
+  const windowOf = (r: DueRow) => (r.prev ? Math.min(35, Math.max(7, Math.ceil((Date.now() - Date.parse(r.prev)) / 86400_000) + 2)) : 35);
   const done = new Set<string>();
   try {
     // Seguidores: varias cuentas por llamada (Google no tiene seguidores).
@@ -74,7 +75,15 @@ export async function syncStatsBatch(rows: DueRow[], client: ZernioClient = clie
     for (let i = 0; i < withFollowers.length; i += 50) {
       const chunk = withFollowers.slice(i, i + 50);
       const days = Math.max(...chunk.map(windowOf));
-      const r = await client.call<any>('GET', `/accounts/follower-stats?accountIds=${chunk.map((x) => encodeURIComponent(x.zernio_account_id)).join(',')}&fromDate=${utcDay(-days)}&toDate=${utcDay(0)}&granularity=daily`);
+      let r: any;
+      try {
+        r = await client.call<any>('GET', `/accounts/follower-stats?accountIds=${chunk.map((x) => encodeURIComponent(x.zernio_account_id)).join(',')}&fromDate=${utcDay(-days)}&toDate=${utcDay(0)}&granularity=daily`);
+      } catch (e) {
+        // Una cuenta que Zernio rechaza no frena a las demás: esas cuentas quedan sin seguidores hoy y siguen con lo demás.
+        if (e instanceof ZernioBusyError || addonMissing(e)) throw e;
+        await logEvent({ level: 'warn', source: 'channel', message: `Estadísticas de redes: Zernio no dio los seguidores de ${chunk.length} cuenta(s): ${(e as any)?.message ?? e}` });
+        continue;
+      }
       for (const row of chunk) {
         for (const p of Array.isArray(r?.stats?.[row.zernio_account_id]) ? r.stats[row.zernio_account_id] : []) {
           const day = dayOf(p?.date);
@@ -108,7 +117,9 @@ export async function syncStatsBatch(rows: DueRow[], client: ZernioClient = clie
             const day = dayOf(d?.date);
             if (!day) continue;
             const m = d?.metrics ?? {};
-            const engagement = ['likes', 'comments', 'shares', 'saves'].reduce((s, k) => s + (num(m[k]) ?? 0), 0);
+            // Sin ninguna de las cuatro cifras, la interacción queda vacía (no en cero: no pisa lo que ya estaba).
+            const parts = ['likes', 'comments', 'shares', 'saves'].map((k) => num(m[k]));
+            const engagement = parts.some((v) => v !== null) ? parts.reduce<number>((t, v) => t + (v ?? 0), 0) : null;
             put(row.id, day, { impressions: num(m.impressions), reach: num(m.reach), engagement, views: num(m.views), clicks: num(m.clicks), posts: num(d?.postCount) });
           }
         }
