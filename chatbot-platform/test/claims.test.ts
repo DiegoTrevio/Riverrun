@@ -7,7 +7,7 @@ const K = ['Hotel Palmas. Habitaciones dobles $1,200 por noche. Alberca climatiz
 
 const flagged: [string, string[]][] = [
   ['¡Hola! Sí, tenemos alberca y gimnasio.', ['gimnasio']],
-  ['Ofrecemos servicio de spa y masajes.', ['masajes']],
+  ['Ofrecemos servicio de spa y masajes.', ['spa', 'masajes']],
   ['Aceptamos Bitcoin como forma de pago.', ['bitcoin']],
   ['Tenemos servicio de lavandería las 24 horas.', ['lavanderia']],
   ['Incluye desayuno buffet y cena.', ['cena']],

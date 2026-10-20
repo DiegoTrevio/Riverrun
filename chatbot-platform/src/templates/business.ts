@@ -15,6 +15,11 @@ export interface BusinessTemplate {
   formality?: Personality['formality'];
   /** Si el giro suele agendar citas (activa la agenda en el chatbot). */
   booking?: boolean;
+  /**
+   * Lo que el asistente de creación propone para este giro (se puede cambiar en «Personalizar»): el trabajo del agente y
+   * los datos que pide. El teléfono nunca va por omisión: WhatsApp ya lo da.
+   */
+  wizard?: { role: 'filter' | 'book' | 'assist' | 'sell'; collect: string[]; collect_other?: string; handoff_extra?: string };
 }
 
 const nameField = { key: 'nombre', label: 'Nombre', type: 'name', ask_when: 'de forma natural al inicio de la conversación' } as const;
@@ -23,6 +28,7 @@ const phoneField = { key: 'telefono', label: 'Teléfono', type: 'phone', ask_whe
 export const BUSINESS_TYPES: BusinessTemplate[] = [
   {
     key: 'restaurante',
+    wizard: { role: 'sell', collect: ['nombre', 'personas'], collect_other: 'Dirección de entrega (si es a domicilio)' },
     label: 'Restaurante o cafetería',
     role: 'Atiendes a clientes que preguntan por el menú, precios, horarios, reservaciones y pedidos para llevar o a domicilio.',
     flow: {
@@ -41,6 +47,7 @@ export const BUSINESS_TYPES: BusinessTemplate[] = [
   },
   {
     key: 'salud',
+    wizard: { role: 'book', collect: ['nombre'], collect_other: 'Motivo de la consulta', handoff_extra: 'Menciona una urgencia o un dolor fuerte' },
     label: 'Clínica, consultorio o dentista',
     role: 'Atiendes a pacientes que quieren información de servicios, costos, ubicación y agendar citas. No das diagnósticos ni recomendaciones médicas.',
     flow: {
@@ -59,6 +66,7 @@ export const BUSINESS_TYPES: BusinessTemplate[] = [
   },
   {
     key: 'hotel',
+    wizard: { role: 'filter', collect: ['nombre', 'fecha', 'personas'] },
     label: 'Hotel u hospedaje',
     role: 'Atiendes a huéspedes que preguntan por habitaciones, tarifas, disponibilidad, servicios y ubicación.',
     flow: {
@@ -76,6 +84,7 @@ export const BUSINESS_TYPES: BusinessTemplate[] = [
   },
   {
     key: 'tienda',
+    wizard: { role: 'sell', collect: ['nombre'], collect_other: 'Dirección de envío (si es a domicilio)' },
     label: 'Tienda o comercio',
     role: 'Atiendes a clientes que preguntan por productos, precios, existencias, envíos y formas de pago.',
     flow: {
@@ -93,6 +102,7 @@ export const BUSINESS_TYPES: BusinessTemplate[] = [
   },
   {
     key: 'servicios',
+    wizard: { role: 'book', collect: ['nombre', 'correo', 'interes'] },
     label: 'Servicios profesionales',
     role: 'Atiendes a prospectos que preguntan por servicios, precios, alcance y tiempos, y quieren agendar una llamada o cotización.',
     flow: {
@@ -112,6 +122,7 @@ export const BUSINESS_TYPES: BusinessTemplate[] = [
   },
   {
     key: 'belleza',
+    wizard: { role: 'book', collect: ['nombre', 'interes'] },
     label: 'Salón de belleza, barbería o spa',
     role: 'Atiendes a clientes que preguntan por servicios, precios, duración y quieren agendar cita.',
     flow: {
@@ -129,6 +140,7 @@ export const BUSINESS_TYPES: BusinessTemplate[] = [
   },
   {
     key: 'otro',
+    wizard: { role: 'assist', collect: ['nombre'] },
     label: 'Otro tipo de negocio',
     role: 'Atiendes a clientes que preguntan por los productos y servicios del negocio.',
     flow: {

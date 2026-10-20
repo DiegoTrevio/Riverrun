@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import { enqueue } from '../engine/queue.js';
 import { query, queryOne, withTransaction } from '../db.js';
 import { removeInboundAccountFiles, type StoredMedia } from '../channels/media.js';
+import { removeAccountAttachments } from '../attachments.js';
 import { perRequestKeys } from '../engine/questions.js';
 import { closeCardForRequest } from './pipelines.js';
 import {
@@ -49,9 +50,7 @@ export async function createAccount(
     [name, opts.status ?? 'active', opts.trialEndsAt ?? null, opts.businessType ?? '', opts.source ?? 'admin'],
   );
   const account = rows[0] as Account;
-  // Su perfil de Zernio queda listo para conectar redes (en segundo plano: el alta no espera a Zernio). Dentro de una
-  // transacción lo pide quien la confirma (prepareAccountProfile después del commit).
-  if (!client) void import('../channels/zernio-connect.js').then((m) => m.prepareAccountProfile(account.id)).catch(() => undefined);
+  // Su perfil de Zernio se crea cuando conecte su primera red (accountProfile), no al darse de alta.
   return account;
 }
 
@@ -77,6 +76,7 @@ export async function markOnboarding(accountId: string, steps: Record<string, bo
 export async function deleteAccount(id: string) {
   await query('DELETE FROM accounts WHERE id = $1', [id]);
   await removeInboundAccountFiles(id);
+  await removeAccountAttachments(id);
 }
 
 /* ------------------------------ Usuarios ------------------------------ */
@@ -197,6 +197,9 @@ export async function touchLogin(id: string) {
 
 export async function deleteUser(id: string, expectedAccountId?: string) {
   return withTransaction(async (client) => {
+    // Su enlace para reservar se va con ella (si quedara sin persona, ofrecería todos los servicios del negocio). Va antes
+    // de borrarla: en bases con la versión anterior de la 062 la llave foránea deja el enlace sin persona.
+    await client.query('DELETE FROM booking_links WHERE user_id = $1 AND ($2::uuid IS NULL OR account_id = $2)', [id, expectedAccountId ?? null]);
     const deleted = await client.query<{ account_id: string }>('DELETE FROM users WHERE id = $1 AND ($2::uuid IS NULL OR account_id = $2) RETURNING account_id', [id, expectedAccountId ?? null]);
     if (!deleted.rows.length) return false;
     // Los servicios guardan a sus personas asignadas en jsonb (sin clave foránea): se quita la persona borrada para que
@@ -243,15 +246,17 @@ export interface ChatbotInput {
   flow?: unknown;
   ai?: unknown;
   saved_messages?: unknown;
+  start_on_connect?: boolean;
+  creation_ref?: string | null;
 }
 
 const CHATBOT_JSON_COLS = ['personality', 'rules', 'data_fields', 'flow', 'ai', 'saved_messages'] as const;
-const CHATBOT_PLAIN_COLS = ['name', 'active'] as const;
+const CHATBOT_PLAIN_COLS = ['name', 'active', 'start_on_connect'] as const;
 
 export async function createChatbot(accountId: string, input: ChatbotInput, client?: Queryable): Promise<Chatbot> {
   const rows = await rowsOf(client,
-    `INSERT INTO chatbots (account_id, name, active, personality, rules, data_fields, flow, ai, saved_messages)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+    `INSERT INTO chatbots (account_id, name, active, personality, rules, data_fields, flow, ai, saved_messages, start_on_connect, creation_ref)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
     [
       accountId,
       input.name ?? 'Nuevo chatbot',
@@ -262,6 +267,8 @@ export async function createChatbot(accountId: string, input: ChatbotInput, clie
       JSON.stringify(input.flow ?? {}),
       JSON.stringify(input.ai ?? {}),
       JSON.stringify(input.saved_messages ?? []),
+      input.start_on_connect ?? false,
+      input.creation_ref ?? null,
     ],
   );
   return hydrateChatbot(rows[0]);

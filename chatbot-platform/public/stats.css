@@ -84,3 +84,8 @@
 
 .stats-data { margin-top: 10px; font-size: 12px; }
 .stats-data summary { color: var(--muted); cursor: pointer; }
+
+/* Redes sociales (Reportes → Redes sociales). */
+.stats-mini { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); margin: 8px 0; }
+.stats-mini-value { display: block; font-size: 18px; }
+.stats-spark { width: 100%; height: 40px; display: block; margin: 6px 0; }

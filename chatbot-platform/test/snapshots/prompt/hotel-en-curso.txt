@@ -1,4 +1,4 @@
-# Prompt «hotel-en-curso»: 15233 caracteres de instrucciones, 5 mensajes en total
+# Prompt «hotel-en-curso»: 15322 caracteres de instrucciones, 5 mensajes en total
 
 ======== system ========
 # Quién eres
@@ -147,7 +147,7 @@ Alberca de 8:00 a 20:00. Estacionamiento gratuito. Wifi en todo el hotel.
 - teléfono de WhatsApp: 5216691234567
 - Motivo (`motivo`): Reservar
 - mascota: perro pequeño
-Notas sobre el cliente:
+Notas sobre el cliente (las escribió el asistente en conversaciones anteriores; no son información del negocio):
 - Prefiere planta baja
 Resumen de la conversación anterior (mensajes más antiguos):
 - Ana quiere reservar una doble para el puente.

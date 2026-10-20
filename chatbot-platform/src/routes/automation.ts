@@ -4,9 +4,9 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { assertAccount, conversationFor, HttpError, notFound, requireRole, scopeAccount, targetAccount } from '../access.js';
 import * as astore from '../automation/store.js';
-import { AccountSettingsSchema, AutomationBodySchema, SequenceBodySchema, type Action, type AutomationBody } from '../automation/types.js';
+import { AccountSettingsSchema, AutomationBodySchema, normalizeLabel, SequenceBodySchema, WaTemplateRefSchema, type Action, type AutomationBody, type FlowButton, type WaTemplateRef } from '../automation/types.js';
 import { config } from '../config.js';
-import { query } from '../db.js';
+import { query, queryOne } from '../db.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
@@ -18,7 +18,20 @@ import { localParts, zonedToUtc } from '../automation/time.js';
  * Todo lo que una regla referencia debe ser de la misma cuenta. Con `clearMissing`, una foto que ya se borró se quita de
  * la regla o secuencia (en lugar de impedir guardarla o desactivarla).
  */
-async function checkReferences(accountId: string, body: { chatbot_id?: string | null; actions?: Action[]; steps?: { image_id: string }[] }, opts: { clearMissing?: boolean } = {}) {
+async function checkReferences(
+  accountId: string,
+  body: { chatbot_id?: string | null; actions?: Action[]; steps?: { image_id: string; wa_template?: WaTemplateRef | null; buttons?: FlowButton[] }[]; wa_template?: WaTemplateRef | null },
+  opts: { clearMissing?: boolean } = {},
+) {
+  // Plantillas de WhatsApp: del mismo negocio (una que ya se borró se quita con `clearMissing`).
+  const templated = [body, ...(body.actions ?? []).filter((a) => a.type === 'send_message'), ...(body.steps ?? [])] as { wa_template?: WaTemplateRef | null }[];
+  for (const holder of templated) {
+    if (!holder.wa_template) continue;
+    const t = await queryOne(`SELECT 1 FROM wa_templates WHERE id = $1 AND account_id = $2`, [holder.wa_template.template_id, accountId]);
+    if (t) continue;
+    if (opts.clearMissing) holder.wa_template = null;
+    else throw new HttpError(400, 'La plantilla de WhatsApp no pertenece a la cuenta');
+  }
   if (body.chatbot_id) {
     const bot = await store.getChatbot(body.chatbot_id);
     if (!bot || bot.account_id !== accountId) throw new HttpError(400, 'El chatbot no pertenece a la cuenta');
@@ -33,6 +46,21 @@ async function checkReferences(accountId: string, body: { chatbot_id?: string | 
     const owner = img ? await store.getChatbot(img.chatbot_id) : null;
     if (!owner || owner.account_id !== accountId) throw new HttpError(400, 'Una imagen no pertenece a la cuenta');
   }
+  // Botones de un flujo: el flujo al que llevan es del mismo negocio (uno borrado pasa a "terminar") y su texto no se
+  // confunde con las palabras para darse de baja, volver a recibir mensajes o aceptar promociones.
+  const buttons = (body.steps ?? []).flatMap((st) => st.buttons ?? []);
+  if (buttons.length) {
+    const st = await astore.getSettings(accountId);
+    const reserved = new Set([...st.opt_out.keywords, ...st.opt_out.resume_keywords, ...st.consent.opt_in_keywords].map(normalizeLabel));
+    for (const b of buttons) {
+      if (reserved.has(normalizeLabel(b.label))) throw new HttpError(400, `El botón "${b.label}" se confunde con la palabra para darse de baja, volver a recibir mensajes o aceptar promociones. Usa otro texto.`);
+      if (b.kind !== 'reply' || b.action !== 'start_sequence' || !b.sequence_id) continue;
+      const seq = await astore.getSequence(b.sequence_id);
+      if (seq?.account_id === accountId) continue;
+      if (opts.clearMissing && !seq) Object.assign(b, { action: 'end', sequence_id: null });
+      else throw new HttpError(400, 'El flujo de un botón no pertenece a la cuenta');
+    }
+  }
   for (const a of body.actions ?? []) {
     if (a.type === 'start_sequence') {
       const seq = await astore.getSequence(a.sequence_id);
@@ -41,6 +69,10 @@ async function checkReferences(accountId: string, body: { chatbot_id?: string | 
     if ((a.type === 'alert_team' || a.type === 'send_report') && a.user_ids.length) {
       const team = await astore.teamMembers(accountId);
       if (a.user_ids.some((id) => !team.some((u) => u.id === id))) throw new HttpError(400, 'Un usuario no pertenece a la cuenta');
+    }
+    if (a.type === 'send_conversation' && a.endpoint_id) {
+      const ep = await queryOne(`SELECT 1 FROM webhook_endpoints WHERE id = $1 AND account_id = $2`, [a.endpoint_id, accountId]);
+      if (!ep) throw new HttpError(400, 'La app elegida no pertenece a la cuenta');
     }
   }
 }
@@ -69,7 +101,19 @@ const CampaignBody = z.object({
   business_hours_only: z.boolean().default(true),
   /** Etapa del recorrido en la que queda la conversación al recibirla: el asistente sigue el flujo desde ahí. */
   flow_step: z.number().int().min(0).max(50).default(0),
-});
+  /** WhatsApp oficial: plantilla aprobada para quien no escribió en las últimas 24 h. */
+  wa_template: WaTemplateRefSchema,
+  /** Qué se envía: un mensaje, o un flujo (cada persona entra al flujo y recibe sus pasos). */
+  kind: z.enum(['message', 'sequence']).default('message'),
+  sequence_id: z.string().uuid().nullable().default(null),
+}).refine((c) => c.kind !== 'sequence' || !!c.sequence_id, { message: 'Elige el flujo que se envía', path: ['sequence_id'] });
+
+/** El flujo de una campaña es del mismo negocio. */
+async function checkCampaignFlow(accountId: string, b: { kind: string; sequence_id: string | null }) {
+  if (b.kind !== 'sequence') return;
+  const seq = b.sequence_id ? await astore.getSequence(b.sequence_id) : null;
+  if (!seq || seq.account_id !== accountId) throw new HttpError(400, 'El flujo no pertenece a la cuenta');
+}
 
 export async function automationRoutes(api: FastifyInstance, service: ChatService) {
   const admins = { preHandler: requireRole('admin') };
@@ -229,6 +273,9 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
     const b = parse(CampaignBody, await scheduleBody(req.body, accountId));
     b.channel_ids = [...new Set(b.channel_ids)].filter((x) => x !== b.channel_id);
     await checkChannel(req.user, accountId, b.channel_id, b.image_id, b.channel_ids);
+    await checkCampaignFlow(accountId, b);
+    const refs = { wa_template: b.wa_template };
+    await checkReferences(accountId, refs);
     return astore.saveCampaign(accountId, { ...b, scheduled_at: b.scheduled_at ? new Date(b.scheduled_at) : null });
   });
 
@@ -238,6 +285,10 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
     const b = parse(CampaignBody, await scheduleBody({ ...c, scheduled_at: c.scheduled_at ? new Date(c.scheduled_at).toISOString() : null, ...(req.body ?? {}) }, c.account_id));
     b.channel_ids = [...new Set(b.channel_ids)].filter((x) => x !== b.channel_id);
     await checkChannel(req.user, c.account_id, b.channel_id, b.image_id, b.channel_ids);
+    await checkCampaignFlow(c.account_id, b);
+    const refs = { wa_template: b.wa_template };
+    await checkReferences(c.account_id, refs, { clearMissing: true });
+    b.wa_template = refs.wa_template ?? null;
     const saved = await astore.saveCampaign(c.account_id, { ...b, scheduled_at: b.scheduled_at ? new Date(b.scheduled_at) : null }, c.id);
     if (c.status === 'scheduled') {
       // Reprogramar con los datos nuevos.
@@ -265,14 +316,22 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
     const requireConsent = settings.consent.require_for_campaigns;
     const audience = await astore.campaignAudience(c, 100000, { requireConsent });
     const ch = await store.getChannel(c.channel_id);
+    // Un flujo cuenta como tantos mensajes por persona como pasos tiene (para el cupo del plan).
+    const flow = c.kind === 'sequence' && c.sequence_id ? await astore.getSequence(c.sequence_id) : null;
+    if (flow && flow.account_id !== c.account_id) throw new HttpError(400, 'El flujo no pertenece a la cuenta');
+    const perPerson = flow ? flow.steps.length : 1;
     return {
       count: audience.length,
+      messages_per_person: perPerson,
+      total_messages: audience.length * perPerson,
       excluded_no_consent: requireConsent ? await astore.campaignExcludedNoConsent(c) : 0,
       sample: audience.slice(0, 10).map((a) => a.name || a.push_name || (a.phone ? `+${a.phone}` : 'Cliente')),
       warning:
         ch?.type === 'messenger' || ch?.type === 'instagram'
           ? 'Meta solo permite escribir a quienes enviaron un mensaje en las últimas 24 horas; el resto se omitirá.'
-          : ch?.type === 'zernio'
+          : ch?.type === 'zernio' && ch.config.platform === 'whatsapp'
+            ? (c.wa_template ? 'A quienes no escribieron en las últimas 24 horas se les enviará la plantilla elegida.' : 'Solo se escribirá a quienes enviaron un mensaje en las últimas 24 horas; para el resto elige una plantilla de WhatsApp aprobada.')
+          : ch?.type === 'zernio' && ['instagram', 'facebook'].includes(ch.config.platform)
             ? 'Solo se escribirá a quienes enviaron un mensaje en las últimas 24 horas; el resto se omitirá.'
           : ch?.type === 'whatsapp'
             ? 'Envía solo a clientes que esperan saber de ti y con ritmo moderado: WhatsApp puede bloquear números que envían mensajes masivos no deseados.'

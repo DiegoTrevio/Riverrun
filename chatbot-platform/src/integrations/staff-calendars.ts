@@ -6,7 +6,7 @@
 import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
 import { logEvent } from '../logs.js';
-import { getAppointment, getSettings, scheduleJob } from '../automation/store.js';
+import { getAppointment, getSettings, isVideoCall, scheduleJob } from '../automation/store.js';
 import * as google from './google.js';
 import * as outlook from './outlook.js';
 
@@ -176,10 +176,15 @@ export async function syncStaffEvent(payload: { appointment_id: string }) {
   if (!cal) return;
   if (row?.staff_event_provider && row.staff_event_provider !== cal.provider) eventId = null;
   try {
-    const id = cal.provider === 'google'
-      ? await google.upsertEvent(googleAuth(cal), eventId, a, (await getSettings(a.account_id)).timezone)
-      : await outlook.upsertEvent(outlookAuth(cal), eventId, a);
-    await query('UPDATE appointments SET staff_event_id = $2, staff_event_provider = $3, staff_event_user_id = $4 WHERE id = $1', [a.id, id, cal.provider, want]);
+    // Videollamada: la sala (Meet o Teams) sale del calendario de la persona que la atiende.
+    const conference = await isVideoCall(a);
+    const ev = cal.provider === 'google'
+      ? await google.upsertEvent(googleAuth(cal), eventId, a, (await getSettings(a.account_id)).timezone, { conference })
+      : await outlook.upsertEvent(outlookAuth(cal), eventId, a, { conference });
+    await query(
+      `UPDATE appointments SET staff_event_id = $2, staff_event_provider = $3, staff_event_user_id = $4,
+         meeting_url = CASE WHEN $5 <> '' AND (meeting_url = '' OR staff_event_user_id IS DISTINCT FROM $4) THEN $5 ELSE meeting_url END
+       WHERE id = $1`, [a.id, ev.id, cal.provider, want, ev.meetingUrl]);
     if (cal.last_error) await markError(cal.user_id, '');
   } catch (e: any) {
     await markError(cal.user_id, e.message);

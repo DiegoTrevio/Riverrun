@@ -38,6 +38,8 @@ export function renderTemplate(template: string, ctx: TemplateContext): string {
     'cita.hora': a ? spanishTime(new Date(a.starts_at), ctx.timezone) : '',
     'cita.lugar': ctx.location ?? '',
     'cita.tipo': a ? (a.kind === 'call' ? 'llamada' : 'cita') : '',
+    'cita.persona': a?.assigned_user_name ?? '',
+    'cita.enlace': a?.meeting_url ?? '',
   };
   return template
     .replace(/\{\{\s*([a-z_]+(?:\.[a-z0-9_]+)?)\s*\}\}/gi, (_m, key: string) => {

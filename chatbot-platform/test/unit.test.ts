@@ -116,10 +116,16 @@ test('validador: datos del cliente solo en campos configurados y válidos', () =
         { field: 'habitacion', value: 'suite' },
       ],
     }),
-    bot: bot(), images: [], sentImageIds: [], groundingSources: KNOW, customerText: 'soy juan',
+    bot: bot(), images: [], sentImageIds: [], groundingSources: KNOW, customerText: 'soy juan, quiero la suite',
   });
   assert.deepEqual(r.plan.saveData, { nombre: 'Juan', habitacion: 'Suite' });
   assert.equal(r.plan.contactName, 'Juan');
+  // Una opción que el cliente no dijo no se guarda, aunque el campo no sea obligatorio.
+  const invented = validateDecision({
+    raw: decision({ messages: ['Perfecto, Juan'], save_data: [{ field: 'nombre', value: 'juan' }, { field: 'habitacion', value: 'suite' }] }),
+    bot: bot(), images: [], sentImageIds: [], groundingSources: KNOW, customerText: 'soy juan',
+  });
+  assert.deepEqual(invented.plan.saveData, { nombre: 'Juan' });
 });
 
 test('validador: sin emojis, límite de burbujas, JSON inválido', () => {
@@ -235,7 +241,24 @@ test('FactCorpus: un precio o número solo vale si aparece completo en las fuent
   assert.deepEqual(kb.unverified('Son $202.', trusted), ['202'], 'ni por estar dentro de la fecha de hoy');
   assert.deepEqual(kb.unverified('La sencilla cuesta 650 por noche.'), ['650'], 'sin signo de pesos tampoco');
   assert.deepEqual(kb.unverified('Llámanos al 1234 5678.'), [], 'el número local de un teléfono conocido sí');
-  assert.deepEqual(kb.unverified('2 noches en doble: $3,300.', trusted), [], 'una cotización (precio × cantidad) sí');
+  assert.deepEqual(kb.unverified('2 noches en doble ($1,650 c/u): $3,300.', trusted, new FactCorpus(['serían 2 noches'])), [], 'una cotización (precio × cantidad que dijo el cliente) sí');
+});
+
+test('FactCorpus: la fecha y la hora de hoy no validan una cotización inventada', async () => {
+  const { FactCorpus } = await import('../src/engine/text.js');
+  // A las 15:20 un "$300" inventado parecía 15 × 20; y con un precio de $150, "$3,000" parecía $150 × 20 (los minutos).
+  const now = 'lunes, 19 de octubre de 2026, 15:20';
+  const trusted = new FactCorpus(['Desayuno: $150 por persona. Abrimos de 9:00 a 18:00.', now]);
+  const check = (customer: string, reply: string) =>
+    new FactCorpus(['Desayuno: $150 por persona. Abrimos de 9:00 a 18:00.', now, customer]).unverified(reply, trusted, new FactCorpus([customer]));
+  assert.deepEqual(check('cuanto el desayuno?', 'El desayuno cuesta $300'), ['300']);
+  assert.deepEqual(check('cuanto el desayuno?', 'Serían $3,000'), ['3000']);
+  // La cantidad que dijo el cliente (aunque coincida con los minutos de la hora), con el precio unitario a la vista, sí.
+  assert.deepEqual(check('somos 20 personas', 'Serían $3,000 ($150 por persona)'), []);
+  // Una cantidad que solo pone la respuesta, no: así se colaba "$3,300 por noche (2 adultos)".
+  assert.deepEqual(check('cuanto el desayuno?', 'Para 2 personas serían $300 ($150 por persona)'), ['300']);
+  // Un número que no es dinero (como el año) no es precio base: 2026 × 2 no valida "$4,052".
+  assert.deepEqual(check('somos 2', 'Serían $4,052'), ['4052']);
 });
 
 test('FactCorpus: un enlace inventado sobre un dominio real no se valida', async () => {
@@ -256,4 +279,24 @@ test('FactCorpus: enlaces con parámetros, teléfono local con guion y decimales
   assert.deepEqual(kb.unverified('Llámanos al 1234-5678'), []);
   assert.deepEqual(kb.unverified('El desayuno cuesta $99.50', kb), []);
   assert.deepEqual(kb.unverified('El desayuno cuesta $99.75', kb), ['99.75']);
+});
+
+test('validador: con una persona pedida, el horario se revisa contra los suyos (no contra la selección general)', () => {
+  const agenda = {
+    slots: { s1: ['2030-01-07T10:00'] }, appointmentIds: [], needsPhoneFor: [],
+    people: { s1: [{ userId: 'u-ana', name: 'Ana García', slots: ['2030-01-08T16:00'] }, { userId: 'u-beto', name: 'Beto', slots: ['2030-01-07T10:00'] }] },
+  };
+  const run = (person: string, slot: string) => validateDecision({
+    raw: decision({ messages: ['Listo'], booking: { action: 'book', service_id: 's1', slot, appointment_id: '', person } }),
+    bot: bot(), images: [], sentImageIds: [], groundingSources: KNOW, customerText: 'con Ana', agenda,
+  });
+  // Un horario de Ana que no está entre los generales sí se agenda con ella.
+  assert.deepEqual(run('Ana', '2030-01-08T16:00').plan.booking, { action: 'book', serviceId: 's1', slot: '2030-01-08T16:00', userId: 'u-ana' });
+  // Un horario general en el que Ana no está libre, no.
+  assert.ok(run('ana garcía', '2030-01-07T10:00').retryable.some((x) => x.includes('Ana García no está libre')));
+  // "Ana López" no es Ana García.
+  assert.ok(run('Ana López', '2030-01-08T16:00').retryable.some((x) => x.includes('no está en la lista')));
+  // Sin persona: solo los horarios generales.
+  assert.deepEqual(run('', '2030-01-07T10:00').plan.booking, { action: 'book', serviceId: 's1', slot: '2030-01-07T10:00' });
+  assert.ok(run('', '2030-01-08T16:00').retryable.some((x) => x.includes('no está disponible')));
 });

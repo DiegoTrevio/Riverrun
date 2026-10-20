@@ -23,8 +23,52 @@ try {
   const service = (await h.authed('POST', '/api/services', { account_id: h.accountId, name: 'Consulta inicial' })).json();
   // Redes sociales (Zernio): una sin conectar y una conectada con su cuenta.
   const socialNew = (await h.authed('POST', '/api/channels', { account_id: h.accountId, chatbot_id: h.botId, name: 'Telegram del hotel', type: 'zernio', config: { platform: 'telegram' } })).json();
-  const socialOn = (await h.authed('POST', '/api/channels', { account_id: h.accountId, chatbot_id: h.botId, name: 'Instagram del hotel', type: 'zernio', config: { platform: 'instagram', profile_id: 'prof_ux', account_id: 'acc_ux', username: 'hotelpalmas', display_name: 'Hotel Palmas' } })).json();
-  zer.accounts.set('acc_ux', { _id: 'acc_ux', platform: 'instagram', profileId: 'prof_ux', username: 'hotelpalmas', displayName: 'Hotel Palmas', isActive: true });
+  // La conectada pasa por el flujo real: pedir la autorización y volver de Zernio con una cuenta del perfil del negocio.
+  const socialOn = (await h.authed('POST', '/api/channels', { account_id: h.accountId, chatbot_id: h.botId, name: 'Instagram del hotel', type: 'zernio', config: { platform: 'instagram' } })).json();
+  assert.equal((await h.authed('POST', `/api/channels/${socialOn.id}/zernio/connect`)).statusCode, 200);
+  const onCfg = (await pool.query(`SELECT config FROM channels WHERE id = $1`, [socialOn.id])).rows[0].config;
+  zer.accounts.set('acc_ux', { _id: 'acc_ux', platform: 'instagram', profileId: onCfg.profile_id, username: 'hotelpalmas', displayName: 'Hotel Palmas', isActive: true });
+  assert.equal((await h.app.inject({ method: 'GET', url: `/zernio/callback/${socialOn.webhook_token}/${onCfg.connect_state}?accountId=acc_ux&username=hotelpalmas` })).statusCode, 302);
+  // WhatsApp oficial con una plantilla aprobada y otra rechazada (pantalla de plantillas).
+  const waSocial = (await pool.query(`INSERT INTO social_accounts (account_id, zernio_account_id, profile_id, platform, username, display_name) VALUES ($1, 'acc_ux_wa', $2, 'whatsapp', '+52 81 1234 5678', 'Hotel Palmas WhatsApp') RETURNING id`, [h.accountId, onCfg.profile_id])).rows[0].id;
+  await pool.query(`INSERT INTO wa_templates (account_id, social_account_id, name, language, category, status, components) VALUES ($1, $2, 'recordatorio_cita', 'es_MX', 'UTILITY', 'APPROVED', $3)`, [h.accountId, waSocial, JSON.stringify([{ type: 'BODY', text: 'Hola {{1}}, te esperamos el {{2}}.' }])]);
+  await pool.query(`INSERT INTO wa_templates (account_id, social_account_id, name, language, category, status, rejection_reason, components) VALUES ($1, $2, 'promo_octubre', 'es_MX', 'MARKETING', 'REJECTED', 'El contenido parece engañoso', $3)`, [h.accountId, waSocial, JSON.stringify([{ type: 'BODY', text: '¡Gana un premio!' }])]);
+  // Comentarios y reseñas: una publicación de Instagram con un comentario largo y una reseña de Google.
+  const igSocial = (await pool.query(`INSERT INTO social_accounts (account_id, zernio_account_id, profile_id, platform, username, display_name) VALUES ($1, 'acc_ux_ig', $2, 'instagram', 'hotelpalmas', 'Hotel Palmas') RETURNING id`, [h.accountId, onCfg.profile_id])).rows[0].id;
+  const gbSocial = (await pool.query(`INSERT INTO social_accounts (account_id, zernio_account_id, profile_id, platform, username, display_name) VALUES ($1, 'acc_ux_gb', $2, 'googlebusiness', '', 'Hotel Palmas Cancún') RETURNING id`, [h.accountId, onCfg.profile_id])).rows[0].id;
+  const uxPost = (await pool.query(`INSERT INTO social_posts (account_id, social_account_id, platform_post_id, url, caption) VALUES ($1, $2, 'ux_post', 'https://instagram.test/p/ux', 'Nuestra suite con vista al mar y desayuno incluido para dos personas') RETURNING id`, [h.accountId, igSocial])).rows[0].id;
+  await pool.query(`INSERT INTO social_comments (account_id, social_account_id, post_id, platform, platform_post_id, comment_id, author, text, created_at_platform, ai_suggestion, sentiment) VALUES ($1, $2, $3, 'instagram', 'ux_post', 'ux_c1', $4, $5, now(), '¡Hola Lucía! La suite está en $2,900 MXN por noche con desayuno.', 'positive')`,
+    [h.accountId, igSocial, uxPost, JSON.stringify({ name: 'Lucía Hernández', username: 'lucia.hdz' }), '¿Cuánto cuesta la suite para el fin de semana largo de noviembre? Somos dos adultos y queremos llevar a nuestro perrito, ¿lo aceptan?']);
+  await pool.query(`INSERT INTO social_reviews (account_id, social_account_id, platform, review_id, author, rating, text, created_at_platform) VALUES ($1, $2, 'googlebusiness', 'accounts/1/locations/2/reviews/ux', $3, 2, 'El cuarto estaba sucio y nadie contestó en recepción.', now())`,
+    [h.accountId, gbSocial, JSON.stringify({ name: 'Mario' })]);
+  // Publicaciones: una programada para mañana con dos redes y una que salió solo en una.
+  const pubA = (await pool.query(`INSERT INTO social_publications (account_id, status, text, scheduled_for, timezone) VALUES ($1, 'programada', $2, now() + interval '1 day', 'America/Mexico_City') RETURNING id`,
+    [h.accountId, 'Este fin de semana: brunch con música en vivo en la terraza. ¡Reserva tu mesa! #HotelPalmas #Cancún'])).rows[0].id;
+  const pubB = (await pool.query(`INSERT INTO social_publications (account_id, status, text, published_at, timezone) VALUES ($1, 'parcial', $2, now() - interval '2 hours', 'America/Mexico_City') RETURNING id`,
+    [h.accountId, 'Nueva suite con vista al mar'])).rows[0].id;
+  for (const [pub, status, url, error] of [[pubA, 'pendiente', '', ''], [pubB, 'publicada', 'https://instagram.test/p/suite', '']]) {
+    await pool.query(`INSERT INTO social_publication_targets (publication_id, account_id, social_account_id, zernio_account_id, platform, username, status, url, error) VALUES ($1, $2, $3, 'acc_ux_ig', 'instagram', 'hotelpalmas', $4, $5, $6)`,
+      [pub, h.accountId, igSocial, status, url, error]);
+  }
+  await pool.query(`INSERT INTO social_publication_targets (publication_id, account_id, social_account_id, zernio_account_id, platform, username, status, error) VALUES ($1, $2, $3, 'acc_ux_gb', 'googlebusiness', '', 'fallida', 'La imagen no cumple el tamaño mínimo de Google')`,
+    [pubB, h.accountId, gbSocial]);
+  // Reportes → Redes sociales: 30 días de cifras de Instagram y de Google.
+  await pool.query(`INSERT INTO social_account_stats (social_account_id, account_id, day, followers, impressions, reach, engagement, posts)
+    SELECT $1, $2, (now() AT TIME ZONE 'UTC')::date - n, 1410 - n * 7, 800 + (n * 37) % 500, 500 + (n * 23) % 300, 40 + (n * 11) % 60, (n % 3 = 0)::int FROM generate_series(1, 30) n`, [igSocial, h.accountId]);
+  await pool.query(`INSERT INTO social_account_stats (social_account_id, account_id, day, impressions, engagement)
+    SELECT $1, $2, (now() AT TIME ZONE 'UTC')::date - n, 60 + (n * 13) % 40, 3 + n % 5 FROM generate_series(1, 30) n`, [gbSocial, h.accountId]);
+  // Flujo con botones (editor, "enviar a un grupo") y su mensaje con botones en la conversación, con la opción elegida.
+  const uxFlow = (await h.authed('POST', '/api/sequences', { account_id: h.accountId, name: 'Promoción de octubre', active: true, steps: [
+    { delay_value: 0, delay_unit: 'minutes', text: 'Hola {{nombre}}, ¿te interesa la promoción de octubre?', buttons: [
+      { label: 'Sí, me interesa', action: 'next', reply: '¡Genial! Te cuento más 👇' }, { label: 'No, gracias', action: 'end' },
+      { label: 'Hablar con alguien', action: 'handoff' }, { label: 'Ver promoción', kind: 'url', url: 'https://hotel.test/promo' }], wait_for_choice: true },
+    { delay_value: 1, delay_unit: 'days', text: 'Estos son los detalles de la promoción.' },
+    { delay_value: 1, delay_unit: 'days', text: 'Último día de la promoción.' },
+  ] })).json().id;
+  await pool.query(`INSERT INTO messages (conversation_id, direction, sender, type, content, status, meta) VALUES ($1, 'out', 'bot', 'text', $2, 'ok', $3)`,
+    [conv.id, 'Hola Ana, ¿te interesa la promoción de octubre?', JSON.stringify({ source: 'sequence', buttons: [{ kind: 'reply', label: 'Sí, me interesa', payload: 'rr:abcdef0123:1' }, { kind: 'reply', label: 'No, gracias', payload: 'rr:abcdef0123:2' }, { kind: 'url', label: 'Ver promoción', url: 'https://hotel.test/promo' }] })]);
+  await pool.query(`INSERT INTO messages (conversation_id, direction, sender, type, content, status, processed, meta) VALUES ($1, 'in', 'customer', 'text', 'Sí, me interesa', 'ok', true, $2)`, [conv.id, JSON.stringify({ button: 'rr:abcdef0123:1', choice: 'Sí, me interesa' })]);
+  const uxMonth = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Mexico_City', year: 'numeric', month: '2-digit' }).format(new Date());
   const login: any = { superadmin: h.authed };
   for (const role of ['admin', 'agent']) {
     const user = (await h.authed('POST', '/api/users', { account_id: h.accountId, name: `Auditor ${role}`, email: `${role}@auditoria.test`, password: 'auditoria123', role })).json();
@@ -41,12 +85,12 @@ try {
     if (role === 'superadmin') await context.addInitScript((id: string) => localStorage.setItem('cp-account', id), h.accountId);
     return context;
   };
-  const routes = ['agentes', `bot/${h.botId}/instrucciones`, `bot/${h.botId}/preguntas`, `bot/${h.botId}/activacion`, `bot/${h.botId}/conocimiento`, `bot/${h.botId}/imagenes`, `bot/${h.botId}/conexiones`, `bot/${h.botId}/probar`, `bot/${h.botId}/conexiones/${h.channelId}`, `bot/${h.botId}/conexiones/${socialNew.id}`, `bot/${h.botId}/conexiones/${socialOn.id}`, 'conversations', `conversation/${conv.id}`, 'agenda', 'agenda/servicios', `agenda/servicios?id=${service.id}`, 'automation/rules', 'automation/rules/new', 'automation/sequences', 'automation/sequences/new', 'automation/campaigns', 'automation/campaigns/new', 'automation/settings', 'pipeline', 'pipeline/editar/nuevo', 'ajustes', 'integraciones', 'users', 'consumo', 'logs', 'plan', 'estadisticas', 'notifications', 'password', 'inicio'];
+  const routes = ['agentes', `bot/${h.botId}/instrucciones`, `bot/${h.botId}/preguntas`, `bot/${h.botId}/activacion`, `bot/${h.botId}/conocimiento`, `bot/${h.botId}/imagenes`, `bot/${h.botId}/conexiones`, `bot/${h.botId}/probar`, `bot/${h.botId}/conexiones/${h.channelId}`, `bot/${h.botId}/conexiones/${socialNew.id}`, `bot/${h.botId}/conexiones/${socialOn.id}`, 'conversations', `conversation/${conv.id}`, 'agenda', 'agenda/servicios', `agenda/servicios?id=${service.id}`, 'agenda/equipo', 'agenda/enlaces', 'automation/rules', 'automation/rules/new', 'automation/sequences', 'automation/sequences/new', `automation/sequences/${uxFlow}`, 'automation/campaigns', 'automation/campaigns/new', `automation/campaigns/new?flow=${uxFlow}`, 'automation/settings', 'pipeline', 'pipeline/editar/nuevo', 'ajustes', 'integraciones', 'redes', `redes/whatsapp/${waSocial}`, 'comentarios', 'comentarios?tipo=review', 'publicaciones', `publicaciones?vista=calendario&mes=${uxMonth}`, 'publicaciones/nueva', `publicaciones/${pubA}`, 'users', 'consumo', 'logs', 'plan', 'estadisticas', 'estadisticas/redes', 'notifications', 'password', 'inicio', 'agentes/nuevo', `bot/${h.botId}/empezar`];
   const helpScreens: Record<string, string> = { [`bot/${h.botId}/conocimiento`]: '01-importar.jpg', [`bot/${h.botId}/probar`]: '03-probar.jpg', [`conversation/${conv.id}`]: '05-conversacion.jpg', ajustes: '06-ajustes.jpg' };
   for (const role of ['admin', 'superadmin', 'agent']) {
     const context = await contextFor(role); const page = await context.newPage();
     page.on('pageerror', (error) => results.errors.push({ role, message: error.message }));
-    const selected = role === 'admin' ? routes : role === 'agent' ? ['conversations', `conversation/${conv.id}`, 'agenda', 'notifications', 'pipeline', 'password'] : ['agentes', 'accounts', 'planes', 'marcas', 'sistema', 'users', 'ajustes', 'integraciones'];
+    const selected = role === 'admin' ? routes : role === 'agent' ? ['conversations', `conversation/${conv.id}`, 'agenda', 'notifications', 'pipeline', 'password'] : ['agentes', 'agentes/nuevo', 'accounts', 'planes', 'marcas', 'sistema', 'sistema/zernio', 'redes', 'users', 'ajustes', 'integraciones'];
     for (const route of selected) {
       await page.goto(`${base}/#/${route}`); await page.locator('.main h1').waitFor(); await page.locator('.main [aria-busy="true"]').waitFor({ state: 'hidden' }); await page.waitForTimeout(100);
       await page.addScriptTag({ content: axe });
@@ -59,16 +103,32 @@ try {
   console.log('Pantallas examinadas:', results.screens.length);
   for (const width of [320, 390, 768, 1024, 1440]) for (const theme of ['light', 'dark'] as const) {
     const context = await contextFor('admin', { viewport: { width, height: 900 }, colorScheme: theme }); const page = await context.newPage();
-    for (const route of ['agentes', `bot/${h.botId}/instrucciones`, `conversation/${conv.id}`, 'conversations', 'automation/sequences/new', 'agenda']) {
+    for (const route of ['agentes', 'agentes/nuevo', `bot/${h.botId}/empezar`, `bot/${h.botId}/instrucciones`, `conversation/${conv.id}`, 'conversations', 'automation/sequences/new', `automation/sequences/${uxFlow}`, `automation/campaigns/new?flow=${uxFlow}`, 'agenda', 'redes', `redes/whatsapp/${waSocial}`, 'comentarios', 'publicaciones', `publicaciones?vista=calendario&mes=${uxMonth}`, 'publicaciones/nueva', 'estadisticas/redes']) {
       await page.goto(`${base}/#/${route}`); await page.locator('.main h1').waitFor(); await page.waitForTimeout(80);
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1);
       results.responsive.push({ width, theme, route, overflow });
       assert.equal(overflow, false, `Desbordamiento en ${route} ${width} ${theme}`);
-      if (width === 390 && theme === 'dark') await page.screenshot({ path: `${output}/${route.split('/')[0]}-mobile.png`, fullPage: true });
+      if (width === 390 && theme === 'dark') await page.screenshot({ path: `${output}/${route.split('?')[0].replace(/[0-9a-f]{8}-[0-9a-f-]{27}/g, 'id').replace(/[^a-z0-9]+/gi, '-')}-mobile.png`, fullPage: true });
     }
     await context.close();
   }
   checked('60 escenarios adaptables sin desbordamiento');
+  // Página pública para reservar: sin sesión, accesible y sin desbordamiento (celular y escritorio, claro y oscuro).
+  const bookingLink = (await h.authed('POST', '/api/booking-links', { account_id: h.accountId, name: 'Agenda con nosotros' })).json();
+  for (const width of [320, 390, 1024]) for (const theme of ['light', 'dark'] as const) {
+    const ctx = await browser!.newContext({ viewport: { width, height: 900 }, colorScheme: theme }); const pg = await ctx.newPage();
+    pg.on('pageerror', (error) => results.errors.push({ role: 'público', message: error.message }));
+    await pg.goto(bookingLink.url.replace('https://bot.test', base)); await pg.locator('main h2').first().waitFor();
+    await pg.addScriptTag({ content: axe });
+    const violations = await pg.evaluate(async () => (await (window as any).axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa', 'best-practice'] } })).violations.map((v: any) => ({ id: v.id, impact: v.impact, nodes: v.nodes.map((n: any) => ({ target: n.target, summary: n.failureSummary })) })));
+    if (width === 390 && theme === 'light') results.screens.push({ role: 'público', route: 'reservar', violations });
+    const overflow = await pg.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1);
+    results.responsive.push({ width, theme, route: 'reservar', overflow });
+    assert.equal(overflow, false, `Desbordamiento en la página para reservar ${width} ${theme}`);
+    if (width === 390 && theme === 'dark') await pg.screenshot({ path: `${output}/reservar-mobile.png`, fullPage: true });
+    await ctx.close();
+  }
+  checked('Página pública para reservar accesible y sin desbordamiento');
   const context = await contextFor('admin'); const page = await context.newPage(); page.setDefaultTimeout(10000);
   const go = async (route: string) => { await page.goto(`${base}/#/${route}`); await page.locator('.main h1').waitFor(); await page.locator('.main [aria-busy="true"]').waitFor({ state: 'hidden' }); };
   await go(`bot/${h.botId}/instrucciones`);
@@ -122,12 +182,65 @@ try {
   let actualCampaign = (await h.authed('GET', `/api/campaigns?account_id=${h.accountId}`)).json().find((c: any) => c.id === campaign.id);
   assert.equal(actualCampaign.message, 'Mensaje anterior');
   await page.getByRole('button', { name: 'Guardar cambios', exact: true }).click();
-  await page.locator('dialog').getByRole('button', { name: 'Confirmar programación', exact: true }).click();
-  await page.waitForTimeout(250);
+  // Se espera la respuesta del guardado (que cambia el mensaje y vuelve a programar): un tiempo fijo no alcanza en una
+  // máquina lenta y la cuenta de tareas se haría a medio guardar.
+  await Promise.all([
+    page.waitForResponse((r) => r.url().includes(`/api/campaigns/${campaign.id}`) && r.request().method() === 'PUT'),
+    page.locator('dialog').getByRole('button', { name: 'Confirmar programación', exact: true }).click(),
+  ]);
   actualCampaign = (await h.authed('GET', `/api/campaigns?account_id=${h.accountId}`)).json().find((c: any) => c.id === campaign.id);
   assert.equal(actualCampaign.message, 'Mensaje revisado');
   assert.equal((await pool.query("SELECT count(*)::int AS n FROM jobs WHERE payload->>'campaign_id' = $1 AND status = 'pending'", [campaign.id])).rows[0].n, 1);
   checked('Campaña programada exige revisión, cancelar no modifica y confirmar programa una sola vez');
+  // Flujo con botones en el simulador: el cliente toca "Sí, me interesa", recibe la respuesta del botón y el mensaje
+  // siguiente al momento, y la IA no contesta el toque.
+  const playgroundPost = (r: any) => r.url().includes(`/api/chatbots/${h.botId}/playground`) && r.request().method() === 'POST';
+  await go(`bot/${h.botId}/probar`);
+  await Promise.all([page.waitForResponse(playgroundPost), (async () => { const i = page.locator('.composer textarea'); await i.fill('hola, quiero información'); await i.press('Enter'); })()]);
+  const pgConv = (await pool.query(`SELECT c.id, c.contact_id FROM conversations c JOIN channels ch ON ch.id = c.channel_id WHERE ch.chatbot_id = $1 AND ch.type = 'playground' ORDER BY c.created_at DESC LIMIT 1`, [h.botId])).rows[0];
+  await pool.query('UPDATE contacts SET consent_at = now() WHERE id = $1', [pgConv.contact_id]);
+  assert.equal((await h.authed('POST', `/api/conversations/${pgConv.id}/sequences`, { sequence_id: uxFlow })).statusCode, 200);
+  await h.fastForward();
+  // Misma ruta: se recarga para ver el mensaje que envió el flujo.
+  await page.reload(); await page.locator('.main h1').waitFor();
+  const chip = page.locator('.chat').getByRole('button', { name: 'Sí, me interesa', exact: true });
+  await chip.waitFor();
+  assert.equal(await page.locator('.chat').getByRole('link', { name: '🔗 Ver promoción', exact: true }).getAttribute('href'), 'https://hotel.test/promo');
+  const aiCalls = h.calls.length;
+  await Promise.all([page.waitForResponse(playgroundPost), chip.click()]);
+  await page.locator('.chat').getByText('¡Genial! Te cuento más 👇').waitFor();
+  await page.locator('.chat').getByText('Estos son los detalles de la promoción.').waitFor();
+  assert.equal(h.calls.length, aiCalls, 'la IA no contesta el toque');
+  assert.equal(await page.locator('.chat button.chip').count(), 0, 'los botones de un mensaje anterior ya no se tocan');
+  const pgEnrollment = (await pool.query(`SELECT status, choice, current_step FROM sequence_enrollments WHERE conversation_id = $1`, [pgConv.id])).rows[0];
+  assert.deepEqual([pgEnrollment.status, pgEnrollment.choice, pgEnrollment.current_step], ['active', 'Sí, me interesa', 2]);
+  checked('Flujo con botones: tocar en el simulador sigue el flujo al momento y la IA no contesta');
+  // Enviar el flujo a un grupo desde el panel: la revisión dice cuántos mensajes son por persona; "Detener el flujo"
+  // lo detiene para todos y la campaña sigue como enviada.
+  await go(`automation/campaigns/new?flow=${uxFlow}`);
+  assert.equal(await page.getByLabel('Nombre', { exact: true }).inputValue(), 'Flujo: Promoción de octubre');
+  assert.ok(await page.getByRole('radio', { name: 'Un flujo (varios mensajes, con botones)' }).isChecked());
+  await page.getByLabel('Canal', { exact: true }).selectOption(h.channelId);
+  await Promise.all([page.waitForResponse((r) => r.url().endsWith('/api/campaigns') && r.request().method() === 'POST'), page.getByRole('button', { name: 'Guardar cambios', exact: true }).click()]);
+  await page.getByRole('button', { name: 'Revisar y enviar', exact: true }).click();
+  await page.locator('dialog').getByText(/Flujo "Promoción de octubre": 3 mensajes por persona/).waitFor();
+  const flowCampaignId = page.url().split('/').pop()!;
+  await Promise.all([
+    page.waitForResponse((r) => r.url().includes(`/api/campaigns/${flowCampaignId}/launch`)),
+    page.locator('dialog').getByRole('button', { name: 'Confirmar envío ahora', exact: true }).click(),
+  ]);
+  await h.fastForward();
+  const groupEnrollment = (await pool.query(`SELECT status FROM sequence_enrollments WHERE campaign_id = $1 AND conversation_id = $2`, [flowCampaignId, conv.id])).rows[0];
+  assert.equal(groupEnrollment?.status, 'active', 'Ana entró al flujo');
+  // (El nombre del contacto cambió en una prueba anterior: se revisa el resto del mensaje.)
+  assert.ok(h.sent.some((x) => x.text.includes('¿te interesa la promoción de octubre?\n\n1. Sí, me interesa\n2. No, gracias\n3. Hablar con alguien\n\n🔗 Ver promoción: https://hotel.test/promo\n\nResponde con el número de tu opción.')), `WhatsApp con QR: botones numerados (${JSON.stringify(h.sent.slice(-2))})`);
+  // Ya está en la campaña: se recarga para verla enviada.
+  await page.reload(); await page.locator('.main h1').waitFor();
+  await page.getByRole('button', { name: 'Detener el flujo', exact: true }).click();
+  await Promise.all([page.waitForResponse((r) => r.url().includes(`/api/campaigns/${flowCampaignId}/cancel`)), page.locator('dialog').getByRole('button', { name: 'Continuar', exact: true }).click()]);
+  assert.equal((await pool.query(`SELECT status FROM sequence_enrollments WHERE campaign_id = $1 AND conversation_id = $2`, [flowCampaignId, conv.id])).rows[0].status, 'stopped');
+  assert.equal((await h.authed('GET', `/api/campaigns?account_id=${h.accountId}`)).json().find((x: any) => x.id === flowCampaignId).status, 'sent');
+  checked('Flujo enviado a un grupo desde el panel: revisión por persona, botones numerados en WhatsApp y "Detener el flujo"');
   await go(`conversation/${conv.id}`);
 
   for (const kind of ['manual', 'simulator']) {
@@ -199,6 +312,29 @@ try {
   const brandColors = await page.locator('.primary').first().evaluate((el) => ({ color: getComputedStyle(el).color, background: getComputedStyle(el).backgroundColor }));
   assert.notEqual(brandColors.color, brandColors.background);
   await context.close(); checked('Marca blanca mantiene el texto de la acción visible');
+  {
+    // Crear un agente en 3 pantallas: aprende, elige qué hará, se prueba y se enciende solo al conectar su WhatsApp.
+    const context = await contextFor('admin'); const page = await context.newPage();
+    page.on('pageerror', (error) => results.errors.push({ role: 'admin', message: error.message }));
+    await page.route('**/api/onboarding/import**', (route) => route.fulfill({ contentType: 'application/json', body: JSON.stringify({ description: 'Hotel boutique en Mazatlán frente al mar.', sections: { catalog: 'Habitación doble — $1,800 por noche', hours: 'Recepción 24 horas', location: 'Av. del Mar 100, Mazatlán', faq: '', other: '' }, source: 'hotelpalmas.mx', truncated: false }) }));
+    await page.goto(`${base}/#/agentes?new=1`); await page.waitForURL('**/#/agentes/nuevo');
+    await page.getByRole('heading', { name: 'Crea tu agente' }).waitFor();
+    await page.getByText('✍️ Lo escribo yo').click();
+    await page.getByLabel('Tu información').fill('Hotel boutique en Mazatlán. Habitación doble $1,800 por noche. Recepción 24 horas.');
+    await page.getByRole('button', { name: 'Siguiente →' }).click(); await page.waitForURL('**/#/agentes/nuevo?paso=2');
+    await page.getByRole('heading', { name: /Esto aprendió de/ }).waitFor();
+    await page.locator('label.plan-option', { hasText: 'Agendar citas' }).click();
+    await page.getByRole('button', { name: 'Crear mi agente' }).click(); await page.waitForURL(/#\/bot\/[0-9a-f-]+\/empezar$/);
+    const created = page.url().split('/bot/')[1].split('/')[0];
+    await page.locator('.composer textarea').waitFor();
+    assert.deepEqual((await pool.query(`SELECT active, start_on_connect FROM chatbots WHERE id = $1`, [created])).rows[0], { active: false, start_on_connect: true });
+    await page.getByRole('button', { name: 'Conectar mi WhatsApp', exact: true }).click(); await page.locator('.wa-connect').waitFor();
+    const instance = (await pool.query(`SELECT config->>'instance' AS i FROM channels WHERE chatbot_id = $1 AND type = 'whatsapp'`, [created])).rows[0].i;
+    await waitFor(() => evo.instances.has(instance), 10000); evo.instances.get(instance)!.state = 'open';
+    await page.getByRole('heading', { name: '¡Listo! Tu agente ya responde en tu WhatsApp' }).waitFor({ timeout: 20000 });
+    assert.deepEqual((await pool.query(`SELECT active, start_on_connect FROM chatbots WHERE id = $1`, [created])).rows[0], { active: true, start_on_connect: false });
+    await context.close(); checked('Crear un agente en 3 pantallas y se enciende solo al conectar su WhatsApp');
+  }
   assert.equal(results.errors.length, 0, JSON.stringify(results.errors));
   const serious = results.screens.flatMap((screen: any) => screen.violations.filter((v: any) => ['critical', 'serious'].includes(v.impact)).map((v: any) => ({ role: screen.role, route: screen.route, ...v })));
   results.serious = serious;

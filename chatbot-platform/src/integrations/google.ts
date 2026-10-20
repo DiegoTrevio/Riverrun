@@ -7,7 +7,7 @@ import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
 import { logEvent } from '../logs.js';
 import { decryptSecret, encryptSecret, hmac, safeEqual } from '../secret.js';
-import { getAppointment, getSettings, scheduleJob } from '../automation/store.js';
+import { getAppointment, getSettings, isVideoCall, scheduleJob } from '../automation/store.js';
 import type { Appointment } from '../automation/types.js';
 
 const OAUTH_URL = () => (process.env.GOOGLE_OAUTH_URL || 'https://oauth2.googleapis.com').replace(/\/$/, '');
@@ -172,8 +172,10 @@ export async function syncAppointment(payload: { appointment_id: string }) {
         await query(`UPDATE appointments SET google_event_id = NULL WHERE id = $1`, [a.id]);
       }
     } else {
-      const id = await upsertEvent(auth(link), eventId ?? null, a, (await getSettings(a.account_id)).timezone);
-      await query(`UPDATE appointments SET google_event_id = $2 WHERE id = $1`, [a.id, id]);
+      // La sala de la videollamada sale del calendario de la persona; si la cita no tiene persona, del del negocio.
+      const conference = !a.assigned_user_id && (await isVideoCall(a));
+      const ev = await upsertEvent(auth(link), eventId ?? null, a, (await getSettings(a.account_id)).timezone, { conference });
+      await query(`UPDATE appointments SET google_event_id = $2, meeting_url = CASE WHEN meeting_url = '' THEN $3 ELSE meeting_url END WHERE id = $1`, [a.id, ev.id, ev.meetingUrl]);
     }
     if (link.last_error) await markError(a.account_id, '');
   } catch (e: any) {
@@ -182,22 +184,29 @@ export async function syncAppointment(payload: { appointment_id: string }) {
   }
 }
 
-export type EventSource = Pick<Appointment, 'id' | 'service_name' | 'customer_name' | 'customer_phone' | 'notes' | 'starts_at' | 'ends_at'>;
+export type EventSource = Pick<Appointment, 'id' | 'service_name' | 'customer_name' | 'customer_phone' | 'notes' | 'starts_at' | 'ends_at' | 'customer_email'>;
 
-/** Crea o actualiza el evento de la cita en el calendario. Devuelve su id. */
-export async function upsertEvent(link: GoogleAuth, eventId: string | null, a: EventSource, tz: string): Promise<string> {
+/**
+ * Crea o actualiza el evento de la cita en el calendario. Con `conference`, Google crea el enlace de Google Meet de la
+ * videollamada. Devuelve el id del evento y ese enlace (si hay).
+ */
+export async function upsertEvent(link: GoogleAuth, eventId: string | null, a: EventSource, tz: string, opts: { conference?: boolean } = {}): Promise<{ id: string; meetingUrl: string }> {
   const cal = `/calendar/v3/calendars/${encodeURIComponent(link.calendar_id)}/events`;
   const event = {
     summary: `${a.service_name}${a.customer_name ? ` · ${a.customer_name}` : ''}`,
-    description: [a.customer_phone && `Teléfono: +${a.customer_phone.replace(/^\+/, '')}`, a.notes, 'Agendada desde Riverrun'].filter(Boolean).join('\n'),
+    description: [a.customer_phone && `Teléfono: +${a.customer_phone.replace(/^\+/, '')}`, a.customer_email && `Correo: ${a.customer_email}`, a.notes, 'Agendada desde Riverrun'].filter(Boolean).join('\n'),
     start: { dateTime: new Date(a.starts_at).toISOString(), timeZone: tz },
     end: { dateTime: new Date(a.ends_at).toISOString(), timeZone: tz },
     extendedProperties: { private: { riverrun_appointment: a.id } },
+    // Mismo requestId en cada actualización: Google no crea otra sala.
+    ...(opts.conference ? { conferenceData: { createRequest: { requestId: `riverrun-${a.id}`, conferenceSolutionKey: { type: 'hangoutsMeet' } } } } : {}),
   };
-  let r = eventId ? await api(link, 'PUT', `${cal}/${encodeURIComponent(eventId)}`, event) : null;
-  if (!r || r.status === 404 || r.status === 410) r = await api(link, 'POST', cal, event);
+  const q = opts.conference ? '?conferenceDataVersion=1' : '';
+  let r = eventId ? await api(link, 'PUT', `${cal}/${encodeURIComponent(eventId)}${q}`, event) : null;
+  if (!r || r.status === 404 || r.status === 410) r = await api(link, 'POST', `${cal}${q}`, event);
   if (!r.ok) throw new Error(r.data?.error?.message || `Google respondió ${r.status}`);
-  return r.data.id;
+  const video = (r.data?.conferenceData?.entryPoints ?? []).find((e: any) => e?.entryPointType === 'video')?.uri;
+  return { id: r.data.id, meetingUrl: String(r.data?.hangoutLink ?? video ?? '') };
 }
 
 /** Quita el evento (si ya no existía, no es error). */

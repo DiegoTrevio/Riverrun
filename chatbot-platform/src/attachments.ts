@@ -87,4 +87,10 @@ export async function removeAttachmentFile(rel: string): Promise<void> {
   await fs.rm(attachmentAbsolutePath(rel), { force: true }).catch(() => undefined);
 }
 
+/** Al borrar un negocio: su carpeta de archivos completa (uploads/<id de la cuenta>). */
+export async function removeAccountAttachments(accountId: string): Promise<void> {
+  if (!/^[0-9a-f-]{36}$/i.test(accountId)) return;
+  await fs.rm(attachmentAbsolutePath(accountId), { recursive: true, force: true }).catch(() => undefined);
+}
+
 export const newAttachmentId = () => crypto.randomUUID();

@@ -15,6 +15,7 @@ import * as astore from '../automation/store.js';
 import * as assignment from '../automation/assignment.js';
 import { NoticeBody, sendNotice } from '../automation/notices.js';
 import { hashKey } from './integrations.js';
+import { conversationExport, ExportContentSchema } from '../integrations/conversation-export.js';
 import { parse } from './util.js';
 
 declare module 'fastify' {
@@ -172,6 +173,17 @@ export async function apiV1Routes(app: FastifyInstance, service: ChatService) {
         if (!conv) throw new HttpError(404, 'Conversación no encontrada');
         const rows = await query<any>(`SELECT id, created_at, direction, sender, type, content FROM messages WHERE conversation_id = $1 AND id > $2 ORDER BY id LIMIT ${q.limit}`, [conv.id, q.after]);
         return { data: rows.map((m) => ({ id: Number(m.id), at: m.created_at, direction: m.direction === 'in' ? 'inbound' : 'outbound', sender: m.sender, type: m.type, text: m.content })), next_after: rows.length === q.limit ? Number(rows.at(-1).id) : null };
+      });
+
+      /**
+       * La conversación tal como la recibe la app en el evento `conversation.sent`: resumen, completa o ambos.
+       * refresh=true actualiza antes el resumen si hay información nueva (usa IA).
+       */
+      v1.get('/conversations/:id/export', async (req: any) => {
+        const q = parse(z.object({ content: ExportContentSchema.default('both'), refresh: z.enum(['true', 'false']).default('false') }), req.query);
+        const conv = await queryOne<{ id: string }>(`SELECT cv.id FROM conversations cv JOIN channels ch ON ch.id = cv.channel_id WHERE cv.id = $1 AND cv.account_id = $2 AND ch.type <> 'playground'`, [req.params.id, account(req)]);
+        if (!conv) throw new HttpError(404, 'Conversación no encontrada');
+        return conversationExport(conv.id, { content: q.content, refresh: q.refresh === 'true' ? (id) => service.summarize(id) : undefined, reason: `API (${req.apiKey.name})` });
       });
 
       /** Enviar un mensaje (a una conversación o por teléfono). Respeta bajas y límites del plan. */

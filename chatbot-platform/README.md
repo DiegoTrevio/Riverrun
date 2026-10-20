@@ -34,37 +34,51 @@ Chat web (widget)    ┘    │                             │
 | **Cuentas y usuarios** | Cada cliente es una cuenta con sus usuarios (administradores y agentes). Solo ven lo suyo: cualquier intento de acceder a otra cuenta responde 404. El superadministrador ve y administra todas. Desactivar una cuenta corta el acceso de sus usuarios y detiene sus canales (los mensajes se siguen guardando). |
 | **Multicanal** | WhatsApp, Telegram, Messenger, Instagram, chat web y redes sociales por Zernio (Instagram, Facebook, WhatsApp Business, Telegram, X, Bluesky y Reddit, conectadas desde el panel). Cada canal pertenece a una cuenta y se asigna a un chatbot; un chatbot puede atender varios canales con la misma configuración. Webhooks verificados por plataforma (secreto de Telegram, firma `X-Hub-Signature-256` de Meta, firma `X-Zernio-Signature` de Zernio, URL secreta de Evolution). Se puede duplicar un chatbot como plantilla, incluso en otra cuenta. |
 
+### Llamadas con el equipo y página para reservar
+
+Los servicios de **llamada** pueden ser telefónicos (la persona le marca al cliente) o **videollamada** (sala de Google Meet o Teams creada en el calendario de la persona, o su enlace fijo). Se reparten por la **persona que pide el cliente** (si el servicio lo permite), **primero con quien ya atiende al cliente**, y luego **por turnos o porcentajes**. La persona asignada recibe un correo; el cliente recibe el enlace. **Agenda → Enlaces para reservar** crea páginas públicas tipo Calendly (del negocio o de una persona) con confirmación y recordatorios por correo. Detalles: [docs/agenda-equipo.md](docs/agenda-equipo.md).
+
 ### Redes sociales (Zernio)
 
-Instagram, Facebook Messenger, WhatsApp Business (API oficial), Telegram, X, Bluesky y Reddit llegan por [Zernio](https://zernio.com), una API unificada de **mensajes directos**. Implementación: `src/channels/zernio.ts` (API, eventos, envíos) y `src/channels/zernio-connect.ts` (conexión desde el panel).
+Instagram, Facebook Messenger, WhatsApp Business (API oficial), Telegram, X, Bluesky y Reddit llegan por [Zernio](https://zernio.com), una API unificada de **mensajes directos**; LinkedIn, TikTok, YouTube, Threads, Pinterest y Google (perfil de negocio) se conectan para comentarios, publicaciones y estadísticas. Implementación: `src/channels/zernio.ts` (API, envíos y qué permite cada red), `src/channels/zernio-connect.ts` (conexión, perfiles y ciclo de vida), `src/channels/zernio-accounts.ts` (redes del negocio, enlace para el cliente y página del administrador), `src/channels/zernio-events.ts` (webhook y cola de eventos) y `src/channels/zernio-budget.ts` (llamadas por minuto compartidas). Arquitectura, separación entre negocios y el manual del administrador: [docs/zernio.md](docs/zernio.md).
 
 **La plataforma tiene una sola llave; cada negocio solo conecta sus redes.**
 
-1. El superadministrador pega la llave en **Sistema → Redes sociales (Zernio)** (o define `ZERNIO_API_KEY` en el `.env`, que tiene prioridad), con `PUBLIC_BASE_URL` en HTTPS. La llave se prueba con Zernio antes de guardarse, se guarda cifrada con la clave del servidor, queda activa sin reiniciar en todos los procesos (en menos de un minuto) y nunca sale al navegador: el panel solo muestra sus últimos 4 caracteres. Al guardarla se registra el webhook único y se crea el perfil de las cuentas que aún no lo tienen; **Probar y reparar** repite ambas cosas.
+1. El superadministrador pega la llave en **Sistema → Redes sociales (Zernio)** (o define `ZERNIO_API_KEY` en el `.env`, que tiene prioridad), con `PUBLIC_BASE_URL` en HTTPS. La llave se prueba con Zernio antes de guardarse, se guarda cifrada con la clave del servidor, queda activa sin reiniciar en todos los procesos (en menos de un minuto) y nunca sale al navegador: el panel solo muestra sus últimos 4 caracteres. Al guardarla se registra el webhook único. **Probar y reparar** lo vuelve a enviar completo (también el secreto) y revisa que los perfiles de los negocios sigan existiendo en Zernio. Si la llave nueva es de **otra cuenta de Zernio**, el panel pide confirmación: las redes de los negocios tendrán que volver a conectarse.
 2. En su agente, el negocio pulsa **+ Conectar teléfono u otro canal**, elige la red (Instagram, Facebook, Telegram…) y la conecta desde el panel, sin ver llaves ni identificadores:
-   - **Instagram, Facebook, WhatsApp Business, X y Reddit:** se abre la autorización de la red (Zernio aloja la elección de página o número) y al terminar vuelve al canal con la cuenta conectada. El retorno usa un estado de un solo uso que vence a los 30 minutos y se valida contra el perfil del negocio.
+   - **Instagram, Facebook, WhatsApp Business, X y Reddit:** se abre la autorización de la red (Zernio aloja la elección de página o número) y al terminar vuelve al canal con la cuenta conectada. El retorno usa un estado de un solo uso que vence a los 30 minutos, y la cuenta solo se guarda si Zernio confirma que está en el perfil de **ese** negocio y es de la red elegida (armar el retorno a mano con la cuenta de otro negocio no sirve). Una cuenta solo puede estar en una conexión.
    - **Telegram:** el panel muestra un código; el negocio agrega el bot de conexión y le envía el código. El panel revisa cada 3 s hasta que queda conectado.
    - **Bluesky:** usuario y contraseña de aplicación en el mismo panel (la contraseña no se guarda).
-3. El servidor crea un **perfil de Zernio por negocio** (se reconoce por `externalId` = id de la cuenta) y registra **un solo webhook** para toda la instalación en `/zernio/events`, firmado con un secreto derivado de `APP_SECRET`. Cada evento se entrega al canal que tiene esa cuenta conectada.
+3. El servidor crea un **perfil de Zernio por negocio** la primera vez que conecta una red (se reconoce por `externalId` = id de la cuenta) y registra **un solo webhook** para toda la instalación en `/zernio/events`, firmado con un secreto derivado de `SESSION_SECRET` (por eso, con Zernio activo, que falte `SESSION_SECRET` es un error crítico). Cada evento cuenta una sola vez (por su id), los de más de 35 días no se aceptan y solo llega al canal del perfil que dice el evento. Los mensajes se guardan al momento; la conexión, entregado, leído y fallido se procesan en una cola.
 
 Como con el QR de WhatsApp, el canal muestra la foto, el nombre y el usuario de la cuenta conectada, su estado, y botones para **Reconectar**, **Revisar conexión** y **Desconectar** (quita la cuenta en Zernio). Si Zernio avisa que la cuenta se desconectó (`account.disconnected`, p. ej. token vencido), el canal queda desconectado y los administradores reciben una notificación y un correo.
 
-Mensajes: el cliente se identifica por la conversación de Zernio; el agente contesta en el mismo hilo con «escribiendo…» donde la red lo permite (Instagram, Facebook, WhatsApp, Telegram). Envía texto, fotos y archivos (los archivos se suben a Zernio con URL firmada; Bluesky y Reddit solo admiten texto). Las fotos, notas de voz y documentos del cliente se descargan (los de WhatsApp con la llave de la plataforma) y las notas de voz se transcriben. Los ecos de lo que envía el agente (`message.sent`) se reconocen por el id de la plataforma y aunque vuelvan sin formato. Meta permite escribir solo dentro de la ventana de 24 h; fuera de ella no se envían campañas por estas redes.
+Mensajes: el cliente se identifica por la conversación de Zernio; el agente contesta en el mismo hilo con «escribiendo…» donde la red lo permite (Instagram, Facebook, WhatsApp, Telegram). Envía texto, fotos y archivos (los archivos se suben a Zernio con URL firmada; Bluesky y Reddit solo admiten texto). Las fotos, notas de voz y documentos del cliente se descargan (los de WhatsApp con la llave de la plataforma) y las notas de voz se transcriben. Los ecos de lo que envía el agente (`message.sent`) se reconocen por el id de la plataforma y aunque vuelvan sin formato. Cada mensaje enviado guarda si se **entregó**, se **leyó** o **falló** (con el código, p. ej. `TEMPLATE_REQUIRED`). Meta (Instagram, Messenger y WhatsApp oficial) permite escribir solo dentro de la ventana de 24 h; fuera de ella no se envían campañas por esas redes. Telegram, X, Bluesky y Reddit no tienen esa regla.
 
-Variables: `ZERNIO_API_KEY` (obligatoria para activar las redes) y `ZERNIO_API_URL` (por defecto `https://zernio.com/api/v1`). Los canales creados antes con su propia llave y webhook siguen funcionando.
+**WhatsApp Business (API oficial)**: alta guiada (con la opción de seguir usando la app WhatsApp Business en el teléfono), un perfil de Zernio por número, PIN de verificación en dos pasos, plantillas (crear, revisión de Meta con aviso, traer de Meta y borrar) y, fuera de las 24 h, envío con plantilla aprobada desde reglas, secuencias, campañas o la conversación (`src/channels/zernio-templates.ts`).
+
+**Comentarios y reseñas** (`src/social/`): bandeja en *Comentarios* con los comentarios de las publicaciones y las reseñas de Google y Facebook; responder, ocultar, me gusta, eliminar y responder en privado según la red; respuesta sugerida por la IA con el conocimiento del agente (sin cifras inventadas) y, si el negocio lo activa, respuesta automática solo a lo positivo con tope por hora. Detalles en [docs/zernio.md](docs/zernio.md#comentarios-y-reseñas).
+
+**Publicaciones** (`src/social/posts.ts`): escribir una vez y publicar ya o programar en varias redes (texto, fotos o video y opciones por red), con validación por red antes de enviar, un solo envío aunque se mande dos veces o Zernio no conteste, estado y enlace por red (webhook o revisión), reintentar, cambiar o cancelar lo programado, y lista o calendario del mes en *Publicaciones*. Detalles en [docs/zernio.md](docs/zernio.md#publicaciones).
+
+**Estadísticas y salud** (`src/social/stats.ts`, `src/social/health.ts`): seguidores, impresiones, alcance e interacción por red y por día en *Reportes → Redes sociales* (una vez al día, con prioridad baja); cada 6 h se revisa la salud de todas las cuentas: avisa una vez si una red se cae o su permiso está por vencer, la reabre al recuperarse y reactiva el webhook si Zernio lo apagó. Detalles en [docs/zernio.md](docs/zernio.md#estadísticas-y-salud).
+
+**Redes sociales** (Ajustes → Redes sociales) muestra al negocio todas sus redes conectadas, con su estado, quién contesta los mensajes de cada una y un botón para conectar otra. **Sistema → Zernio** es la página del superadministrador: cada negocio con su perfil y sus redes, crear el perfil, sincronizar con Zernio (adopta lo que conectaste allá), **enlace de conexión** para mandarle al cliente (sirve 7 días, sin iniciar sesión, hasta que conecta), desconectar todo, el registro de entregas del webhook con **Reenviar**, perfiles sin dueño, el costo estimado y las llamadas disponibles. Cada plan limita cuántas redes se conectan (`social_accounts`; en la prueba, `TRIAL_MAX_SOCIAL_ACCOUNTS`).
+
+Variables: `ZERNIO_API_KEY` (obligatoria para activar las redes), `ZERNIO_API_URL` (por defecto `https://zernio.com/api/v1`) y `ZERNIO_RATE_PER_MIN` (opcional: llamadas por minuto de toda la instalación; si no, según las cuentas conectadas). Los canales creados antes con su propia llave y webhook siguen funcionando (esa llave se guarda cifrada).
 
 ### Facebook e Instagram con un botón (app de Meta de la plataforma)
 
 Con `META_APP_ID` y `META_APP_SECRET` definidos, cada negocio conecta su página de Facebook (Messenger) y su Instagram profesional con **Conectar con Facebook**, sin copiar tokens ni configurar webhooks. Implementación: `src/channels/meta-connect.ts`.
 
-1. El negocio pulsa **Conectar con Facebook** (en las conexiones del agente o en el paso **Redes** de Primeros pasos), inicia sesión y acepta los permisos. El regreso (`/meta/callback`) usa un estado de un solo uso que vence a los 30 minutos.
+1. El negocio pulsa **Conectar con Facebook** (en las conexiones del agente), inicia sesión y acepta los permisos. El regreso (`/meta/callback`) usa un estado de un solo uso que vence a los 30 minutos.
 2. El servidor cambia el código por un token de larga duración y lee las páginas con su Instagram vinculado. El negocio elige qué conectar (Messenger, Instagram o ambos) y el agente que responde; los tokens nunca llegan al navegador.
 3. Cada página elegida se suscribe a la app (`subscribed_apps`) y queda **en línea**. Todos los eventos llegan a **un solo webhook** de la plataforma, `/meta/webhook`, firmado con `X-Hub-Signature-256` usando `META_APP_SECRET`, y se entregan al canal de esa página o cuenta de Instagram. Volver a conectar renueva el token sin duplicar canales; una página ya atendida por otro negocio de la plataforma no se conecta dos veces.
 4. Cada 6 horas se revisan los tokens: si Meta los invalidó (contraseña cambiada, permiso retirado), el canal queda **Desconectado** y el negocio recibe el aviso (según sus **alertas de conexión**) con el botón para volver a conectar. **Desconectar** quita la suscripción de la página y borra el token.
 
 Configuración única en Meta for Developers (la hace el administrador de la plataforma): producto *Inicio de sesión con Facebook* (o *Facebook Login for Business*, con `META_CONFIG_ID`) con la URI de redirección `https://TU_DOMINIO/meta/callback`; productos *Messenger* e *Instagram* con el webhook `https://TU_DOMINIO/meta/webhook` y el token `META_VERIFY_TOKEN` (cualquier texto largo que elijas; debe ser el mismo en Meta y en el servidor), campos `messages`, `messaging_postbacks` y `message_echoes`; y la revisión de la app para `pages_messaging`, `pages_manage_metadata`, `pages_show_list`, `instagram_basic` e `instagram_manage_messages`. Con el botón activo, Facebook e Instagram ya no aparecen como redes de Zernio; los canales conectados antes con tokens manuales siguen funcionando.
 
-**Perfil de Zernio por cuenta:** al dar de alta una cuenta (registro o superadministrador) se crea su perfil de Zernio y se guarda en la cuenta, para que conectar la primera red no espere; si Zernio no responde en ese momento, se crea al conectar la primera red. Nunca se crean dos perfiles por cuenta.
+**Perfil de Zernio por cuenta:** se crea la primera vez que el negocio conecta una red (no al darse de alta, para no llenar Zernio de perfiles sin uso) y se guarda en la cuenta. Nunca se crean dos: se busca por `externalId` y se crea con `Idempotency-Key`. Al borrar un negocio, sus redes y su perfil se quitan de Zernio en un trabajo aparte.
 
 > **WhatsApp:** la conexión por Zernio es la API oficial de WhatsApp Business (Meta); Zernio no ofrece vinculación por QR. El WhatsApp normal con QR sigue siendo su propio canal (Evolution).
 
@@ -113,11 +127,17 @@ Un contenedor (`backup`) respalda **cada noche** (03:30 UTC) lo que no se puede 
 
 ## Cobro automático (Stripe y Mercado Pago)
 
-Los clientes contratan y pagan solos desde **Ajustes → Mi plan y pagos**; tú no cobras ni activas nada a mano.
+Los clientes contratan y pagan solos: **al crear su cuenta** (eligen el plan en el registro y pasan directo al pago) o después desde **Ajustes → Mi plan y pagos**. Tú no cobras ni activas nada a mano.
 
 1. **Claves:** en `.env` pon `STRIPE_SECRET_KEY` + `STRIPE_WEBHOOK_SECRET` y/o `MERCADOPAGO_ACCESS_TOKEN` + `MERCADOPAGO_WEBHOOK_SECRET`; `./riverrun restart`. Cada proveedor se activa solo con sus dos claves.
-2. **Webhooks:** en el panel, **Planes y cobro** muestra la dirección exacta que debes registrar en cada proveedor (`/webhook/billing/stripe` y `/webhook/billing/mercadopago`) y qué eventos activar.
-3. **Planes:** ahí mismo creas tus planes (nombre, precio mensual, moneda). Para Stripe pega el ID del precio (`price_…`) que creaste en su panel; un plan sin él solo se ofrece con Mercado Pago.
+2. **Webhooks:** en el panel, **Planes y cobro** muestra la dirección exacta que debes registrar en cada proveedor (`/webhook/billing/stripe` y `/webhook/billing/mercadopago`) y qué eventos activar. Siguen siendo necesarios para renovaciones, cobros fallidos y cancelaciones.
+3. **Planes:** ahí mismo creas tus planes (nombre, precio mensual, moneda). **No hace falta crear nada en Stripe:** al primer pago de cada plan se crea su producto en Stripe (`riverrun_<clave>`) y se cobra el precio y la moneda del plan; si cambias el precio, los nuevos clientes pagan el nuevo y los que ya pagaban conservan el suyo. Si ya tienes un precio en Stripe (`price_…`), pégalo y se usa ese.
+
+**Registro con pago:** con cobro configurado, el registro (`/#/registro`) muestra tus planes y, si hay prueba gratis, la opción de probar sin tarjeta. Quien elige un plan crea su cuenta y pasa directo a la página de pago; al volver, la cuenta ya está activa. Para enlazar desde tu página de precios usa `https://tu-dominio/#/registro?plan=<clave>` (deja ese plan elegido). Con `TRIAL_DAYS=0` no hay prueba gratis: la cuenta nace en pausa (puede entrar y configurar todo, pero el asistente no responde) y se activa al pagar.
+
+**El pago se confirma aunque el aviso no llegue:** al abrir el pago se guarda su referencia; al volver de la página de pago el panel le pregunta al proveedor y, si ya se cobró, activa la cuenta en ese momento. Si la persona cierra la ventana, la revisión de cada 10 minutos hace lo mismo durante 2 días. El aviso del proveedor (webhook) sigue funcionando igual y nada se aplica dos veces. El regreso del pago (`/pago/stripe`, `/pago/mercadopago`) vuelve al mismo dominio desde el que se pagó (también el de una marca blanca), con la sesión abierta.
+
+**Cobro duplicado:** si alguien paga dos veces (por ejemplo, en dos pestañas), se conserva la suscripción vigente y te llega un aviso (panel y `SUPERADMIN_EMAIL`) para cancelar y reembolsar la otra desde el proveedor.
 
 Qué pasa solo: el pago **activa** la cuenta (sale de prueba o de pausa) y le asigna el plan; la renovación mensual la cobra el proveedor; si un cobro **falla**, la cuenta sigue funcionando `BILLING_GRACE_DAYS` (5 por defecto) mientras se avisa por correo y panel, y luego se **pausa sola**; al pagar, se **reactiva sola**. Al cancelar, el acceso dura hasta el final del periodo ya pagado. El cliente cambia su tarjeta y ve sus facturas en la página de Stripe ("Administrar pago") o cancela desde el panel. Si reactivas a mano una cuenta pausada por pago, el sistema respeta tu decisión. Los avisos de los proveedores se verifican con su firma, se consultan de nuevo al proveedor (llegan repetidos o desordenados sin problema) y las cuentas activadas a mano sin suscripción no se tocan. Nunca pasan datos de tarjeta por tu servidor: el pago ocurre en la página de Stripe / Mercado Pago.
 
@@ -177,16 +197,15 @@ Internet ──HTTPS──> Caddy (app.tudominio.com)
                                   └─ 1 instancia por canal de WhatsApp de cada empresa: "acc<id>_<aleatorio>"
 ```
 
-1. **Registro** (`/#/registro`, enlazado desde el inicio de sesión): nombre, empresa, tipo de negocio, correo y contraseña. Se crea su cuenta en **prueba** (`TRIAL_DAYS`, 14 por defecto) con ella como administradora, y entra directo. Tú recibes un aviso (panel y `SUPERADMIN_EMAIL`).
+1. **Registro** (`/#/registro`, enlazado desde el inicio de sesión): nombre, empresa, tipo de negocio, correo y contraseña. Se crea su cuenta en **prueba** (`TRIAL_DAYS`, 14 por defecto; con `0`, en pausa hasta que pague) con ella como administradora, y entra directo. Con cobro en línea configurado también elige su plan: si elige uno, pasa a pagarlo en ese momento (ver [Cobro automático](#cobro-automático-stripe-y-mercado-pago)). Tú recibes un aviso (panel y `SUPERADMIN_EMAIL`).
 2. **Confirmar correo**: le llega un enlace (48 h, un solo uso). Mientras no lo confirme puede configurar y probar todo, pero **no puede conectar WhatsApp** ni otros canales reales.
-3. **Primeros pasos** (`/#/inicio`), un asistente de 5 pasos:
-   1. *Tu negocio*: zona horaria, horario y su WhatsApp para avisos.
-   2. *Tu asistente*: nombre, trato (tú/usted) y su información: productos/servicios con precios, horarios, ubicación, preguntas frecuentes. Se crea el chatbot con la **plantilla de su giro** (restaurante, salud, hotel, tienda, servicios, belleza u otro): personalidad, flujo, datos que pide y reglas (p.ej. "nunca des diagnósticos" en salud). Todo se puede afinar después en la configuración avanzada.
-   3. *Fotos* (opcional): catálogo de imágenes.
-   4. *Pruébalo*: el simulador.
-   5. *WhatsApp*: el QR aparece solo en cada cuenta/canal (también en celular; "Con mi número" queda como alternativa) → se vincula desde *Dispositivos vinculados* → el panel detecta la conexión, muestra el número vinculado y avanza solo.
+3. **Crea tu agente** (`/#/agentes/nuevo`), 3 pantallas (detalle en [docs/agent-creation.md](docs/agent-creation.md)):
+   1. *Tu negocio*: nombre, tipo de negocio y de dónde aprende (su página web, un archivo o lo escribe); al pulsar *Siguiente* la IA lo lee y lo ordena.
+   2. *Qué hará*: resolver dudas, agendar citas, tomar pedidos o solo tomar datos, ya elegido y ajustado según su **tipo de negocio** (trato, datos que pide, agenda). Lo demás va plegado en *Personalizar (opcional)*. *Crear mi agente* lo crea apagado.
+   3. *Pruébalo y conéctalo* (`/#/bot/:id/empezar`): el simulador y *Conectar mi WhatsApp* (el QR aparece en la misma pantalla; "Con mi número" queda como alternativa). **Al conectarse por primera vez, el agente se enciende solo** y la pantalla dice "¡Listo! Tu agente ya responde en tu WhatsApp".
+   `#/empezar` lleva siempre a lo que falta (y los enlaces viejos de Primeros pasos, `#/inicio`, también).
 4. **Si su WhatsApp se desconecta** (teléfono sin internet, sesión cerrada) se le avisa en el panel y por correo con un enlace que abre directo el código para volver a vincularlo.
-5. **Fin de la prueba**: 3 días antes se avisa a la empresa y a ti; al vencer la cuenta queda **en pausa**: puede entrar al panel, pero el bot no responde ni salen mensajes. Tú, en **Cuentas**, pulsas **Activar plan** (o **Extender prueba**). El cobro todavía es manual: `SUPPORT_CONTACT` es lo que ven para contratar.
+5. **Fin de la prueba**: 3 días antes se avisa a la empresa y a ti; al vencer la cuenta queda **en pausa**: puede entrar al panel, pero el bot no responde ni salen mensajes. Con cobro en línea, los correos llevan el enlace para pagar y la cuenta se reactiva sola al pagar. Sin cobro en línea, tú, en **Cuentas**, pulsas **Activar plan** (o **Extender prueba**) y `SUPPORT_CONTACT` es lo que ven para contratar.
 
 **Resúmenes y respuestas del cliente.** El asistente guarda las respuestas clave del prompt en el contacto y la conversación, con referencia al mensaje original. Al cerrar, completar el objetivo o transferir a una persona se genera un resumen consultable. En **Conversaciones**, el botón *Generar/Actualizar resumen* lo obtiene en cualquier momento. Los datos se actualizan en una transacción y PostgreSQL impide mezclar cuentas, canales y contactos. Consulta [el esquema y las reglas de almacenamiento](docs/data-storage.md).
 
@@ -208,7 +227,7 @@ npm run user:master -- diegoa.trevio@gmail.com
 
 En una imagen de producción ya compilada: `docker compose exec backend node dist/cli/grant-master.js diegoa.trevio@gmail.com`. El comando usa la base de datos configurada y no cambia la contraseña. El registro público nunca concede acceso maestro por el correo enviado.
 
-**Conectar WhatsApp (QR).** Tiene su propio botón en el menú (**📱 Conectar WhatsApp**, `#/conectar`), un mosaico en Ajustes y un aviso amarillo en todas las pantallas mientras el número no esté conectado. La página crea el canal si no existe, muestra el QR (o el código "Con mi número"), confirma la conexión, permite enviar un mensaje de prueba y desvincular para conectar otro número; con varios números lista cada uno con su estado.
+**Conectar WhatsApp (QR).** Se conecta en la pantalla **Prueba tu agente y conéctalo** (`#/empezar`) o en **Agentes → tu agente → Conexiones**. Mientras el número no esté conectado, un aviso amarillo en las demás pantallas lleva a conectarlo (o a reconectar el que se cayó); no aparece en las pantallas donde ya se está conectando. La conexión muestra el QR (o el código "Con mi número"), confirma la conexión, permite enviar un mensaje de prueba y desvincular para conectar otro número.
 
 **Navegación y perfiles.** El menú agrupa todas las herramientas en cuatro apartados: Asistentes y conexiones, Conversaciones, Operación y Configuración. En *Asistentes y conexiones → WhatsApp y otros canales*, cada cuenta puede crear hasta **cuatro perfiles de WhatsApp**, cada uno con instancia, QR y webhook propios. Cada perfil elige un asistente de su misma cuenta; varios perfiles pueden compartirlo. *Ver QR* abre la vinculación del teléfono elegido. Las conversaciones siguen separadas por canal. Desactivar o desconectar un perfil conserva su lugar; eliminarlo libera uno y elimina sus conversaciones. Los otros tipos de canal no consumen estos lugares. Las cuentas que ya tengan más de cuatro conservan sus perfiles, pero no pueden crear otros hasta quedar por debajo del límite.
 
@@ -240,14 +259,14 @@ Al cambiar una contraseña, las demás sesiones abiertas de ese usuario se cierr
 ## Primeros pasos en el panel
 
 1. **Cuentas** (superadministrador): crea la cuenta del cliente y, opcionalmente, su primer administrador.
-2. **Asistentes → + Nuevo asistente**: elige el nombre y tipo de negocio. La configuración tiene cuatro secciones:
+2. **Agentes → + Crear agente** abre **Crea tu agente**, 3 pantallas: tu negocio y de dónde aprende → qué hará (ya elegido según el tipo de negocio, con lo demás plegado en *Personalizar*) → pruébalo y conéctalo. Al conectar su WhatsApp por primera vez el agente **se enciende solo** ([docs/agent-creation.md](docs/agent-creation.md)). Después, cada agente se ajusta en cuatro secciones:
    - **Instrucciones**: escribe cómo debe atender, qué debe preguntar y cuál es su objetivo. El estilo y las opciones avanzadas quedan plegados.
    - **Conocimiento**: agrega productos, precios, horarios y preguntas frecuentes, o usa **⚡ Llena todo por mí**: pega la dirección de tu página (o un Google Sheets compartido), sube un PDF, una foto del menú o un CSV, o pega texto. La IA lo ordena en secciones, tú lo revisas y lo guardas; **🔄 Volver a sincronizar** lo actualiza desde la misma página. Solo se usa lo que está en la fuente (no inventa) y las páginas internas están bloqueadas. Excel y Word: guárdalos como CSV/PDF.
    - **Fotos**: sube imágenes y explica cuándo enviarlas; las reglas de envío son opcionales.
    - **Probar**: conversa como un cliente y revisa los datos guardados automáticamente. Los detalles técnicos de cada respuesta quedan plegados. Funciona aunque el asistente esté apagado.
-   Quien administra su propia cuenta ve un **menú simple** (Conversaciones, Mi asistente, Probar mi asistente, Agenda, Ajustes y Notificaciones); el resto vive en **Ajustes** o en «☰ Mostrar todas las opciones». El asistente de **Primeros pasos** tiene 5 pasos (negocio → asistente → prueba → redes → WhatsApp); las fotos y las redes son opcionales. En **Redes** el negocio conecta Facebook e Instagram con un botón y las demás redes (X, Telegram, Bluesky, Reddit, WhatsApp Business) por Zernio, o lo omite.
-3. **Canales → Nuevo canal**: elige la plataforma, asígnale el asistente y sigue las instrucciones de conexión (abajo).
-4. En **Instrucciones**, marca **Asistente encendido** y guarda.
+   Quien administra su propia cuenta ve un **menú simple** (Conversaciones, Mi asistente, Probar mi asistente, Agenda, Ajustes y Notificaciones); el resto vive en **Ajustes** o en «☰ Mostrar todas las opciones». Facebook, Instagram y las demás redes (X, Telegram, Bluesky, Reddit, WhatsApp Business por Zernio) se conectan en **Conexiones** del agente.
+3. Para más teléfonos u otras redes: **Agentes → tu agente → Conexiones**, elige la plataforma y sigue las instrucciones de conexión (abajo).
+4. Para pausarlo o encenderlo a mano: en **Configurar**, **Pausar agente** o **Encender agente**. Hacerlo a mano quita el encendido automático.
 
 No hay que crear campos para guardar las respuestas. Por ejemplo, si las instrucciones dicen «pregunta la dirección para entregar» y el cliente responde «Av. Reforma 25», el asistente propone guardar `direccion: Av. Reforma 25` y el backend verifica que ese valor aparezca en un mensaje del cliente. Los datos se ven en la ficha de la conversación y en **Probar**; se reutilizan para evitar preguntas repetidas y se actualizan cuando el cliente los corrige. Nombre, correo y teléfono se normalizan y validan. Los campos de configuraciones anteriores siguen siendo compatibles.
 
@@ -275,7 +294,7 @@ Para ver un ejemplo completo: `npm run seed:demo` (o `docker compose exec backen
 
 | Plataforma | Qué necesitas | Cómo se conecta |
 |---|---|---|
-| **WhatsApp** | Un teléfono con WhatsApp (normal o Business) | Al abrir el canal (o el paso 5 de Primeros pasos) el código **aparece solo** y se renueva solo, con cuenta regresiva: **Escanear código QR** es la opción inicial en todos los dispositivos; como alternativa, **Con mi número**: escribe tu número, recibes un código de 8 letras y en WhatsApp → Dispositivos vinculados → *Vincular con el número de teléfono* lo tecleas. El panel detecta la conexión y muestra "Conectado como …". Dos pestañas reutilizan el QR vigente sin reiniciar la vinculación. Si Evolution responde sin código durante un tiempo, se comprueba otra vez el estado antes de recuperar una instancia trabada; los fallos de autorización o de API se muestran como errores, sin eliminar la sesión. |
+| **WhatsApp** | Un teléfono con WhatsApp (normal o Business) | Al abrir el canal (o al pulsar **Conectar mi WhatsApp** en la pantalla de crear el agente) el código **aparece solo** y se renueva solo, con cuenta regresiva: **Escanear código QR** es la opción inicial en todos los dispositivos; como alternativa, **Con mi número**: escribe tu número, recibes un código de 8 letras y en WhatsApp → Dispositivos vinculados → *Vincular con el número de teléfono* lo tecleas. El panel detecta la conexión y muestra "Conectado como …". Dos pestañas reutilizan el QR vigente sin reiniciar la vinculación. Si Evolution responde sin código durante un tiempo, se comprueba otra vez el estado antes de recuperar una instancia trabada; los fallos de autorización o de API se muestran como errores, sin eliminar la sesión. |
 | **Telegram** | Un bot creado con **@BotFather** | Pega el token, guarda y pulsa **Conectar con Telegram**: se valida el token y se registra el webhook con un secreto (los mensajes sin ese secreto se rechazan). Solo chats privados. |
 | **Facebook e Instagram (botón)** | Ser administrador de la página; Instagram profesional vinculado a ella | **Conectar con Facebook**: inicia sesión, elige páginas e Instagram y el agente. Requiere que la plataforma tenga su app de Meta (ver arriba). |
 | **Messenger (manual)** | Una app en Meta for Developers con el producto Messenger y una página de Facebook | Pega el token de la página y la clave secreta de la app. En la app de Meta configura el webhook con la **URL** y el **token de verificación** que muestra el panel, suscrito a `messages`, `messaging_postbacks` y `message_echoes`. Pulsa **Verificar y suscribir la página**. |
@@ -311,7 +330,7 @@ Menú **Automatización** (administradores). Todo corre sobre tareas programadas
 | **El recorrido llega a una etapa** (una concreta o cualquiera) | | Asignar a alguien del equipo (por turnos) |
 | El asistente se desactiva | | |
 
-- **Plantillas rápidas:** bienvenida, fuera de horario, palabra urgente → alerta, seguimiento, queja → persona, listo para comprar → ventas, correo → CRM, palabra → pausar / activar al asistente, agradecer cita, objetivo cumplido → reporte al equipo.
+- **Plantillas rápidas:** bienvenida, fuera de horario, palabra urgente → alerta, seguimiento, queja → persona, listo para comprar → ventas, correo → CRM, palabra → pausar / activar al asistente, agradecer cita, objetivo cumplido → reporte al equipo, objetivo cumplido → resumen a tu app, marcada por el equipo (etiqueta) → conversación completa a tu app.
 - **🧪 Probar palabras:** escribe un mensaje de ejemplo y ve qué reglas se activarían (✅/❌ con el motivo), sin IA y sin enviar nada.
 - **Detener la IA:** una regla puede impedir que la IA responda el mensaje que la disparó.
 - **Variables en los textos:** `{{nombre}}`, `{{cliente}}`, `{{telefono}}`, `{{negocio}}`, `{{mensaje}}`, `{{link}}`, `{{dato.CAMPO}}`, `{{cita.servicio}}`, `{{cita.fecha}}`, `{{cita.hora}}`, `{{cita.lugar}}`.
@@ -325,18 +344,24 @@ Pestaña **Activación** de cada asistente. Lo aplica el sistema (no la IA), por
 - **Qué pasa al apagarse:** pausa en silencio, pasar a una persona (con aviso al equipo) o cerrar la conversación; mensaje opcional; reactivación automática tras N horas (0 = solo con palabra, regla o el botón **Reactivar asistente** de la conversación).
 - **Cómo probarlo:** el **probador de palabras** (en la misma pestaña) dice, sin IA, si el asistente respondería y qué reglas se dispararían; el **Simulador** muestra en cada mensaje "Qué se activó" y el estado del asistente.
 
-### Secuencias (flujos programados)
+### Flujos (mensajes programados, con botones)
 
-- Serie de mensajes con espera entre ellos (minutos, horas o días) y hora del día opcional ("1 día después a las 10:00" = al día siguiente a las 10:00).
+- Serie de mensajes con espera entre ellos (minutos, horas o días) y hora del día opcional ("1 día después a las 10:00" = al día siguiente a las 10:00). Ej.: 3 mensajes con un día de separación.
 - Cada paso puede tener condiciones propias.
+- **Botones** (`src/automation/buttons.ts`): hasta 3 de respuesta y 2 de enlace por mensaje. Cada botón de respuesta hace algo al tocarlo: seguir ya con el mensaje siguiente, terminar el flujo, empezar otro flujo, poner una etiqueta o pasar con una persona, y puede contestar con un texto antes.
+  - Salen como botones en Telegram (teclado en línea), Messenger e Instagram (hasta 3 en la misma burbuja o respuestas rápidas), WhatsApp oficial y demás redes con botones por Zernio, chat web y simulador. En WhatsApp con QR y correo van numerados: el cliente contesta con el número o con el texto del botón.
+  - El toque se reconoce por su identificador (un toque de un mensaje viejo no cuenta); escrito, vale el texto del botón y el número solo si los botones son lo último que se le envió. Cada mensaje con botones se aplica una vez. La palabra de baja siempre gana.
+  - Tocar un botón no cuenta como "el cliente respondió" (el flujo sigue) y la IA no contesta ese toque.
+  - **Esperar a que elija:** si llega la hora del mensaje siguiente y no eligió, el flujo termina o sigue, según se configure.
 - Respetan el horario del negocio: lo que caiga fuera se pasa a la siguiente apertura.
-- Se detienen si el cliente responde, si se da de baja o si una persona toma la conversación.
+- Se detienen si el cliente responde (sin contar los botones), si se da de baja o, al momento, si una persona toma la conversación.
 - Si la cuenta está en pausa o el canal apagado, esperan (reintentan cada hora hasta 7 días) en lugar de perderse.
-- Se inician con una regla o manualmente desde la conversación.
+- Se inician con una regla, manualmente desde la conversación o **enviándolos a un grupo** (campaña de flujo).
 
 ### Campañas
 
-- Mensaje a un segmento: con o sin ciertas etiquetas, o que escribieron en los últimos N días. Envío inmediato o programado.
+- Mensaje (o flujo) a un segmento: con o sin ciertas etiquetas, o que escribieron en los últimos N días. Envío inmediato o programado.
+- **Campaña de flujo:** cada persona entra al flujo; el primer mensaje sale con la campaña y los siguientes a su hora, espaciados por número al ritmo de la campaña. El cupo del plan y el tope diario por número cuentan todos los mensajes del flujo (con un tope de 100 y un flujo de 4 mensajes, entran 25 personas por día). Cancelar la campaña (o "Detener el flujo" cuando ya terminó de enviarse) detiene el flujo para todos.
 - Se envían a ritmo controlado (mensajes por minuto) para proteger el número.
 - Por defecto solo se envían en horario de atención: lo que no alcance sale en la siguiente apertura, al mismo ritmo.
 - Siempre excluyen a quien se dio de baja y no interrumpen conversaciones que está atendiendo una persona. Muestran vista previa de destinatarios y estadísticas por destinatario.
@@ -403,7 +428,7 @@ Una cuenta puede conectar varios WhatsApp. Las **campañas** pueden salir de var
 
 ## Crear un agente sin escribir un prompt
 
-En **Asistentes → + Nuevo asistente** hay un asistente de cuatro pasos: tu empresa, hasta dónde llega el agente (solo filtrar, agendar citas, atender o tomar pedidos; datos que pide; límites; cómo suena), tus documentos (web, PDF, foto, CSV o texto) y una revisión final. De ahí se genera solo el prompt con los lineamientos de siempre (natural, sin dar información de más, sin inventar y sin salirse de su papel), las reglas, el conocimiento y, si agenda, el servicio de la agenda. Detalle en [docs/agent-creation.md](docs/agent-creation.md).
+En **Agentes → + Crear agente** (`#/agentes/nuevo`) hay 3 pantallas: tu negocio y de dónde aprende (web, PDF, foto, CSV o texto), qué hará (resolver dudas, agendar citas, tomar pedidos o solo tomar datos, ya elegido según el tipo de negocio; datos que pide, límites y cómo suena quedan plegados en *Personalizar*) y pruébalo y conéctalo, donde al conectar su WhatsApp se enciende solo. De ahí se genera solo el prompt con los lineamientos de siempre (natural, sin dar información de más, sin inventar y sin salirse de su papel), las reglas, el conocimiento y, si agenda, el servicio de la agenda. Detalle en [docs/agent-creation.md](docs/agent-creation.md).
 
 ## Asignación por turnos (round robin) y avisos internos
 
@@ -522,25 +547,25 @@ test/              pruebas
 Panel (bajo `/api`, con sesión por cookie; todo se limita a la cuenta del usuario):
 
 - Sesión: `POST /api/login`, `GET /api/me`, `PUT /api/me/password`, `POST /api/me/resend-verification`
-- Primeros pasos: `GET /api/onboarding`, `POST /api/onboarding/{business,assistant,import,step,whatsapp}` (`import` lee una web, archivo o texto y devuelve la propuesta de conocimiento)
+- Crear agente: `POST /api/chatbots/draft` y `/wizard` (con `request_id` para no duplicar y `start_on_connect`), `POST /api/chatbots/:id/whatsapp` (su WhatsApp, creado una sola vez), `POST /api/onboarding/import` (lee una web, archivo o texto y devuelve la propuesta de conocimiento). Los demás `/api/onboarding/*` siguen funcionando por compatibilidad.
 - Consumo de IA: `GET /api/usage?month=AAAA-MM`, `/api/ai-prices` (superadmin)
 - Cuentas: `/api/accounts`
 - Usuarios: `/api/users`
 - Chatbots: `/api/chatbots`, `/:id/duplicate`, `/:id/knowledge` (`POST /:id/knowledge/import`: propuesta, o guardado con `save`), `/:id/images`, `/:id/playground`, `/:id/test-message` (probador de palabras: reglas, activadores y desactivadores, sin IA)
 - Canales: `/api/channels`, `/:id/setup`, `/:id/status`, `/:id/rotate-token`, `/:id/whatsapp/{session,connect,logout,test}` (`session`: crea la instancia si hace falta y devuelve el QR vigente o el código por número; el panel la consulta cada 3 s)
-- Conversaciones: `/api/conversations`, `/:id/{takeover,release,close,send,send-image,reset-memory,automation,sequences}`
+- Conversaciones: `/api/conversations`, `/:id/{takeover,release,close,send,send-image,reset-memory,automation,sequences}`, `/:id/send-to-app` y `/:id/app-destinations` (enviar la conversación a tu app: resumen, completa o ambos; ver [integraciones](docs/integraciones.md#enviar-conversaciones-a-tu-app-resumen-o-completa))
 - Automatización: `/api/automations`, `/api/sequences`, `/api/campaigns` (`/:id/{preview,launch,cancel,recipients}`), `/api/settings`
 - Agenda: `/api/services` (`/:id/slots`), `/api/appointments` (`/:id/cancel`), `/api/agenda/info`
 - Notificaciones: `/api/notifications`, `/api/notifications/read`
 - Contactos: `/api/contacts/:id`
 - Registros, uso de IA y estadísticas: `/api/logs`, `/api/ai-runs`, `/api/stats`
-- Cobro: `GET /api/billing`, `POST /api/billing/{checkout,portal,cancel}`, `/api/plans` (crear/editar: superadmin), `GET /api/billing/overview` (superadmin)
+- Cobro: `GET /api/billing`, `POST /api/billing/{checkout,confirm,portal,cancel}`, `/api/plans` (crear/editar: superadmin), `GET /api/billing/overview` (superadmin)
 - Sistema: `GET /api/system/status` (superadmin)
 
 Públicas:
 
-- Registro y contraseñas: `GET /api/signup/info`, `POST /api/signup`, `POST /api/verify-email`, `POST /api/forgot-password`, `POST /api/reset-password` (con límite de intentos por IP).
-- Salud: `GET /health`, `GET /health/ready`. Cobro: `POST /webhook/billing/{stripe,mercadopago}` (firmados).
+- Registro y contraseñas: `GET /api/signup/info` (incluye los planes que se pueden pagar), `POST /api/signup` (con `plan` y `provider` opcionales: devuelve `checkout_url` para pagar en ese momento), `POST /api/verify-email`, `POST /api/forgot-password`, `POST /api/reset-password` (con límite de intentos por IP).
+- Salud: `GET /health`, `GET /health/ready`. Cobro: `POST /webhook/billing/{stripe,mercadopago}` (firmados) y `GET /pago/{stripe,mercadopago}` (regreso desde la página de pago al panel).
 - Webhooks: `GET|POST /webhook/:token`. El token es una URL secreta por canal; `GET` sirve para la verificación de Meta.
 - Chat web: `/webchat/:token/{config,session,messages}`, con CORS y límite de 15 mensajes por minuto por sesión.
 - Imágenes firmadas: `GET /media/:id?e=…&s=…`.

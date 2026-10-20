@@ -1,4 +1,5 @@
 import { brand, brandMark } from './brand.js';
+import { limitsText, planPrice } from './billing.js';
 import { $app, api, field, fill, h, run, select, state, text, toast } from './core.js';
 
 const GOOGLE_MSG = {
@@ -35,7 +36,11 @@ export function renderLogin() {
       googleSlot,
     ),
   );
-  api('GET', '/api/signup/info').then((i) => { if (i.google_login) fill(googleSlot, h('a', { class: 'btn', href: '/oauth/google/login', style: 'display:block;text-align:center;margin-top:12px' }, 'Continuar con Google'), h('p', { class: 'muted small' }, 'Si aún no tienes cuenta, se crea una con tu prueba gratuita y aceptas los términos del servicio.')); if (i.enabled) fill(signupLink, '¿Aún no tienes cuenta? ', h('a', { href: '#/registro' }, `Crea una gratis (${i.trial_days} días de prueba)`)); }).catch(() => undefined);
+  api('GET', '/api/signup/info').then((i) => {
+    const trial = i.trial_days > 0;
+    if (i.google_login) fill(googleSlot, h('a', { class: 'btn', href: '/oauth/google/login', style: 'display:block;text-align:center;margin-top:12px' }, 'Continuar con Google'), h('p', { class: 'muted small' }, trial ? 'Si aún no tienes cuenta, se crea una con tu prueba gratuita y aceptas los términos del servicio.' : 'Si aún no tienes cuenta, se crea una (la activas al contratar tu plan) y aceptas los términos del servicio.'));
+    if (i.enabled) fill(signupLink, '¿Aún no tienes cuenta? ', h('a', { href: '#/registro' }, trial ? `Crea una gratis (${i.trial_days} días de prueba)` : 'Crea tu cuenta'));
+  }).catch(() => undefined);
 }
 
 /* ------------------------------ Registro y recuperación (públicas) ------------------------------ */
@@ -44,21 +49,65 @@ function publicCard(title, ...kids) {
   fill($app, h('div', { class: 'card login', style: 'max-width:440px' }, h('h1', {}, title), kids));
 }
 
-export async function renderSignup() {
+/** Elegir plan al registrarse: prueba gratis (si hay) o un plan que se paga al crear la cuenta. */
+function planPicker(info, f, onChange) {
+  const box = h('div');
+  const method = h('div');
+  const option = (value, title, price, help) => h('label', { class: 'check plan-option' },
+    h('input', { type: 'radio', name: 'signup-plan', value, checked: f.plan === value, onchange: () => { f.plan = value; f.provider = ''; drawMethod(); onChange(); } }),
+    h('span', {}, h('strong', {}, title), help ? h('div', { class: 'small muted' }, help) : null),
+    price ? h('span', { class: 'plan-price' }, price) : null);
+  const drawMethod = () => {
+    const providers = info.plans.find((p) => p.key === f.plan)?.providers ?? [];
+    if (!f.provider || !providers.some((p) => p.name === f.provider)) f.provider = providers[0]?.name ?? '';
+    fill(method, providers.length > 1
+      ? field('Forma de pago', h('div', {}, providers.map((p) => h('label', { class: 'check', style: 'margin:4px 0' },
+        h('input', { type: 'radio', name: 'signup-provider', value: p.name, checked: f.provider === p.name, onchange: () => { f.provider = p.name; } }), p.label))))
+      : null);
+  };
+  fill(box,
+    field('Tu plan', h('div', {},
+      info.trial_days > 0 ? option('', `Probar gratis ${info.trial_days} ${info.trial_days === 1 ? 'día' : 'días'}`, '', 'Sin tarjeta. Contratas cuando quieras desde tu panel.') : null,
+      info.plans.map((p) => option(p.key, p.name, `${planPrice(p)} / mes`, [p.description, limitsText(p.limits)].filter(Boolean).join(' · ') || 'Sin límites de uso')))),
+    method);
+  drawMethod();
+  return box;
+}
+
+export async function renderSignup(params = new URLSearchParams()) {
   const navigation = state.navigation;
   let info;
-  try { info = await api('GET', '/api/signup/info'); } catch { info = { enabled: false, business_types: [] }; }
+  try { info = await api('GET', '/api/signup/info'); } catch { info = { enabled: false, business_types: [], plans: [] }; }
   if (navigation !== state.navigation) return;
   if (!info.enabled) return publicCard('Registro cerrado', h('p', {}, 'Por ahora el registro no está disponible.'), h('a', { href: '#/login' }, 'Iniciar sesión'));
-  const f = { name: '', company: '', business_type: 'otro', email: '', password: '', phone: '', accept_terms: false, website: '' };
+  info.plans = info.plans || [];
+  const trial = info.trial_days > 0;
+  // Un enlace desde tu página de precios puede traer el plan elegido: #/registro?plan=pro
+  const wanted = info.plans.find((p) => p.key === params.get('plan'))?.key;
+  const f = { name: '', company: '', business_type: 'otro', email: '', password: '', phone: '', accept_terms: false, website: '', plan: wanted || (trial ? '' : info.plans[0]?.key || ''), provider: '' };
+  const button = h('button', { class: 'primary', type: 'submit' });
+  const label = () => (button.textContent = f.plan ? 'Crear mi cuenta y pagar' : 'Crear mi cuenta');
+  label();
+  let sending = false;
   const submit = async (e) => {
     e.preventDefault();
+    if (sending) return;
     if (!f.accept_terms) return toast('Acepta los términos para continuar', true);
-    const r = await run(() => api('POST', '/api/signup', f));
-    if (r) { state.me = null; location.hash = '#/agentes?new=1'; }
+    const { plan, provider, ...rest } = f;
+    sending = true;
+    button.disabled = true;
+    const r = await run(() => api('POST', '/api/signup', { ...rest, ...(plan ? { plan, ...(provider ? { provider } : {}) } : {}) }));
+    if (!r) { sending = false; button.disabled = false; return; }
+    state.me = null;
+    if (r.checkout_url) { button.textContent = 'Abriendo el pago seguro…'; location.href = r.checkout_url; return; }
+    if (r.checkout_error) { toast(r.checkout_error, true); location.hash = `#/plan?plan=${encodeURIComponent(plan)}`; return; }
+    location.hash = '#/agentes/nuevo';
   };
+  const intro = info.plans.length
+    ? (trial ? `Prueba gratis ${info.trial_days} días o contrata tu plan desde hoy.` : 'Crea tu cuenta y activa tu plan en un solo paso.')
+    : (trial ? `Prueba gratis ${info.trial_days} días.` : `Crea tu cuenta; tu asistente se activa al contratar tu plan${info.support_contact ? ` (escríbenos a ${info.support_contact})` : ''}.`);
   publicCard('Crea tu asistente',
-    h('p', { class: 'muted', style: 'margin-top:0' }, `Prueba gratis ${info.trial_days} días. En unos minutos tu asistente responde por WhatsApp.`),
+    h('p', { class: 'muted', style: 'margin-top:0' }, `${intro} En unos minutos tu asistente responde por WhatsApp.`),
     h('form', { class: 'stack', onsubmit: submit },
       field('Tu nombre', text(f, 'name', { required: true, autocomplete: 'name' })),
       field('Nombre de tu negocio', text(f, 'company', { placeholder: 'Clínica Sonrisa', required: true, autocomplete: 'organization' })),
@@ -66,13 +115,15 @@ export async function renderSignup() {
       field('Correo', text(f, 'email', { type: 'email', required: true, autocomplete: 'email', placeholder: 'tu@negocio.com' }), 'Te enviaremos un enlace para confirmarlo.'),
       field('Contraseña', text(f, 'password', { type: 'password', autocomplete: 'new-password', minlength: 8, required: true }), 'Mínimo 8 caracteres.'),
       field('WhatsApp para avisos (opcional)', text(f, 'phone', { type: 'tel', autocomplete: 'tel', placeholder: '5215512345678' }), 'Ahí te avisamos cuando un cliente pida hablar con una persona.'),
+      info.plans.length ? planPicker(info, f, label) : null,
+      info.plans.length ? h('p', { class: 'muted small', style: 'margin:0' }, 'Si eliges un plan, al crear tu cuenta pasas a la página segura de pago (Stripe o Mercado Pago); nosotros nunca vemos tu tarjeta. Se renueva cada mes y puedes cancelar cuando quieras.') : null,
       // Campo trampa para bots: oculto para las personas.
       h('div', { style: 'position:absolute;left:-9999px', 'aria-hidden': 'true' }, h('input', { tabindex: '-1', autocomplete: 'off', oninput: (e) => (f.website = e.target.value) })),
       h('label', { class: 'check small' }, h('input', { type: 'checkbox', onchange: (e) => (f.accept_terms = e.target.checked) }),
         [info.terms_url ? ['Acepto los ', h('a', { href: info.terms_url, target: '_blank', rel: 'noopener' }, 'términos del servicio')] : 'Acepto los términos del servicio',
           info.privacy_url ? [' y el ', h('a', { href: info.privacy_url, target: '_blank', rel: 'noopener' }, 'aviso de privacidad')] : '',
           '. Entiendo que WhatsApp se conecta como "dispositivo vinculado" (no es la API oficial) y que los envíos masivos pueden provocar el bloqueo del número.']),
-      h('button', { class: 'primary', type: 'submit' }, 'Crear mi cuenta'),
+      button,
       h('p', { class: 'small', style: 'margin:0' }, '¿Ya tienes cuenta? ', h('a', { href: '#/login' }, 'Inicia sesión'))));
 }
 
@@ -112,8 +163,8 @@ export async function renderVerify(token) {
   try {
     await api('POST', '/api/verify-email', { token });
     state.me = null;
-    fill(box, '✅ Tu correo quedó confirmado. ', h('a', { href: '#/agentes?new=1' }, 'Continuar con la configuración →'));
+    fill(box, '✅ Tu correo quedó confirmado. ', h('a', { href: '#/empezar' }, 'Continuar →'));
   } catch (e) {
-    fill(box, e.message, ' ', h('a', { href: '#/agentes?new=1' }, 'Ir al panel'));
+    fill(box, e.message, ' ', h('a', { href: '#/empezar' }, 'Ir al panel'));
   }
 }

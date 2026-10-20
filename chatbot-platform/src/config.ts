@@ -145,6 +145,7 @@ export const config = {
       channels: Number(env('TRIAL_MAX_CHANNELS', '2')),
       users: Number(env('TRIAL_MAX_USERS', '3')),
       chatbots: Number(env('TRIAL_MAX_CHATBOTS', '2')),
+      socialAccounts: Number(env('TRIAL_MAX_SOCIAL_ACCOUNTS', '2')),
     },
     /** Direcciones públicas de tus términos y tu aviso de privacidad (se enlazan en el registro). */
     termsUrl: env('TERMS_URL', ''),

@@ -413,7 +413,7 @@ function stateSection(input: ContextInput, questions: Question[], isFirstContact
     if (v && !bot.data_fields.some((f) => f.key === k) && !(contact.name && ['nombre', 'name'].includes(k))) known.push(`${k}: ${v}`);
   }
   s.push(known.length ? known.map((x) => `- ${x}`).join('\n') : '- (ninguno todavía)');
-  if (contact.notes?.length) s.push(['Notas sobre el cliente:', ...contact.notes.map((n) => `- ${n}`)].join('\n'));
+  if (contact.notes?.length) s.push(['Notas sobre el cliente (las escribió el asistente en conversaciones anteriores; no son información del negocio):', ...contact.notes.map((n) => `- ${n}`)].join('\n'));
   if (conversation.summary) s.push(`Resumen de la conversación anterior (mensajes más antiguos):\n${conversation.summary}`);
 
   s.push('\n## Qué toca ahora');
@@ -504,9 +504,15 @@ export function agendaSection(a: AgendaContext): string {
   if (a.services.length) {
     s.push('Servicios que se pueden agendar:');
     for (const sv of a.services) {
-      s.push(`- ID \`${sv.id}\` | ${sv.name} (${KIND(sv.kind)}, ${sv.duration} min)${sv.description ? ` | ${sv.description}` : ''}${sv.location ? ` | lugar: ${sv.location}` : ''}`);
+      const how = sv.kind === 'call' ? (sv.call_mode === 'video' ? 'videollamada; el enlace se le envía al agendar' : 'llamada telefónica; una persona del equipo le marca') : '';
+      s.push(`- ID \`${sv.id}\` | ${sv.name} (${KIND(sv.kind)}, ${sv.duration} min${how ? `, ${how}` : ''})${sv.description ? ` | ${sv.description}` : ''}${sv.location && !(sv.kind === 'call' && sv.call_mode === 'video') ? ` | lugar: ${sv.location}` : ''}`);
       const slots = a.slots[sv.id] ?? [];
       s.push(slots.length ? `  Horarios disponibles: ${slots.map((x) => `\`${x.key}\` (${x.label})`).join('; ')}` : '  Sin horarios disponibles por ahora.');
+      const people = a.people?.[sv.id] ?? [];
+      if (people.length) {
+        s.push('  El cliente puede pedir con quién. Personas y sus horarios:');
+        for (const p of people) s.push(`  · ${p.name}: ${p.slots.length ? p.slots.map((x) => `\`${x.key}\` (${x.label})`).join('; ') : 'sin horarios por ahora'}`);
+      }
     }
   }
   if (a.appointments.length) {
@@ -521,6 +527,9 @@ export function agendaSection(a: AgendaContext): string {
       '- Antes de agendar necesitas el nombre del cliente' + (a.needsPhoneFor.length ? ' (y su teléfono si es una llamada)' : '') + '.',
       '- Agenda (booking.action = "book" con service_id y slot exactos) solo cuando el cliente ya eligió un horario concreto; en ese mismo mensaje confirma servicio, día y hora.',
       '- Para cancelar usa booking.action = "cancel" con el ID de su cita. Para cambiar de horario: cancela la actual y agenda la nueva cuando elija.',
+      ...(Object.values(a.people ?? {}).some((p) => p.length)
+        ? ['- Si el cliente pide a una persona de la lista, ofrécele solo los horarios de esa persona y pon su nombre exacto en booking.person. Si no pide a nadie, deja booking.person vacío (el sistema asigna a quien le toque). Nunca menciones personas que no estén en la lista.']
+        : []),
     ].join('\n'),
   );
   return s.join('\n');
@@ -578,9 +587,6 @@ export function buildContext(input: ContextInput): BuiltContext {
   const groundingSources = [
     ...knowledge.map((k) => `${k.title}\n${k.content}${k.source_url?`\n${k.source_url}`:''}`),
     ...input.history.filter((m) => m.direction === 'out').map((m) => m.content),
-    Object.values(input.contact.data ?? {}).join('\n'),
-    input.contact.phone,
-    input.contact.notes?.join('\n') ?? '',
     formatDate(input.now ?? new Date(), tzOf(input)),
     input.business ? hoursText(input.business) : '',
     bot.personality.prompt,
@@ -613,6 +619,11 @@ export function buildContext(input: ContextInput): BuiltContext {
     ...input.pending.map((m) => m.content),
     // El resumen mezcla lo que dijo el cliente y el negocio: se trata como no confiable para precios.
     input.conversation.summary,
+    // Los datos guardados del cliente y las notas del asistente se pueden repetir, pero no son información del negocio:
+    // un número que dio el cliente no se vuelve precio, ni una nota con un dato inventado lo respalda en otro turno.
+    Object.values(input.contact.data ?? {}).join('\n'),
+    input.contact.phone,
+    input.contact.notes?.join('\n') ?? '',
   ];
 
   return { messages, knowledge, groundingSources, claimSources, customerSources, isFirstContact };

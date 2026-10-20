@@ -116,6 +116,7 @@ const NUMBERS: { name: string; min: number; max: number; int?: boolean; area: Ar
   { name: 'TRIAL_MAX_CHANNELS', min: 0, max: 1e6, int: true, area: 'core', what: 'límite de canales de la prueba' },
   { name: 'TRIAL_MAX_USERS', min: 0, max: 1e6, int: true, area: 'core', what: 'límite de usuarios de la prueba' },
   { name: 'TRIAL_MAX_CHATBOTS', min: 0, max: 1e6, int: true, area: 'core', what: 'límite de asistentes de la prueba' },
+  { name: 'TRIAL_MAX_SOCIAL_ACCOUNTS', min: 0, max: 1e6, int: true, area: 'core', what: 'límite de redes sociales conectadas de la prueba' },
   { name: 'BILLING_GRACE_DAYS', min: 0, max: 365, int: true, area: 'billing', what: 'días de gracia de cobro' },
   { name: 'BACKUP_MAX_AGE_HOURS', min: 1, max: 8760, area: 'monitoring', what: 'horas sin respaldo antes de avisar' },
   { name: 'AI_ALERT_USD_PER_ACCOUNT', min: 0, max: 1e6, area: 'ai', what: 'aviso de gasto de IA (USD)' },
@@ -301,9 +302,10 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
   /* ------------------------------ Seguridad ------------------------------ */
   const secret = get('SESSION_SECRET');
   if (!secret) {
-    // Sin secreto se usa uno aleatorio por arranque (secret.ts): no es inseguro, pero degrada funciones. No bloquea.
+    // Sin secreto se usa uno aleatorio por arranque (secret.ts): no es inseguro, pero degrada funciones. Con Zernio sí es
+    // crítico: el webhook se firma con un secreto derivado de él y cada proceso tendría uno distinto.
     add(
-      'warning',
+      get('ZERNIO_API_KEY') ? 'critical' : 'warning',
       'security',
       'session_secret.missing',
       ['SESSION_SECRET'],

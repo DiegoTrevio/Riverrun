@@ -88,6 +88,7 @@ export async function agendaRoutes(api: FastifyInstance, service: ChatService) {
       id: u.id, name: u.name, email: u.email, role: u.role,
       hours: schedules.find((s) => s.id === u.id)?.hours ?? null,
       time_off: schedules.find((s) => s.id === u.id)?.time_off ?? [],
+      meeting_url: schedules.find((s) => s.id === u.id)?.meeting_url ?? '',
       calendar: publicView(calendars.find((c) => c.user_id === u.id) ?? null),
       services: services.filter((s) => s.assigned_user_ids.includes(u.id)).map((s) => ({ id: s.id, name: s.name })),
     }));
@@ -129,6 +130,7 @@ export async function agendaRoutes(api: FastifyInstance, service: ChatService) {
         conversation_id: z.string().uuid().nullable().default(null),
         customer_name: z.string().max(120).default(''),
         customer_phone: z.string().max(30).default(''),
+        customer_email: z.union([z.literal(''), z.string().trim().email().max(200)]).default(''),
         notes: z.string().max(2000).default(''),
         notify_customer: z.boolean().default(true),
         force: z.boolean().default(false),
@@ -154,13 +156,17 @@ export async function agendaRoutes(api: FastifyInstance, service: ChatService) {
       contact,
       customerName: b.customer_name || undefined,
       customerPhone: b.customer_phone.replace(/\D/g, '') || undefined,
+      customerEmail: b.customer_email || undefined,
       notes: b.notes,
       source: 'panel',
       force: b.force,
       assignedUserId,
     });
     if (!r.ok) throw new HttpError(409, `${r.reason}${r.alternatives.length ? `. Disponibles: ${r.alternatives.join('; ')}` : ''}`);
-    const confirmation = b.notify_customer && conv ? await service.agenda.sendConfirmation(r.appointment) : null;
+    // Confirmación al cliente: por su conversación o, si no hay, por correo.
+    const confirmation = !b.notify_customer ? null
+      : conv ? await service.agenda.sendConfirmation(r.appointment)
+      : r.appointment.customer_email ? await service.agenda.mailCustomer(r.appointment, 'booked').catch(() => false).then((sent) => (sent ? { sent: true } : { sent: false, reason: 'no se pudo enviar el correo' })) : null;
     return { ...r.appointment, confirmation };
   });
 
@@ -209,6 +215,9 @@ export async function agendaRoutes(api: FastifyInstance, service: ChatService) {
         allowWhenHuman: true,
         appointment: a,
       });
+    } else if (b.notify_customer && a.customer_email) {
+      // Reservó en la página (sin conversación): se le avisa por correo, igual que se le confirmó.
+      await service.agenda.mailCustomer(a, 'cancelled').catch(() => false);
     }
     return cancelled;
   });

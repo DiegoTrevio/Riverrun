@@ -30,9 +30,9 @@ t('la prueba gratuita trae límites por defecto y los muestra con su uso', async
   const a = await signup('prueba@limites.mx');
   const eff = await lim.effectiveLimits(a.account);
   assert.equal(eff.source, 'trial');
-  assert.deepEqual(eff.limits, { messages_per_month: 300, channels: 2, users: 3, chatbots: 2 });
+  assert.deepEqual(eff.limits, { messages_per_month: 300, channels: 2, users: 3, chatbots: 2, social_accounts: 2 });
   const view = (await a.api('GET', '/api/billing')).json();
-  assert.deepEqual(view.limits.items.map((i: any) => [i.key, i.max]), [['messages_per_month', 300], ['channels', 2], ['users', 3], ['chatbots', 2]]);
+  assert.deepEqual(view.limits.items.map((i: any) => [i.key, i.max]), [['messages_per_month', 300], ['channels', 2], ['users', 3], ['chatbots', 2], ['social_accounts', 2]]);
   assert.equal(view.limits.items.find((i: any) => i.key === 'users').used, 1);
 });
 

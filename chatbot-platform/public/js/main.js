@@ -25,7 +25,7 @@ export async function render() {
   if (['login', 'registro', 'olvide', 'restablecer', 'verificar'].includes(parts[0])) await ensureBrand('host');
   if (!current()) return;
   if (parts[0] === 'login') return view('auth', 'renderLogin');
-  if (parts[0] === 'registro') return view('auth', 'renderSignup');
+  if (parts[0] === 'registro') return view('auth', 'renderSignup', params);
   if (parts[0] === 'olvide') return view('auth', 'renderForgot');
   if (parts[0] === 'restablecer') return view('auth', 'renderReset', params.get('token') || '');
   if (parts[0] === 'verificar') return view('auth', 'renderVerify', params.get('token') || '');
@@ -50,26 +50,37 @@ export async function render() {
   await loadWhatsappStatus();
   if (!current()) return;
   // Los agentes solo atienden conversaciones.
-  if (!isAdmin() && !['conversations', 'conversation', 'contacts', 'contact', 'password', 'agenda', 'notifications', 'pipeline'].includes(parts[0])) {
+  if (!isAdmin() && !['conversations', 'conversation', 'contacts', 'contact', 'password', 'agenda', 'notifications', 'pipeline', 'comentarios'].includes(parts[0])) {
     location.hash = '#/conversations';
     return;
   }
+  // Crear un agente tiene su propia página (antes era una tarjeta dentro de la lista).
+  if (['agentes', 'asistentes'].includes(parts[0]) && !parts[1] && params.get('new') === '1') { location.replace('#/agentes/nuevo'); return; }
   const pending = h('p', { class: 'help', role: 'status' }, 'Cargando información…');
   const content = h('div', { 'aria-busy': 'true' }, pending);
   fill($app, shell(parts[0] || 'home', content));
   try {
     if (parts[0] === 'agentes' && parts[1] === 'conexion') await view('channels', 'viewChannel', content, parts[2]);
-    else if (!parts.length || ['agentes', 'asistentes'].includes(parts[0])) await view('dashboard', 'viewDashboard', content, params);
-    else if (parts[0] === 'inicio') await view('onboarding', 'viewOnboarding', content, parts[1]);
+    else if (parts[0] === 'agentes' && parts[1] === 'nuevo') await view('agentwizard', 'viewNewAgent', content, params);
+    else if (!parts.length || ['agentes', 'asistentes'].includes(parts[0])) await view('dashboard', 'viewDashboard', content, params, !parts.length);
+    // «Empezar» (y los antiguos Primeros pasos): a lo que falta para que el agente responda.
+    else if (parts[0] === 'empezar' || parts[0] === 'inicio') await view('agentstart', 'goStart', content);
+    else if (parts[0] === 'bot' && parts[2] === 'empezar') await view('agentstart', 'viewAgentStart', content, parts[1]);
     else if (parts[0] === 'asistente' || parts[0] === 'probar') await view('dashboard', 'goMainBot', content, parts[0] === 'probar' ? 'probar' : 'conocimiento');
     else if (parts[0] === 'conectar-facebook') await view('meta', 'viewMetaConnect', content, parts[1] || '', params);
     else if (parts[0] === 'conectar') await view('agent-connections', 'goLegacyConnections', params);
     else if (parts[0] === 'ajustes') await view('dashboard', 'viewSettingsHub', content);
     else if (parts[0] === 'integraciones') await view('integrations', 'viewIntegrations', content, params);
     else if (parts[0] === 'marcas') await view('brandadmin', 'viewBrands', content);
+    else if (parts[0] === 'sistema' && parts[1] === 'zernio') await view('zernio-admin', 'viewZernioAdmin', content);
     else if (parts[0] === 'sistema') await view('system', 'viewSystem', content);
+    else if (parts[0] === 'redes' && parts[1] === 'whatsapp' && parts[2]) await view('wa-templates', 'viewWaTemplates', content, parts[2]);
+    else if (parts[0] === 'redes') await view('social-accounts', 'viewSocialAccounts', content, params);
+    else if (parts[0] === 'comentarios') await view('social-inbox', 'viewSocialInbox', content, params);
+    else if (parts[0] === 'publicaciones') await view('social-posts', 'viewSocialPosts', content, parts[1], params);
     else if (parts[0] === 'plan') await view('billing', 'viewPlan', content, params);
     else if (parts[0] === 'planes') await view('billing', 'viewPlans', content);
+    else if (parts[0] === 'estadisticas' && parts[1] === 'redes') await view('analytics', 'viewSocialStats', content, params);
     else if (parts[0] === 'estadisticas') await view('analytics', 'viewAnalytics', content, params);
     else if (parts[0] === 'consumo') await view('usage', 'viewUsage', content, params);
     else if (parts[0] === 'bot' && parts[2] === 'conexiones' && parts[3]) await view('channels', 'viewChannel', content, parts[3], parts[1]);

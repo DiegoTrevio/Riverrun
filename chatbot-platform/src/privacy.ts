@@ -19,7 +19,7 @@ export async function contactDataExport(contactId: string) {
     `SELECT m.conversation_id, m.created_at, m.direction, m.sender, m.type, m.content FROM messages m JOIN conversations cv ON cv.id = m.conversation_id WHERE cv.contact_id = $1 ORDER BY m.id`,
     [contactId],
   );
-  const appointments = await query<any>(`SELECT service_name, kind, starts_at, ends_at, status, customer_name, customer_phone, notes FROM appointments WHERE contact_id = $1 ORDER BY starts_at`, [contactId]).catch(() => []);
+  const appointments = await query<any>(`SELECT service_name, kind, starts_at, ends_at, status, customer_name, customer_phone, customer_email, notes FROM appointments WHERE contact_id = $1 ORDER BY starts_at`, [contactId]).catch(() => []);
   const tasks = await query<any>(`SELECT kind, body, status, to_char(due_on, 'YYYY-MM-DD') AS due_on, created_via, created_at, done_at FROM contact_tasks WHERE contact_id = $1 ORDER BY created_at`, [contactId]);
   return { generated_at: new Date().toISOString(), contact, conversations, messages, appointments, tasks };
 }
@@ -49,7 +49,7 @@ export async function eraseContact(contactId: string, guard: { accountId?: strin
     await client.query(`DELETE FROM email_threads WHERE channel_id = $1 AND address = lower($2)`, [contact.channel_id, contact.external_id]);
     await client.query('DELETE FROM inbound_receipts WHERE channel_id=$1 AND external_id=$2',[contact.channel_id,contact.external_id]);
     await client.query('DELETE FROM query_embedding_cache WHERE account_id=$1',[contact.account_id]);
-    await client.query(`UPDATE appointments SET customer_name = '', customer_phone = '', notes = '' WHERE contact_id = $1 OR conversation_id = ANY($2)`, [contactId, convIds]);
+    await client.query(`UPDATE appointments SET customer_name = '', customer_phone = '', customer_email = '', notes = '' WHERE contact_id = $1 OR conversation_id = ANY($2)`, [contactId, convIds]);
     // Las rutas de sus archivos se leen antes de borrar el contacto: al borrarlo, esas filas desaparecen con los mensajes.
     const files = convIds.length ? (await client.query<{ file_path: string }>(`SELECT mm.file_path FROM message_media mm JOIN messages m ON m.id = mm.message_id WHERE m.conversation_id = ANY($1)`, [convIds])).rows.map((r) => r.file_path) : [];
     await client.query(`DELETE FROM contacts WHERE id = $1`, [contactId]);
@@ -69,7 +69,11 @@ export async function applyRetention(now = new Date()): Promise<{ accounts: numb
   await query(`DELETE FROM query_embedding_cache WHERE ctid IN (SELECT ctid FROM query_embedding_cache WHERE expires_at<$1 LIMIT 10000)`,[now]);
   await query(`DELETE FROM embedding_usage WHERE day<($1::timestamptz AT TIME ZONE 'UTC')::date-7`,[now]);
   await query(`DELETE FROM inbound_receipts WHERE state='done' AND created_at<$1::timestamptz-interval '30 days'`,[now]);
+  // Ids de eventos de Zernio: se guardan lo mismo que se aceptan (35 días) para que un evento repetido no cuente dos veces.
+  await query(`DELETE FROM zernio_events WHERE state IN ('done','ignored','dead') AND received_at<$1::timestamptz-interval '35 days'`,[now]);
   await query(`DELETE FROM webhook_deliveries WHERE created_at < $1`, [new Date(now.getTime() - 30 * 86400_000)]); // la bitácora de entregas dura 30 días
+  // Estadísticas de las redes (totales por día, sin datos de personas): poco más de un año.
+  await query(`DELETE FROM social_account_stats WHERE day < ($1::timestamptz AT TIME ZONE 'UTC')::date - 400`, [now]);
   const accounts = await query<{ id: string; name: string; settings: unknown }>(`SELECT id, name, settings FROM accounts WHERE active`);
   let messagesDeleted = 0, contactsDeleted = 0, touched = 0;
   for (const a of accounts) {
@@ -98,6 +102,10 @@ export async function applyRetention(now = new Date()): Promise<{ accounts: numb
         await removeInboundFiles(r.files);
         if (r.deleted < 5000) break;
       }
+      // Comentarios y reseñas de las redes: lo que escribieron los clientes se guarda lo mismo que sus mensajes.
+      await query(`DELETE FROM social_comments WHERE account_id = $1 AND coalesce(created_at_platform, received_at) < $2`, [a.id, cutoff]);
+      await query(`DELETE FROM social_reviews WHERE account_id = $1 AND coalesce(created_at_platform, received_at) < $2`, [a.id, cutoff]);
+      await query(`DELETE FROM social_posts p WHERE p.account_id = $1 AND p.updated_at < $2 AND NOT EXISTS (SELECT 1 FROM social_comments c WHERE c.post_id = p.id)`, [a.id, cutoff]);
       // El resumen y los datos de la conversación también contienen lo que dijo el cliente: se limpian junto con los mensajes.
       await query(`UPDATE conversations SET summary = '', report_summary = '', data = '{}'::jsonb WHERE account_id = $1 AND last_message_at < $2 AND (summary <> '' OR report_summary <> '' OR data <> '{}'::jsonb)`, [a.id, cutoff]);
     }

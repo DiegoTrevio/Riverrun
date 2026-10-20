@@ -1,5 +1,6 @@
 /**
- * Límites reales por plan: mensajes del asistente al mes, canales, usuarios y asistentes.
+ * Límites reales por plan: mensajes del asistente al mes, canales, usuarios, asistentes y redes sociales conectadas
+ * (cada cuenta conectada en Zernio la paga la plataforma).
  *
  * Cómo se decide el límite de una cuenta (el primero que exista):
  *   1. excepción del superadmin (accounts.limits_override)
@@ -16,18 +17,19 @@ import { query, queryOne } from '../db.js';
 import { sendMail } from '../mailer.js';
 import { logEvent } from '../logs.js';
 
-export const LIMIT_KEYS = ['messages_per_month', 'channels', 'users', 'chatbots'] as const;
+export const LIMIT_KEYS = ['messages_per_month', 'channels', 'users', 'chatbots', 'social_accounts'] as const;
 export type LimitKey = (typeof LIMIT_KEYS)[number];
 export type Limits = Partial<Record<LimitKey, number | null>>;
 
 const Limit = z.number().int().min(1).max(100_000_000).nullable().optional();
-export const LimitsSchema = z.object({ messages_per_month: Limit, channels: Limit, users: Limit, chatbots: Limit }).strict();
+export const LimitsSchema = z.object({ messages_per_month: Limit, channels: Limit, users: Limit, chatbots: Limit, social_accounts: Limit }).strict();
 
 export const LIMIT_LABELS: Record<LimitKey, { singular: string; plural: string }> = {
   messages_per_month: { singular: 'mensaje del asistente al mes', plural: 'mensajes del asistente al mes' },
   channels: { singular: 'canal', plural: 'canales' },
   users: { singular: 'usuario', plural: 'usuarios' },
   chatbots: { singular: 'asistente', plural: 'asistentes' },
+  social_accounts: { singular: 'red social conectada', plural: 'redes sociales conectadas' },
 };
 
 const clean = (l: unknown): Limits => {
@@ -44,6 +46,7 @@ export function trialLimits(): Limits {
   if (t.channels > 0) out.channels = t.channels;
   if (t.users > 0) out.users = t.users;
   if (t.chatbots > 0) out.chatbots = t.chatbots;
+  if (t.socialAccounts > 0) out.social_accounts = t.socialAccounts;
   return out;
 }
 
@@ -78,16 +81,20 @@ export interface Usage {
   channels: number;
   users: number;
   chatbots: number;
+  social_accounts: number;
 }
 
 export async function usageOf(accountId: string): Promise<Usage> {
-  const r = await queryOne<{ channels: number; users: number; chatbots: number }>(
+  const r = await queryOne<{ channels: number; users: number; chatbots: number; social_accounts: number }>(
     `SELECT (SELECT count(*)::int FROM channels WHERE account_id = $1 AND type <> 'playground') AS channels,
             (SELECT count(*)::int FROM users WHERE account_id = $1 AND active) AS users,
-            (SELECT count(*)::int FROM chatbots WHERE account_id = $1) AS chatbots`,
+            (SELECT count(*)::int FROM chatbots WHERE account_id = $1) AS chatbots,
+            (SELECT count(*)::int FROM social_accounts WHERE account_id = $1 AND status <> 'disconnected') AS social_accounts`,
     [accountId],
   );
-  return { messages_per_month: await messagesUsed(accountId), channels: r?.channels ?? 0, users: r?.users ?? 0, chatbots: r?.chatbots ?? 0 };
+  return {
+    messages_per_month: await messagesUsed(accountId), channels: r?.channels ?? 0, users: r?.users ?? 0, chatbots: r?.chatbots ?? 0, social_accounts: r?.social_accounts ?? 0,
+  };
 }
 
 /** Falla con un mensaje claro si crear `adding` más de este recurso pasa el límite de la cuenta. */

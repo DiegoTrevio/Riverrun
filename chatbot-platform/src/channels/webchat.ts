@@ -18,6 +18,11 @@ class WebchatTransport implements Transport {
     return `web-${crypto.randomUUID()}`;
   }
 
+  /** Los botones quedan en el mensaje guardado y el widget los muestra. */
+  async sendButtons() {
+    return `web-${crypto.randomUUID()}`;
+  }
+
   async notify() {
     throw new Error('El chat web no envía avisos internos');
   }

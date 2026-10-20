@@ -46,7 +46,7 @@ after(async () => {
 });
 
 t('migra una instalación existente sin perder datos', async () => {
-  assert.deepEqual(await migrate(db), ['002_accounts_channels.sql', '003_automation.sql', '004_signup.sql', '005_flow.sql', '006_whatsapp_qr.sql', '007_activation.sql', '008_image_triggers.sql', '009_master_access.sql', '010_conversation_records.sql', '011_knowledge_vectors.sql', '012_knowledge_index_invalidation.sql', '013_knowledge_supervision.sql', '014_knowledge_source.sql', '015_billing.sql', '016_conversation_lease.sql', '017_limits.sql', '018_compliance.sql', '019_pools.sql', '020_integrations.sql', '021_brands.sql', '022_email.sql', '023_fk_indexes.sql', '024_assignment.sql', '025_report_analysis.sql', '026_flow_journey.sql', '027_data_integrity.sql', '028_inbound_media.sql', '029_analytics.sql', '030_attachments.sql', '031_handoff.sql', '032_contact_tasks.sql', '033_internal_notices.sql', '034_zernio_channel.sql', '035_saved_messages.sql', '036_questions_done.sql', '037_system_state.sql', '038_incidents.sql', '039_incident_alerts.sql', '040_conversation_restart.sql', '041_automation_once.sql', '042_conversation_requests.sql', '043_outlook_calendar.sql', '044_pipelines.sql', '045_team_agenda.sql', '046_durable_processing.sql', '047_agent_versions.sql', '048_contacts_ai_budgets.sql', '049_opportunity_value.sql', '050_work_recovery.sql', '051_alert_reminders.sql', '052_disconnect_reason.sql', '053_meta_connect.sql', '054_platform_secrets.sql']);
+  assert.deepEqual(await migrate(db), ['002_accounts_channels.sql', '003_automation.sql', '004_signup.sql', '005_flow.sql', '006_whatsapp_qr.sql', '007_activation.sql', '008_image_triggers.sql', '009_master_access.sql', '010_conversation_records.sql', '011_knowledge_vectors.sql', '012_knowledge_index_invalidation.sql', '013_knowledge_supervision.sql', '014_knowledge_source.sql', '015_billing.sql', '016_conversation_lease.sql', '017_limits.sql', '018_compliance.sql', '019_pools.sql', '020_integrations.sql', '021_brands.sql', '022_email.sql', '023_fk_indexes.sql', '024_assignment.sql', '025_report_analysis.sql', '026_flow_journey.sql', '027_data_integrity.sql', '028_inbound_media.sql', '029_analytics.sql', '030_attachments.sql', '031_handoff.sql', '032_contact_tasks.sql', '033_internal_notices.sql', '034_zernio_channel.sql', '035_saved_messages.sql', '036_questions_done.sql', '037_system_state.sql', '038_incidents.sql', '039_incident_alerts.sql', '040_conversation_restart.sql', '041_automation_once.sql', '042_conversation_requests.sql', '043_outlook_calendar.sql', '044_pipelines.sql', '045_team_agenda.sql', '046_durable_processing.sql', '047_agent_versions.sql', '048_contacts_ai_budgets.sql', '049_opportunity_value.sql', '050_work_recovery.sql', '051_alert_reminders.sql', '052_disconnect_reason.sql', '053_meta_connect.sql', '054_platform_secrets.sql', '055_checkout_ref.sql', '056_start_on_connect.sql', '057_zernio_isolation.sql', '058_social_accounts.sql', '059_zernio_events.sql', '060_zernio_admin.sql', '061_whatsapp_templates.sql', '062_team_calls.sql', '063_social_engagement.sql', '064_social_publications.sql', '065_social_stats.sql', '066_flow_buttons.sql']);
   const q = async (sql: string) => (await db.query(sql)).rows;
 
   const accounts = await q('SELECT * FROM accounts');
@@ -88,7 +88,7 @@ t('migra una instalación existente sin perder datos', async () => {
 t('una instalación nueva (sin datos) migra sin crear cuentas vacías', async () => {
   await db.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public;');
   const applied = await migrate(db);
-  assert.deepEqual(applied, ['001_init.sql', '002_accounts_channels.sql', '003_automation.sql', '004_signup.sql', '005_flow.sql', '006_whatsapp_qr.sql', '007_activation.sql', '008_image_triggers.sql', '009_master_access.sql', '010_conversation_records.sql', '011_knowledge_vectors.sql', '012_knowledge_index_invalidation.sql', '013_knowledge_supervision.sql', '014_knowledge_source.sql', '015_billing.sql', '016_conversation_lease.sql', '017_limits.sql', '018_compliance.sql', '019_pools.sql', '020_integrations.sql', '021_brands.sql', '022_email.sql', '023_fk_indexes.sql', '024_assignment.sql', '025_report_analysis.sql', '026_flow_journey.sql', '027_data_integrity.sql', '028_inbound_media.sql', '029_analytics.sql', '030_attachments.sql', '031_handoff.sql', '032_contact_tasks.sql', '033_internal_notices.sql', '034_zernio_channel.sql', '035_saved_messages.sql', '036_questions_done.sql', '037_system_state.sql', '038_incidents.sql', '039_incident_alerts.sql', '040_conversation_restart.sql', '041_automation_once.sql', '042_conversation_requests.sql', '043_outlook_calendar.sql', '044_pipelines.sql', '045_team_agenda.sql', '046_durable_processing.sql', '047_agent_versions.sql', '048_contacts_ai_budgets.sql', '049_opportunity_value.sql', '050_work_recovery.sql', '051_alert_reminders.sql', '052_disconnect_reason.sql', '053_meta_connect.sql', '054_platform_secrets.sql']);
+  assert.deepEqual(applied, ['001_init.sql', '002_accounts_channels.sql', '003_automation.sql', '004_signup.sql', '005_flow.sql', '006_whatsapp_qr.sql', '007_activation.sql', '008_image_triggers.sql', '009_master_access.sql', '010_conversation_records.sql', '011_knowledge_vectors.sql', '012_knowledge_index_invalidation.sql', '013_knowledge_supervision.sql', '014_knowledge_source.sql', '015_billing.sql', '016_conversation_lease.sql', '017_limits.sql', '018_compliance.sql', '019_pools.sql', '020_integrations.sql', '021_brands.sql', '022_email.sql', '023_fk_indexes.sql', '024_assignment.sql', '025_report_analysis.sql', '026_flow_journey.sql', '027_data_integrity.sql', '028_inbound_media.sql', '029_analytics.sql', '030_attachments.sql', '031_handoff.sql', '032_contact_tasks.sql', '033_internal_notices.sql', '034_zernio_channel.sql', '035_saved_messages.sql', '036_questions_done.sql', '037_system_state.sql', '038_incidents.sql', '039_incident_alerts.sql', '040_conversation_restart.sql', '041_automation_once.sql', '042_conversation_requests.sql', '043_outlook_calendar.sql', '044_pipelines.sql', '045_team_agenda.sql', '046_durable_processing.sql', '047_agent_versions.sql', '048_contacts_ai_budgets.sql', '049_opportunity_value.sql', '050_work_recovery.sql', '051_alert_reminders.sql', '052_disconnect_reason.sql', '053_meta_connect.sql', '054_platform_secrets.sql', '055_checkout_ref.sql', '056_start_on_connect.sql', '057_zernio_isolation.sql', '058_social_accounts.sql', '059_zernio_events.sql', '060_zernio_admin.sql', '061_whatsapp_templates.sql', '062_team_calls.sql', '063_social_engagement.sql', '064_social_publications.sql', '065_social_stats.sql', '066_flow_buttons.sql']);
   assert.equal((await db.query('SELECT count(*)::int n FROM accounts')).rows[0].n, 0);
   // Integridad: nada sin llave primaria, nada sin validar y toda llave foránea de una columna con índice (borrar cuentas no recorre tablas enteras)
   const noPk = (await db.query(`SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind = 'r' AND NOT EXISTS (SELECT 1 FROM pg_constraint k WHERE k.conrelid = c.oid AND k.contype = 'p')`)).rows;
@@ -104,7 +104,7 @@ t('varias réplicas pueden migrar simultáneamente una instalación nueva', asyn
   const results = await Promise.allSettled(Array.from({ length: 3 }, () => migrate(db)));
   assert.ok(results.every(r => r.status === 'fulfilled'), JSON.stringify(results));
   const counts = (await db.query('SELECT name, count(*)::int n FROM schema_migrations GROUP BY name')).rows;
-  assert.equal(counts.length, 54);
+  assert.equal(counts.length, 66);
   assert.ok(counts.every(r => r.n === 1));
 });
 
@@ -123,4 +123,53 @@ t('una migración fallida revierte el esquema y libera el bloqueo para otra rép
     assert.deepEqual(await migrate(replica), ['013_knowledge_supervision.sql']);
     assert.deepEqual(await migrate(replica), []);
   } finally { await replica.end(); }
+});
+
+t('sube desde la versión 054 con redes de Zernio, flujos y campañas sin perder datos ni conservar el canal equivocado', async () => {
+  // Base nueva hasta la 054 (lo que hay en producción antes de este cambio), con datos reales.
+  const name = `${dbName}_054`;
+  await pool.query(`DROP DATABASE IF EXISTS ${name}`);
+  await pool.query(`CREATE DATABASE ${name}`);
+  const up = new pg.Pool({ connectionString: new URL(`/${name}`, base).href });
+  try {
+    await up.query('CREATE EXTENSION IF NOT EXISTS pgcrypto');
+    await up.query(`CREATE TABLE schema_migrations (name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`);
+    for (const f of fs.readdirSync(path.resolve('migrations')).filter((x) => x.endsWith('.sql') && x < '055').sort()) {
+      await up.query(fs.readFileSync(path.resolve('migrations', f), 'utf8'));
+      await up.query('INSERT INTO schema_migrations(name) VALUES ($1)', [f]);
+    }
+    const q = async (sql: string, params: unknown[] = []) => (await up.query(sql, params)).rows;
+    const [a] = await q(`INSERT INTO accounts (name, zernio_profile_id) VALUES ('Hotel A', 'prof_a') RETURNING id`);
+    const [b] = await q(`INSERT INTO accounts (name, zernio_profile_id) VALUES ('Tienda B', 'prof_b') RETURNING id`);
+    // Dos canales con la misma cuenta de Zernio: el más antiguo no guardó su perfil; el otro es del perfil del negocio.
+    const [old] = await q(`INSERT INTO channels (account_id, type, name, webhook_token, config, created_at) VALUES ($1, 'zernio', 'IG viejo', 'tok-old', $2, now() - interval '2 days') RETURNING id`,
+      [a.id, JSON.stringify({ platform: 'instagram', account_id: 'acc_dup', username: 'viejo' })]);
+    const [mine] = await q(`INSERT INTO channels (account_id, type, name, webhook_token, config) VALUES ($1, 'zernio', 'IG del hotel', 'tok-mine', $2) RETURNING id`,
+      [a.id, JSON.stringify({ platform: 'instagram', account_id: 'acc_dup', profile_id: 'prof_a', username: 'hotel' })]);
+    const [down] = await q(`INSERT INTO channels (account_id, type, name, webhook_token, config, connection_state) VALUES ($1, 'zernio', 'FB tienda', 'tok-b', $2, 'close') RETURNING id`,
+      [b.id, JSON.stringify({ platform: 'facebook', account_id: 'acc_b', profile_id: 'prof_b', username: 'tienda' })]);
+    const [seq] = await q(`INSERT INTO sequences (account_id, name, steps) VALUES ($1, 'Seguimiento', $2) RETURNING id`, [a.id, JSON.stringify([{ delay_value: 0, delay_unit: 'minutes', text: 'Hola' }])]);
+    const [wa] = await q(`INSERT INTO channels (account_id, type, name, webhook_token, config) VALUES ($1, 'whatsapp', 'WA', 'tok-wa', '{}') RETURNING id`, [a.id]);
+    const [ct] = await q(`INSERT INTO contacts (account_id, channel_id, external_id) VALUES ($1, $2, '5215500000001') RETURNING id`, [a.id, wa.id]);
+    const [cv] = await q(`INSERT INTO conversations (account_id, channel_id, contact_id) VALUES ($1, $2, $3) RETURNING id`, [a.id, wa.id, ct.id]);
+    await q(`INSERT INTO sequence_enrollments (account_id, sequence_id, conversation_id, current_step) VALUES ($1, $2, $3, 1)`, [a.id, seq.id, cv.id]);
+    await q(`INSERT INTO campaigns (account_id, channel_id, name, message) VALUES ($1, $2, 'Promo', 'Hola')`, [a.id, wa.id]);
+
+    const applied = await migrate(up);
+    assert.equal(applied[0], '055_checkout_ref.sql');
+    assert.equal(applied.at(-1), '066_flow_buttons.sql');
+    const chans = Object.fromEntries((await q(`SELECT id, config->>'account_id' AS zid, connection_state, disconnect_reason FROM channels WHERE type = 'zernio'`)).map((r) => [r.id, r]));
+    assert.equal(chans[mine.id].zid, 'acc_dup', 'se conserva el canal del perfil del negocio');
+    assert.deepEqual([chans[old.id].zid, chans[old.id].connection_state, chans[old.id].disconnect_reason], ['', 'close', 'zernio_duplicate'], 'el duplicado queda sin cuenta');
+    const socials = await q(`SELECT account_id, zernio_account_id, channel_id, status, down_notified_at FROM social_accounts ORDER BY zernio_account_id`);
+    assert.deepEqual(socials.map((s) => [s.account_id, s.zernio_account_id, s.channel_id, s.status]), [[b.id, 'acc_b', down.id, 'needs_reconnect'], [a.id, 'acc_dup', mine.id, 'active']]);
+    assert.ok(socials[0].down_notified_at, 'una red ya caída no vuelve a avisar al actualizar');
+    assert.deepEqual((await q(`SELECT profile_id, account_id FROM zernio_profiles ORDER BY profile_id`)).map((p) => [p.profile_id, p.account_id]), [['prof_a', a.id], ['prof_b', b.id]]);
+    assert.deepEqual((await q(`SELECT kind, sequence_id FROM campaigns`))[0], { kind: 'message', sequence_id: null });
+    assert.deepEqual((await q(`SELECT current_step, choice, choice_step, campaign_id, pace_ms FROM sequence_enrollments`))[0], { current_step: 1, choice: '', choice_step: null, campaign_id: null, pace_ms: 0 });
+    assert.deepEqual(await migrate(up), [], 'volver a ejecutar no hace nada');
+  } finally {
+    await up.end();
+    await pool.query(`DROP DATABASE IF EXISTS ${name}`);
+  }
 });

@@ -101,6 +101,27 @@ t('las escrituras concurrentes no pierden respuestas; un origen incorrecto revie
   assert.ok(updatedConversation.data_version > conversation.data_version);
 });
 
+t('el reporte no conserva acuerdos ni próximos pasos con datos que no están en la conversación', async () => {
+  await store.insertMessage({ conversation_id: conv.id, direction: 'in', sender: 'customer', content: 'Gracias, ahí nos vemos' });
+  h.setAnalysis({
+    intent: 'Pedir tacos', sentiment: 'positivo', interest: 'alto',
+    agreements: ['Ana pidió 4 tacos para recoger a las 8', 'Se acordó un 20% de descuento', 'Pagará $480 al recoger'],
+    next_steps: ['Tener listos los tacos a las 8', 'Confirmarle en las próximas 24 horas', 'Llamarla mañana a las 10', 'Enviarle el enlace de pago mpago.la/x1'],
+  });
+  h.setSummary('Ana quiere 4 tacos para recoger a las 8.');
+  try {
+    const result = await h.authed('POST', `/api/conversations/${conv.id}/summary`);
+    assert.equal(result.statusCode, 200, result.body);
+    const analysis = result.json().report_analysis;
+    assert.deepEqual(analysis.agreements, ['Ana pidió 4 tacos para recoger a las 8']);
+    assert.deepEqual(analysis.next_steps, ['Tener listos los tacos a las 8', 'Confirmarle en las próximas 24 horas'], 'un plazo no es un dato del negocio');
+    // Las notas del asistente no se presentan como datos confirmados del contacto.
+    assert.match(h.summaryCalls.at(-1)!.messages[1].content, /Notas que escribió el asistente \(no confirmadas/);
+  } finally {
+    h.setAnalysis(undefined);
+  }
+});
+
 t('la base de datos rechaza mezclar cuentas/canales/contactos y conserva datos existentes', async () => {
   const other = (await h.authed('POST', '/api/accounts', { name: 'Otra cuenta' })).json();
   const channel = (await h.authed('POST', '/api/channels', { account_id: other.id, type: 'webchat', name: 'Otro perfil' })).json();

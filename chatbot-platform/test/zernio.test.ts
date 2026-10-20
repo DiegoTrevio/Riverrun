@@ -261,11 +261,12 @@ t('Bluesky: usuario y contraseña de aplicación en el panel; una contraseña ma
 
 t('canales anteriores: el webhook propio del canal con su secreto sigue funcionando (formato con payload)', async () => {
   const legacy = await h.authed('POST', '/api/channels', {
-    account_id: h.accountId, type: 'zernio', name: 'Zernio anterior', chatbot_id: h.botId,
-    config: { platform: 'reddit', profile_id: 'prof_viejo', account_id: 'acc_vieja', api_key: 'zk_test', webhook_secret: 'secreto-viejo' },
+    account_id: h.accountId, type: 'zernio', name: 'Zernio anterior', chatbot_id: h.botId, config: { platform: 'reddit', api_key: 'zk_test' },
   });
   assert.equal(legacy.statusCode, 200, legacy.body);
   const ch = legacy.json();
+  // Un canal de antes ya tiene en la base su perfil, cuenta y secreto propios (hoy solo los escribe el servidor).
+  await pool.query(`UPDATE channels SET config = config || '{"profile_id":"prof_viejo","account_id":"acc_vieja","webhook_secret":"secreto-viejo"}'::jsonb WHERE id = $1`, [ch.id]);
   const raw = JSON.stringify({ event: 'message.received', payload: { accountId: 'acc_vieja', conversationId: 'conv_rd', message: { id: 'rd_1', text: 'Hola' }, sender: { name: 'Luis' } } });
   const r = await h.app.inject({ method: 'POST', url: `/webhook/${ch.webhook_token}`, headers: { 'content-type': 'application/json', 'x-zernio-signature': sign(raw, 'secreto-viejo') }, payload: raw });
   assert.equal(r.statusCode, 200);

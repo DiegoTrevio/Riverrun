@@ -22,7 +22,7 @@ import { maybeSummarize } from './memory.js';
 import { briefReport } from './report-format.js';
 import { summarizeConversation } from './report.js';
 import { normalize } from './text.js';
-import { CAPTION_MAX, type OutgoingFile, type Transport } from './transport.js';
+import { CAPTION_MAX, type OutgoingButton, type OutgoingFile, type OutgoingTemplate, type Transport } from './transport.js';
 import { emptyPlan, validateDecision, type AgendaValidation, type ExecutionPlan, type ValidationInput } from './validator.js';
 import type { AgendaContext, BookResult } from '../automation/agenda.js';
 import type { AutomationEvent } from '../automation/types.js';
@@ -36,7 +36,7 @@ export interface EngineExtensions {
   pipeline?(conv: Conversation): Promise<PipelineContext | null>;
   agenda?: {
     contextFor(accountId: string, contact: Contact, channelType: ChannelType): Promise<AgendaContext | null>;
-    book(o: { accountId: string; serviceId: string; slotKey: string; conversation: Conversation; contact: Contact; source: 'bot' }): Promise<BookResult>;
+    book(o: { accountId: string; serviceId: string; slotKey: string; conversation: Conversation; contact: Contact; source: 'bot'; assignedUserId?: string | null }): Promise<BookResult>;
     cancel(appointmentId: string, reason: string, by: 'bot'): Promise<unknown>;
   };
   onEvent?(e: AutomationEvent): void;
@@ -269,7 +269,10 @@ export class Engine {
       this.ext.pipeline ? this.ext.pipeline(conv).catch((e) => { log('error', 'engine', `No se pudo cargar el pipeline: ${e?.message ?? e}`); return null; }) : Promise.resolve(null),
     ]);
     const agendaVal: AgendaValidation | null = agendaCtx
-      ? { slots: Object.fromEntries(Object.entries(agendaCtx.slots).map(([k, v]) => [k, v.map((x) => x.key)])), appointmentIds: agendaCtx.appointments.map((a) => a.id), needsPhoneFor: agendaCtx.needsPhoneFor }
+      ? {
+          slots: Object.fromEntries(Object.entries(agendaCtx.slots).map(([k, v]) => [k, v.map((x) => x.key)])), appointmentIds: agendaCtx.appointments.map((a) => a.id), needsPhoneFor: agendaCtx.needsPhoneFor,
+          people: Object.fromEntries(Object.entries(agendaCtx.people ?? {}).map(([k, v]) => [k, v.map((p) => ({ userId: p.userId, name: p.name, slots: p.slots.map((x) => x.key) }))])),
+        }
       : null;
     const hasPhone = !!contact.phone || !!contact.data?.telefono || bot.data_fields.some((f) => f.type === 'phone' && !!contact.data?.[f.key]);
     const imagesById = new Map<string, ImageAsset>(allImages.map((i) => [i.id, i]));
@@ -404,9 +407,10 @@ export class Engine {
       // Datos no verificables tras el reintento: respuesta segura según la regla configurada.
       fallbackUsed = true;
       // La propuesta no pasó la validación: no confirma el objetivo ni avanza la etapa (ni envía sus fotos). Tampoco mueve
-      // la tarjeta del pipeline: su columna puede depender de la respuesta rechazada («ya se le dio un precio»).
+      // la tarjeta del pipeline: su columna puede depender de la respuesta rechazada («ya se le dio un precio»). Ni guarda
+      // sus notas: podrían repetir el dato inventado que se rechazó.
       const stageIntents = new Set(pipeline?.stages.map((st) => normalize(st.intent)) ?? []);
-      const base = { ...plan, booking: null, contextImages: [], savedCodes: [], questionLast: false, goalCompleted: false, flowStep: 0, intents: plan.intents.filter((i) => !stageIntents.has(normalize(i))) };
+      const base = { ...plan, booking: null, contextImages: [], savedCodes: [], questionLast: false, goalCompleted: false, flowStep: 0, remember: [], intents: plan.intents.filter((i) => !stageIntents.has(normalize(i))) };
       if (bookingIssue && !factIssues) {
         // La IA insistió en un horario que no existe: se ofrecen horarios reales.
         plan = { ...base, action: 'reply', messages: [slotFallback(agendaCtx)], images: [] };
@@ -480,7 +484,7 @@ export class Engine {
       // A restart after a booking begins requires review rather than booking again.
       if(currentOperation()) await query(`INSERT INTO delivery_attempts(operation_key,part,conversation_id,state) VALUES($1,-1,$2,'sending') ON CONFLICT DO NOTHING`,[currentOperation(),conv.id]);
       if (plan.booking.action === 'book') {
-        const r = await this.ext.agenda.book({ accountId: conv.account_id, serviceId: plan.booking.serviceId, slotKey: plan.booking.slot, conversation: conv, contact, source: 'bot' });
+        const r = await this.ext.agenda.book({ accountId: conv.account_id, serviceId: plan.booking.serviceId, slotKey: plan.booking.slot, conversation: conv, contact, source: 'bot', assignedUserId: plan.booking.userId });
         if (!r.ok) {
           plan = {
             ...plan,
@@ -491,7 +495,15 @@ export class Engine {
             messages: [r.alternatives.length ? `Uy, ese horario se acaba de ocupar. Te puedo ofrecer ${joinOptions(r.alternatives)}. ¿Cuál te acomoda?` : 'Uy, ese horario se acaba de ocupar. ¿Te puedo ofrecer otro día?'],
           };
           await log('warn', 'engine', `No se pudo agendar: ${r.reason}`);
-        } else booked = true;
+        } else {
+          booked = true;
+          // Llamadas: con quién y, si es videollamada, el enlace (la IA no lo conoce al escribir).
+          const ap = r.appointment;
+          const extra = ap.meeting_url
+            ? `📹 Este es el enlace para la videollamada${ap.assigned_user_name ? ` con ${ap.assigned_user_name}` : ''}: ${ap.meeting_url}`
+            : ap.kind === 'call' && ap.assigned_user_name ? `📞 Te llamará ${ap.assigned_user_name} a esa hora.` : '';
+          if (extra) plan = { ...plan, messages: [...plan.messages, extra] };
+        }
       } else {
         await this.ext.agenda.cancel(plan.booking.appointmentId, 'Cancelada por el cliente en el chat', 'bot');
       }
@@ -753,7 +765,7 @@ export class Engine {
     bot: Chatbot | null,
     conv: Conversation,
     transport: Transport,
-    o: { sender: 'bot' | 'human' | 'system'; text: string; image?: ImageAsset; file?: OutgoingFile; delay: number; meta?: Record<string, unknown> },
+    o: { sender: 'bot' | 'human' | 'system'; text: string; image?: ImageAsset; file?: OutgoingFile; template?: OutgoingTemplate; buttons?: OutgoingButton[]; delay: number; meta?: Record<string, unknown> },
   ): Promise<Message | null> {
     const delivery=nextDelivery();
     // Delay locally; check ownership/human control immediately before the transport, with no typing sleep inside it.
@@ -790,7 +802,7 @@ export class Engine {
     const msg=await withTransaction(async client=>{
       const message=await store.insertMessage({
         conversation_id:conv.id,direction:'out',sender:o.sender,type:o.file?o.file.kind:o.image?'image':'text',content:o.text,
-        image_id:o.image?.id??null,status:'pending',meta:o.file?{...o.meta,attachment_id:o.file.id,file_name:o.file.name}:o.meta,
+        image_id:o.image?.id??null,status:'pending',meta:o.file?{...o.meta,attachment_id:o.file.id,file_name:o.file.name}:o.buttons?.length?{...o.meta,buttons:o.buttons}:o.meta,
       },client);
       if(!message) return null;
       const reserved=await client.query(`INSERT INTO delivery_attempts(operation_key,part,conversation_id,message_id,state) VALUES($1,$2,$3,$4,'sending') ON CONFLICT DO NOTHING RETURNING part`,[delivery.operation,delivery.part,conv.id,message.id]);
@@ -816,8 +828,11 @@ export class Engine {
           return null;
         }
       }
-      const extId=o.file ? (transport.sendFile ? await transport.sendFile(o.file,o.text,0) : (()=>{throw new Error('unsupported_file');})())
-        : o.image ? await transport.sendImage(o.image,o.text,0) : await transport.sendText(o.text,0);
+      const extId=o.template ? (transport.sendTemplate ? await transport.sendTemplate(o.template) : (()=>{throw new Error('unsupported_template');})())
+        : o.file ? (transport.sendFile ? await transport.sendFile(o.file,o.text,0) : (()=>{throw new Error('unsupported_file');})())
+        : o.image ? await transport.sendImage(o.image,o.text,0)
+        : o.buttons?.length ? (transport.sendButtons ? await transport.sendButtons(o.text,o.buttons,0) : (()=>{throw new Error('unsupported_buttons');})())
+        : await transport.sendText(o.text,0);
       // Persist the receipt before usage/events. A DB failure here is an uncertain delivery.
       await store.updateMessage(msg.id,{external_message_id:extId,status:'ok'});
       await query(`UPDATE delivery_attempts SET state='sent',updated_at=now() WHERE operation_key=$1 AND part=$2`,[delivery.operation,delivery.part]);
@@ -827,7 +842,7 @@ export class Engine {
       return sent;
     } catch(e:any) {
       // Only explicit client rejections are safe to treat as not delivered. Timeouts/5xx/network failures are ambiguous.
-      const rejected=/\bHTTP\s+4\d\d\b|→\s*4\d\d\b/.test(String(e?.message)) || e?.message==='unsupported_file' || e instanceof OutboundBlockedError;
+      const rejected=/\bHTTP\s+4\d\d\b|→\s*4\d\d\b/.test(String(e?.message)) || e?.message==='unsupported_file' || e?.message==='unsupported_template' || e?.message==='unsupported_buttons' || e instanceof OutboundBlockedError;
       const state=rejected?'rejected':'uncertain';
       await query(`UPDATE delivery_attempts SET state=$3,updated_at=now() WHERE operation_key=$1 AND part=$2`,[delivery.operation,delivery.part,state]).catch(()=>undefined);
       await store.updateMessage(msg.id,{status:rejected?'failed':'uncertain',meta:{error_code:state}}).catch(()=>undefined);

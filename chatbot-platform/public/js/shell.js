@@ -18,14 +18,16 @@ setInterval(() => { if (state.me && !document.hidden) refreshBell(); }, 20000);
 
 /** Rutas que pertenecen a cada opción del menú lateral. */
 const SECTIONS = {
-  agentes: ['home', 'agentes', 'asistentes', 'asistente', 'bot', 'channels', 'channel', 'conectar', 'inicio', 'probar'],
+  agentes: ['home', 'agentes', 'asistentes', 'asistente', 'bot', 'channels', 'channel', 'conectar', 'inicio', 'empezar', 'probar'],
   conversations: ['conversations', 'conversation'],
   contacts: ['contacts', 'contact'],
   agenda: ['agenda'],
   pipeline: ['pipeline'],
+  comentarios: ['comentarios'],
+  publicaciones: ['publicaciones'],
   automation: ['automation'],
   estadisticas: ['estadisticas'],
-  ajustes: ['ajustes', 'users', 'accounts', 'planes', 'marcas', 'sistema', 'plan', 'consumo', 'logs', 'password', 'integraciones'],
+  ajustes: ['ajustes', 'users', 'accounts', 'planes', 'marcas', 'sistema', 'plan', 'consumo', 'logs', 'password', 'integraciones', 'redes'],
 };
 
 /** Opciones de Ajustes, agrupadas como un submenú (las de la plataforma solo las ve el superadministrador). */
@@ -36,6 +38,7 @@ function settingsGroups() {
       ['#/automation/settings', 'Horario y avisos', 'automation/settings'],
       ['#/users', 'Mi equipo', 'users'],
       ['#/integraciones', 'Integraciones', 'integraciones'],
+      state.meta.zernio_enabled ? ['#/redes', 'Redes sociales', 'redes'] : null,
     ]],
     ['Cuenta', [
       !isSuper() ? ['#/plan', 'Mi plan y pagos', 'plan'] : null,
@@ -75,10 +78,14 @@ export function shell(active, content) {
         h('select', { id: 'profile-switch',
           onchange: (e) => {
             state.accountId = e.target.value; invalidateReads();
-            if (location.hash.startsWith('#/logs?')) {
-              const filters = new URLSearchParams(location.hash.split('?')[1]);
-              filters.delete('account_id');
-              history.replaceState(null, '', '#/logs' + (filters.size ? '?' + filters : ''));
+            // Un enlace que abrió otro perfil (?account_id=, p. ej. desde un aviso de Consumo o Registros) no debe dejarlo fijo.
+            if (location.hash.includes('?')) {
+              const [route, query] = location.hash.split('?');
+              const filters = new URLSearchParams(query);
+              if (filters.has('account_id')) {
+                filters.delete('account_id');
+                history.replaceState(null, '', route + (filters.size ? '?' + filters : ''));
+              }
             }
             try { localStorage.setItem('cp-account', state.accountId); } catch { /* */ }
             if (location.hash.startsWith('#/bot/') || location.hash.startsWith('#/channel/') || location.hash.startsWith('#/agentes/conexion/')) { location.hash = '#/agentes'; return; }
@@ -98,6 +105,8 @@ export function shell(active, content) {
       item('#/contacts', 'contacts', 'Contactos', 'contacts'),
       item('#/agenda', 'calendar', 'Calendarios', 'agenda'),
       item('#/pipeline', 'pipeline', 'Oportunidades', 'pipeline'),
+      state.meta.zernio_enabled ? item('#/comentarios', 'comments', 'Comentarios', 'comentarios') : null,
+      isAdmin() && state.meta.zernio_enabled ? item('#/publicaciones', 'megaphone', 'Publicaciones', 'publicaciones') : null,
       isAdmin() ? item('#/automation', 'zap', 'Automatización', 'automation') : null,
       isAdmin() ? item('#/estadisticas', 'chart', 'Reportes', 'estadisticas') : null),
     h('div', { class: 'spacer' }),
@@ -148,7 +157,7 @@ function accountBanner() {
   if (account.status === 'paused') {
     items.push(h('div', { class: 'banner danger' }, h('strong', {}, 'Tu cuenta está en pausa. '),
       'Tu asistente no está respondiendo ni enviando mensajes; tu configuración y tus conversaciones se conservan.',
-      state.meta.billing_enabled && isAdmin() ? [' ', h('a', { class: 'btn primary', href: '#/plan' }, 'Reactivar mi plan')] : state.meta.support_contact ? [' Para activarla escribe a ', h('strong', {}, state.meta.support_contact), '.'] : ''));
+      state.meta.billing_enabled && isAdmin() ? [' ', h('a', { class: 'btn primary', href: '#/plan' }, 'Activar mi plan')] : state.meta.support_contact ? [' Para activarla escribe a ', h('strong', {}, state.meta.support_contact), '.'] : ''));
   } else if (account.status === 'trial' && account.trial_ends_at) {
     const days = Math.max(0, Math.ceil((new Date(account.trial_ends_at) - Date.now()) / 86400000));
     items.push(h('div', { class: `banner ${days <= 3 ? 'warn' : ''}` },
@@ -156,11 +165,16 @@ function accountBanner() {
       state.meta.billing_enabled && isAdmin() ? [' ', h('a', { class: 'btn primary', href: '#/plan' }, 'Contratar ahora')] : state.meta.support_contact ? [' Para contratar escribe a ', h('strong', {}, state.meta.support_contact), '.'] : ''));
   }
   const here = location.hash.split('?')[0];
-  if (state.wa && !state.wa.connected && isAdmin() && !['#/conectar', '#/inicio'].includes(here) && !here.startsWith('#/channel/')) {
+  // Donde ya se está creando el agente o conectando el teléfono, estos avisos estorban (la página ya lo resuelve).
+  const startPage = /^#\/bot\/[^/]+\/empezar$/.test(here);
+  const setupPage = startPage || ['#/agentes/nuevo', '#/empezar', '#/conectar', '#/inicio'].includes(here) || here.startsWith('#/channel/') || /^#\/bot\/[^/]+\/conexiones\//.test(here);
+  if (state.wa && !state.wa.connected && isAdmin() && !setupPage) {
     items.push(h('div', { class: 'banner warn' }, h('strong', {}, state.wa.has ? 'Tu WhatsApp no está conectado. ' : 'Aún no conectas tu WhatsApp. '),
-      'Tu asistente no puede responder hasta que lo vincules. ', h('a', { class: 'btn primary', href: '#/agentes' }, 'Conectar desde mi agente')));
+      'Tu agente no puede responder hasta que lo vincules. ',
+      h('a', { class: 'btn primary', href: state.wa.has && state.wa.id ? `#/channel/${state.wa.id}` : '#/empezar' }, state.wa.has ? 'Volver a conectarlo' : 'Conectar mi WhatsApp')));
   }
-  if (!user.email_verified_at && state.meta.require_email) {
+  // Crear el agente no necesita el correo confirmado: se pide en la pantalla de conectar, donde sí hace falta.
+  if (!user.email_verified_at && state.meta.require_email && !startPage && here !== '#/agentes/nuevo') {
     items.push(h('div', { class: 'banner warn' },
       `Confirma tu correo (${user.email}) con el enlace que te enviamos para poder conectar tu WhatsApp. `,
       h('a', { href: '#', onclick: async (e) => { e.preventDefault(); if (!(await run(() => api('POST', '/api/me/resend-verification'), 'Te enviamos un nuevo enlace'))) return; } }, 'Reenviar correo')));
@@ -168,8 +182,8 @@ function accountBanner() {
   return items.length ? h('div', { class: 'stack', style: 'margin-bottom:16px' }, items) : null;
 }
 
-/** Cuenta propia con el asistente sin terminar: se abre "Primeros pasos" en lugar de la lista de chatbots. */
+/** Cuenta del autorregistro que todavía no conecta su primer WhatsApp: le falta terminar de configurar su agente. */
 export function needsOnboarding() {
   const acc = state.me?.account;
-  return !isSuper() && isAdmin() && acc && acc.signup_source === 'signup' && !acc.onboarding?.done;
+  return !isSuper() && isAdmin() && acc && acc.signup_source === 'signup' && !acc.onboarding?.done && !acc.onboarding?.whatsapp;
 }

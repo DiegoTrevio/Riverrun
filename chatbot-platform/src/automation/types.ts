@@ -125,6 +125,12 @@ export function accountSettings(raw: unknown): AccountSettings {
 const Slug = z.string().trim().min(1).max(60);
 /** Archivo subido en "Archivos" (vacío = ninguno). */
 const AttachmentRef = z.union([z.string().uuid(), z.literal('')]).default('');
+/**
+ * Plantilla de WhatsApp aprobada (API oficial por Zernio) para escribir fuera de las 24 h: cuál y el texto de cada
+ * variable ({{1}}, {{2}}…), que acepta los datos del contacto ({{nombre}}, {{telefono}}…).
+ */
+export const WaTemplateRefSchema = z.object({ template_id: z.string().uuid(), params: z.array(z.string().max(1000)).max(20).default([]) }).nullable().default(null);
+export type WaTemplateRef = NonNullable<z.infer<typeof WaTemplateRefSchema>>;
 
 export const TriggerSchema = z.discriminatedUnion('type', [
   z.object({
@@ -166,7 +172,7 @@ export const ConditionSchema = z.discriminatedUnion('type', [
 export type Condition = z.infer<typeof ConditionSchema>;
 
 export const ActionSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('send_message'), text: z.string().max(4000).default(''), image_id: z.string().default(''), attachment_id: AttachmentRef, delay_minutes: z.number().int().min(0).max(60 * 24 * 30).default(0) }),
+  z.object({ type: z.literal('send_message'), text: z.string().max(4000).default(''), image_id: z.string().default(''), attachment_id: AttachmentRef, wa_template: WaTemplateRefSchema, delay_minutes: z.number().int().min(0).max(60 * 24 * 30).default(0) }),
   z.object({ type: z.literal('add_tag'), tag: Slug }),
   z.object({ type: z.literal('remove_tag'), tag: Slug }),
   z.object({ type: z.literal('set_field'), field: z.string().regex(/^[a-z0-9_]+$/), value: z.string().max(500) }),
@@ -207,6 +213,13 @@ export const ActionSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('start_sequence'), sequence_id: z.string().uuid() }),
   z.object({ type: z.literal('stop_sequences') }),
   z.object({ type: z.literal('webhook'), url: z.string().url().max(500) }),
+  /** Envía la conversación a la app del cliente (sus webhooks de Integraciones): el resumen, completa o ambos. */
+  z.object({
+    type: z.literal('send_conversation'),
+    content: z.enum(['summary', 'full', 'both']).default('summary'),
+    /** Webhook de destino ('' = todas las apps conectadas que reciben conversaciones). */
+    endpoint_id: z.union([z.string().uuid(), z.literal('')]).default(''),
+  }),
 ]);
 export type Action = z.infer<typeof ActionSchema>;
 
@@ -237,6 +250,36 @@ export interface Automation extends AutomationBody {
 
 /* ------------------------------ Secuencias ------------------------------ */
 
+/** Etiqueta comparable de un botón: sin acentos, mayúsculas, emojis ni signos. */
+export const normalizeLabel = (s: string) =>
+  s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^\p{L}\p{N} ]/gu, ' ').replace(/\s+/g, ' ').trim();
+
+/**
+ * Botón de un mensaje de flujo. Uno de respuesta lleva su acción (seguir, terminar, otro flujo, etiqueta o pasar con una
+ * persona) y, si se quiere, un texto con el que se contesta al tocarlo; uno de enlace abre una dirección https.
+ */
+export const FlowButtonSchema = z.object({
+  label: z.string().trim().min(1, 'Escribe el texto del botón').max(20, 'El texto de un botón tiene máximo 20 caracteres')
+    .refine((s) => normalizeLabel(s) !== '', 'El texto del botón necesita letras o números')
+    .refine((s) => !/^\d+$/.test(normalizeLabel(s)), 'El texto de un botón no puede ser solo un número (se confunde con elegir por número)'),
+  kind: z.enum(['reply', 'url']).default('reply'),
+  url: z.string().trim().max(1000).default(''),
+  action: z.enum(['next', 'end', 'start_sequence', 'tag', 'handoff']).default('next'),
+  sequence_id: z.string().uuid().nullable().default(null),
+  tag: z.string().trim().max(60).default(''),
+  reply: z.string().max(1000).default(''),
+}).superRefine((b, ctx) => {
+  if (b.kind === 'url') {
+    let ok = false;
+    try { ok = new URL(b.url).protocol === 'https:'; } catch { /* inválida */ }
+    if (!ok) ctx.addIssue({ code: 'custom', path: ['url'], message: 'El enlace del botón debe empezar con https://' });
+    return;
+  }
+  if (b.action === 'start_sequence' && !b.sequence_id) ctx.addIssue({ code: 'custom', path: ['sequence_id'], message: 'Elige el flujo que empieza al tocar el botón' });
+  if (b.action === 'tag' && !b.tag) ctx.addIssue({ code: 'custom', path: ['tag'], message: 'Escribe la etiqueta que se agrega al tocar el botón' });
+});
+export type FlowButton = z.infer<typeof FlowButtonSchema>;
+
 export const SequenceStepSchema = z.object({
   /** Espera desde el paso anterior (o desde la inscripción). */
   delay_value: z.number().int().min(0).max(10000).default(0),
@@ -246,9 +289,21 @@ export const SequenceStepSchema = z.object({
   text: z.string().max(4000).default(''),
   image_id: z.string().default(''),
   attachment_id: AttachmentRef,
+  /** WhatsApp oficial: plantilla para cuando el cliente no escribió en las últimas 24 h. */
+  wa_template: WaTemplateRefSchema,
   /** Solo se envía si se cumplen (si no, se salta el paso). */
   conditions: z.array(ConditionSchema).max(10).default([]),
-});
+  /** Botones del mensaje: hasta 3 de respuesta (cada uno con su acción) y 2 de enlace. */
+  buttons: z.array(FlowButtonSchema).max(5).default([]).superRefine((list, ctx) => {
+    if (list.filter((b) => b.kind === 'reply').length > 3) ctx.addIssue({ code: 'custom', message: 'Máximo 3 botones de respuesta por mensaje' });
+    if (list.filter((b) => b.kind === 'url').length > 2) ctx.addIssue({ code: 'custom', message: 'Máximo 2 botones de enlace por mensaje' });
+    const labels = list.map((b) => normalizeLabel(b.label));
+    if (new Set(labels).size !== labels.length) ctx.addIssue({ code: 'custom', message: 'Dos botones no pueden decir lo mismo' });
+  }),
+  /** El paso siguiente espera a que el cliente elija; si llega su hora sin elección, se aplica `if_no_choice`. */
+  wait_for_choice: z.boolean().default(false),
+  if_no_choice: z.enum(['end', 'continue']).default('end'),
+}).refine((st) => !st.buttons.length || !!st.text.trim(), { message: 'Escribe el mensaje que acompaña a los botones', path: ['text'] });
 export type SequenceStep = z.infer<typeof SequenceStepSchema>;
 
 export const SequenceBodySchema = z.object({
@@ -284,6 +339,12 @@ export const ServiceBodySchema = z.object({
   assignment_mode: z.enum(['round_robin', 'weighted']).default('round_robin'),
   /** Porcentaje de citas de cada persona (por id). Sin valor = partes iguales; 0 = solo si nadie más puede. */
   user_weights: z.record(z.string().uuid(), z.number().min(0).max(100)).default({}),
+  /** Llamadas: telefónica (la persona le marca al cliente) o videollamada (con enlace de Meet, Teams o el suyo). */
+  call_mode: z.enum(['phone', 'video']).default('phone'),
+  /** Primero con quien ya atiende al cliente en la conversación (si está libre); si no, según el reparto. */
+  prefer_owner: z.boolean().default(false),
+  /** El cliente puede pedir una persona por su nombre (el agente le ofrece sus horarios). */
+  customer_choice: z.boolean().default(false),
   notify_team: z.boolean().default(true),
   active: z.boolean().default(true),
 });
@@ -310,6 +371,12 @@ export interface Appointment {
   source: string;
   notes: string;
   cancel_reason: string;
+  /** Videollamada: enlace para entrar (de Meet, Teams o el enlace fijo de la persona). */
+  meeting_url?: string;
+  /** Reservas desde la página pública: correo del cliente para confirmarle. */
+  customer_email?: string;
+  /** Nombre de la persona asignada (en las consultas que lo traen). */
+  assigned_user_name?: string | null;
 }
 
 export const DEFAULT_REMINDER = 'Hola {{nombre}}, te recordamos tu {{cita.tipo}} de {{cita.servicio}} el {{cita.fecha}} a las {{cita.hora}}. Si necesitas cambiarla, responde a este mensaje.';

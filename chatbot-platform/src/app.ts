@@ -1,4 +1,5 @@
 import { settleAgentTests } from './agent-quality.js';
+import { migrateLegacyZernioKeys } from './channels/zernio-connect.js';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -31,6 +32,10 @@ import { taskRoutes } from './routes/tasks.js';
 import { pipelineRoutes } from './routes/pipelines.js';
 import { publicRoutes } from './routes/public.js';
 import { signupRoutes } from './routes/signup.js';
+import { socialPublicRoutes, socialRoutes } from './routes/social.js';
+import { bookingPublicRoutes, bookingRoutes } from './routes/booking.js';
+import { socialInboxRoutes } from './routes/social-inbox.js';
+import { socialPostRoutes } from './routes/social-posts.js';
 import { installErrorHandler } from './routes/util.js';
 import { cachedChecks, runReadiness } from './monitor.js';
 import { functionalReport, readinessReport } from './observability/health.js';
@@ -72,6 +77,8 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
   // Llaves guardadas desde el panel (Zernio): disponibles desde el arranque y al día en todos los procesos.
   await loadPlatformSecrets();
   startPlatformSecretsRefresh();
+  // Canales de antes con su propia llave de Zernio en texto: quedan cifrados.
+  await migrateLegacyZernioKeys().catch(() => undefined);
   app.addHook('onClose', async () => {
     stopPlatformSecretsRefresh();
     // Primero se deja de tomar conversaciones nuevas; lo que ya corre termina (docker-compose da 5 min para ello).
@@ -79,6 +86,7 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
     service.stopSweeper();
     await settleAgentTests();
     await service.inbox.stop();
+    await service.zernioEvents.stop();
     await service.scheduler.stop();
     service.stopSweeper();
     await service.queue.stop();
@@ -124,6 +132,8 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
   await sessionRoutes(app);
   await signupRoutes(app);
   await publicRoutes(app, service);
+  await socialPublicRoutes(app);
+  await bookingPublicRoutes(app, service);
   await calendarRoutes(app);
   await billingWebhooks(app);
   await poolPublicRoutes(app);
@@ -140,6 +150,10 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
     await adminRoutes(api, service);
     await chatbotRoutes(api, service);
     await channelRoutes(api);
+    await socialRoutes(api);
+    await bookingRoutes(api);
+    await socialInboxRoutes(api, service);
+    await socialPostRoutes(api);
     await conversationRoutes(api, service);
     await automationRoutes(api, service);
     await pipelineRoutes(api, service);
