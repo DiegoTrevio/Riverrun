@@ -1,5 +1,5 @@
 import { imagesAfterReply, imagesForAssistant, imagesForContext } from './images.js';
-import { affirms, automaticField, customerGave, customerProvided } from './customer-data.js';
+import { affirms, automaticField, customerGave, customerMentioned, customerProvided } from './customer-data.js';
 import type { Chatbot, DataField, ImageAsset } from '../types.js';
 import { DecisionSchema, type Action, type Decision } from './decision.js';
 import { unsupportedClaims } from './claims.js';
@@ -625,7 +625,9 @@ export function validateDecision(input: ValidationInput): ValidationResult {
     // nunca dio (si es obligatorio, además daría el objetivo por cumplido).
     // También vale si el asistente lo propuso y el cliente dijo que sí ("¿Le reservo el 15 de noviembre?" → "sí").
     const confirmed = affirms(input.customerText) && (input.recentBotTexts ?? []).some((t) => customerGave(f, clean, [t]));
-    if (configured && !freeAnswer && !confirmed && !customerGave(f, clean, sources)) {
+    // Un texto libre opcional puede venir resumido con otras palabras: basta con que salga de lo que dijo el cliente.
+    const gave = customerGave(f, clean, sources) || (f.type === 'text' && !configured?.required && customerMentioned(clean, sources));
+    if (configured && !freeAnswer && !confirmed && !gave) {
       if (!configured.required) {
         fixes.push(`Dato no proporcionado por el cliente ignorado: ${f.key}`);
         continue;
@@ -879,12 +881,13 @@ export function validateDecision(input: ValidationInput): ValidationResult {
   }
 
   // Las notas se leen en los siguientes turnos: una con un precio, un descuento, una hora o un enlace que no está en la
-  // conversación ni en la información del negocio no se guarda (si no, el dato inventado parecería conocido).
+  // conversación ni en la información del negocio no se guarda (si no, el dato inventado parecería conocido). Lo que
+  // dijo el cliente sí se anota ("pidió 20% de descuento"): las notas no respaldan nada como información del negocio.
   const remember = d.remember
     .map((x) => x.trim())
     .filter((x) => x.length > 2 && x.length < 200)
     .filter((x) => {
-      if (!rules.verify_facts || !all.unverified(x, trusted, customerCorpus).length) return true;
+      if (!rules.verify_facts || !all.unverified(x, all, customerCorpus).length) return true;
       fixes.push(`Nota no guardada (tiene datos sin respaldo): ${x}`);
       return false;
     })

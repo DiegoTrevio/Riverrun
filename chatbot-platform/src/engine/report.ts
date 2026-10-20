@@ -126,6 +126,8 @@ async function groundedAnalysis(analysis: Analysis, conversationId: string, unti
     ...knowledge.map((k) => `${k.title}\n${k.content}${k.source_url ? `\n${k.source_url}` : ''}`),
     ...data.map((d) => Object.values(d ?? {}).join('\n')),
   ]);
-  const grounded = (x: string) => !corpus.unverified(x, corpus, corpus).length;
+  // Los plazos del propio pendiente ("en 24 horas", "en 15 días") no son datos del negocio: solo se revisan precios,
+  // ofertas, horas, enlaces, teléfonos y correos.
+  const grounded = (x: string) => !corpus.unverified(x, corpus, corpus, { plainNumbers: false }).length;
   return { ...analysis, agreements: analysis.agreements.filter(grounded), next_steps: analysis.next_steps.filter(grounded) };
 }

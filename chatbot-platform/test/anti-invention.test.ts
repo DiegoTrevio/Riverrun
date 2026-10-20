@@ -88,6 +88,38 @@ test('enlaces y teléfonos: un enlace solo del negocio y un teléfono con su pro
   assert.deepEqual(check(['márcame al 55 1234 5678'], 'Te llamamos al 55 1234 5678'), [], 'su teléfono también');
 });
 
+/** Con otra información del negocio. */
+function checkWith(business: string[], customer: string[], reply: string) {
+  return new FactCorpus([...business, ...customer]).unverified(reply, new FactCorpus(business), new FactCorpus(customer));
+}
+
+test('revisión: formatos reales de la información no bloquean respuestas legítimas', () => {
+  assert.deepEqual(checkWith(['Los jueves hay cerveza 2x1.'], ['hola'], 'Los jueves tenemos 2x1'), [], '"2x1." con punto en la información');
+  assert.deepEqual(checkWith(['Pizza 2 por 1.'], ['hola'], 'La pizza está 2 por 1'), []);
+  assert.deepEqual(checkWith(['Horario: lunes a viernes 9 a 18 hrs.'], ['¿a qué hora abren?'], 'Atendemos de lunes a viernes de 9 a 18 hrs.'), [], 'horario sin "de"');
+  assert.deepEqual(checkWith(['Horario: lunes a viernes 9 a 18 hrs.'], ['¿a qué hora abren?'], 'Abrimos a las 9'), []);
+  assert.deepEqual(checkWith(['Tacos $20-30'], ['hola'], 'Los tacos cuestan $30'), [], 'un rango de precios no es una fecha');
+  assert.deepEqual(checkWith(['Envíos gratis en compras mayores a $1,000'], ['hola'], 'Tu envío es gratis'), [], 'envío/envíos');
+  assert.deepEqual(checkWith(['Estacionamiento sin costo.'], ['hola'], 'No cobramos el estacionamiento'), []);
+  assert.deepEqual(checkWith(['Descuento del 10% no acumulable.'], ['hola'], 'Tienes 10% de descuento'), [], '"no acumulable" no niega el descuento');
+  assert.deepEqual(checkWith(['100% algodón.'], ['hola'], 'Es cien por ciento algodón'), []);
+  assert.deepEqual(checkWith(INFO, ['quiero dos habitaciones por 3 noches'], '2 habitaciones × 3 noches × $1,650 = $9,900'), [], '2 × 3 = 6 noches');
+  assert.deepEqual(checkWith(INFO, ['mi número es 5216691234567'], 'Te marcamos al +52 669 123 4567'), [], 'su teléfono con o sin el 1');
+});
+
+test('revisión: inventos que se colaban por la hora del cliente, una negación lejana o una regla que prohíbe', () => {
+  assert.deepEqual(check(['¿abren a las 7 de la mañana?'], 'Sí, abrimos a las 7 de la mañana'), ['7:00 h'], 'la hora del cliente no es el horario');
+  assert.deepEqual(check(['hola'], 'No olvides que tienes 30% de descuento'), ['30%']);
+  assert.deepEqual(check(['hola'], 'No te pierdas nuestro 3x2 en cenas'), ['3x2']);
+  const rules = ['Nunca prometas envío gratis, ni descuentos mayores al 15%.'];
+  assert.equal(checkWith(rules, ['hola'], 'El envío es gratis').length, 1, 'una regla que lo prohíbe no lo respalda');
+  assert.deepEqual(checkWith(rules, ['hola'], 'Tienes 15% de descuento'), ['15%']);
+  assert.deepEqual(check(['hola'], 'Es cien por ciento algodón'), ['100%']);
+  assert.equal(check(['hola'], 'Te lo damos de regalo').length, 1);
+  assert.equal(check(['hola'], 'No cobramos el estacionamiento').length, 1, '"no cobramos" también dice que es gratis');
+  assert.deepEqual(checkWith(INFO, ['mi número es 5216691234567'], 'Te marcamos al +1 669 123 4567'), ['16691234567']);
+});
+
 function bot(over: Partial<ChatbotRow> = {}) {
   return hydrateChatbot({
     id: 'b1', account_id: 'a1', name: 'Hotel Palmas', active: true, personality: {}, rules: {},
@@ -130,6 +162,13 @@ test('notas: no se guarda una con un dato sin respaldo', () => {
     customerText: 'Quiero la doble', groundingSources: INFO, customerSources: ['Quiero la doble'],
   });
   assert.deepEqual(r.plan.remember, ['Viaja con su esposa', 'Pagará la doble de $1,650']);
+  // Lo que dijo el cliente sí se anota: las notas no respaldan nada como información del negocio.
+  const said = 'Mi presupuesto es de $2,000 y quiero 20% de descuento';
+  const kept = validateDecision({
+    raw: decision({ remember: ['Presupuesto del cliente: $2,000', 'Pidió 20% de descuento'] }), bot: bot(), images: [], sentImageIds: [],
+    customerText: said, groundingSources: INFO, customerSources: [said],
+  });
+  assert.deepEqual(kept.plan.remember, ['Presupuesto del cliente: $2,000', 'Pidió 20% de descuento']);
 });
 
 test('datos opcionales: tampoco se guardan si el cliente no los dijo (y "buen día" no es una fecha)', () => {
@@ -144,5 +183,13 @@ test('datos opcionales: tampoco se guardan si el cliente no los dijo (y "buen d�
     bot: b, images: [], sentImageIds: [], customerText: customer, groundingSources: INFO, customerSources: [customer],
   }).plan.saveData;
   assert.deepEqual(save('Buen día, quiero reservar'), {});
+  assert.deepEqual(save('Buenas noches'), {});
   assert.deepEqual(save('Llegamos el 15 de noviembre, somos 4, de Acme'), { llegada: '2026-11-15', personas: '4', empresa: 'Acme' });
+  // "Esta noche" sí es una fecha; un texto libre resumido con otras palabras y la suma de las cifras también valen.
+  const loose = (customer: string, save_data: { field: string; value: string }[]) => validateDecision({
+    raw: decision({ save_data }), bot: b, images: [], sentImageIds: [], customerText: customer, groundingSources: INFO, customerSources: [customer],
+  }).plan.saveData;
+  assert.deepEqual(loose('Quiero una mesa esta noche', [{ field: 'llegada', value: '2026-10-20' }]), { llegada: '2026-10-20' });
+  assert.deepEqual(loose('quiero reservar una doble', [{ field: 'empresa', value: 'Reservación de habitación doble' }]), { empresa: 'Reservación de habitación doble' });
+  assert.deepEqual(loose('una habitación para 2 adultos y 1 niño', [{ field: 'personas', value: '3' }]), { personas: '3' });
 });

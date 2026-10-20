@@ -184,7 +184,9 @@ const MONTHS = '(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|
 const NOT_PRICE_RE = new RegExp(
   String.raw`(?<![\d.,])(?:${[
     String.raw`\d{4}-\d{2}-\d{2}(?:t\d{2}:\d{2}(?::\d{2})?)?`,
-    String.raw`\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?(?!\d)`,
+    // "15/10", "15/10/2026", "15-10-2026"; no "$20-30" (un rango de precios).
+    String.raw`\d{1,2}/\d{1,2}(?:/\d{2,4})?(?!\d)`,
+    String.raw`\d{1,2}-\d{1,2}-\d{2,4}(?!\d)`,
     String.raw`\d{1,2}[:h]\d{2}(?::\d{2})?(?!\d)`,
     String.raw`\d{1,2}\s+de\s+${MONTHS}(?:\s+(?:de|del)\s+\d{4})?`,
     String.raw`${MONTHS}\s+(?:de\s+|del\s+)?\d{4}`,
@@ -199,7 +201,8 @@ const PERCENT_RE = /(\d+(?:[.,]\d+)?)\s?(?:%|por\s?ciento)/giu;
 const percentsIn = (folded: string) => [...folded.matchAll(PERCENT_RE)].map((m) => canonicalNumber(m[1]));
 
 /** Promociones "2x1", "3 x 2", "2 por 1", "dos por uno" (la primera cifra mayor: no son medidas como "4x4"). */
-const PROMO_RE = /(?<![\d.,$])([2-9])\s?(?:x|×|por)\s?([1-8])(?![\d.,:%])(?!\s?(?:m|cm|mts?|metros|pulgadas)(?![\p{L}]))|(?<![\p{L}])(dos|tres|cuatro)\s+por\s+(uno|dos|tres)(?![\p{L}])/giu;
+// Al final puede ir un punto o una coma ("2x1."), pero no una cifra ("2x1.5", "3x2:30") ni un porcentaje.
+const PROMO_RE = /(?<![\d.,$])([2-9])\s?(?:x|×|por)\s?([1-8])(?!\d|[.,:]\d|\s?%)(?!\s?(?:m|cm|mts?|metros|pulgadas)(?![\p{L}]))|(?<![\p{L}])(dos|tres|cuatro)\s+por\s+(uno|dos|tres)(?![\p{L}])/giu;
 const SMALL: Record<string, number> = { uno: 1, dos: 2, tres: 3, cuatro: 4 };
 function promosIn(folded: string): string[] {
   const out: string[] = [];
@@ -211,24 +214,30 @@ function promosIn(folded: string): string[] {
   return out;
 }
 
-/** Algo "sin costo". En la información del negocio también cuenta "no pagan", "no se cobra" o "incluido". */
-const GIFT = String.raw`gratis|gratuit[oa]s?|sin\s+(?:costo|cargo)(?:\s+(?:extra|adicional))?|de\s+cortesia|cortesia|obsequi(?:o|os|a|amos)|regalamos|te\s+regalo|le\s+regalo|bonificacion(?:es)?|bonificamos`;
-const GIFT_RE = new RegExp(String.raw`(?<![\p{L}])(?:${GIFT})(?![\p{L}])`, 'u');
+/** Algo "sin costo": "gratis", "de cortesía", "no se cobra", "no tiene costo"… En la información también cuenta "incluido". */
+const GIFT = String.raw`gratis|gratuit[oa]s?|sin\s+(?:ningun\s+)?(?:costo|cargo)(?:\s+(?:extra|adicional))?|libre\s+de\s+(?:costo|cargo)|de\s+cortesia|cortesia|de\s+regalo|obsequi(?:o|os|a|amos)|regalamos|te\s+regalo|le\s+regalo|bonificacion(?:es)?|bonificamos`;
+const FREE_NO = String.raw`no\s+(?:se\s+)?(?:paga|pagas|pagan|cobra|cobran|cobramos|cuesta|cuestan|tiene\s+costo|tienen\s+costo)`;
+const GIFT_RE = new RegExp(String.raw`(?<![\p{L}])(?:${GIFT}|${FREE_NO})(?![\p{L}])`, 'u');
 const GIFT_G = new RegExp(GIFT_RE.source, 'gu');
-const GIFT_SOURCE_RE = new RegExp(
-  String.raw`(?<![\p{L}])(?:${GIFT}|no\s+(?:se\s+)?(?:paga|pagan|cobra|cobran|cobramos|cuesta|cuestan|tiene\s+costo|tienen\s+costo)|incluid[oa]s?|incluye|incluyen)(?![\p{L}])`,
-  'u',
-);
-/** Las palabras de una misma familia ("reservar", "reservación") se comparan por sus primeras letras. */
-const giftKey = (w: string) => w.slice(0, 5);
+/** "No se cobra" dice que algo es gratis: no es una negación de la oferta. */
+const FREE_NO_G = new RegExp(String.raw`(?<![\p{L}])${FREE_NO}(?![\p{L}])`, 'gu');
+const GIFT_SOURCE_RE = new RegExp(String.raw`(?<![\p{L}])(?:${GIFT}|${FREE_NO}|incluid[oa]s?|incluye|incluyen)(?![\p{L}])`, 'u');
+/** Las palabras de una misma familia ("envío", "envíos"; "reservar", "reservación") se comparan por sus primeras letras. */
+const giftKey = (w: string) => w.slice(0, 4);
 /** Palabras de relleno que no dicen QUÉ es gratis ("hoy", "aprovecha", "también"). */
 const GIFT_FILLER = new Set(
   keywords('hoy mañana ahora aprovecha aprovechar también además siempre todo toda todos todas completamente totalmente claro queda quedan sale salen aplica aplican tienes tiene tienen puedes puede pueden hay son está están será sería serían vez parte nuestro nuestra nuestros nuestras usted ustedes cliente clientes'),
 );
 
-/** Cláusulas: lo que se niega en una ("no manejamos 2x1") no es una oferta. */
+/**
+ * Cláusulas: lo que se niega en una ("no manejamos 2x1", "ese 20% no lo tenemos") no es una oferta, ni lo que una regla
+ * prohíbe ("nunca prometas envío gratis"). Solo cuenta un "no" pegado a tener, haber, ofrecer, aplicar, ser…: en
+ * "no olvides que tienes 30%" sí hay una oferta.
+ */
 const CLAUSE_SPLIT = /[;!?¿¡\n()]+|[.:,](?=\s|$)|\s(?:y|e|o|u|pero|aunque|mientras|sino)\s/;
-const NEGATION_RE = /(?<![\p{L}])(?:no|ni|tampoco|nunca|jamas)(?![\p{L}])/u;
+const NEG_VERBS = 'tenemos|tengo|tiene|tienen|manejamos|maneja|manejan|hay|habra|aplica|aplican|aplicamos|ofrecemos|ofrece|ofrecen|damos|da|dan|incluye|incluyen|es|son|esta|estan|contamos|cuenta|cuentan|existe|existen|prometas|prometer|prometemos|ofrezcas|des|dar|menciones|mencionar|digas|decir|inventes|inventar|uses|usar|regales|regalar';
+const NEGATION_RE = new RegExp(String.raw`(?<![\p{L}])(?:(?:no|nunca|tampoco|jamas)\s+(?:\p{L}+\s+){0,2}(?:${NEG_VERBS})|ni)(?![\p{L}])`, 'u');
+const negated = (clause: string) => NEGATION_RE.test(clause.replace(FREE_NO_G, ' '));
 
 /** Montos escritos con palabras ("mil quinientos pesos", "diez por ciento"): no se pueden comparar con la información. */
 const NUM_WORD = String.raw`(?:un|uno|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce|trece|catorce|quince|dieci\p{L}+|veinte|veinti\p{L}+|treinta|cuarenta|cincuenta|sesenta|setenta|ochenta|noventa|cien|ciento|doscientos|trescientos|cuatrocientos|quinientos|seiscientos|setecientos|ochocientos|novecientos|mil|millon|millones|medio)`;
@@ -246,35 +255,61 @@ const WORD_AMOUNT_RE = new RegExp(
 const TIME_NEXT_OK = new Set(['am', 'pm', 'a', 'hrs', 'hr', 'h', 'horas', 'hora', 'de', 'del', 'y', 'o', 'u', 'e', 'en', 'para', 'por', 'los', 'las', 'todos', 'todas', 'diario', 'hasta', 'que', 'con', 'al', 'como', 'cuando', 'mas', 'aprox', 'te', 'le', 'les', 'nos', 'lo', 'la', 'ya', 'sin', 'se', 'es', 'son', 'pero', 'aunque', 'si']);
 const SCHEDULE_CUE = /(?<![\p{L}])(?:abr\p{L}*|cerr\p{L}*|cierr\p{L}*|horarios?|atend\p{L}*|atencion|abiert[oa]s?|lunes|martes|miercoles|jueves|viernes|sabados?|domingos?|diario|entre semana)(?![\p{L}])/u;
 const MERIDIEM = String.raw`(a\.?\s?m\.?|p\.?\s?m\.?)`;
-interface TimeMention { key: string; label: string; hour: string; min: string }
+/** Cuándo abre o cierra el negocio: esa hora solo puede salir de su horario, nunca de la que propuso el cliente. */
+const OPEN_CUE = /(?<![\p{L}])(?:abr\p{L}*|cerr\p{L}*|cierr\p{L}*|horarios?|abiert[oa]s?)(?![\p{L}])/u;
+/** "9 a 18 hrs", "de 9:00 a 18:00", "9-14 h", "de las 9 a las 6 pm" (en la información del negocio). */
+const RANGE_RE = new RegExp(String.raw`(?<![\d:.,$])(\d{1,2})(?:[:h]([0-5]\d))?\s*(?:a|-|–|hasta)\s*(?:las?\s+)?(\d{1,2})(?:[:h]([0-5]\d))?(?![\d:])(?:\s?(hrs?|horas|h)\.?(?![\p{L}])|\s?${MERIDIEM}(?![\p{L}]))?`, 'gu');
+/** Texto de la cláusula alrededor de una posición (hasta la coma, el punto o el salto de línea más cercanos). */
+function clauseAround(t: string, start: number, end: number) {
+  const from = Math.max(...[',', ';', '.', '!', '?', '\n'].map((c) => t.lastIndexOf(c, start - 1))) + 1;
+  const rest = t.slice(end).search(/[,;.!?\n]/);
+  return t.slice(from, rest < 0 ? t.length : end + rest);
+}
+interface TimeMention { key: string; label: string; hour: string; min: string; open: boolean }
 function timesIn(text: string, loose = false): TimeMention[] {
   const t = fold(text);
   const out: TimeMention[] = [];
-  const add = (h: string, mm?: string, half?: string) => {
+  const add = (h: string, mm: string | undefined, half: string | undefined, start: number, end: number) => {
     const hour = Number(h);
     const min = mm ?? (half === 'media' ? '30' : half === 'cuarto' ? '15' : '00');
     const key = `${hour % 12}:${min}`;
+    if (hour > 24) return;
+    const open = OPEN_CUE.test(clauseAround(t, start, end));
+    const seen = out.find((x) => x.key === key);
+    if (seen) seen.open ||= open;
     // `hour` y `min` como los saca extractFacts, para no volver a revisar esas cifras como números sueltos.
-    if (hour <= 24 && !out.some((x) => x.key === key)) out.push({ key, label: `${hour}:${min} h`, hour: canonicalNumber(h), min: canonicalNumber(min) });
+    else out.push({ key, label: `${hour}:${min} h`, hour: canonicalNumber(h), min: canonicalNumber(min), open });
   };
   const nextOk = (end: number) => {
     const next = /^\s*([\p{L}]+)/u.exec(t.slice(end));
     return !next || TIME_NEXT_OK.has(next[1].replace(/\./g, ''));
   };
-  for (const m of t.matchAll(/(?<![\d:.,$])(\d{1,2})[:h]([0-5]\d)(?!\d)/gu)) add(m[1], m[2]);
-  for (const m of t.matchAll(new RegExp(String.raw`(?<![\d:.,$])(\d{1,2})(?::([0-5]\d))?\s?${MERIDIEM}(?![\p{L}])`, 'gu'))) add(m[1], m[2]);
+  const span = (m: RegExpMatchArray) => [m.index!, m.index! + m[0].length] as const;
+  for (const m of t.matchAll(/(?<![\d:.,$])(\d{1,2})[:h]([0-5]\d)(?!\d)/gu)) add(m[1], m[2], undefined, ...span(m));
+  for (const m of t.matchAll(new RegExp(String.raw`(?<![\d:.,$])(\d{1,2})(?::([0-5]\d))?\s?${MERIDIEM}(?![\p{L}])`, 'gu'))) add(m[1], m[2], undefined, ...span(m));
   for (const m of t.matchAll(/(?<![\p{L}])(?:a|de|desde|hasta|para|entre|y|antes de|despues de)\s+las?\s+(\d{1,2})(?:[:h]([0-5]\d)|\s+y\s+(media|cuarto))?(?![\d:])/gu)) {
-    if (loose || nextOk(m.index! + m[0].length)) add(m[1], m[2], m[3]);
+    if (loose || nextOk(m.index! + m[0].length)) add(m[1], m[2], m[3], ...span(m));
   }
-  for (const m of t.matchAll(new RegExp(String.raw`(?<![\p{L}])de\s+(\d{1,2})(?:[:h]([0-5]\d))?\s*(?:a|-|–)\s*(\d{1,2})(?:[:h]([0-5]\d))?(?![\d:])(\s?${MERIDIEM})?`, 'gu'))) {
-    const end = m.index! + m[0].length;
-    const sentence = t.slice(t.lastIndexOf('\n', m.index!) + 1, end);
-    if (loose || ((m[5] || SCHEDULE_CUE.test(sentence)) && nextOk(end))) {
-      add(m[1], m[2]);
-      add(m[3], m[4]);
+  if (loose) {
+    // En la información: un rango "9 a 18 hrs" aunque no lleve "de", si dice la unidad, los minutos o habla de horario.
+    for (const m of t.matchAll(RANGE_RE)) {
+      const line = t.slice(t.lastIndexOf('\n', m.index!) + 1, t.indexOf('\n', m.index!) < 0 ? t.length : t.indexOf('\n', m.index!));
+      const afterDe = /(?:^|[^\p{L}])de\s*$/u.test(t.slice(Math.max(0, m.index! - 4), m.index!));
+      if (!(m[2] || m[4] || m[5] || m[6] || afterDe || SCHEDULE_CUE.test(line))) continue;
+      add(m[1], m[2], undefined, ...span(m));
+      add(m[3], m[4], undefined, ...span(m));
+    }
+    for (const m of t.matchAll(/(?<![\d:.,$])(\d{1,2})\s?(?:hrs?|h)\.?(?![\p{L}\d])/gu)) add(m[1], undefined, undefined, ...span(m));
+  } else {
+    for (const m of t.matchAll(new RegExp(String.raw`(?<![\p{L}])de\s+(\d{1,2})(?:[:h]([0-5]\d))?\s*(?:a|-|–)\s*(\d{1,2})(?:[:h]([0-5]\d))?(?![\d:])(\s?${MERIDIEM})?`, 'gu'))) {
+      const end = m.index! + m[0].length;
+      const sentence = t.slice(t.lastIndexOf('\n', m.index!) + 1, end);
+      if ((m[5] || SCHEDULE_CUE.test(sentence)) && nextOk(end)) {
+        add(m[1], m[2], undefined, ...span(m));
+        add(m[3], m[4], undefined, ...span(m));
+      }
     }
   }
-  if (loose) for (const m of t.matchAll(/(?<![\d:.,$])(\d{1,2})\s?(?:hrs?|h)\.?(?![\p{L}\d])/gu)) add(m[1]);
   return out;
 }
 
@@ -321,10 +356,12 @@ export class FactCorpus {
     // Los teléfonos, correos y enlaces ya se quitaron en extractFacts: "$234" no se valida por el número del cliente.
     const plain = extractFacts(fold(all).replace(NOT_PRICE_RE, ' ')).numbers;
     this.priceNumbers = new Set([...this.moneyAmounts, ...plain]);
-    this.percents = new Set(percentsIn(this.folded));
-    this.promos = new Set(promosIn(this.folded));
+    // Ofertas de la información, sin lo que se niega o prohíbe ("nunca prometas envío gratis", "ni descuentos del 20%").
+    const offered = this.folded.split(/[.!?\n;]+/).map((s) => s.split(CLAUSE_SPLIT).filter((c) => c && !negated(c)).join(' '));
+    this.percents = new Set(offered.flatMap(percentsIn));
+    this.promos = new Set(offered.flatMap(promosIn));
     this.times = new Set(timesIn(all, true).map((x) => x.key));
-    this.giftSentences = this.folded.split(/[.!?\n;]+/).filter((s) => GIFT_SOURCE_RE.test(s)).map((s) => new Set(keywords(s).map(giftKey)));
+    this.giftSentences = offered.filter((s) => GIFT_SOURCE_RE.test(s)).map((s) => new Set(keywords(s).map(giftKey)));
     this.quantities = new Set();
     for (const s of sources) {
       const ns = spokenNumbers(s).filter((n) => n > 0 && n <= 1000);
@@ -333,6 +370,9 @@ export class FactCorpus {
         if (i) this.quantities.add(Math.abs(n - ns[i - 1]));
       });
       if (ns.length > 1) this.quantities.add(ns.reduce((a, b) => a + b, 0));
+      // "2 habitaciones por 3 noches" = 6: el producto de dos cantidades de un mismo mensaje.
+      const few = ns.slice(0, 8);
+      for (let i = 0; i < few.length; i++) for (let j = i + 1; j < few.length; j++) if (few[i] * few[j] <= 60) this.quantities.add(few[i] * few[j]);
     }
   }
 
@@ -374,11 +414,12 @@ export class FactCorpus {
 
   hasPhone(p: string) {
     if (this.numbers.has(p)) return true;
+    // Sin la lada de México (52, o 521 en celulares) es el mismo número; con otra lada ("+1") ya es otro.
+    const local = (x: string) => x.replace(/^521?(?=\d{10}$)/, '');
     for (const known of this.numbers) {
       if (known.length < 8) continue;
-      if (known.endsWith(p)) return true;
-      // Un número local conocido con la lada de México delante (52, 521); otra lada ("+1") ya es otro número.
-      if (p.endsWith(known) && ['52', '521'].includes(p.slice(0, p.length - known.length))) return true;
+      // Sin lada (10 dígitos o menos) basta con que termine igual; con lada, debe ser el mismo número.
+      if (p.length <= 10 ? known.endsWith(p) : local(known) === local(p)) return true;
     }
     return false;
   }
@@ -404,7 +445,7 @@ export class FactCorpus {
   private unsupportedOffers(reply: string): string[] {
     const bad: string[] = [];
     for (const clause of fold(reply).split(CLAUSE_SPLIT)) {
-      if (!clause?.trim() || NEGATION_RE.test(clause)) continue;
+      if (!clause?.trim() || negated(clause)) continue;
       for (const p of percentsIn(clause)) if (!this.percents.has(p)) bad.push(`${p}%`);
       for (const p of promosIn(clause)) if (!this.promos.has(p)) bad.push(p);
       const gift = GIFT_RE.exec(clause);
@@ -417,7 +458,12 @@ export class FactCorpus {
       }
     }
     for (const m of fold(reply).matchAll(WORD_AMOUNT_RE)) {
-      if (!this.folded.includes(m[0])) bad.push(`«${m[0]}» (escribe la cantidad con cifras)`);
+      if (this.folded.includes(m[0])) continue;
+      // "cien por ciento", "diez por ciento": un porcentaje como cualquier otro (el 100% también debe estar en la información).
+      const percent = /por\s?ciento$/.test(m[0]) ? spokenNumbers(m[0]).reduce((a, b) => a + b, 0) : 0;
+      if (percent) {
+        if (!this.percents.has(String(percent))) bad.push(`${percent}%`);
+      } else bad.push(`«${m[0]}» (escribe la cantidad con cifras)`);
     }
     return bad;
   }
@@ -427,8 +473,9 @@ export class FactCorpus {
    * Si se pasa `trusted` (las fuentes del negocio), además: los montos de dinero, las ofertas, las horas y los enlaces
    * deben venir de ahí, para que el cliente no pueda "dictar" un precio, un descuento o un enlace "del negocio".
    * `customer` (lo que dijo el cliente) sirve para la cantidad de una cotización y para la hora que propuso.
+   * `plainNumbers: false` no revisa los números sueltos (un plazo como "en 24 horas" en un pendiente del reporte).
    */
-  unverified(reply: string, trusted?: FactCorpus, customer?: FactCorpus): string[] {
+  unverified(reply: string, trusted?: FactCorpus, customer?: FactCorpus, opts: { plainNumbers?: boolean } = {}): string[] {
     const f = extractFacts(reply);
     const bad: string[] = [];
     const computed = new Set<string>();
@@ -448,9 +495,10 @@ export class FactCorpus {
       }
       bad.push(...trusted.unsupportedOffers(reply));
       for (const p of percentsIn(fold(reply))) computed.add(p);
-      // Horas: del negocio (horario, agenda, la hora actual) o la que propuso el cliente.
+      // Horas: del negocio (horario, agenda, la hora actual) o la que propuso el cliente. Cuándo abre o cierra, solo del
+      // horario: "¿abren a las 7?" no hace verdad "sí, abrimos a las 7".
       for (const t of timesIn(reply)) {
-        if (!trusted.times.has(t.key) && !customer?.times.has(t.key)) bad.push(t.label);
+        if (!trusted.times.has(t.key) && (t.open || !customer?.times.has(t.key))) bad.push(t.label);
         computed.add(t.hour);
         computed.add(t.min);
       }
@@ -464,7 +512,7 @@ export class FactCorpus {
       const d = m[0].replace(/\D/g, '');
       if (d.length >= 7 && this.phoneDigits.some((p) => p.endsWith(d))) for (const part of m[0].split(/[\s.-]/)) computed.add(canonicalNumber(part));
     }
-    for (const n of f.numbers) if (!computed.has(n) && !this.hasNumber(n)) bad.push(n);
+    if (opts.plainNumbers !== false) for (const n of f.numbers) if (!computed.has(n) && !this.hasNumber(n)) bad.push(n);
     return [...new Set(bad)];
   }
 }
