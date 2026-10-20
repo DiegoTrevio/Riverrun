@@ -363,7 +363,16 @@ class ZernioTransport implements Transport {
     const meta = this.channel.config.platform === 'facebook' || this.channel.config.platform === 'instagram';
     const plain = toPlainText(text);
     const asButtons = buttons.length <= 3 && (!meta || plain.length <= 640);
-    if (!asButtons && buttons.some((b) => b.kind === 'url')) throw new Error('Los enlaces solo van como botón con 3 botones o menos');
+    // Telegram: teclado propio debajo del mensaje (uno por renglón).
+    if (this.channel.config.platform === 'telegram') {
+      return messageRef(await this.client.call<any>('POST', `${this.base}/messages`, {
+        accountId: this.accountId(),
+        message: plain || '👇',
+        replyMarkup: { type: 'inline_keyboard', keyboard: buttons.map((b) => [b.kind === 'url' ? { text: b.label, url: b.url } : { text: b.label, callbackData: b.payload }]) },
+      }));
+    }
+    // No debería pasar (buttons.ts lo evita): se trata como rechazado, no como "sin confirmar".
+    if (!asButtons && buttons.some((b) => b.kind === 'url')) throw new Error('unsupported_buttons');
     return messageRef(await this.client.call<any>('POST', `${this.base}/messages`, {
       accountId: this.accountId(),
       message: plain,

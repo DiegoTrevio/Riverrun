@@ -9,6 +9,7 @@ import https from 'node:https';
 import net from 'node:net';
 import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
+import { DeliveryUncertain, OwnershipLost } from '../engine/coordination.js';
 import { sendMail } from '../mailer.js';
 import { assertOutbound } from '../outbound-guard.js';
 import { agentActive, gate } from '../engine/activation.js';
@@ -38,6 +39,8 @@ interface Ctx {
 }
 
 const MAX_DEPTH = 3;
+/** Tras elegir, el mismo texto escrito otra vez cuenta como repetido (y no se contesta) durante este tiempo. */
+const USED_TYPED_MS = 2 * 60_000;
 
 /* ------------------------------ Coincidencias ------------------------------ */
 
@@ -638,7 +641,7 @@ export class Automator {
    * segundo toque (o el mismo toque por dos réplicas) no repite nada.
    */
   private async handleTap(conv: Conversation, contact: Contact, message: Message, text: string): Promise<boolean> {
-    const p = (await queryOne<{ pending_buttons: (PendingButtons & { used?: number }) | null }>(`SELECT pending_buttons FROM conversations WHERE id = $1`, [conv.id]))?.pending_buttons;
+    const p = (await queryOne<{ pending_buttons: (PendingButtons & { used?: number; used_at?: string }) | null }>(`SELECT pending_buttons FROM conversations WHERE id = $1`, [conv.id]))?.pending_buttons;
     if (!p?.buttons?.length || Date.parse(p.expires_at) < Date.now()) return false;
     const raw = String(message.meta?.button ?? '');
     const tapped = parsePayload(raw);
@@ -649,9 +652,11 @@ export class Automator {
       n = matchChoice(text, p.buttons.map((b) => b.label), Number(lastOut?.id) === Number(p.message_id));
     }
     if (!n || n > p.buttons.length) return false;
-    if (p.used) return true; // ya eligió en este mensaje: el toque repetido no hace nada más
+    // Ya eligió en este mensaje: el mismo toque repetido no hace nada más; escrito, solo cuenta como repetido unos
+    // minutos (después, "sí" es una respuesta normal a lo que se le pregunte y la contesta la IA).
+    if (p.used) return !!tapped || Date.now() - Date.parse(String(p.used_at ?? 0)) < USED_TYPED_MS;
     const claimed = await queryOne(
-      `UPDATE conversations SET pending_buttons = pending_buttons || jsonb_build_object('used', $3::int)
+      `UPDATE conversations SET pending_buttons = pending_buttons || jsonb_build_object('used', $3::int, 'used_at', now())
         WHERE id = $1 AND pending_buttons->>'set' = $2 AND NOT (pending_buttons ? 'used') RETURNING id`, [conv.id, p.set, n]);
     if (!claimed) return true;
     await this.runTap(conv, contact, message, text, p, n);
@@ -667,8 +672,10 @@ export class Automator {
     const live = en?.status === 'active' ? en : null;
     // Elegir no es "responder": el flujo sigue (y "esperar a que elija" sabe que eligió).
     if (en) await query(`UPDATE sequence_enrollments SET choice_step = $2, choice = $3, last_inbound_id = greatest(last_inbound_id, $4) WHERE id = $1`, [en.id, p.step, b.label, message.id]);
+    // La respuesta del botón no impide su acción (terminar, pasar con una persona…) aunque falle.
     if (b.reply.trim()) {
-      const r = await this.chat.outbound.send(conv.id, { text: b.reply, source: 'flow_reply', meta: { button: b.label } });
+      const r = await this.chat.outbound.send(conv.id, { text: b.reply, source: 'flow_reply', meta: { button: b.label } })
+        .catch((err): OutboundResult => ({ sent: false, reason: err instanceof DeliveryUncertain ? 'entrega sin confirmar' : err?.message ?? String(err) }));
       if (!r.sent) await logEvent({ level: 'info', source: 'engine', message: `Respuesta del botón "${b.label}" no enviada (${r.reason})`, accountId: conv.account_id, conversationId: conv.id });
     }
     const ctx = await this.loadCtx(conv.id);
@@ -681,6 +688,7 @@ export class Automator {
         if (!live || p.step === null || live.current_step !== p.step + 1) return;
         await astore.cancelJobs('enrollment_id', live.id);
         await this.runSequenceStep({ enrollment_id: live.id, step: p.step + 1, tap: true }).catch(async (err) => {
+          if (err instanceof OwnershipLost) throw err;
           await logEvent({ level: 'warn', source: 'engine', message: `Botón "${b.label}": el paso siguiente se reintentará (${err?.message ?? err})`, accountId: conv.account_id, conversationId: conv.id });
           await astore.scheduleJob({ account_id: conv.account_id, type: 'sequence_step', payload: { enrollment_id: live.id, conversation_id: conv.id, step: p.step! + 1, tap: true }, run_at: new Date(Date.now() + 60_000) });
         });
@@ -894,7 +902,8 @@ export class Automator {
     if (prev?.wait_for_choice && prev.buttons.some((b) => b.kind === 'reply') && en.choice_step !== payload.step - 1 && prev.if_no_choice === 'end') return stop('el cliente no eligió una opción');
     // Flujo enviado a un grupo: los pasos siguientes salen espaciados por número (salvo el que pidió un botón).
     if (en.pace_ms > 0 && payload.step > 0 && !payload.tap && !payload.paced) {
-      const slot = await astore.reservePacedSlot(ctx.channel.id, en.pace_ms);
+      let slot = await astore.reservePacedSlot(ctx.channel.id, en.pace_ms);
+      if (seq.business_hours_only) slot = nextOpen(ctx.settings.business_hours, ctx.settings.holidays, slot, ctx.settings.timezone);
       if (slot.getTime() > Date.now() + 1000) {
         await reschedule(slot, { paced: true });
         return { sent: false, reason: 'esperando su turno de envío' };
@@ -910,9 +919,15 @@ export class Automator {
           buttons: step.buttons?.length ? step.buttons : undefined, buttonsFrom: { enrollment_id: en.id, sequence_id: seq.id, step: payload.step },
         });
       } catch (e) {
-        // No se sabe si salió: el paso vuelve a quedar pendiente y la tarea se reintenta.
-        await astore.releaseStep(en.id, payload.step);
-        throw e;
+        // Sin confirmar la entrega (es probable que haya salido): no se reenvía, para no duplicarlo, y el flujo sigue.
+        if (e instanceof DeliveryUncertain) {
+          await logEvent({ level: 'warn', source: 'engine', message: `Flujo "${seq.name}": no se confirmó la entrega del mensaje ${payload.step + 1}; el flujo sigue sin reenviarlo`, accountId: ctx.conv.account_id, conversationId: ctx.conv.id });
+          r = { sent: true };
+        } else {
+          // Falló antes de enviarse (o se perdió el turno): el paso vuelve a quedar pendiente y la tarea se reintenta.
+          await astore.releaseStep(en.id, payload.step);
+          throw e;
+        }
       }
       if (!r.sent) return stop(r.reason);
     }

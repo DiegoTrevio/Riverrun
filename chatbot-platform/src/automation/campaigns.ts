@@ -5,6 +5,7 @@ import * as astore from './store.js';
 import { query, queryOne } from '../db.js';
 import { addDays, localParts, nextOpen, zonedToUtc } from './time.js';
 import type { OutboundResult } from './outbound.js';
+import { OwnershipLost } from '../engine/coordination.js';
 
 /** Campañas: envío programado a un segmento, espaciado para no parecer spam (y no arriesgar el número). */
 export class Campaigns {
@@ -128,13 +129,18 @@ export class Campaigns {
    */
   private async startFlow(c: NonNullable<Awaited<ReturnType<typeof astore.getCampaign>>>, conversationId: string): Promise<OutboundResult> {
     if (!c.sequence_id) return { sent: false, reason: 'el flujo de la campaña ya no existe' };
+    let r: OutboundResult;
     try {
       const e = await this.chat.automator.enroll(c.sequence_id, conversationId, `campaña "${c.name}"`, { campaignId: c.id, paceMs: Math.ceil(60_000 / Math.max(1, c.rate_per_minute)), now: true });
       if (!e) return { sent: false, reason: 'ya estaba en este flujo' };
-      return 'result' in e ? e.result : { sent: true };
+      r = 'result' in e ? e.result : { sent: true };
     } catch (err: any) {
-      return { sent: false, reason: err?.message ?? String(err) };
+      if (err instanceof OwnershipLost) throw err;
+      r = { sent: false, reason: err?.message ?? String(err) };
     }
+    // Si su primer mensaje no salió, la persona queda fuera del flujo (no lo recibe más tarde sin que conste).
+    if (!r.sent) await query(`UPDATE sequence_enrollments SET status = 'stopped', stop_reason = $3, finished_at = now() WHERE campaign_id = $1 AND conversation_id = $2 AND status = 'active'`, [c.id, conversationId, r.reason.slice(0, 300)]);
+    return r;
   }
 
   async cancel(campaignId: string) {
@@ -143,7 +149,8 @@ export class Campaigns {
     // Un flujo enviado a un grupo se detiene para todos, aunque la campaña ya haya terminado de inscribir.
     const flows = await query<{ id: string }>(`UPDATE sequence_enrollments SET status = 'stopped', stop_reason = 'campaña cancelada', finished_at = now() WHERE campaign_id = $1 AND status = 'active' RETURNING id`, [c.id]);
     for (const e of flows) await astore.cancelJobs('enrollment_id', e.id);
-    if (c.status === 'cancelled') return;
+    // Una campaña de flujo ya enviada sigue como enviada: solo se detienen sus flujos.
+    if (c.status === 'cancelled' || c.status === 'sent') return;
     await astore.setCampaignStatus(c.id, 'cancelled');
     await astore.cancelJobs('campaign_id', c.id);
     await query(`UPDATE campaign_recipients SET status = 'skipped', reason = 'campaña cancelada' WHERE campaign_id = $1 AND status = 'pending'`, [c.id]);

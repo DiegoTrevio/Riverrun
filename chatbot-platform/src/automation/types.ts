@@ -303,7 +303,7 @@ export const SequenceStepSchema = z.object({
   /** El paso siguiente espera a que el cliente elija; si llega su hora sin elección, se aplica `if_no_choice`. */
   wait_for_choice: z.boolean().default(false),
   if_no_choice: z.enum(['end', 'continue']).default('end'),
-});
+}).refine((st) => !st.buttons.length || !!st.text.trim(), { message: 'Escribe el mensaje que acompaña a los botones', path: ['text'] });
 export type SequenceStep = z.infer<typeof SequenceStepSchema>;
 
 export const SequenceBodySchema = z.object({

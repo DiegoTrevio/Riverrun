@@ -23,6 +23,8 @@ export function parsePayload(payload: string | null | undefined) {
 
 /** Límites de Meta: con botones (hasta 3, de respuesta o de enlace) el texto va en una sola burbuja de máximo 640. */
 const META_TEMPLATE_TEXT = 640;
+/** Con respuestas rápidas el texto va entero: Instagram admite 1000 bytes y Messenger 2000 caracteres. */
+const fitsMetaText = (t: string, instagram: boolean) => (instagram ? Buffer.byteLength(t, 'utf8') <= 1000 : t.length <= 2000);
 /** WhatsApp oficial: el texto de un mensaje con botones de respuesta tiene máximo 1024 caracteres. */
 const WA_INTERACTIVE_TEXT = 1024;
 
@@ -50,9 +52,12 @@ const linkLines = (urls: FlowButton[]) => urls.map((b) => `🔗 ${b.label}: ${b.
  * burbuja (si no cabe, los de respuesta como respuestas rápidas y los enlaces en el texto); WhatsApp oficial, los de
  * respuesta (los enlaces en el texto). WhatsApp por QR, el correo y las demás redes los llevan numerados.
  */
-export function composeButtons(channel: Pick<Channel, 'type' | 'config'>, text: string, buttons: FlowButton[], set: string) {
+export function composeButtons(channel: Pick<Channel, 'type' | 'config'>, rawText: string, buttons: FlowButton[], set: string, suffix = '') {
   const replies = buttons.filter((b) => b.kind === 'reply');
   const urls = buttons.filter((b) => b.kind === 'url');
+  // El pie (p. ej. cómo darse de baja) va al final y cuenta para los límites de cada red.
+  const text = suffix && rawText.trim() ? `${rawText}\n\n${suffix}` : rawText;
+  const instagram = channel.type === 'instagram' || channel.config?.platform === 'instagram';
   const native = (list: FlowButton[]): OutButton[] => list.map((b) => (b.kind === 'url'
     ? { kind: 'url', label: b.label, url: b.url }
     : { kind: 'reply', label: b.label, payload: buttonPayload(set, replies.indexOf(b) + 1) }));
@@ -60,12 +65,12 @@ export function composeButtons(channel: Pick<Channel, 'type' | 'config'>, text: 
   let plan = planFor(channel);
   if (plan === 'replies' && (!replies.length || withLinks(text).length > WA_INTERACTIVE_TEXT)) plan = 'numbered';
   if (plan === 'meta' && buttons.length <= 3 && text.length <= META_TEMPLATE_TEXT && text.trim()) return { text, buttons: native(buttons) };
-  if (plan === 'meta' && replies.length) return { text: withLinks(text), buttons: native(replies) };
+  if (plan === 'meta' && replies.length && fitsMetaText(withLinks(text), instagram)) return { text: withLinks(text), buttons: native(replies) };
   if (plan === 'all' && (text.trim() || replies.length)) return { text, buttons: native(buttons) };
   if (plan === 'replies') return { text: withLinks(text), buttons: native(replies) };
   // Numerados: el cliente contesta con el número o con el texto del botón.
   const list = replies.map((b, i) => `${i + 1}. ${b.label}`).join('\n');
-  const parts = [text.trim(), list, linkLines(urls), replies.length ? 'Responde con el número de tu opción.' : ''].filter(Boolean);
+  const parts = [rawText.trim(), list, linkLines(urls), replies.length ? 'Responde con el número de tu opción.' : '', suffix].filter(Boolean);
   return { text: parts.join('\n\n'), buttons: [] as OutButton[] };
 }
 

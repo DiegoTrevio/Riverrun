@@ -91,6 +91,10 @@ t('"no, gracias" escrito termina el flujo; un segundo toque no repite nada', asy
   await say(c.phone, 'No, gracias');
   assert.equal(h.calls.length, aiBefore);
   assert.equal(textsTo(c.phone).filter((x) => x === 'Entendido, no te molestamos más.').length, 1);
+  // Días después, el mismo texto es una respuesta normal (la contesta la IA), no un toque repetido.
+  await pool.query(`UPDATE conversations SET pending_buttons = jsonb_set(pending_buttons, '{used_at}', to_jsonb(now() - interval '1 day')) WHERE id = $1`, [c.conv.id]);
+  await say(c.phone, 'No, gracias');
+  assert.equal(h.calls.length, aiBefore + 1, 'la IA contesta');
   const e = await enrollment(c.enrollment.id);
   assert.deepEqual([e.status, e.stop_reason], ['stopped', 'el cliente eligió "No, gracias"']);
   await h.fastForward();
@@ -187,6 +191,10 @@ t('el editor valida: flujo de otro negocio, botones que se confunden con BAJA', 
   const baja = await h.authed('POST', '/api/sequences', { account_id: h.accountId, name: 'x', steps: [{ text: 'Hola', buttons: [{ label: 'Baja', action: 'end' }] }] });
   assert.equal(baja.statusCode, 400);
   assert.match(baja.json().error, /darse de baja/);
+  const acepto = await h.authed('POST', '/api/sequences', { account_id: h.accountId, name: 'x', steps: [{ text: 'Hola', buttons: [{ label: 'Acepto', action: 'next' }] }] });
+  assert.equal(acepto.statusCode, 400, 'se confunde con aceptar promociones');
+  const sinTexto = await h.authed('POST', '/api/sequences', { account_id: h.accountId, name: 'x', steps: [{ text: '', image_id: '', buttons: [{ label: 'Sí', action: 'next' }] }] });
+  assert.equal(sinTexto.statusCode, 400, 'los botones necesitan un mensaje');
 });
 
 t('Telegram: botones debajo del mensaje; el toque llega por callback y se confirma', async () => {
@@ -270,10 +278,25 @@ t('enviar un flujo a un grupo: cada persona entra al flujo, el primer paso sale 
   assert.equal(step2(), 1);
   const waiting = (await pool.query(`SELECT count(*)::int AS n FROM jobs WHERE type = 'sequence_step' AND status = 'pending' AND (payload->>'paced')::boolean AND payload->>'enrollment_id' = ANY($1::text[])`, [ens.map((e) => e.id)])).rows[0].n;
   assert.equal(waiting, 2);
-  // Cancelar la campaña detiene los flujos que faltan.
+  // Cancelar la campaña (ya enviada) detiene los flujos que faltan; la campaña sigue como enviada.
+  assert.equal((await h.authed('GET', `/api/campaigns?account_id=${h.accountId}`)).json().find((x: any) => x.id === camp.json().id).status, 'sent');
   assert.equal((await h.authed('POST', `/api/campaigns/${camp.json().id}/cancel`, {})).statusCode, 200);
+  assert.equal((await h.authed('GET', `/api/campaigns?account_id=${h.accountId}`)).json().find((x: any) => x.id === camp.json().id).status, 'sent');
   const after = (await pool.query(`SELECT status, stop_reason FROM sequence_enrollments WHERE campaign_id = $1 AND status <> 'completed'`, [camp.json().id])).rows;
   assert.ok(after.length === 2 && after.every((e) => e.status === 'stopped' && e.stop_reason === 'campaña cancelada'), JSON.stringify(after));
   await h.fastForward();
   assert.equal(step2(), 1);
+});
+
+t('una entrega sin confirmar no se reenvía (no se duplica) y el flujo sigue con el mensaje siguiente', async () => {
+  const seq = await threeDays([]);
+  const c = await customer(seq.id);
+  h.failNext.text = 1; // WhatsApp no confirma el envío (500): pudo haber salido
+  await h.fastForward();
+  await h.fastForward();
+  const e = await enrollment(c.enrollment.id);
+  assert.equal(e.status, 'active');
+  assert.ok(textsTo(c.phone).some((x) => x.startsWith('Paso 2')), 'sigue con el paso 2');
+  const step1 = (await pool.query(`SELECT count(*)::int AS n FROM messages WHERE conversation_id = $1 AND content LIKE 'Hola Ana, ¿te interesa%'`, [c.conv.id])).rows[0].n;
+  assert.equal(step1, 1, 'el paso 1 no se volvió a intentar');
 });

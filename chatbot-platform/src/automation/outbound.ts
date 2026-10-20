@@ -156,12 +156,11 @@ export class Outbound {
         return { sent: false, reason: `la plantilla "${template.name}" no dice cómo darse de baja (agrega en su pie "Responde ${(settings.opt_out.keywords[0] ?? 'BAJA').toUpperCase()} para no recibir más")` };
       }
     }
-    // Con botones, el texto final (numerado o no, según el canal) se arma antes del pie de baja, que va al final.
+    // Con botones, el texto final (numerado o no, según el canal) ya lleva el pie de baja al final.
     const set = o.buttons?.length && !wa ? newButtonSet() : '';
-    const composed = set ? composeButtons(channel, text, o.buttons!, set) : null;
-    const body = composed ? composed.text : text;
-    const textOut = footer && body ? `${body}\n\n${footer}` : body;
-    const captionFooter = footer && !body ? footer : '';
+    const composed = set ? composeButtons(channel, text, o.buttons!, set, footer) : null;
+    const textOut = composed ? composed.text : footer && text ? `${text}\n\n${footer}` : text;
+    const captionFooter = footer && !text ? footer : '';
 
     const transport = channel.type === 'playground' ? new PlaygroundTransport() : this.chat.transportFor(channel, contact);
     const meta = { ...o.meta,source: o.source,transactional:o.transactional===true, allow_when_human: o.allowWhenHuman === true, allow_when_closed: true };

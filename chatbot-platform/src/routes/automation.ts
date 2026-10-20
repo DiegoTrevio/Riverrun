@@ -47,13 +47,13 @@ async function checkReferences(
     if (!owner || owner.account_id !== accountId) throw new HttpError(400, 'Una imagen no pertenece a la cuenta');
   }
   // Botones de un flujo: el flujo al que llevan es del mismo negocio (uno borrado pasa a "terminar") y su texto no se
-  // confunde con las palabras para darse de baja o volver a recibir mensajes.
+  // confunde con las palabras para darse de baja, volver a recibir mensajes o aceptar promociones.
   const buttons = (body.steps ?? []).flatMap((st) => st.buttons ?? []);
   if (buttons.length) {
-    const oo = (await astore.getSettings(accountId)).opt_out;
-    const reserved = new Set([...oo.keywords, ...oo.resume_keywords].map(normalizeLabel));
+    const st = await astore.getSettings(accountId);
+    const reserved = new Set([...st.opt_out.keywords, ...st.opt_out.resume_keywords, ...st.consent.opt_in_keywords].map(normalizeLabel));
     for (const b of buttons) {
-      if (reserved.has(normalizeLabel(b.label))) throw new HttpError(400, `El botón "${b.label}" se confunde con la palabra para darse de baja o volver a recibir mensajes. Usa otro texto.`);
+      if (reserved.has(normalizeLabel(b.label))) throw new HttpError(400, `El botón "${b.label}" se confunde con la palabra para darse de baja, volver a recibir mensajes o aceptar promociones. Usa otro texto.`);
       if (b.kind !== 'reply' || b.action !== 'start_sequence' || !b.sequence_id) continue;
       const seq = await astore.getSequence(b.sequence_id);
       if (seq?.account_id === accountId) continue;

@@ -110,3 +110,27 @@ test('modo de pruebas: los botones también pasan por el control de destino', as
     Object.assign(config.outbound, prev);
   }
 });
+
+test('el pie de baja cuenta para los límites; textos largos van numerados; los botones necesitan un mensaje', () => {
+  const footer = 'Responde BAJA para dejar de recibir estos mensajes.';
+  const list = parsed([reply('Sí'), url('Menú')]);
+  // Messenger: 600 caracteres + el pie ya no caben en la burbuja de botones: respuestas rápidas y el enlace en el texto.
+  const r = composeButtons({ type: 'messenger', config: {} } as any, 'x'.repeat(600), list, 'abcdef0123', footer);
+  assert.deepEqual(r.buttons.map((b) => b.kind), ['reply']);
+  assert.ok(r.text.endsWith(`${footer}\n\n🔗 Menú: https://hotel.test/menu`));
+  // Instagram con más de 1000 bytes: numerado (no cabe ni con respuestas rápidas).
+  const ig = composeButtons({ type: 'zernio', config: { platform: 'instagram' } } as any, 'ñ'.repeat(600), list, 'abcdef0123', footer);
+  assert.deepEqual(ig.buttons, []);
+  assert.ok(ig.text.endsWith(`Responde con el número de tu opción.\n\n${footer}`));
+  // WhatsApp oficial: el pie también cuenta para sus 1024.
+  assert.deepEqual(composeButtons({ type: 'zernio', config: { platform: 'whatsapp' } } as any, 'x'.repeat(1000), list, 'abcdef0123', footer).buttons, []);
+  assert.ok(!SequenceStepSchema.safeParse({ text: '  ', buttons: [reply('Sí')] }).success);
+});
+
+test('el eco de un mensaje con botones de Messenger trae su texto (se reconoce como propio)', async () => {
+  const { adapterFor } = await import('../src/channels/index.js');
+  const echo = adapterFor('messenger').parse({ channel: { config: { page_id: 'PG' } } as any, headers: {}, query: {}, body: {
+    object: 'page', entry: [{ id: 'PG', messaging: [{ sender: { id: 'PG' }, recipient: { id: 'u1' }, timestamp: Date.now(), message: { mid: 'm9', is_echo: true, attachments: [{ type: 'template', payload: { template_type: 'button', text: 'Hola, ¿te interesa?', buttons: [] } }] } }] }],
+  } }).messages[0];
+  assert.deepEqual([echo.fromMe, echo.type, echo.text], [true, 'text', 'Hola, ¿te interesa?']);
+});

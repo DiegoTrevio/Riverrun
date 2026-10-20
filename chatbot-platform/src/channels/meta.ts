@@ -123,7 +123,8 @@ class MetaTransport implements Transport {
     await this.typing(delayMs);
     const plain = toPlainText(text);
     const template = buttons.length <= 3 && plain.length <= 640 && !!plain;
-    if (!template && buttons.some((b) => b.kind === 'url')) throw new Error('Los enlaces solo van como botón con 3 botones o menos');
+    // No debería pasar (buttons.ts lo evita): se trata como rechazado, no como "sin confirmar".
+    if (!template && buttons.some((b) => b.kind === 'url')) throw new Error('unsupported_buttons');
     await this.dispatchGuard?.();
     const message = template
       ? { attachment: { type: 'template', payload: { template_type: 'button', text: plain, buttons: buttons.map((b) => (b.kind === 'url' ? { type: 'web_url', title: b.label, url: b.url } : { type: 'postback', title: b.label, payload: b.payload })) } } }
@@ -165,6 +166,8 @@ function parseEvent(ev: any): InboundMessage | null {
     const payload = !fromMe && typeof m.quick_reply?.payload === 'string' ? { payload: m.quick_reply.payload } : {};
     if (typeof m.text === 'string' && m.text) return { ...base, type: 'text', text: m.text, ...payload };
     const att = m.attachments?.[0];
+    // Eco de un mensaje con botones (plantilla): su texto, para reconocerlo como propio.
+    if (att?.type === 'template' && typeof att.payload?.text === 'string' && att.payload.text) return { ...base, type: 'text', text: att.payload.text };
     if (att) {
       const type = ATTACHMENT_TYPES[att.type] ?? 'other';
       return { ...base, type, text: '', media: att.payload?.url ? { url: att.payload.url } : undefined };
