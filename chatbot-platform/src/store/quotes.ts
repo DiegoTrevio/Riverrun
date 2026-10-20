@@ -266,6 +266,8 @@ export interface NewQuote {
   userId?: string | null;
   /** Fecha de hoy (`YYYY-MM-DD`) en la zona del negocio; de ella sale la vigencia. */
   today: string;
+  /** Operación del motor que la creó: si se reintenta tras un reinicio, se reutiliza en vez de crear otra. */
+  operation?: string;
 }
 
 function addDays(isoDate: string, days: number): string {
@@ -316,7 +318,7 @@ export async function createQuote(input: NewQuote): Promise<Quote> {
         addDays(input.today, settings.validity_days), input.customer ?? {}, input.business ?? {}],
     )).rows[0];
     await insertLines(client, q.id, priced, input.lines);
-    await addQuoteEvent(q.id, 'created', { kind: input.kind, status: input.status, source: input.source }, input.userId ?? null, client);
+    await addQuoteEvent(q.id, 'created', { kind: input.kind, status: input.status, source: input.source, ...(input.operation ? { operation: input.operation } : {}) }, input.userId ?? null, client);
     return { ...quoteRow(q), lines: await linesOf(client, q.id) };
   });
 }
@@ -360,6 +362,34 @@ export async function listQuotes(accountId: string, f: QuoteFilters = {}): Promi
   params.push(Math.min(Math.max(f.limit ?? 100, 1), 500));
   const rows = await query(`SELECT * FROM quotes WHERE ${where.join(' AND ')} ORDER BY created_at DESC LIMIT $${params.length}`, params);
   return rows.map(quoteRow);
+}
+
+/** Cotización que creó una operación del motor (para no duplicarla si la operación se repite tras un reinicio). */
+export async function quoteByOperation(accountId: string, operation: string): Promise<Quote | null> {
+  const r = await queryOne(
+    `SELECT q.id FROM quote_events e JOIN quotes q ON q.id = e.quote_id
+      WHERE e.type = 'created' AND e.detail->>'operation' = $2 AND q.account_id = $1 LIMIT 1`,
+    [accountId, operation],
+  );
+  return r ? getQuote(accountId, r.id) : null;
+}
+
+/** Cotización abierta de una conversación (en preparación, por aprobar o aprobada sin enviar). */
+export async function openQuoteForConversation(accountId: string, conversationId: string): Promise<Quote | null> {
+  const r = await queryOne(
+    `SELECT * FROM quotes WHERE account_id = $1 AND conversation_id = $2 AND status = ANY($3) ORDER BY created_at DESC LIMIT 1`,
+    [accountId, conversationId, OPEN_STATUSES],
+  );
+  return r ? quoteRow(r) : null;
+}
+
+/** Última cotización enviada en una conversación. */
+export async function lastSentQuote(accountId: string, conversationId: string): Promise<Quote | null> {
+  const r = await queryOne(
+    `SELECT * FROM quotes WHERE account_id = $1 AND conversation_id = $2 AND status IN ('sent', 'expired') ORDER BY sent_at DESC NULLS LAST LIMIT 1`,
+    [accountId, conversationId],
+  );
+  return r ? quoteRow(r) : null;
 }
 
 /** Cotización abierta de una solicitud (en preparación, por aprobar o aprobada sin enviar). */
@@ -438,11 +468,11 @@ export async function replaceQuoteLines(
 }
 
 /** Las cotizaciones enviadas o por aprobar cuya vigencia ya pasó se marcan vencidas. Devuelve cuántas. */
-export async function expireQuotes(today: string): Promise<number> {
+export async function expireQuotes(today: string, accountId?: string): Promise<number> {
   const rows = await query(
     `UPDATE quotes SET status = 'expired', updated_at = now()
-      WHERE valid_until < $1 AND status IN ('pending_approval', 'approved', 'sent') RETURNING id`,
-    [today],
+      WHERE valid_until < $1 AND status IN ('pending_approval', 'approved', 'sent') AND ($2::uuid IS NULL OR account_id = $2) RETURNING id`,
+    [today, accountId ?? null],
   );
   for (const r of rows) await addQuoteEvent(r.id, 'expired');
   return rows.length;

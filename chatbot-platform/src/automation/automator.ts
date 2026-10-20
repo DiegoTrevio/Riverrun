@@ -65,6 +65,8 @@ export function triggerMatches(t: Trigger, e: AutomationEvent): boolean {
     case 'appointment_booked':
     case 'appointment_cancelled':
       return !t.service_id || t.service_id === e.appointment?.service_id;
+    case 'quote_sent':
+      return !t.kind || t.kind === e.quote?.kind;
     default:
       return true;
   }

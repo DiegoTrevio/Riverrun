@@ -144,7 +144,7 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
     await conversationRoutes(api, service);
     await automationRoutes(api, service);
     await pipelineRoutes(api, service);
-    await quoteRoutes(api);
+    await quoteRoutes(api, service);
     await agendaRoutes(api, service);
     await onboardingRoutes(api);
     await analyticsRoutes(api);

@@ -58,6 +58,9 @@ const TRIGGERS = {
   stage_reached: 'El recorrido llega a una etapa',
   agent_off: 'El asistente se desactiva en una conversación',
   pipeline_stage: 'Una solicitud cambia de columna en el pipeline',
+  quote_sent: 'Se envía una cotización al cliente',
+  quote_pending_approval: 'Una cotización final queda por aprobar',
+  quote_rejected: 'El equipo rechaza una cotización',
 };
 
 export const ACTIONS = {
@@ -130,6 +133,7 @@ export function triggerSummary(t) {
     case 'tag_added': return `Etiqueta: ${t.tag}`;
     case 'stage_reached': return t.step ? `Llega a la etapa ${t.step}` : 'Llega a cualquier etapa';
     case 'pipeline_stage': return t.stage_id ? `Entra a la columna «${t.stage_id}» del pipeline` : 'Cambia de columna en el pipeline';
+    case 'quote_sent': return t.kind === 'final' ? 'Se envía una cotización final' : t.kind === 'approximate' ? 'Se envía una cotización aproximada' : TRIGGERS.quote_sent;
     default: return TRIGGERS[t.type];
   }
 }
@@ -367,6 +371,9 @@ async function editRule(root, id) {
     } else if (t.type === 'no_reply') {
       t.minutes ??= 60;
       f.push(field('Minutos sin respuesta del cliente (después de nuestro último mensaje)', num(t, 'minutes', { min: 1 }), '60 = 1 hora · 1440 = 1 día. Se envía una sola vez por cada silencio.'));
+    } else if (t.type === 'quote_sent') {
+      t.kind ??= '';
+      f.push(field('Tipo de cotización', select(t, 'kind', [['', 'Cualquiera'], ['approximate', 'Aproximada'], ['final', 'Final']])));
     } else if (t.type === 'appointment_booked' || t.type === 'appointment_cancelled') {
       t.service_id ??= '';
       f.push(field('Servicio', select(t, 'service_id', [['', 'Cualquiera'], ...refs.services.map((s) => [s.id, s.name])])));

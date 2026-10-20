@@ -150,3 +150,5 @@ CREATE TABLE IF NOT EXISTS quote_events (
 );
 CREATE INDEX IF NOT EXISTS quote_events_quote_idx ON quote_events (quote_id, created_at);
 CREATE INDEX IF NOT EXISTS quote_events_user_idx ON quote_events (user_id);
+-- La operación del motor que creó la cotización: un reintento tras un reinicio la reutiliza en vez de duplicarla.
+CREATE INDEX IF NOT EXISTS quote_events_operation_idx ON quote_events ((detail->>'operation')) WHERE type = 'created';

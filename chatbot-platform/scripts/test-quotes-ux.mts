@@ -17,7 +17,8 @@ url.pathname = '/' + name;
 process.env.TEST_DATABASE_URL = url.href;
 
 const { createHarness, pool } = await import('../test/harness.js');
-const { createQuote } = await import('../src/store/quotes.js');
+const qstore = await import('../src/store/quotes.js');
+const { createQuote } = qstore;
 const { exampleTemplate } = await import('../src/quotes/template.js');
 const h = await createHarness();
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
@@ -26,7 +27,7 @@ const errors: string[] = [];
 const axe = fs.readFileSync(createRequire(import.meta.url).resolve('axe-core/axe.min.js'), 'utf8');
 
 try {
-  await h.createBot({});
+  await h.createBot({ ai: { debounce_seconds: 0.1 } });
   await h.app.listen({ host: '127.0.0.1', port: 0 });
   const base = `http://127.0.0.1:${(h.app.server.address() as any).port}`;
   browser = await chromium.launch({ ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : {}), args: ['--no-sandbox'] });
@@ -96,7 +97,37 @@ try {
   await page.getByText('Total: $5,800.00 a $9,280.00').waitFor();
   checks.push('Historial con detalle, tipo aproximada y total en rango');
 
-  for (const route of ['cotizaciones/precios', 'cotizaciones/precios?id=new', 'cotizaciones/formatos', 'cotizaciones/ajustes', 'cotizaciones/historial', `cotizaciones/historial?id=${q.id}`]) {
+  // El agente: encender las cotizaciones desde su pestaña (guardar = aplicar).
+  await page.goto(`${base}/#/bot/${h.botId}/cotizaciones`);
+  await page.getByLabel('Preparar y enviar cotizaciones en PDF').check();
+  await page.getByRole('button', { name: 'Guardar cambios' }).click();
+  await page.getByText('Cambios guardados ✅').waitFor();
+  const bot = (await h.authed('GET', `/api/chatbots/${h.botId}`)).json();
+  assert.equal(bot.ai.quotes.enabled, true);
+  assert.equal(bot.ai.quotes.allow_final, true);
+  checks.push('Cotizaciones encendidas desde la pestaña del agente');
+
+  // Una final por aprobar: el equipo cambia la cantidad, aprueba y el cliente recibe el PDF.
+  await qstore.createPriceItem(h.accountId, { code: 'MESERO', name: 'Mesero', description: '', unit: 'persona', price_mode: 'exact', price_min: 50000, price_max: null, iva_mode: 'plus', active: true, sort: 0 });
+  h.setScript(() => ({ messages: ['Con gusto, la reviso con el equipo.'], quote: { action: 'prepare', items: [{ item_code: 'MESERO', qty: 1, qty_quote: '' }], notes: '', wants_final: true } }));
+  await h.webhook('Quiero la cotización final de un mesero');
+  await h.idle();
+  const conv = await h.conversationFor();
+  await page.goto(`${base}/#/conversation/${conv.id}`);
+  const card = page.locator('#conversation-quotes');
+  await card.getByText('Por aprobar').waitFor();
+  await card.getByLabel('Cantidad de Mesero').fill('3');
+  await card.getByRole('button', { name: 'Aprobar y enviar' }).click();
+  await page.locator('dialog').getByRole('button', { name: 'Continuar' }).click();
+  await page.getByText('Cotización enviada al cliente ✅').waitFor();
+  const final = (await qstore.listQuotes(h.accountId, { conversationId: conv.id }))[0];
+  assert.equal(final.status, 'sent');
+  assert.equal(final.total_min, 3 * 50000 * 1.16);
+  assert.ok(h.sent.some((x) => x.kind === 'file' && x.file === `Cotizacion-${final.folio}.pdf`));
+  assert.ok(h.sent.some((x) => /cotización FINAL/.test(x.text)));
+  checks.push('Cotización final corregida, aprobada y enviada desde la conversación');
+
+  for (const route of ['cotizaciones/precios', 'cotizaciones/precios?id=new', 'cotizaciones/formatos', 'cotizaciones/ajustes', 'cotizaciones/historial', `cotizaciones/historial?id=${q.id}`, `bot/${h.botId}/cotizaciones`]) {
     for (const width of [1366, 768, 390]) {
       await page.setViewportSize({ width, height: 1000 });
       await page.goto(`${base}/#/${route}`);

@@ -71,3 +71,18 @@ test('cotizaciones: precios y fechas en español de México', () => {
   assert.equal(formatDate('2026-11-04'), '4 de noviembre de 2026');
   assert.match(formatMoney(100000, 'USD'), /1,000\.00/);
 });
+
+test('cotizaciones: la cantidad debe salir de lo que escribió el cliente (cifras o palabras)', async () => {
+  const { customerSaidQuantity, quantitiesIn } = await import('../src/engine/validator.js');
+  assert.ok(quantitiesIn('somos 1,500 personas').includes(1500));
+  assert.ok(quantitiesIn('ciento cincuenta invitados').includes(150));
+  assert.ok(quantitiesIn('dos mil volantes').includes(2000));
+  assert.ok(quantitiesIn('dos docenas').includes(24));
+  assert.ok(quantitiesIn('treinta y cinco sillas').includes(35));
+  assert.ok(quantitiesIn('2.5 horas').includes(2.5));
+  const said = ['Hola, cotízame el banquete para 80 personas el sábado'];
+  assert.equal(customerSaidQuantity(80, '80 personas', said), true);
+  assert.equal(customerSaidQuantity(120, '80 personas', said), false, 'la cita no dice esa cantidad');
+  assert.equal(customerSaidQuantity(120, '120 personas', said), false, 'el cliente no lo escribió');
+  assert.equal(customerSaidQuantity(80, '', said), false);
+});

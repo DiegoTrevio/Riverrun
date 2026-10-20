@@ -15,6 +15,8 @@ export interface OutboundOptions {
   imageId?: string;
   /** Archivo de "Archivos" (PDF, Word, audio, video…). */
   attachmentId?: string;
+  /** Archivo generado por el sistema (p. ej. el PDF de una cotización). */
+  file?: OutgoingFile;
   /** automation | sequence | campaign | reminder | booking | no_reply | opt_out */
   source: string;
   /** Mensajes de servicio (recordatorios de cita, confirmaciones): se envían aunque el cliente se haya dado de baja de promociones. */
@@ -93,7 +95,7 @@ export class Outbound {
       const owner = image ? await store.getChatbot(image.chatbot_id) : null;
       if (!image || !image.active || owner?.account_id !== conv.account_id) image = null;
     }
-    let file: OutgoingFile | null = null;
+    let file: OutgoingFile | null = o.file ?? null;
     if (o.attachmentId) {
       const a = await astore.getAttachment(o.attachmentId);
       if (!a || a.account_id !== conv.account_id) return { sent: false, reason: 'el archivo ya no existe (se borró en Archivos)' };

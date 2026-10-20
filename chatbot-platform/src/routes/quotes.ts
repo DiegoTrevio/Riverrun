@@ -8,8 +8,11 @@ import { assertAccount, HttpError, notFound, requireRole, scopeAccount, targetAc
 import { attachmentAbsolutePath } from '../attachments.js';
 import { safeFileName } from '../channels/media.js';
 import { logEvent } from '../logs.js';
-import { IVA_MODES, MAX_PRICE_CENTS, PRICE_MODES } from '../quotes/pricing.js';
-import { renderPdf, sampleData } from '../quotes/render.js';
+import { quoteEvent } from '../quotes/agent.js';
+import { quoteMessage } from '../quotes/messages.js';
+import { IVA_MODES, MAX_LINES, MAX_PRICE_CENTS, MAX_QTY, PRICE_MODES } from '../quotes/pricing.js';
+import { renderPdf, renderQuote, sampleData } from '../quotes/render.js';
+import type { ChatService } from '../service.js';
 import { exampleTemplate, inspectTemplate, KNOWN_TAGS, LINE_TAGS, REQUIRED_TAGS, TEMPLATE_MAX_BYTES } from '../quotes/template.js';
 import * as store from '../store/index.js';
 import * as qstore from '../store/quotes.js';
@@ -57,6 +60,29 @@ const SettingsBody = z.object({
   business_address: z.string().trim().max(300).optional(),
 });
 
+const LineBody = z.object({
+  price_item_id: z.string().uuid().nullable().default(null),
+  code: z.string().trim().max(40).default(''),
+  name: z.string().trim().min(1).max(200),
+  description: z.string().max(1000).default(''),
+  unit: z.string().trim().min(1).max(40).default('servicio'),
+  qty: z.number().positive().max(MAX_QTY),
+  price_mode: z.enum(PRICE_MODES as [string, ...string[]]),
+  price_min: Cents.default(null),
+  price_max: Cents.default(null),
+  iva_mode: z.enum(IVA_MODES as [string, ...string[]]).default('plus'),
+});
+const QuotePatch = z.object({
+  lines: z.array(LineBody).min(1).max(MAX_LINES),
+  notes: z.string().max(2000).optional(),
+  kind: z.enum(['approximate', 'final']).optional(),
+});
+const RejectBody = z.object({
+  reason: z.string().trim().max(500).default(''),
+  /** Mensaje opcional al cliente. */
+  message: z.string().trim().max(1000).default(''),
+});
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const QUOTE_STATUSES = ['draft', 'pending_approval', 'approved', 'sent', 'rejected', 'expired', 'failed'] as const;
 
@@ -69,7 +95,7 @@ async function friendly<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 /** Cotizaciones de la cuenta: ajustes, lista de precios y el historial de cotizaciones enviadas o por aprobar. */
-export async function quoteRoutes(api: FastifyInstance) {
+export async function quoteRoutes(api: FastifyInstance, service: ChatService) {
   const admins = { preHandler: requireRole('admin') };
   const itemFor = async (user: any, id: string) => assertAccount(user, await qstore.findPriceItem(id), 'Concepto no encontrado');
   const quoteFor = async (user: any, id: string) => assertAccount(user, await qstore.findQuote(id), 'Cotización no encontrada');
@@ -126,6 +152,63 @@ export async function quoteRoutes(api: FastifyInstance) {
   api.get('/api/quotes/:id', admins, async (req: any) => {
     const quote = await quoteFor(req.user, req.params.id);
     return { ...quote, events: await qstore.listQuoteEvents(quote.account_id, quote.id) };
+  });
+
+  /** El equipo corrige los conceptos, cantidades o precios antes de aprobar (se recalcula todo). */
+  api.patch('/api/quotes/:id', admins, async (req: any) => {
+    const quote = await quoteFor(req.user, req.params.id);
+    const body = parse(QuotePatch, req.body);
+    const saved = await friendly(() => qstore.replaceQuoteLines(quote.account_id, quote.id, body.lines as qstore.NewQuote['lines'], { notes: body.notes, kind: body.kind, userId: req.user.id }));
+    if (!saved) throw new HttpError(409, 'Esta cotización ya no se puede editar (ya se envió, se rechazó o venció)');
+    return saved;
+  });
+
+  /**
+   * Aprobar y enviar (una final por aprobar, o reintentar una que no se pudo enviar). Solo una persona gana si dos
+   * aprueban a la vez; si el envío falla, queda «Con error» para reintentar.
+   */
+  api.post('/api/quotes/:id/approve', admins, async (req: any) => {
+    const quote = await quoteFor(req.user, req.params.id);
+    if (!quote.conversation_id) throw new HttpError(400, 'Esta cotización no tiene conversación a la cual enviarla');
+    if (!['pending_approval', 'failed', 'draft'].includes(quote.status)) throw new HttpError(409, 'Esta cotización ya se envió o ya no está pendiente');
+    if (quote.kind === 'final' && !(quote.lines ?? []).every((l) => l.price_mode === 'exact')) throw new HttpError(400, 'Una cotización final necesita precio exacto en todos los conceptos');
+    const locked = await qstore.transitionQuote(quote.account_id, quote.id, 'approved', { userId: req.user.id });
+    if (!locked) throw new HttpError(409, 'Otra persona ya la está aprobando: actualiza la página');
+    const fail = async (reason: string, status = 502): Promise<never> => {
+      await qstore.transitionQuote(quote.account_id, quote.id, 'failed', { userId: req.user.id, detail: { error: reason.slice(0, 300) } });
+      throw new HttpError(status, reason);
+    };
+    const conv = await store.getConversation(quote.conversation_id);
+    const [channel, contact] = conv ? await Promise.all([store.getChannel(conv.channel_id), store.getContact(conv.contact_id)]) : [null, null];
+    if (!conv || !channel || !contact) return fail('La conversación ya no existe', 409);
+    const rendered = await renderQuote(quote.account_id, quote.id).catch((e) => fail(`No se pudo generar el PDF: ${e?.message ?? e}`));
+    const fresh = (await qstore.getQuote(quote.account_id, quote.id))!;
+    const bot = conv.chatbot_id ? await store.getChatbot(conv.chatbot_id) : null;
+    const canFile = !!service.transportFor(channel, contact).sendFile;
+    const link = canFile ? undefined : service.quotes.link(fresh);
+    const sent = await service.outbound.send(conv.id, {
+      text: quoteMessage(fresh, bot?.personality.formality ?? 'tu', link),
+      file: canFile ? { id: fresh.id, name: rendered.fileName, mime: 'application/pdf', kind: 'document', absPath: attachmentAbsolutePath(rendered.pdfPath) } : undefined,
+      source: 'quote', transactional: true, allowWhenHuman: true, meta: { quote_message: true, quote_id: fresh.id, quote_kind: fresh.kind },
+    });
+    if (!sent.sent) return fail(`No se pudo enviar: ${sent.reason}`, 409);
+    const done = await service.quotes.delivered(conv, fresh, { userId: req.user.id, via: canFile ? 'file' : 'link' });
+    if (done) service.automator.emit({ type: 'quote_sent', conversationId: conv.id, quote: quoteEvent(done) });
+    await logEvent({ level: 'info', source: 'admin', message: `Cotización ${fresh.folio} (${fresh.kind === 'final' ? 'final' : 'aproximada'}) aprobada y enviada`, accountId: quote.account_id, conversationId: conv.id });
+    return done ?? fresh;
+  });
+
+  api.post('/api/quotes/:id/reject', admins, async (req: any) => {
+    const quote = await quoteFor(req.user, req.params.id);
+    const body = parse(RejectBody, req.body);
+    const done = await qstore.transitionQuote(quote.account_id, quote.id, 'rejected', { userId: req.user.id, set: { rejected_reason: body.reason }, detail: { reason: body.reason } });
+    if (!done) throw new HttpError(409, 'Esta cotización ya no está pendiente');
+    let notified: { sent: boolean; reason?: string } | null = null;
+    if (body.message && quote.conversation_id) {
+      notified = await service.outbound.send(quote.conversation_id, { text: body.message, source: 'quote', transactional: true, allowWhenHuman: true, meta: { quote_message: true, quote_id: quote.id } });
+    }
+    if (quote.conversation_id) service.automator.emit({ type: 'quote_rejected', conversationId: quote.conversation_id, quote: quoteEvent(done) });
+    return { ...done, notified };
   });
 
   /** El PDF (o el Word) generado de una cotización. */

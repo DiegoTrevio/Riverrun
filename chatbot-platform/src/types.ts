@@ -166,6 +166,18 @@ export const AiSettingsSchema = z.object({
   /** Presupuesto de caracteres de conocimiento por llamada (controla costo). */
   knowledge_char_budget: z.number().int().min(1000).max(200000).default(24000),
   timezone: z.string().default('America/Mexico_City'),
+  /** Cotizaciones en PDF con la lista de precios de la cuenta (las finales las aprueba el equipo). */
+  quotes: z
+    .object({
+      enabled: z.boolean().default(false),
+      /** Formato de Word con que se cotiza ('' = el más reciente de la cuenta o el del sistema). */
+      template_id: z.string().max(40).default(''),
+      /** El cliente puede pedir una cotización final; sale hasta que alguien del equipo la aprueba. */
+      allow_final: z.boolean().default(true),
+      /** Datos del cliente que se piden antes de cotizar (claves de los datos a recopilar). */
+      required_fields: z.array(z.string().max(60)).max(20).default([]),
+    })
+    .default({ enabled: false, template_id: '', allow_final: true, required_fields: [] }),
 });
 export type AiSettings = z.infer<typeof AiSettingsSchema>;
 

@@ -3,6 +3,8 @@ import type { ChatMessage } from '../ai/provider.js';
 import type { ChannelType, Chatbot, Contact, Conversation, DataField, ImageAsset, KnowledgeItem, Message } from '../types.js';
 import type { AgendaContext } from '../automation/agenda.js';
 import type { PipelineContext } from '../automation/pipelines.js';
+import type { QuoteCatalog } from '../quotes/agent.js';
+import { formatDate as formatDay, formatTotals, formatUnitPrice } from '../quotes/format.js';
 import { imageSendWhen } from '../types.js';
 import { GENERAL_RULES } from './agent-rules.js';
 import type { ConversationRequest } from '../store/index.js';
@@ -47,6 +49,8 @@ export interface ContextInput {
   pipeline?: PipelineContext | null;
   /** Solicitudes de la conversación (vacío si es la primera): la IA sabe que el cliente vuelve por lo mismo. */
   requests?: ConversationRequest[];
+  /** Lista de precios y estado de las cotizaciones (null = el asistente no cotiza). */
+  quotes?: QuoteCatalog | null;
 }
 
 export interface BusinessInfo {
@@ -449,6 +453,7 @@ function stateSection(input: ContextInput, questions: Question[], isFirstContact
   s.push(now.length ? now.map((x) => (/^\s*- /.test(x) ? x : `- ${x}`)).join('\n') : '- Atiende lo que el cliente necesite.');
 
   if (input.agenda) s.push(agendaSection(input.agenda));
+  if (input.quotes) s.push(quoteSection(input.quotes, input.contact));
 
   s.push('\n## Momento actual');
   s.push(`Fecha y hora del negocio: ${formatDate(input.now ?? new Date(), tzOf(input))} (${tzOf(input)}).`);
@@ -526,6 +531,44 @@ export function agendaSection(a: AgendaContext): string {
   return s.join('\n');
 }
 
+const IVA_NOTE = { plus: 'más IVA', included: 'IVA incluido', exempt: 'sin IVA' } as const;
+
+/** Lista de precios y reglas para cotizar. Los precios cuentan como información del negocio; los totales, no. */
+export function quoteSection(q: QuoteCatalog, contact?: Contact): string {
+  const cur = q.settings.currency;
+  const s: string[] = ['\n## Cotizaciones (archivo PDF)'];
+  s.push('Puedes preparar una cotización formal con estos conceptos. El sistema calcula importes, IVA y totales, llena el formato del negocio y envía el PDF con un mensaje que dice el total y si es APROXIMADA o FINAL.');
+  s.push('Conceptos (clave | nombre | precio | unidad):');
+  for (const i of q.items) {
+    s.push(`- \`${i.code}\` | ${i.name} | ${formatUnitPrice(i, cur)}${i.price_mode === 'tbd' ? '' : ` (${IVA_NOTE[i.iva_mode]})`} | por ${i.unit}${i.description ? ` | ${i.description}` : ''}`);
+  }
+  if (q.requiredFields.length) {
+    const have = contact?.data ?? {};
+    const missing = q.requiredFields.filter((f) => !have[f.key] && !(f.type === 'name' && contact?.name));
+    s.push(`Antes de cotizar necesitas: ${q.requiredFields.map((f) => f.label || f.key).join(', ')}${missing.length ? ` (faltan: ${missing.map((f) => f.label || f.key).join(', ')})` : ' (ya los tienes)'}.`);
+  }
+  if (q.open) {
+    s.push(`Cotización ${q.open.folio} EN REVISIÓN por el equipo (${q.open.kind === 'final' ? 'final' : 'aproximada'}): no prepares otra; si pregunta, dile que el equipo la está revisando y se la envía en cuanto esté aprobada.`);
+  }
+  if (q.lastSent) {
+    const t = formatTotals({ ...q.lastSent, lines: q.lastSent.lines ?? [], can_be_final: false }, q.lastSent.currency).total;
+    s.push(`Ya se le envió la cotización ${q.lastSent.folio} (${q.lastSent.kind === 'final' ? 'FINAL' : 'APROXIMADA'}, total ${t}, vigente hasta el ${formatDay(q.lastSent.valid_until)}). Si pide cambios (otra cantidad, otro concepto), prepara una nueva.`);
+  }
+  s.push(
+    [
+      'Reglas de cotización:',
+      '- Prepara la cotización (quote.action = "prepare") cuando el cliente pida cotización, presupuesto o un precio total y ya sepas qué conceptos y cantidades quiere. Si falta algo (qué necesita, cuántos, un dato de la lista), pregúntalo primero.',
+      '- items: la clave exacta de cada concepto, la cantidad y en qty_quote las palabras exactas del cliente donde dice la cantidad (vacío si es 1).',
+      '- No escribas totales, sumas, IVA ni rangos de la cotización: el sistema los envía con el PDF. En tu mensaje solo di que le compartes la cotización; puedes mencionar precios unitarios de la lista.',
+      '- Si algún concepto es «desde», un rango o «por confirmar», la cotización es APROXIMADA: dilo así y que el precio final se confirma después. Nunca la llames final.',
+      q.allowFinal
+        ? '- wants_final = true solo si el cliente pide una cotización final o formal y todos sus conceptos tienen precio exacto. La final la revisa el equipo antes de enviarla: dile que la están revisando y se la envían en cuanto esté aprobada (no prometas tiempos).'
+        : '- Este negocio solo envía cotizaciones aproximadas desde el chat: si pide una final, dile que el equipo se la confirma.',
+    ].join('\n'),
+  );
+  return s.join('\n');
+}
+
 function historyLine(m: Message, imagesById: Map<string, ImageAsset>): string {
   if (m.type === 'image' && m.direction === 'out' && m.image_id) {
     const img = imagesById.get(m.image_id);
@@ -598,6 +641,7 @@ export function buildContext(input: ContextInput): BuiltContext {
     // Lo que el negocio escribió en sus mensajes guardados también es información verificada.
     bot.saved_messages.filter((m) => m.active).map((m) => m.text).join('\n'),
     input.agenda ? agendaSection(input.agenda) : '',
+    input.quotes ? quoteSection(input.quotes, input.contact) : '',
   ];
 
   // Lo que el negocio realmente afirma: los mensajes anteriores del bot NO cuentan (una invención previa no respalda otra);

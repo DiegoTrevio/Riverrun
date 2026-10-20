@@ -60,6 +60,8 @@ async function main() {
     pruneLogs(config.logRetentionDays).catch(() => undefined);
     pruneAutomationData(config.logRetentionDays).catch(() => undefined);
     pruneAiRunDetail(config.aiRunDetailDays).catch(() => undefined);
+    // Cotizaciones cuya vigencia ya pasó (con la fecha de cada negocio).
+    void import('./quotes/agent.js').then(({ expireDueQuotes }) => expireDueQuotes()).catch((e) => logEvent({ level: 'error', source: 'system', message: `Vencimiento de cotizaciones: ${e?.message ?? e}` }));
   }, 6 * 3600 * 1000).unref();
   }
   // Vigilante: si la cola, las recepciones o las tareas programadas dejan de avanzar, o el proceso se bloquea, sale para

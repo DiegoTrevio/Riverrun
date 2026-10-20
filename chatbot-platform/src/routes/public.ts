@@ -3,7 +3,9 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { adapterFor, mergeChannelConfig } from '../channels/index.js';
-import { signedImageUrl, verifyImageSignature } from '../channels/media.js';
+import { safeFileName, signedImageUrl, verifyImageSignature, verifyQuoteSignature } from '../channels/media.js';
+import { attachmentAbsolutePath } from '../attachments.js';
+import { findQuote } from '../store/quotes.js';
 import type { WebhookRequest } from '../channels/types.js';
 import { WEBCHAT_SESSION_RE, newWebchatSession } from '../channels/webchat.js';
 import { eventAccountId, platformWebhookSecret, verifySignature } from '../channels/zernio.js';
@@ -301,6 +303,22 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
     const p = imageAbsolutePath(img);
     if (!fs.existsSync(p)) return reply.code(404).send();
     reply.header('content-type', img.mime_type).header('cache-control', 'public, max-age=86400').header('access-control-allow-origin', '*');
+    return reply.send(fs.createReadStream(p));
+  });
+
+  /** PDF de una cotización enviada, por enlace firmado (canales que no envían archivos). */
+  app.get('/q/:id', async (req: any, reply) => {
+    const { e, s } = req.query as { e?: string; s?: string };
+    if (!e || !s || !verifyQuoteSignature(req.params.id, e, s)) return reply.code(403).send();
+    const q = await findQuote(req.params.id);
+    if (!q || !['sent', 'expired'].includes(q.status) || !q.pdf_path) return reply.code(404).send();
+    const p = attachmentAbsolutePath(q.pdf_path);
+    if (!fs.existsSync(p)) return reply.code(404).send();
+    reply.header('content-type', 'application/pdf')
+      .header('content-disposition', `inline; filename*=UTF-8''${encodeURIComponent(safeFileName(`Cotizacion-${q.folio}.pdf`))}`)
+      .header('x-content-type-options', 'nosniff')
+      .header('cache-control', 'private, no-store')
+      .header('referrer-policy', 'no-referrer');
     return reply.send(fs.createReadStream(p));
   });
 

@@ -145,6 +145,10 @@ export const TriggerSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('appointment_cancelled'), service_id: z.string().default('') }),
   z.object({ type: z.literal('opt_out') }),
   z.object({ type: z.literal('goal_completed') }),
+  /** Cotizaciones: enviada al cliente (aproximada o final), por aprobar y rechazada por el equipo. */
+  z.object({ type: z.literal('quote_sent'), kind: z.enum(['', 'approximate', 'final']).default('') }),
+  z.object({ type: z.literal('quote_pending_approval') }),
+  z.object({ type: z.literal('quote_rejected') }),
   /** El recorrido llega a una etapa (0 = cualquiera). */
   z.object({ type: z.literal('stage_reached'), step: z.number().int().min(0).max(30).default(0) }),
   z.object({ type: z.literal('agent_off') }),
@@ -334,4 +338,6 @@ export interface AutomationEvent {
   pipeline?: { id: string; name: string; stage_id: string; stage_name: string; stage_kind: string; from_stage_id: string | null; from_stage_name: string | null; reason: string; value: number; currency: string };
   /** Transferencia hecha por una persona del equipo que tomó la conversación (ella ya la atiende: no se reparte). */
   byUserId?: string;
+  /** Cotización enviada, por aprobar o rechazada. */
+  quote?: { id: string; folio: string; kind: 'approximate' | 'final'; total: string };
 }

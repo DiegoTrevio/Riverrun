@@ -14,7 +14,7 @@ import { accountName, isSuper } from './session.js';
 
 // Una sola fila en el orden en que se usa: qué hace, qué sabe, sus fotos, probarlo y conectarlo. Lo demás, en "Más ajustes".
 const TABS = [['instrucciones', 'Instrucciones'], ['conocimiento', 'Información'], ['imagenes', 'Fotos'], ['probar', 'Probar'], ['conexiones', 'Conexiones'], ['preguntas', 'Más ajustes']];
-const MORE_TABS = [['preguntas', 'Preguntas en orden'], ['activacion', 'Cuándo responde'], ['avisos', 'Avisos al equipo']];
+const MORE_TABS = [['preguntas', 'Preguntas en orden'], ['activacion', 'Cuándo responde'], ['avisos', 'Avisos al equipo'], ['cotizaciones', 'Cotizaciones']];
 
 const TAB_ALIASES = { general: 'instrucciones', personalidad: 'instrucciones', datos: 'preguntas', flujo: 'instrucciones', ia: 'instrucciones', avanzado: 'instrucciones', reglas: 'instrucciones' };
 
@@ -53,6 +53,7 @@ export async function viewBot(root, id, tab, params = new URLSearchParams()) {
     preguntas: 'Preguntas que el agente hace siempre y en orden (opcional). Las respuestas se guardan solas.',
     activacion: 'Cuándo responde el agente y cuándo se pone en pausa (opcional).',
     avisos: 'Cuándo avisarle a tu equipo (opcional).',
+    cotizaciones: 'El agente envía cotizaciones en PDF con tu formato y tu lista de precios (opcional).',
     conocimiento: 'Lo que tu agente sabe: precios, servicios, horarios y condiciones. Solo afirma lo que esté aquí.',
     imagenes: 'Fotos que el agente puede enviar y cuándo.',
     probar: '',
@@ -60,7 +61,7 @@ export async function viewBot(root, id, tab, params = new URLSearchParams()) {
   if (guidance[tab] !== '') root.append(h('p', { class: 'help', style: 'margin:0 0 20px' }, guidance[tab] || guidance.instrucciones));
   const body = h('div');
   root.append(body);
-  const views = { instrucciones: tabInstructions, preguntas: tabQuestions, activacion: tabActivation, avisos: tabNotices, conocimiento: tabKnowledge, imagenes: tabImages, conexiones: tabConnections, probar: tabPlayground };
+  const views = { instrucciones: tabInstructions, preguntas: tabQuestions, activacion: tabActivation, avisos: tabNotices, cotizaciones: tabQuotes, conocimiento: tabKnowledge, imagenes: tabImages, conexiones: tabConnections, probar: tabPlayground };
   await (views[tab] || tabInstructions)(body, tab==='probar'?published:bot, params);
   // Pruebas automáticas: opcionales, después del simulador.
   if (tab === 'probar') body.append(h('details', { class: 'card' }, h('summary', {}, 'Pruebas automáticas (opcional)'), h('div', { style: 'margin-top:14px' }, agentTestsCard(bot, versions))));
@@ -613,6 +614,34 @@ function noticeRecipients(rule) {
   if (!a) return '';
   const who = [a.user_ids?.length ? `${a.user_ids.length} persona(s)` : (a.roles || []).map((r) => (r === 'admin' ? 'administradores' : 'agentes')).join(' y '), ...(a.phones || []), ...(a.emails || [])].filter(Boolean);
   return `${a.type === 'send_report' ? 'Reporte' : 'Aviso'} a ${who.join(', ') || 'nadie'}`;
+}
+
+/** Cotizaciones en PDF: encender, formato, si puede enviar finales (con aprobación) y qué datos pedir antes. */
+async function tabQuotes(root, bot) {
+  const [items, templates] = await Promise.all([
+    api('GET', `/api/price-items?account_id=${bot.account_id}&active=1`).catch(() => []),
+    api('GET', `/api/quote-templates?account_id=${bot.account_id}`).catch(() => []),
+  ]);
+  const m = { enabled: false, template_id: '', allow_final: true, required_fields: [], ...(bot.ai.quotes || {}) };
+  const active = templates.filter((t) => t.status === 'active');
+  root.append(
+    h('div', { class: 'card' },
+      check(m, 'enabled', 'Preparar y enviar cotizaciones en PDF'),
+      h('p', { class: 'small muted' },
+        'Cuando el cliente pide una cotización, el agente elige los conceptos de tu lista de precios y las cantidades que dio el cliente; el sistema calcula los montos, llena tu formato y envía el PDF. ',
+        'Si algún precio es «desde», un rango o «por confirmar», la cotización sale APROXIMADA y así se dice en el archivo y en el chat.'),
+      items.length
+        ? h('p', { class: 'small' }, `${items.length} ${items.length === 1 ? 'concepto activo' : 'conceptos activos'} en tu `, h('a', { href: '#/cotizaciones/precios' }, 'lista de precios'), '.')
+        : h('p', { class: 'banner warn', role: 'status' }, 'Tu lista de precios está vacía: el agente no cotiza hasta que agregues conceptos. ', h('a', { href: '#/cotizaciones/precios?id=new' }, 'Agregar conceptos')),
+      field('Formato', select(m, 'template_id', [['', active.length ? 'El más reciente de la cuenta' : 'El formato del sistema'], ...active.map((t) => [t.id, `${t.name} (versión ${t.version})`])]),
+        h('span', {}, 'Sube o cambia formatos en ', h('a', { href: '#/cotizaciones/formatos' }, 'Cotizaciones → Formatos'), '.')),
+      check(m, 'allow_final', 'Permitir cotizaciones finales (alguien del equipo las aprueba antes de enviarlas)'),
+      bot.data_fields.length
+        ? field('Datos que pide antes de cotizar', h('div', {}, bot.data_fields.map((f) => h('label', { class: 'check' },
+            h('input', { type: 'checkbox', checked: m.required_fields.includes(f.key), onchange: (e) => { m.required_fields = e.target.checked ? [...m.required_fields, f.key] : m.required_fields.filter((k) => k !== f.key); } }),
+            f.label || f.key))), 'Aparecen en el formato con {{cliente.clave}}.')
+        : h('p', { class: 'small muted' }, 'Si quieres que pida datos antes de cotizar (nombre, fecha del evento…), agrégalos en Preguntas en orden.')),
+    saveBar(() => saveBot(bot, { ai: { quotes: m } })));
 }
 
 async function tabNotices(root, bot) {
