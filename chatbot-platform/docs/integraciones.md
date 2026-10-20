@@ -50,6 +50,7 @@ Cada entrega es un `POST` con JSON:
 | `conversation.handoff` | La conversación pasó a una persona (con el resumen y los datos capturados) |
 | `goal.completed` | Se cumplió el objetivo de la conversación (con el resumen, el análisis y los datos capturados) |
 | `appointment.booked` / `appointment.cancelled` | Cita agendada / cancelada (con conversación) |
+| `conversation.sent` | Se envió una conversación a tu app: resumen, completa o ambos (ver abajo) |
 | `ping` | Botón "Enviar prueba" |
 
 En `conversation.handoff` y `goal.completed`, `data.conversation` incluye además `summary`, `analysis` (intención, ánimo, interés, acuerdos y pendientes), `data` (datos capturados), `flow_step` y `goal_completed_at`. Se generan antes de avisar, así que no hace falta pedirlos aparte; si la IA no pudo resumir, `summary` es `null` y `data` sigue completo.
@@ -79,6 +80,38 @@ Entrega: responde `2xx` en menos de 15 s. Si falla, se reintenta 3 veces con esp
 
 **Zapier / Make / n8n**: crea un disparador "Webhook" (Catch Hook), pega su URL en Riverrun, pulsa **Enviar prueba** y mapea los campos de `data`. No necesitan verificar la firma si la URL es secreta, pero conviene.
 
+### Enviar conversaciones a tu app (resumen o completa)
+
+Tu app recibe las conversaciones que tú decidas, con el resumen, todos los mensajes o ambos, en el evento `conversation.sent`.
+
+1. **Conecta tu app una vez**: en Integraciones crea un webhook con su dirección y el evento «Conversación enviada a tu app» (o «todos los eventos»).
+2. **Decide cuándo y qué se envía**, de tres formas:
+   - **Reglas automáticas** (Automatización → Reglas, acción **«Enviar la conversación a tu app»**). El disparador y las condiciones de la regla deciden *cuándo* y la acción decide *qué* (resumen, completa o ambos) y a qué app. Por contexto: una intención del cliente («quiere comprar», «queja»), el objetivo cumplido, el paso a una persona, un dato capturado o una etapa del recorrido. Por marcas: una **etiqueta** que pone tu equipo desde el panel (o tu sistema por la API) dispara la regla, por ejemplo la etiqueta `enviar-a-mi-app` → conversación completa. Hay dos plantillas listas.
+   - **A mano**: en la conversación, botón **«↗ Enviar a mi app»** (cualquier persona que vea la conversación).
+   - **Tu app lo pide** cuando quiera: `GET /api/v1/conversations/:id/export?content=summary|full|both` devuelve lo mismo que `data` del evento.
+
+Ejemplo de `data` en `conversation.sent` (con `content: "both"`):
+
+```json
+{
+  "content": "both",
+  "reason": "regla \"Objetivo cumplido → resumen a mi app\"",
+  "trigger": { "rule": "Objetivo cumplido → resumen a mi app", "event": "goal_completed" },
+  "contact": { "id": "…", "name": "Ana", "phone": "5215512345678", "tags": ["vip"], "data": { "correo": "ana@correo.com" }, "consent": true, "opted_out": false },
+  "conversation": { "id": "…", "status": "bot", "channel": { "id": "…", "type": "whatsapp", "name": "WhatsApp" }, "data": {}, "url": "https://TU-DOMINIO/#/conversation/…" },
+  "summary": { "text": "Ana quiere una limpieza dental el lunes…", "analysis": { "intent": "…", "sentiment": "positivo", "interest": "alto", "agreements": [], "next_steps": [] }, "generated_at": "…", "stale": false, "warning": null },
+  "transcript": {
+    "messages": [{ "id": 101, "at": "…", "direction": "inbound", "sender": "customer", "type": "text", "text": "Hola, quiero una cita" }],
+    "total": 1, "included": 1, "truncated": false, "more": null
+  }
+}
+```
+
+- `summary` solo viene con `summary` o `both`. Se actualiza antes de enviar; si la IA no responde se envía el último con `warning`, y si no hay ninguno, `text` es `null`.
+- `transcript` solo viene con `full` o `both`. Trae los mensajes entregados del cliente (`customer`), el asistente (`bot`) y el equipo (`human`), en orden y en el mismo formato que `GET /conversations/:id/messages`. Si la conversación tiene más de 1000 mensajes van los más recientes, con `truncated: true`; el resto se pide en `more`.
+- `trigger` dice qué lo disparó (regla y evento, con la etiqueta, el dato o la intención), o `{ "event": "manual" }` si lo envió una persona: así tu app puede tratar distinto cada caso.
+- La entrega es igual que la de los demás eventos: firmada, con reintentos y en "Ver entregas". En la regla puedes elegir una app concreta; si no, llega a todas las que reciben conversaciones.
+
 ## 3. API v1
 
 Base: `https://TU-DOMINIO/api/v1`. Autenticación: `Authorization: Bearer rr_…` con una llave creada en Integraciones (se muestra una sola vez; en la base solo queda su hash; máximo 10 activas). Las de **lectura** solo hacen `GET`; las de **escritura** también `POST`/`PUT`. Límites: 300 lecturas/min y 60 escrituras/min por llave. Una cuenta pausada responde `402` en escrituras y una inactiva `403`.
@@ -91,6 +124,7 @@ Base: `https://TU-DOMINIO/api/v1`. Autenticación: `Authorization: Bearer rr_…
 | `POST /contacts` | Crea o actualiza por teléfono |
 | `GET /conversations?status&contact_id&updated_since` | Lista conversaciones |
 | `GET /conversations/:id/messages?after&limit` | Mensajes de una conversación |
+| `GET /conversations/:id/export?content=summary\|full\|both&refresh` | La conversación para tu app: resumen, completa o ambos (lo mismo que el evento `conversation.sent`); `refresh=true` actualiza antes el resumen |
 | `POST /messages` | Envía un texto (`conversation_id`, o `channel_id` + `phone`); respeta bajas y el límite del plan |
 | `GET /appointments` | Citas |
 | `GET /team` | Personas del equipo (id, nombre, rol, disponible) |

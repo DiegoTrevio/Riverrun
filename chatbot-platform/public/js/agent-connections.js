@@ -94,7 +94,7 @@ export async function tabConnections(root, bot, params = new URLSearchParams()) 
         h('div', { class: 'row between' }, h('h2', { style: 'margin:0' }, channelIcon(ch.type, ch.config?.platform), ' ', ch.name), status),
         h('p', { class: 'muted' }, ch.type === 'zernio' ? networkLabel(ch.config?.platform) : ch.label || ch.type, ch.config?.number ? ` · +${ch.config.number}` : '', ch.config?.username ? ` · @${ch.config.username}` : ''),
         h('div', { class: 'row' },
-          h('a', { class: 'btn primary', href: connectionHref(ch) }, ch.type === 'whatsapp' ? 'Ver QR / administrar' : ch.type === 'zernio' ? (ch.config?.account_id ? 'Administrar' : 'Conectar cuenta') : ch.config?.connected_via === 'facebook' ? 'Administrar' : 'Configurar conexión'),
+          h('a', { class: 'btn primary', href: connectionHref(ch) }, ch.type === 'whatsapp' ? 'Ver QR / administrar' : ch.type === 'zernio' ? (ch.config?.connected ? 'Administrar' : 'Conectar cuenta') : ch.config?.connected_via === 'facebook' ? 'Administrar' : 'Configurar conexión'),
           h('a', { class: 'btn', href: `#/conversations?channel_id=${ch.id}` }, 'Conversaciones'),
           ch.type === 'whatsapp' ? h('button', { class: 'small', onclick: refresh }, 'Actualizar estado') : null));
     })) : h('div', { class: 'card' }, h('p', {}, 'Este agente todavía no tiene conexiones. Puedes probarlo antes de conectar un teléfono.'), h('a', { class: 'btn', href: `#/bot/${bot.id}/probar` }, 'Probar agente')),

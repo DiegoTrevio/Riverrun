@@ -161,3 +161,42 @@ t('el agente creado atiende con ese prompt: la IA recibe los lineamientos y la i
   await waitFor(() => h.sent.length === 1, 8000);
   for (const frag of ['MANTENTE EN TU ROL', 'No das información de más', 'Limpieza dental: $600', 'Lunes a viernes 9:00 a 18:00', 'Clínica dental familiar']) assert.ok(system.includes(frag), `la IA no recibió: ${frag}`);
 });
+
+t('valores por tipo de negocio: con solo el giro, el agente ya trae su trabajo, sus datos y su trato', async () => {
+  const meta = (await h.authed('GET', '/api/meta')).json();
+  const salud = meta.business_types.find((b: any) => b.key === 'salud');
+  assert.equal(salud.defaults.scope.role, 'book');
+  assert.equal(salud.defaults.style.formality, 'usted');
+  assert.ok(!salud.defaults.scope.collect.includes('telefono'), 'WhatsApp ya da el teléfono');
+  assert.equal(meta.business_types.find((b: any) => b.key === 'restaurante').defaults.scope.role, 'sell', 'un restaurante toma pedidos (no citas de 30 min)');
+
+  const only = (type: string, extra: Record<string, unknown> = {}) => ({ company: { name: 'Negocio Prueba', business_type: type, description: 'Negocio de prueba con información suficiente para responder.' }, ...extra });
+  const d = (await h.authed('POST', '/api/chatbots/draft', only('salud'))).json();
+  assert.match(d.prompt, /Tratas al cliente de usted/);
+  assert.equal(d.creates_service, 'Cita en Negocio Prueba');
+  // Lo que la persona eligió siempre gana sobre la plantilla.
+  const mine = (await h.authed('POST', '/api/chatbots/draft', only('salud', { style: { formality: 'tu' }, scope: { role: 'assist' } }))).json();
+  assert.match(mine.prompt, /Tratas al cliente de tú/);
+  assert.equal(mine.creates_service, null);
+  const tienda = await h.authed('POST', '/api/chatbots/wizard', { account_id: h.accountId, ...only('tienda') });
+  assert.equal(tienda.statusCode, 200, tienda.body);
+  assert.equal(tienda.json().flow.on_goal_action, 'handoff', 'toma pedidos y los pasa a una persona');
+  assert.ok(tienda.json().data_fields.some((f: any) => f.label === 'Dirección de envío (si es a domicilio)'));
+});
+
+t('crear: queda listo para encenderse al conectar, y la misma solicitud repetida no crea otro agente', async () => {
+  const before = await botsCount();
+  const body = { account_id: h.accountId, ...base(), request_id: 'intento-0001-abcd' };
+  const [a, b] = await Promise.all([h.authed('POST', '/api/chatbots/wizard', body), h.authed('POST', '/api/chatbots/wizard', body)]);
+  assert.equal(a.statusCode, 200, a.body);
+  assert.equal(b.statusCode, 200, b.body);
+  assert.equal(a.json().id, b.json().id);
+  assert.equal([a.json().repeated, b.json().repeated].filter(Boolean).length, 1);
+  assert.equal(await botsCount(), before + 1);
+  assert.equal(a.json().active, false);
+  assert.equal(a.json().start_on_connect, true);
+  // Por la API se puede pedir que no se encienda solo.
+  const manual = await h.authed('POST', '/api/chatbots/wizard', { account_id: h.accountId, ...base(), start_on_connect: false });
+  assert.equal(manual.json().start_on_connect, false);
+  assert.equal((await h.authed('POST', '/api/chatbots/wizard', { account_id: h.accountId, ...base(), request_id: 'mal id!' })).statusCode, 400);
+});

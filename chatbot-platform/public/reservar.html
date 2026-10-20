@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex" />
+  <title>Agendar</title>
+  <style>
+    :root { --accent: #155eef; --text: #101828; --muted: #475467; --border: #d0d5dd; --bg: #f9fafb; --panel: #fff; --danger: #b42318; }
+    @media (prefers-color-scheme: dark) { :root { --text: #f2f4f7; --muted: #cbd2dc; --border: #475467; --bg: #0c111d; --panel: #161b26; --danger: #fda29b; } }
+    * { box-sizing: border-box; }
+    body { margin: 0; font: 16px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; color: var(--text); background: var(--bg); }
+    main { max-width: 620px; margin: 0 auto; padding: 24px 16px 48px; }
+    header { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; }
+    header img { width: 48px; height: 48px; border-radius: 10px; object-fit: cover; }
+    h1 { font-size: 1.4rem; margin: 0; }
+    h2 { font-size: 1.05rem; margin: 0 0 10px; }
+    .muted { color: var(--muted); }
+    .small { font-size: .9rem; }
+    .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin: 12px 0; }
+    .choices { display: grid; gap: 8px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 160px), 1fr)); }
+    button { font: inherit; cursor: pointer; border-radius: 8px; border: 1px solid var(--border); background: var(--panel); color: var(--text); padding: 10px 12px; text-align: left; min-height: 44px; }
+    button:hover { border-color: var(--accent); }
+    button[aria-pressed="true"] { border-color: var(--accent); outline: 2px solid var(--accent); }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #fff; text-align: center; width: 100%; font-weight: 600; }
+    button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+    .times { display: flex; flex-wrap: wrap; gap: 8px; }
+    .times button { text-align: center; min-width: 84px; }
+    label { display: block; margin: 10px 0 4px; font-weight: 600; }
+    input, textarea { width: 100%; font: inherit; padding: 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel); color: var(--text); }
+    .error { color: var(--danger); }
+    .trap { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }
+    .back { background: none; border: 0; padding: 0; color: var(--accent); min-height: 0; margin-bottom: 8px; }
+  </style>
+</head>
+<body>
+  <main id="app" aria-live="polite"><p class="muted">Cargando…</p></main>
+  <script src="/reservar.js" defer></script>
+</body>
+</html>

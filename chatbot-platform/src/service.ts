@@ -1,6 +1,6 @@
 import { syncStaffEvent } from './integrations/staff-calendars.js';
 import { syncAppointment as syncOutlookAppointment } from './integrations/outlook.js';
-import { accountAi, audioSeconds } from './ai/budget.js';
+import { accountAi, AiBudgetBlocked, audioSeconds } from './ai/budget.js';
 import { syncAppointment } from './integrations/google.js';
 import crypto from 'node:crypto';
 import type { AiProvider } from './ai/provider.js';
@@ -30,6 +30,13 @@ import { deliver } from './integrations/webhooks.js';
 import { messageQuota, noticeMessagesReached } from './billing/limits.js';
 import { ConversationQueue } from './engine/queue.js';
 import { InboundQueue } from './engine/inbox.js';
+import { ZernioEventQueue } from './channels/zernio-events.js';
+import { zernioCleanup } from './channels/zernio-connect.js';
+import { configureEngagement, isPrivateReplyEcho, runAutoReply, runDigest, syncEngagement } from './social/engagement.js';
+import { suggestReply } from './social/replies.js';
+import { checkPublication, configurePosts } from './social/posts.js';
+import { fillBody, outgoingTemplate, templateBody, templateForChannel, templateVarCount } from './channels/zernio-templates.js';
+import { renderTemplate } from './automation/templates.js';
 import { DeliveryUncertain,currentOperation } from './engine/coordination.js';
 import { PlaygroundTransport, type Transport } from './engine/transport.js';
 import { logEvent } from './logs.js';
@@ -63,6 +70,8 @@ function sameText(sent: string, echo: string) {
 
 export class ChatService {
   readonly inbox: InboundQueue;
+  /** Eventos de Zernio que no son mensajes (conexión, entregado, leído, fallido). */
+  readonly zernioEvents = new ZernioEventQueue();
   get aiProvider() { return this.ai; }
   engine: Engine;
   queue: ConversationQueue;
@@ -117,6 +126,8 @@ export class ChatService {
     });
     // Los avisos de desconexión a WhatsApp adicionales salen por otro WhatsApp conectado de la cuenta.
     setAlertWhatsapp((accountId, phone, text, excludeChannelId) => this.sendInternalWhatsapp(accountId, phone, text, null, excludeChannelId));
+    configureEngagement({ alertTeam: (accountId, o) => this.automator.alertTeam(accountId, o) });
+    configurePosts({ alertTeam: (accountId, o) => this.automator.alertTeam(accountId, o) });
     this.queue = new ConversationQueue((id, a) => this.runConversation(id, a.restarts), 2, config.queue.retryMs, (id) => this.aiUnavailable(id));
     this.inbox = new InboundQueue((channel,msg)=>this.handleIncoming(channel,msg),channel=>this.automator.alertTeam(channel.account_id,{title:'⚠️ Recepción pendiente de revisión',body:'No se pudo completar la recepción de un mensaje. Revisa los trabajos pendientes de este perfil.',kind:'alert',link:'#/logs'}));
     this.scheduler = new Scheduler({
@@ -131,6 +142,15 @@ export class ChatService {
       appointment_reminder: (p) => this.agenda.sendReminder(p),
       campaign_start: (p) => this.campaigns.start(p.campaign_id),
       campaign_send: (p) => this.campaigns.sendOne(p),
+      zernio_cleanup: (p) => zernioCleanup(p),
+      social_sync: (p) => syncEngagement(String(p.social_account_id ?? '')),
+      social_digest: (p) => runDigest(p),
+      social_post_check: (p) => checkPublication(p),
+      social_autoreply: (p) => runAutoReply(p, (accountId, kind, id) => suggestReply(this.ai, accountId, kind, id)).catch((e) => {
+        // Sin presupuesto de IA no se reintenta: lo contesta una persona.
+        if (e instanceof AiBudgetBlocked) return;
+        throw e;
+      }),
     },()=>this.automator.settleAll());
   }
 
@@ -476,6 +496,8 @@ export class ChatService {
     }
     const meta: Record<string, unknown> = stale ? { name: msg.displayName, stale: true } : msg.captureOnly ? { name: msg.displayName, held: 'limite_de_correos' } : { name: msg.displayName };
     if (mediaError) meta.media_error = mediaError;
+    // Botón tocado: su identificador (las automatizaciones reconocen a qué botón de qué mensaje corresponde).
+    if (msg.payload) meta.button = String(msg.payload).slice(0, 200);
     if (triggers) meta.receipt_ready = false;
     const inserted = await store.insertMessage({
       conversation_id: conv.id,
@@ -623,6 +645,8 @@ export class ChatService {
       if (!known.external_message_id) await store.updateMessage(known.id, { external_message_id: msg.messageId });
       return;
     }
+    // Respuesta privada a un comentario (la mandó el negocio desde Comentarios): queda en la conversación sin pausar al asistente.
+    const privateReply = msg.type === 'text' && (await isPrivateReplyEcho(conv.account_id, msg.messageId, msg.text));
     await store.insertMessage({
       conversation_id: conv.id,
       direction: 'out',
@@ -631,8 +655,9 @@ export class ChatService {
       // Lo que escribe una persona desde el teléfono también se enmascara (p. ej. números de tarjeta), como lo del cliente.
       content: msg.type === 'text' ? maskSensitive(msg.text) : content,
       external_message_id: msg.messageId,
-      meta: { source: 'platform' },
+      meta: { source: privateReply ? 'private_reply' : 'platform' },
     });
+    if (privateReply) return;
     // Una persona que escribe desde el teléfono pausa al asistente aunque la conversación esté cerrada (la reabre con ella).
     if ((bot?.rules.pause_on_human_reply ?? true) && conv.status !== 'human') {
       await this.takeover(conv.id, 'Una persona respondió desde la plataforma', undefined, 'telefono');
@@ -649,7 +674,7 @@ export class ChatService {
   }
 
   /** Simulador del panel: mismo motor, sin plataforma externa. */
-  async playground(bot: Chatbot, session: string, text: string) {
+  async playground(bot: Chatbot, session: string, text: string, button?: string) {
     text = cleanText(text);
     const channel = await store.getOrCreatePlaygroundChannel(bot);
     const contact = await store.upsertContact(channel, `playground:${session}`, '', 'Prueba');
@@ -660,7 +685,7 @@ export class ChatService {
       await store.resetFlowState(conv.id);
       conv = (await store.setConversationStatus(conv.id, 'bot', '')) ?? conv;
     }
-    const inserted = await store.insertMessage({ conversation_id: conv.id, direction: 'in', sender: 'customer', type: 'text', content: maskSensitive(text), processed: false });
+    const inserted = await store.insertMessage({ conversation_id: conv.id, direction: 'in', sender: 'customer', type: 'text', content: maskSensitive(text), processed: false, ...(button ? { meta: { button } } : {}) });
     // Las reglas automáticas también se prueban en el simulador.
     if (inserted) {
       const stopAi = await this.automator.onInbound(conv, contact, inserted, text).catch(() => false);
@@ -729,6 +754,33 @@ export class ChatService {
     // Quién lo envió queda en el mensaje (las estadísticas por persona lo cuentan así).
     const sent = await this.queue.exclusive((await store.getConversation(conv.id))?.status==='human'?`human:${conv.id}`:conv.id,()=>this.engine.sendOut(bot, conv, transport, { sender: 'human', text, delay: 0, meta: { source: 'panel', ...(byUserId ? { user_id: byUserId } : {}) } }));
     if (!sent) throw new Error('No se pudo enviar el mensaje (revisa los registros)');
+    return sent;
+  }
+
+  /**
+   * Plantilla de WhatsApp enviada a mano (WhatsApp oficial; fuera de las 24 h es lo único que se puede enviar). Las
+   * variables aceptan los datos del contacto ({{nombre}}…).
+   */
+  async sendManualTemplate(conversationId: string, templateId: string, params: string[], beforeSend?: () => Promise<void>, byUserId?: string) {
+    const conv = await store.getConversation(conversationId);
+    if (!conv) throw new Error('Conversación no encontrada');
+    const [channel, contact] = await Promise.all([store.getChannel(conv.channel_id), store.getContact(conv.contact_id)]);
+    if (!channel || !contact) throw new Error('Datos incompletos');
+    const t = await templateForChannel(conv.account_id, channel, templateId);
+    if (typeof t === 'string') throw new Error(`No se puede enviar: ${t}`);
+    const settings = await astore.getSettings(conv.account_id);
+    const values = params.map((p) => renderTemplate(p, { contact, conversation: conv, businessName: '', channelName: channel.name, timezone: settings.timezone }).trim());
+    const n = templateVarCount(t.components);
+    const empty = Array.from({ length: n }, (_, i) => i).find((i) => !values[i]);
+    if (empty !== undefined) throw new Error(`Escribe el valor de la variable {{${empty + 1}}}`);
+    const bot = conv.chatbot_id ? await store.getChatbot(conv.chatbot_id) : null;
+    const transport = this.transportFor(channel, contact);
+    await beforeSend?.();
+    const sent = await this.queue.exclusive((await store.getConversation(conv.id))?.status==='human'?`human:${conv.id}`:conv.id,()=>this.engine.sendOut(bot, conv, transport, {
+      sender: 'human', text: fillBody(templateBody(t.components), values), template: outgoingTemplate(t, values), delay: 0,
+      meta: { source: 'panel', wa_template: t.name, ...(byUserId ? { user_id: byUserId } : {}) },
+    }));
+    if (!sent) throw new Error('No se pudo enviar la plantilla (revisa los registros)');
     return sent;
   }
 

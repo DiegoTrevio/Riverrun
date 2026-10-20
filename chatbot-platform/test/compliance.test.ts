@@ -107,7 +107,7 @@ t('derecho de supresión: borra al contacto y su historial, anonimiza citas y co
   await send('5215570000009', 'Hola, soy Beto y mi tarjeta es privada');
   const c = await contactBy('5215570000009');
   const conv = (await pool.query(`SELECT id FROM conversations WHERE contact_id = $1`, [c.id])).rows[0].id;
-  await pool.query(`INSERT INTO appointments (account_id, contact_id, conversation_id, customer_name, customer_phone, starts_at, ends_at, notes) VALUES ($1,$2,$3,'Beto','5215570000009', now() + interval '2 days', now() + interval '2 days 1 hour', 'alergia')`, [h.accountId, c.id, conv]);
+  await pool.query(`INSERT INTO appointments (account_id, contact_id, conversation_id, customer_name, customer_phone, customer_email, starts_at, ends_at, notes) VALUES ($1,$2,$3,'Beto','5215570000009','beto@correo.test', now() + interval '2 days', now() + interval '2 days 1 hour', 'alergia')`, [h.accountId, c.id, conv]);
   await pool.query(`INSERT INTO event_logs (account_id, conversation_id, level, source, message) VALUES ($1,$2,'info','engine','contenido: tarjeta privada')`, [h.accountId, conv]);
   const aiRuns = (await pool.query(`SELECT count(*)::int AS n FROM ai_runs WHERE conversation_id = $1`, [conv])).rows[0].n;
   assert.ok(aiRuns >= 1);
@@ -119,7 +119,9 @@ t('derecho de supresión: borra al contacto y su historial, anonimiza citas y co
   const other = await h.app.inject({ method: 'POST', url: '/api/signup', remoteAddress: '10.5.5.5', payload: { name: 'Otro', company: 'Otro negocio', business_type: 'otro', email: 'otro@priv.mx', password: 'clave-otro-123', accept_terms: true } });
   const cookie = String(other.headers['set-cookie']).split(';')[0];
   assert.equal((await h.app.inject({ method: 'DELETE', url: `/api/contacts/${c.id}`, headers: { cookie } })).statusCode, 404);
-  // El administrador sí
+  // El administrador sí. La exportación de sus datos incluye todo lo suyo, también el correo de sus citas.
+  const exported = (await h.authed('GET', `/api/contacts/${c.id}/data`)).json();
+  assert.equal(exported.appointments[0].customer_email, 'beto@correo.test');
   // Entregas de webhook con sus datos y el hilo de correo también se borran
   await pool.query(`INSERT INTO jobs (account_id, type, payload, run_at) VALUES ($1,'webhook_delivery',$2,now() + interval '1 hour')`, [h.accountId, JSON.stringify({ endpoint_id: 'x', event_id: 'e', event: 'contact.created', body: { data: { contact: { id: c.id, name: 'Dato privado' } } } })]);
   await pool.query(`INSERT INTO email_threads (channel_id, address, subject) SELECT channel_id, lower(external_id), 'Asunto privado' FROM contacts WHERE id = $1`, [c.id]);
@@ -131,8 +133,8 @@ t('derecho de supresión: borra al contacto y su historial, anonimiza citas y co
   assert.equal((await pool.query(`SELECT count(*)::int AS n FROM contacts WHERE id = $1`, [c.id])).rows[0].n, 0);
   assert.equal((await pool.query(`SELECT count(*)::int AS n FROM messages WHERE conversation_id = $1`, [conv])).rows[0].n, 0);
   assert.equal((await pool.query(`SELECT count(*)::int AS n FROM event_logs WHERE message LIKE '%tarjeta privada%'`)).rows[0].n, 0);
-  const appt = (await pool.query(`SELECT customer_name, customer_phone, notes FROM appointments WHERE account_id = $1 AND starts_at > now() ORDER BY created_at DESC LIMIT 1`, [h.accountId])).rows[0];
-  assert.deepEqual(appt, { customer_name: '', customer_phone: '', notes: '' });
+  const appt = (await pool.query(`SELECT customer_name, customer_phone, customer_email, notes FROM appointments WHERE account_id = $1 AND starts_at > now() ORDER BY created_at DESC LIMIT 1`, [h.accountId])).rows[0];
+  assert.deepEqual(appt, { customer_name: '', customer_phone: '', customer_email: '', notes: '' }, 'el correo de la cita también se borra');
   const kept = (await pool.query(`SELECT count(*)::int AS n, count(decision)::int AS with_content FROM ai_runs WHERE account_id = $1 AND conversation_id IS NULL`, [h.accountId])).rows[0];
   assert.ok(kept.n >= aiRuns && kept.with_content === 0, 'el costo de IA se conserva sin contenido');
 });

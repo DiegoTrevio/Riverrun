@@ -14,9 +14,12 @@ async function call(method: 'GET' | 'POST' | 'PUT', path: string, body?: unknown
     headers: { authorization: `Bearer ${cfg().accessToken}`, ...(body ? { 'content-type': 'application/json' } : {}) },
     body: body ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(15_000),
+  }).catch((e) => {
+    // Sin respuesta (red, DNS o tiempo agotado): se informa como falla del proveedor, igual que un error HTTP.
+    throw new ProviderError(e?.name === 'TimeoutError' ? 'Mercado Pago no respondió a tiempo' : 'No se pudo conectar con Mercado Pago');
   });
   const data: any = await res.json().catch(() => ({}));
-  if (!res.ok) throw new ProviderError(`Mercado Pago: ${data?.message ?? `HTTP ${res.status}`}`);
+  if (!res.ok) throw new ProviderError(`Mercado Pago: ${data?.message ?? `HTTP ${res.status}`}`, res.status);
   return data;
 }
 
@@ -77,7 +80,11 @@ export const mercadopago: BillingProvider = {
       auto_recurring: { frequency: 1, frequency_type: 'months', transaction_amount: plan.price_cents / 100, currency_id: plan.currency },
     });
     if (!p.init_point) throw new ProviderError('Mercado Pago no devolvió la página de pago');
-    return { url: p.init_point };
+    return { url: p.init_point, ref: String(p.id ?? '') };
+  },
+
+  async checkoutState(ref) {
+    return stateFromPreapproval(await call('GET', `/preapproval/${encodeURIComponent(ref)}`));
   },
 
   async setCancelAtPeriodEnd(sub, cancel) {

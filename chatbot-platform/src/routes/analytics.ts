@@ -3,6 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { requireRole, targetAccount } from '../access.js';
 import { overview, RANGE_KEYS } from '../analytics.js';
+import { socialStats } from '../social/stats.js';
 import { parse } from './util.js';
 
 export async function analyticsRoutes(api: FastifyInstance) {
@@ -20,5 +21,12 @@ export async function analyticsRoutes(api: FastifyInstance) {
       req.query,
     );
     return overview(accountId, q.range, q.from, q.to);
+  });
+
+  /** Redes sociales (Zernio): seguidores, alcance, impresiones e interacción por cuenta, y su salud. */
+  api.get('/api/analytics/social', admins, async (req: any) => {
+    const accountId = await targetAccount(req.user, req.query.account_id);
+    const q = parse(z.object({ days: z.coerce.number().int().refine((d) => [7, 30, 90].includes(d), 'Elige 7, 30 o 90 días').default(30) }), req.query);
+    return socialStats(accountId, q.days);
   });
 }

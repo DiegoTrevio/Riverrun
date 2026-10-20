@@ -73,7 +73,7 @@ function statusSwitch(bot) {
   return h('button', { class: `status-switch ${bot.active ? 'on' : ''}`, role: 'switch', 'aria-checked': String(!!bot.active), title: bot.active ? 'Pausar: deja de responder en todas sus conexiones' : 'Encender: empieza a responder', onclick: async () => {
     if (bot.active && !(await confirmAction('¿Pausar el agente? Dejará de responder en todas sus conexiones hasta que lo enciendas.'))) return;
     if (await run(() => api('PUT', `/api/chatbots/${bot.id}`, { active: !bot.active }), bot.active ? 'Agente en pausa' : 'Agente encendido')) render();
-  } }, h('span', { class: 'dot', 'aria-hidden': 'true' }), bot.active ? 'Encendido' : 'En pausa');
+  } }, h('span', { class: 'dot', 'aria-hidden': 'true' }), bot.active ? 'Encendido' : bot.start_on_connect ? 'Se enciende al conectar' : 'En pausa');
 }
 
 /** Lo que falta para que el agente atienda, en orden. Desaparece cuando todo está listo. */
@@ -83,8 +83,8 @@ async function setupSteps(bot) {
   const steps = [
     [!!bot.personality.prompt.trim(), 'Escribe cómo atiende', `#/bot/${bot.id}/instrucciones`],
     [knowledge === null || knowledge.some((k) => k.active), 'Agrega tu información', `#/bot/${bot.id}/conocimiento`],
-    [connected, 'Conecta WhatsApp u otro canal', `#/bot/${bot.id}/conexiones?new=1`],
-    [!!bot.active, 'Enciéndelo', null],
+    [connected, 'Conecta WhatsApp u otro canal', (bot.channels || []).some((c) => c.type === 'whatsapp') ? `#/bot/${bot.id}/conexiones?new=1` : `#/bot/${bot.id}/empezar`],
+    [!!bot.active, bot.start_on_connect ? 'Se enciende solo al conectar WhatsApp' : 'Enciéndelo', null],
   ];
   if (steps.every(([ok]) => ok)) return null;
   return h('div', { class: 'card setup-steps', 'aria-label': 'Para empezar a atender' },
@@ -136,8 +136,8 @@ async function tabGeneral(root, bot) {
   const steps = [
     [knowledge.some((k) => k.active), 'Tiene la información de tu negocio', 'conocimiento', 'Agrega precios, servicios, horarios y preguntas frecuentes: es lo único que puede afirmar.'],
     [!!bot.personality.prompt.trim(), 'Sabe quién es y a quién atiende', 'personalidad', 'Escribe en "Instrucciones" qué hace tu negocio y qué debe lograr el asistente.'],
-    [channels.some((c) => c.active), 'Está en al menos un canal', null, 'Conéctalo a WhatsApp u otro canal con "+ Agregar canal".'],
-    [bot.active, 'Está encendido', null, 'Marca "Encendido" abajo y guarda.'],
+    [channels.some((c) => c.active), 'Está en al menos un canal', 'conexiones', 'Conéctalo a tu WhatsApp u otro canal en "Conexiones".'],
+    [bot.active, 'Está encendido', null, bot.start_on_connect ? 'Se encenderá solo al conectar su WhatsApp, o enciéndelo arriba con "Encender agente".' : 'Enciéndelo arriba con "Encender agente".'],
   ];
   void steps; void m;
   root.append(

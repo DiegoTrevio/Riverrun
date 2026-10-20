@@ -1,4 +1,5 @@
 import { truncateChars } from '../engine/text.js';
+import { parsePayload } from '../automation/buttons.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
@@ -9,7 +10,9 @@ import { findQuote } from '../store/quotes.js';
 import type { WebhookRequest } from '../channels/types.js';
 import { WEBCHAT_SESSION_RE, newWebchatSession } from '../channels/webchat.js';
 import { eventAccountId, platformWebhookSecret, verifySignature } from '../channels/zernio.js';
-import { saveZernioAccount } from '../channels/zernio-connect.js';
+import { receiveZernioEvent } from '../channels/zernio-events.js';
+import { saveZernioAccount, ZernioOwnershipError } from '../channels/zernio-connect.js';
+import { HttpError } from '../access.js';
 import { config } from '../config.js';
 import { query } from '../db.js';
 import { toPlainText } from '../engine/text.js';
@@ -63,40 +66,35 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
   /** Lo que llegó por el webhook de un canal: QR, estado de conexión, avisos y mensajes (guardados para los workers). */
   const processEvent = async (webhookReq: WebhookRequest) => {
     const { channel } = webhookReq;
-    const { messages, notices, connection, connectionReason, qr } = adapterFor(channel.type).parse(webhookReq);
+    const adapter = adapterFor(channel.type);
+    const { messages, notices, connection, connectionReason, qr } = adapter.parse(webhookReq);
     if (qr) await store.saveQr(channel.id, qr);
     for (const n of notices ?? []) await logEvent({ level: n.level, source: 'channel', message: n.message, accountId: channel.account_id, channelId: channel.id });
     if (connection) await recordConnectionState(channel, connection, connectionReason);
     await service.inbox.accept(channel, messages);
+    if (adapter.acknowledge) void adapter.acknowledge(webhookReq).catch(() => undefined);
   };
   // Evolution puede agregar el nombre del evento al final de la URL (webhook_by_events); lo aceptamos.
   app.post('/webhook/:token', handler);
   app.post('/webhook/:token/:event', handler);
 
   /**
-   * Webhook único de Zernio para toda la plataforma: el evento trae la cuenta conectada (account.id) y se entrega al
-   * canal que la tiene. Firmado con el secreto derivado de la clave del servidor.
+   * Webhook único de Zernio para toda la plataforma. Firmado con el secreto derivado de la clave del servidor. Cada
+   * evento se acepta una sola vez (por su id) y solo llega al canal del perfil que dice el evento; los mensajes se
+   * guardan al momento y lo demás se procesa después (src/channels/zernio-events.ts).
    */
   app.post('/zernio/events', async (req: any, reply) => {
     if (!verifySignature(req.headers, req.rawBody, [platformWebhookSecret()])) {
       await logEvent({ level: 'warn', source: 'webhook', message: 'Zernio: firma inválida en el webhook de la plataforma; se rechaza', details: { ip: req.ip } });
       return reply.code(401).send({ ok: false });
     }
-    const accountId = eventAccountId(req.body);
-    if (!accountId) return reply.send({ ok: true });
-    const rows = await query<{ id: string }>(`SELECT id FROM channels WHERE type = 'zernio' AND config->>'account_id' = $1`, [accountId]);
-    if (!rows.length) {
-      await logEvent({ level: 'info', source: 'webhook', message: `Zernio: evento ${String(req.body?.event ?? '')} de una cuenta sin canal (${accountId})` });
-      return reply.send({ ok: true });
-    }
     try {
-      for (const r of rows) {
-        const channel = await store.getChannel(r.id);
-        if (channel) await processEvent({ channel, headers: req.headers, query: req.query, body: req.body, rawBody: req.rawBody });
-      }
-      return reply.send({ ok: true });
+      const code = await receiveZernioEvent(req,
+        (channel) => processEvent({ channel, headers: req.headers, query: req.query, body: req.body, rawBody: req.rawBody }),
+        () => service.zernioEvents.wake());
+      return reply.code(code).send({ ok: true });
     } catch {
-      await logEvent({ level: 'error', source: 'webhook', message: 'webhook_receipt_failed', details: { reason: 'parse_or_storage', zernioAccount: accountId } }).catch(() => undefined);
+      await logEvent({ level: 'error', source: 'webhook', message: 'webhook_receipt_failed', details: { reason: 'parse_or_storage', zernioAccount: eventAccountId(req.body) } }).catch(() => undefined);
       return reply.code(503).send({ ok: false, error: 'No se pudo guardar la recepción. Reintenta.' });
     }
   });
@@ -159,11 +157,19 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
       return reply.redirect(panel);
     }
     const q = req.query as Record<string, string | undefined>;
-    if (!q.accountId || q.profileId !== channel.config.profile_id) {
-      await logEvent({ level: 'warn', source: 'channel', message: 'Zernio: la cuenta devuelta no corresponde al perfil del canal', accountId: channel.account_id, channelId: channel.id });
-      return reply.redirect(panel);
+    // El texto de error de la URL no se muestra (cualquiera puede armar el enlace): solo un código fijo.
+    if (q.error || !q.accountId) {
+      await logEvent({ level: 'warn', source: 'channel', message: `Zernio: la conexión no se completó${q.error ? ` (${String(q.error).slice(0, 80)})` : ''}`, accountId: channel.account_id, channelId: channel.id });
+      return reply.redirect(`${panel}?zernio=${q.error ? 'cancelled' : 'error'}`);
     }
-    await saveZernioAccount(channel, { id: q.accountId, username: q.username ?? '' });
+    try {
+      await saveZernioAccount(channel, { id: String(q.accountId), username: String(q.username ?? '') });
+    } catch (e: any) {
+      if (e instanceof ZernioOwnershipError) return reply.redirect(`${panel}?zernio=${e.code}`);
+      if (e instanceof HttpError && e.issues?.includes('limit_reached')) return reply.redirect(`${panel}?zernio=limit`);
+      await logEvent({ level: 'error', source: 'channel', message: `Zernio: no se pudo guardar la cuenta conectada: ${e?.message ?? e}`, accountId: channel.account_id, channelId: channel.id });
+      return reply.redirect(`${panel}?zernio=error`);
+    }
     return reply.redirect(panel);
   });
 
@@ -242,7 +248,7 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
   app.post('/webchat/:token/messages', async (req: any, reply) => {
     const ch = await webchat(req, reply);
     if (!ch) return;
-    const { session, text, name } = (req.body ?? {}) as { session?: string; text?: string; name?: string };
+    const { session, text, name, button } = (req.body ?? {}) as { session?: string; text?: string; name?: string; button?: string };
     if (!session || !WEBCHAT_SESSION_RE.test(session)) return reply.code(400).send({ error: 'Sesión inválida' });
     const clean = truncateChars(String(text ?? '').trim(), 2000);
     if (!clean) return reply.code(400).send({ error: 'Mensaje vacío' });
@@ -258,6 +264,8 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
       type: 'text',
       text: clean,
       timestamp: Math.floor(Date.now() / 1000),
+      // Toque de un botón de un flujo (cualquier otro valor se ignora).
+      ...(parsePayload(button) ? { payload: String(button) } : {}),
     });
     return { id: r.messageId };
   });
@@ -270,8 +278,8 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
     const contact = await store.findContact(ch.id, session);
     if (!contact) return { messages: [], typing: false };
     const after = Number(req.query.after) || 0;
-    const rows = await query<{ id: number; direction: string; sender: string; content: string; image_id: string | null; created_at: Date; conv_status: string; pending: boolean }>(
-      `SELECT m.id, m.direction, m.sender, m.content, m.image_id, m.created_at FROM messages m
+    const rows = await query<{ id: number; direction: string; sender: string; content: string; image_id: string | null; created_at: Date; buttons: any; choice: string | null }>(
+      `SELECT m.id, m.direction, m.sender, m.content, m.image_id, m.created_at, m.meta->'buttons' AS buttons, m.meta->>'choice' AS choice FROM messages m
          JOIN conversations c ON c.id = m.conversation_id
        WHERE c.contact_id = $1 AND m.id > $2 AND m.status = 'ok' ORDER BY m.id LIMIT 200`,
       [contact.id, after],
@@ -290,6 +298,8 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
         text: m.direction === 'in' ? m.content : toPlainText(m.content),
         image_url: m.image_id ? signedImageUrl(m.image_id) : null,
         created_at: m.created_at,
+        // Botones del mensaje: de respuesta (se tocan) o de enlace (https).
+        ...(m.direction === 'out' && Array.isArray(m.buttons) ? { buttons: m.buttons.filter((b: any) => b && typeof b.label === 'string').map((b: any) => (b.kind === 'url' ? { kind: 'url', label: b.label, url: /^https:\/\//.test(String(b.url ?? '')) ? b.url : '' } : { kind: 'reply', label: b.label, payload: String(b.payload ?? '') })) } : {}),
       })),
     };
   });

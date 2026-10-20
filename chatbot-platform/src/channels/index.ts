@@ -38,10 +38,17 @@ export function webhookUrl(channel: Pick<Channel, 'type' | 'webhook_token'>) {
   return `${base}/webhook/${channel.webhook_token}`;
 }
 
-/** Versión del canal apta para el panel: secretos enmascarados e información de conexión. */
-export function publicChannel(channel: Channel) {
+/**
+ * Versión del canal apta para el panel: secretos enmascarados e información de conexión. En redes sociales (Zernio), el
+ * perfil y la cuenta solo los ve el superadmin; el negocio solo sabe si su cuenta está conectada.
+ */
+export function publicChannel(channel: Channel, viewer?: { role: string } | null) {
   const cfg: Record<string, unknown> = { ...channel.config };
   for (const k of SECRET_FIELDS) if (cfg[k]) cfg[k] = MASK;
+  if (channel.type === 'zernio') {
+    cfg.connected = !!channel.config.account_id;
+    if (viewer?.role !== 'superadmin') { delete cfg.profile_id; delete cfg.account_id; }
+  }
   // El QR y el código de vinculación solo los entrega la sesión de conexión.
   const { webhook_token, account_active, qr_code, qr_at, pairing_code, pairing_number, pairing_at, ...rest } = channel;
   void account_active, void qr_code, void qr_at, void pairing_code, void pairing_number, void pairing_at;

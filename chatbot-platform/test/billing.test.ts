@@ -47,7 +47,7 @@ t('el superadmin define planes; el cliente solo los ve', async () => {
   assert.equal((await h.authed('POST', '/api/plans', { key: 'Mal Clave', name: 'x', price: 1 })).statusCode, 400);
   const view = (await B.api('GET', '/api/billing')).json();
   assert.deepEqual(view.plans.map((p: any) => p.key), ['solo-mp', 'pro']);
-  assert.deepEqual(view.plans.find((p: any) => p.key === 'solo-mp').providers.map((x: any) => x.name), ['mercadopago'], 'sin ID de precio Stripe no se ofrece');
+  assert.deepEqual(view.plans.find((p: any) => p.key === 'solo-mp').providers.map((x: any) => x.name), ['stripe', 'mercadopago'], 'sin ID de precio, Stripe arma el precio con el monto del plan');
   assert.equal(view.account.status, 'trial');
   assert.equal((await B.api('GET', '/api/meta')).json().billing_enabled, true);
 });
@@ -62,7 +62,9 @@ t('Stripe: contratar abre el pago y registra el intento', async () => {
   assert.equal(req.body.get('client_reference_id'), B.account);
   assert.equal(req.body.get('subscription_data[metadata][account_id]'), B.account);
   assert.equal((await sub()).status, 'incomplete');
-  assert.equal((await B.api('POST', '/api/billing/checkout', { plan: 'solo-mp', provider: 'stripe' })).statusCode, 400);
+  assert.equal((await sub()).checkout_ref, 'cs_1', 'se guarda la sesión para confirmar el pago sin esperar el aviso');
+  assert.equal(req.body.get('success_url'), 'https://bot.test/pago/stripe');
+  assert.equal(req.body.get('cancel_url'), 'https://bot.test/pago/stripe?estado=cancelado');
   assert.equal((await B.api('POST', '/api/billing/checkout', { plan: 'nada', provider: 'stripe' })).statusCode, 404);
   fake.stripe.fail = true;
   assert.equal((await B.api('POST', '/api/billing/checkout', { plan: 'pro', provider: 'stripe' })).statusCode, 502);

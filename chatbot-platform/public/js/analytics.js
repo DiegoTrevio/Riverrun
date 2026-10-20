@@ -18,7 +18,7 @@ const PRESETS = [
   ['custom', 'Rango de fechas'],
 ];
 const CHANNEL_NAMES = { whatsapp: 'WhatsApp', webchat: 'Chat web', email: 'Correo', telegram: 'Telegram', messenger: 'Messenger', instagram: 'Instagram' };
-const KIND_NAMES = { decision: 'Respuestas', summary: 'Resúmenes', transcription: 'Transcripciones', import: 'Importaciones de conocimiento', report: 'Reportes' };
+const KIND_NAMES = { decision: 'Respuestas', summary: 'Resúmenes', transcription: 'Transcripciones', import: 'Importaciones de conocimiento', report: 'Reportes', social_reply: 'Respuestas a comentarios' };
 const ROLE_NAMES = { admin: 'Administrador', agent: 'Operador' };
 
 const nf = new Intl.NumberFormat('es-MX');
@@ -287,6 +287,7 @@ export async function viewAnalytics(root, params = new URLSearchParams()) {
   root.append(
     h('div', { class: 'row between' }, h('h1', {}, 'Estadísticas'), h('div', { class: 'row' }, stamp,
       h('button', { class: 'small', onclick: () => load(false) }, 'Actualizar'))),
+    reportTabs(''),
     h('div', { class: 'row stats-filters' }, select, customRow),
     frame);
 
@@ -432,4 +433,130 @@ export async function viewAnalytics(root, params = new URLSearchParams()) {
 
   await load(false);
   poll(() => load(true), REFRESH_MS, root);
+}
+
+/* -------------------------------- Pestañas de Reportes -------------------------------- */
+
+/** La operación del negocio y, con las redes sociales activas en la instalación, sus redes. */
+function reportTabs(tab) {
+  if (!state.meta?.zernio_enabled) return null;
+  return h('div', { class: 'tabs' }, [['', 'Operación'], ['redes', 'Redes sociales']].map(([k, l]) =>
+    h('a', { href: `#/estadisticas${k ? `/${k}` : ''}`, class: k === tab ? 'active' : '', 'aria-current': k === tab ? 'page' : null }, l)));
+}
+
+/* -------------------------------- Redes sociales (Zernio) -------------------------------- */
+
+const NET_ICONS = { instagram: '📸', facebook: '📘', whatsapp: '🟢', telegram: '✈️', twitter: '𝕏', bluesky: '🦋', reddit: '👽', linkedin: '💼', tiktok: '🎵', youtube: '▶️', threads: '🧵', pinterest: '📌', googlebusiness: '🗺️' };
+
+/** Tendencia de una serie en una línea mínima; las cifras exactas van en la tabla de la cuenta. */
+function sparkline(values, label) {
+  const W = 200;
+  const H = 40;
+  const pts = values.map((v, i) => [v, i]).filter(([v]) => v !== null && v !== undefined);
+  if (pts.length < 2) return null;
+  const lo = Math.min(...pts.map(([v]) => v));
+  const span = Math.max(...pts.map(([v]) => v)) - lo || 1;
+  const n = values.length;
+  const points = pts.map(([v, i]) => `${((i / (n - 1)) * (W - 4) + 2).toFixed(1)},${(H - 3 - ((v - lo) / span) * (H - 6)).toFixed(1)}`).join(' ');
+  return svg('svg', { viewBox: `0 0 ${W} ${H}`, class: 'stats-spark', role: 'img', 'aria-label': label, preserveAspectRatio: 'none' },
+    svg('polyline', { points, class: 'stats-line', stroke: 'var(--s1)', 'vector-effect': 'non-scaling-stroke' }));
+}
+
+export async function viewSocialStats(root, params = new URLSearchParams()) {
+  let days = ['7', '30', '90'].includes(params.get('days')) ? Number(params.get('days')) : 30;
+  const frame = h('div', { class: 'stats-frame' });
+  const stamp = h('span', { class: 'small muted', 'aria-live': 'polite' }, 'Cargando…');
+  root.append(
+    h('div', { class: 'row between' }, h('h1', {}, 'Estadísticas'), stamp),
+    reportTabs('redes'));
+  if (!state.meta?.zernio_enabled) {
+    root.append(h('p', { class: 'banner warn' }, 'Las redes sociales no están activadas en esta instalación.'));
+    return;
+  }
+  root.append(
+    h('div', { class: 'row stats-filters' },
+      h('select', { 'aria-label': 'Periodo', onchange: (e) => { days = Number(e.target.value); history.replaceState(null, '', `#/estadisticas/redes?days=${days}`); load(); } },
+        [[7, 'Últimos 7 días'], [30, 'Últimos 30 días'], [90, 'Últimos 90 días']].map(([v, t]) => h('option', { value: v, selected: v === days }, t)))),
+    frame);
+
+  let seq = 0;
+  async function load() {
+    const mine = ++seq;
+    frame.style.opacity = '0.6';
+    try {
+      const d = await api('GET', `/api/analytics/social?days=${days}${acct('&')}`);
+      if (mine !== seq || !root.isConnected) return;
+      render(d);
+      stamp.textContent = 'Se actualizan una vez al día';
+    } catch (e) {
+      if (mine !== seq) return;
+      stamp.textContent = '';
+      fill(frame, h('div', { class: 'banner warn', role: 'alert' }, `No se pudieron cargar las estadísticas de tus redes: ${e?.message ?? e} `,
+        h('button', { class: 'small', onclick: () => load() }, 'Reintentar')));
+    } finally {
+      if (mine === seq) frame.style.opacity = '';
+    }
+  }
+
+  const mini = (label, value, sub) => h('div', {}, h('div', { class: 'small muted' }, label), h('strong', { class: 'stats-mini-value' }, fmt(value)), sub ? h('div', { class: 'small muted' }, sub) : null);
+  const change = (n) => (n === null || n === undefined ? null : n === 0 ? 'sin cambio' : `${n > 0 ? '▲ +' : '▼ '}${fmt(n)} en el periodo`);
+
+  const accountCard = (a) => {
+    const avatar = a.picture
+      ? h('img', { src: a.picture, alt: '', width: 36, height: 36, style: 'border-radius:50%;object-fit:cover', referrerpolicy: 'no-referrer' })
+      : h('span', { style: 'font-size:26px', 'aria-hidden': 'true' }, NET_ICONS[a.platform] || '🔗');
+    const health = a.health.problem
+      ? h('p', { class: 'small stats-warn' }, '⚠ ', a.health.problem, a.health.reconnect ? [' · ', h('a', { href: '#/redes' }, 'Reconectar')] : null)
+      : h('p', { class: 'small muted' }, '✔ Funcionando');
+    let body;
+    if (!a.analytics) body = h('p', { class: 'small muted' }, `${a.label} no da estadísticas por esta vía.`);
+    else if (!a.series.length) body = h('p', { class: 'small muted' }, a.error || 'Las primeras cifras llegan durante el día siguiente a conectarla.');
+    else {
+      const useFollowers = a.series.filter((s) => s.followers !== null).length > 1;
+      const trend = useFollowers ? a.series.map((s) => s.followers) : a.series.map((s) => s.impressions);
+      const known = trend.filter((v) => v !== null);
+      body = [
+        h('div', { class: 'stats-mini' },
+          a.platform === 'googlebusiness' ? null : mini('Seguidores', a.followers, change(a.followers_change)),
+          a.totals.impressions === null ? null : mini('Impresiones', a.totals.impressions),
+          a.totals.reach === null ? null : mini('Alcance', a.totals.reach, 'suma por día'),
+          a.totals.engagement === null ? null : mini('Interacciones', a.totals.engagement),
+          a.totals.posts === null ? null : mini('Publicaciones', a.totals.posts)),
+        sparkline(trend, `${useFollowers ? 'Seguidores' : 'Impresiones'}: de ${fmt(known[0])} a ${fmt(known.at(-1))} en el periodo`),
+        dataTable(['Día', 'Seguidores', 'Impresiones', 'Alcance', 'Interacciones', 'Publicaciones'],
+          a.series.map((s) => [shortDate(s.day), fmt(s.followers), fmt(s.impressions), fmt(s.reach), fmt(s.engagement), fmt(s.posts)])),
+        a.error ? h('p', { class: 'small stats-warn' }, '⚠ ', a.error) : null,
+      ];
+    }
+    return h('div', { class: 'card stats-chart-card' },
+      h('div', { class: 'row', style: 'gap:10px;align-items:center' }, avatar,
+        h('div', { style: 'min-width:0' }, h('h2', {}, a.display_name || a.username || a.label), h('div', { class: 'small muted' }, a.label, a.username ? ` · @${a.username}` : ''))),
+      health, body);
+  };
+
+  function render(d) {
+    if (!d.accounts.length) {
+      fill(frame, h('div', { class: 'card' }, h('p', {}, 'Todavía no conectas redes sociales.'), h('a', { class: 'btn primary', href: '#/redes' }, 'Conectar una red')));
+      return;
+    }
+    const counted = d.accounts.filter((a) => a.analytics);
+    const sum = (k) => counted.reduce((t, a) => t + (a.totals[k] || 0), 0);
+    const withFollowers = counted.filter((a) => a.followers !== null);
+    const growth = withFollowers.reduce((t, a) => t + (a.followers_change || 0), 0);
+    const attention = d.accounts.filter((a) => a.health.reconnect);
+    fill(frame,
+      d.analytics_available === false ? h('p', { class: 'banner warn', role: 'status' }, 'Las estadísticas de redes están pausadas en la plataforma; avisa al administrador. Mientras tanto ves lo que ya se tenía.') : null,
+      attention.length ? h('p', { class: 'banner warn', role: 'status' },
+        attention.length === 1 ? `${attention[0].label} necesita que la vuelvas a conectar. ` : `${attention.length} redes necesitan que las vuelvas a conectar. `,
+        h('a', { href: '#/redes' }, 'Ir a Redes sociales')) : null,
+      h('div', { class: 'stats-kpis' },
+        tile('Seguidores', withFollowers.length ? withFollowers.reduce((t, a) => t + a.followers, 0) : null, { sub: withFollowers.length ? `${growth >= 0 ? '+' : ''}${fmt(growth)} en el periodo` : 'Sin datos todavía' }),
+        tile('Impresiones', sum('impressions'), { sub: `últimos ${d.days} días` }),
+        tile('Interacciones', sum('engagement'), { sub: 'me gusta, comentarios, compartidos y guardados' }),
+        tile('Publicaciones', sum('posts'), { sub: `últimos ${d.days} días` })),
+      h('div', { class: 'stats-grid' }, d.accounts.map(accountCard)),
+      h('p', { class: 'small muted' }, 'Las cifras vienen de cada red y se actualizan una vez al día (días en hora UTC). Cada red mide a su manera: compara cada red consigo misma.'));
+  }
+
+  await load();
 }

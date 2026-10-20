@@ -35,11 +35,36 @@ export const evo = {
 /** Zernio simulado: perfiles, cuentas conectadas, webhooks y códigos de Telegram, con las respuestas de la API real. */
 export const zer = {
   key: 'zk_plataforma',
+  /** Usuario dueño de la llave (cambia si la llave es de otra cuenta de Zernio). */
+  userId: 'user_1',
   unauthorized: false,
   profiles: [] as any[],
   accounts: new Map<string, any>(),
   webhooks: [] as any[],
   telegram: new Map<string, { status: 'pending' | 'connected' | 'expired'; profileId: string }>(),
+  /** Registro de entregas del webhook (GET /webhooks/logs) y los reenvíos pedidos. */
+  logs: [] as any[],
+  redelivered: [] as Array<{ webhookId: string; eventId: string }>,
+  /** Las siguientes N llamadas responden 429 (límite de la llave). */
+  rateLimited: 0,
+  /** Plantillas de WhatsApp por cuenta conectada (las aprueba la prueba cambiando su estado). */
+  templates: [] as any[],
+  /** Comentarios y reseñas (Inbox): publicaciones con comentarios por cuenta, comentarios por publicación y reseñas. */
+  posts: [] as any[],
+  comments: new Map<string, any[]>(),
+  reviews: [] as any[],
+  /** Comentarios que ya recibieron su respuesta privada (la red permite una). */
+  privateReplied: new Set<string>(),
+  /** Publicaciones (POST /posts) por id, llaves de idempotencia ya vistas y redes que fallan al publicar (con su error). */
+  publications: new Map<string, any>(),
+  idem: new Map<string, string>(),
+  postFail: new Map<string, string>(),
+  /** Salud por cuenta (GET /accounts/health) y estadísticas: seguidores, métricas diarias y Google; sin el complemento, 402/403. */
+  health: new Map<string, any>(),
+  followers: new Map<string, any[]>(),
+  metrics: new Map<string, any[]>(),
+  gbp: new Map<string, any>(),
+  analyticsAddon: true,
 };
 /** Graph de Meta simulado para «Conectar con Facebook»: páginas que devuelve me/accounts y tokens que Meta retiró. */
 export const metaFake = {
@@ -68,14 +93,56 @@ const extServer = http.createServer((req, res) => {
       const p = path.slice('/api/v1'.length);
       const m = req.method;
       if (zer.unauthorized || !String(req.headers.authorization).startsWith('Bearer zk_')) return json(401, { error: 'Unauthorized' });
+      if (zer.rateLimited > 0) {
+        zer.rateLimited--;
+        res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '0' });
+        return res.end(JSON.stringify({ error: 'Rate limit exceeded' }));
+      }
       const account = (platform: string, profileId: string, username: string) => {
         const a = { _id: `acc_${++ext.n}`, platform, profileId, username, displayName: `Negocio ${username}`, profilePicture: `https://cdn.zernio.example/${username}.jpg`, isActive: true };
         zer.accounts.set(a._id, a);
         return a;
       };
-      if (p === '/profiles' && m === 'GET') return json(200, { profiles: zer.profiles, total: zer.profiles.length });
-      if (p === '/profiles' && m === 'POST') { const pr = { _id: `prof_${++ext.n}`, name: body.name, externalId: body.externalId }; zer.profiles.push(pr); return json(201, { message: 'ok', profile: pr }); }
+      if (p === '/profiles' && m === 'GET') {
+        const ext_ = url.searchParams.get('externalId');
+        const list = ext_ ? zer.profiles.filter((x) => x.externalId === ext_) : zer.profiles;
+        return json(200, { profiles: list, total: list.length });
+      }
+      if (p === '/profiles' && m === 'POST') {
+        const dup = zer.profiles.find((x) => x.externalId === body.externalId);
+        if (dup) return json(409, { error: 'A profile with this externalId already exists', existingProfileId: dup._id });
+        const pr = { _id: `prof_${++ext.n}`, name: body.name, externalId: body.externalId };
+        zer.profiles.push(pr);
+        return json(201, { message: 'ok', profile: pr });
+      }
+      if (p.startsWith('/profiles/') && m === 'GET') {
+        const pr = zer.profiles.find((x) => x._id === decodeURIComponent(p.split('/')[2]));
+        return pr ? json(200, { profile: pr }) : json(404, { error: 'Profile not found' });
+      }
+      if (p.startsWith('/profiles/') && m === 'DELETE') {
+        const id = decodeURIComponent(p.split('/')[2]);
+        if ([...zer.accounts.values()].some((a) => a.profileId === id)) return json(400, { error: 'Profile has active accounts' });
+        const i = zer.profiles.findIndex((x) => x._id === id);
+        if (i < 0) return json(404, { error: 'Profile not found' });
+        zer.profiles.splice(i, 1);
+        return json(200, { message: 'ok' });
+      }
       if (p === '/accounts' && m === 'GET') return json(200, { accounts: [...zer.accounts.values()].filter((a) => a.profileId === url.searchParams.get('profileId')) });
+      if (p === '/accounts/health' && m === 'GET') return json(200, { summary: { total: zer.health.size }, accounts: [...zer.health.entries()].map(([accountId, x]) => ({ accountId, ...x })) });
+      if (p === '/accounts/follower-stats' && m === 'GET') {
+        if (!zer.analyticsAddon) return json(403, { error: 'Analytics add-on required', requiresAddon: true });
+        const ids = (url.searchParams.get('accountIds') ?? '').split(',').filter(Boolean);
+        return json(200, { stats: Object.fromEntries(ids.map((id) => [id, zer.followers.get(id) ?? []])), accounts: [] });
+      }
+      if (p === '/analytics/daily-metrics' && m === 'GET') {
+        if (!zer.analyticsAddon) return json(402, { error: 'analytics_addon_required' });
+        const from = url.searchParams.get('fromDate') ?? '';
+        return json(200, { dailyData: (zer.metrics.get(url.searchParams.get('accountId') ?? '') ?? []).filter((d) => !from || d.date >= from) });
+      }
+      if (p === '/analytics/googlebusiness/performance' && m === 'GET') {
+        if (!zer.analyticsAddon) return json(402, { error: 'analytics_addon_required' });
+        return json(200, { metrics: zer.gbp.get(url.searchParams.get('accountId') ?? '') ?? {} });
+      }
       if (p.startsWith('/accounts/') && m === 'DELETE') { zer.accounts.delete(decodeURIComponent(p.split('/')[2])); return json(200, { message: 'ok' }); }
       if (p === '/webhooks/settings' && m === 'GET') return json(200, { webhooks: zer.webhooks });
       if (p === '/webhooks/settings' && m === 'POST') {
@@ -90,7 +157,99 @@ const extServer = http.createServer((req, res) => {
         Object.assign(w, body);
         return json(200, { success: true, webhook: w });
       }
-      if (p === '/users') return json(200, { currentUserId: 'user_1', users: [] });
+      if (p === '/whatsapp/templates' && m === 'GET') return json(200, { success: true, templates: zer.templates.filter((t) => t.accountId === url.searchParams.get('accountId')) });
+      if (p === '/whatsapp/templates' && m === 'POST') {
+        if (!/^[a-z][a-z0-9_]*$/.test(String(body.name)) || !Array.isArray(body.components)) return json(400, { error: 'Invalid template' });
+        if (zer.templates.some((t) => t.accountId === body.accountId && t.name === body.name && t.language === body.language)) return json(400, { error: { message: 'Template name already exists' } });
+        const t = { id: `tpl_${++ext.n}`, accountId: body.accountId, name: body.name, language: body.language, category: body.category, status: 'PENDING', components: body.components };
+        zer.templates.push(t);
+        return json(200, { success: true, template: { id: t.id, name: t.name, status: t.status, category: t.category, language: t.language } });
+      }
+      if (p.startsWith('/whatsapp/templates/') && m === 'DELETE') {
+        const name = decodeURIComponent(p.split('/')[3]);
+        zer.templates = zer.templates.filter((t) => !(t.accountId === url.searchParams.get('accountId') && t.name === name && (!url.searchParams.get('language') || t.language === url.searchParams.get('language'))));
+        return json(200, { success: true });
+      }
+      if (/^\/accounts\/[^/]+\/whatsapp\/register$/.test(p) && m === 'POST') {
+        if (body?.pin === '000000') return json(422, { error: 'PIN mismatch' });
+        return json(200, { registered: true, accountId: decodeURIComponent(p.split('/')[2]), phoneNumberId: 'pn_1' });
+      }
+      if (p === '/webhooks/logs' && m === 'GET') return json(200, { logs: zer.logs, pagination: { total: zer.logs.length, limit: 50, skip: 0, pages: 1, hasMore: false } });
+      if (p === '/webhooks/logs/redeliver' && m === 'POST') {
+        if (!zer.logs.some((l) => l.webhookId === body.webhookId && l.eventId === body.eventId)) return json(422, { error: 'No delivery matches this event' });
+        zer.redelivered.push({ webhookId: body.webhookId, eventId: body.eventId });
+        return json(200, { success: true, message: 'Webhook re-delivered' });
+      }
+      // Comentarios y reseñas: ids de la red codificados en la ruta (los de Google llevan "/").
+      const seg = p.split('/').map((x) => decodeURIComponent(x));
+      const platformOf = (id: unknown) => zer.accounts.get(String(id ?? ''))?.platform;
+      if (p === '/inbox/comments' && m === 'GET') {
+        return json(200, { success: true, data: zer.posts.filter((x) => x.accountId === url.searchParams.get('accountId')), pagination: { hasMore: false, nextCursor: null } });
+      }
+      if (seg[1] === 'inbox' && seg[2] === 'comments' && seg.length === 4) {
+        const post = zer.posts.find((x) => x.id === seg[3]);
+        if (m === 'GET') return json(200, { comments: zer.comments.get(seg[3]) ?? [], post: post ? { permalink: post.permalink, text: post.content, thumbnailUrl: post.picture } : {}, pagination: { hasMore: false } });
+        if (m === 'POST') return json(200, { success: true, data: { commentId: `zc_${++ext.n}`, isReply: !!body.commentId } });
+        if (m === 'DELETE') return json(200, { success: true });
+      }
+      if (seg[1] === 'inbox' && seg[2] === 'comments' && seg.length === 6) {
+        const platform = platformOf(body?.accountId ?? url.searchParams.get('accountId'));
+        if (seg[5] === 'hide' && !['facebook', 'instagram', 'threads', 'twitter', 'tiktok'].includes(platform)) return json(400, { error: { code: 'PLATFORM_LIMITATION', message: 'Hide is not supported' } });
+        if (seg[5] === 'like' && platform === 'instagram') return json(403, { error: { code: 'PLATFORM_BETA_RESTRICTED', message: 'Instagram comment likes are in beta' } });
+        if (seg[5] === 'private-reply') {
+          if (zer.privateReplied.has(seg[4])) return json(400, { error: 'Private reply already sent', details: { privateReplyConsumed: true } });
+          zer.privateReplied.add(seg[4]);
+          return json(200, { success: true, messageId: `pr_${++ext.n}`, commentId: seg[4], platform });
+        }
+        return json(200, { success: true, ...(seg[5] === 'like' && m === 'POST' ? { likeUri: `at://like/${++ext.n}` } : {}) });
+      }
+      if (p === '/inbox/reviews' && m === 'GET') return json(200, { success: true, data: zer.reviews.filter((r) => r.accountId === url.searchParams.get('accountId')), pagination: { hasMore: false } });
+      if (seg[1] === 'inbox' && seg[2] === 'reviews' && seg[4] === 'reply' && m === 'POST') return json(200, { success: true, reply: { id: `rr_${++ext.n}`, text: body.message } });
+      // Publicaciones: crear (ya o programada; la misma llave devuelve la misma), consultar, cambiar, borrar y reintentar.
+      if (p === '/posts' && m === 'POST') {
+        const key = String(req.headers['idempotency-key'] ?? '');
+        if (key && zer.idem.has(key)) return json(200, { post: zer.publications.get(zer.idem.get(key)!), message: 'Idempotent replay' });
+        for (const pl of body.platforms ?? []) {
+          if (!zer.accounts.get(pl.accountId)) return json(403, { error: { code: 'ACCOUNT_DISCONNECTED', message: 'Account disconnected' } });
+          if (['instagram', 'tiktok', 'youtube', 'pinterest'].includes(pl.platform) && !(body.mediaItems ?? []).length) return json(400, { error: `${pl.platform} requires media` });
+        }
+        const id = `zp_${++ext.n}`;
+        const now = !!body.publishNow;
+        const platforms = (body.platforms ?? []).map((pl: any) => {
+          const fail = zer.postFail.get(pl.platform);
+          const n = ++ext.n;
+          return {
+            platform: pl.platform, accountId: { _id: pl.accountId, platform: pl.platform, username: zer.accounts.get(pl.accountId)?.username }, status: !now ? 'pending' : fail ? 'failed' : 'published',
+            ...(now && !fail ? { platformPostId: `pp_${n}`, platformPostUrl: `https://${pl.platform}.test/p/${n}` } : {}), ...(now && fail ? { errorMessage: fail } : {}),
+          };
+        });
+        const status = !now ? 'scheduled' : platforms.every((x: any) => x.status === 'published') ? 'published' : platforms.some((x: any) => x.status === 'published') ? 'partial' : 'failed';
+        const post = { _id: id, content: body.content, status, scheduledFor: body.scheduledFor ?? null, timezone: body.timezone ?? null, platforms, metadata: body.metadata ?? {} };
+        zer.publications.set(id, post);
+        if (key) zer.idem.set(key, id);
+        return json(status === 'partial' || status === 'failed' ? 207 : 201, { post, message: 'ok' });
+      }
+      if (seg[1] === 'posts' && seg[2]) {
+        const post = zer.publications.get(seg[2]);
+        if (!post) return json(404, { error: 'Post not found' });
+        if (seg[3] === 'retry' && m === 'POST') {
+          post.platforms = post.platforms.map((x: any) => (x.status === 'failed' ? { ...x, status: 'published', platformPostUrl: `https://${x.platform}.test/p/r${++ext.n}`, errorMessage: undefined } : x));
+          post.status = 'published';
+          return json(200, { post });
+        }
+        if (m === 'GET') return json(200, { post });
+        if (m === 'PUT') {
+          if (post.status === 'published') return json(400, { error: 'Published posts cannot be edited' });
+          Object.assign(post, { content: body.content, scheduledFor: body.scheduledFor, timezone: body.timezone });
+          return json(200, { post });
+        }
+        if (m === 'DELETE') {
+          if (post.status === 'published') return json(400, { error: 'Published posts cannot be deleted' });
+          zer.publications.delete(seg[2]);
+          return json(200, { message: 'Post deleted' });
+        }
+      }
+      if (p === '/users') return json(200, { currentUserId: zer.userId, users: [] });
       if (p === '/connect/bluesky/credentials') {
         if (body.appPassword === 'mala') return json(400, { error: 'Invalid identifier or password' });
         const profileId = String(body.state).split('-').slice(1).join('-');
@@ -205,6 +364,8 @@ process.env.META_APP_SECRET = 'meta-app-secret-pruebas';
 process.env.META_VERIFY_TOKEN = 'verificacion-meta-pruebas';
 process.env.ZERNIO_API_URL = `${extUrl}/api/v1`;
 process.env.ZERNIO_API_KEY = zer.key;
+// Presupuesto de llamadas a Zernio holgado en las pruebas (la prueba del presupuesto lo baja).
+process.env.ZERNIO_RATE_PER_MIN = process.env.ZERNIO_RATE_PER_MIN || '100000';
 process.env.EVOLUTION_URL = extUrl;
 process.env.EVOLUTION_API_KEY = 'llave-global-de-pruebas';
 process.env.PUBLIC_BASE_URL = 'https://bot.test';
@@ -332,7 +493,7 @@ export async function createHarness() {
       await h.idle();
     },
     /** Espera a que la cola termine todo lo pendiente (evita que una prueba contamine a la siguiente). */
-    async idle() { await waitFor(async () => service.queue.size === 0 && service.inbox.size === 0 && inflight.n === 0 && (await pool.query("SELECT count(*)::int AS n FROM conversation_work WHERE state IN ('pending','running')")).rows[0].n===0 && (await pool.query("SELECT count(*)::int AS n FROM inbound_receipts WHERE state IN ('pending','running')")).rows[0].n===0, 8000); },
+    async idle() { await waitFor(async () => service.queue.size === 0 && service.inbox.size === 0 && service.zernioEvents.size === 0 && inflight.n === 0 && (await pool.query("SELECT count(*)::int AS n FROM zernio_events WHERE state IN ('pending','running')")).rows[0].n===0 && (await pool.query("SELECT count(*)::int AS n FROM conversation_work WHERE state IN ('pending','running')")).rows[0].n===0 && (await pool.query("SELECT count(*)::int AS n FROM inbound_receipts WHERE state IN ('pending','running')")).rows[0].n===0, 8000); },
     webhook(text: string, opts: { fromMe?: boolean; phone?: string; id?: string; timestamp?: number; instance?: string } = {}) {
       const phone = opts.phone ?? '5215511112222';
       return app.inject({

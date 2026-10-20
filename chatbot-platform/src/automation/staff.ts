@@ -18,33 +18,56 @@ export const StaffScheduleBodySchema = z.object({
   hours: WeeklyHoursSchema.nullable().default(null),
   /** Días libres: vacaciones, permisos… (inclusive). */
   time_off: z.array(TimeOffSchema).max(100).default([]),
+  /** Enlace fijo de videollamada (Zoom, Meet personal…): se usa si no tiene calendario conectado que cree la sala. */
+  meeting_url: z.union([z.literal(''), z.string().trim().url().max(500).refine((u) => u.startsWith('https://'), 'El enlace debe empezar con https://')]).optional(),
 });
 
 export interface StaffInfo {
   id: string;
   hours: WeeklyHours | null;
   time_off: TimeOff[];
+  meeting_url?: string;
 }
 
 /** Horario y días libres de esas personas (las que no tienen nada guardado siguen el horario del negocio). */
 export async function staffInfo(userIds: string[]): Promise<StaffInfo[]> {
   if (!userIds.length) return [];
-  const rows = await query<{ user_id: string; hours: WeeklyHours | null; time_off: TimeOff[] }>(
-    'SELECT user_id, hours, time_off FROM staff_schedules WHERE user_id = ANY($1::uuid[])',
+  const rows = await query<{ user_id: string; hours: WeeklyHours | null; time_off: TimeOff[]; meeting_url: string }>(
+    'SELECT user_id, hours, time_off, meeting_url FROM staff_schedules WHERE user_id = ANY($1::uuid[])',
     [userIds],
   );
   return userIds.map((id) => {
     const r = rows.find((x) => x.user_id === id);
-    return { id, hours: r?.hours ?? null, time_off: r?.time_off ?? [] };
+    return { id, hours: r?.hours ?? null, time_off: r?.time_off ?? [], meeting_url: r?.meeting_url ?? '' };
   });
 }
 
 export async function saveSchedule(accountId: string, userId: string, body: z.infer<typeof StaffScheduleBodySchema>) {
   await query(
-    `INSERT INTO staff_schedules (user_id, account_id, hours, time_off) VALUES ($1, $2, $3, $4)
-     ON CONFLICT (user_id) DO UPDATE SET hours = $3, time_off = $4, updated_at = now()`,
-    [userId, accountId, body.hours === null ? null : JSON.stringify(body.hours), JSON.stringify(body.time_off)],
+    `INSERT INTO staff_schedules (user_id, account_id, hours, time_off, meeting_url) VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (user_id) DO UPDATE SET hours = $3, time_off = $4, meeting_url = coalesce($6, staff_schedules.meeting_url), updated_at = now()`,
+    // Sin enlace en el cuerpo, se conserva el que tenía.
+    [userId, accountId, body.hours === null ? null : JSON.stringify(body.hours), JSON.stringify(body.time_off), body.meeting_url ?? '', body.meeting_url ?? null],
   );
+}
+
+/**
+ * El servicio solo con sus personas activas (una desactivada no recibe citas ni ofrece horarios). Si tenía personas y
+ * ninguna está activa, `none` = true: no hay a quién agendar.
+ */
+export async function activeStaff<T extends Pick<Service, 'assigned_user_ids' | 'account_id'>>(service: T): Promise<T & { none: boolean }> {
+  if (!service.assigned_user_ids.length) return { ...service, none: false };
+  const rows = await query<{ id: string }>(`SELECT id FROM users WHERE id = ANY($1::uuid[]) AND account_id = $2 AND active`, [service.assigned_user_ids, service.account_id]);
+  const ok = new Set(rows.map((r) => r.id));
+  const ids = service.assigned_user_ids.filter((id) => ok.has(id));
+  return { ...service, assigned_user_ids: ids, none: !ids.length };
+}
+
+/** Nombre de cada persona (el que ve el cliente): su nombre o, si no tiene, la parte de su correo antes de @. */
+export async function staffNames(userIds: string[]): Promise<Map<string, string>> {
+  if (!userIds.length) return new Map();
+  const rows = await query<{ id: string; name: string; email: string }>(`SELECT id, name, email FROM users WHERE id = ANY($1::uuid[])`, [userIds]);
+  return new Map(rows.map((r) => [r.id, (r.name || r.email.split('@')[0]).trim()]));
 }
 
 /** ¿Está de días libres esa fecha (hora local del negocio)? */

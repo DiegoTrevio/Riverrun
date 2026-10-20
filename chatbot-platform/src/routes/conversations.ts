@@ -18,6 +18,7 @@ import * as astore from '../automation/store.js';
 import * as assignment from '../automation/assignment.js';
 import { stopEnrollments } from '../automation/store.js';
 import { contactDataExport, eraseContact } from '../privacy.js';
+import { appDestinations, ExportContentSchema, sendConversation } from '../integrations/conversation-export.js';
 import { inboundAbsolutePath, safeFileName } from '../channels/media.js';
 
 /** Conversaciones y contactos: disponible para administradores y agentes de la cuenta. */
@@ -289,6 +290,28 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
     return deliverReport(service, conv.id, { users, emails: b.emails, phones: b.phones, note: b.note, includeTranscript: b.include_transcript, refresh: b.refresh, by: req.user.email });
   });
 
+  /** Apps conectadas a las que se puede enviar la conversación (sin la URL completa, que puede llevar un token). */
+  api.get('/api/conversations/:cid/app-destinations', async (req: any) => {
+    const conv = await conversationFor(req.user, req.params.cid);
+    return (await appDestinations(conv.account_id)).map(({ id, label, receives_conversations }) => ({ id, label, receives_conversations }));
+  });
+
+  /** Enviar la conversación a la app (resumen, completa o ambos): quien la ve en el panel decide cuándo. */
+  api.post('/api/conversations/:cid/send-to-app', async (req: any) => {
+    const conv = await conversationFor(req.user, req.params.cid);
+    const b = parse(z.object({ content: ExportContentSchema.default('summary'), endpoint_id: z.union([z.string().uuid(), z.literal('')]).default('') }), req.body ?? {});
+    if ((await store.getChannel(conv.channel_id))?.type === 'playground') throw new HttpError(400, 'Las conversaciones del simulador no se envían a tu app');
+    // Antes de gastar IA en el resumen: ¿hay a dónde enviarla?
+    const targets = (await appDestinations(conv.account_id)).filter((d) => (b.endpoint_id ? d.id === b.endpoint_id : d.receives_conversations));
+    if (!targets.length) throw new HttpError(400, b.endpoint_id ? 'Esa app no está conectada o está apagada' : 'No hay una app conectada que reciba conversaciones. Conéctala en Ajustes → Integraciones (webhook con el evento «Conversación enviada a tu app»).');
+    if (rateLimited(`send-to-app:${req.user.id}`, 30, 10 * 60_000)) throw new HttpError(429, 'Demasiados envíos seguidos: espera unos minutos');
+    const sent = await sendConversation(conv.account_id, conv.id, {
+      content: b.content, endpointId: b.endpoint_id, refresh: (id) => service.summarize(id),
+      reason: `enviada por ${req.user.name || req.user.email} desde el panel`, trigger: { event: 'manual', user_id: req.user.id },
+    });
+    return { sent };
+  });
+
   api.post('/api/conversations/:cid/send', async (req: any) => {
     const conv = await conversationFor(req.user, req.params.cid);
     const b = parse(z.object({ text: z.string().trim().min(1, 'Mensaje vacío').max(4000), takeover: z.boolean().default(true) }), req.body);
@@ -297,6 +320,19 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
     }
     try {
       return await service.sendManual(conv.id, b.text, req.user.id);
+    } catch (e: any) {
+      throw new HttpError(400, e?.message ?? String(e));
+    }
+  });
+
+  /** WhatsApp oficial: plantilla aprobada (fuera de las 24 h es lo único que se puede enviar). */
+  api.post('/api/conversations/:cid/send-template', async (req: any) => {
+    const conv = await conversationFor(req.user, req.params.cid);
+    const b = parse(z.object({ template_id: z.string().uuid('Elige una plantilla'), params: z.array(z.string().max(1000)).max(20).default([]), takeover: z.boolean().default(true) }), req.body);
+    try {
+      return await service.sendManualTemplate(conv.id, b.template_id, b.params, async () => {
+        if (b.takeover && conv.status === 'bot') await service.takeover(conv.id, `${req.user.name || req.user.email} respondió desde el panel`, req.user.id);
+      }, req.user.id);
     } catch (e: any) {
       throw new HttpError(400, e?.message ?? String(e));
     }

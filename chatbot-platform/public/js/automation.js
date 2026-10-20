@@ -4,8 +4,9 @@ import { messageTester, saveBar } from './bot.js';
 import { api, area, check, clone, field, fill, fmtDate, h, dialog, localDateTime, lines, num, run, select, state, text, toast, confirmAction } from './core.js';
 import { render } from './main.js';
 import { withAcct } from './session.js';
+import { waTemplateField } from './wa-template-field.js';
 
-const AUTO_TABS = [['rules', 'Reglas'], ['sequences', 'Secuencias'], ['campaigns', 'Campañas']];
+const AUTO_TABS = [['rules', 'Reglas'], ['sequences', 'Flujos'], ['campaigns', 'Campañas']];
 
 export async function viewAutomation(root, tab, id) {
   // El horario y los avisos viven en Ajustes (su propio título, sin las pestañas de automatización).
@@ -29,8 +30,15 @@ async function automationRefs() {
     api('GET', withAcct('/api/users')),
     api('GET', withAcct('/api/services')),
   ]);
-  const [files, pipelines] = await Promise.all([api('GET', withAcct('/api/attachments')), api('GET', withAcct('/api/pipelines'))]);
-  return { bots, sequences, users: users.filter((u) => u.account_id), services, pipelines, images: [], files, imagesLoaded: false, imageRequest: null };
+  const [files, pipelines, apps, waTemplates] = await Promise.all([
+    api('GET', withAcct('/api/attachments')),
+    api('GET', withAcct('/api/pipelines')),
+    // Apps conectadas (webhooks) para "Enviar la conversación a tu app"; sin perfil elegido no hay lista.
+    api('GET', withAcct('/api/webhook-endpoints')).catch(() => []),
+    // Plantillas de WhatsApp oficial (para escribir pasadas las 24 h); sin redes conectadas, ninguna.
+    state.meta.zernio_enabled ? api('GET', withAcct('/api/wa-templates')).catch(() => []) : [],
+  ]);
+  return { bots, sequences, users: users.filter((u) => u.account_id), services, pipelines, apps, images: [], files, imagesLoaded: false, imageRequest: null, waTemplates };
 }
 
 /**
@@ -78,8 +86,14 @@ export const ACTIONS = {
   create_task: 'Crear pendiente o nota',
   start_sequence: 'Iniciar secuencia',
   stop_sequences: 'Detener secuencias',
+  send_conversation: 'Enviar la conversación a tu app',
   webhook: 'Enviar a otro sistema (webhook)',
 };
+
+/** Qué se envía a la app: el resumen, todos los mensajes o ambos. */
+const CONTENT_OPTIONS = [['summary', 'El resumen (con análisis y datos del cliente)'], ['full', 'La conversación completa (todos los mensajes)'], ['both', 'Ambos: resumen y conversación completa']];
+const appLabel = (ep) => { try { return ep.description || new URL(ep.url).host; } catch { return ep.description || ep.url; } };
+const receivesConversations = (ep) => ep.active && (ep.events.includes('*') || ep.events.includes('conversation.sent'));
 
 const CONDITIONS = {
   channel: 'Canal',
@@ -120,6 +134,8 @@ const RULE_TEMPLATES = [
   { name: 'Palabra → activar al asistente', trigger: { type: 'message_received', match: 'keywords', keywords: ['menu', 'hola asistente'] }, actions: [{ type: 'resume_bot' }] },
   { name: 'Palabra → enviar foto', trigger: { type: 'message_received', match: 'keywords', keywords: ['menu', 'catalogo'] }, actions: [{ type: 'send_message', text: '', image_id: '' }] },
   { name: 'Objetivo cumplido → reporte al equipo', trigger: { type: 'goal_completed' }, actions: [{ type: 'send_report', roles: ['admin'], note: 'Objetivo cumplido' }] },
+  { name: 'Objetivo cumplido → resumen a mi app', trigger: { type: 'goal_completed' }, actions: [{ type: 'send_conversation', content: 'summary', endpoint_id: '' }] },
+  { name: 'Marcada por el equipo → conversación completa a mi app', trigger: { type: 'tag_added', tag: 'enviar-a-mi-app' }, actions: [{ type: 'send_conversation', content: 'full', endpoint_id: '' }] },
   { name: 'Agradecer cita agendada', trigger: { type: 'appointment_booked' }, actions: [{ type: 'send_message', text: 'Te esperamos el {{cita.fecha}} a las {{cita.hora}} 🙌', delay_minutes: 1 }] },
 ];
 
@@ -185,7 +201,7 @@ function typedList(list, types, fieldsFor, onChange) {
   return box;
 }
 
-export const VARS_HELP = 'Variables: {{nombre}}, {{cliente}}, {{telefono}}, {{negocio}}, {{mensaje}}, {{link}}, {{dato.CAMPO}}, {{cita.servicio}}, {{cita.fecha}}, {{cita.hora}}, {{cita.lugar}}';
+export const VARS_HELP = 'Variables: {{nombre}}, {{cliente}}, {{telefono}}, {{negocio}}, {{mensaje}}, {{link}}, {{dato.CAMPO}}, {{cita.servicio}}, {{cita.fecha}}, {{cita.hora}}, {{cita.lugar}}, {{cita.persona}} (quién atiende), {{cita.enlace}} (enlace de la videollamada)';
 
 const ACCEPT_FILES = '.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.csv,.txt,.mp3,.ogg,.wav,.m4a,.mp4,.mov,.webm';
 const KIND_LABEL = { document: 'documento', audio: 'audio', video: 'video', image: 'imagen' };
@@ -226,6 +242,7 @@ function actionFields(a, refs) {
           field('Foto (opcional)', photoPicker(a, 'image_id', refs)),
           field('Esperar antes de enviar (minutos)', num(a, 'delay_minutes', { min: 0 }), '0 = de inmediato')),
         field('Archivo (opcional)', attachmentPicker(a, refs)),
+        waTemplateField(a, refs.waTemplates),
       ];
     case 'alert_team':
       a.message ??= '{{cliente}} necesita atención: "{{mensaje}}"'; a.roles ??= ['admin', 'agent']; a.user_ids ??= []; a.phones ??= [];
@@ -292,6 +309,18 @@ function actionFields(a, refs) {
     case 'start_sequence':
       a.sequence_id ??= refs.sequences[0]?.id || '';
       return [refs.sequences.length ? field('Secuencia', select(a, 'sequence_id', refs.sequences.map((s) => [s.id, s.name]))) : h('p', { class: 'muted' }, 'Primero crea una secuencia.')];
+    case 'send_conversation': {
+      a.content ??= 'summary'; a.endpoint_id ??= '';
+      const apps = refs.apps || [];
+      const none = a.endpoint_id ? !apps.some((ep) => ep.id === a.endpoint_id && ep.active) : !apps.some(receivesConversations);
+      return [
+        h('div', { class: 'grid' },
+          field('Qué enviar', select(a, 'content', CONTENT_OPTIONS)),
+          field('A qué app', select(a, 'endpoint_id', [['', 'Todas las conectadas que reciben conversaciones'], ...apps.map((ep) => [ep.id, `${appLabel(ep)}${ep.active ? '' : ' (apagada)'}`])]))),
+        none ? h('p', { class: 'banner warn', style: 'margin:0 0 8px' }, 'Todavía no hay una app conectada que reciba conversaciones. ', h('a', { href: '#/integraciones' }, 'Conéctala en Integraciones'), ' (webhook con el evento «Conversación enviada a tu app»).') : null,
+        h('p', { class: 'small muted', style: 'margin:0' }, 'Llega a tu app como el evento conversation.sent, firmado y con reintentos, e incluye qué lo disparó. Tú decides cuándo con el disparador y las condiciones: una etiqueta que pone tu equipo, una intención del cliente, el objetivo cumplido o el paso a una persona. Si incluye el resumen, se actualiza antes de enviar.'),
+      ];
+    }
     case 'webhook':
       a.url ??= '';
       return [field('URL', text(a, 'url', { placeholder: 'https://hook.n8n.io/…' }), 'Se envía un POST con los datos del cliente, firmado con la cabecera X-Signature (clave en Ajustes → Horario y avisos).')];
@@ -382,7 +411,7 @@ async function editRule(root, id) {
   };
   initializeDraftDefaults(`rule:${id}`, drawTrigger);
   const save = async () => {
-    if (r.actions.some((a) => a.type === 'send_message' && !a.text?.trim() && !a.image_id && !a.attachment_id)) return toast('En "Enviar mensaje" escribe un mensaje o elige una foto o un archivo', true);
+    if (r.actions.some((a) => a.type === 'send_message' && !a.text?.trim() && !a.image_id && !a.attachment_id && !a.wa_template)) return toast('En "Enviar mensaje" escribe un mensaje o elige una foto o un archivo', true);
     const body = { ...r, chatbot_id: r.chatbot_id || null, account_id: state.accountId || undefined };
     const version = draftVersion(`rule:${id}`);
     const saved = await run(() => (existing ? api('PUT', `/api/automations/${id}`, body) : api('POST', '/api/automations', body)), 'Regla guardada ✅');
@@ -414,32 +443,86 @@ async function listSequences(root) {
   const seqs = await api('GET', withAcct('/api/sequences'));
   root.append(
     h('div', { class: 'card' },
-      h('p', { class: 'muted', style: 'margin-top:0' }, 'Una secuencia es una serie de mensajes programados (por ejemplo: hoy, en 2 días y en una semana). Se inicia con una regla o desde una conversación, respeta el horario del negocio y se detiene si el cliente responde.'),
-      h('a', { class: 'btn primary', href: '#/automation/sequences/new' }, '+ Nueva secuencia')),
+      h('p', { class: 'muted', style: 'margin-top:0' }, 'Un flujo es una serie de mensajes programados (por ejemplo: hoy, mañana y pasado mañana), con botones si quieres (cada botón hace algo: seguir, terminar, otro flujo, una etiqueta o pasar con una persona). Empieza con una regla, desde una conversación o enviándolo a un grupo de clientes; respeta el horario del negocio y se detiene si el cliente responde.'),
+      h('a', { class: 'btn primary', href: '#/automation/sequences/new' }, '+ Nuevo flujo')),
     h('div', { class: 'card' },
       seqs.length
-        ? h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Secuencia'), h('th', {}, 'Pasos'), h('th', {}, 'En curso'), h('th', {}, 'Completadas'), h('th', {}, 'Detenidas'))),
+        ? h('div', { class: 'table-scroll' }, h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Flujo'), h('th', {}, 'Mensajes'), h('th', {}, 'En curso'), h('th', {}, 'Completados'), h('th', {}, 'Detenidos'), h('th', {}, ''))),
             h('tbody', {}, seqs.map((q) => h('tr', { class: 'click', onclick: () => (location.hash = `#/automation/sequences/${q.id}`) },
-              h('td', {}, h('strong', {}, q.name), q.active ? null : h('span', { class: 'badge orange' }, ' inactiva')),
+              h('td', {}, h('strong', {}, q.name), q.active ? null : h('span', { class: 'badge orange' }, ' inactivo'), q.steps.some((st) => st.buttons?.length) ? h('span', { class: 'badge' }, ' con botones') : null),
               h('td', {}, q.steps.length),
-              h('td', {}, q.enrollments.active ?? 0), h('td', {}, q.enrollments.completed ?? 0), h('td', {}, q.enrollments.stopped ?? 0)))))
-        : h('p', { class: 'muted' }, 'Aún no hay secuencias.')),
+              h('td', {}, q.enrollments.active ?? 0), h('td', {}, q.enrollments.completed ?? 0), h('td', {}, q.enrollments.stopped ?? 0),
+              h('td', {}, q.active ? h('a', { class: 'btn small', href: `#/automation/campaigns/new?flow=${q.id}`, onclick: (e) => e.stopPropagation() }, 'Enviar a un grupo') : null))))))
+        : h('p', { class: 'muted' }, 'Aún no hay flujos.')),
   );
+}
+
+const BUTTON_ACTIONS = [['next', 'Seguir con el mensaje siguiente (ya)'], ['end', 'Terminar el flujo'], ['start_sequence', 'Empezar otro flujo'], ['tag', 'Poner una etiqueta'], ['handoff', 'Pasar con una persona']];
+const newButton = (kind) => ({ label: '', kind, url: '', action: 'next', sequence_id: null, tag: '', reply: '' });
+/** Pasos guardados antes de los botones: se leen con sus valores por omisión. */
+const stepDefaults = (st) => { st.buttons ??= []; st.wait_for_choice ??= false; st.if_no_choice ??= 'end'; };
+
+/** Cómo le llega al cliente: con botones (Telegram, Messenger, Instagram, WhatsApp oficial, chat web) o numerado. */
+function buttonsPreview(st) {
+  const replies = st.buttons.filter((b) => b.kind === 'reply' && b.label.trim());
+  const urls = st.buttons.filter((b) => b.kind === 'url' && b.label.trim());
+  if (!replies.length && !urls.length) return null;
+  const numbered = [st.text.trim(), replies.map((b, i) => `${i + 1}. ${b.label}`).join('\n'), urls.map((b) => `🔗 ${b.label}: ${b.url}`).join('\n'), replies.length ? 'Responde con el número de tu opción.' : ''].filter(Boolean).join('\n\n');
+  return h('div', { class: 'grid' },
+    h('div', {}, h('div', { class: 'small muted' }, 'Con botones (Telegram, Messenger, Instagram, WhatsApp oficial, chat web)'),
+      h('div', { class: 'pre' }, st.text.trim() || '…'),
+      h('div', { class: 'msg-buttons', role: 'list', 'aria-label': 'Vista previa de los botones' }, [...replies, ...urls].map((b) => h('span', { class: 'chip', role: 'listitem' }, b.kind === 'url' ? `🔗 ${b.label}` : b.label)))),
+    h('div', {}, h('div', { class: 'small muted' }, 'Numerado (WhatsApp con QR y correo: contesta con el número o el texto)'), h('div', { class: 'pre' }, numbered)));
+}
+
+/** Botones de un mensaje del flujo: hasta 3 de respuesta (cada uno con lo que hace) y 2 de enlace. */
+function buttonsEditor(st, refs, seqId) {
+  const box = h('div');
+  const preview = h('div');
+  const drawPreview = () => fill(preview, buttonsPreview(st));
+  const others = refs.sequences.filter((q) => q.id !== seqId);
+  const count = (kind) => st.buttons.filter((b) => b.kind === kind).length;
+  const draw = () => {
+    fill(box,
+      ...st.buttons.map((b, i) => {
+        if (b.kind === 'reply' && b.action === 'start_sequence' && !b.sequence_id) b.sequence_id = others[0]?.id ?? null;
+        return h('div', { class: 'list-item flow-button' },
+          h('div', { class: 'grid' },
+            field(b.kind === 'url' ? 'Texto del enlace' : `Botón ${st.buttons.slice(0, i + 1).filter((x) => x.kind === 'reply').length}`, text(b, 'label', { maxlength: 20, placeholder: b.kind === 'url' ? 'Ver menú' : 'Sí, me interesa' }), 'Máximo 20 caracteres.'),
+            b.kind === 'url' ? field('Dirección', text(b, 'url', { type: 'url', placeholder: 'https://…' }), 'Debe empezar con https://')
+              : field('Al tocarlo', select(b, 'action', BUTTON_ACTIONS, () => draw()))),
+          b.kind === 'reply' && b.action === 'start_sequence' ? (others.length ? field('Flujo que empieza', select(b, 'sequence_id', others.map((q) => [q.id, q.name]))) : h('p', { class: 'small muted' }, 'Primero crea el otro flujo.')) : null,
+          b.kind === 'reply' && b.action === 'tag' ? field('Etiqueta', text(b, 'tag', { placeholder: 'interesado' })) : null,
+          b.kind === 'reply' ? field('Responder con (opcional)', area(b, 'reply'), 'Se envía al tocarlo, antes de hacer lo de arriba.') : null,
+          h('button', { class: 'small danger', onclick: () => { st.buttons.splice(i, 1); draw(); } }, b.kind === 'url' ? 'Quitar enlace' : 'Quitar botón'));
+      }),
+      h('div', { class: 'row' },
+        h('button', { class: 'small', disabled: count('reply') >= 3, onclick: () => { st.buttons.push(newButton('reply')); draw(); [...box.querySelectorAll('.flow-button')].at(-1)?.querySelector('input')?.focus(); } }, '+ Botón de respuesta'),
+        h('button', { class: 'small', disabled: count('url') >= 2, onclick: () => { st.buttons.push(newButton('url')); draw(); [...box.querySelectorAll('.flow-button')].at(-1)?.querySelector('input')?.focus(); } }, '+ Botón de enlace')),
+      count('reply') ? h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: !!st.wait_for_choice, onchange: (e) => { st.wait_for_choice = e.target.checked; draw(); } }), 'Esperar a que elija antes del mensaje siguiente') : null,
+      count('reply') && st.wait_for_choice ? field('Si llega la hora del mensaje siguiente y no eligió', select(st, 'if_no_choice', [['end', 'Terminar el flujo'], ['continue', 'Enviarlo de todos modos']])) : null,
+      preview);
+    drawPreview();
+  };
+  draw();
+  // La vista previa sigue lo que se escribe (texto del mensaje y de los botones).
+  return { box, refresh: drawPreview };
 }
 
 async function editSequence(root, id) {
   const refs = await automationRefs();
   const existing = id === 'new' ? null : refs.sequences.find((q) => q.id === id);
   if (id !== 'new' && !existing) throw new Error('Secuencia no encontrada');
-  const q = draftModel(`sequence:${id}`, existing || { name: '', active: false, stop_on_reply: true, business_hours_only: true, steps: [{ delay_value: 0, delay_unit: 'minutes', at_time: '', text: '', image_id: '', conditions: [] }] }, false);
+  const q = draftModel(`sequence:${id}`, existing || { name: '', active: false, stop_on_reply: true, business_hours_only: true, steps: [{ delay_value: 0, delay_unit: 'minutes', at_time: '', text: '', image_id: '', conditions: [], buttons: [], wait_for_choice: false, if_no_choice: 'end' }] }, false);
+  initializeDraftDefaults(`sequence:${id}`, () => q.steps.forEach(stepDefaults));
   root.append(draftNotice([`sequence:${id}`], render));
   const list = h('div');
   const timeline = h('ol', { class: 'small' });
   const drawTimeline = () => fill(timeline, q.steps.map((st, i) => h('li', {}, `Mensaje ${i + 1}: ${st.delay_value} ${Object.fromEntries(UNITS)[st.delay_unit]} ${i ? 'después del anterior' : 'desde el inicio'}${st.at_time ? `; siguiente ${st.at_time}` : ''}${q.business_hours_only ? '; respeta el horario del negocio' : ''}`)));
-  const draw = () => fill(list, ...q.steps.map((st, i) => h('div', { class: 'list-item' },
+  const draw = () => fill(list, ...q.steps.map((st, i) => { stepDefaults(st); const buttons = buttonsEditor(st, refs, id); return h('div', { class: 'list-item', oninput: () => buttons.refresh() },
     h('div', { class: 'row between' }, h('strong', {}, `Mensaje ${i + 1}`),
       h('div', { class: 'row' },
-        h('button', { class: 'small', disabled: i === 0, 'aria-label': `Mover mensaje ${i + 1} arriba`, onclick: () => { [q.steps[i - 1], q.steps[i]] = [q.steps[i], q.steps[i - 1]]; draw(); list.querySelectorAll('.list-item')[i - 1]?.querySelector('textarea')?.focus(); } }, '↑'),
+        h('button', { class: 'small', disabled: i === 0, 'aria-label': `Mover mensaje ${i + 1} arriba`, onclick: () => { [q.steps[i - 1], q.steps[i]] = [q.steps[i], q.steps[i - 1]]; draw(); list.querySelectorAll(':scope > .list-item')[i - 1]?.querySelector('textarea')?.focus(); } }, '↑'),
         h('button', { class: 'small danger', disabled: q.steps.length === 1, onclick: () => { q.steps.splice(i, 1); draw(); } }, 'Quitar'))),
     h('div', { class: 'grid' },
       field(i === 0 ? 'Esperar desde que inicia' : 'Esperar desde el mensaje anterior', h('div', { class: 'row' }, h('div', { style: 'width:90px' }, num(st, 'delay_value', { min: 0 })), select(st, 'delay_unit', UNITS))),
@@ -447,25 +530,28 @@ async function editSequence(root, id) {
     field('Mensaje', area(st, 'text'), VARS_HELP),
     field('Imagen (opcional)', photoPicker(st, 'image_id', refs)),
     field('Archivo (opcional)', attachmentPicker(st, refs)),
-    h('details', {}, h('summary', {}, `Enviar solo si… (${st.conditions.length})`), typedList(st.conditions, CONDITIONS, (c) => conditionFields(c))))));
+    waTemplateField(st, refs.waTemplates),
+    h('details', { open: st.buttons.length > 0 }, h('summary', {}, `Botones (${st.buttons.length})`), buttons.box),
+    h('details', {}, h('summary', {}, `Enviar solo si… (${st.conditions.length})`), typedList(st.conditions, CONDITIONS, (c) => conditionFields(c)))); }));
   draw();
   const save = async () => {
     const version = draftVersion(`sequence:${id}`);
-    const saved = await run(() => (existing ? api('PUT', `/api/sequences/${id}`, q) : api('POST', '/api/sequences', { ...q, account_id: state.accountId || undefined })), 'Secuencia guardada ✅');
+    const saved = await run(() => (existing ? api('PUT', `/api/sequences/${id}`, q) : api('POST', '/api/sequences', { ...q, account_id: state.accountId || undefined })), 'Flujo guardado ✅');
     if (saved) { discardDraft(`sequence:${id}`, version); location.hash = '#/automation/sequences'; }
   };
   root.append(
-    h('a', { href: '#/automation/sequences' }, '← Secuencias'),
+    h('a', { href: '#/automation/sequences' }, '← Flujos'),
     h('div', { class: 'card' },
       field('Nombre', text(q, 'name', { placeholder: 'Seguimiento de cotización' })),
-      check(q, 'active', 'Activa'),
-      check(q, 'stop_on_reply', 'Detener si el cliente responde'),
+      check(q, 'active', 'Activo'),
+      check(q, 'stop_on_reply', 'Detener si el cliente responde (tocar un botón no cuenta como responder)'),
       check(q, 'business_hours_only', 'Enviar solo en horario del negocio (lo que caiga fuera se pasa a la siguiente apertura)')),
     h('details', { class: 'card', ontoggle: () => drawTimeline() }, h('summary', {}, 'Ver línea temporal del seguimiento'), timeline),
     h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, 'Mensajes'), list,
-      h('button', { onclick: () => { q.steps.push({ delay_value: 1, delay_unit: 'days', at_time: '', text: '', image_id: '', conditions: [] }); draw(); } }, '+ Agregar mensaje')),
+      h('button', { onclick: () => { q.steps.push({ delay_value: 1, delay_unit: 'days', at_time: '', text: '', image_id: '', conditions: [], buttons: [], wait_for_choice: false, if_no_choice: 'end' }); draw(); } }, '+ Agregar mensaje')),
     saveBar(save, existing ? h('span', { class: 'row', style: 'margin-left:auto' },
-      h('button', { class: 'danger', onclick: async () => { if (await confirmAction('¿Eliminar la secuencia? Se detendrá para todos los inscritos.')) { if (!(await run(() => api('DELETE', `/api/sequences/${id}`), 'Eliminada'))) return; location.hash = '#/automation/sequences'; } } }, 'Eliminar')) : null),
+      existing.active ? h('a', { class: 'btn', href: `#/automation/campaigns/new?flow=${id}` }, 'Enviar a un grupo de clientes') : null,
+      h('button', { class: 'danger', onclick: async () => { if (await confirmAction('¿Eliminar el flujo? Se detendrá para todos los que están en él.')) { if (!(await run(() => api('DELETE', `/api/sequences/${id}`), 'Eliminado'))) return; location.hash = '#/automation/sequences'; } } }, 'Eliminar')) : null),
   );
 }
 
@@ -478,7 +564,7 @@ async function listCampaigns(root) {
   const chName = Object.fromEntries(channels.map((c) => [c.id, c.name]));
   root.append(
     h('div', { class: 'card' },
-      h('p', { class: 'muted', style: 'margin-top:0' }, 'Envía un mensaje a un grupo de clientes (por etiqueta o actividad reciente), ahora o en una fecha. Nunca se envía a quien se dio de baja, y los envíos van espaciados para proteger tu número.'),
+      h('p', { class: 'muted', style: 'margin-top:0' }, 'Envía un mensaje o un flujo a un grupo de clientes (por etiqueta o actividad reciente), ahora o en una fecha. Nunca se envía a quien se dio de baja, y los envíos van espaciados para proteger tu número.'),
       h('a', { class: 'btn primary', href: '#/automation/campaigns/new' }, '+ Nueva campaña')),
     h('div', { class: 'card' },
       camps.length
@@ -486,7 +572,7 @@ async function listCampaigns(root) {
             h('tbody', {}, camps.map((c) => {
               const [cls, label] = CAMPAIGN_STATUS[c.status];
               return h('tr', { class: 'click', onclick: () => (location.hash = `#/automation/campaigns/${c.id}`) },
-                h('td', {}, h('strong', {}, c.name)), h('td', {}, chName[c.channel_id] || ''),
+                h('td', {}, h('strong', {}, c.name), c.kind === 'sequence' ? h('span', { class: 'badge' }, ' flujo') : null), h('td', {}, chName[c.channel_id] || ''),
                 h('td', {}, h('span', { class: `badge ${cls}` }, label)),
                 h('td', {}, c.stats.sent ?? 0), h('td', {}, c.stats.skipped ?? 0),
                 h('td', { class: 'small muted' }, c.scheduled_at ? fmtDate(c.scheduled_at) : ''));
@@ -500,8 +586,12 @@ async function editCampaign(root, id) {
   state.timeZone = info.timezone;
   const existing = id === 'new' ? null : (await api('GET', withAcct('/api/campaigns'))).find((c) => c.id === id);
   if (id !== 'new' && !existing) throw new Error('Campaña no encontrada');
-  const c = draftModel(`campaign:${id}`, existing || { name: '', channel_id: channels[0]?.id || '', message: '', image_id: null, audience: { tags_any: [], tags_none: [], active_within_days: 0, statuses: [] }, scheduled_at: null, rate_per_minute: 20, business_hours_only: true, status: 'draft' }, false);
-  initializeDraftDefaults(`campaign:${id}`, () => { c.image_id ??= ''; c.flow_step ??= 0; c.channel_ids ??= []; });
+  // "Enviar a un grupo" desde un flujo: la campaña nueva ya lleva ese flujo.
+  const fromFlow = id === 'new' ? new URLSearchParams(location.hash.split('?')[1] || '').get('flow') : null;
+  const flows = refs.sequences.filter((q) => q.active);
+  const flowName = fromFlow ? refs.sequences.find((q) => q.id === fromFlow)?.name ?? '' : '';
+  const c = draftModel(`campaign:${id}`, existing || { name: flowName ? `Flujo: ${flowName}` : '', channel_id: channels[0]?.id || '', message: '', image_id: null, audience: { tags_any: [], tags_none: [], active_within_days: 0, statuses: [] }, scheduled_at: null, rate_per_minute: 20, business_hours_only: true, status: 'draft', kind: fromFlow ? 'sequence' : 'message', sequence_id: fromFlow }, false);
+  initializeDraftDefaults(`campaign:${id}`, () => { c.image_id ??= ''; c.flow_step ??= 0; c.channel_ids ??= []; c.kind ??= 'message'; c.sequence_id ??= null; });
   const editable = ['draft', 'scheduled'].includes(c.status);
   const local = draftModel(`campaign-time:${id}`, { when: localDateTime(c.scheduled_at, info.timezone) }, false);
   root.append(draftNotice([`campaign:${id}`, `campaign-time:${id}`], render));
@@ -535,7 +625,10 @@ async function editCampaign(root, id) {
       if (!preview) return;
       if (JSON.stringify(body()) !== fingerprint) return toast('Cambiaste la campaña. Revisa de nuevo los destinatarios.', true);
       if (!preview.count) return toast('No hay destinatarios disponibles para esta campaña.', true);
-      const review = h('div', {}, h('p', {}, `${preview.count} destinatarios · ${preview.excluded_no_consent || 0} excluidos por falta de consentimiento`), h('p', {}, `Conexiones: ${[c.channel_id, ...c.channel_ids].map((key) => channels.find((ch) => ch.id === key)?.name || key).join(', ')}`), h('p', {}, local.when ? `Fecha: ${local.when.replace('T', ' ')} · ${info.timezone}` : 'Envío inmediato'), h('div', { class: 'pre' }, c.message), preview.warning ? h('p', { class: 'banner warn' }, preview.warning) : null);
+      const flowName = c.kind === 'sequence' ? refs.sequences.find((q) => q.id === c.sequence_id)?.name ?? '' : '';
+      const review = h('div', {}, h('p', {}, `${preview.count} destinatarios · ${preview.excluded_no_consent || 0} excluidos por falta de consentimiento`), h('p', {}, `Conexiones: ${[c.channel_id, ...c.channel_ids].map((key) => channels.find((ch) => ch.id === key)?.name || key).join(', ')}`), h('p', {}, local.when ? `Fecha: ${local.when.replace('T', ' ')} · ${info.timezone}` : 'Envío inmediato'),
+        c.kind === 'sequence' ? h('p', {}, `Flujo "${flowName}": ${preview.messages_per_person} mensaje${preview.messages_per_person === 1 ? '' : 's'} por persona (${preview.total_messages} en total, cuentan para el cupo de tu plan).`) : h('div', { class: 'pre' }, c.message),
+        preview.warning ? h('p', { class: 'banner warn' }, preview.warning) : null);
       if (!(await dialog('Revisa la campaña antes de enviarla', review, local.when ? 'Confirmar programación' : 'Confirmar envío ahora'))) return;
       if (JSON.stringify(body()) !== fingerprint) return toast('Cambiaste la campaña. Revisa de nuevo antes de enviar.', true);
       if (!(await save())) return;
@@ -543,6 +636,20 @@ async function editCampaign(root, id) {
       if (c.status === 'scheduled' || await run(() => api('POST', `/api/campaigns/${id}/launch`), 'Campaña en marcha')) render();
     } finally { launching = false; }
   };
+  // Qué se envía: un mensaje (con foto o plantilla) o un flujo completo (sus mensajes y botones, a su hora).
+  const whatBox = h('div');
+  const drawWhat = () => fill(whatBox,
+    h('fieldset', { class: 'field' }, h('legend', {}, '¿Qué quieres enviar?'),
+      h('label', { class: 'check' }, h('input', { type: 'radio', name: 'campaign-kind', value: 'message', disabled: !editable, checked: c.kind !== 'sequence', onchange: () => { c.kind = 'message'; drawWhat(); } }), 'Un mensaje'),
+      h('label', { class: 'check' }, h('input', { type: 'radio', name: 'campaign-kind', value: 'sequence', disabled: !editable, checked: c.kind === 'sequence', onchange: () => { c.kind = 'sequence'; c.sequence_id ||= flows[0]?.id ?? null; drawWhat(); } }), 'Un flujo (varios mensajes, con botones)')),
+    c.kind === 'sequence'
+      ? [flows.length ? field('Flujo', select(c, 'sequence_id', flows.map((q) => [q.id, `${q.name} (${q.steps.length} mensaje${q.steps.length === 1 ? '' : 's'})`]))) : h('p', { class: 'banner warn' }, 'No tienes flujos activos. Crea uno en Automatización → Flujos.'),
+        h('p', { class: 'small muted' }, 'Cada persona entra al flujo: el primer mensaje sale con la campaña y los siguientes a su hora (por ejemplo, un día después), espaciados al ritmo de la campaña para cuidar tu número. Si el cliente toca un botón, pasa lo que dice el botón.')]
+      : [field('Mensaje', area(c, 'message', { big: true }), VARS_HELP),
+        field('Imagen (opcional)', photoPicker(c, 'image_id', refs), 'Con texto, la foto sale con el mensaje como pie en un solo envío.'),
+        waTemplateField(c, refs.waTemplates),
+        field('Etapa del recorrido al enviarla', num(c, 'flow_step', { min: 0, max: 50 }), 'Si es el primer mensaje de un recorrido, indica la etapa en la que queda cada conversación: el asistente sigue el flujo desde ahí cuando el cliente responda. 0 = no cambia.')]);
+  drawWhat();
   const statusBox = h('div');
   if (existing) {
     const [cls, label] = CAMPAIGN_STATUS[c.status];
@@ -552,7 +659,8 @@ async function editCampaign(root, id) {
         h('div', { class: 'row' },
           editable ? h('button', { class: 'small', onclick: async () => { const p = await run(() => api('POST', `/api/campaigns/${id}/preview`, body())); if (p) fill(previewBox, h('p', {}, h('strong', {}, `${p.count} destinatarios`), p.sample.length ? `: ${p.sample.join(', ')}${p.count > p.sample.length ? '…' : ''}` : ''), p.excluded_no_consent ? h('p', { class: 'small' }, `⚠️ ${p.excluded_no_consent} cliente${p.excluded_no_consent === 1 ? '' : 's'} del segmento quedan fuera porque no han aceptado recibir promociones (se registra cuando escriben ACEPTO o tú lo marcas en su ficha).`) : null, p.warning ? h('p', { class: 'badge orange' }, p.warning) : null); } }, 'Ver destinatarios') : null,
           editable ? h('button', { class: 'primary small', onclick: () => reviewAndLaunch() }, local.when ? 'Revisar y programar' : 'Revisar y enviar') : null,
-          ['scheduled', 'sending'].includes(c.status) ? h('button', { class: 'small danger', onclick: async () => { if (await confirmAction('¿Cancelar la campaña?')) { if (!(await run(() => api('POST', `/api/campaigns/${id}/cancel`), 'Cancelada'))) return; render(); } } }, 'Cancelar') : null)),
+          ['scheduled', 'sending'].includes(c.status) ? h('button', { class: 'small danger', onclick: async () => { if (await confirmAction(c.kind === 'sequence' ? '¿Cancelar la campaña? El flujo se detiene para todos los que siguen en él.' : '¿Cancelar la campaña?')) { if (!(await run(() => api('POST', `/api/campaigns/${id}/cancel`), 'Cancelada'))) return; render(); } } }, 'Cancelar') : null,
+          c.kind === 'sequence' && c.status === 'sent' ? h('button', { class: 'small danger', onclick: async () => { if (await confirmAction('¿Detener el flujo para todos los que siguen en él? Ya no recibirán sus mensajes siguientes.')) { if (!(await run(() => api('POST', `/api/campaigns/${id}/cancel`), 'Flujo detenido'))) return; render(); } } }, 'Detener el flujo') : null)),
       previewBox,
       recipients.length ? h('details', {}, h('summary', {}, `Destinatarios (${recipients.length}) · ${c.stats.sent ?? 0} enviados · ${c.stats.skipped ?? 0} omitidos`),
         h('table', {}, h('tbody', {}, recipients.map((r) => h('tr', {}, h('td', {}, r.name || r.push_name || (r.phone ? `+${r.phone}` : '—')), h('td', {}, r.status), h('td', { class: 'small muted' }, r.reason)))))) : null));
@@ -565,9 +673,7 @@ async function editCampaign(root, id) {
         field('Nombre', text(c, 'name', { placeholder: 'Promoción de octubre' })),
         field('Canal', select(c, 'channel_id', channels.map((ch) => [ch.id, `${ch.name} (${ch.label})`]), () => { c.channel_ids = []; if (editable) { drawExtra(); } }))),
       extraBox,
-      field('Mensaje', area(c, 'message', { big: true }), VARS_HELP),
-      field('Imagen (opcional)', photoPicker(c, 'image_id', refs), 'Con texto, la foto sale con el mensaje como pie en un solo envío.'),
-      field('Etapa del recorrido al enviarla', num(c, 'flow_step', { min: 0, max: 50 }), 'Si es el primer mensaje de un recorrido, indica la etapa en la que queda cada conversación: el asistente sigue el flujo desde ahí cuando el cliente responda. 0 = no cambia.')),
+      whatBox),
     h('div', { class: 'card' },
       h('h2', { style: 'margin-top:0' }, 'A quién'),
       h('div', { class: 'grid' },

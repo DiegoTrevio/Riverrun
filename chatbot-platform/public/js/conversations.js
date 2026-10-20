@@ -278,6 +278,33 @@ export async function viewConversation(root, id, opts = {}) {
     gallery.hidden = false;
   };
 
+  // WhatsApp oficial: pasadas 24 h desde el último mensaje del cliente solo se puede enviar una plantilla aprobada.
+  const windowNote = h('p', { class: 'banner warn small', hidden: true });
+  const templateButton = h('button', { hidden: true, title: 'Enviar una plantilla aprobada de WhatsApp', onclick: async () => {
+    const list = (await api('GET', withAcct('/api/wa-templates'))).filter((t) => t.sendable);
+    if (!list.length) return toast('No hay plantillas aprobadas. Créalas en Ajustes → Redes sociales → Plantillas.', true);
+    const pick = { template_id: list[0].id, params: [] };
+    const box = h('div');
+    const draw = () => {
+      const t = list.find((x) => x.id === pick.template_id);
+      fill(box,
+        field('Plantilla', h('select', { onchange: (e) => { pick.template_id = e.target.value; pick.params = []; draw(); } }, list.map((x) => h('option', { value: x.id, selected: x.id === pick.template_id }, `${x.name} (${x.language})`)))),
+        h('p', { class: 'small muted', style: 'white-space:pre-wrap' }, t?.body || ''),
+        t?.variables ? Array.from({ length: t.variables }, (_, i) => field(`Variable {{${i + 1}}}`, h('input', { value: pick.params[i] ?? '', placeholder: '{{nombre}} o un texto', oninput: (e) => (pick.params[i] = e.target.value) }))) : null);
+    };
+    draw();
+    if (!(await dialog('Enviar una plantilla de WhatsApp', box, 'Enviar'))) return;
+    if (await run(() => api('POST', `/api/conversations/${id}/send-template`, pick), 'Plantilla enviada')) await load(true);
+  } }, '📄 Plantilla');
+  const drawWindow = (d) => {
+    const official = d.channel?.type === 'zernio' && d.channel?.platform === 'whatsapp';
+    templateButton.hidden = !official;
+    const lastIn = [...d.messages].reverse().find((m) => m.direction === 'in');
+    const closed = official && (!lastIn || Date.now() - new Date(lastIn.created_at).getTime() > 24 * 3600 * 1000);
+    windowNote.hidden = !closed;
+    fill(windowNote, closed ? 'Pasaron más de 24 h desde el último mensaje del cliente: WhatsApp solo deja enviarle una plantilla aprobada (botón "📄 Plantilla"). Cuando te responda, vuelves a escribir libre.' : '');
+  };
+
   let team = null;
   /** Quién atiende esta conversación y a quién pasársela (round robin o una persona concreta). */
   const assignRow = (d) => {
@@ -312,6 +339,7 @@ export async function viewConversation(root, id, opts = {}) {
     state.timeZone = data.timezone;
     data.messages.forEach((m) => messageMap.set(Number(m.id), m));
     data.messages = [...messageMap.values()].sort((a, b) => Number(a.id) - Number(b.id));
+    drawWindow(data);
     const { conversation: c, contact: ct, messages } = data;
     const [cls, label] = STATUS_BADGE[c.status] || ['', c.status];
     const nextHeader = JSON.stringify([c.status, c.handoff_reason, c.assigned_user_id, ct.name, ct.push_name, ct.phone, ct.handoff_at, data.handoff_by_user, data.channel?.name, data.chatbot?.name, data.agent]);
@@ -354,6 +382,10 @@ export async function viewConversation(root, id, opts = {}) {
           m.media_kind ? customerMedia(m) : null,
           m.meta?.media_error ? h('div', { class: 'small muted' }, `⚠️ ${m.meta.media_error}`) : null,
           m.content || null,
+          // Botones de un flujo (como los vio el cliente) y la opción que eligió.
+          Array.isArray(m.meta?.buttons) && m.meta.buttons.length ? h('div', { class: 'msg-buttons', role: 'list', 'aria-label': 'Botones enviados' },
+            m.meta.buttons.map((b) => h('span', { class: 'chip', role: 'listitem' }, b.kind === 'url' ? `🔗 ${b.label}` : b.label))) : null,
+          m.meta?.choice ? h('div', { class: 'small' }, `👆 Eligió: ${m.meta.choice}`) : null,
           h('div', { class: 'meta' }, [who, fmtDate(m.created_at), m.status === 'failed' ? '⚠️ no enviado' : m.status==='uncertain'?'⚠️ entrega sin confirmar':m.status==='cancelled'?'cancelado':'', m.meta?.fallback ? 'respaldo' : ''].filter(Boolean).join(' · ')));
       }));
       chat.scrollTop = prepended ? previousTop + Math.max(0, chat.scrollHeight - previousHeight) : atBottom || firstRender ? chat.scrollHeight : previousTop;
@@ -371,17 +403,28 @@ export async function viewConversation(root, id, opts = {}) {
       api('GET', withAcct('/api/services')).catch(() => []),
     ]);
     const enr = { sequence_id: seqs.find((q) => q.active)?.id || '' };
-    const book = { service_id: services.find((q) => q.active)?.id || '', slot: '', notes: '' };
+    const book = { service_id: services.find((q) => q.active)?.id || '', slot: '', notes: '', assigned_user_id: '' };
     const slotBox = h('div');
+    const personBox = h('div');
+    let slotList = [];
+    // Con quién: automático (turnos, porcentajes o quien ya atiende) o una persona libre a esa hora.
+    const drawPerson = () => {
+      const free = slotList.find((x) => x.key === book.slot)?.users || [];
+      if (!free.includes(book.assigned_user_id)) book.assigned_user_id = '';
+      fill(personBox, isAdmin() && free.length > 1
+        ? field('Con quién', select(book, 'assigned_user_id', [['', 'Automático (según el servicio)'], ...free.map((u) => [u, (team || []).find((x) => x.id === u)?.name || 'Persona del equipo'])]))
+        : null);
+    };
     const loadSlots = async () => {
       if (!book.service_id) return;
-      const slots = await api('GET', `/api/services/${book.service_id}/slots`);
-      book.slot = slots[0]?.key || '';
-      fill(slotBox, slots.length ? select(book, 'slot', slots.map((x) => [x.key, x.label])) : h('p', { class: 'small muted' }, 'Sin horarios disponibles'));
+      slotList = await api('GET', `/api/services/${book.service_id}/slots`);
+      book.slot = slotList[0]?.key || '';
+      fill(slotBox, slotList.length ? select(book, 'slot', slotList.map((x) => [x.key, x.label]), drawPerson) : h('p', { class: 'small muted' }, 'Sin horarios disponibles'));
+      drawPerson();
     };
     const active = auto.enrollments.filter((e) => e.status === 'active');
     const upcoming = auto.appointments.filter((a) => a.status === 'confirmed' && new Date(a.starts_at) > new Date());
-    const JOB_LABEL = { sequence_step: 'Mensaje de secuencia', no_reply: 'Seguimiento si no responde', automation_send: 'Mensaje programado', appointment_reminder: 'Recordatorio de cita', campaign_send: 'Campaña', flow_image: 'Foto pendiente del recorrido' };
+    const JOB_LABEL = { sequence_step: 'Mensaje de flujo', no_reply: 'Seguimiento si no responde', automation_send: 'Mensaje programado', appointment_reminder: 'Recordatorio de cita', campaign_send: 'Campaña', flow_image: 'Foto pendiente del recorrido' };
     fill(autoBox,
       h('div', { class: 'card' },
         h('h2', { style: 'margin-top:0' }, 'Citas'),
@@ -389,14 +432,15 @@ export async function viewConversation(root, id, opts = {}) {
         services.length ? h('details', { style: 'margin-top:8px' }, h('summary', {}, 'Agendar cita o llamada'),
           field('Servicio', select(book, 'service_id', services.filter((q) => q.active).map((q) => [q.id, q.name]), loadSlots)),
           slotBox,
+          personBox,
           field('Notas', text(book, 'notes')),
-          h('button', { class: 'small primary', onclick: async () => { if (await run(() => api('POST', '/api/appointments', { ...book, conversation_id: id }), 'Agendada: se envió la confirmación al cliente')) { drawAuto(); load(true); } } }, 'Agendar y avisar al cliente')) : null),
+          h('button', { class: 'small primary', onclick: async () => { if (await run(() => api('POST', '/api/appointments', { ...book, assigned_user_id: book.assigned_user_id || null, conversation_id: id }), 'Agendada: se envió la confirmación al cliente')) { drawAuto(); load(true); } } }, 'Agendar y avisar al cliente')) : null),
       h('div', { class: 'card' },
-        h('h2', { style: 'margin-top:0' }, 'Secuencias'),
-        active.length ? active.map((e) => h('div', { class: 'row between small' }, h('span', {}, `▶ ${e.sequence_name} (paso ${e.current_step + 1})`),
+        h('h2', { style: 'margin-top:0' }, 'Flujos'),
+        active.length ? active.map((e) => h('div', { class: 'row between small' }, h('span', {}, `▶ ${e.sequence_name} (mensaje ${Math.min(e.current_step + 1, 30)})${e.choice ? ` · eligió "${e.choice}"` : ''}`),
           h('button', { class: 'small danger', onclick: async () => { if (!(await run(() => api('DELETE', `/api/conversations/${id}/sequences/${e.sequence_id}`), 'Detenida'))) return; drawAuto(); } }, 'Detener'))) : h('p', { class: 'small muted', style: 'margin:0' }, 'Ninguna en curso'),
         seqs.length ? h('div', { class: 'row', style: 'margin-top:8px' }, h('div', { style: 'flex:1' }, select(enr, 'sequence_id', seqs.filter((q) => q.active).map((q) => [q.id, q.name]))),
-          h('button', { class: 'small', onclick: async () => { if (await run(() => api('POST', `/api/conversations/${id}/sequences`, enr), 'Inscrito en la secuencia')) drawAuto(); } }, 'Iniciar')) : null,
+          h('button', { class: 'small', onclick: async () => { if (await run(() => api('POST', `/api/conversations/${id}/sequences`, enr), 'Empezó el flujo')) drawAuto(); } }, 'Iniciar')) : null,
         auto.jobs.length ? h('details', { style: 'margin-top:8px' }, h('summary', {}, `Envíos programados (${auto.jobs.length})`),
           auto.jobs.map((j) => h('div', { class: 'small muted' }, `${fmtDate(j.run_at)} · ${JOB_LABEL[j.type] || j.type}`))) : null),
     );
@@ -495,7 +539,8 @@ export async function viewConversation(root, id, opts = {}) {
               toast('Reporte copiado');
             } catch (e) { toast(e.message || 'No se pudo copiar', true); }
           } }, 'Copiar'),
-          h('button', { class: 'small primary', onclick: () => sendReportDialog(id, data) }, '✉ Enviar reporte')),
+          h('button', { class: 'small primary', onclick: () => sendReportDialog(id, data) }, '✉ Enviar reporte'),
+          h('button', { class: 'small', onclick: () => sendToAppDialog(id) }, '↗ Enviar a mi app')),
         pipelineCard(data.pipeline),
         requestsCard(data.requests),
         h('details', { class: 'small' }, h('summary', {}, 'Datos guardados en esta conversación'), h('div', { class: 'pre' }, Object.entries(c.data || {}).map(([key, value]) => `${key}: ${value}`).join('\n') || 'Aún no se han recopilado datos.')),
@@ -513,7 +558,7 @@ export async function viewConversation(root, id, opts = {}) {
     workRecovery(id),
     h('div', { class: 'row chat-shortcuts' }, [['customer-data', 'Datos del cliente'], ['conversation-summary', 'Resumen'], ['conversation-appointments', 'Citas y seguimientos']].map(([target, label]) => h('button', { class: 'small', onclick: () => { const el = document.getElementById(target); if (!el) return; if (el.tagName === 'DETAILS') el.open = true; el.scrollIntoView({ block: 'start' }); el.focus({ preventScroll: true }); } }, label))),
     h('div', { class: 'split' },
-      h('div', { class: 'card' }, older, chat, h('div', { class: 'composer' }, input, h('button', { onclick: togglePhotos, title: 'Enviar una foto del catálogo' }, '📷 Foto'), sendButton),
+      h('div', { class: 'card' }, older, chat, windowNote, h('div', { class: 'composer' }, input, h('button', { onclick: togglePhotos, title: 'Enviar una foto del catálogo' }, '📷 Foto'), templateButton, sendButton),
         gallery,
         h('p', { class: 'muted small' }, 'Al enviar un mensaje o una foto a mano, el bot se pausa en esta conversación hasta que la devuelvas.')),
       side),
@@ -523,6 +568,37 @@ export async function viewConversation(root, id, opts = {}) {
   poll(() => load(), 5000, root);
 }
 
+
+/** Ventana para enviar la conversación a la app del negocio (sus webhooks): el resumen, completa o ambos. */
+async function sendToAppDialog(id) {
+  const apps = await run(() => api('GET', `/api/conversations/${id}/app-destinations`));
+  if (!apps) return;
+  const receiving = apps.filter((a) => a.receives_conversations);
+  const b = { content: 'summary', endpoint_id: '' };
+  if (!receiving.length) {
+    await dialog('Enviar a mi app', h('div', {},
+      h('p', {}, 'Todavía no hay una app conectada que reciba conversaciones.'),
+      isAdmin() ? h('p', { class: 'small muted' }, 'Conéctala en ', h('a', { href: '#/integraciones' }, 'Ajustes → Integraciones'), ': agrega un webhook con el evento «Conversación enviada a tu app».') : h('p', { class: 'small muted' }, 'Pídele a un administrador que la conecte en Integraciones.')), 'Cerrar');
+    return;
+  }
+  const dlg = h('dialog', { class: 'card', style: 'max-width:520px;width:92vw' });
+  const close = () => { dlg.close(); dlg.remove(); };
+  const send = h('button', { class: 'primary', onclick: async () => {
+    send.disabled = true;
+    try {
+      const r = await run(() => api('POST', `/api/conversations/${id}/send-to-app`, b));
+      if (r) { toast(r.sent === 1 ? 'Enviada a tu app' : `Enviada a ${r.sent} apps`); close(); }
+    } finally { send.disabled = false; }
+  } }, 'Enviar');
+  dlg.append(
+    h('h2', { style: 'margin-top:0' }, 'Enviar la conversación a tu app'),
+    field('Qué enviar', select(b, 'content', [['summary', 'El resumen (con análisis y datos del cliente)'], ['full', 'La conversación completa (todos los mensajes)'], ['both', 'Ambos']])),
+    receiving.length > 1 ? field('A qué app', select(b, 'endpoint_id', [['', 'Todas las conectadas'], ...receiving.map((a) => [a.id, a.label])])) : h('p', { class: 'small muted' }, `Se envía a: ${receiving[0].label}`),
+    h('p', { class: 'small muted' }, 'Si eliges el resumen, se actualiza antes de enviar. Para que se envíe solo, crea una regla en Automatización con la acción «Enviar la conversación a tu app».'),
+    h('div', { class: 'row', style: 'justify-content:flex-end;margin-top:10px' }, h('button', { onclick: close }, 'Cancelar'), send));
+  document.body.append(dlg);
+  dlg.showModal();
+}
 
 /** Ventana para enviar el reporte a personas del equipo (y, si es administrador, a correos o WhatsApp externos). */
 async function sendReportDialog(id) {

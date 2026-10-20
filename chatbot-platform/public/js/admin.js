@@ -108,9 +108,9 @@ export async function viewAccounts(root) {
               if (d > 0) { if (!(await run(() => api('PUT', `/api/accounts/${a.id}`, { extend_trial_days: d }), 'Prueba extendida'))) return; render(); }
             } }, 'Extender prueba') : null,
             h('button', { class: 'small', title: 'Excepción de límites para este perfil (sobre su plan)', onclick: async () => {
-              const keys = { mensajes: 'messages_per_month', canales: 'channels', usuarios: 'users', asistentes: 'chatbots' };
+              const keys = { mensajes: 'messages_per_month', canales: 'channels', usuarios: 'users', asistentes: 'chatbots', redes: 'social_accounts' };
               const cur = Object.entries(keys).filter(([, k]) => a.limits_override?.[k]).map(([n, k]) => `${n}=${a.limits_override[k]}`).join(' ');
-              const txt = await ask('Límites especiales de este perfil (se aplican en lugar de los de su plan).\nFormato: mensajes=1000 canales=2 usuarios=5 asistentes=3\nDéjalo vacío para quitar la excepción y usar los de su plan.', cur);
+              const txt = await ask('Límites especiales de este perfil (se aplican en lugar de los de su plan).\nFormato: mensajes=1000 canales=2 usuarios=5 asistentes=3 redes=2\nDéjalo vacío para quitar la excepción y usar los de su plan.', cur);
               if (txt === null) return;
               const limits_override = {};
               for (const part of txt.split(/[\s,]+/).filter(Boolean)) {
