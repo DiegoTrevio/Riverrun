@@ -4,7 +4,8 @@
 WITH ranked AS (
   SELECT c.id, row_number() OVER (
            PARTITION BY c.config->>'account_id'
-           ORDER BY (a.zernio_profile_id <> '' AND c.config->>'profile_id' = a.zernio_profile_id) DESC, c.created_at, c.id
+           -- coalesce: un canal sin perfil guardado (NULL) no coincide; sin él, NULL quedaría primero al ordenar DESC.
+           ORDER BY coalesce(a.zernio_profile_id <> '' AND c.config->>'profile_id' = a.zernio_profile_id, false) DESC, c.created_at, c.id
          ) AS rn
     FROM channels c JOIN accounts a ON a.id = c.account_id
    WHERE c.type = 'zernio' AND coalesce(c.config->>'account_id', '') <> ''

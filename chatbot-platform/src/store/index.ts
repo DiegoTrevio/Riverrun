@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import { enqueue } from '../engine/queue.js';
 import { query, queryOne, withTransaction } from '../db.js';
 import { removeInboundAccountFiles, type StoredMedia } from '../channels/media.js';
+import { removeAccountAttachments } from '../attachments.js';
 import { perRequestKeys } from '../engine/questions.js';
 import { closeCardForRequest } from './pipelines.js';
 import {
@@ -75,6 +76,7 @@ export async function markOnboarding(accountId: string, steps: Record<string, bo
 export async function deleteAccount(id: string) {
   await query('DELETE FROM accounts WHERE id = $1', [id]);
   await removeInboundAccountFiles(id);
+  await removeAccountAttachments(id);
 }
 
 /* ------------------------------ Usuarios ------------------------------ */

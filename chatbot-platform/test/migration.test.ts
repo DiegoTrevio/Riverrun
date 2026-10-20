@@ -124,3 +124,52 @@ t('una migración fallida revierte el esquema y libera el bloqueo para otra rép
     assert.deepEqual(await migrate(replica), []);
   } finally { await replica.end(); }
 });
+
+t('sube desde la versión 054 con redes de Zernio, flujos y campañas sin perder datos ni conservar el canal equivocado', async () => {
+  // Base nueva hasta la 054 (lo que hay en producción antes de este cambio), con datos reales.
+  const name = `${dbName}_054`;
+  await pool.query(`DROP DATABASE IF EXISTS ${name}`);
+  await pool.query(`CREATE DATABASE ${name}`);
+  const up = new pg.Pool({ connectionString: new URL(`/${name}`, base).href });
+  try {
+    await up.query('CREATE EXTENSION IF NOT EXISTS pgcrypto');
+    await up.query(`CREATE TABLE schema_migrations (name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`);
+    for (const f of fs.readdirSync(path.resolve('migrations')).filter((x) => x.endsWith('.sql') && x < '055').sort()) {
+      await up.query(fs.readFileSync(path.resolve('migrations', f), 'utf8'));
+      await up.query('INSERT INTO schema_migrations(name) VALUES ($1)', [f]);
+    }
+    const q = async (sql: string, params: unknown[] = []) => (await up.query(sql, params)).rows;
+    const [a] = await q(`INSERT INTO accounts (name, zernio_profile_id) VALUES ('Hotel A', 'prof_a') RETURNING id`);
+    const [b] = await q(`INSERT INTO accounts (name, zernio_profile_id) VALUES ('Tienda B', 'prof_b') RETURNING id`);
+    // Dos canales con la misma cuenta de Zernio: el más antiguo no guardó su perfil; el otro es del perfil del negocio.
+    const [old] = await q(`INSERT INTO channels (account_id, type, name, webhook_token, config, created_at) VALUES ($1, 'zernio', 'IG viejo', 'tok-old', $2, now() - interval '2 days') RETURNING id`,
+      [a.id, JSON.stringify({ platform: 'instagram', account_id: 'acc_dup', username: 'viejo' })]);
+    const [mine] = await q(`INSERT INTO channels (account_id, type, name, webhook_token, config) VALUES ($1, 'zernio', 'IG del hotel', 'tok-mine', $2) RETURNING id`,
+      [a.id, JSON.stringify({ platform: 'instagram', account_id: 'acc_dup', profile_id: 'prof_a', username: 'hotel' })]);
+    const [down] = await q(`INSERT INTO channels (account_id, type, name, webhook_token, config, connection_state) VALUES ($1, 'zernio', 'FB tienda', 'tok-b', $2, 'close') RETURNING id`,
+      [b.id, JSON.stringify({ platform: 'facebook', account_id: 'acc_b', profile_id: 'prof_b', username: 'tienda' })]);
+    const [seq] = await q(`INSERT INTO sequences (account_id, name, steps) VALUES ($1, 'Seguimiento', $2) RETURNING id`, [a.id, JSON.stringify([{ delay_value: 0, delay_unit: 'minutes', text: 'Hola' }])]);
+    const [wa] = await q(`INSERT INTO channels (account_id, type, name, webhook_token, config) VALUES ($1, 'whatsapp', 'WA', 'tok-wa', '{}') RETURNING id`, [a.id]);
+    const [ct] = await q(`INSERT INTO contacts (account_id, channel_id, external_id) VALUES ($1, $2, '5215500000001') RETURNING id`, [a.id, wa.id]);
+    const [cv] = await q(`INSERT INTO conversations (account_id, channel_id, contact_id) VALUES ($1, $2, $3) RETURNING id`, [a.id, wa.id, ct.id]);
+    await q(`INSERT INTO sequence_enrollments (account_id, sequence_id, conversation_id, current_step) VALUES ($1, $2, $3, 1)`, [a.id, seq.id, cv.id]);
+    await q(`INSERT INTO campaigns (account_id, channel_id, name, message) VALUES ($1, $2, 'Promo', 'Hola')`, [a.id, wa.id]);
+
+    const applied = await migrate(up);
+    assert.equal(applied[0], '055_checkout_ref.sql');
+    assert.equal(applied.at(-1), '066_flow_buttons.sql');
+    const chans = Object.fromEntries((await q(`SELECT id, config->>'account_id' AS zid, connection_state, disconnect_reason FROM channels WHERE type = 'zernio'`)).map((r) => [r.id, r]));
+    assert.equal(chans[mine.id].zid, 'acc_dup', 'se conserva el canal del perfil del negocio');
+    assert.deepEqual([chans[old.id].zid, chans[old.id].connection_state, chans[old.id].disconnect_reason], ['', 'close', 'zernio_duplicate'], 'el duplicado queda sin cuenta');
+    const socials = await q(`SELECT account_id, zernio_account_id, channel_id, status, down_notified_at FROM social_accounts ORDER BY zernio_account_id`);
+    assert.deepEqual(socials.map((s) => [s.account_id, s.zernio_account_id, s.channel_id, s.status]), [[b.id, 'acc_b', down.id, 'needs_reconnect'], [a.id, 'acc_dup', mine.id, 'active']]);
+    assert.ok(socials[0].down_notified_at, 'una red ya caída no vuelve a avisar al actualizar');
+    assert.deepEqual((await q(`SELECT profile_id, account_id FROM zernio_profiles ORDER BY profile_id`)).map((p) => [p.profile_id, p.account_id]), [['prof_a', a.id], ['prof_b', b.id]]);
+    assert.deepEqual((await q(`SELECT kind, sequence_id FROM campaigns`))[0], { kind: 'message', sequence_id: null });
+    assert.deepEqual((await q(`SELECT current_step, choice, choice_step, campaign_id, pace_ms FROM sequence_enrollments`))[0], { current_step: 1, choice: '', choice_step: null, campaign_id: null, pace_ms: 0 });
+    assert.deepEqual(await migrate(up), [], 'volver a ejecutar no hace nada');
+  } finally {
+    await up.end();
+    await pool.query(`DROP DATABASE IF EXISTS ${name}`);
+  }
+});

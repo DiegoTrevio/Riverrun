@@ -19,7 +19,7 @@ export async function contactDataExport(contactId: string) {
     `SELECT m.conversation_id, m.created_at, m.direction, m.sender, m.type, m.content FROM messages m JOIN conversations cv ON cv.id = m.conversation_id WHERE cv.contact_id = $1 ORDER BY m.id`,
     [contactId],
   );
-  const appointments = await query<any>(`SELECT service_name, kind, starts_at, ends_at, status, customer_name, customer_phone, notes FROM appointments WHERE contact_id = $1 ORDER BY starts_at`, [contactId]).catch(() => []);
+  const appointments = await query<any>(`SELECT service_name, kind, starts_at, ends_at, status, customer_name, customer_phone, customer_email, notes FROM appointments WHERE contact_id = $1 ORDER BY starts_at`, [contactId]).catch(() => []);
   const tasks = await query<any>(`SELECT kind, body, status, to_char(due_on, 'YYYY-MM-DD') AS due_on, created_via, created_at, done_at FROM contact_tasks WHERE contact_id = $1 ORDER BY created_at`, [contactId]);
   return { generated_at: new Date().toISOString(), contact, conversations, messages, appointments, tasks };
 }
@@ -49,7 +49,7 @@ export async function eraseContact(contactId: string, guard: { accountId?: strin
     await client.query(`DELETE FROM email_threads WHERE channel_id = $1 AND address = lower($2)`, [contact.channel_id, contact.external_id]);
     await client.query('DELETE FROM inbound_receipts WHERE channel_id=$1 AND external_id=$2',[contact.channel_id,contact.external_id]);
     await client.query('DELETE FROM query_embedding_cache WHERE account_id=$1',[contact.account_id]);
-    await client.query(`UPDATE appointments SET customer_name = '', customer_phone = '', notes = '' WHERE contact_id = $1 OR conversation_id = ANY($2)`, [contactId, convIds]);
+    await client.query(`UPDATE appointments SET customer_name = '', customer_phone = '', customer_email = '', notes = '' WHERE contact_id = $1 OR conversation_id = ANY($2)`, [contactId, convIds]);
     // Las rutas de sus archivos se leen antes de borrar el contacto: al borrarlo, esas filas desaparecen con los mensajes.
     const files = convIds.length ? (await client.query<{ file_path: string }>(`SELECT mm.file_path FROM message_media mm JOIN messages m ON m.id = mm.message_id WHERE m.conversation_id = ANY($1)`, [convIds])).rows.map((r) => r.file_path) : [];
     await client.query(`DELETE FROM contacts WHERE id = $1`, [contactId]);
