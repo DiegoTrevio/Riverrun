@@ -24,6 +24,10 @@ export interface Subscription {
   cancel_at_period_end: boolean;
   past_due_since: Date | null;
   access_ended_at: Date | null;
+  /** Último pago iniciado (sesión de Stripe o suscripción pendiente de Mercado Pago), para confirmarlo sin esperar el aviso. */
+  checkout_provider: ProviderName | '';
+  checkout_ref: string;
+  checkout_at: Date | null;
 }
 
 /** Estado de una suscripción tal como lo informa el proveedor, ya normalizado. */
@@ -59,9 +63,12 @@ export interface BillingProvider {
   name: ProviderName;
   label: string;
   enabled(): boolean;
-  /** Puede cobrar este plan (p.ej. Stripe necesita el ID de precio). */
+  /** Puede cobrar este plan. */
   supportsPlan(plan: Plan): boolean;
-  createCheckout(args: CheckoutArgs): Promise<{ url: string }>;
+  /** Abre el pago. `ref` identifica ese pago en el proveedor (sesión de Stripe, suscripción de Mercado Pago). */
+  createCheckout(args: CheckoutArgs): Promise<{ url: string; ref: string }>;
+  /** Estado de la suscripción que generó un pago iniciado (null si todavía no se completa). */
+  checkoutState(ref: string, plans: Plan[]): Promise<SubscriptionState | null>;
   /** Página del proveedor para cambiar la tarjeta y ver facturas (si la tiene). */
   portal?(customerId: string, returnUrl: string): Promise<{ url: string }>;
   setCancelAtPeriodEnd(sub: Subscription, cancel: boolean): Promise<void>;
@@ -70,4 +77,9 @@ export interface BillingProvider {
 }
 
 export class WebhookError extends Error {}
-export class ProviderError extends Error {}
+export class ProviderError extends Error {
+  /** Código HTTP con el que respondió el proveedor (0 si no respondió). */
+  constructor(message: string, public status = 0) {
+    super(message);
+  }
+}

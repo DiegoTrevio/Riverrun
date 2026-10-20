@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { query, queryOne } from '../db.js';
-import { accountSettings, type AccountSettings, type Appointment, type Automation, type Sequence, type Service } from './types.js';
+import { accountSettings, type AccountSettings, type Appointment, type Automation, type Sequence, type Service, type WaTemplateRef } from './types.js';
 
 /* ------------------------------ Configuración de la cuenta ------------------------------ */
 
@@ -123,14 +123,45 @@ export interface Enrollment {
   stop_reason: string;
   started_at: Date;
   next_run_at: Date | null;
+  /** Último paso en el que el cliente tocó (o escribió) una opción, y cuál. */
+  choice_step: number | null;
+  choice: string;
+  /** Flujo enviado a un grupo: su campaña y el espacio entre envíos por número. */
+  campaign_id: string | null;
+  pace_ms: number;
 }
 
-export async function createEnrollment(accountId: string, sequenceId: string, conversationId: string, lastInboundId: number) {
+export async function createEnrollment(accountId: string, sequenceId: string, conversationId: string, lastInboundId: number, opts: { campaignId?: string | null; paceMs?: number } = {}) {
   return queryOne<Enrollment>(
-    `INSERT INTO sequence_enrollments (account_id, sequence_id, conversation_id, last_inbound_id) VALUES ($1,$2,$3,$4)
+    `INSERT INTO sequence_enrollments (account_id, sequence_id, conversation_id, last_inbound_id, campaign_id, pace_ms) VALUES ($1,$2,$3,$4,$5,$6)
      ON CONFLICT DO NOTHING RETURNING *`,
-    [accountId, sequenceId, conversationId, lastInboundId],
+    [accountId, sequenceId, conversationId, lastInboundId, opts.campaignId ?? null, Math.max(0, Math.round(opts.paceMs ?? 0))],
   );
+}
+
+/**
+ * Aparta un paso para enviarlo: solo una tarea lo envía aunque haya dos (la programada y la de un botón "seguir").
+ * Devuelve false si otra ya lo tomó o la inscripción terminó.
+ */
+export async function claimStep(id: string, step: number) {
+  return !!(await queryOne(`UPDATE sequence_enrollments SET current_step = $2 + 1 WHERE id = $1 AND status = 'active' AND current_step = $2 RETURNING id`, [id, step]));
+}
+/** ¿Hay un paso del flujo esperando su hora (o su turno)? */
+export async function hasPendingStepJob(enrollmentId: string) {
+  return !!(await queryOne(`SELECT 1 FROM jobs WHERE type = 'sequence_step' AND status = 'pending' AND payload->>'enrollment_id' = $1 LIMIT 1`, [enrollmentId]));
+}
+/** Devuelve el paso apartado si el envío falló sin saber si salió (la tarea se reintenta). */
+export async function releaseStep(id: string, step: number) {
+  await query(`UPDATE sequence_enrollments SET current_step = $2 WHERE id = $1 AND status = 'active' AND current_step = $2 + 1`, [id, step]);
+}
+
+/** Reserva el siguiente hueco de envío del canal (pasos de flujos enviados a un grupo): devuelve cuándo le toca. */
+export async function reservePacedSlot(channelId: string, paceMs: number): Promise<Date> {
+  const row = await queryOne<{ slot: Date }>(
+    `INSERT INTO send_pacing (channel_id, next_free_at) VALUES ($1, now() + $2 * interval '1 millisecond')
+     ON CONFLICT (channel_id) DO UPDATE SET next_free_at = greatest(send_pacing.next_free_at, now()) + $2 * interval '1 millisecond'
+     RETURNING next_free_at - $2 * interval '1 millisecond' AS slot`, [channelId, paceMs]);
+  return new Date(row!.slot);
 }
 
 export async function getEnrollment(id: string) {
@@ -244,7 +275,7 @@ export async function getService(id: string) {
 }
 
 export async function saveService(accountId: string, s: Omit<Service, 'id' | 'account_id'>, id?: string) {
-  const cols = ['name', 'kind', 'description', 'duration_minutes', 'buffer_minutes', 'capacity', 'min_notice_minutes', 'max_days_ahead', 'location', 'hours', 'reminders', 'reminder_message', 'assigned_user_ids', 'assignment_mode', 'user_weights', 'notify_team', 'active'] as const;
+  const cols = ['name', 'kind', 'description', 'duration_minutes', 'buffer_minutes', 'capacity', 'min_notice_minutes', 'max_days_ahead', 'location', 'hours', 'reminders', 'reminder_message', 'assigned_user_ids', 'assignment_mode', 'user_weights', 'call_mode', 'prefer_owner', 'customer_choice', 'notify_team', 'active'] as const;
   const values = cols.map((c) => (['hours', 'reminders', 'assigned_user_ids', 'user_weights'].includes(c) ? (s[c] === null ? null : JSON.stringify(s[c])) : s[c]));
   if (id) {
     return queryOne<Service>(`UPDATE services SET ${cols.map((c, i) => `${c} = $${i + 1}`).join(', ')}, updated_at = now() WHERE id = $${cols.length + 1} RETURNING *`, [...values, id]);
@@ -259,8 +290,14 @@ export async function deleteService(id: string) {
   await query('DELETE FROM services WHERE id = $1', [id]);
 }
 
+/** ¿La cita es una videollamada (servicio de llamada en modo video)? */
+export async function isVideoCall(a: Pick<Appointment, 'kind' | 'service_id'>): Promise<boolean> {
+  if (a.kind !== 'call' || !a.service_id) return false;
+  return (await queryOne<{ call_mode: string }>(`SELECT call_mode FROM services WHERE id = $1`, [a.service_id]))?.call_mode === 'video';
+}
+
 export async function getAppointment(id: string) {
-  return queryOne<Appointment>('SELECT * FROM appointments WHERE id = $1', [id]);
+  return queryOne<Appointment>(`SELECT a.*, coalesce(nullif(u.name, ''), split_part(u.email, '@', 1)) AS assigned_user_name FROM appointments a LEFT JOIN users u ON u.id = a.assigned_user_id WHERE a.id = $1`, [id]);
 }
 
 export async function listAppointments(accountId: string | null, opts: { from?: Date; to?: Date; contactId?: string; status?: string; visibleTo?: string } = {}) {
@@ -413,6 +450,11 @@ export interface Campaign {
   business_hours_only: boolean;
   /** Etapa del recorrido en la que queda cada conversación al recibir la campaña (0 = no cambia). */
   flow_step: number;
+  /** WhatsApp oficial: plantilla para quien no escribió en las últimas 24 h. */
+  wa_template: WaTemplateRef | null;
+  /** Un mensaje, o un flujo (cada persona entra a `sequence_id`). */
+  kind: 'message' | 'sequence';
+  sequence_id: string | null;
   stats: Record<string, number>;
 }
 
@@ -428,19 +470,20 @@ export async function getCampaign(id: string) {
 
 export async function saveCampaign(
   accountId: string,
-  c: Pick<Campaign, 'channel_id' | 'channel_ids' | 'name' | 'message' | 'image_id' | 'audience' | 'scheduled_at' | 'rate_per_minute' | 'business_hours_only' | 'flow_step'>,
+  c: Pick<Campaign, 'channel_id' | 'channel_ids' | 'name' | 'message' | 'image_id' | 'audience' | 'scheduled_at' | 'rate_per_minute' | 'business_hours_only' | 'flow_step'> & { wa_template?: WaTemplateRef | null; kind?: Campaign['kind']; sequence_id?: string | null },
   id?: string,
 ) {
-  const params = [c.channel_id, c.name, c.message, c.image_id, JSON.stringify(c.audience), c.scheduled_at, c.rate_per_minute, c.business_hours_only, JSON.stringify(c.channel_ids ?? []), c.flow_step ?? 0];
+  const kind = c.kind ?? 'message';
+  const params = [c.channel_id, c.name, c.message, c.image_id, JSON.stringify(c.audience), c.scheduled_at, c.rate_per_minute, c.business_hours_only, JSON.stringify(c.channel_ids ?? []), c.flow_step ?? 0, c.wa_template ? JSON.stringify(c.wa_template) : null, kind, kind === 'sequence' ? c.sequence_id ?? null : null];
   if (id) {
     return queryOne<Campaign>(
-      `UPDATE campaigns SET channel_id=$1, name=$2, message=$3, image_id=$4, audience=$5, scheduled_at=$6, rate_per_minute=$7, business_hours_only=$8, channel_ids=$9, flow_step=$10, updated_at=now()
-       WHERE id = $11 RETURNING *`,
+      `UPDATE campaigns SET channel_id=$1, name=$2, message=$3, image_id=$4, audience=$5, scheduled_at=$6, rate_per_minute=$7, business_hours_only=$8, channel_ids=$9, flow_step=$10, wa_template=$11, kind=$12, sequence_id=$13, updated_at=now()
+       WHERE id = $14 RETURNING *`,
       [...params, id],
     );
   }
   return queryOne<Campaign>(
-    `INSERT INTO campaigns (channel_id, name, message, image_id, audience, scheduled_at, rate_per_minute, business_hours_only, channel_ids, flow_step, account_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+    `INSERT INTO campaigns (channel_id, name, message, image_id, audience, scheduled_at, rate_per_minute, business_hours_only, channel_ids, flow_step, wa_template, kind, sequence_id, account_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
     [...params, accountId],
   );
 }
@@ -524,9 +567,12 @@ export async function campaignExcludedNoConsent(c: Pick<Campaign, 'channel_id' |
 }
 
 /** Mensajes de campaña ya enviados desde cada número desde `since` (para respetar el tope diario entre campañas). */
+/** Mensajes de campañas enviados por número desde `since` (una persona de un flujo cuenta como todos sus mensajes). */
 export async function campaignSentSince(accountId: string, since: Date) {
   return query<{ channel_id: string; n: number }>(
-    `SELECT cv.channel_id, count(*)::int AS n FROM campaign_recipients r JOIN conversations cv ON cv.id = r.conversation_id
+    `SELECT cv.channel_id, sum(CASE WHEN c.kind = 'sequence' THEN greatest(1, coalesce(jsonb_array_length(s.steps), 1)) ELSE 1 END)::int AS n
+       FROM campaign_recipients r JOIN conversations cv ON cv.id = r.conversation_id JOIN campaigns c ON c.id = r.campaign_id
+       LEFT JOIN sequences s ON s.id = c.sequence_id
       WHERE cv.account_id = $1 AND r.status = 'sent' AND r.sent_at >= $2 GROUP BY cv.channel_id`,
     [accountId, since],
   );

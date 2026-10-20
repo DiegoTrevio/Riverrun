@@ -96,7 +96,8 @@ export function renderReport(r: ReportView, o: { note?: string; transcript?: str
     a.intent ? `\nQué busca: ${a.intent}` : '',
     r.summary ? `Ánimo: ${SENTIMENT[a.sentiment]} · Interés: ${INTEREST[a.interest]}` : '',
     dataLines.length ? `\nDATOS CONFIRMADOS\n${dataLines.join('\n')}` : '',
-    r.notes.length ? `\nNOTAS\n${r.notes.map((n) => `• ${n}`).join('\n')}` : '',
+    // Las notas las escribió el asistente: no se presentan junto a los datos confirmados como si lo fueran.
+    r.notes.length ? `\nNOTAS DEL ASISTENTE (sin confirmar)\n${r.notes.map((n) => `• ${n}`).join('\n')}` : '',
     a.agreements.length ? `\nACUERDOS\n${a.agreements.map((x) => `• ${x}`).join('\n')}` : '',
     a.next_steps.length ? `\nPENDIENTES\n${a.next_steps.map((x) => `• ${x}`).join('\n')}` : '',
     o.transcript ? `\nÚLTIMOS MENSAJES\n${o.transcript}` : '',

@@ -1,5 +1,5 @@
 import { imagesAfterReply, imagesForAssistant, imagesForContext } from './images.js';
-import { affirms, automaticField, customerGave, customerProvided } from './customer-data.js';
+import { affirms, automaticField, customerGave, customerMentioned, customerProvided } from './customer-data.js';
 import type { Chatbot, DataField, ImageAsset } from '../types.js';
 import { DecisionSchema, type Action, type Decision } from './decision.js';
 import { unsupportedClaims } from './claims.js';
@@ -21,7 +21,7 @@ export interface ExecutionPlan {
   /** Intenciones detectadas (solo de la lista permitida). */
   intents: string[];
   /** Propuesta de agenda ya validada contra los horarios reales. */
-  booking: { action: 'book'; serviceId: string; slot: string } | { action: 'cancel'; appointmentId: string } | null;
+  booking: { action: 'book'; serviceId: string; slot: string; userId?: string } | { action: 'cancel'; appointmentId: string } | null;
   /** Etapa del recorrido (0 = sin recorrido o sin cambio). */
   flowStep: number;
   /** Mensajes guardados (activos y existentes) que se envían tal cual, en el orden que propuso la IA. */
@@ -56,6 +56,8 @@ export interface AgendaValidation {
   appointmentIds: string[];
   /** Servicios para los que falta pedir teléfono antes de agendar. */
   needsPhoneFor: string[];
+  /** Servicios donde el cliente puede pedir persona: cada una con sus horarios. */
+  people?: Record<string, { userId: string; name: string; slots: string[] }[]>;
 }
 
 export interface ValidationInput {
@@ -564,14 +566,15 @@ export function validateDecision(input: ValidationInput): ValidationResult {
   if (images.length && action !== 'handoff') action = 'reply_with_image';
 
   // ---------- Verificación de hechos (cero invenciones) ----------
+  const trusted = new FactCorpus(input.groundingSources);
+  const all = new FactCorpus([...input.groundingSources, ...(input.customerSources ?? [])]);
+  const customerCorpus = new FactCorpus(input.customerSources ?? []);
   if (rules.verify_facts && messages.length) {
-    const trusted = new FactCorpus(input.groundingSources);
-    const all = new FactCorpus([...input.groundingSources, ...(input.customerSources ?? [])]);
-    const unverified = all.unverified(messages.join('\n'), trusted);
+    const unverified = all.unverified(messages.join('\n'), trusted, customerCorpus);
     if (unverified.length) {
       factIssues = true;
       retryable.push(
-        `Mencionaste datos que no están en la información del negocio ni en la conversación: ${unverified.join(', ')}. Elimina o corrige esos datos; si no los tienes, dilo con naturalidad.`,
+        `Mencionaste datos que no están en la información del negocio ni en la conversación: ${unverified.join(', ')}. Elimina o corrige esos datos; si no los tienes, dilo con naturalidad. Precios, descuentos, promociones, horarios y enlaces solo pueden salir de la información del negocio; si calculas un total, escribe también el precio unitario (por ejemplo: 2 noches × $1,650 = $3,300) y usa solo cantidades que dijo el cliente.`,
       );
     }
   }
@@ -618,11 +621,17 @@ export function validateDecision(input: ValidationInput): ValidationResult {
       fixes.push(`Dato no proporcionado por el cliente ignorado: ${f.key}`);
       continue;
     }
-    // Un dato obligatorio bloquea el objetivo: la IA no puede inventar una fecha, una cantidad o una opción que el
-    // cliente nunca dio para darlo por cumplido.
+    // Ningún dato configurado se inventa: la IA no puede guardar una fecha, una cantidad o una opción que el cliente
+    // nunca dio (si es obligatorio, además daría el objetivo por cumplido).
     // También vale si el asistente lo propuso y el cliente dijo que sí ("¿Le reservo el 15 de noviembre?" → "sí").
     const confirmed = affirms(input.customerText) && (input.recentBotTexts ?? []).some((t) => customerGave(f, clean, [t]));
-    if (configured?.required && !freeAnswer && !confirmed && !customerGave(f, clean, sources)) {
+    // Un texto libre opcional puede venir resumido con otras palabras: basta con que salga de lo que dijo el cliente.
+    const gave = customerGave(f, clean, sources) || (f.type === 'text' && !configured?.required && customerMentioned(clean, sources));
+    if (configured && !freeAnswer && !confirmed && !gave) {
+      if (!configured.required) {
+        fixes.push(`Dato no proporcionado por el cliente ignorado: ${f.key}`);
+        continue;
+      }
       fixes.push(`Dato obligatorio no proporcionado por el cliente ignorado: ${f.key}`);
       // Sin descartarlo en silencio (el objetivo se quedaría esperando): se pide confirmarlo con el cliente.
       if (!input.final) retryable.push(`No guardes "${configured.label || f.key}" = "${clean}": el cliente no lo dijo. Pregúntaselo o confírmalo con él antes de guardarlo.`);
@@ -750,17 +759,31 @@ export function validateDecision(input: ValidationInput): ValidationResult {
       fixes.push('Propuesta de agenda ignorada: la agenda no está disponible');
     } else if (b.action === 'book') {
       const slots = agenda.slots[b.service_id];
+      // El cliente pidió a una persona: debe ser de la lista y estar libre en ese horario. Sus horarios son otra selección
+      // (no siempre están entre los generales), así que se revisan contra los suyos.
+      const list = b.person.trim() ? agenda.people?.[b.service_id] ?? [] : [];
+      const want = normalize(b.person).split(/\s+/).filter(Boolean);
+      const exact = list.filter((p) => normalize(p.name) === want.join(' '));
+      // "Ana" vale por "Ana García"; "Ana López" no vale por "Ana García".
+      const loose = exact.length ? exact : list.filter((p) => { const words = normalize(p.name).split(/\s+/); return want.every((w) => words.includes(w)); });
+      const person = loose.length === 1 ? loose[0] : null;
       if (!slots) {
         bookingIssue = true;
         retryable.push(`El servicio "${b.service_id}" no existe. Usa el ID exacto de la sección Agenda.`);
-      } else if (!slots.includes(b.slot)) {
+      } else if (list.length && !person) {
+        bookingIssue = true;
+        retryable.push(`"${b.person}" no está en la lista de personas de ese servicio (${list.map((p) => p.name).join(', ')}). Pon el nombre exacto o deja booking.person vacío.`);
+      } else if (person && !person.slots.includes(b.slot)) {
+        bookingIssue = true;
+        retryable.push(`${person.name} no está libre el ${b.slot}. Ofrece solo sus horarios: ${person.slots.slice(0, 6).join(', ') || 'no tiene horarios por ahora'}.`);
+      } else if (!person && !slots.includes(b.slot)) {
         bookingIssue = true;
         retryable.push(`El horario "${b.slot}" no está disponible para ese servicio. Ofrece solo horarios de la lista y agenda únicamente cuando el cliente elija uno.`);
       } else if (agenda.needsPhoneFor.includes(b.service_id) && !input.hasPhone && !Object.keys(saveData).some((k) => k === 'telefono' || bot.data_fields.find((f) => f.key === k)?.type === 'phone')) {
         bookingIssue = true;
         retryable.push('Para agendar la llamada primero pide el número de teléfono del cliente (no agendes todavía).');
       } else {
-        booking = { action: 'book', serviceId: b.service_id, slot: b.slot };
+        booking = person ? { action: 'book', serviceId: b.service_id, slot: b.slot, userId: person.userId } : { action: 'book', serviceId: b.service_id, slot: b.slot };
       }
     } else if (b.action === 'cancel') {
       if (!agenda.appointmentIds.includes(b.appointment_id)) {
@@ -857,9 +880,17 @@ export function validateDecision(input: ValidationInput): ValidationResult {
     } else retryable.push('La acción requiere al menos un mensaje para el cliente.');
   }
 
+  // Las notas se leen en los siguientes turnos: una con un precio, un descuento, una hora o un enlace que no está en la
+  // conversación ni en la información del negocio no se guarda (si no, el dato inventado parecería conocido). Lo que
+  // dijo el cliente sí se anota ("pidió 20% de descuento"): las notas no respaldan nada como información del negocio.
   const remember = d.remember
     .map((x) => x.trim())
     .filter((x) => x.length > 2 && x.length < 200)
+    .filter((x) => {
+      if (!rules.verify_facts || !all.unverified(x, all, customerCorpus).length) return true;
+      fixes.push(`Nota no guardada (tiene datos sin respaldo): ${x}`);
+      return false;
+    })
     .slice(0, 5);
 
   return {

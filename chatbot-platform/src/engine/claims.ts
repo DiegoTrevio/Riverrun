@@ -120,7 +120,8 @@ export function claimedThings(reply: string): { sentence: string; things: string
         if (PREPOSITION_START.test(p)) continue;
         const raw = words(p);
         if (raw.some((w) => CLITIC.has(w))) continue;
-        const ws = raw.filter((w) => w.length >= 4 && !STOP.has(w) && !/\d/.test(w) && !FIRST_PERSON.test(w));
+        // Las palabras cortas no dicen nada por sí solas, salvo las de la lista de sinónimos ("spa", "gym").
+        const ws = raw.filter((w) => (w.length >= 4 || canonical.has(w)) && !STOP.has(w) && !/\d/.test(w) && !FIRST_PERSON.test(w));
         if (ws.length) things.push(ws);
       }
     });

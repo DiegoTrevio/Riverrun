@@ -40,13 +40,13 @@ export function connectionBadge(c) {
   let color = c.active ? 'green' : '';
   if (c.active && c.type === 'whatsapp') [color, label] = !c.connection_state || c.connection_state === 'unknown' ? ['orange', 'Sin conectar'] : STATE_LABEL[c.connection_state] || ['', 'Sin información'];
   if (c.active && c.config?.connected_via === 'facebook') [color, label] = c.connection_state === 'close' ? ['red', 'Desconectado'] : ['green', 'Conectado'];
-  if (c.active && c.type === 'zernio') [color, label] = !c.config?.account_id ? ['orange', 'Pendiente de conectar'] : c.connection_state === 'close' ? ['red', 'Desconectado'] : ['green', 'Conectado'];
+  if (c.active && c.type === 'zernio') [color, label] = !c.config?.connected ? ['orange', 'Pendiente de conectar'] : c.connection_state === 'close' ? ['red', 'Desconectado'] : ['green', 'Conectado'];
   return h('span', { class: `badge ${color}` }, label);
 }
 
 export function channelStatusCell(c) {
   const needsConnection = c.type === 'whatsapp' || c.type === 'zernio';
-  const connected = c.type === 'whatsapp' ? c.connection_state === 'open' : !!c.config?.account_id && c.connection_state !== 'close';
+  const connected = c.type === 'whatsapp' ? c.connection_state === 'open' : !!c.config?.connected && c.connection_state !== 'close';
   return h('td', {}, connectionBadge(c), needsConnection ? h('a', { href: connectionHref(c), class: 'btn small', style: 'margin-left:8px' }, connected ? 'Administrar' : c.type === 'whatsapp' ? 'Ver QR / reconectar' : 'Conectar cuenta') : null);
 }
 
@@ -193,7 +193,7 @@ function channelConfigFields(ch, cfg) {
     case 'zernio':
       // El negocio solo elige la red; la llave, el perfil y la cuenta los pone el servidor al conectar.
       return [
-        cfg.account_id
+        cfg.connected
           ? field('Red', h('p', {}, channelIcon('zernio', cfg.platform), ' ', networkLabel(cfg.platform)), 'Para cambiar de red, primero desconecta la cuenta.')
           : field('Red', select(cfg, 'platform', (state.meta.social_networks || []).map((n) => [n.id, n.label]), () => document.dispatchEvent(new CustomEvent('cp-social-platform')))),
         isSuper() ? h('details', {}, h('summary', {}, 'Datos técnicos (solo superadmin)'),

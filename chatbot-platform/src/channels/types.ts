@@ -17,6 +17,8 @@ export interface InboundMessage {
   text: string;
   /** Segundos Unix. */
   timestamp: number;
+  /** El cliente tocó un botón: su identificador (el texto del mensaje es la etiqueta del botón). */
+  payload?: string;
   /** Referencia para descargar audio (transcripción). */
   media?: {
     id?: string;
@@ -71,6 +73,8 @@ export interface ChannelAdapter {
   downloadAudio?(channel: Channel, msg: InboundMessage): Promise<{ buffer: Buffer; mimeType: string } | null>;
   /** Foto o documento del cliente: los bytes tal como llegaron. Sin este método, el mensaje queda sin archivo y se indica el motivo. */
   downloadMedia?(channel: Channel, msg: InboundMessage): Promise<{ buffer: Buffer; mimeType: string; fileName?: string } | null>;
+  /** Después de guardar lo recibido: confirmaciones que pide la plataforma (Telegram: que se tocó un botón). Nunca falla. */
+  acknowledge?(req: WebhookRequest): Promise<void>;
   /** Conecta/valida el canal con la plataforma (registrar webhook, validar token...). */
   setup?(channel: Channel, webhookUrl: string): Promise<SetupResult>;
   status?(channel: Channel): Promise<{ state: string; details?: Record<string, unknown> }>;

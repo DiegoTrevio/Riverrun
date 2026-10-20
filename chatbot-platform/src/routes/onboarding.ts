@@ -4,7 +4,7 @@
  */
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { HttpError, requireRole, targetAccount } from '../access.js';
+import { botFor, HttpError, requireRole, targetAccount } from '../access.js';
 import * as astore from '../automation/store.js';
 import { AccountSettingsSchema, WeeklyHoursSchema } from '../automation/types.js';
 import { mergeChannelConfig, publicChannel } from '../channels/index.js';
@@ -26,7 +26,7 @@ const OPTIONAL_STEPS: readonly string[] = ['photos', 'networks'];
 /** Las cuentas del autoregistro deben confirmar su correo antes de conectar canales reales. */
 export function assertVerified(user: User) {
   if (user.role === 'superadmin' || user.email_verified_at || !config.signup.requireEmail) return;
-  throw new HttpError(403, 'Confirma tu correo para conectar canales: revisa tu bandeja o pide un nuevo enlace desde Inicio.');
+  throw new HttpError(403, 'Confirma tu correo para conectar canales: revisa tu bandeja o pide un nuevo enlace con «Reenviar correo».');
 }
 
 /** Bot principal de la cuenta (el más antiguo): el que crea y edita el asistente. */
@@ -213,6 +213,32 @@ export async function onboardingRoutes(api: FastifyInstance) {
     });
     await logEvent({ level: 'info', source: 'admin', message: 'Canal de WhatsApp creado con el asistente', accountId, channelId: ch.id });
     return publicChannel(ch);
+  });
+
+  /**
+   * WhatsApp de un agente (pantalla «Prueba tu agente y conéctalo»): devuelve el suyo (primero el conectado) o crea uno
+   * asignado a él. Solicitudes simultáneas no crean dos: se ordenan por agente.
+   */
+  api.post('/api/chatbots/:id/whatsapp', admins, async (req: any) => {
+    const bot = await botFor(req.user, req.params.id);
+    assertVerified(req.user);
+    return withTransaction(async (client) => {
+      await client.query(`SELECT pg_advisory_xact_lock(hashtextextended('agent-whatsapp:' || $1, 0))`, [bot.id]);
+      const mine = (await store.listChannels(bot.account_id)).filter((c) => c.type === 'whatsapp' && c.chatbot_id === bot.id);
+      const existing = mine.find((c) => c.connection_state === 'open') ?? mine[0];
+      if (existing) return publicChannel(existing);
+      await assertWithinLimit(bot.account_id, 'channels');
+      const ch = await store.createChannel({
+        account_id: bot.account_id,
+        chatbot_id: bot.id,
+        type: 'whatsapp',
+        name: 'WhatsApp',
+        active: true,
+        config: mergeChannelConfig('whatsapp', {}, { instance: newInstanceName(bot.account_id) }),
+      });
+      await logEvent({ level: 'info', source: 'admin', message: `WhatsApp creado para el agente ${bot.name}`, accountId: bot.account_id, chatbotId: bot.id, channelId: ch.id });
+      return publicChannel(ch);
+    });
   });
 
   /** Reenvía el correo de confirmación al usuario actual. */

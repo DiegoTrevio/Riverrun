@@ -3,9 +3,10 @@
  * Se ejecuta periódicamente; cada paso es idempotente (se puede correr las veces que sea).
  */
 import { getSettings, notifyUsers } from './automation/store.js';
+import { mailBrand } from './brands.js';
 import { config } from './config.js';
 import { query, queryOne } from './db.js';
-import { enforceAccess } from './billing/service.js';
+import { billingEnabled, enforceAccess, syncPendingCheckouts } from './billing/service.js';
 import { logEvent } from './logs.js';
 import { sendMail } from './mailer.js';
 import * as store from './store/index.js';
@@ -28,6 +29,13 @@ export async function notifySuperadmins(accountId: string, title: string, body: 
   if (config.signup.superadminEmail) await sendMail({ to: config.signup.superadminEmail, subject: title, text: body });
 }
 
+/** Qué hacer para seguir: pagar en línea (si hay cobro automático) o escribir al contacto de soporte. */
+async function howToContinue(accountId: string) {
+  const mb = await mailBrand(accountId);
+  if (await billingEnabled()) return { mb, text: `Elige tu plan y paga en línea aquí:\n${mb.base}/#/plan\n\n` };
+  return { mb, text: `${config.signup.supportContact ? `Para continuar, escríbenos: ${config.signup.supportContact}\n\n` : ''}${mb.base}` };
+}
+
 export async function checkTrials(now = new Date()) {
   // 1) Aviso unos días antes de que termine la prueba.
   const warn = await query<Account>(
@@ -38,10 +46,12 @@ export async function checkTrials(now = new Date()) {
   for (const acc of warn) {
     const o = await owner(acc);
     if (o) {
+      const next = await howToContinue(acc.id);
       await sendMail({
+        fromName: next.mb.fromName,
         to: o.email,
         subject: 'Tu periodo de prueba está por terminar',
-        text: `Hola ${o.name || ''},\n\nTu prueba de "${acc.name}" termina el ${fmt(acc.trial_ends_at!)}. Después de esa fecha tu asistente dejará de responder hasta que se active tu plan.\n\n${config.signup.supportContact ? `Para continuar, escríbenos: ${config.signup.supportContact}\n\n` : ''}${config.publicBaseUrl}`,
+        text: `Hola ${o.name || ''},\n\nTu prueba de "${acc.name}" termina el ${fmt(acc.trial_ends_at!)}. Después de esa fecha tu asistente dejará de responder hasta que se active tu plan.\n\n${next.text}`,
       });
     }
     await notifySuperadmins(acc.id, `Prueba por vencer: ${acc.name}`, `La prueba de "${acc.name}" termina el ${fmt(acc.trial_ends_at!)}${o ? ` (${o.email})` : ''}.`);
@@ -55,14 +65,17 @@ export async function checkTrials(now = new Date()) {
   for (const acc of expired) {
     await logEvent({ level: 'warn', source: 'admin', message: `Prueba terminada: la cuenta "${acc.name}" quedó en pausa`, accountId: acc.id });
     const o = await owner(acc);
+    const next = await howToContinue(acc.id);
     if (o) {
       await sendMail({
+        fromName: next.mb.fromName,
         to: o.email,
         subject: 'Tu periodo de prueba terminó',
-        text: `Hola ${o.name || ''},\n\nLa prueba de "${acc.name}" terminó y tu asistente está en pausa. Tu configuración y tus conversaciones se conservan.\n\n${config.signup.supportContact ? `Para activar tu plan, escríbenos: ${config.signup.supportContact}\n\n` : ''}${config.publicBaseUrl}`,
+        text: `Hola ${o.name || ''},\n\nLa prueba de "${acc.name}" terminó y tu asistente está en pausa. Tu configuración y tus conversaciones se conservan; se reactiva en cuanto se active tu plan.\n\n${next.text}`,
       });
     }
-    await notifySuperadmins(acc.id, `Prueba terminada: ${acc.name}`, `La cuenta "${acc.name}" quedó en pausa${o ? ` (${o.email})` : ''}. Actívala desde Cuentas si ya pagó.`);
+    const paysOnline = await billingEnabled();
+    await notifySuperadmins(acc.id, `Prueba terminada: ${acc.name}`, `La cuenta "${acc.name}" quedó en pausa${o ? ` (${o.email})` : ''}. ${paysOnline ? 'Se reactiva sola cuando pague en línea.' : 'Actívala desde Cuentas si ya pagó.'}`);
   }
   return { warned: warn.length, paused: expired.length };
 }
@@ -88,7 +101,11 @@ export async function checkAiSpend(now = new Date()) {
 export function startLifecycle(intervalMs = 10 * 60_000) {
   const tick = () => {
     checkTrials().catch((e) => logEvent({ level: 'error', source: 'system', message: `Revisión de pruebas: ${e?.message ?? e}` }));
-    enforceAccess().catch((e) => logEvent({ level: 'error', source: 'system', message: `Revisión de pagos: ${e?.message ?? e}` }));
+    // Primero se confirman los pagos pendientes: un pago ya hecho no debe esperar al aviso del proveedor.
+    syncPendingCheckouts()
+      .catch((e) => logEvent({ level: 'error', source: 'system', message: `Revisión de pagos pendientes: ${e?.message ?? e}` }))
+      .then(() => enforceAccess())
+      .catch((e) => logEvent({ level: 'error', source: 'system', message: `Revisión de pagos: ${e?.message ?? e}` }));
     checkAiSpend().catch((e) => logEvent({ level: 'error', source: 'system', message: `Revisión de gasto de IA: ${e?.message ?? e}` }));
   };
   tick();
@@ -116,6 +133,9 @@ export async function recordConnectionState(ch: Pick<Channel, 'id' | 'account_id
   if (state === 'open') await store.clearConnectionCodes(ch.id);
   if (!row) return;
   if (state === 'open') {
+    // En cada «conectado» (no solo el primero: una conexión ya conectada puede cambiar de agente). Un fallo aquí no
+    // debe hacer fallar el aviso de conexión.
+    await startAgentOnConnect(ch).catch((e) => logEvent({ level: 'error', source: 'channel', message: `No se pudo encender el agente al conectar ${ch.name}: ${e?.message ?? e}`, accountId: ch.account_id, channelId: ch.id }));
     if (row.prev === 'open') return;
     const acc = await queryOne<Account>(`SELECT * FROM accounts WHERE id = $1`, [ch.account_id]);
     if (acc && !acc.onboarding?.whatsapp) {
@@ -137,6 +157,32 @@ export async function recordConnectionState(ch: Pick<Channel, 'id' | 'account_id
       if (await claimDisconnectNotice(ch.id, 0, alerts.repeat_hours)) await notifyDisconnected(ch);
     }
   }
+}
+
+/**
+ * Agentes del asistente de creación: se encienden solos la primera vez que una de sus conexiones queda conectada.
+ * Una sola actualización condicional decide: con avisos simultáneos solo una la gana (un aviso y un registro); si alguien
+ * lo encendió o apagó a mano, la marca ya no está y no se toca.
+ */
+export async function startAgentOnConnect(ch: Pick<Channel, 'id' | 'account_id' | 'name'>) {
+  const bot = await queryOne<{ id: string; name: string }>(
+    `UPDATE chatbots b SET active = true, start_on_connect = false, updated_at = now()
+       FROM channels c
+      WHERE c.id = $1 AND c.chatbot_id = b.id AND c.connection_state = 'open' AND c.active AND c.type <> 'playground'
+        AND b.start_on_connect AND NOT b.active
+      RETURNING b.id, b.name`,
+    [ch.id],
+  );
+  if (!bot) return null;
+  await logEvent({ level: 'info', source: 'channel', message: `Agente encendido al conectar ${ch.name}: ${bot.name}`, accountId: ch.account_id, chatbotId: bot.id, channelId: ch.id });
+  const admins = await query<{ id: string }>(`SELECT id FROM users WHERE account_id = $1 AND role = 'admin' AND active`, [ch.account_id]);
+  await notifyUsers(ch.account_id, admins.map((a) => a.id), {
+    title: 'Tu agente ya está respondiendo',
+    body: `«${bot.name}» se encendió solo al conectar «${ch.name}». Si quieres pausarlo, entra a Agentes → ${bot.name} → Configurar.`,
+    link: `#/bot/${bot.id}/empezar`,
+    kind: 'channel',
+  });
+  return bot;
 }
 
 /** Motivos con los que la sesión no vuelve sola: hay que escanear el QR otra vez. */
@@ -173,11 +219,11 @@ export function setAlertWhatsapp(fn: typeof alertWhatsapp) {
 }
 
 /** Envía un aviso de conexión a quienes se definió: administradores (panel y correo), correos y WhatsApp adicionales. */
-async function sendConnectionAlert(ch: Pick<Channel, 'id' | 'account_id' | 'name' | 'type'>, title: string, body: string, force = false) {
+async function sendConnectionAlert(ch: Pick<Channel, 'id' | 'account_id' | 'name' | 'type'>, title: string, body: string, force = false, linkTo?: string) {
   const s = await connectionAlerts(ch.account_id);
   const sent = { admins: 0, emails: 0, phones: 0, failed: [] as string[] };
   if (!s.enabled && !force) return sent;
-  const link = ch.id ? `#/channel/${ch.id}?conectar=1` : '#/agentes';
+  const link = linkTo ?? (ch.id ? `#/channel/${ch.id}?conectar=1` : '#/agentes');
   const url = `${config.publicBaseUrl}/${link}`;
   if (s.notify_admins) {
     const admins = await query<{ id: string; email: string }>(`SELECT id, email FROM users WHERE account_id = $1 AND role = 'admin' AND active`, [ch.account_id]);
@@ -200,6 +246,14 @@ async function sendConnectionAlert(ch: Pick<Channel, 'id' | 'account_id' | 'name
     }
   }
   return sent;
+}
+
+/**
+ * Redes de Zernio sin canal de mensajes (LinkedIn, YouTube, Google…) que hay que reconectar o cuyo permiso vence: un
+ * aviso por negocio, con los mismos ajustes de avisos de desconexión y enlace a Redes sociales.
+ */
+export async function notifySocialAccounts(accountId: string, title: string, body: string) {
+  return sendConnectionAlert({ id: '', account_id: accountId, name: '', type: 'zernio' }, title, body, false, '#/redes');
 }
 
 /** Aviso de que un canal se desconectó; `hours` si sigue así desde hace horas. El motivo dice si hay que escanear el QR. */

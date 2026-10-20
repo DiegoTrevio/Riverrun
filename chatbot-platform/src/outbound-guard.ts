@@ -67,6 +67,22 @@ export function guardTransport(t: Transport, destination: string): Transport {
           },
         }
       : {}),
+    ...(t.sendTemplate
+      ? {
+          sendTemplate: async (template: Parameters<NonNullable<Transport['sendTemplate']>>[0]) => {
+            assertOutbound(destination);
+            return t.sendTemplate!(template);
+          },
+        }
+      : {}),
+    ...(t.sendButtons
+      ? {
+          sendButtons: async (text: string, buttons: Parameters<NonNullable<Transport['sendButtons']>>[1], delay: number) => {
+            assertOutbound(destination);
+            return t.sendButtons!(text, buttons, delay);
+          },
+        }
+      : {}),
     notify: async (number, text) => {
       assertOutbound(number);
       return t.notify(number, text);

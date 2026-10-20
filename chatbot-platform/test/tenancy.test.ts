@@ -1,6 +1,8 @@
 /** Cuentas, usuarios y roles: cada cuenta solo ve y modifica lo suyo. */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import { createHarness, dbAvailable, pool, sleep, waitFor } from './harness.js';
 
 const ok = await dbAvailable();
@@ -204,8 +206,23 @@ t('protecciones de usuarios: no autodesactivarse, siempre queda un superadmin, c
 });
 
 t('eliminar una cuenta borra todo lo suyo y nada de las demás', async () => {
+  // Un archivo de "Archivos" de B (se guarda en disco, fuera de la base).
+  const bnd = '----borrado';
+  const pdf = Buffer.concat([Buffer.from('%PDF-1.4\n'), Buffer.alloc(64, 32), Buffer.from('\n%%EOF')]);
+  const up = await h.app.inject({ method: 'POST', url: `/api/attachments?account_id=${B.id}`, headers: { cookie: h.cookie, 'content-type': `multipart/form-data; boundary=${bnd}` },
+    payload: Buffer.concat([Buffer.from(`--${bnd}\r\nContent-Disposition: form-data; name="file"; filename="lista.pdf"\r\nContent-Type: application/pdf\r\n\r\n`), pdf, Buffer.from(`\r\n--${bnd}--\r\n`)]) });
+  assert.equal(up.statusCode, 200, up.body);
+  const { config } = await import('../src/config.js');
+  const file = path.join(config.uploadsDir, (await pool.query(`SELECT file_path FROM attachments WHERE id = $1`, [up.json().id])).rows[0].file_path);
+  assert.ok(fs.existsSync(file));
   const r = await h.authed('DELETE', `/api/accounts/${B.id}`);
   assert.equal(r.statusCode, 200);
+  assert.ok(!fs.existsSync(file), 'sus archivos se borran del disco');
+  // Ninguna tabla conserva filas de B (salvo la contabilidad, que queda sin negocio).
+  const tables = (await pool.query(`SELECT c.relname FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid AND c.relkind = 'r' AND c.relnamespace = 'public'::regnamespace WHERE a.attname = 'account_id' AND a.attnum > 0 AND NOT a.attisdropped`)).rows.map((x) => x.relname);
+  const left: string[] = [];
+  for (const t of tables) if ((await pool.query(`SELECT 1 FROM ${t} WHERE account_id = $1 LIMIT 1`, [B.id])).rowCount) left.push(t);
+  assert.deepEqual(left, [], `quedaron filas de la cuenta borrada en: ${left.join(', ')}`);
   assert.equal((await h.authed('GET', `/api/chatbots/${B.bot}`)).statusCode, 404);
   assert.equal((await h.authed('GET', `/api/conversations/${B.conv}`)).statusCode, 404);
   const a2 = await h.loginAs('admin@hotel.mx', 'nueva-clave-123');

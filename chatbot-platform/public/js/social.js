@@ -110,11 +110,24 @@ export function socialConnector(ch, { persist, setup, cfg }) {
     if (!state.meta.zernio_enabled && !ch.config.api_key) {
       return fill(root, h('p', { class: 'banner warn' }, 'Las redes sociales no están activadas en esta instalación. Pide al administrador que configure Zernio.'));
     }
-    fill(root, ch.config.account_id && !reconnect ? connectedView() : connectView());
+    fill(root, returnNotice(), ch.config.connected && !reconnect ? connectedView() : connectView());
+  }
+
+  /** Al volver de Zernio sin conectar: por qué (con textos fijos; el código viene en la dirección). */
+  function returnNotice() {
+    const code = new URLSearchParams(location.hash.split('?')[1] || '').get('zernio');
+    const why = {
+      not_yours: 'Esa cuenta no pertenece a este negocio. Vuelve a pulsar "Conectar" e inicia sesión con la cuenta correcta.',
+      in_use: 'Esa cuenta ya está conectada en otra conexión. Desconéctala ahí primero.',
+      cancelled: 'No se terminó la autorización. Puedes intentarlo de nuevo cuando quieras.',
+      limit: 'Tu plan no permite más redes sociales conectadas. Cámbialo en Ajustes → Mi plan y pagos.',
+      error: 'No se pudo completar la conexión. Inténtalo de nuevo; si sigue fallando, avísanos.',
+    }[code];
+    return why ? h('p', { class: 'banner warn', role: 'alert' }, why) : null;
   }
 
   // Si cambia la red elegida en Configuración, se redibuja la forma de conectarla.
-  const onPlatform = () => { if (!root.isConnected) return document.removeEventListener('cp-social-platform', onPlatform); if (!ch.config.account_id) draw(); };
+  const onPlatform = () => { if (!root.isConnected) return document.removeEventListener('cp-social-platform', onPlatform); if (!ch.config.connected) draw(); };
   document.addEventListener('cp-social-platform', onPlatform);
   draw();
   return root;

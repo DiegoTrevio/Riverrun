@@ -71,9 +71,10 @@ t('modo estricto: un juez de IA revisa lo que las reglas no ven, y su costo qued
     if (req.json_schema?.name === 'claim_check') {
       judged++;
       const reply = JSON.stringify(req.messages);
-      return JSON.stringify({ unsupported: reply.includes('wifi gratis ilimitado') ? ['wifi gratis ilimitado'] : [] });
+      return JSON.stringify({ unsupported: reply.includes('da al mar') ? ['vista al mar'] : [] });
     }
-    return i === 0 ? { messages: ['Tu habitación incluye wifi gratis ilimitado.'] } : { messages: ['Eso lo confirmo con el equipo.'] };
+    // Sin "tenemos", cifras ni "gratis": las reglas no lo ven, solo el juez.
+    return i === 0 ? { messages: ['Tu habitación da al mar y es muy silenciosa.'] } : { messages: ['Eso lo confirmo con el equipo.'] };
   });
   await h.webhook('¿qué incluye la habitación?', { phone: phone() });
   await waitFor(() => h.sent.length >= 1);

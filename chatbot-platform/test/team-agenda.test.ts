@@ -6,6 +6,7 @@ import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { createHarness, dbAvailable, pool, waitFor } from './harness.js';
+const { outbox } = await import('../src/mailer.js');
 
 const ok = await dbAvailable();
 const t = (name: string, fn: () => Promise<void>) => test(name, { skip: !ok && 'PostgreSQL de pruebas no disponible' }, fn);
@@ -36,16 +37,20 @@ const server = http.createServer((req, res) => {
     if (url.pathname.endsWith('/freeBusy')) return send(200, { calendars: { primary: { busy: gBusy[owner] ?? [] } } });
     if (url.pathname.includes('/calendar/v3/') && url.pathname.includes('/events')) {
       const id = decodeURIComponent(url.pathname.split('/events/')[1] ?? '');
-      if (req.method === 'POST') { const e = `g${++n}`; gEvents.set(e, { owner, body }); return send(200, { id: e }); }
-      if (req.method === 'PUT') { if (!gEvents.has(id)) return send(404, {}); gEvents.set(id, { owner, body }); return send(200, { id }); }
+      // Videollamada: con conferenceDataVersion=1 y createRequest, Google crea la sala de Meet.
+      const meet = (e: string) => (url.searchParams.get('conferenceDataVersion') === '1' && body.conferenceData?.createRequest ? { hangoutLink: `https://meet.google.com/${e}-sala` } : {});
+      if (req.method === 'POST') { const e = `g${++n}`; gEvents.set(e, { owner, body }); return send(200, { id: e, ...meet(e) }); }
+      if (req.method === 'PUT') { if (!gEvents.has(id)) return send(404, {}); gEvents.set(id, { owner, body }); return send(200, { id, ...meet(id) }); }
       if (req.method === 'DELETE') { gEvents.delete(id); res.writeHead(204); return res.end(); }
     }
     if (url.pathname === '/v1.0/me') return send(200, { mail: `${owner}@outlook.com` });
     if (url.pathname === '/v1.0/me/calendarView') return send(200, { value: [] });
     if (url.pathname.startsWith('/v1.0/me/events')) {
       const id = decodeURIComponent(url.pathname.split('/events/')[1] ?? '');
-      if (req.method === 'POST') { const e = `o${++n}`; oEvents.set(e, { owner, body }); return send(201, { id: e }); }
-      if (req.method === 'PATCH') { if (!oEvents.has(id)) return send(404, {}); oEvents.set(id, { owner, body }); return send(200, { id }); }
+      // Videollamada: con isOnlineMeeting, Outlook crea la reunión de Teams.
+      const teams = (e: string) => (body.isOnlineMeeting ? { onlineMeeting: { joinUrl: `https://teams.microsoft.com/l/${e}` } } : {});
+      if (req.method === 'POST') { const e = `o${++n}`; oEvents.set(e, { owner, body }); return send(201, { id: e, ...teams(e) }); }
+      if (req.method === 'PATCH') { if (!oEvents.has(id)) return send(404, {}); oEvents.set(id, { owner, body }); return send(200, { id, ...teams(id) }); }
       if (req.method === 'DELETE') { oEvents.delete(id); res.writeHead(204); return res.end(); }
     }
     send(404, { error: { message: `sin ruta ${url.pathname}` } });
@@ -234,4 +239,117 @@ t('calendario de cada persona: sus ocupados la bloquean solo a ella y sus citas 
   assert.equal((await people.ana.api('DELETE', '/api/me/calendar')).statusCode, 200);
   assert.equal((await people.ana.api('GET', '/api/me/calendar')).json().connected, false);
   assert.equal((await slotsOf(svc.id)).find((s) => s.key === first.key)!.users.length, 2);
+});
+
+/* ------------------------------ Llamadas con el equipo ------------------------------ */
+
+t('llamadas: primero con quien ya atiende al cliente; una persona desactivada no recibe; sin horario propio, solo el del negocio', async () => {
+  const svc = await createService({ name: 'Llamada de bienvenida', kind: 'call', prefer_owner: true });
+  await h.webhook('Hola, quiero que me llamen', { phone: '5215577770001' });
+  await h.idle();
+  const conv = await h.conversationFor('5215577770001');
+  assert.equal((await h.authed('PUT', `/api/conversations/${conv.id}/assign`, { user_id: people.beto.id })).statusCode, 200);
+  const both = (await slotsOf(svc.id)).filter((s) => s.users.length === 2);
+  // Beto ya atiende al cliente: la llamada es con él (dos veces seguidas, aunque por turnos le tocaría a Ana).
+  for (const slot of both.slice(0, 2)) {
+    const r = await book(svc.id, slot.key, { conversation_id: conv.id });
+    assert.equal(r.statusCode, 200, r.body);
+    assert.equal(who(r.json().assigned_user_id), 'beto');
+  }
+  // Si Beto está ocupado a esa hora, se reparte entre los libres.
+  const busyBeto = both[0];
+  const other = await book(svc.id, busyBeto.key, { conversation_id: conv.id });
+  assert.equal(who(other.json().assigned_user_id), 'ana');
+
+  // Ana desactivada: ya no aparece en los horarios ni recibe llamadas.
+  assert.equal((await h.authed('PUT', `/api/users/${people.ana.id}`, { active: false })).statusCode, 200);
+  try {
+    const slots = await slotsOf(svc.id);
+    assert.ok(slots.length && slots.every((s) => !s.users.includes(people.ana.id)));
+    assert.equal(who((await book(svc.id, slots.at(-1)!.key)).json().assigned_user_id), 'beto');
+  } finally {
+    assert.equal((await h.authed('PUT', `/api/users/${people.ana.id}`, { active: true })).statusCode, 200);
+  }
+
+  // Ana atiende en la noche (horario propio); Beto no tiene horario propio: solo el del negocio (hasta las 18:00).
+  const nights = Object.fromEntries(['mon', 'tue', 'wed', 'thu', 'fri'].map((d) => [d, [['09:00', '21:00']]]));
+  await h.authed('PUT', `/api/team/${people.ana.id}/schedule`, { hours: { ...nights, sat: [], sun: [] }, time_off: [] });
+  try {
+    const late = (await slotsOf(svc.id)).filter((s) => s.key.slice(11) >= '18:00');
+    assert.ok(late.length > 0, 'hay horarios de noche por Ana');
+    for (const s of late) assert.deepEqual(s.users, [people.ana.id], `${s.key}: Beto no trabaja de noche`);
+  } finally {
+    await h.authed('PUT', `/api/team/${people.ana.id}/schedule`, { hours: null, time_off: [] });
+  }
+});
+
+t('videollamadas: el enlace sale del calendario de la persona (Meet o Teams) o de su enlace fijo; llega al cliente y a quien atiende', async () => {
+  const svc = await createService({ name: 'Asesoría', kind: 'call', call_mode: 'video' });
+  // Beto tiene Outlook conectado (de la prueba anterior); Ana, su enlace fijo de Zoom.
+  assert.equal((await h.authed('PUT', `/api/team/${people.ana.id}/schedule`, { hours: null, time_off: [], meeting_url: 'https://zoom.us/j/123456' })).statusCode, 200);
+  assert.equal((await h.authed('PUT', `/api/team/${people.ana.id}/schedule`, { hours: null, time_off: [], meeting_url: 'http://inseguro.test' })).statusCode, 400);
+  const team = (await h.authed('GET', `/api/team/agenda?account_id=${h.accountId}`)).json();
+  assert.equal(team.find((p: any) => p.id === people.ana.id).meeting_url, 'https://zoom.us/j/123456');
+  // Guardar el horario sin enviar el enlace lo conserva.
+  await h.authed('PUT', `/api/team/${people.ana.id}/schedule`, { hours: null, time_off: [] });
+  const slots = (await slotsOf(svc.id)).filter((s) => s.users.length === 2);
+
+  outbox.length = 0;
+  const withBeto = (await book(svc.id, slots[0].key, { assigned_user_id: people.beto.id })).json();
+  assert.match(withBeto.meeting_url, /^https:\/\/teams\.microsoft\.com\/l\/o\d+$/);
+  assert.equal([...oEvents.values()].at(-1)!.body.isOnlineMeeting, true);
+  const mail = outbox.find((m) => m.to === 'beto@equipo.mx')!;
+  assert.match(mail.subject, /Nueva videollamada contigo: Asesoría/);
+  assert.ok(mail.text.includes(withBeto.meeting_url));
+
+  const withAna = (await book(svc.id, slots[1].key, { assigned_user_id: people.ana.id })).json();
+  assert.equal(withAna.meeting_url, 'https://zoom.us/j/123456');
+
+  // Ana conecta Google: su próxima videollamada tiene sala de Meet propia.
+  await connect('ana', 'google');
+  const meet = (await book(svc.id, slots[2].key, { assigned_user_id: people.ana.id })).json();
+  assert.match(meet.meeting_url, /^https:\/\/meet\.google\.com\/g\d+-sala$/);
+  assert.deepEqual([...gEvents.values()].at(-1)!.body.conferenceData.createRequest.conferenceSolutionKey, { type: 'hangoutsMeet' });
+
+  // Desde una conversación: la confirmación al cliente lleva el enlace; al cancelar, la persona recibe el aviso.
+  await h.webhook('Quiero una asesoría', { phone: '5215577770002' });
+  await h.idle();
+  const conv = await h.conversationFor('5215577770002');
+  h.sent.length = 0;
+  const fromChat = await book(svc.id, slots[3].key, { conversation_id: conv.id, assigned_user_id: people.beto.id, notify_customer: true });
+  assert.equal(fromChat.statusCode, 200, fromChat.body);
+  await waitFor(() => h.sent.some((x) => x.text.includes('Enlace para la videollamada: https://teams.microsoft.com/')));
+  assert.ok(h.sent.some((x) => /quedó agendada para el .* con Beto/.test(x.text)));
+  outbox.length = 0;
+  assert.equal((await h.authed('POST', `/api/appointments/${fromChat.json().id}/cancel`, { notify_customer: false })).statusCode, 200);
+  assert.match(outbox.find((m) => m.to === 'beto@equipo.mx')!.subject, /Se canceló tu videollamada/);
+  // Los recordatorios usan el enlace y la persona.
+  const { renderTemplate } = await import('../src/automation/templates.js');
+  const a = (await pool.query(`SELECT a.*, 'Beto' AS assigned_user_name FROM appointments a WHERE id = $1`, [fromChat.json().id])).rows[0];
+  assert.equal(renderTemplate('Con {{cita.persona}}: {{cita.enlace}}', { appointment: a, timezone: 'America/Mexico_City' } as any), `Con Beto: ${a.meeting_url}`);
+});
+
+t('el cliente pide con quién: el agente ve los horarios de cada persona y agenda con la elegida', async () => {
+  const svc = await createService({ name: 'Llamada con asesor', kind: 'call', customer_choice: true });
+  // Un horario en que los dos están libres: por turnos le tocaría a Ana (primera de la lista, servicio nuevo).
+  const both = new Set((await slotsOf(svc.id)).filter((s) => s.users.length === 2).map((s) => s.key));
+  let betoSlot = '';
+  h.reset();
+  h.setScript((req, i) => {
+    const prompt = req.messages[0].content;
+    assert.match(prompt, /El cliente puede pedir con quién\. Personas y sus horarios:/);
+    assert.match(prompt, /· Ana: `/);
+    const line = prompt.split('\n').find((l: string) => l.includes('· Beto: '))!;
+    betoSlot = [...line.matchAll(/`(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})`/g)].map((m) => m[1]).find((k) => both.has(k))!;
+    assert.ok(betoSlot, 'Beto tiene un horario en que Ana también está libre');
+    if (i === 0) return { messages: ['Listo'], booking: { action: 'book', service_id: svc.id, slot: betoSlot, appointment_id: '', person: 'Carlos' } };
+    return { messages: ['Perfecto, quedó tu llamada con Beto.'], booking: { action: 'book', service_id: svc.id, slot: betoSlot, appointment_id: '', person: 'beto' } };
+  });
+  await h.webhook('Quiero una llamada con Beto', { phone: '5215577770003' });
+  await waitFor(() => h.sent.some((x) => x.text.includes('Te llamará Beto a esa hora')));
+  assert.equal(h.calls.length, 2, 'una persona que no está en la lista se rechazó y se reintentó');
+  assert.match(h.calls[1].messages.at(-1)!.content, /"Carlos" no está en la lista/);
+  const a = (await pool.query(`SELECT assigned_user_id, source FROM appointments WHERE service_id = $1 AND status = 'confirmed'`, [svc.id])).rows;
+  assert.equal(a.length, 1);
+  assert.equal(who(a[0].assigned_user_id), 'beto');
 });

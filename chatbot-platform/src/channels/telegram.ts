@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import { config } from '../config.js';
 import { toPlainText } from '../engine/text.js';
-import { imageAbsolutePath, sleep, type Transport } from '../engine/transport.js';
+import { imageAbsolutePath, sleep, type OutgoingButton, type Transport } from '../engine/transport.js';
 import { safeEqual } from '../secret.js';
 import { ChannelConfigSchemas, type Channel, type ImageAsset } from '../types.js';
 import type { ChannelAdapter, InboundMessage } from './types.js';
@@ -32,14 +32,35 @@ export class TelegramClient {
   }
 }
 
+/** Bots que ya reciben los toques de botones (en este proceso). */
+const callbacksReady = new Set<string>();
+/** Lo que el bot recibe de Telegram: mensajes y toques de botones. */
+const UPDATES = ['message', 'callback_query'];
+
 class TelegramTransport implements Transport {
   private dispatchGuard?:()=>Promise<void>;
   setDispatchGuard(guard:()=>Promise<void>){this.dispatchGuard=guard;}
   kind = 'telegram' as const;
   private client: TelegramClient;
 
-  constructor(channel: Channel, private chatId: string) {
+  constructor(private channel: Channel, private chatId: string) {
     this.client = new TelegramClient(channel.config.bot_token);
+  }
+
+  /**
+   * Los bots conectados antes de los botones solo recibían mensajes: antes del primer botón se les pide también los
+   * toques (con la misma dirección y secreto). Si falla, el botón igual sale y el cliente puede escribir la opción.
+   */
+  private async ensureCallbacks() {
+    if (callbacksReady.has(this.channel.id)) return;
+    try {
+      const info = await this.client.call('getWebhookInfo');
+      const allowed: string[] | undefined = info.allowed_updates;
+      if (info.url && Array.isArray(allowed) && !allowed.includes('callback_query')) {
+        await this.client.call('setWebhook', { url: info.url, secret_token: this.channel.config.secret, allowed_updates: [...new Set([...allowed, ...UPDATES])], drop_pending_updates: false });
+      }
+      callbacksReady.add(this.channel.id);
+    } catch { /* se intenta otra vez con el siguiente botón */ }
   }
 
   private async typing(delayMs: number) {
@@ -69,9 +90,42 @@ class TelegramTransport implements Transport {
     return String(r.message_id);
   }
 
+  /** Botones debajo del mensaje (uno por renglón): los de respuesta regresan su identificador al tocarlos. */
+  async sendButtons(text: string, buttons: OutgoingButton[], delayMs: number) {
+    await this.ensureCallbacks();
+    await this.typing(delayMs);
+    await this.dispatchGuard?.();
+    const r = await this.client.call('sendMessage', {
+      chat_id: this.chatId,
+      text: toPlainText(text) || '👇',
+      reply_markup: { inline_keyboard: buttons.map((b) => [b.kind === 'url' ? { text: b.label, url: b.url } : { text: b.label, callback_data: b.payload }]) },
+    });
+    return String(r.message_id);
+  }
+
   async notify() {
     throw new Error('Telegram no envía avisos internos');
   }
+}
+
+/** Toque de un botón: llega como el texto del botón, con su identificador. */
+function parseCallback(q: any): InboundMessage | null {
+  const m = q?.message;
+  if (!m?.chat || m.chat.type !== 'private' || typeof q.data !== 'string') return null;
+  const from = q.from ?? {};
+  const keyboard: any[] = (m.reply_markup?.inline_keyboard ?? []).flat();
+  const label = keyboard.find((b) => b?.callback_data === q.data)?.text;
+  return {
+    messageId: `cb-${q.id}`,
+    externalId: String(m.chat.id),
+    phone: '',
+    displayName: [from.first_name, from.last_name].filter(Boolean).join(' ') || from.username || '',
+    fromMe: false,
+    type: 'text',
+    text: typeof label === 'string' && label ? label : q.data,
+    payload: q.data,
+    timestamp: Math.floor(Date.now() / 1000),
+  };
 }
 
 function parseMessage(m: any): InboundMessage | null {
@@ -116,8 +170,14 @@ export const telegramAdapter: ChannelAdapter = {
   },
 
   parse({ body }) {
-    const m = parseMessage(body?.message);
+    const m = body?.callback_query ? parseCallback(body.callback_query) : parseMessage(body?.message);
     return { messages: m ? [m] : [] };
+  },
+
+  /** Telegram muestra un reloj en el botón hasta que se confirma el toque. */
+  async acknowledge({ channel, body }) {
+    const id = body?.callback_query?.id;
+    if (id) await new TelegramClient(channel.config.bot_token).call('answerCallbackQuery', { callback_query_id: String(id) }).catch(() => undefined);
   },
 
   transport: (channel, contact) => new TelegramTransport(channel, contact.external_id),
@@ -135,7 +195,8 @@ export const telegramAdapter: ChannelAdapter = {
     if (!webhookUrl.startsWith('https://')) {
       return { ok: false, message: 'Telegram exige HTTPS: define PUBLIC_BASE_URL con tu dominio (https://...)', config: { bot_username: me.username } };
     }
-    await client.call('setWebhook', { url: webhookUrl, secret_token: channel.config.secret, allowed_updates: ['message'], drop_pending_updates: false });
+    await client.call('setWebhook', { url: webhookUrl, secret_token: channel.config.secret, allowed_updates: UPDATES, drop_pending_updates: false });
+    callbacksReady.add(channel.id);
     return { ok: true, message: `Bot @${me.username} conectado`, config: { bot_username: me.username } };
   },
 

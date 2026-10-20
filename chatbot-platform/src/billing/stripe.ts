@@ -27,10 +27,41 @@ async function call(method: 'GET' | 'POST', path: string, body?: Record<string, 
     headers: { authorization: `Bearer ${cfg().secretKey}`, ...(body ? { 'content-type': 'application/x-www-form-urlencoded' } : {}) },
     body: body ? form(body).join('&') : undefined,
     signal: AbortSignal.timeout(15_000),
+  }).catch((e) => {
+    // Sin respuesta (red, DNS o tiempo agotado): se informa como falla del proveedor, igual que un error HTTP.
+    throw new ProviderError(e?.name === 'TimeoutError' ? 'Stripe no respondió a tiempo' : 'No se pudo conectar con Stripe');
   });
   const data: any = await res.json().catch(() => ({}));
-  if (!res.ok) throw new ProviderError(`Stripe: ${data?.error?.message ?? `HTTP ${res.status}`}`);
+  if (!res.ok) throw new ProviderError(`Stripe: ${data?.error?.message ?? `HTTP ${res.status}`}`, res.status);
   return data;
+}
+
+/** Monedas que Stripe cobra sin centavos: el monto va en unidades enteras. */
+const ZERO_DECIMAL = new Set(['BIF', 'CLP', 'DJF', 'GNF', 'JPY', 'KMF', 'KRW', 'MGA', 'PYG', 'RWF', 'VND', 'VUV', 'XAF', 'XOF', 'XPF']);
+export const unitAmount = (plan: Pick<Plan, 'price_cents' | 'currency'>) =>
+  ZERO_DECIMAL.has(plan.currency.toUpperCase()) ? Math.round(plan.price_cents / 100) : plan.price_cents;
+
+/** Cada plan tiene su producto en Stripe con un ID fijo: se crea la primera vez que alguien lo contrata. */
+export const productId = (planKey: string) => `riverrun_${planKey}`;
+
+async function ensureProduct(plan: Plan): Promise<string> {
+  const id = productId(plan.key);
+  const get = () => call('GET', `/v1/products/${encodeURIComponent(id)}`).catch((e) => {
+    if (e instanceof ProviderError && e.status === 404) return null;
+    throw e;
+  });
+  let product = await get();
+  if (!product) {
+    try {
+      product = await call('POST', '/v1/products', { id, name: plan.name, metadata: { plan_key: plan.key } });
+    } catch (e) {
+      // Otro proceso lo pudo crear al mismo tiempo.
+      product = await get();
+      if (!product) throw e;
+    }
+  }
+  if (product.name !== plan.name || product.active === false) await call('POST', `/v1/products/${encodeURIComponent(id)}`, { name: plan.name, active: 'true' });
+  return id;
 }
 
 const STATUS: Record<string, SubStatus> = {
@@ -77,13 +108,17 @@ export const stripe: BillingProvider = {
   label: 'Tarjeta (Stripe)',
   // Con una clave de producción en sandbox no se ofrece el pago: no se puede completar.
   enabled: () => !!(cfg().secretKey && cfg().webhookSecret) && credentialAllowed(cfg().secretKey, TEST_KEYS),
-  supportsPlan: (plan) => !!plan.stripe_price_id,
+  // Con ID de precio (price_…) se usa ese; sin él, el precio mensual se arma con el monto y la moneda del plan.
+  supportsPlan: () => true,
 
   async createCheckout({ accountId, email, plan, successUrl, cancelUrl, customerId }) {
     const meta = { account_id: accountId, plan_key: plan.key };
+    const item = plan.stripe_price_id
+      ? { price: plan.stripe_price_id, quantity: 1 }
+      : { price_data: { currency: plan.currency.toLowerCase(), unit_amount: unitAmount(plan), recurring: { interval: 'month' }, product: await ensureProduct(plan) }, quantity: 1 };
     const s = await call('POST', '/v1/checkout/sessions', {
       mode: 'subscription',
-      line_items: [{ price: plan.stripe_price_id, quantity: 1 }],
+      line_items: [item],
       success_url: successUrl,
       cancel_url: cancelUrl,
       client_reference_id: accountId,
@@ -94,7 +129,16 @@ export const stripe: BillingProvider = {
       subscription_data: { metadata: meta },
     });
     if (!s.url) throw new ProviderError('Stripe no devolvió la página de pago');
-    return { url: s.url };
+    return { url: s.url, ref: String(s.id ?? '') };
+  },
+
+  async checkoutState(ref, plans) {
+    const s = await call('GET', `/v1/checkout/sessions/${encodeURIComponent(ref)}`);
+    const subId = typeof s.subscription === 'string' ? s.subscription : s.subscription?.id;
+    if (s.status !== 'complete' || !subId) return null;
+    const state = stateFromSubscription(await call('GET', `/v1/subscriptions/${encodeURIComponent(subId)}`), plans);
+    if (!state.accountId) state.accountId = s.client_reference_id || null;
+    return state;
   },
 
   async portal(customerId, returnUrl) {

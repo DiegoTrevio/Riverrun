@@ -25,6 +25,7 @@ export const EVENT_TYPES = {
   'appointment.booked': 'Se agendó una cita',
   'appointment.cancelled': 'Se canceló una cita',
   'pipeline.stage_changed': 'Una solicitud cambió de columna en un pipeline',
+  'conversation.sent': 'Conversación enviada a tu app (resumen o completa, por una regla, el equipo o la API)',
   ping: 'Prueba de conexión',
 } as const;
 export type PublicEvent = keyof typeof EVENT_TYPES;
@@ -86,10 +87,13 @@ export function eventBody(id: string, type: PublicEvent, accountId: string, data
   return { id, type, created_at: new Date().toISOString(), account_id: accountId, data };
 }
 
-/** Programa la entrega del evento a cada endpoint suscrito de la cuenta. */
-export async function dispatchEvent(accountId: string, type: PublicEvent, data: Record<string, unknown>) {
+/**
+ * Programa la entrega del evento a cada endpoint suscrito de la cuenta. Con `endpointId` va solo a ese (si está activo),
+ * aunque no esté suscrito al evento: se eligió a propósito.
+ */
+export async function dispatchEvent(accountId: string, type: PublicEvent, data: Record<string, unknown>, o: { endpointId?: string } = {}) {
   const endpoints = await query<Endpoint>(`SELECT * FROM webhook_endpoints WHERE account_id = $1 AND active`, [accountId]);
-  const targets = endpoints.filter((ep) => subscribed(ep, type));
+  const targets = o.endpointId ? endpoints.filter((ep) => ep.id === o.endpointId) : endpoints.filter((ep) => subscribed(ep, type));
   if (!targets.length) return 0;
   const eventId = crypto.randomUUID();
   const body = eventBody(eventId, type, accountId, data);

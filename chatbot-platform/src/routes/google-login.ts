@@ -10,7 +10,7 @@ import { notifySuperadmins } from '../lifecycle.js';
 import { logEvent } from '../logs.js';
 import { hmac, safeEqual } from '../secret.js';
 import * as store from '../store/index.js';
-import { prepareAccountProfile } from '../channels/zernio-connect.js';
+import { newAccountState } from './signup.js';
 
 const HOUR = 3600_000;
 const redirectUri = () => `${config.publicBaseUrl}/oauth/google/login/callback`;
@@ -76,12 +76,11 @@ export async function googleLoginRoutes(app: FastifyInstance) {
       const hash = await hashPassword(crypto.randomBytes(24).toString('base64url')); // sin contraseña: puede crear una con "Olvidé mi contraseña"
       const brand = await brandByDomain(hostOf(req));
       const { account, created } = await withTransaction(async (client) => {
-        const account = await store.createAccount(`Negocio de ${name}`.slice(0, 120), { status: 'trial', trialEndsAt: new Date(Date.now() + config.signup.trialDays * 24 * HOUR), businessType: 'otro', source: 'signup' }, client);
+        const account = await store.createAccount(`Negocio de ${name}`.slice(0, 120), { ...newAccountState(), businessType: 'otro', source: 'signup' }, client);
         const created = await store.createUser({ account_id: account.id, role: 'admin', name, email, password_hash: hash, verified: true }, client);
         await client.query(`UPDATE accounts SET owner_user_id = $2, brand_id = $3 WHERE id = $1`, [account.id, created.id, brand?.id ?? null]);
         return { account, created };
       });
-      prepareAccountProfile(account.id);
       await logEvent({ level: 'info', source: 'admin', message: `Registro nuevo con Google: ${account.name} (${email})`, accountId: account.id, details: { ip: req.ip } });
       await notifySuperadmins(account.id, `Nueva empresa registrada: ${account.name}`, `${name} <${email}> se registró con Google.`);
       setSessionCookie(reply, created.id, hash);
