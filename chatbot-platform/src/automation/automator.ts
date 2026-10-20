@@ -871,7 +871,13 @@ export class Automator {
    */
   async runSequenceStep(payload: { enrollment_id: string; step: number; first_due?: string; tap?: boolean; paced?: boolean }): Promise<OutboundResult | undefined> {
     const en = await astore.getEnrollment(payload.enrollment_id);
-    if (!en || en.status !== 'active' || en.current_step !== payload.step) return;
+    if (!en || en.status !== 'active') return;
+    if (en.current_step !== payload.step) {
+      // El paso ya estaba apartado y nadie programó el siguiente: el proceso que lo enviaba se cayó a medio envío. El
+      // flujo sigue (sin reenviarlo: pudo haber salido) en vez de quedarse detenido sin aviso.
+      if (en.current_step === payload.step + 1 && !(await astore.hasPendingStepJob(en.id))) await this.resumeAfterCrash(en.id, payload.step);
+      return;
+    }
     const seq = await astore.getSequence(en.sequence_id);
     const ctx = await this.loadCtx(en.conversation_id);
     const stop = async (reason: string): Promise<OutboundResult> => {
@@ -940,6 +946,23 @@ export class Automator {
     await astore.updateEnrollment(en.id, { current_step: next, next_run_at: runAt, last_step: true });
     await astore.scheduleJob({ account_id: ctx.conv.account_id, type: 'sequence_step', payload: { enrollment_id: en.id, conversation_id: ctx.conv.id, step: next }, run_at: runAt });
     return { sent: true };
+  }
+
+  /** Retoma un flujo cuyo paso `step` quedó apartado por un proceso que se cayó: programa el siguiente (o lo termina). */
+  private async resumeAfterCrash(enrollmentId: string, step: number) {
+    const en = await astore.getEnrollment(enrollmentId);
+    const seq = en ? await astore.getSequence(en.sequence_id) : null;
+    const ctx = en ? await this.loadCtx(en.conversation_id) : null;
+    if (!en || !seq || !ctx || en.status !== 'active' || en.current_step !== step + 1) return;
+    await logEvent({ level: 'warn', source: 'engine', message: `Flujo "${seq.name}": se retomó tras una interrupción; el mensaje ${step + 1} pudo no haber salido`, accountId: ctx.conv.account_id, conversationId: ctx.conv.id });
+    const next = step + 1;
+    if (next >= seq.steps.length) {
+      await astore.updateEnrollment(en.id, { status: 'completed', next_run_at: null });
+      return;
+    }
+    const runAt = stepTime(new Date(), seq.steps[next], ctx.settings, seq.business_hours_only);
+    await astore.updateEnrollment(en.id, { next_run_at: runAt });
+    await astore.scheduleJob({ account_id: ctx.conv.account_id, type: 'sequence_step', payload: { enrollment_id: en.id, conversation_id: ctx.conv.id, step: next }, run_at: runAt });
   }
 
   /** Tarea programada: seguimiento si el cliente no respondió. */

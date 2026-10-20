@@ -192,6 +192,55 @@ try {
   assert.equal(actualCampaign.message, 'Mensaje revisado');
   assert.equal((await pool.query("SELECT count(*)::int AS n FROM jobs WHERE payload->>'campaign_id' = $1 AND status = 'pending'", [campaign.id])).rows[0].n, 1);
   checked('Campaña programada exige revisión, cancelar no modifica y confirmar programa una sola vez');
+  // Flujo con botones en el simulador: el cliente toca "Sí, me interesa", recibe la respuesta del botón y el mensaje
+  // siguiente al momento, y la IA no contesta el toque.
+  const playgroundPost = (r: any) => r.url().includes(`/api/chatbots/${h.botId}/playground`) && r.request().method() === 'POST';
+  await go(`bot/${h.botId}/probar`);
+  await Promise.all([page.waitForResponse(playgroundPost), (async () => { const i = page.locator('.composer textarea'); await i.fill('hola, quiero información'); await i.press('Enter'); })()]);
+  const pgConv = (await pool.query(`SELECT c.id, c.contact_id FROM conversations c JOIN channels ch ON ch.id = c.channel_id WHERE ch.chatbot_id = $1 AND ch.type = 'playground' ORDER BY c.created_at DESC LIMIT 1`, [h.botId])).rows[0];
+  await pool.query('UPDATE contacts SET consent_at = now() WHERE id = $1', [pgConv.contact_id]);
+  assert.equal((await h.authed('POST', `/api/conversations/${pgConv.id}/sequences`, { sequence_id: uxFlow })).statusCode, 200);
+  await h.fastForward();
+  // Misma ruta: se recarga para ver el mensaje que envió el flujo.
+  await page.reload(); await page.locator('.main h1').waitFor();
+  const chip = page.locator('.chat').getByRole('button', { name: 'Sí, me interesa', exact: true });
+  await chip.waitFor();
+  assert.equal(await page.locator('.chat').getByRole('link', { name: '🔗 Ver promoción', exact: true }).getAttribute('href'), 'https://hotel.test/promo');
+  const aiCalls = h.calls.length;
+  await Promise.all([page.waitForResponse(playgroundPost), chip.click()]);
+  await page.locator('.chat').getByText('¡Genial! Te cuento más 👇').waitFor();
+  await page.locator('.chat').getByText('Estos son los detalles de la promoción.').waitFor();
+  assert.equal(h.calls.length, aiCalls, 'la IA no contesta el toque');
+  assert.equal(await page.locator('.chat button.chip').count(), 0, 'los botones de un mensaje anterior ya no se tocan');
+  const pgEnrollment = (await pool.query(`SELECT status, choice, current_step FROM sequence_enrollments WHERE conversation_id = $1`, [pgConv.id])).rows[0];
+  assert.deepEqual([pgEnrollment.status, pgEnrollment.choice, pgEnrollment.current_step], ['active', 'Sí, me interesa', 2]);
+  checked('Flujo con botones: tocar en el simulador sigue el flujo al momento y la IA no contesta');
+  // Enviar el flujo a un grupo desde el panel: la revisión dice cuántos mensajes son por persona; "Detener el flujo"
+  // lo detiene para todos y la campaña sigue como enviada.
+  await go(`automation/campaigns/new?flow=${uxFlow}`);
+  assert.equal(await page.getByLabel('Nombre', { exact: true }).inputValue(), 'Flujo: Promoción de octubre');
+  assert.ok(await page.getByRole('radio', { name: 'Un flujo (varios mensajes, con botones)' }).isChecked());
+  await page.getByLabel('Canal', { exact: true }).selectOption(h.channelId);
+  await Promise.all([page.waitForResponse((r) => r.url().endsWith('/api/campaigns') && r.request().method() === 'POST'), page.getByRole('button', { name: 'Guardar cambios', exact: true }).click()]);
+  await page.getByRole('button', { name: 'Revisar y enviar', exact: true }).click();
+  await page.locator('dialog').getByText(/Flujo "Promoción de octubre": 3 mensajes por persona/).waitFor();
+  const flowCampaignId = page.url().split('/').pop()!;
+  await Promise.all([
+    page.waitForResponse((r) => r.url().includes(`/api/campaigns/${flowCampaignId}/launch`)),
+    page.locator('dialog').getByRole('button', { name: 'Confirmar envío ahora', exact: true }).click(),
+  ]);
+  await h.fastForward();
+  const groupEnrollment = (await pool.query(`SELECT status FROM sequence_enrollments WHERE campaign_id = $1 AND conversation_id = $2`, [flowCampaignId, conv.id])).rows[0];
+  assert.equal(groupEnrollment?.status, 'active', 'Ana entró al flujo');
+  // (El nombre del contacto cambió en una prueba anterior: se revisa el resto del mensaje.)
+  assert.ok(h.sent.some((x) => x.text.includes('¿te interesa la promoción de octubre?\n\n1. Sí, me interesa\n2. No, gracias\n3. Hablar con alguien\n\n🔗 Ver promoción: https://hotel.test/promo\n\nResponde con el número de tu opción.')), `WhatsApp con QR: botones numerados (${JSON.stringify(h.sent.slice(-2))})`);
+  // Ya está en la campaña: se recarga para verla enviada.
+  await page.reload(); await page.locator('.main h1').waitFor();
+  await page.getByRole('button', { name: 'Detener el flujo', exact: true }).click();
+  await Promise.all([page.waitForResponse((r) => r.url().includes(`/api/campaigns/${flowCampaignId}/cancel`)), page.locator('dialog').getByRole('button', { name: 'Continuar', exact: true }).click()]);
+  assert.equal((await pool.query(`SELECT status FROM sequence_enrollments WHERE campaign_id = $1 AND conversation_id = $2`, [flowCampaignId, conv.id])).rows[0].status, 'stopped');
+  assert.equal((await h.authed('GET', `/api/campaigns?account_id=${h.accountId}`)).json().find((x: any) => x.id === flowCampaignId).status, 'sent');
+  checked('Flujo enviado a un grupo desde el panel: revisión por persona, botones numerados en WhatsApp y "Detener el flujo"');
   await go(`conversation/${conv.id}`);
 
   for (const kind of ['manual', 'simulator']) {

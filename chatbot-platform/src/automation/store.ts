@@ -146,6 +146,10 @@ export async function createEnrollment(accountId: string, sequenceId: string, co
 export async function claimStep(id: string, step: number) {
   return !!(await queryOne(`UPDATE sequence_enrollments SET current_step = $2 + 1 WHERE id = $1 AND status = 'active' AND current_step = $2 RETURNING id`, [id, step]));
 }
+/** ¿Hay un paso del flujo esperando su hora (o su turno)? */
+export async function hasPendingStepJob(enrollmentId: string) {
+  return !!(await queryOne(`SELECT 1 FROM jobs WHERE type = 'sequence_step' AND status = 'pending' AND payload->>'enrollment_id' = $1 LIMIT 1`, [enrollmentId]));
+}
 /** Devuelve el paso apartado si el envío falló sin saber si salió (la tarea se reintenta). */
 export async function releaseStep(id: string, step: number) {
   await query(`UPDATE sequence_enrollments SET current_step = $2 WHERE id = $1 AND status = 'active' AND current_step = $2 + 1`, [id, step]);
@@ -563,9 +567,12 @@ export async function campaignExcludedNoConsent(c: Pick<Campaign, 'channel_id' |
 }
 
 /** Mensajes de campaña ya enviados desde cada número desde `since` (para respetar el tope diario entre campañas). */
+/** Mensajes de campañas enviados por número desde `since` (una persona de un flujo cuenta como todos sus mensajes). */
 export async function campaignSentSince(accountId: string, since: Date) {
   return query<{ channel_id: string; n: number }>(
-    `SELECT cv.channel_id, count(*)::int AS n FROM campaign_recipients r JOIN conversations cv ON cv.id = r.conversation_id
+    `SELECT cv.channel_id, sum(CASE WHEN c.kind = 'sequence' THEN greatest(1, coalesce(jsonb_array_length(s.steps), 1)) ELSE 1 END)::int AS n
+       FROM campaign_recipients r JOIN conversations cv ON cv.id = r.conversation_id JOIN campaigns c ON c.id = r.campaign_id
+       LEFT JOIN sequences s ON s.id = c.sequence_id
       WHERE cv.account_id = $1 AND r.status = 'sent' AND r.sent_at >= $2 GROUP BY cv.channel_id`,
     [accountId, since],
   );

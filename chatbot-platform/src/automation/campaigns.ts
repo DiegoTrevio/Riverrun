@@ -60,7 +60,8 @@ export class Campaigns {
     const tz = settings.timezone;
     const cap = settings.sending.daily_cap_per_number;
     // Cada número lleva su propio ritmo (con varios números la campaña termina antes sin acelerar ninguno) y, si hay tope
-    // diario, lo que no cabe hoy pasa al día siguiente. Los ya enviados hoy por otras campañas cuentan para el tope.
+    // diario, lo que no cabe hoy pasa al día siguiente. Los ya enviados hoy por otras campañas cuentan para el tope, y
+    // cada persona de un flujo cuenta como todos sus mensajes (con un tope de 100 y un flujo de 4, 25 personas por día).
     const nextFree = new Map<string, Date>();
     const used = new Map<string, number>();
     if (cap) {
@@ -74,11 +75,13 @@ export class Campaigns {
         if (!cap) break;
         const day = localParts(at, tz).date;
         const key = `${r.channel_id}|${day}`;
-        if ((used.get(key) ?? 0) >= cap) {
+        const today = used.get(key) ?? 0;
+        // Un flujo más largo que el tope entra solo en un día vacío (una persona ese día).
+        if (today >= cap || (today > 0 && today + perPerson > cap)) {
           at = zonedToUtc(addDays(day, 1), '00:00', tz);
           continue;
         }
-        used.set(key, (used.get(key) ?? 0) + 1);
+        used.set(key, today + perPerson);
         break;
       }
       await query(`INSERT INTO campaign_recipients (campaign_id, conversation_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [c.id, r.conversation_id]);

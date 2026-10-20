@@ -361,7 +361,7 @@ Pestaña **Activación** de cada asistente. Lo aplica el sistema (no la IA), por
 ### Campañas
 
 - Mensaje (o flujo) a un segmento: con o sin ciertas etiquetas, o que escribieron en los últimos N días. Envío inmediato o programado.
-- **Campaña de flujo:** cada persona entra al flujo; el primer mensaje sale con la campaña y los siguientes a su hora, espaciados por número al ritmo de la campaña. El cupo del plan cuenta todos los mensajes del flujo. Cancelar la campaña (o "Detener el flujo" cuando ya terminó de enviarse) detiene el flujo para todos.
+- **Campaña de flujo:** cada persona entra al flujo; el primer mensaje sale con la campaña y los siguientes a su hora, espaciados por número al ritmo de la campaña. El cupo del plan y el tope diario por número cuentan todos los mensajes del flujo (con un tope de 100 y un flujo de 4 mensajes, entran 25 personas por día). Cancelar la campaña (o "Detener el flujo" cuando ya terminó de enviarse) detiene el flujo para todos.
 - Se envían a ritmo controlado (mensajes por minuto) para proteger el número.
 - Por defecto solo se envían en horario de atención: lo que no alcance sale en la siguiente apertura, al mismo ritmo.
 - Siempre excluyen a quien se dio de baja y no interrumpen conversaciones que está atendiendo una persona. Muestran vista previa de destinatarios y estadísticas por destinatario.

@@ -300,3 +300,53 @@ t('una entrega sin confirmar no se reenvía (no se duplica) y el flujo sigue con
   const step1 = (await pool.query(`SELECT count(*)::int AS n FROM messages WHERE conversation_id = $1 AND content LIKE 'Hola Ana, ¿te interesa%'`, [c.conv.id])).rows[0].n;
   assert.equal(step1, 1, 'el paso 1 no se volvió a intentar');
 });
+
+t('tope diario por número: cada persona de un flujo cuenta como todos sus mensajes', async () => {
+  const s = (await h.authed('GET', `/api/settings?account_id=${h.accountId}`)).json();
+  await h.authed('PUT', `/api/settings?account_id=${h.accountId}`, { sending: { ...s.sending, daily_cap_per_number: 4 } });
+  // Lo que enviaron las campañas de las pruebas anteriores fue "otro día" (si no, ya llenaron el tope de hoy).
+  await pool.query(`UPDATE campaign_recipients SET sent_at = now() - interval '3 days' WHERE sent_at IS NOT NULL`);
+  try {
+    const seq = await flow([{ delay_value: 0, delay_unit: 'minutes', text: 'Tope: uno' }, { delay_value: 1, delay_unit: 'days', text: 'Tope: dos' }], { stop_on_reply: false });
+    const phones = [String(++phoneN), String(++phoneN), String(++phoneN)];
+    for (const phone of phones) {
+      await h.webhook('hola', { phone });
+      await waitFor(() => h.sent.some((x) => x.to === phone));
+    }
+    await h.idle();
+    const tag = `tope${Date.now()}`;
+    for (const phone of phones) {
+      const conv = await h.conversationFor(phone);
+      const contact = (await h.authed('GET', `/api/conversations/${conv.id}`)).json().contact;
+      await h.authed('PUT', `/api/contacts/${contact.id}`, { tags: [tag] });
+    }
+    const camp = (await h.authed('POST', '/api/campaigns', { account_id: h.accountId, channel_id: h.channelId, name: 'Flujo con tope', kind: 'sequence', sequence_id: seq.id, audience: { tags_any: [tag] }, rate_per_minute: 120, business_hours_only: false })).json();
+    assert.equal((await h.authed('POST', `/api/campaigns/${camp.id}/launch`, {})).statusCode, 200);
+    const jobs = (await pool.query(`SELECT run_at FROM jobs WHERE type = 'campaign_send' AND payload->>'campaign_id' = $1 ORDER BY run_at`, [camp.id])).rows;
+    assert.equal(jobs.length, 3);
+    const soon = jobs.filter((j) => new Date(j.run_at).getTime() < Date.now() + 3600_000).length;
+    assert.equal(soon, 2, '2 personas × 2 mensajes = 4: la tercera pasa al día siguiente');
+    // Lo ya enviado hoy por otra campaña de flujo también cuenta por mensajes: con 1 persona (2 mensajes) enviada, hoy
+    // solo cabe 1 más.
+    await pool.query(`UPDATE campaign_recipients SET status = 'sent', sent_at = now() WHERE campaign_id = $1 AND conversation_id = (SELECT conversation_id FROM campaign_recipients WHERE campaign_id = $1 LIMIT 1)`, [camp.id]);
+    const { campaignSentSince } = await import('../src/automation/store.js');
+    const today = await campaignSentSince(h.accountId, new Date(Date.now() - 3600_000));
+    assert.equal(today.find((r) => r.channel_id === h.channelId)?.n, 2);
+    await h.authed('POST', `/api/campaigns/${camp.id}/cancel`, {});
+  } finally {
+    await h.authed('PUT', `/api/settings?account_id=${h.accountId}`, { sending: s.sending });
+  }
+});
+
+t('si el proceso se cae a medio envío de un paso, el flujo se retoma con el siguiente (sin reenviarlo)', async () => {
+  const seq = await threeDays([]);
+  const c = await customer(seq.id);
+  // El paso 1 quedó apartado (como si el proceso que lo enviaba se hubiera caído) y su tarea vuelve a correr.
+  await pool.query(`UPDATE sequence_enrollments SET current_step = 1 WHERE id = $1`, [c.enrollment.id]);
+  await h.fastForward();
+  assert.ok(!textsTo(c.phone).some((x) => x.startsWith('Hola Ana, ¿te interesa')), 'no se reenvía el paso apartado');
+  assert.equal((await pool.query(`SELECT count(*)::int AS n FROM jobs WHERE type = 'sequence_step' AND status = 'pending' AND payload->>'enrollment_id' = $1 AND (payload->>'step')::int = 1`, [c.enrollment.id])).rows[0].n, 1, 'el paso 2 quedó programado');
+  await h.fastForward();
+  assert.ok(textsTo(c.phone).some((x) => x.startsWith('Paso 2')));
+  assert.equal((await enrollment(c.enrollment.id)).status, 'active');
+});

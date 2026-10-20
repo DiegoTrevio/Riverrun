@@ -26,7 +26,7 @@ Un flujo se detiene:
 - **al momento**, si una persona toma la conversación (evento `handoff`: tomarla, escribir desde el panel o el teléfono, una regla o el botón "Pasar con una persona"); sus botones dejan de contar;
 - si se cancela su campaña de flujo.
 
-Cada paso se aparta antes de enviarse (`current_step` avanza con un `UPDATE` condicional): el paso que adelanta un botón "Seguir" y el que estaba programado no salen los dos.
+Cada paso se aparta antes de enviarse (`current_step` avanza con un `UPDATE` condicional): el paso que adelanta un botón "Seguir" y el que estaba programado no salen los dos. Si el proceso se cae a medio envío, la tarea se vuelve a correr, encuentra su paso apartado sin ningún paso siguiente programado y retoma el flujo con el mensaje siguiente, sin reenviar el que pudo haber salido. Una entrega sin confirmar tampoco se reenvía: el flujo sigue.
 
 Los cambios de contacto se comparan con los valores anteriores bajo bloqueo de fila de PostgreSQL y los eventos se emiten después de confirmar la transacción. Se mantiene el aislamiento de perfiles y los eventos automáticos existentes del motor.
 
