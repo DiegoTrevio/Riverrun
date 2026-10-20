@@ -73,3 +73,63 @@ t('historial de cotizaciones: lista con filtros y detalle con su historial', asy
   assert.deepEqual(detail.events.map((e: any) => e.type), ['created']);
   assert.equal((await h.authed('GET', '/api/quotes/no-es-uuid')).statusCode, 404);
 });
+
+/** Sube un formato como multipart (con nombre opcional). */
+async function uploadTemplate(file: Buffer, fileName = 'Formato.docx', name = '', cookie = h.cookie) {
+  const b = '----formato';
+  const field = name ? `--${b}\r\nContent-Disposition: form-data; name="name"\r\n\r\n${name}\r\n` : '';
+  const head = Buffer.from(`${field}--${b}\r\nContent-Disposition: form-data; name="file"; filename="${fileName}"\r\nContent-Type: application/octet-stream\r\n\r\n`);
+  return h.app.inject({ method: 'POST', url: `/api/quote-templates?account_id=${h.accountId}`, payload: Buffer.concat([head, file, Buffer.from(`\r\n--${b}--\r\n`)]),
+    headers: { cookie, 'content-type': `multipart/form-data; boundary=${b}` } });
+}
+
+t('formatos: subir, revisar marcas, versiones, vista previa y descargas', async () => {
+  const { exampleTemplate } = await import('../src/quotes/template.js');
+  const example = await h.app.inject({ method: 'GET', url: '/api/quote-templates/example', headers: { cookie: h.cookie } });
+  assert.equal(example.statusCode, 200);
+  assert.match(String(example.headers['content-disposition']), /attachment/);
+
+  const PizZip = (await import('pizzip')).default;
+  const noTotal = new PizZip(exampleTemplate());
+  noTotal.file('word/document.xml', noTotal.file('word/document.xml')!.asText().replace('{{total}}', 'TOTAL'));
+  const bad = await uploadTemplate(noTotal.generate({ type: 'nodebuffer' }) as Buffer);
+  assert.equal(bad.statusCode, 400);
+  assert.match(bad.json().issues.join(), /\{\{total\}\}/);
+  assert.equal((await uploadTemplate(exampleTemplate(), 'formato.docm')).statusCode, 400);
+
+  const first = await uploadTemplate(exampleTemplate(), 'Mi formato.docx', 'Membrete');
+  assert.equal(first.statusCode, 200, first.body);
+  assert.equal(first.json().template.version, 1);
+  assert.deepEqual(first.json().report.unknown, []);
+  const second = (await uploadTemplate(exampleTemplate(), 'otro.docx', 'Membrete')).json().template;
+  assert.equal(second.version, 2);
+  const list = (await h.authed('GET', `/api/quote-templates?account_id=${h.accountId}`)).json();
+  assert.deepEqual(list.map((x: any) => [x.version, x.status]), [[2, 'active'], [1, 'archived']]);
+
+  const preview = await h.app.inject({ method: 'GET', url: `/api/quote-templates/${second.id}/preview`, headers: { cookie: h.cookie } });
+  assert.equal(preview.statusCode, 200);
+  assert.equal(preview.headers['content-type'], 'application/pdf');
+  assert.match(preview.body, /COTIZACIÓN APROXIMADA/);
+  assert.match(preview.body, /Ana López/);
+  const file = await h.app.inject({ method: 'GET', url: `/api/quote-templates/${second.id}/file`, headers: { cookie: h.cookie } });
+  assert.equal(file.rawPayload.subarray(0, 2).toString(), 'PK');
+
+  assert.equal((await uploadTemplate(exampleTemplate(), 'a.docx', '', agent.cookie)).statusCode, 403);
+  assert.equal((await agent('GET', `/api/quote-templates/${second.id}/preview`)).statusCode, 403);
+
+  // Una cotización hecha con la versión 1 usa la vigente (versión 2) al generarse; su archivo se descarga del historial.
+  const { createQuote } = await import('../src/store/quotes.js');
+  const { renderQuote } = await import('../src/quotes/render.js');
+  const q = await createQuote({ accountId: h.accountId, kind: 'final', status: 'draft', source: 'panel', today: '2026-10-20', templateId: first.json().template.id,
+    customer: { nombre: 'Luis' }, lines: [{ name: 'Renta', qty: 2, price_mode: 'exact', price_min: 100000, price_max: null, iva_mode: 'plus' }] });
+  const rendered = await renderQuote(h.accountId, q.id);
+  assert.equal(rendered.fileName, `Cotizacion-${q.folio}.pdf`);
+  const pdf = await h.app.inject({ method: 'GET', url: `/api/quotes/${q.id}/file`, headers: { cookie: h.cookie } });
+  assert.equal(pdf.statusCode, 200);
+  assert.match(pdf.body, /COTIZACIÓN FINAL/);
+  assert.match(pdf.body, /Luis/);
+  assert.match(pdf.body, /Total: USD\s2,160\.00/, "con el IVA (8 %) y la moneda (USD) de los ajustes");
+
+  assert.equal((await h.authed('DELETE', `/api/quote-templates/${second.id}`)).statusCode, 200);
+  assert.equal((await h.authed('GET', `/api/quote-templates?account_id=${h.accountId}`)).json().every((x: any) => x.status === 'archived'), true);
+});

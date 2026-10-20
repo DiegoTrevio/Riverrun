@@ -127,6 +127,7 @@ const NUMBERS: { name: string; min: number; max: number; int?: boolean; area: Ar
   { name: 'KNOWLEDGE_ALERT_HOURLY_USD', min: 0, max: 100000, area: 'knowledge', what: 'umbral de supervisión' },
   { name: 'WHATSAPP_ALERT_DOWN_RATIO', min: 0, max: 1, area: 'whatsapp', what: 'fracción de sesiones caídas que avisa tras actualizar' },
   { name: 'WHATSAPP_ALERT_SEND_FAILURES', min: 1, max: 10000, int: true, area: 'whatsapp', what: 'envíos fallidos en 15 min que avisan' },
+  { name: 'QUOTE_PDF_TIMEOUT_MS', min: 5000, max: 600000, int: true, area: 'core', what: 'tiempo máximo para generar el PDF de una cotización (ms)' },
   { name: 'WHATSAPP_POST_UPDATE_HOURS', min: 1, max: 720, int: true, area: 'whatsapp', what: 'horas de vigilancia tras cambiar la versión de Evolution' },
 ];
 
@@ -181,6 +182,15 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
       `${b.name} no es "true" ni "false": se interpreta como false${b.def ? ' y la función queda apagada (por defecto está encendida)' : ''}.`,
       `Escribe exactamente true o false (en minúsculas) en ${b.name}.`,
     );
+  }
+  if (has('QUOTE_PDF_BACKEND') && !['soffice', 'gotenberg', 'fake'].includes(get('QUOTE_PDF_BACKEND'))) {
+    add('critical', 'core', 'quote_pdf.backend', ['QUOTE_PDF_BACKEND'], 'QUOTE_PDF_BACKEND debe ser "soffice", "gotenberg" o "fake".', 'Bórrala para usar LibreOffice (soffice), o escribe gotenberg y define QUOTE_PDF_URL.');
+  }
+  if (get('QUOTE_PDF_BACKEND') === 'gotenberg' && !has('QUOTE_PDF_URL')) {
+    add('critical', 'core', 'quote_pdf.url', ['QUOTE_PDF_URL'], 'Las cotizaciones usan Gotenberg pero falta QUOTE_PDF_URL.', 'Define QUOTE_PDF_URL (p. ej. http://gotenberg:3000) o borra QUOTE_PDF_BACKEND para usar LibreOffice.');
+  }
+  if (prod && get('QUOTE_PDF_BACKEND') === 'fake') {
+    add('critical', 'core', 'quote_pdf.fake', ['QUOTE_PDF_BACKEND'], 'QUOTE_PDF_BACKEND=fake es solo para pruebas: los clientes recibirían un PDF de prueba.', 'Bórrala en producción.');
   }
   if (has('CONFIG_VALIDATION') && !['strict', 'warn'].includes(get('CONFIG_VALIDATION'))) {
     add(

@@ -21,6 +21,10 @@ export interface QuoteSettings {
   validity_days: number;
   legend_approx: string;
   legend_final: string;
+  business_name: string;
+  business_phone: string;
+  business_email: string;
+  business_address: string;
   folio_prefix: string;
   next_folio: number;
 }
@@ -154,6 +158,9 @@ export function settingsProblem(p: SettingsPatch): string | null {
   for (const k of ['legend_approx', 'legend_final'] as const) {
     if (p[k] !== undefined && (typeof p[k] !== 'string' || p[k]!.length > 500)) return 'Cada leyenda admite hasta 500 caracteres';
   }
+  for (const k of ['business_name', 'business_phone', 'business_email', 'business_address'] as const) {
+    if (p[k] !== undefined && (typeof p[k] !== 'string' || p[k]!.length > 300)) return 'Los datos del negocio admiten hasta 300 caracteres';
+  }
   return null;
 }
 
@@ -161,7 +168,8 @@ export async function updateQuoteSettings(accountId: string, patch: SettingsPatc
   const problem = settingsProblem(patch);
   if (problem) throw new Error(problem);
   await getQuoteSettings(accountId);
-  const fields = (['currency', 'iva_rate', 'prices_include_iva', 'validity_days', 'legend_approx', 'legend_final', 'folio_prefix'] as const)
+  const fields = (['currency', 'iva_rate', 'prices_include_iva', 'validity_days', 'legend_approx', 'legend_final', 'folio_prefix',
+    'business_name', 'business_phone', 'business_email', 'business_address'] as const)
     .filter((k) => patch[k] !== undefined);
   if (fields.length) {
     await query(
@@ -438,4 +446,71 @@ export async function expireQuotes(today: string): Promise<number> {
   );
   for (const r of rows) await addQuoteEvent(r.id, 'expired');
   return rows.length;
+}
+
+/** Guarda dónde quedaron el Word y el PDF generados. */
+export async function setQuoteFiles(accountId: string, id: string, files: { docx_path: string; pdf_path: string; pdf_sha256: string }) {
+  await query(
+    'UPDATE quotes SET docx_path = $3, pdf_path = $4, pdf_sha256 = $5, updated_at = now() WHERE account_id = $1 AND id = $2',
+    [accountId, id, files.docx_path, files.pdf_path, files.pdf_sha256],
+  );
+}
+
+/* ------------------------------ Formatos (plantillas de Word) ------------------------------ */
+
+export interface QuoteTemplate {
+  id: string;
+  account_id: string;
+  name: string;
+  version: number;
+  file_path: string;
+  sha256: string;
+  size_bytes: number;
+  placeholders: string[];
+  status: 'active' | 'archived';
+  created_by: string | null;
+  created_at: Date;
+}
+
+export async function listTemplates(accountId: string): Promise<QuoteTemplate[]> {
+  return query('SELECT * FROM quote_templates WHERE account_id = $1 ORDER BY status, name, version DESC', [accountId]);
+}
+
+export async function findTemplate(id: string): Promise<QuoteTemplate | null> {
+  if (!UUID.test(id)) return null;
+  return queryOne('SELECT * FROM quote_templates WHERE id = $1', [id]);
+}
+
+/**
+ * Formato con que se cotiza: el elegido en el agente (si se subió una versión nueva, la vigente con ese nombre) o, si no
+ * hay uno elegido, el más reciente de la cuenta. `null` = el formato del sistema.
+ */
+export async function resolveTemplate(accountId: string, id?: string | null): Promise<QuoteTemplate | null> {
+  if (id && UUID.test(id)) {
+    const t = await queryOne<QuoteTemplate>('SELECT * FROM quote_templates WHERE account_id = $1 AND id = $2', [accountId, id]);
+    if (t?.status === 'active') return t;
+    if (t) {
+      const current = await queryOne<QuoteTemplate>(`SELECT * FROM quote_templates WHERE account_id = $1 AND name = $2 AND status = 'active' ORDER BY version DESC LIMIT 1`, [accountId, t.name]);
+      if (current) return current;
+    }
+  }
+  return queryOne(`SELECT * FROM quote_templates WHERE account_id = $1 AND status = 'active' ORDER BY created_at DESC LIMIT 1`, [accountId]);
+}
+
+/** Una subida con el mismo nombre es una versión nueva: la anterior se archiva (las cotizaciones hechas la conservan). */
+export async function insertTemplate(t: { id: string; accountId: string; name: string; filePath: string; sha256: string; size: number; placeholders: string[]; createdBy: string | null }): Promise<QuoteTemplate> {
+  return withTransaction(async (client) => {
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`quote-template:${t.accountId}:${t.name}`]);
+    const prev = (await client.query('SELECT COALESCE(max(version), 0) AS v FROM quote_templates WHERE account_id = $1 AND name = $2', [t.accountId, t.name])).rows[0].v;
+    await client.query(`UPDATE quote_templates SET status = 'archived' WHERE account_id = $1 AND name = $2 AND status = 'active'`, [t.accountId, t.name]);
+    return (await client.query(
+      `INSERT INTO quote_templates (id, account_id, name, version, file_path, sha256, size_bytes, placeholders, status, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active', $9) RETURNING *`,
+      [t.id, t.accountId, t.name, Number(prev) + 1, t.filePath, t.sha256, t.size, JSON.stringify(t.placeholders), t.createdBy],
+    )).rows[0];
+  });
+}
+
+export async function archiveTemplate(accountId: string, id: string): Promise<boolean> {
+  return (await query(`UPDATE quote_templates SET status = 'archived' WHERE account_id = $1 AND id = $2 RETURNING id`, [accountId, id])).length > 0;
 }

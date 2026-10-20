@@ -34,6 +34,11 @@ async function main() {
   if(config.queue.role!=='worker') {
     await app.listen({ port: config.port, host: config.host });
     await logEvent({ level: 'info', source: 'system', message: `Servidor iniciado en el puerto ${config.port}` });
+    if (config.quotes.pdfBackend === 'soffice') {
+      void import('./quotes/pdf.js').then(async ({ sofficeAvailable }) => {
+        if (!(await sofficeAvailable())) await logEvent({ level: 'warn', source: 'system', message: 'LibreOffice no está instalado: las cotizaciones no podrán generar su PDF. Usa la imagen de Docker del proyecto, instala libreoffice-writer o configura QUOTE_PDF_URL (Gotenberg).' });
+      });
+    }
   } else { await app.ready(); console.log('Worker PostgreSQL iniciado'); }
 
   if(config.queue.role!=='http') {

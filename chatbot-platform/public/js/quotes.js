@@ -1,11 +1,11 @@
 import { needAccount } from './admin.js';
-import { api, area, check, confirmAction, field, fill, fmtDate, h, run, select, text } from './core.js';
+import { api, area, check, confirmAction, field, fill, fmtDate, h, run, select, text, toast } from './core.js';
 import { render } from './main.js';
 import { withAcct } from './session.js';
 
 /* ============================== Cotizaciones ============================== */
 
-const TABS = [['precios', 'Lista de precios'], ['historial', 'Cotizaciones'], ['ajustes', 'Ajustes']];
+const TABS = [['precios', 'Lista de precios'], ['formatos', 'Formatos'], ['historial', 'Cotizaciones'], ['ajustes', 'Ajustes']];
 
 export const PRICE_MODE = { exact: 'Precio exacto', from: 'Desde (precio mínimo)', range: 'Rango (mínimo a máximo)', tbd: 'Por confirmar (sin precio)' };
 const IVA_MODE = { plus: 'Se suma el IVA', included: 'El precio ya incluye IVA', exempt: 'Exento de IVA' };
@@ -57,6 +57,7 @@ export async function viewQuotes(root, tab = 'precios', params = new URLSearchPa
   const body = h('div');
   root.append(body);
   if (tab === 'ajustes') return viewSettings(body);
+  if (tab === 'formatos') return viewTemplates(body);
   if (tab === 'historial') return params.get('id') ? viewQuote(body, params.get('id')) : listQuotes(body, params);
   return viewPrices(body, params.get('id'));
 }
@@ -134,6 +135,83 @@ function priceForm(existing, settings) {
 
 const slug = (s) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'CONCEPTO';
 
+/* ------------------------------ Formatos (Word) ------------------------------ */
+
+const TAG_GROUPS = [
+  ['Siempre (obligatorias)', [['tipo', 'COTIZACIÓN APROXIMADA o COTIZACIÓN FINAL'], ['total', 'Total con IVA (exacto, rango o «desde»)'], ['leyenda', 'La leyenda de aproximada o final de tus ajustes']]],
+  ['Documento', [['folio', 'Folio consecutivo'], ['fecha', 'Fecha de la cotización'], ['vigencia', 'Válida hasta'], ['subtotal', 'Subtotal'], ['iva', 'IVA'], ['tasa_iva', 'Tasa de IVA'], ['moneda', 'Moneda'], ['notas', 'Notas del equipo']]],
+  ['Cliente', [['nombre', 'Nombre'], ['telefono', 'Teléfono'], ['correo', 'Correo'], ['cliente.dato', 'Cualquier dato que pide tu agente (usa la clave del dato)']]],
+  ['Negocio', [['negocio.nombre', 'Nombre'], ['negocio.telefono', 'Teléfono'], ['negocio.correo', 'Correo'], ['negocio.direccion', 'Dirección']]],
+  ['Tabla de conceptos (en un renglón de la tabla)', [['#conceptos', 'Al inicio del renglón'], ['concepto', 'Nombre'], ['descripcion', 'Descripción'], ['cantidad', 'Cantidad'], ['unidad', 'Unidad'], ['precio_unitario', 'Precio'], ['importe', 'Importe'], ['/conceptos', 'Al final del renglón']]],
+  ['Texto solo en un tipo', [['#es_aproximada', '… texto … {{/es_aproximada}}'], ['#es_final', '… texto … {{/es_final}}']]],
+];
+
+async function viewTemplates(root) {
+  const listBox = h('div');
+  const drawList = async () => {
+    const templates = await api('GET', withAcct('/api/quote-templates'));
+    fill(listBox, templates.length
+      ? h('table', {},
+          h('thead', {}, h('tr', {}, h('th', {}, 'Formato'), h('th', {}, 'Versión'), h('th', {}, 'Estado'), h('th', {}, 'Subido'), h('th', {}, 'Acciones'))),
+          h('tbody', {}, templates.map((t) => h('tr', {},
+            h('td', {}, h('strong', {}, t.name)),
+            h('td', {}, String(t.version)),
+            h('td', {}, t.status === 'active' ? badge(['green', 'En uso']) : badge(['', 'Archivado'])),
+            h('td', { class: 'small' }, fmtDate(t.created_at)),
+            h('td', {}, h('div', { class: 'row' },
+              h('a', { class: 'btn small', href: `/api/quote-templates/${t.id}/preview`, target: '_blank', rel: 'noopener', 'aria-label': `Vista previa de ${t.name} versión ${t.version}` }, 'Vista previa'),
+              h('a', { class: 'btn small', href: `/api/quote-templates/${t.id}/file`, download: '', 'aria-label': `Descargar ${t.name} versión ${t.version}` }, 'Descargar'),
+              t.status === 'active' ? h('button', { class: 'small', 'aria-label': `Archivar ${t.name}`, onclick: async () => {
+                if (!(await confirmAction(`¿Archivar «${t.name}»? Los agentes que lo usan pasarán al formato más reciente o al del sistema.`))) return;
+                await run(async () => { await api('DELETE', `/api/quote-templates/${t.id}`); await drawList(); }, 'Formato archivado');
+              } }, 'Archivar') : null))))))
+      : h('p', { class: 'muted' }, 'Aún no subes un formato: se usa el del sistema.'));
+  };
+  await drawList();
+  const m = { name: '' };
+  const file = h('input', { type: 'file', accept: '.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+  const report = h('div', { 'aria-live': 'polite' });
+  const upload = () => run(async () => {
+    if (!file.files[0]) throw new Error('Elige el archivo de Word (.docx)');
+    const form = new FormData();
+    form.append('name', m.name);
+    form.append('file', file.files[0]);
+    const r = await api('POST', withAcct('/api/quote-templates'), form, true);
+    toast(`Formato «${r.template.name}» guardado (versión ${r.template.version}) ✅`);
+    fill(report, r.report.unknown.length
+      ? h('div', { class: 'banner warn', role: 'status' }, h('p', {}, 'El formato se guardó, pero estas marcas no las conoce el sistema y quedarán vacías:'),
+          h('ul', {}, r.report.unknown.map((t) => h('li', {}, h('code', {}, `{{${t}}}`)))), h('p', { class: 'small' }, 'Revisa que estén bien escritas.'))
+      : null);
+    file.value = '';
+    await drawList();
+  });
+  const copy = (tag) => h('button', { class: 'small', type: 'button', 'aria-label': `Copiar {{${tag}}}`, onclick: async () => {
+    try { await navigator.clipboard.writeText(`{{${tag}}}`); toast(`Copiado {{${tag}}}`); } catch { toast('No se pudo copiar', true); }
+  } }, 'Copiar');
+  root.append(
+    h('div', { class: 'card' },
+      h('p', { class: 'muted', style: 'margin-top:0' },
+        'Diseña tu cotización en Word (logo, colores, condiciones) y escribe marcas como {{nombre}} o {{total}} donde va cada dato. ',
+        'El sistema solo reemplaza las marcas con lo que dio el cliente y con los montos de tu lista de precios; el cliente recibe un PDF. ',
+        'Si no subes un formato, se usa el del sistema.'),
+      h('div', { class: 'row' },
+        h('a', { class: 'btn', href: withAcct('/api/quote-templates/example'), download: '' }, 'Descargar formato de ejemplo'),
+        h('a', { class: 'btn', href: withAcct('/api/quote-templates/example?fmt=pdf'), target: '_blank', rel: 'noopener' }, 'Ver ejemplo en PDF'))),
+    h('div', { class: 'card' },
+      h('h2', { style: 'margin-top:0' }, 'Subir formato'),
+      h('div', { class: 'row' },
+        field('Nombre del formato', text(m, 'name', { maxlength: 80, placeholder: 'Membrete' }), 'Si subes otro con el mismo nombre, queda como versión nueva.'),
+        field('Archivo de Word (.docx)', file)),
+      h('button', { class: 'primary', onclick: upload }, 'Subir formato'),
+      report),
+    h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, 'Tus formatos'), listBox),
+    h('div', { class: 'card' },
+      h('h2', { style: 'margin-top:0' }, 'Marcas que puedes usar'),
+      TAG_GROUPS.map(([title, tags]) => h('details', { open: title.startsWith('Siempre') },
+        h('summary', {}, title),
+        h('table', {}, h('tbody', {}, tags.map(([tag, what]) => h('tr', {}, h('td', {}, h('code', {}, `{{${tag}}}`)), h('td', { class: 'small' }, what), h('td', {}, copy(tag))))))))));
+}
+
 /* ------------------------------ Ajustes ------------------------------ */
 
 async function viewSettings(root) {
@@ -142,6 +220,7 @@ async function viewSettings(root) {
   const save = () => run(() => api('PUT', withAcct('/api/quote-settings'), {
     currency: m.currency, iva_rate: Number(m.iva) / 100, prices_include_iva: m.prices_include_iva, validity_days: Number(m.validity_days),
     legend_approx: m.legend_approx, legend_final: m.legend_final, folio_prefix: m.folio_prefix,
+    business_name: m.business_name, business_phone: m.business_phone, business_email: m.business_email, business_address: m.business_address,
   }), 'Ajustes guardados ✅');
   root.append(h('div', { class: 'card' },
     h('div', { class: 'row' },
@@ -152,6 +231,13 @@ async function viewSettings(root) {
     check(m, 'prices_include_iva', 'Los precios que escribo ya incluyen IVA (valor inicial de los conceptos nuevos)'),
     field('Leyenda de cotización APROXIMADA', area(m, 'legend_approx', { maxlength: 500 }), 'Se imprime en el archivo con {{leyenda}}. El asistente también aclara en el chat que es aproximada.'),
     field('Leyenda de cotización FINAL', area(m, 'legend_final', { maxlength: 500 })),
+    h('h2', {}, 'Datos del negocio en la cotización'),
+    h('p', { class: 'small muted' }, 'Se imprimen donde tu formato tenga {{negocio.nombre}}, {{negocio.telefono}}, {{negocio.correo}} y {{negocio.direccion}}.'),
+    h('div', { class: 'row' },
+      field('Nombre del negocio', text(m, 'business_name', { maxlength: 300, placeholder: 'Si lo dejas vacío, se usa el nombre del perfil' })),
+      field('Teléfono', text(m, 'business_phone', { maxlength: 300, type: 'tel' })),
+      field('Correo', text(m, 'business_email', { maxlength: 300, type: 'email' }))),
+    field('Dirección', text(m, 'business_address', { maxlength: 300 })),
     h('button', { class: 'primary', onclick: save }, 'Guardar ajustes')));
 }
 
@@ -193,7 +279,10 @@ async function viewQuote(root, id) {
     h('div', { class: 'card' },
       h('div', { class: 'row between' },
         h('h2', { style: 'margin:0' }, `Cotización ${q.folio} `, badge(KIND[q.kind]), ' ', badge(STATUS[q.status] || ['', q.status])),
-        q.conversation_id ? h('a', { class: 'btn', href: `#/conversation/${q.conversation_id}` }, 'Ver conversación') : null),
+        h('div', { class: 'row' },
+          q.pdf_path ? h('a', { class: 'btn', href: `/api/quotes/${q.id}/file`, target: '_blank', rel: 'noopener' }, 'Ver PDF') : null,
+          q.docx_path ? h('a', { class: 'btn', href: `/api/quotes/${q.id}/file?fmt=docx`, download: '' }, 'Descargar Word') : null,
+          q.conversation_id ? h('a', { class: 'btn', href: `#/conversation/${q.conversation_id}` }, 'Ver conversación') : null)),
       h('p', { class: 'small muted' }, `Creada ${fmtDate(q.created_at)} · Vigente hasta ${q.valid_until}`, q.source === 'bot' ? ' · Preparada por el asistente' : ''),
       Object.keys(q.customer_snapshot || {}).length
         ? h('dl', { class: 'small' }, Object.entries(q.customer_snapshot).map(([k, v]) => [h('dt', {}, k), h('dd', {}, v)])) : null,

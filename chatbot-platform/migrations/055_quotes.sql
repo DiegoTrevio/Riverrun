@@ -11,6 +11,11 @@ CREATE TABLE IF NOT EXISTS quote_settings (
   validity_days       integer NOT NULL DEFAULT 15 CHECK (validity_days BETWEEN 1 AND 365),
   legend_approx       text NOT NULL DEFAULT 'Esta cotización es aproximada y puede cambiar. El precio final se confirma al revisar los detalles.',
   legend_final        text NOT NULL DEFAULT 'Cotización final. Los precios se respetan durante la vigencia indicada.',
+  -- Datos del negocio que se imprimen en el formato ({{negocio.*}}); el nombre vacío usa el de la cuenta.
+  business_name       text NOT NULL DEFAULT '',
+  business_phone      text NOT NULL DEFAULT '',
+  business_email      text NOT NULL DEFAULT '',
+  business_address    text NOT NULL DEFAULT '',
   folio_prefix        text NOT NULL DEFAULT 'COT-',
   next_folio          integer NOT NULL DEFAULT 1 CHECK (next_folio >= 1),
   updated_at          timestamptz NOT NULL DEFAULT now()

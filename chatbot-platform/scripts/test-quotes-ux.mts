@@ -18,6 +18,7 @@ process.env.TEST_DATABASE_URL = url.href;
 
 const { createHarness, pool } = await import('../test/harness.js');
 const { createQuote } = await import('../src/store/quotes.js');
+const { exampleTemplate } = await import('../src/quotes/template.js');
 const h = await createHarness();
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 const checks: string[] = [];
@@ -71,6 +72,21 @@ try {
   assert.deepEqual([settings.validity_days, settings.folio_prefix], [30, 'SAL-']);
   checks.push('Ajustes de vigencia y folio guardados');
 
+  // Formatos: subir el de ejemplo con una marca que el sistema no conoce; se guarda y se avisa.
+  const PizZip = (await import('pizzip')).default;
+  const zip = new PizZip(exampleTemplate());
+  zip.file('word/document.xml', zip.file('word/document.xml')!.asText().replace('{{notas}}', '{{notas}} {{descuento}}'));
+  await page.goto(`${base}/#/cotizaciones/formatos`);
+  await page.getByLabel('Nombre del formato', { exact: true }).fill('Membrete');
+  await page.getByLabel('Archivo de Word (.docx)', { exact: true }).setInputFiles({ name: 'membrete.docx', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', buffer: zip.generate({ type: 'nodebuffer' }) as Buffer });
+  await page.getByRole('button', { name: 'Subir formato' }).click();
+  await page.getByText('{{descuento}}', { exact: true }).waitFor();
+  await page.getByRole('cell', { name: 'Membrete', exact: true }).waitFor();
+  const preview = await page.request.get(await page.getByRole('link', { name: 'Vista previa de Membrete versión 1' }).getAttribute('href').then((href) => `${base}${href}`));
+  assert.equal(preview.headers()['content-type'], 'application/pdf');
+  assert.match(await preview.text(), /COTIZACIÓN APROXIMADA/);
+  checks.push('Formato de Word subido desde el panel, con aviso de marcas desconocidas y vista previa en PDF');
+
   // Historial y detalle.
   const q = await createQuote({ accountId: h.accountId, kind: 'approximate', status: 'sent', source: 'bot', today: '2026-10-20',
     customer: { nombre: 'Ana López' }, lines: [{ name: 'Decoración', qty: 1, price_mode: 'range', price_min: 500000, price_max: 800000, iva_mode: 'plus' }] });
@@ -80,7 +96,7 @@ try {
   await page.getByText('Total: $5,800.00 a $9,280.00').waitFor();
   checks.push('Historial con detalle, tipo aproximada y total en rango');
 
-  for (const route of ['cotizaciones/precios', 'cotizaciones/precios?id=new', 'cotizaciones/ajustes', 'cotizaciones/historial', `cotizaciones/historial?id=${q.id}`]) {
+  for (const route of ['cotizaciones/precios', 'cotizaciones/precios?id=new', 'cotizaciones/formatos', 'cotizaciones/ajustes', 'cotizaciones/historial', `cotizaciones/historial?id=${q.id}`]) {
     for (const width of [1366, 768, 390]) {
       await page.setViewportSize({ width, height: 1000 });
       await page.goto(`${base}/#/${route}`);
