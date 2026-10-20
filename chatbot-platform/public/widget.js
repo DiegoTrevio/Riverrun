@@ -94,6 +94,9 @@
       '.form textarea:focus{border-color:' + color + '}' +
       '.form button{background:' + color + ';color:' + ink + ';border:0;border-radius:10px;padding:0 14px;font-size:14px;cursor:pointer}' +
       '.form button:disabled{opacity:.5}.err{color:#c0392b;font-size:12px;padding:0 12px 8px;background:#fff}' +
+      '.chips{display:flex;flex-wrap:wrap;gap:6px;align-self:flex-start;max-width:90%}' +
+      '.chip{background:#fff;border:1px solid ' + color + ';color:#1c1f24;border-radius:999px;padding:6px 12px;font-size:13px;line-height:1.3;cursor:pointer;text-decoration:none;min-height:32px;font-family:inherit}' +
+      '.chip:disabled{opacity:.5;cursor:default}' +
       '@media (prefers-reduced-motion:reduce){.typing span{animation:none}}:focus-visible{outline:3px solid #155bc1;outline-offset:2px}' +
       '@media (max-width:480px){.panel{height:calc(100vh - 100px)}}';
     root.appendChild(style);
@@ -141,9 +144,15 @@
     wrap.appendChild(launcher);
     root.appendChild(wrap);
 
+    // Botones de un flujo: solo los del último mensaje se pueden tocar (los de enlace siempre abren).
+    var liveChips = null;
     function addMessage(m) {
       if (rendered[m.id]) return;
       rendered[m.id] = true;
+      if (liveChips) {
+        liveChips.querySelectorAll('button').forEach(function (x) { x.disabled = true; });
+        liveChips = null;
+      }
       var b = el('div', 'msg ' + (m.from === 'customer' ? 'me' : 'bot'));
       if (m.image_url) {
         var img = el('img');
@@ -155,6 +164,28 @@
       }
       if (m.text) richText(b, m.text);
       list.insertBefore(b, typing);
+      if (m.buttons && m.buttons.length) {
+        var row = el('div', 'chips');
+        row.setAttribute('role', 'group');
+        row.setAttribute('aria-label', 'Opciones');
+        m.buttons.forEach(function (x) {
+          if (x.kind === 'url') {
+            if (!/^https:\/\//.test(x.url || '')) return;
+            var a = el('a', 'chip', '🔗 ' + x.label);
+            a.href = x.url;
+            a.target = '_blank';
+            a.rel = 'noopener noreferrer';
+            row.appendChild(a);
+          } else {
+            var btn = el('button', 'chip', x.label);
+            btn.type = 'button';
+            btn.onclick = function () { sendMessage(x.label, x.payload); };
+            row.appendChild(btn);
+          }
+        });
+        list.insertBefore(row, typing);
+        liveChips = row;
+      }
       if (m.from !== 'customer' && !open) {
         unread++;
         badge.textContent = unread;
@@ -229,15 +260,18 @@
     });
     form.addEventListener('submit', function (e) {
       e.preventDefault();
-      var text = input.value.trim();
+      sendMessage(input.value.trim());
+    });
+    /** Envía lo escrito o, con `button`, el botón tocado (su texto y su identificador). */
+    function sendMessage(text, button) {
       if (!text || sending) return;
       sending = true;
       send.disabled = true;
       err.style.display = 'none';
       ensureSession()
-        .then(function () { return api('POST', '/messages', { session: session, text: text }); })
+        .then(function () { return api('POST', '/messages', button ? { session: session, text: text, button: button } : { session: session, text: text }); })
         .then(function (d) {
-          input.value = '';
+          if (!button) input.value = '';
           if (d.id) {
             addMessage({ id: d.id, from: 'customer', text: text });
             if (d.id > lastId) lastId = d.id;
@@ -255,7 +289,7 @@
           send.disabled = false;
           schedule();
         });
-    });
+    }
 
     // Recupera la conversación previa de este navegador.
     session = storage(true);

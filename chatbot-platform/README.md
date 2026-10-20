@@ -344,18 +344,24 @@ Pestaña **Activación** de cada asistente. Lo aplica el sistema (no la IA), por
 - **Qué pasa al apagarse:** pausa en silencio, pasar a una persona (con aviso al equipo) o cerrar la conversación; mensaje opcional; reactivación automática tras N horas (0 = solo con palabra, regla o el botón **Reactivar asistente** de la conversación).
 - **Cómo probarlo:** el **probador de palabras** (en la misma pestaña) dice, sin IA, si el asistente respondería y qué reglas se dispararían; el **Simulador** muestra en cada mensaje "Qué se activó" y el estado del asistente.
 
-### Secuencias (flujos programados)
+### Flujos (mensajes programados, con botones)
 
-- Serie de mensajes con espera entre ellos (minutos, horas o días) y hora del día opcional ("1 día después a las 10:00" = al día siguiente a las 10:00).
+- Serie de mensajes con espera entre ellos (minutos, horas o días) y hora del día opcional ("1 día después a las 10:00" = al día siguiente a las 10:00). Ej.: 3 mensajes con un día de separación.
 - Cada paso puede tener condiciones propias.
+- **Botones** (`src/automation/buttons.ts`): hasta 3 de respuesta y 2 de enlace por mensaje. Cada botón de respuesta hace algo al tocarlo: seguir ya con el mensaje siguiente, terminar el flujo, empezar otro flujo, poner una etiqueta o pasar con una persona, y puede contestar con un texto antes.
+  - Salen como botones en Telegram (teclado en línea), Messenger e Instagram (hasta 3 en la misma burbuja o respuestas rápidas), WhatsApp oficial y demás redes con botones por Zernio, chat web y simulador. En WhatsApp con QR y correo van numerados: el cliente contesta con el número o con el texto del botón.
+  - El toque se reconoce por su identificador (un toque de un mensaje viejo no cuenta); escrito, vale el texto del botón y el número solo si los botones son lo último que se le envió. Cada mensaje con botones se aplica una vez. La palabra de baja siempre gana.
+  - Tocar un botón no cuenta como "el cliente respondió" (el flujo sigue) y la IA no contesta ese toque.
+  - **Esperar a que elija:** si llega la hora del mensaje siguiente y no eligió, el flujo termina o sigue, según se configure.
 - Respetan el horario del negocio: lo que caiga fuera se pasa a la siguiente apertura.
-- Se detienen si el cliente responde, si se da de baja o si una persona toma la conversación.
+- Se detienen si el cliente responde (sin contar los botones), si se da de baja o, al momento, si una persona toma la conversación.
 - Si la cuenta está en pausa o el canal apagado, esperan (reintentan cada hora hasta 7 días) en lugar de perderse.
-- Se inician con una regla o manualmente desde la conversación.
+- Se inician con una regla, manualmente desde la conversación o **enviándolos a un grupo** (campaña de flujo).
 
 ### Campañas
 
-- Mensaje a un segmento: con o sin ciertas etiquetas, o que escribieron en los últimos N días. Envío inmediato o programado.
+- Mensaje (o flujo) a un segmento: con o sin ciertas etiquetas, o que escribieron en los últimos N días. Envío inmediato o programado.
+- **Campaña de flujo:** cada persona entra al flujo; el primer mensaje sale con la campaña y los siguientes a su hora, espaciados por número al ritmo de la campaña. El cupo del plan cuenta todos los mensajes del flujo. Cancelar la campaña (o "Detener el flujo" cuando ya terminó de enviarse) detiene el flujo para todos.
 - Se envían a ritmo controlado (mensajes por minuto) para proteger el número.
 - Por defecto solo se envían en horario de atención: lo que no alcance sale en la siguiente apertura, al mismo ritmo.
 - Siempre excluyen a quien se dio de baja y no interrumpen conversaciones que está atendiendo una persona. Muestran vista previa de destinatarios y estadísticas por destinatario.

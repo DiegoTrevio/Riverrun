@@ -39,32 +39,40 @@ export async function tabPlayground(root, bot) {
   const input = h('textarea', { placeholder: 'Escribe como si fueras el cliente…', 'aria-label': 'Mensaje de prueba', onkeydown: (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } } });
   const btn = h('button', { class: 'primary', onclick: () => send() }, 'Enviar');
 
-  const bubble = (cls, content, img) =>
-    h('div', { class: `bubble ${cls}` }, img ? h('img', { src: `/api/images/${img.id}/file`, alt: img.code || 'Foto del catálogo', loading: 'lazy' }) : null, img ? h('div', { class: 'small muted' }, `🖼 ${img.code}`) : null, content || null);
+  /** Botones de un flujo: los del último mensaje se pueden tocar como lo haría el cliente; los anteriores solo se ven. */
+  const buttonRow = (buttons, live) => h('div', { class: 'msg-buttons', role: 'group', 'aria-label': 'Botones del mensaje' }, buttons.map((b) => (b.kind === 'url'
+    ? h('a', { class: 'chip', href: /^https:\/\//.test(b.url || '') ? b.url : '#', target: '_blank', rel: 'noopener noreferrer' }, `🔗 ${b.label}`)
+    : live ? h('button', { class: 'chip', onclick: () => send({ text: b.label, button: b.payload }) }, b.label) : h('span', { class: 'chip' }, b.label))));
+
+  const bubble = (cls, content, img, extra = null) =>
+    h('div', { class: `bubble ${cls}` }, img ? h('img', { src: `/api/images/${img.id}/file`, alt: img.code || 'Foto del catálogo', loading: 'lazy' }) : null, img ? h('div', { class: 'small muted' }, `🖼 ${img.code}`) : null, content || null, extra);
 
   const load = async () => {
     const d = await api('GET', `/api/chatbots/${bot.id}/playground/${session}`);
-    fill(chat, ...d.messages.map((m) => bubble(m.sender === 'system' ? 'notify' : m.direction === 'in' ? 'in' : 'out', m.content, m.image_id ? { id: m.image_id, code: m.image_code } : null)));
+    const last = d.messages.at(-1);
+    fill(chat, ...d.messages.map((m) => bubble(m.sender === 'system' ? 'notify' : m.direction === 'in' ? 'in' : 'out', m.content, m.image_id ? { id: m.image_id, code: m.image_code } : null,
+      Array.isArray(m.meta?.buttons) && m.meta.buttons.length ? buttonRow(m.meta.buttons, m === last) : m.meta?.choice ? h('div', { class: 'small' }, `👆 ${m.meta.choice}`) : null)));
     chat.scrollTop = chat.scrollHeight;
     showData(d.contact || {});
   };
 
   const showData = (c = {}) => { const labels = Object.fromEntries((bot.data_fields || []).map((f) => [f.key, f.label])); fill(savedData, c?.name || Object.keys(c?.data || {}).length ? h('ul', { class: 'small' }, c.name ? h('li', {}, `Nombre: ${c.name}`) : null, Object.entries(c.data || {}).filter(([k]) => !['nombre', 'name'].includes(k)).map(([k, v]) => h('li', {}, `${labels[k] || dataLabel(k)}: ${v}`))) : h('p', { class: 'small muted' }, 'Todavía no hay datos guardados.')); };
 
-  const send = async () => {
+  /** `tap`: el cliente tocó un botón (va su texto y su identificador). */
+  const send = async (tap = null) => {
     if (sending) return;
-    const text = input.value.trim();
+    const text = tap ? tap.text : input.value.trim();
     if (!text) return;
     sending = true;
     chat.scrollTop = chat.scrollHeight;
     btn.disabled = true;
     btn.textContent = 'Pensando…';
-    const r = await run(() => api('POST', `/api/chatbots/${bot.id}/playground`, { session, text }));
+    const r = await run(() => api('POST', `/api/chatbots/${bot.id}/playground`, { session, text, ...(tap?.button ? { button: tap.button } : {}) }));
     sending = false;
     btn.disabled = false;
     btn.textContent = 'Enviar';
     if (!r) { toast('No se completó el envío. Conservamos tu mensaje; revisa el historial antes de reintentar.', true); return; }
-    if (input.value.trim() === text) input.value = '';
+    if (!tap && input.value.trim() === text) input.value = '';
     // Historial completo: incluye respuestas de reglas automáticas y notas del simulador.
     await load();
     for (const o of r.outputs.filter((x) => x.type === 'notify')) chat.append(bubble('notify', o.text));

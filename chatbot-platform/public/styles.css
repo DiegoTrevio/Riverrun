@@ -326,6 +326,7 @@ details.menu .menu-items { position: absolute; right: 0; top: 110%; z-index: 20;
 details.menu .menu-items a { padding: 8px 10px; border-radius: 6px; color: var(--text); text-decoration: none; }
 details.menu .menu-items a:hover { background: var(--accent-soft); color: var(--accent); }
 .chip { display: inline-block; padding: 2px 8px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg); font-size: 12px; }
+.msg-buttons { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 
 /* Formularios con más espacio y acciones claras en todas las pantallas. */
 button.primary, .btn.primary { color: var(--accent-foreground); }
@@ -520,3 +521,5 @@ button.icon-only { min-width: 40px; justify-content: center; font-size: 18px; li
 .cal-item.red { color: var(--danger); }
 .cal-item.orange { color: var(--warn); }
 @media (max-width: 480px) { .cal-cell { min-height: 48px; padding: 2px; } .cal-item { display: none; } .cal-cell.has::after { content: '•'; color: var(--accent); } }
+button.chip, a.chip { cursor: pointer; color: var(--accent); border-color: var(--accent); font-size: 13px; padding: 4px 10px; min-height: 32px; }
+button.chip:hover, a.chip:hover { background: var(--panel); }

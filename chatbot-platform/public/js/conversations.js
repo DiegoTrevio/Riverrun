@@ -381,6 +381,10 @@ export async function viewConversation(root, id, opts = {}) {
           m.media_kind ? customerMedia(m) : null,
           m.meta?.media_error ? h('div', { class: 'small muted' }, `⚠️ ${m.meta.media_error}`) : null,
           m.content || null,
+          // Botones de un flujo (como los vio el cliente) y la opción que eligió.
+          Array.isArray(m.meta?.buttons) && m.meta.buttons.length ? h('div', { class: 'msg-buttons', role: 'list', 'aria-label': 'Botones enviados' },
+            m.meta.buttons.map((b) => h('span', { class: 'chip', role: 'listitem' }, b.kind === 'url' ? `🔗 ${b.label}` : b.label))) : null,
+          m.meta?.choice ? h('div', { class: 'small' }, `👆 Eligió: ${m.meta.choice}`) : null,
           h('div', { class: 'meta' }, [who, fmtDate(m.created_at), m.status === 'failed' ? '⚠️ no enviado' : m.status==='uncertain'?'⚠️ entrega sin confirmar':m.status==='cancelled'?'cancelado':'', m.meta?.fallback ? 'respaldo' : ''].filter(Boolean).join(' · ')));
       }));
       chat.scrollTop = prepended ? previousTop + Math.max(0, chat.scrollHeight - previousHeight) : atBottom || firstRender ? chat.scrollHeight : previousTop;
@@ -419,7 +423,7 @@ export async function viewConversation(root, id, opts = {}) {
     };
     const active = auto.enrollments.filter((e) => e.status === 'active');
     const upcoming = auto.appointments.filter((a) => a.status === 'confirmed' && new Date(a.starts_at) > new Date());
-    const JOB_LABEL = { sequence_step: 'Mensaje de secuencia', no_reply: 'Seguimiento si no responde', automation_send: 'Mensaje programado', appointment_reminder: 'Recordatorio de cita', campaign_send: 'Campaña', flow_image: 'Foto pendiente del recorrido' };
+    const JOB_LABEL = { sequence_step: 'Mensaje de flujo', no_reply: 'Seguimiento si no responde', automation_send: 'Mensaje programado', appointment_reminder: 'Recordatorio de cita', campaign_send: 'Campaña', flow_image: 'Foto pendiente del recorrido' };
     fill(autoBox,
       h('div', { class: 'card' },
         h('h2', { style: 'margin-top:0' }, 'Citas'),
@@ -431,11 +435,11 @@ export async function viewConversation(root, id, opts = {}) {
           field('Notas', text(book, 'notes')),
           h('button', { class: 'small primary', onclick: async () => { if (await run(() => api('POST', '/api/appointments', { ...book, assigned_user_id: book.assigned_user_id || null, conversation_id: id }), 'Agendada: se envió la confirmación al cliente')) { drawAuto(); load(true); } } }, 'Agendar y avisar al cliente')) : null),
       h('div', { class: 'card' },
-        h('h2', { style: 'margin-top:0' }, 'Secuencias'),
-        active.length ? active.map((e) => h('div', { class: 'row between small' }, h('span', {}, `▶ ${e.sequence_name} (paso ${e.current_step + 1})`),
+        h('h2', { style: 'margin-top:0' }, 'Flujos'),
+        active.length ? active.map((e) => h('div', { class: 'row between small' }, h('span', {}, `▶ ${e.sequence_name} (mensaje ${Math.min(e.current_step + 1, 30)})${e.choice ? ` · eligió "${e.choice}"` : ''}`),
           h('button', { class: 'small danger', onclick: async () => { if (!(await run(() => api('DELETE', `/api/conversations/${id}/sequences/${e.sequence_id}`), 'Detenida'))) return; drawAuto(); } }, 'Detener'))) : h('p', { class: 'small muted', style: 'margin:0' }, 'Ninguna en curso'),
         seqs.length ? h('div', { class: 'row', style: 'margin-top:8px' }, h('div', { style: 'flex:1' }, select(enr, 'sequence_id', seqs.filter((q) => q.active).map((q) => [q.id, q.name]))),
-          h('button', { class: 'small', onclick: async () => { if (await run(() => api('POST', `/api/conversations/${id}/sequences`, enr), 'Inscrito en la secuencia')) drawAuto(); } }, 'Iniciar')) : null,
+          h('button', { class: 'small', onclick: async () => { if (await run(() => api('POST', `/api/conversations/${id}/sequences`, enr), 'Empezó el flujo')) drawAuto(); } }, 'Iniciar')) : null,
         auto.jobs.length ? h('details', { style: 'margin-top:8px' }, h('summary', {}, `Envíos programados (${auto.jobs.length})`),
           auto.jobs.map((j) => h('div', { class: 'small muted' }, `${fmtDate(j.run_at)} · ${JOB_LABEL[j.type] || j.type}`))) : null),
     );

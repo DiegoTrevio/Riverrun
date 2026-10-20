@@ -57,6 +57,17 @@ try {
     SELECT $1, $2, (now() AT TIME ZONE 'UTC')::date - n, 1410 - n * 7, 800 + (n * 37) % 500, 500 + (n * 23) % 300, 40 + (n * 11) % 60, (n % 3 = 0)::int FROM generate_series(1, 30) n`, [igSocial, h.accountId]);
   await pool.query(`INSERT INTO social_account_stats (social_account_id, account_id, day, impressions, engagement)
     SELECT $1, $2, (now() AT TIME ZONE 'UTC')::date - n, 60 + (n * 13) % 40, 3 + n % 5 FROM generate_series(1, 30) n`, [gbSocial, h.accountId]);
+  // Flujo con botones (editor, "enviar a un grupo") y su mensaje con botones en la conversación, con la opción elegida.
+  const uxFlow = (await h.authed('POST', '/api/sequences', { account_id: h.accountId, name: 'Promoción de octubre', active: true, steps: [
+    { delay_value: 0, delay_unit: 'minutes', text: 'Hola {{nombre}}, ¿te interesa la promoción de octubre?', buttons: [
+      { label: 'Sí, me interesa', action: 'next', reply: '¡Genial! Te cuento más 👇' }, { label: 'No, gracias', action: 'end' },
+      { label: 'Hablar con alguien', action: 'handoff' }, { label: 'Ver promoción', kind: 'url', url: 'https://hotel.test/promo' }], wait_for_choice: true },
+    { delay_value: 1, delay_unit: 'days', text: 'Estos son los detalles de la promoción.' },
+    { delay_value: 1, delay_unit: 'days', text: 'Último día de la promoción.' },
+  ] })).json().id;
+  await pool.query(`INSERT INTO messages (conversation_id, direction, sender, type, content, status, meta) VALUES ($1, 'out', 'bot', 'text', $2, 'ok', $3)`,
+    [conv.id, 'Hola Ana, ¿te interesa la promoción de octubre?', JSON.stringify({ source: 'sequence', buttons: [{ kind: 'reply', label: 'Sí, me interesa', payload: 'rr:abcdef0123:1' }, { kind: 'reply', label: 'No, gracias', payload: 'rr:abcdef0123:2' }, { kind: 'url', label: 'Ver promoción', url: 'https://hotel.test/promo' }] })]);
+  await pool.query(`INSERT INTO messages (conversation_id, direction, sender, type, content, status, processed, meta) VALUES ($1, 'in', 'customer', 'text', 'Sí, me interesa', 'ok', true, $2)`, [conv.id, JSON.stringify({ button: 'rr:abcdef0123:1', choice: 'Sí, me interesa' })]);
   const uxMonth = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Mexico_City', year: 'numeric', month: '2-digit' }).format(new Date());
   const login: any = { superadmin: h.authed };
   for (const role of ['admin', 'agent']) {
@@ -74,7 +85,7 @@ try {
     if (role === 'superadmin') await context.addInitScript((id: string) => localStorage.setItem('cp-account', id), h.accountId);
     return context;
   };
-  const routes = ['agentes', `bot/${h.botId}/instrucciones`, `bot/${h.botId}/preguntas`, `bot/${h.botId}/activacion`, `bot/${h.botId}/conocimiento`, `bot/${h.botId}/imagenes`, `bot/${h.botId}/conexiones`, `bot/${h.botId}/probar`, `bot/${h.botId}/conexiones/${h.channelId}`, `bot/${h.botId}/conexiones/${socialNew.id}`, `bot/${h.botId}/conexiones/${socialOn.id}`, 'conversations', `conversation/${conv.id}`, 'agenda', 'agenda/servicios', `agenda/servicios?id=${service.id}`, 'agenda/equipo', 'agenda/enlaces', 'automation/rules', 'automation/rules/new', 'automation/sequences', 'automation/sequences/new', 'automation/campaigns', 'automation/campaigns/new', 'automation/settings', 'pipeline', 'pipeline/editar/nuevo', 'ajustes', 'integraciones', 'redes', `redes/whatsapp/${waSocial}`, 'comentarios', 'comentarios?tipo=review', 'publicaciones', `publicaciones?vista=calendario&mes=${uxMonth}`, 'publicaciones/nueva', `publicaciones/${pubA}`, 'users', 'consumo', 'logs', 'plan', 'estadisticas', 'estadisticas/redes', 'notifications', 'password', 'inicio', 'agentes/nuevo', `bot/${h.botId}/empezar`];
+  const routes = ['agentes', `bot/${h.botId}/instrucciones`, `bot/${h.botId}/preguntas`, `bot/${h.botId}/activacion`, `bot/${h.botId}/conocimiento`, `bot/${h.botId}/imagenes`, `bot/${h.botId}/conexiones`, `bot/${h.botId}/probar`, `bot/${h.botId}/conexiones/${h.channelId}`, `bot/${h.botId}/conexiones/${socialNew.id}`, `bot/${h.botId}/conexiones/${socialOn.id}`, 'conversations', `conversation/${conv.id}`, 'agenda', 'agenda/servicios', `agenda/servicios?id=${service.id}`, 'agenda/equipo', 'agenda/enlaces', 'automation/rules', 'automation/rules/new', 'automation/sequences', 'automation/sequences/new', `automation/sequences/${uxFlow}`, 'automation/campaigns', 'automation/campaigns/new', `automation/campaigns/new?flow=${uxFlow}`, 'automation/settings', 'pipeline', 'pipeline/editar/nuevo', 'ajustes', 'integraciones', 'redes', `redes/whatsapp/${waSocial}`, 'comentarios', 'comentarios?tipo=review', 'publicaciones', `publicaciones?vista=calendario&mes=${uxMonth}`, 'publicaciones/nueva', `publicaciones/${pubA}`, 'users', 'consumo', 'logs', 'plan', 'estadisticas', 'estadisticas/redes', 'notifications', 'password', 'inicio', 'agentes/nuevo', `bot/${h.botId}/empezar`];
   const helpScreens: Record<string, string> = { [`bot/${h.botId}/conocimiento`]: '01-importar.jpg', [`bot/${h.botId}/probar`]: '03-probar.jpg', [`conversation/${conv.id}`]: '05-conversacion.jpg', ajustes: '06-ajustes.jpg' };
   for (const role of ['admin', 'superadmin', 'agent']) {
     const context = await contextFor(role); const page = await context.newPage();
@@ -92,12 +103,12 @@ try {
   console.log('Pantallas examinadas:', results.screens.length);
   for (const width of [320, 390, 768, 1024, 1440]) for (const theme of ['light', 'dark'] as const) {
     const context = await contextFor('admin', { viewport: { width, height: 900 }, colorScheme: theme }); const page = await context.newPage();
-    for (const route of ['agentes', 'agentes/nuevo', `bot/${h.botId}/empezar`, `bot/${h.botId}/instrucciones`, `conversation/${conv.id}`, 'conversations', 'automation/sequences/new', 'agenda', 'redes', `redes/whatsapp/${waSocial}`, 'comentarios', 'publicaciones', `publicaciones?vista=calendario&mes=${uxMonth}`, 'publicaciones/nueva', 'estadisticas/redes']) {
+    for (const route of ['agentes', 'agentes/nuevo', `bot/${h.botId}/empezar`, `bot/${h.botId}/instrucciones`, `conversation/${conv.id}`, 'conversations', 'automation/sequences/new', `automation/sequences/${uxFlow}`, `automation/campaigns/new?flow=${uxFlow}`, 'agenda', 'redes', `redes/whatsapp/${waSocial}`, 'comentarios', 'publicaciones', `publicaciones?vista=calendario&mes=${uxMonth}`, 'publicaciones/nueva', 'estadisticas/redes']) {
       await page.goto(`${base}/#/${route}`); await page.locator('.main h1').waitFor(); await page.waitForTimeout(80);
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1);
       results.responsive.push({ width, theme, route, overflow });
       assert.equal(overflow, false, `Desbordamiento en ${route} ${width} ${theme}`);
-      if (width === 390 && theme === 'dark') await page.screenshot({ path: `${output}/${route.split(/[/?]/)[0]}-mobile.png`, fullPage: true });
+      if (width === 390 && theme === 'dark') await page.screenshot({ path: `${output}/${route.split('?')[0].replace(/[0-9a-f]{8}-[0-9a-f-]{27}/g, 'id').replace(/[^a-z0-9]+/gi, '-')}-mobile.png`, fullPage: true });
     }
     await context.close();
   }
