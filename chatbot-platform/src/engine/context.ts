@@ -413,7 +413,7 @@ function stateSection(input: ContextInput, questions: Question[], isFirstContact
     if (v && !bot.data_fields.some((f) => f.key === k) && !(contact.name && ['nombre', 'name'].includes(k))) known.push(`${k}: ${v}`);
   }
   s.push(known.length ? known.map((x) => `- ${x}`).join('\n') : '- (ninguno todavía)');
-  if (contact.notes?.length) s.push(['Notas sobre el cliente:', ...contact.notes.map((n) => `- ${n}`)].join('\n'));
+  if (contact.notes?.length) s.push(['Notas sobre el cliente (las escribió el asistente en conversaciones anteriores; no son información del negocio):', ...contact.notes.map((n) => `- ${n}`)].join('\n'));
   if (conversation.summary) s.push(`Resumen de la conversación anterior (mensajes más antiguos):\n${conversation.summary}`);
 
   s.push('\n## Qué toca ahora');
@@ -587,9 +587,6 @@ export function buildContext(input: ContextInput): BuiltContext {
   const groundingSources = [
     ...knowledge.map((k) => `${k.title}\n${k.content}${k.source_url?`\n${k.source_url}`:''}`),
     ...input.history.filter((m) => m.direction === 'out').map((m) => m.content),
-    Object.values(input.contact.data ?? {}).join('\n'),
-    input.contact.phone,
-    input.contact.notes?.join('\n') ?? '',
     formatDate(input.now ?? new Date(), tzOf(input)),
     input.business ? hoursText(input.business) : '',
     bot.personality.prompt,
@@ -622,6 +619,11 @@ export function buildContext(input: ContextInput): BuiltContext {
     ...input.pending.map((m) => m.content),
     // El resumen mezcla lo que dijo el cliente y el negocio: se trata como no confiable para precios.
     input.conversation.summary,
+    // Los datos guardados del cliente y las notas del asistente se pueden repetir, pero no son información del negocio:
+    // un número que dio el cliente no se vuelve precio, ni una nota con un dato inventado lo respalda en otro turno.
+    Object.values(input.contact.data ?? {}).join('\n'),
+    input.contact.phone,
+    input.contact.notes?.join('\n') ?? '',
   ];
 
   return { messages, knowledge, groundingSources, claimSources, customerSources, isFirstContact };

@@ -566,14 +566,15 @@ export function validateDecision(input: ValidationInput): ValidationResult {
   if (images.length && action !== 'handoff') action = 'reply_with_image';
 
   // ---------- Verificación de hechos (cero invenciones) ----------
+  const trusted = new FactCorpus(input.groundingSources);
+  const all = new FactCorpus([...input.groundingSources, ...(input.customerSources ?? [])]);
+  const customerCorpus = new FactCorpus(input.customerSources ?? []);
   if (rules.verify_facts && messages.length) {
-    const trusted = new FactCorpus(input.groundingSources);
-    const all = new FactCorpus([...input.groundingSources, ...(input.customerSources ?? [])]);
-    const unverified = all.unverified(messages.join('\n'), trusted, new FactCorpus(input.customerSources ?? []));
+    const unverified = all.unverified(messages.join('\n'), trusted, customerCorpus);
     if (unverified.length) {
       factIssues = true;
       retryable.push(
-        `Mencionaste datos que no están en la información del negocio ni en la conversación: ${unverified.join(', ')}. Elimina o corrige esos datos; si no los tienes, dilo con naturalidad.`,
+        `Mencionaste datos que no están en la información del negocio ni en la conversación: ${unverified.join(', ')}. Elimina o corrige esos datos; si no los tienes, dilo con naturalidad. Precios, descuentos, promociones, horarios y enlaces solo pueden salir de la información del negocio; si calculas un total, escribe también el precio unitario (por ejemplo: 2 noches × $1,650 = $3,300) y usa solo cantidades que dijo el cliente.`,
       );
     }
   }
@@ -620,11 +621,15 @@ export function validateDecision(input: ValidationInput): ValidationResult {
       fixes.push(`Dato no proporcionado por el cliente ignorado: ${f.key}`);
       continue;
     }
-    // Un dato obligatorio bloquea el objetivo: la IA no puede inventar una fecha, una cantidad o una opción que el
-    // cliente nunca dio para darlo por cumplido.
+    // Ningún dato configurado se inventa: la IA no puede guardar una fecha, una cantidad o una opción que el cliente
+    // nunca dio (si es obligatorio, además daría el objetivo por cumplido).
     // También vale si el asistente lo propuso y el cliente dijo que sí ("¿Le reservo el 15 de noviembre?" → "sí").
     const confirmed = affirms(input.customerText) && (input.recentBotTexts ?? []).some((t) => customerGave(f, clean, [t]));
-    if (configured?.required && !freeAnswer && !confirmed && !customerGave(f, clean, sources)) {
+    if (configured && !freeAnswer && !confirmed && !customerGave(f, clean, sources)) {
+      if (!configured.required) {
+        fixes.push(`Dato no proporcionado por el cliente ignorado: ${f.key}`);
+        continue;
+      }
       fixes.push(`Dato obligatorio no proporcionado por el cliente ignorado: ${f.key}`);
       // Sin descartarlo en silencio (el objetivo se quedaría esperando): se pide confirmarlo con el cliente.
       if (!input.final) retryable.push(`No guardes "${configured.label || f.key}" = "${clean}": el cliente no lo dijo. Pregúntaselo o confírmalo con él antes de guardarlo.`);
@@ -873,9 +878,16 @@ export function validateDecision(input: ValidationInput): ValidationResult {
     } else retryable.push('La acción requiere al menos un mensaje para el cliente.');
   }
 
+  // Las notas se leen en los siguientes turnos: una con un precio, un descuento, una hora o un enlace que no está en la
+  // conversación ni en la información del negocio no se guarda (si no, el dato inventado parecería conocido).
   const remember = d.remember
     .map((x) => x.trim())
     .filter((x) => x.length > 2 && x.length < 200)
+    .filter((x) => {
+      if (!rules.verify_facts || !all.unverified(x, trusted, customerCorpus).length) return true;
+      fixes.push(`Nota no guardada (tiene datos sin respaldo): ${x}`);
+      return false;
+    })
     .slice(0, 5);
 
   return {

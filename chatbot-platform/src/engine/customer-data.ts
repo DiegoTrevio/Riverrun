@@ -1,5 +1,5 @@
 import type { DataField } from '../types.js';
-import { normalize } from './text.js';
+import { normalize, spokenNumbers } from './text.js';
 
 const ALIASES: Record<string, string> = {
   name: 'nombre', nombre_cliente: 'nombre', nombre_completo: 'nombre',
@@ -24,13 +24,10 @@ export function automaticField(label: string): DataField | null {
 /** Palabras de un texto, sin mayúsculas, acentos ni puntuación ("Col. Centro," → col, centro). */
 const words = (s: string) => normalize(s).split(/[^\p{L}\p{N}]+/u).filter(Boolean);
 
-const NUMBER_WORDS: Record<string, number> = {
-  un: 1, uno: 1, una: 1, dos: 2, par: 2, tres: 3, cuatro: 4, cinco: 5, seis: 6, siete: 7, ocho: 8, nueve: 9, diez: 10,
-  once: 11, doce: 12, trece: 13, catorce: 14, quince: 15, dieciseis: 16, diecisiete: 17, dieciocho: 18, diecinueve: 19,
-  veinte: 20, treinta: 30, cuarenta: 40, cincuenta: 50, cien: 100,
-};
+// Palabras que dan una fecha: un día de la semana, un mes o "hoy / mañana / la próxima semana". No "día", "tarde" ni
+// "noche": "buen día" o "buenas noches" no son una fecha.
 const DATE_CUES = new Set([
-  'hoy', 'manana', 'pasado', 'dia', 'dias', 'noche', 'tarde', 'finde', 'ahorita', 'ahora', 'temprano', 'madrugada', 'fecha', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado', 'domingo', 'semana', 'mes',
+  'hoy', 'manana', 'pasado', 'finde', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado', 'domingo', 'semana', 'mes',
   'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'setiembre', 'octubre',
   'noviembre', 'diciembre', 'proximo', 'proxima', 'siguiente', 'quincena', 'navidad',
 ]);
@@ -40,27 +37,6 @@ const ORDINALS: Record<string, number> = { primera: 1, primero: 1, segunda: 2, s
 
 /** ¿El cliente dijo que sí? ("sí", "claro, esa", "ok perfecto"). */
 export const affirms = (text: string) => words(text).some((w) => YES.has(w)) && !words(text).some((w) => NO.has(w));
-
-/** Números que dijo el cliente en un mensaje: cifras (sin separadores de miles), palabras ("dos", "docena") y "mil". */
-function numbersIn(text: string): number[] {
-  const ws = words(normalize(text).replace(/(\d)[.,](?=\d{3}(?!\d))/g, '$1'));
-  const out: number[] = [];
-  for (let i = 0; i < ws.length; i++) {
-    const w = ws[i];
-    if (w === 'docena') {
-      // "media docena" = 6, "dos docenas" = 24, "docena" = 12.
-      const prev = NUMBER_WORDS[ws[i - 1]];
-      if (prev !== undefined && out.length) out.pop();
-      out.push(ws[i - 1] === 'media' ? 6 : (prev ?? 1) * 12);
-      continue;
-    }
-    let n = /^\d+$/.test(w) ? Number(w) : NUMBER_WORDS[w];
-    if (n === undefined) continue;
-    if (ws[i + 1] === 'mil') n *= 1000;
-    out.push(n);
-  }
-  return out;
-}
 
 /**
  * ¿El cliente dio este dato? Para los obligatorios: la IA no puede inventarlos para cumplir el objetivo, pero sí
@@ -74,13 +50,13 @@ export function customerGave(field: DataField, value: string, sources: string[])
       // Una cifra que dijo, o la suma de las que dijo en un mensaje ("2 adultos y 1 niño" → 3).
       const n = Number(value);
       return Number.isFinite(n) && sources.some((s) => {
-        const ns = numbersIn(s);
+        const ns = spokenNumbers(s);
         return ns.includes(n) || (ns.length > 1 && ns.reduce((a, b) => a + b, 0) === n);
       });
     }
     case 'date':
       // Las fechas se escriben de muchas formas ("mañana", "el 1 de noviembre", "15/11"): basta con que el cliente
-      // haya dicho alguna fecha; si no dijo ninguna, la IA la inventó.
+      // haya dicho alguna fecha (una cifra o un día, mes o "mañana"); si no dijo ninguna, la IA la inventó.
       return said.some((ws) => ws.some((w) => /\d/.test(w) || DATE_CUES.has(w)));
     case 'option': {
       // Opciones de sí o no ("Sí, quiero factura", "No"): basta con el sí o el no del cliente.

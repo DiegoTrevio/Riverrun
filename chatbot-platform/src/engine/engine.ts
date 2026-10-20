@@ -407,9 +407,10 @@ export class Engine {
       // Datos no verificables tras el reintento: respuesta segura según la regla configurada.
       fallbackUsed = true;
       // La propuesta no pasó la validación: no confirma el objetivo ni avanza la etapa (ni envía sus fotos). Tampoco mueve
-      // la tarjeta del pipeline: su columna puede depender de la respuesta rechazada («ya se le dio un precio»).
+      // la tarjeta del pipeline: su columna puede depender de la respuesta rechazada («ya se le dio un precio»). Ni guarda
+      // sus notas: podrían repetir el dato inventado que se rechazó.
       const stageIntents = new Set(pipeline?.stages.map((st) => normalize(st.intent)) ?? []);
-      const base = { ...plan, booking: null, contextImages: [], savedCodes: [], questionLast: false, goalCompleted: false, flowStep: 0, intents: plan.intents.filter((i) => !stageIntents.has(normalize(i))) };
+      const base = { ...plan, booking: null, contextImages: [], savedCodes: [], questionLast: false, goalCompleted: false, flowStep: 0, remember: [], intents: plan.intents.filter((i) => !stageIntents.has(normalize(i))) };
       if (bookingIssue && !factIssues) {
         // La IA insistió en un horario que no existe: se ofrecen horarios reales.
         plan = { ...base, action: 'reply', messages: [slotFallback(agendaCtx)], images: [] };

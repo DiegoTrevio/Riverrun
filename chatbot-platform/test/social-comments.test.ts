@@ -145,6 +145,45 @@ t('sugerir: usa el conocimiento del agente, registra el gasto y marca para revis
   assert.equal(prompt.match(/<\/comentario>/g)?.length, 1, 'el texto ajeno no cierra la etiqueta');
 });
 
+t('sugerir: lo que afirma, los descuentos y los horarios también se verifican; lo calculado queda guardado', async () => {
+  const original = (await pool.query(`SELECT settings FROM accounts WHERE id = $1`, [h.accountId])).rows[0].settings;
+  await pool.query(`UPDATE accounts SET settings = jsonb_set(settings, '{business_hours}', '{"mon":[["09:00","18:00"]],"tue":[["09:00","18:00"]]}') WHERE id = $1`, [h.accountId]);
+  try {
+    await commentEvent('instagram', 'acc_ig', { id: 'c_offer', text: '¿Tienen alberca? ¿Hay descuento? ¿A qué hora abren?' });
+    await h.idle();
+    const row = await commentRow('c_offer');
+    h.reset();
+    h.setScript(() => ({ reply: '¡Hola! Sí, tenemos alberca, hoy tienes 15% de descuento y abrimos a las 7.', sentiment: 'positive', needs_human: false }));
+    const bad = (await agent('POST', `/api/social-comments/${row.id}/suggest`)).json();
+    assert.equal(bad.needs_human, true);
+    assert.deepEqual(bad.unverified, ['15%', '7:00 h', 'alberca', 'tienes descuento']);
+    assert.equal((await commentRow('c_offer')).needs_human, true, 'se guarda lo calculado, no lo que propuso la IA');
+    // El horario configurado va en el prompt y respalda la respuesta.
+    h.reset();
+    h.setScript(() => ({ reply: '¡Hola! Abrimos de 9 a 6, de lunes a martes.', sentiment: 'positive', needs_human: false }));
+    const good = (await agent('POST', `/api/social-comments/${row.id}/suggest`)).json();
+    assert.deepEqual(good.unverified, []);
+    assert.match(String(h.calls[0].messages[0].content), /Horario de atención:\nLunes: 09:00 a 18:00/);
+    // En automático, una afirmación sin respaldo no se publica sola: la ve una persona.
+    const ig = nets.instagram.socialId;
+    await owner('PUT', `/api/social-accounts/${ig}/comment-settings`, { mode: 'auto', max_per_hour: 10 });
+    const replies = () => zernioCalls('/inbox/comments/post_1').filter((x) => x.method === 'POST').length;
+    const before = replies();
+    h.reset();
+    h.setScript(() => ({ reply: '¡Gracias! Y sí, tenemos spa 🙌', sentiment: 'positive', needs_human: false }));
+    await commentEvent('instagram', 'acc_ig', { id: 'c_spa', text: 'Me encantó, ¿tienen spa?' });
+    await h.idle();
+    await h.fastForward();
+    assert.equal(replies() - before, 0);
+    const spa = await commentRow('c_spa');
+    assert.deepEqual([spa.status, spa.needs_human], ['nuevo', true]);
+    assert.match(spa.ai_suggestion, /spa/, 'la IA sí respondió: lo detuvo la verificación');
+  } finally {
+    await pool.query(`UPDATE accounts SET settings = $2 WHERE id = $1`, [h.accountId, original]);
+    await owner('PUT', `/api/social-accounts/${nets.instagram.socialId}/comment-settings`, { mode: 'suggest' });
+  }
+});
+
 t('responder: sale a la red con su comentario y llave de idempotencia; queda respondido y no se responde dos veces', async () => {
   const c1 = await commentRow('c1');
   const before = zernioCalls('/inbox/comments/post_1').length;
