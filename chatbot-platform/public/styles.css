@@ -506,6 +506,22 @@ button.icon-only { min-width: 40px; justify-content: center; font-size: 18px; li
 .inbox-detail .split { gap: 16px; }
 .inbox-empty { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); text-align: center; padding: 80px 24px; }
 
+/* Ficha del agente: encendido/pausa con un clic y pasos para empezar. */
+.status-switch { display: inline-flex; align-items: center; gap: 8px; border-radius: 999px; padding: 6px 14px; font-weight: 600; }
+.status-switch .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
+.status-switch.on .dot { background: #16a34a; }
+.setup-steps { margin: 16px 0; }
+.setup-steps ol { list-style: none; display: flex; flex-wrap: wrap; gap: 8px 20px; padding: 0; margin: 8px 0 0; }
+.setup-steps li { display: flex; align-items: center; gap: 8px; }
+.setup-steps .mark { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; border: 2px solid var(--accent); color: var(--accent); font-size: 13px; font-weight: 700; }
+.setup-steps li.ok { color: var(--muted); }
+.setup-steps li.ok .mark { background: var(--accent); color: #fff; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+@media (max-width: 720px) {
+  .tabs.agent-tabs { display: flex; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  .tabs.agent-tabs a { white-space: nowrap; flex: 0 0 auto; }
+}
+
 /* Redes sociales: botón de cada red para conectar. */
 .social-network { display: flex; gap: 10px; align-items: center; text-align: left; white-space: normal; width: 100%; min-width: 0; padding: 12px; min-height: 64px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: inherit; }
 .social-network:hover { border-color: var(--accent); }

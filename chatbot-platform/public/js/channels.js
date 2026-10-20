@@ -38,7 +38,7 @@ export function connectionHref(c) {
 export function connectionBadge(c) {
   let label = c.active ? 'Activo' : 'Inactivo';
   let color = c.active ? 'green' : '';
-  if (c.active && c.type === 'whatsapp') [color, label] = STATE_LABEL[c.connection_state] || ['', 'Sin información'];
+  if (c.active && c.type === 'whatsapp') [color, label] = !c.connection_state || c.connection_state === 'unknown' ? ['orange', 'Sin conectar'] : STATE_LABEL[c.connection_state] || ['', 'Sin información'];
   if (c.active && c.config?.connected_via === 'facebook') [color, label] = c.connection_state === 'close' ? ['red', 'Desconectado'] : ['green', 'Conectado'];
   if (c.active && c.type === 'zernio') [color, label] = !c.config?.connected ? ['orange', 'Pendiente de conectar'] : c.connection_state === 'close' ? ['red', 'Desconectado'] : ['green', 'Conectado'];
   return h('span', { class: `badge ${color}` }, label);
