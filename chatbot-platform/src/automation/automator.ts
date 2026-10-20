@@ -8,6 +8,7 @@ import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
 import { config } from '../config.js';
+import { query, queryOne } from '../db.js';
 import { sendMail } from '../mailer.js';
 import { assertOutbound } from '../outbound-guard.js';
 import { agentActive, gate } from '../engine/activation.js';
@@ -22,6 +23,8 @@ import * as store from '../store/index.js';
 import type { Channel, Chatbot, Contact, Conversation, Message } from '../types.js';
 import * as astore from './store.js';
 import { renderTemplate } from './templates.js';
+import type { OutboundResult, PendingButtons } from './outbound.js';
+import { matchChoice, parsePayload } from './buttons.js';
 import { addDays, isOpen, localParts, nextOpen, nextTimeOfDay, zonedToUtc } from './time.js';
 import type { AccountSettings, Action, Automation, AutomationEvent, Condition, SequenceStep, Trigger, WaTemplateRef } from './types.js';
 
@@ -271,6 +274,11 @@ export class Automator {
   async handle(e: AutomationEvent): Promise<{ stopAi: boolean; matched: string[] }> {
     const ctx = await this.loadCtx(e.conversationId);
     if (!ctx || ctx.channel.account_active === false) return { stopAi: false, matched: [] };
+    if (e.type === 'handoff') {
+      // Una persona toma la conversación: sus flujos se detienen al momento y sus botones dejan de contar.
+      await astore.stopEnrollments(ctx.conv.id, 'una persona tomó la conversación');
+      await query(`UPDATE conversations SET pending_buttons = NULL WHERE id = $1`, [ctx.conv.id]);
+    }
     if (e.type === 'handoff' && ctx.channel.type !== 'playground') {
       const who = ctx.contact.name || ctx.contact.push_name || 'Cliente';
       // El aviso lleva el resumen y los datos ya capturados: quien atiende sabe de qué va antes de abrir la conversación.
@@ -605,6 +613,8 @@ export class Automator {
       await this.chat.outbound.send(conv.id, { text: oo.resume_message, source: 'opt_out', transactional: true, allowWhenHuman: true });
       return true;
     }
+    // Botón de un flujo (tocado o escrito): hace lo que dice el botón; no cuenta como "respondió" y la IA no contesta.
+    if (await this.handleTap(conv, contact, message, text)) return true;
     // Consentimiento: escribir "ACEPTO" (u otra frase configurada) autoriza recibir promociones.
     const co = settings.consent;
     if (norm && !contact.opted_out && !contact.consent_at && co.opt_in_keywords.some((k) => normalize(k) === norm)) {
@@ -620,6 +630,79 @@ export class Automator {
     if (first) stop = (await this.handle({ type: 'new_contact', conversationId: conv.id, text })).stopAi || stop;
     stop = (await this.handle({ type: 'message_received', conversationId: conv.id, text, isFirstMessage: first })).stopAi || stop;
     return stop;
+  }
+
+  /**
+   * ¿El mensaje es la elección de un botón del juego vigente? El toque trae su identificador; escrito, vale el texto del
+   * botón y, solo si el mensaje con botones es el último que se le envió, el número. Cada juego se aplica una vez: un
+   * segundo toque (o el mismo toque por dos réplicas) no repite nada.
+   */
+  private async handleTap(conv: Conversation, contact: Contact, message: Message, text: string): Promise<boolean> {
+    const p = (await queryOne<{ pending_buttons: (PendingButtons & { used?: number }) | null }>(`SELECT pending_buttons FROM conversations WHERE id = $1`, [conv.id]))?.pending_buttons;
+    if (!p?.buttons?.length || Date.parse(p.expires_at) < Date.now()) return false;
+    const raw = String(message.meta?.button ?? '');
+    const tapped = parsePayload(raw);
+    let n: number | null = null;
+    if (tapped) n = tapped.set === p.set ? tapped.n : null;
+    else if (!raw) {
+      const lastOut = await queryOne<{ id: string }>(`SELECT id FROM messages WHERE conversation_id = $1 AND direction = 'out' ORDER BY id DESC LIMIT 1`, [conv.id]);
+      n = matchChoice(text, p.buttons.map((b) => b.label), Number(lastOut?.id) === Number(p.message_id));
+    }
+    if (!n || n > p.buttons.length) return false;
+    if (p.used) return true; // ya eligió en este mensaje: el toque repetido no hace nada más
+    const claimed = await queryOne(
+      `UPDATE conversations SET pending_buttons = pending_buttons || jsonb_build_object('used', $3::int)
+        WHERE id = $1 AND pending_buttons->>'set' = $2 AND NOT (pending_buttons ? 'used') RETURNING id`, [conv.id, p.set, n]);
+    if (!claimed) return true;
+    await this.runTap(conv, contact, message, text, p, n);
+    return true;
+  }
+
+  /** Lo que hace el botón elegido: su respuesta y su acción (seguir, terminar, otro flujo, etiqueta o una persona). */
+  private async runTap(conv: Conversation, contact: Contact, message: Message, text: string, p: PendingButtons, n: number) {
+    const b = p.buttons[n - 1];
+    await logEvent({ level: 'info', source: 'engine', message: `👆 Eligió: "${b.label}"`, accountId: conv.account_id, conversationId: conv.id });
+    await query(`UPDATE messages SET meta = coalesce(meta, '{}'::jsonb) || $2 WHERE id = $1`, [message.id, JSON.stringify({ choice: b.label })]);
+    const en = p.enrollment_id ? await astore.getEnrollment(p.enrollment_id) : null;
+    const live = en?.status === 'active' ? en : null;
+    // Elegir no es "responder": el flujo sigue (y "esperar a que elija" sabe que eligió).
+    if (en) await query(`UPDATE sequence_enrollments SET choice_step = $2, choice = $3, last_inbound_id = greatest(last_inbound_id, $4) WHERE id = $1`, [en.id, p.step, b.label, message.id]);
+    if (b.reply.trim()) {
+      const r = await this.chat.outbound.send(conv.id, { text: b.reply, source: 'flow_reply', meta: { button: b.label } });
+      if (!r.sent) await logEvent({ level: 'info', source: 'engine', message: `Respuesta del botón "${b.label}" no enviada (${r.reason})`, accountId: conv.account_id, conversationId: conv.id });
+    }
+    const ctx = await this.loadCtx(conv.id);
+    if (!ctx) return;
+    const e: AutomationEvent = { type: 'message_received', conversationId: conv.id, text };
+    const as = { id: '', name: `botón "${b.label}"` } as Automation;
+    switch (b.action) {
+      case 'next': {
+        // El paso siguiente sale ya (si el flujo sigue en ese punto); el que estaba programado deja de contar.
+        if (!live || p.step === null || live.current_step !== p.step + 1) return;
+        await astore.cancelJobs('enrollment_id', live.id);
+        await this.runSequenceStep({ enrollment_id: live.id, step: p.step + 1, tap: true }).catch(async (err) => {
+          await logEvent({ level: 'warn', source: 'engine', message: `Botón "${b.label}": el paso siguiente se reintentará (${err?.message ?? err})`, accountId: conv.account_id, conversationId: conv.id });
+          await astore.scheduleJob({ account_id: conv.account_id, type: 'sequence_step', payload: { enrollment_id: live.id, conversation_id: conv.id, step: p.step! + 1, tap: true }, run_at: new Date(Date.now() + 60_000) });
+        });
+        return;
+      }
+      case 'end':
+        if (live) await astore.stopEnrollments(conv.id, `el cliente eligió "${b.label}"`, live.sequence_id);
+        return;
+      case 'start_sequence': {
+        if (live) await astore.stopEnrollments(conv.id, `el cliente eligió "${b.label}" (cambió de flujo)`, live.sequence_id);
+        if (!b.sequence_id) return;
+        await this.enroll(b.sequence_id, conv.id, `botón "${b.label}"`).catch((err) =>
+          logEvent({ level: 'warn', source: 'engine', message: `Botón "${b.label}": no se pudo empezar el flujo (${err?.message ?? err})`, accountId: conv.account_id, conversationId: conv.id }));
+        return;
+      }
+      case 'tag':
+        if (b.tag) await this.runAction({ type: 'add_tag', tag: b.tag }, ctx, as, e, 0);
+        return;
+      case 'handoff':
+        await this.runAction({ type: 'handoff', reason: `Eligió "${b.label}" en un flujo` }, ctx, as, e, 0);
+        return;
+    }
   }
 
   /** Después de cada mensaje enviado: programa los seguimientos por falta de respuesta. */
@@ -745,13 +828,23 @@ export class Automator {
 
   /* ------------------------------ Secuencias ------------------------------ */
 
-  async enroll(sequenceId: string, conversationId: string, by: string) {
+  /**
+   * Inscribe la conversación en un flujo. `campaignId` y `paceMs`: flujo enviado a un grupo (sus pasos siguientes salen
+   * espaciados por número). Con `now`, el primer paso se envía en este momento (la campaña ya eligió la hora) y se
+   * devuelve si salió.
+   */
+  async enroll(sequenceId: string, conversationId: string, by: string, opts: { campaignId?: string; paceMs?: number; now?: boolean } = {}) {
     const [seq, conv] = await Promise.all([astore.getSequence(sequenceId), store.getConversation(conversationId)]);
     if (!seq || !conv || seq.account_id !== conv.account_id) throw new Error('Secuencia no encontrada');
     if (!seq.active) throw new Error('La secuencia está desactivada');
     const last = await astore.lastInbound(conv.id);
-    const enrollment = await astore.createEnrollment(conv.account_id, seq.id, conv.id, last?.id ?? 0);
+    const enrollment = await astore.createEnrollment(conv.account_id, seq.id, conv.id, last?.id ?? 0, { campaignId: opts.campaignId, paceMs: opts.paceMs });
     if (!enrollment) return null; // ya estaba inscrito
+    await logEvent({ level: 'info', source: 'engine', message: `Inscrito en la secuencia "${seq.name}" (${by})`, accountId: conv.account_id, conversationId: conv.id });
+    if (opts.now) {
+      const result = await this.runSequenceStep({ enrollment_id: enrollment.id, step: 0 });
+      return { ...enrollment, result: result ?? { sent: false as const, reason: 'el paso no se envió' } };
+    }
     const settings = await astore.getSettings(conv.account_id);
     const runAt = stepTime(new Date(), seq.steps[0], settings, seq.business_hours_only);
     await astore.updateEnrollment(enrollment.id, { next_run_at: runAt });
@@ -761,49 +854,77 @@ export class Automator {
       payload: { enrollment_id: enrollment.id, conversation_id: conv.id, step: 0 },
       run_at: runAt,
     });
-    await logEvent({ level: 'info', source: 'engine', message: `Inscrito en la secuencia "${seq.name}" (${by})`, accountId: conv.account_id, conversationId: conv.id });
     return enrollment;
   }
 
-  /** Tarea programada: envía un paso de secuencia y programa el siguiente. */
-  async runSequenceStep(payload: { enrollment_id: string; step: number; first_due?: string }) {
+  /**
+   * Tarea programada: envía un paso de secuencia y programa el siguiente. `tap`: lo pidió un botón "seguir" (sale ya,
+   * sin esperar turno). Devuelve si el paso salió (undefined si no le tocaba a esta tarea).
+   */
+  async runSequenceStep(payload: { enrollment_id: string; step: number; first_due?: string; tap?: boolean; paced?: boolean }): Promise<OutboundResult | undefined> {
     const en = await astore.getEnrollment(payload.enrollment_id);
     if (!en || en.status !== 'active' || en.current_step !== payload.step) return;
     const seq = await astore.getSequence(en.sequence_id);
     const ctx = await this.loadCtx(en.conversation_id);
-    const stop = (reason: string) => astore.updateEnrollment(en.id, { status: 'stopped', stop_reason: reason, next_run_at: null });
+    const stop = async (reason: string): Promise<OutboundResult> => {
+      await astore.updateEnrollment(en.id, { status: 'stopped', stop_reason: reason, next_run_at: null });
+      return { sent: false, reason };
+    };
     if (!seq || !seq.active) return stop('secuencia desactivada');
     if (!ctx) return stop('conversación eliminada');
     if (ctx.contact.opted_out) return stop('el cliente se dio de baja');
     if (ctx.conv.status === 'human') return stop('una persona está atendiendo la conversación');
+    const reschedule = async (runAt: Date, extra: Record<string, unknown> = {}) => {
+      await astore.updateEnrollment(en.id, { next_run_at: runAt });
+      await astore.scheduleJob({ account_id: ctx.conv.account_id, type: 'sequence_step', payload: { enrollment_id: en.id, conversation_id: ctx.conv.id, step: payload.step, ...extra }, run_at: runAt });
+    };
     if (!ctx.channel.active || ctx.channel.account_active === false) {
       // Canal apagado o cuenta en pausa: la secuencia espera (hasta 7 días) en lugar de perderse.
       const firstDue = payload.first_due ? new Date(payload.first_due) : new Date();
       if (Date.now() - firstDue.getTime() > 7 * 86400_000) return stop('el canal o la cuenta siguen inactivos después de 7 días');
-      const retryAt = new Date(Date.now() + 3600_000);
-      await astore.updateEnrollment(en.id, { next_run_at: retryAt });
-      await astore.scheduleJob({
-        account_id: ctx.conv.account_id,
-        type: 'sequence_step',
-        payload: { enrollment_id: en.id, conversation_id: ctx.conv.id, step: payload.step, first_due: firstDue.toISOString() },
-        run_at: retryAt,
-      });
-      return;
+      await reschedule(new Date(Date.now() + 3600_000), { first_due: firstDue.toISOString() });
+      return { sent: false, reason: 'canal o cuenta inactivos (se reintenta)' };
     }
     if (seq.stop_on_reply) {
       const last = await astore.lastInbound(ctx.conv.id);
       if (last && last.id > en.last_inbound_id) return stop('el cliente respondió');
     }
+    // El paso anterior esperaba una elección y no llegó.
+    const prev = payload.step > 0 ? seq.steps[payload.step - 1] : undefined;
+    if (prev?.wait_for_choice && prev.buttons.some((b) => b.kind === 'reply') && en.choice_step !== payload.step - 1 && prev.if_no_choice === 'end') return stop('el cliente no eligió una opción');
+    // Flujo enviado a un grupo: los pasos siguientes salen espaciados por número (salvo el que pidió un botón).
+    if (en.pace_ms > 0 && payload.step > 0 && !payload.tap && !payload.paced) {
+      const slot = await astore.reservePacedSlot(ctx.channel.id, en.pace_ms);
+      if (slot.getTime() > Date.now() + 1000) {
+        await reschedule(slot, { paced: true });
+        return { sent: false, reason: 'esperando su turno de envío' };
+      }
+    }
+    if (!(await astore.claimStep(en.id, payload.step))) return;
     const step = seq.steps[payload.step];
     if (step && conditionsMatch(step.conditions, ctx)) {
-      const r = await this.chat.outbound.send(ctx.conv.id, { text: step.text, imageId: step.image_id || undefined, attachmentId: step.attachment_id || undefined, waTemplate: step.wa_template, source: 'sequence', meta: { sequence_id: seq.id, step: payload.step } });
+      let r: OutboundResult;
+      try {
+        r = await this.chat.outbound.send(ctx.conv.id, {
+          text: step.text, imageId: step.image_id || undefined, attachmentId: step.attachment_id || undefined, waTemplate: step.wa_template, source: 'sequence', meta: { sequence_id: seq.id, step: payload.step },
+          buttons: step.buttons?.length ? step.buttons : undefined, buttonsFrom: { enrollment_id: en.id, sequence_id: seq.id, step: payload.step },
+        });
+      } catch (e) {
+        // No se sabe si salió: el paso vuelve a quedar pendiente y la tarea se reintenta.
+        await astore.releaseStep(en.id, payload.step);
+        throw e;
+      }
       if (!r.sent) return stop(r.reason);
     }
     const next = payload.step + 1;
-    if (next >= seq.steps.length) return astore.updateEnrollment(en.id, { status: 'completed', current_step: next, next_run_at: null, last_step: true });
+    if (next >= seq.steps.length) {
+      await astore.updateEnrollment(en.id, { status: 'completed', current_step: next, next_run_at: null, last_step: true });
+      return { sent: true };
+    }
     const runAt = stepTime(new Date(), seq.steps[next], ctx.settings, seq.business_hours_only);
     await astore.updateEnrollment(en.id, { current_step: next, next_run_at: runAt, last_step: true });
     await astore.scheduleJob({ account_id: ctx.conv.account_id, type: 'sequence_step', payload: { enrollment_id: en.id, conversation_id: ctx.conv.id, step: next }, run_at: runAt });
+    return { sent: true };
   }
 
   /** Tarea programada: seguimiento si el cliente no respondió. */

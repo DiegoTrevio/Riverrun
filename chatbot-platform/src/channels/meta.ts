@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { config } from '../config.js';
 import { toPlainText } from '../engine/text.js';
-import { sleep, type Transport } from '../engine/transport.js';
+import { sleep, type OutgoingButton, type Transport } from '../engine/transport.js';
 import { logEvent } from '../logs.js';
 import { safeEqual } from '../secret.js';
 import { ChannelConfigSchemas, type Channel, type ChannelType, type ImageAsset } from '../types.js';
@@ -115,6 +115,23 @@ class MetaTransport implements Transport {
     return r.message_id ?? null;
   }
 
+  /**
+   * Hasta 3 botones con el texto en una sola burbuja (de máximo 640): de respuesta o de enlace. Más, o con un texto
+   * largo, van como respuestas rápidas (solo de respuesta; los enlaces ya van en el texto).
+   */
+  async sendButtons(text: string, buttons: OutgoingButton[], delayMs: number) {
+    await this.typing(delayMs);
+    const plain = toPlainText(text);
+    const template = buttons.length <= 3 && plain.length <= 640 && !!plain;
+    if (!template && buttons.some((b) => b.kind === 'url')) throw new Error('Los enlaces solo van como botón con 3 botones o menos');
+    await this.dispatchGuard?.();
+    const message = template
+      ? { attachment: { type: 'template', payload: { template_type: 'button', text: plain, buttons: buttons.map((b) => (b.kind === 'url' ? { type: 'web_url', title: b.label, url: b.url } : { type: 'postback', title: b.label, payload: b.payload })) } } }
+      : { text: plain, quick_replies: buttons.map((b) => ({ content_type: 'text', title: b.label, payload: b.payload })) };
+    const r = await this.graph.call('POST', 'me/messages', { recipient: { id: this.recipientId }, messaging_type: 'RESPONSE', message });
+    return r.message_id ?? null;
+  }
+
   async notify() {
     throw new Error('Messenger/Instagram no envían avisos internos');
   }
@@ -144,7 +161,9 @@ function parseEvent(ev: any): InboundMessage | null {
       fromMe,
       timestamp,
     };
-    if (typeof m.text === 'string' && m.text) return { ...base, type: 'text', text: m.text };
+    // Respuesta rápida tocada: el texto es su etiqueta y el identificador viene aparte (solo del cliente, no de un eco).
+    const payload = !fromMe && typeof m.quick_reply?.payload === 'string' ? { payload: m.quick_reply.payload } : {};
+    if (typeof m.text === 'string' && m.text) return { ...base, type: 'text', text: m.text, ...payload };
     const att = m.attachments?.[0];
     if (att) {
       const type = ATTACHMENT_TYPES[att.type] ?? 'other';
@@ -161,6 +180,7 @@ function parseEvent(ev: any): InboundMessage | null {
       fromMe: false,
       type: 'text',
       text: ev.postback.title || ev.postback.payload || '',
+      ...(typeof ev.postback.payload === 'string' && ev.postback.payload ? { payload: ev.postback.payload } : {}),
       timestamp,
     };
   }

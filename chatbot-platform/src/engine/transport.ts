@@ -25,8 +25,21 @@ export interface Transport {
   sendFile?(file: OutgoingFile, caption: string, delayMs: number): Promise<string | null>;
   /** Plantilla aprobada de WhatsApp oficial (lo único que se puede enviar fuera de las 24 h). Solo WhatsApp por Zernio. */
   sendTemplate?(template: OutgoingTemplate): Promise<string | null>;
+  /**
+   * Texto con botones nativos (Telegram, Messenger, Instagram, WhatsApp oficial, chat web y simulador). Qué botones y
+   * con qué texto lo decide src/automation/buttons.ts según el canal; los demás canales los reciben numerados en el texto.
+   */
+  sendButtons?(text: string, buttons: OutgoingButton[], delayMs: number): Promise<string | null>;
   /** Aviso interno (p.ej. al encargado cuando hay transferencia). */
   notify(number: string, text: string): Promise<void>;
+}
+
+/** Botón de un mensaje: de respuesta (al tocarlo regresa `payload`) o de enlace (abre `url`). */
+export interface OutgoingButton {
+  kind: 'reply' | 'url';
+  label: string;
+  payload?: string;
+  url?: string;
 }
 
 /** Plantilla de WhatsApp lista para enviar: nombre, idioma y componentes con sus variables (forma de la Cloud API de Meta). */
@@ -52,6 +65,7 @@ export interface PlaygroundOutput {
   type: 'text' | 'image' | 'notify';
   text: string;
   image?: { id: string; code: string; name: string };
+  buttons?: OutgoingButton[];
 }
 
 export class PlaygroundTransport implements Transport {
@@ -71,6 +85,11 @@ export class PlaygroundTransport implements Transport {
 
   async sendFile(file: OutgoingFile, caption: string) {
     this.outputs.push({ type: 'text', text: `${caption ? `${caption}\n` : ''}📎 ${file.name}` });
+    return `playground-${Date.now()}-${this.n++}`;
+  }
+
+  async sendButtons(text: string, buttons: OutgoingButton[]) {
+    this.outputs.push({ type: 'text', text, buttons });
     return `playground-${Date.now()}-${this.n++}`;
   }
 

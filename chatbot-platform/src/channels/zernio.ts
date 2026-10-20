@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fsp from 'node:fs/promises';
 import { config } from '../config.js';
 import { toPlainText } from '../engine/text.js';
-import { sleep, type OutgoingFile, type OutgoingTemplate, type Transport } from '../engine/transport.js';
+import { sleep, type OutgoingButton, type OutgoingFile, type OutgoingTemplate, type Transport } from '../engine/transport.js';
 import { decryptSecret, hmac, safeEqual } from '../secret.js';
 import { ChannelConfigSchemas, type Channel, type ImageAsset } from '../types.js';
 import { signedImageUrl } from './media.js';
@@ -251,7 +251,10 @@ export function parseZernioEvent(body: any, accountId = ''): ParseResult {
   }
   const fromMe = event === 'message.sent' || m.direction === 'outgoing';
   const sender = (legacy ? body.payload.sender : m.sender) ?? {};
-  const text = typeof m.text === 'string' ? m.text : '';
+  // Toque de un botón: Messenger/Instagram (respuesta rápida o botón), Telegram (teclado) o WhatsApp (botón o plantilla).
+  const tap = body?.metadata ?? m.metadata ?? {};
+  const payload = [tap.quickReplyPayload, tap.postbackPayload, tap.callbackData, tap.interactiveId, tap.buttonPayload].find((v) => typeof v === 'string' && v);
+  const text = typeof m.text === 'string' && m.text ? m.text : payload && typeof tap.postbackTitle === 'string' ? tap.postbackTitle : typeof m.text === 'string' ? m.text : '';
   const created = Date.parse(String(m.sentAt ?? m.createdAt ?? body?.timestamp ?? ''));
   const files: any[] = Array.isArray(m.attachments) ? m.attachments : m.attachment ? [m.attachment] : m.attachmentUrl ? [{ url: m.attachmentUrl }] : [];
   const file = files[0];
@@ -266,6 +269,7 @@ export function parseZernioEvent(body: any, accountId = ''): ParseResult {
     type,
     text,
     timestamp: Number.isNaN(created) ? Math.floor(Date.now() / 1000) : Math.floor(created / 1000),
+    ...(payload && !fromMe ? { payload: String(payload).slice(0, 200) } : {}),
     ...(file ? { media: { url: typeof file.url === 'string' ? file.url : undefined, mimeType: file.mimeType, filename: file.name ?? file.filename, size: Number(file.size) || undefined } } : {}),
   };
   return { messages: [msg] };
@@ -347,6 +351,25 @@ class ZernioTransport implements Transport {
       attachmentUrl: url,
       attachmentType: ATTACHMENT_TYPE[file.kind],
       attachmentName: file.name,
+    }));
+  }
+
+  /**
+   * Botones nativos: hasta 3 (de respuesta o, en Messenger e Instagram, de enlace; en Meta el texto va en la misma
+   * burbuja y tiene máximo 640). Más, o con un texto largo, van como respuestas rápidas.
+   */
+  async sendButtons(text: string, buttons: OutgoingButton[], delayMs: number) {
+    await this.typing(delayMs);
+    const meta = this.channel.config.platform === 'facebook' || this.channel.config.platform === 'instagram';
+    const plain = toPlainText(text);
+    const asButtons = buttons.length <= 3 && (!meta || plain.length <= 640);
+    if (!asButtons && buttons.some((b) => b.kind === 'url')) throw new Error('Los enlaces solo van como botón con 3 botones o menos');
+    return messageRef(await this.client.call<any>('POST', `${this.base}/messages`, {
+      accountId: this.accountId(),
+      message: plain,
+      ...(asButtons
+        ? { buttons: buttons.map((b) => (b.kind === 'url' ? { type: 'url', title: b.label, url: b.url } : { type: 'postback', title: b.label, payload: b.payload })) }
+        : { quickReplies: buttons.map((b) => ({ title: b.label, payload: b.payload })) }),
     }));
   }
 

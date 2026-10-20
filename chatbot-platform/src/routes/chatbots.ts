@@ -9,6 +9,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { parsePayload } from '../automation/buttons.js';
 import { assertAccount, botFor, HttpError, notFound, requireRole, scopeAccount, targetAccount } from '../access.js';
 import { publicChannel } from '../channels/index.js';
 import { query, withTransaction } from '../db.js';
@@ -557,9 +558,11 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
 
   api.post('/api/chatbots/:id/playground', admins, async (req: any) => {
     const bot = await botFor(req.user, req.params.id);
-    const { session: sid, text } = (req.body ?? {}) as { session?: string; text?: string };
+    const { session: sid, text, button } = (req.body ?? {}) as { session?: string; text?: string; button?: string };
     if (!text?.trim()) throw new HttpError(400, 'Escribe un mensaje');
-    return service.playground(bot, session(sid), text.trim().slice(0, 4000));
+    // Toque de un botón de un flujo: su identificador (cualquier otro valor se ignora).
+    const tap = parsePayload(button) ? String(button) : undefined;
+    return service.playground(bot, session(sid), text.trim().slice(0, 4000), tap);
   });
 
   // Probador de palabras: qué reglas, activadores y desactivadores se dispararían, sin IA y sin enviar nada.

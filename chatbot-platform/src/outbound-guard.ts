@@ -75,6 +75,14 @@ export function guardTransport(t: Transport, destination: string): Transport {
           },
         }
       : {}),
+    ...(t.sendButtons
+      ? {
+          sendButtons: async (text: string, buttons: Parameters<NonNullable<Transport['sendButtons']>>[1], delay: number) => {
+            assertOutbound(destination);
+            return t.sendButtons!(text, buttons, delay);
+          },
+        }
+      : {}),
     notify: async (number, text) => {
       assertOutbound(number);
       return t.notify(number, text);

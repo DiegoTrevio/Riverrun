@@ -492,6 +492,8 @@ export class ChatService {
     }
     const meta: Record<string, unknown> = stale ? { name: msg.displayName, stale: true } : msg.captureOnly ? { name: msg.displayName, held: 'limite_de_correos' } : { name: msg.displayName };
     if (mediaError) meta.media_error = mediaError;
+    // Botón tocado: su identificador (las automatizaciones reconocen a qué botón de qué mensaje corresponde).
+    if (msg.payload) meta.button = String(msg.payload).slice(0, 200);
     if (triggers) meta.receipt_ready = false;
     const inserted = await store.insertMessage({
       conversation_id: conv.id,
@@ -668,7 +670,7 @@ export class ChatService {
   }
 
   /** Simulador del panel: mismo motor, sin plataforma externa. */
-  async playground(bot: Chatbot, session: string, text: string) {
+  async playground(bot: Chatbot, session: string, text: string, button?: string) {
     text = cleanText(text);
     const channel = await store.getOrCreatePlaygroundChannel(bot);
     const contact = await store.upsertContact(channel, `playground:${session}`, '', 'Prueba');
@@ -679,7 +681,7 @@ export class ChatService {
       await store.resetFlowState(conv.id);
       conv = (await store.setConversationStatus(conv.id, 'bot', '')) ?? conv;
     }
-    const inserted = await store.insertMessage({ conversation_id: conv.id, direction: 'in', sender: 'customer', type: 'text', content: maskSensitive(text), processed: false });
+    const inserted = await store.insertMessage({ conversation_id: conv.id, direction: 'in', sender: 'customer', type: 'text', content: maskSensitive(text), processed: false, ...(button ? { meta: { button } } : {}) });
     // Las reglas automáticas también se prueban en el simulador.
     if (inserted) {
       const stopAi = await this.automator.onInbound(conv, contact, inserted, text).catch(() => false);

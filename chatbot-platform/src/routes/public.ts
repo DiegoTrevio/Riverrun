@@ -1,4 +1,5 @@
 import { truncateChars } from '../engine/text.js';
+import { parsePayload } from '../automation/buttons.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
@@ -63,11 +64,13 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
   /** Lo que llegó por el webhook de un canal: QR, estado de conexión, avisos y mensajes (guardados para los workers). */
   const processEvent = async (webhookReq: WebhookRequest) => {
     const { channel } = webhookReq;
-    const { messages, notices, connection, connectionReason, qr } = adapterFor(channel.type).parse(webhookReq);
+    const adapter = adapterFor(channel.type);
+    const { messages, notices, connection, connectionReason, qr } = adapter.parse(webhookReq);
     if (qr) await store.saveQr(channel.id, qr);
     for (const n of notices ?? []) await logEvent({ level: n.level, source: 'channel', message: n.message, accountId: channel.account_id, channelId: channel.id });
     if (connection) await recordConnectionState(channel, connection, connectionReason);
     await service.inbox.accept(channel, messages);
+    if (adapter.acknowledge) void adapter.acknowledge(webhookReq).catch(() => undefined);
   };
   // Evolution puede agregar el nombre del evento al final de la URL (webhook_by_events); lo aceptamos.
   app.post('/webhook/:token', handler);
@@ -243,7 +246,7 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
   app.post('/webchat/:token/messages', async (req: any, reply) => {
     const ch = await webchat(req, reply);
     if (!ch) return;
-    const { session, text, name } = (req.body ?? {}) as { session?: string; text?: string; name?: string };
+    const { session, text, name, button } = (req.body ?? {}) as { session?: string; text?: string; name?: string; button?: string };
     if (!session || !WEBCHAT_SESSION_RE.test(session)) return reply.code(400).send({ error: 'Sesión inválida' });
     const clean = truncateChars(String(text ?? '').trim(), 2000);
     if (!clean) return reply.code(400).send({ error: 'Mensaje vacío' });
@@ -259,6 +262,8 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
       type: 'text',
       text: clean,
       timestamp: Math.floor(Date.now() / 1000),
+      // Toque de un botón de un flujo (cualquier otro valor se ignora).
+      ...(parsePayload(button) ? { payload: String(button) } : {}),
     });
     return { id: r.messageId };
   });
@@ -271,8 +276,8 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
     const contact = await store.findContact(ch.id, session);
     if (!contact) return { messages: [], typing: false };
     const after = Number(req.query.after) || 0;
-    const rows = await query<{ id: number; direction: string; sender: string; content: string; image_id: string | null; created_at: Date; conv_status: string; pending: boolean }>(
-      `SELECT m.id, m.direction, m.sender, m.content, m.image_id, m.created_at FROM messages m
+    const rows = await query<{ id: number; direction: string; sender: string; content: string; image_id: string | null; created_at: Date; buttons: any; choice: string | null }>(
+      `SELECT m.id, m.direction, m.sender, m.content, m.image_id, m.created_at, m.meta->'buttons' AS buttons, m.meta->>'choice' AS choice FROM messages m
          JOIN conversations c ON c.id = m.conversation_id
        WHERE c.contact_id = $1 AND m.id > $2 AND m.status = 'ok' ORDER BY m.id LIMIT 200`,
       [contact.id, after],
@@ -291,6 +296,8 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
         text: m.direction === 'in' ? m.content : toPlainText(m.content),
         image_url: m.image_id ? signedImageUrl(m.image_id) : null,
         created_at: m.created_at,
+        // Botones del mensaje: de respuesta (se tocan) o de enlace (https).
+        ...(m.direction === 'out' && Array.isArray(m.buttons) ? { buttons: m.buttons.filter((b: any) => b && typeof b.label === 'string').map((b: any) => (b.kind === 'url' ? { kind: 'url', label: b.label, url: /^https:\/\//.test(String(b.url ?? '')) ? b.url : '' } : { kind: 'reply', label: b.label, payload: String(b.payload ?? '') })) } : {}),
       })),
     };
   });

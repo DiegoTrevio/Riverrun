@@ -10,7 +10,8 @@ import * as astore from './store.js';
 import { renderTemplate } from './templates.js';
 import { zernioNeedsWindow } from '../channels/zernio.js';
 import { fillBody, outgoingTemplate, templateBody, templateForChannel, templateText, templateVarCount, type WaTemplate } from '../channels/zernio-templates.js';
-import type { Appointment, WaTemplateRef } from './types.js';
+import type { Appointment, FlowButton, WaTemplateRef } from './types.js';
+import { composeButtons, newButtonSet } from './buttons.js';
 
 export interface OutboundOptions {
   text?: string;
@@ -30,7 +31,25 @@ export interface OutboundOptions {
   flowStep?: number;
   /** WhatsApp oficial: plantilla aprobada que se envía si el cliente no escribió en las últimas 24 h. */
   waTemplate?: WaTemplateRef | null;
+  /** Botones del mensaje (flujos). Quedan como el juego vigente de la conversación para reconocer la opción elegida. */
+  buttons?: FlowButton[];
+  /** De qué paso de qué flujo son los botones (para seguir el flujo al tocarlos). */
+  buttonsFrom?: { enrollment_id: string; sequence_id: string; step: number };
 }
+
+/** Juego de botones vigente de una conversación (conversations.pending_buttons). */
+export interface PendingButtons {
+  set: string;
+  message_id: number;
+  expires_at: string;
+  enrollment_id: string | null;
+  sequence_id: string | null;
+  step: number | null;
+  buttons: Pick<FlowButton, 'label' | 'action' | 'sequence_id' | 'tag' | 'reply'>[];
+}
+
+/** Un juego de botones sirve 7 días. */
+const BUTTONS_TTL_MS = 7 * 86400_000;
 
 export type OutboundResult = { sent: true } | { sent: false; reason: string };
 
@@ -137,8 +156,12 @@ export class Outbound {
         return { sent: false, reason: `la plantilla "${template.name}" no dice cómo darse de baja (agrega en su pie "Responde ${(settings.opt_out.keywords[0] ?? 'BAJA').toUpperCase()} para no recibir más")` };
       }
     }
-    const textOut = footer && text ? `${text}\n\n${footer}` : text;
-    const captionFooter = footer && !text ? footer : '';
+    // Con botones, el texto final (numerado o no, según el canal) se arma antes del pie de baja, que va al final.
+    const set = o.buttons?.length && !wa ? newButtonSet() : '';
+    const composed = set ? composeButtons(channel, text, o.buttons!, set) : null;
+    const body = composed ? composed.text : text;
+    const textOut = footer && body ? `${body}\n\n${footer}` : body;
+    const captionFooter = footer && !body ? footer : '';
 
     const transport = channel.type === 'playground' ? new PlaygroundTransport() : this.chat.transportFor(channel, contact);
     const meta = { ...o.meta,source: o.source,transactional:o.transactional===true, allow_when_human: o.allowWhenHuman === true, allow_when_closed: true };
@@ -157,6 +180,23 @@ export class Outbound {
       if(fresh) setControlVersion(Number(fresh.control_version));
       // Fuera de las 24 h en WhatsApp oficial sale solo la plantilla (fotos y archivos no se pueden enviar ahí).
       if (wa) return !!(await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text: wa.preview, template: wa.out, delay: 0, meta: { ...meta, wa_template: wa.name } }));
+      if (composed) {
+        // Con botones: la foto y el archivo primero; el mensaje con botones al final (es el que el cliente contesta).
+        if (image && !(await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text: image.caption, image, delay: 0, meta }))) return false;
+        if (file && !(await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text: '', file, delay: 0, meta }))) return false;
+        if (!textOut) return true;
+        const m = await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text: textOut, buttons: composed.buttons, delay: 0, meta: { ...meta, button_set: set } });
+        if (!m) return false;
+        const replies = o.buttons!.filter((b) => b.kind === 'reply');
+        const pending: PendingButtons | null = replies.length ? {
+          set, message_id: m.id, expires_at: new Date(Date.now() + BUTTONS_TTL_MS).toISOString(),
+          enrollment_id: o.buttonsFrom?.enrollment_id ?? null, sequence_id: o.buttonsFrom?.sequence_id ?? null, step: o.buttonsFrom?.step ?? null,
+          buttons: replies.map((b) => ({ label: b.label, action: b.action, sequence_id: b.sequence_id, tag: b.tag, reply: b.reply })),
+        } : null;
+        // El juego nuevo reemplaza al anterior: un toque viejo ya no cuenta.
+        await queryOne(`UPDATE conversations SET pending_buttons = $2 WHERE id = $1 RETURNING id`, [conv.id, pending ? JSON.stringify(pending) : null]);
+        return true;
+      }
       if (image) {
         // Texto y foto juntos: un solo mensaje con el texto como pie (sin texto, el pie de la foto). Un texto que no
         // cabe como pie sale antes, aparte, y la foto después con su propio pie.

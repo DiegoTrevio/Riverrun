@@ -250,6 +250,36 @@ export interface Automation extends AutomationBody {
 
 /* ------------------------------ Secuencias ------------------------------ */
 
+/** Etiqueta comparable de un botón: sin acentos, mayúsculas, emojis ni signos. */
+export const normalizeLabel = (s: string) =>
+  s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^\p{L}\p{N} ]/gu, ' ').replace(/\s+/g, ' ').trim();
+
+/**
+ * Botón de un mensaje de flujo. Uno de respuesta lleva su acción (seguir, terminar, otro flujo, etiqueta o pasar con una
+ * persona) y, si se quiere, un texto con el que se contesta al tocarlo; uno de enlace abre una dirección https.
+ */
+export const FlowButtonSchema = z.object({
+  label: z.string().trim().min(1, 'Escribe el texto del botón').max(20, 'El texto de un botón tiene máximo 20 caracteres')
+    .refine((s) => normalizeLabel(s) !== '', 'El texto del botón necesita letras o números')
+    .refine((s) => !/^\d+$/.test(normalizeLabel(s)), 'El texto de un botón no puede ser solo un número (se confunde con elegir por número)'),
+  kind: z.enum(['reply', 'url']).default('reply'),
+  url: z.string().trim().max(1000).default(''),
+  action: z.enum(['next', 'end', 'start_sequence', 'tag', 'handoff']).default('next'),
+  sequence_id: z.string().uuid().nullable().default(null),
+  tag: z.string().trim().max(60).default(''),
+  reply: z.string().max(1000).default(''),
+}).superRefine((b, ctx) => {
+  if (b.kind === 'url') {
+    let ok = false;
+    try { ok = new URL(b.url).protocol === 'https:'; } catch { /* inválida */ }
+    if (!ok) ctx.addIssue({ code: 'custom', path: ['url'], message: 'El enlace del botón debe empezar con https://' });
+    return;
+  }
+  if (b.action === 'start_sequence' && !b.sequence_id) ctx.addIssue({ code: 'custom', path: ['sequence_id'], message: 'Elige el flujo que empieza al tocar el botón' });
+  if (b.action === 'tag' && !b.tag) ctx.addIssue({ code: 'custom', path: ['tag'], message: 'Escribe la etiqueta que se agrega al tocar el botón' });
+});
+export type FlowButton = z.infer<typeof FlowButtonSchema>;
+
 export const SequenceStepSchema = z.object({
   /** Espera desde el paso anterior (o desde la inscripción). */
   delay_value: z.number().int().min(0).max(10000).default(0),
@@ -263,6 +293,16 @@ export const SequenceStepSchema = z.object({
   wa_template: WaTemplateRefSchema,
   /** Solo se envía si se cumplen (si no, se salta el paso). */
   conditions: z.array(ConditionSchema).max(10).default([]),
+  /** Botones del mensaje: hasta 3 de respuesta (cada uno con su acción) y 2 de enlace. */
+  buttons: z.array(FlowButtonSchema).max(5).default([]).superRefine((list, ctx) => {
+    if (list.filter((b) => b.kind === 'reply').length > 3) ctx.addIssue({ code: 'custom', message: 'Máximo 3 botones de respuesta por mensaje' });
+    if (list.filter((b) => b.kind === 'url').length > 2) ctx.addIssue({ code: 'custom', message: 'Máximo 2 botones de enlace por mensaje' });
+    const labels = list.map((b) => normalizeLabel(b.label));
+    if (new Set(labels).size !== labels.length) ctx.addIssue({ code: 'custom', message: 'Dos botones no pueden decir lo mismo' });
+  }),
+  /** El paso siguiente espera a que el cliente elija; si llega su hora sin elección, se aplica `if_no_choice`. */
+  wait_for_choice: z.boolean().default(false),
+  if_no_choice: z.enum(['end', 'continue']).default('end'),
 });
 export type SequenceStep = z.infer<typeof SequenceStepSchema>;
 

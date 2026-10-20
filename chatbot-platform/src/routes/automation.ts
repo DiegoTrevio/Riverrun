@@ -4,7 +4,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { assertAccount, conversationFor, HttpError, notFound, requireRole, scopeAccount, targetAccount } from '../access.js';
 import * as astore from '../automation/store.js';
-import { AccountSettingsSchema, AutomationBodySchema, SequenceBodySchema, WaTemplateRefSchema, type Action, type AutomationBody, type WaTemplateRef } from '../automation/types.js';
+import { AccountSettingsSchema, AutomationBodySchema, normalizeLabel, SequenceBodySchema, WaTemplateRefSchema, type Action, type AutomationBody, type FlowButton, type WaTemplateRef } from '../automation/types.js';
 import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
 import { logEvent } from '../logs.js';
@@ -20,7 +20,7 @@ import { localParts, zonedToUtc } from '../automation/time.js';
  */
 async function checkReferences(
   accountId: string,
-  body: { chatbot_id?: string | null; actions?: Action[]; steps?: { image_id: string; wa_template?: WaTemplateRef | null }[]; wa_template?: WaTemplateRef | null },
+  body: { chatbot_id?: string | null; actions?: Action[]; steps?: { image_id: string; wa_template?: WaTemplateRef | null; buttons?: FlowButton[] }[]; wa_template?: WaTemplateRef | null },
   opts: { clearMissing?: boolean } = {},
 ) {
   // Plantillas de WhatsApp: del mismo negocio (una que ya se borró se quita con `clearMissing`).
@@ -45,6 +45,21 @@ async function checkReferences(
     }
     const owner = img ? await store.getChatbot(img.chatbot_id) : null;
     if (!owner || owner.account_id !== accountId) throw new HttpError(400, 'Una imagen no pertenece a la cuenta');
+  }
+  // Botones de un flujo: el flujo al que llevan es del mismo negocio (uno borrado pasa a "terminar") y su texto no se
+  // confunde con las palabras para darse de baja o volver a recibir mensajes.
+  const buttons = (body.steps ?? []).flatMap((st) => st.buttons ?? []);
+  if (buttons.length) {
+    const oo = (await astore.getSettings(accountId)).opt_out;
+    const reserved = new Set([...oo.keywords, ...oo.resume_keywords].map(normalizeLabel));
+    for (const b of buttons) {
+      if (reserved.has(normalizeLabel(b.label))) throw new HttpError(400, `El botón "${b.label}" se confunde con la palabra para darse de baja o volver a recibir mensajes. Usa otro texto.`);
+      if (b.kind !== 'reply' || b.action !== 'start_sequence' || !b.sequence_id) continue;
+      const seq = await astore.getSequence(b.sequence_id);
+      if (seq?.account_id === accountId) continue;
+      if (opts.clearMissing && !seq) Object.assign(b, { action: 'end', sequence_id: null });
+      else throw new HttpError(400, 'El flujo de un botón no pertenece a la cuenta');
+    }
   }
   for (const a of body.actions ?? []) {
     if (a.type === 'start_sequence') {
@@ -88,7 +103,17 @@ const CampaignBody = z.object({
   flow_step: z.number().int().min(0).max(50).default(0),
   /** WhatsApp oficial: plantilla aprobada para quien no escribió en las últimas 24 h. */
   wa_template: WaTemplateRefSchema,
-});
+  /** Qué se envía: un mensaje, o un flujo (cada persona entra al flujo y recibe sus pasos). */
+  kind: z.enum(['message', 'sequence']).default('message'),
+  sequence_id: z.string().uuid().nullable().default(null),
+}).refine((c) => c.kind !== 'sequence' || !!c.sequence_id, { message: 'Elige el flujo que se envía', path: ['sequence_id'] });
+
+/** El flujo de una campaña es del mismo negocio. */
+async function checkCampaignFlow(accountId: string, b: { kind: string; sequence_id: string | null }) {
+  if (b.kind !== 'sequence') return;
+  const seq = b.sequence_id ? await astore.getSequence(b.sequence_id) : null;
+  if (!seq || seq.account_id !== accountId) throw new HttpError(400, 'El flujo no pertenece a la cuenta');
+}
 
 export async function automationRoutes(api: FastifyInstance, service: ChatService) {
   const admins = { preHandler: requireRole('admin') };
@@ -248,6 +273,7 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
     const b = parse(CampaignBody, await scheduleBody(req.body, accountId));
     b.channel_ids = [...new Set(b.channel_ids)].filter((x) => x !== b.channel_id);
     await checkChannel(req.user, accountId, b.channel_id, b.image_id, b.channel_ids);
+    await checkCampaignFlow(accountId, b);
     const refs = { wa_template: b.wa_template };
     await checkReferences(accountId, refs);
     return astore.saveCampaign(accountId, { ...b, scheduled_at: b.scheduled_at ? new Date(b.scheduled_at) : null });
@@ -259,6 +285,7 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
     const b = parse(CampaignBody, await scheduleBody({ ...c, scheduled_at: c.scheduled_at ? new Date(c.scheduled_at).toISOString() : null, ...(req.body ?? {}) }, c.account_id));
     b.channel_ids = [...new Set(b.channel_ids)].filter((x) => x !== b.channel_id);
     await checkChannel(req.user, c.account_id, b.channel_id, b.image_id, b.channel_ids);
+    await checkCampaignFlow(c.account_id, b);
     const refs = { wa_template: b.wa_template };
     await checkReferences(c.account_id, refs, { clearMissing: true });
     b.wa_template = refs.wa_template ?? null;
@@ -289,8 +316,14 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
     const requireConsent = settings.consent.require_for_campaigns;
     const audience = await astore.campaignAudience(c, 100000, { requireConsent });
     const ch = await store.getChannel(c.channel_id);
+    // Un flujo cuenta como tantos mensajes por persona como pasos tiene (para el cupo del plan).
+    const flow = c.kind === 'sequence' && c.sequence_id ? await astore.getSequence(c.sequence_id) : null;
+    if (flow && flow.account_id !== c.account_id) throw new HttpError(400, 'El flujo no pertenece a la cuenta');
+    const perPerson = flow ? flow.steps.length : 1;
     return {
       count: audience.length,
+      messages_per_person: perPerson,
+      total_messages: audience.length * perPerson,
       excluded_no_consent: requireConsent ? await astore.campaignExcludedNoConsent(c) : 0,
       sample: audience.slice(0, 10).map((a) => a.name || a.push_name || (a.phone ? `+${a.phone}` : 'Cliente')),
       warning:
