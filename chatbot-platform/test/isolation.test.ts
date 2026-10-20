@@ -60,6 +60,8 @@ function fillParams(url: string): string | null {
     [/^\/api\/brands\/:id/, 'brand'],
     [/^\/api\/pipelines\/:id/, 'pipeline'],
     [/^\/api\/pipeline-cards\/:id/, 'card'],
+    [/^\/api\/price-items\/:id/, 'price_item'],
+    [/^\/api\/quotes\/:id/, 'quote'],
     [/^\/api\/team\/:userId/, 'user'],
   ];
   const hit = byPrefix.find(([re]) => re.test(url));
@@ -140,6 +142,10 @@ before(async () => {
   B.model = 'gpt-4.1-mini';
   B.pipeline = (await ok200(adminB('POST', '/api/pipelines', { name: `Pipeline ${MARK}`, stages: [{ name: 'Nuevo' }, { name: 'Ganado', kind: 'won' }] }))).id;
   B.card = String((await pool.query(`INSERT INTO pipeline_cards (account_id, pipeline_id, conversation_id, stage_id) VALUES ($1, $2, $3, 'nuevo') RETURNING id`, [B.account, B.pipeline, B.conv])).rows[0].id);
+  B.price_item = (await ok200(adminB('POST', '/api/price-items', { code: 'B1', name: `Concepto ${MARK}`, price_mode: 'exact', price_min: 99900 }))).id;
+  const { createQuote } = await import('../src/store/quotes.js');
+  B.quote = (await createQuote({ accountId: B.account, kind: 'approximate', status: 'sent', source: 'panel', today: '2026-10-20', notes: `Nota ${MARK}`,
+    lines: [{ name: `Concepto ${MARK}`, qty: 1, price_mode: 'exact', price_min: 99900, price_max: null, iva_mode: 'plus' }] })).id;
   await h.idle();
 });
 after(async () => {

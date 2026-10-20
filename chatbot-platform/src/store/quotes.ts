@@ -106,6 +106,7 @@ export const canTransition = (from: QuoteStatus, to: QuoteStatus) => TRANSITIONS
 
 /* ------------------------------ Conversión de filas ------------------------------ */
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const num = (v: unknown) => (v === null || v === undefined ? null : Number(v));
 
 function settingsRow(r: any): QuoteSettings {
@@ -183,6 +184,13 @@ export async function listPriceItems(accountId: string, opts: { activeOnly?: boo
 
 export async function getPriceItem(accountId: string, id: string): Promise<PriceItem | null> {
   const r = await queryOne('SELECT * FROM price_items WHERE account_id = $1 AND id = $2', [accountId, id]);
+  return r ? itemRow(r) : null;
+}
+
+/** Busca un concepto solo por su id (la ruta luego verifica que sea de la cuenta de quien pregunta). */
+export async function findPriceItem(id: string): Promise<PriceItem | null> {
+  if (!UUID.test(id)) return null;
+  const r = await queryOne('SELECT * FROM price_items WHERE id = $1', [id]);
   return r ? itemRow(r) : null;
 }
 
@@ -308,6 +316,13 @@ export async function createQuote(input: NewQuote): Promise<Quote> {
 export async function getQuote(accountId: string, id: string): Promise<Quote | null> {
   const r = await queryOne('SELECT * FROM quotes WHERE account_id = $1 AND id = $2', [accountId, id]);
   return r ? { ...quoteRow(r), lines: await linesOf(pooled, id) } : null;
+}
+
+/** Busca una cotización solo por su id (la ruta luego verifica la cuenta). */
+export async function findQuote(id: string): Promise<Quote | null> {
+  if (!UUID.test(id)) return null;
+  const r = await queryOne('SELECT account_id FROM quotes WHERE id = $1', [id]);
+  return r ? getQuote(r.account_id, id) : null;
 }
 
 export interface QuoteFilters {

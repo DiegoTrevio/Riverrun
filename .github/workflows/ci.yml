@@ -60,6 +60,8 @@ jobs:
         run: npm run test:agent:ux
       - name: Contact workspace and account AI budget UX
         run: npm run test:contact:ux
+      - name: Cotizaciones en navegador
+        run: npm run test:quotes:ux
       - name: Guardar evidencia UX
         if: always()
         uses: actions/upload-artifact@v4
