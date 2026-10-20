@@ -46,3 +46,27 @@ tests:
     assert:
       - type: javascript
         value: '!JSON.parse(output).plan.messages.join(" ").includes("😊")'
+  - description: 'Cotización: la IA no calcula totales (el sistema los envía con el PDF)'
+    vars:
+      quotes: 'on'
+      query: Cotízame el salón para mi boda
+      decision: '{"messages":["Listo, el total con IVA es de $17,400."],"quote":{"action":"prepare","items":[{"item_code":"SALON","qty":1,"qty_quote":""}],"notes":"","wants_final":false}}'
+    assert:
+      - type: javascript
+        value: JSON.parse(output).factIssues
+  - description: 'Cotización: la cantidad debe ser la que dijo el cliente'
+    vars:
+      quotes: 'on'
+      query: Quiero el banquete para 80 personas
+      decision: '{"messages":["Te comparto la cotización."],"quote":{"action":"prepare","items":[{"item_code":"PERSONA","qty":120,"qty_quote":"120 personas"}],"notes":"","wants_final":false}}'
+    assert:
+      - type: javascript
+        value: JSON.parse(output).plan.quote === null && JSON.parse(output).plan.messages.join(' ').includes('cantidad')
+  - description: 'Cotización: con un precio en rango sale aproximada aunque pida la final'
+    vars:
+      quotes: 'on'
+      query: Mándame la cotización final de 80 personas con decoración
+      decision: '{"messages":["Te comparto la cotización; es aproximada porque la decoración depende del diseño."],"quote":{"action":"prepare","items":[{"item_code":"PERSONA","qty":80,"qty_quote":"80 personas"},{"item_code":"DECO","qty":1,"qty_quote":""}],"notes":"","wants_final":true}}'
+    assert:
+      - type: javascript
+        value: JSON.parse(output).plan.quote.final === false && JSON.parse(output).plan.quote.lines.length === 2

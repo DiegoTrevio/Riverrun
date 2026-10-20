@@ -373,7 +373,17 @@ Menú **Agenda**, para administradores y agentes.
 - **Calendario suscribible** (`.ics`) para Google Calendar, Outlook o Apple.
 - **Simulador:** las citas de prueba quedan marcadas "prueba", no ocupan horarios reales y no avisan al equipo. Las alertas y webhooks de las reglas se muestran como notas en el chat de prueba.
 
-## Alertas al equipo
+## Cotizaciones en PDF
+
+Menú **Cotizaciones** (administradores). Detalle en [docs/cotizaciones.md](docs/cotizaciones.md).
+
+- **Lista de precios** con precio exacto, «desde», rango o «por confirmar», e IVA por concepto.
+- **Formato en Word:**
+  - el negocio sube su documento con marcas como `{{nombre}}` o `{{total}}` y el sistema solo las llena;
+  - el cliente recibe un PDF.
+- **La IA elige conceptos y cantidades** (dichas por el cliente); el sistema calcula montos e IVA. El archivo y el chat dicen siempre si es **APROXIMADA** o **FINAL**.
+- **Aproximadas automáticas; finales con aprobación** del equipo desde la conversación (editar, aprobar y enviar, o rechazar).
+
 
 - Cada usuario ve sus **notificaciones** en el panel (con contador).
 - Quien activa "Recibir alertas por WhatsApp" en **Mi perfil** (o su administrador en **Usuarios**) las recibe también en su WhatsApp, a través de un canal de WhatsApp de la cuenta.

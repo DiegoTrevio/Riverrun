@@ -21,7 +21,14 @@ export default class RiverrunProvider {
     const knowledge = [{ id: 'fixture-knowledge', chatbot_id: bot.id, title: 'Tarifa', category: 'precios', content: 'Habitación doble: $1,650 MXN por noche.', active: true, always_include: false, sort_order: 0 }];
     const contact = { name: '', data: {}, notes: [] };
     const conversation = { summary: '', summary_until_id: 0, flow_step: 0, agent_state: {}, data: {} };
-    const ctx = buildContext({ bot, knowledge, images: [], contact, conversation, history: [msg], pending: [msg], sentImageIds: [], imagesById: new Map(), now: new Date('2026-10-06T12:00:00Z') });
+    // Cotizaciones (vars.quotes = 'on'): lista de precios sintética; los montos los calcula el sistema, nunca la IA.
+    const item = (id, code, name, unit, price_mode, price_min, price_max = null) => ({ id, code, name, unit, price_mode, price_min, price_max, iva_mode: 'plus', description: '', active: true, sort: 0 });
+    const quotes = vars.quotes === 'on' ? {
+      settings: { currency: 'MXN', iva_rate: 0.16 }, requiredFields: [], allowFinal: true, templateId: null, requestId: null, open: null, lastSent: null,
+      items: [item('i-salon', 'SALON', 'Renta de salón', 'evento', 'exact', 1500000), item('i-deco', 'DECO', 'Decoración', 'servicio', 'range', 300000, 500000), item('i-pers', 'PERSONA', 'Banquete', 'persona', 'exact', 25000)],
+    } : null;
+    const quoteVal = quotes ? { items: Object.fromEntries(quotes.items.map((i) => [i.code, { id: i.id, name: i.name, exact: i.price_mode === 'exact' }])), requiredFields: [], open: false, allowFinal: true } : null;
+    const ctx = buildContext({ bot, knowledge, images: [], contact, conversation, history: [msg], pending: [msg], sentImageIds: [], imagesById: new Map(), now: new Date('2026-10-06T12:00:00Z'), quotes });
     let raw;
     let tokenUsage;
     let cost;
@@ -36,7 +43,7 @@ export default class RiverrunProvider {
     } else {
       raw = { thinking: '', action: 'reply', messages: [], image_ids: [], save_data: [], remember: [], handoff_reason: '', info_not_found: false, ...JSON.parse(vars.decision) };
     }
-    const result = validateDecision({ raw, bot, images: [], sentImageIds: [], groundingSources: ctx.groundingSources, customerSources: ctx.customerSources, customerDataSources: [prompt], customerText: prompt, knownData: {}, final: true });
+    const result = validateDecision({ raw, bot, images: [], sentImageIds: [], groundingSources: ctx.groundingSources, customerSources: ctx.customerSources, customerDataSources: [prompt], customerText: prompt, knownData: {}, final: true, quotes: quoteVal });
     return { output: JSON.stringify(result), ...(tokenUsage ? { tokenUsage, cost } : {}) };
   }
 }

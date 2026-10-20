@@ -1,5 +1,6 @@
 import { api, ask, field, fill, fmtDate, h, poll, run, select, state } from './core.js';
-import { isSuper, withAcct } from './session.js';
+import { isAdmin, isSuper, withAcct } from './session.js';
+import { badge, KIND, STATUS, totalText } from './quotes.js';
 import { tasksCard, requestsCard } from './conversations.js';
 import { dataLabel } from './bot.js';
 
@@ -58,6 +59,9 @@ export async function viewContact(root,id) {
     ...d.conversations.filter(c=>c.contact_id===r.id).slice(0,1).map(c=>h('a',{class:'btn small',href:`#/conversation/${c.id}`},'Editar datos de este canal'))))),
     h('div',{class:'card stack'},h('h2',{},'Citas próximas'),...(d.appointments.length?d.appointments.map(a=>h('div',{},h('strong',{},a.service_name),h('p',{class:'small'},fmtDate(a.starts_at)),h('a',{href:`#/agenda?week=${agendaWeek(a.starts_at)}`,onclick:scope},'Ver en la agenda'))):[h('p',{class:'muted'},'No hay citas próximas visibles.')]))),
    ...(latest?[tasksCard({tasks:d.tasks},latest,main,load,draft)]:[]),
+   ...(d.quotes?.length?[h('div',{class:'card stack'},h('h2',{},'Cotizaciones'),...d.quotes.map(q=>h('div',{class:'row',style:'gap:6px;flex-wrap:wrap;align-items:center'},
+    h('strong',{},q.folio),badge(KIND[q.kind]),badge(STATUS[q.status]||['',q.status]),h('span',{},totalText(q)),h('span',{class:'small muted'},fmtDate(q.created_at)),
+    isAdmin()?h('a',{href:`#/cotizaciones/historial?id=${q.id}`,onclick:scope},'Ver'):h('a',{href:`#/conversation/${q.conversation_id}`},'Ver conversación'))))]:[]),
    h('div',{class:'card stack'},h('h2',{},'Conversaciones y resúmenes'),h('p',{class:'help'},'Se muestran las últimas 100 conversaciones visibles. Para consultar todo el historial de cada una, ábrela.'),
     ...d.conversations.map(c=>h('details',{open:c.id===latest?.id},h('summary',{},`${c.channel_name} · ${c.chatbot_name||'Sin agente'} · ${fmtDate(c.last_message_at||c.created_at)}`),
      h('p',{class:'small'},c.assigned_name?`Atiende: ${c.assigned_name}`:'Sin persona asignada'),h('div',{class:'pre'},c.summary||'Todavía no tiene resumen. Puedes generarlo al abrir la conversación.'),
