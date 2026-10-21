@@ -56,13 +56,15 @@ export async function eraseContact(contactId: string, guard: { accountId?: strin
     await client.query(`DELETE FROM email_threads WHERE channel_id = $1 AND address = lower($2)`, [contact.channel_id, contact.external_id]);
     await client.query('DELETE FROM inbound_receipts WHERE channel_id=$1 AND external_id=$2',[contact.channel_id,contact.external_id]);
     await client.query('DELETE FROM query_embedding_cache WHERE account_id=$1',[contact.account_id]);
-    await client.query(`UPDATE appointments SET customer_name = '', customer_phone = '', customer_email = '', notes = '' WHERE contact_id = $1 OR conversation_id = ANY($2)`, [contactId, convIds]);
+    // Citas y cotizaciones apuntan al contacto y a su conversación (ambas "SET NULL"): se sueltan aquí. Si se dejan a la
+    // cascada, PostgreSQL puede vaciar contact_id cuando la conversación ya se borró y la fila falla su otra llave.
+    await client.query(`UPDATE appointments SET customer_name = '', customer_phone = '', customer_email = '', notes = '', contact_id = NULL, conversation_id = NULL WHERE contact_id = $1 OR conversation_id = ANY($2)`, [contactId, convIds]);
     // Cotizaciones: se conservan folio y montos (son contabilidad), sin sus datos ni sus archivos (llevan su nombre).
     const quoteFiles = (await client.query<{ docx_path: string | null; pdf_path: string | null }>(
       `SELECT docx_path, pdf_path FROM quotes WHERE contact_id = $1 OR conversation_id = ANY($2) FOR UPDATE`, [contactId, convIds],
     )).rows.flatMap((r) => [r.docx_path, r.pdf_path]).filter((x): x is string => !!x);
     await client.query(
-      `UPDATE quotes SET customer_snapshot = '{}'::jsonb, notes = '', docx_path = NULL, pdf_path = NULL, pdf_sha256 = NULL, updated_at = now()
+      `UPDATE quotes SET customer_snapshot = '{}'::jsonb, notes = '', docx_path = NULL, pdf_path = NULL, pdf_sha256 = NULL, contact_id = NULL, conversation_id = NULL, updated_at = now()
         WHERE contact_id = $1 OR conversation_id = ANY($2)`,
       [contactId, convIds],
     );

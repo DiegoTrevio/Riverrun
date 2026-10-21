@@ -324,7 +324,10 @@ t('tope diario por número: cada persona de un flujo cuenta como todos sus mensa
     assert.equal((await h.authed('POST', `/api/campaigns/${camp.id}/launch`, {})).statusCode, 200);
     const jobs = (await pool.query(`SELECT run_at FROM jobs WHERE type = 'campaign_send' AND payload->>'campaign_id' = $1 ORDER BY run_at`, [camp.id])).rows;
     assert.equal(jobs.length, 3);
-    const soon = jobs.filter((j) => new Date(j.run_at).getTime() < Date.now() + 3600_000).length;
+    // "Hoy" es el día de la cuenta (como lo cuenta el tope), no la próxima hora: cerca de la medianoche, mañana empieza antes.
+    const { addDays, localParts, zonedToUtc } = await import('../src/automation/time.js');
+    const tomorrow = zonedToUtc(addDays(localParts(new Date(), s.timezone).date, 1), '00:00', s.timezone);
+    const soon = jobs.filter((j) => new Date(j.run_at) < tomorrow).length;
     assert.equal(soon, 2, '2 personas × 2 mensajes = 4: la tercera pasa al día siguiente');
     // Lo ya enviado hoy por otra campaña de flujo también cuenta por mensajes: con 1 persona (2 mensajes) enviada, hoy
     // solo cabe 1 más.
