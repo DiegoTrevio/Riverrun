@@ -13,6 +13,7 @@ import { config } from '../config.js';
 import { queryOne, withTransaction } from '../db.js';
 import { assertWithinLimit } from '../billing/limits.js';
 import { logEvent } from '../logs.js';
+import { accountChecklist } from '../onboarding-checklist.js';
 import * as store from '../store/index.js';
 import { alignFixedMessages, BUSINESS_TYPES, chatbotFromTemplate } from '../templates/business.js';
 import { DataFieldSchema, FlowSchema, PersonalitySchema, RulesSchema, type User } from '../types.js';
@@ -186,9 +187,20 @@ export async function onboardingRoutes(api: FastifyInstance) {
   /** Pasos que se marcan a mano: fotos y redes (omitidos o hechos) y prueba en el simulador. */
   api.post('/api/onboarding/step', admins, async (req: any) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
-    const { step } = parse(z.object({ step: z.enum(['photos', 'test', 'networks']) }), req.body);
-    await store.markOnboarding(accountId, { [step]: true });
+    const { step } = parse(z.object({ step: z.enum(['photos', 'test', 'networks', 'hide_checklist']) }), req.body);
+    await store.markOnboarding(accountId, { [step === 'hide_checklist' ? 'checklist_hidden' : step]: true });
     return { ok: true };
+  });
+
+  /** Lista de pendientes de la cuenta para la tarjeta «Para empezar» del inicio. */
+  api.get('/api/onboarding/checklist', admins, async (req: any) => {
+    const accountId = await targetAccount(req.user, req.query.account_id);
+    const acc = (await store.getAccount(accountId))!;
+    // El superadmin que revisa otra cuenta ve lo que vería su dueño.
+    const userId = accountId === req.user.account_id ? req.user.id : acc.owner_user_id;
+    const list = await accountChecklist(accountId, userId);
+    if (list.complete && !acc.onboarding.checklist_done) await store.markOnboarding(accountId, { checklist_done: true });
+    return { ...list, show: acc.signup_source === 'signup' && !acc.onboarding.checklist_hidden && !list.complete };
   });
 
   /** Paso 5: crea (o reutiliza) el canal de WhatsApp de la cuenta, ya con su bot. El QR se pide con /whatsapp/connect. */

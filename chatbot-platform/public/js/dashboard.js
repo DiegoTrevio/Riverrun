@@ -1,7 +1,7 @@
 import { pendingConnections } from './agent-connections.js';
 import { channelIcon, connectionBadge, poolsCard } from './channels.js';
 import { api, area, field, h, run, select, state, text, toast } from './core.js';
-import { accountName, acct, isSuper } from './session.js';
+import { accountName, acct, isAdmin, isSuper } from './session.js';
 
 /** Selector de cuenta al crear algo (solo superadmin; los demás usan la suya). */
 export function accountPicker(obj) {
@@ -12,8 +12,28 @@ export function accountPicker(obj) {
 
 /* ------------------------------ Dashboard ------------------------------ */
 
+/** Tarjeta «Para empezar»: lo que le falta a la cuenta para que su agente atienda y quede contratado. */
+function checklistCard(list) {
+  if (!list?.show) return null;
+  const card = h('section', { class: 'card checklist', 'aria-labelledby': 'checklist-title' },
+    h('div', { class: 'row between' },
+      h('h2', { id: 'checklist-title', style: 'margin:0' }, 'Para empezar'),
+      h('button', { class: 'small', onclick: async () => { if (await run(() => api('POST', `/api/onboarding/step${acct()}`, { step: 'hide_checklist' }))) card.remove(); } }, 'Ocultar')),
+    h('p', { class: 'muted small' }, `${list.done_count} de ${list.total} pasos listos`),
+    h('progress', { max: list.total, value: list.done_count, 'aria-label': `${list.done_count} de ${list.total} pasos listos` }),
+    h('ol', { class: 'checklist-items' }, list.items.map((i) => h('li', { class: i.done ? 'done' : '' },
+      h('span', { class: 'check', 'aria-hidden': 'true' }, i.done ? '✓' : ''),
+      h('div', {},
+        h('strong', {}, i.label), i.optional ? h('span', { class: 'muted small' }, ' (opcional)') : null, i.done ? h('span', { class: 'sr-only' }, ' (listo)') : null,
+        i.done ? null : h('p', { class: 'muted small' }, i.hint)),
+      i.done ? null : i.href ? h('a', { class: 'btn small', href: i.href }, i.action)
+        : h('button', { class: 'small', onclick: () => run(() => api('POST', '/api/me/resend-verification'), 'Te enviamos un nuevo enlace') }, i.action)))));
+  return card;
+}
+
 export async function viewDashboard(root, params = new URLSearchParams(), home = false) {
-  const [bots, stats, channels] = await Promise.all([api('GET', `/api/chatbots${acct()}`), api('GET', `/api/stats${acct()}`).catch(() => null), api('GET', `/api/channels${acct()}`)]);
+  const [bots, stats, channels, checklist] = await Promise.all([api('GET', `/api/chatbots${acct()}`), api('GET', `/api/stats${acct()}`).catch(() => null), api('GET', `/api/channels${acct()}`),
+    isAdmin() && !isSuper() ? api('GET', '/api/onboarding/checklist').catch(() => null) : null]);
   if (!root.isConnected) return;
   // Al entrar sin agentes (p. ej. recién registrado con Google), directo a crear el primero.
   if (home && !bots.length && !isSuper()) { location.replace('#/agentes/nuevo'); return; }
@@ -23,6 +43,7 @@ export async function viewDashboard(root, params = new URLSearchParams(), home =
   root.append(
     h('div', { class: 'row between' }, h('h1', {}, 'Agentes'),
       noAccounts ? h('button', { class: 'primary', disabled: true }, '+ Crear agente') : h('a', { class: 'btn primary', href: '#/agentes/nuevo' }, '+ Crear agente')),
+    checklistCard(checklist),
     noAccounts ? h('div', { class: 'card' }, h('p', {}, 'Primero crea una cuenta (cliente) en ', h('a', { href: '#/accounts' }, 'Cuentas'), '.')) : null,
     h('p', { class: 'muted' }, 'Tu agente atiende a tus clientes por WhatsApp y otras redes. Ábrelo para configurarlo, probarlo y conectarlo.'),
     stats ? null : h('div', { class: 'banner warn', role: 'status' }, 'No pudimos cargar las estadísticas. Puedes configurar tus agentes; vuelve a entrar para actualizar las cifras.'),

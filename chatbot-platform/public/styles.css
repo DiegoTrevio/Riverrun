@@ -539,3 +539,14 @@ button.icon-only { min-width: 40px; justify-content: center; font-size: 18px; li
 @media (max-width: 480px) { .cal-cell { min-height: 48px; padding: 2px; } .cal-item { display: none; } .cal-cell.has::after { content: '•'; color: var(--accent); } }
 button.chip, a.chip { cursor: pointer; color: var(--accent); border-color: var(--accent); font-size: 13px; padding: 4px 10px; min-height: 32px; }
 button.chip:hover, a.chip:hover { background: var(--panel); }
+
+/* Tarjeta «Para empezar» del inicio */
+.checklist progress { width: 100%; height: 8px; accent-color: var(--accent); margin: 4px 0 12px; }
+.checklist-items { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
+.checklist-items li { display: grid; grid-template-columns: 24px 1fr auto; gap: 10px; align-items: start; }
+.checklist-items li > div { min-width: 0; }
+.checklist-items p { margin: 2px 0 0; }
+.checklist-items .check { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--border); display: grid; place-items: center; font-size: 13px; font-weight: 700; }
+.checklist-items li.done .check { background: var(--accent); border-color: var(--accent); color: #fff; }
+.checklist-items li.done strong { color: var(--muted); font-weight: 500; }
+@media (max-width: 560px) { .checklist-items li { grid-template-columns: 24px 1fr; } .checklist-items li > :last-child:not(div) { grid-column: 2; justify-self: start; } }

@@ -9,6 +9,7 @@ import { query, queryOne } from './db.js';
 import { billingEnabled, enforceAccess, syncPendingCheckouts } from './billing/service.js';
 import { logEvent } from './logs.js';
 import { sendMail } from './mailer.js';
+import { checkOnboardingNudges } from './onboarding-checklist.js';
 import * as store from './store/index.js';
 import type { Account, Channel } from './types.js';
 
@@ -107,6 +108,7 @@ export function startLifecycle(intervalMs = 10 * 60_000) {
       .then(() => enforceAccess())
       .catch((e) => logEvent({ level: 'error', source: 'system', message: `Revisión de pagos: ${e?.message ?? e}` }));
     checkAiSpend().catch((e) => logEvent({ level: 'error', source: 'system', message: `Revisión de gasto de IA: ${e?.message ?? e}` }));
+    checkOnboardingNudges().catch((e) => logEvent({ level: 'error', source: 'system', message: `Correos de seguimiento: ${e?.message ?? e}` }));
   };
   tick();
   setInterval(tick, intervalMs).unref();
@@ -194,6 +196,7 @@ const REASON_TEXT: Record<string, string> = {
   replaced: 'La sesión se abrió en otro lugar (WhatsApp Web u otro servidor) y esta se cerró. Cierra la otra y vuelve a vincularlo con el código QR.',
   connection_lost: 'Se perdió la conexión con WhatsApp y no se ha podido recuperar sola. Si no vuelve en unos minutos, vincúlalo de nuevo desde el panel.',
 };
+export const reasonText = (reason: string) => REASON_TEXT[reason] ?? REASON_TEXT.connection_lost;
 
 export async function connectionAlerts(accountId: string) {
   return (await getSettings(accountId)).connection_alerts;

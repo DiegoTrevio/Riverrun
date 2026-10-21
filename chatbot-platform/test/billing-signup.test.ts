@@ -103,6 +103,9 @@ t('crear la cuenta y pagar ahí mismo con Stripe: al volver del pago la cuenta q
   assert.equal(c.json().subscription.status, 'active');
   const acc = await accountOf(accountId);
   assert.equal(acc.status, 'active');
+  // Con cobro en línea, la lista de pendientes incluye el plan, y ya está hecho.
+  const plan = (await api('GET', '/api/onboarding/checklist')).json().items.find((i: any) => i.key === 'plan');
+  assert.deepEqual([plan?.done, plan?.href], [true, '#/plan']);
   assert.equal(acc.plan, 'pro');
   assert.equal(acc.trial_ends_at, null);
   assert.equal((await subOf(accountId)).checkout_ref, '', 'pago aplicado: ya no queda pendiente');
