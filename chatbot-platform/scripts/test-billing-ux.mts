@@ -36,6 +36,33 @@ try {
   const page = await context.newPage();
   page.on('pageerror', (e) => errors.push(e.message));
 
+  // Primera vez con Google: termina su registro aceptando los términos (con el pase firmado que deja Google).
+  {
+    const { googleSignupPass } = await import('../src/signup-guard.js');
+    const ctx = await browser.newContext({ viewport: { width: 390, height: 900 } });
+    const g = await ctx.newPage();
+    g.on('pageerror', (e) => errors.push(e.message));
+    await g.goto(`${base}/#/registro-google?token=${encodeURIComponent(googleSignupPass('gema@estudio.mx', 'Gema'))}`);
+    await g.getByRole('heading', { name: 'Termina tu registro' }).waitFor();
+    await g.getByText('gema@estudio.mx').waitFor();
+    await g.addScriptTag({ content: axe });
+    const violations = await g.evaluate(async () => (await (window as any).axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] } }))
+      .violations.filter((v: any) => ['serious', 'critical'].includes(v.impact)).map((v: any) => v.id));
+    assert.deepEqual(violations, [], 'Registro con Google');
+    assert.ok(await g.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'Registro con Google sin desbordamiento');
+    await g.getByLabel('Nombre de tu negocio').fill('Estudio Gema');
+    await g.getByRole('button', { name: 'Crear mi cuenta' }).click();
+    await g.getByText('Acepta los términos para continuar').waitFor();
+    assert.equal((await pool.query(`SELECT count(*)::int AS n FROM users WHERE email = 'gema@estudio.mx'`)).rows[0].n, 0);
+    await g.getByRole('checkbox').check();
+    await g.getByRole('button', { name: 'Crear mi cuenta' }).click();
+    await g.waitForURL(/#\/agentes\/nuevo/);
+    const terms = (await pool.query(`SELECT t.source FROM terms_acceptances t JOIN users u ON u.id = t.user_id WHERE u.email = 'gema@estudio.mx'`)).rows;
+    assert.deepEqual(terms, [{ source: 'google' }]);
+    await ctx.close();
+    checks.push('Registro con Google: acepta términos antes de crear la cuenta (accesible en móvil)');
+  }
+
   // Registro: los planes se ven "+ IVA", con el total que se cobra.
   await page.goto(`${base}/#/registro`);
   await page.getByText('$499 MXN + IVA / mes').waitFor();

@@ -16,6 +16,7 @@ import type { User } from '../types.js';
 import { HttpError } from '../access.js';
 import { parse } from './util.js';
 import { offeredPlans } from './billing.js';
+import { CAPTCHA_MESSAGE, DISPOSABLE_MESSAGE, captchaEnabled, isDisposableEmail, recordTermsAcceptance, termsVersion, verifyCaptcha } from '../signup-guard.js';
 
 const Password = z.string().min(8, 'mínimo 8 caracteres').max(200);
 const Email = z.string().trim().toLowerCase().email('correo inválido').max(200);
@@ -53,6 +54,9 @@ export async function signupRoutes(app: FastifyInstance) {
     support_contact: config.signup.supportContact,
     terms_url: config.signup.termsUrl,
     privacy_url: config.signup.privacyUrl,
+    terms_version: termsVersion(),
+    // Clave pública del captcha (vacía si no está activo).
+    turnstile_site_key: captchaEnabled() ? config.signup.turnstile.siteKey : '',
     business_types: BUSINESS_TYPES.map(({ key, label }) => ({ key, label })),
     // Planes que se pueden pagar al registrarse (vacío si el cobro en línea no está configurado).
     plans: config.signup.enabled && (await billingEnabled()) ? (await offeredPlans()).filter((p) => p.providers.length) : [],
@@ -74,10 +78,13 @@ export async function signupRoutes(app: FastifyInstance) {
         // Plan que quiere pagar ya (opcional): al crear la cuenta se abre la página de pago.
         plan: z.string().max(40).default(''),
         provider: z.enum(['stripe', 'mercadopago']).optional(),
+        turnstile_token: z.string().max(4000).optional(),
       }),
       req.body,
     );
     if (b.website) throw new HttpError(400, 'No se pudo completar el registro');
+    if (isDisposableEmail(b.email)) throw new HttpError(400, DISPOSABLE_MESSAGE);
+    if (!(await verifyCaptcha(b.turnstile_token, req.ip))) throw new HttpError(400, CAPTCHA_MESSAGE);
     if (await store.getUserForLogin(b.email)) throw new HttpError(409, 'Ya existe una cuenta con ese correo. Inicia sesión o recupera tu contraseña.');
     // El plan se revisa antes de crear la cuenta: un plan o forma de pago que no existe no deja una cuenta a medias.
     const purchase = b.plan ? await payable(b.plan, b.provider) : null;
@@ -93,6 +100,7 @@ export async function signupRoutes(app: FastifyInstance) {
       await client.query(`UPDATE accounts SET owner_user_id = $2, brand_id = $3 WHERE id = $1`, [account.id, user.id, brand?.id ?? null]);
       // Su WhatsApp recibe los avisos de "un cliente quiere hablar con una persona".
       if (b.phone) await client.query(`UPDATE users SET phone = $2, notify_whatsapp = true WHERE id = $1`, [user.id, b.phone.replace(/\D/g, '')]);
+      await recordTermsAcceptance(client, { userId: user.id, accountId: account.id, email: user.email, ip: req.ip, userAgent: String(req.headers['user-agent'] ?? ''), source: 'signup' });
       return { account, user };
     });
 

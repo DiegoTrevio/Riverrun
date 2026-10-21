@@ -54,6 +54,7 @@ export const SECRET_VARS = [
   'DATABASE_URL', 'POSTGRES_PASSWORD', 'SESSION_SECRET', 'ADMIN_PASSWORD', 'EVOLUTION_API_KEY', 'OPENROUTER_API_KEY', 'OPENAI_API_KEY',
   'SMTP_URL', 'STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'MERCADOPAGO_ACCESS_TOKEN', 'MERCADOPAGO_WEBHOOK_SECRET',
   'GOOGLE_CLIENT_SECRET', 'MICROSOFT_CLIENT_SECRET', 'ZERNIO_API_KEY', 'META_APP_SECRET', 'META_VERIFY_TOKEN', 'BACKUP_PASSPHRASE', 'BACKUP_S3_SECRET', 'HEARTBEAT_URL', 'ALERT_WEBHOOK_URL',
+  'TURNSTILE_SECRET_KEY',
 ] as const;
 
 /** Valores de ejemplo conocidos (completos, no prefijos: un secreto aleatorio puede empezar con "x" o "test"). */
@@ -763,6 +764,24 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
       'Activa HTTPS.',
     );
     services.push({ id: 'google', label: 'Google (Calendar e inicio de sesión)', area: 'integrations', state: 'configured', detail: 'Credenciales definidas' });
+  }
+
+  const tsite = get('TURNSTILE_SITE_KEY');
+  const tsecret = get('TURNSTILE_SECRET_KEY');
+  if (!tsite && !tsecret) {
+    services.push({ id: 'turnstile', label: 'Captcha del registro (Cloudflare Turnstile)', area: 'integrations', state: 'disabled', detail: 'Opcional, apagado' });
+  } else if (!tsite || !tsecret) {
+    add(
+      'warning',
+      'integrations',
+      'turnstile.incomplete',
+      ['TURNSTILE_SITE_KEY', 'TURNSTILE_SECRET_KEY'],
+      `El captcha del registro está a medias: falta ${!tsite ? 'TURNSTILE_SITE_KEY' : 'TURNSTILE_SECRET_KEY'}, así que no se pide.`,
+      'Define ambas (Cloudflare → Turnstile) o bórralas.',
+    );
+    services.push({ id: 'turnstile', label: 'Captcha del registro (Cloudflare Turnstile)', area: 'integrations', state: 'incomplete', detail: 'Falta una clave' });
+  } else {
+    services.push({ id: 'turnstile', label: 'Captcha del registro (Cloudflare Turnstile)', area: 'integrations', state: 'configured', detail: 'Claves definidas' });
   }
   const mid = get('MICROSOFT_CLIENT_ID');
   const msecret = get('MICROSOFT_CLIENT_SECRET');
