@@ -182,7 +182,8 @@ export async function renderSignup(params = new URLSearchParams()) {
       termsCheck(info, f),
       captcha(info.turnstile_site_key, f),
       button,
-      h('p', { class: 'small', style: 'margin:0' }, '¿Ya tienes cuenta? ', h('a', { href: '#/login' }, 'Inicia sesión'))));
+      h('p', { class: 'small', style: 'margin:0' }, '¿Ya tienes cuenta? ', h('a', { href: '#/login' }, 'Inicia sesión'),
+        info.plans.length ? [' · ', h('a', { href: '/precios' }, 'Ver precios y planes')] : null)));
 }
 
 export function renderForgot() {
