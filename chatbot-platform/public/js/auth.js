@@ -10,6 +10,7 @@ const GOOGLE_MSG = {
   'solo-contrasena': 'Esta cuenta solo entra con correo y contraseña.',
   'sin-cuenta': 'No hay una cuenta con ese correo y el registro está cerrado.',
   demasiados: 'Demasiados intentos, espera un poco.',
+  'correo-temporal': 'Usa un correo permanente de tu negocio: no aceptamos correos temporales.',
   off: 'El acceso con Google no está activado.',
 };
 
@@ -38,7 +39,7 @@ export function renderLogin() {
   );
   api('GET', '/api/signup/info').then((i) => {
     const trial = i.trial_days > 0;
-    if (i.google_login) fill(googleSlot, h('a', { class: 'btn', href: '/oauth/google/login', style: 'display:block;text-align:center;margin-top:12px' }, 'Continuar con Google'), h('p', { class: 'muted small' }, trial ? 'Si aún no tienes cuenta, se crea una con tu prueba gratuita y aceptas los términos del servicio.' : 'Si aún no tienes cuenta, se crea una (la activas al contratar tu plan) y aceptas los términos del servicio.'));
+    if (i.google_login) fill(googleSlot, h('a', { class: 'btn', href: '/oauth/google/login', style: 'display:block;text-align:center;margin-top:12px' }, 'Continuar con Google'), h('p', { class: 'muted small' }, trial ? 'Si aún no tienes cuenta, la creas con tu prueba gratuita después de aceptar los términos del servicio.' : 'Si aún no tienes cuenta, la creas después de aceptar los términos del servicio (la activas al contratar tu plan).'));
     if (i.enabled) fill(signupLink, '¿Aún no tienes cuenta? ', h('a', { href: '#/registro' }, trial ? `Crea una gratis (${i.trial_days} días de prueba)` : 'Crea tu cuenta'));
   }).catch(() => undefined);
 }
@@ -47,6 +48,65 @@ export function renderLogin() {
 
 function publicCard(title, ...kids) {
   fill($app, h('div', { class: 'card login', style: 'max-width:440px' }, h('h1', {}, title), kids));
+}
+
+/** Casilla de aceptación de términos y aviso de privacidad (se guarda como constancia al crear la cuenta). */
+function termsCheck(info, f) {
+  return h('label', { class: 'check small' }, h('input', { type: 'checkbox', onchange: (e) => (f.accept_terms = e.target.checked) }),
+    [info.terms_url ? ['Acepto los ', h('a', { href: info.terms_url, target: '_blank', rel: 'noopener' }, 'términos del servicio')] : 'Acepto los términos del servicio',
+      info.privacy_url ? [' y el ', h('a', { href: info.privacy_url, target: '_blank', rel: 'noopener' }, 'aviso de privacidad')] : '',
+      '. Entiendo que WhatsApp se conecta como "dispositivo vinculado" (no es la API oficial) y que los envíos masivos pueden provocar el bloqueo del número.']);
+}
+
+/** Captcha de Cloudflare (solo si el servidor lo activa): guarda su respuesta en f.turnstile_token. */
+function captcha(siteKey, f) {
+  if (!siteKey) return null;
+  const box = h('div', { class: 'captcha' });
+  const draw = () => window.turnstile.render(box, { sitekey: siteKey, language: 'es', callback: (t) => (f.turnstile_token = t), 'expired-callback': () => (f.turnstile_token = '') });
+  if (window.turnstile) setTimeout(draw, 0);
+  else {
+    const s = document.createElement('script');
+    s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+    s.async = true;
+    s.onload = draw;
+    document.head.append(s);
+  }
+  return box;
+}
+
+/** Quien entra por primera vez con Google: acepta los términos y nombra su negocio antes de crear la cuenta. */
+export async function renderGoogleSignup(token) {
+  const navigation = state.navigation;
+  let info;
+  try {
+    info = await api('GET', `/api/signup/google?token=${encodeURIComponent(token)}`);
+  } catch (e) {
+    if (navigation !== state.navigation) return;
+    return publicCard('Registro con Google', h('p', {}, e?.message || 'El enlace de registro venció.'), h('a', { class: 'btn primary', href: '/oauth/google/login' }, 'Volver a entrar con Google'));
+  }
+  if (navigation !== state.navigation) return;
+  const f = { token, company: info.name ? `Negocio de ${info.name}` : '', business_type: 'otro', accept_terms: false };
+  let sending = false;
+  const button = h('button', { class: 'primary', type: 'submit' }, 'Crear mi cuenta');
+  const submit = async (e) => {
+    e.preventDefault();
+    if (sending) return;
+    if (!f.accept_terms) return toast('Acepta los términos para continuar', true);
+    sending = true;
+    button.disabled = true;
+    const r = await run(() => api('POST', '/api/signup/google', f));
+    if (!r) { sending = false; button.disabled = false; return; }
+    state.me = null;
+    location.hash = '#/agentes/nuevo';
+  };
+  publicCard('Termina tu registro',
+    h('p', { class: 'muted', style: 'margin-top:0' }, 'Entraste con Google como ', h('strong', {}, info.email), '. Solo falta el nombre de tu negocio y aceptar los términos.'),
+    h('form', { class: 'stack', onsubmit: submit },
+      field('Nombre de tu negocio', text(f, 'company', { required: true, autocomplete: 'organization' })),
+      field('Tipo de negocio', select(f, 'business_type', info.business_types.map((b) => [b.key, b.label]))),
+      termsCheck(info, f),
+      button,
+      h('p', { class: 'small', style: 'margin:0' }, '¿No eres tú? ', h('a', { href: '#/login' }, 'Volver'))));
 }
 
 /** Elegir plan al registrarse: prueba gratis (si hay) o un plan que se paga al crear la cuenta. */
@@ -119,10 +179,8 @@ export async function renderSignup(params = new URLSearchParams()) {
       info.plans.length ? h('p', { class: 'muted small', style: 'margin:0' }, 'Si eliges un plan, al crear tu cuenta pasas a la página segura de pago (Stripe o Mercado Pago); nosotros nunca vemos tu tarjeta. Se renueva cada mes y puedes cancelar cuando quieras.') : null,
       // Campo trampa para bots: oculto para las personas.
       h('div', { style: 'position:absolute;left:-9999px', 'aria-hidden': 'true' }, h('input', { tabindex: '-1', autocomplete: 'off', oninput: (e) => (f.website = e.target.value) })),
-      h('label', { class: 'check small' }, h('input', { type: 'checkbox', onchange: (e) => (f.accept_terms = e.target.checked) }),
-        [info.terms_url ? ['Acepto los ', h('a', { href: info.terms_url, target: '_blank', rel: 'noopener' }, 'términos del servicio')] : 'Acepto los términos del servicio',
-          info.privacy_url ? [' y el ', h('a', { href: info.privacy_url, target: '_blank', rel: 'noopener' }, 'aviso de privacidad')] : '',
-          '. Entiendo que WhatsApp se conecta como "dispositivo vinculado" (no es la API oficial) y que los envíos masivos pueden provocar el bloqueo del número.']),
+      termsCheck(info, f),
+      captcha(info.turnstile_site_key, f),
       button,
       h('p', { class: 'small', style: 'margin:0' }, '¿Ya tienes cuenta? ', h('a', { href: '#/login' }, 'Inicia sesión'),
         info.plans.length ? [' · ', h('a', { href: '/precios' }, 'Ver precios y planes')] : null)));

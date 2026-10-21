@@ -57,6 +57,12 @@ t('registro: crea la cuenta en prueba con su administradora y abre sesión', asy
   assert.equal(body.verification_sent, true);
   assert.equal(body.account.owner_user_id, body.user.id);
 
+  // Queda constancia de qué términos aceptó, desde dónde y cuándo.
+  const terms = (await pool.query(`SELECT source, ip, email, account_id, accepted_at FROM terms_acceptances WHERE user_id = $1`, [body.user.id])).rows;
+  assert.equal(terms.length, 1);
+  assert.deepEqual([terms[0].source, terms[0].ip, terms[0].email, terms[0].account_id], ['signup', '10.0.0.1', 'laura@sonrisa.mx', body.account.id]);
+  assert.ok(terms[0].accepted_at);
+
   L.cookie = cookieOf(r);
   L.api = as(L.cookie);
   L.account = body.account.id;
@@ -80,6 +86,49 @@ t('registro: correo repetido, campo trampa, términos y límite por conexión', 
   assert.equal((await signup({ email: 'corta@y.mx', password: '123' }, '10.0.0.2')).statusCode, 400);
   assert.equal((await signup({ email: 'z1@y.mx' }, '10.0.0.2')).statusCode, 200, 'el quinto intento aún pasa');
   assert.equal((await signup({ email: 'z9@y.mx' }, '10.0.0.2')).statusCode, 429, 'máximo 5 intentos por hora por IP');
+});
+
+t('registro: no se aceptan correos temporales ni dominios bloqueados', async () => {
+  const r = await signup({ email: 'alguien@mailinator.com' }, '10.0.0.3');
+  assert.equal(r.statusCode, 400);
+  assert.match(r.json().error, /correo permanente/);
+  assert.equal((await signup({ email: 'x@sub.yopmail.com' }, '10.0.0.3')).statusCode, 400, 'también sus subdominios');
+  const prev = config.signup.blockedDomains;
+  config.signup.blockedDomains = ['competencia.mx'];
+  try {
+    assert.equal((await signup({ email: 'espia@competencia.mx' }, '10.0.0.3')).statusCode, 400);
+  } finally { config.signup.blockedDomains = prev; }
+  assert.equal((await pool.query(`SELECT count(*)::int n FROM users WHERE email IN ('alguien@mailinator.com', 'espia@competencia.mx')`)).rows[0].n, 0);
+});
+
+t('registro con captcha (Turnstile): sin respuesta válida no se crea la cuenta', async () => {
+  const http = await import('node:http');
+  let reply: { code: number; body: unknown } = { code: 200, body: { success: true } };
+  const seen: string[] = [];
+  const server = http.createServer((req, res) => {
+    let raw = '';
+    req.on('data', (c) => (raw += c));
+    req.on('end', () => { seen.push(raw); res.writeHead(reply.code, { 'content-type': 'application/json' }); res.end(JSON.stringify(reply.body)); });
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const prev = { ...config.signup.turnstile };
+  Object.assign(config.signup.turnstile, { siteKey: 'sitio-publico', secretKey: 'clave-secreta', verifyUrl: `http://127.0.0.1:${(server.address() as any).port}` });
+  try {
+    assert.equal((await h.app.inject({ method: 'GET', url: '/api/signup/info' })).json().turnstile_site_key, 'sitio-publico');
+    assert.equal((await signup({ email: 'c1@captcha.mx' }, '10.0.0.4')).statusCode, 400, 'sin token');
+    reply = { code: 200, body: { success: false } };
+    assert.equal((await signup({ email: 'c2@captcha.mx', turnstile_token: 'malo' }, '10.0.0.4')).statusCode, 400, 'token inválido');
+    reply = { code: 200, body: { success: true } };
+    assert.equal((await signup({ email: 'c3@captcha.mx', turnstile_token: 'bueno' }, '10.0.0.4')).statusCode, 200);
+    const sent = new URLSearchParams(seen.at(-1));
+    assert.deepEqual([sent.get('secret'), sent.get('response'), sent.get('remoteip')], ['clave-secreta', 'bueno', '10.0.0.4']);
+    reply = { code: 503, body: {} };
+    assert.equal((await signup({ email: 'c4@captcha.mx', turnstile_token: 'x' }, '10.0.0.5')).statusCode, 200, 'si Cloudflare no responde, no se cierra el registro');
+  } finally {
+    Object.assign(config.signup.turnstile, prev);
+    server.close();
+  }
+  assert.equal((await h.app.inject({ method: 'GET', url: '/api/signup/info' })).json().turnstile_site_key, '', 'sin claves no hay captcha');
 });
 
 t('asistente: negocio y asistente desde la plantilla del giro', async () => {

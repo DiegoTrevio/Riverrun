@@ -11,6 +11,11 @@ import { logEvent } from '../logs.js';
 import { hmac, safeEqual } from '../secret.js';
 import * as store from '../store/index.js';
 import { newAccountState } from './signup.js';
+import { z } from 'zod';
+import { HttpError } from '../access.js';
+import { BUSINESS_TYPES } from '../templates/business.js';
+import { DISPOSABLE_MESSAGE, googleSignupPass, isDisposableEmail, readGoogleSignupPass, recordTermsAcceptance, termsVersion } from '../signup-guard.js';
+import { parse } from './util.js';
 
 const HOUR = 3600_000;
 const redirectUri = () => `${config.publicBaseUrl}/oauth/google/login/callback`;
@@ -71,23 +76,65 @@ export async function googleLoginRoutes(app: FastifyInstance) {
         return reply.redirect('/#/');
       }
       if (!config.signup.enabled) return fail('sin-cuenta');
-      if (rateLimited(`signup:${req.ip}`, 5, HOUR)) return fail('demasiados');
+      if (isDisposableEmail(email)) return fail('correo-temporal');
+      // Primera vez: la cuenta se crea hasta que acepte los términos (con un pase firmado que lleva el correo verificado).
       const name = String(claims.name ?? email.split('@')[0]).slice(0, 120);
-      const hash = await hashPassword(crypto.randomBytes(24).toString('base64url')); // sin contraseña: puede crear una con "Olvidé mi contraseña"
-      const brand = await brandByDomain(hostOf(req));
-      const { account, created } = await withTransaction(async (client) => {
-        const account = await store.createAccount(`Negocio de ${name}`.slice(0, 120), { ...newAccountState(), businessType: 'otro', source: 'signup' }, client);
-        const created = await store.createUser({ account_id: account.id, role: 'admin', name, email, password_hash: hash, verified: true }, client);
-        await client.query(`UPDATE accounts SET owner_user_id = $2, brand_id = $3 WHERE id = $1`, [account.id, created.id, brand?.id ?? null]);
-        return { account, created };
-      });
-      await logEvent({ level: 'info', source: 'admin', message: `Registro nuevo con Google: ${account.name} (${email})`, accountId: account.id, details: { ip: req.ip } });
-      await notifySuperadmins(account.id, `Nueva empresa registrada: ${account.name}`, `${name} <${email}> se registró con Google.`);
-      setSessionCookie(reply, created.id, hash);
-      return reply.redirect('/#/');
+      return reply.redirect(`/#/registro-google?token=${encodeURIComponent(googleSignupPass(email, name))}`);
     } catch (e: any) {
       await logEvent({ level: 'error', source: 'admin', message: `Acceso con Google: ${e?.message ?? e}`, details: { ip: req.ip } });
       return fail('error');
     }
+  });
+
+  const pass = (token: unknown) => {
+    const p = readGoogleSignupPass(String(token ?? ''));
+    if (!p) throw new HttpError(400, 'El enlace de registro con Google venció. Vuelve a entrar con Google.');
+    return p;
+  };
+
+  /** Datos para terminar el registro con Google: el correo verificado, el nombre y los términos. */
+  app.get('/api/signup/google', async (req: any) => {
+    if (!config.signup.enabled) throw new HttpError(404, 'El registro está cerrado');
+    const p = pass(req.query.token);
+    return {
+      email: p.email,
+      name: p.name,
+      terms_url: config.signup.termsUrl,
+      privacy_url: config.signup.privacyUrl,
+      terms_version: termsVersion(),
+      business_types: BUSINESS_TYPES.map(({ key, label }) => ({ key, label })),
+    };
+  });
+
+  /** Crea la cuenta de quien entró por primera vez con Google, ya con los términos aceptados. */
+  app.post('/api/signup/google', async (req, reply) => {
+    if (!config.signup.enabled) throw new HttpError(404, 'El registro está cerrado');
+    if (rateLimited(`signup:${req.ip}`, 5, HOUR)) return reply.code(429).send({ error: 'Demasiados registros desde esta conexión, intenta más tarde' });
+    const b = parse(
+      z.object({
+        token: z.string().max(2000),
+        company: z.string().trim().min(2, 'escribe el nombre de tu empresa').max(120),
+        business_type: z.string().max(40).default('otro'),
+        accept_terms: z.literal(true, { message: 'Debes aceptar los términos' }),
+      }),
+      req.body,
+    );
+    const { email, name } = pass(b.token);
+    if (isDisposableEmail(email)) throw new HttpError(400, DISPOSABLE_MESSAGE);
+    if (await store.getUserForLogin(email)) throw new HttpError(409, 'Ya existe una cuenta con ese correo. Inicia sesión con Google.');
+    const businessType = BUSINESS_TYPES.some((t) => t.key === b.business_type) ? b.business_type : 'otro';
+    const hash = await hashPassword(crypto.randomBytes(24).toString('base64url')); // sin contraseña: puede crear una con "Olvidé mi contraseña"
+    const brand = await brandByDomain(hostOf(req));
+    const { account, created } = await withTransaction(async (client) => {
+      const account = await store.createAccount(b.company, { ...newAccountState(), businessType, source: 'signup' }, client);
+      const created = await store.createUser({ account_id: account.id, role: 'admin', name: name || email.split('@')[0], email, password_hash: hash, verified: true }, client);
+      await client.query(`UPDATE accounts SET owner_user_id = $2, brand_id = $3 WHERE id = $1`, [account.id, created.id, brand?.id ?? null]);
+      await recordTermsAcceptance(client, { userId: created.id, accountId: account.id, email, ip: req.ip, userAgent: String(req.headers['user-agent'] ?? ''), source: 'google' });
+      return { account, created };
+    });
+    await logEvent({ level: 'info', source: 'admin', message: `Registro nuevo con Google: ${account.name} (${email})`, accountId: account.id, details: { ip: req.ip, business_type: businessType } });
+    await notifySuperadmins(account.id, `Nueva empresa registrada: ${account.name}`, `${created.name} <${email}> se registró con Google.`);
+    setSessionCookie(reply, created.id, hash);
+    return { ok: true, user: created, account: await store.getAccount(account.id) };
   });
 }

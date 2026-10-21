@@ -162,6 +162,16 @@ export const config = {
     /** Direcciones públicas de tus términos y tu aviso de privacidad (se enlazan en el registro). */
     termsUrl: env('TERMS_URL', ''),
     privacyUrl: env('PRIVACY_URL', ''),
+    /** Versión de los términos que se acepta al registrarse (p. ej. "2026-10"); se guarda con cada aceptación. */
+    termsVersion: env('TERMS_VERSION', ''),
+    /** Dominios de correo que no pueden registrarse, además de la lista de correos desechables (separados por comas). */
+    blockedDomains: env('SIGNUP_BLOCKED_DOMAINS', '').split(',').map((d) => d.trim().toLowerCase()).filter(Boolean),
+    /** Captcha de Cloudflare Turnstile en el registro (opcional: con las dos claves se activa). */
+    turnstile: {
+      siteKey: env('TURNSTILE_SITE_KEY', ''),
+      secretKey: env('TURNSTILE_SECRET_KEY', ''),
+      verifyUrl: env('TURNSTILE_VERIFY_URL', 'https://challenges.cloudflare.com/turnstile/v0/siteverify'),
+    },
     /** Contacto que ve el cliente cuando su cuenta está pausada. */
     supportContact: env('SUPPORT_CONTACT', ''),
   },

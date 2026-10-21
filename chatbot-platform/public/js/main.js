@@ -22,10 +22,11 @@ export async function render() {
   const parts = pathPart.split('/').filter(Boolean);
   const params = new URLSearchParams(qs || '');
 
-  if (['login', 'registro', 'olvide', 'restablecer', 'verificar'].includes(parts[0])) await ensureBrand('host');
+  if (['login', 'registro', 'registro-google', 'olvide', 'restablecer', 'verificar'].includes(parts[0])) await ensureBrand('host');
   if (!current()) return;
   if (parts[0] === 'login') return view('auth', 'renderLogin');
   if (parts[0] === 'registro') return view('auth', 'renderSignup', params);
+  if (parts[0] === 'registro-google') return view('auth', 'renderGoogleSignup', params.get('token') || '');
   if (parts[0] === 'olvide') return view('auth', 'renderForgot');
   if (parts[0] === 'restablecer') return view('auth', 'renderReset', params.get('token') || '');
   if (parts[0] === 'verificar') return view('auth', 'renderVerify', params.get('token') || '');

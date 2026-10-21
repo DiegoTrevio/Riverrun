@@ -441,7 +441,8 @@ Una cuenta puede conectar varios WhatsApp. Las **campañas** pueden salir de var
 - **Baja**: la palabra de baja ("STOP") ya existía; los mensajes promocionales llevan un pie configurable con las instrucciones.
 - **Retención**: borrado automático de mensajes y de contactos inactivos tras los días que elijas (cada 6 horas).
 - **Derechos del titular**: descarga de todos los datos de un contacto (JSON) y borrado definitivo desde el panel o `DELETE /api/contacts/:id`.
-- Los términos y el aviso de privacidad se enlazan desde el registro (`TERMS_URL`, `PRIVACY_URL`).
+- Los términos y el aviso de privacidad se enlazan desde el registro (`TERMS_URL`, `PRIVACY_URL`) y cada aceptación queda guardada con su versión (`TERMS_VERSION`), IP, navegador y fecha. Quien entra por primera vez con Google acepta los términos antes de que se cree su cuenta.
+- **Registro protegido**: no se aceptan correos temporales (lista incluida, más `SIGNUP_BLOCKED_DOMAINS`), hay un límite de 5 registros por hora por conexión y, si defines `TURNSTILE_SITE_KEY` y `TURNSTILE_SECRET_KEY`, se pide el captcha de Cloudflare (si Cloudflare no responde, el registro no se bloquea).
 
 ## Crear un agente sin escribir un prompt
 

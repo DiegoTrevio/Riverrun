@@ -45,14 +45,40 @@ async function flow(who: Record<string, unknown>, opts: { tamper?: boolean; noCo
   return { location: String(back.headers.location), session: back.cookies.find((c) => c.name !== 'g_nonce' && c.value) };
 }
 
-t('un correo nuevo crea su cuenta de prueba ya verificada y entra', async () => {
+t('un correo nuevo acepta los términos antes de crear su cuenta de prueba (ya verificada) y entra', async () => {
   const r = await flow({ email: 'Nueva@Empresa.mx', email_verified: true, name: 'Nora' });
-  assert.equal(r.location, '/#/');
-  assert.ok(r.session, 'inicia sesión');
-  const u = (await pool.query(`SELECT u.role, u.email_verified_at, a.status, a.name FROM users u JOIN accounts a ON a.id = u.account_id WHERE u.email = 'nueva@empresa.mx'`)).rows[0];
-  assert.deepEqual([u.role, u.status, !!u.email_verified_at], ['admin', 'trial', true]);
-  const me = await h.app.inject({ method: 'GET', url: '/api/me', headers: { cookie: `${r.session!.name}=${r.session!.value}` } });
+  assert.match(r.location, /^\/#\/registro-google\?token=/);
+  assert.equal(r.session, undefined, 'todavía no hay sesión');
+  assert.equal((await pool.query(`SELECT count(*)::int n FROM users WHERE email = 'nueva@empresa.mx'`)).rows[0].n, 0, 'ni cuenta');
+  const token = decodeURIComponent(r.location.split('token=')[1]);
+
+  const info = await h.app.inject({ method: 'GET', url: `/api/signup/google?token=${encodeURIComponent(token)}` });
+  assert.equal(info.statusCode, 200, info.body);
+  assert.deepEqual([info.json().email, info.json().name], ['nueva@empresa.mx', 'Nora']);
+
+  const post = (body: Record<string, unknown>) => h.app.inject({ method: 'POST', url: '/api/signup/google', remoteAddress: '10.8.7.1', headers: { 'user-agent': 'Navegador de prueba' }, payload: { token, company: 'Estética Nora', business_type: 'belleza', ...body } });
+  assert.equal((await post({ accept_terms: false })).statusCode, 400, 'sin aceptar términos no se crea');
+  const done = await post({ accept_terms: true });
+  assert.equal(done.statusCode, 200, done.body);
+  const session = done.cookies.find((c) => c.value);
+  const u = (await pool.query(`SELECT u.id, u.role, u.email_verified_at, a.status, a.name, a.business_type FROM users u JOIN accounts a ON a.id = u.account_id WHERE u.email = 'nueva@empresa.mx'`)).rows[0];
+  assert.deepEqual([u.role, u.status, !!u.email_verified_at, u.name, u.business_type], ['admin', 'trial', true, 'Estética Nora', 'belleza']);
+  const terms = (await pool.query(`SELECT source, ip, user_agent, email FROM terms_acceptances WHERE user_id = $1`, [u.id])).rows;
+  assert.deepEqual(terms, [{ source: 'google', ip: '10.8.7.1', user_agent: 'Navegador de prueba', email: 'nueva@empresa.mx' }]);
+  const me = await h.app.inject({ method: 'GET', url: '/api/me', headers: { cookie: `${session!.name}=${session!.value}` } });
   assert.equal(me.json().user.email, 'nueva@empresa.mx');
+  assert.equal((await post({ accept_terms: true })).statusCode, 409, 'el mismo pase no crea otra cuenta');
+});
+
+t('el pase de registro con Google no se puede alterar ni usar vencido; los correos temporales no se registran', async () => {
+  const { googleSignupPass } = await import('../src/signup-guard.js');
+  const body = (token: string) => ({ token, company: 'Otra', accept_terms: true });
+  const forged = googleSignupPass('ajeno@empresa.mx', 'X').replace(/\.[^.]+$/, '.firma-falsa');
+  assert.equal((await h.app.inject({ method: 'POST', url: '/api/signup/google', payload: body(forged) })).statusCode, 400);
+  const old = googleSignupPass('ajeno@empresa.mx', 'X', Date.now() - 16 * 60_000);
+  assert.equal((await h.app.inject({ method: 'GET', url: `/api/signup/google?token=${encodeURIComponent(old)}` })).statusCode, 400);
+  assert.equal((await pool.query(`SELECT count(*)::int n FROM users WHERE email = 'ajeno@empresa.mx'`)).rows[0].n, 0);
+  assert.match((await flow({ email: 'alguien@mailinator.com', email_verified: true })).location, /google=correo-temporal/);
 });
 
 t('un usuario existente entra sin crear otra cuenta', async () => {
