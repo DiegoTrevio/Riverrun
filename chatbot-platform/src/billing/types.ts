@@ -86,6 +86,8 @@ export interface CheckoutArgs {
   cancelUrl: string;
   /** Cliente que ya tiene el proveedor (reintentos y cambios de plan). */
   customerId?: string;
+  /** Primer cobro en esta fecha (sustitución de una suscripción con el periodo ya pagado). Solo Mercado Pago. */
+  startAt?: Date;
 }
 
 export interface BillingProvider {
@@ -101,6 +103,12 @@ export interface BillingProvider {
   /** Página del proveedor para cambiar la tarjeta y ver facturas (si la tiene). */
   portal?(customerId: string, returnUrl: string): Promise<{ url: string }>;
   setCancelAtPeriodEnd(sub: Subscription, cancel: boolean): Promise<void>;
+  /**
+   * Cambia el plan de la suscripción vigente y devuelve su estado ya cambiado. `upgrade`: el nuevo plan cuesta más (Stripe
+   * cobra hoy la diferencia proporcional; al bajar, el saldo a favor se descuenta del siguiente cobro). Mercado Pago solo
+   * cambia el monto desde el siguiente cobro y no cambia el periodo (mensual o anual): eso va por sustitución.
+   */
+  changePlan(sub: Subscription, plan: Plan, o: { upgrade: boolean }): Promise<SubscriptionState>;
   /** Verifica la firma y devuelve el estado. Lanza `WebhookError` si la firma no es válida. */
   handleWebhook(req: { rawBody: Buffer; headers: Record<string, string | string[] | undefined>; query: Record<string, string | undefined>; plans: Plan[] }): Promise<WebhookResult | null>;
 }

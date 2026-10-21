@@ -10,8 +10,10 @@ import { query, withTransaction, queryOne } from '../db.js';
 import { notifySuperadmins } from '../lifecycle.js';
 import { logEvent } from '../logs.js';
 import { sendMail } from '../mailer.js';
+import { LIMIT_LABELS, usageOf } from './limits.js';
 import { mercadopago } from './mercadopago.js';
 import { stripe } from './stripe.js';
+import { chargeCents } from './tax.js';
 import type { BillingProvider, Plan, ProviderName, Subscription, SubscriptionState } from './types.js';
 
 export const providers: Record<ProviderName, BillingProvider> = { stripe, mercadopago };
@@ -74,16 +76,79 @@ export async function payable(planKey: string, providerName?: ProviderName): Pro
  * Abre la página de pago del proveedor y anota el pago como pendiente. `base` es la dirección del panel (la principal o
  * el dominio de la marca) a la que vuelve el cliente al pagar o cancelar. Puede lanzar `ProviderError`.
  */
-export async function startCheckout(o: { accountId: string; email: string; plan: Plan; provider: ProviderName; base: string }): Promise<string> {
+export async function startCheckout(o: { accountId: string; email: string; plan: Plan; provider: ProviderName; base: string; startAt?: Date }): Promise<string> {
   const sub = await getSubscription(o.accountId);
   const { url, ref } = await providers[o.provider].createCheckout({
     accountId: o.accountId, email: o.email, plan: o.plan,
     successUrl: `${o.base}/pago/${o.provider}`, cancelUrl: `${o.base}/pago/${o.provider}?estado=cancelado`,
     customerId: sub?.provider === o.provider ? sub.provider_customer_id || undefined : undefined,
+    startAt: o.startAt,
   });
   await beginCheckout(o.accountId, o.provider, o.plan.key, ref);
   await logEvent({ level: 'info', source: 'admin', message: `Pago iniciado: plan ${o.plan.key} con ${o.provider}`, accountId: o.accountId });
   return url;
+}
+
+/** Lo que cuesta un plan al mes (los anuales, su doceava parte): para saber si un cambio sube o baja. */
+const monthly = (p: Plan) => (p.billing_interval === 'year' ? p.price_cents / 12 : p.price_cents);
+
+/** Suscripción vigente de la cuenta (la que se puede cambiar), o error claro si no hay. */
+async function liveSubscription(accountId: string) {
+  const sub = await getSubscription(accountId);
+  if (!sub?.provider_subscription_id || !['active', 'past_due'].includes(sub.status)) throw new HttpError(400, 'No tienes un plan activo');
+  return sub;
+}
+
+/**
+ * Sustitución (Mercado Pago): una suscripción nueva cuyo primer cobro es al terminar el periodo ya pagado. Al autorizarse
+ * reemplaza a la vigente, que se cancela sola (ver `applyStateLocked`). Sirve para cambiar la tarjeta, reanudar tras
+ * cancelar y cambiar entre mensual y anual. Devuelve la página de pago.
+ */
+export async function startReplacement(o: { accountId: string; email: string; plan: Plan; base: string }): Promise<string> {
+  const sub = await getSubscription(o.accountId);
+  const paidUntil = sub?.status === 'past_due' ? null : sub?.current_period_end ?? null;
+  return startCheckout({ ...o, provider: 'mercadopago', startAt: paidUntil && paidUntil > new Date() ? paidUntil : undefined });
+}
+
+/**
+ * Cambia el plan vigente. Stripe: ya, con prorrateo. Mercado Pago: el nuevo monto desde el siguiente cobro; si cambia el
+ * periodo (mensual ↔ anual), por sustitución, y entonces devuelve la página de pago (`url`).
+ */
+export async function changePlan(o: { accountId: string; email: string; planKey: string; base: string }): Promise<{ url?: string }> {
+  const sub = await liveSubscription(o.accountId);
+  if (sub.cancel_at_period_end) throw new HttpError(400, 'Tu plan está por cancelarse: primero elige «Mantener mi plan».');
+  if (sub.plan_key === o.planKey) throw new HttpError(400, 'Ya tienes ese plan');
+  const plan = await getPlan(o.planKey);
+  if (!plan?.active) throw new HttpError(404, 'Ese plan no está disponible');
+  const from = await getPlan(sub.plan_key);
+  const upgrade = !from || monthly(plan) > monthly(from);
+  if (!upgrade) await assertFitsPlan(o.accountId, plan);
+  if (sub.provider === 'mercadopago' && from && from.billing_interval !== plan.billing_interval) {
+    return { url: await startReplacement({ accountId: o.accountId, email: o.email, plan, base: o.base }) };
+  }
+  const state = await providers[sub.provider].changePlan(sub, plan, { upgrade });
+  // El estado se aplica ya (el aviso del proveedor llegará después y no repite nada).
+  await applyState({ ...state, accountId: o.accountId, planKey: plan.key });
+  const acc = await queryOne<{ name: string }>(`SELECT name FROM accounts WHERE id = $1`, [o.accountId]);
+  const effect = sub.provider === 'mercadopago'
+    ? `El nuevo precio (${money(chargeCents(plan), plan.currency)} con IVA) aplica desde tu siguiente cobro, el ${fmt(sub.current_period_end)}.`
+    : upgrade ? 'Se cobró la diferencia proporcional por lo que queda de tu periodo.' : 'La parte que ya pagaste del plan anterior se descuenta de tu siguiente cobro.';
+  await logEvent({ level: 'info', source: 'admin', message: `Cambio de plan (${sub.provider}): ${sub.plan_key || '—'} → ${plan.key}`, accountId: o.accountId });
+  await tell(o.accountId, `Cambiaste al plan ${plan.name}`, `Tu cuenta "${acc?.name ?? ''}" ahora tiene el plan ${plan.name}. ${effect}`);
+  return {};
+}
+
+/** Bajar de plan: la cuenta tiene que caber en los límites del nuevo (salvo los que el superadmin le dio aparte). */
+async function assertFitsPlan(accountId: string, plan: Plan) {
+  const [acc, used] = await Promise.all([queryOne<{ limits_override: Record<string, unknown> | null }>(`SELECT limits_override FROM accounts WHERE id = $1`, [accountId]), usageOf(accountId)]);
+  const over = (['channels', 'users', 'chatbots', 'social_accounts'] as const).filter((k) => {
+    const max = plan.limits?.[k];
+    return typeof max === 'number' && max > 0 && acc?.limits_override?.[k] == null && used[k] > max;
+  });
+  if (over.length) {
+    const list = over.map((k) => `${used[k]} ${LIMIT_LABELS[k].plural} (el plan ${plan.name} permite ${plan.limits[k]})`).join(', ');
+    throw new HttpError(409, `Para cambiar al plan ${plan.name} primero ajusta tu cuenta: tienes ${list}.`);
+  }
 }
 
 /**
@@ -147,11 +212,14 @@ async function applyStateLocked(state: SubscriptionState, now: Date): Promise<st
   if (!acc) return null;
 
   const prev = await getSubscription(accountId);
+  // Sustitución pedida desde el panel (cambiar tarjeta, reanudar, mensual ↔ anual): la nueva es el pago iniciado.
+  const replacing = !!prev?.checkout_ref && prev.checkout_provider === state.provider && prev.checkout_ref === state.subscriptionId
+    && !!prev.provider_subscription_id && prev.provider_subscription_id !== state.subscriptionId && state.status === 'active';
   // Un aviso de una suscripción vieja (ya reemplazada) no debe pisar a la actual.
   if (prev && prev.provider_subscription_id && prev.provider_subscription_id !== state.subscriptionId && prev.provider === state.provider && ['active', 'past_due'].includes(prev.status) && !['active', 'incomplete'].includes(state.status)) return accountId;
   // Una segunda suscripción pagada mientras la vigente sigue cobrando (p. ej. dos pestañas de pago): se conserva la vigente
   // y se avisa al superadmin, una sola vez, para que cancele y reembolse la otra. Sin esto se cobraría dos veces sin que nadie lo note.
-  if (state.status === 'active' && prev?.provider_subscription_id && ['active', 'past_due'].includes(prev.status) && !prev.cancel_at_period_end
+  if (!replacing && state.status === 'active' && prev?.provider_subscription_id && ['active', 'past_due'].includes(prev.status) && !prev.cancel_at_period_end
     && (prev.provider !== state.provider || prev.provider_subscription_id !== state.subscriptionId)) {
     // Si la otra ya se cancela al final de su periodo (un plan reemplazado), no seguirá cobrando: solo se ignora.
     if (!state.cancelAtPeriodEnd && await recordEvent(state.provider, `duplicate:${state.subscriptionId}`, 'duplicate_subscription', accountId)) {
@@ -175,8 +243,24 @@ async function applyStateLocked(state: SubscriptionState, now: Date): Promise<st
     [accountId, state.provider, state.customerId, state.subscriptionId, planKey, state.status, periodEnd, state.cancelAtPeriodEnd, pastDueSince],
   );
 
-  const was = prev?.provider_subscription_id === state.subscriptionId ? prev.status : 'incomplete';
+  // Una sustitución no es una contratación nueva: sigue del estado en que estaba (al corriente o con pago pendiente).
+  const was = prev?.provider_subscription_id === state.subscriptionId || (replacing && ['active', 'past_due'].includes(prev!.status)) ? prev!.status : 'incomplete';
   const plan = planKey ? await getPlan(planKey) : null;
+
+  if (replacing && prev) {
+    // La anterior deja de cobrar. Si ya estaba cancelada (reanudar tras cancelar), no hay nada que hacer.
+    if (['active', 'past_due'].includes(prev.status) && !prev.cancel_at_period_end) {
+      try {
+        await providers[prev.provider].setCancelAtPeriodEnd(prev, true);
+      } catch (e: any) {
+        await logEvent({ level: 'error', source: 'admin', message: `No se pudo cancelar la suscripción sustituida ${prev.provider_subscription_id}: ${e?.message ?? e}`, accountId });
+        await notifySuperadmins(accountId, `Cancelar suscripción sustituida: ${acc.name}`,
+          `"${acc.name}" cambió su forma de pago, pero no se pudo cancelar la suscripción anterior (${prev.provider} ${prev.provider_subscription_id}). Cancélala a mano en ${providers[prev.provider].label} para que no cobre dos veces.`);
+      }
+    }
+    await logEvent({ level: 'info', source: 'admin', message: `Suscripción sustituida (${state.provider}): ${prev.provider_subscription_id} → ${state.subscriptionId}`, accountId });
+    if (was === 'active') await tell(accountId, 'Actualizamos tu plan', `Tu cuenta "${acc.name}" sigue al corriente${plan ? ` con el plan ${plan.name}` : ''} y con tu nueva forma de pago. Próximo cobro: ${fmt(periodEnd)}.`);
+  }
 
   if (state.status === 'active') {
     // Cuenta al corriente: se activa (sale de prueba o de pausa) y se anota el plan contratado.

@@ -177,13 +177,16 @@ t('Stripe: cancelar conserva el acceso hasta el fin del periodo pagado', async (
 });
 
 t('Mercado Pago: contratar, activar, cobro rechazado y cancelar', async () => {
+  // El plan de Stripe se canceló con días ya pagados: el primer cobro de Mercado Pago es cuando terminan (no se cobra dos veces).
+  const paidUntil = new Date((await sub()).current_period_end);
+  assert.ok(paidUntil > new Date());
   const r = await B.api('POST', '/api/billing/checkout', { plan: 'solo-mp', provider: 'mercadopago' });
   assert.equal(r.statusCode, 200, r.body);
   assert.equal(r.json().url, 'https://mp.test/checkout/pre_new');
   const sent = fake.mp.requests.find((x) => x.path === '/preapproval' && x.method === 'POST')!.body;
   assert.equal(sent.external_reference, `${B.account}:solo-mp`);
   assert.equal(sent.payer_email, 'laura@sonrisa.mx');
-  assert.deepEqual(sent.auto_recurring, { frequency: 1, frequency_type: 'months', transaction_amount: 230.84, currency_id: 'MXN' }, 'precio + 16 % de IVA');
+  assert.deepEqual(sent.auto_recurring, { frequency: 1, frequency_type: 'months', transaction_amount: 230.84, currency_id: 'MXN', start_date: paidUntil.toISOString() }, 'precio + 16 % de IVA');
 
   const next = days(30).toISOString();
   fake.mp.preapprovals.pre_1 = { id: 'pre_1', status: 'authorized', external_reference: `${B.account}:solo-mp`, payer_id: 777, next_payment_date: next };

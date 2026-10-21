@@ -14,7 +14,11 @@ export const fake = {
     n: 0,
   },
   /** payments = pagos autorizados de la suscripción; charges = pagos (para reembolsos). */
-  mp: { requests: [] as { method: string; path: string; body: any }[], preapprovals: {} as Record<string, any>, payments: {} as Record<string, any>, charges: {} as Record<string, any> },
+  mp: {
+    requests: [] as { method: string; path: string; body: any }[], preapprovals: {} as Record<string, any>, payments: {} as Record<string, any>, charges: {} as Record<string, any>,
+    /** Id de la próxima suscripción que se cree (por omisión, "pre_new"). */
+    nextId: '',
+  },
 };
 export const SECRETS = { stripe: 'whsec_prueba', mp: 'mp_secreto_prueba' };
 
@@ -59,7 +63,17 @@ const stripeUrl = await serve((req, raw, res) => {
   if (m) {
     const sub = fake.stripe.subs[m[1]];
     if (!sub) return json(res, 404, { error: { message: 'No such subscription' } });
-    if (req.method === 'POST') sub.cancel_at_period_end = body.get('cancel_at_period_end') === 'true';
+    if (req.method === 'POST') {
+      if (body.has('cancel_at_period_end')) sub.cancel_at_period_end = body.get('cancel_at_period_end') === 'true';
+      // Cambio de plan: el renglón toma el nuevo precio (por ID o armado con price_data).
+      if (body.has('items[0][id]')) {
+        const item = sub.items.data[0];
+        item.price = body.get('items[0][price]')
+          ? { id: body.get('items[0][price]') }
+          : { id: `price_${++fake.stripe.n}`, unit_amount: Number(body.get('items[0][price_data][unit_amount]')), recurring: { interval: body.get('items[0][price_data][recurring][interval]') }, product: body.get('items[0][price_data][product]') };
+      }
+      if (body.has('metadata[plan_key]')) sub.metadata = { ...sub.metadata, plan_key: body.get('metadata[plan_key]') };
+    }
     return json(res, 200, sub);
   }
   json(res, 404, { error: { message: 'ruta desconocida' } });
@@ -68,12 +82,20 @@ const mpUrl = await serve((req, raw, res) => {
   const path = req.url!.split('?')[0];
   const body = raw ? JSON.parse(raw) : undefined;
   fake.mp.requests.push({ method: req.method!, path, body });
-  if (path === '/preapproval' && req.method === 'POST') return json(res, 201, { id: 'pre_new', init_point: 'https://mp.test/checkout/pre_new' });
+  if (path === '/preapproval' && req.method === 'POST') {
+    const id = fake.mp.nextId || 'pre_new';
+    return json(res, 201, { id, init_point: `https://mp.test/checkout/${id}` });
+  }
   let m = path.match(/^\/preapproval\/([\w-]+)$/);
   if (m) {
     const p = fake.mp.preapprovals[m[1]];
     if (!p) return json(res, 404, { message: 'not found' });
-    if (req.method === 'PUT') p.status = body.status;
+    if (req.method === 'PUT') {
+      if (body.status) p.status = body.status;
+      if (body.reason) p.reason = body.reason;
+      if (body.external_reference) p.external_reference = body.external_reference;
+      if (body.auto_recurring) p.auto_recurring = { ...p.auto_recurring, ...body.auto_recurring };
+    }
     return json(res, 200, p);
   }
   m = path.match(/^\/authorized_payments\/([\w-]+)$/);
@@ -107,5 +129,5 @@ export function mpEvent(type: string, dataId: string, secret = SECRETS.mp, ts = 
 
 export const stripeSub = (over: Record<string, unknown> = {}) => ({
   id: 'sub_1', customer: 'cus_1', status: 'active', current_period_end: Math.floor(Date.now() / 1000) + 30 * 86400, cancel_at_period_end: false,
-  metadata: { account_id: '', plan_key: 'pro' }, items: { data: [{ price: { id: 'price_pro' } }] }, ...over,
+  metadata: { account_id: '', plan_key: 'pro' }, items: { data: [{ id: 'si_1', price: { id: 'price_pro' } }] }, ...over,
 });
