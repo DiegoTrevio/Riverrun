@@ -1,7 +1,8 @@
 import crypto from 'node:crypto';
 import { config } from '../config.js';
 import { credentialAllowed } from '../outbound-guard.js';
-import { ProviderError, WebhookError, type BillingProvider, type Plan, type SubStatus, type SubscriptionState } from './types.js';
+import { chargeCents } from './tax.js';
+import { ProviderError, WebhookError, type BillingProvider, type PaymentInfo, type SubStatus, type SubscriptionState, type WebhookResult } from './types.js';
 
 const cfg = () => config.billing.mercadopago;
 /** Prefijo de las credenciales de prueba de Mercado Pago. Las de producción empiezan por APP_USR-. */
@@ -43,6 +44,24 @@ export function stateFromPreapproval(p: any): SubscriptionState {
   };
 }
 
+/** Cobro de un pago autorizado de la suscripción (null si todavía no se cobra o se rechazó). */
+export function paymentFromAuthorized(pay: any): PaymentInfo | null {
+  const total = Math.round(Number(pay.transaction_amount ?? 0) * 100);
+  if (!pay.id || pay.payment?.status !== 'approved' || !(total > 0)) return null;
+  const at = new Date(pay.debit_date ?? pay.last_modified ?? pay.date_created ?? Date.now());
+  const paidAt = Number.isNaN(at.getTime()) ? new Date() : at;
+  return {
+    paymentId: String(pay.id),
+    chargeRef: String(pay.payment?.id ?? ''),
+    subscriptionId: String(pay.preapproval_id ?? ''),
+    totalCents: total,
+    currency: String(pay.currency_id ?? 'MXN').toUpperCase(),
+    paidAt,
+    periodStart: paidAt,
+    periodEnd: null,
+  };
+}
+
 /**
  * Firma de Mercado Pago: x-signature = "ts=...,v1=..."; v1 es HMAC-SHA256 de
  * "id:<data.id>;request-id:<x-request-id>;ts:<ts>;" con la clave secreta del webhook.
@@ -77,7 +96,7 @@ export const mercadopago: BillingProvider = {
       payer_email: email,
       back_url: successUrl,
       status: 'pending',
-      auto_recurring: { frequency: 1, frequency_type: 'months', transaction_amount: plan.price_cents / 100, currency_id: plan.currency },
+      auto_recurring: { frequency: plan.billing_interval === 'year' ? 12 : 1, frequency_type: 'months', transaction_amount: chargeCents(plan) / 100, currency_id: plan.currency },
     });
     if (!p.init_point) throw new ProviderError('Mercado Pago no devolvió la página de pago');
     return { url: p.init_point, ref: String(p.id ?? '') };
@@ -104,8 +123,16 @@ export const mercadopago: BillingProvider = {
     verifySignature({ signature: String(headers['x-signature'] ?? ''), requestId: String(headers['x-request-id'] ?? ''), dataId: query['data.id'] ?? undefined, secret: cfg().webhookSecret });
     const type = String(body.type ?? query.type ?? query.topic ?? '');
     const sig = String(headers['x-signature'] ?? '');
-    const result = { eventId: `${type}:${dataId}:${sig.match(/ts=(\d+)/)?.[1] ?? ''}`, type, state: null as SubscriptionState | null };
+    const result: WebhookResult = { eventId: `${type}:${dataId}:${sig.match(/ts=(\d+)/)?.[1] ?? ''}`, type, state: null };
     if (!dataId) return result;
+
+    // Reembolso: llega como aviso del pago (tema "payment") con lo reembolsado hasta ahora.
+    if (type === 'payment') {
+      const p = await call('GET', `/v1/payments/${encodeURIComponent(dataId)}`);
+      const refunded = Math.round(Number(p.transaction_amount_refunded ?? 0) * 100);
+      if (refunded > 0) result.refund = { paymentId: '', chargeRefs: [String(p.id ?? dataId)], refundedCents: refunded };
+      return result;
+    }
 
     let preapprovalId = '';
     let rejectedPayment = false;
@@ -114,11 +141,13 @@ export const mercadopago: BillingProvider = {
       const pay = await call('GET', `/authorized_payments/${encodeURIComponent(dataId)}`);
       preapprovalId = String(pay.preapproval_id ?? '');
       rejectedPayment = ['rejected', 'cancelled'].includes(String(pay.status));
+      result.payment = paymentFromAuthorized(pay) ?? undefined;
     }
     if (!preapprovalId) return result;
     const state = stateFromPreapproval(await call('GET', `/preapproval/${encodeURIComponent(preapprovalId)}`));
     // Un cobro rechazado deja la suscripción "authorized" mientras reintenta: se trata como pago pendiente.
     if (rejectedPayment && state.status === 'active') state.status = 'past_due';
+    if (result.payment) result.payment.periodEnd = state.periodEnd;
     result.state = state;
     return result;
   },

@@ -1,4 +1,4 @@
-import { api, check, field, fill, h, num, run, state, text, toast, confirmAction } from './core.js';
+import { api, check, field, fill, h, num, run, select, state, text, toast, confirmAction } from './core.js';
 import { render } from './main.js';
 import { withAcct } from './session.js';
 import { needsOnboarding } from './shell.js';
@@ -7,7 +7,16 @@ import { needsOnboarding } from './shell.js';
 
 const SUB_LABEL = { incomplete: ['', 'Pago pendiente'], active: ['green', 'Al corriente'], past_due: ['orange', 'Pago pendiente'], canceled: ['red', 'Cancelado'] };
 
-export const planPrice = (p) => `${new Intl.NumberFormat('es-MX', { maximumFractionDigits: 2 }).format(p.price)} ${p.currency}`;
+const amount = (n) => new Intl.NumberFormat('es-MX', { minimumFractionDigits: n % 1 ? 2 : 0, maximumFractionDigits: 2 }).format(n);
+/** Precio publicado: sin IVA, "+ IVA". */
+export const planPrice = (p) => `$${amount(p.price)} ${p.currency}${p.tax_percent ? ' + IVA' : ''}`;
+/** Periodo de cobro del plan. */
+export const per = (p) => (p.interval === 'year' ? 'año' : 'mes');
+/** Lo que se cobra en total, con IVA ("" si no se suma IVA). */
+export const totalText = (p) => (p.tax_percent ? `Total con IVA (${p.tax_percent} %): $${amount(p.total)} ${p.currency} al ${per(p)}` : '');
+
+const PAY_LABEL = { paid: ['green', 'Pagado'], partially_refunded: ['orange', 'Reembolso parcial'], refunded: ['', 'Reembolsado'] };
+const money = (n, currency) => `$${new Intl.NumberFormat('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n)} ${currency}`;
 
 const longDate = (d) => (d ? new Date(d).toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric' }) : '');
 
@@ -41,7 +50,7 @@ export async function viewPlan(root, params) {
     fill(status,
       h('div', { class: 'row between' },
         h('h2', { style: 'margin:0' }, plan ? `Plan ${plan.name}` : 'Tu plan', ' ', h('span', { class: `badge ${SUB_LABEL[sub.status][0]}` }, SUB_LABEL[sub.status][1])),
-        plan ? h('strong', {}, `${planPrice(plan)} / mes`) : null),
+        plan ? h('strong', {}, `${planPrice(plan)} / ${per(plan)}`) : null),
       sub.status === 'past_due'
         ? h('p', { class: 'banner warn' }, `No pudimos cobrar tu plan. Actualiza tu forma de pago${sub.provider === 'stripe' ? ' en "Administrar pago"' : ' en Mercado Pago'} en los próximos ${b.grace_days} días para que tu asistente siga respondiendo.`)
         : h('p', { class: 'muted' }, sub.cancel_at_period_end
@@ -73,7 +82,8 @@ export async function viewPlan(root, params) {
     } else {
       fill(offer, h('div', { class: 'grid' }, b.plans.map((p) => h('div', { class: p.key === params.get('plan') ? 'card chosen' : 'card' },
         h('h2', { style: 'margin:0' }, p.name),
-        h('div', { class: 'kpi', style: 'margin:8px 0' }, planPrice(p), h('span', { class: 'muted small' }, ' / mes')),
+        h('div', { class: 'kpi', style: 'margin:8px 0' }, planPrice(p), h('span', { class: 'muted small' }, ` / ${per(p)}`)),
+        totalText(p) ? h('p', { class: 'muted small', style: 'margin-top:0' }, totalText(p)) : null,
         p.description ? h('p', { class: 'muted' }, p.description) : null,
         limitsText(p.limits) ? h('p', { class: 'small' }, '✓ Incluye ', limitsText(p.limits)) : h('p', { class: 'small' }, '✓ Sin límites de uso'),
         p.providers.length
@@ -82,7 +92,9 @@ export async function viewPlan(root, params) {
             if (r) location.href = r.url;
           } }, `Contratar con ${pr.label}`)))
           : h('p', { class: 'muted small' }, 'No disponible por ahora.')))),
-      h('p', { class: 'muted small' }, 'Pago seguro en la página de Stripe o Mercado Pago: nosotros nunca vemos los datos de tu tarjeta. El cobro se renueva cada mes y puedes cancelar cuando quieras.'));
+      h('p', { class: 'muted small' }, 'Pago seguro en la página de Stripe o Mercado Pago: nosotros nunca vemos los datos de tu tarjeta.',
+        b.plans.some((p) => p.tax_percent) ? ' Los precios no incluyen IVA: se cobra el total con IVA.' : '',
+        ' El cobro se renueva solo y puedes cancelar cuando quieras.'));
     }
   }
 
@@ -105,14 +117,31 @@ export async function viewPlan(root, params) {
       : params.get('pago') === 'cancelado'
         ? h('div', { class: 'banner warn' }, 'No se completó el pago y no se te cobró nada. Puedes intentarlo de nuevo cuando quieras.')
         : null;
-  root.append(h('h1', {}, 'Mi plan y pagos'), notice, status, usage, offer);
+  const history = b.payments?.length
+    ? h('div', { class: 'card' },
+      h('h2', { style: 'margin-top:0' }, 'Tus pagos'),
+      h('table', {},
+        h('thead', {}, h('tr', {}, h('th', {}, 'Fecha'), h('th', {}, 'Concepto'), h('th', { class: 'num' }, 'Subtotal'), h('th', { class: 'num' }, 'IVA'), h('th', { class: 'num' }, 'Total'), h('th', {}, 'Estado'))),
+        h('tbody', {}, b.payments.map((p) => {
+          const plan = b.plans.find((x) => x.key === p.plan_key);
+          return h('tr', {},
+            h('td', {}, longDate(p.paid_at)),
+            h('td', {}, plan ? `Plan ${plan.name}` : 'Suscripción', p.period_end ? h('div', { class: 'muted small' }, `Hasta el ${longDate(p.period_end)}`) : null),
+            h('td', { class: 'num' }, money(p.subtotal, p.currency)),
+            h('td', { class: 'num' }, money(p.tax, p.currency)),
+            h('td', { class: 'num' }, h('strong', {}, money(p.total, p.currency)), p.refunded ? h('div', { class: 'muted small' }, `Reembolsado: ${money(p.refunded, p.currency)}`) : null),
+            h('td', {}, h('span', { class: `badge ${PAY_LABEL[p.status][0]}` }, PAY_LABEL[p.status][1])));
+        }))),
+      h('p', { class: 'muted small', style: 'margin-bottom:0' }, 'Cada pago se registra con su IVA desglosado.'))
+    : null;
+  root.append(h('h1', {}, 'Mi plan y pagos'), notice, status, usage, offer, history);
   if (waiting && !gaveUp) state.timers.push(setTimeout(() => { state.me = null; render(); }, 4000));
 }
 
 /** Superadmin: planes, claves configuradas y avisos de los proveedores. */
 export async function viewPlans(root) {
   const [plans, ov] = await Promise.all([api('GET', '/api/plans'), api('GET', '/api/billing/overview')]);
-  const blank = { key: '', name: '', description: '', price: 0, currency: 'MXN', stripe_price_id: '', active: true, sort_order: 0, limits: {} };
+  const blank = { key: '', name: '', description: '', price: 0, currency: 'MXN', interval: 'month', tax_percent: ov.tax_percent, stripe_price_id: '', active: true, sort_order: 0, limits: {} };
   const count = (provider, status) => ov.counts.filter((c) => c.provider === provider && c.status === status).reduce((a, c) => a + c.n, 0);
 
   const editor = (p, isNew) => {
@@ -123,9 +152,10 @@ export async function viewPlans(root) {
         field('Nombre', text(m, 'name', { placeholder: 'Plan Básico' }))),
       field('Qué incluye', text(m, 'description', { placeholder: '1 WhatsApp, citas y automatizaciones' })),
       h('div', { class: 'grid' },
-        field('Precio mensual', num(m, 'price', { step: 0.01, min: 0 })),
+        field('Precio sin IVA', num(m, 'price', { step: 0.01, min: 0 }), p.tax_percent ? `Se publica "+ IVA" y se cobra el precio más ${p.tax_percent} % de IVA.` : undefined),
+        field('Se cobra', select(m, 'interval', [['month', 'Cada mes'], ['year', 'Cada año']])),
         field('Moneda', text(m, 'currency', { placeholder: 'MXN' })),
-        field('ID de precio de Stripe (opcional)', text(m, 'stripe_price_id', { placeholder: 'price_1Abc…' }), 'Déjalo vacío: Stripe cobra el precio y la moneda de este plan automáticamente. Úsalo solo si ya tienes un precio mensual creado en Stripe por el mismo monto.')),
+        field('ID de precio de Stripe (opcional)', text(m, 'stripe_price_id', { placeholder: 'price_1Abc…' }), 'Déjalo vacío: Stripe cobra el precio con IVA, la moneda y el periodo de este plan automáticamente. Úsalo solo si ya tienes un precio creado en Stripe por el total con IVA y el mismo periodo.')),
       h('h3', { style: 'margin:12px 0 4px' }, 'Límites del plan', h('span', { class: 'muted small' }, ' (vacío = sin límite)')),
       h('div', { class: 'grid' },
         field('Mensajes del asistente al mes', num(m.limits, 'messages_per_month', { min: 1, nullable: true, placeholder: 'Sin límite' })),
@@ -152,7 +182,7 @@ export async function viewPlans(root) {
         : h('p', { class: 'small muted' }, pr.name === 'stripe' ? 'Agrega STRIPE_SECRET_KEY y STRIPE_WEBHOOK_SECRET en .env y reinicia (./riverrun restart).' : 'Agrega MERCADOPAGO_ACCESS_TOKEN y MERCADOPAGO_WEBHOOK_SECRET en .env y reinicia (./riverrun restart).'),
       h('div', { class: 'small' }, 'Dirección de avisos (webhook):'),
       h('div', { class: 'row' }, h('code', { style: 'word-break:break-all' }, pr.webhook_url), copy(pr.webhook_url)),
-      h('p', { class: 'small muted' }, pr.name === 'stripe' ? 'En Stripe → Desarrolladores → Webhooks: eventos checkout.session.completed, customer.subscription.*, invoice.paid e invoice.payment_failed.' : 'En Mercado Pago → Tus integraciones → Webhooks: eventos "Planes y suscripciones" (preapproval y pagos autorizados).')))),
+      h('p', { class: 'small muted' }, pr.name === 'stripe' ? 'En Stripe → Desarrolladores → Webhooks: eventos checkout.session.completed, customer.subscription.*, invoice.paid, invoice.payment_failed y charge.refunded (reembolsos).' : 'En Mercado Pago → Tus integraciones → Webhooks: eventos "Planes y suscripciones" (preapproval y pagos autorizados) y "Pagos" (reembolsos).')))),
     ...(ov.monthly_revenue.length ? [h('p', {}, h('strong', {}, 'Ingreso mensual recurrente: '), ov.monthly_revenue.map((m) => `${m.amount.toLocaleString('es-MX')} ${m.currency}`).join(' · '))] : []),
     h('h2', {}, 'Planes'),
     h('p', { class: 'muted' }, `Si un cobro falla, la cuenta sigue funcionando ${ov.grace_days} días y luego se pausa sola; al pagar, se reactiva sola.`),

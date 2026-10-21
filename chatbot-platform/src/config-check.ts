@@ -118,6 +118,7 @@ const NUMBERS: { name: string; min: number; max: number; int?: boolean; area: Ar
   { name: 'TRIAL_MAX_CHATBOTS', min: 0, max: 1e6, int: true, area: 'core', what: 'límite de asistentes de la prueba' },
   { name: 'TRIAL_MAX_SOCIAL_ACCOUNTS', min: 0, max: 1e6, int: true, area: 'core', what: 'límite de redes sociales conectadas de la prueba' },
   { name: 'BILLING_GRACE_DAYS', min: 0, max: 365, int: true, area: 'billing', what: 'días de gracia de cobro' },
+  { name: 'BILLING_TAX_PERCENT', min: 0, max: 100, area: 'billing', what: 'IVA que se suma al precio de los planes (%)' },
   { name: 'BACKUP_MAX_AGE_HOURS', min: 1, max: 8760, area: 'monitoring', what: 'horas sin respaldo antes de avisar' },
   { name: 'AI_ALERT_USD_PER_ACCOUNT', min: 0, max: 1e6, area: 'ai', what: 'aviso de gasto de IA (USD)' },
   // Mismos límites que config.ts (allí un valor fuera de rango detiene el proceso).

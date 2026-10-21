@@ -13,7 +13,8 @@ export const fake = {
     drop: false,
     n: 0,
   },
-  mp: { requests: [] as { method: string; path: string; body: any }[], preapprovals: {} as Record<string, any>, payments: {} as Record<string, any> },
+  /** payments = pagos autorizados de la suscripción; charges = pagos (para reembolsos). */
+  mp: { requests: [] as { method: string; path: string; body: any }[], preapprovals: {} as Record<string, any>, payments: {} as Record<string, any>, charges: {} as Record<string, any> },
 };
 export const SECRETS = { stripe: 'whsec_prueba', mp: 'mp_secreto_prueba' };
 
@@ -77,6 +78,8 @@ const mpUrl = await serve((req, raw, res) => {
   }
   m = path.match(/^\/authorized_payments\/([\w-]+)$/);
   if (m && fake.mp.payments[m[1]]) return json(res, 200, fake.mp.payments[m[1]]);
+  m = path.match(/^\/v1\/payments\/([\w-]+)$/);
+  if (m && fake.mp.charges[m[1]]) return json(res, 200, fake.mp.charges[m[1]]);
   json(res, 404, { message: 'ruta desconocida' });
 });
 

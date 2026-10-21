@@ -183,7 +183,7 @@ t('Mercado Pago: contratar, activar, cobro rechazado y cancelar', async () => {
   const sent = fake.mp.requests.find((x) => x.path === '/preapproval' && x.method === 'POST')!.body;
   assert.equal(sent.external_reference, `${B.account}:solo-mp`);
   assert.equal(sent.payer_email, 'laura@sonrisa.mx');
-  assert.deepEqual(sent.auto_recurring, { frequency: 1, frequency_type: 'months', transaction_amount: 199, currency_id: 'MXN' });
+  assert.deepEqual(sent.auto_recurring, { frequency: 1, frequency_type: 'months', transaction_amount: 230.84, currency_id: 'MXN' }, 'precio + 16 % de IVA');
 
   const next = days(30).toISOString();
   fake.mp.preapprovals.pre_1 = { id: 'pre_1', status: 'authorized', external_reference: `${B.account}:solo-mp`, payer_id: 777, next_payment_date: next };
