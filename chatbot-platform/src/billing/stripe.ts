@@ -96,6 +96,13 @@ async function ensureProduct(plan: Plan): Promise<string> {
   return id;
 }
 
+/** Precio del renglón: el ID de precio del plan o, sin él, el monto con IVA y el periodo del plan. */
+async function priceOf(plan: Plan) {
+  return plan.stripe_price_id
+    ? { price: plan.stripe_price_id }
+    : { price_data: { currency: plan.currency.toLowerCase(), unit_amount: unitAmount(chargeCents(plan), plan.currency), recurring: { interval: plan.billing_interval === 'year' ? 'year' : 'month' }, product: await ensureProduct(plan) } };
+}
+
 const STATUS: Record<string, SubStatus> = {
   active: 'active', trialing: 'active', past_due: 'past_due', unpaid: 'past_due', canceled: 'canceled', incomplete_expired: 'canceled', incomplete: 'incomplete', paused: 'past_due',
 };
@@ -145,9 +152,7 @@ export const stripe: BillingProvider = {
 
   async createCheckout({ accountId, email, plan, successUrl, cancelUrl, customerId }) {
     const meta = { account_id: accountId, plan_key: plan.key };
-    const item = plan.stripe_price_id
-      ? { price: plan.stripe_price_id, quantity: 1 }
-      : { price_data: { currency: plan.currency.toLowerCase(), unit_amount: unitAmount(chargeCents(plan), plan.currency), recurring: { interval: plan.billing_interval === 'year' ? 'year' : 'month' }, product: await ensureProduct(plan) }, quantity: 1 };
+    const item = { ...(await priceOf(plan)), quantity: 1 };
     const s = await call('POST', '/v1/checkout/sessions', {
       mode: 'subscription',
       line_items: [item],
@@ -180,6 +185,21 @@ export const stripe: BillingProvider = {
 
   async setCancelAtPeriodEnd(sub, cancel) {
     await call('POST', `/v1/subscriptions/${encodeURIComponent(sub.provider_subscription_id)}`, { cancel_at_period_end: cancel ? 'true' : 'false' });
+  },
+
+  async changePlan(sub, plan, { upgrade }) {
+    const path = `/v1/subscriptions/${encodeURIComponent(sub.provider_subscription_id)}`;
+    const item = (await call('GET', path)).items?.data?.[0]?.id;
+    if (!item) throw new ProviderError('Stripe: la suscripción no tiene un concepto que cambiar');
+    const updated = await call('POST', path, {
+      items: [{ id: item, ...(await priceOf(plan)) }],
+      metadata: { account_id: sub.account_id, plan_key: plan.key },
+      // Subir: se cobra hoy la diferencia proporcional y, si el cobro falla, no se cambia nada. Bajar: el saldo a favor
+      // queda para el siguiente cobro.
+      proration_behavior: upgrade ? 'always_invoice' : 'create_prorations',
+      ...(upgrade ? { payment_behavior: 'error_if_incomplete' } : {}),
+    });
+    return stateFromSubscription(updated, [plan]);
   },
 
   async handleWebhook({ rawBody, headers, plans }) {

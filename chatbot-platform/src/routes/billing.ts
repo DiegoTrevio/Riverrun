@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { HttpError, requireRole, targetAccount } from '../access.js';
 import { rateLimited } from '../auth.js';
 import { baseFor } from '../brands.js';
-import { providers, applyState, confirmCheckout, enabledProviders, getPlan, getSubscription, listPlans, payable, recordEvent, startCheckout } from '../billing/service.js';
+import { providers, applyState, changePlan, confirmCheckout, enabledProviders, getPlan, getSubscription, listPlans, payable, recordEvent, startCheckout, startReplacement } from '../billing/service.js';
 import { applyRefund, listPayments, recordPayment } from '../billing/payments.js';
 import { chargeCents, taxPercent } from '../billing/tax.js';
 import { ProviderError, WebhookError, type Plan, type ProviderName, type WebhookResult } from '../billing/types.js';
@@ -174,9 +174,11 @@ export async function billingRoutes(api: FastifyInstance) {
     const b = parse(z.object({ plan: z.string().max(40), provider: z.enum(['stripe', 'mercadopago']) }), req.body);
     const { plan, provider } = await payable(b.plan, b.provider);
     const sub = await getSubscription(accountId);
-    if (sub && ['active', 'past_due'].includes(sub.status) && !sub.cancel_at_period_end && sub.provider_subscription_id) throw new HttpError(409, 'Ya tienes un plan activo. Para cambiar la tarjeta o cancelar usa "Administrar pago".');
+    if (sub && ['active', 'past_due'].includes(sub.status) && !sub.cancel_at_period_end && sub.provider_subscription_id) throw new HttpError(409, 'Ya tienes un plan activo: para cambiarlo usa «Cambiar de plan» en Mi plan.');
     try {
-      return { url: await startCheckout({ accountId, email: req.user.email, plan, provider, base: await baseFor(req) }) };
+      // Volver a contratar con Mercado Pago tras cancelar: el primer cobro es al terminar lo ya pagado.
+      const paidUntil = provider === 'mercadopago' && sub && (sub.status === 'canceled' || sub.cancel_at_period_end) && sub.current_period_end && sub.current_period_end > new Date() ? sub.current_period_end : undefined;
+      return { url: await startCheckout({ accountId, email: req.user.email, plan, provider, base: await baseFor(req), startAt: paidUntil }) };
     } catch (e: any) {
       if (e instanceof ProviderError) throw new HttpError(502, `${e.message}. Intenta de nuevo o escríbenos.`);
       throw e;
@@ -211,10 +213,49 @@ export async function billingRoutes(api: FastifyInstance) {
     }
   });
 
+  /** Los errores del proveedor se informan como 502 con su mensaje. */
+  const viaProvider = async <T>(fn: () => Promise<T>): Promise<T> => {
+    try {
+      return await fn();
+    } catch (e: any) {
+      if (e instanceof ProviderError) throw new HttpError(502, `${e.message}. Intenta de nuevo o escríbenos.`);
+      throw e;
+    }
+  };
+
+  /** Cambiar de plan. Mercado Pago entre mensual y anual pasa por su página de pago: entonces responde `url`. */
+  api.post('/api/billing/change', admins, async (req: any) => {
+    const accountId = await targetAccount(req.user, req.query.account_id);
+    const { plan } = parse(z.object({ plan: z.string().max(40) }), req.body);
+    const r = await viaProvider(async () => changePlan({ accountId, email: req.user.email, planKey: plan, base: await baseFor(req) }));
+    return { ok: true, ...r, subscription: publicSub(await getSubscription(accountId)) };
+  });
+
+  /** Cambiar la tarjeta. Stripe: su página de administración. Mercado Pago: una suscripción nueva desde el siguiente cobro. */
+  api.post('/api/billing/payment-method', admins, async (req: any) => {
+    const accountId = await targetAccount(req.user, req.query.account_id);
+    const sub = await getSubscription(accountId);
+    if (!sub?.provider_subscription_id || !['active', 'past_due'].includes(sub.status)) throw new HttpError(400, 'No tienes un plan activo');
+    const base = await baseFor(req);
+    if (sub.provider === 'stripe') {
+      if (!sub.provider_customer_id) throw new HttpError(400, 'Tu plan no tiene página de administración');
+      return viaProvider(() => providers.stripe.portal!(sub.provider_customer_id, `${base}/#/plan`));
+    }
+    const plan = await getPlan(sub.plan_key);
+    if (!plan?.active) throw new HttpError(409, 'Tu plan ya no se ofrece: elige otro para continuar.');
+    return { url: await viaProvider(() => startReplacement({ accountId, email: req.user.email, plan, base })) };
+  });
+
   api.post('/api/billing/cancel', admins, async (req: any) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
     const { resume } = parse(z.object({ resume: z.boolean().default(false) }), req.body);
     const sub = await getSubscription(accountId);
+    // Mercado Pago no reanuda una suscripción cancelada: se contrata el mismo plan con el primer cobro al terminar lo pagado.
+    if (resume && sub?.provider === 'mercadopago' && (sub.cancel_at_period_end || sub.status === 'canceled') && sub.current_period_end && sub.current_period_end > new Date()) {
+      const plan = await getPlan(sub.plan_key);
+      if (!plan?.active) throw new HttpError(409, 'Tu plan ya no se ofrece: elige otro para continuar.');
+      return { ok: true, url: await viaProvider(async () => startReplacement({ accountId, email: req.user.email, plan, base: await baseFor(req) })) };
+    }
     if (!sub?.provider_subscription_id || !['active', 'past_due'].includes(sub.status)) throw new HttpError(400, 'No tienes un plan activo');
     try {
       await providers[sub.provider].setCancelAtPeriodEnd(sub, !resume);

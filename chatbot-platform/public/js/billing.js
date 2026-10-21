@@ -24,6 +24,27 @@ const LIMIT_SHORT = { messages_per_month: ['mensajes al mes', 'mensaje al mes'],
 /** "hasta 1,000 mensajes al mes · 1 canal · …" (vacío si el plan no tiene límites). */
 export const limitsText = (limits = {}) => Object.entries(LIMIT_SHORT).filter(([k]) => limits[k]).map(([k, [pl, sg]]) => `${limits[k].toLocaleString('es-MX')} ${limits[k] === 1 ? sg : pl}`).join(' · ');
 
+/** Abre la página del proveedor que devuelve la ruta (cambiar tarjeta). */
+async function goPay(path) {
+  const r = await run(() => api('POST', withAcct(path)));
+  if (r?.url) location.href = r.url;
+}
+
+/** Costo al mes (los anuales, su doceava parte): para saber si un cambio sube o baja. */
+const monthly = (p) => (p.interval === 'year' ? p.price / 12 : p.price);
+
+/** Qué pasa con el cobro al cambiar de plan, en palabras del cliente. */
+function changeEffect(sub, from, to) {
+  if (sub.provider === 'mercadopago') {
+    return from && from.interval !== to.interval
+      ? 'Te llevamos a Mercado Pago para autorizar el nuevo cobro; empieza cuando termine lo que ya pagaste.'
+      : `El nuevo precio (${totalText(to) ? `$${amount(to.total)} ${to.currency} con IVA` : planPrice(to)}) se cobra desde tu siguiente pago, el ${longDate(sub.current_period_end)}.`;
+  }
+  return !from || monthly(to) > monthly(from)
+    ? 'Hoy se cobra la parte proporcional de lo que queda de tu periodo.'
+    : 'Lo que ya pagaste del plan actual se descuenta de tu siguiente cobro.';
+}
+
 /** Consultas al proveedor tras volver del pago (cada 4 s, hasta 1 minuto); luego lo confirma la revisión periódica. */
 let confirmTries = 0;
 const MAX_CONFIRM_TRIES = 15;
@@ -52,14 +73,19 @@ export async function viewPlan(root, params) {
         h('h2', { style: 'margin:0' }, plan ? `Plan ${plan.name}` : 'Tu plan', ' ', h('span', { class: `badge ${SUB_LABEL[sub.status][0]}` }, SUB_LABEL[sub.status][1])),
         plan ? h('strong', {}, `${planPrice(plan)} / ${per(plan)}`) : null),
       sub.status === 'past_due'
-        ? h('p', { class: 'banner warn' }, `No pudimos cobrar tu plan. Actualiza tu forma de pago${sub.provider === 'stripe' ? ' en "Administrar pago"' : ' en Mercado Pago'} en los próximos ${b.grace_days} días para que tu asistente siga respondiendo.`)
+        ? h('p', { class: 'banner warn' }, `No pudimos cobrar tu plan. Actualiza tu forma de pago${sub.provider === 'stripe' ? ' en "Administrar pago"' : ' con «Cambiar tarjeta»'} en los próximos ${b.grace_days} días para que tu asistente siga respondiendo.`)
         : h('p', { class: 'muted' }, sub.cancel_at_period_end
           ? `Tu plan se cancelará el ${longDate(sub.current_period_end)}; hasta entonces todo sigue funcionando.`
           : `Próximo cobro: ${longDate(sub.current_period_end)}.`),
       h('div', { class: 'row' },
         sub.can_portal ? h('button', { class: 'primary', onclick: async () => { const r = await run(() => api('POST', withAcct('/api/billing/portal'))); if (r) location.href = r.url; } }, 'Administrar pago y facturas') : null,
-        sub.cancel_at_period_end && sub.provider === 'stripe'
-          ? h('button', { onclick: async () => { if (await run(() => api('POST', withAcct('/api/billing/cancel'), { resume: true }), 'Listo: tu plan sigue activo')) render(); } }, 'Mantener mi plan')
+        sub.provider === 'mercadopago' && !sub.cancel_at_period_end ? h('button', { onclick: () => goPay('/api/billing/payment-method') }, 'Cambiar tarjeta') : null,
+        sub.cancel_at_period_end
+          ? h('button', { onclick: async () => {
+            // Mercado Pago no reanuda: se autoriza de nuevo el mismo plan, con el primer cobro al terminar lo ya pagado.
+            const r = await run(() => api('POST', withAcct('/api/billing/cancel'), { resume: true }), sub.provider === 'stripe' ? 'Listo: tu plan sigue activo' : undefined);
+            if (r?.url) location.href = r.url; else if (r) render();
+          } }, 'Mantener mi plan')
           : !sub.cancel_at_period_end ? h('button', { class: 'danger', onclick: async () => {
             if (!await confirmAction('¿Cancelar tu plan? Seguirás usándolo hasta el final del periodo ya pagado.')) return;
             if (await run(() => api('POST', withAcct('/api/billing/cancel'), {}), 'Cancelación registrada')) render();
@@ -71,6 +97,24 @@ export async function viewPlan(root, params) {
       acc.status === 'paused' ? h('p', { class: 'muted' }, 'Tu configuración y tus conversaciones se conservan. Elige un plan y tu asistente vuelve a responder en cuanto se confirme el pago.') : null,
       sub?.status === 'canceled' ? h('p', { class: 'muted' }, 'Tu plan anterior se canceló. Puedes contratar de nuevo cuando quieras.') : null);
   }
+
+  const others = live && !sub.cancel_at_period_end ? b.plans.filter((p) => p.key !== sub.plan_key) : [];
+  const current = live ? b.plans.find((p) => p.key === sub.plan_key) : null;
+  const change = others.length
+    ? h('section', { class: 'card', 'aria-labelledby': 'change-plan' },
+      h('h2', { id: 'change-plan', style: 'margin-top:0' }, 'Cambiar de plan'),
+      h('div', { class: 'grid' }, others.map((p) => h('div', { class: 'card' },
+        h('h3', { style: 'margin:0' }, p.name),
+        h('div', { class: 'kpi', style: 'margin:8px 0' }, planPrice(p), h('span', { class: 'muted small' }, ` / ${per(p)}`)),
+        totalText(p) ? h('p', { class: 'muted small', style: 'margin-top:0' }, totalText(p)) : null,
+        limitsText(p.limits) ? h('p', { class: 'small' }, '✓ Incluye ', limitsText(p.limits)) : h('p', { class: 'small' }, '✓ Sin límites de uso'),
+        h('button', { class: 'primary', onclick: async () => {
+          if (!await confirmAction(`¿Cambiar al plan ${p.name}? ${changeEffect(sub, current, p)}`)) return;
+          const r = await run(() => api('POST', withAcct('/api/billing/change'), { plan: p.key }));
+          if (r?.url) location.href = r.url;
+          else if (r) { toast(`Listo: ahora tienes el plan ${p.name}`); render(); }
+        } }, `Cambiar a ${p.name}`)))))
+    : null;
 
   const waiting = paid && !live;
   const gaveUp = waiting && confirmTries >= MAX_CONFIRM_TRIES;
@@ -134,7 +178,7 @@ export async function viewPlan(root, params) {
         }))),
       h('p', { class: 'muted small', style: 'margin-bottom:0' }, 'Cada pago se registra con su IVA desglosado.'))
     : null;
-  root.append(h('h1', {}, 'Mi plan y pagos'), notice, status, usage, offer, history);
+  root.append(h('h1', {}, 'Mi plan y pagos'), notice, status, change, usage, offer, history);
   if (waiting && !gaveUp) state.timers.push(setTimeout(() => { state.me = null; render(); }, 4000));
 }
 

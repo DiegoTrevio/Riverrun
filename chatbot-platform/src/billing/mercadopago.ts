@@ -89,14 +89,18 @@ export const mercadopago: BillingProvider = {
   enabled: () => !!(cfg().accessToken && cfg().webhookSecret) && credentialAllowed(cfg().accessToken, TEST_TOKENS),
   supportsPlan: () => true,
 
-  async createCheckout({ accountId, email, plan, successUrl }) {
+  async createCheckout({ accountId, email, plan, successUrl, startAt }) {
     const p = await call('POST', '/preapproval', {
       reason: plan.name,
       external_reference: reference(accountId, plan.key),
       payer_email: email,
       back_url: successUrl,
       status: 'pending',
-      auto_recurring: { frequency: plan.billing_interval === 'year' ? 12 : 1, frequency_type: 'months', transaction_amount: chargeCents(plan) / 100, currency_id: plan.currency },
+      auto_recurring: {
+        frequency: plan.billing_interval === 'year' ? 12 : 1, frequency_type: 'months', transaction_amount: chargeCents(plan) / 100, currency_id: plan.currency,
+        // Sustitución: el primer cobro es cuando termina el periodo ya pagado (no se cobra dos veces).
+        ...(startAt && startAt.getTime() > Date.now() ? { start_date: startAt.toISOString() } : {}),
+      },
     });
     if (!p.init_point) throw new ProviderError('Mercado Pago no devolvió la página de pago');
     return { url: p.init_point, ref: String(p.id ?? '') };
@@ -110,6 +114,17 @@ export const mercadopago: BillingProvider = {
     // Mercado Pago no tiene "cancelar al final del periodo": se cancela ya y el acceso dura hasta la fecha pagada.
     if (!cancel) throw new ProviderError('Para reanudar, contrata el plan de nuevo.');
     await call('PUT', `/preapproval/${encodeURIComponent(sub.provider_subscription_id)}`, { status: 'cancelled' });
+  },
+
+  async changePlan(sub, plan) {
+    const path = `/preapproval/${encodeURIComponent(sub.provider_subscription_id)}`;
+    // El nuevo monto aplica desde el siguiente cobro; el periodo (mensual o anual) no se puede cambiar aquí.
+    await call('PUT', path, {
+      reason: plan.name,
+      external_reference: reference(sub.account_id, plan.key),
+      auto_recurring: { transaction_amount: chargeCents(plan) / 100, currency_id: plan.currency },
+    });
+    return stateFromPreapproval(await call('GET', path));
   },
 
   async handleWebhook({ rawBody, headers, query }) {

@@ -158,6 +158,20 @@ try {
   }
   checks.push('«Mi plan» accesible en computadora, tableta y móvil');
 
+  // Cambiar de plan: Pro mensual → Pro anual, con la confirmación que explica el cobro.
+  await page.setViewportSize({ width: 1366, height: 1000 });
+  await page.goto(`${base}/#/plan`);
+  const change = page.getByRole('region', { name: 'Cambiar de plan' });
+  await change.getByRole('button', { name: 'Cambiar a Pro anual' }).click();
+  const dlg = page.locator('dialog');
+  // El anual sale más barato al mes: lo ya pagado queda a favor.
+  await dlg.getByText(/Lo que ya pagaste del plan actual se descuenta de tu siguiente cobro/).waitFor();
+  await dlg.getByRole('button', { name: 'Continuar' }).click();
+  await page.getByText('Listo: ahora tienes el plan Pro anual').waitFor();
+  await page.getByRole('heading', { name: /Plan Pro anual/ }).waitFor();
+  assert.equal((await pool.query(`SELECT plan_key FROM subscriptions WHERE account_id = $1`, [accountId])).rows[0].plan_key, 'anual');
+  checks.push('Cambiar de plan desde «Mi plan» con la confirmación del cobro');
+
   // El superadmin captura precios sin IVA y elige el periodo. La última tarjeta es la de "Agregar plan".
   await context.clearCookies();
   const sx = h.cookie.indexOf('=');
