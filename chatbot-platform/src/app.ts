@@ -33,6 +33,7 @@ import { pipelineRoutes } from './routes/pipelines.js';
 import { quoteRoutes } from './routes/quotes.js';
 import { publicRoutes } from './routes/public.js';
 import { signupRoutes } from './routes/signup.js';
+import { pricingRoutes } from './routes/pricing.js';
 import { socialPublicRoutes, socialRoutes } from './routes/social.js';
 import { bookingPublicRoutes, bookingRoutes } from './routes/booking.js';
 import { socialInboxRoutes } from './routes/social-inbox.js';
@@ -132,6 +133,7 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
   });
   await sessionRoutes(app);
   await signupRoutes(app);
+  await pricingRoutes(app);
   await publicRoutes(app, service);
   await socialPublicRoutes(app);
   await bookingPublicRoutes(app, service);
