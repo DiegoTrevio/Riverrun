@@ -168,6 +168,8 @@ export const config = {
   /** Cobro automático de suscripciones. Cada proveedor se activa con sus claves; si ninguno está, el cobro sigue siendo manual. */
   billing: {
     graceDays: Number(env('BILLING_GRACE_DAYS', '5')),
+    /** IVA que se suma al precio de los planes (los precios se capturan sin IVA). 0 = no se suma. */
+    taxPercent: Number(env('BILLING_TAX_PERCENT', '16')),
     stripe: {
       secretKey: env('STRIPE_SECRET_KEY', ''),
       webhookSecret: env('STRIPE_WEBHOOK_SECRET', ''),

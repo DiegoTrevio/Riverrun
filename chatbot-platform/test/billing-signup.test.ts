@@ -74,7 +74,7 @@ t('crear la cuenta y pagar ahí mismo con Stripe: al volver del pago la cuenta q
   // Stripe arma el precio con el monto del plan y crea su producto una sola vez.
   const req = lastSession();
   assert.equal(req.body.get('line_items[0][price_data][currency]'), 'mxn');
-  assert.equal(req.body.get('line_items[0][price_data][unit_amount]'), '49900');
+  assert.equal(req.body.get('line_items[0][price_data][unit_amount]'), '57884', 'se cobra el precio + 16 % de IVA');
   assert.equal(req.body.get('line_items[0][price_data][recurring][interval]'), 'month');
   assert.equal(req.body.get('line_items[0][price_data][product]'), 'riverrun_pro');
   assert.equal(req.body.get('customer_email'), 'ana@estetica.mx');
@@ -267,6 +267,6 @@ t('los correos de fin de prueba llevan al pago en línea', async () => {
 });
 
 t('monedas sin centavos: Stripe recibe unidades enteras', async () => {
-  assert.equal(unitAmount({ price_cents: 49900, currency: 'MXN' }), 49900);
-  assert.equal(unitAmount({ price_cents: 1_000_000, currency: 'clp' }), 10000);
+  assert.equal(unitAmount(49900, 'MXN'), 49900);
+  assert.equal(unitAmount(1_000_000, 'clp'), 10000);
 });

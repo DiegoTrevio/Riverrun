@@ -1,5 +1,5 @@
 import { brand, brandMark } from './brand.js';
-import { limitsText, planPrice } from './billing.js';
+import { limitsText, per, planPrice, totalText } from './billing.js';
 import { $app, api, field, fill, h, run, select, state, text, toast } from './core.js';
 
 const GOOGLE_MSG = {
@@ -68,7 +68,7 @@ function planPicker(info, f, onChange) {
   fill(box,
     field('Tu plan', h('div', {},
       info.trial_days > 0 ? option('', `Probar gratis ${info.trial_days} ${info.trial_days === 1 ? 'día' : 'días'}`, '', 'Sin tarjeta. Contratas cuando quieras desde tu panel.') : null,
-      info.plans.map((p) => option(p.key, p.name, `${planPrice(p)} / mes`, [p.description, limitsText(p.limits)].filter(Boolean).join(' · ') || 'Sin límites de uso')))),
+      info.plans.map((p) => option(p.key, p.name, `${planPrice(p)} / ${per(p)}`, [p.description, limitsText(p.limits), totalText(p)].filter(Boolean).join(' · ') || 'Sin límites de uso')))),
     method);
   drawMethod();
   return box;

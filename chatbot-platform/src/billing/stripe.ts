@@ -1,7 +1,8 @@
 import crypto from 'node:crypto';
 import { config } from '../config.js';
 import { credentialAllowed } from '../outbound-guard.js';
-import { ProviderError, WebhookError, type BillingProvider, type Plan, type SubStatus, type SubscriptionState } from './types.js';
+import { chargeCents } from './tax.js';
+import { ProviderError, WebhookError, type BillingProvider, type PaymentInfo, type Plan, type RefundInfo, type SubStatus, type SubscriptionState, type WebhookResult } from './types.js';
 
 const cfg = () => config.billing.stripe;
 /** Prefijos de las claves de prueba de Stripe (modo test). Las de producción empiezan por sk_live_ o rk_live_. */
@@ -38,8 +39,39 @@ async function call(method: 'GET' | 'POST', path: string, body?: Record<string, 
 
 /** Monedas que Stripe cobra sin centavos: el monto va en unidades enteras. */
 const ZERO_DECIMAL = new Set(['BIF', 'CLP', 'DJF', 'GNF', 'JPY', 'KMF', 'KRW', 'MGA', 'PYG', 'RWF', 'VND', 'VUV', 'XAF', 'XOF', 'XPF']);
-export const unitAmount = (plan: Pick<Plan, 'price_cents' | 'currency'>) =>
-  ZERO_DECIMAL.has(plan.currency.toUpperCase()) ? Math.round(plan.price_cents / 100) : plan.price_cents;
+export const unitAmount = (cents: number, currency: string) =>
+  ZERO_DECIMAL.has(currency.toUpperCase()) ? Math.round(cents / 100) : cents;
+/** Monto de Stripe (unidad mínima de la moneda) a centavos. */
+const fromUnit = (amount: number, currency: string) => (ZERO_DECIMAL.has(currency.toUpperCase()) ? amount * 100 : amount);
+const unixDate = (s: unknown) => (typeof s === 'number' && s > 0 ? new Date(s * 1000) : null);
+const idOf = (x: any): string => (typeof x === 'string' ? x : x?.id ?? '');
+
+/** Cobro de una factura pagada (null si no se cobró nada, p. ej. con un cupón del 100 %). */
+export function paymentFromInvoice(inv: any): PaymentInfo | null {
+  const currency = String(inv.currency ?? '').toUpperCase();
+  const amount = Number(inv.amount_paid ?? 0);
+  if (!inv.id || !currency || !(amount > 0) || (inv.status && inv.status !== 'paid')) return null;
+  const period = inv.lines?.data?.[0]?.period ?? {};
+  return {
+    paymentId: String(inv.id),
+    // Versiones nuevas de la API ya no traen el cargo en la factura: entonces se usa el intento de pago.
+    chargeRef: idOf(inv.charge) || idOf(inv.payment_intent) || idOf(inv.payments?.data?.[0]?.payment?.payment_intent),
+    subscriptionId: idOf(inv.subscription) || idOf(inv.parent?.subscription_details?.subscription),
+    totalCents: fromUnit(amount, currency),
+    currency,
+    paidAt: unixDate(inv.status_transitions?.paid_at) ?? unixDate(inv.created) ?? new Date(),
+    periodStart: unixDate(period.start),
+    periodEnd: unixDate(period.end),
+  };
+}
+
+export function refundFromCharge(ch: any): RefundInfo {
+  return {
+    paymentId: idOf(ch.invoice),
+    chargeRefs: [idOf(ch), idOf(ch.payment_intent)].filter(Boolean),
+    refundedCents: fromUnit(Number(ch.amount_refunded ?? 0), String(ch.currency ?? '')),
+  };
+}
 
 /** Cada plan tiene su producto en Stripe con un ID fijo: se crea la primera vez que alguien lo contrata. */
 export const productId = (planKey: string) => `riverrun_${planKey}`;
@@ -115,7 +147,7 @@ export const stripe: BillingProvider = {
     const meta = { account_id: accountId, plan_key: plan.key };
     const item = plan.stripe_price_id
       ? { price: plan.stripe_price_id, quantity: 1 }
-      : { price_data: { currency: plan.currency.toLowerCase(), unit_amount: unitAmount(plan), recurring: { interval: 'month' }, product: await ensureProduct(plan) }, quantity: 1 };
+      : { price_data: { currency: plan.currency.toLowerCase(), unit_amount: unitAmount(chargeCents(plan), plan.currency), recurring: { interval: plan.billing_interval === 'year' ? 'year' : 'month' }, product: await ensureProduct(plan) }, quantity: 1 };
     const s = await call('POST', '/v1/checkout/sessions', {
       mode: 'subscription',
       line_items: [item],
@@ -158,9 +190,11 @@ export const stripe: BillingProvider = {
     } catch {
       throw new WebhookError('Cuerpo inválido');
     }
-    const result = { eventId: String(event.id), type: String(event.type), state: null as SubscriptionState | null };
-    if (!SUB_EVENTS.has(event.type)) return result;
+    const result: WebhookResult = { eventId: String(event.id), type: String(event.type), state: null };
     const obj = event.data?.object ?? {};
+    if (event.type === 'charge.refunded') return { ...result, refund: refundFromCharge(obj) };
+    if (!SUB_EVENTS.has(event.type)) return result;
+    if (event.type === 'invoice.paid' || event.type === 'invoice.payment_succeeded') result.payment = paymentFromInvoice(obj) ?? undefined;
     const subId: string | undefined =
       event.type.startsWith('customer.subscription.') ? obj.id : obj.subscription ?? obj.parent?.subscription_details?.subscription ?? undefined;
     if (!subId) return result;

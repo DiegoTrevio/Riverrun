@@ -11,6 +11,8 @@ export interface Plan {
   active: boolean;
   sort_order: number;
   limits: Record<string, number | null>;
+  /** Cada cuánto se cobra. El precio (sin IVA) es por ese periodo. */
+  billing_interval: 'month' | 'year';
 }
 
 export interface Subscription {
@@ -47,6 +49,33 @@ export interface WebhookResult {
   type: string;
   /** Estado leído del proveedor (siempre se consulta de nuevo: así los avisos repetidos o desordenados no estorban). */
   state: SubscriptionState | null;
+  /** Cobro confirmado que trae el aviso (factura pagada en Stripe, pago autorizado en Mercado Pago). */
+  payment?: PaymentInfo;
+  /** Reembolso informado por el proveedor. */
+  refund?: RefundInfo;
+}
+
+export interface PaymentInfo {
+  /** Factura de Stripe o pago autorizado de Mercado Pago: identifica el cobro aunque el aviso se repita. */
+  paymentId: string;
+  /** Cargo con el que el proveedor informará un reembolso. */
+  chargeRef: string;
+  subscriptionId: string;
+  /** Lo que pagó el cliente, IVA incluido. */
+  totalCents: number;
+  currency: string;
+  paidAt: Date;
+  periodStart: Date | null;
+  periodEnd: Date | null;
+}
+
+export interface RefundInfo {
+  /** Factura (Stripe) o pago autorizado (Mercado Pago) reembolsado, si el proveedor lo informa. */
+  paymentId: string;
+  /** Cargos con los que se puede encontrar el pago. */
+  chargeRefs: string[];
+  /** Total reembolsado hasta ahora (no el monto de este reembolso). */
+  refundedCents: number;
 }
 
 export interface CheckoutArgs {

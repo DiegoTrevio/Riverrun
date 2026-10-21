@@ -5,7 +5,9 @@ import { HttpError, requireRole, targetAccount } from '../access.js';
 import { rateLimited } from '../auth.js';
 import { baseFor } from '../brands.js';
 import { providers, applyState, confirmCheckout, enabledProviders, getPlan, getSubscription, listPlans, payable, recordEvent, startCheckout } from '../billing/service.js';
-import { ProviderError, WebhookError, type Plan, type ProviderName } from '../billing/types.js';
+import { applyRefund, listPayments, recordPayment } from '../billing/payments.js';
+import { chargeCents, taxPercent } from '../billing/tax.js';
+import { ProviderError, WebhookError, type Plan, type ProviderName, type WebhookResult } from '../billing/types.js';
 import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
 import { limitsReport, LimitsSchema } from '../billing/limits.js';
@@ -16,7 +18,9 @@ const PlanBody = z.object({
   key: z.string().regex(/^[a-z0-9_-]{1,40}$/, 'Clave: minúsculas, números, guion y guion bajo'),
   name: z.string().trim().min(1).max(80),
   description: z.string().max(400).default(''),
+  /** Precio sin IVA por periodo (mes o año). */
   price: z.number().positive().max(10_000_000),
+  interval: z.enum(['month', 'year']).default('month'),
   currency: z.string().length(3).transform((c) => c.toUpperCase()).default('MXN'),
   stripe_price_id: z.string().max(120).default(''),
   active: z.boolean().default(true),
@@ -28,7 +32,35 @@ const PlanBody = z.object({
 const publicSub = (s: any) =>
   s && { provider: s.provider, plan_key: s.plan_key, status: s.status, current_period_end: s.current_period_end, cancel_at_period_end: s.cancel_at_period_end, past_due_since: s.past_due_since, can_portal: s.provider === 'stripe' && !!s.provider_customer_id };
 
-const planOut = (p: any) => ({ ...p, price: p.price_cents / 100 });
+/** Plan para el panel: precio sin IVA, IVA y total que se cobra. */
+const planOut = (p: any) => ({ ...p, price: p.price_cents / 100, interval: p.billing_interval, tax_percent: taxPercent(), total: chargeCents(p) / 100 });
+
+const paymentOut = (p: any) => ({
+  id: p.id, provider: p.provider, plan_key: p.plan_key, currency: p.currency, paid_at: p.paid_at, period_start: p.period_start, period_end: p.period_end, status: p.status,
+  total: p.total_cents / 100, subtotal: p.subtotal_cents / 100, tax: p.tax_cents / 100, tax_percent: Number(p.tax_percent), refunded: p.refunded_cents / 100,
+});
+
+/**
+ * Anota el cobro o el reembolso que trae un aviso. El cobro se asocia a la cuenta de su suscripción (la suscripción del
+ * proveedor siempre trae la cuenta); un cobro sin cuenta no es de esta plataforma (otro producto en la misma cuenta del
+ * proveedor) y solo se registra en la bitácora.
+ */
+async function recordMoney(name: ProviderName, result: WebhookResult, accountId: string | null) {
+  if (result.payment) {
+    const sub = await queryOne<{ account_id: string; plan_key: string }>(
+      `SELECT account_id, plan_key FROM subscriptions WHERE provider = $1 AND provider_subscription_id = $2`, [name, result.payment.subscriptionId]);
+    const account = accountId ?? sub?.account_id ?? null;
+    const planKey = result.state?.planKey || sub?.plan_key || '';
+    if (!account) await logEvent({ level: 'warn', source: 'system', message: `Cobro ${result.payment.paymentId} (${name}) sin cuenta de la plataforma: no se registra` });
+    else if (await recordPayment({ accountId: account, provider: name, planKey, payment: result.payment })) {
+      await logEvent({ level: 'info', source: 'admin', message: `Pago recibido (${name}): ${result.payment.totalCents / 100} ${result.payment.currency}`, accountId: account });
+    }
+  }
+  if (result.refund) {
+    const p = await applyRefund(name, result.refund);
+    if (p) await logEvent({ level: 'warn', source: 'admin', message: `Reembolso (${name}): pago ${p.status === 'refunded' ? 'reembolsado completo' : 'reembolsado en parte'}`, accountId: p.account_id ?? undefined });
+  }
+}
 
 /** Planes que se pueden contratar, con los proveedores que los cobran (para "Mi plan" y el registro). */
 export async function offeredPlans() {
@@ -56,6 +88,7 @@ export async function billingWebhooks(app: FastifyInstance) {
         if (!(await recordEvent(name, result.eventId, result.type, null))) return { ok: true };
         try {
           const accountId = result.state ? await applyState(result.state) : null;
+          await recordMoney(name, result, accountId);
           if (accountId) await query(`UPDATE billing_events SET account_id = $3 WHERE provider = $1 AND event_id = $2`, [name, result.eventId, accountId]);
         } catch (e) {
           await query(`DELETE FROM billing_events WHERE provider = $1 AND event_id = $2`, [name, result.eventId]);
@@ -82,9 +115,9 @@ export async function billingRoutes(api: FastifyInstance) {
   const savePlan = async (b: z.infer<typeof PlanBody>) => {
     const cents = Math.round(b.price * 100);
     await query(
-      `INSERT INTO plans (key, name, description, price_cents, currency, stripe_price_id, active, sort_order, limits) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-       ON CONFLICT (key) DO UPDATE SET name = $2, description = $3, price_cents = $4, currency = $5, stripe_price_id = $6, active = $7, sort_order = $8, limits = $9`,
-      [b.key, b.name, b.description, cents, b.currency, b.stripe_price_id.trim(), b.active, b.sort_order, JSON.stringify(Object.fromEntries(Object.entries(b.limits).filter(([, v]) => v)))],
+      `INSERT INTO plans (key, name, description, price_cents, currency, stripe_price_id, active, sort_order, limits, billing_interval) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       ON CONFLICT (key) DO UPDATE SET name = $2, description = $3, price_cents = $4, currency = $5, stripe_price_id = $6, active = $7, sort_order = $8, limits = $9, billing_interval = $10`,
+      [b.key, b.name, b.description, cents, b.currency, b.stripe_price_id.trim(), b.active, b.sort_order, JSON.stringify(Object.fromEntries(Object.entries(b.limits).filter(([, v]) => v))), b.interval],
     );
     return planOut(await getPlan(b.key));
   };
@@ -106,24 +139,30 @@ export async function billingRoutes(api: FastifyInstance) {
   api.get('/api/billing/overview', supers, async () => {
     const counts = await query<{ provider: string; status: string; n: number }>(`SELECT provider, status, count(*)::int AS n FROM subscriptions GROUP BY 1, 2`);
     const mrr = await query<{ currency: string; cents: string }>(
-      `SELECT p.currency, sum(p.price_cents)::text AS cents FROM subscriptions s JOIN plans p ON p.key = s.plan_key WHERE s.status IN ('active', 'past_due') GROUP BY 1`,
+      // Sin IVA (el IVA no es ingreso); los planes anuales cuentan su doceava parte.
+      `SELECT p.currency, round(sum(CASE WHEN p.billing_interval = 'year' THEN p.price_cents / 12.0 ELSE p.price_cents END))::text AS cents
+       FROM subscriptions s JOIN plans p ON p.key = s.plan_key WHERE s.status IN ('active', 'past_due') GROUP BY 1`,
     );
     return {
       providers: Object.values(providers).map((p) => ({ name: p.name, label: p.label, enabled: p.enabled(), webhook_url: `${config.publicBaseUrl}/webhook/billing/${p.name}` })),
       counts,
       monthly_revenue: mrr.map((m) => ({ currency: m.currency, amount: Number(m.cents) / 100 })),
       grace_days: config.billing.graceDays,
+      tax_percent: taxPercent(),
     };
   });
 
   /* ------------------------------ Cuenta ------------------------------ */
   api.get('/api/billing', admins, async (req: any) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
-    const [acc, plans, sub, limits] = await Promise.all([queryOne<any>(`SELECT status, plan, trial_ends_at FROM accounts WHERE id = $1`, [accountId]), offeredPlans(), getSubscription(accountId), limitsReport(accountId)]);
+    const [acc, plans, sub, limits, payments] = await Promise.all([
+      queryOne<any>(`SELECT status, plan, trial_ends_at FROM accounts WHERE id = $1`, [accountId]), offeredPlans(), getSubscription(accountId), limitsReport(accountId), listPayments(accountId),
+    ]);
     return {
       account: acc,
       plans,
       subscription: publicSub(sub),
+      payments: payments.map(paymentOut),
       limits,
       grace_days: config.billing.graceDays,
       support_contact: config.signup.supportContact,
