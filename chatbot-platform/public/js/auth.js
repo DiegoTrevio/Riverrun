@@ -124,7 +124,8 @@ export async function renderSignup(params = new URLSearchParams()) {
           info.privacy_url ? [' y el ', h('a', { href: info.privacy_url, target: '_blank', rel: 'noopener' }, 'aviso de privacidad')] : '',
           '. Entiendo que WhatsApp se conecta como "dispositivo vinculado" (no es la API oficial) y que los envíos masivos pueden provocar el bloqueo del número.']),
       button,
-      h('p', { class: 'small', style: 'margin:0' }, '¿Ya tienes cuenta? ', h('a', { href: '#/login' }, 'Inicia sesión'))));
+      h('p', { class: 'small', style: 'margin:0' }, '¿Ya tienes cuenta? ', h('a', { href: '#/login' }, 'Inicia sesión'),
+        info.plans.length ? [' · ', h('a', { href: '/precios' }, 'Ver precios y planes')] : null)));
 }
 
 export function renderForgot() {

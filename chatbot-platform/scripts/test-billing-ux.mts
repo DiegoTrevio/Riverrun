@@ -36,6 +36,28 @@ try {
   const page = await context.newPage();
   page.on('pageerror', (e) => errors.push(e.message));
 
+  // Página pública de precios: accesible y sin desbordarse; cada plan lleva al registro con ese plan elegido.
+  for (const width of [1366, 768, 390]) {
+    await page.setViewportSize({ width, height: 1000 });
+    await page.goto(`${base}/precios`);
+    await page.getByRole('heading', { name: 'Precios', exact: true }).waitFor();
+    await page.addScriptTag({ content: axe });
+    const violations = await page.evaluate(async () => (await (window as any).axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] } }))
+      .violations.filter((v: any) => ['serious', 'critical'].includes(v.impact)).map((v: any) => v.id));
+    assert.deepEqual(violations, [], `Precios a ${width}`);
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), `Precios sin desbordamiento a ${width}`);
+  }
+  await page.setViewportSize({ width: 1366, height: 1000 });
+  await page.getByText('Total con IVA: $578.84 MXN al mes').waitFor();
+  await page.getByRole('link', { name: 'Contratar el plan Pro', exact: true }).click();
+  await page.getByRole('button', { name: 'Crear mi cuenta y pagar' }).waitFor();
+  assert.ok(await page.locator('input[name="signup-plan"][value="pro"]').isChecked(), 'el plan elegido llega marcado');
+  await page.goto(`${base}/precios`);
+  await page.getByRole('link', { name: 'Probar 14 días gratis' }).click();
+  await page.getByRole('button', { name: 'Crear mi cuenta', exact: true }).waitFor();
+  await page.getByRole('link', { name: 'Ver precios y planes' }).waitFor();
+  checks.push('Página de precios accesible; «Contratar» llega al registro con el plan y «Probar gratis» sin plan');
+
   // Registro: los planes se ven "+ IVA", con el total que se cobra.
   await page.goto(`${base}/#/registro`);
   await page.getByText('$499 MXN + IVA / mes').waitFor();
