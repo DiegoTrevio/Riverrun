@@ -562,6 +562,9 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
     if (!text?.trim()) throw new HttpError(400, 'Escribe un mensaje');
     // Toque de un botón de un flujo: su identificador (cualquier otro valor se ignora).
     const tap = parsePayload(button) ? String(button) : undefined;
+    // Primer mensaje de prueba: marca el paso «Pruébalo en el simulador» de la lista de pendientes.
+    const acc = await store.getAccount(bot.account_id);
+    if (acc && !acc.onboarding.test) await store.markOnboarding(bot.account_id, { test: true });
     return service.playground(bot, session(sid), text.trim().slice(0, 4000), tap);
   });
 

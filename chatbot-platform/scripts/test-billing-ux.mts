@@ -99,6 +99,33 @@ try {
   const cookie = String(r.headers['set-cookie']).split(';')[0];
   const ix = cookie.indexOf('=');
   await context.addCookies([{ name: cookie.slice(0, ix), value: cookie.slice(ix + 1), url: base }]);
+
+  // Tarjeta «Para empezar»: lo que le falta, con el plan porque hay cobro en línea; accesible y sin desbordarse.
+  for (const width of [1366, 768, 390]) {
+    await page.setViewportSize({ width, height: 1000 });
+    await page.goto(`${base}/#/agentes`);
+    await page.getByRole('heading', { name: 'Para empezar' }).waitFor();
+    await page.addScriptTag({ content: axe });
+    const violations = await page.evaluate(async () => (await (window as any).axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] } }))
+      .violations.filter((v: any) => ['serious', 'critical'].includes(v.impact)).map((v: any) => v.id));
+    assert.deepEqual(violations, [], `Para empezar a ${width}`);
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), `Para empezar sin desbordamiento a ${width}`);
+  }
+  const card = page.getByRole('region', { name: 'Para empezar' });
+  await card.getByText('0 de 6 pasos listos').first().waitFor();
+  await card.getByText('Elige tu plan').waitFor();
+  await card.getByRole('link', { name: 'Crear agente' }).waitFor();
+  await card.getByRole('button', { name: 'Reenviar correo' }).waitFor();
+  await pool.query(`UPDATE users SET email_verified_at = now() WHERE email = 'ana@estudio.mx'`);
+  await page.reload();
+  await card.getByText('1 de 6 pasos listos').first().waitFor();
+  await card.getByRole('button', { name: 'Ocultar' }).click();
+  await card.waitFor({ state: 'detached' });
+  await page.reload();
+  await page.getByRole('heading', { name: 'Agentes' }).waitFor();
+  assert.equal(await page.getByRole('heading', { name: 'Para empezar' }).count(), 0, 'oculta se queda oculta');
+  checks.push('«Para empezar»: pasos con plan, avance al confirmar el correo, «Ocultar» y accesible en móvil');
+
   await page.goto(`${base}/#/plan`);
   await page.getByRole('heading', { name: 'Mi plan y pagos' }).waitFor();
   await page.getByText('Total con IVA (16 %): $578.84 MXN al mes').waitFor();
