@@ -139,6 +139,21 @@ t('derecho de supresión: borra al contacto y su historial, anonimiza citas y co
   assert.ok(kept.n >= aiRuns && kept.with_content === 0, 'el costo de IA se conserva sin contenido');
 });
 
+t('supresión: no depende del orden en que PostgreSQL aplica las cascadas', async () => {
+  // PostgreSQL aplica las cascadas en el orden del nombre de sus disparadores (llevan el OID, comparado como texto), que
+  // cambia según cuántos objetos tiene la base. Recrear la llave de las conversaciones deja su borrado en cascada al final:
+  // ese orden (el que tocó en CI) hace fallar la llave de la conversación de la cita si no se suelta antes.
+  await pool.query(`ALTER TABLE conversations DROP CONSTRAINT conversations_contact_id_fkey, ADD CONSTRAINT conversations_contact_id_fkey FOREIGN KEY (contact_id) REFERENCES contacts(id) ON DELETE CASCADE`);
+  await send('5215570000010', 'Hola, quiero una cita');
+  const c = await contactBy('5215570000010');
+  const conv = (await pool.query(`SELECT id FROM conversations WHERE contact_id = $1`, [c.id])).rows[0].id;
+  const appt = (await pool.query(`INSERT INTO appointments (account_id, contact_id, conversation_id, customer_name, starts_at, ends_at) VALUES ($1,$2,$3,'Cita',now() + interval '1 day', now() + interval '1 day 1 hour') RETURNING id`, [h.accountId, c.id, conv])).rows[0].id;
+  const del = await h.authed('DELETE', `/api/contacts/${c.id}`);
+  assert.equal(del.statusCode, 200, del.body);
+  const row = (await pool.query(`SELECT contact_id, conversation_id, customer_name FROM appointments WHERE id = $1`, [appt])).rows[0];
+  assert.deepEqual(row, { contact_id: null, conversation_id: null, customer_name: '' });
+});
+
 t('retención: borra mensajes viejos y su resumen; borra contactos inactivos salvo con citas futuras', async () => {
   await send('5215570000011', 'Hola, cliente viejo');
   await send('5215570000012', 'Hola, cliente con cita');
