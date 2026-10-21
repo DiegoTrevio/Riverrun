@@ -72,18 +72,21 @@ t('regla "si no hay dato, transferir": el backend la hace cumplir aunque la IA s
   h.setScript(() => ({ messages: ['Ese dato no lo tengo, pero pregúntame otra cosa'], info_not_found: true }));
   await h.webhook('tienen gimnasio?', { phone: '5215500000005' });
   await waitFor(async () => (await h.conversationFor('5215500000005'))?.status === 'human');
+  // La respuesta puede salir después de transferir: se espera aquí para que no le llegue a la prueba siguiente.
+  await waitFor(() => h.sent.some((x) => x.to === '5215500000005'));
   await h.authed('PUT', `/api/chatbots/${h.botId}`, { rules: { unknown_info_behavior: 'say_unknown' } });
 });
 
 t('una conversación cerrada se reabre cuando el cliente vuelve a escribir', async () => {
   h.reset();
   const phone = '5215500000006';
+  const mine = () => h.sent.filter((x) => x.to === phone).length;
   await h.webhook('hola', { phone });
-  await waitFor(() => h.sent.length === 1);
+  await waitFor(() => mine() === 1);
   const c = await h.conversationFor(phone);
   await h.authed('POST', `/api/conversations/${c.id}/close`);
   await h.webhook('hola de nuevo', { phone });
-  await waitFor(() => h.sent.length === 2);
+  await waitFor(() => mine() === 2);
   assert.equal((await h.conversationFor(phone)).status, 'bot');
 });
 
@@ -91,7 +94,7 @@ t('mensajes viejos (reconexión, sincronización) se guardan pero no se responde
   h.reset();
   await h.webhook('mensaje de hace 2 horas', { phone: '5215500000007', timestamp: Math.floor(Date.now() / 1000) - 7200 });
   await sleep(500);
-  assert.equal(h.sent.length, 0);
+  assert.equal(h.sent.filter((x) => x.to === '5215500000007').length, 0);
   assert.equal((await h.conversationFor('5215500000007')).message_count, 1);
 });
 
