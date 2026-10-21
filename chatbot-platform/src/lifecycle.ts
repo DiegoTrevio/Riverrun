@@ -6,7 +6,8 @@ import { getSettings, notifyUsers } from './automation/store.js';
 import { mailBrand } from './brands.js';
 import { config } from './config.js';
 import { query, queryOne } from './db.js';
-import { billingEnabled, enforceAccess, syncPendingCheckouts } from './billing/service.js';
+import { checkAccountRetention, keptNote } from './accounts/retention.js';
+import { billingEnabled, checkDunning, enforceAccess, syncPendingCheckouts } from './billing/service.js';
 import { logEvent } from './logs.js';
 import { sendMail } from './mailer.js';
 import { checkOnboardingNudges } from './onboarding-checklist.js';
@@ -60,7 +61,7 @@ export async function checkTrials(now = new Date()) {
 
   // 2) Prueba vencida: la cuenta se pausa (el panel sigue funcionando; el bot no responde).
   const expired = await query<Account>(
-    `UPDATE accounts SET status = 'paused', updated_at = now() WHERE status = 'trial' AND trial_ends_at <= $1 RETURNING *`,
+    `UPDATE accounts SET status = 'paused', paused_at = $1, pause_reason = 'trial', updated_at = now() WHERE status = 'trial' AND trial_ends_at <= $1 RETURNING *`,
     [now],
   );
   for (const acc of expired) {
@@ -72,7 +73,7 @@ export async function checkTrials(now = new Date()) {
         fromName: next.mb.fromName,
         to: o.email,
         subject: 'Tu periodo de prueba terminó',
-        text: `Hola ${o.name || ''},\n\nLa prueba de "${acc.name}" terminó y tu asistente está en pausa. Tu configuración y tus conversaciones se conservan; se reactiva en cuanto se active tu plan.\n\n${next.text}`,
+        text: `Hola ${o.name || ''},\n\nLa prueba de "${acc.name}" terminó y tu asistente está en pausa. ${keptNote()} Se reactiva en cuanto se active tu plan.\n\n${next.text}`,
       });
     }
     const paysOnline = await billingEnabled();
@@ -106,7 +107,9 @@ export function startLifecycle(intervalMs = 10 * 60_000) {
     syncPendingCheckouts()
       .catch((e) => logEvent({ level: 'error', source: 'system', message: `Revisión de pagos pendientes: ${e?.message ?? e}` }))
       .then(() => enforceAccess())
+      .then(() => checkDunning())
       .catch((e) => logEvent({ level: 'error', source: 'system', message: `Revisión de pagos: ${e?.message ?? e}` }));
+    checkAccountRetention().catch((e) => logEvent({ level: 'error', source: 'system', message: `Retención de cuentas: ${e?.message ?? e}` }));
     checkAiSpend().catch((e) => logEvent({ level: 'error', source: 'system', message: `Revisión de gasto de IA: ${e?.message ?? e}` }));
     checkOnboardingNudges().catch((e) => logEvent({ level: 'error', source: 'system', message: `Correos de seguimiento: ${e?.message ?? e}` }));
   };

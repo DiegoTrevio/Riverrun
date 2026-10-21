@@ -85,7 +85,15 @@ export async function viewAccounts(root) {
           h('td', {}, h('strong', {}, a.name),
             a.owner_email ? h('div', { class: 'small muted' }, a.owner_email, a.owner_verified === false ? ' (sin confirmar)' : '') : null,
             h('div', { class: 'small muted' }, `${a.chatbots} bots · ${a.channels} canales · ${a.users} usuarios${a.signup_source === 'signup' ? ' · registro propio' : ''}`)),
-          h('td', {}, statusBadge(a)),
+          h('td', {}, statusBadge(a),
+            // Retención: cuándo se borra sola una cuenta en pausa, y la excepción del superadmin.
+            a.deletion_date ? h('div', { class: 'small error' }, `Se borra el ${fmtDate(a.deletion_date)}`) : null,
+            a.status === 'paused' && a.paused_at && a.signup_source === 'signup'
+              ? h('label', { class: 'check small' }, h('input', { type: 'checkbox', checked: !!a.keep_data, onchange: async (e) => {
+                if (!(await run(() => api('PUT', `/api/accounts/${a.id}`, { keep_data: e.target.checked }), e.target.checked ? 'Sus datos se conservan' : 'Se borrará al cumplir el plazo'))) { e.target.checked = !e.target.checked; return; }
+                render();
+              } }), 'Conservar sus datos')
+              : null),
           h('td', {}, a.whatsapp_state ? h('span', { class: `badge ${a.whatsapp_state === 'open' ? 'green' : 'orange'}` }, { open: 'conectado', close: 'desconectado', connecting: 'conectando' }[a.whatsapp_state] || a.whatsapp_state) : h('span', { class: 'muted small' }, '—')),
           h('td', { class: 'num' }, `${a.conversations_month} / ${a.conversations}`),
           h('td', { class: 'num' }, usd(a.ai_cost_month)),

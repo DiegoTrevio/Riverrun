@@ -172,6 +172,23 @@ try {
   assert.equal((await pool.query(`SELECT plan_key FROM subscriptions WHERE account_id = $1`, [accountId])).rows[0].plan_key, 'anual');
   checks.push('Cambiar de plan desde «Mi plan» con la confirmación del cobro');
 
+  // Cobro fallido: la franja «Actualiza tu pago» aparece en todo el panel (accesible y sin desbordarse en móvil).
+  await pool.query(`UPDATE subscriptions SET status = 'past_due', past_due_since = now() WHERE account_id = $1`, [accountId]);
+  for (const width of [1366, 390]) {
+    await page.setViewportSize({ width, height: 1000 });
+    await page.goto(`${base}/#/agentes`);
+    await page.getByText('No pudimos cobrar tu plan.').waitFor();
+    await page.getByRole('link', { name: 'Actualizar pago' }).waitFor();
+    await page.addScriptTag({ content: axe });
+    const violations = await page.evaluate(async () => (await (window as any).axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] } }))
+      .violations.filter((v: any) => ['serious', 'critical'].includes(v.impact)).map((v: any) => v.id));
+    assert.deepEqual(violations, [], `Franja de pago pendiente a ${width}`);
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), `Franja de pago pendiente sin desbordamiento a ${width}`);
+  }
+  await page.getByRole('link', { name: 'Actualizar pago' }).click();
+  await page.getByRole('heading', { name: 'Mi plan y pagos' }).waitFor();
+  checks.push('Cobro fallido: franja «Actualiza tu pago» en todo el panel, también en móvil');
+
   // El superadmin captura precios sin IVA y elige el periodo. La última tarjeta es la de "Agregar plan".
   await context.clearCookies();
   const sx = h.cookie.indexOf('=');
