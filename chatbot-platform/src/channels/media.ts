@@ -21,6 +21,20 @@ export function verifyImageSignature(imageId: string, exp: string, sig: string) 
   return safeEqual(sig, hmac(`${imageId}:${exp}`));
 }
 
+/**
+ * Enlace firmado al PDF de una cotización, para los canales que no envían archivos (Telegram, Messenger, chat web…).
+ * Vence en 7 días y usa su propio espacio de firma: una firma de foto no abre una cotización.
+ */
+export function signedQuoteUrl(quoteId: string, base = config.publicBaseUrl, days = 7) {
+  const exp = Math.floor(Date.now() / 1000) + days * 24 * 3600;
+  return `${base}/q/${quoteId}?e=${exp}&s=${hmac(`quote:${quoteId}:${exp}`)}`;
+}
+
+export function verifyQuoteSignature(quoteId: string, exp: string, sig: string) {
+  if (!/^\d+$/.test(exp) || Number(exp) < Date.now() / 1000) return false;
+  return safeEqual(sig, hmac(`quote:${quoteId}:${exp}`));
+}
+
 /** Tamaño máximo de una foto o documento del cliente (WhatsApp limita las fotos a 16 MB). Lo que pesa más no se descarga. */
 export const INBOUND_MEDIA_MAX_BYTES = 16 * 1024 * 1024;
 

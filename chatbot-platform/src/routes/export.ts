@@ -88,6 +88,32 @@ export async function exportRoutes(api: FastifyInstance) {
     return download(req, reply, 'conversaciones', accountId, stream);
   });
 
+  /* ------------------------------ Cotizaciones ------------------------------ */
+  api.get('/api/export/quotes.csv', admins, async (req: any, reply) => {
+    const accountId = await targetAccount(req.user, req.query.account_id);
+    const q = parse(z.object({ from: Day.optional(), to: Day.optional() }), req.query);
+    const header = ['folio', 'tipo', 'estado', 'cliente', 'telefono', 'moneda', 'subtotal_min', 'subtotal_max', 'iva_min', 'iva_max', 'total_min', 'total_max', 'conceptos', 'vigencia', 'creada', 'enviada', 'origen', 'conversacion'];
+    const stream = csvStream<{ at: string; id: string }>(header, async (cursor) => {
+      const rows = await query<any>(
+        `SELECT q.*, q.created_at::text AS cursor_at,
+                (SELECT string_agg(l.qty::text || ' × ' || l.name, '; ' ORDER BY l.position) FROM quote_lines l WHERE l.quote_id = q.id) AS concepts
+           FROM quotes q
+          WHERE q.account_id = $1 AND ($2::date IS NULL OR q.created_at >= $2::date) AND ($3::date IS NULL OR q.created_at < $3::date + 1)
+            AND ($4::timestamptz IS NULL OR (q.created_at, q.id) > ($4::timestamptz, $5::uuid))
+          ORDER BY q.created_at, q.id LIMIT ${BATCH}`,
+        [accountId, q.from ?? null, q.to ?? null, cursor?.at ?? null, cursor?.id ?? null],
+      );
+      const pesos = (c: unknown) => (Number(c) / 100).toFixed(2);
+      return {
+        rows: rows.map((r) => [r.folio, r.kind === 'final' ? 'final' : 'aproximada', r.status, r.customer_snapshot?.nombre ?? '', r.customer_snapshot?.telefono ?? '', r.currency,
+          pesos(r.subtotal_min), pesos(r.subtotal_max), pesos(r.iva_min), pesos(r.iva_max), pesos(r.total_min), pesos(r.total_max), r.concepts ?? '',
+          r.valid_until instanceof Date ? r.valid_until.toISOString().slice(0, 10) : r.valid_until, r.created_at, r.sent_at, r.source, r.conversation_id]),
+        cursor: rows.length === BATCH ? { at: rows[rows.length - 1].cursor_at, id: rows[rows.length - 1].id } : null,
+      };
+    });
+    return download(req, reply, 'cotizaciones', accountId, stream);
+  });
+
   /* ------------------------------ Mensajes (transcripciones) ------------------------------ */
   api.get('/api/export/messages.csv', admins, async (req: any, reply) => {
     const accountId = await targetAccount(req.user, req.query.account_id);

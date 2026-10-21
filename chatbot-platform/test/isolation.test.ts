@@ -3,6 +3,7 @@
  * así una ruta nueva queda cubierta sin tocar esta prueba) con usuarios de otra cuenta, y revisa
  * que ninguna respuesta exponga secretos.
  */
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
@@ -60,6 +61,9 @@ function fillParams(url: string): string | null {
     [/^\/api\/brands\/:id/, 'brand'],
     [/^\/api\/pipelines\/:id/, 'pipeline'],
     [/^\/api\/pipeline-cards\/:id/, 'card'],
+    [/^\/api\/price-items\/:id/, 'price_item'],
+    [/^\/api\/quotes\/:id/, 'quote'],
+    [/^\/api\/quote-templates\/:id/, 'quote_template'],
     [/^\/api\/team\/:userId/, 'user'],
     [/^\/api\/social-accounts\/:id/, 'social'],
     [/^\/api\/wa-templates\/:id/, 'wa_template'],
@@ -158,6 +162,16 @@ before(async () => {
   await pool.query(`INSERT INTO social_account_stats (social_account_id, account_id, day, followers, impressions) VALUES ($1, $2, current_date - 1, 4321, 98765)`, [B.social, B.account]);
   B.booking_link = (await pool.query(`INSERT INTO booking_links (account_id, token, name) VALUES ($1, 'tok-b-reservas', $2) RETURNING id`, [B.account, `Reservas ${MARK}`])).rows[0].id;
   B.card = String((await pool.query(`INSERT INTO pipeline_cards (account_id, pipeline_id, conversation_id, stage_id) VALUES ($1, $2, $3, 'nuevo') RETURNING id`, [B.account, B.pipeline, B.conv])).rows[0].id);
+  B.price_item = (await ok200(adminB('POST', '/api/price-items', { code: 'B1', name: `Concepto ${MARK}`, price_mode: 'exact', price_min: 99900 }))).id;
+  const { createQuote, insertTemplate } = await import('../src/store/quotes.js');
+  const { exampleTemplate } = await import('../src/quotes/template.js');
+  const { attachmentAbsolutePath } = await import('../src/attachments.js');
+  const tplPath = `${B.account}/quote-templates/b.docx`;
+  fs.mkdirSync(path.dirname(attachmentAbsolutePath(tplPath)), { recursive: true });
+  fs.writeFileSync(attachmentAbsolutePath(tplPath), exampleTemplate());
+  B.quote_template = (await insertTemplate({ id: crypto.randomUUID(), accountId: B.account, name: `Formato ${MARK}`, filePath: tplPath, sha256: 'x', size: 1, placeholders: [], createdBy: null })).id;
+  B.quote = (await createQuote({ accountId: B.account, kind: 'approximate', status: 'sent', source: 'panel', today: '2026-10-20', notes: `Nota ${MARK}`,
+    lines: [{ name: `Concepto ${MARK}`, qty: 1, price_mode: 'exact', price_min: 99900, price_max: null, iva_mode: 'plus' }] })).id;
   await h.idle();
 });
 after(async () => {

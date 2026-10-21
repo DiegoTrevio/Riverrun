@@ -5,6 +5,7 @@ import { channelIcon } from './channels.js';
 import { api, area, check, clone, dialog, field, fill, fmtDate, h, lines, poll, run, select, state, text, toast, confirmAction, ask } from './core.js';
 import { acct, isAdmin, isSuper, withAcct } from './session.js';
 import { pipelineCard } from './pipeline.js';
+import { quotesCard } from './quotes.js';
 
 /* ------------------------------ Conversaciones ------------------------------ */
 
@@ -511,6 +512,7 @@ export async function viewConversation(root, id, opts = {}) {
           } }, 'Borrar todos sus datos'))) : null,
       flowCard(data.chatbot?.flow, c),
       autoBox,
+      quotesCard(data.quotes, () => load(true)),
       h('details', { class: 'card', id: 'conversation-summary', tabindex: '-1', open: !!c.report_summary },
         h('summary', {}, h('strong', {}, 'Resumen de la conversación'), c.report_summary ? null : h('span', { class: 'muted small' }, ' · sin generar')),
         h('div', { class: 'row' },

@@ -36,6 +36,8 @@ export interface ExecutionPlan {
   goalCompleted: boolean;
   /** La IA detectó que el cliente empieza otra vez una solicitud ya terminada (el motor decide si la abre). */
   newRequest?: boolean;
+  /** Cotización ya validada (conceptos existentes y cantidades que dio el cliente); los montos los calcula el sistema. */
+  quote?: { lines: { itemId: string; code: string; qty: number }[]; notes: string; final: boolean } | null;
 }
 
 export interface ValidationResult {
@@ -48,6 +50,19 @@ export interface ValidationResult {
   factIssues: boolean;
   /** true si la propuesta de agenda no es válida (horario inexistente, cita ajena...). */
   bookingIssue: boolean;
+  /** true si la propuesta de cotización no es válida (concepto inexistente, cantidad que el cliente no dio…). */
+  quoteIssue?: boolean;
+}
+
+/** Lo que el validador necesita saber para cotizar. */
+export interface QuoteValidation {
+  /** Conceptos activos de la lista de precios, por clave en mayúsculas. */
+  items: Record<string, { id: string; name: string; exact: boolean }>;
+  /** Datos que el cliente debe dar antes de cotizar. */
+  requiredFields: { key: string; label: string }[];
+  /** Ya hay una cotización en revisión en esta solicitud. */
+  open: boolean;
+  allowFinal: boolean;
 }
 
 /** Lo que el validador necesita saber de la agenda. */
@@ -106,7 +121,56 @@ export interface ValidationInput {
   contactPhone?: string;
   /** Fotos activas de este asistente (para saber si un mensaje guardado con foto se puede enviar). */
   activeImageIds?: string[];
+  /** Cotizaciones (null = el asistente no cotiza). */
+  quotes?: QuoteValidation | null;
 }
+
+const NUMBER_WORDS: Record<string, number> = {
+  un: 1, uno: 1, una: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5, seis: 6, siete: 7, ocho: 8, nueve: 9, diez: 10, once: 11, doce: 12, trece: 13,
+  catorce: 14, quince: 15, dieciseis: 16, diecisiete: 17, dieciocho: 18, diecinueve: 19, veinte: 20, veintiun: 21, veintiuno: 21, veintiuna: 21,
+  veintidos: 22, veintitres: 23, veinticuatro: 24, veinticinco: 25, veintiseis: 26, veintisiete: 27, veintiocho: 28, veintinueve: 29,
+  treinta: 30, cuarenta: 40, cincuenta: 50, sesenta: 60, setenta: 70, ochenta: 80, noventa: 90, cien: 100, ciento: 100,
+  doscientos: 200, doscientas: 200, trescientos: 300, trescientas: 300, cuatrocientos: 400, cuatrocientas: 400, quinientos: 500, quinientas: 500,
+  seiscientos: 600, seiscientas: 600, setecientos: 700, setecientas: 700, ochocientos: 800, ochocientas: 800, novecientos: 900, novecientas: 900,
+  docena: 12, docenas: 12, media: 0.5, medio: 0.5,
+};
+
+/** Cantidades que se pueden leer en un texto: cifras («1,500», «2.5») y palabras («ciento cincuenta», «dos docenas»). */
+export function quantitiesIn(text: string): number[] {
+  const t = normalize(text);
+  const out: number[] = [];
+  for (const m of t.matchAll(/\d[\d.,]*/g)) {
+    const raw = m[0].replace(/[.,]$/, '');
+    for (const v of [raw.replace(/,/g, ''), raw.replace(/\./g, '').replace(',', '.'), raw.replace(/[.,]/g, '')]) {
+      const n = Number(v);
+      if (Number.isFinite(n)) out.push(n);
+    }
+  }
+  // Palabras seguidas («ciento cincuenta y dos», «dos mil», «dos docenas»).
+  let total = 0, current = 0, any = false;
+  const flush = () => { if (any) out.push(total + current); total = 0; current = 0; any = false; };
+  for (const w of t.split(/[^\p{L}]+/u)) {
+    if (w === 'y' && any) continue;
+    if (w === 'mil') { total += (current || 1) * 1000; current = 0; any = true; continue; }
+    const v = NUMBER_WORDS[w];
+    if (v === undefined) { flush(); continue; }
+    if (w.startsWith('docena')) { current = (current || 1) * 12; any = true; continue; }
+    current += v;
+    any = true;
+  }
+  flush();
+  return out;
+}
+
+/** ¿El cliente dijo esa cantidad? La cita debe estar en sus mensajes y contener el número. */
+export function customerSaidQuantity(qty: number, quote: string, sources: string[]): boolean {
+  const q = normalize(quote).trim();
+  if (q.length < 1 || !sources.some((s) => normalize(s).includes(q))) return false;
+  return quantitiesIn(quote).some((n) => Math.abs(n - qty) < 1e-9);
+}
+
+// Una cotización aproximada no se anuncia como final.
+const FINAL_CLAIM_RE = /(?<![\p{L}])(?:te|le)\s+(?:env[ií]o|comparto|mando|paso|adjunto)\s+(?:la|tu|su)\s+cotizaci[oó]n\s+(?:final|definitiva|formal)(?![\p{L}])|(?<![\p{L}])(?:es|ser[aá])\s+(?:una\s+|la\s+)?cotizaci[oó]n\s+(?:final|definitiva)(?![\p{L}])/iu;
 
 // Promesas de foto ("te mando la foto", "aquí está el menú", "te voy a compartir las fotos"…). Con la bandera u: sin ella,
 // \b no reconoce "menú" ni "está". Los sustantivos que pueden ser texto (menú, catálogo, folleto) solo cuentan si el
@@ -366,6 +430,7 @@ export function validateDecision(input: ValidationInput): ValidationResult {
   const retryable: string[] = [];
   let factIssues = false;
   let bookingIssue = false;
+  let quoteIssue = false;
 
   const parsed = parseDecision(input.raw);
   if (!parsed.decision) {
@@ -795,6 +860,62 @@ export function validateDecision(input: ValidationInput): ValidationResult {
     }
   }
 
+  // ---------- Cotización: conceptos de la lista y cantidades que dio el cliente ----------
+  let quote: ExecutionPlan['quote'] = null;
+  const q = d.quote;
+  if (q.action === 'prepare') {
+    const qv = input.quotes;
+    if (!qv) fixes.push('Cotización ignorada: este asistente no cotiza o no hay conceptos activos');
+    else if (action === 'handoff' || action === 'no_reply') fixes.push('Cotización ignorada: la respuesta no llega al cliente');
+    else {
+      const problems: string[] = [];
+      const sources = [input.customerText, ...(input.customerDataSources ?? input.customerSources ?? [])];
+      const lines: { itemId: string; code: string; qty: number }[] = [];
+      for (const it of q.items.slice(0, 100)) {
+        const code = it.item_code.trim().toUpperCase();
+        const item = qv.items[code];
+        if (!item) { problems.push(`El concepto «${it.item_code}» no está en la lista de precios: usa la clave exacta.`); continue; }
+        if (!(Number.isFinite(it.qty) && it.qty > 0 && it.qty <= 10_000 && Math.round(it.qty * 1000) / 1000 === it.qty)) {
+          problems.push(`La cantidad de «${item.name}» no es válida (${it.qty}).`);
+          continue;
+        }
+        if (it.qty !== 1 && !customerSaidQuantity(it.qty, it.qty_quote, sources)) {
+          problems.push(`El cliente no dijo la cantidad de «${item.name}» (${it.qty}): pregúntasela antes de cotizar, o copia en qty_quote sus palabras exactas.`);
+          continue;
+        }
+        if (lines.some((l) => l.code === code)) continue;
+        lines.push({ itemId: item.id, code, qty: it.qty });
+      }
+      if (!q.items.length) problems.push('Para cotizar indica los conceptos de la lista de precios (items).');
+      const have = { ...(input.knownData ?? {}), ...saveData };
+      const missing = qv.requiredFields.filter((f) => !have[f.key] && !(f.key === nameKey && (contactName || input.knownName)));
+      if (missing.length) problems.push(`Antes de cotizar falta: ${missing.map((f) => f.label || f.key).join(', ')}. Pídeselo al cliente y no prepares la cotización todavía.`);
+      if (qv.open) problems.push('Ya hay una cotización en revisión para esta solicitud: no prepares otra; dile que el equipo la está revisando.');
+      if (problems.length) {
+        quoteIssue = true;
+        if (input.final) {
+          // Sin cotización, la respuesta no puede decir que la envía: se pide lo que falta (o se avisa que ya está en revisión).
+          const tu = bot.personality.formality !== 'usted';
+          const needed = missing.map((f) => f.label || f.key).join(', ');
+          messages = [qv.open ? `${tu ? 'Tu' : 'Su'} cotización está en revisión con el equipo; ${tu ? 'te' : 'se'} la enviamos en cuanto esté lista.`
+            : missing.length ? `Para ${tu ? 'prepararte' : 'prepararle'} la cotización necesito: ${needed}. ¿Me lo ${tu ? 'compartes' : 'comparte'}?`
+            : `Para ${tu ? 'prepararte' : 'prepararle'} la cotización, ¿me ${tu ? 'confirmas' : 'confirma'} qué ${tu ? 'necesitas' : 'necesita'} y en qué cantidad?`];
+          fixes.push(`Cotización no preparada: ${problems.join(' ')}`);
+        } else retryable.push(...problems);
+      } else {
+        quote = { lines, notes: q.notes.trim().slice(0, 1000), final: q.wants_final && qv.allowFinal && lines.every((l) => qv.items[l.code].exact) };
+        if (q.wants_final && !quote.final) fixes.push('El cliente pidió una cotización final, pero no todos los precios son exactos (o el agente no envía finales): sale aproximada');
+        if (!quote.final && messages.some((m) => FINAL_CLAIM_RE.test(m))) {
+          soft(
+            'La cotización sale como APROXIMADA (no todos los precios son exactos o la final la aprueba el equipo): no digas que es final.',
+            () => (messages = dropSentences(messages, (_n, x) => FINAL_CLAIM_RE.test(x))),
+            'Se quitó una frase que llamaba final a una cotización aproximada',
+          );
+        }
+      }
+    }
+  }
+
   // ---------- Recorrido: etapa y objetivo ----------
   const flow = bot.flow;
   const flowStep = flow.steps.length ? Math.min(Math.max(0, Math.trunc(d.flow_step)), flow.steps.length) : 0;
@@ -913,11 +1034,13 @@ export function validateDecision(input: ValidationInput): ValidationResult {
       questionLast: !!question && questionLast && action !== 'handoff' && action !== 'no_reply',
       questionsCompleted,
       newRequest: d.new_request,
+      quote,
     },
     retryable,
     fixes,
     factIssues,
     bookingIssue,
+    quoteIssue,
   };
 }
 

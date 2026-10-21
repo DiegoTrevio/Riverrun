@@ -30,6 +30,7 @@ import { analyticsRoutes } from './routes/analytics.js';
 import { attachmentRoutes } from './routes/attachments.js';
 import { taskRoutes } from './routes/tasks.js';
 import { pipelineRoutes } from './routes/pipelines.js';
+import { quoteRoutes } from './routes/quotes.js';
 import { publicRoutes } from './routes/public.js';
 import { signupRoutes } from './routes/signup.js';
 import { socialPublicRoutes, socialRoutes } from './routes/social.js';
@@ -157,6 +158,7 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
     await conversationRoutes(api, service);
     await automationRoutes(api, service);
     await pipelineRoutes(api, service);
+    await quoteRoutes(api, service);
     await agendaRoutes(api, service);
     await onboardingRoutes(api);
     await analyticsRoutes(api);

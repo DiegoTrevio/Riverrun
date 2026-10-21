@@ -23,7 +23,9 @@ import { briefReport } from './report-format.js';
 import { summarizeConversation } from './report.js';
 import { normalize } from './text.js';
 import { CAPTION_MAX, type OutgoingButton, type OutgoingFile, type OutgoingTemplate, type Transport } from './transport.js';
-import { emptyPlan, validateDecision, type AgendaValidation, type ExecutionPlan, type ValidationInput } from './validator.js';
+import { emptyPlan, validateDecision, type AgendaValidation, type ExecutionPlan, type QuoteValidation, type ValidationInput } from './validator.js';
+import { quoteEvent, type QuoteCatalog, type Quotes } from '../quotes/agent.js';
+import type { Quote } from '../store/quotes.js';
 import type { AgendaContext, BookResult } from '../automation/agenda.js';
 import type { AutomationEvent } from '../automation/types.js';
 import type { PipelineContext } from '../automation/pipelines.js';
@@ -39,6 +41,8 @@ export interface EngineExtensions {
     book(o: { accountId: string; serviceId: string; slotKey: string; conversation: Conversation; contact: Contact; source: 'bot'; assignedUserId?: string | null }): Promise<BookResult>;
     cancel(appointmentId: string, reason: string, by: 'bot'): Promise<unknown>;
   };
+  /** Cotizaciones en PDF con la lista de precios de la cuenta. */
+  quotes?: Pick<Quotes, 'contextFor' | 'prepare' | 'message' | 'link' | 'delivered'>;
   onEvent?(e: AutomationEvent): void;
   settleEvents?(conversationId:string):Promise<void>;
   onOutbound?(conv: Conversation, msg: Message): Promise<void>;
@@ -73,6 +77,18 @@ export interface ProcessOptions {
 }
 
 const MAX_ATTEMPTS = 2;
+
+/** La cotización de esta respuesta: el mensaje del sistema (con el total) y el PDF, o el aviso de que la revisa el equipo. */
+interface QuoteDelivery {
+  text: string;
+  file?: OutgoingFile;
+  quote?: Quote;
+  link?: string;
+  /** Se envió el archivo (o el enlace, en los canales que no envían archivos). */
+  delivered?: 'file' | 'link';
+  /** Cotización final que quedó por aprobar. */
+  pending?: Quote;
+}
 /**
  * Seguro contra repetir: la IA puede abrir una solicitud nueva si la actual ya cumplió su objetivo o empezó hace al menos
  * este tiempo. Antes, repetir la pregunta es seguir la misma solicitud (se le recuerda lo que ya se le dijo).
@@ -262,12 +278,19 @@ export class Engine {
     const images = bot.rules.max_images_per_reply > 0 ? allImages.filter((i) => i.active) : [];
     const semantic = await semanticKnowledge(bot, knowledge, [...history.slice(-4).filter((m) => m.direction === 'in').map((m) => m.content), customerText].join('\n'), this.ai);
     // Automatización y agenda (si están conectadas).
-    const [intents, agendaCtx, business, pipeline] = await Promise.all([
+    const [intents, agendaCtx, business, pipeline, quoteCatalog] = await Promise.all([
       this.ext.intents ? this.ext.intents(conv.account_id, bot.id).catch((e) => { log('error', 'engine', `No se pudieron cargar las intenciones de las reglas: ${e?.message ?? e}`); return []; }) : Promise.resolve([]),
       this.ext.agenda && bot.rules.booking_enabled ? this.ext.agenda.contextFor(conv.account_id, contact, channel.type).catch(() => null) : Promise.resolve(null),
       this.ext.business ? this.ext.business(conv.account_id).catch(() => null) : Promise.resolve(null),
       this.ext.pipeline ? this.ext.pipeline(conv).catch((e) => { log('error', 'engine', `No se pudo cargar el pipeline: ${e?.message ?? e}`); return null; }) : Promise.resolve(null),
+      this.ext.quotes ? this.ext.quotes.contextFor(conv, bot).catch((e) => { log('error', 'engine', `No se pudo cargar la lista de precios: ${e?.message ?? e}`); return null; }) : Promise.resolve(null as QuoteCatalog | null),
     ]);
+    const quoteVal: QuoteValidation | null = quoteCatalog ? {
+      items: Object.fromEntries(quoteCatalog.items.map((i) => [i.code.toUpperCase(), { id: i.id, name: i.name, exact: i.price_mode === 'exact' }])),
+      requiredFields: quoteCatalog.requiredFields.map((f) => ({ key: f.key, label: f.label })),
+      open: !!quoteCatalog.open,
+      allowFinal: quoteCatalog.allowFinal,
+    } : null;
     const agendaVal: AgendaValidation | null = agendaCtx
       ? {
           slots: Object.fromEntries(Object.entries(agendaCtx.slots).map(([k, v]) => [k, v.map((x) => x.key)])), appointmentIds: agendaCtx.appointments.map((a) => a.id), needsPhoneFor: agendaCtx.needsPhoneFor,
@@ -307,6 +330,7 @@ export class Engine {
         questionAsked: questionJourney.asked,
         questionAskedEver: questionJourney.askedEver,
         requests,
+        quotes: quoteCatalog,
       });
       let completion;
       try {
@@ -361,6 +385,7 @@ export class Engine {
         questionJourney,
         contactPhone: contact.phone || undefined,
         activeImageIds: allImages.filter((i) => i.active).map((i) => i.id),
+        quotes: quoteVal,
       };
       const v = validateDecision({ ...lastInput, final: attempt === MAX_ATTEMPTS });
       // Modo estricto: un modelo barato revisa que lo afirmado esté respaldado (solo si lo demás ya pasó).
@@ -410,7 +435,7 @@ export class Engine {
       // la tarjeta del pipeline: su columna puede depender de la respuesta rechazada («ya se le dio un precio»). Ni guarda
       // sus notas: podrían repetir el dato inventado que se rechazó.
       const stageIntents = new Set(pipeline?.stages.map((st) => normalize(st.intent)) ?? []);
-      const base = { ...plan, booking: null, contextImages: [], savedCodes: [], questionLast: false, goalCompleted: false, flowStep: 0, remember: [], intents: plan.intents.filter((i) => !stageIntents.has(normalize(i))) };
+      const base = { ...plan, booking: null, quote: null, contextImages: [], savedCodes: [], questionLast: false, goalCompleted: false, flowStep: 0, remember: [], intents: plan.intents.filter((i) => !stageIntents.has(normalize(i))) };
       if (bookingIssue && !factIssues) {
         // La IA insistió en un horario que no existe: se ofrecen horarios reales.
         plan = { ...base, action: 'reply', messages: [slotFallback(agendaCtx)], images: [] };
@@ -510,6 +535,21 @@ export class Engine {
     }
     const meta = { action: plan.action, info_not_found: plan.infoNotFound, fallback: fallbackUsed };
     if(plan.booking && currentOperation()) await query(`UPDATE delivery_attempts SET state='sent',updated_at=now() WHERE operation_key=$1 AND part=-1`,[currentOperation()]);
+    // Cotización: se crea antes de enviar (una operación repetida tras un reinicio reutiliza la misma). Las aproximadas
+    // salen con su PDF en esta respuesta; las finales quedan para que el equipo las apruebe.
+    let quoteOut: QuoteDelivery | null = null;
+    if (plan.quote && this.ext.quotes && quoteCatalog && plan.action !== 'handoff' && plan.action !== 'no_reply') {
+      await assertOwnership();
+      if (currentOperation()) await query(`INSERT INTO delivery_attempts(operation_key,part,conversation_id,state) VALUES($1,-2,$2,'sending') ON CONFLICT DO NOTHING`, [currentOperation(), conv.id]);
+      const prepared = await this.ext.quotes.prepare({ bot, conv, contact, planned: plan.quote, catalog: quoteCatalog, operation: currentOperation() ?? undefined })
+        .catch(async (e) => { await log('error', 'engine', `No se pudo preparar la cotización: ${e?.message ?? e}`); return null; });
+      if (prepared?.status === 'ready') {
+        // Los canales que no envían archivos reciben un enlace firmado al PDF.
+        const link = transport.sendFile ? undefined : this.ext.quotes.link(prepared.quote);
+        quoteOut = { text: this.ext.quotes.message(bot, prepared.quote, link), file: transport.sendFile ? prepared.file : undefined, quote: prepared.quote, link };
+      } else if (prepared) quoteOut = { text: prepared.text, pending: prepared.status === 'pending' ? prepared.quote : undefined };
+      if (currentOperation()) await query(`UPDATE delivery_attempts SET state='sent',updated_at=now() WHERE operation_key=$1 AND part=-2`, [currentOperation()]);
+    }
     // Recorrido: el objetivo solo cuenta una vez por conversación (hasta que se cierre y se reabra).
     const goalReached = plan.goalCompleted && !conv.goal_completed_at;
     const goalHandoff = goalReached && bot.flow.on_goal_action === 'handoff' && plan.action !== 'handoff';
@@ -582,9 +622,14 @@ export class Engine {
     if (plan.action === 'handoff') {
       await this.executeHandoff(bot, conv, contact, transport, plan.messages, plan.handoffReason || 'La IA decidió transferir');
     } else if (plan.action !== 'no_reply') {
-      const failed = await this.sendPlan(bot, conv, transport, plan, meta, [...selectedRules, ...savedRules], sendable);
+      const failed = await this.sendPlan(bot, conv, transport, plan, meta, [...selectedRules, ...savedRules], sendable, quoteOut);
       for (const x of failed) owed.push({ image: x.image, reason: x.reason, delaySeconds: 45, repeat: sentImageIds.includes(x.image.id) });
     }
+    if (quoteOut?.quote && quoteOut.delivered && this.ext.quotes) {
+      const sentQuote = await this.ext.quotes.delivered(conv, quoteOut.quote, { via: quoteOut.delivered }).catch((e) => { log('error', 'engine', `No se pudo registrar el envío de la cotización: ${e?.message ?? e}`); return null; });
+      if (sentQuote) this.ext.onEvent?.({ type: 'quote_sent', conversationId: conv.id, quote: quoteEvent(sentQuote), text: customerText });
+    }
+    if (quoteOut?.pending) this.ext.onEvent?.({ type: 'quote_pending_approval', conversationId: conv.id, quote: quoteEvent(quoteOut.pending), text: customerText });
     // Una persona tomó la conversación mientras se enviaba la respuesta: el asistente ya no se despide, no la cierra, no la
     // pausa ni la transfiere, y las fotos pendientes no salen después del mensaje de esa persona.
     const tookOver = plan.action !== 'handoff' && (await store.getConversation(conv.id))?.status !== 'bot';
@@ -708,7 +753,7 @@ export class Engine {
   }
 
   /** Envía el plan. Devuelve las fotos que la plataforma rechazó (de reglas del negocio o elegidas por la IA) para reintentarlas. */
-  async sendPlan(bot: Chatbot, conv: Conversation, transport: Transport, plan: ExecutionPlan, meta: Record<string, unknown>, scheduled: ScheduledImage[] = [], saved: SavedItem[] = []): Promise<ScheduledImage[]> {
+  async sendPlan(bot: Chatbot, conv: Conversation, transport: Transport, plan: ExecutionPlan, meta: Record<string, unknown>, scheduled: ScheduledImage[] = [], saved: SavedItem[] = [], quote: QuoteDelivery | null = null): Promise<ScheduledImage[]> {
     const typing = bot.ai.typing_simulation && hasTyping(transport);
     // En correo, varias burbujas serían varios correos: se envían como uno solo.
     const texts = transport.kind === 'email' && plan.messages.length > 1 ? [plan.messages.join('\n\n')] : plan.messages;
@@ -724,6 +769,23 @@ export class Engine {
     for (const text of texts) {
       if (!(await stillBot())) return [];
       await this.sendOut(bot, conv, transport, { sender: 'bot', text, delay: typingDelay(text, typing), meta: tag(text, meta) });
+    }
+    // La cotización va justo después de lo que escribió la IA: el mensaje con el total y, enseguida, el PDF.
+    if (quote) {
+      if (!(await stillBot())) return [];
+      const quoteMeta = { ...meta, quote_message: true, ...(quote.quote ? { quote_id: quote.quote.id, quote_kind: quote.quote.kind } : {}) };
+      const told = await this.sendOut(bot, conv, transport, { sender: 'bot', text: quote.text, delay: typingDelay(quote.text, typing), meta: quoteMeta });
+      if (told && quote.quote && quote.link) quote.delivered = 'link';
+      if (told && quote.file && (await stillBot())) {
+        const sentFile = await this.sendOut(bot, conv, transport, { sender: 'bot', text: '', file: quote.file, delay: typing ? 1200 : 0, meta: quoteMeta });
+        if (sentFile) quote.delivered = 'file';
+        else if (this.ext.quotes && quote.quote) {
+          // La plataforma rechazó el archivo: el cliente recibe el enlace al PDF.
+          const link = this.ext.quotes.link(quote.quote);
+          const again = await this.sendOut(bot, conv, transport, { sender: 'bot', text: `${bot.personality.formality === 'usted' ? 'Puede' : 'Puedes'} ver la cotización aquí: ${link}`, delay: 0, meta: quoteMeta });
+          if (again) quote.delivered = 'link';
+        }
+      }
     }
     const failed: ScheduledImage[] = [];
     for (const { message: m, image } of saved) {

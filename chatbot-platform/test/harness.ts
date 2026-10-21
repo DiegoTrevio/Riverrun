@@ -377,6 +377,8 @@ process.env.UPLOADS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'cp-uploads-'));
 process.env.ADMIN_USER = 'admin@test.mx';
 process.env.ADMIN_PASSWORD = 'secreto123';
 process.env.SESSION_SECRET = 'una-clave-de-pruebas-muy-larga';
+// Las cotizaciones se convierten a PDF con un convertidor de prueba (QUOTE_PDF_BACKEND=soffice usa LibreOffice).
+process.env.QUOTE_PDF_BACKEND ??= 'fake';
 
 export const { pool, migrate } = await import('../src/db.js');
 const { buildApp } = await import('../src/app.js');

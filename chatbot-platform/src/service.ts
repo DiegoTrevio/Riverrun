@@ -40,6 +40,7 @@ import { renderTemplate } from './automation/templates.js';
 import { DeliveryUncertain,currentOperation } from './engine/coordination.js';
 import { PlaygroundTransport, type Transport } from './engine/transport.js';
 import { logEvent } from './logs.js';
+import { Quotes } from './quotes/agent.js';
 import * as store from './store/index.js';
 import type { Channel, Chatbot, Contact, Conversation } from './types.js';
 
@@ -78,6 +79,7 @@ export class ChatService {
   automator: Automator;
   pipelines: Pipelines;
   agenda: Agenda;
+  quotes: Quotes;
   campaigns: Campaigns;
   scheduler: Scheduler;
 
@@ -86,11 +88,13 @@ export class ChatService {
     this.automator = new Automator(this);
     this.pipelines = new Pipelines(this);
     this.agenda = new Agenda(this);
+    this.quotes = new Quotes({ alertTeam: (accountId, o) => this.automator.alertTeam(accountId, o) });
     this.campaigns = new Campaigns(this);
     this.engine = new Engine(ai, {
       intents: (accountId, chatbotId) => this.automator.intentsFor(accountId, chatbotId),
       pipeline: (conv) => this.pipelines.contextFor(conv),
       agenda: this.agenda,
+      quotes: this.quotes,
       onEvent: (e) => this.automator.emit(e),
       settleEvents: (id)=>this.automator.settle(id),
       onOutbound: (conv, msg) => this.automator.onOutbound(conv, msg),

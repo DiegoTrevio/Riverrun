@@ -9,6 +9,7 @@ import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
 import { cardsOfConversation } from '../store/pipelines.js';
+import { getQuote, listQuotes, OPEN_STATUSES } from '../store/quotes.js';
 import { parse } from './util.js';
 import { rateLimited } from '../auth.js';
 import { deliverReport, ReportSendSchema, reportRecipients } from '../automation/report-delivery.js';
@@ -150,6 +151,9 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
       requests: await store.listRequests(conv.id),
       /** Tarjetas del pipeline (una por solicitud) con su historial de columnas. */
       pipeline: await cardsOfConversation(conv.id),
+      /** Cotizaciones de la conversación (las que están en proceso, con sus conceptos para revisarlas). */
+      quotes: await Promise.all((await listQuotes(conv.account_id, { conversationId: conv.id, limit: 10 }))
+        .map(async (q) => (OPEN_STATUSES.includes(q.status) || q.status === 'failed' ? (await getQuote(conv.account_id, q.id)) ?? q : q))),
     };
   });
 

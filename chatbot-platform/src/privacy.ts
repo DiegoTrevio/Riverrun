@@ -3,6 +3,7 @@
  */
 import { query, queryOne, withTransaction } from './db.js';
 import { removeInboundFiles } from './channels/media.js';
+import { removeAttachmentFile } from './attachments.js';
 import { logEvent } from './logs.js';
 import * as astore from './automation/store.js';
 
@@ -21,7 +22,13 @@ export async function contactDataExport(contactId: string) {
   );
   const appointments = await query<any>(`SELECT service_name, kind, starts_at, ends_at, status, customer_name, customer_phone, customer_email, notes FROM appointments WHERE contact_id = $1 ORDER BY starts_at`, [contactId]).catch(() => []);
   const tasks = await query<any>(`SELECT kind, body, status, to_char(due_on, 'YYYY-MM-DD') AS due_on, created_via, created_at, done_at FROM contact_tasks WHERE contact_id = $1 ORDER BY created_at`, [contactId]);
-  return { generated_at: new Date().toISOString(), contact, conversations, messages, appointments, tasks };
+  const quotes = await query<any>(
+    `SELECT q.folio, q.kind, q.status, q.currency, q.total_min, q.total_max, to_char(q.valid_until, 'YYYY-MM-DD') AS valid_until, q.notes, q.customer_snapshot, q.created_at, q.sent_at,
+            (SELECT json_agg(json_build_object('concepto', l.name, 'cantidad', l.qty, 'unidad', l.unit, 'importe_min', l.amount_min, 'importe_max', l.amount_max) ORDER BY l.position) FROM quote_lines l WHERE l.quote_id = q.id) AS lines
+       FROM quotes q WHERE q.contact_id = $1 OR q.conversation_id IN (SELECT id FROM conversations WHERE contact_id = $1) ORDER BY q.created_at`,
+    [contactId],
+  );
+  return { generated_at: new Date().toISOString(), contact, conversations, messages, appointments, tasks, quotes };
 }
 
 /**
@@ -50,14 +57,24 @@ export async function eraseContact(contactId: string, guard: { accountId?: strin
     await client.query('DELETE FROM inbound_receipts WHERE channel_id=$1 AND external_id=$2',[contact.channel_id,contact.external_id]);
     await client.query('DELETE FROM query_embedding_cache WHERE account_id=$1',[contact.account_id]);
     await client.query(`UPDATE appointments SET customer_name = '', customer_phone = '', customer_email = '', notes = '' WHERE contact_id = $1 OR conversation_id = ANY($2)`, [contactId, convIds]);
+    // Cotizaciones: se conservan folio y montos (son contabilidad), sin sus datos ni sus archivos (llevan su nombre).
+    const quoteFiles = (await client.query<{ docx_path: string | null; pdf_path: string | null }>(
+      `SELECT docx_path, pdf_path FROM quotes WHERE contact_id = $1 OR conversation_id = ANY($2) FOR UPDATE`, [contactId, convIds],
+    )).rows.flatMap((r) => [r.docx_path, r.pdf_path]).filter((x): x is string => !!x);
+    await client.query(
+      `UPDATE quotes SET customer_snapshot = '{}'::jsonb, notes = '', docx_path = NULL, pdf_path = NULL, pdf_sha256 = NULL, updated_at = now()
+        WHERE contact_id = $1 OR conversation_id = ANY($2)`,
+      [contactId, convIds],
+    );
     // Las rutas de sus archivos se leen antes de borrar el contacto: al borrarlo, esas filas desaparecen con los mensajes.
     const files = convIds.length ? (await client.query<{ file_path: string }>(`SELECT mm.file_path FROM message_media mm JOIN messages m ON m.id = mm.message_id WHERE m.conversation_id = ANY($1)`, [convIds])).rows.map((r) => r.file_path) : [];
     await client.query(`DELETE FROM contacts WHERE id = $1`, [contactId]);
-    return { conversations: convIds.length, messages, files };
+    return { conversations: convIds.length, messages, files, quoteFiles };
   });
   if (!erased) return null;
   // Los archivos se borran del disco solo después de confirmar la transacción.
   await removeInboundFiles(erased.files);
+  for (const f of erased.quoteFiles) await removeAttachmentFile(f);
   return { conversations: erased.conversations, messages: erased.messages };
 }
 

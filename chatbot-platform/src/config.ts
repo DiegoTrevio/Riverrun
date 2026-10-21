@@ -30,6 +30,11 @@ function outboundMode(value: string): 'live' | 'sandbox' {
   throw new Error('OUTBOUND_MODE debe ser "live" o "sandbox" (valor recibido: ' + JSON.stringify(value.slice(0, 20)) + ').');
 }
 
+function quotePdfBackend(value: string): 'soffice' | 'gotenberg' | 'fake' {
+  if (value === 'soffice' || value === 'gotenberg' || value === 'fake') return value;
+  throw new Error('QUOTE_PDF_BACKEND debe ser "soffice", "gotenberg" o "fake" (valor recibido: ' + JSON.stringify(value.slice(0, 20)) + ').');
+}
+
 const aiBaseUrl = env('OPENROUTER_BASE_URL', env('OPENAI_BASE_URL', 'https://openrouter.ai/api/v1')).replace(/\/$/, '');
 const useOpenRouter = new URL(aiBaseUrl).hostname === 'openrouter.ai';
 
@@ -60,6 +65,13 @@ export const config = {
   /** Base de la API de Zernio (https://zernio.com/api + /v1). */
   zernioApiUrl: env('ZERNIO_API_URL', 'https://zernio.com/api/v1').replace(/\/$/, ''),
   uploadsDir: path.resolve(env('UPLOADS_DIR', './data/uploads')),
+  /** Cotizaciones: el Word del negocio se convierte a PDF con LibreOffice (o con un servicio Gotenberg si se configura). */
+  quotes: {
+    pdfBackend: quotePdfBackend(env('QUOTE_PDF_BACKEND', env('QUOTE_PDF_URL') ? 'gotenberg' : 'soffice')),
+    pdfUrl: env('QUOTE_PDF_URL').replace(/\/$/, ''),
+    sofficePath: env('SOFFICE_PATH', 'soffice'),
+    timeoutMs: Number(env('QUOTE_PDF_TIMEOUT_MS', '60000')),
+  },
   adminUser: env('ADMIN_USER', 'admin'),
   adminPassword: env('ADMIN_PASSWORD', ''),
   sessionSecret: env('SESSION_SECRET', ''),

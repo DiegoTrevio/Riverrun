@@ -15,7 +15,10 @@ COPY --from=build /app/dist ./dist
 COPY package.json ./
 COPY migrations ./migrations
 COPY public ./public
-RUN mkdir -p /data/uploads && chown -R node:node /data
+# Las cotizaciones se llenan en Word y se convierten a PDF con LibreOffice. Liberation tiene las mismas medidas que
+# Arial y Times New Roman, para que el PDF se vea como el formato del negocio.
+RUN apk add --no-cache libreoffice-writer font-liberation font-dejavu font-noto fontconfig \
+  && mkdir -p /data/uploads && chown -R node:node /data
 USER node
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s CMD wget -qO- "http://127.0.0.1:${PORT:-3000}/health" || exit 1
