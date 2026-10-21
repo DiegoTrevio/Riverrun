@@ -10,6 +10,7 @@ import { query, withTransaction, queryOne } from '../db.js';
 import { notifySuperadmins } from '../lifecycle.js';
 import { logEvent } from '../logs.js';
 import { sendMail } from '../mailer.js';
+import { keptNote } from '../accounts/retention.js';
 import { LIMIT_LABELS, usageOf } from './limits.js';
 import { mercadopago } from './mercadopago.js';
 import { stripe } from './stripe.js';
@@ -239,6 +240,7 @@ async function applyStateLocked(state: SubscriptionState, now: Date): Promise<st
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
      ON CONFLICT (account_id) DO UPDATE SET provider = $2, provider_customer_id = $3, provider_subscription_id = $4, plan_key = $5, status = $6,
        current_period_end = $7, cancel_at_period_end = $8, past_due_since = $9,
+       dunning_step = CASE WHEN $6 = 'past_due' THEN subscriptions.dunning_step ELSE 0 END,
        access_ended_at = CASE WHEN $6 = 'active' THEN NULL ELSE subscriptions.access_ended_at END, updated_at = now()`,
     [accountId, state.provider, state.customerId, state.subscriptionId, planKey, state.status, periodEnd, state.cancelAtPeriodEnd, pastDueSince],
   );
@@ -304,12 +306,56 @@ export async function enforceAccess(now = new Date()): Promise<number> {
     [now, config.billing.graceDays],
   );
   for (const r of rows) {
-    await query(`UPDATE accounts SET status = 'paused', updated_at = now() WHERE id = $1 AND status <> 'paused'`, [r.account_id]);
+    await query(`UPDATE accounts SET status = 'paused', paused_at = $2, pause_reason = 'payment', updated_at = now() WHERE id = $1 AND status <> 'paused'`, [r.account_id, now]);
     await logEvent({ level: 'warn', source: 'admin', message: `Cuenta pausada por falta de pago (${r.status})`, accountId: r.account_id });
-    await tell(r.account_id, 'Tu asistente está en pausa', `Tu asistente de "${r.name}" se pausó porque el plan no está al corriente. Tu configuración y tus conversaciones se conservan: reactívalo cuando quieras desde Mi plan.`);
+    await tell(r.account_id, 'Tu asistente está en pausa', `Tu asistente de "${r.name}" se pausó porque el plan no está al corriente. ${keptNote()} Reactívalo cuando quieras desde Mi plan.`);
     await notifySuperadmins(r.account_id, `Cuenta pausada por pago: ${r.name}`, `"${r.name}" quedó en pausa (${r.status}).`);
   }
   return rows.length;
+}
+
+/**
+ * Recordatorios de un cobro fallido (el primer aviso sale al fallar): a los 3 días y un día antes de que termine la
+ * gracia. Cada uno una sola vez por caída (`dunning_step` vuelve a 0 al pagar). Con una gracia corta, el de los 3 días se
+ * salta. Devuelve cuántos se enviaron.
+ */
+export async function checkDunning(now = new Date()): Promise<number> {
+  const grace = config.billing.graceDays;
+  const last = grace - 1;
+  // El último primero: si ya toca, el anterior ya no sale.
+  const steps = [
+    ...(last >= 1 ? [{ step: 2, after: last }] : []),
+    ...(3 < last ? [{ step: 1, after: 3 }] : []),
+  ];
+  let sent = 0;
+  for (const { step, after } of steps) {
+    const rows = await query<{ account_id: string; name: string; provider: ProviderName; past_due_since: Date }>(
+      `UPDATE subscriptions s SET dunning_step = $3, updated_at = now() FROM accounts a
+       WHERE a.id = s.account_id AND s.status = 'past_due' AND s.access_ended_at IS NULL AND s.dunning_step < $3
+         AND s.past_due_since <= $1::timestamptz - make_interval(days => $2)
+       RETURNING s.account_id, a.name, s.provider, s.past_due_since`,
+      [now, after, step],
+    );
+    for (const r of rows) {
+      const deadline = new Date(new Date(r.past_due_since).getTime() + grace * 86400_000);
+      const how = r.provider === 'stripe' ? 'en «Administrar pago»' : 'con «Cambiar tarjeta»';
+      if (step === 1) {
+        await tell(r.account_id, 'Tu pago sigue pendiente', `Todavía no pudimos cobrar el plan de "${r.name}". Actualiza tu forma de pago ${how} en Mi plan antes del ${fmt(deadline)} para que tu asistente siga respondiendo.`);
+      } else {
+        await tell(r.account_id, 'Mañana se pausa tu asistente', `Si no se actualiza el pago, tu asistente de "${r.name}" dejará de responder el ${fmt(deadline)}. Actualiza tu forma de pago ${how} en Mi plan; en cuanto se cobre, todo sigue igual.`);
+      }
+      await logEvent({ level: 'warn', source: 'admin', message: `Recordatorio de cobro fallido (${step === 1 ? '3 días' : 'último aviso'})`, accountId: r.account_id });
+      sent++;
+    }
+  }
+  return sent;
+}
+
+/** Pago pendiente de la cuenta, para la franja del panel (null si está al corriente). */
+export async function paymentDue(accountId: string) {
+  const sub = await getSubscription(accountId);
+  if (sub?.status !== 'past_due' || !sub.past_due_since || sub.access_ended_at) return null;
+  return { provider: sub.provider, grace_ends_at: new Date(new Date(sub.past_due_since).getTime() + config.billing.graceDays * 86400_000) };
 }
 
 export const billingEnabled = async () => enabledProviders().length > 0 && (await listPlans()).length > 0;

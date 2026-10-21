@@ -156,9 +156,16 @@ function accountBanner() {
   const { user, account } = state.me;
   if (!account) return null;
   const items = [];
+  const due = account.payment_due;
+  if (due && account.status !== 'paused' && isAdmin()) {
+    items.push(h('div', { class: 'banner warn', role: 'status' }, h('strong', {}, 'No pudimos cobrar tu plan. '),
+      `Actualiza tu forma de pago antes del ${new Date(due.grace_ends_at).toLocaleDateString('es-MX', { day: 'numeric', month: 'long' })} para que tu asistente siga respondiendo. `,
+      location.hash.split('?')[0] === '#/plan' ? null : h('a', { class: 'btn primary', href: '#/plan' }, 'Actualizar pago')));
+  }
   if (account.status === 'paused') {
     items.push(h('div', { class: 'banner danger' }, h('strong', {}, 'Tu cuenta está en pausa. '),
-      'Tu asistente no está respondiendo ni enviando mensajes; tu configuración y tus conversaciones se conservan.',
+      'Tu asistente no está respondiendo ni enviando mensajes; tu configuración y tus conversaciones se conservan',
+      account.deletion_date ? ` hasta el ${new Date(account.deletion_date).toLocaleDateString('es-MX', { day: 'numeric', month: 'long' })}.` : '.',
       state.meta.billing_enabled && isAdmin() ? [' ', h('a', { class: 'btn primary', href: '#/plan' }, 'Activar mi plan')] : state.meta.support_contact ? [' Para activarla escribe a ', h('strong', {}, state.meta.support_contact), '.'] : ''));
   } else if (account.status === 'trial' && account.trial_ends_at) {
     const days = Math.max(0, Math.ceil((new Date(account.trial_ends_at) - Date.now()) / 86400000));

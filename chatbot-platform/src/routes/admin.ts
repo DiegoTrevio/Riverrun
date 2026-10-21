@@ -1,5 +1,4 @@
 import { aiBudgetRoutes } from './ai-budget.js';
-import fsp from 'node:fs/promises';
 import { NETWORKS, ZERNIO_SECRET, zernioEnabled, zernioKey, zernioKeySource } from '../channels/zernio.js';
 import { knowledgeMonitorReport } from '../engine/knowledge-monitor.js';
 import { operationalStatus } from '../engine/operations.js';
@@ -16,10 +15,8 @@ import {
   verifyPassword,
 } from '../auth.js';
 import { adapterFor } from '../channels/index.js';
-import { releaseWhatsapp } from '../channels/whatsapp.js';
 import { config } from '../config.js';
 import { query, queryOne, withTransaction } from '../db.js';
-import { imageAbsolutePath } from '../engine/transport.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
@@ -30,11 +27,12 @@ import { systemStatus } from '../monitor.js';
 import { listIncidents } from '../observability/incidents.js';
 import { diagnosticsReport, refreshDiagnostics } from '../diagnostics.js';
 import { assertWithinLimit, LimitsSchema } from '../billing/limits.js';
-import { billingEnabled } from '../billing/service.js';
+import { billingEnabled, paymentDue } from '../billing/service.js';
+import { deleteAccountFully } from '../accounts/delete.js';
+import { deletionDate } from '../accounts/retention.js';
 import { parse } from './util.js';
 import { metaConnectEnabled } from '../channels/meta-connect.js';
-import { verifyZernioKey, workspaceChange, zernioFootprint, zernioSystemStatus } from '../channels/zernio-connect.js';
-import { scheduleJob } from '../automation/store.js';
+import { verifyZernioKey, workspaceChange, zernioSystemStatus } from '../channels/zernio-connect.js';
 import { removePlatformSecret, savePlatformSecret } from '../platform-secrets.js';
 
 const Password = z.string().min(8, 'mínimo 8 caracteres').max(200);
@@ -67,10 +65,12 @@ export async function sessionRoutes(app: FastifyInstance) {
 /** Rutas autenticadas: perfil, cuentas, usuarios, estadísticas y registros. */
 export async function adminRoutes(api: FastifyInstance, service: ChatService) {
   await aiBudgetRoutes(api);
-  api.get('/api/me', async (req) => ({
-    user: req.user,
-    account: req.user.account_id ? await store.getAccount(req.user.account_id) : null,
-  }));
+  api.get('/api/me', async (req) => {
+    const account = req.user.account_id ? await store.getAccount(req.user.account_id) : null;
+    // Pago pendiente: los administradores ven la franja «Actualiza tu pago» en todo el panel.
+    const due = account && req.user.role !== 'agent' ? await paymentDue(account.id) : null;
+    return { user: req.user, account: account && { ...account, payment_due: due, deletion_date: deletionDate(account) } };
+  });
 
   api.put('/api/me', async (req) => {
     const b = parse(z.object({ name: z.string().trim().max(120).optional(), phone: z.string().max(30).optional(), notify_whatsapp: z.boolean().optional(), available: z.boolean().optional() }), req.body);
@@ -179,6 +179,8 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
       all ? [] : [req.user.account_id],
     );
     // El agente ve su cuenta sin los totales ni los datos del dueño: son de la cuenta entera.
+    // Cuándo se borraría una cuenta en pausa (retención automática), para el superadmin.
+    if (all) for (const r of rows as any[]) r.deletion_date = deletionDate(r);
     if (req.user.role !== 'agent') return rows;
     const hidden = ['users', 'conversations', 'conversations_month', 'ai_cost_month', 'last_activity_at', 'owner_email', 'owner_verified'];
     return rows.map((r: Record<string, unknown>) => Object.fromEntries(Object.entries(r).filter(([k]) => !hidden.includes(k))));
@@ -257,6 +259,8 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     /** Excepción de límites para esta cuenta (solo las claves indicadas; {} = quitar la excepción). */
     limits_override: LimitsSchema.optional(),
     brand_id: z.string().uuid().nullable().optional(),
+    /** Conservar la cuenta aunque siga en pausa (no la borra la retención automática). */
+    keep_data: z.boolean().optional(),
   });
 
   api.post('/api/accounts', { preHandler: requireRole('superadmin') }, async (req) => {
@@ -294,8 +298,9 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
       trialEnds = new Date(base + b.extend_trial_days * 86400_000);
       status = status ?? 'trial';
     }
-    const acc = (await store.updateAccount(before.id, { name: b.name, active: b.active, status, plan: b.plan, trial_ends_at: trialEnds, limits_override: b.limits_override ? (Object.fromEntries(Object.entries(b.limits_override).filter(([, v]) => v)) as Record<string, number>) : undefined, brand_id: b.brand_id }))!;
-    const changes = [b.active === false ? 'desactivada' : '', status && status !== before.status ? `estado: ${status}` : '', trialEnds !== undefined ? `prueba hasta ${trialEnds?.toISOString().slice(0, 10) ?? '—'}` : '']
+    const acc = (await store.updateAccount(before.id, { name: b.name, active: b.active, status, plan: b.plan, trial_ends_at: trialEnds, limits_override: b.limits_override ? (Object.fromEntries(Object.entries(b.limits_override).filter(([, v]) => v)) as Record<string, number>) : undefined, brand_id: b.brand_id, keep_data: b.keep_data }))!;
+    const changes = [b.active === false ? 'desactivada' : '', status && status !== before.status ? `estado: ${status}` : '', trialEnds !== undefined ? `prueba hasta ${trialEnds?.toISOString().slice(0, 10) ?? '—'}` : '',
+      b.keep_data !== undefined && b.keep_data !== before.keep_data ? (b.keep_data ? 'se conservan sus datos' : 'retención normal') : '']
       .filter(Boolean)
       .join(', ');
     await logEvent({ level: 'info', source: 'admin', message: `Cuenta actualizada: ${acc.name}${changes ? ` (${changes})` : ''}`, accountId: acc.id });
@@ -305,14 +310,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
   api.delete('/api/accounts/:id', { preHandler: requireRole('superadmin') }, async (req: any) => {
     const acc = await store.getAccount(req.params.id);
     if (!acc) throw notFound('Cuenta no encontrada');
-    const images = await query<{ file_path: string }>(`SELECT i.file_path FROM images i JOIN chatbots b ON b.id = i.chatbot_id WHERE b.account_id = $1`, [acc.id]);
-    const whatsapps = (await store.listChannels(acc.id)).filter((c) => c.type === 'whatsapp');
-    const zernio = await zernioFootprint(acc.id);
-    await store.deleteAccount(acc.id);
-    // Sus redes y su perfil se quitan de Zernio aparte (con reintentos): el negocio ya no existe.
-    if (zernio.accounts.length || zernio.profiles.length || zernio.posts.length) await scheduleJob({ account_id: null, type: 'zernio_cleanup', payload: zernio, run_at: new Date() });
-    for (const ch of whatsapps) await releaseWhatsapp(ch, { accountDeleted: true });
-    for (const i of images) await fsp.rm(imageAbsolutePath(i), { force: true });
+    await deleteAccountFully(acc);
     await logEvent({ level: 'warn', source: 'admin', message: `Cuenta eliminada: ${acc.name}` });
     return { ok: true };
   });

@@ -437,6 +437,13 @@ export interface Account {
   signup_source: string;
   ai_alert_month: string;
   limits_override?: Record<string, number>;
+  /** Pausa automática (prueba vencida o falta de pago): desde cuándo y por qué. Vacío si no está en pausa o se pausó a mano. */
+  paused_at: Date | null;
+  pause_reason: '' | 'trial' | 'payment';
+  /** Aviso al dueño de que la cuenta se borrará (retención). */
+  deletion_warned_at: Date | null;
+  /** El superadmin decidió conservarla aunque siga en pausa. */
+  keep_data: boolean;
   created_at: Date;
 }
 
