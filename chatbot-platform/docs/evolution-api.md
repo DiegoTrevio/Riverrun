@@ -157,6 +157,24 @@ git pull --ff-only && ./riverrun update
   siguientes a un cambio de versión, o con una versión incompatible, ya no lo hace con instancias que ya estuvieron
   vinculadas**: avisa ("no la reiniciamos automáticamente") y lo deja en Registros, para no borrar una sesión que quizá
   se recupera corrigiendo la versión.
+- **Nunca** recrea por su cuenta un WhatsApp que estaba conectado y se cayó sin que nadie cerrara la sesión (`down_since`
+  con motivo distinto de `logged_out`/`banned`/`replaced`): Evolution lo reconecta con la sesión guardada. El panel dice
+  "Tu WhatsApp se está reconectando solo" (sin QR) y ofrece **Vincular de nuevo**, que es la única forma de descartar esa
+  sesión. Si Evolution ya no tiene la sesión y genera un QR, el QR se muestra.
+- Las claves de cifrado de cada sesión (pre-keys, sesiones Signal, claves de sincronización) **no están en la base de
+  Evolution**: con `CACHE_REDIS_ENABLED=true`, Evolution 2.3.7 las guarda en Redis (`useMultiFileAuthStatePrisma`: en la
+  base solo va `creds`). Por eso el respaldo incluye una instantánea de Redis (`redis.rdb`, con `redis-cli --rdb`) y
+  `./riverrun restore` la carga con la imagen de Redis (`docker/backup/redis-load.sh`): con AOF activo, Redis ignora un
+  `dump.rdb` al arrancar, así que se carga sin AOF y se activa en caliente.
+
+## Vinculación (QR y código por número), según el código de Evolution 2.3.7
+
+| Comportamiento de Evolution | Qué hace RiverRun |
+|---|---|
+| `GET /instance/connect` con la instancia esperando escaneo (`connecting`) devuelve el QR vigente y **no hace caso de `?number=`**; el número solo cuenta al crearla o al conectar una cerrada. | "Con mi número" sobre una instancia que esperaba un QR (sin sesión) la recrea con el número; el número con que vincula se guarda (`pairing_number`). |
+| Cada QR vive 45 s (`qrTimeout`); con número, pide un **código nuevo con cada QR** y Baileys solo acepta el último. | El código que llega por webhook (`qrcode.updated` → `pairingCode`) reemplaza al anterior; se reutiliza como máximo 40 s. |
+| Al agotar `QRCODE_LIMIT` (30) envía `connection.update` con `state: "refused"`. | Se guarda como `close` sin borrar el motivo anterior; la siguiente consulta del panel pide un QR nuevo. |
+| Cerrar la sesión (`/instance/logout`) manda el webhook `close` con 401 casi al mismo tiempo que responde; con la sesión ya cerrada responde 400 "is not connected". | "Desconectar" marca la desconexión a propósito **antes** de cerrar (sin aviso de caída) y trata el 400 como ya desconectado. |
 - Borrar un canal o una cuenta sigue cerrando y eliminando su instancia: es una acción explícita del usuario.
 
 ## Recuperación
@@ -165,7 +183,7 @@ git pull --ff-only && ./riverrun update
 |---|---|
 | `update` se detuvo antes de aplicar | Nada se cambió. Lee el motivo (configuración crítica, versión incompatible, falta de confirmación o de respaldo), corrígelo y repite. |
 | Falló y el esquema no cambió | `update` ya volvió a la imagen anterior de Evolution. Revisa `./riverrun logs evolution`. |
-| Falló y Evolution ya migró su base | Evolution quedó fijado en la versión nueva. 1) Revisa `./riverrun logs evolution` y el panel. 2) Si Evolution funciona y falló el backend, corrige y repite `update`. 3) Si Evolution no funciona: fija `EVOLUTION_IMAGE=<imagen anterior>` (la imprime `update`) y `./riverrun restore <respaldo previo>`, que restaura su base y las sesiones juntas. Probado con Docker real (2.3.7 → 2.4.0-rc2 → restauración a 2.3.7: misma instancia, mismo webhook, mismo canal). |
+| Falló y Evolution ya migró su base | Evolution quedó fijado en la versión nueva. 1) Revisa `./riverrun logs evolution` y el panel. 2) Si Evolution funciona y falló el backend, corrige y repite `update`. 3) Si Evolution no funciona: fija `EVOLUTION_IMAGE=<imagen anterior>` (la imprime `update`) y `./riverrun restore <respaldo previo>`, que restaura su base y las sesiones juntas (con sus claves de Redis). Probado con Docker real (2.3.7 → 2.4.0-rc2 → restauración a 2.3.7: misma instancia, mismo webhook, mismo canal). |
 | El panel marca instancias **perdidas** | No las vuelvas a vincular todavía (crearía una sesión nueva y perdería la anterior). Revisa `./riverrun logs evolution` y, si la sesión estaba en el respaldo, restáuralo. |
 | Webhook incorrecto | En el canal, "Reconfigurar webhook" (solo lo actualiza; no toca la sesión). |
 | Restaurar un respaldo de otra versión | La restauración muestra con qué Evolution se hizo; si la configurada es **más vieja**, fija `EVOLUTION_IMAGE` a la del respaldo antes de arrancar. Una más nueva lo migra hacia adelante al arrancar. |

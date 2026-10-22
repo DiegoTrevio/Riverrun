@@ -1102,14 +1102,25 @@ export async function saveQr(channelId: string, qr: string) {
   await query(`UPDATE channels SET qr_code = $2, qr_at = now() WHERE id = $1`, [channelId, qr]);
 }
 
-export async function savePairingCode(channelId: string, code: string, number: string) {
+/** Código por número y el número con el que vincula la instancia (`code` null: el número ya se pidió, el código aún no llega). */
+export async function savePairingCode(channelId: string, code: string | null, number: string) {
   await query(`UPDATE channels SET pairing_code = $2, pairing_number = $3, pairing_at = now() WHERE id = $1`, [channelId, code, number]);
+}
+
+/** Código nuevo que llegó por webhook: solo si el canal se está vinculando por número (sustituye al anterior). */
+export async function refreshPairingCode(channelId: string, code: string) {
+  await query(`UPDATE channels SET pairing_code = $2, pairing_at = now() WHERE id = $1 AND pairing_number IS NOT NULL`, [channelId, code]);
 }
 
 /** Cambia el estado de conexión sin avisos (p.ej. al desconectar a propósito desde el panel). */
 export async function setConnectionStateQuiet(channelId: string, state: string) {
   // Desconexión a propósito: no cuenta como caída (sin avisos ni reconexión automática).
   await query(`UPDATE channels SET connection_state = $2, connection_state_at = now(), down_since = NULL WHERE id = $1`, [channelId, state]);
+}
+
+/** Deja el estado de conexión como estaba (p.ej. si no se pudo desconectar a propósito). */
+export async function restoreConnectionState(channelId: string, state: string | null | undefined, downSince: Date | null | undefined) {
+  await query(`UPDATE channels SET connection_state = $2, down_since = $3 WHERE id = $1`, [channelId, state ?? null, downSince ?? null]);
 }
 
 export async function clearConnectionCodes(channelId: string) {

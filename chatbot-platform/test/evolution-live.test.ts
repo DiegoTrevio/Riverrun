@@ -189,6 +189,18 @@ t('descarga de medios: un mensaje inexistente da un error manejable', async () =
   await assert.rejects(evo.getMediaBase64(name, 'NO-EXISTE-0001'), (e: any) => e instanceof EvolutionError);
 });
 
+t('cerrar la sesión de una instancia ya cerrada: 400 "not connected" (el panel la da por desconectada)', async () => {
+  await evo.logout(name).catch(() => undefined);
+  let err: any = null;
+  for (let i = 0; i < 10 && !err; i++) {
+    err = await evo.logout(name).then(() => null, (e: unknown) => e);
+    if (!err) await sleep(1000);
+  }
+  assert.ok(err instanceof EvolutionError, 'una sesión cerrada no se vuelve a cerrar');
+  assert.equal(err.status, 400);
+  assert.match(err.message, /not connected/i, 'el texto que reconoce POST /whatsapp/logout');
+});
+
 t('eliminar y recrear la instancia con el mismo nombre', async () => {
   await evo.logout(name).catch(() => undefined);
   await evo.deleteInstance(name);

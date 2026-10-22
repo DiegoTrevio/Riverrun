@@ -31,6 +31,15 @@ const STATE_LABEL = {
   unknown: ['', 'Sin información'],
 };
 
+/** Motivos de caída con los que WhatsApp no vuelve solo (igual que NEEDS_RELINK del servidor). */
+const NEEDS_RELINK = ['logged_out', 'banned', 'replaced'];
+
+/** Estado de un WhatsApp para mostrar: un teléfono vinculado que se cayó no está "esperando escaneo". */
+function whatsappState(c, s = c.connection_state) {
+  if (c.down_since && (s === 'connecting' || s === 'close')) return NEEDS_RELINK.includes(c.disconnect_reason) ? ['red', 'Hay que volver a vincular'] : ['orange', 'Reconectando'];
+  return !s || s === 'unknown' ? ['orange', 'Sin conectar'] : STATE_LABEL[s] || ['', 'Sin información'];
+}
+
 export function connectionHref(c) {
   return c.chatbot_id ? `#/bot/${c.chatbot_id}/conexiones/${c.id}` : `#/agentes/conexion/${c.id}`;
 }
@@ -38,7 +47,7 @@ export function connectionHref(c) {
 export function connectionBadge(c) {
   let label = c.active ? 'Activo' : 'Inactivo';
   let color = c.active ? 'green' : '';
-  if (c.active && c.type === 'whatsapp') [color, label] = !c.connection_state || c.connection_state === 'unknown' ? ['orange', 'Sin conectar'] : STATE_LABEL[c.connection_state] || ['', 'Sin información'];
+  if (c.active && c.type === 'whatsapp') [color, label] = whatsappState(c);
   if (c.active && c.config?.connected_via === 'facebook') [color, label] = c.connection_state === 'close' ? ['red', 'Desconectado'] : ['green', 'Conectado'];
   if (c.active && c.type === 'zernio') [color, label] = !c.config?.connected ? ['orange', 'Pendiente de conectar'] : c.connection_state === 'close' ? ['red', 'Desconectado'] : ['green', 'Conectado'];
   return h('span', { class: `badge ${color}` }, label);
@@ -229,7 +238,7 @@ export async function viewChannel(root, id, parentId = null) {
   const refresh = async () => {
     try {
       const s = await api('GET', `/api/channels/${id}/status`);
-      const [cls, label] = STATE_LABEL[s.state] || ['', s.state];
+      const [cls, label] = ch.type === 'whatsapp' ? whatsappState(ch, s.state) : STATE_LABEL[s.state] || ['', s.state];
       status.textContent = label + (s.details?.error ? `: ${s.details.error}` : s.details?.last_error ? `: ${s.details.last_error}` : '');
       status.className = `badge ${cls}`;
     } catch (e) {
@@ -270,7 +279,7 @@ export async function viewChannel(root, id, parentId = null) {
   } else if (ch.type === 'whatsapp') {
     const test = { number: state.me.user.phone || '', text: 'Mensaje de prueba ✅' };
     const box = h('div');
-    const setStatus = (s) => { const [cls, label] = STATE_LABEL[s] || ['', s]; status.textContent = label; status.className = `badge ${cls}`; };
+    const setStatus = (s, r) => { const [cls, label] = r?.reconnecting ? ['orange', 'Reconectando'] : STATE_LABEL[s] || ['', s]; status.textContent = label; status.className = `badge ${cls}`; };
     const showConnector = () => fill(box, whatsappConnector(id, { onState: setStatus, onConnected: () => { const nav = state.navigation; const timer = setTimeout(() => { if (nav === state.navigation && root.isConnected) render(); }, 2500); state.timers.push(timer); } }));
     // Por qué se desconectó (si estaba conectado): dice si se reconecta solo o hay que volver a escanear el QR.
     const reasons = {

@@ -117,12 +117,12 @@ Un solo comando para todo lo que sigue:
 
 ## Respaldos
 
-Un contenedor (`backup`) respalda **cada noche** (03:30 UTC) lo que no se puede perder: la base del chatbot, la base de Evolution, las fotos subidas y las sesiones de WhatsApp. Cada respaldo es **un solo archivo cifrado** (AES-256 con `BACKUP_PASSPHRASE`, que `install` genera y te pide guardar fuera del servidor).
+Un contenedor (`backup`) respalda **cada noche** (03:30 UTC) lo que no se puede perder: la base del chatbot, la base de Evolution, las fotos subidas y las sesiones de WhatsApp **con sus claves de cifrado** (Evolution las guarda en Redis; sin ellas, una sesión restaurada no descifra los mensajes y habría que volver a escanear el QR). Cada respaldo es **un solo archivo cifrado** (AES-256 con `BACKUP_PASSPHRASE`, que `install` genera y te pide guardar fuera del servidor).
 
 - **Se verifica solo:** después de crear cada respaldo se abre, se comprueban sus sumas y se **restaura en una base temporal**. Si algo falla, el panel (Sistema) y las alertas lo avisan.
 - **Retención:** 7 diarios, 4 semanales y 6 mensuales (configurable con `BACKUP_KEEP_*`).
 - **Copia en la nube (recomendado):** si el servidor se pierde, los respaldos locales también. Define `BACKUP_S3_BUCKET`, `BACKUP_S3_ENDPOINT`, `BACKUP_S3_KEY` y `BACKUP_S3_SECRET` (Backblaze B2, Cloudflare R2, Wasabi, AWS S3…) y cada respaldo se copia ahí.
-- **Restaurar:** `./riverrun restore` (detiene el sistema, restaura, lo vuelve a levantar). En un servidor nuevo: `./riverrun install`, baja el archivo de la nube y `./riverrun restore ruta/riverrun-….tar.enc` con la misma `BACKUP_PASSPHRASE`. Antes de restaurar se hace un respaldo de seguridad de lo que hubiera.
+- **Restaurar:** `./riverrun restore` (detiene el sistema, restaura, carga las claves de las sesiones en Redis y lo vuelve a levantar). Un respaldo anterior a esta versión no trae esas claves: la restauración lo avisa. En un servidor nuevo: `./riverrun install`, baja el archivo de la nube y `./riverrun restore ruta/riverrun-….tar.enc` con la misma `BACKUP_PASSPHRASE`. Antes de restaurar se hace un respaldo de seguridad de lo que hubiera.
 - Pruebas automáticas del ciclo completo (respaldar → destruir → restaurar → detectar archivos dañados): `scripts/test-backup.sh`.
 
 ## Cobro automático (Stripe y Mercado Pago)

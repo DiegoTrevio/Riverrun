@@ -8,9 +8,15 @@ import http from 'node:http';
 /* ---------- APIs externas simuladas (Telegram Bot API y Meta Graph API) ---------- */
 export interface ExtRequest { method: string; path: string; query: URLSearchParams; headers: http.IncomingHttpHeaders; body: any; raw: string }
 export const ext = { requests: [] as ExtRequest[], fail: new Set<string>(), n: 0 };
-/** Evolution API simulada: instancias con su estado, QR numerados y códigos de vinculación. */
+/**
+ * Evolution API simulada: instancias con su estado, QR numerados y códigos de vinculación. Como Evolution 2.3.7: el
+ * número para el código solo cuenta al crear la instancia o al conectar una cerrada (`number`); esperando escaneo,
+ * `connect` devuelve el QR vigente (aquí, uno nuevo por llamada para simular que pasó el tiempo) y no hace caso del número.
+ */
 export const evo = {
-  instances: new Map<string, { state: string; qrN: number }>(),
+  instances: new Map<string, { state: string; qrN: number; number?: string }>(),
+  /** Se llama al cerrar la sesión antes de responder (como el webhook "close" 401 que Evolution manda en ese momento). */
+  onLogout: null as null | ((instance: string) => Promise<void>),
   /** Instancias "trabadas": connect no devuelve QR. */
   stuck: new Set<string>(),
   /** Archivos que Evolution entrega al pedir un medio recibido, por id del mensaje. */
@@ -295,7 +301,7 @@ const extServer = http.createServer((req, res) => {
         if (evo.instances.has(body.instanceName) || (evo.deleting.get(body.instanceName) ?? 0) > Date.now()) {
           return json(403, { response: { message: [`This name "${body.instanceName}" is already in use.`] } });
         }
-        evo.instances.set(body.instanceName, { state: 'connecting', qrN: 1 });
+        evo.instances.set(body.instanceName, { state: 'connecting', qrN: 1, number: body.number || undefined });
         if (body.webhook) evo.webhooks.set(body.instanceName, body.webhook);
         return json(201, { instance: { instanceName: body.instanceName }, qrcode: { base64: 'data:image/png;base64,QR1', pairingCode: body.number ? 'NEWC0DE1' : null } });
       }
@@ -304,10 +310,11 @@ const extServer = http.createServer((req, res) => {
         if (!i) return json(404, { response: { message: ['not found'] } });
         if (evo.connectErrors.has(name)) return json(evo.connectErrors.get(name)!, { message: 'Connect failed' });
         if (evo.openOnConnect.has(name)) { i.state = 'open'; return json(200, { instance: { state: 'open' } }); }
+        // Cerrada: empieza una vinculación nueva (con el número pedido, o sin él).
+        if (i.state === 'close') { i.state = 'connecting'; i.number = url.searchParams.get('number') || undefined; }
         if (evo.stuck.has(name)) return json(200, { count: 0 });
         i.qrN++;
-        const number = url.searchParams.get('number');
-        return json(200, { base64: `data:image/png;base64,QR${i.qrN}`, code: `2@${i.qrN}`, pairingCode: number ? `PAIR${String(i.qrN).padStart(4, '0')}` : null });
+        return json(200, { base64: `data:image/png;base64,QR${i.qrN}`, code: `2@${i.qrN}`, pairingCode: i.number ? `PAIR${String(i.qrN).padStart(4, '0')}` : null });
       }
       if (path.startsWith('/instance/fetchInstances')) {
         const wanted = url.searchParams.get('instanceName');
@@ -316,7 +323,15 @@ const extServer = http.createServer((req, res) => {
         if (wanted && !i) return json(404, { status: 404, error: 'Not Found', response: { message: [`Instance "${wanted}" not found`] } });
         return json(200, i ? [{ name: wanted, connectionStatus: i.state, ownerJid: evo.owner.jid, profileName: evo.owner.name }] : []);
       }
-      if (path.startsWith('/instance/logout/')) { const i = evo.instances.get(name); if (i) i.state = 'close'; return json(200, { status: 'SUCCESS' }); }
+      if (path.startsWith('/instance/logout/')) {
+        const i = evo.instances.get(name);
+        if (!i) return json(404, { response: { message: [`The "${name}" instance does not exist`] } });
+        if (i.state === 'close') return json(400, { status: 400, error: 'Bad Request', response: { message: [`The "${name}" instance is not connected`] } });
+        i.state = 'close';
+        i.number = undefined;
+        if (evo.onLogout) return void evo.onLogout(name).finally(() => json(200, { status: 'SUCCESS' }));
+        return json(200, { status: 'SUCCESS' });
+      }
       if (path.startsWith('/instance/delete/')) {
         evo.instances.delete(name);
         evo.webhooks.delete(name);

@@ -110,12 +110,21 @@ export const whatsappAdapter: ChannelAdapter = {
     }
     if (event === 'qrcode.updated') {
       const b64 = body?.data?.qrcode?.base64 ?? body?.data?.base64;
-      return { messages: [], qr: typeof b64 === 'string' && b64 ? (b64.startsWith('data:') ? b64 : `data:image/png;base64,${b64}`) : undefined };
+      // Vinculando por número, Evolution pide un código nuevo con cada QR y solo el último sirve.
+      const code = body?.data?.qrcode?.pairingCode;
+      return {
+        messages: [],
+        qr: typeof b64 === 'string' && b64 ? (b64.startsWith('data:') ? b64 : `data:image/png;base64,${b64}`) : undefined,
+        pairingCode: typeof code === 'string' && code ? code : undefined,
+      };
     }
     let connection: string | undefined;
     let connectionReason: string | undefined;
     if (event === 'connection.update') {
       connection = String(body?.data?.state ?? '') || undefined;
+      // "refused": se agotaron los QR sin que nadie escaneara (QRCODE_LIMIT); Evolution cierra la vinculación. Es una
+      // sesión cerrada, sin motivo nuevo (no debe borrar uno anterior, como "se cerró desde el teléfono").
+      if (connection === 'refused') return { messages, notices, connection: 'close' };
       if (connection === 'close') connectionReason = disconnectReason(body?.data?.statusReason ?? body?.data?.lastDisconnect?.error?.output?.statusCode);
       // "connecting" llega varias veces por minuto mientras se vincula o reconecta: no se registra (solo los cambios reales).
       if (connection === 'open') notices.push({ level: 'info', message: 'WhatsApp conectado' });
