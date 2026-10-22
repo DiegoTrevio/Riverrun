@@ -1,4 +1,5 @@
 import { api, confirmAction, field, fill, h, run, select, state, text } from './core.js';
+import { okMark } from './icons.js';
 import { render } from './main.js';
 import { discardDraft, draftModel, draftVersion, hasUnsavedDrafts, markDraftSaved } from './editing.js';
 
@@ -12,7 +13,7 @@ export function pendingChanges(bot,versions) {
     h('strong',{},'Tienes cambios guardados que todavía no usa tu agente. '),
     versions.conflict?'La configuración cambió después; descártalos y vuelve a hacerlos.':'Aplícalos para que tus clientes los vean, o descártalos.',' ',
     versions.conflict?null:h('button',{class:'primary small',onclick:async()=>{
-      if(await run(()=>api('POST',`/api/chatbots/${bot.id}/version-apply`,{revision:versions.draft.revision}),'Cambios aplicados ✅')) render();
+      if(await run(()=>api('POST',`/api/chatbots/${bot.id}/version-apply`,{revision:versions.draft.revision}),'Cambios aplicados')) render();
     }},'Aplicar cambios'),' ',
     h('button',{class:'small',onclick:async()=>{
       if(!await confirmAction('¿Descartar esos cambios? El agente sigue como está ahora.')) return;
@@ -27,7 +28,7 @@ export function versionHistory(bot,versions) {
   const restore=async(release_id)=>{
     if(!await confirmAction('¿Volver a esta versión? Tu agente usará de inmediato esa configuración (el conocimiento, las fotos y las conexiones no cambian).')) return;
     const restored=await run(()=>api('POST',`/api/chatbots/${bot.id}/version-restore`,{revision:versions.draft.revision,release_id}));
-    if(restored&&await run(()=>api('POST',`/api/chatbots/${bot.id}/version-apply`,{revision:restored.revision}),'Versión recuperada ✅')) {
+    if(restored&&await run(()=>api('POST',`/api/chatbots/${bot.id}/version-apply`,{revision:restored.revision}),'Versión recuperada')) {
       ['general','personality','flow','rules','ai','questions','saved_messages'].forEach(k=>discardDraft(`${bot.id}:${k}`));render();
     }
   };
@@ -43,8 +44,8 @@ export function agentTestsCard(bot,versions) {
   const suite=draftModel(key,versions.suite,false);
   const box=h('div',{class:'card stack'}),cases=h('div',{class:'stack'}),results=h('div',{role:'status','aria-live':'polite'});
   let busy=false;
-  const showRun=(r)=>fill(results,h('strong',{},r.status==='running'?'Evaluando tu agente…':r.status==='passed'?'✓ Todas las pruebas aprobadas':r.status==='failed'?'Hay resultados que corregir':'No se completó la evaluación'),
-    ...(r.results||[]).map(test=>h('details',{open:!test.passed},h('summary',{},`${test.passed?'✓':'⚠'} ${test.name}`),
+  const showRun=(r)=>fill(results,h('strong',{},r.status==='running'?'Evaluando tu agente…':r.status==='passed'?'Todas las pruebas aprobadas':r.status==='failed'?'Hay resultados que corregir':'No se completó la evaluación'),
+    ...(r.results||[]).map(test=>h('details',{open:!test.passed},h('summary',{},okMark(test.passed),' ',test.name),
       ...(test.error?[h('p',{class:'error'},test.error)]:[]),...(test.turns||[]).map(t=>h('div',{class:'stack'},h('strong',{},`Turno ${t.turn}`),h('p',{class:'pre'},t.actual.text||'(sin respuesta)'),
         h('p',{class:'small muted'},`Acción: ${t.actual.action}. Fotos: ${t.actual.images.join(', ')||'ninguna'}. Reserva: ${t.actual.booked?'simulada':'ninguna'}.`),
         h('pre',{class:'pre small'},JSON.stringify(t.actual.data,null,2)),...t.failures.map(f=>h('p',{class:'error'},f)))))),

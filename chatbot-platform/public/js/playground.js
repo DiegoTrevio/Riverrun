@@ -1,5 +1,6 @@
 import { dataLabel } from './bot.js';
 import { api, fill, h, run, toast } from './core.js';
+import { icon } from './icons.js';
 import { render } from './main.js';
 
 const ACTION_LABEL = { paused: 'No respondió: el asistente no está activo en esta conversación', reply: 'Respondió', reply_with_image: 'Respondió con foto', handoff: 'Pasó la conversación a una persona', no_reply: 'No respondió', human: 'No respondió: la conversación está con una persona', inactive: 'No respondió: el asistente está apagado', error: 'Error' };
@@ -41,17 +42,17 @@ export async function tabPlayground(root, bot) {
 
   /** Botones de un flujo: los del último mensaje se pueden tocar como lo haría el cliente; los anteriores solo se ven. */
   const buttonRow = (buttons, live) => h('div', { class: 'msg-buttons', role: 'group', 'aria-label': 'Botones del mensaje' }, buttons.map((b) => (b.kind === 'url'
-    ? h('a', { class: 'chip', href: /^https:\/\//.test(b.url || '') ? b.url : '#', target: '_blank', rel: 'noopener noreferrer' }, `🔗 ${b.label}`)
+    ? h('a', { class: 'chip', href: /^https:\/\//.test(b.url || '') ? b.url : '#', target: '_blank', rel: 'noopener noreferrer' }, icon('external', 14), b.label)
     : live ? h('button', { class: 'chip', onclick: () => send({ text: b.label, button: b.payload }) }, b.label) : h('span', { class: 'chip' }, b.label))));
 
   const bubble = (cls, content, img, extra = null) =>
-    h('div', { class: `bubble ${cls}` }, img ? h('img', { src: `/api/images/${img.id}/file`, alt: img.code || 'Foto del catálogo', loading: 'lazy' }) : null, img ? h('div', { class: 'small muted' }, `🖼 ${img.code}`) : null, content || null, extra);
+    h('div', { class: `bubble ${cls}` }, img ? h('img', { src: `/api/images/${img.id}/file`, alt: img.code || 'Foto del catálogo', loading: 'lazy' }) : null, img ? h('div', { class: 'small muted with-icon' }, icon('image', 14), img.code) : null, content || null, extra);
 
   const load = async () => {
     const d = await api('GET', `/api/chatbots/${bot.id}/playground/${session}`);
     const last = d.messages.at(-1);
     fill(chat, ...d.messages.map((m) => bubble(m.sender === 'system' ? 'notify' : m.direction === 'in' ? 'in' : 'out', m.content, m.image_id ? { id: m.image_id, code: m.image_code } : null,
-      Array.isArray(m.meta?.buttons) && m.meta.buttons.length ? buttonRow(m.meta.buttons, m === last) : m.meta?.choice ? h('div', { class: 'small' }, `👆 ${m.meta.choice}`) : null)));
+      Array.isArray(m.meta?.buttons) && m.meta.buttons.length ? buttonRow(m.meta.buttons, m === last) : m.meta?.choice ? h('div', { class: 'small' }, `Eligió: ${m.meta.choice}`) : null)));
     chat.scrollTop = chat.scrollHeight;
     showData(d.contact || {});
   };
@@ -94,7 +95,7 @@ export async function tabPlayground(root, bot) {
         r.result.fallback_used ? h('div', { class: 'small' }, h('span', { class: 'badge orange' }, 'mensaje de respaldo'), ' La IA no logró una respuesta comprobable y se envió tu mensaje de respaldo.') : null,
         r.result.info_not_found ? h('div', { class: 'small' }, h('span', { class: 'badge orange' }, 'dato no encontrado'), ' Le preguntaron algo que no está en "Conocimiento". Agrégalo si quieres que lo responda.') : null),
       r.result.status === 'paused' ? null : h('div', {}, h('strong', {}, 'Revisión de reglas: '),
-        !rejected.length && !fixes.length ? h('span', { class: 'badge green' }, '✓ cumplió todo a la primera') : null,
+        !rejected.length && !fixes.length ? h('span', { class: 'badge green' }, 'cumplió todo a la primera') : null,
         rejected.length ? h('div', { class: 'small' }, h('span', { class: 'badge orange' }, `${rejected.length} ${rejected.length === 1 ? 'respuesta rehecha' : 'respuestas rehechas'}`), h('ul', { class: 'muted' }, [...new Set(rejected.flatMap((a) => a.retryable).map(explainIssue))].map((x) => h('li', {}, x)))) : null,
         fixes.length ? h('div', { class: 'small' }, h('span', { class: 'badge' }, 'ajustes automáticos'), h('ul', { class: 'muted' }, fixes.map((x) => h('li', {}, x)))) : null),
       h('div', {}, h('strong', {}, 'Conversación: '),

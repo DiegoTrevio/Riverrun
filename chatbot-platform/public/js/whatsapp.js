@@ -1,4 +1,13 @@
-import { api, confirmAction, field, fill, h, state, toast } from './core.js';
+import { api, confirmAction, field, fill, fmtPhone, h, state, toast } from './core.js';
+import { icon } from './icons.js';
+
+// Anillo de cuenta regresiva del código: un trazo que se vacía (sin degradados).
+const RING_R = 19;
+const RING_C = 2 * Math.PI * RING_R;
+const countdownRing = () => h('div', {
+  class: 'wa-ring', title: 'El código se renueva solo',
+  html: `<svg viewBox="0 0 44 44" width="44" height="44" aria-hidden="true"><circle class="track" cx="22" cy="22" r="${RING_R}" fill="none" stroke-width="3"/><circle class="left" cx="22" cy="22" r="${RING_R}" fill="none" stroke-width="3" stroke-linecap="round" stroke-dasharray="${RING_C.toFixed(2)}" stroke-dashoffset="0"/></svg><span></span>`,
+});
 
 /* ------------------------------ Conectar WhatsApp (QR o código por número) ------------------------------ */
 
@@ -76,7 +85,7 @@ export function whatsappConnector(channelId, { onConnected, onState } = {}) {
     const ring = root.querySelector('.wa-ring');
     if (!ring || !st.expiresAt) return;
     const left = Math.max(0, Math.round((st.expiresAt - Date.now()) / 1000));
-    ring.style.setProperty('--p', String(Math.round((left / st.ttl) * 100)));
+    ring.querySelector('.left')?.setAttribute('stroke-dashoffset', (RING_C * (1 - Math.min(1, left / st.ttl))).toFixed(2));
     ring.querySelector('span').textContent = left ? `${left}s` : '…';
     if (!left && document.body.contains(root)) poll(); // venció: se pide el siguiente
   }
@@ -84,12 +93,12 @@ export function whatsappConnector(channelId, { onConnected, onState } = {}) {
   function drawTabs() {
     if (drawnMode === st.mode) return;
     drawnMode = st.mode;
-    const tab = (mode, label, sub) => h('button', {
+    const tab = (mode, iconName, label, sub) => h('button', {
       class: `wa-tab ${st.mode === mode ? 'active' : ''}`,
       'aria-pressed': st.mode === mode ? 'true' : 'false',
       onclick: () => { if (st.mode === mode) return; st.mode = mode; st.data = null; st.error = ''; st.expiresAt = 0; draw(); if (mode === 'qr') poll(); },
-    }, h('strong', {}, label), h('small', {}, sub));
-    fill(tabs, tab('qr', '📷 Escanear código QR', 'Escanea desde WhatsApp en tu teléfono'), tab('code', '🔢 Con mi número', 'Si estás en el mismo celular'));
+    }, h('strong', {}, icon(iconName, 16), label), h('small', {}, sub));
+    fill(tabs, tab('qr', 'qr', 'Escanear código QR', 'Escanea desde WhatsApp en tu teléfono'), tab('code', 'hash', 'Con mi número', 'Si estás en el mismo celular'));
   }
 
   function drawSteps() {
@@ -109,9 +118,9 @@ export function whatsappConnector(channelId, { onConnected, onState } = {}) {
       fill(tabs);
       fill(steps);
       return fill(main,
-        h('div', { class: 'wa-done' }, h('div', { class: 'wa-check' }, '✓'),
+        h('div', { class: 'wa-done' }, h('div', { class: 'wa-check' }, icon('check', 28)),
           h('h2', {}, '¡WhatsApp conectado!'),
-          p?.number ? h('p', {}, 'Conectado como ', h('strong', {}, p.name || 'tu cuenta'), ` · +${p.number}`) : null,
+          p?.number ? h('p', {}, 'Conectado como ', h('strong', {}, p.name || 'tu cuenta'), ` · ${fmtPhone(p.number)}`) : null,
           st.data?.warning ? h('p', { class: 'banner warn' }, st.data.warning) : null,
           h('p', { class: 'small muted', role: 'status' }, 'Teléfono conectado. El agente responderá cuando esté encendido, el perfil esté activo y se cumplan sus reglas de activación.')));
     }
@@ -148,7 +157,7 @@ export function whatsappConnector(channelId, { onConnected, onState } = {}) {
       const qr = st.data?.qr;
       fill(main, err,
         qr ? h('div', { class: 'wa-qr' }, h('img', { class: 'qr', src: qr, alt: 'Código QR para vincular WhatsApp' }),
-              h('div', { class: 'wa-ring', title: 'El código se renueva solo' }, h('span', {}, ''))) 
+              countdownRing())
            : h('div', { class: 'wa-qr wa-loading' }, h('div', { class: 'spinner' }), h('p', { class: 'muted' }, 'Generando tu código… (unos segundos)'),
                (st.data?.waited_s ?? 0) > 60 ? h('p', { class: 'small muted', style: 'max-width:360px;text-align:center' }, 'Está tardando más de lo normal. Puedes probar "Con mi número" o esperar: seguimos intentando solos.') : null),
         qr ? h('p', { class: 'small muted', style: 'text-align:center' }, 'El código se renueva solo; no tienes que hacer nada más que escanearlo.') : null);

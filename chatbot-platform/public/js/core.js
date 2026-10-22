@@ -155,6 +155,31 @@ export function localDateTime(d, timeZone) {
 
 export const clone = (o) => JSON.parse(JSON.stringify(o));
 
+/* ------------------------------ Personas, tiempos y teléfonos ------------------------------ */
+/** Iniciales de una persona (dos letras como máximo). */
+export const initialsOf = (name) => (name || '?').split(/[\s@.]+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('') || '?';
+/** Tono estable de cada persona (identidad, no dato): tintes pálidos separados, nunca violeta. */
+const PERSON_HUES = [190, 32, 140, 350, 205, 85, 12, 165];
+export const personTint = (key) => `--h:${PERSON_HUES[[...String(key || '?')].reduce((n, ch) => n + ch.charCodeAt(0), 0) % PERSON_HUES.length]}`;
+/** «hace 4 min», «hace 2 h», «ayer»… para lo que espera o acaba de pasar. */
+export function ago(d) {
+  if (!d) return '';
+  const mins = Math.max(0, (Date.now() - new Date(d)) / 60000);
+  if (mins < 1) return 'ahora';
+  if (mins < 60) return `hace ${Math.round(mins)} min`;
+  if (mins < 24 * 60) return `hace ${Math.round(mins / 60)} h`;
+  const days = Math.round(mins / 1440);
+  return days === 1 ? 'ayer' : `hace ${days} días`;
+}
+/** Número de WhatsApp legible: +52 998 123 4567 (México) o +lada y el resto. */
+export function fmtPhone(raw) {
+  const d = String(raw || '').replace(/\D/g, '');
+  if (!d) return '';
+  const m = d.match(/^52(1?)(\d{3})(\d{3})(\d{4})$/);
+  if (m) return `+52 ${m[2]} ${m[3]} ${m[4]}`; // el «1» de los celulares es del identificador de WhatsApp, no del número
+  return `+${d}`;
+}
+
 /* ------------------------------ Campos de formulario ------------------------------ */
 
 export function field(label, input, help) {

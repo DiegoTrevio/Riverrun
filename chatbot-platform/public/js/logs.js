@@ -1,4 +1,5 @@
 import { api, field, fmtDate, h, select, state } from './core.js';
+import { icon } from './icons.js';
 import { render } from './main.js';
 import { isSuper } from './session.js';
 
@@ -35,8 +36,8 @@ export async function viewLogs(root, params) {
       h('div', { style: 'min-width:180px' }, field('Agente', select(f, 'chatbot_id', [['', 'Todos los chatbots'], ...bots.map((b) => [b.id, b.name])], apply))),
       h('div', { style: 'min-width:140px' }, field('Nivel', select(f, 'level', [['', 'Todos los niveles'], ['error', 'Errores'], ['warn', 'Advertencias'], ['info', 'Información']], apply))),
       h('div', { style: 'min-width:160px' }, field('Componente', select(f, 'source', [['', 'Todos los componentes'], ['evolution', 'Evolution (WhatsApp)'], ['channel', 'Canales'], ['ai', 'IA'], ['validator', 'Validador'], ['engine', 'Motor'], ['webhook', 'Webhook'], ['admin', 'Panel'], ['system', 'Sistema']], apply))),
-      f.conversation_id ? h('span', { class: 'badge' }, 'filtrado por conversación ', h('a', { href: '#', onclick: (e) => { e.preventDefault(); f.conversation_id = ''; apply(); } }, '✕')) : null,
-      f.channel_id ? h('span', { class: 'badge' }, 'filtrado por canal ', h('a', { href: '#', onclick: (e) => { e.preventDefault(); f.channel_id = ''; apply(); } }, '✕')) : null,
+      f.conversation_id ? h('span', { class: 'badge' }, 'filtrado por conversación ', h('a', { href: '#', 'aria-label': 'Quitar el filtro de conversación', onclick: (e) => { e.preventDefault(); f.conversation_id = ''; apply(); } }, icon('x', 12))) : null,
+      f.channel_id ? h('span', { class: 'badge' }, 'filtrado por canal ', h('a', { href: '#', 'aria-label': 'Quitar el filtro de canal', onclick: (e) => { e.preventDefault(); f.channel_id = ''; apply(); } }, icon('x', 12))) : null,
       h('button', { onclick: () => { location.hash = '#/logs'; } }, 'Limpiar filtros'),
       h('button', { onclick: render }, 'Actualizar')),
     h('div', { class: 'card' },

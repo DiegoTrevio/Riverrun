@@ -276,7 +276,7 @@ Al cambiar una contraseña, las demás sesiones abiertas de ese usuario se cierr
 1. **Cuentas** (superadministrador): crea la cuenta del cliente y, opcionalmente, su primer administrador.
 2. **Agentes → + Crear agente** abre **Crea tu agente**, 3 pantallas: tu negocio y de dónde aprende → qué hará (ya elegido según el tipo de negocio, con lo demás plegado en *Personalizar*) → pruébalo y conéctalo. Al conectar su WhatsApp por primera vez el agente **se enciende solo** ([docs/agent-creation.md](docs/agent-creation.md)). Después, cada agente se ajusta en cuatro secciones:
    - **Instrucciones**: escribe cómo debe atender, qué debe preguntar y cuál es su objetivo. El estilo y las opciones avanzadas quedan plegados.
-   - **Conocimiento**: agrega productos, precios, horarios y preguntas frecuentes, o usa **⚡ Llena todo por mí**: pega la dirección de tu página (o un Google Sheets compartido), sube un PDF, una foto del menú o un CSV, o pega texto. La IA lo ordena en secciones, tú lo revisas y lo guardas; **🔄 Volver a sincronizar** lo actualiza desde la misma página. Solo se usa lo que está en la fuente (no inventa) y las páginas internas están bloqueadas. Excel y Word: guárdalos como CSV/PDF.
+   - **Conocimiento**: agrega productos, precios, horarios y preguntas frecuentes, o usa **Llena todo por mí**: pega la dirección de tu página (o un Google Sheets compartido), sube un PDF, una foto del menú o un CSV, o pega texto. La IA lo ordena en secciones, tú lo revisas y lo guardas; **Volver a sincronizar** lo actualiza desde la misma página. Solo se usa lo que está en la fuente (no inventa) y las páginas internas están bloqueadas. Excel y Word: guárdalos como CSV/PDF.
    - **Fotos**: sube imágenes y explica cuándo enviarlas; las reglas de envío son opcionales.
    - **Probar**: conversa como un cliente y revisa los datos guardados automáticamente. Los detalles técnicos de cada respuesta quedan plegados. Funciona aunque el asistente esté apagado.
    La ficha de cada agente tiene una sola fila de secciones (**Instrucciones · Información · Fotos · Probar · Conexiones · Más ajustes**), un interruptor **Encendido / En pausa** y, mientras falte algo, los pasos **Para empezar a atender**. **Guardar cambios** aplica de inmediato; cada guardado queda en **Opciones avanzadas → Historial de versiones** para volver atrás (ver [docs/agent-versions-and-tests.md](docs/agent-versions-and-tests.md)).
@@ -347,7 +347,7 @@ Menú **Automatización** (administradores). Todo corre sobre tareas programadas
 | El asistente se desactiva | | |
 
 - **Plantillas rápidas:** bienvenida, fuera de horario, palabra urgente → alerta, seguimiento, queja → persona, listo para comprar → ventas, correo → CRM, palabra → pausar / activar al asistente, agradecer cita, objetivo cumplido → reporte al equipo, objetivo cumplido → resumen a tu app, marcada por el equipo (etiqueta) → conversación completa a tu app.
-- **🧪 Probar palabras:** escribe un mensaje de ejemplo y ve qué reglas se activarían (✅/❌ con el motivo), sin IA y sin enviar nada.
+- **Probar palabras:** escribe un mensaje de ejemplo y ve qué reglas se activarían (sí o no, con el motivo), sin IA y sin enviar nada.
 - **Detener la IA:** una regla puede impedir que la IA responda el mensaje que la disparó.
 - **Variables en los textos:** `{{nombre}}`, `{{cliente}}`, `{{telefono}}`, `{{negocio}}`, `{{mensaje}}`, `{{link}}`, `{{dato.CAMPO}}`, `{{cita.servicio}}`, `{{cita.fecha}}`, `{{cita.hora}}`, `{{cita.lugar}}`.
 

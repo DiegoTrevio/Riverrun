@@ -139,7 +139,7 @@ try {
   assert.equal(await instructions.inputValue(), 'BORRADOR_CONSERVADO');
   await page.reload(); assert.equal(await instructions.inputValue(), 'BORRADOR_CONSERVADO');
   await page.getByRole('button', { name: 'Guardar cambios', exact: true }).first().click();
-  await page.getByText('Cambios guardados ✅', { exact: true }).waitFor();
+  await page.getByText('Cambios guardados', { exact: true }).waitFor();
   // Guardar = aplicar: el agente usa el cambio de inmediato y queda en el historial.
   assert.equal((await h.authed('GET', `/api/chatbots/${h.botId}`)).json().personality.prompt, 'BORRADOR_CONSERVADO');
   assert.ok((await h.authed('GET', `/api/chatbots/${h.botId}/versions`)).json().releases.length >= 1);
@@ -206,7 +206,7 @@ try {
   await page.reload(); await page.locator('.main h1').waitFor();
   const chip = page.locator('.chat').getByRole('button', { name: 'Sí, me interesa', exact: true });
   await chip.waitFor();
-  assert.equal(await page.locator('.chat').getByRole('link', { name: '🔗 Ver promoción', exact: true }).getAttribute('href'), 'https://hotel.test/promo');
+  assert.equal(await page.locator('.chat').getByRole('link', { name: 'Ver promoción', exact: true }).getAttribute('href'), 'https://hotel.test/promo');
   const aiCalls = h.calls.length;
   await Promise.all([page.waitForResponse(playgroundPost), chip.click()]);
   await page.locator('.chat').getByText('¡Genial! Te cuento más 👇').waitFor();
@@ -306,14 +306,14 @@ try {
   }
   checked('En el celular, el conector abre con "Con mi número" y entrega el código al primer toque');
   await go(`bot/${h.botId}/conexiones/${socialOn.id}`);
-  await page.getByText('✓ Conectado', { exact: true }).waitFor();
+  await page.locator('.main .badge.green', { hasText: /^Conectado$/ }).first().waitFor();
   await page.getByText('Instagram · @hotelpalmas', { exact: true }).waitFor();
   await go(`bot/${h.botId}/conexiones/${socialNew.id}`);
   await page.getByRole('button', { name: 'Obtener código de Telegram', exact: true }).click();
   await page.getByText(/ZRN-\d+/).first().waitFor({ timeout: 10000 }).catch(async () => { throw new Error(`Sin código de Telegram: ${await page.locator('.main').innerText()}`); });
   const code = (await page.locator('.social-connect').innerText()).match(/ZRN-\d+/)![0];
   zer.telegram.get(code)!.status = 'connected';
-  await page.getByText('✓ Conectado', { exact: true }).waitFor({ timeout: 10000 });
+  await page.locator('.main .badge.green', { hasText: /^Conectado$/ }).first().waitFor({ timeout: 10000 });
   checked('Redes sociales: cuenta conectada visible y Telegram se conecta con código desde el panel');
   const telegram = (await h.authed('POST', '/api/channels', { account_id: h.accountId, chatbot_id: h.botId, name: 'Telegram UX', type: 'telegram' })).json();
   await page.route(`**/api/channels/${telegram.id}/status`, (route) => route.fulfill({ json: { state: 'open' } }));
@@ -351,7 +351,7 @@ try {
     await page.route('**/api/onboarding/import**', (route) => route.fulfill({ contentType: 'application/json', body: JSON.stringify({ description: 'Hotel boutique en Mazatlán frente al mar.', sections: { catalog: 'Habitación doble — $1,800 por noche', hours: 'Recepción 24 horas', location: 'Av. del Mar 100, Mazatlán', faq: '', other: '' }, source: 'hotelpalmas.mx', truncated: false }) }));
     await page.goto(`${base}/#/agentes?new=1`); await page.waitForURL('**/#/agentes/nuevo');
     await page.getByRole('heading', { name: 'Crea tu agente' }).waitFor();
-    await page.getByText('✍️ Lo escribo yo').click();
+    await page.getByText('Lo escribo yo', { exact: true }).click();
     await page.getByLabel('Tu información').fill('Hotel boutique en Mazatlán. Habitación doble $1,800 por noche. Recepción 24 horas.');
     await page.getByRole('button', { name: 'Siguiente →' }).click(); await page.waitForURL('**/#/agentes/nuevo?paso=2');
     await page.getByRole('heading', { name: /Esto aprendió de/ }).waitFor();

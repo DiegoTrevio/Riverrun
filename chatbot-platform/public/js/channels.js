@@ -1,24 +1,23 @@
 import { markDraftSaved, draftModel, draftNotice, draftVersion } from './editing.js';
 import { saveBar } from './bot.js';
-import { api, area, check, clone, field, fill, h, lines, run, select, state, text, toast, confirmAction, ask } from './core.js';
+import { api, area, check, clone, field, fill, fmtPhone, h, lines, run, select, state, text, toast, confirmAction, ask } from './core.js';
 import { render } from './main.js';
 import { accountName, acct, isSuper, isAdmin } from './session.js';
 import { metaChannelPanel } from './meta.js';
 import { socialConnector } from './social.js';
 import { whatsappConnector } from './whatsapp.js';
+import { icon, networkIcon } from './icons.js';
 
 /* ------------------------------ Canales ------------------------------ */
 
-const CHANNEL_ICONS = { whatsapp: '🟢', telegram: '✈️', messenger: '💬', instagram: '📸', webchat: '🌐', email: '✉️', zernio: '🔗', playground: '🧪' };
-/** Redes conectadas por Zernio: cada una con su ícono. */
-const NETWORK_ICONS = { instagram: '📸', facebook: '💬', whatsapp: '🟢', telegram: '✈️', twitter: '𝕏', bluesky: '🦋', reddit: '👽' };
+const CHANNEL_ICONS = { whatsapp: 'whatsapp', telegram: 'send', messenger: 'messenger', instagram: 'instagram', webchat: 'globe', email: 'mail', zernio: 'link', playground: 'test' };
 
 export const networkLabel = (platform) => (state.meta.social_networks || []).find((n) => n.id === platform)?.label || platform || 'Red social';
 
 /** Ícono del canal; para redes sociales, el de la red (Instagram, Facebook, Telegram…). */
 export function channelIcon(type, platform) {
-  if (type === 'zernio' && platform) return h('span', { title: networkLabel(platform) }, NETWORK_ICONS[platform] || '🔗');
-  return h('span', { title: type }, CHANNEL_ICONS[type] || '•');
+  if (type === 'zernio' && platform) return h('span', { class: 'channel-icon', title: networkLabel(platform) }, networkIcon(platform));
+  return h('span', { class: 'channel-icon', title: type }, icon(CHANNEL_ICONS[type] || 'link'));
 }
 
 const STATE_LABEL = {
@@ -68,7 +67,7 @@ export async function poolsCard(channels) {
   const chName = (id) => wa.find((c) => c.id === id)?.name || '—';
   const picker = (obj) => h('div', { class: 'field' }, h('span', {}, 'Números que reciben clientes'), wa.map((c) => h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: obj.channel_ids.includes(c.id), onchange: (e) => { obj.channel_ids = e.target.checked ? [...obj.channel_ids, c.id] : obj.channel_ids.filter((x) => x !== c.id); } }), `${c.name}${c.config?.number ? ` (+${c.config.number})` : ' (sin conectar)'}`)));
   return h('div', { class: 'card' },
-    h('h2', { style: 'margin-top:0' }, '🔀 Enlace que reparte clientes entre tus números'),
+    h('h2', { style: 'margin-top:0' }, 'Enlace que reparte clientes entre tus números'),
     h('p', { class: 'muted' }, 'Pon este enlace en tu web, redes o anuncios: cada persona que lo abra se va a uno de tus números de WhatsApp conectados (los desconectados se saltan solos) y el chat se abre con tu mensaje listo para enviar.'),
     pools.map((p) => h('div', { class: 'list-item' },
       h('div', { class: 'row between' }, h('strong', {}, p.name, ' ', h('span', { class: `badge ${p.active ? 'green' : ''}` }, p.active ? 'activo' : 'pausado')),
@@ -277,7 +276,7 @@ export async function viewChannel(root, id, parentId = null) {
   if (viaFacebook) {
     connection.push(metaChannelPanel(ch, { onChange: render }));
   } else if (ch.type === 'whatsapp') {
-    const test = { number: state.me.user.phone || '', text: 'Mensaje de prueba ✅' };
+    const test = { number: state.me.user.phone || '', text: 'Mensaje de prueba ✅' }; // taste-skill-ignore: texto que llega al WhatsApp del cliente o del equipo
     const box = h('div');
     const setStatus = (s, r) => { const [cls, label] = r?.reconnecting ? ['orange', 'Reconectando'] : STATE_LABEL[s] || ['', s]; status.textContent = label; status.className = `badge ${cls}`; };
     const showConnector = () => fill(box, whatsappConnector(id, { onState: setStatus, onConnected: () => { const nav = state.navigation; const timer = setTimeout(() => { if (nav === state.navigation && root.isConnected) render(); }, 2500); state.timers.push(timer); } }));
@@ -293,8 +292,8 @@ export async function viewChannel(root, id, parentId = null) {
       : null;
     if (ch.connection_state === 'open') {
       fill(box,
-        h('p', {}, h('span', { class: 'badge green' }, '✓ Conectado'), ' ',
-          ch.config.profile_name ? h('strong', {}, ch.config.profile_name) : null, ch.config.number ? ` · +${ch.config.number}` : ''),
+        h('p', {}, h('span', { class: 'badge green' }, 'Conectado'), ' ',
+          ch.config.profile_name ? h('strong', {}, ch.config.profile_name) : null, ch.config.number ? ` · ${fmtPhone(ch.config.number)}` : ''),
         h('div', { class: 'row' },
           h('button', { onclick: async () => { if (await confirmAction('¿Vincular otro número? Se desconecta el actual.')) { if (!(await run(() => api('POST', `/api/channels/${id}/whatsapp/logout`)))) return; showConnector(); } } }, 'Cambiar de número'),
           h('button', { class: 'danger', onclick: async () => { if (await confirmAction('¿Desconectar este WhatsApp? El asistente dejará de responder por aquí.')) { if (!(await run(() => api('POST', `/api/channels/${id}/whatsapp/logout`), 'Desconectado'))) return; render(); } } }, 'Desconectar')));

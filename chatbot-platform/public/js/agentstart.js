@@ -1,5 +1,5 @@
 import { stepsBar } from './agentwizard.js';
-import { api, confirmAction, fill, h, poll, run, state } from './core.js';
+import { api, confirmAction, fill, fmtPhone, h, poll, run, state } from './core.js';
 import { render } from './main.js';
 import { tabPlayground } from './playground.js';
 import { acct, isSuper } from './session.js';
@@ -71,7 +71,7 @@ function statusLine(bot, connected, live, connectCard) {
 function drawConnect(card, bot, { phones, mine, connected, live }) {
   const title = h('h2', { style: 'margin-top:0' }, 'Conecta tu WhatsApp');
   const intro = h('p', { class: 'muted' }, 'Puede ser WhatsApp normal o WhatsApp Business. Sigues usando WhatsApp en tu teléfono como siempre; si tú contestas una conversación, tu agente se pausa en ella.');
-  if (connected) return fill(card, h('h2', { style: 'margin-top:0' }, live ? '🎉 Tu agente ya está atendiendo' : 'Tu WhatsApp está conectado'), doneBody(bot, connected, live));
+  if (connected) return fill(card, h('h2', { style: 'margin-top:0' }, live ? 'Tu agente ya está atendiendo' : 'Tu WhatsApp está conectado'), doneBody(bot, connected, live));
 
   const verifyNeeded = !isSuper() && state.meta.require_email && !state.me.user.email_verified_at;
   if (verifyNeeded) {
@@ -106,7 +106,7 @@ function drawConnect(card, bot, { phones, mine, connected, live }) {
       h('summary', {}, '¿Ya conectaste un WhatsApp en otro agente? Úsalo aquí'),
       h('p', { class: 'small muted' }, 'El número deja de atenderlo el otro agente y pasa a este. Sus conversaciones se conservan.'),
       others.map((c) => h('div', { class: 'row', style: 'margin:6px 0' },
-        h('span', {}, `${c.name}${c.config?.number ? ` · +${c.config.number}` : ''}`),
+        h('span', {}, `${c.name}${c.config?.number ? ` · ${fmtPhone(c.config.number)}` : ''}`),
         h('button', { class: 'small', onclick: async () => {
           if (!(await confirmAction(`¿Usar «${c.name}» con este agente? El otro agente deja de atender ese número.`))) return;
           if (await run(() => api('PUT', `/api/channels/${c.id}`, { chatbot_id: bot.id }), 'Listo: ese WhatsApp ahora lo atiende este agente')) render();
@@ -115,7 +115,7 @@ function drawConnect(card, bot, { phones, mine, connected, live }) {
 
 /** Ya conectado: qué sigue. */
 function doneBody(bot, ch, live) {
-  const number = ch.config?.number ? ` (+${ch.config.number})` : '';
+  const number = ch.config?.number ? ` (${fmtPhone(ch.config.number)})` : '';
   const books = bot.rules?.booking_enabled;
   return [
     live

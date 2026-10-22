@@ -1,4 +1,5 @@
 import { api, confirmAction, field, fill, fmtDate, h, run, select, state, toast } from './core.js';
+import { icon, networkIcon } from './icons.js';
 import { render } from './main.js';
 import { isAdmin, withAcct } from './session.js';
 
@@ -7,12 +8,12 @@ import { isAdmin, withAcct } from './session.js';
  * contesta, oculta o responde en privado; la IA sugiere la respuesta con la información del negocio.
  */
 
-const ICONS = { instagram: '📸', facebook: '📘', twitter: '𝕏', bluesky: '🦋', reddit: '👽', linkedin: '💼', tiktok: '🎵', youtube: '▶️', threads: '🧵', googlebusiness: '🗺️' };
 const STATUS = { nuevo: ['orange', 'Pendiente'], respondido: ['green', 'Respondido'], oculto: ['', 'Oculto'], eliminado: ['red', 'Eliminado'], ignorado: ['', 'Ignorado'] };
 const SENTIMENT = { positive: ['green', 'Positivo'], neutral: ['', 'Neutral'], negative: ['red', 'Negativo'] };
 const SOURCE = { human: 'por una persona', suggested: 'con la sugerencia de la IA', auto: 'automáticamente', external: 'desde la red' };
 const label = (platform) => (state.meta.social_capabilities || []).find((n) => n.id === platform)?.label || platform;
-const stars = (n) => (n ? '★'.repeat(n) + '☆'.repeat(5 - n) : 'Sin calificación');
+/** Calificación como cinco estrellas de línea: las ganadas, llenas. */
+const stars = (n) => (n ? h('span', { class: 'stars', role: 'img', 'aria-label': `${n} de 5 estrellas` }, [1, 2, 3, 4, 5].map((i) => h('span', { class: i <= n ? 'on' : '' }, icon('star', 14)))) : 'Sin calificación');
 /** Enlaces de la red: solo http(s). */
 const safeUrl = (u) => (/^https?:\/\//i.test(u || '') ? u : '');
 
@@ -45,7 +46,7 @@ export async function viewSocialInbox(root, params) {
       } }, 'Revisar ahora') : null,
       isAdmin() ? h('a', { href: '#/redes', class: 'small' }, 'Respuestas automáticas y avisos →') : null));
   if (!data.items.length) {
-    root.append(h('div', { class: 'card empty' }, h('p', {}, f.estado === 'pendientes' ? 'No hay nada pendiente. 🎉' : 'No hay nada con estos filtros.'),
+    root.append(h('div', { class: 'card empty' }, h('p', {}, f.estado === 'pendientes' ? 'No hay nada pendiente.' : 'No hay nada con estos filtros.'),
       h('p', { class: 'small muted' }, 'Los comentarios nuevos llegan solos en cuanto alguien escribe; X y las reseñas de Facebook se revisan una vez al día.')));
     return;
   }
@@ -78,7 +79,7 @@ function content(it, redraw) {
   return [
     h('div', { class: 'row between wrap' },
       h('div', { style: 'min-width:0' },
-        h('strong', {}, `${ICONS[it.platform] || '🔗'} ${label(it.platform)}`),
+        h('strong', { class: 'with-icon' }, networkIcon(it.platform, 16), label(it.platform)),
         h('span', { class: 'small muted' }, `${it.account_username ? ` · @${it.account_username}` : ''} · ${fmtDate(it.created_at)}`)),
       h('div', { class: 'row', style: 'gap:6px' },
         it.needs_human ? h('span', { class: 'badge red' }, 'Revísalo en persona') : null,
@@ -89,12 +90,12 @@ function content(it, redraw) {
       h('div', { style: 'min-width:0' },
         h('p', { class: 'small muted', style: 'margin:0;overflow-wrap:anywhere' }, it.post.caption ? `En: ${it.post.caption.slice(0, 140)}${it.post.caption.length > 140 ? '…' : ''}` : 'En una publicación'),
         safeUrl(it.post.url) ? h('a', { href: safeUrl(it.post.url), target: '_blank', rel: 'noopener noreferrer', class: 'small' }, 'Ver en la red') : null)) : null,
-    !comment ? h('p', { class: 'small', 'aria-label': `${it.rating ?? 'sin'} estrellas` }, h('span', { style: 'color:#d97706' }, stars(it.rating)), it.location ? h('span', { class: 'muted' }, ` · ${it.location}`) : null,
+    !comment ? h('p', { class: 'small' }, stars(it.rating), it.location ? h('span', { class: 'muted' }, ` · ${it.location}`) : null,
       safeUrl(it.url) ? h('span', {}, ' · ', h('a', { href: safeUrl(it.url), target: '_blank', rel: 'noopener noreferrer' }, 'Ver en la red')) : null) : null,
     h('p', { style: 'white-space:pre-wrap;margin:10px 0;overflow-wrap:anywhere' }, h('strong', {}, `${author}: `), it.text || '(sin texto)'),
     it.reply_text ? h('div', { class: 'note' }, h('span', { class: 'small muted' }, `Respuesta ${SOURCE[it.reply_source] || ''}${it.replied_by ? ` (${it.replied_by})` : ''}${it.replied_at ? ` · ${fmtDate(it.replied_at)}` : ''}`),
       h('p', { style: 'white-space:pre-wrap;margin:4px 0 0;overflow-wrap:anywhere' }, it.reply_text)) : null,
-    comment && it.private_reply_at ? h('p', { class: 'small muted' }, `✉️ Respondido en privado · ${fmtDate(it.private_reply_at)}`) : null,
+    comment && it.private_reply_at ? h('p', { class: 'small muted' }, `Respondido en privado · ${fmtDate(it.private_reply_at)}`) : null,
     open && (comment ? can.reply : true) ? h('div', { class: 'stack', style: 'margin-top:8px' },
       field(comment ? 'Tu respuesta' : 'Respuesta a la reseña', box),
       warn,
@@ -102,14 +103,14 @@ function content(it, redraw) {
         h('button', { class: 'secondary', onclick: async () => {
           const s = await run(() => api('POST', withAcct(`${base}/suggest`)));
           if (!s) return;
-          if (s.risk) { warn.textContent = '⚠️ Es un mensaje delicado: contéstalo en persona.'; return; }
+          if (s.risk) { warn.textContent = 'Es un mensaje delicado: contéstalo en persona.'; return; }
           suggested = s.reply;
           m.text = s.reply;
           box.value = s.reply;
-          warn.textContent = s.unverified?.length ? `⚠️ Revisa antes de enviar: ${s.unverified.join(', ')} no está en la información de tu agente.`
-            : s.needs_human ? '⚠️ La IA sugiere que una persona lo revise antes de responder.' : '';
+          warn.textContent = s.unverified?.length ? `Revisa antes de enviar: ${s.unverified.join(', ')} no está en la información de tu agente.`
+            : s.needs_human ? 'La IA sugiere que una persona lo revise antes de responder.' : '';
           box.focus();
-        } }, '✨ Sugerir respuesta'),
+        } }, 'Sugerir respuesta'),
         h('button', { onclick: () => {
           if (!m.text.trim()) return toast('Escribe la respuesta', true);
           act('reply', { text: m.text, source: m.text === suggested && suggested ? 'suggested' : 'human' }, 'Respuesta publicada');
@@ -121,7 +122,7 @@ function content(it, redraw) {
     h('div', { class: 'row wrap', style: 'gap:8px;margin-top:8px' },
       comment && can.hide && ['nuevo', 'respondido'].includes(it.status) ? h('button', { class: 'small secondary', onclick: () => act('hide', undefined, 'Comentario oculto') }, 'Ocultar') : null,
       comment && can.hide && it.status === 'oculto' ? h('button', { class: 'small secondary', onclick: () => act('unhide', undefined, 'Comentario visible otra vez') }, 'Mostrar') : null,
-      comment && can.like && it.status !== 'eliminado' ? h('button', { class: 'small secondary', 'aria-pressed': String(!!it.liked), onclick: () => act(it.liked ? 'unlike' : 'like') }, it.liked ? '♥ Te gusta' : '♡ Me gusta') : null,
+      comment && can.like && it.status !== 'eliminado' ? h('button', { class: 'small secondary', 'aria-pressed': String(!!it.liked), onclick: () => act(it.liked ? 'unlike' : 'like') }, icon('heart', 16), it.liked ? 'Te gusta' : 'Me gusta') : null,
       it.status === 'nuevo' ? h('button', { class: 'small secondary', onclick: () => act('ignore', undefined, 'Quitado de pendientes') }, 'No requiere respuesta') : null,
       it.status === 'ignorado' ? h('button', { class: 'small secondary', onclick: () => act('unignore') }, 'Volver a pendientes') : null,
       comment && can.delete && isAdmin() && it.status !== 'eliminado' ? h('button', { class: 'small danger', onclick: async () => {

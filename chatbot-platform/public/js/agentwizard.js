@@ -1,6 +1,7 @@
 import { discardDraft, draftModel } from './editing.js';
 import { importCard, importFrom, IMPORT_ACCEPT, SECTION_LABELS } from './importer.js';
 import { api, area, field, fill, h, select, state, text, toast } from './core.js';
+import { icon } from './icons.js';
 import { accountPicker } from './dashboard.js';
 import { render } from './main.js';
 import { isSuper } from './session.js';
@@ -13,7 +14,7 @@ export const STEPS = ['Tu negocio', 'Qué hará', 'Pruébalo y conéctalo'];
 export function stepsBar(current) {
   return h('ol', { class: 'steps', 'aria-label': 'Pasos para crear tu agente' }, STEPS.map((label, i) =>
     h('li', { class: i < current ? 'done' : i === current ? 'current' : '', 'aria-current': i === current ? 'step' : null },
-      h('span', { class: 'step' }, h('span', { class: 'num', 'aria-hidden': 'true' }, i < current ? '✓' : i + 1), label))));
+      h('span', { class: 'step' }, h('span', { class: 'num', 'aria-hidden': 'true' }, i < current ? icon('check', 14) : i + 1), label))));
 }
 
 const ROLES = [
@@ -24,9 +25,9 @@ const ROLES = [
 ];
 const COLLECT = [['nombre', 'Nombre'], ['telefono', 'Teléfono (WhatsApp ya lo da)'], ['correo', 'Correo'], ['ciudad', 'Ciudad o zona'], ['interes', 'Qué le interesa'], ['presupuesto', 'Presupuesto'], ['fecha', 'Fecha o momento'], ['personas', 'Número de personas']];
 const SOURCES = [
-  ['url', '🌐 Mi página web', 'Tu sitio, tu menú en línea o una hoja de Google Sheets compartida.'],
-  ['file', '📄 Un archivo', 'PDF, foto de tu menú o lista de precios, o CSV. ¿Tienes Excel? Guárdalo como CSV o PDF.'],
-  ['text', '✍️ Lo escribo yo', 'Qué vendes y a qué precio, tu horario, dónde estás y lo que más te preguntan.'],
+  ['url', 'Mi página web', 'Tu sitio, tu menú en línea o una hoja de Google Sheets compartida.'],
+  ['file', 'Un archivo', 'PDF, foto de tu menú o lista de precios, o CSV. ¿Tienes Excel? Guárdalo como CSV o PDF.'],
+  ['text', 'Lo escribo yo', 'Qué vendes y a qué precio, tu horario, dónde estás y lo que más te preguntan.'],
 ];
 /** Lo mínimo para que pueda responder (el servidor aplica la misma regla). */
 const MIN_INFO = 40;
@@ -110,11 +111,11 @@ export async function viewNewAgent(root, params) {
 function screenBusiness(w) {
   let file = null;
   const fileName = h('span', { class: 'small muted' });
-  const fileInput = h('input', { type: 'file', hidden: true, accept: IMPORT_ACCEPT, onchange: (e) => { file = e.target.files[0] || null; fileName.textContent = file ? `📎 ${file.name}` : ''; } });
+  const fileInput = h('input', { type: 'file', hidden: true, accept: IMPORT_ACCEPT, onchange: (e) => { file = e.target.files[0] || null; fileName.textContent = file ? file.name : ''; } });
   const sourceBox = h('div');
   const drawSource = () => fill(sourceBox,
     w.teach.mode === 'url' ? field('Dirección de tu página', text(w.teach, 'url', { type: 'url', placeholder: 'https://www.minegocio.com', autocomplete: 'url' })) : null,
-    w.teach.mode === 'file' ? h('div', { class: 'row' }, h('button', { type: 'button', onclick: () => fileInput.click() }, '📎 Elegir archivo'), fileInput, fileName) : null,
+    w.teach.mode === 'file' ? h('div', { class: 'row' }, h('button', { type: 'button', onclick: () => fileInput.click() }, icon('paperclip', 16), 'Elegir archivo'), fileInput, fileName) : null,
     w.teach.mode === 'text' ? field('Tu información', area(w.teach, 'text', { big: true, maxlength: 50000, placeholder: 'Ej.: Somos una clínica dental en Monterrey. Limpieza $600 (45 min), blanqueamiento $3,500. Abrimos de lunes a viernes de 9 a 7. Aceptamos tarjeta.' })) : null);
   drawSource();
   const status = h('p', { class: 'small muted', role: 'status' });
@@ -177,8 +178,8 @@ function screenRole(w) {
   const suggested = typeDefaults(w.company.business_type).scope.role;
   const typeLabel = typeInfo(w.company.business_type)?.label || 'tu tipo de negocio';
   const chips = h('div', { class: 'row', style: 'gap:6px;flex-wrap:wrap' });
-  const drawChips = () => fill(chips, Object.entries(SECTION_LABELS).map(([k, l]) => h('span', { class: 'chip' }, w.knowledge.sections[k].trim() ? `✓ ${l}` : `— ${l}`)),
-    w.knowledge.extra.trim() ? h('span', { class: 'chip' }, '✓ Lo que escribiste') : null);
+  const drawChips = () => fill(chips, Object.entries(SECTION_LABELS).map(([k, l]) => w.knowledge.sections[k].trim() ? h('span', { class: 'chip done' }, icon('check', 14), l) : h('span', { class: 'chip muted' }, l)),
+    w.knowledge.extra.trim() ? h('span', { class: 'chip done' }, icon('check', 14), 'Lo que escribiste') : null);
   drawChips();
   const sections = h('div', { class: 'stack' }, Object.entries(SECTION_LABELS).map(([k, l]) => field(l, area(w.knowledge.sections, k, { big: k === 'catalog', oninput: drawChips }))));
   const learned = h('div', { class: 'card stack' },

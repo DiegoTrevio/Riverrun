@@ -1,4 +1,5 @@
 import { api, check, field, fill, h, num, run, select, state, text, toast, confirmAction } from './core.js';
+import { okMark } from './icons.js';
 import { render } from './main.js';
 import { withAcct } from './session.js';
 import { needsOnboarding } from './shell.js';
@@ -107,7 +108,7 @@ export async function viewPlan(root, params) {
         h('h3', { style: 'margin:0' }, p.name),
         h('div', { class: 'kpi', style: 'margin:8px 0' }, planPrice(p), h('span', { class: 'muted small' }, ` / ${per(p)}`)),
         totalText(p) ? h('p', { class: 'muted small', style: 'margin-top:0' }, totalText(p)) : null,
-        limitsText(p.limits) ? h('p', { class: 'small' }, '✓ Incluye ', limitsText(p.limits)) : h('p', { class: 'small' }, '✓ Sin límites de uso'),
+        limitsText(p.limits) ? h('p', { class: 'small' }, okMark(true), ' Incluye ', limitsText(p.limits)) : h('p', { class: 'small' }, okMark(true), ' Sin límites de uso'),
         h('button', { class: 'primary', onclick: async () => {
           if (!await confirmAction(`¿Cambiar al plan ${p.name}? ${changeEffect(sub, current, p)}`)) return;
           const r = await run(() => api('POST', withAcct('/api/billing/change'), { plan: p.key }));
@@ -129,7 +130,7 @@ export async function viewPlan(root, params) {
         h('div', { class: 'kpi', style: 'margin:8px 0' }, planPrice(p), h('span', { class: 'muted small' }, ` / ${per(p)}`)),
         totalText(p) ? h('p', { class: 'muted small', style: 'margin-top:0' }, totalText(p)) : null,
         p.description ? h('p', { class: 'muted' }, p.description) : null,
-        limitsText(p.limits) ? h('p', { class: 'small' }, '✓ Incluye ', limitsText(p.limits)) : h('p', { class: 'small' }, '✓ Sin límites de uso'),
+        limitsText(p.limits) ? h('p', { class: 'small' }, okMark(true), ' Incluye ', limitsText(p.limits)) : h('p', { class: 'small' }, okMark(true), ' Sin límites de uso'),
         p.providers.length
           ? h('div', { class: 'stack' }, p.providers.map((pr) => h('button', { class: 'primary', onclick: async () => {
             const r = await run(() => api('POST', withAcct('/api/billing/checkout'), { plan: p.key, provider: pr.name }));

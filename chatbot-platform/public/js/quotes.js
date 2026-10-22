@@ -110,7 +110,7 @@ function priceForm(existing, settings) {
     if (existing) await api('PUT', `/api/price-items/${existing.id}`, body);
     else await api('POST', withAcct('/api/price-items'), body);
     location.hash = '#/cotizaciones/precios';
-  }, 'Concepto guardado ✅');
+  }, 'Concepto guardado');
   const remove = async () => {
     if (!(await confirmAction(`¿Eliminar «${existing.name}»? Las cotizaciones ya hechas no cambian.`))) return;
     await run(async () => { await api('DELETE', `/api/price-items/${existing.id}`); location.hash = '#/cotizaciones/precios'; render(); }, 'Concepto eliminado');
@@ -177,7 +177,7 @@ async function viewTemplates(root) {
     form.append('name', m.name);
     form.append('file', file.files[0]);
     const r = await api('POST', withAcct('/api/quote-templates'), form, true);
-    toast(`Formato «${r.template.name}» guardado (versión ${r.template.version}) ✅`);
+    toast(`Formato «${r.template.name}» guardado (versión ${r.template.version})`);
     fill(report, r.report.unknown.length
       ? h('div', { class: 'banner warn', role: 'status' }, h('p', {}, 'El formato se guardó, pero estas marcas no las conoce el sistema y quedarán vacías:'),
           h('ul', {}, r.report.unknown.map((t) => h('li', {}, h('code', {}, `{{${t}}}`)))), h('p', { class: 'small' }, 'Revisa que estén bien escritas.'))
@@ -221,7 +221,7 @@ async function viewSettings(root) {
     currency: m.currency, iva_rate: Number(m.iva) / 100, prices_include_iva: m.prices_include_iva, validity_days: Number(m.validity_days),
     legend_approx: m.legend_approx, legend_final: m.legend_final, folio_prefix: m.folio_prefix,
     business_name: m.business_name, business_phone: m.business_phone, business_email: m.business_email, business_address: m.business_address,
-  }), 'Ajustes guardados ✅');
+  }), 'Ajustes guardados');
   root.append(h('div', { class: 'card' },
     h('div', { class: 'row' },
       field('IVA (%)', text(m, 'iva', { type: 'number', min: 0, max: 99, step: '0.01', inputmode: 'decimal' })),
@@ -370,7 +370,7 @@ function quoteEditor(q, reload) {
   const approve = async () => {
     const what = m.kind === 'final' ? 'COTIZACIÓN FINAL' : 'COTIZACIÓN APROXIMADA';
     if (!(await confirmAction(`Se enviará al cliente el PDF como ${what}, con su total. ¿Continuar?`))) return;
-    if (await run(async () => { if (dirty) await save(); return api('POST', `/api/quotes/${q.id}/approve`); }, 'Cotización enviada al cliente ✅')) reload();
+    if (await run(async () => { if (dirty) await save(); return api('POST', `/api/quotes/${q.id}/approve`); }, 'Cotización enviada al cliente')) reload();
   };
   const reject = async () => {
     const r = { reason: '', message: '' };

@@ -68,7 +68,7 @@ try {
   await page.getByLabel('Vigencia (días)', { exact: true }).fill('30');
   await page.getByLabel('Prefijo del folio', { exact: true }).fill('SAL-');
   await page.getByRole('button', { name: 'Guardar ajustes' }).click();
-  await page.getByText('Ajustes guardados ✅').waitFor();
+  await page.getByText('Ajustes guardados', { exact: true }).waitFor();
   const settings = (await h.authed('GET', `/api/quote-settings?account_id=${h.accountId}`)).json();
   assert.deepEqual([settings.validity_days, settings.folio_prefix], [30, 'SAL-']);
   checks.push('Ajustes de vigencia y folio guardados');
@@ -101,7 +101,7 @@ try {
   await page.goto(`${base}/#/bot/${h.botId}/cotizaciones`);
   await page.getByLabel('Preparar y enviar cotizaciones en PDF').check();
   await page.getByRole('button', { name: 'Guardar cambios' }).click();
-  await page.getByText('Cambios guardados ✅').waitFor();
+  await page.getByText('Cambios guardados', { exact: true }).waitFor();
   const bot = (await h.authed('GET', `/api/chatbots/${h.botId}`)).json();
   assert.equal(bot.ai.quotes.enabled, true);
   assert.equal(bot.ai.quotes.allow_final, true);
@@ -119,7 +119,7 @@ try {
   await card.getByLabel('Cantidad de Mesero').fill('3');
   await card.getByRole('button', { name: 'Aprobar y enviar' }).click();
   await page.locator('dialog').getByRole('button', { name: 'Continuar' }).click();
-  await page.getByText('Cotización enviada al cliente ✅').waitFor();
+  await page.getByText('Cotización enviada al cliente', { exact: true }).waitFor();
   const final = (await qstore.listQuotes(h.accountId, { conversationId: conv.id }))[0];
   assert.equal(final.status, 'sent');
   assert.equal(final.total_min, 3 * 50000 * 1.16);

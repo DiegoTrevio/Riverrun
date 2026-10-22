@@ -65,7 +65,7 @@ export function socialConnector(ch, { persist, setup, cfg }) {
         h('div', {},
           h('strong', {}, c.display_name || c.username || networkLabel(c.platform)),
           h('div', { class: 'small muted' }, networkLabel(c.platform), c.username ? ` · @${c.username}` : ''),
-          h('span', { class: `badge ${down ? 'red' : 'green'}` }, down ? 'Desconectado: vuelve a conectar' : '✓ Conectado'))),
+          h('span', { class: `badge ${down ? 'red' : 'green'}` }, down ? 'Desconectado: vuelve a conectar' : 'Conectado'))),
       h('p', { class: 'small muted' }, 'Los mensajes directos que reciba esta cuenta llegan a Conversaciones y el agente los contesta.'),
       h('div', { class: 'row' },
         h('button', { class: down ? 'primary' : '', onclick: () => draw(true) }, 'Reconectar'),

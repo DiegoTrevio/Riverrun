@@ -1,4 +1,4 @@
-import { api, ask, field, fill, fmtDate, h, poll, run, select, state } from './core.js';
+import { api, ask, field, fill, fmtDate, fmtPhone, h, poll, run, select, state } from './core.js';
 import { isAdmin, isSuper, withAcct } from './session.js';
 import { badge, KIND, STATUS, totalText } from './quotes.js';
 import { tasksCard, requestsCard } from './conversations.js';
@@ -19,7 +19,7 @@ export async function viewContacts(root,params) {
   try{
    const page=await api('GET',withAcct(`/api/contacts?${new URLSearchParams({...filters(),offset:append?offset:0})}`));
    offset=page.next_offset;more.hidden=!page.has_more;
-   const items=page.items.map(c=>h('tr',{},h('td',{},h('a',{href:`#/contact/${c.id}`},h('strong',{},c.name)),h('div',{class:'small muted'},c.phone?`+${c.phone}`:'Sin teléfono'),isSuper()&&!state.accountId?h('div',{class:'small muted'},c.account_name):null),
+   const items=page.items.map(c=>h('tr',{},h('td',{},h('a',{href:`#/contact/${c.id}`},h('strong',{},c.name)),h('div',{class:'small muted'},c.phone?fmtPhone(c.phone):'Sin teléfono'),isSuper()&&!state.accountId?h('div',{class:'small muted'},c.account_name):null),
     h('td',{},`${c.channels} ${c.channels===1?'canal':'canales'}`,h('div',{class:'small muted'},c.tags.join(', '))),
     h('td',{},...(c.pending?[h('span',{class:'badge orange'},'Con pendientes')]:[]),...(c.unassigned?[h('span',{class:'badge'},'Sin asignar')]:[]),c.next_appointment?h('div',{class:'small'},`Cita: ${fmtDate(c.next_appointment)}`):null),
     h('td',{},fmtDate(c.last_activity)),h('td',{},h('a',{class:'btn small',href:`#/contact/${c.id}`},'Ver ficha'))));
@@ -52,7 +52,7 @@ export async function viewContact(root,id) {
   const scope=()=>{if(isSuper()){state.accountId=d.contact.account_id;try{localStorage.setItem('cp-account',state.accountId);}catch{/* optional storage */}}};
   const agendaWeek=starts=>{const date=new Intl.DateTimeFormat('en-CA',{timeZone:state.timeZone||'America/Mexico_City'}).format(new Date(starts));const monday=new Date(`${date}T12:00:00Z`);monday.setUTCDate(monday.getUTCDate()-(monday.getUTCDay()+6)%7);return monday.toISOString().slice(0,10);};
   fill(body,h('a',{class:'breadcrumb',href:'#/contacts'},'← Contactos'),h('div',{class:'row between'},h('h1',{},main.name||main.push_name||'Contacto'),latest?h('a',{class:'btn primary',href:`#/conversation/${latest.id}`},'Retomar conversación'):null),
-   h('p',{class:'help'},`${d.account_name} · ${main.phone?`+${main.phone} · `:''}${d.records.length} ${d.records.length===1?'canal visible':'canales visibles'}. Los datos se conservan por canal para evitar sobrescribir respuestas distintas.`),
+   h('p',{class:'help'},`${d.account_name} · ${main.phone?`${fmtPhone(main.phone)} · `:''}${d.records.length} ${d.records.length===1?'canal visible':'canales visibles'}. Los datos se conservan por canal para evitar sobrescribir respuestas distintas.`),
    d.tags.length?h('div',{class:'row'},...d.tags.map(t=>h('span',{class:'badge'},t))):null,
    h('div',{class:'grid'},h('div',{class:'card stack'},h('h2',{},'Datos y notas'),...d.records.map(r=>h('details',{open:d.records.length===1},h('summary',{},r.channel_name),
     h('dl',{},...(r.name?[h('dt',{},'Nombre guardado'),h('dd',{},r.name)]:[]),...Object.entries(r.data||{}).flatMap(([k,v])=>[h('dt',{},dataLabel(k)),h('dd',{},String(v))])),...(r.notes||[]).map(n=>h('p',{class:'small'},n)),

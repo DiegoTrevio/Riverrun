@@ -1,10 +1,11 @@
 import { api, confirmAction, field, fill, fmtDate, h, run, toast } from './core.js';
+import { okMark } from './icons.js';
 import { render } from './main.js';
 import { configSection, functionalSection } from './system-config.js';
 
 /* ------------------------------ Sistema (superadmin) ------------------------------ */
 
-const CHECK_BADGE = { ok: ['green', '✓ Bien'], warn: ['orange', '! Atención'], fail: ['red', '✕ Falla'], na: ['', '—'] };
+const CHECK_BADGE = { ok: ['green', 'Bien'], warn: ['orange', 'Atención'], fail: ['red', 'Falla'], na: ['', '—'] };
 
 export async function viewSystem(root) {
   const sys = await api('GET', '/api/system/status');
@@ -32,17 +33,17 @@ export async function viewSystem(root) {
         h('p', { class: 'small' }, 'Suscripciones: ', sum(sys.subscriptions, 'status'))),
       h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, 'Respaldos'),
         b ? [
-          h('p', { class: 'small' }, b.ok ? h('span', { class: 'badge green' }, '✓ Último respaldo correcto') : h('span', { class: 'badge red' }, '✕ Falló el último intento'), ' ', b.verified ? h('span', { class: 'badge green' }, 'restauración probada') : null),
+          h('p', { class: 'small' }, b.ok ? h('span', { class: 'badge green' }, 'Último respaldo correcto') : h('span', { class: 'badge red' }, 'Falló el último intento'), ' ', b.verified ? h('span', { class: 'badge green' }, 'restauración probada') : null),
           h('p', { class: 'small' }, `Último correcto: ${b.last_success_at ? fmtDate(b.last_success_at) : 'nunca'} · ${b.size_bytes ? (b.size_bytes / 1048576).toFixed(1) + ' MB' : ''}`),
-          h('p', { class: 'small' }, b.remote ? `Copia en la nube: ${b.remote_ok === false ? '✕ falló' : '✓ activa'}` : '⚠️ Solo hay copia en este servidor. Configura BACKUP_S3_* para guardarla fuera.'),
+          h('p', { class: 'small' }, b.remote ? `Copia en la nube: ${b.remote_ok === false ? 'falló' : 'activa'}` : 'Solo hay copia en este servidor. Configura BACKUP_S3_* para guardarla fuera.'),
           b.error ? h('p', { class: 'small error' }, b.error) : null,
         ] : h('p', { class: 'small muted' }, 'Todavía no hay respaldos.')),
       h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, 'Alertas'),
-        h('p', { class: 'small' }, sys.alerts_configured.email ? '✓ Por correo (SUPERADMIN_EMAIL + SMTP)' : '✕ Por correo: falta SUPERADMIN_EMAIL o SMTP_URL'),
-        h('p', { class: 'small' }, sys.alerts_configured.webhook ? '✓ Por webhook (Slack, Discord, ntfy…)' : '– Por webhook: opcional (ALERT_WEBHOOK_URL)'),
-        h('p', { class: 'small' }, sys.alerts_configured.heartbeat ? '✓ Latido externo (HEARTBEAT_URL): si el servidor cae, el servicio externo avisa' : '✕ Latido externo: falta HEARTBEAT_URL (por ejemplo healthchecks.io); sin él nadie avisa si el servidor completo se cae'),
+        h('p', { class: 'small' }, okMark(sys.alerts_configured.email), ' ', sys.alerts_configured.email ? 'Por correo (SUPERADMIN_EMAIL + SMTP)' : 'Por correo: falta SUPERADMIN_EMAIL o SMTP_URL'),
+        h('p', { class: 'small' }, okMark(sys.alerts_configured.webhook), ' ', sys.alerts_configured.webhook ? 'Por webhook (Slack, Discord, ntfy…)' : '– Por webhook: opcional (ALERT_WEBHOOK_URL)'),
+        h('p', { class: 'small' }, okMark(sys.alerts_configured.heartbeat), ' ', sys.alerts_configured.heartbeat ? 'Latido externo (HEARTBEAT_URL): si el servidor cae, el servicio externo avisa' : 'Latido externo: falta HEARTBEAT_URL (por ejemplo healthchecks.io); sin él nadie avisa si el servidor completo se cae'),
         !sys.alerts_configured.email && !sys.alerts_configured.webhook ? h('p', { class: 'banner danger', role: 'alert' }, 'Ninguna alerta sale del panel: si algo falla de noche, nadie se entera. Configura SMTP_URL o ALERT_WEBHOOK_URL.') : null,
-        h('p', { class: 'small' }, sys.heartbeat_configured ? '✓ Latido externo activo' : '⚠️ Sin latido externo: si el servidor entero cae, nadie se entera. Configura HEARTBEAT_URL (healthchecks.io es gratis).'))));
+        h('p', { class: 'small' }, okMark(sys.heartbeat_configured), ' ', sys.heartbeat_configured ? 'Latido externo activo' : 'Sin latido externo: si el servidor entero cae, nadie se entera. Configura HEARTBEAT_URL (healthchecks.io es gratis).'))));
   root.append(await zernioCard(), functionalSection(sys.functional), await configSection());
 }
 
@@ -55,13 +56,13 @@ async function zernioCard() {
     const busy = async (button, fn) => { button.disabled = true; try { const r = await fn(); if (r) draw(r); } finally { button.disabled = false; } };
     fill(card,
       h('div', { class: 'row between' }, h('h2', { style: 'margin:0' }, 'Redes sociales (Zernio)'),
-        h('span', { class: `badge ${s.enabled ? 'green' : 'orange'}` }, s.enabled ? '✓ Activa' : 'Sin llave')),
+        h('span', { class: `badge ${s.enabled ? 'green' : 'orange'}` }, s.enabled ? 'Activa' : 'Sin llave')),
       h('p', { class: 'small muted' }, 'Una sola llave para toda la plataforma: con ella cada negocio conecta Instagram, Facebook, Telegram, X, Bluesky, Reddit y WhatsApp Business desde su panel, con su propio perfil de Zernio. Los negocios nunca ven la llave.'),
       s.source === 'env' ? h('p', { class: 'small' }, `Definida en el servidor (ZERNIO_API_KEY), termina en …${s.hint}. Se administra en el .env.`)
         : s.source === 'panel' ? h('p', { class: 'small' }, `Guardada en el panel (cifrada), termina en …${s.hint}`, s.updated_at ? ` · ${fmtDate(s.updated_at)}` : '', '.')
           : h('p', { class: 'small' }, 'Crea una llave en zernio.com → Settings → API Keys y pégala aquí.'),
       s.enabled ? h('p', { class: 'small' }, `Negocios con perfil de Zernio: ${s.accounts_with_profile} de ${s.accounts_total} (se crea al conectar su primera red)`, s.checking_profiles ? ` · revisando ${s.checking_profiles} perfiles…` : '', ` · redes conectadas: ${s.connected_channels}`) : null,
-      s.webhook ? h('p', { class: `small ${s.webhook.ok ? '' : 'error'}` }, s.webhook.ok ? '✓ Webhook registrado en Zernio: ' : '✕ No se pudo registrar el webhook: ', s.webhook.ok ? h('code', {}, s.webhook_url) : s.webhook.error) : null,
+      s.webhook ? h('p', { class: `small ${s.webhook.ok ? '' : 'error'}` }, okMark(s.webhook.ok), ' ', s.webhook.ok ? 'Webhook registrado en Zernio: ' : 'No se pudo registrar el webhook: ', s.webhook.ok ? h('code', {}, s.webhook_url) : s.webhook.error) : null,
       s.source !== 'env' ? h('div', { class: 'row', style: 'align-items:flex-end' },
         field(s.source === 'panel' ? 'Reemplazar llave' : 'Llave de Zernio', input),
         h('button', { class: 'primary', onclick: (e) => busy(e.currentTarget, () => {

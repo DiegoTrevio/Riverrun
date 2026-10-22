@@ -1,8 +1,9 @@
 import { needAccount } from './admin.js';
-import { api, area, check, clone, confirmAction, field, fill, fmtDate, h, run, select, state, text, toast } from './core.js';
+import { api, area, check, clone, confirmAction, field, fill, fmtDate, fmtPhone, h, run, select, state, text, toast } from './core.js';
+import { icon } from './icons.js';
 import { isAdmin, withAcct } from './session.js';
 
-const KIND = { open: 'En curso', won: '✅ Ganada', lost: '❌ Perdida' };
+const KIND = { open: 'En curso', won: 'Ganada', lost: 'Perdida' };
 const SOURCE = { inicio: 'entró', ia: 'la IA lo detectó', evento: 'por un evento', manual: 'a mano', cierre: 'al terminar la solicitud' };
 /** Eventos que mueven una tarjeta a una columna (además de la situación que detecta la IA). */
 const SIMPLE_EVENTS = [
@@ -88,8 +89,8 @@ export async function viewPipeline(root, a, b) {
     onclick: () => openOpportunity(card), onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openOpportunity(card); } } },
     h('div', { class: 'row between' }, h('strong', { class: 'pipeline-card-title' }, card.contact_name || card.contact_phone || 'Cliente'), avatar(card)),
     h('div', { class: 'opp-value' }, money(card.value, cur())),
-    h('div', { class: 'small muted' }, [card.channel_name, card.request_number > 1 ? `Solicitud ${card.request_number}.ª` : null, card.conversation_status === 'human' ? '🙋 con una persona' : null].filter(Boolean).join(' · ')),
-    card.last_reason ? h('div', { class: 'small opp-reason', title: card.last_reason }, `${card.last_source === 'ia' ? '🤖 ' : card.last_source === 'manual' ? '✋ ' : ''}${card.last_reason}`) : null,
+    h('div', { class: 'small muted' }, [card.channel_name, card.request_number > 1 ? `Solicitud ${card.request_number}.ª` : null, card.conversation_status === 'human' ? 'con una persona' : null].filter(Boolean).join(' · ')),
+    card.last_reason ? h('div', { class: 'small opp-reason', title: card.last_reason }, `${card.last_source === 'ia' ? 'IA: ' : card.last_source === 'manual' ? 'A mano: ' : ''}${card.last_reason}`) : null,
     h('div', { class: 'row between small muted' }, h('span', {}, timeAgo(card.stage_entered_at)), card.closed_at ? h('span', { class: 'badge' }, 'Cerrada') : null));
   const draw = () => {
     const cards = visible();
@@ -101,7 +102,7 @@ export async function viewPipeline(root, a, b) {
         h('tbody', {}, cards.map((c) => {
           const st = stageOf(c.stage_id);
           return h('tr', { class: 'click', onclick: () => openOpportunity(c) },
-            h('td', {}, h('strong', {}, c.contact_name || c.contact_phone || 'Cliente'), h('div', { class: 'small muted' }, c.contact_phone ? `+${c.contact_phone}` : '')),
+            h('td', {}, h('strong', {}, c.contact_name || c.contact_phone || 'Cliente'), h('div', { class: 'small muted' }, c.contact_phone ? fmtPhone(c.contact_phone) : '')),
             h('td', {}, h('span', { class: 'stage-pill', style: `--stage:${st?.color || '#667085'}` }, st?.name || c.stage_id)),
             h('td', {}, money(c.value, cur())),
             h('td', {}, c.assigned_name || h('span', { class: 'muted' }, 'Sin asignar')),
@@ -143,9 +144,9 @@ export async function viewPipeline(root, a, b) {
     const v = { value: Number(card.value) || 0, stage: card.stage_id };
     const history = h('div', { class: 'small muted' }, 'Cargando historial…');
     box.append(
-      h('div', { class: 'row between' }, h('h2', { style: 'margin:0' }, card.contact_name || card.contact_phone || 'Cliente'), h('button', { class: 'icon-only', 'aria-label': 'Cerrar', onclick: close }, '✕')),
+      h('div', { class: 'row between' }, h('h2', { style: 'margin:0' }, card.contact_name || card.contact_phone || 'Cliente'), h('button', { class: 'icon-only', 'aria-label': 'Cerrar', onclick: close }, icon('x'))),
       h('dl', { class: 'appt-facts' },
-        h('dt', {}, 'Teléfono'), h('dd', {}, card.contact_phone ? `+${card.contact_phone}` : '—'),
+        h('dt', {}, 'Teléfono'), h('dd', {}, card.contact_phone ? fmtPhone(card.contact_phone) : '—'),
         h('dt', {}, 'Atiende'), h('dd', {}, card.assigned_name || 'Sin asignar'),
         h('dt', {}, 'Canal'), h('dd', {}, card.channel_name || '—')),
       h('div', { class: 'grid', style: 'gap:12px' },
@@ -155,7 +156,7 @@ export async function viewPipeline(root, a, b) {
         h('button', { class: 'primary', onclick: async () => {
           if (v.value !== Number(card.value) && !(await run(() => api('PATCH', `/api/pipeline-cards/${card.id}`, { value: v.value })))) return;
           if (v.stage !== card.stage_id && !(await run(() => api('POST', `/api/pipeline-cards/${card.id}/move`, { stage_id: v.stage })))) return;
-          toast('Oportunidad guardada ✅'); close(); load();
+          toast('Oportunidad guardada'); close(); load();
         } }, 'Guardar'),
         h('a', { class: 'btn', href: `#/conversation/${card.conversation_id}`, onclick: close }, 'Abrir chat')),
       h('h3', {}, 'Historial'), history);
@@ -213,7 +214,7 @@ async function editPipeline(root, id) {
                 field('Se agrega la etiqueta', text(extra, 'tag', { placeholder: 'ej. vip', oninput: syncExtra })))),
           ]);
   };
-  const drawStages = () => fill(stagesBox, p.stages.map(stageEditor), h('button', { onclick: () => { p.stages.push({ name: 'Nueva columna', kind: 'open', color: '#8b5cf6', when: '', events: [] }); drawStages(); } }, '+ Agregar columna'));
+  const drawStages = () => fill(stagesBox, p.stages.map(stageEditor), h('button', { onclick: () => { p.stages.push({ name: 'Nueva columna', kind: 'open', color: '#64748b', when: '', events: [] }); drawStages(); } }, '+ Agregar columna'));
   drawStages();
 
   const save = async () => {

@@ -4,6 +4,7 @@ import { tabConnections } from './agent-connections.js';
 import { ACTIONS, triggerSummary, VARS_HELP } from './automation.js';
 import { channelIcon, channelStatusCell } from './channels.js';
 import { api, area, check, clone, field, fill, fmtDate, h, lines, num, poll, run, select, state, text, toast, confirmAction, ask } from './core.js';
+import { icon, okMark } from './icons.js';
 import { discardDraft, draftModel, draftNotice, draftVersion } from './editing.js';
 import { importCard, importPreview } from './importer.js';
 import { render } from './main.js';
@@ -21,7 +22,7 @@ const TAB_ALIASES = { general: 'instrucciones', personalidad: 'instrucciones', d
 export const dataLabel = (key) => key.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
 
 /** Marca si el sistema hace cumplir un ajuste o si es una guía para la IA. */
-const guaranteed = () => h('span', { class: 'badge green', title: 'El sistema lo revisa antes de enviar cada respuesta: si no se cumple, la corrige o pide otra a la IA.' }, '✓ Garantizado');
+const guaranteed = () => h('span', { class: 'badge green', title: 'El sistema lo revisa antes de enviar cada respuesta: si no se cumple, la corrige o pide otra a la IA.' }, 'Garantizado');
 
 const guide = () => h('span', { class: 'badge', title: 'Instrucción para la IA. La sigue casi siempre; compruébalo en Probar.' }, 'Guía');
 
@@ -90,7 +91,7 @@ async function setupSteps(bot) {
   return h('div', { class: 'card setup-steps', 'aria-label': 'Para empezar a atender' },
     h('strong', {}, 'Para empezar a atender:'),
     h('ol', {}, steps.map(([ok, label, href], i) => h('li', { class: ok ? 'ok' : '' },
-      h('span', { class: 'mark', 'aria-hidden': 'true' }, ok ? '✓' : String(i + 1)),
+      h('span', { class: 'mark', 'aria-hidden': 'true' }, ok ? icon('check', 14) : String(i + 1)),
       ok || !href ? h('span', {}, label, ok ? h('span', { class: 'sr-only' }, ' (listo)') : '') : h('a', { href }, label)))));
 }
 
@@ -123,7 +124,7 @@ async function saveBot(bot, patch) {
   const versions = keys.map((key) => [key, draftVersion(key)]);
   delete patch.active;
   // Guardar = aplicar: el cambio llega de inmediato a todas sus conexiones (y queda en el historial de versiones).
-  const saved = await run(() => api('POST', `/api/chatbots/${bot.id}/version-apply`, {revision:bot._draftRevision,patch}), 'Cambios guardados ✅');
+  const saved = await run(() => api('POST', `/api/chatbots/${bot.id}/version-apply`, {revision:bot._draftRevision,patch}), 'Cambios guardados');
   if (saved) versions.forEach(([key, version]) => discardDraft(key, version));
   return saved;
 }
@@ -156,7 +157,7 @@ function photoWarningsCard(bot) {
   const list = bot.photo_warnings || [];
   if (!list.length) return null;
   return h('div', { class: 'card', style: 'border-left:4px solid var(--danger)' },
-    h('h2', { style: 'margin-top:0' }, '⚠ Revisa tus fotos'),
+    h('h2', { style: 'margin-top:0' }, 'Revisa tus fotos'),
     h('ul', { class: 'small', style: 'margin:0;padding-left:18px' }, list.map((w) => h('li', {}, w))),
     h('p', { class: 'small muted', style: 'margin-bottom:0' }, 'Se corrige en ', h('a', { href: `#/bot/${bot.id}/imagenes` }, 'Fotos'), ' o en el texto de las instrucciones.'));
 }
@@ -207,7 +208,7 @@ export function flowCard(flow, c) {
   if (!flow || (!flow.goal && !flow.steps?.length)) return null;
   return h('div', { class: 'card' },
     h('h2', { style: 'margin-top:0' }, 'Recorrido'),
-    c.goal_completed_at ? h('p', {}, h('span', { class: 'badge green' }, '🎯 Objetivo cumplido'), ' ', h('span', { class: 'small muted' }, fmtDate(c.goal_completed_at))) : flow.goal ? h('p', { class: 'small' }, 'Objetivo: ', flow.goal) : null,
+    c.goal_completed_at ? h('p', {}, h('span', { class: 'badge green' }, 'Objetivo cumplido'), ' ', h('span', { class: 'small muted' }, fmtDate(c.goal_completed_at))) : flow.goal ? h('p', { class: 'small' }, 'Objetivo: ', flow.goal) : null,
     flow.steps?.length ? h('ol', { class: 'small flow-steps' }, flow.steps.map((st, i) =>
       h('li', { class: i + 1 < (c.flow_step || 0) || (c.goal_completed_at && i + 1 <= (c.flow_step || 0)) ? 'done' : i + 1 === c.flow_step ? 'current' : '' }, st.title))) : null);
 }
@@ -276,15 +277,15 @@ async function tabKnowledge(root, bot) {
     importCard({
       endpoint: `/api/chatbots/${bot.id}/knowledge/import`,
       url: sources[0] || '',
-      title: items.length ? '⚡ Actualizar desde mi página o archivo' : '⚡ Llena todo por mí',
+      title: items.length ? 'Actualizar desde mi página o archivo' : 'Llena todo por mí',
       button: 'Leer mi información',
       onResult: (data) => importPreview(preview, bot, data),
     }),
     ...(sources.length ? [h('p', { class: 'small muted', style: 'margin:-8px 0 16px' }, 'Información importada de ',
       sources.map((u) => [h('strong', {}, u), ' ', h('button', { class: 'small', onclick: async () => {
-        const r = await run(() => api('POST', `/api/chatbots/${bot.id}/knowledge/import`, { url: u, save: true }), 'Actualizado desde tu página ✅');
+        const r = await run(() => api('POST', `/api/chatbots/${bot.id}/knowledge/import`, { url: u, save: true }), 'Actualizado desde tu página');
         if (r) render();
-      } }, '🔄 Volver a sincronizar')]))] : []),
+      } }, 'Volver a sincronizar')]))] : []),
     preview,
     field('Buscar información cargada', h('input', { type: 'search', placeholder: 'Tema o contenido…', oninput: (e) => { const value = e.target.value.trim().toLocaleLowerCase('es'); root.querySelectorAll('[data-search]').forEach((item) => { item.hidden = !item.dataset.search.includes(value); }); } })),
     h('div', { class: 'card' },
@@ -444,7 +445,7 @@ function savedMessagesCard(bot, images) {
         h('div', { class: 'grid' },
           h('details', {}, h('summary', {}, 'Código avanzado (automático)'), field('Código', text(m, 'code', { placeholder: 'Se genera del título' }), 'Los códigos existentes se conservan.')),
           field('Título', text(m, 'title', { placeholder: 'Lista de precios' })),
-          field('Foto (opcional)', select(m, 'image_id', m.image_id && !photos.some(([id]) => id === m.image_id) ? [...photos, [m.image_id, '⚠ Foto borrada o inactiva: elige otra o quítala']] : photos))),
+          field('Foto (opcional)', select(m, 'image_id', m.image_id && !photos.some(([id]) => id === m.image_id) ? [...photos, [m.image_id, 'Foto borrada o inactiva: elige otra o quítala']] : photos))),
         field('Texto', area(m, 'text', { placeholder: 'Nuestras tarifas: habitación doble $1,650 MXN por noche, desayuno incluido.' }), 'Se envía tal cual. Si tiene foto, va como pie de la foto en un solo mensaje.'),
         field(tag('Cuándo enviarlo', guide()), text(m, 'when', { placeholder: 'Cuando el cliente pregunte por precios o tarifas' })),
         h('div', { class: 'grid' },
@@ -652,11 +653,11 @@ async function tabNotices(root, bot) {
   const fields = bot.data_fields;
   const m = draftModel(`${bot.id}:notice-new`, { when: when[0][0], step: '1', context: '', field: '', keywords: [], name: '', message: '', what: 'alert', admins: true, agents: false, phones: [], once: true });
   const defaultMessage = () => ({
-    goal_completed: `🎯 {{cliente}} cumplió el objetivo: ${bot.flow.goal}`,
+    goal_completed: `🎯 {{cliente}} cumplió el objetivo: ${bot.flow.goal}`, // taste-skill-ignore: texto que llega al WhatsApp del cliente o del equipo
     stage_reached: `{{cliente}} llegó a la etapa ${m.step}${bot.flow.steps[Number(m.step) - 1] ? ` (${bot.flow.steps[Number(m.step) - 1].title})` : ''}.`,
     intent: `{{cliente}}: ${m.context || 'contexto detectado'}. Último mensaje: "{{mensaje}}"`,
     data_captured: m.field ? `{{cliente}} dio su ${(fields.find((f) => f.key === m.field)?.label || m.field).toLowerCase()}: {{dato.${m.field}}}` : '{{cliente}} compartió un dato: "{{mensaje}}"',
-    handoff: '🙋 {{cliente}} pasó con una persona: "{{mensaje}}"',
+    handoff: '🙋 {{cliente}} pasó con una persona: "{{mensaje}}"', // taste-skill-ignore: texto que llega al WhatsApp del cliente o del equipo
     message_received: '{{cliente}} escribió: "{{mensaje}}"',
   })[m.when];
 
@@ -711,7 +712,7 @@ async function tabNotices(root, bot) {
     const name = m.name.trim() || `Aviso: ${m.when === 'intent' ? context : m.when === 'stage_reached' ? `etapa ${m.step}` : label}`.slice(0, 120);
     const body = { account_id: bot.account_id, chatbot_id: bot.id, name, active: true, trigger, conditions: [], actions: [action], once_per_conversation: !!m.once };
     const version = draftVersion(`${bot.id}:notice-new`);
-    if (await run(() => api('POST', '/api/automations', body), 'Aviso creado ✅')) { discardDraft(`${bot.id}:notice-new`, version); render(); }
+    if (await run(() => api('POST', '/api/automations', body), 'Aviso creado')) { discardDraft(`${bot.id}:notice-new`, version); render(); }
   };
 
   root.append(
@@ -840,7 +841,7 @@ export function messageTester(bots, botId) {
       r.rules.length
         ? h('table', { class: 'small' }, h('thead', {}, h('tr', {}, h('th', {}, 'Acciones'), h('th', {}, 'Regla'), h('th', {}, 'Resultado'), h('th', {}, 'Acciones'))),
             h('tbody', {}, r.rules.map((x) => h('tr', {},
-              h('td', {}, x.matched ? '✅' : '❌'),
+              h('td', {}, okMark(x.matched), x.matched ? ' Sí' : ' No'),
               h('td', {}, h('a', { href: `#/automation/rules/${x.id}` }, x.name)),
               h('td', { class: x.matched ? '' : 'muted' }, x.reason),
               h('td', { class: 'muted' }, x.actions.map((k) => ACTIONS[k] || k).join(' → '), x.stop_ai ? ' · la IA no responde' : '')))))
@@ -901,7 +902,7 @@ function flowSection(f) {
       h('h2', { style: 'margin-top:0' }, 'Recorrido de la conversación ', guide()),
       h('p', { class: 'muted' }, 'Es una guía, no un guion: el cliente puede saltar pasos o dar todo junto y el asistente se adapta.'),
       field('Objetivo de la conversación', area(f, 'goal', { placeholder: 'Que el cliente haga una reservación o deje sus datos para que un asesor lo contacte.' })),
-      field('Saludo sugerido', text(f, 'greeting', { placeholder: '¡Hola! Gracias por escribir al Hotel Las Palmas 🌴' })),
+      field('Saludo sugerido', text(f, 'greeting', { placeholder: '¡Hola! Gracias por escribir al Hotel Las Palmas 🌴' })), // taste-skill-ignore: texto que llega al WhatsApp del cliente o del equipo
       h('h2', {}, 'Etapas sugeridas'),
       list,
       h('button', { onclick: () => { f.steps.push({ title: '', description: '' }); draw(); } }, '+ Agregar etapa'),
