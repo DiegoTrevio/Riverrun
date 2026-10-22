@@ -192,6 +192,17 @@ export const config = {
       webhookSecret: env('MERCADOPAGO_WEBHOOK_SECRET', ''),
       apiUrl: env('MERCADOPAGO_API_URL', 'https://api.mercadopago.com'),
     },
+    /** Facturas electrónicas (CFDI 4.0) con Facturapi. Sin clave no se emiten (quedan pendientes hasta configurarla). */
+    cfdi: {
+      apiKey: env('FACTURAPI_API_KEY', ''),
+      apiUrl: env('FACTURAPI_API_URL', 'https://www.facturapi.io/v2'),
+      /** Clave de producto/servicio del SAT: 81112106 = Proveedores de servicios de aplicación (software como servicio). */
+      productKey: env('CFDI_PRODUCT_KEY', '81112106'),
+      /** Código postal del domicilio fiscal del emisor (lugar de expedición de la factura global). */
+      issuerZip: env('CFDI_ISSUER_ZIP', ''),
+      /** Intentos ante fallas del PAC antes de dejar el CFDI con error y avisar. */
+      maxAttempts: Number(env('CFDI_MAX_ATTEMPTS', '8')),
+    },
   },
   /** Monitoreo: ping periódico (healthchecks.io, Uptime Kuma…) y aviso por webhook (Slack, ntfy, Telegram…) además del correo. */
   monitor: {

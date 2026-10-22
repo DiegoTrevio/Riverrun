@@ -19,6 +19,15 @@ export const fake = {
     /** Id de la próxima suscripción que se cree (por omisión, "pre_new"). */
     nextId: '',
   },
+  /** PAC: invoices = CFDI timbrados. fail5xx = el servicio falla; reject = rechaza los datos (400) con ese mensaje. */
+  facturapi: {
+    requests: [] as { method: string; path: string; body: any }[],
+    invoices: [] as any[],
+    fail5xx: false,
+    reject: '',
+    /** Timbra y corta la conexión sin responder (la respuesta se pierde). */
+    drop: false,
+  },
 };
 export const SECRETS = { stripe: 'whsec_prueba', mp: 'mp_secreto_prueba' };
 
@@ -105,6 +114,40 @@ const mpUrl = await serve((req, raw, res) => {
   json(res, 404, { message: 'ruta desconocida' });
 });
 
+const facturapiUrl = await serve((req, raw, res) => {
+  const [path, qs] = req.url!.split('?');
+  const body = raw ? JSON.parse(raw) : undefined;
+  const f = fake.facturapi;
+  f.requests.push({ method: req.method!, path, body });
+  if (req.headers.authorization !== 'Bearer sk_test_facturapi') return json(res, 401, { message: 'Clave inválida' });
+  if (f.fail5xx) return json(res, 503, { message: 'Servicio no disponible' });
+  if (path === '/v2/invoices' && req.method === 'POST') {
+    if (f.reject) return json(res, 400, { message: f.reject });
+    const missing = ['type', 'customer', 'items', 'payment_form', 'use'].filter((k) => body?.[k] === undefined);
+    if (missing.length || !body.customer.tax_id || !body.customer.address?.zip) return json(res, 400, { message: `Faltan campos: ${missing.join(', ') || 'customer'}` });
+    const n = f.invoices.length + 1;
+    const total = Math.round(body.items.reduce((s: number, i: any) => s + i.product.price * i.quantity, 0) * 100) / 100;
+    const inv = { id: `fac_${n}`, uuid: `UUID-${n}`, series: 'A', folio_number: n, status: 'valid', total, ...body };
+    f.invoices.push(inv);
+    if (f.drop) return void req.socket.destroy();
+    return json(res, 200, inv);
+  }
+  if (path === '/v2/invoices' && req.method === 'GET') {
+    const ext = new URLSearchParams(qs).get('external_id');
+    return json(res, 200, { data: f.invoices.filter((i) => !ext || i.external_id === ext), page: 1, total_pages: 1 });
+  }
+  const m = path.match(/^\/v2\/invoices\/([\w-]+)\/(pdf|xml)$/);
+  if (m) {
+    if (!f.invoices.some((i) => i.id === m[1])) return json(res, 404, { message: 'No encontrada' });
+    res.writeHead(200, { 'content-type': m[2] === 'pdf' ? 'application/pdf' : 'application/xml' });
+    return void res.end(m[2] === 'pdf' ? `%PDF-${m[1]}` : `<cfdi:Comprobante Folio="${m[1]}"/>`);
+  }
+  json(res, 404, { message: 'ruta desconocida' });
+});
+
+process.env.FACTURAPI_API_KEY = 'sk_test_facturapi';
+process.env.FACTURAPI_API_URL = `${facturapiUrl}/v2`;
+process.env.CFDI_ISSUER_ZIP = '64000';
 process.env.STRIPE_SECRET_KEY = 'sk_test_prueba';
 process.env.STRIPE_WEBHOOK_SECRET = SECRETS.stripe;
 process.env.STRIPE_API_URL = stripeUrl;

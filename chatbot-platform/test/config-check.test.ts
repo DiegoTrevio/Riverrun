@@ -247,3 +247,21 @@ test('rechaza rol, tiempos y límites inválidos de procesamiento durable antes 
   assert.ok(report.issues.some(issue=>issue.vars.includes(name)&&issue.level==='critical'),name);
  }
 });
+
+test('facturas (Facturapi): clave de producción en sandbox es crítica; sin PAC con cobro activo, aviso', () => {
+  const sandbox = validateConfig(installed({ RIVERRUN_ENV: 'test', OUTBOUND_MODE: 'sandbox', FACTURAPI_API_KEY: 'sk_live_facturas_reales', CFDI_ISSUER_ZIP: '64000' }));
+  assert.ok(sandbox.issues.some((i) => i.id === 'facturapi.live_key_in_sandbox' && i.level === 'critical'), formatReport(sandbox));
+  assert.doesNotMatch(formatReport(sandbox), /sk_live_facturas_reales/);
+  assert.equal(validateConfig(installed({ RIVERRUN_ENV: 'test', OUTBOUND_MODE: 'sandbox', FACTURAPI_API_KEY: 'sk_test_x', CFDI_ISSUER_ZIP: '64000' })).issues.some((i) => i.id.startsWith('facturapi.')), false);
+
+  const charging = { STRIPE_SECRET_KEY: 'sk_live_cobro', STRIPE_WEBHOOK_SECRET: 'whsec_produccion_1' };
+  assert.ok(ids(installed(charging), 'warning').includes('facturapi.missing'));
+  assert.equal(ids(installed()).includes('facturapi.missing'), false, 'sin cobro en línea no hace falta PAC');
+  const ready = ids(installed({ ...charging, FACTURAPI_API_KEY: 'sk_live_facturas', CFDI_ISSUER_ZIP: '64000' }));
+  assert.equal(ready.some((i) => i.startsWith('facturapi.')), false, ready.join());
+  assert.ok(ids(installed({ ...charging, FACTURAPI_API_KEY: 'sk_test_facturas', CFDI_ISSUER_ZIP: '64000' })).includes('facturapi.test_mode'));
+  assert.ok(ids(installed({ ...charging, FACTURAPI_API_KEY: 'sk_live_facturas' })).includes('facturapi.issuer_zip'));
+  assert.ok(ids(installed({ ...charging, FACTURAPI_API_KEY: 'otra-cosa', CFDI_ISSUER_ZIP: '64000' })).includes('facturapi.key_format'));
+  assert.ok(ids(installed({ FACTURAPI_API_URL: 'no-es-url' })).includes('url.FACTURAPI_API_URL'));
+  assert.equal(redactSecrets('FACTURAPI_API_KEY=sk_live_secreta', { FACTURAPI_API_KEY: 'sk_live_secreta' }).includes('sk_live_secreta'), false);
+});

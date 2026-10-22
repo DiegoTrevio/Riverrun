@@ -54,7 +54,7 @@ export const SECRET_VARS = [
   'DATABASE_URL', 'POSTGRES_PASSWORD', 'SESSION_SECRET', 'ADMIN_PASSWORD', 'EVOLUTION_API_KEY', 'OPENROUTER_API_KEY', 'OPENAI_API_KEY',
   'SMTP_URL', 'STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'MERCADOPAGO_ACCESS_TOKEN', 'MERCADOPAGO_WEBHOOK_SECRET',
   'GOOGLE_CLIENT_SECRET', 'MICROSOFT_CLIENT_SECRET', 'ZERNIO_API_KEY', 'META_APP_SECRET', 'META_VERIFY_TOKEN', 'BACKUP_PASSPHRASE', 'BACKUP_S3_SECRET', 'HEARTBEAT_URL', 'ALERT_WEBHOOK_URL',
-  'TURNSTILE_SECRET_KEY',
+  'TURNSTILE_SECRET_KEY', 'FACTURAPI_API_KEY',
 ] as const;
 
 /** Valores de ejemplo conocidos (completos, no prefijos: un secreto aleatorio puede empezar con "x" o "test"). */
@@ -120,6 +120,7 @@ const NUMBERS: { name: string; min: number; max: number; int?: boolean; area: Ar
   { name: 'TRIAL_MAX_SOCIAL_ACCOUNTS', min: 0, max: 1e6, int: true, area: 'core', what: 'límite de redes sociales conectadas de la prueba' },
   { name: 'BILLING_GRACE_DAYS', min: 0, max: 365, int: true, area: 'billing', what: 'días de gracia de cobro' },
   { name: 'BILLING_TAX_PERCENT', min: 0, max: 100, area: 'billing', what: 'IVA que se suma al precio de los planes (%)' },
+  { name: 'CFDI_MAX_ATTEMPTS', min: 1, max: 100, int: true, area: 'billing', what: 'intentos para emitir un CFDI' },
   { name: 'BACKUP_MAX_AGE_HOURS', min: 1, max: 8760, area: 'monitoring', what: 'horas sin respaldo antes de avisar' },
   { name: 'AI_ALERT_USD_PER_ACCOUNT', min: 0, max: 1e6, area: 'ai', what: 'aviso de gasto de IA (USD)' },
   // Mismos límites que config.ts (allí un valor fuera de rango detiene el proceso).
@@ -296,7 +297,7 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
       'Usa el mismo dominio en ambas (o borra PUBLIC_BASE_URL para que se arme con DOMAIN).',
     );
   }
-  for (const k of ['TELEGRAM_API_URL', 'META_GRAPH_URL', 'ZERNIO_API_URL', 'STRIPE_API_URL', 'MERCADOPAGO_API_URL', 'OPENROUTER_BASE_URL', 'OPENAI_BASE_URL', 'EVOLUTION_URL']) {
+  for (const k of ['TELEGRAM_API_URL', 'META_GRAPH_URL', 'ZERNIO_API_URL', 'STRIPE_API_URL', 'MERCADOPAGO_API_URL', 'FACTURAPI_API_URL', 'OPENROUTER_BASE_URL', 'OPENAI_BASE_URL', 'EVOLUTION_URL']) {
     if (has(k) && !HTTP_URL.safeParse(get(k)).success) {
       const ai = k === 'OPENROUTER_BASE_URL' || k === 'OPENAI_BASE_URL';
       // La URL de la IA se interpreta al cargar la configuración: un valor roto detiene el proceso de todos modos.
@@ -730,6 +731,35 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
     (s) => s.startsWith('APP_USR-'),
     (s) => s.length >= 16,
   );
+
+  /* ------------------------------ Facturas (CFDI) ------------------------------ */
+  const fkey = get('FACTURAPI_API_KEY');
+  const charging = (has('STRIPE_SECRET_KEY') && has('STRIPE_WEBHOOK_SECRET')) || (has('MERCADOPAGO_ACCESS_TOKEN') && has('MERCADOPAGO_WEBHOOK_SECRET'));
+  if (sandbox && fkey.startsWith('sk_live_')) add(
+    'critical',
+    'billing',
+    'facturapi.live_key_in_sandbox',
+    ['FACTURAPI_API_KEY'],
+    'Facturapi: este entorno es de pruebas (OUTBOUND_MODE=sandbox) y FACTURAPI_API_KEY es una clave de producción. Con ella se timbrarían facturas reales ante el SAT.',
+    'Usa la clave de pruebas de Facturapi (sk_test_…) o quítala de este entorno.',
+  );
+  if (!fkey) {
+    if (prod && charging) add(
+      'warning',
+      'billing',
+      'facturapi.missing',
+      ['FACTURAPI_API_KEY'],
+      'El cobro en línea está activo pero no hay PAC: los pagos se registran y sus facturas (CFDI) quedan pendientes.',
+      'Define FACTURAPI_API_KEY (clave de producción de Facturapi) para emitirlas.',
+    );
+    services.push({ id: 'facturapi', label: 'Facturas (Facturapi)', area: 'billing', state: 'disabled', detail: 'Sin PAC: las facturas quedan pendientes' });
+  } else {
+    if (!/^sk_(live|test)_/.test(fkey)) add('warning', 'billing', 'facturapi.key_format', ['FACTURAPI_API_KEY'], 'FACTURAPI_API_KEY no tiene el formato de una clave secreta de Facturapi (sk_live_… o sk_test_…).', 'Cópiala de nuevo desde el panel de Facturapi (organización → API keys).');
+    if (prod && fkey.startsWith('sk_test_')) add('warning', 'billing', 'facturapi.test_mode', ['FACTURAPI_API_KEY'], 'Facturapi usa una clave de pruebas en producción: las facturas no tienen validez ante el SAT.', 'Usa la clave de producción (sk_live_…).');
+    if (!get('CFDI_ISSUER_ZIP')) add('warning', 'billing', 'facturapi.issuer_zip', ['CFDI_ISSUER_ZIP'], 'Falta CFDI_ISSUER_ZIP: sin el código postal de tu domicilio fiscal no se puede emitir la factura global del mes.', 'Escribe el código postal de tu Constancia de Situación Fiscal (5 números).');
+    else if (!/^\d{5}$/.test(get('CFDI_ISSUER_ZIP'))) add('warning', 'billing', 'facturapi.issuer_zip', ['CFDI_ISSUER_ZIP'], 'CFDI_ISSUER_ZIP debe tener 5 números.', 'Escribe el código postal de tu Constancia de Situación Fiscal.');
+    services.push({ id: 'facturapi', label: 'Facturas (Facturapi)', area: 'billing', state: 'configured', detail: fkey.startsWith('sk_test_') ? 'Modo de pruebas' : 'Clave definida' });
+  }
 
   /* ------------------------------ Integraciones ------------------------------ */
   const gid = get('GOOGLE_CLIENT_ID');

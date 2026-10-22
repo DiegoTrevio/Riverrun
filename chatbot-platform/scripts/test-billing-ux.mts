@@ -213,6 +213,24 @@ try {
   assert.deepEqual(fiscalRow, { wants_invoice: true, rfc: 'EKU9003173C9', legal_name: 'ESCUELA KEMPER URGATE', cfdi_use: 'G03' });
   checks.push('Facturación: con factura, error del RFC en su campo y datos guardados (accesible en móvil)');
 
+  // Al pedir factura, el pago del mes recibe su CFDI: aparece en «Tus pagos» con su PDF y XML.
+  const { processCfdi } = await import('../src/billing/cfdi.js');
+  assert.equal(await processCfdi(), 1);
+  await page.reload();
+  await page.getByRole('heading', { name: 'Tus pagos' }).waitFor();
+  await page.getByRole('columnheader', { name: 'Factura' }).waitFor();
+  const pdfLink = page.getByRole('link', { name: /: PDF$/ }).first();
+  await pdfLink.waitFor();
+  const pdf = await page.request.get(new URL((await pdfLink.getAttribute('href'))!, base).href);
+  assert.equal(pdf.status(), 200);
+  assert.equal(pdf.headers()['content-type'], 'application/pdf');
+  await page.addScriptTag({ content: axe });
+  const cfdiViolations = await page.evaluate(async () => (await (window as any).axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] } }))
+    .violations.filter((v: any) => ['serious', 'critical'].includes(v.impact)).map((v: any) => v.id));
+  assert.deepEqual(cfdiViolations, [], 'Factura en el historial a 390');
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'Historial con factura sin desbordamiento a 390');
+  checks.push('Factura (CFDI) del pago descargable en «Tus pagos» (accesible en móvil)');
+
   // El superadmin captura precios sin IVA y elige el periodo. La última tarjeta es la de "Agregar plan".
   await context.clearCookies();
   const sx = h.cookie.indexOf('=');

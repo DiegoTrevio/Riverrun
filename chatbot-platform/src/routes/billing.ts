@@ -7,6 +7,7 @@ import { baseFor } from '../brands.js';
 import { providers, applyState, changePlan, confirmCheckout, enabledProviders, getPlan, getSubscription, listPlans, payable, recordEvent, startCheckout, startReplacement } from '../billing/service.js';
 import { FiscalSchema, fiscalComplete, getFiscal, personaOf, REGIMES, saveFiscal, USES, usesFor } from '../billing/fiscal.js';
 import { applyRefund, listPayments, recordPayment } from '../billing/payments.js';
+import { cfdiCounts, cfdiForPayments, getCfdi, invoicer, onFiscalSaved, queuePaymentCfdi } from '../billing/cfdi.js';
 import { chargeCents, taxPercent } from '../billing/tax.js';
 import { ProviderError, WebhookError, type Plan, type ProviderName, type WebhookResult } from '../billing/types.js';
 import { config } from '../config.js';
@@ -53,8 +54,14 @@ async function recordMoney(name: ProviderName, result: WebhookResult, accountId:
     const account = accountId ?? sub?.account_id ?? null;
     const planKey = result.state?.planKey || sub?.plan_key || '';
     if (!account) await logEvent({ level: 'warn', source: 'system', message: `Cobro ${result.payment.paymentId} (${name}) sin cuenta de la plataforma: no se registra` });
-    else if (await recordPayment({ accountId: account, provider: name, planKey, payment: result.payment })) {
-      await logEvent({ level: 'info', source: 'admin', message: `Pago recibido (${name}): ${result.payment.totalCents / 100} ${result.payment.currency}`, accountId: account });
+    else {
+      const paymentId = await recordPayment({ accountId: account, provider: name, planKey, payment: result.payment });
+      if (paymentId) {
+        await logEvent({ level: 'info', source: 'admin', message: `Pago recibido (${name}): ${result.payment.totalCents / 100} ${result.payment.currency}`, accountId: account });
+        // Su factura sale en la siguiente revisión (o entra a la global del mes si no pidió factura). Un fallo aquí no
+        // debe devolver el aviso: el pago ya quedó y un reintento del proveedor no lo volvería a ver como nuevo.
+        await queuePaymentCfdi(paymentId).catch((e) => logEvent({ level: 'error', source: 'admin', message: `No se pudo preparar la factura del pago ${result.payment!.paymentId}: ${e?.message ?? e}`, accountId: account }));
+      }
     }
   }
   if (result.refund) {
@@ -150,6 +157,7 @@ export async function billingRoutes(api: FastifyInstance) {
       monthly_revenue: mrr.map((m) => ({ currency: m.currency, amount: Number(m.cents) / 100 })),
       grace_days: config.billing.graceDays,
       tax_percent: taxPercent(),
+      invoicing: { enabled: invoicer.enabled(), counts: await cfdiCounts() },
     };
   });
 
@@ -159,11 +167,13 @@ export async function billingRoutes(api: FastifyInstance) {
     const [acc, plans, sub, limits, payments, fiscal] = await Promise.all([
       queryOne<any>(`SELECT status, plan, trial_ends_at FROM accounts WHERE id = $1`, [accountId]), offeredPlans(), getSubscription(accountId), limitsReport(accountId), listPayments(accountId), getFiscal(accountId),
     ]);
+    const cfdi = await cfdiForPayments(payments.map((p) => p.id));
     return {
       account: acc,
       plans,
       subscription: publicSub(sub),
-      payments: payments.map(paymentOut),
+      payments: payments.map((p) => ({ ...paymentOut(p), cfdi: cfdi.get(p.id) })),
+      invoicing: invoicer.enabled(),
       limits,
       grace_days: config.billing.graceDays,
       support_contact: config.signup.supportContact,
@@ -190,7 +200,25 @@ export async function billingRoutes(api: FastifyInstance) {
     const d = parse(FiscalSchema, req.body);
     const f = await saveFiscal(accountId, req.user.role === 'superadmin' ? null : req.user.id, d);
     await logEvent({ level: 'info', source: 'admin', message: d.wants_invoice ? `Datos de facturación guardados (RFC ${d.rfc}, ${personaOf(d.rfc) === 'moral' ? 'persona moral' : 'persona física'})` : 'Facturación: sin factura (público en general)', accountId });
+    // Las facturas rechazadas por datos se reintentan con los nuevos; si ahora pide factura, sus pagos del mes la reciben.
+    await onFiscalSaved(accountId);
     return { ok: true, complete: fiscalComplete(f), wants_invoice: f.wants_invoice };
+  });
+
+  /** PDF o XML de un CFDI: del administrador de su cuenta (la global, solo del superadmin). */
+  api.get('/api/billing/invoices/:id/:format', admins, async (req: any, reply) => {
+    const { id, format } = req.params;
+    if (!['pdf', 'xml'].includes(format) || !/^[0-9a-f-]{36}$/.test(id)) throw new HttpError(404, 'No encontrado');
+    const c = await getCfdi(id);
+    const mine = c && (req.user.role === 'superadmin' || (c.account_id && c.account_id === (await targetAccount(req.user, req.query.account_id))));
+    if (!c || !mine || c.status !== 'issued') throw new HttpError(404, 'No encontrado');
+    const file = await viaProvider(() => invoicer.download(c.provider_invoice_id, format));
+    const name = `${c.series}${c.folio}` || c.sat_uuid;
+    return reply
+      .header('content-type', format === 'pdf' ? 'application/pdf' : 'application/xml')
+      .header('content-disposition', `attachment; filename="${name.replace(/[^\w.-]/g, '') || 'factura'}.${format}"`)
+      .header('cache-control', 'private, no-store')
+      .send(file);
   });
 
   api.post('/api/billing/checkout', admins, async (req: any) => {
