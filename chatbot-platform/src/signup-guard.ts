@@ -78,7 +78,7 @@ export const CAPTCHA_MESSAGE = 'Confirma que no eres un robot e intenta de nuevo
 export const termsVersion = () => config.signup.termsVersion || config.signup.termsUrl;
 
 /** Guarda la constancia de aceptación de términos (dentro de la transacción que crea la cuenta). */
-export async function recordTermsAcceptance(client: PoolClient, o: { userId: string; accountId: string; email: string; ip: string; userAgent: string; source: 'signup' | 'google' | 'reaccept' }) {
+export async function recordTermsAcceptance(client: PoolClient, o: { userId: string; accountId: string; email: string; ip: string; userAgent: string; source: 'signup' | 'google' | 'reaccept' | 'invite' }) {
   await client.query(
     `INSERT INTO terms_acceptances (user_id, account_id, email, terms_version, terms_url, privacy_url, ip, user_agent, source) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
     [o.userId, o.accountId, o.email, termsVersion(), config.signup.termsUrl, config.signup.privacyUrl, o.ip, o.userAgent.slice(0, 300), o.source],

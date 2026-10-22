@@ -1,5 +1,6 @@
 /** Iniciar sesión o registrarse con Google (OpenID Connect). Solo funciona en el dominio principal. */
 import crypto from 'node:crypto';
+import { pendingInviteFor } from './invitations.js';
 import type { FastifyInstance } from 'fastify';
 import { brandByDomain, hostOf } from '../brands.js';
 import { hashPassword, rateLimited, setSessionCookie } from '../auth.js';
@@ -75,6 +76,9 @@ export async function googleLoginRoutes(app: FastifyInstance) {
         await logEvent({ level: 'info', source: 'admin', message: `Acceso con Google: ${email}`, accountId: user.account_id, details: { ip: req.ip } });
         return reply.redirect('/#/');
       }
+      // La invitaron a un equipo: se une a esa cuenta (aunque el registro público esté cerrado).
+      const invite = await pendingInviteFor(email);
+      if (invite) return reply.redirect(`/#/invitacion?google=${encodeURIComponent(googleSignupPass(email, String(claims.name ?? '').slice(0, 120)))}`);
       if (!config.signup.enabled) return fail('sin-cuenta');
       if (isDisposableEmail(email)) return fail('correo-temporal');
       // Primera vez: la cuenta se crea hasta que acepte los términos (con un pase firmado que lleva el correo verificado).

@@ -15,7 +15,7 @@ import * as store from './store/index.js';
 /** Señales de la cuenta con las que se decide qué falta (todas existen ya en la base). */
 export async function onboardingSignals(accountId: string, userId: string | null) {
   const s = await queryOne<{
-    verified: boolean; bot_id: string | null; connected: boolean; simulated: boolean; switched_on: boolean; paid: boolean; users: number;
+    verified: boolean; bot_id: string | null; connected: boolean; simulated: boolean; switched_on: boolean; paid: boolean; users: number; invited: number;
     relink: { channel_id: string; reason: string } | null;
   }>(
     `SELECT
@@ -27,6 +27,7 @@ export async function onboardingSignals(accountId: string, userId: string | null
        EXISTS (SELECT 1 FROM chatbots WHERE account_id = $1 AND (active OR start_on_connect)) AS switched_on,
        EXISTS (SELECT 1 FROM subscriptions WHERE account_id = $1 AND status IN ('active', 'past_due')) AS paid,
        (SELECT count(*)::int FROM users WHERE account_id = $1 AND active) AS users,
+       (SELECT count(*)::int FROM account_invitations WHERE account_id = $1 AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > now()) AS invited,
        (SELECT json_build_object('channel_id', id, 'reason', disconnect_reason) FROM channels
          WHERE account_id = $1 AND type = 'whatsapp' AND connection_state IS DISTINCT FROM 'open' AND disconnect_reason = ANY($3::text[])
          ORDER BY down_since DESC NULLS LAST LIMIT 1) AS relink`,
@@ -62,7 +63,10 @@ export async function accountChecklist(accountId: string, userId: string | null)
     { key: 'activate', label: 'Enciende tu agente', done: s.switched_on, optional: false, href: s.bot_id ? `#/bot/${s.bot_id}/instrucciones` : '#/agentes/nuevo', action: 'Encender', hint: 'Mientras esté en pausa no responde a tus clientes.' },
   ];
   if (await billingEnabled()) items.push({ key: 'plan', label: 'Elige tu plan', done: s.paid, optional: false, href: '#/plan', action: 'Ver planes', hint: 'Así tu agente sigue atendiendo cuando termine la prueba.' });
-  items.push({ key: 'team', label: 'Suma a tu equipo', done: s.users > 1, optional: true, href: '#/users', action: 'Agregar', hint: 'Que tu equipo atienda las conversaciones que pasen a una persona.' });
+  items.push({
+    key: 'team', label: 'Invita a tu equipo', done: s.users > 1, optional: true, href: '#/users', action: 'Invitar',
+    hint: s.invited ? `${s.invited === 1 ? 'Tienes 1 invitación' : `Tienes ${s.invited} invitaciones`} por aceptar.` : 'Que tu equipo atienda las conversaciones que pasen a una persona.',
+  });
   const required = items.filter((i) => !i.optional);
   return { items, done_count: required.filter((i) => i.done).length, total: required.length, complete: required.every((i) => i.done) };
 }

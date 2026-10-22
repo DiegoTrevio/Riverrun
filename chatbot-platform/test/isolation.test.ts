@@ -72,6 +72,7 @@ function fillParams(url: string): string | null {
     [/^\/api\/social-reviews\/:id/, 'social_review'],
     [/^\/api\/social-publications\/:id/, 'social_publication'],
     [/^\/api\/billing\/invoices\/:id/, 'cfdi'],
+    [/^\/api\/invitations\/:id/, 'invitation'],
     // Solo el superadmin: la cuenta A debe recibir 403.
     [/^\/api\/system\/zernio\/tenants\/:id/, 'account'],
     [/^\/api\/system\/zernio\/webhook-logs\/:id/, 'bot'],
@@ -162,6 +163,7 @@ before(async () => {
   await pool.query(`INSERT INTO social_publication_targets (publication_id, account_id, social_account_id, zernio_account_id, platform, username) VALUES ($1, $2, $3, 'acc_b_aislamiento', 'linkedin', $4)`, [B.social_publication, B.account, B.social, `b_${MARK}`]);
   await pool.query(`INSERT INTO social_account_stats (social_account_id, account_id, day, followers, impressions) VALUES ($1, $2, current_date - 1, 4321, 98765)`, [B.social, B.account]);
   B.cfdi = (await pool.query(`INSERT INTO cfdi_invoices (kind, account_id, status, provider_invoice_id, sat_uuid, receiver) VALUES ('payment', $1, 'issued', 'fac_b', 'UUID-B', $2) RETURNING id`, [B.account, JSON.stringify({ legal_name: `Receptor ${MARK}` })])).rows[0].id;
+  B.invitation = (await pool.query(`INSERT INTO account_invitations (account_id, email, name, role, token_hash, expires_at) VALUES ($1, 'invitada@b.mx', $2, 'agent', 'hash-b-aislamiento', now() + interval '7 days') RETURNING id`, [B.account, `Invitada ${MARK}`])).rows[0].id;
   B.booking_link = (await pool.query(`INSERT INTO booking_links (account_id, token, name) VALUES ($1, 'tok-b-reservas', $2) RETURNING id`, [B.account, `Reservas ${MARK}`])).rows[0].id;
   B.card = String((await pool.query(`INSERT INTO pipeline_cards (account_id, pipeline_id, conversation_id, stage_id) VALUES ($1, $2, $3, 'nuevo') RETURNING id`, [B.account, B.pipeline, B.conv])).rows[0].id);
   B.price_item = (await ok200(adminB('POST', '/api/price-items', { code: 'B1', name: `Concepto ${MARK}`, price_mode: 'exact', price_min: 99900 }))).id;

@@ -273,6 +273,8 @@ En una imagen de producción ya compilada: `docker compose exec backend node dis
 | **Administrador** | Todo dentro de su cuenta: chatbots, canales, usuarios, conversaciones y registros. |
 | **Agente** | Solo conversaciones de su cuenta: verlas, tomarlas, responder, devolverlas al bot y editar datos del cliente. No ve la configuración ni credenciales. |
 
+**Invitar al equipo:** en **Mi equipo → Invitar a tu equipo** el administrador escribe el correo y el rol (operador o administrador). La persona recibe un enlace (7 días, un solo uso; «Reenviar» manda uno nuevo y anula el anterior, «Cancelar» lo anula) para unirse eligiendo su propia contraseña o entrando con Google, acepta los términos (queda la constancia) y entra directo a esa cuenta, aunque el registro público esté cerrado. Las invitaciones pendientes cuentan para el límite de usuarios del plan, que se vuelve a revisar al aceptar. Un correo que ya tiene cuenta en la plataforma no se puede invitar (cada correo pertenece a una sola cuenta). Crear un usuario con contraseña inicial sigue disponible en **Crear usuario con contraseña inicial**.
+
 Al cambiar una contraseña, las demás sesiones abiertas de ese usuario se cierran. Desactivar un usuario le quita el acceso al instante. Cualquiera puede recuperar su contraseña con **¿Olvidaste tu contraseña?** (enlace por correo de 1 hora y un solo uso).
 
 *Desactivar* una cuenta le quita todo acceso; *pausarla* (o que venza su prueba) le deja el panel pero detiene el bot y los envíos.
@@ -461,7 +463,7 @@ Una cuenta puede conectar varios WhatsApp. Las **campañas** pueden salir de var
 
 ## Alta sin ayuda: «Para empezar» y correos de seguimiento
 
-- **Para empezar** (inicio, solo administradores de cuentas del registro): lista de lo que falta para que el agente atienda: confirmar el correo, crear el agente, probarlo en el simulador, conectar WhatsApp u otro canal, encenderlo y, si hay cobro en línea, elegir plan (sumar al equipo es opcional). Si el WhatsApp se cayó y hay que volver a escanear el QR, lo dice con el motivo y lleva a volver a vincularlo. Se oculta sola al terminar o con «Ocultar» (`GET /api/onboarding/checklist`).
+- **Para empezar** (inicio, solo administradores de cuentas del registro): lista de lo que falta para que el agente atienda: confirmar el correo, crear el agente, probarlo en el simulador, conectar WhatsApp u otro canal, encenderlo y, si hay cobro en línea, elegir plan (invitar al equipo es opcional y avisa cuántas invitaciones faltan por aceptarse). Si el WhatsApp se cayó y hay que volver a escanear el QR, lo dice con el motivo y lleva a volver a vincularlo. Se oculta sola al terminar o con «Ocultar» (`GET /api/onboarding/checklist`).
 - **Correos de seguimiento** (cada uno una sola vez por cuenta, solo a cuentas del registro de los últimos 14 días, y nunca si el paso ya está hecho): al día 1 sin canal conectado, «Conecta tu WhatsApp»; al día 3 sin ninguna conversación, «Prueba tu agente»; 3 días después de la pausa por fin de la prueba sin plan, «Reactívalo». El aviso de fin de prueba sigue igual. Cada correo trae un enlace firmado para darse de baja (`/baja-recordatorios`); la baja no afecta los correos de pagos ni de seguridad.
 
 ## Crear un agente sin escribir un prompt

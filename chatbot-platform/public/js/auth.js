@@ -109,6 +109,50 @@ export async function renderGoogleSignup(token) {
       h('p', { class: 'small', style: 'margin:0' }, '¿No eres tú? ', h('a', { href: '#/login' }, 'Volver'))));
 }
 
+/** Aceptar una invitación de equipo: con el enlace del correo (elige contraseña) o tras entrar con Google. */
+export async function renderInvite(params) {
+  const navigation = state.navigation;
+  const token = params.get('token') || '';
+  const google = params.get('google') || '';
+  const q = google ? `google=${encodeURIComponent(google)}` : `token=${encodeURIComponent(token)}`;
+  let info;
+  try {
+    info = await api('GET', `/api/invitation?${q}`);
+  } catch (e) {
+    if (navigation !== state.navigation) return;
+    return publicCard('Invitación', h('p', {}, e?.message || 'Esta invitación no es válida.'), h('a', { class: 'btn primary', href: '#/login' }, 'Iniciar sesión'));
+  }
+  if (navigation !== state.navigation) return;
+  const f = { ...(google ? { google } : { token }), name: info.name || '', password: '', confirm: '', accept_terms: false };
+  let sending = false;
+  const button = h('button', { class: 'primary', type: 'submit' }, google ? 'Unirme con Google' : 'Unirme al equipo');
+  const submit = async (e) => {
+    e.preventDefault();
+    if (sending) return;
+    if (!google && f.password !== f.confirm) return toast('Las contraseñas no coinciden', true);
+    if (!f.accept_terms) return toast('Acepta los términos para continuar', true);
+    sending = true;
+    button.disabled = true;
+    const { confirm: _c, ...body } = f;
+    const r = await run(() => api('POST', '/api/invitation/accept', google ? { ...body, password: undefined } : body));
+    if (!r) { sending = false; button.disabled = false; return; }
+    state.me = null;
+    location.hash = '#/';
+  };
+  const role = info.role === 'admin' ? 'administrador' : 'agente';
+  publicCard(`Únete a ${info.account}`,
+    h('p', { class: 'muted', style: 'margin-top:0' }, info.invited_by ? `${info.invited_by} te invitó como ${role}. ` : `Te invitaron como ${role}. `,
+      google ? ['Entraste con Google como ', h('strong', {}, info.email), '.'] : ['Tu acceso será con ', h('strong', {}, info.email), '.']),
+    h('form', { class: 'stack', onsubmit: submit },
+      field('Tu nombre', text(f, 'name', { required: true, autocomplete: 'name' })),
+      google ? null : field('Elige tu contraseña', text(f, 'password', { type: 'password', autocomplete: 'new-password', minlength: 8, required: true }), 'Mínimo 8 caracteres.'),
+      google ? null : field('Repítela', text(f, 'confirm', { type: 'password', autocomplete: 'new-password', minlength: 8, required: true })),
+      termsCheck(info, f),
+      button,
+      info.google_login ? h('a', { class: 'btn', href: '/oauth/google/login', style: 'display:block;text-align:center' }, 'Unirme con Google') : null,
+      h('p', { class: 'small', style: 'margin:0' }, '¿Ya tienes cuenta? ', h('a', { href: '#/login' }, 'Inicia sesión'))));
+}
+
 /** Elegir plan al registrarse: prueba gratis (si hay) o un plan que se paga al crear la cuenta. */
 function planPicker(info, f, onChange) {
   const box = h('div');
