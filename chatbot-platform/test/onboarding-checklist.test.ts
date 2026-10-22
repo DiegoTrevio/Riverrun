@@ -109,7 +109,7 @@ t('correos de seguimiento: conectar al día 1, probar al día 3, una sola vez ca
   const mail = mails('mar@cafe.mx')[0];
   assert.match(mail.text, /Café Mar/);
   assert.match(mail.text, /https:\/\/bot\.test\/#\/empezar/);
-  assert.match(mail.text, /\/baja-recordatorios\?c=[0-9a-f-]{36}&s=\w+/);
+  assert.match(mail.text, /\/baja-recordatorios\?c=[0-9a-f-]{36}&s=[\w-]+/);
 
   await checkOnboardingNudges();
   assert.equal(mails('mar@cafe.mx').length, 1, 'no se repite');
@@ -167,7 +167,9 @@ t('baja de los recordatorios: el enlace firmado del correo los detiene; uno alte
   assert.match(page.body, /Dejar de recibirlos/);
   assert.notEqual((await store.getAccount(K.account))!.onboarding.nudges_off, true);
 
-  const bad = link.replace(/s=\w/, (m) => (m === 's=0' ? 's=1' : 's=0'));
+  // La firma es base64url (puede empezar con «-»): se reemplaza completa para que siempre quede alterada.
+  const bad = link.replace(/s=[^&]+/, 's=firma-alterada');
+  assert.notEqual(bad, link);
   assert.equal((await h.app.inject({ method: 'GET', url: bad })).statusCode, 400);
   assert.equal((await h.app.inject({ method: 'POST', url: bad, headers: { 'content-type': 'application/x-www-form-urlencoded' }, payload: '' })).statusCode, 400);
   assert.equal((await h.app.inject({ method: 'GET', url: '/baja-recordatorios' })).statusCode, 400);
