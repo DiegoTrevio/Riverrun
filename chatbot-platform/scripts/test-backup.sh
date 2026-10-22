@@ -53,6 +53,37 @@ EVOLUTION_IMAGE="evoapicloud/evolution-api@sha256:abc" bash "$here/docker/backup
 dropdb --if-exists bk_evo
 export BACKUP_DATABASES=bk_src
 
+echo "== claves de las sesiones de WhatsApp (Redis): se respaldan y vuelven al restaurar aunque Redis use AOF"
+if command -v redis-server >/dev/null 2>&1 && command -v redis-cli >/dev/null 2>&1; then
+  rport=6391; rdir="$work/redis"; mkdir -p "$rdir"
+  redis_up() { redis-server --port "$rport" --bind 127.0.0.1 --dir "$rdir" --appendonly yes --daemonize yes --pidfile "$work/redis.pid" --logfile "$work/redis.log"
+    for _ in $(seq 1 50); do redis-cli -p "$rport" ping 2>/dev/null | grep -q PONG && return 0; sleep 0.2; done; echo "ERROR: Redis de prueba no arrancó"; exit 1; }
+  redis_down() { redis-cli -p "$rport" shutdown nosave >/dev/null 2>&1 || true; for _ in $(seq 1 50); do [[ -f "$work/redis.pid" ]] || return 0; sleep 0.2; done; }
+  redis_up
+  redis-cli -p "$rport" -n 6 HSET evolution:instance:inst-1 pre-key-1 '{"keyPair":"x"}' creds-ignorado 1 >/dev/null
+  export BACKUP_REDIS_URI="redis://127.0.0.1:$rport"
+  bash "$here/docker/backup/backup.sh" now
+  grep -q '"ok": true' "$work/out/status.json" || { cat "$work/out/status.json"; echo "ERROR: el respaldo con Redis no pasó"; exit 1; }
+  f="$(ls "$work/out"/riverrun-*.tar.enc | tail -n 1)"
+  openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:BACKUP_PASSPHRASE < "$f" | tar -tf - | grep -q '^./redis.rdb$' || { echo "ERROR: el respaldo no trae redis.rdb"; exit 1; }
+  # Servidor nuevo: Redis vacío. La restauración deja la copia y redis-load.sh la carga (con AOF, un dump.rdb suelto se ignora).
+  redis_down; rm -rf "${rdir:?}"/*
+  REDIS_DATA_DIR="$rdir" bash "$here/docker/backup/backup.sh" restore latest
+  [[ -f "$rdir/riverrun-restore.rdb" ]] || { echo "ERROR: la restauración no dejó la copia de Redis"; exit 1; }
+  sh "$here/docker/backup/redis-load.sh" "$rdir" 6392
+  [[ ! -f "$rdir/riverrun-restore.rdb" && -f "$rdir/appendonlydir/appendonly.aof.manifest" ]] || { echo "ERROR: redis-load.sh no dejó el AOF listo"; exit 1; }
+  redis_up
+  [[ "$(redis-cli -p "$rport" -n 6 HGET evolution:instance:inst-1 pre-key-1)" == '{"keyPair":"x"}' ]] || { echo "ERROR: las claves de Redis no volvieron"; exit 1; }
+  sh "$here/docker/backup/redis-load.sh" "$rdir" 6392 | grep -q "Sin claves de Redis que restaurar" || { echo "ERROR: sin copia, redis-load.sh debe no tocar nada"; exit 1; }
+  # Redis caído al respaldar: el respaldo de las bases se crea igual, pero queda marcado como fallido (se avisa).
+  redis_down
+  if bash "$here/docker/backup/backup.sh" now 2> "$work/log"; then echo "ERROR: un respaldo sin las claves de Redis se dio por bueno"; exit 1; fi
+  grep -q '"ok": false' "$work/out/status.json" && grep -q "no incluye las claves de las sesiones" "$work/log" || { cat "$work/log"; echo "ERROR: no avisó que faltaba Redis"; exit 1; }
+  unset BACKUP_REDIS_URI
+else
+  echo "(sin redis-server en este equipo: se omite)"
+fi
+
 echo "== archivo dañado se detecta"
 f="$(ls "$work/out"/riverrun-*.tar.enc | tail -n 1)"; head -c 2000 "$f" > "$f.cut"; mv "$f.cut" "$f"
 if bash "$here/docker/backup/backup.sh" verify "$f" >/dev/null 2>&1; then echo "ERROR: no detectó el daño"; exit 1; fi

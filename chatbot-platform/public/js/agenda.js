@@ -2,7 +2,8 @@ import { discardDraft, draftModel, draftNotice, draftVersion } from './editing.j
 import { needAccount } from './admin.js';
 import { VARS_HELP, hoursEditor } from './automation.js';
 import { saveBar } from './bot.js';
-import { api, area, check, clone, field, fill, h, dialog, num, run, select, state, text, toast, confirmAction, ask } from './core.js';
+import { api, area, check, clone, field, fill, fmtPhone, h, dialog, num, run, select, state, text, toast, confirmAction, ask } from './core.js';
+import { icon } from './icons.js';
 import { render } from './main.js';
 import { isAdmin, withAcct } from './session.js';
 
@@ -76,7 +77,7 @@ const PROVIDER = { google: 'Google Calendar', outlook: 'Outlook' };
  */
 async function viewTeam(root, params) {
   const status = params.get('calendario');
-  if (status === 'ok') toast('Calendario conectado ✅');
+  if (status === 'ok') toast('Calendario conectado');
   else if (status === 'cancelado') toast('No se conectó el calendario', true);
   else if (status === 'error') toast(`No se pudo conectar el calendario${params.get('msg') ? `: ${params.get('msg')}` : ''}`, true);
   const [team, mine] = await Promise.all([api('GET', withAcct('/api/team/agenda')), api('GET', '/api/me/calendar').catch(() => null)]);
@@ -108,7 +109,7 @@ function personCard(p, mine) {
         drawOff();
       } }, '+ Agregar')));
   drawOff();
-  const save = () => run(() => api('PUT', `/api/team/${p.id}/schedule`, { hours: m.own ? m.hours : null, time_off: m.time_off, meeting_url: m.meeting_url.trim() }), 'Disponibilidad guardada ✅');
+  const save = () => run(() => api('PUT', `/api/team/${p.id}/schedule`, { hours: m.own ? m.hours : null, time_off: m.time_off, meeting_url: m.meeting_url.trim() }), 'Disponibilidad guardada');
   return h('div', { class: 'card' },
     h('div', { class: 'row between' }, h('h2', { style: 'margin:0' }, p.name || p.email),
       h('span', { class: 'small muted' }, p.services.length ? `Atiende: ${p.services.map((s) => s.name).join(', ')}` : 'No está asignada a ningún servicio')),
@@ -128,7 +129,7 @@ function personCard(p, mine) {
 function calendarBox(p, mine) {
   const c = p.calendar;
   const line = c.connected
-    ? [h('span', { class: 'badge green' }, `✓ ${PROVIDER[c.provider]}`), c.email ? ` ${c.email}` : '', c.last_error ? h('div', { class: 'small', style: 'color:var(--danger)' }, `Último error: ${c.last_error}`) : null]
+    ? [h('span', { class: 'badge green' }, `Conectado a ${PROVIDER[c.provider]}`), c.email ? ` ${c.email}` : '', c.last_error ? h('div', { class: 'small', style: 'color:var(--danger)' }, `Último error: ${c.last_error}`) : null]
     : [h('span', { class: 'badge' }, 'Sin calendario conectado')];
   const connect = async (provider) => {
     const r = await run(() => api('POST', '/api/me/calendar/connect', { provider }));
@@ -148,7 +149,7 @@ function calendarBox(p, mine) {
   } else if (!c.connected) {
     actions.push(h('span', { class: 'small muted' }, 'Cada persona conecta su calendario desde su propia sesión (Agenda → Mi disponibilidad).'));
   }
-  return h('div', { class: 'row', style: 'margin:8px 0' }, h('strong', {}, '📆 Calendario:'), line, actions);
+  return h('div', { class: 'row', style: 'margin:8px 0' }, h('strong', {}, 'Calendario:'), line, actions);
 }
 
 /** Fecha AAAA-MM-DD en la zona horaria del negocio. */
@@ -238,7 +239,7 @@ async function agendaWeek(root, params) {
     h('div', { class: 'grid' }, field('Nombre del cliente', text(n, 'customer_name')), field('Teléfono', text(n, 'customer_phone', { placeholder: '5215512345678' }))),
     field('Notas', area(n, 'notes')),
     h('p', { class: 'small muted' }, 'Para avisar al cliente por su chat, agenda desde su conversación.'),
-    h('button', { class: 'primary', onclick: async () => { if (await run(() => api('POST', '/api/appointments', { ...n, assigned_user_id: n.assigned_user_id || null }), 'Agendada ✅')) render(); } }, 'Agendar'));
+    h('button', { class: 'primary', onclick: async () => { if (await run(() => api('POST', '/api/appointments', { ...n, assigned_user_id: n.assigned_user_id || null }), 'Agendada')) render(); } }, 'Agendar'));
 
   const title = view === 'month' ? monthTitle(anchor) : view === 'week'
     ? `${dayNum(days[0])} ${shortMonth(days[0])} – ${dayNum(days[6])} ${shortMonth(days[6])} ${days[6].slice(0, 4)}`
@@ -327,11 +328,11 @@ async function agendaWeek(root, params) {
     const act = (text, fn, cls2 = '') => h('button', { class: cls2, onclick: async () => { const r = await fn(); if (r) { close(); render(); } } }, text);
     box.addEventListener('cancel', (e) => { e.preventDefault(); close(); });
     box.append(
-      h('div', { class: 'row between' }, h('h2', { style: 'margin:0' }, a.kind === 'call' ? '📞 ' : '📅 ', a.service_name), h('button', { class: 'icon-only', 'aria-label': 'Cerrar', onclick: close }, '✕')),
+      h('div', { class: 'row between' }, h('h2', { class: 'with-icon', style: 'margin:0' }, icon(a.kind === 'call' ? 'phone' : 'calendar', 20), a.service_name), h('button', { class: 'icon-only', 'aria-label': 'Cerrar', onclick: close }, icon('x'))),
       h('p', {}, h('span', { class: `badge ${cls}` }, label), a.source === 'simulador' ? h('span', { class: 'badge' }, ' prueba') : null),
       h('dl', { class: 'appt-facts' },
         h('dt', {}, 'Cuándo'), h('dd', {}, `${dayTitle(tzParts(a.starts_at, tz).date)}, ${hhmm(a.starts_at)}–${hhmm(a.ends_at)}`),
-        h('dt', {}, 'Cliente'), h('dd', {}, a.customer_name || 'Cliente', a.customer_phone ? ` · +${a.customer_phone.replace(/^\+/, '')}` : '', a.customer_email ? ` · ${a.customer_email}` : ''),
+        h('dt', {}, 'Cliente'), h('dd', {}, a.customer_name || 'Cliente', a.customer_phone ? ` · ${fmtPhone(a.customer_phone)}` : '', a.customer_email ? ` · ${a.customer_email}` : ''),
         h('dt', {}, 'Atiende'), h('dd', {}, h('i', { class: 'dot', style: `background:${colorOf(a)}` }), ' ', a.assigned_user_name || 'Sin asignar'),
         a.meeting_url ? [h('dt', {}, 'Videollamada'), h('dd', {}, h('a', { href: a.meeting_url, target: '_blank', rel: 'noopener' }, 'Entrar a la videollamada'))] : null,
         a.source === 'pagina' ? [h('dt', {}, 'Origen'), h('dd', {}, 'Reservó en tu página para agendar')] : null,
@@ -365,9 +366,9 @@ async function listServices(root) {
       h('a', { class: 'btn primary', href: '#/agenda/servicios?id=new' }, '+ Nuevo servicio')),
     h('div', { class: 'card' }, services.length
       ? h('table', {}, h('tbody', {}, services.map((s) => h('tr', { class: 'click', onclick: () => (location.hash = `#/agenda/servicios?id=${s.id}`) },
-          h('td', {}, s.kind === 'call' ? '📞 ' : '📅 ', h('strong', {}, s.name), s.active ? null : h('span', { class: 'badge orange' }, ' inactivo')),
+          h('td', { class: 'with-icon' }, icon(s.kind === 'call' ? 'phone' : 'calendar', 16), h('strong', {}, s.name), s.active ? null : h('span', { class: 'badge orange' }, ' inactivo')),
           h('td', { class: 'small' }, `${s.duration_minutes} min`, s.capacity > 1 ? ` · ${s.capacity} a la vez${s.assigned_user_ids.length ? ' por persona' : ''}` : ''),
-          h('td', { class: 'small' }, s.assigned_user_ids.length ? `${s.assigned_user_ids.length} ${s.assigned_user_ids.length === 1 ? 'persona' : 'personas'}${s.assigned_user_ids.length > 1 ? ` · ${s.assignment_mode === 'weighted' ? 'por porcentajes' : 'por turnos'}` : ''}${s.prefer_owner ? ' · primero quien atiende' : ''}${s.customer_choice ? ' · el cliente elige' : ''}` : 'Sin personas asignadas', s.kind === 'call' ? ` · ${s.call_mode === 'video' ? '📹 videollamada' : '📞 telefónica'}` : ''),
+          h('td', { class: 'small' }, s.assigned_user_ids.length ? `${s.assigned_user_ids.length} ${s.assigned_user_ids.length === 1 ? 'persona' : 'personas'}${s.assigned_user_ids.length > 1 ? ` · ${s.assignment_mode === 'weighted' ? 'por porcentajes' : 'por turnos'}` : ''}${s.prefer_owner ? ' · primero quien atiende' : ''}${s.customer_choice ? ' · el cliente elige' : ''}` : 'Sin personas asignadas', s.kind === 'call' ? ` · ${s.call_mode === 'video' ? 'videollamada' : 'telefónica'}` : ''),
           h('td', { class: 'small muted' }, s.hours ? 'horario propio' : 'horario del negocio')))))
       : h('p', { class: 'muted' }, 'Aún no hay servicios.')),
   );
@@ -429,7 +430,7 @@ async function editService(root, id) {
     const user_weights = Object.fromEntries(Object.entries(s.user_weights || {}).filter(([u]) => s.assigned_user_ids.includes(u)));
     const body = { ...s, user_weights, hours: own.on ? s.hours : null, reminders, account_id: state.accountId || undefined };
     const versions = [`service:${id}`, `reminders:${id}`, `service-hours:${id}`].map((key) => [key, draftVersion(key)]);
-    if (await run(() => (existing ? api('PUT', `/api/services/${id}`, body) : api('POST', '/api/services', body)), 'Servicio guardado ✅')) { versions.forEach(([key, version]) => discardDraft(key, version)); location.hash = '#/agenda/servicios'; }
+    if (await run(() => (existing ? api('PUT', `/api/services/${id}`, body) : api('POST', '/api/services', body)), 'Servicio guardado')) { versions.forEach(([key, version]) => discardDraft(key, version)); location.hash = '#/agenda/servicios'; }
   };
   root.append(
     h('a', { href: '#/agenda/servicios' }, '← Servicios'),

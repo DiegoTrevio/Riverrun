@@ -2,14 +2,15 @@ import { workspaceTabs } from './contact-workspace.js';
 import { workRecovery } from './work-recovery.js';
 import { dataLabel, flowCard } from './bot.js';
 import { channelIcon } from './channels.js';
-import { api, area, check, clone, dialog, field, fill, fmtDate, h, lines, poll, run, select, state, text, toast, confirmAction, ask } from './core.js';
+import { api, area, check, clone, dialog, field, fill, fmtDate, fmtPhone, h, initialsOf, lines, personTint, poll, run, select, state, text, toast, confirmAction, ask } from './core.js';
+import { icon, okMark } from './icons.js';
 import { acct, isAdmin, isSuper, withAcct } from './session.js';
 import { pipelineCard } from './pipeline.js';
 import { quotesCard } from './quotes.js';
 
 /* ------------------------------ Conversaciones ------------------------------ */
 
-const STATUS_BADGE = { bot: ['green', 'Bot'], human: ['orange', 'Humano'], closed: ['', 'Cerrada'] };
+const STATUS_BADGE = { bot: ['green', 'Bot'], human: ['orange', 'Con persona'], closed: ['', 'Cerrada'] };
 
 /** Última vez que una persona tomó la conversación del contacto: desde dónde y quién (queda en el contacto). */
 
@@ -21,7 +22,7 @@ export function requestsCard(list = []) {
   return h('details', { class: 'small', open: true }, h('summary', {}, `Solicitudes: ${list.length} (la actual es la ${list.length}.ª)`),
     h('ul', { style: 'margin:6px 0;padding-left:18px' }, [...list].reverse().map((r) => h('li', {},
       h('strong', {}, `${r.number}.ª`), ` · ${fmtDate(r.started_at)} · ${REQUEST_REASON[r.reason] || r.reason}`,
-      r.ended_at ? ` · ${r.goal_completed_at ? '🎯 cumplió el objetivo' : 'sin cumplir el objetivo'}` : ' · en curso',
+      r.ended_at ? ` · ${r.goal_completed_at ? 'cumplió el objetivo' : 'sin cumplir el objetivo'}` : ' · en curso',
       Object.keys(r.data || {}).length ? h('div', { class: 'muted' }, Object.entries(r.data).map(([k, v]) => `${k}: ${v}`).join(' · ')) : null))));
 }
 
@@ -54,7 +55,7 @@ export function tasksCard(data, c, ct, reload, draft) {
         ? h('input', { type: 'checkbox', checked: t.status === 'hecha', title: 'Marcar como hecho', onchange: async (e) => { if (await run(() => api('PATCH', `/api/tasks/${t.id}`, { status: e.target.checked ? 'hecha' : 'abierta' }))) reload(); } })
         : h('span', { class: 'badge' }, 'nota'),
       h('div', { style: 'flex:1' }, h('div', { class: 'task-text' }, t.body), meta ? h('div', { class: 'small muted' }, meta) : null),
-      h('button', { class: 'small', title: 'Borrar', onclick: async () => { if (await run(() => api('DELETE', `/api/tasks/${t.id}`), 'Borrado')) reload(); } }, '✕'));
+      h('button', { class: 'small', title: 'Borrar', onclick: async () => { if (await run(() => api('DELETE', `/api/tasks/${t.id}`), 'Borrado')) reload(); } }, icon('x', 14)));
   };
   const add = async () => {
     if (adding) return;
@@ -82,8 +83,8 @@ const customerMedia = (m) => {
   const size = m.media_size ? (m.media_size >= 1048576 ? `${(m.media_size / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(m.media_size / 1024))} KB`) : '';
   return h('div', { class: 'media' },
     m.media_kind === 'image' ? h('a', { href: url, target: '_blank', rel: 'noopener' }, h('img', { src: url, alt: name })) : null,
-    h('a', { href: url, download: name }, `📎 ${name}${size ? ` · ${size}` : ''}`),
-    m.media_complete === false ? h('div', { class: 'small muted' }, '⚠️ El archivo llegó incompleto: pídele al cliente que lo envíe de nuevo.') : null);
+    h('a', { href: url, download: name }, icon('paperclip', 14), ` ${name}${size ? ` · ${size}` : ''}`),
+    m.media_complete === false ? h('div', { class: 'small muted' }, 'El archivo llegó incompleto: pídele al cliente que lo envíe de nuevo.') : null);
 };
 
 export async function viewConversations(root, params) {
@@ -119,11 +120,11 @@ export async function viewConversations(root, params) {
       ...(rows.length ? rows.map((c) => {
         const [cls, label] = STATUS_BADGE[c.status] || ['', c.status];
         return h('tr', { class: 'click', onclick: () => (location.hash = `#/conversation/${c.id}`) },
-          h('td', {}, h('a', { href: `#/conversation/${c.id}` }, h('strong', {}, c.name || c.push_name || (c.channel_type === 'webchat' ? 'Visitante del sitio' : 'Sin nombre'))), h('div', { class: 'muted small' }, c.phone ? `+${c.phone}` : '')),
+          h('td', {}, h('a', { href: `#/conversation/${c.id}` }, h('strong', {}, c.name || c.push_name || (c.channel_type === 'webchat' ? 'Visitante del sitio' : 'Sin nombre'))), h('div', { class: 'muted small' }, c.phone ? fmtPhone(c.phone) : '')),
           h('td', {}, channelIcon(c.channel_type, c.channel_platform), ' ', c.channel_name, h('div', { class: 'muted small' }, c.chatbot_name || 'sin chatbot')),
           showAccount ? h('td', { class: 'small' }, c.account_name) : null,
           h('td', {}, h('span', { class: `badge ${cls}` }, label), c.status === 'human' && c.handoff_reason ? h('div', { class: 'muted small' }, c.handoff_reason) : null),
-          h('td', { class: 'small' }, c.assigned_user_id ? `👤 ${c.assigned_name || c.assigned_email}` : h('span', { class: 'muted' }, '—')),
+          h('td', { class: 'small' }, c.assigned_user_id ? (c.assigned_name || c.assigned_email) : h('span', { class: 'muted' }, '—')),
           h('td', { class: 'muted' }, (c.last_message || '').slice(0, 90)),
           h('td', { class: 'muted small' }, fmtDate(c.last_message_at)));
       }) : [h('tr', {}, h('td', { colspan: 7, class: 'muted' }, 'No hay conversaciones.'))]),
@@ -142,24 +143,32 @@ export async function viewConversations(root, params) {
   };
   const exportMenu = isAdmin()
     ? h('details', { class: 'menu' },
-      h('summary', { class: 'btn' }, '⬇ Exportar'),
+      h('summary', { class: 'btn' }, icon('download', 16), 'Exportar'),
       h('div', { class: 'menu-items' },
-        h('a', { href: exportUrl('contacts'), download: '' }, '👥 Contactos (CSV)'),
-        h('a', { href: exportUrl('conversations'), download: '' }, '💬 Conversaciones (CSV)'),
-        h('a', { href: exportUrl('messages'), download: '' }, '📝 Mensajes completos (CSV)')))
+        h('a', { href: exportUrl('contacts'), download: '' }, 'Contactos (CSV)'),
+        h('a', { href: exportUrl('conversations'), download: '' }, 'Conversaciones (CSV)'),
+        h('a', { href: exportUrl('messages'), download: '' }, 'Mensajes completos (CSV)')))
     : null;
+  const filters = [
+    h('div', { class: 'filter' }, field('Agente', select(f, 'chatbot_id', [['', 'Todos los chatbots'], ...bots.map((b) => [b.id, b.name])], apply))),
+    h('div', { class: 'filter' }, field('Plataforma', select(f, 'channel_type', [['', 'Todas las plataformas'], ...types], apply))),
+    h('div', { class: 'filter' }, field('Conexión', select(f, 'channel_id', [['', 'Todos los canales'], ...channels.map((c) => [c.id, c.name])], apply))),
+    h('div', { class: 'filter' }, field('Estado', select(f, 'status', [['', 'Todos los estados'], ['bot', 'Atendidas por bot'], ['human', 'Con persona'], ['closed', 'Cerradas']], apply))),
+    // El agente solo ve sus conversaciones: el filtro por persona no le sirve.
+    isAdmin() ? h('div', { class: 'filter' }, field('Atiende', select(f, 'assigned', [['', 'Todas las personas'], ['me', 'Asignadas a mí'], ['none', 'Sin asignar']], apply))) : null,
+  ];
+  const search = h('div', { class: 'search-field' }, h('input', { type: 'search', 'aria-label': 'Buscar nombre o teléfono', placeholder: 'Buscar nombre o teléfono…', value: f.search, onchange: (e) => { f.search = e.target.value; apply(); } }));
+  const active = Object.values(f).filter(Boolean).length;
+  const chosen = active - (f.search ? 1 : 0);
+  // En el celular la lista va primero: los filtros se pliegan (abiertos solo si hay alguno puesto).
+  const filterCard = matchMedia('(max-width: 760px)').matches
+    ? h('div', { class: 'card stack' }, search, h('details', { class: 'filters', open: chosen > 0 }, h('summary', {}, chosen ? `Filtros (${chosen})` : 'Filtros'), h('div', { class: 'row' }, filters)))
+    : h('div', { class: 'card row' }, filters, search);
   root.append(
     h('div', { class: 'row between' }, h('h1', {}, 'Conversaciones'), exportMenu),
     workspaceTabs('inbox'),
-    h('div', { class: 'card row' },
-      h('div', { class: 'filter' }, field('Agente', select(f, 'chatbot_id', [['', 'Todos los chatbots'], ...bots.map((b) => [b.id, b.name])], apply))),
-      h('div', { class: 'filter' }, field('Plataforma', select(f, 'channel_type', [['', 'Todas las plataformas'], ...types], apply))),
-      h('div', { class: 'filter' }, field('Conexión', select(f, 'channel_id', [['', 'Todos los canales'], ...channels.map((c) => [c.id, c.name])], apply))),
-      h('div', { class: 'filter' }, field('Estado', select(f, 'status', [['', 'Todos los estados'], ['bot', 'Atendidas por bot'], ['human', 'Con humano'], ['closed', 'Cerradas']], apply))),
-      // El agente solo ve sus conversaciones: el filtro por persona no le sirve.
-      isAdmin() ? h('div', { class: 'filter' }, field('Atiende', select(f, 'assigned', [['', 'Todas las personas'], ['me', 'Asignadas a mí'], ['none', 'Sin asignar']], apply))) : null,
-      h('div', { class: 'search-field' }, h('input', { type: 'search', 'aria-label': 'Buscar nombre o teléfono', placeholder: 'Buscar nombre o teléfono…', value: f.search, onchange: (e) => { f.search = e.target.value; apply(); } }))),
-    h('button', { class: 'small', onclick: () => { location.hash = '#/conversations'; } }, 'Limpiar filtros'),
+    filterCard,
+    active ? h('button', { class: 'small', onclick: () => { location.hash = '#/conversations'; } }, 'Limpiar filtros') : null,
     h('div', { class: 'card' }, h('table', { class: 'responsive-table' }, h('thead', {}, h('tr', {}, h('th', {}, 'Cliente'), h('th', {}, 'Canal'), showAccount ? h('th', {}, 'Cuenta') : null, h('th', {}, 'Estado'), h('th', {}, 'Asignada a'), h('th', {}, 'Último mensaje'), h('th', {}, 'Fecha'))), table)),
   );
   root.append(h('button', { class: 'small', onclick: () => load() }, 'Actualizar bandeja'), more);
@@ -180,12 +189,8 @@ const shortTime = (d) => {
   if (new Date().toDateString() === t.toDateString()) return t.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit', ...(state.timeZone ? { timeZone: state.timeZone } : {}) });
   return t.toLocaleDateString('es-MX', { day: 'numeric', month: 'short', ...(state.timeZone ? { timeZone: state.timeZone } : {}) });
 };
-const AVATAR_COLORS = ['#155eef', '#12b76a', '#f79009', '#7a5af8', '#ee46bc', '#06aed4', '#f04438', '#669f2a'];
-const avatarOf = (name, key) => {
-  const initials = (name || '?').split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('') || '?';
-  const color = AVATAR_COLORS[[...String(key)].reduce((n, ch) => n + ch.charCodeAt(0), 0) % AVATAR_COLORS.length];
-  return h('span', { class: 'inbox-avatar', style: `background:${color}`, 'aria-hidden': 'true' }, initials);
-};
+// Cada persona con su tinte pálido estable (el mismo que en la cola del inicio).
+const avatarOf = (name, key) => h('span', { class: 'inbox-avatar person', style: personTint(key), 'aria-hidden': 'true' }, initialsOf(name));
 
 /**
  * Conversaciones como en Go High Level: la lista a la izquierda, el chat al centro y la ficha del cliente a la derecha.
@@ -205,12 +210,14 @@ export async function viewInbox(root, params, id) {
   items.addEventListener('scroll', () => { inboxScroll = items.scrollTop; });
   const detail = h('section', { class: 'inbox-detail' });
   root.append(h('div', { class: 'inbox' }, list, detail));
+  let shown = [];
   const load = async () => {
     const qs = new URLSearchParams({ page: 'true', ...(f.status ? { status: f.status } : {}), ...(f.search ? { search: f.search } : {}) });
     if (isSuper() && state.accountId) qs.set('account_id', state.accountId);
     const page = await api('GET', `/api/conversations?${qs}`);
+    shown = page.items;
     fill(items, page.items.length ? page.items.map((c) => {
-      const name = c.name || c.push_name || (c.channel_type === 'webchat' ? 'Visitante del sitio' : c.phone ? `+${c.phone}` : 'Sin nombre');
+      const name = c.name || c.push_name || (c.channel_type === 'webchat' ? 'Visitante del sitio' : c.phone ? fmtPhone(c.phone) : 'Sin nombre');
       const waiting = c.last_direction === 'in' && c.status !== 'closed';
       return h('li', {}, h('a', { href: `#/conversation/${c.id}`, class: `inbox-item${c.id === id ? ' active' : ''}${waiting ? ' waiting' : ''}`, 'aria-current': c.id === id ? 'true' : null },
         avatarOf(name, c.contact_id || c.id),
@@ -219,7 +226,7 @@ export async function viewInbox(root, params, id) {
           h('div', { class: 'inbox-preview' }, channelIcon(c.channel_type), ' ', (c.last_message || '').slice(0, 120)),
           h('div', { class: 'inbox-meta' },
             c.status === 'human' ? h('span', { class: 'badge orange' }, 'Con persona') : c.status === 'closed' ? h('span', { class: 'badge' }, 'Cerrada') : h('span', { class: 'badge green' }, 'Bot'),
-            c.assigned_name ? h('span', { class: 'small muted' }, `👤 ${c.assigned_name}`) : null,
+            c.assigned_name ? h('span', { class: 'small muted with-icon' }, icon('user', 12), c.assigned_name) : null,
             waiting ? h('span', { class: 'sr-only' }, 'Esperando respuesta') : null))));
     }) : h('li', { class: 'muted small', style: 'padding:16px' }, 'No hay conversaciones.'));
     items.scrollTop = inboxScroll;
@@ -227,7 +234,13 @@ export async function viewInbox(root, params, id) {
   await load();
   poll(load, 10000, root);
   if (id) await viewConversation(detail, id, { embedded: true });
-  else detail.append(h('div', { class: 'inbox-empty' }, h('div', { style: 'font-size:40px' }, '💬'), h('h2', {}, 'Elige una conversación'), h('p', { class: 'muted' }, 'Aquí ves el chat y, a la derecha, los datos del cliente, sus citas y sus pendientes.')));
+  else {
+    // Sin conversación abierta: si alguien espera a una persona, la de más espera se atiende desde aquí.
+    const next = shown.filter((c) => c.status === 'human').sort((a, b) => new Date(a.last_message_at) - new Date(b.last_message_at))[0];
+    const nextName = next && (next.name || next.push_name || (next.phone ? fmtPhone(next.phone) : 'Cliente'));
+    detail.append(h('div', { class: 'inbox-empty' }, h('div', { class: 'inbox-empty-mark' }, icon('chat', 32)), h('h2', {}, 'Elige una conversación'), h('p', { class: 'muted' }, 'Aquí ves el chat y, a la derecha, los datos del cliente, sus citas y sus pendientes.'),
+      next ? h('a', { class: 'btn primary', href: `#/conversation/${next.id}` }, `Atender a ${nextName}`) : null));
+  }
 }
 
 export async function viewConversation(root, id, opts = {}) {
@@ -295,14 +308,14 @@ export async function viewConversation(root, id, opts = {}) {
     draw();
     if (!(await dialog('Enviar una plantilla de WhatsApp', box, 'Enviar'))) return;
     if (await run(() => api('POST', `/api/conversations/${id}/send-template`, pick), 'Plantilla enviada')) await load(true);
-  } }, '📄 Plantilla');
+  } }, icon('file', 16), 'Plantilla');
   const drawWindow = (d) => {
     const official = d.channel?.type === 'zernio' && d.channel?.platform === 'whatsapp';
     templateButton.hidden = !official;
     const lastIn = [...d.messages].reverse().find((m) => m.direction === 'in');
     const closed = official && (!lastIn || Date.now() - new Date(lastIn.created_at).getTime() > 24 * 3600 * 1000);
     windowNote.hidden = !closed;
-    fill(windowNote, closed ? 'Pasaron más de 24 h desde el último mensaje del cliente: WhatsApp solo deja enviarle una plantilla aprobada (botón "📄 Plantilla"). Cuando te responda, vuelves a escribir libre.' : '');
+    fill(windowNote, closed ? 'Pasaron más de 24 h desde el último mensaje del cliente: WhatsApp solo deja enviarle una plantilla aprobada (botón «Plantilla»). Cuando te responda, vuelves a escribir libre.' : '');
   };
 
   let team = null;
@@ -317,12 +330,12 @@ export async function viewConversation(root, id, opts = {}) {
       if (r) load(true);
     } },
       h('option', { value: '' }, 'Cambiar asignación…'),
-      isAdmin() ? h('option', { value: 'next' }, '🔄 Siguiente por turnos') : null,
+      isAdmin() ? h('option', { value: 'next' }, 'Siguiente por turnos') : null,
       isAdmin() ? (team || []).map((u) => h('option', { value: u.id }, `${u.name || u.email}${u.available === false ? ' (no disponible)' : ''}`)) : null,
       c.assigned_user_id ? h('option', { value: 'none' }, 'Quitar asignación') : null);
     return h('div', { class: 'row', style: 'margin:0 0 8px' },
       h('span', { class: 'small muted' }, 'Atiende:'),
-      c.assigned_user_id ? h('span', { class: 'badge green' }, `👤 ${d.assignee?.name || d.assignee?.email || 'alguien'}${c.assigned_user_id === me.id ? ' (tú)' : ''}`) : h('span', { class: 'badge' }, 'sin asignar'),
+      c.assigned_user_id ? h('span', { class: 'badge green' }, `${d.assignee?.name || d.assignee?.email || 'alguien'}${c.assigned_user_id === me.id ? ' (tú)' : ''}`) : h('span', { class: 'badge' }, 'sin asignar'),
       c.assigned_user_id !== me.id ? h('button', { class: 'small', onclick: async () => { if (await run(() => api('PUT', `/api/conversations/${id}/assign`, { user_id: 'me' }), 'Es tuya')) load(true); } }, 'Quedármela') : null,
       isAdmin() || c.assigned_user_id === me.id ? sel : null);
   };
@@ -354,7 +367,7 @@ export async function viewConversation(root, id, opts = {}) {
           c.status !== 'bot' ? h('button', { class: 'primary', onclick: async () => { if (!(await run(() => api('POST', `/api/conversations/${id}/release`), 'El bot vuelve a responder'))) return; load(true); } }, 'Devolver al bot') : null,
           c.status !== 'closed' ? h('button', { onclick: async () => { if (!(await run(() => api('POST', `/api/conversations/${id}/close`), 'Cerrada'))) return; load(true); } }, 'Cerrar') : null)),
       assignRow(data),
-      h('p', { class: 'muted' }, channelIcon(data.channel?.type, data.channel?.platform), ' ', data.channel?.name, ' · ', data.chatbot?.name || 'sin chatbot', ct.phone ? ` · +${ct.phone}` : '', c.status === 'human' && c.handoff_reason ? ` · Motivo: ${c.handoff_reason}` : ''),
+      h('p', { class: 'muted' }, channelIcon(data.channel?.type, data.channel?.platform), ' ', data.channel?.name, ' · ', data.chatbot?.name || 'sin chatbot', ct.phone ? ` · ${fmtPhone(ct.phone)}` : '', c.status === 'human' && c.handoff_reason ? ` · Motivo: ${c.handoff_reason}` : ''),
       handoffLine(ct, data.handoff_by_user),
       c.status === 'bot' && data.agent && !data.agent.on
         ? h('div', { class: 'card legend row between' },
@@ -374,19 +387,19 @@ export async function viewConversation(root, id, opts = {}) {
       messageSignature = signature;
       fill(chat, ...messages.map((m) => {
         const cls = ['bubble', m.direction === 'in' ? 'in' : 'out', m.sender === 'human' ? 'human' : '', ['failed','uncertain'].includes(m.status) ? 'failed' : ''].join(' ');
-        const who = m.sender === 'human' ? '👤 equipo' : m.sender === 'bot' ? '🤖 bot' : '';
+        const who = m.sender === 'human' ? 'equipo' : m.sender === 'bot' ? 'bot' : '';
         return h('div', { class: cls },
           m.image_id ? h('img', { src: `/api/images/${m.image_id}/file`, alt: m.image_name || '' }) : null,
-          m.image_id ? h('div', { class: 'small muted' }, `🖼 ${m.image_code || ''}`) : null,
-          m.meta?.attachment_id ? h('a', { href: `/api/attachments/${m.meta.attachment_id}/file`, target: '_blank', rel: 'noopener' }, `📎 ${m.meta.file_name || 'Archivo'}`) : null,
+          m.image_id ? h('div', { class: 'small muted with-icon' }, icon('image', 14), m.image_code || '') : null,
+          m.meta?.attachment_id ? h('a', { href: `/api/attachments/${m.meta.attachment_id}/file`, target: '_blank', rel: 'noopener' }, icon('paperclip', 14), ` ${m.meta.file_name || 'Archivo'}`) : null,
           m.media_kind ? customerMedia(m) : null,
-          m.meta?.media_error ? h('div', { class: 'small muted' }, `⚠️ ${m.meta.media_error}`) : null,
+          m.meta?.media_error ? h('div', { class: 'small muted' }, m.meta.media_error) : null,
           m.content || null,
           // Botones de un flujo (como los vio el cliente) y la opción que eligió.
           Array.isArray(m.meta?.buttons) && m.meta.buttons.length ? h('div', { class: 'msg-buttons', role: 'list', 'aria-label': 'Botones enviados' },
-            m.meta.buttons.map((b) => h('span', { class: 'chip', role: 'listitem' }, b.kind === 'url' ? `🔗 ${b.label}` : b.label))) : null,
-          m.meta?.choice ? h('div', { class: 'small' }, `👆 Eligió: ${m.meta.choice}`) : null,
-          h('div', { class: 'meta' }, [who, fmtDate(m.created_at), m.status === 'failed' ? '⚠️ no enviado' : m.status==='uncertain'?'⚠️ entrega sin confirmar':m.status==='cancelled'?'cancelado':'', m.meta?.fallback ? 'respaldo' : ''].filter(Boolean).join(' · ')));
+            m.meta.buttons.map((b) => h('span', { class: 'chip', role: 'listitem' }, b.kind === 'url' ? [icon('external', 14), b.label] : b.label))) : null,
+          m.meta?.choice ? h('div', { class: 'small' }, `Eligió: ${m.meta.choice}`) : null,
+          h('div', { class: 'meta' }, [who, fmtDate(m.created_at), m.status === 'failed' ? 'no enviado' : m.status==='uncertain'?'entrega sin confirmar':m.status==='cancelled'?'cancelado':'', m.meta?.fallback ? 'respaldo' : ''].filter(Boolean).join(' · ')));
       }));
       chat.scrollTop = prepended ? previousTop + Math.max(0, chat.scrollHeight - previousHeight) : atBottom || firstRender ? chat.scrollHeight : previousTop;
     }
@@ -428,7 +441,7 @@ export async function viewConversation(root, id, opts = {}) {
     fill(autoBox,
       h('div', { class: 'card' },
         h('h2', { style: 'margin-top:0' }, 'Citas'),
-        upcoming.length ? upcoming.map((a) => h('div', { class: 'small' }, a.kind === 'call' ? '📞 ' : '📅 ', h('strong', {}, a.service_name), ` · ${fmtDate(a.starts_at)}`)) : h('p', { class: 'small muted', style: 'margin:0' }, 'Sin citas próximas'),
+        upcoming.length ? upcoming.map((a) => h('div', { class: 'small with-icon' }, icon(a.kind === 'call' ? 'phone' : 'calendar', 14), h('strong', {}, a.service_name), ` · ${fmtDate(a.starts_at)}`)) : h('p', { class: 'small muted', style: 'margin:0' }, 'Sin citas próximas'),
         services.length ? h('details', { style: 'margin-top:8px' }, h('summary', {}, 'Agendar cita o llamada'),
           field('Servicio', select(book, 'service_id', services.filter((q) => q.active).map((q) => [q.id, q.name]), loadSlots)),
           slotBox,
@@ -502,7 +515,7 @@ export async function viewConversation(root, id, opts = {}) {
         ct.consent_at ? h('p', { class: 'small muted', style: 'margin:-4px 0 8px' }, `Consentimiento registrado el ${fmtDate(ct.consent_at)}${ct.consent_source ? ` (${{ keyword: 'lo escribió el cliente', panel: 'marcado por el equipo', legacy: 'cliente anterior a esta función', api: 'integración' }[ct.consent_source] || ct.consent_source})` : ''}.`) : null,
         h('button', { class: 'small', onclick: () => saveContact() }, 'Guardar datos'), contactError),
       isAdmin() ? h('details', { class: 'card' },
-        h('summary', {}, '🔒 Privacidad de este cliente'),
+        h('summary', {}, 'Privacidad de este cliente'),
         h('p', { class: 'small muted' }, 'Para atender una solicitud de acceso o supresión de datos personales.'),
         h('div', { class: 'row' },
           h('a', { class: 'btn small', href: `/api/contacts/${ct.id}/data`, download: '' }, 'Descargar todos sus datos'),
@@ -524,13 +537,13 @@ export async function viewConversation(root, id, opts = {}) {
         h('p', { class: 'small pre' }, c.report_summary || 'Se genera al cerrar, completar el objetivo o transferir la conversación. Puedes pedirlo en cualquier momento.'),
         c.report_at ? h('p', { class: 'small muted' }, `Generado: ${fmtDate(c.report_at)}`, c.report_until_id < (data.messages.filter((m) => m.status === 'ok').at(-1)?.id || 0) || c.report_data_version !== c.data_version ? ' · Hay información nueva; actualiza el resumen.' : '') : null,
         c.report_analysis && c.report_summary ? h('div', { class: 'row small', style: 'gap:6px;flex-wrap:wrap' },
-          c.report_analysis.intent ? h('span', { class: 'chip' }, `🎯 ${c.report_analysis.intent}`) : null,
+          c.report_analysis.intent ? h('span', { class: 'chip' }, `Busca: ${c.report_analysis.intent}`) : null,
           h('span', { class: 'chip' }, `Ánimo: ${c.report_analysis.sentiment || 'neutral'}`),
           h('span', { class: 'chip' }, `Interés: ${(c.report_analysis.interest || 'sin_dato').replace('_', ' ')}`),
-          ...(c.report_analysis.agreements || []).map((x) => h('span', { class: 'chip' }, `🤝 ${x}`)),
-          ...(c.report_analysis.next_steps || []).map((x) => h('span', { class: 'chip' }, `⏭ ${x}`))) : null,
+          ...(c.report_analysis.agreements || []).map((x) => h('span', { class: 'chip' }, `Acordado: ${x}`)),
+          ...(c.report_analysis.next_steps || []).map((x) => h('span', { class: 'chip' }, `Siguiente paso: ${x}`))) : null,
         h('div', { class: 'row', style: 'gap:6px;margin:8px 0' },
-          h('a', { class: 'btn small', href: `/api/conversations/${id}/report?format=txt&transcript=1`, download: '' }, '⬇ Descargar reporte'),
+          h('a', { class: 'btn small', href: `/api/conversations/${id}/report?format=txt&transcript=1`, download: '' }, icon('download', 16), 'Descargar reporte'),
           h('button', { class: 'small', onclick: async () => {
             try {
               const res = await fetch(`/api/conversations/${id}/report?format=txt`);
@@ -539,8 +552,8 @@ export async function viewConversation(root, id, opts = {}) {
               toast('Reporte copiado');
             } catch (e) { toast(e.message || 'No se pudo copiar', true); }
           } }, 'Copiar'),
-          h('button', { class: 'small primary', onclick: () => sendReportDialog(id, data) }, '✉ Enviar reporte'),
-          h('button', { class: 'small', onclick: () => sendToAppDialog(id) }, '↗ Enviar a mi app')),
+          h('button', { class: 'small primary', onclick: () => sendReportDialog(id, data) }, 'Enviar reporte'),
+          h('button', { class: 'small', onclick: () => sendToAppDialog(id) }, 'Enviar a mi app')),
         pipelineCard(data.pipeline),
         requestsCard(data.requests),
         h('details', { class: 'small' }, h('summary', {}, 'Datos guardados en esta conversación'), h('div', { class: 'pre' }, Object.entries(c.data || {}).map(([key, value]) => `${key}: ${value}`).join('\n') || 'Aún no se han recopilado datos.')),
@@ -558,7 +571,7 @@ export async function viewConversation(root, id, opts = {}) {
     workRecovery(id),
     h('div', { class: 'row chat-shortcuts' }, [['customer-data', 'Datos del cliente'], ['conversation-summary', 'Resumen'], ['conversation-appointments', 'Citas y seguimientos']].map(([target, label]) => h('button', { class: 'small', onclick: () => { const el = document.getElementById(target); if (!el) return; if (el.tagName === 'DETAILS') el.open = true; el.scrollIntoView({ block: 'start' }); el.focus({ preventScroll: true }); } }, label))),
     h('div', { class: 'split' },
-      h('div', { class: 'card' }, older, chat, windowNote, h('div', { class: 'composer' }, input, h('button', { onclick: togglePhotos, title: 'Enviar una foto del catálogo' }, '📷 Foto'), templateButton, sendButton),
+      h('div', { class: 'card' }, older, chat, windowNote, h('div', { class: 'composer' }, input, h('button', { onclick: togglePhotos, title: 'Enviar una foto del catálogo' }, icon('image', 16), 'Foto'), templateButton, sendButton),
         gallery,
         h('p', { class: 'muted small' }, 'Al enviar un mensaje o una foto a mano, el bot se pausa en esta conversación hasta que la devuelvas.')),
       side),
@@ -613,15 +626,15 @@ async function sendReportDialog(id) {
     try {
       const r = await run(() => api('POST', `/api/conversations/${id}/report/send`, b));
       if (r) fill(result,
-        r.warning ? h('p', { class: 'muted' }, `⚠️ ${r.warning}`) : null,
-        r.deliveries.map((d) => h('div', {}, `${d.ok ? '✅' : '❌'} ${d.via}: ${d.to}${d.detail ? ` — ${d.detail}` : ''}`)));
+        r.warning ? h('p', { class: 'banner warn' }, r.warning) : null,
+        r.deliveries.map((d) => h('div', {}, okMark(d.ok), ` ${d.via}: ${d.to}${d.detail ? ` — ${d.detail}` : ''}`)));
     } finally { send.disabled = false; }
   } }, 'Enviar');
   dlg.append(
     h('h2', { style: 'margin-top:0' }, 'Enviar reporte de la conversación'),
     h('p', { class: 'small muted' }, 'Se actualiza el resumen y se envía por el panel, y por correo o WhatsApp a quien lo tenga activado.'),
     h('div', { class: 'row', style: 'flex-wrap:wrap' }, people.map((u) => h('label', { class: 'check' },
-      h('input', { type: 'checkbox', onchange: (e) => { b.user_ids = e.target.checked ? [...b.user_ids, u.id] : b.user_ids.filter((x) => x !== u.id); } }), u.name, u.whatsapp ? ' 📱' : ''))),
+      h('input', { type: 'checkbox', onchange: (e) => { b.user_ids = e.target.checked ? [...b.user_ids, u.id] : b.user_ids.filter((x) => x !== u.id); } }), u.name, u.whatsapp ? ' · WhatsApp' : ''))),
     isAdmin() ? field('Correos externos (uno por línea)', lines(b, 'emails', { placeholder: 'direccion@empresa.com' })) : null,
     isAdmin() ? field('WhatsApp externos (uno por línea)', lines(b, 'phones', { placeholder: '5215512345678' })) : null,
     field('Nota (opcional)', text(b, 'note')),

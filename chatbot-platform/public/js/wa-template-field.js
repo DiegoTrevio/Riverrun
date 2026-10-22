@@ -17,7 +17,7 @@ export function waTemplateField(holder, templates) {
     const pick = h('select', { onchange: (e) => { holder.wa_template = e.target.value ? { template_id: e.target.value, params: [] } : null; draw(); } },
       h('option', { value: '' }, 'Ninguna'),
       usable.map((x) => h('option', { value: x.id, selected: x.id === cur?.template_id }, `${x.name} (${x.language})`)),
-      cur && !t ? h('option', { value: cur.template_id, selected: true }, '⚠ Plantilla borrada o sin aprobar: elige otra') : null);
+      cur && !t ? h('option', { value: cur.template_id, selected: true }, 'Plantilla borrada o sin aprobar: elige otra') : null);
     fill(box,
       field('Plantilla de WhatsApp si pasaron 24 h (opcional)', pick, 'Solo para WhatsApp oficial: si el cliente no ha escrito en las últimas 24 h, se envía esta plantilla aprobada en lugar del mensaje.'),
       t ? h('p', { class: 'small muted', style: 'white-space:pre-wrap;margin:4px 0 8px' }, t.body) : null,

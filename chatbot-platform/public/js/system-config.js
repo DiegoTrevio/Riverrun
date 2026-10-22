@@ -1,15 +1,16 @@
 import { api, fill, fmtDate, h, run } from './core.js';
+import { okMark } from './icons.js';
 
 /* ------------------------------ Sistema → Configuración y servicios (superadmin) ------------------------------ */
 // Muestra lo que valida el servidor: nunca valores de claves ni direcciones internas con credenciales.
 
 const LEVEL = { critical: ['red', 'Crítico'], warning: ['orange', 'Aviso'], optional: ['', 'Opcional'] };
-const STATUS = { ok: ['green', '✓ Bien'], warn: ['orange', '! Atención'], fail: ['red', '✕ Falla'], na: ['', '—'] };
+const STATUS = { ok: ['green', 'Bien'], warn: ['orange', 'Atención'], fail: ['red', 'Falla'], na: ['', '—'] };
 const ENV = { production: 'producción', development: 'desarrollo', test: 'pruebas' };
 const STEPS = [['configured', 'Configurado'], ['reachable', 'Accesible'], ['credentials', 'Credenciales válidas'], ['functional', 'Funcional'], ['ready', 'Listo para usarse']];
 const COMPAT = { verified: 'green', unverified: 'orange', unknown: 'orange', incompatible: 'red' };
 const badge = ([cls, text]) => h('span', { class: `badge ${cls}` }, text);
-const step = (v) => (v === true ? '✓' : v === false ? '✕' : '—');
+const step = (v) => (v === true ? okMark(true) : v === false ? okMark(false) : '—');
 
 function probeRow(p) {
   return h('div', { style: 'padding:10px 0;border-top:1px solid var(--border)' },
@@ -53,7 +54,7 @@ function render(box, d) {
       h('div', { class: 'row between' }, h('h2', { style: 'margin:0' }, 'Configuración'), badge(STATUS[c.status])),
       d.started_with_critical ? h('div', { class: 'banner danger', style: 'margin-top:8px' }, 'El servidor arrancó con CONFIG_VALIDATION=warn a pesar de problemas críticos. Corrígelos y quita esa variable.') : null,
       h('p', { class: 'small' }, `Entorno: ${ENV[c.env] ?? c.env} · ${c.counts.critical} crítico(s) · ${c.counts.warning} aviso(s) · ${c.counts.optional} opcional(es) apagado(s) · revisada ${fmtDate(c.checked_at)}`),
-      important.length ? h('ul', { style: 'padding-left:18px' }, important.map(issueRow)) : h('p', { class: 'small' }, '✓ Sin problemas críticos ni avisos.'),
+      important.length ? h('ul', { style: 'padding-left:18px' }, important.map(issueRow)) : h('p', { class: 'small' }, 'Sin problemas críticos ni avisos.'),
       optional.length ? h('details', {}, h('summary', {}, `Servicios opcionales apagados (${optional.length})`), h('ul', { style: 'padding-left:18px' }, optional.map(issueRow))) : null),
     h('div', { class: 'grid' },
       h('div', { class: 'card' },

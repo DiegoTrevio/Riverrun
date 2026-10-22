@@ -1,4 +1,5 @@
 import { api, confirmAction, field, fill, h, poll, run, state, toast } from './core.js';
+import { icon, networkIcon } from './icons.js';
 import { render } from './main.js';
 import { withAcct } from './session.js';
 
@@ -7,12 +8,12 @@ import { withAcct } from './session.js';
  * estado y su enlace; lo que falla se puede reintentar.
  */
 
-const ICONS = { instagram: '📸', facebook: '📘', twitter: '𝕏', bluesky: '🦋', reddit: '👽', linkedin: '💼', tiktok: '🎵', youtube: '▶️', threads: '🧵', pinterest: '📌', googlebusiness: '🗺️', telegram: '✈️' };
 const STATUS = {
   borrador: ['', 'Borrador'], enviando: ['orange', 'Enviando…'], programada: ['', 'Programada'], publicando: ['orange', 'Publicando…'],
   publicada: ['green', 'Publicada'], parcial: ['orange', 'Salió en algunas redes'], fallida: ['red', 'No salió'], cancelada: ['', 'Cancelada'],
 };
-const TARGET = { pendiente: '⏳', publicando: '⏳', publicada: '✅', fallida: '⚠️', cancelada: '⛔', eliminada: '🗑️' };
+/** Estado de cada red de una publicación, como insignia (color y palabra). */
+const TARGET = { pendiente: ['', 'Pendiente'], publicando: ['', 'Publicando'], publicada: ['green', 'Publicada'], fallida: ['red', 'Falló'], cancelada: ['', 'Cancelada'], eliminada: ['', 'Eliminada'] };
 const label = (platform) => (state.meta.social_capabilities || []).find((n) => n.id === platform)?.label || platform;
 const safeUrl = (u) => (/^https?:\/\//i.test(u || '') ? u : '');
 const graphemes = (t) => {
@@ -115,12 +116,12 @@ function monthGrid(month, items, tz) {
       class: `cal-cell${ps.length ? ' has' : ''}`, 'aria-label': `${d}: ${ps.length} publicación${ps.length === 1 ? '' : 'es'}`,
       onclick: () => { location.hash = `#/publicaciones?vista=calendario&mes=${month}&dia=${k}`; },
     }, h('span', { class: 'cal-day' }, String(d)),
-    ps.slice(0, 3).map((p) => h('span', { class: `cal-item ${STATUS[p.status]?.[0] || ''}` }, `${timeLabel(whenOf(p), tz)} ${p.targets.map((t) => ICONS[t.platform] || '🔗').join('')}`)),
+    ps.slice(0, 3).map((p) => h('span', { class: `cal-item ${STATUS[p.status]?.[0] || ''}` }, `${timeLabel(whenOf(p), tz)} `, p.targets.map((t) => networkIcon(t.platform, 12)))),
     ps.length > 3 ? h('span', { class: 'small muted' }, `+${ps.length - 3}`) : null));
   }
   return h('div', { class: 'card' },
-    h('div', { class: 'cal-grid', 'aria-hidden': 'true' }, ['Lu', 'Ma', 'Mi', 'Ju', 'Vi', 'Sá', 'Do'].map((d) => h('span', { class: 'cal-head' }, d))),
-    h('div', { class: 'cal-grid' }, cells));
+    h('div', { class: 'post-cal-grid', 'aria-hidden': 'true' }, ['Lu', 'Ma', 'Mi', 'Ju', 'Vi', 'Sá', 'Do'].map((d) => h('span', { class: 'post-cal-head' }, d))),
+    h('div', { class: 'post-cal-grid' }, cells));
 }
 
 function card(p, tz) {
@@ -128,15 +129,15 @@ function card(p, tz) {
   const act = async (fn, okMsg) => { if (await run(fn, okMsg)) render(); };
   return h('div', { class: 'card social-publication' },
     h('div', { class: 'row between wrap', style: 'gap:8px' },
-      h('strong', {}, `${p.status === 'programada' || p.status === 'borrador' ? (p.scheduled_for ? '🕒 ' : '') : ''}${timeLabel(whenOf(p), tz)}`),
+      h('strong', {}, `${p.status === 'programada' || p.status === 'borrador' ? (p.scheduled_for ? icon('clock', 14) : '') : ''}${timeLabel(whenOf(p), tz)}`),
       h('span', { class: `badge ${color}` }, status)),
     h('div', { class: 'row', style: 'gap:10px;margin-top:8px;align-items:flex-start' },
       p.media[0] && safeUrl(p.media[0].url) ? (p.media[0].type === 'image'
         ? h('img', { src: safeUrl(p.media[0].url), alt: '', width: 64, height: 64, loading: 'lazy', style: 'object-fit:cover;border-radius:6px;flex:none', referrerpolicy: 'no-referrer' })
-        : h('span', { style: 'font-size:28px;flex:none', 'aria-hidden': 'true' }, '🎬')) : null,
+        : h('span', { class: 'net-icon', style: 'flex:none' }, icon('video', 28))) : null,
       h('p', { style: 'white-space:pre-wrap;margin:0;overflow-wrap:anywhere;min-width:0' }, p.text ? `${p.text.slice(0, 280)}${p.text.length > 280 ? '…' : ''}` : '(sin texto)')),
     h('ul', { class: 'plain', style: 'margin:8px 0 0;padding:0;list-style:none' }, p.targets.map((t) => h('li', { class: 'small', style: 'overflow-wrap:anywhere' },
-      `${TARGET[t.status] || ''} ${ICONS[t.platform] || '🔗'} ${label(t.platform)}${t.username ? ` @${t.username}` : ''}`,
+      TARGET[t.status] ? [h('span', { class: `badge ${TARGET[t.status][0]}` }, TARGET[t.status][1]), ' '] : null, h('span', { class: 'with-icon' }, networkIcon(t.platform, 14), `${label(t.platform)}${t.username ? ` @${t.username}` : ''}`),
       safeUrl(t.url) ? h('span', {}, ' · ', h('a', { href: safeUrl(t.url), target: '_blank', rel: 'noopener noreferrer' }, 'Ver en la red')) : null,
       t.error ? h('span', { class: 'error' }, ` · ${t.error}`) : null))),
     p.error ? h('p', { class: 'small error' }, p.error) : null,
@@ -208,7 +209,7 @@ async function compose(root, id, params) {
     const warn = !over && r.warnAbove && n > r.warnAbove;
     const needs = r.mediaRequired === 'video' ? !m.media.some((x) => x.type === 'video') : r.mediaRequired === 'any' ? !m.media.length : false;
     return h('span', { class: `badge ${over || needs ? 'red' : warn ? 'orange' : ''}`, title: needs ? (r.mediaRequired === 'video' ? 'Necesita un video' : 'Necesita una foto o un video') : '' },
-      `${ICONS[a.platform] || '🔗'} ${n}/${warn ? r.warnAbove : r.max}${needs ? (r.mediaRequired === 'video' ? ' · falta video' : ' · falta foto') : ''}`);
+      networkIcon(a.platform, 12), ` ${n}/${warn ? r.warnAbove : r.max}${needs ? (r.mediaRequired === 'video' ? ' · falta video' : ' · falta foto') : ''}`);
   }));
   const drawExtras = () => fill(extras, ...chosen().map((a) => {
     const r = rules[a.platform] || {};
@@ -222,9 +223,9 @@ async function compose(root, id, params) {
         r.link ? field('Enlace de destino', h('input', { type: 'url', placeholder: 'https://', value: o.link || '', oninput: (e) => (o.link = e.target.value) })) : null));
   }));
   const drawMedia = () => fill(mediaList, ...m.media.map((x, i) => h('div', { class: 'media-chip row', style: 'gap:6px;align-items:center' },
-    x.type === 'image' && safeUrl(x.url) ? h('img', { src: safeUrl(x.url), alt: '', width: 48, height: 48, style: 'object-fit:cover;border-radius:6px', referrerpolicy: 'no-referrer' }) : h('span', { 'aria-hidden': 'true', style: 'font-size:24px' }, '🎬'),
+    x.type === 'image' && safeUrl(x.url) ? h('img', { src: safeUrl(x.url), alt: '', width: 48, height: 48, style: 'object-fit:cover;border-radius:6px', referrerpolicy: 'no-referrer' }) : h('span', { class: 'net-icon' }, icon('video', 24)),
     h('span', { class: 'small', style: 'max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, x.name || (x.type === 'image' ? 'Foto' : 'Video')),
-    h('button', { class: 'small secondary', 'aria-label': `Quitar ${x.name || 'archivo'}`, onclick: () => { m.media.splice(i, 1); drawMedia(); drawCounters(); } }, '✕'))));
+    h('button', { class: 'small secondary', 'aria-label': `Quitar ${x.name || 'archivo'}`, onclick: () => { m.media.splice(i, 1); drawMedia(); drawCounters(); } }, icon('x', 14)))));
 
   const fileInput = h('input', { type: 'file', accept: 'image/jpeg,image/png,image/webp,video/mp4', multiple: true, onchange: async (e) => {
     // Mientras sube no se puede publicar (saldría sin ese archivo).
@@ -248,7 +249,7 @@ async function compose(root, id, params) {
 
   const accountsBox = h('div', { class: 'stack' }, data.accounts.map((a) => h('label', { class: 'check' },
     h('input', { type: 'checkbox', checked: m.selected.has(a.id), onchange: (e) => { if (e.target.checked) m.selected.add(a.id); else m.selected.delete(a.id); drawCounters(); drawExtras(); } }),
-    ` ${ICONS[a.platform] || '🔗'} ${label(a.platform)}${a.username ? ` · @${a.username}` : a.display_name ? ` · ${a.display_name}` : ''}`)));
+    ' ', networkIcon(a.platform, 16), ` ${label(a.platform)}${a.username ? ` · @${a.username}` : a.display_name ? ` · ${a.display_name}` : ''}`)));
 
   const whenBox = h('div', { class: 'stack' });
   const save = h('button', { class: 'primary' });

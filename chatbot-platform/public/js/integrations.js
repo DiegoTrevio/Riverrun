@@ -33,7 +33,7 @@ async function calendarCard(params, key) {
           h('p', { class: 'muted' }, `Copia tus citas a ${c.name} y evita que el asistente ofrezca horas en las que ya estás ocupado.${c.hint ? ` ${c.hint}` : ''}`),
           h('button', { class: 'primary', onclick: async () => { const r = await run(() => api('POST', `/api/integrations/${key}/connect`, acctBody())); if (r) location.href = r.url; } }, `Conectar ${c.name}`),
         ];
-  return h('div', { class: 'card' }, h('h2', {}, `📅 ${c.name}`), ...body);
+  return h('div', { class: 'card' }, h('h2', {}, c.name), ...body);
 }
 
 function endpointCard(ep, events) {

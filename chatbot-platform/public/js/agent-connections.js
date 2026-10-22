@@ -1,6 +1,6 @@
 import { receiptRecovery } from './receipt-recovery.js';
 import { channelIcon, connectionBadge, connectionHref, networkLabel } from './channels.js';
-import { api, field, fill, h, run, select, state, text, toast } from './core.js';
+import { api, field, fill, fmtPhone, h, run, select, state, text, toast } from './core.js';
 import { metaConnectButton } from './meta.js';
 import { accountName, isSuper } from './session.js';
 
@@ -75,7 +75,7 @@ export async function tabConnections(root, bot, params = new URLSearchParams()) 
         field('Nombre de la conexión', text(draft, 'name', { placeholder: 'WhatsApp ventas, recepción…', maxlength: 120 }))),
       warning, button),
     metaDirect ? h('div', { class: 'card' },
-      h('h2', { style: 'margin-top:0' }, '💬📸 Facebook e Instagram'),
+      h('h2', { style: 'margin-top:0' }, 'Facebook e Instagram'),
       h('p', { class: 'help' }, 'Inicia sesión con Facebook, elige tus páginas y tu Instagram profesional, y sus mensajes llegan a este agente. Sin copiar tokens.'),
       metaConnectButton({ chatbotId: bot.id, accountId: bot.account_id })) : null,
     pending.length ? pendingConnections(pending, [bot]) : null,
@@ -92,7 +92,7 @@ export async function tabConnections(root, bot, params = new URLSearchParams()) 
       refresh();
       return h('div', { class: 'card' },
         h('div', { class: 'row between' }, h('h2', { style: 'margin:0' }, channelIcon(ch.type, ch.config?.platform), ' ', ch.name), status),
-        h('p', { class: 'muted' }, ch.type === 'zernio' ? networkLabel(ch.config?.platform) : ch.label || ch.type, ch.config?.number ? ` · +${ch.config.number}` : '', ch.config?.username ? ` · @${ch.config.username}` : ''),
+        h('p', { class: 'muted' }, ch.type === 'zernio' ? networkLabel(ch.config?.platform) : ch.label || ch.type, ch.config?.number ? ` · ${fmtPhone(ch.config.number)}` : '', ch.config?.username ? ` · @${ch.config.username}` : ''),
         h('div', { class: 'row' },
           h('a', { class: 'btn primary', href: connectionHref(ch) }, ch.type === 'whatsapp' ? 'Ver QR / administrar' : ch.type === 'zernio' ? (ch.config?.connected ? 'Administrar' : 'Conectar cuenta') : ch.config?.connected_via === 'facebook' ? 'Administrar' : 'Configurar conexión'),
           h('a', { class: 'btn', href: `#/conversations?channel_id=${ch.id}` }, 'Conversaciones'),

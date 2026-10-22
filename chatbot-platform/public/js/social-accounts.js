@@ -1,4 +1,5 @@
 import { api, ask, confirmAction, dialog, field, h, run, select, state, toast } from './core.js';
+import { icon, networkIcon } from './icons.js';
 import { render } from './main.js';
 import { isSuper, withAcct } from './session.js';
 
@@ -7,7 +8,6 @@ import { isSuper, withAcct } from './session.js';
  * para conectar otra red. El negocio nunca ve llaves ni identificadores de Zernio.
  */
 
-const ICONS = { instagram: '📸', facebook: '📘', whatsapp: '🟢', telegram: '✈️', twitter: '𝕏', bluesky: '🦋', reddit: '👽', linkedin: '💼', tiktok: '🎵', youtube: '▶️', threads: '🧵', pinterest: '📌', googlebusiness: '🗺️' };
 const STATUS = { active: ['green', 'Conectada'], needs_reconnect: ['red', 'Hay que reconectarla'], disconnected: ['red', 'Desconectada'], stale: ['orange', 'Hay que volver a conectarla'] };
 const RETURN = {
   ok: 'Listo: la red quedó conectada.',
@@ -73,7 +73,7 @@ export async function viewSocialAccounts(root, params = new URLSearchParams()) {
     const [color, label] = STATUS[a.status] || ['', a.status];
     const avatar = /^https:\/\//.test(a.picture || '')
       ? h('img', { src: a.picture, alt: '', width: 44, height: 44, style: 'border-radius:50%;object-fit:cover', referrerpolicy: 'no-referrer' })
-      : h('span', { style: 'font-size:30px', 'aria-hidden': 'true' }, ICONS[a.platform] || '🔗');
+      : h('span', { class: 'net-icon' }, networkIcon(a.platform, 26));
     const agent = a.dm ? h('select', {
       'aria-label': `Quién contesta los mensajes de ${n.label}`,
       onchange: async (e) => { if (await run(() => api('PUT', withAcct(`/api/social-accounts/${a.id}`), { chatbot_id: e.target.value || null }), 'Guardado')) render(); },
@@ -84,7 +84,7 @@ export async function viewSocialAccounts(root, params = new URLSearchParams()) {
           h('strong', {}, a.display_name || a.username || n.label),
           h('div', { class: 'small muted' }, n.label, a.username ? ` · @${a.username}` : ''),
           h('span', { class: `badge ${color}` }, label),
-          a.status === 'active' && a.health?.problem ? h('div', { class: 'small stats-warn' }, '⚠ ', a.health.problem) : null),
+          a.status === 'active' && a.health?.problem ? h('div', { class: 'small stats-warn' }, icon('alert', 14), ' ', a.health.problem) : null),
         h('div', { class: 'row' },
           a.status !== 'active' || a.health?.reconnect ? h('button', { class: 'small primary', onclick: () => connect(a.platform, a.chatbot_id, a.id) }, 'Reconectar') : null,
           a.platform === 'whatsapp' ? h('a', { class: 'btn small', href: `#/redes/whatsapp/${a.id}` }, 'Plantillas') : null,
@@ -132,7 +132,7 @@ export async function viewSocialAccounts(root, params = new URLSearchParams()) {
       h('h2', { style: 'margin-top:0' }, 'Conectar otra red'),
       data.meta_direct ? h('p', { class: 'small muted' }, 'Facebook e Instagram ya se conectan con el botón "Conectar con Facebook" en las conexiones de tu agente; aquí solo se usan para comentarios, publicaciones y estadísticas.') : null,
       h('div', { class: 'grid' }, networks.map((n) => h('button', { class: 'social-network', onclick: () => connect(n.id) },
-        h('span', { style: 'font-size:24px', 'aria-hidden': 'true' }, ICONS[n.id] || '🔗'),
+        h('span', { class: 'net-icon' }, networkIcon(n.id, 22)),
         h('span', {}, h('strong', {}, n.label), h('br'), h('span', { class: 'small muted' }, can(n, data.meta_direct))))))),
     isSuper() ? h('p', { class: 'small muted' }, 'Como superadmin también puedes administrar los perfiles de todos los negocios en Sistema → Zernio.') : null,
   );

@@ -485,6 +485,10 @@ export interface Channel {
   /** Último estado de conexión conocido (WhatsApp: open | connecting | close). */
   connection_state?: string;
   connection_state_at?: Date | null;
+  /** Desde cuándo está caído un canal que estaba conectado (null: conectado, nunca vinculado o desconectado a propósito). */
+  down_since?: Date | null;
+  /** Por qué se cayó (WhatsApp): logged_out | banned | replaced | connection_lost; vacío mientras está conectado. */
+  disconnect_reason?: string;
   /** Último QR / código de vinculación de WhatsApp (solo para la sesión de conexión; nunca al panel). */
   qr_code?: string | null;
   qr_at?: Date | null;

@@ -209,7 +209,7 @@ export function renderReset(token) {
     e.preventDefault();
     if (f.password !== f.confirm) return toast('Las contraseñas no coinciden', true);
     const r = await run(() => api('POST', '/api/reset-password', { token: f.token, password: f.password }));
-    if (r) fill(box, h('p', {}, '✅ Listo, ya puedes entrar con tu contraseña nueva.'), h('a', { class: 'btn primary', href: '#/login' }, 'Iniciar sesión'));
+    if (r) fill(box, h('p', {}, 'Listo, ya puedes entrar con tu contraseña nueva.'), h('a', { class: 'btn primary', href: '#/login' }, 'Iniciar sesión'));
   } },
     field('Contraseña nueva', text(f, 'password', { type: 'password', autocomplete: 'new-password', minlength: 8, required: true }), 'Mínimo 8 caracteres.'),
     field('Repítela', text(f, 'confirm', { type: 'password', autocomplete: 'new-password', minlength: 8, required: true })),
@@ -222,7 +222,7 @@ export async function renderVerify(token) {
   try {
     await api('POST', '/api/verify-email', { token });
     state.me = null;
-    fill(box, '✅ Tu correo quedó confirmado. ', h('a', { href: '#/empezar' }, 'Continuar →'));
+    fill(box, 'Tu correo quedó confirmado. ', h('a', { href: '#/empezar' }, 'Continuar →'));
   } catch (e) {
     fill(box, e.message, ' ', h('a', { href: '#/empezar' }, 'Ir al panel'));
   }

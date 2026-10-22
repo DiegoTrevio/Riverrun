@@ -117,12 +117,12 @@ Un solo comando para todo lo que sigue:
 
 ## Respaldos
 
-Un contenedor (`backup`) respalda **cada noche** (03:30 UTC) lo que no se puede perder: la base del chatbot, la base de Evolution, las fotos subidas y las sesiones de WhatsApp. Cada respaldo es **un solo archivo cifrado** (AES-256 con `BACKUP_PASSPHRASE`, que `install` genera y te pide guardar fuera del servidor).
+Un contenedor (`backup`) respalda **cada noche** (03:30 UTC) lo que no se puede perder: la base del chatbot, la base de Evolution, las fotos subidas y las sesiones de WhatsApp **con sus claves de cifrado** (Evolution las guarda en Redis; sin ellas, una sesión restaurada no descifra los mensajes y habría que volver a escanear el QR). Cada respaldo es **un solo archivo cifrado** (AES-256 con `BACKUP_PASSPHRASE`, que `install` genera y te pide guardar fuera del servidor).
 
 - **Se verifica solo:** después de crear cada respaldo se abre, se comprueban sus sumas y se **restaura en una base temporal**. Si algo falla, el panel (Sistema) y las alertas lo avisan.
 - **Retención:** 7 diarios, 4 semanales y 6 mensuales (configurable con `BACKUP_KEEP_*`).
 - **Copia en la nube (recomendado):** si el servidor se pierde, los respaldos locales también. Define `BACKUP_S3_BUCKET`, `BACKUP_S3_ENDPOINT`, `BACKUP_S3_KEY` y `BACKUP_S3_SECRET` (Backblaze B2, Cloudflare R2, Wasabi, AWS S3…) y cada respaldo se copia ahí.
-- **Restaurar:** `./riverrun restore` (detiene el sistema, restaura, lo vuelve a levantar). En un servidor nuevo: `./riverrun install`, baja el archivo de la nube y `./riverrun restore ruta/riverrun-….tar.enc` con la misma `BACKUP_PASSPHRASE`. Antes de restaurar se hace un respaldo de seguridad de lo que hubiera.
+- **Restaurar:** `./riverrun restore` (detiene el sistema, restaura, carga las claves de las sesiones en Redis y lo vuelve a levantar). Un respaldo anterior a esta versión no trae esas claves: la restauración lo avisa. En un servidor nuevo: `./riverrun install`, baja el archivo de la nube y `./riverrun restore ruta/riverrun-….tar.enc` con la misma `BACKUP_PASSPHRASE`. Antes de restaurar se hace un respaldo de seguridad de lo que hubiera.
 - Pruebas automáticas del ciclo completo (respaldar → destruir → restaurar → detectar archivos dañados): `scripts/test-backup.sh`.
 
 ## Cobro automático (Stripe y Mercado Pago)
@@ -276,7 +276,7 @@ Al cambiar una contraseña, las demás sesiones abiertas de ese usuario se cierr
 1. **Cuentas** (superadministrador): crea la cuenta del cliente y, opcionalmente, su primer administrador.
 2. **Agentes → + Crear agente** abre **Crea tu agente**, 3 pantallas: tu negocio y de dónde aprende → qué hará (ya elegido según el tipo de negocio, con lo demás plegado en *Personalizar*) → pruébalo y conéctalo. Al conectar su WhatsApp por primera vez el agente **se enciende solo** ([docs/agent-creation.md](docs/agent-creation.md)). Después, cada agente se ajusta en cuatro secciones:
    - **Instrucciones**: escribe cómo debe atender, qué debe preguntar y cuál es su objetivo. El estilo y las opciones avanzadas quedan plegados.
-   - **Conocimiento**: agrega productos, precios, horarios y preguntas frecuentes, o usa **⚡ Llena todo por mí**: pega la dirección de tu página (o un Google Sheets compartido), sube un PDF, una foto del menú o un CSV, o pega texto. La IA lo ordena en secciones, tú lo revisas y lo guardas; **🔄 Volver a sincronizar** lo actualiza desde la misma página. Solo se usa lo que está en la fuente (no inventa) y las páginas internas están bloqueadas. Excel y Word: guárdalos como CSV/PDF.
+   - **Conocimiento**: agrega productos, precios, horarios y preguntas frecuentes, o usa **Llena todo por mí**: pega la dirección de tu página (o un Google Sheets compartido), sube un PDF, una foto del menú o un CSV, o pega texto. La IA lo ordena en secciones, tú lo revisas y lo guardas; **Volver a sincronizar** lo actualiza desde la misma página. Solo se usa lo que está en la fuente (no inventa) y las páginas internas están bloqueadas. Excel y Word: guárdalos como CSV/PDF.
    - **Fotos**: sube imágenes y explica cuándo enviarlas; las reglas de envío son opcionales.
    - **Probar**: conversa como un cliente y revisa los datos guardados automáticamente. Los detalles técnicos de cada respuesta quedan plegados. Funciona aunque el asistente esté apagado.
    La ficha de cada agente tiene una sola fila de secciones (**Instrucciones · Información · Fotos · Probar · Conexiones · Más ajustes**), un interruptor **Encendido / En pausa** y, mientras falte algo, los pasos **Para empezar a atender**. **Guardar cambios** aplica de inmediato; cada guardado queda en **Opciones avanzadas → Historial de versiones** para volver atrás (ver [docs/agent-versions-and-tests.md](docs/agent-versions-and-tests.md)).
@@ -347,7 +347,7 @@ Menú **Automatización** (administradores). Todo corre sobre tareas programadas
 | El asistente se desactiva | | |
 
 - **Plantillas rápidas:** bienvenida, fuera de horario, palabra urgente → alerta, seguimiento, queja → persona, listo para comprar → ventas, correo → CRM, palabra → pausar / activar al asistente, agradecer cita, objetivo cumplido → reporte al equipo, objetivo cumplido → resumen a tu app, marcada por el equipo (etiqueta) → conversación completa a tu app.
-- **🧪 Probar palabras:** escribe un mensaje de ejemplo y ve qué reglas se activarían (✅/❌ con el motivo), sin IA y sin enviar nada.
+- **Probar palabras:** escribe un mensaje de ejemplo y ve qué reglas se activarían (sí o no, con el motivo), sin IA y sin enviar nada.
 - **Detener la IA:** una regla puede impedir que la IA responda el mensaje que la disparó.
 - **Variables en los textos:** `{{nombre}}`, `{{cliente}}`, `{{telefono}}`, `{{negocio}}`, `{{mensaje}}`, `{{link}}`, `{{dato.CAMPO}}`, `{{cita.servicio}}`, `{{cita.fecha}}`, `{{cita.hora}}`, `{{cita.lugar}}`.
 

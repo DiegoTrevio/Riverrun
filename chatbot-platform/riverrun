@@ -422,9 +422,13 @@ cmd_restore() {
   [[ "$sure" == "RESTAURAR" ]] || die "Cancelado."
   say "Haciendo un respaldo de seguridad de lo que hay ahora…"
   dc exec -T -e BACKUP_PREFIX=prerestore backup /usr/local/bin/backup.sh now >/dev/null 2>&1 && ok "Respaldo de seguridad hecho" || warn "No se pudo (¿instalación nueva?). Continúo."
-  dc stop backend evolution >/dev/null 2>&1 || true
+  dc stop backend evolution redis >/dev/null 2>&1 || true
   dc up -d postgres >/dev/null
   dc run --rm "${extra[@]}" restore restore "$target"
+  # Las claves de las sesiones de WhatsApp (Redis): se cargan con el propio Redis antes de arrancar Evolution.
+  # (Sin copia de Redis en el respaldo, el script lo dice y no toca nada.)
+  dc run --rm --no-deps -T --entrypoint sh redis -s < docker/backup/redis-load.sh \
+    || warn "No se pudieron cargar las claves de las sesiones de WhatsApp (Redis): si algún WhatsApp no recibe mensajes, vincúlalo de nuevo."
   export APP_VERSION; APP_VERSION="$(version)"
   dc up -d
   wait_healthy 180 && ok "Restauración completa y sistema funcionando" || die "Se restauró pero el sistema no responde: ./riverrun logs backend"

@@ -1,18 +1,25 @@
-import { brand, brandMark, resetBrand } from './brand.js';
+import { brand, brandMark, productMark, resetBrand } from './brand.js';
 import { api, h, invalidateReads, run, state } from './core.js';
 import { icon } from './icons.js';
 import { render } from './main.js';
 import { ROLE_LABEL, isAdmin, isSuper } from './session.js';
 
-const bell = h('span', { class: 'count', hidden: true });
+/** Avisos sin leer: en el menú lateral y en la barra del teléfono (solo es una cola cuando hay algo que ver). */
+const bells = [h('span', { class: 'count', hidden: true }), h('span', { class: 'count', hidden: true })];
 
 export async function refreshBell() {
   try {
     const n = await api('GET', '/api/notifications?limit=1');
-    bell.textContent = n.unread > 99 ? '99+' : n.unread;
-    bell.hidden = !n.unread;
+    for (const bell of bells) {
+      bell.textContent = n.unread > 99 ? '99+' : n.unread;
+      bell.hidden = !n.unread;
+    }
   } catch { /* sin sesión */ }
 }
+
+/** Marca y nombre del producto: el logo de la marca blanca, o la marca propia con su nombre. */
+const productName = () => (brand.name === 'Panel de Chatbots' ? 'Chatbots' : brand.name);
+const brandBlock = () => (brand.logo ? brandMark(28) : [productMark(), h('span', { class: 'brand-name' }, productName())]);
 
 setInterval(() => { if (state.me && !document.hidden) refreshBell(); }, 20000);
 
@@ -97,8 +104,23 @@ export function shell(active, content) {
         state.accounts.map((a) => h('option', { value: a.id, selected: a.id === state.accountId }, a.name + (a.active ? '' : ' (inactiva)')))))
     : h('div', { class: 'account-switch' }, h('strong', {}, account?.name || brand.name), h('span', {}, ROLE_LABEL[user.role]));
 
+  const initials = (user.name || user.email || '?').split(/[\s@.]+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('');
+  const menu = h('div', { class: 'user-menu', hidden: true, role: 'menu' },
+    h('div', { class: 'user-menu-head' }, h('strong', {}, user.name || user.email), h('span', { class: 'small muted' }, `${user.email} · ${ROLE_LABEL[user.role]}`)),
+    h('a', { href: '#/password', role: 'menuitem' }, icon('user'), 'Mi perfil'),
+    h('a', { href: '#', role: 'menuitem', onclick: async (e) => { e.preventDefault(); await api('POST', '/api/logout'); state.me = null; state.ux = []; window.dispatchEvent(new Event('sessionended')); invalidateReads(); resetBrand(); location.hash = '#/login'; } }, icon('logout'), 'Cerrar sesión'));
+  const avatar = h('button', { class: 'user-row', type: 'button', 'aria-label': `Menú de ${user.name || user.email}`, 'aria-haspopup': 'menu', 'aria-expanded': 'false',
+    onclick: (e) => { e.stopPropagation(); menu.hidden = !menu.hidden; avatar.setAttribute('aria-expanded', String(!menu.hidden)); } },
+    h('span', { class: 'avatar', 'aria-hidden': 'true' }, initials),
+    h('span', { class: 'who' }, h('strong', {}, user.name || user.email), h('span', {}, ROLE_LABEL[user.role])));
+  const closeMenu = (e) => {
+    if (!avatar.isConnected) return document.removeEventListener('click', closeMenu);
+    if (!menu.hidden && !menu.contains(e.target)) { menu.hidden = true; avatar.setAttribute('aria-expanded', 'false'); }
+  };
+  document.addEventListener('click', closeMenu);
+
   const sidebar = h('nav', { class: 'sidebar', 'aria-label': 'Menú principal' },
-    h('div', { class: 'brand' }, brand.logo ? brandMark(28) : h('span', { class: 'brand-name' }, brand.name === 'Panel de Chatbots' ? 'Chatbots' : brand.name)),
+    h('div', { class: 'brand' }, brandBlock()),
     switcher,
     h('div', { class: 'nav-list' },
       isAdmin() ? item('#/agentes', 'bot', 'Agentes', 'agentes') : null,
@@ -112,29 +134,20 @@ export function shell(active, content) {
       isAdmin() ? item('#/automation', 'zap', 'Automatización', 'automation') : null,
       isAdmin() ? item('#/estadisticas', 'chart', 'Reportes', 'estadisticas') : null),
     h('div', { class: 'spacer' }),
-    isAdmin() ? item('#/ajustes', 'settings', 'Ajustes', 'ajustes') : item('#/password', 'user', 'Mi perfil', 'ajustes'),
+    h('div', { class: 'nav-foot' },
+      isAdmin() ? item('#/ajustes', 'settings', 'Ajustes', 'ajustes') : item('#/password', 'user', 'Mi perfil', 'ajustes'),
+      h('a', { href: '#/notifications', class: `nav-item${active === 'notifications' ? ' active' : ''}`, 'aria-current': active === 'notifications' ? 'page' : null, onclick: closeNav },
+        icon('bell'), h('span', {}, 'Notificaciones'), bells[0]),
+      h('a', { href: '/ayuda.html', class: 'nav-item', target: '_blank', rel: 'noopener' }, icon('help'), h('span', {}, 'Ayuda')),
+      h('div', { class: 'user-menu-wrap' }, avatar, menu)),
   );
 
-  const initials = (user.name || user.email || '?').split(/[\s@.]+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('');
-  const menu = h('div', { class: 'user-menu', hidden: true, role: 'menu' },
-    h('div', { class: 'user-menu-head' }, h('strong', {}, user.name || user.email), h('span', { class: 'small muted' }, `${user.email} · ${ROLE_LABEL[user.role]}`)),
-    h('a', { href: '#/password', role: 'menuitem' }, icon('user', 18), 'Mi perfil'),
-    h('a', { href: '#', role: 'menuitem', onclick: async (e) => { e.preventDefault(); await api('POST', '/api/logout'); state.me = null; state.ux = []; window.dispatchEvent(new Event('sessionended')); invalidateReads(); resetBrand(); location.hash = '#/login'; } }, icon('logout', 18), 'Cerrar sesión'));
-  const avatar = h('button', { class: 'avatar', type: 'button', 'aria-label': `Menú de ${user.name || user.email}`, 'aria-haspopup': 'menu', 'aria-expanded': 'false',
-    onclick: (e) => { e.stopPropagation(); menu.hidden = !menu.hidden; avatar.setAttribute('aria-expanded', String(!menu.hidden)); } }, initials);
-  const closeMenu = (e) => {
-    if (!avatar.isConnected) return document.removeEventListener('click', closeMenu);
-    if (!menu.hidden && !menu.contains(e.target)) { menu.hidden = true; avatar.setAttribute('aria-expanded', 'false'); }
-  };
-  document.addEventListener('click', closeMenu);
-
+  // Tableta y teléfono: el menú lateral se pliega en esta barra (marca, avisos y el botón del menú).
   const topbar = h('header', { class: 'topbar' },
-    h('button', { class: 'icon-button nav-toggle', type: 'button', 'aria-label': 'Abrir el menú', onclick: () => document.querySelector('.layout').classList.add('nav-open') }, icon('menu')),
-    h('div', { class: 'topbar-title' }, page ? 'Ajustes' : ''),
+    h('button', { class: 'icon-button nav-toggle', type: 'button', 'aria-label': 'Abrir el menú', onclick: () => document.querySelector('.layout').classList.add('nav-open') }, icon('menu', 20)),
+    h('div', { class: 'topbar-title' }, brandBlock()),
     h('div', { class: 'topbar-actions' },
-      h('a', { class: 'icon-button', href: '/ayuda.html', target: '_blank', rel: 'noopener', 'aria-label': 'Ayuda', title: 'Ayuda' }, icon('help')),
-      h('a', { class: `icon-button${active === 'notifications' ? ' active' : ''}`, href: '#/notifications', 'aria-label': 'Notificaciones', title: 'Notificaciones' }, icon('bell'), bell),
-      h('div', { class: 'user-menu-wrap' }, avatar, menu)));
+      h('a', { class: `icon-button${active === 'notifications' ? ' active' : ''}`, href: '#/notifications', 'aria-label': 'Notificaciones', title: 'Notificaciones' }, icon('bell', 20), bells[1])));
 
   const body = page ? h('div', { class: 'settings-layout' }, settingsNav(page), h('div', { class: 'settings-body' }, content)) : content;
   return h('div', { class: 'layout' },

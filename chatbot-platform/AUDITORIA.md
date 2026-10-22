@@ -66,3 +66,46 @@ El entorno de la auditoría no tiene salida directa a WhatsApp, Meta ni OpenAI. 
   - la IA caída;
   - la validación de ajustes;
   - los nombres propios en el trato.
+
+---
+
+# Auditoría de Conexiones (WhatsApp por QR o por número) — octubre 2026
+
+## Alcance y cómo se revisó
+
+| Área | Cómo se revisó |
+|---|---|
+| Comportamiento real de Evolution 2.3.7 | Código fuente de la etiqueta `2.3.7` (controlador de instancias, servicio de Baileys, monitor, estado de autenticación) y Baileys `7.0.0-rc.9` de la imagen fijada |
+| Evolution real en Docker | `scripts/evolution-compat.sh` antes y después de los cambios: 12/12 verificaciones reales (el QR se omite: este entorno no llega a WhatsApp) |
+| Sesión de vinculación, webhooks y desconexión | Pruebas con PostgreSQL real y Evolution simulada, ahora con la semántica de 2.3.7 |
+| Panel | Regresión UX y accesibilidad en navegador (68 pantallas, 176 escenarios), más dos recorridos nuevos |
+| Respaldo y restauración de sesiones | `scripts/test-backup.sh` con Redis real; la carga con AOF probada con la imagen `redis:7-alpine` |
+
+## Hallazgos
+
+| # | Gravedad | Hallazgo | Estado |
+|---|---|---|---|
+| 1 | **Alta** | **"Con mi número" fallaba** si antes se había mostrado el QR (lo normal): con la instancia esperando escaneo, Evolution devuelve el QR vigente e **ignora el número**, así que nunca llegaba un código ("WhatsApp no generó el código…") hasta que la instancia se trababa. | Corregido: si la instancia espera un QR y aún no tiene sesión, la vinculación se reinicia con el número y el código sale en la misma consulta. |
+| 2 | **Alta** | El código por número se mostraba hasta 2 min, pero **Evolution pide uno nuevo con cada QR (cada 45 s) y solo el último sirve**: la persona tecleaba un código ya inválido. | Corregido: el código que llega por webhook reemplaza al anterior, se reutiliza como máximo 40 s y el panel avisa que use siempre el que ve. |
+| 3 | **Alta** | **Abrir la conexión de un WhatsApp que se estaba reconectando solo** (justo lo que pide el correo de "se desconectó") **borraba la sesión a los 45 s** (logout + borrar + crear) y obligaba a escanear de nuevo, aunque se hubiera recuperado sola. | Corregido: una sesión vinculada que se cayó sin cerrarse nunca se recrea sola. El panel dice "se está reconectando solo" (sin QR) y ofrece **Vincular de nuevo** a propósito. |
+| 4 | **Alta** | **El respaldo no incluía las claves de cifrado de las sesiones.** Con caché en Redis, Evolution guarda en Redis las pre-keys, las sesiones Signal y las claves de sincronización (en su base solo va `creds`). Al restaurar en un servidor nuevo, las sesiones no descifrarían los mensajes. Además, con AOF activo, dejar un `dump.rdb` en el volumen no sirve: Redis arranca vacío (comprobado). | Corregido: cada respaldo incluye una instantánea de Redis (`redis.rdb`), verificada. `./riverrun restore` la carga con la propia imagen de Redis (sin AOF → AOF en caliente). Si Redis no responde al respaldar, el respaldo se marca como fallido y se avisa. |
+| 5 | Media | **"Desconectar" desde el panel podía mandar "Hay que volver a vincular tu WhatsApp"**: Evolution envía el webhook de cierre (401) casi al mismo tiempo que responde, y el panel marcaba la desconexión a propósito después. | Corregido: se marca antes de cerrar. Si no se puede cerrar, el estado vuelve a como estaba y el mensaje es claro. |
+| 6 | Media | Desconectar una sesión que ya estaba cerrada daba un error técnico ("HTTP 400 … is not connected"). | Corregido: cuenta como desconectada (verificado contra Evolution real). |
+| 7 | Baja | Al agotarse los QR (`QRCODE_LIMIT`), Evolution manda el estado `refused`: se guardaba tal cual (el panel mostraba "Sin información") y podía borrar el motivo de una caída anterior. | Corregido: se guarda como `close` y conserva el motivo. |
+| 8 | Baja | En un celular el conector abría en "Escanear QR", que no se puede escanear con el mismo teléfono. | Corregido: en celulares abre en **Con mi número** (con el número del perfil ya escrito): un toque y aparece el código. |
+| 9 | Baja | La Evolution simulada de las pruebas daba códigos por número que la real no da, por eso el fallo #1 no se detectaba. | Corregido: simula 2.3.7 (número solo al crear o con la instancia cerrada; 400 al cerrar una sesión cerrada; webhook de cierre antes de responder). |
+| 10 | Baja | La guía del cliente remitía a un menú "📱 Conectar WhatsApp" que ya no existe, y el panel tenía una pantalla de conexión sin ruta (código muerto). | Corregido: la guía describe lo que ve la persona y se quitó la pantalla duplicada. |
+
+Las 6 pruebas nuevas de la sesión de vinculación **fallan con el código anterior** y pasan con el nuevo.
+
+## Lo que no se pudo probar aquí (requiere un teléfono)
+
+Este entorno no llega a los servidores de WhatsApp: no se pudo escanear un QR ni teclear un código reales. En el VPS:
+1. Desde la computadora: el QR aparece solo; escanearlo → "Conectado como …".
+2. Desconectar y repetir desde el **celular**: la pantalla abre en "Con mi número"; tocar *Obtener código* y escribirlo en
+   WhatsApp → *Dispositivos vinculados* → *Vincular con el número de teléfono*. Si WhatsApp dice "código incorrecto", usar
+   el que muestre el panel en ese momento.
+3. Con el teléfono conectado, cortar el internet del **servidor** 2–3 minutos y abrir la conexión en el panel: debe decir
+   "Tu WhatsApp se está reconectando solo" (sin QR) y volver a "Conectado" sin escanear.
+4. `./riverrun backup` y luego, en un servidor de prueba, `./riverrun restore <archivo>`: el WhatsApp debe recibir y
+   contestar mensajes sin volver a vincularlo.

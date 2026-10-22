@@ -1,11 +1,11 @@
 import { api, confirmAction, field, fill, fmtDate, h, run, toast } from './core.js';
+import { icon, networkIcon, okMark } from './icons.js';
 
 /**
  * Zernio para el administrador de la plataforma: una sola llave, un perfil por negocio. Aquí se ve cada negocio con su
  * perfil y sus redes, se crean enlaces de conexión para mandarle al cliente, se revisa el webhook y lo que cuesta.
  */
 
-const ICONS = { instagram: '📸', facebook: '📘', whatsapp: '🟢', telegram: '✈️', twitter: '𝕏', bluesky: '🦋', reddit: '👽', linkedin: '💼', tiktok: '🎵', youtube: '▶️', threads: '🧵', pinterest: '📌', googlebusiness: '🗺️' };
 const STATUS_COLOR = { active: 'green', needs_reconnect: 'red', disconnected: 'red', stale: 'orange' };
 
 /** Costo mensual estimado con la tabla pública de Zernio (2 cuentas gratis; luego por cuenta; mensajes salientes). */
@@ -43,7 +43,7 @@ export async function viewZernioAdmin(root) {
       h('tbody', {}, r.map((l) => h('tr', {},
         h('td', { class: 'small' }, l.created_at ? fmtDate(l.created_at) : '—'),
         h('td', { class: 'small' }, l.event || '—'),
-        h('td', { class: 'small' }, l.ok ? '✓ Entregado' : `✕ ${l.status_code || ''} ${l.error || ''}`.trim()),
+        h('td', { class: 'small' }, okMark(l.ok), ' ', l.ok ? 'Entregado' : `${l.status_code || ''} ${l.error || ''}`.trim()),
         h('td', {}, !l.ok && l.id ? h('button', { class: 'small', onclick: async () => { if (await run(() => api('POST', `/api/system/zernio/webhook-logs/${encodeURIComponent(l.id)}/redeliver`, { webhook_id: l.webhook_id }), 'Reenviado')) loadLogs(); } }, 'Reenviar') : null))))) : h('p', { class: 'muted small' }, 'Sin entregas registradas en los últimos 30 días.'));
   };
 
@@ -65,9 +65,9 @@ export async function viewZernioAdmin(root) {
 
   const row = (t) => h('tr', {},
     h('td', {}, h('strong', {}, t.name), t.active ? null : h('span', { class: 'badge orange' }, ' inactiva')),
-    h('td', { class: 'small' }, t.profile_id ? '✓ Perfil' : h('span', { class: 'muted' }, 'Sin perfil')),
+    h('td', { class: 'small' }, t.profile_id ? [okMark(true), ' Perfil'] : h('span', { class: 'muted' }, 'Sin perfil')),
     h('td', {}, t.accounts.length ? t.accounts.map((a) => h('span', { class: `badge ${STATUS_COLOR[a.status] || ''}`, style: 'margin:2px', title: `${label(a.platform)} · ${a.status}` },
-      ICONS[a.platform] || '🔗', ' ', a.username ? `@${a.username}` : label(a.platform))) : h('span', { class: 'muted small' }, '—')),
+      networkIcon(a.platform, 16), ' ', a.username ? `@${a.username}` : label(a.platform))) : h('span', { class: 'muted small' }, '—')),
     h('td', { class: 'num' }, (t.outbound_month || 0).toLocaleString('es-MX')),
     h('td', {}, h('div', { class: 'stack' },
       h('div', { class: 'row' },
@@ -92,17 +92,17 @@ export async function viewZernioAdmin(root) {
     const c = x.counts || {};
     const hook = x.webhook;
     return [
-      h('p', {}, `✔ ${c.ok || 0} bien · ⚠ ${c.warning || 0} con aviso · ✕ ${c.error || 0} con problema`),
+      h('p', {}, `${c.ok || 0} bien · ${c.warning || 0} con aviso · ${c.error || 0} con problema`),
       hook ? h('p', { class: `small ${hook.active ? '' : 'stats-warn'}` },
-        hook.active ? '✔ Webhook activo' : '✕ Webhook apagado por Zernio',
+        okMark(hook.active), ' ', hook.active ? 'Webhook activo' : 'Webhook apagado por Zernio',
         hook.repaired ? ' · se reactivó en la última revisión' : '',
         hook.failure_count ? ` · ${hook.failure_count} entregas fallidas seguidas` : '',
         hook.last_fired_at ? ` · último evento ${fmtDate(hook.last_fired_at)}` : '',
         hook.checked_at ? ` · revisado ${fmtDate(hook.checked_at)}` : '') : h('p', { class: 'small muted' }, 'El webhook todavía no se ha revisado.'),
-      x.analytics_available === false ? h('p', { class: 'small stats-warn' }, '⚠ Tu cuenta de Zernio no tiene el complemento de estadísticas: los negocios no ven cifras nuevas de sus redes. Se vuelve a intentar cada día.') : null,
+      x.analytics_available === false ? h('p', { class: 'small stats-warn' }, icon('alert', 14), ' Tu cuenta de Zernio no tiene el complemento de estadísticas: los negocios no ven cifras nuevas de sus redes. Se vuelve a intentar cada día.') : null,
       x.broken.length ? h('div', { class: 'table-scroll' }, h('table', {},
         h('thead', {}, h('tr', {}, h('th', {}, 'Negocio'), h('th', {}, 'Red'), h('th', {}, 'Desde'))),
-        h('tbody', {}, x.broken.map((b) => h('tr', {}, h('td', {}, b.business), h('td', {}, ICONS[b.platform] || '🔗', ' ', label(b.platform), b.username ? ` · @${b.username}` : ''), h('td', { class: 'small' }, b.since ? fmtDate(b.since) : '—'))))))
+        h('tbody', {}, x.broken.map((b) => h('tr', {}, h('td', {}, b.business), h('td', {}, networkIcon(b.platform, 16), ' ', label(b.platform), b.username ? ` · @${b.username}` : ''), h('td', { class: 'small' }, b.since ? fmtDate(b.since) : '—'))))))
         : h('p', { class: 'small muted' }, 'Ninguna red necesita reconectarse.'),
     ];
   };

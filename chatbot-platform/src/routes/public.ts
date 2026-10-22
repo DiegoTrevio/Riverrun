@@ -67,8 +67,9 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
   const processEvent = async (webhookReq: WebhookRequest) => {
     const { channel } = webhookReq;
     const adapter = adapterFor(channel.type);
-    const { messages, notices, connection, connectionReason, qr } = adapter.parse(webhookReq);
+    const { messages, notices, connection, connectionReason, qr, pairingCode } = adapter.parse(webhookReq);
     if (qr) await store.saveQr(channel.id, qr);
+    if (pairingCode) await store.refreshPairingCode(channel.id, pairingCode);
     for (const n of notices ?? []) await logEvent({ level: n.level, source: 'channel', message: n.message, accountId: channel.account_id, channelId: channel.id });
     if (connection) await recordConnectionState(channel, connection, connectionReason);
     await service.inbox.accept(channel, messages);

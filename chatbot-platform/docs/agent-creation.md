@@ -6,7 +6,7 @@ Las tres pantallas muestran el indicador **1 Tu negocio · 2 Qué hará · 3 Pru
 
 1. **Tu negocio** (`#/agentes/nuevo`)
    - Nombre y tipo de negocio, ya llenados con los datos de la cuenta. El superadministrador elige además el perfil.
-   - **¿De dónde aprende tu agente?** 🌐 *Mi página web* (también un Google Sheets compartido) · 📄 *Un archivo*: PDF, foto del menú o CSV (Excel y Word: guárdalos como CSV o PDF) · ✍️ *Lo escribo yo*.
+   - **¿De dónde aprende tu agente?** *Mi página web* (también un Google Sheets compartido) · *Un archivo*: PDF, foto del menú o CSV (Excel y Word: guárdalos como CSV o PDF) · *Lo escribo yo*.
    - **Siguiente** lee la fuente con IA (`POST /api/onboarding/import`) y la ordena en precios, horarios, ubicación, preguntas frecuentes y otra información. Si la IA no puede ordenar el texto escrito, se usa tal cual. Antes de seguir se pide un mínimo de información (40 caracteres), con un mensaje claro si falta.
 2. **Qué hará** (`#/agentes/nuevo?paso=2`)
    - **Esto aprendió de {negocio}**: la descripción y lo que encontró (✓ Precios, ✓ Horarios…). En *Revisar o corregir* están las secciones, *Agregar otra fuente* y *Algo más que deba saber*.

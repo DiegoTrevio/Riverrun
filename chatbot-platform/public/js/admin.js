@@ -1,4 +1,7 @@
 import { api, area, check, field, fmtDate, h, run, select, state, text, toast, confirmAction, ask } from './core.js';
+
+/** El título de un aviso sin el emoji con que llega también por WhatsApp (en el panel lo dice el texto). */
+const plainTitle = (t) => String(t || '').replace(/^[\p{Extended_Pictographic}️‍\s]+/u, '');
 import { accountPicker } from './dashboard.js';
 import { render } from './main.js';
 import { ROLE_LABEL, acct, isAdmin, isSuper, withAcct } from './session.js';
@@ -34,7 +37,7 @@ export async function viewUsers(root) {
         h('tbody', {}, users.map((u) => {
           const self = u.id === me.id;
           return h('tr', {},
-            h('td', {}, h('strong', {}, u.name || '—'), h('div', { class: 'muted small' }, u.email, u.phone ? ` · 📱 +${u.phone}${u.notify_whatsapp ? ' (alertas)' : ''}` : ''), !u.active ? h('span', { class: 'badge orange' }, 'desactivado') : null, u.active && u.role !== 'superadmin' && u.available === false ? h('span', { class: 'badge' }, 'no disponible para turnos') : null),
+            h('td', {}, h('strong', {}, u.name || '—'), h('div', { class: 'muted small' }, u.email, u.phone ? ` · WhatsApp +${u.phone}${u.notify_whatsapp ? ' (alertas)' : ''}` : ''), !u.active ? h('span', { class: 'badge orange' }, 'desactivado') : null, u.active && u.role !== 'superadmin' && u.available === false ? h('span', { class: 'badge' }, 'no disponible para turnos') : null),
             h('td', {}, u.role === 'superadmin' || self ? ROLE_LABEL[u.role]
               : h('select', { 'aria-label': `Rol de ${u.email}`, onchange: async (e) => { if (await run(() => api('PUT', `/api/users/${u.id}`, { role: e.target.value }), 'Rol actualizado')) render(); } },
                   [['agent', 'Operador del perfil'], ['admin', 'Administrador del perfil']].map(([v, l]) => h('option', { value: v, selected: u.role === v }, l)))),
@@ -197,7 +200,7 @@ export function needAccount(root) {
 async function noticeCard() {
   const users = (await api('GET', withAcct('/api/users')).catch(() => [])).filter((u) => u.account_id && u.active);
   const n = { title: '', body: '', to: 'all', round_robin: false, user_ids: [] };
-  return h('details', { class: 'card' }, h('summary', {}, '📣 Enviar un aviso interno al equipo'),
+  return h('details', { class: 'card' }, h('summary', {}, 'Enviar un aviso interno al equipo'),
     h('div', { style: 'margin-top:10px' },
       field('Título', text(n, 'title', { placeholder: 'Llegó un cliente importante' })),
       field('Mensaje', area(n, 'body')),
@@ -227,7 +230,7 @@ export async function viewNotifications(root) {
         else render();
       } },
         h('td', { style: 'width:10px' }, n.read_at ? '' : h('span', { class: 'badge red' }, '•')),
-        h('td', {}, h('strong', {}, n.title), h('div', { class: 'small muted pre' }, n.body)),
+        h('td', {}, h('strong', {}, plainTitle(n.title)), h('div', { class: 'small muted pre' }, n.body)),
         h('td', { class: 'small muted' }, fmtDate(n.created_at))))))
         : h('p', { class: 'muted' }, state.me.user.account_id ? 'Sin notificaciones.' : 'Las notificaciones llegan a los usuarios de cada cuenta.')),
   );

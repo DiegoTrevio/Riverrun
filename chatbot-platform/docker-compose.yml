@@ -174,11 +174,14 @@ services:
     restart: unless-stopped
     depends_on:
       postgres: { condition: service_healthy }
+      redis: { condition: service_started }
     environment:
       PGHOST: postgres
       PGUSER: chatbot
       PGPASSWORD: ${POSTGRES_PASSWORD}
       BACKUP_PASSPHRASE: ${BACKUP_PASSPHRASE:?Define BACKUP_PASSPHRASE en .env (ejecuta ./riverrun install)}
+      # Evolution guarda en Redis las claves de cifrado de cada sesión de WhatsApp: se respaldan con todo lo demás.
+      BACKUP_REDIS_URI: redis://redis:6379
       BACKUP_HOUR: ${BACKUP_HOUR:-03:30}
       BACKUP_KEEP_DAILY: ${BACKUP_KEEP_DAILY:-7}
       BACKUP_KEEP_WEEKLY: ${BACKUP_KEEP_WEEKLY:-4}
@@ -213,6 +216,8 @@ services:
       - backups:/backups
       - uploads:/data/uploads
       - evolution_instances:/evolution/instances
+      # Deja ahí la copia de Redis; ./riverrun restore la carga con el propio Redis (docker/backup/redis-load.sh).
+      - redisdata:/redis
 
   caddy:
     image: caddy:2-alpine

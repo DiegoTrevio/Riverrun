@@ -2,6 +2,7 @@ import { discardDraft, draftModel, draftNotice, draftVersion, initializeDraftDef
 import { needAccount } from './admin.js';
 import { messageTester, saveBar } from './bot.js';
 import { api, area, check, clone, field, fill, fmtDate, h, dialog, localDateTime, lines, num, run, select, state, text, toast, confirmAction } from './core.js';
+import { icon } from './icons.js';
 import { render } from './main.js';
 import { withAcct } from './session.js';
 import { waTemplateField } from './wa-template-field.js';
@@ -47,7 +48,7 @@ async function automationRefs() {
  */
 function photoOptions(refs, current) {
   const opts = [['', '— Sin imagen —'], ...refs.images.map((i) => [i.id, `${i.name} (${i.bot})${i.active === false ? ' — inactiva: no se enviará' : ''}`])];
-  if (current && !refs.images.some((i) => i.id === current)) opts.push([current, refs.imagesLoaded ? '⚠ Foto borrada: elige otra o quítala' : 'Foto guardada · abre el catálogo para ver su nombre']);
+  if (current && !refs.images.some((i) => i.id === current)) opts.push([current, refs.imagesLoaded ? 'Foto borrada: elige otra o quítala' : 'Foto guardada · abre el catálogo para ver su nombre']);
   return opts;
 }
 
@@ -124,8 +125,8 @@ function photoPicker(obj, key, refs) {
 /** Plantillas para empezar rápido: cubren las necesidades más comunes. */
 const RULE_TEMPLATES = [
   { name: 'Bienvenida a clientes nuevos', trigger: { type: 'new_contact' }, actions: [{ type: 'add_tag', tag: 'nuevo' }] },
-  { name: 'Fuera de horario', trigger: { type: 'message_received', match: 'any' }, conditions: [{ type: 'business_hours', inside: false }], actions: [{ type: 'send_message', text: 'Gracias por escribir 🙌 Estamos fuera de horario; te respondemos en cuanto abramos.' }] },
-  { name: 'Palabra urgente → alerta', trigger: { type: 'message_received', match: 'keywords', keywords: ['urgente', 'emergencia'] }, actions: [{ type: 'alert_team', message: '🚨 {{cliente}} escribió algo urgente: "{{mensaje}}"' }, { type: 'handoff', reason: 'Mensaje urgente' }] },
+  { name: 'Fuera de horario', trigger: { type: 'message_received', match: 'any' }, conditions: [{ type: 'business_hours', inside: false }], actions: [{ type: 'send_message', text: 'Gracias por escribir 🙌 Estamos fuera de horario; te respondemos en cuanto abramos.' }] }, // taste-skill-ignore: texto que llega al WhatsApp del cliente o del equipo
+  { name: 'Palabra urgente → alerta', trigger: { type: 'message_received', match: 'keywords', keywords: ['urgente', 'emergencia'] }, actions: [{ type: 'alert_team', message: '🚨 {{cliente}} escribió algo urgente: "{{mensaje}}"' }, { type: 'handoff', reason: 'Mensaje urgente' }] }, // taste-skill-ignore: texto que llega al WhatsApp del cliente o del equipo
   { name: 'Seguimiento si no responde', trigger: { type: 'no_reply', minutes: 120 }, conditions: [{ type: 'status', status: 'bot' }], actions: [{ type: 'send_message', text: '¿Pudiste revisarlo, {{nombre}}? Si tienes alguna duda, aquí estoy.' }] },
   { name: 'Queja → persona', trigger: { type: 'intent', intent: 'queja', description: 'El cliente está molesto, inconforme o reporta un problema' }, actions: [{ type: 'handoff', reason: 'Queja del cliente' }, { type: 'alert_team', message: 'Queja de {{cliente}}: "{{mensaje}}"' }] },
   { name: 'Quiere comprar → avisar a ventas', trigger: { type: 'intent', intent: 'listo_para_comprar', description: 'El cliente quiere comprar, reservar o pagar' }, actions: [{ type: 'add_tag', tag: 'caliente' }, { type: 'alert_team', message: '{{cliente}} está listo para comprar. {{link}}' }] },
@@ -136,7 +137,7 @@ const RULE_TEMPLATES = [
   { name: 'Objetivo cumplido → reporte al equipo', trigger: { type: 'goal_completed' }, actions: [{ type: 'send_report', roles: ['admin'], note: 'Objetivo cumplido' }] },
   { name: 'Objetivo cumplido → resumen a mi app', trigger: { type: 'goal_completed' }, actions: [{ type: 'send_conversation', content: 'summary', endpoint_id: '' }] },
   { name: 'Marcada por el equipo → conversación completa a mi app', trigger: { type: 'tag_added', tag: 'enviar-a-mi-app' }, actions: [{ type: 'send_conversation', content: 'full', endpoint_id: '' }] },
-  { name: 'Agradecer cita agendada', trigger: { type: 'appointment_booked' }, actions: [{ type: 'send_message', text: 'Te esperamos el {{cita.fecha}} a las {{cita.hora}} 🙌', delay_minutes: 1 }] },
+  { name: 'Agradecer cita agendada', trigger: { type: 'appointment_booked' }, actions: [{ type: 'send_message', text: 'Te esperamos el {{cita.fecha}} a las {{cita.hora}} 🙌', delay_minutes: 1 }] }, // taste-skill-ignore: texto que llega al WhatsApp del cliente o del equipo
 ];
 
 export function triggerSummary(t) {
@@ -166,7 +167,7 @@ async function listRules(root) {
       h('div', { class: 'row' }, h('a', { class: 'btn primary', href: '#/automation/rules/new' }, '+ Regla en blanco')),
       h('h2', {}, 'Plantillas rápidas'),
       h('div', { class: 'row' }, RULE_TEMPLATES.map((t) => h('button', { class: 'small', onclick: () => create(t) }, t.name)))),
-    bots.length ? h('details', { class: 'card' }, h('summary', {}, h('strong', {}, '🧪 Probar palabras'), h('span', { class: 'small muted' }, ' — qué reglas se activan con un mensaje')), messageTester(bots)) : null,
+    bots.length ? h('details', { class: 'card' }, h('summary', {}, h('strong', {}, 'Probar palabras'), h('span', { class: 'small muted' }, ' — qué reglas se activan con un mensaje')), messageTester(bots)) : null,
     h('div', { class: 'card' },
       rules.length
         ? h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Regla'), h('th', {}, 'Cuando'), h('th', {}, 'Acciones'), h('th', {}, 'Veces'), h('th', {}, 'Acciones'))),
@@ -251,11 +252,11 @@ function actionFields(a, refs) {
         h('p', { class: 'small muted', style: 'margin:0 0 6px' }, 'Destinatarios (si eliges personas, solo a ellas; si no, por rol):'),
         h('div', { class: 'row' }, refs.users.map((u) => h('label', { class: 'check' },
           h('input', { type: 'checkbox', checked: a.user_ids.includes(u.id), onchange: (e) => { a.user_ids = e.target.checked ? [...a.user_ids, u.id] : a.user_ids.filter((x) => x !== u.id); } }),
-          u.name || u.email, u.notify_whatsapp && u.phone ? ' 📱' : ''))),
+          u.name || u.email, u.notify_whatsapp && u.phone ? ' · WhatsApp' : ''))),
         h('div', { class: 'row' }, [['admin', 'Administradores'], ['agent', 'Agentes']].map(([r, l]) => h('label', { class: 'check' },
           h('input', { type: 'checkbox', checked: a.roles.includes(r), onchange: (e) => { a.roles = e.target.checked ? [...a.roles, r] : a.roles.filter((x) => x !== r); } }), l))),
         check(a, 'round_robin', 'Avisar a una sola persona, por turnos (la siguiente de los destinatarios que esté disponible), en lugar de a todas'),
-        field('Además, avisar por WhatsApp a estos números', lines(a, 'phones', { placeholder: '5215512345678' }), '📱 = recibe también por WhatsApp (configurable en Usuarios).'),
+        field('Además, avisar por WhatsApp a estos números', lines(a, 'phones', { placeholder: '5215512345678' }), '«WhatsApp» junto a un nombre: también recibe el aviso por WhatsApp (configurable en Usuarios).'),
       ];
     case 'send_report':
       a.note ??= ''; a.roles ??= ['admin']; a.user_ids ??= []; a.emails ??= []; a.phones ??= []; a.include_transcript ??= false;
@@ -263,7 +264,7 @@ function actionFields(a, refs) {
         h('p', { class: 'small muted', style: 'margin:0 0 6px' }, 'Envía el resumen, el análisis y los datos confirmados de la conversación (el resumen se actualiza antes de enviar). Destinatarios (si eliges personas, solo a ellas; si no, por rol):'),
         h('div', { class: 'row' }, refs.users.map((u) => h('label', { class: 'check' },
           h('input', { type: 'checkbox', checked: a.user_ids.includes(u.id), onchange: (e) => { a.user_ids = e.target.checked ? [...a.user_ids, u.id] : a.user_ids.filter((x) => x !== u.id); } }),
-          u.name || u.email, u.notify_whatsapp && u.phone ? ' 📱' : ''))),
+          u.name || u.email, u.notify_whatsapp && u.phone ? ' · WhatsApp' : ''))),
         h('div', { class: 'row' }, [['admin', 'Administradores'], ['agent', 'Agentes']].map(([r, l]) => h('label', { class: 'check' },
           h('input', { type: 'checkbox', checked: a.roles.includes(r), onchange: (e) => { a.roles = e.target.checked ? [...a.roles, r] : a.roles.filter((x) => x !== r); } }), l))),
         field('Además, enviar por correo a', lines(a, 'emails', { placeholder: 'direccion@empresa.com' }), 'Máximo 5. Requiere correo configurado en el servidor.'),
@@ -414,7 +415,7 @@ async function editRule(root, id) {
     if (r.actions.some((a) => a.type === 'send_message' && !a.text?.trim() && !a.image_id && !a.attachment_id && !a.wa_template)) return toast('En "Enviar mensaje" escribe un mensaje o elige una foto o un archivo', true);
     const body = { ...r, chatbot_id: r.chatbot_id || null, account_id: state.accountId || undefined };
     const version = draftVersion(`rule:${id}`);
-    const saved = await run(() => (existing ? api('PUT', `/api/automations/${id}`, body) : api('POST', '/api/automations', body)), 'Regla guardada ✅');
+    const saved = await run(() => (existing ? api('PUT', `/api/automations/${id}`, body) : api('POST', '/api/automations', body)), 'Regla guardada');
     if (saved) { discardDraft(`rule:${id}`, version); location.hash = '#/automation/rules'; }
   };
   root.append(
@@ -467,11 +468,11 @@ function buttonsPreview(st) {
   const replies = st.buttons.filter((b) => b.kind === 'reply' && b.label.trim());
   const urls = st.buttons.filter((b) => b.kind === 'url' && b.label.trim());
   if (!replies.length && !urls.length) return null;
-  const numbered = [st.text.trim(), replies.map((b, i) => `${i + 1}. ${b.label}`).join('\n'), urls.map((b) => `🔗 ${b.label}: ${b.url}`).join('\n'), replies.length ? 'Responde con el número de tu opción.' : ''].filter(Boolean).join('\n\n');
+  const numbered = [st.text.trim(), replies.map((b, i) => `${i + 1}. ${b.label}`).join('\n'), urls.map((b) => `🔗 ${b.label}: ${b.url}`).join('\n'), replies.length ? 'Responde con el número de tu opción.' : ''].filter(Boolean).join('\n\n'); // taste-skill-ignore: texto que llega al WhatsApp del cliente o del equipo
   return h('div', { class: 'grid' },
     h('div', {}, h('div', { class: 'small muted' }, 'Con botones (Telegram, Messenger, Instagram, WhatsApp oficial, chat web)'),
       h('div', { class: 'pre' }, st.text.trim() || '…'),
-      h('div', { class: 'msg-buttons', role: 'list', 'aria-label': 'Vista previa de los botones' }, [...replies, ...urls].map((b) => h('span', { class: 'chip', role: 'listitem' }, b.kind === 'url' ? `🔗 ${b.label}` : b.label)))),
+      h('div', { class: 'msg-buttons', role: 'list', 'aria-label': 'Vista previa de los botones' }, [...replies, ...urls].map((b) => h('span', { class: 'chip', role: 'listitem' }, b.kind === 'url' ? [icon('external', 14), b.label] : b.label)))),
     h('div', {}, h('div', { class: 'small muted' }, 'Numerado (WhatsApp con QR y correo: contesta con el número o el texto)'), h('div', { class: 'pre' }, numbered)));
 }
 
@@ -536,7 +537,7 @@ async function editSequence(root, id) {
   draw();
   const save = async () => {
     const version = draftVersion(`sequence:${id}`);
-    const saved = await run(() => (existing ? api('PUT', `/api/sequences/${id}`, q) : api('POST', '/api/sequences', { ...q, account_id: state.accountId || undefined })), 'Flujo guardado ✅');
+    const saved = await run(() => (existing ? api('PUT', `/api/sequences/${id}`, q) : api('POST', '/api/sequences', { ...q, account_id: state.accountId || undefined })), 'Flujo guardado');
     if (saved) { discardDraft(`sequence:${id}`, version); location.hash = '#/automation/sequences'; }
   };
   root.append(
@@ -657,7 +658,7 @@ async function editCampaign(root, id) {
     fill(statusBox, h('div', { class: 'card' },
       h('div', { class: 'row between' }, h('h2', { style: 'margin:0' }, 'Estado: ', h('span', { class: `badge ${cls}` }, label)),
         h('div', { class: 'row' },
-          editable ? h('button', { class: 'small', onclick: async () => { const p = await run(() => api('POST', `/api/campaigns/${id}/preview`, body())); if (p) fill(previewBox, h('p', {}, h('strong', {}, `${p.count} destinatarios`), p.sample.length ? `: ${p.sample.join(', ')}${p.count > p.sample.length ? '…' : ''}` : ''), p.excluded_no_consent ? h('p', { class: 'small' }, `⚠️ ${p.excluded_no_consent} cliente${p.excluded_no_consent === 1 ? '' : 's'} del segmento quedan fuera porque no han aceptado recibir promociones (se registra cuando escriben ACEPTO o tú lo marcas en su ficha).`) : null, p.warning ? h('p', { class: 'badge orange' }, p.warning) : null); } }, 'Ver destinatarios') : null,
+          editable ? h('button', { class: 'small', onclick: async () => { const p = await run(() => api('POST', `/api/campaigns/${id}/preview`, body())); if (p) fill(previewBox, h('p', {}, h('strong', {}, `${p.count} destinatarios`), p.sample.length ? `: ${p.sample.join(', ')}${p.count > p.sample.length ? '…' : ''}` : ''), p.excluded_no_consent ? h('p', { class: 'small' }, `${p.excluded_no_consent} cliente${p.excluded_no_consent === 1 ? '' : 's'} del segmento quedan fuera porque no han aceptado recibir promociones (se registra cuando escriben ACEPTO o tú lo marcas en su ficha).`) : null, p.warning ? h('p', { class: 'badge orange' }, p.warning) : null); } }, 'Ver destinatarios') : null,
           editable ? h('button', { class: 'primary small', onclick: () => reviewAndLaunch() }, local.when ? 'Revisar y programar' : 'Revisar y enviar') : null,
           ['scheduled', 'sending'].includes(c.status) ? h('button', { class: 'small danger', onclick: async () => { if (await confirmAction(c.kind === 'sequence' ? '¿Cancelar la campaña? El flujo se detiene para todos los que siguen en él.' : '¿Cancelar la campaña?')) { if (!(await run(() => api('POST', `/api/campaigns/${id}/cancel`), 'Cancelada'))) return; render(); } } }, 'Cancelar') : null,
           c.kind === 'sequence' && c.status === 'sent' ? h('button', { class: 'small danger', onclick: async () => { if (await confirmAction('¿Detener el flujo para todos los que siguen en él? Ya no recibirán sus mensajes siguientes.')) { if (!(await run(() => api('POST', `/api/campaigns/${id}/cancel`), 'Flujo detenido'))) return; render(); } } }, 'Detener el flujo') : null)),
@@ -793,7 +794,7 @@ async function editSettings(root) {
       const { ics_url, ...body } = s;
       void ics_url;
       const version = draftVersion('settings');
-      if (await run(() => api('PUT', withAcct('/api/settings'), body), 'Guardado ✅')) { discardDraft('settings', version); render(); }
+      if (await run(() => api('PUT', withAcct('/api/settings'), body), 'Guardado')) { discardDraft('settings', version); render(); }
     }),
   );
 }

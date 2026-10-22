@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Respaldos de Riverrun: bases de datos (chatbot y Evolution), fotos subidas y sesiones de WhatsApp.
+# Respaldos de Riverrun: bases de datos (chatbot y Evolution), fotos subidas y sesiones de WhatsApp (con sus claves en Redis).
 #
 #   backup.sh daemon        un respaldo cada día a BACKUP_HOUR (UTC) — es lo que corre el contenedor "backup"
 #   backup.sh now           respaldo inmediato
@@ -22,6 +22,10 @@ REMOTE="${BACKUP_REMOTE:-}"
 REMOTE_KEEP_DAYS="${BACKUP_REMOTE_KEEP_DAYS:-45}"
 DATABASES="${BACKUP_DATABASES:-chatbot evolution}"
 EVOLUTION_DB="${BACKUP_EVOLUTION_DB:-evolution}" # base de Evolution dentro de DATABASES (sesiones de WhatsApp)
+# Redis de Evolution: con su caché en Redis, Evolution guarda ahí las claves de cifrado de cada sesión de WhatsApp (en
+# su base solo queda la credencial). Sin ellas, una sesión restaurada no descifra los mensajes y hay que volver a vincular.
+REDIS_URI="${BACKUP_REDIS_URI:-}"
+REDIS_DIR="${REDIS_DATA_DIR:-/redis}" # volumen de Redis (solo al restaurar: ahí se deja la copia para cargarla)
 export PGHOST="${PGHOST:-postgres}" PGUSER="${PGUSER:-chatbot}" PGPASSWORD="${PGPASSWORD:-${POSTGRES_PASSWORD:-}}"
 STATUS="$BACKUP_DIR/status.json"
 
@@ -93,11 +97,19 @@ make_backup() {
   log "Respaldo $ts: archivos"
   if [[ -d "$UPLOADS_DIR" ]]; then tar -C "$UPLOADS_DIR" -czf "$work/uploads.tar.gz" .; else : > "$work/uploads.tar.gz"; fi
   if [[ -d "$EVOLUTION_DIR" ]]; then tar -C "$EVOLUTION_DIR" -czf "$work/evolution_instances.tar.gz" .; else : > "$work/evolution_instances.tar.gz"; fi
+  # Claves de las sesiones (instantánea consistente de Redis). Si Redis no responde, el respaldo sigue (las bases y los
+  # archivos valen igual) pero queda marcado: la verificación lo da por fallido para que se vea y se avise.
+  local redis_keys=""
+  if [[ -n "$REDIS_URI" ]]; then
+    log "Respaldo $ts: claves de las sesiones de WhatsApp (Redis)"
+    if redis-cli -u "$REDIS_URI" --rdb "$work/redis.rdb" >/dev/null 2>&1 && [[ -s "$work/redis.rdb" ]]; then redis_keys=included
+    else rm -f "$work/redis.rdb"; redis_keys=missing; log "ATENCIÓN: no se pudo copiar Redis: este respaldo no incluye las claves de las sesiones de WhatsApp"; fi
+  fi
   ( cd "$work" && sha256sum ./* > SHA256SUMS )
   # Con qué Evolution se hizo: restaurar su base en una versión más vieja que la que la migró puede dañarla.
   local evo_mig=""
   [[ " $DATABASES " == *" $EVOLUTION_DB "* ]] && evo_mig="$(evolution_migration "$EVOLUTION_DB")"
-  echo "{\"created_at\": \"$(date -u +%FT%TZ)\", \"databases\": \"$DATABASES\", \"version\": \"${APP_VERSION:-unknown}\", \"evolution_image\": \"$(json_escape "${EVOLUTION_IMAGE:-}")\", \"evolution_migration\": \"$(json_escape "$evo_mig")\"}" > "$work/manifest.json"
+  echo "{\"created_at\": \"$(date -u +%FT%TZ)\", \"databases\": \"$DATABASES\", \"version\": \"${APP_VERSION:-unknown}\", \"evolution_image\": \"$(json_escape "${EVOLUTION_IMAGE:-}")\", \"evolution_migration\": \"$(json_escape "$evo_mig")\", \"redis_keys\": \"$redis_keys\"}" > "$work/manifest.json"
   local suffix="tar.enc"; [[ -z "${BACKUP_PASSPHRASE:-}" ]] && suffix="tar"
   out="$BACKUP_DIR/${BACKUP_PREFIX:-riverrun}-$ts.$suffix" # el respaldo previo a restaurar usa otro prefijo para que "latest" no lo elija
   tar -C "$work" -cf - . | encrypt > "$out.partial"
@@ -120,6 +132,12 @@ verify_backup() { # FILE → restaura en una base temporal y cuenta tablas
   for f in uploads.tar.gz evolution_instances.tar.gz; do
     [[ ! -s "$work/$f" ]] || tar -tzf "$work/$f" >/dev/null 2>&1 || { fail "$f dañado"; return 1; }
   done
+  # Redis: la instantánea empieza con "REDIS" + versión del formato (se carga con el propio Redis al restaurar).
+  if [[ -f "$work/redis.rdb" ]]; then
+    [[ "$(head -c 5 "$work/redis.rdb")" == "REDIS" ]] || { fail "redis.rdb dañado (claves de las sesiones de WhatsApp)"; return 1; }
+  elif [[ "$(manifest_field "$work/manifest.json" redis_keys)" == "missing" ]]; then
+    fail "El respaldo no incluye las claves de las sesiones de WhatsApp: Redis no respondió al respaldar"; return 1
+  fi
   local dump
   for dump in "$work"/*.dump; do pg_restore --list "$dump" >/dev/null 2>&1 || { fail "$(basename "$dump") no es legible"; return 1; }; done
   # Prueba real: restaurar la base principal en una base temporal. Con BACKUP_VERIFY_ALL=true (antes de cambiar la
@@ -204,6 +222,16 @@ restore() {
   done
   if [[ -s "$work/uploads.tar.gz" && -d "$UPLOADS_DIR" ]]; then log "Restaurando fotos y archivos"; find "$UPLOADS_DIR" -mindepth 1 -delete; tar -C "$UPLOADS_DIR" -xzf "$work/uploads.tar.gz"; fi
   if [[ -s "$work/evolution_instances.tar.gz" && -d "$EVOLUTION_DIR" ]]; then log "Restaurando sesiones de WhatsApp"; find "$EVOLUTION_DIR" -mindepth 1 -delete; tar -C "$EVOLUTION_DIR" -xzf "$work/evolution_instances.tar.gz"; fi
+  # Redis no se puede escribir en caliente desde aquí: se deja la copia en su volumen y `./riverrun restore` la carga con
+  # el propio Redis (docker/backup/redis-load.sh) antes de arrancar Evolution.
+  if [[ -s "$work/redis.rdb" && -d "$REDIS_DIR" ]]; then
+    log "Preparando las claves de las sesiones de WhatsApp (Redis)"
+    cp "$work/redis.rdb" "$REDIS_DIR/riverrun-restore.rdb"
+  elif [[ -s "$work/redis.rdb" ]]; then
+    log "ATENCIÓN: el respaldo trae las claves de las sesiones (redis.rdb) pero el volumen de Redis no está en $REDIS_DIR: usa ./riverrun restore."
+  elif [[ -d "$REDIS_DIR" ]]; then
+    log "ATENCIÓN: este respaldo es anterior y no trae las claves de las sesiones (Redis): si algún WhatsApp no recibe mensajes, vincúlalo de nuevo."
+  fi
   log "Restauración completa."
 }
 

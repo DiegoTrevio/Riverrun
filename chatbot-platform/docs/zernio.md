@@ -111,7 +111,7 @@ La autorización es la página de Zernio en español (`signup=hosted`, Embedded 
 - Cada mensaje de una regla, una secuencia o una campaña puede llevar *Plantilla de WhatsApp si pasaron 24 h*. Dentro
   de la ventana sale el mensaje normal; fuera, la plantilla, con sus variables llenas con los datos del contacto
   (`{{nombre}}`, `{{telefono}}`…). Sin plantilla, el envío se omite con el motivo "elige una plantilla aprobada".
-- En la conversación, el botón **📄 Plantilla** la envía a mano (la persona toma la conversación) y un aviso indica
+- En la conversación, el botón **Plantilla** la envía a mano (la persona toma la conversación) y un aviso indica
   cuándo pasaron las 24 h.
 - La plantilla debe ser del mismo número de la conversación.
 

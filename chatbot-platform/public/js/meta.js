@@ -1,4 +1,5 @@
 import { api, check, confirmAction, field, fill, h, run, select, state, toast } from './core.js';
+import { icon } from './icons.js';
 import { isSuper, withAcct } from './session.js';
 
 /* ------------------------------ Facebook e Instagram con un botón ------------------------------ */
@@ -49,9 +50,9 @@ export async function viewMetaConnect(root, sessionId, params) {
         h('div', { class: 'row' },
           p.picture ? h('img', { src: p.picture, alt: '', width: 40, height: 40, style: 'border-radius:50%' }) : null,
           h('h2', { style: 'margin:0;font-size:1.05rem' }, p.name)),
-        check(picks[i], 'messenger', `💬 Messenger de la página${p.messenger_connected ? ' (ya conectado: se renueva)' : ''}`),
+        check(picks[i], 'messenger', `Messenger de la página${p.messenger_connected ? ' (ya conectado: se renueva)' : ''}`),
         p.instagram
-          ? check(picks[i], 'instagram', `📸 Instagram @${p.instagram.username || p.instagram.id}${p.instagram.connected ? ' (ya conectado: se renueva)' : ''}`)
+          ? check(picks[i], 'instagram', `Instagram @${p.instagram.username || p.instagram.id}${p.instagram.connected ? ' (ya conectado: se renueva)' : ''}`)
           : h('p', { class: 'help' }, 'Esta página no tiene una cuenta profesional de Instagram vinculada.'))),
       accountBots.length
         ? field('Agente que responderá', select(choice, 'chatbot_id', accountBots.map((b) => [b.id, b.name])))
@@ -66,7 +67,7 @@ export async function viewMetaConnect(root, sessionId, params) {
           if (!r) return;
           fill(result, h('div', { class: 'banner', role: 'status' },
             h('p', {}, `Listo: ${r.channels.length} ${r.channels.length === 1 ? 'conexión' : 'conexiones'} en línea.`),
-            h('ul', {}, r.channels.map((c) => h('li', {}, c.type === 'instagram' ? '📸 ' : '💬 ', c.name)))),
+            h('ul', {}, r.channels.map((c) => h('li', { class: 'with-icon' }, icon(c.type === 'instagram' ? 'instagram' : 'messenger', 16), c.name)))),
             h('a', { class: 'btn primary', href: choice.chatbot_id ? `#/bot/${choice.chatbot_id}/conexiones` : '#/agentes?connections=1' }, 'Ver mis conexiones'));
           button.remove();
         } finally { button.disabled = false; }
@@ -87,7 +88,7 @@ export function metaChannelPanel(ch, { onChange }) {
       h('span', {},
         h('strong', {}, ch.config.page_name || ch.name),
         ch.type === 'instagram' && ch.config.username ? ` · @${ch.config.username}` : '',
-        ' ', h('span', { class: `badge ${down ? 'red' : 'green'}` }, down ? 'Desconectado' : '✓ Conectado'))),
+        ' ', h('span', { class: `badge ${down ? 'red' : 'green'}` }, down ? 'Desconectado' : 'Conectado'))),
     down ? h('p', { class: 'banner warn', role: 'status' }, reason) : null,
     h('div', { class: 'row' },
       metaConnectButton({ chatbotId: ch.chatbot_id, accountId: ch.account_id, label: down ? 'Volver a conectar con Facebook' : 'Volver a conectar / agregar páginas', primary: down }),

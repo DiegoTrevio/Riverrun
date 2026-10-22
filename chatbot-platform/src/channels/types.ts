@@ -51,6 +51,8 @@ export interface ParseResult {
   connectionReason?: string;
   /** QR nuevo enviado por la plataforma (WhatsApp: qrcode.updated). */
   qr?: string;
+  /** Código por número que acompaña al QR nuevo (WhatsApp, si se vincula por número): sustituye al anterior. */
+  pairingCode?: string;
 }
 
 export interface SetupResult {

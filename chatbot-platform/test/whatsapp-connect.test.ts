@@ -76,16 +76,42 @@ t('el QR que Evolution manda por webhook (qrcode.updated) se usa en la siguiente
   await waitFor(async () => (await session()).json().qr === 'data:image/png;base64,QRWEB');
 });
 
-t('código por número: valida, agrega la lada de México y entrega el código de 8 caracteres', async () => {
+t('código por número: valida, agrega la lada de México y reinicia la vinculación con el número (Evolution no lo toma mientras espera un QR)', async () => {
   assert.equal((await session({ mode: 'code', number: '12345' })).statusCode, 400);
   ext.requests.length = 0;
   const r = await session({ mode: 'code', number: '81 1111 2222', refresh: true }); // el clic en "Obtener código" fuerza la solicitud
   assert.equal(r.statusCode, 200, r.body);
-  assert.match(r.json().pairingCode, /^PAIR\d{4}$/);
-  assert.equal(r.json().expires_in, 120);
+  assert.equal(r.json().pairingCode, 'NEWC0DE1', 'el código de la instancia creada con el número');
+  assert.equal(r.json().expires_in, 40, 'se reutiliza menos de lo que Evolution tarda en cambiarlo (45 s)');
+  assert.equal(evoCalls('/instance/create')[0]?.body.number, '528111112222', 'la instancia se crea con el número');
+  assert.equal(evoCalls('/instance/delete/').length, 1, 'la que esperaba un QR se descarta (aún no tenía sesión)');
+  // Mientras lo teclea, el código no cambia ni se reinicia la vinculación.
+  ext.requests.length = 0;
+  assert.equal((await session({ mode: 'code', number: '528111112222' })).json().pairingCode, 'NEWC0DE1');
+  assert.equal(evoCalls('/instance/').filter((x) => /create|delete|connect\//.test(x.path)).length, 0);
+  // "Pedir otro": la instancia ya vincula con ese número; Evolution entrega el código vigente, sin recrear.
+  const another = (await session({ mode: 'code', number: '528111112222', refresh: true })).json();
+  assert.match(another.pairingCode, /^PAIR\d{4}$/);
+  assert.equal(evoCalls('/instance/delete/').length, 0);
   assert.equal(evoCalls('/instance/connect/')[0].query.get('number'), '528111112222');
-  // Mientras lo teclea, el código no cambia.
-  assert.equal((await session({ mode: 'code', number: '528111112222' })).json().pairingCode, r.json().pairingCode);
+  // Evolution pide un código nuevo con cada QR y solo el último sirve: el que llega por webhook es el que se muestra.
+  await webhook({ event: 'QRCODE_UPDATED', data: { qrcode: { instance: C.instance, base64: 'data:image/png;base64,QRX', pairingCode: 'LAST0001' } } });
+  await waitFor(async () => (await session({ mode: 'code', number: '528111112222' })).json().pairingCode === 'LAST0001');
+  // Otro número: la vinculación vuelve a empezar con él (el código anterior era de otro teléfono).
+  ext.requests.length = 0;
+  attempts.get(C.id)!.recreateAt = 0;
+  const changed = (await session({ mode: 'code', number: '5215599998888', refresh: true })).json();
+  assert.equal(changed.pairingCode, 'NEWC0DE1');
+  assert.equal(evoCalls('/instance/create')[0]?.body.number, '5215599998888');
+});
+
+t('un código por webhook no aparece si nadie está vinculando por número', async () => {
+  const ch = (await admin('POST', '/api/channels', { type: 'whatsapp', name: 'Solo QR' })).json();
+  await admin('POST', `/api/channels/${ch.id}/whatsapp/session`, {});
+  const r = await h.app.inject({ method: 'POST', url: `/webhook/${ch.webhook_token}`, payload: { instance: ch.config.instance, event: 'qrcode.updated', data: { qrcode: { base64: 'QRSOLO', pairingCode: 'AJENO001' } } } });
+  assert.equal(r.statusCode, 200);
+  await waitFor(async () => (await admin('POST', `/api/channels/${ch.id}/whatsapp/session`, {})).json().qr === 'data:image/png;base64,QRSOLO');
+  assert.equal((await pool.query(`SELECT pairing_code FROM channels WHERE id = $1`, [ch.id])).rows[0].pairing_code, null);
 });
 
 t('sin código todavía: no reinicia la vinculación en cada consulta ni recrea la instancia antes de tiempo', async () => {
@@ -269,4 +295,112 @@ t('un 403 por autorización al crear la instancia no se confunde con un nombre o
     assert.equal(evoCalls('/instance/create').length, 1);
     assert.equal(evo.instances.has(ch.config.instance), false);
   } finally { evo.createDenied = false; }
+});
+
+/** Canal vinculado que se cae sin que nadie cierre la sesión: Evolution lo reconecta solo (sin QR: la sesión sigue guardada). */
+async function linkedThenDown(name: string) {
+  const ch = (await admin('POST', '/api/channels', { type: 'whatsapp', name })).json();
+  await admin('POST', `/api/channels/${ch.id}/whatsapp/session`, {});
+  evo.instances.get(ch.config.instance)!.state = 'open';
+  assert.equal((await admin('POST', `/api/channels/${ch.id}/whatsapp/session`, {})).json().state, 'open');
+  evo.instances.get(ch.config.instance)!.state = 'connecting';
+  evo.stuck.add(ch.config.instance);
+  const r = await h.app.inject({ method: 'POST', url: `/webhook/${ch.webhook_token}`, payload: { instance: ch.config.instance, event: 'connection.update', data: { state: 'connecting' } } });
+  assert.equal(r.statusCode, 200);
+  assert.ok((await pool.query(`SELECT down_since FROM channels WHERE id = $1`, [ch.id])).rows[0].down_since, 'quedó marcado como caído');
+  return ch;
+}
+const closeWebhook = (ch: { webhook_token: string }) => async (instance: string) => {
+  await h.app.inject({ method: 'POST', url: `/webhook/${ch.webhook_token}`, payload: { instance, event: 'connection.update', data: { state: 'close', statusReason: 401 } } });
+};
+const relinkNotices = async (accountId: string) =>
+  (await pool.query(`SELECT title FROM notifications WHERE account_id = $1 AND (title LIKE 'Hay que volver a vincular%' OR title LIKE 'Tu WhatsApp se desconectó%')`, [accountId])).rows;
+
+t('una sesión vinculada que se reconecta sola no se borra al abrir el panel (ni con QR ni por número)', async () => {
+  const ch = await linkedThenDown('Se recupera sola');
+  attempts.set(ch.id, { connectAt: 0, recreateAt: 0, waitingSince: Date.now() - 10 * 60_000 });
+  ext.requests.length = 0;
+  for (const body of [{}, { refresh: true }, { mode: 'code', number: '5218111112222', refresh: true }]) {
+    const r = await admin('POST', `/api/channels/${ch.id}/whatsapp/session`, body);
+    assert.equal(r.statusCode, 200, r.body);
+    assert.equal(r.json().reconnecting, true, JSON.stringify(body));
+    assert.equal(r.json().qr, null);
+  }
+  assert.equal(evoCalls('/instance/delete/').length + evoCalls('/instance/logout/').length, 0, 'la sesión guardada no se toca');
+  assert.ok(evo.instances.has(ch.config.instance));
+  // Vuelve sola: la siguiente consulta lo confirma.
+  evo.stuck.delete(ch.config.instance);
+  evo.instances.get(ch.config.instance)!.state = 'open';
+  assert.equal((await admin('POST', `/api/channels/${ch.id}/whatsapp/session`, {})).json().state, 'open');
+});
+
+t('si la sesión que se recuperaba ya no existe en Evolution (pide QR), el QR se muestra', async () => {
+  const ch = await linkedThenDown('Perdió la sesión');
+  evo.stuck.delete(ch.config.instance);
+  attempts.delete(ch.id);
+  const r = (await admin('POST', `/api/channels/${ch.id}/whatsapp/session`, {})).json();
+  assert.match(String(r.qr), /^data:image\/png;base64,QR\d+$/);
+  assert.equal(r.reconnecting, undefined);
+});
+
+t('"Vincular de nuevo" descarta la sesión a pedido, entrega un QR nuevo y no se avisa como desconexión', async () => {
+  const ch = await linkedThenDown('Vincular de nuevo');
+  evo.onLogout = closeWebhook(ch); // Evolution avisa del cierre (401) antes de responder
+  try {
+    ext.requests.length = 0;
+    const r = await admin('POST', `/api/channels/${ch.id}/whatsapp/session`, { relink: true });
+    assert.equal(r.statusCode, 200, r.body);
+    assert.equal(r.json().qr, 'data:image/png;base64,QR1', 'QR de la instancia nueva');
+    assert.equal(evoCalls('/instance/delete/').length, 1);
+  } finally { evo.onLogout = null; }
+  assert.deepEqual(await relinkNotices(ch.account_id), []);
+  const row = (await pool.query(`SELECT connection_state, down_since FROM channels WHERE id = $1`, [ch.id])).rows[0];
+  assert.equal(row.down_since, null, 'ya no cuenta como caída que se recupera sola');
+  // Pulsarlo dos veces seguidas no recrea dos veces.
+  ext.requests.length = 0;
+  await admin('POST', `/api/channels/${ch.id}/whatsapp/session`, { relink: true });
+  assert.equal(evoCalls('/instance/delete/').length, 0);
+});
+
+t('desconectar desde el panel: aunque el aviso de Evolution llegue antes, no se avisa de una caída; ya cerrada no es error', async () => {
+  const ch = (await admin('POST', '/api/channels', { type: 'whatsapp', name: 'Desconexión a propósito' })).json();
+  await admin('POST', `/api/channels/${ch.id}/whatsapp/session`, {});
+  evo.instances.get(ch.config.instance)!.state = 'open';
+  assert.equal((await admin('POST', `/api/channels/${ch.id}/whatsapp/session`, {})).json().state, 'open');
+  evo.onLogout = closeWebhook(ch);
+  try {
+    const r = await admin('POST', `/api/channels/${ch.id}/whatsapp/logout`);
+    assert.equal(r.statusCode, 200, r.body);
+  } finally { evo.onLogout = null; }
+  assert.deepEqual(await relinkNotices(ch.account_id), [], 'sin "Hay que volver a vincular tu WhatsApp"');
+  const row = (await pool.query(`SELECT connection_state, down_since FROM channels WHERE id = $1`, [ch.id])).rows[0];
+  assert.deepEqual([row.connection_state, row.down_since], ['close', null]);
+  // Evolution responde 400 "is not connected" a una sesión ya cerrada: para el panel es lo mismo.
+  const again = await admin('POST', `/api/channels/${ch.id}/whatsapp/logout`);
+  assert.equal(again.statusCode, 200, again.body);
+});
+
+t('si no se puede desconectar (Evolution caído): mensaje claro y el estado queda como estaba', async () => {
+  const ch = (await admin('POST', '/api/channels', { type: 'whatsapp', name: 'Desconexión fallida' })).json();
+  await admin('POST', `/api/channels/${ch.id}/whatsapp/session`, {});
+  evo.instances.get(ch.config.instance)!.state = 'open';
+  await admin('POST', `/api/channels/${ch.id}/whatsapp/session`, {});
+  evo.down = true;
+  try {
+    const r = await admin('POST', `/api/channels/${ch.id}/whatsapp/logout`);
+    assert.equal(r.statusCode, 400);
+    assert.match(r.json().error, /No pudimos desconectar tu WhatsApp/);
+    assert.ok(!/Evolution|HTTP/.test(r.json().error));
+  } finally { evo.down = false; }
+  assert.equal((await pool.query(`SELECT connection_state FROM channels WHERE id = $1`, [ch.id])).rows[0].connection_state, 'open');
+});
+
+t('QR agotados ("refused"): queda como cerrada y conserva el motivo anterior', async () => {
+  const ch = (await admin('POST', '/api/channels', { type: 'whatsapp', name: 'QR agotados' })).json();
+  await admin('POST', `/api/channels/${ch.id}/whatsapp/session`, {});
+  await pool.query(`UPDATE channels SET disconnect_reason = 'logged_out' WHERE id = $1`, [ch.id]);
+  const r = await h.app.inject({ method: 'POST', url: `/webhook/${ch.webhook_token}`, payload: { instance: ch.config.instance, event: 'connection.update', data: { state: 'refused', statusReason: 428 } } });
+  assert.equal(r.statusCode, 200);
+  const row = (await pool.query(`SELECT connection_state, disconnect_reason FROM channels WHERE id = $1`, [ch.id])).rows[0];
+  assert.deepEqual([row.connection_state, row.disconnect_reason], ['close', 'logged_out']);
 });

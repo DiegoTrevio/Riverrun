@@ -1,19 +1,33 @@
-import { api, field, fill, h, state, toast } from './core.js';
+import { api, confirmAction, field, fill, fmtPhone, h, state, toast } from './core.js';
+import { icon } from './icons.js';
+
+// Anillo de cuenta regresiva del código: un trazo que se vacía (sin degradados).
+const RING_R = 19;
+const RING_C = 2 * Math.PI * RING_R;
+const countdownRing = () => h('div', {
+  class: 'wa-ring', title: 'El código se renueva solo',
+  html: `<svg viewBox="0 0 44 44" width="44" height="44" aria-hidden="true"><circle class="track" cx="22" cy="22" r="${RING_R}" fill="none" stroke-width="3"/><circle class="left" cx="22" cy="22" r="${RING_R}" fill="none" stroke-width="3" stroke-linecap="round" stroke-dasharray="${RING_C.toFixed(2)}" stroke-dashoffset="0"/></svg><span></span>`,
+});
 
 /* ------------------------------ Conectar WhatsApp (QR o código por número) ------------------------------ */
 
+/** En un celular no se puede escanear la propia pantalla: ahí lo más fácil es el código por número. */
+const onPhone = () => { try { return matchMedia('(pointer: coarse)').matches && Math.min(screen.width, screen.height) < 768; } catch { return false; } };
+
 /**
  * Conector de WhatsApp: se pone en marcha solo, muestra un QR que se renueva solo (con cuenta regresiva)
- * o un código para "Vincular con número de teléfono" (lo más fácil si el panel está abierto en el mismo celular).
+ * o un código para "Vincular con número de teléfono" (lo que se ofrece primero si el panel está abierto en un celular).
+ * Si el teléfono ya estaba vinculado y la sesión se está recuperando sola, no pide escanear nada.
  */
 export function whatsappConnector(channelId, { onConnected, onState } = {}) {
   const st = {
-    mode: 'qr',
+    mode: onPhone() ? 'code' : 'qr',
     os: /iPhone|iPad|iPod/i.test(navigator.userAgent) ? 'ios' : 'android',
     number: (state.me?.user?.phone || '').replace(/\D/g, ''),
     expiresAt: 0,
     ttl: 30,
     codeRequested: false,
+    relink: false,
     done: false,
     error: '',
     data: null,
@@ -44,15 +58,18 @@ export function whatsappConnector(channelId, { onConnected, onState } = {}) {
     inflight = true;
     const mode = st.mode;
     const number = st.number;
+    // "Vincular de nuevo" pulsado: viaja en esta consulta (o en la siguiente, si había otra en curso).
+    const relink = st.relink;
+    st.relink = false;
     try {
-      const body = { mode, refresh, ...(mode === 'code' ? { number } : {}) };
+      const body = { mode, refresh: refresh || relink, ...(relink ? { relink } : {}), ...(mode === 'code' ? { number } : {}) };
       const r = await api('POST', `/api/channels/${channelId}/whatsapp/session`, body);
       if (mode !== st.mode || (mode === 'code' && number !== st.number)) return;
       st.error = '';
       st.data = r;
-      st.ttl = st.mode === 'qr' ? 30 : 120;
+      st.ttl = st.mode === 'qr' ? 30 : 40;
       st.expiresAt = Date.now() + (r.expires_in || 0) * 1000;
-      onState?.(r.state);
+      onState?.(r.state, r);
       if (!root.isConnected) return;
       if (r.state === 'open') { st.done = true; stop(); onConnected?.(r); }
     } catch (e) {
@@ -68,7 +85,7 @@ export function whatsappConnector(channelId, { onConnected, onState } = {}) {
     const ring = root.querySelector('.wa-ring');
     if (!ring || !st.expiresAt) return;
     const left = Math.max(0, Math.round((st.expiresAt - Date.now()) / 1000));
-    ring.style.setProperty('--p', String(Math.round((left / st.ttl) * 100)));
+    ring.querySelector('.left')?.setAttribute('stroke-dashoffset', (RING_C * (1 - Math.min(1, left / st.ttl))).toFixed(2));
     ring.querySelector('span').textContent = left ? `${left}s` : '…';
     if (!left && document.body.contains(root)) poll(); // venció: se pide el siguiente
   }
@@ -76,12 +93,12 @@ export function whatsappConnector(channelId, { onConnected, onState } = {}) {
   function drawTabs() {
     if (drawnMode === st.mode) return;
     drawnMode = st.mode;
-    const tab = (mode, label, sub) => h('button', {
+    const tab = (mode, iconName, label, sub) => h('button', {
       class: `wa-tab ${st.mode === mode ? 'active' : ''}`,
       'aria-pressed': st.mode === mode ? 'true' : 'false',
       onclick: () => { if (st.mode === mode) return; st.mode = mode; st.data = null; st.error = ''; st.expiresAt = 0; draw(); if (mode === 'qr') poll(); },
-    }, h('strong', {}, label), h('small', {}, sub));
-    fill(tabs, tab('qr', '📷 Escanear código QR', 'Escanea desde WhatsApp en tu teléfono'), tab('code', '🔢 Con mi número', 'Si estás en el mismo celular'));
+    }, h('strong', {}, icon(iconName, 16), label), h('small', {}, sub));
+    fill(tabs, tab('qr', 'qr', 'Escanear código QR', 'Escanea desde WhatsApp en tu teléfono'), tab('code', 'hash', 'Con mi número', 'Si estás en el mismo celular'));
   }
 
   function drawSteps() {
@@ -101,23 +118,46 @@ export function whatsappConnector(channelId, { onConnected, onState } = {}) {
       fill(tabs);
       fill(steps);
       return fill(main,
-        h('div', { class: 'wa-done' }, h('div', { class: 'wa-check' }, '✓'),
+        h('div', { class: 'wa-done' }, h('div', { class: 'wa-check' }, icon('check', 28)),
           h('h2', {}, '¡WhatsApp conectado!'),
-          p?.number ? h('p', {}, 'Conectado como ', h('strong', {}, p.name || 'tu cuenta'), ` · +${p.number}`) : null,
+          p?.number ? h('p', {}, 'Conectado como ', h('strong', {}, p.name || 'tu cuenta'), ` · ${fmtPhone(p.number)}`) : null,
           st.data?.warning ? h('p', { class: 'banner warn' }, st.data.warning) : null,
           h('p', { class: 'small muted', role: 'status' }, 'Teléfono conectado. El agente responderá cuando esté encendido, el perfil esté activo y se cumplan sus reglas de activación.')));
     }
-    drawTabs();
-    drawSteps();
-    const signature = JSON.stringify([st.mode, st.error, st.data?.qr, st.data?.pairingCode, st.codeRequested, st.data?.waited_s > 60]);
+    if (st.data?.reconnecting) {
+      // Sin nada que escanear, las pestañas y los pasos para vincular solo confundirían.
+      fill(tabs);
+      fill(steps);
+      drawnMode = drawnOs = '';
+    } else {
+      drawTabs();
+      drawSteps();
+    }
+    const signature = JSON.stringify([st.mode, st.error, st.data?.qr, st.data?.pairingCode, st.codeRequested, st.data?.waited_s > 60, !!st.data?.reconnecting, st.data?.waited_s > 120]);
     if (signature === screenSignature) return void drawCountdown();
     screenSignature = signature;
     const err = st.error ? h('div', { class: 'banner danger' }, st.error, ' ', h('button', { class: 'small', onclick: () => { st.error = ''; draw(); poll(true); } }, 'Reintentar')) : null;
+    // Ya estaba vinculado y se está reconectando solo: escanear de nuevo no hace falta (y borraría la sesión guardada).
+    if (st.data?.reconnecting) {
+      return fill(main, err,
+        h('div', { class: 'wa-qr wa-loading', role: 'status' }, h('div', { class: 'spinner' }),
+          h('p', {}, h('strong', {}, 'Tu WhatsApp se está reconectando solo.')),
+          h('p', { class: 'small muted', style: 'max-width:380px;text-align:center' }, 'Ya estaba vinculado: no tienes que escanear nada. Revisa que el teléfono tenga internet; esta pantalla avanza sola en cuanto vuelva.'),
+          (st.data.waited_s ?? 0) > 120 ? h('p', { class: 'small muted', style: 'max-width:380px;text-align:center' }, 'Si quitaste el dispositivo vinculado en tu teléfono o quieres usar otro número, vincúlalo de nuevo.') : null,
+          h('button', { class: 'small', onclick: async () => {
+            if (!await confirmAction('¿Vincular de nuevo? Se cerrará la sesión guardada y tendrás que escanear el código (o escribir el código por número) en tu teléfono.')) return;
+            screenSignature = '';
+            st.data = null;
+            st.relink = true;
+            draw();
+            await poll(true);
+          } }, 'Vincular de nuevo')));
+    }
     if (st.mode === 'qr') {
       const qr = st.data?.qr;
       fill(main, err,
         qr ? h('div', { class: 'wa-qr' }, h('img', { class: 'qr', src: qr, alt: 'Código QR para vincular WhatsApp' }),
-              h('div', { class: 'wa-ring', title: 'El código se renueva solo' }, h('span', {}, ''))) 
+              countdownRing())
            : h('div', { class: 'wa-qr wa-loading' }, h('div', { class: 'spinner' }), h('p', { class: 'muted' }, 'Generando tu código… (unos segundos)'),
                (st.data?.waited_s ?? 0) > 60 ? h('p', { class: 'small muted', style: 'max-width:360px;text-align:center' }, 'Está tardando más de lo normal. Puedes probar "Con mi número" o esperar: seguimos intentando solos.') : null),
         qr ? h('p', { class: 'small muted', style: 'text-align:center' }, 'El código se renueva solo; no tienes que hacer nada más que escanearlo.') : null);
@@ -143,9 +183,11 @@ export function whatsappConnector(channelId, { onConnected, onState } = {}) {
               h('button', { class: 'small', onclick: async () => { try { await navigator.clipboard.writeText(code); toast('Código copiado'); } catch { toast('Cópialo a mano', true); } } }, 'Copiar código'),
               h('button', { class: 'small', onclick: () => getCode(true) }, 'Pedir otro'),
               h('button', { class: 'small', onclick: () => { st.codeRequested = false; st.data = null; draw(); } }, 'Cambiar número')),
-            h('p', { class: 'small muted' }, 'Esperando a que escribas el código en WhatsApp… esta pantalla avanza sola.'))
+            h('p', { class: 'small muted' }, 'Esperando a que escribas el código en WhatsApp… esta pantalla avanza sola.'),
+            h('p', { class: 'small muted' }, 'WhatsApp cambia el código cada poco: escribe siempre el que veas aquí. Si te dice que es incorrecto, usa el nuevo.'))
         : st.codeRequested
-          ? h('div', { class: 'wa-qr wa-loading' }, h('div', { class: 'spinner' }), h('p', { class: 'muted' }, 'Pidiendo tu código…'))
+          ? h('div', { class: 'wa-qr wa-loading' }, h('div', { class: 'spinner' }), h('p', { class: 'muted' }, 'Pidiendo tu código… (unos segundos)'),
+              (st.data?.waited_s ?? 0) > 60 ? h('p', { class: 'small muted', style: 'max-width:360px;text-align:center' }, 'Está tardando más de lo normal. Seguimos intentando; también puedes usar "Escanear código QR" desde otra pantalla.') : null)
           : h('div', { class: 'wa-code-box' },
               field('Tu número de WhatsApp', input, 'El número del teléfono donde está el WhatsApp del negocio, con lada (México: 10 dígitos).'),
               h('button', { class: 'primary', onclick: () => getCode() }, 'Obtener código')));

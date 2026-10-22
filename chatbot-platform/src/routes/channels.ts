@@ -333,7 +333,7 @@ export async function channelRoutes(api: FastifyInstance) {
   api.post('/api/channels/:id/whatsapp/session', admins, async (req: any) => {
     assertVerified(req.user);
     const ch = await whatsapp(req.user, req.params.id);
-    const b = parse(z.object({ mode: z.enum(['qr', 'code']).default('qr'), number: z.string().max(30).optional(), refresh: z.boolean().default(false) }), req.body ?? {});
+    const b = parse(z.object({ mode: z.enum(['qr', 'code']).default('qr'), number: z.string().max(30).optional(), refresh: z.boolean().default(false), relink: z.boolean().default(false) }), req.body ?? {});
     try {
       return await whatsappSession(ch, b);
     } catch (e: any) {
@@ -344,11 +344,21 @@ export async function channelRoutes(api: FastifyInstance) {
 
   api.post('/api/channels/:id/whatsapp/logout', admins, async (req: any) => {
     const ch = await whatsapp(req.user, req.params.id);
-    await evolutionFor(ch).logout(ch.config.instance).catch((e) => {
-      throw new HttpError(400, e?.message ?? String(e));
-    });
+    // Desconexión a propósito: se marca ANTES de cerrar. Evolution avisa por webhook ("sesión cerrada", 401) casi al mismo
+    // tiempo que responde; si llegara primero contaría como caída y mandaría "Hay que volver a vincular tu WhatsApp".
+    await store.setConnectionStateQuiet(ch.id, 'close');
+    try {
+      await evolutionFor(ch).logout(ch.config.instance);
+    } catch (e: any) {
+      // Ya estaba cerrada (Evolution: "is not connected") o la instancia no existe: el resultado es el mismo.
+      const alreadyClosed = e?.status === 404 || (e?.status === 400 && /not connected/i.test(String(e?.message)));
+      if (!alreadyClosed) {
+        await store.restoreConnectionState(ch.id, ch.connection_state, ch.down_since);
+        await logEvent({ level: 'error', source: 'evolution', message: `No se pudo desconectar WhatsApp (${ch.name}): ${e?.message ?? e}`, accountId: ch.account_id, channelId: ch.id });
+        throw new HttpError(400, 'No pudimos desconectar tu WhatsApp ahora. Intenta de nuevo en unos segundos.');
+      }
+    }
     await store.clearConnectionCodes(ch.id);
-    await store.setConnectionStateQuiet(ch.id, 'close'); // desconexión a propósito: sin alerta
     return { ok: true };
   });
 

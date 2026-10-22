@@ -29,7 +29,7 @@ try {
  // Guardar = aplicar: sin pasos extra ni pruebas obligatorias.
  await page.getByLabel('Nombre del agente',{exact:true}).fill('Agente guardado y aplicado');
  await page.getByRole('button',{name:'Guardar cambios',exact:true}).first().click();
- await page.getByText('Cambios guardados ✅',{exact:true}).waitFor();await page.getByRole('heading',{name:'Agente guardado y aplicado'}).waitFor();
+ await page.getByText('Cambios guardados',{exact:true}).waitFor();await page.getByRole('heading',{name:'Agente guardado y aplicado'}).waitFor();
  assert.equal((await store.getChatbot(h.botId))!.name,'Agente guardado y aplicado');checks.push('Guardar aplica los cambios de inmediato');
  await page.getByText('Opciones avanzadas',{exact:true}).click();await page.getByText('Historial de versiones',{exact:true}).click();
  await page.getByText('En uso',{exact:true}).waitFor();checks.push('Cada guardado queda en el historial de versiones');
@@ -41,7 +41,7 @@ try {
  await page.getByLabel('Mensajes del cliente, uno por línea',{exact:true}).fill('hola');
  await page.getByLabel('La respuesta debe incluir (separa frases con |)',{exact:true}).fill('ayudo');
  await page.getByRole('button',{name:'Guardar y ejecutar pruebas',exact:true}).click();
- await page.getByText('✓ Todas las pruebas aprobadas',{exact:true}).waitFor();checks.push('Crear y ejecutar un caso desde la interfaz');
+ await page.getByText('Todas las pruebas aprobadas',{exact:true}).waitFor();checks.push('Crear y ejecutar un caso desde la interfaz');
  // A late response must acknowledge only the submitted cases, preserving edits made while saving.
  let release!:()=>void,entered!:()=>void;const hold=new Promise<void>(r=>release=r),waiting=new Promise<void>(r=>entered=r);
  await page.route(`**/api/chatbots/${h.botId}/tests`,async route=>{const response=await route.fetch();entered();await hold;await route.fulfill({response});});
@@ -50,7 +50,7 @@ try {
  await page.waitForTimeout(250);await page.unrouteAll({behavior:'wait'});
  assert.equal(await page.getByLabel('La respuesta debe incluir (separa frases con |)',{exact:true}).inputValue(),'gusto');
  assert.deepEqual((await h.authed('GET',`/api/chatbots/${h.botId}/tests`)).json().cases[0].turns[0].expect.contains,['ayudo']);
- await page.getByRole('button',{name:'Guardar y ejecutar pruebas',exact:true}).click();await page.getByText('✓ Todas las pruebas aprobadas',{exact:true}).waitFor();
+ await page.getByRole('button',{name:'Guardar y ejecutar pruebas',exact:true}).click();await page.getByText('Todas las pruebas aprobadas',{exact:true}).waitFor();
  checks.push('Una respuesta de guardado tardía conserva las ediciones nuevas');
  await page.getByRole('link',{name:'Instrucciones',exact:true}).click();await page.getByLabel('Nombre del agente',{exact:true}).waitFor();
  await page.getByLabel('Nombre del agente',{exact:true}).fill('Segundo cambio');await page.getByRole('button',{name:'Guardar cambios',exact:true}).first().click();

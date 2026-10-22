@@ -60,7 +60,7 @@
 .stats-key { display: inline-block; width: 12px; height: 2px; border-radius: 2px; vertical-align: middle; flex: none; }
 
 .stats-tip { position: fixed; z-index: 50; min-width: 150px; max-width: 260px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border);
-  background: var(--panel); color: var(--text); box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12); font-size: 12px; pointer-events: none; }
+  background: var(--panel); color: var(--text); box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12); font-size: 12px; pointer-events: none; } /* taste-skill-ignore: globo de ayuda sobre la gráfica */
 .stats-tip[hidden] { display: none; }
 .stats-tip-day { display: block; margin-bottom: 4px; }
 .stats-tip-row { display: flex; align-items: center; gap: 6px; }

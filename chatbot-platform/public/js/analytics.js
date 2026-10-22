@@ -4,6 +4,7 @@
  * Los nombres y textos que llegan del servidor se escriben con textContent, nunca como HTML.
  */
 import { api, poll, fill, h, state } from './core.js';
+import { icon, networkIcon, okMark } from './icons.js';
 import { acct } from './session.js';
 
 const REFRESH_MS = 30000;
@@ -267,7 +268,7 @@ function tile(label, cur, { display = fmt(cur), prev, up = 'good', sub = null, a
     h('div', { class: 'stats-value' }, display),
     delta,
     sub ? h('div', { class: 'small muted' }, sub) : null,
-    alert ? h('div', { class: 'small stats-warn' }, '⚠ Revisa los registros de envío') : null);
+    alert ? h('div', { class: 'small stats-warn' }, icon('alert', 14), ' Revisa los registros de envío') : null);
 }
 
 /* ------------------------------------ Vista ------------------------------------ */
@@ -427,8 +428,8 @@ export async function viewAnalytics(root, params = new URLSearchParams()) {
 
   /** Estado de una cita con icono y texto: el color nunca va solo. */
   function statusRow(kind, label, n) {
-    const icon = kind === 'ok' ? '✔' : kind === 'warn' ? '⚠' : '•';
-    return h('div', { class: `stats-status-row is-${kind}` }, h('span', { class: 'stats-icon', 'aria-hidden': 'true' }, icon), h('span', {}, label), h('strong', {}, fmt(n)));
+    const mark = kind === 'ok' ? icon('check', 14) : kind === 'warn' ? icon('alert', 14) : '•';
+    return h('div', { class: `stats-status-row is-${kind}` }, h('span', { class: 'stats-icon', 'aria-hidden': 'true' }, mark), h('span', {}, label), h('strong', {}, fmt(n)));
   }
 
   await load(false);
@@ -446,7 +447,6 @@ function reportTabs(tab) {
 
 /* -------------------------------- Redes sociales (Zernio) -------------------------------- */
 
-const NET_ICONS = { instagram: '📸', facebook: '📘', whatsapp: '🟢', telegram: '✈️', twitter: '𝕏', bluesky: '🦋', reddit: '👽', linkedin: '💼', tiktok: '🎵', youtube: '▶️', threads: '🧵', pinterest: '📌', googlebusiness: '🗺️' };
 
 /** Tendencia de una serie en una línea mínima; las cifras exactas van en la tabla de la cuenta. */
 function sparkline(values, label) {
@@ -504,10 +504,10 @@ export async function viewSocialStats(root, params = new URLSearchParams()) {
   const accountCard = (a) => {
     const avatar = a.picture
       ? h('img', { src: a.picture, alt: '', width: 36, height: 36, style: 'border-radius:50%;object-fit:cover', referrerpolicy: 'no-referrer' })
-      : h('span', { style: 'font-size:26px', 'aria-hidden': 'true' }, NET_ICONS[a.platform] || '🔗');
+      : h('span', { class: 'net-icon' }, networkIcon(a.platform, 24));
     const health = a.health.problem
-      ? h('p', { class: 'small stats-warn' }, '⚠ ', a.health.problem, a.health.reconnect ? [' · ', h('a', { href: '#/redes' }, 'Reconectar')] : null)
-      : h('p', { class: 'small muted' }, '✔ Funcionando');
+      ? h('p', { class: 'small stats-warn' }, icon('alert', 14), ' ', a.health.problem, a.health.reconnect ? [' · ', h('a', { href: '#/redes' }, 'Reconectar')] : null)
+      : h('p', { class: 'small muted' }, okMark(true), ' Funcionando');
     let body;
     if (!a.analytics) body = h('p', { class: 'small muted' }, `${a.label} no da estadísticas por esta vía.`);
     else if (!a.series.length) body = h('p', { class: 'small muted' }, a.error || 'Las primeras cifras llegan durante el día siguiente a conectarla.');
@@ -525,7 +525,7 @@ export async function viewSocialStats(root, params = new URLSearchParams()) {
         sparkline(trend, `${useFollowers ? 'Seguidores' : 'Impresiones'}: de ${fmt(known[0])} a ${fmt(known.at(-1))} en el periodo`),
         dataTable(['Día', 'Seguidores', 'Impresiones', 'Alcance', 'Interacciones', 'Publicaciones'],
           a.series.map((s) => [shortDate(s.day), fmt(s.followers), fmt(s.impressions), fmt(s.reach), fmt(s.engagement), fmt(s.posts)])),
-        a.error ? h('p', { class: 'small stats-warn' }, '⚠ ', a.error) : null,
+        a.error ? h('p', { class: 'small stats-warn' }, icon('alert', 14), ' ', a.error) : null,
       ];
     }
     return h('div', { class: 'card stats-chart-card' },

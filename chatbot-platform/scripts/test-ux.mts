@@ -4,7 +4,7 @@ import path from 'node:path';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { chromium } from 'playwright';
-import { createHarness, pool, waitFor, evo, zer } from '../test/harness.js';
+import { createHarness, pool, waitFor, evo, ext, zer } from '../test/harness.js';
 
 assert.ok(process.env.TEST_DATABASE_URL, 'Define TEST_DATABASE_URL para una base de pruebas aislada; el arnés reinicia public.');
 const axe = fs.readFileSync(createRequire(import.meta.url).resolve('axe-core/axe.min.js'), 'utf8');
@@ -139,7 +139,7 @@ try {
   assert.equal(await instructions.inputValue(), 'BORRADOR_CONSERVADO');
   await page.reload(); assert.equal(await instructions.inputValue(), 'BORRADOR_CONSERVADO');
   await page.getByRole('button', { name: 'Guardar cambios', exact: true }).first().click();
-  await page.getByText('Cambios guardados ✅', { exact: true }).waitFor();
+  await page.getByText('Cambios guardados', { exact: true }).waitFor();
   // Guardar = aplicar: el agente usa el cambio de inmediato y queda en el historial.
   assert.equal((await h.authed('GET', `/api/chatbots/${h.botId}`)).json().personality.prompt, 'BORRADOR_CONSERVADO');
   assert.ok((await h.authed('GET', `/api/chatbots/${h.botId}/versions`)).json().releases.length >= 1);
@@ -206,7 +206,7 @@ try {
   await page.reload(); await page.locator('.main h1').waitFor();
   const chip = page.locator('.chat').getByRole('button', { name: 'Sí, me interesa', exact: true });
   await chip.waitFor();
-  assert.equal(await page.locator('.chat').getByRole('link', { name: '🔗 Ver promoción', exact: true }).getAttribute('href'), 'https://hotel.test/promo');
+  assert.equal(await page.locator('.chat').getByRole('link', { name: 'Ver promoción', exact: true }).getAttribute('href'), 'https://hotel.test/promo');
   const aiCalls = h.calls.length;
   await Promise.all([page.waitForResponse(playgroundPost), chip.click()]);
   await page.locator('.chat').getByText('¡Genial! Te cuento más 👇').waitFor();
@@ -274,15 +274,46 @@ try {
   evo.instances.get('palmas')!.state = 'open'; await page.getByText('¡WhatsApp conectado!', { exact: true }).waitFor();
   assert.equal(await page.getByText('Desde ahora tu asistente responde los mensajes que lleguen a este número.', { exact: true }).count(), 0);
   checked('QR conserva foco y diferencia conexión de atención encendida');
+  // El teléfono vinculado se cae y Evolution lo reconecta solo: el panel no pide escanear (ni ofrece pestañas de QR).
+  evo.instances.get('palmas')!.state = 'connecting'; evo.stuck.add('palmas');
+  assert.equal((await h.app.inject({ method: 'POST', url: `/webhook/${h.token}`, payload: { instance: 'palmas', event: 'connection.update', data: { state: 'connecting' } } })).statusCode, 200);
+  await go(`bot/${h.botId}/conexiones/${h.channelId}`);
+  await page.getByText('Tu WhatsApp se está reconectando solo.', { exact: true }).waitFor();
+  assert.equal(await page.locator('.wa-tab').count(), 0, 'sin pestañas de QR mientras se reconecta');
+  assert.equal(await page.locator('img.qr').count(), 0);
+  await page.getByText('Reconectando', { exact: true }).waitFor();
+  // "Vincular de nuevo" (con confirmación) descarta esa sesión y muestra un QR nuevo.
+  await page.getByRole('button', { name: 'Vincular de nuevo', exact: true }).click();
+  await page.locator('dialog').getByRole('button', { name: 'Continuar', exact: true }).click();
+  await page.locator('img.qr').waitFor();
+  assert.ok(ext.requests.some((x) => x.path === '/instance/delete/palmas'), 'la sesión anterior se descartó a pedido');
+  evo.stuck.delete('palmas'); evo.instances.get('palmas')!.state = 'open';
+  await page.getByText('¡WhatsApp conectado!', { exact: true }).waitFor();
+  checked('Un WhatsApp que se reconecta solo no pide escanear y ofrece "Vincular de nuevo"');
+  {
+    // En un celular no se puede escanear la propia pantalla: el conector abre con el código por número.
+    const phone = await contextFor('admin', { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+    const p = await phone.newPage(); p.setDefaultTimeout(10000);
+    const fresh = (await h.authed('POST', '/api/channels', { account_id: h.accountId, chatbot_id: h.botId, type: 'whatsapp', name: 'WhatsApp desde el celular' })).json();
+    await p.goto(`${base}/#/bot/${h.botId}/conexiones/${fresh.id}`); await p.locator('.wa-connect').waitFor();
+    assert.equal(await p.getByRole('button', { name: /Con mi número/ }).getAttribute('aria-pressed'), 'true');
+    await p.getByLabel('Tu número de WhatsApp').fill('81 1111 2222');
+    await p.getByRole('button', { name: 'Obtener código', exact: true }).click();
+    await p.getByText('NEWC-0DE1', { exact: true }).waitFor();
+    assert.equal(evo.instances.get(fresh.config.instance)?.number, '528111112222', 'la instancia vincula con ese número');
+    await phone.close();
+    await h.authed('DELETE', `/api/channels/${fresh.id}`);
+  }
+  checked('En el celular, el conector abre con "Con mi número" y entrega el código al primer toque');
   await go(`bot/${h.botId}/conexiones/${socialOn.id}`);
-  await page.getByText('✓ Conectado', { exact: true }).waitFor();
+  await page.locator('.main .badge.green', { hasText: /^Conectado$/ }).first().waitFor();
   await page.getByText('Instagram · @hotelpalmas', { exact: true }).waitFor();
   await go(`bot/${h.botId}/conexiones/${socialNew.id}`);
   await page.getByRole('button', { name: 'Obtener código de Telegram', exact: true }).click();
   await page.getByText(/ZRN-\d+/).first().waitFor({ timeout: 10000 }).catch(async () => { throw new Error(`Sin código de Telegram: ${await page.locator('.main').innerText()}`); });
   const code = (await page.locator('.social-connect').innerText()).match(/ZRN-\d+/)![0];
   zer.telegram.get(code)!.status = 'connected';
-  await page.getByText('✓ Conectado', { exact: true }).waitFor({ timeout: 10000 });
+  await page.locator('.main .badge.green', { hasText: /^Conectado$/ }).first().waitFor({ timeout: 10000 });
   checked('Redes sociales: cuenta conectada visible y Telegram se conecta con código desde el panel');
   const telegram = (await h.authed('POST', '/api/channels', { account_id: h.accountId, chatbot_id: h.botId, name: 'Telegram UX', type: 'telegram' })).json();
   await page.route(`**/api/channels/${telegram.id}/status`, (route) => route.fulfill({ json: { state: 'open' } }));
@@ -320,7 +351,7 @@ try {
     await page.route('**/api/onboarding/import**', (route) => route.fulfill({ contentType: 'application/json', body: JSON.stringify({ description: 'Hotel boutique en Mazatlán frente al mar.', sections: { catalog: 'Habitación doble — $1,800 por noche', hours: 'Recepción 24 horas', location: 'Av. del Mar 100, Mazatlán', faq: '', other: '' }, source: 'hotelpalmas.mx', truncated: false }) }));
     await page.goto(`${base}/#/agentes?new=1`); await page.waitForURL('**/#/agentes/nuevo');
     await page.getByRole('heading', { name: 'Crea tu agente' }).waitFor();
-    await page.getByText('✍️ Lo escribo yo').click();
+    await page.getByText('Lo escribo yo', { exact: true }).click();
     await page.getByLabel('Tu información').fill('Hotel boutique en Mazatlán. Habitación doble $1,800 por noche. Recepción 24 horas.');
     await page.getByRole('button', { name: 'Siguiente →' }).click(); await page.waitForURL('**/#/agentes/nuevo?paso=2');
     await page.getByRole('heading', { name: /Esto aprendió de/ }).waitFor();
