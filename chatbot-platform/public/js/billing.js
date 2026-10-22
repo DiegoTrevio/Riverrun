@@ -24,6 +24,77 @@ const LIMIT_SHORT = { messages_per_month: ['mensajes al mes', 'mensaje al mes'],
 /** "hasta 1,000 mensajes al mes · 1 canal · …" (vacío si el plan no tiene límites). */
 export const limitsText = (limits = {}) => Object.entries(LIMIT_SHORT).filter(([k]) => limits[k]).map(([k, [pl, sg]]) => `${limits[k].toLocaleString('es-MX')} ${limits[k] === 1 ? sg : pl}`).join(' · ');
 
+/** Persona del RFC: 12 caracteres = empresa (moral), 13 = persona física. */
+const personaOf = (rfc) => (rfc.length === 12 ? 'moral' : rfc.length === 13 ? 'fisica' : '');
+
+/**
+ * Tarjeta «Facturación»: con o sin factura y, con factura, los datos de la Constancia de Situación Fiscal. Los errores
+ * del servidor se muestran junto a cada campo.
+ */
+async function fiscalCard(onSaved) {
+  const r = await api('GET', withAcct('/api/billing/fiscal'));
+  const f = { ...r.fiscal };
+  const card = h('section', { class: 'card', 'aria-labelledby': 'fiscal-title' });
+  const errors = {};
+  const errorFor = (name) => (errors[name] = h('small', { class: 'error', id: `fiscal-${name}-error`, role: 'alert' }));
+  const withError = (name, input) => { input.addEventListener('input', () => clearError(name)); return h('div', {}, input, errorFor(name)); };
+  const clearError = (name) => { errors[name].textContent = ''; card.querySelector(`[name="${name}"]`)?.removeAttribute('aria-invalid'); };
+  const regime = h('select', { name: 'tax_regime' });
+  const use = h('select', { name: 'cfdi_use' });
+  const fillRegimes = () => {
+    const p = personaOf(f.rfc.trim());
+    const list = r.regimes.filter((x) => !p || x.for.includes(p));
+    if (!list.some((x) => x.code === f.tax_regime)) f.tax_regime = '';
+    regime.replaceChildren(h('option', { value: '' }, p ? 'Elige tu régimen' : 'Primero escribe tu RFC'), ...list.map((x) => h('option', { value: x.code, selected: x.code === f.tax_regime }, x.label)));
+    fillUses();
+  };
+  // Al cambiar de régimen se propone su primer uso (Gastos en general, si aplica).
+  const fillUses = (reset = false) => {
+    const allowed = r.uses_by_regime[f.tax_regime] || ['S01'];
+    if (reset || !allowed.includes(f.cfdi_use)) f.cfdi_use = allowed[0];
+    use.replaceChildren(...r.uses.filter((u) => allowed.includes(u.code)).map((u) => h('option', { value: u.code, selected: u.code === f.cfdi_use }, u.label)));
+  };
+  regime.onchange = (e) => { f.tax_regime = e.target.value; clearError('tax_regime'); fillUses(true); };
+  use.onchange = (e) => { f.cfdi_use = e.target.value; };
+  const rfc = text(f, 'rfc', { maxlength: 13, autocomplete: 'off', placeholder: 'XAXX010101000', style: 'text-transform:uppercase', oninput: () => fillRegimes() });
+  const details = h('div', { hidden: !f.wants_invoice },
+    h('div', { class: 'grid' },
+      field('RFC', withError('rfc', rfc)),
+      field('Nombre o razón social', withError('legal_name', text(f, 'legal_name', { maxlength: 300 })), 'Tal como aparece en tu Constancia de Situación Fiscal, sin «S.A. de C.V.».'),
+      field('Régimen fiscal', withError('tax_regime', regime)),
+      field('Código postal fiscal', withError('zip', text(f, 'zip', { maxlength: 5, inputmode: 'numeric', autocomplete: 'postal-code' }))),
+      field('Uso del CFDI', withError('cfdi_use', use)),
+      field('Correo para tus facturas (opcional)', withError('invoice_email', text(f, 'invoice_email', { type: 'email', autocomplete: 'email' })), 'Si lo dejas vacío, las enviamos al correo del dueño de la cuenta.')));
+  const choice = (value, label) => h('label', { class: 'check' }, h('input', { type: 'radio', name: 'wants_invoice', value, checked: f.wants_invoice === (value === 'yes'), onchange: () => { f.wants_invoice = value === 'yes'; details.hidden = !f.wants_invoice; } }), label);
+  fillRegimes();
+  fill(card,
+    h('h2', { id: 'fiscal-title', style: 'margin-top:0' }, 'Facturación'),
+    h('fieldset', { class: 'field' }, h('legend', {}, '¿Quieres factura?'),
+      choice('no', 'Sin factura (tus pagos se incluyen en la factura a público en general)'),
+      choice('yes', 'Con factura a mi nombre')),
+    details,
+    h('p', { class: 'muted small' }, 'Guardamos tus datos para emitir tus facturas. Puedes cambiarlos cuando quieras.'),
+    h('button', { class: 'primary', onclick: async () => {
+      for (const k of Object.keys(errors)) clearError(k);
+      try {
+        await api('PUT', withAcct('/api/billing/fiscal'), { ...f, rfc: f.rfc.trim().toUpperCase() });
+        toast(f.wants_invoice ? 'Datos de facturación guardados' : 'Listo: sin factura');
+        onSaved();
+      } catch (e) {
+        const byField = (e.issues || []).map((i) => i.split(': ')).filter(([k]) => errors[k]);
+        if (!byField.length) return toast(e.message || 'No se pudo guardar', true);
+        for (const [k, ...msg] of byField) {
+          errors[k].textContent = msg.join(': ');
+          const input = card.querySelector(`[name="${k}"]`);
+          input?.setAttribute('aria-invalid', 'true');
+          input?.setAttribute('aria-describedby', errors[k].id);
+        }
+        card.querySelector(`[name="${byField[0][0]}"]`)?.focus();
+      }
+    } }, 'Guardar'));
+  return card;
+}
+
 /** Abre la página del proveedor que devuelve la ruta (cambiar tarjeta). */
 async function goPay(path) {
   const r = await run(() => api('POST', withAcct(path)));
@@ -178,7 +249,12 @@ export async function viewPlan(root, params) {
         }))),
       h('p', { class: 'muted small', style: 'margin-bottom:0' }, 'Cada pago se registra con su IVA desglosado.'))
     : null;
-  root.append(h('h1', {}, 'Mi plan y pagos'), notice, status, change, usage, offer, history);
+  const fiscal = await fiscalCard(() => render()).catch(() => null);
+  // Pidió factura sin completar sus datos: se avisa antes de pagar (el servidor también lo exige).
+  const fiscalMissing = b.fiscal?.wants_invoice && !b.fiscal.complete && (!live || sub.cancel_at_period_end)
+    ? h('p', { class: 'banner warn' }, 'Pediste factura: completa tus datos en «Facturación» antes de contratar.')
+    : null;
+  root.append(h('h1', {}, 'Mi plan y pagos'), notice, status, change, fiscal, usage, fiscalMissing, offer, history);
   if (waiting && !gaveUp) state.timers.push(setTimeout(() => { state.me = null; render(); }, 4000));
 }
 

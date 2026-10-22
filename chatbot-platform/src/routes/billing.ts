@@ -5,6 +5,7 @@ import { HttpError, requireRole, targetAccount } from '../access.js';
 import { rateLimited } from '../auth.js';
 import { baseFor } from '../brands.js';
 import { providers, applyState, changePlan, confirmCheckout, enabledProviders, getPlan, getSubscription, listPlans, payable, recordEvent, startCheckout, startReplacement } from '../billing/service.js';
+import { FiscalSchema, fiscalComplete, getFiscal, personaOf, REGIMES, saveFiscal, USES, usesFor } from '../billing/fiscal.js';
 import { applyRefund, listPayments, recordPayment } from '../billing/payments.js';
 import { chargeCents, taxPercent } from '../billing/tax.js';
 import { ProviderError, WebhookError, type Plan, type ProviderName, type WebhookResult } from '../billing/types.js';
@@ -155,8 +156,8 @@ export async function billingRoutes(api: FastifyInstance) {
   /* ------------------------------ Cuenta ------------------------------ */
   api.get('/api/billing', admins, async (req: any) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
-    const [acc, plans, sub, limits, payments] = await Promise.all([
-      queryOne<any>(`SELECT status, plan, trial_ends_at FROM accounts WHERE id = $1`, [accountId]), offeredPlans(), getSubscription(accountId), limitsReport(accountId), listPayments(accountId),
+    const [acc, plans, sub, limits, payments, fiscal] = await Promise.all([
+      queryOne<any>(`SELECT status, plan, trial_ends_at FROM accounts WHERE id = $1`, [accountId]), offeredPlans(), getSubscription(accountId), limitsReport(accountId), listPayments(accountId), getFiscal(accountId),
     ]);
     return {
       account: acc,
@@ -166,7 +167,30 @@ export async function billingRoutes(api: FastifyInstance) {
       limits,
       grace_days: config.billing.graceDays,
       support_contact: config.signup.supportContact,
+      fiscal: { wants_invoice: fiscal.wants_invoice, complete: fiscalComplete(fiscal) },
     };
+  });
+
+  /* ------------------------------ Datos fiscales ------------------------------ */
+  const catalogs = {
+    regimes: REGIMES.map((r) => ({ code: r.code, label: `${r.code} · ${r.label}`, for: r.for })),
+    uses: USES.map((u) => ({ code: u.code, label: `${u.code} · ${u.label}` })),
+    uses_by_regime: Object.fromEntries(REGIMES.map((r) => [r.code, usesFor(r.code)])),
+  };
+
+  api.get('/api/billing/fiscal', admins, async (req: any) => {
+    const accountId = await targetAccount(req.user, req.query.account_id);
+    const f = await getFiscal(accountId);
+    const { account_id: _a, updated_at, ...data } = f as any;
+    return { fiscal: data, complete: fiscalComplete(f), updated_at, ...catalogs };
+  });
+
+  api.put('/api/billing/fiscal', admins, async (req: any) => {
+    const accountId = await targetAccount(req.user, req.query.account_id);
+    const d = parse(FiscalSchema, req.body);
+    const f = await saveFiscal(accountId, req.user.role === 'superadmin' ? null : req.user.id, d);
+    await logEvent({ level: 'info', source: 'admin', message: d.wants_invoice ? `Datos de facturación guardados (RFC ${d.rfc}, ${personaOf(d.rfc) === 'moral' ? 'persona moral' : 'persona física'})` : 'Facturación: sin factura (público en general)', accountId });
+    return { ok: true, complete: fiscalComplete(f), wants_invoice: f.wants_invoice };
   });
 
   api.post('/api/billing/checkout', admins, async (req: any) => {
@@ -175,6 +199,9 @@ export async function billingRoutes(api: FastifyInstance) {
     const { plan, provider } = await payable(b.plan, b.provider);
     const sub = await getSubscription(accountId);
     if (sub && ['active', 'past_due'].includes(sub.status) && !sub.cancel_at_period_end && sub.provider_subscription_id) throw new HttpError(409, 'Ya tienes un plan activo: para cambiarlo usa «Cambiar de plan» en Mi plan.');
+    // Quien pidió factura necesita sus datos completos antes del primer cobro (su CFDI sale de cada pago).
+    const fiscal = await getFiscal(accountId);
+    if (fiscal.wants_invoice && !fiscalComplete(fiscal)) throw new HttpError(400, 'Completa tus datos de facturación antes de pagar (en «Facturación», en esta misma página), o elige «Sin factura».');
     try {
       // Volver a contratar con Mercado Pago tras cancelar: el primer cobro es al terminar lo ya pagado.
       const paidUntil = provider === 'mercadopago' && sub && (sub.status === 'canceled' || sub.cancel_at_period_end) && sub.current_period_end && sub.current_period_end > new Date() ? sub.current_period_end : undefined;
