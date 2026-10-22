@@ -189,6 +189,30 @@ try {
   await page.getByRole('heading', { name: 'Mi plan y pagos' }).waitFor();
   checks.push('Cobro fallido: franja «Actualiza tu pago» en todo el panel, también en móvil');
 
+  // Facturación: con factura a su nombre; un RFC mal escrito se marca en su campo y uno válido se guarda.
+  await page.setViewportSize({ width: 390, height: 1000 });
+  await page.goto(`${base}/#/plan`);
+  const fiscal = page.getByRole('region', { name: 'Facturación' });
+  await fiscal.getByLabel('Con factura a mi nombre').check();
+  await fiscal.getByLabel('RFC').fill('EKU9003173C8');
+  await fiscal.getByLabel('Nombre o razón social').fill('Escuela Kemper Urgate S.A. de C.V.');
+  await fiscal.getByLabel('Régimen fiscal').selectOption('601');
+  await fiscal.getByLabel('Código postal fiscal').fill('42501');
+  await fiscal.getByRole('button', { name: 'Guardar' }).click();
+  await fiscal.getByText(/revisa la homoclave/).waitFor();
+  assert.equal(await fiscal.getByLabel('RFC').getAttribute('aria-invalid'), 'true');
+  await page.addScriptTag({ content: axe });
+  const fiscalViolations = await page.evaluate(async () => (await (window as any).axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] } }))
+    .violations.filter((v: any) => ['serious', 'critical'].includes(v.impact)).map((v: any) => v.id));
+  assert.deepEqual(fiscalViolations, [], 'Facturación a 390');
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'Facturación sin desbordamiento a 390');
+  await fiscal.getByLabel('RFC').fill('EKU9003173C9');
+  await fiscal.getByRole('button', { name: 'Guardar' }).click();
+  await page.getByText('Datos de facturación guardados').waitFor();
+  const fiscalRow = (await pool.query(`SELECT wants_invoice, rfc, legal_name, cfdi_use FROM account_fiscal WHERE account_id = $1`, [accountId])).rows[0];
+  assert.deepEqual(fiscalRow, { wants_invoice: true, rfc: 'EKU9003173C9', legal_name: 'ESCUELA KEMPER URGATE', cfdi_use: 'G03' });
+  checks.push('Facturación: con factura, error del RFC en su campo y datos guardados (accesible en móvil)');
+
   // El superadmin captura precios sin IVA y elige el periodo. La última tarjeta es la de "Agregar plan".
   await context.clearCookies();
   const sx = h.cookie.indexOf('=');
