@@ -22,7 +22,8 @@ jobs:
   test:
     name: Tipos y pruebas
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Una corrida sana tarda ~16 min; el margen deja lugar a un reintento de la instalación del navegador.
+    timeout-minutes: 25
     services:
       postgres:
         image: pgvector/pgvector:0.8.7-pg16
@@ -50,8 +51,28 @@ jobs:
         run: npm run check:frontend && node --check public/app.js
       - name: Pruebas
         run: npm test
+      # El navegador se guarda en caché por versión de Playwright: la descarga a veces se cuelga y consumía todo el job.
+      - name: Versión de Playwright
+        id: pw
+        run: echo "version=$(node -p "require('./node_modules/playwright/package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: Caché del navegador de pruebas
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-chromium
       - name: Instalar navegador de pruebas
-        run: npx playwright install --with-deps chromium
+        timeout-minutes: 12
+        env:
+          CACHE_HIT: ${{ steps.pw-cache.outputs.cache-hit }}
+        run: |
+          # Con caché solo faltan los paquetes del sistema. Cada intento tiene 4 minutos: uno colgado se corta y se reintenta.
+          if [ "$CACHE_HIT" = "true" ]; then set -- install-deps chromium; else set -- install --with-deps chromium; fi
+          for i in 1 2 3; do
+            timeout 240 npx playwright "$@" && exit 0
+            echo "::warning::Instalación del navegador: el intento $i falló o se agotó; se reintenta"
+          done
+          exit 1
       - name: Regresión UX y accesibilidad
         run: npm run test:ux
       - name: Activación semántica en navegador y aislamiento de base
