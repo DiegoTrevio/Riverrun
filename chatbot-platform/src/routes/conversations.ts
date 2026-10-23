@@ -123,7 +123,7 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
       store.getContact(conv.contact_id),
       query(
         `SELECT m.*, i.code AS image_code, i.name AS image_name,
-                mm.kind AS media_kind, mm.mime AS media_mime, mm.file_name AS media_name, mm.size_bytes AS media_size, mm.complete AS media_complete
+                mm.kind AS media_kind, mm.mime AS media_mime, mm.file_name AS media_name, mm.size_bytes AS media_size, mm.complete AS media_complete, mm.ai_summary AS media_summary
          FROM messages m LEFT JOIN images i ON i.id = m.image_id LEFT JOIN message_media mm ON mm.message_id = m.id
          WHERE m.conversation_id = $1 ${messageFilter} ORDER BY m.id ${options.after !== undefined ? 'ASC' : 'DESC'} LIMIT 501`,
         messageParams,
@@ -171,7 +171,8 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
     await conversationFor(req.user, file.conversation_id);
     const abs = inboundAbsolutePath(file.file_path);
     if (!abs || !fs.existsSync(abs)) throw new HttpError(404, 'El archivo ya no está guardado');
-    const inline = ['image/jpeg', 'image/png', 'image/webp'].includes(file.mime);
+    // Fotos y videos se ven en el panel; lo demás se descarga.
+    const inline = ['image/jpeg', 'image/png', 'image/webp', 'video/mp4', 'video/quicktime', 'video/webm'].includes(file.mime);
     reply
       .header('content-type', inline ? file.mime : 'application/octet-stream')
       .header('content-disposition', `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(safeFileName(file.file_name))}`)

@@ -163,6 +163,23 @@
         img.onload = scroll;
         b.appendChild(img);
       }
+      if (m.file && /^https?:\/\//.test(m.file.url || '')) {
+        if (m.file.kind === 'video' || m.file.kind === 'audio') {
+          var media = el(m.file.kind);
+          media.src = m.file.url;
+          media.controls = true;
+          media.preload = 'metadata';
+          media.style.maxWidth = '100%';
+          b.appendChild(media);
+        } else {
+          var link = el('a', 'file', '📎 ' + (m.file.name || 'Archivo'));
+          link.href = m.file.url;
+          link.target = '_blank';
+          link.rel = 'noopener';
+          link.setAttribute('download', m.file.name || '');
+          b.appendChild(link);
+        }
+      }
       if (m.text) richText(b, m.text);
       list.insertBefore(b, typing);
       if (m.buttons && m.buttons.length) {

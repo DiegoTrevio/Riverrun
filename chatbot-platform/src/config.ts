@@ -91,6 +91,8 @@ export const config = {
     fallbackModels: env('OPENROUTER_FALLBACK_MODELS', '').split(',').map((m) => m.trim()).filter((m) => m && m !== 'none'),
     summaryModel: env('OPENROUTER_SUMMARY_MODEL', env('OPENAI_SUMMARY_MODEL', useOpenRouter ? 'openai/gpt-4.1-mini' : 'gpt-4.1-mini')),
     transcriptionModel: env('OPENROUTER_TRANSCRIPTION_MODEL', env('OPENAI_TRANSCRIPTION_MODEL', useOpenRouter ? 'google/gemini-2.5-flash' : 'gpt-4o-mini-transcribe')),
+    /** Lee las fotos y los PDF que mandan los clientes (necesita un modelo que vea imágenes y documentos). */
+    mediaModel: env('OPENROUTER_MEDIA_MODEL', env('OPENAI_MEDIA_MODEL', useOpenRouter ? 'google/gemini-2.5-flash' : 'gpt-4.1-mini')),
     timeoutMs: Number(env('OPENROUTER_TIMEOUT_MS', env('OPENAI_TIMEOUT_MS', '45000'))),
   },
   knowledgeSearch: {

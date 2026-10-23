@@ -22,7 +22,7 @@ import { maybeSummarize } from './memory.js';
 import { briefReport } from './report-format.js';
 import { summarizeConversation } from './report.js';
 import { normalize } from './text.js';
-import { CAPTION_MAX, type OutgoingButton, type OutgoingFile, type OutgoingTemplate, type Transport } from './transport.js';
+import { CAPTION_MAX, libraryFile, sendsAnyFile, type OutgoingButton, type OutgoingFile, type OutgoingTemplate, type Transport } from './transport.js';
 import { emptyPlan, validateDecision, type AgendaValidation, type ExecutionPlan, type QuoteValidation, type ValidationInput } from './validator.js';
 import { quoteEvent, type QuoteCatalog, type Quotes } from '../quotes/agent.js';
 import type { Quote } from '../store/quotes.js';
@@ -545,8 +545,8 @@ export class Engine {
         .catch(async (e) => { await log('error', 'engine', `No se pudo preparar la cotización: ${e?.message ?? e}`); return null; });
       if (prepared?.status === 'ready') {
         // Los canales que no envían archivos reciben un enlace firmado al PDF.
-        const link = transport.sendFile ? undefined : this.ext.quotes.link(prepared.quote);
-        quoteOut = { text: this.ext.quotes.message(bot, prepared.quote, link), file: transport.sendFile ? prepared.file : undefined, quote: prepared.quote, link };
+        const link = sendsAnyFile(transport) ? undefined : this.ext.quotes.link(prepared.quote);
+        quoteOut = { text: this.ext.quotes.message(bot, prepared.quote, link), file: sendsAnyFile(transport) ? prepared.file : undefined, quote: prepared.quote, link };
       } else if (prepared) quoteOut = { text: prepared.text, pending: prepared.status === 'pending' ? prepared.quote : undefined };
       if (currentOperation()) await query(`UPDATE delivery_attempts SET state='sent',updated_at=now() WHERE operation_key=$1 AND part=-2`, [currentOperation()]);
     }
@@ -836,10 +836,13 @@ export class Engine {
       await new Promise(r=>setTimeout(r,Math.min(o.delay,7000)));
     }
     await assertOwnership();
+    // Un video, documento o audio de la biblioteca se envía como archivo (igual que una foto, pero con su tipo).
+    let libFile: OutgoingFile | null = null;
     if(o.image) {
       const image=await store.getImage(o.image.id);
       const owner=image?await store.getChatbot(image.chatbot_id):null;
       if(!image?.active || owner?.account_id!==conv.account_id) return null;
+      libFile=libraryFile(image);
     }
     if(o.sender==='bot') {
       const fresh=await store.getConversation(conv.id);
@@ -863,8 +866,8 @@ export class Engine {
     }
     const msg=await withTransaction(async client=>{
       const message=await store.insertMessage({
-        conversation_id:conv.id,direction:'out',sender:o.sender,type:o.file?o.file.kind:o.image?'image':'text',content:o.text,
-        image_id:o.image?.id??null,status:'pending',meta:o.file?{...o.meta,attachment_id:o.file.id,file_name:o.file.name}:o.buttons?.length?{...o.meta,buttons:o.buttons}:o.meta,
+        conversation_id:conv.id,direction:'out',sender:o.sender,type:o.file?o.file.kind:libFile?libFile.kind:o.image?'image':'text',content:o.text,
+        image_id:o.image?.id??null,status:'pending',meta:o.file?{...o.meta,attachment_id:o.file.id,file_name:o.file.name}:libFile?{...o.meta,file_name:libFile.name}:o.buttons?.length?{...o.meta,buttons:o.buttons}:o.meta,
       },client);
       if(!message) return null;
       const reserved=await client.query(`INSERT INTO delivery_attempts(operation_key,part,conversation_id,message_id,state) VALUES($1,$2,$3,$4,'sending') ON CONFLICT DO NOTHING RETURNING part`,[delivery.operation,delivery.part,conv.id,message.id]);
@@ -892,6 +895,9 @@ export class Engine {
       }
       const extId=o.template ? (transport.sendTemplate ? await transport.sendTemplate(o.template) : (()=>{throw new Error('unsupported_template');})())
         : o.file ? (transport.sendFile ? await transport.sendFile(o.file,o.text,0) : (()=>{throw new Error('unsupported_file');})())
+        : libFile ? (transport.sendFile ? await transport.sendFile(libFile,o.text,0)
+          // El canal no envía archivos: va el nombre con un enlace firmado para abrirlo o descargarlo.
+          : await transport.sendText(`${o.text ? `${o.text}\n` : ''}📎 ${libFile.name}: ${libFile.url}`,0))
         : o.image ? await transport.sendImage(o.image,o.text,0)
         : o.buttons?.length ? (transport.sendButtons ? await transport.sendButtons(o.text,o.buttons,0) : (()=>{throw new Error('unsupported_buttons');})())
         : await transport.sendText(o.text,0);

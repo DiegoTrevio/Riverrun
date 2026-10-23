@@ -129,6 +129,17 @@ const ImageMeta = z.object({
     .optional(),
 });
 
+const KIND_LABEL: Record<string, string> = { image: 'Foto', video: 'Video', document: 'Documento', audio: 'Audio' };
+
+/** Nombre con que llega al cliente un documento, video o audio: el original, o el nombre que le dio el negocio con su extensión. */
+function libraryFileName(file: UploadFile, name: string) {
+  if (file.kind === 'image') return '';
+  const original = file.fileName.replace(/[\\/\x00-\x1f\x7f"]/g, ' ').trim();
+  if (original && path.extname(original).toLowerCase() === file.ext) return original.slice(0, 120);
+  const base = name.replace(/[\\/\x00-\x1f\x7f"]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 100) || 'archivo';
+  return `${base}${file.ext}`;
+}
+
 /** Los agentes solo ven nombre y estado (para filtros); la configuración es de administradores. */
 function visibleBot(user: User, bot: Chatbot) {
   if (user.role === 'agent') return { id: bot.id, account_id: bot.account_id, name: bot.name, active: bot.active };
@@ -477,7 +488,7 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
     const upload = await readUpload(req);
     const meta = parse(ImageMeta, upload.fields);
     if (!meta.code || !meta.name) throw new HttpError(400, 'El ID y el nombre son obligatorios');
-    if (!upload.file) throw new HttpError(400, 'Falta el archivo de imagen');
+    if (!upload.file) throw new HttpError(400, 'Falta el archivo');
     const rel = await saveFile(bot.id, upload.file);
     try {
       const img = await store.insertImage({
@@ -490,11 +501,13 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
         file_path: rel,
         mime_type: upload.file.mime,
         size_bytes: upload.file.buffer.length,
+        kind: upload.file.kind,
+        file_name: libraryFileName(upload.file, meta.name),
         active: meta.active ?? true,
         send_when: meta.send_when ?? {},
         sha256: upload.file.sha256,
       });
-      await logEvent({ level: 'info', source: 'admin', message: `Imagen agregada: ${img.code}`, accountId: bot.account_id, chatbotId: bot.id });
+      await logEvent({ level: 'info', source: 'admin', message: `${KIND_LABEL[img.kind ?? 'image']} agregado a la biblioteca: ${img.code}`, accountId: bot.account_id, chatbotId: bot.id });
       return img;
     } catch (e) {
       await fsp.rm(path.join(config.uploadsDir, rel), { force: true });
@@ -513,6 +526,8 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
       patch.mime_type = file.mime;
       patch.size_bytes = file.buffer.length;
       patch.sha256 = file.sha256;
+      patch.kind = file.kind;
+      patch.file_name = libraryFileName(file, String(patch.name ?? img.name));
     }
     let updated;
     try {

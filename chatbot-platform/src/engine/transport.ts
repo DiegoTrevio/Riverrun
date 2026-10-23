@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { config } from '../config.js';
+import { signedImageUrl } from '../channels/media.js';
 import type { ChannelType, ImageAsset } from '../types.js';
 
 /** Archivo listo para enviar (PDF, Word, audio, video…). La ruta ya se comprobó contra la cuenta. */
@@ -9,6 +10,8 @@ export interface OutgoingFile {
   mime: string;
   kind: 'image' | 'document' | 'audio' | 'video';
   absPath: string;
+  /** Dirección pública y firmada del archivo, para las plataformas que lo descargan por su cuenta (Messenger, Instagram). */
+  url?: string;
 }
 
 /** Canal de salida. El mismo motor funciona para todas las plataformas y para el simulador. */
@@ -21,6 +24,8 @@ export interface Transport {
   /** Envía texto. `delayMs` = tiempo de "escribiendo…" sugerido (cada plataforma lo aplica si puede). */
   sendText(text: string, delayMs: number): Promise<string | null>;
   sendImage(image: ImageAsset, caption: string, delayMs: number): Promise<string | null>;
+  /** El canal solo muestra archivos de la biblioteca del agente (chat web): un PDF de cotización le llega como enlace. */
+  libraryFilesOnly?: boolean;
   /** Envía un archivo (PDF, audio, video…). Opcional: los canales que no lo admiten no lo implementan y el envío falla con un aviso claro. */
   sendFile?(file: OutgoingFile, caption: string, delayMs: number): Promise<string | null>;
   /** Plantilla aprobada de WhatsApp oficial (lo único que se puede enviar fuera de las 24 h). Solo WhatsApp por Zernio. */
@@ -57,6 +62,16 @@ export const CAPTION_MAX = 1024;
 
 export function imageAbsolutePath(img: Pick<ImageAsset, 'file_path'>) {
   return path.isAbsolute(img.file_path) ? img.file_path : path.join(config.uploadsDir, img.file_path);
+}
+
+/** El canal puede recibir un archivo cualquiera (una cotización en PDF), no solo los de la biblioteca. */
+export const sendsAnyFile = (t: Transport) => !!t.sendFile && !t.libraryFilesOnly;
+
+/** Un video, documento o audio de la biblioteca del agente, listo para enviarse como archivo (null si es una foto). */
+export function libraryFile(img: ImageAsset): OutgoingFile | null {
+  if (!img.kind || img.kind === 'image') return null;
+  const ext = path.extname(img.file_path) || '';
+  return { id: img.id, name: img.file_name || `${img.code}${ext}`, mime: img.mime_type, kind: img.kind, absPath: imageAbsolutePath(img), url: signedImageUrl(img.id) };
 }
 
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

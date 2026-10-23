@@ -191,6 +191,8 @@ const promiseRe = (noun: string) =>
     'iu',
   );
 const IMAGE_PROMISE_RE = promiseRe(PHOTO_NOUN);
+// Videos y documentos de la biblioteca: misma regla que las fotos (la cotización en PDF tiene su propio envío).
+const FILE_PROMISE_RE = promiseRe('(?:videos?|documentos?|pdfs?|archivos?)');
 const TEXT_PROMISE_RE = promiseRe(TEXT_NOUN);
 // "Te la mando", "aquí la tienes de nuevo": solo cuenta si el cliente habla de una foto (si no, "la" puede ser otra cosa).
 const PRONOUN_PROMISE_RE = new RegExp(`${B}(?:(?:te|le)\\s+(?:la|las)\\s+${SEND_VERB}|(?:aqu[ií]|ah[ií])\\s+(?:te\\s+|le\\s+)?(?:la|las)\\s+(?:tienes|tiene|dejo|va|van))${E}`, 'iu');
@@ -966,8 +968,10 @@ export function validateDecision(input: ValidationInput): ValidationResult {
   // "Menú" o "catálogo" pueden ser texto: solo son foto si el catálogo tiene una foto con ese nombre.
   const textNounIsPhoto = catalog.some((i) => /(?<![\p{L}\p{N}])(?:menu|catalogo|flyer|folleto)/u.test(normalize(`${i.code} ${i.name}`)));
   const customerTalksPhoto = CUSTOMER_PHOTO_RE.test(customerPlain);
+  const hasFiles = catalog.some((i) => (i.kind ?? 'image') !== 'image');
   const promisesPhoto = (x: string) =>
-    IMAGE_PROMISE_RE.test(x) || (textNounIsPhoto && TEXT_PROMISE_RE.test(x)) || (customerTalksPhoto && PRONOUN_PROMISE_RE.test(x));
+    IMAGE_PROMISE_RE.test(x) || (textNounIsPhoto && TEXT_PROMISE_RE.test(x)) || (customerTalksPhoto && PRONOUN_PROMISE_RE.test(x)) ||
+    (hasFiles && FILE_PROMISE_RE.test(x) && !/cotizaci/i.test(normalize(x)));
   /** La oración promete una foto que no sale: la que nombra (si nombra una del catálogo) o cualquiera (si no nombra ninguna). */
   const brokenPromise = (x: string) => {
     // Una pregunta de la lista la escribió el negocio y ofrece, no promete («¿Te envío nuestro folleto?»).

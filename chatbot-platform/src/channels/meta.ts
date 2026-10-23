@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { config } from '../config.js';
 import { toPlainText } from '../engine/text.js';
-import { sleep, type OutgoingButton, type Transport } from '../engine/transport.js';
+import { sleep, type OutgoingButton, type OutgoingFile, type Transport } from '../engine/transport.js';
 import { logEvent } from '../logs.js';
 import { safeEqual } from '../secret.js';
 import { ChannelConfigSchemas, type Channel, type ChannelType, type ImageAsset } from '../types.js';
@@ -110,6 +110,29 @@ class MetaTransport implements Transport {
     if (caption) {
       await this.sendText(caption, 0).catch((e: any) =>
         logEvent({ level: 'warn', source: 'channel', message: `Foto entregada, pero su texto no se pudo enviar (${this.kind})`, accountId: this.channel.account_id, channelId: this.channel.id }),
+      );
+    }
+    return r.message_id ?? null;
+  }
+
+  /**
+   * Video, documento o audio: Meta lo descarga desde su dirección firmada (necesita HTTPS). Sin dirección pública (un
+   * archivo que no tiene enlace firmado) el canal no lo puede enviar y el motor manda el aviso o el enlace que corresponda.
+   */
+  async sendFile(file: OutgoingFile, caption: string, delayMs: number) {
+    if (!file.url || !config.publicBaseUrl.startsWith('https://')) throw new Error('unsupported_file');
+    await this.typing(Math.min(delayMs, 1500));
+    await this.dispatchGuard?.();
+    const type = file.kind === 'video' ? 'video' : file.kind === 'audio' ? 'audio' : file.kind === 'image' ? 'image' : 'file';
+    const r = await this.graph.call('POST', 'me/messages', {
+      recipient: { id: this.recipientId },
+      messaging_type: 'RESPONSE',
+      message: { attachment: { type, payload: { url: file.url, is_reusable: true } } },
+    });
+    // Como en las fotos, el texto va aparte; si falla, el archivo ya llegó y no cuenta como fallido.
+    if (caption) {
+      await this.sendText(caption, 0).catch(() =>
+        logEvent({ level: 'warn', source: 'channel', message: `Archivo entregado, pero su texto no se pudo enviar (${this.kind})`, accountId: this.channel.account_id, channelId: this.channel.id }),
       );
     }
     return r.message_id ?? null;

@@ -161,6 +161,8 @@ export const AiSettingsSchema = z.object({
   /** Mostrar "escribiendo..." proporcional al largo de la respuesta. */
   typing_simulation: z.boolean().default(true),
   transcribe_audio: z.boolean().default(false),
+  /** Ver las fotos y leer los documentos (PDF, Word, texto) que manda el cliente: la IA los resume una vez y responde con base en eso. */
+  understand_media: z.boolean().default(true),
   max_bubbles: z.number().int().min(1).max(5).default(3),
   max_chars_per_bubble: z.number().int().min(80).max(2000).default(450),
   /** Presupuesto de caracteres de conocimiento por llamada (controla costo). */
@@ -315,7 +317,13 @@ export interface ImageAsset {
   size_bytes: number;
   active: boolean;
   send_when?: unknown;
+  /** Qué es: foto (por omisión), video, documento o audio. Todos se eligen y se envían igual que las fotos. */
+  kind?: LibraryKind;
+  /** Nombre con que el cliente recibe un documento, video o audio (vacío en fotos). */
+  file_name?: string;
 }
+
+export type LibraryKind = 'image' | 'video' | 'document' | 'audio';
 
 export interface Contact {
   id: string;
