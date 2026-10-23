@@ -22,7 +22,9 @@ jobs:
   test:
     name: Tipos y pruebas
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Una corrida sana tarda ~18 min (14 de pruebas y el resto en el navegador); el margen deja lugar a los reintentos
+    # de los paquetes del sistema y del navegador sin cancelar una corrida sana.
+    timeout-minutes: 35
     services:
       postgres:
         image: pgvector/pgvector:0.8.7-pg16
@@ -50,8 +52,41 @@ jobs:
         run: npm run check:frontend && node --check public/app.js
       - name: Pruebas
         run: npm test
-      - name: Instalar navegador de pruebas
-        run: npx playwright install --with-deps chromium
+      # Lo que se colgaba era apt: una descarga del espejo de Ubuntu que deja de mandar datos y espera para siempre.
+      # apt lleva sus propios tiempos (reintenta una descarga atascada); si aun así hay que cortar, se mata lo que quedó
+      # (el apt-get que lanza sudo sobrevive al timeout y deja el candado de dpkg) y el siguiente intento arranca limpio.
+      - name: Paquetes del sistema para el navegador
+        timeout-minutes: 14
+        run: |
+          printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "5";\n' | sudo tee /etc/apt/apt.conf.d/99-ci-timeouts > /dev/null
+          for i in 1 2 3; do
+            timeout -k 15 240 npx playwright install-deps chromium && exit 0
+            echo "::warning::Paquetes del sistema: el intento $i falló o se agotó; se limpia apt y se reintenta"
+            sudo pkill -9 -x apt-get || true
+            sudo pkill -9 -x dpkg || true
+            sudo rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock
+            sudo dpkg --configure -a || true
+          done
+          exit 1
+      # El navegador se guarda en caché por versión de Playwright; sin caché se descarga (solo HTTP, seguro de cortar).
+      - name: Versión de Playwright
+        id: pw
+        run: echo "version=$(node -p "require('./node_modules/playwright/package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: Caché del navegador de pruebas
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-chromium
+      - name: Navegador de pruebas
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 10
+        run: |
+          for i in 1 2 3; do
+            timeout -k 10 180 npx playwright install chromium && exit 0
+            echo "::warning::Navegador: el intento $i falló o se agotó; se reintenta"
+          done
+          exit 1
       - name: Regresión UX y accesibilidad
         run: npm run test:ux
       - name: Activación semántica en navegador y aislamiento de base
