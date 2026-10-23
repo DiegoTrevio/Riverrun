@@ -770,8 +770,9 @@ async function editSettings(root) {
         field('Repetir «un cliente espera a una persona» cada (minutos)', num(s.alert_timing, 'human_repeat_minutes', { min: 0, max: 1440 }), 'Mientras el cliente siga esperando, durante 24 horas. 0 = recordar una sola vez. El primer recordatorio sale según cada agente (Reglas → recordar a los … minutos).'),
         field('Repetir «el asistente no pudo responder» cada (minutos)', num(s.alert_timing, 'ai_error_repeat_minutes', { min: 10, max: 1440 }), 'Mientras el cliente siga sin respuesta, durante 24 horas.')),
       field('Escalar una conversación asignada sin respuesta después de (minutos)', num(s.alert_timing, 'escalate_minutes', { min: 0, max: 1440 }), '0 = no escalar. Si la persona asignada no responde en ese tiempo, se avisa una vez más a quienes elijas abajo (o a los administradores).'),
-      team.length ? h('div', {}, h('p', { class: 'small muted', style: 'margin:6px 0' }, 'Escalar a (si no marcas a nadie, a los administradores):'),
-        h('div', { class: 'row' }, team.map((u) => h('label', { class: 'check' },
+      // Solo administradores: un agente no puede abrir una conversación que no tiene asignada.
+      team.some((u) => u.role === 'admin') ? h('div', {}, h('p', { class: 'small muted', style: 'margin:6px 0' }, 'Escalar a estos administradores (si no marcas a nadie, a todos):'),
+        h('div', { class: 'row' }, team.filter((u) => u.role === 'admin').map((u) => h('label', { class: 'check' },
           h('input', { type: 'checkbox', checked: s.alert_timing.escalate_user_ids.includes(u.id), onchange: (e) => { s.alert_timing.escalate_user_ids = e.target.checked ? [...s.alert_timing.escalate_user_ids, u.id] : s.alert_timing.escalate_user_ids.filter((x) => x !== u.id); } }),
           u.name || u.email)))) : null),
     h('div', { class: 'card' },

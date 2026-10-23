@@ -496,7 +496,7 @@ async function send(accountId: string, pubId: string, now: boolean, resend = fal
       await query(`UPDATE social_publications SET status = 'borrador', error = $2 WHERE id = $1`, [pubId, why]);
       // Lo rechazó la red sin que nadie esté mirando (reenvío de la revisión): se avisa al equipo.
       if (resend) {
-        await deps.alertTeam(accountId, { title: '⚠️ Una publicación no salió', body: `La red la rechazó: ${why}. Quedó como borrador en Publicaciones para corregirla.`, link: '#/publicaciones', kind: 'alert' });
+        await deps.alertTeam(accountId, { title: '⚠️ Una publicación no salió', body: `La red la rechazó: ${why}. Quedó como borrador en Publicaciones para corregirla.`, link: '#/publicaciones', kind: 'social_alert' });
       }
       throw explain(e);
     }
@@ -572,7 +572,7 @@ async function afterStatus(pubId: string) {
   await deps.alertTeam(p.account_id, {
     title: p.status === 'fallida' ? '⚠️ Una publicación no salió' : '⚠️ Una publicación no salió en todas tus redes',
     body: `"${p.text.slice(0, 80)}${p.text.length > 80 ? '…' : ''}" falló en ${failed.map((f) => networkOf(f.platform)?.label ?? f.platform).join(', ') || 'una red'}${failed[0]?.error ? `: ${failed[0].error.slice(0, 160)}` : ''}. Puedes reintentarla en Publicaciones.`,
-    link: '#/publicaciones', kind: 'alert',
+    link: '#/publicaciones', kind: 'social_alert',
   });
 }
 

@@ -195,3 +195,98 @@ t('cita cancelada: respeta «avisar al equipo» del servicio y trae el teléfono
   assert.ok(n, 'sí avisa cuando el servicio lo tiene activado');
   assert.match(n.body, /Rosa \(\+5215500002222\)/);
 });
+
+/* ------------------------------ Revisión de G2 ------------------------------ */
+
+t('transferencia por una regla: si el encargado es del equipo, su WhatsApp no se pierde', async () => {
+  await pool.query(`UPDATE chatbots SET rules = rules || '{"handoff_notify_number": "5215511112222"}'::jsonb WHERE id = $1`, [h.botId]);
+  const rule = await h.authed('POST', '/api/automations', { account_id: h.accountId, name: 'Pide humano', trigger: { type: 'message_received', match: 'keywords', keywords: ['humano'] }, actions: [{ type: 'handoff', reason: 'Lo pidió el cliente' }] });
+  assert.equal(rule.statusCode, 200, rule.body);
+  const phone = '5215530009101';
+  h.reset();
+  await customer('quiero un humano', phone);
+  assert.equal((await h.conversationFor(phone)).status, 'human');
+  // La regla no manda el aviso propio del encargado: le llega el del equipo (antes no le llegaba ninguno).
+  await waitFor(() => h.sent.some((s) => s.to === '5215511112222'), 8000);
+  await h.authed('DELETE', `/api/automations/${rule.json().id}`);
+  await pool.query(`UPDATE chatbots SET rules = rules || jsonb_build_object('handoff_notify_number', $2::text) WHERE id = $1`, [h.botId, NOTIFY]);
+});
+
+t('agrupar: avisos distintos con el mismo título sí llegan, y se agrupa también para quien solo usa WhatsApp', async () => {
+  const conv = await h.conversationFor('5215530009003');
+  const base = { title: '🧾 Cotización final por aprobar', link: `#/conversation/${conv.id}`, conversationId: conv.id, kind: 'quote' };
+  const q0 = (await notices(bossId, 'quote')).length;
+  await h.service.automator.alertTeam(h.accountId, { ...base, body: 'Folio C-1 por $1,000' });
+  await h.service.automator.alertTeam(h.accountId, { ...base, body: 'Folio C-2 por $2,500' });
+  assert.equal((await notices(bossId, 'quote')).length - q0, 2, 'dos cotizaciones distintas: dos avisos');
+  // Solo por WhatsApp (panel apagado): el mismo aviso repetido sale una vez.
+  assert.equal((await bossApi('PUT', '/api/me', { alert_prefs: { rules: { panel: false } } })).statusCode, 200);
+  h.reset();
+  const goal = { title: '🎯 Objetivo cumplido', body: 'Cliente: Ana · reservó', link: `#/conversation/${conv.id}`, conversationId: conv.id, kind: 'goal' };
+  await h.service.automator.alertTeam(h.accountId, goal);
+  await h.service.automator.alertTeam(h.accountId, goal);
+  assert.equal(h.sent.filter((s) => s.to === '5215511112222').length, 1);
+  assert.equal((await bossApi('PUT', '/api/me', { alert_prefs: {} })).statusCode, 200);
+});
+
+t('responder desde el teléfono sigue repartiendo por turnos (sin «esperando a una persona»)', async () => {
+  await settings({ assignment: { enabled: true, on_handoff: true, roles: ['agent'], user_ids: [agentId], notify_all: true } });
+  const phone = '5215530009102';
+  await customer('hola, ¿hay envíos?', phone);
+  const before = (await notices(bossId, 'handoff')).length;
+  await h.webhook('Hola, te atiende Luis', { phone, fromMe: true, id: `PHONE-${Date.now()}` });
+  await h.idle();
+  await h.service.automator.settleAll();
+  const conv = await h.conversationFor(phone);
+  assert.equal(conv.status, 'human');
+  assert.equal(conv.assigned_user_id, agentId, 'queda a cargo de alguien del panel');
+  assert.equal((await notices(bossId, 'handoff')).length, before);
+  assert.ok((await notices(agentId, 'assignment')).some((n) => n.link === `#/conversation/${conv.id}` && !/espera a una persona/.test(n.title)));
+  await settings({ assignment: { enabled: false, on_handoff: true, roles: ['agent'], user_ids: [], notify_all: false } });
+});
+
+t('escalamiento: solo a administradores de la cuenta y, si los elegidos ya no están, a todos los administradores', async () => {
+  // Un agente o un usuario inventado no se guardan como destino del escalamiento.
+  await settings({ alert_timing: { human_repeat_minutes: 120, ai_error_repeat_minutes: 0, escalate_minutes: 30, escalate_user_ids: [agentId, '00000000-0000-4000-8000-000000000000', bossId] } });
+  const saved = (await h.authed('GET', `/api/settings?account_id=${h.accountId}`)).json().alert_timing;
+  assert.deepEqual(saved.escalate_user_ids, [bossId]);
+  assert.equal(saved.ai_error_repeat_minutes, 0, 'un 0 ya no rechaza los ajustes (cuenta como 10)');
+  // La jefa elegida se desactiva: el escalamiento va a los demás administradores, no a nadie.
+  const other = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'otra-jefa@avisos.mx', name: 'Otra', password: 'clave-avisos-1', role: 'admin' });
+  assert.equal(other.statusCode, 200, other.body);
+  await pool.query(`UPDATE users SET active = false WHERE id = $1`, [bossId]);
+  const phone = '5215530009103';
+  await customer('quiero un asesor', phone);
+  await customer('¿hola?', phone);
+  const conv = await h.conversationFor(phone);
+  await pool.query(`UPDATE conversations SET assigned_user_id = $2, escalated_at = NULL WHERE id = $1`, [conv.id, agentId]);
+  await pool.query(`UPDATE messages SET created_at = now() - interval '40 minutes' WHERE conversation_id = $1`, [conv.id]);
+  await h.service.remindHumanWaiting();
+  assert.equal((await notices(other.json().id, 'escalation')).filter((n) => n.link === `#/conversation/${conv.id}`).length, 1);
+  await pool.query(`UPDATE users SET active = true WHERE id = $1`, [bossId]);
+  await settings({ alert_timing: { human_repeat_minutes: 120, ai_error_repeat_minutes: 30, escalate_minutes: 0, escalate_user_ids: [] } });
+});
+
+t('«Alertar al equipo» con números extra: esos números reciben solo el mensaje de la regla, sin datos del cliente', async () => {
+  const rule = await h.authed('POST', '/api/automations', { account_id: h.accountId, name: 'Aviso externo', trigger: { type: 'message_received', match: 'keywords', keywords: ['factura'] }, actions: [{ type: 'alert_team', message: 'Piden factura', roles: ['admin'], phones: ['5215577778888'] }] });
+  assert.equal(rule.statusCode, 200, rule.body);
+  const phone = '5215530009104';
+  h.reset();
+  await customer('necesito factura', phone);
+  await waitFor(() => h.sent.some((s) => s.to === '5215577778888'), 8000);
+  const ext = h.sent.find((s) => s.to === '5215577778888')!;
+  assert.match(ext.text, /Piden factura/);
+  assert.doesNotMatch(ext.text, /Cliente:|5215530009104/);
+  const team = h.sent.find((s) => s.to === '5215511112222' && /Piden factura/.test(s.text))!;
+  assert.match(team.text, /Cliente: .*\+5215530009104/, 'al equipo sí le llega con los datos del cliente');
+  await h.authed('DELETE', `/api/automations/${rule.json().id}`);
+});
+
+t('«Mis avisos» muestra lo que de verdad pasa con el correo: «solo urgentes» donde aplica', async () => {
+  const groups = (await bossApi('GET', '/api/alert-groups')).json();
+  const by = Object.fromEntries(groups.map((g: any) => [g.key, g.defaults.email]));
+  assert.equal(by.handoff, 'urgent', 'los recordatorios y el escalamiento van por correo; el primer aviso no');
+  assert.equal(by.errors, 'urgent');
+  assert.equal(by.agenda, false);
+  assert.equal(by.social, 'urgent', 'una reseña mala o una publicación fallida sí van por correo');
+});

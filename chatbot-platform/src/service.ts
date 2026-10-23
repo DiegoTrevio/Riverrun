@@ -258,8 +258,8 @@ export class ChatService {
     const due = await query<{ conversation_id: string }>(`UPDATE conversation_work w SET alerted_at=now()
       WHERE w.state='dead' AND (w.reason<>'processing_error' OR w.revivals>=12)
         AND w.updated_at>now()-interval '24 hours'
-        AND (w.alerted_at IS NULL OR w.alerted_at<now()-make_interval(mins => COALESCE((SELECT (a.settings->'alert_timing'->>'ai_error_repeat_minutes')::int
-          FROM conversations c JOIN accounts a ON a.id=c.account_id WHERE c.id=w.conversation_id), 30)))
+        AND (w.alerted_at IS NULL OR w.alerted_at<now()-make_interval(mins => GREATEST(10, COALESCE((SELECT (a.settings->'alert_timing'->>'ai_error_repeat_minutes')::int
+          FROM conversations c JOIN accounts a ON a.id=c.account_id WHERE c.id=w.conversation_id), 30))))
         AND EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id=w.conversation_id AND m.direction='in' AND NOT m.processed)
         AND EXISTS (SELECT 1 FROM conversations c WHERE c.id=w.conversation_id AND c.status='bot')
       RETURNING w.conversation_id`);
@@ -306,7 +306,8 @@ export class ChatService {
       JOIN accounts a ON a.id = c.account_id
       JOIN LATERAL (SELECT direction, created_at FROM messages WHERE conversation_id = c.id ORDER BY id DESC LIMIT 1) m ON true
       WHERE c.status = 'human' AND m.direction = 'in' AND m.created_at > now() - interval '24 hours'
-    ) x WHERE x.remind_due OR x.escalate_min > 0
+    ) x WHERE x.remind_due OR (x.escalate_min > 0 AND x.waiting_min >= x.escalate_min)
+    ORDER BY x.waiting_min DESC
     LIMIT 200`);
     let n = 0;
     for (const row of rows) {
@@ -338,8 +339,10 @@ export class ChatService {
   }
   /** Escala una conversación asignada que sigue sin respuesta: un aviso a los administradores (o a quienes eligió la cuenta). */
   private async escalateWaiting(conversationId: string, waitingMin: number) {
+    // Se reserva una sola vez y solo si el último mensaje sigue siendo del cliente (alguien pudo responder entre tanto).
     const claimed = await queryOne<{ account_id: string; assigned_user_id: string | null }>(`UPDATE conversations SET escalated_at = now()
       WHERE id = $1 AND status = 'human' AND assigned_user_id IS NOT NULL
+        AND (SELECT direction FROM messages WHERE conversation_id = $1 ORDER BY id DESC LIMIT 1) = 'in'
         AND (escalated_at IS NULL OR escalated_at < COALESCE((SELECT max(created_at) FROM messages WHERE conversation_id = $1 AND direction = 'out' AND sender = 'human'), '-infinity'))
       RETURNING account_id, assigned_user_id`, [conversationId]);
     if (!claimed) return;
@@ -347,12 +350,15 @@ export class ChatService {
     const channel = conv && (await store.getChannel(conv.channel_id));
     if (!conv || !channel || channel.type === 'playground') return;
     const [contact, settings, assignee] = await Promise.all([store.getContact(conv.contact_id), astore.getSettings(conv.account_id), claimed.assigned_user_id ? store.getUserBasic(claimed.assigned_user_id) : null]);
-    const to = settings.alert_timing.escalate_user_ids;
+    // Solo administradores activos de la cuenta (un agente no podría abrir una conversación que no es suya). Si ya no queda
+    // ninguno de los elegidos (se desactivaron o se fueron), se escala a todos los administradores: nunca a nadie.
+    const admins = (await astore.teamMembers(conv.account_id, ['admin'])).map((u) => u.id);
+    const chosen = settings.alert_timing.escalate_user_ids.filter((id) => admins.includes(id));
     await this.automator.alertTeam(conv.account_id, {
       title: '⚠️ Conversación asignada sin respuesta',
       body: conversationAlert({ contact, channel: channel.name, reason: `lleva ${waitingMin} min esperando y ${assignee ? assignee.name || assignee.email : 'la persona asignada'} no ha respondido` }),
       link: `#/conversation/${conv.id}`,
-      ...(to.length ? { userIds: to } : { roles: ['admin'] as ('admin' | 'agent')[] }),
+      userIds: chosen.length ? chosen : admins,
       kind: 'escalation',
     }).catch(() => undefined);
   }

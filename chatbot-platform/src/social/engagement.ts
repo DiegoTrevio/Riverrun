@@ -343,7 +343,7 @@ async function afterReview(sa: SocialAccountRow, row: ReviewRow, o: { synced: bo
     if (await claimNotice('social_reviews', row.id)) {
       await deps.alertTeam(sa.account_id, {
         title: `⭐ Reseña de ${row.rating ?? '?'} estrellas en ${label(sa.platform)}`,
-        body: `${who(row.author)}: "${(row.text || 'sin texto').slice(0, 200)}". Contéstala desde Comentarios.`, link: '#/comentarios?tipo=review', kind: risk ? 'safety' : 'alert',
+        body: `${who(row.author)}: "${(row.text || 'sin texto').slice(0, 200)}". Contéstala desde Comentarios.`, link: '#/comentarios?tipo=review', kind: risk ? 'safety' : 'social_alert',
       });
     }
     return;

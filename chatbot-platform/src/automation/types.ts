@@ -80,7 +80,8 @@ export const AlertTimingSchema = z.object({
   /** Repetir «un cliente espera a una persona» cada N minutos (durante 24 h). 0 = recordar una sola vez. */
   human_repeat_minutes: z.number().int().min(0).max(1440).default(120),
   /** Repetir «un cliente sigue esperando respuesta» (el asistente no pudo contestar) cada N minutos (durante 24 h). */
-  ai_error_repeat_minutes: z.number().int().min(10).max(1440).default(30),
+  // Menos de 10 cuenta como 10 (ver reviveFailed): un campo vacío en el panel (0) no rechaza todos los ajustes.
+  ai_error_repeat_minutes: z.number().int().min(0).max(1440).default(30),
   /** Escalar: si una conversación asignada lleva N minutos sin respuesta de una persona, se avisa una vez más. 0 = no escalar. */
   escalate_minutes: z.number().int().min(0).max(1440).default(0),
   /** A quién se escala (vacío = a los administradores). */
@@ -420,6 +421,8 @@ export interface AutomationEvent {
   byUserId?: string;
   /** Desde dónde se pasó a una persona: 'telefono' = alguien ya contestó desde el teléfono (no se avisa de una espera). */
   via?: 'bot' | 'regla' | 'panel' | 'telefono' | '';
+  /** Número del encargado del agente que ya recibió su propio aviso de esta transferencia (no se le manda otro). */
+  managerNotified?: string;
   /** Cotización enviada, por aprobar o rechazada. */
   quote?: { id: string; folio: string; kind: 'approximate' | 'final'; total: string };
 }

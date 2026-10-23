@@ -963,17 +963,21 @@ export class Engine {
     }
     await logEvent({ level: 'info', source: 'engine', message: `Conversación transferida a humano: ${reason}`, accountId: conv.account_id, chatbotId: bot.id, channelId: conv.channel_id, conversationId: conv.id });
     await this.summarizeFinal(conv);
-    this.ext.onEvent?.({ type: 'handoff', conversationId: conv.id });
+    // El encargado del agente recibe su aviso con el resumen. El evento sale después y dice si llegó: solo entonces el aviso
+    // al equipo no le manda otro WhatsApp igual (si falló, le llega el del equipo).
+    let managerNotified: string | undefined;
     if (bot.rules.handoff_notify_number) {
       const who = contact.name || contact.push_name || contact.phone || contact.external_id;
       const brief = await briefReport(conv.id, 1200, { customer: false }).catch(() => '');
       const text = `🔔 *${bot.name}*: ${who}${contact.phone ? ` (+${contact.phone})` : ''} necesita atención.\nMotivo: ${reason}${brief ? `\n\n${brief}` : ''}`;
       try {
         await transport.notify(bot.rules.handoff_notify_number, text);
+        managerNotified = bot.rules.handoff_notify_number.replace(/\D/g, '');
       } catch (e: any) {
         await logEvent({ level: 'error', source: 'channel', message: `No se pudo avisar al encargado: ${e?.message ?? e}`, accountId: conv.account_id, chatbotId: bot.id, conversationId: conv.id });
       }
     }
+    this.ext.onEvent?.({ type: 'handoff', conversationId: conv.id, managerNotified });
   }
 
   /** Apaga al asistente en la conversación según lo configurado: pausa, pasa a una persona o cierra. */

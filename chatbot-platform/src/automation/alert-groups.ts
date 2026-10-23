@@ -29,18 +29,34 @@ const GROUP_OF: Record<string, AlertGroup> = {
   follow_up: 'followups',
   social: 'social',
   social_reply: 'social',
+  // Una reseña mala o una publicación que no salió: de redes, pero urgente (va por correo como antes).
+  social_alert: 'social',
   ai_error: 'errors',
   safety: 'errors',
   alert: 'errors',
   automation: 'errors',
+  // Solo para filtrar Notificaciones: estos avisos (WhatsApp desconectado, integraciones que fallan) van a los
+  // administradores directo, sin pasar por las preferencias.
+  channel: 'errors',
+  integration: 'errors',
 };
+const FILTER_ONLY = ['channel', 'integration'];
 
 /** Tipos de aviso de un grupo (para filtrar la página de Notificaciones). */
 export const kindsOfGroup = (group: string) => Object.entries(GROUP_OF).filter(([, g]) => g === group).map(([k]) => k);
 
-/** Lo que el panel muestra por grupo, con lo que pasa si la persona no elige nada (correo: solo lo urgente). */
+/**
+ * Lo que el panel muestra por grupo, con lo que pasa si la persona no elige nada. El correo de un grupo puede ser
+ * «solo lo urgente» ('urgent'): en «Esperan a una persona» salen por correo los recordatorios y el escalamiento, no el
+ * primer aviso. Así la tabla muestra lo que de verdad pasa.
+ */
 export const alertGroupsForPanel = () =>
-  ALERT_GROUPS.map((g) => ({ ...g, defaults: { panel: true, whatsapp: true, email: kindsOfGroup(g.key).some((k) => EMAIL_KINDS.includes(k)) }, panel_locked: g.key === 'errors' }));
+  ALERT_GROUPS.map((g) => {
+    const kinds = kindsOfGroup(g.key).filter((k) => !FILTER_ONLY.includes(k));
+    const mailed = kinds.filter((k) => EMAIL_KINDS.includes(k)).length;
+    const email: boolean | 'urgent' = mailed === 0 ? false : mailed === kinds.length ? true : 'urgent';
+    return { ...g, defaults: { panel: true, whatsapp: true, email }, panel_locked: g.key === 'errors' };
+  });
 
 /** Grupo de un tipo de aviso; los que no tienen grupo (p. ej. un aviso manual del equipo) llegan siempre como hoy. */
 export const alertGroupOf = (kind: string | undefined): AlertGroup | null => (kind ? GROUP_OF[kind] ?? null : null);
@@ -52,7 +68,7 @@ export const alertGroupOf = (kind: string | undefined): AlertGroup | null => (ki
 export const groupsRepeats = (kind: string | undefined) => alertGroupOf(kind) !== 'errors' && kind !== 'handoff_wait';
 
 /** Lo urgente también llega por correo: el WhatsApp de la cuenta puede ser justo lo que está fallando. */
-export const EMAIL_KINDS = ['ai_error', 'safety', 'alert', 'handoff_wait', 'escalation'];
+export const EMAIL_KINDS = ['ai_error', 'safety', 'alert', 'handoff_wait', 'escalation', 'social_alert'];
 
 /** Por dónde le llega un aviso de este tipo a una persona, según lo que eligió. */
 export function alertChannels(prefs: AlertPrefs | null | undefined, kind: string | undefined) {

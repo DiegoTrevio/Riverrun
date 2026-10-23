@@ -736,3 +736,4 @@ details.filters[open] > summary { margin-bottom: 12px; }
 .alert-prefs th[scope="row"] { font-weight: normal; text-align: left; }
 .alert-prefs td { text-align: center; }
 .alert-prefs input[type="checkbox"] { width: 22px; height: 22px; }
+a.chip.active { background: var(--accent); color: var(--surface); border-color: var(--accent); }

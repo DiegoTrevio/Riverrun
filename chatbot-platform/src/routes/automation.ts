@@ -143,6 +143,9 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
     const raw = (req.body ?? {}) as Record<string, unknown>;
     // Los secretos no se cambian desde aquí (se regeneran con su propia ruta).
     const next = parse(AccountSettingsSchema, { ...current, ...raw, calendar_token: current.calendar_token, webhook_secret: current.webhook_secret });
+    // Se escala solo a administradores activos de esta cuenta: lo demás se descarta al guardar.
+    const admins = new Set((await astore.teamMembers(accountId, ['admin'])).map((u) => u.id));
+    next.alert_timing.escalate_user_ids = next.alert_timing.escalate_user_ids.filter((id) => admins.has(id));
     await astore.saveSettings(accountId, next);
     await logEvent({ level: 'info', source: 'admin', message: 'Configuración de la cuenta actualizada', accountId });
     return { ...next, ics_url: `${config.publicBaseUrl}/calendar/${next.calendar_token}.ics` };
