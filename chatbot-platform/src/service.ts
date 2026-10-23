@@ -21,6 +21,7 @@ import { INBOUND_MEDIA_MAX_BYTES, removeInboundFiles, saveInboundMedia, type Sto
 import { config } from './config.js';
 import { gate } from './engine/activation.js';
 import { describeInbound, type InboundMessage } from './channels/types.js';
+import { describeWithMedia, understandMedia } from './engine/media-understanding.js';
 import { query, queryOne } from './db.js';
 import { summarizeConversation } from './engine/report.js';
 import { Engine, type ProcessResult } from './engine/engine.js';
@@ -484,14 +485,34 @@ export class ChatService {
     // Foto o documento del cliente: se guarda tal como llegó. Si no se puede, el mensaje se guarda igual y el motivo queda visible en el panel.
     let media: StoredMedia | undefined;
     let mediaError = '';
-    if (msg.type === 'image' || msg.type === 'document') {
+    if (msg.type === 'image' || msg.type === 'document' || msg.type === 'video') {
       try {
         const captured = await this.captureInboundMedia(channel, msg, msg.type);
         media = captured.media;
         mediaError = captured.error ?? '';
       } catch (e: any) {
-        mediaError = `${msg.type === 'image' ? 'La foto' : 'El documento'} no se guardó: ${e?.message ?? e}`;
+        mediaError = `${msg.type === 'image' ? 'La foto' : msg.type === 'video' ? 'El video' : 'El documento'} no se guardó: ${e?.message ?? e}`;
         await logEvent({ level: 'warn', source: 'engine', message: `No se pudo guardar un archivo del cliente: ${e?.message ?? e}`, ...logBase });
+      }
+    }
+    // Foto o documento: el agente lee lo que contiene (una sola vez), en lugar de saber solo que llegó un archivo.
+    if (media && bot?.ai.understand_media && (media.kind === 'image' || media.kind === 'document') && triggers) {
+      const started = Date.now();
+      try {
+        const understood = await understandMedia(accountAi(this.ai, channel.account_id, bot.id, 'media'), media);
+        if (understood) {
+          media.ai_summary = understood.summary;
+          content = maskSensitive(describeWithMedia(media.kind, msg.type === 'document' && msg.text === media.file_name ? '' : msg.text, media.file_name, understood.summary));
+          if (understood.ai) {
+            await store.insertAiRun({
+              account_id: channel.account_id, chatbot_id: bot.id, conversation_id: conv.id, kind: 'media', model: understood.ai.model,
+              input_tokens: understood.ai.usage.input_tokens, cached_tokens: understood.ai.usage.cached_tokens, output_tokens: understood.ai.usage.output_tokens,
+              cost_usd: understood.ai.cost_usd, latency_ms: Date.now() - started,
+            });
+          }
+        }
+      } catch (e: any) {
+        await logEvent({ level: 'warn', source: 'ai', message: `No se pudo leer el archivo del cliente: ${e?.message ?? e}`, ...logBase });
       }
     }
     const meta: Record<string, unknown> = stale ? { name: msg.displayName, stale: true } : msg.captureOnly ? { name: msg.displayName, held: 'limite_de_correos' } : { name: msg.displayName };
@@ -584,8 +605,8 @@ export class ChatService {
   }
 
   /** Descarga la foto o el documento del cliente y lo guarda con sus bytes originales. Si el canal no puede o el archivo es muy grande, devuelve el motivo. */
-  private async captureInboundMedia(channel: Channel, msg: InboundMessage, kind: 'image' | 'document'): Promise<{ media?: StoredMedia; error?: string }> {
-    const label = kind === 'image' ? 'La foto' : 'El documento';
+  private async captureInboundMedia(channel: Channel, msg: InboundMessage, kind: 'image' | 'document' | 'video'): Promise<{ media?: StoredMedia; error?: string }> {
+    const label = kind === 'image' ? 'La foto' : kind === 'video' ? 'El video' : 'El documento';
     const limit = `${INBOUND_MEDIA_MAX_BYTES / 1024 / 1024} MB`;
     const adapter = adapterFor(channel.type);
     if (!adapter.downloadMedia) return { error: `${label} no se guardó: este canal todavía no permite descargar archivos` };

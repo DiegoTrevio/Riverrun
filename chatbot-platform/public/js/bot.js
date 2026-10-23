@@ -14,7 +14,7 @@ import { accountName, isSuper } from './session.js';
 /* ------------------------------ Chatbot ------------------------------ */
 
 // Una sola fila en el orden en que se usa: qué hace, qué sabe, sus fotos, probarlo y conectarlo. Lo demás, en "Más ajustes".
-const TABS = [['instrucciones', 'Instrucciones'], ['conocimiento', 'Información'], ['imagenes', 'Fotos'], ['probar', 'Probar'], ['conexiones', 'Conexiones'], ['preguntas', 'Más ajustes']];
+const TABS = [['instrucciones', 'Instrucciones'], ['conocimiento', 'Información'], ['imagenes', 'Fotos y archivos'], ['probar', 'Probar'], ['conexiones', 'Conexiones'], ['preguntas', 'Más ajustes']];
 const MORE_TABS = [['preguntas', 'Preguntas en orden'], ['activacion', 'Cuándo responde'], ['avisos', 'Avisos al equipo'], ['cotizaciones', 'Cotizaciones']];
 
 const TAB_ALIASES = { general: 'instrucciones', personalidad: 'instrucciones', datos: 'preguntas', flujo: 'instrucciones', ia: 'instrucciones', avanzado: 'instrucciones', reglas: 'instrucciones' };
@@ -339,20 +339,39 @@ function sendWhenEditor(w, bot) {
   return box;
 }
 
-/** Aviso de formato: WhatsApp muestra mejor JPG/PNG; las fotos pesadas tardan en llegar. */
+/** Lo que acepta la biblioteca: fotos, videos, documentos y audio (el servidor revisa el tipo real del archivo). */
+const LIBRARY_ACCEPT = 'image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm,application/pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.csv,.txt,audio/mpeg,audio/ogg,audio/mp4,audio/wav,.m4a';
+const KIND_ICON = { video: '🎬', document: '📄', audio: '🎵' };
+const KIND_NAME = { image: 'Foto', video: 'Video', document: 'Documento', audio: 'Audio' };
+const mb = (n) => `${(n / 1024 / 1024).toFixed(1)} MB`;
+
+/** Aviso de formato y tamaño: fotos hasta 5 MB (JPG o PNG se ven mejor en WhatsApp); videos, documentos y audio hasta 16 MB. */
 function imageFileHint(input) {
-  const hint = h('small', {}, 'JPG o PNG recomendados (máx. 5 MB).');
+  const hint = h('small', {}, 'Fotos JPG o PNG (máx. 5 MB); videos MP4, PDF, Word, Excel o audio (máx. 16 MB).');
   input.addEventListener('change', () => {
     const f = input.files[0];
     if (!f) return;
     const warn = [];
+    const isImage = f.type.startsWith('image/');
     if (f.type === 'image/webp') warn.push('WEBP: en algunos teléfonos WhatsApp no la muestra bien; mejor JPG o PNG.');
-    if (f.size > 5 * 1024 * 1024) warn.push('Pesa más de 5 MB: no se podrá subir; redúcela.');
-    else if (f.size > 2 * 1024 * 1024) warn.push('Pesa más de 2 MB: tardará más en llegar; conviene reducirla.');
+    if (isImage && f.size > 5 * 1024 * 1024) warn.push('La foto pesa más de 5 MB: no se podrá subir; redúcela.');
+    else if (!isImage && f.size > 16 * 1024 * 1024) warn.push(`Pesa ${mb(f.size)}: el máximo es 16 MB (el límite de WhatsApp); comprímelo.`);
+    else if (isImage && f.size > 2 * 1024 * 1024) warn.push('Pesa más de 2 MB: tardará más en llegar; conviene reducirla.');
+    else if (f.type.startsWith('video/') && f.type !== 'video/mp4') warn.push('Los videos MP4 son los que mejor se reproducen en todos los teléfonos.');
     hint.textContent = warn.join(' ') || 'Formato correcto.';
     hint.className = warn.length ? 'error' : '';
   });
   return hint;
+}
+
+/** Vista previa en la tarjeta: la foto, el video, o el ícono con el nombre del archivo. */
+function libraryPreview(img) {
+  const src = `/api/images/${img.id}/file?v=${encodeURIComponent(img.file_path)}`;
+  const kind = img.kind || 'image';
+  if (kind === 'image') return h('img', { src, alt: img.name, loading: 'lazy' });
+  if (kind === 'video') return h('video', { src, controls: true, preload: 'metadata', 'aria-label': img.name });
+  return h('div', { class: 'file-preview', role: 'img', 'aria-label': `${KIND_NAME[kind]}: ${img.file_name || img.name}` },
+    h('span', { class: 'file-icon', 'aria-hidden': 'true' }, KIND_ICON[kind] || '📎'), h('span', { class: 'small' }, img.file_name || img.name, ` · ${mb(img.size_bytes || 0)}`));
 }
 
 export async function tabImages(root, bot) {
@@ -360,20 +379,20 @@ export async function tabImages(root, bot) {
   const warnings = photoWarningsCard(bot);
   if (warnings) root.append(warnings);
   const n = draftModel(`${bot.id}:photo-new`, { code: '', name: '', description: '', usage_rule: '', caption: '', send_when: sendWhenDefaults() });
-  const fileInput = h('input', { type: 'file', accept: 'image/jpeg,image/png,image/webp' });
+  const fileInput = h('input', { type: 'file', accept: LIBRARY_ACCEPT, 'aria-label': 'Archivo' });
   const upload = async () => {
     if (!fileInput.files[0]) return toast('Selecciona un archivo', true);
-    if (!n.name.trim()) return toast('Escribe el nombre de la foto', true);
+    if (!n.name.trim()) return toast('Escribe el nombre (por ejemplo «Menú en PDF» o «Video del local»)', true);
     if (!n.code.trim()) { const base = questionKey(n.name); n.code = base; for (let i = 2; images.some((img) => img.code === n.code); i++) n.code = `${base}_${i}`; }
     const fd = new FormData();
     for (const [k, v] of Object.entries(n)) fd.append(k, typeof v === 'object' ? JSON.stringify(v) : v);
     fd.append('file', fileInput.files[0]);
     const version = draftVersion(`${bot.id}:photo-new`);
-    if (await run(() => api('POST', `/api/chatbots/${bot.id}/images`, fd, true), 'Imagen agregada')) { discardDraft(`${bot.id}:photo-new`, version); render(); }
+    if (await run(() => api('POST', `/api/chatbots/${bot.id}/images`, fd, true), 'Agregado a la biblioteca')) { discardDraft(`${bot.id}:photo-new`, version); render(); }
   };
   const card = (img) => {
     const m = draftModel(`${bot.id}:photo:${img.id}`, { ...img, send_when: sendWhenDefaults(img.send_when) });
-    const replace = h('input', { type: 'file', accept: 'image/jpeg,image/png,image/webp' });
+    const replace = h('input', { type: 'file', accept: LIBRARY_ACCEPT });
     const save = async () => {
       const fd = new FormData();
       for (const k of ['code', 'name', 'description', 'usage_rule', 'caption']) fd.append(k, m[k] ?? '');
@@ -381,15 +400,15 @@ export async function tabImages(root, bot) {
       fd.append('active', String(m.active));
       if (replace.files[0]) fd.append('file', replace.files[0]);
       const version = draftVersion(`${bot.id}:photo:${img.id}`);
-      const r = await run(() => api('PUT', `/api/images/${img.id}`, fd, true), 'Imagen actualizada');
+      const r = await run(() => api('PUT', `/api/images/${img.id}`, fd, true), 'Guardado');
       if (r) discardDraft(`${bot.id}:photo:${img.id}`, version);
       if (r?.warning) toast(r.warning, true);
       if (r) render();
     };
     return h('div', { class: 'img-card' },
-      h('img', { src: `/api/images/${img.id}/file?v=${encodeURIComponent(img.file_path)}`, alt: img.name, loading: 'lazy' }),
+      libraryPreview(img),
       h('details', { class: 'body' },
-        h('summary', {}, h('strong', {}, img.name), ' · ', img.active ? 'Activa' : 'Inactiva', ' · Editar'),
+        h('summary', {}, h('strong', {}, img.name), ' · ', KIND_NAME[img.kind || 'image'], ' · ', img.active ? 'Activo' : 'Inactivo', ' · Editar'),
         draftNotice([`${bot.id}:photo:${img.id}`], render),
         h('div', { class: 'row between' }, h('code', {}, img.code),
           h('span', {},
@@ -398,30 +417,30 @@ export async function tabImages(root, bot) {
             ' ', !img.active ? h('span', { class: 'badge orange' }, 'inactiva') : null)),
         h('details', {}, h('summary', {}, 'Identificador avanzado'), field('ID (lo usa la IA)', text(m, 'code'))),
         field('Nombre', text(m, 'name')),
-        field('Qué muestra', area(m, 'description')),
-        field(tag('Cuándo enviarla', guide()), area(m, 'usage_rule'), 'Para la IA (modos "La IA decide" y "Ambos").'),
+        field((img.kind || 'image') === 'image' ? 'Qué muestra' : 'Qué contiene', area(m, 'description')),
+        field(tag('Cuándo enviarlo', guide()), area(m, 'usage_rule'), 'Para la IA (modos "La IA decide" y "Ambos").'),
         h('details', {}, h('summary', {}, 'Reglas de envío'), sendWhenEditor(m.send_when, bot)),
-        field('Pie de foto (opcional)', text(m, 'caption')),
-        check(m, 'active', 'Activa'),
+        field('Texto que lo acompaña (opcional)', text(m, 'caption')),
+        check(m, 'active', 'Activo'),
         field('Reemplazar archivo', replace, imageFileHint(replace)),
         h('div', { class: 'row' },
           h('button', { class: 'primary small', onclick: save }, 'Guardar'),
-          h('button', { class: 'small danger', onclick: async () => { if (await confirmAction('¿Eliminar imagen?')) { const r = await run(() => api('DELETE', `/api/images/${img.id}`), 'Eliminada'); if (!r) return; if (r.warning) toast(r.warning, true); render(); } } }, 'Eliminar'))),
+          h('button', { class: 'small danger', onclick: async () => { if (await confirmAction(`¿Eliminar «${img.name}»?`)) { const r = await run(() => api('DELETE', `/api/images/${img.id}`), 'Eliminada'); if (!r) return; if (r.warning) toast(r.warning, true); render(); } } }, 'Eliminar'))),
     );
   };
   root.append(
     h('div', { class: 'card' },
-      h('p', { class: 'muted' }, 'Sube fotos y escribe cuándo debe enviarlas el asistente. Opcionalmente puedes definir reglas de envío (', guaranteed(), ').'),
-      h('h2', {}, 'Agregar imagen'),
+      h('p', { class: 'muted' }, 'Sube fotos, videos y documentos (menú en PDF, catálogo, video del lugar…) y escribe cuándo debe enviarlos el asistente: los elige por el contexto de la conversación, igual que las fotos. Opcionalmente puedes definir reglas de envío (', guaranteed(), ').'),
+      h('h2', {}, 'Agregar foto o archivo'),
       h('div', { class: 'grid' },
         h('details', {}, h('summary', {}, 'Identificador avanzado (automático)'), field('ID', text(n, 'code', { placeholder: 'Se genera del nombre' }), 'Puedes personalizarlo antes de subir.')),
-        field('Nombre', text(n, 'name', { placeholder: 'Foto habitación doble' })),
+        field('Nombre', text(n, 'name', { placeholder: 'Foto habitación doble · Menú en PDF · Video del recorrido' })),
         field('Archivo', fileInput, imageFileHint(fileInput))),
-      field('Qué muestra', area(n, 'description', { placeholder: 'Habitación doble con dos camas matrimoniales y vista al mar' })),
-      field(tag('Cuándo enviarla', guide()), area(n, 'usage_rule', { placeholder: 'Cuando el cliente pregunte por la habitación doble o pida fotos de las habitaciones' }), 'Para la IA (modos "La IA decide" y "Ambos"). También puedes pedirla en tus Instrucciones por su ID.'),
+      field('Qué muestra o contiene', area(n, 'description', { placeholder: 'Habitación doble con dos camas matrimoniales y vista al mar · Menú completo con precios' })),
+      field(tag('Cuándo enviarlo', guide()), area(n, 'usage_rule', { placeholder: 'Cuando el cliente pregunte por la habitación doble o pida fotos de las habitaciones' }), 'Para la IA (modos "La IA decide" y "Ambos"). También puedes pedirla en tus Instrucciones por su ID.'),
       h('details', {}, h('summary', {}, 'Reglas de envío (opcional)'), sendWhenEditor(n.send_when, bot)),
-      field('Pie de foto (opcional)', text(n, 'caption')),
-      h('button', { class: 'primary', onclick: upload }, 'Subir imagen'),
+      field('Texto que lo acompaña (opcional)', text(n, 'caption')),
+      h('button', { class: 'primary', onclick: upload }, 'Subir'),
     ),
     h('div', { class: 'grid' }, images.map(card)),
     savedMessagesCard(bot, images),
@@ -939,5 +958,6 @@ function aiSection(a) {
       h('p', { class: 'small muted' }, 'La zona horaria y el horario de atención que conoce el asistente se toman de ', h('a', { href: '#/automation/settings' }, 'Ajustes → Horario y avisos'), '.'),
       check(a, 'typing_simulation', 'Mostrar "escribiendo…" antes de cada mensaje'),
       check(a, 'transcribe_audio', 'Entender notas de voz (las transcribe; tiene un costo pequeño por minuto)'),
+      check(a, 'understand_media', 'Entender fotos y documentos del cliente (ve la foto y lee el PDF o Word; tiene un costo pequeño por archivo)'),
     ));
 }

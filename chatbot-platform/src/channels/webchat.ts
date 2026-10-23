@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import type { Transport } from '../engine/transport.js';
+import type { OutgoingFile, Transport } from '../engine/transport.js';
 import { ChannelConfigSchemas } from '../types.js';
 import type { ChannelAdapter } from './types.js';
 
@@ -9,12 +9,20 @@ import type { ChannelAdapter } from './types.js';
  */
 class WebchatTransport implements Transport {
   kind = 'webchat' as const;
+  libraryFilesOnly = true;
 
   async sendText() {
     return `web-${crypto.randomUUID()}`;
   }
 
   async sendImage() {
+    return `web-${crypto.randomUUID()}`;
+  }
+
+  /** El archivo queda en el mensaje guardado: el widget muestra el video o el enlace para descargar el documento. */
+  async sendFile(file: OutgoingFile) {
+    // Solo los archivos con dirección firmada (los de la biblioteca del agente) se pueden mostrar en el widget.
+    if (!file.url) throw new Error('unsupported_file');
     return `web-${crypto.randomUUID()}`;
   }
 

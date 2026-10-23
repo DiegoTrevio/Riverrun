@@ -130,7 +130,8 @@ export class Quotes {
       return {
         status: 'ready',
         quote: (await qstore.getQuote(conv.account_id, quote.id))!,
-        file: { id: quote.id, name: rendered.fileName, mime: 'application/pdf', kind: 'document', absPath: attachmentAbsolutePath(rendered.pdfPath) },
+        // Con su dirección firmada, Messenger e Instagram también lo reciben como archivo.
+        file: { id: quote.id, name: rendered.fileName, mime: 'application/pdf', kind: 'document', absPath: attachmentAbsolutePath(rendered.pdfPath), url: signedQuoteUrl(quote.id) },
       };
     } catch (e: any) {
       await qstore.transitionQuote(conv.account_id, quote.id, 'failed', { detail: { error: String(e?.message ?? e).slice(0, 300) } });

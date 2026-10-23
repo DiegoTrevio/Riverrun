@@ -460,15 +460,15 @@ export async function getImage(id: string) {
 
 export async function insertImage(img: Omit<ImageAsset, 'id' | 'active'> & { active?: boolean; sha256?: string }): Promise<ImageAsset> {
   const row = await queryOne<ImageAsset>(
-    `INSERT INTO images (chatbot_id, code, name, description, usage_rule, caption, file_path, mime_type, size_bytes, active, send_when, sha256)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
-    [img.chatbot_id, img.code, img.name, img.description, img.usage_rule, img.caption, img.file_path, img.mime_type, img.size_bytes, img.active ?? true, JSON.stringify(img.send_when ?? {}), img.sha256 ?? ''],
+    `INSERT INTO images (chatbot_id, code, name, description, usage_rule, caption, file_path, mime_type, size_bytes, active, send_when, sha256, kind, file_name)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
+    [img.chatbot_id, img.code, img.name, img.description, img.usage_rule, img.caption, img.file_path, img.mime_type, img.size_bytes, img.active ?? true, JSON.stringify(img.send_when ?? {}), img.sha256 ?? '', img.kind ?? 'image', img.file_name ?? ''],
   );
   return row!;
 }
 
 export async function updateImage(id: string, patch: Partial<ImageAsset>, client?: Queryable): Promise<ImageAsset | null> {
-  const allowed = ['code', 'name', 'description', 'usage_rule', 'caption', 'active', 'file_path', 'mime_type', 'size_bytes', 'send_when', 'sha256'] as const;
+  const allowed = ['code', 'name', 'description', 'usage_rule', 'caption', 'active', 'file_path', 'mime_type', 'size_bytes', 'send_when', 'sha256', 'kind', 'file_name'] as const;
   const sets: string[] = [];
   const params: unknown[] = [];
   for (const k of allowed) {
@@ -844,8 +844,8 @@ export async function insertMessage(m: NewMessage, transaction?: import('pg').Po
     if (row && m.media) {
       // Si esto falla, se deshace también el mensaje: nunca queda un mensaje que diga "foto" sin su archivo.
       await client.query(
-        `INSERT INTO message_media (message_id, kind, mime, file_name, size_bytes, sha256, file_path, complete) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-        [row.id, m.media.kind, m.media.mime, m.media.file_name, m.media.size_bytes, m.media.sha256, m.media.file_path, m.media.complete],
+        `INSERT INTO message_media (message_id, kind, mime, file_name, size_bytes, sha256, file_path, complete, ai_summary) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [row.id, m.media.kind, m.media.mime, m.media.file_name, m.media.size_bytes, m.media.sha256, m.media.file_path, m.media.complete, m.media.ai_summary ?? ''],
       );
     }
     return row;

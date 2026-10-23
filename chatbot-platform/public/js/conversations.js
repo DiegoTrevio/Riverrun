@@ -83,6 +83,8 @@ const customerMedia = (m) => {
   const size = m.media_size ? (m.media_size >= 1048576 ? `${(m.media_size / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(m.media_size / 1024))} KB`) : '';
   return h('div', { class: 'media' },
     m.media_kind === 'image' ? h('a', { href: url, target: '_blank', rel: 'noopener' }, h('img', { src: url, alt: name })) : null,
+    m.media_kind === 'video' ? h('video', { src: url, controls: true, preload: 'metadata', 'aria-label': name, style: 'max-width:100%' }) : null,
+    m.media_summary ? h('div', { class: 'small muted' }, `Lo que entendió el asistente: ${m.media_summary}`) : null,
     h('a', { href: url, download: name }, icon('paperclip', 14), ` ${name}${size ? ` · ${size}` : ''}`),
     m.media_complete === false ? h('div', { class: 'small muted' }, 'El archivo llegó incompleto: pídele al cliente que lo envíe de nuevo.') : null);
 };
@@ -284,10 +286,13 @@ export async function viewConversation(root, id, opts = {}) {
     fill(gallery, imgs.length
       ? imgs.map((img) => h('button', { class: 'thumb', title: `Enviar "${img.name}"`, onclick: async (event) => {
           if (sending) return; sending = true; const button = event.currentTarget; button.disabled = true;
-          try { if (await run(() => api('POST', `/api/conversations/${id}/send-image`, { image_id: img.id }), 'Foto enviada')) { gallery.hidden = true; await load(true); } }
+          try { if (await run(() => api('POST', `/api/conversations/${id}/send-image`, { image_id: img.id }), (img.kind || 'image') === 'image' ? 'Foto enviada' : 'Archivo enviado')) { gallery.hidden = true; await load(true); } }
           finally { sending = false; button.disabled = false; }
-        } }, h('img', { src: `/api/images/${img.id}/file?v=${encodeURIComponent(img.file_path)}`, alt: img.name, loading: 'lazy' }), h('span', { class: 'small' }, img.name)))
-      : h('p', { class: 'muted small' }, 'No hay fotos activas. Súbelas en el asistente → Fotos.'));
+        } }, (img.kind || 'image') === 'image'
+          ? h('img', { src: `/api/images/${img.id}/file?v=${encodeURIComponent(img.file_path)}`, alt: img.name, loading: 'lazy' })
+          : h('span', { class: 'file-thumb', 'aria-hidden': 'true' }, { video: '🎬', document: '📄', audio: '🎵' }[img.kind] || '📎'),
+        h('span', { class: 'small' }, img.name)))
+      : h('p', { class: 'muted small' }, 'No hay fotos ni archivos activos. Súbelos en el asistente → Fotos y archivos.'));
     gallery.hidden = false;
   };
 
@@ -389,8 +394,10 @@ export async function viewConversation(root, id, opts = {}) {
         const cls = ['bubble', m.direction === 'in' ? 'in' : 'out', m.sender === 'human' ? 'human' : '', ['failed','uncertain'].includes(m.status) ? 'failed' : ''].join(' ');
         const who = m.sender === 'human' ? 'equipo' : m.sender === 'bot' ? 'bot' : '';
         return h('div', { class: cls },
-          m.image_id ? h('img', { src: `/api/images/${m.image_id}/file`, alt: m.image_name || '' }) : null,
-          m.image_id ? h('div', { class: 'small muted with-icon' }, icon('image', 14), m.image_code || '') : null,
+          m.image_id && m.type === 'image' ? h('img', { src: `/api/images/${m.image_id}/file`, alt: m.image_name || '' }) : null,
+          m.image_id && m.type === 'video' ? h('video', { src: `/api/images/${m.image_id}/file`, controls: true, preload: 'metadata', 'aria-label': m.image_name || 'video', style: 'max-width:100%' }) : null,
+          m.image_id && m.type !== 'image' && m.type !== 'video' ? h('a', { href: `/api/images/${m.image_id}/file`, target: '_blank', rel: 'noopener' }, icon('paperclip', 14), ` ${m.meta?.file_name || m.image_name || 'Archivo'}`) : null,
+          m.image_id ? h('div', { class: 'small muted with-icon' }, icon(m.type === 'image' ? 'image' : 'paperclip', 14), m.image_code || '') : null,
           m.meta?.attachment_id ? h('a', { href: `/api/attachments/${m.meta.attachment_id}/file`, target: '_blank', rel: 'noopener' }, icon('paperclip', 14), ` ${m.meta.file_name || 'Archivo'}`) : null,
           m.media_kind ? customerMedia(m) : null,
           m.meta?.media_error ? h('div', { class: 'small muted' }, m.meta.media_error) : null,

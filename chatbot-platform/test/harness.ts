@@ -353,7 +353,7 @@ const extServer = http.createServer((req, res) => {
       if (method === 'getMe') return json(200, { ok: true, result: { id: 1, username: 'palmas_bot' } });
       if (method === 'getFile') return json(200, { ok: true, result: { file_path: 'voice/a.ogg' } });
       if (method === 'getWebhookInfo') return json(200, { ok: true, result: { url: 'https://bot.test/webhook/x', pending_update_count: 0 } });
-      if (method === 'sendMessage' || method === 'sendPhoto') return json(200, { ok: true, result: { message_id: ++ext.n } });
+      if (['sendMessage', 'sendPhoto', 'sendDocument', 'sendVideo', 'sendAudio'].includes(method)) return json(200, { ok: true, result: { message_id: ++ext.n } });
       return json(200, { ok: true, result: true });
     }
     if (path.endsWith('/oauth/access_token')) {

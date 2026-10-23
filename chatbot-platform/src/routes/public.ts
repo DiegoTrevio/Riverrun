@@ -279,8 +279,8 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
     const contact = await store.findContact(ch.id, session);
     if (!contact) return { messages: [], typing: false };
     const after = Number(req.query.after) || 0;
-    const rows = await query<{ id: number; direction: string; sender: string; content: string; image_id: string | null; created_at: Date; buttons: any; choice: string | null }>(
-      `SELECT m.id, m.direction, m.sender, m.content, m.image_id, m.created_at, m.meta->'buttons' AS buttons, m.meta->>'choice' AS choice FROM messages m
+    const rows = await query<{ id: number; direction: string; sender: string; type: string; content: string; image_id: string | null; file_name: string | null; created_at: Date; buttons: any; choice: string | null }>(
+      `SELECT m.id, m.direction, m.sender, m.type, m.content, m.image_id, m.meta->>'file_name' AS file_name, m.created_at, m.meta->'buttons' AS buttons, m.meta->>'choice' AS choice FROM messages m
          JOIN conversations c ON c.id = m.conversation_id
        WHERE c.contact_id = $1 AND m.id > $2 AND m.status = 'ok' ORDER BY m.id LIMIT 200`,
       [contact.id, after],
@@ -297,7 +297,9 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
         id: m.id,
         from: m.direction === 'in' ? 'customer' : m.sender,
         text: m.direction === 'in' ? m.content : toPlainText(m.content),
-        image_url: m.image_id ? signedImageUrl(m.image_id) : null,
+        image_url: m.image_id && m.type === 'image' ? signedImageUrl(m.image_id) : null,
+        // Video, documento o audio de la biblioteca del agente: el widget lo reproduce o lo ofrece para descargar.
+        ...(m.image_id && m.type !== 'image' ? { file: { url: signedImageUrl(m.image_id), name: m.file_name || 'archivo', kind: m.type } } : {}),
         created_at: m.created_at,
         // Botones del mensaje: de respuesta (se tocan) o de enlace (https).
         ...(m.direction === 'out' && Array.isArray(m.buttons) ? { buttons: m.buttons.filter((b: any) => b && typeof b.label === 'string').map((b: any) => (b.kind === 'url' ? { kind: 'url', label: b.label, url: /^https:\/\//.test(String(b.url ?? '')) ? b.url : '' } : { kind: 'reply', label: b.label, payload: String(b.payload ?? '') })) } : {}),
@@ -313,7 +315,9 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
     if (!img || !img.active) return reply.code(404).send();
     const p = imageAbsolutePath(img);
     if (!fs.existsSync(p)) return reply.code(404).send();
-    reply.header('content-type', img.mime_type).header('cache-control', 'public, max-age=86400').header('access-control-allow-origin', '*');
+    reply.header('content-type', img.mime_type).header('cache-control', 'public, max-age=86400').header('access-control-allow-origin', '*').header('x-content-type-options', 'nosniff');
+    // Los documentos se descargan con su nombre; fotos, videos y audios se pueden ver en línea.
+    if ((img.kind ?? 'image') === 'document') reply.header('content-disposition', `attachment; filename="${(img.file_name || 'archivo').replace(/["\\\r\n]/g, '')}"`);
     return reply.send(fs.createReadStream(p));
   });
 

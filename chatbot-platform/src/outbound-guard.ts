@@ -49,6 +49,7 @@ export function guardTransport(t: Transport, destination: string): Transport {
   return {
     kind: t.kind,
     typingSimulation: t.typingSimulation,
+    libraryFilesOnly: t.libraryFilesOnly,
     ...(t.setDispatchGuard?{setDispatchGuard:(guard:()=>Promise<void>)=>t.setDispatchGuard!(guard)}:{}),
     ...(t.startTyping?{startTyping:async()=>{assertOutbound(destination);await t.startTyping!();}}:{}),
     sendText: async (text, delay) => {

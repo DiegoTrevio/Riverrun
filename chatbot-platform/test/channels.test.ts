@@ -34,6 +34,17 @@ before(async () => {
   ]);
   const up = await h.app.inject({ method: 'POST', url: `/api/chatbots/${h.botId}/images`, payload: body, headers: { cookie: h.cookie, 'content-type': `multipart/form-data; boundary=${b}` } });
   assert.equal(up.statusCode, 200, up.body);
+  // Documento de la biblioteca: se elige y se envía igual que una foto.
+  const pdf = Buffer.from('%PDF-1.4\n1 0 obj\n<< /Title (Menu) >>\nendobj\n%%EOF\n');
+  const docBody = Buffer.concat([
+    Buffer.from(part('code', 'menu_pdf') + part('name', 'Menú')),
+    Buffer.from(`--${b}\r\nContent-Disposition: form-data; name="file"; filename="menu.pdf"\r\nContent-Type: application/pdf\r\n\r\n`),
+    pdf,
+    Buffer.from(`\r\n--${b}--\r\n`),
+  ]);
+  const doc = await h.app.inject({ method: 'POST', url: `/api/chatbots/${h.botId}/images`, payload: docBody, headers: { cookie: h.cookie, 'content-type': `multipart/form-data; boundary=${b}` } });
+  assert.equal(doc.statusCode, 200, doc.body);
+  assert.deepEqual([doc.json().kind, doc.json().file_name], ['document', 'menu.pdf']);
 });
 after(async () => {
   if (h) await h.app.close();
@@ -86,6 +97,19 @@ t('Telegram: rechaza webhooks sin el secreto y responde a los válidos (texto pl
   const convs = (await h.authed('GET', `/api/conversations?channel_type=telegram`)).json();
   assert.equal(convs.length, 1);
   assert.equal(convs[0].push_name, 'Luis Pérez');
+});
+
+t('Telegram: un documento de la biblioteca sale con sendDocument y su nombre', async () => {
+  ext.requests.length = 0;
+  h.reset();
+  h.setScript(() => ({ action: 'reply_with_image', messages: ['Te mando el menú en PDF'], image_ids: ['menu_pdf'] }));
+  const r = await h.app.inject({ method: 'POST', url: `/webhook/${tg.webhook_token}`, headers: { 'x-telegram-bot-api-secret-token': tg.secret }, payload: tgUpdate('¿tienen menú?', 778) });
+  assert.equal(r.statusCode, 200);
+  await waitFor(() => reqs('/sendDocument').length === 1, 12000);
+  assert.equal(reqs('/sendPhoto').length, 0, 'un PDF no va como foto');
+  await h.idle();
+  const row = (await pool.query(`SELECT m.type, m.meta->>'file_name' AS file_name FROM messages m JOIN images i ON i.id = m.image_id WHERE i.code = 'menu_pdf' ORDER BY m.id DESC LIMIT 1`)).rows[0];
+  assert.deepEqual([row.type, row.file_name], ['document', 'menu.pdf']);
 });
 
 t('Telegram: ignora grupos', async () => {
@@ -162,6 +186,24 @@ t('Messenger: el eco de nuestro envío se ignora; una respuesta manual desde la 
   await waitFor(async () => (await h.authed('GET', `/api/conversations/${sentMid.id}`)).json().conversation.status === 'human');
 });
 
+t('Messenger: un documento de la biblioteca sale como archivo con su URL firmada', async () => {
+  const body = fbEvent('me pasas el menú?', 'PSID9');
+  ext.requests.length = 0;
+  h.reset();
+  h.setScript(() => ({ action: 'reply_with_image', messages: ['Claro, aquí va el menú'], image_ids: ['menu_pdf'] }));
+  const r = await h.app.inject({ method: 'POST', url: `/webhook/${fb.webhook_token}`, headers: { 'content-type': 'application/json', 'x-hub-signature-256': sign(body) }, payload: body });
+  assert.equal(r.statusCode, 200);
+  await waitFor(() => reqs('/me/messages').some((x) => x.body.message?.attachment?.type === 'file'));
+  const file = reqs('/me/messages').find((x) => x.body.message?.attachment?.type === 'file')!;
+  assert.match(file.body.message.attachment.payload.url, /^https:\/\/bot\.test\/media\//);
+  // La URL firmada entrega el PDF como descarga con su nombre.
+  const u = new URL(file.body.message.attachment.payload.url);
+  const got = await h.app.inject({ method: 'GET', url: u.pathname + u.search });
+  assert.equal(got.statusCode, 200);
+  assert.equal(got.headers['content-type'], 'application/pdf');
+  assert.equal(got.headers['content-disposition'], 'attachment; filename="menu.pdf"');
+});
+
 /* ------------------------------ Instagram ------------------------------ */
 t('Instagram: recibe mensajes directos firmados y responde por la API de mensajes', async () => {
   const ig = await createChannel('instagram', { account_id: 'IG1', page_access_token: 'IGTOKEN', app_secret: 'ig-secret' });
@@ -220,6 +262,21 @@ t('Chat web: sesión, mensaje, "escribiendo…" y respuesta con imagen', async (
   // Otra sesión no ve esta conversación
   const other = (await h.app.inject({ method: 'GET', url: `${base}/messages?session=${'0'.repeat(32)}` })).json();
   assert.equal(other.messages.length, 0);
+});
+
+t('Chat web: un documento de la biblioteca llega al widget como archivo para descargar', async () => {
+  const web = await createChannel('webchat', { title: 'Hotel Palmas' });
+  const base = `/webchat/${web.webhook_token}`;
+  const { session } = (await h.app.inject({ method: 'POST', url: `${base}/session` })).json();
+  h.reset();
+  h.setScript(() => ({ action: 'reply_with_image', messages: ['Te dejo el menú'], image_ids: ['menu_pdf'] }));
+  assert.equal((await h.app.inject({ method: 'POST', url: `${base}/messages`, payload: { session, text: 'menú?' } })).statusCode, 200);
+  await waitFor(async () => (await h.app.inject({ method: 'GET', url: `${base}/messages?session=${session}` })).json().messages.length === 3);
+  const msgs = (await h.app.inject({ method: 'GET', url: `${base}/messages?session=${session}` })).json().messages;
+  const file = msgs[2];
+  assert.equal(file.image_url, null, 'no se muestra como foto');
+  assert.deepEqual([file.file.name, file.file.kind], ['menu.pdf', 'document']);
+  assert.match(file.file.url, /^https:\/\/bot\.test\/media\//);
 });
 
 t('Chat web: orígenes permitidos, límite de mensajes y canal desactivado', async () => {

@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import { config } from '../config.js';
 import { toPlainText } from '../engine/text.js';
-import { imageAbsolutePath, sleep, type OutgoingButton, type Transport } from '../engine/transport.js';
+import { imageAbsolutePath, sleep, type OutgoingButton, type OutgoingFile, type Transport } from '../engine/transport.js';
 import { safeEqual } from '../secret.js';
 import { ChannelConfigSchemas, type Channel, type ImageAsset } from '../types.js';
 import type { ChannelAdapter, InboundMessage } from './types.js';
@@ -90,6 +90,20 @@ class TelegramTransport implements Transport {
     return String(r.message_id);
   }
 
+  /** Video, documento o audio: cada tipo con su método de Telegram (se reproduce o descarga dentro del chat). */
+  async sendFile(file: OutgoingFile, caption: string, delayMs: number) {
+    await this.typing(Math.min(delayMs, 1500));
+    const [method, field] = file.kind === 'video' ? ['sendVideo', 'video'] : file.kind === 'audio' ? ['sendAudio', 'audio'] : file.kind === 'image' ? ['sendPhoto', 'photo'] : ['sendDocument', 'document'];
+    const form = new FormData();
+    form.append('chat_id', this.chatId);
+    if (caption) form.append('caption', toPlainText(caption));
+    const buf = await fs.readFile(file.absPath);
+    form.append(field, new Blob([new Uint8Array(buf)], { type: file.mime }), file.name);
+    await this.dispatchGuard?.();
+    const r = await this.client.call(method, form);
+    return String(r.message_id);
+  }
+
   /** Botones debajo del mensaje (uno por renglón): los de respuesta regresan su identificador al tocarlos. */
   async sendButtons(text: string, buttons: OutgoingButton[], delayMs: number) {
     await this.ensureCallbacks();
@@ -144,13 +158,23 @@ function parseMessage(m: any): InboundMessage | null {
     const text = m.text.trim() === '/start' ? '[El cliente inició la conversación]' : m.text;
     return { ...base, type: 'text', text };
   }
-  if (m.photo) return { ...base, type: 'image', text: m.caption ?? '' };
+  if (m.photo) {
+    // Telegram manda la foto en varios tamaños: se usa el más grande.
+    const p = Array.isArray(m.photo) ? m.photo.at(-1) : null;
+    return { ...base, type: 'image', text: m.caption ?? '', ...(p?.file_id ? { media: { id: p.file_id, mimeType: 'image/jpeg', size: Number(p.file_size) || undefined } } : {}) };
+  }
   if (m.voice || m.audio) {
     const a = m.voice ?? m.audio;
     return { ...base, type: 'audio', text: '', media: { id: a.file_id, mimeType: a.mime_type ?? 'audio/ogg', seconds: Number(a.duration) || undefined } };
   }
-  if (m.video || m.video_note) return { ...base, type: 'video', text: m.caption ?? '' };
-  if (m.document) return { ...base, type: 'document', text: m.caption ?? m.document.file_name ?? '' };
+  if (m.video || m.video_note) {
+    const v = m.video ?? m.video_note;
+    return { ...base, type: 'video', text: m.caption ?? '', media: { id: v.file_id, mimeType: v.mime_type ?? 'video/mp4', filename: v.file_name, size: Number(v.file_size) || undefined } };
+  }
+  if (m.document) {
+    const d = m.document;
+    return { ...base, type: 'document', text: m.caption ?? d.file_name ?? '', media: { id: d.file_id, mimeType: d.mime_type ?? 'application/octet-stream', filename: d.file_name, size: Number(d.file_size) || undefined } };
+  }
   if (m.sticker) return { ...base, type: 'sticker', text: '' };
   if (m.location) return { ...base, type: 'location', text: `${m.location.latitude},${m.location.longitude}` };
   if (m.contact) return { ...base, type: 'contact', text: [m.contact.first_name, m.contact.phone_number].filter(Boolean).join(' ') };
@@ -187,6 +211,14 @@ export const telegramAdapter: ChannelAdapter = {
     const client = new TelegramClient(channel.config.bot_token);
     const file = await client.call('getFile', { file_id: msg.media.id });
     return { buffer: await client.download(file.file_path), mimeType: msg.media.mimeType ?? 'audio/ogg' };
+  },
+
+  /** Foto, documento o video del cliente: Telegram entrega el archivo por su identificador (hasta 20 MB). */
+  async downloadMedia(channel, msg) {
+    if (!msg.media?.id) return null;
+    const client = new TelegramClient(channel.config.bot_token);
+    const file = await client.call('getFile', { file_id: msg.media.id });
+    return { buffer: await client.download(file.file_path), mimeType: msg.media.mimeType ?? 'application/octet-stream', fileName: msg.media.filename ?? String(file.file_path ?? '').split('/').pop() };
   },
 
   async setup(channel, webhookUrl) {

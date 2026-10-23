@@ -40,7 +40,7 @@ export const INBOUND_MEDIA_MAX_BYTES = 16 * 1024 * 1024;
 
 /** Archivo de un cliente ya guardado en disco, con lo necesario para comprobarlo después. */
 export interface StoredMedia {
-  kind: 'image' | 'document';
+  kind: 'image' | 'document' | 'video';
   /** Ruta relativa a UPLOADS_DIR (siempre empieza con "inbound/"). */
   file_path: string;
   /** Tipo según los bytes, no según lo que declaró la plataforma. */
@@ -50,9 +50,11 @@ export interface StoredMedia {
   sha256: string;
   /** false si el archivo parece cortado (una foto o PDF sin su final). */
   complete: boolean;
+  /** Lo que la IA entendió de la foto o el documento (vacío si no se leyó). */
+  ai_summary?: string;
 }
 
-const EXT_BY_MIME: Record<string, string> = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'application/pdf': '.pdf' };
+const EXT_BY_MIME: Record<string, string> = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'application/pdf': '.pdf', 'video/mp4': '.mp4', 'video/quicktime': '.mov', 'video/webm': '.webm' };
 
 /** Nombre para descargar: sin rutas ni caracteres de control, con un máximo de 120 caracteres. */
 export function safeFileName(name: string): string {
@@ -64,9 +66,20 @@ export function safeFileName(name: string): string {
  * Guarda el archivo tal como llegó (bytes originales, sin recodificar) en una ruta nueva y devuelve su huella.
  * Nunca sobrescribe: cada archivo tiene un nombre aleatorio.
  */
+/** Videos y documentos que la firma de foto/PDF no reconoce: MP4/MOV, WEBM, Word moderno y texto (por su firma y extensión). */
+function sniffMore(b: Buffer, ext: string): string {
+  const ascii = (from: number, to: number) => b.subarray(from, to).toString('latin1');
+  if (ascii(4, 8) === 'ftyp') return ext === '.mov' ? 'video/quicktime' : 'video/mp4';
+  if (b.length >= 4 && b[0] === 0x1a && b[1] === 0x45 && b[2] === 0xdf && b[3] === 0xa3) return 'video/webm';
+  if (ascii(0, 4) === 'PK\x03\x04' && ext === '.docx') return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  if ((ext === '.txt' || ext === '.csv') && !b.subarray(0, 8192).includes(0)) return ext === '.csv' ? 'text/csv' : 'text/plain';
+  return 'application/octet-stream';
+}
+
 export async function saveInboundMedia(accountId: string, kind: StoredMedia['kind'], buffer: Buffer, declaredName: string): Promise<StoredMedia> {
-  const mime = sniffMime(buffer);
   const declaredExt = path.extname(declaredName).toLowerCase();
+  const sniffed = sniffMime(buffer);
+  const mime = sniffed === 'application/octet-stream' ? sniffMore(buffer, declaredExt) : sniffed;
   const ext = EXT_BY_MIME[mime] ?? (/^\.[a-z0-9]{1,8}$/.test(declaredExt) ? declaredExt : '.bin');
   const rel = path.posix.join('inbound', accountId, `${crypto.randomUUID()}${ext}`);
   const abs = path.join(config.uploadsDir, rel);

@@ -251,6 +251,9 @@ td.num, th.num { text-align: right; }
 
 .img-card { border: 1px solid var(--line); border-radius: var(--radius-card); overflow: hidden; background: var(--surface); }
 .img-card img { width: 100%; height: 170px; object-fit: cover; display: block; background: var(--raised); }
+.img-card video { width: 100%; height: 170px; display: block; background: #000; }
+.img-card .file-preview { height: 170px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 0 12px; text-align: center; background: var(--raised); overflow-wrap: anywhere; }
+.img-card .file-icon { font-size: 40px; line-height: 1; }
 .img-card .body { padding: 12px 14px; }
 code { background: var(--raised); color: var(--text); padding: 1px 6px; border-radius: 4px; font-size: 12px; }
 
@@ -271,6 +274,7 @@ code { background: var(--raised); color: var(--text); padding: 1px 6px; border-r
 .gallery[hidden] { display: none; }
 .gallery .thumb { display: flex; flex-direction: column; gap: 4px; padding: 4px; text-align: left; }
 .gallery .thumb img { width: 100%; height: 80px; object-fit: cover; border-radius: 6px; display: block; }
+.gallery .thumb .file-thumb { height: 80px; display: flex; align-items: center; justify-content: center; font-size: 32px; border-radius: 6px; background: var(--raised); }
 
 /* La columna del chat y la lateral no se estiran una a la otra: cada una mide lo que necesita. */
 .split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, 340px); gap: var(--gap); align-items: start; }

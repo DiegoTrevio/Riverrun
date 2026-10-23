@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { sendsAnyFile } from '../engine/transport.js';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
@@ -184,11 +185,11 @@ export async function quoteRoutes(api: FastifyInstance, service: ChatService) {
     const rendered = await renderQuote(quote.account_id, quote.id).catch((e) => fail(`No se pudo generar el PDF: ${e?.message ?? e}`));
     const fresh = (await qstore.getQuote(quote.account_id, quote.id))!;
     const bot = conv.chatbot_id ? await store.getChatbot(conv.chatbot_id) : null;
-    const canFile = !!service.transportFor(channel, contact).sendFile;
+    const canFile = sendsAnyFile(service.transportFor(channel, contact));
     const link = canFile ? undefined : service.quotes.link(fresh);
     const sent = await service.outbound.send(conv.id, {
       text: quoteMessage(fresh, bot?.personality.formality ?? 'tu', link),
-      file: canFile ? { id: fresh.id, name: rendered.fileName, mime: 'application/pdf', kind: 'document', absPath: attachmentAbsolutePath(rendered.pdfPath) } : undefined,
+      file: canFile ? { id: fresh.id, name: rendered.fileName, mime: 'application/pdf', kind: 'document', absPath: attachmentAbsolutePath(rendered.pdfPath), url: service.quotes.link(fresh) } : undefined,
       source: 'quote', transactional: true, allowWhenHuman: true, meta: { quote_message: true, quote_id: fresh.id, quote_kind: fresh.kind },
     });
     if (!sent.sent) return fail(`No se pudo enviar: ${sent.reason}`, 409);
