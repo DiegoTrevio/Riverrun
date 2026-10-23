@@ -101,7 +101,7 @@ export async function render() {
     else if (parts[0] === 'pipeline') await view('pipeline', 'viewPipeline', content, parts[1], parts[2]);
     else if (parts[0] === 'cotizaciones') await view('quotes', 'viewQuotes', content, parts[1] || 'precios', params);
     else if (parts[0] === 'agenda') await view('agenda', 'viewAgenda', content, parts[1] || 'citas', params);
-    else if (parts[0] === 'notifications') await view('admin', 'viewNotifications', content);
+    else if (parts[0] === 'notifications') await view('admin', 'viewNotifications', content, params);
     else content.append(h('p', {}, 'Página no encontrada'));
     if (current()) {
       pending.remove(); content.removeAttribute('aria-busy');

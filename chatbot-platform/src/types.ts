@@ -455,6 +455,9 @@ export interface Account {
   created_at: Date;
 }
 
+export type AlertChannelPrefs = { panel?: boolean; whatsapp?: boolean; email?: boolean };
+export type AlertPrefs = Partial<Record<string, AlertChannelPrefs>>;
+
 export interface User {
   id: string;
   account_id: string | null;
@@ -463,6 +466,8 @@ export interface User {
   email: string;
   phone: string;
   notify_whatsapp: boolean;
+  /** Por grupo de avisos, si le llegan en el panel, por WhatsApp y por correo (lo que falta = lo de siempre). */
+  alert_prefs: AlertPrefs;
   /** Disponible para recibir conversaciones por turnos. */
   available: boolean;
   active: boolean;

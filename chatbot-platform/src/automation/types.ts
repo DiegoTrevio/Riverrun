@@ -75,6 +75,18 @@ export const AssignmentSchema = z.object({
   notify_all: z.boolean().default(false),
 });
 
+/** Cada cuánto se repiten los recordatorios al equipo y cuándo se escala una conversación asignada sin respuesta. */
+export const AlertTimingSchema = z.object({
+  /** Repetir «un cliente espera a una persona» cada N minutos (durante 24 h). 0 = recordar una sola vez. */
+  human_repeat_minutes: z.number().int().min(0).max(1440).default(120),
+  /** Repetir «un cliente sigue esperando respuesta» (el asistente no pudo contestar) cada N minutos (durante 24 h). */
+  ai_error_repeat_minutes: z.number().int().min(10).max(1440).default(30),
+  /** Escalar: si una conversación asignada lleva N minutos sin respuesta de una persona, se avisa una vez más. 0 = no escalar. */
+  escalate_minutes: z.number().int().min(0).max(1440).default(0),
+  /** A quién se escala (vacío = a los administradores). */
+  escalate_user_ids: z.array(z.string().uuid()).max(50).default([]),
+});
+
 /** Avisos cuando un WhatsApp se desconecta: cuándo, cada cuánto y a quién (lo define cada negocio). */
 export const ConnectionAlertsSchema = z.object({
   enabled: z.boolean().default(true),
@@ -109,6 +121,7 @@ export const AccountSettingsSchema = z.object({
   /** Notificar en el panel a todo el equipo cuando una conversación pasa a humano. */
   notify_team_on_handoff: z.boolean().default(true),
   connection_alerts: ConnectionAlertsSchema.default(() => ConnectionAlertsSchema.parse({})),
+  alert_timing: AlertTimingSchema.default(() => AlertTimingSchema.parse({})),
   /** Secreto para suscribirse al calendario (.ics) y firmar webhooks salientes. */
   calendar_token: z.string().default(''),
   webhook_secret: z.string().default(''),
@@ -405,6 +418,8 @@ export interface AutomationEvent {
   pipeline?: { id: string; name: string; stage_id: string; stage_name: string; stage_kind: string; from_stage_id: string | null; from_stage_name: string | null; reason: string; value: number; currency: string };
   /** Transferencia hecha por una persona del equipo que tomó la conversación (ella ya la atiende: no se reparte). */
   byUserId?: string;
+  /** Desde dónde se pasó a una persona: 'telefono' = alguien ya contestó desde el teléfono (no se avisa de una espera). */
+  via?: 'bot' | 'regla' | 'panel' | 'telefono' | '';
   /** Cotización enviada, por aprobar o rechazada. */
   quote?: { id: string; folio: string; kind: 'approximate' | 'final'; total: string };
 }

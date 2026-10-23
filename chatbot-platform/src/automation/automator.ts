@@ -1,4 +1,6 @@
 import * as assignment from './assignment.js';
+import { alertChannels, groupsRepeats } from './alert-groups.js';
+import { conversationAlert } from './alert-format.js';
 import { deliverReport, reportRecipients } from './report-delivery.js';
 import { briefReport } from '../engine/report-format.js';
 import { imageSendWhen } from '../types.js';
@@ -230,9 +232,6 @@ export async function postSigned(url: string, body: unknown, secret: string, ext
 
 /* ------------------------------ Automatizador ------------------------------ */
 
-/** Avisos urgentes que también se envían por correo (clientes sin respuesta, emergencias, fallas de recepción). */
-const EMAIL_KINDS = ['ai_error', 'safety', 'alert', 'handoff_wait'];
-
 export class Automator {
   /** Trabajo en curso por conversación (el simulador espera a que termine para mostrarlo). */
   private inflight = new Map<string, Set<Promise<unknown>>>();
@@ -284,11 +283,18 @@ export class Automator {
       await astore.stopEnrollments(ctx.conv.id, 'una persona tomó la conversación');
       await query(`UPDATE conversations SET pending_buttons = NULL WHERE id = $1`, [ctx.conv.id]);
     }
-    if (e.type === 'handoff' && ctx.channel.type !== 'playground') {
-      const who = ctx.contact.name || ctx.contact.push_name || 'Cliente';
-      // El aviso lleva el resumen y los datos ya capturados: quien atiende sabe de qué va antes de abrir la conversación.
+    // Si alguien contestó desde el teléfono, ya hay una persona atendiendo: no es una espera y no se avisa a nadie.
+    if (e.type === 'handoff' && ctx.channel.type !== 'playground' && e.via !== 'telefono') {
+      // El aviso lleva quién es el cliente, el motivo, el resumen y los datos ya capturados: quien atiende sabe de qué va
+      // antes de abrir la conversación.
       const brief = await briefReport(ctx.conv.id, 1500, { customer: false }).catch(() => '');
-      const alert = { link: `#/conversation/${ctx.conv.id}`, body: `${who} (${ctx.channel.name}): ${ctx.conv.handoff_reason || 'transferida'}${brief ? `\n\n${brief}` : ''}` };
+      const alert = {
+        link: `#/conversation/${ctx.conv.id}`,
+        body: conversationAlert({ contact: ctx.contact, channel: ctx.channel.name, reason: ctx.conv.handoff_reason || 'transferida', brief }),
+        conversationId: ctx.conv.id,
+        // El encargado del agente (handoff_notify_number) ya recibe su propio aviso con el resumen: no le llega otro igual.
+        skipPhones: !e.byUserId && ctx.bot?.rules.handoff_notify_number ? [ctx.bot.rules.handoff_notify_number] : [],
+      };
       const asg = ctx.settings.assignment;
       let assigned: string | null = null;
       if (e.byUserId && ctx.conv.assigned_user_id === e.byUserId) {
@@ -300,11 +306,12 @@ export class Automator {
         if (user) {
           assigned = user.id;
           ctx.conv.assigned_user_id = user.id;
-          await this.alertTeam(ctx.conv.account_id, { ...alert, title: '📥 Te asignaron una conversación', userIds: [user.id], kind: 'assignment' });
+          // Un solo aviso para quien la recibe: «te asignaron» ya dice que espera a una persona.
+          await this.alertTeam(ctx.conv.account_id, { ...alert, title: '📥 Te asignaron una conversación que espera a una persona', userIds: [user.id], kind: 'assignment', conversationId: undefined });
         }
       }
       if (ctx.settings.notify_team_on_handoff && (!assigned || asg.notify_all)) {
-        await this.alertTeam(ctx.conv.account_id, { ...alert, title: '🙋 Conversación esperando a una persona', kind: 'handoff', conversationId: ctx.conv.id });
+        await this.alertTeam(ctx.conv.account_id, { ...alert, title: '🙋 Conversación esperando a una persona', kind: 'handoff', excludeUserIds: assigned ? [assigned] : [] });
       }
     }
     // Pipeline: la solicitud se crea en su primera columna y avanza según lo que pasa (antes de las reglas, que pueden
@@ -414,12 +421,13 @@ export class Automator {
         }
         await this.alertTeam(ctx.conv.account_id, {
           title: `🔔 ${rule.name}`,
-          body: this.render(a.message, ctx, e),
+          body: conversationAlert({ contact: ctx.contact, channel: ctx.channel.name, extra: this.render(a.message, ctx, e) }),
           link: `#/conversation/${ctx.conv.id}`,
           conversationId: ctx.conv.id,
           userIds,
           roles: a.roles,
           phones: a.phones,
+          kind: 'rule',
         });
         return;
       }
@@ -435,7 +443,7 @@ export class Automator {
         const user = await assignment.assignRoundRobin(ctx.conv, { scope: `rule:${rule.id}`, roles: a.roles, userIds: a.user_ids, reason: `regla "${rule.name}"` });
         if (!user) return;
         ctx.conv.assigned_user_id = user.id;
-        await this.alertTeam(ctx.conv.account_id, { title: '📥 Te asignaron una conversación', body: this.render(a.message, ctx, e), link: `#/conversation/${ctx.conv.id}`, userIds: [user.id], kind: 'assignment' });
+        await this.alertTeam(ctx.conv.account_id, { title: '📥 Te asignaron una conversación', body: conversationAlert({ contact: ctx.contact, channel: ctx.channel.name, reason: `regla «${rule.name}»`, extra: this.render(a.message, ctx, e) }), link: `#/conversation/${ctx.conv.id}`, userIds: [user.id], kind: 'assignment' });
         if (a.take_over && ctx.conv.status !== 'human') {
           await store.setConversationStatus(ctx.conv.id, 'human', `Asignada a ${user.name || user.email}`);
           await store.markHandoff(ctx.conv.contact_id, user.id, 'regla');
@@ -566,25 +574,31 @@ export class Automator {
 
   /* ------------------------------ Alertas al equipo ------------------------------ */
 
-  /** Notificación en el panel y, a quien lo tenga activado, por WhatsApp. */
   /**
    * Avisa al equipo. Un aviso de una conversación (conversationId) o de una cita (staffId) llega siempre a los administradores,
    * y a un agente solo si tiene esa conversación o cita asignada: lo demás no lo puede abrir.
+   * Cada persona recibe el aviso por donde eligió en «Mis avisos» (panel, WhatsApp, correo; ver alert-groups). El mismo
+   * aviso de la misma conversación no le llega dos veces en 10 minutos (salvo fallas, emergencias y recordatorios). excludeUserIds: quienes ya recibieron otro aviso del
+   * mismo caso; skipPhones: números que ya recibieron su propio aviso (el encargado del agente).
    */
-  async alertTeam(accountId: string, o: { title: string; body: string; link?: string; userIds?: string[]; roles?: ('admin' | 'agent')[]; phones?: string[]; kind?: string; conversationId?: string; staffId?: string | null }) {
+  async alertTeam(accountId: string, o: { title: string; body: string; link?: string; userIds?: string[]; roles?: ('admin' | 'agent')[]; phones?: string[]; kind?: string; conversationId?: string; staffId?: string | null; excludeUserIds?: string[]; skipPhones?: string[] }) {
     const team = await astore.teamMembers(accountId, ['admin', 'agent']);
     const picked = o.userIds?.length ? team.filter((u) => o.userIds!.includes(u.id)) : team.filter((u) => (o.roles ?? ['admin', 'agent']).includes(u.role as 'admin'));
     const owner = o.conversationId ? await astore.assigneeOf(o.conversationId) : o.staffId;
-    const recipients = o.conversationId || o.staffId !== undefined ? team.filter((u) => u.role === 'admin' || (picked.includes(u) && u.id === owner)) : picked;
-    await astore.notifyUsers(accountId, recipients.map((u) => u.id), { title: o.title, body: o.body, link: o.link, kind: o.kind });
-    const link = o.link ? `\n${config.publicBaseUrl}/${o.link}` : '';
-    // Lo urgente también llega por correo: el WhatsApp de la cuenta puede ser justo lo que está fallando.
-    if (o.kind && EMAIL_KINDS.includes(o.kind)) {
-      for (const u of recipients.filter((x) => x.email)) {
-        await sendMail({ to: u.email, subject: o.title.replace(/^[^\p{L}\p{N}]+/u, ''), text: `${o.body}${link}` }).catch(() => undefined);
-      }
+    let recipients = (o.conversationId || o.staffId !== undefined ? team.filter((u) => u.role === 'admin' || (picked.includes(u) && u.id === owner)) : picked)
+      .filter((u) => !o.excludeUserIds?.includes(u.id));
+    if (o.conversationId && o.link && groupsRepeats(o.kind)) {
+      const recent = await astore.recentlyAlerted(recipients.map((u) => u.id), o.kind ?? 'alert', o.link, o.title, 10);
+      recipients = recipients.filter((u) => !recent.has(u.id));
     }
-    const phones = new Set([...recipients.filter((u) => u.notify_whatsapp && u.phone).map((u) => u.phone), ...(o.phones ?? []).map((p) => p.replace(/\D/g, '')).filter(Boolean)]);
+    const ch = new Map(recipients.map((u) => [u.id, alertChannels(u.alert_prefs, o.kind)]));
+    await astore.notifyUsers(accountId, recipients.filter((u) => ch.get(u.id)!.panel).map((u) => u.id), { title: o.title, body: o.body, link: o.link, kind: o.kind });
+    const link = o.link ? `\n${config.publicBaseUrl}/${o.link}` : '';
+    for (const u of recipients.filter((x) => x.email && ch.get(x.id)!.email)) {
+      await sendMail({ to: u.email, subject: o.title.replace(/^[^\p{L}\p{N}]+/u, ''), text: `${o.body}${link}` }).catch(() => undefined);
+    }
+    const skip = new Set((o.skipPhones ?? []).map((p) => p.replace(/\D/g, '')));
+    const phones = new Set([...recipients.filter((u) => u.notify_whatsapp && u.phone && ch.get(u.id)!.whatsapp).map((u) => u.phone), ...(o.phones ?? []).map((p) => p.replace(/\D/g, ''))].filter((p) => p && !skip.has(p)));
     for (const phone of phones) {
       try {
         await this.chat.sendInternalWhatsapp(accountId, phone, `*${o.title}*\n${o.body}${link}`);

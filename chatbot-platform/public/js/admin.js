@@ -1,4 +1,4 @@
-import { api, area, check, field, fmtDate, h, run, select, state, text, toast, confirmAction, ask } from './core.js';
+import { api, area, check, field, fmtDate, h, run, select, state, text, toast, confirmAction, ask, dialog } from './core.js';
 
 /** El título de un aviso sin el emoji con que llega también por WhatsApp (en el panel lo dice el texto). */
 const plainTitle = (t) => String(t || '').replace(/^[\p{Extended_Pictographic}️‍\s]+/u, '');
@@ -7,6 +7,43 @@ import { render } from './main.js';
 import { ROLE_LABEL, acct, isAdmin, isSuper, withAcct } from './session.js';
 import { refreshBell } from './shell.js';
 import { usd } from './usage.js';
+
+/* ------------------------------ Mis avisos ------------------------------ */
+
+const ALERT_CHANNELS = [['panel', 'Panel'], ['whatsapp', 'WhatsApp'], ['email', 'Correo']];
+
+/**
+ * Tabla «grupo × panel / WhatsApp / correo». prefs se modifica en el lugar y solo guarda lo que la persona cambia: lo que no
+ * toca sigue como siempre (ver alert-groups en el servidor).
+ */
+function alertPrefsTable(groups, prefs, o = {}) {
+  return h('div', { class: 'table-scroll' }, h('table', { class: 'alert-prefs' },
+    h('caption', { class: 'sr-only' }, 'Por dónde te llega cada tipo de aviso'),
+    h('thead', {}, h('tr', {}, h('th', { scope: 'col' }, 'Aviso'), ALERT_CHANNELS.map(([, l]) => h('th', { scope: 'col' }, l)))),
+    h('tbody', {}, groups.map((g) => h('tr', {},
+      h('th', { scope: 'row' }, h('strong', {}, g.label), h('div', { class: 'small muted' }, g.hint)),
+      ALERT_CHANNELS.map(([c, l]) => {
+        const locked = c === 'panel' && g.panel_locked;
+        const value = locked ? true : prefs[g.key]?.[c] ?? g.defaults[c];
+        return h('td', {}, h('input', {
+          type: 'checkbox', checked: value, disabled: locked || (c === 'whatsapp' && o.noPhone),
+          'aria-label': `${g.label}: ${l}`,
+          title: locked ? 'Las emergencias y fallas siempre llegan al panel' : c === 'whatsapp' && o.noPhone ? 'Agrega un WhatsApp para alertas y actívalo' : '',
+          onchange: (e) => { prefs[g.key] = { ...(prefs[g.key] || {}), [c]: e.target.checked }; },
+        }));
+      }))))));
+}
+
+/** El administrador ajusta los avisos de una persona de su equipo. */
+async function editMemberAlerts(u) {
+  const groups = await api('GET', '/api/alert-groups');
+  const prefs = structuredClone(u.alert_prefs || {});
+  const body = h('div', {},
+    h('p', { class: 'small muted' }, u.phone && u.notify_whatsapp ? `Su WhatsApp para alertas: +${u.phone}.` : 'No tiene WhatsApp para alertas activado: esos avisos solo le llegan en el panel y por correo.'),
+    alertPrefsTable(groups, prefs, { noPhone: !(u.phone && u.notify_whatsapp) }));
+  if (!(await dialog(`Avisos de ${u.name || u.email}`, body, 'Guardar'))) return;
+  if (await run(() => api('PUT', `/api/users/${u.id}`, { alert_prefs: prefs }), 'Avisos guardados')) render();
+}
 
 /* ------------------------------ Usuarios ------------------------------ */
 
@@ -82,6 +119,7 @@ export async function viewUsers(root) {
                 const phone = await ask('WhatsApp para alertas (con lada; vacío para quitar)', u.phone || '');
                 if (phone !== null && (await run(() => api('PUT', `/api/users/${u.id}`, { phone, notify_whatsapp: !!phone.replace(/\D/g, '') }), 'Actualizado'))) render();
               } }, 'Alertas WhatsApp'),
+              u.role !== 'superadmin' ? h('button', { class: 'small', 'aria-label': `Avisos de ${u.email}`, onclick: () => editMemberAlerts(u) }, 'Avisos') : null,
               h('button', { class: 'small danger', onclick: async () => { if (await confirmAction(`¿Eliminar a ${u.email}?`)) { if (!(await run(() => api('DELETE', `/api/users/${u.id}`), 'Eliminado'))) return; render(); } } }, 'Eliminar'))));
         })))),
   );
@@ -194,6 +232,9 @@ export async function viewAccounts(root) {
 export async function viewPassword(root) {
   const f = { current: '', password: '', confirm: '' };
   const me = { name: state.me.user.name, phone: state.me.user.phone || '', notify_whatsapp: !!state.me.user.notify_whatsapp, available: state.me.user.available !== false };
+  // Los avisos son del equipo de una cuenta: el maestro sin cuenta no los recibe.
+  const groups = state.me.user.account_id ? await api('GET', '/api/alert-groups').catch(() => null) : null;
+  const prefs = structuredClone(state.me.user.alert_prefs || {});
   root.append(
     h('h1', {}, 'Mi perfil'),
     h('div', { class: 'card', style: 'max-width:420px' },
@@ -202,6 +243,13 @@ export async function viewPassword(root) {
       check(me, 'notify_whatsapp', 'Recibir las alertas del equipo por WhatsApp'),
       state.me.user.account_id ? check(me, 'available', 'Estoy disponible: recibir conversaciones asignadas por turnos (desmárcalo si estás fuera de turno)') : null,
       h('button', { onclick: async () => { const u = await run(() => api('PUT', '/api/me', me), 'Perfil guardado'); if (u) state.me.user = { ...state.me.user, ...u }; } }, 'Guardar perfil')),
+    groups ? [
+      h('h2', {}, 'Mis avisos'),
+      h('div', { class: 'card', style: 'max-width:720px' },
+        h('p', { class: 'small muted' }, 'Elige por dónde te llega cada tipo de aviso. El WhatsApp necesita tu número de arriba con «Recibir las alertas del equipo por WhatsApp» activado. Lo que no cambies sigue como hasta ahora.'),
+        alertPrefsTable(groups, prefs, { noPhone: !(state.me.user.phone && state.me.user.notify_whatsapp) }),
+        h('button', { onclick: async () => { const u = await run(() => api('PUT', '/api/me', { alert_prefs: prefs }), 'Avisos guardados'); if (u) state.me.user = { ...state.me.user, ...u }; } }, 'Guardar avisos')),
+    ] : null,
     h('h2', {}, 'Cambiar contraseña'),
     h('div', { class: 'card', style: 'max-width:420px' },
       field('Contraseña actual', text(f, 'current', { type: 'password' })),
@@ -247,12 +295,17 @@ async function noticeCard() {
       } }, 'Enviar aviso')));
 }
 
-export async function viewNotifications(root) {
-  const data = await api('GET', '/api/notifications?limit=100');
+export async function viewNotifications(root, params) {
+  const group = params?.get?.('grupo') || '';
+  const data = await api('GET', `/api/notifications?limit=100${group ? `&group=${encodeURIComponent(group)}` : ''}`);
+  const filter = { group };
   root.append(
     h('div', { class: 'row between' }, h('h1', {}, 'Notificaciones'),
       data.unread ? h('button', { onclick: async () => { if (!(await run(() => api('POST', '/api/notifications/read', {})))) return; render(); } }, 'Marcar todas como leídas') : null),
     isAdmin() && (state.me.user.account_id || state.accountId) ? await noticeCard() : null,
+    h('div', { class: 'row', style: 'flex-wrap:wrap;gap:8px;align-items:flex-end' },
+      field('Mostrar', select(filter, 'group', [['', 'Todos los avisos'], ...(data.groups || []).map((g) => [g.key, g.label])], () => { location.hash = filter.group ? `#/notifications?grupo=${filter.group}` : '#/notifications'; })),
+      state.me.user.account_id ? h('a', { href: '#/password', class: 'small' }, 'Elegir por dónde me llega cada aviso') : null),
     h('div', { class: 'card' },
       data.items.length ? h('table', {}, h('tbody', {}, data.items.map((n) => h('tr', { class: n.link ? 'click' : '', onclick: async () => {
         if (!n.read_at) await api('POST', '/api/notifications/read', { ids: [n.id] });
@@ -262,7 +315,7 @@ export async function viewNotifications(root) {
         h('td', { style: 'width:10px' }, n.read_at ? '' : h('span', { class: 'badge red' }, '•')),
         h('td', {}, h('strong', {}, plainTitle(n.title)), h('div', { class: 'small muted pre' }, n.body)),
         h('td', { class: 'small muted' }, fmtDate(n.created_at))))))
-        : h('p', { class: 'muted' }, state.me.user.account_id ? 'Sin notificaciones.' : 'Las notificaciones llegan a los usuarios de cada cuenta.')),
+        : h('p', { class: 'muted' }, state.me.user.account_id ? (group ? 'Sin avisos de este tipo.' : 'Sin notificaciones.') : 'Las notificaciones llegan a los usuarios de cada cuenta.')),
   );
   refreshBell();
 }

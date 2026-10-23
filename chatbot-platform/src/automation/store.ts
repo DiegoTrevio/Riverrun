@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { query, queryOne } from '../db.js';
 import { accountSettings, type AccountSettings, type Appointment, type Automation, type Sequence, type Service, type WaTemplateRef } from './types.js';
+import type { AlertPrefs } from '../types.js';
 
 /* ------------------------------ Configuración de la cuenta ------------------------------ */
 
@@ -389,9 +390,19 @@ export async function notifyUsers(accountId: string, userIds: string[], n: { tit
   }
 }
 
+/** Quiénes ya recibieron en el panel este mismo aviso (tipo, enlace y título) en los últimos minutos. */
+export async function recentlyAlerted(userIds: string[], kind: string, link: string, title: string, minutes: number) {
+  if (!userIds.length) return new Set<string>();
+  const rows = await query<{ user_id: string }>(
+    `SELECT DISTINCT user_id FROM notifications WHERE user_id = ANY($1) AND kind = $2 AND link = $3 AND title = $4 AND created_at > now() - make_interval(mins => $5)`,
+    [userIds, kind, link, title.slice(0, 200), minutes],
+  );
+  return new Set(rows.map((r) => r.user_id));
+}
+
 export async function teamMembers(accountId: string, roles: string[] = ['admin', 'agent']) {
-  return query<{ id: string; name: string; email: string; role: string; phone: string; notify_whatsapp: boolean }>(
-    `SELECT id, name, email, role, phone, notify_whatsapp FROM users WHERE account_id = $1 AND active AND role = ANY($2)`,
+  return query<{ id: string; name: string; email: string; role: string; phone: string; notify_whatsapp: boolean; alert_prefs: AlertPrefs }>(
+    `SELECT id, name, email, role, phone, notify_whatsapp, alert_prefs FROM users WHERE account_id = $1 AND active AND role = ANY($2)`,
     [accountId, roles],
   );
 }
@@ -537,8 +548,8 @@ export async function campaignStats(id: string) {
 
 /* ------------------------------ Notificaciones del usuario ------------------------------ */
 
-export async function listNotifications(userId: string, limit = 50, accountId: string | null = null) {
-  return query(`SELECT * FROM notifications WHERE user_id = $1 AND ($3::uuid IS NULL OR account_id = $3) ORDER BY id DESC LIMIT $2`, [userId, limit, accountId]);
+export async function listNotifications(userId: string, limit = 50, accountId: string | null = null, kinds: string[] | null = null) {
+  return query(`SELECT * FROM notifications WHERE user_id = $1 AND ($3::uuid IS NULL OR account_id = $3) AND ($4::text[] IS NULL OR kind = ANY($4)) ORDER BY id DESC LIMIT $2`, [userId, limit, accountId, kinds]);
 }
 
 export async function unreadCount(userId: string, accountId: string | null = null) {

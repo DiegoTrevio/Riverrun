@@ -23,6 +23,7 @@ import { gate } from './engine/activation.js';
 import { describeInbound, type InboundMessage } from './channels/types.js';
 import { describeWithMedia, understandMedia } from './engine/media-understanding.js';
 import { query, queryOne } from './db.js';
+import { conversationAlert } from './automation/alert-format.js';
 import { summarizeConversation } from './engine/report.js';
 import { Engine, type ProcessResult } from './engine/engine.js';
 import { setAlertWhatsapp } from './lifecycle.js';
@@ -195,7 +196,16 @@ export class ChatService {
     const t = this.transportFactory(channel, contact);
     if (channel.type === 'playground') return t;
     const guarded = guardTransport(t, contact.phone || contact.external_id);
-    if (channel.type === 'whatsapp') return guarded;
+    if (channel.type === 'whatsapp') {
+      // El aviso sale por este mismo WhatsApp: se registra antes de enviarlo para que su eco no cree una conversación
+      // falsa del encargado (ni pause al asistente ni dispare otro aviso).
+      return { ...guarded, notify: async (number, text) => {
+        const digits = number.replace(/\D/g, '');
+        assertOutbound(digits);
+        await store.recordInternalNotice(channel.account_id, digits, text.trim());
+        await guarded.notify(digits, text);
+      } };
+    }
     return { ...guarded, notify: (number, text) => this.notifyViaWhatsapp(channel, number, text) };
   }
 
@@ -236,7 +246,8 @@ export class ChatService {
 
   /**
    * Conversaciones en revisión: las que fallaron por la IA se reintentan cada 10 minutos (hasta 12 veces, unas 2 horas);
-   * las demás (envío incierto o reintentos agotados) vuelven a avisar al equipo cada 30 minutos mientras el cliente siga
+   * las demás (envío incierto o reintentos agotados) vuelven a avisar al equipo cada 30 minutos (o lo que elija la cuenta
+   * en Automatización → Ajustes) mientras el cliente siga
    * esperando, durante 24 horas.
    */
   async reviveFailed(): Promise<{ retried: number; reminded: number }> {
@@ -246,7 +257,9 @@ export class ChatService {
       RETURNING w.conversation_id`);
     const due = await query<{ conversation_id: string }>(`UPDATE conversation_work w SET alerted_at=now()
       WHERE w.state='dead' AND (w.reason<>'processing_error' OR w.revivals>=12)
-        AND w.updated_at>now()-interval '24 hours' AND (w.alerted_at IS NULL OR w.alerted_at<now()-interval '30 minutes')
+        AND w.updated_at>now()-interval '24 hours'
+        AND (w.alerted_at IS NULL OR w.alerted_at<now()-make_interval(mins => COALESCE((SELECT (a.settings->'alert_timing'->>'ai_error_repeat_minutes')::int
+          FROM conversations c JOIN accounts a ON a.id=c.account_id WHERE c.id=w.conversation_id), 30)))
         AND EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id=w.conversation_id AND m.direction='in' AND NOT m.processed)
         AND EXISTS (SELECT 1 FROM conversations c WHERE c.id=w.conversation_id AND c.status='bot')
       RETURNING w.conversation_id`);
@@ -261,10 +274,9 @@ export class ChatService {
       if (!conv) return;
       const [contact, channel] = await Promise.all([store.getContact(conv.contact_id), store.getChannel(conv.channel_id)]);
       if (!channel || channel.type === 'playground') return;
-      const who = contact?.name || contact?.push_name || (contact?.phone ? `+${contact.phone}` : 'Un cliente');
       await this.automator.alertTeam(conv.account_id, {
         title: '⏰ Un cliente sigue esperando respuesta',
-        body: `${who} (${channel.name}) sigue sin respuesta y el asistente no puede contestarle solo. Ábrelo y respóndele o confirma que ya se atendió.`,
+        body: conversationAlert({ contact, channel: channel.name, reason: 'sigue sin respuesta y el asistente no puede contestarle solo', extra: 'Ábrelo y respóndele o confirma que ya se atendió.' }),
         link: `#/conversation/${conversationId}`,
         conversationId,
         kind: 'ai_error',
@@ -277,32 +289,44 @@ export class ChatService {
 
   /**
    * Clientes que esperan a una persona del equipo: si el último mensaje es del cliente y lleva más de
-   * `handoff_reminder_minutes`, se recuerda al equipo (y se repite cada 2 horas, durante 24 horas).
+   * `handoff_reminder_minutes`, se recuerda al equipo (y se repite cada `alert_timing.human_repeat_minutes`, por defecto
+   * 2 horas, durante 24 horas). Si la conversación ya tiene a alguien asignado y la cuenta escala, a los
+   * `escalate_minutes` se avisa además a los administradores (o a quienes eligió), una vez hasta que una persona responda.
    */
   async remindHumanWaiting(): Promise<number> {
-    const rows = await query<{ id: string; chatbot_id: string | null; waiting_min: number }>(`SELECT c.id, c.chatbot_id, floor(extract(epoch FROM now() - m.created_at) / 60)::int AS waiting_min
+    const repeat = `COALESCE((a.settings->'alert_timing'->>'human_repeat_minutes')::int, 120)`;
+    const rows = await query<{ id: string; chatbot_id: string | null; waiting_min: number; escalate_min: number; remind_due: boolean }>(`SELECT * FROM (
+      SELECT c.id, c.chatbot_id,
+        floor(extract(epoch FROM now() - m.created_at) / 60)::int AS waiting_min,
+        (c.human_reminded_at IS NULL OR c.human_reminded_at < m.created_at OR (${repeat} > 0 AND c.human_reminded_at < now() - make_interval(mins => ${repeat}))) AS remind_due,
+        CASE WHEN c.assigned_user_id IS NOT NULL AND (c.escalated_at IS NULL OR c.escalated_at < COALESCE(
+          (SELECT max(created_at) FROM messages WHERE conversation_id = c.id AND direction = 'out' AND sender = 'human'), '-infinity'))
+          THEN COALESCE((a.settings->'alert_timing'->>'escalate_minutes')::int, 0) ELSE 0 END AS escalate_min
       FROM conversations c
+      JOIN accounts a ON a.id = c.account_id
       JOIN LATERAL (SELECT direction, created_at FROM messages WHERE conversation_id = c.id ORDER BY id DESC LIMIT 1) m ON true
       WHERE c.status = 'human' AND m.direction = 'in' AND m.created_at > now() - interval '24 hours'
-        AND (c.human_reminded_at IS NULL OR c.human_reminded_at < m.created_at OR c.human_reminded_at < now() - interval '2 hours')
-      LIMIT 200`);
+    ) x WHERE x.remind_due OR x.escalate_min > 0
+    LIMIT 200`);
     let n = 0;
     for (const row of rows) {
+      if (row.escalate_min && row.waiting_min >= row.escalate_min) await this.escalateWaiting(row.id, row.waiting_min);
+      if (!row.remind_due) continue;
       const bot = row.chatbot_id ? await store.getChatbot(row.chatbot_id) : null;
       const minutes = bot?.rules.handoff_reminder_minutes ?? 30;
       if (!minutes || row.waiting_min < minutes) continue;
-      const claimed = await query(`UPDATE conversations SET human_reminded_at = now() WHERE id = $1 AND status = 'human'
-        AND (human_reminded_at IS NULL OR human_reminded_at < now() - interval '2 hours' OR human_reminded_at < (SELECT max(created_at) FROM messages WHERE conversation_id = $1 AND direction = 'in')) RETURNING id`, [row.id]);
+      const claimed = await query(`UPDATE conversations c SET human_reminded_at = now() FROM accounts a WHERE c.id = $1 AND a.id = c.account_id AND c.status = 'human'
+        AND (c.human_reminded_at IS NULL OR c.human_reminded_at < (SELECT max(created_at) FROM messages WHERE conversation_id = $1 AND direction = 'in')
+          OR (${repeat} > 0 AND c.human_reminded_at < now() - make_interval(mins => ${repeat}))) RETURNING c.id`, [row.id]);
       if (!claimed.length) continue;
       const conv = await store.getConversation(row.id);
       if (!conv) continue;
       const [contact, channel] = await Promise.all([store.getContact(conv.contact_id), store.getChannel(conv.channel_id)]);
       if (!channel || channel.type === 'playground') continue;
-      const who = contact?.name || contact?.push_name || (contact?.phone ? `+${contact.phone}` : 'Un cliente');
       const resume = bot?.rules.auto_resume_minutes ? '' : ' Si nadie puede atenderlo, devuelve la conversación al asistente desde Conversaciones.';
       await this.automator.alertTeam(conv.account_id, {
         title: '⏳ Un cliente espera a una persona',
-        body: `${who} (${channel.name}) espera respuesta de alguien del equipo desde hace ${row.waiting_min} min.${resume}`,
+        body: conversationAlert({ contact, channel: channel.name, reason: `espera respuesta de alguien del equipo desde hace ${row.waiting_min} min`, extra: resume.trim() }),
         link: `#/conversation/${conv.id}`,
         conversationId: conv.id,
         kind: 'handoff_wait',
@@ -312,6 +336,27 @@ export class ChatService {
     }
     return n;
   }
+  /** Escala una conversación asignada que sigue sin respuesta: un aviso a los administradores (o a quienes eligió la cuenta). */
+  private async escalateWaiting(conversationId: string, waitingMin: number) {
+    const claimed = await queryOne<{ account_id: string; assigned_user_id: string | null }>(`UPDATE conversations SET escalated_at = now()
+      WHERE id = $1 AND status = 'human' AND assigned_user_id IS NOT NULL
+        AND (escalated_at IS NULL OR escalated_at < COALESCE((SELECT max(created_at) FROM messages WHERE conversation_id = $1 AND direction = 'out' AND sender = 'human'), '-infinity'))
+      RETURNING account_id, assigned_user_id`, [conversationId]);
+    if (!claimed) return;
+    const conv = await store.getConversation(conversationId);
+    const channel = conv && (await store.getChannel(conv.channel_id));
+    if (!conv || !channel || channel.type === 'playground') return;
+    const [contact, settings, assignee] = await Promise.all([store.getContact(conv.contact_id), astore.getSettings(conv.account_id), claimed.assigned_user_id ? store.getUserBasic(claimed.assigned_user_id) : null]);
+    const to = settings.alert_timing.escalate_user_ids;
+    await this.automator.alertTeam(conv.account_id, {
+      title: '⚠️ Conversación asignada sin respuesta',
+      body: conversationAlert({ contact, channel: channel.name, reason: `lleva ${waitingMin} min esperando y ${assignee ? assignee.name || assignee.email : 'la persona asignada'} no ha respondido` }),
+      link: `#/conversation/${conv.id}`,
+      ...(to.length ? { userIds: to } : { roles: ['admin'] as ('admin' | 'agent')[] }),
+      kind: 'escalation',
+    }).catch(() => undefined);
+  }
+
 
   /**
    * «Devolver al asistente después de N minutos sin actividad humana»: si nadie del equipo escribió en ese tiempo, la
@@ -647,7 +692,7 @@ export class ChatService {
     await store.markAllProcessed(conversationId);
     if (changed) {
       await store.markHandoff(changed.contact_id, byUserId ?? null, via);
-      this.automator.emit({ type: 'handoff', conversationId, byUserId });
+      this.automator.emit({ type: 'handoff', conversationId, byUserId, via });
     }
     if(currentOperation()?.startsWith('receipt:')) await this.automator.settle(conversationId);
     return changed ?? await store.getConversation(conversationId);

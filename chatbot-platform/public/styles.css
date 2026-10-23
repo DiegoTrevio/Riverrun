@@ -730,3 +730,9 @@ summary.btn { display: inline-flex; align-items: center; gap: 6px; }
 .inbox-empty-mark { color: var(--muted); display: flex; justify-content: center; }
 details.filters > summary { cursor: pointer; font-weight: 600; color: var(--text); padding: 4px 0; }
 details.filters[open] > summary { margin-bottom: 12px; }
+
+/* Mis avisos: grupo × panel / WhatsApp / correo. */
+.table-scroll { overflow-x: auto; max-width: 100%; }
+.alert-prefs th[scope="row"] { font-weight: normal; text-align: left; }
+.alert-prefs td { text-align: center; }
+.alert-prefs input[type="checkbox"] { width: 22px; height: 22px; }

@@ -143,11 +143,11 @@ t('regla "asignar": avisa a la persona del turno y puede pasar la conversación 
 
 t('regla "alertar" por turnos: el aviso de una conversación sin asignar llega al dueño, no a un agente que no la ve', async () => {
   await h.authed('POST', '/api/automations', { account_id: h.accountId, name: 'Aviso rotativo', trigger: { type: 'message_received', match: 'keywords', keywords: ['catalogo'] }, actions: [{ type: 'alert_team', message: 'Piden catálogo', roles: ['agent'], round_robin: true }] });
-  const before = Object.fromEntries(await Promise.all([...team, { id: ownerId }].map(async (u) => [u.id, (await notices(u.id, 'alert')).length])));
+  const before = Object.fromEntries(await Promise.all([...team, { id: ownerId }].map(async (u) => [u.id, (await notices(u.id, 'rule')).length])));
   for (let i = 0; i < 3; i++) await h.webhook('mándame el catalogo', { phone: `52155900001${i}` });
-  await waitFor(async () => { await h.service.automator.settleAll(); return (await notices(ownerId, 'alert')).length - before[ownerId] >= 3; }, 8000);
-  assert.equal((await notices(ownerId, 'alert')).length - before[ownerId], 3, 'el dueño recibe cada aviso');
-  for (const u of team) assert.equal((await notices(u.id, 'alert')).length - before[u.id], 0, 'un agente no recibe avisos de conversaciones sin asignar');
+  await waitFor(async () => { await h.service.automator.settleAll(); return (await notices(ownerId, 'rule')).length - before[ownerId] >= 3; }, 8000);
+  assert.equal((await notices(ownerId, 'rule')).length - before[ownerId], 3, 'el dueño recibe cada aviso');
+  for (const u of team) assert.equal((await notices(u.id, 'rule')).length - before[u.id], 0, 'un agente no recibe avisos de conversaciones sin asignar');
 });
 
 t('asignación manual: permisos, validaciones y filtros de la lista', async () => {

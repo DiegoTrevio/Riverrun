@@ -3,6 +3,7 @@
  * validada) y registrar que llegó al cliente. Las aproximadas salen solas; las finales quedan para que el equipo las
  * apruebe.
  */
+import { conversationAlert } from '../automation/alert-format.js';
 import { attachmentAbsolutePath } from '../attachments.js';
 import { signedQuoteUrl } from '../channels/media.js';
 import * as astore from '../automation/store.js';
@@ -119,7 +120,7 @@ export class Quotes {
       if (quote.kind === 'final') {
         await this.hooks.alertTeam?.(conv.account_id, {
           title: '🧾 Cotización final por aprobar',
-          body: `${customerLabel(contact)} pidió una cotización final: folio ${quote.folio} por ${formatTotals({ ...quote, lines: quote.lines ?? [], can_be_final: true }, quote.currency).total}. Revísala y apruébala desde la conversación.`,
+          body: conversationAlert({ contact, reason: 'pidió una cotización final', extra: `Folio ${quote.folio} por ${formatTotals({ ...quote, lines: quote.lines ?? [], can_be_final: true }, quote.currency).total}. Revísala y apruébala desde la conversación.` }),
           link: `#/conversation/${conv.id}`, kind: 'quote', conversationId: conv.id,
         }).catch(() => undefined);
       }

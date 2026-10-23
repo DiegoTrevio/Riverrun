@@ -14,6 +14,7 @@ import * as store from '../store/index.js';
 import * as astore from '../automation/store.js';
 import * as assignment from '../automation/assignment.js';
 import { NoticeBody, sendNotice } from '../automation/notices.js';
+import { describeConversation } from '../automation/alert-format.js';
 import { hashKey } from './integrations.js';
 import { conversationExport, ExportContentSchema } from '../integrations/conversation-export.js';
 import { parse } from './util.js';
@@ -237,7 +238,7 @@ export async function apiV1Routes(app: FastifyInstance, service: ChatService) {
         } else {
           await assignment.setAssignee(conv.id, null);
         }
-        if (userId) await service.automator.alertTeam(account(req), { title: '📥 Te asignaron una conversación', body: 'Asignada desde un sistema externo', link: `#/conversation/${conv.id}`, userIds: [userId], kind: 'assignment' });
+        if (userId) await service.automator.alertTeam(account(req), { title: '📥 Te asignaron una conversación', body: await describeConversation(conv.id, 'asignada desde un sistema externo', { brief: true }), link: `#/conversation/${conv.id}`, userIds: [userId], kind: 'assignment' });
         return { ok: true, assigned_user_id: userId };
       });
 
