@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import PizZip from 'pizzip';
 // El arnés va primero: define las variables de entorno antes de que se cargue la configuración.
 import { createHarness, dbAvailable, evo, pool, sleep, waitFor } from './harness.js';
+const { DOCX_XML_MAX, docxText } = await import('../src/engine/media-understanding.js');
 
 const ok = await dbAvailable();
 const t = (name: string, fn: () => Promise<void>) => test(name, { skip: !ok && 'PostgreSQL de pruebas no disponible' }, fn);
@@ -104,6 +105,26 @@ t('la IA elige el PDF por contexto y sale como documento; no se repite y queda e
   assert.match(JSON.stringify(h.calls[h.calls.length - 1].messages), /\[Documento enviado: menu_pdf - Menú\]/);
 });
 
+t('el eco de un documento que envió el agente no pausa al asistente aunque llegue antes que su identificador', async () => {
+  h.reset();
+  const phone = '5215550000014';
+  h.setScript(() => ({ action: 'reply_with_image', messages: [''], image_ids: ['menu_pdf'] }));
+  await say('¿tienes el menú?', phone);
+  assert.equal(filesTo(phone).length, 1);
+  const conv = await h.conversationFor(phone);
+  // Como si WhatsApp devolviera el eco mientras el envío del archivo (grande) todavía no responde.
+  await pool.query(`UPDATE messages SET external_message_id = NULL WHERE conversation_id = $1 AND type = 'document'`, [conv.id]);
+  const r = await h.app.inject({
+    method: 'POST', url: `/webhook/${h.token}`,
+    payload: { event: 'messages.upsert', instance: 'palmas', data: { key: { remoteJid: `${phone}@s.whatsapp.net`, fromMe: true, id: 'ECHO-DOC-1' }, message: { documentMessage: { fileName: 'Menu 2026.pdf', mimetype: 'application/pdf' } }, messageTimestamp: Math.floor(Date.now() / 1000) } },
+  });
+  assert.equal(r.statusCode, 200);
+  await h.idle();
+  assert.equal((await h.conversationFor(phone)).status, 'bot', 'el asistente sigue atendiendo');
+  const doc = (await pool.query(`SELECT external_message_id FROM messages WHERE conversation_id = $1 AND type = 'document' AND direction = 'out'`, [conv.id])).rows;
+  assert.deepEqual(doc, [{ external_message_id: 'ECHO-DOC-1' }], 'el eco se reconoce como nuestro envío');
+});
+
 t('prometer un documento que no sale: la frase se quita', async () => {
   h.reset();
   const phone = '5215550000002';
@@ -112,6 +133,20 @@ t('prometer un documento que no sale: la frase se quita', async () => {
   const texts = h.sent.filter((s) => s.to === phone && s.kind === 'text').map((s) => s.text).join(' ');
   assert.doesNotMatch(texts, /Te envío el documento/);
   assert.equal(filesTo(phone).length, 0);
+});
+
+t('frases normales con «documentos» o «archivo» no se borran como promesa rota', async () => {
+  h.reset();
+  const phone = '5215550000012';
+  const keep = [
+    'Te dejo la lista de documentos requeridos: acta de nacimiento, CURP y dos fotos.',
+    'Le comparto que el archivo debe pesar menos de 2 MB.',
+    'Aquí tienes los documentos que pide el trámite: identificación y comprobante de domicilio.',
+  ];
+  h.setScript(() => ({ action: 'reply', messages: [keep.join(' ')] }));
+  await say('¿qué necesito para el trámite?', phone);
+  const texts = h.sent.filter((s) => s.to === phone && s.kind === 'text').map((s) => s.text).join(' ');
+  for (const k of keep) assert.ok(texts.includes(k), `se conserva: ${k}\n${texts}`);
 });
 
 t('envío manual desde la conversación: un video de la biblioteca sale como archivo', async () => {
@@ -164,6 +199,37 @@ t('Word del cliente: se lee su texto sin llamar a la IA; video: se guarda para e
   const v = await saved('VID-1');
   assert.deepEqual([v.kind, v.mime], ['video', 'video/mp4']);
   assert.match(v.content, /video: "así suena el motor"/);
+});
+
+t('un Word «bomba» (se descomprime a gigas) no frena al servidor: se deja de leer al pasar el tope', async () => {
+  const zip = new PizZip();
+  zip.file('word/document.xml', '0'.repeat(DOCX_XML_MAX * 4));
+  const bomb = zip.generate({ type: 'nodebuffer', compression: 'DEFLATE' }) as Buffer;
+  assert.ok(bomb.length < 100_000, 'comprimido pesa poco');
+  const started = Date.now();
+  assert.equal(docxText(bomb), '');
+  assert.ok(Date.now() - started < 1000, 'se corta sin descomprimir todo');
+  assert.equal(docxText(docx('Hola')), 'Hola');
+});
+
+t('lo que se lee de un archivo se enmascara, y con una persona atendiendo no se gasta IA', async () => {
+  h.reset();
+  const phone = '5215550000013';
+  const word = docx('Mi tarjeta es 4111 1111 1111 1111, cárguenme el pedido');
+  evo.media.set('DOC-9', { buffer: word, mimetype: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+  await sendWhatsApp('DOC-9', { documentMessage: { fileName: 'pago.docx', mimetype: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', fileLength: word.length } }, phone);
+  const m = await saved('DOC-9');
+  assert.doesNotMatch(`${m.ai_summary} ${m.content}`, /4111 1111 1111 1111/);
+  assert.match(m.ai_summary, /1111/);
+  // La conversación pasa a una persona: la foto que llega después se guarda, pero la IA no la lee.
+  const conv = await h.conversationFor(phone);
+  await pool.query(`UPDATE conversations SET status = 'human' WHERE id = $1`, [conv.id]);
+  const before = readCalls().length;
+  evo.media.set('PDF-9', { buffer: PDF, mimetype: 'application/pdf' });
+  await sendWhatsApp('PDF-9', { documentMessage: { fileName: 'otro.pdf', mimetype: 'application/pdf', fileLength: PDF.length } }, phone);
+  const p = await saved('PDF-9');
+  assert.equal(p.ai_summary, '');
+  assert.equal(readCalls().length, before, 'sin llamada a la IA');
 });
 
 t('con «Entender fotos y documentos» apagado no se llama a la IA', async () => {

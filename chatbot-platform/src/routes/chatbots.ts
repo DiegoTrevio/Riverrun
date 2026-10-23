@@ -30,7 +30,7 @@ import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
 import { AiSettingsSchema, DataFieldSchema, FlowSchema, ImageSendWhenSchema, imageSendWhen, PersonalitySchema, RulesSchema, SavedMessagesSchema, type Chatbot, type SavedMessage, type User } from '../types.js';
 import { alignFixedMessages, chatbotFromTemplate } from '../templates/business.js';
-import { parse, readUpload, saveFile, type UploadFile } from './util.js';
+import { dispositionHeader, parse, readUpload, saveFile, sendRanged, type UploadFile } from './util.js';
 
 const ChatbotBody = z.object({
   name: z.string().trim().min(1).max(120).optional(),
@@ -564,8 +564,10 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
     const img = await imageFor(req.user, req.params.iid);
     const p = imageAbsolutePath(img);
     if (!fs.existsSync(p)) throw notFound();
-    reply.header('content-type', img.mime_type).header('cache-control', 'private, max-age=300');
-    return reply.send(fs.createReadStream(p));
+    reply.header('content-type', img.mime_type).header('cache-control', 'private, max-age=300').header('x-content-type-options', 'nosniff');
+    // Un documento (p. ej. un .txt) no se abre en línea dentro del panel: se descarga con su nombre.
+    if ((img.kind ?? 'image') === 'document') reply.header('content-disposition', dispositionHeader(img.file_name || img.code));
+    return sendRanged(req, reply, p);
   });
 
   /* ------------------------------- Simulador ------------------------------- */

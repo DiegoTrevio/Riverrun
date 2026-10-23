@@ -71,6 +71,8 @@ function parseOne(d: any, instance: string): IncomingMessage | null {
   } else if (msg.videoMessage) {
     type = 'video';
     text = msg.videoMessage.caption ?? '';
+    // Con su tamaño se rechaza antes de descargar un video que no cabe (no se trae completo a memoria).
+    media = { mimeType: msg.videoMessage.mimetype || undefined, size: Number(msg.videoMessage.fileLength) || undefined };
   } else if (msg.documentMessage) {
     type = 'document';
     const fileName = msg.documentMessage.fileName ?? '';

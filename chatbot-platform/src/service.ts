@@ -540,13 +540,15 @@ export class ChatService {
         await logEvent({ level: 'warn', source: 'engine', message: `No se pudo guardar un archivo del cliente: ${e?.message ?? e}`, ...logBase });
       }
     }
-    // Foto o documento: el agente lee lo que contiene (una sola vez), en lugar de saber solo que llegó un archivo.
-    if (media && bot?.ai.understand_media && (media.kind === 'image' || media.kind === 'document') && triggers) {
+    // Foto o documento: el agente lee lo que contiene (una sola vez), en lugar de saber solo que llegó un archivo. Solo si
+    // el asistente va a contestar: con una persona atendiendo o el agente apagado no se gasta IA.
+    if (media && bot?.ai.understand_media && bot.active && conv.status !== 'human' && (media.kind === 'image' || media.kind === 'document') && triggers) {
       const started = Date.now();
       try {
         const understood = await understandMedia(accountAi(this.ai, channel.account_id, bot.id, 'media'), media);
         if (understood) {
-          media.ai_summary = understood.summary;
+          // Lo que se lee (una tarjeta en una foto, un número en un Word) se enmascara igual que lo que escribe el cliente.
+          media.ai_summary = maskSensitive(understood.summary);
           content = maskSensitive(describeWithMedia(media.kind, msg.type === 'document' && msg.text === media.file_name ? '' : msg.text, media.file_name, understood.summary));
           if (understood.ai) {
             await store.insertAiRun({
@@ -706,7 +708,7 @@ export class ChatService {
       (msg.text ? await store.findRecentOutgoingEcho(conv.id, msg.text) : null) ??
       // Algunas plataformas (Zernio) devuelven el eco sin formato: "*doble*" vuelve como "doble".
       (msg.text ? (await store.recentOutgoing(conv.id)).find((m) => sameText(m.content, msg.text)) ?? null : null) ??
-      (msg.type === 'image' ? await store.findRecentOutgoingImageEcho(conv.id) : null);
+      (msg.type === 'image' || msg.type === 'video' || msg.type === 'document' || msg.type === 'audio' ? await store.findRecentOutgoingMediaEcho(conv.id, msg.type) : null);
     if (known) {
       if (!known.external_message_id) await store.updateMessage(known.id, { external_message_id: msg.messageId });
       return;

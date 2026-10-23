@@ -191,8 +191,25 @@ const promiseRe = (noun: string) =>
     'iu',
   );
 const IMAGE_PROMISE_RE = promiseRe(PHOTO_NOUN);
-// Videos y documentos de la biblioteca: misma regla que las fotos (la cotización en PDF tiene su propio envío).
-const FILE_PROMISE_RE = promiseRe('(?:videos?|documentos?|pdfs?|archivos?)');
+// Videos y documentos de la biblioteca: misma regla que las fotos (la cotización en PDF tiene su propio envío), pero más
+// estricta: «documentos» y «archivo» son comunes en un texto normal («te dejo la lista de documentos: INE…», «el archivo
+// debe pesar menos de 2 MB»). Solo cuenta si el sustantivo va justo después del verbo (con su artículo) — «te envío el PDF»,
+// «aquí tienes el video» — y la oración no trae ella misma el contenido (dos puntos o un enlace).
+const FILE_NOUN = '(?:videos?|documentos?|pdfs?|archivos?)';
+const FILE_DET = '(?:(?:el|la|los|las|un|una|nuestro|nuestra|nuestros|nuestras|este|esta|estos|estas|mi|mis|su|sus)\\s+)?';
+const FILE_PROMISE_RE = new RegExp(
+  [
+    `${B}(?:te|le|les)\\s+(?:(?:la|lo|las|los)\\s+)?${SEND_VERB}\\s+${FILE_DET}${FILE_NOUN}${E}`,
+    `${B}(?:te|le|les)\\s+voy\\s+a\\s+(?:enviar|mandar|compartir|pasar|mostrar|enseñar|reenviar)\\s+${FILE_DET}${FILE_NOUN}${E}`,
+    `${B}(?:enviarte|mandarte|compartirte|pasarte|mostrarte|enseñarte|enviarle|mandarle|compartirle|pasarle|mostrarle)\\s+${FILE_DET}${FILE_NOUN}${E}`,
+    `${B}(?:aqu[ií]|ah[ií]|ac[aá])\\s+(?:te\\s+|le\\s+)?(?:va|van|est[aá]n?|tienes?|tiene|dejo)\\s+${FILE_DET}${FILE_NOUN}${E}`,
+  ].join('|'),
+  'iu',
+);
+// Cualquier promesa de envío («te comparto …», «aquí tienes …»): con ella, nombrar un video o documento de la biblioteca
+// («te comparto nuestro catálogo en PDF») también es prometerlo.
+const ANY_SEND_RE = promiseRe('[\\p{L}\\p{N}]+');
+const INLINE_CONTENT_RE = /:|https?:\/\//;
 const TEXT_PROMISE_RE = promiseRe(TEXT_NOUN);
 // "Te la mando", "aquí la tienes de nuevo": solo cuenta si el cliente habla de una foto (si no, "la" puede ser otra cosa).
 const PRONOUN_PROMISE_RE = new RegExp(`${B}(?:(?:te|le)\\s+(?:la|las)\\s+${SEND_VERB}|(?:aqu[ií]|ah[ií])\\s+(?:te\\s+|le\\s+)?(?:la|las)\\s+(?:tienes|tiene|dejo|va|van))${E}`, 'iu');
@@ -968,10 +985,12 @@ export function validateDecision(input: ValidationInput): ValidationResult {
   // "Menú" o "catálogo" pueden ser texto: solo son foto si el catálogo tiene una foto con ese nombre.
   const textNounIsPhoto = catalog.some((i) => /(?<![\p{L}\p{N}])(?:menu|catalogo|flyer|folleto)/u.test(normalize(`${i.code} ${i.name}`)));
   const customerTalksPhoto = CUSTOMER_PHOTO_RE.test(customerPlain);
-  const hasFiles = catalog.some((i) => (i.kind ?? 'image') !== 'image');
+  const fileItems = catalog.filter((i) => (i.kind ?? 'image') !== 'image');
+  const hasFiles = fileItems.length > 0;
   const promisesPhoto = (x: string) =>
     IMAGE_PROMISE_RE.test(x) || (textNounIsPhoto && TEXT_PROMISE_RE.test(x)) || (customerTalksPhoto && PRONOUN_PROMISE_RE.test(x)) ||
-    (hasFiles && FILE_PROMISE_RE.test(x) && !/cotizaci/i.test(normalize(x)));
+    (hasFiles && !/cotizaci/i.test(normalize(x)) && !INLINE_CONTENT_RE.test(x) &&
+      (FILE_PROMISE_RE.test(x) || (ANY_SEND_RE.test(x) && namedImages(x, fileItems).length > 0)));
   /** La oración promete una foto que no sale: la que nombra (si nombra una del catálogo) o cualquiera (si no nombra ninguna). */
   const brokenPromise = (x: string) => {
     // Una pregunta de la lista la escribió el negocio y ofrece, no promete («¿Te envío nuestro folleto?»).

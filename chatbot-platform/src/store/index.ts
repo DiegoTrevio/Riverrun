@@ -911,11 +911,15 @@ export async function recentOutgoing(conversationId: string, seconds = 120) {
 }
 
 /** Imagen enviada por nosotros hace poco cuyo ID aún no se guardó (eco que llega antes que la respuesta HTTP). */
-export async function findRecentOutgoingImageEcho(conversationId: string, seconds = 120) {
+/**
+ * Eco de una foto, video, documento o audio que enviamos: su texto no sirve para reconocerlo (va vacío o es el nombre del
+ * archivo), así que se busca el envío reciente del mismo tipo que aún no tiene identificador de la plataforma.
+ */
+export async function findRecentOutgoingMediaEcho(conversationId: string, type: 'image' | 'video' | 'document' | 'audio', seconds = 120) {
   return queryOne<Message>(
-    `SELECT * FROM messages WHERE conversation_id = $1 AND direction = 'out' AND type = 'image' AND sender IN ('bot','human','system')
+    `SELECT * FROM messages WHERE conversation_id = $1 AND direction = 'out' AND type = $3 AND sender IN ('bot','human','system')
        AND external_message_id IS NULL AND created_at > now() - ($2 || ' seconds')::interval ORDER BY id LIMIT 1`,
-    [conversationId, String(seconds)],
+    [conversationId, String(seconds), type],
   );
 }
 

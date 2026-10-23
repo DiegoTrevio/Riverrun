@@ -895,9 +895,7 @@ export class Engine {
       }
       const extId=o.template ? (transport.sendTemplate ? await transport.sendTemplate(o.template) : (()=>{throw new Error('unsupported_template');})())
         : o.file ? (transport.sendFile ? await transport.sendFile(o.file,o.text,0) : (()=>{throw new Error('unsupported_file');})())
-        : libFile ? (transport.sendFile ? await transport.sendFile(libFile,o.text,0)
-          // El canal no envía archivos: va el nombre con un enlace firmado para abrirlo o descargarlo.
-          : await transport.sendText(`${o.text ? `${o.text}\n` : ''}📎 ${libFile.name}: ${libFile.url}`,0))
+        : libFile ? await this.sendLibraryFile(transport,libFile,o.text)
         : o.image ? await transport.sendImage(o.image,o.text,0)
         : o.buttons?.length ? (transport.sendButtons ? await transport.sendButtons(o.text,o.buttons,0) : (()=>{throw new Error('unsupported_buttons');})())
         : await transport.sendText(o.text,0);
@@ -917,6 +915,22 @@ export class Engine {
       await logEvent({level:'error',source:'channel',message:'delivery_failure',accountId:conv.account_id,chatbotId:bot?.id??null,channelId:conv.channel_id,conversationId:conv.id,details:{state,kind:transport.kind}}).catch(()=>undefined);
       if(!rejected) throw new DeliveryUncertain();
       return null;
+    }
+  }
+
+  /**
+   * Video, documento o audio de la biblioteca. Si el canal no envía archivos (o no puede enviar este: Messenger sin una
+   * dirección https pública), va el nombre con un enlace firmado para abrirlo o descargarlo. unsupported_file se lanza
+   * antes de enviar nada, así que el enlace nunca duplica un archivo que sí salió.
+   */
+  private async sendLibraryFile(transport: Transport, file: OutgoingFile, text: string) {
+    const link = () => transport.sendText(`${text ? `${text}\n` : ''}📎 ${file.name}: ${file.url}`, 0);
+    if (!transport.sendFile) return link();
+    try {
+      return await transport.sendFile(file, text, 0);
+    } catch (e: any) {
+      if (e?.message === 'unsupported_file' && file.url) return link();
+      throw e;
     }
   }
 
