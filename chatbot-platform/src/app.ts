@@ -33,6 +33,7 @@ import { pipelineRoutes } from './routes/pipelines.js';
 import { quoteRoutes } from './routes/quotes.js';
 import { publicRoutes } from './routes/public.js';
 import { signupRoutes } from './routes/signup.js';
+import { invitationPublicRoutes, invitationRoutes } from './routes/invitations.js';
 import { nudgesRoutes } from './routes/nudges.js';
 import { pricingRoutes } from './routes/pricing.js';
 import { socialPublicRoutes, socialRoutes } from './routes/social.js';
@@ -134,6 +135,7 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
   });
   await sessionRoutes(app);
   await signupRoutes(app);
+  await invitationPublicRoutes(app);
   await pricingRoutes(app);
   await nudgesRoutes(app);
   await publicRoutes(app, service);
@@ -170,6 +172,7 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
     await taskRoutes(api);
     await knowledgeImportRoutes(api, opts.ai);
     await billingRoutes(api);
+    await invitationRoutes(api);
     await exportRoutes(api);
     await poolAdminRoutes(api);
     await integrationRoutes(api);

@@ -231,6 +231,50 @@ try {
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'Historial con factura sin desbordamiento a 390');
   checks.push('Factura (CFDI) del pago descargable en «Tus pagos» (accesible en móvil)');
 
+  // Equipo: el dueño invita por correo desde «Mi equipo»; la persona abre el enlace, elige su contraseña y entra.
+  await page.goto(`${base}/#/users`);
+  const invite = page.getByRole('region', { name: 'Invitar a tu equipo' });
+  await invite.getByLabel('Correo').fill('rita@estudio.mx');
+  await invite.getByLabel('Nombre (opcional)').fill('Rita');
+  await invite.getByRole('button', { name: 'Enviar invitación' }).click();
+  await page.getByText('Invitación enviada a rita@estudio.mx').waitFor();
+  await invite.getByRole('button', { name: 'Reenviar invitación a rita@estudio.mx' }).waitFor();
+  await page.addScriptTag({ content: axe });
+  const teamViolations = await page.evaluate(async () => (await (window as any).axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] } }))
+    .violations.filter((v: any) => ['serious', 'critical'].includes(v.impact)).map((v: any) => v.id));
+  assert.deepEqual(teamViolations, [], 'Mi equipo a 390');
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'Mi equipo sin desbordamiento a 390');
+  const { outbox } = await import('../src/mailer.js');
+  const inviteMail = [...outbox].reverse().find((m) => m.to === 'rita@estudio.mx')!;
+  const inviteLink = /(http\S+#\/invitacion\?token=\S+)/.exec(inviteMail.text)![1];
+  {
+    const ctx = await browser.newContext({ viewport: { width: 390, height: 900 } });
+    const g = await ctx.newPage();
+    g.on('pageerror', (e) => errors.push(e.message));
+    await g.goto(`${base}/#/invitacion?token=${new URL(inviteLink.replace('#/', '')).searchParams.get('token')}`);
+    await g.getByRole('heading', { name: /^Únete a / }).waitFor();
+    await g.getByText('rita@estudio.mx').waitFor();
+    await g.addScriptTag({ content: axe });
+    const v = await g.evaluate(async () => (await (window as any).axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] } }))
+      .violations.filter((x: any) => ['serious', 'critical'].includes(x.impact)).map((x: any) => x.id));
+    assert.deepEqual(v, [], 'Invitación a 390');
+    assert.ok(await g.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'Invitación sin desbordamiento a 390');
+    await g.getByLabel('Elige tu contraseña').fill('clave-de-rita');
+    await g.getByLabel('Repítela').fill('clave-de-rita');
+    await g.getByRole('checkbox').check();
+    await g.getByRole('button', { name: 'Unirme al equipo' }).click();
+    await g.waitForURL((u) => !u.hash.startsWith('#/invitacion'));
+    // Ya entró con su sesión (no la manda a iniciar sesión).
+    const me = await g.request.get(`${base}/api/me`);
+    assert.equal(me.status(), 200);
+    assert.equal((await me.json()).user.email, 'rita@estudio.mx');
+    assert.ok(!(await g.evaluate(() => location.hash)).startsWith('#/login'));
+    const rita = (await pool.query(`SELECT account_id, role FROM users WHERE email = 'rita@estudio.mx'`)).rows[0];
+    assert.deepEqual([rita.account_id, rita.role], [accountId, 'agent']);
+    await ctx.close();
+  }
+  checks.push('Invitar a tu equipo desde «Mi equipo» y unirse con el enlace eligiendo contraseña (accesible en móvil)');
+
   // El superadmin captura precios sin IVA y elige el periodo. La última tarjeta es la de "Agregar plan".
   await context.clearCookies();
   const sx = h.cookie.indexOf('=');

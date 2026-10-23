@@ -218,9 +218,10 @@ t('si una persona responde desde el teléfono, el bot se pausa', async () => {
   script = () => ({ messages: ['¡Hola! ¿En qué te ayudo?'] });
   await waitFor(() => sent.length === 1);
   await webhook('Hola, te atiende Luis', { phone: '5215533334444', fromMe: true, id: 'PHONE-1' });
-  await new Promise((r) => setTimeout(r, 100));
-  const convs = (await authed('GET', `/api/conversations?chatbot_id=${botId}&search=33334444`)).json();
-  assert.equal(convs[0].status, 'human');
+  // El mensaje del teléfono se procesa en segundo plano: se espera a que llegue (en CI, 100 ms fijos no bastaban).
+  const statusOf = async () => (await authed('GET', `/api/conversations?chatbot_id=${botId}&search=33334444`)).json()[0]?.status;
+  await waitFor(async () => (await statusOf()) === 'human');
+  assert.equal(await statusOf(), 'human');
 });
 
 t('mensajes duplicados del webhook se ignoran', async () => {

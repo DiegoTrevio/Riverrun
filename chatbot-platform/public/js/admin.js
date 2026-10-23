@@ -10,8 +10,37 @@ import { usd } from './usage.js';
 
 /* ------------------------------ Usuarios ------------------------------ */
 
+/** Invitar por correo: la persona elige su contraseña (o entra con Google) y se une sola a la cuenta. */
+async function inviteCard() {
+  // El superadmin invita a la cuenta que tenga elegida.
+  if (isSuper() && !acct()) return null;
+  const pending = await api('GET', withAcct('/api/invitations'));
+  const inv = { email: '', name: '', role: 'agent' };
+  const send = async (e) => {
+    e.preventDefault();
+    if (await run(() => api('POST', withAcct('/api/invitations'), inv), `Invitación enviada a ${inv.email}`)) render();
+  };
+  return h('section', { class: 'card', 'aria-labelledby': 'invite-title' },
+    h('h2', { id: 'invite-title', style: 'margin-top:0' }, 'Invitar a tu equipo'),
+    h('p', { class: 'muted small' }, 'Le llega un correo con un enlace para unirse: elige su propia contraseña o entra con Google. El enlace vence en 7 días.'),
+    h('form', { onsubmit: send },
+      h('div', { class: 'grid' },
+        field('Correo', text(inv, 'email', { type: 'email', required: true, autocomplete: 'off', placeholder: 'persona@empresa.com' })),
+        field('Nombre (opcional)', text(inv, 'name', { autocomplete: 'off' })),
+        field('Rol', select(inv, 'role', [['agent', 'Operador · conversaciones y agenda'], ['admin', 'Administrador · gestiona todo el perfil']]))),
+      h('button', { class: 'primary', type: 'submit' }, 'Enviar invitación')),
+    pending.length ? [
+      h('h3', {}, 'Invitaciones pendientes'),
+      h('ul', { class: 'plain' }, pending.map((p) => h('li', { class: 'row', style: 'justify-content:space-between;flex-wrap:wrap;gap:8px' },
+        h('span', {}, h('strong', {}, p.email), ` · ${ROLE_LABEL[p.role]} · `, p.expired ? h('span', { class: 'badge orange' }, 'vencida') : h('span', { class: 'muted small' }, `vence ${fmtDate(p.expires_at)}`)),
+        h('span', { class: 'row' },
+          h('button', { class: 'small', 'aria-label': `Reenviar invitación a ${p.email}`, onclick: async () => { if (await run(() => api('POST', withAcct(`/api/invitations/${p.id}/resend`)), 'Invitación reenviada')) render(); } }, 'Reenviar'),
+          h('button', { class: 'small danger', 'aria-label': `Cancelar invitación a ${p.email}`, onclick: async () => { if (await confirmAction(`¿Cancelar la invitación a ${p.email}?`) && (await run(() => api('DELETE', withAcct(`/api/invitations/${p.id}`)), 'Invitación cancelada'))) render(); } }, 'Cancelar'))))),
+    ] : null);
+}
+
 export async function viewUsers(root) {
-  const users = await api('GET', `/api/users${acct()}`);
+  const [users, invite] = await Promise.all([api('GET', `/api/users${acct()}`), inviteCard()]);
   const n = { name: '', email: '', password: '', role: 'agent', phone: '', notify_whatsapp: false };
   const roles = [['agent', 'Operador · conversaciones y agenda de su perfil'], ['admin', 'Administrador · gestiona su perfil completo']];
   if (isSuper()) roles.push(['superadmin', 'Maestro · acceso a todos los perfiles']);
@@ -20,8 +49,9 @@ export async function viewUsers(root) {
   root.append(
     h('h1', {}, 'Usuarios y permisos'),
     h('p', { class: 'muted' }, 'Cada usuario pertenece a un perfil de negocio y solo puede gestionar sus datos. El maestro tiene acceso a todos los perfiles.'),
-    h('div', { class: 'card' },
-      h('h2', { style: 'margin-top:0' }, 'Nuevo usuario'),
+    invite,
+    h('details', { class: 'card', open: !invite },
+      h('summary', {}, h('strong', {}, invite ? 'Crear usuario con contraseña inicial' : 'Nuevo usuario')),
       h('div', { class: 'grid' },
         field('Nombre', text(n, 'name')),
         field('Correo', text(n, 'email', { type: 'email', autocomplete: 'off', placeholder: 'persona@empresa.com' })),
