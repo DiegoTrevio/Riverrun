@@ -9,6 +9,8 @@ export interface Mail {
   text: string;
   /** Nombre del remitente (la marca del cliente). La dirección sigue siendo la del servidor. */
   fromName?: string;
+  /** Archivos adjuntos (p. ej. el PDF y el XML de una factura). */
+  attachments?: { filename: string; content: Buffer; contentType: string }[];
 }
 
 /** Correos enviados en memoria (solo sin SMTP: desarrollo y pruebas). */
@@ -47,7 +49,7 @@ export async function sendMail(mail: Mail): Promise<boolean> {
     return false;
   }
   try {
-    await t.sendMail({ from: fromFor(mail.fromName), to: mail.to, subject: mail.subject, text: mail.text });
+    await t.sendMail({ from: fromFor(mail.fromName), to: mail.to, subject: mail.subject, text: mail.text, attachments: mail.attachments });
     return true;
   } catch (e: any) {
     await logEvent({ level: 'error', source: 'system', message: `No se pudo enviar el correo a ${mail.to}: ${e?.message ?? e}` });

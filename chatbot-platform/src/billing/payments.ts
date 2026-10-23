@@ -24,12 +24,12 @@ export interface Payment {
   period_end: Date | null;
 }
 
-/** Guarda el cobro. Devuelve true si es nuevo (false si ese aviso ya se había registrado). */
-export async function recordPayment(o: { accountId: string; provider: ProviderName; planKey: string; payment: PaymentInfo }): Promise<boolean> {
+/** Guarda el cobro. Devuelve su id si es nuevo (null si ese aviso ya se había registrado). */
+export async function recordPayment(o: { accountId: string; provider: ProviderName; planKey: string; payment: PaymentInfo }): Promise<string | null> {
   const p = o.payment;
   const percent = taxPercent();
   const { subtotal, tax } = splitTax(p.totalCents, percent);
-  const row = await queryOne<{ inserted: boolean }>(
+  const row = await queryOne<{ id: string; inserted: boolean }>(
     `INSERT INTO billing_payments (account_id, provider, provider_payment_id, provider_charge_ref, subscription_id, plan_key, currency,
        total_cents, subtotal_cents, tax_cents, tax_percent, paid_at, period_start, period_end)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
@@ -37,10 +37,10 @@ export async function recordPayment(o: { accountId: string; provider: ProviderNa
        -- Un aviso posterior puede traer el cargo o el periodo que faltaban; lo demás no cambia.
        provider_charge_ref = CASE WHEN billing_payments.provider_charge_ref = '' THEN EXCLUDED.provider_charge_ref ELSE billing_payments.provider_charge_ref END,
        period_end = COALESCE(billing_payments.period_end, EXCLUDED.period_end), updated_at = now()
-     RETURNING (xmax = 0) AS inserted`,
+     RETURNING id, (xmax = 0) AS inserted`,
     [o.accountId, o.provider, p.paymentId, p.chargeRef, p.subscriptionId, o.planKey, p.currency, p.totalCents, subtotal, tax, percent, p.paidAt, p.periodStart, p.periodEnd],
   );
-  return !!row?.inserted;
+  return row?.inserted ? row.id : null;
 }
 
 /** Anota un reembolso. Devuelve el pago afectado (null si no se encontró, p. ej. un cargo que no es de una suscripción). */

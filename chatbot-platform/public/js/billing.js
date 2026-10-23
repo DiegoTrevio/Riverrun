@@ -19,6 +19,25 @@ export const totalText = (p) => (p.tax_percent ? `Total con IVA (${p.tax_percent
 const PAY_LABEL = { paid: ['green', 'Pagado'], partially_refunded: ['orange', 'Reembolso parcial'], refunded: ['', 'Reembolsado'] };
 const money = (n, currency) => `$${new Intl.NumberFormat('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n)} ${currency}`;
 
+/** Enlaces de descarga del PDF y el XML de un CFDI. */
+const cfdiLinks = (id, what) => [
+  h('a', { href: withAcct(`/api/billing/invoices/${id}/pdf`), download: '', 'aria-label': `${what}: PDF` }, 'PDF'), ' · ',
+  h('a', { href: withAcct(`/api/billing/invoices/${id}/xml`), download: '', 'aria-label': `${what}: XML` }, 'XML'),
+];
+
+/** Columna «Factura» de un pago: su CFDI, la global del mes en la que entró, o en qué va. */
+function cfdiCell(c, p) {
+  if (!c) return '—';
+  const credits = c.credits.map((n) => h('div', { class: 'muted small' }, `Nota de crédito ${money(n.amount, p.currency)}: `,
+    n.status === 'issued' ? cfdiLinks(n.id, 'Nota de crédito') : 'en trámite'));
+  if (c.status === 'issued') return [cfdiLinks(c.id, `Factura del ${longDate(p.paid_at)}`), ...credits];
+  if (c.status === 'global') return h('span', { class: 'muted small' }, 'En la factura global del mes (público en general)');
+  if (c.status === 'pending') return h('span', { class: 'muted small' }, 'En trámite');
+  if (c.status === 'failed' && c.error) return h('div', {}, h('button', { class: 'small', onclick: () => document.getElementById('fiscal-title')?.scrollIntoView({ block: 'start' }) }, 'Revisa tus datos fiscales'), h('div', { class: 'error small' }, c.error));
+  if (c.status === 'failed') return h('span', { class: 'muted small' }, 'Con retraso: la estamos revisando');
+  return '—';
+}
+
 const longDate = (d) => (d ? new Date(d).toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric' }) : '');
 
 const LIMIT_SHORT = { messages_per_month: ['mensajes al mes', 'mensaje al mes'], channels: ['canales', 'canal'], users: ['usuarios', 'usuario'], chatbots: ['asistentes', 'asistente'], social_accounts: ['redes sociales', 'red social'] };
@@ -74,7 +93,7 @@ async function fiscalCard(onSaved) {
       choice('no', 'Sin factura (tus pagos se incluyen en la factura a público en general)'),
       choice('yes', 'Con factura a mi nombre')),
     details,
-    h('p', { class: 'muted small' }, 'Guardamos tus datos para emitir tus facturas. Puedes cambiarlos cuando quieras.'),
+    h('p', { class: 'muted small' }, 'Con factura, cada pago genera tu CFDI a tu nombre y te llega por correo. Si el SAT rechaza tus datos te avisamos para corregirlos. Puedes cambiarlos cuando quieras: aplica a tus siguientes pagos y a los de este mes.'),
     h('button', { class: 'primary', onclick: async () => {
       for (const k of Object.keys(errors)) clearError(k);
       try {
@@ -237,7 +256,7 @@ export async function viewPlan(root, params) {
     ? h('div', { class: 'card' },
       h('h2', { style: 'margin-top:0' }, 'Tus pagos'),
       h('table', {},
-        h('thead', {}, h('tr', {}, h('th', {}, 'Fecha'), h('th', {}, 'Concepto'), h('th', { class: 'num' }, 'Subtotal'), h('th', { class: 'num' }, 'IVA'), h('th', { class: 'num' }, 'Total'), h('th', {}, 'Estado'))),
+        h('thead', {}, h('tr', {}, h('th', {}, 'Fecha'), h('th', {}, 'Concepto'), h('th', { class: 'num' }, 'Subtotal'), h('th', { class: 'num' }, 'IVA'), h('th', { class: 'num' }, 'Total'), h('th', {}, 'Estado'), h('th', {}, 'Factura'))),
         h('tbody', {}, b.payments.map((p) => {
           const plan = b.plans.find((x) => x.key === p.plan_key);
           return h('tr', {},
@@ -246,9 +265,10 @@ export async function viewPlan(root, params) {
             h('td', { class: 'num' }, money(p.subtotal, p.currency)),
             h('td', { class: 'num' }, money(p.tax, p.currency)),
             h('td', { class: 'num' }, h('strong', {}, money(p.total, p.currency)), p.refunded ? h('div', { class: 'muted small' }, `Reembolsado: ${money(p.refunded, p.currency)}`) : null),
-            h('td', {}, h('span', { class: `badge ${PAY_LABEL[p.status][0]}` }, PAY_LABEL[p.status][1])));
+            h('td', {}, h('span', { class: `badge ${PAY_LABEL[p.status][0]}` }, PAY_LABEL[p.status][1])),
+            h('td', {}, cfdiCell(p.cfdi, p)));
         }))),
-      h('p', { class: 'muted small', style: 'margin-bottom:0' }, 'Cada pago se registra con su IVA desglosado.'))
+      h('p', { class: 'muted small', style: 'margin-bottom:0' }, b.invoicing ? 'Cada pago se registra con su IVA desglosado. Tus facturas llegan por correo con su PDF y XML.' : 'Cada pago se registra con su IVA desglosado.'))
     : null;
   const fiscal = await fiscalCard(() => render()).catch(() => null);
   // Pidió factura sin completar sus datos: se avisa antes de pagar (el servidor también lo exige).

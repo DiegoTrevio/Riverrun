@@ -8,6 +8,7 @@ import { config } from './config.js';
 import { query, queryOne } from './db.js';
 import { checkAccountRetention, keptNote } from './accounts/retention.js';
 import { billingEnabled, checkDunning, enforceAccess, syncPendingCheckouts } from './billing/service.js';
+import { checkGlobalInvoice, processCfdi } from './billing/cfdi.js';
 import { logEvent } from './logs.js';
 import { sendMail } from './mailer.js';
 import { checkOnboardingNudges } from './onboarding-checklist.js';
@@ -112,6 +113,10 @@ export function startLifecycle(intervalMs = 10 * 60_000) {
     checkAccountRetention().catch((e) => logEvent({ level: 'error', source: 'system', message: `Retención de cuentas: ${e?.message ?? e}` }));
     checkAiSpend().catch((e) => logEvent({ level: 'error', source: 'system', message: `Revisión de gasto de IA: ${e?.message ?? e}` }));
     checkOnboardingNudges().catch((e) => logEvent({ level: 'error', source: 'system', message: `Correos de seguimiento: ${e?.message ?? e}` }));
+    // Facturas: primero se arma la global del mes que cerró y luego se emite todo lo pendiente.
+    checkGlobalInvoice()
+      .then(() => processCfdi())
+      .catch((e) => logEvent({ level: 'error', source: 'system', message: `Emisión de facturas: ${e?.message ?? e}` }));
   };
   tick();
   setInterval(tick, intervalMs).unref();
