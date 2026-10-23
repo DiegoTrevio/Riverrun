@@ -201,7 +201,19 @@ t('Messenger: un documento de la biblioteca sale como archivo con su URL firmada
   const got = await h.app.inject({ method: 'GET', url: u.pathname + u.search });
   assert.equal(got.statusCode, 200);
   assert.equal(got.headers['content-type'], 'application/pdf');
-  assert.equal(got.headers['content-disposition'], 'attachment; filename="menu.pdf"');
+  assert.equal(got.headers['content-disposition'], `attachment; filename="menu.pdf"; filename*=UTF-8''menu.pdf`);
+  // Rangos: Safari en iPhone pide el archivo por partes.
+  const part = await h.app.inject({ method: 'GET', url: u.pathname + u.search, headers: { range: 'bytes=0-3' } });
+  assert.equal(part.statusCode, 206);
+  assert.equal(part.headers['content-range'], `bytes 0-3/${got.rawPayload.length}`);
+  assert.equal(part.rawPayload.toString('latin1'), got.rawPayload.subarray(0, 4).toString('latin1'));
+  // Un nombre con raya, emoji u otro alfabeto ya no rompe la descarga (antes respondía 500).
+  const id = u.pathname.split('/').pop()!;
+  await pool.query(`UPDATE images SET file_name = 'Menú – 2026 📦 菜单.pdf' WHERE id = $1`, [id]);
+  const named = await h.app.inject({ method: 'GET', url: u.pathname + u.search });
+  assert.equal(named.statusCode, 200);
+  assert.match(String(named.headers['content-disposition']), /filename\*=UTF-8''Men%C3%BA%20%E2%80%93%202026%20%F0%9F%93%A6%20%E8%8F%9C%E5%8D%95\.pdf/);
+  await pool.query(`UPDATE images SET file_name = 'menu.pdf' WHERE id = $1`, [id]);
 });
 
 /* ------------------------------ Instagram ------------------------------ */

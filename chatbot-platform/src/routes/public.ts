@@ -24,6 +24,7 @@ import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
 import type { Channel } from '../types.js';
 import { channelsForEntry, finishMetaConnect, META_NONCE_COOKIE, metaVerifyToken, verifyMetaSignature } from '../channels/meta-connect.js';
+import { dispositionHeader, sendRanged } from './util.js';
 
 /** Tiempo para volver de Zernio después de pulsar "Conectar cuenta". */
 const ZERNIO_CONNECT_TTL_MS = 30 * 60_000;
@@ -317,8 +318,8 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
     if (!fs.existsSync(p)) return reply.code(404).send();
     reply.header('content-type', img.mime_type).header('cache-control', 'public, max-age=86400').header('access-control-allow-origin', '*').header('x-content-type-options', 'nosniff');
     // Los documentos se descargan con su nombre; fotos, videos y audios se pueden ver en línea.
-    if ((img.kind ?? 'image') === 'document') reply.header('content-disposition', `attachment; filename="${(img.file_name || 'archivo').replace(/["\\\r\n]/g, '')}"`);
-    return reply.send(fs.createReadStream(p));
+    if ((img.kind ?? 'image') === 'document') reply.header('content-disposition', dispositionHeader(img.file_name || 'archivo'));
+    return sendRanged(req, reply, p);
   });
 
   /** PDF de una cotización enviada, por enlace firmado (canales que no envían archivos). */
@@ -326,7 +327,10 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
     const { e, s } = req.query as { e?: string; s?: string };
     if (!e || !s || !verifyQuoteSignature(req.params.id, e, s)) return reply.code(403).send();
     const q = await findQuote(req.params.id);
-    if (!q || !['sent', 'expired'].includes(q.status) || !q.pdf_path) return reply.code(404).send();
+    // Además de las enviadas: la que se está enviando por un canal que descarga el archivo de este enlace (Messenger,
+    // Instagram), es decir, una final ya aprobada o una aproximada. Una final sin aprobar nunca sale.
+    const sending = q?.status === 'approved' || (q?.status === 'draft' && q.kind === 'approximate');
+    if (!q || !(['sent', 'expired'].includes(q.status) || sending) || !q.pdf_path) return reply.code(404).send();
     const p = attachmentAbsolutePath(q.pdf_path);
     if (!fs.existsSync(p)) return reply.code(404).send();
     reply.header('content-type', 'application/pdf')

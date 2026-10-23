@@ -483,13 +483,14 @@ En **Agentes → + Crear agente** (`#/agentes/nuevo`) hay 3 pantallas: tu negoci
 - **Mis avisos** (Mi perfil; un administrador también lo ajusta por persona en **Usuarios → Avisos**): cada persona elige, por grupo, si le llega en el panel, por WhatsApp y por correo. Los grupos son: *Esperan a una persona*, *Asignadas a mí*, *Citas*, *Cotizaciones*, *Objetivos y reglas*, *Seguimientos prometidos*, *Redes sociales* y *Errores y emergencias* (este siempre llega al panel). Lo que no cambies queda como antes: todo en el panel, WhatsApp si tienes número y lo activaste, y correo solo lo urgente. **Notificaciones** se filtra por grupo.
 - **Avisos más completos**: los de una conversación traen nombre y teléfono del cliente, canal, motivo, un resumen breve y el enlace directo (espera de una persona, asignaciones, reglas *Alertar al equipo*, cotización por aprobar). La cita cancelada trae el teléfono.
 - **Sin avisos repetidos**:
-  - la misma persona no recibe dos veces el mismo aviso de la misma conversación en 10 minutos (las fallas, emergencias y recordatorios sí llegan cada vez);
+  - la misma persona no recibe dos veces el mismo aviso (mismo título y texto) de la misma conversación en 10 minutos, por ningún canal; uno distinto (otra cotización, otro motivo) sí llega, y las fallas, emergencias y recordatorios llegan cada vez;
   - quien recibe «Te asignaron una conversación que espera a una persona» no recibe además el aviso general;
-  - el encargado del agente (*avisar a este número*) recibe un solo WhatsApp;
-  - si alguien contesta desde el teléfono, el asistente se pausa pero no se avisa de una espera;
+  - el encargado del agente (*avisar a este número*) recibe un solo WhatsApp: si su aviso propio no salió (o la transferencia vino de una regla o un botón), le llega el del equipo;
+  - si alguien contesta desde el teléfono, el asistente se pausa y la conversación se reparte por turnos, pero no se avisa de una espera;
+  - los números extra de *Alertar al equipo* reciben solo el mensaje de la regla, sin los datos del cliente;
   - el eco del aviso al encargado ya no abre una conversación falsa;
   - la cita cancelada respeta *Avisar al equipo* del servicio.
-- **Tiempos y escalamiento** (Automatización → Ajustes → *Avisos al equipo*): cada cuánto se repite «un cliente espera a una persona» (por defecto 2 h; 0 = una vez) y «el asistente no pudo responder» (por defecto 30 min). Si una conversación asignada lleva N minutos sin respuesta de una persona, se avisa una vez a los administradores o a quienes elijas (apagado por defecto).
+- **Tiempos y escalamiento** (Automatización → Ajustes → *Avisos al equipo*): cada cuánto se repite «un cliente espera a una persona» (por defecto 2 h; 0 = una vez) y «el asistente no pudo responder» (por defecto 30 min). Si una conversación asignada lleva N minutos sin respuesta de una persona, se avisa una vez a los administradores que elijas (o a todos si no eliges, o si los elegidos ya no están activos); apagado por defecto.
 
 ## Integraciones
 

@@ -390,12 +390,21 @@ export async function notifyUsers(accountId: string, userIds: string[], n: { tit
   }
 }
 
-/** Quiénes ya recibieron en el panel este mismo aviso (tipo, enlace y título) en los últimos minutos. */
-export async function recentlyAlerted(userIds: string[], kind: string, link: string, title: string, minutes: number) {
+/**
+ * Reserva la entrega de un aviso a cada persona: devuelve a quiénes les toca (los que no recibieron ese mismo aviso —tipo,
+ * enlace, título y texto— en los últimos minutos). Queda registrado aunque la persona lo reciba solo por WhatsApp o correo.
+ */
+export async function claimAlertDeliveries(userIds: string[], kind: string, link: string, digest: string, minutes: number) {
   if (!userIds.length) return new Set<string>();
+  // Las huellas de más de un día ya no sirven para agrupar: se limpian de a poco.
+  await query(`DELETE FROM alert_deliveries WHERE id IN (SELECT id FROM alert_deliveries WHERE created_at < now() - interval '1 day' LIMIT 500)`);
   const rows = await query<{ user_id: string }>(
-    `SELECT DISTINCT user_id FROM notifications WHERE user_id = ANY($1) AND kind = $2 AND link = $3 AND title = $4 AND created_at > now() - make_interval(mins => $5)`,
-    [userIds, kind, link, title.slice(0, 200), minutes],
+    `INSERT INTO alert_deliveries (user_id, kind, link, digest)
+     SELECT u, $2, $3, $4 FROM unnest($1::uuid[]) AS u
+      WHERE NOT EXISTS (SELECT 1 FROM alert_deliveries d WHERE d.user_id = u AND d.kind = $2 AND d.link = $3 AND d.digest = $4
+                          AND d.created_at > now() - make_interval(mins => $5))
+     RETURNING user_id`,
+    [userIds, kind, link, digest, minutes],
   );
   return new Set(rows.map((r) => r.user_id));
 }

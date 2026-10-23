@@ -169,6 +169,26 @@ t('chat web (sin archivos): el cliente recibe un enlace firmado al PDF; alterado
   assert.equal((await h.app.inject({ method: 'GET', url: url.pathname + url.search })).statusCode, 404);
 });
 
+t('Messenger e Instagram descargan el PDF de su enlace mientras se envía (antes respondía 404)', async () => {
+  const phone = nextPhone();
+  h.reset();
+  h.setScript(() => ({ messages: ['Hola'] }));
+  await say('Hola', phone);
+  const conv = (await pool.query('SELECT * FROM conversations WHERE id = $1', [(await h.conversationFor(phone)).id])).rows[0];
+  const contact = (await pool.query('SELECT * FROM contacts WHERE id = $1', [conv.contact_id])).rows[0];
+  const bot = (await store.getChatbot(h.botId))!;
+  const catalog = (await h.service.quotes.contextFor(conv, bot))!;
+  const planned = { lines: [{ itemId: catalog.items.find((i) => i.code === 'SALON')!.id, code: 'SALON', qty: 1 }], notes: '', final: false };
+  const ready = await h.service.quotes.prepare({ bot, conv, contact, planned, catalog, operation: 'op-meta-1' });
+  assert.equal(ready.status, 'ready');
+  if (ready.status !== 'ready') return;
+  assert.equal(ready.quote.status, 'draft', 'todavía no se marca como enviada');
+  const url = new URL(ready.file.url!);
+  const pdf = await h.app.inject({ method: 'GET', url: url.pathname + url.search });
+  assert.equal(pdf.statusCode, 200, 'la plataforma puede descargarla para enviarla');
+  assert.equal(pdf.headers['content-type'], 'application/pdf');
+});
+
 t('reinicio a media respuesta: la misma operación reutiliza la cotización en vez de duplicarla', async () => {
   const phone = nextPhone();
   h.reset();

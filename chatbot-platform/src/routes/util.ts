@@ -1,7 +1,8 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { HttpError } from '../access.js';
 import { config } from '../config.js';
@@ -10,6 +11,7 @@ import { ATTACHMENT_MAX_BYTES, identifyAttachment } from '../attachments.js';
 import type { LibraryKind } from '../types.js';
 import { deepClean } from '../engine/text.js';
 import { logEvent } from '../logs.js';
+import { safeFileName } from '../channels/media.js';
 
 export { completeImage };
 
@@ -90,4 +92,26 @@ export async function saveFile(chatbotId: string, file: UploadFile) {
   const rel = path.join(chatbotId, `${crypto.randomUUID()}${file.ext}`);
   await fsp.writeFile(path.join(config.uploadsDir, rel), file.buffer);
   return rel;
+}
+
+/** Content-Disposition con el nombre en UTF-8 (acentos, emoji, otros alfabetos) y una versión ASCII de respaldo. */
+export function dispositionHeader(name: string, inline = false) {
+  const safe = safeFileName(name);
+  const ascii = safe.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '') || 'archivo';
+  return `${inline ? 'inline' : 'attachment'}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(safe)}`;
+}
+
+/**
+ * Envía un archivo con soporte de rangos (Range: bytes=…): Safari en iPhone solo reproduce videos así, y un video largo
+ * se puede adelantar sin descargarlo completo.
+ */
+export function sendRanged(req: FastifyRequest, reply: FastifyReply, abs: string) {
+  const size = fs.statSync(abs).size;
+  reply.header('accept-ranges', 'bytes');
+  const m = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range ?? '').trim());
+  if (!m || (!m[1] && !m[2])) return reply.header('content-length', size).send(fs.createReadStream(abs));
+  const start = m[1] ? Number(m[1]) : Math.max(0, size - Number(m[2]));
+  const end = Math.min(m[1] && m[2] ? Number(m[2]) : size - 1, size - 1);
+  if (start > end || start >= size) return reply.code(416).header('content-range', `bytes */${size}`).send();
+  return reply.code(206).header('content-range', `bytes ${start}-${end}/${size}`).header('content-length', end - start + 1).send(fs.createReadStream(abs, { start, end }));
 }

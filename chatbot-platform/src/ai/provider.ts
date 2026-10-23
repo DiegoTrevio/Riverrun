@@ -36,6 +36,9 @@ export interface CompletionRequest {
   /** Si se indica, la respuesta debe cumplir este JSON Schema (structured outputs, strict). */
   json_schema?: { name: string; schema: Record<string, unknown> };
   max_tokens?: number;
+  /** Tiempo máximo e intentos de esta llamada (por defecto los del proveedor): un archivo del cliente no espera minutos. */
+  timeout_ms?: number;
+  max_attempts?: number;
 }
 
 /** Interfaz mínima del proveedor de IA: permite cambiar de proveedor o simularlo en pruebas. */
@@ -127,7 +130,7 @@ export class OpenAiProvider implements AiProvider {
       }
     }
     const started = Date.now();
-    const res = await this.post('/chat/completions', JSON.stringify(body), { 'content-type': 'application/json' });
+    const res = await this.post('/chat/completions', JSON.stringify(body), { 'content-type': 'application/json' }, { timeoutMs: req.timeout_ms, attempts: req.max_attempts });
     const data: any = await res.json();
     if (data.error) throw new AiError(`${this.label}: el proveedor no pudo generar una respuesta.`, data.error.code, undefined, false);
     const choice = data.choices?.[0];
@@ -194,11 +197,12 @@ export class OpenAiProvider implements AiProvider {
     return new AiError(message, status);
   }
 
-  private async post(path: string, body: BodyInit, headers: Record<string, string> = {}): Promise<Response> {
+  private async post(path: string, body: BodyInit, headers: Record<string, string> = {}, o: { timeoutMs?: number; attempts?: number } = {}): Promise<Response> {
     let lastErr: unknown;
-    for (let attempt = 0; attempt < this.maxAttempts; attempt++) {
+    const maxAttempts = Math.max(1, Math.min(o.attempts ?? this.maxAttempts, this.maxAttempts));
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
+      const timer = setTimeout(() => ctrl.abort(), o.timeoutMs ?? this.timeoutMs);
       try {
         const res = await fetch(this.baseUrl + path, {
           method: 'POST',
@@ -211,14 +215,14 @@ export class OpenAiProvider implements AiProvider {
         // Reintentar solo errores transitorios.
         if (res.status === 429 || res.status >= 500) {
           lastErr = this.apiError(res.status);
-          if (attempt + 1 < this.maxAttempts) await sleep(800 * 2 ** attempt);
+          if (attempt + 1 < maxAttempts) await sleep(800 * 2 ** attempt);
           continue;
         }
         throw this.apiError(res.status);
       } catch (e: any) {
         if (e instanceof AiError && e.status && e.status < 500 && e.status !== 429) throw e;
         lastErr = e?.name === 'AbortError' ? new AiError(`Tiempo de espera agotado al llamar a ${this.label}`) : e;
-        if (attempt + 1 < this.maxAttempts) await sleep(800 * 2 ** attempt);
+        if (attempt + 1 < maxAttempts) await sleep(800 * 2 ** attempt);
       } finally {
         clearTimeout(timer);
       }

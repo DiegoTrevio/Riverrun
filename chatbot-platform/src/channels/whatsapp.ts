@@ -87,7 +87,10 @@ export class WhatsappTransport implements Transport {
   async sendFile(file: OutgoingFile, caption: string, delayMs: number) {
     const buf = await fs.readFile(file.absPath);
     await this.dispatchGuard?.();
-    return this.client.sendMedia(this.instance, this.number, buf.toString('base64'), file.mime, file.name, caption, delayMs, file.kind);
+    const id = await this.client.sendMedia(this.instance, this.number, buf.toString('base64'), file.mime, file.name, caption, delayMs, file.kind);
+    // WhatsApp no admite pie en un audio: el texto sale como mensaje aparte (su eco se reconoce por el texto).
+    if (file.kind === 'audio' && caption.trim()) await this.client.sendText(this.instance, this.number, caption, 0);
+    return id;
   }
 
   async notify(number: string, text: string) {

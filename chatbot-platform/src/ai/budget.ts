@@ -111,12 +111,19 @@ export const audioSeconds=(audio:Buffer,mimeType='')=>{
  const perSecond=/mpeg|mp3|mp4|m4a|aac/i.test(mimeType)?16000:/wav|wave|pcm/i.test(mimeType)?32000:2000;
  return Math.max(1,Math.round(audio.length/perSecond));
 };
+/**
+ * Los datos de una foto o un PDF no cuentan como texto: sus base64 se quitan del cálculo (una foto de 5 MB reservaba
+ * ~7 millones de tokens). Cada foto o archivo reserva en su lugar el margen de visión fijo (MEDIA_TOKENS): lo que cobra
+ * cada modelo por una imagen varía mucho, y el cobro real se ajusta al terminar.
+ */
+const withoutMedia=(m:CompletionRequest['messages'][number])=>Array.isArray(m.content)?{...m,content:m.content.map(p=>p.type==='image_url'||p.type==='file'?{type:p.type}:p)}:m;
+const MEDIA_TOKENS=1000000;
 export function accountAi(ai:AiProvider,accountId:string,chatbotId:string|null=null,kind='decision',beforeEmbed?:()=>Promise<void>):AiProvider {
  const wrapper:AiProvider={
   async complete(req:CompletionRequest){
    const models=[...new Set([req.model,...(req.fallback_models?.length?req.fallback_models:config.openai.fallbackModels)].slice(0,3).map(normalize))];
    const media=req.messages.flatMap(m=>Array.isArray(m.content)?m.content:[]).filter(p=>p.type==='image_url'||p.type==='file').length;
-   const input=Math.max(Buffer.byteLength(JSON.stringify({messages:req.messages,schema:req.json_schema??null}))+1024+req.messages.length*64,media*1000000);
+   const input=Math.max(Buffer.byteLength(JSON.stringify({messages:req.messages.map(withoutMedia),schema:req.json_schema??null}))+1024+req.messages.length*64,media*MEDIA_TOKENS);
    const output=req.max_tokens??(/^(gpt-5|o\d)/i.test(normalize(req.model))?6000:1200);
    return invoke(accountId,chatbotId,{kind,models,input,output},r=>(r.limited?ai.forBudget?.()??ai:ai).complete({...req,max_tokens:r.output}));
   },

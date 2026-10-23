@@ -24,14 +24,23 @@ function alertPrefsTable(groups, prefs, o = {}) {
       h('th', { scope: 'row' }, h('strong', {}, g.label), h('div', { class: 'small muted' }, g.hint)),
       ALERT_CHANNELS.map(([c, l]) => {
         const locked = c === 'panel' && g.panel_locked;
-        const value = locked ? true : prefs[g.key]?.[c] ?? g.defaults[c];
-        return h('td', {}, h('input', {
-          type: 'checkbox', checked: value, disabled: locked || (c === 'whatsapp' && o.noPhone),
-          'aria-label': `${g.label}: ${l}`,
-          title: locked ? 'Las emergencias y fallas siempre llegan al panel' : c === 'whatsapp' && o.noPhone ? 'Agrega un WhatsApp para alertas y actívalo' : '',
-          onchange: (e) => { prefs[g.key] = { ...(prefs[g.key] || {}), [c]: e.target.checked }; },
-        }));
-      }))))));
+        const noPhone = c === 'whatsapp' && o.noPhone;
+        const chosen = prefs[g.key]?.[c];
+        // «Solo lo urgente»: sin elección propia, de este grupo salen por correo solo algunos avisos (p. ej. los
+        // recordatorios, no el primer aviso). Se muestra a medias y con su texto, para no aparentar «todo» o «nada».
+        const urgent = chosen === undefined && g.defaults[c] === 'urgent';
+        const note = urgent ? h('div', { class: 'small muted' }, 'solo urgentes') : null;
+        const input = h('input', {
+          type: 'checkbox', checked: locked || (!noPhone && (chosen ?? g.defaults[c] === true)), disabled: locked || noPhone,
+          'aria-label': `${g.label}: ${l}${urgent ? ' (solo lo urgente)' : ''}`,
+          'aria-describedby': locked ? 'alert-note-panel' : noPhone ? 'alert-note-whatsapp' : null,
+          onchange: (e) => { prefs[g.key] = { ...(prefs[g.key] || {}), [c]: e.target.checked }; e.target.indeterminate = false; note?.remove(); },
+        });
+        if (urgent) input.indeterminate = true;
+        return h('td', {}, input, note);
+      }))))),
+    h('p', { id: 'alert-note-panel', class: 'small muted' }, 'Errores y emergencias siempre llegan al panel.'),
+    o.noPhone ? h('p', { id: 'alert-note-whatsapp', class: 'small muted' }, 'WhatsApp: agrega un número para alertas y activa «Recibir las alertas del equipo por WhatsApp».') : null);
 }
 
 /** El administrador ajusta los avisos de una persona de su equipo. */
@@ -242,7 +251,8 @@ export async function viewPassword(root) {
       field('WhatsApp para alertas', text(me, 'phone', { placeholder: '5215512345678' })),
       check(me, 'notify_whatsapp', 'Recibir las alertas del equipo por WhatsApp'),
       state.me.user.account_id ? check(me, 'available', 'Estoy disponible: recibir conversaciones asignadas por turnos (desmárcalo si estás fuera de turno)') : null,
-      h('button', { onclick: async () => { const u = await run(() => api('PUT', '/api/me', me), 'Perfil guardado'); if (u) state.me.user = { ...state.me.user, ...u }; } }, 'Guardar perfil')),
+      // Al guardar se vuelve a dibujar: «Mis avisos» habilita la columna de WhatsApp en cuanto hay número.
+      h('button', { onclick: async () => { const u = await run(() => api('PUT', '/api/me', me), 'Perfil guardado'); if (u) { state.me.user = { ...state.me.user, ...u }; render(); } } }, 'Guardar perfil')),
     groups ? [
       h('h2', {}, 'Mis avisos'),
       h('div', { class: 'card', style: 'max-width:720px' },
@@ -304,7 +314,10 @@ export async function viewNotifications(root, params) {
       data.unread ? h('button', { onclick: async () => { if (!(await run(() => api('POST', '/api/notifications/read', {})))) return; render(); } }, 'Marcar todas como leídas') : null),
     isAdmin() && (state.me.user.account_id || state.accountId) ? await noticeCard() : null,
     h('div', { class: 'row', style: 'flex-wrap:wrap;gap:8px;align-items:flex-end' },
-      field('Mostrar', select(filter, 'group', [['', 'Todos los avisos'], ...(data.groups || []).map((g) => [g.key, g.label])], () => { location.hash = filter.group ? `#/notifications?grupo=${filter.group}` : '#/notifications'; })),
+      // Enlaces y no una lista desplegable: cambiar de vista con el teclado no debe saltar de página a cada flecha.
+      h('nav', { 'aria-label': 'Mostrar avisos por tipo', class: 'row', style: 'flex-wrap:wrap;gap:6px' },
+        [['', 'Todos'], ...(data.groups || []).map((g) => [g.key, g.label])].map(([k, l]) =>
+          h('a', { href: k ? `#/notifications?grupo=${k}` : '#/notifications', class: `chip${filter.group === k ? ' active' : ''}`, 'aria-current': filter.group === k ? 'page' : null }, l))),
       state.me.user.account_id ? h('a', { href: '#/password', class: 'small' }, 'Elegir por dónde me llega cada aviso') : null),
     h('div', { class: 'card' },
       data.items.length ? h('table', {}, h('tbody', {}, data.items.map((n) => h('tr', { class: n.link ? 'click' : '', onclick: async () => {

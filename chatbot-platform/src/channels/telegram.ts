@@ -93,14 +93,20 @@ class TelegramTransport implements Transport {
   /** Video, documento o audio: cada tipo con su método de Telegram (se reproduce o descarga dentro del chat). */
   async sendFile(file: OutgoingFile, caption: string, delayMs: number) {
     await this.typing(Math.min(delayMs, 1500));
-    const [method, field] = file.kind === 'video' ? ['sendVideo', 'video'] : file.kind === 'audio' ? ['sendAudio', 'audio'] : file.kind === 'image' ? ['sendPhoto', 'photo'] : ['sendDocument', 'document'];
+    // sendAudio solo acepta MP3/M4A y sendVoice solo OGG/Opus: otro audio va como documento.
+    const audio = /^audio\/(mpeg|mp3|mp4|m4a|x-m4a|aac)$/.test(file.mime) ? ['sendAudio', 'audio'] : /^audio\/ogg/.test(file.mime) ? ['sendVoice', 'voice'] : ['sendDocument', 'document'];
+    const [method, field] = file.kind === 'video' ? ['sendVideo', 'video'] : file.kind === 'audio' ? audio : file.kind === 'image' ? ['sendPhoto', 'photo'] : ['sendDocument', 'document'];
+    const text = caption ? toPlainText(caption) : '';
+    // Telegram rechaza pies de más de 1024 caracteres: un texto largo sale como mensaje aparte, después del archivo.
+    const inline = text.length <= 1024;
     const form = new FormData();
     form.append('chat_id', this.chatId);
-    if (caption) form.append('caption', toPlainText(caption));
+    if (text && inline) form.append('caption', text);
     const buf = await fs.readFile(file.absPath);
     form.append(field, new Blob([new Uint8Array(buf)], { type: file.mime }), file.name);
     await this.dispatchGuard?.();
     const r = await this.client.call(method, form);
+    if (text && !inline) await this.sendText(caption, 0);
     return String(r.message_id);
   }
 
