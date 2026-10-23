@@ -297,6 +297,7 @@ export class Agenda {
         link: o.conversation ? `#/conversation/${o.conversation.id}` : '#/agenda',
         userIds: result.assigned_user_id ? [result.assigned_user_id] : undefined,
         staffId: result.assigned_user_id ?? null,
+        kind: 'appointment',
       });
     }
     if (!simulated) await syncCalendars(o.accountId, result.id).catch(() => undefined);
@@ -385,14 +386,19 @@ export class Agenda {
     await astore.cancelJobs('appointment_id', a.id);
     const settings = await astore.getSettings(a.account_id);
     const when = `${spanishDate(new Date(a.starts_at), settings.timezone)} a las ${spanishTime(new Date(a.starts_at), settings.timezone)}`;
-    if (a.source !== 'simulador') await this.mailStaff(a, a.service_id ? await astore.getService(a.service_id) : null, 'cancelled', when).catch(() => undefined);
-    await this.chat.automator.alertTeam(a.account_id, {
-      title: `❌ ${a.kind === 'call' ? 'Llamada' : 'Cita'} cancelada: ${a.service_name}`,
-      body: `${a.customer_name || 'Cliente'} · ${when} · ${by === 'bot' ? 'cancelada por el cliente en el chat' : by === 'pagina' ? 'cancelada por el cliente' : reason}`,
-      link: a.conversation_id ? `#/conversation/${a.conversation_id}` : '#/agenda',
-      userIds: a.assigned_user_id ? [a.assigned_user_id] : undefined,
-      staffId: a.assigned_user_id ?? null,
-    });
+    const service = a.service_id ? await astore.getService(a.service_id) : null;
+    if (a.source !== 'simulador') await this.mailStaff(a, service, 'cancelled', when).catch(() => undefined);
+    // Igual que al agendar: un servicio con «avisar al equipo» apagado tampoco avisa al cancelar, y el simulador no avisa.
+    if ((service?.notify_team ?? true) && a.source !== 'simulador') {
+      await this.chat.automator.alertTeam(a.account_id, {
+        title: `❌ ${a.kind === 'call' ? 'Llamada' : 'Cita'} cancelada: ${a.service_name}`,
+        body: `${a.customer_name || 'Cliente'}${a.customer_phone ? ` (+${a.customer_phone.replace(/^\+/, '')})` : ''} · ${when} · ${by === 'bot' ? 'cancelada por el cliente en el chat' : by === 'pagina' ? 'cancelada por el cliente' : reason}`,
+        link: a.conversation_id ? `#/conversation/${a.conversation_id}` : '#/agenda',
+        userIds: a.assigned_user_id ? [a.assigned_user_id] : undefined,
+        staffId: a.assigned_user_id ?? null,
+        kind: 'appointment',
+      });
+    }
     await syncCalendars(a.account_id, a.id).catch(() => undefined);
     const updated = { ...a, status: 'cancelled' as const, cancel_reason: reason };
     if (a.conversation_id) this.chat.automator.emit({ type: 'appointment_cancelled', conversationId: a.conversation_id, appointment: updated });

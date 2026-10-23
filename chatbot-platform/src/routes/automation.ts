@@ -1,3 +1,4 @@
+import { ALERT_GROUPS, alertGroupsForPanel, kindsOfGroup } from '../automation/alert-groups.js';
 import { NoticeBody, sendNotice } from '../automation/notices.js';
 import { testConnectionAlert } from '../lifecycle.js';
 import type { FastifyInstance } from 'fastify';
@@ -368,9 +369,16 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
 
   /* ------------------------------ Notificaciones (todos los roles) ------------------------------ */
   api.get('/api/notifications', async (req: any) => {
-    const [items, unread] = await Promise.all([astore.listNotifications(req.user.id, Math.min(Number(req.query.limit) || 50, 200), scopeAccount(req.user)), astore.unreadCount(req.user.id, scopeAccount(req.user))]);
-    return { unread, items };
+    const group = typeof req.query.group === 'string' && ALERT_GROUPS.some((g) => g.key === req.query.group) ? req.query.group : null;
+    const [items, unread] = await Promise.all([
+      astore.listNotifications(req.user.id, Math.min(Number(req.query.limit) || 50, 200), scopeAccount(req.user), group ? kindsOfGroup(group) : null),
+      astore.unreadCount(req.user.id, scopeAccount(req.user)),
+    ]);
+    return { unread, items, groups: alertGroupsForPanel() };
   });
+
+  /** Grupos de avisos para «Mis avisos» (Mi perfil y Mi equipo). */
+  api.get('/api/alert-groups', async () => alertGroupsForPanel());
 
   api.post('/api/notifications/read', async (req: any) => {
     const { ids } = parse(z.object({ ids: z.array(z.number().int()).optional() }), req.body);

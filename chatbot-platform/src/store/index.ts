@@ -15,6 +15,7 @@ import {
   type ChannelType,
   type Role,
   type User,
+  type AlertPrefs,
   type Chatbot,
   type ChatbotRow,
   type Contact,
@@ -82,7 +83,7 @@ export async function deleteAccount(id: string) {
 
 /* ------------------------------ Usuarios ------------------------------ */
 
-const USER_COLS = 'id, account_id, role, name, email, phone, notify_whatsapp, available, active, email_verified_at, last_login_at, created_at';
+const USER_COLS = 'id, account_id, role, name, email, phone, notify_whatsapp, alert_prefs, available, active, email_verified_at, last_login_at, created_at';
 
 export async function listUsers(accountId: string | null): Promise<User[]> {
   return accountId
@@ -126,7 +127,7 @@ export const getUserBasic = (id: string) => queryOne<{ id: string; name: string;
 
 export async function updateUser(
   id: string,
-  patch: { name?: string; role?: Role; account_id?: string | null; active?: boolean; password_hash?: string; email?: string; phone?: string; notify_whatsapp?: boolean; available?: boolean },
+  patch: { name?: string; role?: Role; account_id?: string | null; active?: boolean; password_hash?: string; email?: string; phone?: string; notify_whatsapp?: boolean; available?: boolean; alert_prefs?: AlertPrefs },
   expectedAccountId?: string,
 ) {
   return withTransaction(async (client) => {
@@ -134,9 +135,10 @@ export async function updateUser(
       `UPDATE users SET name = COALESCE($2, name), role = COALESCE($3, role), active = COALESCE($4, active),
        password_hash = COALESCE($5, password_hash), email = COALESCE($6, email),
        phone = COALESCE($7, phone), notify_whatsapp = COALESCE($8, notify_whatsapp),
-       account_id = CASE WHEN $9::boolean THEN $10::uuid ELSE account_id END, available = COALESCE($12, available), updated_at = now()
+       account_id = CASE WHEN $9::boolean THEN $10::uuid ELSE account_id END, available = COALESCE($12, available),
+       alert_prefs = COALESCE($13::jsonb, alert_prefs), updated_at = now()
      WHERE id = $1 AND ($11::uuid IS NULL OR account_id = $11) RETURNING ${USER_COLS}`,
-      [id, patch.name ?? null, patch.role ?? null, patch.active ?? null, patch.password_hash ?? null, patch.email?.trim() ?? null, patch.phone?.replace(/\D/g, '') ?? null, patch.notify_whatsapp ?? null, patch.account_id !== undefined, patch.account_id ?? null, expectedAccountId ?? null, patch.available ?? null],
+      [id, patch.name ?? null, patch.role ?? null, patch.active ?? null, patch.password_hash ?? null, patch.email?.trim() ?? null, patch.phone?.replace(/\D/g, '') ?? null, patch.notify_whatsapp ?? null, patch.account_id !== undefined, patch.account_id ?? null, expectedAccountId ?? null, patch.available ?? null, patch.alert_prefs ? JSON.stringify(patch.alert_prefs) : null],
     );
     const user = result.rows[0] ?? null;
     // Quien se desactiva o cambia de perfil deja de tener conversaciones abiertas asignadas.

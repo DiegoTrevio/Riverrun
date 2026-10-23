@@ -1,3 +1,5 @@
+import { cleanAlertPrefs } from '../automation/alert-groups.js';
+import type { AlertPrefs } from '../types.js';
 import { aiBudgetRoutes } from './ai-budget.js';
 import { NETWORKS, ZERNIO_SECRET, zernioEnabled, zernioKey, zernioKeySource } from '../channels/zernio.js';
 import { knowledgeMonitorReport } from '../engine/knowledge-monitor.js';
@@ -73,8 +75,8 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
   });
 
   api.put('/api/me', async (req) => {
-    const b = parse(z.object({ name: z.string().trim().max(120).optional(), phone: z.string().max(30).optional(), notify_whatsapp: z.boolean().optional(), available: z.boolean().optional() }), req.body);
-    return store.updateUser(req.user.id, b);
+    const b = parse(z.object({ name: z.string().trim().max(120).optional(), phone: z.string().max(30).optional(), notify_whatsapp: z.boolean().optional(), available: z.boolean().optional(), alert_prefs: z.record(z.string(), z.unknown()).optional() }), req.body);
+    return store.updateUser(req.user.id, { ...b, alert_prefs: b.alert_prefs ? cleanAlertPrefs(b.alert_prefs) : undefined });
   });
 
   api.put('/api/me/password', async (req, reply) => {
@@ -366,6 +368,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
         phone: z.string().max(30).optional(),
         notify_whatsapp: z.boolean().optional(),
         available: z.boolean().optional(),
+        alert_prefs: z.record(z.string(), z.unknown()).optional(),
       }),
       req.body,
     );
@@ -389,7 +392,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
       throw new HttpError(400, 'Debe quedar al menos un superadministrador activo');
     }
     if (b.active === true && !target.active && target.account_id) await assertWithinLimit(target.account_id, 'users');
-    const patch: { name?: string; email?: string; role?: Role; account_id?: string | null; active?: boolean; password_hash?: string; phone?: string; notify_whatsapp?: boolean; available?: boolean } = {
+    const patch: { name?: string; email?: string; role?: Role; account_id?: string | null; active?: boolean; password_hash?: string; phone?: string; notify_whatsapp?: boolean; available?: boolean; alert_prefs?: AlertPrefs } = {
       name: b.name,
       email: b.email,
       role: b.role,
@@ -398,6 +401,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
       phone: b.phone,
       notify_whatsapp: b.notify_whatsapp,
       available: b.available,
+      alert_prefs: b.alert_prefs ? cleanAlertPrefs(b.alert_prefs) : undefined,
     };
     if (b.password) patch.password_hash = await hashPassword(b.password);
     const updated = await store.updateUser(target.id, patch, req.user.role === 'superadmin' ? undefined : scopeAccount(req.user)!);

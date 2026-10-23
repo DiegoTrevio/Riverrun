@@ -480,6 +480,17 @@ En **Agentes → + Crear agente** (`#/agentes/nuevo`) hay 3 pantallas: tu negoci
 - **A mano**: en cada conversación se ve quién atiende; cualquiera se la queda ("Quedármela"), y un administrador la pasa a una persona o a la siguiente del turno. Quien toma una conversación sin dueña se queda con ella. La lista filtra *Asignadas a mí / Sin asignar*.
 - **Avisos internos manuales**: en **Notificaciones → Enviar un aviso interno** (administradores) a todo el equipo, a un rol, a personas o a quien toque por turnos; también por API (`POST /api/v1/notifications`, `GET /api/v1/team`, `PUT /api/v1/conversations/:id/assign`) para que Zapier, Make o tu CRM avisen al equipo.
 
+- **Mis avisos** (Mi perfil; un administrador también lo ajusta por persona en **Usuarios → Avisos**): cada persona elige, por grupo, si le llega en el panel, por WhatsApp y por correo. Los grupos son: *Esperan a una persona*, *Asignadas a mí*, *Citas*, *Cotizaciones*, *Objetivos y reglas*, *Seguimientos prometidos*, *Redes sociales* y *Errores y emergencias* (este siempre llega al panel). Lo que no cambies queda como antes: todo en el panel, WhatsApp si tienes número y lo activaste, y correo solo lo urgente. **Notificaciones** se filtra por grupo.
+- **Avisos más completos**: los de una conversación traen nombre y teléfono del cliente, canal, motivo, un resumen breve y el enlace directo (espera de una persona, asignaciones, reglas *Alertar al equipo*, cotización por aprobar). La cita cancelada trae el teléfono.
+- **Sin avisos repetidos**:
+  - la misma persona no recibe dos veces el mismo aviso de la misma conversación en 10 minutos (las fallas, emergencias y recordatorios sí llegan cada vez);
+  - quien recibe «Te asignaron una conversación que espera a una persona» no recibe además el aviso general;
+  - el encargado del agente (*avisar a este número*) recibe un solo WhatsApp;
+  - si alguien contesta desde el teléfono, el asistente se pausa pero no se avisa de una espera;
+  - el eco del aviso al encargado ya no abre una conversación falsa;
+  - la cita cancelada respeta *Avisar al equipo* del servicio.
+- **Tiempos y escalamiento** (Automatización → Ajustes → *Avisos al equipo*): cada cuánto se repite «un cliente espera a una persona» (por defecto 2 h; 0 = una vez) y «el asistente no pudo responder» (por defecto 30 min). Si una conversación asignada lleva N minutos sin respuesta de una persona, se avisa una vez a los administradores o a quienes elijas (apagado por defecto).
+
 ## Integraciones
 
 Canal de **correo electrónico** (IMAP/SMTP, Gmail y Outlook), inicio de sesión con Google, Google Calendar, webhooks firmados (Zapier, Make, n8n) y API v1 con llaves y especificación OpenAPI: ver [docs/integraciones.md](docs/integraciones.md).

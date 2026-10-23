@@ -1,4 +1,5 @@
 import { contactWorkspaceRoutes } from './contact-workspace.js';
+import { describeConversation } from '../automation/alert-format.js';
 import fs from 'node:fs';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -220,10 +221,9 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
     }
     await log(conv, target ? `Conversación asignada a ${target.email} por ${req.user.email}` : `Conversación sin asignar (${req.user.email})`);
     if (target && target.id !== req.user.id) {
-      const contact = await store.getContact(conv.contact_id);
       await service.automator.alertTeam(conv.account_id, {
         title: '📥 Te asignaron una conversación',
-        body: `${contact?.name || contact?.push_name || 'Cliente'}${b.user_id === 'next' ? ' (por turnos)' : ` · te la asignó ${req.user.name || req.user.email}`}`,
+        body: await describeConversation(conv.id, b.user_id === 'next' ? 'asignada por turnos' : `te la asignó ${req.user.name || req.user.email}`, { brief: true }),
         link: `#/conversation/${conv.id}`,
         userIds: [target.id],
         kind: 'assignment',
