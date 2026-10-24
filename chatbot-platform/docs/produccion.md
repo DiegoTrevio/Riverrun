@@ -165,6 +165,65 @@ LOAD_TEST_TARGET=staging HEALTH_TOKEN=... node scripts/load-test.mjs --duration 
 
 Sale con código 1 si la tasa de errores supera 1% o el p95 supera `--max-p95-ms` (1000 por defecto). Limitación: mide la capa de salud y métricas, no el procesamiento de mensajes; probar ese camino exigiría escribir y gastar IA, y eso no entra en una prueba de solo lectura. Lo verifica `test/load-test.test.ts` (7 pruebas, con un servidor local). **No se ha corrido contra un staging real.**
 
+## Pasar a cobro real
+
+El cobro, la factura y lo que sigue funcionan solos. Lo único que no se puede hacer desde el código son las cuentas live
+y su configuración. Haz estos pasos en orden; al final, el tablero **Ajustes → Plataforma → Tu negocio** (`#/negocio`)
+no debe mostrar nada en «Para cobrar de verdad».
+
+1. **Servidor de producción**: `PUBLIC_BASE_URL=https://…` (los proveedores solo mandan avisos a HTTPS),
+   `OUTBOUND_MODE=live` y sin `RIVERRUN_ENV=test`. Con cobro activo, en producción son **críticos** (el servidor no
+   arranca en modo estricto): claves de prueba de Stripe, Mercado Pago o Facturapi, una dirección sin HTTPS y que
+   falte `SUPERADMIN_EMAIL`.
+2. **Avisos para ti**: `SUPERADMIN_EMAIL` con un correo que leas y SMTP funcionando (SPF, DKIM y DMARC del dominio de
+   `MAIL_FROM`). Lo urgente te llega al momento (contracargos, facturas que no salieron, una cancelación o un reembolso
+   que hay que hacer a mano, un proveedor que dejó de mandar avisos). Lo demás llega en un solo correo al día desde
+   `SUPERADMIN_DIGEST_HOUR` (8 por defecto, hora de México); `SUPERADMIN_DIGEST=false` vuelve a un correo por aviso.
+3. **Stripe** (cuenta de México, en modo live):
+   - Claves: `STRIPE_SECRET_KEY=sk_live_…` (o una clave restringida `rk_live_…`).
+   - Webhook en *Desarrolladores → Webhooks* hacia `https://TU-DOMINIO/webhook/billing/stripe`, con los eventos:
+     - `checkout.session.completed`;
+     - `customer.subscription.created`, `customer.subscription.updated` y `customer.subscription.deleted`;
+     - `invoice.paid`, `invoice.payment_failed` e `invoice.payment_action_required`;
+     - `charge.refunded`;
+     - `charge.dispute.created` y `charge.dispute.closed`.
+     
+     Su secreto va en `STRIPE_WEBHOOK_SECRET=whsec_…`. La lista también está en **Planes y cobro**.
+   - *Facturación → Recuperación de ingresos → Reintentos*: activa los reintentos inteligentes y, **al agotarlos, deja
+     la suscripción vencida** (no la canceles): la plataforma manda los recordatorios, pausa al terminar la gracia
+     (`BILLING_GRACE_DAYS`) y cancela a los 30 días en pausa (`BILLING_CANCEL_AFTER_PAUSE_DAYS`).
+   - *Portal del cliente*: permite actualizar el método de pago, ver facturas y cancelar al final del periodo.
+   - 3D Secure: no hay que configurar nada; cuando el banco pide confirmar, el cliente recibe el enlace por correo y en
+     su panel.
+4. **Mercado Pago** (cuenta de vendedor, credenciales de producción):
+   - Access token: `MERCADOPAGO_ACCESS_TOKEN=APP_USR-…`.
+   - Webhook en *Tus integraciones → Webhooks* hacia `https://TU-DOMINIO/webhook/billing/mercadopago`, con los temas
+     «Planes y suscripciones» y «Pagos».
+   - La clave secreta del webhook va en `MERCADOPAGO_WEBHOOK_SECRET`.
+5. **Facturapi** (facturas CFDI 4.0):
+   - Clave live: `FACTURAPI_API_KEY=sk_live_…`.
+   - En Facturapi: tu CSD (.cer y .key), régimen fiscal y serie.
+   - `CFDI_ISSUER_ZIP` con el código postal de tu Constancia de Situación Fiscal.
+   - Confirma con tu contador la clave de producto (`CFDI_PRODUCT_KEY`, por defecto 81112106) y las formas de pago (04
+     tarjeta con Stripe, 31 intermediario con Mercado Pago).
+   - El adaptador sigue la API v2 de Facturapi pero no se ha probado contra una cuenta real: emite primero una factura
+     con la clave de pruebas (`sk_test_…`, en un servidor con `RIVERRUN_ENV=test`).
+6. **Textos legales**:
+   - Publica tus términos (`TERMS_URL`) y define `TERMS_VERSION`.
+   - Para el aviso de privacidad: o publicas el tuyo (`PRIVACY_URL`), o usas el incluido en `/privacidad` con
+     `PRIVACY_COMPANY`, `PRIVACY_ADDRESS` y `PRIVACY_CONTACT`.
+7. **Planes**: créalos en **Planes y cobro**, con el precio sin IVA, el periodo y los límites. Revisa `/precios`.
+8. **Prueba con dinero real** antes de abrir el registro:
+   - Contrata el plan más barato con tu propia tarjeta.
+   - Confirma que la cuenta se activa, que llega el correo del pago, que aparece en «Tus pagos» y que sale su factura.
+   - Reembolsa ese cobro desde Stripe o Mercado Pago y confirma que el reembolso y la nota de crédito quedan
+     registrados.
+   - Cancela la suscripción de prueba.
+9. **Después de abrir**:
+   - Revisa `#/negocio` y el resumen diario.
+   - Si «Última revisión contra el proveedor» no avanza, o te llega «no está mandando avisos», revisa el webhook
+     (dirección, eventos y secreto).
+
 ## Pruebas que necesitan cuentas o teléfonos reales
 
 Estas pruebas **no** se corren en CI ni en esta revisión. Requieren credenciales que no están en el repositorio. Se corren solo en staging, con cuentas y números de prueba:

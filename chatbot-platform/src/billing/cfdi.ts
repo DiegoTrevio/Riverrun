@@ -14,6 +14,7 @@ import { sendMail } from '../mailer.js';
 import { facturapi, type CfdiDocument, type CfdiReceiver, type InvoiceProvider } from './facturapi.js';
 import { fiscalComplete, getFiscal, usesFor } from './fiscal.js';
 import { taxPercent } from './tax.js';
+import { emailSuperadmin } from '../platform/digest.js';
 import { ProviderError, type ProviderName } from './types.js';
 
 export const invoicer: InvoiceProvider = facturapi;
@@ -199,13 +200,13 @@ async function build(row: Cfdi): Promise<{ doc: CfdiDocument; invoiced: { id: st
   };
 }
 
-/** Avisa al superadmin. Sin cuenta (la global no es de ninguna) solo por correo. */
+/** Avisa al superadmin, al momento (una factura que no sale es urgente). Sin cuenta (la global no es de ninguna) solo por correo. */
 async function alertPlatform(accountId: string | null, title: string, body: string) {
   if (accountId) {
     const supers = await query<{ id: string }>(`SELECT id FROM users WHERE role = 'superadmin' AND active`);
     await notifyUsers(accountId, supers.map((s) => s.id), { title, body, link: '#/accounts', kind: 'platform' });
   }
-  if (config.signup.superadminEmail) await sendMail({ to: config.signup.superadminEmail, subject: title, text: body });
+  await emailSuperadmin(title, body, { urgent: true, accountId });
 }
 
 async function tellAccount(accountId: string, title: string, body: string) {

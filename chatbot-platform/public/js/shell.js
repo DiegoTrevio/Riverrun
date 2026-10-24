@@ -35,7 +35,7 @@ const SECTIONS = {
   cotizaciones: ['cotizaciones'],
   automation: ['automation'],
   estadisticas: ['estadisticas'],
-  ajustes: ['ajustes', 'users', 'accounts', 'planes', 'marcas', 'sistema', 'plan', 'consumo', 'logs', 'password', 'integraciones', 'redes'],
+  ajustes: ['ajustes', 'users', 'accounts', 'negocio', 'planes', 'marcas', 'sistema', 'plan', 'consumo', 'logs', 'password', 'integraciones', 'redes'],
 };
 
 /** Opciones de Ajustes, agrupadas como un submenú (las de la plataforma solo las ve el superadministrador). */
@@ -55,6 +55,7 @@ function settingsGroups() {
     ]],
     ['Personal', [['#/password', 'Mi perfil', 'password']]],
     isSuper() ? ['Plataforma', [
+      ['#/negocio', 'Tu negocio', 'negocio'],
       ['#/accounts', 'Perfiles de negocio', 'accounts'],
       ['#/planes', 'Planes y cobro', 'planes'],
       ['#/marcas', 'Marca blanca', 'marcas'],

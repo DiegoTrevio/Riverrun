@@ -2,21 +2,23 @@
  * Lo que traen los avisos de dinero (y la conciliación): cobros, reembolsos y contracargos. Cada uno se registra una
  * sola vez aunque llegue repetido, y lo que implica para la cuenta (factura, pausa, reactivación) pasa solo.
  */
-import { config } from '../config.js';
 import { notifySuperadmins } from '../lifecycle.js';
 import { logEvent } from '../logs.js';
-import { sendMail } from '../mailer.js';
+import { emailSuperadmin } from '../platform/digest.js';
 import { query, queryOne } from '../db.js';
 import { queuePaymentCfdi } from './cfdi.js';
 import { applyRefund, recordPayment } from './payments.js';
 import { getSubscription, money, queueAction, tell } from './service.js';
 import type { DisputeInfo, ProviderName, WebhookResult } from './types.js';
 
-/** Aviso al superadmin; si la cuenta ya no existe, solo por correo (y en la bitácora). */
-export async function alertSuperadmins(accountId: string | null, title: string, body: string) {
-  if (accountId) return notifySuperadmins(accountId, title, body);
+/**
+ * Aviso al superadmin; si la cuenta ya no existe, solo por correo (y en la bitácora). Urgente: el correo sale ya; si no,
+ * va en el resumen del día.
+ */
+export async function alertSuperadmins(accountId: string | null, title: string, body: string, o: { urgent?: boolean } = {}) {
+  if (accountId) return notifySuperadmins(accountId, title, body, o);
   await logEvent({ level: 'warn', source: 'admin', message: `${title}: ${body}` });
-  if (config.signup.superadminEmail) await sendMail({ to: config.signup.superadminEmail, subject: title, text: body });
+  await emailSuperadmin(title, body, o);
 }
 
 /**
@@ -87,7 +89,7 @@ export async function applyDispute(provider: ProviderName, d: DisputeInfo) {
       await tell(accountId, 'Tu asistente está en pausa',
         `Tu banco nos avisó que desconociste el cobro de tu plan (${what}). Mientras se aclara, el asistente de "${name}" está en pausa. Si fue un error, avisa a tu banco que reconoces el cargo; en cuanto se resuelva, se reactiva solo.`);
     }
-    await alertSuperadmins(accountId, `Contracargo: ${name}`, `"${name}" desconoció con su banco el cobro de ${what}. Su asistente quedó en pausa. Responde la disputa aquí: ${d.url}`);
+    await alertSuperadmins(accountId, `Contracargo: ${name}`, `"${name}" desconoció con su banco el cobro de ${what}. Su asistente quedó en pausa. Responde la disputa aquí: ${d.url}`, { urgent: true });
     return;
   }
 

@@ -153,6 +153,10 @@ export const config = {
     requireEmail: env('SIGNUP_REQUIRE_EMAIL', 'true') === 'true',
     /** Correo del superadmin para avisos (cuentas nuevas, pruebas que vencen, gasto alto). */
     superadminEmail: env('SUPERADMIN_EMAIL', ''),
+    /** Lo no urgente llega en un solo correo al día (false: un correo por aviso, como antes). */
+    superadminDigest: env('SUPERADMIN_DIGEST', 'true') !== 'false',
+    /** Hora de México desde la que sale el resumen diario. */
+    superadminDigestHour: Math.min(23, Math.max(0, Number(env('SUPERADMIN_DIGEST_HOUR', '8')) || 0)),
     /** Límites de la prueba gratuita (0 = sin límite). Evitan que una prueba sin tarjeta gaste IA sin tope. */
     trialLimits: {
       messages: Number(env('TRIAL_MAX_MESSAGES', '300')),

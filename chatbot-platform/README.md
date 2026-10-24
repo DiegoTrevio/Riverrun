@@ -473,6 +473,27 @@ Una cuenta puede conectar varios WhatsApp. Las **campañas** pueden salir de var
 - Los términos y el aviso de privacidad se enlazan desde el registro (`TERMS_URL`, `PRIVACY_URL`) y cada aceptación queda guardada con su versión (`TERMS_VERSION`), IP, navegador y fecha. Quien entra por primera vez con Google acepta los términos antes de que se cree su cuenta.
 - **Registro protegido**: no se aceptan correos temporales (lista incluida, más `SIGNUP_BLOCKED_DOMAINS`), hay un límite de 5 registros por hora por conexión y, si defines `TURNSTILE_SITE_KEY` y `TURNSTILE_SECRET_KEY`, se pide el captcha de Cloudflare (si Cloudflare no responde, el registro no se bloquea).
 
+## Tu negocio: tablero, resumen diario y pasar a cobro real
+
+- **Tablero** (*Ajustes → Plataforma → Tu negocio*, `#/negocio`, solo superadmin; `GET /api/platform/business`):
+  - registros de 30 días contra los 30 anteriores, pruebas activas y conversión de prueba a pago (90 días);
+  - MRR y ARR sin IVA (los anuales cuentan su doceava parte) y lo cobrado en 30 días sin IVA ni reembolsos;
+  - suscripciones activas, bajas, cobros fallidos en curso, contracargos y facturas (CFDI) por emitir o con error;
+  - la última revisión contra el proveedor;
+  - «Para cobrar de verdad»: lo que la revisión de configuración encuentra en cobro, facturas y avisos.
+- **Avisos para ti**:
+  - En el panel llegan al momento.
+  - Por correo solo llega al momento lo urgente: contracargos, facturas que no salieron, cancelaciones o reembolsos que hay que hacer a mano, una suscripción que no existe en el proveedor y un proveedor que no manda avisos.
+  - Lo demás (cuentas nuevas, pruebas que vencen o terminan, cobros fallidos que se recuperan solos, bajas, borrados) llega en un solo correo al día, con las cifras del tablero.
+  - El correo diario sale desde `SUPERADMIN_DIGEST_HOUR` (8, hora de México), solo si hubo avisos.
+  - `SUPERADMIN_DIGEST=false` vuelve a un correo por aviso.
+- **Pasar a cobro real**: los pasos están en [docs/produccion.md](docs/produccion.md#pasar-a-cobro-real).
+  - En producción con cobro activo son **críticos** (no arranca en modo estricto):
+    - claves de prueba de Stripe, Mercado Pago o Facturapi;
+    - una `PUBLIC_BASE_URL` sin HTTPS;
+    - que falte `SUPERADMIN_EMAIL`.
+  - En un servidor de pruebas (`RIVERRUN_ENV=test`) siguen siendo avisos.
+
 ## El dueño se atiende solo: datos, borrado, contacto y estado
 
 - **Descargar la cuenta**: en *Mi plan y pagos → Tus datos*, el dueño baja un ZIP (`GET /api/account/export.zip`, cinco al día) con equipo, agentes y su conocimiento, automatizaciones, agenda, canales (sin credenciales), contactos, conversaciones y mensajes, cotizaciones, pagos y facturas. Solo trae datos de su cuenta.

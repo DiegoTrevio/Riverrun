@@ -265,3 +265,18 @@ test('facturas (Facturapi): clave de producción en sandbox es crítica; sin PAC
   assert.ok(ids(installed({ FACTURAPI_API_URL: 'no-es-url' })).includes('url.FACTURAPI_API_URL'));
   assert.equal(redactSecrets('FACTURAPI_API_KEY=sk_live_secreta', { FACTURAPI_API_KEY: 'sk_live_secreta' }).includes('sk_live_secreta'), false);
 });
+
+test('pasar a cobro real: en producción, claves de prueba, sin HTTPS o sin SUPERADMIN_EMAIL son críticos (en pruebas, avisos)', () => {
+  const live = { STRIPE_SECRET_KEY: 'sk_live_cobro', STRIPE_WEBHOOK_SECRET: 'whsec_produccion_1', FACTURAPI_API_KEY: 'sk_live_facturas', CFDI_ISSUER_ZIP: '64000' };
+  assert.equal(ids(installed(live), 'critical').some((i) => /^(stripe|facturapi|billing)\./.test(i)), false, 'listo para cobrar: sin críticos de cobro');
+  const crit = (over: Env) => ids(installed({ ...live, ...over }), 'critical');
+  assert.ok(crit({ STRIPE_SECRET_KEY: 'sk_test_cobro' }).includes('stripe.test_mode'));
+  assert.ok(crit({ MERCADOPAGO_ACCESS_TOKEN: 'TEST-cobro-123', MERCADOPAGO_WEBHOOK_SECRET: 'mp-secreto-produccion' }).includes('mercadopago.test_mode'));
+  assert.ok(crit({ FACTURAPI_API_KEY: 'sk_test_facturas' }).includes('facturapi.test_mode'));
+  assert.ok(crit({ PUBLIC_BASE_URL: 'http://bot.ejemplo.com' }).includes('stripe.needs_https'));
+  assert.ok(crit({ SUPERADMIN_EMAIL: '' }).includes('billing.superadmin_email'));
+  assert.equal(blocksStartup(validateConfig(installed({ ...live, STRIPE_SECRET_KEY: 'sk_test_cobro' }))), true);
+  // Un servidor de pruebas (RIVERRUN_ENV=test) puede usar claves de prueba sin bloquear el arranque.
+  const staging = validateConfig(installed({ ...live, RIVERRUN_ENV: 'test', OUTBOUND_MODE: 'sandbox', STRIPE_SECRET_KEY: 'sk_test_cobro', FACTURAPI_API_KEY: 'sk_test_facturas', SUPERADMIN_EMAIL: '' }));
+  assert.equal(staging.issues.some((i) => i.level === 'critical' && /^(stripe|facturapi|billing)\./.test(i.id)), false, formatReport(staging));
+});

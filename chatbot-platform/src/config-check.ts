@@ -693,16 +693,17 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
       `${hookVar} no tiene el formato esperado: las notificaciones de pago serían rechazadas.`,
       `Cópialo del webhook configurado en ${label}.`,
     );
+    // En producción, cobrar con claves de prueba o sin HTTPS es no cobrar: no se arranca así en modo estricto.
     if (prod && testKey(key)) add(
-      'warning',
+      'critical',
       'billing',
       `${id}.test_mode`,
       [keyVar],
       `${label} usa una clave de pruebas en producción: no se cobra de verdad.`,
-      'Usa la clave de producción.',
+      'Usa la clave de producción (o RIVERRUN_ENV=test si este servidor es de pruebas).',
     );
     if (!https) add(
-      'warning',
+      prod ? 'critical' : 'warning',
       'billing',
       `${id}.needs_https`,
       ['PUBLIC_BASE_URL'],
@@ -736,7 +737,7 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
   const fkey = get('FACTURAPI_API_KEY');
   const charging = (has('STRIPE_SECRET_KEY') && has('STRIPE_WEBHOOK_SECRET')) || (has('MERCADOPAGO_ACCESS_TOKEN') && has('MERCADOPAGO_WEBHOOK_SECRET'));
   if (charging && !has('SUPERADMIN_EMAIL')) add(
-    'warning',
+    prod ? 'critical' : 'warning',
     'billing',
     'billing.superadmin_email',
     ['SUPERADMIN_EMAIL'],
@@ -763,7 +764,7 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
     services.push({ id: 'facturapi', label: 'Facturas (Facturapi)', area: 'billing', state: 'disabled', detail: 'Sin PAC: las facturas quedan pendientes' });
   } else {
     if (!/^sk_(live|test)_/.test(fkey)) add('warning', 'billing', 'facturapi.key_format', ['FACTURAPI_API_KEY'], 'FACTURAPI_API_KEY no tiene el formato de una clave secreta de Facturapi (sk_live_… o sk_test_…).', 'Cópiala de nuevo desde el panel de Facturapi (organización → API keys).');
-    if (prod && fkey.startsWith('sk_test_')) add('warning', 'billing', 'facturapi.test_mode', ['FACTURAPI_API_KEY'], 'Facturapi usa una clave de pruebas en producción: las facturas no tienen validez ante el SAT.', 'Usa la clave de producción (sk_live_…).');
+    if (prod && fkey.startsWith('sk_test_')) add(charging ? 'critical' : 'warning', 'billing', 'facturapi.test_mode', ['FACTURAPI_API_KEY'], 'Facturapi usa una clave de pruebas en producción: las facturas no tienen validez ante el SAT.', 'Usa la clave de producción (sk_live_…).');
     if (!get('CFDI_ISSUER_ZIP')) add('warning', 'billing', 'facturapi.issuer_zip', ['CFDI_ISSUER_ZIP'], 'Falta CFDI_ISSUER_ZIP: sin el código postal de tu domicilio fiscal no se puede emitir la factura global del mes.', 'Escribe el código postal de tu Constancia de Situación Fiscal (5 números).');
     else if (!/^\d{5}$/.test(get('CFDI_ISSUER_ZIP'))) add('warning', 'billing', 'facturapi.issuer_zip', ['CFDI_ISSUER_ZIP'], 'CFDI_ISSUER_ZIP debe tener 5 números.', 'Escribe el código postal de tu Constancia de Situación Fiscal.');
     services.push({ id: 'facturapi', label: 'Facturas (Facturapi)', area: 'billing', state: 'configured', detail: fkey.startsWith('sk_test_') ? 'Modo de pruebas' : 'Clave definida' });
