@@ -5,8 +5,7 @@
  */
 import fsp from 'node:fs/promises';
 import { scheduleJob } from '../automation/store.js';
-import { notifySuperadmins } from '../lifecycle.js';
-import { providers, getSubscription } from '../billing/service.js';
+import { providers, getSubscription, queueAction } from '../billing/service.js';
 import { releaseWhatsapp } from '../channels/whatsapp.js';
 import { zernioFootprint } from '../channels/zernio-connect.js';
 import { query } from '../db.js';
@@ -15,16 +14,18 @@ import { logEvent } from '../logs.js';
 import * as store from '../store/index.js';
 import type { Account } from '../types.js';
 
-/** Cancela en el proveedor la suscripción que siga cobrando. Si no se puede, avisa al superadmin para hacerlo a mano. */
+/**
+ * Cancela en el proveedor la suscripción que siga cobrando. Si no se puede ahora, queda pendiente y se reintenta sola
+ * (sobrevive al borrado de la cuenta); solo si se agotan los intentos se avisa al superadmin.
+ */
 async function stopCharging(acc: Account) {
   const sub = await getSubscription(acc.id);
   if (!sub?.provider_subscription_id || !['active', 'past_due'].includes(sub.status) || sub.cancel_at_period_end) return;
   try {
     await providers[sub.provider].setCancelAtPeriodEnd(sub, true);
   } catch (e: any) {
-    await logEvent({ level: 'error', source: 'admin', message: `No se pudo cancelar la suscripción de la cuenta borrada ${acc.name}: ${e?.message ?? e}`, accountId: acc.id });
-    await notifySuperadmins(acc.id, `Cancelar suscripción: ${acc.name}`,
-      `Se va a borrar "${acc.name}", pero no se pudo cancelar su suscripción (${sub.provider} ${sub.provider_subscription_id}). Cancélala a mano en ${providers[sub.provider].label} para que no se le siga cobrando.`);
+    await logEvent({ level: 'warn', source: 'admin', message: `No se pudo cancelar la suscripción de la cuenta borrada ${acc.name}, se reintenta: ${e?.message ?? e}`, accountId: acc.id });
+    await queueAction({ provider: sub.provider, kind: 'cancel', ref: sub.provider_subscription_id, accountId: acc.id, reason: 'deleted' });
   }
 }
 
