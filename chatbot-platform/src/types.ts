@@ -450,6 +450,9 @@ export interface Account {
   pause_reason: '' | 'trial' | 'payment' | 'dispute';
   /** Aviso al dueño de que la cuenta se borrará (retención). */
   deletion_warned_at: Date | null;
+  /** El dueño pidió borrar la cuenta (y lo confirmó por correo): cuándo, y cuándo se borra. */
+  deletion_requested_at: Date | null;
+  deletion_scheduled_for: Date | null;
   /** El superadmin decidió conservarla aunque siga en pausa. */
   keep_data: boolean;
   created_at: Date;

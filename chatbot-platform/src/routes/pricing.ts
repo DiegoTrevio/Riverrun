@@ -6,6 +6,7 @@ import type { FastifyInstance } from 'fastify';
 import { brandByDomain, hostOf, publicBrand } from '../brands.js';
 import { config } from '../config.js';
 import { offeredPlans } from './billing.js';
+import { privacyUrl } from './self-service.js';
 
 const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 const amount = (n: number) => new Intl.NumberFormat('es-MX', { minimumFractionDigits: n % 1 ? 2 : 0, maximumFractionDigits: 2 }).format(n);
@@ -111,6 +112,9 @@ export function pricingPage(o: { brand: ReturnType<typeof publicBrand>; plans: O
     <a href="/#/login">Ya tengo cuenta</a>
     ${o.terms ? `<a href="${esc(o.terms)}">Términos</a>` : ''}
     ${o.privacy ? `<a href="${esc(o.privacy)}">Aviso de privacidad</a>` : ''}
+    <a href="/ayuda.html">Ayuda</a>
+    <a href="/estado">Estado del servicio</a>
+    <a href="/contacto">Escríbenos</a>
     ${o.support ? `<span>Contacto: ${esc(o.support)}</span>` : ''}
   </footer>
 </main>
@@ -129,7 +133,7 @@ export async function pricingRoutes(app: FastifyInstance) {
       signup: config.signup.enabled,
       support: own?.support_email || config.signup.supportContact,
       terms: config.signup.termsUrl,
-      privacy: config.signup.privacyUrl,
+      privacy: privacyUrl(),
     });
     // Cada dominio ve su marca: un caché intermedio no debe mezclarlas.
     return reply.header('cache-control', 'public, max-age=300').header('vary', 'Host').type('text/html; charset=utf-8').send(html);
