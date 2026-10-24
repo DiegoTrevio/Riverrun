@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { config } from '../config.js';
 import { credentialAllowed } from '../outbound-guard.js';
 import { chargeCents } from './tax.js';
-import { ProviderError, WebhookError, type BillingProvider, type PaymentInfo, type SubStatus, type SubscriptionState, type WebhookResult } from './types.js';
+import { ProviderError, WebhookError, type BillingProvider, type DisputeInfo, type PaymentInfo, type SubStatus, type SubscriptionState, type WebhookResult } from './types.js';
 
 const cfg = () => config.billing.mercadopago;
 /** Prefijo de las credenciales de prueba de Mercado Pago. Las de producción empiezan por APP_USR-. */
@@ -61,6 +61,28 @@ export function paymentFromAuthorized(pay: any): PaymentInfo | null {
     periodEnd: null,
   };
 }
+
+/** Contracargo de un pago: status_detail "reimbursed" = se le devolvió el dinero a la plataforma (ganado); "settled" = perdido. */
+export function disputeFromPayment(p: any): DisputeInfo | null {
+  if (p.status !== 'charged_back') return null;
+  const detail = String(p.status_detail ?? '');
+  return {
+    disputeId: `cb_${p.id}`,
+    chargeRefs: [String(p.id ?? '')].filter(Boolean),
+    status: detail === 'reimbursed' ? 'won' : detail === 'settled' ? 'lost' : 'open',
+    amountCents: Math.round(Number(p.transaction_amount ?? 0) * 100),
+    url: 'https://www.mercadopago.com.mx/activities',
+  };
+}
+
+/** Pagos autorizados de una suscripción, del más reciente al más antiguo. */
+async function authorizedPayments(preapprovalId: string): Promise<any[]> {
+  const r = await call('GET', `/authorized_payments/search?${new URLSearchParams({ preapproval_id: preapprovalId })}`);
+  const list: any[] = r.results ?? r.elements ?? [];
+  return list.sort((a, b) => new Date(b.date_created ?? 0).getTime() - new Date(a.date_created ?? 0).getTime());
+}
+
+const MP_DAY = 86400_000;
 
 /**
  * Firma de Mercado Pago: x-signature = "ts=...,v1=..."; v1 es HMAC-SHA256 de
@@ -127,6 +149,45 @@ export const mercadopago: BillingProvider = {
     return stateFromPreapproval(await call('GET', path));
   },
 
+  /**
+   * Además del estado que informa Mercado Pago, se revisan sus cobros: una suscripción sigue "autorizada" mientras
+   * reintenta un cobro rechazado, y una recién autorizada puede no haber cobrado nunca. Ambos casos son pago pendiente.
+   * Para no marcar a quien sí paga, "nunca cobró" exige que Mercado Pago lo confirme (charged_quantity = 0) y 3 días.
+   */
+  async subscriptionState(subscriptionId, _plans, now = new Date()) {
+    const p = await call('GET', `/preapproval/${encodeURIComponent(subscriptionId)}`);
+    const state = stateFromPreapproval(p);
+    if (state.status !== 'active') return state;
+    const pays = await authorizedPayments(subscriptionId);
+    const last = pays[0];
+    if (last && ['rejected', 'cancelled'].includes(String(last.status)) && last.payment?.status !== 'approved') state.status = 'past_due';
+    const startedAt = new Date(p.auto_recurring?.start_date ?? p.date_created ?? now);
+    const neverCharged = Number(p.summarized?.charged_quantity) === 0 && !pays.some((x) => x.payment?.status === 'approved');
+    if (neverCharged && startedAt.getTime() < now.getTime() - 3 * MP_DAY) state.status = 'past_due';
+    return state;
+  },
+
+  async recentPayments(subscriptionId, since) {
+    const pays = await authorizedPayments(subscriptionId);
+    return pays.map(paymentFromAuthorized).filter((x): x is PaymentInfo => !!x && x.paidAt >= since);
+  },
+
+  async cancelNow(subscriptionId) {
+    try {
+      await call('PUT', `/preapproval/${encodeURIComponent(subscriptionId)}`, { status: 'cancelled' });
+    } catch (e) {
+      if (e instanceof ProviderError && e.status === 404) return;
+      throw e;
+    }
+  },
+
+  async refund(chargeRef) {
+    const path = `/v1/payments/${encodeURIComponent(chargeRef)}`;
+    // Ya reembolsado (un reintento tras perder la respuesta): no se pide otra vez.
+    if ((await call('GET', path)).status === 'refunded') return;
+    await call('POST', `${path}/refunds`, {});
+  },
+
   async handleWebhook({ rawBody, headers, query }) {
     let body: any = {};
     try {
@@ -146,6 +207,7 @@ export const mercadopago: BillingProvider = {
       const p = await call('GET', `/v1/payments/${encodeURIComponent(dataId)}`);
       const refunded = Math.round(Number(p.transaction_amount_refunded ?? 0) * 100);
       if (refunded > 0) result.refund = { paymentId: '', chargeRefs: [String(p.id ?? dataId)], refundedCents: refunded };
+      result.dispute = disputeFromPayment(p) ?? undefined;
       return result;
     }
 

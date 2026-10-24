@@ -7,7 +7,8 @@ import { mailBrand } from './brands.js';
 import { config } from './config.js';
 import { query, queryOne } from './db.js';
 import { checkAccountRetention, keptNote } from './accounts/retention.js';
-import { billingEnabled, checkDunning, enforceAccess, syncPendingCheckouts } from './billing/service.js';
+import { billingEnabled, cancelLongUnpaid, checkDunning, enforceAccess, syncPendingCheckouts } from './billing/service.js';
+import { checkWebhookSilence, processBillingActions, reconcileSubscriptions } from './billing/autopilot.js';
 import { checkGlobalInvoice, processCfdi } from './billing/cfdi.js';
 import { logEvent } from './logs.js';
 import { sendMail } from './mailer.js';
@@ -104,11 +105,17 @@ export async function checkAiSpend(now = new Date()) {
 export function startLifecycle(intervalMs = 10 * 60_000) {
   const tick = () => {
     checkTrials().catch((e) => logEvent({ level: 'error', source: 'system', message: `Revisión de pruebas: ${e?.message ?? e}` }));
-    // Primero se confirman los pagos pendientes: un pago ya hecho no debe esperar al aviso del proveedor.
+    // Primero se confirman los pagos pendientes y se concilia con el proveedor (un pago ya hecho, o un cobro fallido cuyo
+    // aviso se perdió, no debe esperar al aviso); después se pausa, se recuerda y se cancela lo que corresponda.
     syncPendingCheckouts()
       .catch((e) => logEvent({ level: 'error', source: 'system', message: `Revisión de pagos pendientes: ${e?.message ?? e}` }))
+      .then(() => reconcileSubscriptions())
+      .catch((e) => logEvent({ level: 'error', source: 'system', message: `Conciliación de suscripciones: ${e?.message ?? e}` }))
       .then(() => enforceAccess())
       .then(() => checkDunning())
+      .then(() => cancelLongUnpaid())
+      .then(() => processBillingActions())
+      .then(() => checkWebhookSilence())
       .catch((e) => logEvent({ level: 'error', source: 'system', message: `Revisión de pagos: ${e?.message ?? e}` }));
     checkAccountRetention().catch((e) => logEvent({ level: 'error', source: 'system', message: `Retención de cuentas: ${e?.message ?? e}` }));
     checkAiSpend().catch((e) => logEvent({ level: 'error', source: 'system', message: `Revisión de gasto de IA: ${e?.message ?? e}` }));

@@ -159,20 +159,32 @@ t('Mercado Pago: la revisión periódica activa la cuenta aunque el cliente cier
   assert.equal(await syncPendingCheckouts(), 0, 'ya aplicado: no se consulta de nuevo');
 });
 
-t('dos pagos completados (dos pestañas): se conserva el vigente y se avisa una vez al superadmin', async () => {
+t('dos pagos completados (dos pestañas): se conserva el vigente y el otro se cancela y se reembolsa solo, una vez', async () => {
+  const { processBillingActions } = await import('../src/billing/autopilot.js');
   const r = await signup({ email: 'dani@spa.mx', company: 'Spa Dani', plan: 'pro', provider: 'stripe' });
   const accountId = r.json().account.id;
   payStripe(r.json().checkout_url.split('/').pop(), accountId, 'sub_dani_1');
   assert.equal((await as(r)('POST', '/api/billing/confirm')).json().confirmed, true);
 
   fake.stripe.subs.sub_dani_2 = stripeSub({ id: 'sub_dani_2', customer: 'cus_dani', metadata: { account_id: accountId, plan_key: 'pro' } });
+  fake.stripe.invoices.push({ id: 'in_dani_2', subscription: 'sub_dani_2', status: 'paid', amount_paid: 57884, currency: 'mxn', charge: 'ch_dani_2', created: Math.floor(Date.now() / 1000) });
   for (const id of ['evt_dup_1', 'evt_dup_2']) {
     const e = stripeEvent('customer.subscription.created', fake.stripe.subs.sub_dani_2, id);
     assert.equal((await h.app.inject({ method: 'POST', url: '/webhook/billing/stripe', payload: e.payload, headers: e.headers })).statusCode, 200);
   }
   assert.equal((await subOf(accountId)).provider_subscription_id, 'sub_dani_1');
-  assert.equal(await superNotices('Cobro duplicado: Spa Dani'), 1);
   assert.equal(outbox.filter((m) => m.to === 'dani@spa.mx' && m.subject.includes('plan está activo')).length, 1);
+
+  await processBillingActions();
+  assert.equal(fake.stripe.subs.sub_dani_2.status, 'canceled');
+  assert.equal(fake.stripe.subs.sub_dani_1.status, 'active', 'la vigente sigue');
+  assert.deepEqual(fake.stripe.refunds.filter((x) => x.charge === 'ch_dani_2'), [{ charge: 'ch_dani_2', payment_intent: '' }]);
+  assert.equal(outbox.filter((m) => m.to === 'dani@spa.mx' && m.subject === 'Te devolvimos un cobro doble').length, 1);
+  assert.equal(await superNotices('Cobro duplicado resuelto'), 1);
+  // Ya resuelto: otra revisión no repite nada.
+  await processBillingActions(new Date(Date.now() + 86400_000));
+  assert.equal(fake.stripe.refunds.filter((x) => x.charge === 'ch_dani_2').length, 1);
+  assert.equal(await superNotices('Cobro duplicado resuelto'), 1);
 });
 
 t('si el proveedor falla al registrarse, la cuenta queda creada y puede reintentar el pago', async () => {

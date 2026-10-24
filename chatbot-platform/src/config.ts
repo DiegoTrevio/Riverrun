@@ -182,6 +182,8 @@ export const config = {
     graceDays: Number(env('BILLING_GRACE_DAYS', '5')),
     /** Días que se conserva una cuenta pausada sola (prueba vencida o falta de pago) antes de borrarla. 0 = nunca se borra. */
     retentionDays: Number(env('ACCOUNT_RETENTION_DAYS', '90')),
+    /** Días en pausa por falta de pago tras los que se cancela la suscripción en el proveedor (deja de reintentar cobrar). 0 = nunca. */
+    cancelAfterPauseDays: Number(env('BILLING_CANCEL_AFTER_PAUSE_DAYS', '30')),
     /** IVA que se suma al precio de los planes (los precios se capturan sin IVA). 0 = no se suma. */
     taxPercent: Number(env('BILLING_TAX_PERCENT', '16')),
     stripe: {

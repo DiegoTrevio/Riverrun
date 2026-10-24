@@ -82,7 +82,10 @@ t('plan anual: Stripe cobra precio + IVA cada año y Mercado Pago cada 12 meses'
   assert.equal(req.body.get('line_items[0][price_data][recurring][interval]'), 'year');
   assert.equal((await M.api('POST', '/api/billing/checkout', { plan: 'anual', provider: 'mercadopago' })).statusCode, 200);
   const sent = fake.mp.requests.filter((x) => x.path === '/preapproval' && x.method === 'POST').at(-1)!.body;
-  assert.deepEqual(sent.auto_recurring, { frequency: 12, frequency_type: 'months', transaction_amount: 5788.4, currency_id: 'MXN' });
+  // Las cuentas están en su prueba: el primer cobro es al terminarla (ver billing-autopilot.test.ts).
+  const { start_date, ...recurring } = sent.auto_recurring;
+  assert.deepEqual(recurring, { frequency: 12, frequency_type: 'months', transaction_amount: 5788.4, currency_id: 'MXN' });
+  assert.ok(start_date);
 });
 
 t('Stripe: una factura pagada se registra una sola vez con el IVA desglosado', async () => {

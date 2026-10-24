@@ -735,6 +735,14 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
   /* ------------------------------ Facturas (CFDI) ------------------------------ */
   const fkey = get('FACTURAPI_API_KEY');
   const charging = (has('STRIPE_SECRET_KEY') && has('STRIPE_WEBHOOK_SECRET')) || (has('MERCADOPAGO_ACCESS_TOKEN') && has('MERCADOPAGO_WEBHOOK_SECRET'));
+  if (charging && !has('SUPERADMIN_EMAIL')) add(
+    'warning',
+    'billing',
+    'billing.superadmin_email',
+    ['SUPERADMIN_EMAIL'],
+    'El cobro en línea está activo pero no hay SUPERADMIN_EMAIL: los contracargos y lo poco que no se resuelve solo (una cancelación o un reembolso que el proveedor rechazó varias veces) solo se avisan en el panel.',
+    'Define SUPERADMIN_EMAIL con el correo donde quieres recibir esos avisos.',
+  );
   if (sandbox && fkey.startsWith('sk_live_')) add(
     'critical',
     'billing',

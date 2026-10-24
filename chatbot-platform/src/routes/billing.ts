@@ -4,12 +4,13 @@ import { z } from 'zod';
 import { HttpError, requireRole, targetAccount } from '../access.js';
 import { rateLimited } from '../auth.js';
 import { baseFor } from '../brands.js';
-import { providers, applyState, changePlan, confirmCheckout, enabledProviders, getPlan, getSubscription, listPlans, payable, recordEvent, startCheckout, startReplacement } from '../billing/service.js';
+import { providers, applyState, changePlan, confirmCheckout, enabledProviders, getPlan, getSubscription, listPlans, notePaymentAction, payable, recordEvent, startCheckout, startReplacement } from '../billing/service.js';
+import { applyDispute, recordMoney } from '../billing/ledger.js';
 import { FiscalSchema, fiscalComplete, getFiscal, personaOf, REGIMES, saveFiscal, USES, usesFor } from '../billing/fiscal.js';
-import { applyRefund, listPayments, recordPayment } from '../billing/payments.js';
-import { cfdiCounts, cfdiForPayments, getCfdi, invoicer, onFiscalSaved, queuePaymentCfdi } from '../billing/cfdi.js';
+import { listPayments } from '../billing/payments.js';
+import { cfdiCounts, cfdiForPayments, getCfdi, invoicer, onFiscalSaved } from '../billing/cfdi.js';
 import { chargeCents, taxPercent } from '../billing/tax.js';
-import { ProviderError, WebhookError, type Plan, type ProviderName, type WebhookResult } from '../billing/types.js';
+import { ProviderError, WebhookError, type Plan, type ProviderName } from '../billing/types.js';
 import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
 import { limitsReport, LimitsSchema } from '../billing/limits.js';
@@ -42,33 +43,12 @@ const paymentOut = (p: any) => ({
   total: p.total_cents / 100, subtotal: p.subtotal_cents / 100, tax: p.tax_cents / 100, tax_percent: Number(p.tax_percent), refunded: p.refunded_cents / 100,
 });
 
-/**
- * Anota el cobro o el reembolso que trae un aviso. El cobro se asocia a la cuenta de su suscripción (la suscripción del
- * proveedor siempre trae la cuenta); un cobro sin cuenta no es de esta plataforma (otro producto en la misma cuenta del
- * proveedor) y solo se registra en la bitácora.
- */
-async function recordMoney(name: ProviderName, result: WebhookResult, accountId: string | null) {
-  if (result.payment) {
-    const sub = await queryOne<{ account_id: string; plan_key: string }>(
-      `SELECT account_id, plan_key FROM subscriptions WHERE provider = $1 AND provider_subscription_id = $2`, [name, result.payment.subscriptionId]);
-    const account = accountId ?? sub?.account_id ?? null;
-    const planKey = result.state?.planKey || sub?.plan_key || '';
-    if (!account) await logEvent({ level: 'warn', source: 'system', message: `Cobro ${result.payment.paymentId} (${name}) sin cuenta de la plataforma: no se registra` });
-    else {
-      const paymentId = await recordPayment({ accountId: account, provider: name, planKey, payment: result.payment });
-      if (paymentId) {
-        await logEvent({ level: 'info', source: 'admin', message: `Pago recibido (${name}): ${result.payment.totalCents / 100} ${result.payment.currency}`, accountId: account });
-        // Su factura sale en la siguiente revisión (o entra a la global del mes si no pidió factura). Un fallo aquí no
-        // debe devolver el aviso: el pago ya quedó y un reintento del proveedor no lo volvería a ver como nuevo.
-        await queuePaymentCfdi(paymentId).catch((e) => logEvent({ level: 'error', source: 'admin', message: `No se pudo preparar la factura del pago ${result.payment!.paymentId}: ${e?.message ?? e}`, accountId: account }));
-      }
-    }
-  }
-  if (result.refund) {
-    const p = await applyRefund(name, result.refund);
-    if (p) await logEvent({ level: 'warn', source: 'admin', message: `Reembolso (${name}): pago ${p.status === 'refunded' ? 'reembolsado completo' : 'reembolsado en parte'}`, accountId: p.account_id ?? undefined });
-  }
-}
+/** Límite de veces por hora y cuenta: estas rutas llaman al proveedor (y un ciclo en el panel no debe saturarlo). */
+const tooMany = (reply: any, key: string, max: number) => {
+  if (!rateLimited(key, max, 3600_000)) return false;
+  reply.code(429).send({ error: 'Demasiados intentos, espera un momento y vuelve a intentar' });
+  return true;
+};
 
 /** Planes que se pueden contratar, con los proveedores que los cobran (para "Mi plan" y el registro). */
 export async function offeredPlans() {
@@ -95,8 +75,11 @@ export async function billingWebhooks(app: FastifyInstance) {
         // Primero se anota el aviso: si ya se procesó, no se repite. Si falla el proceso, se libera para que el proveedor reintente.
         if (!(await recordEvent(name, result.eventId, result.type, null))) return { ok: true };
         try {
+          // El banco pide confirmar el cobro (3DS): se guarda antes, así el aviso de cobro fallido ya dice cómo resolverlo.
+          if (result.actionUrl && result.state) await notePaymentAction(name, result.state.subscriptionId, result.actionUrl);
           const accountId = result.state ? await applyState(result.state) : null;
           await recordMoney(name, result, accountId);
+          if (result.dispute) await applyDispute(name, result.dispute);
           if (accountId) await query(`UPDATE billing_events SET account_id = $3 WHERE provider = $1 AND event_id = $2`, [name, result.eventId, accountId]);
         } catch (e) {
           await query(`DELETE FROM billing_events WHERE provider = $1 AND event_id = $2`, [name, result.eventId]);
@@ -195,8 +178,9 @@ export async function billingRoutes(api: FastifyInstance) {
     return { fiscal: data, complete: fiscalComplete(f), updated_at, ...catalogs };
   });
 
-  api.put('/api/billing/fiscal', admins, async (req: any) => {
+  api.put('/api/billing/fiscal', admins, async (req: any, reply) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
+    if (tooMany(reply, `billing-fiscal:${accountId}`, 30)) return reply;
     const d = parse(FiscalSchema, req.body);
     const f = await saveFiscal(accountId, req.user.role === 'superadmin' ? null : req.user.id, d);
     await logEvent({ level: 'info', source: 'admin', message: d.wants_invoice ? `Datos de facturación guardados (RFC ${d.rfc}, ${personaOf(d.rfc) === 'moral' ? 'persona moral' : 'persona física'})` : 'Facturación: sin factura (público en general)', accountId });
@@ -212,6 +196,7 @@ export async function billingRoutes(api: FastifyInstance) {
     const c = await getCfdi(id);
     const mine = c && (req.user.role === 'superadmin' || (c.account_id && c.account_id === (await targetAccount(req.user, req.query.account_id))));
     if (!c || !mine || c.status !== 'issued') throw new HttpError(404, 'No encontrado');
+    if (tooMany(reply, `billing-invoice:${req.user.id}`, 120)) return reply;
     const file = await viaProvider(() => invoicer.download(c.provider_invoice_id, format));
     const name = `${c.series}${c.folio}` || c.sat_uuid;
     return reply
@@ -221,8 +206,9 @@ export async function billingRoutes(api: FastifyInstance) {
       .send(file);
   });
 
-  api.post('/api/billing/checkout', admins, async (req: any) => {
+  api.post('/api/billing/checkout', admins, async (req: any, reply) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
+    if (tooMany(reply, `billing-checkout:${accountId}`, 20)) return reply;
     const b = parse(z.object({ plan: z.string().max(40), provider: z.enum(['stripe', 'mercadopago']) }), req.body);
     const { plan, provider } = await payable(b.plan, b.provider);
     const sub = await getSubscription(accountId);
@@ -256,8 +242,9 @@ export async function billingRoutes(api: FastifyInstance) {
   });
 
   /** Stripe: página para cambiar tarjeta, ver facturas y cancelar. */
-  api.post('/api/billing/portal', admins, async (req: any) => {
+  api.post('/api/billing/portal', admins, async (req: any, reply) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
+    if (tooMany(reply, `billing-portal:${accountId}`, 30)) return reply;
     const sub = await getSubscription(accountId);
     const provider = sub && providers[sub.provider];
     if (!sub || !provider?.portal || !sub.provider_customer_id) throw new HttpError(400, 'Tu plan no tiene página de administración: cancélalo desde aquí.');
@@ -279,16 +266,18 @@ export async function billingRoutes(api: FastifyInstance) {
   };
 
   /** Cambiar de plan. Mercado Pago entre mensual y anual pasa por su página de pago: entonces responde `url`. */
-  api.post('/api/billing/change', admins, async (req: any) => {
+  api.post('/api/billing/change', admins, async (req: any, reply) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
+    if (tooMany(reply, `billing-change:${accountId}`, 10)) return reply;
     const { plan } = parse(z.object({ plan: z.string().max(40) }), req.body);
     const r = await viaProvider(async () => changePlan({ accountId, email: req.user.email, planKey: plan, base: await baseFor(req) }));
     return { ok: true, ...r, subscription: publicSub(await getSubscription(accountId)) };
   });
 
   /** Cambiar la tarjeta. Stripe: su página de administración. Mercado Pago: una suscripción nueva desde el siguiente cobro. */
-  api.post('/api/billing/payment-method', admins, async (req: any) => {
+  api.post('/api/billing/payment-method', admins, async (req: any, reply) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
+    if (tooMany(reply, `billing-payment-method:${accountId}`, 10)) return reply;
     const sub = await getSubscription(accountId);
     if (!sub?.provider_subscription_id || !['active', 'past_due'].includes(sub.status)) throw new HttpError(400, 'No tienes un plan activo');
     const base = await baseFor(req);
@@ -301,8 +290,9 @@ export async function billingRoutes(api: FastifyInstance) {
     return { url: await viaProvider(() => startReplacement({ accountId, email: req.user.email, plan, base })) };
   });
 
-  api.post('/api/billing/cancel', admins, async (req: any) => {
+  api.post('/api/billing/cancel', admins, async (req: any, reply) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
+    if (tooMany(reply, `billing-cancel:${accountId}`, 20)) return reply;
     const { resume } = parse(z.object({ resume: z.boolean().default(false) }), req.body);
     const sub = await getSubscription(accountId);
     // Mercado Pago no reanuda una suscripción cancelada: se contrata el mismo plan con el primer cobro al terminar lo pagado.
