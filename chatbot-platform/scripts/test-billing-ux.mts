@@ -275,6 +275,38 @@ try {
   }
   checks.push('Invitar a tu equipo desde «Mi equipo» y unirse con el enlace eligiendo contraseña (accesible en móvil)');
 
+  // «Tus datos»: el dueño descarga su cuenta y pide borrarla; con el borrado programado, la franja y «Cancelar el borrado».
+  const accName = (await pool.query(`SELECT name FROM accounts WHERE id = $1`, [accountId])).rows[0].name as string;
+  await page.setViewportSize({ width: 390, height: 1000 });
+  await page.goto(`${base}/#/plan`);
+  const data = page.getByRole('region', { name: 'Tus datos' });
+  await data.getByRole('link', { name: 'Descargar todos mis datos (ZIP)' }).waitFor();
+  await data.getByLabel(/Para confirmar, escribe el nombre de tu cuenta/).fill(accName);
+  await data.getByRole('button', { name: 'Borrar mi cuenta' }).click();
+  await page.getByText('Te enviamos un correo a ana@estudio.mx para confirmar el borrado').waitFor();
+  await pool.query(`UPDATE accounts SET deletion_requested_at = now(), deletion_scheduled_for = now() + interval '7 days' WHERE id = $1`, [accountId]);
+  for (const width of [1366, 390]) {
+    await page.setViewportSize({ width, height: 1000 });
+    await page.goto(`${base}/#/agentes`);
+    await page.getByText('Tu cuenta se va a borrar.').waitFor();
+    await page.addScriptTag({ content: axe });
+    const violations = await page.evaluate(async () => (await (window as any).axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] } }))
+      .violations.filter((v: any) => ['serious', 'critical'].includes(v.impact)).map((v: any) => v.id));
+    assert.deepEqual(violations, [], `Franja de borrado a ${width}`);
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), `Franja de borrado sin desbordamiento a ${width}`);
+  }
+  await page.getByRole('link', { name: 'Cancelar el borrado' }).click();
+  await page.getByRole('heading', { name: 'Mi plan y pagos' }).waitFor();
+  await page.addScriptTag({ content: axe });
+  const dataViolations = await page.evaluate(async () => (await (window as any).axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] } }))
+    .violations.filter((v: any) => ['serious', 'critical'].includes(v.impact)).map((v: any) => v.id));
+  assert.deepEqual(dataViolations, [], 'Tarjeta «Tus datos» a 390');
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'Tarjeta «Tus datos» sin desbordamiento a 390');
+  await page.getByRole('region', { name: 'Tus datos' }).getByRole('button', { name: 'Cancelar el borrado' }).click();
+  await page.getByText('Listo: tu cuenta ya no se borrará').waitFor();
+  assert.equal((await pool.query(`SELECT deletion_scheduled_for FROM accounts WHERE id = $1`, [accountId])).rows[0].deletion_scheduled_for, null);
+  checks.push('Tus datos: descargar, pedir el borrado, la franja en todo el panel y cancelar el borrado (accesible en móvil)');
+
   // El superadmin captura precios sin IVA y elige el periodo. La última tarjeta es la de "Agregar plan".
   await context.clearCookies();
   const sx = h.cookie.indexOf('=');
