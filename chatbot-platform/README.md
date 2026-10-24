@@ -458,6 +458,8 @@ Menú **Cotizaciones** (administradores). Detalle en [docs/cotizaciones.md](docs
 
 Cada plan define mensajes del mes, canales, usuarios y asistentes (0 o vacío = sin límite); la prueba gratuita usa `TRIAL_MAX_*`, y el superadmin puede dar una excepción por cuenta (**Cuentas → Límites**). Al llegar al 80 % y al 100 % de mensajes se avisa al administrador; al agotarse, el asistente deja de responder solo (sin llamar a la IA) hasta el mes siguiente o hasta subir de plan, y una campaña mayor al cupo restante no se lanza. El simulador no gasta cupo.
 
+**Subir de plan al topar un límite:** si alguien intenta agregar un canal, un usuario, una invitación, un asistente o una red social por encima de su plan, el panel no muestra un error de formulario. Muestra «Llegaste al límite de … de tu plan (N de N)» y el botón **Subir a {plan}**, con el plan más barato en el que cabe todo lo que ya usa (primero los de su mismo periodo, mensual o anual). El botón lleva a **Mi plan** con ese plan elegido y «Subir ahora», que en Stripe cambia el plan al momento con prorrateo. Quien no administra la cuenta ve que debe pedírselo a un administrador. La API responde 403 con `issues: ['limit_reached']` y `limit: { key, label, used, max, next_plan }`. Los avisos del 80 % y del 100 % de mensajes nombran el plan sugerido y enlazan a `#/plan?subir=<clave>`.
+
 ## Varios números de WhatsApp
 
 Una cuenta puede conectar varios WhatsApp. Las **campañas** pueden salir de varios números a la vez (cada uno con su ritmo y su tope diario, **Ajustes → Horario y avisos**), y un **enlace de reparto** (`/wa/<token>`, en Canales) manda a cada cliente nuevo al número conectado menos ocupado o por turnos.

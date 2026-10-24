@@ -1,6 +1,6 @@
 import { discardDraft, draftModel } from './editing.js';
 import { importCard, importFrom, IMPORT_ACCEPT, SECTION_LABELS } from './importer.js';
-import { api, area, field, fill, h, select, state, text, toast } from './core.js';
+import { api, area, field, fill, h, select, state, text, toast, upgradeCard } from './core.js';
 import { icon } from './icons.js';
 import { accountPicker } from './dashboard.js';
 import { render } from './main.js';
@@ -253,7 +253,7 @@ function screenRole(w) {
     } catch (e) {
       create.disabled = false;
       const limit = e.issues?.includes('limit_reached');
-      fill(errorBox, h('div', { class: 'banner danger', role: 'alert' }, limit ? e.message.replace(/:.*$/, '') : e.message, limit ? [' ', h('a', { href: '#/plan' }, 'Ver planes')] : null));
+      fill(errorBox, limit ? upgradeCard(e) : h('div', { class: 'banner danger', role: 'alert' }, e.message));
       toast(limit ? 'Tu plan ya no permite más agentes' : e.message, true);
     }
   } }, 'Crear mi agente');

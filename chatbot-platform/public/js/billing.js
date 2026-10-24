@@ -189,12 +189,14 @@ export async function viewPlan(root, params) {
       sub?.status === 'canceled' ? h('p', { class: 'muted' }, 'Tu plan anterior se canceló. Puedes contratar de nuevo cuando quieras.') : null);
   }
 
+  // Desde un límite o un aviso de uso: el plan sugerido queda elegido (un clic para subir).
+  const wanted = params.get('subir') || params.get('plan');
   const others = live && !sub.cancel_at_period_end ? b.plans.filter((p) => p.key !== sub.plan_key) : [];
   const current = live ? b.plans.find((p) => p.key === sub.plan_key) : null;
   const change = others.length
     ? h('section', { class: 'card', 'aria-labelledby': 'change-plan' },
       h('h2', { id: 'change-plan', style: 'margin-top:0' }, 'Cambiar de plan'),
-      h('div', { class: 'grid' }, others.map((p) => h('div', { class: 'card' },
+      h('div', { class: 'grid' }, others.map((p) => h('div', { class: p.key === wanted ? 'card chosen' : 'card' },
         h('h3', { style: 'margin:0' }, p.name),
         h('div', { class: 'kpi', style: 'margin:8px 0' }, planPrice(p), h('span', { class: 'muted small' }, ` / ${per(p)}`)),
         totalText(p) ? h('p', { class: 'muted small', style: 'margin-top:0' }, totalText(p)) : null,
@@ -203,8 +205,9 @@ export async function viewPlan(root, params) {
           if (!await confirmAction(`¿Cambiar al plan ${p.name}? ${changeEffect(sub, current, p)}`)) return;
           const r = await run(() => api('POST', withAcct('/api/billing/change'), { plan: p.key }));
           if (r?.url) location.href = r.url;
-          else if (r) { toast(`Listo: ahora tienes el plan ${p.name}`); render(); }
-        } }, `Cambiar a ${p.name}`)))))
+          // Sin el plan sugerido en la dirección (cambiar la dirección ya vuelve a dibujar la página).
+          else if (r) { toast(`Listo: ahora tienes el plan ${p.name}`); if (location.hash !== '#/plan') location.hash = '#/plan'; else render(); }
+        } }, p.key === wanted ? `Subir ahora a ${p.name}` : `Cambiar a ${p.name}`)))))
     : null;
 
   const waiting = paid && !live;
@@ -215,7 +218,7 @@ export async function viewPlan(root, params) {
     if (!b.plans.length) {
       fill(offer, h('div', { class: 'card' }, h('p', {}, 'El pago en línea todavía no está disponible.'), b.support_contact ? h('p', {}, 'Para contratar escríbenos a ', h('strong', {}, b.support_contact), '.') : null));
     } else {
-      fill(offer, h('div', { class: 'grid' }, b.plans.map((p) => h('div', { class: p.key === params.get('plan') ? 'card chosen' : 'card' },
+      fill(offer, h('div', { class: 'grid' }, b.plans.map((p) => h('div', { class: p.key === wanted ? 'card chosen' : 'card' },
         h('h2', { style: 'margin:0' }, p.name),
         h('div', { class: 'kpi', style: 'margin:8px 0' }, planPrice(p), h('span', { class: 'muted small' }, ` / ${per(p)}`)),
         totalText(p) ? h('p', { class: 'muted small', style: 'margin-top:0' }, totalText(p)) : null,
@@ -276,6 +279,8 @@ export async function viewPlan(root, params) {
     ? h('p', { class: 'banner warn' }, 'Pediste factura: completa tus datos en «Facturación» antes de contratar.')
     : null;
   root.append(h('h1', {}, 'Mi plan y pagos'), notice, status, change, fiscal, usage, fiscalMissing, offer, history);
+  // El plan sugerido a la vista (el foco queda en el título, como en toda página nueva).
+  if (params.get('subir')) root.querySelector('.card.chosen')?.scrollIntoView({ block: 'center' });
   if (waiting && !gaveUp) state.timers.push(setTimeout(() => { state.me = null; render(); }, 4000));
 }
 
