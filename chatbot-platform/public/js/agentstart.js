@@ -1,5 +1,5 @@
 import { stepsBar } from './agentwizard.js';
-import { api, confirmAction, fill, fmtPhone, h, poll, run, state } from './core.js';
+import { api, confirmAction, fill, fmtPhone, h, poll, run, state, upgradeCard } from './core.js';
 import { render } from './main.js';
 import { tabPlayground } from './playground.js';
 import { acct, isSuper } from './session.js';
@@ -96,7 +96,7 @@ function drawConnect(card, bot, { phones, mine, connected, live }) {
       start.hidden = true;
     } catch (e) {
       start.disabled = false;
-      fill(area, h('div', { class: 'banner danger', role: 'alert' }, e.message, ' ',
+      fill(area, e.limit ? upgradeCard(e) : h('div', { class: 'banner danger', role: 'alert' }, e.message, ' ',
         e.status === 409 ? h('a', { href: `#/bot/${bot.id}/conexiones` }, 'Ver mis conexiones') : e.status === 403 && /plan/i.test(e.message) ? h('a', { href: '#/plan' }, 'Ver planes') : null));
     }
   } }, mine.length ? 'Mostrar mi código QR' : 'Conectar mi WhatsApp');

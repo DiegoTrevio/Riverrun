@@ -8,7 +8,7 @@ import { z } from 'zod';
 import { HttpError, requireRole, targetAccount } from '../access.js';
 import { hashPassword, rateLimited, setSessionCookie } from '../auth.js';
 import { hostOf, mailBrand } from '../brands.js';
-import { assertWithinLimit, effectiveLimits, LIMIT_LABELS, usageOf } from '../billing/limits.js';
+import { assertWithinLimit, effectiveLimits, LIMIT_LABELS, limitDetail, offerText, usageOf } from '../billing/limits.js';
 import { config } from '../config.js';
 import { query, queryOne, withTransaction } from '../db.js';
 import { googleConfigured } from '../integrations/google.js';
@@ -54,10 +54,12 @@ async function assertRoomForInvite(accountId: string) {
   if (used + pending + 1 > max) {
     const l = LIMIT_LABELS.users;
     const extra = pending ? ` más ${pending} ${pending === 1 ? 'invitación pendiente' : 'invitaciones pendientes'}` : '';
+    const detail = await limitDetail(accountId, 'users', used + pending, max);
     throw new HttpError(
       403,
-      `${source === 'trial' ? 'Tu periodo de prueba permite' : 'Tu plan permite'} hasta ${max} ${max === 1 ? l.singular : l.plural} y ya tienes ${used}${extra}. Para invitar a más personas, cambia de plan en Ajustes → Mi plan y pagos o cancela una invitación.`,
+      `${source === 'trial' ? 'Tu periodo de prueba permite' : 'Tu plan permite'} hasta ${max} ${max === 1 ? l.singular : l.plural} y ya tienes ${used}${extra}.${detail.next_plan ? ` ${offerText(detail.next_plan, 'users')}` : ''} Para invitar a más personas, cambia de plan en Ajustes → Mi plan y pagos o cancela una invitación.`,
       ['limit_reached'],
+      { limit: detail },
     );
   }
 }

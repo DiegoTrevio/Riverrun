@@ -57,10 +57,13 @@ async function requestApi(method, url, body, isForm) {
   recordUX(`${method}:${group}`, performance.now() - start, res.ok ? 'ok' : `http_${res.status}`);
   if (res.status === 401 && !url.endsWith('/login')) { location.hash = '#/login'; throw new Error('Sesión expirada'); }
   if (!res.ok) {
-    const msg = data?.issues ? `${data.error}: ${data.issues.join('; ')}` : data?.error || `Error ${res.status}`;
+    // Un límite del plan no es un error de los datos: el mensaje ya dice qué pasó y a qué plan subir.
+    const limited = data?.issues?.includes('limit_reached');
+    const msg = data?.issues && !limited ? `${data.error}: ${data.issues.join('; ')}` : data?.error || `Error ${res.status}`;
     const error = new Error(msg);
     error.status = res.status;
     error.issues = data?.issues;
+    if (limited) error.limit = data.limit || {};
     throw error;
   }
   return data;
@@ -128,6 +131,26 @@ export function toast(msg, error = false) {
   toastTimer = setTimeout(() => (t.hidden = true), error ? 6000 : 2500);
 }
 
+const amountText = (n) => new Intl.NumberFormat('es-MX', { minimumFractionDigits: n % 1 ? 2 : 0, maximumFractionDigits: 2 }).format(n);
+
+/**
+ * Se topó un límite del plan: en lugar de "revisa el formulario", qué se topó y un botón para subir al plan que alcanza
+ * (lo deja elegido en Mi plan). Quien no administra la cuenta ve a quién pedírselo.
+ */
+export function upgradeCard(e) {
+  const l = e.limit || {};
+  const p = l.next_plan;
+  const canPay = ['admin', 'superadmin'].includes(state.me?.user?.role);
+  return h('div', { class: 'form-error banner warn', role: 'alert', tabindex: '-1' },
+    h('p', {}, h('strong', {}, l.label ? `Llegaste al límite de ${l.label} de tu plan` : 'Llegaste al límite de tu plan'), l.max ? ` (${l.used} de ${l.max}).` : '.'),
+    !canPay
+      ? h('p', {}, 'Pídele a un administrador de tu cuenta que cambie de plan en Mi plan y pagos.')
+      : p
+        ? h('p', {}, h('a', { class: 'btn primary', href: `#/plan?subir=${encodeURIComponent(p.key)}` }, `Subir a ${p.name}`), ` $${amountText(p.price)} ${p.currency} al ${p.interval === 'year' ? 'año' : 'mes'}${p.total !== p.price ? ' + IVA' : ''} · `,
+          p.allows ? `hasta ${p.allows.toLocaleString('es-MX')} ${l.label}` : `${l.label} sin límite`)
+        : h('p', {}, h('a', { class: 'btn primary', href: '#/plan' }, 'Ver planes')));
+}
+
 export async function run(fn, okMsg) {
   const target = document.activeElement?.closest('.card');
   target?.querySelector(':scope > .form-error')?.remove();
@@ -137,7 +160,9 @@ export async function run(fn, okMsg) {
     return r === null || r === undefined ? { ok: true } : r;
   } catch (e) {
     if (target?.isConnected) {
-      const box = h('div', { class: 'form-error banner danger', role: 'alert', tabindex: '-1' }, h('p', {}, e.issues ? 'Revisa los datos del formulario y vuelve a intentarlo.' : e.message || 'No se completó la acción.'), e.issues ? h('details', {}, h('summary', {}, 'Ver campos que necesitan revisión'), h('ul', {}, e.issues.map((issue) => h('li', {}, issue)))) : null);
+      const box = e.limit
+        ? upgradeCard(e)
+        : h('div', { class: 'form-error banner danger', role: 'alert', tabindex: '-1' }, h('p', {}, e.issues ? 'Revisa los datos del formulario y vuelve a intentarlo.' : e.message || 'No se completó la acción.'), e.issues ? h('details', {}, h('summary', {}, 'Ver campos que necesitan revisión'), h('ul', {}, e.issues.map((issue) => h('li', {}, issue)))) : null);
       target.append(box);
       box.focus({ preventScroll: true });
     }

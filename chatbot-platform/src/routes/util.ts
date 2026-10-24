@@ -24,7 +24,7 @@ export function parse<T>(schema: z.ZodType<T>, body: unknown): T {
 /** Errores de la API en un formato único: { error, issues? }. */
 export function installErrorHandler(app: FastifyInstance) {
   app.setErrorHandler(async (err: any, req, reply) => {
-    if (err instanceof HttpError) return reply.code(err.statusCode).send({ error: err.message, issues: err.issues });
+    if (err instanceof HttpError) return reply.code(err.statusCode).send({ ...err.data, error: err.message, issues: err.issues });
     if (err?.code === '23505') return reply.code(409).send({ error: uniqueMessage(err) });
     if (err?.statusCode && err.statusCode < 500) return reply.code(err.statusCode).send({ error: err.message });
     await logEvent({ level: 'error', source: 'system', message: `Error en ${req.method} ${req.url.split('?')[0]}: ${err?.message ?? err}`, details: err });

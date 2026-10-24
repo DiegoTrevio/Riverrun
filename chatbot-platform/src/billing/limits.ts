@@ -16,6 +16,7 @@ import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
 import { sendMail } from '../mailer.js';
 import { logEvent } from '../logs.js';
+import { chargeCents } from './tax.js';
 
 export const LIMIT_KEYS = ['messages_per_month', 'channels', 'users', 'chatbots', 'social_accounts'] as const;
 export type LimitKey = (typeof LIMIT_KEYS)[number];
@@ -97,6 +98,49 @@ export async function usageOf(accountId: string): Promise<Usage> {
   };
 }
 
+export interface UpgradeOffer {
+  key: string;
+  name: string;
+  /** Precio sin IVA por periodo, total con IVA y cuánto permite del límite que se topó (null = sin límite). */
+  price: number;
+  total: number;
+  currency: string;
+  interval: 'month' | 'year';
+  allows: number | null;
+}
+
+/**
+ * Plan al que conviene subir para tener `needed` de `key`: de los que se ofrecen, uno que lo permite y en el que cabe
+ * todo lo que la cuenta ya usa; primero los del mismo periodo que su plan (mensual si no tiene) y, entre ellos, el más
+ * barato. null si ningún plan alcanza (o no hay planes).
+ */
+export async function nextPlanFor(accountId: string, key: LimitKey, needed: number): Promise<UpgradeOffer | null> {
+  const [acc, used, plans] = await Promise.all([
+    queryOne<{ plan: string }>(`SELECT plan FROM accounts WHERE id = $1`, [accountId]),
+    usageOf(accountId),
+    query<{ key: string; name: string; price_cents: number; currency: string; billing_interval: 'month' | 'year'; limits: unknown }>(`SELECT key, name, price_cents, currency, billing_interval, limits FROM plans WHERE active`),
+  ]);
+  const fits = (max: number | null | undefined, n: number) => !max || max >= n;
+  const monthly = (p: { price_cents: number; billing_interval: string }) => (p.billing_interval === 'year' ? p.price_cents / 12 : p.price_cents);
+  // Quien paga cada mes no debería ver como "siguiente plan" un compromiso anual solo por salir más barato al mes.
+  const period = plans.find((p) => p.key === acc?.plan)?.billing_interval ?? 'month';
+  const best = plans
+    .map((p) => ({ ...p, lim: clean(p.limits) }))
+    .filter((p) => p.key !== acc?.plan && fits(p.lim[key], needed) && LIMIT_KEYS.every((k) => k === key || k === 'messages_per_month' || fits(p.lim[k], used[k])))
+    .sort((a, b) => Number(a.billing_interval !== period) - Number(b.billing_interval !== period) || monthly(a) - monthly(b))[0];
+  if (!best) return null;
+  return { key: best.key, name: best.name, price: best.price_cents / 100, total: chargeCents(best) / 100, currency: best.currency, interval: best.billing_interval, allows: best.lim[key] ?? null };
+}
+
+/** Lo que el panel necesita para ofrecer subir de plan al topar un límite. */
+export async function limitDetail(accountId: string, key: LimitKey, used: number, max: number) {
+  return { key, label: LIMIT_LABELS[key].plural, used, max, next_plan: await nextPlanFor(accountId, key, Math.max(used, max) + 1) };
+}
+
+/** "El plan Pro incluye hasta 5 canales" / "…sin límite de canales". */
+export const offerText = (o: UpgradeOffer, key: LimitKey) =>
+  `El plan ${o.name} incluye ${o.allows ? `hasta ${o.allows.toLocaleString('es-MX')} ${o.allows === 1 ? LIMIT_LABELS[key].singular : LIMIT_LABELS[key].plural}` : `${LIMIT_LABELS[key].plural} sin límite`}.`;
+
 /** Falla con un mensaje claro si crear `adding` más de este recurso pasa el límite de la cuenta. */
 export async function assertWithinLimit(accountId: string, key: Exclude<LimitKey, 'messages_per_month'>, adding = 1) {
   const { limits, source } = await effectiveLimits(accountId);
@@ -106,7 +150,9 @@ export async function assertWithinLimit(accountId: string, key: Exclude<LimitKey
   if (used + adding > max) {
     const who = source === 'trial' ? 'Tu periodo de prueba permite' : 'Tu plan permite';
     const l = LIMIT_LABELS[key];
-    throw new HttpError(403, `${who} hasta ${max} ${max === 1 ? l.singular : l.plural} y ya tienes ${used}. Para agregar más, cambia de plan en Ajustes → Mi plan y pagos.`, ['limit_reached']);
+    const detail = await limitDetail(accountId, key, used, max);
+    const offer = detail.next_plan ? ` ${offerText(detail.next_plan, key)}` : '';
+    throw new HttpError(403, `${who} hasta ${max} ${max === 1 ? l.singular : l.plural} y ya tienes ${used}.${offer} Para agregar más, cambia de plan en Ajustes → Mi plan y pagos.`, ['limit_reached'], { limit: detail });
   }
 }
 
@@ -150,12 +196,16 @@ async function notifyLimit(accountId: string, notice: 'messages_80' | 'messages_
   const admins = await query<{ id: string; email: string }>(`SELECT id, email FROM users WHERE account_id = $1 AND role = 'admin' AND active`, [accountId]);
   const full = notice === 'messages_100';
   const title = full ? 'Llegaste al límite de mensajes de tu plan' : 'Estás por llegar al límite de mensajes de tu plan';
+  // El plan sugerido va en el texto y el enlace lo deja elegido en Mi plan (un clic para subir).
+  const next = await nextPlanFor(accountId, 'messages_per_month', max + 1);
+  const suggest = next ? ` ${offerText(next, 'messages_per_month')}` : '';
   const body = full
-    ? `Tu asistente ya envió los ${max.toLocaleString('es-MX')} mensajes que incluye tu plan este mes, así que dejó de responder solo. Sube de plan para que siga atendiendo; el contador se reinicia el día 1.`
-    : `Tu asistente lleva ${used.toLocaleString('es-MX')} de ${max.toLocaleString('es-MX')} mensajes de tu plan este mes (80 %). Cuando llegue al 100 % dejará de responder solo.`;
-  await notifyUsers(accountId, admins.map((a) => a.id), { title, body, link: '#/plan', kind: 'billing' });
+    ? `Tu asistente ya envió los ${max.toLocaleString('es-MX')} mensajes que incluye tu plan este mes, así que dejó de responder solo. Sube de plan para que siga atendiendo; el contador se reinicia el día 1.${suggest}`
+    : `Tu asistente lleva ${used.toLocaleString('es-MX')} de ${max.toLocaleString('es-MX')} mensajes de tu plan este mes (80 %). Cuando llegue al 100 % dejará de responder solo.${suggest}`;
+  const link = next ? `#/plan?subir=${encodeURIComponent(next.key)}` : '#/plan';
+  await notifyUsers(accountId, admins.map((a) => a.id), { title, body, link, kind: 'billing' });
   const mb = await mailBrand(accountId);
-  for (const a of admins) await sendMail({ fromName: mb.fromName, to: a.email, subject: title, text: `${body}\n\n${mb.base}/#/plan` });
+  for (const a of admins) await sendMail({ fromName: mb.fromName, to: a.email, subject: title, text: `${body}\n\n${next ? `Subir al plan ${next.name}: ` : ''}${mb.base}/${link}` });
 }
 
 /** Resumen para el panel: límite, uso y porcentaje de cada recurso. */
