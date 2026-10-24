@@ -34,6 +34,9 @@
     summary { cursor: pointer; font-weight: 600; }
     details p { color: var(--text); }
     footer { margin-top: 36px; color: var(--muted); font-size: 14px; border-top: 1px solid var(--border); padding-top: 14px; }
+    .toc { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 18px 0 0; font-size: 15px; }
+    .toc a { color: var(--accent); }
+    h3.faq[id], ol.steps > li[id] { scroll-margin-top: 16px; }
     kbd { background: var(--soft); border-radius: 4px; padding: 1px 6px; font: inherit; font-weight: 600; }
     @media (max-width: 560px) { ol.steps > li { padding-left: 16px; padding-top: 58px; } }
     @media print { body { background: #fff; color: #000; } .top, footer a.btn { display: none; } ol.steps > li, details { break-inside: avoid; } details { border: 0; } details[open] summary ~ * { display: block; } }
@@ -48,9 +51,19 @@
       <a class="btn" href="/#/agentes">Ir a mi panel</a>
       <a class="btn ghost" href="javascript:window.print()">Imprimir esta guía</a>
     </div>
+    <nav class="toc" aria-label="Secciones de la ayuda">
+      <a href="#empezar">Para empezar</a>
+      <a href="#whatsapp">WhatsApp</a>
+      <a href="#pagos">Pagos y plan</a>
+      <a href="#facturas">Facturas</a>
+      <a href="#cuenta">Tu cuenta y privacidad</a>
+      <a href="#preguntas">Preguntas frecuentes</a>
+      <a href="/contacto">Escríbenos</a>
+      <a href="/estado">Estado del servicio</a>
+    </nav>
   </header>
 
-  <ol class="steps">
+  <ol class="steps" id="empezar">
     <li>
       <h2>Crea tu cuenta <span class="time">· 1 minuto</span></h2>
       <p>Escribe tu nombre, el de tu negocio y tu correo, y acepta los términos. La prueba es gratuita y no pide tarjeta. Confirma tu correo con el enlace que te llega (revisa spam).</p>
@@ -78,7 +91,7 @@
       </figure>
     </li>
 
-    <li>
+    <li id="whatsapp">
       <h2>Conecta tu WhatsApp <span class="time">· 2 minutos</span></h2>
       <p>En esa misma pantalla pulsa <kbd>Conectar mi WhatsApp</kbd> (necesitas haber confirmado tu correo). En WhatsApp abre <em>Configuración → Dispositivos vinculados → Vincular un dispositivo</em> y escanea el código. Si abriste el panel en el mismo celular, la pantalla empieza en <kbd>Con mi número</kbd>: toca <kbd>Obtener código</kbd> y escríbelo en WhatsApp (<em>Vincular con el número de teléfono</em>); si el código cambia mientras lo escribes, usa el más reciente. <strong>Al conectarlo por primera vez, tu agente se enciende solo</strong> y empieza a responder; puedes pausarlo cuando quieras en <strong>Configurar</strong>.</p>
       <p>Para más teléfonos u otros canales entra a <strong>Agentes → tu agente → Conexiones</strong>. Cada perfil puede tener hasta cuatro teléfonos de WhatsApp, cada uno con su propio QR, y puedes asignar varios a un agente.</p>
@@ -105,7 +118,57 @@
     </li>
   </ol>
 
-  <h3 class="faq">Preguntas frecuentes</h3>
+  <h3 class="faq" id="pagos">Pagos y plan</h3>
+  <details>
+    <summary>¿Cómo pago y cuándo me cobran?</summary>
+    <p>Elige tu plan en <strong>Ajustes → Mi plan y pagos</strong> y paga en la página segura de Stripe o Mercado Pago (nosotros no vemos tu tarjeta). El cobro queda domiciliado: se repite solo cada mes o cada año. Si pagas durante tu prueba gratis, el primer cargo llega cuando termina la prueba, así no pierdes días.</p>
+  </details>
+  <details>
+    <summary>Llegué al límite de mi plan, ¿qué hago?</summary>
+    <p>Cuando llegas al límite de canales, agentes, personas o mensajes, el panel te dice cuál plan te alcanza y te lleva a él para subir en un paso. Al subir, Stripe cobra hoy solo la parte proporcional; en Mercado Pago el nuevo precio aplica desde tu siguiente cobro.</p>
+  </details>
+  <details>
+    <summary>Mi banco me pide confirmar el pago</summary>
+    <p>Algunos bancos piden autenticar el cargo (3D Secure). Te llega un correo y un aviso en el panel con el enlace para confirmarlo: ábrelo y confirma en la app o el mensaje de tu banco.</p>
+  </details>
+  <details>
+    <summary>¿Qué pasa si falla un cobro?</summary>
+    <p>Tu asistente sigue funcionando unos días mientras lo regularizas; te avisamos por correo y en el panel con el enlace para actualizar tu tarjeta. Si no se regulariza, la cuenta se pausa (sin perder nada) y, tras 30 días en pausa, se cancela la suscripción. Al pagar, todo vuelve a funcionar solo.</p>
+  </details>
+  <details>
+    <summary>¿Puedo cambiar de plan, de tarjeta o cancelar?</summary>
+    <p>Sí, desde <strong>Ajustes → Mi plan y pagos</strong>: <kbd>Cambiar a…</kbd>, <kbd>Administrar pago</kbd> o <kbd>Cambiar tarjeta</kbd>, y <kbd>Cancelar</kbd>. Al cancelar conservas el servicio hasta el final del periodo pagado y puedes reactivarlo antes de esa fecha.</p>
+  </details>
+
+  <h3 class="faq" id="facturas">Facturas</h3>
+  <details>
+    <summary>¿Cómo obtengo mi factura (CFDI)?</summary>
+    <p>En <strong>Ajustes → Mi plan y pagos → Facturación</strong> elige <em>Con factura a mi nombre</em> y captura tu RFC, razón social (tal como aparece en tu Constancia de Situación Fiscal, sin «S.A. de C.V.»), régimen, código postal y uso del CFDI. Cada cobro genera tu factura y te llega por correo con el PDF y el XML; también la descargas en el historial de pagos.</p>
+  </details>
+  <details>
+    <summary>Dice «Revisa tus datos fiscales»</summary>
+    <p>El SAT rechazó tus datos (por ejemplo, el código postal o el régimen no coinciden con tu constancia). Corrígelos en la tarjeta de Facturación y la factura se vuelve a emitir sola.</p>
+  </details>
+  <details>
+    <summary>No pedí factura, ¿qué pasa con mis pagos?</summary>
+    <p>Entran a la factura global del mes a público en general, como pide el SAT. Si después eliges «Con factura», los pagos del mes en curso que aún no estén en la global reciben su factura a tu nombre.</p>
+  </details>
+
+  <h3 class="faq" id="cuenta">Tu cuenta y privacidad</h3>
+  <details>
+    <summary>¿Cómo descargo todos mis datos?</summary>
+    <p>En <strong>Ajustes → Mi plan y pagos → Tus datos</strong> pulsa <kbd>Descargar todos mis datos (ZIP)</kbd>: recibes un ZIP con tu equipo, agentes, conocimiento, contactos, conversaciones, citas, cotizaciones, pagos y facturas. Lo puede hacer el dueño de la cuenta.</p>
+  </details>
+  <details>
+    <summary>¿Cómo borro mi cuenta?</summary>
+    <p>En esa misma tarjeta, el dueño escribe el nombre de la cuenta y pulsa <kbd>Borrar mi cuenta</kbd>. Te enviamos un correo para confirmarlo; al confirmar se cancela tu suscripción y la cuenta se borra en 7 días. Mientras tanto puedes pulsar <kbd>Cancelar el borrado</kbd>. Conservamos solo lo que la ley nos obliga (pagos y facturas).</p>
+  </details>
+  <details>
+    <summary>¿Qué hacen con mis datos?</summary>
+    <p>Lee nuestro <a href="/privacidad">aviso de privacidad</a>. Ahí también está cómo ejercer tus derechos ARCO (acceso, rectificación, cancelación y oposición).</p>
+  </details>
+
+  <h3 class="faq" id="preguntas">Preguntas frecuentes</h3>
 
   <details>
     <summary>¿Cómo conecto Instagram, Facebook, X u otras redes sociales?</summary>
@@ -172,8 +235,8 @@
   </details>
 
   <footer>
-    <p id="soporte">¿Necesitas ayuda? Escríbenos y te apoyamos.</p>
-    <p><a href="/">Volver al panel</a></p>
+    <p id="soporte">¿Necesitas ayuda? <a href="/contacto">Escríbenos</a> y te apoyamos.</p>
+    <p><a href="/">Volver al panel</a> · <a href="/estado">Estado del servicio</a> · <a href="/privacidad">Aviso de privacidad</a></p>
   </footer>
 </main>
 <script>

@@ -169,6 +169,11 @@ function accountBanner() {
   const { user, account } = state.me;
   if (!account) return null;
   const items = [];
+  if (account.deletion_scheduled_for && isAdmin()) {
+    items.push(h('div', { class: 'banner danger', role: 'status' }, h('strong', {}, 'Tu cuenta se va a borrar. '),
+      `Pediste borrarla y se borrará el ${new Date(account.deletion_scheduled_for).toLocaleDateString('es-MX', { day: 'numeric', month: 'long' })}. `,
+      location.hash.split('?')[0] === '#/plan' ? null : h('a', { class: 'btn', href: '#/plan' }, 'Cancelar el borrado')));
+  }
   const due = account.payment_due;
   if (due && due.action_url && account.status !== 'paused' && isAdmin()) {
     // El banco detuvo el cobro hasta que se confirme (3DS): la tarjeta está bien, solo hay que confirmarlo.

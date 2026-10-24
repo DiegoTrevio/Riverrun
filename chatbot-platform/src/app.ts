@@ -36,6 +36,7 @@ import { signupRoutes } from './routes/signup.js';
 import { invitationPublicRoutes, invitationRoutes } from './routes/invitations.js';
 import { nudgesRoutes } from './routes/nudges.js';
 import { pricingRoutes } from './routes/pricing.js';
+import { accountSelfServiceRoutes, selfServicePages } from './routes/self-service.js';
 import { socialPublicRoutes, socialRoutes } from './routes/social.js';
 import { bookingPublicRoutes, bookingRoutes } from './routes/booking.js';
 import { socialInboxRoutes } from './routes/social-inbox.js';
@@ -138,6 +139,7 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
   await invitationPublicRoutes(app);
   await pricingRoutes(app);
   await nudgesRoutes(app);
+  await selfServicePages(app);
   await publicRoutes(app, service);
   await socialPublicRoutes(app);
   await bookingPublicRoutes(app, service);
@@ -174,6 +176,7 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
     await billingRoutes(api);
     await invitationRoutes(api);
     await exportRoutes(api);
+    await accountSelfServiceRoutes(api);
     await poolAdminRoutes(api);
     await integrationRoutes(api);
     await myCalendarRoutes(api);

@@ -473,6 +473,15 @@ Una cuenta puede conectar varios WhatsApp. Las **campañas** pueden salir de var
 - Los términos y el aviso de privacidad se enlazan desde el registro (`TERMS_URL`, `PRIVACY_URL`) y cada aceptación queda guardada con su versión (`TERMS_VERSION`), IP, navegador y fecha. Quien entra por primera vez con Google acepta los términos antes de que se cree su cuenta.
 - **Registro protegido**: no se aceptan correos temporales (lista incluida, más `SIGNUP_BLOCKED_DOMAINS`), hay un límite de 5 registros por hora por conexión y, si defines `TURNSTILE_SITE_KEY` y `TURNSTILE_SECRET_KEY`, se pide el captcha de Cloudflare (si Cloudflare no responde, el registro no se bloquea).
 
+## El dueño se atiende solo: datos, borrado, contacto y estado
+
+- **Descargar la cuenta**: en *Mi plan y pagos → Tus datos*, el dueño baja un ZIP (`GET /api/account/export.zip`, cinco al día) con equipo, agentes y su conocimiento, automatizaciones, agenda, canales (sin credenciales), contactos, conversaciones y mensajes, cotizaciones, pagos y facturas. Solo trae datos de su cuenta.
+- **Borrar la cuenta**: el dueño escribe el nombre de la cuenta y recibe un enlace firmado por correo (vence en 24 h). Al confirmarlo se pide al proveedor cancelar la suscripción al final del periodo y la cuenta se borra a los 7 días (`deleteAccountFully`); mientras tanto cualquier administrador puede pulsar «Cancelar el borrado». Los pagos y CFDI se conservan sin la cuenta, como en la retención.
+- **`/contacto`**: formulario público con límite de 5 envíos por hora y por conexión, campo trampa y Turnstile si está configurado. Llega a `SUPERADMIN_EMAIL` (o al contacto de soporte) con «responder a» del remitente.
+- **`/estado`**: el estado de cada componente (WhatsApp, IA, correo, cobro…) sin detalles internos.
+- **`/privacidad`**: aviso de privacidad con la sección ARCO (`PRIVACY_COMPANY`, `PRIVACY_ADDRESS`, `PRIVACY_CONTACT`; 20 días hábiles para responder). Si defines `PRIVACY_URL` se usa la tuya en el registro, los precios y la ayuda.
+- **Ayuda** (`/ayuda.html`): secciones con anclas para WhatsApp (`#whatsapp`), pagos (`#pagos`), facturas (`#facturas`), cuenta y privacidad (`#cuenta`) y preguntas frecuentes (`#preguntas`).
+
 ## Alta sin ayuda: «Para empezar» y correos de seguimiento
 
 - **Para empezar** (inicio, solo administradores de cuentas del registro): lista de lo que falta para que el agente atienda: confirmar el correo, crear el agente, probarlo en el simulador, conectar WhatsApp u otro canal, encenderlo y, si hay cobro en línea, elegir plan (invitar al equipo es opcional y avisa cuántas invitaciones faltan por aceptarse). Si el WhatsApp se cayó y hay que volver a escanear el QR, lo dice con el motivo y lleva a volver a vincularlo. Se oculta sola al terminar o con «Ocultar» (`GET /api/onboarding/checklist`).

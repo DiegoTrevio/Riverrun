@@ -164,6 +164,10 @@ export const config = {
     /** Direcciones públicas de tus términos y tu aviso de privacidad (se enlazan en el registro). */
     termsUrl: env('TERMS_URL', ''),
     privacyUrl: env('PRIVACY_URL', ''),
+    /** Aviso de privacidad propio (/privacidad): quién es el responsable y dónde se ejercen los derechos ARCO. */
+    privacyCompany: env('PRIVACY_COMPANY', ''),
+    privacyAddress: env('PRIVACY_ADDRESS', ''),
+    privacyContact: env('PRIVACY_CONTACT', ''),
     /** Versión de los términos que se acepta al registrarse (p. ej. "2026-10"); se guarda con cada aceptación. */
     termsVersion: env('TERMS_VERSION', ''),
     /** Dominios de correo que no pueden registrarse, además de la lista de correos desechables (separados por comas). */
