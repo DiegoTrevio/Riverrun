@@ -175,7 +175,7 @@ t('dos pagos completados (dos pestañas): se conserva el vigente y el otro se ca
   assert.equal((await subOf(accountId)).provider_subscription_id, 'sub_dani_1');
   assert.equal(outbox.filter((m) => m.to === 'dani@spa.mx' && m.subject.includes('plan está activo')).length, 1);
 
-  await processBillingActions();
+  await processBillingActions(new Date(Date.now() + 1000)); // el reloj de PostgreSQL puede ir unos ms adelante
   assert.equal(fake.stripe.subs.sub_dani_2.status, 'canceled');
   assert.equal(fake.stripe.subs.sub_dani_1.status, 'active', 'la vigente sigue');
   assert.deepEqual(fake.stripe.refunds.filter((x) => x.charge === 'ch_dani_2'), [{ charge: 'ch_dani_2', payment_intent: '' }]);

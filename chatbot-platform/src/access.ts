@@ -10,7 +10,8 @@ import type { Role, User } from './types.js';
  * Lo que no es de tu cuenta responde 404 (no se revela que existe).
  */
 export class HttpError extends Error {
-  constructor(public statusCode: number, message: string, public issues?: string[]) {
+  /** `data`: campos extra para la respuesta (p. ej. qué límite se topó y a qué plan subir). */
+  constructor(public statusCode: number, message: string, public issues?: string[], public data?: Record<string, unknown>) {
     super(message);
   }
 }

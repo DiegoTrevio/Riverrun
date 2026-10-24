@@ -307,6 +307,32 @@ try {
   assert.equal((await pool.query(`SELECT deletion_scheduled_for FROM accounts WHERE id = $1`, [accountId])).rows[0].deletion_scheduled_for, null);
   checks.push('Tus datos: descargar, pedir el borrado, la franja en todo el panel y cancelar el borrado (accesible en móvil)');
 
+  // Topar un límite: en lugar de "revisa el formulario", qué se topó y un botón al plan que alcanza (del mismo periodo).
+  await pool.query(`UPDATE plans SET limits = '{"users": 2}' WHERE key = 'anual'`);
+  assert.equal((await h.authed('POST', '/api/plans', { key: 'equipo-anual', name: 'Equipo anual', price: 9990, interval: 'year', limits: { users: 10 } })).statusCode, 200);
+  await page.setViewportSize({ width: 390, height: 1000 });
+  await page.goto(`${base}/#/users`);
+  await page.reload();
+  await invite.getByLabel('Correo').fill('luz@estudio.mx');
+  await invite.getByRole('button', { name: 'Enviar invitación', exact: true }).click();
+  await invite.getByText('Llegaste al límite de usuarios de tu plan').waitFor();
+  assert.equal(await invite.getByText('Revisa los datos del formulario').count(), 0, 'un límite no es un error del formulario');
+  const up = invite.getByRole('link', { name: 'Subir a Equipo anual' });
+  await up.waitFor();
+  await page.addScriptTag({ content: axe });
+  const limitViolations = await page.evaluate(async () => (await (window as any).axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] } }))
+    .violations.filter((v: any) => ['serious', 'critical'].includes(v.impact)).map((v: any) => v.id));
+  assert.deepEqual(limitViolations, [], 'Límite del plan a 390');
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'Límite del plan sin desbordamiento a 390');
+  await up.click();
+  await page.waitForURL((u) => u.hash === '#/plan?subir=equipo-anual');
+  const chosen = page.locator('.card.chosen');
+  await chosen.getByRole('heading', { name: 'Equipo anual' }).waitFor();
+  const upNow = chosen.getByRole('button', { name: 'Subir ahora a Equipo anual' });
+  await upNow.waitFor();
+  assert.ok(await upNow.evaluate((b) => { const r = b.getBoundingClientRect(); return r.top >= 0 && r.bottom <= window.innerHeight; }), 'el botón para subir queda a la vista');
+  checks.push('Topar el límite de usuarios: «Subir a …» lleva a Mi plan con el plan sugerido elegido (accesible en móvil)');
+
   // El superadmin captura precios sin IVA y elige el periodo. La última tarjeta es la de "Agregar plan".
   await context.clearCookies();
   const sx = h.cookie.indexOf('=');
