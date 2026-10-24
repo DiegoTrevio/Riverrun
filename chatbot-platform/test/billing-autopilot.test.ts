@@ -176,7 +176,7 @@ t('a los 30 días en pausa sin pago la suscripción se cancela en el proveedor (
   assert.equal((await subOf(a.accountId)).status, 'canceled');
   assert.deepEqual(mails(a.email), ['Cancelamos tu suscripción']);
   assert.equal(await cancelLongUnpaid(), 0, 'una sola vez');
-  await processBillingActions();
+  await processBillingActions(new Date(Date.now() + 1000)); // el reloj de PostgreSQL puede ir unos ms adelante
   assert.equal(fake.stripe.subs.sub_largo.status, 'canceled');
   // Ya sin suscripción que cobre, la cuenta entra al plazo de retención.
   const candidate = (await pool.query(`SELECT 1 FROM accounts a WHERE a.id = $1 AND a.status = 'paused' AND NOT EXISTS (SELECT 1 FROM subscriptions s WHERE s.account_id = a.id AND s.status IN ('active', 'past_due'))`, [a.accountId])).rowCount;
@@ -225,7 +225,7 @@ t('contracargo perdido: cuenta como reembolso, la suscripción se cancela y la c
   assert.deepEqual([p.dispute_status, p.refunded_cents], ['lost', 57884]);
   assert.equal((await subOf(a.accountId)).status, 'canceled');
   assert.equal((await accOf(a.accountId)).status, 'paused');
-  await processBillingActions();
+  await processBillingActions(new Date(Date.now() + 1000)); // el reloj de PostgreSQL puede ir unos ms adelante
   assert.equal(fake.stripe.subs.sub_perd.status, 'canceled');
   assert.equal(await superNotices('Contracargo perdido'), 1);
 });
@@ -268,7 +268,8 @@ t('una cancelación que el proveedor rechaza se reintenta con espera creciente y
   await queueAction({ provider: 'stripe', kind: 'cancel', ref: 'sub_terca', accountId: null, reason: 'replaced' });
   fake.stripe.refundFail = true;
   try {
-    let now = Date.now();
+    // queueAction fecha la acción con el reloj de PostgreSQL, que en CI puede ir unos ms adelante del de Node.
+    let now = Date.now() + 1000;
     await processBillingActions(new Date(now));
     const first = (await pool.query(`SELECT attempts, status, next_attempt_at FROM billing_actions WHERE ref = 'sub_terca'`)).rows[0];
     assert.deepEqual([first.attempts, first.status], [1, 'pending']);

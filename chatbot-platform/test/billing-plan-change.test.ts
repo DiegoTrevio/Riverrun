@@ -218,7 +218,7 @@ t('un segundo cobro que nadie pidió se cancela solo (y no se confunde con una s
   assert.equal((await subOf(a.accountId)).provider_subscription_id, 'pre_uma');
   const actions = (await pool.query(`SELECT kind, reason FROM billing_actions WHERE ref = 'pre_uma2' ORDER BY kind`)).rows;
   assert.deepEqual(actions.map((x) => `${x.kind}:${x.reason}`), ['cancel:duplicate', 'refund_subscription:duplicate']);
-  await processBillingActions();
+  await processBillingActions(new Date(Date.now() + 1000)); // el reloj de PostgreSQL puede ir unos ms adelante
   assert.equal(fake.mp.preapprovals.pre_uma2.status, 'cancelled');
   assert.equal(fake.mp.preapprovals.pre_uma.status, 'authorized', 'la vigente sigue cobrando');
   assert.equal(await superNotices('Cobro duplicado resuelto'), 1);
