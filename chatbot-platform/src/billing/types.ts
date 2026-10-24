@@ -30,6 +30,10 @@ export interface Subscription {
   checkout_provider: ProviderName | '';
   checkout_ref: string;
   checkout_at: Date | null;
+  /** El banco detuvo el último cobro hasta que el cliente lo confirme (3DS): página donde lo confirma. */
+  payment_action_url: string;
+  /** Última vez que se comparó con el proveedor. */
+  reconciled_at: Date | null;
 }
 
 /** Estado de una suscripción tal como lo informa el proveedor, ya normalizado. */
@@ -53,6 +57,20 @@ export interface WebhookResult {
   payment?: PaymentInfo;
   /** Reembolso informado por el proveedor. */
   refund?: RefundInfo;
+  /** Contracargo: el cliente desconoció un cobro con su banco. */
+  dispute?: DisputeInfo;
+  /** El banco detuvo el cobro hasta que el cliente lo confirme (3DS): página donde lo confirma. */
+  actionUrl?: string;
+}
+
+export interface DisputeInfo {
+  disputeId: string;
+  /** Cargos con los que se puede encontrar el pago disputado. */
+  chargeRefs: string[];
+  status: 'open' | 'won' | 'lost';
+  amountCents: number;
+  /** Dónde se responde la disputa en el proveedor. */
+  url: string;
 }
 
 export interface PaymentInfo {
@@ -86,8 +104,10 @@ export interface CheckoutArgs {
   cancelUrl: string;
   /** Cliente que ya tiene el proveedor (reintentos y cambios de plan). */
   customerId?: string;
-  /** Primer cobro en esta fecha (sustitución de una suscripción con el periodo ya pagado). Solo Mercado Pago. */
+  /** Primer cobro en esta fecha (sustitución de una suscripción con el periodo ya pagado, o fin de la prueba). Solo Mercado Pago. */
   startAt?: Date;
+  /** Quien paga durante su prueba no la pierde: el primer cobro es al terminar. Solo Stripe (Mercado Pago usa `startAt`). */
+  trialEnd?: Date;
 }
 
 export interface BillingProvider {
@@ -109,14 +129,22 @@ export interface BillingProvider {
    * cambia el monto desde el siguiente cobro y no cambia el periodo (mensual o anual): eso va por sustitución.
    */
   changePlan(sub: Subscription, plan: Plan, o: { upgrade: boolean }): Promise<SubscriptionState>;
+  /** Estado actual de una suscripción (conciliación: por si un aviso se perdió). */
+  subscriptionState(subscriptionId: string, plans: Plan[], now?: Date): Promise<SubscriptionState>;
+  /** Cobros confirmados de la suscripción desde `since` (conciliación: los que no llegaron por aviso). */
+  recentPayments(subscriptionId: string, since: Date): Promise<PaymentInfo[]>;
+  /** Cancela ya (no al final del periodo): duplicadas, sin pago o con contracargo perdido. Ya cancelada cuenta como hecha. */
+  cancelNow(subscriptionId: string): Promise<void>;
+  /** Reembolsa por completo un cobro. Ya reembolsado cuenta como hecho. */
+  refund(chargeRef: string): Promise<void>;
   /** Verifica la firma y devuelve el estado. Lanza `WebhookError` si la firma no es válida. */
   handleWebhook(req: { rawBody: Buffer; headers: Record<string, string | string[] | undefined>; query: Record<string, string | undefined>; plans: Plan[] }): Promise<WebhookResult | null>;
 }
 
 export class WebhookError extends Error {}
 export class ProviderError extends Error {
-  /** Código HTTP con el que respondió el proveedor (0 si no respondió). */
-  constructor(message: string, public status = 0) {
+  /** Código HTTP con el que respondió el proveedor (0 si no respondió) y su código de error, si lo da. */
+  constructor(message: string, public status = 0, public code = '') {
     super(message);
   }
 }

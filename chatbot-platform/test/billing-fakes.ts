@@ -8,6 +8,12 @@ export const fake = {
     subs: {} as Record<string, any>,
     sessions: {} as Record<string, any>,
     products: {} as Record<string, any>,
+    /** Facturas que devuelve GET /v1/invoices (cobros de las suscripciones). */
+    invoices: [] as any[],
+    /** Reembolsos pedidos (POST /v1/refunds). */
+    refunds: [] as { charge: string; payment_intent: string }[],
+    /** El proveedor rechaza los reembolsos y las cancelaciones. */
+    refundFail: false,
     fail: false,
     /** Corta la conexión sin responder (red caída). */
     drop: false,
@@ -16,6 +22,8 @@ export const fake = {
   /** payments = pagos autorizados de la suscripción; charges = pagos (para reembolsos). */
   mp: {
     requests: [] as { method: string; path: string; body: any }[], preapprovals: {} as Record<string, any>, payments: {} as Record<string, any>, charges: {} as Record<string, any>,
+    /** Pagos reembolsados (POST /v1/payments/:id/refunds). */
+    refunds: [] as string[],
     /** Id de la próxima suscripción que se cree (por omisión, "pre_new"). */
     nextId: '',
   },
@@ -42,11 +50,24 @@ function serve(handler: (req: http.IncomingMessage, raw: string, res: http.Serve
 const json = (res: http.ServerResponse, code: number, data: unknown) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(data)); };
 
 const stripeUrl = await serve((req, raw, res) => {
-  const path = req.url!.split('?')[0];
+  const [path, qs] = req.url!.split('?');
   const body = new URLSearchParams(raw);
   fake.stripe.requests.push({ method: req.method!, path, body });
   if (fake.stripe.drop) return void req.socket.destroy();
   if (fake.stripe.fail) return json(res, 402, { error: { message: 'Tu tarjeta fue rechazada' } });
+  if (path === '/v1/invoices' && req.method === 'GET') {
+    const q = new URLSearchParams(qs);
+    const since = Number(q.get('created[gte]') ?? 0);
+    return json(res, 200, { data: fake.stripe.invoices.filter((i) => i.subscription === q.get('subscription') && (i.created ?? 0) >= since && (!q.get('status') || i.status === q.get('status'))) });
+  }
+  if (path === '/v1/refunds' && req.method === 'POST') {
+    if (fake.stripe.refundFail) return json(res, 500, { error: { message: 'Error interno' } });
+    const charge = body.get('charge') ?? '';
+    const pi = body.get('payment_intent') ?? '';
+    if (fake.stripe.refunds.some((r) => (charge && r.charge === charge) || (pi && r.payment_intent === pi))) return json(res, 400, { error: { message: 'Charge already refunded', code: 'charge_already_refunded' } });
+    fake.stripe.refunds.push({ charge, payment_intent: pi });
+    return json(res, 200, { id: `re_${++fake.stripe.n}`, status: 'succeeded' });
+  }
   if (path === '/v1/checkout/sessions' && req.method === 'POST') {
     const id = `cs_${++fake.stripe.n}`;
     fake.stripe.sessions[id] = { id, url: `https://checkout.stripe.test/c/${id}`, status: 'open', subscription: null, client_reference_id: body.get('client_reference_id') };
@@ -71,7 +92,12 @@ const stripeUrl = await serve((req, raw, res) => {
   const m = path.match(/^\/v1\/subscriptions\/([\w-]+)$/);
   if (m) {
     const sub = fake.stripe.subs[m[1]];
-    if (!sub) return json(res, 404, { error: { message: 'No such subscription' } });
+    if (!sub) return json(res, 404, { error: { message: 'No such subscription', code: 'resource_missing' } });
+    if (req.method === 'DELETE') {
+      if (fake.stripe.refundFail) return json(res, 500, { error: { message: 'Error interno' } });
+      sub.status = 'canceled';
+      return json(res, 200, sub);
+    }
     if (req.method === 'POST') {
       if (body.has('cancel_at_period_end')) sub.cancel_at_period_end = body.get('cancel_at_period_end') === 'true';
       // Cambio de plan: el renglón toma el nuevo precio (por ID o armado con price_data).
@@ -88,9 +114,19 @@ const stripeUrl = await serve((req, raw, res) => {
   json(res, 404, { error: { message: 'ruta desconocida' } });
 });
 const mpUrl = await serve((req, raw, res) => {
-  const path = req.url!.split('?')[0];
+  const [path, qs] = req.url!.split('?');
   const body = raw ? JSON.parse(raw) : undefined;
   fake.mp.requests.push({ method: req.method!, path, body });
+  if (path === '/authorized_payments/search') {
+    const pre = new URLSearchParams(qs).get('preapproval_id');
+    return json(res, 200, { results: Object.values(fake.mp.payments).filter((p: any) => p.preapproval_id === pre) });
+  }
+  const rf = path.match(/^\/v1\/payments\/([\w-]+)\/refunds$/);
+  if (rf && req.method === 'POST') {
+    fake.mp.refunds.push(rf[1]);
+    if (fake.mp.charges[rf[1]]) fake.mp.charges[rf[1]].status = 'refunded';
+    return json(res, 201, { id: Date.now(), payment_id: rf[1], status: 'approved' });
+  }
   if (path === '/preapproval' && req.method === 'POST') {
     const id = fake.mp.nextId || 'pre_new';
     return json(res, 201, { id, init_point: `https://mp.test/checkout/${id}` });

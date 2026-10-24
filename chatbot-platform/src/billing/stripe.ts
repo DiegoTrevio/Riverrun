@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { config } from '../config.js';
 import { credentialAllowed } from '../outbound-guard.js';
 import { chargeCents } from './tax.js';
-import { ProviderError, WebhookError, type BillingProvider, type PaymentInfo, type Plan, type RefundInfo, type SubStatus, type SubscriptionState, type WebhookResult } from './types.js';
+import { ProviderError, WebhookError, type BillingProvider, type DisputeInfo, type PaymentInfo, type Plan, type RefundInfo, type SubStatus, type SubscriptionState, type WebhookResult } from './types.js';
 
 const cfg = () => config.billing.stripe;
 /** Prefijos de las claves de prueba de Stripe (modo test). Las de producción empiezan por sk_live_ o rk_live_. */
@@ -21,7 +21,7 @@ export function form(obj: Record<string, unknown>, prefix = ''): string[] {
   return out;
 }
 
-async function call(method: 'GET' | 'POST', path: string, body?: Record<string, unknown>): Promise<any> {
+async function call(method: 'GET' | 'POST' | 'DELETE', path: string, body?: Record<string, unknown>): Promise<any> {
   if (!credentialAllowed(cfg().secretKey, TEST_KEYS)) throw new ProviderError('Stripe: en este entorno (OUTBOUND_MODE=sandbox) solo se usan claves de prueba');
   const res = await fetch(cfg().apiUrl + path, {
     method,
@@ -33,7 +33,7 @@ async function call(method: 'GET' | 'POST', path: string, body?: Record<string, 
     throw new ProviderError(e?.name === 'TimeoutError' ? 'Stripe no respondió a tiempo' : 'No se pudo conectar con Stripe');
   });
   const data: any = await res.json().catch(() => ({}));
-  if (!res.ok) throw new ProviderError(`Stripe: ${data?.error?.message ?? `HTTP ${res.status}`}`, res.status);
+  if (!res.ok) throw new ProviderError(`Stripe: ${data?.error?.message ?? `HTTP ${res.status}`}`, res.status, String(data?.error?.code ?? ''));
   return data;
 }
 
@@ -70,6 +70,18 @@ export function refundFromCharge(ch: any): RefundInfo {
     paymentId: idOf(ch.invoice),
     chargeRefs: [idOf(ch), idOf(ch.payment_intent)].filter(Boolean),
     refundedCents: fromUnit(Number(ch.amount_refunded ?? 0), String(ch.currency ?? '')),
+  };
+}
+
+/** Contracargo de Stripe: abierto mientras se revisa; ganado o perdido al cerrarse. */
+export function disputeFromStripe(d: any): DisputeInfo {
+  return {
+    disputeId: String(d.id ?? ''),
+    chargeRefs: [idOf(d.charge), idOf(d.payment_intent)].filter(Boolean),
+    // warning_closed: la consulta previa del banco se cerró sin contracargo.
+    status: d.status === 'won' || d.status === 'warning_closed' ? 'won' : d.status === 'lost' ? 'lost' : 'open',
+    amountCents: fromUnit(Number(d.amount ?? 0), String(d.currency ?? '')),
+    url: d.id ? `https://dashboard.stripe.com/disputes/${d.id}` : 'https://dashboard.stripe.com/disputes',
   };
 }
 
@@ -140,7 +152,8 @@ export function verifySignature(raw: Buffer, header: string | undefined, secret:
   if (!ok) throw new WebhookError('Firma de Stripe inválida');
 }
 
-const SUB_EVENTS = new Set(['checkout.session.completed', 'customer.subscription.created', 'customer.subscription.updated', 'customer.subscription.deleted', 'invoice.paid', 'invoice.payment_succeeded', 'invoice.payment_failed']);
+const SUB_EVENTS = new Set(['checkout.session.completed', 'customer.subscription.created', 'customer.subscription.updated', 'customer.subscription.deleted', 'invoice.paid', 'invoice.payment_succeeded', 'invoice.payment_failed', 'invoice.payment_action_required']);
+const DISPUTE_EVENTS = new Set(['charge.dispute.created', 'charge.dispute.updated', 'charge.dispute.closed']);
 
 export const stripe: BillingProvider = {
   name: 'stripe',
@@ -150,7 +163,7 @@ export const stripe: BillingProvider = {
   // Con ID de precio (price_…) se usa ese; sin él, el precio mensual se arma con el monto y la moneda del plan.
   supportsPlan: () => true,
 
-  async createCheckout({ accountId, email, plan, successUrl, cancelUrl, customerId }) {
+  async createCheckout({ accountId, email, plan, successUrl, cancelUrl, customerId, trialEnd }) {
     const meta = { account_id: accountId, plan_key: plan.key };
     const item = { ...(await priceOf(plan)), quantity: 1 };
     const s = await call('POST', '/v1/checkout/sessions', {
@@ -163,7 +176,8 @@ export const stripe: BillingProvider = {
       allow_promotion_codes: true,
       locale: 'es',
       metadata: meta,
-      subscription_data: { metadata: meta },
+      // Durante la prueba: se guarda la tarjeta hoy y el primer cobro es al terminar la prueba.
+      subscription_data: { metadata: meta, ...(trialEnd ? { trial_end: Math.floor(trialEnd.getTime() / 1000) } : {}) },
     });
     if (!s.url) throw new ProviderError('Stripe no devolvió la página de pago');
     return { url: s.url, ref: String(s.id ?? '') };
@@ -202,6 +216,35 @@ export const stripe: BillingProvider = {
     return stateFromSubscription(updated, [plan]);
   },
 
+  async subscriptionState(subscriptionId, plans) {
+    return stateFromSubscription(await call('GET', `/v1/subscriptions/${encodeURIComponent(subscriptionId)}`), plans);
+  },
+
+  async recentPayments(subscriptionId, since) {
+    const q = new URLSearchParams({ subscription: subscriptionId, status: 'paid', limit: '24', 'created[gte]': String(Math.floor(since.getTime() / 1000)) });
+    const list = await call('GET', `/v1/invoices?${q}`);
+    return (list.data ?? []).map(paymentFromInvoice).filter((p: PaymentInfo | null): p is PaymentInfo => !!p);
+  },
+
+  async cancelNow(subscriptionId) {
+    try {
+      await call('DELETE', `/v1/subscriptions/${encodeURIComponent(subscriptionId)}`);
+    } catch (e) {
+      // Ya no existe o ya estaba cancelada: no hay nada más que hacer.
+      if (e instanceof ProviderError && (e.status === 404 || e.code === 'resource_missing')) return;
+      throw e;
+    }
+  },
+
+  async refund(chargeRef) {
+    try {
+      await call('POST', '/v1/refunds', chargeRef.startsWith('pi_') ? { payment_intent: chargeRef } : { charge: chargeRef });
+    } catch (e) {
+      if (e instanceof ProviderError && e.code === 'charge_already_refunded') return;
+      throw e;
+    }
+  },
+
   async handleWebhook({ rawBody, headers, plans }) {
     verifySignature(rawBody, String(headers['stripe-signature'] ?? ''), cfg().webhookSecret);
     let event: any;
@@ -213,8 +256,10 @@ export const stripe: BillingProvider = {
     const result: WebhookResult = { eventId: String(event.id), type: String(event.type), state: null };
     const obj = event.data?.object ?? {};
     if (event.type === 'charge.refunded') return { ...result, refund: refundFromCharge(obj) };
+    if (DISPUTE_EVENTS.has(event.type)) return { ...result, dispute: disputeFromStripe(obj) };
     if (!SUB_EVENTS.has(event.type)) return result;
     if (event.type === 'invoice.paid' || event.type === 'invoice.payment_succeeded') result.payment = paymentFromInvoice(obj) ?? undefined;
+    if (event.type === 'invoice.payment_action_required' && obj.hosted_invoice_url) result.actionUrl = String(obj.hosted_invoice_url);
     const subId: string | undefined =
       event.type.startsWith('customer.subscription.') ? obj.id : obj.subscription ?? obj.parent?.subscription_details?.subscription ?? undefined;
     if (!subId) return result;

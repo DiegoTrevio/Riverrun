@@ -170,7 +170,12 @@ function accountBanner() {
   if (!account) return null;
   const items = [];
   const due = account.payment_due;
-  if (due && account.status !== 'paused' && isAdmin()) {
+  if (due && due.action_url && account.status !== 'paused' && isAdmin()) {
+    // El banco detuvo el cobro hasta que se confirme (3DS): la tarjeta está bien, solo hay que confirmarlo.
+    items.push(h('div', { class: 'banner warn', role: 'status' }, h('strong', {}, 'Tu banco pide que confirmes el pago de tu plan. '),
+      `Confírmalo antes del ${new Date(due.grace_ends_at).toLocaleDateString('es-MX', { day: 'numeric', month: 'long' })} para que tu asistente siga respondiendo. `,
+      h('a', { class: 'btn primary', href: due.action_url, target: '_blank', rel: 'noopener' }, 'Confirmar pago')));
+  } else if (due && account.status !== 'paused' && isAdmin()) {
     items.push(h('div', { class: 'banner warn', role: 'status' }, h('strong', {}, 'No pudimos cobrar tu plan. '),
       `Actualiza tu forma de pago antes del ${new Date(due.grace_ends_at).toLocaleDateString('es-MX', { day: 'numeric', month: 'long' })} para que tu asistente siga respondiendo. `,
       location.hash.split('?')[0] === '#/plan' ? null : h('a', { class: 'btn primary', href: '#/plan' }, 'Actualizar pago')));

@@ -210,12 +210,18 @@ t('Mercado Pago: cambiar la tarjeta y reanudar tras cancelar, sin cobrar dos vec
   assert.equal((await s.api('POST', '/api/billing/payment-method')).json().url, 'https://billing.stripe.test/p/1');
 });
 
-t('un segundo cobro que nadie pidió sigue avisando al superadmin', async () => {
+t('un segundo cobro que nadie pidió se cancela solo (y no se confunde con una sustitución)', async () => {
+  const { processBillingActions } = await import('../src/billing/autopilot.js');
   const a = await paidMp('uma@cafe.mx', 'pro', 'pre_uma');
   fake.mp.preapprovals.pre_uma2 = { id: 'pre_uma2', status: 'authorized', external_reference: `${a.accountId}:pro`, payer_id: 7, next_payment_date: periodEnd.toISOString() };
   assert.equal((await mpHook('subscription_preapproval', 'pre_uma2')).statusCode, 200);
   assert.equal((await subOf(a.accountId)).provider_subscription_id, 'pre_uma');
-  assert.equal(await superNotices('Cobro duplicado: Negocio'), 1);
+  const actions = (await pool.query(`SELECT kind, reason FROM billing_actions WHERE ref = 'pre_uma2' ORDER BY kind`)).rows;
+  assert.deepEqual(actions.map((x) => `${x.kind}:${x.reason}`), ['cancel:duplicate', 'refund_subscription:duplicate']);
+  await processBillingActions();
+  assert.equal(fake.mp.preapprovals.pre_uma2.status, 'cancelled');
+  assert.equal(fake.mp.preapprovals.pre_uma.status, 'authorized', 'la vigente sigue cobrando');
+  assert.equal(await superNotices('Cobro duplicado resuelto'), 1);
 });
 
 t('Mercado Pago con el cobro rechazado: cambiar la tarjeta cobra ya y la cuenta queda al corriente, sin contarse como nueva', async () => {
