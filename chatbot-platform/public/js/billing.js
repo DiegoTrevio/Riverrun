@@ -275,8 +275,42 @@ export async function viewPlan(root, params) {
   const fiscalMissing = b.fiscal?.wants_invoice && !b.fiscal.complete && (!live || sub.cancel_at_period_end)
     ? h('p', { class: 'banner warn' }, 'Pediste factura: completa tus datos en «Facturación» antes de contratar.')
     : null;
-  root.append(h('h1', {}, 'Mi plan y pagos'), notice, status, change, fiscal, usage, fiscalMissing, offer, history);
+  root.append(h('h1', {}, 'Mi plan y pagos'), notice, status, change, fiscal, usage, fiscalMissing, offer, history, dataCard());
   if (waiting && !gaveUp) state.timers.push(setTimeout(() => { state.me = null; render(); }, 4000));
+}
+
+/**
+ * «Tus datos»: el dueño descarga todo lo de su cuenta (ZIP) o la borra. Borrar pide escribir el nombre de la cuenta y
+ * se confirma desde el correo; con el borrado ya programado, se puede cancelar.
+ */
+function dataCard() {
+  const { user, account } = state.me || {};
+  if (!account || user?.role !== 'admin') return null;
+  // Sin dueño registrado, el servidor decide (su administrador más antiguo).
+  const owner = !account.owner_user_id || account.owner_user_id === user.id;
+  const fmtDay = (d) => new Date(d).toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric' });
+  const confirm = { text: '' };
+  const removal = account.deletion_scheduled_for
+    ? [h('p', { class: 'banner danger' }, `Tu cuenta se borrará el ${fmtDay(account.deletion_scheduled_for)}.`),
+      h('button', { onclick: async () => {
+        const r = await run(() => api('DELETE', '/api/account/deletion'), 'Listo: tu cuenta ya no se borrará');
+        if (r?.resubscribe) toast('Tu plan quedó cancelado: vuelve a contratarlo en esta página para que siga activo.');
+        if (r) { state.me = null; render(); }
+      } }, 'Cancelar el borrado')]
+    : owner
+      ? [h('p', { class: 'muted small' }, 'Se borran tu agente, sus conexiones, tus contactos y tus conversaciones; tus pagos y facturas se conservan por ley. Te llega un correo para confirmarlo y, ya confirmado, tienes 7 días para cancelarlo.'),
+        field(`Para confirmar, escribe el nombre de tu cuenta («${account.name}»)`, text(confirm, 'text', { autocomplete: 'off' })),
+        h('button', { class: 'danger', onclick: async () => {
+          const r = await run(() => api('POST', '/api/account/deletion', { confirm: confirm.text }));
+          if (r) toast(`Te enviamos un correo a ${r.email} para confirmar el borrado`);
+        } }, 'Borrar mi cuenta')]
+      : [h('p', { class: 'muted small' }, 'Solo el dueño de la cuenta puede borrarla.')];
+  return h('section', { class: 'card', 'aria-labelledby': 'data-title' },
+    h('h2', { id: 'data-title', style: 'margin-top:0' }, 'Tus datos'),
+    owner ? [h('p', {}, 'Descarga todo lo de tu cuenta: configuración, agentes y su conocimiento, contactos, conversaciones, cotizaciones, pagos y facturas.'),
+      h('a', { class: 'btn', href: withAcct('/api/account/export.zip'), download: '' }, 'Descargar todos mis datos (ZIP)')] : null,
+    h('h3', {}, 'Borrar mi cuenta'),
+    removal);
 }
 
 /** Superadmin: planes, claves configuradas y avisos de los proveedores. */
