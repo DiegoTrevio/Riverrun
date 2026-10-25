@@ -26,6 +26,7 @@ import { CAPTION_MAX, libraryFile, sendsAnyFile, type OutgoingButton, type Outgo
 import { emptyPlan, validateDecision, type AgendaValidation, type ExecutionPlan, type QuoteValidation, type ValidationInput } from './validator.js';
 import { quoteEvent, type QuoteCatalog, type Quotes } from '../quotes/agent.js';
 import type { Quote } from '../store/quotes.js';
+import type { ReceivableContext } from '../receivables/index.js';
 import type { AgendaContext, BookResult } from '../automation/agenda.js';
 import type { AutomationEvent } from '../automation/types.js';
 import type { PipelineContext } from '../automation/pipelines.js';
@@ -43,6 +44,8 @@ export interface EngineExtensions {
   };
   /** Cotizaciones en PDF con la lista de precios de la cuenta. */
   quotes?: Pick<Quotes, 'contextFor' | 'prepare' | 'message' | 'link' | 'delivered'>;
+  /** Lo que el cliente debe al negocio (cobros pendientes) y cómo pagar. */
+  receivables?(conv: Conversation): Promise<ReceivableContext | null>;
   onEvent?(e: AutomationEvent): void;
   settleEvents?(conversationId:string):Promise<void>;
   onOutbound?(conv: Conversation, msg: Message): Promise<void>;
@@ -278,12 +281,13 @@ export class Engine {
     const images = bot.rules.max_images_per_reply > 0 ? allImages.filter((i) => i.active) : [];
     const semantic = await semanticKnowledge(bot, knowledge, [...history.slice(-4).filter((m) => m.direction === 'in').map((m) => m.content), customerText].join('\n'), this.ai);
     // Automatización y agenda (si están conectadas).
-    const [intents, agendaCtx, business, pipeline, quoteCatalog] = await Promise.all([
+    const [intents, agendaCtx, business, pipeline, quoteCatalog, receivables] = await Promise.all([
       this.ext.intents ? this.ext.intents(conv.account_id, bot.id).catch((e) => { log('error', 'engine', `No se pudieron cargar las intenciones de las reglas: ${e?.message ?? e}`); return []; }) : Promise.resolve([]),
       this.ext.agenda && bot.rules.booking_enabled ? this.ext.agenda.contextFor(conv.account_id, contact, channel.type).catch(() => null) : Promise.resolve(null),
       this.ext.business ? this.ext.business(conv.account_id).catch(() => null) : Promise.resolve(null),
       this.ext.pipeline ? this.ext.pipeline(conv).catch((e) => { log('error', 'engine', `No se pudo cargar el pipeline: ${e?.message ?? e}`); return null; }) : Promise.resolve(null),
       this.ext.quotes ? this.ext.quotes.contextFor(conv, bot).catch((e) => { log('error', 'engine', `No se pudo cargar la lista de precios: ${e?.message ?? e}`); return null; }) : Promise.resolve(null as QuoteCatalog | null),
+      this.ext.receivables ? this.ext.receivables(conv).catch((e) => { log('error', 'engine', `No se pudieron cargar los cobros del cliente: ${e?.message ?? e}`); return null; }) : Promise.resolve(null),
     ]);
     const quoteVal: QuoteValidation | null = quoteCatalog ? {
       items: Object.fromEntries(quoteCatalog.items.map((i) => [i.code.toUpperCase(), { id: i.id, name: i.name, exact: i.price_mode === 'exact' }])),
@@ -331,6 +335,7 @@ export class Engine {
         questionAskedEver: questionJourney.askedEver,
         requests,
         quotes: quoteCatalog,
+        receivables,
       });
       let completion;
       try {

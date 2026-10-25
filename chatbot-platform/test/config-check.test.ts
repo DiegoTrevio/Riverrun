@@ -280,3 +280,12 @@ test('pasar a cobro real: en producción, claves de prueba, sin HTTPS o sin SUPE
   const staging = validateConfig(installed({ ...live, RIVERRUN_ENV: 'test', OUTBOUND_MODE: 'sandbox', STRIPE_SECRET_KEY: 'sk_test_cobro', FACTURAPI_API_KEY: 'sk_test_facturas', SUPERADMIN_EMAIL: '' }));
   assert.equal(staging.issues.some((i) => i.level === 'critical' && /^(stripe|facturapi|billing)\./.test(i.id)), false, formatReport(staging));
 });
+
+test('cobros: números fuera de rango son críticos; días u hora mal escritos, avisos', () => {
+  assert.ok(ids(installed({ RECEIVABLE_MAX_REMINDERS: '0' }), 'critical').includes('number.RECEIVABLE_MAX_REMINDERS'));
+  assert.ok(ids(installed({ RECEIVABLE_MANUAL_REMIND_PER_DAY: 'mucho' }), 'critical').includes('number.RECEIVABLE_MANUAL_REMIND_PER_DAY'));
+  assert.ok(ids(installed({ RECEIVABLE_DEFAULT_REMINDERS: '-3,hoy,3' }), 'warning').includes('receivables.default_reminders'));
+  assert.ok(ids(installed({ RECEIVABLE_DEFAULT_SEND_AT: '25:00' }), 'warning').includes('receivables.default_send_at'));
+  assert.ok(ids(installed({ RECEIVABLES_ENABLED: 'si' }), 'warning').includes('boolean.RECEIVABLES_ENABLED'));
+  assert.equal(ids(installed({ RECEIVABLE_DEFAULT_REMINDERS: '-7,-1,0,5', RECEIVABLE_DEFAULT_SEND_AT: '09:30' })).some((i) => i.startsWith('receivables.')), false);
+});

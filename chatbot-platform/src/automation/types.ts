@@ -169,6 +169,10 @@ export const TriggerSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('quote_sent'), kind: z.enum(['', 'approximate', 'final']).default('') }),
   z.object({ type: z.literal('quote_pending_approval') }),
   z.object({ type: z.literal('quote_rejected') }),
+  /** Cobros: hoy vence (al enviarse el recordatorio del día), venció sin pagarse (al día siguiente) y el equipo lo marcó pagado. */
+  z.object({ type: z.literal('payment_due') }),
+  z.object({ type: z.literal('payment_overdue') }),
+  z.object({ type: z.literal('payment_paid') }),
   /** El recorrido llega a una etapa (0 = cualquiera). */
   z.object({ type: z.literal('stage_reached'), step: z.number().int().min(0).max(30).default(0) }),
   z.object({ type: z.literal('agent_off') }),
@@ -425,4 +429,6 @@ export interface AutomationEvent {
   managerNotified?: string;
   /** Cotización enviada, por aprobar o rechazada. */
   quote?: { id: string; folio: string; kind: 'approximate' | 'final'; total: string };
+  /** Cobro del evento (payment_*): sus variables {{pago.concepto}}, {{pago.monto}}… */
+  payment?: Record<string, string>;
 }

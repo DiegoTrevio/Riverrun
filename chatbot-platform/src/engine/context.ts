@@ -4,6 +4,7 @@ import type { ChannelType, Chatbot, Contact, Conversation, DataField, ImageAsset
 import type { AgendaContext } from '../automation/agenda.js';
 import type { PipelineContext } from '../automation/pipelines.js';
 import type { QuoteCatalog } from '../quotes/agent.js';
+import type { ReceivableContext } from '../receivables/index.js';
 import { formatDate as formatDay, formatTotals, formatUnitPrice } from '../quotes/format.js';
 import { imageSendWhen } from '../types.js';
 import { GENERAL_RULES } from './agent-rules.js';
@@ -51,6 +52,8 @@ export interface ContextInput {
   requests?: ConversationRequest[];
   /** Lista de precios y estado de las cotizaciones (null = el asistente no cotiza). */
   quotes?: QuoteCatalog | null;
+  /** Lo que el cliente debe al negocio (cobros pendientes) y cómo pagar. */
+  receivables?: ReceivableContext | null;
 }
 
 export interface BusinessInfo {
@@ -456,6 +459,7 @@ function stateSection(input: ContextInput, questions: Question[], isFirstContact
 
   if (input.agenda) s.push(agendaSection(input.agenda));
   if (input.quotes) s.push(quoteSection(input.quotes, input.contact));
+  if (input.receivables) s.push(receivableSection(input.receivables));
 
   s.push('\n## Momento actual');
   s.push(`Fecha y hora del negocio: ${formatDate(input.now ?? new Date(), tzOf(input))} (${tzOf(input)}).`);
@@ -663,6 +667,7 @@ export function buildContext(input: ContextInput): BuiltContext {
     bot.saved_messages.filter((m) => m.active).map((m) => m.text).join('\n'),
     input.agenda ? agendaSection(input.agenda) : '',
     input.quotes ? quoteSection(input.quotes, input.contact) : '',
+    input.receivables ? receivableSection(input.receivables) : '',
   ];
 
   // Lo que el negocio realmente afirma: los mensajes anteriores del bot NO cuentan (una invención previa no respalda otra);
@@ -719,3 +724,19 @@ function questionsSection(questions: Question[]): string {
   ].join('\n');
 }
 
+
+/** Cobros pendientes del cliente: el asistente puede decir cuánto debe y cómo pagar, pero nunca confirma un pago. */
+export function receivableSection(r: ReceivableContext): string {
+  const s: string[] = ['\n## Pagos pendientes del cliente'];
+  for (const i of r.items) {
+    s.push(`- ${i.concept}: ${i.amount}, ${i.overdueDays > 0 ? `venció el ${i.due} (${i.overdueDays} días de atraso)` : `vence el ${i.due}`}${i.reference ? ` | referencia: ${i.reference}` : ''}${i.link ? ` | enlace de pago: ${i.link}` : ''}`);
+  }
+  if (r.instructions) s.push(`Cómo pagar (lo escribió el negocio):\n${r.instructions}`);
+  s.push([
+    'Reglas de pagos:',
+    '- Si el cliente pregunta cuánto debe o cómo pagar, díselo con estos datos (monto, fecha, enlace o instrucciones). No inventes otras formas de pago.',
+    '- Si dice que ya pagó o manda su comprobante, agradécele y dile que el equipo lo verifica y le confirma. Nunca confirmes que el pago llegó ni des el cobro por pagado.',
+    '- No presiones ni amenaces; sé amable. Si pide más plazo, un descuento o tiene una queja sobre el cobro, transfiere a una persona.',
+  ].join('\n'));
+  return s.join('\n');
+}
