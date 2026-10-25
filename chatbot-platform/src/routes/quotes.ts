@@ -9,7 +9,10 @@ import { assertAccount, HttpError, notFound, requireRole, scopeAccount, targetAc
 import { attachmentAbsolutePath } from '../attachments.js';
 import { safeFileName } from '../channels/media.js';
 import { logEvent } from '../logs.js';
+import { AcceptBody, acceptedTotal, planCharges } from '../quotes/accept.js';
 import { quoteEvent } from '../quotes/agent.js';
+import { receivableBySource } from '../receivables/index.js';
+import { receivableOut } from './receivables.js';
 import { quoteMessage } from '../quotes/messages.js';
 import { IVA_MODES, MAX_LINES, MAX_PRICE_CENTS, MAX_QTY, PRICE_MODES } from '../quotes/pricing.js';
 import { renderPdf, renderQuote, sampleData } from '../quotes/render.js';
@@ -85,7 +88,7 @@ const RejectBody = z.object({
 });
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const QUOTE_STATUSES = ['draft', 'pending_approval', 'approved', 'sent', 'rejected', 'expired', 'failed'] as const;
+const QUOTE_STATUSES = ['draft', 'pending_approval', 'approved', 'sent', 'accepted', 'rejected', 'expired', 'failed'] as const;
 
 /** Errores de validación de la lista de precios y los ajustes: se muestran tal cual al negocio. */
 async function friendly<T>(fn: () => Promise<T>): Promise<T> {
@@ -210,6 +213,50 @@ export async function quoteRoutes(api: FastifyInstance, service: ChatService) {
     }
     if (quote.conversation_id) service.automator.emit({ type: 'quote_rejected', conversationId: quote.conversation_id, quote: quoteEvent(done) });
     return { ...done, notified };
+  });
+
+  /**
+   * El cliente aceptó la cotización (lo marca el equipo): ya no vence y, si se pide, se crean sus cobros con sus
+   * recordatorios de pago: el total, un anticipo y el resto, o varias parcialidades.
+   */
+  api.post('/api/quotes/:id/accept', admins, async (req: any) => {
+    const quote = await quoteFor(req.user, req.params.id);
+    if (quote.status !== 'sent') throw new HttpError(409, quote.status === 'accepted' ? 'Esta cotización ya está aceptada' : 'Solo se puede aceptar una cotización enviada al cliente');
+    const body = parse(AcceptBody, req.body ?? {});
+    // Todo se valida antes de cambiar el estado: si el plan no cuadra, la cotización sigue enviada.
+    let charges: ReturnType<typeof planCharges> = [];
+    let total = 0;
+    try {
+      if (body.plan) {
+        total = acceptedTotal(quote, body.amount_cents);
+        charges = planCharges(quote.folio, total, body.plan);
+      }
+    } catch (e: any) { throw new HttpError(400, e?.message ?? 'Plan de pago inválido'); }
+    // Primero los cobros (cada uno con su folio de origen: si algo falla a la mitad, repetir no duplica) y después el
+    // estado: así una falla no deja la cotización aceptada sin sus cobros y sin forma de reintentar.
+    const created = [];
+    for (const [i, c] of charges.entries()) {
+      const { receivable } = await service.receivables.create({
+        accountId: quote.account_id, contactId: quote.contact_id, conversationId: quote.conversation_id, concept: c.concept, amountCents: c.amount_cents,
+        currency: quote.currency, dueDate: c.due_date, reference: quote.folio, source: 'quote', sourceId: `${quote.id}:${i + 1}`, installment: c.installment,
+        createdBy: req.user.id, actor: req.user.email,
+      });
+      created.push(receivableOut(receivable));
+    }
+    const done = await qstore.transitionQuote(quote.account_id, quote.id, 'accepted', { userId: req.user.id, detail: { amount_cents: total || undefined, plan: body.plan?.type ?? null, charges: charges.length } });
+    if (!done) {
+      // Otra persona la aceptó al mismo tiempo (sus cobros son estos mismos) o venció justo ahora: en ese caso no se cobran.
+      if ((await qstore.findQuote(quote.id))?.status !== 'accepted') {
+        for (const [i] of charges.entries()) {
+          const r = await receivableBySource(quote.account_id, 'quote', `${quote.id}:${i + 1}`);
+          if (r?.status === 'pending') await service.receivables.settle(r, 'canceled', { userId: req.user.id, note: 'La cotización ya no estaba enviada' });
+        }
+      }
+      throw new HttpError(409, 'Esta cotización ya se aceptó o ya no está enviada');
+    }
+    if (quote.conversation_id) service.automator.emit({ type: 'quote_accepted', conversationId: quote.conversation_id, quote: quoteEvent(done) });
+    await logEvent({ level: 'info', source: 'admin', message: `Cotización ${quote.folio} aceptada por el cliente (marcó ${req.user.email})${created.length ? `; ${created.length} cobro(s) creado(s)` : ''}`, accountId: quote.account_id, conversationId: quote.conversation_id });
+    return { quote: done, receivables: created };
   });
 
   /** El PDF (o el Word) generado de una cotización. */

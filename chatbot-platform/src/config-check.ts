@@ -109,6 +109,7 @@ const NUMBERS: { name: string; min: number; max: number; int?: boolean; area: Ar
   { name: 'EMAIL_POLL_SECONDS', min: 1, max: 86400, int: true, area: 'email', what: 'revisión de buzones (s)' },
   { name: 'RECEIVABLE_MAX_REMINDERS', min: 1, max: 20, int: true, area: 'core', what: 'recordatorios de pago por cobro' },
   { name: 'RECEIVABLE_MANUAL_REMIND_PER_DAY', min: 1, max: 20, int: true, area: 'core', what: 'recordatorios manuales por cobro al día' },
+  { name: 'RECEIVABLE_RECURRING_LEAD_DAYS', min: 0, max: 60, int: true, area: 'core', what: 'días de anticipación de los cobros recurrentes' },
   { name: 'LOG_RETENTION_DAYS', min: 1, max: 3650, int: true, area: 'core', what: 'días de registros' },
   { name: 'AI_RUN_DETAIL_DAYS', min: 1, max: 3650, int: true, area: 'ai', what: 'días de detalle de IA' },
   { name: 'TRUST_PROXY_HOPS', min: 0, max: 10, int: true, area: 'security', what: 'proxies de confianza' },

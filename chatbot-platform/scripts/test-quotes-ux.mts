@@ -127,6 +127,31 @@ try {
   assert.ok(h.sent.some((x) => /cotización FINAL/.test(x.text)));
   checks.push('Cotización final corregida, aprobada y enviada desde la conversación');
 
+  // El cliente la aceptó: desde la conversación, en el celular, se crean 3 parcialidades con sus recordatorios.
+  // Una página nueva a 390 px (la sesión es la misma): así se acomoda como en un celular.
+  const phone = await page.context().newPage();
+  await phone.setViewportSize({ width: 390, height: 900 });
+  phone.on('pageerror', (e) => errors.push(e.message));
+  await phone.goto(`${base}/#/conversation/${conv.id}`);
+  await phone.locator('#conversation-quotes summary').click();
+  await phone.locator('#conversation-quotes').getByRole('button', { name: 'El cliente aceptó' }).click();
+  const acceptDialog = phone.getByRole('dialog');
+  await acceptDialog.getByLabel('Crear cobro').selectOption('installments');
+  await acceptDialog.getByText(/Pago 3 de 3: \$/).waitFor();
+  await phone.addScriptTag({ content: axe });
+  const dialogViolations = await phone.evaluate(async () => (await (window as any).axe.run(document.querySelector('dialog[open]'), { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] } }))
+    .violations.filter((v: any) => ['serious', 'critical'].includes(v.impact)).map((v: any) => v.id));
+  assert.deepEqual(dialogViolations, [], 'diálogo «El cliente aceptó»');
+  assert.ok(await phone.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'diálogo sin desbordamiento a 390');
+  await acceptDialog.getByRole('button', { name: 'Marcar aceptada' }).click();
+  await phone.getByText(/Cotización aceptada: 3 cobro\(s\) creado\(s\)/).waitFor();
+  const charges = (await pool.query(`SELECT amount_cents::int AS c, installment FROM receivables WHERE source = 'quote' AND source_id LIKE $1 ORDER BY source_id`, [`${final.id}:%`])).rows;
+  assert.deepEqual(charges.map((x) => x.installment), ['1 de 3', '2 de 3', '3 de 3']);
+  assert.equal(charges.reduce((sum, x) => sum + x.c, 0), final.total_min);
+  assert.equal((await qstore.findQuote(final.id))!.status, 'accepted');
+  await phone.close();
+  checks.push('El cliente aceptó: la cotización se marca y se crean sus parcialidades desde el celular');
+
   for (const route of ['cotizaciones/precios', 'cotizaciones/precios?id=new', 'cotizaciones/formatos', 'cotizaciones/ajustes', 'cotizaciones/historial', `cotizaciones/historial?id=${q.id}`, `bot/${h.botId}/cotizaciones`]) {
     for (const width of [1366, 768, 390]) {
       await page.setViewportSize({ width, height: 1000 });

@@ -284,6 +284,7 @@ test('pasar a cobro real: en producción, claves de prueba, sin HTTPS o sin SUPE
 test('cobros: números fuera de rango son críticos; días u hora mal escritos, avisos', () => {
   assert.ok(ids(installed({ RECEIVABLE_MAX_REMINDERS: '0' }), 'critical').includes('number.RECEIVABLE_MAX_REMINDERS'));
   assert.ok(ids(installed({ RECEIVABLE_MANUAL_REMIND_PER_DAY: 'mucho' }), 'critical').includes('number.RECEIVABLE_MANUAL_REMIND_PER_DAY'));
+  assert.ok(ids(installed({ RECEIVABLE_RECURRING_LEAD_DAYS: '90' }), 'critical').includes('number.RECEIVABLE_RECURRING_LEAD_DAYS'));
   assert.ok(ids(installed({ RECEIVABLE_DEFAULT_REMINDERS: '-3,hoy,3' }), 'warning').includes('receivables.default_reminders'));
   assert.ok(ids(installed({ RECEIVABLE_DEFAULT_SEND_AT: '25:00' }), 'warning').includes('receivables.default_send_at'));
   assert.ok(ids(installed({ RECEIVABLES_ENABLED: 'si' }), 'warning').includes('boolean.RECEIVABLES_ENABLED'));

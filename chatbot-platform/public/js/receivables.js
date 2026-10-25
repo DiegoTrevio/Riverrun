@@ -14,18 +14,23 @@ const parseDays = (s) => {
   return days.length && days.every((d) => Number.isInteger(d) && d >= -60 && d <= 120) ? days : undefined;
 };
 const daysText = (days) => (days || []).map((d) => (d < 0 ? `${-d} día${d === -1 ? '' : 's'} antes` : d === 0 ? 'el día' : `${d} día${d === 1 ? '' : 's'} después`)).join(', ');
-export const PAYMENT_VARS = '{{nombre}} · {{pago.concepto}} · {{pago.monto}} · {{pago.vencimiento}} · {{pago.dias_atraso}} · {{pago.dias_para_vencer}} · {{pago.link}} · {{pago.instrucciones}} · {{pago.referencia}} · {{negocio}}';
+export const PAYMENT_VARS = '{{nombre}} · {{pago.concepto}} · {{pago.monto}} · {{pago.vencimiento}} · {{pago.dias_atraso}} · {{pago.dias_para_vencer}} · {{pago.link}} · {{pago.instrucciones}} · {{pago.referencia}} · {{pago.parcialidad}} · {{negocio}}';
+const SOURCE = { recurring: 'Pago recurrente', appointment: 'Anticipo de cita', quote: 'De una cotización', api: 'Registrado por la API' };
+const FREQ = { weekly: 'Cada semana', biweekly: 'Cada 2 semanas', monthly: 'Cada mes' };
+const WEEKDAYS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
 
 export async function viewReceivables(root, params) {
-  const tab = params.get('tab') === 'ajustes' && isAdmin() ? 'ajustes' : 'lista';
+  const tab = params.get('tab') === 'ajustes' && isAdmin() ? 'ajustes' : params.get('tab') === 'recurrentes' ? 'recurrentes' : 'lista';
   root.append(
     h('div', { class: 'row between' }, h('h1', {}, 'Cobros'),
       h('nav', { class: 'row', 'aria-label': 'Secciones de cobros' },
         h('a', { class: `btn${tab === 'lista' ? ' primary' : ''}`, href: '#/cobros', 'aria-current': tab === 'lista' ? 'page' : null }, 'Cobros'),
+        h('a', { class: `btn${tab === 'recurrentes' ? ' primary' : ''}`, href: '#/cobros?tab=recurrentes', 'aria-current': tab === 'recurrentes' ? 'page' : null }, 'Recurrentes'),
         isAdmin() ? h('a', { class: `btn${tab === 'ajustes' ? ' primary' : ''}`, href: '#/cobros?tab=ajustes', 'aria-current': tab === 'ajustes' ? 'page' : null }, 'Ajustes de cobro') : null)),
     h('p', { class: 'help' }, 'Registra lo que te deben tus clientes y el asistente les recuerda el pago por WhatsApp antes y después de la fecha. El dinero te llega directo con tus instrucciones de pago; tú marcas el cobro como pagado.'),
   );
   if (tab === 'ajustes') return settingsView(root);
+  if (tab === 'recurrentes') return plansView(root, params);
   return listView(root, params);
 }
 
@@ -72,7 +77,9 @@ function table(r, reload) {
       const who = x.contact_name || (x.contact_phone ? `+${x.contact_phone}` : 'Cliente');
       return h('tr', {},
         h('td', {}, x.conversation_id ? h('a', { href: `#/conversation/${x.conversation_id}` }, who) : who),
-        h('td', {}, x.concept, x.reference ? h('div', { class: 'small muted' }, `Ref. ${x.reference}`) : null),
+        h('td', {}, x.concept, x.installment && !x.concept.includes(x.installment) ? ` (${x.installment})` : '',
+          x.reference ? h('div', { class: 'small muted' }, `Ref. ${x.reference}`) : null,
+          SOURCE[x.source] ? h('div', { class: 'small muted' }, SOURCE[x.source]) : null),
         h('td', { class: 'num' }, money(x.amount_cents, x.currency)),
         h('td', {}, day(x.due_date)),
         h('td', {}, h('span', { class: `badge${overdue ? ' danger' : x.status === 'paid' ? ' ok' : ''}` }, overdue ? 'Vencido' : STATUS[x.status]),
@@ -121,9 +128,8 @@ const validate = (m) => {
   return '';
 };
 
-function newForm(params, reload) {
-  const m = { contact_id: params.get('contact') || '', concept: '', amount_cents: 0, due_date: '', payment_link: '', reference: '', reminders: null };
-  const pickedName = params.get('name') || '';
+/** Buscador de cliente (los que ya te escribieron): deja el elegido en `m.contact_id`. */
+function contactPicker(m, pickedName = '') {
   const results = h('div');
   const picked = h('p', { class: 'small', role: 'status' }, pickedName ? `Cliente: ${pickedName}` : '');
   let timer;
@@ -139,9 +145,14 @@ function newForm(params, reload) {
       } }, `${c.name}${c.phone ? ` · +${c.phone}` : ''}`)))) : h('p', { class: 'small muted' }, 'Sin coincidencias.'));
     }, 250);
   } });
+  return [field('Cliente', search, 'Busca a un cliente que ya te haya escrito.'), results, picked];
+}
+
+function newForm(params, reload) {
+  const m = { contact_id: params.get('contact') || '', concept: '', amount_cents: 0, due_date: '', payment_link: '', reference: '', reminders: null };
   const box = h('details', { class: 'card', open: params.get('contact') ? true : undefined },
     h('summary', {}, h('strong', {}, 'Nuevo cobro')),
-    field('Cliente', search, 'Busca a un cliente que ya te haya escrito.'), results, picked,
+    ...contactPicker(m, params.get('name') || ''),
     ...receivableFields(m),
     h('button', { class: 'primary', onclick: async () => {
       const err = !m.contact_id ? 'Elige al cliente de la lista' : validate(m);
@@ -203,4 +214,79 @@ async function settingsView(root) {
       await run(() => api('PUT', withAcct('/api/receivables/settings'), s), 'Ajustes de cobro guardados');
     } }, 'Guardar')),
   );
+}
+
+/* ------------------------------ Pagos recurrentes ------------------------------ */
+
+const planWhen = (p) => (p.frequency === 'monthly' ? `${FREQ.monthly}, el día ${p.day}${p.day >= 29 ? ' (o el último del mes)' : ''}` : `${FREQ[p.frequency]}, en ${WEEKDAYS[p.day]}`);
+
+async function plansView(root, params) {
+  const body = h('div');
+  const load = async () => {
+    const r = await api('GET', withAcct('/api/receivable-plans'));
+    fill(body, !r.data.length ? h('div', { class: 'card' }, h('p', { class: 'muted' }, 'Aún no hay pagos recurrentes.'))
+      : h('div', { class: 'card', style: 'overflow-x:auto' }, h('table', {},
+        h('caption', { class: 'sr-only' }, 'Pagos recurrentes'),
+        h('thead', {}, h('tr', {}, h('th', {}, 'Cliente'), h('th', {}, 'Concepto'), h('th', { class: 'num' }, 'Monto'), h('th', {}, 'Cuándo'), h('th', {}, 'Próximo cobro'), h('th', {}, 'Estado'), h('th', {}, h('span', { class: 'sr-only' }, 'Acciones')))),
+        h('tbody', {}, r.data.map((p) => h('tr', {},
+          h('td', {}, p.contact_name || (p.contact_phone ? `+${p.contact_phone}` : 'Cliente')),
+          h('td', {}, p.concept),
+          h('td', { class: 'num' }, money(p.amount_cents, p.currency)),
+          h('td', { class: 'small' }, planWhen(p), p.max_payments ? h('div', { class: 'muted' }, `${p.payments_created} de ${p.max_payments} pagos`) : p.ends_on ? h('div', { class: 'muted' }, `hasta ${day(p.ends_on)}`) : null),
+          h('td', {}, p.next_due ? day(p.next_due) : '—'),
+          h('td', {}, h('span', { class: `badge${p.active ? ' ok' : ''}` }, p.active ? 'Activo' : p.next_due === null && p.payments_created ? 'Terminado' : 'Pausado')),
+          h('td', {}, h('div', { class: 'row', style: 'gap:6px;flex-wrap:wrap' },
+            h('button', { 'aria-label': `${p.active ? 'Pausar' : 'Reanudar'}: ${p.concept}`, onclick: async () => {
+              if (await run(() => api('PUT', `/api/receivable-plans/${p.id}`, { active: !p.active }), p.active ? 'Pago recurrente pausado' : 'Pago recurrente reanudado')) load();
+            } }, p.active ? 'Pausar' : 'Reanudar'),
+            isAdmin() ? h('button', { 'aria-label': `Borrar: ${p.concept}`, onclick: async () => {
+              if (!(await confirmAction(`¿Borrar el pago recurrente «${p.concept}»? Los cobros que ya creó se quedan.`))) return;
+              if (await run(() => api('DELETE', `/api/receivable-plans/${p.id}`), 'Pago recurrente borrado')) load();
+            } }, 'Borrar') : null))))))));
+  };
+  root.append(
+    h('p', { class: 'small muted' }, 'Una mensualidad o una cuota fija: unos días antes de cada vencimiento se crea su cobro en la lista de Cobros, con sus recordatorios de pago. Pausar o borrar un pago recurrente no toca los cobros que ya creó.'),
+    planForm(params, load),
+    body);
+  await load();
+}
+
+function planForm(params, reload) {
+  const today = new Date().toISOString().slice(0, 10);
+  const m = { contact_id: params.get('contact') || '', concept: '', amount: '', frequency: 'monthly', day: '1', starts_on: today, ends_on: '', max_payments: '', payment_link: '', reference: '' };
+  const dayBox = h('div');
+  const drawDay = () => fill(dayBox, m.frequency === 'monthly'
+    ? field('Día del mes', h('input', { type: 'number', min: 1, max: 31, value: m.day, oninput: (e) => { m.day = e.target.value; } }), 'Si el mes es más corto, vence el último día.')
+    : field('Día de la semana', h('select', { onchange: (e) => { m.day = e.target.value; } }, WEEKDAYS.map((d, i) => h('option', { value: String(i), selected: String(i) === m.day }, d)))));
+  drawDay();
+  const box = h('details', { class: 'card' },
+    h('summary', {}, h('strong', {}, 'Nuevo pago recurrente')),
+    ...contactPicker(m, params.get('name') || ''),
+    h('div', { class: 'grid' },
+      field('Concepto', text(m, 'concept', { maxlength: 200, placeholder: 'Mensualidad del gimnasio' })),
+      field('Monto', h('input', { type: 'number', min: 0.01, step: 0.01, oninput: (e) => { m.amount = e.target.value; } })),
+      field('Frecuencia', h('select', { onchange: (e) => { m.frequency = e.target.value; m.day = '1'; drawDay(); } },
+        Object.entries(FREQ).map(([v, l]) => h('option', { value: v, selected: v === m.frequency }, l)))),
+      dayBox),
+    h('div', { class: 'grid' },
+      field('Empieza', h('input', { type: 'date', value: m.starts_on, oninput: (e) => { m.starts_on = e.target.value; } })),
+      field('Termina (opcional)', h('input', { type: 'date', oninput: (e) => { m.ends_on = e.target.value; } })),
+      field('Número de pagos (opcional)', h('input', { type: 'number', min: 1, max: 600, oninput: (e) => { m.max_payments = e.target.value; } }), 'Déjalo vacío si no tiene fin.')),
+    h('div', { class: 'grid' },
+      field('Enlace de pago (opcional)', text(m, 'payment_link', { type: 'url', placeholder: 'https://mpago.la/…' })),
+      field('Referencia (opcional)', text(m, 'reference', { maxlength: 100 }))),
+    h('button', { class: 'primary', onclick: async () => {
+      const amount = Math.round(Number(m.amount) * 100);
+      const err = !m.contact_id ? 'Elige al cliente de la lista' : !m.concept.trim() ? 'Escribe el concepto' : !(amount > 0) ? 'Escribe el monto' : !m.starts_on ? 'Elige cuándo empieza' : '';
+      if (err) return toast(err, true);
+      const r = await run(() => api('POST', withAcct('/api/receivable-plans'), {
+        contact_id: m.contact_id, concept: m.concept.trim(), amount_cents: amount, frequency: m.frequency, day: Number(m.day), starts_on: m.starts_on,
+        ends_on: m.ends_on || null, max_payments: m.max_payments ? Number(m.max_payments) : null, payment_link: m.payment_link.trim(), reference: m.reference.trim(),
+      }));
+      if (!r) return;
+      toast(r.created ? `Pago recurrente registrado: ya se creó su primer cobro` : `Pago recurrente registrado: el primer cobro se crea unos días antes del ${r.plan.next_due ? day(r.plan.next_due) : 'vencimiento'}`);
+      box.open = false;
+      reload();
+    } }, 'Registrar pago recurrente'));
+  return box;
 }

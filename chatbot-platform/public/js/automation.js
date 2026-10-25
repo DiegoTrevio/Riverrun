@@ -70,6 +70,7 @@ const TRIGGERS = {
   quote_sent: 'Se envía una cotización al cliente',
   quote_pending_approval: 'Una cotización final queda por aprobar',
   quote_rejected: 'El equipo rechaza una cotización',
+  quote_accepted: 'El cliente acepta una cotización',
   payment_due: 'Hoy vence un pago de un cliente',
   payment_overdue: 'Un pago vence sin pagarse',
   payment_paid: 'El equipo marca un pago como pagado',
