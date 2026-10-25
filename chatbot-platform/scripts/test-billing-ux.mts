@@ -352,6 +352,24 @@ try {
   assert.deepEqual([saved.price_cents, saved.billing_interval], [199000, 'year']);
   checks.push('El superadmin crea un plan anual con precio sin IVA');
 
+  // «Tu negocio»: el tablero del superadmin, desde el menú de Ajustes, accesible y sin desbordarse en móvil.
+  for (const width of [1366, 390]) {
+    await page.setViewportSize({ width, height: 1000 });
+    await page.goto(`${base}/#/negocio`);
+    await page.getByRole('heading', { name: 'Tu negocio', level: 1 }).waitFor();
+    await page.getByText('Ingreso mensual recurrente (MRR)').waitFor();
+    await page.getByRole('heading', { name: 'Para cobrar de verdad' }).waitFor();
+    await page.addScriptTag({ content: axe });
+    const violations = await page.evaluate(async () => (await (window as any).axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] } }))
+      .violations.filter((v: any) => ['serious', 'critical'].includes(v.impact)).map((v: any) => v.id));
+    assert.deepEqual(violations, [], `Tu negocio a ${width}`);
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), `Tu negocio sin desbordamiento a ${width}`);
+  }
+  await page.goto(`${base}/#/ajustes`);
+  await page.getByRole('link', { name: 'Tu negocio' }).first().click();
+  await page.getByRole('heading', { name: 'Tu negocio', level: 1 }).waitFor();
+  checks.push('Tu negocio: tablero del superadmin con ingresos, clientes, cobro y lo que falta para cobrar (accesible en móvil)');
+
   assert.deepEqual(errors, []);
   process.stdout.write(JSON.stringify({ checks, errors }, null, 2) + '\n');
 } finally {

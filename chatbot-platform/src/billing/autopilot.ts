@@ -81,7 +81,7 @@ export async function processBillingActions(now = new Date()): Promise<number> {
         await query(`UPDATE billing_actions SET status = 'failed', last_error = $2, updated_at = now() WHERE id = $1`, [a.id, msg]);
         await logEvent({ level: 'error', source: 'admin', message: `No se pudo ${a.kind === 'cancel' ? 'cancelar' : 'reembolsar'} ${WHAT[a.reason] ?? 'una suscripción'} tras ${a.attempts} intentos: ${msg}`, accountId: a.account_id ?? undefined });
         await alertSuperadmins(a.account_id, a.kind === 'cancel' ? 'Cancela una suscripción a mano' : 'Reembolsa un cobro a mano',
-          `No se pudo ${a.kind === 'cancel' ? 'cancelar' : 'reembolsar los cobros de'} ${WHAT[a.reason] ?? 'una suscripción'} (${a.provider} ${a.ref}) tras ${a.attempts} intentos: ${msg}. Hazlo desde ${p.label} para que no se cobre de más.`);
+          `No se pudo ${a.kind === 'cancel' ? 'cancelar' : 'reembolsar los cobros de'} ${WHAT[a.reason] ?? 'una suscripción'} (${a.provider} ${a.ref}) tras ${a.attempts} intentos: ${msg}. Hazlo desde ${p.label} para que no se cobre de más.`, { urgent: true });
       } else {
         const wait = BACKOFF[Math.min(a.attempts - 1, BACKOFF.length - 1)];
         await query(`UPDATE billing_actions SET last_error = $2, next_attempt_at = $3, updated_at = now() WHERE id = $1`, [a.id, msg, new Date(now.getTime() + wait)]);
@@ -139,7 +139,7 @@ export async function reconcileSubscriptions(now = new Date()): Promise<{ checke
       if (e instanceof ProviderError && e.status === 404) {
         // La suscripción ya no existe en el proveedor: no se corrige sola, hay que revisarla (se avisa una vez).
         if (await recordEvent(sub.provider, `reconcile-missing:${sub.provider_subscription_id}`, 'reconcile_missing', sub.account_id)) {
-          await alertSuperadmins(sub.account_id, 'Suscripción que no existe en el proveedor', `La suscripción ${sub.provider} ${sub.provider_subscription_id} ya no existe en ${p.label}, pero aquí sigue como "${sub.status}". Revisa en ${p.label} si se borró y corrígela a mano.`);
+          await alertSuperadmins(sub.account_id, 'Suscripción que no existe en el proveedor', `La suscripción ${sub.provider} ${sub.provider_subscription_id} ya no existe en ${p.label}, pero aquí sigue como "${sub.status}". Revisa en ${p.label} si se borró y corrígela a mano.`, { urgent: true });
         }
       } else {
         // Red o proveedor caído: se reintenta en la siguiente hora, no hasta mañana.
@@ -176,7 +176,7 @@ export async function checkWebhookSilence(now = new Date()): Promise<string[]> {
     if (!(await recordEvent(name, `webhook-silence:${weekOf(now)}`, 'webhook_silence', null))) continue;
     silent.push(name);
     await alertSuperadmins(null, `${p.label} no está mandando avisos`,
-      `Hay ${r.live} suscripciones con ${p.label} y en ${SILENCE_DAYS} días no llegó ningún aviso de pago${r.last ? ` (el último fue el ${new Date(r.last).toISOString().slice(0, 10)})` : ''}. La revisión diaria corrige los cobros, pero revisa que el webhook esté configurado en ${p.label} (en Planes y cobro están la dirección y los eventos).`);
+      `Hay ${r.live} suscripciones con ${p.label} y en ${SILENCE_DAYS} días no llegó ningún aviso de pago${r.last ? ` (el último fue el ${new Date(r.last).toISOString().slice(0, 10)})` : ''}. La revisión diaria corrige los cobros, pero revisa que el webhook esté configurado en ${p.label} (en Planes y cobro están la dirección y los eventos).`, { urgent: true });
   }
   return silent;
 }

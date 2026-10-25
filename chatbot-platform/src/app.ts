@@ -17,6 +17,7 @@ import { channelRoutes } from './routes/channels.js';
 import { chatbotRoutes } from './routes/chatbots.js';
 import { conversationRoutes } from './routes/conversations.js';
 import { billingRoutes, billingWebhooks } from './routes/billing.js';
+import { businessRoutes } from './routes/business.js';
 import { poolAdminRoutes, poolPublicRoutes } from './routes/pools.js';
 import { googleLoginRoutes } from './routes/google-login.js';
 import { brandAdminRoutes, brandPublicRoutes } from './routes/brands.js';
@@ -174,6 +175,7 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
     await taskRoutes(api);
     await knowledgeImportRoutes(api, opts.ai);
     await billingRoutes(api);
+    await businessRoutes(api);
     await invitationRoutes(api);
     await exportRoutes(api);
     await accountSelfServiceRoutes(api);

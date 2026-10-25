@@ -11,6 +11,7 @@ import { logEvent } from '../logs.js';
 import { sendMail } from '../mailer.js';
 import type { Account } from '../types.js';
 import { deleteAccountFully } from './delete.js';
+import { emailSuperadmin } from '../platform/digest.js';
 
 /** Días de aviso antes del borrado. */
 export const WARN_DAYS = 7;
@@ -38,7 +39,7 @@ const CANDIDATE = `a.status = 'paused' AND a.paused_at IS NOT NULL AND a.signup_
 async function superadmins(title: string, body: string) {
   const supers = await query<{ id: string; account_id: string }>(`SELECT id, account_id FROM users WHERE role = 'superadmin' AND active AND account_id IS NOT NULL`);
   for (const s of supers) await notifyUsers(s.account_id, [s.id], { title, body, link: '#/accounts', kind: 'platform' });
-  if (config.signup.superadminEmail) await sendMail({ to: config.signup.superadminEmail, subject: title, text: body });
+  await emailSuperadmin(title, body);
 }
 
 export async function checkAccountRetention(now = new Date()): Promise<{ warned: number; deleted: number }> {

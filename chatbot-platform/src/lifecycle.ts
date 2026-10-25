@@ -14,6 +14,7 @@ import { checkGlobalInvoice, processCfdi } from './billing/cfdi.js';
 import { logEvent } from './logs.js';
 import { sendMail } from './mailer.js';
 import { checkOnboardingNudges } from './onboarding-checklist.js';
+import { emailSuperadmin, sendSuperadminDigest } from './platform/digest.js';
 import * as store from './store/index.js';
 import type { Account, Channel } from './types.js';
 
@@ -28,10 +29,11 @@ async function owner(acc: Account) {
 }
 
 /** Avisa al superadmin: notificación en el panel y, si hay SUPERADMIN_EMAIL, correo. */
-export async function notifySuperadmins(accountId: string, title: string, body: string) {
+/** Aviso al superadmin: en el panel al momento; por correo al momento si es urgente, si no en el resumen del día. */
+export async function notifySuperadmins(accountId: string, title: string, body: string, o: { urgent?: boolean } = {}) {
   const supers = await query<{ id: string }>(`SELECT id FROM users WHERE role = 'superadmin' AND active`);
   await notifyUsers(accountId, supers.map((s) => s.id), { title, body, link: `#/accounts`, kind: 'platform' });
-  if (config.signup.superadminEmail) await sendMail({ to: config.signup.superadminEmail, subject: title, text: body });
+  await emailSuperadmin(title, body, { urgent: o.urgent, accountId });
 }
 
 /** Qué hacer para seguir: pagar en línea (si hay cobro automático) o escribir al contacto de soporte. */
@@ -122,6 +124,7 @@ export function startLifecycle(intervalMs = 10 * 60_000) {
     checkScheduledDeletions().catch((e) => logEvent({ level: 'error', source: 'system', message: `Borrado de cuentas pedido por su dueño: ${e?.message ?? e}` }));
     checkAiSpend().catch((e) => logEvent({ level: 'error', source: 'system', message: `Revisión de gasto de IA: ${e?.message ?? e}` }));
     checkOnboardingNudges().catch((e) => logEvent({ level: 'error', source: 'system', message: `Correos de seguimiento: ${e?.message ?? e}` }));
+    sendSuperadminDigest().catch((e) => logEvent({ level: 'error', source: 'system', message: `Resumen diario al superadmin: ${e?.message ?? e}` }));
     // Facturas: primero se arma la global del mes que cerró y luego se emite todo lo pendiente.
     checkGlobalInvoice()
       .then(() => processCfdi())
