@@ -178,10 +178,15 @@ t('editar solo el concepto no toca la moneda, el enlace, la referencia ni los d�
 });
 
 t('bordes: nada en el pasado, cambio de fecha reprograma y la fecha local cerca de medianoche', async () => {
-  // Venció ayer y su único recordatorio era el día del vencimiento: no se programa nada que ya pasó.
-  const old = await create({ concept: 'Cobro atrasado', due_date: today(-1), reminders: [0] });
+  // Venció hace 2 días y su único recordatorio era el día del vencimiento: no se programa nada que ya pasó (ni su
+  // aviso de vencido, que era ayer a las 10:00). Con «ayer» no basta: antes de las 10:00 locales su aviso sigue por venir.
+  const old = await create({ concept: 'Cobro atrasado', due_date: today(-2), reminders: [0] });
   assert.equal(old.scheduled, 0);
   assert.deepEqual(await jobsOf(old.receivable.id), []);
+  // Vence hoy: el aviso de vencido queda para mañana a las 10:00 locales, a cualquier hora que se registre.
+  const dueToday = await create({ concept: 'Cobro de hoy', due_date: today(0), reminders: [0] });
+  const overdue = (await jobsOf(dueToday.receivable.id)).filter((j) => j.type === 'receivable_overdue');
+  assert.deepEqual(overdue.map((j) => new Date(j.run_at).toISOString()), [zonedToUtc(today(1), '10:00', TZ).toISOString()]);
   // Cambiar la fecha reprograma con los mismos días.
   const r = await create({ concept: 'Taller de cerámica' });
   const moved = await h.authed('PUT', `/api/receivables/${r.receivable.id}`, { due_date: today(30) });
