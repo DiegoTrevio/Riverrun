@@ -1,3 +1,4 @@
+import { fieldControl } from './contact-fields.js';
 import { workspaceTabs } from './contact-workspace.js';
 import { workRecovery } from './work-recovery.js';
 import { dataLabel, flowCard } from './bot.js';
@@ -472,12 +473,14 @@ export async function viewConversation(root, id, opts = {}) {
     sideVersion = c.data_version;
     const m = { name: ct.name, data: { ...ct.data }, notes: [...(ct.notes || [])], tags: [...(ct.tags || [])], opted_out: !!ct.opted_out, consent: !!ct.consent_at };
     const fieldsDef = data.chatbot?.data_fields || [];
+    // «Datos de tus clientes» de la cuenta: primero, en su orden y con el control de su tipo.
+    const own = data.contact_fields || [];
     let savingContact = false;
     const base = clone(m);
     const contactError = h('div', { class: 'small', role: 'status' });
     // Los campos de tipo "nombre" se editan en el campo Nombre del contacto.
     const nameKeys = [...new Set([...fieldsDef.filter((f) => f.type === 'name').map((f) => f.key), ...['nombre', 'name'].filter((k) => Object.hasOwn(ct.data || {}, k))])];
-    const keys = [...new Set([...fieldsDef.map((f) => f.key), ...Object.keys(ct.data || {})])].filter((k) => !nameKeys.includes(k) && !(ct.name && ['nombre', 'name'].includes(k)));
+    const keys = [...new Set([...own.map((f) => f.key), ...fieldsDef.map((f) => f.key), ...Object.keys(ct.data || {})])].filter((k) => !nameKeys.includes(k) && !(ct.name && ['nombre', 'name'].includes(k)));
     const payload = (model, version) => { const aliases = [...new Set([...nameKeys, ...['nombre', 'name'].filter((key) => Object.hasOwn(model.data, key))])]; return { ...model, base_data_version: version, data: Object.fromEntries(Object.entries({ ...model.data, ...Object.fromEntries(aliases.map((key) => [key, model.name])) }).filter(([, value]) => value)) }; };
     const saveContact = async (model = m, version = sideVersion) => {
       if (savingContact) return; savingContact = true;
@@ -514,7 +517,7 @@ export async function viewConversation(root, id, opts = {}) {
       h('div', { class: 'card', id: 'customer-data', tabindex: '-1' },
         h('h2', { style: 'margin-top:0' }, 'Datos del cliente'),
         field('Nombre', text(m, 'name')),
-        ...keys.map((k) => field(fieldsDef.find((f) => f.key === k)?.label || dataLabel(k), text(m.data, k))),
+        ...keys.map((k) => { const f = own.find((x) => x.key === k); return field(f?.label || fieldsDef.find((x) => x.key === k)?.label || dataLabel(k), f ? fieldControl(f, m.data) : text(m.data, k)); }),
         field('Notas (memoria)', lines(m, 'notes')),
         field('Etiquetas', h('input', { type: 'text', value: m.tags.join(', '), placeholder: 'vip, interesado', oninput: (e) => (m.tags = e.target.value.split(',').map((x) => x.trim()).filter(Boolean)) }), 'Separadas por comas. Sirven para campañas y reglas.'),
         check(m, 'opted_out', 'Dado de baja (no recibe mensajes promocionales)'),

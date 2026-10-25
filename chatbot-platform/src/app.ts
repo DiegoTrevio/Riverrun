@@ -33,6 +33,7 @@ import { taskRoutes } from './routes/tasks.js';
 import { pipelineRoutes } from './routes/pipelines.js';
 import { quoteRoutes } from './routes/quotes.js';
 import { receivableRoutes } from './routes/receivables.js';
+import { contactFieldRoutes } from './routes/contact-fields.js';
 import { publicRoutes } from './routes/public.js';
 import { signupRoutes } from './routes/signup.js';
 import { invitationPublicRoutes, invitationRoutes } from './routes/invitations.js';
@@ -170,6 +171,7 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
     await pipelineRoutes(api, service);
     await quoteRoutes(api, service);
     await receivableRoutes(api, service);
+    await contactFieldRoutes(api);
     await agendaRoutes(api, service);
     await onboardingRoutes(api);
     await analyticsRoutes(api);

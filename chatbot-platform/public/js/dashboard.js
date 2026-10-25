@@ -187,6 +187,7 @@ export async function viewSettingsHub(root) {
       tile('#/automation', 'zap', 'Respuestas automáticas', 'Recordatorios, seguimientos y campañas a tus clientes.'),
       tile('#/integraciones', 'plug', 'Integraciones', 'Google Calendar, webhooks para Zapier o Make y llaves de la API.'),
       tile('#/users', 'contacts', 'Mi equipo', 'Usuarios para quienes atienden las conversaciones contigo.'),
+      tile('#/datos-clientes', 'user', 'Datos de tus clientes', 'Lo que guardas de cada cliente (cumpleaños, número de cliente…), para su ficha y tus mensajes.'),
       !isSuper() ? tile('#/plan', 'card', 'Mi plan y pagos', 'Tu plan, próximo cobro, forma de pago y facturas.') : null,
       tile('#/consumo', 'chart', 'Consumo', 'Cuánto ha usado tu asistente este mes.'),
       tile('#/logs', 'wrench', 'Registros', 'Si algo falla, aquí se ve qué pasó.'),

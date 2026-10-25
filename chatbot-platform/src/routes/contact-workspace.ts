@@ -1,3 +1,4 @@
+import { listContactFields } from '../contacts/fields.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { contactFor, scopeAccount, targetAccount, HttpError } from '../access.js';
@@ -46,7 +47,7 @@ export async function contactWorkspaceRoutes(api:FastifyInstance) {
   const requests=conversations.length?await query('SELECT * FROM conversation_requests WHERE conversation_id=ANY($1::uuid[]) ORDER BY started_at DESC LIMIT 200',[conversations.map(c=>c.id)]):[];
   const quotes=conversations.length?await query('SELECT id,folio,kind,status,currency,total_min,total_max,open_ended,has_tbd,created_at,conversation_id FROM quotes WHERE account_id=$1 AND conversation_id=ANY($2::uuid[]) ORDER BY created_at DESC LIMIT 50',[root.account_id,conversations.map(c=>c.id)]):[];
   const account=await queryOne("SELECT name,coalesce(settings->>'timezone','America/Mexico_City') AS timezone FROM accounts WHERE id=$1",[root.account_id]);
-  return {contact:root,account_name:account?.name,timezone:account?.timezone,records,conversations,tasks,appointments,requests,quotes,tags:[...new Set(records.flatMap(r=>r.tags))]};
+  return {contact:root,account_name:account?.name,timezone:account?.timezone,contact_fields:await listContactFields(root.account_id),records,conversations,tasks,appointments,requests,quotes,tags:[...new Set(records.flatMap(r=>r.tags))]};
  });
  api.get('/api/contact-views',async(req:any)=>{
   const id=await targetAccount(req.user,req.query.account_id);

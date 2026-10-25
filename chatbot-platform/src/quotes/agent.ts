@@ -52,7 +52,7 @@ const customerLabel = (c: Contact) => c.name || c.push_name || c.phone || 'Un cl
 
 /** Lo que llevan los eventos de cotización (reglas automáticas y webhooks). */
 export function quoteEvent(q: qstore.Quote) {
-  return { id: q.id, folio: q.folio, kind: q.kind, total: formatTotals({ ...q, lines: q.lines ?? [], can_be_final: false }, q.currency).total };
+  return { id: q.id, folio: q.folio, kind: q.kind, total: formatTotals({ ...q, lines: q.lines ?? [], can_be_final: false }, q.currency).total, valid_until: q.valid_until || undefined };
 }
 
 export class Quotes {

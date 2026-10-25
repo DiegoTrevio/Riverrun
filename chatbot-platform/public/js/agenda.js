@@ -1,6 +1,8 @@
+import { waTemplateField } from './wa-template-field.js';
 import { discardDraft, draftModel, draftNotice, draftVersion } from './editing.js';
 import { needAccount } from './admin.js';
-import { VARS_HELP, hoursEditor } from './automation.js';
+import { hoursEditor } from './automation.js';
+import { varsField } from './vars-help.js';
 import { saveBar } from './bot.js';
 import { api, area, check, clone, field, fill, fmtPhone, h, dialog, num, run, select, state, text, toast, confirmAction, ask } from './core.js';
 import { icon } from './icons.js';
@@ -379,10 +381,10 @@ async function listServices(root) {
 }
 
 async function editService(root, id) {
-  const [services, users] = await Promise.all([api('GET', withAcct('/api/services')), api('GET', withAcct('/api/users'))]);
+  const [services, users, templates] = await Promise.all([api('GET', withAcct('/api/services')), api('GET', withAcct('/api/users')), state.meta?.zernio_enabled ? api('GET', withAcct('/api/wa-templates')).catch(() => []) : []]);
   const existing = id === 'new' ? null : services.find((s) => s.id === id);
   if (id !== 'new' && !existing) throw new Error('Servicio no encontrado');
-  const s = draftModel(`service:${id}`, existing || { name: '', kind: 'appointment', description: '', duration_minutes: 30, buffer_minutes: 0, capacity: 1, min_notice_minutes: 60, max_days_ahead: 30, location: '', hours: null, reminders: [1440, 60], reminder_message: '', assigned_user_ids: [], assignment_mode: 'round_robin', user_weights: {}, call_mode: 'phone', prefer_owner: false, customer_choice: false, notify_team: true, deposit_cents: 0, deposit_currency: 'MXN', deposit_due_hours: 0, deposit_cancel_unpaid: false, active: true }, false);
+  const s = draftModel(`service:${id}`, existing || { name: '', kind: 'appointment', description: '', duration_minutes: 30, buffer_minutes: 0, capacity: 1, min_notice_minutes: 60, max_days_ahead: 30, location: '', hours: null, reminders: [1440, 60], reminder_message: '', assigned_user_ids: [], assignment_mode: 'round_robin', user_weights: {}, call_mode: 'phone', prefer_owner: false, customer_choice: false, notify_team: true, deposit_cents: 0, deposit_currency: 'MXN', deposit_due_hours: 0, deposit_cancel_unpaid: false, reminder_wa_template: null, active: true }, false);
   s.assignment_mode ||= 'round_robin';
   s.deposit_cents ??= 0;
   s.deposit_currency ||= 'MXN';
@@ -467,7 +469,8 @@ async function editService(root, id) {
       peopleBox,
       check(s, 'notify_team', 'Avisar al equipo cuando se agenda o cancela'),
       field('Recordatorios antes de la cita', h('textarea', { value: rem.text, oninput: (e) => (rem.text = e.target.value) }), 'Ej.: 1 día, 2 horas o 30 minutos. Uno por renglón. También acepta minutos sin unidad.'),
-      field('Mensaje del recordatorio (opcional)', area(s, 'reminder_message', { placeholder: 'Hola {{nombre}}, te recordamos tu {{cita.tipo}} de {{cita.servicio}} el {{cita.fecha}} a las {{cita.hora}}.' }), VARS_HELP)),
+      varsField('Mensaje del recordatorio (opcional)', area(s, 'reminder_message', { placeholder: 'Hola {{nombre}}, te recordamos tu {{cita.tipo}} de {{cita.servicio}} el {{cita.fecha}} a las {{cita.hora}}.' }), 'appointment'),
+      waTemplateField(s, templates, 'reminder_wa_template', { label: 'Plantilla de WhatsApp para el recordatorio (opcional)', help: 'Solo para WhatsApp oficial: si el cliente no ha escrito en las últimas 24 h, el recordatorio sale con esta plantilla aprobada. Sus variables aceptan {{cita.fecha}}, {{cita.hora}} y las demás.' })),
     state.meta?.receivables_enabled ? h('div', { class: 'card' },
       h('h2', { style: 'margin-top:0' }, 'Anticipo'),
       h('p', { class: 'small muted' }, 'Al agendar se registra el cobro del anticipo en ', h('a', { href: '#/cobros' }, 'Cobros'), ' y el cliente recibe cuánto y cómo pagar, con sus recordatorios. El equipo lo marca pagado al recibirlo.'),

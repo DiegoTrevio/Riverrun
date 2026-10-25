@@ -1,7 +1,8 @@
 import { agentTestsCard, pendingChanges, versionHistory } from './agent-versions.js';
 import { semanticActivation } from './semantic-activation.js';
 import { tabConnections } from './agent-connections.js';
-import { ACTIONS, triggerSummary, VARS_HELP } from './automation.js';
+import { ACTIONS, triggerSummary } from './automation.js';
+import { varsHelp } from './vars-help.js';
 import { channelIcon, channelStatusCell } from './channels.js';
 import { api, area, check, clone, field, fill, fmtDate, h, lines, num, poll, run, select, state, text, toast, confirmAction, ask } from './core.js';
 import { icon, okMark } from './icons.js';
@@ -697,7 +698,7 @@ async function tabNotices(root, bot) {
 
   const whenBox = h('div');
   const messageField = h('div');
-  const drawMessage = () => fill(messageField, field('Mensaje', area(m, 'message', { placeholder: defaultMessage() }), `Si lo dejas vacío se usa el de ejemplo. ${VARS_HELP}. El aviso lleva el enlace a la conversación.`));
+  const drawMessage = () => { const input = area(m, 'message', { placeholder: defaultMessage() }); fill(messageField, field('Mensaje', input, 'Si lo dejas vacío se usa el de ejemplo. El aviso lleva el enlace a la conversación.'), varsHelp(input, 'rule', { trigger: () => m.when })); };
   const drawWhen = () => {
     const parts = [field('Cuándo avisar', select(m, 'when', when, () => { drawWhen(); drawMessage(); }))];
     if (m.when === 'stage_reached') parts.push(field('Etapa', select(m, 'step', bot.flow.steps.map((st, i) => [String(i + 1), `${i + 1}. ${st.title}`]), drawMessage)));

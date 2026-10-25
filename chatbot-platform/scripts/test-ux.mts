@@ -72,6 +72,8 @@ try {
   const uxDue = new Date(Date.now() + 5 * 86400_000).toISOString().slice(0, 10);
   await h.authed('PUT', `/api/receivables/settings?account_id=${h.accountId}`, { payment_instructions: 'Transferencia a la CLABE 012180001234567890.' });
   const uxCharge = (await h.authed('POST', `/api/receivables?account_id=${h.accountId}`, { contact_id: conv.contact_id, concept: 'Reservación de octubre', amount_cents: 180000, due_date: uxDue })).json().receivable;
+  // «Datos de tus clientes»: un campo de fecha que la ficha muestra con su control.
+  assert.equal((await h.authed('POST', `/api/contact-fields?account_id=${h.accountId}`, { label: 'Cumpleaños', key: 'cumpleanos', type: 'date' })).statusCode, 201);
   const uxMonth = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Mexico_City', year: 'numeric', month: '2-digit' }).format(new Date());
   const login: any = { superadmin: h.authed };
   for (const role of ['admin', 'agent']) {
@@ -89,12 +91,12 @@ try {
     if (role === 'superadmin') await context.addInitScript((id: string) => localStorage.setItem('cp-account', id), h.accountId);
     return context;
   };
-  const routes = ['agentes', `bot/${h.botId}/instrucciones`, `bot/${h.botId}/preguntas`, `bot/${h.botId}/activacion`, `bot/${h.botId}/conocimiento`, `bot/${h.botId}/imagenes`, `bot/${h.botId}/conexiones`, `bot/${h.botId}/probar`, `bot/${h.botId}/conexiones/${h.channelId}`, `bot/${h.botId}/conexiones/${socialNew.id}`, `bot/${h.botId}/conexiones/${socialOn.id}`, 'conversations', `conversation/${conv.id}`, 'agenda', 'agenda/servicios', `agenda/servicios?id=${service.id}`, 'agenda/equipo', 'agenda/enlaces', 'automation/rules', 'automation/rules/new', 'automation/sequences', 'automation/sequences/new', `automation/sequences/${uxFlow}`, 'automation/campaigns', 'automation/campaigns/new', `automation/campaigns/new?flow=${uxFlow}`, 'automation/settings', 'pipeline', 'pipeline/editar/nuevo', 'ajustes', 'integraciones', 'redes', `redes/whatsapp/${waSocial}`, 'comentarios', 'comentarios?tipo=review', 'publicaciones', `publicaciones?vista=calendario&mes=${uxMonth}`, 'publicaciones/nueva', `publicaciones/${pubA}`, 'users', 'consumo', 'logs', 'plan', 'cobros', 'cobros?tab=recurrentes', 'cobros?tab=ajustes', 'estadisticas', 'estadisticas/redes', 'notifications', 'notifications?grupo=handoff', 'password', 'inicio', 'agentes/nuevo', `bot/${h.botId}/empezar`];
+  const routes = ['agentes', `bot/${h.botId}/instrucciones`, `bot/${h.botId}/preguntas`, `bot/${h.botId}/activacion`, `bot/${h.botId}/conocimiento`, `bot/${h.botId}/imagenes`, `bot/${h.botId}/conexiones`, `bot/${h.botId}/probar`, `bot/${h.botId}/conexiones/${h.channelId}`, `bot/${h.botId}/conexiones/${socialNew.id}`, `bot/${h.botId}/conexiones/${socialOn.id}`, 'conversations', `conversation/${conv.id}`, 'agenda', 'agenda/servicios', `agenda/servicios?id=${service.id}`, 'agenda/equipo', 'agenda/enlaces', 'automation/rules', 'automation/rules/new', 'automation/sequences', 'automation/sequences/new', `automation/sequences/${uxFlow}`, 'automation/campaigns', 'automation/campaigns/new', `automation/campaigns/new?flow=${uxFlow}`, 'automation/settings', 'pipeline', 'pipeline/editar/nuevo', 'ajustes', 'integraciones', 'redes', `redes/whatsapp/${waSocial}`, 'comentarios', 'comentarios?tipo=review', 'publicaciones', `publicaciones?vista=calendario&mes=${uxMonth}`, 'publicaciones/nueva', `publicaciones/${pubA}`, 'users', 'consumo', 'logs', 'plan', 'cobros', 'cobros?tab=recurrentes', 'cobros?tab=ajustes', 'datos-clientes', 'contacts', 'estadisticas', 'estadisticas/redes', 'notifications', 'notifications?grupo=handoff', 'password', 'inicio', 'agentes/nuevo', `bot/${h.botId}/empezar`];
   const helpScreens: Record<string, string> = { [`bot/${h.botId}/conocimiento`]: '01-importar.jpg', [`bot/${h.botId}/probar`]: '03-probar.jpg', [`conversation/${conv.id}`]: '05-conversacion.jpg', ajustes: '06-ajustes.jpg' };
   for (const role of ['admin', 'superadmin', 'agent']) {
     const context = await contextFor(role); const page = await context.newPage();
     page.on('pageerror', (error) => results.errors.push({ role, message: error.message }));
-    const selected = role === 'admin' ? routes : role === 'agent' ? ['conversations', `conversation/${conv.id}`, 'agenda', 'cobros', 'cobros?tab=recurrentes', 'notifications', 'pipeline', 'password'] : ['agentes', 'agentes/nuevo', 'accounts', 'planes', 'marcas', 'sistema', 'sistema/zernio', 'redes', 'users', 'ajustes', 'integraciones'];
+    const selected = role === 'admin' ? routes : role === 'agent' ? ['conversations', `conversation/${conv.id}`, 'agenda', 'cobros', 'cobros?tab=recurrentes', 'datos-clientes', 'notifications', 'pipeline', 'password'] : ['agentes', 'agentes/nuevo', 'accounts', 'planes', 'marcas', 'sistema', 'sistema/zernio', 'redes', 'users', 'ajustes', 'integraciones'];
     for (const route of selected) {
       await page.goto(`${base}/#/${route}`); await page.locator('.main h1').waitFor(); await page.locator('.main [aria-busy="true"]').waitFor({ state: 'hidden' }); await page.waitForTimeout(100);
       await page.addScriptTag({ content: axe });
@@ -107,7 +109,7 @@ try {
   console.log('Pantallas examinadas:', results.screens.length);
   for (const width of [320, 390, 768, 1024, 1440]) for (const theme of ['light', 'dark'] as const) {
     const context = await contextFor('admin', { viewport: { width, height: 900 }, colorScheme: theme }); const page = await context.newPage();
-    for (const route of ['agentes', 'agentes/nuevo', `bot/${h.botId}/empezar`, `bot/${h.botId}/instrucciones`, `conversation/${conv.id}`, 'conversations', 'automation/sequences/new', `automation/sequences/${uxFlow}`, `automation/campaigns/new?flow=${uxFlow}`, 'agenda', 'redes', `redes/whatsapp/${waSocial}`, 'comentarios', 'publicaciones', `publicaciones?vista=calendario&mes=${uxMonth}`, 'publicaciones/nueva', 'estadisticas/redes', 'password', 'notifications?grupo=errors', 'automation/settings', 'cobros', 'cobros?tab=recurrentes', 'cobros?tab=ajustes']) {
+    for (const route of ['agentes', 'agentes/nuevo', `bot/${h.botId}/empezar`, `bot/${h.botId}/instrucciones`, `conversation/${conv.id}`, 'conversations', 'automation/sequences/new', `automation/sequences/${uxFlow}`, `automation/campaigns/new?flow=${uxFlow}`, 'agenda', 'redes', `redes/whatsapp/${waSocial}`, 'comentarios', 'publicaciones', `publicaciones?vista=calendario&mes=${uxMonth}`, 'publicaciones/nueva', 'estadisticas/redes', 'password', 'notifications?grupo=errors', 'automation/settings', 'cobros', 'cobros?tab=recurrentes', 'cobros?tab=ajustes', 'datos-clientes', 'contacts']) {
       await page.goto(`${base}/#/${route}`); await page.locator('.main h1').waitFor(); await page.waitForTimeout(80);
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1);
       results.responsive.push({ width, theme, route, overflow });
@@ -407,6 +409,53 @@ try {
     await page.locator('tbody tr', { hasText: 'Mensualidad de clases' }).getByText('Cada mes, el día 15').waitFor();
     assert.equal((await pool.query(`SELECT amount_cents::int AS c, frequency, day FROM receivable_plans WHERE concept = 'Mensualidad de clases'`)).rows[0]?.c, 120000);
     await context.close(); checked('Cobros: ver el cobro del cliente, marcarlo pagado y registrar uno nuevo y un pago recurrente desde el celular');
+  }
+  {
+    // Datos de tus clientes: agregar un dato con opciones, editar la fecha en la ficha, insertar la variable con un clic e importar un CSV.
+    const context = await contextFor('admin', { viewport: { width: 390, height: 900 } }); const page = await context.newPage();
+    page.on('pageerror', (error) => results.errors.push({ role: 'admin', message: error.message }));
+    await page.goto(`${base}/#/datos-clientes`); await page.getByRole('heading', { name: 'Datos de tus clientes', level: 1 }).waitFor();
+    await page.getByRole('button', { name: 'Agregar dato' }).click();
+    const dlg = page.getByRole('dialog');
+    await dlg.getByLabel('Etiqueta').fill('Plan contratado');
+    assert.equal(await dlg.getByLabel('Clave').inputValue(), 'plan_contratado', 'la clave sale de la etiqueta');
+    await dlg.getByLabel('Tipo').selectOption('option');
+    await dlg.getByLabel('Opciones').fill('Básico\nPremium');
+    await dlg.getByRole('button', { name: 'Agregar' }).click();
+    await page.getByText('Campo agregado').waitFor();
+    await page.locator('tbody tr', { hasText: 'Plan contratado' }).getByText('{{campo.plan_contratado}}').waitFor();
+    // La ficha: la fecha con su control de fecha y la opción con su lista.
+    await page.goto(`${base}/#/conversation/${conv.id}`);
+    const card = page.locator('#customer-data'); await card.waitFor();
+    const birthday = card.getByLabel('Cumpleaños');
+    assert.equal(await birthday.getAttribute('type'), 'date');
+    await birthday.fill('1990-05-15');
+    await card.getByLabel('Plan contratado').selectOption('Premium');
+    await card.getByRole('button', { name: 'Guardar datos' }).click();
+    await page.getByText('Datos guardados', { exact: true }).waitFor();
+    const saved = (await pool.query(`SELECT data FROM contacts WHERE id = $1`, [conv.contact_id])).rows[0].data;
+    assert.deepEqual([saved.cumpleanos, saved.plan_contratado], ['1990-05-15', 'Premium']);
+    // La ayuda de variables de un mensaje: un clic inserta {{campo.cumpleanos}} donde está el cursor.
+    await page.goto(`${base}/#/automation/sequences/new`);
+    const message = page.getByLabel('Mensaje', { exact: true }).first(); await message.waitFor();
+    await message.fill('Feliz cumpleaños ');
+    await page.getByText('Variables (clic para insertar)').first().click();
+    await page.getByRole('button', { name: 'Insertar {{campo.cumpleanos}}: Cumpleaños' }).first().click();
+    assert.equal(await message.inputValue(), 'Feliz cumpleaños {{campo.cumpleanos}}');
+    // Importar contactos desde CSV: el resumen dice cuántos se crearon y qué filas no entraron.
+    await page.goto(`${base}/#/contacts`); await page.getByRole('heading', { name: 'Contactos', level: 1 }).waitFor();
+    await page.getByRole('button', { name: 'Importar contactos' }).click();
+    await page.getByRole('dialog').getByLabel('Archivo').setInputFiles({ name: 'clientes.csv', mimeType: 'text/csv', buffer: Buffer.from('telefono,nombre,Cumpleaños\n5215599990001,Ximena,03/11/1985\n5215599990002,Yael,31/02/1990\n') });
+    await page.getByRole('dialog').getByRole('button', { name: 'Importar' }).click();
+    const summary = page.getByRole('dialog', { name: 'Importación terminada' });
+    await summary.getByText('1 contacto nuevo y 0 actualizados.').waitFor();
+    await summary.getByText(/Fila 3: «Cumpleaños» no es válido/).waitFor();
+    await page.addScriptTag({ content: axe });
+    const violations = await page.evaluate(async () => (await (window as any).axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa', 'best-practice'] } })).violations.map((v: any) => ({ id: v.id, impact: v.impact, nodes: v.nodes.map((n: any) => ({ target: n.target, summary: n.failureSummary })) })));
+    results.screens.push({ role: 'admin', route: 'contacts (resumen de importación)', violations });
+    await summary.getByRole('button', { name: 'Listo' }).click();
+    assert.equal((await pool.query(`SELECT data->>'cumpleanos' AS d FROM contacts WHERE phone = '5215599990001'`)).rows[0]?.d, '1985-11-03');
+    await context.close(); checked('Datos de tus clientes: agregar un dato, editarlo en la ficha con su control, insertarlo como variable e importar contactos por CSV desde el celular');
   }
   assert.equal(results.errors.length, 0, JSON.stringify(results.errors));
   const serious = results.screens.flatMap((screen: any) => screen.violations.filter((v: any) => ['critical', 'serious'].includes(v.impact)).map((v: any) => ({ role: screen.role, route: screen.route, ...v })));

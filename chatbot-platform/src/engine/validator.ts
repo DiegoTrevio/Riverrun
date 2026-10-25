@@ -123,6 +123,8 @@ export interface ValidationInput {
   activeImageIds?: string[];
   /** Cotizaciones (null = el asistente no cotiza). */
   quotes?: QuoteValidation | null;
+  /** «Datos de tus clientes» de la cuenta: un dato con su clave se valida por su tipo. */
+  accountFields?: DataField[];
 }
 
 const NUMBER_WORDS: Record<string, number> = {
@@ -679,13 +681,15 @@ export function validateDecision(input: ValidationInput): ValidationResult {
   let contactName: string | null = null;
   for (const { field, value } of d.save_data.slice(0, 30)) {
     // Una opción de una lista fija ("¿Pagas con tarjeta o efectivo?") no es un dato sensible, aunque la clave lo parezca.
-    const fixedOption = bot.data_fields.some((x) => x.key === field && x.type === 'option' && x.options.length > 0);
+    const own = input.accountFields?.find((x) => x.key === field);
+    const fixedOption = [...bot.data_fields, ...(own ? [own] : [])].some((x) => x.key === field && x.type === 'option' && x.options.length > 0);
     if ((isSensitiveField(field) && !fixedOption) || cardNumbersIn(value).length) {
       fixes.push(`Dato sensible no guardado (${field}): no se guardan tarjetas, códigos ni contraseñas`);
       continue;
     }
     const configured = bot.data_fields.find((x) => x.key === field);
-    const f = configured ?? automaticField(field);
+    // Un campo de la cuenta que el agente no pide se valida por su tipo, como un dato que el cliente dio por su cuenta.
+    const f = configured ?? own ?? automaticField(field);
     if (!f) {
       fixes.push(`Campo inválido ignorado: ${field}`);
       continue;

@@ -737,3 +737,10 @@ details.filters[open] > summary { margin-bottom: 12px; }
 .alert-prefs td { text-align: center; }
 .alert-prefs input[type="checkbox"] { width: 22px; height: 22px; }
 a.chip.active { background: var(--accent); color: var(--surface); border-color: var(--accent); }
+
+/* Ayuda de variables: cada una se inserta con un clic en el cuadro de texto de arriba. */
+.vars-help { margin: -4px 0 12px; }
+.vars-help > summary { cursor: pointer; font-size: .85rem; color: var(--muted, #667); }
+.vars-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.vars-list .var-chip { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .78rem; padding: 2px 8px; }
+.vars-list .vars-group { flex-basis: 100%; margin: 6px 0 0; }
