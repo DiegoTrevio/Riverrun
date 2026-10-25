@@ -268,6 +268,8 @@ export const config = {
     maxReminders: Math.max(1, Math.min(20, Number(env('RECEIVABLE_MAX_REMINDERS', '8')) || 8)),
     /** «Enviar recordatorio ahora» por cobro y por día. */
     manualRemindPerDay: Math.max(1, Math.min(20, Number(env('RECEIVABLE_MANUAL_REMIND_PER_DAY', '3')) || 3)),
+    /** Pagos recurrentes: con cuántos días de anticipación se crea el cobro de cada periodo. */
+    recurringLeadDays: Math.max(0, Math.min(60, Number.isFinite(Number(env('RECEIVABLE_RECURRING_LEAD_DAYS', '7'))) ? Math.trunc(Number(env('RECEIVABLE_RECURRING_LEAD_DAYS', '7'))) : 7)),
   },
 };
 

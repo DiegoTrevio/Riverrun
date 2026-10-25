@@ -337,7 +337,11 @@ async function agendaWeek(root, params) {
         a.meeting_url ? [h('dt', {}, 'Videollamada'), h('dd', {}, h('a', { href: a.meeting_url, target: '_blank', rel: 'noopener' }, 'Entrar a la videollamada'))] : null,
         a.source === 'pagina' ? [h('dt', {}, 'Origen'), h('dd', {}, 'Reservó en tu página para agendar')] : null,
         a.notes ? [h('dt', {}, 'Notas'), h('dd', {}, a.notes)] : null,
-        a.cancel_reason ? [h('dt', {}, 'Motivo'), h('dd', {}, a.cancel_reason)] : null),
+        a.cancel_reason ? [h('dt', {}, 'Motivo'), h('dd', {}, a.cancel_reason)] : null,
+        a.deposit ? [h('dt', {}, 'Anticipo'), h('dd', {},
+          `${new Intl.NumberFormat('es-MX', { style: 'currency', currency: a.deposit.currency || 'MXN' }).format(Number(a.deposit.amount_cents) / 100)} · `,
+          a.deposit.status === 'paid' ? 'pagado' : a.deposit.status === 'canceled' ? 'cancelado' : `pendiente (vence ${a.deposit.due_date})`, ' · ',
+          h('a', { href: `#/cobros?status=${a.deposit.status === 'pending' ? 'pending' : ''}`, onclick: close }, 'Ver en Cobros'))] : null),
       h('div', { class: 'row' },
         a.conversation_id ? h('a', { class: 'btn', href: `#/conversation/${a.conversation_id}`, onclick: close }, 'Abrir chat') : null,
         a.status === 'confirmed' ? act('Completada', () => run(() => api('PUT', `/api/appointments/${a.id}`, { status: 'completed' }), 'Listo')) : null,
@@ -378,8 +382,14 @@ async function editService(root, id) {
   const [services, users] = await Promise.all([api('GET', withAcct('/api/services')), api('GET', withAcct('/api/users'))]);
   const existing = id === 'new' ? null : services.find((s) => s.id === id);
   if (id !== 'new' && !existing) throw new Error('Servicio no encontrado');
-  const s = draftModel(`service:${id}`, existing || { name: '', kind: 'appointment', description: '', duration_minutes: 30, buffer_minutes: 0, capacity: 1, min_notice_minutes: 60, max_days_ahead: 30, location: '', hours: null, reminders: [1440, 60], reminder_message: '', assigned_user_ids: [], assignment_mode: 'round_robin', user_weights: {}, call_mode: 'phone', prefer_owner: false, customer_choice: false, notify_team: true, active: true }, false);
+  const s = draftModel(`service:${id}`, existing || { name: '', kind: 'appointment', description: '', duration_minutes: 30, buffer_minutes: 0, capacity: 1, min_notice_minutes: 60, max_days_ahead: 30, location: '', hours: null, reminders: [1440, 60], reminder_message: '', assigned_user_ids: [], assignment_mode: 'round_robin', user_weights: {}, call_mode: 'phone', prefer_owner: false, customer_choice: false, notify_team: true, deposit_cents: 0, deposit_currency: 'MXN', deposit_due_hours: 0, deposit_cancel_unpaid: false, active: true }, false);
   s.assignment_mode ||= 'round_robin';
+  s.deposit_cents ??= 0;
+  s.deposit_currency ||= 'MXN';
+  s.deposit_due_hours ??= 0;
+  s.deposit_cancel_unpaid ??= false;
+  // Anticipo en pesos en el formulario; se guarda en centavos.
+  const dep = { amount: s.deposit_cents ? (s.deposit_cents / 100).toFixed(2) : '' };
   s.user_weights ||= {};
   s.call_mode ||= 'phone';
   s.prefer_owner ??= false;
@@ -428,7 +438,9 @@ async function editService(root, id) {
       reminders.push(n);
     }
     const user_weights = Object.fromEntries(Object.entries(s.user_weights || {}).filter(([u]) => s.assigned_user_ids.includes(u)));
-    const body = { ...s, user_weights, hours: own.on ? s.hours : null, reminders, account_id: state.accountId || undefined };
+    const depositCents = Math.round(Number(dep.amount || 0) * 100);
+    if (!Number.isFinite(depositCents) || depositCents < 0) return run(() => { throw new Error('Escribe el anticipo en pesos (o déjalo vacío si no pides anticipo).'); });
+    const body = { ...s, user_weights, hours: own.on ? s.hours : null, reminders, deposit_cents: depositCents, deposit_due_hours: Number(s.deposit_due_hours) || 0, account_id: state.accountId || undefined };
     const versions = [`service:${id}`, `reminders:${id}`, `service-hours:${id}`].map((key) => [key, draftVersion(key)]);
     if (await run(() => (existing ? api('PUT', `/api/services/${id}`, body) : api('POST', '/api/services', body)), 'Servicio guardado')) { versions.forEach(([key, version]) => discardDraft(key, version)); location.hash = '#/agenda/servicios'; }
   };
@@ -456,6 +468,13 @@ async function editService(root, id) {
       check(s, 'notify_team', 'Avisar al equipo cuando se agenda o cancela'),
       field('Recordatorios antes de la cita', h('textarea', { value: rem.text, oninput: (e) => (rem.text = e.target.value) }), 'Ej.: 1 día, 2 horas o 30 minutos. Uno por renglón. También acepta minutos sin unidad.'),
       field('Mensaje del recordatorio (opcional)', area(s, 'reminder_message', { placeholder: 'Hola {{nombre}}, te recordamos tu {{cita.tipo}} de {{cita.servicio}} el {{cita.fecha}} a las {{cita.hora}}.' }), VARS_HELP)),
+    state.meta?.receivables_enabled ? h('div', { class: 'card' },
+      h('h2', { style: 'margin-top:0' }, 'Anticipo'),
+      h('p', { class: 'small muted' }, 'Al agendar se registra el cobro del anticipo en ', h('a', { href: '#/cobros' }, 'Cobros'), ' y el cliente recibe cuánto y cómo pagar, con sus recordatorios. El equipo lo marca pagado al recibirlo.'),
+      h('div', { class: 'grid' },
+        field('Monto del anticipo', h('input', { type: 'number', min: 0, step: 0.01, value: dep.amount, placeholder: 'Sin anticipo', oninput: (e) => { dep.amount = e.target.value; } }), 'Déjalo vacío o en 0 si este servicio no pide anticipo.'),
+        field('Vence (horas antes de la cita)', num(s, 'deposit_due_hours', { min: 0, max: 720 }), '0 = vence el mismo día en que se agenda.')),
+      check(s, 'deposit_cancel_unpaid', 'Cancelar la cita si a esa hora el anticipo no se ha pagado (se avisa al cliente y al equipo)')) : null,
     saveBar(save, existing ? h('span', { class: 'row', style: 'margin-left:auto' },
       h('button', { class: 'danger', onclick: async () => { if (await confirmAction('¿Eliminar el servicio? Las citas existentes se conservan.')) { if (!(await run(() => api('DELETE', `/api/services/${id}`), 'Eliminado'))) return; location.hash = '#/agenda/servicios'; } } }, 'Eliminar')) : null),
   );

@@ -276,7 +276,7 @@ export async function getService(id: string) {
 }
 
 export async function saveService(accountId: string, s: Omit<Service, 'id' | 'account_id'>, id?: string) {
-  const cols = ['name', 'kind', 'description', 'duration_minutes', 'buffer_minutes', 'capacity', 'min_notice_minutes', 'max_days_ahead', 'location', 'hours', 'reminders', 'reminder_message', 'assigned_user_ids', 'assignment_mode', 'user_weights', 'call_mode', 'prefer_owner', 'customer_choice', 'notify_team', 'active'] as const;
+  const cols = ['name', 'kind', 'description', 'duration_minutes', 'buffer_minutes', 'capacity', 'min_notice_minutes', 'max_days_ahead', 'location', 'hours', 'reminders', 'reminder_message', 'assigned_user_ids', 'assignment_mode', 'user_weights', 'call_mode', 'prefer_owner', 'customer_choice', 'notify_team', 'deposit_cents', 'deposit_currency', 'deposit_due_hours', 'deposit_cancel_unpaid', 'active'] as const;
   const values = cols.map((c) => (['hours', 'reminders', 'assigned_user_ids', 'user_weights'].includes(c) ? (s[c] === null ? null : JSON.stringify(s[c])) : s[c]));
   if (id) {
     return queryOne<Service>(`UPDATE services SET ${cols.map((c, i) => `${c} = $${i + 1}`).join(', ')}, updated_at = now() WHERE id = $${cols.length + 1} RETURNING *`, [...values, id]);
@@ -320,7 +320,10 @@ export async function listAppointments(accountId: string | null, opts: { from?: 
     where.push(`(a.assigned_user_id = ${p} OR c.assigned_user_id = ${p} OR a.contact_id IN (SELECT contact_id FROM conversations WHERE assigned_user_id = ${p}))`);
   }
   return query<Appointment & { assigned_user_name: string | null; channel_type: string | null }>(
-    `SELECT a.*, u.name AS assigned_user_name, ch.type AS channel_type FROM appointments a
+    `SELECT a.*, u.name AS assigned_user_name, ch.type AS channel_type,
+            (SELECT json_build_object('id', r.id, 'status', r.status, 'amount_cents', r.amount_cents, 'currency', r.currency, 'due_date', to_char(r.due_date, 'YYYY-MM-DD'))
+               FROM receivables r WHERE r.account_id = a.account_id AND r.source = 'appointment' AND r.source_id = a.id::text ORDER BY r.created_at DESC LIMIT 1) AS deposit
+       FROM appointments a
        LEFT JOIN users u ON u.id = a.assigned_user_id
        LEFT JOIN conversations c ON c.id = a.conversation_id
        LEFT JOIN channels ch ON ch.id = c.channel_id

@@ -8,6 +8,9 @@ import { staffBusy, syncStaffEvent } from '../integrations/staff-calendars.js';
 import * as googleCal from '../integrations/google.js';
 import * as outlookCal from '../integrations/outlook.js';
 import { mailBrand } from '../brands.js';
+import { config } from '../config.js';
+import { formatMoney } from '../quotes/format.js';
+import { getReceivableSettings, receivableBySource, todayIn, type Receivable } from '../receivables/index.js';
 import { sendMail } from '../mailer.js';
 import { activeStaff, assignmentStats, isOff, pickStaff, staffInfo, staffNames, worksDuring, type StaffInfo } from './staff.js';
 import * as astore from './store.js';
@@ -284,6 +287,7 @@ export class Agenda {
     }
 
     if (!simulated) await this.scheduleReminders(result, service);
+    if (!simulated) await this.createDeposit(result, service, tz).catch((e) => logEvent({ level: 'error', source: 'engine', message: `No se pudo registrar el anticipo de la cita: ${e?.message ?? e}`, accountId: o.accountId, conversationId: o.conversation?.id ?? null }));
     // Videollamada: el enlace queda listo antes de confirmar (Meet o Teams del calendario, o el enlace fijo).
     if (!simulated && service.kind === 'call' && service.call_mode === 'video') result.meeting_url = await this.meetingFor(result, service);
     result.assigned_user_name = result.assigned_user_id ? (await staffNames([result.assigned_user_id])).get(result.assigned_user_id) ?? null : null;
@@ -352,6 +356,11 @@ export class Agenda {
           call && !a.meeting_url && !a.customer_phone ? 'Antes de la hora te enviaremos el enlace o los datos para la llamada.' : '',
           !call && service?.location ? `Lugar: ${service.location}` : '',
         ].filter(Boolean);
+    const deposit = what === 'booked' ? await this.depositOf(a) : null;
+    if (deposit?.status === 'pending') {
+      const how = (await getReceivableSettings(a.account_id)).payment_instructions.trim();
+      main.push('', `Para confirmar tu ${kind} te pedimos un anticipo de ${formatMoney(Number(deposit.amount_cents), deposit.currency)}.`, ...(how ? ['Cómo pagar:', how] : []));
+    }
     const text = [first ? `Hola ${first},` : 'Hola,', '', ...main, '', `— ${business}`].join('\n');
     return sendMail({ fromName: mb.fromName, to: a.customer_email, subject, text });
   }
@@ -379,20 +388,23 @@ export class Agenda {
     await sendMail({ fromName: mb.fromName, to: user.email, subject, text: [...details, '', `Agenda: ${mb.base}/#/agenda`].join('\n') });
   }
 
-  async cancel(appointmentId: string, reason: string, by: 'bot' | 'panel' | 'pagina') {
+  async cancel(appointmentId: string, reason: string, by: 'bot' | 'panel' | 'pagina' | 'sistema') {
     const a = await astore.getAppointment(appointmentId);
     if (!a || a.status !== 'confirmed') return null;
     await query(`UPDATE appointments SET status = 'cancelled', cancel_reason = $2, updated_at = now() WHERE id = $1`, [a.id, reason]);
     await astore.cancelJobs('appointment_id', a.id);
+    // Su anticipo pendiente ya no se cobra.
+    const deposit = await receivableBySource(a.account_id, 'appointment', a.id);
+    if (deposit?.status === 'pending') await this.chat.receivables.settle(deposit, 'canceled', { userId: null, note: 'Se canceló la cita' });
     const settings = await astore.getSettings(a.account_id);
     const when = `${spanishDate(new Date(a.starts_at), settings.timezone)} a las ${spanishTime(new Date(a.starts_at), settings.timezone)}`;
     const service = a.service_id ? await astore.getService(a.service_id) : null;
     if (a.source !== 'simulador') await this.mailStaff(a, service, 'cancelled', when).catch(() => undefined);
     // Igual que al agendar: un servicio con «avisar al equipo» apagado tampoco avisa al cancelar, y el simulador no avisa.
-    if ((service?.notify_team ?? true) && a.source !== 'simulador') {
+    if (((service?.notify_team ?? true) || by === 'sistema') && a.source !== 'simulador') {
       await this.chat.automator.alertTeam(a.account_id, {
         title: `❌ ${a.kind === 'call' ? 'Llamada' : 'Cita'} cancelada: ${a.service_name}`,
-        body: `${a.customer_name || 'Cliente'}${a.customer_phone ? ` (+${a.customer_phone.replace(/^\+/, '')})` : ''} · ${when} · ${by === 'bot' ? 'cancelada por el cliente en el chat' : by === 'pagina' ? 'cancelada por el cliente' : reason}`,
+        body: `${a.customer_name || 'Cliente'}${a.customer_phone ? ` (+${a.customer_phone.replace(/^\+/, '')})` : ''} · ${when} · ${by === 'bot' ? 'cancelada por el cliente en el chat' : by === 'pagina' ? 'cancelada por el cliente' : by === 'sistema' ? `se canceló sola: ${reason}` : reason}`,
         link: a.conversation_id ? `#/conversation/${a.conversation_id}` : '#/agenda',
         userIds: a.assigned_user_id ? [a.assigned_user_id] : undefined,
         staffId: a.assigned_user_id ?? null,
@@ -430,8 +442,81 @@ export class Agenda {
     await astore.cancelJobs('appointment_id', a.id);
     const updated = (await astore.getAppointment(a.id))!;
     await this.scheduleReminders(updated, service);
+    await this.moveDeposit(updated, service, settings.timezone);
     await syncCalendars(a.account_id, a.id).catch(() => undefined);
     return { ok: true, appointment: updated };
+  }
+
+  /* ------------------------------ Anticipo ------------------------------ */
+
+  /** El día en que vence el anticipo (zona del negocio): unas horas antes de la cita, o hoy si ya no da tiempo. */
+  private depositDue(a: Appointment, service: Service, tz: string, now = new Date()) {
+    const limit = new Date(new Date(a.starts_at).getTime() - service.deposit_due_hours * 3600_000);
+    return { limit, due: todayIn(tz, service.deposit_due_hours && limit > now ? limit : now) };
+  }
+
+  /** La tarea que cancela la cita si a la hora límite el anticipo sigue sin pagarse (si el servicio lo pide). */
+  private async armDepositCheck(a: Appointment, service: Service, limit: Date) {
+    if (!service.deposit_cancel_unpaid || !service.deposit_due_hours || limit.getTime() <= Date.now()) return;
+    // Sin conversación ni correo no hay cómo avisarle del anticipo ni de la cancelación: el equipo decide.
+    if (!a.conversation_id && !a.customer_email) return;
+    await astore.scheduleJob({ account_id: a.account_id, type: 'appointment_deposit_check', payload: { appointment_id: a.id }, run_at: limit, dedupe_key: `depcheck:${a.id}` });
+  }
+
+  /**
+   * Al agendar un servicio con anticipo: se registra el cobro (con sus recordatorios de pago) y, si hay conversación, el
+   * cliente recibe en un par de minutos el primer aviso con cuánto y cómo pagar.
+   */
+  private async createDeposit(a: Appointment, service: Service, tz: string) {
+    if (!service.deposit_cents || !config.receivables.enabled) return null;
+    const { limit, due } = this.depositDue(a, service, tz);
+    const when = `${spanishDate(new Date(a.starts_at), tz)} a las ${spanishTime(new Date(a.starts_at), tz)}`;
+    const { receivable, existed } = await this.chat.receivables.create({
+      accountId: a.account_id, contactId: a.contact_id, conversationId: a.conversation_id,
+      concept: `Anticipo: ${service.name} del ${when}`, amountCents: service.deposit_cents, currency: service.deposit_currency,
+      dueDate: due, source: 'appointment', sourceId: a.id, actor: 'la agenda',
+    });
+    if (existed) return receivable;
+    if (a.conversation_id) {
+      await astore.scheduleJob({ account_id: a.account_id, type: 'receivable_reminder', payload: { receivable_id: receivable.id, offset: 0 }, run_at: new Date(Date.now() + 2 * 60_000), dedupe_key: `payrem:${receivable.id}:al-agendar` });
+    }
+    await this.armDepositCheck(a, service, limit);
+    return receivable;
+  }
+
+  /** La cita cambió de hora: el anticipo pendiente vence en su nuevo día y la revisión se mueve a la nueva hora límite. */
+  private async moveDeposit(a: Appointment, service: Service, tz: string) {
+    const deposit = await receivableBySource(a.account_id, 'appointment', a.id);
+    if (deposit?.status !== 'pending') return;
+    const { limit, due } = this.depositDue(a, service, tz);
+    await this.chat.receivables.moveDue(deposit, due);
+    await this.armDepositCheck(a, service, limit);
+  }
+
+  /** Tarea programada: a la hora límite, si el anticipo sigue pendiente, la cita se cancela y se le avisa al cliente. */
+  async checkDeposit(payload: { appointment_id: string }) {
+    const a = await astore.getAppointment(payload.appointment_id);
+    if (!a || a.status !== 'confirmed') return;
+    const deposit: Receivable | null = await receivableBySource(a.account_id, 'appointment', a.id);
+    if (deposit?.status !== 'pending') return;
+    // El cliente dijo que ya pagó y el equipo lo está verificando: se vuelve a revisar al terminar esa pausa.
+    if (deposit.paused_until && new Date(deposit.paused_until).getTime() > Date.now()) {
+      await astore.scheduleJob({ account_id: a.account_id, type: 'appointment_deposit_check', payload, run_at: new Date(deposit.paused_until), dedupe_key: `depcheck:${a.id}:pausa` });
+      return;
+    }
+    const cancelled = await this.cancel(a.id, 'no se recibió el anticipo a tiempo', 'sistema');
+    if (!cancelled) return;
+    if (a.conversation_id) {
+      await this.chat.outbound.send(a.conversation_id, {
+        text: `Hola {{nombre}}, tu {{cita.tipo}} de {{cita.servicio}} del {{cita.fecha}} a las {{cita.hora}} se canceló porque no recibimos el anticipo de ${formatMoney(Number(deposit.amount_cents), deposit.currency)}. Si ya pagaste o quieres agendar otra vez, escríbenos por aquí.`,
+        source: 'booking', transactional: true, allowWhenHuman: true, appointment: cancelled,
+      });
+    } else if (a.customer_email) await this.mailCustomer(cancelled, 'cancelled').catch(() => undefined);
+  }
+
+  /** El anticipo de una cita, para su confirmación y el detalle en el panel. */
+  async depositOf(a: Pick<Appointment, 'id' | 'account_id'>) {
+    return receivableBySource(a.account_id, 'appointment', a.id);
   }
 
   async scheduleReminders(a: Appointment, service: Service) {

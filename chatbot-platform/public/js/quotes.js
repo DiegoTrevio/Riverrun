@@ -11,7 +11,7 @@ export const PRICE_MODE = { exact: 'Precio exacto', from: 'Desde (precio mínimo
 const IVA_MODE = { plus: 'Se suma el IVA', included: 'El precio ya incluye IVA', exempt: 'Exento de IVA' };
 export const KIND = { approximate: ['orange', 'Aproximada'], final: ['green', 'Final'] };
 export const STATUS = {
-  draft: ['', 'En preparación'], pending_approval: ['orange', 'Por aprobar'], approved: ['green', 'Aprobada'], sent: ['green', 'Enviada'],
+  draft: ['', 'En preparación'], pending_approval: ['orange', 'Por aprobar'], approved: ['green', 'Aprobada'], sent: ['green', 'Enviada'], accepted: ['green', 'Aceptada por el cliente'],
   rejected: ['red', 'Rechazada'], expired: ['', 'Vencida'], failed: ['red', 'Con error'],
 };
 
@@ -282,7 +282,8 @@ async function viewQuote(root, id) {
         h('div', { class: 'row' },
           q.pdf_path ? h('a', { class: 'btn', href: `/api/quotes/${q.id}/file`, target: '_blank', rel: 'noopener' }, 'Ver PDF') : null,
           q.docx_path ? h('a', { class: 'btn', href: `/api/quotes/${q.id}/file?fmt=docx`, download: '' }, 'Descargar Word') : null,
-          q.conversation_id ? h('a', { class: 'btn', href: `#/conversation/${q.conversation_id}` }, 'Ver conversación') : null)),
+          q.conversation_id ? h('a', { class: 'btn', href: `#/conversation/${q.conversation_id}` }, 'Ver conversación') : null,
+          q.status === 'sent' && isAdmin() ? h('button', { class: 'primary', onclick: () => acceptDialog(q, () => render()) }, 'El cliente aceptó') : null)),
       h('p', { class: 'small muted' }, `Creada ${fmtDate(q.created_at)} · Vigente hasta ${q.valid_until}`, q.source === 'bot' ? ' · Preparada por el asistente' : ''),
       Object.keys(q.customer_snapshot || {}).length
         ? h('dl', { class: 'small' }, Object.entries(q.customer_snapshot).map(([k, v]) => [h('dt', {}, k), h('dd', {}, v)])) : null,
@@ -295,15 +296,95 @@ async function viewQuote(root, id) {
           h('td', {}, lineAmount(l, c)))))),
       h('p', {}, h('strong', {}, `Total: ${totalText(q)}`), h('span', { class: 'small muted' }, ` (IVA ${Math.round(q.iva_rate * 100)} %)`)),
       q.notes ? h('p', { class: 'small' }, `Notas: ${q.notes}`) : null,
-      q.rejected_reason ? h('p', { class: 'small' }, `Motivo del rechazo: ${q.rejected_reason}`) : null),
+      q.rejected_reason ? h('p', { class: 'small' }, `Motivo del rechazo: ${q.rejected_reason}`) : null,
+      q.status === 'accepted' ? h('p', { class: 'small' }, `Aceptada por el cliente${q.accepted_at ? ` el ${fmtDate(q.accepted_at)}` : ''}. `, h('a', { href: `#/cobros?status=` }, 'Ver sus cobros')) : null),
     h('div', { class: 'card' }, h('h3', { style: 'margin-top:0' }, 'Historial'),
       h('ul', { class: 'small' }, (q.events || []).map((e) => h('li', {}, `${fmtDate(e.created_at)} · ${EVENT[e.type] || e.type}${e.user_name ? ` · ${e.user_name}` : ''}`)))));
 }
 
 const EVENT = {
   created: 'Creada', edited: 'Editada por el equipo', pending_approval: 'Enviada a aprobación', approved: 'Aprobada', sent: 'Enviada al cliente',
-  rejected: 'Rechazada', expired: 'Venció', failed: 'No se pudo generar o enviar', draft: 'Vuelve a preparación',
+  rejected: 'Rechazada', expired: 'Venció', failed: 'No se pudo generar o enviar', draft: 'Vuelve a preparación', accepted: 'El cliente la aceptó',
 };
+
+/* ------------------------------ Aceptada por el cliente ------------------------------ */
+
+const isoDay = (d) => d.toISOString().slice(0, 10);
+const plusDays = (s, n) => isoDay(new Date(Date.parse(`${s}T12:00:00Z`) + n * 86400_000));
+function plusMonths(s, n) {
+  const [y, m, d] = s.split('-').map(Number);
+  const t = m - 1 + n; const ny = y + Math.floor(t / 12); const nm = (t % 12) + 1;
+  const last = new Date(Date.UTC(ny, nm, 0)).getUTCDate();
+  return `${ny}-${String(nm).padStart(2, '0')}-${String(Math.min(d, last)).padStart(2, '0')}`;
+}
+
+/** Los cobros que saldrán del plan (el servidor hace el mismo cálculo y lo valida). */
+export function previewCharges(total, p) {
+  if (!(total > 0)) return [];
+  if (p.type === 'full') return [{ amount: total, due: p.due_date, label: 'Total' }];
+  if (p.type === 'deposit') {
+    const dep = Math.round((total * Number(p.percent)) / 100);
+    return [{ amount: dep, due: p.due_date, label: `Anticipo (${p.percent} %)` }, { amount: total - dep, due: p.rest_due_date, label: 'Resto' }];
+  }
+  const n = Number(p.count); if (!(n >= 2)) return [];
+  const each = Math.floor(total / n);
+  return Array.from({ length: n }, (_, i) => ({
+    amount: i === n - 1 ? total - each * (n - 1) : each,
+    due: p.every === 'month' ? plusMonths(p.first_due, i) : plusDays(p.first_due, i * (p.every === 'week' ? 7 : 15)),
+    label: `Pago ${i + 1} de ${n}`,
+  }));
+}
+
+/** «El cliente aceptó»: se marca la cotización y, si se quiere, se crean sus cobros con sus recordatorios de pago. */
+export async function acceptDialog(q, reload) {
+  const c = q.currency;
+  const exact = q.total_min === q.total_max && !q.open_ended && !q.has_tbd;
+  const today = isoDay(new Date());
+  const m = { amount: exact ? '' : (q.total_max ? (q.total_max / 100).toFixed(2) : ''), how: 'full', percent: '50', due_date: plusDays(today, 3), rest_due_date: plusDays(today, 30), count: '3', every: 'month', first_due: plusDays(today, 3) };
+  const total = () => (exact ? q.total_max : Math.round(Number(m.amount) * 100));
+  const plan = () => (m.how === 'none' ? null
+    : m.how === 'full' ? { type: 'full', due_date: m.due_date }
+      : m.how === 'deposit' ? { type: 'deposit', percent: Number(m.percent), due_date: m.due_date, rest_due_date: m.rest_due_date }
+        : { type: 'installments', count: Number(m.count), every: m.every, first_due: m.first_due });
+  const preview = h('div', { class: 'small', role: 'status', 'aria-live': 'polite' });
+  const opts = h('div');
+  const date = (key, label) => field(label, h('input', { type: 'date', value: m[key], oninput: (e) => { m[key] = e.target.value; showPreview(); } }));
+  const showPreview = () => {
+    const p = plan();
+    const list = p ? previewCharges(total(), p) : [];
+    fill(preview, !p ? h('p', { class: 'muted' }, 'Solo se marca como aceptada; los cobros los registras tú después.')
+      : !list.length ? h('p', { class: 'muted' }, 'Escribe el monto para ver los cobros.')
+        : h('ul', { style: 'margin:4px 0' }, list.map((x) => h('li', {}, `${x.label}: ${money(x.amount, c)} · vence ${x.due}`))));
+  };
+  const drawOpts = () => {
+    fill(opts,
+      m.how === 'full' ? date('due_date', 'Vence') : null,
+      m.how === 'deposit' ? h('div', { class: 'grid' },
+        field('Anticipo (%)', h('input', { type: 'number', min: 1, max: 99, value: m.percent, oninput: (e) => { m.percent = e.target.value; showPreview(); } })),
+        date('due_date', 'Vence el anticipo'), date('rest_due_date', 'Vence el resto')) : null,
+      m.how === 'installments' ? h('div', { class: 'grid' },
+        field('Número de pagos', h('input', { type: 'number', min: 2, max: 36, value: m.count, oninput: (e) => { m.count = e.target.value; showPreview(); } })),
+        field('Cada', select(m, 'every', [['month', 'Mes'], ['fortnight', '15 días'], ['week', 'Semana']], showPreview)),
+        date('first_due', 'Vence el primero')) : null);
+    showPreview();
+  };
+  drawOpts();
+  const content = h('div', {},
+    h('p', {}, `Cotización ${q.folio} · ${totalText(q)}`),
+    exact ? null : field('Monto final acordado', h('input', { type: 'number', min: 0.01, step: 0.01, value: m.amount, oninput: (e) => { m.amount = e.target.value; showPreview(); } }), 'La cotización es un rango o tiene conceptos por confirmar: escribe lo que se va a cobrar.'),
+    field('Crear cobro', select(m, 'how', [['full', 'Un solo pago por el total'], ['deposit', 'Anticipo y resto'], ['installments', 'En parcialidades'], ['none', 'No crear cobro']], drawOpts)),
+    opts, preview);
+  const ok = await dialog('El cliente aceptó la cotización', content, 'Marcar aceptada', () => {
+    if (m.how !== 'none' && !(total() > 0)) { toast('Escribe el monto final', true); return false; }
+    return true;
+  });
+  if (!ok) return;
+  const body = { plan: plan(), ...(!exact && total() > 0 ? { amount_cents: total() } : {}) };
+  const r = await run(() => api('POST', `/api/quotes/${q.id}/accept`, body));
+  if (!r) return;
+  toast(r.receivables.length ? `Cotización aceptada: ${r.receivables.length} cobro(s) creado(s) con sus recordatorios` : 'Cotización marcada como aceptada');
+  reload();
+}
 
 /* ------------------------------ En la conversación ------------------------------ */
 
@@ -321,7 +402,8 @@ function quoteItem(q, reload) {
   const head = h('div', { class: 'row', style: 'gap:6px;flex-wrap:wrap;align-items:center' },
     h('strong', {}, q.folio), badge(KIND[q.kind]), badge(STATUS[q.status] || ['', q.status]), h('span', {}, totalText(q)),
     admin && q.pdf_path ? h('a', { href: `/api/quotes/${q.id}/file`, target: '_blank', rel: 'noopener' }, 'Ver PDF') : null,
-    admin ? h('a', { href: `#/cotizaciones/historial?id=${q.id}` }, 'Detalle') : null);
+    admin ? h('a', { href: `#/cotizaciones/historial?id=${q.id}` }, 'Detalle') : null,
+    admin && q.status === 'sent' ? h('button', { class: 'small', onclick: () => acceptDialog(q, reload) }, 'El cliente aceptó') : null);
   if (!admin || !['pending_approval', 'failed'].includes(q.status)) return h('div', { class: 'quote-item', style: 'margin:8px 0' }, head);
   return h('div', { class: 'quote-item card', style: 'margin:8px 0;padding:10px' }, head, quoteEditor(q, reload));
 }

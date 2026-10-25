@@ -59,6 +59,12 @@ async function main() {
   const resumed = await service.resumePending();
   if (resumed) console.log(`Retomando ${resumed} conversaciones pendientes`);
 
+  // Pagos recurrentes: el cobro de cada periodo se crea unos días antes de que venza (cada hora; no se duplica).
+  const plans = () => void import('./receivables/plans.js').then(({ runPlans }) => runPlans(service.receivables))
+    .catch((e) => logEvent({ level: 'error', source: 'system', message: `Pagos recurrentes: ${e?.message ?? e}` }));
+  plans();
+  setInterval(plans, 3600 * 1000).unref();
+
   setInterval(() => void pollEmailChannels(service).catch((e) => logEvent({ level: 'error', source: 'channel', message: `Lectura de correo: ${e?.message ?? e}` })), config.emailPollSeconds * 1000).unref();
 
   setInterval(() => {

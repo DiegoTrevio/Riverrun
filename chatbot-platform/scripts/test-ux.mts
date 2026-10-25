@@ -89,12 +89,12 @@ try {
     if (role === 'superadmin') await context.addInitScript((id: string) => localStorage.setItem('cp-account', id), h.accountId);
     return context;
   };
-  const routes = ['agentes', `bot/${h.botId}/instrucciones`, `bot/${h.botId}/preguntas`, `bot/${h.botId}/activacion`, `bot/${h.botId}/conocimiento`, `bot/${h.botId}/imagenes`, `bot/${h.botId}/conexiones`, `bot/${h.botId}/probar`, `bot/${h.botId}/conexiones/${h.channelId}`, `bot/${h.botId}/conexiones/${socialNew.id}`, `bot/${h.botId}/conexiones/${socialOn.id}`, 'conversations', `conversation/${conv.id}`, 'agenda', 'agenda/servicios', `agenda/servicios?id=${service.id}`, 'agenda/equipo', 'agenda/enlaces', 'automation/rules', 'automation/rules/new', 'automation/sequences', 'automation/sequences/new', `automation/sequences/${uxFlow}`, 'automation/campaigns', 'automation/campaigns/new', `automation/campaigns/new?flow=${uxFlow}`, 'automation/settings', 'pipeline', 'pipeline/editar/nuevo', 'ajustes', 'integraciones', 'redes', `redes/whatsapp/${waSocial}`, 'comentarios', 'comentarios?tipo=review', 'publicaciones', `publicaciones?vista=calendario&mes=${uxMonth}`, 'publicaciones/nueva', `publicaciones/${pubA}`, 'users', 'consumo', 'logs', 'plan', 'cobros', 'cobros?tab=ajustes', 'estadisticas', 'estadisticas/redes', 'notifications', 'notifications?grupo=handoff', 'password', 'inicio', 'agentes/nuevo', `bot/${h.botId}/empezar`];
+  const routes = ['agentes', `bot/${h.botId}/instrucciones`, `bot/${h.botId}/preguntas`, `bot/${h.botId}/activacion`, `bot/${h.botId}/conocimiento`, `bot/${h.botId}/imagenes`, `bot/${h.botId}/conexiones`, `bot/${h.botId}/probar`, `bot/${h.botId}/conexiones/${h.channelId}`, `bot/${h.botId}/conexiones/${socialNew.id}`, `bot/${h.botId}/conexiones/${socialOn.id}`, 'conversations', `conversation/${conv.id}`, 'agenda', 'agenda/servicios', `agenda/servicios?id=${service.id}`, 'agenda/equipo', 'agenda/enlaces', 'automation/rules', 'automation/rules/new', 'automation/sequences', 'automation/sequences/new', `automation/sequences/${uxFlow}`, 'automation/campaigns', 'automation/campaigns/new', `automation/campaigns/new?flow=${uxFlow}`, 'automation/settings', 'pipeline', 'pipeline/editar/nuevo', 'ajustes', 'integraciones', 'redes', `redes/whatsapp/${waSocial}`, 'comentarios', 'comentarios?tipo=review', 'publicaciones', `publicaciones?vista=calendario&mes=${uxMonth}`, 'publicaciones/nueva', `publicaciones/${pubA}`, 'users', 'consumo', 'logs', 'plan', 'cobros', 'cobros?tab=recurrentes', 'cobros?tab=ajustes', 'estadisticas', 'estadisticas/redes', 'notifications', 'notifications?grupo=handoff', 'password', 'inicio', 'agentes/nuevo', `bot/${h.botId}/empezar`];
   const helpScreens: Record<string, string> = { [`bot/${h.botId}/conocimiento`]: '01-importar.jpg', [`bot/${h.botId}/probar`]: '03-probar.jpg', [`conversation/${conv.id}`]: '05-conversacion.jpg', ajustes: '06-ajustes.jpg' };
   for (const role of ['admin', 'superadmin', 'agent']) {
     const context = await contextFor(role); const page = await context.newPage();
     page.on('pageerror', (error) => results.errors.push({ role, message: error.message }));
-    const selected = role === 'admin' ? routes : role === 'agent' ? ['conversations', `conversation/${conv.id}`, 'agenda', 'cobros', 'notifications', 'pipeline', 'password'] : ['agentes', 'agentes/nuevo', 'accounts', 'planes', 'marcas', 'sistema', 'sistema/zernio', 'redes', 'users', 'ajustes', 'integraciones'];
+    const selected = role === 'admin' ? routes : role === 'agent' ? ['conversations', `conversation/${conv.id}`, 'agenda', 'cobros', 'cobros?tab=recurrentes', 'notifications', 'pipeline', 'password'] : ['agentes', 'agentes/nuevo', 'accounts', 'planes', 'marcas', 'sistema', 'sistema/zernio', 'redes', 'users', 'ajustes', 'integraciones'];
     for (const route of selected) {
       await page.goto(`${base}/#/${route}`); await page.locator('.main h1').waitFor(); await page.locator('.main [aria-busy="true"]').waitFor({ state: 'hidden' }); await page.waitForTimeout(100);
       await page.addScriptTag({ content: axe });
@@ -107,7 +107,7 @@ try {
   console.log('Pantallas examinadas:', results.screens.length);
   for (const width of [320, 390, 768, 1024, 1440]) for (const theme of ['light', 'dark'] as const) {
     const context = await contextFor('admin', { viewport: { width, height: 900 }, colorScheme: theme }); const page = await context.newPage();
-    for (const route of ['agentes', 'agentes/nuevo', `bot/${h.botId}/empezar`, `bot/${h.botId}/instrucciones`, `conversation/${conv.id}`, 'conversations', 'automation/sequences/new', `automation/sequences/${uxFlow}`, `automation/campaigns/new?flow=${uxFlow}`, 'agenda', 'redes', `redes/whatsapp/${waSocial}`, 'comentarios', 'publicaciones', `publicaciones?vista=calendario&mes=${uxMonth}`, 'publicaciones/nueva', 'estadisticas/redes', 'password', 'notifications?grupo=errors', 'automation/settings', 'cobros', 'cobros?tab=ajustes']) {
+    for (const route of ['agentes', 'agentes/nuevo', `bot/${h.botId}/empezar`, `bot/${h.botId}/instrucciones`, `conversation/${conv.id}`, 'conversations', 'automation/sequences/new', `automation/sequences/${uxFlow}`, `automation/campaigns/new?flow=${uxFlow}`, 'agenda', 'redes', `redes/whatsapp/${waSocial}`, 'comentarios', 'publicaciones', `publicaciones?vista=calendario&mes=${uxMonth}`, 'publicaciones/nueva', 'estadisticas/redes', 'password', 'notifications?grupo=errors', 'automation/settings', 'cobros', 'cobros?tab=recurrentes', 'cobros?tab=ajustes']) {
       await page.goto(`${base}/#/${route}`); await page.locator('.main h1').waitFor(); await page.waitForTimeout(80);
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1);
       results.responsive.push({ width, theme, route, overflow });
@@ -394,7 +394,19 @@ try {
     await page.getByText(/^Cobro registrado: \d recordatorio/).waitFor();
     await page.locator('tbody tr', { hasText: 'Anticipo de evento' }).getByText('$950.50').waitFor();
     assert.equal((await pool.query(`SELECT amount_cents::int AS c FROM receivables WHERE concept = 'Anticipo de evento'`)).rows[0]?.c, 95050);
-    await context.close(); checked('Cobros: ver el cobro del cliente, marcarlo pagado y registrar uno nuevo desde el celular');
+    // «Nuevo pago recurrente»: una mensualidad que se cobra sola cada mes.
+    await page.goto(`${base}/#/cobros?tab=recurrentes`); await page.getByRole('heading', { name: 'Cobros', level: 1 }).waitFor();
+    await page.getByText('Nuevo pago recurrente', { exact: true }).click();
+    await page.getByLabel('Cliente').fill('Dato actualizado');
+    await page.getByRole('button', { name: /^Dato actualizado del cliente/ }).click();
+    await page.getByLabel('Concepto').fill('Mensualidad de clases');
+    await page.getByLabel('Monto').fill('1200');
+    await page.getByLabel('Día del mes').fill('15');
+    await page.getByRole('button', { name: 'Registrar pago recurrente' }).click();
+    await page.getByText(/^Pago recurrente registrado/).waitFor();
+    await page.locator('tbody tr', { hasText: 'Mensualidad de clases' }).getByText('Cada mes, el día 15').waitFor();
+    assert.equal((await pool.query(`SELECT amount_cents::int AS c, frequency, day FROM receivable_plans WHERE concept = 'Mensualidad de clases'`)).rows[0]?.c, 120000);
+    await context.close(); checked('Cobros: ver el cobro del cliente, marcarlo pagado y registrar uno nuevo y un pago recurrente desde el celular');
   }
   assert.equal(results.errors.length, 0, JSON.stringify(results.errors));
   const serious = results.screens.flatMap((screen: any) => screen.violations.filter((v: any) => ['critical', 'serious'].includes(v.impact)).map((v: any) => ({ role: screen.role, route: screen.route, ...v })));

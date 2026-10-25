@@ -488,7 +488,7 @@ equipo lo marca como pagado.
   - Cada cobro puede tener días propios.
   - Salen por la conversación más reciente del cliente. En WhatsApp oficial, fuera de las 24 h, salen con la plantilla aprobada que se elija.
   - Son mensajes de servicio: no exigen consentimiento de promociones. No le llegan a quien escribió la palabra de baja.
-- **Variables:** `{{pago.concepto}}`, `{{pago.monto}}`, `{{pago.vencimiento}}`, `{{pago.dias_atraso}}`, `{{pago.dias_para_vencer}}`, `{{pago.link}}`, `{{pago.instrucciones}}` y `{{pago.referencia}}`, además de `{{nombre}}` y las demás. Si el texto no trae el enlace, las instrucciones o la referencia, se agregan al final.
+- **Variables:** `{{pago.concepto}}`, `{{pago.monto}}`, `{{pago.vencimiento}}`, `{{pago.dias_atraso}}`, `{{pago.dias_para_vencer}}`, `{{pago.link}}`, `{{pago.instrucciones}}`, `{{pago.referencia}}` y `{{pago.parcialidad}}` («2 de 3»), además de `{{nombre}}` y las demás. Si el texto no trae el enlace, las instrucciones o la referencia, se agregan al final.
 - **«Ya pagué» o un comprobante:**
   - El asistente no confirma el pago: dice que el equipo lo verifica.
   - Se avisa al equipo (grupo **Pagos** de *Mis avisos*) y los recordatorios de ese cliente se pausan 2 días.
@@ -496,8 +496,29 @@ equipo lo marca como pagado.
 - **Vencido sin pagar:** el día siguiente se avisa al equipo una sola vez (se puede apagar).
 - **El asistente sabe lo que debe el cliente** y le da el monto, la fecha y las instrucciones si pregunta «¿cuánto debo?» o «¿cómo pago?».
 - **Reglas:** disparadores *Hoy vence un pago*, *Un pago vence sin pagarse* y *El equipo marca un pago como pagado*, con las mismas variables `{{pago.*}}`.
-- **API v1:** `GET /api/v1/receivables`, `POST /api/v1/receivables` (con `contact_id`, o `channel_id` de WhatsApp y `phone`) y `POST /api/v1/receivables/:id/paid` y `/cancel`.
-- **Variables de entorno:** `RECEIVABLES_ENABLED`, `RECEIVABLE_DEFAULT_REMINDERS`, `RECEIVABLE_DEFAULT_SEND_AT`, `RECEIVABLE_MAX_REMINDERS` y `RECEIVABLE_MANUAL_REMIND_PER_DAY`.
+- **API v1:**
+  - `GET /api/v1/receivables` y `POST /api/v1/receivables` (con `contact_id`, o `channel_id` de WhatsApp y `phone`; con `source_id`, un reintento no duplica el cobro);
+  - `POST /api/v1/receivables/:id/paid` y `/cancel`;
+  - pagos recurrentes: `GET` y `POST /api/v1/receivable-plans` y `POST /api/v1/receivable-plans/:id/deactivate`.
+- **Variables de entorno:** `RECEIVABLES_ENABLED`, `RECEIVABLE_DEFAULT_REMINDERS`, `RECEIVABLE_DEFAULT_SEND_AT`, `RECEIVABLE_MAX_REMINDERS`, `RECEIVABLE_MANUAL_REMIND_PER_DAY` y `RECEIVABLE_RECURRING_LEAD_DAYS`.
+
+**Cobros que se crean solos.** Son cobros normales, con sus recordatorios, su pausa por «ya pagué» y su «Marcar pagado». Ninguno se duplica aunque su tarea corra dos veces: cada uno lleva el folio de su origen.
+
+- **Pagos recurrentes** (*Cobros → Recurrentes*, `GET/POST /api/receivable-plans`):
+  - una mensualidad o una cuota cada semana o cada 2 semanas, con su día (el 31 cae en el último día de los meses cortos);
+  - tiene fecha de inicio, y opcionalmente de fin o un número de pagos;
+  - el cobro de cada periodo se crea `RECEIVABLE_RECURRING_LEAD_DAYS` días antes (7 por defecto);
+  - pausar o borrar el plan no toca los cobros que ya creó, y al llegar a su fin el plan se desactiva solo.
+- **Anticipo de cita** (en el servicio de la agenda: monto fijo y cuántas horas antes de la cita vence):
+  - al agendar, por el asistente, el panel o la página pública, se registra el cobro;
+  - si hay conversación, el cliente recibe en un par de minutos cuánto y cómo pagar; si reservó en la página, va en su correo de confirmación;
+  - cancelar la cita cancela el anticipo, y cambiarla de hora mueve su vencimiento;
+  - con *cancelar si no se pagó*, a la hora límite sin pago la cita se cancela sola y se avisa al cliente y al equipo.
+- **Desde una cotización** (`POST /api/quotes/:id/accept`, admin):
+  - en una cotización enviada, el botón *El cliente aceptó* la marca como **aceptada**, y una cotización aceptada ya no vence;
+  - ofrece crear sus cobros: el total, un anticipo (%) y el resto, o N parcialidades cada mes, cada 15 días o cada semana; los centavos que no se reparten parejo van en el último;
+  - si la cotización es un rango, se pide el monto final acordado;
+  - dispara la regla *El cliente acepta una cotización*.
 
 ## Tu negocio: tablero, resumen diario y pasar a cobro real
 

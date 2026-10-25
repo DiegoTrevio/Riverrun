@@ -146,6 +146,7 @@ export class ChatService {
       no_reply: (p) => this.automator.runNoReply(p),
       sequence_step: (p) => this.automator.runSequenceStep(p),
       appointment_reminder: (p) => this.agenda.sendReminder(p),
+      appointment_deposit_check: (p) => this.agenda.checkDeposit(p),
       receivable_reminder: (p) => this.receivables.runReminder(p),
       receivable_overdue: (p) => this.receivables.runOverdue(p),
       campaign_start: (p) => this.campaigns.start(p.campaign_id),

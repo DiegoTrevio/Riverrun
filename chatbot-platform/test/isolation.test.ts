@@ -74,6 +74,7 @@ function fillParams(url: string): string | null {
     [/^\/api\/billing\/invoices\/:id/, 'cfdi'],
     [/^\/api\/invitations\/:id/, 'invitation'],
     [/^\/api\/receivables\/:id/, 'receivable'],
+    [/^\/api\/receivable-plans\/:id/, 'receivable_plan'],
     // Solo el superadmin: la cuenta A debe recibir 403.
     [/^\/api\/system\/zernio\/tenants\/:id/, 'account'],
     [/^\/api\/system\/zernio\/webhook-logs\/:id/, 'bot'],
@@ -181,6 +182,9 @@ before(async () => {
   const rec = await adminB('POST', '/api/receivables', { contact_id: B.contact, concept: `Cobro ${MARK}`, amount_cents: 12300, due_date: due });
   assert.equal(rec.statusCode, 201, rec.body);
   B.receivable = rec.json().receivable.id;
+  const plan = await adminB('POST', '/api/receivable-plans', { contact_id: B.contact, concept: `Plan ${MARK}`, amount_cents: 45600, frequency: 'monthly', day: 5, starts_on: due });
+  assert.equal(plan.statusCode, 201, plan.body);
+  B.receivable_plan = plan.json().plan.id;
   await h.idle();
 });
 after(async () => {

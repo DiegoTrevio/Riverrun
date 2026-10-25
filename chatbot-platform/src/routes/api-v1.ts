@@ -18,7 +18,8 @@ import { describeConversation } from '../automation/alert-format.js';
 import { hashKey } from './integrations.js';
 import { conversationExport, ExportContentSchema } from '../integrations/conversation-export.js';
 import { parse } from './util.js';
-import { createReceivable, ReceivableBody, receivableOut } from './receivables.js';
+import { createPlan, createReceivable, listPlans, PlanBody, planOut, ReceivableBody, receivableOut } from './receivables.js';
+import { getPlan } from '../receivables/plans.js';
 import { config } from '../config.js';
 import { getReceivable, listReceivables, todayIn } from '../receivables/index.js';
 
@@ -193,6 +194,26 @@ export async function apiV1Routes(app: FastifyInstance, service: ChatService) {
           return receivableOut(updated);
         });
       }
+
+      /** Pagos recurrentes: cada periodo se crea su cobro (con sus recordatorios) unos días antes de que venza. */
+      v1.get('/receivable-plans', async (req: any) => {
+        if (!config.receivables.enabled) throw new HttpError(404, 'Los cobros no están activados');
+        const q = parse(z.object({ contact_id: z.string().uuid().optional() }), req.query);
+        const today = todayIn((await astore.getSettings(account(req))).timezone);
+        return { data: (await listPlans(account(req), q.contact_id)).map((p) => planOut(p, today)) };
+      });
+      v1.post('/receivable-plans', async (req: any, reply) => {
+        if (!config.receivables.enabled) throw new HttpError(404, 'Los cobros no están activados');
+        const { plan, created } = await createPlan(service, account(req), parse(PlanBody, req.body), { userId: null, actor: `la API (${req.apiKey.name})` });
+        return reply.code(201).send({ ...planOut(plan, todayIn((await astore.getSettings(account(req))).timezone)), receivables_created: created });
+      });
+      v1.post('/receivable-plans/:id/deactivate', async (req: any) => {
+        if (!config.receivables.enabled) throw new HttpError(404, 'Los cobros no están activados');
+        const p = await getPlan(req.params.id);
+        if (!p || p.account_id !== account(req)) throw new HttpError(404, 'Pago recurrente no encontrado');
+        await query(`UPDATE receivable_plans SET active = false, updated_at = now() WHERE id = $1`, [p.id]);
+        return planOut({ ...p, active: false }, todayIn((await astore.getSettings(account(req))).timezone));
+      });
 
       /* ------------------------------ Conversaciones y mensajes ------------------------------ */
       v1.get('/conversations', async (req: any) => {

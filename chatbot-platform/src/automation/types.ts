@@ -169,6 +169,8 @@ export const TriggerSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('quote_sent'), kind: z.enum(['', 'approximate', 'final']).default('') }),
   z.object({ type: z.literal('quote_pending_approval') }),
   z.object({ type: z.literal('quote_rejected') }),
+  /** El equipo marcó que el cliente aceptó la cotización. */
+  z.object({ type: z.literal('quote_accepted') }),
   /** Cobros: hoy vence (al enviarse el recordatorio del día), venció sin pagarse (al día siguiente) y el equipo lo marcó pagado. */
   z.object({ type: z.literal('payment_due') }),
   z.object({ type: z.literal('payment_overdue') }),
@@ -368,6 +370,13 @@ export const ServiceBodySchema = z.object({
   /** El cliente puede pedir una persona por su nombre (el agente le ofrece sus horarios). */
   customer_choice: z.boolean().default(false),
   notify_team: z.boolean().default(true),
+  /** Anticipo para confirmar la cita: un monto fijo (0 = sin anticipo). Se cobra con los recordatorios de pago. */
+  deposit_cents: z.number().int().min(0).max(100_000_000_000).default(0),
+  deposit_currency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/).default('MXN'),
+  /** Horas antes de la cita en que vence el anticipo (0 = el día que se agenda). */
+  deposit_due_hours: z.number().int().min(0).max(720).default(0),
+  /** Si a esa hora no se pagó, la cita se cancela sola y se avisa al cliente y al equipo. */
+  deposit_cancel_unpaid: z.boolean().default(false),
   active: z.boolean().default(true),
 });
 export type ServiceBody = z.infer<typeof ServiceBodySchema>;

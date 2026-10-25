@@ -44,6 +44,8 @@ export interface Receivable {
   reference: string;
   source: 'manual' | 'api' | 'recurring' | 'appointment' | 'quote';
   source_id: string;
+  /** «2 de 3» en pagos en parcialidades; vacío si no aplica. */
+  installment: string;
   reminders: number[] | null;
   reminders_sent: number;
   last_reminded_at: string | null;
@@ -68,7 +70,7 @@ export interface ReceivableSettings {
 
 /** Columnas de un cobro (el monto como número y el vencimiento como YYYY-MM-DD). */
 const cols = (p = '') => `${p}id, ${p}account_id, ${p}contact_id, ${p}conversation_id, ${p}concept, ${p}amount_cents::float8 AS amount_cents, ${p}currency,
-  to_char(${p}due_date, 'YYYY-MM-DD') AS due_date, ${p}status, ${p}paid_at, ${p}paid_by, ${p}paid_note, ${p}payment_link, ${p}reference, ${p}source, ${p}source_id,
+  to_char(${p}due_date, 'YYYY-MM-DD') AS due_date, ${p}status, ${p}paid_at, ${p}paid_by, ${p}paid_note, ${p}payment_link, ${p}reference, ${p}source, ${p}source_id, ${p}installment,
   ${p}reminders, ${p}reminders_sent, ${p}last_reminded_at, ${p}paused_until, ${p}overdue_notified_at, ${p}created_by, ${p}created_at, ${p}updated_at`;
 export const RECEIVABLE_COLS = cols();
 
@@ -99,6 +101,10 @@ export async function saveReceivableSettings(accountId: string, s: ReceivableSet
       s.wa_template ? JSON.stringify(s.wa_template) : null, s.notify_team_on_overdue],
   );
 }
+
+/** El cobro que salió de un origen (la cita de su anticipo, el periodo de un plan, la parcialidad de una cotización). */
+export const receivableBySource = (accountId: string, source: Receivable['source'], sourceId: string) =>
+  queryOne<Receivable>(`SELECT ${RECEIVABLE_COLS} FROM receivables WHERE account_id = $1 AND source = $2 AND source_id = $3 ORDER BY created_at DESC LIMIT 1`, [accountId, source, sourceId]);
 
 export const getReceivable = (id: string) => queryOne<Receivable>(`SELECT ${RECEIVABLE_COLS} FROM receivables WHERE id = $1`, [id]);
 
@@ -161,7 +167,7 @@ export function daysBetween(from: string, to: string) {
 }
 
 /** Las variables del cobro para los mensajes: {{pago.concepto}}, {{pago.monto}}, {{pago.vencimiento}}… */
-export function paymentVars(r: Pick<Receivable, 'concept' | 'amount_cents' | 'currency' | 'due_date' | 'payment_link' | 'reference'>, s: Pick<ReceivableSettings, 'payment_instructions'>, tz: string, now = new Date()): Record<string, string> {
+export function paymentVars(r: Pick<Receivable, 'concept' | 'amount_cents' | 'currency' | 'due_date' | 'payment_link' | 'reference'> & { installment?: string }, s: Pick<ReceivableSettings, 'payment_instructions'>, tz: string, now = new Date()): Record<string, string> {
   const late = daysBetween(r.due_date, todayIn(tz, now));
   return {
     'pago.concepto': r.concept,
@@ -173,6 +179,7 @@ export function paymentVars(r: Pick<Receivable, 'concept' | 'amount_cents' | 'cu
     'pago.link': r.payment_link,
     'pago.instrucciones': s.payment_instructions.trim(),
     'pago.referencia': r.reference,
+    'pago.parcialidad': r.installment ?? '',
   };
 }
 
@@ -204,8 +211,52 @@ export interface ReceivableContext {
 const cancelReceivableJobs = (id: string) =>
   query(`UPDATE jobs SET status = 'cancelled', finished_at = now() WHERE status = 'pending' AND payload ? 'receivable_id' AND payload->>'receivable_id' = $1`, [id]);
 
+/** Un cobro nuevo, del panel, la API o uno que se crea solo (plan recurrente, anticipo de cita, cotización aceptada). */
+export interface NewReceivable {
+  accountId: string;
+  /** Sin cliente (una reserva de la página pública): el equipo lo ve en Cobros, pero no hay a quién recordarle. */
+  contactId: string | null;
+  conversationId?: string | null;
+  concept: string;
+  amountCents: number;
+  currency?: string;
+  dueDate: string;
+  paymentLink?: string;
+  reference?: string;
+  reminders?: number[] | null;
+  source: Receivable['source'];
+  /** Folio del origen: el mismo origen con el mismo folio no crea un segundo cobro. */
+  sourceId?: string;
+  installment?: string;
+  createdBy?: string | null;
+  /** Quién lo registró, para la bitácora. */
+  actor: string;
+}
+
 export class Receivables {
   constructor(private chat: ChatService) {}
+
+  /**
+   * Registra el cobro y programa sus recordatorios. Si ya existe uno del mismo origen y folio (la tarea corrió dos veces,
+   * el ERP reintentó), devuelve ese sin crear otro ni volver a programarlo.
+   */
+  async create(n: NewReceivable): Promise<{ receivable: Receivable; scheduled: number; existed?: boolean }> {
+    const sourceId = n.source === 'manual' ? '' : (n.sourceId ?? '').slice(0, 200);
+    const r = await queryOne<Receivable>(
+      `INSERT INTO receivables (account_id, contact_id, conversation_id, concept, amount_cents, currency, due_date, payment_link, reference, reminders, source, source_id, installment, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+       ON CONFLICT (account_id, source, source_id) WHERE source <> 'manual' AND source_id <> '' DO NOTHING RETURNING ${RECEIVABLE_COLS}`,
+      [n.accountId, n.contactId, n.conversationId ?? null, n.concept.slice(0, 200), n.amountCents, n.currency ?? 'MXN', n.dueDate, n.paymentLink ?? '', n.reference ?? '',
+        n.reminders ? JSON.stringify(n.reminders) : null, n.source, sourceId, n.installment ?? '', n.createdBy ?? null],
+    );
+    if (!r) {
+      const existing = (await queryOne<Receivable>(`SELECT ${RECEIVABLE_COLS} FROM receivables WHERE account_id = $1 AND source = $2 AND source_id = $3`, [n.accountId, n.source, sourceId]))!;
+      return { receivable: existing, scheduled: 0, existed: true };
+    }
+    const scheduled = await this.schedule(r);
+    await logEvent({ level: 'info', source: 'admin', message: `Cobro registrado por ${n.actor}: ${r.concept} (${r.currency} ${(Number(r.amount_cents) / 100).toFixed(2)}, vence ${r.due_date}); ${scheduled} recordatorio(s) programado(s)`, accountId: n.accountId });
+    return { receivable: r, scheduled };
+  }
 
   /** Programa (o reprograma) los recordatorios de un cobro pendiente y la revisión de vencido. Devuelve cuántos quedaron. */
   async schedule(r: Receivable, now = new Date()) {
@@ -228,6 +279,15 @@ export class Receivables {
       await astore.scheduleJob({ account_id: r.account_id, type: 'receivable_overdue', payload: { receivable_id: r.id }, run_at: overdueAt, dedupe_key: `payover:${r.id}` });
     }
     return n;
+  }
+
+  /** Cambia el vencimiento de un cobro pendiente (la cita de su anticipo se movió) y reprograma sus recordatorios. */
+  async moveDue(r: Receivable, dueDate: string) {
+    const updated = await queryOne<Receivable>(
+      `UPDATE receivables SET due_date = $2, overdue_notified_at = CASE WHEN due_date <> $2::date THEN NULL ELSE overdue_notified_at END, updated_at = now()
+        WHERE id = $1 AND status = 'pending' RETURNING ${RECEIVABLE_COLS}`, [r.id, dueDate]);
+    if (updated) await this.schedule(updated);
+    return updated;
   }
 
   /** Reprograma los pendientes de una cuenta que usan sus días (al cambiar los días o la hora de envío). */

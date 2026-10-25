@@ -9,7 +9,7 @@ type Queryable = { query: (text: string, params?: unknown[]) => Promise<{ rows: 
 const pooled: Queryable = { query: (t, p) => query(t, p).then((rows) => ({ rows })) };
 
 export type QuoteKind = 'approximate' | 'final';
-export type QuoteStatus = 'draft' | 'pending_approval' | 'approved' | 'sent' | 'rejected' | 'expired' | 'failed';
+export type QuoteStatus = 'draft' | 'pending_approval' | 'approved' | 'sent' | 'accepted' | 'rejected' | 'expired' | 'failed';
 export type QuoteSource = 'bot' | 'panel';
 
 export interface QuoteSettings {
@@ -86,6 +86,8 @@ export interface Quote {
   approved_by: string | null;
   approved_at: Date | null;
   sent_at: Date | null;
+  accepted_at?: Date | null;
+  accepted_by?: string | null;
   rejected_reason: string;
   created_at: Date;
   updated_at: Date;
@@ -101,7 +103,9 @@ const TRANSITIONS: Record<QuoteStatus, readonly QuoteStatus[]> = {
   pending_approval: ['approved', 'sent', 'rejected', 'expired', 'failed'],
   approved: ['sent', 'failed', 'expired'],
   failed: ['draft', 'pending_approval', 'approved', 'sent', 'rejected'],
-  sent: ['expired'],
+  // El cliente la aceptó (lo marca el equipo): ya no vence y de ella salen sus cobros.
+  sent: ['accepted', 'expired'],
+  accepted: [],
   rejected: [],
   expired: [],
 };
@@ -433,6 +437,10 @@ export async function transitionQuote(
       extra.push(`approved_by = $${params.length}, approved_at = now()`);
     }
     if (to === 'sent') extra.push('sent_at = now()');
+    if (to === 'accepted') {
+      params.push(opts.userId ?? null);
+      extra.push(`accepted_by = $${params.length}, accepted_at = now()`);
+    }
     const r = (await client.query(
       `UPDATE quotes SET status = $3, updated_at = now()${extra.length ? `, ${extra.join(', ')}` : ''} WHERE account_id = $1 AND id = $2 RETURNING *`,
       params,
