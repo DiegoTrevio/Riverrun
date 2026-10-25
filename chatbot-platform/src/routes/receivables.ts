@@ -21,19 +21,29 @@ const Day = z.number().int().min(-60).max(120);
 const Days = z.array(Day).max(20).transform((d) => [...new Set(d)].sort((a, b) => a - b));
 const Link = z.union([z.literal(''), z.string().trim().max(500).url().refine((u) => /^https:\/\//i.test(u), 'El enlace de pago debe empezar con https://')]);
 
-export const ReceivableBody = z.object({
-  contact_id: z.string().uuid(),
+const fields = {
   conversation_id: z.string().uuid().nullable().optional(),
   concept: z.string().trim().min(1).max(200),
   amount_cents: z.number().int().min(1).max(100_000_000_000),
-  currency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/).default('MXN'),
+  currency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/),
   due_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Fecha en formato AAAA-MM-DD').refine((d) => !Number.isNaN(Date.parse(`${d}T00:00:00Z`)), 'Fecha inválida'),
-  payment_link: Link.default(''),
-  reference: z.string().trim().max(100).default(''),
+  payment_link: Link,
+  reference: z.string().trim().max(100),
   /** null = los días de la cuenta. */
-  reminders: Days.nullable().default(null),
+  reminders: Days.nullable(),
+};
+export const ReceivableBody = z.object({
+  ...fields,
+  contact_id: z.string().uuid(),
+  currency: fields.currency.default('MXN'),
+  payment_link: Link.default(''),
+  reference: fields.reference.default(''),
+  reminders: fields.reminders.default(null),
+  /** Folio del sistema que lo da de alta (API): un reintento con el mismo folio no duplica el cobro. */
+  source_id: z.string().trim().max(100).default(''),
 });
-const ReceivablePatch = ReceivableBody.omit({ contact_id: true }).partial();
+/** Sin valores por defecto: lo que no viene no se toca (editar el concepto no cambia la moneda ni el enlace). */
+const ReceivablePatch = z.object(fields).partial();
 
 const SettingsBody = z.object({
   payment_instructions: z.string().max(2000).default(''),
@@ -55,7 +65,7 @@ export const receivableOut = (r: Receivable & { contact_name?: string; contact_p
 });
 
 /** Alta de un cobro (panel o API): el contacto es de la cuenta y la conversación, si se da, también. */
-export async function createReceivable(service: ChatService, accountId: string, b: z.infer<typeof ReceivableBody>, o: { userId: string | null; source: 'manual' | 'api'; actor: string }) {
+export async function createReceivable(service: ChatService, accountId: string, b: z.infer<typeof ReceivableBody>, o: { userId: string | null; source: 'manual' | 'api'; actor: string }): Promise<{ receivable: Receivable; scheduled: number; existed?: boolean }> {
   if (b.reminders && b.reminders.length > config.receivables.maxReminders) throw new HttpError(400, `Hasta ${config.receivables.maxReminders} recordatorios por cobro`);
   const contact = await queryOne<{ id: string }>(`SELECT id FROM contacts WHERE id = $1 AND account_id = $2`, [b.contact_id, accountId]);
   if (!contact) throw new HttpError(400, 'El cliente no existe en esta cuenta');
@@ -63,12 +73,19 @@ export async function createReceivable(service: ChatService, accountId: string, 
     const conv = await queryOne(`SELECT 1 FROM conversations WHERE id = $1 AND account_id = $2 AND contact_id = $3`, [b.conversation_id, accountId, contact.id]);
     if (!conv) throw new HttpError(400, 'La conversación no es de este cliente');
   }
-  const r = (await queryOne<Receivable>(
-    `INSERT INTO receivables (account_id, contact_id, conversation_id, concept, amount_cents, currency, due_date, payment_link, reference, reminders, source, created_by)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING ${RECEIVABLE_COLS}`,
+  const sourceId = o.source === 'api' ? b.source_id : '';
+  const r = await queryOne<Receivable>(
+    `INSERT INTO receivables (account_id, contact_id, conversation_id, concept, amount_cents, currency, due_date, payment_link, reference, reminders, source, source_id, created_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+     ON CONFLICT (account_id, source_id) WHERE source = 'api' AND source_id <> '' DO NOTHING RETURNING ${RECEIVABLE_COLS}`,
     [accountId, contact.id, b.conversation_id ?? null, b.concept, b.amount_cents, b.currency, b.due_date, b.payment_link, b.reference,
-      b.reminders ? JSON.stringify(b.reminders) : null, o.source, o.userId],
-  ))!;
+      b.reminders ? JSON.stringify(b.reminders) : null, o.source, sourceId, o.userId],
+  );
+  if (!r) {
+    // Ya existía con ese folio: se devuelve el mismo cobro, sin programar otra vez sus recordatorios.
+    const existing = (await queryOne<Receivable>(`SELECT ${RECEIVABLE_COLS} FROM receivables WHERE account_id = $1 AND source = 'api' AND source_id = $2`, [accountId, sourceId]))!;
+    return { receivable: existing, scheduled: 0, existed: true };
+  }
   const scheduled = await service.receivables.schedule(r);
   await logEvent({ level: 'info', source: 'admin', message: `Cobro registrado por ${o.actor}: ${r.concept} (${r.currency} ${(Number(r.amount_cents) / 100).toFixed(2)}, vence ${r.due_date}); ${scheduled} recordatorio(s) programado(s)`, accountId });
   return { receivable: r, scheduled };
@@ -86,7 +103,7 @@ export async function receivableRoutes(api: FastifyInstance, service: ChatServic
     const q = parse(z.object({ status: z.enum(['', 'pending', 'overdue', 'paid', 'canceled']).default(''), contact_id: z.string().uuid().optional(), search: z.string().trim().max(100).optional(), account_id: z.string().optional() }), req.query);
     const st = await astore.getSettings(accountId);
     const today = todayIn(st.timezone);
-    const { rows, totals } = await listReceivables(accountId, { status: q.status, contactId: q.contact_id, search: q.search }, today);
+    const { rows, totals } = await listReceivables(accountId, { status: q.status, contactId: q.contact_id, search: q.search }, today, st.timezone);
     return { today, data: rows.map(receivableOut), totals };
   });
 

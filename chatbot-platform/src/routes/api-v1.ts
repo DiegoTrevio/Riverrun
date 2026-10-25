@@ -157,7 +157,7 @@ export async function apiV1Routes(app: FastifyInstance, service: ChatService) {
         if (!config.receivables.enabled) throw new HttpError(404, 'Los cobros no están activados');
         const q = parse(z.object({ status: z.enum(['', 'pending', 'overdue', 'paid', 'canceled']).default(''), contact_id: z.string().uuid().optional() }), req.query);
         const st = await astore.getSettings(account(req));
-        const { rows, totals } = await listReceivables(account(req), { status: q.status, contactId: q.contact_id, limit: 500 }, todayIn(st.timezone));
+        const { rows, totals } = await listReceivables(account(req), { status: q.status, contactId: q.contact_id, limit: 500 }, todayIn(st.timezone), st.timezone);
         return { data: rows.map(receivableOut), totals };
       });
 
@@ -178,8 +178,8 @@ export async function apiV1Routes(app: FastifyInstance, service: ChatService) {
         }
         const { channel_id: _c, phone: _p, ...body } = raw;
         void _c; void _p;
-        const { receivable, scheduled } = await createReceivable(service, account(req), { ...body, contact_id: contactId }, { userId: null, source: 'api', actor: `la API (${req.apiKey.name})` });
-        return reply.code(201).send({ ...receivableOut(receivable), reminders_scheduled: scheduled });
+        const { receivable, scheduled, existed } = await createReceivable(service, account(req), { ...body, contact_id: contactId }, { userId: null, source: 'api', actor: `la API (${req.apiKey.name})` });
+        return reply.code(existed ? 200 : 201).send({ ...receivableOut(receivable), reminders_scheduled: scheduled });
       });
 
       for (const [path, status] of [['paid', 'paid'], ['cancel', 'canceled']] as const) {

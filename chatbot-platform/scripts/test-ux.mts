@@ -382,7 +382,19 @@ try {
     await page.getByRole('dialog').getByRole('button', { name: 'Marcar pagado' }).click();
     await page.getByText('Cobro marcado como pagado').waitFor();
     assert.equal((await pool.query(`SELECT status FROM receivables WHERE id = $1`, [uxCharge.id])).rows[0].status, 'paid');
-    await context.close(); checked('Cobros: ver el cobro del cliente y marcarlo pagado desde el celular');
+    // «Nuevo cobro» desde el formulario: buscar al cliente, llenar y registrar; aparece en la lista con sus recordatorios.
+    await page.getByText('Nuevo cobro', { exact: true }).click();
+    await page.getByLabel('Cliente').fill('Dato actualizado');
+    await page.getByRole('button', { name: /^Dato actualizado del cliente/ }).click();
+    await page.getByText(/^Cliente: Dato actualizado del cliente/).waitFor();
+    await page.getByLabel('Concepto').fill('Anticipo de evento');
+    await page.getByLabel('Monto').fill('950.50');
+    await page.getByLabel('Vence').fill(new Date(Date.now() + 10 * 86400_000).toISOString().slice(0, 10));
+    await page.getByRole('button', { name: 'Registrar cobro' }).click();
+    await page.getByText(/^Cobro registrado: \d recordatorio/).waitFor();
+    await page.locator('tbody tr', { hasText: 'Anticipo de evento' }).getByText('$950.50').waitFor();
+    assert.equal((await pool.query(`SELECT amount_cents::int AS c FROM receivables WHERE concept = 'Anticipo de evento'`)).rows[0]?.c, 95050);
+    await context.close(); checked('Cobros: ver el cobro del cliente, marcarlo pagado y registrar uno nuevo desde el celular');
   }
   assert.equal(results.errors.length, 0, JSON.stringify(results.errors));
   const serious = results.screens.flatMap((screen: any) => screen.violations.filter((v: any) => ['critical', 'serious'].includes(v.impact)).map((v: any) => ({ role: screen.role, route: screen.route, ...v })));

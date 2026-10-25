@@ -37,6 +37,10 @@ CREATE INDEX IF NOT EXISTS receivables_contact_idx ON receivables (contact_id);
 CREATE INDEX IF NOT EXISTS receivables_conversation_idx ON receivables (conversation_id);
 CREATE INDEX IF NOT EXISTS receivables_paid_by_idx ON receivables (paid_by);
 CREATE INDEX IF NOT EXISTS receivables_created_by_idx ON receivables (created_by);
+-- Un ERP que reintenta el alta con su mismo folio (source_id) no duplica el cobro.
+CREATE UNIQUE INDEX IF NOT EXISTS receivables_api_source_idx ON receivables (account_id, source_id) WHERE source = 'api' AND source_id <> '';
+-- Cancelar y reprogramar los recordatorios de un cobro sin recorrer toda la cola de trabajos.
+CREATE INDEX IF NOT EXISTS jobs_receivable_idx ON jobs ((payload->>'receivable_id')) WHERE status = 'pending' AND payload ? 'receivable_id';
 
 CREATE TABLE IF NOT EXISTS receivable_settings (
   account_id uuid PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,

@@ -110,7 +110,7 @@ export interface ReceivableFilter {
 }
 
 /** Lista de la cuenta con el nombre y teléfono del cliente, y los totales por cobrar, vencido y cobrado este mes. */
-export async function listReceivables(accountId: string, f: ReceivableFilter, today: string) {
+export async function listReceivables(accountId: string, f: ReceivableFilter, today: string, tz = 'UTC') {
   const where: string[] = ['r.account_id = $1'];
   const args: unknown[] = [accountId];
   const arg = (v: unknown) => `$${args.push(v)}`;
@@ -132,9 +132,9 @@ export async function listReceivables(accountId: string, f: ReceivableFilter, to
     `SELECT currency,
             COALESCE(sum(amount_cents) FILTER (WHERE status = 'pending'), 0)::text AS pending,
             COALESCE(sum(amount_cents) FILTER (WHERE status = 'pending' AND due_date < $2), 0)::text AS overdue,
-            COALESCE(sum(amount_cents) FILTER (WHERE status = 'paid' AND paid_at >= date_trunc('month', now())), 0)::text AS paid_month
+            COALESCE(sum(amount_cents) FILTER (WHERE status = 'paid' AND paid_at >= (date_trunc('month', now() AT TIME ZONE $3) AT TIME ZONE $3)), 0)::text AS paid_month
        FROM receivables WHERE account_id = $1 GROUP BY currency ORDER BY currency`,
-    [accountId, today],
+    [accountId, today, tz],
   );
   return { rows, totals: totals.map((t) => ({ currency: t.currency, pending_cents: Number(t.pending), overdue_cents: Number(t.overdue), paid_month_cents: Number(t.paid_month) })) };
 }
@@ -200,12 +200,16 @@ export interface ReceivableContext {
 
 /* ------------------------------ Recordatorios ------------------------------ */
 
+/** Cancela los trabajos pendientes de un cobro (con la llave escrita, para usar el índice jobs_receivable_idx). */
+const cancelReceivableJobs = (id: string) =>
+  query(`UPDATE jobs SET status = 'cancelled', finished_at = now() WHERE status = 'pending' AND payload ? 'receivable_id' AND payload->>'receivable_id' = $1`, [id]);
+
 export class Receivables {
   constructor(private chat: ChatService) {}
 
   /** Programa (o reprograma) los recordatorios de un cobro pendiente y la revisión de vencido. Devuelve cuántos quedaron. */
   async schedule(r: Receivable, now = new Date()) {
-    await astore.cancelJobs('receivable_id', r.id);
+    await cancelReceivableJobs(r.id);
     if (r.status !== 'pending' || !config.receivables.enabled) return 0;
     const [s, st] = await Promise.all([getReceivableSettings(r.account_id), astore.getSettings(r.account_id)]);
     const offsets = (r.reminders ?? s.default_reminders).slice(0, config.receivables.maxReminders);
@@ -236,9 +240,13 @@ export class Receivables {
   async remind(r: Receivable, o: { manual?: boolean; now?: Date } = {}): Promise<{ sent: boolean; reason?: string; conversationId?: string | null }> {
     const now = o.now ?? new Date();
     if (r.status !== 'pending') return { sent: false, reason: 'el cobro ya no está pendiente' };
-    if (!o.manual && r.reminders_sent >= config.receivables.maxReminders) return { sent: false, reason: 'se alcanzó el máximo de recordatorios de este cobro' };
+    const skip = async (reason: string, conversationId: string | null = null) => {
+      await logEvent({ level: 'warn', source: 'engine', message: `Recordatorio de pago no enviado (${r.concept}): ${reason}`, accountId: r.account_id, conversationId: conversationId ?? undefined });
+      return { sent: false, reason, conversationId };
+    };
+    if (!o.manual && r.reminders_sent >= config.receivables.maxReminders) return skip('se alcanzó el máximo de recordatorios de este cobro', r.conversation_id);
     const conversationId = r.conversation_id ?? (r.contact_id ? await latestConversationOf(r.contact_id) : null);
-    if (!conversationId) return { sent: false, reason: 'el cliente no tiene una conversación por donde escribirle' };
+    if (!conversationId) return skip('el cliente no tiene una conversación por donde escribirle');
     // Quien escribió la palabra de baja no recibe recordatorios automáticos (el equipo lo contacta por otro medio).
     const optedOut = r.contact_id ? (await queryOne<{ opted_out: boolean }>(`SELECT opted_out FROM contacts WHERE id = $1`, [r.contact_id]))?.opted_out : false;
     if (optedOut) {
@@ -258,10 +266,7 @@ export class Receivables {
       vars,
       meta: { receivable_id: r.id },
     });
-    if (!res.sent) {
-      await logEvent({ level: 'warn', source: 'engine', message: `Recordatorio de pago no enviado (${r.concept}): ${res.reason}`, accountId: r.account_id, conversationId });
-      return { sent: false, reason: res.reason, conversationId };
-    }
+    if (!res.sent) return skip(res.reason ?? 'no se pudo enviar', conversationId);
     await query(`UPDATE receivables SET reminders_sent = reminders_sent + 1, last_reminded_at = $2, conversation_id = COALESCE(conversation_id, $3), updated_at = now() WHERE id = $1`, [r.id, now, conversationId]);
     if (kind === 'due' && !o.manual) this.chat.automator.emit({ type: 'payment_due', conversationId, payment: vars });
     return { sent: true, conversationId };
@@ -273,10 +278,26 @@ export class Receivables {
     if (!r || r.status !== 'pending') return;
     // El cliente reportó su pago: se espera a que el equipo lo verifique; si después sigue pendiente, sale.
     if (r.paused_until && new Date(r.paused_until).getTime() > Date.now()) {
-      await astore.scheduleJob({ account_id: r.account_id, type: 'receivable_reminder', payload, run_at: new Date(r.paused_until), dedupe_key: `payrem:${r.id}:${payload.offset}:pausa` });
+      await astore.scheduleJob({ account_id: r.account_id, type: 'receivable_reminder', payload, run_at: await this.sendTimeAfter(r.account_id, new Date(r.paused_until)), dedupe_key: `payrem:${r.id}:${payload.offset}:pausa` });
       return;
     }
+    // Uno al día como mucho: los que una pausa juntó en el mismo momento, o el día en que ya se recordó a mano.
+    if (r.last_reminded_at) {
+      const tz = (await astore.getSettings(r.account_id)).timezone;
+      if (todayIn(tz, new Date(r.last_reminded_at)) === todayIn(tz)) return;
+    }
     await this.remind(r);
+  }
+
+  /** La primera hora de envío del negocio (y dentro de su horario, si lo pide) a partir de un momento. */
+  private async sendTimeAfter(accountId: string, from: Date) {
+    const [s, st] = await Promise.all([getReceivableSettings(accountId), astore.getSettings(accountId)]);
+    const day = todayIn(st.timezone, from);
+    let at = zonedToUtc(day, s.send_at, st.timezone);
+    if (at.getTime() < from.getTime()) at = zonedToUtc(addDays(day, 1), s.send_at, st.timezone);
+    const hasHours = Object.values(st.business_hours).some((w) => w.length > 0);
+    if (s.respect_business_hours && hasHours && !isOpen(st.business_hours, st.holidays, at, st.timezone)) at = nextOpen(st.business_hours, st.holidays, at, st.timezone);
+    return at;
   }
 
   /** Tarea programada: al día siguiente del vencimiento, aviso al equipo y evento «pago vencido» (una vez por cobro). */
@@ -287,17 +308,25 @@ export class Receivables {
     const [s, st] = await Promise.all([getReceivableSettings(r.account_id), astore.getSettings(r.account_id)]);
     const vars = paymentVars(r, s, st.timezone);
     const conversationId = r.conversation_id ?? (r.contact_id ? await latestConversationOf(r.contact_id) : null);
-    if (s.notify_team_on_overdue) {
-      const who = r.contact_id ? await queryOne<{ name: string }>(`SELECT COALESCE(NULLIF(name, ''), NULLIF(push_name, ''), '+' || phone, 'Un cliente') AS name FROM contacts WHERE id = $1`, [r.contact_id]) : null;
-      await this.chat.automator.alertTeam(r.account_id, {
-        title: `⏰ Pago vencido: ${who?.name ?? 'un cliente'}`,
-        body: `${r.concept} por ${vars['pago.monto']} venció el ${vars['pago.vencimiento']} y sigue pendiente.`,
-        link: `#/cobros?id=${r.id}`,
-        kind: 'payment',
-        conversationId: conversationId ?? undefined,
-      });
+    try {
+      if (s.notify_team_on_overdue) await this.alertOverdue(r, vars, conversationId);
+    } catch (e) {
+      // El reintento de la tarea debe poder avisar: se libera la marca de «ya avisado».
+      await query(`UPDATE receivables SET overdue_notified_at = NULL WHERE id = $1`, [r.id]);
+      throw e;
     }
     if (conversationId) this.chat.automator.emit({ type: 'payment_overdue', conversationId, payment: vars });
+  }
+
+  private async alertOverdue(r: Receivable, vars: Record<string, string>, conversationId: string | null) {
+    const who = r.contact_id ? await queryOne<{ name: string }>(`SELECT COALESCE(NULLIF(name, ''), NULLIF(push_name, ''), '+' || phone, 'Un cliente') AS name FROM contacts WHERE id = $1`, [r.contact_id]) : null;
+    await this.chat.automator.alertTeam(r.account_id, {
+      title: `⏰ Pago vencido: ${who?.name ?? 'un cliente'}`,
+      body: `${r.concept} por ${vars['pago.monto']} venció el ${vars['pago.vencimiento']} y sigue pendiente.`,
+      link: `#/cobros?id=${r.id}`,
+      kind: 'payment',
+      conversationId: conversationId ?? undefined,
+    });
   }
 
   /** Marcar pagado o cancelar: ya no se insiste. «Pagado» dispara el evento «pago recibido» para las reglas. */
@@ -309,7 +338,7 @@ export class Receivables {
       [r.id, status, by.userId, (by.note ?? '').slice(0, 500)],
     );
     if (!updated) return null;
-    await astore.cancelJobs('receivable_id', r.id);
+    await cancelReceivableJobs(r.id);
     if (status === 'paid') {
       const conversationId = updated.conversation_id ?? (updated.contact_id ? await latestConversationOf(updated.contact_id) : null);
       if (conversationId) {

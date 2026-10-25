@@ -253,3 +253,34 @@ t('revisión: promociones con plantilla dicen cómo darse de baja; aviso adelant
   assert.equal(rows.acc_wa2_ig, 'active');
   assert.equal(rows.acc_wa2, 'active');
 });
+
+t('recordatorio de pago fuera de las 24 h: sale con la plantilla y los datos del cobro; sin plantilla no sale y queda el motivo', async () => {
+  const contactId = (await pool.query(`SELECT contact_id FROM conversations WHERE id = $1`, [conv.id])).rows[0].contact_id;
+  await pool.query(`UPDATE messages SET created_at = now() - interval '3 days' WHERE conversation_id = $1 AND direction = 'in'`, [conv.id]);
+  const due = new Date(Date.now() + 5 * 86400_000).toISOString().slice(0, 10);
+  const made = await owner('POST', '/api/receivables', { contact_id: contactId, conversation_id: conv.id, concept: 'Reservación 12', amount_cents: 320000, due_date: due });
+  assert.equal(made.statusCode, 201, made.body);
+  const id = made.json().receivable.id;
+  const posted = () => ext.requests.filter((x) => x.method === 'POST' && x.path === '/api/v1/inbox/conversations/conv_wa1/messages');
+
+  // Sin plantilla: WhatsApp no deja escribir fuera de la ventana; no sale, no cuenta y el panel dice por qué.
+  let before = posted().length;
+  let r = await owner('POST', `/api/receivables/${id}/remind`);
+  assert.equal(r.statusCode, 422, r.body);
+  assert.match(r.json().error, /plantilla aprobada/);
+  assert.equal(posted().length, before);
+  assert.equal((await owner('GET', `/api/receivables/${id}`)).json().receivable.reminders_sent, 0);
+
+  // Con la plantilla en los ajustes de cobro: sale con el nombre y el monto del cobro como variables.
+  const s = await owner('PUT', '/api/receivables/settings', { payment_instructions: 'CLABE 012180001234567890', wa_template: { template_id: templateId, params: ['{{nombre}}', '{{pago.vencimiento}} por {{pago.monto}}'] } });
+  assert.equal(s.statusCode, 200, s.body);
+  before = posted().length;
+  r = await owner('POST', `/api/receivables/${id}/remind`);
+  assert.equal(r.statusCode, 200, r.body);
+  const body = posted()[before].body;
+  assert.equal(body.template.elements[0].name, 'recordatorio');
+  const params = body.template.elements[0].components[0].parameters.map((p: any) => p.text);
+  assert.equal(params[0], 'Ana');
+  assert.match(params[1], /por \$3,200\.00$/);
+  assert.equal((await owner('GET', `/api/receivables/${id}`)).json().receivable.reminders_sent, 1);
+});
