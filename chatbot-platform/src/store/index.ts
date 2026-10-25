@@ -102,6 +102,68 @@ export async function getUserForLogin(email: string) {
   );
 }
 
+/* ------------------------------ Sesiones del panel ------------------------------ */
+
+export interface UserSession {
+  id: string;
+  user_id: string;
+  created_at: Date;
+  last_seen_at: Date;
+  expires_at: Date;
+  user_agent: string;
+  ip: string;
+  via: string;
+}
+
+/** Abre una sesión. Una persona tiene como mucho 30 abiertas: al pasar de ahí se cierran las de uso más antiguo. */
+export async function createUserSession(s: { userId: string; expires: Date; via: string; userAgent: string; ip: string }) {
+  const row = (await queryOne<{ id: string }>(
+    `INSERT INTO user_sessions (user_id, expires_at, via, user_agent, ip) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+    [s.userId, s.expires, s.via, s.userAgent, s.ip],
+  ))!;
+  await query(
+    `UPDATE user_sessions SET revoked_at = now() WHERE id IN (
+       SELECT id FROM user_sessions WHERE user_id = $1 AND revoked_at IS NULL ORDER BY last_seen_at DESC OFFSET 30)`,
+    [s.userId],
+  );
+  return row;
+}
+
+/** ¿Sigue abierta? Anota el uso como mucho cada 5 minutos (no se escribe en cada petición). */
+export async function touchUserSession(id: string, userId: string): Promise<boolean> {
+  if (!/^[0-9a-f-]{36}$/i.test(id)) return false;
+  const row = await queryOne<{ stale: boolean }>(
+    `SELECT last_seen_at < now() - interval '5 minutes' AS stale FROM user_sessions WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL AND expires_at > now()`,
+    [id, userId],
+  );
+  if (!row) return false;
+  if (row.stale) await query(`UPDATE user_sessions SET last_seen_at = now() WHERE id = $1`, [id]);
+  return true;
+}
+
+export async function listUserSessions(userId: string) {
+  return query<UserSession>(
+    `SELECT id, user_id, created_at, last_seen_at, expires_at, user_agent, ip, via FROM user_sessions
+      WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > now() ORDER BY last_seen_at DESC LIMIT 50`,
+    [userId],
+  );
+}
+
+/** Cierra sesiones de una persona: una (`only`), todas menos una (`except`) o todas. Devuelve cuántas cerró. */
+export async function revokeUserSessions(userId: string, o: { only?: string; except?: string | null } = {}) {
+  const rows = await query(
+    `UPDATE user_sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL
+        AND ($2::uuid IS NULL OR id = $2) AND ($3::uuid IS NULL OR id <> $3) RETURNING id`,
+    [userId, o.only ?? null, o.except ?? null],
+  );
+  return rows.length;
+}
+
+/** Borra las sesiones vencidas o cerradas hace más de 30 días. */
+export async function pruneUserSessions() {
+  await query(`DELETE FROM user_sessions WHERE coalesce(revoked_at, expires_at) < now() - interval '30 days'`);
+}
+
 /** Usuario de una sesión: debe estar activo y, si tiene cuenta, la cuenta también. */
 export async function getSessionUser(id: string) {
   return queryOne<User & { password_hash: string }>(

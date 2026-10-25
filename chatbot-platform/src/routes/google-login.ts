@@ -72,7 +72,7 @@ export async function googleLoginRoutes(app: FastifyInstance) {
           await store.updateUser(user.id, { password_hash: hash });
           await store.markEmailVerified(user.id);
         }
-        setSessionCookie(reply, user.id, hash);
+        await setSessionCookie(reply, user.id, hash, 'google');
         await logEvent({ level: 'info', source: 'admin', message: `Acceso con Google: ${email}`, accountId: user.account_id, details: { ip: req.ip } });
         return reply.redirect('/#/');
       }
@@ -138,7 +138,7 @@ export async function googleLoginRoutes(app: FastifyInstance) {
     });
     await logEvent({ level: 'info', source: 'admin', message: `Registro nuevo con Google: ${account.name} (${email})`, accountId: account.id, details: { ip: req.ip, business_type: businessType } });
     await notifySuperadmins(account.id, `Nueva empresa registrada: ${account.name}`, `${created.name} <${email}> se registró con Google.`);
-    setSessionCookie(reply, created.id, hash);
+    await setSessionCookie(reply, created.id, hash, 'google');
     return { ok: true, user: created, account: await store.getAccount(account.id) };
   });
 }

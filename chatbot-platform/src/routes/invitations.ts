@@ -213,7 +213,7 @@ export async function invitationPublicRoutes(app: FastifyInstance) {
       return created;
     });
     await logEvent({ level: 'info', source: 'admin', message: `${inv.email} se unió al equipo (${ROLE_LABEL[inv.role]})${google ? ' con Google' : ''}`, accountId: inv.account_id, details: { ip: req.ip } });
-    setSessionCookie(reply, user.id, hash);
+    await setSessionCookie(reply, user.id, hash, 'invite');
     return { ok: true, user };
   });
 }

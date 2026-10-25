@@ -111,7 +111,7 @@ export async function signupRoutes(app: FastifyInstance) {
       `Nueva empresa registrada: ${account.name}`,
       `${user.name} <${user.email}> registró "${account.name}" (${BUSINESS_TYPES.find((t) => t.key === businessType)?.label}). ${trialEndsAt ? `Prueba hasta ${trialEndsAt.toISOString().slice(0, 10)}.` : 'Sin prueba: se activa al pagar.'}${purchase ? ` Eligió el plan ${purchase.plan.name}.` : ''}`,
     );
-    setSessionCookie(reply, user.id, passwordHash);
+    await setSessionCookie(reply, user.id, passwordHash, 'signup');
 
     // Con plan elegido, se abre su pago. Si el proveedor falla, la cuenta ya existe: el panel lo deja reintentar en "Mi plan".
     let checkout: { checkout_url?: string; checkout_error?: string } = {};
@@ -161,6 +161,7 @@ export async function signupRoutes(app: FastifyInstance) {
     if (!userId) throw new HttpError(400, 'El enlace no es válido o ya venció. Pide uno nuevo.');
     // La contraseña nueva invalida todas las sesiones abiertas. Abrir el enlace también confirma el correo.
     await store.updateUser(userId, { password_hash: await hashPassword(b.password) });
+    await store.revokeUserSessions(userId);
     await store.markEmailVerified(userId);
     await logEvent({ level: 'info', source: 'admin', message: 'Contraseña restablecida por correo', details: { user_id: userId } });
     return { ok: true };

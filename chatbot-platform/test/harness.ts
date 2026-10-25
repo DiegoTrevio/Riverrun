@@ -365,7 +365,13 @@ const extServer = http.createServer((req, res) => {
     if (path.endsWith('/me') && metaFake.revoked.has(url.searchParams.get('access_token') ?? '')) return json(400, { error: { message: 'Error validating access token', code: 190 } });
     if (path.endsWith('/me/messages')) return json(200, { recipient_id: body?.recipient?.id, message_id: `m_${++ext.n}` });
     if (path.endsWith('/subscribed_apps')) return json(200, { success: true });
-    if (path.endsWith('/me')) return json(200, { id: 'PAGE1', name: 'Hotel Palmas' });
+    if (path.endsWith('/me')) {
+      // El token de una página dice de qué página es (los de otras pruebas, sin página conocida, siguen siendo de PAGE1).
+      const own = metaFake.pages.find((p: any) => p.access_token === url.searchParams.get('access_token'));
+      return json(200, own ? { id: own.id, name: own.name } : { id: 'PAGE1', name: 'Hotel Palmas' });
+    }
+    const pageFields = metaFake.pages.find((p: any) => path.endsWith(`/${p.id}`) && p.access_token === url.searchParams.get('access_token'));
+    if (pageFields) return json(200, { id: pageFields.id, instagram_business_account: pageFields.instagram_business_account ? { id: pageFields.instagram_business_account.id } : undefined });
     return json(404, { error: { message: 'ruta simulada desconocida' } });
   });
 });

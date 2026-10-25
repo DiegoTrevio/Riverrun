@@ -369,8 +369,9 @@ test('descarga de adjuntos: los de la API de Zernio llevan la llave; los de la r
   assert.equal((calls[0].init.headers as Record<string, string>).authorization, 'Bearer zk_test');
   assert.ok(calls[0].url.startsWith(base));
   calls = [];
+  // Lo que no es de Zernio va por la descarga pública (revisa cada IP y no lleva la llave): nunca por este fetch con llave.
   await zernioAdapter.downloadAudio!(channel(), { media: { url: 'https://scontent.cdninstagram.com/v/a.mp4' } } as any);
-  assert.equal((calls[0].init.headers as Record<string, string>).authorization, undefined);
+  assert.ok(calls.every((c) => !(c.init?.headers as Record<string, string> | undefined)?.authorization));
   calls = [];
   assert.equal(await zernioAdapter.downloadMedia!(channel(), { media: { url: 'http://169.254.169.254/latest' } } as any), null, 'solo HTTPS');
   assert.equal(calls.length, 0);

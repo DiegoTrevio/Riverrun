@@ -143,7 +143,10 @@ t('volver a conectar renueva el token sin duplicar canales, aunque se pulse dos 
   assert.equal(session.pages[0].instagram.connected, true);
   const body = { pages: [{ page_id: 'PAGE1', messenger: true, instagram: true }] };
   const [a, b] = await Promise.all([owner('POST', `/api/meta/sessions/${s.id}/apply`, body), owner('POST', `/api/meta/sessions/${s.id}/apply`, body)]);
-  assert.deepEqual([a.statusCode, b.statusCode].sort(), [200, 400], a.body + b.body);
+  // Una gana; la otra se rechaza: 400 si llegó mientras se aplicaba, 404 si la sesión ya se había consumido.
+  const codes = [a.statusCode, b.statusCode].sort();
+  assert.equal(codes[0], 200, a.body + b.body);
+  assert.ok([400, 404].includes(codes[1]), a.body + b.body);
   assert.equal((await metaChannels()).length, 2);
 });
 
@@ -193,6 +196,80 @@ t('mensajes de Messenger e Instagram llegan al canal de su página y el agente c
   await h.idle();
   const convs = (await pool.query(`SELECT c.type FROM conversations v JOIN channels c ON c.id = v.channel_id WHERE c.account_id = $1 AND c.type IN ('messenger','instagram')`, [h.accountId])).rows;
   assert.deepEqual(convs.map((r) => r.type).sort(), ['instagram', 'messenger']);
+});
+
+t('auditoría S1: otro negocio no puede apartar ni recibir la página de Facebook o el Instagram de este', async () => {
+  const rival = (await h.authed('POST', '/api/accounts', { name: 'Negocio rival' })).json();
+  assert.equal((await h.authed('POST', '/api/users', { account_id: rival.id, email: 'rival@otro.mx', name: 'Rival', password: 'clave-rival-1', role: 'admin' })).statusCode, 200);
+  const as = await h.loginAs('rival@otro.mx', 'clave-rival-1');
+  // Crea canales manuales con la página y el Instagram del hotel, y escribe a mano que se conectaron con el botón.
+  const fake = { connected_via: 'facebook', meta_connected_at: '2026-01-01T00:00:00Z', page_id: 'PAGE1', page_access_token: 'tok-falso', app_secret: 's', verify_token: 'v' };
+  const m = await as('POST', '/api/channels', { type: 'messenger', name: 'Mi Messenger', config: fake });
+  assert.equal(m.statusCode, 200, m.body);
+  const ig = await as('POST', '/api/channels', { type: 'instagram', name: 'Mi Instagram', config: { ...fake, account_id: 'IG1' } });
+  assert.equal(ig.statusCode, 200, ig.body);
+  // Y lo intenta también editando.
+  assert.equal((await as('PUT', `/api/channels/${m.json().id}`, { config: { connected_via: 'facebook', meta_connected_at: 'x' } })).statusCode, 200);
+  for (const c of await metaChannels(rival.id)) {
+    assert.equal(c.config.connected_via, 'manual', 'el panel no marca un canal como conectado con el botón');
+    assert.equal(c.config.meta_connected_at, '');
+  }
+  // Los eventos de Meta de esa página siguen llegando solo al hotel.
+  await deliver(dm('page', 'PAGE1', 'PSID_S1', 'mensaje para el hotel'));
+  await deliver(dm('instagram', 'IG1', 'IGU_S1', 'mensaje para el hotel por insta'));
+  await waitFor(async () => (await pool.query(`SELECT count(*)::int AS n FROM contacts WHERE external_id IN ('PSID_S1', 'IGU_S1')`)).rows[0].n === 2, 15000);
+  const owners = (await pool.query(`SELECT DISTINCT k.account_id FROM contacts k WHERE k.external_id IN ('PSID_S1', 'IGU_S1')`)).rows.map((r) => r.account_id);
+  assert.deepEqual(owners, [h.accountId]);
+  await h.idle();
+  // Un canal conectado con el botón no cambia de página desde el panel.
+  const fb = (await metaChannels()).find((c) => c.type === 'messenger');
+  assert.equal((await owner('PUT', `/api/channels/${fb.id}`, { config: { page_id: 'OTRA_PAGINA', page_access_token: 'otro' } })).statusCode, 200);
+  const after = (await store.getChannel(fb.id))!.config;
+  assert.equal(after.page_id, 'PAGE1');
+  assert.equal(after.page_access_token, 'page_tok_1');
+});
+
+t('auditoría S1: un canal que ya decía «conectado» antes de la marca solo recibe eventos si Meta confirma que su token es de esa página', async () => {
+  const { verifyPendingMetaChannels } = await import('../src/channels/meta-connect.js');
+  const legacy = (await h.authed('POST', '/api/accounts', { name: 'Negocio de antes' })).json();
+  // Como los dejaría la migración 084: marcados «conectados» pero sin evidencia, pendientes de verificar.
+  const mk = async (type: string, cfg: Record<string, unknown>) => (await pool.query(
+    `INSERT INTO channels (account_id, type, name, webhook_token, config) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+    [legacy.id, type, `Canal ${type}`, `tok-${crypto.randomUUID()}`, JSON.stringify({ connected_via: 'facebook', meta_verify: 'pending', page_access_token: 'page_tok_2', ...cfg })])).rows[0].id;
+  metaFake.pages.push({ id: 'PAGE7', name: 'Café Siete', access_token: 'page_tok_7', picture: { data: { url: 'https://img.test/p7.jpg' } }, instagram_business_account: { id: 'IG7', username: 'cafesiete', profile_picture_url: '' } });
+  try {
+    const real = await mk('messenger', { page_id: 'PAGE7', page_access_token: 'page_tok_7' });
+    const realIg = await mk('instagram', { page_id: 'PAGE7', account_id: 'IG7', page_access_token: 'page_tok_7' });
+    const forged = await mk('messenger', { page_id: 'PAGE_AJENA_9', page_access_token: 'tok-falso' });
+    const forgedIg = await mk('instagram', { page_id: 'PAGE7', account_id: 'IG_AJENO', page_access_token: 'page_tok_7' });
+    metaFake.revoked.add('tok-falso');
+    // Mientras está pendiente no recibe nada.
+    await deliver(dm('page', 'PAGE7', 'PSID_P7', 'hola café'));
+    await h.idle();
+    assert.equal((await pool.query(`SELECT count(*)::int AS n FROM contacts WHERE external_id = 'PSID_P7'`)).rows[0].n, 0);
+    const r = await verifyPendingMetaChannels();
+    assert.deepEqual(r, { verified: 2, dropped: 2 });
+    const cfg = async (id: string) => (await store.getChannel(id))!.config;
+    for (const id of [real, realIg]) {
+      const c = await cfg(id);
+      assert.equal(c.connected_via, 'facebook');
+      assert.ok(c.meta_connected_at);
+      assert.equal(c.meta_verify, '');
+    }
+    for (const id of [forged, forgedIg]) {
+      const c = await cfg(id);
+      assert.equal(c.connected_via, 'manual');
+      assert.equal(c.page_access_token, '');
+    }
+    await deliver(dm('page', 'PAGE7', 'PSID_P7', 'hola café'));
+    await waitFor(async () => (await pool.query(`SELECT count(*)::int AS n FROM contacts WHERE external_id = 'PSID_P7'`)).rows[0].n === 1, 15000);
+    await h.idle();
+  } finally {
+    metaFake.pages.pop();
+    metaFake.revoked.delete('tok-falso');
+    // Las pruebas siguientes cuentan los canales de Facebook del hotel: este negocio no debe interferir.
+    await pool.query(`DELETE FROM accounts WHERE id = $1`, [legacy.id]);
+  }
 });
 
 t('si Facebook retira el permiso, el canal queda desconectado y el negocio recibe el aviso', async () => {

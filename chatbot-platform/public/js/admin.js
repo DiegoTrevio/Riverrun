@@ -1,4 +1,4 @@
-import { api, area, check, field, fmtDate, h, run, select, state, text, toast, confirmAction, ask, dialog } from './core.js';
+import { api, area, check, field, fill, fmtDate, h, run, select, state, text, toast, confirmAction, ask, dialog } from './core.js';
 
 /** El título de un aviso sin el emoji con que llega también por WhatsApp (en el panel lo dice el texto). */
 const plainTitle = (t) => String(t || '').replace(/^[\p{Extended_Pictographic}️‍\s]+/u, '');
@@ -238,6 +238,38 @@ export async function viewAccounts(root) {
 
 /* ------------------------------ Contraseña ------------------------------ */
 
+const VIA = { password: 'con contraseña', google: 'con Google', invite: 'al aceptar una invitación', signup: 'al registrarse', password_change: 'al cambiar la contraseña' };
+
+/** Mi perfil → dónde está abierta tu cuenta: cerrar una sesión o todas las demás (p. ej. si perdiste un teléfono). */
+function sessionsCard() {
+  const box = h('div', { class: 'card stack', style: 'max-width:720px' }, h('p', { class: 'help', role: 'status' }, 'Cargando sesiones…'));
+  const draw = async () => {
+    const d = await api('GET', '/api/me/sessions').catch((e) => ({ error: e.message }));
+    if (d.error) return fill(box, h('p', { class: 'error' }, d.error));
+    const others = d.sessions.filter((s) => !s.current);
+    fill(box,
+      h('p', { class: 'small muted' }, 'Dónde está abierta tu cuenta. Si no reconoces una, ciérrala y cambia tu contraseña.'),
+      d.sessions.length ? h('table', { class: 'responsive-table' },
+        h('thead', {}, h('tr', {}, ...['Dispositivo', 'Último uso', 'Inició', ''].map((t) => h('th', {}, t)))),
+        h('tbody', {}, ...d.sessions.map((s) => h('tr', {},
+          h('td', { 'data-label': 'Dispositivo' }, h('strong', {}, s.device), s.current ? h('span', { class: 'badge green', style: 'margin-left:6px' }, 'Esta sesión') : null, h('div', { class: 'small muted' }, `${s.ip} · ${VIA[s.via] || s.via}`)),
+          h('td', { 'data-label': 'Último uso' }, fmtDate(s.last_seen_at)),
+          h('td', { 'data-label': 'Inició' }, fmtDate(s.created_at)),
+          h('td', {}, h('button', { class: 'small', 'aria-label': `Cerrar la sesión de ${s.device}${s.current ? ' (esta sesión)' : ''}`, onclick: async () => {
+            if (s.current && !(await dialog('Cerrar esta sesión', h('p', {}, 'Saldrás del panel en este dispositivo.'), 'Cerrar sesión'))) return;
+            const r = await run(() => api('DELETE', `/api/me/sessions/${s.id}`), 'Sesión cerrada');
+            if (r?.current) location.reload(); else if (r) draw();
+          } }, 'Cerrar')))))) : h('p', { class: 'muted' }, 'No hay sesiones registradas.'),
+      d.legacy ? h('p', { class: 'small muted' }, 'Esta sesión se abrió antes de registrar sesiones: no aparece en la lista y vence sola. Para que aparezca, sal y vuelve a entrar.') : null,
+      others.length ? h('button', { class: 'danger', onclick: async () => {
+        if (!(await dialog('Cerrar las demás sesiones', h('p', {}, `Se cerrarán ${others.length} ${others.length === 1 ? 'sesión' : 'sesiones'} en otros dispositivos. Esta sigue abierta.`), 'Cerrar las demás'))) return;
+        if (await run(() => api('POST', '/api/me/sessions/revoke-others'), 'Sesiones cerradas')) draw();
+      } }, 'Cerrar sesión en todos los demás dispositivos') : null);
+  };
+  draw();
+  return box;
+}
+
 export async function viewPassword(root) {
   const f = { current: '', password: '', confirm: '' };
   const me = { name: state.me.user.name, phone: state.me.user.phone || '', notify_whatsapp: !!state.me.user.notify_whatsapp, available: state.me.user.available !== false };
@@ -260,6 +292,8 @@ export async function viewPassword(root) {
         alertPrefsTable(groups, prefs, { noPhone: !(state.me.user.phone && state.me.user.notify_whatsapp) }),
         h('button', { onclick: async () => { const u = await run(() => api('PUT', '/api/me', { alert_prefs: prefs }), 'Avisos guardados'); if (u) state.me.user = { ...state.me.user, ...u }; } }, 'Guardar avisos')),
     ] : null,
+    h('h2', {}, 'Sesiones abiertas'),
+    sessionsCard(),
     h('h2', {}, 'Cambiar contraseña'),
     h('div', { class: 'card', style: 'max-width:420px' },
       field('Contraseña actual', text(f, 'current', { type: 'password' })),

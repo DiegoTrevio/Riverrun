@@ -49,7 +49,7 @@ export async function onboardingRoutes(api: FastifyInstance) {
       bot ? store.listImages(bot.id) : [],
       queryOne<{ id: string }>(`SELECT id FROM channels WHERE account_id = $1 AND type = 'whatsapp' ORDER BY created_at LIMIT 1`, [accountId]),
       queryOne<{ id: string }>(`SELECT id FROM channels WHERE account_id = $1 AND connection_state = 'open'
-        AND (type = 'zernio' OR (type IN ('messenger', 'instagram') AND config->>'connected_via' = 'facebook')) LIMIT 1`, [accountId]),
+        AND (type = 'zernio' OR (type IN ('messenger', 'instagram') AND config->>'connected_via' = 'facebook' AND coalesce(config->>'meta_connected_at', '') <> '')) LIMIT 1`, [accountId]),
     ]);
     const done = {
       business: !!acc.onboarding.business,

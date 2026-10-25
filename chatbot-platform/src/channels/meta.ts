@@ -1,11 +1,12 @@
 import crypto from 'node:crypto';
 import { config } from '../config.js';
+import { fetchPublic } from '../knowledge-import.js';
 import { toPlainText } from '../engine/text.js';
 import { sleep, type OutgoingButton, type OutgoingFile, type Transport } from '../engine/transport.js';
 import { logEvent } from '../logs.js';
 import { safeEqual } from '../secret.js';
 import { ChannelConfigSchemas, type Channel, type ChannelType, type ImageAsset } from '../types.js';
-import { signedImageUrl } from './media.js';
+import { INBOUND_MEDIA_MAX_BYTES, signedImageUrl } from './media.js';
 import type { ChannelAdapter, InboundMessage } from './types.js';
 
 /**
@@ -250,10 +251,10 @@ function metaAdapter(type: 'messenger' | 'instagram', label: string, objectName:
     transport: (channel, contact) => new MetaTransport(type, channel, contact.external_id),
 
     async downloadAudio(_channel, msg) {
-      if (!msg.media?.url) return null;
-      const res = await fetch(msg.media.url, { signal: AbortSignal.timeout(30000) });
-      if (!res.ok) return null;
-      return { buffer: Buffer.from(await res.arrayBuffer()), mimeType: res.headers.get('content-type') ?? 'audio/mp4' };
+      if (!msg.media?.url?.startsWith('https://')) return null;
+      // La URL viene en el webhook: se revisa cada salto para no llegar a la red interna del servidor.
+      const r = await fetchPublic(msg.media.url, { maxBytes: INBOUND_MEDIA_MAX_BYTES, accept: '*/*' }).catch(() => null);
+      return r ? { buffer: r.body, mimeType: r.mime || 'audio/mp4' } : null;
     },
 
     async setup(channel) {
