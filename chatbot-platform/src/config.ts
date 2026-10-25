@@ -255,7 +255,28 @@ export const config = {
   },
   /** Aviso (sin bloqueo) cuando una cuenta supera este gasto de IA en el mes, en USD. 0 = sin aviso. */
   aiAlertUsdPerAccount: Number(env('AI_ALERT_USD_PER_ACCOUNT', '0')),
+  /**
+   * Cobros de los negocios a sus clientes y sus recordatorios de pago. Los días y la hora son con los que nace la
+   * configuración de cada cuenta; cada negocio los cambia en Cobros → Ajustes.
+   */
+  receivables: {
+    enabled: env('RECEIVABLES_ENABLED', 'true') !== 'false',
+    /** Días respecto al vencimiento (negativo = antes): "-3,0,3,7". */
+    defaultReminders: receivableDays(env('RECEIVABLE_DEFAULT_REMINDERS', '-3,0,3,7')),
+    defaultSendAt: /^([01]\d|2[0-3]):[0-5]\d$/.test(env('RECEIVABLE_DEFAULT_SEND_AT', '10:00')) ? env('RECEIVABLE_DEFAULT_SEND_AT', '10:00') : '10:00',
+    /** Tope de recordatorios automáticos por cobro. */
+    maxReminders: Math.max(1, Math.min(20, Number(env('RECEIVABLE_MAX_REMINDERS', '8')) || 8)),
+    /** «Enviar recordatorio ahora» por cobro y por día. */
+    manualRemindPerDay: Math.max(1, Math.min(20, Number(env('RECEIVABLE_MANUAL_REMIND_PER_DAY', '3')) || 3)),
+  },
 };
+
+/** "-3,0,3,7" → [-3, 0, 3, 7] (enteros entre -60 y 120, sin repetir, ordenados). Algo inválido usa los de siempre. */
+export function receivableDays(raw: string): number[] {
+  const days = raw.split(',').map((s) => s.trim()).filter(Boolean).map(Number);
+  if (!days.length || days.some((d) => !Number.isInteger(d) || d < -60 || d > 120)) return [-3, 0, 3, 7];
+  return [...new Set(days)].sort((a, b) => a - b);
+}
 
 /**
  * Compatibilidad: lista de problemas como texto. La validación completa (niveles, entorno y cómo corregir)

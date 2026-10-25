@@ -362,6 +362,7 @@ export class Automator {
       message: e.text,
       appointment: e.appointment,
       timezone: ctx.settings.timezone,
+      vars: e.payment,
     });
   }
 
@@ -657,6 +658,9 @@ export class Automator {
     }
     // Secuencias que se detienen cuando el cliente responde.
     await astore.stopEnrollmentsOnReply(conv.id);
+    // «Ya pagué» o un comprobante con un cobro pendiente: aviso al equipo (el asistente contesta, pero no lo confirma).
+    await this.chat.receivables.onCustomerMessage(conv, contact, message, text).catch((e) =>
+      logEvent({ level: 'error', source: 'engine', message: `No se pudo revisar el reporte de pago: ${e?.message ?? e}`, accountId: conv.account_id, conversationId: conv.id }));
     const first = await store.isFirstLiveInbound(conv.id, message.id);
     let stop = false;
     if (first) stop = (await this.handle({ type: 'new_contact', conversationId: conv.id, text })).stopAi || stop;

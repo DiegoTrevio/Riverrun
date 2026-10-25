@@ -473,6 +473,32 @@ Una cuenta puede conectar varios WhatsApp. Las **campañas** pueden salir de var
 - Los términos y el aviso de privacidad se enlazan desde el registro (`TERMS_URL`, `PRIVACY_URL`) y cada aceptación queda guardada con su versión (`TERMS_VERSION`), IP, navegador y fecha. Quien entra por primera vez con Google acepta los términos antes de que se cree su cuenta.
 - **Registro protegido**: no se aceptan correos temporales (lista incluida, más `SIGNUP_BLOCKED_DOMAINS`), hay un límite de 5 registros por hora por conexión y, si defines `TURNSTILE_SITE_KEY` y `TURNSTILE_SECRET_KEY`, se pide el captcha de Cloudflare (si Cloudflare no responde, el registro no se bloquea).
 
+## Cobros a tus clientes y recordatorios de pago
+
+Cada negocio registra lo que le deben sus clientes en **Cobros** (`#/cobros`, admin y agentes; `GET/POST /api/receivables`).
+El asistente les recuerda el pago por WhatsApp. El dinero no pasa por la plataforma: el cliente paga con las
+instrucciones del negocio (CLABE, enlace fijo de Mercado Pago o Stripe, efectivo) o con el enlace propio del cobro, y el
+equipo lo marca como pagado.
+
+- **Un cobro** tiene cliente, concepto, monto, fecha de vencimiento, enlace de pago (opcional, solo `https://`) y referencia.
+- **Recordatorios** en *Cobros → Ajustes de cobro*:
+  - días respecto al vencimiento, por ejemplo `-3, 0, 3, 7`: 3 días antes, el día y 3 y 7 días después;
+  - la hora de envío, en la zona del negocio y respetando su horario si así se elige;
+  - tres textos: antes, el día y vencido.
+  - Cada cobro puede tener días propios.
+  - Salen por la conversación más reciente del cliente. En WhatsApp oficial, fuera de las 24 h, salen con la plantilla aprobada que se elija.
+  - Son mensajes de servicio: no exigen consentimiento de promociones. No le llegan a quien escribió la palabra de baja.
+- **Variables:** `{{pago.concepto}}`, `{{pago.monto}}`, `{{pago.vencimiento}}`, `{{pago.dias_atraso}}`, `{{pago.dias_para_vencer}}`, `{{pago.link}}`, `{{pago.instrucciones}}` y `{{pago.referencia}}`, además de `{{nombre}}` y las demás. Si el texto no trae el enlace, las instrucciones o la referencia, se agregan al final.
+- **«Ya pagué» o un comprobante:**
+  - El asistente no confirma el pago: dice que el equipo lo verifica.
+  - Se avisa al equipo (grupo **Pagos** de *Mis avisos*) y los recordatorios de ese cliente se pausan 2 días.
+  - Al marcarlo pagado ya no se insiste.
+- **Vencido sin pagar:** el día siguiente se avisa al equipo una sola vez (se puede apagar).
+- **El asistente sabe lo que debe el cliente** y le da el monto, la fecha y las instrucciones si pregunta «¿cuánto debo?» o «¿cómo pago?».
+- **Reglas:** disparadores *Hoy vence un pago*, *Un pago vence sin pagarse* y *El equipo marca un pago como pagado*, con las mismas variables `{{pago.*}}`.
+- **API v1:** `GET /api/v1/receivables`, `POST /api/v1/receivables` (con `contact_id`, o `channel_id` de WhatsApp y `phone`) y `POST /api/v1/receivables/:id/paid` y `/cancel`.
+- **Variables de entorno:** `RECEIVABLES_ENABLED`, `RECEIVABLE_DEFAULT_REMINDERS`, `RECEIVABLE_DEFAULT_SEND_AT`, `RECEIVABLE_MAX_REMINDERS` y `RECEIVABLE_MANUAL_REMIND_PER_DAY`.
+
 ## Tu negocio: tablero, resumen diario y pasar a cobro real
 
 - **Tablero** (*Ajustes → Plataforma → Tu negocio*, `#/negocio`, solo superadmin; `GET /api/platform/business`):

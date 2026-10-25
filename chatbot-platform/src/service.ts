@@ -8,6 +8,7 @@ import { Agenda } from './automation/agenda.js';
 import { Automator } from './automation/automator.js';
 import { Pipelines } from './automation/pipelines.js';
 import { Campaigns } from './automation/campaigns.js';
+import { Receivables } from './receivables/index.js';
 import { Outbound } from './automation/outbound.js';
 import { Scheduler } from './automation/scheduler.js';
 import * as astore from './automation/store.js';
@@ -83,6 +84,7 @@ export class ChatService {
   agenda: Agenda;
   quotes: Quotes;
   campaigns: Campaigns;
+  receivables: Receivables;
   scheduler: Scheduler;
 
   constructor(private ai: AiProvider, private transportFactory: TransportFactory = defaultTransport) {
@@ -92,7 +94,9 @@ export class ChatService {
     this.agenda = new Agenda(this);
     this.quotes = new Quotes({ alertTeam: (accountId, o) => this.automator.alertTeam(accountId, o) });
     this.campaigns = new Campaigns(this);
+    this.receivables = new Receivables(this);
     this.engine = new Engine(ai, {
+      receivables: (conv) => this.receivables.contextFor(conv),
       intents: (accountId, chatbotId) => this.automator.intentsFor(accountId, chatbotId),
       pipeline: (conv) => this.pipelines.contextFor(conv),
       agenda: this.agenda,
@@ -142,6 +146,8 @@ export class ChatService {
       no_reply: (p) => this.automator.runNoReply(p),
       sequence_step: (p) => this.automator.runSequenceStep(p),
       appointment_reminder: (p) => this.agenda.sendReminder(p),
+      receivable_reminder: (p) => this.receivables.runReminder(p),
+      receivable_overdue: (p) => this.receivables.runOverdue(p),
       campaign_start: (p) => this.campaigns.start(p.campaign_id),
       campaign_send: (p) => this.campaigns.sendOne(p),
       zernio_cleanup: (p) => zernioCleanup(p),

@@ -18,6 +18,9 @@ import { describeConversation } from '../automation/alert-format.js';
 import { hashKey } from './integrations.js';
 import { conversationExport, ExportContentSchema } from '../integrations/conversation-export.js';
 import { parse } from './util.js';
+import { createReceivable, ReceivableBody, receivableOut } from './receivables.js';
+import { config } from '../config.js';
+import { getReceivable, listReceivables, todayIn } from '../receivables/index.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -147,6 +150,49 @@ export async function apiV1Routes(app: FastifyInstance, service: ChatService) {
         await applyPatch(contact.id, patch);
         return reply.code(existed ? 200 : 201).send(contactOut(await queryOne<any>(`${CONTACT_SELECT} WHERE c.id = $1`, [contact.id])));
       });
+
+      /* ------------------------------ Cobros ------------------------------ */
+      /** Lo que deben los clientes (para tu ERP o tu caja). */
+      v1.get('/receivables', async (req: any) => {
+        if (!config.receivables.enabled) throw new HttpError(404, 'Los cobros no están activados');
+        const q = parse(z.object({ status: z.enum(['', 'pending', 'overdue', 'paid', 'canceled']).default(''), contact_id: z.string().uuid().optional() }), req.query);
+        const st = await astore.getSettings(account(req));
+        const { rows, totals } = await listReceivables(account(req), { status: q.status, contactId: q.contact_id, limit: 500 }, todayIn(st.timezone));
+        return { data: rows.map(receivableOut), totals };
+      });
+
+      /** Registrar un cobro: con contact_id, o con channel_id (WhatsApp) y phone (se da de alta el cliente si no existe). */
+      v1.post('/receivables', async (req: any, reply) => {
+        if (!config.receivables.enabled) throw new HttpError(404, 'Los cobros no están activados');
+        const raw = parse(ReceivableBody.partial({ contact_id: true }).extend({ channel_id: z.string().uuid().optional(), phone: z.string().max(20).optional() })
+          .refine((x) => x.contact_id || (x.channel_id && x.phone), 'Indica contact_id, o channel_id y phone'), req.body);
+        let contactId = raw.contact_id;
+        if (!contactId) {
+          const channel = await store.getChannel(raw.channel_id!);
+          if (!channel || channel.account_id !== account(req) || channel.type !== 'whatsapp') throw new HttpError(400, 'channel_id debe ser un canal de WhatsApp de tu cuenta');
+          const phone = raw.phone!.replace(/\D/g, '');
+          if (phone.length < 8) throw new HttpError(400, 'Teléfono inválido (con lada de país, solo números)');
+          const contact = await store.upsertContact(channel, `${phone}@s.whatsapp.net`, phone, '');
+          await store.getOrCreateConversation(channel, contact.id);
+          contactId = contact.id;
+        }
+        const { channel_id: _c, phone: _p, ...body } = raw;
+        void _c; void _p;
+        const { receivable, scheduled } = await createReceivable(service, account(req), { ...body, contact_id: contactId }, { userId: null, source: 'api', actor: `la API (${req.apiKey.name})` });
+        return reply.code(201).send({ ...receivableOut(receivable), reminders_scheduled: scheduled });
+      });
+
+      for (const [path, status] of [['paid', 'paid'], ['cancel', 'canceled']] as const) {
+        v1.post(`/receivables/:id/${path}`, async (req: any) => {
+          if (!config.receivables.enabled) throw new HttpError(404, 'Los cobros no están activados');
+          const r = await getReceivable(req.params.id);
+          if (!r || r.account_id !== account(req)) throw new HttpError(404, 'Cobro no encontrado');
+          const b = parse(z.object({ note: z.string().trim().max(500).default('') }), req.body ?? {});
+          const updated = await service.receivables.settle(r, status, { userId: null, note: b.note || `API (${req.apiKey.name})` });
+          if (!updated) throw new HttpError(409, 'El cobro ya no está pendiente');
+          return receivableOut(updated);
+        });
+      }
 
       /* ------------------------------ Conversaciones y mensajes ------------------------------ */
       v1.get('/conversations', async (req: any) => {

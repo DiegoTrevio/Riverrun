@@ -73,6 +73,7 @@ function fillParams(url: string): string | null {
     [/^\/api\/social-publications\/:id/, 'social_publication'],
     [/^\/api\/billing\/invoices\/:id/, 'cfdi'],
     [/^\/api\/invitations\/:id/, 'invitation'],
+    [/^\/api\/receivables\/:id/, 'receivable'],
     // Solo el superadmin: la cuenta A debe recibir 403.
     [/^\/api\/system\/zernio\/tenants\/:id/, 'account'],
     [/^\/api\/system\/zernio\/webhook-logs\/:id/, 'bot'],
@@ -176,6 +177,10 @@ before(async () => {
   B.quote_template = (await insertTemplate({ id: crypto.randomUUID(), accountId: B.account, name: `Formato ${MARK}`, filePath: tplPath, sha256: 'x', size: 1, placeholders: [], createdBy: null })).id;
   B.quote = (await createQuote({ accountId: B.account, kind: 'approximate', status: 'sent', source: 'panel', today: '2026-10-20', notes: `Nota ${MARK}`,
     lines: [{ name: `Concepto ${MARK}`, qty: 1, price_mode: 'exact', price_min: 99900, price_max: null, iva_mode: 'plus' }] })).id;
+  const due = new Date(Date.now() + 10 * 86400_000).toISOString().slice(0, 10);
+  const rec = await adminB('POST', '/api/receivables', { contact_id: B.contact, concept: `Cobro ${MARK}`, amount_cents: 12300, due_date: due });
+  assert.equal(rec.statusCode, 201, rec.body);
+  B.receivable = rec.json().receivable.id;
   await h.idle();
 });
 after(async () => {

@@ -109,6 +109,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     require_email: config.signup.requireEmail,
     billing_enabled: await billingEnabled(),
     zernio_enabled: zernioEnabled(),
+    receivables_enabled: config.receivables.enabled,
     meta_connect_enabled: metaConnectEnabled(),
     // Redes para una conexión de mensajes; y lo que permite cada red de Zernio (comentarios, posts, estadísticas…).
     social_networks: NETWORKS.filter((n) => n.dm).map(({ id, label, flow }) => ({ id, label, flow })),

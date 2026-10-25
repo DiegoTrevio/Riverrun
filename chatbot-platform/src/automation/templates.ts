@@ -12,6 +12,8 @@ export interface TemplateContext {
   appointment?: Appointment | null;
   location?: string;
   timezone: string;
+  /** Variables propias del contexto (p. ej. las de un cobro: pago.monto, pago.vencimiento…). */
+  vars?: Record<string, string>;
 }
 
 /**
@@ -40,6 +42,7 @@ export function renderTemplate(template: string, ctx: TemplateContext): string {
     'cita.tipo': a ? (a.kind === 'call' ? 'llamada' : 'cita') : '',
     'cita.persona': a?.assigned_user_name ?? '',
     'cita.enlace': a?.meeting_url ?? '',
+    ...ctx.vars,
   };
   return template
     .replace(/\{\{\s*([a-z_]+(?:\.[a-z0-9_]+)?)\s*\}\}/gi, (_m, key: string) => {

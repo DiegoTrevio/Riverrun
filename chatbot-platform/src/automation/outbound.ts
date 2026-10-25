@@ -28,6 +28,8 @@ export interface OutboundOptions {
   allowWhenHuman?: boolean;
   appointment?: Appointment | null;
   location?: string;
+  /** Variables propias del envío (las de un cobro en un recordatorio de pago). */
+  vars?: Record<string, string>;
   meta?: Record<string, unknown>;
   /** Etapa del recorrido en la que queda la conversación al enviarse (0 = no cambia). Así el asistente sigue el flujo desde ahí. */
   flowStep?: number;
@@ -125,6 +127,7 @@ export class Outbound {
       appointment: o.appointment,
       location: o.location,
       timezone: settings.timezone,
+      vars: o.vars,
     });
     const text = o.text ? render(o.text) : '';
     // La plantilla lleva sus variables con los datos del contacto; Meta no acepta una vacía.

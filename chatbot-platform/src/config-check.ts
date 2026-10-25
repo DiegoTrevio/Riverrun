@@ -107,6 +107,8 @@ const NUMBERS: { name: string; min: number; max: number; int?: boolean; area: Ar
   {name:'KNOWLEDGE_MIN_SIMILARITY',min:0,max:1,area:'knowledge',what:'confianza mínima de coincidencia'},
   {name:'EMBEDDING_PRICE_PER_MILLION',min:0,max:10000,area:'knowledge',what:'precio estimado de embeddings'},
   { name: 'EMAIL_POLL_SECONDS', min: 1, max: 86400, int: true, area: 'email', what: 'revisión de buzones (s)' },
+  { name: 'RECEIVABLE_MAX_REMINDERS', min: 1, max: 20, int: true, area: 'core', what: 'recordatorios de pago por cobro' },
+  { name: 'RECEIVABLE_MANUAL_REMIND_PER_DAY', min: 1, max: 20, int: true, area: 'core', what: 'recordatorios manuales por cobro al día' },
   { name: 'LOG_RETENTION_DAYS', min: 1, max: 3650, int: true, area: 'core', what: 'días de registros' },
   { name: 'AI_RUN_DETAIL_DAYS', min: 1, max: 3650, int: true, area: 'ai', what: 'días de detalle de IA' },
   { name: 'TRUST_PROXY_HOPS', min: 0, max: 10, int: true, area: 'security', what: 'proxies de confianza' },
@@ -146,6 +148,7 @@ const BOOLEANS: { name: string; def: boolean; area: Area }[] = [
   { name: 'ALLOW_PRIVATE_WEBHOOKS', def: false, area: 'security' },
   { name: 'HTTP_LOG', def: false, area: 'core' },
   { name: 'LOG_DEBUG', def: false, area: 'core' },
+  { name: 'RECEIVABLES_ENABLED', def: true, area: 'core' },
 ];
 
 export function validateConfig(env: Env = process.env, now = new Date()): ConfigReport {
@@ -187,6 +190,14 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
       `Escribe exactamente true o false (en minúsculas) en ${b.name}.`,
     );
   }
+  // Cobros: los días y la hora con que nace la configuración de cada cuenta. Un valor raro usa los de siempre.
+  if (has('RECEIVABLE_DEFAULT_REMINDERS')) {
+    const days = get('RECEIVABLE_DEFAULT_REMINDERS').split(',').map((s) => s.trim()).filter(Boolean).map(Number);
+    if (!days.length || days.some((d) => !Number.isInteger(d) || d < -60 || d > 120)) add('warning', 'core', 'receivables.default_reminders', ['RECEIVABLE_DEFAULT_REMINDERS'],
+      'RECEIVABLE_DEFAULT_REMINDERS no es una lista válida de días: se usan -3,0,3,7.', 'Escribe días enteros separados por comas, de -60 a 120 (negativo = antes del vencimiento), por ejemplo -3,0,3,7.');
+  }
+  if (has('RECEIVABLE_DEFAULT_SEND_AT') && !/^([01]\d|2[0-3]):[0-5]\d$/.test(get('RECEIVABLE_DEFAULT_SEND_AT'))) add('warning', 'core', 'receivables.default_send_at', ['RECEIVABLE_DEFAULT_SEND_AT'],
+    'RECEIVABLE_DEFAULT_SEND_AT no es una hora HH:MM: se usa 10:00.', 'Escribe la hora local del negocio, por ejemplo 10:00.');
   if (has('QUOTE_PDF_BACKEND') && !['soffice', 'gotenberg', 'fake'].includes(get('QUOTE_PDF_BACKEND'))) {
     add('critical', 'core', 'quote_pdf.backend', ['QUOTE_PDF_BACKEND'], 'QUOTE_PDF_BACKEND debe ser "soffice", "gotenberg" o "fake".', 'Bórrala para usar LibreOffice (soffice), o escribe gotenberg y define QUOTE_PDF_URL.');
   }
