@@ -276,8 +276,8 @@ export async function getService(id: string) {
 }
 
 export async function saveService(accountId: string, s: Omit<Service, 'id' | 'account_id'>, id?: string) {
-  const cols = ['name', 'kind', 'description', 'duration_minutes', 'buffer_minutes', 'capacity', 'min_notice_minutes', 'max_days_ahead', 'location', 'hours', 'reminders', 'reminder_message', 'assigned_user_ids', 'assignment_mode', 'user_weights', 'call_mode', 'prefer_owner', 'customer_choice', 'notify_team', 'deposit_cents', 'deposit_currency', 'deposit_due_hours', 'deposit_cancel_unpaid', 'active'] as const;
-  const values = cols.map((c) => (['hours', 'reminders', 'assigned_user_ids', 'user_weights'].includes(c) ? (s[c] === null ? null : JSON.stringify(s[c])) : s[c]));
+  const cols = ['name', 'kind', 'description', 'duration_minutes', 'buffer_minutes', 'capacity', 'min_notice_minutes', 'max_days_ahead', 'location', 'hours', 'reminders', 'reminder_message', 'assigned_user_ids', 'assignment_mode', 'user_weights', 'call_mode', 'prefer_owner', 'customer_choice', 'notify_team', 'deposit_cents', 'deposit_currency', 'deposit_due_hours', 'deposit_cancel_unpaid', 'reminder_wa_template', 'active'] as const;
+  const values = cols.map((c) => (['hours', 'reminders', 'assigned_user_ids', 'user_weights', 'reminder_wa_template'].includes(c) ? (s[c] == null ? null : JSON.stringify(s[c])) : s[c]));
   if (id) {
     return queryOne<Service>(`UPDATE services SET ${cols.map((c, i) => `${c} = $${i + 1}`).join(', ')}, updated_at = now() WHERE id = $${cols.length + 1} RETURNING *`, [...values, id]);
   }

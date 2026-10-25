@@ -36,7 +36,7 @@ const SECTIONS = {
   cotizaciones: ['cotizaciones'],
   automation: ['automation'],
   estadisticas: ['estadisticas'],
-  ajustes: ['ajustes', 'users', 'accounts', 'negocio', 'planes', 'marcas', 'sistema', 'plan', 'consumo', 'logs', 'password', 'integraciones', 'redes'],
+  ajustes: ['ajustes', 'datos-clientes', 'users', 'accounts', 'negocio', 'planes', 'marcas', 'sistema', 'plan', 'consumo', 'logs', 'password', 'integraciones', 'redes'],
 };
 
 /** Opciones de Ajustes, agrupadas como un submenú (las de la plataforma solo las ve el superadministrador). */
@@ -46,6 +46,7 @@ function settingsGroups() {
     ['Mi negocio', [
       ['#/automation/settings', 'Horario y avisos', 'automation/settings'],
       ['#/users', 'Mi equipo', 'users'],
+      ['#/datos-clientes', 'Datos de tus clientes', 'datos-clientes'],
       ['#/integraciones', 'Integraciones', 'integraciones'],
       state.meta.zernio_enabled ? ['#/redes', 'Redes sociales', 'redes'] : null,
     ]],

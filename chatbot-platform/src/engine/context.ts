@@ -54,6 +54,8 @@ export interface ContextInput {
   quotes?: QuoteCatalog | null;
   /** Lo que el cliente debe al negocio (cobros pendientes) y cómo pagar. */
   receivables?: ReceivableContext | null;
+  /** «Datos de tus clientes» de la cuenta: con su etiqueta en los datos conocidos (no se piden). */
+  accountFields?: DataField[];
 }
 
 export interface BusinessInfo {
@@ -417,9 +419,10 @@ function stateSection(input: ContextInput, questions: Question[], isFirstContact
   else if (contact.push_name) known.push(`nombre de perfil de WhatsApp (no confirmado, úsalo con cuidado): ${contact.push_name}`);
   if (contact.phone && input.channelType === 'whatsapp') known.push(`teléfono de WhatsApp: ${contact.phone}`);
   // El nombre ya va arriba si coincide con el dato del nombre.
-  for (const f of bot.data_fields) if (data[f.key] && !(f.key === nameKey && data[f.key] === contact.name)) known.push(`${f.label} (\`${f.key}\`): ${data[f.key]}`);
+  const labelled = [...bot.data_fields, ...(input.accountFields ?? []).filter((a) => !bot.data_fields.some((f) => f.key === a.key))];
+  for (const f of labelled) if (data[f.key] && !(f.key === nameKey && data[f.key] === contact.name)) known.push(`${f.label} (\`${f.key}\`): ${data[f.key]}`);
   for (const [k, v] of Object.entries(data)) {
-    if (v && !bot.data_fields.some((f) => f.key === k) && !(contact.name && ['nombre', 'name'].includes(k))) known.push(`${k}: ${v}`);
+    if (v && !labelled.some((f) => f.key === k) && !(contact.name && ['nombre', 'name'].includes(k))) known.push(`${k}: ${v}`);
   }
   s.push(known.length ? known.map((x) => `- ${x}`).join('\n') : '- (ninguno todavía)');
   if (contact.notes?.length) s.push(['Notas sobre el cliente (las escribió el asistente en conversaciones anteriores; no son información del negocio):', ...contact.notes.map((n) => `- ${n}`)].join('\n'));

@@ -8,7 +8,7 @@ import type { AiProvider } from '../ai/provider.js';
 import { recordMessage } from '../billing/limits.js';
 import { logEvent } from '../logs.js';
 import * as store from '../store/index.js';
-import type { Channel, Chatbot, Contact, Conversation, ImageAsset, Message, SavedMessage } from '../types.js';
+import type { Channel, Chatbot, Contact, Conversation, DataField, ImageAsset, Message, SavedMessage } from '../types.js';
 import { detectRisk, isAutomatedMessage, promisesFollowUp, repeatedCustomerText, SAFETY_MESSAGES, type RiskHit } from './safety.js';
 import { asksQuestion, contactNameKey } from './questions.js';
 import { agentActive, agentStatus, offAfterReply } from './activation.js';
@@ -27,6 +27,7 @@ import { emptyPlan, validateDecision, type AgendaValidation, type ExecutionPlan,
 import { quoteEvent, type QuoteCatalog, type Quotes } from '../quotes/agent.js';
 import type { Quote } from '../store/quotes.js';
 import type { ReceivableContext } from '../receivables/index.js';
+import { asDataField, listContactFields } from '../contacts/fields.js';
 import type { AgendaContext, BookResult } from '../automation/agenda.js';
 import type { AutomationEvent } from '../automation/types.js';
 import type { PipelineContext } from '../automation/pipelines.js';
@@ -301,7 +302,9 @@ export class Engine {
           people: Object.fromEntries(Object.entries(agendaCtx.people ?? {}).map(([k, v]) => [k, v.map((p) => ({ userId: p.userId, name: p.name, slots: p.slots.map((x) => x.key) }))])),
         }
       : null;
-    const hasPhone = !!contact.phone || !!contact.data?.telefono || bot.data_fields.some((f) => f.type === 'phone' && !!contact.data?.[f.key]);
+    // «Datos de tus clientes» de la cuenta: el asistente los reconoce (etiqueta y tipo) si el cliente los da, sin pedirlos.
+    const accountFields = (await listContactFields(conv.account_id)).map(asDataField);
+    const hasPhone = !!contact.phone || !!contact.data?.telefono || [...bot.data_fields, ...accountFields].some((f) => f.type === 'phone' && !!contact.data?.[f.key]);
     const imagesById = new Map<string, ImageAsset>(allImages.map((i) => [i.id, i]));
     const model = bot.ai.model || config.openai.defaultModel;
     // Fotos con momento fijo (las garantiza el sistema): por palabra del cliente o de bienvenida, se saben antes de la IA.
@@ -336,6 +339,7 @@ export class Engine {
         requests,
         quotes: quoteCatalog,
         receivables,
+        accountFields,
       });
       let completion;
       try {
@@ -391,6 +395,7 @@ export class Engine {
         contactPhone: contact.phone || undefined,
         activeImageIds: allImages.filter((i) => i.active).map((i) => i.id),
         quotes: quoteVal,
+        accountFields,
       };
       const v = validateDecision({ ...lastInput, final: attempt === MAX_ATTEMPTS });
       // Modo estricto: un modelo barato revisa que lo afirmado esté respaldado (solo si lo demás ya pasó).
@@ -507,7 +512,7 @@ export class Engine {
     const dataBefore = { ...(contact.data ?? {}) };
     const nameBefore = contact.name;
     let booked = false;
-    await this.applyMemory(contact, plan, conv.id, lastPendingId, [...history, ...pending], bot);
+    await this.applyMemory(contact, plan, conv.id, lastPendingId, [...history, ...pending], bot, accountFields);
     // Agenda: se ejecuta antes de enviar; si el horario se ocupó justo ahora, se avisa en vez de confirmar.
     if (plan.booking && this.ext.agenda) {
       await assertOwnership();
@@ -1021,11 +1026,11 @@ export class Engine {
     }
   }
 
-  async applyMemory(contact: Contact, plan: ExecutionPlan, conversationId: string, sourceMessageId: number, messages: Message[], bot: Chatbot) {
+  async applyMemory(contact: Contact, plan: ExecutionPlan, conversationId: string, sourceMessageId: number, messages: Message[], bot: Chatbot, accountFields: DataField[] = []) {
     if (!Object.keys(plan.saveData).length && !plan.contactName && !plan.remember.length) return;
     const sources: Record<string, number> = {};
     for (const [key, value] of Object.entries(plan.saveData)) {
-      const field = bot.data_fields.find((f) => f.key === key) ?? automaticField(key);
+      const field = bot.data_fields.find((f) => f.key === key) ?? accountFields.find((f) => f.key === key) ?? automaticField(key);
       if (!field) continue;
       const source = [...messages].sort((a, b) => b.id - a.id).find((m) => m.direction === 'in' && customerProvided(field, value, [m.content]));
       if (source) sources[key] = source.id;

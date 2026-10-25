@@ -377,6 +377,8 @@ export const ServiceBodySchema = z.object({
   deposit_due_hours: z.number().int().min(0).max(720).default(0),
   /** Si a esa hora no se pagó, la cita se cancela sola y se avisa al cliente y al equipo. */
   deposit_cancel_unpaid: z.boolean().default(false),
+  /** WhatsApp oficial fuera de la ventana de 24 h: el recordatorio sale con esta plantilla aprobada. */
+  reminder_wa_template: WaTemplateRefSchema,
   active: z.boolean().default(true),
 });
 export type ServiceBody = z.infer<typeof ServiceBodySchema>;
@@ -437,7 +439,7 @@ export interface AutomationEvent {
   /** Número del encargado del agente que ya recibió su propio aviso de esta transferencia (no se le manda otro). */
   managerNotified?: string;
   /** Cotización enviada, por aprobar o rechazada. */
-  quote?: { id: string; folio: string; kind: 'approximate' | 'final'; total: string };
+  quote?: { id: string; folio: string; kind: 'approximate' | 'final'; total: string; /** AAAA-MM-DD */ valid_until?: string };
   /** Cobro del evento (payment_*): sus variables {{pago.concepto}}, {{pago.monto}}… */
   payment?: Record<string, string>;
 }

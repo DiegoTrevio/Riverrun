@@ -1,3 +1,4 @@
+import { varsField } from './vars-help.js';
 import { api, area, check, confirmAction, dialog, field, fill, fmtDate, h, run, state, text, toast } from './core.js';
 import { isAdmin, withAcct } from './session.js';
 import { waTemplateField } from './wa-template-field.js';
@@ -14,7 +15,6 @@ const parseDays = (s) => {
   return days.length && days.every((d) => Number.isInteger(d) && d >= -60 && d <= 120) ? days : undefined;
 };
 const daysText = (days) => (days || []).map((d) => (d < 0 ? `${-d} día${d === -1 ? '' : 's'} antes` : d === 0 ? 'el día' : `${d} día${d === 1 ? '' : 's'} después`)).join(', ');
-export const PAYMENT_VARS = '{{nombre}} · {{pago.concepto}} · {{pago.monto}} · {{pago.vencimiento}} · {{pago.dias_atraso}} · {{pago.dias_para_vencer}} · {{pago.link}} · {{pago.instrucciones}} · {{pago.referencia}} · {{pago.parcialidad}} · {{negocio}}';
 const SOURCE = { recurring: 'Pago recurrente', appointment: 'Anticipo de cita', quote: 'De una cotización', api: 'Registrado por la API' };
 const FREQ = { weekly: 'Cada semana', biweekly: 'Cada 2 semanas', monthly: 'Cada mes' };
 const WEEKDAYS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
@@ -201,10 +201,10 @@ async function settingsView(root) {
       check(s, 'notify_team_on_overdue', 'Avisar al equipo cuando un cobro vence sin pagarse')),
     h('section', { class: 'card', 'aria-labelledby': 'pay-msg' },
       h('h2', { id: 'pay-msg', style: 'margin-top:0' }, 'Mensajes'),
-      h('p', { class: 'small muted' }, `Déjalos vacíos para usar los de siempre. Variables: ${PAYMENT_VARS}. Si el mensaje no trae {{pago.link}}, {{pago.instrucciones}} o {{pago.referencia}}, se agregan al final.`),
-      field('Antes de que venza', area(s, 'message_before', { rows: 3, placeholder: ph.before })),
-      field('El día que vence', area(s, 'message_due', { rows: 3, placeholder: ph.due })),
-      field('Después de vencido', area(s, 'message_overdue', { rows: 3, placeholder: ph.overdue })),
+      h('p', { class: 'small muted' }, 'Déjalos vacíos para usar los de siempre. Si el mensaje no trae {{pago.link}}, {{pago.instrucciones}} o {{pago.referencia}}, se agregan al final.'),
+      varsField('Antes de que venza', area(s, 'message_before', { rows: 3, placeholder: ph.before }), 'payment'),
+      varsField('El día que vence', area(s, 'message_due', { rows: 3, placeholder: ph.due }), 'payment'),
+      varsField('Después de vencido', area(s, 'message_overdue', { rows: 3, placeholder: ph.overdue }), 'payment'),
       waTemplateField(s, templates)),
     h('div', { class: 'row' }, h('button', { class: 'primary', onclick: async () => {
       const d = parseDays(days.text);

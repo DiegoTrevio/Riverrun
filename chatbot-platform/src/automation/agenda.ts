@@ -550,6 +550,7 @@ export class Agenda {
       allowWhenHuman: true,
       appointment: a,
       location: service?.location,
+      waTemplate: service?.reminder_wa_template ?? null,
     });
     if (!r.sent) {
       await logEvent({ level: 'warn', source: 'engine', message: `Recordatorio no enviado: ${r.reason}`, accountId: a.account_id, conversationId: a.conversation_id });

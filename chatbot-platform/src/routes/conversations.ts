@@ -1,3 +1,4 @@
+import { cleanFieldValue, listContactFields, TYPE_LABELS } from '../contacts/fields.js';
 import { contactWorkspaceRoutes } from './contact-workspace.js';
 import { describeConversation } from '../automation/alert-format.js';
 import fs from 'node:fs';
@@ -140,6 +141,8 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
       has_more_messages: messages.length > 500,
       messages_incremental: options.after !== undefined,
       chatbot: bot ? { id: bot.id, name: bot.name, data_fields: bot.data_fields, flow: bot.flow } : null,
+      /** «Datos de tus clientes» de la cuenta: van primero en la ficha, cada uno con su control. */
+      contact_fields: await listContactFields(conv.account_id),
       /** Asistente en esta conversación: activo, en pausa (motivo) o esperando su palabra de activación. */
       agent: bot ? agentStatus(bot, conv) : null,
       channel: channel ? { id: channel.id, name: channel.name, type: channel.type, platform: channel.type === 'zernio' ? channel.config.platform : undefined } : null,
@@ -396,6 +399,18 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
       req.body,
     );
     const { consent, base_data_version, ...patch } = b;
+    // Los «Datos de tus clientes» se guardan con su formato (una fecha como AAAA-MM-DD, una opción de su lista…).
+    if (patch.data) {
+      for (const f of await listContactFields(contact.account_id)) {
+        const raw = patch.data[f.key];
+        // Un valor que ya tenía (guardado por la IA o antes de definir el tipo) no impide guardar lo demás.
+        if (raw === undefined || raw === contact.data?.[f.key]) continue;
+        const clean = cleanFieldValue(f, raw);
+        if (clean === null) throw new HttpError(400, `«${f.label}» no es válido${f.type === 'option' ? `: elige una de sus opciones (${f.options.join(', ')})` : ` como ${TYPE_LABELS[f.type]}`}`);
+        if (clean) patch.data[f.key] = clean;
+        else delete patch.data[f.key];
+      }
+    }
     // Si la IA o el equipo guardó datos después de abrir el formulario, no se sobrescriben: se pide revisar antes.
     const changes = await store.updateContactFromPanel(contact.id, { ...patch, expectedDataVersion: base_data_version }).catch((e) => {
       if (e instanceof store.StaleDataError) throw new HttpError(409, 'Los datos cambiaron mientras los editabas (la IA capturó algo nuevo). Recarga la conversación y revisa antes de guardar.');

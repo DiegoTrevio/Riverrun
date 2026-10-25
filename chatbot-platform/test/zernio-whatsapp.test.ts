@@ -284,3 +284,30 @@ t('recordatorio de pago fuera de las 24 h: sale con la plantilla y los datos del
   assert.match(params[1], /por \$3,200\.00$/);
   assert.equal((await owner('GET', `/api/receivables/${id}`)).json().receivable.reminders_sent, 1);
 });
+
+t('recordatorio de cita fuera de las 24 h: sale con la plantilla del servicio y los datos de la cita; sin plantilla no sale y queda el motivo', async () => {
+  const contactId = (await pool.query(`SELECT contact_id FROM conversations WHERE id = $1`, [conv.id])).rows[0].contact_id;
+  await pool.query(`UPDATE messages SET created_at = now() - interval '3 days' WHERE conversation_id = $1 AND direction = 'in'`, [conv.id]);
+  const svc = await owner('POST', '/api/services', { name: 'Masaje relajante', duration_minutes: 60 });
+  assert.equal(svc.statusCode, 200, svc.body);
+  const appt = (await pool.query(`INSERT INTO appointments (account_id, service_id, service_name, contact_id, conversation_id, customer_name, starts_at, ends_at)
+    VALUES ($1, $2, 'Masaje relajante', $3, $4, 'Ana', now() + interval '1 day', now() + interval '1 day 1 hour') RETURNING id`, [h.accountId, svc.json().id, contactId, conv.id])).rows[0].id;
+  const posted = () => ext.requests.filter((x) => x.method === 'POST' && x.path === '/api/v1/inbox/conversations/conv_wa1/messages');
+  const warned = async () => (await pool.query(`SELECT message FROM event_logs WHERE conversation_id = $1 AND message LIKE 'Recordatorio no enviado%' ORDER BY id DESC LIMIT 1`, [conv.id])).rows[0]?.message;
+
+  let before = posted().length;
+  await h.service.agenda.sendReminder({ appointment_id: appt });
+  assert.equal(posted().length, before, 'sin plantilla no sale');
+  assert.match(await warned(), /plantilla aprobada/);
+
+  const saved = await owner('PUT', `/api/services/${svc.json().id}`, { reminder_wa_template: { template_id: templateId, params: ['{{nombre}}', '{{cita.servicio}} el {{cita.fecha}}'] } });
+  assert.equal(saved.statusCode, 200, saved.body);
+  assert.equal(saved.json().reminder_wa_template.template_id, templateId);
+  before = posted().length;
+  await h.service.agenda.sendReminder({ appointment_id: appt });
+  const body = posted()[before]?.body;
+  assert.ok(body, 'sale con la plantilla');
+  const params = body.template.elements[0].components[0].parameters.map((p: any) => p.text);
+  assert.equal(params[0], 'Ana');
+  assert.match(params[1], /^Masaje relajante el \S+ \d+ de \S+$/);
+});

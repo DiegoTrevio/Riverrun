@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { HttpError, requireRole, targetAccount } from '../access.js';
 import { rateLimited } from '../auth.js';
 import { query } from '../db.js';
+import { listContactFields } from '../contacts/fields.js';
 import { csvStream, exportFilename } from '../export.js';
 import { logEvent } from '../logs.js';
 import * as store from '../store/index.js';
@@ -30,9 +31,11 @@ export async function exportRoutes(api: FastifyInstance) {
   api.get('/api/export/contacts.csv', admins, async (req: any, reply) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
     const q = parse(z.object({ channel_id: z.string().uuid().optional(), tag: z.string().max(60).optional(), opted_out: z.enum(['true', 'false']).optional(), since: Day.optional() }), req.query);
-    // Columnas de datos: los campos que piden los asistentes de la cuenta; lo demás va junto en "otros_datos".
+    // Columnas de datos: primero los «Datos de tus clientes» de la cuenta, en su orden; luego los que piden los asistentes.
+    // Lo demás va junto en "otros_datos". Con la etiqueta como encabezado, el archivo se puede volver a importar.
     const bots = await store.listChatbots(accountId);
-    const fields = [...new Map(bots.flatMap((b) => b.data_fields).map((f) => [f.key, f.label])).entries()];
+    const own = await listContactFields(accountId);
+    const fields = [...new Map([...own, ...bots.flatMap((b) => b.data_fields).filter((f) => !own.some((o) => o.key === f.key))].map((f) => [f.key, f.label])).entries()];
     const header = ['id', 'nombre', 'nombre_en_el_canal', 'telefono', 'canal', 'tipo_de_canal', 'etiquetas', 'dado_de_baja', 'fecha_de_baja', 'conversaciones', 'ultimo_mensaje', 'creado', ...fields.map(([, label]) => label), 'otros_datos', 'notas'];
     const stream = csvStream<{ at: string; id: string }>(header, async (cursor) => {
       const rows = await query<any>(

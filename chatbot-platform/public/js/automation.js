@@ -1,3 +1,4 @@
+import { varsField } from './vars-help.js';
 import { discardDraft, draftModel, draftNotice, draftVersion, initializeDraftDefaults } from './editing.js';
 import { needAccount } from './admin.js';
 import { messageTester, saveBar } from './bot.js';
@@ -206,7 +207,6 @@ function typedList(list, types, fieldsFor, onChange) {
   return box;
 }
 
-export const VARS_HELP = 'Variables: {{nombre}}, {{cliente}}, {{telefono}}, {{negocio}}, {{mensaje}}, {{link}}, {{dato.CAMPO}}, {{cita.servicio}}, {{cita.fecha}}, {{cita.hora}}, {{cita.lugar}}, {{cita.persona}} (quién atiende), {{cita.enlace}} (enlace de la videollamada)';
 
 const ACCEPT_FILES = '.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.csv,.txt,.mp3,.ogg,.wav,.m4a,.mp4,.mov,.webm';
 const KIND_LABEL = { document: 'documento', audio: 'audio', video: 'video', image: 'imagen' };
@@ -237,12 +237,12 @@ function attachmentPicker(obj, refs) {
     h('div', { style: 'margin-top:6px' }, up));
 }
 
-function actionFields(a, refs) {
+function actionFields(a, refs, trigger) {
   switch (a.type) {
     case 'send_message':
       a.text ??= ''; a.image_id ??= ''; a.attachment_id ??= ''; a.delay_minutes ??= 0;
       return [
-        field('Mensaje (opcional si eliges una foto)', area(a, 'text'), VARS_HELP),
+        varsField('Mensaje (opcional si eliges una foto)', area(a, 'text'), 'rule', { trigger }),
         h('div', { class: 'grid' },
           field('Foto (opcional)', photoPicker(a, 'image_id', refs)),
           field('Esperar antes de enviar (minutos)', num(a, 'delay_minutes', { min: 0 }), '0 = de inmediato')),
@@ -252,7 +252,7 @@ function actionFields(a, refs) {
     case 'alert_team':
       a.message ??= '{{cliente}} necesita atención: "{{mensaje}}"'; a.roles ??= ['admin', 'agent']; a.user_ids ??= []; a.phones ??= [];
       return [
-        field('Mensaje de la alerta', area(a, 'message'), VARS_HELP),
+        varsField('Mensaje de la alerta', area(a, 'message'), 'rule', { trigger }),
         h('p', { class: 'small muted', style: 'margin:0 0 6px' }, 'Destinatarios (si eliges personas, solo a ellas; si no, por rol):'),
         h('div', { class: 'row' }, refs.users.map((u) => h('label', { class: 'check' },
           h('input', { type: 'checkbox', checked: a.user_ids.includes(u.id), onchange: (e) => { a.user_ids = e.target.checked ? [...a.user_ids, u.id] : a.user_ids.filter((x) => x !== u.id); } }),
@@ -279,7 +279,7 @@ function actionFields(a, refs) {
     case 'assign':
       a.message ??= 'Te asignaron a {{cliente}}: "{{mensaje}}"'; a.roles ??= ['agent', 'admin']; a.user_ids ??= []; a.take_over ??= false;
       return [
-        field('Aviso para la persona asignada', area(a, 'message'), VARS_HELP),
+        varsField('Aviso para la persona asignada', area(a, 'message'), 'rule', { trigger }),
         h('p', { class: 'small muted', style: 'margin:0 0 6px' }, 'Turno entre (si no eliges personas, entre todas las de estos roles que estén disponibles):'),
         h('div', { class: 'row' }, refs.users.map((u) => h('label', { class: 'check' },
           h('input', { type: 'checkbox', checked: a.user_ids.includes(u.id), onchange: (e) => { a.user_ids = e.target.checked ? [...a.user_ids, u.id] : a.user_ids.filter((x) => x !== u.id); } }),
@@ -309,7 +309,7 @@ function actionFields(a, refs) {
         h('div', { class: 'grid' },
           field('Qué se crea', select(a, 'kind', [['pendiente', 'Pendiente (se puede marcar como hecho)'], ['nota', 'Nota (solo informa)']])),
           field('Vence en (días)', num(a, 'due_days', { min: 0, max: 365 }), '0 = sin fecha límite. Cuenta desde el día en que se dispara la regla.')),
-        field('Texto', area(a, 'body', { placeholder: 'Dar seguimiento a {{cliente}}: "{{mensaje}}"' }), VARS_HELP),
+        varsField('Texto', area(a, 'body', { placeholder: 'Dar seguimiento a {{cliente}}: "{{mensaje}}"' }), 'rule', { trigger }),
       ];
     case 'start_sequence':
       a.sequence_id ??= refs.sequences[0]?.id || '';
@@ -433,7 +433,7 @@ async function editRule(root, id) {
       check(r, 'once_per_conversation', 'Solo una vez por conversación (vuelve a contar si la conversación se reinicia o se reabre)')),
     h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, '1. Cuándo'), trigBox),
     h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, '2. Solo si… (opcional)'), typedList(r.conditions, CONDITIONS, (c) => conditionFields(c))),
-    h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, '3. Hacer'), typedList(r.actions, ACTIONS, (a) => actionFields(a, refs))),
+    h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, '3. Hacer'), typedList(r.actions, ACTIONS, (a) => actionFields(a, refs, () => r.trigger?.type))),
     h('details', { class: 'card' }, h('summary', {}, 'Probar la configuración guardada'), h('p', { class: 'help' }, 'La prueba usa las reglas guardadas. Guarda tus cambios antes de probarlos.'), messageTester(refs.bots)),
     saveBar(save, existing ? h('span', { class: 'row', style: 'margin-left:auto' },
       h('button', { class: 'danger', onclick: async () => { if (await confirmAction('¿Eliminar la regla?')) { if (!(await run(() => api('DELETE', `/api/automations/${id}`), 'Eliminada'))) return; location.hash = '#/automation/rules'; } } }, 'Eliminar')) : null),
@@ -532,7 +532,7 @@ async function editSequence(root, id) {
     h('div', { class: 'grid' },
       field(i === 0 ? 'Esperar desde que inicia' : 'Esperar desde el mensaje anterior', h('div', { class: 'row' }, h('div', { style: 'width:90px' }, num(st, 'delay_value', { min: 0 })), select(st, 'delay_unit', UNITS))),
       field('A esta hora (opcional)', h('input', { type: 'time', value: st.at_time, oninput: (e) => (st.at_time = e.target.value) }), 'Ej.: al día siguiente a las 10:00')),
-    field('Mensaje', area(st, 'text'), VARS_HELP),
+    varsField('Mensaje', area(st, 'text'), 'sequence'),
     field('Imagen (opcional)', photoPicker(st, 'image_id', refs)),
     field('Archivo (opcional)', attachmentPicker(st, refs)),
     waTemplateField(st, refs.waTemplates),
@@ -650,7 +650,7 @@ async function editCampaign(root, id) {
     c.kind === 'sequence'
       ? [flows.length ? field('Flujo', select(c, 'sequence_id', flows.map((q) => [q.id, `${q.name} (${q.steps.length} mensaje${q.steps.length === 1 ? '' : 's'})`]))) : h('p', { class: 'banner warn' }, 'No tienes flujos activos. Crea uno en Automatización → Flujos.'),
         h('p', { class: 'small muted' }, 'Cada persona entra al flujo: el primer mensaje sale con la campaña y los siguientes a su hora (por ejemplo, un día después), espaciados al ritmo de la campaña para cuidar tu número. Si el cliente toca un botón, pasa lo que dice el botón.')]
-      : [field('Mensaje', area(c, 'message', { big: true }), VARS_HELP),
+      : [varsField('Mensaje', area(c, 'message', { big: true }), 'campaign'),
         field('Imagen (opcional)', photoPicker(c, 'image_id', refs), 'Con texto, la foto sale con el mensaje como pie en un solo envío.'),
         waTemplateField(c, refs.waTemplates),
         field('Etapa del recorrido al enviarla', num(c, 'flow_step', { min: 0, max: 50 }), 'Si es el primer mensaje de un recorrido, indica la etapa en la que queda cada conversación: el asistente sigue el flujo desde ahí cuando el cliente responda. 0 = no cambia.')]);

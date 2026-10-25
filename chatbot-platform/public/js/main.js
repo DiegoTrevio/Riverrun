@@ -73,6 +73,7 @@ export async function render() {
     else if (parts[0] === 'conectar') await view('agent-connections', 'goLegacyConnections', params);
     else if (parts[0] === 'ajustes') await view('dashboard', 'viewSettingsHub', content);
     else if (parts[0] === 'integraciones') await view('integrations', 'viewIntegrations', content, params);
+    else if (parts[0] === 'datos-clientes') await view('contact-fields', 'viewContactFields', content);
     else if (parts[0] === 'marcas') await view('brandadmin', 'viewBrands', content);
     else if (parts[0] === 'sistema' && parts[1] === 'zernio') await view('zernio-admin', 'viewZernioAdmin', content);
     else if (parts[0] === 'sistema') await view('system', 'viewSystem', content);

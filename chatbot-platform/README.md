@@ -365,7 +365,10 @@ Menú **Automatización** (administradores). Todo corre sobre tareas programadas
 - **Plantillas rápidas:** bienvenida, fuera de horario, palabra urgente → alerta, seguimiento, queja → persona, listo para comprar → ventas, correo → CRM, palabra → pausar / activar al asistente, agradecer cita, objetivo cumplido → reporte al equipo, objetivo cumplido → resumen a tu app, marcada por el equipo (etiqueta) → conversación completa a tu app.
 - **Probar palabras:** escribe un mensaje de ejemplo y ve qué reglas se activarían (sí o no, con el motivo), sin IA y sin enviar nada.
 - **Detener la IA:** una regla puede impedir que la IA responda el mensaje que la disparó.
-- **Variables en los textos:** `{{nombre}}`, `{{cliente}}`, `{{telefono}}`, `{{negocio}}`, `{{mensaje}}`, `{{link}}`, `{{dato.CAMPO}}`, `{{cita.servicio}}`, `{{cita.fecha}}`, `{{cita.hora}}`, `{{cita.lugar}}`.
+- **Variables en los textos.** Debajo de cada mensaje, **Variables (clic para insertar)** muestra las que aplican ahí (en una regla, según su disparador) y cada una se inserta donde está el cursor. Una variable que no aplica queda vacía; en una plantilla oficial de WhatsApp, el envío no sale si una de sus variables queda vacía.
+  - **Del cliente:** `{{nombre}}`, `{{nombre_completo}}`, `{{cliente}}`, `{{telefono}}`, `{{negocio}}`, `{{canal}}`, `{{link}}`, `{{fecha_hoy}}` (en la zona del negocio), `{{asesor}}` (la persona asignada a la conversación), `{{dato.CLAVE}}` (cualquier dato guardado) y `{{campo.CLAVE}}` (un dato de **Datos de tus clientes**, con su formato: una fecha como «3 de noviembre de 1990»).
+  - **Cobros y citas:** `{{saldo}}` (lo pendiente del cliente, por moneda), `{{pagos_pendientes}}`, y `{{proxima_cita.fecha}}`, `{{proxima_cita.hora}}` y `{{proxima_cita.servicio}}` (su próxima cita confirmada).
+  - **Del evento:** `{{mensaje}}` (lo que escribió el cliente); `{{cita.servicio}}`, `{{cita.fecha}}`, `{{cita.hora}}`, `{{cita.lugar}}`, `{{cita.tipo}}`, `{{cita.persona}}` y `{{cita.enlace}}` en las citas; `{{pago.*}}` en las reglas de pagos; `{{cotizacion.folio}}`, `{{cotizacion.total}}` y `{{cotizacion.vigencia}}` en las de cotizaciones. Un mensaje con espera guarda las variables del evento para cuando sale.
 
 ### Activadores y desactivadores del asistente
 
@@ -402,6 +405,7 @@ Pestaña **Activación** de cada asistente. Lo aplica el sistema (no la IA), por
 
 - Zona horaria, horario semanal y días festivos.
 - **Bajas:** "BAJA"/"STOP" (configurable) deja de enviar mensajes promocionales; "ALTA" los reactiva. Los recordatorios de citas sí llegan.
+- **Recordatorio de cita en WhatsApp oficial:** fuera de la ventana de 24 h, Meta solo deja escribir con una plantilla aprobada. En cada servicio (Agenda → Servicios), **Plantilla de WhatsApp para el recordatorio** elige esa plantilla y el texto de sus variables (`{{nombre}}`, `{{cita.fecha}}`, `{{cita.hora}}`…). Sin plantilla, el recordatorio no sale y el registro dice por qué.
 - Aviso al equipo cuando una conversación pasa a una persona.
 - URL del calendario `.ics` y clave de los webhooks.
 
@@ -453,6 +457,16 @@ Menú **Cotizaciones** (administradores). Detalle en [docs/cotizaciones.md](docs
 - **Tomar conversación** (el bot deja de responder), **responder manualmente** desde el panel, **devolver al bot** (los mensajes que llegaron mientras atendía una persona no se contestan en automático) y **borrar memoria**.
 
 - **Exportar a CSV**: menú **Exportar** en Conversaciones (contactos, conversaciones y mensajes; solo administradores, queda en el registro).
+
+### Datos de tus clientes
+
+**Ajustes → Datos de tus clientes** (`#/datos-clientes`): los datos que el negocio guarda de cada cliente (cumpleaños, número de cliente, plan…), cada uno con etiqueta, clave y tipo (texto, número, fecha, lista de opciones, correo o teléfono). Solo un administrador los agrega, edita, ordena o borra; borrar un campo no borra lo que ya tienen guardado los clientes.
+
+- **Ficha del cliente:** van primero y en su orden, cada uno con su control (fecha, número, lista…). Se guardan con su formato (la fecha como AAAA-MM-DD; «15/05/1990» también se acepta) y un valor que no corresponde a su tipo no se guarda.
+- **El asistente** los ve con su etiqueta en los datos del cliente y, si el cliente los menciona, los guarda validando su tipo. No los pide: lo que pide cada agente se configura en sus preguntas y datos a recopilar.
+- **Exportar contactos** trae una columna por campo (con su etiqueta), antes de las de los agentes.
+- **Importar contactos** (Contactos → **Importar contactos**, solo administradores): un CSV con `telefono` (obligatorio, con lada de país), `nombre`, `etiquetas` (separadas por punto y coma) y una columna por campo, reconocida por su etiqueta o su clave; acepta coma o punto y coma como separador y una exportación se puede volver a importar. Es alta o actualización por teléfono en el canal de WhatsApp elegido (el mismo camino que `POST /api/v1/contacts`), hasta 5,000 filas. Una celda vacía no borra nada y las etiquetas se suman. Las filas con un error (teléfono inválido o repetido, una fecha que no existe, una opción que no está en la lista) no se importan y el resumen dice cuáles y por qué. Importar no dispara reglas ni envía mensajes.
+- **API:** `GET /api/contact-fields` (todo el equipo), `POST`, `PUT /:id`, `DELETE /:id` y `PUT /order` (administradores); `POST /api/contacts/import` con `{ channel_id, csv }`.
 
 ## Planes y límites
 
