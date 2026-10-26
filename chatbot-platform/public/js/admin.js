@@ -319,6 +319,42 @@ export function needAccount(root) {
 /* ============================== Notificaciones ============================== */
 
 /** Aviso interno manual: a todo el equipo, a un rol, a personas o a quien toque por turnos. */
+const CHANNEL_LABEL = { whatsapp: 'WhatsApp', email: 'Correo' };
+const DELIVERY_LABEL = { sent: 'entregado', pending: 'reintentando', failed: 'no llegó', skipped: 'no se pudo enviar' };
+
+/** Por dónde llegó un aviso: «WhatsApp: no llegó (motivo) · Correo: entregado (respaldo)». */
+function deliveryLine(list) {
+  if (!list?.length) return null;
+  return h('div', { class: 'small', style: 'margin-top:4px' }, list.map((d, i) => h('span', {},
+    i ? ' · ' : '',
+    h('span', { class: d.status === 'sent' ? '' : 'error' }, `${CHANNEL_LABEL[d.channel] ?? d.channel}: ${DELIVERY_LABEL[d.status] ?? d.status}`),
+    d.fallback ? ' (respaldo)' : '',
+    d.error ? h('span', { class: 'muted' }, ` (${d.error})`) : '')));
+}
+
+/** Para el administrador: los avisos al equipo que no llegaron por WhatsApp o correo, con «Reintentar». */
+async function failedDeliveriesCard() {
+  const list = await api('GET', withAcct('/api/alert-deliveries?days=7')).catch(() => []);
+  if (!list.length) return null;
+  return h('section', { class: 'card', 'aria-labelledby': 'failed-deliveries' },
+    h('h2', { id: 'failed-deliveries' }, `Avisos que no llegaron (7 días): ${list.length}`),
+    h('p', { class: 'small muted' }, 'Cada aviso se reintenta solo varias veces y los urgentes salen también por el otro canal. Si sigue sin llegar, revisa el teléfono o el correo de la persona en ', h('a', { href: '#/users' }, 'Mi equipo'), '.'),
+    h('div', { class: 'table-scroll' }, h('table', {},
+      h('thead', {}, h('tr', {}, ['Para', 'Aviso', 'Canal', 'Motivo', 'Fecha', ''].map((t) => h('th', { scope: 'col' }, t)))),
+      h('tbody', {}, list.map((d) => h('tr', {},
+        h('td', {}, d.user_name || d.destination),
+        h('td', {}, plainTitle(d.title || '')),
+        h('td', {}, `${CHANNEL_LABEL[d.channel] ?? d.channel} · ${d.destination}`),
+        h('td', { class: 'small' }, d.last_error || DELIVERY_LABEL[d.status] || ''),
+        h('td', { class: 'small muted' }, fmtDate(d.created_at)),
+        h('td', {}, h('button', { 'aria-label': `Reintentar el aviso «${plainTitle(d.title || '')}» para ${d.user_name || d.destination} por ${CHANNEL_LABEL[d.channel] ?? d.channel}`, onclick: async () => {
+          const r = await run(() => api('POST', withAcct(`/api/alert-deliveries/${d.id}/retry`), {}));
+          if (!r) return;
+          toast(r.status === 'sent' ? 'Listo: el aviso llegó' : 'Sigue sin llegar; se reintentará solo', r.status !== 'sent');
+          render();
+        } }, 'Reintentar'))))))));
+}
+
 async function noticeCard() {
   const users = (await api('GET', withAcct('/api/users')).catch(() => [])).filter((u) => u.account_id && u.active);
   const n = { title: '', body: '', to: 'all', round_robin: false, user_ids: [] };
@@ -346,6 +382,8 @@ export async function viewNotifications(root, params) {
   root.append(
     h('div', { class: 'row between' }, h('h1', {}, 'Notificaciones'),
       data.unread ? h('button', { onclick: async () => { if (!(await run(() => api('POST', '/api/notifications/read', {})))) return; render(); } }, 'Marcar todas como leídas') : null),
+    data.whatsapp_failing ? h('p', { class: 'banner warn', role: 'status' }, 'Tus últimos avisos por WhatsApp no llegaron. Revisa tu número (con lada de país) en ', h('a', { href: '#/password' }, 'Mi perfil'), '.') : null,
+    isAdmin() && (state.me.user.account_id || state.accountId) ? await failedDeliveriesCard() : null,
     isAdmin() && (state.me.user.account_id || state.accountId) ? await noticeCard() : null,
     h('div', { class: 'row', style: 'flex-wrap:wrap;gap:8px;align-items:flex-end' },
       // Enlaces y no una lista desplegable: cambiar de vista con el teclado no debe saltar de página a cada flecha.
@@ -360,7 +398,7 @@ export async function viewNotifications(root, params) {
         else render();
       } },
         h('td', { style: 'width:10px' }, n.read_at ? '' : h('span', { class: 'badge red' }, '•')),
-        h('td', {}, h('strong', {}, plainTitle(n.title)), h('div', { class: 'small muted pre' }, n.body)),
+        h('td', {}, h('strong', {}, plainTitle(n.title)), h('div', { class: 'small muted pre' }, n.body), deliveryLine(n.deliveries)),
         h('td', { class: 'small muted' }, fmtDate(n.created_at))))))
         : h('p', { class: 'muted' }, state.me.user.account_id ? (group ? 'Sin avisos de este tipo.' : 'Sin notificaciones.') : 'Las notificaciones llegan a los usuarios de cada cuenta.')),
   );

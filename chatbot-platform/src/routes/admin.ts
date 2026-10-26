@@ -38,6 +38,24 @@ import { metaConnectEnabled } from '../channels/meta-connect.js';
 import { verifyZernioKey, workspaceChange, zernioSystemStatus } from '../channels/zernio-connect.js';
 import { removePlatformSecret, savePlatformSecret } from '../platform-secrets.js';
 
+/**
+ * WhatsApp de una persona del equipo (para sus avisos): con lada de país, de 11 a 15 dígitos. Vacío lo quita. Un número
+ * sin lada no le llegaría nunca y nadie se enteraría.
+ */
+const PHONE_HINT = 'Incluye la lada del país, por ejemplo 52 55 1234 5678';
+const phoneOk = (v: string) => {
+  const d = v.replace(/\D/g, '');
+  return d === '' || (d.length >= 11 && d.length <= 15);
+};
+const StaffPhone = z.string().max(30).refine(phoneOk, PHONE_HINT);
+/** Al editar: el número que ya estaba guardado (aunque sea de antes, sin lada) no impide guardar lo demás. */
+const EditedPhone = z.string().max(30);
+function checkEditedPhone(next: string | undefined, current: string | null | undefined) {
+  if (next === undefined || next.replace(/\D/g, '') === (current ?? '').replace(/\D/g, '')) return undefined;
+  if (!phoneOk(next)) throw new HttpError(400, PHONE_HINT);
+  return next;
+}
+
 const Password = z.string().min(8, 'mínimo 8 caracteres').max(200);
 const Email = z.string().trim().toLowerCase().email('correo inválido').max(200);
 
@@ -79,8 +97,9 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
   });
 
   api.put('/api/me', async (req) => {
-    const b = parse(z.object({ name: z.string().trim().max(120).optional(), phone: z.string().max(30).optional(), notify_whatsapp: z.boolean().optional(), available: z.boolean().optional(), alert_prefs: z.record(z.string(), z.unknown()).optional() }), req.body);
-    return store.updateUser(req.user.id, { ...b, alert_prefs: b.alert_prefs ? cleanAlertPrefs(b.alert_prefs) : undefined });
+    const b = parse(z.object({ name: z.string().trim().max(120).optional(), phone: EditedPhone.optional(), notify_whatsapp: z.boolean().optional(), available: z.boolean().optional(), alert_prefs: z.record(z.string(), z.unknown()).optional() }), req.body);
+    const current = await queryOne<{ phone: string }>(`SELECT phone FROM users WHERE id = $1`, [req.user.id]);
+    return store.updateUser(req.user.id, { ...b, phone: checkEditedPhone(b.phone, current?.phone), alert_prefs: b.alert_prefs ? cleanAlertPrefs(b.alert_prefs) : undefined });
   });
 
   /* ------------------------------ Mis sesiones ------------------------------ */
@@ -363,7 +382,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
         password: Password,
         role: z.enum(['superadmin', 'admin', 'agent']),
         account_id: z.string().uuid().nullable().optional(),
-        phone: z.string().max(30).default(''),
+        phone: StaffPhone.default(''),
         notify_whatsapp: z.boolean().default(false),
       }),
       req.body,
@@ -398,7 +417,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
         account_id: z.string().uuid().nullable().optional(),
         active: z.boolean().optional(),
         password: Password.optional(),
-        phone: z.string().max(30).optional(),
+        phone: EditedPhone.optional(),
         notify_whatsapp: z.boolean().optional(),
         available: z.boolean().optional(),
         alert_prefs: z.record(z.string(), z.unknown()).optional(),
@@ -431,7 +450,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
       role: b.role,
       account_id: accountId !== target.account_id ? accountId : undefined,
       active: b.active,
-      phone: b.phone,
+      phone: checkEditedPhone(b.phone, target.phone),
       notify_whatsapp: b.notify_whatsapp,
       available: b.available,
       alert_prefs: b.alert_prefs ? cleanAlertPrefs(b.alert_prefs) : undefined,

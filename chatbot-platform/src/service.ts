@@ -28,7 +28,6 @@ import { query, queryOne } from './db.js';
 import { conversationAlert } from './automation/alert-format.js';
 import { summarizeConversation } from './engine/report.js';
 import { Engine, type ProcessResult } from './engine/engine.js';
-import { setAlertWhatsapp } from './lifecycle.js';
 import { RETRYABLE_DEAD } from './engine/queue.js';
 import { deliver } from './integrations/webhooks.js';
 import { messageQuota, noticeMessagesReached } from './billing/limits.js';
@@ -48,6 +47,7 @@ import { Quotes } from './quotes/agent.js';
 import * as store from './store/index.js';
 import type { Channel, Chatbot, Contact, Conversation } from './types.js';
 import { runMailRetry } from './mail-retry.js';
+import { configureAlertDelivery, processAlertReceipts } from './automation/alert-delivery.js';
 
 /** Antigüedad máxima de un mensaje entrante para responderlo automáticamente. */
 const MAX_MESSAGE_AGE_SECONDS = 30 * 60;
@@ -133,7 +133,8 @@ export class ChatService {
       },
     });
     // Los avisos de desconexión a WhatsApp adicionales salen por otro WhatsApp conectado de la cuenta.
-    setAlertWhatsapp((accountId, phone, text, excludeChannelId) => this.sendInternalWhatsapp(accountId, phone, text, null, excludeChannelId));
+    // Los avisos al equipo por WhatsApp salen por un WhatsApp conectado de la cuenta (ver alert-delivery).
+    configureAlertDelivery({ sendWhatsapp: (accountId, phone, text, excludeChannelId) => this.sendInternalWhatsapp(accountId, phone, text, null, excludeChannelId) });
     configureEngagement({ alertTeam: (accountId, o) => this.automator.alertTeam(accountId, o) });
     configurePosts({ alertTeam: (accountId, o) => this.automator.alertTeam(accountId, o) });
     this.queue = new ConversationQueue((id, a) => this.runConversation(id, a.restarts), 2, config.queue.retryMs, (id) => this.aiUnavailable(id));
@@ -182,12 +183,16 @@ export class ChatService {
 
   /** Aviso interno por WhatsApp (alertas al equipo), usando un WhatsApp activo de la cuenta. */
   async sendInternalWhatsapp(accountId: string, number: string, text: string, preferChatbotId?: string | null, excludeChannelId?: string) {
-    // Primero los WhatsApp conectados: un aviso por uno desconectado no llegaría.
-    const channels = (await store.listChannels(accountId))
-      .filter((c) => c.type === 'whatsapp' && c.active && c.config.instance && c.id !== excludeChannelId)
+    // Primero los WhatsApp conectados; uno que se sabe desconectado no se usa (el aviso no llegaría y el respaldo por
+    // correo tardaría en salir). Los que aún no reportan su estado sí se intentan.
+    const all = (await store.listChannels(accountId)).filter((c) => c.type === 'whatsapp' && c.active && c.config.instance && c.id !== excludeChannelId);
+    const channels = all.filter((c) => c.connection_state !== 'close')
       .sort((a, b) => Number(b.connection_state === 'open') - Number(a.connection_state === 'open'));
     const wa = channels.find((c) => c.chatbot_id === preferChatbotId && c.connection_state === 'open') ?? channels[0];
-    if (!wa) throw new Error(excludeChannelId ? 'La cuenta no tiene otro WhatsApp conectado para enviar el aviso' : 'La cuenta no tiene un canal de WhatsApp activo para enviar el aviso');
+    if (!wa) {
+      throw new Error(all.length ? 'El WhatsApp del negocio está desconectado'
+        : excludeChannelId ? 'La cuenta no tiene otro WhatsApp conectado para enviar el aviso' : 'La cuenta no tiene un canal de WhatsApp activo para enviar el aviso');
+    }
     const digits = number.replace(/\D/g, '');
     // Antes de registrar nada: en sandbox un aviso a un número no permitido no debe quedar como enviado.
     assertOutbound(digits);
@@ -293,6 +298,8 @@ export class ChatService {
         roles: ['admin','agent'],
       });
     } catch (e: any) {
+      // El recordatorio no quedó registrado: se libera para que la siguiente vuelta lo intente otra vez.
+      await query('UPDATE conversation_work SET alerted_at=NULL WHERE conversation_id=$1', [conversationId]).catch(() => undefined);
       await logEvent({ level: 'error', source: 'system', message: `No se pudo recordar al equipo un cliente en espera: ${e?.message ?? e}`, conversationId });
     }
   }
@@ -321,20 +328,33 @@ export class ChatService {
     LIMIT 200`);
     let n = 0;
     for (const row of rows) {
-      if (row.escalate_min && row.waiting_min >= row.escalate_min) await this.escalateWaiting(row.id, row.waiting_min);
-      if (!row.remind_due) continue;
-      const bot = row.chatbot_id ? await store.getChatbot(row.chatbot_id) : null;
-      const minutes = bot?.rules.handoff_reminder_minutes ?? 30;
-      if (!minutes || row.waiting_min < minutes) continue;
-      const claimed = await query(`UPDATE conversations c SET human_reminded_at = now() FROM accounts a WHERE c.id = $1 AND a.id = c.account_id AND c.status = 'human'
-        AND (c.human_reminded_at IS NULL OR c.human_reminded_at < (SELECT max(created_at) FROM messages WHERE conversation_id = $1 AND direction = 'in')
-          OR (${repeat} > 0 AND c.human_reminded_at < now() - make_interval(mins => ${repeat}))) RETURNING c.id`, [row.id]);
-      if (!claimed.length) continue;
-      const conv = await store.getConversation(row.id);
-      if (!conv) continue;
-      const [contact, channel] = await Promise.all([store.getContact(conv.contact_id), store.getChannel(conv.channel_id)]);
-      if (!channel || channel.type === 'playground') continue;
-      const resume = bot?.rules.auto_resume_minutes ? '' : ' Si nadie puede atenderlo, devuelve la conversación al asistente desde Conversaciones.';
+      // Una conversación con problemas no detiene los recordatorios de las demás.
+      try {
+        if (await this.remindOne(row, repeat)) n++;
+      } catch (e: any) {
+        await logEvent({ level: 'error', source: 'system', message: `No se pudo recordar una conversación que espera a una persona: ${e?.message ?? e}`, conversationId: row.id });
+      }
+    }
+    return n;
+  }
+
+  private async remindOne(row: { id: string; chatbot_id: string | null; waiting_min: number; escalate_min: number; remind_due: boolean }, repeat: string) {
+    if (row.escalate_min && row.waiting_min >= row.escalate_min) await this.escalateWaiting(row.id, row.waiting_min);
+    if (!row.remind_due) return false;
+    const bot = row.chatbot_id ? await store.getChatbot(row.chatbot_id) : null;
+    const minutes = bot?.rules.handoff_reminder_minutes ?? 30;
+    if (!minutes || row.waiting_min < minutes) return false;
+    const claimed = await queryOne<{ id: string; prev: Date | null }>(`UPDATE conversations c SET human_reminded_at = now() FROM accounts a, (SELECT human_reminded_at AS prev FROM conversations WHERE id = $1) o
+      WHERE c.id = $1 AND a.id = c.account_id AND c.status = 'human'
+      AND (c.human_reminded_at IS NULL OR c.human_reminded_at < (SELECT max(created_at) FROM messages WHERE conversation_id = $1 AND direction = 'in')
+        OR (${repeat} > 0 AND c.human_reminded_at < now() - make_interval(mins => ${repeat}))) RETURNING c.id, o.prev`, [row.id]);
+    if (!claimed) return false;
+    const conv = await store.getConversation(row.id);
+    if (!conv) return false;
+    const [contact, channel] = await Promise.all([store.getContact(conv.contact_id), store.getChannel(conv.channel_id)]);
+    if (!channel || channel.type === 'playground') return false;
+    const resume = bot?.rules.auto_resume_minutes ? '' : ' Si nadie puede atenderlo, devuelve la conversación al asistente desde Conversaciones.';
+    try {
       await this.automator.alertTeam(conv.account_id, {
         title: '⏳ Un cliente espera a una persona',
         body: conversationAlert({ contact, channel: channel.name, reason: `espera respuesta de alguien del equipo desde hace ${row.waiting_min} min`, extra: resume.trim() }),
@@ -342,19 +362,23 @@ export class ChatService {
         conversationId: conv.id,
         kind: 'handoff_wait',
         roles: ['admin', 'agent'],
-      }).catch(() => undefined);
-      n++;
+      });
+    } catch (e) {
+      // El recordatorio no quedó registrado: se devuelve la marca para que la siguiente vuelta lo intente.
+      await query(`UPDATE conversations SET human_reminded_at = $2 WHERE id = $1`, [row.id, claimed.prev]).catch(() => undefined);
+      throw e;
     }
-    return n;
+    return true;
   }
   /** Escala una conversación asignada que sigue sin respuesta: un aviso a los administradores (o a quienes eligió la cuenta). */
   private async escalateWaiting(conversationId: string, waitingMin: number) {
     // Se reserva una sola vez y solo si el último mensaje sigue siendo del cliente (alguien pudo responder entre tanto).
-    const claimed = await queryOne<{ account_id: string; assigned_user_id: string | null }>(`UPDATE conversations SET escalated_at = now()
-      WHERE id = $1 AND status = 'human' AND assigned_user_id IS NOT NULL
+    const claimed = await queryOne<{ account_id: string; assigned_user_id: string | null; prev: Date | null }>(`UPDATE conversations c SET escalated_at = now()
+      FROM (SELECT escalated_at AS prev FROM conversations WHERE id = $1) o
+      WHERE c.id = $1 AND c.status = 'human' AND c.assigned_user_id IS NOT NULL
         AND (SELECT direction FROM messages WHERE conversation_id = $1 ORDER BY id DESC LIMIT 1) = 'in'
-        AND (escalated_at IS NULL OR escalated_at < COALESCE((SELECT max(created_at) FROM messages WHERE conversation_id = $1 AND direction = 'out' AND sender = 'human'), '-infinity'))
-      RETURNING account_id, assigned_user_id`, [conversationId]);
+        AND (c.escalated_at IS NULL OR c.escalated_at < COALESCE((SELECT max(created_at) FROM messages WHERE conversation_id = $1 AND direction = 'out' AND sender = 'human'), '-infinity'))
+      RETURNING c.account_id, c.assigned_user_id, o.prev`, [conversationId]);
     if (!claimed) return;
     const conv = await store.getConversation(conversationId);
     const channel = conv && (await store.getChannel(conv.channel_id));
@@ -370,7 +394,11 @@ export class ChatService {
       link: `#/conversation/${conv.id}`,
       userIds: chosen.length ? chosen : admins,
       kind: 'escalation',
-    }).catch(() => undefined);
+    }).catch(async (e) => {
+      // El escalamiento no quedó registrado: se devuelve la marca para que la siguiente vuelta lo intente.
+      await query(`UPDATE conversations SET escalated_at = $2 WHERE id = $1`, [conversationId, claimed.prev]).catch(() => undefined);
+      await logEvent({ level: 'error', source: 'system', message: `No se pudo escalar una conversación sin respuesta: ${e?.message ?? e}`, accountId: conv.account_id, conversationId });
+    });
   }
 
 
@@ -420,6 +448,8 @@ export class ChatService {
       this.reviveFailed()
         .then(async (r) => { if (r.retried) await logEvent({ level: 'warn', source: 'engine', message: `Se reintentaron ${r.retried} conversaciones en las que el asistente no pudo responder` }); })
         .catch(() => undefined);
+      // Avisos al equipo que no llegaron: se reintentan cuando les toca.
+      processAlertReceipts().catch((e) => logEvent({ level: 'error', source: 'system', message: `Reintento de avisos al equipo: ${e?.message ?? e}` }));
     }, intervalMs);
     this.sweeper.unref();
   }
@@ -481,6 +511,8 @@ export class ChatService {
         roles: ['admin','agent'],
       });
     } catch (e: any) {
+      // Sin aviso registrado, la marca se libera: los recordatorios lo retoman en la siguiente vuelta.
+      await query('UPDATE conversation_work SET alerted_at=NULL WHERE conversation_id=$1', [conversationId]).catch(() => undefined);
       await logEvent({ level: 'error', source: 'system', message: `No se pudo avisar de la falla de IA: ${e?.message ?? e}`, conversationId });
     }
   }

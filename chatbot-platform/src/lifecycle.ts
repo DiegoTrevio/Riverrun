@@ -14,12 +14,12 @@ import { billingEnabled, cancelLongUnpaid, checkDunning, enforceAccess, syncPend
 import { checkStuckEvents, checkWebhookSilence, processBillingActions, reconcileSubscriptions } from './billing/autopilot.js';
 import { checkGlobalInvoice, processCfdi } from './billing/cfdi.js';
 import { logEvent } from './logs.js';
-import { sendMail } from './mailer.js';
 import { sendMailDurable } from './mail-retry.js';
 import { checkOnboardingNudges } from './onboarding-checklist.js';
 import { emailSuperadmin, sendSuperadminDigest } from './platform/digest.js';
 import * as store from './store/index.js';
 import type { Account, Channel } from './types.js';
+import { attemptDelivery, newAlertKey, queueDelivery } from './automation/alert-delivery.js';
 
 const WARN_DAYS = 3;
 const fmt = (d: Date) => new Date(d).toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'America/Mexico_City' });
@@ -288,12 +288,6 @@ export async function claimDisconnectNotice(channelId: string, afterMinutes: num
   return rows.length > 0;
 }
 
-/** Envío de avisos por WhatsApp a números adicionales (lo registra el servicio: usa otro WhatsApp conectado de la cuenta). */
-let alertWhatsapp: ((accountId: string, phone: string, text: string, excludeChannelId?: string) => Promise<void>) | null = null;
-export function setAlertWhatsapp(fn: typeof alertWhatsapp) {
-  alertWhatsapp = fn;
-}
-
 /** Envía un aviso de conexión a quienes se definió: administradores (panel y correo), correos y WhatsApp adicionales. */
 async function sendConnectionAlert(ch: Pick<Channel, 'id' | 'account_id' | 'name' | 'type'>, title: string, body: string, force = false, linkTo?: string) {
   const s = await connectionAlerts(ch.account_id);
@@ -301,25 +295,25 @@ async function sendConnectionAlert(ch: Pick<Channel, 'id' | 'account_id' | 'name
   if (!s.enabled && !force) return sent;
   const link = linkTo ?? (ch.id ? `#/channel/${ch.id}?conectar=1` : '#/agentes');
   const url = `${config.publicBaseUrl}/${link}`;
+  // Cada correo y WhatsApp queda registrado: si falla se reintenta y, para los administradores, sale por su otro canal.
+  // El WhatsApp que se cayó no sirve para avisar de su caída: sale por otro conectado de la cuenta.
+  const payload = { title, body, url, excludeChannelId: ch.id || undefined };
   if (s.notify_admins) {
     const admins = await query<{ id: string; email: string }>(`SELECT id, email FROM users WHERE account_id = $1 AND role = 'admin' AND active`, [ch.account_id]);
-    await notifyUsers(ch.account_id, admins.map((a) => a.id), { title, body, link, kind: 'channel' });
-    for (const a of admins) await sendMail({ to: a.email, subject: title, text: `${body}\n\n${url}` });
+    const ids = await notifyUsers(ch.account_id, admins.map((a) => a.id), { title, body, link, kind: 'channel' });
+    await Promise.allSettled(admins.filter((a) => a.email).map(async (a) =>
+      attemptDelivery(await queueDelivery({ accountId: ch.account_id, notificationId: ids.get(a.id) ?? null, userId: a.id, alertKey: newAlertKey(), kind: 'channel', channel: 'email', destination: a.email, payload }))));
     sent.admins = admins.length;
   }
-  for (const to of s.emails) {
-    await sendMail({ to, subject: title, text: `${body}\n\n${url}` });
-    sent.emails++;
-  }
-  for (const phone of s.phones) {
-    try {
-      if (!alertWhatsapp) throw new Error('sin envío de WhatsApp disponible');
-      await alertWhatsapp(ch.account_id, phone, `*${title}*\n${body}\n${url}`, ch.id || undefined);
-      sent.phones++;
-    } catch (e: any) {
-      sent.failed.push(phone);
-      await logEvent({ level: 'warn', source: 'channel', message: `Aviso de desconexión no enviado por WhatsApp a ${phone}: ${e?.message ?? e}`, accountId: ch.account_id, channelId: ch.id || null });
-    }
+  const extra = [
+    ...s.emails.map((to) => ({ channel: 'email' as const, destination: to })),
+    ...s.phones.map((p) => ({ channel: 'whatsapp' as const, destination: p.replace(/\D/g, '') })),
+  ];
+  const results = await Promise.all(extra.map(async (d) => ({ ...d, status: await attemptDelivery(await queueDelivery({ accountId: ch.account_id, alertKey: newAlertKey(), kind: 'channel', ...d, payload })) })));
+  for (const r of results) {
+    if (r.channel === 'email') sent.emails++;
+    else if (r.status === 'sent') sent.phones++;
+    else sent.failed.push(r.destination);
   }
   return sent;
 }

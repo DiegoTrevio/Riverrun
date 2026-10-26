@@ -13,7 +13,8 @@ import net from 'node:net';
 import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
 import { DeliveryUncertain, OwnershipLost } from '../engine/coordination.js';
-import { sendMail } from '../mailer.js';
+import { emailSuperadmin } from '../platform/digest.js';
+import { attemptDelivery, isImportantAlert, newAlertKey, queueDelivery, type Receipt } from './alert-delivery.js';
 import { assertOutbound } from '../outbound-guard.js';
 import { agentActive, gate } from '../engine/activation.js';
 import { matchKeyword } from '../engine/engine.js';
@@ -605,6 +606,8 @@ export class Automator {
     const owner = o.conversationId ? await astore.assigneeOf(o.conversationId) : o.staffId;
     let recipients = (o.conversationId || o.staffId !== undefined ? team.filter((u) => u.role === 'admin' || (picked.includes(u) && u.id === owner)) : picked)
       .filter((u) => !o.excludeUserIds?.includes(u.id));
+    // Nadie a quién avisar (sin administradores activos, todos excluidos): no se pierde en silencio.
+    if (!recipients.length && !o.phones?.length && !o.excludeUserIds?.length) await this.noRecipients(accountId, o.kind, o.title).catch(() => undefined);
     if (o.conversationId && o.link && groupsRepeats(o.kind)) {
       // Mismo aviso = mismo título y texto: otra cotización, otro motivo u otro mensaje de una regla sí llegan.
       const digest = crypto.createHash('sha256').update(`${o.title}\n${o.body}`).digest('hex');
@@ -612,22 +615,42 @@ export class Automator {
       recipients = recipients.filter((u) => fresh.has(u.id));
     }
     const ch = new Map(recipients.map((u) => [u.id, alertChannels(u.alert_prefs, o.kind)]));
-    await astore.notifyUsers(accountId, recipients.filter((u) => ch.get(u.id)!.panel).map((u) => u.id), { title: o.title, body: o.body, link: o.link, kind: o.kind });
-    const link = o.link ? `\n${config.publicBaseUrl}/${o.link}` : '';
-    for (const u of recipients.filter((x) => x.email && ch.get(x.id)!.email)) {
-      await sendMail({ to: u.email, subject: o.title.replace(/^[^\p{L}\p{N}]+/u, ''), text: `${o.body}${link}` }).catch(() => undefined);
-    }
+    const panelIds = await astore.notifyUsers(accountId, recipients.filter((u) => ch.get(u.id)!.panel).map((u) => u.id), { title: o.title, body: o.body, link: o.link, kind: o.kind });
+    const url = o.link ? `${config.publicBaseUrl}/${o.link}` : undefined;
+    // Cada entrega por WhatsApp o correo queda registrada: si falla se reintenta y, si es urgente, sale por el otro canal.
+    const receipts: Receipt[] = [];
+    const queue = (d: Omit<Parameters<typeof queueDelivery>[0], 'accountId' | 'kind'>) => queueDelivery({ ...d, accountId, kind: o.kind }).then((r) => receipts.push(r));
     const skip = new Set((o.skipPhones ?? []).map((p) => p.replace(/\D/g, '')));
-    const teamPhones = new Set(recipients.filter((u) => u.notify_whatsapp && u.phone && ch.get(u.id)!.whatsapp).map((u) => u.phone.replace(/\D/g, '')));
-    const external = new Set((o.phones ?? []).map((p) => p.replace(/\D/g, '')).filter((p) => !teamPhones.has(p)));
-    for (const phone of [...teamPhones, ...external].filter((p) => p && !skip.has(p))) {
-      const body = external.has(phone) && o.phonesBody !== undefined ? o.phonesBody : o.body;
-      try {
-        await this.chat.sendInternalWhatsapp(accountId, phone, `*${o.title}*\n${body}${link}`);
-      } catch (e: any) {
-        await logEvent({ level: 'warn', source: 'channel', message: `Alerta no enviada por WhatsApp a ${phone}: ${e?.message ?? e}`, accountId });
+    const phonesUsed = new Set<string>();
+    for (const u of recipients) {
+      const key = newAlertKey();
+      const base = { notificationId: panelIds.get(u.id) ?? null, userId: u.id, alertKey: key, payload: { title: o.title, body: o.body, url } };
+      if (u.email && ch.get(u.id)!.email) await queue({ ...base, channel: 'email', destination: u.email });
+      const phone = u.phone?.replace(/\D/g, '') ?? '';
+      if (u.notify_whatsapp && phone && ch.get(u.id)!.whatsapp && !skip.has(phone) && !phonesUsed.has(phone)) {
+        phonesUsed.add(phone);
+        await queue({ ...base, channel: 'whatsapp', destination: phone });
       }
     }
+    // Los números externos de una regla no son del equipo: reciben solo el texto de quien configuró el aviso.
+    for (const phone of new Set((o.phones ?? []).map((p) => p.replace(/\D/g, '')))) {
+      if (!phone || skip.has(phone) || phonesUsed.has(phone)) continue;
+      phonesUsed.add(phone);
+      await queue({ userId: null, alertKey: newAlertKey(), channel: 'whatsapp', destination: phone, payload: { title: o.title, body: o.phonesBody ?? o.body, url } });
+    }
+    // En paralelo: un WhatsApp lento no hace esperar a los demás (ni a la conversación más de lo que tarda uno).
+    await Promise.allSettled(receipts.map((r) => attemptDelivery(r)));
+  }
+
+  /** Un aviso sin nadie que lo reciba: queda en la bitácora y, si es urgente, el superadmin se entera (una vez al día). */
+  private async noRecipients(accountId: string, kind: string | undefined, title: string) {
+    await logEvent({ level: 'warn', source: 'engine', message: `Aviso sin nadie que lo reciba: ${title}`, accountId, details: { kind: kind ?? 'alert', reason: 'alert_no_recipients' } });
+    if (!isImportantAlert(kind)) return;
+    const day = new Date().toISOString().slice(0, 10);
+    const first = await queryOne(`INSERT INTO system_state (key, value) VALUES ($1, '{}') ON CONFLICT (key) DO NOTHING RETURNING key`, [`alert-no-recipients:${accountId}:${day}`]);
+    if (!first) return;
+    const acc = await queryOne<{ name: string }>(`SELECT name FROM accounts WHERE id = $1`, [accountId]);
+    await emailSuperadmin(`Avisos sin destinatario: ${acc?.name ?? accountId}`, `La cuenta "${acc?.name ?? accountId}" no tiene a nadie activo que reciba sus avisos urgentes («${title}»). Revisa que tenga al menos un administrador activo.`, { accountId, urgent: true });
   }
 
   /* ------------------------------ Mensajes entrantes ------------------------------ */
