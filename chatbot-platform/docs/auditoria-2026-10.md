@@ -64,7 +64,7 @@ Cada hallazgo crítico o alto se comprobó en el código. Los que no se sostuvie
 - **Escenario:** si el proceso cae entre los dos pasos, la suscripción queda «cancelada» en la base, pero Stripe o Mercado Pago siguen reintentando el cobro. Nadie la vuelve a tomar.
 - **Arreglo:** el cambio de estado y el `billing_actions` en la misma transacción.
 
-**P3 · Alto · WhatsApp (Evolution) reintenta los envíos y puede mandar mensajes duplicados.** (`src/evolution/client.ts:18-50`)
+**P3 · Alto · WhatsApp (Evolution) reintenta los envíos y puede mandar mensajes duplicados.** (`src/evolution/client.ts:18-50`) ✅ Corregido en el PR de mensajes (rama `audit-mensajes`).
 - **Causa:** `sendText` y `sendMedia` usan `retries = 1` por defecto. Ante un tiempo agotado de 30 s o un 5xx, vuelven a hacer el POST aunque Evolution ya haya entregado el primero.
 - **Escenario:** el reintento ocurre dentro de la llamada, así que la protección de entrega incierta (`delivery_attempts`) no lo ve. El cliente recibe el mensaje dos veces, también los recordatorios de pago.
 - **Arreglo:** `retries = 0` en los envíos. La capa durable decide si reintentar.
@@ -149,19 +149,19 @@ Cada hallazgo crítico o alto se comprobó en el código. Los que no se sostuvie
 
 **Listo para producción**
 - **Medio:**
-  - Avisos marcados como enviados aunque el correo falló: el de fin de prueba, el de cobro fallido y el resumen del superadmin, porque `sendMail` devuelve `false` en lugar de lanzar un error.
+  - ✅ Corregido en el PR de mensajes (rama `audit-mensajes`) (si el servidor de correo falla, el correo se reintenta solo): avisos marcados como enviados aunque el correo falló: el de fin de prueba, el de cobro fallido y el resumen del superadmin, porque `sendMail` devuelve `false` en lugar de lanzar un error.
   - ✅ Corregido en el PR de cobros (rama `audit-cobros`): `applyState` tenía un candado global mientras mandaba correos (ahora es por cuenta, los correos salen después y SMTP tiene tiempo límite).
   - ✅ Corregido en el PR de cobros (rama `audit-cobros`): en un reintento podía faltar el CFDI de un pago ya registrado.
   - ✅ Corregido en el PR de cobros (rama `audit-cobros`): un reembolso que llegaba antes que su pago se perdía (ahora el aviso se reintenta).
   - ✅ Corregido en el PR de cobros (rama `audit-cobros`): el lease del CFDI podía vencer a mitad del lote (ahora se reserva uno a la vez).
-  - El `tick()` del ciclo de vida se puede encimar con el anterior.
-  - Errores que se pierden en el scheduler, la cola y los webhooks: no se guarda el mensaje.
-  - Un recordatorio de pago que no se pudo enviar no se reintenta.
-  - El cuerpo de la respuesta de la IA se lee sin tiempo límite.
+  - ✅ Corregido en el PR de mensajes (rama `audit-mensajes`): el `tick()` del ciclo de vida se podía encimar con el anterior.
+  - ✅ Corregido en el PR de mensajes (rama `audit-mensajes`): errores que se perdían en el scheduler, la cola y los webhooks (no se guardaba el mensaje).
+  - ✅ Corregido en el PR de mensajes (rama `audit-mensajes`): un recordatorio de pago que no se pudo enviar no se reintentaba (ahora, cada hora hasta 3 veces, y luego avisa).
+  - ✅ Corregido en el PR de mensajes (rama `audit-mensajes`): el cuerpo de la respuesta de la IA se leía sin tiempo límite.
 - **Bajo:**
   - ✅ Corregido en el PR de cobros (rama `audit-cobros`): fechas imposibles («31 de febrero») daban 500.
   - ✅ Corregido en el PR de cobros (rama `audit-cobros`): la factura global solo cubría el mes anterior (ahora, cualquier mes cerrado de los últimos 3).
-  - Trabajos que tumban el proceso no tienen límite de intentos al recuperarse.
+  - ✅ Corregido en el PR de mensajes (rama `audit-mensajes`): trabajos que tumban el proceso no tenían límite de intentos al recuperarse.
   - El apagado no tiene plazo máximo.
   - `HEALTHCHECK` no revisa la base.
   - El CI no escanea la imagen.

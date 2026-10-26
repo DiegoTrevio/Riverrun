@@ -133,7 +133,6 @@ export function loginAllowed(ip: string) {
 }
 export function registerLoginFailure(ip: string) {
   const now = Date.now();
-  if (attempts.size > 10_000) for (const [k, v] of attempts) if (v.until < now) attempts.delete(k);
   const a = attempts.get(ip);
   if (!a || a.until < now) attempts.set(ip, { n: 1, until: now + 15 * 60_000 });
   else a.n++;
@@ -143,7 +142,6 @@ export function registerLoginFailure(ip: string) {
 const buckets = new Map<string, { n: number; until: number }>();
 export function rateLimited(key: string, max: number, windowMs: number) {
   const now = Date.now();
-  if (buckets.size > 10_000) for (const [k, v] of buckets) if (v.until < now) buckets.delete(k);
   const b = buckets.get(key);
   if (!b || b.until < now) {
     buckets.set(key, { n: 1, until: now + windowMs });
@@ -152,3 +150,9 @@ export function rateLimited(key: string, max: number, windowMs: number) {
   b.n++;
   return b.n > max;
 }
+
+/** Olvida los intentos y límites cuya ventana ya pasó. Corre cada minuto (antes solo al llegar a 10,000 claves). */
+export function pruneRateLimits(now = Date.now()) {
+  for (const m of [attempts, buckets]) for (const [k, v] of m) if (v.until < now) m.delete(k);
+}
+setInterval(() => pruneRateLimits(), 60_000).unref();

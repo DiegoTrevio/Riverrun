@@ -17,6 +17,9 @@ import { addDays, isOpen, localParts, nextOpen, spanishDate, zonedToUtc } from '
 import type { WaTemplateRef } from '../automation/types.js';
 import type { Contact, Conversation, Message } from '../types.js';
 
+/** Reintentos de un recordatorio de pago que no salió por algo pasajero (uno por hora). */
+const REMINDER_RETRY_LIMIT = 3;
+
 const DAY = 86400_000;
 /** Al reportar un pago, cuánto se deja de insistir mientras el equipo lo verifica. */
 export const PAUSE_ON_REPORT_MS = 2 * DAY;
@@ -297,7 +300,7 @@ export class Receivables {
   }
 
   /** Envía el recordatorio de un cobro (programado o «Enviar recordatorio ahora»). Devuelve si salió y, si no, por qué. */
-  async remind(r: Receivable, o: { manual?: boolean; now?: Date } = {}): Promise<{ sent: boolean; reason?: string; conversationId?: string | null }> {
+  async remind(r: Receivable, o: { manual?: boolean; now?: Date } = {}): Promise<{ sent: boolean; reason?: string; transient?: boolean; conversationId?: string | null }> {
     const now = o.now ?? new Date();
     if (r.status !== 'pending') return { sent: false, reason: 'el cobro ya no está pendiente' };
     const skip = async (reason: string, conversationId: string | null = null) => {
@@ -326,14 +329,14 @@ export class Receivables {
       vars,
       meta: { receivable_id: r.id },
     });
-    if (!res.sent) return skip(res.reason ?? 'no se pudo enviar', conversationId);
+    if (!res.sent) return { ...(await skip(res.reason ?? 'no se pudo enviar', conversationId)), transient: res.transient };
     await query(`UPDATE receivables SET reminders_sent = reminders_sent + 1, last_reminded_at = $2, conversation_id = COALESCE(conversation_id, $3), updated_at = now() WHERE id = $1`, [r.id, now, conversationId]);
     if (kind === 'due' && !o.manual) this.chat.automator.emit({ type: 'payment_due', conversationId, payment: vars });
     return { sent: true, conversationId };
   }
 
   /** Tarea programada: el recordatorio de un día. Vuelve a revisar el cobro (pudo pagarse o cancelarse). */
-  async runReminder(payload: { receivable_id: string; offset: number }) {
+  async runReminder(payload: { receivable_id: string; offset: number; retry?: number }) {
     const r = await getReceivable(payload.receivable_id);
     if (!r || r.status !== 'pending') return;
     // El cliente reportó su pago: se espera a que el equipo lo verifique; si después sigue pendiente, sale.
@@ -346,7 +349,23 @@ export class Receivables {
       const tz = (await astore.getSettings(r.account_id)).timezone;
       if (todayIn(tz, new Date(r.last_reminded_at)) === todayIn(tz)) return;
     }
-    await this.remind(r);
+    const res = await this.remind(r);
+    if (res.sent || !res.transient) return;
+    // No salió por algo pasajero (el canal desconectado, la plataforma lo rechazó): se reintenta en una hora, hasta
+    // REMINDER_RETRY_LIMIT veces; después se avisa al equipo para que lo mande por otro medio.
+    const retry = (payload.retry ?? 0) + 1;
+    if (retry <= REMINDER_RETRY_LIMIT) {
+      await astore.scheduleJob({ account_id: r.account_id, type: 'receivable_reminder', payload: { ...payload, retry }, run_at: new Date(Date.now() + 3600_000), dedupe_key: `payrem:${r.id}:${payload.offset}:r${retry}` });
+      return;
+    }
+    const who = r.contact_id ? await queryOne<{ name: string }>(`SELECT COALESCE(NULLIF(name, ''), NULLIF(push_name, ''), '+' || phone, 'Un cliente') AS name FROM contacts WHERE id = $1`, [r.contact_id]) : null;
+    await this.chat.automator.alertTeam(r.account_id, {
+      title: `💳 No salió un recordatorio de pago: ${who?.name ?? 'un cliente'}`,
+      body: `El recordatorio de ${r.concept} no se pudo enviar tras ${REMINDER_RETRY_LIMIT + 1} intentos (${res.reason ?? 'error del canal'}). Revisa el canal o recuérdaselo por otro medio.`,
+      link: `#/cobros?id=${r.id}`,
+      kind: 'payment',
+      conversationId: res.conversationId ?? undefined,
+    });
   }
 
   /** La primera hora de envío del negocio (y dentro de su horario, si lo pide) a partir de un momento. */

@@ -1,6 +1,7 @@
 import { config } from '../config.js';
 import { tick } from '../watchdog.js';
 import { query, queryOne, withTransaction } from '../db.js';
+import { logEvent } from '../logs.js';
 import type { InboundMessage } from '../channels/types.js';
 import type { Channel } from '../types.js';
 import * as store from '../store/index.js';
@@ -52,11 +53,20 @@ export class InboundQueue {
       tick('inbox');
       if(this.stopped) break;
       await coordinated(`${row.from_me?'control':'inbound'}:${row.channel_id}:${row.external_id}`,`receipt:${row.id}`,async()=>{
-        const receipt=await queryOne(`UPDATE inbound_receipts SET state='running',lease_until=now()+interval '5 minutes',attempts=attempts+1
-          WHERE id=$1 AND ((state='pending' AND run_at<=now()) OR (state='running' AND lease_until<now())) RETURNING *`,[row.id]);
+        const receipt=await queryOne(`UPDATE inbound_receipts r SET state='running',lease_until=now()+interval '5 minutes',attempts=r.attempts+1
+          FROM (SELECT state FROM inbound_receipts WHERE id=$1) o
+          WHERE r.id=$1 AND ((r.state='pending' AND r.run_at<=now()) OR (r.state='running' AND r.lease_until<now())) RETURNING r.*,o.state='running' AS recovered`,[row.id]);
         if(!receipt) return;
         const channel=await store.getChannel(row.channel_id);
         if(!channel) return;
+        // Cada vez que se toma cuenta como intento, también si se retomó porque el proceso murió con ella en curso: una
+        // recepción que tumba el proceso no se retoma para siempre.
+        if(receipt.recovered&&receipt.attempts>config.queue.attempts) {
+          await query(`UPDATE inbound_receipts SET state='dead',reason='recovered_too_often',lease_until=NULL WHERE id=$1`,[row.id]);
+          await logEvent({level:'error',source:'system',message:'inbound_receipt_dead',accountId:channel.account_id,channelId:channel.id,details:{receipt_id:row.id,reason:'recovered_too_often',attempts:receipt.attempts}}).catch(()=>undefined);
+          this.hints.delete(row.id);await this.failed(channel);
+          return;
+        }
         try {
           const prior=await queryOne(`SELECT m.meta FROM messages m JOIN conversations c ON c.id=m.conversation_id JOIN contacts ct ON ct.id=c.contact_id
             WHERE c.channel_id=$1 AND ct.external_id=$2 AND m.external_message_id=$3`,[channel.id,row.external_id,row.message_id]);
@@ -64,7 +74,8 @@ export class InboundQueue {
           await this.receive(channel,receipt.payload);
           await query(`UPDATE inbound_receipts SET state='done',payload='{}',lease_until=NULL,reason=NULL WHERE id=$1`,[row.id]);
           this.hints.delete(row.id);
-        } catch(e) {
+        } catch(e:any) {
+          if(!(e instanceof DeliveryUncertain)) await logEvent({level:'error',source:'system',message:'inbound_receipt_failed',accountId:channel.account_id,channelId:channel.id,details:{receipt_id:row.id,error:String(e?.message??e).slice(0,500)}}).catch(()=>undefined);
           const dead=e instanceof DeliveryUncertain||receipt.attempts>=config.queue.attempts;
           await query(`UPDATE inbound_receipts SET state=$2,reason=$3,lease_until=NULL,run_at=now()+$4*interval '1 millisecond' WHERE id=$1`,[row.id,dead?'dead':'pending',e instanceof DeliveryUncertain?'receipt_interrupted':'receipt_processing',Math.min(config.queue.maxRetryMs,config.queue.retryMs*2**(receipt.attempts-1))]);
           if(dead) {this.hints.delete(row.id);await this.failed(channel);}

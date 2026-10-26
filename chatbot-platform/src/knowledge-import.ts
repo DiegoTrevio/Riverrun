@@ -268,3 +268,9 @@ export function checkImportRate(accountId: string, now = Date.now()) {
   recent.push(now);
   hits.set(accountId, recent);
 }
+
+/** Olvida las cuentas sin importaciones en la última hora (antes el mapa nunca se limpiaba). */
+export function pruneImportRate(now = Date.now()) {
+  for (const [k, v] of hits) if (!v.some((t) => now - t < 3_600_000)) hits.delete(k);
+}
+setInterval(() => pruneImportRate(), 60_000).unref();

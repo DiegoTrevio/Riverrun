@@ -1,4 +1,5 @@
 import { calendarBusy, syncCalendars } from '../integrations/calendars.js';
+import type pg from 'pg';
 import { query, queryOne, withTransaction } from '../db.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
@@ -391,8 +392,11 @@ export class Agenda {
   async cancel(appointmentId: string, reason: string, by: 'bot' | 'panel' | 'pagina' | 'sistema') {
     const a = await astore.getAppointment(appointmentId);
     if (!a || a.status !== 'confirmed') return null;
-    await query(`UPDATE appointments SET status = 'cancelled', cancel_reason = $2, updated_at = now() WHERE id = $1`, [a.id, reason]);
-    await astore.cancelJobs('appointment_id', a.id);
+    // Cancelar la cita y sus recordatorios en un solo paso: no puede quedar cancelada con recordatorios vivos.
+    await withTransaction(async (c) => {
+      await c.query(`UPDATE appointments SET status = 'cancelled', cancel_reason = $2, updated_at = now() WHERE id = $1`, [a.id, reason]);
+      await astore.cancelJobs('appointment_id', a.id, c);
+    });
     // Su anticipo pendiente ya no se cobra.
     const deposit = await receivableBySource(a.account_id, 'appointment', a.id);
     if (deposit?.status === 'pending') await this.chat.receivables.settle(deposit, 'canceled', { userId: null, note: 'Se canceló la cita' });
@@ -438,10 +442,14 @@ export class Agenda {
     if (slot?.users.length && (!assigned || !slot.users.includes(assigned))) assigned = pickStaff(service, slot.users, await assignmentStats(service.id, slot.users));
     const start = zonedToUtc(date, time, settings.timezone);
     const end = new Date(start.getTime() + service.duration_minutes * 60_000);
-    await query(`UPDATE appointments SET starts_at = $2, ends_at = $3, assigned_user_id = $4, updated_at = now() WHERE id = $1`, [a.id, start, end, assigned]);
-    await astore.cancelJobs('appointment_id', a.id);
+    // Mover la cita, cancelar sus recordatorios y programar los nuevos en un solo paso: si algo falla a la mitad, la
+    // cita no queda movida sin recordatorios (ni con los de la hora anterior).
+    await withTransaction(async (c) => {
+      await c.query(`UPDATE appointments SET starts_at = $2, ends_at = $3, assigned_user_id = $4, updated_at = now() WHERE id = $1`, [a.id, start, end, assigned]);
+      await astore.cancelJobs('appointment_id', a.id, c);
+      await this.scheduleReminders({ ...a, starts_at: start, ends_at: end, assigned_user_id: assigned }, service, c);
+    });
     const updated = (await astore.getAppointment(a.id))!;
-    await this.scheduleReminders(updated, service);
     await this.moveDeposit(updated, service, settings.timezone);
     await syncCalendars(a.account_id, a.id).catch(() => undefined);
     return { ok: true, appointment: updated };
@@ -519,7 +527,7 @@ export class Agenda {
     return receivableBySource(a.account_id, 'appointment', a.id);
   }
 
-  async scheduleReminders(a: Appointment, service: Service) {
+  async scheduleReminders(a: Appointment, service: Service, db?: pg.PoolClient) {
     for (const minutes of service.reminders) {
       const runAt = new Date(new Date(a.starts_at).getTime() - minutes * 60_000);
       // Sin conversación (reservas de la página pública), el recordatorio va por correo.
@@ -527,17 +535,21 @@ export class Agenda {
       await astore.scheduleJob({
         account_id: a.account_id,
         type: 'appointment_reminder',
-        payload: { appointment_id: a.id, conversation_id: a.conversation_id, minutes },
+        // La hora de la cita va en el recordatorio: si la cita se movió y este quedó vivo, no sale con la hora vieja.
+        payload: { appointment_id: a.id, conversation_id: a.conversation_id, minutes, starts_at: new Date(a.starts_at).toISOString() },
         run_at: runAt,
         dedupe_key: `reminder:${a.id}:${minutes}`,
-      });
+      }, db);
     }
   }
 
   /** Tarea programada: recordatorio al cliente (mensaje de servicio, se envía aunque se haya dado de baja de promociones). */
-  async sendReminder(payload: { appointment_id: string }) {
+  async sendReminder(payload: { appointment_id: string; starts_at?: string }) {
     const a = await astore.getAppointment(payload.appointment_id);
-    if (!a || a.status !== 'confirmed') return;
+    // Sigue en pie y a la misma hora (un recordatorio de la hora anterior a un cambio no sale).
+    const current = (x: Appointment | null | undefined): x is Appointment =>
+      !!x && x.status === 'confirmed' && (!payload.starts_at || new Date(x.starts_at).getTime() === new Date(payload.starts_at).getTime());
+    if (!current(a)) return;
     const service = a.service_id ? await astore.getService(a.service_id) : null;
     if (!a.conversation_id) {
       if (a.customer_email) await this.mailCustomer(a, 'reminder');
@@ -551,9 +563,12 @@ export class Agenda {
       appointment: a,
       location: service?.location,
       waTemplate: service?.reminder_wa_template ?? null,
+      // Se vuelve a revisar justo antes de enviar: pudo cancelarse o moverse mientras tanto.
+      stillValid: async () => current(await astore.getAppointment(a.id)),
     });
     if (!r.sent) {
-      await logEvent({ level: 'warn', source: 'engine', message: `Recordatorio no enviado: ${r.reason}`, accountId: a.account_id, conversationId: a.conversation_id });
+      // Una cita cancelada o movida justo antes es lo esperado, no una advertencia.
+      await logEvent({ level: r.reason === 'ya no corresponde enviarlo' ? 'info' : 'warn', source: 'engine', message: `Recordatorio no enviado: ${r.reason}`, accountId: a.account_id, conversationId: a.conversation_id });
     }
   }
 

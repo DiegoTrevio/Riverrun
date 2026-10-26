@@ -27,6 +27,8 @@ export interface OutboundOptions {
   transactional?: boolean;
   /** Enviar aunque una persona esté atendiendo la conversación. */
   allowWhenHuman?: boolean;
+  /** Se revisa justo antes de enviar (con la conversación tomada): si devuelve false, ya no se manda (p. ej. la cita se canceló). */
+  stillValid?: () => Promise<boolean>;
   appointment?: Appointment | null;
   location?: string;
   /** Variables propias del envío (las de un cobro en un recordatorio de pago). */
@@ -56,7 +58,8 @@ export interface PendingButtons {
 /** Un juego de botones sirve 7 días. */
 const BUTTONS_TTL_MS = 7 * 86400_000;
 
-export type OutboundResult = { sent: true } | { sent: false; reason: string };
+/** `transient`: no salió por algo pasajero (el canal desconectado o rechazó el envío); vale la pena reintentarlo. */
+export type OutboundResult = { sent: true } | { sent: false; reason: string; transient?: boolean };
 
 const META_WINDOW_MS = 24 * 3600 * 1000;
 
@@ -81,7 +84,7 @@ export class Outbound {
     if (!conv) return { sent: false, reason: 'conversación inexistente' };
     const [channel, contact] = await Promise.all([store.getChannel(conv.channel_id), store.getContact(conv.contact_id)]);
     if (!channel || !contact) return { sent: false, reason: 'conversación incompleta' };
-    if (!channel.active || channel.account_active === false) return { sent: false, reason: 'canal o cuenta inactivos' };
+    if (!channel.active || channel.account_active === false) return { sent: false, reason: 'canal o cuenta inactivos', transient: true };
     if (contact.opted_out && !o.transactional) return { sent: false, reason: 'el cliente se dio de baja' };
     // Los envíos automáticos también gastan el cupo del plan (los recordatorios y confirmaciones no se cortan).
     if (!o.transactional && ['automation', 'sequence', 'campaign', 'no_reply', 'api'].includes(o.source) && (await messageQuota(conv.account_id)).reached) return { sent: false, reason: 'se alcanzó el límite de mensajes de tu plan' };
@@ -176,23 +179,32 @@ export class Outbound {
     const journeyStart = o.flowStep ? await store.dbNow() : undefined;
     // Nunca en paralelo con una respuesta del bot en la misma conversación.
     let blocked='';
+    // Si alguna parte ya salió, el envío no se puede repetir completo (duplicaría lo enviado): no es «pasajero».
+    let sentAny = false;
+    const engine = this.chat.engine;
+    const sendPart = async (...args: Parameters<typeof engine.sendOut>) => {
+      const m = await engine.sendOut(...args);
+      if (m) sentAny = true;
+      return m;
+    };
     const ok = await this.chat.queue.exclusive(conv.id, async () => {
       const [latestConv,latestChannel,latestContact]=await Promise.all([store.getConversation(conv.id),store.getChannel(channel.id),store.getContact(contact.id)]);
       if(!latestConv||!latestChannel?.active||latestChannel.account_active===false) blocked='canal o cuenta inactivos';
       else if(latestConv.status==='human'&&!o.allowWhenHuman) blocked='una persona está atendiendo la conversación';
       else if(latestContact?.opted_out&&!o.transactional) blocked='el cliente se dio de baja';
       else if(promotional&&(await astore.getSettings(conv.account_id)).consent.require_for_campaigns&&!latestContact?.consent_at) blocked='el cliente no ha aceptado recibir promociones';
+      else if(o.stillValid&&!(await o.stillValid())) blocked='ya no corresponde enviarlo';
       if(blocked) return false;
       const fresh=await queryOne('SELECT control_version FROM conversations WHERE id=$1',[conv.id]);
       if(fresh) setControlVersion(Number(fresh.control_version));
       // Fuera de las 24 h en WhatsApp oficial sale solo la plantilla (fotos y archivos no se pueden enviar ahí).
-      if (wa) return !!(await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text: wa.preview, template: wa.out, delay: 0, meta: { ...meta, wa_template: wa.name } }));
+      if (wa) return !!(await sendPart(bot, conv, transport, { sender: 'bot', text: wa.preview, template: wa.out, delay: 0, meta: { ...meta, wa_template: wa.name } }));
       if (composed) {
         // Con botones: la foto y el archivo primero; el mensaje con botones al final (es el que el cliente contesta).
-        if (image && !(await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text: image.caption, image, delay: 0, meta }))) return false;
-        if (file && !(await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text: '', file, delay: 0, meta }))) return false;
+        if (image && !(await sendPart(bot, conv, transport, { sender: 'bot', text: image.caption, image, delay: 0, meta }))) return false;
+        if (file && !(await sendPart(bot, conv, transport, { sender: 'bot', text: '', file, delay: 0, meta }))) return false;
         if (!textOut) return true;
-        const m = await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text: textOut, buttons: composed.buttons, delay: 0, meta: { ...meta, button_set: set } });
+        const m = await sendPart(bot, conv, transport, { sender: 'bot', text: textOut, buttons: composed.buttons, delay: 0, meta: { ...meta, button_set: set } });
         if (!m) return false;
         const replies = o.buttons!.filter((b) => b.kind === 'reply');
         const pending: PendingButtons | null = replies.length ? {
@@ -209,32 +221,32 @@ export class Outbound {
         // cabe como pie sale antes, aparte, y la foto después con su propio pie.
         const together = textOut.length <= CAPTION_MAX;
         if (textOut && !together) {
-          const t = await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text: textOut, delay: 0, meta });
+          const t = await sendPart(bot, conv, transport, { sender: 'bot', text: textOut, delay: 0, meta });
           if (!t) return false;
         }
         const withFooter = captionFooter ? `${image.caption}${image.caption ? '\n\n' : ''}${captionFooter}` : image.caption;
         // Solo foto: si su pie con el de baja no cabe, la foto va con su pie y el de baja como texto aparte.
         const footerApart = !textOut && !!captionFooter && withFooter.length > CAPTION_MAX;
         const caption = (together && textOut) || (footerApart ? image.caption : withFooter);
-        const m = await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text: caption, image, delay: 0, meta });
-        if (m && footerApart) await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text: captionFooter, delay: 0, meta });
+        const m = await sendPart(bot, conv, transport, { sender: 'bot', text: caption, image, delay: 0, meta });
+        if (m && footerApart) await sendPart(bot, conv, transport, { sender: 'bot', text: captionFooter, delay: 0, meta });
         if (!m) {
           // Si la plataforma rechaza la foto, el cliente igual recibe el texto.
           if (!textOut || !together) return !!textOut;
-          const t = await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text: textOut, delay: 0, meta: { ...meta, image_failed: true } });
+          const t = await sendPart(bot, conv, transport, { sender: 'bot', text: textOut, delay: 0, meta: { ...meta, image_failed: true } });
           if (!t) return false;
         }
       } else if (text) {
-        const m = await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text: textOut, delay: 0, meta });
+        const m = await sendPart(bot, conv, transport, { sender: 'bot', text: textOut, delay: 0, meta });
         if (!m) return false;
       }
       if (file) {
-        const m = await this.chat.engine.sendOut(bot, conv, transport, { sender: 'bot', text: captionFooter, file, delay: 0, meta });
+        const m = await sendPart(bot, conv, transport, { sender: 'bot', text: captionFooter, file, delay: 0, meta });
         if (!m) return false;
       }
       return true;
     });
-    if (!ok) return { sent: false, reason: blocked||'la plataforma rechazó el envío (ver registros)' };
+    if (!ok) return { sent: false, reason: blocked||'la plataforma rechazó el envío (ver registros)', transient: !sentAny && (!blocked || blocked === 'canal o cuenta inactivos') };
     // El asistente continúa el recorrido desde la etapa indicada cuando el cliente responda.
     const steps = bot?.flow.steps.length ?? 0;
     // Empieza un recorrido nuevo en esa etapa: si la conversación estaba cerrada, al contestar el cliente no se reinicia.

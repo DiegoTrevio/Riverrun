@@ -6,7 +6,8 @@ import { pruneUserSessions } from './store/index.js';
 import { getSettings, notifyUsers } from './automation/store.js';
 import { mailBrand } from './brands.js';
 import { config } from './config.js';
-import { query, queryOne } from './db.js';
+import pg from 'pg';
+import { pool, query, queryOne } from './db.js';
 import { checkAccountRetention, keptNote } from './accounts/retention.js';
 import { checkScheduledDeletions } from './accounts/self-service.js';
 import { billingEnabled, cancelLongUnpaid, checkDunning, enforceAccess, syncPendingCheckouts } from './billing/service.js';
@@ -14,6 +15,7 @@ import { checkStuckEvents, checkWebhookSilence, processBillingActions, reconcile
 import { checkGlobalInvoice, processCfdi } from './billing/cfdi.js';
 import { logEvent } from './logs.js';
 import { sendMail } from './mailer.js';
+import { sendMailDurable } from './mail-retry.js';
 import { checkOnboardingNudges } from './onboarding-checklist.js';
 import { emailSuperadmin, sendSuperadminDigest } from './platform/digest.js';
 import * as store from './store/index.js';
@@ -55,12 +57,12 @@ export async function checkTrials(now = new Date()) {
     const o = await owner(acc);
     if (o) {
       const next = await howToContinue(acc.id);
-      await sendMail({
+      await sendMailDurable({
         fromName: next.mb.fromName,
         to: o.email,
         subject: 'Tu periodo de prueba está por terminar',
         text: `Hola ${o.name || ''},\n\nTu prueba de "${acc.name}" termina el ${fmt(acc.trial_ends_at!)}. Después de esa fecha tu asistente dejará de responder hasta que se active tu plan.\n\n${next.text}`,
-      });
+      }, acc.id);
     }
     await notifySuperadmins(acc.id, `Prueba por vencer: ${acc.name}`, `La prueba de "${acc.name}" termina el ${fmt(acc.trial_ends_at!)}${o ? ` (${o.email})` : ''}.`);
   }
@@ -75,12 +77,12 @@ export async function checkTrials(now = new Date()) {
     const o = await owner(acc);
     const next = await howToContinue(acc.id);
     if (o) {
-      await sendMail({
+      await sendMailDurable({
         fromName: next.mb.fromName,
         to: o.email,
         subject: 'Tu periodo de prueba terminó',
         text: `Hola ${o.name || ''},\n\nLa prueba de "${acc.name}" terminó y tu asistente está en pausa. ${keptNote()} Se reactiva en cuanto se active tu plan.\n\n${next.text}`,
-      });
+      }, acc.id);
     }
     const paysOnline = await billingEnabled();
     await notifySuperadmins(acc.id, `Prueba terminada: ${acc.name}`, `La cuenta "${acc.name}" quedó en pausa${o ? ` (${o.email})` : ''}. ${paysOnline ? 'Se reactiva sola cuando pague en línea.' : 'Actívala desde Cuentas si ya pagó.'}`);
@@ -106,32 +108,80 @@ export async function checkAiSpend(now = new Date()) {
   return rows.length;
 }
 
+/** Bandera de este proceso: una vuelta no empieza mientras la anterior sigue corriendo. */
+let ticking = false;
+/** Plazo de una vuelta: si una tarea se cuelga, se suelta el turno para que las demás no se queden detenidas. */
+export const TICK_DEADLINE_MS = 8 * 60_000;
+
+/**
+ * Una vuelta del ciclo de vida: pruebas, cobros, retención, facturas… Corre en una sola instancia a la vez (candado
+ * de la base) y nunca se encima con la anterior. Devuelve `ran`, o por qué se saltó.
+ */
+export async function lifecycleTick(deadlineMs = TICK_DEADLINE_MS): Promise<'ran' | 'busy' | 'locked' | 'timeout'> {
+  if (ticking) return 'busy';
+  ticking = true;
+  let client: pg.PoolClient | null = null;
+  try {
+    client = await pool.connect();
+    const got = (await client.query(`SELECT pg_try_advisory_lock(hashtextextended('riverrun:lifecycle-tick', 0)) AS ok`)).rows[0]?.ok === true;
+    if (!got) return 'locked';
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      const all = Promise.allSettled([
+        checkTrials().catch((e) => logEvent({ level: 'error', source: 'system', message: `Revisión de pruebas: ${e?.message ?? e}` })),
+        // Primero se confirman los pagos pendientes y se concilia con el proveedor (un pago ya hecho, o un cobro fallido cuyo
+        // aviso se perdió, no debe esperar al aviso); después se pausa, se recuerda y se cancela lo que corresponda.
+        syncPendingCheckouts()
+          .catch((e) => logEvent({ level: 'error', source: 'system', message: `Revisión de pagos pendientes: ${e?.message ?? e}` }))
+          .then(() => reconcileSubscriptions())
+          .catch((e) => logEvent({ level: 'error', source: 'system', message: `Conciliación de suscripciones: ${e?.message ?? e}` }))
+          .then(() => enforceAccess())
+          .then(() => checkDunning())
+          .then(() => cancelLongUnpaid())
+          .then(() => processBillingActions())
+          .then(() => checkWebhookSilence())
+          .then(() => checkStuckEvents())
+          .catch((e) => logEvent({ level: 'error', source: 'system', message: `Revisión de pagos: ${e?.message ?? e}` })),
+        checkAccountRetention().catch((e) => logEvent({ level: 'error', source: 'system', message: `Retención de cuentas: ${e?.message ?? e}` })),
+        checkScheduledDeletions().catch((e) => logEvent({ level: 'error', source: 'system', message: `Borrado de cuentas pedido por su dueño: ${e?.message ?? e}` })),
+        checkAiSpend().catch((e) => logEvent({ level: 'error', source: 'system', message: `Revisión de gasto de IA: ${e?.message ?? e}` })),
+        checkOnboardingNudges().catch((e) => logEvent({ level: 'error', source: 'system', message: `Correos de seguimiento: ${e?.message ?? e}` })),
+        sendSuperadminDigest().catch((e) => logEvent({ level: 'error', source: 'system', message: `Resumen diario al superadmin: ${e?.message ?? e}` })),
+        pruneUserSessions().catch((e) => logEvent({ level: 'error', source: 'system', message: `Limpieza de sesiones: ${e?.message ?? e}` })),
+        // Facturas: primero se arma la global del mes que cerró y luego se emite todo lo pendiente.
+        checkGlobalInvoice()
+          .then(() => processCfdi())
+          .catch((e) => logEvent({ level: 'error', source: 'system', message: `Emisión de facturas: ${e?.message ?? e}` })),
+      ]);
+      const late = new Promise<'timeout'>((r) => { timer = setTimeout(() => r('timeout'), deadlineMs); timer.unref(); });
+      if ((await Promise.race([all.then(() => 'ran' as const), late])) === 'timeout') {
+        // Lo colgado sigue corriendo, pero ya no detiene a las demás tareas ni a las siguientes vueltas.
+        await logEvent({ level: 'error', source: 'system', message: `El ciclo de vida tardó más de ${Math.round(deadlineMs / 60_000)} min: se suelta el turno (alguna tarea está colgada)` });
+        return 'timeout';
+      }
+    } finally {
+      clearTimeout(timer);
+      const unlocked = await client.query(`SELECT pg_advisory_unlock(hashtextextended('riverrun:lifecycle-tick', 0)) AS ok`).then((r) => r.rows[0]?.ok === true, () => false);
+      // Si no se pudo soltar, la conexión se descarta (al cerrarse, la base suelta el candado).
+      if (!unlocked) { client.release(true); client = null; }
+    }
+    return 'ran';
+  } finally {
+    client?.release();
+    ticking = false;
+  }
+}
+
 export function startLifecycle(intervalMs = 10 * 60_000) {
+  let skipped = 0;
   const tick = () => {
-    checkTrials().catch((e) => logEvent({ level: 'error', source: 'system', message: `Revisión de pruebas: ${e?.message ?? e}` }));
-    // Primero se confirman los pagos pendientes y se concilia con el proveedor (un pago ya hecho, o un cobro fallido cuyo
-    // aviso se perdió, no debe esperar al aviso); después se pausa, se recuerda y se cancela lo que corresponda.
-    syncPendingCheckouts()
-      .catch((e) => logEvent({ level: 'error', source: 'system', message: `Revisión de pagos pendientes: ${e?.message ?? e}` }))
-      .then(() => reconcileSubscriptions())
-      .catch((e) => logEvent({ level: 'error', source: 'system', message: `Conciliación de suscripciones: ${e?.message ?? e}` }))
-      .then(() => enforceAccess())
-      .then(() => checkDunning())
-      .then(() => cancelLongUnpaid())
-      .then(() => processBillingActions())
-      .then(() => checkWebhookSilence())
-      .then(() => checkStuckEvents())
-      .catch((e) => logEvent({ level: 'error', source: 'system', message: `Revisión de pagos: ${e?.message ?? e}` }));
-    checkAccountRetention().catch((e) => logEvent({ level: 'error', source: 'system', message: `Retención de cuentas: ${e?.message ?? e}` }));
-    checkScheduledDeletions().catch((e) => logEvent({ level: 'error', source: 'system', message: `Borrado de cuentas pedido por su dueño: ${e?.message ?? e}` }));
-    checkAiSpend().catch((e) => logEvent({ level: 'error', source: 'system', message: `Revisión de gasto de IA: ${e?.message ?? e}` }));
-    checkOnboardingNudges().catch((e) => logEvent({ level: 'error', source: 'system', message: `Correos de seguimiento: ${e?.message ?? e}` }));
-    sendSuperadminDigest().catch((e) => logEvent({ level: 'error', source: 'system', message: `Resumen diario al superadmin: ${e?.message ?? e}` }));
-    pruneUserSessions().catch((e) => logEvent({ level: 'error', source: 'system', message: `Limpieza de sesiones: ${e?.message ?? e}` }));
-    // Facturas: primero se arma la global del mes que cerró y luego se emite todo lo pendiente.
-    checkGlobalInvoice()
-      .then(() => processCfdi())
-      .catch((e) => logEvent({ level: 'error', source: 'system', message: `Emisión de facturas: ${e?.message ?? e}` }));
+    lifecycleTick()
+      .then(async (r) => {
+        // Saltarse una vuelta es normal (otra instancia la corre); muchas seguidas en esta, no.
+        skipped = r === 'busy' ? skipped + 1 : 0;
+        if (skipped === 3) await logEvent({ level: 'warn', source: 'system', message: 'El ciclo de vida lleva 3 vueltas sin poder empezar: la anterior sigue corriendo' });
+      })
+      .catch((e) => logEvent({ level: 'error', source: 'system', message: `Ciclo de vida: ${e?.message ?? e}` }));
   };
   tick();
   setInterval(tick, intervalMs).unref();

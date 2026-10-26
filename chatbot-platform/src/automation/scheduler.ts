@@ -82,12 +82,15 @@ export class Scheduler {
       await this.settle?.();
       await astore.finishJob(job.id, 'done');
     } catch (e: any) {
-      const msg = e instanceof DeliveryUncertain ? 'delivery_uncertain' : e instanceof JobTimeout ? 'job_timeout' : 'job_execution_failed';
+      const code = e instanceof DeliveryUncertain ? 'delivery_uncertain' : e instanceof JobTimeout ? 'job_timeout' : 'job_execution_failed';
+      // El mensaje del error queda en la tarea y en la bitácora: sin él no hay forma de saber qué falló.
+      const error = String(e?.message ?? e ?? '').slice(0, 500);
+      const msg = code === 'job_execution_failed' && error ? `${code}: ${error}` : code;
       if (!(e instanceof DeliveryUncertain) && job.attempts < 3) {
         await astore.retryJob(job.id, new Date(Date.now() + 60_000 * 2 ** (job.attempts-1)), msg);
       } else {
         await astore.finishJob(job.id, 'failed', msg);
-        await logEvent({ level: 'error', source: 'system', message: 'job_failed', accountId: job.account_id, details: {type:job.type,reason:msg,job_id:job.id} });
+        await logEvent({ level: 'error', source: 'system', message: 'job_failed', accountId: job.account_id, details: {type:job.type,reason:code,error,job_id:job.id} });
       }
     }
   }

@@ -12,12 +12,19 @@ export class EvolutionError extends Error {
  * Cliente mínimo para Evolution API v2.
  * Documentación: https://doc.evolution-api.com/v2
  */
+/** Errores de conexión en los que la petición no llegó a salir: repetirla no duplica nada. */
+const NOT_SENT = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'UND_ERR_CONNECT_TIMEOUT']);
+
 export class EvolutionClient {
   constructor(private baseUrl: string, private apiKey: string, private timeoutMs = 30000) {}
 
+  /**
+   * `retries`: cuántas veces se repite ante un 5xx o un error de red. Aunque sea 0, una petición que ni siquiera se
+   * pudo conectar (rechazada, sin DNS, tiempo de conexión agotado) se repite una vez: esa no llegó a Evolution.
+   */
   async request<T = any>(method: string, path: string, body?: unknown, retries = 1): Promise<T> {
     let lastErr: unknown;
-    for (let attempt = 0; attempt <= retries; attempt++) {
+    for (let attempt = 0; attempt <= Math.max(retries, 1); attempt++) {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
       try {
@@ -46,7 +53,9 @@ export class EvolutionClient {
       } catch (e: any) {
         if (e instanceof EvolutionError) throw e;
         lastErr = new EvolutionError(e?.name === 'AbortError' ? `Evolution ${path}: tiempo de espera agotado` : `Evolution ${path}: ${e?.message ?? e}`);
-        if (attempt < retries) await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+        const notSent = NOT_SENT.has(String(e?.cause?.code ?? e?.code ?? ''));
+        if (!(attempt < retries || (notSent && attempt === 0))) throw lastErr;
+        await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
       } finally {
         clearTimeout(timer);
       }
@@ -54,9 +63,13 @@ export class EvolutionClient {
     throw lastErr;
   }
 
-  /** Envía texto. `delay` (ms) muestra "escribiendo..." antes de enviar. Devuelve el ID del mensaje. */
+  /**
+   * Envía texto. `delay` (ms) muestra "escribiendo..." antes de enviar. Devuelve el ID del mensaje.
+   * Un solo intento: si se agota el tiempo o Evolution responde 5xx, el mensaje pudo haber salido. Repetirlo aquí lo
+   * duplicaría; decide la capa durable (entrega incierta), que sí lleva el registro.
+   */
   async sendText(instance: string, number: string, text: string, delay = 0): Promise<string | null> {
-    const res = await this.request('POST', `/message/sendText/${encodeURIComponent(instance)}`, { number, text, delay: delay || undefined });
+    const res = await this.request('POST', `/message/sendText/${encodeURIComponent(instance)}`, { number, text, delay: delay || undefined }, 0);
     return res?.key?.id ?? null;
   }
 
@@ -65,7 +78,7 @@ export class EvolutionClient {
     return this.sendMedia(instance, number, media, mimeType, fileName, caption, delay, 'image');
   }
 
-  /** Envía un archivo: imagen, documento (PDF, Word…), audio o video. El audio no lleva leyenda. */
+  /** Envía un archivo: imagen, documento (PDF, Word…), audio o video. El audio no lleva leyenda. Un solo intento, como el texto. */
   async sendMedia(instance: string, number: string, media: string, mimeType: string, fileName: string, caption = '', delay = 0, mediatype: 'image' | 'document' | 'audio' | 'video' = 'image'): Promise<string | null> {
     const res = await this.request('POST', `/message/sendMedia/${encodeURIComponent(instance)}`, {
       number,
@@ -75,7 +88,7 @@ export class EvolutionClient {
       media,
       fileName,
       delay: delay || undefined,
-    });
+    }, 0);
     return res?.key?.id ?? null;
   }
 

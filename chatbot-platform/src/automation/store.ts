@@ -1,5 +1,7 @@
 import crypto from 'node:crypto';
+import type pg from 'pg';
 import { query, queryOne } from '../db.js';
+import { logEvent } from '../logs.js';
 import { accountSettings, type AccountSettings, type Appointment, type Automation, type Sequence, type Service, type WaTemplateRef } from './types.js';
 import type { AlertPrefs } from '../types.js';
 
@@ -213,13 +215,13 @@ export interface Job {
 }
 
 /** Programa una tarea. Con `dedupe_key`, reemplaza la pendiente con la misma clave. */
-export async function scheduleJob(j: { account_id: string | null; type: string; payload: Record<string, unknown>; run_at: Date; dedupe_key?: string }) {
-  return queryOne<Job>(
-    `INSERT INTO jobs (account_id, type, payload, run_at, dedupe_key) VALUES ($1,$2,$3,$4,$5)
+/** Con `db` (un cliente en transacción), la tarea queda en esa transacción. */
+export async function scheduleJob(j: { account_id: string | null; type: string; payload: Record<string, unknown>; run_at: Date; dedupe_key?: string }, db?: pg.PoolClient) {
+  const sql = `INSERT INTO jobs (account_id, type, payload, run_at, dedupe_key) VALUES ($1,$2,$3,$4,$5)
      ON CONFLICT (dedupe_key) WHERE status = 'pending' AND dedupe_key IS NOT NULL
-     DO UPDATE SET run_at = EXCLUDED.run_at, payload = EXCLUDED.payload RETURNING *`,
-    [j.account_id, j.type, JSON.stringify(j.payload), j.run_at, j.dedupe_key ?? null],
-  );
+     DO UPDATE SET run_at = EXCLUDED.run_at, payload = EXCLUDED.payload RETURNING *`;
+  const args = [j.account_id, j.type, JSON.stringify(j.payload), j.run_at, j.dedupe_key ?? null];
+  return db ? ((await db.query(sql, args)).rows[0] as Job) ?? null : queryOne<Job>(sql, args);
 }
 
 /** Reclama tareas vencidas (varias instancias no toman la misma: SKIP LOCKED). */
@@ -240,12 +242,22 @@ export async function retryJob(id: number, runAt: Date, error: string) {
   await query(`UPDATE jobs SET status = 'pending', run_at = $2, last_error = $3 WHERE id = $1`, [id, runAt, error.slice(0, 1000)]);
 }
 
-export async function cancelJobs(payloadKey: string, value: string) {
-  await query(`UPDATE jobs SET status = 'cancelled', finished_at = now() WHERE status = 'pending' AND payload->>$1 = $2`, [payloadKey, value]);
+export async function cancelJobs(payloadKey: string, value: string, db?: pg.PoolClient) {
+  const sql = `UPDATE jobs SET status = 'cancelled', finished_at = now() WHERE status = 'pending' AND payload->>$1 = $2`;
+  await (db ? db.query(sql, [payloadKey, value]) : query(sql, [payloadKey, value]));
 }
 
 /** Tareas "running" de un proceso que murió vuelven a la cola. */
+/**
+ * Tareas que se quedaron «corriendo» porque el proceso murió. Se retoman, salvo las que ya se tomaron 3 veces: una que
+ * tumba el proceso cada vez no se retoma para siempre (queda fallida, con su motivo).
+ */
 export async function recoverStaleJobs() {
+  const dead = await query<{ id: number; type: string; account_id: string | null }>(
+    `UPDATE jobs SET status = 'failed', last_error = 'recovered_too_often', finished_at = now()
+     WHERE status = 'running' AND started_at < now() - interval '5 minutes' AND attempts >= 3 RETURNING id, type, account_id`,
+  );
+  for (const j of dead) await logEvent({ level: 'error', source: 'system', message: 'job_failed', accountId: j.account_id, details: { type: j.type, reason: 'recovered_too_often', job_id: j.id } });
   await query(`UPDATE jobs SET status = 'pending' WHERE status = 'running' AND started_at < now() - interval '5 minutes'`);
 }
 
