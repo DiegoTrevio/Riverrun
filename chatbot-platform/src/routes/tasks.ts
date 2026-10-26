@@ -1,12 +1,13 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { dateStr } from '../dates.js';
 import { contactFor, conversationFor, HttpError, notFound } from '../access.js';
 import * as store from '../store/index.js';
 import type { ContactTask } from '../types.js';
 import { parse } from './util.js';
 
 type Viewer = Parameters<typeof contactFor>[0];
-const DueOn = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'La fecha límite debe tener formato AAAA-MM-DD');
+const DueOn = dateStr('La fecha límite debe tener formato AAAA-MM-DD');
 const Text = z.string().trim().min(1, 'Escribe el pendiente o la nota').max(1000, 'Máximo 1000 caracteres');
 
 const TaskBody = z.object({

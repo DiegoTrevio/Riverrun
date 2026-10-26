@@ -10,7 +10,7 @@ import { query, queryOne } from './db.js';
 import { checkAccountRetention, keptNote } from './accounts/retention.js';
 import { checkScheduledDeletions } from './accounts/self-service.js';
 import { billingEnabled, cancelLongUnpaid, checkDunning, enforceAccess, syncPendingCheckouts } from './billing/service.js';
-import { checkWebhookSilence, processBillingActions, reconcileSubscriptions } from './billing/autopilot.js';
+import { checkStuckEvents, checkWebhookSilence, processBillingActions, reconcileSubscriptions } from './billing/autopilot.js';
 import { checkGlobalInvoice, processCfdi } from './billing/cfdi.js';
 import { logEvent } from './logs.js';
 import { sendMail } from './mailer.js';
@@ -120,6 +120,7 @@ export function startLifecycle(intervalMs = 10 * 60_000) {
       .then(() => cancelLongUnpaid())
       .then(() => processBillingActions())
       .then(() => checkWebhookSilence())
+      .then(() => checkStuckEvents())
       .catch((e) => logEvent({ level: 'error', source: 'system', message: `Revisión de pagos: ${e?.message ?? e}` }));
     checkAccountRetention().catch((e) => logEvent({ level: 'error', source: 'system', message: `Retención de cuentas: ${e?.message ?? e}` }));
     checkScheduledDeletions().catch((e) => logEvent({ level: 'error', source: 'system', message: `Borrado de cuentas pedido por su dueño: ${e?.message ?? e}` }));

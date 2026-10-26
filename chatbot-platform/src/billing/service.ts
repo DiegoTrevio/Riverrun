@@ -42,12 +42,50 @@ export async function tell(accountId: string, title: string, body: string) {
   for (const a of list) await sendMail({ fromName: mb.fromName, to: a.email, subject: title, text: `${body}\n\n${mb.base}/#/plan` });
 }
 
+/** Marca interna de una sola vez (p. ej. «ya se avisó de este duplicado»). Devuelve true la primera vez. */
 export async function recordEvent(provider: string, eventId: string, type: string, accountId: string | null): Promise<boolean> {
   const r = await queryOne<{ event_id: string }>(
-    `INSERT INTO billing_events (provider, event_id, type, account_id) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING RETURNING event_id`,
+    `INSERT INTO billing_events (provider, event_id, type, account_id, processed_at) VALUES ($1,$2,$3,$4,now()) ON CONFLICT DO NOTHING RETURNING event_id`,
     [provider, eventId, type, accountId],
   );
   return !!r;
+}
+
+/** Minutos que se respeta la reserva de un aviso: pasado eso, se da por muerto el proceso que lo tomó. */
+export const EVENT_CLAIM_MINUTES = 10;
+
+/**
+ * Reserva un aviso del proveedor para procesarlo. `claimed`: hay que procesarlo (es nuevo, o quedó a medias porque el
+ * proceso que lo tomó murió); `done`: ya se procesó; `busy`: otro proceso lo está procesando ahora mismo.
+ */
+export async function claimEvent(provider: string, eventId: string, type: string): Promise<{ status: 'claimed'; token: string; receivedAt: Date } | { status: 'done' } | { status: 'busy' }> {
+  const r = await queryOne<{ claim_token: string; received_at: Date }>(
+    `INSERT INTO billing_events (provider, event_id, type, claimed_at, claim_token, processed_at) VALUES ($1,$2,$3,now(),gen_random_uuid(),NULL)
+     ON CONFLICT (provider, event_id) DO UPDATE SET claimed_at = now(), claim_token = gen_random_uuid()
+       WHERE billing_events.processed_at IS NULL AND (billing_events.claimed_at IS NULL OR billing_events.claimed_at < now() - make_interval(mins => $4))
+     RETURNING claim_token, received_at`,
+    [provider, eventId, type, EVENT_CLAIM_MINUTES],
+  );
+  if (r) return { status: 'claimed', token: r.claim_token, receivedAt: r.received_at };
+  const row = await queryOne<{ processed_at: Date | null }>(`SELECT processed_at FROM billing_events WHERE provider = $1 AND event_id = $2`, [provider, eventId]);
+  return row?.processed_at ? { status: 'done' } : { status: 'busy' };
+}
+
+/** El aviso quedó procesado: un reintento del proveedor ya no lo repite. Solo quien tiene la reserva lo cierra. */
+export async function finishEvent(provider: string, eventId: string, token: string, accountId: string | null) {
+  await query(
+    `UPDATE billing_events SET processed_at = now(), claimed_at = NULL, claim_token = NULL, account_id = COALESCE($4, account_id)
+     WHERE provider = $1 AND event_id = $2 AND claim_token = $3`,
+    [provider, eventId, token, accountId],
+  );
+}
+
+/** El aviso falló: se libera para que el reintento del proveedor lo procese desde el principio (si nadie más lo retomó). */
+export async function releaseEvent(provider: string, eventId: string, token: string) {
+  await query(
+    `UPDATE billing_events SET claimed_at = NULL, claim_token = NULL WHERE provider = $1 AND event_id = $2 AND claim_token = $3 AND processed_at IS NULL`,
+    [provider, eventId, token],
+  );
 }
 
 /**
@@ -221,20 +259,29 @@ export async function syncPendingCheckouts(now = new Date()): Promise<number> {
  * Devuelve la cuenta afectada (o null si no se pudo asociar).
  */
 export async function applyState(state: SubscriptionState, now = new Date()): Promise<string | null> {
-  // Los avisos de un mismo cambio llegan casi juntos (p. ej. checkout y suscripción creada): se procesan uno a la vez
-  // para que los correos y avisos no se dupliquen.
-  return withTransaction(async (client) => {
-    await client.query(`SELECT pg_advisory_xact_lock(hashtext('billing-apply'))`);
-    return applyStateLocked(state, now);
+  const accountId = state.accountId
+    ?? (await queryOne<{ account_id: string }>(`SELECT account_id FROM subscriptions WHERE provider = $1 AND provider_subscription_id = $2`, [state.provider, state.subscriptionId]))?.account_id
+    ?? null;
+  if (!accountId) return null;
+  // Los avisos de un mismo cambio llegan casi juntos (p. ej. checkout y suscripción creada): los de una cuenta se procesan
+  // uno a la vez para que los correos y avisos no se dupliquen. Las demás cuentas no esperan.
+  const later: Later = [];
+  const result = await withTransaction(async (client) => {
+    await client.query(`SELECT pg_advisory_xact_lock(hashtext('billing-apply:' || $1))`, [accountId]);
+    return applyStateLocked({ ...state, accountId }, now, later);
   });
+  // Correos y avisos, ya sin el candado: un correo lento no detiene los cobros. Un aviso que falla no deshace el estado.
+  for (const run of later) {
+    await run().catch((e) => logEvent({ level: 'warn', source: 'admin', message: `Aviso de cobro sin enviar: ${e?.message ?? e}`, accountId }));
+  }
+  return result;
 }
 
-async function applyStateLocked(state: SubscriptionState, now: Date): Promise<string | null> {
-  let accountId = state.accountId;
-  if (!accountId) {
-    accountId = (await queryOne<{ account_id: string }>(`SELECT account_id FROM subscriptions WHERE provider = $1 AND provider_subscription_id = $2`, [state.provider, state.subscriptionId]))?.account_id ?? null;
-  }
-  if (!accountId) return null;
+/** Avisos que salen al terminar de aplicar un estado (fuera del candado). */
+type Later = (() => Promise<unknown>)[];
+
+async function applyStateLocked(state: SubscriptionState & { accountId: string }, now: Date, later: Later): Promise<string | null> {
+  const accountId = state.accountId;
   const acc = await queryOne<{ id: string; name: string; status: string; plan: string }>(`SELECT id, name, status, plan FROM accounts WHERE id = $1`, [accountId]);
   if (!acc) return null;
 
@@ -288,7 +335,7 @@ async function applyStateLocked(state: SubscriptionState, now: Date): Promise<st
       }
     }
     await logEvent({ level: 'info', source: 'admin', message: `Suscripción sustituida (${state.provider}): ${prev.provider_subscription_id} → ${state.subscriptionId}`, accountId });
-    if (was === 'active') await tell(accountId, 'Actualizamos tu plan', `Tu cuenta "${acc.name}" sigue al corriente${plan ? ` con el plan ${plan.name}` : ''} y con tu nueva forma de pago. Próximo cobro: ${fmt(periodEnd)}.`);
+    if (was === 'active') later.push(() => tell(accountId, 'Actualizamos tu plan', `Tu cuenta "${acc.name}" sigue al corriente${plan ? ` con el plan ${plan.name}` : ''} y con tu nueva forma de pago. Próximo cobro: ${fmt(periodEnd)}.`));
   }
 
   if (state.status === 'active') {
@@ -303,20 +350,20 @@ async function applyStateLocked(state: SubscriptionState, now: Date): Promise<st
     );
     if (was !== 'active') {
       await logEvent({ level: 'info', source: 'admin', message: `Pago confirmado (${state.provider}): plan ${planKey || '—'}`, accountId });
-      await tell(accountId, was === 'past_due' ? 'Recibimos tu pago, ¡gracias!' : '¡Tu plan está activo!', `Tu cuenta "${acc.name}" quedó al corriente${plan ? ` con el plan ${plan.name}` : ''}. Próxima renovación: ${fmt(periodEnd)}.`);
-      if (was !== 'past_due') await notifySuperadmins(accountId, `Nueva suscripción: ${acc.name}`, `"${acc.name}" contrató${plan ? ` ${plan.name} (${money(plan.price_cents, plan.currency)})` : ''} por ${state.provider}.`);
+      later.push(() => tell(accountId, was === 'past_due' ? 'Recibimos tu pago, ¡gracias!' : '¡Tu plan está activo!', `Tu cuenta "${acc.name}" quedó al corriente${plan ? ` con el plan ${plan.name}` : ''}. Próxima renovación: ${fmt(periodEnd)}.`));
+      if (was !== 'past_due') later.push(() => notifySuperadmins(accountId, `Nueva suscripción: ${acc.name}`, `"${acc.name}" contrató${plan ? ` ${plan.name} (${money(plan.price_cents, plan.currency)})` : ''} por ${state.provider}.`));
     }
   } else if (state.status === 'past_due' && was !== 'past_due') {
     await logEvent({ level: 'warn', source: 'admin', message: `Cobro fallido (${state.provider}): la cuenta tiene ${config.billing.graceDays} días para ponerse al corriente`, accountId });
-    if (prev?.payment_action_url) await tell(accountId, 'Confirma tu pago con tu banco', confirmText(acc.name, prev.payment_action_url));
-    else await tell(accountId, 'No pudimos cobrar tu plan', `No se pudo procesar el pago de "${acc.name}". Actualiza tu forma de pago en los próximos ${config.billing.graceDays} días para que tu asistente siga respondiendo.`);
-    await notifySuperadmins(accountId, `Cobro fallido: ${acc.name}`, `No se pudo cobrar a "${acc.name}" (${state.provider}).`);
+    if (prev?.payment_action_url) later.push(() => tell(accountId, 'Confirma tu pago con tu banco', confirmText(acc.name, prev.payment_action_url)));
+    else later.push(() => tell(accountId, 'No pudimos cobrar tu plan', `No se pudo procesar el pago de "${acc.name}". Actualiza tu forma de pago en los próximos ${config.billing.graceDays} días para que tu asistente siga respondiendo.`));
+    later.push(() => notifySuperadmins(accountId, `Cobro fallido: ${acc.name}`, `No se pudo cobrar a "${acc.name}" (${state.provider}).`));
   } else if (state.status === 'canceled' && was !== 'canceled') {
     await logEvent({ level: 'info', source: 'admin', message: `Suscripción cancelada (${state.provider})`, accountId });
     const until = periodEnd && periodEnd > now ? ` Tu asistente sigue activo hasta el ${fmt(periodEnd)}.` : '';
-    await tell(accountId, 'Tu suscripción se canceló', `La suscripción de "${acc.name}" se canceló.${until} Puedes volver a contratar cuando quieras.`);
-    await notifySuperadmins(accountId, `Suscripción cancelada: ${acc.name}`, `"${acc.name}" canceló su plan.`);
-    await enforceAccess(now);
+    later.push(() => tell(accountId, 'Tu suscripción se canceló', `La suscripción de "${acc.name}" se canceló.${until} Puedes volver a contratar cuando quieras.`));
+    later.push(() => notifySuperadmins(accountId, `Suscripción cancelada: ${acc.name}`, `"${acc.name}" canceló su plan.`));
+    later.push(() => enforceAccess(now));
   }
   return accountId;
 }
@@ -327,16 +374,23 @@ async function applyStateLocked(state: SubscriptionState, now: Date): Promise<st
  * si el superadmin reactiva la cuenta a mano, no se vuelve a pausar.
  */
 export async function enforceAccess(now = new Date()): Promise<number> {
+  // Marcar la caída y pausar la cuenta en la misma sentencia: si el proceso muere a la mitad, no queda una caída anotada
+  // con la cuenta todavía activa (la consulta ya no la volvería a tomar).
   const rows = await query<{ account_id: string; name: string; status: string }>(
-    `UPDATE subscriptions s SET access_ended_at = $1, updated_at = now() FROM accounts a
-     WHERE a.id = s.account_id AND s.access_ended_at IS NULL AND (
-       (s.status = 'past_due' AND s.past_due_since <= $1::timestamptz - make_interval(days => $2))
-       OR (s.status = 'canceled' AND (s.current_period_end IS NULL OR s.current_period_end <= $1))
-     ) RETURNING s.account_id, a.name, s.status`,
+    `WITH ended AS (
+       UPDATE subscriptions s SET access_ended_at = $1, updated_at = now() FROM accounts a
+       WHERE a.id = s.account_id AND s.access_ended_at IS NULL AND (
+         (s.status = 'past_due' AND s.past_due_since <= $1::timestamptz - make_interval(days => $2))
+         OR (s.status = 'canceled' AND (s.current_period_end IS NULL OR s.current_period_end <= $1))
+       ) RETURNING s.account_id, a.name, s.status
+     ), paused AS (
+       UPDATE accounts SET status = 'paused', paused_at = $1, pause_reason = 'payment', updated_at = now()
+       WHERE id IN (SELECT account_id FROM ended) AND status <> 'paused' RETURNING id
+     )
+     SELECT account_id, name, status FROM ended`,
     [now, config.billing.graceDays],
   );
   for (const r of rows) {
-    await query(`UPDATE accounts SET status = 'paused', paused_at = $2, pause_reason = 'payment', updated_at = now() WHERE id = $1 AND status <> 'paused'`, [r.account_id, now]);
     await logEvent({ level: 'warn', source: 'admin', message: `Cuenta pausada por falta de pago (${r.status})`, accountId: r.account_id });
     await tell(r.account_id, 'Tu asistente está en pausa', `Tu asistente de "${r.name}" se pausó porque el plan no está al corriente. ${keptNote()} Reactívalo cuando quieras desde Mi plan.`);
     await notifySuperadmins(r.account_id, `Cuenta pausada por pago: ${r.name}`, `"${r.name}" quedó en pausa (${r.status}).`);
@@ -429,15 +483,23 @@ export async function notePaymentAction(provider: ProviderName, subscriptionId: 
 export async function cancelLongUnpaid(now = new Date()): Promise<number> {
   const days = config.billing.cancelAfterPauseDays;
   if (!(days > 0)) return 0;
+  // La cancelación en el proveedor se encola en la misma sentencia: si el proceso muere a la mitad, no queda una
+  // suscripción «cancelada» aquí que el proveedor siga cobrando.
   const rows = await query<{ account_id: string; name: string; provider: ProviderName; provider_subscription_id: string }>(
-    `UPDATE subscriptions s SET status = 'canceled', cancel_at_period_end = false, updated_at = now() FROM accounts a
-     WHERE a.id = s.account_id AND s.status = 'past_due' AND s.access_ended_at IS NOT NULL AND a.status = 'paused'
-       AND s.access_ended_at <= $1::timestamptz - make_interval(days => $2)
-     RETURNING s.account_id, a.name, s.provider, s.provider_subscription_id`,
+    `WITH canceled AS (
+       UPDATE subscriptions s SET status = 'canceled', cancel_at_period_end = false, updated_at = now() FROM accounts a
+       WHERE a.id = s.account_id AND s.status = 'past_due' AND s.access_ended_at IS NOT NULL AND a.status = 'paused'
+         AND s.access_ended_at <= $1::timestamptz - make_interval(days => $2)
+       RETURNING s.account_id, a.name, s.provider, s.provider_subscription_id
+     ), queued AS (
+       INSERT INTO billing_actions (provider, kind, ref, account_id, reason)
+       SELECT provider, 'cancel', provider_subscription_id, account_id, 'unpaid' FROM canceled WHERE provider_subscription_id <> ''
+       ON CONFLICT (provider, kind, ref) DO NOTHING
+     )
+     SELECT account_id, name, provider, provider_subscription_id FROM canceled`,
     [now, days],
   );
   for (const r of rows) {
-    await queueAction({ provider: r.provider, kind: 'cancel', ref: r.provider_subscription_id, accountId: r.account_id, reason: 'unpaid' });
     await logEvent({ level: 'warn', source: 'admin', message: `Suscripción cancelada tras ${days} días en pausa sin pago`, accountId: r.account_id });
     await tell(r.account_id, 'Cancelamos tu suscripción',
       `Tu cuenta "${r.name}" lleva ${days} días en pausa sin que se pudiera cobrar, así que cancelamos la suscripción para no seguir intentando cobrarte. ${keptNote()} Puedes volver a contratar cuando quieras desde Mi plan.`);

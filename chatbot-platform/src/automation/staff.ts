@@ -3,11 +3,12 @@
  * turnos (round robin) o por porcentajes.
  */
 import { z } from 'zod';
+import { dateStr } from '../dates.js';
 import { query } from '../db.js';
 import { toMinutes } from './time.js';
 import { WeeklyHoursSchema, type Service, type WeeklyHours } from './types.js';
 
-const DateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Fecha en formato AAAA-MM-DD');
+const DateStr = dateStr();
 export const TimeOffSchema = z
   .object({ from: DateStr, to: DateStr, note: z.string().trim().max(120).default('') })
   .refine((t) => t.from <= t.to, 'El día final debe ser igual o posterior al inicial');

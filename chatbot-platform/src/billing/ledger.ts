@@ -8,7 +8,7 @@ import { emailSuperadmin } from '../platform/digest.js';
 import { query, queryOne } from '../db.js';
 import { queuePaymentCfdi } from './cfdi.js';
 import { applyRefund, recordPayment } from './payments.js';
-import { getSubscription, money, queueAction, tell } from './service.js';
+import { getSubscription, money, tell } from './service.js';
 import type { DisputeInfo, ProviderName, WebhookResult } from './types.js';
 
 /**
@@ -35,21 +35,32 @@ export async function recordMoney(name: ProviderName, result: Pick<WebhookResult
     const planKey = result.state?.planKey || sub?.plan_key || '';
     if (!account) await logEvent({ level: 'warn', source: 'system', message: `Cobro ${result.payment.paymentId} (${name}) sin cuenta de la plataforma: no se registra` });
     else {
-      const paymentId = await recordPayment({ accountId: account, provider: name, planKey, payment: result.payment });
-      if (paymentId) {
+      const saved = await recordPayment({ accountId: account, provider: name, planKey, payment: result.payment });
+      if (saved?.fresh) {
         fresh = true;
         await logEvent({ level: 'info', source: 'admin', message: `Pago recibido (${name}): ${result.payment.totalCents / 100} ${result.payment.currency}`, accountId: account });
-        // Su factura sale en la siguiente revisión (o entra a la global del mes si no pidió factura). Un fallo aquí no
-        // debe devolver el aviso: el pago ya quedó y un reintento del proveedor no lo volvería a ver como nuevo.
-        await queuePaymentCfdi(paymentId).catch((e) => logEvent({ level: 'error', source: 'admin', message: `No se pudo preparar la factura del pago ${result.payment!.paymentId}: ${e?.message ?? e}`, accountId: account }));
       }
+      // Su factura sale en la siguiente revisión (o entra a la global del mes si no pidió factura). Se prepara aunque el
+      // pago ya estuviera registrado: si el proceso murió justo después de registrarlo, el reintento la deja lista (no se
+      // duplica). Si falla, el aviso se reintenta.
+      if (saved) await queuePaymentCfdi(saved.id);
     }
   }
   if (result.refund) {
     const p = await applyRefund(name, result.refund);
     if (p) await logEvent({ level: 'warn', source: 'admin', message: `Reembolso (${name}): pago ${p.status === 'refunded' ? 'reembolsado completo' : 'reembolsado en parte'}`, accountId: p.account_id ?? undefined });
+    // El reembolso de un cobro de suscripción (trae su factura) que llegó antes que el cobro: se pide que el proveedor
+    // reintente, para no perderlo. Un cargo sin factura no es de una suscripción de la plataforma.
+    else if (result.refund.paymentId) throw new RefundBeforePaymentError(result.refund.paymentId);
   }
   return fresh;
+}
+
+/** Un reembolso cuyo cobro todavía no llega: el aviso se reintenta (`500`) hasta que esté registrado. */
+export class RefundBeforePaymentError extends Error {
+  constructor(paymentId: string) {
+    super(`Reembolso del cobro ${paymentId}, que todavía no está registrado: se espera el reintento del proveedor`);
+  }
 }
 
 const fmtDate = (d: Date) => new Date(d).toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'America/Mexico_City' });
@@ -114,8 +125,13 @@ export async function applyDispute(provider: ProviderName, d: DisputeInfo) {
   await applyRefund(provider, { paymentId: '', chargeRefs: refs, refundedCents: p.total_cents });
   const sub = accountId ? await getSubscription(accountId) : null;
   if (accountId && sub?.provider === provider && sub.provider_subscription_id && ['active', 'past_due'].includes(sub.status)) {
-    await query(`UPDATE subscriptions SET status = 'canceled', cancel_at_period_end = false, updated_at = now() WHERE account_id = $1`, [accountId]);
-    await queueAction({ provider, kind: 'cancel', ref: sub.provider_subscription_id, accountId, reason: 'dispute' });
+    // Cancelada aquí y encolada en el proveedor a la vez: no puede quedar una sin la otra.
+    await query(
+      `WITH canceled AS (UPDATE subscriptions SET status = 'canceled', cancel_at_period_end = false, updated_at = now() WHERE account_id = $1 RETURNING account_id)
+       INSERT INTO billing_actions (provider, kind, ref, account_id, reason) SELECT $2, 'cancel', $3, account_id, 'dispute' FROM canceled
+       ON CONFLICT (provider, kind, ref) DO NOTHING`,
+      [accountId, provider, sub.provider_subscription_id],
+    );
   }
   if (accountId) {
     await tell(accountId, 'Cancelamos tu suscripción',

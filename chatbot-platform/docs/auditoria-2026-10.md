@@ -55,12 +55,12 @@ Cada hallazgo crítico o alto se comprobó en el código. Los que no se sostuvie
 
 ### Listo para producción
 
-**P1 · Alto · `enforceAccess` puede dejar activa para siempre una cuenta sin pago.** (`src/billing/service.ts:329-347`)
+**P1 · Alto · `enforceAccess` puede dejar activa para siempre una cuenta sin pago.** (`src/billing/service.ts:329-347`) ✅ Corregido en el PR de cobros (rama `audit-cobros`).
 - **Causa:** primero marca `access_ended_at` y después, fila por fila y sin transacción, pausa la cuenta.
 - **Escenario:** si el proceso cae entre los dos pasos, la cuenta sigue activa. La consulta ya no la vuelve a tomar, porque exige `access_ended_at IS NULL`.
 - **Arreglo:** pausar en la misma sentencia (CTE) o en la misma transacción.
 
-**P2 · Alto · `cancelLongUnpaid` cancela en la base antes de encolar la cancelación en el proveedor.** (`src/billing/service.ts:429-448`)
+**P2 · Alto · `cancelLongUnpaid` cancela en la base antes de encolar la cancelación en el proveedor.** (`src/billing/service.ts:429-448`) ✅ Corregido en el PR de cobros (rama `audit-cobros`).
 - **Escenario:** si el proceso cae entre los dos pasos, la suscripción queda «cancelada» en la base, pero Stripe o Mercado Pago siguen reintentando el cobro. Nadie la vuelve a tomar.
 - **Arreglo:** el cambio de estado y el `billing_actions` en la misma transacción.
 
@@ -69,7 +69,7 @@ Cada hallazgo crítico o alto se comprobó en el código. Los que no se sostuvie
 - **Escenario:** el reintento ocurre dentro de la llamada, así que la protección de entrega incierta (`delivery_attempts`) no lo ve. El cliente recibe el mensaje dos veces, también los recordatorios de pago.
 - **Arreglo:** `retries = 0` en los envíos. La capa durable decide si reintentar.
 
-**P4 · Alto · Un aviso de cobro se da por procesado antes de procesarlo.** (`src/routes/billing.ts:69-91`)
+**P4 · Alto · Un aviso de cobro se da por procesado antes de procesarlo.** (`src/routes/billing.ts:69-91`) ✅ Corregido en el PR de cobros (rama `audit-cobros`): se reserva al llegar y se da por procesado al terminar; lo que quede atorado más de un día se avisa al superadmin.
 - **Causa:** `recordEvent` guarda el evento y después se aplica. Si el proceso muere en medio (despliegue o watchdog), el `DELETE` de compensación nunca corre, y el reintento del proveedor responde «ya procesado».
 - **Escenario:** la conciliación diaria recupera el estado de la suscripción y los pagos, pero no los reembolsos ni los contracargos. Un contracargo así no pausa la cuenta, y un reembolso no genera su nota de crédito.
 - **Arreglo:** guardar el evento con `processed_at` y reprocesarlo si quedó sin terminar.
@@ -150,17 +150,17 @@ Cada hallazgo crítico o alto se comprobó en el código. Los que no se sostuvie
 **Listo para producción**
 - **Medio:**
   - Avisos marcados como enviados aunque el correo falló: el de fin de prueba, el de cobro fallido y el resumen del superadmin, porque `sendMail` devuelve `false` en lugar de lanzar un error.
-  - `applyState` tiene un candado global mientras manda correos.
-  - En un reintento puede faltar el CFDI de un pago ya registrado.
-  - Un reembolso que llega antes que su pago se pierde.
-  - El lease del CFDI puede vencer a mitad del lote.
+  - ✅ Corregido en el PR de cobros (rama `audit-cobros`): `applyState` tenía un candado global mientras mandaba correos (ahora es por cuenta, los correos salen después y SMTP tiene tiempo límite).
+  - ✅ Corregido en el PR de cobros (rama `audit-cobros`): en un reintento podía faltar el CFDI de un pago ya registrado.
+  - ✅ Corregido en el PR de cobros (rama `audit-cobros`): un reembolso que llegaba antes que su pago se perdía (ahora el aviso se reintenta).
+  - ✅ Corregido en el PR de cobros (rama `audit-cobros`): el lease del CFDI podía vencer a mitad del lote (ahora se reserva uno a la vez).
   - El `tick()` del ciclo de vida se puede encimar con el anterior.
   - Errores que se pierden en el scheduler, la cola y los webhooks: no se guarda el mensaje.
   - Un recordatorio de pago que no se pudo enviar no se reintenta.
   - El cuerpo de la respuesta de la IA se lee sin tiempo límite.
 - **Bajo:**
-  - Fechas imposibles («31 de febrero») dan 500.
-  - La factura global solo cubre el mes anterior.
+  - ✅ Corregido en el PR de cobros (rama `audit-cobros`): fechas imposibles («31 de febrero») daban 500.
+  - ✅ Corregido en el PR de cobros (rama `audit-cobros`): la factura global solo cubría el mes anterior (ahora, cualquier mes cerrado de los últimos 3).
   - Trabajos que tumban el proceso no tienen límite de intentos al recuperarse.
   - El apagado no tiene plazo máximo.
   - `HEALTHCHECK` no revisa la base.

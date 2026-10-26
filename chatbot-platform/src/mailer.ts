@@ -20,7 +20,12 @@ export const outbox: Mail[] = [];
 
 let transporter: Transporter | null | undefined;
 function transport() {
-  if (transporter === undefined) transporter = config.mail.smtpUrl ? nodemailer.createTransport(config.mail.smtpUrl) : null;
+  // Tiempos límite: un SMTP que no responde no debe detener a quien manda el correo (cobros, avisos, la cola).
+  if (transporter === undefined) {
+    transporter = config.mail.smtpUrl
+      ? nodemailer.createTransport({ url: config.mail.smtpUrl, connectionTimeout: 10_000, greetingTimeout: 10_000, socketTimeout: 20_000 })
+      : null;
+  }
   return transporter;
 }
 
