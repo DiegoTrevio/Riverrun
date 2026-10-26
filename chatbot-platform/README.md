@@ -592,6 +592,15 @@ En **Agentes → + Crear agente** (`#/agentes/nuevo`) hay 3 pantallas: tu negoci
   - el eco del aviso al encargado ya no abre una conversación falsa;
   - la cita cancelada respeta *Avisar al equipo* del servicio.
 - **Tiempos y escalamiento** (Automatización → Ajustes → *Avisos al equipo*): cada cuánto se repite «un cliente espera a una persona» (por defecto 2 h; 0 = una vez) y «el asistente no pudo responder» (por defecto 30 min). Si una conversación asignada lleva N minutos sin respuesta de una persona, se avisa una vez a los administradores que elijas (o a todos si no eliges, o si los elegidos ya no están activos); apagado por defecto.
+- **Entrega confiable**: cada aviso por WhatsApp o correo queda registrado con su resultado.
+  - Si falla, se reintenta solo (1, 5 y 15 minutos después); al cuarto intento queda como *no llegó*.
+  - Los urgentes (esperas, escalamientos, errores del asistente, emergencias, reseñas malas y WhatsApp desconectado) salen también por el otro canal de la persona si el primero falla, aunque tenga ese canal apagado en *Mis avisos*.
+  - Si no llega por ningún lado, el aviso del panel lo dice y los administradores reciben un aviso (una vez al día por persona) para revisar su teléfono o su correo.
+  - Los WhatsApp internos salen por un WhatsApp conectado del negocio; uno desconectado no se usa.
+  - Si una cuenta no tiene a nadie activo para un aviso urgente, queda en la bitácora y te llega un correo (una vez al día).
+- **Ver las entregas**: en **Notificaciones** cada aviso dice por dónde llegó (*WhatsApp: entregado · Correo: no llegó*). Los administradores ven *Avisos que no llegaron (7 días)* con **Reintentar**, y si tus últimos WhatsApp no llegaron aparece una franja para revisar tu número. También por API: `GET /api/alert-deliveries` y `POST /api/alert-deliveries/:id/retry`.
+- **Teléfono del equipo**: el WhatsApp de cada persona se guarda con la lada del país (de 11 a 15 dígitos, por ejemplo 52 55 1234 5678).
+- Los avisos urgentes sin leer no se borran en la limpieza de 60 días (se conservan hasta un año).
 
 ## Integraciones
 

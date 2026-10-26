@@ -72,6 +72,12 @@ export const groupsRepeats = (kind: string | undefined) => alertGroupOf(kind) !=
 /** Lo urgente también llega por correo: el WhatsApp de la cuenta puede ser justo lo que está fallando. */
 export const EMAIL_KINDS = ['ai_error', 'safety', 'alert', 'handoff_wait', 'escalation', 'social_alert'];
 
+/**
+ * Los avisos que no pueden quedarse sin leer: llevan respaldo entre canales (si falla el WhatsApp, por correo y al revés)
+ * y en el panel no se borran mientras nadie los lea. Los urgentes, más un WhatsApp del negocio desconectado.
+ */
+export const IMPORTANT_KINDS = [...EMAIL_KINDS, 'channel'];
+
 /** Por dónde le llega un aviso de este tipo a una persona, según lo que eligió. */
 export function alertChannels(prefs: AlertPrefs | null | undefined, kind: string | undefined) {
   const group = alertGroupOf(kind);

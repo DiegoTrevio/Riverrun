@@ -1,4 +1,5 @@
 import { ALERT_GROUPS, alertGroupsForPanel, kindsOfGroup } from '../automation/alert-groups.js';
+import { deliveriesFor, failedDeliveries, retryDelivery, whatsappFailing } from '../automation/alert-delivery.js';
 import { NoticeBody, sendNotice } from '../automation/notices.js';
 import { testConnectionAlert } from '../lifecycle.js';
 import type { FastifyInstance } from 'fastify';
@@ -373,11 +374,30 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
   /* ------------------------------ Notificaciones (todos los roles) ------------------------------ */
   api.get('/api/notifications', async (req: any) => {
     const group = typeof req.query.group === 'string' && ALERT_GROUPS.some((g) => g.key === req.query.group) ? req.query.group : null;
-    const [items, unread] = await Promise.all([
+    const [items, unread, failing] = await Promise.all([
       astore.listNotifications(req.user.id, Math.min(Number(req.query.limit) || 50, 200), scopeAccount(req.user), group ? kindsOfGroup(group) : null),
       astore.unreadCount(req.user.id, scopeAccount(req.user)),
+      whatsappFailing(req.user.id),
     ]);
-    return { unread, items, groups: alertGroupsForPanel() };
+    // Por dónde le llegó cada aviso (WhatsApp, correo) y si falló: solo las entregas de quien lo ve.
+    const deliveries = await deliveriesFor(items.map((n: any) => n.id));
+    return { unread, items: items.map((n: any) => ({ ...n, deliveries: deliveries.get(String(n.id)) ?? [] })), groups: alertGroupsForPanel(), whatsapp_failing: failing };
+  });
+
+  /** Avisos al equipo que no llegaron (WhatsApp o correo) en los últimos días. Solo administradores. */
+  api.get('/api/alert-deliveries', { preHandler: requireRole('admin') }, async (req: any) => {
+    const accountId = await targetAccount(req.user, req.query.account_id);
+    const days = Math.min(Math.max(Number(req.query.days) || 7, 1), 30);
+    return failedDeliveries(accountId, days);
+  });
+
+  /** Vuelve a intentar una entrega que no llegó. */
+  api.post('/api/alert-deliveries/:id/retry', { preHandler: requireRole('admin') }, async (req: any) => {
+    if (!/^\d+$/.test(String(req.params.id))) throw notFound('Entrega no encontrada');
+    const accountId = await targetAccount(req.user, req.body?.account_id ?? req.query.account_id);
+    const status = await retryDelivery(req.params.id, accountId);
+    if (!status) throw notFound('Entrega no encontrada');
+    return { status };
   });
 
   /** Grupos de avisos para «Mis avisos» (Mi perfil y Mi equipo). */

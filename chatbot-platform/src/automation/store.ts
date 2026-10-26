@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import type pg from 'pg';
-import { query, queryOne } from '../db.js';
+import { query, queryOne, withTransaction } from '../db.js';
+import { IMPORTANT_KINDS } from './alert-groups.js';
 import { logEvent } from '../logs.js';
 import { accountSettings, type AccountSettings, type Appointment, type Automation, type Sequence, type Service, type WaTemplateRef } from './types.js';
 import type { AlertPrefs } from '../types.js';
@@ -392,9 +393,11 @@ export async function deleteAttachment(id: string) {
 
 /* ------------------------------ Notificaciones ------------------------------ */
 
+/** Avisos del panel. Devuelve el id del aviso de cada persona (para ligarle sus entregas por WhatsApp y correo). */
 export async function notifyUsers(accountId: string, userIds: string[], n: { title: string; body: string; link?: string; kind?: string }) {
+  const ids = new Map<string, string>();
   for (const uid of new Set(userIds)) {
-    await query(`INSERT INTO notifications (account_id, user_id, kind, title, body, link) VALUES ($1,$2,$3,$4,$5,$6)`, [
+    const row = await queryOne<{ id: string }>(`INSERT INTO notifications (account_id, user_id, kind, title, body, link) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`, [
       accountId,
       uid,
       n.kind ?? 'alert',
@@ -402,7 +405,9 @@ export async function notifyUsers(accountId: string, userIds: string[], n: { tit
       n.body.slice(0, 2000),
       n.link ?? '',
     ]);
+    if (row) ids.set(uid, String(row.id));
   }
+  return ids;
 }
 
 /**
@@ -413,15 +418,20 @@ export async function claimAlertDeliveries(userIds: string[], kind: string, link
   if (!userIds.length) return new Set<string>();
   // Las huellas de más de un día ya no sirven para agrupar: se limpian de a poco.
   await query(`DELETE FROM alert_deliveries WHERE id IN (SELECT id FROM alert_deliveries WHERE created_at < now() - interval '1 day' LIMIT 500)`);
-  const rows = await query<{ user_id: string }>(
-    `INSERT INTO alert_deliveries (user_id, kind, link, digest)
-     SELECT u, $2, $3, $4 FROM unnest($1::uuid[]) AS u
-      WHERE NOT EXISTS (SELECT 1 FROM alert_deliveries d WHERE d.user_id = u AND d.kind = $2 AND d.link = $3 AND d.digest = $4
-                          AND d.created_at > now() - make_interval(mins => $5))
-     RETURNING user_id`,
-    [userIds, kind, link, digest, minutes],
-  );
-  return new Set(rows.map((r) => r.user_id));
+  // Un candado por persona y aviso (en orden, sin bloqueos cruzados): dos procesos que mandan el mismo aviso a la vez
+  // no lo entregan dos veces.
+  return withTransaction(async (c) => {
+    for (const u of [...new Set(userIds)].sort()) await c.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [`alert:${u}:${kind}:${link}:${digest}`]);
+    const rows = (await c.query<{ user_id: string }>(
+      `INSERT INTO alert_deliveries (user_id, kind, link, digest)
+       SELECT u, $2, $3, $4 FROM unnest($1::uuid[]) AS u
+        WHERE NOT EXISTS (SELECT 1 FROM alert_deliveries d WHERE d.user_id = u AND d.kind = $2 AND d.link = $3 AND d.digest = $4
+                            AND d.created_at > now() - make_interval(mins => $5))
+       RETURNING user_id`,
+      [userIds, kind, link, digest, minutes],
+    )).rows;
+    return new Set(rows.map((r) => r.user_id));
+  });
 }
 
 export async function teamMembers(accountId: string, roles: string[] = ['admin', 'agent']) {
@@ -586,7 +596,10 @@ export async function markNotificationsRead(userId: string, ids?: number[], acco
 
 export async function pruneAutomationData(days: number) {
   await query(`DELETE FROM jobs WHERE status IN ('done','failed','cancelled') AND created_at < now() - ($1 || ' days')::interval`, [String(days)]);
-  await query(`DELETE FROM notifications WHERE created_at < now() - ($1 || ' days')::interval`, [String(Math.max(days, 60))]);
+  // Los urgentes sin leer se conservan hasta un año: nadie los vio todavía. Lo demás, como siempre.
+  await query(`DELETE FROM notifications WHERE created_at < now() - ($1 || ' days')::interval AND NOT (read_at IS NULL AND kind = ANY($2) AND created_at > now() - interval '365 days')`,
+    [String(Math.max(days, 60)), IMPORTANT_KINDS]);
+  await query(`DELETE FROM alert_receipts WHERE created_at < now() - ($1 || ' days')::interval`, [String(Math.max(days, 60))]);
 }
 
 /** Borra el detalle técnico (decisión y validación completas) de respuestas viejas de la IA; conserva consumo y costo. */

@@ -81,6 +81,16 @@ try {
     login[role] = await h.loginAs(`${role}@auditoria.test`, 'auditoria123');
     if (role === 'agent') await h.authed('PUT', `/api/conversations/${conv.id}/assign`, { user_id: user.id });
   }
+  // Un aviso urgente cuyo WhatsApp no llegó y salió por correo, y WhatsApp que siguen fallando (Notificaciones).
+  const auditor = (await pool.query(`SELECT id, email FROM users WHERE email = 'admin@auditoria.test'`)).rows[0];
+  const uxNotice = (await pool.query(`INSERT INTO notifications (account_id, user_id, title, body, link, kind) VALUES ($1, $2, '🚨 Posible emergencia', 'Un cliente pidió ayuda urgente.', $3, 'safety') RETURNING id`, [h.accountId, auditor.id, `#/conversation/${conv.id}`])).rows[0].id;
+  const uxReceipt = (channel: string, destination: string, status: string, error: string, fallbackOf: string | null = null, notice: string | null = uxNotice) => pool.query(
+    `INSERT INTO alert_receipts (account_id, notification_id, user_id, alert_key, kind, channel, destination, payload, status, attempts, last_error, fallback_of)
+     VALUES ($1, $2, $3, '00000000-0000-4000-8000-000000000001', 'safety', $4, $5, $6, $7, 4, $8, $9) RETURNING id`,
+    [h.accountId, notice, auditor.id, channel, destination, JSON.stringify({ title: '🚨 Posible emergencia', body: 'Un cliente pidió ayuda urgente.' }), status, error, fallbackOf]);
+  const uxWa = (await uxReceipt('whatsapp', '5215511112222', 'failed', 'El WhatsApp del negocio está desconectado')).rows[0].id;
+  await uxReceipt('email', auditor.email, 'sent', '', uxWa);
+  for (let i = 0; i < 2; i++) await uxReceipt('whatsapp', '5215511112222', 'failed', 'Evolution sendText → HTTP 500', null, null);
   await h.app.listen({ port: 0, host: '127.0.0.1' });
   const address: any = h.app.server.address(); const base = `http://127.0.0.1:${address.port}`;
   browser = await chromium.launch({ ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : {}), args: ['--no-sandbox'] });
@@ -119,6 +129,20 @@ try {
     await context.close();
   }
   checked('60 escenarios adaptables sin desbordamiento');
+  {
+    // Notificaciones: por dónde llegó cada aviso, los que no llegaron con «Reintentar» y la franja de WhatsApp que falla.
+    const phone = await contextFor('admin', { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+    const p = await phone.newPage(); p.setDefaultTimeout(10000);
+    await p.goto(`${base}/#/notifications`); await p.locator('.main h1').waitFor();
+    await p.getByText('WhatsApp: no llegó', { exact: true }).first().waitFor();
+    await p.getByText('Correo: entregado', { exact: true }).waitFor();
+    await p.getByRole('heading', { name: /Avisos que no llegaron \(7 días\): 3/ }).waitFor();
+    await p.getByText(/Tus últimos avisos por WhatsApp no llegaron/).waitFor();
+    await p.getByRole('button', { name: 'Reintentar el aviso «Posible emergencia» para Auditor admin por WhatsApp' }).first().waitFor();
+    assert.equal(await p.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false, 'Notificaciones sin desbordamiento a 390 px');
+    await phone.close();
+  }
+  checked('Notificaciones muestra por dónde llegó cada aviso y los que no llegaron, con «Reintentar»');
   // Página pública para reservar: sin sesión, accesible y sin desbordamiento (celular y escritorio, claro y oscuro).
   const bookingLink = (await h.authed('POST', '/api/booking-links', { account_id: h.accountId, name: 'Agenda con nosotros' })).json();
   for (const width of [320, 390, 1024]) for (const theme of ['light', 'dark'] as const) {
