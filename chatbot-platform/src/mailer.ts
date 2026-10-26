@@ -38,28 +38,37 @@ export function fromFor(name?: string) {
   return `"${name.replace(/["\\\r\n<>]/g, '')}" <${addr}>`;
 }
 
+/** Qué pasó con un correo: salió, no tocaba mandarlo (sin SMTP o en sandbox) o el servidor de correo falló. */
+export type MailResult = 'sent' | 'skipped' | 'failed';
+
 /**
  * Envía un correo de texto. Sin SMTP configurado, se guarda en el registro (para poder copiar el enlace en desarrollo).
- * Nunca lanza: un fallo de correo no debe romper el registro ni las tareas.
+ * Nunca lanza: un fallo de correo no debe romper el registro ni las tareas. Quien necesita saber si falló (para
+ * reintentarlo) mira el resultado.
  */
-export async function sendMail(mail: Mail): Promise<boolean> {
+export async function deliverMail(mail: Mail): Promise<MailResult> {
   // Sandbox: solo a destinos de prueba. El registro no incluye el destinatario ni el asunto (pueden llevar datos de clientes).
   if (!outboundAllowed(mail.to)) {
     await logEvent({ level: 'warn', source: 'system', message: 'Correo bloqueado (OUTBOUND_MODE=sandbox): el destino no está permitido' });
-    return false;
+    return 'skipped';
   }
   const t = transport();
   if (!t) {
     outbox.push(mail);
     if (outbox.length > 100) outbox.shift();
     await logEvent({ level: 'info', source: 'system', message: `Correo (sin SMTP) para ${mail.to}: ${mail.subject}`, details: { text: mail.text } });
-    return false;
+    return 'skipped';
   }
   try {
     await t.sendMail({ from: fromFor(mail.fromName), to: mail.to, subject: mail.subject, text: mail.text, attachments: mail.attachments, replyTo: mail.replyTo });
-    return true;
+    return 'sent';
   } catch (e: any) {
     await logEvent({ level: 'error', source: 'system', message: `No se pudo enviar el correo a ${mail.to}: ${e?.message ?? e}` });
-    return false;
+    return 'failed';
   }
+}
+
+/** Como `deliverMail`, pero solo dice si el correo salió. */
+export async function sendMail(mail: Mail): Promise<boolean> {
+  return (await deliverMail(mail)) === 'sent';
 }

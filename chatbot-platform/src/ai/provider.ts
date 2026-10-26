@@ -210,7 +210,9 @@ export class OpenAiProvider implements AiProvider {
           body,
           signal: ctrl.signal,
         });
-        if (res.ok) return res;
+        // El cuerpo se lee aquí, todavía con el tiempo límite: un proveedor que manda los encabezados y luego se queda
+        // callado no debe colgar la respuesta. Quien llama recibe la respuesta ya completa.
+        if (res.ok) return new Response(await res.arrayBuffer(), { status: res.status, headers: res.headers });
         await res.text(); // No propagamos respuestas que puedan incluir fragmentos de credenciales.
         // Reintentar solo errores transitorios.
         if (res.status === 429 || res.status >= 500) {

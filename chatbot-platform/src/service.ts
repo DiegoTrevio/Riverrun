@@ -47,6 +47,7 @@ import { logEvent } from './logs.js';
 import { Quotes } from './quotes/agent.js';
 import * as store from './store/index.js';
 import type { Channel, Chatbot, Contact, Conversation } from './types.js';
+import { runMailRetry } from './mail-retry.js';
 
 /** Antigüedad máxima de un mensaje entrante para responderlo automáticamente. */
 const MAX_MESSAGE_AGE_SECONDS = 30 * 60;
@@ -153,6 +154,7 @@ export class ChatService {
       campaign_start: (p) => this.campaigns.start(p.campaign_id),
       campaign_send: (p) => this.campaigns.sendOne(p),
       zernio_cleanup: (p) => zernioCleanup(p),
+      mail_retry: (p) => runMailRetry(p),
       social_sync: (p) => syncEngagement(String(p.social_account_id ?? '')),
       social_digest: (p) => runDigest(p),
       social_post_check: (p) => checkPublication(p),

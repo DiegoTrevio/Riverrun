@@ -6,7 +6,7 @@
 import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
 import { logEvent } from '../logs.js';
-import { sendMail } from '../mailer.js';
+import { deliverMail, sendMail } from '../mailer.js';
 
 const DAY = 86400_000;
 const TZ = 'America/Mexico_City';
@@ -152,12 +152,11 @@ export async function sendSuperadminDigest(now = new Date()): Promise<number> {
     `Tablero: ${config.publicBaseUrl}/#/negocio`,
     'Lo urgente (contracargos, facturas que no salieron y lo que hay que hacer a mano) te sigue llegando al momento.',
   ].join('\n');
-  try {
-    await sendMail({ to, subject: `Resumen del día: ${items.length} aviso(s)`, text });
-  } catch (e) {
-    // Se libera el día para reintentar en la siguiente vuelta; los avisos siguen pendientes.
+  // Si el servidor de correo falla, se libera el día para reintentar en la siguiente vuelta y los avisos siguen
+  // pendientes (no se dan por enviados).
+  if ((await deliverMail({ to, subject: `Resumen del día: ${items.length} aviso(s)`, text })) === 'failed') {
     await query(`UPDATE system_state SET value = '{}', updated_at = now() WHERE key = 'superadmin_digest'`);
-    throw e;
+    return 0;
   }
   await query(`UPDATE superadmin_digest SET sent_at = $2 WHERE id = ANY($1::bigint[])`, [items.map((i) => i.id), now]);
   // Lo ya enviado solo sirve un tiempo (el panel conserva sus propios avisos).

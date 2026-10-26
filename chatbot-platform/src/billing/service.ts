@@ -9,7 +9,7 @@ import { config } from '../config.js';
 import { query, withTransaction, queryOne } from '../db.js';
 import { notifySuperadmins } from '../lifecycle.js';
 import { logEvent } from '../logs.js';
-import { sendMail } from '../mailer.js';
+import { sendMailDurable } from '../mail-retry.js';
 import { keptNote } from '../accounts/retention.js';
 import { LIMIT_LABELS, usageOf } from './limits.js';
 import { mercadopago } from './mercadopago.js';
@@ -39,7 +39,8 @@ export async function tell(accountId: string, title: string, body: string) {
   const list = await admins(accountId);
   await notifyUsers(accountId, list.map((a) => a.id), { title, body, link: '#/plan', kind: 'billing' });
   const mb = await mailBrand(accountId);
-  for (const a of list) await sendMail({ fromName: mb.fromName, to: a.email, subject: title, text: `${body}\n\n${mb.base}/#/plan` });
+  // Si el servidor de correo falla, el correo se reintenta solo (el aviso del panel ya quedó y no se repite).
+  for (const a of list) await sendMailDurable({ fromName: mb.fromName, to: a.email, subject: title, text: `${body}\n\n${mb.base}/#/plan` }, accountId);
 }
 
 /** Marca interna de una sola vez (p. ej. «ya se avisó de este duplicado»). Devuelve true la primera vez. */

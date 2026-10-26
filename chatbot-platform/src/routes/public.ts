@@ -58,8 +58,8 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
     try {
       await processEvent(webhookReq);
       return reply.send({ ok: true });
-    } catch {
-      await logEvent({ level: 'error', source: 'webhook', message: 'webhook_receipt_failed', accountId: channel.account_id, channelId: channel.id, details: { reason: 'parse_or_storage' } }).catch(() => undefined);
+    } catch (e: any) {
+      await logEvent({ level: 'error', source: 'webhook', message: 'webhook_receipt_failed', accountId: channel.account_id, channelId: channel.id, details: { reason: 'parse_or_storage', error: String(e?.message ?? e).slice(0, 500) } }).catch(() => undefined);
       return reply.code(503).send({ ok: false, error: 'No se pudo guardar la recepción. Reintenta.' });
     }
   };
@@ -69,10 +69,16 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
     const { channel } = webhookReq;
     const adapter = adapterFor(channel.type);
     const { messages, notices, connection, connectionReason, qr, pairingCode } = adapter.parse(webhookReq);
-    if (qr) await store.saveQr(channel.id, qr);
-    if (pairingCode) await store.refreshPairingCode(channel.id, pairingCode);
-    for (const n of notices ?? []) await logEvent({ level: n.level, source: 'channel', message: n.message, accountId: channel.account_id, channelId: channel.id });
-    if (connection) await recordConnectionState(channel, connection, connectionReason);
+    // El QR, la vinculación y el estado de conexión no deben costar los mensajes del mismo aviso: si algo de eso falla,
+    // se registra y los mensajes se guardan igual (si no, el aviso se rechaza y el proveedor podría no reintentarlo).
+    try {
+      if (qr) await store.saveQr(channel.id, qr);
+      if (pairingCode) await store.refreshPairingCode(channel.id, pairingCode);
+      for (const n of notices ?? []) await logEvent({ level: n.level, source: 'channel', message: n.message, accountId: channel.account_id, channelId: channel.id });
+      if (connection) await recordConnectionState(channel, connection, connectionReason);
+    } catch (e: any) {
+      await logEvent({ level: 'error', source: 'webhook', message: 'webhook_connection_state_failed', accountId: channel.account_id, channelId: channel.id, details: { error: String(e?.message ?? e).slice(0, 500) } }).catch(() => undefined);
+    }
     await service.inbox.accept(channel, messages);
     if (adapter.acknowledge) void adapter.acknowledge(webhookReq).catch(() => undefined);
   };
@@ -95,8 +101,8 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
         (channel) => processEvent({ channel, headers: req.headers, query: req.query, body: req.body, rawBody: req.rawBody }),
         () => service.zernioEvents.wake());
       return reply.code(code).send({ ok: true });
-    } catch {
-      await logEvent({ level: 'error', source: 'webhook', message: 'webhook_receipt_failed', details: { reason: 'parse_or_storage', zernioAccount: eventAccountId(req.body) } }).catch(() => undefined);
+    } catch (e: any) {
+      await logEvent({ level: 'error', source: 'webhook', message: 'webhook_receipt_failed', details: { reason: 'parse_or_storage', error: String(e?.message ?? e).slice(0, 500), zernioAccount: eventAccountId(req.body) } }).catch(() => undefined);
       return reply.code(503).send({ ok: false, error: 'No se pudo guardar la recepción. Reintenta.' });
     }
   });
@@ -243,9 +249,15 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
     const list = (recent.get(key) ?? []).filter((t) => now - t < 60_000);
     list.push(now);
     recent.set(key, list);
-    if (recent.size > 20_000) for (const [k, v] of recent) if (!v.some((t) => now - t < 60_000)) recent.delete(k);
     return list.length > max;
   };
+  // Cada minuto se olvida a quien no escribió en el último minuto (sin esto, el mapa crece con cada visitante).
+  const pruneRecent = setInterval(() => {
+    const now = Date.now();
+    for (const [k, v] of recent) if (!v.some((t) => now - t < 60_000)) recent.delete(k);
+  }, 60_000);
+  pruneRecent.unref();
+  app.addHook('onClose', async () => clearInterval(pruneRecent));
 
   app.post('/webchat/:token/messages', async (req: any, reply) => {
     const ch = await webchat(req, reply);

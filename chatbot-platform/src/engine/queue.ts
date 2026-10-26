@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { config } from '../config.js';
 import { tick } from '../watchdog.js';
 import { query, queryOne } from '../db.js';
+import { logEvent } from '../logs.js';
 import { coordinated, DeliveryUncertain,detached } from './coordination.js';
 export type Runner = (id: string, attempt: { restarts: number }) => Promise<{ status: string }>;
 /** Fallos que se pueden repetir sin riesgo de duplicar un envío (la IA falló, o el trabajo era de antes de un reinicio). */
@@ -99,16 +100,30 @@ export class ConversationQueue {
   private async run(id:string) {
     const r=await coordinated(`conversation:${id}`,`queue:${id}`,async()=>{
       const token=crypto.randomUUID();
-      const job=await queryOne(`UPDATE conversation_work SET state='running',token=$2,claimed_revision=revision,lease_until=now()+interval '5 minutes',updated_at=now()
-        WHERE conversation_id=$1 AND ((state='pending' AND run_at<=now()) OR (state='running' AND lease_until<now())) RETURNING *`,[id,token]);
+      // Retomar una reserva vencida (el proceso murió con la conversación en curso) cuenta como intento: una que tumba el
+      // proceso cada vez no se retoma para siempre.
+      const job=await queryOne(`UPDATE conversation_work w SET state='running',token=$2,claimed_revision=revision,lease_until=now()+interval '5 minutes',updated_at=now(),
+        attempts=w.attempts+CASE WHEN o.state='running' THEN 1 ELSE 0 END
+        FROM (SELECT state FROM conversation_work WHERE conversation_id=$1) o
+        WHERE w.conversation_id=$1 AND ((w.state='pending' AND w.run_at<=now()) OR (w.state='running' AND w.lease_until<now())) RETURNING w.*,o.state='running' AS recovered`,[id,token]);
       if(!job) return false;
+      if(job.attempts>=this.maxAttempts) {
+        await query(`UPDATE conversation_work SET state='dead',reason='recovered_too_often',token=NULL,lease_until=NULL,updated_at=now() WHERE conversation_id=$1 AND token=$2`,[id,token]);
+        await logEvent({level:'error',source:'system',message:'conversation_work_dead',details:{conversation_id:id,reason:'recovered_too_often',attempts:job.attempts}}).catch(()=>undefined);
+        await this.onGiveUp?.(id);
+        return true;
+      }
       const heartbeat=setInterval(()=>{void query(`UPDATE conversation_work SET lease_until=now()+interval '5 minutes' WHERE conversation_id=$1 AND token=$2`,[id,token]).catch(()=>undefined);},30_000);
       heartbeat.unref();
       let status='error';let reason='processing_error';
       try {status=(await this.runner(id,{restarts:job.restarts})).status;}
-      catch(e) {if(e instanceof DeliveryUncertain) {status='uncertain';reason='delivery_uncertain';}}
+      catch(e:any) {
+        if(e instanceof DeliveryUncertain) {status='uncertain';reason='delivery_uncertain';}
+        else await logEvent({level:'error',source:'system',message:'conversation_processing_failed',details:{conversation_id:id,error:String(e?.message??e).slice(0,500)}}).catch(()=>undefined);
+      }
       finally {clearInterval(heartbeat);}
-      const errors=job.attempts+(status==='error'?1:0);
+      // Cada vez que se toma cuenta como mucho un intento: si ya se contó al retomarla, su error no suma otro.
+      const errors=job.attempts+(status==='error'&&!job.recovered?1:0);
       const dead=status==='uncertain'||(status==='error'&&errors>=this.maxAttempts);
       const repeat=status==='error'||status==='restart'||status==='busy';
       const delay=status==='error'?Math.min(config.queue.maxRetryMs,this.errorRetryMs*2**(errors-1)):status==='busy'?2000:500;
