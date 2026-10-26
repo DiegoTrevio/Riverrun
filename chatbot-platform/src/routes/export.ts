@@ -1,6 +1,7 @@
 /** Exportar contactos, conversaciones y mensajes a CSV (solo administradores; cada exportación queda en el registro). */
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { dateStr } from '../dates.js';
 import { HttpError, requireRole, targetAccount } from '../access.js';
 import { rateLimited } from '../auth.js';
 import { query } from '../db.js';
@@ -10,7 +11,7 @@ import { logEvent } from '../logs.js';
 import * as store from '../store/index.js';
 import { parse } from './util.js';
 
-const Day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Fecha AAAA-MM-DD');
+const Day = dateStr('Fecha AAAA-MM-DD');
 const BATCH = 1000;
 
 export async function exportRoutes(api: FastifyInstance) {

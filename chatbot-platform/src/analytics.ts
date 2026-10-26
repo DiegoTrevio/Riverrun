@@ -7,15 +7,14 @@
 import { HttpError } from './access.js';
 import * as astore from './automation/store.js';
 import { query, queryOne } from './db.js';
+import { isDate } from './dates.js';
 
 export const RANGE_KEYS = ['today', 'week', '7', '15', '30', '60', '90', 'custom'] as const;
 export type RangeKey = (typeof RANGE_KEYS)[number];
 const MAX_DAYS = 366;
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 /** El simulador del panel no es tráfico de clientes: no entra en ninguna cifra. */
 const REAL = `c.channel_id IN (SELECT ch.id FROM channels ch WHERE ch.account_id = $1 AND ch.type <> 'playground')`;
 
-const isDate = (s: string) => DATE_RE.test(s) && new Date(`${s}T00:00:00Z`).toISOString().slice(0, 10) === s;
 const shift = (day: string, n: number) => {
   const d = new Date(`${day}T00:00:00Z`);
   d.setUTCDate(d.getUTCDate() + n);

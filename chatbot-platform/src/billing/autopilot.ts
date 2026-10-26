@@ -17,7 +17,7 @@ const DAY = 24 * HOUR;
 const BACKOFF = [5 * MIN, 30 * MIN, 2 * HOUR, 6 * HOUR, DAY];
 export const MAX_ACTION_ATTEMPTS = 8;
 /** Marcas internas que se guardan en billing_events para no repetir avisos: no son avisos del proveedor. */
-export const INTERNAL_EVENT_TYPES = ['duplicate_subscription', 'reconcile_missing', 'webhook_silence', 'reconcile_fixed'];
+export const INTERNAL_EVENT_TYPES = ['duplicate_subscription', 'reconcile_missing', 'webhook_silence', 'reconcile_fixed', 'webhook_stuck'];
 /** Días sin ningún aviso de un proveedor que tiene suscripciones: más que un ciclo mensual (en uno normal llega al menos la renovación). */
 export const SILENCE_DAYS = 35;
 const weekOf = (d: Date) => Math.floor(d.getTime() / (7 * DAY));
@@ -179,4 +179,28 @@ export async function checkWebhookSilence(now = new Date()): Promise<string[]> {
       `Hay ${r.live} suscripciones con ${p.label} y en ${SILENCE_DAYS} días no llegó ningún aviso de pago${r.last ? ` (el último fue el ${new Date(r.last).toISOString().slice(0, 10)})` : ''}. La revisión diaria corrige los cobros, pero revisa que el webhook esté configurado en ${p.label} (en Planes y cobro están la dirección y los eventos).`, { urgent: true });
   }
   return silent;
+}
+
+/**
+ * Avisos del proveedor que llevan más de un día sin poder procesarse (el proveedor ya los reintentó y siguen fallando, o
+ * dejó de reintentar). El estado y los cobros los corrige la conciliación, pero un reembolso o un contracargo no se
+ * pueden reconstruir: se avisa al superadmin, una vez por aviso, para que lo revise a mano.
+ */
+export async function checkStuckEvents(now = new Date()): Promise<number> {
+  const rows = await query<{ provider: ProviderName; event_id: string; type: string; account_id: string | null; received_at: Date }>(
+    `SELECT e.provider, e.event_id, e.type, e.account_id, e.received_at FROM billing_events e
+     WHERE e.processed_at IS NULL AND e.received_at <= $1::timestamptz - interval '1 day' AND e.type <> ALL($2::text[])
+       AND NOT EXISTS (SELECT 1 FROM billing_events m WHERE m.provider = e.provider AND m.event_id = 'stuck:' || e.event_id)
+     ORDER BY e.received_at LIMIT 20`,
+    [now, INTERNAL_EVENT_TYPES],
+  );
+  let alerted = 0;
+  for (const r of rows) {
+    if (!(await recordEvent(r.provider, `stuck:${r.event_id}`, 'webhook_stuck', r.account_id))) continue;
+    alerted++;
+    const label = providers[r.provider]?.label ?? r.provider;
+    await alertSuperadmins(r.account_id, `${label}: un aviso de cobro no se pudo procesar`,
+      `El aviso «${r.type}» (${r.event_id}) llegó el ${new Date(r.received_at).toISOString().slice(0, 10)} y no se ha podido procesar. La revisión diaria corrige el estado y los cobros, pero si era un reembolso o un contracargo revísalo en ${label} y en la bitácora.`, { urgent: true });
+  }
+  return alerted;
 }

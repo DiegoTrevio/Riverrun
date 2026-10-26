@@ -4,8 +4,8 @@ import { z } from 'zod';
 import { HttpError, requireRole, targetAccount } from '../access.js';
 import { rateLimited } from '../auth.js';
 import { baseFor } from '../brands.js';
-import { providers, applyState, changePlan, confirmCheckout, enabledProviders, getPlan, getSubscription, listPlans, notePaymentAction, payable, recordEvent, startCheckout, startReplacement } from '../billing/service.js';
-import { applyDispute, recordMoney } from '../billing/ledger.js';
+import { providers, applyState, changePlan, confirmCheckout, enabledProviders, getPlan, getSubscription, listPlans, notePaymentAction, payable, claimEvent, finishEvent, releaseEvent, startCheckout, startReplacement } from '../billing/service.js';
+import { alertSuperadmins, applyDispute, recordMoney, RefundBeforePaymentError } from '../billing/ledger.js';
 import { FiscalSchema, fiscalComplete, getFiscal, personaOf, REGIMES, saveFiscal, USES, usesFor } from '../billing/fiscal.js';
 import { listPayments } from '../billing/payments.js';
 import { cfdiCounts, cfdiForPayments, getCfdi, invoicer, onFiscalSaved } from '../billing/cfdi.js';
@@ -56,6 +56,9 @@ export async function offeredPlans() {
   return (await listPlans()).map((p: Plan) => ({ ...planOut(p), providers: on.filter((x) => x.supportsPlan(p)).map((x) => ({ name: x.name, label: x.label })) }));
 }
 
+/** Cuánto se espera el cobro de un reembolso que llegó antes (el proveedor reintenta mientras tanto). */
+const REFUND_WAIT_MS = 6 * 3600_000;
+
 /** Rutas públicas: los proveedores avisan aquí. La firma se verifica sobre el cuerpo original. */
 export async function billingWebhooks(app: FastifyInstance) {
   // Regreso desde la página de pago. Va al panel en el mismo dominio (y con la misma sesión) desde el que se pagó; el
@@ -72,23 +75,33 @@ export async function billingWebhooks(app: FastifyInstance) {
       try {
         const result = await provider.handleWebhook({ rawBody: req.rawBody ?? Buffer.alloc(0), headers: req.headers, query: req.query as Record<string, string | undefined>, plans: await listPlans(true) });
         if (!result) return { ok: true };
-        // Primero se anota el aviso: si ya se procesó, no se repite. Si falla el proceso, se libera para que el proveedor reintente.
-        if (!(await recordEvent(name, result.eventId, result.type, null))) return { ok: true };
+        // Primero se reserva el aviso: si ya se procesó, no se repite; si otro proceso lo atiende ahora, el proveedor
+        // reintenta después. Solo se da por procesado al terminar: si el proceso muere a la mitad, el reintento lo retoma.
+        const claim = await claimEvent(name, result.eventId, result.type);
+        if (claim.status === 'done') return { ok: true };
+        if (claim.status === 'busy') return reply.code(503).send({ error: 'Se está procesando, reintenta más tarde' });
         try {
           // El banco pide confirmar el cobro (3DS): se guarda antes, así el aviso de cobro fallido ya dice cómo resolverlo.
           if (result.actionUrl && result.state) await notePaymentAction(name, result.state.subscriptionId, result.actionUrl);
           const accountId = result.state ? await applyState(result.state) : null;
           await recordMoney(name, result, accountId);
           if (result.dispute) await applyDispute(name, result.dispute);
-          if (accountId) await query(`UPDATE billing_events SET account_id = $3 WHERE provider = $1 AND event_id = $2`, [name, result.eventId, accountId]);
+          await finishEvent(name, result.eventId, claim.token, accountId);
         } catch (e) {
-          await query(`DELETE FROM billing_events WHERE provider = $1 AND event_id = $2`, [name, result.eventId]);
+          // Un reembolso cuyo cobro nunca llegó (de otro producto en la misma cuenta del proveedor, o anterior a la
+          // plataforma): pasadas unas horas deja de pedir reintentos, para que el proveedor no dé el webhook por roto.
+          if (e instanceof RefundBeforePaymentError && Date.now() - new Date(claim.receivedAt).getTime() > REFUND_WAIT_MS) {
+            await finishEvent(name, result.eventId, claim.token, null);
+            await alertSuperadmins(null, 'Reembolso sin su cobro', `${providers[name].label} avisó un reembolso (${result.eventId}) de un cobro que no está registrado aquí. Si es de una suscripción de la plataforma, revísalo en ${providers[name].label}.`);
+            return { ok: true };
+          }
+          await releaseEvent(name, result.eventId, claim.token);
           throw e;
         }
         return { ok: true };
       } catch (e: any) {
         if (e instanceof WebhookError) return reply.code(400).send({ error: e.message });
-        await logEvent({ level: 'error', source: 'system', message: `Aviso de cobro (${name}): ${e?.message ?? e}` });
+        await logEvent({ level: e instanceof RefundBeforePaymentError ? 'warn' : 'error', source: 'system', message: `Aviso de cobro (${name}): ${e?.message ?? e}` });
         // 500: el proveedor reintenta más tarde.
         return reply.code(500).send({ error: 'No se pudo procesar' });
       }

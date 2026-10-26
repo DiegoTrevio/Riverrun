@@ -24,8 +24,8 @@ export interface Payment {
   period_end: Date | null;
 }
 
-/** Guarda el cobro. Devuelve su id si es nuevo (null si ese aviso ya se había registrado). */
-export async function recordPayment(o: { accountId: string; provider: ProviderName; planKey: string; payment: PaymentInfo }): Promise<string | null> {
+/** Guarda el cobro. Devuelve su id y si es nuevo (`fresh` es false si ese aviso ya se había registrado). */
+export async function recordPayment(o: { accountId: string; provider: ProviderName; planKey: string; payment: PaymentInfo }): Promise<{ id: string; fresh: boolean } | null> {
   const p = o.payment;
   const percent = taxPercent();
   const { subtotal, tax } = splitTax(p.totalCents, percent);
@@ -40,7 +40,7 @@ export async function recordPayment(o: { accountId: string; provider: ProviderNa
      RETURNING id, (xmax = 0) AS inserted`,
     [o.accountId, o.provider, p.paymentId, p.chargeRef, p.subscriptionId, o.planKey, p.currency, p.totalCents, subtotal, tax, percent, p.paidAt, p.periodStart, p.periodEnd],
   );
-  return row?.inserted ? row.id : null;
+  return row ? { id: row.id, fresh: row.inserted } : null;
 }
 
 /** Anota un reembolso. Devuelve el pago afectado (null si no se encontró, p. ej. un cargo que no es de una suscripción). */

@@ -60,10 +60,6 @@ export function mexicoMonth(d: Date) {
   const p = new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit' }).formatToParts(d);
   return `${p.find((x) => x.type === 'year')!.value}-${p.find((x) => x.type === 'month')!.value}`;
 }
-export function previousMonth(period: string) {
-  const [y, m] = period.split('-').map(Number);
-  return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, '0')}`;
-}
 
 /** Datos del receptor que se copian al CFDI. El correo de facturas o, si está vacío, el del dueño de la cuenta. */
 async function receiverOf(accountId: string): Promise<CfdiReceiver | null> {
@@ -112,12 +108,29 @@ export async function onFiscalSaved(accountId: string, now = new Date()) {
 }
 
 /**
- * Global del mes anterior (hora de México), una por forma de pago, con los pagos sin factura propia. El SAT la pide en
+ * Global de cada mes cerrado (hora de México), una por forma de pago, con los pagos sin factura propia. El SAT la pide en
  * las 24 horas siguientes al cierre del mes: se arma en la primera revisión del mes y se emite enseguida.
  */
 export async function checkGlobalInvoice(now = new Date()) {
   if (!invoicer.enabled() || !config.billing.cfdi.issuerZip) return 0;
-  const period = previousMonth(mexicoMonth(now));
+  // Todos los meses ya cerrados que tienen pagos sin factura (del más antiguo al más nuevo), no solo el anterior: si un
+  // mes se saltó (Facturapi o el código postal se configuraron tarde, el servidor estuvo apagado), su global sale igual.
+  // Hasta 3 meses atrás: lo más viejo se revisa con el contador, no se timbra solo.
+  const months = await query<{ period: string }>(
+    `SELECT DISTINCT to_char(paid_at AT TIME ZONE '${TZ}', 'YYYY-MM') AS period FROM billing_payments
+     WHERE global_cfdi_id IS NULL AND refunded_cents < total_cents AND to_char(paid_at AT TIME ZONE '${TZ}', 'YYYY-MM') < $1
+       AND paid_at > $2::timestamptz - interval '3 months'
+       AND NOT EXISTS (SELECT 1 FROM cfdi_invoices x WHERE x.payment_id = billing_payments.id AND x.kind = 'payment' AND x.status <> 'void')
+     ORDER BY 1`,
+    [mexicoMonth(now), now],
+  );
+  let created = 0;
+  for (const { period } of months) created += await globalFor(period);
+  return created;
+}
+
+/** La global de un mes, una por forma de pago. Devuelve cuántas se crearon. */
+async function globalFor(period: string) {
   let created = 0;
   for (const [provider, form] of Object.entries(PAYMENT_FORM)) {
     const done = await withTransaction(async (c) => {
@@ -291,19 +304,26 @@ async function attempt(row: Cfdi, now: Date) {
 export async function processCfdi(now = new Date(), limit = 20) {
   await syncCredits();
   if (!invoicer.enabled()) return 0;
-  const rows = await query<Cfdi>(
-    `UPDATE cfdi_invoices SET attempts = attempts + 1, next_attempt_at = $1::timestamptz + make_interval(mins => $3), updated_at = now()
-     WHERE id IN (
-       -- GREATEST: lo que se acaba de crear en esta misma revisión (notas de crédito) también entra.
-       SELECT c.id FROM cfdi_invoices c WHERE c.status = 'pending' AND c.next_attempt_at <= GREATEST($1::timestamptz, now())
-         -- Una nota de crédito espera a que salga el CFDI que corrige.
-         AND (c.kind <> 'credit' OR EXISTS (SELECT 1 FROM cfdi_invoices o WHERE o.id = c.related_id AND o.status = 'issued'))
-       ORDER BY c.next_attempt_at LIMIT $2 FOR UPDATE SKIP LOCKED)
-     RETURNING *`,
-    [now, limit, LEASE_MIN],
-  );
-  for (const row of rows) await attempt(row, now);
-  return rows.length;
+  // Una a la vez: la reserva (LEASE_MIN) cubre solo la que se está emitiendo, así otra revisión no toma a medio lote
+  // una que sigue esperando su turno aquí.
+  let done = 0;
+  while (done < limit) {
+    const row = await queryOne<Cfdi>(
+      `UPDATE cfdi_invoices SET attempts = attempts + 1, next_attempt_at = $1::timestamptz + make_interval(mins => $2), updated_at = now()
+       WHERE id = (
+         -- GREATEST: lo que se acaba de crear en esta misma revisión (notas de crédito) también entra.
+         SELECT c.id FROM cfdi_invoices c WHERE c.status = 'pending' AND c.next_attempt_at <= GREATEST($1::timestamptz, now())
+           -- Una nota de crédito espera a que salga el CFDI que corrige.
+           AND (c.kind <> 'credit' OR EXISTS (SELECT 1 FROM cfdi_invoices o WHERE o.id = c.related_id AND o.status = 'issued'))
+         ORDER BY c.next_attempt_at LIMIT 1 FOR UPDATE SKIP LOCKED)
+       RETURNING *`,
+      [now, LEASE_MIN],
+    );
+    if (!row) break;
+    await attempt(row, now);
+    done++;
+  }
+  return done;
 }
 
 /** CFDI de los pagos de una cuenta para «Mi plan»: el propio, la global en la que entró y sus notas de crédito. */

@@ -4,6 +4,7 @@
  */
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { dateStr } from '../dates.js';
 import { assertAccount, HttpError, notFound, requireRole, targetAccount } from '../access.js';
 import { rateLimited } from '../auth.js';
 import { config } from '../config.js';
@@ -27,7 +28,7 @@ const fields = {
   concept: z.string().trim().min(1).max(200),
   amount_cents: z.number().int().min(1).max(100_000_000_000),
   currency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/),
-  due_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Fecha en formato AAAA-MM-DD').refine((d) => !Number.isNaN(Date.parse(`${d}T00:00:00Z`)), 'Fecha inválida'),
+  due_date: dateStr(),
   payment_link: Link,
   reference: z.string().trim().max(100),
   /** null = los días de la cuenta. */
@@ -46,7 +47,7 @@ export const ReceivableBody = z.object({
 /** Sin valores por defecto: lo que no viene no se toca (editar el concepto no cambia la moneda ni el enlace). */
 const ReceivablePatch = z.object(fields).partial();
 
-const DateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Fecha en formato AAAA-MM-DD').refine((d) => !Number.isNaN(Date.parse(`${d}T00:00:00Z`)), 'Fecha inválida');
+const DateStr = dateStr();
 const planFields = {
   conversation_id: fields.conversation_id,
   concept: fields.concept,

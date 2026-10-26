@@ -3,10 +3,11 @@
  * parcialidades. Cada cobro tiene su folio de origen (`<cotización>:<n>`), así que no se duplica.
  */
 import { z } from 'zod';
+import { dateStr } from '../dates.js';
 import { addDays } from '../automation/time.js';
 import type { Quote } from '../store/quotes.js';
 
-const DateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Fecha en formato AAAA-MM-DD').refine((d) => !Number.isNaN(Date.parse(`${d}T00:00:00Z`)), 'Fecha inválida');
+const DateStr = dateStr();
 
 export const AcceptBody = z.object({
   /** El monto final acordado: obligatorio si la cotización es un rango o tiene conceptos por definir. */

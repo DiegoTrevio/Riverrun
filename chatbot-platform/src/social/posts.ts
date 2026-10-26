@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { z } from 'zod';
+import { dateStr } from '../dates.js';
 import { HttpError } from '../access.js';
 import { identifyAttachment } from '../attachments.js';
 import * as astore from '../automation/store.js';
@@ -84,7 +85,7 @@ export const PublicationInputSchema = z.object({
   targets: z.array(TargetSchema).min(1, 'Elige al menos una red').max(20),
   mode: z.enum(['draft', 'now', 'schedule']).default('draft'),
   /** Fecha y hora en el horario del negocio. */
-  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Elige la fecha').optional(),
+  date: dateStr('Elige la fecha').optional(),
   time: z.string().regex(/^\d{2}:\d{2}$/, 'Elige la hora').optional(),
   version: z.number().int().optional(),
 });
