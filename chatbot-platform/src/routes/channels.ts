@@ -44,7 +44,12 @@ const ZERNIO_CLIENT_FIELDS = ['platform'];
 /** Perfil y cuenta de Zernio: solo los escribe el servidor al conectar (nadie los puede poner desde el panel). */
 const ZERNIO_SERVER_FIELDS = ['profile_id', 'account_id', 'username', 'display_name', 'picture', 'telegram_code', 'connect_state', 'webhook_secret', 'connected'];
 
-function clientConfig(user: User, type: string, cfg: Record<string, unknown> | undefined) {
+/** Messenger e Instagram: cómo se conectó y su marca solo los escribe el servidor (el botón «Conectar con Facebook»). */
+const META_SERVER_FIELDS = ['connected_via', 'meta_connected_at', 'meta_verify'];
+/** En un canal conectado con el botón, la página y su token tampoco se cambian desde el panel (recibiría los eventos de otra página). */
+const META_CONNECTED_FIELDS = ['page_id', 'account_id', 'page_access_token', 'page_name', 'username', 'picture'];
+
+function clientConfig(user: User, type: string, cfg: Record<string, unknown> | undefined, current?: Record<string, unknown>) {
   if (cfg && type === 'zernio' && user.role === 'superadmin') {
     const out = Object.fromEntries(Object.entries(cfg).filter(([k]) => !ZERNIO_SERVER_FIELDS.includes(k)));
     // La llave propia de un canal de antes se guarda cifrada (zernioKey la descifra al usarla).
@@ -52,6 +57,10 @@ function clientConfig(user: User, type: string, cfg: Record<string, unknown> | u
     return out;
   }
   if (!cfg || user.role === 'superadmin') return cfg;
+  if (type === 'messenger' || type === 'instagram') {
+    const locked = current?.connected_via === 'facebook' ? [...META_SERVER_FIELDS, ...META_CONNECTED_FIELDS] : META_SERVER_FIELDS;
+    return Object.fromEntries(Object.entries(cfg).filter(([k]) => !locked.includes(k)));
+  }
   if (type === 'zernio') return Object.fromEntries(Object.entries(cfg).filter(([k]) => ZERNIO_CLIENT_FIELDS.includes(k)));
   if (type !== 'whatsapp') return cfg;
   // El formulario reenvía la configuración completa: estos campos se ignoran en silencio.
@@ -129,7 +138,7 @@ export async function channelRoutes(api: FastifyInstance) {
     const ch = await channelFor(req.user, req.params.id);
     const b = parse(ChannelBody, req.body);
     await checkBot(req.user, ch.account_id, b.chatbot_id);
-    const given = clientConfig(req.user, ch.type, b.config);
+    const given = clientConfig(req.user, ch.type, b.config, ch.config);
     if (ch.type === 'zernio' && given?.platform !== undefined && given.platform !== ch.config.platform) {
       if (!dmNetworkOf(String(given.platform))) throw new HttpError(400, 'Elige la red que quieres conectar');
       if (ch.config.account_id) throw new HttpError(400, 'Desconecta la cuenta antes de cambiar de red');

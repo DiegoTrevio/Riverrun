@@ -2,6 +2,7 @@
  * Ciclo de vida de las cuentas del autoregistro: fin de la prueba y avisos al superadmin.
  * Se ejecuta periódicamente; cada paso es idempotente (se puede correr las veces que sea).
  */
+import { pruneUserSessions } from './store/index.js';
 import { getSettings, notifyUsers } from './automation/store.js';
 import { mailBrand } from './brands.js';
 import { config } from './config.js';
@@ -125,6 +126,7 @@ export function startLifecycle(intervalMs = 10 * 60_000) {
     checkAiSpend().catch((e) => logEvent({ level: 'error', source: 'system', message: `Revisión de gasto de IA: ${e?.message ?? e}` }));
     checkOnboardingNudges().catch((e) => logEvent({ level: 'error', source: 'system', message: `Correos de seguimiento: ${e?.message ?? e}` }));
     sendSuperadminDigest().catch((e) => logEvent({ level: 'error', source: 'system', message: `Resumen diario al superadmin: ${e?.message ?? e}` }));
+    pruneUserSessions().catch((e) => logEvent({ level: 'error', source: 'system', message: `Limpieza de sesiones: ${e?.message ?? e}` }));
     // Facturas: primero se arma la global del mes que cerró y luego se emite todo lo pendiente.
     checkGlobalInvoice()
       .then(() => processCfdi())

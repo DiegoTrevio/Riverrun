@@ -269,6 +269,8 @@ t('llamadas: primero con quien ya atiende al cliente; una persona desactivada no
     assert.equal(who((await book(svc.id, slots.at(-1)!.key)).json().assigned_user_id), 'beto');
   } finally {
     assert.equal((await h.authed('PUT', `/api/users/${people.ana.id}`, { active: true })).statusCode, 200);
+    // Desactivarla cerró sus sesiones: vuelve a entrar.
+    people.ana.api = await h.loginAs('ana@equipo.mx', 'secreto123');
   }
 
   // Ana atiende en la noche (horario propio); Beto no tiene horario propio: solo el del negocio (hasta las 18:00).

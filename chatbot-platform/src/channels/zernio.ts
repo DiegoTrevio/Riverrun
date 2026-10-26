@@ -1,11 +1,12 @@
 import crypto from 'node:crypto';
 import fsp from 'node:fs/promises';
 import { config } from '../config.js';
+import { fetchPublic } from '../knowledge-import.js';
 import { toPlainText } from '../engine/text.js';
 import { sleep, type OutgoingButton, type OutgoingFile, type OutgoingTemplate, type Transport } from '../engine/transport.js';
 import { decryptSecret, hmac, safeEqual } from '../secret.js';
 import { ChannelConfigSchemas, type Channel, type ImageAsset } from '../types.js';
-import { signedImageUrl } from './media.js';
+import { INBOUND_MEDIA_MAX_BYTES, signedImageUrl } from './media.js';
 import type { ChannelAdapter, InboundMessage, ParseResult, WebhookRequest } from './types.js';
 import { platformSecret } from '../platform-secrets.js';
 import { drainZernioBudget, noteZernioLimit, takeZernioBudget, type ZernioPriority } from './zernio-budget.js';
@@ -284,11 +285,21 @@ function messageRef(r: any): string | null {
 /** Descarga un adjunto que mandó el cliente. Los servidos por la API de Zernio (p. ej. WhatsApp) piden la llave. */
 async function download(channel: Channel, url: string | undefined): Promise<{ buffer: Buffer; mimeType: string } | null> {
   if (!url) return null;
-  const own = url.startsWith(new URL(config.zernioApiUrl).origin);
-  if (!own && !url.startsWith('https://')) return null;
-  const res = await fetch(url, { headers: own ? { authorization: `Bearer ${zernioKey(channel)}` } : {}, signal: AbortSignal.timeout(30000) });
-  if (!res.ok) return null;
-  return { buffer: Buffer.from(await res.arrayBuffer()), mimeType: (res.headers.get('content-type') ?? 'application/octet-stream').split(';')[0] };
+  let parsed: URL;
+  try { parsed = new URL(url); } catch { return null; }
+  // La llave solo va al servidor de Zernio (mismo origen exacto, no un nombre que empiece igual).
+  if (parsed.origin === new URL(config.zernioApiUrl).origin) {
+    // Sin seguir redirecciones (la llave no viaja a otro lado) y con el mismo tope de tamaño que lo demás.
+    const res = await fetch(url, { headers: { authorization: `Bearer ${zernioKey(channel)}` }, redirect: 'manual', signal: AbortSignal.timeout(30000) });
+    if (!res.ok || Number(res.headers.get('content-length') ?? 0) > INBOUND_MEDIA_MAX_BYTES) return null;
+    const buffer = Buffer.from(await res.arrayBuffer());
+    if (buffer.length > INBOUND_MEDIA_MAX_BYTES) return null;
+    return { buffer, mimeType: (res.headers.get('content-type') ?? 'application/octet-stream').split(';')[0] };
+  }
+  // Cualquier otra dirección: solo https y sin llegar a la red interna del servidor.
+  if (parsed.protocol !== 'https:') return null;
+  const r = await fetchPublic(url, { maxBytes: INBOUND_MEDIA_MAX_BYTES, accept: '*/*' }).catch(() => null);
+  return r ? { buffer: r.body, mimeType: r.mime || 'application/octet-stream' } : null;
 }
 
 const ATTACHMENT_TYPE: Record<OutgoingFile['kind'], string> = { image: 'image', video: 'video', audio: 'audio', document: 'file' };

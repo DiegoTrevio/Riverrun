@@ -55,7 +55,14 @@ export function normalizeUrl(raw: string): URL {
   return u;
 }
 
-function getOnce(u: URL): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: Buffer }> {
+interface FetchOptions {
+  /** Tamaño máximo de la respuesta (por defecto, el de una página de conocimiento). */
+  maxBytes?: number;
+  accept?: string;
+}
+
+function getOnce(u: URL, opts: FetchOptions = {}): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: Buffer }> {
+  const max = opts.maxBytes ?? MAX_PAGE_BYTES;
   const host = u.hostname.replace(/^\[|\]$/g, '');
   if (!config.allowPrivateWebhooks && net.isIP(host) && isPrivateIp(host)) throw new HttpError(400, 'Esa dirección no es pública');
   const mod = u.protocol === 'https:' ? https : http;
@@ -65,7 +72,7 @@ function getOnce(u: URL): Promise<{ status: number; headers: http.IncomingHttpHe
       {
         method: 'GET',
         timeout: 12_000,
-        headers: { 'user-agent': 'Mozilla/5.0 (compatible; ChatbotImport/1.0)', accept: 'text/html,text/plain,text/csv,application/pdf,*/*;q=0.5', 'accept-language': 'es,en;q=0.5' },
+        headers: { 'user-agent': 'Mozilla/5.0 (compatible; ChatbotImport/1.0)', accept: opts.accept ?? 'text/html,text/plain,text/csv,application/pdf,*/*;q=0.5', 'accept-language': 'es,en;q=0.5' },
         ...(config.allowPrivateWebhooks ? {} : { lookup: safeLookup as any }),
       },
       (res) => {
@@ -73,7 +80,7 @@ function getOnce(u: URL): Promise<{ status: number; headers: http.IncomingHttpHe
         let size = 0;
         res.on('data', (c: Buffer) => {
           size += c.length;
-          if (size > MAX_PAGE_BYTES) return req.destroy(new HttpError(400, 'La página es demasiado grande'));
+          if (size > max) return req.destroy(new HttpError(400, 'La página es demasiado grande'));
           chunks.push(c);
         });
         res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body: Buffer.concat(chunks) }));
@@ -87,14 +94,14 @@ function getOnce(u: URL): Promise<{ status: number; headers: http.IncomingHttpHe
 }
 
 /** Sigue hasta 4 redirecciones y revisa la IP de cada salto (evita llegar a la red interna). */
-export async function fetchPublic(raw: string): Promise<{ url: URL; mime: string; body: Buffer }> {
+export async function fetchPublic(raw: string, opts: FetchOptions = {}): Promise<{ url: URL; mime: string; body: Buffer }> {
   let u = normalizeUrl(raw);
   for (let hop = 0; hop < 5; hop++) {
     if (!config.allowPrivateWebhooks && !net.isIP(u.hostname.replace(/^\[|\]$/g, ''))) {
       const addrs = await dns.lookup(u.hostname, { all: true }).catch(() => []);
       if (!addrs.length) throw new HttpError(400, 'No se encontró esa dirección web');
     }
-    const res = await getOnce(u);
+    const res = await getOnce(u, opts);
     const location = res.headers.location;
     if ([301, 302, 303, 307, 308].includes(res.status) && location) {
       u = normalizeUrl(new URL(location, u).toString());

@@ -157,9 +157,15 @@ export async function applyMetaSelection(sessionId: string, accountId: string, c
   }
 }
 
+/**
+ * Canal conectado con el botón y con token. La marca `meta_connected_at` solo la pone el servidor al conectar: un canal
+ * al que alguien le escribió `connected_via` o la página de otro negocio no la tiene, así que no recibe sus eventos.
+ */
+const CONNECTED = `config->>'connected_via' = 'facebook' AND coalesce(config->>'meta_connected_at','') <> '' AND coalesce(config->>'page_access_token','') <> ''`;
+
 /** Página o Instagram ya atendido por otro negocio de la plataforma (ambos agentes contestarían). */
 async function takenElsewhere(accountId: string, type: string, key: string, id: string) {
-  return !!(await queryOne(`SELECT 1 FROM channels WHERE account_id <> $1 AND type = $2 AND config->>$3 = $4 AND config->>'connected_via' = 'facebook' AND coalesce(config->>'page_access_token','') <> '' LIMIT 1`, [accountId, type, key, id]));
+  return !!(await queryOne(`SELECT 1 FROM channels WHERE account_id <> $1 AND type = $2 AND config->>$3 = $4 AND ${CONNECTED} LIMIT 1`, [accountId, type, key, id]));
 }
 
 async function applyPages(pages: MetaPage[], accountId: string, chatbotId: string | null, picks: MetaSelection[]): Promise<Channel[]> {
@@ -178,19 +184,20 @@ async function applyPages(pages: MetaPage[], accountId: string, chatbotId: strin
   const out: Channel[] = [];
   for (const { pick, page } of chosen) {
     await graph('POST', `${page.id}/subscribed_apps`, { subscribed_fields: SUBSCRIBED_FIELDS, access_token: page.access_token });
-    // Un candado por página: dos conexiones a la vez (otra pestaña u otro negocio) no crean canales repetidos.
+    // Un candado por página: dos conexiones a la vez (otra pestaña u otro negocio) no crean canales repetidos. Si aun así
+    // otro negocio la conectó en el mismo instante, el índice único lo detiene y se explica igual.
     await withTransaction(async (db) => {
       await db.query(`SELECT pg_advisory_xact_lock(hashtext('meta-page:' || $1))`, [page.id]);
       for (const t of targets(pick, page)) {
         if (await takenElsewhere(accountId, t.type, t.key, t.id)) throw taken(t);
-        out.push(t.type === 'messenger'
-          ? await upsertChannel(accountId, chatbotId, 'messenger', page.id, `Messenger · ${page.name}`, {
-            page_id: page.id, page_access_token: page.access_token, connected_via: 'facebook', page_name: page.name, picture: page.picture,
+        out.push(await (t.type === 'messenger'
+          ? upsertChannel(accountId, chatbotId, 'messenger', page.id, `Messenger · ${page.name}`, {
+            page_id: page.id, page_access_token: page.access_token, connected_via: 'facebook', meta_connected_at: new Date().toISOString(), meta_verify: '', page_name: page.name, picture: page.picture,
           })
-          : await upsertChannel(accountId, chatbotId, 'instagram', page.instagram!.id, `Instagram · @${page.instagram!.username || page.name}`, {
-            account_id: page.instagram!.id, page_id: page.id, page_access_token: page.access_token, connected_via: 'facebook',
+          : upsertChannel(accountId, chatbotId, 'instagram', page.instagram!.id, `Instagram · @${page.instagram!.username || page.name}`, {
+            account_id: page.instagram!.id, page_id: page.id, page_access_token: page.access_token, connected_via: 'facebook', meta_connected_at: new Date().toISOString(), meta_verify: '',
             page_name: page.name, username: page.instagram!.username, picture: page.instagram!.picture,
-          }));
+          })).catch((e: any) => { throw e?.code === '23505' ? taken(t) : e; }));
       }
     });
   }
@@ -220,7 +227,7 @@ async function upsertChannel(accountId: string, chatbotId: string | null, type: 
 export async function disconnectMetaChannel(ch: Channel): Promise<Channel> {
   const pageId = String(ch.config.page_id ?? '');
   const sibling = pageId ? await queryOne(`SELECT 1 FROM channels WHERE id <> $1 AND type IN ('messenger','instagram') AND config->>'page_id' = $2
-    AND config->>'connected_via' = 'facebook' AND coalesce(config->>'page_access_token','') <> '' LIMIT 1`, [ch.id, pageId]) : null;
+    AND ${CONNECTED} LIMIT 1`, [ch.id, pageId]) : null;
   if (pageId && ch.config.page_access_token && !sibling) {
     await graph('DELETE', `${pageId}/subscribed_apps`, { access_token: ch.config.page_access_token }).catch((e) =>
       logEvent({ level: 'warn', source: 'channel', message: `Facebook: no se pudo quitar la suscripción de la página: ${e?.message ?? e}`, accountId: ch.account_id, channelId: ch.id }));
@@ -234,8 +241,7 @@ export async function channelsForEntry(object: string, entryId: string): Promise
   const type = object === 'instagram' ? 'instagram' : 'messenger';
   const key = type === 'messenger' ? 'page_id' : 'account_id';
   // Un canal desconectado (sin token) no recibe eventos que no podría contestar.
-  const rows = await query<{ id: string }>(`SELECT id FROM channels WHERE type = $1 AND config->>$2 = $3 AND config->>'connected_via' = 'facebook'
-    AND coalesce(config->>'page_access_token','') <> ''`, [type, key, entryId]);
+  const rows = await query<{ id: string }>(`SELECT id FROM channels WHERE type = $1 AND config->>$2 = $3 AND ${CONNECTED}`, [type, key, entryId]);
   const out: Channel[] = [];
   for (const r of rows) { const ch = await store.getChannel(r.id); if (ch) out.push(ch); }
   return out;
@@ -246,7 +252,7 @@ export async function channelsForEntry(object: string, entryId: string): Promise
  * el canal queda desconectado y se avisa según los ajustes del negocio. Si vuelve a funcionar, queda en línea.
  */
 export async function checkMetaTokens(): Promise<{ checked: number; lost: number }> {
-  const rows = await query<{ id: string }>(`SELECT id FROM channels WHERE type IN ('messenger','instagram') AND active AND config->>'connected_via' = 'facebook' AND coalesce(config->>'page_access_token','') <> '' LIMIT 500`);
+  const rows = await query<{ id: string }>(`SELECT id FROM channels WHERE type IN ('messenger','instagram') AND active AND ${CONNECTED} LIMIT 500`);
   const r = { checked: 0, lost: 0 };
   for (const { id } of rows) {
     const ch = await store.getChannel(id);
@@ -267,9 +273,50 @@ export async function checkMetaTokens(): Promise<{ checked: number; lost: number
   return r;
 }
 
+/**
+ * Canales que ya decían «conectado con Facebook» antes de la marca del servidor (migración 084): se confía en ellos solo si
+ * su token es de esa página (y, en Instagram, si esa página tiene ese Instagram). Si no, quedan como manuales y sin token.
+ * Un error de red o de Meta los deja pendientes para la siguiente vuelta.
+ */
+export async function verifyPendingMetaChannels(): Promise<{ verified: number; dropped: number }> {
+  const rows = await query<{ id: string }>(`SELECT id FROM channels WHERE type IN ('messenger','instagram') AND config->>'meta_verify' = 'pending'
+    AND config->>'connected_via' = 'facebook' AND coalesce(config->>'page_access_token','') <> '' LIMIT 200`);
+  const r = { verified: 0, dropped: 0 };
+  for (const { id } of rows) {
+    const ch = await store.getChannel(id);
+    if (!ch) continue;
+    const token = String(ch.config.page_access_token);
+    let owns = false;
+    try {
+      const me = await graph<{ id: string }>('GET', 'me', { fields: 'id', access_token: token });
+      owns = String(me.id) === String(ch.config.page_id);
+      if (owns && ch.type === 'instagram') {
+        const page = await graph<{ instagram_business_account?: { id: string } }>('GET', String(ch.config.page_id), { fields: 'instagram_business_account', access_token: token });
+        owns = String(page.instagram_business_account?.id ?? '') === String(ch.config.account_id);
+      }
+    } catch (e: any) {
+      if (![190, 10, 200, 100].includes(Number(e?.code))) continue;
+    }
+    if (owns) {
+      await store.updateChannel(ch.id, { config: { ...ch.config, meta_verify: '', meta_connected_at: new Date().toISOString() } });
+      r.verified++;
+    } else {
+      await store.updateChannel(ch.id, { config: { ...ch.config, meta_verify: '', connected_via: 'manual', page_access_token: '' } });
+      await store.setConnectionStateQuiet(ch.id, 'close');
+      await logEvent({ level: 'warn', source: 'channel', message: 'Facebook: este canal decía estar conectado con el botón, pero su token no es de esa página. Se desconectó; vuelve a conectarlo con «Conectar con Facebook».', accountId: ch.account_id, channelId: ch.id });
+      r.dropped++;
+    }
+  }
+  return r;
+}
+
 export function startMetaTokenWatch(intervalMs = 6 * 3600_000) {
   if (!metaConnectEnabled()) return;
-  const run = () => void checkMetaTokens().catch((e) => logEvent({ level: 'error', source: 'channel', message: `Revisión de tokens de Facebook: ${e?.message ?? e}` }));
+  const run = () => void verifyPendingMetaChannels()
+    .catch((e) => logEvent({ level: 'error', source: 'channel', message: `Verificación de canales de Facebook: ${e?.message ?? e}` }))
+    .then(() => checkMetaTokens())
+    .catch((e) => logEvent({ level: 'error', source: 'channel', message: `Revisión de tokens de Facebook: ${e?.message ?? e}` }));
+  setTimeout(() => void verifyPendingMetaChannels().catch(() => undefined), 30_000).unref();
   setTimeout(run, 5 * 60_000).unref();
   setInterval(() => void purgeExpired().catch(() => undefined), 3600_000).unref();
   setInterval(run, intervalMs).unref();

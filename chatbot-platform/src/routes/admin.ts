@@ -15,6 +15,7 @@ import {
   registerLoginFailure,
   setSessionCookie,
   verifyPassword,
+  currentSession,
 } from '../auth.js';
 import { adapterFor } from '../channels/index.js';
 import { config } from '../config.js';
@@ -52,13 +53,16 @@ export async function sessionRoutes(app: FastifyInstance) {
       await logEvent({ level: 'warn', source: 'admin', message: 'Intento de acceso fallido', details: { ip: req.ip, email: who.slice(0, 100) } });
       return reply.code(401).send({ error: 'Usuario o contraseña incorrectos' });
     }
-    setSessionCookie(reply, user.id, user.password_hash);
+    await setSessionCookie(reply, user.id, user.password_hash, 'password');
     const { password_hash, ...safe } = user;
     void password_hash;
     return { ok: true, user: safe };
   });
 
-  app.post('/api/logout', async (_req, reply) => {
+  app.post('/api/logout', async (req, reply) => {
+    // Cerrar sesión la invalida en el servidor: la cookie copiada a otro lado ya no sirve.
+    const s = currentSession(req);
+    if (s?.sid && /^[0-9a-f-]{36}$/i.test(s.sid)) await store.revokeUserSessions(s.uid, { only: s.sid });
     clearSessionCookie(reply);
     return { ok: true };
   });
@@ -79,6 +83,33 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     return store.updateUser(req.user.id, { ...b, alert_prefs: b.alert_prefs ? cleanAlertPrefs(b.alert_prefs) : undefined });
   });
 
+  /* ------------------------------ Mis sesiones ------------------------------ */
+  // Cada persona ve y cierra solo las suyas.
+  const browserOf = (ua: string) => {
+    const b = /Edg\//.test(ua) ? 'Edge' : /OPR\//.test(ua) ? 'Opera' : /Chrome\//.test(ua) ? 'Chrome' : /Firefox\//.test(ua) ? 'Firefox' : /Safari\//.test(ua) ? 'Safari' : 'Navegador';
+    const os = /iPhone|iPad/.test(ua) ? 'iPhone o iPad' : /Android/.test(ua) ? 'Android' : /Windows/.test(ua) ? 'Windows' : /Mac OS X/.test(ua) ? 'Mac' : /Linux/.test(ua) ? 'Linux' : '';
+    return os ? `${b} en ${os}` : b;
+  };
+  // Solo una parte de la IP: suficiente para reconocerla, sin mostrarla completa.
+  const partialIp = (ip: string) => (ip.includes(':') ? `${ip.split(':').slice(0, 3).join(':')}:…` : ip.split('.').slice(0, 2).join('.') + (ip.includes('.') ? '.…' : ''));
+  api.get('/api/me/sessions', async (req: any) => ({
+    // Una sesión de antes de registrar sesiones no aparece en la lista (vence sola en máximo 7 días).
+    legacy: !req.sessionId,
+    sessions: (await store.listUserSessions(req.user.id)).map((s) => ({
+      id: s.id, device: browserOf(s.user_agent), ip: partialIp(s.ip), via: s.via, created_at: s.created_at, last_seen_at: s.last_seen_at, current: s.id === req.sessionId,
+    })),
+  }));
+  api.delete('/api/me/sessions/:id', async (req: any) => {
+    if (!z.string().uuid().safeParse(req.params.id).success || !(await store.revokeUserSessions(req.user.id, { only: req.params.id }))) throw notFound('Sesión no encontrada');
+    await logEvent({ level: 'info', source: 'admin', message: `Sesión cerrada desde Mi perfil por ${req.user.email}`, accountId: req.user.account_id ?? undefined });
+    return { ok: true, current: req.params.id === req.sessionId };
+  });
+  api.post('/api/me/sessions/revoke-others', async (req: any) => {
+    const closed = await store.revokeUserSessions(req.user.id, { except: req.sessionId });
+    await logEvent({ level: 'info', source: 'admin', message: `${req.user.email} cerró sus otras ${closed} sesiones`, accountId: req.user.account_id ?? undefined });
+    return { ok: true, closed };
+  });
+
   api.put('/api/me/password', async (req, reply) => {
     const b = parse(z.object({ current: z.string(), password: Password }), req.body);
     const full = await store.getUserForLogin(req.user.email);
@@ -86,7 +117,8 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     const hash = await hashPassword(b.password);
     await store.updateUser(req.user.id, { password_hash: hash });
     // Las demás sesiones se cierran; esta sigue abierta con la nueva huella.
-    setSessionCookie(reply, req.user.id, hash);
+    await store.revokeUserSessions(req.user.id);
+    await setSessionCookie(reply, req.user.id, hash, 'password_change');
     return { ok: true };
   });
 
@@ -407,6 +439,9 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     if (b.password) patch.password_hash = await hashPassword(b.password);
     const updated = await store.updateUser(target.id, patch, req.user.role === 'superadmin' ? undefined : scopeAccount(req.user)!);
     if (!updated) throw notFound('Usuario no encontrado');
+    // Desactivar a alguien, cambiarle el correo o la contraseña cierra todas sus sesiones abiertas. Un cambio de rol o de
+    // cuenta aplica al momento en las sesiones abiertas (el usuario se vuelve a leer en cada petición).
+    if (!updated.active || updated.email !== target.email || patch.password_hash) await store.revokeUserSessions(updated.id);
     if (updated.role !== target.role || updated.account_id !== target.account_id) {
       await logEvent({ level: 'info', source: 'admin', message: `Permisos de usuario actualizados: ${updated.email}`, accountId: updated.account_id ?? target.account_id ?? undefined,
         details: { actor_id: req.user.id, user_id: updated.id, previous_role: target.role, role: updated.role, previous_account_id: target.account_id, account_id: updated.account_id } });

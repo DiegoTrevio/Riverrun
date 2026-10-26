@@ -538,6 +538,10 @@ export const ChannelConfigSchemas = {
     graph_version: z.string().max(10).default('v21.0'),
     /** facebook = conectado con el botón (webhook de la plataforma); manual = tokens propios. */
     connected_via: z.enum(['manual', 'facebook']).default('manual'),
+    /** Marca del servidor al conectar con el botón: sin ella el canal no recibe eventos del webhook de la plataforma. */
+    meta_connected_at: z.string().max(40).default(''),
+    /** «pending»: venía marcado como conectado antes de la marca; se verifica con Meta antes de recibir eventos. */
+    meta_verify: z.string().max(20).default(''),
     page_name: z.string().max(200).default(''),
     picture: z.string().max(2000).default(''),
   }),
@@ -548,6 +552,8 @@ export const ChannelConfigSchemas = {
     verify_token: z.string().max(200).default(''),
     graph_version: z.string().max(10).default('v21.0'),
     connected_via: z.enum(['manual', 'facebook']).default('manual'),
+    meta_connected_at: z.string().max(40).default(''),
+    meta_verify: z.string().max(20).default(''),
     /** Página de Facebook vinculada (la que da el token y la suscripción a los mensajes). */
     page_id: z.string().max(60).default(''),
     page_name: z.string().max(200).default(''),

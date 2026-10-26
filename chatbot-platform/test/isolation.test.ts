@@ -76,6 +76,8 @@ function fillParams(url: string): string | null {
     [/^\/api\/receivables\/:id/, 'receivable'],
     [/^\/api\/receivable-plans\/:id/, 'receivable_plan'],
     [/^\/api\/contact-fields\/:id/, 'contact_field'],
+    // Una sesión del admin de B: nadie de A la cierra.
+    [/^\/api\/me\/sessions\/:id/, 'user_session'],
     // Solo el superadmin: la cuenta A debe recibir 403.
     [/^\/api\/system\/zernio\/tenants\/:id/, 'account'],
     [/^\/api\/system\/zernio\/webhook-logs\/:id/, 'bot'],
@@ -189,6 +191,7 @@ before(async () => {
   const cf = await adminB('POST', '/api/contact-fields', { label: `Campo ${MARK}`, key: 'campo_b', type: 'text' });
   assert.equal(cf.statusCode, 201, cf.body);
   B.contact_field = cf.json().id;
+  B.user_session = (await pool.query(`SELECT s.id FROM user_sessions s JOIN users u ON u.id = s.user_id WHERE u.email = 'admin@b.mx' AND s.revoked_at IS NULL ORDER BY s.created_at DESC LIMIT 1`)).rows[0].id;
   await h.idle();
 });
 after(async () => {

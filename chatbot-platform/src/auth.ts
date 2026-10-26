@@ -37,44 +37,61 @@ export function passwordProblem(pw: string): string | null {
 /** Huella de la contraseña: al cambiarla, las sesiones anteriores dejan de valer. */
 const passwordVersion = (passwordHash: string) => hmac(`pv:${passwordHash}`).slice(0, 16);
 
-export function createSession(userId: string, passwordHash: string) {
-  const payload = Buffer.from(JSON.stringify({ uid: userId, pv: passwordVersion(passwordHash), exp: Date.now() + TTL_MS })).toString('base64url');
+/** `sid`: la sesión registrada en `user_sessions` (las cookies de antes no lo traen y valen hasta vencer). */
+export function createSession(userId: string, passwordHash: string, sid?: string, exp = Date.now() + TTL_MS) {
+  const payload = Buffer.from(JSON.stringify({ uid: userId, pv: passwordVersion(passwordHash), exp, ...(sid ? { sid } : {}) })).toString('base64url');
   return `${payload}.${hmac(payload)}`;
 }
 
-export function readSession(token: string | undefined): { uid: string; pv: string } | null {
+export function readSession(token: string | undefined): { uid: string; pv: string; sid?: string } | null {
   if (!token) return null;
   const [payload, sig] = token.split('.');
   if (!payload || !sig || !safeEqual(sig, hmac(payload))) return null;
   try {
     const data = JSON.parse(Buffer.from(payload, 'base64url').toString());
-    return data.exp > Date.now() && typeof data.uid === 'string' && typeof data.pv === 'string' ? { uid: data.uid, pv: data.pv } : null;
+    if (!(data.exp > Date.now() && typeof data.uid === 'string' && typeof data.pv === 'string')) return null;
+    return { uid: data.uid, pv: data.pv, ...(typeof data.sid === 'string' ? { sid: data.sid } : {}) };
   } catch {
     return null;
   }
 }
 
-export function setSessionCookie(reply: FastifyReply, userId: string, passwordHash: string) {
-  reply.setCookie(COOKIE, createSession(userId, passwordHash), { httpOnly: true, sameSite: 'strict', secure: config.secureCookies, path: '/', maxAge: TTL_MS / 1000 });
+export type SessionVia = 'password' | 'google' | 'invite' | 'signup' | 'password_change';
+
+/** Inicia una sesión: queda registrada (se puede cerrar desde Mi perfil o al cerrar sesión) y se pone la cookie. */
+export async function setSessionCookie(reply: FastifyReply, userId: string, passwordHash: string, via: SessionVia = 'password') {
+  const req = reply.request;
+  const expires = new Date(Date.now() + TTL_MS);
+  const sid = (await store.createUserSession({ userId, expires, via, userAgent: String(req?.headers?.['user-agent'] ?? '').slice(0, 300), ip: String(req?.ip ?? '').slice(0, 64) })).id;
+  reply.setCookie(COOKIE, createSession(userId, passwordHash, sid, expires.getTime()), { httpOnly: true, sameSite: 'strict', secure: config.secureCookies, path: '/', maxAge: TTL_MS / 1000 });
+  return sid;
 }
 
 export function clearSessionCookie(reply: FastifyReply) {
   reply.clearCookie(COOKIE, { path: '/' });
 }
 
+/** La sesión de esta petición (para cerrarla al salir). */
+export const currentSession = (req: FastifyRequest) => readSession(req.cookies?.[COOKIE]);
+
 /** Autenticación del panel: carga el usuario en cada petición (si se desactiva, pierde acceso al instante). */
 export async function requireAuth(req: FastifyRequest, reply: FastifyReply) {
   const session = readSession(req.cookies?.[COOKIE]);
   const row = session ? await store.getSessionUser(session.uid) : null;
   if (!row || !safeEqual(passwordVersion(row.password_hash), session!.pv)) return reply.code(401).send({ error: 'No autenticado' });
+  // Una sesión registrada debe seguir abierta: cerrar sesión (aquí o desde otro dispositivo) la invalida al momento.
+  if (session!.sid && !(await store.touchUserSession(session!.sid, row.id))) return reply.code(401).send({ error: 'No autenticado' });
   const { password_hash, ...user } = row;
   void password_hash;
   req.user = user;
+  req.sessionId = session!.sid ?? null;
 }
 
 declare module 'fastify' {
   interface FastifyRequest {
     user: User;
+    /** Sesión registrada de la petición (null en las cookies de antes de registrar sesiones). */
+    sessionId: string | null;
   }
 }
 
