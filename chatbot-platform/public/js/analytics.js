@@ -55,7 +55,12 @@ const niceMax = (v) => {
 const NS = 'http://www.w3.org/2000/svg';
 function svg(tag, attrs = {}, ...kids) {
   const el = document.createElementNS(NS, tag);
-  for (const [k, v] of Object.entries(attrs)) if (v !== null && v !== undefined && v !== false) el.setAttribute(k, v === true ? '' : String(v));
+  for (const [k, v] of Object.entries(attrs)) {
+    if (v === null || v === undefined || v === false) continue;
+    // El estilo va por el CSSOM (como en h()): la CSP del panel no permite atributos style.
+    if (k === 'style') el.style.cssText = String(v);
+    else el.setAttribute(k, v === true ? '' : String(v));
+  }
   for (const c of kids.flat()) if (c !== null && c !== undefined && c !== false) el.append(c instanceof Node ? c : document.createTextNode(String(c)));
   return el;
 }

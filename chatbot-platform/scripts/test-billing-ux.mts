@@ -23,6 +23,7 @@ const h = await createHarness();
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 const checks: string[] = [];
 const errors: string[] = [];
+const cspViolations: string[] = [];
 const axe = fs.readFileSync(createRequire(import.meta.url).resolve('axe-core/axe.min.js'), 'utf8');
 
 try {
@@ -32,6 +33,13 @@ try {
   assert.equal((await h.authed('POST', '/api/plans', { key: 'anual', name: 'Pro anual', price: 4990, interval: 'year' })).statusCode, 200);
 
   browser = await chromium.launch({ ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : {}), args: ['--no-sandbox'] });
+  // La CSP no debe bloquear nada del panel ni de las páginas públicas: Chrome lo anota en la consola («Refused to…»).
+  const newContext = browser.newContext.bind(browser);
+  browser.newContext = (async (...args: Parameters<typeof newContext>) => {
+    const ctx = await newContext(...args);
+    ctx.on('console', (m) => { if (/Content Security Policy/i.test(m.text())) cspViolations.push(`${m.location().url}: ${m.text()}`); });
+    return ctx;
+  }) as typeof newContext;
   const context = await browser.newContext({ viewport: { width: 1366, height: 1000 } });
   const page = await context.newPage();
   page.on('pageerror', (e) => errors.push(e.message));
@@ -45,7 +53,7 @@ try {
     await g.goto(`${base}/#/registro-google?token=${encodeURIComponent(googleSignupPass('gema@estudio.mx', 'Gema'))}`);
     await g.getByRole('heading', { name: 'Termina tu registro' }).waitFor();
     await g.getByText('gema@estudio.mx').waitFor();
-    await g.addScriptTag({ content: axe });
+    await g.evaluate(axe);
     const violations = await g.evaluate(async () => (await (window as any).axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] } }))
       .violations.filter((v: any) => ['serious', 'critical'].includes(v.impact)).map((v: any) => v.id));
     assert.deepEqual(violations, [], 'Registro con Google');
@@ -67,7 +75,7 @@ try {
     await page.setViewportSize({ width, height: 1000 });
     await page.goto(`${base}/precios`);
     await page.getByRole('heading', { name: 'Precios', exact: true }).waitFor();
-    await page.addScriptTag({ content: axe });
+    await page.evaluate(axe);
     const violations = await page.evaluate(async () => (await (window as any).axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] } }))
       .violations.filter((v: any) => ['serious', 'critical'].includes(v.impact)).map((v: any) => v.id));
     assert.deepEqual(violations, [], `Precios a ${width}`);
@@ -105,7 +113,7 @@ try {
     await page.setViewportSize({ width, height: 1000 });
     await page.goto(`${base}/#/agentes`);
     await page.getByRole('heading', { name: 'Para empezar' }).waitFor();
-    await page.addScriptTag({ content: axe });
+    await page.evaluate(axe);
     const violations = await page.evaluate(async () => (await (window as any).axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] } }))
       .violations.filter((v: any) => ['serious', 'critical'].includes(v.impact)).map((v: any) => v.id));
     assert.deepEqual(violations, [], `Para empezar a ${width}`);
@@ -150,7 +158,7 @@ try {
     await page.setViewportSize({ width, height: 1000 });
     await page.goto(`${base}/#/plan`);
     await page.getByRole('heading', { name: 'Tus pagos' }).waitFor();
-    await page.addScriptTag({ content: axe });
+    await page.evaluate(axe);
     const violations = await page.evaluate(async () => (await (window as any).axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] } }))
       .violations.filter((v: any) => ['serious', 'critical'].includes(v.impact)).map((v: any) => v.id));
     assert.deepEqual(violations, [], `Mi plan a ${width}`);
@@ -179,7 +187,7 @@ try {
     await page.goto(`${base}/#/agentes`);
     await page.getByText('No pudimos cobrar tu plan.').waitFor();
     await page.getByRole('link', { name: 'Actualizar pago' }).waitFor();
-    await page.addScriptTag({ content: axe });
+    await page.evaluate(axe);
     const violations = await page.evaluate(async () => (await (window as any).axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] } }))
       .violations.filter((v: any) => ['serious', 'critical'].includes(v.impact)).map((v: any) => v.id));
     assert.deepEqual(violations, [], `Franja de pago pendiente a ${width}`);
@@ -201,7 +209,7 @@ try {
   await fiscal.getByRole('button', { name: 'Guardar' }).click();
   await fiscal.getByText(/revisa la homoclave/).waitFor();
   assert.equal(await fiscal.getByLabel('RFC').getAttribute('aria-invalid'), 'true');
-  await page.addScriptTag({ content: axe });
+  await page.evaluate(axe);
   const fiscalViolations = await page.evaluate(async () => (await (window as any).axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] } }))
     .violations.filter((v: any) => ['serious', 'critical'].includes(v.impact)).map((v: any) => v.id));
   assert.deepEqual(fiscalViolations, [], 'Facturación a 390');
@@ -224,7 +232,7 @@ try {
   const pdf = await page.request.get(new URL((await pdfLink.getAttribute('href'))!, base).href);
   assert.equal(pdf.status(), 200);
   assert.equal(pdf.headers()['content-type'], 'application/pdf');
-  await page.addScriptTag({ content: axe });
+  await page.evaluate(axe);
   const cfdiViolations = await page.evaluate(async () => (await (window as any).axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] } }))
     .violations.filter((v: any) => ['serious', 'critical'].includes(v.impact)).map((v: any) => v.id));
   assert.deepEqual(cfdiViolations, [], 'Factura en el historial a 390');
@@ -239,7 +247,7 @@ try {
   await invite.getByRole('button', { name: 'Enviar invitación' }).click();
   await page.getByText('Invitación enviada a rita@estudio.mx').waitFor();
   await invite.getByRole('button', { name: 'Reenviar invitación a rita@estudio.mx' }).waitFor();
-  await page.addScriptTag({ content: axe });
+  await page.evaluate(axe);
   const teamViolations = await page.evaluate(async () => (await (window as any).axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] } }))
     .violations.filter((v: any) => ['serious', 'critical'].includes(v.impact)).map((v: any) => v.id));
   assert.deepEqual(teamViolations, [], 'Mi equipo a 390');
@@ -254,7 +262,7 @@ try {
     await g.goto(`${base}/#/invitacion?token=${new URL(inviteLink.replace('#/', '')).searchParams.get('token')}`);
     await g.getByRole('heading', { name: /^Únete a / }).waitFor();
     await g.getByText('rita@estudio.mx').waitFor();
-    await g.addScriptTag({ content: axe });
+    await g.evaluate(axe);
     const v = await g.evaluate(async () => (await (window as any).axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] } }))
       .violations.filter((x: any) => ['serious', 'critical'].includes(x.impact)).map((x: any) => x.id));
     assert.deepEqual(v, [], 'Invitación a 390');
@@ -289,7 +297,7 @@ try {
     await page.setViewportSize({ width, height: 1000 });
     await page.goto(`${base}/#/agentes`);
     await page.getByText('Tu cuenta se va a borrar.').waitFor();
-    await page.addScriptTag({ content: axe });
+    await page.evaluate(axe);
     const violations = await page.evaluate(async () => (await (window as any).axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] } }))
       .violations.filter((v: any) => ['serious', 'critical'].includes(v.impact)).map((v: any) => v.id));
     assert.deepEqual(violations, [], `Franja de borrado a ${width}`);
@@ -297,7 +305,7 @@ try {
   }
   await page.getByRole('link', { name: 'Cancelar el borrado' }).click();
   await page.getByRole('heading', { name: 'Mi plan y pagos' }).waitFor();
-  await page.addScriptTag({ content: axe });
+  await page.evaluate(axe);
   const dataViolations = await page.evaluate(async () => (await (window as any).axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] } }))
     .violations.filter((v: any) => ['serious', 'critical'].includes(v.impact)).map((v: any) => v.id));
   assert.deepEqual(dataViolations, [], 'Tarjeta «Tus datos» a 390');
@@ -319,7 +327,7 @@ try {
   assert.equal(await invite.getByText('Revisa los datos del formulario').count(), 0, 'un límite no es un error del formulario');
   const up = invite.getByRole('link', { name: 'Subir a Equipo anual' });
   await up.waitFor();
-  await page.addScriptTag({ content: axe });
+  await page.evaluate(axe);
   const limitViolations = await page.evaluate(async () => (await (window as any).axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] } }))
     .violations.filter((v: any) => ['serious', 'critical'].includes(v.impact)).map((v: any) => v.id));
   assert.deepEqual(limitViolations, [], 'Límite del plan a 390');
@@ -359,7 +367,7 @@ try {
     await page.getByRole('heading', { name: 'Tu negocio', level: 1 }).waitFor();
     await page.getByText('Ingreso mensual recurrente (MRR)').waitFor();
     await page.getByRole('heading', { name: 'Para cobrar de verdad' }).waitFor();
-    await page.addScriptTag({ content: axe });
+    await page.evaluate(axe);
     const violations = await page.evaluate(async () => (await (window as any).axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] } }))
       .violations.filter((v: any) => ['serious', 'critical'].includes(v.impact)).map((v: any) => v.id));
     assert.deepEqual(violations, [], `Tu negocio a ${width}`);
@@ -371,6 +379,7 @@ try {
   checks.push('Tu negocio: tablero del superadmin con ingresos, clientes, cobro y lo que falta para cobrar (accesible en móvil)');
 
   assert.deepEqual(errors, []);
+  assert.deepEqual(cspViolations, [], 'La CSP bloqueó algo del panel o de una página pública');
   process.stdout.write(JSON.stringify({ checks, errors }, null, 2) + '\n');
 } finally {
   await browser?.close();

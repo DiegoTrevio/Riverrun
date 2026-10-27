@@ -65,7 +65,7 @@ try {
  for(const tab of ['instrucciones','probar']) {
   await page.goto(`${base}/#/bot/${h.botId}/${tab}`);await page.getByRole('heading',{name:'Segundo cambio'}).waitFor();
   for(const width of [1366,768,390]) {
-   await page.setViewportSize({width,height:1000});await page.addScriptTag({content:axe});
+   await page.setViewportSize({width,height:1000});await page.evaluate(axe);
    const violations=await page.evaluate(async()=> (await (window as any).axe.run(document,{runOnly:{type:'tag',values:['wcag2a','wcag2aa','wcag21aa']}})).violations.filter((v:any)=>['serious','critical'].includes(v.impact)));
    assert.deepEqual(violations,[],`${tab} a ${width}px`);assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),`Sin desbordamiento a ${width}`);
   }

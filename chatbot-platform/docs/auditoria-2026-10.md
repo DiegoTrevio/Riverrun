@@ -74,7 +74,7 @@ Cada hallazgo crítico o alto se comprobó en el código. Los que no se sostuvie
 - **Escenario:** la conciliación diaria recupera el estado de la suscripción y los pagos, pero no los reembolsos ni los contracargos. Un contracargo así no pausa la cuenta, y un reembolso no genera su nota de crédito.
 - **Arreglo:** guardar el evento con `processed_at` y reprocesarlo si quedó sin terminar.
 
-**P5 · Alto · `docker-compose.yml` no le pasa al contenedor varias variables que la app lee.**
+**P5 · Alto · `docker-compose.yml` no le pasa al contenedor varias variables que la app lee.** ✅ Corregido en el PR de despliegue (rama `audit-despliegue`): compose pasa todas y `test/compose-env.test.ts` lo vigila.
 - **Faltan, sobre todo:**
   - `META_APP_ID`, `META_APP_SECRET`, `META_CONFIG_ID` y `META_VERIFY_TOKEN`;
   - `CFDI_PRODUCT_KEY` y `CFDI_MAX_ATTEMPTS`;
@@ -140,7 +140,7 @@ Cada hallazgo crítico o alto se comprobó en el código. Los que no se sostuvie
   - ✅ Corregido en el PR de seguridad: descarga de medios entrantes de Meta sin protección de IP privadas (`meta.ts:254`), y comparación de origen de Zernio por prefijo (`zernio.ts:287`).
   - ✅ Corregido en el PR de seguridad (sesiones registradas, con su lista en Mi perfil): las sesiones no se podían revocar en el servidor: cerrar sesión solo borra la cookie, que dura 7 días.
 - **Bajo:**
-  - Sin encabezados CSP, HSTS ni `frame-ancestors` en Caddy.
+  - ✅ Corregido en el PR de despliegue: sin encabezados CSP, HSTS ni `frame-ancestors` (ahora CSP estricta en el panel, `X-Frame-Options` en las páginas salvo reservar y la ayuda, y HSTS en Caddy).
   - Los secretos de Telegram se muestran a los administradores de la cuenta.
   - `/api/me` devuelve `a.*` de la cuenta.
   - El límite de intentos de inicio de sesión es solo por IP.
@@ -162,9 +162,9 @@ Cada hallazgo crítico o alto se comprobó en el código. Los que no se sostuvie
   - ✅ Corregido en el PR de cobros (rama `audit-cobros`): fechas imposibles («31 de febrero») daban 500.
   - ✅ Corregido en el PR de cobros (rama `audit-cobros`): la factura global solo cubría el mes anterior (ahora, cualquier mes cerrado de los últimos 3).
   - ✅ Corregido en el PR de mensajes (rama `audit-mensajes`): trabajos que tumban el proceso no tenían límite de intentos al recuperarse.
-  - El apagado no tiene plazo máximo.
-  - `HEALTHCHECK` no revisa la base.
-  - El CI no escanea la imagen.
+  - ✅ Corregido en el PR de despliegue: el apagado no tenía plazo máximo (ahora `SHUTDOWN_TIMEOUT_MS`, cierra la base y no se repite con otra señal).
+  - ✅ Corregido en el PR de despliegue: `HEALTHCHECK` no revisaba la base (ahora `/health/db`, con `start-period`; Caddy espera al backend sano).
+  - ✅ Corregido en el PR de despliegue: el CI no escaneaba la imagen (ahora Trivy y una prueba de humo de la imagen).
 
 **Base de datos**
 - **Medio:**

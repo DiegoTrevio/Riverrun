@@ -138,7 +138,7 @@ try {
   const acceptDialog = phone.getByRole('dialog');
   await acceptDialog.getByLabel('Crear cobro').selectOption('installments');
   await acceptDialog.getByText(/Pago 3 de 3: \$/).waitFor();
-  await phone.addScriptTag({ content: axe });
+  await phone.evaluate(axe);
   const dialogViolations = await phone.evaluate(async () => (await (window as any).axe.run(document.querySelector('dialog[open]'), { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] } }))
     .violations.filter((v: any) => ['serious', 'critical'].includes(v.impact)).map((v: any) => v.id));
   assert.deepEqual(dialogViolations, [], 'diálogo «El cliente aceptó»');
@@ -158,7 +158,7 @@ try {
       await page.goto(`${base}/#/${route}`);
       await page.locator('.main h1').waitFor();
       await page.locator('.main [aria-busy="true"]').waitFor({ state: 'hidden' }).catch(() => undefined);
-      await page.addScriptTag({ content: axe });
+      await page.evaluate(axe);
       const violations = await page.evaluate(async () => (await (window as any).axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] } }))
         .violations.filter((v: any) => ['serious', 'critical'].includes(v.impact)).map((v: any) => v.id));
       assert.deepEqual(violations, [], `${route} a ${width}`);

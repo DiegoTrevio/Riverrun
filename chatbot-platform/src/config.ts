@@ -132,6 +132,8 @@ export const config = {
     stallMs: Math.max(60_000, Number(env('WATCHDOG_STALL_MS', '600000')) || 600000),
     blockMs: Math.max(10_000, Number(env('WATCHDOG_BLOCK_MS', '60000')) || 60000),
   },
+  /** Al apagar: tiempo máximo para terminar lo que está en curso (menor que stop_grace_period de compose, 300 s). */
+  shutdownTimeoutMs: Math.max(1000, Number(env('SHUTDOWN_TIMEOUT_MS', '240000')) || 240000),
   queue: {
     concurrency: Math.max(1, Math.min(6, Number(env('QUEUE_CONCURRENCY', '2')) || 2)),
     attempts: Math.max(1, Math.min(20, Number(env('QUEUE_MAX_ATTEMPTS', '3')) || 3)),

@@ -86,6 +86,23 @@ Hace, en orden: revisar cambios locales, descargar, construir **sin arrancar**, 
 
 **Ventana de observación.** Después de levantar la versión nueva, `./riverrun update` la observa durante `RIVERRUN_OBSERVE_SECONDS` (120 por defecto; `0` la apaga), midiendo la salud funcional cada `RIVERRUN_OBSERVE_POLL` segundos (15 por defecto). Un fallo aislado no revierte: hacen falta dos comprobaciones seguidas malas, como en las alertas. Una falla sostenida vuelve a la versión anterior, igual que una falla al levantar. La ventana añade ese tiempo a cada actualización; si necesitas actualizar más rápido, bájala con cuidado. Lo verifica `scripts/test-cli.sh` (un fallo aislado no revierte; una falla sostenida sí; un valor inválido se rechaza antes de descargar). **Limitación:** la ventana observa la salud funcional, no el tráfico real: un fallo que solo aparece con mensajes reales no se detecta aquí.
 
+## Contenedor, encabezados y apagado
+
+- **Variables:** `docker-compose.yml` le pasa al backend todas las variables que lee la app (vacía = el valor por defecto; ver `.env.example`). `test/compose-env.test.ts` falla si se agrega una a la app y no a compose o a `.env.example`.
+- **Obligatoria:** `SESSION_SECRET`. Sin ella, `docker compose` no arranca y dice «ejecuta ./riverrun install». `ADMIN_PASSWORD` puede quedar vacía una vez creado el superadministrador (el preflight lo avisa).
+- **Salud:** el `HEALTHCHECK` de la imagen usa `/health/db` (responde y llega a la base; los primeros 60 s no cuentan). Caddy arranca hasta que el backend está sano. `/health/ready` sigue siendo el de los monitores externos (también revisa las tareas atrasadas).
+- **Apagado:** termina lo que está en curso y cierra la base, con un plazo de `SHUTDOWN_TIMEOUT_MS` (240 s, menor que los 300 s de `stop_grace_period`). Si algo se cuelga, sale con código 1 y dice qué faltó. Una segunda señal no repite el cierre.
+- **Encabezados:**
+  - Caddy pone HSTS (un año, sin `includeSubDomains`) y quita `Server`.
+  - El backend pone `nosniff` y `Referrer-Policy` en todo.
+  - En las páginas, CSP y `X-Frame-Options: DENY`.
+  - El panel lleva una CSP estricta: solo código y estilos propios, más Cloudflare Turnstile. Un `style="…"` escrito en HTML o con `setAttribute` no se aplica; usa `el.style` o una clase.
+  - **Se pueden incrustar en un iframe:** solo `/reservar/…` y la ayuda.
+  - `/widget.js`, `/webchat/*` y `/media/*` conservan su CORS para los sitios de los clientes.
+- **CI («Imágenes de Docker»):**
+  - `scripts/test-image-smoke.sh` arranca la imagen con su base, espera a que quede sana, revisa los encabezados, la apaga (debe salir con 0) y valida el Caddyfile con Caddy.
+  - Trivy escanea la imagen. Las dependencias de la app con un arreglo disponible (alto o crítico) bloquean; los paquetes del sistema de la imagen base solo se reportan.
+
 ## Revertir no es restaurar
 
 | | Revertir | Restaurar |
