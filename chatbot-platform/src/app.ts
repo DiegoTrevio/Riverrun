@@ -45,7 +45,8 @@ import { bookingPublicRoutes, bookingRoutes } from './routes/booking.js';
 import { socialInboxRoutes } from './routes/social-inbox.js';
 import { socialPostRoutes } from './routes/social-posts.js';
 import { installErrorHandler } from './routes/util.js';
-import { cachedChecks, runReadiness } from './monitor.js';
+import { cachedChecks, checkDb, runReadiness } from './monitor.js';
+import { registerSecurityHeaders } from './security-headers.js';
 import { functionalReport, readinessReport } from './observability/health.js';
 import { collectMetricsExtra, renderMetrics } from './observability/metrics.js';
 import { ChatService, type TransportFactory } from './service.js';
@@ -116,12 +117,19 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
   });
 
   installErrorHandler(app);
+  registerSecurityHeaders(app);
   await app.register(cookie);
   await app.register(multipart);
   await app.register(fastifyStatic, { root: path.resolve(here, '..', 'public'), prefix: '/' });
 
   // Liveness: el proceso responde. No consulta nada, así un fallo externo no reinicia el contenedor en bucle.
   app.get('/health', async () => ({ ok: true }));
+  // Salud del contenedor (HEALTHCHECK de Docker): responde y llega a la base. No mira las tareas atrasadas, para que una
+  // caída larga (con trabajos pendientes) no deje el contenedor «no sano» ni a Caddy sin arrancar mientras se pone al día.
+  app.get('/health/db', async (_req, reply) => {
+    const db = await checkDb();
+    return reply.code(db.status === 'fail' ? 503 : 200).send({ ok: db.status !== 'fail' });
+  });
   // Readiness: puede atender peticiones. Público y sin detalles; 503 solo si la base de datos o las tareas fallan.
   app.get('/health/ready', async (_req, reply) => {
     const { code, body } = readinessReport(await runReadiness());

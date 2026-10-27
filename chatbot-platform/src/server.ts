@@ -6,7 +6,8 @@ import { OpenAiProvider } from './ai/provider.js';
 import { buildApp } from './app.js';
 import { bootstrapSuperadmin } from './auth.js';
 import { config } from './config.js';
-import { migrate } from './db.js';
+import { migrate, pool } from './db.js';
+import { gracefulShutdown } from './shutdown.js';
 import { startLifecycle } from './lifecycle.js';
 import { startMonitor } from './monitor.js';
 import { logEvent, pruneLogs } from './logs.js';
@@ -33,7 +34,24 @@ async function main() {
   app.addHook('onClose', async () => knowledgeMonitor.stop());
   const knowledgeWorker = new KnowledgeWorker(ai);
   app.addHook('onClose', async () => knowledgeWorker.stop());
+  // Las señales se atienden desde ya: un SIGTERM mientras arranca (retomando conversaciones) también cierra en orden.
+  let watchdog: ReturnType<typeof startWatchdog> | null = null;
+  let workerKeepAlive: ReturnType<typeof setInterval> | undefined;
+  // Primero termina lo que está en curso (respuestas, trabajos), luego cierra la base; con plazo, para no quedarse colgado.
+  const shutdown = gracefulShutdown({
+    timeoutMs: config.shutdownTimeoutMs,
+    exit: (code) => process.exit(code),
+    steps: [
+      { name: 'vigilante', run: () => { watchdog?.stop(); clearInterval(workerKeepAlive); } },
+      { name: 'servidor y trabajos en curso', run: () => app.close() },
+      { name: 'base de datos', run: () => pool.end() },
+    ],
+  });
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  process.on('SIGINT', () => void shutdown('SIGINT'));
   if(!['all','http','worker'].includes(config.queue.role)) throw new Error('PROCESS_ROLE debe ser all, http o worker.');
+  // Una señal mientras arranca (migraciones, retomar conversaciones): no se sigue arrancando lo que ya se está cerrando.
+  if (shutdown.started) return;
   if(config.queue.role!=='worker') {
     await app.listen({ port: config.port, host: config.host });
     await logEvent({ level: 'info', source: 'system', message: `Servidor iniciado en el puerto ${config.port}` });
@@ -44,6 +62,7 @@ async function main() {
     }
   } else { await app.ready(); console.log('Worker PostgreSQL iniciado'); }
 
+  if (shutdown.started) return;
   if(config.queue.role!=='http') {
   service.scheduler.start(config.schedulerIntervalMs);
   service.startSweeper();
@@ -78,7 +97,7 @@ async function main() {
   }
   // Vigilante: si la cola, las recepciones o las tareas programadas dejan de avanzar, o el proceso se bloquea, sale para
   // que Docker lo reinicie (los mensajes y trabajos están en PostgreSQL y se retoman al arrancar).
-  const watchdog = !config.watchdog.enabled ? null : startWatchdog({
+  watchdog = !config.watchdog.enabled ? null : startWatchdog({
       loops: config.queue.role === 'http' ? [] : ['queue', 'inbox', 'scheduler'],
       stallMs: config.watchdog.stallMs,
       blockMs: config.watchdog.blockMs,
@@ -89,17 +108,8 @@ async function main() {
         process.exit(1);
       },
     });
-  const workerKeepAlive=config.queue.role==='worker'?setInterval(()=>{},30_000):undefined;
+  workerKeepAlive=config.queue.role==='worker'?setInterval(()=>{},30_000):undefined;
 
-  const shutdown = async () => {
-    console.log('Cerrando...');
-    watchdog?.stop();
-    clearInterval(workerKeepAlive);
-    await app.close();
-    process.exit(0);
-  };
-  process.on('SIGTERM', shutdown);
-  process.on('SIGINT', shutdown);
   process.on('unhandledRejection', (e) => {
     void logEvent({ level: 'error', source: 'system', message: `Promesa rechazada sin manejar: ${(e as any)?.message ?? e}`, details: e });
   });

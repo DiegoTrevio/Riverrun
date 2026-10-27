@@ -42,7 +42,7 @@ try{
  await page.locator('#profile-switch').selectOption(h.accountId);await page.waitForFunction(()=>!location.hash.includes('account_id'));await page.getByRole('heading',{name:'Presupuesto de este perfil'}).waitFor();assert.equal(await page.getByLabel('Límite mensual (USD)',{exact:true}).inputValue(),'0');
  checks.push('El aviso abre el perfil correcto y permite cambiar de perfil sin quedarse fijado');
  for(const route of ['contacts',`contact/${records[0].c.id}`,'consumo'])for(const width of [1366,768,390]){
-  await page.setViewportSize({width,height:1000});await page.goto(`${base}/#/${route}`);await page.locator('.main h1').waitFor();await page.addScriptTag({content:axe});
+  await page.setViewportSize({width,height:1000});await page.goto(`${base}/#/${route}`);await page.locator('.main h1').waitFor();await page.evaluate(axe);
   const violations=await page.evaluate(async()=> (await (window as any).axe.run(document,{runOnly:{type:'tag',values:['wcag2a','wcag2aa','wcag21aa']}})).violations.filter((v:any)=>['serious','critical'].includes(v.impact)));assert.deepEqual(violations,[],`${route} a ${width}`);assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),`${route} sin desbordamiento a ${width}`);
  }
  checks.push('Contactos, ficha y presupuesto accesibles en computadora, tableta y móvil');assert.deepEqual(errors,[]);assert.equal(h.sent.length,0);process.stdout.write(JSON.stringify({checks,errors},null,2)+'\n');

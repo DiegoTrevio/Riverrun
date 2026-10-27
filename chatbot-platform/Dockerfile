@@ -21,5 +21,6 @@ RUN apk add --no-cache libreoffice-writer font-liberation font-dejavu font-noto 
   && mkdir -p /data/uploads && chown -R node:node /data
 USER node
 EXPOSE 3000
-HEALTHCHECK --interval=30s --timeout=5s CMD wget -qO- "http://127.0.0.1:${PORT:-3000}/health" || exit 1
+# Sano = responde y llega a la base de datos (/health/db); los primeros 60 s (migraciones) no cuentan como falla.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 CMD wget -qO- "http://127.0.0.1:${PORT:-3000}/health/db" || exit 1
 CMD ["node", "dist/index.js"]

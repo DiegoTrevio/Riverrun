@@ -35,7 +35,7 @@ export interface CheckResult {
 const withTimeout = <T>(p: Promise<T>, ms: number, what: string) =>
   Promise.race([p, new Promise<T>((_, rej) => setTimeout(() => rej(new Error(`${what}: sin respuesta en ${ms / 1000}s`)), ms).unref())]);
 
-async function checkDb(): Promise<CheckResult> {
+export async function checkDb(): Promise<CheckResult> {
   const base = { name: 'database', label: 'Base de datos' };
   try {
     await withTimeout(query('SELECT 1'), 4000, 'PostgreSQL');

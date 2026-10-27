@@ -93,6 +93,6 @@ t('una configuración válida arranca, migra y responde', async () => {
     assert.doesNotMatch(p.output(), /no arranca/);
   } finally {
     p.child.kill('SIGTERM');
-    await p.exited;
+    assert.equal(await p.exited, 0, `el apagado ordenado sale con 0\n${p.output()}`);
   }
 });

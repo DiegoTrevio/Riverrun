@@ -27,7 +27,7 @@ try {
  const page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));
  await page.goto(`${base}/#/bot/${h.botId}/conocimiento`);
  const wizard=page.locator('details').filter({has:page.getByText('Búsqueda por significado · preparar, probar y activar',{exact:true})});await wizard.locator('summary').click();
- const check=async(label:string)=>{await page.addScriptTag({content:axe});const violations=await page.evaluate(async()=> (await (window as any).axe.run(document,{runOnly:{type:'tag',values:['wcag2a','wcag2aa','wcag21aa']}})).violations.filter((v:any)=>['serious','critical'].includes(v.impact)));assert.deepEqual(violations,[]);results.checks.push(label);};
+ const check=async(label:string)=>{await page.evaluate(axe);const violations=await page.evaluate(async()=> (await (window as any).axe.run(document,{runOnly:{type:'tag',values:['wcag2a','wcag2aa','wcag21aa']}})).violations.filter((v:any)=>['serious','critical'].includes(v.impact)));assert.deepEqual(violations,[]);results.checks.push(label);};
  await check('Asistente desactivado accesible');assert.equal(await wizard.getByRole('button',{name:'Activar para este perfil',exact:true}).isDisabled(),true);
  await wizard.getByRole('button',{name:'Comprobar proveedor',exact:true}).click();await wizard.getByRole('button',{name:'Preparar conocimiento',exact:true}).waitFor({state:'visible'});
  await waitFor(async()=>!(await wizard.getByRole('button',{name:'Preparar conocimiento',exact:true}).isDisabled()));

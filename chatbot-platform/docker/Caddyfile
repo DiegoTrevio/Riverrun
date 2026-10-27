@@ -6,8 +6,18 @@
 	}
 }
 
+# Siempre por HTTPS (un año) y sin anunciar el servidor. Sin includeSubDomains: DOMAIN puede ser el dominio del negocio y
+# sus otros subdominios no son nuestros. Los demás encabezados (CSP, iframes, nosniff) los pone el backend.
+(seguridad) {
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+}
+
 {$DOMAIN} {
 	encode gzip
+	import seguridad
 	# /internal/* es solo para Caddy (va directo al backend, sin pasar por aquí)
 	handle /internal/* {
 		respond 404
@@ -23,6 +33,7 @@ https:// {
 		on_demand
 	}
 	encode gzip
+	import seguridad
 	handle /internal/* {
 		respond 404
 	}

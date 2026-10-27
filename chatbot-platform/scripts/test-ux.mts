@@ -11,6 +11,7 @@ const axe = fs.readFileSync(createRequire(import.meta.url).resolve('axe-core/axe
 const output = path.resolve('data/ux-test-results'); fs.mkdirSync(output, { recursive: true });
 const h = await createHarness(); let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 const results: any = { screens: [], responsive: [], regressions: [], errors: [] };
+const cspViolations: string[] = [];
 const checked = (name: string) => { results.regressions.push(name); console.log('UX ✓', name); };
 try {
   await h.createBot({ name: 'Ventas y reservas', personality: { prompt: 'Atiende pedidos y pregunta el nombre y la dirección.' }, data_fields: [] });
@@ -94,6 +95,13 @@ try {
   await h.app.listen({ port: 0, host: '127.0.0.1' });
   const address: any = h.app.server.address(); const base = `http://127.0.0.1:${address.port}`;
   browser = await chromium.launch({ ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : {}), args: ['--no-sandbox'] });
+  // La CSP no debe bloquear nada del panel ni de las páginas públicas: Chrome lo anota en la consola («Refused to…»).
+  const newContext = browser.newContext.bind(browser);
+  browser.newContext = (async (...args: Parameters<typeof newContext>) => {
+    const ctx = await newContext(...args);
+    ctx.on('console', (m) => { if (/Content Security Policy/i.test(m.text())) cspViolations.push(`${m.location().url}: ${m.text()}`); });
+    return ctx;
+  }) as typeof newContext;
   const contextFor = async (role: string, options: any = {}) => {
     const context = await browser!.newContext({ viewport: { width: 1440, height: 1000 }, ...options });
     const cookie = login[role].cookie; const ix = cookie.indexOf('=');
@@ -109,7 +117,7 @@ try {
     const selected = role === 'admin' ? routes : role === 'agent' ? ['conversations', `conversation/${conv.id}`, 'agenda', 'cobros', 'cobros?tab=recurrentes', 'datos-clientes', 'notifications', 'pipeline', 'password'] : ['agentes', 'agentes/nuevo', 'accounts', 'planes', 'marcas', 'sistema', 'sistema/zernio', 'redes', 'users', 'ajustes', 'integraciones'];
     for (const route of selected) {
       await page.goto(`${base}/#/${route}`); await page.locator('.main h1').waitFor(); await page.locator('.main [aria-busy="true"]').waitFor({ state: 'hidden' }); await page.waitForTimeout(100);
-      await page.addScriptTag({ content: axe });
+      await page.evaluate(axe);
       const violations = await page.evaluate(async () => (await (window as any).axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa', 'best-practice'] } })).violations.map((v: any) => ({ id: v.id, impact: v.impact, nodes: v.nodes.map((n: any) => ({ target: n.target, summary: n.failureSummary })) })));
       results.screens.push({ role, route, violations });
       if (role === 'admin' && helpScreens[route]) await page.screenshot({ path: `${output}/${helpScreens[route]}`, type: 'jpeg', quality: 85, fullPage: true });
@@ -149,7 +157,7 @@ try {
     const ctx = await browser!.newContext({ viewport: { width, height: 900 }, colorScheme: theme }); const pg = await ctx.newPage();
     pg.on('pageerror', (error) => results.errors.push({ role: 'público', message: error.message }));
     await pg.goto(bookingLink.url.replace('https://bot.test', base)); await pg.locator('main h2').first().waitFor();
-    await pg.addScriptTag({ content: axe });
+    await pg.evaluate(axe);
     const violations = await pg.evaluate(async () => (await (window as any).axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa', 'best-practice'] } })).violations.map((v: any) => ({ id: v.id, impact: v.impact, nodes: v.nodes.map((n: any) => ({ target: n.target, summary: n.failureSummary })) })));
     if (width === 390 && theme === 'light') results.screens.push({ role: 'público', route: 'reservar', violations });
     const overflow = await pg.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1);
@@ -474,7 +482,7 @@ try {
     const summary = page.getByRole('dialog', { name: 'Importación terminada' });
     await summary.getByText('1 contacto nuevo y 0 actualizados.').waitFor();
     await summary.getByText(/Fila 3: «Cumpleaños» no es válido/).waitFor();
-    await page.addScriptTag({ content: axe });
+    await page.evaluate(axe);
     const violations = await page.evaluate(async () => (await (window as any).axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa', 'best-practice'] } })).violations.map((v: any) => ({ id: v.id, impact: v.impact, nodes: v.nodes.map((n: any) => ({ target: n.target, summary: n.failureSummary })) })));
     results.screens.push({ role: 'admin', route: 'contacts (resumen de importación)', violations });
     await summary.getByRole('button', { name: 'Listo' }).click();
@@ -482,6 +490,7 @@ try {
     await context.close(); checked('Datos de tus clientes: agregar un dato, editarlo en la ficha con su control, insertarlo como variable e importar contactos por CSV desde el celular');
   }
   assert.equal(results.errors.length, 0, JSON.stringify(results.errors));
+  assert.deepEqual(cspViolations, [], 'La CSP bloqueó algo del panel o de una página pública');
   const serious = results.screens.flatMap((screen: any) => screen.violations.filter((v: any) => ['critical', 'serious'].includes(v.impact)).map((v: any) => ({ role: screen.role, route: screen.route, ...v })));
   results.serious = serious;
   fs.writeFileSync(`${output}/results.json`, JSON.stringify(results, null, 2));
