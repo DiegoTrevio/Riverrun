@@ -95,7 +95,8 @@ t('mensajes viejos (reconexión, sincronización) se guardan pero no se responde
   await h.webhook('mensaje de hace 2 horas', { phone: '5215500000007', timestamp: Math.floor(Date.now() / 1000) - 7200 });
   await sleep(500);
   assert.equal(h.sent.filter((x) => x.to === '5215500000007').length, 0);
-  assert.equal((await h.conversationFor('5215500000007')).message_count, 1);
+  const conv = await h.conversationFor('5215500000007');
+  assert.equal((await pool.query(`SELECT count(*)::int AS n FROM messages WHERE conversation_id = $1`, [conv.id])).rows[0].n, 1);
 });
 
 t('si la IA falla en el reintento, se usa la respuesta segura en vez de quedarse callado', async () => {

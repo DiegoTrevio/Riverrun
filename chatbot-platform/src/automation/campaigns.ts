@@ -2,7 +2,7 @@ import { messageQuota } from '../billing/limits.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
 import * as astore from './store.js';
-import { query, queryOne } from '../db.js';
+import { query, queryOne, withTransaction } from '../db.js';
 import { addDays, localParts, nextOpen, zonedToUtc } from './time.js';
 import type { OutboundResult } from './outbound.js';
 import { OwnershipLost } from '../engine/coordination.js';
@@ -64,6 +64,7 @@ export class Campaigns {
     // cada persona de un flujo cuenta como todos sus mensajes (con un tope de 100 y un flujo de 4, 25 personas por día).
     const nextFree = new Map<string, Date>();
     const used = new Map<string, number>();
+    const plan: { conversation_id: string; at: Date }[] = [];
     if (cap) {
       const midnight = zonedToUtc(localParts(new Date(), tz).date, '00:00', tz);
       for (const r of await astore.campaignSentSince(c.account_id, midnight)) used.set(`${r.channel_id}|${localParts(new Date(), tz).date}`, r.n);
@@ -84,15 +85,26 @@ export class Campaigns {
         used.set(key, today + perPerson);
         break;
       }
-      await query(`INSERT INTO campaign_recipients (campaign_id, conversation_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [c.id, r.conversation_id]);
-      await astore.scheduleJob({
-        account_id: c.account_id,
-        type: 'campaign_send',
-        payload: { campaign_id: c.id, conversation_id: r.conversation_id },
-        run_at: at,
-      });
+      plan.push({ conversation_id: r.conversation_id, at });
       nextFree.set(r.channel_id, new Date(at.getTime() + gapMs));
     }
+    // Destinatarios y envíos en lotes y en una sola transacción: o queda toda la campaña programada o nada (y vuelve a
+    // borrador). Cada envío lleva su llave: un reintento no programa dos veces a la misma persona.
+    await withTransaction(async (db) => {
+      for (let i = 0; i < plan.length; i += 1000) {
+        const part = plan.slice(i, i + 1000);
+        const convs = part.map((p) => p.conversation_id);
+        await db.query(`INSERT INTO campaign_recipients (campaign_id, conversation_id) SELECT $1, unnest($2::uuid[]) ON CONFLICT DO NOTHING`, [c.id, convs]);
+        await db.query(
+          `INSERT INTO jobs (account_id, type, payload, run_at, dedupe_key)
+           SELECT $1, 'campaign_send', jsonb_build_object('campaign_id', $2::text, 'conversation_id', conv), at, 'campaign_send:' || $2 || ':' || conv
+           FROM unnest($3::text[], $4::timestamptz[]) AS t(conv, at)
+           ON CONFLICT (dedupe_key) WHERE status = 'pending' AND dedupe_key IS NOT NULL
+           DO UPDATE SET run_at = EXCLUDED.run_at, payload = EXCLUDED.payload`,
+          [c.account_id, c.id, convs, part.map((p) => p.at)],
+        );
+      }
+    });
     await astore.campaignStats(c.id);
     if (!audience.length) await astore.setCampaignStatus(c.id, 'sent');
     await logEvent({ level: 'info', source: 'engine', message: `Campaña "${c.name}" iniciada: ${audience.length} destinatarios`, accountId: c.account_id, channelId: c.channel_id });
@@ -119,8 +131,12 @@ export class Campaigns {
        WHERE campaign_id = $1 AND conversation_id = $2`,
       [c.id, payload.conversation_id, r.sent ? 'sent' : 'skipped', r.sent ? '' : r.reason],
     );
-    const stats = await astore.campaignStats(c.id);
-    if (!stats.pending) {
+    // Se suma este envío a las estadísticas sin recontar toda la campaña. El contador puede quedar alto (un destinatario
+    // que se borró, un proceso que se cayó entre los dos pasos): lo que decide si terminó es que no quede nadie pendiente.
+    const pending = await astore.bumpCampaignStats(c.id, r.sent ? 'sent' : 'skipped');
+    const done = pending === 0 || !(await queryOne(`SELECT 1 FROM campaign_recipients WHERE campaign_id = $1 AND status = 'pending' LIMIT 1`, [c.id]));
+    const stats = done ? await astore.campaignStats(c.id) : null;
+    if (stats && !stats.pending) {
       await astore.setCampaignStatus(c.id, 'sent');
       await logEvent({ level: 'info', source: 'engine', message: `Campaña "${c.name}" terminada: ${stats.sent} enviados, ${stats.skipped} omitidos`, accountId: c.account_id });
     }
