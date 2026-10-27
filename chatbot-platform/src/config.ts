@@ -42,6 +42,13 @@ export const config = {
   port: Number(env('PORT', '3000')),
   host: env('HOST', '0.0.0.0'),
   databaseUrl: env('DATABASE_URL', 'postgres://chatbot:chatbot@localhost:5432/chatbot'),
+  /** Base de datos: tiempos límite (0 = sin límite), tamaño del pool y espera máxima de una migración por un candado. */
+  db: {
+    statementTimeoutMs: Math.max(0, Number(env('DB_STATEMENT_TIMEOUT_MS', '60000')) || 0),
+    idleTxTimeoutMs: Math.max(0, Number(env('DB_IDLE_TX_TIMEOUT_MS', '60000')) || 0),
+    poolMax: Math.max(2, Number(env('DB_POOL_MAX', '')) || Math.max(10, Number(env('QUEUE_CONCURRENCY', '2')) * 3 + 4)),
+    migrationLockTimeoutMs: Math.max(0, Number(env('MIGRATION_LOCK_TIMEOUT_MS', '30000')) || 0),
+  },
   /** URL con la que Evolution API puede llegar a este backend (p.ej. http://backend:3000 en docker). */
   webhookBaseUrl: env('WEBHOOK_BASE_URL', 'http://localhost:3000').replace(/\/$/, ''),
   /**

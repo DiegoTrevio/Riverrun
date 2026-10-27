@@ -1,4 +1,4 @@
-import { query } from './db.js';
+import { deleteInBatches, query } from './db.js';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 export type LogSource = 'webhook' | 'evolution' | 'channel' | 'ai' | 'validator' | 'engine' | 'admin' | 'system';
@@ -35,6 +35,7 @@ function serialize(d: unknown): unknown {
   return d;
 }
 
+/** Borra la bitácora vieja en lotes (es la tabla más grande). Devuelve cuántos registros se borraron. */
 export async function pruneLogs(days: number) {
-  await query(`DELETE FROM event_logs WHERE created_at < now() - ($1 || ' days')::interval`, [String(days)]);
+  return deleteInBatches('event_logs', `created_at < now() - ($1 || ' days')::interval`, [String(days)]);
 }

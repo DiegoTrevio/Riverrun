@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import type pg from 'pg';
-import { query, queryOne, withTransaction } from '../db.js';
+import { deleteInBatches, query, queryOne, updateInBatches, withTransaction } from '../db.js';
 import { IMPORTANT_KINDS } from './alert-groups.js';
 import { logEvent } from '../logs.js';
 import { accountSettings, type AccountSettings, type Appointment, type Automation, type Sequence, type Service, type WaTemplateRef } from './types.js';
@@ -243,9 +243,16 @@ export async function retryJob(id: number, runAt: Date, error: string) {
   await query(`UPDATE jobs SET status = 'pending', run_at = $2, last_error = $3 WHERE id = $1`, [id, runAt, error.slice(0, 1000)]);
 }
 
-export async function cancelJobs(payloadKey: string, value: string, db?: pg.PoolClient) {
-  const sql = `UPDATE jobs SET status = 'cancelled', finished_at = now() WHERE status = 'pending' AND payload->>$1 = $2`;
-  await (db ? db.query(sql, [payloadKey, value]) : query(sql, [payloadKey, value]));
+/** Llaves por las que se cancelan trabajos pendientes: cada una tiene su índice (087 y, la de cobros, 081). */
+export const JOB_KEYS = ['enrollment_id', 'conversation_id', 'appointment_id', 'campaign_id', 'automation_id', 'receivable_id'] as const;
+export type JobKey = (typeof JOB_KEYS)[number];
+
+export async function cancelJobs(payloadKey: JobKey, value: string, db?: pg.PoolClient) {
+  // La llave va escrita (de la lista) y no como parámetro: así la consulta coincide con su índice parcial.
+  if (!JOB_KEYS.includes(payloadKey)) throw new Error(`cancelJobs: llave no permitida (${payloadKey})`);
+  const has = payloadKey === 'receivable_id' ? ` AND payload ? 'receivable_id'` : '';
+  const sql = `UPDATE jobs SET status = 'cancelled', finished_at = now() WHERE status = 'pending'${has} AND payload->>'${payloadKey}' = $1`;
+  await (db ? db.query(sql, [value]) : query(sql, [value]));
 }
 
 /** Tareas "running" de un proceso que murió vuelven a la cola. */
@@ -594,17 +601,21 @@ export async function markNotificationsRead(userId: string, ids?: number[], acco
   await query(`UPDATE notifications SET read_at = now() WHERE user_id = $1 AND read_at IS NULL AND ($2::bigint[] IS NULL OR id = ANY($2)) AND ($3::uuid IS NULL OR account_id = $3)`, [userId, ids?.length ? ids : null, accountId]);
 }
 
+/** Borra en lotes los trabajos terminados, los avisos y las entregas viejas. Devuelve cuántos se borraron. */
 export async function pruneAutomationData(days: number) {
-  await query(`DELETE FROM jobs WHERE status IN ('done','failed','cancelled') AND created_at < now() - ($1 || ' days')::interval`, [String(days)]);
+  const jobs = await deleteInBatches('jobs', `status IN ('done','failed','cancelled') AND created_at < now() - ($1 || ' days')::interval`, [String(days)]);
   // Los urgentes sin leer se conservan hasta un año: nadie los vio todavía. Lo demás, como siempre.
-  await query(`DELETE FROM notifications WHERE created_at < now() - ($1 || ' days')::interval AND NOT (read_at IS NULL AND kind = ANY($2) AND created_at > now() - interval '365 days')`,
+  const notifications = await deleteInBatches('notifications',
+    `created_at < now() - ($1 || ' days')::interval AND NOT (read_at IS NULL AND kind = ANY($2) AND created_at > now() - interval '365 days')`,
     [String(Math.max(days, 60)), IMPORTANT_KINDS]);
-  await query(`DELETE FROM alert_receipts WHERE created_at < now() - ($1 || ' days')::interval`, [String(Math.max(days, 60))]);
+  const receipts = await deleteInBatches('alert_receipts', `created_at < now() - ($1 || ' days')::interval`, [String(Math.max(days, 60))]);
+  return { jobs, notifications, receipts };
 }
 
 /** Borra el detalle técnico (decisión y validación completas) de respuestas viejas de la IA; conserva consumo y costo. */
 export async function pruneAiRunDetail(days: number) {
-  await query(`UPDATE ai_runs SET decision = NULL, validation = NULL WHERE created_at < now() - ($1 || ' days')::interval AND (decision IS NOT NULL OR validation IS NOT NULL)`, [String(days)]);
+  return updateInBatches('ai_runs', 'decision = NULL, validation = NULL',
+    `created_at < now() - ($1 || ' days')::interval AND (decision IS NOT NULL OR validation IS NOT NULL)`, [String(days)]);
 }
 
 /** Cuántos del segmento quedan fuera por no haber aceptado recibir promociones. */

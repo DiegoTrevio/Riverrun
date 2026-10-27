@@ -1,7 +1,7 @@
 /**
  * Privacidad: derechos de las personas (acceso/portabilidad y supresión) y retención automática de datos.
  */
-import { query, queryOne, withTransaction } from './db.js';
+import { deleteInBatches, query, queryOne, withTransaction } from './db.js';
 import { removeInboundFiles } from './channels/media.js';
 import { removeAttachmentFile } from './attachments.js';
 import { logEvent } from './logs.js';
@@ -37,6 +37,8 @@ export async function contactDataExport(contactId: string) {
  */
 export async function eraseContact(contactId: string, guard: { accountId?: string; inactiveSince?: Date } = {}): Promise<{ conversations: number; messages: number } | null> {
   const erased = await withTransaction(async (client) => {
+    // Un contacto con años de historial: sus borrados en cascada pueden pasar del tiempo límite normal.
+    await client.query('SET LOCAL statement_timeout = 0');
     const contact = (await client.query<{ id: string; account_id: string; channel_id: string; external_id: string }>(`SELECT id, account_id, channel_id, external_id FROM contacts WHERE id = $1 FOR UPDATE`, [contactId])).rows[0];
     if (!contact || (guard.accountId && contact.account_id !== guard.accountId)) return null;
     // Desde la retención: si el contacto volvió a escribir mientras se decidía, no se borra.
@@ -86,11 +88,12 @@ export async function eraseContact(contactId: string, guard: { accountId?: strin
  */
 export async function applyRetention(now = new Date()): Promise<{ accounts: number; messages: number; contacts: number }> {
   await query(`DELETE FROM query_embedding_cache WHERE ctid IN (SELECT ctid FROM query_embedding_cache WHERE expires_at<$1 LIMIT 10000)`,[now]);
-  await query(`DELETE FROM embedding_usage WHERE day<($1::timestamptz AT TIME ZONE 'UTC')::date-7`,[now]);
-  await query(`DELETE FROM inbound_receipts WHERE state='done' AND created_at<$1::timestamptz-interval '30 days'`,[now]);
+  // En lotes: son tablas que crecen con cada mensaje y cada envío.
+  await deleteInBatches('embedding_usage', `day<($1::timestamptz AT TIME ZONE 'UTC')::date-7`, [now]);
+  await deleteInBatches('inbound_receipts', `state='done' AND created_at<$1::timestamptz-interval '30 days'`, [now]);
   // Ids de eventos de Zernio: se guardan lo mismo que se aceptan (35 días) para que un evento repetido no cuente dos veces.
-  await query(`DELETE FROM zernio_events WHERE state IN ('done','ignored','dead') AND received_at<$1::timestamptz-interval '35 days'`,[now]);
-  await query(`DELETE FROM webhook_deliveries WHERE created_at < $1`, [new Date(now.getTime() - 30 * 86400_000)]); // la bitácora de entregas dura 30 días
+  await deleteInBatches('zernio_events', `state IN ('done','ignored','dead') AND received_at<$1::timestamptz-interval '35 days'`, [now]);
+  await deleteInBatches('webhook_deliveries', `created_at < $1`, [new Date(now.getTime() - 30 * 86400_000)]); // la bitácora de entregas dura 30 días
   // Estadísticas de las redes (totales por día, sin datos de personas): poco más de un año.
   await query(`DELETE FROM social_account_stats WHERE day < ($1::timestamptz AT TIME ZONE 'UTC')::date - 400`, [now]);
   const accounts = await query<{ id: string; name: string; settings: unknown }>(`SELECT id, name, settings FROM accounts WHERE active`);
