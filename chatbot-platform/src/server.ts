@@ -10,9 +10,8 @@ import { migrate, pool } from './db.js';
 import { gracefulShutdown } from './shutdown.js';
 import { startLifecycle } from './lifecycle.js';
 import { startMonitor } from './monitor.js';
-import { logEvent, pruneLogs } from './logs.js';
-import { applyRetention } from './privacy.js';
-import { pruneAiRunDetail, pruneAutomationData } from './automation/store.js';
+import { logEvent } from './logs.js';
+import { runMaintenance } from './maintenance.js';
 import { KnowledgeWorker } from './engine/knowledge-preparation.js';
 import { startWatchdog } from './watchdog.js';
 import { startWhatsappWatch } from './whatsapp-watch.js';
@@ -87,10 +86,8 @@ async function main() {
   setInterval(() => void pollEmailChannels(service).catch((e) => logEvent({ level: 'error', source: 'channel', message: `Lectura de correo: ${e?.message ?? e}` })), config.emailPollSeconds * 1000).unref();
 
   setInterval(() => {
-    applyRetention().catch((e) => logEvent({ level: 'error', source: 'system', message: `Retención de datos: ${e?.message ?? e}` }));
-    pruneLogs(config.logRetentionDays).catch(() => undefined);
-    pruneAutomationData(config.logRetentionDays).catch(() => undefined);
-    pruneAiRunDetail(config.aiRunDetailDays).catch(() => undefined);
+    // Retención y limpieza en lotes, en una sola instancia (las demás se saltan esta vuelta).
+    runMaintenance().catch((e) => logEvent({ level: 'error', source: 'system', message: `Mantenimiento de la base: ${e?.message ?? e}` }));
     // Cotizaciones cuya vigencia ya pasó (con la fecha de cada negocio).
     void import('./quotes/agent.js').then(({ expireDueQuotes }) => expireDueQuotes()).catch((e) => logEvent({ level: 'error', source: 'system', message: `Vencimiento de cotizaciones: ${e?.message ?? e}` }));
   }, 6 * 3600 * 1000).unref();

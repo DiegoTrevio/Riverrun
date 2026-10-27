@@ -27,6 +27,8 @@ const save = async (channel: Channel, values: Record<string, unknown>) =>
  */
 export async function accountProfile(accountId: string, channel?: Pick<Channel, 'config'>): Promise<string> {
   return withTransaction(async (db) => {
+    // Espera a Zernio dentro de la transacción (con reintentos, más de un minuto): que no la cierre el tiempo límite.
+    await db.query('SET LOCAL idle_in_transaction_session_timeout = 0');
     await db.query(`SELECT pg_advisory_xact_lock(hashtext('zernio-profile:' || $1))`, [accountId]);
     const acc = (await db.query(`SELECT name, zernio_profile_id FROM accounts WHERE id = $1`, [accountId])).rows[0];
     if (!acc) throw new Error('La cuenta no existe');

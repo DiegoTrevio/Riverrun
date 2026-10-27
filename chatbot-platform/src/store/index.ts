@@ -76,7 +76,11 @@ export async function markOnboarding(accountId: string, steps: Record<string, bo
 }
 
 export async function deleteAccount(id: string) {
-  await query('DELETE FROM accounts WHERE id = $1', [id]);
+  // Borra en cascada todo lo de la cuenta (mensajes, bitácora…): en una cuenta grande pasa del tiempo límite normal.
+  await withTransaction(async (db) => {
+    await db.query('SET LOCAL statement_timeout = 0');
+    await db.query('DELETE FROM accounts WHERE id = $1', [id]);
+  });
   await removeInboundAccountFiles(id);
   await removeAccountAttachments(id);
 }

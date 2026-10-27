@@ -84,7 +84,7 @@ Cada hallazgo crítico o alto se comprobó en el código. Los que no se sostuvie
 
 ### Base de datos y rendimiento
 
-**D1 · Alto · `messages` no tiene índice por fecha.**
+**D1 · Alto · `messages` no tiene índice por fecha.** ✅ Corregido en el PR de base de datos (rama `audit-db-indices`): índice BRIN por `created_at`.
 - **Causa:** solo tiene `(conversation_id, id)`.
 - **Escenario:**
   - Las estadísticas (unas 8 consultas por página), los mensajes de 24 h por agente en el panel del superadmin, el consumo de Zernio del mes y la retención recorren todo el historial de la cuenta, o de la plataforma.
@@ -94,15 +94,15 @@ Cada hallazgo crítico o alto se comprobó en el código. Los que no se sostuvie
 **D2 · Alto (a escala) · `GET /api/contacts` calcula a todos los contactos de la cuenta en cada búsqueda, y pagina con OFFSET.** (`src/routes/contact-workspace.ts:15-34`)
 - **Arreglo:** filtrar antes de agrupar, y paginar por cursor.
 
-**D3 · Alto · `pruneLogs` borra en una sola sentencia todos los `event_logs` viejos, sin candado.** (`src/logs.ts:39`)
+**D3 · Alto · `pruneLogs` borra en una sola sentencia todos los `event_logs` viejos, sin candado.** (`src/logs.ts:39`) ✅ Corregido en el PR de base de datos (rama `audit-db-indices`): lotes de 5,000 y una sola instancia.
 - **Escenario:** es la tabla de más volumen. Cada 6 horas borra millones de filas a la vez, con picos de WAL y de vacuum, y lo corre cada instancia al mismo tiempo.
 - **Arreglo:** borrar en lotes de 5,000, con candado consultivo.
 
-**D4 · Alto · `pruneAutomationData` borra los `jobs` terminados y los `notifications` viejos sin un índice que los encuentre, en una sola sentencia.** (`src/automation/store.ts:576-577`)
+**D4 · Alto · `pruneAutomationData` borra los `jobs` terminados y los `notifications` viejos sin un índice que los encuentre, en una sola sentencia.** (`src/automation/store.ts:576-577`) ✅ Corregido en el PR de base de datos (rama `audit-db-indices`): índices por fecha y borrado en lotes.
 - **Escenario:** las campañas crean un trabajo por destinatario, así que se recorre toda la tabla cada vez.
 - **Arreglo:** índices parciales por `created_at`, y borrado en lotes.
 
-**D5 · (base de D1) El sistema de migraciones corre cada archivo en una transacción**, así que no permite `CREATE INDEX CONCURRENTLY`. (`src/db.ts:68-82`)
+**D5 · (base de D1) El sistema de migraciones corre cada archivo en una transacción**, así que no permite `CREATE INDEX CONCURRENTLY`. (`src/db.ts:68-82`) ✅ Corregido en el PR de base de datos (rama `audit-db-indices`): encabezado `-- migrate:no-transaction` y `lock_timeout` en las demás.
 - **Arreglo:** un encabezado `-- migrate:no-transaction` para las migraciones de índices en tablas grandes.
 
 ### Panel y accesibilidad
@@ -170,16 +170,16 @@ Cada hallazgo crítico o alto se comprobó en el código. Los que no se sostuvie
 - **Medio:**
   - Orden de candados invertido entre contacto y conversación, que puede causar deadlocks.
   - La bandeja hace subconsultas por fila y no usa su índice para ordenar.
-  - `cancelJobs` por `enrollment_id` y `conversation_id` no tiene índice.
+  - ✅ Corregido en el PR de base de datos: `cancelJobs` por `enrollment_id` y `conversation_id` no tenía índice.
   - El lanzamiento de una campaña es N+1, no es atómico y recalcula las estadísticas en cada envío.
-  - La recuperación de trabajos colgados no tiene índice.
+  - ✅ Corregido en el PR de base de datos: la recuperación de trabajos colgados no tenía índice.
   - El borrado de una cuenta es una sola transacción gigante.
   - La conexión se queda tomada durante llamadas externas.
   - La exportación ordena toda la cuenta en cada lote.
-  - Faltan índices de monitoreo en `event_logs`.
+  - ✅ Corregido en el PR de base de datos: faltaban índices de monitoreo en `event_logs` (ahora, errores por fecha).
   - Las migraciones antiguas tienen CHECK y FK sin `NOT VALID`.
 - **Bajo:**
-  - Sin `statement_timeout` ni `idle_in_transaction_session_timeout`.
+  - ✅ Corregido en el PR de base de datos: sin `statement_timeout` ni `idle_in_transaction_session_timeout` (ahora 60 s cada uno, configurables).
   - Reiniciar conversaciones va una por una.
   - `fillfactor` en `conversations`.
 

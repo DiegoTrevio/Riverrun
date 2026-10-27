@@ -268,6 +268,8 @@ export async function applyState(state: SubscriptionState, now = new Date()): Pr
   // uno a la vez para que los correos y avisos no se dupliquen. Las demás cuentas no esperan.
   const later: Later = [];
   const result = await withTransaction(async (client) => {
+    // Puede esperar al proveedor de cobro dentro de la transacción: que no la cierre el tiempo límite de inactividad.
+    await client.query('SET LOCAL idle_in_transaction_session_timeout = 0');
     await client.query(`SELECT pg_advisory_xact_lock(hashtext('billing-apply:' || $1))`, [accountId]);
     return applyStateLocked({ ...state, accountId }, now, later);
   });

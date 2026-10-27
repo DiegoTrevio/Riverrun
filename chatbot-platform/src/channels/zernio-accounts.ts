@@ -127,6 +127,8 @@ async function tenantProfile(accountId: string, profileId: string): Promise<bool
 export async function whatsappProfileFor(accountId: string): Promise<string> {
   const primary = await accountProfile(accountId);
   return withTransaction(async (db) => {
+    // Espera a Zernio dentro de la transacción: que no la cierre el tiempo límite de transacción inactiva.
+    await db.query('SET LOCAL idle_in_transaction_session_timeout = 0');
     await db.query(`SELECT pg_advisory_xact_lock(hashtext('zernio-wa-profile:' || $1))`, [accountId]);
     const profiles = (await db.query<{ profile_id: string }>(
       `SELECT $2::text AS profile_id, 0 AS ord UNION ALL SELECT profile_id, 1 FROM zernio_profiles WHERE account_id = $1 AND profile_id <> $2 ORDER BY ord, profile_id`, [accountId, primary])).rows;
