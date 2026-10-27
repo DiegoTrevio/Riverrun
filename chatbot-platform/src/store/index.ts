@@ -1,7 +1,7 @@
 import { evaluatedChatbot, evaluatedImages } from '../engine/agent-snapshot.js';
 import crypto from 'node:crypto';
 import { enqueue } from '../engine/queue.js';
-import { query, queryOne, withTransaction } from '../db.js';
+import { deleteInBatches, query, queryOne, withTransaction } from '../db.js';
 import { removeInboundAccountFiles, type StoredMedia } from '../channels/media.js';
 import { removeAccountAttachments } from '../attachments.js';
 import { perRequestKeys } from '../engine/questions.js';
@@ -76,7 +76,13 @@ export async function markOnboarding(accountId: string, steps: Record<string, bo
 }
 
 export async function deleteAccount(id: string) {
-  // Borra en cascada todo lo de la cuenta (mensajes, bitácora…): en una cuenta grande pasa del tiempo límite normal.
+  // Lo más pesado primero, en lotes (sin una transacción gigante ni un pico de escritura); lo demás cae en cascada con
+  // la cuenta. Ya se decidió borrarla: si algo falla a la mitad, el siguiente intento sigue donde se quedó.
+  await deleteInBatches('messages', `conversation_id IN (SELECT id FROM conversations WHERE account_id = $1)`, [id]);
+  await deleteInBatches('event_logs', 'account_id = $1', [id]);
+  await deleteInBatches('ai_runs', 'account_id = $1', [id]);
+  await deleteInBatches('jobs', 'account_id = $1', [id]);
+  // El resto en cascada con la cuenta: sin el tiempo límite normal por si queda mucho.
   await withTransaction(async (db) => {
     await db.query('SET LOCAL statement_timeout = 0');
     await db.query('DELETE FROM accounts WHERE id = $1', [id]);
@@ -752,11 +758,15 @@ export interface ConversationRequest {
  */
 export async function beginRequest(conversationId: string, o: { reason: RequestReason; step?: number; since?: Date }): Promise<number> {
   return withTransaction(async (client) => {
+    // Mismo orden de candados que el resto (primero el contacto, luego la conversación): al revés, dos procesos que
+    // tocan la misma conversación podían bloquearse mutuamente. El contacto de una conversación no cambia.
+    const contactId = (await client.query('SELECT contact_id FROM conversations WHERE id = $1', [conversationId])).rows[0]?.contact_id as string | undefined;
+    if (!contactId) return 0;
+    const contact = (await client.query('SELECT data FROM contacts WHERE id = $1 FOR UPDATE', [contactId])).rows[0] as { data: Record<string, string> } | undefined;
     const conv = (await client.query('SELECT * FROM conversations WHERE id = $1 FOR UPDATE', [conversationId])).rows[0] as Conversation | undefined;
     if (!conv) return 0;
     const botRow = conv.chatbot_id ? (await client.query('SELECT * FROM chatbots WHERE id = $1', [conv.chatbot_id])).rows[0] : null;
     const keys = botRow ? perRequestKeys(hydrateChatbot(botRow)) : [];
-    const contact = (await client.query('SELECT data FROM contacts WHERE id = $1 FOR UPDATE', [conv.contact_id])).rows[0] as { data: Record<string, string> } | undefined;
     const data = contact?.data ?? {};
     const answers = JSON.stringify(Object.fromEntries(keys.filter((k) => data[k]).map((k) => [k, data[k]])));
     const last = ((await client.query('SELECT max(number)::int AS n FROM conversation_requests WHERE conversation_id = $1', [conv.id])).rows[0]?.n as number | null) ?? 0;

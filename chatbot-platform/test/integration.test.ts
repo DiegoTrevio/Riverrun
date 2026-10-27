@@ -233,7 +233,8 @@ t('mensajes duplicados del webhook se ignoran', async () => {
   await waitFor(() => sent.length === 1);
   await new Promise((r) => setTimeout(r, 300));
   const convs = (await authed('GET', `/api/conversations?chatbot_id=${botId}&search=55556666`)).json();
-  assert.equal(convs[0].message_count, 2);
+  const count = (await pool.query(`SELECT count(*)::int AS n FROM messages WHERE conversation_id = $1`, [convs[0].id])).rows[0].n;
+  assert.equal(count, 2, 'el mensaje repetido se guarda una sola vez');
 });
 
 t('chatbot inactivo guarda pero no responde', async () => {

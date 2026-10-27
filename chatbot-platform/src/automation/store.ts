@@ -587,6 +587,16 @@ export async function campaignStats(id: string) {
   return stats;
 }
 
+/** Suma un envío a las estadísticas de la campaña (un pendiente menos). Devuelve cuántos quedan pendientes. */
+export async function bumpCampaignStats(id: string, outcome: 'sent' | 'skipped' | 'failed') {
+  const row = await queryOne<{ pending: number }>(
+    `UPDATE campaigns SET stats = stats || jsonb_build_object('pending', greatest(coalesce((stats->>'pending')::int, 0) - 1, 0), $2::text, coalesce((stats->>$2)::int, 0) + 1), updated_at = now()
+     WHERE id = $1 RETURNING (stats->>'pending')::int AS pending`,
+    [id, outcome],
+  );
+  return row?.pending ?? 0;
+}
+
 /* ------------------------------ Notificaciones del usuario ------------------------------ */
 
 export async function listNotifications(userId: string, limit = 50, accountId: string | null = null, kinds: string[] | null = null) {

@@ -82,7 +82,7 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
       try { raw = JSON.parse(Buffer.from(q.cursor.slice(0, 512), 'base64url').toString()); } catch { throw new HttpError(400, 'El cursor de conversaciones no es válido'); }
       const cursor = parse(z.object({ at: z.string().datetime({ offset: true }), id: z.string().uuid() }), raw);
       params.push(cursor.at, cursor.id);
-      where.push(`(coalesce(c.last_message_at, c.created_at), c.id) < ($${params.length - 1}::timestamptz, $${params.length}::uuid)`);
+      where.push(`(c.last_message_at, c.id) < ($${params.length - 1}::timestamptz, $${params.length}::uuid)`);
     }
     const paged = q.page === 'true';
     params.push(limit + (paged ? 1 : 0));
@@ -90,18 +90,18 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
       `SELECT c.id, c.account_id, c.chatbot_id, c.channel_id, c.status, c.handoff_reason, c.last_message_at, c.created_at, c.assigned_user_id, au.name AS assigned_name, au.email AS assigned_email,
               ct.id AS contact_id, ct.name, ct.push_name, ct.phone, ct.external_id,
               ch.type AS channel_type, ch.config->>'platform' AS channel_platform, ch.name AS channel_name, b.name AS chatbot_name, a.name AS account_name,
-              ${paged ? `to_char(coalesce(c.last_message_at, c.created_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS page_cursor_at,` : ''}
-              (SELECT content FROM messages m WHERE m.conversation_id = c.id ORDER BY id DESC LIMIT 1) AS last_message,
-              (SELECT direction FROM messages m WHERE m.conversation_id = c.id ORDER BY id DESC LIMIT 1) AS last_direction,
-              (SELECT count(*)::int FROM messages m WHERE m.conversation_id = c.id) AS message_count
+              ${paged ? `to_char(c.last_message_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS page_cursor_at,` : ''}
+              lm.content AS last_message, lm.direction AS last_direction
        FROM conversations c
          JOIN contacts ct ON ct.id = c.contact_id
          JOIN channels ch ON ch.id = c.channel_id
          JOIN accounts a ON a.id = c.account_id
          LEFT JOIN chatbots b ON b.id = c.chatbot_id
          LEFT JOIN users au ON au.id = c.assigned_user_id
+         -- El último mensaje, una sola búsqueda por conversación (last_message_at nunca es nulo: ordena con su índice).
+         LEFT JOIN LATERAL (SELECT content, direction FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1) lm ON true
        ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-       ORDER BY coalesce(c.last_message_at, c.created_at) DESC, c.id DESC LIMIT $${params.length}`,
+       ORDER BY c.last_message_at DESC, c.id DESC LIMIT $${params.length}`,
       params,
     );
     if (!paged) return rows;

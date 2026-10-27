@@ -91,7 +91,7 @@ Cada hallazgo crítico o alto se comprobó en el código. Los que no se sostuvie
   - Con millones de mensajes, esas páginas tardan segundos o más.
 - **Arreglo:** índice BRIN en `messages (created_at)`, que es barato porque la tabla solo crece. Requiere el modo de migración sin transacción (D5).
 
-**D2 · Alto (a escala) · `GET /api/contacts` calcula a todos los contactos de la cuenta en cada búsqueda, y pagina con OFFSET.** (`src/routes/contact-workspace.ts:15-34`)
+**D2 · Alto (a escala) · `GET /api/contacts` calcula a todos los contactos de la cuenta en cada búsqueda, y pagina con OFFSET.** (`src/routes/contact-workspace.ts:15-34`) ✅ Corregido en el PR de consultas (rama `audit-db-consultas`): filtra antes de calcular, y pagina por cursor.
 - **Arreglo:** filtrar antes de agrupar, y paginar por cursor.
 
 **D3 · Alto · `pruneLogs` borra en una sola sentencia todos los `event_logs` viejos, sin candado.** (`src/logs.ts:39`) ✅ Corregido en el PR de base de datos (rama `audit-db-indices`): lotes de 5,000 y una sola instancia.
@@ -168,14 +168,14 @@ Cada hallazgo crítico o alto se comprobó en el código. Los que no se sostuvie
 
 **Base de datos**
 - **Medio:**
-  - Orden de candados invertido entre contacto y conversación, que puede causar deadlocks.
-  - La bandeja hace subconsultas por fila y no usa su índice para ordenar.
+  - ✅ Corregido en el PR de consultas: orden de candados invertido entre contacto y conversación (`beginRequest` ahora toma primero el contacto).
+  - ✅ Corregido en el PR de consultas: la bandeja hacía subconsultas por fila y no usaba su índice para ordenar.
   - ✅ Corregido en el PR de base de datos: `cancelJobs` por `enrollment_id` y `conversation_id` no tenía índice.
-  - El lanzamiento de una campaña es N+1, no es atómico y recalcula las estadísticas en cada envío.
+  - ✅ Corregido en el PR de consultas: el lanzamiento de una campaña era N+1, no atómico y recalculaba las estadísticas en cada envío.
   - ✅ Corregido en el PR de base de datos: la recuperación de trabajos colgados no tenía índice.
-  - El borrado de una cuenta es una sola transacción gigante.
+  - ✅ Corregido en el PR de consultas: el borrado de una cuenta era una sola transacción gigante (ahora lo pesado va en lotes).
   - La conexión se queda tomada durante llamadas externas.
-  - La exportación ordena toda la cuenta en cada lote.
+  - ✅ Corregido en el PR de consultas: la exportación ordenaba toda la cuenta en cada lote (índice por cuenta y fecha de alta).
   - ✅ Corregido en el PR de base de datos: faltaban índices de monitoreo en `event_logs` (ahora, errores por fecha).
   - Las migraciones antiguas tienen CHECK y FK sin `NOT VALID`.
 - **Bajo:**

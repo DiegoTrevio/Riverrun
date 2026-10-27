@@ -12,13 +12,13 @@ export async function viewContacts(root,params) {
  const model={view:params.get('view')||'all',search:params.get('search')||'',tag:params.get('tag')||''};
  const filters=()=>Object.fromEntries(Object.entries(model).filter(([,v])=>v));
  const apply=()=>{location.hash=`#/contacts?${new URLSearchParams(filters())}`;};
- const rows=h('tbody'),status=h('p',{class:'help',role:'status'});let offset=0,busy=false;
+ const rows=h('tbody'),status=h('p',{class:'help',role:'status'});let cursor=null,pages=0,busy=false;
  const more=h('button',{hidden:true,onclick:()=>load(true)},'Cargar más contactos');
  const load=async(append=false)=>{
   if(busy)return;busy=true;more.disabled=true;
   try{
-   const page=await api('GET',withAcct(`/api/contacts?${new URLSearchParams({...filters(),offset:append?offset:0})}`));
-   offset=page.next_offset;more.hidden=!page.has_more;
+   const page=await api('GET',withAcct(`/api/contacts?${new URLSearchParams({...filters(),...(append&&cursor?{cursor}:{})})}`));
+   cursor=page.next_cursor;pages=append?pages+1:1;more.hidden=!page.has_more;
    const items=page.items.map(c=>h('tr',{},h('td',{},h('a',{href:`#/contact/${c.id}`},h('strong',{},c.name)),h('div',{class:'small muted'},c.phone?fmtPhone(c.phone):'Sin teléfono'),isSuper()&&!state.accountId?h('div',{class:'small muted'},c.account_name):null),
     h('td',{},`${c.channels} ${c.channels===1?'canal':'canales'}`,h('div',{class:'small muted'},c.tags.join(', '))),
     h('td',{},...(c.pending?[h('span',{class:'badge orange'},'Con pendientes')]:[]),...(c.unassigned?[h('span',{class:'badge'},'Sin asignar')]:[]),c.next_appointment?h('div',{class:'small'},`Cita: ${fmtDate(c.next_appointment)}`):null),
@@ -41,7 +41,8 @@ export async function viewContacts(root,params) {
   h('div',{class:'card stack'},h('div',{class:'row'},field('Mostrar',select(model,'view',[['all','Todos'],['pending','Con pendientes'],['unassigned','Sin asignar'],['upcoming','Con citas próximas']],apply)),
    field('Buscar nombre o teléfono',h('input',{type:'search',value:model.search,onchange:e=>{model.search=e.target.value;apply();}})),field('Etiqueta',h('input',{value:model.tag,onchange:e=>{model.tag=e.target.value;apply();}}))),saved),status,
   h('div',{class:'card'},h('table',{class:'responsive-table'},h('thead',{},h('tr',{},...['Persona','Canales y etiquetas','Qué sigue','Última actividad',''].map(s=>h('th',{},s)))),rows)),more);
- await load();poll(()=>offset<=50?load():undefined,10000,root);
+ // Se refresca sola mientras solo está la primera página (con más cargadas, se perdería lo que ya se ve).
+ await load();poll(()=>pages<=1?load():undefined,10000,root);
 }
 
 export async function viewContact(root,id) {
