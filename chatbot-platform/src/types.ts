@@ -566,6 +566,8 @@ export const ChannelConfigSchemas = {
     color: z.string().regex(/^#[0-9a-fA-F]{6}$/, 'Color en formato #RRGGBB').default('#128c7e'),
     welcome_message: z.string().max(500).default('¡Hola! 👋 ¿En qué te puedo ayudar?'),
     launcher_text: z.string().max(40).default('Chatea con nosotros'),
+    /** Modo de color del widget: según el dispositivo del visitante, o fijo en claro u oscuro (para combinar con el sitio). */
+    theme: z.enum(['auto', 'light', 'dark']).default('auto'),
     /** Dominios que pueden insertar el chat (vacío = cualquiera). */
     allowed_origins: z.array(z.string().max(200)).default([]),
   }),

@@ -149,6 +149,30 @@ try {
   }
   checked('Widget: en español, la conversación se anuncia con quién habla y el campo muestra su foco');
 
+  // 4. Modo de color del widget: automático sigue al dispositivo; claro y oscuro lo fijan. Contraste y foco en cada uno.
+  const panelBg = async (theme: string, scheme: 'light' | 'dark') => {
+    await h.authed('PUT', `/api/channels/${web.id}`, { config: { title: 'Hotel Palmas', color: '#7dd3fc', welcome_message: 'Hola, ¿en qué te ayudo?', theme } });
+    const ctx = await browser!.newContext({ viewport: { width: 390, height: 900 }, colorScheme: scheme }); const page = await ctx.newPage();
+    page.on('pageerror', (error) => results.errors.push({ route: 'widget', message: error.message }));
+    await page.route(`${base}/sitio-del-cliente`, (route) => route.fulfill({ contentType: 'text/html', body: `<!doctype html><html lang="en"><head><title>Hotel Palmas</title></head><body><main><h1>Hotel Palmas</h1></main><script src="/widget.js" data-channel="${web.webhook_token}" async></script></body></html>` }));
+    await page.goto(`${base}/sitio-del-cliente`);
+    await page.getByRole('button', { name: /Chatea con nosotros/ }).click();
+    await page.getByRole('log', { name: 'Conversación' }).locator('.msg').first().waitFor();
+    await audit(page, `widget · ${theme} · sistema ${scheme}`, { theme: scheme });
+    const box = page.getByRole('textbox', { name: 'Mensaje' });
+    await page.keyboard.press('Shift+Tab'); await page.keyboard.press('Tab');
+    assert.notEqual(await box.evaluate((el: any) => getComputedStyle(el).outlineStyle), 'none', `contorno del campo (${theme}, ${scheme})`);
+    const bg = await page.getByRole('log', { name: 'Conversación' }).evaluate((l: any) => getComputedStyle(l.closest('.panel')).backgroundColor);
+    await ctx.close();
+    return bg;
+  };
+  const DARK_PANEL = 'rgb(22, 27, 38)';
+  assert.equal(await panelBg('auto', 'dark'), DARK_PANEL, 'automático + dispositivo oscuro = oscuro');
+  assert.notEqual(await panelBg('auto', 'light'), DARK_PANEL, 'automático + dispositivo claro = claro');
+  assert.notEqual(await panelBg('light', 'dark'), DARK_PANEL, 'fijo en claro aunque el dispositivo esté oscuro');
+  assert.equal(await panelBg('dark', 'light'), DARK_PANEL, 'fijo en oscuro aunque el dispositivo esté claro');
+  checked('Widget: modo de color automático, claro y oscuro, cada uno sin hallazgos serios y con el foco visible');
+
   assert.equal(results.errors.length, 0, JSON.stringify(results.errors));
   const serious = results.screens.flatMap((s: any) => s.violations.filter((v: any) => ['critical', 'serious'].includes(v.impact)).map((v: any) => ({ route: s.route, width: s.width, theme: s.theme, ...v })));
   results.serious = serious;
