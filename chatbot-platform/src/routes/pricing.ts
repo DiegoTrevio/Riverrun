@@ -7,6 +7,7 @@ import { brandByDomain, hostOf, publicBrand } from '../brands.js';
 import { config } from '../config.js';
 import { offeredPlans } from './billing.js';
 import { privacyUrl } from './self-service.js';
+import { publicPalette } from '../public-colors.js';
 
 const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 const amount = (n: number) => new Intl.NumberFormat('es-MX', { minimumFractionDigits: n % 1 ? 2 : 0, maximumFractionDigits: 2 }).format(n);
@@ -46,7 +47,8 @@ function planCard(p: Offered, o: { signup: boolean; trialDays: number }) {
 
 export function pricingPage(o: { brand: ReturnType<typeof publicBrand>; plans: Offered[]; trialDays: number; signup: boolean; support: string; terms: string; privacy: string }) {
   const name = o.brand.name;
-  const accent = HEX.test(o.brand.color) ? o.brand.color : '';
+  // Colores con contraste AA en los dos temas, también con el color de una marca blanca.
+  const palette = publicPalette(HEX.test(o.brand.color) ? o.brand.color : '');
   const contact = o.support ? `Escríbenos a <strong>${esc(o.support)}</strong>.` : '';
   const faq: [string, string][] = [
     ...(o.trialDays > 0 ? [['¿Necesito tarjeta para probar?', `No. Tienes ${o.trialDays} días gratis para configurar y probar tu asistente; eliges plan cuando quieras.`] as [string, string]] : []),
@@ -62,11 +64,11 @@ export function pricingPage(o: { brand: ReturnType<typeof publicBrand>; plans: O
 <title>Precios — ${esc(name)}</title>
 <meta name="description" content="Planes y precios de ${esc(name)}: tu asistente responde por WhatsApp las 24 horas." />
 <style>
-  :root { --accent: ${accent || '#155eef'}; --text: #101828; --muted: #475467; --border: #e4e7ec; --bg: #f2f4f7; --panel: #fff; }
-  @media (prefers-color-scheme: dark) { :root { ${accent ? '' : '--accent: #2f6fed;'} --text: #e4e7ec; --muted: #98a2b3; --border: #252b37; --bg: #0c111d; --panel: #161b26; } }
+  :root { ${palette.light} --text: #101828; --muted: #475467; --border: #e4e7ec; --bg: #f2f4f7; --panel: #fff; }
+  @media (prefers-color-scheme: dark) { :root { ${palette.dark} --text: #e4e7ec; --muted: #98a2b3; --border: #252b37; --bg: #0c111d; --panel: #161b26; } }
   * { box-sizing: border-box; }
   body { margin: 0; font: 16px/1.55 Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: var(--text); background: var(--bg); }
-  main { max-width: 1040px; margin: 0 auto; padding: 32px 16px 64px; }
+  main { max-width: 1040px; margin: 0 auto; padding: 32px 16px 24px; }
   .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; margin-bottom: 28px; }
   .brand img { height: 36px; width: auto; }
   h1 { font-size: 32px; margin: 0 0 8px; }
@@ -78,11 +80,11 @@ export function pricingPage(o: { brand: ReturnType<typeof publicBrand>; plans: O
   .price strong { font-size: 32px; }
   .price span { color: var(--muted); }
   .plan ul { padding-left: 20px; margin: 8px 0 16px; flex: 1; }
-  .btn { display: block; text-align: center; background: var(--accent); color: #fff; padding: 11px 16px; border-radius: 8px; text-decoration: none; font-weight: 600; }
-  .btn.ghost { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+  .btn { display: block; text-align: center; background: var(--accent); color: var(--accent-ink); padding: 11px 16px; border-radius: 8px; text-decoration: none; font-weight: 600; }
+  .btn.ghost { background: transparent; color: var(--link); border: 1px solid var(--link); }
   .hero { margin: 0 0 28px; }
   .hero .btn { display: inline-block; padding: 12px 22px; }
-  .btn:focus-visible, a:focus-visible, summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .btn:focus-visible, a:focus-visible, summary:focus-visible { outline: 3px solid var(--link); outline-offset: 2px; }
   .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .muted { color: var(--muted); }
   .small { font-size: 14px; margin: 0; }
@@ -90,7 +92,7 @@ export function pricingPage(o: { brand: ReturnType<typeof publicBrand>; plans: O
   section.faq h2 { font-size: 22px; margin: 0 0 4px; }
   details { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
   summary { cursor: pointer; font-weight: 600; }
-  footer { margin-top: 40px; color: var(--muted); font-size: 14px; display: flex; gap: 16px; flex-wrap: wrap; }
+  footer { max-width: 1040px; margin: 16px auto 0; padding: 0 16px 48px; color: var(--muted); font-size: 14px; display: flex; gap: 16px; flex-wrap: wrap; }
   footer a { color: inherit; }
 </style>
 </head>
@@ -108,7 +110,8 @@ export function pricingPage(o: { brand: ReturnType<typeof publicBrand>; plans: O
     <h2 id="faq">Preguntas frecuentes</h2>
     ${faq.map(([q, a]) => `<details><summary>${esc(q)}</summary><p>${esc(a)}</p></details>`).join('\n    ')}
   </section>
-  <footer>
+</main>
+<footer>
     <a href="/#/login">Ya tengo cuenta</a>
     ${o.terms ? `<a href="${esc(o.terms)}">Términos</a>` : ''}
     ${o.privacy ? `<a href="${esc(o.privacy)}">Aviso de privacidad</a>` : ''}
@@ -116,8 +119,7 @@ export function pricingPage(o: { brand: ReturnType<typeof publicBrand>; plans: O
     <a href="/estado">Estado del servicio</a>
     <a href="/contacto">Escríbenos</a>
     ${o.support ? `<span>Contacto: ${esc(o.support)}</span>` : ''}
-  </footer>
-</main>
+</footer>
 </body>
 </html>`;
 }

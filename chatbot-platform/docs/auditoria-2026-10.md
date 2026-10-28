@@ -112,7 +112,7 @@ Cada hallazgo crítico o alto se comprobó en el código. Los que no se sostuvie
 - **Escenario:** quien navega con teclado o lector de pantalla pierde su lugar.
 - **Arreglo:** devolver el foco al mismo enlace tras recargar, como ya se hace con el scroll.
 
-**A2 · Alto · Los mensajes nuevos del chat no se anuncian, ni en el panel ni en el widget.** (`conversations.js:250,394`; `widget.js:115,184`) ✅ Corregido en el PR de accesibilidad del panel (rama `audit-a11y-panel`) en lo del panel: `role="log"`, los mensajes nuevos se agregan y cada uno dice quién habla. El widget va en el PR de accesibilidad pública.
+**A2 · Alto · Los mensajes nuevos del chat no se anuncian, ni en el panel ni en el widget.** (`conversations.js:250,394`; `widget.js:115,184`) ✅ Corregido en el PR de accesibilidad del panel (rama `audit-a11y-panel`) en lo del panel: `role="log"`, los mensajes nuevos se agregan y cada uno dice quién habla. El widget, en el PR de accesibilidad pública (rama `audit-a11y-publico`): `role="log"`, quién habla y `lang="es"`.
 - **Arreglo:** `role="log"` en la lista de mensajes, agregar los mensajes en lugar de reemplazarlos y poner quién habla en texto para lector de pantalla.
 
 **A3 · Alto · El menú lateral en celular y tableta no se usa con teclado.** (`shell.js:151,159`) ✅ Corregido en el PR de accesibilidad del panel (rama `audit-a11y-panel`).
@@ -120,7 +120,7 @@ Cada hallazgo crítico o alto se comprobó en el código. Los que no se sostuvie
 - **Escenario:** también afecta a quien usa zoom de 200 a 400 %.
 - **Arreglo:** mover el foco al abrir, cerrar con Escape y devolver el foco al botón.
 
-**A4 · Alto · La página pública para reservar pierde el foco en cada paso.** (`reservar.html:37`, `reservar.js:40-49`)
+**A4 · Alto · La página pública para reservar pierde el foco en cada paso.** (`reservar.html:37`, `reservar.js:40-49`) ✅ Corregido en el PR de accesibilidad pública (rama `audit-a11y-publico`): sin `aria-live` en `main`, el foco va al título de cada paso y el error a su campo.
 - **Causa:** reemplaza todo el `<main aria-live>`, así que algunos lectores releen la tarjeta completa.
 - **Arreglo:** quitar `aria-live` de `main`, enfocar el título de cada paso y asociar los errores a su campo.
 
@@ -128,7 +128,7 @@ Cada hallazgo crítico o alto se comprobó en el código. Los que no se sostuvie
 - **Causa:** `run()` muestra un aviso genérico al final de la tarjeta, y la lista de campos con error va dentro de un desplegable cerrado. Solo `billing.js` lo hace bien.
 - **Arreglo:** marcar `aria-invalid` y `aria-describedby` en los campos que vienen en `issues`, y enfocar el primero.
 
-**A6 · Alto · Contraste insuficiente en páginas públicas (axe: serio).**
+**A6 · Alto · Contraste insuficiente en páginas públicas (axe: serio).** ✅ Corregido en el PR de accesibilidad pública (rama `audit-a11y-publico`): colores con 4.5:1 en claro y oscuro, también con marca blanca (`src/public-colors.ts`), y el nuevo `test:public:ux` en el CI.
 - **Dónde:** en modo oscuro, los enlaces del pie de `/estado`, `/contacto`, `/privacidad` y `/borrar-cuenta`. En `ayuda.html`, en claro y oscuro, el botón y los enlaces de color.
 - **Ya fallan hoy:** cualquiera de esas páginas, en las pruebas hechas en esta auditoría.
 - **Arreglo:** colores de acento con contraste de 4.5:1 en los dos temas. Además, agregar estas páginas a `test:ux`.
@@ -184,6 +184,11 @@ Cada hallazgo crítico o alto se comprobó en el código. Los que no se sostuvie
   - `fillfactor` en `conversations`.
 
 **Accesibilidad**
+- ✅ Corregido en el PR de accesibilidad pública (rama `audit-a11y-publico`), lo público:
+  - el widget lleva `lang="es"` y su campo vuelve a mostrar el contorno de foco;
+  - los botones de día en reservar se llaman como su texto visible;
+  - los errores del formulario de contacto van a su campo;
+  - el pie de las páginas públicas va fuera de `main`, y «Imprimir» de la ayuda es un botón.
 - ✅ Corregido en el PR de accesibilidad del panel (rama `audit-a11y-panel`), lo del panel:
   - enlace «Saltar al contenido»;
   - `<main>` en el inicio de sesión y el registro;

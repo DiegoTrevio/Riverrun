@@ -214,7 +214,8 @@ function channelConfigFields(ch, cfg) {
           field('Título', text(cfg, 'title')),
           field('Subtítulo', text(cfg, 'subtitle')),
           field('Color', h('input', { type: 'color', value: cfg.color, oninput: (e) => (cfg.color = e.target.value) })),
-          field('Texto del botón', text(cfg, 'launcher_text'))),
+          field('Texto del botón', text(cfg, 'launcher_text')),
+          field('Modo de color', select(cfg, 'theme', [['auto', 'Automático (según el dispositivo del visitante)'], ['light', 'Claro'], ['dark', 'Oscuro']]), 'Fíjalo en claro u oscuro para que combine con tu sitio.')),
         field('Mensaje de bienvenida', area(cfg, 'welcome_message')),
         field('Dominios permitidos', lines(cfg, 'allowed_origins', { placeholder: 'hotelpalmas.mx\n*.hotelpalmas.mx' }), 'Vacío = cualquier sitio puede insertar el chat.'),
       ];

@@ -276,6 +276,16 @@ t('Chat web: sesión, mensaje, "escribiendo…" y respuesta con imagen', async (
   assert.equal(other.messages.length, 0);
 });
 
+t('Chat web: el modo de color es automático por defecto y se puede fijar en claro u oscuro', async () => {
+  const web = await createChannel('webchat', { title: 'Hotel Palmas' });
+  const config = async () => (await h.app.inject({ method: 'GET', url: `/webchat/${web.webhook_token}/config` })).json();
+  assert.equal((await config()).theme, 'auto');
+  assert.equal((await h.authed('PUT', `/api/channels/${web.id}`, { config: { title: 'Hotel Palmas', theme: 'dark' } })).statusCode, 200);
+  assert.equal((await config()).theme, 'dark');
+  assert.equal((await h.authed('PUT', `/api/channels/${web.id}`, { config: { title: 'Hotel Palmas', theme: 'morado' } })).statusCode, 400);
+  assert.equal((await config()).theme, 'dark', 'un valor inválido no cambia nada');
+});
+
 t('Chat web: un documento de la biblioteca llega al widget como archivo para descargar', async () => {
   const web = await createChannel('webchat', { title: 'Hotel Palmas' });
   const base = `/webchat/${web.webhook_token}`;

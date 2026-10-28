@@ -231,8 +231,8 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
   app.get('/webchat/:token/config', async (req: any, reply) => {
     const ch = await webchat(req, reply);
     if (!ch) return;
-    const { title, subtitle, color, welcome_message, launcher_text } = ch.config;
-    return { title, subtitle, color, welcome_message, launcher_text };
+    const { title, subtitle, color, welcome_message, launcher_text, theme } = ch.config;
+    return { title, subtitle, color, welcome_message, launcher_text, theme: theme || 'auto' };
   });
 
   app.post('/webchat/:token/session', async (req: any, reply) => {
