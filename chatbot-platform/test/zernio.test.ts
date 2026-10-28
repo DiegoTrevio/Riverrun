@@ -185,8 +185,10 @@ t('desconexión avisada por Zernio: el canal queda desconectado y se avisa al eq
   const raw = JSON.stringify({ id: 'evt_down', event: 'account.disconnected', account: { accountId: 'acc_ig', profileId: (await cfg()).profile_id, platform: 'instagram', username: 'hotel', disconnectionType: 'unintentional', reason: 'Token expired' }, timestamp: new Date().toISOString() });
   assert.equal((await deliver(raw)).statusCode, 200);
   await waitFor(async () => (await store.getChannel(channel.id))!.connection_state === 'close', 5000);
-  const n = await pool.query(`SELECT title FROM notifications WHERE account_id = $1 AND title LIKE '%red social%'`, [h.accountId]);
-  assert.ok(n.rows.length >= 1, 'aviso de desconexión');
+  // El aviso se crea justo después de marcar el canal (recordConnectionState): hay que esperarlo, no leerlo una vez.
+  const notices = async () => (await pool.query(`SELECT title FROM notifications WHERE account_id = $1 AND title LIKE '%red social%'`, [h.accountId])).rows.length;
+  await waitFor(async () => (await notices()) >= 1, 5000).catch(() => {});
+  assert.ok((await notices()) >= 1, 'aviso de desconexión');
   const reconnect = JSON.stringify({ id: 'evt_up', event: 'account.connected', account: { accountId: 'acc_ig', platform: 'instagram' } });
   assert.equal((await deliver(reconnect)).statusCode, 200);
   await waitFor(async () => (await store.getChannel(channel.id))!.connection_state === 'open', 5000);
