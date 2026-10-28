@@ -6,6 +6,7 @@ import { removeInboundAccountFiles, type StoredMedia } from '../channels/media.j
 import { removeAccountAttachments } from '../attachments.js';
 import { perRequestKeys } from '../engine/questions.js';
 import { closeCardForRequest } from './pipelines.js';
+import { phoneVariants } from '../contacts/phone.js';
 import {
   channelConfig,
   hydrateChatbot,
@@ -589,6 +590,49 @@ export async function upsertContact(channel: Pick<Channel, 'id' | 'account_id'>,
 
 export async function findContact(channelId: string, externalId: string) {
   return queryOne<Contact>('SELECT * FROM contacts WHERE channel_id = $1 AND external_id = $2', [channelId, externalId]);
+}
+
+const waJids = (variants: string[]) => variants.map((v) => `${v}@s.whatsapp.net`);
+
+/**
+ * El contacto de un teléfono en el canal: por el número guardado o por su identificador de WhatsApp, en cualquiera de
+ * sus formas (México: 52… y 521…). Así encuentra también a quien escribió con un identificador @lid.
+ */
+export async function findContactByPhone(channel: Pick<Channel, 'id' | 'account_id'>, digits: string) {
+  const v = phoneVariants(digits);
+  return queryOne<Contact>(
+    `SELECT * FROM contacts WHERE channel_id = $1
+        AND ((account_id = $2 AND phone <> '' AND regexp_replace(phone, '[^0-9]', '', 'g') = ANY($3)) OR external_id = ANY($4))
+      ORDER BY updated_at DESC LIMIT 1`,
+    [channel.id, channel.account_id, v, waJids(v)],
+  );
+}
+
+/**
+ * Primer mensaje de un identificador de WhatsApp que no conocíamos: si ese número ya era un contacto dado de alta por la
+ * API o importado, al que el cliente nunca había escrito, toma ese contacto (con sus datos, etiquetas y cobros) en vez
+ * de crear otro. Pasa cuando WhatsApp usa la otra forma del número (521… o 52…) o un identificador @lid.
+ */
+export async function claimPhoneContact(channel: Pick<Channel, 'id' | 'account_id'>, externalId: string, phone: string): Promise<boolean> {
+  const digits = phone.replace(/\D/g, '');
+  if (digits.length < 8) return false;
+  const v = phoneVariants(digits);
+  try {
+    const r = await queryOne<{ id: string }>(
+      `UPDATE contacts SET external_id = $3, phone = $5, updated_at = now() WHERE id = (
+         SELECT c.id FROM contacts c WHERE c.channel_id = $1 AND c.account_id = $2 AND c.external_id <> $3 AND c.external_id LIKE '%@s.whatsapp.net'
+            AND ((c.phone <> '' AND regexp_replace(c.phone, '[^0-9]', '', 'g') = ANY($4)) OR c.external_id = ANY($6))
+            AND NOT EXISTS (SELECT 1 FROM conversations cv JOIN messages m ON m.conversation_id = cv.id WHERE cv.contact_id = c.id AND m.direction = 'in')
+          ORDER BY c.updated_at DESC LIMIT 1)
+       RETURNING id`,
+      [channel.id, channel.account_id, externalId, v, digits, waJids(v)],
+    );
+    return !!r;
+  } catch (e: any) {
+    // Otro mensaje del mismo número ganó la carrera y ya creó su contacto: se usa ese.
+    if (e?.code === '23505') return false;
+    throw e;
+  }
 }
 
 export async function getContact(id: string) {

@@ -215,11 +215,14 @@ export async function postSigned(url: string, body: unknown, secret: string, ext
   const host = u.hostname.replace(/^\[|\]$/g, '');
   if (!config.allowPrivateWebhooks && net.isIP(host) && isPrivateIp(host)) throw new Error('La URL apunta a una red interna; no está permitido');
   const payload = JSON.stringify(body);
+  const ts = String(Math.floor(Date.now() / 1000));
   const headers = {
     'content-type': 'application/json',
     'content-length': Buffer.byteLength(payload),
     'x-signature': `sha256=${crypto.createHmac('sha256', secret).update(payload).digest('hex')}`,
-    'x-riverrun-timestamp': String(Math.floor(Date.now() / 1000)),
+    'x-riverrun-timestamp': ts,
+    // La firma con la hora adentro: quien la verifica puede rechazar una entrega vieja que alguien repita.
+    'x-riverrun-signature': `t=${ts},v1=${crypto.createHmac('sha256', secret).update(`${ts}.${payload}`).digest('hex')}`,
     ...extraHeaders,
   };
   const mod = u.protocol === 'https:' ? https : http;

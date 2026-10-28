@@ -46,6 +46,8 @@ export function openApiSpec() {
     },
     paths: {
       '/me': { get: { summary: 'Cuenta y permiso de la llave', responses: ok({ type: 'object' }) } },
+      '/channels': { get: { summary: 'Tus canales (el id que piden channel_id)', responses: ok({ type: 'object' }) } },
+      '/contact-fields': { get: { summary: 'Los datos de tus clientes: la clave que va en data y qué valor acepta', responses: ok({ type: 'object' }) } },
       '/contacts': {
         get: { summary: 'Lista contactos', parameters: [limit, cursor, updatedSince, param('tag', 'query', { type: 'string' }), param('phone', 'query', { type: 'string' }), param('channel_id', 'query', { type: 'string', format: 'uuid' })], responses: ok(page('Contact')) },
         post: { summary: 'Crea o actualiza un contacto por teléfono', requestBody: body({ allOf: [ref('ContactPatch'), { type: 'object', required: ['phone', 'channel_id'], properties: { phone: { type: 'string' }, channel_id: { type: 'string', format: 'uuid' } } }] }), responses: ok(ref('Contact')) },
