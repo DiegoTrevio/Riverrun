@@ -28,10 +28,10 @@ import * as store from '../store/index.js';
 import type { Channel, Chatbot, Contact, Conversation, Message } from '../types.js';
 import * as astore from './store.js';
 import { renderTemplate } from './templates.js';
-import type { OutboundResult, PendingButtons } from './outbound.js';
+import { needs24h, type OutboundResult, type PendingButtons } from './outbound.js';
 import { matchChoice, parsePayload } from './buttons.js';
-import { addDays, isOpen, localParts, nextTimeOfDay, zonedToUtc } from './time.js';
-import { liveUntilOf, sendTime } from './send-window.js';
+import { addDays, isOpen, localParts, nextOpen, nextTimeOfDay, zonedToUtc } from './time.js';
+import { liveUntilOf, sendTime, windowDeadline } from './send-window.js';
 import type { AccountSettings, Action, Automation, AutomationEvent, Condition, SequenceStep, Trigger, WaTemplateRef } from './types.js';
 
 interface Ctx {
@@ -925,7 +925,13 @@ export class Automator {
     const settings = await astore.getSettings(conv.account_id);
     // Lo inició el equipo desde el panel: el primer mensaje (si no tiene espera) sale ya, aunque sea de noche.
     const now = Date.now();
-    const runAt = stepTime(new Date(now), seq.steps[0], settings, seq.business_hours_only, opts.byTeam ? new Date(now + 60_000) : liveUntilOf(last));
+    const live = liveUntilOf(last);
+    const channel = await store.getChannel(conv.channel_id);
+    const runAt = stepTime(new Date(now), seq.steps[0], settings, seq.business_hours_only, {
+      liveUntil: opts.byTeam ? new Date(Math.max(now + 60_000, live?.getTime() ?? 0)) : live,
+      deadline: windowDeadline(!!channel && needs24h(channel.type, channel.config?.platform), last),
+      spreadKey: `${enrollment.id}:0`,
+    });
     const team = opts.byTeam && runAt.getTime() <= now + 60_000;
     await astore.updateEnrollment(enrollment.id, { next_run_at: runAt });
     await astore.scheduleJob({
@@ -974,6 +980,7 @@ export class Automator {
     // El último mensaje del cliente: si respondió, si está conversando (no se espera al horario de envío) y el pie de baja.
     const lastIn = await astore.lastInbound(ctx.conv.id);
     const liveUntil = liveUntilOf(lastIn);
+    const deadline = windowDeadline(needs24h(ctx.channel.type, ctx.channel.config?.platform), lastIn);
     if (seq.stop_on_reply && lastIn && lastIn.id > en.last_inbound_id) return stop('el cliente respondió');
     // El paso anterior esperaba una elección y no llegó.
     const prev = payload.step > 0 ? seq.steps[payload.step - 1] : undefined;
@@ -981,10 +988,12 @@ export class Automator {
     // Flujo enviado a un grupo: los pasos siguientes salen espaciados por número (salvo el que pidió un botón).
     if (en.pace_ms > 0 && payload.step > 0 && !payload.tap && !payload.paced) {
       const slot = await astore.reservePacedSlot(ctx.channel.id, en.pace_ms);
-      const at = sendTime(slot, ctx.settings, { businessOnly: seq.business_hours_only, liveUntil });
+      const at = sendTime(slot, ctx.settings, { businessOnly: seq.business_hours_only, liveUntil, deadline });
       if (at.getTime() > Date.now() + 1000) {
-        // Si el horario lo movió, al abrir vuelve a tomar turno: así no salen todos juntos a la hora de abrir.
-        await reschedule(at, at.getTime() === slot.getTime() ? { paced: true } : {});
+        // Si lo movió el horario para mensajes programados, al abrir vuelve a tomar turno (así no salen todos juntos a la
+        // hora de abrir); si solo fue el horario del negocio, conserva su turno como siempre.
+        const asBefore = seq.business_hours_only ? nextOpen(ctx.settings.business_hours, ctx.settings.holidays, slot, ctx.settings.timezone) : slot;
+        await reschedule(at, at.getTime() === asBefore.getTime() ? { paced: true } : {});
         return { sent: false, reason: 'esperando su turno de envío' };
       }
     }
@@ -1016,7 +1025,7 @@ export class Automator {
       await astore.updateEnrollment(en.id, { status: 'completed', current_step: next, next_run_at: null, last_step: true });
       return { sent: true };
     }
-    const runAt = stepTime(new Date(), seq.steps[next], ctx.settings, seq.business_hours_only, liveUntil);
+    const runAt = stepTime(new Date(), seq.steps[next], ctx.settings, seq.business_hours_only, { liveUntil, deadline, spreadKey: `${en.id}:${next}` });
     await astore.updateEnrollment(en.id, { current_step: next, next_run_at: runAt, last_step: true });
     await astore.scheduleJob({ account_id: ctx.conv.account_id, type: 'sequence_step', payload: { enrollment_id: en.id, conversation_id: ctx.conv.id, step: next }, run_at: runAt });
     return { sent: true };
@@ -1034,7 +1043,8 @@ export class Automator {
       await astore.updateEnrollment(en.id, { status: 'completed', next_run_at: null });
       return;
     }
-    const runAt = stepTime(new Date(), seq.steps[next], ctx.settings, seq.business_hours_only, liveUntilOf(await astore.lastInbound(ctx.conv.id)));
+    const last = await astore.lastInbound(ctx.conv.id);
+    const runAt = stepTime(new Date(), seq.steps[next], ctx.settings, seq.business_hours_only, { liveUntil: liveUntilOf(last), deadline: windowDeadline(needs24h(ctx.channel.type, ctx.channel.config?.platform), last), spreadKey: `${en.id}:${next}` });
     await astore.updateEnrollment(en.id, { next_run_at: runAt });
     await astore.scheduleJob({ account_id: ctx.conv.account_id, type: 'sequence_step', payload: { enrollment_id: en.id, conversation_id: ctx.conv.id, step: next }, run_at: runAt });
   }
@@ -1062,9 +1072,10 @@ export class Automator {
 
 /**
  * Momento de envío de un paso: espera + hora del día opcional + horario del negocio + horario para mensajes
- * programados (salvo que el cliente esté conversando: `liveUntil`).
+ * programados (salvo que el cliente esté conversando: `liveUntil`, o que esperar lo saque de la ventana de 24 h:
+ * `deadline`). `spreadKey` reparte lo que el horario movió para que no salga todo en el mismo minuto.
  */
-export function stepTime(from: Date, step: SequenceStep, settings: AccountSettings, businessOnly: boolean, liveUntil: Date | null = null): Date {
+export function stepTime(from: Date, step: SequenceStep, settings: AccountSettings, businessOnly: boolean, o: { liveUntil?: Date | null; deadline?: Date | null; spreadKey?: string } = {}): Date {
   const unit = step.delay_unit === 'days' ? 86400_000 : step.delay_unit === 'hours' ? 3600_000 : 60_000;
   let t = new Date(from.getTime() + step.delay_value * unit);
   if (step.at_time && step.delay_unit === 'days' && step.delay_value > 0) {
@@ -1074,5 +1085,5 @@ export function stepTime(from: Date, step: SequenceStep, settings: AccountSettin
   } else if (step.at_time) {
     t = nextTimeOfDay(t, step.at_time, settings.timezone);
   }
-  return sendTime(t, settings, { businessOnly, liveUntil });
+  return sendTime(t, settings, { businessOnly, ...o });
 }

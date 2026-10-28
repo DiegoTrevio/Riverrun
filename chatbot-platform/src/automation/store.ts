@@ -171,6 +171,11 @@ export async function reservePacedSlot(channelId: string, paceMs: number, from?:
   return new Date(row!.slot);
 }
 
+/** El último envío pendiente de una campaña: lo que esperó la noche sale después, sin empalmarse con lo ya planeado. */
+export async function campaignLastPending(campaignId: string) {
+  return (await queryOne<{ at: Date | null }>(`SELECT max(run_at) AS at FROM jobs WHERE type = 'campaign_send' AND status = 'pending' AND payload->>'campaign_id' = $1`, [campaignId]))?.at ?? null;
+}
+
 /** Próximo paso de un flujo que quedó esperando (horario para mensajes programados): lo que ve el panel. */
 export async function setEnrollmentNextRun(id: string, at: Date) {
   await query(`UPDATE sequence_enrollments SET next_run_at = $2 WHERE id = $1 AND status = 'active'`, [id, at]);
@@ -494,8 +499,8 @@ export async function setConsent(contactId: string, consent: boolean, source = '
 
 /** Para decidir si algo programado espera: el canal de la conversación y cuándo escribió el cliente por última vez. */
 export async function sendContext(conversationId: string) {
-  return queryOne<{ channel_id: string; channel_type: string; last_inbound_at: Date | null }>(
-    `SELECT c.channel_id, ch.type AS channel_type,
+  return queryOne<{ channel_id: string; channel_type: string; platform: string | null; last_inbound_at: Date | null }>(
+    `SELECT c.channel_id, ch.type AS channel_type, ch.config->>'platform' AS platform,
             (SELECT m.created_at FROM messages m WHERE m.conversation_id = c.id AND m.direction = 'in' ORDER BY m.id DESC LIMIT 1) AS last_inbound_at
        FROM conversations c JOIN channels ch ON ch.id = c.channel_id WHERE c.id = $1`, [conversationId]);
 }

@@ -268,16 +268,22 @@ export class Receivables {
     if (r.status !== 'pending' || !config.receivables.enabled) return 0;
     const [s, st] = await Promise.all([getReceivableSettings(r.account_id), astore.getSettings(r.account_id)]);
     const offsets = (r.reminders ?? s.default_reminders).slice(0, config.receivables.maxReminders);
+    // Ese día a la hora de envío, dentro del horario para mensajes programados (sin cambiar de día). Si acercarlo ya lo
+    // dejó en el pasado, queda a su hora y al correr espera a la mañana (mejor tarde que perdido).
+    const sameDay = (day: string) => {
+      const raw = zonedToUtc(day, s.send_at, st.timezone);
+      const at = sameDayTime(raw, st, r.id);
+      return at.getTime() >= now.getTime() + 60_000 ? at : raw;
+    };
     let n = 0;
     for (const offset of offsets) {
-      // Ese día a la hora de envío, dentro del horario para mensajes programados (sin cambiar de día) y, si se pide, del negocio.
-      const at = sendTime(sameDayTime(zonedToUtc(addDays(r.due_date, offset), s.send_at, st.timezone), st), st, { businessOnly: s.respect_business_hours });
+      const at = sendTime(sameDay(addDays(r.due_date, offset)), st, { businessOnly: s.respect_business_hours });
       if (at.getTime() < now.getTime() + 60_000) continue;
       await astore.scheduleJob({ account_id: r.account_id, type: 'receivable_reminder', payload: { receivable_id: r.id, offset }, run_at: at, dedupe_key: `payrem:${r.id}:${offset}` });
       n++;
     }
     // Al día siguiente del vencimiento: aviso al equipo y evento «pago vencido» (una vez), aunque no haya recordatorio ese día.
-    const overdueAt = sameDayTime(zonedToUtc(addDays(r.due_date, 1), s.send_at, st.timezone), st);
+    const overdueAt = sameDay(addDays(r.due_date, 1));
     if (!r.overdue_notified_at && overdueAt.getTime() > now.getTime()) {
       await astore.scheduleJob({ account_id: r.account_id, type: 'receivable_overdue', payload: { receivable_id: r.id }, run_at: overdueAt, dedupe_key: `payover:${r.id}` });
     }
@@ -372,7 +378,7 @@ export class Receivables {
   private async sendTimeAfter(accountId: string, from: Date) {
     const [s, st] = await Promise.all([getReceivableSettings(accountId), astore.getSettings(accountId)]);
     const day = todayIn(st.timezone, from);
-    const sendAt = (d: string) => sameDayTime(zonedToUtc(d, s.send_at, st.timezone), st);
+    const sendAt = (d: string) => sameDayTime(zonedToUtc(d, s.send_at, st.timezone), st, accountId);
     let at = sendAt(day);
     if (at.getTime() < from.getTime()) at = sendAt(addDays(day, 1));
     return sendTime(at, st, { businessOnly: s.respect_business_hours });

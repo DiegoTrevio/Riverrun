@@ -32,6 +32,8 @@ const dayIn = (days: number, tz = NIGHT) => localParts(new Date(Date.now() + day
 /** El cliente escribió hace dos horas: ya no está conversando. */
 const quiet = (conversationId: string) => pool.query(`UPDATE messages SET created_at = created_at - interval '2 hours' WHERE conversation_id = $1`, [conversationId]);
 const job = async (type: string, conversationId: string) => (await pool.query(`SELECT * FROM jobs WHERE type = $1 AND payload->>'conversation_id' = $2 ORDER BY id DESC LIMIT 1`, [type, conversationId])).rows[0];
+/** Entre las 8:00 y las 8:29 del día siguiente: lo que esperó la noche se reparte en esa media hora. */
+const morning = (at: Date | string, tz = NIGHT) => local(at, tz).date === dayIn(1, tz) && local(at, tz).time >= '08:00' && local(at, tz).time < '08:30';
 const sentTo = (phone: string) => h.sent.filter((s) => s.to === phone && s.kind !== 'notify').map((s) => s.text.split('\n\n')[0]);
 
 async function customer(phone: string, text: string) {
@@ -72,12 +74,13 @@ t('un mensaje de regla con espera que cae de noche espera a las 8:00 (sin gastar
   assert.equal(held.status, 'pending');
   assert.equal(held.attempts, 0, 'esperar no gasta un intento');
   assert.equal(held.last_error, 'quiet_hours');
-  assert.deepEqual([local(held.run_at).date, local(held.run_at).time], [dayIn(1), '08:00']);
+  assert.ok(morning(held.run_at), `mañana entre 8:00 y 8:29 (${local(held.run_at).date} ${local(held.run_at).time})`);
   const log = (await pool.query(`SELECT message FROM event_logs WHERE conversation_id = $1 AND message LIKE 'Mensaje programado en espera%'`, [conv.id])).rows;
   assert.equal(log.length, 1, 'queda anotado en la conversación');
 
-  // Ya de día (otra zona en la que ahora son las 12): sale.
+  // Ya de día (otra zona en la que ahora son las 12): lo que esperaba se vuelve a decidir en la próxima media hora y sale.
   assert.equal((await settings({ timezone: zoneAt(12) })).statusCode, 200);
+  assert.ok(new Date((await job('automation_send', conv.id)).run_at).getTime() <= Date.now() + 30 * 60_000, 'al cambiar el horario ya no espera a mañana');
   await h.fastForward();
   assert.deepEqual(sentTo('5215530000001'), ['Aquí está tu cotización.']);
   await settings({ timezone: NIGHT });
@@ -121,14 +124,16 @@ t('flujos: un paso que cae de noche queda para las 8:00 (y el panel lo ve); el q
   await h.idle();
   assert.deepEqual(sentTo('5215530000004'), ['Hola, te escribe el equipo'], 'lo que inicia el equipo sale aunque sea de noche');
   const next = await job('sequence_step', conv.id);
-  assert.deepEqual([local(next.run_at).date, local(next.run_at).time], [dayIn(1), '08:00'], 'el siguiente, 2 h después, cae de noche: a las 8:00');
+  assert.ok(morning(next.run_at), 'el siguiente, 2 h después, cae de noche: mañana a primera hora');
   // Forzado a correr ya (como lo atrasado tras una caída): vuelve a esperar y el panel ve la misma hora.
+  await pool.query(`UPDATE sequence_enrollments SET next_run_at = NULL WHERE sequence_id = $1`, [seq.id]);
   await h.fastForward();
   assert.deepEqual(sentTo('5215530000004'), ['Hola, te escribe el equipo']);
   const held = await job('sequence_step', conv.id);
   const en = (await h.authed('GET', `/api/conversations/${conv.id}/automation`)).json().enrollments.find((e: any) => e.sequence_id === seq.id);
+  assert.ok(en.next_run_at, 'la espera quedó anotada en el flujo');
   assert.equal(new Date(en.next_run_at).toISOString(), new Date(held.run_at).toISOString());
-  assert.equal(local(held.run_at).time, '08:00');
+  assert.ok(morning(held.run_at));
 });
 
 t('«si no contesta»: el que solo pone etiquetas corre de noche; el que le escribe al cliente espera', async () => {
@@ -147,8 +152,9 @@ t('«si no contesta»: el que solo pone etiquetas corre de noche; el que le escr
   assert.deepEqual(sentTo('5215530000005'), [], 'el mensaje al cliente espera');
   const held = (await pool.query(`SELECT * FROM jobs WHERE type = 'no_reply' AND payload->>'automation_id' = $1`, [nudge.id])).rows[0];
   assert.equal(held.status, 'pending');
-  assert.equal(local(held.run_at).time, '08:00');
+  assert.ok(morning(held.run_at));
   await pool.query(`UPDATE jobs SET status = 'cancelled' WHERE type = 'no_reply' AND status = 'pending'`);
+  await pool.query(`UPDATE automations SET active = false WHERE id = ANY($1)`, [[tag.id, nudge.id]]);
 });
 
 t('campañas lanzadas de noche: empiezan a las 8:00 con su ritmo, y lo atrasado tampoco sale todo junto', async () => {
@@ -169,24 +175,31 @@ t('campañas lanzadas de noche: empiezan a las 8:00 con su ritmo, y lo atrasado 
   const held = await runAts();
   assert.equal(held.length, planned.length);
   for (let i = 1; i < held.length; i++) assert.ok(held[i].getTime() - held[i - 1].getTime() >= 60_000, 'sin salir todos juntos');
-  assert.ok(local(held[0]).time >= '08:00');
+  assert.deepEqual([local(held[0]).date, local(held[0]).time >= '08:00'], [dayIn(1), true], 'mañana desde la hora de inicio');
   await h.authed('POST', `/api/campaigns/${r.json().id}/cancel`);
 });
 
-t('recordatorios de cita ya programados de noche: se adelantan antes de la noche, o salen como uno si coinciden', async () => {
-  const day2 = dayIn(2);
-  const appt = '00000000-0000-4000-8000-000000000001';
-  const mk = (minutes: number, time: string) => astore.scheduleJob({ account_id: h.accountId, type: 'appointment_reminder', payload: { appointment_id: appt, minutes }, run_at: zonedToUtc(day2, time, NIGHT), dedupe_key: `reminder:${appt}:${minutes}` });
-  await mk(120, '06:30');
-  await mk(60, '07:30');
-  await mk(30, '12:00');
-  assert.ok((await advanceQuietReminders(h.accountId)) >= 2);
-  const rows = (await pool.query(`SELECT payload->>'minutes' AS m, status, run_at FROM jobs WHERE type = 'appointment_reminder' AND payload->>'appointment_id' = $1`, [appt])).rows;
-  const byMin = Object.fromEntries(rows.map((x) => [x.m, x]));
-  assert.deepEqual([byMin['120'].status, local(byMin['120'].run_at).date, local(byMin['120'].run_at).time], ['pending', dayIn(1), '20:59'], 'el de las 6:30 sale la noche anterior a las 20:59');
-  assert.equal(byMin['60'].status, 'cancelled', 'el de las 7:30 también quedaría a las 20:59: sale uno');
-  assert.deepEqual([byMin['30'].status, local(byMin['30'].run_at).time], ['pending', '12:00'], 'el que cae de día no se mueve');
-  await pool.query(`UPDATE jobs SET status = 'cancelled' WHERE payload->>'appointment_id' = $1`, [appt]);
+t('recordatorios de cita ya programados de noche: se adelantan antes de la noche, salen a las 8:00 si aún da tiempo, o salen como uno', async () => {
+  const mk = (appt: string, starts: Date, minutes: number) => astore.scheduleJob({ account_id: h.accountId, type: 'appointment_reminder', payload: { appointment_id: appt, minutes, starts_at: starts.toISOString() }, run_at: new Date(starts.getTime() - minutes * 60_000), dedupe_key: `reminder:${appt}:${minutes}` });
+  const rows = async (appt: string) => Object.fromEntries((await pool.query(`SELECT payload->>'minutes' AS m, status, run_at FROM jobs WHERE type = 'appointment_reminder' AND payload->>'appointment_id' = $1`, [appt])).rows.map((x) => [x.m, x]));
+  // Pasado mañana a las 8:30: el de un día antes cae de día; los de 2 h y 1 h (6:30 y 7:30) se adelantan a la noche anterior y salen como uno.
+  const a = '00000000-0000-4000-8000-000000000001';
+  for (const m of [1440, 120, 60]) await mk(a, zonedToUtc(dayIn(2), '08:30', NIGHT), m);
+  // Mañana a las 8:30 y a las 7:45, con aviso 1 h antes (7:30 y 6:45): adelantarlos a esta noche ya pasó (son las 22:xx).
+  const b = '00000000-0000-4000-8000-000000000002';
+  const c = '00000000-0000-4000-8000-000000000003';
+  await mk(b, zonedToUtc(dayIn(1), '08:30', NIGHT), 60);
+  await mk(c, zonedToUtc(dayIn(1), '07:45', NIGHT), 60);
+  assert.ok((await advanceQuietReminders(h.accountId)) >= 4);
+  const ra = await rows(a);
+  assert.deepEqual([ra['1440'].status, local(ra['1440'].run_at).time], ['pending', '08:30'], 'el que cae de día no se mueve');
+  assert.equal(ra['120'].status, 'pending');
+  assert.equal(local(ra['120'].run_at).date, dayIn(1));
+  assert.ok(local(ra['120'].run_at).time >= '20:30' && local(ra['120'].run_at).time <= '20:59', 'la noche anterior, antes de las 21:00');
+  assert.equal(ra['60'].status, 'cancelled', 'el de 1 h quedaría a la misma hora: sale uno');
+  assert.deepEqual([(await rows(b))['60'].status, local((await rows(b))['60'].run_at).time], ['pending', '08:00'], 'a las 8:00 aún es antes de la cita de las 8:30');
+  assert.equal((await rows(c))['60'].status, 'cancelled', 'a las 8:00 la cita de las 7:45 ya empezó');
+  await pool.query(`UPDATE jobs SET status = 'cancelled' WHERE type = 'appointment_reminder' AND status = 'pending'`);
 });
 
 t('cobros con hora de envío de noche: salen ese mismo día antes de la noche', async () => {
@@ -197,7 +210,7 @@ t('cobros con hora de envío de noche: salen ese mismo día antes de la noche', 
   assert.equal(r.statusCode, 201, r.body);
   const jobs = (await pool.query(`SELECT type, run_at FROM jobs WHERE status = 'pending' AND payload->>'receivable_id' = $1 ORDER BY run_at`, [r.json().receivable.id])).rows;
   assert.ok(jobs.length >= 2);
-  for (const j of jobs) assert.equal(local(j.run_at).time, '20:59', `${j.type}: a las 20:59, no a las 22:30`);
+  for (const j of jobs) assert.ok(local(j.run_at).time >= '20:30' && local(j.run_at).time <= '20:59', `${j.type}: antes de la noche, no a las 22:30 (${local(j.run_at).time})`);
   assert.deepEqual(jobs.map((j) => local(j.run_at).date), [dayIn(4), dayIn(6)], 'el mismo día que tocaba (recordatorio y aviso de vencido)');
 });
 

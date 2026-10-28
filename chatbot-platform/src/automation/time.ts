@@ -118,7 +118,10 @@ export function inSendWindow(w: SendWindow, at: Date, tz: string): boolean {
 export function sendableAt(w: SendWindow, at: Date, tz: string): Date {
   if (inSendWindow(w, at, tz)) return at;
   const lp = localParts(at, tz);
-  let t = zonedToUtc(lp.minutes < toMinutes(w.start) ? lp.date : addDays(lp.date, 1), w.start, tz);
+  let date = lp.minutes < toMinutes(w.start) ? lp.date : addDays(lp.date, 1);
+  let t = zonedToUtc(date, w.start, tz);
+  // En el cambio de horario de invierno una hora local se repite: la de inicio puede quedar antes de `at`; es la del día siguiente.
+  for (let i = 0; i < 2 && t.getTime() <= at.getTime(); i++) t = zonedToUtc((date = addDays(date, 1)), w.start, tz);
   // La hora de inicio cayó en el salto del horario de verano: una hora después ya existe.
   for (let i = 0; i < 2 && !inSendWindow(w, t, tz); i++) t = new Date(t.getTime() + HOUR);
   return t;
@@ -135,19 +138,21 @@ export function beforeQuiet(w: SendWindow, at: Date, tz: string): Date {
 
 /**
  * Cuándo puede salir algo programado para `at`: en horario del negocio (si se da `hours`) y dentro del horario para
- * mensajes programados. Si el cliente está conversando (`liveUntil`), no se espera a ese horario.
+ * mensajes programados. Si el cliente está conversando (`liveUntil`), no se espera a ese horario. `deadline`: después
+ * de esa hora ya no se podrá enviar (la ventana de 24 h de Meta): esperar más allá lo perdería, así que sale a su hora.
  */
-export function nextSendTime(at: Date, o: { window: SendWindow; tz: string; hours?: WeeklyHours | null; holidays?: string[]; liveUntil?: Date | null }): Date {
+export function nextSendTime(at: Date, o: { window: SendWindow; tz: string; hours?: WeeklyHours | null; holidays?: string[]; liveUntil?: Date | null; deadline?: Date | null }): Date {
+  const keep = (t: Date) => (o.deadline && t.getTime() > o.deadline.getTime() && at.getTime() <= o.deadline.getTime() ? at : t);
   let t = at;
   for (let i = 0; i < 8; i++) {
     const open = o.hours ? nextOpen(o.hours, o.holidays ?? [], t, o.tz) : t;
     if (o.liveUntil && open.getTime() < o.liveUntil.getTime()) return open;
     const next = sendableAt(o.window, open, o.tz);
-    if (next.getTime() === t.getTime()) return t;
+    if (next.getTime() === t.getTime()) return keep(t);
     t = next;
   }
   // El horario del negocio nunca coincide con el de envío: gana el de envío.
-  return sendableAt(o.window, at, o.tz);
+  return keep(sendableAt(o.window, at, o.tz));
 }
 
 const DIAS = { mon: 'lunes', tue: 'martes', wed: 'miércoles', thu: 'jueves', fri: 'viernes', sat: 'sábado', sun: 'domingo' } as const;

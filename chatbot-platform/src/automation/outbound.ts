@@ -67,6 +67,8 @@ const BUTTONS_TTL_MS = 7 * 86400_000;
 export type OutboundResult = { sent: true } | { sent: false; reason: string; transient?: boolean };
 
 const META_WINDOW_MS = 24 * 3600 * 1000;
+/** Canales en los que solo se puede escribir 24 h después del último mensaje del cliente (Messenger, Instagram, WhatsApp oficial…). */
+export const needs24h = (type: string, platform?: string) => type === 'messenger' || type === 'instagram' || (type === 'zernio' && zernioNeedsWindow(String(platform ?? '')));
 
 /**
  * Envío proactivo (no es respuesta a un mensaje): automatizaciones, secuencias, campañas y recordatorios.
@@ -102,7 +104,7 @@ export class Outbound {
     if (conv.status === 'human' && !o.allowWhenHuman) return { sent: false, reason: 'una persona está atendiendo la conversación' };
     // WhatsApp oficial fuera de las 24 h: solo con una plantilla aprobada.
     let template: WaTemplate | null = null;
-    if (channel.type === 'messenger' || channel.type === 'instagram' || (channel.type === 'zernio' && zernioNeedsWindow(channel.config.platform))) {
+    if (needs24h(channel.type, channel.config.platform)) {
       // Meta (Messenger, Instagram y WhatsApp oficial) solo permite escribir dentro de las 24 h posteriores al último
       // mensaje del cliente. Telegram, X, Bluesky y Reddit no tienen esa regla.
       const last = await astore.lastInbound(conv.id);

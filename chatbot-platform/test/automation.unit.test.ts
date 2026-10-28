@@ -176,6 +176,12 @@ test('horario de envío: de noche espera a la hora de inicio; lo atado a una hor
   const t = sendableAt(early, zonedToUtc('2026-03-07', '23:00', NY), NY);
   assert.equal(inSendWindow(early, t, NY), true);
   assert.equal(localParts(t, NY).date, '2026-03-08');
+  // 1 de noviembre (2:00 → 1:00): a la 1:10 repetida, una hora de inicio de 1:30 ya pasó en la primera vuelta; nunca
+  // devuelve un momento anterior (la tarea no quedaría dando vueltas).
+  const fallBack = new Date('2026-11-01T06:10:00Z'); // 1:10 (horario de invierno), la segunda vez
+  const late = { enabled: true, start: '01:30', end: '21:00' };
+  const next = sendableAt(late, fallBack, NY);
+  assert.ok(next.getTime() > fallBack.getTime() && inSendWindow(late, next, NY), next.toISOString());
 });
 
 test('horario de envío junto con el horario del negocio, y con el cliente conversando', () => {
@@ -194,7 +200,13 @@ test('pasos de flujo: de noche esperan a la hora de inicio, salvo que el cliente
   const step = (o: Record<string, unknown>) => ({ delay_value: 0, delay_unit: 'hours', at_time: '', text: '', image_id: '', conditions: [], ...o }) as any;
   const from = mx('2026-09-29', '20:30');
   assert.equal(when(stepTime(from, step({ delay_value: 1 }), settings, false)), '2026-09-30 08:00');
-  assert.equal(when(stepTime(from, step({ delay_value: 1 }), settings, false, mx('2026-09-29', '22:00'))), '2026-09-29 21:30');
+  assert.equal(when(stepTime(from, step({ delay_value: 1 }), settings, false, { liveUntil: mx('2026-09-29', '22:00') })), '2026-09-29 21:30');
+  // Repartido en la media hora siguiente (siempre igual para el mismo paso): no todo a las 8:00 en punto.
+  const spread = stepTime(from, step({ delay_value: 1 }), settings, false, { spreadKey: 'inscripción-1:2' });
+  assert.ok(when(spread) >= '2026-09-30 08:00' && when(spread) < '2026-09-30 08:30', when(spread));
+  assert.equal(stepTime(from, step({ delay_value: 1 }), settings, false, { spreadKey: 'inscripción-1:2' }).getTime(), spread.getTime());
+  // Messenger/Instagram: esperar a las 8:00 lo dejaría fuera de la ventana de 24 h (vence a las 23:00): sale a su hora.
+  assert.equal(when(stepTime(from, step({ delay_value: 1 }), settings, false, { deadline: mx('2026-09-29', '23:00') })), '2026-09-29 21:30');
   assert.equal(when(stepTime(from, step({ delay_value: 1 }), noWindow, false)), '2026-09-29 21:30');
 });
 
@@ -204,8 +216,9 @@ test('al enviar: de noche espera; conversando o apenas atrasado sale; un recorda
   assert.equal(when(quietDecision(base) as Date), '2026-09-30 08:00');
   assert.equal(quietDecision({ ...base, now: mx('2026-09-29', '12:00') }), null);
   assert.equal(quietDecision({ ...base, liveUntil: mx('2026-09-29', '23:20') }), null);
-  assert.equal(quietDecision({ ...base, now: mx('2026-09-29', '21:05'), runAt: mx('2026-09-29', '20:59') }), null, 'programado en horario y 6 minutos tarde: sale');
-  assert.equal(when(quietDecision({ ...base, now: mx('2026-09-29', '21:30'), runAt: mx('2026-09-29', '20:59') }) as Date), '2026-09-30 08:00');
+  assert.equal(quietDecision({ ...base, now: mx('2026-09-29', '21:40'), runAt: mx('2026-09-29', '20:59') }), null, 'programado en horario y 41 minutos tarde (muchos a la vez): sale');
+  assert.equal(when(quietDecision({ ...base, now: mx('2026-09-29', '22:30'), runAt: mx('2026-09-29', '20:59') }) as Date), '2026-09-30 08:00');
+  assert.equal(quietDecision({ ...base, deadline: mx('2026-09-30', '06:00') }), null, 'esperar perdería la ventana de 24 h: sale ya');
   assert.equal(quietDecision({ ...base, startsAt: mx('2026-09-30', '07:30') }), 'drop');
   assert.equal(quietDecision({ ...base, window: { ...W, enabled: false } }), null);
 });
@@ -225,8 +238,14 @@ test('recordatorios de cita: el que cae de noche se adelanta; si ya pasó no sal
   assert.deepEqual(at(reminderTimes(mx('2026-10-01', '07:30'), [1440, 60], W, MX, mx('2026-09-29', '12:00'))), [[1440, '2026-09-29 20:59'], [60, '2026-09-30 20:59']]);
   // A las 8:30 con avisos 2 h y 1 h antes (6:30 y 7:30): los dos quedan a las 20:59 del día anterior → uno.
   assert.deepEqual(at(reminderTimes(mx('2026-10-01', '08:30'), [120, 60], W, MX, mx('2026-09-29', '12:00'))), [[120, '2026-09-30 20:59']]);
-  // Reservó a las 23:00 para mañana a las 7:30: adelantado a las 20:59 de hoy ya pasó → no sale (acaba de recibir la confirmación).
+  // Reservó a las 23:00 para mañana a las 7:30: adelantado a las 20:59 de hoy ya pasó y a las 8:00 ya habría empezado → no sale.
   assert.deepEqual(reminderTimes(mx('2026-09-30', '07:30'), [60], W, MX, mx('2026-09-29', '23:00')), []);
+  // Para las 8:30: el de las 7:30 sale a las 8:00 (aún antes de la cita).
+  assert.deepEqual(at(reminderTimes(mx('2026-09-30', '08:30'), [60], W, MX, mx('2026-09-29', '23:00'))), [[60, '2026-09-30 08:00']]);
+  // Con la cita como llave se reparten en la media hora anterior a la noche, y los dos de la misma cita siguen saliendo como uno.
+  const spread = at(reminderTimes(mx('2026-10-01', '08:30'), [120, 60], W, MX, mx('2026-09-29', '12:00'), 'cita-7'));
+  assert.equal(spread.length, 1);
+  assert.ok(String(spread[0][1]) >= '2026-09-30 20:30' && String(spread[0][1]) <= '2026-09-30 20:59', String(spread[0][1]));
   // En horario: sale a su hora.
   assert.deepEqual(at(reminderTimes(mx('2026-10-01', '12:00'), [60], W, MX, mx('2026-09-29', '12:00'))), [[60, '2026-10-01 11:00']]);
 });

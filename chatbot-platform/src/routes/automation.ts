@@ -145,14 +145,25 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
     const raw = (req.body ?? {}) as Record<string, unknown>;
     // Los secretos no se cambian desde aquí (se regeneran con su propia ruta). `sending` se mezcla un nivel: cambiar el
     // tope diario no vuelve a encender un horario de envío apagado.
-    const sending = raw.sending && typeof raw.sending === 'object' && !Array.isArray(raw.sending) ? { ...current.sending, ...(raw.sending as object) } : current.sending;
+    const obj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+    const sending = obj(raw.sending) ? { ...current.sending, ...raw.sending, window: obj(raw.sending.window) ? { ...current.sending.window, ...raw.sending.window } : current.sending.window } : current.sending;
     const next = parse(AccountSettingsSchema, { ...current, ...raw, sending, calendar_token: current.calendar_token, webhook_secret: current.webhook_secret });
     // Se escala solo a administradores activos de esta cuenta: lo demás se descarta al guardar.
     const admins = new Set((await astore.teamMembers(accountId, ['admin'])).map((u) => u.id));
     next.alert_timing.escalate_user_ids = next.alert_timing.escalate_user_ids.filter((id) => admins.has(id));
     await astore.saveSettings(accountId, next);
-    // Otro horario de envío u otra zona horaria: los recordatorios de cita ya programados se acomodan a la nueva noche.
-    if (JSON.stringify(next.sending.window) !== JSON.stringify(current.sending.window) || next.timezone !== current.timezone) await advanceQuietReminders(accountId);
+    // Otro horario de envío u otra zona horaria: lo que esperaba se vuelve a decidir con el nuevo en la próxima media hora
+    // (repartido; si ya no es de noche, sale) y los recordatorios de cita ya programados se acomodan a la nueva noche. Las
+    // campañas conservan su turno (al llegar se vuelve a revisar): soltarlas juntas rompería su ritmo.
+    if (JSON.stringify(next.sending.window) !== JSON.stringify(current.sending.window) || next.timezone !== current.timezone) {
+      try {
+        await query(`UPDATE jobs SET run_at = least(run_at, now() + (id % 30) * interval '1 minute')
+                      WHERE account_id = $1 AND status = 'pending' AND last_error = 'quiet_hours' AND type <> 'campaign_send'`, [accountId]);
+        await advanceQuietReminders(accountId);
+      } catch (e: any) {
+        await logEvent({ level: 'warn', source: 'admin', message: `Horario guardado, pero no se pudieron reacomodar los envíos programados: ${e?.message ?? e}`, accountId });
+      }
+    }
     await logEvent({ level: 'info', source: 'admin', message: 'Configuración de la cuenta actualizada', accountId });
     return { ...next, ics_url: `${config.publicBaseUrl}/calendar/${next.calendar_token}.ics` };
   });

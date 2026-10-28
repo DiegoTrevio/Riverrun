@@ -16,8 +16,8 @@ import { sendMail } from '../mailer.js';
 import { activeStaff, assignmentStats, isOff, pickStaff, staffInfo, staffNames, worksDuring, type StaffInfo } from './staff.js';
 import * as astore from './store.js';
 import { renderTemplate } from './templates.js';
-import { addDays, beforeQuiet, dayOf, fromMinutes, inSendWindow, localParts, slotKey, spanishDate, spanishTime, toMinutes, zonedToUtc } from './time.js';
-import { windowOf } from './send-window.js';
+import { addDays, beforeQuiet, dayOf, fromMinutes, inSendWindow, localParts, sendableAt, slotKey, spanishDate, spanishTime, toMinutes, zonedToUtc } from './time.js';
+import { spreadOf, windowOf } from './send-window.js';
 import { DEFAULT_REMINDER, type AccountSettings, type Appointment, type SendWindow, type Service } from './types.js';
 
 export interface Slot {
@@ -448,7 +448,7 @@ export class Agenda {
     await withTransaction(async (c) => {
       await c.query(`UPDATE appointments SET starts_at = $2, ends_at = $3, assigned_user_id = $4, updated_at = now() WHERE id = $1`, [a.id, start, end, assigned]);
       await astore.cancelJobs('appointment_id', a.id, c);
-      await this.scheduleReminders({ ...a, starts_at: start, ends_at: end, assigned_user_id: assigned }, service, c);
+      await this.scheduleReminders({ ...a, starts_at: start, ends_at: end, assigned_user_id: assigned }, service, c, settings);
     });
     const updated = (await astore.getAppointment(a.id))!;
     await this.moveDeposit(updated, service, settings.timezone);
@@ -528,11 +528,12 @@ export class Agenda {
     return receivableBySource(a.account_id, 'appointment', a.id);
   }
 
-  async scheduleReminders(a: Appointment, service: Service, db?: pg.PoolClient) {
+  /** `settings`: los de la cuenta, si ya se tienen (dentro de una transacción no se vuelve a consultar). */
+  async scheduleReminders(a: Appointment, service: Service, db?: pg.PoolClient, settings?: AccountSettings) {
     // Sin conversación (reservas de la página pública), el recordatorio va por correo.
     if (!a.conversation_id && !a.customer_email) return;
-    const st = await astore.getSettings(a.account_id);
-    for (const { minutes, at: runAt } of reminderTimes(new Date(a.starts_at), service.reminders, windowOf(st), st.timezone)) {
+    const st = settings ?? (await astore.getSettings(a.account_id));
+    for (const { minutes, at: runAt } of reminderTimes(new Date(a.starts_at), service.reminders, windowOf(st), st.timezone, new Date(), a.id)) {
       await astore.scheduleJob({
         account_id: a.account_id,
         type: 'appointment_reminder',
@@ -623,15 +624,26 @@ export async function buildIcs(accountId: string, accountName: string) {
 export { renderTemplate, store };
 
 /**
- * Cuándo sale cada recordatorio de una cita: `minutes` antes y, si eso cae de noche, antes de que empiece la noche (el
- * texto dice la fecha y la hora de la cita, así que llegar antes no confunde). Si esa hora ya pasó, no sale (la
- * confirmación acaba de llegar) y si dos quedan a la misma hora, sale uno.
+ * Cuándo sale un recordatorio que debía salir en `raw`: si cae de noche, antes de que empiece la noche (el texto dice
+ * la fecha y la hora de la cita, así que llegar antes no confunde), repartido en la media hora anterior por cita
+ * (`key`). Si esa hora ya pasó (se agendó de noche), a la hora de inicio si aún es antes de la cita. null: no da tiempo.
  */
-export function reminderTimes(startsAt: Date, minutes: number[], w: SendWindow, tz: string, now = new Date()) {
+export function reminderTime(raw: Date, startsAt: Date, w: SendWindow, tz: string, now = new Date(), key = ''): Date | null {
+  if (inSendWindow(w, raw, tz)) return raw.getTime() >= now.getTime() + 60_000 ? raw : null;
+  const before = beforeQuiet(w, raw, tz);
+  const spread = new Date(before.getTime() - (key ? spreadOf(key) : 0));
+  const early = inSendWindow(w, spread, tz) ? spread : before;
+  if (early.getTime() >= now.getTime() + 60_000) return early;
+  const after = sendableAt(w, raw, tz);
+  return after.getTime() < startsAt.getTime() && after.getTime() >= now.getTime() + 60_000 ? after : null;
+}
+
+/** Los recordatorios de una cita (`minutes` antes de que empiece), con `reminderTime`; si dos quedan a la misma hora, sale uno. */
+export function reminderTimes(startsAt: Date, minutes: number[], w: SendWindow, tz: string, now = new Date(), key = '') {
   const out: { minutes: number; at: Date }[] = [];
   for (const m of minutes) {
-    const at = beforeQuiet(w, new Date(startsAt.getTime() - m * 60_000), tz);
-    if (at.getTime() < now.getTime() + 60_000 || out.some((x) => x.at.getTime() === at.getTime())) continue;
+    const at = reminderTime(new Date(startsAt.getTime() - m * 60_000), startsAt, w, tz, now, key);
+    if (!at || out.some((x) => x.at.getTime() === at.getTime())) continue;
     out.push({ minutes: m, at });
   }
   return out;
@@ -642,8 +654,8 @@ export function reminderTimes(startsAt: Date, minutes: number[], w: SendWindow, 
  * cambiara): se adelantan como los nuevos, o se cancelan si ya no da tiempo o si otro de la misma cita sale a esa hora.
  */
 export async function advanceQuietReminders(accountId?: string, now = new Date()) {
-  const jobs = await query<{ id: string; account_id: string; run_at: Date; appointment_id: string }>(
-    `SELECT id, account_id, run_at, payload->>'appointment_id' AS appointment_id FROM jobs
+  const jobs = await query<{ id: string; account_id: string; run_at: Date; appointment_id: string; starts_at: string | null }>(
+    `SELECT id, account_id, run_at, payload->>'appointment_id' AS appointment_id, payload->>'starts_at' AS starts_at FROM jobs
       WHERE type = 'appointment_reminder' AND status = 'pending' AND ($1::uuid IS NULL OR account_id = $1) ORDER BY run_at`, [accountId ?? null]);
   const settings = new Map<string, AccountSettings>();
   const taken = new Set<string>();
@@ -652,10 +664,12 @@ export async function advanceQuietReminders(accountId?: string, now = new Date()
     let st = settings.get(j.account_id);
     if (!st) settings.set(j.account_id, (st = await astore.getSettings(j.account_id)));
     const w = windowOf(st);
-    const at = inSendWindow(w, j.run_at, st.timezone) ? j.run_at : beforeQuiet(w, j.run_at, st.timezone);
-    const key = `${j.appointment_id}|${at.getTime()}`;
-    if (at.getTime() === j.run_at.getTime()) { taken.add(key); continue; }
-    if (at.getTime() < now.getTime() + 60_000 || taken.has(key)) {
+    if (inSendWindow(w, j.run_at, st.timezone)) { taken.add(`${j.appointment_id}|${j.run_at.getTime()}`); continue; }
+    // Sin la hora de la cita no se sabe si a la hora de inicio aún sirve: que lo decida al correr (quiet-hold).
+    if (!j.starts_at) continue;
+    const at = reminderTime(j.run_at, new Date(j.starts_at), w, st.timezone, now, j.appointment_id);
+    const key = `${j.appointment_id}|${at?.getTime()}`;
+    if (!at || taken.has(key)) {
       await query(`UPDATE jobs SET status = 'cancelled', last_error = 'quiet_hours', finished_at = now() WHERE id = $1 AND status = 'pending'`, [j.id]);
     } else {
       await query(`UPDATE jobs SET run_at = $2 WHERE id = $1 AND status = 'pending'`, [j.id, at]);
