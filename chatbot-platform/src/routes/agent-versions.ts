@@ -97,8 +97,10 @@ export async function agentVersionRoutes(api:FastifyInstance,service:ChatService
    */
   api.post('/api/chatbots/:id/version-apply',admin,async(req:any)=>{
     const bot=await botFor(req.user,req.params.id);
-    const {revision,patch}=parse(Revision.extend({patch:z.record(z.string(),z.unknown()).default({})}),req.body);
+    // ai_change: lo que se cambió con IA en palabras; queda como motivo de la versión (la IA lo lee en los próximos cambios).
+    const {revision,patch,ai_change}=parse(Revision.extend({patch:z.record(z.string(),z.unknown()).default({}),ai_change:z.string().trim().max(300).optional()}),req.body);
     await agentDraft(bot);
+    const reason=ai_change?`Cambio con IA: ${ai_change.replace(/\s+/g,' ')}`:'Guardado desde el panel';
     const published=await withTransaction(async(client)=>{
       let draft=await locked(client,bot,revision);
       const live=(await client.query('SELECT agent_configuration(chatbots) AS configuration FROM chatbots WHERE id=$1',[bot.id])).rows[0].configuration;
@@ -107,7 +109,7 @@ export async function agentVersionRoutes(api:FastifyInstance,service:ChatService
         draft=(await client.query<AgentDraft>('UPDATE agent_drafts SET configuration=$2,base_configuration=$2,step_map=NULL,image_rules=NULL,revision=revision+1,updated_at=now() WHERE chatbot_id=$1 RETURNING *',[bot.id,JSON.stringify(live)])).rows[0];
       }
       if(Object.keys(patch).length) draft=await mergeDraft(client,bot,draft,patch,req.user.id);
-      return publishDraft(client,bot,draft,req.user,'Guardado desde el panel');
+      return publishDraft(client,bot,draft,req.user,reason);
     });
     await logEvent({level:'info',source:'admin',message:`Cambios del agente guardados y aplicados por ${req.user.email}`,accountId:bot.account_id,chatbotId:bot.id});
     return published;

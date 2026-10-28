@@ -121,12 +121,13 @@ export function saveBar(onSave, extra, label = 'Guardar cambios') {
 
 const draftSaveBar = (onSave, extra) => saveBar(onSave, extra, 'Guardar cambios');
 
-async function saveBot(bot, patch) {
+/** `aiChange`: lo que se cambió con IA, en palabras; queda como motivo en el historial de versiones. */
+async function saveBot(bot, patch, aiChange) {
   const keys = Object.keys(patch).filter((key) => key !== 'rules' || patch.rules.verify_facts !== undefined).map((key) => `${bot.id}:${key === 'name' || key === 'active' ? 'general' : key === 'data_fields' ? 'questions' : key}`);
   const versions = keys.map((key) => [key, draftVersion(key)]);
   delete patch.active;
   // Guardar = aplicar: el cambio llega de inmediato a todas sus conexiones (y queda en el historial de versiones).
-  const saved = await run(() => api('POST', `/api/chatbots/${bot.id}/version-apply`, {revision:bot._draftRevision,patch}), 'Cambios guardados');
+  const saved = await run(() => api('POST', `/api/chatbots/${bot.id}/version-apply`, {revision:bot._draftRevision,patch,...(aiChange?{ai_change:aiChange.slice(0,300)}:{})}), aiChange ? undefined : 'Cambios guardados');
   if (saved) versions.forEach(([key, version]) => discardDraft(key, version));
   return saved;
 }
@@ -171,24 +172,24 @@ async function tabInstructions(root, bot) {
   const warnings = photoWarningsCard(bot);
   if (warnings) root.append(warnings);
   const promptArea = area(p, 'prompt', { big: true, placeholder: 'Eres Mario, el asistente de Los Trompitos. Atiende de forma amable y breve. Ayuda a hacer pedidos. Pregunta qué quieren ordenar, la cantidad y si pasan a recoger o necesitan entrega. Para entrega, pide nombre y dirección. Haz una pregunta a la vez.' });
-  // Pedir el cambio en palabras: se aplica con el mismo guardado de la página (queda en el historial de versiones).
+  // Pedir el cambio en palabras: se aplica al momento con el mismo guardado de la página (queda en el historial de versiones).
   const assistant = promptAssistant({
     botId: bot.id,
     getPrompt: () => p.prompt,
-    apply: async (prompt) => {
+    apply: async (prompt, change) => {
       const before = p.prompt;
       p.prompt = prompt; promptArea.value = prompt;
-      if (await saveBot(bot, { ...m, personality: p, flow: f })) { render(); return true; }
+      if (await saveBot(bot, { ...m, personality: p, flow: f }, change)) { render(); return true; }
       p.prompt = before; promptArea.value = before;
       return false;
     },
   });
   root.append(
     h('div', { class: 'card' },
+      assistant,
       h('div', { class: 'grid' },
         field('Nombre del agente', text(m, 'name')),
         field('Nombre con el que se presenta (opcional)', text(p, 'assistant_name', { placeholder: 'Mario' }))),
-      assistant,
       field('Cómo debe atender', promptArea,
         ['Los precios, horarios y productos van en ', h('a', { href: `#/bot/${bot.id}/conocimiento` }, 'Información'), '. Los datos del cliente (nombre, dirección, pedido…) se guardan solos.']),
       field('¿Qué debe lograr? (opcional)', area(f, 'goal', { placeholder: 'Ayudar al cliente a completar su pedido y pasarlo al equipo para confirmarlo.' })),

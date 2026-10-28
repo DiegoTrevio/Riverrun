@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { BoardSchema, compileBoard } from '../src/automation/flow-board.js';
 import { boardToSpec, designFlow, fitLabel, FlowSpecSchema, specToBoard } from '../src/automation/flow-ai.js';
-import { applyPromptOps, editPrompt, promptUnits } from '../src/agent-prompt-edit.js';
+import { applyPromptOps, editPrompt, historyText, lineChanges, promptChanges, promptUnits, relatedLines } from '../src/agent-prompt-edit.js';
 import type { AiProvider, CompletionRequest } from '../src/ai/provider.js';
 
 const block = (b: Record<string, unknown>) => ({ text: '', minutes: 0, at_time: '', photo: '', buttons: [], wait_for_choice: false, next: '', ...b });
@@ -228,4 +228,55 @@ test('al aplicar un cambio, el resto de las instrucciones queda idéntico (sangr
   assert.equal(r.prompt, 'PRECIOS\n  - Adultos $150\n  - Niños $120\n \nHorario: 9 a 7\n');
   const removed = applyPromptOps(units, [{ op: 'remove', line: 4, text: '' }]);
   assert.equal(removed.prompt, 'PRECIOS\n  - Adultos $150\n  - Niños $100\n');
+});
+
+const V1 = 'Eres Mario.\nAbrimos de 9 a 6.\nEnvíos gratis en compras mayores a $500.';
+const V2 = 'Eres Mario.\nAbrimos de 9 a 6.\nLos domingos cerramos.';
+const V3 = 'Eres Mario.\nAbrimos de 9 a 7.\nLos domingos cerramos.';
+const RELEASES = [
+  { prompt: V3, at: '2026-10-28T17:00:00Z', reason: 'Guardado desde el panel' },
+  { prompt: V3, at: '2026-10-28T16:00:00Z', reason: 'Guardado desde el panel' },
+  { prompt: V2, at: '2026-10-27T18:00:00Z', reason: 'Cambio con IA: Quité lo de envíos gratis y agregué que los domingos cierran.' },
+  { prompt: V1, at: '2026-10-20T15:00:00Z', reason: 'Versión inicial' },
+];
+
+test('cambios anteriores: qué entró y qué salió en cada versión, y dónde está hoy lo que se agregó', () => {
+  assert.deepEqual(lineChanges(V1, V2), { added: ['Los domingos cerramos.'], removed: ['Envíos gratis en compras mayores a $500.'] });
+  assert.deepEqual(lineChanges('A\nA\nB', '  A\nB'), { added: [], removed: ['A'] }, 'un renglón repetido cuenta las veces que aparece');
+  // La versión que no tocó las instrucciones (cambió otra cosa del agente) no cuenta como cambio.
+  const changes = promptChanges(RELEASES);
+  assert.equal(changes.length, 2);
+  assert.equal(changes[0].at.toISOString(), '2026-10-28T16:00:00.000Z');
+  const text = historyText(changes, promptUnits(V3), 'America/Mexico_City');
+  assert.match(text, /^1\. [^\n]* — Guardado desde el panel\n {3}agregó \(sigue en \[2\]\): «Abrimos de 9 a 7\.»\n {3}quitó: «Abrimos de 9 a 6\.»/);
+  assert.match(text, /\n2\. 27 oct 2026[^\n]* — Cambio con IA: Quité lo de envíos gratis[^\n]*\n {3}agregó \(sigue en \[3\]\): «Los domingos cerramos\.»\n {3}quitó: «Envíos gratis en compras mayores a \$500\.»/);
+  // Lo que se quitó y hoy volvió a estar se señala con su renglón.
+  const back = historyText(promptChanges([{ prompt: V2, at: '2026-10-27T18:00:00Z', reason: 'Cambio con IA: quité envíos' }, { prompt: V1, at: '2026-10-20T15:00:00Z', reason: 'Versión inicial' }]), promptUnits(V1));
+  assert.match(back, /quitó \(volvió a estar en \[3\]\): «Envíos gratis/);
+  assert.match(back, /agregó \(ya no está\): «Los domingos cerramos\.»/);
+  assert.equal(historyText(changes, promptUnits(V3), 'America/Mexico_City', 10), '', 'lo que no cabe en el presupuesto se deja fuera');
+  assert.match(historyText(changes, promptUnits(V3), 'Zona/Inventada'), /Cambio con IA/, 'una zona horaria inválida no rompe');
+});
+
+test('renglones relacionados: los que ya hablan de lo que se pide, aunque con otras palabras', () => {
+  const units = promptUnits('Eres Mario de Los Trompitos.\nAbrimos de 9 a 7.\nLos domingos cerramos.\nPromo 2x1 los martes.\nPagos con tarjeta o efectivo.');
+  assert.deepEqual(relatedLines(units, 'cambia el horario, ahora cerramos a las 8'), [2, 3]);
+  assert.deepEqual(relatedLines(units, 'quita lo de los domingos'), [3]);
+  assert.deepEqual(relatedLines(units, 'quita la promo del martes'), [4]);
+  assert.deepEqual(relatedLines(units, 'ya no aceptamos transferencias'), [5]);
+  assert.deepEqual(relatedLines(units, 'quita esto'), []);
+});
+
+test('la IA recibe los renglones relacionados, los cambios anteriores y las reglas para no duplicar', async () => {
+  const { ai, calls } = fakeAi([{ summary: 'Cambié el horario que ya tenías: ahora abren a las 10.', question: '', operations: [{ op: 'replace', line: 2, text: 'Abrimos de 10 a 7.' }] }]);
+  const r = await editPrompt(ai, { prompt: V2, instruction: 'cambia el horario: abrimos de 10 a 7', history: promptChanges(RELEASES.slice(2)), timeZone: 'America/Mexico_City', now: new Date('2026-10-28T18:00:00Z') });
+  assert.match(String(calls[0].messages[0].content), /nunca dejes dos renglones que digan lo mismo/);
+  const text = String(calls[0].messages[1].content);
+  assert.match(text, /Renglones que ya usan palabras de lo que pide[^\n]*: \[2\] \[3\]/);
+  assert.match(text, /hoy es 28 oct 2026/);
+  assert.match(text, /<cambios_anteriores>\n1\. [^\n]*Cambio con IA: Quité lo de envíos gratis[^\n]*\n {3}agregó \(sigue en \[3\]\)/);
+  assert.equal(r.prompt, 'Eres Mario.\nAbrimos de 10 a 7.\nLos domingos cerramos.');
+  const { ai: plain, calls: plainCalls } = fakeAi([{ summary: 'Ahora habla de usted.', question: '', operations: [{ op: 'add', line: 1, text: 'Habla de usted.' }] }]);
+  await editPrompt(plain, { prompt: 'Eres Mario.', instruction: 'habla de usted' });
+  assert.doesNotMatch(String(plainCalls[0].messages[1].content), /Renglones que ya usan|cambios_anteriores/, 'sin coincidencias ni historial no se manda nada de eso');
 });

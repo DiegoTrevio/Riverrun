@@ -41,13 +41,15 @@ export function agentPanel({ bots, board, name, context = '' }) {
 
   /**
    * Guardar = aplicar: llega de inmediato a sus conexiones y queda en el historial de versiones. `botId`: el agente del
-   * que se cargó el texto (si mientras tanto se eligió otro, no se guarda en el equivocado).
+   * que se cargó el texto (si mientras tanto se eligió otro, no se guarda en el equivocado). `aiChange`: lo que se cambió
+   * con IA, en palabras, para el historial.
    */
-  async function save(prompt, botId) {
+  async function save(prompt, botId, aiChange) {
     if (!current || current.bot !== botId || choice.bot !== botId) { toast('Cambiaste de agente: vuelve a pedir el cambio para este.', true); return false; }
     try {
-      await api('POST', `/api/chatbots/${botId}/version-apply`, { revision: current.revision, patch: { personality: { ...current.personality, prompt } } });
-      toast('Instrucciones aplicadas: el agente ya atiende así');
+      await api('POST', `/api/chatbots/${botId}/version-apply`, { revision: current.revision, patch: { personality: { ...current.personality, prompt } }, ...(aiChange ? { ai_change: aiChange.slice(0, 300) } : {}) });
+      // Lo que se cambió con IA ya lo muestra el asistente; el aviso queda para lo editado a mano.
+      if (!aiChange) toast('Instrucciones aplicadas: el agente ya atiende así');
       await load();
       return true;
     } catch (e) {
@@ -68,7 +70,7 @@ export function agentPanel({ bots, board, name, context = '' }) {
       current = { bot: botId, revision: versions.draft.revision, personality, original: personality.prompt || '', blocks: fresh(personality.prompt) };
       if (mounted !== botId) {
         mounted = botId;
-        fill(assistantSlot, promptAssistant({ botId, getPrompt: () => (current?.bot === botId ? current.original : null), apply: (prompt) => save(prompt, botId), context }));
+        fill(assistantSlot, promptAssistant({ botId, getPrompt: () => (current?.bot === botId ? current.original : null), apply: (prompt, change) => save(prompt, botId, change), context }));
       }
       draw();
     } catch (e) {

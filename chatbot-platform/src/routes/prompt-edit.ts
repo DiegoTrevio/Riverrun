@@ -2,10 +2,11 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { botFor, requireRole } from '../access.js';
 import { agentDraft } from '../agent-quality.js';
-import { editPrompt } from '../agent-prompt-edit.js';
+import { editPrompt, promptChanges } from '../agent-prompt-edit.js';
 import { accountAi } from '../ai/budget.js';
 import type { AiProvider } from '../ai/provider.js';
 import { checkAiDesignRate } from '../automation/flow-ai.js';
+import { query } from '../db.js';
 import { logEvent } from '../logs.js';
 import * as store from '../store/index.js';
 import { hydrateChatbot } from '../types.js';
@@ -19,18 +20,23 @@ const Body = z.object({
 });
 
 /**
- * Propuesta de cambio a las instrucciones del agente, escrita en palabras. No guarda nada: el panel muestra el antes y
- * el después, y al aplicarlo usa el guardado de siempre (queda en el historial de versiones).
+ * Cambio a las instrucciones del agente, escrito en palabras. Aquí no se guarda nada: el panel lo aplica con el guardado
+ * de siempre (queda en el historial de versiones, con lo que se pidió como motivo). La IA recibe los cambios anteriores
+ * de ese historial para poder volver a lo que ya se agregó o se quitó.
  */
 export async function promptEditRoutes(api: FastifyInstance, ai: AiProvider) {
   api.post('/api/chatbots/:id/prompt-edit', { preHandler: requireRole('admin') }, async (req: any) => {
     const bot = await botFor(req.user, req.params.id);
     const body = parse(Body, req.body);
     checkAiDesignRate(bot.account_id);
-    const prompt = body.prompt ?? hydrateChatbot({ ...bot, ...(await agentDraft(bot)).configuration }).personality.prompt;
+    const draft = hydrateChatbot({ ...bot, ...(await agentDraft(bot)).configuration });
+    const prompt = body.prompt ?? draft.personality.prompt;
+    const releases = await query<{ prompt: string | null; reason: string; created_at: Date }>(
+      `SELECT configuration->'personality'->>'prompt' AS prompt, reason, created_at FROM agent_releases WHERE chatbot_id = $1 ORDER BY id DESC LIMIT 30`, [bot.id]);
+    const history = promptChanges(releases.map((r) => ({ prompt: r.prompt ?? '', at: r.created_at, reason: r.reason })));
     let result;
     try {
-      result = await editPrompt(accountAi(ai, bot.account_id, bot.id, 'prompt_edit'), { prompt, instruction: body.instruction, context: body.context, agent: bot.name });
+      result = await editPrompt(accountAi(ai, bot.account_id, bot.id, 'prompt_edit'), { prompt, instruction: body.instruction, context: body.context, agent: bot.name, history, timeZone: draft.ai.timezone });
     } catch (e: any) {
       await logEvent({ level: 'warn', source: 'ai', message: `No se pudo preparar el cambio de instrucciones: ${e?.message ?? e}`, accountId: bot.account_id, chatbotId: bot.id });
       throw e;

@@ -169,3 +169,24 @@ t('cambiar instrucciones escribiendo qué cambiar: propone, no guarda, y al apli
   assert.equal(none.question, 'No encontré nada sobre estacionamiento.');
   assert.equal((await h.authed('POST', `/api/chatbots/${h.botId}/prompt-edit`, { instruction: ' ' })).statusCode, 400);
 });
+
+t('lo que ya se cambió antes: el motivo queda en el historial y la IA lo recibe para volver a ello', async () => {
+  const before = (await h.authed('GET', `/api/chatbots/${h.botId}`)).json().personality.prompt;
+  const v = (await h.authed('GET', `/api/chatbots/${h.botId}/versions`)).json();
+  const saved = await h.authed('POST', `/api/chatbots/${h.botId}/version-apply`, { revision: v.draft.revision, patch: { personality: { ...v.draft_bot.personality, prompt: `${before}\n\nPromo 2x1 los martes.` } }, ai_change: 'Agregué la promo 2x1 de los martes.' });
+  assert.equal(saved.statusCode, 200, saved.body);
+  const [release] = (await pool.query(`SELECT reason FROM agent_releases WHERE chatbot_id = $1 ORDER BY id DESC LIMIT 1`, [h.botId])).rows;
+  assert.equal(release.reason, 'Cambio con IA: Agregué la promo 2x1 de los martes.');
+  let sent = '';
+  h.setScript((req: any) => {
+    sent = String(req.messages[1].content);
+    const line = Number(sent.match(/agregó \(sigue en \[(\d+)\]\): «Promo 2x1 los martes\.»/)?.[1] ?? 0);
+    return JSON.stringify({ summary: 'Quité la promo 2x1 que habías agregado.', question: '', operations: [{ op: 'remove', line, text: '' }] });
+  });
+  const r = await h.authed('POST', `/api/chatbots/${h.botId}/prompt-edit`, { instruction: 'quita la promo que agregué' });
+  assert.equal(r.statusCode, 200, r.body);
+  assert.match(sent, /<cambios_anteriores>\n1\. [^\n]* — Cambio con IA: Agregué la promo 2x1 de los martes\.\n {3}agregó \(sigue en \[5\]\): «Promo 2x1 los martes\.»/);
+  assert.match(sent, /— Guardado desde el panel\n {3}agregó \(sigue en \[4\]\): «Los domingos cerramos\.»\n {3}quitó: «- Envío gratis»/);
+  assert.match(sent, /Renglones que ya usan palabras de lo que pide[^\n]*: \[5\]\n/);
+  assert.equal(r.json().prompt, before);
+});
