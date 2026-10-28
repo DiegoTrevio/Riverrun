@@ -120,6 +120,18 @@ try {
       await page.evaluate(axe);
       const violations = await page.evaluate(async () => (await (window as any).axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa', 'best-practice'] } })).violations.map((v: any) => ({ id: v.id, impact: v.impact, nodes: v.nodes.map((n: any) => ({ target: n.target, summary: n.failureSummary })) })));
       results.screens.push({ role, route, violations });
+      // Nombres de controles: nada de «Dato 1» ni llaves en inglés (call_mode), y en un grupo no se repite el nombre genérico.
+      const badNames = await page.evaluate(() => {
+        const bad: string[] = [];
+        document.querySelectorAll('.sr-only').forEach((s) => { if (/^Dato \d+$/.test(s.textContent || '')) bad.push(s.textContent!); });
+        document.querySelectorAll('[aria-label]').forEach((el) => { const v = el.getAttribute('aria-label') || ''; if (/^[a-z]+([ _][a-z]+)*$/.test(v) && /(^| )(id|mode|type|status|role|key)$/.test(v)) bad.push(v); });
+        document.querySelectorAll('fieldset.field').forEach((fs) => {
+          const generic = [...fs.querySelectorAll(':scope > .sr-only[data-generic]')].map((s) => s.textContent);
+          if (new Set(generic).size < generic.length) bad.push(`${fs.querySelector('legend')?.textContent}: ${generic.join(', ')}`);
+        });
+        return bad;
+      });
+      for (const name of badNames) (results.badNames ||= []).push({ role, route, name });
       if (role === 'admin' && helpScreens[route]) await page.screenshot({ path: `${output}/${helpScreens[route]}`, type: 'jpeg', quality: 85, fullPage: true });
     }
     await context.close();
@@ -489,6 +501,129 @@ try {
     assert.equal((await pool.query(`SELECT data->>'cumpleanos' AS d FROM contacts WHERE phone = '5215599990001'`)).rows[0]?.d, '1985-11-03');
     await context.close(); checked('Datos de tus clientes: agregar un dato, editarlo en la ficha con su control, insertarlo como variable e importar contactos por CSV desde el celular');
   }
+  {
+    // Teclado y lector de pantalla en el panel (auditoría A1, A2, A3, A5 y medios).
+    const context = await contextFor('admin'); const page = await context.newPage(); page.setDefaultTimeout(10000);
+    page.on('pageerror', (error) => results.errors.push({ role: 'admin', message: error.message }));
+    await page.clock.install();
+    // A1: la bandeja se vuelve a dibujar cada 10 s y el foco sigue en la misma conversación; los filtros dicen cuál está puesto.
+    for (const n of ['5215500000101', '5215500000102']) { await h.webhook('Hola', { phone: n }); }
+    await h.idle();
+    await page.goto(`${base}/#/conversations`); await page.locator('.inbox-items a').nth(1).waitFor();
+    const target = page.locator('.inbox-items a').nth(1);
+    const href = await target.getAttribute('href');
+    await target.focus();
+    await h.webhook('Sigo aquí', { phone: '5215500000101' }); await h.idle();
+    await page.clock.runFor(11000); await page.waitForTimeout(300);
+    assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('href')), href, 'el foco sigue en la conversación tras el sondeo');
+    assert.equal(await page.getByRole('group', { name: 'Filtrar conversaciones' }).getByRole('button', { name: 'Todas' }).getAttribute('aria-pressed'), 'true');
+    // A2: los mensajes son un registro; uno nuevo se agrega sin reconstruir los demás y dice quién habla.
+    await page.goto(`${base}/#/conversation/${conv.id}`);
+    const log = page.getByRole('log', { name: 'Mensajes de la conversación' }); await log.locator('.bubble').first().waitFor();
+    await log.locator('.bubble').first().evaluate((b: any) => { b.__marcado = true; });
+    await h.webhook('Mensaje nuevo para el lector');
+    await h.idle(); await page.clock.runFor(6000);
+    await log.getByText('Mensaje nuevo para el lector').waitFor();
+    assert.equal(await log.locator('.bubble').first().evaluate((b: any) => b.__marcado === true), true, 'la burbuja anterior es el mismo nodo');
+    assert.match(await log.locator('.bubble', { hasText: 'Mensaje nuevo para el lector' }).innerText(), /^Cliente:/);
+    // Saltar al contenido, título de la pestaña y foco en el título.
+    await page.goto(`${base}/#/agentes`); await page.locator('.main h1').waitFor();
+    assert.match(await page.title(), /^Agentes · /);
+    // Desde el inicio del documento (como al abrir la página), el primer Tab llega a «Saltar al contenido».
+    await page.evaluate(() => { document.body.tabIndex = -1; document.body.focus(); document.body.removeAttribute('tabindex'); });
+    await page.keyboard.press('Tab');
+    assert.equal(await page.evaluate(() => document.activeElement?.textContent), 'Saltar al contenido');
+    await page.keyboard.press('Enter');
+    assert.equal(await page.evaluate(() => document.activeElement?.id), 'contenido');
+    // A5: el error del servidor va junto a su campo, con su ayuda, el foco en él y un solo aviso.
+    await page.goto(`${base}/#/users`); await page.locator('.main h1').waitFor();
+    const create = page.locator('details.card', { hasText: 'Crear usuario con contraseña inicial' });
+    await create.locator('summary').click();
+    const phone = create.getByLabel('WhatsApp para alertas (opcional)');
+    await create.getByLabel('Nombre', { exact: true }).fill('Persona sin lada');
+    await create.getByLabel('Correo', { exact: true }).fill('sinlada@auditoria.test');
+    await create.getByLabel('Contraseña inicial', { exact: true }).fill('auditoria123');
+    await phone.fill('5512345678');
+    await page.getByRole('button', { name: 'Crear usuario', exact: true }).click();
+    await page.getByText(/Incluye la lada del país/).first().waitFor();
+    assert.equal(await phone.getAttribute('aria-invalid'), 'true');
+    const describedBy = (await phone.getAttribute('aria-describedby')) || '';
+    assert.match(await page.evaluate((ids) => ids.split(' ').map((id) => document.getElementById(id)?.textContent).join(' | '), describedBy), /Incluye la lada del país/);
+    assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('name')), 'phone', 'el foco va al campo con el error');
+    assert.equal(await page.locator('#toast-alert').textContent(), '', 'sin repetir el error en el aviso emergente');
+    await phone.fill('5215512345678');
+    assert.equal(await phone.getAttribute('aria-invalid'), null, 'al corregir se quita la marca');
+    // Un aviso con un diálogo abierto queda dentro del diálogo, a la vista.
+    await page.evaluate(async () => {
+      const core = await import('/js/core.js');
+      core.dialog('Prueba', core.h('p', {}, 'Diálogo abierto'));
+      core.toast('Aviso sobre el diálogo');
+    });
+    await page.getByRole('dialog').getByText('Aviso sobre el diálogo').waitFor();
+    assert.equal(await page.evaluate(() => { const t = document.getElementById('toast')!; const r = t.getBoundingClientRect(); return document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)?.closest('#toast') !== null; }), true, 'el aviso se ve encima del diálogo');
+    await page.keyboard.press('Escape');
+    // Menú de la cuenta con teclado.
+    await page.getByRole('button', { name: /menú de tu cuenta$/ }).click();
+    assert.equal(await page.evaluate(() => document.activeElement?.textContent), 'Mi perfil');
+    await page.keyboard.press('ArrowDown');
+    assert.equal(await page.evaluate(() => document.activeElement?.textContent), 'Cerrar sesión');
+    await page.keyboard.press('Escape');
+    assert.match(await page.evaluate(() => document.activeElement?.getAttribute('aria-label') || ''), /menú de tu cuenta$/);
+    assert.equal(await page.getByRole('menu').count(), 0, 'el menú se cerró');
+    // Contraste calculado: borde de los campos (3:1) y botón rojo sólido (4.5:1), en claro y oscuro.
+    for (const scheme of ['light', 'dark'] as const) {
+      await page.emulateMedia({ colorScheme: scheme });
+      await page.evaluate('window.__name = (f) => f'); // tsx nombra las funciones con __name, que la página no tiene
+      const ratios = await page.evaluate(() => {
+        const rgb = (c: string) => (c.match(/[\d.]+/g) || []).slice(0, 3).map(Number);
+        const lum = (c: string) => { const [r, g, b] = rgb(c).map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }); return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
+        const ratio = (a: string, b: string) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+        const input = document.createElement('input'); document.querySelector('.main')!.append(input);
+        const danger = document.createElement('button'); danger.className = 'danger solid'; danger.textContent = 'Borrar'; document.querySelector('.main')!.append(danger);
+        const surface = getComputedStyle(input).backgroundColor;
+        const out = { border: ratio(getComputedStyle(input).borderTopColor, surface), danger: ratio(getComputedStyle(danger).color, getComputedStyle(danger).backgroundColor) };
+        input.remove(); danger.remove();
+        return out;
+      });
+      assert.ok(ratios.border >= 3, `borde de campos ${scheme}: ${ratios.border.toFixed(2)}:1`);
+      assert.ok(ratios.danger >= 4.5, `botón rojo ${scheme}: ${ratios.danger.toFixed(2)}:1`);
+    }
+    await page.emulateMedia({ colorScheme: 'light' });
+    // Borrar un pendiente pide confirmación.
+    assert.equal((await h.authed('POST', `/api/contacts/${conv.contact_id}/tasks`, { kind: 'pendiente', body: 'Llamar para confirmar la reservación' })).statusCode < 300, true);
+    await page.goto(`${base}/#/conversation/${conv.id}`);
+    await page.getByRole('button', { name: 'Borrar pendiente: Llamar para confirmar la reservación' }).click();
+    await page.getByRole('dialog', { name: 'Confirma la acción' }).getByText('¿Borrar el pendiente «Llamar para confirmar la reservación»?').waitFor();
+    await page.getByRole('dialog').getByRole('button', { name: 'Cancelar' }).click();
+    assert.equal((await pool.query(`SELECT count(*)::int AS n FROM contact_tasks WHERE body = 'Llamar para confirmar la reservación'`)).rows[0].n, 1);
+    await context.close();
+    // A3: en el celular, el menú lateral se abre con el foco dentro, deja el resto inerte y Escape lo cierra.
+    const phoneCtx = await contextFor('admin', { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+    const p = await phoneCtx.newPage(); p.setDefaultTimeout(10000);
+    await p.goto(`${base}/#/agentes`); await p.locator('.main h1').waitFor();
+    const toggle = p.getByRole('button', { name: 'Abrir el menú' });
+    assert.equal(await toggle.getAttribute('aria-expanded'), 'false');
+    await toggle.click();
+    assert.equal(await toggle.getAttribute('aria-expanded'), 'true');
+    await p.waitForFunction(() => !!document.activeElement?.closest('#menu-principal'));
+    assert.equal(await p.evaluate(() => document.querySelector('.content')?.hasAttribute('inert')), true, 'el resto queda inerte');
+    await p.keyboard.press('Escape');
+    assert.equal(await p.evaluate(() => document.activeElement?.getAttribute('aria-label')), 'Abrir el menú', 'el foco vuelve al botón');
+    assert.equal(await toggle.getAttribute('aria-expanded'), 'false');
+    // Sin teclado (lector en el celular) se cierra con su botón, y el foco vuelve igual al botón del menú.
+    await toggle.click();
+    await p.getByRole('button', { name: 'Cerrar el menú' }).click();
+    assert.equal(await p.evaluate(() => document.querySelector('.content')?.hasAttribute('inert')), false);
+    assert.equal(await p.evaluate(() => document.activeElement?.getAttribute('aria-label')), 'Abrir el menú');
+    // Las páginas públicas también tienen <main> y su título enfocado.
+    await p.context().clearCookies();
+    await p.goto(`${base}/#/olvide`); await p.locator('main h1').waitFor();
+    assert.equal(await p.evaluate(() => document.activeElement?.tagName), 'H1');
+    assert.match(await p.title(), / · /);
+    await phoneCtx.close();
+  }
+  checked('Teclado: la bandeja conserva el foco, los mensajes se anuncian, saltar al contenido, errores en su campo, avisos sobre diálogos, menús, contraste y confirmar al borrar');
+  assert.deepEqual(results.badNames || [], [], 'Controles con nombre genérico o una llave en inglés');
   assert.equal(results.errors.length, 0, JSON.stringify(results.errors));
   assert.deepEqual(cspViolations, [], 'La CSP bloqueó algo del panel o de una página pública');
   const serious = results.screens.flatMap((screen: any) => screen.violations.filter((v: any) => ['critical', 'serious'].includes(v.impact)).map((v: any) => ({ role: screen.role, route: screen.route, ...v })));

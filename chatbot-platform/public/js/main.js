@@ -1,5 +1,5 @@
 import { $app, errorCard, fill, h, recordUX, state } from './core.js';
-import { ensureBrand } from './brand.js';
+import { brand, ensureBrand } from './brand.js';
 import { loadWhatsappStatus } from './connect.js';
 import { clearTimers, isAdmin, loadSession } from './session.js';
 import { shell } from './shell.js';
@@ -110,7 +110,11 @@ export async function render() {
       pending.remove(); content.removeAttribute('aria-busy');
       recordUX(`navigate:${parts[0] || 'agentes'}`, performance.now() - start, 'ok');
       const title = content.querySelector('h1');
-      if (title) { title.tabIndex = -1; title.focus({ preventScroll: true }); }
+      // Una vista puede marcar dónde empieza (la bandeja: la conversación elegida, no el título de la lista).
+      const first = content.querySelector('[data-focus]') || title;
+      if (first) { first.tabIndex = -1; first.focus({ preventScroll: true }); }
+      // La pestaña dice en qué página estás (también para quien tiene varias abiertas o usa lector de pantalla).
+      document.title = title?.textContent.trim() ? `${title.textContent.trim()} · ${brand.name}` : brand.name;
       content.querySelectorAll('table').forEach((table) => { const labels = [...table.querySelectorAll('thead th')].map((th) => th.textContent); table.querySelectorAll('tbody tr').forEach((row) => [...row.children].forEach((td, i) => { if (labels[i]) td.dataset.label = labels[i]; })); });
     }
   } catch (e) {

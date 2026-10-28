@@ -119,17 +119,85 @@ function tableLabels(table) {
 }
 
 let toastTimer;
+let toastFrame;
 
+/**
+ * Avisos en dos regiones fijas de index.html (#toast con role=status y #toast-alert con role=alert): el lector ya las
+ * conoce cuando cambia su texto. Con un diálogo abierto se mueven dentro de él: fuera quedarían debajo y sin anunciarse.
+ */
 export function toast(msg, error = false) {
-  const t = document.getElementById('toast');
-  t.textContent = msg;
-  t.className = 'toast' + (error ? ' error' : '');
-  t.setAttribute('role', error ? 'alert' : 'status');
-  t.setAttribute('aria-live', error ? 'assertive' : 'polite');
-  t.hidden = false;
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (t.hidden = true), error ? 6000 : 2500);
+  // Si un diálogo propio se borró con las regiones dentro, se vuelven a crear.
+  const regions = [['toast', 'status'], ['toast-alert', 'alert']].map(([id, role]) => document.getElementById(id)
+    || h('div', { id, class: `toast${role === 'alert' ? ' error' : ''}`, role, 'aria-atomic': 'true' }));
+  for (const r of regions) r.textContent = '';
+  const t = regions[error ? 1 : 0];
+  clearTimeout(toastTimer); cancelAnimationFrame(toastFrame);
+  // El lugar se decide en el siguiente cuadro: un «Guardado» seguido de cerrar el diálogo sale en la página, no se pierde.
+  toastFrame = requestAnimationFrame(() => {
+    const host = [...document.querySelectorAll('dialog[open]')].pop() || document.body;
+    for (const r of regions) if (r.parentNode !== host) host.append(r);
+    t.textContent = msg;
+  });
+  toastTimer = setTimeout(() => { t.textContent = ''; }, error ? 6000 : 2500);
 }
+/** Al cerrar un diálogo, los avisos vuelven a la página. */
+function restoreToasts() {
+  for (const id of ['toast', 'toast-alert']) { const r = document.getElementById(id); if (r && r.parentNode !== document.body) document.body.append(r); }
+}
+
+/**
+ * Errores del servidor ("campo: mensaje") junto a su campo: aria-invalid, el mensaje en aria-describedby (sin quitar la
+ * ayuda) y el foco en el primero. El campo se busca por name o data-field (la ruta completa o su primera parte).
+ * Devuelve los errores que no encontraron campo.
+ */
+export function showFieldErrors(scope, issues = []) {
+  clearFieldErrors(scope);
+  const loose = [];
+  let first = null;
+  for (const issue of issues) {
+    const [path, ...rest] = String(issue).split(': ');
+    const message = rest.join(': ');
+    // Primero la ruta completa y luego su primera parte (un campo anidado sin control propio va a su grupo).
+    const find = (n) => scope.querySelector(`[name="${CSS.escape(n)}"]:not([type=hidden]),[data-field="${CSS.escape(n)}"]`);
+    const control = message ? find(path) || (path.includes('.') ? find(path.split('.')[0]) : null) : null;
+    if (!control) { loose.push(issue); continue; }
+    markFieldError(control, message);
+    first ||= control;
+  }
+  first?.focus();
+  return loose;
+}
+
+function markFieldError(control, message) {
+  if (!control.id) control.id = `field-${++fieldId}`;
+  const id = `${control.id}-error`;
+  let note = document.getElementById(id);
+  if (!note) {
+    note = h('small', { class: 'field-error', id });
+    // Dentro de su campo; nunca dentro de la etiqueta de una casilla (se volvería parte de su nombre).
+    const box = control.closest('.field');
+    if (box) box.append(note); else (control.closest('label') || control).after(note);
+  }
+  note.textContent = message;
+  if (!('describedby' in control.dataset)) control.dataset.describedby = control.getAttribute('aria-describedby') || '';
+  control.setAttribute('aria-describedby', [control.dataset.describedby, id].filter(Boolean).join(' '));
+  control.setAttribute('aria-invalid', 'true');
+  const clear = () => clearFieldError(control);
+  control.addEventListener('input', clear, { once: true });
+  control.addEventListener('change', clear, { once: true });
+}
+
+function clearFieldError(control) {
+  document.getElementById(`${control.id}-error`)?.remove();
+  control.removeAttribute('aria-invalid');
+  if ('describedby' in control.dataset) {
+    const original = control.dataset.describedby;
+    if (original) control.setAttribute('aria-describedby', original); else control.removeAttribute('aria-describedby');
+    delete control.dataset.describedby;
+  }
+}
+
+export function clearFieldErrors(scope) { scope?.querySelectorAll('[aria-invalid="true"]').forEach(clearFieldError); }
 
 const amountText = (n) => new Intl.NumberFormat('es-MX', { minimumFractionDigits: n % 1 ? 2 : 0, maximumFractionDigits: 2 }).format(n);
 
@@ -154,19 +222,24 @@ export function upgradeCard(e) {
 export async function run(fn, okMsg) {
   const target = document.activeElement?.closest('.card');
   target?.querySelector(':scope > .form-error')?.remove();
+  clearFieldErrors(target);
   try {
     const r = await fn();
     if (okMsg) toast(okMsg);
     return r === null || r === undefined ? { ok: true } : r;
   } catch (e) {
-    if (target?.isConnected) {
-      const box = e.limit
-        ? upgradeCard(e)
-        : h('div', { class: 'form-error banner danger', role: 'alert', tabindex: '-1' }, h('p', {}, e.issues ? 'Revisa los datos del formulario y vuelve a intentarlo.' : e.message || 'No se completó la acción.'), e.issues ? h('details', {}, h('summary', {}, 'Ver campos que necesitan revisión'), h('ul', {}, e.issues.map((issue) => h('li', {}, issue)))) : null);
-      target.append(box);
-      box.focus({ preventScroll: true });
-    }
-    toast(e.message || String(e), true);
+    if (!target?.isConnected) { toast(e.message || String(e), true); return undefined; }
+    // Cada error va junto a su campo (y el foco al primero); en la tarjeta solo quedan los que no tienen campo. Un solo
+    // aviso: la tarjeta lo anuncia, sin repetirlo abajo en el aviso emergente.
+    const loose = e.issues && !e.limit ? showFieldErrors(target, e.issues) : null;
+    const marked = !!loose && loose.length < e.issues.length;
+    const box = e.limit
+      ? upgradeCard(e)
+      : h('div', { class: 'form-error banner danger', role: 'alert', tabindex: '-1' },
+        h('p', {}, e.issues ? (marked ? 'Revisa los campos marcados.' : 'Revisa los datos del formulario y vuelve a intentarlo.') : e.message || 'No se completó la acción.'),
+        loose?.length ? h('ul', {}, loose.map((issue) => h('li', {}, issue))) : null);
+    target.append(box);
+    if (!marked) { box.focus({ preventScroll: true }); box.scrollIntoView?.({ block: 'nearest' }); }
     return undefined;
   }
 }
@@ -225,7 +298,11 @@ export function field(label, input, help) {
   const names = [];
   controls.forEach((control, i) => {
     if (control.closest('label') || (control.hasAttribute('aria-labelledby') && !control.dataset.autoLabel)) return;
-    const part = h('span', { class: 'sr-only', id: `${id}-${i}` }, control.type === 'number' ? 'Cantidad' : control.tagName === 'SELECT' ? 'Opción' : control.type === 'file' ? 'Archivo' : `Dato ${i + 1}`);
+    // El nombre de cada parte sale de lo que el control ya dice (data-label, placeholder o title); solo sin nada de eso
+    // queda una palabra genérica, marcada para que la prueba del panel la encuentre.
+    const own = control.dataset.label || control.getAttribute('aria-label') || control.getAttribute('placeholder') || control.title;
+    const generic = control.type === 'number' ? 'Cantidad' : control.tagName === 'SELECT' ? 'Opción' : control.type === 'file' ? 'Archivo' : 'Valor';
+    const part = h('span', { class: 'sr-only', id: `${id}-${i}`, 'data-generic': own ? null : '1' }, own || generic);
     control.removeAttribute('aria-label');
     control.setAttribute('aria-labelledby', `${legend.id} ${part.id}`);
     if (hint) control.setAttribute('aria-describedby', hint.id);
@@ -246,24 +323,29 @@ export function area(obj, key, opts = {}) {
 
 export function num(obj, key, opts = {}) {
   return h('input', {
-    type: 'number', step: opts.step ?? 1, min: opts.min, max: opts.max, value: obj[key] ?? '',
+    type: 'number', name: key, step: opts.step ?? 1, min: opts.min, max: opts.max, value: obj[key] ?? '',
     placeholder: opts.placeholder,
     oninput: (e) => (obj[key] = e.target.value === '' ? (opts.nullable ? null : 0) : Number(e.target.value)),
   });
 }
 
 export function select(obj, key, options, onchange) {
-  return h('select', { name: key, 'data-auto-label': '1', 'aria-label': key.replace(/_/g, ' '), onchange: (e) => { obj[key] = e.target.value; onchange?.(e.target.value); } },
+  // Sin aria-label con la llave (en inglés): la etiqueta la da field() o quien lo usa suelto.
+  return h('select', { name: key, 'data-auto-label': '1', onchange: (e) => { obj[key] = e.target.value; onchange?.(e.target.value); } },
     options.map(([v, l]) => h('option', { value: v, selected: obj[key] === v }, l)));
 }
 
+/** Nombre accesible de un control que va suelto (sin field()). */
+export const named = (el, label) => { el.setAttribute('aria-label', label); return el; };
+
 export function check(obj, key, label) {
-  return h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: !!obj[key], onchange: (e) => (obj[key] = e.target.checked) }), label);
+  return h('label', { class: 'check' }, h('input', { type: 'checkbox', name: key, checked: !!obj[key], onchange: (e) => (obj[key] = e.target.checked) }), label);
 }
 
 /** Lista de textos, uno por renglón. */
 export function lines(obj, key, opts = {}) {
   return h('textarea', {
+    name: key,
     class: opts.big ? 'big' : '',
     placeholder: opts.placeholder || 'Uno por renglón',
     value: (obj[key] || []).join('\n'),
@@ -303,7 +385,7 @@ export function dialog(title, content, accept = 'Continuar', validate = () => tr
     const titleId = `dialog-${++fieldId}`;
     const box = h('dialog', { class: 'card app-dialog', 'aria-labelledby': titleId });
     let closed = false;
-    const close = (ok) => { if (closed) return; closed = true; box.close(); box.remove(); if (previous?.isConnected) previous.focus(); resolve(ok); };
+    const close = (ok) => { if (closed) return; closed = true; box.close(); restoreToasts(); box.remove(); if (previous?.isConnected) previous.focus(); resolve(ok); };
     box.addEventListener('cancel', (e) => { e.preventDefault(); close(false); });
     box.append(h('h2', { id: titleId }, title), content, h('div', { class: 'row dialog-actions' }, h('button', { onclick: () => close(false) }, 'Cancelar'), h('button', { class: 'primary', onclick: () => { if (validate()) close(true); } }, accept)));
     document.body.append(box); box.showModal();
@@ -315,4 +397,4 @@ export async function ask(message, value = '', opts = {}) {
   const accepted = await dialog(opts.title || 'Completa la información', field(message, input), opts.accept || 'Guardar', () => input.reportValidity());
   return accepted ? input.value : null;
 }
-export const confirmAction = (message) => dialog('Confirma la acción', h('p', {}, message));
+export const confirmAction = (message, accept) => dialog('Confirma la acción', h('p', {}, message), accept);

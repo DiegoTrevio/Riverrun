@@ -25,7 +25,7 @@ export function renderLogin() {
     const ok = await run(() => api('POST', '/api/login', f));
     if (ok) { state.me = null; location.hash = '#/'; }
   };
-  fill($app,
+  publicPage(
     h('form', { class: 'card login', onsubmit: submit },
       brand.logo ? h('div', { style: 'text-align:center;margin-bottom:8px' }, brandMark(48)) : null,
       h('h1', {}, brand.name),
@@ -47,7 +47,17 @@ export function renderLogin() {
 /* ------------------------------ Registro y recuperación (públicas) ------------------------------ */
 
 function publicCard(title, ...kids) {
-  fill($app, h('div', { class: 'card login', style: 'max-width:440px' }, h('h1', {}, title), kids));
+  publicPage(h('div', { class: 'card login', style: 'max-width:440px' }, h('h1', {}, title), kids));
+}
+
+/** Las páginas públicas también son un <main>: el título de la pestaña dice dónde estás y el foco empieza en el título. */
+function publicPage(card) {
+  fill($app, h('main', { id: 'contenido' }, card));
+  const title = card.querySelector('h1');
+  if (!title) return;
+  document.title = title.textContent === brand.name ? brand.name : `${title.textContent} · ${brand.name}`;
+  title.tabIndex = -1;
+  title.focus({ preventScroll: true });
 }
 
 /** Casilla de aceptación de términos y aviso de privacidad (se guarda como constancia al crear la cuenta). */
