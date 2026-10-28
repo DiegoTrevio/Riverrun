@@ -116,6 +116,12 @@ t('«Enviar prueba» de un evento manda un ejemplo real marcado test; la entrega
   assert.equal(sample.test, true);
   assert.ok(sample.data.receivable.id && sample.data.contact.id, 'con el cobro y el contacto reales de la cuenta');
   assert.equal((await h.authed('POST', `/api/webhook-endpoints/${ep.id}/test`, { event: 'nada' })).statusCode, 400);
+  // La prueba de conexión no lleva datos de clientes reales.
+  assert.equal((await h.authed('POST', `/api/webhook-endpoints/${ep.id}/test`, {})).json().ok, true);
+  const ping = at('/zap', 'ping').at(-1)!.body;
+  assert.equal(ping.test, true);
+  assert.equal(ping.data.contact.name, 'Ana López', 'el contacto de ejemplo');
+  assert.equal((await pool.query(`SELECT count(*)::int n FROM contacts WHERE id::text = $1`, [ping.data.contact.id])).rows[0].n, 0);
   // Un evento real: queda guardado y se puede ver y reenviar.
   const c = (await call('POST', '/api/v1/contacts', { phone: '5215581100004' })).json();
   await call('PUT', `/api/v1/contacts/${c.id}`, { add_tags: ['zap'] });

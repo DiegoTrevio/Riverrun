@@ -206,9 +206,16 @@ export async function apiV1Routes(app: FastifyInstance, service: ChatService) {
       });
       v1.addHook('onSend', async (req: any, reply, payload) => {
         if (!req.idempotency) return payload;
-        // Un error del servidor no se guarda: así el reintento sí vuelve a intentarlo.
-        if (reply.statusCode >= 500) await query(`DELETE FROM api_idempotency WHERE api_key_id = $1 AND idem_key = $2`, [req.apiKey.id, req.idempotency]);
-        else await query(`UPDATE api_idempotency SET status_code = $3, response = $4 WHERE api_key_id = $1 AND idem_key = $2`, [req.apiKey.id, req.idempotency, reply.statusCode, typeof payload === 'string' ? payload : String(payload ?? '')]);
+        try {
+          // Solo se guarda lo que salió bien. Un error (datos inválidos, no se pudo enviar, el servidor falló) no hizo
+          // nada: el reintento con la misma llave lo vuelve a intentar, también ya corregido.
+          if (reply.statusCode >= 200 && reply.statusCode < 300) await query(`UPDATE api_idempotency SET status_code = $3, response = $4 WHERE api_key_id = $1 AND idem_key = $2`, [req.apiKey.id, req.idempotency, reply.statusCode, typeof payload === 'string' ? payload : String(payload ?? '')]);
+          else await query(`DELETE FROM api_idempotency WHERE api_key_id = $1 AND idem_key = $2`, [req.apiKey.id, req.idempotency]);
+        } catch (e: any) {
+          // La operación ya se hizo: la respuesta sale igual. Sin la respuesta guardada, la llave queda «en curso» unos
+          // minutos y después se libera.
+          await logEvent({ level: 'error', source: 'system', message: `API: no se pudo guardar la respuesta de Idempotency-Key: ${e?.message ?? e}`, accountId: req.apiKey.account_id }).catch(() => undefined);
+        }
         return payload;
       });
 

@@ -115,13 +115,12 @@ function conversationPayload(conv: Conversation, channel: Pick<Channel, 'id' | '
   };
 }
 
-/** La cita como la devuelve GET /api/v1/appointments. */
+/**
+ * La cita como la devuelve GET /api/v1/appointments: todos sus campos con sus valores tal cual (los mismos que traía el
+ * aviso antes, para no romper a quien ya los usa), más el nombre de la persona asignada.
+ */
 export function appointmentPayload(a: Appointment) {
-  return {
-    id: a.id, service_id: a.service_id, service_name: a.service_name, kind: a.kind, status: a.status, starts_at: a.starts_at, ends_at: a.ends_at,
-    customer_name: a.customer_name, customer_phone: a.customer_phone || null, customer_email: a.customer_email || null, notes: a.notes, source: a.source,
-    contact_id: a.contact_id, conversation_id: a.conversation_id, assigned_user_id: a.assigned_user_id, meeting_url: a.meeting_url || null, cancel_reason: a.cancel_reason || null,
-  };
+  return { ...a, meeting_url: a.meeting_url ?? null, customer_email: a.customer_email ?? null, assigned_user_name: a.assigned_user_name ?? null };
 }
 
 /** Lo que se envía del contacto y la conversación (sin datos internos). */
@@ -238,12 +237,15 @@ export async function deliver(payload: { endpoint_id: string; event_id: string; 
   // Las tareas de antes las reintenta el planificador (3 intentos), como cuando se programaron.
   if (legacy && attempt < 3) throw new Error(r.error);
   if (!legacy && attempt < MAX_ATTEMPTS) {
-    await scheduleJob({ account_id: ep.account_id, type: 'webhook_delivery', payload: { endpoint_id: ep.id, event_id: payload.event_id, event: payload.event, attempt: attempt + 1 }, run_at: new Date(Date.now() + RETRY_MINUTES[attempt - 1] * 60_000) });
+    // Con dedupe_key: si el proceso se reinicia justo aquí y la tarea corre otra vez, no quedan dos reintentos.
+    await scheduleJob({ account_id: ep.account_id, type: 'webhook_delivery', payload: { endpoint_id: ep.id, event_id: payload.event_id, event: payload.event, attempt: attempt + 1 }, run_at: new Date(Date.now() + RETRY_MINUTES[attempt - 1] * 60_000), dedupe_key: `whdel:${ep.id}:${payload.event_id}:${attempt + 1}` });
     return;
   }
   // Cada evento cuenta una vez (tras agotar sus intentos), no una por intento.
   const failures = (await queryOne<{ consecutive_failures: number }>(`UPDATE webhook_endpoints SET consecutive_failures = consecutive_failures + 1 WHERE id = $1 RETURNING consecutive_failures`, [ep.id]))?.consecutive_failures ?? 0;
   if (failures >= MAX_CONSECUTIVE_FAILURES) await pauseEndpoint(ep, `Se pausó tras ${failures} fallos seguidos (último: ${r.error})`);
+  // Una tarea de antes termina como fallida, igual que antes (el planificador ya no la reintenta: es su tercer intento).
+  if (legacy) throw new Error(r.error);
 }
 
 /** Reenvía un evento guardado a un endpoint (desde «Ver entregas»). null si ya no está guardado. */
@@ -301,7 +303,8 @@ export async function sampleEventData(accountId: string, type: PublicEvent): Pro
       return { ...base, pipeline: { id: '00000000-0000-4000-8000-000000000007', name: 'Ventas', stage_id: 'interesado', stage_name: 'Interesado', stage_kind: 'open', from_stage_id: 'nuevo', from_stage_name: 'Nuevo', reason: 'El cliente pidió precios', value: 0, currency: 'MXN' } };
     case 'conversation.sent':
       return { content: 'summary', reason: 'prueba desde el panel', trigger: { event: 'manual' }, ...base, summary: { text: (base.conversation as { summary: string | null }).summary, analysis: {}, generated_at: null, stale: false, warning: null } };
-    case 'ping': return { message: 'Prueba de conexión desde el panel', contact: base.contact };
+    // La prueba de conexión no lleva datos de clientes: puede ir a una dirección que todavía no está verificada.
+    case 'ping': return { message: 'Prueba de conexión desde el panel', contact: SAMPLE_CONTACT };
     default: return base;
   }
 }

@@ -60,6 +60,8 @@ export async function eraseContact(contactId: string, guard: { accountId?: strin
          OR body->'data'->'appointment'->>'contact_id' = $2 OR body->'data'->'receivable'->>'contact_id' = $2)`,
       [contact.account_id, contactId, convIds],
     );
+    // Respuestas de la API guardadas por Idempotency-Key (24 h) que traen sus datos: una repetición ya no los devuelve.
+    await client.query(`DELETE FROM api_idempotency WHERE api_key_id IN (SELECT id FROM api_keys WHERE account_id = $1) AND strpos(response, $2) > 0`, [contact.account_id, contactId]);
     await client.query(`DELETE FROM email_threads WHERE channel_id = $1 AND address = lower($2)`, [contact.channel_id, contact.external_id]);
     await client.query('DELETE FROM inbound_receipts WHERE channel_id=$1 AND external_id=$2',[contact.channel_id,contact.external_id]);
     await client.query('DELETE FROM query_embedding_cache WHERE account_id=$1',[contact.account_id]);

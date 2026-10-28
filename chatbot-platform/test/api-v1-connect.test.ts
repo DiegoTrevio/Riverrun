@@ -131,11 +131,26 @@ t('Idempotency-Key: repetir devuelve lo mismo sin volver a enviar; otro cuerpo c
   const other = await call(writeKey, 'POST', '/api/v1/messages', { ...body, text: 'Otro texto' }, { 'idempotency-key': 'pedido-77' });
   assert.equal(other.statusCode, 409);
   assert.equal(other.json().code, 'idempotency_conflict');
-  // Un error de datos también se guarda (repetirlo da el mismo error); la otra llave de la cuenta no lo ve.
+  // Un error no se guarda: no hizo nada, así que con la misma llave se puede repetir ya corregido.
   const e1 = await call(writeKey, 'POST', '/api/v1/contacts', { phone: 'x' }, { 'idempotency-key': 'k2' });
-  const e2 = await call(writeKey, 'POST', '/api/v1/contacts', { phone: 'x' }, { 'idempotency-key': 'k2' });
   assert.equal(e1.statusCode, 400);
-  assert.equal(e2.headers['idempotent-replayed'], 'true');
+  const fixed = await call(writeKey, 'POST', '/api/v1/contacts', { phone: '5215581000009', name: 'Corregido' }, { 'idempotency-key': 'k2' });
+  assert.equal(fixed.statusCode, 201, fixed.body);
+  assert.equal(fixed.headers['idempotent-replayed'], undefined);
+  // Un mensaje que no salió (se dio de baja) se reintenta con la misma llave cuando ya se puede.
+  const c9 = fixed.json();
+  await call(writeKey, 'PUT', `/api/v1/contacts/${c9.id}`, { opted_out: true });
+  const no = await call(writeKey, 'POST', '/api/v1/messages', { contact_id: c9.id, text: 'Tu factura' }, { 'idempotency-key': 'msg-9' });
+  assert.equal(no.statusCode, 422);
+  await call(writeKey, 'PUT', `/api/v1/contacts/${c9.id}`, { opted_out: false });
+  const yes = await call(writeKey, 'POST', '/api/v1/messages', { contact_id: c9.id, text: 'Tu factura' }, { 'idempotency-key': 'msg-9' });
+  assert.equal(yes.statusCode, 200, yes.body);
+  assert.equal(yes.json().sent, true);
+  // Al borrar los datos del cliente se borran también las respuestas guardadas que los traen.
+  assert.equal((await h.authed('DELETE', `/api/contacts/${c9.id}`)).statusCode, 200);
+  assert.equal((await pool.query(`SELECT count(*)::int n FROM api_idempotency WHERE strpos(response, $1) > 0`, [c9.id])).rows[0].n, 0);
+  const after = await call(writeKey, 'POST', '/api/v1/contacts', { phone: '5215581000009', name: 'Corregido' }, { 'idempotency-key': 'k2' });
+  assert.notEqual(after.json().id, c9.id, 'una repetición ya no devuelve al cliente borrado');
   // Si la primera sigue en curso, se avisa en vez de correrla dos veces.
   const keyId = (await pool.query(`SELECT id FROM api_keys WHERE name = 'CRM' AND account_id = $1`, [h.accountId])).rows[0].id;
   const pending = { phone: '5215581000007' };
