@@ -50,6 +50,7 @@ function fillParams(url: string): string | null {
     [/^\/api\/messages\/:mid/, 'message'],
     [/^\/api\/knowledge\/:kid/, 'knowledge'],
     [/^\/api\/sequences\/:id/, 'sequence'],
+    [/^\/api\/flow-boards\/:id/, 'flow_board'],
     [/^\/api\/services\/:id/, 'service'],
     [/^\/api\/users\/:id/, 'user'],
     [/^\/api\/ai-prices\/:model/, 'model'],
@@ -146,6 +147,7 @@ before(async () => {
   );
   B.automation = (await ok200(adminB('POST', '/api/automations', { name: `Regla ${MARK}`, trigger: { type: 'new_contact' }, actions: [{ type: 'add_tag', tag: 'b' }] }))).id;
   B.sequence = (await ok200(adminB('POST', '/api/sequences', { name: `Secuencia ${MARK}`, steps: [{ delay_value: 1, delay_unit: 'days', text: 'hola' }] }))).id;
+  B.flow_board = (await ok200(adminB('POST', '/api/flow-boards', { name: `Lienzo ${MARK}`, board: { nodes: [{ id: 't1', type: 'trigger', x: 0, y: 0, data: { trigger: null } }, { id: 'm1', type: 'message', x: 0, y: 200, data: { text: `hola ${MARK}` } }], edges: [{ id: 'e1', from: 't1', port: 'out', to: 'm1' }] } }))).id;
   B.campaign = (await ok200(adminB('POST', '/api/campaigns', { name: `Campaña ${MARK}`, channel_id: B.channel, message: 'promo' }))).id;
   B.service = (await ok200(adminB('POST', '/api/services', { name: `Servicio ${MARK}`, duration_minutes: 30 }))).id;
   const slot = (await adminB('GET', `/api/services/${B.service}/slots`)).json()[0];
@@ -226,6 +228,7 @@ t('todas las rutas con :id de la cuenta B: el admin y el agente de A reciben 403
   assert.equal(bot.name, `Bot ${MARK}`);
   assert.equal((await adminB('GET', '/api/automations')).json().length, 1);
   assert.equal((await adminB('GET', '/api/sequences')).json().length, 1);
+  assert.equal((await adminB('GET', `/api/flow-boards/${B.flow_board}`)).json().revision, 0, 'nadie de A guardó ni publicó el lienzo de B');
   assert.equal((await adminB('GET', `/api/appointments`)).json().find((a: any) => a.id === B.appointment).status, 'confirmed');
   assert.equal((await adminB('GET', '/api/users')).json().length, 2);
   assert.equal((await adminB('GET','/api/contact-views')).json().length,1);

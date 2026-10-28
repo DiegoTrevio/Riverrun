@@ -60,6 +60,25 @@ const PATHS = {
   threads: '<circle cx="12" cy="12" r="3.6"/><path d="M15.6 12v1.4a2.6 2.6 0 0 0 5.2 0V12A8.8 8.8 0 1 0 17.4 19"/>',
   pinterest: '<circle cx="12" cy="12" r="9"/><path d="M10.6 8.6c3-1.2 5.8.4 5.3 3.4-.4 2.5-2.7 3.4-4.2 2.6M11.6 10.4 9.2 20.6"/>',
   'x-logo': '<path d="M4.5 4h4L19.5 20h-4zM19.5 4l-6.6 7.2M4.5 20l6.6-7.2"/>',
+  /* Lienzo de flujos */
+  undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>',
+  redo: '<path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  minus: '<path d="M5 12h14"/>',
+  fit: '<path d="M4 9V5a1 1 0 0 1 1-1h4M15 4h4a1 1 0 0 1 1 1v4M20 15v4a1 1 0 0 1-1 1h-4M9 20H5a1 1 0 0 1-1-1v-4"/>',
+  note: '<path d="M5 4h14a1 1 0 0 1 1 1v9l-6 6H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/><path d="M14 20v-5a1 1 0 0 1 1-1h5"/>',
+  type: '<path d="M5 6V4h14v2M12 4v16M9 20h6"/>',
+  trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
+  copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/>',
+  play: '<path d="M7 4.5v15l12-7.5z"/>',
+  'arrow-left': '<path d="M19 12H5M11 6l-6 6 6 6"/>',
+  tag: '<path d="M3.5 12.5V4.5a1 1 0 0 1 1-1h8l8 8-9 9z"/><circle cx="8.5" cy="8.5" r="1.5"/>',
+  flag: '<path d="M5 21V4M5 4h11l-2 4 2 4H5"/>',
+  branch: '<circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="9" r="2"/><path d="M6 7v10M18 11c0 4-6 3-11.5 6.5"/>',
+  list: '<path d="M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01"/>',
+  more: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
+  pause: '<path d="M8 5v14M16 5v14"/>',
+  layout: '<rect x="4" y="3" width="7" height="6" rx="1"/><rect x="13" y="15" width="7" height="6" rx="1"/><path d="M7.5 9v4.5a1.5 1.5 0 0 0 1.5 1.5h4"/>',
 };
 
 /** Ícono de línea decorativo (el texto de al lado dice qué es). */

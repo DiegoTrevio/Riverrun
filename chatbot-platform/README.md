@@ -345,6 +345,14 @@ Detalles por plataforma:
 
 Menú **Automatización** (administradores). Todo corre sobre tareas programadas guardadas en PostgreSQL, así que sobreviven a reinicios del servidor.
 
+### Lienzo de flujos (como una pizarra)
+
+**Automatización → Lienzo** (la pestaña por omisión) dibuja un flujo completo sin formularios: inicio (cuándo empieza), mensajes con texto, foto o archivo y hasta 3 botones de respuesta y 2 de enlace, esperas y acciones (etiqueta, pasar con una persona, avisar al equipo, empezar otro flujo, terminar), unidos con líneas. Notas, títulos y fotos de referencia viven solo en el lienzo. Se guarda solo (con número de revisión: dos pestañas no se pisan), tiene deshacer, plantillas, vista previa tipo WhatsApp y, en el teléfono, una vista de lista con hoja inferior.
+
+Al **publicar**, el servidor lo compila (`src/automation/flow-board.ts`, sin base de datos y con pruebas) y en una sola transacción crea o actualiza: una **regla** con el disparador, sus condiciones y las acciones previas al primer mensaje, que inicia el **flujo principal**; y un **flujo (secuencia)** por cada rama de botón. Un botón unido a lo que sigue en la misma línea es «seguir ya»; unido a otro mensaje, «empezar esa rama»; a una acción, esa acción; sin línea, «terminar». Volver a publicar actualiza los mismos (`published_map`) y borra las ramas que se quitaron; mover tarjetas no cuenta como cambio por publicar (`published_hash`). Pausar desactiva la regla y sus flujos; borrar el lienzo borra lo que publicó. Las reglas y flujos que salieron de un lienzo llevan `board_id` y el panel avisa que se editan desde ahí.
+
+Desde el lienzo, **Instrucciones del agente** edita por párrafos el texto «Cómo debe atender» del agente (cambiar, quitar, agregar u ordenar, con vista antes/después) y lo aplica con `/api/chatbots/:id/version-apply`, así que queda en su historial de versiones.
+
 ### Reglas: "cuando pase X, si se cumple Y, haz Z"
 
 | Cuándo (disparador) | Solo si (condiciones) | Hacer (acciones) |
@@ -719,6 +727,7 @@ Panel (bajo `/api`, con sesión por cookie; todo se limita a la cuenta del usuar
 - Canales: `/api/channels`, `/:id/setup`, `/:id/status`, `/:id/rotate-token`, `/:id/whatsapp/{session,connect,logout,test}` (`session`: crea la instancia si hace falta y devuelve el QR vigente o el código por número; el panel la consulta cada 3 s)
 - Conversaciones: `/api/conversations`, `/:id/{takeover,release,close,send,send-image,reset-memory,automation,sequences}`, `/:id/send-to-app` y `/:id/app-destinations` (enviar la conversación a tu app: resumen, completa o ambos; ver [integraciones](docs/integraciones.md#enviar-conversaciones-a-tu-app-resumen-o-completa))
 - Automatización: `/api/automations`, `/api/sequences`, `/api/campaigns` (`/:id/{preview,launch,cancel,recipients}`), `/api/settings`
+- Lienzo de flujos: `/api/flow-boards` (`/:id`, `/:id/{check,publish,pause,duplicate}`)
 - Agenda: `/api/services` (`/:id/slots`), `/api/appointments` (`/:id/cancel`), `/api/agenda/info`
 - Notificaciones: `/api/notifications`, `/api/notifications/read`
 - Contactos: `/api/contacts/:id`

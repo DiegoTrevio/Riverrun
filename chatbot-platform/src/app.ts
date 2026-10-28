@@ -13,6 +13,7 @@ import { requireAuth } from './auth.js';
 import { adminRoutes, sessionRoutes } from './routes/admin.js';
 import { agendaRoutes, calendarRoutes } from './routes/agenda.js';
 import { automationRoutes } from './routes/automation.js';
+import { flowBoardRoutes } from './routes/flow-boards.js';
 import { channelRoutes } from './routes/channels.js';
 import { chatbotRoutes } from './routes/chatbots.js';
 import { conversationRoutes } from './routes/conversations.js';
@@ -176,6 +177,7 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
     await socialPostRoutes(api);
     await conversationRoutes(api, service);
     await automationRoutes(api, service);
+    await flowBoardRoutes(api);
     await pipelineRoutes(api, service);
     await quoteRoutes(api, service);
     await receivableRoutes(api, service);

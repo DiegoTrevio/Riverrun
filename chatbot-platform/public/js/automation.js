@@ -8,9 +8,17 @@ import { render } from './main.js';
 import { withAcct } from './session.js';
 import { waTemplateField } from './wa-template-field.js';
 
-const AUTO_TABS = [['rules', 'Reglas'], ['sequences', 'Flujos'], ['campaigns', 'Campañas']];
+const AUTO_TABS = [['lienzo', 'Lienzo'], ['rules', 'Reglas'], ['sequences', 'Flujos'], ['campaigns', 'Campañas']];
+
+/** Lo que salió de un lienzo lo dice, con un enlace para editarlo ahí (al volver a publicar se reemplaza). */
+const fromBoard = (item) => (item.board_id ? h('span', { class: 'badge', title: 'Se edita en el lienzo' }, 'del lienzo') : null);
+const boardNotice = (item, what) => (item?.board_id ? h('div', { class: 'banner warn', role: 'note', style: 'margin-bottom:16px' },
+  h('strong', {}, `${what === 'regla' ? 'Esta regla' : 'Este flujo'} se dibujó en el lienzo. `), 'Si lo cambias aquí, al volver a publicar el lienzo se reemplaza. ',
+  h('a', { class: 'btn small', href: `#/automation/lienzo/${item.board_id}` }, 'Editar en el lienzo')) : null);
 
 export async function viewAutomation(root, tab, id) {
+  // El lienzo de un flujo ocupa toda la pantalla (como una pizarra), sin el título ni las pestañas.
+  if (tab === 'lienzo' && id) return (await import('./flowboard.js')).viewFlowBoard(root, id);
   // El horario y los avisos viven en Ajustes (su propio título, sin las pestañas de automatización).
   root.append(...(tab === 'settings'
     ? [h('h1', {}, 'Horario y avisos')]
@@ -18,6 +26,7 @@ export async function viewAutomation(root, tab, id) {
   if (needAccount(root)) return;
   const body = h('div');
   root.append(body);
+  if (tab === 'lienzo') return (await import('./flowboard.js')).viewFlowBoards(body);
   if (tab === 'rules') return id ? editRule(body, id) : listRules(body);
   if (tab === 'sequences') return id ? editSequence(body, id) : listSequences(body);
   if (tab === 'campaigns') return id ? editCampaign(body, id) : listCampaigns(body);
@@ -177,7 +186,7 @@ async function listRules(root) {
       rules.length
         ? h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Regla'), h('th', {}, 'Cuando'), h('th', {}, 'Acciones'), h('th', {}, 'Veces'), h('th', {}, 'Acciones'))),
             h('tbody', {}, rules.map((r) => h('tr', {},
-              h('td', {}, h('a', { href: `#/automation/rules/${r.id}` }, h('strong', {}, r.name)), ' ', r.active ? null : h('span', { class: 'badge orange' }, 'inactiva'), r.stop_ai ? h('div', { class: 'small muted' }, 'la IA no responde') : null, r.once_per_conversation ? h('div', { class: 'small muted' }, 'una vez por conversación') : null),
+              h('td', {}, h('a', { href: `#/automation/rules/${r.id}` }, h('strong', {}, r.name)), ' ', r.active ? null : h('span', { class: 'badge orange' }, 'inactiva'), ' ', fromBoard(r), r.stop_ai ? h('div', { class: 'small muted' }, 'la IA no responde') : null, r.once_per_conversation ? h('div', { class: 'small muted' }, 'una vez por conversación') : null),
               h('td', { class: 'small' }, triggerSummary(r.trigger), r.conditions.length ? h('div', { class: 'muted' }, `+ ${r.conditions.length} condición(es)`) : null),
               h('td', { class: 'small' }, r.actions.map((a) => ACTIONS[a.type]).join(' → ')),
               h('td', { class: 'small muted' }, r.run_count, r.last_run_at ? h('div', {}, fmtDate(r.last_run_at)) : null),
@@ -368,7 +377,7 @@ async function editRule(root, id) {
   const existing = id === 'new' ? null : (await api('GET', withAcct('/api/automations'))).find((r) => r.id === id);
   if (id !== 'new' && !existing) throw new Error('Regla no encontrada');
   const r = draftModel(`rule:${id}`, existing || { name: '', active: false, chatbot_id: null, stop_ai: false, once_per_conversation: false, priority: 0, trigger: { type: 'message_received', match: 'keywords', keywords: [] }, conditions: [], actions: [] }, false);
-  root.append(draftNotice([`rule:${id}`], render));
+  root.append(draftNotice([`rule:${id}`], render), boardNotice(existing, 'regla'));
   initializeDraftDefaults(`rule:${id}`, () => { r.chatbot_id ??= ''; });
   const trigBox = h('div');
   const drawTrigger = () => {
@@ -454,7 +463,7 @@ async function listSequences(root) {
       seqs.length
         ? h('div', { class: 'table-scroll' }, h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Flujo'), h('th', {}, 'Mensajes'), h('th', {}, 'En curso'), h('th', {}, 'Completados'), h('th', {}, 'Detenidos'), h('th', {}, ''))),
             h('tbody', {}, seqs.map((q) => h('tr', { class: 'click', onclick: () => (location.hash = `#/automation/sequences/${q.id}`) },
-              h('td', {}, h('strong', {}, q.name), q.active ? null : h('span', { class: 'badge orange' }, ' inactivo'), q.steps.some((st) => st.buttons?.length) ? h('span', { class: 'badge' }, ' con botones') : null),
+              h('td', {}, h('strong', {}, q.name), q.active ? null : h('span', { class: 'badge orange' }, ' inactivo'), q.steps.some((st) => st.buttons?.length) ? h('span', { class: 'badge' }, ' con botones') : null, ' ', fromBoard(q)),
               h('td', {}, q.steps.length),
               h('td', {}, q.enrollments.active ?? 0), h('td', {}, q.enrollments.completed ?? 0), h('td', {}, q.enrollments.stopped ?? 0),
               h('td', {}, q.active ? h('a', { class: 'btn small', href: `#/automation/campaigns/new?flow=${q.id}`, onclick: (e) => e.stopPropagation() }, 'Enviar a un grupo') : null))))))
@@ -520,7 +529,7 @@ async function editSequence(root, id) {
   if (id !== 'new' && !existing) throw new Error('Secuencia no encontrada');
   const q = draftModel(`sequence:${id}`, existing || { name: '', active: false, stop_on_reply: true, business_hours_only: true, steps: [{ delay_value: 0, delay_unit: 'minutes', at_time: '', text: '', image_id: '', conditions: [], buttons: [], wait_for_choice: false, if_no_choice: 'end' }] }, false);
   initializeDraftDefaults(`sequence:${id}`, () => q.steps.forEach(stepDefaults));
-  root.append(draftNotice([`sequence:${id}`], render));
+  root.append(draftNotice([`sequence:${id}`], render), boardNotice(existing, 'flujo'));
   const list = h('div');
   const timeline = h('ol', { class: 'small' });
   const drawTimeline = () => fill(timeline, q.steps.map((st, i) => h('li', {}, `Mensaje ${i + 1}: ${st.delay_value} ${Object.fromEntries(UNITS)[st.delay_unit]} ${i ? 'después del anterior' : 'desde el inicio'}${st.at_time ? `; siguiente ${st.at_time}` : ''}${q.business_hours_only ? '; respeta el horario del negocio' : ''}`)));
