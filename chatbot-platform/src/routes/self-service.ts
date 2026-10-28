@@ -19,6 +19,7 @@ import { toComponents } from '../observability/health.js';
 import { STATE_LABEL, overallState } from '../observability/status.js';
 import { CAPTCHA_MESSAGE, captchaEnabled, verifyCaptcha } from '../signup-guard.js';
 import * as store from '../store/index.js';
+import { publicPalette } from '../public-colors.js';
 import { parse } from './util.js';
 
 const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -39,7 +40,8 @@ async function brandFor(req: any) {
 }
 
 function page(o: { title: string; brand: ReturnType<typeof publicBrand>; body: string; head?: string; noindex?: boolean }) {
-  const accent = HEX.test(o.brand.color) ? o.brand.color : '';
+  // Colores con contraste AA en los dos temas, también con el color de una marca blanca.
+  const palette = publicPalette(HEX.test(o.brand.color) ? o.brand.color : '');
   return `<!doctype html>
 <html lang="es">
 <head>
@@ -48,11 +50,11 @@ function page(o: { title: string; brand: ReturnType<typeof publicBrand>; body: s
 ${o.noindex ? '<meta name="robots" content="noindex" />' : ''}
 <title>${esc(o.title)} — ${esc(o.brand.name)}</title>
 <style>
-  :root { --accent: ${accent || '#155eef'}; --text: #101828; --muted: #475467; --border: #e4e7ec; --bg: #f2f4f7; --panel: #fff; --ok: #067647; --warn: #b54708; --bad: #b42318; }
-  @media (prefers-color-scheme: dark) { :root { ${accent ? '' : '--accent: #2f6fed;'} --text: #e4e7ec; --muted: #98a2b3; --border: #252b37; --bg: #0c111d; --panel: #161b26; --ok: #47cd89; --warn: #fdb022; --bad: #f97066; } }
+  :root { ${palette.light} --text: #101828; --muted: #475467; --border: #e4e7ec; --bg: #f2f4f7; --panel: #fff; --ok: #067647; --warn: #b54708; --bad: #b42318; }
+  @media (prefers-color-scheme: dark) { :root { ${palette.dark} --text: #e4e7ec; --muted: #98a2b3; --border: #252b37; --bg: #0c111d; --panel: #161b26; --ok: #47cd89; --warn: #fdb022; --bad: #f97066; } }
   * { box-sizing: border-box; }
   body { margin: 0; font: 16px/1.6 Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: var(--text); background: var(--bg); }
-  main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 16px 24px; }
   .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; margin-bottom: 24px; }
   .brand img { height: 32px; width: auto; }
   h1 { font-size: 28px; margin: 0 0 8px; }
@@ -69,13 +71,16 @@ ${o.noindex ? '<meta name="robots" content="noindex" />' : ''}
   label { display: block; font-weight: 600; margin: 14px 0 4px; }
   input, textarea { width: 100%; font: inherit; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); color: var(--text); }
   textarea { min-height: 140px; }
-  button, .btn { display: inline-block; background: var(--accent); color: #fff; border: 0; padding: 11px 18px; border-radius: 8px; font: inherit; font-weight: 600; cursor: pointer; text-decoration: none; margin-top: 16px; }
-  button.danger { background: var(--bad); }
-  :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  button, .btn { display: inline-block; background: var(--accent); color: var(--accent-ink); border: 0; padding: 11px 18px; border-radius: 8px; font: inherit; font-weight: 600; cursor: pointer; text-decoration: none; margin-top: 16px; }
+  button.danger { background: var(--bad-solid); color: #fff; }
+  :focus-visible { outline: 3px solid var(--link); outline-offset: 2px; }
   .hp { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }
   .error { color: var(--bad); font-weight: 600; }
-  footer { margin-top: 40px; color: var(--muted); font-size: 14px; display: flex; gap: 16px; flex-wrap: wrap; }
-  footer a, main a { color: var(--accent); }
+  footer { max-width: 760px; margin: 16px auto 0; padding: 0 16px 48px; color: var(--muted); font-size: 14px; display: flex; gap: 16px; flex-wrap: wrap; }
+  main a { color: var(--link); }
+  footer a { color: inherit; }
+  input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--bad); }
+  .field-error { display: block; color: var(--bad); font-weight: 600; margin-top: 4px; }
 </style>
 ${o.head ?? ''}
 </head>
@@ -83,14 +88,14 @@ ${o.head ?? ''}
 <main>
   <div class="brand">${o.brand.logo ? `<img src="${esc(o.brand.logo)}" alt="" />` : ''}<span>${esc(o.brand.name)}</span></div>
   ${o.body}
-  <footer>
-    <a href="/ayuda.html">Ayuda</a>
-    <a href="/estado">Estado del servicio</a>
-    <a href="/contacto">Contacto</a>
-    <a href="${esc(privacyUrl())}">Aviso de privacidad</a>
-    <a href="/#/login">Entrar a mi panel</a>
-  </footer>
 </main>
+<footer>
+  <a href="/ayuda.html">Ayuda</a>
+  <a href="/estado">Estado del servicio</a>
+  <a href="/contacto">Contacto</a>
+  <a href="${esc(privacyUrl())}">Aviso de privacidad</a>
+  <a href="/#/login">Entrar a mi panel</a>
+</footer>
 </body>
 </html>`;
 }
@@ -120,8 +125,13 @@ export async function selfServicePages(root: FastifyInstance) {
     });
 
     /* Contacto: el mensaje llega al correo de soporte con "responder a" la persona. */
-    const contactForm = (o: { brand: any; error?: string; values?: Record<string, string> }) => {
+    // Cada campo que falla lleva aria-invalid y su mensaje en aria-describedby; arriba queda el resumen.
+    const FIELD_ERROR: Record<string, string> = { name: 'Escribe tu nombre.', email: 'Escribe un correo válido, por ejemplo tu@correo.com.', message: 'El mensaje debe tener al menos 10 caracteres.' };
+    const contactForm = (o: { brand: any; error?: string; values?: Record<string, string>; fields?: string[] }) => {
       const v = o.values ?? {};
+      const bad = new Set(o.fields ?? []);
+      const attrs = (k: string) => (bad.has(k) ? ` aria-invalid="true" aria-describedby="c-${k}-error"` : '');
+      const note = (k: string) => (bad.has(k) ? `<small class="field-error" id="c-${k}-error">${esc(FIELD_ERROR[k])}</small>` : '');
       const siteKey = captchaEnabled() ? config.signup.turnstile.siteKey : '';
       return page({
         title: 'Contacto',
@@ -131,9 +141,9 @@ export async function selfServicePages(root: FastifyInstance) {
   <p class="muted">¿Tienes una duda, un problema o una sugerencia? Escríbenos y te respondemos por correo. También revisa la <a href="/ayuda.html">ayuda</a> y el <a href="/estado">estado del servicio</a>.</p>
   ${o.error ? `<p class="error" role="alert">${esc(o.error)}</p>` : ''}
   <form class="card" method="post" action="/contacto">
-    <label for="c-name">Tu nombre</label><input id="c-name" name="name" maxlength="120" required value="${esc(v.name)}" autocomplete="name" />
-    <label for="c-email">Tu correo</label><input id="c-email" name="email" type="email" maxlength="200" required value="${esc(v.email)}" autocomplete="email" />
-    <label for="c-message">Mensaje</label><textarea id="c-message" name="message" minlength="10" maxlength="5000" required>${esc(v.message)}</textarea>
+    <label for="c-name">Tu nombre</label><input id="c-name" name="name" maxlength="120" required value="${esc(v.name)}" autocomplete="name"${attrs('name')} />${note('name')}
+    <label for="c-email">Tu correo</label><input id="c-email" name="email" type="email" maxlength="200" required value="${esc(v.email)}" autocomplete="email"${attrs('email')} />${note('email')}
+    <label for="c-message">Mensaje</label><textarea id="c-message" name="message" minlength="10" maxlength="5000" required${attrs('message')}>${esc(v.message)}</textarea>${note('message')}
     <div class="hp" aria-hidden="true"><label for="c-web">No llenes este campo</label><input id="c-web" name="web" tabindex="-1" autocomplete="off" /></div>
     ${siteKey ? `<div class="cf-turnstile" data-sitekey="${esc(siteKey)}"></div>` : ''}
     <button type="submit">Enviar mensaje</button>
@@ -154,7 +164,10 @@ export async function selfServicePages(root: FastifyInstance) {
       const values = (req.body ?? {}) as Record<string, string>;
       if (rateLimited(`contact:${req.ip}`, 5, 3600_000)) return html(reply, 429, contactForm({ brand, values, error: 'Ya recibimos varios mensajes desde tu conexión. Intenta más tarde.' }));
       const b = ContactBody.safeParse(values);
-      if (!b.success) return html(reply, 400, contactForm({ brand, values, error: 'Revisa tu nombre, tu correo y que el mensaje tenga al menos 10 caracteres.' }));
+      if (!b.success) {
+        const fields = [...new Set(b.error.issues.map((i) => String(i.path[0])).filter((k) => k in FIELD_ERROR))];
+        return html(reply, 400, contactForm({ brand, values, fields, error: fields.length === 1 ? FIELD_ERROR[fields[0]] : 'Revisa los campos marcados.' }));
+      }
       // Campo trampa: solo un robot lo llena. Se le contesta igual para no darle pistas.
       if (!b.data.web) {
         if (!(await verifyCaptcha(b.data['cf-turnstile-response'], req.ip))) return html(reply, 400, contactForm({ brand, values, error: CAPTCHA_MESSAGE }));

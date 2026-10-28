@@ -99,6 +99,8 @@ jobs:
         run: npm run test:quotes:ux
       - name: Cobro en navegador
         run: npm run test:billing:ux
+      - name: Páginas públicas, reservar y widget en navegador
+        run: npm run test:public:ux
       - name: Guardar evidencia UX
         if: always()
         uses: actions/upload-artifact@v4
