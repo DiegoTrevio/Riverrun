@@ -4,7 +4,8 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { HttpError, requireRole, scopeAccount, targetAccount } from '../access.js';
 import { config } from '../config.js';
-import { EVENT_TYPES, deliver, eventBody, type Endpoint } from '../integrations/webhooks.js';
+import { ALL_EVENTS_SET, EVENT_TYPES, deliverOnce, eventBody, redeliver, sampleEventData, type Endpoint, type PublicEvent } from '../integrations/webhooks.js';
+import * as astore from '../automation/store.js';
 import { query, queryOne } from '../db.js';
 import { logEvent } from '../logs.js';
 import { parse } from './util.js';
@@ -30,7 +31,8 @@ const EndpointBody = z.object({
 export async function integrationRoutes(api: FastifyInstance) {
   const admins = { preHandler: requireRole('admin') };
 
-  api.get('/api/webhook-events', admins, async () => Object.entries(EVENT_TYPES).filter(([k]) => k !== 'ping').map(([type, label]) => ({ type, label, default: type !== 'message.received' })));
+  // in_all: lo incluye «todos los eventos» ("*"); default: va marcado al crear un webhook.
+  api.get('/api/webhook-events', admins, async () => Object.entries(EVENT_TYPES).filter(([k]) => k !== 'ping').map(([type, label]) => ({ type, label, default: type !== 'message.received', in_all: ALL_EVENTS_SET.has(type) })));
 
   const endpointFor = async (user: any, id: string) => {
     const ep = await queryOne<Endpoint>(`SELECT * FROM webhook_endpoints WHERE id = $1`, [id]);
@@ -76,22 +78,61 @@ export async function integrationRoutes(api: FastifyInstance) {
     return { ok: true };
   });
 
-  /** Envía un evento "ping" ahora mismo y dice qué respondió la otra parte. */
+  /**
+   * Envía una prueba ahora mismo y dice qué respondió la otra parte. Con `event`, un ejemplo con la forma real de ese
+   * evento (con la conversación más reciente de la cuenta), marcado `test: true`, para mapear los campos en Zapier o Make.
+   */
   api.post('/api/webhook-endpoints/:id/test', admins, async (req: any) => {
     const ep = await endpointFor(req.user, req.params.id);
+    const b = parse(z.object({ event: z.string().refine((e) => e in EVENT_TYPES, 'Evento desconocido').default('ping') }), req.body ?? {});
+    const event = b.event as PublicEvent;
     const eventId = crypto.randomUUID();
-    const body = eventBody(eventId, 'ping', ep.account_id, { message: 'Prueba de conexión desde el panel', contact: { id: 'prueba', name: 'Cliente de prueba', phone: '5215500000000', tags: [], data: {} } });
-    try {
-      await deliver({ endpoint_id: ep.id, event_id: eventId, event: 'ping', body });
-      return { ok: true };
-    } catch (e: any) {
-      return { ok: false, error: String(e?.message ?? e) };
-    }
+    const body = eventBody(eventId, event, ep.account_id, await sampleEventData(ep.account_id, event), { test: true });
+    const r = await deliverOnce(ep, eventId, event, body, 1);
+    return r.ok ? { ok: true, event, status_code: r.status } : { ok: false, event, status_code: r.status, error: r.error };
   });
 
+  // redeliverable: su evento sigue guardado (30 días) y se puede reenviar.
   api.get('/api/webhook-endpoints/:id/deliveries', admins, async (req: any) => {
     const ep = await endpointFor(req.user, req.params.id);
-    return query(`SELECT id, event_id, event, ok, status_code, error, attempt, duration_ms, created_at FROM webhook_deliveries WHERE endpoint_id = $1 ORDER BY id DESC LIMIT 50`, [ep.id]);
+    return query(
+      `SELECT d.id, d.event_id, d.event, d.ok, d.status_code, d.error, d.attempt, d.duration_ms, d.created_at, (ev.id IS NOT NULL) AS redeliverable
+         FROM webhook_deliveries d LEFT JOIN webhook_events ev ON ev.id = d.event_id WHERE d.endpoint_id = $1 ORDER BY d.id DESC LIMIT 50`,
+      [ep.id],
+    );
+  });
+
+  const deliveryFor = async (req: any) => {
+    const ep = await endpointFor(req.user, req.params.id);
+    const d = /^\d{1,18}$/.test(String(req.params.deliveryId)) ? await queryOne<{ id: string; event_id: string; event: string }>(`SELECT id, event_id, event, ok, status_code, error, attempt, created_at FROM webhook_deliveries WHERE id = $1 AND endpoint_id = $2`, [req.params.deliveryId, ep.id]) : null;
+    if (!d) throw new HttpError(404, 'Entrega no encontrada');
+    return { ep, d };
+  };
+
+  /** Lo que se envió en una entrega (el cuerpo del evento, si sigue guardado). */
+  api.get('/api/webhook-endpoints/:id/deliveries/:deliveryId', admins, async (req: any) => {
+    const { d } = await deliveryFor(req);
+    const ev = await queryOne<{ body: unknown }>(`SELECT body FROM webhook_events WHERE id = $1`, [d.event_id]);
+    return { delivery: d, body: ev?.body ?? null };
+  });
+
+  /** Vuelve a enviar el evento de esa entrega (por si tu sistema lo perdió). */
+  api.post('/api/webhook-endpoints/:id/deliveries/:deliveryId/redeliver', admins, async (req: any) => {
+    const { ep, d } = await deliveryFor(req);
+    if (!ep.active) throw new HttpError(409, 'El webhook está apagado: enciéndelo para reenviar');
+    const event = await redeliver(ep, d.event_id);
+    if (!event) throw new HttpError(410, 'Ese evento ya no está guardado (se guardan 30 días)');
+    await logEvent({ level: 'info', source: 'admin', message: `Webhook: ${req.user.email} reenvió ${event} a ${new URL(ep.url).host}`, accountId: ep.account_id });
+    return { ok: true, event };
+  });
+
+  /** Cambia solo el secreto de webhooks (el enlace del calendario se queda igual). Las firmas viejas dejan de valer. */
+  api.post('/api/settings/rotate-webhook-secret', admins, async (req: any) => {
+    const accountId = await targetAccount(req.user, req.body?.account_id ?? req.query.account_id);
+    const s = await astore.getSettings(accountId);
+    await astore.saveSettings(accountId, { ...s, webhook_secret: crypto.randomBytes(24).toString('hex') });
+    await logEvent({ level: 'info', source: 'admin', message: `Secreto de webhooks cambiado por ${req.user.email}`, accountId });
+    return { webhook_secret: (await astore.getSettings(accountId)).webhook_secret };
   });
 
   /* ------------------------------ Llaves de la API ------------------------------ */

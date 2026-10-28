@@ -11,7 +11,7 @@ import { query, queryOne } from '../db.js';
 import { buildReport } from '../engine/report-format.js';
 import { logEvent } from '../logs.js';
 import * as store from '../store/index.js';
-import { dispatchEvent } from './webhooks.js';
+import { contactPayload, dispatchEvent } from './webhooks.js';
 
 /** summary: resumen y análisis · full: todos los mensajes · both: las dos cosas. */
 export const ExportContentSchema = z.enum(['summary', 'full', 'both']);
@@ -53,10 +53,8 @@ export async function conversationExport(conversationId: string, o: {
     content: o.content,
     reason: o.reason || null,
     trigger: o.trigger ?? null,
-    contact: contact && {
-      id: contact.id, name: contact.name || contact.push_name || '', phone: contact.phone, tags: contact.tags, data: contact.data,
-      consent: !!contact.consent_at, opted_out: contact.opted_out,
-    },
+    // El mismo contacto que en los demás eventos.
+    contact: contact && channel ? contactPayload(contact, channel) : null,
     conversation: {
       id: conv.id, status: conv.status, handoff_reason: conv.handoff_reason || null, assigned_user_id: conv.assigned_user_id ?? null,
       channel: channel && { id: channel.id, type: channel.type, name: channel.name },

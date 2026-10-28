@@ -10,6 +10,7 @@ import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
 import { normalize } from '../engine/text.js';
 import { logEvent } from '../logs.js';
+import { paymentEvent } from '../integrations/webhooks.js';
 import { formatMoney } from '../quotes/format.js';
 import type { ChatService } from '../service.js';
 import * as astore from '../automation/store.js';
@@ -58,6 +59,15 @@ export interface Receivable {
   created_at: string;
   updated_at: string;
 }
+
+/** Un cobro como lo ven la API, los webhooks y el panel. */
+export const receivableOut = (r: Receivable & { contact_name?: string; contact_phone?: string | null }) => ({
+  id: r.id, contact_id: r.contact_id, conversation_id: r.conversation_id, contact_name: r.contact_name ?? undefined, contact_phone: r.contact_phone ?? undefined,
+  concept: r.concept, amount_cents: Number(r.amount_cents), currency: r.currency, due_date: r.due_date, status: r.status,
+  paid_at: r.paid_at, paid_note: r.paid_note, payment_link: r.payment_link, reference: r.reference, source: r.source, reminders: r.reminders,
+  reminders_sent: r.reminders_sent, last_reminded_at: r.last_reminded_at, paused_until: r.paused_until, created_at: r.created_at,
+  source_id: r.source_id, installment: r.installment,
+});
 
 export interface ReceivableSettings {
   payment_instructions: string;
@@ -331,7 +341,10 @@ export class Receivables {
     });
     if (!res.sent) return { ...(await skip(res.reason ?? 'no se pudo enviar', conversationId)), transient: res.transient };
     await query(`UPDATE receivables SET reminders_sent = reminders_sent + 1, last_reminded_at = $2, conversation_id = COALESCE(conversation_id, $3), updated_at = now() WHERE id = $1`, [r.id, now, conversationId]);
-    if (kind === 'due' && !o.manual) this.chat.automator.emit({ type: 'payment_due', conversationId, payment: vars });
+    if (kind === 'due' && !o.manual) {
+      this.chat.automator.emit({ type: 'payment_due', conversationId, payment: vars });
+      await paymentEvent('payment.due', r, { conversationId });
+    }
     return { sent: true, conversationId };
   }
 
@@ -395,6 +408,7 @@ export class Receivables {
       throw e;
     }
     if (conversationId) this.chat.automator.emit({ type: 'payment_overdue', conversationId, payment: vars });
+    await paymentEvent('payment.overdue', r, { conversationId });
   }
 
   private async alertOverdue(r: Receivable, vars: Record<string, string>, conversationId: string | null) {
@@ -409,7 +423,7 @@ export class Receivables {
   }
 
   /** Marcar pagado o cancelar: ya no se insiste. «Pagado» dispara el evento «pago recibido» para las reglas. */
-  async settle(r: Receivable, status: 'paid' | 'canceled', by: { userId: string | null; note?: string }) {
+  async settle(r: Receivable, status: 'paid' | 'canceled', by: { userId: string | null; note?: string; origin?: 'api' }) {
     const updated = await queryOne<Receivable>(
       `UPDATE receivables SET status = $2, paid_at = CASE WHEN $2 = 'paid' THEN now() ELSE NULL END, paid_by = CASE WHEN $2 = 'paid' THEN $3::uuid ELSE NULL END,
               paid_note = $4, paused_until = NULL, updated_at = now()
@@ -424,6 +438,7 @@ export class Receivables {
         const [s, st] = await Promise.all([getReceivableSettings(r.account_id), astore.getSettings(r.account_id)]);
         this.chat.automator.emit({ type: 'payment_paid', conversationId, payment: paymentVars(updated, s, st.timezone) });
       }
+      await paymentEvent('payment.paid', updated, { conversationId, origin: by.origin });
     }
     return updated;
   }

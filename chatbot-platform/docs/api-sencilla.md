@@ -79,6 +79,8 @@ es compatible con lo que ya funciona: no se quita ni se renombra ningún campo, 
   - `payment.due`, `payment.overdue` y `payment.paid`, con el cobro en la misma forma que `GET /receivables`;
   - `quote.sent`, `quote.accepted` y `quote.rejected`.
 - **Cita**: los eventos de cita llevan la cita en la misma forma que `GET /appointments`, no la fila interna.
+- **«Todos los eventos» (`*`)** mantiene los de siempre: los eventos nuevos se eligen uno por uno, para que un Zap que ya
+  funciona no empiece a recibir avisos de otro tipo. Desde el panel siempre se eligen con casillas.
 
 ## Fase C: página «Conectar» y documentación
 

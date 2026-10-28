@@ -13,7 +13,7 @@ import { logEvent } from '../logs.js';
 import * as astore from '../automation/store.js';
 import { WaTemplateRefSchema } from '../automation/types.js';
 import {
-  getReceivable, getReceivableSettings, listReceivables, RECEIVABLE_COLS, saveReceivableSettings, todayIn, type Receivable,
+  getReceivable, getReceivableSettings, listReceivables, RECEIVABLE_COLS, receivableOut, saveReceivableSettings, todayIn, type Receivable,
 } from '../receivables/index.js';
 import { getPlan, nextDue, PLAN_COLS, planCols, runPlans, type ReceivablePlan } from '../receivables/plans.js';
 import type { ChatService } from '../service.js';
@@ -91,13 +91,7 @@ const SettingsBody = z.object({
   notify_team_on_overdue: z.boolean().default(true),
 });
 
-export const receivableOut = (r: Receivable & { contact_name?: string; contact_phone?: string | null }) => ({
-  id: r.id, contact_id: r.contact_id, conversation_id: r.conversation_id, contact_name: r.contact_name ?? undefined, contact_phone: r.contact_phone ?? undefined,
-  concept: r.concept, amount_cents: Number(r.amount_cents), currency: r.currency, due_date: r.due_date, status: r.status,
-  paid_at: r.paid_at, paid_note: r.paid_note, payment_link: r.payment_link, reference: r.reference, source: r.source, reminders: r.reminders,
-  reminders_sent: r.reminders_sent, last_reminded_at: r.last_reminded_at, paused_until: r.paused_until, created_at: r.created_at,
-  source_id: r.source_id, installment: r.installment,
-});
+export { receivableOut };
 
 export const planOut = (p: ReceivablePlan & { contact_name?: string; contact_phone?: string | null }, today: string) => ({
   id: p.id, contact_id: p.contact_id, conversation_id: p.conversation_id, contact_name: p.contact_name ?? undefined, contact_phone: p.contact_phone ?? undefined,

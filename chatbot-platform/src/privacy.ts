@@ -55,6 +55,11 @@ export async function eraseContact(contactId: string, guard: { accountId?: strin
       `DELETE FROM jobs WHERE type = 'webhook_delivery' AND account_id = $1 AND (payload->'body'->'data'->'contact'->>'id' = $2 OR payload->'body'->'data'->'conversation'->>'id' = ANY($3::text[]))`,
       [contact.account_id, contactId, convIds],
     );
+    await client.query(
+      `DELETE FROM webhook_events WHERE account_id = $1 AND (body->'data'->'contact'->>'id' = $2 OR body->'data'->'conversation'->>'id' = ANY($3::text[])
+         OR body->'data'->'appointment'->>'contact_id' = $2 OR body->'data'->'receivable'->>'contact_id' = $2)`,
+      [contact.account_id, contactId, convIds],
+    );
     await client.query(`DELETE FROM email_threads WHERE channel_id = $1 AND address = lower($2)`, [contact.channel_id, contact.external_id]);
     await client.query('DELETE FROM inbound_receipts WHERE channel_id=$1 AND external_id=$2',[contact.channel_id,contact.external_id]);
     await client.query('DELETE FROM query_embedding_cache WHERE account_id=$1',[contact.account_id]);
@@ -94,6 +99,7 @@ export async function applyRetention(now = new Date()): Promise<{ accounts: numb
   // Ids de eventos de Zernio: se guardan lo mismo que se aceptan (35 días) para que un evento repetido no cuente dos veces.
   await deleteInBatches('zernio_events', `state IN ('done','ignored','dead') AND received_at<$1::timestamptz-interval '35 days'`, [now]);
   await deleteInBatches('webhook_deliveries', `created_at < $1`, [new Date(now.getTime() - 30 * 86400_000)]); // la bitácora de entregas dura 30 días
+  await deleteInBatches('webhook_events', `created_at < $1`, [new Date(now.getTime() - 30 * 86400_000)]); // el cuerpo de cada evento, para reenviarlo
   // Respuestas guardadas por Idempotency-Key de la API: valen 24 h.
   await deleteInBatches('api_idempotency', `created_at < $1`, [new Date(now.getTime() - 86400_000)]);
   // Estadísticas de las redes (totales por día, sin datos de personas): poco más de un año.

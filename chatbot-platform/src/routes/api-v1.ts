@@ -25,6 +25,7 @@ import { NoticeBody, sendNotice } from '../automation/notices.js';
 import { describeConversation } from '../automation/alert-format.js';
 import { hashKey } from './integrations.js';
 import { conversationExport, ExportContentSchema } from '../integrations/conversation-export.js';
+import { appointmentPayload } from '../integrations/webhooks.js';
 import { createPlan, createReceivable, listPlans, PlanBody, planOut, ReceivableBody, receivableOut } from './receivables.js';
 import { getPlan } from '../receivables/plans.js';
 import { config } from '../config.js';
@@ -317,9 +318,10 @@ export async function apiV1Routes(app: FastifyInstance, service: ChatService) {
         const changes = await store.updateContactFromPanel(contactId, { name: b.name, data, notes: b.notes, tags, opted_out: b.opted_out });
         const conv = (await query<{ id: string }>('SELECT id FROM conversations WHERE contact_id = $1', [contactId]))[0];
         if (conv && changes) {
-          if (changes.optedOut) { await astore.stopEnrollments(conv.id, 'baja desde la API'); service.automator.emit({ type: 'opt_out', conversationId: conv.id }); }
-          for (const field of changes.changedFields) service.automator.emit({ type: 'data_captured', conversationId: conv.id, field });
-          for (const tag of changes.addedTags) service.automator.emit({ type: 'tag_added', conversationId: conv.id, tag });
+          // origin: el webhook dice que lo cambió tu sistema, para que no le responda a su propio cambio.
+          if (changes.optedOut) { await astore.stopEnrollments(conv.id, 'baja desde la API'); service.automator.emit({ type: 'opt_out', conversationId: conv.id, origin: 'api' }); }
+          for (const field of changes.changedFields) service.automator.emit({ type: 'data_captured', conversationId: conv.id, field, origin: 'api' });
+          for (const tag of changes.addedTags) service.automator.emit({ type: 'tag_added', conversationId: conv.id, tag, origin: 'api' });
         }
       }
 
@@ -368,7 +370,7 @@ export async function apiV1Routes(app: FastifyInstance, service: ChatService) {
           const r = await getReceivable(req.params.id);
           if (!r || r.account_id !== account(req)) throw new HttpError(404, 'Cobro no encontrado');
           const b = input(z.object({ note: z.string().trim().max(500).default('') }), req.body ?? {});
-          const updated = await service.receivables.settle(r, status, { userId: null, note: b.note || `API (${req.apiKey.name})` });
+          const updated = await service.receivables.settle(r, status, { userId: null, note: b.note || `API (${req.apiKey.name})`, origin: 'api' });
           if (!updated) throw apiError(409, 'not_pending', 'El cobro ya no está pendiente');
           return receivableOut(updated);
         });
@@ -498,12 +500,13 @@ export async function apiV1Routes(app: FastifyInstance, service: ChatService) {
       v1.get('/appointments', async (req: any) => {
         const q = input(z.object({ from: Iso.optional(), to: Iso.optional(), status: z.string().max(20).optional(), limit: Limit }), req.query);
         const rows = await query<any>(
-          `SELECT id, service_name, kind, customer_name, customer_phone, starts_at, ends_at, status, source, notes, contact_id FROM appointments
-            WHERE account_id = $1 AND ($2::timestamptz IS NULL OR starts_at >= $2) AND ($3::timestamptz IS NULL OR starts_at < $3) AND ($4::text IS NULL OR status = $4)
+          `SELECT * FROM appointments
+            WHERE account_id = $1 AND source <> 'simulador' AND ($2::timestamptz IS NULL OR starts_at >= $2) AND ($3::timestamptz IS NULL OR starts_at < $3) AND ($4::text IS NULL OR status = $4)
             ORDER BY starts_at LIMIT ${q.limit}`,
           [account(req), q.from ?? null, q.to ?? null, q.status ?? null],
         );
-        return { data: rows };
+        // La misma forma que en los webhooks de citas.
+        return { data: rows.map(appointmentPayload) };
       });
     },
     { prefix: '/api/v1' },

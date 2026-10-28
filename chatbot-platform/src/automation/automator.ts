@@ -336,7 +336,7 @@ export class Automator {
     // Webhooks de eventos de la cuenta (Zapier, Make, CRM…). El simulador del panel no dispara avisos reales.
     const publicEvent = publicEventFor(e);
     if (publicEvent && ctx.channel.type !== 'playground') {
-      dispatchEvent(ctx.conv.account_id, publicEvent, eventData(e, ctx)).catch((err) => logEvent({ level: 'error', source: 'system', message: `Webhooks de eventos: ${err?.message ?? err}`, accountId: ctx.conv.account_id }));
+      dispatchEvent(ctx.conv.account_id, publicEvent, eventData(e, ctx), { origin: e.origin }).catch((err) => logEvent({ level: 'error', source: 'system', message: `Webhooks de eventos: ${err?.message ?? err}`, accountId: ctx.conv.account_id }));
     }
     const rules = await astore.activeAutomations(ctx.conv.account_id, e.type, ctx.conv.chatbot_id);
     const matched: string[] = [];

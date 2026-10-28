@@ -110,20 +110,24 @@ t('webhook: si la URL falla se reintenta, queda en la bitácora y tras muchos fa
   const contact = (await pool.query(`SELECT id FROM contacts WHERE phone = '5215580000001'`)).rows[0];
   await h.authed('PUT', `/api/contacts/${contact.id}`, { tags: ['vip'] });
   await until(() => received.filter((r) => r.path === '/falla').length >= 1); // intento 1
-  await h.fastForward(); // reintento 2
-  await h.fastForward(); // reintento 3
+  // El siguiente intento espera 1 minuto (luego 5, 30, 120 y 360): 6 intentos en unas 8 h.
+  const next = (await pool.query(`SELECT run_at FROM jobs WHERE type = 'webhook_delivery' AND status = 'pending' AND payload->>'endpoint_id' = $1`, [ep.id])).rows[0];
+  assert.ok(next && Math.abs(new Date(next.run_at).getTime() - Date.now() - 60_000) < 15_000, 'el reintento espera un minuto');
+  for (let i = 2; i <= 6; i++) await h.fastForward(); // reintentos 2 a 6
   const attempts = received.filter((r) => r.path === '/falla');
-  assert.equal(attempts.length, 3, 'tres intentos');
+  assert.equal(attempts.length, 6, 'seis intentos');
+  assert.equal(new Set(attempts.map((a) => a.headers['x-riverrun-delivery'])).size, 1, 'el mismo evento en cada intento');
   const log = (await h.authed('GET', `/api/webhook-endpoints/${ep.id}/deliveries`)).json();
   assert.ok(log.every((d: any) => !d.ok && d.status_code === 500 && /500/.test(d.error)));
-  assert.deepEqual(log.map((d: any) => d.attempt).sort(), [1, 2, 3]);
-  // Un evento cuenta como un solo fallo (tras sus 3 intentos); se pausa al llegar a 20 seguidos
+  assert.deepEqual(log.map((d: any) => d.attempt).sort(), [1, 2, 3, 4, 5, 6]);
+  await h.fastForward();
+  assert.equal(received.filter((r) => r.path === '/falla').length, 6, 'después del sexto ya no insiste');
+  // Un evento cuenta como un solo fallo (tras sus intentos); se pausa al llegar a 20 seguidos
   assert.equal((await pool.query(`SELECT consecutive_failures n FROM webhook_endpoints WHERE id = $1`, [ep.id])).rows[0].n, 1);
   await pool.query(`UPDATE webhook_endpoints SET consecutive_failures = 19 WHERE id = $1`, [ep.id]);
   await h.authed('PUT', `/api/contacts/${contact.id}`, { tags: ['vip', 'nuevo'] });
-  await until(() => received.filter((r) => r.path === '/falla').length >= 4);
-  await h.fastForward(); // reintento 2 del segundo evento
-  await h.fastForward(); // reintento 3: ahí cuenta como fallo del evento
+  await until(() => received.filter((r) => r.path === '/falla').length >= 7);
+  for (let i = 2; i <= 6; i++) await h.fastForward(); // reintentos del segundo evento: el último cuenta como fallo
   const paused = (await h.authed('GET', `/api/webhook-endpoints?account_id=${h.accountId}`)).json().find((e: any) => e.id === ep.id);
   assert.equal(paused.active, false);
   assert.match(paused.disabled_reason, /20 fallos seguidos/);
@@ -270,4 +274,15 @@ t('la especificación OpenAPI es pública y cubre todas las rutas de la API v1',
   const routes = [...src.matchAll(/v1\.(get|post|put|delete)\('([^']+)'/g)].map((m) => [m[1], m[2].replace(/:(\w+)/g, '{$1}')]);
   assert.ok(routes.length >= 9);
   for (const [method, path] of routes) assert.ok(spec.paths[path]?.[method], `falta ${method.toUpperCase()} ${path} en OpenAPI`);
+  for (const [path, ops] of Object.entries<any>(spec.paths)) for (const [m, op] of Object.entries<any>(ops)) assert.ok(op.tags?.length, `${m} ${path} sin sección en la documentación`);
+  // Cada evento de webhook está documentado, y cada code que devuelve la API también.
+  const { EVENT_TYPES } = await import('../src/integrations/webhooks.js');
+  assert.deepEqual(Object.keys(spec.webhooks).sort(), Object.keys(EVENT_TYPES).sort());
+  const codes = new Set(spec.components.schemas.Error.properties.code.examples);
+  for (const [, c] of src.matchAll(/(?:apiError\(\d+, |code: )'([a-z_]+)'/g)) if (c !== 'not_sent') assert.ok(codes.has(c), `falta el code ${c} en OpenAPI`);
+  // La documentación navegable no pide llave.
+  const docs = await h.app.inject({ method: 'GET', url: '/api/v1/docs' });
+  assert.equal(docs.statusCode, 302);
+  assert.equal(docs.headers.location, '/api-docs.html');
+  assert.equal((await h.app.inject({ method: 'GET', url: '/api-docs.html' })).statusCode, 200);
 });

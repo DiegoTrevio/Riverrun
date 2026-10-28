@@ -616,6 +616,22 @@ En **Agentes → + Crear agente** (`#/agentes/nuevo`) hay 3 pantallas: tu negoci
 
 Canal de **correo electrónico** (IMAP/SMTP, Gmail y Outlook), inicio de sesión con Google, Google Calendar, webhooks firmados (Zapier, Make, n8n) y API v1 con llaves y especificación OpenAPI: ver [docs/integraciones.md](docs/integraciones.md).
 
+- **Conecta tu sistema** (Ajustes → Integraciones): la dirección, la llave, una prueba y ejemplos listos para copiar con los datos de la cuenta; la referencia completa está en `/api/v1/docs` (generada de `/api/v1/openapi.json`, sin llave).
+- **API sin adivinar** (`src/routes/api-v1.ts`):
+  - `GET /channels` y `GET /contact-fields` dan los ids y las claves que piden las demás rutas;
+  - con un solo WhatsApp no hace falta `channel_id`;
+  - el teléfono se acepta en cualquier formato y se encuentra en sus dos formas de México (52/521) y con `@lid`; cuando el cliente contesta a un contacto dado de alta por la API, sigue siendo el mismo (`src/contacts/phone.ts`, `claimPhoneContact`);
+  - `data` acepta números y sí/no y se valida contra los datos definidos;
+  - cada error trae un `code` estable y `fields`;
+  - `Idempotency-Key` hace seguro reintentar un POST/PUT durante 24 h (`api_idempotency`).
+- **Webhooks coherentes** (`src/integrations/webhooks.ts`):
+  - el contacto, la cita y el cobro con la misma forma que en la API, más `origin` (`api` o `riverrun`);
+  - firma con hora (`x-riverrun-signature: t=…,v1=…`);
+  - eventos de cobros, cotizaciones y citas reprogramadas o sin chat;
+  - 6 reintentos en unas 8 h;
+  - cada evento se guarda 30 días (`webhook_events`) para verlo y **Reenviarlo** desde el panel;
+  - «Enviar prueba» manda un ejemplo real del evento elegido.
+
 ## Marca blanca
 
 El superadmin crea **marcas** (**Marca blanca** en el menú) con nombre, color, logo, correo de soporte y, opcionalmente, un dominio propio (`panel.miagencia.com`). Se asigna a cada cuenta (**Cuentas → Marca**) y quien se registre desde ese dominio queda con ella. Cambia el nombre, el color y el logo del panel, del inicio de sesión y del registro, y el nombre del remitente y los enlaces de los correos. Para un dominio propio, el cliente apunta un registro DNS al servidor y Caddy genera el certificado HTTPS al primer acceso (solo para dominios registrados). Es marca blanca para **tus** clientes: no hay todavía un panel donde un revendedor administre sus propias cuentas (eso sigue siendo del superadmin).
