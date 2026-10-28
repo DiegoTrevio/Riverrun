@@ -2,7 +2,7 @@ import { varsField } from './vars-help.js';
 import { discardDraft, draftModel, draftNotice, draftVersion, initializeDraftDefaults } from './editing.js';
 import { needAccount } from './admin.js';
 import { messageTester, saveBar } from './bot.js';
-import { api, area, check, clone, field, fill, fmtDate, h, dialog, localDateTime, lines, num, run, select, state, text, toast, confirmAction, named } from './core.js';
+import { api, area, check, clone, dayLabel, field, fill, fmtDate, h, dialog, localDateTime, lines, num, plusDay, run, select, state, text, toast, confirmAction, named } from './core.js';
 import { icon } from './icons.js';
 import { render } from './main.js';
 import { withAcct } from './session.js';
@@ -609,6 +609,16 @@ async function editCampaign(root, id) {
   initializeDraftDefaults(`campaign:${id}`, () => { c.image_id ??= ''; c.flow_step ??= 0; c.channel_ids ??= []; c.kind ??= 'message'; c.sequence_id ??= null; });
   const editable = ['draft', 'scheduled'].includes(c.status);
   const local = draftModel(`campaign-time:${id}`, { when: localDateTime(c.scheduled_at, info.timezone) }, false);
+  // Si la hora elegida (o ahora, si se envía ya) cae de noche, se dice cuándo empieza de verdad.
+  const startNote = h('p', { class: 'small', role: 'status' });
+  const showStart = () => {
+    const sw = info.send_window;
+    const when = local.when || localDateTime(new Date(), info.timezone);
+    const [day, time] = when.split('T');
+    if (!sw?.enabled || !time || (time >= sw.start && time < sw.end)) return fill(startNote);
+    fill(startNote, `${local.when ? 'Esa hora cae de noche' : 'Ahora es de noche'}: empezará a enviarse ${dayLabel(time < sw.start ? day : plusDay(day), info.timezone)} a las ${sw.start.replace(/^0/, '')} (horario para mensajes programados).`);
+  };
+  showStart();
   root.append(draftNotice([`campaign:${id}`, `campaign-time:${id}`], render));
   const previewBox = h('div');
   // Varios números: la campaña también sale desde los otros canales del mismo tipo (cada cliente recibe desde el número que ya conoce).
@@ -699,8 +709,9 @@ async function editCampaign(root, id) {
     h('div', { class: 'card' },
       h('h2', { style: 'margin-top:0' }, 'Cuándo y a qué ritmo'),
       h('div', { class: 'grid' },
-        field('Fecha y hora de envío', h('input', { type: 'datetime-local', value: local.when, oninput: (e) => (local.when = e.target.value) }), `Zona del negocio: ${info.timezone}. Vacío = enviar ahora.`),
+        field('Fecha y hora de envío', h('input', { type: 'datetime-local', value: local.when, oninput: (e) => { local.when = e.target.value; showStart(); } }), `Zona del negocio: ${info.timezone}. Vacío = enviar ahora.`),
         field('Mensajes por minuto', num(c, 'rate_per_minute', { min: 1, max: 120 }), 'Recomendado para WhatsApp: 10–30')),
+      startNote,
       check(c, 'business_hours_only', 'Enviar solo en horario de atención (lo que no alcance sale en la siguiente apertura)'),
       h('p', { class: 'small muted' }, 'No se envía a quien se dio de baja ni a conversaciones que está atendiendo una persona. Nunca sale de noche: respeta el ', h('a', { href: '#/automation/settings' }, 'horario para mensajes programados'), '.')),
     editable ? saveBar(c.status === 'scheduled' ? reviewAndLaunch : save, existing ? h('span', { class: 'row', style: 'margin-left:auto' },
@@ -726,6 +737,28 @@ export function hoursEditor(hours) {
     }))));
 }
 
+/** Horario para mensajes programados: una sola opción con horarios listos; «Otro horario» muestra las horas. */
+const WINDOW_PRESETS = [['08:00-21:00', 'De 8 am a 9 pm (recomendado)'], ['09:00-20:00', 'De 9 am a 8 pm'], ['07:00-22:00', 'De 7 am a 10 pm'], ['custom', 'Otro horario'], ['off', 'A cualquier hora (no recomendado)']];
+function sendWindowCard(win) {
+  const pick = { v: !win.enabled ? 'off' : WINDOW_PRESETS.some(([k]) => k === `${win.start}-${win.end}`) ? `${win.start}-${win.end}` : 'custom' };
+  const custom = h('div', { class: 'grid' });
+  const drawCustom = () => {
+    custom.hidden = pick.v !== 'custom';
+    fill(custom, custom.hidden ? [] : [field('Desde', text(win, 'start', { type: 'time' })), field('Hasta', text(win, 'end', { type: 'time' }))]);
+  };
+  const choose = (v) => {
+    win.enabled = v !== 'off';
+    if (v.includes('-')) [win.start, win.end] = v.split('-');
+    drawCustom();
+  };
+  drawCustom();
+  return h('div', { class: 'card' },
+    h('h2', { style: 'margin-top:0' }, 'Horario para mensajes programados'),
+    field('¿A qué hora pueden salir los mensajes programados?', select(pick, 'v', WINDOW_PRESETS, choose), 'En la zona horaria del negocio.'),
+    custom,
+    h('p', { class: 'small muted' }, 'Lo que caiga de noche espera a la mañana y los recordatorios de citas y pagos salen antes de la noche. Si el cliente te está escribiendo, se le contesta normal.'));
+}
+
 async function editSettings(root) {
   const s = draftModel('settings', await api('GET', withAcct('/api/settings')), false);
   // Un borrador guardado antes de que existiera el horario para mensajes programados no lo trae.
@@ -740,13 +773,7 @@ async function editSettings(root) {
       field('Zona horaria', text(s, 'timezone')),
       hoursEditor(s.business_hours),
       field('Días cerrados (festivos)', lines(s, 'holidays', { placeholder: '2026-12-25\n2027-01-01' }), 'Formato AAAA-MM-DD, uno por renglón.')),
-    h('div', { class: 'card' },
-      h('h2', { style: 'margin-top:0' }, 'Horario para mensajes programados'),
-      check(s.sending.window, 'enabled', 'No enviar mensajes programados de noche (recomendado)'),
-      h('div', { class: 'grid' },
-        field('Desde', text(s.sending.window, 'start', { type: 'time' })),
-        field('Hasta', text(s.sending.window, 'end', { type: 'time' }), 'En la zona horaria del negocio.')),
-      h('p', { class: 'small muted' }, 'Fuera de este horario, los flujos, las campañas, los mensajes de reglas con espera y los seguimientos «si no contesta» esperan a la hora de inicio. Los recordatorios de citas y de pagos se acomodan para salir antes de la noche. Si el cliente escribió en los últimos 30 minutos, sale normal porque está conversando. Las respuestas del asistente y lo que envía tu equipo nunca esperan.')),
+    sendWindowCard(s.sending.window),
     h('div', { class: 'card' },
       h('h2', { style: 'margin-top:0' }, 'Bajas (dejar de recibir mensajes)'),
       check(s.opt_out, 'enabled', 'Permitir que el cliente se dé de baja escribiendo una palabra'),

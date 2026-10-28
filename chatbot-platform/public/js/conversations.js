@@ -3,7 +3,7 @@ import { workspaceTabs } from './contact-workspace.js';
 import { workRecovery } from './work-recovery.js';
 import { dataLabel, flowCard } from './bot.js';
 import { channelIcon } from './channels.js';
-import { api, area, check, clone, dialog, field, fill, fmtDate, fmtPhone, h, initialsOf, lines, personTint, poll, run, select, state, text, toast, confirmAction, ask, named } from './core.js';
+import { api, area, check, clone, dialog, field, fill, fmtDate, fmtPhone, fmtWhen, h, initialsOf, lines, personTint, poll, run, select, state, text, toast, confirmAction, ask, named } from './core.js';
 import { icon, okMark } from './icons.js';
 import { acct, isAdmin, isSuper, withAcct } from './session.js';
 import { pipelineCard } from './pipeline.js';
@@ -505,12 +505,13 @@ export async function viewConversation(root, id, opts = {}) {
           h('button', { class: 'small primary', onclick: async () => { if (await run(() => api('POST', '/api/appointments', { ...book, assigned_user_id: book.assigned_user_id || null, conversation_id: id }), 'Agendada: se envió la confirmación al cliente')) { drawAuto(); load(true); } } }, 'Agendar y avisar al cliente')) : null),
       h('div', { class: 'card' },
         h('h2', { style: 'margin-top:0' }, 'Flujos'),
-        active.length ? active.map((e) => h('div', { class: 'row between small' }, h('span', {}, `▶ ${e.sequence_name} (mensaje ${Math.min(e.current_step + 1, 30)})${e.choice ? ` · eligió "${e.choice}"` : ''}`),
+        active.length ? active.map((e) => h('div', { class: 'row between small' }, h('span', {}, `▶ ${e.sequence_name} (mensaje ${Math.min(e.current_step + 1, 30)})${e.choice ? ` · eligió "${e.choice}"` : ''}${e.next_run_at ? ` · sigue ${fmtWhen(e.next_run_at)}` : ''}`),
           h('button', { class: 'small danger', onclick: async () => { if (!(await run(() => api('DELETE', `/api/conversations/${id}/sequences/${e.sequence_id}`), 'Detenida'))) return; drawAuto(); } }, 'Detener'))) : h('p', { class: 'small muted', style: 'margin:0' }, 'Ninguna en curso'),
         seqs.length ? h('div', { class: 'row', style: 'margin-top:8px' }, h('div', { style: 'flex:1' }, named(select(enr, 'sequence_id', seqs.filter((q) => q.active).map((q) => [q.id, q.name])), 'Flujo para iniciar')),
           h('button', { class: 'small', onclick: async () => { if (await run(() => api('POST', `/api/conversations/${id}/sequences`, enr), 'Empezó el flujo')) drawAuto(); } }, 'Iniciar')) : null,
-        auto.jobs.length ? h('details', { style: 'margin-top:8px' }, h('summary', {}, `Envíos programados (${auto.jobs.length})`),
-          auto.jobs.map((j) => h('div', { class: 'small muted' }, `${fmtDate(j.run_at)} · ${JOB_LABEL[j.type] || j.type}`))) : null),
+        // Cuándo sale de verdad cada envío (lo que espera por el horario para mensajes programados lo dice).
+        auto.jobs.length ? h('details', { style: 'margin-top:8px', open: auto.jobs.length <= 5 }, h('summary', {}, `Envíos programados (${auto.jobs.length})`),
+          auto.jobs.map((j) => { const when = fmtWhen(j.run_at); return h('div', { class: 'small muted' }, `${JOB_LABEL[j.type] || j.type}: sale ${when}${j.last_error === 'quiet_hours' ? ' (esperando el horario de envío)' : ''}`); })) : null),
     );
     if (services.length) loadSlots();
   };

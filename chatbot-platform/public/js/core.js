@@ -245,6 +245,23 @@ export async function run(fn, okMsg) {
 }
 
 export const fmtDate = (d, timeZone = state.timeZone) => (d ? new Date(d).toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short', ...(timeZone ? { timeZone } : {}) }) : '');
+/** Día local (AAAA-MM-DD) de un instante en la zona del negocio. */
+export const localDay = (d, timeZone = state.timeZone) => new Intl.DateTimeFormat('en-CA', timeZone ? { timeZone } : {}).format(new Date(d));
+export const plusDay = (day, n = 1) => { const [y, m, dd] = day.split('-').map(Number); return new Date(Date.UTC(y, m - 1, dd + n)).toISOString().slice(0, 10); };
+/** «hoy», «mañana» o «el jue 30 oct» para un día local (AAAA-MM-DD). */
+export function dayLabel(day, timeZone = state.timeZone) {
+  const today = localDay(Date.now(), timeZone);
+  if (day === today) return 'hoy';
+  if (day === plusDay(today)) return 'mañana';
+  const [y, m, dd] = day.split('-').map(Number);
+  return `el ${new Date(Date.UTC(y, m - 1, dd, 12)).toLocaleDateString('es-MX', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' })}`;
+}
+/** «hoy a las 15:30», «mañana a las 8:00» o «el jue 30 oct a las 8:00», en la zona del negocio. */
+export function fmtWhen(d, timeZone = state.timeZone) {
+  if (!d) return '';
+  const time = new Date(d).toLocaleTimeString('es-MX', { hour: 'numeric', minute: '2-digit', hourCycle: 'h23', ...(timeZone ? { timeZone } : {}) });
+  return `${dayLabel(localDay(d, timeZone), timeZone)} a las ${time}`;
+}
 export function localDateTime(d, timeZone) {
   if (!d) return '';
   const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(d)).map((x) => [x.type, x.value]));

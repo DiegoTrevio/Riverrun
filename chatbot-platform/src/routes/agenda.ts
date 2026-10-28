@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { assertAccount, conversationFor, HttpError, requireRole, scopeAccount, targetAccount } from '../access.js';
 import { buildIcs, freeSlots } from '../automation/agenda.js';
 import * as astore from '../automation/store.js';
+import { windowOf } from '../automation/send-window.js';
 import { spanishDate, spanishTime } from '../automation/time.js';
 import { ServiceBodySchema, type ServiceBody } from '../automation/types.js';
 import { StaffScheduleBodySchema, staffInfo, saveSchedule } from '../automation/staff.js';
@@ -74,7 +75,8 @@ export async function agendaRoutes(api: FastifyInstance, service: ChatService) {
     const accountId = req.user.role === 'superadmin' ? req.query.account_id : req.user.account_id;
     if (!accountId) return { timezone: 'America/Mexico_City' };
     const settings = await astore.getSettings(await targetAccount(req.user, accountId));
-    return { timezone: settings.timezone };
+    // El horario para mensajes programados: el panel dice cuándo empieza lo que se programa de noche.
+    return { timezone: settings.timezone, send_window: windowOf(settings) };
   });
 
   /* ------------------------------ Disponibilidad del equipo ------------------------------ */
