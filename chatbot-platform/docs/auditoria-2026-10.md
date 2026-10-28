@@ -107,15 +107,15 @@ Cada hallazgo crítico o alto se comprobó en el código. Los que no se sostuvie
 
 ### Panel y accesibilidad
 
-**A1 · Alto · La bandeja pierde el foco del teclado cada 10 segundos.** (`public/js/conversations.js:222,238`)
+**A1 · Alto · La bandeja pierde el foco del teclado cada 10 segundos.** (`public/js/conversations.js:222,238`) ✅ Corregido en el PR de accesibilidad del panel (rama `audit-a11y-panel`): el foco vuelve a la misma conversación, también en la vista de tabla.
 - **Causa:** la lista se reconstruye completa en cada sondeo.
 - **Escenario:** quien navega con teclado o lector de pantalla pierde su lugar.
 - **Arreglo:** devolver el foco al mismo enlace tras recargar, como ya se hace con el scroll.
 
-**A2 · Alto · Los mensajes nuevos del chat no se anuncian, ni en el panel ni en el widget.** (`conversations.js:250,394`; `widget.js:115,184`)
+**A2 · Alto · Los mensajes nuevos del chat no se anuncian, ni en el panel ni en el widget.** (`conversations.js:250,394`; `widget.js:115,184`) ✅ Corregido en el PR de accesibilidad del panel (rama `audit-a11y-panel`) en lo del panel: `role="log"`, los mensajes nuevos se agregan y cada uno dice quién habla. El widget va en el PR de accesibilidad pública.
 - **Arreglo:** `role="log"` en la lista de mensajes, agregar los mensajes en lugar de reemplazarlos y poner quién habla en texto para lector de pantalla.
 
-**A3 · Alto · El menú lateral en celular y tableta no se usa con teclado.** (`shell.js:151,159`)
+**A3 · Alto · El menú lateral en celular y tableta no se usa con teclado.** (`shell.js:151,159`) ✅ Corregido en el PR de accesibilidad del panel (rama `audit-a11y-panel`).
 - **Causa:** al abrir no recibe el foco, Escape no lo cierra y el botón no tiene `aria-expanded`.
 - **Escenario:** también afecta a quien usa zoom de 200 a 400 %.
 - **Arreglo:** mover el foco al abrir, cerrar con Escape y devolver el foco al botón.
@@ -124,7 +124,7 @@ Cada hallazgo crítico o alto se comprobó en el código. Los que no se sostuvie
 - **Causa:** reemplaza todo el `<main aria-live>`, así que algunos lectores releen la tarjeta completa.
 - **Arreglo:** quitar `aria-live` de `main`, enfocar el título de cada paso y asociar los errores a su campo.
 
-**A5 · Alto · Los errores de formulario no se asocian a su campo.** (`core.js:144-168`)
+**A5 · Alto · Los errores de formulario no se asocian a su campo.** (`core.js:144-168`) ✅ Corregido en el PR de accesibilidad del panel (rama `audit-a11y-panel`): `showFieldErrors` marca cada campo, lo enfoca y el aviso sale una sola vez.
 - **Causa:** `run()` muestra un aviso genérico al final de la tarjeta, y la lista de campos con error va dentro de un desplegable cerrado. Solo `billing.js` lo hace bien.
 - **Arreglo:** marcar `aria-invalid` y `aria-describedby` en los campos que vienen en `issues`, y enfocar el primero.
 
@@ -184,6 +184,17 @@ Cada hallazgo crítico o alto se comprobó en el código. Los que no se sostuvie
   - `fillfactor` en `conversations`.
 
 **Accesibilidad**
+- ✅ Corregido en el PR de accesibilidad del panel (rama `audit-a11y-panel`), lo del panel:
+  - enlace «Saltar al contenido»;
+  - `<main>` en el inicio de sesión y el registro;
+  - el título de la pestaña cambia por página;
+  - el aviso emergente se ve y se anuncia sobre un diálogo;
+  - contraste de los bordes de campos y del botón rojo en modo oscuro;
+  - el foco ya no queda debajo de la barra fija;
+  - el menú de usuario se maneja con teclado;
+  - los filtros de la bandeja son botones con `aria-pressed`;
+  - los controles de un grupo ya no se llaman «Dato 1», y los `select` sueltos tienen nombre en español;
+  - casillas de 24 px, borrar una tarea pide confirmación y el subrayado de los enlaces es más visible.
 - **Medio:**
   - Sin enlace para saltar al contenido.
   - El inicio de sesión y el registro no tienen `<main>`.

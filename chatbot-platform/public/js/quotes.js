@@ -1,5 +1,5 @@
 import { needAccount } from './admin.js';
-import { api, area, check, confirmAction, dialog, field, fill, fmtDate, h, run, select, text, toast } from './core.js';
+import { api, area, check, confirmAction, dialog, field, fill, fmtDate, h, run, select, text, toast, named } from './core.js';
 import { render } from './main.js';
 import { isAdmin, withAcct } from './session.js';
 
@@ -422,7 +422,7 @@ function quoteEditor(q, reload) {
         h('td', {}, text(l, 'name', { 'aria-label': `Concepto ${i + 1}`, maxlength: 200, oninput: touch })),
         h('td', {}, text(l, 'qty', { type: 'number', min: 0.001, step: 'any', 'aria-label': `Cantidad de ${l.name}`, oninput: touch, style: 'max-width:90px' })),
         h('td', {}, h('div', { class: 'row', style: 'gap:4px' },
-          select(l, 'price_mode', Object.entries(PRICE_MODE), () => { touch(); draw(); }),
+          named(select(l, 'price_mode', Object.entries(PRICE_MODE), () => { touch(); draw(); }), `Tipo de precio de ${l.name || `concepto ${i + 1}`}`),
           l.price_mode === 'tbd' ? null : text(l, 'min', { type: 'number', min: 0, step: '0.01', 'aria-label': `${l.price_mode === 'range' ? 'Mínimo' : 'Precio'} de ${l.name}`, oninput: touch, style: 'max-width:110px' }),
           l.price_mode === 'range' ? text(l, 'max', { type: 'number', min: 0, step: '0.01', 'aria-label': `Máximo de ${l.name}`, oninput: touch, style: 'max-width:110px' }) : null)),
         h('td', {}, lines.length > 1 ? h('button', { class: 'small', 'aria-label': `Quitar ${l.name}`, onclick: () => { lines.splice(i, 1); touch(); draw(); } }, 'Quitar') : null))))),

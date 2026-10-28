@@ -73,14 +73,46 @@ function settingsPage(active) {
   return SECTIONS.ajustes.includes(active) ? active : null;
 }
 
-const closeNav = () => document.querySelector('.layout')?.classList.remove('nav-open');
+/*
+ * Menú lateral en tableta y teléfono: al abrir, el foco entra al menú y el resto de la página queda inerte; Escape o el
+ * fondo lo cierran y el foco vuelve al botón. Si la ventana crece a escritorio con el menú abierto, se cierra solo.
+ */
+const desktop = matchMedia('(min-width: 1025px)');
+function navKeys(e) {
+  // Un Escape que ya atendió otro control (el menú de la cuenta, un diálogo) no cierra también el menú lateral.
+  if (!document.querySelector('.layout.nav-open')) return closeNav();
+  if (e.key === 'Escape' && !e.defaultPrevented) { e.preventDefault(); closeNav(true); }
+}
+function openNav() {
+  const layout = document.querySelector('.layout');
+  if (!layout) return;
+  layout.classList.add('nav-open');
+  layout.querySelector('.content')?.setAttribute('inert', '');
+  layout.querySelector('.nav-toggle')?.setAttribute('aria-expanded', 'true');
+  document.addEventListener('keydown', navKeys);
+  desktop.addEventListener('change', closeNavOnDesktop);
+  requestAnimationFrame(() => layout.querySelector('.sidebar .nav-item[aria-current], .sidebar .nav-item')?.focus());
+}
+function closeNav(returnFocus = false) {
+  const layout = document.querySelector('.layout');
+  document.removeEventListener('keydown', navKeys);
+  desktop.removeEventListener('change', closeNavOnDesktop);
+  if (!layout?.classList.contains('nav-open')) return;
+  layout.classList.remove('nav-open');
+  layout.querySelector('.content')?.removeAttribute('inert');
+  const toggle = layout.querySelector('.nav-toggle');
+  toggle?.setAttribute('aria-expanded', 'false');
+  if (returnFocus === true) toggle?.focus();
+}
+function closeNavOnDesktop() { if (desktop.matches) closeNav(); }
 
 export function shell(active, content) {
   refreshBell();
   const page = isAdmin() ? settingsPage(active) : null;
   const section = page ? 'ajustes' : Object.keys(SECTIONS).find((k) => SECTIONS[k].includes(active)) ?? active;
   const { user, account } = state.me;
-  const item = (href, iconName, label, key) => h('a', { href, class: `nav-item${section === key ? ' active' : ''}`, 'aria-current': section === key ? 'page' : null, onclick: closeNav },
+  // En la página actual el hash no cambia y no se vuelve a dibujar: el foco regresa al botón del menú.
+  const item = (href, iconName, label, key) => h('a', { href, class: `nav-item${section === key ? ' active' : ''}`, 'aria-current': section === key ? 'page' : null, onclick: () => closeNav(location.hash === href) },
     icon(iconName), h('span', {}, label));
 
   const switcher = isSuper()
@@ -108,21 +140,41 @@ export function shell(active, content) {
     : h('div', { class: 'account-switch' }, h('strong', {}, account?.name || brand.name), h('span', {}, ROLE_LABEL[user.role]));
 
   const initials = (user.name || user.email || '?').split(/[\s@.]+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('');
-  const menu = h('div', { class: 'user-menu', hidden: true, role: 'menu' },
-    h('div', { class: 'user-menu-head' }, h('strong', {}, user.name || user.email), h('span', { class: 'small muted' }, `${user.email} · ${ROLE_LABEL[user.role]}`)),
+  // Menú de la cuenta (patrón de botón de menú): flechas, Inicio y Fin entre opciones; Escape cierra y vuelve al botón.
+  const items = h('div', { role: 'menu', 'aria-label': 'Tu cuenta',
+    onkeydown: (e) => {
+      const list = [...items.querySelectorAll('[role=menuitem]')];
+      const at = list.indexOf(document.activeElement);
+      const go = { ArrowDown: at + 1, ArrowUp: at - 1, Home: 0, End: list.length - 1 }[e.key];
+      if (go !== undefined) { e.preventDefault(); list[(go + list.length) % list.length].focus(); }
+      else if (e.key === 'Escape') { e.preventDefault(); setMenu(false); avatar.focus(); }
+      else if (e.key === 'Tab') setMenu(false);
+    } },
     h('a', { href: '#/password', role: 'menuitem' }, icon('user'), 'Mi perfil'),
     h('a', { href: '#', role: 'menuitem', onclick: async (e) => { e.preventDefault(); await api('POST', '/api/logout'); state.me = null; state.ux = []; window.dispatchEvent(new Event('sessionended')); invalidateReads(); resetBrand(); location.hash = '#/login'; } }, icon('logout'), 'Cerrar sesión'));
-  const avatar = h('button', { class: 'user-row', type: 'button', 'aria-label': `Menú de ${user.name || user.email}`, 'aria-haspopup': 'menu', 'aria-expanded': 'false',
-    onclick: (e) => { e.stopPropagation(); menu.hidden = !menu.hidden; avatar.setAttribute('aria-expanded', String(!menu.hidden)); } },
+  const menu = h('div', { class: 'user-menu', hidden: true },
+    h('div', { class: 'user-menu-head' }, h('strong', {}, user.name || user.email), h('span', { class: 'small muted' }, `${user.email} · ${ROLE_LABEL[user.role]}`)),
+    items);
+  const setMenu = (open, focus) => {
+    menu.hidden = !open;
+    avatar.setAttribute('aria-expanded', String(open));
+    const list = [...items.querySelectorAll('[role=menuitem]')];
+    if (open && focus) (focus === 'last' ? list.at(-1) : list[0])?.focus();
+  };
+  const avatar = h('button', { class: 'user-row', type: 'button', 'aria-label': `${user.name || user.email} ${ROLE_LABEL[user.role]}: menú de tu cuenta`, 'aria-haspopup': 'menu', 'aria-expanded': 'false',
+    onclick: (e) => { e.stopPropagation(); setMenu(menu.hidden, 'first'); },
+    onkeydown: (e) => { if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); setMenu(true, e.key === 'ArrowUp' ? 'last' : 'first'); } } },
     h('span', { class: 'avatar', 'aria-hidden': 'true' }, initials),
     h('span', { class: 'who' }, h('strong', {}, user.name || user.email), h('span', {}, ROLE_LABEL[user.role])));
   const closeMenu = (e) => {
     if (!avatar.isConnected) return document.removeEventListener('click', closeMenu);
-    if (!menu.hidden && !menu.contains(e.target)) { menu.hidden = true; avatar.setAttribute('aria-expanded', 'false'); }
+    if (!menu.hidden && !menu.contains(e.target)) setMenu(false);
   };
   document.addEventListener('click', closeMenu);
 
-  const sidebar = h('nav', { class: 'sidebar', 'aria-label': 'Menú principal' },
+  const sidebar = h('nav', { class: 'sidebar', id: 'menu-principal', 'aria-label': 'Menú principal' },
+    // Sin teclado (lector en el celular) no hay Escape: el menú abierto se cierra con este botón.
+    h('button', { class: 'icon-button nav-close', type: 'button', 'aria-label': 'Cerrar el menú', onclick: () => closeNav(true) }, icon('x', 20)),
     h('div', { class: 'brand' }, brandBlock()),
     switcher,
     h('div', { class: 'nav-list' },
@@ -148,16 +200,19 @@ export function shell(active, content) {
 
   // Tableta y teléfono: el menú lateral se pliega en esta barra (marca, avisos y el botón del menú).
   const topbar = h('header', { class: 'topbar' },
-    h('button', { class: 'icon-button nav-toggle', type: 'button', 'aria-label': 'Abrir el menú', onclick: () => document.querySelector('.layout').classList.add('nav-open') }, icon('menu', 20)),
+    h('button', { class: 'icon-button nav-toggle', type: 'button', 'aria-label': 'Abrir el menú', 'aria-controls': 'menu-principal', 'aria-expanded': 'false', onclick: openNav }, icon('menu', 20)),
     h('div', { class: 'topbar-title' }, brandBlock()),
     h('div', { class: 'topbar-actions' },
       h('a', { class: `icon-button${active === 'notifications' ? ' active' : ''}`, href: '#/notifications', 'aria-label': 'Notificaciones', title: 'Notificaciones' }, icon('bell', 20), bells[1])));
 
   const body = page ? h('div', { class: 'settings-layout' }, settingsNav(page), h('div', { class: 'settings-body' }, content)) : content;
+  // «Saltar al contenido»: el hash es la ruta, así que el enlace enfoca <main> sin cambiarlo.
+  const skip = h('a', { class: 'skip-link', href: '#contenido', onclick: (e) => { e.preventDefault(); document.getElementById('contenido')?.focus(); } }, 'Saltar al contenido');
   return h('div', { class: 'layout' },
+    skip,
     sidebar,
-    h('div', { class: 'scrim', onclick: closeNav }),
-    h('div', { class: 'content' }, topbar, h('main', { class: 'main' }, accountBanner(), body)));
+    h('div', { class: 'scrim', onclick: () => closeNav(true) }),
+    h('div', { class: 'content' }, topbar, h('main', { class: 'main', id: 'contenido', tabindex: '-1' }, accountBanner(), body)));
 }
 
 /** Submenú de Ajustes (a la izquierda; en el teléfono, arriba). */

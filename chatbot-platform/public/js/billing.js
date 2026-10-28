@@ -1,4 +1,4 @@
-import { api, check, field, fill, h, num, run, select, state, text, toast, confirmAction } from './core.js';
+import { api, check, clearFieldErrors, field, fill, h, num, run, select, showFieldErrors, state, text, toast, confirmAction } from './core.js';
 import { okMark } from './icons.js';
 import { render } from './main.js';
 import { withAcct } from './session.js';
@@ -55,10 +55,6 @@ async function fiscalCard(onSaved) {
   const r = await api('GET', withAcct('/api/billing/fiscal'));
   const f = { ...r.fiscal };
   const card = h('section', { class: 'card', 'aria-labelledby': 'fiscal-title' });
-  const errors = {};
-  const errorFor = (name) => (errors[name] = h('small', { class: 'error', id: `fiscal-${name}-error`, role: 'alert' }));
-  const withError = (name, input) => { input.addEventListener('input', () => clearError(name)); return h('div', {}, input, errorFor(name)); };
-  const clearError = (name) => { errors[name].textContent = ''; card.querySelector(`[name="${name}"]`)?.removeAttribute('aria-invalid'); };
   const regime = h('select', { name: 'tax_regime' });
   const use = h('select', { name: 'cfdi_use' });
   const fillRegimes = () => {
@@ -74,17 +70,17 @@ async function fiscalCard(onSaved) {
     if (reset || !allowed.includes(f.cfdi_use)) f.cfdi_use = allowed[0];
     use.replaceChildren(...r.uses.filter((u) => allowed.includes(u.code)).map((u) => h('option', { value: u.code, selected: u.code === f.cfdi_use }, u.label)));
   };
-  regime.onchange = (e) => { f.tax_regime = e.target.value; clearError('tax_regime'); fillUses(true); };
+  regime.onchange = (e) => { f.tax_regime = e.target.value; fillUses(true); };
   use.onchange = (e) => { f.cfdi_use = e.target.value; };
   const rfc = text(f, 'rfc', { maxlength: 13, autocomplete: 'off', placeholder: 'XAXX010101000', style: 'text-transform:uppercase', oninput: () => fillRegimes() });
   const details = h('div', { hidden: !f.wants_invoice },
     h('div', { class: 'grid' },
-      field('RFC', withError('rfc', rfc)),
-      field('Nombre o razón social', withError('legal_name', text(f, 'legal_name', { maxlength: 300 })), 'Tal como aparece en tu Constancia de Situación Fiscal, sin «S.A. de C.V.».'),
-      field('Régimen fiscal', withError('tax_regime', regime)),
-      field('Código postal fiscal', withError('zip', text(f, 'zip', { maxlength: 5, inputmode: 'numeric', autocomplete: 'postal-code' }))),
-      field('Uso del CFDI', withError('cfdi_use', use)),
-      field('Correo para tus facturas (opcional)', withError('invoice_email', text(f, 'invoice_email', { type: 'email', autocomplete: 'email' })), 'Si lo dejas vacío, las enviamos al correo del dueño de la cuenta.')));
+      field('RFC', rfc),
+      field('Nombre o razón social', text(f, 'legal_name', { maxlength: 300 }), 'Tal como aparece en tu Constancia de Situación Fiscal, sin «S.A. de C.V.».'),
+      field('Régimen fiscal', regime),
+      field('Código postal fiscal', text(f, 'zip', { maxlength: 5, inputmode: 'numeric', autocomplete: 'postal-code' })),
+      field('Uso del CFDI', use),
+      field('Correo para tus facturas (opcional)', text(f, 'invoice_email', { type: 'email', autocomplete: 'email' }), 'Si lo dejas vacío, las enviamos al correo del dueño de la cuenta.')));
   const choice = (value, label) => h('label', { class: 'check' }, h('input', { type: 'radio', name: 'wants_invoice', value, checked: f.wants_invoice === (value === 'yes'), onchange: () => { f.wants_invoice = value === 'yes'; details.hidden = !f.wants_invoice; } }), label);
   fillRegimes();
   fill(card,
@@ -95,21 +91,16 @@ async function fiscalCard(onSaved) {
     details,
     h('p', { class: 'muted small' }, 'Con factura, cada pago genera tu CFDI a tu nombre y te llega por correo. Si el SAT rechaza tus datos te avisamos para corregirlos. Puedes cambiarlos cuando quieras: aplica a tus siguientes pagos y a los de este mes.'),
     h('button', { class: 'primary', onclick: async () => {
-      for (const k of Object.keys(errors)) clearError(k);
+      clearFieldErrors(card);
       try {
         await api('PUT', withAcct('/api/billing/fiscal'), { ...f, rfc: f.rfc.trim().toUpperCase() });
         toast(f.wants_invoice ? 'Datos de facturación guardados' : 'Listo: sin factura');
         onSaved();
       } catch (e) {
-        const byField = (e.issues || []).map((i) => i.split(': ')).filter(([k]) => errors[k]);
-        if (!byField.length) return toast(e.message || 'No se pudo guardar', true);
-        for (const [k, ...msg] of byField) {
-          errors[k].textContent = msg.join(': ');
-          const input = card.querySelector(`[name="${k}"]`);
-          input?.setAttribute('aria-invalid', 'true');
-          input?.setAttribute('aria-describedby', errors[k].id);
-        }
-        card.querySelector(`[name="${byField[0][0]}"]`)?.focus();
+        // Cada error junto a su campo (el mismo helper que usa todo el panel); lo que no tiene campo va al aviso.
+        const loose = showFieldErrors(card, e.issues || []);
+        if (!e.issues?.length) toast(e.message || 'No se pudo guardar', true);
+        else if (loose.length) toast(loose.join('; '), true);
       }
     } }, 'Guardar'));
   return card;

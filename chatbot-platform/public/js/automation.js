@@ -2,7 +2,7 @@ import { varsField } from './vars-help.js';
 import { discardDraft, draftModel, draftNotice, draftVersion, initializeDraftDefaults } from './editing.js';
 import { needAccount } from './admin.js';
 import { messageTester, saveBar } from './bot.js';
-import { api, area, check, clone, field, fill, fmtDate, h, dialog, localDateTime, lines, num, run, select, state, text, toast, confirmAction } from './core.js';
+import { api, area, check, clone, field, fill, fmtDate, h, dialog, localDateTime, lines, num, run, select, state, text, toast, confirmAction, named } from './core.js';
 import { icon } from './icons.js';
 import { render } from './main.js';
 import { withAcct } from './session.js';
@@ -342,7 +342,7 @@ function conditionFields(c) {
         h('input', { type: 'checkbox', checked: c.channel_types.includes(t.type), onchange: (e) => { c.channel_types = e.target.checked ? [...c.channel_types, t.type] : c.channel_types.filter((x) => x !== t.type); } }), t.label)))];
     case 'business_hours':
       c.inside ??= true;
-      return [h('select', { onchange: (e) => (c.inside = e.target.value === 'true') },
+      return [h('select', { 'aria-label': 'Horario de atención', onchange: (e) => (c.inside = e.target.value === 'true') },
         [['true', 'Dentro del horario'], ['false', 'Fuera del horario']].map(([v, l]) => h('option', { value: v, selected: String(c.inside) === v }, l)))];
     case 'has_tag':
       c.tag ??= ''; c.negate ??= false;
@@ -354,10 +354,10 @@ function conditionFields(c) {
         field('Valor', text(c, 'value')))];
     case 'status':
       c.status ??= 'bot';
-      return [select(c, 'status', [['bot', 'La atiende el bot'], ['human', 'La atiende una persona'], ['closed', 'Cerrada']])];
+      return [named(select(c, 'status', [['bot', 'La atiende el bot'], ['human', 'La atiende una persona'], ['closed', 'Cerrada']]), 'Estado de la conversación')];
     case 'agent':
       c.state ??= 'on';
-      return [select(c, 'state', [['on', 'El asistente está activo'], ['off', 'El asistente está en pausa o esperando su palabra']])];
+      return [named(select(c, 'state', [['on', 'El asistente está activo'], ['off', 'El asistente está en pausa o esperando su palabra']]), 'Estado del asistente')];
     default:
       return [];
   }

@@ -4,7 +4,7 @@ import { tabConnections } from './agent-connections.js';
 import { ACTIONS, triggerSummary } from './automation.js';
 import { varsHelp } from './vars-help.js';
 import { channelIcon, channelStatusCell } from './channels.js';
-import { api, area, check, clone, field, fill, fmtDate, h, lines, num, poll, run, select, state, text, toast, confirmAction, ask } from './core.js';
+import { api, area, check, clone, field, fill, fmtDate, h, lines, num, poll, run, select, state, text, toast, confirmAction, ask, named } from './core.js';
 import { icon, okMark } from './icons.js';
 import { discardDraft, draftModel, draftNotice, draftVersion } from './editing.js';
 import { importCard, importPreview } from './importer.js';
@@ -147,7 +147,7 @@ async function tabGeneral(root, bot) {
     h('div', { class: 'row admin-actions' },
       restartConversationsButton(bot),
       h('span', { class: 'row', style: 'margin-left:auto' },
-        isSuper() ? h('span', { style: 'min-width:180px' }, select(dup, 'account_id', state.accounts.map((a) => [a.id, a.name]))) : null,
+        isSuper() ? h('span', { style: 'min-width:180px' }, named(select(dup, 'account_id', state.accounts.map((a) => [a.id, a.name])), 'Cuenta a la que se duplica')) : null,
         h('button', { onclick: async () => { const c = await run(() => api('POST', `/api/chatbots/${bot.id}/duplicate`, dup), 'Chatbot duplicado'); if (c) location.hash = `#/bot/${c.id}/general`; } }, isSuper() ? 'Duplicar en esa cuenta' : 'Duplicar'),
         h('button', { class: 'danger', onclick: async () => { if (await ask(`Escribe "${bot.name}" para eliminarlo (sus canales quedarán sin chatbot)`) === bot.name) { if (!(await run(() => api('DELETE', `/api/chatbots/${bot.id}`), 'Eliminado'))) return; location.hash = '#/'; } } }, 'Eliminar'))),
   );
@@ -513,7 +513,7 @@ function tabQuestions(root, bot) {
     const targets = [['', 'Sigue con la siguiente'], ...qs.slice(i + 1).map((x, n) => [x._id, `Ir a la pregunta ${i + n + 2}: ${x.question || '(sin texto)'}`]), ['end', 'Terminar las preguntas'], ['handoff', 'Pasar con una persona']];
     return h('div', { class: 'card', style: 'background:var(--bg);margin:8px 0' },
       h('p', { class: 'small', style: 'margin-top:0' }, tag('Qué sigue según la respuesta', guaranteed())),
-      q.options.filter((o) => o.trim()).map((o) => h('div', { class: 'grid' }, h('span', { class: 'small' }, `Si responde «${o}»`), select(q._routes, o, targets))));
+      q.options.filter((o) => o.trim()).map((o) => h('div', { class: 'grid' }, h('span', { class: 'small' }, `Si responde «${o}»`), named(select(q._routes, o, targets), `Qué sigue si responde «${o}»`))));
   };
   const draw = () => fill(list,
     qs.length

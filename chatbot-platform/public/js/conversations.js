@@ -3,7 +3,7 @@ import { workspaceTabs } from './contact-workspace.js';
 import { workRecovery } from './work-recovery.js';
 import { dataLabel, flowCard } from './bot.js';
 import { channelIcon } from './channels.js';
-import { api, area, check, clone, dialog, field, fill, fmtDate, fmtPhone, h, initialsOf, lines, personTint, poll, run, select, state, text, toast, confirmAction, ask } from './core.js';
+import { api, area, check, clone, dialog, field, fill, fmtDate, fmtPhone, h, initialsOf, lines, personTint, poll, run, select, state, text, toast, confirmAction, ask, named } from './core.js';
 import { icon, okMark } from './icons.js';
 import { acct, isAdmin, isSuper, withAcct } from './session.js';
 import { pipelineCard } from './pipeline.js';
@@ -53,10 +53,14 @@ export function tasksCard(data, c, ct, reload, draft) {
     ].filter(Boolean).join(' · ');
     return h('div', { class: `task-row${t.status === 'hecha' ? ' done' : ''}` },
       t.kind === 'pendiente'
-        ? h('input', { type: 'checkbox', checked: t.status === 'hecha', title: 'Marcar como hecho', onchange: async (e) => { if (await run(() => api('PATCH', `/api/tasks/${t.id}`, { status: e.target.checked ? 'hecha' : 'abierta' }))) reload(); } })
+        ? h('input', { type: 'checkbox', checked: t.status === 'hecha', title: 'Marcar como hecho', 'aria-label': `Hecho: ${t.body.slice(0, 80)}`, onchange: async (e) => { if (await run(() => api('PATCH', `/api/tasks/${t.id}`, { status: e.target.checked ? 'hecha' : 'abierta' }))) reload(); } })
         : h('span', { class: 'badge' }, 'nota'),
       h('div', { style: 'flex:1' }, h('div', { class: 'task-text' }, t.body), meta ? h('div', { class: 'small muted' }, meta) : null),
-      h('button', { class: 'small', title: 'Borrar', onclick: async () => { if (await run(() => api('DELETE', `/api/tasks/${t.id}`), 'Borrado')) reload(); } }, icon('x', 14)));
+      h('button', { class: 'small', title: 'Borrar', 'aria-label': `Borrar ${t.kind === 'pendiente' ? 'pendiente' : 'nota'}: ${t.body.slice(0, 80)}`,
+        onclick: async () => {
+          if (!(await confirmAction(`¿Borrar ${t.kind === 'pendiente' ? 'el pendiente' : 'la nota'} «${t.body.slice(0, 80)}»?`, t.kind === 'pendiente' ? 'Borrar pendiente' : 'Borrar nota'))) return;
+          if (await run(() => api('DELETE', `/api/tasks/${t.id}`), 'Borrado')) reload();
+        } }, icon('x', 14)));
   };
   const add = async () => {
     if (adding) return;
@@ -119,6 +123,7 @@ export async function viewConversations(root, params) {
     cursor = page.next_cursor; more.hidden = !page.has_more;
     rowsSoFar = append ? [...rowsSoFar, ...page.items.filter((r) => !rowsSoFar.some((old) => old.id === r.id))] : page.items;
     const rows = rowsSoFar;
+    const focused = table.contains(document.activeElement) ? document.activeElement.getAttribute('href') : null;
     fill(table,
       ...(rows.length ? rows.map((c) => {
         const [cls, label] = STATUS_BADGE[c.status] || ['', c.status];
@@ -132,6 +137,7 @@ export async function viewConversations(root, params) {
           h('td', { class: 'muted small' }, fmtDate(c.last_message_at)));
       }) : [h('tr', {}, h('td', { colspan: 7, class: 'muted' }, 'No hay conversaciones.'))]),
     );
+    if (focused) table.querySelector(`a[href="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
     } finally { loading = false; more.disabled = false; }
   };
   const types = state.meta.channel_types.map((t) => [t.type, t.label]);
@@ -208,17 +214,25 @@ export async function viewInbox(root, params, id) {
     h('div', { class: 'inbox-list-head' },
       h('div', { class: 'row between' }, h('h1', { style: 'margin:0;font-size:18px' }, 'Conversaciones'), h('a', { class: 'small', href: '#/conversations?vista=tabla' }, 'Vista de tabla')),
       h('input', { type: 'search', placeholder: 'Buscar nombre o teléfono…', 'aria-label': 'Buscar conversaciones', value: f.search, onchange: (e) => { f.search = e.target.value.trim(); load(); } }),
-      h('div', { class: 'inbox-tabs', role: 'tablist' }, INBOX_TABS.map(([k, l]) => h('button', { role: 'tab', 'aria-selected': String(f.status === k), class: f.status === k ? 'active' : '', onclick: (e) => { f.status = k; e.currentTarget.parentNode.querySelectorAll('button').forEach((b) => { const on = b === e.currentTarget; b.classList.toggle('active', on); b.setAttribute('aria-selected', String(on)); }); load(); } }, l)))),
+      // Filtros de una misma lista (no pestañas): botones con aria-pressed dentro de un grupo con nombre.
+      h('div', { class: 'inbox-tabs', role: 'group', 'aria-label': 'Filtrar conversaciones' }, INBOX_TABS.map(([k, l]) => h('button', { type: 'button', 'aria-pressed': String(f.status === k), class: f.status === k ? 'active' : '', onclick: (e) => { f.status = k; e.currentTarget.parentNode.querySelectorAll('button').forEach((b) => { const on = b === e.currentTarget; b.classList.toggle('active', on); b.setAttribute('aria-pressed', String(on)); }); load(); } }, l)))),
     items);
   items.addEventListener('scroll', () => { inboxScroll = items.scrollTop; });
   const detail = h('section', { class: 'inbox-detail' });
   root.append(h('div', { class: 'inbox' }, list, detail));
   let shown = [];
+  let inboxSignature = '';
   const load = async () => {
     const qs = new URLSearchParams({ page: 'true', ...(f.status ? { status: f.status } : {}), ...(f.search ? { search: f.search } : {}) });
     if (isSuper() && state.accountId) qs.set('account_id', state.accountId);
     const page = await api('GET', `/api/conversations?${qs}`);
     shown = page.items;
+    // Sin cambios no se vuelve a dibujar (el lector no relee el enlace enfocado cada 10 s); con cambios, el foco sigue
+    // en la misma conversación.
+    const listSignature = JSON.stringify([page.items, Math.floor(Date.now() / 60000)]); // y una vez por minuto, por «hace 5 min»
+    if (listSignature === inboxSignature) return;
+    inboxSignature = listSignature;
+    const focused = items.contains(document.activeElement) ? document.activeElement.getAttribute('href') : null;
     fill(items, page.items.length ? page.items.map((c) => {
       const name = c.name || c.push_name || (c.channel_type === 'webchat' ? 'Visitante del sitio' : c.phone ? fmtPhone(c.phone) : 'Sin nombre');
       const waiting = c.last_direction === 'in' && c.status !== 'closed';
@@ -233,6 +247,7 @@ export async function viewInbox(root, params, id) {
             waiting ? h('span', { class: 'sr-only' }, 'Esperando respuesta') : null))));
     }) : h('li', { class: 'muted small', style: 'padding:16px' }, 'No hay conversaciones.'));
     items.scrollTop = inboxScroll;
+    if (focused) items.querySelector(`a[href="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
   };
   await load();
   poll(load, 10000, root);
@@ -247,7 +262,9 @@ export async function viewInbox(root, params, id) {
 }
 
 export async function viewConversation(root, id, opts = {}) {
-  const chat = h('div', { class: 'chat', id: 'conversation-messages', tabindex: '-1', 'aria-label': 'Mensajes de la conversación' });
+  // role=log: los mensajes que llegan se anuncian solos (solo los agregados, no los cambios de estado).
+  const chat = h('div', { class: 'chat', id: 'conversation-messages', tabindex: '-1', role: 'log', 'aria-relevant': 'additions', 'aria-label': 'Mensajes de la conversación' });
+  const bubbles = new Map();
   const side = h('div');
   const header = h('div');
   const input = h('textarea', { 'aria-label': 'Mensaje al cliente', placeholder: 'Escribe como persona del equipo… (Enter para enviar)', onkeydown: (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } } });
@@ -367,7 +384,7 @@ export async function viewConversation(root, id, opts = {}) {
     fill(header, 
       h('div', { class: 'row between' },
         // En la vista de tres paneles el título de la página es «Conversaciones»: el del cliente es un subtítulo (un solo h1).
-        h(opts.embedded ? 'h2' : 'h1', { style: opts.embedded ? 'margin:0' : null }, ct.name || ct.push_name || 'Cliente', ' ', h('span', { class: `badge ${cls}` }, label)),
+        h(opts.embedded ? 'h2' : 'h1', { style: opts.embedded ? 'margin:0' : null, 'data-focus': opts.embedded ? '' : null }, ct.name || ct.push_name || 'Cliente', ' ', h('span', { class: `badge ${cls}` }, label)),
         h('div', { class: 'row' },
           c.status !== 'human' ? h('button', { class: 'primary', onclick: async () => { if (!(await run(() => api('POST', `/api/conversations/${id}/takeover`), 'Tomaste la conversación'))) return; load(true); } }, 'Tomar conversación') : null,
           c.status !== 'bot' ? h('button', { class: 'primary', onclick: async () => { if (!(await run(() => api('POST', `/api/conversations/${id}/release`), 'El bot vuelve a responder'))) return; load(true); } }, 'Devolver al bot') : null,
@@ -391,10 +408,12 @@ export async function viewConversation(root, id, opts = {}) {
       const prepended = firstMessageId !== null && Number(messages[0]?.id) < firstMessageId;
       firstMessageId = Number(messages[0]?.id);
       messageSignature = signature;
-      fill(chat, ...messages.map((m) => {
+      const bubbleOf = (m) => {
         const cls = ['bubble', m.direction === 'in' ? 'in' : 'out', m.sender === 'human' ? 'human' : '', ['failed','uncertain'].includes(m.status) ? 'failed' : ''].join(' ');
         const who = m.sender === 'human' ? 'equipo' : m.sender === 'bot' ? 'bot' : '';
-        return h('div', { class: cls },
+        // Quién habla, en texto para el lector (a la vista lo dicen el lado y el color de la burbuja).
+        const speaker = m.direction === 'in' ? 'Cliente: ' : m.sender === 'human' ? 'Equipo: ' : m.sender === 'bot' ? 'Bot: ' : 'Mensaje enviado: ';
+        return h('div', { class: cls }, h('span', { class: 'sr-only' }, speaker),
           m.image_id && m.type === 'image' ? h('img', { src: `/api/images/${m.image_id}/file`, alt: m.image_name || '' }) : null,
           m.image_id && m.type === 'video' ? h('video', { src: `/api/images/${m.image_id}/file`, controls: true, preload: 'metadata', 'aria-label': m.image_name || 'video', style: 'max-width:100%' }) : null,
           m.image_id && m.type !== 'image' && m.type !== 'video' ? h('a', { href: `/api/images/${m.image_id}/file`, target: '_blank', rel: 'noopener' }, icon('paperclip', 14), ` ${m.meta?.file_name || m.image_name || 'Archivo'}`) : null,
@@ -408,7 +427,35 @@ export async function viewConversation(root, id, opts = {}) {
             m.meta.buttons.map((b) => h('span', { class: 'chip', role: 'listitem' }, b.kind === 'url' ? [icon('external', 14), b.label] : b.label))) : null,
           m.meta?.choice ? h('div', { class: 'small' }, `Eligió: ${m.meta.choice}`) : null,
           h('div', { class: 'meta' }, [who, fmtDate(m.created_at), m.status === 'failed' ? 'no enviado' : m.status==='uncertain'?'entrega sin confirmar':m.status==='cancelled'?'cancelado':'', m.meta?.fallback ? 'respaldo' : ''].filter(Boolean).join(' · ')));
-      }));
+      };
+      // Por mensaje y sin reconstruir la lista: un mensaje nuevo se agrega al final y el registro (role=log) lo anuncia;
+      // la primera carga y los anteriores entran con aria-busy para no leer todo el historial.
+      const quiet = firstRender || prepended;
+      if (quiet) chat.setAttribute('aria-busy', 'true');
+      const ids = new Set(messages.map((m) => String(m.id)));
+      for (const [k, b] of bubbles) if (!ids.has(k)) { b.node.remove(); bubbles.delete(k); }
+      let prev = null;
+      for (const m of messages) {
+        const k = String(m.id);
+        const sig = JSON.stringify([m.status, m.meta, m.content]);
+        const body = JSON.stringify([m.content, m.image_id, m.media_kind, m.meta?.buttons, m.meta?.choice, m.meta?.attachment_id]);
+        let b = bubbles.get(k);
+        if (!b) { b = { node: bubbleOf(m), sig, body }; bubbles.set(k, b); }
+        else if (b.sig !== sig) {
+          // Un cambio de estado (enviado, no enviado) solo toca la clase y la línea de abajo: no es un mensaje nuevo.
+          const fresh = bubbleOf(m);
+          b.node.className = fresh.className;
+          if (b.body === body) b.node.querySelector(':scope > .meta').textContent = fresh.querySelector(':scope > .meta').textContent;
+          else b.node.replaceChildren(...fresh.childNodes);
+          b.sig = sig; b.body = body;
+        }
+        const want = prev ? prev.nextSibling : chat.firstChild;
+        if (b.node !== want) chat.insertBefore(b.node, want);
+        prev = b.node;
+      }
+      while (prev?.nextSibling) prev.nextSibling.remove();
+      if (!prev) chat.replaceChildren();
+      if (quiet) setTimeout(() => chat.removeAttribute('aria-busy'), 300);
       chat.scrollTop = prepended ? previousTop + Math.max(0, chat.scrollHeight - previousHeight) : atBottom || firstRender ? chat.scrollHeight : previousTop;
     }
     if (!sideDirty && (force || !side.contains(document.activeElement))) drawSide();
@@ -440,7 +487,7 @@ export async function viewConversation(root, id, opts = {}) {
       if (!book.service_id) return;
       slotList = await api('GET', `/api/services/${book.service_id}/slots`);
       book.slot = slotList[0]?.key || '';
-      fill(slotBox, slotList.length ? select(book, 'slot', slotList.map((x) => [x.key, x.label]), drawPerson) : h('p', { class: 'small muted' }, 'Sin horarios disponibles'));
+      fill(slotBox, slotList.length ? named(select(book, 'slot', slotList.map((x) => [x.key, x.label]), drawPerson), 'Horario de la cita') : h('p', { class: 'small muted' }, 'Sin horarios disponibles'));
       drawPerson();
     };
     const active = auto.enrollments.filter((e) => e.status === 'active');
@@ -460,7 +507,7 @@ export async function viewConversation(root, id, opts = {}) {
         h('h2', { style: 'margin-top:0' }, 'Flujos'),
         active.length ? active.map((e) => h('div', { class: 'row between small' }, h('span', {}, `▶ ${e.sequence_name} (mensaje ${Math.min(e.current_step + 1, 30)})${e.choice ? ` · eligió "${e.choice}"` : ''}`),
           h('button', { class: 'small danger', onclick: async () => { if (!(await run(() => api('DELETE', `/api/conversations/${id}/sequences/${e.sequence_id}`), 'Detenida'))) return; drawAuto(); } }, 'Detener'))) : h('p', { class: 'small muted', style: 'margin:0' }, 'Ninguna en curso'),
-        seqs.length ? h('div', { class: 'row', style: 'margin-top:8px' }, h('div', { style: 'flex:1' }, select(enr, 'sequence_id', seqs.filter((q) => q.active).map((q) => [q.id, q.name]))),
+        seqs.length ? h('div', { class: 'row', style: 'margin-top:8px' }, h('div', { style: 'flex:1' }, named(select(enr, 'sequence_id', seqs.filter((q) => q.active).map((q) => [q.id, q.name])), 'Flujo para iniciar')),
           h('button', { class: 'small', onclick: async () => { if (await run(() => api('POST', `/api/conversations/${id}/sequences`, enr), 'Empezó el flujo')) drawAuto(); } }, 'Iniciar')) : null,
         auto.jobs.length ? h('details', { style: 'margin-top:8px' }, h('summary', {}, `Envíos programados (${auto.jobs.length})`),
           auto.jobs.map((j) => h('div', { class: 'small muted' }, `${fmtDate(j.run_at)} · ${JOB_LABEL[j.type] || j.type}`))) : null),
