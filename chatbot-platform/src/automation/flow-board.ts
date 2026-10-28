@@ -49,10 +49,12 @@ export const BoardNodeSchema = z.discriminatedUnion('type', [
       text: z.string().max(4000).default(''),
       image_id: Uuid,
       attachment_id: Uuid,
+      /** La foto que falta (la deja la IA al armar el flujo): se muestra en la tarjeta hasta que se elige una. */
+      photo_hint: z.string().max(200).default(''),
       buttons: z.array(BoardButtonSchema).max(5).default([]),
       wait_for_choice: z.boolean().default(false),
       if_no_choice: z.enum(['end', 'continue']).default('end'),
-    }).default(() => ({ text: '', image_id: '', attachment_id: '', buttons: [], wait_for_choice: false, if_no_choice: 'end' as const })),
+    }).default(() => ({ text: '', image_id: '', attachment_id: '', photo_hint: '', buttons: [], wait_for_choice: false, if_no_choice: 'end' as const })),
   }),
   z.object({
     ...base,
@@ -149,6 +151,8 @@ export interface CompiledFlow {
 }
 
 const MINUTES = { minutes: 1, hours: 60, days: 1440 } as const;
+/** Un hueco por llenar, como «[precio]»: no debe llegar así al cliente. */
+const PLACEHOLDER_HOLE = /\[[^\]\n]{2,60}\]/;
 const FLOW_TYPES = new Set(['trigger', 'message', 'wait', 'action']);
 
 /** Espera total en la unidad más grande que la expresa exacta (el editor de flujos admite hasta 10000 de cada una). */
@@ -264,6 +268,9 @@ export function compileBoard(board: Board, name: string): CompiledFlow {
       if (cur.type !== 'message') break;
       const m = cur.data;
       if (!m.text.trim() && !m.image_id && !m.attachment_id) problems.push({ node: cur.id, message: 'Este mensaje está vacío: escribe un texto o agrega una foto o un archivo.' });
+      const hole = [m.text, ...m.buttons.map((b) => b.reply)].join('\n').match(PLACEHOLDER_HOLE);
+      if (hole) problems.push({ node: cur.id, message: `Completa lo que está entre corchetes: «${hole[0]}».` });
+      if (m.photo_hint && !m.image_id && !m.attachment_id) problems.push({ node: cur.id, warning: true, message: `Falta la foto: ${m.photo_hint}.` });
       const replies = m.buttons.filter((b) => b.kind === 'reply');
       if (replies.length > 3) problems.push({ node: cur.id, message: 'Máximo 3 botones de respuesta por mensaje.' });
       if (m.buttons.length - replies.length > 2) problems.push({ node: cur.id, message: 'Máximo 2 botones de enlace por mensaje.' });

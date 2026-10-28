@@ -79,6 +79,8 @@ const PATHS = {
   more: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
   pause: '<path d="M8 5v14M16 5v14"/>',
   layout: '<rect x="4" y="3" width="7" height="6" rx="1"/><rect x="13" y="15" width="7" height="6" rx="1"/><path d="M7.5 9v4.5a1.5 1.5 0 0 0 1.5 1.5h4"/>',
+  wand: '<path d="M4 20 14.5 9.5"/><path d="m13 7 2 2"/><path d="M17.5 3.5v3M16 5h3M19.5 10.5v2M18.5 11.5h2M10.5 3v2M9.5 4h2"/>',
+  upload: '<path d="M12 15V4M7.5 8.5 12 4l4.5 4.5"/><path d="M5 14v4.5a1.5 1.5 0 0 0 1.5 1.5h11a1.5 1.5 0 0 0 1.5-1.5V14"/>',
 };
 
 /** Ícono de línea decorativo (el texto de al lado dice qué es). */

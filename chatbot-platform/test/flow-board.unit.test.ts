@@ -124,6 +124,6 @@ test('el esquema rechaza ids y líneas inválidas y da valores por omisión a ca
   assert.ok(!BoardSchema.safeParse({ nodes: [{ id: 'a b', type: 'message', x: 0, y: 0 }] }).success);
   assert.ok(!BoardSchema.safeParse({ edges: [{ id: 'e', from: 'a', port: 'boton', to: 'b' }] }).success);
   const b = BoardSchema.parse({ nodes: [{ id: 'm', type: 'message', x: 1, y: 2 }, { id: 'n', type: 'note', x: 0, y: 0 }] });
-  assert.deepEqual(b.nodes[0], { id: 'm', type: 'message', x: 1, y: 2, data: { text: '', image_id: '', attachment_id: '', buttons: [], wait_for_choice: false, if_no_choice: 'end' } });
+  assert.deepEqual(b.nodes[0], { id: 'm', type: 'message', x: 1, y: 2, data: { text: '', image_id: '', attachment_id: '', photo_hint: '', buttons: [], wait_for_choice: false, if_no_choice: 'end' } });
   assert.deepEqual(b.settings, { stop_on_reply: true, business_hours_only: true });
 });

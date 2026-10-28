@@ -1,6 +1,7 @@
 import { api, field, fill, h, select, toast } from './core.js';
 import { icon } from './icons.js';
 import { newId } from './flowboard-templates.js';
+import { promptAssistant } from './prompt-assistant.js';
 
 /*
  * Instrucciones del agente desde el lienzo: el texto con el que atiende («Cómo debe atender») partido en bloques, para
@@ -25,7 +26,7 @@ function suggestion(board, name) {
   return `Algunos clientes reciben el flujo «${name}»${about}. Si responden a esos mensajes, continúa la conversación con normalidad y usa la información de ese flujo.`;
 }
 
-export function agentPanel({ bots, board, name }) {
+export function agentPanel({ bots, board, name, context = '' }) {
   const root = h('div', { class: 'fb-agent' });
   if (!bots.length) {
     fill(root, h('p', { class: 'help' }, 'Aún no tienes un agente. Créalo en ', h('a', { href: '#/agentes/nuevo' }, 'Agentes'), ' y vuelve aquí para ajustar sus instrucciones.'));
@@ -33,7 +34,24 @@ export function agentPanel({ bots, board, name }) {
   }
   const choice = { bot: bots[0].id };
   const body = h('div', { class: 'fb-agent-body' });
+  const assistantSlot = h('div', { class: 'fb-agent-assistant' });
+  const manual = h('details', { class: 'fb-agent-manual' }, h('summary', {}, 'Editar a mano, párrafo por párrafo'), body);
   let current = null;
+  let mounted = null;
+
+  /** Guardar = aplicar: llega de inmediato a sus conexiones y queda en el historial de versiones. */
+  async function save(prompt) {
+    try {
+      await api('POST', `/api/chatbots/${choice.bot}/version-apply`, { revision: current.revision, patch: { personality: { ...current.personality, prompt } } });
+      toast('Instrucciones aplicadas: el agente ya atiende así');
+      await load();
+      return true;
+    } catch (e) {
+      if (e.status === 409) { toast('Las instrucciones cambiaron en otra sesión. Ya se volvieron a cargar: pide el cambio otra vez.', true); await load(); }
+      else toast(e.message, true);
+      return false;
+    }
+  }
 
   async function load() {
     fill(body, h('p', { class: 'help', role: 'status' }, 'Cargando las instrucciones…'));
@@ -41,6 +59,10 @@ export function agentPanel({ bots, board, name }) {
       const versions = await api('GET', `/api/chatbots/${choice.bot}/versions`);
       const personality = versions.draft_bot.personality;
       current = { revision: versions.draft.revision, personality, original: personality.prompt || '', blocks: fresh(personality.prompt) };
+      if (mounted !== choice.bot) {
+        mounted = choice.bot;
+        fill(assistantSlot, promptAssistant({ botId: choice.bot, getPrompt: () => current.original, apply: save, context }));
+      }
       draw();
     } catch (e) {
       fill(body, h('p', { class: 'banner danger', role: 'alert' }, e.message), h('button', { type: 'button', class: 'small', onclick: load }, 'Reintentar'));
@@ -118,20 +140,13 @@ export function agentPanel({ bots, board, name }) {
 
   async function apply(button) {
     button.disabled = true;
-    try {
-      await api('POST', `/api/chatbots/${choice.bot}/version-apply`, { revision: current.revision, patch: { personality: { ...current.personality, prompt: joinBlocks(current.blocks) } } });
-      toast('Instrucciones aplicadas: el agente ya atiende así');
-      await load();
-    } catch (e) {
-      button.disabled = false;
-      if (e.status === 409) fill(body, h('p', { class: 'banner warn', role: 'alert' }, e.message), h('button', { type: 'button', class: 'small', onclick: load }, 'Volver a cargar'));
-      else toast(e.message, true);
-    }
+    if (!(await save(joinBlocks(current.blocks))) && button.isConnected) button.disabled = false;
   }
 
   fill(root,
     bots.length > 1 ? field('Agente', select(choice, 'bot', bots.map((b) => [b.id, b.name]), () => load())) : h('p', { class: 'fb-agent-name' }, icon('bot', 16), h('strong', {}, bots[0].name)),
-    body);
+    assistantSlot,
+    manual);
   load();
   return root;
 }

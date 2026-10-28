@@ -27,6 +27,7 @@ import { openApiRoutes } from './routes/openapi.js';
 import { apiV1Routes } from './routes/api-v1.js';
 import { exportRoutes } from './routes/export.js';
 import { knowledgeImportRoutes } from './routes/import.js';
+import { promptEditRoutes } from './routes/prompt-edit.js';
 import { onboardingRoutes } from './routes/onboarding.js';
 import { analyticsRoutes } from './routes/analytics.js';
 import { attachmentRoutes } from './routes/attachments.js';
@@ -177,7 +178,7 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
     await socialPostRoutes(api);
     await conversationRoutes(api, service);
     await automationRoutes(api, service);
-    await flowBoardRoutes(api);
+    await flowBoardRoutes(api, opts.ai);
     await pipelineRoutes(api, service);
     await quoteRoutes(api, service);
     await receivableRoutes(api, service);
@@ -188,6 +189,7 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
     await attachmentRoutes(api);
     await taskRoutes(api);
     await knowledgeImportRoutes(api, opts.ai);
+    await promptEditRoutes(api, opts.ai);
     await billingRoutes(api);
     await businessRoutes(api);
     await invitationRoutes(api);

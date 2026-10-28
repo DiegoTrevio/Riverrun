@@ -1,6 +1,7 @@
 import { needAccount } from './admin.js';
 import { triggerSummary } from './automation.js';
 import { agentPanel } from './flowboard-agent.js';
+import { aiResult, ideaComposer, requestDesign } from './flowboard-ai.js';
 import { previewPanel } from './flowboard-preview.js';
 import { boardThumb, newId, TEMPLATES } from './flowboard-templates.js';
 import { ago, api, area, confirmAction, dialog, field, fill, fmtDate, h, lines, select, state, text, toast } from './core.js';
@@ -54,7 +55,7 @@ const NOTE_COLORS = [['sun', 'Amarillo'], ['leaf', 'Verde'], ['sky', 'Azul'], ['
 
 const DEFAULTS = {
   trigger: () => ({ trigger: { type: 'message_received', match: 'keywords', keywords: [], first_message_only: false }, conditions: [], chatbot_id: null, stop_ai: true, once_per_conversation: false }),
-  message: () => ({ text: '', image_id: '', attachment_id: '', buttons: [], wait_for_choice: false, if_no_choice: 'end' }),
+  message: () => ({ text: '', image_id: '', attachment_id: '', photo_hint: '', buttons: [], wait_for_choice: false, if_no_choice: 'end' }),
   wait: () => ({ value: 1, unit: 'days', at_time: '' }),
   action: (kind = 'tag') => ({ action: kind, tag: '', message: '', reason: '', sequence_id: '' }),
   note: () => ({ text: '', color: 'sun', w: 220, h: 160 }),
@@ -108,6 +109,20 @@ export function boardStatus(b) {
 
 /* ============================== Lista de lienzos ============================== */
 
+const CREATE_EXAMPLES = [
+  ['Bienvenida con menú', 'Cuando un cliente escriba por primera vez, salúdalo por su nombre y ofrécele tres botones: Ver servicios, Agendar una cita y Hablar con alguien (que lo pase con una persona).'],
+  ['Promoción', 'Cuando alguien escriba PROMO, mándale la promoción de esta semana con dos botones: Apartar (que lo pase con una persona) y Ver precios. Si no contesta, al día siguiente a las 10 recuérdale que termina el domingo.'],
+  ['Seguimiento', 'Lo inicio yo: un mensaje para preguntar si pudo revisar la cotización; si no contesta, otro a los 2 días y uno último a los 5 días ofreciéndole ayuda.'],
+  ['Encuesta después de la cita', 'Cuando se agende una cita, al día siguiente pregúntale cómo le fue con botones Excelente, Bien y Mal. Si elige Mal, pásalo con una persona; si elige Excelente, pídele una reseña.'],
+];
+const AI_STEPS = ['Leyendo tu idea…', 'Escribiendo los mensajes…', 'Uniendo botones y esperas…', 'Revisando que funcione…', 'Ya casi…'];
+const EDIT_EXAMPLES = [
+  ['Agregar un botón', 'Agrega al primer mensaje un botón «Ubicación» que mande la dirección del negocio.'],
+  ['Cambiar una espera', 'Cambia la espera para que el siguiente mensaje salga 2 días después a las 10 de la mañana.'],
+  ['Hablar de usted', 'Cambia todos los mensajes para que hablen de usted.'],
+  ['Más corto', 'Haz todos los mensajes más cortos y directos, sin perder la información.'],
+];
+
 export async function viewFlowBoards(root) {
   if (needAccount(root)) return;
   const boards = await api('GET', withAcct('/api/flow-boards'));
@@ -146,10 +161,27 @@ export async function viewFlowBoards(root) {
       h('td', { class: 'num small muted' }, h('time', { datetime: b.updated_at, title: fmtDate(b.updated_at) }, ago(b.updated_at))));
   };
 
+  const composer = ideaComposer({
+    id: 'fb-idea',
+    label: 'Describe tu flujo',
+    placeholder: 'Ejemplo: cuando alguien escriba PROMO, mándale la promoción con dos botones, Apartar y Ver precios; si no contesta, recuérdale al día siguiente.',
+    examples: CREATE_EXAMPLES,
+    submit: 'Crear flujo',
+    steps: AI_STEPS,
+    onSubmit: async ({ idea, file }) => {
+      const r = await requestDesign({ url: withAcct('/api/flow-boards/ai'), idea, file });
+      const b = await api('POST', '/api/flow-boards', { name: r.name, board: r.board, account_id: state.accountId || undefined });
+      try { sessionStorage.setItem(`fb-ai:${b.id}`, JSON.stringify({ summary: r.summary, review: r.review })); } catch { /* sin almacenamiento */ }
+      location.hash = `#/automation/lienzo/${b.id}?ordenar=1&ia=1`;
+    },
+  });
+
   root.append(
     h('section', { class: 'card fb-start', 'aria-labelledby': 'fb-start-title' },
-      h('h2', { id: 'fb-start-title' }, 'Dibuja un flujo de mensajes'),
-      h('p', { class: 'help fb-start-lead' }, 'Arrastra mensajes con foto y botones, esperas y acciones, y únelos con líneas. Al publicar, el lienzo se convierte en una regla y sus flujos, y empieza a funcionar en todos tus canales.'),
+      h('h2', { id: 'fb-start-title' }, 'Crea un flujo de mensajes'),
+      h('p', { class: 'help fb-start-lead' }, 'Escríbelo como se lo contarías a alguien de tu equipo, o sube una foto de tu dibujo, de tu pizarrón o de una captura. Lo armo completo, con sus mensajes, botones y esperas, y lo revisas en el lienzo antes de publicarlo.'),
+      composer.el,
+      h('h3', { class: 'fb-start-sub' }, 'O empieza con una plantilla'),
       templates),
     h('section', { class: 'card', 'aria-labelledby': 'fb-list-title' },
       h('div', { class: 'row between fb-list-head' }, h('h2', { id: 'fb-list-title' }, 'Tus flujos dibujados'), h('span', { class: 'small muted' }, boards.length === 1 ? '1 flujo' : `${boards.length} flujos`)),
@@ -373,6 +405,7 @@ export async function viewFlowBoard(root, id) {
   const redoBtn = h('button', { class: 'fb-icon', type: 'button', 'aria-label': 'Rehacer', title: 'Rehacer (Ctrl+Mayús+Z)', onclick: () => redo() }, icon('redo', 18));
   const publishBtn = h('button', { class: 'primary fb-publish', type: 'button', onclick: () => publish() }, 'Publicar');
   const menuBtn = h('button', { class: 'fb-icon', type: 'button', 'aria-label': 'Más opciones', 'aria-haspopup': 'menu', 'aria-expanded': 'false', onclick: (e) => { e.stopPropagation(); openMenu(menuBtn); } }, icon('more', 18));
+  const aiBtn = h('button', { class: 'fb-tool fb-ai-btn', type: 'button', 'aria-label': 'Cambiar con IA', title: 'Escribe qué cambiar y la IA lo hace en el lienzo', onclick: () => openPanel('ai') }, icon('wand', 16), h('span', { class: 'fb-tool-label' }, 'Cambiar con IA'));
   const top = h('header', { class: 'fb-top' },
     h('a', { class: 'fb-icon', href: '#/automation/lienzo', 'aria-label': 'Volver a tus flujos', title: 'Volver a tus flujos' }, icon('arrow-left', 18)),
     h('div', { class: 'fb-title-wrap' }, h('h1', { class: 'fb-title' }, titleBtn), statusEl, saveEl),
@@ -383,6 +416,7 @@ export async function viewFlowBoard(root, id) {
         problemsBtn,
         h('button', { class: 'fb-tool', type: 'button', onclick: () => openPanel('preview') }, icon('play', 16), h('span', { class: 'fb-tool-label' }, 'Vista previa')),
         h('button', { class: 'fb-tool', type: 'button', onclick: () => openPanel('agent') }, icon('bot', 16), h('span', { class: 'fb-tool-label' }, 'Instrucciones del agente'))),
+      aiBtn,
       menuBtn,
       publishBtn));
 
@@ -455,6 +489,7 @@ export async function viewFlowBoard(root, id) {
     h('div', { class: 'fb-panel-head' }, panelTitle, h('button', { class: 'fb-icon', type: 'button', 'aria-label': 'Cerrar', onclick: () => closePanel() }, icon('x', 18))),
     panelBody);
   const phoneBar = h('nav', { class: 'fb-phonebar', 'aria-label': 'Agregar al flujo' },
+    h('button', { type: 'button', class: 'fb-phone-ai', onclick: () => openPanel('ai') }, icon('wand', 18), h('span', {}, 'Con IA')),
     [['message', 'Mensaje', 'chat'], ['wait', 'Espera', 'clock'], ['tag', 'Etiqueta', 'tag'], ['handoff', 'Persona', 'user'], ['note', 'Nota', 'note']].map(([key, label, iconName]) =>
       h('button', { type: 'button', onclick: () => addFromPalette(SPECS[key]) }, icon(iconName, 18), h('span', {}, label))));
   const editor = h('div', { class: 'fb-editor' }, top, viewToggle, h('div', { class: 'fb-body' }, palette, stage, inspector, panel), phoneBar);
@@ -596,6 +631,7 @@ export async function viewFlowBoard(root, id) {
       kids.push(head(n, 'Mensaje', replies.length ? `${replies.length} ${replies.length === 1 ? 'botón' : 'botones'}` : null),
         h('div', { class: 'fb-node-body' },
           photo ? h('div', { class: 'fb-media' }, photo) : null,
+          !photo && d.photo_hint ? h('p', { class: 'fb-missing' }, icon('image', 14), h('span', {}, `Falta la foto: ${d.photo_hint}`)) : null,
           d.text.trim() ? h('p', { class: 'fb-msg' }, richText(d.text)) : h('p', { class: 'fb-msg fb-placeholder' }, photo ? 'Solo la foto, sin texto' : 'Escribe el mensaje…'),
           d.buttons.length ? h('div', { class: 'fb-buttons' }, d.buttons.map((b) => {
             if (b.kind === 'url') return h('div', { class: 'fb-btn url' }, icon('external', 14), h('span', { class: 'fb-btn-label' }, b.label || 'Enlace sin texto'));
@@ -1134,6 +1170,7 @@ export async function viewFlowBoard(root, id) {
       item('Deshacer', 'undo', undo, 'fb-narrow-only'), item('Rehacer', 'redo', redo, 'fb-narrow-only'),
       item('Vista previa', 'play', () => openPanel('preview'), 'fb-narrow-only'),
       item('Instrucciones del agente', 'bot', () => openPanel('agent'), 'fb-narrow-only'),
+      item('Cambiar con IA', 'wand', () => openPanel('ai'), 'fb-narrow-only'),
       item(`Pendientes${countEl.textContent ? ` (${countEl.textContent})` : ''}`, 'alert', () => openPanel('problems'), 'fb-narrow-only'),
       item('Ajustes del flujo', 'settings', () => { S.sel.clear(); S.edge = null; S.boardPanel = true; refresh({ inspector: true }); }),
       item('Ordenar el flujo', 'layout', () => { if (S.view !== 'canvas') setView('canvas'); tidy(); }),
@@ -1198,11 +1235,76 @@ export async function viewFlowBoard(root, id) {
     S.panel = kind;
     panel.hidden = false;
     editor.classList.add('has-panel');
-    panelTitle.textContent = { problems: 'Pendientes', preview: 'Vista previa', agent: 'Instrucciones del agente' }[kind];
+    panelTitle.textContent = { problems: 'Pendientes', preview: 'Vista previa', agent: 'Instrucciones del agente', ai: 'Cambiar con IA' }[kind];
     if (kind === 'problems') renderProblems(extra);
     else if (kind === 'preview') fill(panelBody, previewPanel({ board: S.board, files, fileUrl, onShow: (nid) => { const n = byId(nid); if (!n || canvas.hidden) return; S.sel.clear(); S.sel.add(nid); refresh(); centerOn(n); } }));
-    else fill(panelBody, agentPanel({ bots, board: S.board, name: S.name }));
-    panel.querySelector('.fb-panel-head button')?.focus();
+    else if (kind === 'ai') fill(panelBody, aiPanel(extra));
+    else fill(panelBody, agentPanel({ bots, board: S.board, name: S.name, context: flowContext() }));
+    if (kind === 'ai' && !isPhone()) panelBody.querySelector('textarea')?.focus();
+    else panel.querySelector('.fb-panel-head button')?.focus();
+  }
+
+  /** El flujo en palabras, para que la IA entienda de qué se habla al cambiar las instrucciones del agente. */
+  function flowContext() {
+    const t = S.board.nodes.find((n) => n.type === 'trigger');
+    const msgs = S.board.nodes.filter((n) => n.type === 'message' && n.data.text.trim()).slice(0, 6).map((n) => `- ${clip(n.data.text, 160)}`);
+    return [`Flujo «${S.name}»: ${t ? describe(t) : 'sin inicio'}.`, msgs.length ? `Sus mensajes:\n${msgs.join('\n')}` : ''].filter(Boolean).join('\n');
+  }
+
+  /* ---------- Cambiar con IA ---------- */
+
+  let aiLast = null;
+  /** Panel para pedir un cambio en palabras (o con una foto). `intro`: lo que hizo la IA al crear el flujo. */
+  function aiPanel(intro) {
+    const slot = h('div', { class: 'ai-slot' });
+    const errors = () => S.problems.filter((p) => !p.warning).length;
+    const show = (r, undoable) => fill(slot, aiResult({
+      title: undoable ? 'Cambio hecho' : 'Tu flujo está listo',
+      summary: r.summary, review: r.review ?? [], errors: errors(),
+      onProblems: () => openPanel('problems'),
+      onUndo: undoable ? () => { if (undoAi()) fill(slot, h('p', { class: 'help', role: 'status' }, 'Deshiciste el cambio. El flujo quedó como estaba.')); } : null,
+    }));
+    const composer = ideaComposer({
+      id: `fb-ai-idea-${id}`,
+      label: '¿Qué quieres cambiar, agregar o quitar?',
+      placeholder: 'Ejemplo: agrega un botón «Ubicación» que mande la dirección y cambia la espera a 2 días.',
+      examples: EDIT_EXAMPLES,
+      submit: 'Hacer el cambio',
+      steps: AI_STEPS,
+      onSubmit: async ({ idea, file }) => {
+        const r = await requestDesign({ url: inAcct('/api/flow-boards/ai'), idea, file, name: S.name, board: { nodes: S.board.nodes, edges: S.board.edges, settings: S.board.settings } });
+        applyAi(r);
+        composer.reset();
+        show(r, true);
+      },
+    });
+    if (intro?.summary || intro?.review?.length) show(intro, false);
+    return [
+      h('p', { class: 'help' }, 'Escríbelo como se lo dirías a alguien de tu equipo. También puedes subir una foto: tu dibujo, un volante o una captura. El cambio se ve en el lienzo y puedes deshacerlo.'),
+      slot,
+      composer.el,
+    ];
+  }
+  /** Pone en el lienzo lo que armó la IA y lo ordena; todo queda como un solo paso de «Deshacer». */
+  function applyAi(r) {
+    if (r.photo && !files.some((f) => f.id === r.photo.id)) files.unshift(r.photo);
+    S.board.nodes = r.board.nodes; S.board.edges = r.board.edges; S.board.settings = r.board.settings;
+    S.problems = r.problems ?? S.problems;
+    S.sel.clear(); S.edge = null; S.boardPanel = false;
+    const back = S.view;
+    setView('canvas');
+    tidy();
+    if (back !== 'canvas') setView(back);
+    aiLast = last;
+    refreshProblems();
+    renderInspector();
+  }
+  function undoAi() {
+    if (!aiLast) return false;
+    if (last !== aiLast) { toast('Hiciste otros cambios después: usa Deshacer de arriba, paso por paso.', true); return false; }
+    undo();
+    aiLast = null;
+    return true;
   }
   function closePanel() {
     S.panel = null;
@@ -1401,8 +1503,10 @@ export async function viewFlowBoard(root, id) {
     body.append(
       varsField('Mensaje', area(d, 'text', { rows: 5, maxlength: 4000, placeholder: 'Hola {{nombre}}, …' }), 'sequence'),
       photo ? h('div', { class: 'fb-insp-photo' }, photo) : null,
+      !photo && d.photo_hint ? h('p', { class: 'fb-missing' }, icon('image', 14), h('span', {}, `Falta la foto: ${d.photo_hint}`),
+        h('button', { type: 'button', class: 'fb-link small', onclick: () => { d.photo_hint = ''; commit({ inspector: true }); } }, 'No hace falta')) : null,
       h('div', { class: 'row' },
-        h('button', { type: 'button', class: 'small', onclick: () => pickPhoto(d) }, icon('image', 14), photo ? 'Cambiar foto o archivo' : 'Agregar foto o archivo'),
+        h('button', { type: 'button', class: `small${!photo && d.photo_hint ? ' primary' : ''}`, onclick: () => pickPhoto(d) }, icon('image', 14), photo ? 'Cambiar foto o archivo' : 'Agregar foto o archivo'),
         photo ? h('button', { type: 'button', class: 'small danger', onclick: () => { d.image_id = ''; d.attachment_id = ''; commit({ inspector: true }); } }, 'Quitar') : null),
       h('h3', {}, 'Botones'),
       h('p', { class: 'small muted fb-tight' }, 'Hasta 3 de respuesta y 2 de enlace. En WhatsApp con QR salen numerados.'),
@@ -1469,6 +1573,7 @@ export async function viewFlowBoard(root, id) {
     if (!ok || !chosen) return;
     if (chosen.kind === 'catalog') { d.image_id = chosen.id; d.attachment_id = ''; }
     else { d.attachment_id = chosen.id; if ('image_id' in d) d.image_id = ''; }
+    if ('photo_hint' in d) d.photo_hint = '';
     commit({ inspector: true });
   }
 
@@ -1528,11 +1633,18 @@ export async function viewFlowBoard(root, id) {
 
   // Primer dibujo. Recién creado (desde una plantilla), el flujo se ordena con la altura real de cada elemento.
   const arrange = /[?&]ordenar=1/.test(location.hash);
-  if (arrange) { history.replaceState(null, '', location.hash.replace(/\?.*$/, '')); fitted = true; }
+  const fromAi = /[?&]ia=1/.test(location.hash);
+  if (arrange || fromAi) history.replaceState(null, '', location.hash.replace(/\?.*$/, ''));
+  if (arrange) fitted = true;
   setSave('saved');
   if (arrange) { setView('canvas'); tidy({ record: false }); if (S.view !== 'canvas' || isPhone()) setView(isPhone() ? 'list' : 'canvas'); }
   else setView(S.view);
   applyViewport();
   refreshProblems();
   renderInspector();
+  if (fromAi) {
+    let intro = null;
+    try { intro = JSON.parse(sessionStorage.getItem(`fb-ai:${id}`) || 'null'); sessionStorage.removeItem(`fb-ai:${id}`); } catch { /* sin almacenamiento */ }
+    openPanel('ai', intro ?? {});
+  }
 }

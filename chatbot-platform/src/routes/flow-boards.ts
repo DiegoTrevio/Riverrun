@@ -3,11 +3,17 @@ import type { FastifyInstance } from 'fastify';
 import type pg from 'pg';
 import { z } from 'zod';
 import { assertAccount, HttpError, requireRole, scopeAccount, targetAccount } from '../access.js';
+import { accountAi } from '../ai/budget.js';
+import type { AiProvider } from '../ai/provider.js';
+import { identifyAttachment, newAttachmentId, saveAttachment } from '../attachments.js';
+import { checkAiDesignRate, designFlow } from '../automation/flow-ai.js';
 import { BoardSchema, boardSummary, compileBoard, type Board, type CompiledFlow } from '../automation/flow-board.js';
 import * as astore from '../automation/store.js';
 import { AutomationBodySchema, SequenceBodySchema, type Action, type SequenceStep } from '../automation/types.js';
+import { safeFileName } from '../channels/media.js';
 import { query, queryOne, withTransaction } from '../db.js';
 import { logEvent } from '../logs.js';
+import * as store from '../store/index.js';
 import type { User } from '../types.js';
 import { checkReferences } from './automation.js';
 import { parse } from './util.js';
@@ -128,8 +134,98 @@ async function dropAutomation(c: pg.PoolClient, id: string) {
   await c.query('DELETE FROM automations WHERE id = $1', [id]);
 }
 
-export async function flowBoardRoutes(api: FastifyInstance) {
+/** Lo que la IA lee del negocio para escribir mensajes con datos reales: su nombre y la información de su agente. */
+export async function businessContext(accountId: string, limit = 6000) {
+  const account = await store.getAccount(accountId);
+  const lines = [`Nombre del negocio: ${account?.name ?? ''}`];
+  const bots = await store.listChatbots(accountId);
+  const bot = bots.find((b) => b.active) ?? bots[0];
+  if (bot) {
+    const items = (await store.listKnowledge(bot.id, true)).sort((a, b) => Number(b.always_include) - Number(a.always_include));
+    let used = lines[0].length;
+    for (const i of items) {
+      const block = `${i.title}:\n${i.content.trim()}`;
+      if (used + block.length > limit) { lines.push(block.slice(0, Math.max(0, limit - used))); break; }
+      lines.push(block);
+      used += block.length + 2;
+    }
+  }
+  return lines.filter(Boolean).join('\n\n');
+}
+
+const DESIGN_IMAGE_MAX = 8_000_000;
+
+/** La idea (texto), la foto opcional y el lienzo actual (si se pide un cambio), en un formulario o en JSON. */
+async function readDesignInput(req: any) {
+  let idea = '';
+  let name = '';
+  let board: unknown;
+  let image: { buffer: Buffer; filename: string } | null = null;
+  if (req.isMultipart?.()) {
+    for await (const part of req.parts({ limits: { fileSize: DESIGN_IMAGE_MAX, files: 1, fieldSize: 2_000_000 } })) {
+      if (part.type === 'file') {
+        const buffer = await part.toBuffer();
+        if (part.file.truncated) throw new HttpError(400, 'La imagen pesa más de 8 MB.');
+        if (buffer.length) image = { buffer, filename: part.filename || 'imagen' };
+      } else if (part.fieldname === 'idea') idea = String(part.value);
+      else if (part.fieldname === 'name') name = String(part.value);
+      else if (part.fieldname === 'board' && String(part.value)) {
+        try { board = JSON.parse(String(part.value)); } catch { throw new HttpError(400, 'El lienzo actual llegó incompleto. Recarga la página.'); }
+      }
+    }
+  } else {
+    const b = req.body ?? {};
+    idea = typeof b.idea === 'string' ? b.idea : '';
+    name = typeof b.name === 'string' ? b.name : '';
+    board = b.board ?? undefined;
+  }
+  if (idea.length > 4000) throw new HttpError(400, 'Tu idea es muy larga: resúmela en menos de 4000 caracteres.');
+  const type = image ? identifyAttachment(image.buffer, image.filename) : null;
+  if (image && type?.kind !== 'image') throw new HttpError(400, 'Sube una foto JPG, PNG o WEBP (por ejemplo, una foto de tu dibujo o una captura).');
+  return { idea, name: name.trim().slice(0, 120), board, image: image && type ? { ...image, type } : null };
+}
+
+export async function flowBoardRoutes(api: FastifyInstance, ai: AiProvider) {
   const admins = { preHandler: requireRole('admin') };
+
+  /**
+   * Crear o cambiar un flujo describiéndolo (o con una foto). No guarda el lienzo: devuelve la propuesta para que el
+   * panel la muestre (en un lienzo nuevo, o aplicada al abierto, con deshacer). Si un mensaje usa la foto adjunta, la
+   * foto se guarda en los archivos de la cuenta.
+   */
+  api.post('/api/flow-boards/ai', admins, async (req: any) => {
+    const accountId = await targetAccount(req.user, req.query.account_id);
+    const input = await readDesignInput(req);
+    if (!input.idea.trim() && !input.image) throw new HttpError(400, 'Escribe tu idea o sube una imagen del flujo.');
+    checkAiDesignRate(accountId);
+    const current = input.board === undefined ? null : readBoard(input.board);
+    const uploadId = input.image ? newAttachmentId() : null;
+    let result;
+    try {
+      result = await designFlow(accountAi(ai, accountId, null, 'flow_ai'), {
+        idea: input.idea,
+        image: input.image ? { mime: input.image.type.mime, data: input.image.buffer } : null,
+        current,
+        name: input.name,
+        business: await businessContext(accountId),
+        uploadId,
+      });
+    } catch (e: any) {
+      await logEvent({ level: 'warn', source: 'ai', message: `No se pudo armar el flujo con IA: ${e?.message ?? e}`, accountId });
+      throw e;
+    }
+    for (const run of result.runs) {
+      await store.insertAiRun({ account_id: accountId, chatbot_id: null, conversation_id: null, kind: 'flow_ai', model: run.model, input_tokens: run.usage.input_tokens, cached_tokens: run.usage.cached_tokens, output_tokens: run.usage.output_tokens, cost_usd: run.cost_usd, latency_ms: run.latency_ms });
+    }
+    let photo = null;
+    if (result.usedUpload && input.image && uploadId) {
+      const rel = await saveAttachment(accountId, uploadId, input.image.buffer, input.image.type);
+      photo = await astore.insertAttachment({ id: uploadId, account_id: accountId, name: safeFileName(input.image.filename), mime: input.image.type.mime, kind: 'image', size_bytes: input.image.buffer.length, file_path: rel });
+    }
+    const messages = result.board.nodes.filter((n) => n.type === 'message').length;
+    await logEvent({ level: 'info', source: 'admin', message: `${current ? 'Flujo cambiado' : 'Flujo armado'} con IA por ${req.user.email}: «${result.name}» (${messages} mensaje(s)${input.image ? ', desde una imagen' : ''})`, accountId });
+    return { name: result.name, summary: result.summary, review: result.review, board: result.board, problems: result.problems, photo };
+  });
 
   api.get('/api/flow-boards', admins, async (req: any) => {
     const accountId = scopeAccount(req.user, req.query.account_id);
