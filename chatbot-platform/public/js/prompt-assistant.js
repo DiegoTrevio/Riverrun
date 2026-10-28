@@ -116,6 +116,8 @@ export function promptAssistant({ botId, getPrompt, apply, context = '', label =
   function showApplied() {
     const last = recent.get(botId);
     if (!last || Date.now() - last.at > 30 * 60_000) { recent.delete(botId); return; }
+    // Deshecho mientras la página se volvía a dibujar (la pestaña del agente guarda y se redibuja): solo se avisa.
+    if (last.undone) { recent.delete(botId); if (Date.now() - last.at < 15_000) say('Listo: las instrucciones quedaron como estaban.'); return; }
     result.replaceChildren(h('div', { class: 'ai-result' },
       h('p', { class: 'ai-result-head' }, icon('check', 16), h('strong', {}, 'Aplicado: el agente ya atiende así')),
       h('p', { class: 'ai-result-text' }, last.summary),
@@ -129,7 +131,8 @@ export function promptAssistant({ botId, getPrompt, apply, context = '', label =
     setBusy(true, 'Regresando las instrucciones como estaban…');
     let ok = false;
     try { ok = await apply(last.previous); } catch (e) { toast(e.message, true); }
-    if (ok) recent.delete(botId);
+    // El aviso queda guardado un momento: si la página se vuelve a dibujar, la caja nueva lo muestra.
+    if (ok) recent.set(botId, { undone: true, at: Date.now() });
     if (!box.isConnected) return;
     setBusy(false);
     if (ok) { result.replaceChildren(); say('Listo: las instrucciones quedaron como estaban.'); }
