@@ -25,7 +25,8 @@ export class Scheduler {
   private closing = false;
   private draining?: Promise<number>;
 
-  constructor(private handlers: Record<string, JobHandler>,private settle?:()=>Promise<void>) {}
+  /** `hold`: antes de correr una tarea, decide si debe esperar (horario para mensajes programados); true = no correrla ahora. */
+  constructor(private handlers: Record<string, JobHandler>,private settle?:()=>Promise<void>,private hold?:(job:Job)=>Promise<boolean>) {}
 
   start(intervalMs: number) {
     this.timer = setInterval(() => void this.runDue(), intervalMs);
@@ -76,6 +77,8 @@ export class Scheduler {
     try {
       await assertOwnership();
       if(await interruptedOperation(`job:${job.id}`)) throw new DeliveryUncertain();
+      // De noche, lo que le escribe al cliente por su cuenta vuelve a la cola para la hora de inicio (sin correr nada).
+      if (await this.hold?.(job)) return;
       // Una tarea colgada no detiene a las demás: se corta y se reintenta. Si alcanzó a enviar algo, el reintento lo
       // detecta (operación interrumpida) y no lo duplica; la tarea original pierde el permiso al cerrarse la sesión.
       await withTimeout(handler(job.payload, job), config.jobTimeoutMs);

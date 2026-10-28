@@ -399,6 +399,7 @@ Pestaña **Activación** de cada asistente. Lo aplica el sistema (no la IA), por
   - Tocar un botón no cuenta como "el cliente respondió" (el flujo sigue) y la IA no contesta ese toque.
   - **Esperar a que elija:** si llega la hora del mensaje siguiente y no eligió, el flujo termina o sigue, según se configure.
 - Respetan el horario del negocio: lo que caiga fuera se pasa a la siguiente apertura.
+- Nunca salen de noche (horario para mensajes programados, abajo). Si el cliente está conversando sí siguen; un flujo que el equipo inicia desde la conversación manda su primer mensaje en ese momento.
 - Se detienen si el cliente responde (sin contar los botones), si se da de baja o, al momento, si una persona toma la conversación.
 - Si la cuenta está en pausa o el canal apagado, esperan (reintentan cada hora hasta 7 días) en lugar de perderse.
 - Se inician con una regla, manualmente desde la conversación o **enviándolos a un grupo** (campaña de flujo).
@@ -409,11 +410,17 @@ Pestaña **Activación** de cada asistente. Lo aplica el sistema (no la IA), por
 - **Campaña de flujo:** cada persona entra al flujo; el primer mensaje sale con la campaña y los siguientes a su hora, espaciados por número al ritmo de la campaña. El cupo del plan y el tope diario por número cuentan todos los mensajes del flujo (con un tope de 100 y un flujo de 4 mensajes, entran 25 personas por día). Cancelar la campaña (o "Detener el flujo" cuando ya terminó de enviarse) detiene el flujo para todos.
 - Se envían a ritmo controlado (mensajes por minuto) para proteger el número.
 - Por defecto solo se envían en horario de atención: lo que no alcance sale en la siguiente apertura, al mismo ritmo.
+- Nunca salen de noche: lo que cae fuera del horario para mensajes programados (también lo que no cupo en el tope diario) sigue a la hora de inicio con el mismo ritmo, sin salir todo junto.
 - Siempre excluyen a quien se dio de baja y no interrumpen conversaciones que está atendiendo una persona. Muestran vista previa de destinatarios y estadísticas por destinatario.
 
 ### Horario y ajustes
 
 - Zona horaria, horario semanal y días festivos.
+- **Horario para mensajes programados** (por omisión de 8:00 a 21:00, encendido; `sending.window` en los ajustes de la cuenta). Para que nada le llegue al cliente de madrugada:
+  - **Esperan a la hora de inicio:** pasos de flujos, campañas, mensajes de reglas con espera y seguimientos «si no contesta» que le escriben al cliente (los que solo ponen etiquetas o avisan al equipo corren a cualquier hora).
+  - **Se acomodan antes de la noche:** los recordatorios de cita (una cita a las 7:30 con aviso 1 hora antes lo recibe a las 20:59 del día anterior; si esa hora ya pasó no sale y si dos quedan a la misma hora sale uno) y los de cobro (salen ese mismo día).
+  - **Siempre salen:** las respuestas del asistente y de los botones, las confirmaciones, lo que envía el equipo, la API y el simulador. Y si el cliente escribió en los últimos 30 minutos, lo programado sale normal porque está conversando.
+  - Se revisa al programar y otra vez al enviar (`src/automation/quiet-hold.ts`, antes de correr la tarea): también lo respetan los reintentos, lo atrasado después de una caída y lo programado antes de cambiar el horario. Esperar no gasta intentos y queda anotado en la conversación. Al cambiar el horario o la zona horaria, los recordatorios de cita ya programados se acomodan.
 - **Bajas:** "BAJA"/"STOP" (configurable) deja de enviar mensajes promocionales; "ALTA" los reactiva. Los recordatorios de citas sí llegan.
 - **Recordatorio de cita en WhatsApp oficial:** fuera de la ventana de 24 h, Meta solo deja escribir con una plantilla aprobada. En cada servicio (Agenda → Servicios), **Plantilla de WhatsApp para el recordatorio** elige esa plantilla y el texto de sus variables (`{{nombre}}`, `{{cita.fecha}}`, `{{cita.hora}}`…). Sin plantilla, el recordatorio no sale y el registro dice por qué.
 - Aviso al equipo cuando una conversación pasa a una persona.
@@ -434,7 +441,7 @@ Menú **Agenda**, para administradores y agentes.
   - Agenda cuando el cliente elige y cancela sus citas a pedido.
   - El backend valida el horario y la cita en una transacción bloqueada, así que no hay dobles reservas.
   - Si la IA propone un horario que no existe, se rechaza y se ofrecen horarios reales.
-- **Recordatorios** automáticos al cliente (por defecto 1 día y 1 hora antes) y **aviso al equipo** (a quien atiende) al agendar o cancelar.
+- **Recordatorios** automáticos al cliente (por defecto 1 día y 1 hora antes) y **aviso al equipo** (a quien atiende) al agendar o cancelar. Si un recordatorio cae de noche, se adelanta para salir antes (horario para mensajes programados).
 - **Desde el panel:**
   - vista semanal en la hora del negocio;
   - nueva cita;
@@ -507,7 +514,7 @@ equipo lo marca como pagado.
 - **Un cobro** tiene cliente, concepto, monto, fecha de vencimiento, enlace de pago (opcional, solo `https://`) y referencia.
 - **Recordatorios** en *Cobros → Ajustes de cobro*:
   - días respecto al vencimiento, por ejemplo `-3, 0, 3, 7`: 3 días antes, el día y 3 y 7 días después;
-  - la hora de envío, en la zona del negocio y respetando su horario si así se elige;
+  - la hora de envío, en la zona del negocio y respetando su horario si así se elige (si cae de noche, sale ese mismo día antes de la noche);
   - tres textos: antes, el día y vencido.
   - Cada cobro puede tener días propios.
   - Salen por la conversación más reciente del cliente. En WhatsApp oficial, fuera de las 24 h, salen con la plantilla aprobada que se elija.

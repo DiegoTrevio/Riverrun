@@ -30,7 +30,8 @@ import * as astore from './store.js';
 import { renderTemplate } from './templates.js';
 import type { OutboundResult, PendingButtons } from './outbound.js';
 import { matchChoice, parsePayload } from './buttons.js';
-import { addDays, isOpen, localParts, nextOpen, nextTimeOfDay, zonedToUtc } from './time.js';
+import { addDays, isOpen, localParts, nextTimeOfDay, zonedToUtc } from './time.js';
+import { liveUntilOf, sendTime } from './send-window.js';
 import type { AccountSettings, Action, Automation, AutomationEvent, Condition, SequenceStep, Trigger, WaTemplateRef } from './types.js';
 
 interface Ctx {
@@ -909,7 +910,7 @@ export class Automator {
    * espaciados por número). Con `now`, el primer paso se envía en este momento (la campaña ya eligió la hora) y se
    * devuelve si salió.
    */
-  async enroll(sequenceId: string, conversationId: string, by: string, opts: { campaignId?: string; paceMs?: number; now?: boolean; byCustomer?: boolean } = {}) {
+  async enroll(sequenceId: string, conversationId: string, by: string, opts: { campaignId?: string; paceMs?: number; now?: boolean; byCustomer?: boolean; byTeam?: boolean } = {}) {
     const [seq, conv] = await Promise.all([astore.getSequence(sequenceId), store.getConversation(conversationId)]);
     if (!seq || !conv || seq.account_id !== conv.account_id) throw new Error('Secuencia no encontrada');
     if (!seq.active) throw new Error('La secuencia está desactivada');
@@ -922,12 +923,15 @@ export class Automator {
       return { ...enrollment, result: result ?? { sent: false as const, reason: 'el paso no se envió' } };
     }
     const settings = await astore.getSettings(conv.account_id);
-    const runAt = stepTime(new Date(), seq.steps[0], settings, seq.business_hours_only);
+    // Lo inició el equipo desde el panel: el primer mensaje (si no tiene espera) sale ya, aunque sea de noche.
+    const now = Date.now();
+    const runAt = stepTime(new Date(now), seq.steps[0], settings, seq.business_hours_only, opts.byTeam ? new Date(now + 60_000) : liveUntilOf(last));
+    const team = opts.byTeam && runAt.getTime() <= now + 60_000;
     await astore.updateEnrollment(enrollment.id, { next_run_at: runAt });
     await astore.scheduleJob({
       account_id: conv.account_id,
       type: 'sequence_step',
-      payload: { enrollment_id: enrollment.id, conversation_id: conv.id, step: 0 },
+      payload: { enrollment_id: enrollment.id, conversation_id: conv.id, step: 0, ...(team ? { team: true } : {}) },
       run_at: runAt,
     });
     return enrollment;
@@ -967,19 +971,20 @@ export class Automator {
       await reschedule(new Date(Date.now() + 3600_000), { first_due: firstDue.toISOString() });
       return { sent: false, reason: 'canal o cuenta inactivos (se reintenta)' };
     }
-    if (seq.stop_on_reply) {
-      const last = await astore.lastInbound(ctx.conv.id);
-      if (last && last.id > en.last_inbound_id) return stop('el cliente respondió');
-    }
+    // El último mensaje del cliente: si respondió, si está conversando (no se espera al horario de envío) y el pie de baja.
+    const lastIn = await astore.lastInbound(ctx.conv.id);
+    const liveUntil = liveUntilOf(lastIn);
+    if (seq.stop_on_reply && lastIn && lastIn.id > en.last_inbound_id) return stop('el cliente respondió');
     // El paso anterior esperaba una elección y no llegó.
     const prev = payload.step > 0 ? seq.steps[payload.step - 1] : undefined;
     if (prev?.wait_for_choice && prev.buttons.some((b) => b.kind === 'reply') && en.choice_step !== payload.step - 1 && prev.if_no_choice === 'end') return stop('el cliente no eligió una opción');
     // Flujo enviado a un grupo: los pasos siguientes salen espaciados por número (salvo el que pidió un botón).
     if (en.pace_ms > 0 && payload.step > 0 && !payload.tap && !payload.paced) {
-      let slot = await astore.reservePacedSlot(ctx.channel.id, en.pace_ms);
-      if (seq.business_hours_only) slot = nextOpen(ctx.settings.business_hours, ctx.settings.holidays, slot, ctx.settings.timezone);
-      if (slot.getTime() > Date.now() + 1000) {
-        await reschedule(slot, { paced: true });
+      const slot = await astore.reservePacedSlot(ctx.channel.id, en.pace_ms);
+      const at = sendTime(slot, ctx.settings, { businessOnly: seq.business_hours_only, liveUntil });
+      if (at.getTime() > Date.now() + 1000) {
+        // Si el horario lo movió, al abrir vuelve a tomar turno: así no salen todos juntos a la hora de abrir.
+        await reschedule(at, at.getTime() === slot.getTime() ? { paced: true } : {});
         return { sent: false, reason: 'esperando su turno de envío' };
       }
     }
@@ -988,8 +993,7 @@ export class Automator {
     if (step && conditionsMatch(step.conditions, ctx)) {
       let r: OutboundResult;
       try {
-        const lastIn = en.started_by_customer ? await astore.lastInbound(ctx.conv.id) : null;
-        const conversational = !!lastIn && Date.now() - new Date(lastIn.created_at).getTime() < CUSTOMER_WINDOW_MS;
+        const conversational = en.started_by_customer && !!lastIn && Date.now() - new Date(lastIn.created_at).getTime() < CUSTOMER_WINDOW_MS;
         r = await this.chat.outbound.send(ctx.conv.id, {
           text: step.text, imageId: step.image_id || undefined, attachmentId: step.attachment_id || undefined, waTemplate: step.wa_template, source: 'sequence', conversational, meta: { sequence_id: seq.id, step: payload.step },
           buttons: step.buttons?.length ? step.buttons : undefined, buttonsFrom: { enrollment_id: en.id, sequence_id: seq.id, step: payload.step },
@@ -1012,7 +1016,7 @@ export class Automator {
       await astore.updateEnrollment(en.id, { status: 'completed', current_step: next, next_run_at: null, last_step: true });
       return { sent: true };
     }
-    const runAt = stepTime(new Date(), seq.steps[next], ctx.settings, seq.business_hours_only);
+    const runAt = stepTime(new Date(), seq.steps[next], ctx.settings, seq.business_hours_only, liveUntil);
     await astore.updateEnrollment(en.id, { current_step: next, next_run_at: runAt, last_step: true });
     await astore.scheduleJob({ account_id: ctx.conv.account_id, type: 'sequence_step', payload: { enrollment_id: en.id, conversation_id: ctx.conv.id, step: next }, run_at: runAt });
     return { sent: true };
@@ -1030,7 +1034,7 @@ export class Automator {
       await astore.updateEnrollment(en.id, { status: 'completed', next_run_at: null });
       return;
     }
-    const runAt = stepTime(new Date(), seq.steps[next], ctx.settings, seq.business_hours_only);
+    const runAt = stepTime(new Date(), seq.steps[next], ctx.settings, seq.business_hours_only, liveUntilOf(await astore.lastInbound(ctx.conv.id)));
     await astore.updateEnrollment(en.id, { next_run_at: runAt });
     await astore.scheduleJob({ account_id: ctx.conv.account_id, type: 'sequence_step', payload: { enrollment_id: en.id, conversation_id: ctx.conv.id, step: next }, run_at: runAt });
   }
@@ -1056,8 +1060,11 @@ export class Automator {
   }
 }
 
-/** Momento de envío de un paso: espera + hora del día opcional + horario del negocio. */
-export function stepTime(from: Date, step: SequenceStep, settings: AccountSettings, businessOnly: boolean): Date {
+/**
+ * Momento de envío de un paso: espera + hora del día opcional + horario del negocio + horario para mensajes
+ * programados (salvo que el cliente esté conversando: `liveUntil`).
+ */
+export function stepTime(from: Date, step: SequenceStep, settings: AccountSettings, businessOnly: boolean, liveUntil: Date | null = null): Date {
   const unit = step.delay_unit === 'days' ? 86400_000 : step.delay_unit === 'hours' ? 3600_000 : 60_000;
   let t = new Date(from.getTime() + step.delay_value * unit);
   if (step.at_time && step.delay_unit === 'days' && step.delay_value > 0) {
@@ -1067,6 +1074,5 @@ export function stepTime(from: Date, step: SequenceStep, settings: AccountSettin
   } else if (step.at_time) {
     t = nextTimeOfDay(t, step.at_time, settings.timezone);
   }
-  if (businessOnly) t = nextOpen(settings.business_hours, settings.holidays, t, settings.timezone);
-  return t;
+  return sendTime(t, settings, { businessOnly, liveUntil });
 }

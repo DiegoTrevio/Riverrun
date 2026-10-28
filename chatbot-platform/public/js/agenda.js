@@ -468,7 +468,7 @@ async function editService(root, id) {
       h('p', { class: 'small muted' }, 'Si eliges personas, solo se ofrecen horarios en los que al menos una esté libre (según su horario, sus días libres y su calendario) y la cita se le asigna a quien le toque. El horario de cada persona se configura en ', h('a', { href: '#/agenda/equipo' }, 'Equipo y disponibilidad'), '.'),
       peopleBox,
       check(s, 'notify_team', 'Avisar al equipo cuando se agenda o cancela'),
-      field('Recordatorios antes de la cita', h('textarea', { value: rem.text, oninput: (e) => (rem.text = e.target.value) }), 'Ej.: 1 día, 2 horas o 30 minutos. Uno por renglón. También acepta minutos sin unidad.'),
+      field('Recordatorios antes de la cita', h('textarea', { value: rem.text, oninput: (e) => (rem.text = e.target.value) }), 'Ej.: 1 día, 2 horas o 30 minutos. Uno por renglón. También acepta minutos sin unidad. Si uno cae de noche (fuera del horario para mensajes programados), se adelanta para salir antes de la noche.'),
       varsField('Mensaje del recordatorio (opcional)', area(s, 'reminder_message', { placeholder: 'Hola {{nombre}}, te recordamos tu {{cita.tipo}} de {{cita.servicio}} el {{cita.fecha}} a las {{cita.hora}}.' }), 'appointment'),
       waTemplateField(s, templates, 'reminder_wa_template', { label: 'Plantilla de WhatsApp para el recordatorio (opcional)', help: 'Solo para WhatsApp oficial: si el cliente no ha escrito en las últimas 24 h, el recordatorio sale con esta plantilla aprobada. Sus variables aceptan {{cita.fecha}}, {{cita.hora}} y las demás.' })),
     state.meta?.receivables_enabled ? h('div', { class: 'card' },

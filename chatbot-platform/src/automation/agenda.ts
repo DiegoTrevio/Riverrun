@@ -16,8 +16,9 @@ import { sendMail } from '../mailer.js';
 import { activeStaff, assignmentStats, isOff, pickStaff, staffInfo, staffNames, worksDuring, type StaffInfo } from './staff.js';
 import * as astore from './store.js';
 import { renderTemplate } from './templates.js';
-import { addDays, dayOf, fromMinutes, localParts, slotKey, spanishDate, spanishTime, toMinutes, zonedToUtc } from './time.js';
-import { DEFAULT_REMINDER, type AccountSettings, type Appointment, type Service } from './types.js';
+import { addDays, beforeQuiet, dayOf, fromMinutes, inSendWindow, localParts, slotKey, spanishDate, spanishTime, toMinutes, zonedToUtc } from './time.js';
+import { windowOf } from './send-window.js';
+import { DEFAULT_REMINDER, type AccountSettings, type Appointment, type SendWindow, type Service } from './types.js';
 
 export interface Slot {
   start: Date;
@@ -528,10 +529,10 @@ export class Agenda {
   }
 
   async scheduleReminders(a: Appointment, service: Service, db?: pg.PoolClient) {
-    for (const minutes of service.reminders) {
-      const runAt = new Date(new Date(a.starts_at).getTime() - minutes * 60_000);
-      // Sin conversación (reservas de la página pública), el recordatorio va por correo.
-      if (runAt.getTime() < Date.now() + 60_000 || (!a.conversation_id && !a.customer_email)) continue;
+    // Sin conversación (reservas de la página pública), el recordatorio va por correo.
+    if (!a.conversation_id && !a.customer_email) return;
+    const st = await astore.getSettings(a.account_id);
+    for (const { minutes, at: runAt } of reminderTimes(new Date(a.starts_at), service.reminders, windowOf(st), st.timezone)) {
       await astore.scheduleJob({
         account_id: a.account_id,
         type: 'appointment_reminder',
@@ -620,3 +621,47 @@ export async function buildIcs(accountId: string, accountName: string) {
 }
 
 export { renderTemplate, store };
+
+/**
+ * Cuándo sale cada recordatorio de una cita: `minutes` antes y, si eso cae de noche, antes de que empiece la noche (el
+ * texto dice la fecha y la hora de la cita, así que llegar antes no confunde). Si esa hora ya pasó, no sale (la
+ * confirmación acaba de llegar) y si dos quedan a la misma hora, sale uno.
+ */
+export function reminderTimes(startsAt: Date, minutes: number[], w: SendWindow, tz: string, now = new Date()) {
+  const out: { minutes: number; at: Date }[] = [];
+  for (const m of minutes) {
+    const at = beforeQuiet(w, new Date(startsAt.getTime() - m * 60_000), tz);
+    if (at.getTime() < now.getTime() + 60_000 || out.some((x) => x.at.getTime() === at.getTime())) continue;
+    out.push({ minutes: m, at });
+  }
+  return out;
+}
+
+/**
+ * Recordatorios ya programados que caen de noche (programados antes de este horario o antes de que la cuenta lo
+ * cambiara): se adelantan como los nuevos, o se cancelan si ya no da tiempo o si otro de la misma cita sale a esa hora.
+ */
+export async function advanceQuietReminders(accountId?: string, now = new Date()) {
+  const jobs = await query<{ id: string; account_id: string; run_at: Date; appointment_id: string }>(
+    `SELECT id, account_id, run_at, payload->>'appointment_id' AS appointment_id FROM jobs
+      WHERE type = 'appointment_reminder' AND status = 'pending' AND ($1::uuid IS NULL OR account_id = $1) ORDER BY run_at`, [accountId ?? null]);
+  const settings = new Map<string, AccountSettings>();
+  const taken = new Set<string>();
+  let moved = 0;
+  for (const j of jobs) {
+    let st = settings.get(j.account_id);
+    if (!st) settings.set(j.account_id, (st = await astore.getSettings(j.account_id)));
+    const w = windowOf(st);
+    const at = inSendWindow(w, j.run_at, st.timezone) ? j.run_at : beforeQuiet(w, j.run_at, st.timezone);
+    const key = `${j.appointment_id}|${at.getTime()}`;
+    if (at.getTime() === j.run_at.getTime()) { taken.add(key); continue; }
+    if (at.getTime() < now.getTime() + 60_000 || taken.has(key)) {
+      await query(`UPDATE jobs SET status = 'cancelled', last_error = 'quiet_hours', finished_at = now() WHERE id = $1 AND status = 'pending'`, [j.id]);
+    } else {
+      await query(`UPDATE jobs SET run_at = $2 WHERE id = $1 AND status = 'pending'`, [j.id, at]);
+      taken.add(key);
+    }
+    moved++;
+  }
+  return moved;
+}

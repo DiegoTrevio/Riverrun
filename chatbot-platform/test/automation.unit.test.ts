@@ -1,9 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { computeSlots, spreadSlots } from '../src/automation/agenda.js';
+import { computeSlots, reminderTimes, spreadSlots } from '../src/automation/agenda.js';
+import { planSends } from '../src/automation/campaigns.js';
+import { quietDecision } from '../src/automation/quiet-hold.js';
 import { conditionsMatch, stepTime, triggerMatches } from '../src/automation/automator.js';
 import { renderTemplate } from '../src/automation/templates.js';
-import { isOpen, localParts, nextOpen, nextTimeOfDay, slotKey, spanishDate, zonedToUtc } from '../src/automation/time.js';
+import { beforeQuiet, inSendWindow, isOpen, localParts, nextOpen, nextSendTime, nextTimeOfDay, sendableAt, slotKey, spanishDate, zonedToUtc } from '../src/automation/time.js';
 import { AccountSettingsSchema, AutomationBodySchema, ServiceBodySchema, TriggerSchema, type Service } from '../src/automation/types.js';
 
 const MX = 'America/Mexico_City'; // UTC-6 sin horario de verano
@@ -143,4 +145,88 @@ test('ajustes: se rechazan zonas horarias inexistentes y franjas invertidas (rom
   assert.equal(AccountSettingsSchema.safeParse({ business_hours: { mon: [['18:00', '09:00']] } }).success, false);
   assert.equal(AccountSettingsSchema.safeParse({ timezone: 'America/Bogota', business_hours: { mon: [['09:00', '14:00'], ['16:00', '19:00']] } }).success, true);
   assert.equal(ServiceBodySchema.safeParse({ name: 'X', hours: { tue: [['20:00', '19:00']] } }).success, false);
+});
+
+/* ------------------------- Horario para mensajes programados ------------------------- */
+
+const W = { enabled: true, start: '08:00', end: '21:00' };
+const mx = (d: string, t: string) => zonedToUtc(d, t, MX);
+const when = (at: Date, tz = MX) => `${localParts(at, tz).date} ${localParts(at, tz).time}`;
+const noWindow = AccountSettingsSchema.parse({ timezone: MX, sending: { window: { enabled: false } } });
+
+test('horario de envío: de 8 a 21 por omisión, encendido; empezar después de terminar se rechaza', () => {
+  assert.deepEqual(AccountSettingsSchema.parse({}).sending.window, W);
+  assert.deepEqual(AccountSettingsSchema.parse({ sending: { daily_cap_per_number: 5 } }).sending.window, W, 'las cuentas que no lo tenían guardado lo tienen encendido');
+  assert.equal(AccountSettingsSchema.safeParse({ sending: { window: { enabled: true, start: '21:00', end: '08:00' } } }).success, false);
+});
+
+test('horario de envío: de noche espera a la hora de inicio; lo atado a una hora se adelanta antes de la noche', () => {
+  assert.equal(inSendWindow(W, mx('2026-09-29', '20:59'), MX), true);
+  assert.equal(inSendWindow(W, mx('2026-09-29', '21:00'), MX), false);
+  assert.equal(inSendWindow(W, mx('2026-09-29', '07:59'), MX), false);
+  assert.equal(when(sendableAt(W, mx('2026-09-29', '22:00'), MX)), '2026-09-30 08:00');
+  assert.equal(when(sendableAt(W, mx('2026-09-29', '07:00'), MX)), '2026-09-29 08:00');
+  assert.equal(when(sendableAt(W, mx('2026-09-29', '12:00'), MX)), '2026-09-29 12:00');
+  assert.equal(when(beforeQuiet(W, mx('2026-09-30', '06:30'), MX)), '2026-09-29 20:59');
+  assert.equal(when(beforeQuiet(W, mx('2026-09-29', '22:30'), MX)), '2026-09-29 20:59');
+  assert.equal(when(sendableAt({ ...W, enabled: false }, mx('2026-09-29', '03:00'), MX)), '2026-09-29 03:00', 'apagado: sale a su hora');
+  // Nueva York, 8 de marzo de 2026 (2:00 → 3:00): una hora de inicio que ese día no existe cae en la primera que sí.
+  const NY = 'America/New_York';
+  const early = { enabled: true, start: '02:30', end: '21:00' };
+  const t = sendableAt(early, zonedToUtc('2026-03-07', '23:00', NY), NY);
+  assert.equal(inSendWindow(early, t, NY), true);
+  assert.equal(localParts(t, NY).date, '2026-03-08');
+});
+
+test('horario de envío junto con el horario del negocio, y con el cliente conversando', () => {
+  // Martes 19:30, negocio de 9 a 18: miércoles a las 9:00.
+  assert.equal(when(nextSendTime(mx('2026-09-29', '19:30'), { window: W, tz: MX, hours: settings.business_hours, holidays: [] })), '2026-09-30 09:00');
+  // Un horario del negocio que nunca coincide con el de envío (22:00 a 23:30): gana el de envío.
+  const night = Object.fromEntries(['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'].map((d) => [d, [['22:00', '23:30']]])) as any;
+  assert.equal(when(nextSendTime(mx('2026-09-29', '12:00'), { window: W, tz: MX, hours: night })), '2026-09-29 12:00');
+  // Conversando (escribió hace poco): no espera; ya pasado ese rato, sí.
+  const live = mx('2026-09-29', '23:10');
+  assert.equal(when(nextSendTime(mx('2026-09-29', '23:00'), { window: W, tz: MX, liveUntil: live })), '2026-09-29 23:00');
+  assert.equal(when(nextSendTime(mx('2026-09-29', '23:20'), { window: W, tz: MX, liveUntil: live })), '2026-09-30 08:00');
+});
+
+test('pasos de flujo: de noche esperan a la hora de inicio, salvo que el cliente esté conversando o esté apagado', () => {
+  const step = (o: Record<string, unknown>) => ({ delay_value: 0, delay_unit: 'hours', at_time: '', text: '', image_id: '', conditions: [], ...o }) as any;
+  const from = mx('2026-09-29', '20:30');
+  assert.equal(when(stepTime(from, step({ delay_value: 1 }), settings, false)), '2026-09-30 08:00');
+  assert.equal(when(stepTime(from, step({ delay_value: 1 }), settings, false, mx('2026-09-29', '22:00'))), '2026-09-29 21:30');
+  assert.equal(when(stepTime(from, step({ delay_value: 1 }), noWindow, false)), '2026-09-29 21:30');
+});
+
+test('al enviar: de noche espera; conversando o apenas atrasado sale; un recordatorio que llegaría tarde se cancela', () => {
+  const night = mx('2026-09-29', '23:00');
+  const base = { now: night, runAt: night, window: W, tz: MX, liveUntil: null };
+  assert.equal(when(quietDecision(base) as Date), '2026-09-30 08:00');
+  assert.equal(quietDecision({ ...base, now: mx('2026-09-29', '12:00') }), null);
+  assert.equal(quietDecision({ ...base, liveUntil: mx('2026-09-29', '23:20') }), null);
+  assert.equal(quietDecision({ ...base, now: mx('2026-09-29', '21:05'), runAt: mx('2026-09-29', '20:59') }), null, 'programado en horario y 6 minutos tarde: sale');
+  assert.equal(when(quietDecision({ ...base, now: mx('2026-09-29', '21:30'), runAt: mx('2026-09-29', '20:59') }) as Date), '2026-09-30 08:00');
+  assert.equal(quietDecision({ ...base, startsAt: mx('2026-09-30', '07:30') }), 'drop');
+  assert.equal(quietDecision({ ...base, window: { ...W, enabled: false } }), null);
+});
+
+test('campañas: lo que cae de noche sigue a la hora de inicio con el mismo ritmo; lo que no cabe en el día, también', () => {
+  const people = (n: number) => Array.from({ length: n }, (_, i) => ({ conversation_id: `c${i}`, channel_id: 'ch' }));
+  const plan = (n: number, now: Date, o: { cap?: number; s?: typeof settings } = {}) =>
+    planSends(people(n), { now, gapMs: 60_000, cap: o.cap ?? 0, perPerson: 1, used: new Map(), settings: o.s ?? settings, businessOnly: false }).map((p) => when(p.at));
+  assert.deepEqual(plan(5, mx('2026-09-29', '20:57')), ['2026-09-29 20:57', '2026-09-29 20:58', '2026-09-29 20:59', '2026-09-30 08:00', '2026-09-30 08:01']);
+  assert.deepEqual(plan(3, mx('2026-09-29', '12:00'), { cap: 2 }), ['2026-09-29 12:00', '2026-09-29 12:01', '2026-09-30 08:00']);
+  assert.deepEqual(plan(3, mx('2026-09-29', '12:00'), { cap: 2, s: noWindow }), ['2026-09-29 12:00', '2026-09-29 12:01', '2026-09-30 00:00'], 'apagado: como antes');
+});
+
+test('recordatorios de cita: el que cae de noche se adelanta; si ya pasó no sale; dos a la misma hora salen como uno', () => {
+  const at = (r: { minutes: number; at: Date }[]) => r.map((x) => [x.minutes, when(x.at)]);
+  // Cita el 1 de octubre a las 7:30: el de un día antes (30 sep 7:30) y el de una hora antes (1 oct 6:30) caen de noche.
+  assert.deepEqual(at(reminderTimes(mx('2026-10-01', '07:30'), [1440, 60], W, MX, mx('2026-09-29', '12:00'))), [[1440, '2026-09-29 20:59'], [60, '2026-09-30 20:59']]);
+  // A las 8:30 con avisos 2 h y 1 h antes (6:30 y 7:30): los dos quedan a las 20:59 del día anterior → uno.
+  assert.deepEqual(at(reminderTimes(mx('2026-10-01', '08:30'), [120, 60], W, MX, mx('2026-09-29', '12:00'))), [[120, '2026-09-30 20:59']]);
+  // Reservó a las 23:00 para mañana a las 7:30: adelantado a las 20:59 de hoy ya pasó → no sale (acaba de recibir la confirmación).
+  assert.deepEqual(reminderTimes(mx('2026-09-30', '07:30'), [60], W, MX, mx('2026-09-29', '23:00')), []);
+  // En horario: sale a su hora.
+  assert.deepEqual(at(reminderTimes(mx('2026-10-01', '12:00'), [60], W, MX, mx('2026-09-29', '12:00'))), [[60, '2026-10-01 11:00']]);
 });

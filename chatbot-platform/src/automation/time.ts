@@ -1,4 +1,4 @@
-import { DAYS, type Day, type WeeklyHours } from './types.js';
+import { DAYS, type Day, type SendWindow, type WeeklyHours } from './types.js';
 
 /** Fecha/hora "de pared" en una zona horaria. */
 export interface LocalParts {
@@ -101,6 +101,53 @@ export function nextTimeOfDay(after: Date, hhmm: string, tz: string): Date {
   const lp = localParts(after, tz);
   const today = zonedToUtc(lp.date, hhmm, tz);
   return today.getTime() >= after.getTime() ? today : zonedToUtc(addDays(lp.date, 1), hhmm, tz);
+}
+
+/* ------------------------- Horario para mensajes programados ------------------------- */
+
+const HOUR = 3_600_000;
+
+/** ¿Puede salir un mensaje programado en ese instante? (de `start` a `end`, sin incluir `end`; apagado = siempre). */
+export function inSendWindow(w: SendWindow, at: Date, tz: string): boolean {
+  if (!w.enabled) return true;
+  const m = localParts(at, tz).minutes;
+  return m >= toMinutes(w.start) && m < toMinutes(w.end);
+}
+
+/** El mismo instante si puede salir; si no, la siguiente hora de inicio (hoy si aún no empieza, si no mañana). */
+export function sendableAt(w: SendWindow, at: Date, tz: string): Date {
+  if (inSendWindow(w, at, tz)) return at;
+  const lp = localParts(at, tz);
+  let t = zonedToUtc(lp.minutes < toMinutes(w.start) ? lp.date : addDays(lp.date, 1), w.start, tz);
+  // La hora de inicio cayó en el salto del horario de verano: una hora después ya existe.
+  for (let i = 0; i < 2 && !inSendWindow(w, t, tz); i++) t = new Date(t.getTime() + HOUR);
+  return t;
+}
+
+/** El mismo instante si puede salir; si no, el último minuto antes de la noche (del mismo día o, de madrugada, del anterior). */
+export function beforeQuiet(w: SendWindow, at: Date, tz: string): Date {
+  if (inSendWindow(w, at, tz)) return at;
+  const lp = localParts(at, tz);
+  let t = zonedToUtc(lp.minutes >= toMinutes(w.end) ? lp.date : addDays(lp.date, -1), fromMinutes(toMinutes(w.end) - 1), tz);
+  for (let i = 0; i < 2 && !inSendWindow(w, t, tz); i++) t = new Date(t.getTime() - HOUR);
+  return t;
+}
+
+/**
+ * Cuándo puede salir algo programado para `at`: en horario del negocio (si se da `hours`) y dentro del horario para
+ * mensajes programados. Si el cliente está conversando (`liveUntil`), no se espera a ese horario.
+ */
+export function nextSendTime(at: Date, o: { window: SendWindow; tz: string; hours?: WeeklyHours | null; holidays?: string[]; liveUntil?: Date | null }): Date {
+  let t = at;
+  for (let i = 0; i < 8; i++) {
+    const open = o.hours ? nextOpen(o.hours, o.holidays ?? [], t, o.tz) : t;
+    if (o.liveUntil && open.getTime() < o.liveUntil.getTime()) return open;
+    const next = sendableAt(o.window, open, o.tz);
+    if (next.getTime() === t.getTime()) return t;
+    t = next;
+  }
+  // El horario del negocio nunca coincide con el de envío: gana el de envío.
+  return sendableAt(o.window, at, o.tz);
 }
 
 const DIAS = { mon: 'lunes', tue: 'martes', wed: 'miércoles', thu: 'jueves', fri: 'viernes', sat: 'sábado', sun: 'domingo' } as const;

@@ -162,12 +162,18 @@ export async function releaseStep(id: string, step: number) {
 }
 
 /** Reserva el siguiente hueco de envío del canal (pasos de flujos enviados a un grupo): devuelve cuándo le toca. */
-export async function reservePacedSlot(channelId: string, paceMs: number): Promise<Date> {
+/** Siguiente turno libre del número (cada `paceMs`), desde ahora o desde `from` (p. ej. la hora en que abre el horario de envío). */
+export async function reservePacedSlot(channelId: string, paceMs: number, from?: Date): Promise<Date> {
   const row = await queryOne<{ slot: Date }>(
-    `INSERT INTO send_pacing (channel_id, next_free_at) VALUES ($1, now() + $2 * interval '1 millisecond')
-     ON CONFLICT (channel_id) DO UPDATE SET next_free_at = greatest(send_pacing.next_free_at, now()) + $2 * interval '1 millisecond'
-     RETURNING next_free_at - $2 * interval '1 millisecond' AS slot`, [channelId, paceMs]);
+    `INSERT INTO send_pacing (channel_id, next_free_at) VALUES ($1, greatest(COALESCE($3::timestamptz, now()), now()) + $2 * interval '1 millisecond')
+     ON CONFLICT (channel_id) DO UPDATE SET next_free_at = greatest(send_pacing.next_free_at, COALESCE($3::timestamptz, now()), now()) + $2 * interval '1 millisecond'
+     RETURNING next_free_at - $2 * interval '1 millisecond' AS slot`, [channelId, paceMs, from ?? null]);
   return new Date(row!.slot);
+}
+
+/** Próximo paso de un flujo que quedó esperando (horario para mensajes programados): lo que ve el panel. */
+export async function setEnrollmentNextRun(id: string, at: Date) {
+  await query(`UPDATE sequence_enrollments SET next_run_at = $2 WHERE id = $1 AND status = 'active'`, [id, at]);
 }
 
 export async function getEnrollment(id: string) {
@@ -243,6 +249,24 @@ export async function finishJob(id: number, status: 'done' | 'failed' | 'cancell
 
 export async function retryJob(id: number, runAt: Date, error: string) {
   await query(`UPDATE jobs SET status = 'pending', run_at = $2, last_error = $3 WHERE id = $1`, [id, runAt, error.slice(0, 1000)]);
+}
+
+/**
+ * Tarea que todavía no debe correr (horario para mensajes programados): vuelve a la cola para `runAt` sin gastar un
+ * intento y sin su turno de ritmo (lo vuelve a tomar al correr). Si ya hay otra pendiente con la misma clave, la más
+ * nueva gana y esta se cancela. Devuelve si quedó en espera.
+ */
+export async function holdJob(id: number, runAt: Date, reason = 'quiet_hours'): Promise<boolean> {
+  try {
+    const rows = await query(
+      `UPDATE jobs SET status = 'pending', run_at = $2, attempts = greatest(attempts - 1, 0), last_error = $3, payload = payload - 'paced'
+        WHERE id = $1 AND status = 'running' RETURNING id`, [id, runAt, reason]);
+    return rows.length > 0;
+  } catch (e: any) {
+    if (e?.code !== '23505') throw e;
+    await finishJob(id, 'cancelled', `${reason}: la reemplazó otra pendiente`);
+    return false;
+  }
 }
 
 /** Llaves por las que se cancelan trabajos pendientes: cada una tiene su índice (087 y, la de cobros, 081). */
@@ -466,6 +490,14 @@ export async function setConsent(contactId: string, consent: boolean, source = '
     `UPDATE contacts SET consent_at = CASE WHEN $2 THEN COALESCE(consent_at, now()) ELSE NULL END, consent_source = CASE WHEN $2 THEN $3 ELSE '' END, updated_at = now() WHERE id = $1`,
     [contactId, consent, source],
   );
+}
+
+/** Para decidir si algo programado espera: el canal de la conversación y cuándo escribió el cliente por última vez. */
+export async function sendContext(conversationId: string) {
+  return queryOne<{ channel_id: string; channel_type: string; last_inbound_at: Date | null }>(
+    `SELECT c.channel_id, ch.type AS channel_type,
+            (SELECT m.created_at FROM messages m WHERE m.conversation_id = c.id AND m.direction = 'in' ORDER BY m.id DESC LIMIT 1) AS last_inbound_at
+       FROM conversations c JOIN channels ch ON ch.id = c.channel_id WHERE c.id = $1`, [conversationId]);
 }
 
 export async function lastInbound(conversationId: string) {

@@ -133,6 +133,11 @@ export const config = {
   schedulerIntervalMs: Number(env('SCHEDULER_INTERVAL_MS', '5000')),
   /** Tiempo máximo de una tarea programada (recordatorio, campaña, sincronización…) antes de cortarla y reintentarla. */
   jobTimeoutMs: Math.max(1000, Number(env('JOB_TIMEOUT_MS', '180000')) || 180000),
+  /**
+   * Horario para mensajes programados (Horario y avisos): se aplica siempre en el servidor. Las pruebas lo apagan para
+   * no depender de la hora a la que corren, y las que lo prueban lo encienden.
+   */
+  sendWindow: { enforced: true },
   /** Vigilante: un bucle de trabajo sin avanzar este tiempo, o el proceso bloqueado, hacen que se reinicie. WATCHDOG=off lo apaga. */
   watchdog: {
     enabled: env('WATCHDOG', 'on') !== 'off',

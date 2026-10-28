@@ -54,7 +54,18 @@ export const ConsentSchema = z.object({
   opt_in_message: z.string().max(500).default('¡Gracias! Te enviaremos novedades y promociones. Responde BAJA cuando quieras dejar de recibirlas.'),
 });
 
-export const SendingSchema = z.object({ daily_cap_per_number: z.number().int().min(0).max(100000).default(0) });
+/**
+ * Horario para mensajes programados (flujos, campañas, reglas con espera, seguimientos, recordatorios): fuera de él
+ * esperan a la hora de inicio, en la zona horaria del negocio. Encendido por omisión: nadie quiere mensajes de madrugada.
+ */
+export const SendWindowSchema = z.object({ enabled: z.boolean().default(true), start: HHMM.default('08:00'), end: HHMM.default('21:00') })
+  .refine((w) => w.start < w.end, { message: 'El horario para mensajes programados debe empezar antes de terminar (ej. 08:00 a 21:00)', path: ['end'] });
+export type SendWindow = z.infer<typeof SendWindowSchema>;
+
+export const SendingSchema = z.object({
+  daily_cap_per_number: z.number().int().min(0).max(100000).default(0),
+  window: SendWindowSchema.default(() => SendWindowSchema.parse({})),
+});
 
 export const RetentionSchema = z.object({
   /** Borrar mensajes con más de N días (0 = no borrar). */

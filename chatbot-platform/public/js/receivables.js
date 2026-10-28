@@ -195,7 +195,7 @@ async function settingsView(root) {
       h('h2', { id: 'pay-when', style: 'margin-top:0' }, 'Cuándo recordar'),
       h('div', { class: 'grid' },
         field('Días de recordatorio', text(days, 'text', { placeholder: '-3, 0, 3, 7', oninput: showDays }), `Negativo = antes del vencimiento, 0 = el día, positivo = después. Hasta ${max}.`),
-        field('Hora de envío', h('input', { type: 'time', value: s.send_at, oninput: (e) => { s.send_at = e.target.value; } }), 'En la zona horaria de tu negocio.')),
+        field('Hora de envío', h('input', { type: 'time', value: s.send_at, oninput: (e) => { s.send_at = e.target.value; } }), 'En la zona horaria de tu negocio. Si cae de noche (fuera del horario para mensajes programados), sale ese mismo día antes de la noche.')),
       preview,
       check(s, 'respect_business_hours', 'Si a esa hora estás cerrado, enviarlo cuando abras'),
       check(s, 'notify_team_on_overdue', 'Avisar al equipo cuando un cobro vence sin pagarse')),

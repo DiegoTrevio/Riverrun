@@ -3,7 +3,9 @@ import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
 import * as astore from './store.js';
 import { query, queryOne, withTransaction } from '../db.js';
-import { addDays, localParts, nextOpen, zonedToUtc } from './time.js';
+import { addDays, localParts, zonedToUtc } from './time.js';
+import { sendTime } from './send-window.js';
+import type { AccountSettings } from './types.js';
 import type { OutboundResult } from './outbound.js';
 import { OwnershipLost } from '../engine/coordination.js';
 
@@ -62,32 +64,12 @@ export class Campaigns {
     // Cada número lleva su propio ritmo (con varios números la campaña termina antes sin acelerar ninguno) y, si hay tope
     // diario, lo que no cabe hoy pasa al día siguiente. Los ya enviados hoy por otras campañas cuentan para el tope, y
     // cada persona de un flujo cuenta como todos sus mensajes (con un tope de 100 y un flujo de 4, 25 personas por día).
-    const nextFree = new Map<string, Date>();
     const used = new Map<string, number>();
-    const plan: { conversation_id: string; at: Date }[] = [];
     if (cap) {
       const midnight = zonedToUtc(localParts(new Date(), tz).date, '00:00', tz);
       for (const r of await astore.campaignSentSince(c.account_id, midnight)) used.set(`${r.channel_id}|${localParts(new Date(), tz).date}`, r.n);
     }
-    for (const r of audience) {
-      let at = nextFree.get(r.channel_id) ?? new Date();
-      for (let guard = 0; guard < 400; guard++) {
-        if (c.business_hours_only) at = nextOpen(settings.business_hours, settings.holidays, at, tz);
-        if (!cap) break;
-        const day = localParts(at, tz).date;
-        const key = `${r.channel_id}|${day}`;
-        const today = used.get(key) ?? 0;
-        // Un flujo más largo que el tope entra solo en un día vacío (una persona ese día).
-        if (today >= cap || (today > 0 && today + perPerson > cap)) {
-          at = zonedToUtc(addDays(day, 1), '00:00', tz);
-          continue;
-        }
-        used.set(key, today + perPerson);
-        break;
-      }
-      plan.push({ conversation_id: r.conversation_id, at });
-      nextFree.set(r.channel_id, new Date(at.getTime() + gapMs));
-    }
+    const plan = planSends(audience, { now: new Date(), gapMs, cap, perPerson, used, settings, businessOnly: c.business_hours_only });
     // Destinatarios y envíos en lotes y en una sola transacción: o queda toda la campaña programada o nada (y vuelve a
     // borrador). Cada envío lleva su llave: un reintento no programa dos veces a la misma persona.
     await withTransaction(async (db) => {
@@ -175,4 +157,36 @@ export class Campaigns {
     await query(`UPDATE campaign_recipients SET status = 'skipped', reason = 'campaña cancelada' WHERE campaign_id = $1 AND status = 'pending'`, [c.id]);
     await astore.campaignStats(c.id);
   }
+}
+
+/**
+ * Hora de envío de cada destinatario: cada número lleva su propio ritmo (`gapMs`), en horario del negocio si se pide
+ * y siempre dentro del horario para mensajes programados (lo que cae de noche sigue a la hora de inicio, con el mismo
+ * ritmo). Con tope diario, lo que no cabe en el día pasa al siguiente. `used`: lo ya enviado por número y día
+ * (`canal|YYYY-MM-DD`); cada persona de un flujo cuenta como sus `perPerson` mensajes.
+ */
+export function planSends(recipients: { conversation_id: string; channel_id: string }[], o: { now: Date; gapMs: number; cap: number; perPerson: number; used: Map<string, number>; settings: AccountSettings; businessOnly: boolean }) {
+  const tz = o.settings.timezone;
+  const nextFree = new Map<string, Date>();
+  const plan: { conversation_id: string; at: Date }[] = [];
+  for (const r of recipients) {
+    let at = nextFree.get(r.channel_id) ?? o.now;
+    for (let guard = 0; guard < 400; guard++) {
+      at = sendTime(at, o.settings, { businessOnly: o.businessOnly });
+      if (!o.cap) break;
+      const day = localParts(at, tz).date;
+      const key = `${r.channel_id}|${day}`;
+      const today = o.used.get(key) ?? 0;
+      // Un flujo más largo que el tope entra solo en un día vacío (una persona ese día).
+      if (today >= o.cap || (today > 0 && today + o.perPerson > o.cap)) {
+        at = zonedToUtc(addDays(day, 1), '00:00', tz);
+        continue;
+      }
+      o.used.set(key, today + o.perPerson);
+      break;
+    }
+    plan.push({ conversation_id: r.conversation_id, at });
+    nextFree.set(r.channel_id, new Date(at.getTime() + o.gapMs));
+  }
+  return plan;
 }

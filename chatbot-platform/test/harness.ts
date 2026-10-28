@@ -400,6 +400,9 @@ process.env.ADMIN_PASSWORD = 'secreto123';
 process.env.SESSION_SECRET = 'una-clave-de-pruebas-muy-larga';
 // Las cotizaciones se convierten a PDF con un convertidor de prueba (QUOTE_PDF_BACKEND=soffice usa LibreOffice).
 process.env.QUOTE_PDF_BACKEND ??= 'fake';
+// El horario para mensajes programados depende de la hora real a la que corren: apagado en las pruebas (las que lo
+// prueban lo encienden).
+(await import('../src/config.js')).config.sendWindow.enforced = false;
 
 export const { pool, migrate } = await import('../src/db.js');
 const { buildApp } = await import('../src/app.js');

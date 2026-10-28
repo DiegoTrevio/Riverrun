@@ -11,6 +11,7 @@ import { gracefulShutdown } from './shutdown.js';
 import { startLifecycle } from './lifecycle.js';
 import { startMonitor } from './monitor.js';
 import { logEvent } from './logs.js';
+import { advanceQuietReminders } from './automation/agenda.js';
 import { runMaintenance } from './maintenance.js';
 import { KnowledgeWorker } from './engine/knowledge-preparation.js';
 import { startWatchdog } from './watchdog.js';
@@ -63,6 +64,8 @@ async function main() {
 
   if (shutdown.started) return;
   if(config.queue.role!=='http') {
+  // Recordatorios de cita programados antes del horario para mensajes programados: se adelantan antes de que corran.
+  await advanceQuietReminders().catch((e: any) => logEvent({ level: 'warn', source: 'system', message: `No se pudieron acomodar los recordatorios nocturnos: ${e?.message ?? e}` }));
   service.scheduler.start(config.schedulerIntervalMs);
   service.startSweeper();
   knowledgeWorker.start();

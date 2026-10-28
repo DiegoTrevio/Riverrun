@@ -559,7 +559,8 @@ async function editSequence(root, id) {
       field('Nombre', text(q, 'name', { placeholder: 'Seguimiento de cotización' })),
       check(q, 'active', 'Activo'),
       check(q, 'stop_on_reply', 'Detener si el cliente responde (tocar un botón no cuenta como responder)'),
-      check(q, 'business_hours_only', 'Enviar solo en horario del negocio (lo que caiga fuera se pasa a la siguiente apertura)')),
+      check(q, 'business_hours_only', 'Enviar solo en horario del negocio (lo que caiga fuera se pasa a la siguiente apertura)'),
+      h('p', { class: 'small muted' }, 'Además, nunca sale de noche: respeta el ', h('a', { href: '#/automation/settings' }, 'horario para mensajes programados'), '.')),
     h('details', { class: 'card', ontoggle: () => drawTimeline() }, h('summary', {}, 'Ver línea temporal del seguimiento'), timeline),
     h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, 'Mensajes'), list,
       h('button', { onclick: () => { q.steps.push({ delay_value: 1, delay_unit: 'days', at_time: '', text: '', image_id: '', conditions: [], buttons: [], wait_for_choice: false, if_no_choice: 'end' }); draw(); } }, '+ Agregar mensaje')),
@@ -701,7 +702,7 @@ async function editCampaign(root, id) {
         field('Fecha y hora de envío', h('input', { type: 'datetime-local', value: local.when, oninput: (e) => (local.when = e.target.value) }), `Zona del negocio: ${info.timezone}. Vacío = enviar ahora.`),
         field('Mensajes por minuto', num(c, 'rate_per_minute', { min: 1, max: 120 }), 'Recomendado para WhatsApp: 10–30')),
       check(c, 'business_hours_only', 'Enviar solo en horario de atención (lo que no alcance sale en la siguiente apertura)'),
-      h('p', { class: 'small muted' }, 'No se envía a quien se dio de baja ni a conversaciones que está atendiendo una persona.')),
+      h('p', { class: 'small muted' }, 'No se envía a quien se dio de baja ni a conversaciones que está atendiendo una persona. Nunca sale de noche: respeta el ', h('a', { href: '#/automation/settings' }, 'horario para mensajes programados'), '.')),
     editable ? saveBar(c.status === 'scheduled' ? reviewAndLaunch : save, existing ? h('span', { class: 'row', style: 'margin-left:auto' },
       h('button', { class: 'danger', onclick: async () => { if (await confirmAction('¿Eliminar la campaña?')) { if (!(await run(() => api('DELETE', `/api/campaigns/${id}`), 'Eliminada'))) return; location.hash = '#/automation/campaigns'; } } }, 'Eliminar')) : null) : null,
   );
@@ -727,6 +728,8 @@ export function hoursEditor(hours) {
 
 async function editSettings(root) {
   const s = draftModel('settings', await api('GET', withAcct('/api/settings')), false);
+  // Un borrador guardado antes de que existiera el horario para mensajes programados no lo trae.
+  s.sending.window ??= { enabled: true, start: '08:00', end: '21:00' };
   root.append(draftNotice(['settings'], render));
   const team = (await api('GET', withAcct('/api/users')).catch(() => [])).filter((u) => u.account_id && u.active);
   const copy = (v) => h('button', { class: 'small', onclick: async () => { try { await navigator.clipboard.writeText(v); toast('Copiado'); } catch { toast('No se pudo copiar', true); } } }, 'Copiar');
@@ -737,6 +740,13 @@ async function editSettings(root) {
       field('Zona horaria', text(s, 'timezone')),
       hoursEditor(s.business_hours),
       field('Días cerrados (festivos)', lines(s, 'holidays', { placeholder: '2026-12-25\n2027-01-01' }), 'Formato AAAA-MM-DD, uno por renglón.')),
+    h('div', { class: 'card' },
+      h('h2', { style: 'margin-top:0' }, 'Horario para mensajes programados'),
+      check(s.sending.window, 'enabled', 'No enviar mensajes programados de noche (recomendado)'),
+      h('div', { class: 'grid' },
+        field('Desde', text(s.sending.window, 'start', { type: 'time' })),
+        field('Hasta', text(s.sending.window, 'end', { type: 'time' }), 'En la zona horaria del negocio.')),
+      h('p', { class: 'small muted' }, 'Fuera de este horario, los flujos, las campañas, los mensajes de reglas con espera y los seguimientos «si no contesta» esperan a la hora de inicio. Los recordatorios de citas y de pagos se acomodan para salir antes de la noche. Si el cliente escribió en los últimos 30 minutos, sale normal porque está conversando. Las respuestas del asistente y lo que envía tu equipo nunca esperan.')),
     h('div', { class: 'card' },
       h('h2', { style: 'margin-top:0' }, 'Bajas (dejar de recibir mensajes)'),
       check(s.opt_out, 'enabled', 'Permitir que el cliente se dé de baja escribiendo una palabra'),
@@ -750,7 +760,7 @@ async function editSettings(root) {
       h('p', { class: 'small muted' }, 'Quien se da de baja no recibe campañas, secuencias ni mensajes de reglas; sí recibe recordatorios de sus citas.')),
     h('div', { class: 'card' },
       h('h2', { style: 'margin-top:0' }, 'Protección del número de WhatsApp'),
-      field('Tope de mensajes de campaña por número y por día', num(s.sending, 'daily_cap_per_number', { min: 0 }), '0 = sin tope. Lo que no cabe hoy se envía al día siguiente. Para números nuevos, empezar con 50–100 al día reduce el riesgo de bloqueo.')),
+      field('Tope de mensajes de campaña por número y por día', num(s.sending, 'daily_cap_per_number', { min: 0 }), '0 = sin tope. Lo que no cabe hoy se envía al día siguiente, desde la hora de inicio del horario para mensajes programados. Para números nuevos, empezar con 50–100 al día reduce el riesgo de bloqueo.')),
     h('div', { class: 'card' },
       h('h2', { style: 'margin-top:0' }, 'Consentimiento para promociones'),
       check(s.consent, 'require_for_campaigns', 'Enviar campañas y secuencias solo a quienes aceptaron recibirlas (recomendado)'),

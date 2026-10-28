@@ -15,6 +15,7 @@ import * as store from '../store/index.js';
 import type { User } from '../types.js';
 import { parse } from './util.js';
 import { localParts, zonedToUtc } from '../automation/time.js';
+import { advanceQuietReminders } from '../automation/agenda.js';
 
 /**
  * Todo lo que una regla referencia debe ser de la misma cuenta. Con `clearMissing`, una foto que ya se borró se quita de
@@ -142,12 +143,16 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
     const accountId = await targetAccount(req.user, req.query.account_id);
     const current = await astore.getSettings(accountId);
     const raw = (req.body ?? {}) as Record<string, unknown>;
-    // Los secretos no se cambian desde aquí (se regeneran con su propia ruta).
-    const next = parse(AccountSettingsSchema, { ...current, ...raw, calendar_token: current.calendar_token, webhook_secret: current.webhook_secret });
+    // Los secretos no se cambian desde aquí (se regeneran con su propia ruta). `sending` se mezcla un nivel: cambiar el
+    // tope diario no vuelve a encender un horario de envío apagado.
+    const sending = raw.sending && typeof raw.sending === 'object' && !Array.isArray(raw.sending) ? { ...current.sending, ...(raw.sending as object) } : current.sending;
+    const next = parse(AccountSettingsSchema, { ...current, ...raw, sending, calendar_token: current.calendar_token, webhook_secret: current.webhook_secret });
     // Se escala solo a administradores activos de esta cuenta: lo demás se descarta al guardar.
     const admins = new Set((await astore.teamMembers(accountId, ['admin'])).map((u) => u.id));
     next.alert_timing.escalate_user_ids = next.alert_timing.escalate_user_ids.filter((id) => admins.has(id));
     await astore.saveSettings(accountId, next);
+    // Otro horario de envío u otra zona horaria: los recordatorios de cita ya programados se acomodan a la nueva noche.
+    if (JSON.stringify(next.sending.window) !== JSON.stringify(current.sending.window) || next.timezone !== current.timezone) await advanceQuietReminders(accountId);
     await logEvent({ level: 'info', source: 'admin', message: 'Configuración de la cuenta actualizada', accountId });
     return { ...next, ics_url: `${config.publicBaseUrl}/calendar/${next.calendar_token}.ics` };
   });
@@ -243,7 +248,7 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
     const { sequence_id } = parse(z.object({ sequence_id: z.string().uuid() }), req.body);
     await sequenceFor(req.user, sequence_id);
     try {
-      const e = await service.automator.enroll(sequence_id, conv.id, `panel: ${req.user.email}`);
+      const e = await service.automator.enroll(sequence_id, conv.id, `panel: ${req.user.email}`, { byTeam: true });
       if (!e) throw new HttpError(409, 'Ya está inscrito en esa secuencia');
       return e;
     } catch (e: any) {

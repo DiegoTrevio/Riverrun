@@ -12,6 +12,7 @@ import { Campaigns } from './automation/campaigns.js';
 import { Receivables } from './receivables/index.js';
 import { Outbound } from './automation/outbound.js';
 import { Scheduler } from './automation/scheduler.js';
+import { holdIfQuiet } from './automation/quiet-hold.js';
 import * as astore from './automation/store.js';
 import { isOpen, nextOpen, spanishDate, spanishTime } from './automation/time.js';
 import { detectRisk, maskSensitive } from './engine/safety.js';
@@ -164,7 +165,7 @@ export class ChatService {
         if (e instanceof AiBudgetBlocked) return;
         throw e;
       }),
-    },()=>this.automator.settleAll());
+    },()=>this.automator.settleAll(),(job)=>holdIfQuiet(job));
   }
 
   summarize(conversationId: string) {

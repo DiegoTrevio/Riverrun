@@ -1456,6 +1456,7 @@ export async function viewFlowBoard(root, id) {
         h('h3', {}, 'Cómo se envía'),
         toggle(st, 'stop_on_reply', 'Se detiene si el cliente responde (tocar un botón no cuenta)'),
         toggle(st, 'business_hours_only', 'Solo en horario del negocio (lo de fuera sale al abrir)'),
+        h('p', { class: 'small muted' }, 'Nunca sale de noche: respeta el ', h('a', { href: '#/automation/settings' }, 'horario para mensajes programados'), '.'),
         h('h3', {}, 'Para moverte'),
         h('ul', { class: 'fb-keys small' },
           h('li', {}, h('kbd', {}, 'Arrastrar el fondo'), h('span', {}, 'moverte por el lienzo')),
