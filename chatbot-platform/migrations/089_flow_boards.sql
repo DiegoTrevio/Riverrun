@@ -25,3 +25,7 @@ ALTER TABLE automations ADD COLUMN IF NOT EXISTS board_id uuid REFERENCES flow_b
 ALTER TABLE sequences ADD COLUMN IF NOT EXISTS board_id uuid REFERENCES flow_boards(id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS automations_board_idx ON automations (board_id) WHERE board_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS sequences_board_idx ON sequences (board_id) WHERE board_id IS NOT NULL;
+
+-- Un flujo que empezó el cliente (escribió una palabra, es nuevo o tocó un botón) le contesta lo que pidió: mientras haya
+-- escrito en las últimas 24 h sus mensajes no piden el consentimiento de promociones (el pie de baja sí va).
+ALTER TABLE sequence_enrollments ADD COLUMN IF NOT EXISTS started_by_customer boolean NOT NULL DEFAULT false;

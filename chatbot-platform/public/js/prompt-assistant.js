@@ -17,6 +17,31 @@ const EXAMPLES = [
 /** Lo aplicado hace poco, por agente: así «Deshacer» sigue a la mano aunque la página se vuelva a dibujar. */
 const recent = new Map();
 
+/** ¿Es el mismo texto? (el navegador y el servidor pueden diferir en saltos \r o espacios al final). */
+const sameText = (a, b) => a !== null && b !== null && String(a).replace(/\r/g, '').trim() === String(b).replace(/\r/g, '').trim();
+
+/** Renglones con texto (sin espacios a los lados), para comparar el antes y el después. */
+const rows = (text) => text.replace(/\r/g, '').split('\n').map((x) => x.trim()).filter(Boolean);
+
+/**
+ * Antes y después renglón por renglón (la secuencia común más larga): sirve cuando se encadenan varios ajustes, porque
+ * cada respuesta del servidor compara solo contra el paso anterior. Textos enormes se quedan con la última comparación.
+ */
+function compareRows(before, after, fallback) {
+  const a = rows(before), b = rows(after);
+  if (a.length * b.length > 600_000) return fallback;
+  const L = Array.from({ length: a.length + 1 }, () => new Uint16Array(b.length + 1));
+  for (let i = a.length - 1; i >= 0; i--) for (let j = b.length - 1; j >= 0; j--) L[i][j] = a[i] === b[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  const out = [];
+  let i = 0, j = 0;
+  while (i < a.length || j < b.length) {
+    if (i < a.length && j < b.length && a[i] === b[j]) { out.push({ text: a[i], state: 'same' }); i++; j++; }
+    else if (j < b.length && (i === a.length || L[i][j + 1] >= L[i + 1][j])) { out.push({ text: b[j], state: 'new' }); j++; }
+    else { out.push({ text: a[i], state: 'removed' }); i++; }
+  }
+  return out;
+}
+
 /** Los renglones que cambian, con uno de contexto antes y después; `full` muestra todo el texto. */
 function diffList(lines, full) {
   const changed = lines.flatMap((l, i) => (l.state === 'same' ? [] : [i]));
@@ -68,13 +93,17 @@ export function promptAssistant({ botId, getPrompt, apply, context = '', label =
     if (busy) return;
     const instruction = ta.value.trim();
     if (!instruction) { say('Escribe qué quieres cambiar.', 'err'); ta.focus(); return; }
+    if (draft && !sameText(getPrompt(), draft.original)) draft = null;
     const base = draft ? draft.prompt : getPrompt();
+    if (base === null) { say('Espera a que carguen las instrucciones del agente.', 'err'); return; }
     setBusy(true, 'Leyendo las instrucciones y preparando el cambio…');
     try {
       const r = await api('POST', `/api/chatbots/${botId}/prompt-edit`, { instruction, prompt: base, context: typeof context === 'function' ? context() : context });
       setBusy(false);
       if (!r.changed) { say(r.question || 'No encontré qué cambiar. ¿Puedes decirlo con otras palabras?', 'err'); ta.focus(); return; }
-      draft = { original: draft?.original ?? base, prompt: r.prompt, lines: r.lines, summaries: [...(draft?.summaries ?? []), r.summary || instruction] };
+      const original = draft?.original ?? base;
+      // Con varios ajustes, el antes y el después se comparan contra el texto de partida (no solo contra el último paso).
+      draft = { original, prompt: r.prompt, lines: draft ? compareRows(original, r.prompt, r.lines) : r.lines, summaries: [...(draft?.summaries ?? []), r.summary || instruction] };
       ta.value = ''; grow();
       showProposal();
     } catch (e) {
@@ -102,10 +131,16 @@ export function promptAssistant({ botId, getPrompt, apply, context = '', label =
   async function commit() {
     if (!draft || busy) return;
     const { original, prompt, summaries } = draft;
+    if (!sameText(getPrompt(), original)) {
+      draft = null;
+      result.replaceChildren();
+      say('Las instrucciones cambiaron desde que preparaste el cambio (en otra pestaña o a mano). Pídelo otra vez para no perder lo nuevo.', 'err');
+      return;
+    }
     setBusy(true, 'Aplicando al agente…');
     let ok = false;
     try { ok = await apply(prompt); } catch (e) { toast(e.message, true); }
-    if (ok) recent.set(botId, { summary: summaries.join(' '), previous: original, at: Date.now() });
+    if (ok) recent.set(botId, { summary: summaries.join(' '), previous: original, applied: prompt, at: Date.now() });
     if (!box.isConnected) return;
     setBusy(false);
     if (!ok) { say('No se aplicó. Revisa el aviso e intenta de nuevo.', 'err'); return; }
@@ -128,6 +163,12 @@ export function promptAssistant({ botId, getPrompt, apply, context = '', label =
   async function undo() {
     const last = recent.get(botId);
     if (!last || busy) return;
+    if (!sameText(getPrompt(), last.applied)) {
+      recent.delete(botId);
+      result.replaceChildren();
+      say('Las instrucciones cambiaron después de aplicar el cambio, así que deshacerlo borraría lo nuevo. Si lo necesitas, vuelve a una versión en el historial del agente.', 'err');
+      return;
+    }
     setBusy(true, 'Regresando las instrucciones como estaban…');
     let ok = false;
     try { ok = await apply(last.previous); } catch (e) { toast(e.message, true); }

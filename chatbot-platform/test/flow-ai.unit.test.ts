@@ -179,3 +179,53 @@ test('cambiar instrucciones con IA: renglones numerados, y si no encuentra qué 
   assert.equal(none.question, 'No encontré nada sobre estacionamiento.');
   assert.equal(none.prompt, PROMPT);
 });
+
+test('un cambio con IA no pierde datos que su formato no lleva (filtros del inicio, esperas de 0, fotos)', () => {
+  const current = BoardSchema.parse({
+    nodes: [
+      { id: 't', type: 'trigger', x: 0, y: 0, data: { trigger: { type: 'message_received', match: 'keywords', keywords: ['promo'], first_message_only: true } } },
+      { id: 'm1', type: 'message', x: 0, y: 200, data: { text: 'Hola', image_id: '33333333-3333-4333-8333-333333333333' } },
+      { id: 'w', type: 'wait', x: 0, y: 400, data: { value: 0, unit: 'minutes', at_time: '10:00' } },
+      { id: 'm2', type: 'message', x: 0, y: 520, data: { text: 'Adiós', attachment_id: '44444444-4444-4444-8444-444444444444' } },
+    ],
+    edges: [{ id: 'e1', from: 't', port: 'out', to: 'm1' }, { id: 'e2', from: 'm1', port: 'out', to: 'w' }, { id: 'e3', from: 'w', port: 'out', to: 'm2' }],
+  });
+  const s = boardToSpec(current, 'Promo');
+  s.trigger.keywords = ['promo', 'oferta'];
+  s.blocks.find((b) => b.id === 'm1')!.photo = '';
+  s.blocks.find((b) => b.id === 'm2')!.photo = 'remove';
+  const { board } = specToBoard(s, current);
+  const byId = new Map(board.nodes.map((n) => [n.id, n]));
+  const t = byId.get('t')!;
+  assert.deepEqual(t.type === 'trigger' && t.data.trigger, { type: 'message_received', match: 'keywords', keywords: ['promo', 'oferta'], first_message_only: true }, 'se suma la palabra sin perder «solo el primer mensaje»');
+  const w = byId.get('w')!;
+  assert.deepEqual(w.type === 'wait' && w.data, { value: 0, unit: 'minutes', at_time: '10:00' });
+  const m1 = byId.get('m1')!, m2 = byId.get('m2')!;
+  assert.equal(m1.type === 'message' && m1.data.image_id, '33333333-3333-4333-8333-333333333333', 'si la IA no repite la foto, se queda');
+  assert.equal(m2.type === 'message' && m2.data.attachment_id, '', 'con «remove» se quita');
+  // El servicio de «agenda una cita» tampoco se pierde.
+  const appt = BoardSchema.parse({ nodes: [{ id: 't', type: 'trigger', x: 0, y: 0, data: { trigger: { type: 'appointment_booked', service_id: 'svc-1' } } }] });
+  const again = specToBoard(boardToSpec(appt, 'Cita'), appt).board.nodes[0];
+  assert.deepEqual(again.type === 'trigger' && again.data.trigger, { type: 'appointment_booked', service_id: 'svc-1' });
+});
+
+test('seis botones de la IA se quedan en 3 de respuesta y 2 de enlace', () => {
+  const sixButtons = spec({
+    start: 'm1',
+    blocks: [block({ id: 'm1', type: 'message', text: 'Menú', buttons: [button('Uno', ''), button('Dos', ''), button('Tres', ''), button('Cuatro', ''),
+      { label: 'Web', kind: 'url', url: 'https://a.mx', reply: '', go_to: '' }, { label: 'Mapa', kind: 'url', url: 'https://b.mx', reply: '', go_to: '' }, { label: 'Otro', kind: 'url', url: 'https://c.mx', reply: '', go_to: '' }] })],
+  });
+  const { board } = specToBoard(sixButtons);
+  const m = board.nodes.find((n) => n.type === 'message')!;
+  assert.deepEqual(m.type === 'message' && m.data.buttons.map((b) => b.label), ['Uno', 'Dos', 'Tres', 'Web', 'Mapa']);
+});
+
+test('al aplicar un cambio, el resto de las instrucciones queda idéntico (sangrías, renglones en blanco, final)', () => {
+  const text = 'PRECIOS\n  - Adultos $150\n  - Niños $100\n \nHorario: 9 a 7\n';
+  const units = promptUnits(text);
+  assert.equal(applyPromptOps(units, []).prompt, text);
+  const r = applyPromptOps(units, [{ op: 'replace', line: 3, text: '- Niños $120' }]);
+  assert.equal(r.prompt, 'PRECIOS\n  - Adultos $150\n  - Niños $120\n \nHorario: 9 a 7\n');
+  const removed = applyPromptOps(units, [{ op: 'remove', line: 4, text: '' }]);
+  assert.equal(removed.prompt, 'PRECIOS\n  - Adultos $150\n  - Niños $100\n');
+});

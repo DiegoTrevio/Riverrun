@@ -39,10 +39,14 @@ export function agentPanel({ bots, board, name, context = '' }) {
   let current = null;
   let mounted = null;
 
-  /** Guardar = aplicar: llega de inmediato a sus conexiones y queda en el historial de versiones. */
-  async function save(prompt) {
+  /**
+   * Guardar = aplicar: llega de inmediato a sus conexiones y queda en el historial de versiones. `botId`: el agente del
+   * que se cargó el texto (si mientras tanto se eligió otro, no se guarda en el equivocado).
+   */
+  async function save(prompt, botId) {
+    if (!current || current.bot !== botId || choice.bot !== botId) { toast('Cambiaste de agente: vuelve a pedir el cambio para este.', true); return false; }
     try {
-      await api('POST', `/api/chatbots/${choice.bot}/version-apply`, { revision: current.revision, patch: { personality: { ...current.personality, prompt } } });
+      await api('POST', `/api/chatbots/${botId}/version-apply`, { revision: current.revision, patch: { personality: { ...current.personality, prompt } } });
       toast('Instrucciones aplicadas: el agente ya atiende así');
       await load();
       return true;
@@ -55,13 +59,16 @@ export function agentPanel({ bots, board, name, context = '' }) {
 
   async function load() {
     fill(body, h('p', { class: 'help', role: 'status' }, 'Cargando las instrucciones…'));
+    // Otro agente: lo del anterior se quita de inmediato (su propuesta no se puede aplicar a este).
+    if (current && current.bot !== choice.bot) { current = null; mounted = null; fill(assistantSlot); }
     try {
       const versions = await api('GET', `/api/chatbots/${choice.bot}/versions`);
       const personality = versions.draft_bot.personality;
-      current = { revision: versions.draft.revision, personality, original: personality.prompt || '', blocks: fresh(personality.prompt) };
-      if (mounted !== choice.bot) {
-        mounted = choice.bot;
-        fill(assistantSlot, promptAssistant({ botId: choice.bot, getPrompt: () => current.original, apply: save, context }));
+      const botId = choice.bot;
+      current = { bot: botId, revision: versions.draft.revision, personality, original: personality.prompt || '', blocks: fresh(personality.prompt) };
+      if (mounted !== botId) {
+        mounted = botId;
+        fill(assistantSlot, promptAssistant({ botId, getPrompt: () => (current?.bot === botId ? current.original : null), apply: (prompt) => save(prompt, botId), context }));
       }
       draw();
     } catch (e) {
@@ -140,7 +147,7 @@ export function agentPanel({ bots, board, name, context = '' }) {
 
   async function apply(button) {
     button.disabled = true;
-    if (!(await save(joinBlocks(current.blocks))) && button.isConnected) button.disabled = false;
+    if (!(await save(joinBlocks(current.blocks), current.bot)) && button.isConnected) button.disabled = false;
   }
 
   fill(root,

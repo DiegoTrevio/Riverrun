@@ -62,6 +62,12 @@ function flowHash(board: Board, name: string) {
 /** ¿Lo dibujado ya no es lo publicado? (solo si se publicó alguna vez). */
 const pendingOf = (row: Pick<FlowBoardRow, 'published_hash'>, board: Board, name: string) => !!row.published_hash && flowHash(board, name) !== row.published_hash;
 
+/** Palabras que un botón no puede decir (darse de baja, volver a recibir, aceptar promociones): se avisan en el lienzo. */
+async function reservedWords(accountId: string) {
+  const st = await astore.getSettings(accountId);
+  return [...st.opt_out.keywords, ...st.opt_out.resume_keywords, ...st.consent.opt_in_keywords];
+}
+
 const boardFor = async (user: User, id: string) => assertAccount(user, await queryOne<FlowBoardRow>('SELECT * FROM flow_boards WHERE id = $1', [id]), 'Flujo no encontrado');
 
 /** Los flujos del lienzo, listos para guardarse (las ramas apuntan a `ids`, o al relleno si aún no existen). */
@@ -89,7 +95,7 @@ function ruleBody(flow: CompiledFlow, name: string, active: boolean, mainId: str
 
 /** Revisa el lienzo completo: lo que dibuja y lo que depende de la cuenta (fotos, archivos, flujos, palabras). */
 async function validate(row: FlowBoardRow, board: Board) {
-  const flow = compileBoard(board, row.name);
+  const flow = compileBoard(board, row.name, { reserved: await reservedWords(row.account_id) });
   const errors = flow.problems.filter((p) => !p.warning);
   if (errors.length) throw new HttpError(400, 'Antes de publicar, resuelve los pendientes del lienzo', errors.map((p) => p.message), { problems: flow.problems });
   let bodies;
@@ -208,6 +214,7 @@ export async function flowBoardRoutes(api: FastifyInstance, ai: AiProvider) {
         current,
         name: input.name,
         business: await businessContext(accountId),
+        reserved: await reservedWords(accountId),
         uploadId,
       });
     } catch (e: any) {
@@ -264,13 +271,13 @@ export async function flowBoardRoutes(api: FastifyInstance, ai: AiProvider) {
       `INSERT INTO flow_boards (account_id, name, board, created_by) VALUES ($1, $2, $3, $4) RETURNING *`,
       [accountId, body.name, JSON.stringify(board), req.user.id],
     );
-    return { ...row, problems: compileBoard(board, body.name).problems };
+    return { ...row, problems: compileBoard(board, body.name, { reserved: await reservedWords(accountId) }).problems };
   });
 
   api.get('/api/flow-boards/:id', admins, async (req: any) => {
     const row = await boardFor(req.user, req.params.id);
     const board = BoardSchema.safeParse(row.board);
-    return { ...row, board: board.success ? board.data : BoardSchema.parse({}), pending: board.success ? pendingOf(row, board.data, row.name) : false, problems: board.success ? compileBoard(board.data, row.name).problems : [] };
+    return { ...row, board: board.success ? board.data : BoardSchema.parse({}), pending: board.success ? pendingOf(row, board.data, row.name) : false, problems: board.success ? compileBoard(board.data, row.name, { reserved: await reservedWords(row.account_id) }).problems : [] };
   });
 
   /** Guardado automático: solo si nadie más lo cambió desde la revisión que se tiene abierta. */
@@ -284,14 +291,14 @@ export async function flowBoardRoutes(api: FastifyInstance, ai: AiProvider) {
       [row.id, body.revision, name, JSON.stringify(board)],
     );
     if (!saved) throw new HttpError(409, 'Este flujo cambió en otra pestaña o en otro equipo. Recarga para ver la versión más reciente.', undefined, { revision: row.revision });
-    return { id: saved.id, name: saved.name, revision: saved.revision, updated_at: saved.updated_at, published_revision: saved.published_revision, pending: pendingOf(saved, board, name), problems: compileBoard(board, name).problems };
+    return { id: saved.id, name: saved.name, revision: saved.revision, updated_at: saved.updated_at, published_revision: saved.published_revision, pending: pendingOf(saved, board, name), problems: compileBoard(board, name, { reserved: await reservedWords(row.account_id) }).problems };
   });
 
   /** Revisión sin publicar: qué falta, y en qué se convertiría. */
   api.post('/api/flow-boards/:id/check', admins, async (req: any) => {
     const row = await boardFor(req.user, req.params.id);
     const board = readBoard(row.board);
-    const flow = compileBoard(board, row.name);
+    const flow = compileBoard(board, row.name, { reserved: await reservedWords(row.account_id) });
     return { problems: flow.problems, rule: !!flow.rule, sequences: flow.sequences.map((s) => ({ name: s.name, messages: s.steps.length })) };
   });
 

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ConditionSchema, TriggerSchema, type Action, type Condition, type FlowButton, type SequenceStep, type Trigger } from './types.js';
+import { ConditionSchema, normalizeLabel, TriggerSchema, type Action, type Condition, type FlowButton, type SequenceStep, type Trigger } from './types.js';
 
 /*
  * Lienzo de flujos: lo que la persona dibuja (como en una pizarra) y cómo se convierte en lo que el sistema ya ejecuta.
@@ -29,13 +29,24 @@ export type BoardButton = z.infer<typeof BoardButtonSchema>;
 
 const base = { id: NodeId, x: Coord, y: Coord };
 
+/**
+ * El inicio mientras se edita: uno completo, o uno a medio llenar (por ejemplo «se le pone una etiqueta» sin la etiqueta
+ * todavía). Así el lienzo se sigue guardando; lo que falta sale en los pendientes y no se publica hasta completarlo.
+ */
+const DraftTriggerSchema = z.union([
+  TriggerSchema,
+  z.object({ type: z.string().trim().min(1).max(40) }).catchall(z.union([z.string().max(300), z.number().finite(), z.boolean(), z.array(z.string().max(200)).max(50)])),
+]);
+/** El inicio ya completo, o null si aún falta algo (o si lo inicia la persona: `trigger` null). */
+export const completeTrigger = (t: unknown): Trigger | null => { const r = TriggerSchema.safeParse(t); return r.success ? r.data : null; };
+
 export const BoardNodeSchema = z.discriminatedUnion('type', [
   z.object({
     ...base,
     type: z.literal('trigger'),
     data: z.object({
       /** null = «lo inicio yo» (desde una conversación o enviándolo a un grupo): no se crea regla. */
-      trigger: TriggerSchema.nullable().default(null),
+      trigger: DraftTriggerSchema.nullable().default(null),
       conditions: z.array(ConditionSchema).max(20).default([]),
       chatbot_id: z.union([z.string().uuid(), z.null()]).default(null),
       stop_ai: z.boolean().default(false),
@@ -144,15 +155,19 @@ export interface CompiledFlow {
     /** Acciones antes del primer mensaje (sin el inicio del flujo, que se agrega al publicar). */
     actions: Action[];
   };
-  /** Flujo principal (el que arranca el inicio), o null si el inicio solo hace acciones. */
+  /** Flujo principal (el que arranca el inicio; su clave es MAIN_KEY), o null si el inicio solo hace acciones. */
   main: string | null;
   sequences: CompiledSequence[];
   problems: BoardProblem[];
 }
 
 const MINUTES = { minutes: 1, hours: 60, days: 1440 } as const;
-/** Un hueco por llenar, como «[precio]»: no debe llegar así al cliente. */
-const PLACEHOLDER_HOLE = /\[[^\]\n]{2,60}\]/;
+/** Un hueco por llenar, como «[precio]» o «[enlace de pago]» (palabras en minúsculas): no debe llegar así al cliente. */
+const PLACEHOLDER_HOLE = /\[[a-záéíóúüñ][a-záéíóúüñ ]{1,40}\]/;
+/** Clave fija del flujo principal en lo publicado: sigue siendo el mismo aunque cambie su primer mensaje. */
+export const MAIN_KEY = ':main';
+/** Si un mensaje espera a que elijan y no hay una Espera después, este es el tiempo que tienen para elegir. */
+export const CHOICE_WINDOW_MINUTES = 1440;
 const FLOW_TYPES = new Set(['trigger', 'message', 'wait', 'action']);
 
 /** Espera total en la unidad más grande que la expresa exacta (el editor de flujos admite hasta 10000 de cada una). */
@@ -173,7 +188,8 @@ const snippet = (s: string, n = 40) => {
  * Convierte el lienzo en la regla y los flujos que se publican. No consulta la base: lo que depende de la cuenta (fotos,
  * archivos, flujos existentes, palabras reservadas) se revisa al publicar.
  */
-export function compileBoard(board: Board, name: string): CompiledFlow {
+export function compileBoard(board: Board, name: string, opts: { reserved?: string[] } = {}): CompiledFlow {
+  const reserved = new Set((opts.reserved ?? []).map(normalizeLabel).filter(Boolean));
   const problems: BoardProblem[] = [];
   const nodes = new Map(board.nodes.map((n) => [n.id, n]));
   const out = new Map<string, BoardEdge>();
@@ -234,11 +250,15 @@ export function compileBoard(board: Board, name: string): CompiledFlow {
     }
     if (cur) { main = cur.id; want(cur.id); }
     const t = start.data;
-    if (t.trigger) {
-      if (t.trigger.type === 'message_received' && t.trigger.match !== 'any' && !t.trigger.keywords.length) problems.push({ node: start.id, message: 'Escribe al menos una palabra o frase que inicia el flujo (o elige «Cualquier mensaje»).' });
-      if (t.trigger.type === 'intent' && t.stop_ai) problems.push({ node: start.id, message: 'Con «La IA detecta una intención» el agente ya respondió: desmarca «El agente no contesta ese mensaje».' });
+    const trig = completeTrigger(t.trigger);
+    if (t.trigger && !trig) {
+      const type = String((t.trigger as { type?: unknown }).type ?? '');
+      problems.push({ node: start.id, message: type === 'tag_added' ? 'Escribe la etiqueta que inicia el flujo.' : type === 'intent' ? 'Escribe la intención que detecta la IA (un nombre corto) y cómo la reconoce (máximo 300 caracteres).' : 'Revisa cuándo empieza el flujo: le falta un dato.' });
+    } else if (trig) {
+      if (trig.type === 'message_received' && trig.match !== 'any' && !trig.keywords.length) problems.push({ node: start.id, message: 'Escribe al menos una palabra o frase que inicia el flujo (o elige «Cualquier mensaje»).' });
+      if (trig.type === 'intent' && t.stop_ai) problems.push({ node: start.id, message: 'Con «La IA detecta una intención» el agente ya respondió: desmarca «El agente no contesta ese mensaje».' });
       if (!actions.length && !main) problems.push({ node: start.id, message: 'Conecta el inicio a un mensaje o a una acción.' });
-      rule = { trigger: t.trigger, conditions: t.conditions, chatbot_id: t.chatbot_id, stop_ai: t.stop_ai, once_per_conversation: t.once_per_conversation, actions };
+      rule = { trigger: trig, conditions: t.conditions, chatbot_id: t.chatbot_id, stop_ai: t.stop_ai, once_per_conversation: t.once_per_conversation, actions };
     } else {
       if (actions.length) problems.push({ node: start.id, message: 'Un flujo que inicias tú no puede empezar con acciones: conéctalo directo a un mensaje.' });
       if (!main) problems.push({ node: start.id, message: 'Conecta el inicio al primer mensaje.' });
@@ -252,6 +272,7 @@ export function compileBoard(board: Board, name: string): CompiledFlow {
     const messages: (BoardNode & { type: 'message' })[] = [];
     let waited = 0;
     let atTime = '';
+    let hadWait = false;
     const seen = new Set<string>();
     for (let cur = nodes.get(key); cur; cur = next(cur.id)) {
       if (seen.has(cur.id)) { problems.push({ node: cur.id, message: 'La línea principal regresa a un mensaje anterior. Para repetirlo, usa un botón.' }); break; }
@@ -259,6 +280,7 @@ export function compileBoard(board: Board, name: string): CompiledFlow {
       if (cur.type === 'wait') {
         waited += cur.data.value * MINUTES[cur.data.unit];
         if (cur.data.at_time) atTime = cur.data.at_time;
+        hadWait = true;
         continue;
       }
       if (cur.type === 'action') {
@@ -275,13 +297,20 @@ export function compileBoard(board: Board, name: string): CompiledFlow {
       if (replies.length > 3) problems.push({ node: cur.id, message: 'Máximo 3 botones de respuesta por mensaje.' });
       if (m.buttons.length - replies.length > 2) problems.push({ node: cur.id, message: 'Máximo 2 botones de enlace por mensaje.' });
       if (m.buttons.length && !m.text.trim()) problems.push({ node: cur.id, message: 'Escribe el texto que acompaña a los botones.' });
-      const labels = m.buttons.map((b) => b.label.trim().toLowerCase()).filter(Boolean);
+      const labels = m.buttons.map((b) => normalizeLabel(b.label)).filter(Boolean);
       if (new Set(labels).size !== labels.length) problems.push({ node: cur.id, message: 'Dos botones no pueden decir lo mismo.' });
       for (const b of m.buttons) {
-        if (!b.label.trim()) problems.push({ node: cur.id, message: 'Un botón no tiene texto.' });
-        else if (b.label.trim().length > 20) problems.push({ node: cur.id, message: `El botón «${b.label.trim()}» pasa de 20 caracteres.` });
+        const label = b.label.trim();
+        if (!label) problems.push({ node: cur.id, message: 'Un botón no tiene texto.' });
+        else if (label.length > 20) problems.push({ node: cur.id, message: `El botón «${label}» pasa de 20 caracteres.` });
+        else if (!normalizeLabel(label)) problems.push({ node: cur.id, message: `El botón «${label}» necesita letras o números.` });
+        else if (/^\d+$/.test(normalizeLabel(label))) problems.push({ node: cur.id, message: `El botón «${label}» no puede ser solo un número: se confunde con elegir por número.` });
+        else if (reserved.has(normalizeLabel(label))) problems.push({ node: cur.id, message: `El botón «${label}» se confunde con la palabra para darse de baja, volver a recibir mensajes o aceptar promociones. Usa otro texto.` });
         if (b.kind === 'url' && !/^https:\/\/\S+$/.test(b.url)) problems.push({ node: cur.id, message: `El enlace del botón «${b.label.trim() || 'sin texto'}» debe empezar con https://` });
       }
+      // «Esperar a que elija» sin una Espera después: el siguiente sale cuando elige o, si no elige, después de un día.
+      const before = steps.at(-1);
+      if (before && !hadWait && before.wait_for_choice) waited = CHOICE_WINDOW_MINUTES;
       steps.push({
         node: cur.id,
         ...delayOf(waited),
@@ -296,7 +325,7 @@ export function compileBoard(board: Board, name: string): CompiledFlow {
         if_no_choice: m.if_no_choice,
       });
       messages.push(cur);
-      waited = 0; atTime = '';
+      waited = 0; atTime = ''; hadWait = false;
     }
     if (!steps.length) problems.push({ node: key, message: 'Esta rama no tiene ningún mensaje.' });
     if (steps.length > 30) problems.push({ node: key, message: 'Un flujo admite hasta 30 mensajes seguidos.' });
@@ -315,7 +344,11 @@ export function compileBoard(board: Board, name: string): CompiledFlow {
         const btn: CompiledButton = { label, kind: 'reply', url: '', action: 'end', sequence_id: null, tag: '', reply: b.reply };
         const to = next(node.id, `b:${b.id}`);
         if (!to) { /* sin línea: el flujo termina al tocarlo */ }
-        else if (ahead.has(to.id)) btn.action = 'next';
+        else if (ahead.has(to.id)) {
+          btn.action = 'next';
+          const after = steps[i + 1];
+          if (!node.data.wait_for_choice && after && after.delay_value === 0 && !after.at_time) problems.push({ node: node.id, message: `El botón «${label || 'sin texto'}» sigue con el mensaje siguiente, pero ese mensaje sale enseguida: activa «Esperar a que elija».` });
+        }
         else if (to.type === 'message' || to.type === 'wait') { btn.action = 'start_sequence'; btn.target = to.id; want(to.id); }
         else if (to.type === 'action') {
           reached.add(to.id);
@@ -344,7 +377,15 @@ export function compileBoard(board: Board, name: string): CompiledFlow {
       problems.push({ node: n.id, warning: true, message: 'No está conectado al flujo: no se publicará.' });
     }
   }
-  return { rule, main, sequences, problems };
+  // El flujo principal se publica con una clave fija (las ramas, con la de su primer elemento): al cambiar o agregar el
+  // primer mensaje se actualiza el mismo flujo, y quienes van en él no pierden su lugar.
+  if (main) {
+    for (const seq of sequences) {
+      if (seq.key === main) seq.key = MAIN_KEY;
+      for (const st of seq.steps) for (const b of st.buttons) if (b.target === main) b.target = MAIN_KEY;
+    }
+  }
+  return { rule, main: main ? MAIN_KEY : null, sequences, problems };
 }
 
 /** Resumen para la lista de lienzos: cuántos mensajes y botones tiene, y cuándo empieza. */
@@ -355,6 +396,6 @@ export function boardSummary(board: Board) {
     messages: count('message'),
     buttons: board.nodes.reduce((n, x) => n + (x.type === 'message' ? x.data.buttons.length : 0), 0),
     notes: count('note') + count('text') + count('image'),
-    trigger: start?.type === 'trigger' ? start.data.trigger : null,
+    trigger: start?.type === 'trigger' ? completeTrigger(start.data.trigger) : null,
   };
 }

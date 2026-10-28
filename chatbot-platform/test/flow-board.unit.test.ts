@@ -25,7 +25,8 @@ test('la línea principal es un flujo; las esperas se suman como la espera del m
     { id: 'm2', type: 'message', data: { text: 'Seguimiento' } },
   ], [['t', 'out', 'tag'], ['tag', 'out', 'm1'], ['m1', 'out', 'w1'], ['w1', 'out', 'w2'], ['w2', 'out', 'm2']]), 'Promo de verano');
   assert.deepEqual(errors(f), []);
-  assert.equal(f.main, 'm1');
+  assert.equal(f.main, ':main', 'el flujo principal se publica con una clave fija');
+  assert.equal(f.sequences[0].steps[0].node, 'm1');
   assert.deepEqual(f.rule?.actions, [{ type: 'add_tag', tag: 'promo' }], 'las acciones antes del primer mensaje van en la regla');
   assert.equal(f.rule?.stop_ai, true);
   assert.equal(f.sequences.length, 1);
@@ -57,7 +58,7 @@ test('botones: a lo que sigue = seguir ya; a otro mensaje = otra rama; a una acc
   ]);
   assert.equal(buttons[0].reply, 'Va 👇');
   assert.equal(f.sequences[0].steps[0].wait_for_choice, true);
-  assert.deepEqual(f.sequences.map((s) => [s.key, s.name, s.steps.length]), [['m1', 'Menú', 2], ['p1', 'Menú · Lista de precios: …', 1]]);
+  assert.deepEqual(f.sequences.map((s) => [s.key, s.name, s.steps.length]), [[':main', 'Menú', 2], ['p1', 'Menú · Lista de precios: …', 1]]);
   assert.ok(errors(f).some((m) => m.includes('3 botones')), 'cuatro botones de respuesta no se publican');
 });
 
@@ -68,7 +69,7 @@ test('una rama que vuelve al mensaje del menú se repite con un botón (no con l
   ], [['t', 'out', 'm1'], ['m1', 'b:a', 'm1']]), 'Repetir');
   assert.deepEqual(errors(ok), []);
   assert.equal(ok.rule, null, '«lo inicio yo» no crea regla');
-  assert.deepEqual(ok.sequences[0].steps[0].buttons.map((b) => [b.action, b.target]), [['start_sequence', 'm1']]);
+  assert.deepEqual(ok.sequences[0].steps[0].buttons.map((b) => [b.action, b.target]), [['start_sequence', ':main']], 'volver al menú es volver al flujo principal');
 
   const loop = compileBoard(board([
     { id: 't', type: 'trigger', data: { trigger: null } },
@@ -126,4 +127,50 @@ test('el esquema rechaza ids y líneas inválidas y da valores por omisión a ca
   const b = BoardSchema.parse({ nodes: [{ id: 'm', type: 'message', x: 1, y: 2 }, { id: 'n', type: 'note', x: 0, y: 0 }] });
   assert.deepEqual(b.nodes[0], { id: 'm', type: 'message', x: 1, y: 2, data: { text: '', image_id: '', attachment_id: '', photo_hint: '', buttons: [], wait_for_choice: false, if_no_choice: 'end' } });
   assert.deepEqual(b.settings, { stop_on_reply: true, business_hours_only: true });
+});
+
+test('«esperar a que elija» sin una Espera da un día para elegir; un botón «sigue» sin esperar es un pendiente', () => {
+  const nodes = (wait: boolean) => [
+    { id: 't', type: 'trigger', data: keyword(['menu']) },
+    { id: 'm1', type: 'message', data: { text: '¿Qué te interesa?', wait_for_choice: wait, buttons: [{ id: 'a', label: 'Precios' }, { id: 'b', label: 'Horario' }] } },
+    { id: 'm2', type: 'message', data: { text: 'Estos son los precios' } },
+    { id: 'm3', type: 'message', data: { text: 'Abrimos de 9 a 7' } },
+  ];
+  const edges: [string, string, string][] = [['t', 'out', 'm1'], ['m1', 'out', 'm2'], ['m1', 'b:a', 'm2'], ['m1', 'b:b', 'm3']];
+  const waiting = compileBoard(board(nodes(true), edges), 'Menú');
+  assert.deepEqual(errors(waiting), []);
+  const [main] = waiting.sequences;
+  assert.deepEqual([main.steps[1].delay_value, main.steps[1].delay_unit], [1, 'days'], 'el siguiente sale al elegir o, si no elige, en un día');
+  const loose = compileBoard(board(nodes(false), edges), 'Menú');
+  assert.ok(errors(loose).some((m) => m.includes('«Precios» sigue con el mensaje siguiente, pero ese mensaje sale enseguida')));
+  // Con una Espera de por medio, el tiempo para elegir es el de la Espera.
+  const withWait = compileBoard(board([...nodes(true), { id: 'w', type: 'wait', data: { value: 2, unit: 'hours' } }], [['t', 'out', 'm1'], ['m1', 'out', 'w'], ['w', 'out', 'm2'], ['m1', 'b:a', 'm2'], ['m1', 'b:b', 'm3']]), 'Menú');
+  assert.deepEqual([withWait.sequences[0].steps[1].delay_value, withWait.sequences[0].steps[1].delay_unit], [2, 'hours']);
+});
+
+test('las etiquetas de los botones se revisan como al publicar (números, acentos y palabras reservadas)', () => {
+  const f = compileBoard(board([
+    { id: 't', type: 'trigger', data: keyword(['menu']) },
+    { id: 'm1', type: 'message', data: { text: 'Elige', buttons: [{ id: 'a', label: '1' }, { id: 'b', label: 'Sí' }, { id: 'c', label: 'Si' }] } },
+    { id: 'm2', type: 'message', data: { text: 'Otra', buttons: [{ id: 'd', label: '👍' }, { id: 'e', label: 'BAJA' }] } },
+  ], [['t', 'out', 'm1'], ['m1', 'out', 'm2']]), 'Menú', { reserved: ['baja'] });
+  const e = errors(f);
+  assert.ok(e.some((m) => m.includes('«1» no puede ser solo un número')));
+  assert.ok(e.includes('Dos botones no pueden decir lo mismo.'), 'Sí y Si son el mismo botón');
+  assert.ok(e.some((m) => m.includes('«👍» necesita letras o números')));
+  assert.ok(e.some((m) => m.includes('«BAJA» se confunde con la palabra para darse de baja')));
+});
+
+test('un hueco por llenar ([precio]) impide publicar; un texto entre corchetes como [2x1] no', () => {
+  const msg = (text: string) => compileBoard(board([{ id: 't', type: 'trigger', data: keyword(['promo']) }, { id: 'm1', type: 'message', data: { text } }], [['t', 'out', 'm1']]), 'Promo');
+  assert.deepEqual(errors(msg('El corte cuesta [precio de la promo].')), ['Completa lo que está entre corchetes: «[precio de la promo]».']);
+  assert.deepEqual(errors(msg('Promo [2x1] esta semana. [Ver menú] abajo.')), []);
+});
+
+test('un inicio a medio llenar se guarda y queda como pendiente (no se publica la regla)', () => {
+  const b = board([{ id: 't', type: 'trigger', data: { trigger: { type: 'tag_added', tag: '' } } }, { id: 'm1', type: 'message', data: { text: 'Hola' } }], [['t', 'out', 'm1']]);
+  const f = compileBoard(b, 'Etiqueta');
+  assert.deepEqual(errors(f), ['Escribe la etiqueta que inicia el flujo.']);
+  assert.equal(f.rule, null);
+  assert.ok(!BoardSchema.safeParse({ nodes: [{ id: 't', type: 'trigger', x: 0, y: 0, data: { trigger: { type: 'intent', description: 'x'.repeat(301) } } }] }).success, 'los textos siguen teniendo su límite');
 });

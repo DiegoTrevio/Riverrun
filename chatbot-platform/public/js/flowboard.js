@@ -170,6 +170,8 @@ export async function viewFlowBoards(root) {
     steps: AI_STEPS,
     onSubmit: async ({ idea, file }) => {
       const r = await requestDesign({ url: withAcct('/api/flow-boards/ai'), idea, file });
+      // Si ya se fue de esta página, no se crea ni se le lleva al flujo.
+      if (!root.isConnected) return;
       const b = await api('POST', '/api/flow-boards', { name: r.name, board: r.board, account_id: state.accountId || undefined });
       try { sessionStorage.setItem(`fb-ai:${b.id}`, JSON.stringify({ summary: r.summary, review: r.review })); } catch { /* sin almacenamiento */ }
       location.hash = `#/automation/lienzo/${b.id}?ordenar=1&ia=1`;
@@ -320,6 +322,8 @@ export async function viewFlowBoard(root, id) {
     if (n.type === 'trigger') return n.data.trigger ? triggerSummary(n.data.trigger) : 'Lo inicias tú';
     return clip(n.data.text || n.data.caption, 40) || KINDS[n.type].label;
   };
+  /** Sin una Espera después, «esperar a que elija» le da un día (así se publica); con Espera, el tiempo es el de ella. */
+  const choiceWindow = (n) => { const e = edgeFrom(n.id); const t = e && byId(e.to); return t && t.type !== 'wait' ? ' (hasta 1 día)' : ''; };
   /** A dónde lleva el botón de un mensaje, en palabras cortas para el lienzo. */
   const buttonDest = (n, b) => {
     const e = edgeFrom(n.id, `b:${b.id}`);
@@ -383,7 +387,10 @@ export async function viewFlowBoard(root, id) {
         refreshProblems();
       } catch (e) {
         if (e.status === 409) { S.conflict = true; setSave('conflict'); }
-        else { S.dirty = true; setSave('error', e.message); }
+        else {
+          if (S.saveState !== 'error') toast(`No se guardó el lienzo: ${e.message}`, true);
+          S.dirty = true; setSave('error', e.message);
+        }
       }
     });
     return chain;
@@ -448,7 +455,7 @@ export async function viewFlowBoard(root, id) {
         onclick: () => addFromPalette(SPECS[key]),
         onpointerdown: (e) => paletteDrag(e, key, label, iconName),
       }, h('span', { class: `fb-tile t-${toneOf(key)}`, 'aria-hidden': 'true' }, icon(iconName, 16)), h('span', { class: 'fb-pal-label' }, label), h('span', { class: 'fb-pal-grip', 'aria-hidden': 'true' }, icon('grip', 14)))))),
-    h('p', { class: 'fb-pal-tip small muted' }, 'Arrastra al lienzo, o toca para agregarlo después de lo que tengas elegido.'));
+    h('p', { class: 'fb-pal-tip small muted' }, 'Arrastra al lienzo, o toca para agregarlo después de lo que tengas elegido (o al final del flujo).'));
 
   const markers = s('defs');
   for (const [mid, cls] of [['fb-arrow', 'fb-arrow'], ['fb-arrow-on', 'fb-arrow on']]) {
@@ -639,7 +646,7 @@ export async function viewFlowBoard(root, id) {
             return h('div', { class: 'fb-btn' }, h('span', { class: 'fb-btn-label' }, b.label || 'Botón sin texto'), h('span', { class: `fb-btn-dest d-${dest.replace(' ', '-')}` }, dest),
               h('span', { class: `fb-port opt${edgeFrom(n.id, `b:${b.id}`) ? ' on' : ''}`, 'data-port': `b:${b.id}`, title: `Arrastra para decir qué pasa al tocar «${b.label}»` }));
           })) : null,
-          replies.length && d.wait_for_choice ? h('p', { class: 'fb-sub' }, d.if_no_choice === 'end' ? 'Espera a que elija; si no elige, termina' : 'Espera a que elija; si no, sigue') : null),
+          replies.length && d.wait_for_choice ? h('p', { class: 'fb-sub' }, `Espera a que elija${choiceWindow(n)}; ${d.if_no_choice === 'end' ? 'si no elige, termina' : 'si no, sigue'}`) : null),
         outPort(n));
     } else if (n.type === 'wait') {
       kids.push(head(n, 'Espera'), h('div', { class: 'fb-node-body fb-wait' }, h('strong', {}, waitWords(d)), d.at_time ? h('span', { class: 'fb-sub' }, `y a las ${d.at_time}`) : null), outPort(n));
@@ -768,9 +775,17 @@ export async function viewFlowBoard(root, id) {
     if (to) S.board.edges.push({ id: newId('e'), from, port, to });
   }
   /** Agrega lo nuevo después de lo elegido (y lo une); si no hay nada elegido, en el centro de la vista. */
+  /** El último elemento de la línea principal (donde se sigue escribiendo el flujo). */
+  function mainTail() {
+    let cur = S.board.nodes.find((n) => n.type === 'trigger');
+    for (let guard = 0, e = cur && edgeFrom(cur.id); e && guard < 300; guard++, e = edgeFrom(cur.id)) { const nx = byId(e.to); if (!nx || nx === cur) break; cur = nx; }
+    return cur;
+  }
   function addFromPalette(make, at) {
     const spec = make();
-    const sel = S.sel.size === 1 ? byId([...S.sel][0]) : null;
+    const picked = S.sel.size === 1 ? byId([...S.sel][0]) : null;
+    const tail = !picked && !at && FLOW.has(spec.type) ? mainTail() : null;
+    const sel = picked ?? (tail && !edgeFrom(tail.id) ? tail : null);
     let n;
     if (!at && canChain(sel) && FLOW.has(spec.type)) {
       const g = sizeOf(sel);
@@ -827,7 +842,7 @@ export async function viewFlowBoard(root, id) {
 
   /* ---------- Ordenar ---------- */
 
-  function tidy({ record = true } = {}) {
+  function tidy({ record = true, notes = true } = {}) {
     const t = S.board.nodes.find((n) => n.type === 'trigger');
     if (!t) return;
     measure();
@@ -854,7 +869,7 @@ export async function viewFlowBoard(root, id) {
     walk(t.id, 0, t.y);
     // Las notas y fotos de la pizarra quedan en una columna a la izquierda de la línea principal.
     let ny = t.y;
-    for (const n of S.board.nodes.filter((x) => BOARD_ONLY.has(x.type))) { n.x = t.x - sizeOf(n).w - 72; n.y = ny; ny += sizeOf(n).h + 24; }
+    if (notes) for (const n of S.board.nodes.filter((x) => BOARD_ONLY.has(x.type))) { n.x = t.x - sizeOf(n).w - 72; n.y = ny; ny += sizeOf(n).h + 24; }
     if (record) commit(); else { last = snap(); scheduleSave(); refresh(); }
     fit({ readable: true });
   }
@@ -1212,6 +1227,8 @@ export async function viewFlowBoard(root, id) {
     try {
       await flush();
       if (S.conflict) return;
+      // Si el último cambio no llegó al servidor, publicar mandaría la versión anterior.
+      if (S.dirty || S.saveState === 'error') { toast('Tu último cambio no se guardó, así que aún no se publica. Revisa tu conexión y toca «Reintentar».', true); return; }
       const r = await api('POST', `/api/flow-boards/${id}/publish`, { revision: S.revision });
       S.published_revision = r.published_revision; S.published_at = r.published_at; S.problems = r.problems; S.pending = false;
       refreshProblems();
@@ -1272,10 +1289,15 @@ export async function viewFlowBoard(root, id) {
       submit: 'Hacer el cambio',
       steps: AI_STEPS,
       onSubmit: async ({ idea, file }) => {
+        const sent = snap();
         const r = await requestDesign({ url: inAcct('/api/flow-boards/ai'), idea, file, name: S.name, board: { nodes: S.board.nodes, edges: S.board.edges, settings: S.board.settings } });
+        if (!editor.isConnected) return;
+        // Si se editó el lienzo mientras la IA trabajaba, aplicar su versión borraría esos cambios.
+        if (snap() !== sent) throw new Error('Cambiaste el lienzo mientras la IA trabajaba: vuelve a pedir el cambio para no perder lo que hiciste.');
         applyAi(r);
         composer.reset();
         show(r, true);
+        if (!composer.el.isConnected) toast('La IA hizo el cambio en el lienzo. Puedes deshacerlo.');
       },
     });
     if (intro?.summary || intro?.review?.length) show(intro, false);
@@ -1288,13 +1310,17 @@ export async function viewFlowBoard(root, id) {
   /** Pone en el lienzo lo que armó la IA y lo ordena; todo queda como un solo paso de «Deshacer». */
   function applyAi(r) {
     if (r.photo && !files.some((f) => f.id === r.photo.id)) files.unshift(r.photo);
+    const had = new Set(S.board.nodes.filter((n) => FLOW.has(n.type)).map((n) => n.id));
     S.board.nodes = r.board.nodes; S.board.edges = r.board.edges; S.board.settings = r.board.settings;
     S.problems = r.problems ?? S.problems;
     S.sel.clear(); S.edge = null; S.boardPanel = false;
-    const back = S.view;
-    setView('canvas');
-    tidy();
-    if (back !== 'canvas') setView(back);
+    if (S.board.nodes.some((n) => FLOW.has(n.type) && !had.has(n.id))) {
+      // Con elementos nuevos se ordena la línea (con sus medidas reales); las notas se quedan donde las pusiste.
+      const back = S.view;
+      setView('canvas');
+      tidy({ notes: false });
+      if (back !== 'canvas') setView(back);
+    } else commit();
     aiLast = last;
     refreshProblems();
     renderInspector();
@@ -1317,7 +1343,7 @@ export async function viewFlowBoard(root, id) {
     const warnings = S.problems.filter((p) => p.warning);
     const item = (p) => {
       const n = byId(p.node);
-      return h('li', {}, h('button', { type: 'button', class: `fb-problem${p.warning ? ' warn' : ''}`, disabled: !n, onclick: () => { if (S.view === 'canvas') centerOn(n); pick([n.id], { focus: true }); } },
+      return h('li', {}, h('button', { type: 'button', class: `fb-problem${p.warning ? ' warn' : ''}`, disabled: !n, onclick: () => { closePanel(); if (S.view === 'canvas') centerOn(n); pick([n.id], { focus: true }); } },
         h('span', { class: 'fb-problem-what' }, n ? `${kindLabel(n)} · ${describe(n)}` : 'El flujo'),
         h('span', {}, p.message)));
     };
@@ -1392,7 +1418,7 @@ export async function viewFlowBoard(root, id) {
     } else if (n.type === 'action') actionForm(body, n);
     else if (n.type === 'note') {
       body.append(
-        field('Nota', area(d, 'text', { rows: 6, placeholder: 'Una idea, un pendiente o un recordatorio para tu equipo' }), 'Las notas no se publican: solo viven en el lienzo. También puedes escribir directo en ella con doble clic.'),
+        field('Nota', area(d, 'text', { rows: 6, maxlength: 2000, placeholder: 'Una idea, un pendiente o un recordatorio para tu equipo' }), 'Las notas no se publican: solo viven en el lienzo. También puedes escribir directo en ella con doble clic.'),
         h('fieldset', { class: 'field' }, h('legend', {}, 'Color'), h('div', { class: 'fb-swatches' }, NOTE_COLORS.map(([c, label]) => h('label', { class: `fb-swatch c-${c}`, title: label },
           h('input', { type: 'radio', name: `note-color-${n.id}`, value: c, checked: d.color === c, onchange: () => { d.color = c; } }), h('span', { class: 'sr-only' }, label))))));
     } else if (n.type === 'text') {
@@ -1457,11 +1483,11 @@ export async function viewFlowBoard(root, id) {
         field('Cómo coincide', select(t, 'match', [['keywords', 'Contiene alguna de estas palabras'], ['exact', 'Es exactamente una de ellas'], ['contains', 'Contiene el texto en cualquier parte'], ['any', 'Cualquier mensaje']], () => commit({ inspector: true }))),
         t.match !== 'any' ? field('Palabras o frases', lines(t, 'keywords', { placeholder: 'promo\npromoción\nquiero la oferta' }), 'Una por renglón. No distingue mayúsculas ni acentos.') : null,
         toggle(t, 'first_message_only', 'Solo si es su primer mensaje'));
-    } else if (t?.type === 'intent') body.append(field('Nombre corto de la intención', text(t, 'intent', { placeholder: 'quiere_cotizar' })), field('Cómo la reconoce la IA', area(t, 'description', { rows: 3, placeholder: 'El cliente pide precio o cotización de un servicio' })));
-    else if (t?.type === 'tag_added') body.append(field('Etiqueta', text(t, 'tag', { placeholder: 'interesado' })));
+    } else if (t?.type === 'intent') body.append(field('Nombre corto de la intención', text(t, 'intent', { maxlength: 60, placeholder: 'quiere_cotizar' })), field('Cómo la reconoce la IA', area(t, 'description', { rows: 3, maxlength: 300, placeholder: 'El cliente pide precio o cotización de un servicio' })));
+    else if (t?.type === 'tag_added') body.append(field('Etiqueta', text(t, 'tag', { maxlength: 60, placeholder: 'interesado' })));
     else if (t?.type === 'no_reply') body.append(field('Minutos sin respuesta', h('input', { type: 'number', min: 1, value: t.minutes, oninput: (e) => { t.minutes = Math.max(1, Math.round(Number(e.target.value) || 1)); } }), '60 = 1 hora · 1440 = 1 día. Cuenta desde nuestro último mensaje.'));
     else if (t?.type === 'appointment_booked') body.append(field('Servicio', select(t, 'service_id', [['', 'Cualquiera'], ...services.map((x) => [x.id, x.name])])));
-    else if (t?.type === 'data_captured') body.append(field('Dato (vacío = cualquiera)', text(t, 'field', { placeholder: 'correo' })));
+    else if (t?.type === 'data_captured') body.append(field('Dato (vacío = cualquiera)', text(t, 'field', { maxlength: 80, placeholder: 'correo' })));
     if (t) {
       const hours = d.conditions.find((c) => c.type === 'business_hours');
       const tagCond = d.conditions.find((c) => c.type === 'has_tag' && !c.negate);
@@ -1486,7 +1512,7 @@ export async function viewFlowBoard(root, id) {
     const d = n.data;
     body.append(field('Qué hace', select(d, 'action', Object.entries(ACTIONS).map(([k, a]) => [k, a.label]), () => commit({ inspector: true }))));
     if (d.action === 'tag') body.append(field('Etiqueta', text(d, 'tag', { placeholder: 'promo', maxlength: 60 }), 'Sirve para filtrar contactos, enviar campañas o iniciar otras reglas.'));
-    else if (d.action === 'alert') body.append(varsField('Aviso para tu equipo', area(d, 'message', { rows: 3, placeholder: '{{cliente}} pidió la promo: "{{mensaje}}"' }), 'alert'), h('p', { class: 'small muted' }, 'Llega al panel y a quienes reciben avisos por WhatsApp. Solo funciona antes del primer mensaje.'));
+    else if (d.action === 'alert') body.append(varsField('Aviso para tu equipo', area(d, 'message', { rows: 3, maxlength: 2000, placeholder: '{{cliente}} pidió la promo: "{{mensaje}}"' }), 'alert'), h('p', { class: 'small muted' }, 'Llega al panel y a quienes reciben avisos por WhatsApp. Solo funciona antes del primer mensaje.'));
     else if (d.action === 'handoff') body.append(field('Motivo (opcional)', text(d, 'reason', { placeholder: 'Quiere apartar', maxlength: 300 }), 'El agente deja de contestar y tu equipo ve el motivo.'));
     else if (d.action === 'flow') {
       const others = sequences.filter((q) => q.board_id !== id);
@@ -1522,10 +1548,10 @@ export async function viewFlowBoard(root, id) {
               h('details', { open: !!b.reply }, h('summary', { class: 'small' }, 'Contestar algo al tocarlo (opcional)'), field('Respuesta', area(b, 'reply', { rows: 2, maxlength: 1000, placeholder: '¡Perfecto! Te cuento…' })))]);
       })),
       h('div', { class: 'row' },
-        h('button', { type: 'button', class: 'small', disabled: replies >= 3, onclick: () => { d.buttons.push({ id: newId('b'), label: '', kind: 'reply', url: '', reply: '' }); commit({ inspector: true }); [...inspector.querySelectorAll('.fb-btn-edit')].at(-1)?.querySelector('input')?.focus(); } }, icon('plus', 14), 'Botón'),
+        h('button', { type: 'button', class: 'small', disabled: replies >= 3, onclick: () => { if (!replies) d.wait_for_choice = true; d.buttons.push({ id: newId('b'), label: '', kind: 'reply', url: '', reply: '' }); commit({ inspector: true }); [...inspector.querySelectorAll('.fb-btn-edit')].at(-1)?.querySelector('input')?.focus(); } }, icon('plus', 14), 'Botón'),
         h('button', { type: 'button', class: 'small', disabled: urls >= 2, onclick: () => { d.buttons.push({ id: newId('b'), label: '', kind: 'url', url: '', reply: '' }); commit({ inspector: true }); [...inspector.querySelectorAll('.fb-btn-edit')].at(-1)?.querySelector('input')?.focus(); } }, icon('link', 14), 'Enlace')),
       replies ? toggle(d, 'wait_for_choice', 'Esperar a que elija antes del mensaje siguiente', () => commit({ inspector: true })) : null,
-      replies && d.wait_for_choice ? field('Si llega la hora y no eligió', select(d, 'if_no_choice', [['end', 'Terminar el flujo'], ['continue', 'Enviar el siguiente de todos modos']])) : null,
+      replies && d.wait_for_choice ? field(choiceWindow(n) ? 'Si en 1 día no elige' : 'Si llega la hora de la espera y no eligió', select(d, 'if_no_choice', [['end', 'Terminar el flujo'], ['continue', 'Enviar el siguiente de todos modos']])) : null,
       destField(n, 'out', 'Después de este mensaje', 'Para esperar antes del siguiente, agrega una Espera.'));
   }
 

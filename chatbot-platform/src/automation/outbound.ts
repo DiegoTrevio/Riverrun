@@ -25,6 +25,11 @@ export interface OutboundOptions {
   source: string;
   /** Mensajes de servicio (recordatorios de cita, confirmaciones): se envían aunque el cliente se haya dado de baja de promociones. */
   transactional?: boolean;
+  /**
+   * Respuesta a lo que el cliente acaba de pedir (un flujo que él empezó, dentro de las 24 h de su último mensaje): no
+   * pide el consentimiento de promociones. Lleva el pie de baja como todo flujo, y las bajas se respetan.
+   */
+  conversational?: boolean;
   /** Enviar aunque una persona esté atendiendo la conversación. */
   allowWhenHuman?: boolean;
   /** Se revisa justo antes de enviar (con la conversación tomada): si devuelve false, ya no se manda (p. ej. la cita se canceló). */
@@ -89,7 +94,8 @@ export class Outbound {
     // Los envíos automáticos también gastan el cupo del plan (los recordatorios y confirmaciones no se cortan).
     if (!o.transactional && ['automation', 'sequence', 'campaign', 'no_reply', 'api'].includes(o.source) && (await messageQuota(conv.account_id)).reached) return { sent: false, reason: 'se alcanzó el límite de mensajes de tu plan' };
     const promotional = !o.transactional && PROMOTIONAL_SOURCES.has(o.source);
-    if (promotional) {
+    const needsConsent = promotional && !o.conversational;
+    if (needsConsent) {
       const st = await astore.getSettings(conv.account_id);
       if (st.consent.require_for_campaigns && !contact.consent_at) return { sent: false, reason: 'el cliente no ha aceptado recibir promociones' };
     }
@@ -192,7 +198,7 @@ export class Outbound {
       if(!latestConv||!latestChannel?.active||latestChannel.account_active===false) blocked='canal o cuenta inactivos';
       else if(latestConv.status==='human'&&!o.allowWhenHuman) blocked='una persona está atendiendo la conversación';
       else if(latestContact?.opted_out&&!o.transactional) blocked='el cliente se dio de baja';
-      else if(promotional&&(await astore.getSettings(conv.account_id)).consent.require_for_campaigns&&!latestContact?.consent_at) blocked='el cliente no ha aceptado recibir promociones';
+      else if(needsConsent&&(await astore.getSettings(conv.account_id)).consent.require_for_campaigns&&!latestContact?.consent_at) blocked='el cliente no ha aceptado recibir promociones';
       else if(o.stillValid&&!(await o.stillValid())) blocked='ya no corresponde enviarlo';
       if(blocked) return false;
       const fresh=await queryOne('SELECT control_version FROM conversations WHERE id=$1',[conv.id]);

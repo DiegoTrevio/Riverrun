@@ -9,18 +9,24 @@ import { config } from './config.js';
  * aquí se aplican tal cual, así que lo que no se pidió queda idéntico, con sus saltos de línea.
  */
 
-export interface PromptUnit { text: string; sep: string }
+/** Un renglón con texto: tal cual (`raw`, con su sangría), sin espacios a los lados (`text`) y lo que lo sigue hasta el próximo (`sep`). */
+export interface PromptUnit { raw: string; text: string; sep: string; pre?: string }
 export type PromptLineState = 'same' | 'changed' | 'removed' | 'new';
 export interface PromptLine { text: string; before?: string; state: PromptLineState }
 
-/** Renglones con texto, cada uno con los saltos de línea que lo siguen (para volver a armar el texto igual). */
+/**
+ * Renglones con texto, cada uno con exactamente lo que lo separa del siguiente (saltos, renglones en blanco con
+ * espacios…); el primero guarda lo que va antes y el último lo que queda al final. Unirlos devuelve el texto idéntico.
+ */
 export function promptUnits(prompt: string): PromptUnit[] {
-  const units: PromptUnit[] = [];
-  for (const m of prompt.replace(/\r/g, '').matchAll(/([^\n]*\S[^\n]*)(\n*)/g)) units.push({ text: m[1].trim(), sep: m[2] });
-  if (units.length) units[units.length - 1].sep = '';
+  const text = prompt.replace(/\r/g, '');
+  const found = [...text.matchAll(/[^\n]*\S[^\n]*/g)];
+  const units = found.map((m, i) => ({ raw: m[0], text: m[0].trim(), sep: text.slice(m.index! + m[0].length, i + 1 < found.length ? found[i + 1].index : text.length) }));
+  if (units.length) (units[0] as PromptUnit).pre = text.slice(0, found[0].index);
   return units;
 }
-export const joinUnits = (units: PromptUnit[]) => units.map((u) => u.text + u.sep).join('').trim();
+export const joinUnits = (units: PromptUnit[]) => (units[0]?.pre ?? '') + units.map((u) => u.raw + u.sep).join('');
+const breaks = (sep: string) => (sep.match(/\n/g) ?? []).length;
 const LIST_ITEM = /^([-*•]|\d+[.)])\s/;
 
 const Op = z.object({
@@ -87,6 +93,10 @@ export function applyPromptOps(units: PromptUnit[], ops: PromptEdit['operations'
       edits.set(o.line, o.op === 'replace' && text ? { op: 'replace', text } : { op: 'remove', text: '' });
     }
   }
+  // Lo que va antes del primer renglón y después del último se conserva tal cual; entre renglones se trabaja con sus saltos.
+  const pre = units[0]?.pre ?? '';
+  const tail = units.at(-1)?.sep ?? '';
+  const inner = units.map((u, i) => ({ ...u, sep: i === n - 1 ? '' : u.sep }));
   const out: PromptUnit[] = [];
   const lines: PromptLine[] = [];
   /** Lo agregado toma el salto que seguía al renglón anterior; entre dos elementos de una lista, un solo salto. */
@@ -94,23 +104,27 @@ export function applyPromptOps(units: PromptUnit[], ops: PromptEdit['operations'
     for (const text of adds.get(at) ?? []) {
       const prev = out.at(-1);
       if (prev) prev.sep = LIST_ITEM.test(prev.text) && LIST_ITEM.test(text) ? '\n' : sep;
-      out.push({ text, sep }); lines.push({ text, state: 'new' });
+      out.push({ raw: text, text, sep }); lines.push({ text, state: 'new' });
     }
   };
   added(0, '\n\n');
-  units.forEach((u, i) => {
+  inner.forEach((u, i) => {
     const e = edits.get(i + 1);
     const sep = u.sep || '\n\n';
     if (e?.op === 'remove') {
       // Si el renglón quitado cerraba un párrafo (o una lista), el anterior se queda con ese salto.
       const prev = out.at(-1);
-      if (prev && u.sep.length > prev.sep.length) prev.sep = u.sep;
+      if (prev && breaks(u.sep) > breaks(prev.sep)) prev.sep = u.sep;
       lines.push({ text: u.text, state: 'removed' });
-    } else if (e?.op === 'replace' && e.text !== u.text) { out.push({ text: e.text, sep }); lines.push({ text: e.text, before: u.text, state: 'changed' }); }
-    else { out.push({ text: u.text, sep }); lines.push({ text: u.text, state: 'same' }); }
+    } else if (e?.op === 'replace' && e.text !== u.text) {
+      // El renglón nuevo conserva la sangría del que sustituye.
+      out.push({ raw: (u.raw.match(/^\s*/)?.[0] ?? '') + e.text, text: e.text, sep: u.sep }); lines.push({ text: e.text, before: u.text, state: 'changed' });
+    } else { out.push({ raw: u.raw, text: u.text, sep: u.sep }); lines.push({ text: u.text, state: 'same' }); }
     added(i + 1, sep);
   });
-  if (out.length) out[out.length - 1].sep = '';
+  if (!out.length) return { prompt: '', lines, changed: lines.some((l) => l.state !== 'same') };
+  out[out.length - 1].sep = tail;
+  out[0].pre = pre;
   return { prompt: joinUnits(out), lines, changed: lines.some((l) => l.state !== 'same') };
 }
 
