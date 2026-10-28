@@ -100,7 +100,7 @@ export async function render() {
     else if (parts[0] === 'accounts') await view('admin', 'viewAccounts', content);
     else if (parts[0] === 'logs') await view('logs', 'viewLogs', content, params);
     else if (parts[0] === 'password') await view('admin', 'viewPassword', content);
-    else if (parts[0] === 'automation') await view('automation', 'viewAutomation', content, parts[1] || 'rules', parts[2]);
+    else if (parts[0] === 'automation') await view('automation', 'viewAutomation', content, parts[1] || 'lienzo', parts[2]);
     else if (parts[0] === 'pipeline') await view('pipeline', 'viewPipeline', content, parts[1], parts[2]);
     else if (parts[0] === 'cotizaciones') await view('quotes', 'viewQuotes', content, parts[1] || 'precios', params);
     else if (parts[0] === 'agenda') await view('agenda', 'viewAgenda', content, parts[1] || 'citas', params);

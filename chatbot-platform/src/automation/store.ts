@@ -133,13 +133,15 @@ export interface Enrollment {
   /** Flujo enviado a un grupo: su campaña y el espacio entre envíos por número. */
   campaign_id: string | null;
   pace_ms: number;
+  /** Lo empezó el cliente (una palabra, ser nuevo, un botón): sus pasos le contestan y no piden consentimiento. */
+  started_by_customer: boolean;
 }
 
-export async function createEnrollment(accountId: string, sequenceId: string, conversationId: string, lastInboundId: number, opts: { campaignId?: string | null; paceMs?: number } = {}) {
+export async function createEnrollment(accountId: string, sequenceId: string, conversationId: string, lastInboundId: number, opts: { campaignId?: string | null; paceMs?: number; byCustomer?: boolean } = {}) {
   return queryOne<Enrollment>(
-    `INSERT INTO sequence_enrollments (account_id, sequence_id, conversation_id, last_inbound_id, campaign_id, pace_ms) VALUES ($1,$2,$3,$4,$5,$6)
+    `INSERT INTO sequence_enrollments (account_id, sequence_id, conversation_id, last_inbound_id, campaign_id, pace_ms, started_by_customer) VALUES ($1,$2,$3,$4,$5,$6,$7)
      ON CONFLICT DO NOTHING RETURNING *`,
-    [accountId, sequenceId, conversationId, lastInboundId, opts.campaignId ?? null, Math.max(0, Math.round(opts.paceMs ?? 0))],
+    [accountId, sequenceId, conversationId, lastInboundId, opts.campaignId ?? null, Math.max(0, Math.round(opts.paceMs ?? 0)), !!opts.byCustomer],
   );
 }
 

@@ -10,6 +10,7 @@ import { discardDraft, draftModel, draftNotice, draftVersion } from './editing.j
 import { importCard, importPreview } from './importer.js';
 import { render } from './main.js';
 import { tabPlayground } from './playground.js';
+import { promptAssistant } from './prompt-assistant.js';
 import { accountName, isSuper } from './session.js';
 
 /* ------------------------------ Chatbot ------------------------------ */
@@ -169,12 +170,26 @@ async function tabInstructions(root, bot) {
   const f = draftModel(`${bot.id}:flow`, bot.flow);
   const warnings = photoWarningsCard(bot);
   if (warnings) root.append(warnings);
+  const promptArea = area(p, 'prompt', { big: true, placeholder: 'Eres Mario, el asistente de Los Trompitos. Atiende de forma amable y breve. Ayuda a hacer pedidos. Pregunta qué quieren ordenar, la cantidad y si pasan a recoger o necesitan entrega. Para entrega, pide nombre y dirección. Haz una pregunta a la vez.' });
+  // Pedir el cambio en palabras: se aplica con el mismo guardado de la página (queda en el historial de versiones).
+  const assistant = promptAssistant({
+    botId: bot.id,
+    getPrompt: () => p.prompt,
+    apply: async (prompt) => {
+      const before = p.prompt;
+      p.prompt = prompt; promptArea.value = prompt;
+      if (await saveBot(bot, { ...m, personality: p, flow: f })) { render(); return true; }
+      p.prompt = before; promptArea.value = before;
+      return false;
+    },
+  });
   root.append(
     h('div', { class: 'card' },
       h('div', { class: 'grid' },
         field('Nombre del agente', text(m, 'name')),
         field('Nombre con el que se presenta (opcional)', text(p, 'assistant_name', { placeholder: 'Mario' }))),
-      field('Cómo debe atender', area(p, 'prompt', { big: true, placeholder: 'Eres Mario, el asistente de Los Trompitos. Atiende de forma amable y breve. Ayuda a hacer pedidos. Pregunta qué quieren ordenar, la cantidad y si pasan a recoger o necesitan entrega. Para entrega, pide nombre y dirección. Haz una pregunta a la vez.' }),
+      assistant,
+      field('Cómo debe atender', promptArea,
         ['Los precios, horarios y productos van en ', h('a', { href: `#/bot/${bot.id}/conocimiento` }, 'Información'), '. Los datos del cliente (nombre, dirección, pedido…) se guardan solos.']),
       field('¿Qué debe lograr? (opcional)', area(f, 'goal', { placeholder: 'Ayudar al cliente a completar su pedido y pasarlo al equipo para confirmarlo.' })),
       h('details', {}, h('summary', { class: 'small' }, 'Clientes que regresan'),

@@ -47,6 +47,10 @@ interface Ctx {
 const MAX_DEPTH = 3;
 /** Tras elegir, el mismo texto escrito otra vez cuenta como repetido (y no se contesta) durante este tiempo. */
 const USED_TYPED_MS = 2 * 60_000;
+/** Disparadores que vienen de algo que hizo el cliente: el flujo que inician le contesta (no pide consentimiento). */
+const CUSTOMER_TRIGGERS = new Set<string | undefined>(['message_received', 'new_contact', 'intent', 'data_captured']);
+/** Mientras el cliente haya escrito en estas horas, un flujo que él empezó le sigue contestando. */
+const CUSTOMER_WINDOW_MS = 24 * 3600_000;
 
 /* ------------------------------ Coincidencias ------------------------------ */
 
@@ -521,7 +525,7 @@ export class Automator {
         ctx.conv.status = 'closed';
         return;
       case 'start_sequence':
-        await this.enroll(a.sequence_id, ctx.conv.id, `regla "${rule.name}"`);
+        await this.enroll(a.sequence_id, ctx.conv.id, `regla "${rule.name}"`, { byCustomer: CUSTOMER_TRIGGERS.has(rule.trigger?.type) });
         return;
       case 'stop_sequences':
         await astore.stopEnrollments(ctx.conv.id, `regla "${rule.name}"`);
@@ -764,7 +768,7 @@ export class Automator {
       case 'start_sequence': {
         if (live) await astore.stopEnrollments(conv.id, `el cliente eligió "${b.label}" (cambió de flujo)`, live.sequence_id);
         if (!b.sequence_id) return;
-        await this.enroll(b.sequence_id, conv.id, `botón "${b.label}"`).catch((err) =>
+        await this.enroll(b.sequence_id, conv.id, `botón "${b.label}"`, { byCustomer: true }).catch((err) =>
           logEvent({ level: 'warn', source: 'engine', message: `Botón "${b.label}": no se pudo empezar el flujo (${err?.message ?? err})`, accountId: conv.account_id, conversationId: conv.id }));
         return;
       }
@@ -905,12 +909,12 @@ export class Automator {
    * espaciados por número). Con `now`, el primer paso se envía en este momento (la campaña ya eligió la hora) y se
    * devuelve si salió.
    */
-  async enroll(sequenceId: string, conversationId: string, by: string, opts: { campaignId?: string; paceMs?: number; now?: boolean } = {}) {
+  async enroll(sequenceId: string, conversationId: string, by: string, opts: { campaignId?: string; paceMs?: number; now?: boolean; byCustomer?: boolean } = {}) {
     const [seq, conv] = await Promise.all([astore.getSequence(sequenceId), store.getConversation(conversationId)]);
     if (!seq || !conv || seq.account_id !== conv.account_id) throw new Error('Secuencia no encontrada');
     if (!seq.active) throw new Error('La secuencia está desactivada');
     const last = await astore.lastInbound(conv.id);
-    const enrollment = await astore.createEnrollment(conv.account_id, seq.id, conv.id, last?.id ?? 0, { campaignId: opts.campaignId, paceMs: opts.paceMs });
+    const enrollment = await astore.createEnrollment(conv.account_id, seq.id, conv.id, last?.id ?? 0, { campaignId: opts.campaignId, paceMs: opts.paceMs, byCustomer: opts.byCustomer });
     if (!enrollment) return null; // ya estaba inscrito
     await logEvent({ level: 'info', source: 'engine', message: `Inscrito en la secuencia "${seq.name}" (${by})`, accountId: conv.account_id, conversationId: conv.id });
     if (opts.now) {
@@ -984,8 +988,10 @@ export class Automator {
     if (step && conditionsMatch(step.conditions, ctx)) {
       let r: OutboundResult;
       try {
+        const lastIn = en.started_by_customer ? await astore.lastInbound(ctx.conv.id) : null;
+        const conversational = !!lastIn && Date.now() - new Date(lastIn.created_at).getTime() < CUSTOMER_WINDOW_MS;
         r = await this.chat.outbound.send(ctx.conv.id, {
-          text: step.text, imageId: step.image_id || undefined, attachmentId: step.attachment_id || undefined, waTemplate: step.wa_template, source: 'sequence', meta: { sequence_id: seq.id, step: payload.step },
+          text: step.text, imageId: step.image_id || undefined, attachmentId: step.attachment_id || undefined, waTemplate: step.wa_template, source: 'sequence', conversational, meta: { sequence_id: seq.id, step: payload.step },
           buttons: step.buttons?.length ? step.buttons : undefined, buttonsFrom: { enrollment_id: en.id, sequence_id: seq.id, step: payload.step },
         });
       } catch (e) {

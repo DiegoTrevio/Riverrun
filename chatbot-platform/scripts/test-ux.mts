@@ -66,6 +66,18 @@ try {
     { delay_value: 1, delay_unit: 'days', text: 'Estos son los detalles de la promoción.' },
     { delay_value: 1, delay_unit: 'days', text: 'Último día de la promoción.' },
   ] })).json().id;
+  // Lienzo de flujos: un inicio por palabra, un mensaje con botones (uno lleva a otra rama), una espera, una nota y una etiqueta.
+  const uxBoard = (await h.authed('POST', '/api/flow-boards', { account_id: h.accountId, name: 'Promo de octubre en el lienzo', board: {
+    nodes: [
+      { id: 't1', type: 'trigger', x: 0, y: 0, data: { trigger: { type: 'message_received', match: 'keywords', keywords: ['promo'] }, stop_ai: true } },
+      { id: 'm1', type: 'message', x: 0, y: 200, data: { text: 'Hola {{nombre}}, ¿te interesa la promoción de octubre?', buttons: [{ id: 'b1', label: 'Sí, me interesa' }, { id: 'b2', label: 'Hablar con alguien' }] } },
+      { id: 'w1', type: 'wait', x: 0, y: 520, data: { value: 1, unit: 'days' } },
+      { id: 'm2', type: 'message', x: 0, y: 660, data: { text: 'Estos son los detalles de la promoción.' } },
+      { id: 'a1', type: 'action', x: 380, y: 200, data: { action: 'handoff' } },
+      { id: 'n1', type: 'note', x: -320, y: 0, data: { text: 'Revisar precios con el equipo', color: 'sky' } },
+    ],
+    edges: [{ id: 'e1', from: 't1', port: 'out', to: 'm1' }, { id: 'e2', from: 'm1', port: 'out', to: 'w1' }, { id: 'e3', from: 'w1', port: 'out', to: 'm2' }, { id: 'e4', from: 'm1', port: 'b:b2', to: 'a1' }],
+  } })).json().id;
   await pool.query(`INSERT INTO messages (conversation_id, direction, sender, type, content, status, meta) VALUES ($1, 'out', 'bot', 'text', $2, 'ok', $3)`,
     [conv.id, 'Hola Ana, ¿te interesa la promoción de octubre?', JSON.stringify({ source: 'sequence', buttons: [{ kind: 'reply', label: 'Sí, me interesa', payload: 'rr:abcdef0123:1' }, { kind: 'reply', label: 'No, gracias', payload: 'rr:abcdef0123:2' }, { kind: 'url', label: 'Ver promoción', url: 'https://hotel.test/promo' }] })]);
   await pool.query(`INSERT INTO messages (conversation_id, direction, sender, type, content, status, processed, meta) VALUES ($1, 'in', 'customer', 'text', 'Sí, me interesa', 'ok', true, $2)`, [conv.id, JSON.stringify({ button: 'rr:abcdef0123:1', choice: 'Sí, me interesa' })]);
@@ -109,7 +121,7 @@ try {
     if (role === 'superadmin') await context.addInitScript((id: string) => localStorage.setItem('cp-account', id), h.accountId);
     return context;
   };
-  const routes = ['agentes', `bot/${h.botId}/instrucciones`, `bot/${h.botId}/preguntas`, `bot/${h.botId}/activacion`, `bot/${h.botId}/conocimiento`, `bot/${h.botId}/imagenes`, `bot/${h.botId}/conexiones`, `bot/${h.botId}/probar`, `bot/${h.botId}/conexiones/${h.channelId}`, `bot/${h.botId}/conexiones/${socialNew.id}`, `bot/${h.botId}/conexiones/${socialOn.id}`, 'conversations', `conversation/${conv.id}`, 'agenda', 'agenda/servicios', `agenda/servicios?id=${service.id}`, 'agenda/equipo', 'agenda/enlaces', 'automation/rules', 'automation/rules/new', 'automation/sequences', 'automation/sequences/new', `automation/sequences/${uxFlow}`, 'automation/campaigns', 'automation/campaigns/new', `automation/campaigns/new?flow=${uxFlow}`, 'automation/settings', 'pipeline', 'pipeline/editar/nuevo', 'ajustes', 'integraciones', 'redes', `redes/whatsapp/${waSocial}`, 'comentarios', 'comentarios?tipo=review', 'publicaciones', `publicaciones?vista=calendario&mes=${uxMonth}`, 'publicaciones/nueva', `publicaciones/${pubA}`, 'users', 'consumo', 'logs', 'plan', 'cobros', 'cobros?tab=recurrentes', 'cobros?tab=ajustes', 'datos-clientes', 'contacts', 'estadisticas', 'estadisticas/redes', 'notifications', 'notifications?grupo=handoff', 'password', 'inicio', 'agentes/nuevo', `bot/${h.botId}/empezar`];
+  const routes = ['agentes', `bot/${h.botId}/instrucciones`, `bot/${h.botId}/preguntas`, `bot/${h.botId}/activacion`, `bot/${h.botId}/conocimiento`, `bot/${h.botId}/imagenes`, `bot/${h.botId}/conexiones`, `bot/${h.botId}/probar`, `bot/${h.botId}/conexiones/${h.channelId}`, `bot/${h.botId}/conexiones/${socialNew.id}`, `bot/${h.botId}/conexiones/${socialOn.id}`, 'conversations', `conversation/${conv.id}`, 'agenda', 'agenda/servicios', `agenda/servicios?id=${service.id}`, 'agenda/equipo', 'agenda/enlaces', 'automation/lienzo', `automation/lienzo/${uxBoard}`, 'automation/rules', 'automation/rules/new', 'automation/sequences', 'automation/sequences/new', `automation/sequences/${uxFlow}`, 'automation/campaigns', 'automation/campaigns/new', `automation/campaigns/new?flow=${uxFlow}`, 'automation/settings', 'pipeline', 'pipeline/editar/nuevo', 'ajustes', 'integraciones', 'redes', `redes/whatsapp/${waSocial}`, 'comentarios', 'comentarios?tipo=review', 'publicaciones', `publicaciones?vista=calendario&mes=${uxMonth}`, 'publicaciones/nueva', `publicaciones/${pubA}`, 'users', 'consumo', 'logs', 'plan', 'cobros', 'cobros?tab=recurrentes', 'cobros?tab=ajustes', 'datos-clientes', 'contacts', 'estadisticas', 'estadisticas/redes', 'notifications', 'notifications?grupo=handoff', 'password', 'inicio', 'agentes/nuevo', `bot/${h.botId}/empezar`];
   const helpScreens: Record<string, string> = { [`bot/${h.botId}/conocimiento`]: '01-importar.jpg', [`bot/${h.botId}/probar`]: '03-probar.jpg', [`conversation/${conv.id}`]: '05-conversacion.jpg', ajustes: '06-ajustes.jpg' };
   for (const role of ['admin', 'superadmin', 'agent']) {
     const context = await contextFor(role); const page = await context.newPage();
@@ -139,7 +151,7 @@ try {
   console.log('Pantallas examinadas:', results.screens.length);
   for (const width of [320, 390, 768, 1024, 1440]) for (const theme of ['light', 'dark'] as const) {
     const context = await contextFor('admin', { viewport: { width, height: 900 }, colorScheme: theme }); const page = await context.newPage();
-    for (const route of ['agentes', 'agentes/nuevo', `bot/${h.botId}/empezar`, `bot/${h.botId}/instrucciones`, `conversation/${conv.id}`, 'conversations', 'automation/sequences/new', `automation/sequences/${uxFlow}`, `automation/campaigns/new?flow=${uxFlow}`, 'agenda', 'redes', `redes/whatsapp/${waSocial}`, 'comentarios', 'publicaciones', `publicaciones?vista=calendario&mes=${uxMonth}`, 'publicaciones/nueva', 'estadisticas/redes', 'password', 'notifications?grupo=errors', 'automation/settings', 'cobros', 'cobros?tab=recurrentes', 'cobros?tab=ajustes', 'datos-clientes', 'contacts']) {
+    for (const route of ['agentes', 'agentes/nuevo', `bot/${h.botId}/empezar`, `bot/${h.botId}/instrucciones`, `conversation/${conv.id}`, 'conversations', 'automation/lienzo', `automation/lienzo/${uxBoard}`, 'automation/sequences/new', `automation/sequences/${uxFlow}`, `automation/campaigns/new?flow=${uxFlow}`, 'agenda', 'redes', `redes/whatsapp/${waSocial}`, 'comentarios', 'publicaciones', `publicaciones?vista=calendario&mes=${uxMonth}`, 'publicaciones/nueva', 'estadisticas/redes', 'password', 'notifications?grupo=errors', 'automation/settings', 'cobros', 'cobros?tab=recurrentes', 'cobros?tab=ajustes', 'datos-clientes', 'contacts']) {
       await page.goto(`${base}/#/${route}`); await page.locator('.main h1').waitFor(); await page.waitForTimeout(80);
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1);
       results.responsive.push({ width, theme, route, overflow });

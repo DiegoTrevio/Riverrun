@@ -20,7 +20,7 @@ import { localParts, zonedToUtc } from '../automation/time.js';
  * Todo lo que una regla referencia debe ser de la misma cuenta. Con `clearMissing`, una foto que ya se borró se quita de
  * la regla o secuencia (en lugar de impedir guardarla o desactivarla).
  */
-async function checkReferences(
+export async function checkReferences(
   accountId: string,
   body: { chatbot_id?: string | null; actions?: Action[]; steps?: { image_id: string; wa_template?: WaTemplateRef | null; buttons?: FlowButton[] }[]; wa_template?: WaTemplateRef | null },
   opts: { clearMissing?: boolean } = {},
