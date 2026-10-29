@@ -357,7 +357,7 @@ function sendWhenEditor(w, bot) {
 
 /** Lo que acepta la biblioteca: fotos, videos, documentos y audio (el servidor revisa el tipo real del archivo). */
 const LIBRARY_ACCEPT = 'image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm,application/pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.csv,.txt,audio/mpeg,audio/ogg,audio/mp4,audio/wav,.m4a';
-const KIND_ICON = { video: '🎬', document: '📄', audio: '🎵' };
+const KIND_ICON = { video: 'video', document: 'file', audio: 'audio' };
 const KIND_NAME = { image: 'Foto', video: 'Video', document: 'Documento', audio: 'Audio' };
 const mb = (n) => `${(n / 1024 / 1024).toFixed(1)} MB`;
 
@@ -387,7 +387,7 @@ function libraryPreview(img) {
   if (kind === 'image') return h('img', { src, alt: img.name, loading: 'lazy' });
   if (kind === 'video') return h('video', { src, controls: true, preload: 'metadata', 'aria-label': img.name });
   return h('div', { class: 'file-preview', role: 'img', 'aria-label': `${KIND_NAME[kind]}: ${img.file_name || img.name}` },
-    h('span', { class: 'file-icon', 'aria-hidden': 'true' }, KIND_ICON[kind] || '📎'), h('span', { class: 'small' }, img.file_name || img.name, ` · ${mb(img.size_bytes || 0)}`));
+    h('span', { class: 'file-icon', 'aria-hidden': 'true' }, icon(KIND_ICON[kind] || 'paperclip', 36)), h('span', { class: 'small' }, img.file_name || img.name, ` · ${mb(img.size_bytes || 0)}`));
 }
 
 export async function tabImages(root, bot) {

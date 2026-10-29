@@ -209,7 +209,8 @@
           media.style.maxWidth = '100%';
           b.appendChild(media);
         } else {
-          var link = el('a', 'file', '📎 ' + (m.file.name || 'Archivo'));
+          var link = el('a', 'file', m.file.name || 'Archivo');
+          link.insertAdjacentHTML('afterbegin', '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;margin-right:4px"><path d="m20 11.5-8.3 8.3a5 5 0 0 1-7-7L13 4.5a3.4 3.4 0 0 1 4.8 4.8L9.6 17.5a1.8 1.8 0 0 1-2.6-2.6l7.6-7.6"/></svg>');
           link.href = m.file.url;
           link.target = '_blank';
           link.rel = 'noopener';

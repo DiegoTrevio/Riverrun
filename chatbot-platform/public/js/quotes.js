@@ -1,5 +1,5 @@
 import { needAccount } from './admin.js';
-import { api, area, check, confirmAction, dialog, field, fill, fmtDate, h, run, select, text, toast, named } from './core.js';
+import { api, area, check, confirmAction, dialog, field, fill, fmtDate, h, run, select, settingsSection, text, toast, named } from './core.js';
 import { render } from './main.js';
 import { isAdmin, withAcct } from './session.js';
 
@@ -66,8 +66,8 @@ export async function viewQuotes(root, tab = 'precios', params = new URLSearchPa
 
 async function viewPrices(root, editId) {
   const [items, settings] = await Promise.all([api('GET', withAcct('/api/price-items')), api('GET', withAcct('/api/quote-settings'))]);
-  root.append(h('div', { class: 'card' },
-    h('p', { class: 'muted', style: 'margin-top:0' },
+  root.append(h('div', { class: 'page-intro' },
+    h('p', { class: 'muted' },
       'Los conceptos que el asistente puede cotizar. Usa precio exacto cuando ya lo sabes; «desde», rango o «por confirmar» cuando depende de los detalles: ',
       'esas cotizaciones salen como APROXIMADAS. El asistente nunca calcula montos: los totales salen de esta lista.'),
     h('a', { class: 'btn primary', href: '#/cotizaciones/precios?id=new' }, '+ Nuevo concepto')));
@@ -86,7 +86,17 @@ async function viewPrices(root, editId) {
           h('td', {}, unitPrice(i, settings.currency), h('span', { class: 'small muted' }, ` / ${i.unit}`)),
           h('td', { class: 'small' }, IVA_MODE[i.iva_mode]),
           h('td', {}, i.active ? badge(['green', 'Activo']) : badge(['', 'Inactivo']))))))
-    : h('p', { class: 'muted' }, 'Aún no hay conceptos. Agrega los servicios o productos que cotizas.')));
+    // Sin conceptos: la lista vacía enseña cómo se ve cada tipo de precio (ejemplos, en gris y marcados como tales).
+    : [h('p', { style: 'margin-top:0' }, h('strong', {}, 'Aún no hay conceptos. '), 'Agrega los servicios o productos que cotizas; así se verá tu lista:'),
+      h('table', { class: 'example-table' },
+        h('caption', { class: 'sr-only' }, 'Ejemplos de conceptos'),
+        h('thead', {}, h('tr', {}, h('th', {}, 'Concepto (ejemplo)'), h('th', {}, 'Precio'), h('th', {}, 'Cómo sale en la cotización'))),
+        h('tbody', {}, [
+          ['Servicio con precio fijo', '$500.00 / servicio', 'Exacta'],
+          ['Paquete que depende de los detalles', 'desde $1,200.00 / paquete', 'Aproximada'],
+          ['Trabajo con precio variable', '$800.00 – $1,500.00 / trabajo', 'Aproximada'],
+          ['Algo que hay que revisar antes', 'Por confirmar', 'Aproximada'],
+        ].map(([name, price, kind]) => h('tr', {}, h('td', {}, name), h('td', {}, price), h('td', {}, kind)))))]));
 }
 
 function priceForm(existing, settings) {
@@ -222,23 +232,25 @@ async function viewSettings(root) {
     legend_approx: m.legend_approx, legend_final: m.legend_final, folio_prefix: m.folio_prefix,
     business_name: m.business_name, business_phone: m.business_phone, business_email: m.business_email, business_address: m.business_address,
   }), 'Ajustes guardados');
-  root.append(h('div', { class: 'card' },
-    h('div', { class: 'row' },
-      field('IVA (%)', text(m, 'iva', { type: 'number', min: 0, max: 99, step: '0.01', inputmode: 'decimal' })),
-      field('Moneda', text(m, 'currency', { maxlength: 3, placeholder: 'MXN' })),
-      field('Vigencia (días)', text(m, 'validity_days', { type: 'number', min: 1, max: 365 })),
-      field('Prefijo del folio', text(m, 'folio_prefix', { maxlength: 12 }), `Siguiente folio: ${s.folio_prefix}${String(s.next_folio).padStart(4, '0')}`)),
-    check(m, 'prices_include_iva', 'Los precios que escribo ya incluyen IVA (valor inicial de los conceptos nuevos)'),
-    field('Leyenda de cotización APROXIMADA', area(m, 'legend_approx', { maxlength: 500 }), 'Se imprime en el archivo con {{leyenda}}. El asistente también aclara en el chat que es aproximada.'),
-    field('Leyenda de cotización FINAL', area(m, 'legend_final', { maxlength: 500 })),
-    h('h2', {}, 'Datos del negocio en la cotización'),
-    h('p', { class: 'small muted' }, 'Se imprimen donde tu formato tenga {{negocio.nombre}}, {{negocio.telefono}}, {{negocio.correo}} y {{negocio.direccion}}.'),
-    h('div', { class: 'row' },
-      field('Nombre del negocio', text(m, 'business_name', { maxlength: 300, placeholder: 'Si lo dejas vacío, se usa el nombre del perfil' })),
-      field('Teléfono', text(m, 'business_phone', { maxlength: 300, type: 'tel' })),
-      field('Correo', text(m, 'business_email', { maxlength: 300, type: 'email' }))),
-    field('Dirección', text(m, 'business_address', { maxlength: 300 })),
-    h('button', { class: 'primary', onclick: save }, 'Guardar ajustes')));
+  // Tres secciones en dos columnas (qué es, a la izquierda; sus campos, a la derecha) y un solo «Guardar ajustes».
+  root.append(
+    settingsSection('Montos y folios', 'Lo que se aplica a cada cotización nueva: el impuesto, la moneda, cuántos días vale y cómo se numera.',
+      h('div', { class: 'row' },
+        field('IVA (%)', text(m, 'iva', { type: 'number', min: 0, max: 99, step: '0.01', inputmode: 'decimal' })),
+        field('Moneda', text(m, 'currency', { maxlength: 3, placeholder: 'MXN' })),
+        field('Vigencia (días)', text(m, 'validity_days', { type: 'number', min: 1, max: 365 })),
+        field('Prefijo del folio', text(m, 'folio_prefix', { maxlength: 12 }), `Siguiente folio: ${s.folio_prefix}${String(s.next_folio).padStart(4, '0')}`)),
+      check(m, 'prices_include_iva', 'Los precios que escribo ya incluyen IVA (valor inicial de los conceptos nuevos)')),
+    settingsSection('Leyendas', 'El texto que aclara al cliente si la cotización es aproximada o final.',
+      field('Leyenda de cotización APROXIMADA', area(m, 'legend_approx', { maxlength: 500 }), 'Se imprime en el archivo con {{leyenda}}. El asistente también aclara en el chat que es aproximada.'),
+      field('Leyenda de cotización FINAL', area(m, 'legend_final', { maxlength: 500 }))),
+    settingsSection('Datos del negocio en la cotización', 'Se imprimen donde tu formato tenga {{negocio.nombre}}, {{negocio.telefono}}, {{negocio.correo}} y {{negocio.direccion}}.',
+      h('div', { class: 'row' },
+        field('Nombre del negocio', text(m, 'business_name', { maxlength: 300, placeholder: 'Si lo dejas vacío, se usa el nombre del perfil' })),
+        field('Teléfono', text(m, 'business_phone', { maxlength: 300, type: 'tel' })),
+        field('Correo', text(m, 'business_email', { maxlength: 300, type: 'email' }))),
+      field('Dirección', text(m, 'business_address', { maxlength: 300 }))),
+    h('div', { class: 'settings-actions' }, h('button', { class: 'primary', onclick: save }, 'Guardar ajustes')));
 }
 
 /* ------------------------------ Historial ------------------------------ */

@@ -71,9 +71,9 @@ function agentPanel(b, s, mine) {
       : h('p', { class: 'agent-panel-note muted', style: 'margin-top:16px' }, 'Todavía no tiene teléfono ni canales. ', h('a', { href: `#/bot/${b.id}/empezar` }, 'Conectar mi WhatsApp')),
     h('div', { class: 'agent-panel-foot' },
       h('a', { class: 'btn small', href: `#/bot/${b.id}/instrucciones` }, 'Configurar'),
-      h('a', { class: 'btn small', href: `#/bot/${b.id}/probar` }, 'Probar'),
-      h('a', { class: 'btn small', href: `#/conversations?chatbot_id=${b.id}` }, 'Conversaciones'),
-      h('a', { class: 'btn small', href: `#/bot/${b.id}/conexiones?new=1` }, 'Conectar otro canal')));
+      h('a', { class: 'btn small ghost', href: `#/bot/${b.id}/probar` }, 'Probar'),
+      h('a', { class: 'btn small ghost', href: `#/conversations?chatbot_id=${b.id}` }, 'Conversaciones'),
+      h('a', { class: 'btn small ghost', href: `#/bot/${b.id}/conexiones?new=1` }, 'Conectar otro canal')));
 }
 
 /** Cola de la derecha: quienes esperan a una persona, la espera más larga primero, con «Atender» a un clic. */

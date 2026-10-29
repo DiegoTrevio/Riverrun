@@ -1,5 +1,5 @@
 import { varsField } from './vars-help.js';
-import { api, area, check, confirmAction, dialog, field, fill, fmtDate, h, run, state, text, toast } from './core.js';
+import { api, area, check, confirmAction, dialog, field, fill, fmtDate, h, run, settingsSection, state, text, toast } from './core.js';
 import { isAdmin, withAcct } from './session.js';
 import { waTemplateField } from './wa-template-field.js';
 
@@ -22,12 +22,13 @@ const WEEKDAYS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes
 export async function viewReceivables(root, params) {
   const tab = params.get('tab') === 'ajustes' && isAdmin() ? 'ajustes' : params.get('tab') === 'recurrentes' ? 'recurrentes' : 'lista';
   root.append(
-    h('div', { class: 'row between' }, h('h1', {}, 'Cobros'),
-      h('nav', { class: 'row', 'aria-label': 'Secciones de cobros' },
-        h('a', { class: `btn${tab === 'lista' ? ' primary' : ''}`, href: '#/cobros', 'aria-current': tab === 'lista' ? 'page' : null }, 'Cobros'),
-        h('a', { class: `btn${tab === 'recurrentes' ? ' primary' : ''}`, href: '#/cobros?tab=recurrentes', 'aria-current': tab === 'recurrentes' ? 'page' : null }, 'Recurrentes'),
-        isAdmin() ? h('a', { class: `btn${tab === 'ajustes' ? ' primary' : ''}`, href: '#/cobros?tab=ajustes', 'aria-current': tab === 'ajustes' ? 'page' : null }, 'Ajustes de cobro') : null)),
-    h('p', { class: 'help' }, 'Registra lo que te deben tus clientes y el asistente les recuerda el pago por WhatsApp antes y después de la fecha. El dinero te llega directo con tus instrucciones de pago; tú marcas el cobro como pagado.'),
+    h('h1', {}, 'Cobros'),
+    h('p', { class: 'help', style: 'margin:0 0 16px;max-width:760px' }, 'Registra lo que te deben tus clientes y el asistente les recuerda el pago por WhatsApp antes y después de la fecha. El dinero te llega directo con tus instrucciones de pago; tú marcas el cobro como pagado.'),
+    // Las secciones como pestañas subrayadas, igual que en el resto del panel.
+    h('nav', { class: 'tabs', 'aria-label': 'Secciones de cobros' },
+      h('a', { class: tab === 'lista' ? 'active' : '', href: '#/cobros', 'aria-current': tab === 'lista' ? 'page' : null }, 'Cobros'),
+      h('a', { class: tab === 'recurrentes' ? 'active' : '', href: '#/cobros?tab=recurrentes', 'aria-current': tab === 'recurrentes' ? 'page' : null }, 'Recurrentes'),
+      isAdmin() ? h('a', { class: tab === 'ajustes' ? 'active' : '', href: '#/cobros?tab=ajustes', 'aria-current': tab === 'ajustes' ? 'page' : null }, 'Ajustes de cobro') : null),
   );
   if (tab === 'ajustes') return settingsView(root);
   if (tab === 'recurrentes') return plansView(root, params);
@@ -60,10 +61,12 @@ async function listView(root, params) {
 function totalsBlock(totals) {
   if (!totals.length) return null;
   const sum = (k) => totals.map((t) => money(t[k], t.currency)).join(' · ');
-  return h('div', { class: 'grid', style: 'margin-bottom:12px' },
-    h('div', { class: 'card' }, h('div', { class: 'kpi' }, sum('pending_cents')), h('div', { class: 'muted small' }, 'Por cobrar')),
-    h('div', { class: 'card' }, h('div', { class: 'kpi' }, sum('overdue_cents')), h('div', { class: 'muted small' }, 'Vencido')),
-    h('div', { class: 'card' }, h('div', { class: 'kpi' }, sum('paid_month_cents')), h('div', { class: 'muted small' }, 'Cobrado este mes')));
+  // Una franja dividida: la etiqueta arriba y la cifra debajo; lo vencido en rojo solo cuando hay algo vencido.
+  const overdue = totals.some((t) => t.overdue_cents > 0);
+  return h('div', { class: 'card kpi-card' }, h('div', { class: 'kpi-strip' },
+    h('div', {}, h('span', { class: 'label' }, 'Por cobrar'), h('span', { class: 'value' }, sum('pending_cents'))),
+    h('div', {}, h('span', { class: 'label' }, 'Vencido'), h('span', { class: `value${overdue ? ' alert' : ''}` }, sum('overdue_cents'))),
+    h('div', {}, h('span', { class: 'label' }, 'Cobrado este mes'), h('span', { class: 'value' }, sum('paid_month_cents')))));
 }
 
 function table(r, reload) {
@@ -91,13 +94,13 @@ function table(r, reload) {
             const note = h('input', { placeholder: 'Opcional: cómo pagó, folio de la transferencia…' });
             if (!(await dialog(`¿Marcar «${x.concept}» como pagado?`, field('Nota', note), 'Marcar pagado'))) return;
             if (await run(() => api('POST', `/api/receivables/${x.id}/paid`, { note: note.value }), 'Cobro marcado como pagado')) reload();
-          }, 'primary', x.concept),
-          act('Recordar ahora', async () => { if (await run(() => api('POST', `/api/receivables/${x.id}/remind`), 'Recordatorio enviado')) reload(); }, '', x.concept),
-          act('Editar', () => editDialog(x, reload), '', x.concept),
+          }, 'small', x.concept),
+          act('Recordar ahora', async () => { if (await run(() => api('POST', `/api/receivables/${x.id}/remind`), 'Recordatorio enviado')) reload(); }, 'small ghost', x.concept),
+          act('Editar', () => editDialog(x, reload), 'small ghost', x.concept),
           act('Cancelar', async () => {
             if (!(await confirmAction(`¿Cancelar el cobro «${x.concept}»? Ya no se le recordará al cliente.`))) return;
             if (await run(() => api('POST', `/api/receivables/${x.id}/cancel`), 'Cobro cancelado')) reload();
-          }, '', x.concept)) : null));
+          }, 'small ghost danger', x.concept)) : null));
     }))));
 }
 
@@ -188,25 +191,22 @@ async function settingsView(root) {
   const showDays = () => { const d = parseDays(days.text); preview.textContent = d ? `Se recuerda: ${daysText(d)}.` : 'Revisa los días: números enteros separados por comas.'; };
   showDays();
   root.append(
-    h('section', { class: 'card', 'aria-labelledby': 'pay-how' },
-      h('h2', { id: 'pay-how', style: 'margin-top:0' }, 'Cómo te pagan'),
+    // Cada parte en dos columnas (qué es, a la izquierda; sus controles, a la derecha) y un solo «Guardar» al final.
+    settingsSection('Cómo te pagan', 'Lo que el cliente necesita para pagarte: una cuenta, un enlace de pago o ambos.',
       field('Instrucciones de pago', area(s, 'payment_instructions', { rows: 4, placeholder: 'Transferencia a la CLABE 012 180 0012 3456 7890 (Banco, a nombre de…)\nO paga con tarjeta: https://mpago.la/…' }), 'Van en cada recordatorio y el asistente las da si el cliente pregunta cómo pagar.')),
-    h('section', { class: 'card', 'aria-labelledby': 'pay-when' },
-      h('h2', { id: 'pay-when', style: 'margin-top:0' }, 'Cuándo recordar'),
+    settingsSection('Cuándo recordar', 'Los días, antes y después del vencimiento, en que el asistente le escribe al cliente.',
       h('div', { class: 'grid' },
         field('Días de recordatorio', text(days, 'text', { placeholder: '-3, 0, 3, 7', oninput: showDays }), `Negativo = antes del vencimiento, 0 = el día, positivo = después. Hasta ${max}.`),
         field('Hora de envío', h('input', { type: 'time', value: s.send_at, oninput: (e) => { s.send_at = e.target.value; } }), 'En la zona horaria de tu negocio.')),
       preview,
       check(s, 'respect_business_hours', 'Si a esa hora estás cerrado, enviarlo cuando abras'),
       check(s, 'notify_team_on_overdue', 'Avisar al equipo cuando un cobro vence sin pagarse')),
-    h('section', { class: 'card', 'aria-labelledby': 'pay-msg' },
-      h('h2', { id: 'pay-msg', style: 'margin-top:0' }, 'Mensajes'),
-      h('p', { class: 'small muted' }, 'Déjalos vacíos para usar los de siempre. Si el mensaje no trae {{pago.link}}, {{pago.instrucciones}} o {{pago.referencia}}, se agregan al final.'),
+    settingsSection('Mensajes', 'Déjalos vacíos para usar los de siempre. Si el mensaje no trae {{pago.link}}, {{pago.instrucciones}} o {{pago.referencia}}, se agregan al final.',
       varsField('Antes de que venza', area(s, 'message_before', { rows: 3, placeholder: ph.before }), 'payment'),
       varsField('El día que vence', area(s, 'message_due', { rows: 3, placeholder: ph.due }), 'payment'),
       varsField('Después de vencido', area(s, 'message_overdue', { rows: 3, placeholder: ph.overdue }), 'payment'),
       waTemplateField(s, templates)),
-    h('div', { class: 'row' }, h('button', { class: 'primary', onclick: async () => {
+    h('div', { class: 'settings-actions' }, h('button', { class: 'primary', onclick: async () => {
       const d = parseDays(days.text);
       if (!d) return toast('Revisa los días de recordatorio', true);
       if (d.length > max) return toast(`Hasta ${max} recordatorios`, true);

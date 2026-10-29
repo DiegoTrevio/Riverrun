@@ -1,4 +1,4 @@
-import { api, area, check, field, fill, fmtDate, h, run, select, state, text, toast, confirmAction, ask, dialog } from './core.js';
+import { api, area, check, field, fill, fmtDate, h, run, select, settingsSection, state, text, toast, confirmAction, ask, dialog } from './core.js';
 
 /** El título de un aviso sin el emoji con que llega también por WhatsApp (en el panel lo dice el texto). */
 const plainTitle = (t) => String(t || '').replace(/^[\p{Extended_Pictographic}️‍\s]+/u, '');
@@ -247,13 +247,13 @@ const VIA = { password: 'con contraseña', google: 'con Google', invite: 'al ace
 
 /** Mi perfil → dónde está abierta tu cuenta: cerrar una sesión o todas las demás (p. ej. si perdiste un teléfono). */
 function sessionsCard() {
-  const box = h('div', { class: 'card stack', style: 'max-width:720px' }, h('p', { class: 'help', role: 'status' }, 'Cargando sesiones…'));
+  // Va dentro de su sección de Mi perfil: la explicación está en la columna de la izquierda.
+  const box = h('div', { class: 'stack' }, h('p', { class: 'help', role: 'status' }, 'Cargando sesiones…'));
   const draw = async () => {
     const d = await api('GET', '/api/me/sessions').catch((e) => ({ error: e.message }));
     if (d.error) return fill(box, h('p', { class: 'error' }, d.error));
     const others = d.sessions.filter((s) => !s.current);
     fill(box,
-      h('p', { class: 'small muted' }, 'Dónde está abierta tu cuenta. Si no reconoces una, ciérrala y cambia tu contraseña.'),
       d.sessions.length ? h('table', { class: 'responsive-table' },
         h('thead', {}, h('tr', {}, ...['Dispositivo', 'Último uso', 'Inició', ''].map((t) => h('th', {}, t)))),
         h('tbody', {}, ...d.sessions.map((s) => h('tr', {},
@@ -281,33 +281,28 @@ export async function viewPassword(root) {
   // Los avisos son del equipo de una cuenta: el maestro sin cuenta no los recibe.
   const groups = state.me.user.account_id ? await api('GET', '/api/alert-groups').catch(() => null) : null;
   const prefs = structuredClone(state.me.user.alert_prefs || {});
+  // Cada sección con su explicación a la izquierda y su propio «Guardar» abajo a la derecha de su panel.
   root.append(
     h('h1', {}, 'Mi perfil'),
-    h('div', { class: 'card', style: 'max-width:420px' },
+    settingsSection('Tus datos', 'Tu nombre en el panel y el WhatsApp al que te llegan las alertas del equipo.',
       field('Nombre', text(me, 'name')),
       field('WhatsApp para alertas', text(me, 'phone', { placeholder: '5215512345678' })),
       check(me, 'notify_whatsapp', 'Recibir las alertas del equipo por WhatsApp'),
       state.me.user.account_id ? check(me, 'available', 'Estoy disponible: recibir conversaciones asignadas por turnos (desmárcalo si estás fuera de turno)') : null,
       // Al guardar se vuelve a dibujar: «Mis avisos» habilita la columna de WhatsApp en cuanto hay número.
-      h('button', { onclick: async () => { const u = await run(() => api('PUT', '/api/me', me), 'Perfil guardado'); if (u) { state.me.user = { ...state.me.user, ...u }; render(); } } }, 'Guardar perfil')),
-    groups ? [
-      h('h2', {}, 'Mis avisos'),
-      h('div', { class: 'card', style: 'max-width:720px' },
-        h('p', { class: 'small muted' }, 'Elige por dónde te llega cada tipo de aviso. El WhatsApp necesita tu número de arriba con «Recibir las alertas del equipo por WhatsApp» activado. Lo que no cambies sigue como hasta ahora.'),
-        alertPrefsTable(groups, prefs, { noPhone: !(state.me.user.phone && state.me.user.notify_whatsapp) }),
-        h('button', { onclick: async () => { const u = await run(() => api('PUT', '/api/me', { alert_prefs: prefs }), 'Avisos guardados'); if (u) state.me.user = { ...state.me.user, ...u }; } }, 'Guardar avisos')),
-    ] : null,
-    h('h2', {}, 'Sesiones abiertas'),
-    sessionsCard(),
-    h('h2', {}, 'Cambiar contraseña'),
-    h('div', { class: 'card', style: 'max-width:420px' },
+      h('div', { class: 'settings-actions' }, h('button', { onclick: async () => { const u = await run(() => api('PUT', '/api/me', me), 'Perfil guardado'); if (u) { state.me.user = { ...state.me.user, ...u }; render(); } } }, 'Guardar perfil'))),
+    groups ? settingsSection('Mis avisos', 'Elige por dónde te llega cada tipo de aviso. El WhatsApp necesita tu número de arriba con «Recibir las alertas del equipo por WhatsApp» activado. Lo que no cambies sigue como hasta ahora.',
+      alertPrefsTable(groups, prefs, { noPhone: !(state.me.user.phone && state.me.user.notify_whatsapp) }),
+      h('div', { class: 'settings-actions' }, h('button', { onclick: async () => { const u = await run(() => api('PUT', '/api/me', { alert_prefs: prefs }), 'Avisos guardados'); if (u) state.me.user = { ...state.me.user, ...u }; } }, 'Guardar avisos'))) : null,
+    settingsSection('Sesiones abiertas', 'Dónde está abierta tu cuenta. Si no reconoces una, ciérrala y cambia tu contraseña.', sessionsCard()),
+    settingsSection('Cambiar contraseña', 'La que usas para entrar al panel con tu correo.',
       field('Contraseña actual', text(f, 'current', { type: 'password' })),
       field('Nueva contraseña', text(f, 'password', { type: 'password' }), 'Mínimo 8 caracteres. Se cerrarán tus otras sesiones abiertas.'),
       field('Repite la nueva contraseña', text(f, 'confirm', { type: 'password' })),
-      h('button', { class: 'primary', onclick: async () => {
+      h('div', { class: 'settings-actions' }, h('button', { class: 'primary', onclick: async () => {
         if (f.password !== f.confirm) return toast('Las contraseñas no coinciden', true);
         if (await run(() => api('PUT', '/api/me/password', { current: f.current, password: f.password }), 'Contraseña actualizada')) render();
-      } }, 'Guardar')),
+      } }, 'Guardar'))),
   );
 }
 

@@ -2,7 +2,7 @@ import { varsField } from './vars-help.js';
 import { discardDraft, draftModel, draftNotice, draftVersion, initializeDraftDefaults } from './editing.js';
 import { needAccount } from './admin.js';
 import { messageTester, saveBar } from './bot.js';
-import { api, area, check, clone, field, fill, fmtDate, h, dialog, localDateTime, lines, num, run, select, state, text, toast, confirmAction, named } from './core.js';
+import { api, area, check, clone, field, fill, fmtDate, h, dialog, localDateTime, lines, num, run, select, state, text, toast, confirmAction, named, settingsSection } from './core.js';
 import { icon } from './icons.js';
 import { render } from './main.js';
 import { withAcct } from './session.js';
@@ -731,14 +731,11 @@ async function editSettings(root) {
   const team = (await api('GET', withAcct('/api/users')).catch(() => [])).filter((u) => u.account_id && u.active);
   const copy = (v) => h('button', { class: 'small', onclick: async () => { try { await navigator.clipboard.writeText(v); toast('Copiado'); } catch { toast('No se pudo copiar', true); } } }, 'Copiar');
   root.append(
-    h('div', { class: 'card' },
-      h('h2', { style: 'margin-top:0' }, 'Horario del negocio'),
-      h('p', { class: 'small muted' }, 'Formato por día: 09:00-14:00, 16:00-19:00 (vacío = cerrado). Lo usan el asistente (para responder "¿están abiertos?"), la agenda, las secuencias, las campañas y la condición "horario del negocio".'),
+    settingsSection('Horario del negocio', 'Formato por día: 09:00-14:00, 16:00-19:00 (vacío = cerrado). Lo usan el asistente (para responder "¿están abiertos?"), la agenda, las secuencias, las campañas y la condición "horario del negocio".',
       field('Zona horaria', text(s, 'timezone')),
       hoursEditor(s.business_hours),
       field('Días cerrados (festivos)', lines(s, 'holidays', { placeholder: '2026-12-25\n2027-01-01' }), 'Formato AAAA-MM-DD, uno por renglón.')),
-    h('div', { class: 'card' },
-      h('h2', { style: 'margin-top:0' }, 'Bajas (dejar de recibir mensajes)'),
+    settingsSection('Bajas (dejar de recibir mensajes)', 'Quien se da de baja no recibe campañas, secuencias ni mensajes de reglas; sí recibe recordatorios de sus citas.',
       check(s.opt_out, 'enabled', 'Permitir que el cliente se dé de baja escribiendo una palabra'),
       h('div', { class: 'grid' },
         field('Palabras para darse de baja', lines(s.opt_out, 'keywords'), 'El mensaje debe ser exactamente una de ellas.'),
@@ -747,25 +744,21 @@ async function editSettings(root) {
       field('Respuesta al volver', area(s.opt_out, 'resume_message')),
       check(s.opt_out, 'footer_enabled', 'Agregar a cada campaña y secuencia cómo darse de baja (recomendado; muchas leyes lo exigen)'),
       field('Texto del pie', text(s.opt_out, 'footer_text'), '{{palabra_baja}} se reemplaza por la primera palabra de baja de arriba, en mayúsculas.'),
-      h('p', { class: 'small muted' }, 'Quien se da de baja no recibe campañas, secuencias ni mensajes de reglas; sí recibe recordatorios de sus citas.')),
-    h('div', { class: 'card' },
-      h('h2', { style: 'margin-top:0' }, 'Protección del número de WhatsApp'),
+      ),
+    settingsSection('Protección del número de WhatsApp', null,
       field('Tope de mensajes de campaña por número y por día', num(s.sending, 'daily_cap_per_number', { min: 0 }), '0 = sin tope. Lo que no cabe hoy se envía al día siguiente. Para números nuevos, empezar con 50–100 al día reduce el riesgo de bloqueo.')),
-    h('div', { class: 'card' },
-      h('h2', { style: 'margin-top:0' }, 'Consentimiento para promociones'),
+    settingsSection('Consentimiento para promociones', 'Quien escribe una de esas frases queda registrado con fecha. También puedes marcarlo a mano en la ficha de cada cliente. Los mensajes de servicio (respuestas, recordatorios de citas) no necesitan este consentimiento. Los clientes anteriores a esta función quedaron como aceptados.',
       check(s.consent, 'require_for_campaigns', 'Enviar campañas y secuencias solo a quienes aceptaron recibirlas (recomendado)'),
       h('div', { class: 'grid' },
         field('Frases con las que aceptan', lines(s.consent, 'opt_in_keywords'), 'El mensaje debe ser exactamente una de ellas.'),
         field('Respuesta al aceptar', area(s.consent, 'opt_in_message'))),
-      h('p', { class: 'small muted' }, 'Quien escribe una de esas frases queda registrado con fecha. También puedes marcarlo a mano en la ficha de cada cliente. Los mensajes de servicio (respuestas, recordatorios de citas) no necesitan este consentimiento. Los clientes anteriores a esta función quedaron como aceptados.')),
-    h('div', { class: 'card' },
-      h('h2', { style: 'margin-top:0' }, 'Privacidad: cuánto tiempo guardar los datos'),
+      ),
+    settingsSection('Privacidad: cuánto tiempo guardar los datos', 'El borrado es automático (cada pocas horas) y no se puede deshacer; los respaldos antiguos pueden conservar los datos hasta que se renueven. Para atender la solicitud de una sola persona usa "Borrar todos sus datos" en su ficha.',
       h('div', { class: 'grid' },
         field('Borrar mensajes con más de … días', num(s.retention, 'messages_days', { min: 0 }), '0 = conservarlos siempre. También se limpian los resúmenes de esas conversaciones.'),
         field('Borrar contactos sin actividad en … días', num(s.retention, 'inactive_contacts_days', { min: 0 }), '0 = nunca. No se borran contactos con citas futuras.')),
-      h('p', { class: 'small muted' }, 'El borrado es automático (cada pocas horas) y no se puede deshacer; los respaldos antiguos pueden conservar los datos hasta que se renueven. Para atender la solicitud de una sola persona usa "Borrar todos sus datos" en su ficha.')),
-    h('div', { class: 'card' },
-      h('h2', { style: 'margin-top:0' }, 'Reparto de conversaciones por turnos (round robin)'),
+      ),
+    settingsSection('Reparto de conversaciones por turnos (round robin)', 'Cada persona recibe una notificación en el panel (y por WhatsApp si lo tiene activado). Quien esté marcado como "no disponible" se salta sin perder su lugar. También puedes asignar a mano desde cada conversación o con la acción "Asignar a alguien del equipo" en las reglas.',
       check(s.assignment, 'enabled', 'Asignar automáticamente cada conversación que pasa a una persona, una a una, entre el equipo'),
       h('div', { class: 'row' }, [['agent', 'Agentes'], ['admin', 'Administradores']].map(([r, l]) => h('label', { class: 'check' },
         h('input', { type: 'checkbox', checked: s.assignment.roles.includes(r), onchange: (e) => { s.assignment.roles = e.target.checked ? [...s.assignment.roles, r] : s.assignment.roles.filter((x) => x !== r); } }), l))),
@@ -774,11 +767,9 @@ async function editSettings(root) {
           h('input', { type: 'checkbox', checked: s.assignment.user_ids.includes(u.id), onchange: (e) => { s.assignment.user_ids = e.target.checked ? [...s.assignment.user_ids, u.id] : s.assignment.user_ids.filter((x) => x !== u.id); } }),
           u.name || u.email, u.available === false ? ' (no disponible)' : '')))) : null,
       check(s.assignment, 'notify_all', 'Además de la persona asignada, avisar a todo el equipo'),
-      h('p', { class: 'small muted' }, 'Cada persona recibe una notificación en el panel (y por WhatsApp si lo tiene activado). Quien esté marcado como "no disponible" se salta sin perder su lugar. También puedes asignar a mano desde cada conversación o con la acción "Asignar a alguien del equipo" en las reglas.')),
-    h('div', { class: 'card' },
-      h('h2', { style: 'margin-top:0' }, 'Avisos al equipo'),
+      ),
+    settingsSection('Avisos al equipo', 'El aviso llega en el panel y, a quien lo tenga activado, por WhatsApp y correo. Cada persona elige por dónde le llega cada tipo de aviso en Mi perfil → Mis avisos. Si alguien contesta desde el teléfono, no se avisa: ya lo está atendiendo.',
       check(s, 'notify_team_on_handoff', 'Avisar al equipo cuando una conversación pasa a una persona'),
-      h('p', { class: 'small muted' }, 'El aviso llega en el panel y, a quien lo tenga activado, por WhatsApp y correo. Cada persona elige por dónde le llega cada tipo de aviso en Mi perfil → Mis avisos. Si alguien contesta desde el teléfono, no se avisa: ya lo está atendiendo.'),
       h('div', { class: 'grid' },
         field('Repetir «un cliente espera a una persona» cada (minutos)', num(s.alert_timing, 'human_repeat_minutes', { min: 0, max: 1440 }), 'Mientras el cliente siga esperando, durante 24 horas. 0 = recordar una sola vez. El primer recordatorio sale según cada agente (Reglas → recordar a los … minutos).'),
         field('Repetir «el asistente no pudo responder» cada (minutos)', num(s.alert_timing, 'ai_error_repeat_minutes', { min: 10, max: 1440 }), 'Mientras el cliente siga sin respuesta, durante 24 horas.')),
@@ -788,9 +779,7 @@ async function editSettings(root) {
         h('div', { class: 'row' }, team.filter((u) => u.role === 'admin').map((u) => h('label', { class: 'check' },
           h('input', { type: 'checkbox', checked: s.alert_timing.escalate_user_ids.includes(u.id), onchange: (e) => { s.alert_timing.escalate_user_ids = e.target.checked ? [...s.alert_timing.escalate_user_ids, u.id] : s.alert_timing.escalate_user_ids.filter((x) => x !== u.id); } }),
           u.name || u.email)))) : null),
-    h('div', { class: 'card' },
-      h('h2', { style: 'margin-top:0' }, 'Avisos si se desconecta un WhatsApp'),
-      h('p', { class: 'small muted' }, 'La sesión que vinculas con el código QR se conserva aunque se reinicie el servidor. Si se pierde la conexión, se intenta recuperar sola; si no vuelve, se avisa según lo que definas aquí. Si se cerró la sesión desde el teléfono, el aviso dice que hay que volver a escanear el QR.'),
+    settingsSection('Avisos si se desconecta un WhatsApp', 'La sesión que vinculas con el código QR se conserva aunque se reinicie el servidor. Si se pierde la conexión, se intenta recuperar sola; si no vuelve, se avisa según lo que definas aquí. Si se cerró la sesión desde el teléfono, el aviso dice que hay que volver a escanear el QR.',
       check(s.connection_alerts, 'enabled', 'Enviar avisos cuando un WhatsApp se desconecta'),
       h('div', { class: 'grid' },
         field('Avisar después de (minutos)', num(s.connection_alerts, 'after_minutes', { min: 0, max: 1440 }), '0 = de inmediato. Unos minutos evitan avisos por cortes breves que se recuperan solos.'),
@@ -806,8 +795,7 @@ async function editSettings(root) {
         const parts = [r.admins ? `${r.admins} administrador(es)` : '', r.emails ? `${r.emails} correo(s)` : '', r.phones ? `${r.phones} WhatsApp` : ''].filter(Boolean);
         toast(parts.length ? `Alerta de prueba enviada a ${parts.join(', ')}${r.failed.length ? `; no se pudo enviar a ${r.failed.join(', ')}` : ''}` : 'No hay a quién avisar: activa a los administradores o agrega correos o WhatsApp.', !parts.length || r.failed.length > 0);
       } }, 'Enviar alerta de prueba (con lo guardado)')),
-    h('div', { class: 'card' },
-      h('h2', { style: 'margin-top:0' }, 'Integraciones'),
+    settingsSection('Integraciones', null,
       h('p', {}, 'Calendario de citas para Google Calendar / Outlook / Apple (suscribirse por URL):'),
       h('p', {}, h('code', {}, s.ics_url), ' ', copy(s.ics_url)),
       h('p', {}, 'Clave para verificar los webhooks salientes (cabecera ', h('code', {}, 'X-Signature: sha256=HMAC'), '):'),

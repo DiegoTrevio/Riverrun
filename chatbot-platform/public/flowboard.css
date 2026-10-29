@@ -383,6 +383,8 @@
 .ai-file-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ai-examples { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .ai-example { min-height: 32px; padding: 0 12px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); color: var(--text); font-size: 13px; }
+/* Un ejemplo largo baja de línea dentro de su panel en vez de salirse (el Copiloto mide 400px). */
+.copilot .ai-example { max-width: 100%; white-space: normal; text-align: left; padding-top: 5px; padding-bottom: 5px; border-radius: 16px; }
 .ai-example:hover { background: var(--raised); }
 .ai-status { margin: 0; }
 .ai-status:empty { display: none; }
