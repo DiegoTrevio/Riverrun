@@ -26,7 +26,11 @@ export interface Message {
 }
 export interface Link { label: string; href: string }
 /** Lo que ve quien revisa o confirma una acción: lo arma el servidor, nunca el modelo. */
-export interface Preview { title: string; lines: string[]; quote?: string; diff?: { state: 'same' | 'removed' | 'new'; text: string }[]; warning?: string }
+export interface Preview {
+  title: string; lines: string[]; quote?: string; diff?: { state: 'same' | 'removed' | 'new'; text: string }[]; warning?: string;
+  /** Solo para el servidor: cómo estaba el registro al proponer (p. ej. su revisión), para no ejecutar sobre otra versión. */
+  meta?: Record<string, unknown>;
+}
 export interface UndoStep { method: 'POST' | 'PUT' | 'PATCH' | 'DELETE'; url: string; body?: unknown }
 /** Receta para deshacer: comprueba que el registro siga como lo dejó la acción y aplica los pasos inversos. */
 export interface UndoRecipe {

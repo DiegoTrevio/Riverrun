@@ -50,7 +50,7 @@ export async function confirmAction(deps: RunnerDeps, o: { action: cs.Action; us
     await cs.updateAction(action.id, { status: 'failed', error: 'Los datos guardados ya no son válidos' });
     throw new HttpError(409, 'Los datos de la propuesta ya no son válidos; pídela de nuevo');
   }
-  const ctx = await ctxFor(deps, claimed, user, o.cookie, o.ip);
+  const ctx: Ctx = { ...(await ctxFor(deps, claimed, user, o.cookie, o.ip)), proposal: claimed.preview ?? undefined };
   try {
     const r = await def.execute(parsed.data, ctx);
     const title = r.title ?? claimed.title;

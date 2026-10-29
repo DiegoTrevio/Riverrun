@@ -30,3 +30,35 @@ export async function conversation(ctx: Ctx, conversationId: string) {
 }
 
 export const isAdmin = (ctx: Ctx) => ctx.user.role === 'admin' || ctx.user.role === 'superadmin';
+
+/** Un agente de la cuenta (la lectura también descarta los de otra cuenta para el superadmin). */
+export async function botOf(ctx: Ctx, id: string) {
+  const b = await ctx.call.get<any>(path`/api/chatbots/${id}`);
+  if (!b?.id) throw new ToolError('no_encontrado', 'Agente no encontrado');
+  return b;
+}
+
+/** Valor en una ruta con puntos («rules.custom_rules»). */
+export const getPath = (obj: any, p: string): unknown => p.split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj);
+
+/** Objeto parcial a partir de rutas con puntos: { 'rules.x': 1 } → { rules: { x: 1 } }. */
+export function fromPaths(values: Record<string, unknown>): Record<string, any> {
+  const out: Record<string, any> = {};
+  for (const [p, v] of Object.entries(values)) {
+    const keys = p.split('.');
+    let o = out;
+    keys.slice(0, -1).forEach((k) => { o = o[k] ??= {}; });
+    o[keys[keys.length - 1]] = v;
+  }
+  return out;
+}
+
+export const snapshot = (obj: unknown, paths: string[]) => Object.fromEntries(paths.map((p) => [p, getPath(obj, p) ?? null]));
+
+/** Lista con elementos agregados y quitados (sin repetir, sin distinguir mayúsculas al quitar). */
+export function editList(list: string[], add: string[] = [], remove: string[] = []): string[] {
+  const drop = new Set(remove.map((x) => x.trim().toLowerCase()));
+  const kept = list.filter((x) => !drop.has(x.trim().toLowerCase()));
+  for (const x of add) if (!kept.some((k) => k.trim().toLowerCase() === x.trim().toLowerCase())) kept.push(x.trim());
+  return kept;
+}

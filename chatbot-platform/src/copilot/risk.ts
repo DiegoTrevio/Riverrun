@@ -9,7 +9,8 @@ import type { Ctx, RiskInfo, ToolDef, TriggerHint } from './registry.js';
 import { riskInfo } from './registry.js';
 
 /** Acciones de una regla que llegan a clientes u otros sistemas. */
-const OUTWARD = new Set(['send_message', 'start_sequence', 'webhook', 'send_conversation', 'send_report']);
+export const OUTWARD = new Set(['send_message', 'start_sequence', 'webhook', 'send_conversation', 'send_report']);
+const CONFIG_AREAS = new Set(['agente', 'automatizacion', 'cuenta']);
 
 interface RuleRow { name: string; trigger: Record<string, any>; actions: { type: string }[] }
 
@@ -44,7 +45,9 @@ export async function assessRisk(def: ToolDef, args: unknown, ctx: Ctx): Promise
   const reasons = [...base.reasons];
   const rules = def.events ? await outwardRules(ctx.accountId, await def.events(args, ctx)) : [];
   if (rules.length) reasons.push(`Esto activará ${rules.length === 1 ? 'la regla' : 'las reglas'} ${rules.map((n) => `«${n}»`).join(', ')}, que envía${rules.length === 1 ? '' : 'n'} algo al cliente o a otro sistema.`);
-  if (ctx.tainted && def.targets) {
+  // La configuración (agente, automatizaciones, horario) cambia cómo se atiende a todos: tras leer texto de clientes, siempre se confirma.
+  if (ctx.tainted && CONFIG_AREAS.has(def.area)) reasons.push('En este pedido leí mensajes escritos por clientes; confirma este cambio a la configuración.');
+  else if (ctx.tainted && def.targets) {
     const targets = await def.targets(args, ctx);
     const outside = targets.filter((t) => !ctx.scope.has(t.id));
     if (outside.length) reasons.push('En este pedido leí mensajes escritos por clientes; confirma este cambio, que toca registros que no estabas viendo.');

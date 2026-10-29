@@ -26,6 +26,8 @@ export interface Ctx {
   /** Registros que este turno puede cambiar sin confirmación aunque haya leído texto de clientes. */
   scope: Set<string>;
   tainted: boolean;
+  /** Al confirmar: la propuesta que la persona vio (su `meta` dice cómo estaba el registro entonces). */
+  proposal?: Preview;
 }
 
 export interface ExecResult {
