@@ -108,11 +108,19 @@ export function validEmbedding(v: unknown): v is number[] {
 
 export class AiError extends Error {
   notDispatched=false;
+  /** OpenRouter no encontró un proveedor que acepte todos los parámetros pedidos (con `require_parameters`). */
+  unsupportedParameters = false;
   static beforeDispatch(message:string) {const error=new AiError(message);error.notDispatched=true;return error;}
   constructor(message: string, public status?: number, public body?: string, public definiteRejection = true) {
     super(message);
   }
 }
+
+/**
+ * Modelos que OpenRouter no pudo atender con `temperature` (Claude 5, GPT-5 y 6, otros más): en este proceso ya no se les
+ * manda. Se aprende al primer rechazo, sin una lista de nombres que se vuelva vieja.
+ */
+const withoutTemperature = new Set<string>();
 
 /** Modelos de razonamiento (gpt-5*, o1/o3/o4*) no aceptan temperature. */
 function isReasoningModel(model: string) {
@@ -152,7 +160,8 @@ export class OpenAiProvider implements AiProvider {
       messages: req.messages.map(wireMessage),
       [this.provider === 'openrouter' ? 'max_tokens' : 'max_completion_tokens']: req.max_tokens ?? (reasoning ? 6000 : 1200),
     };
-    if (!reasoning && req.temperature !== null && req.temperature !== undefined) body.temperature = req.temperature;
+    const primary = this.model(req.model);
+    if (!reasoning && req.temperature !== null && req.temperature !== undefined && !withoutTemperature.has(primary)) body.temperature = req.temperature;
     // Con herramientas no se pide razonamiento: algunos proveedores exigen reenviarlo junto con cada llamada.
     if (req.reasoning_effort && !tools) {
       if (this.provider === 'openrouter') body.reasoning = { effort: req.reasoning_effort };
@@ -174,7 +183,6 @@ export class OpenAiProvider implements AiProvider {
     }
     // Lista de respaldo: OpenRouter prueba el siguiente modelo si el principal falla, está saturado o rechaza la petición.
     if (this.provider === 'openrouter') {
-      const primary = body.model as string;
       const chosen = req.fallback_models === 'none' ? [] : req.fallback_models?.length ? req.fallback_models : config.openai.fallbackModels;
       const fallbacks = [...new Set(chosen.map((m) => this.model(m)))].filter((m) => m !== primary).slice(0, 2);
       if (fallbacks.length) {
@@ -185,7 +193,17 @@ export class OpenAiProvider implements AiProvider {
       if (req.prompt_cache && [primary, ...fallbacks].every((m) => /^~?anthropic\//.test(m))) body.cache_control = { type: 'ephemeral' };
     }
     const started = Date.now();
-    const res = await this.post('/chat/completions', JSON.stringify(body), { 'content-type': 'application/json' }, { timeoutMs: req.timeout_ms, attempts: req.max_attempts });
+    const send = () => this.post('/chat/completions', JSON.stringify(body), { 'content-type': 'application/json' }, { timeoutMs: req.timeout_ms, attempts: req.max_attempts });
+    let res: Response;
+    try {
+      res = await send();
+    } catch (e) {
+      // Sin un proveedor que acepte `temperature`, OpenRouter rechaza la llamada antes de cobrarla: se repite sin ella.
+      if (!(e instanceof AiError && e.unsupportedParameters && body.temperature !== undefined)) throw e;
+      withoutTemperature.add(primary);
+      delete body.temperature;
+      res = await send();
+    }
     const data: any = await res.json();
     if (data.error) throw new AiError(`${this.label}: el proveedor no pudo generar una respuesta.`, data.error.code, undefined, false);
     const choice = data.choices?.[0];
@@ -271,12 +289,17 @@ export class OpenAiProvider implements AiProvider {
         // El cuerpo se lee aquí, todavía con el tiempo límite: un proveedor que manda los encabezados y luego se queda
         // callado no debe colgar la respuesta. Quien llama recibe la respuesta ya completa.
         if (res.ok) return new Response(await res.arrayBuffer(), { status: res.status, headers: res.headers });
-        await res.text(); // No propagamos respuestas que puedan incluir fragmentos de credenciales.
+        const text = await res.text(); // No propagamos respuestas que puedan incluir fragmentos de credenciales.
         // Reintentar solo errores transitorios.
         if (res.status === 429 || res.status >= 500) {
           lastErr = this.apiError(res.status);
           if (attempt + 1 < maxAttempts) await sleep(800 * 2 ** attempt);
           continue;
+        }
+        if (res.status === 404 && /No endpoints found that can handle the requested parameters/i.test(text)) {
+          const unsupported = new AiError(`${this.label}: el modelo no acepta alguno de los parámetros pedidos (herramientas, JSON Schema o temperatura). Revisa la configuración del modelo.`, 404);
+          unsupported.unsupportedParameters = true;
+          throw unsupported;
         }
         throw this.apiError(res.status);
       } catch (e: any) {

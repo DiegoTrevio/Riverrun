@@ -219,3 +219,41 @@ test('OpenRouter: caché que avanza con la conversación solo si se pide y todos
     assert.equal(seen[0].body.cache_control, undefined, 'OpenAI directo no lo recibe');
   });
 });
+
+test('OpenRouter: un modelo que no acepta temperature se reintenta sin ella una vez y ya no se le manda', async () => {
+  const seen: any[] = [];
+  const server = http.createServer((req, res) => {
+    let raw = '';
+    req.on('data', (c) => { raw += c; });
+    req.on('end', () => {
+      const body = JSON.parse(raw);
+      seen.push(body);
+      // Como OpenRouter con `require_parameters`: el modelo «sin-temperatura» no tiene proveedor que la acepte.
+      if (body.model === 'anthropic/sin-temperatura' && body.temperature !== undefined) {
+        res.writeHead(404, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ error: { message: 'No endpoints found that can handle the requested parameters.', code: 404 } }));
+      }
+      if (body.model === 'anthropic/no-existe') {
+        res.writeHead(404, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ error: { message: 'Model not found', code: 404 } }));
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ model: body.model, choices: [{ message: { content: 'Hola' }, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 1, cost: 0.00001 } }));
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const client = new OpenAiProvider('TEST', `http://127.0.0.1:${(server.address() as any).port}`, 1000, 'openrouter');
+    const ask = (model: string) => client.complete({ model, fallback_models: 'none', temperature: 0.2, tools: [{ name: 'ping', description: 'Ping', parameters: { type: 'object', properties: {} } }], messages: [{ role: 'user', content: 'Hola' }] });
+    assert.equal((await ask('anthropic/sin-temperatura')).content, 'Hola');
+    assert.deepEqual(seen.map((b) => b.temperature), [0.2, undefined], 'se repite sin temperature');
+    await ask('anthropic/sin-temperatura');
+    assert.equal(seen.length, 3, 'la siguiente llamada ya no la manda (una sola petición)');
+    assert.equal(seen[2].temperature, undefined);
+    await ask('anthropic/claude-sonnet-4.5');
+    assert.equal(seen[3].temperature, 0.2, 'los modelos que sí la aceptan la siguen recibiendo');
+    // Otro 404 (modelo que no existe) no se reintenta.
+    await assert.rejects(ask('anthropic/no-existe'), (e: any) => e instanceof AiError && e.status === 404 && !e.unsupportedParameters);
+    assert.equal(seen.length, 5);
+  } finally { await new Promise<void>((resolve) => server.close(() => resolve())); }
+});
