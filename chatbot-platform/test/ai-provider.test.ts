@@ -199,3 +199,23 @@ test('OpenRouter: herramientas — envía tools en formato OpenAI, exige soporte
     await assert.rejects(new OpenAiProvider('TEST', url, 1000, 'openrouter').complete({ model: 'x/y', messages: [] }), /Respuesta vacía/);
   }, () => ({ message: { content: '' }, finish_reason: 'length' }));
 });
+
+test('OpenRouter: caché que avanza con la conversación solo si se pide y todos los modelos son de Anthropic', async () => {
+  await withApi(async (url, seen) => {
+    const client = new OpenAiProvider('TEST', url, 1000, 'openrouter');
+    await client.complete({ model: 'anthropic/claude-sonnet-4.5', fallback_models: 'none', prompt_cache: true, messages: [{ role: 'user', content: 'Hola' }] });
+    assert.deepEqual(seen[0].body.cache_control, { type: 'ephemeral' });
+    await client.complete({ model: 'anthropic/claude-sonnet-4.5', fallback_models: ['anthropic/claude-haiku-4.5'], prompt_cache: true, messages: [{ role: 'user', content: 'Hola' }] });
+    assert.deepEqual(seen[1].body.cache_control, { type: 'ephemeral' }, 'con respaldos de Anthropic también');
+    await client.complete({ model: 'anthropic/claude-sonnet-4.5', fallback_models: ['openai/gpt-4.1'], prompt_cache: true, messages: [{ role: 'user', content: 'Hola' }] });
+    assert.equal(seen[2].body.cache_control, undefined, 'un respaldo de otro proveedor no recibe el campo');
+    await client.complete({ model: 'anthropic/claude-sonnet-4.5', fallback_models: 'none', messages: [{ role: 'user', content: 'Hola' }] });
+    assert.equal(seen[3].body.cache_control, undefined, 'sin pedirlo no se manda (el agente de clientes no cambia)');
+    await client.complete({ model: 'openai/gpt-4.1-mini', fallback_models: 'none', prompt_cache: true, messages: [{ role: 'user', content: 'Hola' }] });
+    assert.equal(seen[4].body.cache_control, undefined);
+  });
+  await withApi(async (url, seen) => {
+    await new OpenAiProvider('TEST', url, 1000, 'openai').complete({ model: 'gpt-4.1', prompt_cache: true, messages: [{ role: 'user', content: 'Hola' }] });
+    assert.equal(seen[0].body.cache_control, undefined, 'OpenAI directo no lo recibe');
+  });
+});

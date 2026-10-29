@@ -189,3 +189,17 @@ t('estadísticas: responde con los números del periodo', async () => {
   const data = lastToolResult();
   assert.ok(data.totales, JSON.stringify(data).slice(0, 300));
 });
+
+t('horarios libres a partir de un día: solo de ese día en adelante, aunque esté a más de dos semanas', async () => {
+  const from = new Date(Date.now() + 20 * 86400_000).toLocaleDateString('en-CA', { timeZone: 'America/Mexico_City' });
+  script([call('horarios_libres', { servicio_id: serviceId, desde: from }), 'Estos son.']);
+  await ask(`¿Qué horarios hay a partir del ${from}?`);
+  // La lista llega recortada para el modelo («… y N más» al final).
+  const slots = (lastToolResult().horarios as any[]).filter((x) => typeof x === 'object');
+  assert.ok(slots.length > 0, 'hay horarios aunque sea a más de 14 días');
+  assert.ok(slots.every((x) => x.horario.slice(0, 10) >= from), JSON.stringify(slots.slice(0, 3)));
+  script([call('horarios_libres', { servicio_id: serviceId, fecha: from }), 'Estos son.']);
+  await ask(`¿Qué horarios hay el ${from}?`);
+  const day = (lastToolResult().horarios as any[]).filter((x) => typeof x === 'object');
+  assert.ok(day.length > 0 && day.every((x) => x.horario.startsWith(from)), 'un día a más de 14 días también tiene horarios');
+});

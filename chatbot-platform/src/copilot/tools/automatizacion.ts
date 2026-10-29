@@ -164,12 +164,24 @@ export const crearRegla = defineTool({
 const CambiarRegla = z.object({ regla_id: Id, ...Object.fromEntries(Object.entries(RuleFields).map(([k, v]) => [k, (v as z.ZodType).optional()])) } as any)
   .refine((a: any) => Object.keys(RuleFields).some((k) => a[k] !== undefined), 'Indica qué cambiar') as unknown as z.ZodType<any>;
 
+/** Lo que ve el modelo: sin repetir el esquema largo de crear_regla (el servidor valida con el completo). */
+const sameAs = (field: string) => `Misma forma que «${field}» en crear_regla`;
+const CambiarReglaParaModelo = z.object({
+  regla_id: Id,
+  ...Object.fromEntries(Object.entries(RuleFields).map(([k, v]) => [k, (v as z.ZodType).optional()])),
+  cuando: z.looseObject({}).optional().describe(sameAs('cuando')),
+  condiciones: z.array(z.looseObject({})).max(10).optional().describe(sameAs('condiciones')),
+  acciones: z.array(z.looseObject({})).min(1).max(10).optional().describe(sameAs('acciones')),
+  activa: z.boolean().optional().describe('false la pausa; true la activa'),
+});
+
 export const cambiarRegla = defineTool({
   name: 'cambiar_regla',
   area: 'automatizacion',
   roles: ['admin'],
   description: 'Cambia una regla existente: nombre, disparador, condiciones, acciones (la lista completa nueva), pausarla (activa: false) o activarla. Activarla o cambiar lo que hace se confirma si envía mensajes.',
   schema: CambiarRegla,
+  modelSchema: CambiarReglaParaModelo,
   label: () => 'Cambiando la regla…',
   async risk(a: any, ctx) {
     const rule = await findRule(ctx, a.regla_id);

@@ -77,6 +77,11 @@ export interface CompletionRequest {
   /** Tiempo máximo e intentos de esta llamada (por defecto los del proveedor): un archivo del cliente no espera minutos. */
   timeout_ms?: number;
   max_attempts?: number;
+  /**
+   * Caché que avanza con la conversación (solo OpenRouter con modelos de Anthropic): cada paso lee del anterior lo que
+   * ya mandó, a una fracción del precio. Conviene en ciclos con herramientas, donde cada paso repite todo lo anterior.
+   */
+  prompt_cache?: boolean;
 }
 
 /** Interfaz mínima del proveedor de IA: permite cambiar de proveedor o simularlo en pruebas. */
@@ -176,6 +181,8 @@ export class OpenAiProvider implements AiProvider {
         delete body.model;
         body.models = [primary, ...fallbacks];
       }
+      // OpenRouter pone el punto de caché al final de la petición; solo se pide si todos los modelos son de Anthropic.
+      if (req.prompt_cache && [primary, ...fallbacks].every((m) => /^~?anthropic\//.test(m))) body.cache_control = { type: 'ephemeral' };
     }
     const started = Date.now();
     const res = await this.post('/chat/completions', JSON.stringify(body), { 'content-type': 'application/json' }, { timeoutMs: req.timeout_ms, attempts: req.max_attempts });

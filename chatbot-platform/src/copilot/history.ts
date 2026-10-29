@@ -11,6 +11,9 @@ import type { Action, Message } from './store.js';
 export const FULL_TURNS = 6;
 const MAX_CHARS = 40000;
 const MAX_TOOL = 3000;
+/** Los resultados de herramientas de turnos más viejos que los últimos `RECENT_TURNS` se recortan a `OLD_TOOL`. */
+const RECENT_TURNS = 2;
+const OLD_TOOL = 800;
 
 function userText(m: Message, actions: Map<string, Action>): string {
   const text = m.redacted ? '(mensaje borrado)' : m.content;
@@ -18,14 +21,15 @@ function userText(m: Message, actions: Map<string, Action>): string {
   return refs.length ? `${text}\n\n[Se refiere a estas acciones]\n${refs.map(actionLine).join('\n')}` : text;
 }
 
-function toModel(m: Message, actions: Map<string, Action>): AnyMessage | null {
+function toModel(m: Message, actions: Map<string, Action>, toolMax = MAX_TOOL): AnyMessage | null {
   if (m.role === 'user') return { role: 'user', content: userText(m, actions) };
   if (m.role === 'event') return { role: 'user', content: `${NOTICE} ${m.redacted ? '(borrado)' : tidy(m.content, 300)}` };
   if (m.role === 'assistant') {
     if (m.tool_calls?.length) return { role: 'assistant', content: m.content || null, tool_calls: m.tool_calls };
     return m.content ? { role: 'assistant', content: m.content } : null;
   }
-  return { role: 'tool', tool_call_id: m.tool_call_id ?? '', content: (m.redacted ? '(borrado)' : m.content).slice(0, MAX_TOOL) };
+  const content = m.redacted ? '(borrado)' : m.content;
+  return { role: 'tool', tool_call_id: m.tool_call_id ?? '', content: content.length > toolMax ? `${content.slice(0, toolMax)}… (recortado)` : content };
 }
 
 const NOTICE = '[Aviso del panel]';
@@ -67,8 +71,9 @@ export function buildHistory(messages: Message[], actions: Action[]): AnyMessage
   }
   const rendered = turns.map((t, i) => {
     const full = i >= turns.length - FULL_TURNS;
+    const toolMax = i >= turns.length - RECENT_TURNS ? MAX_TOOL : OLD_TOOL;
     const kept = full ? t : t.filter((m) => m.role === 'user' || m.role === 'event' || (m.role === 'assistant' && !m.tool_calls?.length && !!m.content));
-    return repair(kept.map((m) => toModel(m, byId)).filter((m): m is AnyMessage => !!m));
+    return repair(kept.map((m) => toModel(m, byId, toolMax)).filter((m): m is AnyMessage => !!m));
   });
   // Tope de tamaño: se quitan los turnos más viejos (siempre queda el último).
   const size = (t: AnyMessage[]) => t.reduce((n, m) => n + JSON.stringify(m).length, 0);

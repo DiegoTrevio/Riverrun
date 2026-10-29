@@ -420,10 +420,11 @@ export async function dbAvailable() {
 type Out = Record<string, unknown> | string | Error;
 export type Script = (req: Req, callIndex: number) => Out | Promise<Out>;
 /** Respuesta simulada del Copiloto: texto, llamadas a herramientas (con argumentos en objeto o texto) o un error. */
-export type CopilotOut = string | Error | { content?: string; tool_calls?: { name: string; arguments?: Record<string, unknown> | string }[] };
+export type CopilotOut = string | Error | { content?: string; tool_calls?: { name: string; arguments?: Record<string, unknown> | string }[]; cost_usd?: number };
 export type CopilotScript = (req: Req, callIndex: number) => CopilotOut | Promise<CopilotOut>;
 
-export async function createHarness() {
+/** `realAi`: para la evaluación con la IA real, el Copiloto y lo que sus herramientas le piden a la IA usan ese proveedor. */
+export async function createHarness(opts: { realAi?: import('../src/ai/provider.js').AiProvider } = {}) {
   const calls: Req[] = [];
   const summaryCalls: Req[] = [];
   const sent: { kind: string; to: string; text: string; image?: string; file?: string; mime?: string; fileKind?: string }[] = [];
@@ -437,6 +438,10 @@ export async function createHarness() {
   let n = 0;
   const ai: import('../src/ai/provider.js').AiProvider = {
     async complete(req: Req) {
+      if (opts.realAi && (req.tools?.length || ['prompt_edit', 'flow_board'].includes(req.json_schema?.name ?? ''))) {
+        if (req.tools?.length) copilotCalls.push(req);
+        return opts.realAi.complete(req);
+      }
       // El Copiloto es la única llamada con herramientas: tiene su propio guion.
       if (req.tools?.length) {
         copilotCalls.push(req);
@@ -445,7 +450,7 @@ export async function createHarness() {
         if (out instanceof Error) throw out;
         const o = typeof out === 'string' ? { content: out } : out;
         const toolCalls = (o.tool_calls ?? []).map((c, i) => ({ id: `call_${index}_${i}`, name: c.name, arguments: typeof c.arguments === 'string' ? c.arguments : JSON.stringify(c.arguments ?? {}) }));
-        return { content: o.content ?? '', ...(toolCalls.length ? { tool_calls: toolCalls } : {}), finish_reason: toolCalls.length ? 'tool_calls' : 'stop', model: req.model, latency_ms: 1, usage: { input_tokens: 300, cached_tokens: 0, output_tokens: 30 } };
+        return { content: o.content ?? '', ...(toolCalls.length ? { tool_calls: toolCalls } : {}), finish_reason: toolCalls.length ? 'tool_calls' : 'stop', model: req.model, latency_ms: 1, usage: { input_tokens: 300, cached_tokens: 0, output_tokens: 30 }, ...('cost_usd' in o ? { cost_usd: o.cost_usd } : {}) };
       }
       if (!req.json_schema || req.json_schema.name === 'conversation_report') {
         summaryCalls.push(req);

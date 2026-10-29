@@ -21,7 +21,8 @@ import { buildHistory, FULL_TURNS } from './history.js';
 import * as cs from './store.js';
 
 export interface RunnerDeps { ai: AiProvider; inject: Inject; tools: ToolDef[] }
-export interface TurnRequest { thread: cs.Thread; turn: cs.Turn; user: User; cookie: string; ip?: string; refs: string[] }
+/** `maxUsd`: lo que le queda a la cuenta del tope diario del Copiloto (el pedido no gasta más que eso). */
+export interface TurnRequest { thread: cs.Thread; turn: cs.Turn; user: User; cookie: string; ip?: string; refs: string[]; maxUsd?: number }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const inflight = new Set<Promise<void>>();
@@ -114,6 +115,7 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
     const fallback = limits.fallbackModels.length ? limits.fallbackModels : 'none' as const;
 
     let cost = 0, toolCalls = 0, changes = 0, proposals = 0;
+    const maxCost = Math.min(limits.turnMaxUsd, req.maxUsd ?? Infinity);
     let limitHit = '';
     // Cambios y propuestas ya hechos en este pedido (no se repiten); las consultas se olvidan al cambiar algo.
     const done = new Map<string, string>();
@@ -122,7 +124,7 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
     const ask = async (toolChoice: 'auto' | 'none') => {
       const res = await ai.complete({
         model: limits.model, fallback_models: fallback, messages: [system, ...history], tools: specs, tool_choice: toolChoice,
-        temperature: 0.2, max_tokens: 4096, timeout_ms: 90_000, max_attempts: 2,
+        temperature: 0.2, max_tokens: 4096, timeout_ms: 90_000, max_attempts: 2, prompt_cache: true,
       });
       const usage = { input: res.usage.input_tokens, cached: res.usage.cached_tokens, output: res.usage.output_tokens, cost: res.cost_usd ?? 0 };
       cost += usage.cost;
@@ -226,7 +228,7 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
         return;
       }
       const overTime = Date.now() - started > limits.turnSeconds * 1000;
-      const overCost = cost >= limits.turnMaxUsd;
+      const overCost = cost >= maxCost;
       const last = step >= limits.maxSteps || overTime || overCost || !!limitHit;
       await cs.heartbeat(turn.id, last ? 'Escribiendo el resumen…' : 'Pensando…');
       const res = await ask(last ? 'none' : 'auto');

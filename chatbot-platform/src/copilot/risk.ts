@@ -7,7 +7,7 @@
  */
 import { query } from '../db.js';
 import { normalize } from '../engine/text.js';
-import type { Ctx, RiskInfo, ToolDef, TriggerHint } from './registry.js';
+import type { Ctx, RiskInfo, Target, ToolDef, TriggerHint } from './registry.js';
 import { riskInfo } from './registry.js';
 
 /** Acciones de una regla que llegan a clientes u otros sistemas. */
@@ -51,6 +51,22 @@ export async function outwardRules(accountId: string, hints: TriggerHint[]): Pro
   return [...names];
 }
 
+/**
+ * Contacto dueño de cada conversación o cita (de esta cuenta). El alcance es por cliente: si la persona buscó a Ana, su
+ * conversación y sus citas también son «lo que estaba viendo», aunque el id que se leyó fuera el del contacto.
+ */
+async function ownerContacts(accountId: string, targets: Target[]): Promise<Map<string, string>> {
+  const ids = (kind: string) => targets.filter((t) => t.kind === kind).map((t) => t.id);
+  const [conversations, appointments] = [ids('conversation'), ids('appointment')];
+  if (!conversations.length && !appointments.length) return new Map();
+  const rows = await query<{ id: string; contact_id: string }>(
+    `SELECT id, contact_id FROM conversations WHERE account_id = $1 AND id = ANY($2::uuid[])
+     UNION ALL SELECT id, contact_id FROM appointments WHERE account_id = $1 AND id = ANY($3::uuid[]) AND contact_id IS NOT NULL`,
+    [accountId, conversations, appointments],
+  );
+  return new Map(rows.map((r) => [r.id, r.contact_id]));
+}
+
 export async function assessRisk(def: ToolDef, args: unknown, ctx: Ctx): Promise<RiskInfo> {
   const base = riskInfo(await def.risk(args, ctx));
   if (base.level !== 'reversible') return base;
@@ -63,7 +79,8 @@ export async function assessRisk(def: ToolDef, args: unknown, ctx: Ctx): Promise
   else if (ctx.tainted && def.targets) {
     const targets = await def.targets(args, ctx);
     const outside = targets.filter((t) => !ctx.scope.has(t.id));
-    if (outside.length) reasons.push('Antes leí mensajes escritos por clientes; confirma este cambio, que toca registros que no estabas viendo.');
+    const owners = await ownerContacts(ctx.accountId, outside);
+    if (outside.some((t) => !ctx.scope.has(owners.get(t.id) ?? ''))) reasons.push('Antes leí mensajes escritos por clientes; confirma este cambio, que toca registros que no estabas viendo.');
   }
   return reasons.length > base.reasons.length ? { level: 'confirm', reasons } : base;
 }

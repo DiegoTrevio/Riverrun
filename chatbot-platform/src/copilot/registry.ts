@@ -56,6 +56,8 @@ export interface ToolDef<A = any> {
   roles: ('admin' | 'agent')[];
   description: string;
   schema: z.ZodType<A>;
+  /** Esquema más corto para el modelo cuando el completo repite el de otra herramienta (el servidor valida con `schema`). */
+  modelSchema?: z.ZodType;
   /** Texto del paso mientras corre («Buscando contactos…»). */
   label: (args: A) => string;
   risk: (args: A, ctx: Ctx) => Level | RiskInfo | Promise<Level | RiskInfo>;
@@ -90,22 +92,34 @@ export function allowed(def: ToolDef, user: User): boolean {
   return def.roles.includes('agent');
 }
 
-/** JSON Schema limpio para el modelo: sin `$schema`, sin el regex largo de los uuid ni topes de enteros enormes. */
+/** Palabras del JSON Schema cuyo valor es un mapa de nombre → esquema: sus claves son nombres de campos, no palabras. */
+const MAPS = new Set(['properties', 'patternProperties', 'definitions', '$defs']);
+
+/**
+ * JSON Schema limpio y corto para el modelo (va en cada paso de cada pedido): sin `$schema`, sin el regex largo de los
+ * uuid, sin topes de enteros enormes, sin valores por omisión adentro (los pone zod al validar; los de los argumentos de
+ * arriba sí van, porque dicen qué pasa si el modelo no los manda, como «avisar al cliente»), sin `type` junto a un `const`
+ * y sin `additionalProperties` adentro (zod quita los campos de más; solo el objeto de arriba lo dice).
+ */
 function clean(node: any): any {
   if (Array.isArray(node)) return node.map(clean);
   if (!node || typeof node !== 'object') return node;
   const out: any = {};
   for (const [k, v] of Object.entries(node)) {
-    if (k === '$schema') continue;
+    if (k === '$schema' || k === 'default') continue;
     if (k === 'pattern' && node.format === 'uuid') continue;
+    if (k === 'type' && node.const !== undefined) continue;
+    if (k === 'additionalProperties' && (v === false || (v && typeof v === 'object' && !Object.keys(v).length))) continue;
     if ((k === 'maximum' && v === Number.MAX_SAFE_INTEGER) || (k === 'minimum' && v === Number.MIN_SAFE_INTEGER)) continue;
-    out[k] = clean(v);
+    out[k] = MAPS.has(k) && v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([name, s]) => [name, clean(s)])) : clean(v);
   }
-  if (out.type === 'object' && out.properties && out.additionalProperties === undefined) out.additionalProperties = false;
   return out;
 }
 
 export function toolSpec(def: ToolDef): ToolSpec {
-  const schema = clean(z.toJSONSchema(def.schema, { target: 'draft-7', io: 'input' }));
+  const full: any = z.toJSONSchema(def.modelSchema ?? def.schema, { target: 'draft-7', io: 'input' });
+  const schema = clean(full);
+  for (const [k, v] of Object.entries<any>(full.properties ?? {})) if (v && 'default' in v) schema.properties[k].default = v.default;
+  if (schema.additionalProperties === undefined) schema.additionalProperties = false;
   return { name: def.name, description: def.description, parameters: schema };
 }

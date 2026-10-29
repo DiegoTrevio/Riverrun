@@ -167,9 +167,11 @@ export async function recentlyTainted(threadId: string, exceptTurnId: string, tu
 }
 
 export async function recentTurns(userId: string, accountId: string) {
-  return (await queryOne<{ user_hour: number; account_day: number }>(
+  return (await queryOne<{ user_hour: number; account_day: number; account_day_usd: number }>(
     `SELECT (SELECT count(*)::int FROM copilot_turns WHERE user_id = $1 AND started_at > now() - interval '1 hour') AS user_hour,
-            (SELECT count(*)::int FROM copilot_turns WHERE account_id = $2 AND started_at > now() - interval '24 hours') AS account_day`,
+            day.turns AS account_day, day.usd AS account_day_usd
+       FROM (SELECT count(*)::int AS turns, coalesce(sum(cost_usd), 0)::float8 AS usd
+               FROM copilot_turns WHERE account_id = $2 AND started_at > now() - interval '24 hours') day`,
     [userId, accountId],
   ))!;
 }

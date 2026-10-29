@@ -136,6 +136,8 @@ export const config = {
     turnMaxUsd: Number(env('COPILOT_TURN_MAX_USD', '0.5')),
     turnsPerHour: Number(env('COPILOT_TURNS_PER_HOUR', '30')),
     accountTurnsPerDay: Number(env('COPILOT_ACCOUNT_TURNS_PER_DAY', '300')),
+    /** Tope de gasto del Copiloto por cuenta en 24 horas, en USD (0 = sin tope; aparte del presupuesto de IA). */
+    accountUsdPerDay: Math.max(0, Number(env('COPILOT_ACCOUNT_USD_PER_DAY', '3')) || 0),
     proposalMinutes: Number(env('COPILOT_PROPOSAL_MINUTES', '30')),
     undoDays: Number(env('COPILOT_UNDO_DAYS', '7')),
     retentionDays: Number(env('COPILOT_RETENTION_DAYS', '90')),

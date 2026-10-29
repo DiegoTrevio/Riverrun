@@ -50,14 +50,18 @@ export const horariosLibres = defineTool({
   name: 'horarios_libres',
   area: 'agenda',
   roles: ['admin', 'agent'],
-  description: 'Horarios libres de un servicio de la agenda en los próximos días (con quién atiende cada uno).',
-  schema: z.object({ servicio_id: Id, dias: z.number().int().min(1).max(60).optional(), fecha: DateStr.optional().describe('Solo ese día') }),
+  description: 'Horarios libres de un servicio de la agenda (con quién atiende cada uno): en los próximos días, un día (fecha) o a partir de un día (desde).',
+  schema: z.object({ servicio_id: Id, dias: z.number().int().min(1).max(60).optional(), fecha: DateStr.optional().describe('Solo ese día'), desde: DateStr.optional().describe('A partir de ese día') }),
   label: () => 'Buscando horarios libres…',
   risk: () => 'read',
   async execute(a, ctx) {
     const s = await serviceOf(ctx, a.servicio_id);
-    const slots = (await ctx.call.get<any[]>(`${path`/api/services/${s.id}/slots`}${qs({ days: a.dias ?? 14 })}`)) ?? [];
-    const shown = (a.fecha ? slots.filter((x) => x.date === a.fecha) : slots).slice(0, 30);
+    // Los horarios se cuentan desde hoy: para un día más adelante se piden también los días hasta él.
+    const start = a.fecha ?? a.desde;
+    const ahead = start ? Math.max(0, Math.round((Date.parse(`${start}T00:00:00Z`) - Date.parse(`${localParts(new Date(), ctx.timezone).date}T00:00:00Z`)) / 86400_000)) : 0;
+    const days = Math.min(60, ahead + (a.fecha ? 1 : a.dias ?? 14));
+    const slots = (await ctx.call.get<any[]>(`${path`/api/services/${s.id}/slots`}${qs({ days })}`)) ?? [];
+    const shown = slots.filter((x) => (a.fecha ? x.date === a.fecha : !a.desde || x.date >= a.desde)).slice(0, 30);
     return { title: `Busqué horarios libres de ${s.name}: ${shown.length}`, links: [links.agenda()], data: { servicio: s.name, horarios: shown.map((x) => ({ horario: x.key, texto: x.label })), hay_mas: slots.length > shown.length || undefined } };
   },
 });
