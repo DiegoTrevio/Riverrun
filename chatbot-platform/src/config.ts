@@ -125,7 +125,7 @@ export const config = {
   copilot: {
     enabled: env('COPILOT_ENABLED', 'true') === 'true',
     /** Un modelo capaz de encadenar herramientas; con límites de gasto necesita su precio en ai_prices. */
-    model: env('OPENROUTER_COPILOT_MODEL', useOpenRouter ? 'anthropic/claude-sonnet-4.5' : 'gpt-4.1'),
+    model: env('OPENROUTER_COPILOT_MODEL', useOpenRouter ? 'deepseek/deepseek-v4.1-flash-1017' : 'gpt-4.1'),
     /** Respaldos del Copiloto (deben saber usar herramientas); vacío o "none" = ninguno. */
     fallbackModels: env('OPENROUTER_COPILOT_FALLBACK_MODELS', '').split(',').map((m) => m.trim()).filter((m) => m && m !== 'none'),
     maxSteps: Number(env('COPILOT_MAX_STEPS', '8')),

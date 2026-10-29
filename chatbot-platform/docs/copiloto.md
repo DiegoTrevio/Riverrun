@@ -17,7 +17,8 @@ por eso se llama **Copiloto**.
   sobre la cuenta que tenga elegida.
 - **Qué cubre:** configurar el agente, automatizar, operar el día a día y responder preguntas sobre los datos.
 - **Dónde:** un panel lateral disponible en todo el panel. Sabe qué página y qué registro estás viendo.
-- **Modelo:** uno capaz de encadenar pasos (`OPENROUTER_COPILOT_MODEL`). Se cobra del presupuesto de IA de la cuenta
+- **Modelo:** uno capaz de encadenar pasos (`OPENROUTER_COPILOT_MODEL`; por omisión `deepseek/deepseek-v4.1-flash-1017`, que
+  pasó los 22 casos de la prueba con la IA real a unos 0.003 USD por pedido). Se cobra del presupuesto de IA de la cuenta
   (`kind = 'copilot'`).
 - **Activación:**
   - Se enciende cuenta por cuenta (`accounts.copilot_enabled`) desde Cuentas, sin volver a desplegar.
@@ -330,7 +331,7 @@ cada cambio quedó bien:
 
 ```bash
 # Con la IA real (necesita OPENROUTER_API_KEY y la base local de pruebas; la borra y la vuelve a crear):
-RIVERRUN_EVAL_MAX_USD=3 npm run eval:copilot:live -- --models anthropic/claude-sonnet-4.5,anthropic/claude-haiku-4.5
+RIVERRUN_EVAL_MAX_USD=3 npm run eval:copilot:live -- --models deepseek/deepseek-v4.1-flash-1017,anthropic/claude-sonnet-4.5
 # Solo algunos casos (y los que necesitan antes):
 npm run eval:copilot:live -- --only agendar,cancelar
 # Sin IA, con el modelo de guion (revisa que los casos y sus comprobaciones funcionan):
