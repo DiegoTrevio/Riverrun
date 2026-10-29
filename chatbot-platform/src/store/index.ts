@@ -6,6 +6,7 @@ import { removeInboundAccountFiles, type StoredMedia } from '../channels/media.j
 import { removeAccountAttachments } from '../attachments.js';
 import { perRequestKeys } from '../engine/questions.js';
 import { closeCardForRequest } from './pipelines.js';
+import { phoneVariants } from '../contacts/phone.js';
 import {
   channelConfig,
   hydrateChatbot,
@@ -589,6 +590,60 @@ export async function upsertContact(channel: Pick<Channel, 'id' | 'account_id'>,
 
 export async function findContact(channelId: string, externalId: string) {
   return queryOne<Contact>('SELECT * FROM contacts WHERE channel_id = $1 AND external_id = $2', [channelId, externalId]);
+}
+
+/**
+ * Ids de los contactos con ese número en cualquiera de sus dos formas (México: 52… y 521…): por el teléfono guardado
+ * (índice contacts_account_phone) o por su identificador de WhatsApp en el canal. Una igualdad por forma, no `= ANY`:
+ * así PostgreSQL usa los dos índices completos en vez de revisar cada contacto de la cuenta.
+ * Parámetros: $1 canal, $2 cuenta y, desde `from`, las dos formas del número y sus dos identificadores.
+ */
+export function phoneMatchIds(digits: string, from: number) {
+  const v = phoneVariants(digits);
+  const [a, b] = [v[0], v[1] ?? v[0]];
+  const p = (i: number) => `$${from + i}`;
+  const byPhone = (i: number) => `SELECT id FROM contacts WHERE account_id = $2 AND phone <> '' AND regexp_replace(phone, '[^0-9]', '', 'g') = ${p(i)}`;
+  const byJid = (i: number) => `SELECT id FROM contacts WHERE channel_id = $1 AND external_id = ${p(i)}`;
+  return { sql: [byPhone(0), byPhone(1), byJid(2), byJid(3)].join(' UNION ALL '), params: [a, b, `${a}@s.whatsapp.net`, `${b}@s.whatsapp.net`] };
+}
+
+/**
+ * El contacto de un teléfono en el canal: por el número guardado o por su identificador de WhatsApp, en cualquiera de
+ * sus formas (México: 52… y 521…). Así encuentra también a quien escribió con un identificador @lid.
+ */
+export async function findContactByPhone(channel: Pick<Channel, 'id' | 'account_id'>, digits: string) {
+  const m = phoneMatchIds(digits, 3);
+  return queryOne<Contact>(
+    `SELECT * FROM contacts WHERE channel_id = $1 AND id IN (${m.sql}) ORDER BY updated_at DESC LIMIT 1`,
+    [channel.id, channel.account_id, ...m.params],
+  );
+}
+
+/**
+ * Primer mensaje de un identificador de WhatsApp que no conocíamos: si ese número ya era un contacto dado de alta por la
+ * API o importado, al que el cliente nunca había escrito, toma ese contacto (con sus datos, etiquetas y cobros) en vez
+ * de crear otro. Pasa cuando WhatsApp usa la otra forma del número (521… o 52…) o un identificador @lid.
+ */
+export async function claimPhoneContact(channel: Pick<Channel, 'id' | 'account_id'>, externalId: string, phone: string): Promise<boolean> {
+  const digits = phone.replace(/\D/g, '');
+  if (digits.length < 8) return false;
+  const m = phoneMatchIds(digits, 5);
+  try {
+    const r = await queryOne<{ id: string }>(
+      `UPDATE contacts SET external_id = $3, phone = $4, updated_at = now() WHERE id = (
+         SELECT c.id FROM contacts c WHERE c.channel_id = $1 AND c.account_id = $2 AND c.external_id <> $3 AND c.external_id LIKE '%@s.whatsapp.net'
+            AND c.id IN (${m.sql})
+            AND NOT EXISTS (SELECT 1 FROM conversations cv JOIN messages m ON m.conversation_id = cv.id WHERE cv.contact_id = c.id AND m.direction = 'in')
+          ORDER BY c.updated_at DESC LIMIT 1)
+       RETURNING id`,
+      [channel.id, channel.account_id, externalId, digits, ...m.params],
+    );
+    return !!r;
+  } catch (e: any) {
+    // Otro mensaje del mismo número ganó la carrera y ya creó su contacto: se usa ese.
+    if (e?.code === '23505') return false;
+    throw e;
+  }
 }
 
 export async function getContact(id: string) {

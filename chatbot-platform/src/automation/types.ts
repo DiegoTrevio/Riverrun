@@ -442,4 +442,6 @@ export interface AutomationEvent {
   quote?: { id: string; folio: string; kind: 'approximate' | 'final'; total: string; /** AAAA-MM-DD */ valid_until?: string };
   /** Cobro del evento (payment_*): sus variables {{pago.concepto}}, {{pago.monto}}… */
   payment?: Record<string, string>;
+  /** Lo provocó tu sistema por la API: el webhook lo dice (origin: "api") para que no le responda a su propio cambio. */
+  origin?: 'api';
 }

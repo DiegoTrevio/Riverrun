@@ -763,3 +763,18 @@ html { scroll-padding-top: calc(var(--topbar-h) + 8px); }
 .skip-link:focus { top: 8px; }
 .field > small.field-error, .field-error { display: block; color: var(--negative); margin-top: 6px; font-size: 13px; font-weight: 500; }
 [aria-invalid="true"] { border-color: var(--negative) !important; }
+
+/* Integraciones: pasos para conectar, código para copiar y entregas de webhooks */
+.connect-steps { margin: 12px 0 16px; padding-left: 22px; display: grid; gap: 12px; }
+.connect-steps li { min-width: 0; }
+.connect-steps li > .row, .connect-steps li > .code-block { margin-top: 6px; }
+.code-inline { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; padding: 4px 8px; overflow-wrap: anywhere; }
+.code-block { display: flex; gap: 8px; align-items: flex-start; margin: 6px 0; }
+.code-block pre { flex: 1; min-width: 0; margin: 0; padding: 10px 12px; background: var(--raised); color: var(--text); border: 1px solid var(--line); border-radius: var(--radius-control); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.5; white-space: pre; overflow-x: auto; max-height: 360px; }
+.code-block pre:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.example h3 { font-size: 14px; margin: 14px 0 4px; }
+.event-picker .check { margin-bottom: 8px; flex-wrap: wrap; }
+.event-picker code { font-size: 11px; }
+.delivery-list { list-style: none; margin: 8px 0 0; padding: 0; max-height: 50vh; overflow-y: auto; }
+.delivery-list li { padding: 8px 0; border-bottom: 1px solid var(--rule); font-size: 13px; }
+@media (max-width: 640px) { .code-block { flex-direction: column; } .code-block pre { width: 100%; } }

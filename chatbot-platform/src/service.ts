@@ -526,6 +526,9 @@ export class ChatService {
       return { conversationId: null, messageId: null };
     }
     const bot = channel.chatbot_id ? await store.getChatbot(channel.chatbot_id) : null;
+    // Un número dado de alta por la API o importado que escribe (o al que se le escribe) por primera vez con otra forma
+    // del número o con @lid sigue siendo el mismo contacto.
+    if (channel.type === 'whatsapp' && msg.phone && !(await store.findContact(channel.id, msg.externalId))) await store.claimPhoneContact(channel, msg.externalId, msg.phone);
     const contact = await store.upsertContact(channel, msg.externalId, msg.phone, msg.fromMe ? '' : msg.displayName);
     const conv = await store.getOrCreateConversation(channel, contact.id);
     const logBase = { accountId: channel.account_id, chatbotId: bot?.id ?? null, channelId: channel.id, conversationId: conv.id };

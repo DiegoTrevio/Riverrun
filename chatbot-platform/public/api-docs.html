@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>API de Riverrun — documentación</title>
+  <meta name="robots" content="noindex" />
+  <style>
+    :root { --accent: #0f6b7a; --accent-ink: #fff; --link: #0f6b7a; --soft: #eef6f7; --text: #111827; --muted: #5f6672; --border: #e5e7eb; --bg: #f9fafb; --panel: #fff; --code: #f3f4f6;
+      --get: #1d5f9e; --post: #247b50; --put: #92400e; --del: #c4242a; }
+    @media (prefers-color-scheme: dark) { :root { --accent: #6fc9d6; --accent-ink: #062a30; --link: #6fc9d6; --soft: #12343a; --text: #e8edf2; --muted: #a3afbb; --border: #2c3a48; --bg: #10161d; --panel: #18212b; --code: #0c1218;
+      --get: #8cc4f5; --post: #7fd6a4; --put: #f5c37a; --del: #ff9b9b; } }
+    * { box-sizing: border-box; }
+    body { margin: 0; font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: var(--text); background: var(--bg); }
+    a { color: var(--link); }
+    :focus-visible { outline: 3px solid var(--link); outline-offset: 2px; }
+    .skip { position: absolute; left: 8px; top: -100px; background: var(--panel); padding: 8px 12px; border: 2px solid var(--link); border-radius: 6px; z-index: 10; }
+    .skip:focus { top: 8px; }
+    .layout { max-width: 1180px; margin: 0 auto; padding: 24px 16px 48px; display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 32px; }
+    nav { position: sticky; top: 16px; align-self: start; max-height: calc(100vh - 32px); overflow-y: auto; font-size: 14px; }
+    nav ul { list-style: none; padding: 0; margin: 0 0 16px; }
+    nav li { margin: 4px 0; }
+    nav > details > summary { font-weight: 600; margin-bottom: 4px; }
+    nav h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 16px 0 6px; }
+    h1 { font-size: 28px; margin: 0 0 6px; }
+    h2.section { font-size: 21px; margin: 36px 0 6px; padding-top: 8px; border-top: 1px solid var(--border); }
+    h3 { font-size: 16px; margin: 0; }
+    .lead { color: var(--muted); }
+    .intro li { margin: 4px 0; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    code { background: var(--code); padding: 1px 5px; border-radius: 4px; font-size: 13px; overflow-wrap: anywhere; }
+    pre { background: var(--code); border: 1px solid var(--border); border-radius: 8px; padding: 12px; overflow-x: auto; font-size: 12.5px; line-height: 1.5; margin: 8px 0; }
+    .op { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin: 14px 0; }
+    .op-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+    .method { font: 700 12px/1 ui-monospace, monospace; padding: 4px 8px; border-radius: 5px; border: 1px solid currentColor; }
+    .m-get { color: var(--get); } .m-post { color: var(--post); } .m-put { color: var(--put); } .m-delete { color: var(--del); }
+    .path { font: 600 14px ui-monospace, monospace; overflow-wrap: anywhere; }
+    .op p { margin: 8px 0; }
+    table { border-collapse: collapse; width: 100%; font-size: 13.5px; margin: 8px 0; }
+    th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+    th { color: var(--muted); font-weight: 600; }
+    .req { color: var(--del); font-size: 12px; }
+    .muted { color: var(--muted); }
+    .base { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 14px 0; }
+    button { font: inherit; font-size: 13px; padding: 5px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel); color: var(--text); cursor: pointer; }
+    .pre-wrap { position: relative; }
+    .pre-wrap button { position: absolute; top: 6px; right: 6px; }
+    details { margin: 8px 0; }
+    summary { cursor: pointer; font-weight: 600; }
+    .table-wrap { overflow-x: auto; }
+    @media (max-width: 820px) { .layout { grid-template-columns: minmax(0, 1fr); } nav { position: static; max-height: none; } }
+  </style>
+</head>
+<body>
+  <a href="#contenido" class="skip">Ir al contenido</a>
+  <div class="layout">
+    <nav aria-label="Secciones de la documentación" id="toc"></nav>
+    <main id="contenido">
+      <header>
+        <h1>API de Riverrun</h1>
+        <p class="lead" id="lead">Cargando la documentación…</p>
+      </header>
+      <div id="doc"></div>
+    </main>
+  </div>
+  <script src="/api-docs.js"></script>
+</body>
+</html>

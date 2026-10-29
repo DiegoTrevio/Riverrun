@@ -9,6 +9,7 @@ import { staffBusy, syncStaffEvent } from '../integrations/staff-calendars.js';
 import * as googleCal from '../integrations/google.js';
 import * as outlookCal from '../integrations/outlook.js';
 import { mailBrand } from '../brands.js';
+import { appointmentEvent } from '../integrations/webhooks.js';
 import { config } from '../config.js';
 import { formatMoney } from '../quotes/format.js';
 import { getReceivableSettings, receivableBySource, todayIn, type Receivable } from '../receivables/index.js';
@@ -308,6 +309,8 @@ export class Agenda {
     if (!simulated) await syncCalendars(o.accountId, result.id).catch(() => undefined);
     if (!simulated) await this.mailStaff(result, service, 'booked', when).catch(() => undefined);
     if (o.conversation) this.chat.automator.emit({ type: 'appointment_booked', conversationId: o.conversation.id, appointment: result });
+    // Webhooks: también las citas sin chat (página de reservas, panel).
+    if (!simulated) await appointmentEvent('appointment.booked', result);
     return { ok: true, appointment: result };
   }
 
@@ -418,6 +421,7 @@ export class Agenda {
     await syncCalendars(a.account_id, a.id).catch(() => undefined);
     const updated = { ...a, status: 'cancelled' as const, cancel_reason: reason };
     if (a.conversation_id) this.chat.automator.emit({ type: 'appointment_cancelled', conversationId: a.conversation_id, appointment: updated });
+    await appointmentEvent('appointment.cancelled', updated);
     return updated;
   }
 
@@ -451,6 +455,7 @@ export class Agenda {
     });
     const updated = (await astore.getAppointment(a.id))!;
     await this.moveDeposit(updated, service, settings.timezone);
+    await appointmentEvent('appointment.rescheduled', updated);
     await syncCalendars(a.account_id, a.id).catch(() => undefined);
     return { ok: true, appointment: updated };
   }

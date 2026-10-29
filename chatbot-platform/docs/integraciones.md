@@ -4,7 +4,7 @@ Riverrun se conecta con otros sistemas de tres formas. Todo se administra en **A
 
 1. **Google Calendar y Outlook**: las citas aparecen en tu calendario y tus horas ocupadas no se ofrecen a los clientes. Se pueden conectar los dos a la vez.
 2. **Webhooks**: Riverrun avisa por `POST` firmado a la dirección que indiques cuando pasa algo (Zapier, Make, n8n, tu CRM).
-3. **API v1**: tu sistema consulta y escribe contactos, conversaciones, mensajes y citas con una llave.
+3. **API v1**: tu sistema consulta y escribe contactos, conversaciones, mensajes, cobros y citas con una llave. La pantalla de Integraciones tiene los pasos, la dirección y ejemplos listos para copiar; la referencia completa está en `https://TU-DOMINIO/api/v1/docs`.
 
 ## 1. Google Calendar
 
@@ -37,8 +37,13 @@ El permiso permanente se guarda cifrado igual que el de Google; Microsoft lo ren
 Cada entrega es un `POST` con JSON:
 
 ```json
-{ "id": "uuid-del-evento", "type": "contact.created", "created_at": "2026-10-07T15:04:05.000Z", "account_id": "uuid", "data": { "contact": { "id": "…", "name": "Ana", "phone": "5215512345678", "tags": [], "data": {} } } }
+{ "id": "uuid-del-evento", "type": "contact.created", "api_version": 1, "created_at": "2026-10-07T15:04:05.000Z", "account_id": "uuid", "origin": "riverrun",
+  "data": { "contact": { "id": "…", "name": "Ana", "profile_name": "Ana", "phone": "5215512345678", "channel": { "id": "…", "type": "whatsapp", "name": "WhatsApp" }, "tags": [], "data": {}, "consent": true, "opted_out": false, "created_at": "…" }, "conversation": { "id": "…", "status": "bot", "url": "https://TU-DOMINIO/#/conversation/…" } } }
 ```
+
+- `origin` es `"api"` cuando lo provocó tu propio sistema por la API (por ejemplo, tu CRM agregó la etiqueta): así puedes ignorar tu propio cambio y evitar ciclos. Si no, es `"riverrun"`.
+- El contacto, la cita y el cobro llegan con la misma forma que en la API (`GET /contacts`, `GET /appointments`, `GET /receivables`). En el contacto, `consent` es sí/no; el detalle está en `GET /contacts/:id`.
+- `test: true` solo aparece en las pruebas que mandas desde el panel.
 
 | Evento | Cuándo |
 |---|---|
@@ -49,36 +54,46 @@ Cada entrega es un `POST` con JSON:
 | `contact.opted_out` | El cliente se dio de baja de promociones |
 | `conversation.handoff` | La conversación pasó a una persona (con el resumen y los datos capturados) |
 | `goal.completed` | Se cumplió el objetivo de la conversación (con el resumen, el análisis y los datos capturados) |
-| `appointment.booked` / `appointment.cancelled` | Cita agendada / cancelada (con conversación) |
+| `appointment.booked` / `appointment.rescheduled` / `appointment.cancelled` | Cita agendada, cambiada de fecha u hora, o cancelada. También las que no tienen chat (página de reservas, panel): ahí `conversation` es `null` |
+| `payment.due` / `payment.overdue` / `payment.paid` | Hoy vence un cobro (al salir su recordatorio), venció sin pagarse, o se marcó pagado. Trae `receivable` |
+| `quote.sent` / `quote.accepted` / `quote.rejected` | Cotización enviada, aceptada por el cliente o rechazada por el equipo. Trae `quote` (folio, tipo, total, vigencia) |
+| `pipeline.stage_changed` | Una solicitud cambió de columna en un pipeline |
 | `conversation.sent` | Se envió una conversación a tu app: resumen, completa o ambos (ver abajo) |
-| `ping` | Botón "Enviar prueba" |
+| `ping` | «Enviar prueba» de conexión |
+
+«Todos los eventos» (`"*"`, al crear un webhook por la API) son los de siempre: los de cobros, cotizaciones y `appointment.rescheduled` se eligen uno por uno, para que un Zap que ya funciona no empiece a recibir avisos de otro tipo. Desde el panel se eligen con casillas.
 
 En `conversation.handoff` y `goal.completed`, `data.conversation` incluye además `summary`, `analysis` (intención, ánimo, interés, acuerdos y pendientes), `data` (datos capturados), `flow_step` y `goal_completed_at`. Se generan antes de avisar, así que no hace falta pedirlos aparte; si la IA no pudo resumir, `summary` es `null` y `data` sigue completo.
 
-Cabeceras: `x-riverrun-event`, `x-riverrun-delivery` (id de la entrega), `x-riverrun-timestamp` y `x-signature: sha256=<HMAC-SHA256 del cuerpo exacto>`, con el secreto de webhooks de tu cuenta (Ajustes → Horario y avisos).
+**Cabeceras:** `x-riverrun-event` (el tipo), `x-riverrun-delivery` (el id del evento), `x-riverrun-timestamp`, `x-riverrun-signature: t=<segundos>,v1=<HMAC-SHA256 de "t.cuerpo">` y `x-signature: sha256=<HMAC-SHA256 del cuerpo>` (la de antes, se conserva). El secreto está en **Integraciones → Secreto para verificar los webhooks**, donde también se cambia (el enlace del calendario no cambia).
 
-**Verifica siempre la firma** (usa el cuerpo crudo, sin volver a serializar):
+**Verifica siempre la firma** con el cuerpo crudo (sin volver a serializar) y rechaza las de hace más de 5 minutos:
 
 ```js
 // Node
 import crypto from 'node:crypto';
-const ok = (raw, header, secret) => {
-  const expected = 'sha256=' + crypto.createHmac('sha256', secret).update(raw).digest('hex');
-  return header.length === expected.length && crypto.timingSafeEqual(Buffer.from(header), Buffer.from(expected));
-};
+export function verify(raw, header, secret, toleranceSec = 300) {
+  const { t, v1 } = Object.fromEntries(header.split(',').map((p) => p.split('=')));
+  if (Math.abs(Date.now() / 1000 - Number(t)) > toleranceSec) return false;
+  const expected = crypto.createHmac('sha256', secret).update(`${t}.${raw}`).digest('hex');
+  return v1.length === expected.length && crypto.timingSafeEqual(Buffer.from(v1), Buffer.from(expected));
+}
 ```
 
 ```python
 # Python
-import hmac, hashlib
-def ok(raw: bytes, header: str, secret: str) -> bool:
-    expected = "sha256=" + hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(header, expected)
+import hmac, hashlib, time
+def verify(raw: bytes, header: str, secret: str, tolerance: int = 300) -> bool:
+    parts = dict(p.split("=", 1) for p in header.split(","))
+    if abs(time.time() - int(parts["t"])) > tolerance:
+        return False
+    expected = hmac.new(secret.encode(), parts["t"].encode() + b"." + raw, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(parts["v1"], expected)
 ```
 
-Entrega: responde `2xx` en menos de 15 s. Si falla, se reintenta 3 veces con espera creciente; el mismo evento puede llegar más de una vez, usa `id` para no duplicar. Tras **20 fallos seguidos** el webhook se pausa y se avisa al equipo; al encenderlo de nuevo vuelve a funcionar. Las últimas entregas se ven en "Ver entregas" y se conservan 30 días.
+**Entrega:** responde `2xx` en menos de 10 s. Si falla, se reintenta 6 veces en unas 8 horas (a 1, 5, 30, 120 y 360 minutos) con el **mismo** `id`: úsalo para no duplicar. Tras **20 eventos fallidos seguidos** el webhook se pausa y se avisa al equipo; al encenderlo de nuevo vuelve a funcionar. En **Ver entregas** están las últimas 50 con lo que se envió y un botón **Reenviar** (el cuerpo de cada evento se guarda 30 días; al borrar los datos de un cliente se borran también sus eventos). Cada webhook se puede **Editar** (dirección, descripción y eventos).
 
-**Zapier / Make / n8n**: crea un disparador "Webhook" (Catch Hook), pega su URL en Riverrun, pulsa **Enviar prueba** y mapea los campos de `data`. No necesitan verificar la firma si la URL es secreta, pero conviene.
+**Zapier / Make / n8n**: crea un disparador "Webhook" (Catch Hook), pega su URL en Riverrun, pulsa **Enviar prueba** y elige el evento: llega un ejemplo con la forma real y los datos más recientes de tu cuenta, para mapear los campos. No necesitan verificar la firma si la URL es secreta, pero conviene.
 
 ### Enviar conversaciones a tu app (resumen o completa)
 
@@ -114,32 +129,54 @@ Ejemplo de `data` en `conversation.sent` (con `content: "both"`):
 
 ## 3. API v1
 
-Base: `https://TU-DOMINIO/api/v1`. Autenticación: `Authorization: Bearer rr_…` con una llave creada en Integraciones (se muestra una sola vez; en la base solo queda su hash; máximo 10 activas). Las de **lectura** solo hacen `GET`; las de **escritura** también `POST`/`PUT`. Límites: 300 lecturas/min y 60 escrituras/min por llave. Una cuenta pausada responde `402` en escrituras y una inactiva `403`.
+**Empieza en 3 pasos** (los mismos que muestra la pantalla de Integraciones, con tu dirección ya puesta):
+
+1. Crea una llave en **Integraciones → Llaves de la API**. «Lectura y escritura» si tu sistema va a dar de alta clientes, cobros o mensajes. Se muestra una sola vez; en la base solo queda su hash; máximo 10 activas.
+2. En tu sistema pon la dirección `https://TU-DOMINIO/api/v1` y la cabecera `Authorization: Bearer rr_…`.
+3. Prueba: `curl https://TU-DOMINIO/api/v1/me -H "Authorization: Bearer rr_…"` responde con tu cuenta, la zona horaria y el canal por omisión.
+
+Referencia completa con ejemplos: `https://TU-DOMINIO/api/v1/docs` (sin llave). Especificación **OpenAPI 3.1** para Postman, Insomnia o un generador de clientes: `https://TU-DOMINIO/api/v1/openapi.json` (incluye los webhooks).
+
+**Para no adivinar nada:**
+
+- `GET /channels` da los ids de tus canales. Si tienes **un solo WhatsApp**, no hace falta mandar `channel_id`: se usa ese. Con varios, la respuesta de error `channel_required` trae la lista.
+- `GET /contact-fields` da las claves de los datos de tus clientes (`data`), su tipo y sus opciones.
+- **Teléfono en cualquier formato**: `+52 1 (55) 1234-5678`, `0052…`, `521…`. Con la zona horaria de México, a un número de 10 dígitos se le pone la lada 52. Las dos formas de un celular de México (`52…` y `521…`) son el mismo contacto, y también lo encuentra si el cliente escribió con un identificador `@lid`. Cuando el cliente contesta a un contacto que diste de alta, sigue siendo ese contacto.
+- **`data`** acepta texto, números y sí/no; `null` o `""` borran el dato. Los datos definidos en «Datos de clientes» se validan (número, fecha `AAAA-MM-DD` o `DD/MM/AAAA`, opción de la lista, correo, teléfono) y se guardan normalizados.
+
+**Errores**: siempre `{ "error", "code", "fields": [{ "field", "message" }], "issues" }`. `code` es estable para tu programa (`invalid_request`, `invalid_phone`, `channel_required`, `not_found`, `read_only_key`, `rate_limited`, `idempotency_conflict`…; la lista completa está en la documentación); `error` es el mensaje en español. Un id con mal formato da 404 y una ruta que no existe, `route_not_found`.
+
+**Reintentos seguros**: manda `Idempotency-Key: <un id único de la operación>` en `POST`/`PUT`. Si tu sistema repite la petición (se cortó la red), recibe la misma respuesta con `idempotent-replayed: true` sin crear el contacto ni enviar el mensaje otra vez. Vale 24 h por llave; la misma llave con otro cuerpo da `409 idempotency_conflict`.
+
+**Límites**: 300 lecturas/min y 60 escrituras/min por llave. Una cuenta pausada responde `402` en escrituras y una inactiva `403`.
 
 | Método y ruta | Qué hace |
 |---|---|
-| `GET /me` | Cuenta, permiso de la llave y estado |
+| `GET /me` | Cuenta, permiso de la llave, zona horaria y canal por omisión |
+| `GET /channels` · `GET /contact-fields` | Tus canales y los datos de tus clientes |
 | `GET /contacts?limit&cursor&updated_since&tag&phone&channel_id` | Lista contactos (paginado por `cursor`) |
-| `GET /contacts/:id` · `PUT /contacts/:id` | Ver o actualizar (`name`, `data`, `tags`, `add_tags`, `remove_tags`, `notes`, `consent`) |
-| `POST /contacts` | Crea o actualiza por teléfono |
+| `GET /contacts/:id` · `PUT /contacts/:id` | Ver o actualizar (`name`, `data`, `tags`, `add_tags`, `remove_tags`, `notes`, `consent`, `opted_out`) |
+| `POST /contacts` | Crea o actualiza por teléfono (201 nuevo, 200 ya existía) |
 | `GET /conversations?status&contact_id&updated_since` | Lista conversaciones |
 | `GET /conversations/:id/messages?after&limit` | Mensajes de una conversación |
-| `GET /conversations/:id/export?content=summary\|full\|both&refresh` | La conversación para tu app: resumen, completa o ambos (lo mismo que el evento `conversation.sent`); `refresh=true` actualiza antes el resumen |
-| `POST /messages` | Envía un texto (`conversation_id`, o `channel_id` + `phone`); respeta bajas y el límite del plan |
-| `GET /appointments` | Citas |
+| `GET /conversations/:id/export?content=summary\|full\|both&refresh` | La conversación para tu app (lo mismo que el evento `conversation.sent`); `refresh=true` actualiza antes el resumen |
+| `POST /messages` | Envía un texto a `conversation_id`, `contact_id` o `phone`; respeta bajas y el límite del plan (422 con el motivo si no sale) |
+| `GET /receivables` · `POST /receivables` · `POST /receivables/:id/paid` · `/cancel` | Cobros con recordatorios por WhatsApp (`contact_id` o `phone`; `source_id` evita duplicados) |
+| `GET /receivable-plans` · `POST /receivable-plans` · `POST /receivable-plans/:id/deactivate` | Pagos recurrentes |
+| `GET /appointments` | Citas (la misma forma que en los webhooks) |
 | `GET /team` | Personas del equipo (id, nombre, rol, disponible) |
-| `POST /notifications` | Aviso interno en el panel: `title`, `body`, `link` (ruta del panel), `user_ids`, `roles`, `round_robin` (solo a quien siga en el turno) |
+| `POST /notifications` | Aviso interno en el panel: `title`, `body`, `link`, `user_ids`, `roles`, `round_robin` |
 | `PUT /conversations/:id/assign` | `user_id`: una persona, `"next"` (siguiente por turnos) o `null` (sin asignar) |
 
 Ejemplo:
 
 ```bash
-curl -H "Authorization: Bearer rr_xxx" "https://TU-DOMINIO/api/v1/contacts?updated_since=2026-10-01T00:00:00Z&limit=100"
+curl -X POST https://TU-DOMINIO/api/v1/contacts \
+  -H "Authorization: Bearer rr_xxx" -H "Content-Type: application/json" -H "Idempotency-Key: cliente-1024" \
+  -d '{ "phone": "+52 55 1234 5678", "name": "Ana López", "data": { "correo": "ana@ejemplo.com", "edad": 30 }, "tags": ["crm"] }'
 ```
 
-La respuesta lleva `data` y, si hay más, `next_cursor` para la siguiente página.
-
-Especificación **OpenAPI 3.1** (sin llave): `https://TU-DOMINIO/api/v1/openapi.json`. Impórtala en Postman, Insomnia o un generador de clientes.
+Las listas traen `data` y, si hay más, `next_cursor` para la siguiente página.
 
 ## 4. Canal de correo electrónico (IMAP/SMTP)
 
