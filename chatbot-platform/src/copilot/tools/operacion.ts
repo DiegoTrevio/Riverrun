@@ -71,7 +71,8 @@ export const buscarCitas = defineTool({
     const to = a.hasta ? new Date(`${a.hasta}T23:59:59Z`).getTime() + 86400_000 : Date.now() + 14 * 86400_000;
     const list = (await ctx.call.get<any[]>(`/api/appointments${qs({ from: new Date(from).toISOString(), to: new Date(to).toISOString(), status: a.estado })}`)) ?? [];
     const inRange = list.filter((x) => { const d = localParts(new Date(x.starts_at), ctx.timezone).date; return (!a.desde || d >= a.desde) && (!a.hasta || d <= a.hasta); });
-    return { title: `Revisé la agenda: ${inRange.length} cita(s)`, links: [links.agenda()], contactIds: inRange.map((x) => x.contact_id).filter(Boolean), data: { citas: inRange.slice(0, 40).map((x) => apptOut(x, ctx.timezone)) } };
+    // El nombre de quien reserva en la página pública lo escribe cualquiera.
+    return { title: `Revisé la agenda: ${inRange.length} cita(s)`, links: [links.agenda()], untrusted: inRange.length > 0, contactIds: inRange.map((x) => x.contact_id).filter(Boolean), data: { citas: inRange.slice(0, 40).map((x) => apptOut(x, ctx.timezone)) } };
   },
 });
 
@@ -243,6 +244,7 @@ export const verOportunidades = defineTool({
     return {
       title: `Revisé el tablero ${p.name}: ${cards.length} oportunidad(es)`,
       links: [links.pipeline(p.id)],
+      untrusted: cards.length > 0,
       contactIds: [...new Set(cards.map((c) => c.contact_id))],
       data: {
         embudo: p.name,
@@ -329,7 +331,7 @@ export const verCobros = defineTool({
   async execute(a, ctx) {
     const r = await ctx.call.get<any>(`/api/receivables${qs({ status: a.estado, contact_id: a.contacto_id, search: a.buscar })}`);
     const rows: any[] = r?.data ?? [];
-    return { title: `Revisé los cobros: ${rows.length}`, links: [links.receivables(a.contacto_id)], contactIds: [...new Set(rows.map((x) => x.contact_id))], data: { totales: r?.totals, cobros: rows.slice(0, 30).map(receivableOut) } };
+    return { title: `Revisé los cobros: ${rows.length}`, links: [links.receivables(a.contacto_id)], untrusted: rows.length > 0, contactIds: [...new Set(rows.map((x) => x.contact_id))], data: { totales: r?.totals, cobros: rows.slice(0, 30).map(receivableOut) } };
   },
 });
 
@@ -488,7 +490,7 @@ export const verCotizaciones = defineTool({
       };
     }
     const list = (await ctx.call.get<any[]>(`/api/quotes${qs({ status: a.estado, contact_id: a.contacto_id, search: a.buscar, limit: 30 })}`)) ?? [];
-    return { title: `Revisé las cotizaciones: ${list.length}`, links: [{ label: 'Ver cotizaciones', href: '#/cotizaciones/historial' }], data: { cotizaciones: list.map((q) => ({ id: q.id, folio: q.folio, estado: QUOTE_ES[q.status] ?? q.status, total: totalOf(q), cliente: q.customer_snapshot?.nombre ?? q.contact_name ?? undefined })) } };
+    return { title: `Revisé las cotizaciones: ${list.length}`, untrusted: list.length > 0, contactIds: [...new Set(list.map((q) => q.contact_id).filter(Boolean))], links: [{ label: 'Ver cotizaciones', href: '#/cotizaciones/historial' }], data: { cotizaciones: list.map((q) => ({ id: q.id, folio: q.folio, estado: QUOTE_ES[q.status] ?? q.status, total: totalOf(q), cliente: q.customer_snapshot?.nombre ?? q.contact_name ?? undefined })) } };
   },
 });
 
@@ -506,6 +508,7 @@ export const editarCotizacion = defineTool({
   }).refine((a) => a.cambiar?.length || a.quitar?.length || a.agregar?.length || a.notas !== undefined, 'Indica qué cambiar'),
   label: () => 'Corrigiendo la cotización…',
   risk: () => 'reversible',
+  targets: (a) => [{ kind: 'quote', id: a.cotizacion_id }],
   async execute(a, ctx) {
     const q = await quoteOf(ctx, a.cotizacion_id);
     const lines: ReturnType<typeof lineBody>[] = (q.lines ?? []).map(lineBody);

@@ -105,14 +105,23 @@ function ruleRisk(rule: { active?: boolean; actions?: any[]; stop_ai?: boolean }
   return reasons.length ? { level: 'confirm', reasons } : { level: 'reversible', reasons: [] };
 }
 
+/** Una acción completa para quien confirma: el texto entero de lo que se envía y a qué números. */
+function actionDetail(a: any): string {
+  if (a.type === 'send_message') return `→ Envía al cliente${a.delay_minutes ? ` (a los ${a.delay_minutes} min)` : ''}: «${a.text || (a.wa_template ? 'una plantilla de WhatsApp' : '')}»`;
+  if (a.type === 'alert_team') return `→ Avisa al equipo${a.phones?.length ? ` y por WhatsApp a ${a.phones.join(', ')}` : ''}: «${a.message}»`;
+  return `→ ${describeAction(a)}`;
+}
+
 function rulePreview(title: string, rule: any) {
   const msg = (rule.actions ?? []).find((x: any) => x.type === 'send_message' && x.text);
   return {
     title,
     lines: [
       `Cuando ${describeTrigger(rule.trigger)}${rule.conditions?.length ? ` (con ${rule.conditions.length} condición(es))` : ''}:`,
-      ...(rule.actions ?? []).map((x: any) => `→ ${describeAction(x)}`),
+      ...(rule.actions ?? []).map(actionDetail),
       ...(rule.stop_ai ? ['El asistente no contesta ese mensaje.'] : []),
+      ...(rule.once_per_conversation ? ['Una sola vez por conversación.'] : []),
+      ...(rule.chatbot_id ? [] : ['Para las conversaciones de todos los agentes.']),
     ],
     ...(msg ? { quote: msg.text } : {}),
   };
@@ -164,7 +173,8 @@ export const cambiarRegla = defineTool({
   label: () => 'Cambiando la regla…',
   async risk(a: any, ctx) {
     const rule = await findRule(ctx, a.regla_id);
-    const material = ['cuando', 'condiciones', 'acciones', 'detener_asistente'].some((k) => a[k] !== undefined) || a.activa === true;
+    // Solo renombrar o pausar no cambia lo que la regla manda; lo demás (incluido a qué agente aplica o cuántas veces) sí.
+    const material = Object.keys(RuleFields).some((k) => a[k] !== undefined && k !== 'nombre' && !(k === 'activa' && a[k] === false));
     return material ? ruleRisk({ ...rule, ...ruleBody(a) }) : 'reversible';
   },
   async preview(a: any, ctx) {
@@ -234,7 +244,7 @@ export const editarSecuencia = defineTool({
       title: `Cambiar la secuencia «${seq.name}»`,
       lines: [
         ...(a.activa !== undefined ? [a.activa ? 'Se activa.' : 'Se pausa.'] : []),
-        ...(a.pasos ?? []).map((p) => `Paso ${p.numero}: ${p.texto !== undefined ? quote(p.texto, 80) : ''}${p.espera ? ` (espera ${p.espera.valor} ${p.espera.unidad})` : ''}`),
+        ...(a.pasos ?? []).map((p) => `Paso ${p.numero}: ${p.texto !== undefined ? `«${p.texto}»` : ''}${p.espera ? ` (espera ${p.espera.valor} ${p.espera.unidad})` : ''}`),
       ],
     };
   },

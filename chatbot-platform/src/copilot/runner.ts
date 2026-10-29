@@ -17,7 +17,7 @@ import { assessRisk } from './risk.js';
 import { forModel } from './summarize.js';
 import { describePage } from './page.js';
 import { accountSnapshot, systemMessage } from './prompt.js';
-import { buildHistory } from './history.js';
+import { buildHistory, FULL_TURNS } from './history.js';
 import * as cs from './store.js';
 
 export interface RunnerDeps { ai: AiProvider; inject: Inject; tools: ToolDef[] }
@@ -92,6 +92,8 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
       idsIn(a.args, ctx.scope);
       idsIn(a.result, ctx.scope);
     }
+    // Lo que se leyó de clientes en los turnos que el modelo vuelve a ver completos sigue en el historial.
+    if (await cs.recentlyTainted(thread.id, turn.id, FULL_TURNS)) ctx.tainted = true;
 
     const defs = toolsFor(user, deps.tools);
     const specs = defs.map(toolSpec);
@@ -139,9 +141,12 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
       if (risk.level === 'read') {
         try {
           const r = await def.execute(args, ctx);
+          // Lo que se lee después de haber leído texto de clientes ya no amplía lo que se puede cambiar sin confirmar.
+          if (!ctx.tainted) {
+            r.read?.forEach((t) => ctx.scope.add(t.id));
+            r.contactIds?.forEach((id) => ctx.scope.add(id));
+          }
           if (r.untrusted) ctx.tainted = true;
-          r.read?.forEach((t) => ctx.scope.add(t.id));
-          r.contactIds?.forEach((id) => ctx.scope.add(id));
           if (r.untrusted || r.contactIds?.length) await cs.markTurn(turn.id, { tainted: r.untrusted, contactIds: r.contactIds });
           await cs.insertAction({ thread_id: thread.id, turn_id: turn.id, account_id: thread.account_id, user_id: user.id, tool_call_id: call.id, tool: def.name, args: args as Record<string, unknown>, risk: 'read', status: 'done', title: r.title ?? def.label(args), links: r.links ?? [], contact_ids: r.contactIds ?? [], executed_at: new Date() });
           const text = forModel(r.data);
@@ -160,8 +165,9 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
         try {
           const r = await def.execute(args, { ...ctx, call: makeCaller({ inject: deps.inject, cookie: req.cookie, accountId: thread.account_id, superadmin: user.role === 'superadmin', ip: req.ip, actionId: action.id }) });
           const title = r.title ?? def.label(args);
-          r.contactIds?.forEach((id) => ctx.scope.add(id));
-          if (r.contactIds?.length) await cs.markTurn(turn.id, { contactIds: r.contactIds });
+          if (!ctx.tainted) r.contactIds?.forEach((id) => ctx.scope.add(id));
+          if (r.untrusted) ctx.tainted = true;
+          if (r.untrusted || r.contactIds?.length) await cs.markTurn(turn.id, { tainted: r.untrusted, contactIds: r.contactIds });
           await cs.updateAction(action.id, {
             status: 'done', title, result: r.data ?? null, links: r.links ?? [], before: r.before ?? null, after: r.after ?? null, undo: r.undo ?? null,
             undo_until: r.undo ? new Date(Date.now() + limits.undoDays * 86400_000) : null, contact_ids: r.contactIds ?? [], executed_at: new Date(),

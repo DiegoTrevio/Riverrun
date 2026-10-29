@@ -304,6 +304,26 @@ t('al borrar los datos de un cliente se vacía lo que el Copiloto leyó de él',
   assert.ok(acts.every((a) => JSON.stringify(a.args) === '{}'));
 });
 
+t('al borrar los datos de un cliente también se vacían los avisos y los registros con su nombre', async () => {
+  const conv = await conversationWith('5215511110010');
+  await owner('PUT', `/api/contacts/${conv.contact_id}`, { name: 'Zoila Borrable' });
+  const id = await thread(owner);
+  const page = { page: { hash: `#/contact/${conv.contact_id}` } };
+  script([call('etiquetar', { contacto_ids: [conv.contact_id], agregar: ['borrar'] }), 'Listo.']);
+  await ask(owner, id, 'Etiquétala', page);
+  script([call('enviar_mensaje', { conversacion_id: conv.id, texto: 'Hola Zoila' }), 'Confírmalo.']);
+  const r = await ask(owner, id, 'Escríbele', page);
+  const proposal = r.actions.find((a: any) => a.status === 'proposed');
+  assert.equal((await owner('POST', `/api/copilot/actions/${proposal.id}/decline`)).statusCode, 200);
+  const named = async () => [
+    (await pool.query(`SELECT 1 FROM copilot_messages WHERE thread_id = $1 AND content LIKE '%Zoila%'`, [id])).rowCount,
+    (await pool.query(`SELECT 1 FROM event_logs WHERE source = 'copilot' AND message LIKE '%Zoila%'`)).rowCount,
+  ];
+  assert.ok((await named()).every((n) => n! > 0), 'antes de borrar están el aviso y el registro');
+  assert.equal((await owner('DELETE', `/api/contacts/${conv.contact_id}`)).statusCode, 200);
+  assert.deepEqual(await named(), [0, 0]);
+});
+
 t('deshacer todo un pedido, de lo último a lo primero', async () => {
   const id = await thread(owner);
   script([

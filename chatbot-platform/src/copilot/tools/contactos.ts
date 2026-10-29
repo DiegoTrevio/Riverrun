@@ -28,6 +28,9 @@ export const buscarContactos = defineTool({
     const all: any[] = r.items ?? [];
     const items = all.slice(0, a.limite ?? 20);
     return {
+      // Los nombres los ponen los clientes (su perfil de WhatsApp): se tratan como texto de clientes.
+      untrusted: items.length > 0,
+      contactIds: items.map((c) => c.id),
       title: `Busqué contactos${a.texto ? ` «${a.texto}»` : ''}${a.etiqueta ? ` con la etiqueta ${a.etiqueta}` : ''}: ${items.length}`,
       data: {
         mostrados: items.length,
@@ -221,6 +224,7 @@ export const crearTarea = defineTool({
   risk: () => 'reversible',
   targets: (a) => [{ kind: 'contact', id: a.contacto_id }],
   async execute(a, ctx) {
+    await profile(ctx, a.contacto_id); // primero se revisa que sea de la cuenta (el superadmin puede ver todas)
     const t = await ctx.call.send<any>('POST', path`/api/contacts/${a.contacto_id}/tasks`, { kind: a.tipo, body: a.texto, ...(a.vence && a.tipo === 'pendiente' ? { due_on: a.vence } : {}) });
     return {
       title: `${a.tipo === 'nota' ? 'Agregué la nota' : 'Agregué el pendiente'} «${a.texto.slice(0, 60)}»${t.due_on ? ` para el ${day(t.due_on, ctx.timezone)}` : ''}`,

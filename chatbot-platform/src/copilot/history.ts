@@ -4,10 +4,11 @@
  * se cortó a la mitad, se completa con «sin resultado»), porque los proveedores rechazan llamadas sin respuesta.
  */
 import type { AnyMessage } from '../ai/provider.js';
-import { actionLine } from './prompt.js';
+import { actionLine, tidy } from './prompt.js';
 import type { Action, Message } from './store.js';
 
-const FULL_TURNS = 6;
+/** Turnos que se repiten completos (con los resultados de sus herramientas). */
+export const FULL_TURNS = 6;
 const MAX_CHARS = 40000;
 const MAX_TOOL = 3000;
 
@@ -19,7 +20,7 @@ function userText(m: Message, actions: Map<string, Action>): string {
 
 function toModel(m: Message, actions: Map<string, Action>): AnyMessage | null {
   if (m.role === 'user') return { role: 'user', content: userText(m, actions) };
-  if (m.role === 'event') return { role: 'user', content: `[Aviso del panel] ${m.redacted ? '(borrado)' : m.content}` };
+  if (m.role === 'event') return { role: 'user', content: `[Aviso del panel] ${m.redacted ? '(borrado)' : tidy(m.content, 300)}` };
   if (m.role === 'assistant') {
     if (m.tool_calls?.length) return { role: 'assistant', content: m.content || null, tool_calls: m.tool_calls };
     return m.content ? { role: 'assistant', content: m.content } : null;

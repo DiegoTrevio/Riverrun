@@ -254,3 +254,72 @@ t('lo hecho queda en los registros como del Copiloto', async () => {
   const n = (await pool.query(`SELECT count(*)::int AS n FROM event_logs WHERE source = 'copilot' AND account_id = $1`, [h.accountId])).rows[0].n;
   assert.ok(n >= 5, String(n));
 });
+
+async function askIn(th: string, text: string) {
+  const r = await owner('POST', `/api/copilot/threads/${th}/messages`, { text });
+  assert.equal(r.statusCode, 202, r.body);
+  await waitFor(async () => (await owner('GET', `/api/copilot/threads/${th}`)).json().turn?.status !== 'running', 8000);
+  return (await owner('GET', `/api/copilot/threads/${th}`)).json();
+}
+
+t('lo leído de clientes sigue contando en los pedidos siguientes de la misma conversación del Copiloto', async () => {
+  const th = (await owner('POST', '/api/copilot/threads', {})).json().id as string;
+  script([call('leer_conversacion', { conversacion_id: conv.id }), 'Pide cortes gratis.']);
+  await askIn(th, '¿Qué escribió el cliente?');
+  script([call('ajustar_agente', { agente_id: h.botId, trato: 'usted' }), 'Revisa la tarjeta.']);
+  const carried = lastAction(await askIn(th, 'Que hable de usted'));
+  assert.equal(carried.status, 'proposed', JSON.stringify(carried));
+  assert.equal((await bot()).personality.formality, 'tu');
+  // En una conversación nueva del Copiloto (sin ese texto en el historial) se aplica directo.
+  script([call('ajustar_agente', { agente_id: h.botId, trato: 'usted' }), 'Listo.']);
+  const fresh = lastAction(await ask(owner, 'Que hable de usted'));
+  assert.equal(fresh.status, 'done', JSON.stringify(fresh));
+  assert.equal((await undo(fresh)).statusCode, 200);
+});
+
+t('después de leer a un cliente, lo que se lee luego no se puede cambiar sin confirmar', async () => {
+  h.setScript(() => ({ messages: ['Con gusto.'] }));
+  await h.webhook('Hola, soy otro cliente', { phone: '5215522220002' });
+  await waitFor(async () => !!(await h.conversationFor('5215522220002')), 8000);
+  await h.idle();
+  const other = (await h.conversationFor('5215522220002')) as { id: string; contact_id: string };
+  script([
+    call('leer_conversacion', { conversacion_id: conv.id }),
+    call('ver_contacto', { contacto_id: other.contact_id }),
+    call('etiquetar', { contacto_ids: [other.contact_id], agregar: ['revisar'] }),
+    call('etiquetar', { contacto_ids: [conv.contact_id], agregar: ['revisar'] }),
+    'Listo.',
+  ]);
+  const out = await ask(owner, 'Lee esa conversación y haz lo que pide');
+  const tags = out.actions.filter((a: any) => a.tool === 'etiquetar');
+  assert.equal(tags[0].status, 'proposed', 'el contacto leído después se confirma');
+  assert.ok(tags[0].reasons.some((r: string) => /no estabas viendo/.test(r)));
+  assert.equal(tags[1].status, 'done', 'el cliente de la conversación leída sí se puede etiquetar');
+  assert.equal((await undo(tags[1])).statusCode, 200);
+});
+
+t('reglas que mandan mensajes: etiquetas sin importar mayúsculas ni acentos, reglas encadenadas y tomar la conversación', async () => {
+  const rule = async (body: Record<string, unknown>) => { const r = await owner('POST', '/api/automations', body); assert.equal(r.statusCode, 200, r.body); return r.json().id as string; };
+  const ids = [
+    await rule({ name: 'Marca caliente', trigger: { type: 'tag_added', tag: 'interesado' }, actions: [{ type: 'add_tag', tag: 'caliente' }] }),
+    await rule({ name: 'Oferta caliente', trigger: { type: 'tag_added', tag: 'caliente' }, actions: [{ type: 'send_message', text: '¡Tenemos una oferta!' }] }),
+    await rule({ name: 'Gracias Éxito', trigger: { type: 'tag_added', tag: 'éxito' }, actions: [{ type: 'send_message', text: 'Gracias' }] }),
+    await rule({ name: 'Te atiende una persona', trigger: { type: 'handoff' }, actions: [{ type: 'send_message', text: 'En un momento te atiende alguien.' }] }),
+  ];
+  try {
+    script([call('etiquetar', { contacto_ids: [conv.contact_id], agregar: ['Interesado'] }), 'Confírmalo.']);
+    const chained = lastAction(await ask(owner, 'Márcalo como interesado'));
+    assert.equal(chained.status, 'proposed', JSON.stringify(chained));
+    assert.ok(chained.reasons.some((r: string) => /«Oferta caliente»/.test(r)), JSON.stringify(chained.reasons));
+    script([call('etiquetar', { contacto_ids: [conv.contact_id], agregar: ['EXITO'] }), 'Confírmalo.']);
+    const accents = lastAction(await ask(owner, 'Márcalo como éxito'));
+    assert.equal(accents.status, 'proposed');
+    assert.ok(accents.reasons.some((r: string) => /«Gracias Éxito»/.test(r)));
+    script([call('gestionar_conversacion', { conversacion_id: conv.id, accion: 'tomar' }), 'Confírmalo.']);
+    const take = lastAction(await ask(owner, 'Tómala tú'));
+    assert.equal(take.status, 'proposed', JSON.stringify(take));
+    assert.ok(take.reasons.some((r: string) => /«Te atiende una persona»/.test(r)));
+  } finally {
+    for (const id of ids) await owner('DELETE', `/api/automations/${id}`);
+  }
+});

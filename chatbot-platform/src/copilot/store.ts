@@ -155,6 +155,17 @@ export async function stopRequested(id: string): Promise<boolean> {
 }
 
 /** Turnos que empezó esa persona en la última hora y la cuenta en las últimas 24 h (límites de uso). */
+/**
+ * ¿Alguno de los turnos anteriores que el modelo vuelve a ver completos leyó texto de clientes? Entonces ese texto sigue
+ * en el historial y el turno nuevo se trata igual que si lo hubiera leído.
+ */
+export async function recentlyTainted(threadId: string, exceptTurnId: string, turns: number): Promise<boolean> {
+  return !!(await queryOne(
+    `SELECT 1 FROM (SELECT tainted FROM copilot_turns WHERE thread_id = $1 AND id <> $2 ORDER BY started_at DESC LIMIT $3) t WHERE tainted LIMIT 1`,
+    [threadId, exceptTurnId, turns],
+  ));
+}
+
 export async function recentTurns(userId: string, accountId: string) {
   return (await queryOne<{ user_hour: number; account_day: number }>(
     `SELECT (SELECT count(*)::int FROM copilot_turns WHERE user_id = $1 AND started_at > now() - interval '1 hour') AS user_hour,
@@ -299,10 +310,14 @@ export async function redactContact(db: Db, contactId: string) {
     await db.query(`UPDATE copilot_messages SET content = '', tool_calls = NULL, redacted = true WHERE turn_id = ANY($1::uuid[])`, [turnIds]);
     await db.query(`UPDATE copilot_threads SET title = '' WHERE id = ANY($1::uuid[])`, [[...new Set(turns.map((t) => t.thread_id))]]);
   }
-  await db.query(
+  const actions = (await db.query(
     `UPDATE copilot_actions SET args = '{}', preview = NULL, result = NULL, before = NULL, after = NULL, undo = NULL, links = '[]',
             title = 'Datos de un cliente borrados', status = CASE WHEN status = 'proposed' THEN 'expired' ELSE status END, updated_at = now()
-      WHERE turn_id = ANY($1::uuid[]) OR $2 = ANY(contact_ids)`,
+      WHERE turn_id = ANY($1::uuid[]) OR $2 = ANY(contact_ids) RETURNING id`,
     [turnIds, contactId],
-  );
+  )).rows.map((r: { id: string }) => r.id);
+  // El registro de lo que hizo el Copiloto lleva el título de la acción (con el nombre del cliente).
+  if (actions.length) {
+    await db.query(`UPDATE event_logs SET message = 'Copiloto: acción sobre un cliente cuyos datos se borraron', details = details - 'title' WHERE details->>'copilot_action_id' = ANY($1::text[])`, [actions]);
+  }
 }

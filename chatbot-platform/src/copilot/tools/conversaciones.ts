@@ -27,7 +27,9 @@ export const buscarConversaciones = defineTool({
     const rows = await ctx.call.get<any[]>(`/api/conversations${qs({ search: a.texto, status: a.estado ? STATUS[a.estado] : undefined, assigned: a.asignada === 'a_mi' ? 'me' : a.asignada === 'a_nadie' ? 'none' : undefined, limit: a.limite ?? 15 })}`);
     return {
       title: `Revisé ${rows.length} conversaciones`,
-      untrusted: rows.some((r) => r.last_message),
+      // Nombres y últimos mensajes los escriben los clientes.
+      untrusted: rows.length > 0,
+      contactIds: [...new Set(rows.map((r) => r.contact_id).filter(Boolean))],
       data: {
         conversaciones: rows.map((r) => ({
           id: r.id, contacto_id: r.contact_id, cliente: nameOf(r), telefono: r.phone, estado: STATUS_ES[r.status] ?? r.status,
@@ -85,6 +87,8 @@ export const gestionarConversacion = defineTool({
   label: (a) => (a.accion === 'asignar' ? 'Asignando la conversación…' : a.accion === 'tomar' ? 'Tomando la conversación…' : 'Devolviendo la conversación al agente…'),
   risk: () => 'reversible',
   targets: (a) => [{ kind: 'conversation', id: a.conversacion_id }],
+  // Tomarla la pasa a una persona: las reglas «pasa a una persona» pueden escribirle al cliente.
+  events: (a) => (a.accion === 'tomar' ? [{ type: 'handoff' }] : []),
   async execute(a, ctx) {
     const before = await conversation(ctx, a.conversacion_id);
     const id = before.conversation.id;
