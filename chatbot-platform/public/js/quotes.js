@@ -66,8 +66,8 @@ export async function viewQuotes(root, tab = 'precios', params = new URLSearchPa
 
 async function viewPrices(root, editId) {
   const [items, settings] = await Promise.all([api('GET', withAcct('/api/price-items')), api('GET', withAcct('/api/quote-settings'))]);
-  root.append(h('div', { class: 'card' },
-    h('p', { class: 'muted', style: 'margin-top:0' },
+  root.append(h('div', { class: 'page-intro' },
+    h('p', { class: 'muted' },
       'Los conceptos que el asistente puede cotizar. Usa precio exacto cuando ya lo sabes; «desde», rango o «por confirmar» cuando depende de los detalles: ',
       'esas cotizaciones salen como APROXIMADAS. El asistente nunca calcula montos: los totales salen de esta lista.'),
     h('a', { class: 'btn primary', href: '#/cotizaciones/precios?id=new' }, '+ Nuevo concepto')));
@@ -86,7 +86,17 @@ async function viewPrices(root, editId) {
           h('td', {}, unitPrice(i, settings.currency), h('span', { class: 'small muted' }, ` / ${i.unit}`)),
           h('td', { class: 'small' }, IVA_MODE[i.iva_mode]),
           h('td', {}, i.active ? badge(['green', 'Activo']) : badge(['', 'Inactivo']))))))
-    : h('p', { class: 'muted' }, 'Aún no hay conceptos. Agrega los servicios o productos que cotizas.')));
+    // Sin conceptos: la lista vacía enseña cómo se ve cada tipo de precio (ejemplos, en gris y marcados como tales).
+    : [h('p', { style: 'margin-top:0' }, h('strong', {}, 'Aún no hay conceptos. '), 'Agrega los servicios o productos que cotizas; así se verá tu lista:'),
+      h('table', { class: 'example-table' },
+        h('caption', { class: 'sr-only' }, 'Ejemplos de conceptos'),
+        h('thead', {}, h('tr', {}, h('th', {}, 'Concepto (ejemplo)'), h('th', {}, 'Precio'), h('th', {}, 'Cómo sale en la cotización'))),
+        h('tbody', {}, [
+          ['Servicio con precio fijo', '$500.00 / servicio', 'Exacta'],
+          ['Paquete que depende de los detalles', 'desde $1,200.00 / paquete', 'Aproximada'],
+          ['Trabajo con precio variable', '$800.00 – $1,500.00 / trabajo', 'Aproximada'],
+          ['Algo que hay que revisar antes', 'Por confirmar', 'Aproximada'],
+        ].map(([name, price, kind]) => h('tr', {}, h('td', {}, name), h('td', {}, price), h('td', {}, kind)))))]));
 }
 
 function priceForm(existing, settings) {

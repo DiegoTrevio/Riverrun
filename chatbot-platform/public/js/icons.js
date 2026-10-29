@@ -46,6 +46,7 @@ const PATHS = {
   paperclip: '<path d="m20 11.5-8.3 8.3a5 5 0 0 1-7-7L13 4.5a3.4 3.4 0 0 1 4.8 4.8L9.6 17.5a1.8 1.8 0 0 1-2.6-2.6l7.6-7.6"/>',
   image: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 16-5-5-9 9"/>',
   video: '<rect x="3" y="6" width="13" height="12" rx="2"/><path d="m16 10 5-3v10l-5-3z"/>',
+  audio: '<path d="M9 18V5l11-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/>',
   lock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
   star: '<path d="m12 3.5 2.6 5.4 5.9.8-4.3 4.1 1 5.8L12 16.8l-5.2 2.8 1-5.8-4.3-4.1 5.9-.8z"/>',
   heart: '<path d="M12 20s-7.5-4.6-9-9.2A4.6 4.6 0 0 1 12 7.5a4.6 4.6 0 0 1 9 3.3C19.5 15.4 12 20 12 20z"/>',

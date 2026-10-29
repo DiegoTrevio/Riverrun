@@ -22,7 +22,7 @@ export async function viewContacts(root,params) {
    const items=page.items.map(c=>h('tr',{},h('td',{},h('a',{href:`#/contact/${c.id}`},h('strong',{},c.name)),h('div',{class:'small muted'},c.phone?fmtPhone(c.phone):'Sin teléfono'),isSuper()&&!state.accountId?h('div',{class:'small muted'},c.account_name):null),
     h('td',{},`${c.channels} ${c.channels===1?'canal':'canales'}`,h('div',{class:'small muted'},c.tags.join(', '))),
     h('td',{},...(c.pending?[h('span',{class:'badge orange'},'Con pendientes')]:[]),...(c.unassigned?[h('span',{class:'badge'},'Sin asignar')]:[]),c.next_appointment?h('div',{class:'small'},`Cita: ${fmtDate(c.next_appointment)}`):null),
-    h('td',{},fmtDate(c.last_activity)),h('td',{},h('a',{class:'btn small',href:`#/contact/${c.id}`},'Ver ficha'))));
+    h('td',{},fmtDate(c.last_activity)),h('td',{class:'row-action'},h('a',{class:'btn small ghost',href:`#/contact/${c.id}`},'Ver ficha'))));
    if(append)rows.append(...items);else fill(rows,...(items.length?items:[h('tr',{},h('td',{colspan:5},'No hay contactos con estos filtros.'))]));
    status.textContent='Se muestran únicamente los contactos y canales que puedes gestionar.';
   }catch(error){status.textContent=error.message;status.className='error';}finally{busy=false;more.disabled=false;}
@@ -33,13 +33,16 @@ export async function viewContacts(root,params) {
   const views=await api('GET',withAcct('/api/contact-views'));
   const pick={id:''},options=select(pick,'id',[['','Mis vistas guardadas'],...views.map(v=>[v.id,v.name])],()=>{const v=views.find(v=>v.id===pick.id);if(v)location.hash=`#/contacts?${new URLSearchParams(v.filters)}`;});
   options.setAttribute('aria-label','Vista de contactos guardada');
-  saved.append(options,h('button',{onclick:async()=>{const name=await ask('Nombre de esta vista');if(!name)return;if(await run(()=>api('POST',withAcct('/api/contact-views'),{name,filters:model}),'Vista guardada'))location.hash=`#/contacts?${new URLSearchParams({...filters(),saved:Date.now()})}`;}},'Guardar esta vista'),
-   h('button',{onclick:async()=>{if(!pick.id)return;if(await run(()=>api('DELETE',withAcct(`/api/contact-views/${pick.id}`)),'Vista eliminada')){views.splice(views.findIndex(v=>v.id===pick.id),1);options.querySelector(`option[value="${pick.id}"]`)?.remove();pick.id='';options.value='';}}},'Eliminar vista seleccionada'));
+  saved.append(options,h('button',{class:'ghost',onclick:async()=>{const name=await ask('Nombre de esta vista');if(!name)return;if(await run(()=>api('POST',withAcct('/api/contact-views'),{name,filters:model}),'Vista guardada'))location.hash=`#/contacts?${new URLSearchParams({...filters(),saved:Date.now()})}`;}},'Guardar esta vista'),
+   h('button',{class:'ghost',onclick:async()=>{if(!pick.id)return;if(await run(()=>api('DELETE',withAcct(`/api/contact-views/${pick.id}`)),'Vista eliminada')){views.splice(views.findIndex(v=>v.id===pick.id),1);options.querySelector(`option[value="${pick.id}"]`)?.remove();pick.id='';options.value='';}}},'Eliminar vista seleccionada'));
  }
  const tools=isAdmin()&&canSave?h('div',{class:'row'},h('button',{onclick:async()=>{if(await importContactsDialog())load();}},'Importar contactos'),h('a',{class:'btn',href:withAcct('/api/export/contacts.csv'),download:''},'Exportar CSV')):null;
  root.append(h('div',{class:'row between'},h('h1',{},'Contactos'),tools),workspaceTabs('contacts'),h('p',{class:'help'},'Encuentra a una persona y retoma su atención desde una sola ficha. Los registros del mismo teléfono se reúnen dentro del perfil, conservando el origen de cada dato.'),
-  h('div',{class:'card stack'},h('div',{class:'row'},field('Mostrar',select(model,'view',[['all','Todos'],['pending','Con pendientes'],['unassigned','Sin asignar'],['upcoming','Con citas próximas']],apply)),
-   field('Buscar nombre o teléfono',h('input',{type:'search',value:model.search,onchange:e=>{model.search=e.target.value;apply();}})),field('Etiqueta',h('input',{value:model.tag,onchange:e=>{model.tag=e.target.value;apply();}}))),saved),status,
+  // Los filtros en una sola barra sobre la tabla (sin tarjeta propia); las vistas guardadas al final de la misma línea.
+  h('div',{class:'toolbar'},field('Buscar nombre o teléfono',h('input',{type:'search',value:model.search,onchange:e=>{model.search=e.target.value;apply();}})),
+   field('Mostrar',select(model,'view',[['all','Todos'],['pending','Con pendientes'],['unassigned','Sin asignar'],['upcoming','Con citas próximas']],apply)),
+   field('Etiqueta',h('input',{value:model.tag,onchange:e=>{model.tag=e.target.value;apply();}}))),
+  h('div',{class:'row between list-meta'},status,saved),
   h('div',{class:'card'},h('table',{class:'responsive-table'},h('thead',{},h('tr',{},...['Persona','Canales y etiquetas','Qué sigue','Última actividad',''].map(s=>h('th',{},s)))),rows)),more);
  // Se refresca sola mientras solo está la primera página (con más cargadas, se perdería lo que ya se ve).
  await load();poll(()=>pages<=1?load():undefined,10000,root);

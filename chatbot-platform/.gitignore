@@ -4,3 +4,7 @@ data/
 .env
 evals/results/
 .promptfoo/
+# Carpeta de trabajo de la skill design-taste-frontend: capturas y reportes del inspector.
+# Se guarda solo la dirección repartida (el estilo del panel), para que las próximas sesiones la conserven.
+.taste-skill/*
+!.taste-skill/direction.json

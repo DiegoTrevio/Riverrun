@@ -173,7 +173,7 @@ const shortMonth = (iso) => new Date(iso + 'T12:00:00Z').toLocaleDateString('es-
 const shortDay = (iso) => new Date(iso + 'T12:00:00Z').toLocaleDateString('es-MX', { timeZone: 'UTC', weekday: 'short' }).replace('.', '');
 const dayNum = (iso) => Number(iso.slice(8, 10));
 /** Colores de las personas (y gris para las citas sin persona). */
-const PALETTE = ['#155eef', '#12b76a', '#f79009', '#7a5af8', '#ee46bc', '#06aed4', '#f04438', '#669f2a'];
+const PALETTE = ['#155eef', '#12b76a', '#f79009', '#0e9384', '#ee46bc', '#06aed4', '#f04438', '#669f2a'];
 const VIEWS = [['day', 'Día'], ['week', 'Semana'], ['month', 'Mes']];
 const HOUR_PX = 56;
 

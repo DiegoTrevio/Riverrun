@@ -1,42 +1,41 @@
 /* Estadísticas del panel (public/js/analytics.js).
-   Series: paleta categórica validada (blue, orange, aqua) con las superficies del panel, claro y oscuro.
+   Series del estilo framed-sheet: la principal en el tono de la marca (el mismo del panel, o el de la marca blanca);
+   la segunda en gris tinta (neutra) y la tercera en ámbar, ambas a 3:1 o más sobre la hoja.
    Estados (bueno/aviso/grave/crítico) solo en iconos y deltas, siempre con texto o signo al lado. */
 :root {
-  --s1: #2a78d6;
-  --s2: #eb6834;
-  --s3: #1baf7a;
-  --st-good: #0ca30c;
-  --st-serious: #ec835a;
+  --s1: var(--accent);
+  --s2: #6b7075;
+  --s3: #a86f0c;
+  --st-good: #1e7b4f;
+  --st-serious: #b45309;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --s1: #3987e5;
-    --s2: #d95926;
-    --s3: #199e70;
-    --st-good: #0ca30c;
-    --st-serious: #ec835a;
+    --s1: var(--accent);
+    --s2: #a1a1aa;
+    --s3: #d29a36;
+    --st-good: #3fc07a;
+    --st-serious: #f0b44c;
   }
 }
 
 .table-scroll { overflow-x: auto; max-width: 100%; }
 .stats-filters { margin-bottom: 14px; }
-.stats-filters select { width: auto; min-width: 230px; }
+.stats-filters > select, .stats-filters select { width: auto; min-width: 230px; flex: 0 1 auto; }
 .stats-filters label { display: inline-flex; align-items: center; gap: 6px; }
 .stats-section { font-size: 16px; margin: 22px 0 10px; }
 .stats-frame { transition: opacity 0.15s ease; }
 .stats-frame h2 { font-size: 15px; margin: 0; }
 .stats-frame h3 { font-size: 13px; margin: 14px 0 6px; color: var(--muted); }
 
-.stats-kpis { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(clamp(140px, 42vw, 190px), 1fr)); margin-bottom: 14px; }
+/* auto-fit: las cifras ocupan toda la fila (con auto-fill quedaba una columna vacía a la derecha). */
+.stats-kpis { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(clamp(140px, 42vw, 190px), 1fr)); margin-bottom: 16px; }
 .stats-tile { margin: 0; }
-.stats-value { font-size: clamp(20px, 6vw, 26px); font-weight: 700; margin: 4px 0 2px; }
+.stats-value { font-size: clamp(22px, 6vw, 28px); font-weight: 400; letter-spacing: -0.01em; margin: 4px 0 2px; }
 .stats-delta { display: block; font-size: 12px; margin: 2px 0; }
-.stats-delta.is-good { color: #006300; }
+.stats-delta.is-good { color: var(--positive); }
 .stats-delta.is-bad { color: var(--danger); }
-@media (prefers-color-scheme: dark) {
-  .stats-delta.is-good { color: #0ca30c; }
-}
-.stats-warn { color: #9a6206; }
+.stats-warn { color: var(--warning); }
 
 .stats-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr)); margin-bottom: 14px; }
 .stats-chart-card { min-width: 0; margin-bottom: 0; }

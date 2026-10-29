@@ -22,12 +22,13 @@ const WEEKDAYS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes
 export async function viewReceivables(root, params) {
   const tab = params.get('tab') === 'ajustes' && isAdmin() ? 'ajustes' : params.get('tab') === 'recurrentes' ? 'recurrentes' : 'lista';
   root.append(
-    h('div', { class: 'row between' }, h('h1', {}, 'Cobros'),
-      h('nav', { class: 'row', 'aria-label': 'Secciones de cobros' },
-        h('a', { class: `btn${tab === 'lista' ? ' primary' : ''}`, href: '#/cobros', 'aria-current': tab === 'lista' ? 'page' : null }, 'Cobros'),
-        h('a', { class: `btn${tab === 'recurrentes' ? ' primary' : ''}`, href: '#/cobros?tab=recurrentes', 'aria-current': tab === 'recurrentes' ? 'page' : null }, 'Recurrentes'),
-        isAdmin() ? h('a', { class: `btn${tab === 'ajustes' ? ' primary' : ''}`, href: '#/cobros?tab=ajustes', 'aria-current': tab === 'ajustes' ? 'page' : null }, 'Ajustes de cobro') : null)),
-    h('p', { class: 'help' }, 'Registra lo que te deben tus clientes y el asistente les recuerda el pago por WhatsApp antes y después de la fecha. El dinero te llega directo con tus instrucciones de pago; tú marcas el cobro como pagado.'),
+    h('h1', {}, 'Cobros'),
+    h('p', { class: 'help', style: 'margin:0 0 16px;max-width:760px' }, 'Registra lo que te deben tus clientes y el asistente les recuerda el pago por WhatsApp antes y después de la fecha. El dinero te llega directo con tus instrucciones de pago; tú marcas el cobro como pagado.'),
+    // Las secciones como pestañas subrayadas, igual que en el resto del panel.
+    h('nav', { class: 'tabs', 'aria-label': 'Secciones de cobros' },
+      h('a', { class: tab === 'lista' ? 'active' : '', href: '#/cobros', 'aria-current': tab === 'lista' ? 'page' : null }, 'Cobros'),
+      h('a', { class: tab === 'recurrentes' ? 'active' : '', href: '#/cobros?tab=recurrentes', 'aria-current': tab === 'recurrentes' ? 'page' : null }, 'Recurrentes'),
+      isAdmin() ? h('a', { class: tab === 'ajustes' ? 'active' : '', href: '#/cobros?tab=ajustes', 'aria-current': tab === 'ajustes' ? 'page' : null }, 'Ajustes de cobro') : null),
   );
   if (tab === 'ajustes') return settingsView(root);
   if (tab === 'recurrentes') return plansView(root, params);
@@ -60,10 +61,12 @@ async function listView(root, params) {
 function totalsBlock(totals) {
   if (!totals.length) return null;
   const sum = (k) => totals.map((t) => money(t[k], t.currency)).join(' · ');
-  return h('div', { class: 'grid', style: 'margin-bottom:12px' },
-    h('div', { class: 'card' }, h('div', { class: 'kpi' }, sum('pending_cents')), h('div', { class: 'muted small' }, 'Por cobrar')),
-    h('div', { class: 'card' }, h('div', { class: 'kpi' }, sum('overdue_cents')), h('div', { class: 'muted small' }, 'Vencido')),
-    h('div', { class: 'card' }, h('div', { class: 'kpi' }, sum('paid_month_cents')), h('div', { class: 'muted small' }, 'Cobrado este mes')));
+  // Una franja dividida: la etiqueta arriba y la cifra debajo; lo vencido en rojo solo cuando hay algo vencido.
+  const overdue = totals.some((t) => t.overdue_cents > 0);
+  return h('div', { class: 'card kpi-card' }, h('div', { class: 'kpi-strip' },
+    h('div', {}, h('span', { class: 'label' }, 'Por cobrar'), h('span', { class: 'value' }, sum('pending_cents'))),
+    h('div', {}, h('span', { class: 'label' }, 'Vencido'), h('span', { class: `value${overdue ? ' alert' : ''}` }, sum('overdue_cents'))),
+    h('div', {}, h('span', { class: 'label' }, 'Cobrado este mes'), h('span', { class: 'value' }, sum('paid_month_cents')))));
 }
 
 function table(r, reload) {
@@ -91,13 +94,13 @@ function table(r, reload) {
             const note = h('input', { placeholder: 'Opcional: cómo pagó, folio de la transferencia…' });
             if (!(await dialog(`¿Marcar «${x.concept}» como pagado?`, field('Nota', note), 'Marcar pagado'))) return;
             if (await run(() => api('POST', `/api/receivables/${x.id}/paid`, { note: note.value }), 'Cobro marcado como pagado')) reload();
-          }, 'primary', x.concept),
-          act('Recordar ahora', async () => { if (await run(() => api('POST', `/api/receivables/${x.id}/remind`), 'Recordatorio enviado')) reload(); }, '', x.concept),
-          act('Editar', () => editDialog(x, reload), '', x.concept),
+          }, 'small', x.concept),
+          act('Recordar ahora', async () => { if (await run(() => api('POST', `/api/receivables/${x.id}/remind`), 'Recordatorio enviado')) reload(); }, 'small ghost', x.concept),
+          act('Editar', () => editDialog(x, reload), 'small ghost', x.concept),
           act('Cancelar', async () => {
             if (!(await confirmAction(`¿Cancelar el cobro «${x.concept}»? Ya no se le recordará al cliente.`))) return;
             if (await run(() => api('POST', `/api/receivables/${x.id}/cancel`), 'Cobro cancelado')) reload();
-          }, '', x.concept)) : null));
+          }, 'small ghost danger', x.concept)) : null));
     }))));
 }
 

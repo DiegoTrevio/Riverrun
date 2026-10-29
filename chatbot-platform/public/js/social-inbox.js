@@ -100,7 +100,7 @@ function content(it, redraw) {
       field(comment ? 'Tu respuesta' : 'Respuesta a la reseña', box),
       warn,
       h('div', { class: 'row wrap', style: 'gap:8px' },
-        h('button', { class: 'secondary', onclick: async () => {
+        h('button', { class: 'ghost', onclick: async () => {
           const s = await run(() => api('POST', withAcct(`${base}/suggest`)));
           if (!s) return;
           if (s.risk) { warn.textContent = 'Es un mensaje delicado: contéstalo en persona.'; return; }
@@ -115,11 +115,12 @@ function content(it, redraw) {
           if (!m.text.trim()) return toast('Escribe la respuesta', true);
           act('reply', { text: m.text, source: m.text === suggested && suggested ? 'suggested' : 'human' }, 'Respuesta publicada');
         } }, 'Responder'),
-        comment && can.privateReply && !it.private_reply_at ? h('button', { class: 'secondary', title: 'Le llega como mensaje directo (una sola vez y hasta 7 días después del comentario)', onclick: () => {
+        comment && can.privateReply && !it.private_reply_at ? h('button', { class: 'ghost', title: 'Le llega como mensaje directo (una sola vez y hasta 7 días después del comentario)', onclick: () => {
           if (!m.text.trim()) return toast('Escribe el mensaje privado', true);
           act('private-reply', { text: m.text }, 'Mensaje privado enviado');
         } }, 'Responder en privado') : null)) : null,
-    h('div', { class: 'row wrap', style: 'gap:8px;margin-top:8px' },
+    // Lo que no es responder va como acción de texto: el único botón con borde de cada comentario es «Responder».
+    h('div', { class: 'row wrap item-actions', style: 'gap:4px;margin-top:8px' },
       comment && can.hide && ['nuevo', 'respondido'].includes(it.status) ? h('button', { class: 'small secondary', onclick: () => act('hide', undefined, 'Comentario oculto') }, 'Ocultar') : null,
       comment && can.hide && it.status === 'oculto' ? h('button', { class: 'small secondary', onclick: () => act('unhide', undefined, 'Comentario visible otra vez') }, 'Mostrar') : null,
       comment && can.like && it.status !== 'eliminado' ? h('button', { class: 'small secondary', 'aria-pressed': String(!!it.liked), onclick: () => act(it.liked ? 'unlike' : 'like') }, icon('heart', 16), it.liked ? 'Te gusta' : 'Me gusta') : null,

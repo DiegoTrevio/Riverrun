@@ -4,8 +4,10 @@
 .copilot { position: fixed; top: 0; right: 0; bottom: 0; width: var(--cp-w); z-index: 55; display: flex; flex-direction: column; background: var(--surface); border-left: 1px solid var(--line); }
 .copilot[hidden] { display: none; }
 /* Pantalla ancha: acoplado, la página se hace a un lado (y los avisos también). */
-body.cp-docked #app { margin-right: var(--cp-w); }
-body.cp-docked .toast { right: calc(var(--cp-w) + 20px); }
+body.cp-docked #app { margin-right: calc(var(--cp-w) + 8px); }
+body.cp-docked .toast { right: calc(var(--cp-w) + 28px); }
+/* Acoplado, es una segunda hoja sobre el marco: a 8px de los bordes, con el mismo borde y las mismas esquinas. */
+body.cp-docked .copilot { top: 8px; right: 8px; bottom: 8px; border: 1px solid var(--sheet-edge); border-radius: var(--radius-sheet); overflow: hidden; }
 /* Pantalla mediana: cajón encima de la página. */
 @media (max-width: 1279px) {
   .copilot { width: min(420px, 92vw); box-shadow: -12px 0 32px rgba(17, 24, 39, .16); } /* taste-skill-ignore: cajón flotante sobre la página */
