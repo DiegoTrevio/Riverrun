@@ -87,13 +87,32 @@ export const buscarCitas = defineTool({
 const CrearCita = z.object({
   servicio_id: Id,
   horario: Slot,
-  conversacion_id: Id.optional().describe('La conversación del cliente (o da nombre y teléfono)'),
-  nombre_cliente: Text(120).optional(),
+  conversacion_id: Id.optional().describe('La conversación del cliente'),
+  contacto_id: Id.optional().describe('O el contacto (se usa su conversación)'),
+  nombre_cliente: Text(120).optional().describe('Solo si el cliente no está en contactos'),
   telefono: z.string().trim().max(30).optional(),
   notas: z.string().trim().max(2000).optional(),
   avisar_al_cliente: z.boolean().default(true).describe('Mandarle la confirmación'),
   atiende: Id.optional().describe('Id de la persona del equipo que atiende'),
-}).refine((a) => a.conversacion_id || a.nombre_cliente, 'Indica la conversación o el nombre del cliente');
+}).refine((a) => a.conversacion_id || a.contacto_id || a.nombre_cliente, 'Indica la conversación, el contacto o el nombre del cliente');
+
+/**
+ * La conversación del cliente para la cita: la indicada, la del contacto o, con solo nombre y teléfono, la del cliente que
+ * ya tiene ese número. Así la cita no queda suelta en la agenda, sin la ficha del cliente.
+ */
+async function citaConversation(a: z.infer<typeof CrearCita>, ctx: Ctx): Promise<string | null> {
+  if (a.conversacion_id) return a.conversacion_id;
+  if (a.contacto_id) {
+    const id = (await profile(ctx, a.contacto_id)).conversations?.[0]?.id;
+    if (!id) throw new ToolError('no_encontrado', 'Ese contacto no tiene conversación; da su nombre y teléfono.');
+    return id;
+  }
+  const digits = (a.telefono ?? '').replace(/\D/g, '').slice(-10);
+  if (digits.length < 8) return null;
+  const rows = (await ctx.call.get<any[]>(`/api/conversations${qs({ search: digits, limit: 5 })}`)) ?? [];
+  const same = rows.filter((r) => String(r.phone ?? '').replace(/\D/g, '').endsWith(digits));
+  return same.length === 1 ? same[0].id : null;
+}
 
 export const crearCita = defineTool({
   name: 'crear_cita',
@@ -110,11 +129,15 @@ export const crearCita = defineTool({
     ];
     return reasons.length ? { level: 'confirm', reasons } : 'reversible';
   },
-  targets: (a) => (a.conversacion_id ? [{ kind: 'conversation', id: a.conversacion_id }] : []),
+  async targets(a, ctx) {
+    const conv = await citaConversation(a, ctx);
+    return conv ? [{ kind: 'conversation', id: conv }] : [];
+  },
   events: (a) => [{ type: 'appointment_booked', value: a.servicio_id }],
   async preview(a, ctx) {
     const s = await serviceOf(ctx, a.servicio_id);
-    const who = a.conversacion_id ? nameOf((await ctx.call.get<any>(path`/api/conversations/${a.conversacion_id}`))?.contact) : a.nombre_cliente;
+    const conv = await citaConversation(a, ctx);
+    const who = conv ? nameOf((await ctx.call.get<any>(path`/api/conversations/${conv}`))?.contact) : a.nombre_cliente;
     return {
       title: `Agendar ${s.name} para ${who} el ${a.horario.replace('T', ' a las ')}`,
       lines: [a.avisar_al_cliente ? 'Le mandamos la confirmación al cliente.' : 'No se le avisa al cliente.', ...(a.notas ? [`Notas: ${a.notas}`] : [])],
@@ -122,8 +145,9 @@ export const crearCita = defineTool({
   },
   async execute(a, ctx) {
     const s = await serviceOf(ctx, a.servicio_id);
+    const conv = await citaConversation(a, ctx);
     const r = await ctx.call.send<any>('POST', '/api/appointments', {
-      service_id: s.id, slot: a.horario, conversation_id: a.conversacion_id ?? null, customer_name: a.nombre_cliente ?? '', customer_phone: a.telefono ?? '',
+      service_id: s.id, slot: a.horario, conversation_id: conv, customer_name: a.nombre_cliente ?? '', customer_phone: a.telefono ?? '',
       notes: a.notas ?? '', notify_customer: a.avisar_al_cliente, assigned_user_id: a.atiende ?? null,
     });
     return {

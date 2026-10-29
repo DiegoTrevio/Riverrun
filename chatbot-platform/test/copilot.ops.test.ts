@@ -203,3 +203,19 @@ t('horarios libres a partir de un día: solo de ese día en adelante, aunque est
   const day = (lastToolResult().horarios as any[]).filter((x) => typeof x === 'object');
   assert.ok(day.length > 0 && day.every((x) => x.horario.startsWith(from)), 'un día a más de 14 días también tiene horarios');
 });
+
+t('agendar con el contacto, o con nombre y teléfono de alguien que ya es cliente, liga la cita a su ficha', async () => {
+  script([call('horarios_libres', { servicio_id: serviceId, desde: new Date(Date.now() + 5 * 86400_000).toLocaleDateString('en-CA', { timeZone: 'America/Mexico_City' }) }), 'Estos son.']);
+  await ask('¿Qué horarios hay?');
+  const [first, second] = (lastToolResult().horarios as any[]).filter((x) => typeof x === 'object').map((x) => x.horario);
+  script([call('crear_cita', { servicio_id: serviceId, horario: first, contacto_id: conv.contact_id, avisar_al_cliente: false }), 'Agendada.']);
+  const byContact = lastAction(await ask('Agéndale a Carla'));
+  assert.equal(byContact.status, 'done', JSON.stringify(byContact));
+  script([call('crear_cita', { servicio_id: serviceId, horario: second, nombre_cliente: 'Carla Méndez', telefono: '+52 1 55 3333 0001', avisar_al_cliente: false }), 'Agendada.']);
+  const byPhone = lastAction(await ask('Agéndale a Carla Méndez, su teléfono es 55 3333 0001'));
+  assert.equal(byPhone.status, 'done', JSON.stringify(byPhone));
+  const mine = (await appointments()).filter((x) => x.status === 'confirmed' && [first, second].some((s) => x.starts_at && new Date(x.starts_at).getTime() === new Date(`${s}:00-06:00`).getTime()));
+  assert.equal(mine.length, 2, JSON.stringify((await appointments()).map((x) => [x.starts_at, x.contact_id])));
+  assert.ok(mine.every((x) => x.contact_id === conv.contact_id && x.conversation_id === conv.id), 'las dos quedaron en la ficha de Carla');
+  for (const a of [byContact, byPhone]) assert.equal((await undo(a)).statusCode, 200);
+});
