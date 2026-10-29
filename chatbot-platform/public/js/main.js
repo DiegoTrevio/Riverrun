@@ -1,10 +1,13 @@
 import { $app, errorCard, fill, h, recordUX, state } from './core.js';
 import { brand, ensureBrand } from './brand.js';
 import { loadWhatsappStatus } from './connect.js';
-import { clearTimers, isAdmin, loadSession } from './session.js';
+import { clearTimers, copilotAvailable, isAdmin, loadSession } from './session.js';
 import { shell } from './shell.js';
 
 /* ------------------------------ Router ------------------------------ */
+
+/** Ya se cargó el Copiloto alguna vez (para quitarlo si la cuenta deja de tenerlo). */
+let copilotLoaded = false;
 
 window.addEventListener('hashchange', render);
 
@@ -117,6 +120,8 @@ export async function render() {
       document.title = title?.textContent.trim() ? `${title.textContent.trim()} · ${brand.name}` : brand.name;
       content.querySelectorAll('table').forEach((table) => { const labels = [...table.querySelectorAll('thead th')].map((th) => th.textContent); table.querySelectorAll('tbody tr').forEach((row) => [...row.children].forEach((td, i) => { if (labels[i]) td.dataset.label = labels[i]; })); });
     }
+    // Copiloto: se monta (o se quita) según la cuenta y se entera de la página abierta.
+    if (current() && (copilotAvailable() || copilotLoaded)) { copilotLoaded = true; import('./copilot.js').then((m) => m.syncCopilot()).catch(() => undefined); }
   } catch (e) {
     if (current()) { content.removeAttribute('aria-busy'); fill(content, errorCard(e, render)); }
   }

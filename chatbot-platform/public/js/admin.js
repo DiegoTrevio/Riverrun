@@ -173,7 +173,12 @@ export async function viewAccounts(root) {
                 if (!(await run(() => api('PUT', `/api/accounts/${a.id}`, { keep_data: e.target.checked }), e.target.checked ? 'Sus datos se conservan' : 'Se borrará al cumplir el plazo'))) { e.target.checked = !e.target.checked; return; }
                 render();
               } }), 'Conservar sus datos')
-              : null),
+              : null,
+            // El Copiloto se enciende cuenta por cuenta.
+            h('label', { class: 'check small' }, h('input', { type: 'checkbox', checked: !!a.copilot_enabled, 'aria-label': `Copiloto para ${a.name}`, onchange: async (e) => {
+              if (!(await run(() => api('PUT', `/api/accounts/${a.id}`, { copilot_enabled: e.target.checked }), e.target.checked ? 'Copiloto encendido' : 'Copiloto apagado'))) { e.target.checked = !e.target.checked; return; }
+              render();
+            } }), 'Copiloto')),
           h('td', {}, a.whatsapp_state ? h('span', { class: `badge ${a.whatsapp_state === 'open' ? 'green' : 'orange'}` }, { open: 'conectado', close: 'desconectado', connecting: 'conectando' }[a.whatsapp_state] || a.whatsapp_state) : h('span', { class: 'muted small' }, '—')),
           h('td', { class: 'num' }, `${a.conversations_month} / ${a.conversations}`),
           h('td', { class: 'num' }, usd(a.ai_cost_month)),

@@ -165,6 +165,7 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
           await cs.updateAction(action.id, {
             status: 'done', title, result: r.data ?? null, links: r.links ?? [], before: r.before ?? null, after: r.after ?? null, undo: r.undo ?? null,
             undo_until: r.undo ? new Date(Date.now() + limits.undoDays * 86400_000) : null, contact_ids: r.contactIds ?? [], executed_at: new Date(),
+            ...(r.preview ? { preview: r.preview } : {}),
           });
           await logEvent({ level: 'info', source: 'copilot', message: `Copiloto (${user.email}): ${title}`, accountId: thread.account_id, details: { copilot_action_id: action.id, tool: def.name, turn_id: turn.id, risk: 'reversible' } }).catch(() => undefined);
           const text = forModel({ estado: 'hecho', accion: `A${action.id.slice(0, 8)}`, resumen: title, resultado: r.data });

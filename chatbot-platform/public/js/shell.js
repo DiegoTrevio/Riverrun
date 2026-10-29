@@ -2,7 +2,10 @@ import { brand, brandMark, productMark, resetBrand } from './brand.js';
 import { api, h, invalidateReads, run, state } from './core.js';
 import { icon } from './icons.js';
 import { render } from './main.js';
-import { ROLE_LABEL, isAdmin, isSuper } from './session.js';
+import { ROLE_LABEL, copilotAvailable, isAdmin, isSuper } from './session.js';
+
+/** Abre o cierra el Copiloto (su módulo se carga solo si la cuenta lo tiene). */
+const toggleCopilot = () => import('./copilot.js').then((m) => m.toggleCopilot());
 
 /** Avisos sin leer: en el menú lateral y en la barra del teléfono (solo es una cola cuando hay algo que ver). */
 const bells = [h('span', { class: 'count', hidden: true }), h('span', { class: 'count', hidden: true })];
@@ -191,6 +194,7 @@ export function shell(active, content) {
       isAdmin() ? item('#/estadisticas', 'chart', 'Reportes', 'estadisticas') : null),
     h('div', { class: 'spacer' }),
     h('div', { class: 'nav-foot' },
+      copilotAvailable() ? h('button', { type: 'button', class: 'nav-item cp-launch', 'data-copilot-launcher': '', 'aria-controls': 'copilot', 'aria-expanded': 'false', title: 'Copiloto (Ctrl + .)', onclick: () => { closeNav(); return toggleCopilot(); } }, icon('wand'), h('span', {}, 'Copiloto')) : null,
       isAdmin() ? item('#/ajustes', 'settings', 'Ajustes', 'ajustes') : item('#/password', 'user', 'Mi perfil', 'ajustes'),
       h('a', { href: '#/notifications', class: `nav-item${active === 'notifications' ? ' active' : ''}`, 'aria-current': active === 'notifications' ? 'page' : null, onclick: closeNav },
         icon('bell'), h('span', {}, 'Notificaciones'), bells[0]),
@@ -203,6 +207,7 @@ export function shell(active, content) {
     h('button', { class: 'icon-button nav-toggle', type: 'button', 'aria-label': 'Abrir el menú', 'aria-controls': 'menu-principal', 'aria-expanded': 'false', onclick: openNav }, icon('menu', 20)),
     h('div', { class: 'topbar-title' }, brandBlock()),
     h('div', { class: 'topbar-actions' },
+      copilotAvailable() ? h('button', { type: 'button', class: 'icon-button', 'data-copilot-launcher': '', 'aria-controls': 'copilot', 'aria-expanded': 'false', 'aria-label': 'Copiloto', title: 'Copiloto', onclick: toggleCopilot }, icon('wand', 20)) : null,
       h('a', { class: `icon-button${active === 'notifications' ? ' active' : ''}`, href: '#/notifications', 'aria-label': 'Notificaciones', title: 'Notificaciones' }, icon('bell', 20), bells[1])));
 
   const body = page ? h('div', { class: 'settings-layout' }, settingsNav(page), h('div', { class: 'settings-body' }, content)) : content;

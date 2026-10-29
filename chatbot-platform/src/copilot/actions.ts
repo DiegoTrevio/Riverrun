@@ -57,6 +57,7 @@ export async function confirmAction(deps: RunnerDeps, o: { action: cs.Action; us
     const updated = (await cs.updateAction(action.id, {
       status: 'done', title, result: r.data ?? null, links: r.links ?? claimed.links, before: r.before ?? null, after: r.after ?? null, undo: r.undo ?? null,
       undo_until: r.undo ? new Date(Date.now() + config.copilot.undoDays * 86400_000) : null, executed_at: new Date(),
+      ...(r.preview ? { preview: r.preview } : {}),
       contact_ids: [...new Set([...claimed.contact_ids, ...(r.contactIds ?? [])])],
     }))!;
     await note(updated, `Confirmaste: ${claimed.title} → hecho.`);

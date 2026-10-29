@@ -43,6 +43,8 @@ export interface ExecResult {
   untrusted?: boolean;
   /** Registros que leyó (el alcance de lo que se puede cambiar después). */
   read?: Target[];
+  /** Lo que muestra la tarjeta de lo hecho (p. ej. el antes y el después de unas instrucciones). */
+  preview?: Preview;
 }
 
 export interface ToolDef<A = any> {
