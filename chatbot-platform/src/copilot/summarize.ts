@@ -73,6 +73,7 @@ export const links = {
   prices: (label = 'Ver lista de precios'): Link => ({ label, href: '#/cotizaciones/precios' }),
   agenda: (label = 'Ver agenda'): Link => ({ label, href: '#/agenda/citas' }),
   receivables: (contactId?: string, label = 'Ver cobros'): Link => ({ label, href: contactId ? `#/cobros?contact=${contactId}` : '#/cobros' }),
+  stats: (label = 'Ver estadísticas'): Link => ({ label, href: '#/estadisticas' }),
 };
 
 /** ¿Es un enlace que el panel puede abrir sin riesgo? (el panel vuelve a revisarlo antes de pintarlo) */
