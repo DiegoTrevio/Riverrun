@@ -2,7 +2,7 @@ import { config } from '../config.js';
 
 /** Parte de un mensaje con archivos (imagen o PDF) para los modelos que los leen directamente. */
 export type ContentPart =
-  | { type: 'text'; text: string }
+  | { type: 'text'; text: string; cache_control?: { type: 'ephemeral' } }
   | { type: 'image_url'; image_url: { url: string } }
   | { type: 'file'; file: { filename: string; file_data: string } };
 
@@ -10,6 +10,36 @@ export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
   content: string | ContentPart[];
 }
+
+/** Herramienta que el modelo puede pedir (function calling compatible con OpenAI). */
+export interface ToolSpec {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
+/** Llamada a una herramienta pedida por el modelo; `arguments` es el JSON tal como llegó. */
+export interface ToolCall {
+  id: string;
+  name: string;
+  arguments: string;
+}
+
+/** Turno del modelo que pidió herramientas (puede no traer texto). */
+export interface AssistantToolMessage {
+  role: 'assistant';
+  content: string | null;
+  tool_calls: ToolCall[];
+}
+
+/** Resultado de una herramienta, en respuesta a la llamada `tool_call_id`. */
+export interface ToolResultMessage {
+  role: 'tool';
+  tool_call_id: string;
+  content: string;
+}
+
+export type AnyMessage = ChatMessage | AssistantToolMessage | ToolResultMessage;
 
 export interface Usage {
   input_tokens: number;
@@ -24,13 +54,21 @@ export interface CompletionResult {
   latency_ms: number;
   /** Costo reportado por OpenRouter en USD, cuando está disponible. */
   cost_usd?: number;
+  /** Herramientas que pidió el modelo (solo si la petición traía `tools`). */
+  tool_calls?: ToolCall[];
+  /** `stop`, `tool_calls`, `length`… tal como lo reporta el proveedor. */
+  finish_reason?: string;
 }
 
 export interface CompletionRequest {
   model: string;
-  /** Modelos de respaldo para esta llamada (solo OpenRouter); vacío = los de la configuración global. */
-  fallback_models?: string[];
-  messages: ChatMessage[];
+  /** Modelos de respaldo para esta llamada (solo OpenRouter); vacío = los de la configuración global; 'none' = ninguno. */
+  fallback_models?: string[] | 'none';
+  messages: AnyMessage[];
+  /** Herramientas disponibles; no se combina con `json_schema`. */
+  tools?: ToolSpec[];
+  tool_choice?: 'auto' | 'none' | 'required' | { name: string };
+  parallel_tool_calls?: boolean;
   temperature?: number | null;
   reasoning_effort?: string;
   /** Si se indica, la respuesta debe cumplir este JSON Schema (structured outputs, strict). */
@@ -102,15 +140,25 @@ export class OpenAiProvider implements AiProvider {
   async complete(req: CompletionRequest): Promise<CompletionResult> {
     if (!this.apiKey) throw AiError.beforeDispatch(this.provider === 'openrouter' ? 'Configura OPENROUTER_API_KEY para conectar el asistente con OpenRouter.' : 'OPENAI_API_KEY no configurado');
     const reasoning = isReasoningModel(req.model);
+    const tools = req.tools?.length ? req.tools : null;
+    if (tools && req.json_schema) throw AiError.beforeDispatch('Una llamada con herramientas no puede pedir además un JSON Schema.');
     const body: Record<string, unknown> = {
       model: this.model(req.model),
-      messages: req.messages,
+      messages: req.messages.map(wireMessage),
       [this.provider === 'openrouter' ? 'max_tokens' : 'max_completion_tokens']: req.max_tokens ?? (reasoning ? 6000 : 1200),
     };
     if (!reasoning && req.temperature !== null && req.temperature !== undefined) body.temperature = req.temperature;
-    if (req.reasoning_effort) {
+    // Con herramientas no se pide razonamiento: algunos proveedores exigen reenviarlo junto con cada llamada.
+    if (req.reasoning_effort && !tools) {
       if (this.provider === 'openrouter') body.reasoning = { effort: req.reasoning_effort };
       else if (reasoning) body.reasoning_effort = req.reasoning_effort;
+    }
+    if (tools) {
+      body.tools = tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } }));
+      if (req.tool_choice) body.tool_choice = typeof req.tool_choice === 'string' ? req.tool_choice : { type: 'function', function: { name: req.tool_choice.name } };
+      if (req.parallel_tool_calls !== undefined) body.parallel_tool_calls = req.parallel_tool_calls;
+      // Los modelos de respaldo que no saben usar herramientas se saltan, en vez de responder sin ellas.
+      if (this.provider === 'openrouter') body.provider = { require_parameters: true };
     }
     if (req.json_schema) {
       if (this.provider === 'openrouter') body.provider = { require_parameters: true };
@@ -122,7 +170,7 @@ export class OpenAiProvider implements AiProvider {
     // Lista de respaldo: OpenRouter prueba el siguiente modelo si el principal falla, está saturado o rechaza la petición.
     if (this.provider === 'openrouter') {
       const primary = body.model as string;
-      const chosen = req.fallback_models?.length ? req.fallback_models : config.openai.fallbackModels;
+      const chosen = req.fallback_models === 'none' ? [] : req.fallback_models?.length ? req.fallback_models : config.openai.fallbackModels;
       const fallbacks = [...new Set(chosen.map((m) => this.model(m)))].filter((m) => m !== primary).slice(0, 2);
       if (fallbacks.length) {
         delete body.model;
@@ -136,9 +184,12 @@ export class OpenAiProvider implements AiProvider {
     const choice = data.choices?.[0];
     if (choice?.message?.refusal) throw new AiError(`El modelo se negó a responder: ${choice.message.refusal}`);
     const content: string = choice?.message?.content ?? '';
-    if (!content) throw new AiError(`Respuesta vacía del modelo (finish_reason=${choice?.finish_reason})`);
+    const toolCalls = tools ? readToolCalls(choice?.message?.tool_calls) : [];
+    if (!content && !toolCalls.length) throw new AiError(`Respuesta vacía del modelo (finish_reason=${choice?.finish_reason})`);
     return {
       content,
+      ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
+      ...(typeof choice?.finish_reason === 'string' ? { finish_reason: choice.finish_reason } : {}),
       model: data.model ?? req.model,
       latency_ms: Date.now() - started,
       ...(this.provider === 'openrouter' ? providerCost(data) : {}),
@@ -231,6 +282,25 @@ export class OpenAiProvider implements AiProvider {
     }
     throw lastErr instanceof Error ? lastErr : new AiError(String(lastErr));
   }
+}
+
+/** Un mensaje con llamadas a herramientas viaja en el formato de OpenAI; los demás, tal cual. */
+function wireMessage(m: AnyMessage) {
+  if (m.role === 'assistant' && 'tool_calls' in m && m.tool_calls?.length) {
+    return { role: 'assistant', content: m.content || null, tool_calls: m.tool_calls.map((c) => ({ id: c.id, type: 'function', function: { name: c.name, arguments: c.arguments } })) };
+  }
+  return m;
+}
+
+/** Llamadas que pidió el modelo. Sin nombre no sirven; un proveedor que manda los argumentos como objeto se normaliza a texto. */
+function readToolCalls(raw: unknown): ToolCall[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((c: any, i: number) => {
+    const name = typeof c?.function?.name === 'string' ? c.function.name : '';
+    if (!name) return [];
+    const args = c.function.arguments;
+    return [{ id: typeof c.id === 'string' && c.id ? c.id : `call_${i}`, name, arguments: typeof args === 'string' ? args : JSON.stringify(args ?? {}) }];
+  });
 }
 
 function providerCost(data: any): { cost_usd?: number } {

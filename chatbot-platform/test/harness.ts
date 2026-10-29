@@ -419,6 +419,9 @@ export async function dbAvailable() {
 
 type Out = Record<string, unknown> | string | Error;
 export type Script = (req: Req, callIndex: number) => Out | Promise<Out>;
+/** Respuesta simulada del Copiloto: texto, llamadas a herramientas (con argumentos en objeto o texto) o un error. */
+export type CopilotOut = string | Error | { content?: string; tool_calls?: { name: string; arguments?: Record<string, unknown> | string }[] };
+export type CopilotScript = (req: Req, callIndex: number) => CopilotOut | Promise<CopilotOut>;
 
 export async function createHarness() {
   const calls: Req[] = [];
@@ -429,9 +432,21 @@ export async function createHarness() {
   let summaryError: Error | null = null;
   let summaryAnalysis: Record<string, unknown> | undefined;
   let summaryFields: { field: string; value: string; source_message_id: number }[] = [];
+  const copilotCalls: Req[] = [];
+  let copilotScript: CopilotScript = () => 'Listo.';
   let n = 0;
   const ai: import('../src/ai/provider.js').AiProvider = {
     async complete(req: Req) {
+      // El Copiloto es la única llamada con herramientas: tiene su propio guion.
+      if (req.tools?.length) {
+        copilotCalls.push(req);
+        const index = copilotCalls.length - 1;
+        const out = await copilotScript(req, index);
+        if (out instanceof Error) throw out;
+        const o = typeof out === 'string' ? { content: out } : out;
+        const toolCalls = (o.tool_calls ?? []).map((c, i) => ({ id: `call_${index}_${i}`, name: c.name, arguments: typeof c.arguments === 'string' ? c.arguments : JSON.stringify(c.arguments ?? {}) }));
+        return { content: o.content ?? '', ...(toolCalls.length ? { tool_calls: toolCalls } : {}), finish_reason: toolCalls.length ? 'tool_calls' : 'stop', model: req.model, latency_ms: 1, usage: { input_tokens: 300, cached_tokens: 0, output_tokens: 30 } };
+      }
       if (!req.json_schema || req.json_schema.name === 'conversation_report') {
         summaryCalls.push(req);
         if (summaryError && req.json_schema?.name === 'conversation_report') throw summaryError;
@@ -500,13 +515,14 @@ export async function createHarness() {
 
   let msgN = 0;
   const h = {
-    app, service, ai, calls, summaryCalls, sent, authed, loginAs, cookie: authed.cookie, failNext, token: '', botId: '', accountId: '', channelId: '',
+    app, service, ai, calls, summaryCalls, copilotCalls, sent, authed, loginAs, cookie: authed.cookie, failNext, token: '', botId: '', accountId: '', channelId: '',
     setScript(s: Script) { script = s; },
+    setCopilotScript(s: CopilotScript) { copilotScript = s; },
     setSummary(s: string) { summary = s; },
     setAnalysis(a: Record<string, unknown> | undefined) { summaryAnalysis = a; },
     setSummaryError(error: Error | null) { summaryError = error; },
     setSummaryFields(fields: typeof summaryFields) { summaryFields = fields; },
-    reset() { calls.length = 0; summaryCalls.length = 0; sent.length = 0; },
+    reset() { calls.length = 0; summaryCalls.length = 0; copilotCalls.length = 0; sent.length = 0; },
     /** Adelanta el reloj: todas las tareas pendientes vencen ya, y se ejecutan. */
     async fastForward() {
       await pool.query(`UPDATE jobs SET run_at = now() - interval '1 second' WHERE status = 'pending'`);
