@@ -312,6 +312,19 @@ export function field(label, input, help) {
 }
 let fieldId = 0;
 
+/**
+ * Una sección de ajustes en dos columnas: a la izquierda qué es y para qué sirve (título y explicación), a la derecha
+ * sus controles en un panel. Con poco ancho (celular, tableta o con el Copiloto acoplado) la explicación va arriba.
+ */
+export function settingsSection(title, description, ...content) {
+  const id = `ajuste-${++sectionId}`;
+  return h('section', { class: 'settings-section', 'aria-labelledby': id },
+    h('div', { class: 'settings-section-grid' },
+      h('div', { class: 'settings-section-label' }, h('h2', { id }, title), description ? h('p', {}, description) : null),
+      h('div', { class: 'settings-section-panel' }, ...content)));
+}
+let sectionId = 0;
+
 export function text(obj, key, opts = {}) {
   return h('input', { ...opts, type: opts.type || 'text', name: key, value: obj[key] ?? '', oninput: (e) => { obj[key] = e.target.value; opts.oninput?.(e); } });
 }

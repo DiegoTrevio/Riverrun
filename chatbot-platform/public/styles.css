@@ -170,6 +170,33 @@ h3 { font-size: 14px; line-height: 1.4; margin: 16px 0 8px; font-weight: 600; }
 .settings-nav a:hover { background: var(--raised); }
 .settings-nav a.active { background: var(--active); color: var(--text); font-weight: 600; }
 .settings-body { min-width: 0; }
+
+/* Ajustes en dos columnas (framed-sheet, settings): a la izquierda el título y la explicación; a la derecha los
+   controles en un panel de un tono, sin borde. Las secciones se separan con una regla de 1px y 32px de aire.
+   Las columnas dependen del ancho de la sección (no de la ventana): con el Copiloto acoplado también se apilan. */
+.settings-section { container-type: inline-size; padding: 32px 0; }
+.settings-section:first-of-type { padding-top: 8px; }
+.settings-section + .settings-section { border-top: 1px solid var(--line); }
+.settings-section-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+@container (min-width: 820px) {
+  .settings-section-grid { grid-template-columns: minmax(200px, 300px) minmax(0, 1fr); gap: 16px 40px; }
+  /* El título queda a la altura del primer renglón del panel y acompaña a un panel alto mientras se desplaza. */
+  .settings-section-label { padding-top: 8px; position: sticky; top: 24px; align-self: start; }
+}
+.settings-section-label h2 { margin: 0; font-size: 16px; }
+.settings-section-label p { margin: 6px 0 0; color: var(--muted); font-size: 14px; line-height: 1.55; max-width: 60ch; }
+.settings-section-panel { min-width: 0; background: var(--ground); border-radius: var(--radius-sheet); padding: 20px; }
+.settings-section-panel > :first-child { margin-top: 0; }
+.settings-section-panel > :last-child { margin-bottom: 0; }
+.settings-section-panel .field { margin-bottom: 16px; }
+.settings-section-panel .grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 0 16px; }
+.settings-section-panel h3 { margin: 20px 0 8px; }
+/* Una URL o una clave larga baja de línea dentro del panel en vez de empujar la página de lado. */
+.settings-section-panel code { overflow-wrap: anywhere; }
+/* El guardar de cada panel, abajo a la derecha. */
+.settings-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+/* Una tabla dentro de un panel va sobre la hoja blanca, no sobre el tono del panel. */
+.settings-section-panel .table-scroll { background: var(--surface); border-radius: var(--radius-card); }
 @media (max-width: 900px) {
   .settings-layout { grid-template-columns: minmax(0, 1fr); }
   .settings-nav { position: static; display: flex; gap: 4px; overflow-x: auto; padding-bottom: 4px; }
@@ -205,6 +232,8 @@ h3 { font-size: 14px; line-height: 1.4; margin: 16px 0 8px; font-weight: 600; }
 /* Los selectores de una fila (filtros) toman su ancho natural y se acomodan en varias columnas. */
 .row > select { width: auto; flex: 1 1 130px; max-width: 100%; }
 .filter { flex: 1 1 150px; min-width: 0; max-width: 100%; }
+/* Una fila de campos con etiqueta: arriba, para que los controles queden parejos aunque uno lleve ayuda debajo. */
+.row:has(> .field) { align-items: flex-start; }
 /* Una fila de campos con etiqueta y botones: los botones y enlaces se alinean con los controles, no con las etiquetas. */
 .row:has(> .field):has(> button, > .btn) { align-items: flex-end; }
 .row:has(> .field) > :is(button, .btn) { margin-bottom: 20px; }
@@ -837,8 +866,9 @@ details.filters[open] > summary { margin-bottom: 12px; }
 
 /* Mis avisos: grupo × panel / WhatsApp / correo. */
 .table-scroll { overflow-x: auto; max-width: 100%; }
-.alert-prefs th[scope="row"] { font-weight: normal; text-align: left; }
-.alert-prefs td { text-align: center; }
+/* El nombre de cada aviso baja de línea (los th no lo hacen): así las columnas de canales caben en un panel angosto. */
+.alert-prefs th[scope="row"] { font-weight: normal; text-align: left; white-space: normal; font-size: 14px; color: var(--text); min-width: 180px; }
+.alert-prefs td { text-align: center; min-width: 84px; overflow-wrap: normal; }
 .alert-prefs input[type="checkbox"] { width: 22px; height: 22px; }
 a.chip.active { background: var(--accent); color: var(--surface); border-color: var(--accent); }
 

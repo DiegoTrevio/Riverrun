@@ -1,5 +1,5 @@
 import { varsField } from './vars-help.js';
-import { api, area, check, confirmAction, dialog, field, fill, fmtDate, h, run, state, text, toast } from './core.js';
+import { api, area, check, confirmAction, dialog, field, fill, fmtDate, h, run, settingsSection, state, text, toast } from './core.js';
 import { isAdmin, withAcct } from './session.js';
 import { waTemplateField } from './wa-template-field.js';
 
@@ -191,25 +191,22 @@ async function settingsView(root) {
   const showDays = () => { const d = parseDays(days.text); preview.textContent = d ? `Se recuerda: ${daysText(d)}.` : 'Revisa los días: números enteros separados por comas.'; };
   showDays();
   root.append(
-    h('section', { class: 'card', 'aria-labelledby': 'pay-how' },
-      h('h2', { id: 'pay-how', style: 'margin-top:0' }, 'Cómo te pagan'),
+    // Cada parte en dos columnas (qué es, a la izquierda; sus controles, a la derecha) y un solo «Guardar» al final.
+    settingsSection('Cómo te pagan', 'Lo que el cliente necesita para pagarte: una cuenta, un enlace de pago o ambos.',
       field('Instrucciones de pago', area(s, 'payment_instructions', { rows: 4, placeholder: 'Transferencia a la CLABE 012 180 0012 3456 7890 (Banco, a nombre de…)\nO paga con tarjeta: https://mpago.la/…' }), 'Van en cada recordatorio y el asistente las da si el cliente pregunta cómo pagar.')),
-    h('section', { class: 'card', 'aria-labelledby': 'pay-when' },
-      h('h2', { id: 'pay-when', style: 'margin-top:0' }, 'Cuándo recordar'),
+    settingsSection('Cuándo recordar', 'Los días, antes y después del vencimiento, en que el asistente le escribe al cliente.',
       h('div', { class: 'grid' },
         field('Días de recordatorio', text(days, 'text', { placeholder: '-3, 0, 3, 7', oninput: showDays }), `Negativo = antes del vencimiento, 0 = el día, positivo = después. Hasta ${max}.`),
         field('Hora de envío', h('input', { type: 'time', value: s.send_at, oninput: (e) => { s.send_at = e.target.value; } }), 'En la zona horaria de tu negocio.')),
       preview,
       check(s, 'respect_business_hours', 'Si a esa hora estás cerrado, enviarlo cuando abras'),
       check(s, 'notify_team_on_overdue', 'Avisar al equipo cuando un cobro vence sin pagarse')),
-    h('section', { class: 'card', 'aria-labelledby': 'pay-msg' },
-      h('h2', { id: 'pay-msg', style: 'margin-top:0' }, 'Mensajes'),
-      h('p', { class: 'small muted' }, 'Déjalos vacíos para usar los de siempre. Si el mensaje no trae {{pago.link}}, {{pago.instrucciones}} o {{pago.referencia}}, se agregan al final.'),
+    settingsSection('Mensajes', 'Déjalos vacíos para usar los de siempre. Si el mensaje no trae {{pago.link}}, {{pago.instrucciones}} o {{pago.referencia}}, se agregan al final.',
       varsField('Antes de que venza', area(s, 'message_before', { rows: 3, placeholder: ph.before }), 'payment'),
       varsField('El día que vence', area(s, 'message_due', { rows: 3, placeholder: ph.due }), 'payment'),
       varsField('Después de vencido', area(s, 'message_overdue', { rows: 3, placeholder: ph.overdue }), 'payment'),
       waTemplateField(s, templates)),
-    h('div', { class: 'row' }, h('button', { class: 'primary', onclick: async () => {
+    h('div', { class: 'settings-actions' }, h('button', { class: 'primary', onclick: async () => {
       const d = parseDays(days.text);
       if (!d) return toast('Revisa los días de recordatorio', true);
       if (d.length > max) return toast(`Hasta ${max} recordatorios`, true);
