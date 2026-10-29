@@ -53,8 +53,10 @@ body.cp-docked .toast { right: calc(var(--cp-w) + 20px); }
 .cp-card.is-declined .cp-card-title, .cp-card.is-expired .cp-card-title { color: var(--muted); }
 .cp-lines { margin: 0; padding-left: 18px; font-size: 13px; }
 .cp-quote { margin: 0; padding: 8px 10px; border-left: 3px solid var(--accent-track); border-radius: 0 6px 6px 0; background: var(--raised); white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Más compactos que los desplegables del panel (44 px), sin bajar de un objetivo cómodo al tacto. */
+.cp-diff > summary, .cp-reads > summary { min-height: 32px; padding: 6px 0; }
 .cp-diff summary { width: fit-content; font-size: 13px; cursor: pointer; }
-.cp-diff .ai-diff { margin-top: 6px; }
+.cp-diff .ai-diff { margin-top: 2px; }
 .cp-warning, .cp-reason { margin: 0; font-size: 13px; color: var(--warning); }
 .cp-error { margin: 0; font-size: 13px; color: var(--negative); }
 .cp-card-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }

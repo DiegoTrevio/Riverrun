@@ -136,70 +136,77 @@ Cómo funciona:
 
 ## Catálogo
 
-Riesgo: R = leer, V = reversible, C = confirmar. «dyn» = pasa a C con las reglas de arriba.
+54 herramientas (`src/copilot/tools/`): 28 para agentes del equipo y todas para administradores. Riesgo: R = leer,
+V = reversible (con «Deshacer»), C = confirmar. «dyn» = pasa a C con las reglas de [Riesgo](#riesgo). Después de leer
+texto de clientes, todo cambio de configuración (agente, automatizaciones, horario) pasa a C.
 
-**Consultar (R):**
-- contexto de la cuenta;
-- contactos;
-- conteo de etiquetas;
-- conversaciones y su lectura;
-- citas y horarios libres;
-- oportunidades;
-- cobros;
-- cotizaciones;
-- estadísticas y consumo;
-- automatizaciones;
-- flujos con su revisión;
-- agentes con versiones y conocimiento;
-- probar reglas;
-- probar al agente en el simulador.
-
-**Agente (admin):**
+**Cuenta, contactos y conversaciones** (`cuenta.ts`, `contactos.ts`, `conversaciones.ts`; admin y agente):
 
 | Herramienta | Riesgo |
 |---|---|
-| Cambiar instrucciones en palabras (`editPrompt` + `version-apply`) | V; C si hay un borrador sin publicar |
-| Ajustar nombre, trato, activación, derivación y objetivo | V |
-| Apagar el agente | V |
-| Encender el agente | C |
-| Agregar o editar conocimiento | V |
-| Borrar conocimiento | C |
-| Ajustes y conceptos de cotización | V |
-| Horario del negocio y avisos (lista de claves permitidas) | V |
+| `contexto_cuenta`, `contar_etiquetas`, `buscar_contactos`, `ver_contacto`, `buscar_conversaciones`, `leer_conversacion` | R |
+| `editar_contacto` (combina con lo que hay; versión de datos), `etiquetar` (hasta 20) | dyn |
+| `crear_tarea`, `actualizar_tarea` | V |
+| `gestionar_conversacion` (asignar, tomar, devolver) | V |
+| `cerrar_conversacion`, `dar_de_baja`, `enviar_mensaje`, `enviar_foto`, `secuencia_de_conversacion` (inscribir o sacar) | C |
 
-**Automatización (admin):**
+**Día a día** (`operacion.ts`):
+
+| Herramienta | Quién | Riesgo |
+|---|---|---|
+| `horarios_libres`, `buscar_citas` | ambos | R |
+| `crear_cita` | ambos | C si avisa al cliente o el servicio pide anticipo; si no, V (deshacer = cancelar sin avisar) |
+| `cambiar_cita` (reagendar, notas, estado, quién atiende) | ambos | V |
+| `cancelar_cita` | ambos | C |
+| `ver_oportunidades` | ambos | R |
+| `actualizar_oportunidad` (columna y valor) | ambos | dyn |
+| `ver_cobros` | ambos | R |
+| `crear_cobro` (deshacer = cancelarlo), `cerrar_cobro` (pagado o cancelado), `recordar_cobro` | ambos | C |
+| `editar_cobro` | ambos | V |
+| `ver_cotizaciones` | admin | R |
+| `editar_cotizacion` (renglones y notas, antes de enviarla), `editar_lista_de_precios` | admin | V |
+| `decidir_cotizacion` (aprobar y enviar, rechazar, marcar aceptada) | admin | C |
+| `estadisticas` (periodo y el anterior, equipo, canales, gasto de IA) | admin | R |
+
+Las herramientas de cobros solo existen si `RECEIVABLES_ENABLED` está encendido.
+
+**Agente** (`agente.ts`, admin):
 
 | Herramienta | Riesgo |
 |---|---|
-| Crear flujo con IA (borrador) | V |
-| Cambiar flujo con IA | V |
-| Publicar flujo | C |
-| Pausar flujo | V |
-| Reanudar flujo | C |
-| Reglas y secuencias | dyn |
-| Campaña en borrador | V |
-| Lanzar o cancelar campaña | C |
-| Borrar automatizaciones | C |
+| `ver_agente` | R |
+| `cambiar_instrucciones` (`prompt-edit` + `version-apply`; la tarjeta muestra el antes y el después) | V |
+| `ajustar_agente` (nombre, trato, largo, emojis, tono, si no sabe, reglas, temas prohibidos, cuándo pasa a una persona) | V |
+| `encender_o_apagar_agente` | apagar V; encender C |
+| `agregar_conocimiento`, `editar_conocimiento` | V |
+| `borrar_conocimiento` (deshacer = volverlo a agregar) | C |
+| `cambiar_horario` (horario por día y días cerrados) | V |
 
-**Día a día:**
+Si el agente tiene cambios sin aplicar en su página, el Copiloto no aplica nada de paso: pide aplicarlos o
+descartarlos primero. Deshacer compara lo publicado con lo que dejó el Copiloto y no pisa cambios posteriores.
+
+**Automatización** (`automatizacion.ts`, admin):
 
 | Herramienta | Riesgo |
 |---|---|
-| Editar contacto | dyn |
-| Etiquetar hasta 20 contactos | dyn |
-| Tareas | V |
-| Asignar, tomar o devolver conversación | V |
-| Cerrar conversación | C |
-| Enviar mensaje, plantilla o foto | C |
-| Inscribir o sacar de secuencia | C |
-| Crear cita | C si avisa al cliente o hay anticipo; si no, V |
-| Cambiar cita | V |
-| Cancelar cita | C |
-| Mover oportunidad o cambiar su valor | dyn |
-| Crear, cerrar o recordar cobro | C |
-| Editar cobro | V |
-| Editar cotización | V |
-| Aprobar y enviar, rechazar o aceptar cotización | C |
+| `listar_automatizaciones`, `ver_flujo` | R |
+| `crear_flujo`, `cambiar_flujo` (con IA; en borrador; con candado de revisión) | V |
+| `publicar_flujo` (sobre la revisión que se vio) | C |
+| `pausar_o_reanudar_flujo` | pausar V; reanudar C |
+| `crear_regla`, `cambiar_regla` | C si queda activa y envía mensajes o calla al asistente; si no, V |
+| `editar_secuencia` (nombre, activa, texto o espera de sus pasos) | C si hay personas en ella; si no, V |
+| `crear_campana` (borrador, con su audiencia) | V |
+| `lanzar_campana`, `cancelar_campana`, `borrar_automatizacion` | C |
+
+Las reglas del Copiloto no llevan acciones que mandan datos a otros sistemas (`webhook`, `send_conversation`,
+`send_report`). Las reglas y secuencias que vienen de un lienzo se cambian con `cambiar_flujo`.
+
+**Una propuesta no se ejecuta sobre otra versión.** La vista previa guarda cómo estaba el registro (`meta`, que no
+sale al panel: la revisión del flujo, la campaña, la cotización). Si cambió antes de confirmar, la acción falla y pide
+volver a proponerla.
+
+**No incluido en esta versión:** plantillas de WhatsApp, probar reglas o al agente en el simulador, ajustes de
+cotización, avisos al equipo y activación del agente.
 
 **Fuera del Copiloto** (dice dónde hacerlo):
 - canales;
