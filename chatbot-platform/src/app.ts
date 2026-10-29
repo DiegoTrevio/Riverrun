@@ -52,6 +52,9 @@ import { registerSecurityHeaders } from './security-headers.js';
 import { functionalReport, readinessReport } from './observability/health.js';
 import { collectMetricsExtra, renderMetrics } from './observability/metrics.js';
 import { ChatService, type TransportFactory } from './service.js';
+import { copilotRoutes } from './copilot/routes.js';
+import { settleTurns } from './copilot/runner.js';
+import { COPILOT_TOOLS } from './copilot/tools/index.js';
 import { loadPlatformSecrets, startPlatformSecretsRefresh, stopPlatformSecretsRefresh } from './platform-secrets.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -92,6 +95,8 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
   await migrateLegacyZernioKeys().catch(() => undefined);
   app.addHook('onClose', async () => {
     stopPlatformSecretsRefresh();
+    // Los pedidos al Copiloto en curso terminan su paso (con tope); los que no, quedan como interrumpidos.
+    await settleTurns();
     // Primero se deja de tomar conversaciones nuevas; lo que ya corre termina (docker-compose da 5 min para ello).
     service.queue.drain();
     service.stopSweeper();
@@ -199,6 +204,8 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
     await integrationRoutes(api);
     await myCalendarRoutes(api);
     await brandAdminRoutes(api);
+    // Copiloto: sus herramientas llaman a estas mismas rutas dentro del proceso, con la sesión de quien lo usa.
+    await copilotRoutes(api, { ai: opts.ai, tools: COPILOT_TOOLS, inject: (o) => app.inject(o).then((r) => ({ statusCode: r.statusCode, body: r.body })) });
   });
 
   return { app, service };
