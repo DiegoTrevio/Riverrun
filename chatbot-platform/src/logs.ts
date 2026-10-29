@@ -1,7 +1,7 @@
 import { deleteInBatches, query } from './db.js';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
-export type LogSource = 'webhook' | 'evolution' | 'channel' | 'ai' | 'validator' | 'engine' | 'admin' | 'system';
+export type LogSource = 'webhook' | 'evolution' | 'channel' | 'ai' | 'validator' | 'engine' | 'admin' | 'system' | 'copilot';
 
 export interface LogInput {
   level: LogLevel;

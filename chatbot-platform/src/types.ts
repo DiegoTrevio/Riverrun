@@ -455,6 +455,8 @@ export interface Account {
   deletion_scheduled_for: Date | null;
   /** El superadmin decidió conservarla aunque siga en pausa. */
   keep_data: boolean;
+  /** El superadmin encendió el Copiloto para esta cuenta. */
+  copilot_enabled: boolean;
   created_at: Date;
 }
 

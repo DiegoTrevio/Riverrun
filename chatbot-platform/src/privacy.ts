@@ -6,6 +6,8 @@ import { removeInboundFiles } from './channels/media.js';
 import { removeAttachmentFile } from './attachments.js';
 import { logEvent } from './logs.js';
 import * as astore from './automation/store.js';
+import { pruneThreads, redactContact } from './copilot/store.js';
+import { config } from './config.js';
 
 /** Todo lo que el sistema guarda de un contacto, listo para entregárselo (acceso / portabilidad). */
 export async function contactDataExport(contactId: string) {
@@ -62,6 +64,8 @@ export async function eraseContact(contactId: string, guard: { accountId?: strin
     );
     // Respuestas de la API guardadas por Idempotency-Key (24 h) que traen sus datos: una repetición ya no los devuelve.
     await client.query(`DELETE FROM api_idempotency WHERE api_key_id IN (SELECT id FROM api_keys WHERE account_id = $1) AND strpos(response, $2) > 0`, [contact.account_id, contactId]);
+    // Lo que el Copiloto leyó o cambió de este cliente: se vacía el texto de esos turnos y los datos de sus acciones.
+    await redactContact(client, contactId);
     await client.query(`DELETE FROM email_threads WHERE channel_id = $1 AND address = lower($2)`, [contact.channel_id, contact.external_id]);
     await client.query('DELETE FROM inbound_receipts WHERE channel_id=$1 AND external_id=$2',[contact.channel_id,contact.external_id]);
     await client.query('DELETE FROM query_embedding_cache WHERE account_id=$1',[contact.account_id]);
@@ -104,6 +108,8 @@ export async function applyRetention(now = new Date()): Promise<{ accounts: numb
   await deleteInBatches('webhook_events', `created_at < $1`, [new Date(now.getTime() - 30 * 86400_000)]); // el cuerpo de cada evento, para reenviarlo
   // Respuestas guardadas por Idempotency-Key de la API: valen 24 h.
   await deleteInBatches('api_idempotency', `created_at < $1`, [new Date(now.getTime() - 86400_000)]);
+  // Conversaciones con el Copiloto: 90 días sin actividad (COPILOT_RETENTION_DAYS).
+  await pruneThreads(now);
   // Estadísticas de las redes (totales por día, sin datos de personas): poco más de un año.
   await query(`DELETE FROM social_account_stats WHERE day < ($1::timestamptz AT TIME ZONE 'UTC')::date - 400`, [now]);
   const accounts = await query<{ id: string; name: string; settings: unknown }>(`SELECT id, name, settings FROM accounts WHERE active`);
@@ -140,6 +146,8 @@ export async function applyRetention(now = new Date()): Promise<{ accounts: numb
       await query(`DELETE FROM social_posts p WHERE p.account_id = $1 AND p.updated_at < $2 AND NOT EXISTS (SELECT 1 FROM social_comments c WHERE c.post_id = p.id)`, [a.id, cutoff]);
       // El resumen y los datos de la conversación también contienen lo que dijo el cliente: se limpian junto con los mensajes.
       await query(`UPDATE conversations SET summary = '', report_summary = '', data = '{}'::jsonb WHERE account_id = $1 AND last_message_at < $2 AND (summary <> '' OR report_summary <> '' OR data <> '{}'::jsonb)`, [a.id, cutoff]);
+      // El Copiloto lee mensajes de clientes: sus conversaciones no duran más que los mensajes de la cuenta.
+      if (days < config.copilot.retentionDays) await pruneThreads(now, a.id, days);
     }
     if (inactive > 0) {
       const cutoff = new Date(now.getTime() - inactive * 86400_000);

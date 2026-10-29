@@ -93,7 +93,9 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     const account = req.user.account_id ? await store.getAccount(req.user.account_id) : null;
     // Pago pendiente: los administradores ven la franja «Actualiza tu pago» en todo el panel.
     const due = account && req.user.role !== 'agent' ? await paymentDue(account.id) : null;
-    return { user: req.user, account: account && { ...account, payment_due: due, deletion_date: deletionDate(account) } };
+    // Copiloto: el superadmin lo usa en la cuenta que elija (el panel revisa que esa cuenta lo tenga encendido).
+    const copilot = { enabled: config.copilot.enabled && (req.user.role === 'superadmin' || !!account?.copilot_enabled) };
+    return { user: req.user, account: account && { ...account, payment_due: due, deletion_date: deletionDate(account) }, copilot };
   });
 
   api.put('/api/me', async (req) => {
@@ -315,6 +317,8 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     brand_id: z.string().uuid().nullable().optional(),
     /** Conservar la cuenta aunque siga en pausa (no la borra la retención automática). */
     keep_data: z.boolean().optional(),
+    /** Encender o apagar el Copiloto para esta cuenta. */
+    copilot_enabled: z.boolean().optional(),
   });
 
   api.post('/api/accounts', { preHandler: requireRole('superadmin') }, async (req) => {
@@ -352,9 +356,10 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
       trialEnds = new Date(base + b.extend_trial_days * 86400_000);
       status = status ?? 'trial';
     }
-    const acc = (await store.updateAccount(before.id, { name: b.name, active: b.active, status, plan: b.plan, trial_ends_at: trialEnds, limits_override: b.limits_override ? (Object.fromEntries(Object.entries(b.limits_override).filter(([, v]) => v)) as Record<string, number>) : undefined, brand_id: b.brand_id, keep_data: b.keep_data }))!;
+    const acc = (await store.updateAccount(before.id, { name: b.name, active: b.active, status, plan: b.plan, trial_ends_at: trialEnds, limits_override: b.limits_override ? (Object.fromEntries(Object.entries(b.limits_override).filter(([, v]) => v)) as Record<string, number>) : undefined, brand_id: b.brand_id, keep_data: b.keep_data, copilot_enabled: b.copilot_enabled }))!;
     const changes = [b.active === false ? 'desactivada' : '', status && status !== before.status ? `estado: ${status}` : '', trialEnds !== undefined ? `prueba hasta ${trialEnds?.toISOString().slice(0, 10) ?? '—'}` : '',
-      b.keep_data !== undefined && b.keep_data !== before.keep_data ? (b.keep_data ? 'se conservan sus datos' : 'retención normal') : '']
+      b.keep_data !== undefined && b.keep_data !== before.keep_data ? (b.keep_data ? 'se conservan sus datos' : 'retención normal') : '',
+      b.copilot_enabled !== undefined && b.copilot_enabled !== before.copilot_enabled ? (b.copilot_enabled ? 'Copiloto encendido' : 'Copiloto apagado') : '']
       .filter(Boolean)
       .join(', ');
     await logEvent({ level: 'info', source: 'admin', message: `Cuenta actualizada: ${acc.name}${changes ? ` (${changes})` : ''}`, accountId: acc.id });
