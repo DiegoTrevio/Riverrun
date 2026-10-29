@@ -4,7 +4,7 @@ import http from 'node:http';
 import { OpenAiProvider, AiError } from '../src/ai/provider.js';
 import { config } from '../src/config.js';
 
-async function withApi(fn: (url: string, seen: any[], fail: (status: number) => void) => Promise<void>) {
+async function withApi(fn: (url: string, seen: any[], fail: (status: number) => void) => Promise<void>, reply?: (body: any) => Record<string, unknown>) {
   const seen: any[] = [];
   let status = 200;
   const server = http.createServer((req, res) => {
@@ -14,7 +14,8 @@ async function withApi(fn: (url: string, seen: any[], fail: (status: number) => 
       const body = JSON.parse(raw);
       seen.push({ url: req.url, authorization: req.headers.authorization, body });
       res.writeHead(status, { 'content-type': 'application/json' });
-      res.end(JSON.stringify(status !== 200 ? { error: { message: 'Incorrect API key: sk-or-v1-FAKE-SECRET' } } : { model: body.model, choices: [{ message: { content: 'Respuesta de prueba' }, finish_reason: 'stop' }], usage: { prompt_tokens: 20, completion_tokens: 10, cost: 0.00003, prompt_tokens_details: { cached_tokens: 5 } } }));
+      const choice = reply?.(body) ?? { message: { content: 'Respuesta de prueba' }, finish_reason: 'stop' };
+      res.end(JSON.stringify(status !== 200 ? { error: { message: 'Incorrect API key: sk-or-v1-FAKE-SECRET' } } : { model: body.model, choices: [choice], usage: { prompt_tokens: 20, completion_tokens: 10, cost: 0.00003, prompt_tokens_details: { cached_tokens: 5 } } }));
     });
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -147,4 +148,54 @@ test('OpenRouter: lista de respaldo — models en orden, sin repetir el principa
     try { await direct.complete({ model: 'gpt-4.1-mini', messages }); } finally { config.openai.fallbackModels = saved; }
     assert.equal(seen[3].body.models, undefined);
   });
+});
+
+test('OpenRouter: herramientas — envía tools en formato OpenAI, exige soporte y lee las llamadas sin texto', async () => {
+  const toolReply = (body: any) => body.tools
+    ? { message: { content: null, tool_calls: [
+      { id: 'call_a', type: 'function', function: { name: 'buscar_contactos', arguments: '{"texto":"Ana"}' } },
+      { id: 'call_b', type: 'function', function: { name: 'ver_contacto', arguments: { id: 'x' } } },
+      { id: 'call_c', type: 'function', function: { arguments: '{}' } },
+    ] }, finish_reason: 'tool_calls' }
+    : { message: { content: 'Respuesta de prueba' }, finish_reason: 'stop' };
+  await withApi(async (url, seen) => {
+    const client = new OpenAiProvider('TEST', url, 1000, 'openrouter');
+    const tools = [{ name: 'buscar_contactos', description: 'Busca contactos', parameters: { type: 'object', properties: { texto: { type: 'string' } }, required: ['texto'], additionalProperties: false } }];
+    const result = await client.complete({
+      model: 'anthropic/claude-sonnet-4.5', fallback_models: 'none', tools, tool_choice: 'auto', reasoning_effort: 'low',
+      messages: [
+        { role: 'system', content: [{ type: 'text', text: 'Eres Copiloto', cache_control: { type: 'ephemeral' } }] },
+        { role: 'user', content: 'Busca a Ana' },
+        { role: 'assistant', content: null, tool_calls: [{ id: 'call_0', name: 'buscar_contactos', arguments: '{"texto":"Ana"}' }] },
+        { role: 'tool', tool_call_id: 'call_0', content: '{"contactos":[]}' },
+      ],
+    });
+    const body = seen[0].body;
+    assert.deepEqual(body.tools, [{ type: 'function', function: tools[0] }]);
+    assert.equal(body.tool_choice, 'auto');
+    assert.deepEqual(body.provider, { require_parameters: true }, 'los respaldos sin herramientas se saltan');
+    assert.equal(body.reasoning, undefined, 'con herramientas no se pide razonamiento');
+    assert.equal(body.model, 'anthropic/claude-sonnet-4.5');
+    assert.equal(body.models, undefined, "fallback_models: 'none' no manda respaldos");
+    assert.deepEqual(body.messages[2], { role: 'assistant', content: null, tool_calls: [{ id: 'call_0', type: 'function', function: { name: 'buscar_contactos', arguments: '{"texto":"Ana"}' } }] });
+    assert.deepEqual(body.messages[3], { role: 'tool', tool_call_id: 'call_0', content: '{"contactos":[]}' });
+    assert.deepEqual(body.messages[0].content[0].cache_control, { type: 'ephemeral' });
+    assert.equal(result.content, '');
+    assert.equal(result.finish_reason, 'tool_calls');
+    assert.deepEqual(result.tool_calls, [
+      { id: 'call_a', name: 'buscar_contactos', arguments: '{"texto":"Ana"}' },
+      { id: 'call_b', name: 'ver_contacto', arguments: '{"id":"x"}' },
+    ], 'los argumentos en objeto se vuelven texto y una llamada sin nombre se descarta');
+
+    await client.complete({ model: 'anthropic/claude-sonnet-4.5', tools, tool_choice: { name: 'buscar_contactos' }, parallel_tool_calls: false, messages: [] });
+    assert.deepEqual(seen[1].body.tool_choice, { type: 'function', function: { name: 'buscar_contactos' } });
+    assert.equal(seen[1].body.parallel_tool_calls, false);
+
+    // Sin herramientas, una respuesta vacía sigue siendo un error; y no se mezclan herramientas con JSON Schema.
+    await assert.rejects(client.complete({ model: 'x/y', tools, json_schema: { name: 'n', schema: {} }, messages: [] }), (e: any) => e instanceof AiError && e.notDispatched);
+    assert.equal(seen.length, 2, 'la combinación inválida no llega al proveedor');
+  }, toolReply);
+  await withApi(async (url) => {
+    await assert.rejects(new OpenAiProvider('TEST', url, 1000, 'openrouter').complete({ model: 'x/y', messages: [] }), /Respuesta vacía/);
+  }, () => ({ message: { content: '' }, finish_reason: 'length' }));
 });

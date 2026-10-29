@@ -28,4 +28,7 @@ export async function loadSession() {
   if (state.accountId && !accounts.some((a) => a.id === state.accountId)) state.accountId = '';
 }
 
+/** El Copiloto está disponible: encendido para la cuenta (el superadmin, en la cuenta que tenga elegida). */
+export const copilotAvailable = () => !!state.me?.copilot?.enabled && (!isSuper() || !!state.accounts.find((a) => a.id === state.accountId)?.copilot_enabled);
+
 export const withAcct = (url) => url + (isSuper() && state.accountId ? `${url.includes('?') ? '&' : '?'}account_id=${state.accountId}` : '');

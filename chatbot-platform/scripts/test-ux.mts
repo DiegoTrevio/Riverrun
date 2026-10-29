@@ -635,6 +635,82 @@ try {
     await phoneCtx.close();
   }
   checked('Teclado: la bandeja conserva el foco, los mensajes se anuncian, saltar al contenido, errores en su campo, avisos sobre diálogos, menús, contraste y confirmar al borrar');
+  {
+    // Copiloto: pedir, ver la tarjeta, deshacer, «Cambiar esto» y confirmar un mensaje; el panel sigue abierto al navegar.
+    await pool.query(`UPDATE accounts SET copilot_enabled = true WHERE id = $1`, [h.accountId]);
+    h.setCopilotScript((req) => {
+      const last: any = req.messages[req.messages.length - 1];
+      if (last.role === 'tool') return /pendiente_de_confirmacion/.test(last.content) ? 'Revisa el mensaje y confírmalo en la tarjeta.' : 'Listo. Puedes **deshacerlo** desde la tarjeta.';
+      if (/vip/i.test(String(last.content))) return { tool_calls: [{ name: 'etiquetar', arguments: { contacto_ids: [conv.contact_id], agregar: ['vip'] } }] };
+      return { tool_calls: [{ name: 'enviar_mensaje', arguments: { conversacion_id: conv.id, texto: 'Te esperamos el sábado a las 11.' } }] };
+    });
+    const context = await contextFor('admin'); const page = await context.newPage(); page.setDefaultTimeout(10000);
+    page.on('pageerror', (error) => results.errors.push({ role: 'admin', message: error.message }));
+    await page.goto(`${base}/#/contact/${conv.contact_id}`); await page.locator('.main h1').waitFor();
+    const launcher = page.locator('.sidebar [data-copilot-launcher]');
+    await launcher.click();
+    const panel = page.locator('#copilot');
+    await panel.getByText('En esta página:').waitFor();
+    assert.equal(await launcher.getAttribute('aria-expanded'), 'true');
+    assert.equal(await page.evaluate(() => document.activeElement?.id), 'copilot-input', 'el foco va al cuadro de texto');
+    const input = panel.getByLabel('Qué necesitas del Copiloto');
+    await input.fill('Etiqueta a este contacto como VIP'); await input.press('Enter');
+    const done = panel.locator('.cp-card.is-done'); await done.waitFor();
+    await panel.locator('.cp-msg.is-copilot', { hasText: 'Listo.' }).waitFor();
+    assert.ok((await pool.query(`SELECT tags FROM contacts WHERE id = $1`, [conv.contact_id])).rows[0].tags.includes('vip'));
+    await panel.getByRole('button', { name: 'Actualizar vista' }).click();
+    await page.locator('.main').getByText('vip', { exact: true }).first().waitFor();
+    await done.getByRole('button', { name: /^Deshacer/ }).click();
+    await panel.locator('.cp-card.is-undone').waitFor();
+    assert.ok(!(await pool.query(`SELECT tags FROM contacts WHERE id = $1`, [conv.contact_id])).rows[0].tags.includes('vip'));
+    await panel.locator('.cp-card.is-undone').getByRole('button', { name: /^Cambiar esto/ }).click();
+    await panel.locator('.cp-chip.ref').waitFor();
+    await panel.locator('.cp-chip.ref').getByRole('button').click();
+    const before = h.sent.length;
+    await input.fill('Avísale que la esperamos el sábado'); await input.press('Enter');
+    const proposal = panel.locator('.cp-card.is-proposed'); await proposal.waitFor();
+    await panel.locator('.cp-msg.is-copilot', { hasText: 'confírmalo' }).waitFor();
+    assert.equal(h.sent.length, before, 'nada sale antes de confirmar');
+    await page.evaluate(axe);
+    const violations = await page.evaluate(async () => (await (window as any).axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa', 'best-practice'] } })).violations.map((v: any) => ({ id: v.id, impact: v.impact, nodes: v.nodes.map((n: any) => ({ target: n.target, summary: n.failureSummary })) })));
+    results.screens.push({ role: 'admin', route: 'copiloto (propuesta)', violations });
+    await proposal.getByRole('button', { name: /^Confirmar: Enviar mensaje/ }).click();
+    await panel.locator('.cp-event', { hasText: 'Confirmaste' }).waitFor();
+    await waitFor(() => h.sent.some((m: any) => JSON.stringify(m).includes('Te esperamos el sábado a las 11.')), 8000);
+    await page.goto(`${base}/#/contacts`); await page.locator('.main h1').waitFor();
+    await panel.getByText('En esta página: Contactos').waitFor();
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false);
+    await input.press('Escape');
+    assert.equal(await panel.isHidden(), true, 'Escape cierra el Copiloto');
+    await context.close();
+    // Ancho a ancho, claro y oscuro: abierto sin desbordar; en el celular es un diálogo y Escape devuelve el foco.
+    for (const width of [320, 390, 768, 1024, 1440]) for (const theme of ['light', 'dark'] as const) {
+      const ctx = await contextFor('admin', { viewport: { width, height: 900 }, colorScheme: theme, ...(width <= 390 ? { isMobile: true, hasTouch: true } : {}) });
+      const p = await ctx.newPage(); p.setDefaultTimeout(10000);
+      p.on('pageerror', (error) => results.errors.push({ role: 'admin', message: error.message }));
+      await p.goto(`${base}/#/contact/${conv.contact_id}`); await p.locator('.main h1').waitFor();
+      await p.locator('[data-copilot-launcher]:visible').click();
+      await p.locator('#copilot .cp-chip').first().waitFor();
+      const overflow = await p.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1);
+      results.responsive.push({ width, theme, route: 'copiloto', overflow });
+      assert.equal(overflow, false, `Desbordamiento del Copiloto ${width} ${theme}`);
+      if (width <= 768) {
+        assert.equal(await p.locator('#copilot').getAttribute('aria-modal'), 'true');
+        assert.equal(await p.evaluate(() => document.getElementById('app')?.hasAttribute('inert')), true, 'el resto queda inerte');
+        await p.keyboard.press('Escape');
+        assert.equal(await p.evaluate(() => document.activeElement?.hasAttribute('data-copilot-launcher')), true, 'el foco vuelve al botón del Copiloto');
+      }
+      if (width === 390 && theme === 'dark') await p.screenshot({ path: `${output}/copiloto-mobile.png` });
+      await ctx.close();
+    }
+    // El agente lo usa con ejemplos de su rol.
+    const agentCtx = await contextFor('agent'); const ap = await agentCtx.newPage(); ap.setDefaultTimeout(10000);
+    await ap.goto(`${base}/#/conversations`); await ap.locator('.main h1').waitFor();
+    await ap.locator('.sidebar [data-copilot-launcher]').click();
+    await ap.locator('#copilot').getByText('¿Qué conversaciones tengo sin responder?').waitFor();
+    await agentCtx.close();
+  }
+  checked('Copiloto: pedir, deshacer, «Cambiar esto», confirmar un mensaje, navegar con el panel abierto, en cada ancho y para el agente');
   assert.deepEqual(results.badNames || [], [], 'Controles con nombre genérico o una llave en inglés');
   assert.equal(results.errors.length, 0, JSON.stringify(results.errors));
   assert.deepEqual(cspViolations, [], 'La CSP bloqueó algo del panel o de una página pública');

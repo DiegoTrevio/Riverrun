@@ -35,6 +35,10 @@ export async function configuredModels(): Promise<{ id: string; where: string }[
     { id: o.summaryModel, where: 'OPENROUTER_SUMMARY_MODEL' },
     { id: o.transcriptionModel, where: 'OPENROUTER_TRANSCRIPTION_MODEL' },
     ...o.fallbackModels.map((id) => ({ id, where: 'OPENROUTER_FALLBACK_MODELS' })),
+    ...(config.copilot.enabled ? [
+      { id: config.copilot.model, where: 'OPENROUTER_COPILOT_MODEL' },
+      ...config.copilot.fallbackModels.map((id) => ({ id, where: 'OPENROUTER_COPILOT_FALLBACK_MODELS' })),
+    ] : []),
   ];
   const rows = await query<{ name: string; model: string; fallbacks: string[] }>(
     `SELECT name, ai->>'model' AS model, COALESCE(ARRAY(SELECT jsonb_array_elements_text(ai->'fallback_models')), '{}') AS fallbacks FROM chatbots`,

@@ -287,6 +287,16 @@ En una imagen de producción ya compilada: `docker compose exec backend node dis
 
 *Desactivar* una cuenta le quita todo acceso; *pausarla* (o que venza su prueba) le deja el panel pero detiene el bot y los envíos.
 
+## Copiloto: pedirle al panel que haga las cosas
+
+El **Copiloto** es un panel lateral (botón en el menú, o Ctrl/⌘ + .) donde administradores y agentes escriben qué quieren y la IA lo hace con sus mismos permisos: etiquetar y editar contactos, pendientes, conversaciones, mensajes, citas, oportunidades, cobros, cotizaciones y estadísticas; y, para administradores, las instrucciones y ajustes del agente, su conocimiento, el horario, flujos del lienzo con IA, reglas, secuencias y campañas. Sabe qué página está abierta («este contacto»).
+
+- **Lo reversible** se aplica al momento y su tarjeta trae **Deshacer** (7 días; no pisa lo que alguien cambió después). **Lo que llega a clientes o no se puede deshacer** (mensajes, cobros, publicar, lanzar, cancelar, borrar) queda como propuesta y solo se ejecuta con **Confirmar**, con los datos que se vieron. **Cambiar esto** en una tarjeta pide un cambio sobre esa acción.
+- Cada herramienta llama a las mismas rutas del panel con la sesión de quien pide: mismos permisos, validaciones, límites y registros (origen `copilot`). Lo que escriben los clientes se trata como dato, no como instrucción: tras leerlo, los cambios fuera de lo que se está viendo y los de configuración se confirman.
+- **Encenderlo:** el superadministrador lo activa cuenta por cuenta en **Cuentas** (casilla «Copiloto»). `COPILOT_ENABLED=false` lo apaga en toda la plataforma.
+- **Modelo y costo:** `OPENROUTER_COPILOT_MODEL` (por defecto `anthropic/claude-sonnet-4.5`; debe saber usar herramientas) y `OPENROUTER_COPILOT_FALLBACK_MODELS`. Se cobra del presupuesto de IA de la cuenta (tipo «Copiloto» en Consumo) y no arranca si el presupuesto va arriba del 80 %, para no dejar sin IA al agente de los clientes. Límites por pedido, por usuario y por cuenta en las variables `COPILOT_*` (ver `.env.example`).
+- Diseño, catálogo de herramientas y seguridad: [docs/copiloto.md](docs/copiloto.md).
+
 ## Primeros pasos en el panel
 
 1. **Cuentas** (superadministrador): crea la cuenta del cliente y, opcionalmente, su primer administrador.
