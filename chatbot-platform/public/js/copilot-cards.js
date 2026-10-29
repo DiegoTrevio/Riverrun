@@ -42,7 +42,7 @@ const STATUS = {
 const timeOf = (d) => new Date(d).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit', hour12: false });
 
 /** Antes y después por renglón (instrucciones del agente): lo que cambia con un renglón de contexto, plegado. */
-function diffBlock(diff) {
+function diffBlock(diff, key) {
   const near = new Set(diff.flatMap((l, i) => (l.state === 'same' ? [] : [i - 1, i, i + 1])));
   const items = [];
   let gap = 0;
@@ -55,7 +55,7 @@ function diffBlock(diff) {
     else items.push(h('li', { class: 'ai-diff-same' }, l.text));
   });
   flush();
-  return h('details', { class: 'cp-diff' }, h('summary', {}, 'Ver los cambios'), h('ul', { class: 'ai-diff', tabindex: '0', 'aria-label': 'Cambios por renglón' }, items));
+  return h('details', { class: 'cp-diff', 'data-key': `d:${key}` }, h('summary', {}, 'Ver los cambios'), h('ul', { class: 'ai-diff', tabindex: '0', 'aria-label': 'Cambios por renglón' }, items));
 }
 
 /**
@@ -80,7 +80,7 @@ export function actionCard(a, on, busy = false) {
     h('div', { class: 'cp-card-head' }, h('span', { class: `badge ${tone}` }, label), h('p', { class: 'cp-card-title' }, a.title || 'Acción')),
     proposed && p.lines?.length ? h('ul', { class: 'cp-lines' }, p.lines.map((l) => h('li', {}, l))) : null,
     proposed && p.quote ? h('blockquote', { class: 'cp-quote' }, p.quote) : null,
-    Array.isArray(p.diff) && p.diff.length ? diffBlock(p.diff) : null,
+    Array.isArray(p.diff) && p.diff.length ? diffBlock(p.diff, a.id) : null,
     proposed && p.warning ? h('p', { class: 'cp-warning' }, p.warning) : null,
     proposed && a.reasons?.length ? a.reasons.map((r) => h('p', { class: 'cp-reason' }, r)) : null,
     a.error && (a.status === 'failed' || a.status === 'unknown') ? h('p', { class: 'cp-error' }, a.error) : null,

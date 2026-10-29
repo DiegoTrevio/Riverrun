@@ -73,6 +73,15 @@ function errorText(e: unknown): string {
 
 const err = (code: string, mensaje: string) => JSON.stringify({ error: code, mensaje });
 
+/** Tarjeta de confirmación de una herramienta sin vista previa propia: lo que se pidió, campo por campo. */
+export function genericPreview(def: ToolDef, args: unknown): cs.Preview {
+  const fmt = (v: unknown): string => (typeof v === 'string' ? `«${v.slice(0, 400)}»`
+    : Array.isArray(v) ? v.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(', ').slice(0, 400)
+    : v && typeof v === 'object' ? JSON.stringify(v).slice(0, 400) : String(v));
+  const lines = Object.entries((args ?? {}) as Record<string, unknown>).filter(([, v]) => v !== undefined).map(([k, v]) => `${k.replace(/_/g, ' ')}: ${fmt(v)}`);
+  return { title: def.label(args).replace(/…$/, ''), lines };
+}
+
 export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void> {
   const { thread, turn, user } = req;
   const started = Date.now();
@@ -106,7 +115,9 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
 
     let cost = 0, toolCalls = 0, changes = 0, proposals = 0;
     let limitHit = '';
+    // Cambios y propuestas ya hechos en este pedido (no se repiten); las consultas se olvidan al cambiar algo.
     const done = new Map<string, string>();
+    const reads = new Map<string, string>();
 
     const ask = async (toolChoice: 'auto' | 'none') => {
       const res = await ai.complete({
@@ -132,7 +143,8 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
       if (!parsed.success) return JSON.stringify({ error: 'datos_invalidos', mensaje: 'Argumentos inválidos', detalles: parsed.error.issues.slice(0, 6).map((i) => `${i.path.join('.') || 'argumentos'}: ${i.message}`) });
       const args = parsed.data;
       const key = `${def.name}:${cs.stableJson(args)}`;
-      if (done.has(key)) return JSON.stringify({ estado: 'ya_hecho', nota: 'Esta misma acción ya se hizo en este pedido.', resultado_anterior: JSON.parse(done.get(key)!) });
+      const prior = done.get(key) ?? reads.get(key);
+      if (prior !== undefined) return JSON.stringify({ estado: 'ya_hecho', nota: 'Esta misma acción ya se hizo en este pedido.', resultado_anterior: prior });
       await cs.heartbeat(turn.id, def.label(args));
 
       let risk;
@@ -150,7 +162,7 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
           if (r.untrusted || r.contactIds?.length) await cs.markTurn(turn.id, { tainted: r.untrusted, contactIds: r.contactIds });
           await cs.insertAction({ thread_id: thread.id, turn_id: turn.id, account_id: thread.account_id, user_id: user.id, tool_call_id: call.id, tool: def.name, args: args as Record<string, unknown>, risk: 'read', status: 'done', title: r.title ?? def.label(args), links: r.links ?? [], contact_ids: r.contactIds ?? [], executed_at: new Date() });
           const text = forModel(r.data);
-          done.set(key, text);
+          reads.set(key, text);
           return text;
         } catch (e) {
           if (e instanceof ToolError && e.code === 'sesion') throw e;
@@ -176,6 +188,7 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
           await logEvent({ level: 'info', source: 'copilot', message: `Copiloto (${user.email}): ${title}`, accountId: thread.account_id, details: { copilot_action_id: action.id, tool: def.name, turn_id: turn.id, risk: 'reversible' } }).catch(() => undefined);
           const text = forModel({ estado: 'hecho', accion: `A${action.id.slice(0, 8)}`, resumen: title, resultado: r.data });
           done.set(key, text);
+          reads.clear(); // lo que se consultó antes puede haber cambiado
           return text;
         } catch (e) {
           await cs.updateAction(action.id, { status: 'failed', error: e instanceof ToolError ? e.message : 'La acción falló en el servidor.' });
@@ -189,7 +202,7 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
       let preview: cs.Preview;
       let contactIds: string[] = [];
       try {
-        preview = def.preview ? await def.preview(args, ctx) : { title: def.label(args), lines: [] };
+        preview = def.preview ? await def.preview(args, ctx) : genericPreview(def, args);
         contactIds = def.targets ? (await def.targets(args, ctx)).filter((t) => t.kind === 'contact').map((t) => t.id) : [];
       } catch (e) {
         return errorText(e);
@@ -218,7 +231,7 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
       await cs.heartbeat(turn.id, last ? 'Escribiendo el resumen…' : 'Pensando…');
       const res = await ask(last ? 'none' : 'auto');
       if (last || !res.tool_calls?.length) {
-        await say(res.content || 'Listo.');
+        await say(res.content || (last ? 'Llegué al límite de este pedido; lo que hice está en las tarjetas.' : 'Listo.'));
         await cs.finishTurn(turn.id, 'done');
         await cs.touchThread(thread.id);
         return;
@@ -228,7 +241,10 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
       await cs.addMessage({ thread_id: thread.id, turn_id: turn.id, role: 'assistant', content: res.content, tool_calls: calls });
       for (const c of calls) {
         const stopped = await cs.stopRequested(turn.id);
-        const content = stopped ? err('detenido', 'No se ejecutó: la persona pidió detener.') : await runTool(c);
+        const content = stopped ? err('detenido', 'No se ejecutó: la persona pidió detener.')
+          // La respuesta se cortó por largo: los argumentos pueden venir incompletos.
+          : res.finish_reason === 'length' ? err('respuesta_cortada', 'Tu respuesta se cortó por largo; haz el cambio en partes más chicas.')
+          : await runTool(c);
         history.push({ role: 'tool', tool_call_id: c.id, content });
         await cs.addMessage({ thread_id: thread.id, turn_id: turn.id, role: 'tool', tool_call_id: c.id, content });
       }

@@ -20,7 +20,7 @@ function userText(m: Message, actions: Map<string, Action>): string {
 
 function toModel(m: Message, actions: Map<string, Action>): AnyMessage | null {
   if (m.role === 'user') return { role: 'user', content: userText(m, actions) };
-  if (m.role === 'event') return { role: 'user', content: `[Aviso del panel] ${m.redacted ? '(borrado)' : tidy(m.content, 300)}` };
+  if (m.role === 'event') return { role: 'user', content: `${NOTICE} ${m.redacted ? '(borrado)' : tidy(m.content, 300)}` };
   if (m.role === 'assistant') {
     if (m.tool_calls?.length) return { role: 'assistant', content: m.content || null, tool_calls: m.tool_calls };
     return m.content ? { role: 'assistant', content: m.content } : null;
@@ -28,7 +28,13 @@ function toModel(m: Message, actions: Map<string, Action>): AnyMessage | null {
   return { role: 'tool', tool_call_id: m.tool_call_id ?? '', content: (m.redacted ? '(borrado)' : m.content).slice(0, MAX_TOOL) };
 }
 
-/** Cada llamada con su resultado, en orden; los resultados sueltos se quitan. */
+const NOTICE = '[Aviso del panel]';
+const isNotice = (m: AnyMessage) => m.role === 'user' && typeof m.content === 'string' && m.content.startsWith(NOTICE);
+
+/**
+ * Cada llamada con su resultado, en orden; los resultados sueltos se quitan. Un aviso del panel que cayó entre una
+ * llamada y su resultado (se confirmó una tarjeta mientras el Copiloto trabajaba) va después de los resultados.
+ */
 function repair(list: AnyMessage[]): AnyMessage[] {
   const out: AnyMessage[] = [];
   for (let i = 0; i < list.length; i++) {
@@ -37,8 +43,15 @@ function repair(list: AnyMessage[]): AnyMessage[] {
     out.push(m);
     if (m.role === 'assistant' && 'tool_calls' in m && m.tool_calls?.length) {
       const results = new Map<string, AnyMessage>();
-      for (let j = i + 1; j < list.length && list[j].role === 'tool'; j++) results.set((list[j] as any).tool_call_id, list[j]);
+      const notices: AnyMessage[] = [];
+      let j = i + 1;
+      for (; j < list.length && (list[j].role === 'tool' || isNotice(list[j])); j++) {
+        if (list[j].role === 'tool') results.set((list[j] as any).tool_call_id, list[j]);
+        else notices.push(list[j]);
+      }
       for (const c of m.tool_calls) out.push(results.get(c.id) ?? { role: 'tool', tool_call_id: c.id, content: '{"error":"sin_resultado","mensaje":"Se interrumpió antes de terminar."}' });
+      out.push(...notices);
+      i = j - 1;
     }
   }
   return out;

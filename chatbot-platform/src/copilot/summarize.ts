@@ -49,6 +49,8 @@ export function when(value: string | Date | null | undefined, timeZone: string):
 /** Solo una fecha («2026-11-04»). */
 export function day(value: string | Date | null | undefined, timeZone: string): string {
   if (!value) return '';
+  // Una fecha sola (vencimiento) no tiene hora: convertirla de UTC a la zona la movería un día.
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return '';
   return d.toLocaleDateString('en-CA', { timeZone });

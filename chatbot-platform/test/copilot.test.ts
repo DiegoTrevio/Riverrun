@@ -324,6 +324,33 @@ t('al borrar los datos de un cliente también se vacían los avisos y los regist
   assert.deepEqual(await named(), [0, 0]);
 });
 
+t('un pedido colgado en otra conversación (por un reinicio) no impide pedir en una nueva', async () => {
+  const stuck = await thread(owner);
+  script(['Listo.']);
+  await ask(owner, stuck, 'hola');
+  await pool.query(`UPDATE copilot_turns SET status = 'running', heartbeat_at = now() - interval '5 minutes', finished_at = NULL WHERE thread_id = $1`, [stuck]);
+  const fresh = await thread(owner);
+  const r = await owner('POST', `/api/copilot/threads/${fresh}/messages`, { text: 'otra cosa' });
+  assert.equal(r.statusCode, 202, r.body);
+  await waitFor(async () => (await owner('GET', `/api/copilot/threads/${fresh}`)).json().turn?.status !== 'running', 8000);
+  assert.equal((await pool.query(`SELECT status FROM copilot_turns WHERE thread_id = $1`, [stuck])).rows[0].status, 'interrupted');
+});
+
+t('deshacer el cambio de una nota funciona (una nota no tiene estado)', async () => {
+  const id = await thread(owner);
+  const page = { page: { hash: `#/contact/${ana.contact_id}` } };
+  script([call('crear_tarea', { contacto_id: ana.contact_id, tipo: 'nota', texto: 'Prefiere los sábados' }), 'Listo.']);
+  const made = (await ask(owner, id, 'Anota que prefiere los sábados', page)).actions.find((a: any) => a.tool === 'crear_tarea');
+  const taskId = (await owner('GET', `/api/contacts/${ana.contact_id}/tasks`)).json().find((t: any) => t.body === 'Prefiere los sábados').id;
+  script([call('actualizar_tarea', { contacto_id: ana.contact_id, tarea_id: taskId, texto: 'Prefiere los domingos' }), 'Listo.']);
+  const edited = (await ask(owner, id, 'Mejor los domingos', page)).actions.find((a: any) => a.tool === 'actualizar_tarea');
+  assert.equal(edited.status, 'done', JSON.stringify(edited));
+  const u = await owner('POST', `/api/copilot/actions/${edited.id}/undo`);
+  assert.equal(u.statusCode, 200, u.body);
+  assert.ok((await owner('GET', `/api/contacts/${ana.contact_id}/tasks`)).json().some((t: any) => t.body === 'Prefiere los sábados'));
+  assert.equal((await owner('POST', `/api/copilot/actions/${made.id}/undo`)).statusCode, 200);
+});
+
 t('deshacer todo un pedido, de lo último a lo primero', async () => {
   const id = await thread(owner);
   script([

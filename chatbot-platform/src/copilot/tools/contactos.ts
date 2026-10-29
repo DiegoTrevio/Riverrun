@@ -67,7 +67,7 @@ export const verContacto = defineTool({
         conversaciones: (p.conversations ?? []).slice(0, 5).map((cv: any) => ({ id: cv.id, estado: cv.status, asignada_a: cv.assigned_name ?? undefined, agente: cv.chatbot_name ?? undefined, ultimo_mensaje: when(cv.last_message_at, ctx.timezone) })),
         pendientes: (p.tasks ?? []).filter((t: any) => t.status === 'abierta').slice(0, 10).map((t: any) => ({ id: t.id, tipo: t.kind, texto: t.body, vence: t.due_on ?? undefined })),
         proximas_citas: (p.appointments ?? []).slice(0, 5).map((ap: any) => ({ id: ap.id, servicio: ap.service_name, inicio: when(ap.starts_at, ctx.timezone), estado: ap.status })),
-        cotizaciones: (p.quotes ?? []).slice(0, 5).map((q: any) => ({ id: q.id, folio: q.folio, estado: q.status, total: q.total_max ?? q.total_min, moneda: q.currency })),
+        cotizaciones: (p.quotes ?? []).slice(0, 5).map((q: any) => ({ id: q.id, folio: q.folio, estado: q.status, total: `$${(Number(q.total_max ?? q.total_min ?? 0) / 100).toLocaleString('es-MX')} ${q.currency}` })),
         datos_del_cliente: { datos: c.data, notas: c.notes },
       },
     };
@@ -87,6 +87,13 @@ export const editarContacto = defineTool({
   }).refine((a) => a.nombre !== undefined || a.datos !== undefined || a.nota !== undefined, 'Indica qué cambiar'),
   label: () => 'Actualizando el contacto…',
   risk: () => 'reversible',
+  async preview(a, ctx) {
+    const c = (await profile(ctx, a.contacto_id)).contact;
+    return {
+      title: `Actualizar a ${nameOf(c)}`,
+      lines: [...(a.nombre ? [`Nombre: «${a.nombre}»`] : []), ...Object.entries(a.datos ?? {}).map(([k, v]) => (v === null ? `Borrar el dato ${k}` : `${k}: «${v}»`)), ...(a.nota ? [`Nota nueva: «${a.nota}»`] : [])],
+    };
+  },
   targets: (a) => [{ kind: 'contact', id: a.contacto_id }],
   events: (a) => [
     ...Object.entries(a.datos ?? {}).filter(([, v]) => v).map(([k]) => ({ type: 'data_captured', value: k })),
@@ -140,6 +147,12 @@ export const etiquetar = defineTool({
   }).refine((a) => a.agregar.length || a.quitar.length, 'Indica qué etiquetas agregar o quitar'),
   label: (a) => `Etiquetando ${a.contacto_ids.length === 1 ? 'al contacto' : `${a.contacto_ids.length} contactos`}…`,
   risk: () => 'reversible',
+  async preview(a, ctx) {
+    const names: string[] = [];
+    for (const id of a.contacto_ids) names.push(nameOf((await profile(ctx, id)).contact));
+    const what = [...a.agregar.map((t) => `+${t}`), ...a.quitar.map((t) => `−${t}`)].join(' ');
+    return { title: `Etiquetar a ${names.length === 1 ? names[0] : `${names.length} contactos`}: ${what}`, lines: names.length > 1 ? [names.join(', ')] : [] };
+  },
   targets: (a) => a.contacto_ids.map((id) => ({ kind: 'contact', id })),
   events: (a) => a.agregar.map((t) => ({ type: 'tag_added', value: t })),
   async execute(a, ctx) {
@@ -222,6 +235,10 @@ export const crearTarea = defineTool({
   }),
   label: (a) => (a.tipo === 'nota' ? 'Agregando una nota…' : 'Agregando un pendiente…'),
   risk: () => 'reversible',
+  async preview(a, ctx) {
+    const c = (await profile(ctx, a.contacto_id)).contact;
+    return { title: `Agregar ${a.tipo === 'nota' ? 'una nota' : 'un pendiente'} a ${nameOf(c)}`, lines: a.vence ? [`Vence el ${a.vence}.`] : [], quote: a.texto };
+  },
   targets: (a) => [{ kind: 'contact', id: a.contacto_id }],
   async execute(a, ctx) {
     await profile(ctx, a.contacto_id); // primero se revisa que sea de la cuenta (el superadmin puede ver todas)
@@ -276,7 +293,10 @@ export const actualizarTarea = defineTool({
     const t = await findTask(ctx, params.contact_id, params.task_id);
     if (!t) throw new ToolError('conflicto', 'El pendiente ya no existe.');
     if (stableJson(taskShape(t)) !== stableJson(params.after)) throw new ToolError('conflicto', 'El pendiente cambió después; para no perder esos cambios, no lo regresé.');
-    await ctx.call.send('PATCH', path`/api/tasks/${params.task_id}`, { body: params.before.body, status: params.before.status, due_on: params.before.due_on });
+    const after = params.after as any;
+    // Solo lo que cambió: una nota no tiene estado y el panel rechaza que se lo manden.
+    const body = Object.fromEntries((['body', 'status', 'due_on'] as const).filter((k) => stableJson(params.before[k]) !== stableJson(after[k])).map((k) => [k, params.before[k]]));
+    if (Object.keys(body).length) await ctx.call.send('PATCH', path`/api/tasks/${params.task_id}`, body);
   },
 });
 

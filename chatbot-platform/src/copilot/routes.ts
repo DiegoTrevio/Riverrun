@@ -158,6 +158,7 @@ export async function copilotRoutes(api: FastifyInstance, deps: RunnerDeps) {
       refs: z.array(Id).max(5).default([]),
     }), req.body);
     await cs.sweepStale(thread.id);
+    await cs.sweepStaleUser(req.user.id);
     const used = await cs.recentTurns(req.user.id, thread.account_id);
     if (used.user_hour >= config.copilot.turnsPerHour) throw new HttpError(429, 'Llegaste al límite de pedidos al Copiloto por hora; intenta en un rato');
     if (used.account_day >= config.copilot.accountTurnsPerDay) throw new HttpError(429, 'La cuenta llegó al límite de pedidos al Copiloto de hoy');

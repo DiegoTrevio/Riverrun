@@ -89,6 +89,11 @@ export const gestionarConversacion = defineTool({
   targets: (a) => [{ kind: 'conversation', id: a.conversacion_id }],
   // Tomarla la pasa a una persona: las reglas «pasa a una persona» pueden escribirle al cliente.
   events: (a) => (a.accion === 'tomar' ? [{ type: 'handoff' }] : []),
+  async preview(a, ctx) {
+    const c = await conversation(ctx, a.conversacion_id);
+    const verb = a.accion === 'asignar' ? `Asignar (${a.persona === 'yo' ? 'a ti' : a.persona === 'nadie' ? 'a nadie' : 'a otra persona'})` : a.accion === 'tomar' ? 'Tomar' : 'Devolver al agente';
+    return { title: `${verb} la conversación con ${nameOf(c.contact)}`, lines: a.accion === 'tomar' ? ['La atiende una persona; el agente deja de contestar.'] : [] };
+  },
   async execute(a, ctx) {
     const before = await conversation(ctx, a.conversacion_id);
     const id = before.conversation.id;
@@ -99,7 +104,8 @@ export const gestionarConversacion = defineTool({
     const name = nameOf(after.contact);
     const prev = before.conversation;
     const steps: { method: 'POST' | 'PUT'; url: string; body?: unknown }[] = [];
-    if (prev.status !== after.conversation.status) steps.push({ method: 'POST', url: path`/api/conversations/${id}/${prev.status === 'bot' ? 'release' : 'takeover'}` });
+    const back = prev.status === 'bot' ? 'release' : prev.status === 'closed' ? 'close' : 'takeover';
+    if (prev.status !== after.conversation.status) steps.push({ method: 'POST', url: path`/api/conversations/${id}/${back}` });
     if ((prev.assigned_user_id ?? null) !== (after.conversation.assigned_user_id ?? null)) steps.push({ method: 'PUT', url: path`/api/conversations/${id}/assign`, body: { user_id: prev.assigned_user_id ?? null } });
     const assignee = after.assignee?.name || after.assignee?.email;
     return {

@@ -193,13 +193,19 @@ function schedule(ms = 1000) {
 
 async function pull() {
   if (!s.open || !s.threadId) return;
+  const asked = s.threadId;
   try {
-    const u = await api('GET', url(`/threads/${s.threadId}/updates?after_rev=${s.rev}`));
+    const u = await api('GET', url(`/threads/${asked}/updates?after_rev=${s.rev}`));
+    // Mientras tanto se abrió otra conversación (o se cambió de cuenta): esto ya no es de la que se ve.
+    if (asked !== s.threadId) return;
     const changed = (u.messages?.length || 0) + (u.actions?.length || 0) + (u.turns?.length || 0) > 0;
     merge(u);
     if (changed) render();
     if (running()) schedule(1000);
-  } catch {
+  } catch (e) {
+    if (asked !== s.threadId) return;
+    // La conversación ya no existe (se borró o venció) o no es de esta cuenta: se empieza una nueva, sin seguir preguntando.
+    if (e.status === 404 || e.status === 403) { resetThread(); save(); render(); setStatus('Esa conversación ya no está disponible.', true); return; }
     schedule(4000);
   }
 }
@@ -213,7 +219,9 @@ async function send() {
   el.send.disabled = true;
   try {
     if (!s.threadId) { const t = await api('POST', url('/threads'), {}); s.threadId = t.id; save(); }
-    const r = await api('POST', url(`/threads/${s.threadId}/messages`), { text, page: { hash: s.pageOff ? '' : location.hash }, refs: s.refs.map((x) => x.id) });
+    const asked = s.threadId;
+    const r = await api('POST', url(`/threads/${asked}/messages`), { text, page: { hash: s.pageOff ? '' : location.hash }, refs: s.refs.map((x) => x.id) });
+    if (asked !== s.threadId) return;
     el.input.value = '';
     s.refs = []; s.pageOff = false;
     merge({ messages: [r.message], turns: [r.turn] });
@@ -375,8 +383,13 @@ function render() {
       h('p', {}, 'Dime qué quieres hacer y lo hago en el panel. Lo que se puede deshacer lo aplico al momento; lo que llega a tus clientes te lo muestro antes para que lo confirmes.'),
       h('div', { class: 'ai-examples' }, examples().map((x) => h('button', { type: 'button', class: 'ai-example', onclick: () => { el.input.value = x; el.input.focus(); } }, x)))));
   const keep = log ? log.scrollTop : 0;
+  // Los desplegables abiertos («Ver los cambios», «Consultó…») siguen abiertos al volver a pintar.
+  const open = new Set([...(log?.querySelectorAll('details[open][data-key]') ?? [])].map((d) => d.dataset.key));
+  for (const d of next.querySelectorAll('details[data-key]')) if (open.has(d.dataset.key)) d.open = true;
+  const logFocused = document.activeElement === log;
   fill(el.body, next);
   next.scrollTop = atBottom ? next.scrollHeight : keep;
+  if (logFocused) next.focus({ preventScroll: true });
   if (focusKey) next.querySelector(`[data-key="${CSS.escape(focusKey)}"]`)?.focus();
   renderChips();
   const live = s.turn?.status === 'running';

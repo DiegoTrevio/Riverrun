@@ -37,6 +37,11 @@ async function undoConfig(ctx: Ctx, p: { bot_id: string; before: Record<string, 
   await apply(ctx, bot.id, v, fromPaths(p.before));
 }
 
+/** Renglones del cambio de instrucciones para la tarjeta (un renglón cambiado se ve como quitado y agregado). */
+function diffOf(lines: any[] = []): NonNullable<Preview['diff']> {
+  return lines.flatMap((l: any) => (l.state === 'changed' ? [{ state: 'removed' as const, text: l.before ?? '' }, { state: 'new' as const, text: l.text }] : [{ state: l.state, text: l.text }]));
+}
+
 const EMOJIS = { ninguno: 'none', pocos: 'few', normal: 'normal' } as const;
 const EMOJIS_OUT: Record<string, string> = { none: 'ninguno', few: 'pocos', normal: 'normal' };
 const UNKNOWN = { decir_que_no_sabe: 'say_unknown', preguntar: 'ask', pasar_a_persona: 'handoff' } as const;
@@ -88,18 +93,34 @@ export const cambiarInstrucciones = defineTool({
   label: () => 'Cambiando las instrucciones del agente…',
   risk: () => 'reversible',
   targets: (a) => [{ kind: 'bot', id: a.agente_id }],
-  async execute(a, ctx) {
+  // Si hay que confirmarlo, la tarjeta muestra el cambio exacto y al confirmar se aplica ese mismo texto.
+  async preview(a, ctx) {
     const bot = await botOf(ctx, a.agente_id);
     const v = await versions(ctx, bot.id);
     noPending(v);
     const before = liveOf(bot, v).personality.prompt;
     const r = await ctx.call.send<any>('POST', path`/api/chatbots/${bot.id}/prompt-edit`, { instruction: a.cambio, prompt: before });
-    if (!r.changed) {
-      return { title: `No cambié las instrucciones de ${bot.name}`, links: [links.bot(bot.id, 'instrucciones', 'Ver instrucciones')], undo: null, data: { sin_cambios: true, pregunta: r.question || undefined, nota: r.summary } };
+    if (!r.changed) throw new ToolError('datos_invalidos', r.question || 'No encontré qué cambiar en las instrucciones.');
+    return { title: `Cambiar las instrucciones de ${bot.name}: ${String(r.summary || a.cambio).slice(0, 120)}`, lines: [], diff: diffOf(r.lines), meta: { before, prompt: r.prompt, summary: r.summary } };
+  },
+  async execute(a, ctx) {
+    const bot = await botOf(ctx, a.agente_id);
+    const v = await versions(ctx, bot.id);
+    noPending(v);
+    const before = liveOf(bot, v).personality.prompt;
+    const seen = ctx.proposal?.meta as { before?: string; prompt?: string; summary?: string } | undefined;
+    let r: { prompt: string; summary: string; lines?: any[]; changed: boolean; question?: string };
+    if (seen?.prompt !== undefined) {
+      if (seen.before !== before) throw new ToolError('conflicto', 'Las instrucciones cambiaron después de la propuesta; pídemelo de nuevo para revisar el cambio.');
+      r = { prompt: seen.prompt, summary: seen.summary ?? a.cambio, changed: true };
+    } else {
+      r = await ctx.call.send<any>('POST', path`/api/chatbots/${bot.id}/prompt-edit`, { instruction: a.cambio, prompt: before });
+      if (!r.changed) {
+        return { title: `No cambié las instrucciones de ${bot.name}`, links: [links.bot(bot.id, 'instrucciones', 'Ver instrucciones')], undo: null, data: { sin_cambios: true, pregunta: r.question || undefined, nota: r.summary } };
+      }
     }
     await apply(ctx, bot.id, v, { personality: { prompt: r.prompt } });
-    const diff: NonNullable<Preview['diff']> = (r.lines ?? []).flatMap((l: any) =>
-      l.state === 'changed' ? [{ state: 'removed' as const, text: l.before ?? '' }, { state: 'new' as const, text: l.text }] : [{ state: l.state, text: l.text }]);
+    const diff = r.lines ? diffOf(r.lines) : (ctx.proposal?.diff ?? []);
     return {
       title: `Cambié las instrucciones de ${bot.name}: ${String(r.summary || a.cambio).slice(0, 120)}`,
       links: [links.bot(bot.id, 'instrucciones', 'Ver instrucciones')],
@@ -164,6 +185,12 @@ export const ajustarAgente = defineTool({
   label: () => 'Ajustando el agente…',
   risk: () => 'reversible',
   targets: (a) => [{ kind: 'bot', id: a.agente_id }],
+  async preview(a, ctx) {
+    const bot = await botOf(ctx, a.agente_id);
+    const changes = settingsChanges(a, liveOf(bot, await versions(ctx, bot.id)));
+    const show = (v: unknown) => (Array.isArray(v) ? v.join(' · ') || '(nada)' : String(v));
+    return { title: `Ajustar a ${bot.name}`, lines: Object.entries(changes).map(([p, v]) => `${SETTING_LABEL[p] ?? p}: ${show(v)}`) };
+  },
   async execute(a, ctx) {
     const bot = await botOf(ctx, a.agente_id);
     const v = await versions(ctx, bot.id);
@@ -201,6 +228,7 @@ export const encenderApagarAgente = defineTool({
   async preview(a, ctx) {
     const bot = await botOf(ctx, a.agente_id);
     const channels = (bot.channels ?? []).filter((c: any) => c.active).map((c: any) => c.name);
+    if (!a.encender) return { title: `Apagar el agente ${bot.name}`, lines: ['Deja de contestar a los clientes en todos sus canales.'] };
     return {
       title: `Encender el agente ${bot.name}`,
       lines: [channels.length ? `Empieza a contestar a los clientes en: ${channels.join(', ')}.` : 'Aún no tiene canales activos: contestará cuando conectes uno.'],
@@ -241,6 +269,10 @@ export const agregarConocimiento = defineTool({
   label: (a) => `Agregando «${a.titulo.slice(0, 40)}» al conocimiento…`,
   risk: () => 'reversible',
   targets: (a) => [{ kind: 'bot', id: a.agente_id }],
+  async preview(a, ctx) {
+    const bot = await botOf(ctx, a.agente_id);
+    return { title: `Agregar «${a.titulo}» al conocimiento de ${bot.name}`, lines: ['El agente lo usa al contestar a los clientes.'], quote: a.contenido.slice(0, 1500) };
+  },
   async execute(a, ctx) {
     const bot = await botOf(ctx, a.agente_id);
     const k = await ctx.call.send<any>('POST', path`/api/chatbots/${bot.id}/knowledge`, { title: a.titulo, content: a.contenido, ...(a.categoria ? { category: a.categoria } : {}) });
@@ -270,6 +302,15 @@ export const editarConocimiento = defineTool({
   label: () => 'Editando el conocimiento del agente…',
   risk: () => 'reversible',
   targets: (a) => [{ kind: 'bot', id: a.agente_id }],
+  async preview(a, ctx) {
+    const { bot, item } = await knowledgeItem(ctx, a.agente_id, a.conocimiento_id);
+    if (!item) throw new ToolError('no_encontrado', 'Esa información no es de este agente');
+    return {
+      title: `Editar «${item.title}» en el conocimiento de ${bot.name}`,
+      lines: [...(a.titulo ? [`Título nuevo: «${a.titulo}»`] : []), ...(a.categoria ? [`Categoría: ${a.categoria}`] : []), ...(a.activo !== undefined ? [a.activo ? 'Se activa.' : 'Se desactiva.'] : [])],
+      ...(a.contenido ? { quote: a.contenido.slice(0, 1500) } : {}),
+    };
+  },
   async execute(a, ctx) {
     const { bot, item } = await knowledgeItem(ctx, a.agente_id, a.conocimiento_id);
     if (!item) throw new ToolError('no_encontrado', 'Esa información no es de este agente');
@@ -316,7 +357,8 @@ export const borrarConocimiento = defineTool({
       title: `Borré «${item.title}» del conocimiento de ${bot.name}`,
       links: [links.bot(bot.id, 'conocimiento', 'Ver conocimiento')],
       before: knowledgeShape(item),
-      undo: { label: 'Volver a agregarlo', custom: { tool: 'borrar_conocimiento', params: { bot_id: bot.id, item: knowledgeShape(item) } } },
+      // Se vuelve a crear con todo lo que tenía (siempre incluido, orden y fuente).
+      undo: { label: 'Volver a agregarlo', custom: { tool: 'borrar_conocimiento', params: { bot_id: bot.id, item: { ...knowledgeShape(item), always_include: !!item.always_include, sort_order: item.sort_order ?? 0, source_url: item.source_url ?? null } } } },
       data: { borrado: true },
     };
   },

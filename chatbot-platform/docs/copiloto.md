@@ -103,10 +103,24 @@ Resultados que ve el modelo:
 - El hash de lo que se mostró (`seen_hash`) debe coincidir.
 
 **Un cambio reversible pasa a `confirm` si:**
-1. Dispara una regla activa que manda mensajes, inicia secuencias o llama webhooks: etiqueta agregada, dato
-   capturado, etapa, cita agendada. La tarjeta nombra la regla.
-2. El turno leyó texto escrito por clientes y el cambio toca un registro fuera de los permitidos: la página abierta,
-   las acciones referidas o lo que se leyó. Esto protege contra instrucciones escondidas en mensajes.
+1. Dispara una regla activa que manda mensajes, inicia secuencias o llama webhooks: etiqueta agregada (sin importar
+   mayúsculas ni acentos, como el motor de reglas), dato capturado, etapa, cita agendada, conversación tomada por una
+   persona. Se siguen las reglas encadenadas por etiqueta (hasta tres saltos). La tarjeta nombra la regla.
+2. El turno leyó texto escrito por clientes y el cambio es de configuración (agente, automatizaciones, horario), no
+   dice qué registros toca, o toca un registro fuera de los permitidos: la página abierta, las acciones referidas o lo
+   que se leyó **antes** de ese texto (lo que se lee después no amplía el alcance). Esto protege contra instrucciones
+   escondidas en mensajes.
+
+**Texto de clientes.** Cuenta como tal todo lo que escriben los clientes o cualquiera desde afuera: mensajes, datos y
+notas, y también sus nombres (el perfil de WhatsApp o la página pública de reservas), así que las búsquedas de
+contactos, conversaciones, citas, oportunidades, cobros y cotizaciones marcan el turno. Lo leído en los 6 turnos que el
+modelo vuelve a ver completos sigue contando en el turno nuevo. Los nombres que entran al prompt (equipo, agentes,
+página abierta, títulos de acciones y avisos) van en una línea corta sin signos de formato y el prompt los trata como
+datos.
+
+**La tarjeta muestra lo que se va a hacer.** Cada herramienta que puede pasar a `confirm` arma su vista previa (sin
+vista previa propia, la tarjeta lista lo pedido campo por campo). Un cambio de instrucciones que hay que confirmar
+muestra su antes y después, y al confirmar se aplica exactamente ese texto (no se vuelve a pedir a la IA).
 
 ## Deshacer
 

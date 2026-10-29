@@ -5,7 +5,7 @@ import { COPILOT_TOOLS } from '../src/copilot/tools/index.js';
 import { toolSpec, allowed } from '../src/copilot/registry.js';
 import { buildHistory } from '../src/copilot/history.js';
 import { parsePage } from '../src/copilot/page.js';
-import { clip, forModel, safeLink } from '../src/copilot/summarize.js';
+import { clip, day, forModel, safeLink } from '../src/copilot/summarize.js';
 import { keepAccount, path, qs, ToolError } from '../src/copilot/executor.js';
 import { argsHash, stableJson, type Action, type Message } from '../src/copilot/store.js';
 import { pickPaths } from '../src/copilot/actions.js';
@@ -49,6 +49,23 @@ test('historial: cada llamada queda con su resultado y los resultados sueltos se
   assert.equal((h[2] as any).tool_call_id, 'a');
   assert.equal((h[3] as any).tool_call_id, 'b');
   assert.match((h[3] as any).content, /sin_resultado/);
+});
+
+test('historial: un aviso del panel que cae entre una llamada y su resultado va después del resultado', () => {
+  const h = buildHistory([
+    msg(1, { role: 'user', content: 'Etiqueta a Ana' }),
+    msg(2, { role: 'assistant', tool_calls: [{ id: 'a', name: 'etiquetar', arguments: '{}' }] }),
+    msg(3, { role: 'event', content: 'Confirmaste: Enviar mensaje a Beto → hecho.' }),
+    msg(4, { role: 'tool', tool_call_id: 'a', content: '{"estado":"hecho"}' }),
+  ], []);
+  assert.deepEqual(h.map((m) => m.role), ['user', 'assistant', 'tool', 'user']);
+  assert.equal((h[2] as any).content, '{"estado":"hecho"}', 'el resultado real, no «sin resultado»');
+  assert.match(String((h[3] as any).content), /^\[Aviso del panel\] Confirmaste/);
+});
+
+test('fechas: una fecha sola no se mueve de día por la zona horaria', () => {
+  assert.equal(day('2026-11-04', 'America/Mexico_City'), '2026-11-04');
+  assert.equal(day(new Date('2026-11-04T03:00:00Z'), 'America/Mexico_City'), '2026-11-03');
 });
 
 test('historial: los turnos viejos solo conservan lo que se pidió y lo que se respondió; las referencias se explican', () => {

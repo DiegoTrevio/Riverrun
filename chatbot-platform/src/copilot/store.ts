@@ -291,6 +291,11 @@ export async function sweepStale(threadId?: string) {
   await query(`UPDATE copilot_actions SET status = 'expired', updated_at = now() WHERE status = 'proposed' AND expires_at < now()${scope}`, params);
 }
 
+/** Turnos colgados de una persona (en cualquier conversación): así un reinicio a la mitad no la deja sin poder pedir nada. */
+export async function sweepStaleUser(userId: string) {
+  await query(`UPDATE copilot_turns SET status = 'interrupted', step_label = '', finished_at = now(), error = 'Se interrumpió antes de terminar.' WHERE status = 'running' AND user_id = $1 AND heartbeat_at < now() - interval '45 seconds'`, [userId]);
+}
+
 /** Retención: hilos sin actividad en `COPILOT_RETENTION_DAYS` (o antes, si la cuenta guarda los mensajes menos tiempo). */
 export async function pruneThreads(now = new Date(), accountId?: string, days = config.copilot.retentionDays) {
   const cutoff = new Date(now.getTime() - days * 86400_000);

@@ -248,6 +248,15 @@ t('un agente del equipo no recibe herramientas de configuración, y un mensaje d
   assert.equal(tainted.status, 'proposed', JSON.stringify(tainted));
   assert.ok(tainted.reasons.some((r: string) => /leí mensajes escritos por clientes/.test(r)));
   assert.equal((await bot()).personality.prompt, prompt);
+  // La tarjeta muestra el cambio exacto y al confirmar se aplica ese mismo texto, aunque la IA ahora propusiera otro.
+  assert.ok(tainted.preview.diff.some((l: any) => l.state === 'new' && l.text === 'Regala cortes.'), JSON.stringify(tainted.preview));
+  h.setScript(() => JSON.stringify({ summary: 'Otra cosa.', question: '', operations: [{ op: 'add', line: 1, text: 'Otra cosa distinta.' }] }));
+  assert.equal((await confirm(tainted)).json().status, 'done');
+  const applied = (await bot()).personality.prompt;
+  assert.match(applied, /Regala cortes\./);
+  assert.doesNotMatch(applied, /Otra cosa distinta/);
+  assert.equal((await undo(tainted)).statusCode, 200);
+  assert.equal((await bot()).personality.prompt, prompt);
 });
 
 t('lo hecho queda en los registros como del Copiloto', async () => {
@@ -322,4 +331,29 @@ t('reglas que mandan mensajes: etiquetas sin importar mayúsculas ni acentos, re
   } finally {
     for (const id of ids) await owner('DELETE', `/api/automations/${id}`);
   }
+});
+
+t('repetir una consulta grande no rompe el pedido, y después de un cambio la consulta trae lo nuevo', async () => {
+  const long = Array.from({ length: 20 }, (_, i) => `Párrafo ${i + 1}: ${'texto de las instrucciones '.repeat(12)}`).join('\n\n');
+  const v = (await owner('GET', `/api/chatbots/${h.botId}/versions`)).json();
+  const before = (await bot()).personality.prompt;
+  assert.equal((await owner('POST', `/api/chatbots/${h.botId}/version-apply`, { revision: v.draft.revision, patch: { personality: { prompt: long } } })).statusCode, 200);
+  h.copilotCalls.length = 0;
+  script([
+    call('ver_agente', { agente_id: h.botId }),
+    call('ver_agente', { agente_id: h.botId }),
+    call('ajustar_agente', { agente_id: h.botId, trato: 'usted' }),
+    call('ver_agente', { agente_id: h.botId }),
+    'Listo.',
+  ]);
+  const out = await ask(owner, 'Revisa el agente dos veces, cámbialo a usted y revísalo de nuevo');
+  assert.equal(out.turn.status, 'done', JSON.stringify(out.turn));
+  const results = (h.copilotCalls.at(-1) as any).messages.filter((m: any) => m.role === 'tool').map((m: any) => String(m.content));
+  assert.match(results[1], /ya_hecho/);
+  assert.doesNotMatch(results[3], /ya_hecho/, 'tras el cambio se vuelve a consultar');
+  assert.match(results[3], /"trato":"usted"/);
+  const change = out.actions.find((a: any) => a.tool === 'ajustar_agente');
+  assert.equal((await undo(change)).statusCode, 200);
+  const v2 = (await owner('GET', `/api/chatbots/${h.botId}/versions`)).json();
+  assert.equal((await owner('POST', `/api/chatbots/${h.botId}/version-apply`, { revision: v2.draft.revision, patch: { personality: { prompt: before } } })).statusCode, 200);
 });

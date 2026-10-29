@@ -429,6 +429,7 @@ export const pausarReanudarFlujo = defineTool({
   targets: (a) => [{ kind: 'board', id: a.flujo_id }],
   async preview(a, ctx) {
     const b = await boardOf(ctx, a.flujo_id);
+    if (a.pausar) return { title: `Pausar el flujo «${b.name}»`, lines: ['Deja de iniciar y quienes van en él se detienen en su siguiente mensaje.'] };
     return { title: `Reanudar el flujo «${b.name}»`, lines: ['Vuelve a iniciar con los clientes y quienes iban en él siguen recibiendo sus mensajes.'] };
   },
   async execute(a, ctx) {

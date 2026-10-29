@@ -26,13 +26,17 @@ async function serviceOf(ctx: Ctx, id: string) {
   return s;
 }
 
-/** Una cita visible para quien pregunta (el panel solo las lista por fechas). */
+/**
+ * Una cita visible para quien pregunta. El panel solo las lista por fechas (hasta mil): primero las próximas y, si no
+ * está, las de los últimos 90 días.
+ */
 async function appointmentOf(ctx: Ctx, id: string) {
-  const from = new Date(Date.now() - 90 * 86400_000).toISOString();
-  const to = new Date(Date.now() + 400 * 86400_000).toISOString();
-  const a = ((await ctx.call.get<any[]>(`/api/appointments${qs({ from, to })}`)) ?? []).find((x) => x.id === id);
-  if (!a) throw new ToolError('no_encontrado', 'Cita no encontrada');
-  return a;
+  const at = (days: number) => new Date(Date.now() + days * 86400_000).toISOString();
+  for (const [from, to] of [[at(-1), at(400)], [at(-90), at(0)]]) {
+    const a = ((await ctx.call.get<any[]>(`/api/appointments${qs({ from, to })}`)) ?? []).find((x) => x.id === id);
+    if (a) return a;
+  }
+  throw new ToolError('no_encontrado', 'Cita no encontrada');
 }
 const slotOf = (a: any, tz: string) => { const p = localParts(new Date(a.starts_at), tz); return `${p.date}T${p.time}`; };
 const apptShape = (a: any, tz: string) => ({ slot: slotOf(a, tz), notes: a.notes ?? '', status: a.status, assigned_user_id: a.assigned_user_id ?? null });
@@ -269,6 +273,11 @@ export const actualizarOportunidad = defineTool({
     .refine((a) => a.columna || a.valor !== undefined, 'Indica la columna o el valor'),
   label: () => 'Actualizando la oportunidad…',
   risk: () => 'reversible',
+  async preview(a, ctx) {
+    const { pipeline, card } = await cardOf(ctx, a.oportunidad_id);
+    const st = a.columna ? stageOf(pipeline, a.columna) : null;
+    return { title: `Actualizar la oportunidad de ${card.contact_name}`, lines: [...(a.columna ? [`Columna: «${st?.name ?? a.columna}»`] : []), ...(a.valor !== undefined ? [`Valor: ${a.valor}`] : [])] };
+  },
   async targets(a, ctx) {
     const { card } = await cardOf(ctx, a.oportunidad_id);
     return [{ kind: 'conversation', id: card.conversation_id }];
