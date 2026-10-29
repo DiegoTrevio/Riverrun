@@ -15,7 +15,7 @@ export async function viewUsage(root, params) {
   const months = [...Array(6)].map((_, i) => { const d = new Date(); d.setUTCDate(1); d.setUTCMonth(d.getUTCMonth() - i); return d.toISOString().slice(0, 7); });
   const pick = h('select', { 'aria-label': 'Mes de consumo (UTC)', style: 'width:auto', onchange: (e) => (location.hash = `#/consumo?month=${e.target.value}`) }, months.map((m) => h('option', { value: m, selected: m === month }, m)));
   const u = await api('GET', withAcct(`/api/usage?month=${month}`));
-  root.append(h('div', { class: 'row between' }, h('h1', {}, 'Consumo de IA'), pick), h('p', { class: 'help' }, 'Periodo mensual en UTC. Los importes registrados pueden diferir de la factura del proveedor; Estadísticas permite consultar otros periodos.'));
+  root.append(h('div', { class: 'row between' }, h('h1', {}, 'Consumo de IA'), pick), h('p', { class: 'help' }, 'Mes en UTC. Los importes pueden diferir de la factura del proveedor; en Estadísticas consultas otros periodos.'));
   if (u.accounts) {
     root.append(
       h('div', { class: 'card' }, h('div', { class: 'kpi' }, usd(u.total_usd)), h('div', { class: 'muted small' }, `Importes registrados en ${month}; pueden incluir estimaciones`)),
@@ -24,7 +24,7 @@ export async function viewUsage(root, params) {
         h('tbody', {}, u.accounts.map((a) => h('tr', { class: 'click', onclick: () => { state.accountId = a.id; try { localStorage.setItem('cp-account', a.id); } catch { /* */ } render(); } },
           h('td', {}, a.name), h('td', {}, statusBadge(a)), h('td', { class: 'num' }, usd(a.cost_usd),a.unknown_costs?` + ${a.unknown_costs} sin importe determinado`:'') , h('td', { class: 'num' }, a.calls),
           h('td', { class: 'num' }, Number(a.input_tokens).toLocaleString()), h('td', { class: 'num' }, Number(a.output_tokens).toLocaleString()), h('td', { class: 'num' }, (a.audio_seconds / 60).toFixed(1))))))),
-      h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, 'Precios por modelo (USD)'), h('p', { class: 'small muted' }, 'Verifica las tarifas del proveedor y modelo configurados (OpenRouter u otro). Los importes reportados o estimados conservan su valor histórico; un cambio de tarifas aplica a las llamadas nuevas.'), await pricesEditor()),
+      h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, 'Precios por modelo (USD)'), h('p', { class: 'small muted' }, 'Verifica las tarifas de tu proveedor y modelo (OpenRouter u otro). Un cambio de tarifa aplica solo a las llamadas nuevas.'), await pricesEditor()),
     );
     return;
   }

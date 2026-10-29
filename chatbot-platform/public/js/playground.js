@@ -124,7 +124,7 @@ export async function tabPlayground(root, bot) {
     h('div', { class: 'split' },
       h('div', { class: 'card' },
         h('div', { class: 'row between' }, h('h2', { style: 'margin:0' }, 'Simulador'), h('button', { class: 'small', onclick: reset }, 'Reiniciar conversación')),
-        h('p', { class: 'muted small' }, 'Escribe como si fueras un cliente. Responde exactamente igual que en WhatsApp, con las mismas reglas (funciona aunque esté apagado). Las fotos se muestran aquí en lugar de enviarse.'),
+        h('p', { class: 'muted small' }, 'Escribe como si fueras un cliente: responde igual que en WhatsApp, aunque el agente esté apagado. Las fotos se muestran aquí en vez de enviarse.'),
         chat,
         h('div', { class: 'row', style: 'margin:8px 0;gap:6px;flex-wrap:wrap' }, h('span', { class: 'small muted' }, 'Prueba:'),
           TEST_IDEAS.map((q) => h('button', { class: 'small', onclick: () => { if (!sending) { input.value = q; send(); } } }, q))),

@@ -24,7 +24,7 @@ export async function viewWaTemplates(root, socialId) {
     return;
   }
   root.append(h('p', { class: 'muted' },
-    `Número: ${wa.display_name || wa.username || 'WhatsApp'}. WhatsApp solo deja escribirle a un cliente durante las 24 h posteriores a su último mensaje. Para escribirle después (recordatorios, seguimientos o promociones) se usa una plantilla aprobada por Meta; la revisión tarda de minutos a 24 h y te avisamos.`));
+    `Número: ${wa.display_name || wa.username || 'WhatsApp'}. Pasadas 24 h desde el último mensaje del cliente, WhatsApp solo deja escribirle con una plantilla aprobada por Meta (la revisión tarda de minutos a 24 h; te avisamos).`));
 
   const card = (t) => {
     const [color, label] = STATUS[t.status] || ['', t.status];

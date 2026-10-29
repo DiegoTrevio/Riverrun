@@ -98,7 +98,7 @@ export function socialConnector(ch, { persist, setup, cfg }) {
     }
     return [
       h('p', {}, `Pulsa el botón, inicia sesión en ${n.label} y autoriza el acceso a tus mensajes. Al terminar regresas aquí con la cuenta conectada.`),
-      n.id === 'whatsapp' ? h('p', { class: 'small muted' }, 'Esto conecta la API oficial de WhatsApp Business (Meta): elige tu número durante la autorización. Fuera de la ventana de 24 horas, Meta solo permite plantillas aprobadas. Para vincular un WhatsApp normal con QR, crea una conexión de WhatsApp.') : null,
+      n.id === 'whatsapp' ? h('p', { class: 'small muted' }, 'API oficial de WhatsApp Business (Meta): eliges tu número al autorizar; tras 24 h sin mensajes del cliente, solo puedes enviar plantillas aprobadas. ¿WhatsApp normal? Usa una conexión con QR.') : null,
       n.id === 'instagram' ? h('p', { class: 'small muted' }, 'Tu cuenta de Instagram debe ser profesional (de empresa o creador).') : null,
       n.id === 'facebook' ? h('p', { class: 'small muted' }, 'Elige la página de Facebook cuyos mensajes de Messenger quieres atender.') : null,
       h('button', { class: 'primary', onclick: () => start() }, `Conectar con ${n.label}`),

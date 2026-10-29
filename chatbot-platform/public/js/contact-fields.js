@@ -89,7 +89,7 @@ export async function viewContactFields(root) {
             if (!(await dialog('Borrar campo', h('p', {}, `Se quita «${f.label}» de la ficha. Lo que ya tienen guardado tus clientes se conserva en sus datos.`), 'Borrar'))) return;
             if (await run(() => api('DELETE', `/api/contact-fields/${f.id}`), 'Campo borrado')) draw();
           } }, 'Borrar')) : null))))),
-    ] : [h('p', { class: 'muted' }, 'Todavía no tienes datos propios. Agrega los que quieras guardar de cada cliente: su cumpleaños, su número de cliente, su plan…')]));
+    ] : [h('p', { class: 'muted' }, 'Todavía no tienes datos propios. Agrega lo que quieras guardar de cada cliente: cumpleaños, número de cliente, plan…')]));
   };
   const add = async () => {
     const m = { label: '', key: '', type: 'text', options: [] };
@@ -99,7 +99,7 @@ export async function viewContactFields(root) {
   root.append(
     h('a', { class: 'breadcrumb', href: '#/ajustes' }, '← Ajustes'),
     h('div', { class: 'row between' }, h('h1', {}, 'Datos de tus clientes'), admin ? h('button', { class: 'primary', onclick: add }, 'Agregar dato') : null),
-    h('p', { class: 'help' }, 'Los datos que tu negocio guarda de cada cliente. Aparecen primero en su ficha, cada uno con su control (fecha, número, lista…), en la exportación e importación de contactos, y como variables {{campo.clave}} en tus mensajes. El asistente los reconoce si el cliente los menciona, pero no los pide: lo que pide cada agente se configura en sus preguntas.'),
+    h('p', { class: 'help' }, 'Lo que guardas de cada cliente: aparece en su ficha, en la importación y exportación, y como {{campo.clave}} en tus mensajes. El asistente no los pide; eso se configura en las preguntas de cada agente.'),
     h('div', { class: 'card' }, list),
     admin ? h('div', { class: 'card stack' }, h('h2', {}, 'Importar y exportar'), h('p', { class: 'small' }, 'En Contactos puedes importar un CSV con estas columnas (por su etiqueta o su clave) y exportar todos tus contactos.'), h('a', { class: 'btn small', href: '#/contacts' }, 'Ir a Contactos')) : null,
   );

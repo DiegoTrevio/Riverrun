@@ -68,8 +68,8 @@ async function viewPrices(root, editId) {
   const [items, settings] = await Promise.all([api('GET', withAcct('/api/price-items')), api('GET', withAcct('/api/quote-settings'))]);
   root.append(h('div', { class: 'page-intro' },
     h('p', { class: 'muted' },
-      'Los conceptos que el asistente puede cotizar. Usa precio exacto cuando ya lo sabes; «desde», rango o «por confirmar» cuando depende de los detalles: ',
-      'esas cotizaciones salen como APROXIMADAS. El asistente nunca calcula montos: los totales salen de esta lista.'),
+      'Lo que el asistente puede cotizar. Usa precio exacto si lo sabes; «desde», rango o «por confirmar» si depende de los detalles (sale como APROXIMADA). ',
+      'Los totales salen siempre de esta lista.'),
     h('a', { class: 'btn primary', href: '#/cotizaciones/precios?id=new' }, '+ Nuevo concepto')));
   if (editId) {
     const existing = editId === 'new' ? null : items.find((i) => i.id === editId);

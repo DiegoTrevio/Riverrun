@@ -230,7 +230,7 @@ export async function renderSignup(params = new URLSearchParams()) {
       field('Contraseña', text(f, 'password', { type: 'password', autocomplete: 'new-password', minlength: 8, required: true }), 'Mínimo 8 caracteres.'),
       field('WhatsApp para avisos (opcional)', text(f, 'phone', { type: 'tel', autocomplete: 'tel', placeholder: '5215512345678' }), 'Ahí te avisamos cuando un cliente pida hablar con una persona.'),
       info.plans.length ? planPicker(info, f, label) : null,
-      info.plans.length ? h('p', { class: 'muted small', style: 'margin:0' }, 'Si eliges un plan, al crear tu cuenta pasas a la página segura de pago (Stripe o Mercado Pago); nosotros nunca vemos tu tarjeta. Se renueva cada mes y puedes cancelar cuando quieras.') : null,
+      info.plans.length ? h('p', { class: 'muted small', style: 'margin:0' }, 'Al elegir un plan pasas al pago seguro (Stripe o Mercado Pago); nunca vemos tu tarjeta. Se renueva cada mes y puedes cancelar cuando quieras.') : null,
       // Campo trampa para bots: oculto para las personas.
       h('div', { style: 'position:absolute;left:-9999px', 'aria-hidden': 'true' }, h('input', { tabindex: '-1', autocomplete: 'off', oninput: (e) => (f.website = e.target.value) })),
       termsCheck(info, f),

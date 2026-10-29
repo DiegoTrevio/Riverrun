@@ -33,14 +33,14 @@ function brandForm(b, cname) {
     h('div', { class: 'row' },
       h('button', { class: 'primary', onclick: save }, 'Guardar'),
       b.id ? h('button', { class: 'danger', onclick: async () => { if (await confirmAction(`¿Borrar la marca "${b.name}"? Sus cuentas vuelven a la marca de la plataforma.`)) { if (!(await run(() => api('DELETE', `/api/brands/${b.id}`), 'Borrada'))) return; render(); } } }, 'Borrar') : null),
-    b.id ? h('p', { class: 'muted small' }, `${b.accounts} cuenta(s) usan esta marca. Asigna la marca a una cuenta desde "Cuentas" → Marca. Quien se registre desde el dominio de la marca queda con ella automáticamente.`) : null);
+    b.id ? h('p', { class: 'muted small' }, `${b.accounts} cuenta(s) usan esta marca. Asígnala en "Cuentas" → Marca; quien se registre desde su dominio queda con ella.`) : null);
 }
 
 export async function viewBrands(root) {
   const { brands, cname_target } = await api('GET', '/api/brands');
   root.append(
     h('h1', {}, 'Marca blanca'),
-    h('p', { class: 'muted' }, 'Para revender con tu propio nombre: cada marca cambia el nombre, el logo, el color y el remitente de los correos de las cuentas que la usan, y puede tener su propio dominio.'),
+    h('p', { class: 'muted' }, 'Para revender con tu nombre: cada marca cambia el nombre, el logo, el color y el remitente de los correos de sus cuentas, y puede tener su propio dominio.'),
     ...brands.map((b) => brandForm(b, cname_target)),
     brandForm({}, cname_target));
 }

@@ -194,7 +194,7 @@ async function tabInstructions(root, bot) {
       field('¿Qué debe lograr? (opcional)', area(f, 'goal', { placeholder: 'Ayudar al cliente a completar su pedido y pasarlo al equipo para confirmarlo.' })),
       h('details', {}, h('summary', { class: 'small' }, 'Clientes que regresan'),
         field(tag('Empezar una solicitud nueva después de (horas sin actividad)', guaranteed()), num(f, 'new_request_after_hours', { min: 0, max: 2160 }),
-          'Por omisión 24. Con 0, solo cuando el asistente detecte que pide otra vez lo que ya se le resolvió (otra reserva, el mismo problema), y nunca antes de 30 minutos si no se cumplió el objetivo. En cada solicitud nueva vuelven a contar el objetivo, las etapas, las preguntas que se repiten, las fotos y los avisos «una vez».'))),
+          'Por omisión 24. Con 0, solo cuando el cliente pide otra vez algo ya resuelto. En cada solicitud nueva vuelven a contar el objetivo, las etapas, las preguntas, las fotos y los avisos «una vez».'))),
     h('details', { class: 'card' }, h('summary', {}, 'Estilo de las respuestas'),
       h('div', { class: 'grid', style: 'margin-top:14px' },
         field('Trato', select(p, 'formality', [['tu', 'De tú'], ['usted', 'De usted']])),
@@ -339,7 +339,7 @@ function sendWhenEditor(w, bot) {
     field('¿Cuándo se envía?', select(w, 'mode', [['ai', 'La IA decide (según "Cuándo enviarla")'], ['rules', 'Solo en los momentos que marque aquí'], ['both', 'En estos momentos y también cuando la IA lo crea conveniente']], draw)),
     w.mode === 'ai' ? null : h('div', { class: 'list-item' },
       h('p', { class: 'small', style: 'margin-top:0' }, guaranteed(), ' El sistema la envía junto con la respuesta, aunque la IA no la elija, respetando el máximo de fotos por respuesta.'),
-      w.mode === 'rules' ? h('p', { class: 'small muted', style: 'margin-top:0' }, 'Con «Solo en los momentos que marque aquí» la IA no puede elegirla: marca al menos un momento. Si tus Instrucciones dicen cuándo enviarla, usa «La IA decide» o «Ambos».') : null,
+      w.mode === 'rules' ? h('p', { class: 'small muted', style: 'margin-top:0' }, 'Con «Solo en los momentos que marque aquí», marca al menos uno. Si tus Instrucciones dicen cuándo enviarla, usa «La IA decide» o «Ambos».') : null,
       field(tag('Enviar por contexto (la IA decide si se cumple)', guide()), area(w, 'context', { placeholder: 'Cuando el cliente quiera comparar habitaciones o el asistente le explique las opciones disponibles.' }), 'Describe la situación. La IA interpreta la conversación completa; no exige palabras exactas.'),
       field('Cuando el cliente escriba', lines(w, 'keywords', { placeholder: 'menú\nprecios\nubicación' }), 'Una por renglón. Si la vuelve a pedir, se reenvía.'),
       field('Cuando el asistente diga o pregunte', lines(w, 'assistant_keywords', { placeholder: 'qué tipo de habitación\ncuál prefieres' }), 'Una frase por renglón. Se comprueba en la respuesta que se envía al cliente.'),
@@ -446,7 +446,7 @@ export async function tabImages(root, bot) {
   };
   root.append(
     h('div', { class: 'card' },
-      h('p', { class: 'muted' }, 'Sube fotos, videos y documentos (menú en PDF, catálogo, video del lugar…) y escribe cuándo debe enviarlos el asistente: los elige por el contexto de la conversación, igual que las fotos. Opcionalmente puedes definir reglas de envío (', guaranteed(), ').'),
+      h('p', { class: 'muted' }, 'Sube fotos, videos y documentos (menú, catálogo, video del lugar…) y escribe cuándo enviarlos: el asistente los elige por el contexto. También puedes fijar reglas de envío (', guaranteed(), ').'),
       h('h2', {}, 'Agregar foto o archivo'),
       h('div', { class: 'grid' },
         h('details', {}, h('summary', {}, 'Identificador avanzado (automático)'), field('ID', text(n, 'code', { placeholder: 'Se genera del nombre' }), 'Puedes personalizarlo antes de subir.')),
@@ -495,7 +495,7 @@ function savedMessagesCard(bot, images) {
   draw();
   return h('div', { class: 'card' },
     h('h2', { style: 'margin-top:0' }, 'Mensajes guardados (texto + foto)'),
-    h('p', { class: 'small muted' }, 'El asistente los envía tal cual cuando se cumple su condición; con foto, salen juntos en un solo mensaje. En el prompt menciónalos por su código, por ejemplo: "si piden precios, envía el mensaje precios".'),
+    h('p', { class: 'small muted' }, 'Salen tal cual cuando se cumple su condición (con foto, en un solo mensaje). En tus instrucciones, nómbralos por su código: "si piden precios, envía el mensaje precios".'),
     box);
 }
 
@@ -607,7 +607,7 @@ function tabQuestions(root, bot) {
     if (await saveBot(bot, { data_fields: [...fields, ...rest], rules: { activation: { off_on_questions: !!a.off_on_questions, off_when_fields: offFields } } })) render();
   };
   root.append(
-    h('div', { class: 'card legend' }, h('p', { style: 'margin:0' }, guaranteed(), ' El asistente hace estas preguntas en orden, una por mensaje y con tu texto. En una pregunta de opciones puedes marcar qué sigue según la respuesta: saltar a otra pregunta, terminar o pasar con una persona. Si el cliente pregunta otra cosa, le responde y retoma la pregunta pendiente; si ya dio un dato, no se lo vuelve a preguntar. Las respuestas se guardan en el contacto. Compruébalo en ', h('a', { href: `#/bot/${bot.id}/probar` }, 'Probar'), '.')),
+    h('div', { class: 'card legend' }, h('p', { style: 'margin:0' }, guaranteed(), ' El asistente hace estas preguntas en orden, una por mensaje, y guarda las respuestas en el contacto. Si el cliente pregunta otra cosa, le responde y retoma; si ya dio un dato, no lo repite. Compruébalo en ', h('a', { href: `#/bot/${bot.id}/probar` }, 'Probar'), '.')),
     h('div', { class: 'card' },
       h('h2', { style: 'margin-top:0' }, 'Preguntas (en orden)'),
       list,
@@ -617,7 +617,7 @@ function tabQuestions(root, bot) {
     h('div', { class: 'card' },
       h('h2', { style: 'margin-top:0' }, 'Al terminar las preguntas'),
       check(a, 'off_on_questions', tag('Apagar el asistente en esa conversación cuando el cliente responda todas las preguntas', guaranteed())),
-      h('p', { class: 'small muted', style: 'margin:0' }, 'Responde ese último mensaje y después se apaga. Qué pasa al apagarse (pausa, pasar a una persona o cerrar) y el mensaje de despedida se configuran en ', h('a', { href: `#/bot/${bot.id}/activacion` }, 'Activación'), '.')),
+      h('p', { class: 'small muted', style: 'margin:0' }, 'Responde ese último mensaje y se apaga. Qué pasa al apagarse y el mensaje de despedida se configuran en ', h('a', { href: `#/bot/${bot.id}/activacion` }, 'Activación'), '.')),
     draftSaveBar(save),
   );
 }
@@ -849,7 +849,7 @@ function tabActivation(root, bot) {
     h('div', { class: 'card' },
       h('h2', { style: 'margin-top:0' }, '4. Cuando una persona escribe'),
       check(r, 'pause_on_human_reply', tag('Si alguien del equipo contesta desde el teléfono, el asistente se calla en esa conversación', guaranteed())),
-      h('p', { class: 'small muted', style: 'margin:0' }, 'Aplica también si la conversación está cerrada, y queda registrado en el contacto quién la atendió y cuándo. Lo que escribes desde el panel siempre pausa al asistente.')),
+      h('p', { class: 'small muted', style: 'margin:0' }, 'Aplica aunque la conversación esté cerrada, y queda registrado quién la atendió y cuándo. Escribir desde el panel siempre pausa al asistente.')),
     h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, 'Probar palabras'), messageTester([bot], bot.id)),
     draftSaveBar(async () => {
       a.on_keywords = a.on_keywords.filter((x) => x.trim());
@@ -944,7 +944,7 @@ function flowSection(f) {
       h('div', { style: 'margin-top:14px' },
         field(tag('Cuando se cumpla el objetivo, el asistente…', guide()), area(f, 'on_goal_completed', { placeholder: 'Agradece y confirma los datos recibidos.' })),
         field(tag('…y además el sistema', guaranteed()), select(f, 'on_goal_action', [['none', 'No hace nada más'], ['handoff', 'Pasa la conversación a una persona'], ['notify', 'Avisa al equipo con el reporte completo (panel y WhatsApp)']]),
-          'El asistente reconoce cuándo se cumple el objetivo con las respuestas del cliente. Pasa una sola vez por solicitud. Al cumplirse, el equipo recibe el resumen, los datos confirmados y los pendientes; también puedes usarlo como disparador en Automatización (por ejemplo, para enviar el reporte por correo).')),
+          'Pasa una sola vez por solicitud. Al cumplirse, el equipo recibe el resumen y los datos confirmados; también sirve como disparador en Automatización.')),
     ));
 }
 

@@ -70,7 +70,7 @@ function statusLine(bot, connected, live, connectCard) {
 
 function drawConnect(card, bot, { phones, mine, connected, live }) {
   const title = h('h2', { style: 'margin-top:0' }, 'Conecta tu WhatsApp');
-  const intro = h('p', { class: 'muted' }, 'Puede ser WhatsApp normal o WhatsApp Business. Sigues usando WhatsApp en tu teléfono como siempre; si tú contestas una conversación, tu agente se pausa en ella.');
+  const intro = h('p', { class: 'muted' }, 'Sirve WhatsApp normal o Business. Lo sigues usando en tu teléfono; si tú contestas una conversación, tu agente se pausa en ella.');
   if (connected) return fill(card, h('h2', { style: 'margin-top:0' }, live ? 'Tu agente ya está atendiendo' : 'Tu WhatsApp está conectado'), doneBody(bot, connected, live));
 
   const verifyNeeded = !isSuper() && state.meta.require_email && !state.me.user.email_verified_at;

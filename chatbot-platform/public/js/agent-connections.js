@@ -76,7 +76,7 @@ export async function tabConnections(root, bot, params = new URLSearchParams()) 
       warning, button),
     metaDirect ? h('div', { class: 'card' },
       h('h2', { style: 'margin-top:0' }, 'Facebook e Instagram'),
-      h('p', { class: 'help' }, 'Inicia sesión con Facebook, elige tus páginas y tu Instagram profesional, y sus mensajes llegan a este agente. Sin copiar tokens.'),
+      h('p', { class: 'help' }, 'Inicia sesión con Facebook y elige tus páginas y tu Instagram profesional: sus mensajes llegan a este agente.'),
       metaConnectButton({ chatbotId: bot.id, accountId: bot.account_id })) : null,
     pending.length ? pendingConnections(pending, [bot]) : null,
     mine.length ? h('div', { class: 'grid' }, mine.map((ch) => {

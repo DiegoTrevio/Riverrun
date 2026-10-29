@@ -57,7 +57,7 @@ async function zernioCard() {
     fill(card,
       h('div', { class: 'row between' }, h('h2', { style: 'margin:0' }, 'Redes sociales (Zernio)'),
         h('span', { class: `badge ${s.enabled ? 'green' : 'orange'}` }, s.enabled ? 'Activa' : 'Sin llave')),
-      h('p', { class: 'small muted' }, 'Una sola llave para toda la plataforma: con ella cada negocio conecta Instagram, Facebook, Telegram, X, Bluesky, Reddit y WhatsApp Business desde su panel, con su propio perfil de Zernio. Los negocios nunca ven la llave.'),
+      h('p', { class: 'small muted' }, 'Una sola llave para toda la plataforma: cada negocio conecta sus redes desde su panel, con su propio perfil de Zernio, sin ver nunca la llave.'),
       s.source === 'env' ? h('p', { class: 'small' }, `Definida en el servidor (ZERNIO_API_KEY), termina en …${s.hint}. Se administra en el .env.`)
         : s.source === 'panel' ? h('p', { class: 'small' }, `Guardada en el panel (cifrada), termina en …${s.hint}`, s.updated_at ? ` · ${fmtDate(s.updated_at)}` : '', '.')
           : h('p', { class: 'small' }, 'Crea una llave en zernio.com → Settings → API Keys y pégala aquí.'),

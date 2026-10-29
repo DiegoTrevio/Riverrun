@@ -61,14 +61,14 @@ function connectCard({ channels, fields, keys }) {
   const writeKey = keys.some((k) => !k.revoked_at && k.scope === 'write');
   return h('section', { class: 'card', 'aria-labelledby': 'connect-title' },
     h('h2', { id: 'connect-title' }, 'Conecta tu sistema'),
-    h('p', { class: 'muted' }, 'Tu CRM, tu tienda, Zapier, Make o n8n: con la API das de alta clientes, cobros y mensajes; con los webhooks (abajo) te avisamos cuando pasa algo.'),
+    h('p', { class: 'muted' }, 'Tu CRM, tu tienda, Zapier, Make o n8n: con la API das de alta clientes, cobros y mensajes; con los webhooks te avisamos de lo que pasa.'),
     h('ol', { class: 'connect-steps' },
       h('li', {}, h('strong', {}, 'Crea una llave '), writeKey ? 'Ya tienes una de lectura y escritura (en «Llaves de la API», abajo).' : 'en «Llaves de la API» (abajo). Elige «Lectura y escritura» si tu sistema va a dar de alta clientes o enviar mensajes.'),
       h('li', {}, h('strong', {}, 'Pon en tu sistema esta dirección y tu llave'), h('div', { class: 'row' }, h('code', { class: 'code-inline' }, base), copyButton(base, 'Copiar', 'la dirección de la API'))),
       h('li', {}, h('strong', {}, 'Prueba la conexión'), ' (responde con el nombre de tu cuenta):', codeBlock(`curl ${base}/me -H "Authorization: Bearer TU_LLAVE"`, 'el comando de prueba'))),
     h('details', {}, h('summary', {}, 'Ejemplos listos para copiar'),
       examples.map(([title, code, note]) => h('div', { class: 'example' }, h('h3', {}, title), codeBlock(code, title.toLowerCase()), h('p', { class: 'muted small' }, note))),
-      h('p', { class: 'muted small' }, 'Idempotency-Key es opcional: si tu sistema repite la petición (se cortó la red), recibe la misma respuesta sin crear otro cliente ni enviar el mensaje otra vez.')),
+      h('p', { class: 'muted small' }, 'Idempotency-Key es opcional: si tu sistema repite la petición, recibe la misma respuesta sin duplicar el cliente ni el mensaje.')),
     h('details', {}, h('summary', {}, `Claves de los datos de tus clientes (${fields.length})`),
       fields.length
         ? h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Clave en data'), h('th', {}, 'Dato'), h('th', {}, 'Acepta'))),
@@ -83,7 +83,7 @@ function secretCard(settings) {
   const input = h('input', { type: 'password', readonly: true, value: settings.webhook_secret, autocomplete: 'off' });
   return h('div', { class: 'card' },
     h('h2', {}, 'Secreto para verificar los webhooks'),
-    h('p', { class: 'muted small' }, 'Cada aviso trae la cabecera x-riverrun-signature calculada con este secreto: compruébala en tu sistema para saber que el aviso es nuestro (ejemplo en la documentación).'),
+    h('p', { class: 'muted small' }, 'Cada aviso trae la cabecera x-riverrun-signature hecha con este secreto: compruébala para saber que el aviso es nuestro.'),
     field('Secreto de webhooks', h('div', { class: 'row' }, input,
       h('button', { class: 'small', onclick: (e) => { const show = input.type === 'password'; input.type = show ? 'text' : 'password'; e.target.textContent = show ? 'Ocultar' : 'Mostrar'; } }, 'Mostrar'),
       copyButton(settings.webhook_secret, 'Copiar', 'el secreto de webhooks'),
@@ -121,7 +121,7 @@ async function deliveriesDialog(ep) {
           h('button', { class: 'small', onclick: () => showDelivery(ep, d) }, 'Ver'),
           d.redeliverable ? h('button', { class: 'small', onclick: async () => { await run(() => api('POST', `/api/webhook-endpoints/${ep.id}/deliveries/${d.id}/redeliver`), 'Reenviado: llegará en unos segundos'); } }, 'Reenviar') : null))))
     : h('p', { class: 'muted' }, 'Todavía no hay entregas.');
-  await dialog('Entregas del webhook', h('div', {}, h('p', { class: 'muted small' }, 'Las últimas 50. Si una falla, se reintenta sola 6 veces en unas 8 horas; con «Reenviar» la mandas otra vez cuando quieras.'), list), 'Cerrar');
+  await dialog('Entregas del webhook', h('div', {}, h('p', { class: 'muted small' }, 'Las últimas 50. Si una falla, se reintenta sola 6 veces en unas 8 horas; con «Reenviar» la mandas otra vez.'), list), 'Cerrar');
 }
 
 async function testDialog(ep, events) {
@@ -182,7 +182,7 @@ export async function viewIntegrations(root, params) {
   const picked = new Set(events.filter((e) => e.default).map((e) => e.type));
   root.append(
     h('h2', {}, 'Webhooks (avisos a otros sistemas)'),
-    h('p', { class: 'muted small' }, 'Cuando pasa algo (un cliente nuevo, una cita, un pago), te avisamos con un POST a tu dirección. Cada aviso trae el contacto con la misma forma que la API.'),
+    h('p', { class: 'muted small' }, 'Cuando pasa algo (un cliente nuevo, una cita, un pago) te avisamos con un POST a tu dirección; el contacto llega igual que en la API.'),
     ...(endpoints.length ? endpoints.map((ep) => endpointCard(ep, events)) : [h('p', { class: 'muted' }, 'Aún no tienes webhooks.')]),
     h('div', { class: 'card' },
       h('h2', {}, 'Nuevo webhook'),
