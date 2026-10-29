@@ -703,7 +703,7 @@ async function sendToAppDialog(id) {
     h('h2', { style: 'margin-top:0' }, 'Enviar la conversación a tu app'),
     field('Qué enviar', select(b, 'content', [['summary', 'El resumen (con análisis y datos del cliente)'], ['full', 'La conversación completa (todos los mensajes)'], ['both', 'Ambos']])),
     receiving.length > 1 ? field('A qué app', select(b, 'endpoint_id', [['', 'Todas las conectadas'], ...receiving.map((a) => [a.id, a.label])])) : h('p', { class: 'small muted' }, `Se envía a: ${receiving[0].label}`),
-    h('p', { class: 'small muted' }, 'Si eliges el resumen, se actualiza antes de enviar. Para que se envíe solo, crea una regla en Automatización con la acción «Enviar la conversación a tu app».'),
+    h('p', { class: 'small muted' }, 'Si eliges el resumen, se actualiza antes de enviar. Para enviarla sola, crea una regla con la acción «Enviar la conversación a tu app».'),
     h('div', { class: 'row', style: 'justify-content:flex-end;margin-top:10px' }, h('button', { onclick: close }, 'Cancelar'), send));
   document.body.append(dlg);
   dlg.showModal();

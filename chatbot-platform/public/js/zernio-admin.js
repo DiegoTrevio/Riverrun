@@ -115,7 +115,7 @@ export async function viewZernioAdmin(root) {
       h('p', { class: 'small muted' }, `Costo estimado de Zernio: ~${estimate(totalAccounts, totalOutbound)} USD al mes (según su tabla pública: 2 cuentas gratis, luego por cuenta; 10 000 mensajes salientes gratis). Lo cobra Zernio a la llave de la plataforma.`),
       budget ? h('p', { class: 'small' }, `Llamadas a Zernio disponibles ahora: ${Math.floor(budget.tokens)} de ${budget.capacity} por minuto (compartidas entre todos los negocios).`) : null),
     h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, 'Salud de las redes'),
-      h('p', { class: 'small muted' }, 'Se revisa sola cada 6 horas: a cada negocio se le avisa cuando una red se cae o su permiso está por vencer, y si Zernio apaga el webhook se reactiva y te avisamos.'),
+      h('p', { class: 'small muted' }, 'Se revisa sola cada 6 horas: se avisa a cada negocio si una red se cae o su permiso vence, y si Zernio apaga el webhook, se reactiva y te avisamos.'),
       healthBox,
       h('button', { class: 'small', onclick: async () => {
         const r = await run(() => api('POST', '/api/system/zernio/health/check'));
@@ -125,7 +125,7 @@ export async function viewZernioAdmin(root) {
           : `Revisado: ${r.down} caída(s) nueva(s), ${r.back} recuperada(s), ${r.warned} aviso(s) de permiso`, r.mass);
       } }, 'Revisar ahora')),
     h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, 'Negocios'),
-      h('p', { class: 'small muted' }, 'Cada negocio tiene su propio perfil de Zernio (se crea al conectar su primera red). Puedes conectar redes por un cliente con un enlace, o directo en el panel de Zernio dentro de su perfil: se adoptan solas.'),
+      h('p', { class: 'small muted' }, 'Cada negocio tiene su perfil de Zernio (se crea con su primera red). Conecta redes por un cliente con un enlace o en Zernio, dentro de su perfil: se adoptan solas.'),
       table),
     h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, 'Webhook de Zernio'),
       h('p', { class: 'small' }, status.webhook_url ? ['Dirección: ', h('code', {}, status.webhook_url)] : ''),

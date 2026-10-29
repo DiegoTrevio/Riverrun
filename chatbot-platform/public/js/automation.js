@@ -242,7 +242,7 @@ function attachmentPicker(obj, refs) {
     } catch (err) { toast(err.message, true); }
   } });
   return h('div', {}, sel,
-    h('div', { class: 'small muted' }, 'PDF, Word, Excel, PowerPoint, CSV, TXT, audio, video o foto. Máximo 16 MB. Se envía por WhatsApp y correo; los demás canales avisan que no lo admiten.'),
+    h('div', { class: 'small muted' }, 'PDF, Office, CSV, TXT, audio, video o foto, hasta 16 MB. Sale por WhatsApp y correo; los demás canales avisan que no lo admiten.'),
     h('div', { style: 'margin-top:6px' }, up));
 }
 
@@ -274,7 +274,7 @@ function actionFields(a, refs, trigger) {
     case 'send_report':
       a.note ??= ''; a.roles ??= ['admin']; a.user_ids ??= []; a.emails ??= []; a.phones ??= []; a.include_transcript ??= false;
       return [
-        h('p', { class: 'small muted', style: 'margin:0 0 6px' }, 'Envía el resumen, el análisis y los datos confirmados de la conversación (el resumen se actualiza antes de enviar). Destinatarios (si eliges personas, solo a ellas; si no, por rol):'),
+        h('p', { class: 'small muted', style: 'margin:0 0 6px' }, 'Envía el resumen (actualizado), el análisis y los datos confirmados. Destinatarios (si eliges personas, solo a ellas; si no, por rol):'),
         h('div', { class: 'row' }, refs.users.map((u) => h('label', { class: 'check' },
           h('input', { type: 'checkbox', checked: a.user_ids.includes(u.id), onchange: (e) => { a.user_ids = e.target.checked ? [...a.user_ids, u.id] : a.user_ids.filter((x) => x !== u.id); } }),
           u.name || u.email, u.notify_whatsapp && u.phone ? ' · WhatsApp' : ''))),
@@ -332,7 +332,7 @@ function actionFields(a, refs, trigger) {
           field('Qué enviar', select(a, 'content', CONTENT_OPTIONS)),
           field('A qué app', select(a, 'endpoint_id', [['', 'Todas las conectadas que reciben conversaciones'], ...apps.map((ep) => [ep.id, `${appLabel(ep)}${ep.active ? '' : ' (apagada)'}`])]))),
         none ? h('p', { class: 'banner warn', style: 'margin:0 0 8px' }, 'Todavía no hay una app conectada que reciba conversaciones. ', h('a', { href: '#/integraciones' }, 'Conéctala en Integraciones'), ' (webhook con el evento «Conversación enviada a tu app»).') : null,
-        h('p', { class: 'small muted', style: 'margin:0' }, 'Llega a tu app como el evento conversation.sent, firmado y con reintentos, e incluye qué lo disparó. Tú decides cuándo con el disparador y las condiciones: una etiqueta que pone tu equipo, una intención del cliente, el objetivo cumplido o el paso a una persona. Si incluye el resumen, se actualiza antes de enviar.'),
+        h('p', { class: 'small muted', style: 'margin:0' }, 'Llega a tu app como el evento conversation.sent, firmado y con reintentos. Tú decides cuándo con el disparador: una etiqueta, una intención del cliente, el objetivo cumplido o el paso a una persona.'),
       ];
     }
     case 'webhook':
@@ -457,7 +457,7 @@ async function listSequences(root) {
   const seqs = await api('GET', withAcct('/api/sequences'));
   root.append(
     h('div', { class: 'card' },
-      h('p', { class: 'muted', style: 'margin-top:0' }, 'Un flujo es una serie de mensajes programados (por ejemplo: hoy, mañana y pasado mañana), con botones si quieres (cada botón hace algo: seguir, terminar, otro flujo, una etiqueta o pasar con una persona). Empieza con una regla, desde una conversación o enviándolo a un grupo de clientes; respeta el horario del negocio y se detiene si el cliente responde.'),
+      h('p', { class: 'muted', style: 'margin-top:0' }, 'Una serie de mensajes programados, con botones si quieres. Empieza con una regla, desde una conversación o con una campaña; respeta tu horario y se detiene si el cliente responde.'),
       h('a', { class: 'btn primary', href: '#/automation/sequences/new' }, '+ Nuevo flujo')),
     h('div', { class: 'card' },
       seqs.length
@@ -578,7 +578,7 @@ async function listCampaigns(root) {
   const chName = Object.fromEntries(channels.map((c) => [c.id, c.name]));
   root.append(
     h('div', { class: 'card' },
-      h('p', { class: 'muted', style: 'margin-top:0' }, 'Envía un mensaje o un flujo a un grupo de clientes (por etiqueta o actividad reciente), ahora o en una fecha. Nunca se envía a quien se dio de baja, y los envíos van espaciados para proteger tu número.'),
+      h('p', { class: 'muted', style: 'margin-top:0' }, 'Un mensaje o un flujo para un grupo de clientes, ahora o en una fecha. Nunca le llega a quien se dio de baja, y sale espaciado para proteger tu número.'),
       h('a', { class: 'btn primary', href: '#/automation/campaigns/new' }, '+ Nueva campaña')),
     h('div', { class: 'card' },
       camps.length
@@ -658,7 +658,7 @@ async function editCampaign(root, id) {
       h('label', { class: 'check' }, h('input', { type: 'radio', name: 'campaign-kind', value: 'sequence', disabled: !editable, checked: c.kind === 'sequence', onchange: () => { c.kind = 'sequence'; c.sequence_id ||= flows[0]?.id ?? null; drawWhat(); } }), 'Un flujo (varios mensajes, con botones)')),
     c.kind === 'sequence'
       ? [flows.length ? field('Flujo', select(c, 'sequence_id', flows.map((q) => [q.id, `${q.name} (${q.steps.length} mensaje${q.steps.length === 1 ? '' : 's'})`]))) : h('p', { class: 'banner warn' }, 'No tienes flujos activos. Crea uno en Automatización → Flujos.'),
-        h('p', { class: 'small muted' }, 'Cada persona entra al flujo: el primer mensaje sale con la campaña y los siguientes a su hora (por ejemplo, un día después), espaciados al ritmo de la campaña para cuidar tu número. Si el cliente toca un botón, pasa lo que dice el botón.')]
+        h('p', { class: 'small muted' }, 'Cada persona entra al flujo: el primer mensaje sale con la campaña y los demás a su hora, espaciados para cuidar tu número.')]
       : [varsField('Mensaje', area(c, 'message', { big: true }), 'campaign'),
         field('Imagen (opcional)', photoPicker(c, 'image_id', refs), 'Con texto, la foto sale con el mensaje como pie en un solo envío.'),
         waTemplateField(c, refs.waTemplates),
@@ -731,7 +731,7 @@ async function editSettings(root) {
   const team = (await api('GET', withAcct('/api/users')).catch(() => [])).filter((u) => u.account_id && u.active);
   const copy = (v) => h('button', { class: 'small', onclick: async () => { try { await navigator.clipboard.writeText(v); toast('Copiado'); } catch { toast('No se pudo copiar', true); } } }, 'Copiar');
   root.append(
-    settingsSection('Horario del negocio', 'Formato por día: 09:00-14:00, 16:00-19:00 (vacío = cerrado). Lo usan el asistente (para responder "¿están abiertos?"), la agenda, las secuencias, las campañas y la condición "horario del negocio".',
+    settingsSection('Horario del negocio', 'Por día: 09:00-14:00, 16:00-19:00 (vacío = cerrado). Lo usan el asistente, la agenda, los flujos y las campañas.',
       field('Zona horaria', text(s, 'timezone')),
       hoursEditor(s.business_hours),
       field('Días cerrados (festivos)', lines(s, 'holidays', { placeholder: '2026-12-25\n2027-01-01' }), 'Formato AAAA-MM-DD, uno por renglón.')),
@@ -747,18 +747,18 @@ async function editSettings(root) {
       ),
     settingsSection('Protección del número de WhatsApp', null,
       field('Tope de mensajes de campaña por número y por día', num(s.sending, 'daily_cap_per_number', { min: 0 }), '0 = sin tope. Lo que no cabe hoy se envía al día siguiente. Para números nuevos, empezar con 50–100 al día reduce el riesgo de bloqueo.')),
-    settingsSection('Consentimiento para promociones', 'Quien escribe una de esas frases queda registrado con fecha. También puedes marcarlo a mano en la ficha de cada cliente. Los mensajes de servicio (respuestas, recordatorios de citas) no necesitan este consentimiento. Los clientes anteriores a esta función quedaron como aceptados.',
+    settingsSection('Consentimiento para promociones', 'Quien escribe una de esas frases queda registrado con fecha (también puedes marcarlo en su ficha). Las respuestas y los recordatorios de citas no lo necesitan.',
       check(s.consent, 'require_for_campaigns', 'Enviar campañas y secuencias solo a quienes aceptaron recibirlas (recomendado)'),
       h('div', { class: 'grid' },
         field('Frases con las que aceptan', lines(s.consent, 'opt_in_keywords'), 'El mensaje debe ser exactamente una de ellas.'),
         field('Respuesta al aceptar', area(s.consent, 'opt_in_message'))),
       ),
-    settingsSection('Privacidad: cuánto tiempo guardar los datos', 'El borrado es automático (cada pocas horas) y no se puede deshacer; los respaldos antiguos pueden conservar los datos hasta que se renueven. Para atender la solicitud de una sola persona usa "Borrar todos sus datos" en su ficha.',
+    settingsSection('Privacidad: cuánto tiempo guardar los datos', 'El borrado es automático y no se puede deshacer (los respaldos los conservan hasta renovarse). Para una sola persona, usa «Borrar todos sus datos» en su ficha.',
       h('div', { class: 'grid' },
         field('Borrar mensajes con más de … días', num(s.retention, 'messages_days', { min: 0 }), '0 = conservarlos siempre. También se limpian los resúmenes de esas conversaciones.'),
         field('Borrar contactos sin actividad en … días', num(s.retention, 'inactive_contacts_days', { min: 0 }), '0 = nunca. No se borran contactos con citas futuras.')),
       ),
-    settingsSection('Reparto de conversaciones por turnos (round robin)', 'Cada persona recibe una notificación en el panel (y por WhatsApp si lo tiene activado). Quien esté marcado como "no disponible" se salta sin perder su lugar. También puedes asignar a mano desde cada conversación o con la acción "Asignar a alguien del equipo" en las reglas.',
+    settingsSection('Reparto de conversaciones por turnos (round robin)', 'Cada persona recibe un aviso en el panel (y por WhatsApp si lo activó). Quien no está disponible se salta sin perder su turno.',
       check(s.assignment, 'enabled', 'Asignar automáticamente cada conversación que pasa a una persona, una a una, entre el equipo'),
       h('div', { class: 'row' }, [['agent', 'Agentes'], ['admin', 'Administradores']].map(([r, l]) => h('label', { class: 'check' },
         h('input', { type: 'checkbox', checked: s.assignment.roles.includes(r), onchange: (e) => { s.assignment.roles = e.target.checked ? [...s.assignment.roles, r] : s.assignment.roles.filter((x) => x !== r); } }), l))),
@@ -768,7 +768,7 @@ async function editSettings(root) {
           u.name || u.email, u.available === false ? ' (no disponible)' : '')))) : null,
       check(s.assignment, 'notify_all', 'Además de la persona asignada, avisar a todo el equipo'),
       ),
-    settingsSection('Avisos al equipo', 'El aviso llega en el panel y, a quien lo tenga activado, por WhatsApp y correo. Cada persona elige por dónde le llega cada tipo de aviso en Mi perfil → Mis avisos. Si alguien contesta desde el teléfono, no se avisa: ya lo está atendiendo.',
+    settingsSection('Avisos al equipo', 'Llega en el panel y, a quien lo activó, por WhatsApp y correo; cada quien lo elige en Mi perfil. Si alguien contesta desde el teléfono, no se avisa.',
       check(s, 'notify_team_on_handoff', 'Avisar al equipo cuando una conversación pasa a una persona'),
       h('div', { class: 'grid' },
         field('Repetir «un cliente espera a una persona» cada (minutos)', num(s.alert_timing, 'human_repeat_minutes', { min: 0, max: 1440 }), 'Mientras el cliente siga esperando, durante 24 horas. 0 = recordar una sola vez. El primer recordatorio sale según cada agente (Reglas → recordar a los … minutos).'),
@@ -779,7 +779,7 @@ async function editSettings(root) {
         h('div', { class: 'row' }, team.filter((u) => u.role === 'admin').map((u) => h('label', { class: 'check' },
           h('input', { type: 'checkbox', checked: s.alert_timing.escalate_user_ids.includes(u.id), onchange: (e) => { s.alert_timing.escalate_user_ids = e.target.checked ? [...s.alert_timing.escalate_user_ids, u.id] : s.alert_timing.escalate_user_ids.filter((x) => x !== u.id); } }),
           u.name || u.email)))) : null),
-    settingsSection('Avisos si se desconecta un WhatsApp', 'La sesión que vinculas con el código QR se conserva aunque se reinicie el servidor. Si se pierde la conexión, se intenta recuperar sola; si no vuelve, se avisa según lo que definas aquí. Si se cerró la sesión desde el teléfono, el aviso dice que hay que volver a escanear el QR.',
+    settingsSection('Avisos si se desconecta un WhatsApp', 'Si se pierde la conexión, se intenta recuperar sola; si no vuelve, se avisa como definas aquí.',
       check(s.connection_alerts, 'enabled', 'Enviar avisos cuando un WhatsApp se desconecta'),
       h('div', { class: 'grid' },
         field('Avisar después de (minutos)', num(s.connection_alerts, 'after_minutes', { min: 0, max: 1440 }), '0 = de inmediato. Unos minutos evitan avisos por cortes breves que se recuperan solos.'),

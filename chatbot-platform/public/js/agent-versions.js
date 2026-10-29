@@ -97,7 +97,7 @@ export function agentTestsCard(bot,versions) {
     finally{if(!results.textContent.includes('Evaluando')){busy=false;execute.disabled=false;}}
   }},'Guardar y ejecutar pruebas');
   draw();
-  box.append(h('h2',{style:'margin:0'},'Pruebas automáticas'),h('p',{class:'help'},'Opcional: guarda conversaciones de ejemplo y compruébalas cuando cambies tu agente. Se usa tu proveedor de IA; puede generar costo. Las fotos se simulan y las reservas no ocupan tu agenda. Máximo 10 casos, 6 turnos por caso y 40 llamadas por ejecución.'),cases,
+  box.append(h('h2',{style:'margin:0'},'Pruebas automáticas'),h('p',{class:'help'},'Opcional: guarda conversaciones de ejemplo y compruébalas cuando cambies tu agente. Usa tu IA (puede costar); las fotos y las reservas se simulan. Hasta 10 casos de 6 turnos.'),cases,
     h('div',{class:'row'},h('button',{onclick:()=>{if(suite.cases.length>=10)return;suite.cases.push({name:'Nueva prueba',turns:[{text:'',expect:{contains:[],not_contains:[],image_codes:[],data:{}}}]});draw();}},'Agregar prueba'),h('button',{onclick:save},'Guardar pruebas'),execute,h('a',{href:`/api/chatbots/${bot.id}/tests/promptfoo`,download:'agent-promptfoo.json'},'Exportar a Promptfoo')),results);
   if(versions.runs[0])showRun(versions.runs[0]);
   return box;

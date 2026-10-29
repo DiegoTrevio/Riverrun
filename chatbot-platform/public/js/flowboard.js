@@ -181,7 +181,7 @@ export async function viewFlowBoards(root) {
   root.append(
     h('section', { class: 'card fb-start', 'aria-labelledby': 'fb-start-title' },
       h('h2', { id: 'fb-start-title' }, 'Crea un flujo de mensajes'),
-      h('p', { class: 'help fb-start-lead' }, 'Escríbelo como se lo contarías a alguien de tu equipo, o sube una foto de tu dibujo, de tu pizarrón o de una captura. Lo armo completo, con sus mensajes, botones y esperas, y lo revisas en el lienzo antes de publicarlo.'),
+      h('p', { class: 'help fb-start-lead' }, 'Cuéntalo como a alguien de tu equipo, o sube una foto de tu dibujo o una captura. Lo armo completo y lo revisas en el lienzo antes de publicarlo.'),
       composer.el,
       h('h3', { class: 'fb-start-sub' }, 'O empieza con una plantilla'),
       templates),
@@ -1302,7 +1302,7 @@ export async function viewFlowBoard(root, id) {
     });
     if (intro?.summary || intro?.review?.length) show(intro, false);
     return [
-      h('p', { class: 'help' }, 'Escríbelo como se lo dirías a alguien de tu equipo. También puedes subir una foto: tu dibujo, un volante o una captura. El cambio se ve en el lienzo y puedes deshacerlo.'),
+      h('p', { class: 'help' }, 'Cuéntalo como a alguien de tu equipo, o sube una foto (tu dibujo, un volante, una captura). El cambio se ve en el lienzo y puedes deshacerlo.'),
       slot,
       composer.el,
     ];

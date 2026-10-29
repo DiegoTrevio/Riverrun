@@ -35,7 +35,7 @@ export async function viewPipeline(root, a, b) {
   const pipelines = await api('GET', withAcct('/api/pipelines'));
   if (!pipelines.length) {
     root.append(h('h1', {}, 'Oportunidades'), h('div', { class: 'card' },
-      h('p', {}, 'Un pipeline muestra en columnas en qué va cada cliente (por ejemplo Nuevo → Interesado → Cotizado → Ganado o Perdido). Cada solicitud es una oportunidad que pasa sola de una columna a otra según lo que pasa en la conversación: la IA detecta la situación que describes para cada columna, o un evento como cumplir el objetivo o agendar una cita. También puedes moverlas a mano y ponerles un valor.'),
+      h('p', {}, 'Un pipeline muestra en columnas en qué va cada cliente (Nuevo → Interesado → Cotizado → Ganado o Perdido). Cada oportunidad avanza sola según la conversación; también puedes moverla a mano y ponerle un valor.'),
       isAdmin() ? h('a', { class: 'btn primary', href: '#/pipeline/editar/nuevo' }, 'Crear mi pipeline') : h('p', { class: 'muted' }, 'Tu administrador aún no crea un pipeline.')));
     return;
   }
@@ -233,7 +233,7 @@ async function editPipeline(root, id) {
         h('small', {}, 'Cada agente usa un solo pipeline. Las conversaciones de esos agentes entran solas en la primera columna.')),
       field('Moneda del valor de las oportunidades', select(p, 'currency', [['MXN', 'Pesos mexicanos (MXN)'], ['USD', 'Dólares (USD)'], ['EUR', 'Euros (EUR)'], ['COP', 'Pesos colombianos (COP)'], ['ARS', 'Pesos argentinos (ARS)'], ['CLP', 'Pesos chilenos (CLP)'], ['PEN', 'Soles (PEN)'], ['GTQ', 'Quetzales (GTQ)']])),
       check(p, 'allow_backward', 'Permitir que una tarjeta regrese sola a una columna anterior'),
-      h('p', { class: 'small muted' }, 'Las tarjetas avanzan solas; una vez en una columna de ganadas o perdidas ya no se mueven solas. A mano siempre puedes moverlas. Cuando el cliente vuelve por otra solicitud, la anterior se cierra (como ganada si cumplió el objetivo o perdida si no) y empieza una tarjeta nueva.')),
+      h('p', { class: 'small muted' }, 'Las tarjetas avanzan solas hasta ganada o perdida, y a mano puedes moverlas siempre. Si el cliente vuelve por otra cosa, la anterior se cierra y empieza una tarjeta nueva.')),
     h('h2', {}, 'Columnas'),
     stagesBox,
     h('div', { class: 'row' },

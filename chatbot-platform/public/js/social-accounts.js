@@ -121,7 +121,7 @@ export async function viewSocialAccounts(root, params = new URLSearchParams()) {
 
   root.append(
     h('h1', {}, 'Redes sociales'),
-    h('p', { class: 'muted' }, 'Conecta las redes de tu negocio. En las que tienen mensajes directos tu agente puede contestar; tú inicias sesión en cada red y autorizas el acceso.'),
+    h('p', { class: 'muted' }, 'Conecta las redes de tu negocio. En las que tienen mensajes directos, tu agente puede contestar.'),
     notice,
     h('div', { class: 'card' },
       h('h2', { style: 'margin-top:0' }, 'Tus redes conectadas'),
@@ -130,7 +130,7 @@ export async function viewSocialAccounts(root, params = new URLSearchParams()) {
       data.accounts.length ? h('p', { class: 'small', style: 'margin-bottom:0' }, h('a', { href: '#/estadisticas/redes' }, 'Ver sus estadísticas →')) : null),
     h('div', { class: 'card' },
       h('h2', { style: 'margin-top:0' }, 'Conectar otra red'),
-      data.meta_direct ? h('p', { class: 'small muted' }, 'Facebook e Instagram ya se conectan con el botón "Conectar con Facebook" en las conexiones de tu agente; aquí solo se usan para comentarios, publicaciones y estadísticas.') : null,
+      data.meta_direct ? h('p', { class: 'small muted' }, 'Facebook e Instagram se conectan con "Conectar con Facebook" en las conexiones de tu agente; aquí solo se usan para comentarios, publicaciones y estadísticas.') : null,
       h('div', { class: 'grid' }, networks.map((n) => h('button', { class: 'social-network', onclick: () => connect(n.id) },
         h('span', { class: 'net-icon' }, networkIcon(n.id, 22)),
         h('span', {}, h('strong', {}, n.label), h('br'), h('span', { class: 'small muted' }, can(n, data.meta_direct))))))),

@@ -23,7 +23,7 @@ export async function viewReceivables(root, params) {
   const tab = params.get('tab') === 'ajustes' && isAdmin() ? 'ajustes' : params.get('tab') === 'recurrentes' ? 'recurrentes' : 'lista';
   root.append(
     h('h1', {}, 'Cobros'),
-    h('p', { class: 'help', style: 'margin:0 0 16px;max-width:760px' }, 'Registra lo que te deben tus clientes y el asistente les recuerda el pago por WhatsApp antes y después de la fecha. El dinero te llega directo con tus instrucciones de pago; tú marcas el cobro como pagado.'),
+    h('p', { class: 'help', style: 'margin:0 0 16px;max-width:760px' }, 'Registra lo que te deben y el asistente lo recuerda por WhatsApp antes y después de la fecha. Te pagan directo con tus instrucciones; tú lo marcas como pagado.'),
     // Las secciones como pestañas subrayadas, igual que en el resto del panel.
     h('nav', { class: 'tabs', 'aria-label': 'Secciones de cobros' },
       h('a', { class: tab === 'lista' ? 'active' : '', href: '#/cobros', 'aria-current': tab === 'lista' ? 'page' : null }, 'Cobros'),
@@ -201,7 +201,7 @@ async function settingsView(root) {
       preview,
       check(s, 'respect_business_hours', 'Si a esa hora estás cerrado, enviarlo cuando abras'),
       check(s, 'notify_team_on_overdue', 'Avisar al equipo cuando un cobro vence sin pagarse')),
-    settingsSection('Mensajes', 'Déjalos vacíos para usar los de siempre. Si el mensaje no trae {{pago.link}}, {{pago.instrucciones}} o {{pago.referencia}}, se agregan al final.',
+    settingsSection('Mensajes', 'Vacíos, se usan los de siempre. Si no traen {{pago.link}}, {{pago.instrucciones}} o {{pago.referencia}}, se agregan al final.',
       varsField('Antes de que venza', area(s, 'message_before', { rows: 3, placeholder: ph.before }), 'payment'),
       varsField('El día que vence', area(s, 'message_due', { rows: 3, placeholder: ph.due }), 'payment'),
       varsField('Después de vencido', area(s, 'message_overdue', { rows: 3, placeholder: ph.overdue }), 'payment'),
@@ -245,7 +245,7 @@ async function plansView(root, params) {
             } }, 'Borrar') : null))))))));
   };
   root.append(
-    h('p', { class: 'small muted' }, 'Una mensualidad o una cuota fija: unos días antes de cada vencimiento se crea su cobro en la lista de Cobros, con sus recordatorios de pago. Pausar o borrar un pago recurrente no toca los cobros que ya creó.'),
+    h('p', { class: 'small muted' }, 'Una mensualidad o cuota fija: unos días antes de cada vencimiento se crea su cobro, con recordatorios. Pausarlo o borrarlo no toca los cobros ya creados.'),
     planForm(params, load),
     body);
   await load();

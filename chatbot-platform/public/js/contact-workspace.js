@@ -37,7 +37,7 @@ export async function viewContacts(root,params) {
    h('button',{class:'ghost',onclick:async()=>{if(!pick.id)return;if(await run(()=>api('DELETE',withAcct(`/api/contact-views/${pick.id}`)),'Vista eliminada')){views.splice(views.findIndex(v=>v.id===pick.id),1);options.querySelector(`option[value="${pick.id}"]`)?.remove();pick.id='';options.value='';}}},'Eliminar vista seleccionada'));
  }
  const tools=isAdmin()&&canSave?h('div',{class:'row'},h('button',{onclick:async()=>{if(await importContactsDialog())load();}},'Importar contactos'),h('a',{class:'btn',href:withAcct('/api/export/contacts.csv'),download:''},'Exportar CSV')):null;
- root.append(h('div',{class:'row between'},h('h1',{},'Contactos'),tools),workspaceTabs('contacts'),h('p',{class:'help'},'Encuentra a una persona y retoma su atención desde una sola ficha. Los registros del mismo teléfono se reúnen dentro del perfil, conservando el origen de cada dato.'),
+ root.append(h('div',{class:'row between'},h('h1',{},'Contactos'),tools),workspaceTabs('contacts'),h('p',{class:'help'},'Busca a una persona y retoma su atención desde su ficha. Los registros del mismo teléfono se reúnen en uno.'),
   // Los filtros en una sola barra sobre la tabla (sin tarjeta propia); las vistas guardadas al final de la misma línea.
   h('div',{class:'toolbar'},field('Buscar nombre o teléfono',h('input',{type:'search',value:model.search,onchange:e=>{model.search=e.target.value;apply();}})),
    field('Mostrar',select(model,'view',[['all','Todos'],['pending','Con pendientes'],['unassigned','Sin asignar'],['upcoming','Con citas próximas']],apply)),

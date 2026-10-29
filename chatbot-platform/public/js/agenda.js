@@ -52,7 +52,7 @@ async function viewLinks(root) {
   const m = { name: '', service_ids: [], user_id: '' };
   root.append(
     h('div', { class: 'card' },
-      h('p', { class: 'muted', style: 'margin-top:0' }, 'Comparte un enlace (en redes, tu firma de correo o tu sitio) para que tus clientes elijan servicio, día y hora sin escribir al chat. Las reservas aparecen en tu calendario, se reparten como el servicio indica y al cliente le llega la confirmación y los recordatorios por correo.'),
+      h('p', { class: 'muted', style: 'margin-top:0' }, 'Un enlace para que tus clientes reserven solos: eligen servicio, día y hora, y reciben la confirmación y los recordatorios por correo.'),
       links.length ? links.map(card) : h('p', { class: 'muted' }, 'Todavía no hay enlaces.')),
     h('div', { class: 'card' },
       h('h2', { style: 'margin-top:0' }, 'Nuevo enlace'),
@@ -368,7 +368,7 @@ async function listServices(root) {
   const services = await api('GET', withAcct('/api/services'));
   root.append(
     h('div', { class: 'card' },
-      h('p', { class: 'muted', style: 'margin-top:0' }, 'Los servicios son lo que se puede agendar (citas presenciales o llamadas). El bot ofrece solo horarios realmente libres, agenda cuando el cliente elige, envía recordatorios y avisa a quien atiende.'),
+      h('p', { class: 'muted', style: 'margin-top:0' }, 'Lo que se puede agendar (citas o llamadas). El asistente ofrece solo horarios libres, agenda, envía recordatorios y avisa a quien atiende.'),
       h('a', { class: 'btn primary', href: '#/agenda/servicios?id=new' }, '+ Nuevo servicio')),
     h('div', { class: 'card' }, services.length
       ? h('table', {}, h('tbody', {}, services.map((s) => h('tr', { class: 'click', onclick: () => (location.hash = `#/agenda/servicios?id=${s.id}`) },
@@ -426,7 +426,7 @@ async function editService(root, id) {
         check(s, 'customer_choice', 'El cliente puede pedir con quién (el agente le ofrece los horarios de esa persona)')) : null,
       chosen.length > 1 && s.assignment_mode === 'weighted' ? h('div', {},
         h('div', { class: 'row' }, chosen.map((u) => field(`${u.name || u.email} (%)`, h('input', { type: 'number', min: 0, max: 100, step: 1, value: Math.round(s.user_weights[u.id] ?? 100 / chosen.length), oninput: (e) => { s.user_weights = { ...s.user_weights, [u.id]: Number(e.target.value) || 0 }; } })))),
-        h('p', { class: 'small muted' }, `Suma actual: ${Math.round(total)} %. Se reparte en proporción (no hace falta que sume 100). Con 0 % la persona solo recibe citas cuando nadie más está libre. Si a quien le toca no está libre en ese horario, se le asigna a otra persona.`)) : null);
+        h('p', { class: 'small muted' }, `Suma actual: ${Math.round(total)} %. Se reparte en proporción. Con 0 % solo recibe citas si nadie más está libre; si a quien le toca no está libre, pasa a otra persona.`)) : null);
   };
   drawPeople();
   const save = async () => {
@@ -465,7 +465,7 @@ async function editService(root, id) {
       check(s, 'active', 'Activo (el bot puede agendarlo)')),
     h('div', { class: 'card' },
       h('h2', { style: 'margin-top:0' }, 'Quién atiende y avisos'),
-      h('p', { class: 'small muted' }, 'Si eliges personas, solo se ofrecen horarios en los que al menos una esté libre (según su horario, sus días libres y su calendario) y la cita se le asigna a quien le toque. El horario de cada persona se configura en ', h('a', { href: '#/agenda/equipo' }, 'Equipo y disponibilidad'), '.'),
+      h('p', { class: 'small muted' }, 'Si eliges personas, solo se ofrecen horarios en que alguna esté libre, y la cita va a quien le toque. El horario de cada persona se configura en ', h('a', { href: '#/agenda/equipo' }, 'Equipo y disponibilidad'), '.'),
       peopleBox,
       check(s, 'notify_team', 'Avisar al equipo cuando se agenda o cancela'),
       field('Recordatorios antes de la cita', h('textarea', { value: rem.text, oninput: (e) => (rem.text = e.target.value) }), 'Ej.: 1 día, 2 horas o 30 minutos. Uno por renglón. También acepta minutos sin unidad.'),

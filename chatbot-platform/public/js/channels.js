@@ -68,7 +68,7 @@ export async function poolsCard(channels) {
   const picker = (obj) => h('div', { class: 'field' }, h('span', {}, 'Números que reciben clientes'), wa.map((c) => h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: obj.channel_ids.includes(c.id), onchange: (e) => { obj.channel_ids = e.target.checked ? [...obj.channel_ids, c.id] : obj.channel_ids.filter((x) => x !== c.id); } }), `${c.name}${c.config?.number ? ` (+${c.config.number})` : ' (sin conectar)'}`)));
   return h('div', { class: 'card' },
     h('h2', { style: 'margin-top:0' }, 'Enlace que reparte clientes entre tus números'),
-    h('p', { class: 'muted' }, 'Pon este enlace en tu web, redes o anuncios: cada persona que lo abra se va a uno de tus números de WhatsApp conectados (los desconectados se saltan solos) y el chat se abre con tu mensaje listo para enviar.'),
+    h('p', { class: 'muted' }, 'Ponlo en tu web, redes o anuncios: abre el chat con uno de tus WhatsApp conectados y tu mensaje listo para enviar.'),
     pools.map((p) => h('div', { class: 'list-item' },
       h('div', { class: 'row between' }, h('strong', {}, p.name, ' ', h('span', { class: `badge ${p.active ? 'green' : ''}` }, p.active ? 'activo' : 'pausado')),
         h('div', { class: 'row' },
@@ -122,8 +122,8 @@ export async function viewChannels(root, params) {
   root.append(
     h('div', { class: 'row between' }, h('h1', {}, 'WhatsApp y otros canales'), h('button', { class: 'primary', onclick: () => (createBox.hidden = !createBox.hidden) }, '+ Nuevo canal')),
     h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' },
-      'Cada canal es una conexión con una plataforma (un número de WhatsApp, un bot de Telegram, una página de Facebook, una cuenta de Instagram o el chat de un sitio web). ',
-      'Conecta hasta cuatro perfiles de WhatsApp por cuenta, cada uno con su propio QR. Asigna un asistente diferente a cada teléfono o comparte el mismo en varios. Las conversaciones de cada perfil se mantienen separadas.')),
+      'Cada canal conecta una plataforma: WhatsApp, Telegram, Facebook, Instagram o el chat de tu sitio. ',
+      'Hasta cuatro WhatsApp por cuenta, cada uno con su QR y su asistente (o uno compartido); sus conversaciones van por separado.')),
     !state.meta.public_https ? h('div', { class: 'card' }, h('span', { class: 'badge orange' }, 'Aviso'), ' ',
       `La URL pública (${state.meta.public_base_url}) no es HTTPS. Telegram, Messenger e Instagram exigen HTTPS: define PUBLIC_BASE_URL con tu dominio.`) : null,
     h('p', { class: 'muted small' }, selectedAccount ? `${profileCount} de ${limit} perfiles de WhatsApp. Los perfiles desconectados también ocupan un lugar.` : `Hasta ${limit} perfiles de WhatsApp por cuenta.`),
@@ -330,7 +330,7 @@ export async function viewChannel(root, id, parentId = null) {
     );
   } else if (ch.type === 'email') {
     connection.push(
-      h('p', { class: 'muted small' }, 'Al conectar se prueba el acceso de lectura y de envío. Solo se contestan los correos que lleguen después de conectar; avisos automáticos y listas de correo se ignoran. Se revisa el buzón cada minuto.'),
+      h('p', { class: 'muted small' }, 'Al conectar se prueba leer y enviar. Solo se contestan correos nuevos (no los avisos automáticos ni las listas); el buzón se revisa cada minuto.'),
       h('button', { class: 'primary', onclick: setup }, 'Guardar, probar y conectar el correo'),
     );
   } else if (ch.type === 'webchat') {

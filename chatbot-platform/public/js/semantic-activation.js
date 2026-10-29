@@ -10,7 +10,7 @@ export async function semanticActivation(bot) {
   const causes={budget_exhausted:'presupuesto diario agotado',invalid_embedding:'el modelo devolvió un vector incompatible',storage_failed:'no se pudo guardar el índice',provider_auth:'el proveedor rechazó la autenticación',provider_rate_limit:'el proveedor limitó las solicitudes',provider_unavailable:'el proveedor no está disponible',embedding_busy:'otra preparación está en curso'};
   const draw=()=>{
     content.replaceChildren(
-      h('p',{class:'help'},'Se aplica a todos los agentes de este perfil. Primero prepara y compara resultados; después activa. Puedes volver a la búsqueda por palabras cuando quieras.'),
+      h('p',{class:'help'},'Aplica a todos los agentes del perfil. Prepara y compara antes de activar; puedes volver a la búsqueda por palabras cuando quieras.'),
       h('p',{role:'status'},status.enabled?'Activa para este perfil':status.preparing?'Preparando · las conversaciones siguen con búsqueda por palabras':'Desactivada · búsqueda por palabras'),
       h('p',{},`1. Base de datos: ${status.database.ready?'pgvector disponible':'requiere configuración del servidor'}. Proveedor: ${status.verified_model===status.model?'comprobado':'pendiente de comprobar'}.`),
       action('Comprobar proveedor','/verify',()=>({}),!status.database.ready||!status.provider_configured||status.force_off),

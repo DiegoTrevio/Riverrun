@@ -89,7 +89,7 @@ async function fiscalCard(onSaved) {
       choice('no', 'Sin factura (tus pagos se incluyen en la factura a público en general)'),
       choice('yes', 'Con factura a mi nombre')),
     details,
-    h('p', { class: 'muted small' }, 'Con factura, cada pago genera tu CFDI a tu nombre y te llega por correo. Si el SAT rechaza tus datos te avisamos para corregirlos. Puedes cambiarlos cuando quieras: aplica a tus siguientes pagos y a los de este mes.'),
+    h('p', { class: 'muted small' }, 'Con factura, cada pago genera tu CFDI y te llega por correo; si el SAT rechaza tus datos, te avisamos. Los cambios aplican a los pagos de este mes en adelante.'),
     h('button', { class: 'primary', onclick: async () => {
       clearFieldErrors(card);
       try {
@@ -176,7 +176,7 @@ export async function viewPlan(root, params) {
     fill(status,
       h('h2', { style: 'margin-top:0' }, acc.status === 'paused' ? 'Tu asistente está en pausa' : acc.status === 'trial' ? 'Estás en periodo de prueba' : 'Elige tu plan'),
       acc.status === 'trial' && days !== null ? h('p', { class: 'muted' }, days === 0 ? 'Tu prueba termina hoy.' : `Te quedan ${days} ${days === 1 ? 'día' : 'días'} de prueba. Si contratas ahora, no pierdes nada: tu cuenta sigue exactamente igual.`) : null,
-      acc.status === 'paused' ? h('p', { class: 'muted' }, 'Tu configuración y tus conversaciones se conservan. Elige un plan y tu asistente vuelve a responder en cuanto se confirme el pago.') : null,
+      acc.status === 'paused' ? h('p', { class: 'muted' }, 'Tu configuración y tus conversaciones se conservan. Elige un plan y tu asistente vuelve en cuanto se confirme el pago.') : null,
       sub?.status === 'canceled' ? h('p', { class: 'muted' }, 'Tu plan anterior se canceló. Puedes contratar de nuevo cuando quieras.') : null);
   }
 
@@ -233,7 +233,7 @@ export async function viewPlan(root, params) {
       b.limits.items.filter((i) => i.max).map((i) => h('div', { style: 'margin:10px 0' },
         h('div', { class: 'row between small' }, h('span', {}, i.label), h('span', { class: i.percent >= 100 ? 'error' : 'muted' }, `${i.used.toLocaleString('es-MX')} de ${i.max.toLocaleString('es-MX')}`)),
         h('div', { class: 'bar' }, h('div', { class: `bar-fill ${i.percent >= 100 ? 'full' : i.percent >= 80 ? 'warn' : ''}`, style: `width:${i.percent}%` })))),
-      b.limits.items.some((i) => i.key === 'messages_per_month' && i.max) ? h('p', { class: 'muted small', style: 'margin-bottom:0' }, 'Los mensajes se cuentan cada mes (el día 1 vuelven a cero). Al llegar al límite el asistente deja de responder solo; las conversaciones se siguen guardando.') : null)
+      b.limits.items.some((i) => i.key === 'messages_per_month' && i.max) ? h('p', { class: 'muted small', style: 'margin-bottom:0' }, 'Se cuentan por mes (el día 1 vuelven a cero). Al llegar al límite el asistente deja de responder; las conversaciones se siguen guardando.') : null)
     : null;
   const notice = paid && live
     ? h('div', { class: 'banner' }, h('strong', {}, '¡Listo, tu plan está activo! '), 'Te enviamos la confirmación por correo.',
@@ -294,7 +294,7 @@ function dataCard() {
         if (r) { state.me = null; render(); }
       } }, 'Cancelar el borrado')]
     : owner
-      ? [h('p', { class: 'muted small' }, 'Se borran tu agente, sus conexiones, tus contactos y tus conversaciones; tus pagos y facturas se conservan por ley. Te llega un correo para confirmarlo y, ya confirmado, tienes 7 días para cancelarlo.'),
+      ? [h('p', { class: 'muted small' }, 'Se borran tu agente, sus conexiones, tus contactos y tus conversaciones; tus pagos y facturas se conservan por ley. Lo confirmas por correo y tienes 7 días para cancelarlo.'),
         field(`Para confirmar, escribe el nombre de tu cuenta («${account.name}»)`, text(confirm, 'text', { autocomplete: 'off' })),
         h('button', { class: 'danger', onclick: async () => {
           const r = await run(() => api('POST', '/api/account/deletion', { confirm: confirm.text }));
@@ -354,7 +354,7 @@ export async function viewPlans(root) {
       h('div', { class: 'small' }, 'Dirección de avisos (webhook):'),
       h('div', { class: 'row' }, h('code', { style: 'word-break:break-all' }, pr.webhook_url), copy(pr.webhook_url)),
       h('p', { class: 'small muted' }, pr.name === 'stripe' ? 'En Stripe → Desarrolladores → Webhooks: eventos checkout.session.completed, customer.subscription.*, invoice.paid, invoice.payment_failed, invoice.payment_action_required (el banco pide confirmar), charge.refunded (reembolsos) y charge.dispute.* (contracargos).' : 'En Mercado Pago → Tus integraciones → Webhooks: eventos "Planes y suscripciones" (preapproval y pagos autorizados) y "Pagos" (reembolsos y contracargos).')))),
-    h('p', { class: 'muted' }, 'Además, una vez al día cada suscripción se compara con el proveedor: si un aviso se pierde, el cobro, la pausa o la reactivación se aplican igual.'),
+    h('p', { class: 'muted' }, 'Además, cada suscripción se compara con el proveedor una vez al día: un aviso perdido no deja un cobro, una pausa o una reactivación sin aplicar.'),
     ...(ov.monthly_revenue.length ? [h('p', {}, h('strong', {}, 'Ingreso mensual recurrente: '), ov.monthly_revenue.map((m) => `${m.amount.toLocaleString('es-MX')} ${m.currency}`).join(' · '))] : []),
     h('h2', {}, 'Planes'),
     h('p', { class: 'muted' }, `Si un cobro falla, la cuenta sigue funcionando ${ov.grace_days} días y luego se pausa sola; al pagar, se reactiva sola.`),

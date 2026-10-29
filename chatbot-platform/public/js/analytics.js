@@ -560,7 +560,7 @@ export async function viewSocialStats(root, params = new URLSearchParams()) {
         tile('Interacciones', sum('engagement'), { sub: 'me gusta, comentarios, compartidos y guardados' }),
         tile('Publicaciones', sum('posts'), { sub: `últimos ${d.days} días` })),
       h('div', { class: 'stats-grid' }, d.accounts.map(accountCard)),
-      h('p', { class: 'small muted' }, 'Las cifras vienen de cada red y se actualizan una vez al día (días en hora UTC). Cada red mide a su manera: compara cada red consigo misma.'));
+      h('p', { class: 'small muted' }, 'Cifras de cada red, actualizadas una vez al día (en UTC). Cada red mide a su manera: compárala consigo misma.'));
   }
 
   await load();

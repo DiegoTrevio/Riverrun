@@ -94,7 +94,7 @@ export async function viewUsers(root) {
   const me = state.me.user;
   root.append(
     h('h1', {}, 'Usuarios y permisos'),
-    h('p', { class: 'muted' }, 'Cada usuario pertenece a un perfil de negocio y solo puede gestionar sus datos. El maestro tiene acceso a todos los perfiles.'),
+    h('p', { class: 'muted' }, 'Cada usuario solo gestiona su perfil de negocio; el maestro tiene acceso a todos.'),
     invite,
     h('details', { class: 'card', open: !invite },
       h('summary', {}, h('strong', {}, invite ? 'Crear usuario con contraseña inicial' : 'Nuevo usuario')),
@@ -148,7 +148,7 @@ export async function viewAccounts(root) {
   root.append(
     h('h1', {}, 'Perfiles de negocio'),
     h('div', { class: 'card' },
-      h('p', { class: 'muted', style: 'margin-top:0' }, 'Cada perfil funciona como una subcuenta: tiene sus propios usuarios, asistentes, canales, conversaciones y agenda. Sus usuarios solo gestionan ese perfil; el maestro puede abrirlos todos.'),
+      h('p', { class: 'muted', style: 'margin-top:0' }, 'Cada perfil es una subcuenta con sus propios usuarios, asistentes, canales, conversaciones y agenda. El maestro puede abrirlos todos.'),
       h('h2', {}, 'Nuevo perfil'),
       field('Nombre del cliente', text(n, 'name', { placeholder: 'Hotel Las Palmas' })),
       h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: true, onchange: (e) => { n.withAdmin = e.target.checked; adminBox.hidden = !n.withAdmin; } }), 'Crear también su primer administrador'),
@@ -265,7 +265,7 @@ function sessionsCard() {
             const r = await run(() => api('DELETE', `/api/me/sessions/${s.id}`), 'Sesión cerrada');
             if (r?.current) location.reload(); else if (r) draw();
           } }, 'Cerrar')))))) : h('p', { class: 'muted' }, 'No hay sesiones registradas.'),
-      d.legacy ? h('p', { class: 'small muted' }, 'Esta sesión se abrió antes de registrar sesiones: no aparece en la lista y vence sola. Para que aparezca, sal y vuelve a entrar.') : null,
+      d.legacy ? h('p', { class: 'small muted' }, 'Esta sesión es anterior al registro de sesiones: no aparece aquí y vence sola. Para verla, sal y vuelve a entrar.') : null,
       others.length ? h('button', { class: 'danger', onclick: async () => {
         if (!(await dialog('Cerrar las demás sesiones', h('p', {}, `Se cerrarán ${others.length} ${others.length === 1 ? 'sesión' : 'sesiones'} en otros dispositivos. Esta sigue abierta.`), 'Cerrar las demás'))) return;
         if (await run(() => api('POST', '/api/me/sessions/revoke-others'), 'Sesiones cerradas')) draw();
@@ -291,7 +291,7 @@ export async function viewPassword(root) {
       state.me.user.account_id ? check(me, 'available', 'Estoy disponible: recibir conversaciones asignadas por turnos (desmárcalo si estás fuera de turno)') : null,
       // Al guardar se vuelve a dibujar: «Mis avisos» habilita la columna de WhatsApp en cuanto hay número.
       h('div', { class: 'settings-actions' }, h('button', { onclick: async () => { const u = await run(() => api('PUT', '/api/me', me), 'Perfil guardado'); if (u) { state.me.user = { ...state.me.user, ...u }; render(); } } }, 'Guardar perfil'))),
-    groups ? settingsSection('Mis avisos', 'Elige por dónde te llega cada tipo de aviso. El WhatsApp necesita tu número de arriba con «Recibir las alertas del equipo por WhatsApp» activado. Lo que no cambies sigue como hasta ahora.',
+    groups ? settingsSection('Mis avisos', 'Elige por dónde te llega cada aviso. Para recibirlos por WhatsApp, activa «Recibir las alertas del equipo por WhatsApp» arriba.',
       alertPrefsTable(groups, prefs, { noPhone: !(state.me.user.phone && state.me.user.notify_whatsapp) }),
       h('div', { class: 'settings-actions' }, h('button', { onclick: async () => { const u = await run(() => api('PUT', '/api/me', { alert_prefs: prefs }), 'Avisos guardados'); if (u) state.me.user = { ...state.me.user, ...u }; } }, 'Guardar avisos'))) : null,
     settingsSection('Sesiones abiertas', 'Dónde está abierta tu cuenta. Si no reconoces una, ciérrala y cambia tu contraseña.', sessionsCard()),
@@ -338,7 +338,7 @@ async function failedDeliveriesCard() {
   if (!list.length) return null;
   return h('section', { class: 'card', 'aria-labelledby': 'failed-deliveries' },
     h('h2', { id: 'failed-deliveries' }, `Avisos que no llegaron (7 días): ${list.length}`),
-    h('p', { class: 'small muted' }, 'Cada aviso se reintenta solo varias veces y los urgentes salen también por el otro canal. Si sigue sin llegar, revisa el teléfono o el correo de la persona en ', h('a', { href: '#/users' }, 'Mi equipo'), '.'),
+    h('p', { class: 'small muted' }, 'Cada aviso se reintenta solo y lo urgente sale también por el otro canal. Si aun así no llega, revisa el teléfono o el correo de la persona en ', h('a', { href: '#/users' }, 'Mi equipo'), '.'),
     h('div', { class: 'table-scroll' }, h('table', {},
       h('thead', {}, h('tr', {}, ['Para', 'Aviso', 'Canal', 'Motivo', 'Fecha', ''].map((t) => h('th', { scope: 'col' }, t)))),
       h('tbody', {}, list.map((d) => h('tr', {},
