@@ -125,7 +125,7 @@ export const config = {
   copilot: {
     enabled: env('COPILOT_ENABLED', 'true') === 'true',
     /** Un modelo capaz de encadenar herramientas; con límites de gasto necesita su precio en ai_prices. */
-    model: env('OPENROUTER_COPILOT_MODEL', useOpenRouter ? 'anthropic/claude-sonnet-4.5' : 'gpt-4.1'),
+    model: env('OPENROUTER_COPILOT_MODEL', useOpenRouter ? 'deepseek/deepseek-v4.1-flash-1017' : 'gpt-4.1'),
     /** Respaldos del Copiloto (deben saber usar herramientas); vacío o "none" = ninguno. */
     fallbackModels: env('OPENROUTER_COPILOT_FALLBACK_MODELS', '').split(',').map((m) => m.trim()).filter((m) => m && m !== 'none'),
     maxSteps: Number(env('COPILOT_MAX_STEPS', '8')),
@@ -136,6 +136,8 @@ export const config = {
     turnMaxUsd: Number(env('COPILOT_TURN_MAX_USD', '0.5')),
     turnsPerHour: Number(env('COPILOT_TURNS_PER_HOUR', '30')),
     accountTurnsPerDay: Number(env('COPILOT_ACCOUNT_TURNS_PER_DAY', '300')),
+    /** Tope de gasto del Copiloto por cuenta en 24 horas, en USD (0 = sin tope; aparte del presupuesto de IA). */
+    accountUsdPerDay: Math.max(0, Number(env('COPILOT_ACCOUNT_USD_PER_DAY', '3')) || 0),
     proposalMinutes: Number(env('COPILOT_PROPOSAL_MINUTES', '30')),
     undoDays: Number(env('COPILOT_UNDO_DAYS', '7')),
     retentionDays: Number(env('COPILOT_RETENTION_DAYS', '90')),

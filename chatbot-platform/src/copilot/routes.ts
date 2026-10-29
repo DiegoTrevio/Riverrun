@@ -162,6 +162,8 @@ export async function copilotRoutes(api: FastifyInstance, deps: RunnerDeps) {
     const used = await cs.recentTurns(req.user.id, thread.account_id);
     if (used.user_hour >= config.copilot.turnsPerHour) throw new HttpError(429, 'Llegaste al límite de pedidos al Copiloto por hora; intenta en un rato');
     if (used.account_day >= config.copilot.accountTurnsPerDay) throw new HttpError(429, 'La cuenta llegó al límite de pedidos al Copiloto de hoy');
+    const dayCap = config.copilot.accountUsdPerDay;
+    if (dayCap > 0 && used.account_day_usd >= dayCap) throw new HttpError(429, 'La cuenta llegó al tope de gasto del Copiloto de las últimas 24 horas; intenta más tarde');
     if (await budgetTight(thread.account_id)) throw new HttpError(409, 'El presupuesto de IA de la cuenta está por acabarse: el Copiloto se pausa para no dejar sin IA a tu agente. Revísalo en Consumo de IA.');
     const refs = (await cs.actionsByIds(b.refs, thread.id)).map((a) => a.id);
     const cookie = sessionCookie(req);
@@ -169,7 +171,9 @@ export async function copilotRoutes(api: FastifyInstance, deps: RunnerDeps) {
     if (!turn) throw new HttpError(409, 'Todavía estoy trabajando en tu pedido anterior');
     const message = await cs.addMessage({ thread_id: thread.id, turn_id: turn.id, role: 'user', content: b.text, refs });
     await cs.touchThread(thread.id, b.text.slice(0, 60));
-    void startTurnInBackground(deps, { thread, turn, user: req.user, cookie, ip: req.ip, refs });
+    // Un pedido no gasta más de lo que le queda a la cuenta en el día.
+    const maxUsd = dayCap > 0 ? dayCap - used.account_day_usd : undefined;
+    void startTurnInBackground(deps, { thread, turn, user: req.user, cookie, ip: req.ip, refs, maxUsd });
     return reply.code(202).send({ turn: turnOut(turn), message: messageOut(message) });
   });
 

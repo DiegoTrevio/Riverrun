@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { COPILOT_TOOLS } from '../src/copilot/tools/index.js';
 import { toolSpec, allowed } from '../src/copilot/registry.js';
 import { buildHistory } from '../src/copilot/history.js';
+import { systemMessage } from '../src/copilot/prompt.js';
 import { parsePage } from '../src/copilot/page.js';
 import { clip, day, forModel, safeLink } from '../src/copilot/summarize.js';
 import { keepAccount, path, qs, ToolError } from '../src/copilot/executor.js';
@@ -128,4 +129,60 @@ test('resultados cortos para el modelo: textos y listas recortados', () => {
   assert.equal(c.list.at(-1), '… y 10 más');
   assert.ok(!('vacio' in c) && !('nada' in c));
   assert.ok(forModel({ big: Array.from({ length: 20 }, () => long) }).length <= 3000 + 20);
+});
+
+test('herramientas: el esquema que ve el modelo es corto, sin perder lo que importa', () => {
+  const walk = (node: any, depth: number, out: { nestedDefault: number; nestedAdditional: number }) => {
+    if (Array.isArray(node)) return node.forEach((n) => walk(n, depth, out));
+    if (!node || typeof node !== 'object') return;
+    if (depth > 1 && 'default' in node) out.nestedDefault++;
+    if (depth > 0 && node.additionalProperties === false) out.nestedAdditional++;
+    for (const [k, v] of Object.entries(node)) walk(v, k === 'properties' ? depth : depth + 1, out);
+  };
+  const size = (role: string) => JSON.stringify(COPILOT_TOOLS.filter((t) => allowed(t, { role } as any)).map(toolSpec)).length;
+  for (const t of COPILOT_TOOLS) {
+    const out = { nestedDefault: 0, nestedAdditional: 0 };
+    walk(toolSpec(t).parameters, 0, out);
+    assert.deepEqual(out, { nestedDefault: 0, nestedAdditional: 0 }, t.name);
+  }
+  // Los valores por omisión de los argumentos sí van: dicen qué pasa si el modelo no los manda.
+  const cita = toolSpec(COPILOT_TOOLS.find((t) => t.name === 'crear_cita')!).parameters as any;
+  assert.equal(cita.properties.avisar_al_cliente.default, true);
+  // Tope de regresión: lo que va en cada paso de cada pedido no debe volver a crecer sin darse cuenta.
+  assert.ok(size('admin') < 39_000, `herramientas de administrador: ${size('admin')} caracteres`);
+  assert.ok(size('agent') < 14_000, `herramientas de agente: ${size('agent')} caracteres`);
+});
+
+test('cambiar_regla: el modelo ve un esquema corto, pero el servidor valida con el completo', () => {
+  const def = COPILOT_TOOLS.find((t) => t.name === 'cambiar_regla')!;
+  assert.ok(JSON.stringify(toolSpec(def)).length < 1500, 'no repite el esquema de crear_regla');
+  assert.equal(def.schema.safeParse({ regla_id: ID, acciones: [{ type: 'no_existe' }] }).success, false);
+  assert.equal(def.schema.safeParse({ regla_id: ID, acciones: [{ type: 'add_tag', tag: 'interesado' }, { type: 'alert_team' }] }).success, true);
+});
+
+test('prompt: la lista de la conversación lleva solo cambios y propuestas, las últimas 12', () => {
+  const act = (i: number, risk: string) => ({ id: `${String(i).padStart(8, '0')}-0000-4000-8000-000000000000`, tool: risk === 'read' ? 'buscar_contactos' : 'etiquetar', risk, status: 'done', title: `Acción ${i}`, args: { n: i } }) as unknown as Action;
+  const actions = Array.from({ length: 30 }, (_, i) => act(i, i % 2 ? 'read' : 'reversible'));
+  const system = systemMessage({ model: 'anthropic/claude-sonnet-4.5', user: { role: 'admin', name: 'Dueña' } as any, accountName: 'Barbería', timezone: 'America/Mexico_City', snapshot: '', page: {}, actions });
+  const dynamic = (system.content as any[])[1].text as string;
+  assert.ok(!dynamic.includes('buscar_contactos'), 'sin consultas');
+  assert.equal((dynamic.match(/· etiquetar ·/g) ?? []).length, 12);
+  assert.ok(dynamic.includes('Acción 28') && !dynamic.includes('Acción 4 '), 'las más nuevas');
+  assert.deepEqual((system.content as any[])[0].cache_control, { type: 'ephemeral' }, 'la parte fija va a la caché');
+});
+
+test('historial: los resultados de herramientas de turnos viejos se recortan; los de los 2 últimos no', () => {
+  const big = JSON.stringify({ contactos: 'x'.repeat(2500) });
+  const turn = (n: number) => [
+    msg(n * 10, { role: 'user', content: `Pedido ${n}`, turn_id: `t${n}` }),
+    msg(n * 10 + 1, { role: 'assistant', tool_calls: [{ id: `c${n}`, name: 'buscar_contactos', arguments: '{}' }], turn_id: `t${n}` }),
+    msg(n * 10 + 2, { role: 'tool', tool_call_id: `c${n}`, content: big, turn_id: `t${n}` }),
+    msg(n * 10 + 3, { role: 'assistant', content: 'Listo.', turn_id: `t${n}` }),
+  ];
+  const h = buildHistory([...turn(1), ...turn(2), ...turn(3)], []);
+  const tools = h.filter((m: any) => m.role === 'tool') as any[];
+  assert.equal(tools.length, 3);
+  assert.ok(tools[0].content.length < 900 && tools[0].content.endsWith('(recortado)'), 'el turno viejo se recorta');
+  assert.equal(tools[1].content, big);
+  assert.equal(tools[2].content, big);
 });

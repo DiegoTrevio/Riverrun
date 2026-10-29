@@ -17,7 +17,8 @@ por eso se llama **Copiloto**.
   sobre la cuenta que tenga elegida.
 - **Qué cubre:** configurar el agente, automatizar, operar el día a día y responder preguntas sobre los datos.
 - **Dónde:** un panel lateral disponible en todo el panel. Sabe qué página y qué registro estás viendo.
-- **Modelo:** uno capaz de encadenar pasos (`OPENROUTER_COPILOT_MODEL`). Se cobra del presupuesto de IA de la cuenta
+- **Modelo:** uno capaz de encadenar pasos (`OPENROUTER_COPILOT_MODEL`; por omisión `deepseek/deepseek-v4.1-flash-1017`, que
+  pasó los 22 casos de la prueba con la IA real a unos 0.003 USD por pedido). Se cobra del presupuesto de IA de la cuenta
   (`kind = 'copilot'`).
 - **Activación:**
   - Se enciende cuenta por cuenta (`accounts.copilot_enabled`) desde Cuentas, sin volver a desplegar.
@@ -56,7 +57,19 @@ Turnos en curso:
 
 Límites de uso:
 - 30 turnos por hora por usuario y 300 al día por cuenta, contados en la base de datos.
+- Tope de gasto por cuenta: 3 USD en 24 horas (`COPILOT_ACCOUNT_USD_PER_DAY`; 0 = sin tope). Al llegar, no arranca otro
+  pedido, y un pedido en curso no gasta más de lo que le queda a la cuenta. Usa el costo que reporta OpenRouter.
 - No arranca si el gasto de IA ya pasó el 80 % de un límite: así no deja sin IA al agente que atiende a los clientes.
+
+Lo que se le manda al modelo, para gastar poco:
+- Las herramientas y la parte fija de las instrucciones van primero y en orden fijo: se guardan en caché y se comparten
+  entre todas las cuentas (con modelos de Anthropic).
+- Cada paso de un pedido lee de la caché lo que mandó el paso anterior (`cache_control` de OpenRouter); solo se cobra
+  completo lo nuevo.
+- El JSON Schema de las herramientas va sin valores por omisión ni datos que zod ya revisa. `cambiar_regla` no repite el
+  esquema de `crear_regla`.
+- La lista de la conversación lleva solo los cambios y las propuestas (las últimas 12), no las consultas.
+- Los resultados de herramientas de turnos más viejos que los últimos 2 se recortan.
 
 ## Herramientas: las mismas rutas del panel
 
@@ -108,8 +121,9 @@ Resultados que ve el modelo:
    persona. Se siguen las reglas encadenadas por etiqueta (hasta tres saltos). La tarjeta nombra la regla.
 2. El turno leyó texto escrito por clientes y el cambio es de configuración (agente, automatizaciones, horario), no
    dice qué registros toca, o toca un registro fuera de los permitidos: la página abierta, las acciones referidas o lo
-   que se leyó **antes** de ese texto (lo que se lee después no amplía el alcance). Esto protege contra instrucciones
-   escondidas en mensajes.
+   que se leyó **antes** de ese texto (lo que se lee después no amplía el alcance). El alcance es por cliente: la
+   conversación y las citas de un contacto permitido también lo están. Esto protege contra instrucciones escondidas en
+   mensajes.
 
 **Texto de clientes.** Cuenta como tal todo lo que escriben los clientes o cualquiera desde afuera: mensajes, datos y
 notas, y también sus nombres (el perfil de WhatsApp o la página pública de reservas), así que las búsquedas de
@@ -308,3 +322,43 @@ cotización, avisos al equipo y activación del agente.
   - solo el dueño del hilo confirma;
   - no existe una herramienta que confirme.
 - **Presupuesto:** todo pasa por `accountAi` y se registra en `ai_runs` y en `ai_spend` (`kind = 'copilot'`).
+
+## Probar con la IA real
+
+Las pruebas (`npm test`) usan un modelo simulado por guion. Para saber si el modelo real hace bien los cambios, y cuánto
+cuestan, `scripts/eval-copilot.mts` corre unos 20 pedidos sobre una cuenta de prueba y revisa en la base de datos que
+cada cambio quedó bien:
+
+```bash
+# Con la IA real (necesita OPENROUTER_API_KEY y la base local de pruebas; la borra y la vuelve a crear):
+RIVERRUN_EVAL_MAX_USD=3 npm run eval:copilot:live -- --models deepseek/deepseek-v4.1-flash-1017,anthropic/claude-sonnet-4.5
+# Solo algunos casos (y los que necesitan antes):
+npm run eval:copilot:live -- --only agendar,cancelar
+# Sin IA, con el modelo de guion (revisa que los casos y sus comprobaciones funcionan):
+npm run eval:copilot
+```
+
+- **Casos:**
+  - etiquetar y «Cambiar esto»;
+  - datos, pendientes, asignar;
+  - agendar y cancelar «esa cita» (queda como propuesta y se confirma);
+  - mover una oportunidad;
+  - un mensaje al cliente (propuesta);
+  - instrucciones del agente y deshacer;
+  - conocimiento, horario;
+  - una regla interna y cambiar «esa regla» (la misma, no otra);
+  - una regla que manda mensajes y una etiqueta que dispara otra (propuestas);
+  - un pedido ambiguo (pregunta);
+  - instrucciones escondidas en un mensaje de cliente (no hace nada);
+  - algo fuera de alcance;
+  - una pregunta sobre los datos;
+  - un agente del equipo (no cambia la configuración, sí etiqueta lo suyo).
+- **Pasa** cuando el pedido termina bien y la comprobación del caso se cumple en la base de datos.
+- **Por cada modelo**, el script:
+  - revisa en el catálogo de OpenRouter que existe y acepta herramientas, y muestra su precio;
+  - dice qué casos pasaron, con sus pasos y su costo;
+  - da el costo por pedido y qué parte de la entrada salió de la caché;
+  - al final, dice el más barato que pasó todos.
+- **Tope de gasto:** `RIVERRUN_EVAL_MAX_USD` (por omisión 2, máximo 10) y hasta 0.30 USD por pedido. Conviene una clave de
+  OpenRouter dedicada, con tope de crédito.
+

@@ -367,3 +367,58 @@ t('deshacer todo un pedido, de lo último a lo primero', async () => {
   assert.ok(!p.contact.tags.includes('uno'));
   assert.ok(!p.tasks.some((x: any) => x.body === 'Llamar el lunes'));
 });
+
+/** Estas van al final del archivo: suben el tope de pedidos por hora para no toparse con los de las pruebas anteriores. */
+async function withLimits<T>(patch: Partial<typeof config.copilot>, fn: () => Promise<T>): Promise<T> {
+  const saved = { ...config.copilot };
+  Object.assign(config.copilot, { turnsPerHour: 1000, ...patch });
+  try { return await fn(); } finally { Object.assign(config.copilot, saved); }
+}
+
+t('tope diario de gasto por cuenta: un pedido no gasta más de lo que le queda, y al llegar no arranca otro', async () => {
+  const id = await thread(owner);
+  const used = async () => Number((await pool.query(`SELECT coalesce(sum(cost_usd), 0)::float8 AS usd FROM copilot_turns WHERE account_id = $1 AND started_at > now() - interval '24 hours'`, [h.accountId])).rows[0].usd);
+  const earlier = (await pool.query(`INSERT INTO copilot_turns (thread_id, account_id, user_id, status, finished_at) SELECT id, account_id, user_id, 'done', now() FROM copilot_threads WHERE id = $1 RETURNING id`, [id])).rows[0].id;
+  try {
+    await withLimits({ accountUsdPerDay: (await used()) + 1 }, async () => {
+      await pool.query(`UPDATE copilot_turns SET cost_usd = 0.95 WHERE id = $1`, [earlier]);
+      h.copilotCalls.length = 0;
+      script([{ ...call('etiquetar', { contacto_ids: [ana.contact_id], agregar: ['caro'] }), cost_usd: 0.06 }, 'Resumen.']);
+      const r = await ask(owner, id, 'Etiqueta a Ana como caro');
+      assert.equal(r.turn.status, 'done', JSON.stringify(r.turn));
+      assert.equal(h.copilotCalls.length, 2);
+      assert.equal(h.copilotCalls[1].tool_choice, 'none', 'con lo que le quedaba a la cuenta ya gastado, el siguiente paso solo resume');
+      const blocked = await owner('POST', `/api/copilot/threads/${id}/messages`, { text: 'Otra cosa' });
+      assert.equal(blocked.statusCode, 429);
+      assert.match(blocked.json().error, /tope de gasto/);
+    });
+    await withLimits({ accountUsdPerDay: 0 }, async () => {
+      script(['Listo.']);
+      assert.equal((await ask(owner, id, 'hola')).turn.status, 'done', '0 = sin tope');
+    });
+  } finally {
+    await pool.query(`UPDATE copilot_turns SET cost_usd = 0 WHERE account_id = $1`, [h.accountId]);
+  }
+});
+
+t('el alcance es por cliente: tras buscar a Ana, su conversación se cambia sin confirmar; la de otro cliente, no', async () => {
+  await withLimits({}, async () => {
+    const id = await thread(owner);
+    script([
+      // Por teléfono: el último mensaje de Beto menciona a «Ana López» y la búsqueda por nombre también lo traería.
+      call('buscar_conversaciones', { texto: '5215511110001' }),
+      { tool_calls: [
+        { name: 'gestionar_conversacion', arguments: { conversacion_id: ana.id, accion: 'asignar', persona: agentId } },
+        { name: 'gestionar_conversacion', arguments: { conversacion_id: beto.id, accion: 'asignar', persona: agentId } },
+      ] },
+      'Listo.',
+    ]);
+    const r = await ask(owner, id, 'Asigna la conversación de Ana a Luis');
+    const [mine, other] = r.actions.filter((a: any) => a.tool === 'gestionar_conversacion');
+    assert.equal(mine.status, 'done', JSON.stringify(mine));
+    assert.equal(other.status, 'proposed', 'la conversación de Beto no salió en la búsqueda');
+    assert.match(other.reasons.join(' '), /no estabas viendo/);
+    assert.equal((await owner('POST', `/api/copilot/actions/${mine.id}/undo`)).statusCode, 200);
+    assert.equal((await owner('POST', `/api/copilot/actions/${other.id}/decline`)).statusCode, 200);
+  });
+});
