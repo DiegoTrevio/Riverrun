@@ -24,7 +24,7 @@ export function newApiKey() {
 const EndpointBody = z.object({
   url: z.string().url().max(500).refine((u) => /^https?:\/\//i.test(u), 'La dirección debe empezar con http:// o https://'),
   description: z.string().max(200).default(''),
-  events: z.array(z.string()).min(1).default(['*']).refine((l) => l.every((e) => e === '*' || e in EVENT_TYPES), 'Evento desconocido'),
+  events: z.array(z.string()).min(1).default(['*']).refine((l) => l.every((e) => e === '*' || Object.hasOwn(EVENT_TYPES, e)), 'Evento desconocido'),
   active: z.boolean().default(true),
 });
 
@@ -84,7 +84,7 @@ export async function integrationRoutes(api: FastifyInstance) {
    */
   api.post('/api/webhook-endpoints/:id/test', admins, async (req: any) => {
     const ep = await endpointFor(req.user, req.params.id);
-    const b = parse(z.object({ event: z.string().refine((e) => e in EVENT_TYPES, 'Evento desconocido').default('ping') }), req.body ?? {});
+    const b = parse(z.object({ event: z.string().refine((e) => Object.hasOwn(EVENT_TYPES, e), 'Evento desconocido').default('ping') }), req.body ?? {});
     const event = b.event as PublicEvent;
     const eventId = crypto.randomUUID();
     const body = eventBody(eventId, event, ep.account_id, await sampleEventData(ep.account_id, event), { test: true });

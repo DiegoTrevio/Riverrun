@@ -592,19 +592,30 @@ export async function findContact(channelId: string, externalId: string) {
   return queryOne<Contact>('SELECT * FROM contacts WHERE channel_id = $1 AND external_id = $2', [channelId, externalId]);
 }
 
-const waJids = (variants: string[]) => variants.map((v) => `${v}@s.whatsapp.net`);
+/**
+ * Ids de los contactos con ese número en cualquiera de sus dos formas (México: 52… y 521…): por el teléfono guardado
+ * (índice contacts_account_phone) o por su identificador de WhatsApp en el canal. Una igualdad por forma, no `= ANY`:
+ * así PostgreSQL usa los dos índices completos en vez de revisar cada contacto de la cuenta.
+ * Parámetros: $1 canal, $2 cuenta y, desde `from`, las dos formas del número y sus dos identificadores.
+ */
+export function phoneMatchIds(digits: string, from: number) {
+  const v = phoneVariants(digits);
+  const [a, b] = [v[0], v[1] ?? v[0]];
+  const p = (i: number) => `$${from + i}`;
+  const byPhone = (i: number) => `SELECT id FROM contacts WHERE account_id = $2 AND phone <> '' AND regexp_replace(phone, '[^0-9]', '', 'g') = ${p(i)}`;
+  const byJid = (i: number) => `SELECT id FROM contacts WHERE channel_id = $1 AND external_id = ${p(i)}`;
+  return { sql: [byPhone(0), byPhone(1), byJid(2), byJid(3)].join(' UNION ALL '), params: [a, b, `${a}@s.whatsapp.net`, `${b}@s.whatsapp.net`] };
+}
 
 /**
  * El contacto de un teléfono en el canal: por el número guardado o por su identificador de WhatsApp, en cualquiera de
  * sus formas (México: 52… y 521…). Así encuentra también a quien escribió con un identificador @lid.
  */
 export async function findContactByPhone(channel: Pick<Channel, 'id' | 'account_id'>, digits: string) {
-  const v = phoneVariants(digits);
+  const m = phoneMatchIds(digits, 3);
   return queryOne<Contact>(
-    `SELECT * FROM contacts WHERE channel_id = $1
-        AND ((account_id = $2 AND phone <> '' AND regexp_replace(phone, '[^0-9]', '', 'g') = ANY($3)) OR external_id = ANY($4))
-      ORDER BY updated_at DESC LIMIT 1`,
-    [channel.id, channel.account_id, v, waJids(v)],
+    `SELECT * FROM contacts WHERE channel_id = $1 AND id IN (${m.sql}) ORDER BY updated_at DESC LIMIT 1`,
+    [channel.id, channel.account_id, ...m.params],
   );
 }
 
@@ -616,16 +627,16 @@ export async function findContactByPhone(channel: Pick<Channel, 'id' | 'account_
 export async function claimPhoneContact(channel: Pick<Channel, 'id' | 'account_id'>, externalId: string, phone: string): Promise<boolean> {
   const digits = phone.replace(/\D/g, '');
   if (digits.length < 8) return false;
-  const v = phoneVariants(digits);
+  const m = phoneMatchIds(digits, 5);
   try {
     const r = await queryOne<{ id: string }>(
-      `UPDATE contacts SET external_id = $3, phone = $5, updated_at = now() WHERE id = (
+      `UPDATE contacts SET external_id = $3, phone = $4, updated_at = now() WHERE id = (
          SELECT c.id FROM contacts c WHERE c.channel_id = $1 AND c.account_id = $2 AND c.external_id <> $3 AND c.external_id LIKE '%@s.whatsapp.net'
-            AND ((c.phone <> '' AND regexp_replace(c.phone, '[^0-9]', '', 'g') = ANY($4)) OR c.external_id = ANY($6))
+            AND c.id IN (${m.sql})
             AND NOT EXISTS (SELECT 1 FROM conversations cv JOIN messages m ON m.conversation_id = cv.id WHERE cv.contact_id = c.id AND m.direction = 'in')
           ORDER BY c.updated_at DESC LIMIT 1)
        RETURNING id`,
-      [channel.id, channel.account_id, externalId, v, digits, waJids(v)],
+      [channel.id, channel.account_id, externalId, digits, ...m.params],
     );
     return !!r;
   } catch (e: any) {

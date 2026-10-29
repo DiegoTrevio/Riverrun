@@ -48,7 +48,9 @@ function connectCard({ channels, fields, keys }) {
   const whatsapp = channels.filter((c) => c.type === 'whatsapp' && c.active);
   // Con un solo WhatsApp no hace falta channel_id; con varios, los ejemplos usan el primero.
   const channelPart = whatsapp.length > 1 ? `"channel_id": "${whatsapp[0].id}", ` : '';
-  const sample = fields[0] ? `"${fields[0].key}": ${fields[0].type === 'number' ? '1' : fields[0].type === 'date' ? '"1990-11-03"' : fields[0].type === 'option' ? `"${fields[0].options[0] ?? ''}"` : '"…"'}` : '"correo": "ana@ejemplo.com"';
+  // Un valor que la API acepta para el primer dato definido (copiado tal cual, funciona).
+  const SAMPLE_VALUE = { number: 1, date: '1990-11-03', email: 'ana@ejemplo.com', phone: '+52 55 1234 5678', text: 'Ejemplo' };
+  const sample = fields[0] ? `${JSON.stringify(fields[0].key)}: ${JSON.stringify(fields[0].type === 'option' ? fields[0].options[0] ?? '' : SAMPLE_VALUE[fields[0].type] ?? 'Ejemplo')}`.replaceAll("'", "\\u0027") : '"correo": "ana@ejemplo.com"';
   const post = (path, body, idem) => `curl -X POST ${base}${path} \\\n  -H "Authorization: Bearer TU_LLAVE" \\\n  -H "Content-Type: application/json" \\\n${idem ? `  -H "Idempotency-Key: ${idem}" \\\n` : ''}  -d '${body}'`;
   const examples = [
     ['Dar de alta (o actualizar) un cliente', post('/contacts', `{ ${channelPart}"phone": "+52 55 1234 5678", "name": "Ana López", "data": { ${sample} }, "tags": ["crm"] }`, 'cliente-1024'), 'El teléfono puede ir en cualquier formato. Si ya existe, se actualiza (no se duplica).'],

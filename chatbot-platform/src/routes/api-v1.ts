@@ -141,8 +141,11 @@ async function cleanData(accountId: string, data: z.infer<typeof DataPatch>) {
 /* ------------------------------ Reintentos seguros (Idempotency-Key) ------------------------------ */
 
 const IDEMPOTENCY_HOURS = 24;
-/** Una petición «en curso» de hace más que esto se dio por perdida (el proceso se reinició): se puede repetir. */
-const IDEMPOTENCY_STALE_MS = 2 * 60_000;
+/**
+ * Una petición «en curso» de hace más que esto se dio por perdida (el proceso se reinició): se puede repetir. Con margen
+ * de sobra sobre la más lenta (un envío que espera al canal), para no repetir una que sigue corriendo.
+ */
+const IDEMPOTENCY_STALE_MS = 10 * 60_000;
 
 const contactOut = (c: any) => ({
   id: c.id, name: c.name || null, profile_name: c.push_name || null, phone: c.phone || null,
@@ -275,14 +278,17 @@ export async function apiV1Routes(app: FastifyInstance, service: ChatService) {
         const q = input(z.object({ limit: Limit, cursor: z.string().optional(), updated_since: Iso.optional(), tag: z.string().max(60).optional(), phone: z.string().max(30).optional(), channel_id: z.string().uuid().optional() }), req.query);
         const cur = dec(q.cursor);
         // El teléfono en cualquier formato y en cualquiera de sus formas (México: 52… y 521…).
-        const phones = q.phone ? phoneVariants(normalizePhone(q.phone, (await astore.getSettings(account(req))).timezone) ?? q.phone.replace(/\D/g, '')) : null;
+        const v = q.phone ? phoneVariants(normalizePhone(q.phone, (await astore.getSettings(account(req))).timezone) ?? q.phone.replace(/\D/g, '')) : null;
+        // Una igualdad por forma: así usa el índice por teléfono (con `= ANY` revisaría cada contacto de la cuenta).
+        const byPhone = (p: string) => `SELECT id FROM contacts WHERE account_id = $1 AND phone <> '' AND regexp_replace(phone, '[^0-9]', '', 'g') = ${p}`;
         const rows = await query<any>(
           `${CONTACT_SELECT} WHERE c.account_id = $1 AND ch.type <> 'playground'
              AND ($2::timestamptz IS NULL OR c.updated_at >= $2) AND ($3::text IS NULL OR c.tags @> to_jsonb($3::text))
-             AND ($4::text[] IS NULL OR (c.phone <> '' AND regexp_replace(c.phone, '[^0-9]', '', 'g') = ANY($4))) AND ($5::uuid IS NULL OR c.channel_id = $5)
-             AND ($6::timestamptz IS NULL OR (c.updated_at, c.id) > ($6::timestamptz, $7::uuid))
+             AND ($4::uuid IS NULL OR c.channel_id = $4)
+             AND ($5::timestamptz IS NULL OR (c.updated_at, c.id) > ($5::timestamptz, $6::uuid))
+             ${v ? `AND c.id IN (${byPhone('$7')} UNION ALL ${byPhone('$8')})` : ''}
            ORDER BY c.updated_at, c.id LIMIT ${q.limit + 1}`,
-          [account(req), q.updated_since ?? null, q.tag ?? null, phones, q.channel_id ?? null, cur?.at ?? null, cur?.id ?? null],
+          [account(req), q.updated_since ?? null, q.tag ?? null, q.channel_id ?? null, cur?.at ?? null, cur?.id ?? null, ...(v ? [v[0], v[1] ?? v[0]] : [])],
         );
         const page = rows.slice(0, q.limit);
         // El cursor lleva el texto exacto de PostgreSQL (microsegundos).
@@ -507,9 +513,9 @@ export async function apiV1Routes(app: FastifyInstance, service: ChatService) {
       v1.get('/appointments', async (req: any) => {
         const q = input(z.object({ from: Iso.optional(), to: Iso.optional(), status: z.string().max(20).optional(), limit: Limit }), req.query);
         const rows = await query<any>(
-          `SELECT * FROM appointments
-            WHERE account_id = $1 AND source <> 'simulador' AND ($2::timestamptz IS NULL OR starts_at >= $2) AND ($3::timestamptz IS NULL OR starts_at < $3) AND ($4::text IS NULL OR status = $4)
-            ORDER BY starts_at LIMIT ${q.limit}`,
+          `SELECT a.*, coalesce(nullif(u.name, ''), split_part(u.email, '@', 1)) AS assigned_user_name FROM appointments a LEFT JOIN users u ON u.id = a.assigned_user_id
+            WHERE a.account_id = $1 AND a.source <> 'simulador' AND ($2::timestamptz IS NULL OR a.starts_at >= $2) AND ($3::timestamptz IS NULL OR a.starts_at < $3) AND ($4::text IS NULL OR a.status = $4)
+            ORDER BY a.starts_at LIMIT ${q.limit}`,
           [account(req), q.from ?? null, q.to ?? null, q.status ?? null],
         );
         // La misma forma que en los webhooks de citas.

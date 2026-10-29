@@ -18,7 +18,7 @@ const server = http.createServer((req, res) => {
     const raw = Buffer.concat(chunks).toString();
     let body: any = null; try { body = JSON.parse(raw); } catch { /* */ }
     received.push({ path: req.url!, headers: req.headers, raw, body });
-    res.writeHead(200); res.end('ok');
+    res.writeHead(req.url!.startsWith('/falla') ? 500 : 200); res.end('ok');
   });
 });
 await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
@@ -116,6 +116,9 @@ t('«Enviar prueba» de un evento manda un ejemplo real marcado test; la entrega
   assert.equal(sample.test, true);
   assert.ok(sample.data.receivable.id && sample.data.contact.id, 'con el cobro y el contacto reales de la cuenta');
   assert.equal((await h.authed('POST', `/api/webhook-endpoints/${ep.id}/test`, { event: 'nada' })).statusCode, 400);
+  // Nombres heredados de los objetos de JavaScript no son eventos.
+  assert.equal((await h.authed('POST', `/api/webhook-endpoints/${ep.id}/test`, { event: 'toString' })).statusCode, 400);
+  assert.equal((await h.authed('POST', '/api/webhook-endpoints', { account_id: h.accountId, url: hook('/x'), events: ['constructor'] })).statusCode, 400);
   // La prueba de conexión no lleva datos de clientes reales.
   assert.equal((await h.authed('POST', `/api/webhook-endpoints/${ep.id}/test`, {})).json().ok, true);
   const ping = at('/zap', 'ping').at(-1)!.body;
@@ -139,6 +142,23 @@ t('«Enviar prueba» de un evento manda un ejemplo real marcado test; la entrega
   // Al borrar los datos del cliente se borran sus eventos guardados.
   assert.equal((await h.authed('DELETE', `/api/contacts/${c.id}`)).statusCode, 200);
   assert.equal((await pool.query(`SELECT count(*)::int n FROM webhook_events WHERE body->'data'->'contact'->>'id' = $1`, [c.id])).rows[0].n, 0);
+});
+
+t('un reenvío manual conserva sus propios reintentos, sin pisar los de la entrega original', async () => {
+  const ep = await mkEndpoint({ url: hook('/falla-cadena'), events: ['contact.tag_added'] });
+  const c = (await call('POST', '/api/v1/contacts', { phone: '5215581100005' })).json();
+  await call('PUT', `/api/v1/contacts/${c.id}`, { add_tags: ['cadena'] });
+  // Solo lo que ya toca: el primer intento falla y deja pendiente el segundo (en un minuto).
+  await waitFor(async () => { await h.service.automator.settleAll(); await h.service.scheduler.runDue(); return at('/falla-cadena').length >= 1; }, 8000);
+  const pending = async () => (await pool.query(`SELECT dedupe_key FROM jobs WHERE type = 'webhook_delivery' AND status = 'pending' AND payload->>'endpoint_id' = $1`, [ep.id])).rows.map((r) => r.dedupe_key);
+  assert.equal((await pending()).length, 1);
+  const log = (await h.authed('GET', `/api/webhook-endpoints/${ep.id}/deliveries`)).json();
+  assert.equal((await h.authed('POST', `/api/webhook-endpoints/${ep.id}/deliveries/${log[0].id}/redeliver`)).statusCode, 200);
+  await h.service.scheduler.runDue(); // el reenvío también falla y programa su propio segundo intento
+  assert.equal(at('/falla-cadena').length, 2);
+  const keys = await pending();
+  assert.equal(keys.length, 2, `dos cadenas de reintentos: ${keys.join(', ')}`);
+  assert.equal(new Set(keys).size, 2);
 });
 
 t('el secreto de webhooks cambia solo, sin tocar el enlace del calendario', async () => {

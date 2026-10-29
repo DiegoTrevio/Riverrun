@@ -164,8 +164,8 @@ const targetsFor = async (accountId: string, type: PublicEvent, endpointId?: str
  * Programa la entrega del evento a cada endpoint suscrito de la cuenta. Con `endpointId` va solo a ese (si está activo),
  * aunque no esté suscrito al evento: se eligió a propósito.
  */
-export async function dispatchEvent(accountId: string, type: PublicEvent, data: Record<string, unknown>, o: { endpointId?: string; origin?: EventOrigin } = {}) {
-  const targets = await targetsFor(accountId, type, o.endpointId);
+export async function dispatchEvent(accountId: string, type: PublicEvent, data: Record<string, unknown>, o: { endpointId?: string; origin?: EventOrigin; targets?: Endpoint[] } = {}) {
+  const targets = o.targets ?? (await targetsFor(accountId, type, o.endpointId));
   if (!targets.length) return 0;
   const eventId = crypto.randomUUID();
   const body = eventBody(eventId, type, accountId, data, { origin: o.origin });
@@ -183,10 +183,12 @@ export async function dispatchEvent(accountId: string, type: PublicEvent, data: 
  */
 export async function dispatchRecordEvent(accountId: string, type: PublicEvent, record: Record<string, unknown>, ref: { conversationId?: string | null; contactId?: string | null }, o: { origin?: EventOrigin } = {}) {
   try {
-    if (!(await targetsFor(accountId, type)).length) return 0;
+    // Antes de leer el contacto: ¿alguien recibe este evento?
+    const targets = await targetsFor(accountId, type);
+    if (!targets.length) return 0;
     const ctx = await contextOf(ref);
     if (ctx.playground) return 0;
-    return await dispatchEvent(accountId, type, { ...record, contact: ctx.contact, conversation: ctx.conversation }, o);
+    return await dispatchEvent(accountId, type, { ...record, contact: ctx.contact, conversation: ctx.conversation }, { ...o, targets });
   } catch (e: any) {
     await logEvent({ level: 'error', source: 'system', message: `Webhooks de eventos (${type}): ${e?.message ?? e}`, accountId });
     return 0;
@@ -225,7 +227,7 @@ export async function deliverOnce(ep: Endpoint, eventId: string, event: string, 
  * Tarea programada: una entrega. Si falla, programa el siguiente intento; tras el último cuenta un fallo del endpoint.
  * Las tareas de antes traen el cuerpo y su intento en la tarea (`body`, el número de intento del planificador).
  */
-export async function deliver(payload: { endpoint_id: string; event_id: string; event: string; body?: unknown; attempt?: number }, jobAttempt = 1) {
+export async function deliver(payload: { endpoint_id: string; event_id: string; event: string; body?: unknown; attempt?: number; chain?: string }, jobAttempt = 1) {
   const ep = await queryOne<Endpoint>(`SELECT * FROM webhook_endpoints WHERE id = $1`, [payload.endpoint_id]);
   if (!ep || !ep.active) return; // se borró o se pausó mientras esperaba
   const body = payload.body ?? (await queryOne<{ body: unknown }>(`SELECT body FROM webhook_events WHERE id = $1`, [payload.event_id]))?.body;
@@ -237,8 +239,10 @@ export async function deliver(payload: { endpoint_id: string; event_id: string; 
   // Las tareas de antes las reintenta el planificador (3 intentos), como cuando se programaron.
   if (legacy && attempt < 3) throw new Error(r.error);
   if (!legacy && attempt < MAX_ATTEMPTS) {
-    // Con dedupe_key: si el proceso se reinicia justo aquí y la tarea corre otra vez, no quedan dos reintentos.
-    await scheduleJob({ account_id: ep.account_id, type: 'webhook_delivery', payload: { endpoint_id: ep.id, event_id: payload.event_id, event: payload.event, attempt: attempt + 1 }, run_at: new Date(Date.now() + RETRY_MINUTES[attempt - 1] * 60_000), dedupe_key: `whdel:${ep.id}:${payload.event_id}:${attempt + 1}` });
+    // Con dedupe_key: si el proceso se reinicia justo aquí y la tarea corre otra vez, no quedan dos reintentos. `chain`
+    // separa cada reenvío manual de la cadena original: cada uno conserva sus propios intentos.
+    const chain = payload.chain ?? 'o';
+    await scheduleJob({ account_id: ep.account_id, type: 'webhook_delivery', payload: { endpoint_id: ep.id, event_id: payload.event_id, event: payload.event, attempt: attempt + 1, ...(payload.chain ? { chain } : {}) }, run_at: new Date(Date.now() + RETRY_MINUTES[attempt - 1] * 60_000), dedupe_key: `whdel:${ep.id}:${payload.event_id}:${chain}:${attempt + 1}` });
     return;
   }
   // Cada evento cuenta una vez (tras agotar sus intentos), no una por intento.
@@ -252,7 +256,7 @@ export async function deliver(payload: { endpoint_id: string; event_id: string; 
 export async function redeliver(ep: Endpoint, eventId: string) {
   const ev = await queryOne<{ type: string }>(`SELECT type FROM webhook_events WHERE id = $1 AND account_id = $2`, [eventId, ep.account_id]);
   if (!ev) return null;
-  await scheduleJob({ account_id: ep.account_id, type: 'webhook_delivery', payload: { endpoint_id: ep.id, event_id: eventId, event: ev.type, attempt: 1 }, run_at: new Date() });
+  await scheduleJob({ account_id: ep.account_id, type: 'webhook_delivery', payload: { endpoint_id: ep.id, event_id: eventId, event: ev.type, attempt: 1, chain: crypto.randomUUID().slice(0, 8) }, run_at: new Date() });
   return ev.type;
 }
 

@@ -343,7 +343,8 @@ export class Receivables {
     await query(`UPDATE receivables SET reminders_sent = reminders_sent + 1, last_reminded_at = $2, conversation_id = COALESCE(conversation_id, $3), updated_at = now() WHERE id = $1`, [r.id, now, conversationId]);
     if (kind === 'due' && !o.manual) {
       this.chat.automator.emit({ type: 'payment_due', conversationId, payment: vars });
-      await paymentEvent('payment.due', r, { conversationId });
+      // El cobro como quedó (recordatorios enviados, conversación), igual que lo devolvería GET /receivables.
+      await paymentEvent('payment.due', (await getReceivable(r.id)) ?? r, { conversationId });
     }
     return { sent: true, conversationId };
   }
