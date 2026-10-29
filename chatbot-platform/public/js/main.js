@@ -54,8 +54,8 @@ export async function render() {
   if (!current()) return;
   await loadWhatsappStatus();
   if (!current()) return;
-  // Los agentes solo atienden conversaciones.
-  if (!isAdmin() && !['conversations', 'conversation', 'contacts', 'contact', 'password', 'agenda', 'notifications', 'pipeline', 'comentarios'].includes(parts[0])) {
+  // Los agentes solo atienden conversaciones (y lo de sus clientes: contactos, agenda, oportunidades y cobros).
+  if (!isAdmin() && !['conversations', 'conversation', 'contacts', 'contact', 'password', 'agenda', 'notifications', 'pipeline', 'comentarios', 'cobros'].includes(parts[0])) {
     location.hash = '#/conversations';
     return;
   }
