@@ -54,7 +54,7 @@ export function tasksCard(data, c, ct, reload, draft) {
     ].filter(Boolean).join(' · ');
     return h('div', { class: `task-row${t.status === 'hecha' ? ' done' : ''}` },
       t.kind === 'pendiente'
-        ? h('input', { type: 'checkbox', checked: t.status === 'hecha', title: 'Marcar como hecho', 'aria-label': `Hecho: ${t.body.slice(0, 80)}`, onchange: async (e) => { if (await run(() => api('PATCH', `/api/tasks/${t.id}`, { status: e.target.checked ? 'hecha' : 'abierta' }))) reload(); } })
+        ? h('input', { type: 'checkbox', checked: t.status === 'hecha', title: 'Marcar como hecho', 'aria-label': `Hecho: ${t.body.slice(0, 80)}`, onchange: async (e) => { const box = e.target; if (await run(() => api('PATCH', `/api/tasks/${t.id}`, { status: box.checked ? 'hecha' : 'abierta' }))) reload(); else box.checked = !box.checked; } })
         : h('span', { class: 'badge' }, 'nota'),
       h('div', { style: 'flex:1' }, h('div', { class: 'task-text' }, t.body), meta ? h('div', { class: 'small muted' }, meta) : null),
       h('button', { class: 'small', title: 'Borrar', 'aria-label': `Borrar ${t.kind === 'pendiente' ? 'pendiente' : 'nota'}: ${t.body.slice(0, 80)}`,
@@ -555,6 +555,8 @@ export async function viewConversation(root, id, opts = {}) {
   };
 
   const drawSide = () => {
+    // Lo que se abrió o cerró en el panel queda igual al volver a dibujarlo (el sondeo lo hace cada 5 s).
+    const toggled = new Map([...side.querySelectorAll('details')].map((d) => [d.querySelector('summary')?.textContent, d.open]));
     const { conversation: c, contact: ct } = data;
     sideVersion = c.data_version;
     const m = { name: ct.name, data: { ...ct.data }, notes: [...(ct.notes || [])], tags: [...(ct.tags || [])], opted_out: !!ct.opted_out, consent: !!ct.consent_at };
@@ -658,6 +660,7 @@ export async function viewConversation(root, id, opts = {}) {
       isAdmin() ? h('div', { class: 'card' }, h('a', { href: `#/logs?conversation_id=${id}` }, 'Ver registros de esta conversación →')) : null,
       h('button', { class: 'small', onclick: () => { chat.scrollIntoView({ block: 'start' }); chat.focus(); } }, 'Volver a los mensajes'),
     );
+    side.querySelectorAll('details').forEach((d) => { const open = toggled.get(d.querySelector('summary')?.textContent); if (open !== undefined) d.open = open; });
   };
 
   const sendButton = h('button', { class: 'primary', onclick: send }, 'Enviar');

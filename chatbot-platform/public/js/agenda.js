@@ -143,7 +143,7 @@ function calendarBox(p, mine) {
       for (const provider of ['google', 'outlook']) if (mine.available?.[provider]) actions.push(h('button', { onclick: () => connect(provider) }, `Conectar mi ${PROVIDER[provider]}`));
       if (!actions.length) actions.push(h('span', { class: 'small muted' }, 'Esta instalación aún no tiene Google ni Outlook configurados.'));
     } else {
-      actions.push(h('label', { class: 'check', style: 'margin:0' }, h('input', { type: 'checkbox', checked: c.block_busy, onchange: (e) => run(() => api('PUT', '/api/me/calendar', { block_busy: e.target.checked }), 'Guardado') }), 'Mis eventos ocupados bloquean mis horarios'));
+      actions.push(h('label', { class: 'check', style: 'margin:0' }, h('input', { type: 'checkbox', checked: c.block_busy, onchange: async (e) => { const box = e.target; if (!(await run(() => api('PUT', '/api/me/calendar', { block_busy: box.checked }), 'Guardado'))) box.checked = !box.checked; } }), 'Mis eventos ocupados bloquean mis horarios'));
       actions.push(h('button', { class: 'small danger', onclick: async () => { if (await confirmAction('¿Desconectar tu calendario? Las citas ya copiadas se quedan en él.')) { if (await run(() => api('DELETE', '/api/me/calendar'), 'Desconectado')) render(); } } }, 'Desconectar'));
     }
   } else if (c.connected && isAdmin()) {
