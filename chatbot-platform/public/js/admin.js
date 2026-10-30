@@ -2,7 +2,6 @@ import { api, area, check, field, fill, fmtDate, h, run, select, settingsSection
 
 /** El título de un aviso sin el emoji con que llega también por WhatsApp (en el panel lo dice el texto). */
 const plainTitle = (t) => String(t || '').replace(/^[\p{Extended_Pictographic}️‍\s]+/u, '');
-import { accountPicker } from './dashboard.js';
 import { render } from './main.js';
 import { mfaSecurityCard } from './mfa.js';
 import { ROLE_LABEL, acct, isAdmin, isOwner, isSuper, ownerOnlyText, withAcct } from './session.js';
@@ -58,6 +57,9 @@ async function editMemberAlerts(u) {
 /* ------------------------------ Usuarios ------------------------------ */
 
 /** Invitar por correo: la persona elige su contraseña (o entra con Google) y se une sola a la cuenta. */
+/** El correo de la invitación no salió (p. ej. sin SMTP): quedó guardada y se puede reenviar. */
+const MAIL_NOT_SENT = 'La invitación quedó guardada, pero no se pudo mandar el correo: revisa la configuración de correo (SMTP).';
+
 async function inviteCard() {
   // El superadmin invita a la cuenta que tenga elegida.
   if (isSuper() && !acct()) return null;
@@ -65,7 +67,10 @@ async function inviteCard() {
   const inv = { email: '', name: '', role: 'agent' };
   const send = async (e) => {
     e.preventDefault();
-    if (await run(() => api('POST', withAcct('/api/invitations'), inv), `Invitación enviada a ${inv.email}`)) render();
+    const r = await run(() => api('POST', withAcct('/api/invitations'), inv));
+    if (!r) return;
+    toast(r.mail_sent === false ? MAIL_NOT_SENT : `Invitación enviada a ${inv.email}`, r.mail_sent === false);
+    render();
   };
   return h('section', { class: 'card', 'aria-labelledby': 'invite-title' },
     h('h2', { id: 'invite-title', style: 'margin-top:0' }, 'Invitar a tu equipo'),
@@ -82,33 +87,27 @@ async function inviteCard() {
       h('ul', { class: 'plain' }, pending.map((p) => h('li', { class: 'row', style: 'justify-content:space-between;flex-wrap:wrap;gap:8px' },
         h('span', {}, h('strong', {}, p.email), ` · ${ROLE_LABEL[p.role]} · `, p.expired ? h('span', { class: 'badge orange' }, 'vencida') : h('span', { class: 'muted small' }, `vence ${fmtDate(p.expires_at)}`)),
         h('span', { class: 'row' },
-          h('button', { class: 'small', 'aria-label': `Reenviar invitación a ${p.email}`, onclick: async () => { if (await run(() => api('POST', withAcct(`/api/invitations/${p.id}/resend`)), 'Invitación reenviada')) render(); } }, 'Reenviar'),
+          h('button', { class: 'small', 'aria-label': `Reenviar invitación a ${p.email}`, onclick: async () => { const r = await run(() => api('POST', withAcct(`/api/invitations/${p.id}/resend`))); if (r) { toast(r.mail_sent === false ? MAIL_NOT_SENT : 'Invitación reenviada', r.mail_sent === false); render(); } } }, 'Reenviar'),
           h('button', { class: 'small danger', 'aria-label': `Cancelar invitación a ${p.email}`, onclick: async () => { if (await confirmAction(`¿Cancelar la invitación a ${p.email}?`) && (await run(() => api('DELETE', withAcct(`/api/invitations/${p.id}`)), 'Invitación cancelada'))) render(); } }, 'Cancelar'))))),
     ] : null);
 }
 
+/** Lo que se va con la baja de alguien (sus llaves, webhooks e invitaciones abiertas), o '' si no hay nada. */
+async function goneWith(u) {
+  const s = await api('GET', `/api/users/${u.id}/offboarding`).catch(() => null);
+  if (!s || !(s.api_keys || s.webhooks || s.invitations)) return '';
+  return `Se revocan ${s.api_keys} llaves de API y ${s.invitations} invitaciones, y se pausan ${s.webhooks} webhooks que creó.`;
+}
+
 export async function viewUsers(root) {
   const [users, invite] = await Promise.all([api('GET', `/api/users${acct()}`), inviteCard()]);
-  const n = { name: '', email: '', password: '', role: 'agent', phone: '', notify_whatsapp: false };
-  const roles = [['agent', 'Operador · conversaciones y agenda de su perfil'], ...(isOwner() ? [['admin', 'Administrador · gestiona su perfil completo']] : [])];
-  if (isSuper()) roles.push(['superadmin', 'Maestro · acceso a todos los perfiles']);
-  const assignedProfile = h('div', {}, accountPicker(n));
   const me = state.me.user;
   root.append(
     h('h1', {}, 'Usuarios y permisos'),
     h('p', { class: 'muted' }, 'Cada usuario solo gestiona su perfil de negocio; el maestro tiene acceso a todos.'),
     invite,
-    h('details', { class: 'card', open: !invite },
-      h('summary', {}, h('strong', {}, invite ? 'Crear usuario con contraseña inicial' : 'Nuevo usuario')),
-      h('div', { class: 'grid' },
-        field('Nombre', text(n, 'name')),
-        field('Correo', text(n, 'email', { type: 'email', autocomplete: 'off', placeholder: 'persona@empresa.com' })),
-        field('Contraseña inicial', text(n, 'password', { type: 'password', autocomplete: 'new-password', minlength: 12 }), 'Mínimo 12 caracteres; una frase de 3 o 4 palabras funciona bien. Pídele que la cambie al entrar.'),
-        field('Rol', select(n, 'role', roles, () => { assignedProfile.hidden = n.role === 'superadmin'; })),
-        field('WhatsApp para alertas (opcional)', text(n, 'phone', { placeholder: '5215512345678' }))),
-      check(n, 'notify_whatsapp', 'Enviarle las alertas también por WhatsApp'),
-      assignedProfile,
-      h('button', { class: 'primary', onclick: async () => { if (await run(() => api('POST', '/api/users', n.role === 'superadmin' ? { ...n, account_id: null } : n), 'Usuario creado')) render(); } }, 'Crear usuario')),
+    // Al equipo se le invita: cada persona elige su contraseña al aceptar. El maestro invita desde el perfil que elige.
+    invite ? null : h('p', { class: 'banner', role: 'status' }, 'Elige un perfil arriba para invitar a su equipo.'),
     h('div', { class: 'card' },
       h('table', {},
         h('thead', {}, h('tr', {}, h('th', {}, 'Usuario'), h('th', {}, 'Rol'), isSuper() ? h('th', {}, 'Perfil asignado') : null, h('th', {}, 'Último acceso'), h('th', {}, 'Acciones'))),
@@ -132,18 +131,26 @@ export async function viewUsers(root) {
               } }, 'Hacer dueño') : null,
               isSuper() && u.role !== 'superadmin' && !u.is_owner ? h('button', { class: 'small', onclick: async () => { if (await confirmAction(`¿Dar a ${u.email} acceso maestro a TODOS los perfiles?`)) { if (!(await run(() => api('PUT', `/api/users/${u.id}`, { role: 'superadmin' }), 'Acceso maestro asignado'))) return; render(); } } }, 'Dar acceso maestro') : null,
               u.role !== 'superadmin' && u.active ? h('button', { class: 'small', title: 'Si no está disponible se salta en el reparto por turnos', onclick: async () => { if (await run(() => api('PUT', `/api/users/${u.id}`, { available: u.available === false }), u.available === false ? 'Disponible' : 'Fuera de turno')) render(); } }, u.available === false ? 'Marcar disponible' : 'Fuera de turno') : null,
-              u.is_owner ? null : h('button', { class: 'small', onclick: async () => { if (await run(() => api('PUT', `/api/users/${u.id}`, { active: !u.active }), u.active ? 'Desactivado' : 'Activado')) render(); } }, u.active ? 'Desactivar' : 'Activar'),
+              u.is_owner ? null : h('button', { class: 'small', onclick: async () => {
+                // Con la baja se van sus llaves, webhooks e invitaciones: se dice antes cuáles.
+                const gone = u.active ? await goneWith(u) : '';
+                if (gone && !(await confirmAction(`¿Desactivar a ${u.name || u.email}? ${gone}`, 'Desactivar'))) return;
+                if (await run(() => api('PUT', `/api/users/${u.id}`, { active: !u.active }), u.active ? 'Desactivado' : 'Activado')) render();
+              } }, u.active ? 'Desactivar' : 'Activar'),
               u.mfa_enabled ? h('button', { class: 'small', 'aria-label': `Restablecer 2FA de ${u.email}`, onclick: async () => {
                 if (!(await dialog(`Restablecer 2FA de ${u.name || u.email}`, h('p', {}, 'Su verificación en dos pasos se borra, se cierran sus sesiones y la configura otra vez al entrar.'), 'Restablecer 2FA'))) return;
                 if (await run(() => api('POST', `/api/users/${u.id}/2fa/reset`), 'Verificación en dos pasos restablecida')) render();
               } }, 'Restablecer 2FA') : null,
-              h('button', { class: 'small', onclick: async () => { const pw = await ask('Nueva contraseña (mínimo 12 caracteres)', '', { type: 'password', minlength: 12, required: true }); if (pw) if (!(await run(() => api('PUT', `/api/users/${u.id}`, { password: pw }), 'Contraseña actualizada'))) return; } }, 'Restablecer contraseña'),
               h('button', { class: 'small', onclick: async () => {
                 const phone = await ask('WhatsApp para alertas (con lada; vacío para quitar)', u.phone || '');
                 if (phone !== null && (await run(() => api('PUT', `/api/users/${u.id}`, { phone, notify_whatsapp: !!phone.replace(/\D/g, '') }), 'Actualizado'))) render();
               } }, 'Alertas WhatsApp'),
               u.role !== 'superadmin' ? h('button', { class: 'small', 'aria-label': `Avisos de ${u.email}`, onclick: () => editMemberAlerts(u) }, 'Avisos') : null,
-              u.is_owner ? null : h('button', { class: 'small danger', onclick: async () => { if (await confirmAction(`¿Eliminar a ${u.email}?`)) { if (!(await run(() => api('DELETE', `/api/users/${u.id}`), 'Eliminado'))) return; render(); } } }, 'Eliminar'))));
+              u.is_owner ? null : h('button', { class: 'small danger', onclick: async () => {
+                const gone = await goneWith(u);
+                if (!(await confirmAction(gone ? `¿Eliminar a ${u.email}? ${gone}` : `¿Eliminar a ${u.email}?`))) return;
+                if (await run(() => api('DELETE', `/api/users/${u.id}`), 'Eliminado')) render();
+              } }, 'Eliminar'))));
         })))),
   );
 }
@@ -153,23 +160,22 @@ export async function viewUsers(root) {
 export async function viewAccounts(root) {
   const accounts = await api('GET', '/api/accounts');
   state.accounts = accounts;
-  const n = { name: '', withAdmin: true, admin: { name: '', email: '', password: '' } };
-  const adminBox = h('div', {},
+  const n = { name: '', withOwner: true, owner: { name: '', email: '' } };
+  const ownerBox = h('div', {},
     h('div', { class: 'grid' },
-      field('Nombre del administrador', text(n.admin, 'name')),
-      field('Correo', text(n.admin, 'email', { placeholder: 'dueño@cliente.com' })),
-      field('Contraseña inicial', text(n.admin, 'password', { type: 'password' }), 'Mínimo 12 caracteres; una frase de 3 o 4 palabras funciona bien.')));
+      field('Nombre del dueño', text(n.owner, 'name')),
+      field('Correo', text(n.owner, 'email', { type: 'email', placeholder: 'dueño@cliente.com' }), 'Le llega una invitación: elige su propia contraseña y queda como dueño de la cuenta.')));
   root.append(
     h('h1', {}, 'Perfiles de negocio'),
     h('div', { class: 'card' },
       h('p', { class: 'muted', style: 'margin-top:0' }, 'Cada perfil es una subcuenta con sus propios usuarios, asistentes, canales, conversaciones y agenda. El maestro puede abrirlos todos.'),
       h('h2', {}, 'Nuevo perfil'),
       field('Nombre del cliente', text(n, 'name', { placeholder: 'Hotel Las Palmas' })),
-      h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: true, onchange: (e) => { n.withAdmin = e.target.checked; adminBox.hidden = !n.withAdmin; } }), 'Crear también su primer administrador'),
-      adminBox,
+      h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: true, onchange: (e) => { n.withOwner = e.target.checked; ownerBox.hidden = !n.withOwner; } }), 'Invitar a su dueño'),
+      ownerBox,
       h('button', { class: 'primary', onclick: async () => {
-        const body = { name: n.name, ...(n.withAdmin ? { admin: n.admin } : {}) };
-        const acc = await run(() => api('POST', '/api/accounts', body), 'Cuenta creada');
+        const body = { name: n.name, ...(n.withOwner ? { owner: n.owner } : {}) };
+        const acc = await run(() => api('POST', '/api/accounts', body), n.withOwner ? `Cuenta creada: invitamos a ${n.owner.email}` : 'Cuenta creada');
         if (acc) { state.accountId = acc.id; try { localStorage.setItem('cp-account', acc.id); } catch { /* */ } state.me = null; render(); }
       } }, 'Crear perfil')),
     h('div', { class: 'card' },
@@ -304,6 +310,14 @@ export async function viewPassword(root) {
       state.me.user.account_id ? check(me, 'available', 'Estoy disponible: recibir conversaciones asignadas por turnos (desmárcalo si estás fuera de turno)') : null,
       // Al guardar se vuelve a dibujar: «Mis avisos» habilita la columna de WhatsApp en cuanto hay número.
       h('div', { class: 'settings-actions' }, h('button', { onclick: async () => { const u = await run(() => api('PUT', '/api/me', me), 'Perfil guardado'); if (u) { state.me.user = { ...state.me.user, ...u }; render(); } } }, 'Guardar perfil'))),
+    settingsSection('Correo', 'Con él entras al panel y te llegan los avisos. El cambio se aplica al abrir el enlace que te mandamos al correo nuevo.',
+      h('p', {}, h('strong', {}, state.me.user.email)),
+      h('div', { class: 'settings-actions' }, h('button', { onclick: async () => {
+        const email = await ask('Correo nuevo', '', { type: 'email', required: true, autocomplete: 'email' });
+        if (!email) return;
+        const r = await run(() => api('PUT', '/api/me/email', { email }));
+        if (r) toast(`Te mandamos un enlace a ${r.pending}. El cambio se aplica al abrirlo.`);
+      } }, 'Cambiar correo'))),
     groups ? settingsSection('Mis avisos', 'Elige por dónde te llega cada aviso. Para recibirlos por WhatsApp, activa «Recibir las alertas del equipo por WhatsApp» arriba.',
       alertPrefsTable(groups, prefs, { noPhone: !(state.me.user.phone && state.me.user.notify_whatsapp) }),
       h('div', { class: 'settings-actions' }, h('button', { onclick: async () => { const u = await run(() => api('PUT', '/api/me', { alert_prefs: prefs }), 'Avisos guardados'); if (u) state.me.user = { ...state.me.user, ...u }; } }, 'Guardar avisos'))) : null,

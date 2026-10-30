@@ -19,10 +19,11 @@ export type Outcome = Control & {
   dialog?: string;
 };
 
-/** No se presionan en el recorrido (cierran la sesión con la que se audita); los cubre su prueba por área. */
+/** No se presionan en el recorrido (cierran la sesión o cambian al dueño de la cuenta con la que se audita); los cubre su prueba por área. */
 const SKIP: [RegExp, string][] = [
   [/^Cerrar sesión$/i, 'cierra la sesión de la auditoría'],
   [/cerrar (las |todas las )?(otras )?sesiones|cerrar las demás|cerrar sesión en todos|^Cerrar la sesión de /i, 'cierra la sesión de la auditoría (lo prueba el área global)'],
+  [/^Hacer dueño$/, 'transfiere la cuenta de la auditoría a otra persona (lo prueba el área equipo)'],
 ];
 const CANCEL = /^(Cancelar|Cerrar|No|Listo|Entendido|Volver)$/;
 /** Sin efecto y está bien: en la pantalla recién abierta no hay nada que hacer con ellos. */

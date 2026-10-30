@@ -53,7 +53,9 @@ try {
     const ctx = await browser.newContext({ viewport: { width: 390, height: 900 } });
     const g = await ctx.newPage();
     g.on('pageerror', (e) => errors.push(e.message));
-    await g.goto(`${base}/#/registro-google?token=${encodeURIComponent(googleSignupPass('gema@estudio.mx', 'Gema'))}`);
+    // El pase solo sirve en el navegador que entró con Google: su número va también en la cookie cp_gpass.
+    await ctx.addCookies([{ name: 'cp_gpass', value: 'navegador-de-gema', domain: new URL(base).hostname, path: '/api', httpOnly: true, sameSite: 'Strict' }]);
+    await g.goto(`${base}/#/registro-google/${encodeURIComponent(googleSignupPass({ email: 'gema@estudio.mx', name: 'Gema', sub: 'g-gema' }, 'navegador-de-gema'))}`);
     await g.getByRole('heading', { name: 'Termina tu registro' }).waitFor();
     await g.getByText('gema@estudio.mx').waitFor();
     await g.evaluate(axe);
@@ -261,7 +263,8 @@ try {
   await invite.getByLabel('Correo').fill('rita@estudio.mx');
   await invite.getByLabel('Nombre (opcional)').fill('Rita');
   await invite.getByRole('button', { name: 'Enviar invitación' }).click();
-  await page.getByText('Invitación enviada a rita@estudio.mx').waitFor();
+  // Sin SMTP en las pruebas: queda guardada y el panel avisa que el correo no salió (el buzón de pruebas sí lo tiene).
+  await page.getByText('La invitación quedó guardada, pero no se pudo mandar el correo').waitFor();
   // «Reenviar invitación» le manda el correo otra vez.
   const inviteMails = mailsTo('rita@estudio.mx');
   await invite.getByRole('button', { name: 'Reenviar invitación a rita@estudio.mx' }).click();
@@ -273,12 +276,13 @@ try {
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'Mi equipo sin desbordamiento a 390');
   const { outbox } = await import('../src/mailer.js');
   const inviteMail = [...outbox].reverse().find((m) => m.to === 'rita@estudio.mx')!;
-  const inviteLink = /(http\S+#\/invitacion\?token=\S+)/.exec(inviteMail.text)![1];
+  // El enlace va al dominio principal, con el token en la ruta del panel (no en la URL de la API).
+  const inviteLink = /(http\S+#\/invitacion\/\S+)/.exec(inviteMail.text)![1];
   {
     const ctx = await browser.newContext({ viewport: { width: 390, height: 900 } });
     const g = await ctx.newPage();
     g.on('pageerror', (e) => errors.push(e.message));
-    await g.goto(`${base}/#/invitacion?token=${new URL(inviteLink.replace('#/', '')).searchParams.get('token')}`);
+    await g.goto(`${base}/#/invitacion/${inviteLink.split('#/invitacion/')[1]}`);
     await g.getByRole('heading', { name: /^Únete a / }).waitFor();
     await g.getByText('rita@estudio.mx').waitFor();
     await g.evaluate(axe);

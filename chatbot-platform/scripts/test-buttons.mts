@@ -66,6 +66,8 @@ try {
     const next = logins.then(async () => {
       if (role === 'superadmin') await pool.query(`UPDATE users SET active = true WHERE email = $1`, [email]);
       else await pool.query(`UPDATE users SET role = $2, account_id = $3, active = true WHERE email = $1`, [email, role, h.accountId]);
+      // El administrador de la auditoría es el dueño de su cuenta (un recorrido pudo transferirla).
+      if (role === 'admin') await pool.query(`UPDATE accounts SET owner_user_id = (SELECT id FROM users WHERE email = $1) WHERE id = $2`, [email, h.accountId]);
       return h.loginAs(email, password);
     });
     logins = next.catch(() => undefined);
@@ -95,7 +97,7 @@ try {
   };
   // Sin sesión: entrar, registrarse, recuperar la contraseña, las páginas del servidor y la página para reservar.
   const booking = (await h.authed('POST', '/api/booking-links', { account_id: h.accountId, name: 'Agenda con nosotros' })).json();
-  const publico = ['login', 'registro', 'olvide', 'restablecer?token=auditoria', 'verificar?token=auditoria', 'invitacion?token=auditoria', 'registro-google?token=auditoria',
+  const publico = ['login', 'registro', 'olvide', 'restablecer?token=auditoria', 'verificar?token=auditoria', 'invitacion/auditoria', 'registro-google/auditoria', 'cambiar-correo/auditoria',
     '/precios', '/estado', '/contacto', '/privacidad', '/ayuda.html', new URL(booking.url).pathname];
   const only = process.env.BUTTONS_ONLY || '';
   // Primero el pase funcional por área (cada área prepara sus datos); después el recorrido, que borra al aceptar.
