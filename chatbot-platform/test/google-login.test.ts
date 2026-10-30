@@ -7,6 +7,7 @@ import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { createHarness, dbAvailable, pool } from './harness.js';
+const { config } = await import('../src/config.js');
 
 const ok = await dbAvailable();
 const t = (name: string, fn: () => Promise<void>) => test(name, { skip: !ok && 'PostgreSQL de pruebas no disponible' }, fn);
@@ -154,4 +155,31 @@ t('con el registro cerrado no crea cuentas nuevas, y el botón solo aparece en e
   const info = (host: string) => h.app.inject({ method: 'GET', url: '/api/signup/info', headers: { host } }).then((r) => r.json().google_login);
   assert.equal(await info(new URL(config.publicBaseUrl).host), true);
   assert.equal(await info('panel.otra-marca.com'), false);
+});
+
+t('con el captcha activo, terminar el registro con Google pide el captcha (entrar a una cuenta que existe, no)', async () => {
+  let valid = true;
+  const turnstile = http.createServer((req, res) => { req.resume(); req.on('end', () => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ success: valid })); }); });
+  await new Promise<void>((r) => turnstile.listen(0, '127.0.0.1', r));
+  const prev = { ...config.signup.turnstile };
+  Object.assign(config.signup.turnstile, { siteKey: 'sitio', secretKey: 'secreto', verifyUrl: `http://127.0.0.1:${(turnstile.address() as any).port}` });
+  try {
+    const r = await flow({ sub: 'g-capi', email: 'capi@empresa.mx', email_verified: true, name: 'Capi' });
+    const token = decodeURIComponent(r.location.split('/registro-google/')[1]);
+    const post = (extra: Record<string, unknown>) => h.app.inject({ method: 'POST', url: '/api/signup/google', remoteAddress: '10.8.9.1', headers: { cookie: r.cookie }, payload: { token, company: 'Capi SA', accept_terms: true, ...extra } });
+    const sinToken = await post({});
+    assert.equal(sinToken.statusCode, 400, sinToken.body);
+    assert.equal(sinToken.json().error, 'Confirma que no eres un robot e intenta de nuevo.');
+    valid = false;
+    assert.equal((await post({ turnstile_token: 'malo' })).statusCode, 400);
+    valid = true;
+    const done = await post({ turnstile_token: 'bueno' });
+    assert.equal(done.statusCode, 200, done.body);
+    // Ya con cuenta, entrar con Google no pide captcha.
+    const back = await flow({ sub: 'g-capi', email: 'capi@empresa.mx', email_verified: true, name: 'Capi' });
+    assert.doesNotMatch(back.location, /registro-google/);
+  } finally {
+    Object.assign(config.signup.turnstile, prev);
+    turnstile.close();
+  }
 });

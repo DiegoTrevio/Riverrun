@@ -121,13 +121,43 @@ t('registro con captcha (Turnstile): sin respuesta válida no se crea la cuenta'
     assert.equal((await signup({ email: 'c3@captcha.mx', turnstile_token: 'bueno' }, '10.0.0.4')).statusCode, 200);
     const sent = new URLSearchParams(seen.at(-1));
     assert.deepEqual([sent.get('secret'), sent.get('response'), sent.get('remoteip')], ['clave-secreta', 'bueno', '10.0.0.4']);
+    // Si Cloudflare no responde, el registro se cierra un momento (y un solo aviso al superadministrador por hora).
     reply = { code: 503, body: {} };
-    assert.equal((await signup({ email: 'c4@captcha.mx', turnstile_token: 'x' }, '10.0.0.5')).statusCode, 200, 'si Cloudflare no responde, no se cierra el registro');
+    const since = new Date();
+    const prevSuper = config.signup.superadminEmail;
+    config.signup.superadminEmail = 'super@plataforma.mx';
+    const alerts = () => outbox.filter((m) => m.to === 'super@plataforma.mx' && m.subject === 'El captcha del registro no responde').length;
+    for (const [i, email] of ['c4@captcha.mx', 'c5@captcha.mx', 'c6@captcha.mx'].entries()) {
+      const down = await signup({ email, turnstile_token: 'x' }, `10.0.1.${i}`);
+      assert.equal(down.statusCode, 503, down.body);
+      assert.equal(down.json().error, 'No pudimos comprobar el captcha: intenta en un momento');
+    }
+    assert.equal((await pool.query(`SELECT count(*)::int AS n FROM users WHERE email LIKE 'c_@captcha.mx' AND email <> 'c3@captcha.mx'`)).rows[0].n, 0, 'no se creó ninguna');
+    assert.ok((await pool.query(`SELECT count(*)::int AS n FROM event_logs WHERE created_at >= $1 AND message LIKE 'Captcha sin respuesta de Cloudflare%'`, [since])).rows[0].n >= 1);
+    assert.equal(alerts(), 1, 'un solo aviso urgente al superadministrador');
+    config.signup.superadminEmail = prevSuper;
   } finally {
     Object.assign(config.signup.turnstile, prev);
     server.close();
   }
   assert.equal((await h.app.inject({ method: 'GET', url: '/api/signup/info' })).json().turnstile_site_key, '', 'sin claves no hay captcha');
+});
+
+t('en producción el captcha es obligatorio: sin claves no se abre el registro público', async () => {
+  const prev = process.env.RIVERRUN_ENV;
+  process.env.RIVERRUN_ENV = 'production';
+  try {
+    const r = await signup({ email: 'sin-claves@captcha.mx' }, '10.0.2.1');
+    assert.equal(r.statusCode, 503, r.body);
+    assert.equal(r.json().error, 'El registro no está disponible por ahora');
+    assert.equal((await h.app.inject({ method: 'GET', url: '/api/signup/info' })).json().signup_available, false);
+    const google = await h.app.inject({ method: 'POST', url: '/api/signup/google', remoteAddress: '10.0.2.2', payload: { token: 'x', company: 'Sin claves', accept_terms: true } });
+    assert.equal(google.statusCode, 503, google.body);
+  } finally {
+    if (prev === undefined) delete process.env.RIVERRUN_ENV;
+    else process.env.RIVERRUN_ENV = prev;
+  }
+  assert.equal((await h.app.inject({ method: 'GET', url: '/api/signup/info' })).json().signup_available, true, 'fuera de producción, sin claves se registra');
 });
 
 t('asistente: negocio y asistente desde la plantilla del giro', async () => {

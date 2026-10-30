@@ -16,7 +16,7 @@ import { newAccountState } from './signup.js';
 import { z } from 'zod';
 import { HttpError } from '../access.js';
 import { BUSINESS_TYPES } from '../templates/business.js';
-import { DISPOSABLE_MESSAGE, GOOGLE_PASS_COOKIE, googlePassCookie, googleSignupPass, isDisposableEmail, readGoogleSignupPass, recordTermsAcceptance, termsVersion } from '../signup-guard.js';
+import { assertCaptcha, DISPOSABLE_MESSAGE, GOOGLE_PASS_COOKIE, googlePassCookie, googleSignupPass, isDisposableEmail, readGoogleSignupPass, recordTermsAcceptance, termsVersion } from '../signup-guard.js';
 import { query } from '../db.js';
 import { parse } from './util.js';
 
@@ -134,9 +134,12 @@ export async function googleLoginRoutes(app: FastifyInstance) {
         company: z.string().trim().min(2, 'escribe el nombre de tu empresa').max(120),
         business_type: z.string().max(40).default('otro'),
         accept_terms: z.literal(true, { message: 'Debes aceptar los términos' }),
+        turnstile_token: z.string().max(4000).optional(),
       }),
       req.body,
     );
+    // La cuenta se crea aquí: el captcha va en este paso (entrar con Google a una cuenta que ya existe no lo pide).
+    await assertCaptcha(b.turnstile_token, req.ip);
     const { email, name, sub } = pass(b.token, req);
     if (isDisposableEmail(email)) throw new HttpError(400, DISPOSABLE_MESSAGE);
     if ((await store.getUserForLogin(email)) || (await store.getUserForGoogle(sub))) throw new HttpError(409, 'Ya existe una cuenta con ese correo. Inicia sesión con Google.');

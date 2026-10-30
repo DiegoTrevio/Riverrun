@@ -7,6 +7,7 @@ import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
 import { logEvent } from '../logs.js';
 import { deliverMail, sendMail } from '../mailer.js';
+import { notifyUsers } from '../automation/store.js';
 
 const DAY = 86400_000;
 const TZ = 'America/Mexico_City';
@@ -163,4 +164,11 @@ export async function sendSuperadminDigest(now = new Date()): Promise<number> {
   await query(`DELETE FROM superadmin_digest WHERE sent_at < $1`, [new Date(now.getTime() - 90 * DAY)]);
   await logEvent({ level: 'info', source: 'system', message: `Resumen diario enviado al superadmin (${items.length} avisos)` });
   return items.length;
+}
+
+/** Aviso de la plataforma sin una cuenta de por medio (captcha caído, topes globales): en el panel y por correo. */
+export async function notifyPlatform(title: string, body: string, o: { urgent?: boolean } = {}): Promise<void> {
+  const supers = await query<{ id: string; account_id: string }>(`SELECT id, account_id FROM users WHERE role = 'superadmin' AND active AND account_id IS NOT NULL`);
+  for (const s of supers) await notifyUsers(s.account_id, [s.id], { title, body, link: '#/accounts', kind: 'platform' });
+  await emailSuperadmin(title, body, { urgent: o.urgent });
 }

@@ -839,6 +839,23 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
 
   const tsite = get('TURNSTILE_SITE_KEY');
   const tsecret = get('TURNSTILE_SECRET_KEY');
+  // En producción el registro público pide captcha: sin las dos claves responde 503 (no impide arrancar).
+  if (prod && flag('SIGNUP_ENABLED', true) && !(tsite && tsecret)) add(
+    'warning',
+    'security',
+    'turnstile.required',
+    ['TURNSTILE_SITE_KEY', 'TURNSTILE_SECRET_KEY'],
+    'El registro público está abierto pero falta el captcha (Cloudflare Turnstile): mientras falte, el registro responde «El registro no está disponible por ahora».',
+    'Crea un sitio en Cloudflare → Turnstile y define TURNSTILE_SITE_KEY y TURNSTILE_SECRET_KEY, o cierra el registro con SIGNUP_ENABLED=false.',
+  );
+  if (flag('SIGNUP_ENABLED', true) && !get('STRIPE_SECRET_KEY') && !get('MERCADOPAGO_ACCESS_TOKEN')) add(
+    'optional',
+    'billing',
+    'signup.no_billing',
+    ['STRIPE_SECRET_KEY', 'MERCADOPAGO_ACCESS_TOKEN'],
+    'Registro sin cobro: las pruebas no piden tarjeta.',
+    'Para que la prueba gratis pida una tarjeta, configura Stripe o Mercado Pago.',
+  );
   if (!tsite && !tsecret) {
     services.push({ id: 'turnstile', label: 'Captcha del registro (Cloudflare Turnstile)', area: 'integrations', state: 'disabled', detail: 'Opcional, apagado' });
   } else if (!tsite || !tsecret) {

@@ -22,7 +22,7 @@ import { HttpError } from '../access.js';
 import { assertPasswordAllowed, NewPassword } from '../identity/passwords.js';
 import { parse } from './util.js';
 import { offeredPlans } from './billing.js';
-import { CAPTCHA_MESSAGE, DISPOSABLE_MESSAGE, captchaEnabled, isDisposableEmail, recordTermsAcceptance, termsVersion, verifyCaptcha } from '../signup-guard.js';
+import { DISPOSABLE_MESSAGE, assertCaptcha, captchaEnabled, isDisposableEmail, recordTermsAcceptance, signupAvailable, termsVersion } from '../signup-guard.js';
 
 const Password = NewPassword;
 const Email = z.string().trim().toLowerCase().email('correo inválido').max(200);
@@ -69,6 +69,8 @@ export async function sendVerification(user: Pick<User, 'id' | 'name' | 'email'>
 export async function signupRoutes(app: FastifyInstance) {
   app.get('/api/signup/info', async (req) => ({
     enabled: config.signup.enabled,
+    // En producción sin las claves de Turnstile el registro público queda cerrado.
+    signup_available: signupAvailable(),
     // Solo en el dominio principal: Google exige registrar la dirección de regreso.
     google_login: googleConfigured() && hostOf(req) === new URL(config.publicBaseUrl).hostname,
     trial_days: Math.max(0, config.signup.trialDays),
@@ -105,7 +107,7 @@ export async function signupRoutes(app: FastifyInstance) {
     );
     if (b.website) throw new HttpError(400, 'No se pudo completar el registro');
     if (isDisposableEmail(b.email)) throw new HttpError(400, DISPOSABLE_MESSAGE);
-    if (!(await verifyCaptcha(b.turnstile_token, req.ip))) throw new HttpError(400, CAPTCHA_MESSAGE);
+    await assertCaptcha(b.turnstile_token, req.ip);
     if (await store.getUserForLogin(b.email)) throw new HttpError(409, 'Ya existe una cuenta con ese correo. Inicia sesión o recupera tu contraseña.');
     await assertPasswordAllowed(b.password, { email: b.email, businessName: b.company });
     // El plan se revisa antes de crear la cuenta: un plan o forma de pago que no existe no deja una cuenta a medias.

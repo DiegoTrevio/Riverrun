@@ -28,6 +28,8 @@ const installed = (over: Env = {}): Env => ({
   OPENROUTER_MODEL: 'openai/gpt-4.1-mini',
   ADMIN_USER: 'yo@ejemplo.com',
   ADMIN_PASSWORD: KEY.admin,
+  TURNSTILE_SITE_KEY: '0x4AAAAAAAsitio',
+  TURNSTILE_SECRET_KEY: '0x4AAAAAAAsecreto',
   SESSION_SECRET: KEY.session,
   SECURE_COOKIES: 'true',
   SIGNUP_ENABLED: 'true',
@@ -293,4 +295,17 @@ test('cobros: números fuera de rango son críticos; días u hora mal escritos, 
   assert.ok(ids(installed({ RECEIVABLE_DEFAULT_SEND_AT: '25:00' }), 'warning').includes('receivables.default_send_at'));
   assert.ok(ids(installed({ RECEIVABLES_ENABLED: 'si' }), 'warning').includes('boolean.RECEIVABLES_ENABLED'));
   assert.equal(ids(installed({ RECEIVABLE_DEFAULT_REMINDERS: '-7,-1,0,5', RECEIVABLE_DEFAULT_SEND_AT: '09:30' })).some((i) => i.startsWith('receivables.')), false);
+});
+
+test('en producción el registro público pide Turnstile (aviso); sin cobro, las pruebas no piden tarjeta (informativo)', () => {
+  const sinCaptcha = installed();
+  delete sinCaptcha.TURNSTILE_SITE_KEY;
+  delete sinCaptcha.TURNSTILE_SECRET_KEY;
+  const r = validateConfig(sinCaptcha);
+  assert.ok(r.issues.some((i) => i.id === 'turnstile.required' && i.level === 'warning'), formatReport(r));
+  assert.equal(blocksStartup(r), false, 'no impide arrancar: el registro responde 503');
+  assert.ok(!ids({ ...sinCaptcha, SIGNUP_ENABLED: 'false' }).includes('turnstile.required'), 'con el registro cerrado no hace falta');
+  assert.ok(!ids(installed()).includes('turnstile.required'));
+  assert.ok(ids(installed(), 'optional').includes('signup.no_billing'), 'sin Stripe ni Mercado Pago');
+  assert.ok(!ids(installed({ STRIPE_SECRET_KEY: 'sk_test_1', STRIPE_WEBHOOK_SECRET: 'whsec_1' })).includes('signup.no_billing'));
 });
