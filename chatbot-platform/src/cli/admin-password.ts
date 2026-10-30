@@ -1,7 +1,7 @@
 /**
  * Recupera el acceso del superadministrador (o lo crea si no existe): `./riverrun admin-password [correo]`.
  * Genera una contraseña nueva y la muestra una sola vez; con `--stdin` la lee de la entrada (así no queda en el historial
- * ni en la lista de procesos). Cierra todas sus sesiones abiertas.
+ * ni en la lista de procesos). Cierra todas sus sesiones abiertas y restablece su verificación en dos pasos.
  */
 import { z } from 'zod';
 import { resetSuperadminPassword } from '../auth.js';
@@ -24,8 +24,9 @@ try {
   console.log(`${r.created ? 'Superadministrador creado' : 'Contraseña restablecida'}: ${email}`);
   if (!typed) console.log(`Contraseña nueva: ${r.password}`);
   console.log('Sus sesiones abiertas se cerraron. Guárdala en tu gestor de contraseñas.');
-  // El límite de intentos lo lleva el servidor en memoria: este comando no lo puede levantar.
-  console.log('Si tu conexión quedó bloqueada por intentos fallidos, espera 15 minutos o reinicia (./riverrun restart).');
+  if (!r.created) console.log('Su verificación en dos pasos se restableció: la configura al entrar.');
+  // Se levantan los intentos de su cuenta; los de la conexión (por IP) vencen solos.
+  console.log('Si tu conexión quedó bloqueada por intentos fallidos, espera 15 minutos.');
 } catch (error) {
   console.error(error instanceof Error ? error.message : 'No se pudo cambiar la contraseña');
   process.exitCode = 1;

@@ -19,7 +19,8 @@ import {
 import { adapterFor } from '../channels/index.js';
 import { config } from '../config.js';
 import { assertPasswordAllowed, NewPassword } from '../identity/passwords.js';
-import { beginLogin, renewSessionAfterPasswordChange, resetMfa } from '../identity/mfa.js';
+import { beginLogin, renewSessionAfterPasswordChange } from '../identity/mfa.js';
+import { resetMfa } from '../identity/reset-mfa.js';
 import { browserOf, forgetTrustedDevices, trustedDeviceFor } from '../identity/devices.js';
 import { countHit, LIMITS, releaseHit } from '../identity/rate-limit.js';
 import { notifyUser } from '../identity/notices.js';

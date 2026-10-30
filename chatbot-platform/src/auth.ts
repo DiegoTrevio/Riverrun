@@ -6,6 +6,8 @@ import { query } from './db.js';
 import { logEvent } from './logs.js';
 import { HttpError } from './access.js';
 import { assertPasswordAllowed } from './identity/passwords.js';
+import { clearHits } from './identity/rate-limit.js';
+import { resetMfa } from './identity/reset-mfa.js';
 import { hmac, safeEqual } from './secret.js';
 import * as store from './store/index.js';
 import type { Role, User } from './types.js';
@@ -208,8 +210,10 @@ export async function resetSuperadminPassword(email: string, given?: string): Pr
   }
   await store.updateUser(existing.id, { password_hash: hash, active: true });
   await store.revokeUserSessions(existing.id);
-  await query(`UPDATE user_devices SET trust_hash = NULL, trusted_until = NULL WHERE user_id = $1`, [existing.id]);
-  await logEvent({ level: 'warn', source: 'system', message: `Contraseña del superadministrador "${email}" restablecida desde el servidor (./riverrun admin-password); se cerraron sus sesiones` });
+  // Perdió el acceso: también su verificación en dos pasos (la configura al entrar) y los intentos que la bloqueaban.
+  await resetMfa(existing.id);
+  await clearHits(`login-acct:${email.toLowerCase()}`);
+  await logEvent({ level: 'warn', source: 'system', message: `Contraseña del superadministrador "${email}" restablecida desde el servidor (./riverrun admin-password); se cerraron sus sesiones y se restableció su verificación en dos pasos` });
   return { password, created: false };
 }
 
