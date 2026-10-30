@@ -1,6 +1,7 @@
 /**
  * Prueba en navegador de la verificación en dos pasos: configurar la app (QR, código, códigos de recuperación), entrar con
- * el código o con un código de recuperación, el reto vencido y el registro con plan que abre el pago al terminar.
+ * el código o con un código de recuperación, la verificación reciente, Mi perfil (códigos nuevos, olvidar un dispositivo),
+ * restablecer el 2FA de alguien del equipo, el reto vencido y el registro con plan que abre el pago al terminar.
  * Accesible (axe) y sin desbordarse en computadora y en móvil.
  */
 import assert from 'node:assert/strict';
@@ -49,6 +50,8 @@ try {
   const base = `http://127.0.0.1:${(h.app.server.address() as any).port}`;
   await h.createBot();
   assert.equal((await h.authed('POST', '/api/users', { account_id: h.accountId, name: 'Nuria', email: 'nuria@identidad.mx', password: PASS, role: 'admin' })).statusCode, 200);
+  assert.equal((await h.authed('POST', '/api/users', { account_id: h.accountId, name: 'Tomás', email: 'tomas@identidad.mx', password: PASS, role: 'agent' })).statusCode, 200);
+  await h.loginAs('tomas@identidad.mx', PASS); // ya configuró su app
   assert.equal((await h.authed('POST', '/api/plans', { key: 'pro', name: 'Pro', description: 'Todo incluido', price: 499 })).statusCode, 200);
 
   browser = await chromium.launch({ ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : {}), args: ['--no-sandbox'] });
@@ -78,7 +81,7 @@ try {
   await page.getByLabel('Código de 6 dígitos').fill(totpAt(secret, currentStep()));
   await page.getByRole('button', { name: 'Activar' }).click();
   await page.getByRole('heading', { name: 'Guarda tus códigos de recuperación' }).waitFor();
-  const codes = await page.locator('.recovery-codes li').allTextContents();
+  let codes = await page.locator('.recovery-codes li').allTextContents();
   assert.equal(codes.length, 10);
   const proceed = page.getByRole('button', { name: 'Continuar' });
   assert.equal(await proceed.isDisabled(), true, 'no avanza sin confirmar que los guardó');
@@ -101,6 +104,7 @@ try {
   await page.getByLabel('Recordar este dispositivo 30 días').waitFor();
   await accessible(page, 'Escribir el código');
   await page.getByLabel('Código de 6 dígitos').fill(totpAt(secret, currentStep()));
+  await page.getByLabel('Recordar este dispositivo 30 días').check();
   await page.getByRole('button', { name: 'Entrar' }).click();
   await page.locator('.main h1').first().waitFor();
   checks.push('Entrar con el código de la app (accesible en móvil)');
@@ -120,6 +124,46 @@ try {
   await page.getByRole('button', { name: 'Ya la copié' }).click();
   assert.equal((await pool.query(`SELECT count(*)::int n FROM api_keys WHERE name = 'Mi CRM'`)).rows[0].n, 1);
   checks.push('Acción delicada sin verificación reciente: pide el código y la termina (accesible en móvil)');
+
+  // Mi perfil → Verificación en dos pasos: códigos nuevos (con verificación reciente) y olvidar el dispositivo recordado.
+  await pool.query(`UPDATE user_sessions SET mfa_at = now() - interval '16 minutes' WHERE user_id = (SELECT id FROM users WHERE email = 'nuria@identidad.mx')`);
+  await page.goto(`${base}/#/password`);
+  const security = page.getByRole('region', { name: 'Verificación en dos pasos' });
+  await security.getByText('Te quedan 10 códigos de recuperación.').waitFor();
+  await security.getByRole('cell', { name: 'Chrome en Linux', exact: true }).waitFor();
+  await accessible(page, 'Mi perfil → verificación en dos pasos');
+  await security.getByRole('button', { name: 'Generar códigos nuevos' }).click();
+  await page.getByRole('dialog', { name: 'Generar códigos nuevos' }).getByRole('button', { name: 'Generar códigos nuevos' }).click();
+  const again = page.getByRole('dialog', { name: 'Confirma que eres tú' });
+  await again.waitFor();
+  await pool.query(`UPDATE users SET totp_last_step = 0 WHERE email = 'nuria@identidad.mx'`);
+  await again.getByLabel('Código de 6 dígitos').fill(totpAt(secret, currentStep()));
+  await again.getByRole('button', { name: 'Confirmar' }).click();
+  const fresh = page.getByRole('dialog', { name: 'Tus códigos nuevos' });
+  await fresh.waitFor();
+  const newCodes = await fresh.locator('.recovery-codes li').allTextContents();
+  assert.equal(newCodes.length, 10);
+  assert.notDeepEqual(newCodes, codes);
+  codes = newCodes;
+  await accessible(page, 'Tus códigos nuevos');
+  await fresh.getByRole('button', { name: 'Ya los guardé' }).click();
+  await security.getByRole('button', { name: 'Olvidar Chrome en Linux' }).click();
+  await security.getByText(/^Ninguno\./).waitFor();
+  assert.equal((await pool.query(`SELECT count(*)::int n FROM user_devices d JOIN users u ON u.id = d.user_id WHERE u.email = 'nuria@identidad.mx' AND d.trusted_until > now()`)).rows[0].n, 0);
+  checks.push('Mi perfil: códigos nuevos con verificación reciente y olvidar el dispositivo recordado (accesible en móvil)');
+
+  // Equipo: restablecer el 2FA de un agente.
+  await page.goto(`${base}/#/users`);
+  const tomas = page.getByRole('row').filter({ hasText: 'tomas@identidad.mx' });
+  await tomas.getByText('2FA activo').waitFor();
+  await tomas.getByRole('button', { name: 'Restablecer 2FA de tomas@identidad.mx' }).click();
+  const reset = page.getByRole('dialog', { name: 'Restablecer 2FA de Tomás' });
+  await reset.getByText('Su verificación en dos pasos se borra, se cierran sus sesiones y la configura otra vez al entrar.').waitFor();
+  await accessible(page, 'Restablecer 2FA');
+  await reset.getByRole('button', { name: 'Restablecer 2FA' }).click();
+  await page.getByRole('row').filter({ hasText: 'tomas@identidad.mx' }).getByText('2FA pendiente').waitFor();
+  assert.equal((await pool.query(`SELECT totp_enabled_at FROM users WHERE email = 'tomas@identidad.mx'`)).rows[0].totp_enabled_at, null);
+  checks.push('Equipo: «Restablecer 2FA» de un agente con su confirmación; queda «2FA pendiente» (accesible en móvil)');
 
   // Con un código de recuperación.
   await context.clearCookies();

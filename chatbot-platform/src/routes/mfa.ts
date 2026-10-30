@@ -6,10 +6,13 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { notifyUser } from '../identity/notices.js';
 import { challengeKey, challengeUser, confirmEnrollment, finishChallenge, loadMfaUser, startEnrollment, verifyUserCode } from '../identity/mfa.js';
-import { hasRecentMfa } from '../identity/step-up.js';
+import { forgetTrustedDevices, listTrustedDevices } from '../identity/devices.js';
+import { hasRecentMfa, stepUp } from '../identity/step-up.js';
+import { notFound } from '../access.js';
 import { query } from '../db.js';
+import { logEvent } from '../logs.js';
 import { countHit, hitsFor, LIMITS } from '../identity/rate-limit.js';
-import { replaceRecoveryCodes } from '../identity/recovery-codes.js';
+import { remainingRecoveryCodes, replaceRecoveryCodes } from '../identity/recovery-codes.js';
 import * as store from '../store/index.js';
 import { parse } from './util.js';
 
@@ -67,7 +70,7 @@ export async function mfaPublicRoutes(app: FastifyInstance) {
   });
 }
 
-/** Rutas con sesión: confirmar con el código (verificación reciente) y saber si hace falta. */
+/** Rutas con sesión: confirmar con el código (verificación reciente), saber si hace falta y Mi perfil → seguridad. */
 export async function mfaRoutes(api: FastifyInstance) {
   api.post('/api/2fa/step-up', async (req, reply) => {
     const b = parse(Code, req.body);
@@ -81,4 +84,43 @@ export async function mfaRoutes(api: FastifyInstance) {
   });
 
   api.get('/api/2fa/recent', async (req) => ({ recent: hasRecentMfa(req) }));
+
+  const me = async (id: string) => {
+    const user = await loadMfaUser(id);
+    if (!user) throw notFound('Usuario no encontrado');
+    return user;
+  };
+
+  api.get('/api/me/security', async (req) => {
+    const user = await me(req.user.id);
+    return { totp_enabled_at: user.totp_enabled_at, recovery_remaining: await remainingRecoveryCodes(user.id), devices: await listTrustedDevices(user.id) };
+  });
+
+  /** «Generar códigos nuevos»: los anteriores dejan de servir. */
+  api.post('/api/me/2fa/recovery-codes', stepUp, async (req) => {
+    const user = await me(req.user.id);
+    const codes = await replaceRecoveryCodes(user.id);
+    void notifyUser(user, 'recovery_regenerated');
+    return { recovery_codes: codes };
+  });
+
+  /** «Cambiar de app»: un secreto pendiente (el mismo si ya había uno); la app actual sirve hasta confirmar el nuevo. */
+  api.post('/api/me/2fa/authenticator', stepUp, async (req) => {
+    const { secret, otpauth, qr } = await startEnrollment(await me(req.user.id));
+    return { secret, otpauth, qr };
+  });
+
+  api.post('/api/me/2fa/authenticator/confirm', stepUp, async (req, reply) => {
+    const b = parse(Code, req.body);
+    const user = await me(req.user.id);
+    if (!(await confirmEnrollment(user.id, b.code))) return wrongCode(reply);
+    await logEvent({ level: 'info', source: 'admin', message: `${user.email} cambió su app de verificación`, accountId: user.account_id ?? undefined });
+    void notifyUser(user, 'mfa_changed');
+    return { ok: true };
+  });
+
+  api.delete('/api/me/devices/:id', async (req: any) => {
+    if (!z.string().uuid().safeParse(req.params.id).success || !(await forgetTrustedDevices(req.user.id, { only: req.params.id }))) throw notFound('Dispositivo no encontrado');
+    return { ok: true };
+  });
 }

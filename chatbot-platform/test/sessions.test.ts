@@ -73,15 +73,15 @@ t('nadie cierra ni ve sesiones de otra persona', async () => {
   assert.equal(await me(mine), 200);
 });
 
-t('cambiar la contraseña o desactivar a la persona cierra sus sesiones; un cambio de rol aplica en la sesión abierta', async () => {
+t('cambiar la contraseña, el rol o desactivar a la persona cierra sus sesiones', async () => {
   const a = await login();
   const b = await login();
   assert.equal((await as(a)('PUT', '/api/me/password', { current: PASS, password: PASS })).statusCode, 200);
   assert.equal(await me(b), 401, 'la otra sesión se cerró');
   const c = await login();
   assert.equal((await h.authed('PUT', `/api/users/${userId}`, { role: 'agent' })).statusCode, 200);
-  assert.equal(await me(c), 200, 'sigue dentro, ya como agente');
-  assert.equal((await as(c)('GET', '/api/users')).statusCode, 403, 'con los permisos nuevos al momento');
+  assert.equal(await me(c), 401, 'entra otra vez con los permisos nuevos');
+  assert.equal((await as(await login())('GET', '/api/users')).statusCode, 403, 'ya como agente');
   const d = await login();
   assert.equal((await h.authed('PUT', `/api/users/${userId}`, { active: false })).statusCode, 200);
   assert.equal(await me(d), 401);

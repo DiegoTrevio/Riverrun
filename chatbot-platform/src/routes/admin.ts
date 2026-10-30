@@ -19,7 +19,7 @@ import {
 import { adapterFor } from '../channels/index.js';
 import { config } from '../config.js';
 import { assertPasswordAllowed, NewPassword } from '../identity/passwords.js';
-import { beginLogin, renewSessionAfterPasswordChange } from '../identity/mfa.js';
+import { beginLogin, renewSessionAfterPasswordChange, resetMfa } from '../identity/mfa.js';
 import { browserOf, forgetTrustedDevices, trustedDeviceFor } from '../identity/devices.js';
 import { countHit, LIMITS, releaseHit } from '../identity/rate-limit.js';
 import { notifyUser } from '../identity/notices.js';
@@ -496,17 +496,29 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     }
     const updated = await store.updateUser(target.id, patch, req.user.role === 'superadmin' ? undefined : scopeAccount(req.user)!);
     if (!updated) throw notFound('Usuario no encontrado');
-    // Desactivar a alguien, cambiarle el correo o la contraseña cierra todas sus sesiones abiertas. Un cambio de rol o de
+    // Desactivar a alguien, cambiarle el correo o la contraseña cierra todas sus sesiones abiertas y olvida sus
+    // dispositivos recordados. Un cambio de rol cierra sus sesiones (entra otra vez con los permisos nuevos); uno de
     // cuenta aplica al momento en las sesiones abiertas (el usuario se vuelve a leer en cada petición).
     if (!updated.active || updated.email !== target.email || patch.password_hash) {
       await store.revokeUserSessions(updated.id);
       await forgetTrustedDevices(updated.id);
-    }
+    } else if (updated.role !== target.role) await store.revokeUserSessions(updated.id);
     if (updated.role !== target.role || updated.account_id !== target.account_id) {
       await logEvent({ level: 'info', source: 'admin', message: `Permisos de usuario actualizados: ${updated.email}`, accountId: updated.account_id ?? target.account_id ?? undefined,
         details: { actor_id: req.user.id, user_id: updated.id, previous_role: target.role, role: updated.role, previous_account_id: target.account_id, account_id: updated.account_id } });
     }
     return updated;
+  });
+
+  /** «Restablecer 2FA» en Equipo (perdió su teléfono y sus códigos): se cierran sus sesiones y la configura al entrar. */
+  api.post('/api/users/:id/2fa/reset', { ...admins, ...stepUp }, async (req: any) => {
+    const target = await manageable(req);
+    if (target.id === req.user.id) throw new HttpError(400, 'Para cambiar tu propia app usa Mi perfil');
+    await resetMfa(target.id);
+    await store.revokeUserSessions(target.id);
+    await logEvent({ level: 'warn', source: 'admin', message: `Verificación en dos pasos restablecida: ${target.email} (por ${req.user.email})`, accountId: target.account_id ?? undefined });
+    void notifyUser(target, 'mfa_reset', { by: req.user.name || req.user.email });
+    return { ok: true };
   });
 
   api.delete('/api/users/:id', { ...admins, ...stepUp }, async (req: any) => {

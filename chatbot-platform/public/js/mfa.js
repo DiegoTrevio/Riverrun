@@ -1,9 +1,10 @@
 /**
- * Verificación en dos pasos en el panel: escribir el código de la app (o uno de recuperación) después de la contraseña y,
- * la primera vez, configurar la app (QR, código y los 10 códigos de recuperación).
+ * Verificación en dos pasos en el panel: escribir el código de la app (o uno de recuperación) después de la contraseña,
+ * la primera vez configurar la app (QR, código y los 10 códigos de recuperación) y, en Mi perfil, cambiar de app,
+ * generar códigos nuevos y olvidar dispositivos recordados.
  */
 import { publicCard } from './auth.js';
-import { api, dialog, field, fill, h, run, state, text, toast } from './core.js';
+import { api, dialog, field, fill, fmtDate, h, run, state, text, toast } from './core.js';
 
 /** A dónde sigue después del segundo paso: el pago del registro (si eligió plan) o el panel. */
 function goNext() {
@@ -18,6 +19,28 @@ function goNext() {
 }
 
 const codeInput = (f) => text(f, 'code', { inputmode: 'numeric', autocomplete: 'one-time-code', required: true, maxlength: 9 });
+
+/** Los códigos de recuperación con «Copiar» y «Descargar .txt». */
+function recoveryCodesBlock(codes, account) {
+  const plain = `Códigos de recuperación de ${account}\nCada uno sirve una sola vez para entrar si no tienes tu teléfono.\n\n${codes.join('\n')}\n`;
+  return h('div', { class: 'stack' },
+    h('ul', { class: 'recovery-codes' }, ...codes.map((c) => h('li', {}, h('code', {}, c)))),
+    h('div', { class: 'row' },
+      h('button', { type: 'button', onclick: () => navigator.clipboard?.writeText(plain).then(() => toast('Códigos copiados'), () => toast('No se pudieron copiar: descárgalos', true)) }, 'Copiar'),
+      h('button', { type: 'button', onclick: () => {
+        const a = h('a', { href: URL.createObjectURL(new Blob([plain], { type: 'text/plain' })), download: 'codigos-de-recuperacion.txt' });
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      } }, 'Descargar .txt')));
+}
+
+/** El QR y la clave para escribirla a mano. */
+const qrBlock = (data) => [
+  h('img', { src: data.qr, alt: 'Código QR para tu app de autenticación', width: 200, height: 200, class: 'totp-qr' }),
+  h('details', {},
+    h('summary', {}, '¿No puedes escanearlo? Escribe esta clave'),
+    h('p', {}, h('code', { 'data-totp-secret': '' }, data.secret.match(/.{1,4}/g).join(' ')))),
+];
 
 export async function renderMfaVerify() {
   let info;
@@ -63,18 +86,10 @@ export async function renderMfaEnroll() {
   publicCard('Activa la verificación en dos pasos', box);
   const showCodes = (codes) => {
     const proceed = h('button', { class: 'primary', type: 'button', disabled: true, onclick: goNext }, 'Continuar');
-    const plain = `Códigos de recuperación de ${data.account}\nCada uno sirve una sola vez para entrar si no tienes tu teléfono.\n\n${codes.join('\n')}\n`;
     fill(box,
       h('h2', {}, 'Guarda tus códigos de recuperación'),
       h('p', {}, 'Si pierdes tu teléfono, entra con uno de estos códigos. Cada uno sirve una sola vez. Guárdalos en tu gestor de contraseñas o imprímelos: no los volveremos a mostrar.'),
-      h('ul', { class: 'recovery-codes' }, ...codes.map((c) => h('li', {}, h('code', {}, c)))),
-      h('div', { class: 'row' },
-        h('button', { type: 'button', onclick: () => navigator.clipboard?.writeText(plain).then(() => toast('Códigos copiados'), () => toast('No se pudieron copiar: descárgalos', true)) }, 'Copiar'),
-        h('button', { type: 'button', onclick: () => {
-          const a = h('a', { href: URL.createObjectURL(new Blob([plain], { type: 'text/plain' })), download: 'codigos-de-recuperacion.txt' });
-          a.click();
-          setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-        } }, 'Descargar .txt')),
+      recoveryCodesBlock(codes, data.account),
       h('label', { class: 'check' },
         h('input', { type: 'checkbox', onchange: (e) => (proceed.disabled = !e.target.checked) }),
         ' Ya los guardé en un lugar seguro'),
@@ -88,10 +103,7 @@ export async function renderMfaEnroll() {
   fill(box,
     h('p', { class: 'muted', style: 'margin-top:0' }, 'Además de tu contraseña, para entrar usarás un código de una app de autenticación (Google Authenticator, Microsoft Authenticator, 1Password…). Así nadie entra a tu cuenta aunque sepa tu contraseña.'),
     h('h2', {}, '1. Escanea este código con tu app de autenticación'),
-    h('img', { src: data.qr, alt: 'Código QR para tu app de autenticación', width: 200, height: 200, class: 'totp-qr' }),
-    h('details', {},
-      h('summary', {}, '¿No puedes escanearlo? Escribe esta clave'),
-      h('p', {}, h('code', { 'data-totp-secret': '' }, data.secret.match(/.{1,4}/g).join(' ')))),
+    ...qrBlock(data),
     h('h2', {}, '2. Escribe el código que muestra la app'),
     h('form', { class: 'stack', onsubmit: submit },
       field('Código de 6 dígitos', codeInput(f)),
@@ -124,4 +136,64 @@ export async function stepUpDialog() {
 export async function ensureRecentMfa() {
   const { recent } = await api('GET', '/api/2fa/recent');
   return recent || stepUpDialog();
+}
+
+/** «Cambiar de app»: escanea el QR nuevo y confirma con un código de la app nueva. true si quedó cambiada. */
+async function changeAuthenticator() {
+  const data = await run(() => api('POST', '/api/me/2fa/authenticator'));
+  if (!data) return false;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const f = { code: '' };
+    const input = codeInput(f);
+    const content = h('div', { class: 'stack' },
+      h('p', {}, attempt ? 'Ese código no es correcto: escribe el que muestra la app nueva.' : 'Escanea este código con la app nueva. La que usas ahora sigue sirviendo hasta que confirmes.'),
+      ...qrBlock(data),
+      field('Código de 6 dígitos de la app nueva', input));
+    if (!(await dialog('Cambiar de app', content, 'Cambiar de app', () => input.reportValidity()))) return false;
+    try {
+      await api('POST', '/api/me/2fa/authenticator/confirm', { code: f.code });
+      toast('Listo: desde ahora entra con el código de la app nueva');
+      return true;
+    } catch (e) {
+      if (e.status !== 400) { toast(e.message, true); return false; }
+    }
+  }
+  return false;
+}
+
+/** Mi perfil → Verificación en dos pasos: la app, los códigos de recuperación que quedan y los dispositivos recordados. */
+export function mfaSecurityCard() {
+  const box = h('div', { class: 'stack' }, h('p', { class: 'help', role: 'status' }, 'Cargando…'));
+  const draw = async () => {
+    const d = await api('GET', '/api/me/security').catch((e) => ({ error: e.message }));
+    if (d.error) return fill(box, h('p', { class: 'error' }, d.error));
+    const left = d.recovery_remaining;
+    fill(box,
+      h('p', {}, h('span', { class: 'badge green' }, 'Activa'), d.totp_enabled_at ? ` desde el ${fmtDate(d.totp_enabled_at)}.` : null, ' Entras con tu contraseña y el código de tu app de autenticación.'),
+      h('div', { class: 'row' }, h('button', { onclick: async () => { if (await changeAuthenticator()) draw(); } }, 'Cambiar de app')),
+      h('h3', {}, 'Códigos de recuperación'),
+      left <= 2 ? h('p', { class: 'banner warn', role: 'status' }, 'Te quedan pocos códigos de recuperación. Genera nuevos para poder entrar si pierdes tu teléfono.') : null,
+      h('p', {}, left === 1 ? 'Te queda 1 código de recuperación.' : `Te quedan ${left} códigos de recuperación.`),
+      h('div', { class: 'row' }, h('button', { onclick: async () => {
+        if (!(await dialog('Generar códigos nuevos', h('p', {}, 'Los códigos que tienes ahora dejarán de servir.'), 'Generar códigos nuevos'))) return;
+        const r = await run(() => api('POST', '/api/me/2fa/recovery-codes'));
+        if (!r) return;
+        await dialog('Tus códigos nuevos', h('div', { class: 'stack' },
+          h('p', {}, 'Cada uno sirve una sola vez. Guárdalos en tu gestor de contraseñas o imprímelos: no los volveremos a mostrar.'),
+          recoveryCodesBlock(r.recovery_codes, state.me.user.email)), 'Ya los guardé');
+        draw();
+      } }, 'Generar códigos nuevos')),
+      h('h3', {}, 'Dispositivos recordados'),
+      d.devices.length ? h('table', { class: 'responsive-table' },
+        h('thead', {}, h('tr', {}, ...['Dispositivo', 'Último uso', 'Recordado hasta', ''].map((t) => h('th', {}, t)))),
+        h('tbody', {}, ...d.devices.map((dev) => h('tr', {},
+          h('td', { 'data-label': 'Dispositivo' }, h('strong', {}, dev.device)),
+          h('td', { 'data-label': 'Último uso' }, fmtDate(dev.last_seen_at)),
+          h('td', { 'data-label': 'Recordado hasta' }, fmtDate(dev.trusted_until)),
+          h('td', {}, h('button', { class: 'small', 'aria-label': `Olvidar ${dev.device}`, onclick: async () => {
+            if (await run(() => api('DELETE', `/api/me/devices/${dev.id}`), 'Dispositivo olvidado: te pedirá el código')) draw();
+          } }, 'Olvidar')))))) : h('p', { class: 'muted' }, 'Ninguno. Al entrar puedes marcar «Recordar este dispositivo 30 días» para no escribir el código en ese navegador.'));
+  };
+  draw();
+  return box;
 }

@@ -13,10 +13,10 @@ import { logEvent } from '../logs.js';
 import { decryptSecret, encryptSecret, hmac, safeEqual } from '../secret.js';
 import * as store from '../store/index.js';
 import type { Role, User } from '../types.js';
-import { browserOf, noteDevice, trustDevice, trustedDeviceFor } from './devices.js';
+import { browserOf, forgetTrustedDevices, noteDevice, trustDevice, trustedDeviceFor } from './devices.js';
 import { notifyUser } from './notices.js';
 import { qrDataUri } from './qr.js';
-import { countHit, LIMITS } from './rate-limit.js';
+import { clearHits, countHit, LIMITS } from './rate-limit.js';
 import { isRecoveryCodeShape, useRecoveryCode } from './recovery-codes.js';
 import { matchTotp, newTotpSecret, otpauthUri } from './totp.js';
 
@@ -174,6 +174,17 @@ export async function confirmEnrollment(userId: string, code: string): Promise<b
     [userId, step, row!.totp_pending],
   );
   return !!done;
+}
+
+/**
+ * Borra la verificación en dos pasos de alguien (app, la pendiente, códigos de recuperación, dispositivos recordados y el
+ * bloqueo): la configura otra vez la próxima vez que entra. Sus sesiones las cierra quien llama.
+ */
+export async function resetMfa(userId: string): Promise<void> {
+  await query(`UPDATE users SET totp_secret = NULL, totp_pending = NULL, totp_enabled_at = NULL, totp_last_step = 0, mfa_locked_until = NULL, updated_at = now() WHERE id = $1`, [userId]);
+  await query(`DELETE FROM user_recovery_codes WHERE user_id = $1`, [userId]);
+  await forgetTrustedDevices(userId);
+  await clearHits(`mfa-user:${userId}`);
 }
 
 /**

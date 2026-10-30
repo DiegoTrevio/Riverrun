@@ -108,10 +108,12 @@ export async function deleteAccount(id: string) {
 
 const USER_COLS = 'id, account_id, role, name, email, phone, notify_whatsapp, alert_prefs, available, active, email_verified_at, last_login_at, created_at';
 
-export async function listUsers(accountId: string | null): Promise<User[]> {
+/** El equipo, con si ya configuró la verificación en dos pasos (nunca el secreto). */
+export async function listUsers(accountId: string | null): Promise<(User & { mfa_enabled: boolean })[]> {
+  const cols = `${USER_COLS}, totp_enabled_at IS NOT NULL AS mfa_enabled`;
   return accountId
-    ? query<User>(`SELECT ${USER_COLS} FROM users WHERE account_id = $1 ORDER BY created_at`, [accountId])
-    : query<User>(`SELECT ${USER_COLS} FROM users ORDER BY account_id NULLS FIRST, created_at`);
+    ? query(`SELECT ${cols} FROM users WHERE account_id = $1 ORDER BY created_at`, [accountId])
+    : query(`SELECT ${cols} FROM users ORDER BY account_id NULLS FIRST, created_at`);
 }
 
 export async function getUser(id: string) {

@@ -68,6 +68,8 @@ t('el maestro reasigna el perfil y una sesión abierta pierde acceso al anterior
 
 t('el operador solo atiende conversaciones y agenda de su perfil', async () => {
   assert.equal((await h.authed('PUT', `/api/users/${user.id}`, { role: 'agent' })).statusCode, 200);
+  assert.equal((await member('GET', '/api/me')).statusCode, 401, 'cambiar el rol cierra sus sesiones');
+  member = await h.loginAs('usuario@perfil.test', 'Pz-160-Qx-360-Kv');
   assert.equal((await member('POST', '/api/chatbots', { name: 'Prohibido' })).statusCode, 403);
   assert.equal((await member('GET', '/api/users')).statusCode, 403);
   assert.equal((await member('GET', '/api/conversations')).statusCode, 200);
@@ -80,6 +82,7 @@ t('el maestro puede promover un usuario existente sin cambiar su contraseña', a
   assert.equal(promoted.statusCode, 200, promoted.body);
   assert.equal(promoted.json().account_id, null);
   assert.equal((await store.getUserForLogin(user.email))!.password_hash, before!.password_hash);
+  member = await h.loginAs('usuario@perfil.test', 'Pz-160-Qx-360-Kv');
   assert.equal((await member('GET', '/api/accounts')).json().length, 2);
   assert.equal((await member('GET', `/api/chatbots/${botA.id}`)).statusCode, 200);
   assert.equal((await member('GET', `/api/chatbots/${botB.id}`)).statusCode, 200);
