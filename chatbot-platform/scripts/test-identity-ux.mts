@@ -209,24 +209,26 @@ try {
   await page.locator('.main h1').first().waitFor();
   checks.push('El superadmin entra con código y sin «Recordar este dispositivo»');
 
-  // Registro con plan: primero configura la verificación y después abre el pago.
+  // Registro con plan: primero configura la verificación y después sigue a Mi plan, con su plan elegido (la tarjeta se
+  // agrega ahí, con el correo confirmado).
   await context.clearCookies();
-  await page.route(/^https:\/\/[a-z]+\.stripe\.test\//, (route) => route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>Stripe</title><h1>Pago</h1>' }));
   await page.goto(`${base}/#/registro?plan=pro`);
   await page.getByLabel('Tu nombre').fill('Oscar');
   await page.getByLabel('Nombre de tu negocio').fill('Taller Oscar');
   await page.getByLabel('Correo').fill('oscar@taller.mx');
   await page.getByLabel('Contraseña').fill(PASS);
   await page.getByRole('checkbox').first().check();
-  await page.getByRole('button', { name: 'Crear mi cuenta y pagar' }).click();
+  await page.getByRole('button', { name: 'Crear mi cuenta', exact: true }).click();
   await page.waitForURL(/#\/login\/configurar/);
   const s2 = (await page.locator('[data-totp-secret]').textContent())!.replace(/\s/g, '');
   await page.getByLabel('Código de 6 dígitos').fill(totpAt(s2, currentStep()));
   await page.getByRole('button', { name: 'Activar' }).click();
   await page.getByLabel('Ya los guardé en un lugar seguro').check();
   await page.getByRole('button', { name: 'Continuar' }).click();
-  await page.waitForURL(/stripe\.test/);
-  checks.push('Registro con plan: configura la verificación y después abre el pago');
+  await page.waitForURL(/#\/plan\?plan=pro/);
+  await page.getByText(/^Al registrarte elegiste el plan /).waitFor();
+  await page.getByText('Falta verificar tu correo.').waitFor();
+  checks.push('Registro con plan: configura la verificación y después sigue a Mi plan con su plan elegido');
 
   assert.deepEqual(errors, []);
   assert.deepEqual(cspViolations, [], 'La CSP bloqueó algo del panel');
