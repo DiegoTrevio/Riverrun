@@ -19,10 +19,11 @@ export type NoticeKind =
   | 'new_device'
   | 'ownership_transferred'
   | 'ownership_received'
-  | 'email_changed';
+  | 'email_changed'
+  | 'role_changed';
 
 interface NoticeUser { id: string; email: string; name: string; account_id: string | null }
-interface NoticeDetails { device?: string; ip?: string; remaining?: number; by?: string; account?: string; to?: string; from?: string }
+interface NoticeDetails { device?: string; ip?: string; remaining?: number; by?: string; account?: string; to?: string; from?: string; role?: string }
 
 const FOOTER = 'Si no fuiste tú: cambia tu contraseña y cierra todas las sesiones desde Mi perfil.';
 
@@ -45,6 +46,7 @@ const SUBJECT: Record<NoticeKind, string> = {
   ownership_transferred: 'Transferiste tu cuenta',
   ownership_received: 'Ahora eres dueño de la cuenta',
   email_changed: 'Cambiaste tu correo',
+  role_changed: 'Tu rol cambió',
 };
 
 function body(kind: NoticeKind, when: string, d: NoticeDetails): string {
@@ -63,6 +65,7 @@ function body(kind: NoticeKind, when: string, d: NoticeDetails): string {
     case 'ownership_received': return `${d.from} te transfirió la cuenta «${d.account}» el ${when}. Revisa los datos de facturación en Mi plan.`;
     // A la dirección anterior: `to` es la nueva.
     case 'email_changed': return `El correo de tu cuenta cambió a ${d.to} el ${when}.`;
+    case 'role_changed': return `${d.by ? `${d.by} cambió` : 'Cambió'} tu rol a ${d.role} el ${when}. Al entrar otra vez tienes los permisos nuevos.`;
   }
 }
 

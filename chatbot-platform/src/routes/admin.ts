@@ -110,6 +110,7 @@ export async function sessionRoutes(app: FastifyInstance) {
 
 /** Rutas autenticadas: perfil, cuentas, usuarios, estadísticas y registros. */
 const INVITE_ONLY = 'Invita a la persona: ella elige su contraseña al aceptar';
+const ROLE_NAMES: Record<Role, string> = { superadmin: 'superadministrador', admin: 'administrador', agent: 'agente' };
 const OWN_ONLY = 'Cada persona cambia su contraseña y su correo en Mi perfil';
 
 export async function adminRoutes(api: FastifyInstance, service: ChatService) {
@@ -499,6 +500,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
       await forgetTrustedDevices(updated.id);
       if (target.active) await offboard(target, req.user);
     } else if (updated.role !== target.role) await store.revokeUserSessions(updated.id);
+    if (updated.role !== target.role) await notifyUser(updated, 'role_changed', { by: req.user.name || req.user.email, role: ROLE_NAMES[updated.role] });
     if (updated.role !== target.role || updated.account_id !== target.account_id) {
       await logEvent({ level: 'info', source: 'admin', message: `Permisos de usuario actualizados: ${updated.email}`, accountId: updated.account_id ?? target.account_id ?? undefined,
         details: { actor_id: req.user.id, user_id: updated.id, previous_role: target.role, role: updated.role, previous_account_id: target.account_id, account_id: updated.account_id } });

@@ -168,3 +168,15 @@ t('nadie desactiva, degrada, mueve ni borra al dueño: primero transfiere', asyn
   const owner = await h.loginAs('dora@duenos.mx', PASS);
   assert.equal((await owner('PUT', `/api/users/${ids['beto@duenos.mx']}`, { name: 'Beto Duarte' })).statusCode, 200, 'el dueño sí maneja a los administradores');
 });
+
+t('cambiarle el rol a alguien le avisa por correo quién lo cambió', async () => {
+  const { outbox } = await import('../src/mailer.js');
+  const owner = await h.loginAs('dora@duenos.mx', PASS);
+  const sent = outbox.length;
+  assert.equal((await owner('PUT', `/api/users/${ids['ciro@duenos.mx']}`, { role: 'admin' })).statusCode, 200);
+  const mail = outbox.slice(sent).find((m) => m.to === 'ciro@duenos.mx');
+  assert.equal(mail?.subject, 'Tu rol cambió');
+  assert.match(mail!.text, /Dora cambió tu rol a administrador el /);
+  assert.equal((await owner('PUT', `/api/users/${ids['ciro@duenos.mx']}`, { name: 'Ciro' })).statusCode, 200);
+  assert.equal(outbox.slice(sent).filter((m) => m.to === 'ciro@duenos.mx').length, 1, 'sin cambio de rol no hay aviso');
+});
