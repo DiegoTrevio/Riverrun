@@ -19,7 +19,7 @@ before(async () => {
   h = await createHarness();
   await h.createBot();
   for (const [email, role] of [['duena@palmas.mx', 'admin'], ['agente@palmas.mx', 'agent']]) {
-    assert.equal((await h.authed('POST', '/api/users', { account_id: h.accountId, name: role, email, password: 'Pz-144-Qx-344-Kv', role })).statusCode, 200);
+    await h.addUser({ account_id: h.accountId, name: role, email, password: 'Pz-144-Qx-344-Kv', role });
   }
   admin = await h.loginAs('duena@palmas.mx', 'Pz-144-Qx-344-Kv');
   agent = await h.loginAs('agente@palmas.mx', 'Pz-144-Qx-344-Kv');

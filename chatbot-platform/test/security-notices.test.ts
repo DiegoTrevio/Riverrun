@@ -32,6 +32,10 @@ t('cada evento manda su asunto, saluda y termina con qué hacer si no fue la per
     recovery_regenerated: 'Generaste códigos de recuperación nuevos',
     mfa_locked: 'Bloqueamos tu verificación por intentos fallidos',
     new_device: 'Nuevo inicio de sesión en tu cuenta',
+    ownership_transferred: 'Transferiste tu cuenta',
+    ownership_received: 'Ahora eres dueño de la cuenta',
+    email_changed: 'Cambiaste tu correo',
+    role_changed: 'Tu rol cambió',
   } as const;
   for (const [kind, subject] of Object.entries(subjects)) {
     const before = outbox.length;
@@ -54,4 +58,12 @@ t('los detalles: códigos que quedan, dispositivo con IP parcial y quién restab
   assert.doesNotMatch(last().text, /203\.0\.113\.7/);
   await notifyUser(ana, 'mfa_reset', { by: 'Luis' });
   assert.match(last().text, /Luis restableció/);
+  await notifyUser(ana, 'ownership_transferred', { account: 'Florería Sol', to: 'Beto' });
+  assert.match(last().text, /Transferiste la cuenta «Florería Sol» a Beto el .+\. Sigues como administrador\./);
+  await notifyUser(ana, 'ownership_transferred', { account: 'Florería Sol', to: 'Beto', by: 'Soporte' });
+  assert.match(last().text, /Soporte transfirió la cuenta «Florería Sol» a Beto el .+\. Sigues como administrador\./);
+  await notifyUser(ana, 'role_changed', { by: 'Luis', role: 'administrador' });
+  assert.match(last().text, /Luis cambió tu rol a administrador el .+\. Al entrar otra vez tienes los permisos nuevos\./);
+  await notifyUser(ana, 'ownership_received', { account: 'Florería Sol', from: 'Luis' });
+  assert.match(last().text, /Luis te transfirió la cuenta «Florería Sol» el .+\. Revisa los datos de facturación en Mi plan\./);
 });

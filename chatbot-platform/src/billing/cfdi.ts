@@ -9,6 +9,7 @@ import { notifyUsers } from '../automation/store.js';
 import { mailBrand } from '../brands.js';
 import { config } from '../config.js';
 import { query, queryOne, withTransaction } from '../db.js';
+import { accountOwner } from '../identity/ownership.js';
 import { logEvent } from '../logs.js';
 import { sendMail } from '../mailer.js';
 import { facturapi, type CfdiDocument, type CfdiReceiver, type InvoiceProvider } from './facturapi.js';
@@ -65,11 +66,7 @@ export function mexicoMonth(d: Date) {
 async function receiverOf(accountId: string): Promise<CfdiReceiver | null> {
   const f = await getFiscal(accountId);
   if (!f.wants_invoice || !fiscalComplete(f)) return null;
-  const owner = await queryOne<{ email: string }>(
-    `SELECT u.email FROM accounts a JOIN users u ON u.id = a.owner_user_id OR (u.account_id = a.id AND u.role = 'admin')
-     WHERE a.id = $1 ORDER BY (u.id = a.owner_user_id) DESC, u.created_at LIMIT 1`,
-    [accountId],
-  );
+  const owner = await accountOwner(accountId);
   return { rfc: f.rfc, legal_name: f.legal_name, tax_regime: f.tax_regime, zip: f.zip, cfdi_use: f.cfdi_use, email: f.invoice_email || owner?.email || '' };
 }
 

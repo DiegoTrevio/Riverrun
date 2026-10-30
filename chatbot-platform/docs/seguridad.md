@@ -15,7 +15,7 @@ Cada etapa es un PR con pruebas que fallan con el código anterior y pasan con e
 | Etapa | Qué resuelve | Estado |
 |---|---|---|
 | 1. Altos de la aplicación | ID-1, IN-1, AI-1, AI-2, AI-3, AI-4, PAY-1, INF-1 | ✅ Corregido |
-| 2. Identidad | 2FA obligatorio para todos, contraseñas filtradas, sesiones con caducidad por inactividad, límites por cuenta y en la base, dueño distinto de administrador, correo verificado de verdad (ID-2…ID-10) | 2a ✅ (acceso), 2b pendiente (cuenta) |
+| 2. Identidad | 2FA obligatorio para todos, contraseñas filtradas, sesiones con caducidad por inactividad, límites por cuenta y en la base, dueño distinto de administrador, correo verificado de verdad (ID-2…ID-10) | 2a ✅ (acceso), 2b ✅ (cuenta) |
 | 3. Registro y cobros | Captcha → correo → 2FA → pago, topes contra prueba de tarjetas (PAY-2), Radar, disputas, pruebas gratis por persona (PAY-3…PAY-16) | Pendiente |
 | 4. Abuso de entradas | Límites compartidos en la base, tamaños por ruta, firma del webhook de WhatsApp, adjuntos sin macros, PDF aislados, cuota de IA antes de transcribir (IN-2…IN-14, PAY-6) | Pendiente |
 | 5. IA y Copiloto | Tarjetas de confirmación completas, costo de sub-llamados, notas de cotización, fuga de instrucciones (AI-5…AI-13) | Pendiente |
@@ -76,11 +76,7 @@ Diseño: [`superpowers/specs/2026-10-30-seguridad-etapa-2-identidad-design.md`](
 nunca vencía por inactividad con la pestaña abierta, que con HTTPS salir no borraba la cookie `__Host-` (faltaba
 `Secure` al borrarla), que un secreto pendiente se volvía a mostrar para siempre (quien supiera la contraseña podía dejar
 uno preparado) y que entrar con un código de recuperación solo mostraba un aviso pasajero. Todo eso quedó corregido, con
-su prueba. Lo que señaló y queda para después:
-- Un `cp_trust` copiado a otro navegador entra sin el aviso de dispositivo nuevo; restablecer la contraseña por correo no
-  levanta el bloqueo del 2FA; «Cerrar las demás sesiones» y «Olvidar» no piden verificación reciente (2b).
-- Ráfagas: el bloqueo del 2FA y su correo se repiten con códigos malos simultáneos; dos «Generar códigos nuevos» a la vez
-  pueden dejar 20 códigos (2b).
+su prueba. Lo que señaló y queda para después (lo de la 2b ya quedó corregido, ver abajo):
 - `rotate-secret`: quien configura su app justo entre el re-cifrado y el reinicio queda con el cifrado anterior; sus
   códigos de recuperación sí sirven (etapa 6).
 
@@ -97,6 +93,44 @@ su prueba. Lo que señaló y queda para después:
 - Mi perfil tiene «Verificación en dos pasos» (cambiar de app, códigos que quedan y «Generar códigos nuevos», dispositivos recordados con «Olvidar»); Equipo muestra «2FA activo» o «2FA pendiente» y «Restablecer 2FA».
 - Llegan correos de aviso de seguridad (ver la tabla).
 
+## Etapa 2b: lo que se corrigió
+
+Diseño: el mismo de la 2a. Plan: [`superpowers/plans/2026-10-30-seguridad-etapa-2b-cuenta.md`](superpowers/plans/2026-10-30-seguridad-etapa-2b-cuenta.md).
+
+| # | Hallazgo | Arreglo | Prueba |
+|---|---|---|---|
+| ID-2 | Cualquier administrador equivalía al dueño: podía cambiarle la clave, degradarlo, borrar o exportar la cuenta. | Cada cuenta tiene un solo dueño (`accounts.owner_user_id`, siempre un administrador activo de ella; sin uno válido, el administrador activo más antiguo, y queda guardado). Solo el dueño (o el superadministrador) maneja el plan, los pagos y la facturación, descarga o borra la cuenta, cancela el borrado e invita, promueve o maneja a los administradores (también reenvía, cancela o reemplaza sus invitaciones); a los demás les responde `owner_only` antes de pedir el código. Al dueño nadie lo desactiva, degrada, mueve ni borra: «Primero transfiere la cuenta a otro administrador». «Hacer dueño» transfiere a un administrador activo con su correo verificado y su 2FA (en una sola escritura condicionada), queda en la bitácora y avisa a los dos; la sesión del anterior pierde lo del dueño al momento. Mi plan es de solo lectura para quien no es dueño. | `account-owner.test.ts`, `account-transfer.test.ts`, `test:account:ux` |
+| ID-2 | Nadie debía escribir la contraseña de otro, pero el equipo se creaba con contraseña inicial y se le podía cambiar la clave o el correo a otro. | Al equipo se le invita y cada persona elige su contraseña al aceptar: `POST /api/users` responde 410; cambiar la contraseña o el correo de otra persona responde 400 (ni el superadministrador). Una cuenta nueva se crea con una invitación a su dueño, que al aceptarla queda como dueño. | `invite-only.test.ts`, `harness-helpers.test.ts` |
+| ID-4 | Cuentas «verificadas» sin prueba de control del correo; el login con Google entraba a ellas (y cambiaba su contraseña). | Un usuario creado sin decir lo contrario queda sin verificar. Google entra por su identificador estable (`sub`); por correo solo se liga si los dos lados lo tienen verificado; con el correo sin verificar aquí no entra ni toca la contraseña. El pase del registro con Google solo sirve en el navegador que entró (cookie `cp_gpass`) y ya no viaja en la URL de la API. Cambiar el correo pide la contraseña actual y la verificación reciente (con la sesión sola no se cambia: el correo abre «Olvidé mi contraseña»), topa 5 pedidos por hora contando también los correos ocupados, se aplica al abrir el enlace que llega al correo nuevo (si alguien lo tomó mientras tanto, no cambia nada) y avisa al anterior con qué correo entrar y cómo volver a poner el suyo. | `google-login.test.ts`, `email-change.test.ts`, `invite-only.test.ts` |
+| ID-5 | Al dar de baja a alguien sobrevivían sus invitaciones, llaves de API y webhooks. | Desactivar, borrar o pasar a otra cuenta a alguien revoca sus llaves (de la cuenta de antes), pausa sus webhooks («Lo creó …, que ya no está en el equipo») y cancela sus invitaciones; reactivarlo no revive nada. La confirmación del panel dice qué se va. | `offboarding.test.ts`, `test:account:ux` |
+| ID-6 | Las invitaciones servían para mandar correo con texto controlado, también desde una cuenta sin verificar. | Texto fijo con los nombres limpios (sin enlaces ni dominios) y entre «»; solo invita quien tiene su correo verificado y con el del dueño verificado; topes en la base (20 por día por cuenta, 3 por día al mismo correo, 50 pendientes). Si el correo no sale (sin SMTP), el panel lo dice. | `invitation-limits.test.ts` |
+| ID-7 | Recuperar la contraseña delataba qué correos existen (por el tiempo) y su límite estaba en memoria. | Responde al momento y lo mismo exista o no el correo; el resto va en segundo plano. Topes en la base: 5 por hora por conexión y 3 por hora al mismo correo. | `password-recovery.test.ts` |
+| ID-8 | Los enlaces para restablecer seguían vigentes tras cambiar la contraseña; uno nuevo invalidaba al anterior aunque llegara antes. | Quedan vivos los 3 más nuevos (sirve cualquiera); usar uno, cambiar la contraseña o confirmar un cambio de correo invalida los demás. Restablecer por correo quita también el bloqueo del 2FA. | `password-recovery.test.ts`, `email-change.test.ts` |
+| ID-10 | Los enlaces con token iban al dominio de la marca blanca. | Todo enlace con token (verificar, restablecer, invitación, cambio de correo, borrar la cuenta) va al dominio principal; el remitente sigue con su marca. | `brand.test.ts` |
+| INF-13 (parte) | Sin SMTP, la bitácora guardaba el correo completo, con sus enlaces. | La bitácora guarda el texto con los tokens como `[oculto]`. | `mailer.test.ts` |
+| 2a | Lo que la revisión de la 2a dejó para después. | Un `cp_trust` copiado a otro navegador ya no salta el código (hace falta su `cp_device`); con muchos códigos malos a la vez llega un solo correo de bloqueo; dos «Generar códigos nuevos» a la vez dejan 10; «Cerrar las demás sesiones» y «Olvidar» un dispositivo piden verificación reciente. | `identity-devices.test.ts`, `identity-limits.test.ts`, `identity-profile.test.ts`, `identity-step-up.test.ts` |
+
+**Cambios que nota la gente:**
+- Cada cuenta tiene un dueño (el administrador que la creó o el primero que aceptó). Solo él cambia el plan y la tarjeta, ve la facturación, descarga o borra la cuenta, e invita o maneja a los administradores; los demás administradores ven Mi plan sin botones. En Equipo aparece «Dueño» y, para el dueño, «Hacer dueño» en los administradores que pueden recibir la cuenta.
+- Ya no se crean usuarios con contraseña inicial ni se cambia la contraseña de otro: se invita (Equipo → Invitar a tu equipo). El superadministrador crea una cuenta invitando a su dueño.
+- El correo propio se cambia en Mi perfil → Correo, con la contraseña actual: llega un enlace al correo nuevo y el cambio se aplica al abrirlo; al anterior le llega un aviso.
+- Entrar con Google: si el correo de la cuenta no está verificado, primero hay que entrar con la contraseña y verificarlo.
+- Desactivar, borrar o pasar a otra cuenta a alguien revoca sus llaves de API, pausa sus webhooks y cancela sus invitaciones (la confirmación lo dice).
+- Para invitar hay que tener el correo verificado (y el dueño también); hay topes por día.
+- Los enlaces de los correos (verificar, restablecer, invitación, cambio de correo, borrar la cuenta) van al dominio principal también en cuentas con marca blanca.
+
+**Revisión independiente de la etapa 2b.** Encontró que con una sesión robada se podía cambiar el correo sin la
+contraseña y, con «Olvidé mi contraseña» al correo nuevo, quedarse con la cuenta. Además subí a importantes que preguntar
+por correos ocupados al cambiar el correo no tenía tope, que quien aceptaba una invitación de administrador podía quedar
+como dueño antes que un administrador más antiguo, que un administrador que no es el dueño podía cancelar, reenviar o
+cambiar por una de agente la invitación de administrador del dueño, y que al pasar a alguien a otra cuenta su llave de
+la cuenta de antes seguía entrando. Todo eso quedó corregido, con su prueba. Lo que señaló y queda para después:
+- Crear una invitación no es atómico: un doble clic al mismo correo puede responder 500 (y gastar un intento del tope).
+- Cambiar el correo e invitar al dueño de una cuenta nueva no dicen si el correo salió (sin SMTP el panel dice «te
+  mandamos…»); las invitaciones del equipo sí lo dicen.
+- El superadministrador sin cuenta elegida ve «Hacer dueño» y el servidor responde «Elige la cuenta»; tampoco ve
+  exportar o borrar la cuenta en Mi plan (la API sí se lo permite con `?account_id`).
+
 ## Hallazgos pendientes por etapa
 
 Abreviaturas: ID identidad, PAY cobros, IN entradas, AI IA y Copiloto, INF servidor.
@@ -107,10 +141,6 @@ Abreviaturas: ID identidad, PAY cobros, IN entradas, AI IA y Copiloto, INF servi
 - **INF-3** `./riverrun update` nunca actualiza Caddy, Node, Redis ni PostgreSQL.
 
 ### Medios
-- **ID-2** Cualquier administrador equivale al dueño (puede cambiar su clave, degradarlo, borrar o exportar la cuenta).
-- **ID-4** Cuentas «verificadas» sin prueba de control del correo (también las que crea un administrador); el login con Google entra a ellas.
-- **ID-5** Al dar de baja a alguien sobreviven sus invitaciones, llaves de API y webhooks.
-- **ID-6** Las invitaciones sirven para mandar correo con texto controlado desde una cuenta sin verificar.
 - **PAY-3** Pruebas gratis sin límite (correo sin normalizar, sin huella de tarjeta).
 - **PAY-4/5** Disputas: un aviso fuera de orden re-pausa para siempre; una disputa abierta no detiene los cobros.
 - **PAY-6** Cuentas en pausa o sin cupo siguen gastando IA (transcripción, Copiloto, herramientas con IA).
@@ -130,9 +160,8 @@ Abreviaturas: ID identidad, PAY cobros, IN entradas, AI IA y Copiloto, INF servi
 - **INF-11** Respaldo: directorio de trabajo en claro, credencial de S3 que puede borrar, cifrado sin autenticación.
 
 ### Bajos
-ID-7, ID-8 e ID-10 (tiempos en recuperar contraseña, tokens de recuperación vigentes tras cambiar la clave, enlaces de
-marca blanca; ID-9 quedó en la etapa 2a), PAY-10…PAY-16, AI-10…AI-13, IN-8…IN-14 (calendario `.ics` sin escapar, asunto
+PAY-10…PAY-16, AI-10…AI-13, IN-8…IN-14 (calendario `.ics` sin escapar, asunto
 reflejado, textos de la URL en el panel, reservas como relé de correo, `unsafe-inline` en páginas públicas, plazos de
 descarga, analizador JSON propio), INF-12…INF-15 (secretos impresos por el instalador, cuerpos de correo en la bitácora sin
-SMTP, `.gitignore`, acciones por etiqueta). `privacy.md` y `terms.md` (sitio de GitHub Pages) dicen «Viralize» y prometen
+SMTP —los tokens ya van ocultos desde la 2b—, `.gitignore`, acciones por etiqueta). `privacy.md` y `terms.md` (sitio de GitHub Pages) dicen «Viralize» y prometen
 «encriptamos todos los datos»: lo revisa el dueño o su abogado.

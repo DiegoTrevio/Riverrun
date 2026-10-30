@@ -21,7 +21,7 @@ before(async () => {
   h = await createHarness();
   await h.createBot();
   for (const email of ['lia@clave.mx', 'max@clave.mx']) {
-    assert.equal((await h.authed('POST', '/api/users', { account_id: h.accountId, name: email, email, password: PASS, role: 'admin' })).statusCode, 200);
+    await h.addUser({ account_id: h.accountId, name: email, email, password: PASS, role: 'admin' });
     await h.loginAs(email, PASS);
   }
   // Max empezó a cambiar de app: su secreto pendiente también se re-cifra.

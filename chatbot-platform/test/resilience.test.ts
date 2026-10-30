@@ -32,7 +32,7 @@ before(async () => {
   if (!ok) return;
   h = await createHarness();
   await h.createBot();
-  assert.equal((await h.authed('POST', '/api/users', { account_id: h.accountId, email: ADMIN, name: 'Dueño', password: 'Pz-118-Qx-318-Kv', role: 'admin' })).statusCode, 200);
+  await h.addUser({ account_id: h.accountId, email: ADMIN, name: 'Dueño', password: 'Pz-118-Qx-318-Kv', role: 'admin' });
   // Estas pruebas avisan de inmediato; la espera configurable tiene sus propias pruebas al final.
   await setAlerts({ after_minutes: 0 });
 });

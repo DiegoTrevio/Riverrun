@@ -25,14 +25,18 @@ export async function render() {
   const parts = pathPart.split('/').filter(Boolean);
   const params = new URLSearchParams(qs || '');
 
-  if (['login', 'registro', 'registro-google', 'invitacion', 'olvide', 'restablecer', 'verificar'].includes(parts[0])) await ensureBrand('host');
+  if (['login', 'registro', 'registro-google', 'invitacion', 'olvide', 'restablecer', 'verificar', 'cambiar-correo'].includes(parts[0])) await ensureBrand('host');
   if (!current()) return;
   if (parts[0] === 'login' && parts[1] === 'codigo') return view('mfa', 'renderMfaVerify');
   if (parts[0] === 'login' && parts[1] === 'configurar') return view('mfa', 'renderMfaEnroll');
   if (parts[0] === 'login') return view('auth', 'renderLogin');
   if (parts[0] === 'registro') return view('auth', 'renderSignup', params);
-  if (parts[0] === 'registro-google') return view('auth', 'renderGoogleSignup', params.get('token') || '');
+  // El pase de Google va en la ruta (no en la URL de la API) y solo sirve en este navegador (cookie cp_gpass).
+  if (parts[0] === 'registro-google') return view('auth', 'renderGoogleSignup', decodeURIComponent(parts[1] || ''));
+  if (parts[0] === 'invitacion' && parts[1] === 'google') params.set('google', decodeURIComponent(parts[2] || ''));
+  else if (parts[0] === 'invitacion' && parts[1]) params.set('token', decodeURIComponent(parts[1]));
   if (parts[0] === 'invitacion') return view('auth', 'renderInvite', params);
+  if (parts[0] === 'cambiar-correo') return view('auth', 'renderEmailChange', decodeURIComponent(parts[1] || ''));
   if (parts[0] === 'olvide') return view('auth', 'renderForgot');
   if (parts[0] === 'restablecer') return view('auth', 'renderReset', params.get('token') || '');
   if (parts[0] === 'verificar') return view('auth', 'renderVerify', params.get('token') || '');

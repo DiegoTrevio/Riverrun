@@ -57,7 +57,7 @@ export async function integrationRoutes(api: FastifyInstance) {
     const b = parse(EndpointBody, req.body);
     const n = (await queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM webhook_endpoints WHERE account_id = $1`, [accountId]))?.n ?? 0;
     if (n >= 10) throw new HttpError(400, 'Máximo 10 webhooks por cuenta');
-    const ep = await queryOne(`INSERT INTO webhook_endpoints (account_id, url, description, events, active) VALUES ($1,$2,$3,$4,$5) RETURNING *`, [accountId, b.url, b.description, JSON.stringify(b.events), b.active]);
+    const ep = await queryOne(`INSERT INTO webhook_endpoints (account_id, url, description, events, active, created_by) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`, [accountId, b.url, b.description, JSON.stringify(b.events), b.active, req.user.id]);
     await logEvent({ level: 'info', source: 'admin', message: `Webhook creado hacia ${new URL(b.url).host}`, accountId });
     return ep;
   });

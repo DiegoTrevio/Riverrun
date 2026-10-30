@@ -61,8 +61,7 @@ test('a lo más 4 cálculos a la vez y 64 esperando: el siguiente responde 503',
 });
 
 t('quien entra con un hash de antes queda con el nuevo', async () => {
-  const created = await h.authed('POST', '/api/users', { account_id: null, name: 'Vieja', email: 'vieja@hash.mx', password: 'Pz-127-Qx-327-Kv', role: 'superadmin' });
-  assert.equal(created.statusCode, 200, created.body);
+  await h.addSuperadmin('vieja@hash.mx', 'Pz-127-Qx-327-Kv');
   await pool.query(`UPDATE users SET password_hash = $1 WHERE email = 'vieja@hash.mx'`, [oldHash('Pz-127-Qx-327-Kv')]);
   const r = await h.app.inject({ method: 'POST', url: '/api/login', payload: { email: 'vieja@hash.mx', password: 'Pz-127-Qx-327-Kv' } });
   assert.notEqual(r.statusCode, 401, r.body);

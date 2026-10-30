@@ -99,7 +99,7 @@ t('responder desde el panel o el teléfono dispara transferencia; el eco no la r
 });
 t('editar un contacto de otro perfil no escribe ni dispara reglas', async () => {
   const capture = await rule('data_captured'); const opt = await rule('opt_out'); const conv = await live();
-  await h.authed('POST','/api/accounts',{name:'Otro',admin:{email:'other@audit.test',password:'Pz-945-Qx-946-Kv'}});
+  await h.addAccount({name:'Otro',admin:{email:'other@audit.test',password:'Pz-945-Qx-946-Kv'}});
   const other = await h.loginAs('other@audit.test','Pz-945-Qx-946-Kv');
   const response = await other('PUT',`/api/contacts/${conv.contact_id}`,{data:{correo:'wrong@example.test'},opted_out:true});
   assert.equal(response.statusCode,404); assert.equal(await runs(capture),0); assert.equal(await runs(opt),0);

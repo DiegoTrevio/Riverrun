@@ -42,9 +42,8 @@ const enter = async (b: ReturnType<typeof browser>, email: string, password = PA
   return (await b.send('POST', '/api/login/2fa', { code: await h.codeFor(email), remember })).json();
 };
 const newUser = async (email: string) => {
-  const r = await h.authed('POST', '/api/users', { account_id: h.accountId, name: 'Dora', email, password: PASS, role: 'agent' });
-  assert.equal(r.statusCode, 200, r.body);
-  return r.json().id as string;
+  const r = await h.addUser({ account_id: h.accountId, name: 'Dora', email, password: PASS, role: 'agent' });
+  return r.id as string;
 };
 const mails = (to: string, subject: string) => outbox.filter((m) => m.to === to && m.subject === subject).length;
 
@@ -73,6 +72,23 @@ t('recordar el dispositivo salta el código la próxima vez (sin dar verificaci�
   const row = (await pool.query(`SELECT s.mfa_at FROM user_sessions s JOIN users u ON u.id = s.user_id WHERE u.email = 'dora@disp.mx' ORDER BY s.created_at DESC LIMIT 1`)).rows[0];
   assert.equal(row.mfa_at, null, 'entrar con dispositivo recordado no cuenta como código escrito');
   assert.equal((await b.send('POST', '/api/login', { email: 'dora@disp.mx', password: 'otra-clave-equivocada' })).statusCode, 401, 'la contraseña se sigue pidiendo');
+});
+
+t('un cp_trust copiado a otro navegador (sin su cp_device) no salta el código', async () => {
+  await newUser('copia@disp.mx');
+  const b = browser();
+  await enter(b, 'copia@disp.mx');
+  await b.send('POST', '/api/logout');
+  assert.ok((await enter(b, 'copia@disp.mx', PASS, true)).ok);
+  await b.send('POST', '/api/logout');
+  const thief = browser();
+  thief.jar.set('cp_trust', b.jar.get('cp_trust')!);
+  assert.equal((await thief.send('POST', '/api/login', { email: 'copia@disp.mx', password: PASS })).json().mfa, 'verify', 'sin su cp_device pide el código');
+  const other = browser();
+  other.jar.set('cp_trust', b.jar.get('cp_trust')!);
+  other.jar.set('cp_device', 'y'.repeat(43));
+  assert.equal((await other.send('POST', '/api/login', { email: 'copia@disp.mx', password: PASS })).json().mfa, 'verify', 'con el cp_device de otro navegador, también');
+  assert.equal((await b.send('POST', '/api/login', { email: 'copia@disp.mx', password: PASS })).json().ok, true, 'en su navegador sigue recordado');
 });
 
 t('el superadmin nunca queda recordado', async () => {
@@ -122,12 +138,18 @@ t('se olvida al cambiar o restablecer la contraseña, al cerrar las demás sesio
   await asksCode(b);
 
   b = await trusted();
+  // Entró sin escribir el código (dispositivo recordado): cerrar las demás sesiones lo pide.
+  assert.equal((await b.send('POST', '/api/me/sessions/revoke-others')).json().code, 'step_up');
+  assert.equal((await b.send('POST', '/api/2fa/step-up', { code: await h.codeFor('fer@disp.mx') })).statusCode, 200);
   assert.equal((await b.send('POST', '/api/me/sessions/revoke-others')).statusCode, 200);
   await asksCode(b);
 
   b = await trusted();
+  const sent = outbox.length;
   await h.app.inject({ method: 'POST', url: '/api/forgot-password', remoteAddress: '10.63.1.1', payload: { email: 'fer@disp.mx' } });
-  const mail = [...outbox].reverse().find((m) => m.to === 'fer@disp.mx' && m.subject === 'Restablece tu contraseña')!;
+  // El correo sale en segundo plano, después de responder.
+  await waitFor(() => outbox.slice(sent).some((m) => m.to === 'fer@disp.mx' && m.subject === 'Restablece tu contraseña'));
+  const mail = outbox.slice(sent).find((m) => m.to === 'fer@disp.mx' && m.subject === 'Restablece tu contraseña')!;
   const token = decodeURIComponent(/restablecer\?token=([^\s&]+)/.exec(mail.text)![1]);
   assert.equal((await h.app.inject({ method: 'POST', url: '/api/reset-password', remoteAddress: '10.63.1.2', payload: { token, password: 'Pz-975-Qx-976-Kv' } })).statusCode, 200);
   password = 'Pz-975-Qx-976-Kv';

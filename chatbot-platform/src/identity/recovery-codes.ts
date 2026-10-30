@@ -5,7 +5,7 @@
  */
 import crypto from 'node:crypto';
 import type pg from 'pg';
-import { query, queryOne } from '../db.js';
+import { query, queryOne, withTransaction } from '../db.js';
 
 const ALPHABET = '0123456789abcdefghjkmnpqrstvwxyz';
 const LENGTH = 12;
@@ -26,12 +26,19 @@ export function normalizeRecoveryCode(input: string): string {
 const hashOf = (code: string) => crypto.createHash('sha256').update(normalizeRecoveryCode(code)).digest('hex');
 
 /** Borra los anteriores y genera 10 nuevos; devuelve los códigos (la única vez que se ven). */
+/**
+ * Cambia los códigos de la persona por 10 nuevos, en una transacción y con su fila bloqueada: dos pedidos a la vez dejan
+ * 10 códigos (los del último), no 20.
+ */
 export async function replaceRecoveryCodes(userId: string, client?: pg.PoolClient): Promise<string[]> {
-  const run = (text: string, params: unknown[]) => (client ? client.query(text, params) : query(text, params));
-  const codes = newRecoveryCodes();
-  await run(`DELETE FROM user_recovery_codes WHERE user_id = $1`, [userId]);
-  await run(`INSERT INTO user_recovery_codes (user_id, code_hash) SELECT $1, unnest($2::text[])`, [userId, codes.map(hashOf)]);
-  return codes;
+  const replace = async (c: pg.PoolClient) => {
+    const codes = newRecoveryCodes();
+    await c.query(`SELECT 1 FROM users WHERE id = $1 FOR UPDATE`, [userId]);
+    await c.query(`DELETE FROM user_recovery_codes WHERE user_id = $1`, [userId]);
+    await c.query(`INSERT INTO user_recovery_codes (user_id, code_hash) SELECT $1, unnest($2::text[])`, [userId, codes.map(hashOf)]);
+    return codes;
+  };
+  return client ? replace(client) : withTransaction(replace);
 }
 
 /** Usa un código (una sola vez, aunque lleguen dos peticiones a la vez). Devuelve cuántos quedan, o null si no sirvió. */

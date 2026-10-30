@@ -158,7 +158,7 @@ async function editDialog(ep, events) {
 
 function endpointCard(ep, events) {
   const label = (e) => (e === '*' ? 'Todos los eventos de siempre' : events.find((x) => x.type === e)?.label || e);
-  const status = ep.disabled_reason ? h('span', { class: 'badge red' }, 'Pausado por fallos') : ep.active ? h('span', { class: 'badge green' }, 'Activo') : h('span', { class: 'badge' }, 'Apagado');
+  const status = ep.disabled_reason ? h('span', { class: 'badge red' }, 'Pausado') : ep.active ? h('span', { class: 'badge green' }, 'Activo') : h('span', { class: 'badge' }, 'Apagado');
   return h('div', { class: 'card' },
     h('div', { class: 'row between' }, h('strong', {}, ep.description || ep.url), status),
     h('div', { class: 'muted small' }, ep.url),

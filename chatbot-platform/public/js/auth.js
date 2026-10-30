@@ -8,6 +8,8 @@ const GOOGLE_MSG = {
   'sin-correo': 'Google no confirmó tu correo.',
   desactivada: 'Esta cuenta está desactivada.',
   'solo-contrasena': 'Esta cuenta solo entra con correo y contraseña.',
+  'sin-verificar': 'Ese correo no está verificado en tu cuenta: entra con tu contraseña y verifícalo para usar Google.',
+  'otra-cuenta': 'Tu usuario ya entra con otra cuenta de Google: usa esa o entra con tu contraseña.',
   'sin-cuenta': 'No hay una cuenta con ese correo y el registro está cerrado.',
   demasiados: 'Demasiados intentos, espera un poco.',
   'correo-temporal': 'Usa un correo permanente de tu negocio: no aceptamos correos temporales.',
@@ -104,7 +106,7 @@ export async function renderGoogleSignup(token) {
   const navigation = state.navigation;
   let info;
   try {
-    info = await api('GET', `/api/signup/google?token=${encodeURIComponent(token)}`);
+    info = await api('POST', '/api/signup/google/peek', { token });
   } catch (e) {
     if (navigation !== state.navigation) return;
     return publicCard('Registro con Google', h('p', {}, e?.message || 'El enlace de registro venció.'), h('a', { class: 'btn primary', href: '/oauth/google/login' }, 'Volver a entrar con Google'));
@@ -138,10 +140,10 @@ export async function renderInvite(params) {
   const navigation = state.navigation;
   const token = params.get('token') || '';
   const google = params.get('google') || '';
-  const q = google ? `google=${encodeURIComponent(google)}` : `token=${encodeURIComponent(token)}`;
   let info;
   try {
-    info = await api('GET', `/api/invitation?${q}`);
+    // El token (o el pase de Google) va en el cuerpo, no en la URL de la API.
+    info = await api('POST', '/api/invitation/peek', google ? { google } : { token });
   } catch (e) {
     if (navigation !== state.navigation) return;
     return publicCard('Invitación', h('p', {}, e?.message || 'Esta invitación no es válida.'), h('a', { class: 'btn primary', href: '#/login' }, 'Iniciar sesión'));
@@ -280,6 +282,19 @@ export function renderReset(token) {
     field('Contraseña nueva', text(f, 'password', { type: 'password', autocomplete: 'new-password', minlength: 12, required: true }), 'Mínimo 12 caracteres; una frase de 3 o 4 palabras funciona bien.'),
     field('Repítela', text(f, 'confirm', { type: 'password', autocomplete: 'new-password', minlength: 12, required: true })),
     h('button', { class: 'primary', type: 'submit' }, 'Guardar')));
+}
+
+/** El enlace que llega al correo nuevo (cambiar el correo desde Mi perfil): al abrirlo se aplica el cambio. */
+export async function renderEmailChange(token) {
+  const box = h('p', {}, 'Cambiando tu correo…');
+  publicCard('Cambiar tu correo', box);
+  try {
+    await api('POST', '/api/email-change/confirm', { token });
+    state.me = null;
+    fill(box, 'Tu correo cambió. Entra con tu correo nuevo. ', h('a', { href: '#/login' }, 'Iniciar sesión →'));
+  } catch (e) {
+    fill(box, e.message, ' ', h('a', { href: '#/login' }, 'Iniciar sesión'));
+  }
 }
 
 export async function renderVerify(token) {

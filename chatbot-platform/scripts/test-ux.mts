@@ -460,24 +460,21 @@ try {
     assert.equal(await page.evaluate(() => document.activeElement?.textContent), 'Saltar al contenido');
     await page.keyboard.press('Enter');
     assert.equal(await page.evaluate(() => document.activeElement?.id), 'contenido');
-    // A5: el error del servidor va junto a su campo, con su ayuda, el foco en él y un solo aviso.
+    // A5: el error del servidor va junto a su campo, con el foco en él y un solo aviso (invitar con un correo que el
+    // navegador acepta y el servidor no).
     await page.goto(`${base}/#/users`); await page.locator('.main h1').waitFor();
-    const create = page.locator('details.card', { hasText: 'Crear usuario con contraseña inicial' });
-    await create.locator('summary').click();
-    const phone = create.getByLabel('WhatsApp para alertas (opcional)');
-    await create.getByLabel('Nombre', { exact: true }).fill('Persona sin lada');
-    await create.getByLabel('Correo', { exact: true }).fill('sinlada@auditoria.test');
-    await create.getByLabel('Contraseña inicial', { exact: true }).fill('Pz-100-Qx-300-Kv');
-    await phone.fill('5512345678');
-    await page.getByRole('button', { name: 'Crear usuario', exact: true }).click();
-    await page.getByText(/Incluye la lada del país/).first().waitFor();
-    assert.equal(await phone.getAttribute('aria-invalid'), 'true');
-    const describedBy = (await phone.getAttribute('aria-describedby')) || '';
-    assert.match(await page.evaluate((ids) => ids.split(' ').map((id) => document.getElementById(id)?.textContent).join(' | '), describedBy), /Incluye la lada del país/);
-    assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('name')), 'phone', 'el foco va al campo con el error');
+    const invite = page.locator('section.card', { hasText: 'Invitar a tu equipo' });
+    const email = invite.getByLabel('Correo', { exact: true });
+    await email.fill('persona@sin-dominio');
+    await invite.getByRole('button', { name: 'Enviar invitación', exact: true }).click();
+    await page.getByText(/correo inválido/).first().waitFor();
+    assert.equal(await email.getAttribute('aria-invalid'), 'true');
+    const describedBy = (await email.getAttribute('aria-describedby')) || '';
+    assert.match(await page.evaluate((ids) => ids.split(' ').map((id) => document.getElementById(id)?.textContent).join(' | '), describedBy), /correo inválido/);
+    assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('name')), 'email', 'el foco va al campo con el error');
     assert.equal(await page.locator('#toast-alert').textContent(), '', 'sin repetir el error en el aviso emergente');
-    await phone.fill('5215512345678');
-    assert.equal(await phone.getAttribute('aria-invalid'), null, 'al corregir se quita la marca');
+    await email.fill('persona@ejemplo.mx');
+    assert.equal(await email.getAttribute('aria-invalid'), null, 'al corregir se quita la marca');
     // Un aviso con un diálogo abierto queda dentro del diálogo, a la vista.
     await page.evaluate(async () => {
       const core = await import('/js/core.js');

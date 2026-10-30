@@ -32,13 +32,11 @@ before(async () => {
   h = await createHarness();
   await h.createBot({ rules: { handoff_keywords: ['asesor'], handoff_notify_number: NOTIFY } });
   h.setScript(() => ({ messages: ['Con gusto te ayudo.'] }));
-  const boss = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'jefa@avisos.mx', name: 'Jefa', password: 'Pz-107-Qx-307-Kv', role: 'admin', phone: '5215511112222', notify_whatsapp: true });
-  assert.equal(boss.statusCode, 200, boss.body);
-  bossId = boss.json().id;
+  const boss = await h.addUser({ account_id: h.accountId, email: 'jefa@avisos.mx', name: 'Jefa', password: 'Pz-107-Qx-307-Kv', role: 'admin', phone: '5215511112222', notify_whatsapp: true });
+  bossId = boss.id;
   bossApi = await h.loginAs('jefa@avisos.mx', 'Pz-107-Qx-307-Kv');
-  const agent = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'agente@avisos.mx', name: 'Agente', password: 'Pz-107-Qx-307-Kv', role: 'agent' });
-  assert.equal(agent.statusCode, 200, agent.body);
-  agentId = agent.json().id;
+  const agent = await h.addUser({ account_id: h.accountId, email: 'agente@avisos.mx', name: 'Agente', password: 'Pz-107-Qx-307-Kv', role: 'agent' });
+  agentId = agent.id;
 });
 after(async () => {
   if (h) await h.app.close();
@@ -252,8 +250,7 @@ t('escalamiento: solo a administradores de la cuenta y, si los elegidos ya no es
   assert.deepEqual(saved.escalate_user_ids, [bossId]);
   assert.equal(saved.ai_error_repeat_minutes, 0, 'un 0 ya no rechaza los ajustes (cuenta como 10)');
   // La jefa elegida se desactiva: el escalamiento va a los demás administradores, no a nadie.
-  const other = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'otra-jefa@avisos.mx', name: 'Otra', password: 'Pz-107-Qx-307-Kv', role: 'admin' });
-  assert.equal(other.statusCode, 200, other.body);
+  const other = await h.addUser({ account_id: h.accountId, email: 'otra-jefa@avisos.mx', name: 'Otra', password: 'Pz-107-Qx-307-Kv', role: 'admin' });
   await pool.query(`UPDATE users SET active = false WHERE id = $1`, [bossId]);
   const phone = '5215530009103';
   await customer('quiero un asesor', phone);
@@ -262,7 +259,7 @@ t('escalamiento: solo a administradores de la cuenta y, si los elegidos ya no es
   await pool.query(`UPDATE conversations SET assigned_user_id = $2, escalated_at = NULL WHERE id = $1`, [conv.id, agentId]);
   await pool.query(`UPDATE messages SET created_at = now() - interval '40 minutes' WHERE conversation_id = $1`, [conv.id]);
   await h.service.remindHumanWaiting();
-  assert.equal((await notices(other.json().id, 'escalation')).filter((n) => n.link === `#/conversation/${conv.id}`).length, 1);
+  assert.equal((await notices(other.id, 'escalation')).filter((n) => n.link === `#/conversation/${conv.id}`).length, 1);
   await pool.query(`UPDATE users SET active = true WHERE id = $1`, [bossId]);
   await settings({ alert_timing: { human_repeat_minutes: 120, ai_error_repeat_minutes: 30, escalate_minutes: 0, escalate_user_ids: [] } });
 });

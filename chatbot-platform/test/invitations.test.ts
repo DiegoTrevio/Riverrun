@@ -29,19 +29,20 @@ const B = { account: '', admin: null as unknown as Api };
 let outbox: { to: string; subject: string; text: string }[];
 
 const tokenFor = (to: string) => {
-  const mail = [...outbox].reverse().find((m) => m.to === to && m.text.includes('#/invitacion?token='));
+  const mail = [...outbox].reverse().find((m) => m.to === to && m.text.includes('#/invitacion/'));
   assert.ok(mail, `sin invitación para ${to}`);
-  return decodeURIComponent(/#\/invitacion\?token=([^\s]+)/.exec(mail.text)![1]);
+  return decodeURIComponent(/#\/invitacion\/([^\s]+)/.exec(mail.text)![1]);
 };
-const info = (q: string) => h.app.inject({ method: 'GET', url: `/api/invitation?${q}`, remoteAddress: '10.9.0.1' });
+/** Ver la invitación: `q` es `token=…` o `google=…` (va en el cuerpo, no en la URL). */
+const info = (q: string, cookie?: string) =>
+  h.app.inject({ method: 'POST', url: '/api/invitation/peek', remoteAddress: '10.9.0.1', headers: cookie ? { cookie } : {}, payload: Object.fromEntries(new URLSearchParams(q)) });
 let ip = 0;
 const accept = (body: Record<string, unknown>) =>
   h.app.inject({ method: 'POST', url: '/api/invitation/accept', remoteAddress: `10.9.1.${++ip}`, headers: { 'user-agent': 'Navegador de prueba' }, payload: { name: 'Persona', accept_terms: true, ...body } });
 
 async function account(name: string, email: string) {
-  const r = await h.authed('POST', '/api/accounts', { name, admin: { name: `Admin ${name}`, email, password: 'Pz-144-Qx-344-Kv' } });
-  assert.equal(r.statusCode, 200, r.body);
-  return r.json().id as string;
+  const r = await h.addAccount({ name, admin: { name: `Admin ${name}`, email, password: 'Pz-144-Qx-344-Kv' } });
+  return r.id as string;
 }
 
 before(async () => {
@@ -52,7 +53,7 @@ before(async () => {
   B.account = await account('Cuenta Beto', 'beto@otra.mx');
   A.admin = await h.loginAs('ana@taller.mx', 'Pz-144-Qx-344-Kv');
   B.admin = await h.loginAs('beto@otra.mx', 'Pz-144-Qx-344-Kv');
-  assert.equal((await A.admin('POST', '/api/users', { name: 'Agente', email: 'agente@taller.mx', password: 'Pz-144-Qx-344-Kv', role: 'agent' })).statusCode, 200);
+  await h.addUser({ account_id: A.account, name: 'Agente', email: 'agente@taller.mx', password: 'Pz-144-Qx-344-Kv', role: 'agent' });
   A.agent = await h.loginAs('agente@taller.mx', 'Pz-144-Qx-344-Kv');
 });
 after(async () => {
@@ -67,7 +68,7 @@ t('invitar por correo y unirse eligiendo contraseña: queda en la cuenta, con su
   assert.deepEqual([r.json().email, r.json().role], ['lalo@taller.mx', 'admin']);
   assert.ok(!r.body.includes('token'), 'la respuesta no trae el enlace');
   const mail = [...outbox].reverse().find((m) => m.to === 'lalo@taller.mx')!;
-  assert.match(mail.subject, /Admin Taller Ana te invitó a Taller Ana/);
+  assert.equal(mail.subject, '«Admin Taller Ana» te invitó a «Taller Ana»');
   assert.match(mail.text, /como administrador/);
   const token = tokenFor('lalo@taller.mx');
 
@@ -152,7 +153,7 @@ t('correos que ya tienen cuenta o temporales no se invitan; agentes y otras cuen
   assert.deepEqual((await B.admin('GET', '/api/invitations')).json().map((i: any) => i.email), ['rosa@otra.mx']);
 
   // Si alguien registra ese correo antes de aceptar, la invitación ya no crea otro usuario.
-  assert.equal((await B.admin('POST', '/api/users', { name: 'Quique', email: 'quique@taller.mx', password: 'Pz-144-Qx-344-Kv', role: 'agent' })).statusCode, 200);
+  await h.addUser({ account_id: B.account, name: 'Quique', email: 'quique@taller.mx', password: 'Pz-144-Qx-344-Kv', role: 'agent' });
   assert.equal((await accept({ token: tokenFor('quique@taller.mx'), password: 'Pz-114-Qx-314-Kv' })).statusCode, 409);
 });
 
@@ -162,28 +163,37 @@ t('con Google: un correo invitado se une a su equipo (aunque el registro públic
   const enabled = config.signup.enabled;
   Object.assign(config.signup, { enabled: false });
   try {
-    claims = { email: 'Sofi@Taller.mx', email_verified: true, name: 'Sofía' };
+    claims = { sub: 'g-sofi', email: 'Sofi@Taller.mx', email_verified: true, name: 'Sofía' };
     const start = await h.app.inject({ method: 'GET', url: '/oauth/google/login', remoteAddress: '10.9.2.1' });
     const state = new URL(String(start.headers.location)).searchParams.get('state')!;
     const nonce = start.cookies.find((c) => c.name === 'g_nonce')!.value;
     const back = await h.app.inject({ method: 'GET', url: `/oauth/google/login/callback?code=abc&state=${encodeURIComponent(state)}`, remoteAddress: '10.9.2.1', headers: { cookie: `g_nonce=${nonce}` } });
     const location = String(back.headers.location);
-    assert.match(location, /^\/#\/invitacion\?google=/);
-    const pass = decodeURIComponent(location.split('google=')[1]);
+    assert.match(location, /^\/#\/invitacion\/google\//);
+    const pass = decodeURIComponent(location.split('/invitacion/google/')[1]);
+    const gpass = back.cookies.find((c) => c.name === 'cp_gpass');
+    assert.ok(gpass?.httpOnly && gpass.sameSite === 'Strict', 'el pase queda ligado a este navegador');
+    const cookie = `cp_gpass=${gpass!.value}`;
+    const viaGoogle = (body: Record<string, unknown>, c = cookie) =>
+      h.app.inject({ method: 'POST', url: '/api/invitation/accept', remoteAddress: `10.9.2.${++ip}`, headers: c ? { cookie: c } : {}, payload: { accept_terms: true, ...body } });
 
-    const i = (await info(`google=${encodeURIComponent(pass)}`)).json();
+    assert.equal((await info(`google=${encodeURIComponent(pass)}`)).statusCode, 401, 'en otro navegador (sin su cookie) no sirve');
+    const i = (await info(`google=${encodeURIComponent(pass)}`, cookie)).json();
     assert.deepEqual([i.account, i.email, i.name, i.via_google], ['Taller Ana', 'sofi@taller.mx', 'Sofía', true]);
-    const done = await accept({ google: pass, name: 'Sofía' });
+    assert.equal((await viaGoogle({ google: pass, name: 'Sofía' }, '')).statusCode, 401, 'ni al aceptar');
+    const done = await viaGoogle({ google: pass, name: 'Sofía' });
     assert.equal(done.statusCode, 200, done.body);
-    const u = (await pool.query(`SELECT account_id, role FROM users WHERE email = 'sofi@taller.mx'`)).rows[0];
-    assert.deepEqual([u.account_id, u.role], [A.account, 'agent']);
-    assert.equal((await accept({ google: pass, name: 'Sofía' })).statusCode, 400, 'el pase ya no tiene invitación pendiente');
+    const u = (await pool.query(`SELECT account_id, role, google_sub FROM users WHERE email = 'sofi@taller.mx'`)).rows[0];
+    assert.deepEqual([u.account_id, u.role, u.google_sub], [A.account, 'agent', 'g-sofi']);
+    assert.equal((await viaGoogle({ google: pass, name: 'Sofía' })).statusCode, 400, 'el pase ya no tiene invitación pendiente');
   } finally {
     Object.assign(config.signup, { enabled });
   }
   // Un pase de Google sin invitación pendiente no sirve.
   const { googleSignupPass } = await import('../src/signup-guard.js');
-  assert.equal((await accept({ google: googleSignupPass('nadie@taller.mx', 'X') })).statusCode, 400);
+  const lone = googleSignupPass({ email: 'nadie@taller.mx', name: 'X', sub: 'g-nadie' }, 'navegador-1');
+  const r = await h.app.inject({ method: 'POST', url: '/api/invitation/accept', remoteAddress: '10.9.3.1', headers: { cookie: 'cp_gpass=navegador-1' }, payload: { google: lone, name: 'X', accept_terms: true } });
+  assert.equal(r.statusCode, 400);
 });
 
 t('la lista de pendientes sugiere invitar y avisa las invitaciones por aceptar', async () => {

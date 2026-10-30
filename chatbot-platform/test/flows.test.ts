@@ -30,8 +30,7 @@ before(async () => {
     ],
   });
   await h.authed('PUT', `/api/settings?account_id=${h.accountId}`, { business_hours: ALL_DAY, timezone: 'America/Bogota', consent: { require_for_campaigns: false } });
-  const u = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'equipo@hotel.mx', name: 'Equipo', password: 'Pz-123-Qx-323-Kv', role: 'admin' });
-  assert.equal(u.statusCode, 200, u.body);
+  const u = await h.addUser({ account_id: h.accountId, email: 'equipo@hotel.mx', name: 'Equipo', password: 'Pz-123-Qx-323-Kv', role: 'admin' });
 });
 after(async () => {
   if (h) await h.app.close();

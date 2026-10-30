@@ -1,11 +1,12 @@
 import { googleConfigured } from '../integrations/google.js';
-import { baseFor, brandByDomain, hostOf, mailBrand } from '../brands.js';
+import { baseFor, brandByDomain, hostOf, linkBase, mailBrand } from '../brands.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { hashPassword, rateLimited } from '../auth.js';
+import { hashPassword, ipKey, rateLimited } from '../auth.js';
 import { beginLogin } from '../identity/mfa.js';
 import { forgetTrustedDevices } from '../identity/devices.js';
-import { clearHits } from '../identity/rate-limit.js';
+import { clearHits, countHit } from '../identity/rate-limit.js';
+import { query } from '../db.js';
 import { notifyUser } from '../identity/notices.js';
 import { billingEnabled, payable, startCheckout } from '../billing/service.js';
 import { ProviderError } from '../billing/types.js';
@@ -38,6 +39,21 @@ export function newAccountState(now = Date.now()) {
   return days > 0 ? { status: 'trial' as const, trialEndsAt: new Date(now + days * 24 * HOUR) } : { status: 'paused' as const, trialEndsAt: null };
 }
 
+/** El enlace para restablecer la contraseña (en segundo plano: ver /api/forgot-password). */
+async function sendResetLink(email: string) {
+  if ((await countHit(`forgot-email:${email.toLowerCase()}`, HOUR)) > 3) return;
+  const u = await store.getUserForLogin(email);
+  if (!u || !u.active || (u.account_id && !u.account_active)) return;
+  const token = await store.createAuthToken(u.id, 'reset_password', 60);
+  const mb = await mailBrand(u.account_id);
+  await sendMail({
+    fromName: mb.fromName,
+    to: u.email,
+    subject: 'Restablece tu contraseña',
+    text: `Hola ${u.name || ''},\n\nPara elegir una contraseña nueva abre este enlace (vence en 1 hora):\n\n${link(linkBase(), 'restablecer', token)}\n\nSi no lo pediste, ignora este mensaje: tu contraseña no cambia.`,
+  });
+}
+
 export async function sendVerification(user: Pick<User, 'id' | 'name' | 'email'>) {
   const token = await store.createAuthToken(user.id, 'verify_email', 48 * 60);
   const mb = await mailBrand((user as { account_id?: string | null }).account_id);
@@ -45,7 +61,7 @@ export async function sendVerification(user: Pick<User, 'id' | 'name' | 'email'>
     fromName: mb.fromName,
     to: user.email,
     subject: 'Confirma tu correo',
-    text: `Hola ${user.name || ''},\n\nConfirma tu correo para poder conectar tu WhatsApp y tus demás canales:\n\n${link(mb.base, 'verificar', token)}\n\nEl enlace vence en 48 horas. Si no creaste esta cuenta, ignora este mensaje.`,
+    text: `Hola ${user.name || ''},\n\nConfirma tu correo para poder conectar tu WhatsApp y tus demás canales:\n\n${link(linkBase(), 'verificar', token)}\n\nEl enlace vence en 48 horas. Si no creaste esta cuenta, ignora este mensaje.`,
   });
 }
 
@@ -143,21 +159,17 @@ export async function signupRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
-  /** Siempre responde lo mismo para no revelar qué correos están registrados. */
+  /**
+   * Siempre responde lo mismo y al momento, exista o no el correo: buscarlo, crear el enlace y mandarlo va en segundo
+   * plano (ni la respuesta ni lo que tarda delatan qué correos están registrados). Topes en la base: 5 pedidos por hora
+   * desde una conexión y 3 por hora al mismo correo (exista o no; los de más no mandan nada).
+   */
   app.post('/api/forgot-password', async (req, reply) => {
-    if (rateLimited(`forgot:${req.ip}`, 5, HOUR)) return reply.code(429).send({ error: 'Demasiados intentos, intenta más tarde' });
+    if ((await countHit(`forgot-ip:${ipKey(req.ip)}`, HOUR)) > 5) return reply.code(429).send({ error: 'Demasiados intentos, intenta más tarde' });
     const { email } = parse(z.object({ email: Email }), req.body);
-    const u = await store.getUserForLogin(email);
-    if (u && u.active && (!u.account_id || u.account_active) && !rateLimited(`forgot-user:${u.id}`, 3, HOUR)) {
-      const token = await store.createAuthToken(u.id, 'reset_password', 60);
-      const mb = await mailBrand(u.account_id);
-      await sendMail({
-        fromName: mb.fromName,
-        to: u.email,
-        subject: 'Restablece tu contraseña',
-        text: `Hola ${u.name || ''},\n\nPara elegir una contraseña nueva abre este enlace (vence en 1 hora):\n\n${link(mb.base, 'restablecer', token)}\n\nSi no lo pediste, ignora este mensaje: tu contraseña no cambia.`,
-      });
-    }
+    setImmediate(() => {
+      sendResetLink(email).catch((e) => logEvent({ level: 'error', source: 'admin', message: `No se pudo mandar el enlace para restablecer la contraseña: ${e?.message ?? e}` }).catch(() => undefined));
+    });
     return { ok: true };
   });
 
@@ -171,11 +183,15 @@ export async function signupRoutes(app: FastifyInstance) {
     if (owner) await clearHits(`login-acct:${owner.email.toLowerCase()}`);
     const userId = await store.consumeAuthToken(b.token, 'reset_password');
     if (!userId) throw new HttpError(400, 'El enlace no es válido o ya venció. Pide uno nuevo.');
-    // La contraseña nueva invalida todas las sesiones abiertas. Abrir el enlace también confirma el correo.
+    // La contraseña nueva invalida todas las sesiones abiertas y los demás enlaces. Abrir el enlace también confirma
+    // el correo, y quita el bloqueo del 2FA por intentos (quien lo abre probó que el correo es suyo).
     await store.updateUser(userId, { password_hash: await hashPassword(b.password) });
     await store.revokeUserSessions(userId);
+    await store.invalidateAuthTokens(userId);
     await forgetTrustedDevices(userId);
     await store.markEmailVerified(userId);
+    await query(`UPDATE users SET mfa_locked_until = NULL WHERE id = $1`, [userId]);
+    await clearHits(`mfa-user:${userId}`);
     await logEvent({ level: 'info', source: 'admin', message: 'Contraseña restablecida por correo', details: { user_id: userId } });
     // No abre sesión: después entra con su contraseña nueva y su código.
     const user = await store.getUser(userId);

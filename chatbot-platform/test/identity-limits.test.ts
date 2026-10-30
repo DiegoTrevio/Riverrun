@@ -5,7 +5,7 @@
  */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createHarness, dbAvailable, pool, waitFor } from './harness.js';
+import { createHarness, dbAvailable, pool, sleep, waitFor } from './harness.js';
 
 const ok = await dbAvailable();
 const t = (name: string, fn: () => Promise<void>) => test(name, { skip: !ok && 'PostgreSQL de pruebas no disponible' }, fn);
@@ -17,8 +17,7 @@ const login = (email: string, password: string, remoteAddress: string, cookie = 
   h.app.inject({ method: 'POST', url: '/api/login', remoteAddress, payload: { email, password }, headers: cookie ? { cookie } : {} });
 const cookiesOf = (r: any) => [r.headers['set-cookie'] ?? []].flat().map(String).map((c: string) => c.split(';')[0]).filter((c: string) => !c.endsWith('='));
 const newUser = async (email: string) => {
-  const r = await h.authed('POST', '/api/users', { account_id: h.accountId, name: 'Ivo', email, password: PASS, role: 'agent' });
-  assert.equal(r.statusCode, 200, r.body);
+  const r = await h.addUser({ account_id: h.accountId, name: 'Ivo', email, password: PASS, role: 'agent' });
 };
 const ACCOUNT_LIMIT = 'Demasiados intentos con esta cuenta. Entra desde un dispositivo recordado o recupera tu contraseña por correo.';
 
@@ -63,8 +62,11 @@ t('10 contraseñas malas a una cuenta la bloquean, salvo desde su dispositivo re
   const c2 = cookiesOf(await login('jo@lim.mx', PASS, '10.71.0.1', cookiesOf(done).join('; ')));
   const remembered = await h.app.inject({ method: 'POST', url: '/api/login/2fa', remoteAddress: '10.71.0.1', headers: { cookie: [...cookiesOf(done), ...c2].join('; ') }, payload: { code: await h.codeFor('jo@lim.mx'), remember: true } });
   assert.equal(remembered.statusCode, 200, remembered.body);
-  const trustCookie = cookiesOf(remembered).find((c: string) => c.startsWith('cp_trust='))!;
-  assert.ok(trustCookie);
+  // El dispositivo recordado necesita sus dos cookies: cp_trust y la cp_device de ese mismo navegador.
+  const trust = cookiesOf(remembered).find((c: string) => c.startsWith('cp_trust='))!;
+  const device = [...cookiesOf(first), ...cookiesOf(done), ...c2].find((c: string) => c.startsWith('cp_device='))!;
+  assert.ok(trust && device);
+  const trustCookie = `${trust}; ${device}`;
 
   for (let i = 0; i < 10; i++) assert.equal((await login('jo@lim.mx', 'clave-que-no-es-9', `10.72.0.${i}`)).statusCode, 401);
   const blocked = await login('jo@lim.mx', PASS, '10.73.0.1');
@@ -90,6 +92,18 @@ t('10 códigos malos bloquean la verificación una hora y avisan por correo', as
   await waitFor(() => outbox.some((m) => m.to === 'kai@lim.mx' && m.subject === 'Bloqueamos tu verificación por intentos fallidos'), 3000);
   assert.equal((await code(await challenge(), await h.codeFor('kai@lim.mx'))).statusCode, 429, 'bloqueada aunque el código sea bueno');
   assert.ok((await pool.query(`SELECT mfa_locked_until > now() + interval '50 minutes' AS locked FROM users WHERE email = 'kai@lim.mx'`)).rows[0].locked);
+});
+
+t('con 12 códigos malos a la vez llega un solo correo de bloqueo', async () => {
+  await newUser('tino@lim.mx');
+  await h.loginAs('tino@lim.mx', PASS); // configura la app
+  const challenges: string[] = [];
+  for (let i = 0; i < 3; i++) challenges.push(cookiesOf(await login('tino@lim.mx', PASS, `10.75.0.${i + 1}`)).join('; '));
+  const code = (cookie: string) => h.app.inject({ method: 'POST', url: '/api/login/2fa', headers: { cookie }, payload: { code: '111111' } });
+  const results = await Promise.all(challenges.flatMap((c) => Array.from({ length: 4 }, () => code(c))));
+  assert.ok(results.some((r) => r.statusCode === 429), 'quedó bloqueada');
+  await sleep(500);
+  assert.equal(outbox.filter((m) => m.to === 'tino@lim.mx' && m.subject === 'Bloqueamos tu verificación por intentos fallidos').length, 1);
 });
 
 t('la contraseña actual equivocada al cambiarla cuenta como intento a la cuenta', async () => {

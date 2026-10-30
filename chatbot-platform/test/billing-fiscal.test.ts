@@ -96,7 +96,7 @@ t('guardar y leer los datos; un agente no puede; con factura y datos incompletos
   g = (await api('GET', '/api/billing/fiscal')).json();
   assert.deepEqual([g.fiscal.wants_invoice, g.fiscal.rfc, g.complete], [false, 'EKU9003173C9', true]);
 
-  assert.equal((await h.authed('POST', '/api/users', { account_id: accountId, name: 'Iker', email: 'iker@escuela.mx', password: 'Pz-126-Qx-326-Kv', role: 'agent' })).statusCode, 200);
+  await h.addUser({ account_id: accountId, name: 'Iker', email: 'iker@escuela.mx', password: 'Pz-126-Qx-326-Kv', role: 'agent' });
   const agent = await h.loginAs('iker@escuela.mx', 'Pz-126-Qx-326-Kv');
   assert.equal((await agent('GET', '/api/billing/fiscal')).statusCode, 403);
   assert.equal((await agent('PUT', '/api/billing/fiscal', MORAL)).statusCode, 403);

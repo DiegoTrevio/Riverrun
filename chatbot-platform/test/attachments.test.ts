@@ -24,8 +24,7 @@ before(async () => {
   h = await createHarness();
   await h.createBot();
   h.setScript(() => ({ messages: ['Hola, ¿en qué te ayudo?'] }));
-  const r = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'agente@archivos.test', name: 'Agente', password: 'Pz-106-Qx-306-Kv', role: 'agent' });
-  assert.equal(r.statusCode, 200, r.body);
+  const r = await h.addUser({ account_id: h.accountId, email: 'agente@archivos.test', name: 'Agente', password: 'Pz-106-Qx-306-Kv', role: 'agent' });
   agent = await h.loginAs('agente@archivos.test', 'Pz-106-Qx-306-Kv');
 });
 after(async () => {

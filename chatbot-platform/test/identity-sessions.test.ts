@@ -18,8 +18,7 @@ before(async () => {
   if (!ok) return;
   h = await createHarness();
   await h.createBot();
-  const r = await h.authed('POST', '/api/users', { account_id: h.accountId, name: 'Agente', role: 'agent', ...AGENT });
-  assert.equal(r.statusCode, 200, r.body);
+  await h.addUser({ account_id: h.accountId, name: 'Agente', role: 'agent', ...AGENT });
   agent = await h.loginAs(AGENT.email, AGENT.password);
 });
 after(async () => {

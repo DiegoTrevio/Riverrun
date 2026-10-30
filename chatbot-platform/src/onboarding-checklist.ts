@@ -6,6 +6,7 @@ import { billingEnabled } from './billing/service.js';
 import { mailBrand } from './brands.js';
 import { config } from './config.js';
 import { query, queryOne } from './db.js';
+import { accountOwner } from './identity/ownership.js';
 import { NEEDS_RELINK, reasonText } from './lifecycle.js';
 import { logEvent } from './logs.js';
 import { sendMail } from './mailer.js';
@@ -127,10 +128,7 @@ export async function checkOnboardingNudges(now = new Date()): Promise<number> {
     );
     for (const { account_id } of due) {
       const acc = await store.getAccount(account_id);
-      const to = acc && (await queryOne<{ email: string; name: string }>(
-        `SELECT email, name FROM users WHERE id = $1 OR (account_id = $2 AND role = 'admin' AND active) ORDER BY (id = $1) DESC, created_at LIMIT 1`,
-        [acc.owner_user_id, acc.id],
-      ));
+      const to = acc && (await accountOwner(acc.id));
       if (!acc || !to) continue;
       const mb = await mailBrand(acc.id);
       const off = `${mb.base}/baja-recordatorios?c=${acc.id}&s=${unsubscribeSig(acc.id)}`;

@@ -80,7 +80,7 @@ t('franja de pago pendiente en el panel; al pagar se quita y los recordatorios v
   assert.equal(me.account.payment_due.provider, 'stripe');
 
   // Un agente no ve la franja.
-  assert.equal((await h.authed('POST', '/api/users', { account_id: a.accountId, name: 'Leo', email: 'leo@salon.mx', password: 'Pz-129-Qx-329-Kv', role: 'agent' })).statusCode, 200);
+  await h.addUser({ account_id: a.accountId, name: 'Leo', email: 'leo@salon.mx', password: 'Pz-129-Qx-329-Kv', role: 'agent' });
   assert.equal((await (await h.loginAs('leo@salon.mx', 'Pz-129-Qx-329-Kv'))('GET', '/api/me')).json().account.payment_due, null);
 
   await pool.query(`UPDATE subscriptions SET past_due_since = now() - interval '3 days 1 hour' WHERE account_id = $1`, [a.accountId]);

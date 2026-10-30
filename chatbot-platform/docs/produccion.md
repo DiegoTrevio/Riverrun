@@ -151,12 +151,16 @@ Todos entran con contraseña y el código de una app de autenticación ([etapa 2
 | Quién | Cómo vuelve |
 |---|---|
 | Cualquiera con sus códigos de recuperación | Entra con uno (cada uno sirve una vez): el panel abre **Mi perfil → Verificación en dos pasos** con el aviso; ahí pulsa «Cambiar de app» y «Generar códigos nuevos». |
-| Agente o administrador | Otro administrador de su cuenta (o el superadministrador) pulsa **Restablecer 2FA** en Equipo. Se cierran sus sesiones y la configura otra vez al entrar con su contraseña. En la etapa 2b, el de un administrador lo restablece solo el dueño. |
-| Dueño de la cuenta | El superadministrador, desde Equipo de esa cuenta, después de comprobar por fuera que es él. |
+| Agente | Un administrador de su cuenta (o el superadministrador) pulsa **Restablecer 2FA** en Equipo. Se cierran sus sesiones y la configura otra vez al entrar con su contraseña. |
+| Administrador | Lo mismo, pero solo el dueño de la cuenta (o el superadministrador). |
+| Dueño de la cuenta | El superadministrador, desde Equipo de esa cuenta, después de comprobar por fuera que es él. Si el dueño ya no va a estar, el superadministrador pasa la cuenta a otro administrador con **Hacer dueño** (debe tener su correo verificado y su 2FA). |
+| Quien perdió el acceso a su correo | Lo cambia en **Mi perfil → Correo** mientras aún entra: el cambio se aplica al abrir el enlace que llega al correo nuevo, y al anterior le llega un aviso. Si ya no entra, el superadministrador comprueba por fuera quién es; al equipo no se le cambia el correo desde Equipo. |
 | Superadministrador | En el servidor: `./riverrun admin-password [correo]`. Contraseña nueva, 2FA restablecido (lo configura al entrar), sesiones cerradas y los intentos fallidos de su cuenta en 0. Si su conexión quedó bloqueada, espera 15 minutos. |
 
 - **10 códigos equivocados en una hora** bloquean el 2FA de esa persona una hora y le llega un correo: alguien tiene su contraseña. Que la cambie.
-- **10 contraseñas equivocadas en una hora** para un correo: esa cuenta solo entra desde un dispositivo recordado o recuperando la contraseña por correo (que reinicia el contador).
+- **10 contraseñas equivocadas en una hora** para un correo: esa cuenta solo entra desde un dispositivo recordado o recuperando la contraseña por correo (que reinicia el contador y también quita el bloqueo del 2FA).
+- **Dueño y administradores** ([etapa 2b](seguridad.md#etapa-2b-lo-que-se-corrigió)): cada cuenta tiene un solo dueño, el único que maneja el plan, los pagos, la facturación, descargar o borrar la cuenta y a los administradores. Al dueño no se le desactiva ni borra: primero se transfiere la cuenta con «Hacer dueño».
+- **Nadie escribe la contraseña de otro:** al equipo se le invita (Equipo → Invitar a tu equipo) y cada persona elige la suya al aceptar. Una cuenta nueva se crea invitando a su dueño. Sin SMTP la invitación queda guardada y el panel avisa que el correo no salió.
 - **`./riverrun rotate-secret`** vuelve a cifrar los secretos de la verificación en dos pasos con el `SESSION_SECRET` nuevo antes de escribirlo en `.env`. Si no puede (un secreto que no se lee), no cambia nada y lo dice.
 - **Contraseñas filtradas:** las nuevas se comparan con una lista local de las 100 000 más comunes y con Have I Been Pwned por rango (solo salen los primeros 5 caracteres del SHA-1; 1,5 s como máximo; si no responde, decide la lista local y queda en la bitácora). Sin salida a internet: `PWNED_PASSWORDS_URL=off`. `PASSWORD_HASH_COST=test` es solo para la suite de pruebas; `./riverrun preflight` lo marca como crítico con HTTPS.
 

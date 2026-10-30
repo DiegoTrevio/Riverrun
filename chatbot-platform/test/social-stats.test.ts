@@ -48,7 +48,7 @@ before(async () => {
   h = await createHarness();
   await h.createBot();
   for (const [email, role] of [['duena@salud.mx', 'admin'], ['agente@salud.mx', 'agent']] as const) {
-    await h.authed('POST', '/api/users', { account_id: h.accountId, email, name: role, password: 'Pz-143-Qx-343-Kv', role });
+    await h.addUser({ account_id: h.accountId, email, name: role, password: 'Pz-143-Qx-343-Kv', role });
   }
   await pool.query('UPDATE users SET email_verified_at = now()');
   owner = await h.loginAs('duena@salud.mx', 'Pz-143-Qx-343-Kv');

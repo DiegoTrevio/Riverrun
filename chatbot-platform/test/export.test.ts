@@ -124,7 +124,7 @@ t('más de 1,000 filas se exportan completas, sin repetir ni saltar (paginación
 
 t('permisos: solo administradores de la cuenta; otra cuenta no ve nada de esta', async () => {
   // Un agente no exporta
-  await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'agente@export.mx', password: 'Pz-101-Qx-301-Kv', role: 'agent' });
+  await h.addUser({ account_id: h.accountId, email: 'agente@export.mx', password: 'Pz-101-Qx-301-Kv', role: 'agent' });
   const agent = await h.loginAs('agente@export.mx', 'Pz-101-Qx-301-Kv');
   assert.equal((await agent('GET', '/api/export/contacts.csv')).statusCode, 403);
   // El administrador de otra cuenta solo recibe lo suyo (aunque pida ?account_id= ajeno)

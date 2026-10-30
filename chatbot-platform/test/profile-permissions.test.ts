@@ -14,12 +14,12 @@ let a: any, b: any, user: any, botA: any, botB: any;
 before(async () => {
   if (!available) return;
   h = await createHarness();
-  a = (await h.authed('POST', '/api/accounts', { name: 'Perfil A', admin: { email: 'admin@perfil.test', password: 'Pz-158-Qx-358-Kv' } })).json();
+  a = (await h.addAccount({ name: 'Perfil A', admin: { email: 'admin@perfil.test', password: 'Pz-158-Qx-358-Kv' } }));
   b = (await h.authed('POST', '/api/accounts', { name: 'Perfil B' })).json();
   admin = await h.loginAs('admin@perfil.test', 'Pz-158-Qx-358-Kv');
   botA = (await admin('POST', '/api/chatbots', { name: 'Asistente A' })).json();
   botB = (await h.authed('POST', '/api/chatbots', { account_id: b.id, name: 'Asistente B' })).json();
-  user = (await admin('POST', '/api/users', { email: 'usuario@perfil.test', password: 'Pz-160-Qx-360-Kv', role: 'admin' })).json();
+  user = await h.addUser({ account_id: a.id, email: 'usuario@perfil.test', password: 'Pz-160-Qx-360-Kv', role: 'admin' });
   member = await h.loginAs('usuario@perfil.test', 'Pz-160-Qx-360-Kv');
 });
 after(async () => {
@@ -39,7 +39,9 @@ t('un administrador solo gestiona su perfil y no puede cambiar su alcance ni dar
 });
 
 t('el maestro reasigna el perfil y una sesión abierta pierde acceso al anterior inmediatamente', async () => {
-  await pool.query('UPDATE accounts SET owner_user_id = $1 WHERE id = $2', [user.id, a.id]);
+  // Al dueño no se le mueve (primero transfiere): se mueve al otro administrador.
+  const ownerOfA = (await store.getAccount(a.id))!.owner_user_id;
+  assert.ok(ownerOfA && ownerOfA !== user.id);
   await notifyUsers(a.id, [user.id], { title: 'Datos privados A', body: 'Solo perfil A' });
   assert.equal((await member('GET', '/api/notifications')).json().unread, 1);
   const moved = await h.authed('PUT', `/api/users/${user.id}`, { account_id: b.id });
@@ -52,7 +54,7 @@ t('el maestro reasigna el perfil y una sesión abierta pierde acceso al anterior
   assert.equal((await member('GET', `/api/chatbots/${botA.id}`)).statusCode, 404);
   assert.equal((await member('GET', `/api/chatbots/${botB.id}`)).statusCode, 200);
   assert.equal((await member('GET', '/api/me')).json().account.id, b.id);
-  assert.equal((await store.getAccount(a.id))!.owner_user_id, null);
+  assert.equal((await store.getAccount(a.id))!.owner_user_id, ownerOfA, 'el dueño de A no cambia');
   await notifyUsers(b.id, [user.id], { title: 'Datos B', body: 'Perfil nuevo' });
   const notifications = (await member('GET', '/api/notifications')).json();
   assert.equal(notifications.unread, 1);
@@ -67,6 +69,10 @@ t('el maestro reasigna el perfil y una sesión abierta pierde acceso al anterior
 });
 
 t('el operador solo atiende conversaciones y agenda de su perfil', async () => {
+  // Movido a B quedó como su único administrador, o sea su dueño: primero B tiene otra dueña.
+  assert.deepEqual((await h.authed('PUT', `/api/users/${user.id}`, { role: 'agent' })).json(), { error: 'Primero transfiere la cuenta a otro administrador' });
+  const duenaB = (await h.addUser({ account_id: b.id, email: 'duena-b@perfil.test', password: 'Pz-160-Qx-360-Kv', role: 'admin' }));
+  await pool.query('UPDATE accounts SET owner_user_id = $1 WHERE id = $2', [duenaB.id, b.id]);
   assert.equal((await h.authed('PUT', `/api/users/${user.id}`, { role: 'agent' })).statusCode, 200);
   assert.equal((await member('GET', '/api/me')).statusCode, 401, 'cambiar el rol cierra sus sesiones');
   member = await h.loginAs('usuario@perfil.test', 'Pz-160-Qx-360-Kv');
@@ -89,8 +95,7 @@ t('el maestro puede promover un usuario existente sin cambiar su contraseña', a
 });
 
 t('la migración da acceso maestro al correo de Diego verificado y conserva su contraseña', async () => {
-  const created = await h.authed('POST', '/api/users', { account_id: a.id, email: 'diegoa.trevio@gmail.com', password: 'Pz-152-Qx-352-Kv', role: 'admin' });
-  assert.equal(created.statusCode, 200, created.body);
+  const created = await h.addUser({ account_id: a.id, email: 'diegoa.trevio@gmail.com', password: 'Pz-152-Qx-352-Kv', role: 'admin' });
   const login = await h.loginAs('diegoa.trevio@gmail.com', 'Pz-152-Qx-352-Kv');
   const before = await store.getUserForLogin('diegoa.trevio@gmail.com');
   const migration = fs.readFileSync('migrations/009_master_access.sql', 'utf8');
@@ -116,7 +121,7 @@ t('provisionar no crea usuarios inexistentes ni concede acceso a un correo sin c
 });
 
 t('crear perfil y administrador es atómico si el correo ya está en uso', async () => {
-  const response = await h.authed('POST', '/api/accounts', { name: 'Perfil incompleto', admin: { email: 'admin@perfil.test', password: 'Pz-158-Qx-358-Kv' } });
+  const response = await h.authed('POST', '/api/accounts', { name: 'Perfil incompleto', owner: { email: 'admin@perfil.test' } });
   assert.equal(response.statusCode, 409, response.body);
   assert.equal((await store.listAccounts()).length, 2);
 });

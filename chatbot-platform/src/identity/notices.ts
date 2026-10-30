@@ -16,10 +16,14 @@ export type NoticeKind =
   | 'recovery_used'
   | 'recovery_regenerated'
   | 'mfa_locked'
-  | 'new_device';
+  | 'new_device'
+  | 'ownership_transferred'
+  | 'ownership_received'
+  | 'email_changed'
+  | 'role_changed';
 
 interface NoticeUser { id: string; email: string; name: string; account_id: string | null }
-interface NoticeDetails { device?: string; ip?: string; remaining?: number; by?: string }
+interface NoticeDetails { device?: string; ip?: string; remaining?: number; by?: string; account?: string; to?: string; from?: string; role?: string }
 
 const FOOTER = 'Si no fuiste tú: cambia tu contraseña y cierra todas las sesiones desde Mi perfil.';
 
@@ -39,6 +43,10 @@ const SUBJECT: Record<NoticeKind, string> = {
   recovery_regenerated: 'Generaste códigos de recuperación nuevos',
   mfa_locked: 'Bloqueamos tu verificación por intentos fallidos',
   new_device: 'Nuevo inicio de sesión en tu cuenta',
+  ownership_transferred: 'Transferiste tu cuenta',
+  ownership_received: 'Ahora eres dueño de la cuenta',
+  email_changed: 'Cambiaste tu correo',
+  role_changed: 'Tu rol cambió',
 };
 
 function body(kind: NoticeKind, when: string, d: NoticeDetails): string {
@@ -52,6 +60,12 @@ function body(kind: NoticeKind, when: string, d: NoticeDetails): string {
     case 'recovery_regenerated': return `Generaste códigos de recuperación nuevos el ${when}. Los anteriores ya no sirven.`;
     case 'mfa_locked': return `Alguien escribió bien tu contraseña pero se equivocó muchas veces con el código (${when}). Bloqueamos la verificación una hora. Cambia tu contraseña: alguien la conoce.`;
     case 'new_device': return `Alguien entró a tu cuenta el ${when} desde un dispositivo nuevo: ${d.device || 'un navegador'}${d.ip ? ` (IP ${partialIp(d.ip)})` : ''}.`;
+    // `by`: cuando la reasigna el superadministrador y no el dueño.
+    case 'ownership_transferred': return `${d.by ? `${d.by} transfirió` : 'Transferiste'} la cuenta «${d.account}» a ${d.to} el ${when}. Sigues como administrador.`;
+    case 'ownership_received': return `${d.from} te transfirió la cuenta «${d.account}» el ${when}. Revisa los datos de facturación en Mi plan.`;
+    // A la dirección anterior: `to` es la nueva.
+    case 'email_changed': return `El correo de tu cuenta cambió a ${d.to} el ${when} (se pidió con tu contraseña). Desde ahora entras con ese correo; si no fuiste tú, entra con él y vuelve a poner el tuyo desde Mi perfil.`;
+    case 'role_changed': return `${d.by ? `${d.by} cambió` : 'Cambió'} tu rol a ${d.role} el ${when}. Al entrar otra vez tienes los permisos nuevos.`;
   }
 }
 

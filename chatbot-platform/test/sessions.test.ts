@@ -24,9 +24,10 @@ before(async () => {
   if (!ok) return;
   h = await createHarness();
   await h.createBot();
-  const u = await h.authed('POST', '/api/users', { account_id: h.accountId, email: EMAIL, name: 'Recepción', password: PASS, role: 'admin' });
-  assert.equal(u.statusCode, 200, u.body);
-  userId = u.json().id;
+  // Primero la dueña (la primera administradora que acepta): a la persona de estas pruebas se le cambia el rol.
+  await h.addUser({ account_id: h.accountId, email: 'duena@sesiones.mx', name: 'Dueña', password: PASS, role: 'admin' });
+  const u = await h.addUser({ account_id: h.accountId, email: EMAIL, name: 'Recepción', password: PASS, role: 'admin' });
+  userId = u.id;
 });
 after(async () => {
   if (h) await h.app.close();

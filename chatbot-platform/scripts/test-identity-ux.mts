@@ -49,8 +49,8 @@ try {
   await h.app.listen({ host: '127.0.0.1', port: 0 });
   const base = `http://127.0.0.1:${(h.app.server.address() as any).port}`;
   await h.createBot();
-  assert.equal((await h.authed('POST', '/api/users', { account_id: h.accountId, name: 'Nuria', email: 'nuria@identidad.mx', password: PASS, role: 'admin' })).statusCode, 200);
-  assert.equal((await h.authed('POST', '/api/users', { account_id: h.accountId, name: 'Tomás', email: 'tomas@identidad.mx', password: PASS, role: 'agent' })).statusCode, 200);
+  await h.addUser({ account_id: h.accountId, name: 'Nuria', email: 'nuria@identidad.mx', password: PASS, role: 'admin' });
+  await h.addUser({ account_id: h.accountId, name: 'Tomás', email: 'tomas@identidad.mx', password: PASS, role: 'agent' });
   await h.loginAs('tomas@identidad.mx', PASS); // ya configuró su app
   assert.equal((await h.authed('POST', '/api/plans', { key: 'pro', name: 'Pro', description: 'Todo incluido', price: 499 })).statusCode, 200);
 

@@ -36,7 +36,7 @@ before(async () => {
     ai: { debounce_seconds: 0.1, quotes: { enabled: true, allow_final: true, required_fields: [], template_id: '' } },
   });
   // Alguien del equipo a quien avisar de las cotizaciones finales por aprobar.
-  await h.authed('POST', '/api/users', { account_id: h.accountId, name: 'Dueña', email: 'duena@cotiza.test', password: 'Pz-116-Qx-316-Kv', role: 'admin' });
+  await h.addUser({ account_id: h.accountId, name: 'Dueña', email: 'duena@cotiza.test', password: 'Pz-116-Qx-316-Kv', role: 'admin' });
   await item('SALON', 'Renta de salón', { unit: 'evento', price_min: 1500000 });
   await item('PERSONA', 'Banquete por persona', { unit: 'persona', price_min: 25000 });
   await item('DECO', 'Decoración', { price_mode: 'range', price_min: 300000, price_max: 500000 });

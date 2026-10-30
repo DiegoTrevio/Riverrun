@@ -25,12 +25,10 @@ before(async () => {
   h = await createHarness();
   await h.createBot();
   for (const [name, email, role] of [['Ana', 'ana@perfil.mx', 'admin'], ['Beto', 'beto@perfil.mx', 'agent'], ['Cata', 'cata@perfil.mx', 'agent']] as const) {
-    const r = await h.authed('POST', '/api/users', { account_id: h.accountId, name, email, password: PASS, role });
-    assert.equal(r.statusCode, 200, r.body);
-    ids[email] = r.json().id;
+    const r = await h.addUser({ account_id: h.accountId, name, email, password: PASS, role });
+    ids[email] = r.id;
   }
-  const other = await h.authed('POST', '/api/accounts', { name: 'Otra cuenta', admin: { name: 'Otra', email: 'otra@perfil.mx', password: PASS } });
-  assert.equal(other.statusCode, 200, other.body);
+  const other = await h.addAccount({ name: 'Otra cuenta', admin: { name: 'Otra', email: 'otra@perfil.mx', password: PASS } });
   ana = await h.loginAs('ana@perfil.mx', PASS);
   beto = await h.loginAs('beto@perfil.mx', PASS);
   otra = await h.loginAs('otra@perfil.mx', PASS);
@@ -57,6 +55,13 @@ t('códigos nuevos: los anteriores dejan de servir y llega el aviso', async () =
   assert.equal((await ana('POST', '/api/2fa/step-up', { code: second[0] })).statusCode, 200);
   assert.equal((await ana('GET', '/api/me/security')).json().recovery_remaining, 9);
   await waitFor(() => mailTo('ana@perfil.mx', 'Generaste códigos de recuperación nuevos'));
+});
+
+t('dos «Generar códigos nuevos» al mismo tiempo dejan 10 códigos', async () => {
+  const both = await Promise.all([ana('POST', '/api/me/2fa/recovery-codes'), ana('POST', '/api/me/2fa/recovery-codes')]);
+  for (const r of both) assert.equal(r.statusCode, 200, r.body);
+  const n = (await pool.query(`SELECT count(*)::int AS n FROM user_recovery_codes c JOIN users u ON u.id = c.user_id WHERE u.email = 'ana@perfil.mx' AND c.used_at IS NULL`)).rows[0].n;
+  assert.equal(n, 10);
 });
 
 t('cambiar de app: el código de la anterior ya no sirve y llega el aviso', async () => {

@@ -4,10 +4,11 @@
  * dueño y se ejecuta 7 días después; mientras tanto se puede cancelar. Al confirmar, el plan deja de renovarse.
  */
 import PizZip from 'pizzip';
-import { mailBrand } from '../brands.js';
+import { linkBase, mailBrand } from '../brands.js';
 import { providers, getSubscription, queueAction } from '../billing/service.js';
 import { alertSuperadmins } from '../billing/ledger.js';
 import { query, queryOne } from '../db.js';
+import { accountOwner } from '../identity/ownership.js';
 import { csvRow } from '../export.js';
 import { logEvent } from '../logs.js';
 import { sendMail } from '../mailer.js';
@@ -22,19 +23,6 @@ export const DELETION_GRACE_DAYS = 7;
 /** Vigencia del enlace de confirmación que llega por correo. */
 const LINK_MS = DAY;
 const fmt = (d: Date) => d.toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'America/Mexico_City' });
-
-/** El dueño de la cuenta: quien la creó o, si ya no está, su administrador más antiguo. */
-export async function ownerOf(acc: Pick<Account, 'id' | 'owner_user_id'>) {
-  return queryOne<{ id: string; name: string; email: string }>(
-    `SELECT id, name, email FROM users WHERE (id = $1 AND account_id = $2) OR (account_id = $2 AND role = 'admin' AND active) ORDER BY (id = $1) DESC, created_at LIMIT 1`,
-    [acc.owner_user_id, acc.id],
-  );
-}
-
-export async function isOwner(user: Pick<User, 'id' | 'role' | 'account_id'>, acc: Pick<Account, 'id' | 'owner_user_id'>) {
-  if (user.role !== 'admin' || user.account_id !== acc.id) return false;
-  return (await ownerOf(acc))?.id === user.id;
-}
 
 /* ------------------------------ Borrar la cuenta ------------------------------ */
 
@@ -59,7 +47,7 @@ export function readDeletionToken(token: string, now = Date.now()): string | nul
 /** Primer paso: manda al correo del dueño el enlace para confirmar. No cambia nada todavía. */
 export async function requestDeletion(acc: Account, owner: { email: string; name: string }) {
   const mb = await mailBrand(acc.id);
-  const link = `${mb.base}/borrar-cuenta?t=${encodeURIComponent(deletionToken(acc.id))}`;
+  const link = `${linkBase()}/borrar-cuenta?t=${encodeURIComponent(deletionToken(acc.id))}`;
   await sendMail({
     fromName: mb.fromName,
     to: owner.email,
@@ -93,7 +81,7 @@ export async function scheduleDeletion(accountId: string, now = new Date()): Pro
     await query(`UPDATE subscriptions SET cancel_at_period_end = true, updated_at = now() WHERE account_id = $1`, [accountId]);
   }
   const acc = await store.getAccount(accountId);
-  const owner = acc ? await ownerOf(acc) : null;
+  const owner = acc ? await accountOwner(acc.id) : null;
   if (owner) {
     const mb = await mailBrand(accountId);
     await sendMail({
@@ -132,7 +120,7 @@ export async function checkScheduledDeletions(now = new Date()): Promise<number>
   let deleted = 0;
   for (const acc of due) {
     try {
-      const owner = await ownerOf(acc);
+      const owner = await accountOwner(acc.id);
       const mb = await mailBrand(acc.id);
       await deleteAccountFully(acc);
       deleted++;

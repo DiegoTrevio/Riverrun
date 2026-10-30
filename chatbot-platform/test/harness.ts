@@ -1,9 +1,11 @@
 /** Arnés compartido: PostgreSQL real + IA simulada + WhatsApp simulado. */
+import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import type { User } from '../src/types.js';
 
 /* ---------- APIs externas simuladas (Telegram Bot API y Meta Graph API) ---------- */
 export interface ExtRequest { method: string; path: string; query: URLSearchParams; headers: http.IncomingHttpHeaders; body: any; raw: string }
@@ -556,6 +558,7 @@ export async function createHarness(opts: { realAi?: import('../src/ai/provider.
   const authed = await loginAs('admin@test.mx', 'secreto123');
 
   let msgN = 0;
+  let acceptN = 0;
   const h = {
     app, service, ai, calls, summaryCalls, copilotCalls, sent, authed, loginAs, sessionFrom, codeFor, totpSecrets, cookie: authed.cookie, failNext, token: '', botId: '', accountId: '', channelId: '',
     setScript(s: Script) { script = s; },
@@ -565,6 +568,54 @@ export async function createHarness(opts: { realAi?: import('../src/ai/provider.
     setSummaryError(error: Error | null) { summaryError = error; },
     setSummaryFields(fields: typeof summaryFields) { summaryFields = fields; },
     reset() { calls.length = 0; summaryCalls.length = 0; copilotCalls.length = 0; sent.length = 0; },
+    /**
+     * Un usuario nuevo como en el producto: una invitación (con SQL, sin quien invita) que la persona acepta eligiendo
+     * su contraseña. Cada aceptación llega desde otra conexión para no topar el límite por conexión. Sin nombre queda
+     * sin nombre (al aceptar se pide uno: se borra después). `phone`/`notify_whatsapp`: los guarda el superadministrador.
+     */
+    async addUser(o: { account_id?: string; name?: string; email: string; password: string; role: 'admin' | 'agent'; phone?: string; notify_whatsapp?: boolean }): Promise<User> {
+      const accountId = o.account_id ?? h.accountId;
+      assert.ok(accountId, `addUser(${o.email}) necesita la cuenta: account_id o h.accountId`);
+      const token = crypto.randomBytes(24).toString('base64url');
+      // Como en el producto, reemplaza una invitación pendiente al mismo correo.
+      await pool.query(`UPDATE account_invitations SET revoked_at = now() WHERE account_id = $1 AND lower(email) = lower($2) AND accepted_at IS NULL AND revoked_at IS NULL`, [accountId, o.email]);
+      await pool.query(
+        `INSERT INTO account_invitations (account_id, email, name, role, token_hash, invited_by, expires_at) VALUES ($1, $2, $3, $4, $5, NULL, now() + interval '1 day')`,
+        [accountId, o.email, o.name ?? '', o.role, crypto.createHash('sha256').update(token).digest('hex')],
+      );
+      const n = ++acceptN;
+      const r = await app.inject({
+        method: 'POST', url: '/api/invitation/accept', remoteAddress: `10.251.${(n >> 8) & 255}.${n & 255}`,
+        payload: { token, name: o.name || o.email.split('@')[0], password: o.password, accept_terms: true },
+      });
+      assert.equal(r.statusCode, 200, `addUser(${o.email}): ${r.body}`);
+      let user = r.json().user as User;
+      if (!o.name) {
+        await pool.query(`UPDATE users SET name = '' WHERE id = $1`, [user.id]);
+        user = { ...user, name: '' };
+      }
+      if (o.phone !== undefined || o.notify_whatsapp !== undefined) {
+        const u = await authed('PUT', `/api/users/${user.id}`, { ...(o.phone !== undefined && { phone: o.phone }), ...(o.notify_whatsapp !== undefined && { notify_whatsapp: o.notify_whatsapp }) });
+        assert.equal(u.statusCode, 200, u.body);
+        user = u.json();
+      }
+      return user;
+    },
+    /** Una cuenta nueva (como superadministrador) y, con `admin`, su administrador por invitación. */
+    async addAccount(o: { name: string; admin?: { name?: string; email: string; password: string } }): Promise<{ id: string; admin?: User } & Record<string, any>> {
+      const r = await authed('POST', '/api/accounts', { name: o.name });
+      assert.equal(r.statusCode, 200, r.body);
+      const acc = r.json();
+      return { ...acc, admin: o.admin ? await h.addUser({ ...o.admin, account_id: acc.id, role: 'admin' }) : undefined };
+    },
+    /** Otro superadministrador (solo para pruebas que lo necesitan): entra por una cuenta de paso que se borra. */
+    async addSuperadmin(email: string, password: string): Promise<User> {
+      const step = await h.addAccount({ name: `Paso de ${email}` });
+      const user = await h.addUser({ account_id: step.id, email, password, role: 'admin' });
+      await pool.query(`UPDATE users SET role = 'superadmin', account_id = NULL WHERE id = $1`, [user.id]);
+      await pool.query(`DELETE FROM accounts WHERE id = $1`, [step.id]);
+      return { ...user, role: 'superadmin', account_id: null };
+    },
     /** Adelanta el reloj: todas las tareas pendientes vencen ya, y se ejecutan. */
     async fastForward() {
       await pool.query(`UPDATE jobs SET run_at = now() - interval '1 second' WHERE status = 'pending'`);

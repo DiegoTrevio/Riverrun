@@ -15,8 +15,7 @@ before(async () => {
   h = await createHarness();
   await h.createBot();
   const email = 'agente@auditoria.test';
-  const u = await h.authed('POST', '/api/users', { account_id: h.accountId, email, name: 'Agente', password: PASS, role: 'agent' });
-  assert.equal(u.statusCode, 200, u.body);
+  const u = await h.addUser({ account_id: h.accountId, email, name: 'Agente', password: PASS, role: 'agent' });
   agent = await h.loginAs(email, PASS);
   const s = await h.authed('POST', '/api/services', { account_id: h.accountId, name: 'Visita de auditoría', kind: 'appointment', duration_minutes: 60, min_notice_minutes: 0, max_days_ahead: 5 });
   assert.equal(s.statusCode, 200, s.body);
@@ -43,7 +42,7 @@ t('los secretos de la cuenta (calendario y webhooks) no salen en /api/me ni en /
   const s = (await h.authed('GET', `/api/settings/secrets?account_id=${h.accountId}`)).json();
   assert.ok(s.calendar_token && s.webhook_secret, 'la cuenta ya tiene sus secretos');
   const email = 'duena@auditoria.test';
-  assert.equal((await h.authed('POST', '/api/users', { account_id: h.accountId, email, name: 'Dueña', password: PASS, role: 'admin' })).statusCode, 200);
+  await h.addUser({ account_id: h.accountId, email, name: 'Dueña', password: PASS, role: 'admin' });
   const admin = await h.loginAs(email, PASS);
   for (const [who, req] of [['agente', agent], ['administrador', admin], ['superadmin', h.authed]] as const) {
     for (const url of ['/api/me', '/api/accounts', '/api/accounts?view=selector']) {

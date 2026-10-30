@@ -20,9 +20,8 @@ let serviceId = '';
 const PASS = 'Pz-917-Qx-918-Kv';
 async function newUser(name: string, role: 'agent' | 'admin') {
   const email = `${name}@visibilidad.test`;
-  const r = await h.authed('POST', '/api/users', { account_id: h.accountId, email, name, password: PASS, role });
-  assert.equal(r.statusCode, 200, r.body);
-  return { id: r.json().id as string, req: await h.loginAs(email, PASS) };
+  const r = await h.addUser({ account_id: h.accountId, email, name, password: PASS, role });
+  return { id: r.id as string, req: await h.loginAs(email, PASS) };
 }
 
 /** Cliente nuevo que escribe; la conversación queda asignada a quien se indique (o sin asignar). */

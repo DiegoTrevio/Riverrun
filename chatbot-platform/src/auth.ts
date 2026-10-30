@@ -6,7 +6,7 @@ import { query } from './db.js';
 import { logEvent } from './logs.js';
 import { HttpError } from './access.js';
 import { assertPasswordAllowed } from './identity/passwords.js';
-import { clearHits } from './identity/rate-limit.js';
+import { clearHits, countHit, LIMITS, releaseHit } from './identity/rate-limit.js';
 import { resetMfa } from './identity/reset-mfa.js';
 import { hmac, safeEqual } from './secret.js';
 import * as store from './store/index.js';
@@ -71,6 +71,23 @@ export async function verifyPassword(password: string, stored: string): Promise<
   if (!h || !h.salt.length || !h.hash.length) return false;
   const got = await scrypt(password, h.salt, h.hash.length, h.cost);
   return crypto.timingSafeEqual(got, h.hash);
+}
+
+export const ACCOUNT_LIMIT = 'Demasiados intentos con esta cuenta. Entra desde un dispositivo recordado o recupera tu contraseña por correo.';
+
+/**
+ * La contraseña actual, para lo que cambia cómo se entra (la contraseña, el correo). Una equivocada cuenta como intento
+ * a la cuenta: con una cookie robada no se adivina sin límite.
+ */
+export async function assertCurrentPassword(email: string, current: string): Promise<void> {
+  const key = `login-acct:${email.toLowerCase()}`;
+  if ((await countHit(key, LIMITS.loginAccount.windowMs)) > LIMITS.loginAccount.max) {
+    await releaseHit(key);
+    throw new HttpError(429, ACCOUNT_LIMIT);
+  }
+  const full = await store.getUserForLogin(email);
+  if (!full || !(await verifyPassword(current, full.password_hash))) throw new HttpError(400, 'La contraseña actual no es correcta');
+  await releaseHit(key);
 }
 
 /** El hash no usa los parámetros vigentes: se recalcula la próxima vez que la persona entra. */
@@ -192,7 +209,8 @@ export async function bootstrapSuperadmin() {
     return;
   }
   if (await store.getUserForLogin(config.adminUser)) return;
-  await store.createUser({ account_id: null, role: 'superadmin', name: 'Administrador', email: config.adminUser, password_hash: await hashPassword(config.adminPassword) });
+  // Lo crea quien instala con su propio correo: queda verificado.
+  await store.createUser({ account_id: null, role: 'superadmin', name: 'Administrador', email: config.adminUser, password_hash: await hashPassword(config.adminPassword), verified: true });
   await logEvent({ level: 'info', source: 'system', message: `Superadministrador "${config.adminUser}" creado desde la configuración` });
 }
 
@@ -208,7 +226,7 @@ export async function resetSuperadminPassword(email: string, given?: string): Pr
   if (existing && existing.role !== 'superadmin') throw new Error(`${email} no es superadministrador: su contraseña no se cambia desde aquí.`);
   const hash = await hashPassword(password);
   if (!existing) {
-    await store.createUser({ account_id: null, role: 'superadmin', name: 'Administrador', email, password_hash: hash });
+    await store.createUser({ account_id: null, role: 'superadmin', name: 'Administrador', email, password_hash: hash, verified: true });
     await logEvent({ level: 'warn', source: 'system', message: `Superadministrador "${email}" creado desde el servidor (./riverrun admin-password)` });
     return { password, created: true };
   }

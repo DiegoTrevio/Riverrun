@@ -47,8 +47,8 @@ t('crear canales, usuarios y asistentes por encima del límite se rechaza con un
   const ch2 = await a.api('POST', '/api/channels', { type: 'telegram', name: 'TG', config: { bot_token: '123:abc' } });
   assert.equal(ch2.statusCode, 403);
   assert.match(ch2.json().error, /1 canal/);
-  assert.equal((await a.api('POST', '/api/users', { email: 'agente1@limites.mx', password: 'Pz-101-Qx-301-Kv', role: 'agent' })).statusCode, 200);
-  assert.equal((await a.api('POST', '/api/users', { email: 'agente2@limites.mx', password: 'Pz-103-Qx-303-Kv', role: 'agent' })).statusCode, 403);
+  await h.addUser({ account_id: a.account, email: 'agente1@limites.mx', password: 'Pz-101-Qx-301-Kv', role: 'agent' });
+  assert.equal((await a.api('POST', '/api/invitations', { email: 'agente2@limites.mx', role: 'agent' })).statusCode, 403);
   // Duplicar también cuenta
   const bot = (await a.api('GET', '/api/chatbots')).json()[0];
   assert.equal((await a.api('POST', `/api/chatbots/${bot.id}/duplicate`)).statusCode, 403);
@@ -136,9 +136,9 @@ t('una campaña más grande que el cupo restante no se lanza', async () => {
 t('reactivar a un usuario también respeta el límite de usuarios', async () => {
   const a = await signup('react@limites.mx');
   await h.authed('PUT', `/api/accounts/${a.account}`, { limits_override: { users: 2 } });
-  const u1 = (await a.api('POST', '/api/users', { email: 'u1@limites.mx', password: 'Pz-101-Qx-301-Kv', role: 'agent' })).json();
+  const u1 = await h.addUser({ account_id: a.account, email: 'u1@limites.mx', password: 'Pz-101-Qx-301-Kv', role: 'agent' });
   assert.equal((await a.api('PUT', `/api/users/${u1.id}`, { active: false })).statusCode, 200);
-  assert.equal((await a.api('POST', '/api/users', { email: 'u2@limites.mx', password: 'Pz-103-Qx-303-Kv', role: 'agent' })).statusCode, 200);
+  await h.addUser({ account_id: a.account, email: 'u2@limites.mx', password: 'Pz-103-Qx-303-Kv', role: 'agent' });
   const back = await a.api('PUT', `/api/users/${u1.id}`, { active: true });
   assert.equal(back.statusCode, 403, 'ya hay 2 activos');
 });

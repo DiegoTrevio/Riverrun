@@ -28,13 +28,15 @@ export const checks = {
     assert.doesNotMatch(page.url(), /#\/login/);
   },
   'Recuperar contraseña: llega el correo y su enlace deja elegir otra con la que se entra': async ({ h, base, open }: AreaContext) => {
-    assert.ok((await h.authed('POST', '/api/users', { account_id: h.accountId, name: 'Persona que olvidó', email: 'olvido@auditoria.test', password: 'Pz-100-Qx-300-Kv', role: 'agent' })).statusCode < 300);
+    await h.addUser({ account_id: h.accountId, name: 'Persona que olvidó', email: 'olvido@auditoria.test', password: 'Pz-100-Qx-300-Kv', role: 'agent' });
     const page = await anonymous(open);
     await page.goto(`${base}/#/olvide`); await page.locator('main h1').first().waitFor();
     const before = outbox.length;
     await page.getByLabel('Correo').fill('olvido@auditoria.test');
     await page.getByRole('button', { name: 'Enviar enlace' }).click();
     await page.getByText(/te enviamos un enlace/).waitFor();
+    // El correo sale en segundo plano, después de responder.
+    for (let i = 0; i < 50 && !outbox.slice(before).some((m: any) => String(m.to).includes('olvido@auditoria.test')); i++) await page.waitForTimeout(100);
     const mail = outbox.slice(before).find((m: any) => String(m.to).includes('olvido@auditoria.test'));
     assert.ok(mail, 'no salió el correo para recuperar la contraseña');
     const link = (JSON.stringify(mail).match(/#\/restablecer\?token=[\w-]+/) || [])[0];

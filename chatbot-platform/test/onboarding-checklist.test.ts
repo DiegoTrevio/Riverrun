@@ -85,8 +85,7 @@ t('lista de pendientes: «Ocultar», permisos y cuentas creadas por el superadmi
   assert.equal(done(list).team, false);
 
   // Un agente de la cuenta no la ve; con él, el paso opcional del equipo queda hecho.
-  const agent = await h.authed('POST', '/api/users', { account_id: B.account, name: 'Beto', email: 'beto@cafe.mx', password: 'Pz-108-Qx-308-Kv', role: 'agent' });
-  assert.equal(agent.statusCode, 200, agent.body);
+  const agent = await h.addUser({ account_id: B.account, name: 'Beto', email: 'beto@cafe.mx', password: 'Pz-108-Qx-308-Kv', role: 'agent' });
   assert.equal((await (await h.loginAs('beto@cafe.mx', 'Pz-108-Qx-308-Kv'))('GET', '/api/onboarding/checklist')).statusCode, 403);
   list = await checklist(B.api);
   assert.equal(done(list).team, true);

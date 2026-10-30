@@ -25,11 +25,9 @@ before(async () => {
   if (!ok) return;
   h = await createHarness();
   await h.createBot();
-  const u = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'equipo@clinica.mx', name: 'Equipo', password: 'Pz-123-Qx-323-Kv', role: 'agent' });
-  assert.equal(u.statusCode, 200, u.body);
+  const u = await h.addUser({ account_id: h.accountId, email: 'equipo@clinica.mx', name: 'Equipo', password: 'Pz-123-Qx-323-Kv', role: 'agent' });
   // Las conversaciones sin asignar avisan a los administradores: los agentes solo reciben lo que tienen asignado.
-  const owner = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'dueno@clinica.mx', name: 'Dueño', password: 'Pz-123-Qx-323-Kv', role: 'admin' });
-  assert.equal(owner.statusCode, 200, owner.body);
+  const owner = await h.addUser({ account_id: h.accountId, email: 'dueno@clinica.mx', name: 'Dueño', password: 'Pz-123-Qx-323-Kv', role: 'admin' });
 });
 after(async () => {
   if (h) await h.app.close();

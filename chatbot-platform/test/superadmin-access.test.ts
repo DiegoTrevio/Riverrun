@@ -69,8 +69,9 @@ t('recuperar el acceso crea al superadmin si no existe, pero no convierte en sup
   assert.equal((await pool.query(`SELECT role FROM users WHERE email = 'nuevo-jefe@test.mx'`)).rows[0].role, 'superadmin');
 
   const jefe = await h.loginAs('nuevo-jefe@test.mx', 'clave-elegida-larga');
-  const acc = (await jefe('POST', '/api/accounts', { name: 'Negocio de Ana', admin: { name: 'Ana', email: 'ana@negocio.mx', password: 'Pz-109-Qx-309-Kv' } })).json();
+  const acc = (await jefe('POST', '/api/accounts', { name: 'Negocio de Ana' })).json();
   assert.ok(acc.id);
+  await h.addUser({ account_id: acc.id, name: 'Ana', email: 'ana@negocio.mx', password: 'Pz-109-Qx-309-Kv', role: 'admin' });
   await assert.rejects(() => resetSuperadminPassword('ana@negocio.mx'), /no es superadministrador/);
   assert.equal((await login('ana@negocio.mx', 'Pz-109-Qx-309-Kv')).statusCode, 200, 'su contraseña no cambió');
 });

@@ -176,8 +176,7 @@ t('las columnas se pueden editar: una que se borra manda sus tarjetas a la prime
   assert.equal(r.json().stages[0].id, 'nuevo', 'renombrar conserva el identificador');
   assert.equal((await cardOf('5215510020002')).open.stage_id, 'nuevo');
 
-  const user = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'agente-pipe@test.mx', password: 'Pz-919-Qx-920-Kv', name: 'Agente', role: 'agent' });
-  assert.equal(user.statusCode, 200, user.body);
+  const user = await h.addUser({ account_id: h.accountId, email: 'agente-pipe@test.mx', password: 'Pz-919-Qx-920-Kv', name: 'Agente', role: 'agent' });
   const agent = await h.loginAs('agente-pipe@test.mx', 'Pz-919-Qx-920-Kv');
   assert.equal((await agent('GET', `/api/pipelines/${pipelineId}/board`)).json().cards.length, 0, 'sin conversaciones asignadas no ve tarjetas');
   assert.equal((await agent('POST', '/api/pipelines', { name: 'X', stages: [{ name: 'a' }, { name: 'b' }] })).statusCode, 403);

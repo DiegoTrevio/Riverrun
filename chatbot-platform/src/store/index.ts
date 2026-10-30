@@ -109,8 +109,9 @@ export async function deleteAccount(id: string) {
 const USER_COLS = 'id, account_id, role, name, email, phone, notify_whatsapp, alert_prefs, available, active, email_verified_at, last_login_at, created_at';
 
 /** El equipo, con si ya configuró la verificación en dos pasos (nunca el secreto). */
-export async function listUsers(accountId: string | null): Promise<(User & { mfa_enabled: boolean })[]> {
-  const cols = `${USER_COLS}, totp_enabled_at IS NOT NULL AS mfa_enabled`;
+export async function listUsers(accountId: string | null): Promise<(User & { mfa_enabled: boolean; is_owner: boolean })[]> {
+  const cols = `${USER_COLS}, totp_enabled_at IS NOT NULL AS mfa_enabled,
+    EXISTS (SELECT 1 FROM accounts a WHERE a.id = users.account_id AND a.owner_user_id = users.id) AS is_owner`;
   return accountId
     ? query(`SELECT ${cols} FROM users WHERE account_id = $1 ORDER BY created_at`, [accountId])
     : query(`SELECT ${cols} FROM users ORDER BY account_id NULLS FIRST, created_at`);
@@ -120,8 +121,16 @@ export async function getUser(id: string) {
   return queryOne<User>(`SELECT ${USER_COLS} FROM users WHERE id = $1`, [id]);
 }
 
+/** Quien entra con Google: por su identificador estable (`sub`), no por el correo. */
+export async function getUserForGoogle(sub: string) {
+  return queryOne<User & { password_hash: string; account_active: boolean | null; google_sub: string | null }>(
+    `SELECT u.*, a.active AS account_active FROM users u LEFT JOIN accounts a ON a.id = u.account_id WHERE u.google_sub = $1`,
+    [sub],
+  );
+}
+
 export async function getUserForLogin(email: string) {
-  return queryOne<User & { password_hash: string; account_active: boolean | null }>(
+  return queryOne<User & { password_hash: string; account_active: boolean | null; google_sub: string | null }>(
     `SELECT u.*, a.active AS account_active FROM users u LEFT JOIN accounts a ON a.id = u.account_id WHERE lower(u.email) = lower($1)`,
     [email.trim()],
   );
@@ -211,10 +220,10 @@ export async function createUser(
   u: { account_id: string | null; role: Role; name: string; email: string; password_hash: string; verified?: boolean },
   client?: Queryable,
 ) {
-  // Los usuarios que crea un administrador se dan por verificados; los del autoregistro, no.
+  // Sin `verified` explícito, el correo queda sin verificar: lo verifica quien abre el enlace (invitación, registro).
   const rows = await rowsOf(client,
     `INSERT INTO users (account_id, role, name, email, password_hash, email_verified_at) VALUES ($1,$2,$3,$4,$5, CASE WHEN $6::boolean THEN now() END) RETURNING ${USER_COLS}`,
-    [u.account_id, u.role, u.name, u.email.trim(), u.password_hash, u.verified ?? true],
+    [u.account_id, u.role, u.name, u.email.trim(), u.password_hash, u.verified ?? false],
   );
   return rows[0] as User;
 }
@@ -268,21 +277,44 @@ export async function markEmailVerified(id: string) {
 
 const tokenHash = (token: string) => crypto.createHash('sha256').update(token).digest('hex');
 
-/** Crea un token de un solo uso; se guarda solo su hash. Invalida los anteriores del mismo tipo. */
-export async function createAuthToken(userId: string, kind: 'verify_email' | 'reset_password', ttlMinutes: number) {
+export type AuthTokenKind = 'verify_email' | 'reset_password' | 'change_email';
+
+/**
+ * Crea un token de un solo uso; se guarda solo su hash. De restablecer la contraseña quedan vivos los 3 más nuevos (un
+ * correo que tarda no deja inservible el siguiente); de los demás tipos, solo el nuevo. `email`: el correo nuevo de un
+ * cambio de correo (se aplica al abrir el enlace).
+ */
+export async function createAuthToken(userId: string, kind: AuthTokenKind, ttlMinutes: number, email?: string) {
   const token = crypto.randomBytes(32).toString('base64url');
-  await query(`UPDATE auth_tokens SET used_at = now() WHERE user_id = $1 AND kind = $2 AND used_at IS NULL`, [userId, kind]);
-  await query(`INSERT INTO auth_tokens (user_id, kind, token_hash, expires_at) VALUES ($1, $2, $3, now() + make_interval(mins => $4))`, [
+  const keep = kind === 'reset_password' ? 2 : 0;
+  await query(
+    `UPDATE auth_tokens SET used_at = now() WHERE user_id = $1 AND kind = $2 AND used_at IS NULL
+        AND id NOT IN (SELECT id FROM auth_tokens WHERE user_id = $1 AND kind = $2 AND used_at IS NULL ORDER BY created_at DESC, id DESC LIMIT $3)`,
+    [userId, kind, keep],
+  );
+  await query(`INSERT INTO auth_tokens (user_id, kind, token_hash, expires_at, email) VALUES ($1, $2, $3, now() + make_interval(mins => $4), $5)`, [
     userId,
     kind,
     tokenHash(token),
     ttlMinutes,
+    email ?? null,
   ]);
   return token;
 }
 
+/** Ningún enlace abierto de la persona sirve ya (cambió su correo o su contraseña). */
+export async function invalidateAuthTokens(userId: string, client?: Queryable) {
+  await rowsOf(client, `UPDATE auth_tokens SET used_at = now() WHERE user_id = $1 AND used_at IS NULL`, [userId]);
+}
+
+/** El cambio de correo de un token vigente, bloqueado hasta terminar la transacción. */
+export async function lockEmailChange(token: string, client: Queryable) {
+  const rows = await rowsOf(client, `SELECT user_id, email FROM auth_tokens WHERE token_hash = $1 AND kind = 'change_email' AND used_at IS NULL AND expires_at > now() FOR UPDATE`, [tokenHash(token)]);
+  return (rows[0] as { user_id: string; email: string } | undefined) ?? null;
+}
+
 /** Consume el token (una sola vez, sin caducar). Devuelve el usuario dueño o null. */
-export async function consumeAuthToken(token: string, kind: 'verify_email' | 'reset_password') {
+export async function consumeAuthToken(token: string, kind: Exclude<AuthTokenKind, 'change_email'>) {
   const row = await queryOne<{ user_id: string }>(
     `UPDATE auth_tokens SET used_at = now() WHERE token_hash = $1 AND kind = $2 AND used_at IS NULL AND expires_at > now() RETURNING user_id`,
     [tokenHash(token), kind],
@@ -291,7 +323,7 @@ export async function consumeAuthToken(token: string, kind: 'verify_email' | 're
 }
 
 /** De quién es un token vigente, sin gastarlo (para revisar la contraseña nueva antes de usar el enlace). */
-export async function peekAuthToken(token: string, kind: 'verify_email' | 'reset_password') {
+export async function peekAuthToken(token: string, kind: Exclude<AuthTokenKind, 'change_email'>) {
   return queryOne<{ user_id: string; email: string; account_name: string | null }>(
     `SELECT t.user_id, u.email, a.name AS account_name FROM auth_tokens t JOIN users u ON u.id = t.user_id LEFT JOIN accounts a ON a.id = u.account_id
       WHERE t.token_hash = $1 AND t.kind = $2 AND t.used_at IS NULL AND t.expires_at > now()`,

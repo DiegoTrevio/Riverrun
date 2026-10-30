@@ -10,9 +10,11 @@ import fastifyStatic from '@fastify/static';
 import type { AiProvider } from './ai/provider.js';
 import { config } from './config.js';
 import { requireAuth } from './auth.js';
+import { accountPublicRoutes, accountRoutes } from './routes/account.js';
 import { adminRoutes, sessionRoutes } from './routes/admin.js';
 import { mfaPublicRoutes, mfaRoutes } from './routes/mfa.js';
 import { originGuard } from './identity/origin-guard.js';
+import { ownerHook } from './identity/ownership.js';
 import { stepUpHook } from './identity/step-up.js';
 import { agendaRoutes, calendarRoutes } from './routes/agenda.js';
 import { automationRoutes } from './routes/automation.js';
@@ -161,6 +163,7 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
   await mfaPublicRoutes(app);
   await signupRoutes(app);
   await invitationPublicRoutes(app);
+  await accountPublicRoutes(app);
   await pricingRoutes(app);
   await nudgesRoutes(app);
   await selfServicePages(app);
@@ -180,10 +183,13 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
   // Todo lo demás requiere sesión; cada ruta verifica además la cuenta y el rol.
   await app.register(async (api) => {
     api.addHook('preHandler', requireAuth);
+    // Lo del dueño de la cuenta, antes de pedir el código: quien no es dueño recibe su 403, no la ventana del código.
+    api.addHook('preHandler', ownerHook);
     // Las acciones delicadas piden el código otra vez si el último tiene más de 15 minutos.
     api.addHook('preHandler', stepUpHook);
     await mfaRoutes(api);
     await adminRoutes(api, service);
+    await accountRoutes(api);
     await chatbotRoutes(api, service);
     await channelRoutes(api);
     await socialRoutes(api);

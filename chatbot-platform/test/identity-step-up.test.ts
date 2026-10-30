@@ -15,10 +15,12 @@ let h: Awaited<ReturnType<typeof createHarness>>;
 const ID = '00000000-0000-4000-8000-000000000000';
 export const STEP_UP: [string, string][] = [
   ['PUT', '/api/me/password'],
+  ['PUT', '/api/me/email'],
+  ['POST', '/api/me/sessions/revoke-others'],
+  ['DELETE', `/api/me/devices/${ID}`],
   ['POST', '/api/me/2fa/recovery-codes'],
   ['POST', '/api/me/2fa/authenticator'],
   ['POST', '/api/me/2fa/authenticator/confirm'],
-  ['POST', '/api/users'],
   ['DELETE', `/api/users/${ID}`],
   ['POST', `/api/users/${ID}/2fa/reset`],
   ['POST', '/api/api-keys'],
@@ -36,6 +38,8 @@ export const STEP_UP: [string, string][] = [
   ['PUT', '/api/billing/fiscal'],
   ['GET', '/api/account/export.zip'],
   ['POST', '/api/account/deletion'],
+  ['DELETE', '/api/account/deletion'],
+  ['POST', '/api/account/transfer'],
   ['POST', '/api/accounts'],
   ['DELETE', `/api/accounts/${ID}`],
   ['PUT', '/api/system/zernio'],
@@ -50,7 +54,7 @@ before(async () => {
   if (!ok) return;
   h = await createHarness();
   await h.createBot();
-  assert.equal((await h.authed('POST', '/api/users', { account_id: h.accountId, name: 'Mía', email: 'mia@paso.mx', password: PASS, role: 'admin' })).statusCode, 200);
+  await h.addUser({ account_id: h.accountId, name: 'Mía', email: 'mia@paso.mx', password: PASS, role: 'admin' });
   admin = await h.loginAs('mia@paso.mx', PASS);
 });
 after(async () => {
@@ -81,7 +85,7 @@ t('con el código, la misma acción pasa; un código malo no', async () => {
 
 t('algunas acciones lo piden según lo que cambian', async () => {
   assert.equal((await h.authed('POST', '/api/2fa/step-up', { code: await h.codeFor('admin@test.mx') })).statusCode, 200);
-  const agent = (await h.authed('POST', '/api/users', { account_id: h.accountId, name: 'Nico', email: 'nico@paso.mx', password: PASS, role: 'agent' })).json();
+  const agent = (await h.addUser({ account_id: h.accountId, name: 'Nico', email: 'nico@paso.mx', password: PASS, role: 'agent' }));
   await age('mia@paso.mx', 16);
   assert.equal((await admin('PUT', `/api/users/${agent.id}`, { name: 'Nico Ruiz' })).statusCode, 200, 'un cambio de nombre no');
   assert.equal((await admin('PUT', `/api/users/${agent.id}`, { role: 'admin' })).json().code, 'step_up', 'un cambio de rol sí');

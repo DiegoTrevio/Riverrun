@@ -6,7 +6,7 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { createHarness, dbAvailable, pool, waitFor } from './harness.js';
+import { createHarness, dbAvailable, pool, store, waitFor } from './harness.js';
 
 const ok = await dbAvailable();
 const t = (name: string, fn: () => Promise<void>) => test(name, { skip: !ok && 'PostgreSQL de pruebas no disponible' }, fn);
@@ -30,9 +30,7 @@ const resign = (cookie: string, patch: Record<string, unknown>) => {
 };
 const PASS = 'Pz-931-Qx-932-Kv';
 const newUser = async (email: string, role = 'agent') => {
-  const r = await h.authed('POST', '/api/users', { account_id: h.accountId, name: 'Persona', email, password: PASS, role });
-  assert.equal(r.statusCode, 200, r.body);
-  return r.json().id as string;
+  return (await h.addUser({ account_id: h.accountId, name: 'Persona', email, password: PASS, role: role as 'admin' | 'agent' })).id;
 };
 /** Configura el 2FA de alguien por la API y devuelve su secreto y sus códigos. */
 const enroll = async (email: string) => {
@@ -174,7 +172,8 @@ t('si la desactivan o cambia su contraseña entre la contraseña y el código, e
   assert.equal((await h.authed('PUT', `/api/users/${id}`, { active: true })).statusCode, 200);
   await resetStep('cambia@login.mx');
   const c2 = await challenge('cambia@login.mx', PASS);
-  assert.equal((await h.authed('PUT', `/api/users/${id}`, { password: 'Pz-933-Qx-934-Kv' })).statusCode, 200);
+  const { hashPassword } = await import('../src/auth.js');
+  await store.updateUser(id, { password_hash: await hashPassword('Pz-933-Qx-934-Kv') }); // la cambió (Mi perfil o el enlace del correo)
   assert.equal((await post('/api/login/2fa', c2, { code: totpAt(secret, currentStep()) })).statusCode, 401);
 });
 
@@ -189,7 +188,7 @@ t('registro e invitación piden configurar antes de abrir sesión', async () => 
 
   assert.equal((await h.authed('POST', `/api/invitations?account_id=${h.accountId}`, { email: 'invitada@login.mx', name: 'Inés', role: 'agent' })).statusCode, 200);
   const mail = [...outbox].reverse().find((m) => m.to === 'invitada@login.mx')!;
-  const token = decodeURIComponent(/token=([^\s&]+)/.exec(mail.text)![1]);
+  const token = decodeURIComponent(/#\/invitacion\/([^\s]+)/.exec(mail.text)![1]);
   const a = await h.app.inject({ method: 'POST', url: '/api/invitation/accept', remoteAddress: '10.62.0.2', payload: { token, name: 'Inés', password: PASS, accept_terms: true } });
   assert.equal(a.statusCode, 200, a.body);
   assert.equal(a.json().mfa, 'enroll');
@@ -209,6 +208,8 @@ t('cambiar la contraseña sigue en la sesión y avisa; restablecer por correo no
   await waitFor(() => outbox.some((m) => m.to === 'olvida@login.mx' && m.subject === 'Tu contraseña cambió'), 3000);
 
   assert.equal((await h.app.inject({ method: 'POST', url: '/api/forgot-password', remoteAddress: '10.62.0.3', payload: { email: 'olvida@login.mx' } })).statusCode, 200);
+  // El correo sale en segundo plano, después de responder.
+  await waitFor(() => outbox.some((m) => m.to === 'olvida@login.mx' && m.subject === 'Restablece tu contraseña'));
   const mail = [...outbox].reverse().find((m) => m.to === 'olvida@login.mx' && m.subject === 'Restablece tu contraseña')!;
   const token = decodeURIComponent(/restablecer\?token=([^\s&]+)/.exec(mail.text)![1]);
   const reset = await h.app.inject({ method: 'POST', url: '/api/reset-password', remoteAddress: '10.62.0.4', payload: { token, password: 'Pz-937-Qx-938-Kv' } });

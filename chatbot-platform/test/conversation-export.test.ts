@@ -141,7 +141,7 @@ t('a mano desde el panel; un operador solo envía las conversaciones que ve', as
   assert.match(d.reason, /desde el panel/);
   assert.equal(d.trigger.event, 'manual');
 
-  await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'operador@clinica.mx', name: 'Operador', password: 'Pz-135-Qx-335-Kv', role: 'agent' });
+  await h.addUser({ account_id: h.accountId, email: 'operador@clinica.mx', name: 'Operador', password: 'Pz-135-Qx-335-Kv', role: 'agent' });
   const agent = await h.loginAs('operador@clinica.mx', 'Pz-135-Qx-335-Kv');
   assert.equal((await agent('POST', `/api/conversations/${conv.id}/send-to-app`, { content: 'summary' })).statusCode, 404, 'no la tiene asignada');
 });

@@ -12,7 +12,7 @@ before(async () => {
   if (!ok) return;
   h = await createHarness();
   await h.createBot({});
-  await h.authed('POST', '/api/users', { account_id: h.accountId, name: 'Agente', email: 'agente@cotiza.test', password: 'Pz-101-Qx-301-Kv', role: 'agent' });
+  await h.addUser({ account_id: h.accountId, name: 'Agente', email: 'agente@cotiza.test', password: 'Pz-101-Qx-301-Kv', role: 'agent' });
   agent = await h.loginAs('agente@cotiza.test', 'Pz-101-Qx-301-Kv');
 });
 after(async () => {

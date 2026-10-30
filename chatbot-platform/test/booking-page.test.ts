@@ -22,8 +22,8 @@ before(async () => {
   h = await createHarness();
   await h.createBot();
   for (const name of ['ana', 'beto']) {
-    const r = await h.authed('POST', '/api/users', { account_id: h.accountId, email: `${name}@reservas.mx`, password: 'Pz-921-Qx-922-Kv', name: name[0].toUpperCase() + name.slice(1), role: 'agent' });
-    people[name] = { id: r.json().id, api: await h.loginAs(`${name}@reservas.mx`, 'Pz-921-Qx-922-Kv') };
+    const r = await h.addUser({ account_id: h.accountId, email: `${name}@reservas.mx`, password: 'Pz-921-Qx-922-Kv', name: name[0].toUpperCase() + name.slice(1), role: 'agent' });
+    people[name] = { id: r.id, api: await h.loginAs(`${name}@reservas.mx`, 'Pz-921-Qx-922-Kv') };
   }
   const svc = async (body: Record<string, unknown>) => (await h.authed('POST', '/api/services', { account_id: h.accountId, duration_minutes: 30, min_notice_minutes: 0, max_days_ahead: 14, ...body })).json();
   call = await svc({ name: 'Llamada de diagnóstico', kind: 'call', assigned_user_ids: [people.ana.id, people.beto.id], customer_choice: true });

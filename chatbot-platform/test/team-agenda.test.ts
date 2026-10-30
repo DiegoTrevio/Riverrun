@@ -80,9 +80,8 @@ before(async () => {
   h = await createHarness();
   await h.createBot();
   for (const name of ['ana', 'beto']) {
-    const r = await h.authed('POST', '/api/users', { account_id: h.accountId, email: `${name}@equipo.mx`, password: 'Pz-919-Qx-920-Kv', name: name[0].toUpperCase() + name.slice(1), role: 'agent' });
-    assert.equal(r.statusCode, 200, r.body);
-    people[name] = { id: r.json().id, api: await h.loginAs(`${name}@equipo.mx`, 'Pz-919-Qx-920-Kv') };
+    const r = await h.addUser({ account_id: h.accountId, email: `${name}@equipo.mx`, password: 'Pz-919-Qx-920-Kv', name: name[0].toUpperCase() + name.slice(1), role: 'agent' });
+    people[name] = { id: r.id, api: await h.loginAs(`${name}@equipo.mx`, 'Pz-919-Qx-920-Kv') };
   }
 });
 after(async () => {

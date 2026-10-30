@@ -15,16 +15,21 @@ import {
   ipKey,
   verifyPassword,
   currentSession,
+  ACCOUNT_LIMIT,
+  assertCurrentPassword,
 } from '../auth.js';
 import { adapterFor } from '../channels/index.js';
 import { config } from '../config.js';
 import { assertPasswordAllowed, NewPassword } from '../identity/passwords.js';
 import { beginLogin, renewSessionAfterPasswordChange } from '../identity/mfa.js';
 import { resetMfa } from '../identity/reset-mfa.js';
+import { accountOwner, assertOwner } from '../identity/ownership.js';
 import { browserOf, forgetTrustedDevices, trustedDeviceFor } from '../identity/devices.js';
 import { countHit, LIMITS, releaseHit } from '../identity/rate-limit.js';
 import { notifyUser } from '../identity/notices.js';
-import { query, queryOne, withTransaction } from '../db.js';
+import { query, queryOne } from '../db.js';
+import { assertInvitable, createInvitation } from './invitations.js';
+import { offboardingSummary, offboardUser } from '../identity/offboarding.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
@@ -52,7 +57,6 @@ const phoneOk = (v: string) => {
   const d = v.replace(/\D/g, '');
   return d === '' || (d.length >= 11 && d.length <= 15);
 };
-const StaffPhone = z.string().max(30).refine(phoneOk, PHONE_HINT);
 /** Al editar: el número que ya estaba guardado (aunque sea de antes, sin lada) no impide guardar lo demás. */
 const EditedPhone = z.string().max(30);
 function checkEditedPhone(next: string | undefined, current: string | null | undefined) {
@@ -62,9 +66,7 @@ function checkEditedPhone(next: string | undefined, current: string | null | und
 }
 
 const Password = NewPassword;
-const ACCOUNT_LIMIT = 'Demasiados intentos con esta cuenta. Entra desde un dispositivo recordado o recupera tu contraseña por correo.';
 const accountName = async (id: string | null | undefined) => (id ? (await store.getAccount(id))?.name : undefined);
-const Email = z.string().trim().toLowerCase().email('correo inválido').max(200);
 
 /** Rutas públicas de sesión. */
 export async function sessionRoutes(app: FastifyInstance) {
@@ -108,6 +110,10 @@ export async function sessionRoutes(app: FastifyInstance) {
 }
 
 /** Rutas autenticadas: perfil, cuentas, usuarios, estadísticas y registros. */
+const INVITE_ONLY = 'Invita a la persona: ella elige su contraseña al aceptar';
+const ROLE_NAMES: Record<Role, string> = { superadmin: 'superadministrador', admin: 'administrador', agent: 'agente' };
+const OWN_ONLY = 'Cada persona cambia su contraseña y su correo en Mi perfil';
+
 export async function adminRoutes(api: FastifyInstance, service: ChatService) {
   await aiBudgetRoutes(api);
   api.get('/api/me', async (req) => {
@@ -116,7 +122,8 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     const due = account && req.user.role !== 'agent' ? await paymentDue(account.id) : null;
     // Copiloto: el superadmin lo usa en la cuenta que elija (el panel revisa que esa cuenta lo tenga encendido).
     const copilot = { enabled: config.copilot.enabled && (req.user.role === 'superadmin' || !!account?.copilot_enabled) };
-    return { user: req.user, account: account && { ...store.publicAccount(account), payment_due: due, deletion_date: deletionDate(account) }, copilot };
+    const owner = account ? await accountOwner(account.id) : null;
+    return { user: req.user, account: account && { ...store.publicAccount(account), payment_due: due, deletion_date: deletionDate(account) }, owner: owner && { id: owner.id, name: owner.name || owner.email }, copilot };
   });
 
   api.put('/api/me', async (req) => {
@@ -139,7 +146,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     await logEvent({ level: 'info', source: 'admin', message: `Sesión cerrada desde Mi perfil por ${req.user.email}`, accountId: req.user.account_id ?? undefined });
     return { ok: true, current: req.params.id === req.sessionId };
   });
-  api.post('/api/me/sessions/revoke-others', async (req: any) => {
+  api.post('/api/me/sessions/revoke-others', stepUp, async (req: any) => {
     const closed = await store.revokeUserSessions(req.user.id, { except: req.sessionId });
     await forgetTrustedDevices(req.user.id);
     await logEvent({ level: 'info', source: 'admin', message: `${req.user.email} cerró sus otras ${closed} sesiones`, accountId: req.user.account_id ?? undefined });
@@ -148,17 +155,10 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
 
   api.put('/api/me/password', stepUp, async (req, reply) => {
     const b = parse(z.object({ current: z.string(), password: Password }), req.body);
-    // La contraseña actual equivocada cuenta como intento a la cuenta (con una cookie robada no se adivina sin límite).
-    const accountLimit = `login-acct:${req.user.email.toLowerCase()}`;
-    if ((await countHit(accountLimit, LIMITS.loginAccount.windowMs)) > LIMITS.loginAccount.max) {
-      await releaseHit(accountLimit);
-      throw new HttpError(429, ACCOUNT_LIMIT);
-    }
-    const full = await store.getUserForLogin(req.user.email);
-    if (!full || !(await verifyPassword(b.current, full.password_hash))) throw new HttpError(400, 'La contraseña actual no es correcta');
-    await releaseHit(accountLimit);
+    await assertCurrentPassword(req.user.email, b.current);
     await assertPasswordAllowed(b.password, { email: req.user.email, businessName: await accountName(req.user.account_id) });
     const hash = await hashPassword(b.password);
+    await store.invalidateAuthTokens(req.user.id); // los enlaces para restablecer que hubiera ya no sirven
     await store.updateUser(req.user.id, { password_hash: hash });
     // Las demás sesiones se cierran; esta sigue abierta con la nueva huella (y con su verificación reciente).
     await store.revokeUserSessions(req.user.id);
@@ -351,23 +351,19 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     const b = parse(
       z.object({
         name: z.string().trim().min(1).max(120),
-        admin: z.object({ name: z.string().trim().max(120).default(''), email: Email, password: Password }).optional(),
+        // Su dueño: le llega una invitación de administrador y, al aceptarla, queda como dueño.
+        owner: z.object({ name: z.string().trim().max(120).default(''), email: z.string().trim().toLowerCase().email('correo inválido').max(200) }).optional(),
+        admin: z.unknown().optional(),
       }),
       req.body,
     );
-    if (b.admin) await assertPasswordAllowed(b.admin.password, { email: b.admin.email, businessName: b.name });
-    const passwordHash = b.admin ? await hashPassword(b.admin.password) : null;
-    const { account, admin } = await withTransaction(async (client) => {
-      const account = await store.createAccount(b.name, {}, client);
-      const admin = b.admin ? await store.createUser({ account_id: account.id, role: 'admin', name: b.admin.name, email: b.admin.email, password_hash: passwordHash! }, client) : null;
-      if (admin) {
-        await client.query('UPDATE accounts SET owner_user_id = $1 WHERE id = $2', [admin.id, account.id]);
-        account.owner_user_id = admin.id;
-      }
-      return { account, admin };
-    });
+    if (b.admin !== undefined) throw new HttpError(400, INVITE_ONLY);
+    // Antes de crear la cuenta: un correo que no se puede invitar no deja una cuenta a medias.
+    if (b.owner) await assertInvitable(b.owner.email);
+    const account = await store.createAccount(b.name, {});
     await logEvent({ level: 'info', source: 'admin', message: `Cuenta creada: ${account.name}`, accountId: account.id });
-    return { ...store.publicAccount(account), admin };
+    if (b.owner) await createInvitation(req.user, account.id, { ...b.owner, role: 'admin' });
+    return store.publicAccount(account);
   });
 
   api.put('/api/accounts/:id', { preHandler: requireRole('superadmin') }, async (req: any) => {
@@ -404,53 +400,46 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
   /* ------------------------------ Usuarios ------------------------------ */
   const admins = { preHandler: requireRole('admin') };
 
-  api.get('/api/users', admins, async (req: any) => store.listUsers(scopeAccount(req.user, req.query.account_id)));
-
-  api.post('/api/users', { ...admins, ...stepUp }, async (req) => {
-    const b = parse(
-      z.object({
-        name: z.string().trim().max(120).default(''),
-        email: Email,
-        password: Password,
-        role: z.enum(['superadmin', 'admin', 'agent']),
-        account_id: z.string().uuid().nullable().optional(),
-        phone: StaffPhone.default(''),
-        notify_whatsapp: z.boolean().default(false),
-      }),
-      req.body,
-    );
-    if (b.role === 'superadmin') {
-      if (req.user.role !== 'superadmin') throw new HttpError(403, 'Solo un superadministrador puede crear otro');
-      await assertPasswordAllowed(b.password, { email: b.email });
-      return store.createUser({ account_id: null, role: 'superadmin', name: b.name, email: b.email, password_hash: await hashPassword(b.password) });
-    }
-    const accountId = await targetAccount(req.user, b.account_id);
-    await assertWithinLimit(accountId, 'users');
-    await assertPasswordAllowed(b.password, { email: b.email, businessName: await accountName(accountId) });
-    const created = await store.createUser({ account_id: accountId, role: b.role, name: b.name, email: b.email, password_hash: await hashPassword(b.password) });
-    const user = b.phone || b.notify_whatsapp ? ((await store.updateUser(created.id, { phone: b.phone, notify_whatsapp: b.notify_whatsapp })) ?? created) : created;
-    await logEvent({ level: 'info', source: 'admin', message: `Usuario creado: ${user.email} (${user.role})`, accountId });
-    return user;
+  api.get('/api/users', admins, async (req: any) => {
+    const accountId = scopeAccount(req.user, req.query.account_id);
+    if (accountId) await accountOwner(accountId); // deja guardado al dueño vigente antes de marcarlo
+    return store.listUsers(accountId);
   });
 
-  /** Usuario que el usuario actual puede administrar. */
+  // Nadie escribe la contraseña de otro: al equipo se le invita y elige la suya al aceptar.
+  api.post('/api/users', async () => {
+    throw new HttpError(410, INVITE_ONLY);
+  });
+
+  /** Usuario que el usuario actual puede administrar: a otro administrador, solo el dueño de la cuenta. */
   const manageable = async (req: any) => {
     const target = await store.getUser(req.params.id);
     if (!target || (target.role === 'superadmin' && req.user.role !== 'superadmin')) throw notFound('Usuario no encontrado');
     if (target.account_id) assertAccount(req.user, target, 'Usuario no encontrado');
+    if (target.role === 'admin' && target.id !== req.user.id) await assertOwner(req, target.account_id!);
     return target;
   };
+  /** Al dar de baja: revoca sus llaves e invitaciones y pausa sus webhooks, y lo deja en la bitácora. */
+  const offboard = async (target: { id: string; name: string; email: string; account_id: string | null }, actor: { email: string }) => {
+    const gone = await offboardUser(target.id, target.name || target.email);
+    if (gone.api_keys || gone.webhooks || gone.invitations) {
+      await logEvent({ level: 'info', source: 'admin', message: `Baja de ${target.email} (por ${actor.email}): ${gone.api_keys} llaves revocadas, ${gone.webhooks} webhooks pausados, ${gone.invitations} invitaciones canceladas`, accountId: target.account_id ?? undefined });
+    }
+  };
+  /** El dueño no se desactiva, degrada, mueve ni borra: primero transfiere la cuenta. */
+  const isOwnerUser = async (u: { id: string; role: Role; account_id: string | null }) => u.role === 'admin' && !!u.account_id && (await accountOwner(u.account_id))?.id === u.id;
+  const FIRST_TRANSFER = 'Primero transfiere la cuenta a otro administrador';
 
   api.put('/api/users/:id', admins, async (req: any) => {
     const target = await manageable(req);
+    // La contraseña y el correo los cambia cada quien en Mi perfil (el correo, confirmando el nuevo).
+    if (req.body && typeof req.body === 'object' && ('password' in req.body || 'email' in req.body)) throw new HttpError(400, OWN_ONLY);
     const b = parse(
       z.object({
         name: z.string().trim().max(120).optional(),
-        email: Email.optional(),
         role: z.enum(['superadmin', 'admin', 'agent']).optional(),
         account_id: z.string().uuid().nullable().optional(),
         active: z.boolean().optional(),
-        password: Password.optional(),
         phone: EditedPhone.optional(),
         notify_whatsapp: z.boolean().optional(),
         available: z.boolean().optional(),
@@ -458,8 +447,8 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
       }),
       req.body,
     );
-    // Cambiar el rol, dar de baja, o cambiar la contraseña o el correo de alguien pide verificación reciente.
-    if ((b.role !== undefined && b.role !== target.role) || (b.active !== undefined && b.active !== target.active) || b.password || (b.email !== undefined && b.email !== target.email)) assertRecentMfa(req);
+    // Cambiar el rol o dar de baja a alguien pide verificación reciente.
+    if ((b.role !== undefined && b.role !== target.role) || (b.active !== undefined && b.active !== target.active)) assertRecentMfa(req);
     if (req.user.role !== 'superadmin' && (b.account_id !== undefined || b.role === 'superadmin')) {
       throw new HttpError(403, 'Solo el maestro puede asignar perfiles o acceso global');
     }
@@ -475,14 +464,17 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     if (target.id === req.user.id && (b.active === false || (b.role && b.role !== req.user.role))) {
       throw new HttpError(400, 'No puedes desactivarte ni cambiar tu propio rol');
     }
+    if ((b.active === false || (b.role !== undefined && b.role !== 'admin') || (b.account_id !== undefined && b.account_id !== target.account_id)) && (await isOwnerUser(target))) {
+      throw new HttpError(400, FIRST_TRANSFER);
+    }
+    if (b.role === 'admin' && target.role !== 'admin' && target.account_id) await assertOwner(req, target.account_id);
     if (target.role === 'superadmin' && b.role && b.role !== 'superadmin') throw new HttpError(400, 'El rol de superadministrador no se cambia');
     if (target.role === 'superadmin' && b.active === false && (await store.countSuperadmins()) <= 1) {
       throw new HttpError(400, 'Debe quedar al menos un superadministrador activo');
     }
     if (b.active === true && !target.active && target.account_id) await assertWithinLimit(target.account_id, 'users');
-    const patch: { name?: string; email?: string; role?: Role; account_id?: string | null; active?: boolean; password_hash?: string; phone?: string; notify_whatsapp?: boolean; available?: boolean; alert_prefs?: AlertPrefs } = {
+    const patch: { name?: string; role?: Role; account_id?: string | null; active?: boolean; phone?: string; notify_whatsapp?: boolean; available?: boolean; alert_prefs?: AlertPrefs } = {
       name: b.name,
-      email: b.email,
       role: b.role,
       account_id: accountId !== target.account_id ? accountId : undefined,
       active: b.active,
@@ -491,25 +483,28 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
       available: b.available,
       alert_prefs: b.alert_prefs ? cleanAlertPrefs(b.alert_prefs) : undefined,
     };
-    if (b.password) {
-      await assertPasswordAllowed(b.password, { email: b.email ?? target.email, businessName: await accountName(accountId) });
-      patch.password_hash = await hashPassword(b.password);
-    }
     const updated = await store.updateUser(target.id, patch, req.user.role === 'superadmin' ? undefined : scopeAccount(req.user)!);
     if (!updated) throw notFound('Usuario no encontrado');
-    // Desactivar a alguien, cambiarle el correo o la contraseña cierra todas sus sesiones abiertas y olvida sus
-    // dispositivos recordados. Un cambio de rol cierra sus sesiones (entra otra vez con los permisos nuevos); uno de
-    // cuenta aplica al momento en las sesiones abiertas (el usuario se vuelve a leer en cada petición).
-    if (!updated.active || updated.email !== target.email || patch.password_hash) {
+    // Desactivar a alguien cierra todas sus sesiones abiertas y olvida sus dispositivos recordados. Un cambio de rol
+    // cierra sus sesiones (entra otra vez con los permisos nuevos); uno de cuenta aplica al momento en las sesiones
+    // abiertas (el usuario se vuelve a leer en cada petición).
+    if (!updated.active) {
       await store.revokeUserSessions(updated.id);
       await forgetTrustedDevices(updated.id);
+      if (target.active) await offboard(target, req.user);
     } else if (updated.role !== target.role) await store.revokeUserSessions(updated.id);
+    // Pasar a otra cuenta también es irse de la de antes: lo que dejó abierto ahí se va con la baja.
+    if (updated.active && target.active && updated.account_id !== target.account_id) await offboard(target, req.user);
+    if (updated.role !== target.role) await notifyUser(updated, 'role_changed', { by: req.user.name || req.user.email, role: ROLE_NAMES[updated.role] });
     if (updated.role !== target.role || updated.account_id !== target.account_id) {
       await logEvent({ level: 'info', source: 'admin', message: `Permisos de usuario actualizados: ${updated.email}`, accountId: updated.account_id ?? target.account_id ?? undefined,
         details: { actor_id: req.user.id, user_id: updated.id, previous_role: target.role, role: updated.role, previous_account_id: target.account_id, account_id: updated.account_id } });
     }
     return updated;
   });
+
+  /** Lo que se iría con la baja de alguien (para la confirmación del panel). */
+  api.get('/api/users/:id/offboarding', admins, async (req: any) => offboardingSummary((await manageable(req)).id));
 
   /** «Restablecer 2FA» en Equipo (perdió su teléfono y sus códigos): se cierran sus sesiones y la configura al entrar. */
   api.post('/api/users/:id/2fa/reset', { ...admins, ...stepUp }, async (req: any) => {
@@ -525,7 +520,10 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
   api.delete('/api/users/:id', { ...admins, ...stepUp }, async (req: any) => {
     const target = await manageable(req);
     if (target.id === req.user.id) throw new HttpError(400, 'No puedes eliminar tu propio usuario');
+    if (await isOwnerUser(target)) throw new HttpError(400, FIRST_TRANSFER);
     if (target.role === 'superadmin' && (await store.countSuperadmins()) <= 1) throw new HttpError(400, 'Debe quedar al menos un superadministrador');
+    // Antes de borrar: después sus llaves, webhooks e invitaciones se quedan sin autor.
+    await offboard(target, req.user);
     const deleted = await store.deleteUser(target.id, req.user.role === 'superadmin' ? undefined : scopeAccount(req.user)!);
     if (!deleted) throw notFound('Usuario no encontrado');
     return { ok: true };

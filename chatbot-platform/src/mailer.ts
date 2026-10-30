@@ -46,6 +46,16 @@ export type MailResult = 'sent' | 'skipped' | 'failed';
  * Nunca lanza: un fallo de correo no debe romper el registro ni las tareas. Quien necesita saber si falló (para
  * reintentarlo) mira el resultado.
  */
+/**
+ * Oculta el token de cada enlace (verificar, restablecer, borrar la cuenta, invitación, cambio de correo, registro con
+ * Google): la bitácora no lo guarda, porque la leen más personas que quien recibe el correo.
+ */
+export function redactTokens(text: string): string {
+  return String(text)
+    .replace(/([?&](?:token|t)=)[^\s&#]+/g, '$1[oculto]')
+    .replace(/(#\/(?:invitacion|cambiar-correo|registro-google)\/)[^\s?#]+/g, '$1[oculto]');
+}
+
 export async function deliverMail(mail: Mail): Promise<MailResult> {
   // Sandbox: solo a destinos de prueba. El registro no incluye el destinatario ni el asunto (pueden llevar datos de clientes).
   if (!outboundAllowed(mail.to)) {
@@ -56,7 +66,7 @@ export async function deliverMail(mail: Mail): Promise<MailResult> {
   if (!t) {
     outbox.push(mail);
     if (outbox.length > 100) outbox.shift();
-    await logEvent({ level: 'info', source: 'system', message: `Correo (sin SMTP) para ${mail.to}: ${mail.subject}`, details: { text: mail.text } });
+    await logEvent({ level: 'info', source: 'system', message: `Correo (sin SMTP) para ${mail.to}: ${mail.subject}`, details: { text: redactTokens(mail.text) } });
     return 'skipped';
   }
   try {

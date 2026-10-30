@@ -1,7 +1,7 @@
 /** Cobro automático: planes (los define el superadmin), contratar, administrar el pago y avisos de Stripe / Mercado Pago. */
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { stepUp } from '../identity/step-up.js';
+import { ownerOnly, ownerStepUp } from '../identity/ownership.js';
 import { HttpError, requireRole, targetAccount } from '../access.js';
 import { rateLimited } from '../auth.js';
 import { baseFor } from '../brands.js';
@@ -188,14 +188,14 @@ export async function billingRoutes(api: FastifyInstance) {
     uses_by_regime: Object.fromEntries(REGIMES.map((r) => [r.code, usesFor(r.code)])),
   };
 
-  api.get('/api/billing/fiscal', admins, async (req: any) => {
+  api.get('/api/billing/fiscal', { ...admins, ...ownerOnly }, async (req: any) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
     const f = await getFiscal(accountId);
     const { account_id: _a, updated_at, ...data } = f as any;
     return { fiscal: data, complete: fiscalComplete(f), updated_at, ...catalogs };
   });
 
-  api.put('/api/billing/fiscal', { ...admins, ...stepUp }, async (req: any, reply) => {
+  api.put('/api/billing/fiscal', { ...admins, ...ownerStepUp }, async (req: any, reply) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
     if (tooMany(reply, `billing-fiscal:${accountId}`, 30)) return reply;
     const d = parse(FiscalSchema, req.body);
@@ -207,7 +207,7 @@ export async function billingRoutes(api: FastifyInstance) {
   });
 
   /** PDF o XML de un CFDI: del administrador de su cuenta (la global, solo del superadmin). */
-  api.get('/api/billing/invoices/:id/:format', admins, async (req: any, reply) => {
+  api.get('/api/billing/invoices/:id/:format', { ...admins, ...ownerOnly }, async (req: any, reply) => {
     const { id, format } = req.params;
     if (!['pdf', 'xml'].includes(format) || !/^[0-9a-f-]{36}$/.test(id)) throw new HttpError(404, 'No encontrado');
     const c = await getCfdi(id);
@@ -223,7 +223,7 @@ export async function billingRoutes(api: FastifyInstance) {
       .send(file);
   });
 
-  api.post('/api/billing/checkout', { ...admins, ...stepUp }, async (req: any, reply) => {
+  api.post('/api/billing/checkout', { ...admins, ...ownerStepUp }, async (req: any, reply) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
     if (tooMany(reply, `billing-checkout:${accountId}`, 20)) return reply;
     const b = parse(z.object({ plan: z.string().max(40), provider: z.enum(['stripe', 'mercadopago']) }), req.body);
@@ -244,7 +244,7 @@ export async function billingRoutes(api: FastifyInstance) {
   });
 
   /** Al volver de la página de pago: se pregunta al proveedor por el pago iniciado y, si ya se cobró, la cuenta se activa. */
-  api.post('/api/billing/confirm', admins, async (req: any, reply) => {
+  api.post('/api/billing/confirm', { ...admins, ...ownerOnly }, async (req: any, reply) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
     if (rateLimited(`billing-confirm:${accountId}`, 60, 3600_000)) return reply.code(429).send({ error: 'Demasiadas consultas, espera un momento' });
     let confirmed = false;
@@ -259,7 +259,7 @@ export async function billingRoutes(api: FastifyInstance) {
   });
 
   /** Stripe: página para cambiar tarjeta, ver facturas y cancelar. */
-  api.post('/api/billing/portal', { ...admins, ...stepUp }, async (req: any, reply) => {
+  api.post('/api/billing/portal', { ...admins, ...ownerStepUp }, async (req: any, reply) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
     if (tooMany(reply, `billing-portal:${accountId}`, 30)) return reply;
     const sub = await getSubscription(accountId);
@@ -283,7 +283,7 @@ export async function billingRoutes(api: FastifyInstance) {
   };
 
   /** Cambiar de plan. Mercado Pago entre mensual y anual pasa por su página de pago: entonces responde `url`. */
-  api.post('/api/billing/change', { ...admins, ...stepUp }, async (req: any, reply) => {
+  api.post('/api/billing/change', { ...admins, ...ownerStepUp }, async (req: any, reply) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
     if (tooMany(reply, `billing-change:${accountId}`, 10)) return reply;
     const { plan } = parse(z.object({ plan: z.string().max(40) }), req.body);
@@ -292,7 +292,7 @@ export async function billingRoutes(api: FastifyInstance) {
   });
 
   /** Cambiar la tarjeta. Stripe: su página de administración. Mercado Pago: una suscripción nueva desde el siguiente cobro. */
-  api.post('/api/billing/payment-method', { ...admins, ...stepUp }, async (req: any, reply) => {
+  api.post('/api/billing/payment-method', { ...admins, ...ownerStepUp }, async (req: any, reply) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
     if (tooMany(reply, `billing-payment-method:${accountId}`, 10)) return reply;
     const sub = await getSubscription(accountId);
@@ -308,7 +308,7 @@ export async function billingRoutes(api: FastifyInstance) {
     return { url: await viaProvider(() => startReplacement({ accountId, email: req.user.email, plan, base })) };
   });
 
-  api.post('/api/billing/cancel', { ...admins, ...stepUp }, async (req: any, reply) => {
+  api.post('/api/billing/cancel', { ...admins, ...ownerStepUp }, async (req: any, reply) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
     if (tooMany(reply, `billing-cancel:${accountId}`, 20)) return reply;
     const { resume } = parse(z.object({ resume: z.boolean().default(false) }), req.body);

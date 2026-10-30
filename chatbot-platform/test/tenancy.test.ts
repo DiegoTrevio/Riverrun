@@ -14,9 +14,8 @@ const A = { id: '', bot: '', channel: '', token: '', instance: '', knowledge: ''
 const B = { id: '', bot: '', channel: '', token: '', instance: '', knowledge: '', conv: '', contact: '', api: null as unknown as Api };
 
 async function setupAccount(x: typeof A, name: string, email: string, instance: string, phone: string) {
-  const acc = await h.authed('POST', '/api/accounts', { name, admin: { name: `Admin ${name}`, email, password: 'Pz-144-Qx-344-Kv' } });
-  assert.equal(acc.statusCode, 200, acc.body);
-  x.id = acc.json().id;
+  const acc = await h.addAccount({ name, admin: { name: `Admin ${name}`, email, password: 'Pz-144-Qx-344-Kv' } });
+  x.id = acc.id;
   x.api = await h.loginAs(email, 'Pz-144-Qx-344-Kv');
   // El administrador crea todo sin indicar cuenta: se usa la suya.
   const bot = await x.api('POST', '/api/chatbots', { name: `Bot ${name}`, active: true, ai: { debounce_seconds: 0.1 } });
@@ -118,11 +117,12 @@ t('no se puede asignar a un canal el chatbot de otra cuenta ni crear cosas en ot
   // account_id ajeno se ignora: se crea en la propia cuenta
   const bot = await A.api('POST', '/api/chatbots', { name: 'Otro', account_id: B.id });
   assert.equal(bot.json().account_id, A.id);
-  const user = await A.api('POST', '/api/users', { email: 'agente@hotel.mx', password: 'Pz-101-Qx-301-Kv', role: 'agent', account_id: B.id });
-  assert.equal(user.statusCode, 200, user.body);
-  assert.equal(user.json().account_id, A.id);
-  // Un administrador no puede crear superadministradores ni cuentas
-  assert.equal((await A.api('POST', '/api/users', { email: 'x@x.mx', password: 'Pz-147-Qx-347-Kv', role: 'superadmin' })).statusCode, 403);
+  const inv = await A.api('POST', `/api/invitations?account_id=${B.id}`, { email: 'agente@hotel.mx', role: 'agent' });
+  assert.equal(inv.statusCode, 200, inv.body);
+  assert.equal((await pool.query(`SELECT account_id FROM account_invitations WHERE id = $1`, [inv.json().id])).rows[0].account_id, A.id);
+  const agent = await h.addUser({ account_id: A.id, email: 'agente@hotel.mx', password: 'Pz-101-Qx-301-Kv', role: 'agent' });
+  // Un administrador no puede dar acceso maestro ni crear cuentas
+  assert.equal((await A.api('PUT', `/api/users/${agent.id}`, { role: 'superadmin' })).statusCode, 403);
   assert.equal((await A.api('POST', '/api/accounts', { name: 'x' })).statusCode, 403);
   const usersB = (await h.authed('GET', `/api/users?account_id=${B.id}`)).json();
   assert.equal((await A.api('PUT', `/api/users/${usersB[0].id}`, { active: false })).statusCode, 404);
@@ -199,9 +199,9 @@ t('protecciones de usuarios: no autodesactivarse, siempre queda un superadmin, c
   assert.equal(good.statusCode, 200);
   assert.equal((await other('GET', '/api/me')).statusCode, 401, 'las otras sesiones se cierran al cambiar la contraseña');
   A.api = await h.loginAs('admin@hotel.mx', 'Pz-153-Qx-353-Kv');
-  const weak = await A.api('POST', '/api/users', { email: 'otro@hotel.mx', password: '123', role: 'agent' });
+  const weak = await A.api('PUT', '/api/me/password', { current: 'Pz-153-Qx-353-Kv', password: '123' });
   assert.equal(weak.statusCode, 400);
-  const dup = await A.api('POST', '/api/users', { email: 'AGENTE@hotel.mx', password: 'Pz-103-Qx-303-Kv', role: 'agent' });
+  const dup = await A.api('POST', '/api/invitations', { email: 'AGENTE@hotel.mx', role: 'agent' });
   assert.equal(dup.statusCode, 409, 'correo duplicado sin importar mayúsculas');
 });
 

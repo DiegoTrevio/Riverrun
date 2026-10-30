@@ -102,13 +102,12 @@ before(async () => {
   h = await createHarness();
   h.setScript(() => ({ messages: ['Hola'] }));
   for (const [name, email] of [['Cuenta A', 'admin@a.mx'], [`Cuenta ${MARK}`, 'admin@b.mx']]) {
-    const r = await h.authed('POST', '/api/accounts', { name, admin: { name: 'Admin', email, password: 'Pz-144-Qx-344-Kv' } });
-    assert.equal(r.statusCode, 200, r.body);
-    if (email === 'admin@b.mx') B.account = r.json().id;
+    const r = await h.addAccount({ name, admin: { name: 'Admin', email, password: 'Pz-144-Qx-344-Kv' } });
+    if (email === 'admin@b.mx') B.account = r.id;
   }
   adminA = await h.loginAs('admin@a.mx', 'Pz-144-Qx-344-Kv');
   adminB = await h.loginAs('admin@b.mx', 'Pz-144-Qx-344-Kv');
-  assert.equal((await adminA('POST', '/api/users', { email: 'agente@a.mx', name: 'Agente', password: 'Pz-144-Qx-344-Kv', role: 'agent' })).statusCode, 200);
+  await h.addUser({ account_id: (await adminA('GET', '/api/me')).json().user.account_id, email: 'agente@a.mx', name: 'Agente', password: 'Pz-144-Qx-344-Kv', role: 'agent' });
   agentA = await h.loginAs('agente@a.mx', 'Pz-144-Qx-344-Kv');
 
   // Recursos de la cuenta B (con un marcador para detectar fugas).
@@ -154,7 +153,7 @@ before(async () => {
   B.service = (await ok200(adminB('POST', '/api/services', { name: `Servicio ${MARK}`, duration_minutes: 30 }))).id;
   const slot = (await adminB('GET', `/api/services/${B.service}/slots`)).json()[0];
   B.appointment = (await ok200(adminB('POST', '/api/appointments', { service_id: B.service, slot: slot.key, customer_name: `Cliente ${MARK}`, notify_customer: false }))).id;
-  B.user = (await ok200(adminB('POST', '/api/users', { email: 'agente@b.mx', name: `Agente ${MARK}`, password: 'Pz-144-Qx-344-Kv', role: 'agent' }))).id;
+  B.user = (await h.addUser({ account_id: B.account, email: 'agente@b.mx', name: `Agente ${MARK}`, password: 'Pz-144-Qx-344-Kv', role: 'agent' })).id;
   B.endpoint = (await ok200(adminB('POST', '/api/webhook-endpoints', { url: 'https://example.com/hook', description: `Hook ${MARK}` }))).id;
   B.apikey = (await ok200(adminB('POST', '/api/api-keys', { name: `Llave ${MARK}` }))).id;
   // Sesión de «Conectar con Facebook» de B, con una página y su token: A no la ve ni la aplica.
@@ -268,7 +267,7 @@ t('el agente no puede usar rutas de administración de su propia cuenta', async 
   const adminOnly = [
     ['POST', '/api/chatbots', { name: 'x' }],
     ['POST', '/api/channels', { type: 'webchat', name: 'x' }],
-    ['POST', '/api/users', { email: 'x@a.mx', name: 'x', password: 'Pz-144-Qx-344-Kv', role: 'admin' }],
+    ['POST', '/api/invitations', { email: 'x@a.mx', name: 'x', role: 'admin' }],
     ['PUT', '/api/settings', { timezone: 'America/Bogota' }],
     ['POST', '/api/automations', { name: 'x', trigger: { type: 'new_contact' }, actions: [] }],
     ['POST', '/api/campaigns', { name: 'x', message: 'x' }],

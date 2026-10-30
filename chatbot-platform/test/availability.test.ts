@@ -30,7 +30,7 @@ before(async () => {
   h = await createHarness();
   await h.createBot();
   // Los avisos del equipo llegan a los usuarios de la cuenta.
-  assert.equal((await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'dueno@disponible.mx', name: 'Dueño', password: 'Pz-118-Qx-318-Kv', role: 'admin' })).statusCode, 200);
+  await h.addUser({ account_id: h.accountId, email: 'dueno@disponible.mx', name: 'Dueño', password: 'Pz-118-Qx-318-Kv', role: 'admin' });
   h.setScript(() => (aiDown ? new Error('proveedor de IA caído') : { messages: ['Hola, con gusto te ayudo'] }));
   await h.authed('PUT', `/api/chatbots/${h.botId}`, { ai: { debounce_seconds: 0.2 } });
   await h.webhook('hola');

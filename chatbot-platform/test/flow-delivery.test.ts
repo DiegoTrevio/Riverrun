@@ -30,8 +30,7 @@ before(async () => {
     flow: { goal: 'Que el cliente deje fechas y correo', steps: [{ title: 'Saludo' }, { title: 'Pedir fechas' }, { title: 'Pedir correo' }], on_goal_action: 'notify' },
     data_fields: [{ key: 'fechas', label: 'Fechas', type: 'text', required: true }, { key: 'correo', label: 'Correo', type: 'email', required: true }],
   });
-  const u = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'equipo@hotel.mx', name: 'Equipo', password: 'Pz-123-Qx-323-Kv', role: 'admin', phone: TEAM_PHONE, notify_whatsapp: true });
-  assert.equal(u.statusCode, 200, u.body);
+  const u = await h.addUser({ account_id: h.accountId, email: 'equipo@hotel.mx', name: 'Equipo', password: 'Pz-123-Qx-323-Kv', role: 'admin', phone: TEAM_PHONE, notify_whatsapp: true });
   equipo = await h.loginAs('equipo@hotel.mx', 'Pz-123-Qx-323-Kv');
   await h.uploadImage('mapa', 'Mapa', { mode: 'rules', flow_steps: [2] });
   await h.uploadImage('gracias', 'Gracias', { mode: 'rules', on_goal: true });
