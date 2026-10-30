@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { hashPassword, rateLimited } from '../auth.js';
 import { beginLogin } from '../identity/mfa.js';
 import { forgetTrustedDevices } from '../identity/devices.js';
+import { clearHits } from '../identity/rate-limit.js';
 import { notifyUser } from '../identity/notices.js';
 import { billingEnabled, payable, startCheckout } from '../billing/service.js';
 import { ProviderError } from '../billing/types.js';
@@ -166,6 +167,8 @@ export async function signupRoutes(app: FastifyInstance) {
     // La contraseña se revisa antes de gastar el enlace: si no sirve, puede elegir otra con el mismo.
     const owner = await store.peekAuthToken(b.token, 'reset_password');
     if (owner) await assertPasswordAllowed(b.password, { email: owner.email, businessName: owner.account_name ?? undefined });
+    // Recuperar el acceso por correo levanta el tope de intentos de esa cuenta.
+    if (owner) await clearHits(`login-acct:${owner.email.toLowerCase()}`);
     const userId = await store.consumeAuthToken(b.token, 'reset_password');
     if (!userId) throw new HttpError(400, 'El enlace no es válido o ya venció. Pide uno nuevo.');
     // La contraseña nueva invalida todas las sesiones abiertas. Abrir el enlace también confirma el correo.

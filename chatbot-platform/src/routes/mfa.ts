@@ -14,6 +14,7 @@ import { parse } from './util.js';
 const CHALLENGE_WINDOW_MS = 15 * 60_000;
 const Code = z.object({ code: z.string().trim().min(1, 'Escribe el código').max(40) });
 const expired = (reply: FastifyReply) => reply.code(401).send({ error: 'Vuelve a escribir tu contraseña para continuar', code: 'challenge_expired' });
+export const LOCKED = 'Bloqueamos la verificación por una hora por demasiados intentos. Si no fuiste tú, cambia tu contraseña.';
 const wrongCode = (reply: FastifyReply) => reply.code(400).send({ error: 'El código no es correcto' });
 
 export async function mfaPublicRoutes(app: FastifyInstance) {
@@ -24,6 +25,7 @@ export async function mfaPublicRoutes(app: FastifyInstance) {
     const key = challengeKey(found.challenge);
     if ((await hitsFor(key)) >= LIMITS.codePerChallenge) return expired(reply);
     const check = await verifyUserCode(found.user, b.code);
+    if (check.result === 'locked') return reply.code(429).send({ error: LOCKED });
     if (check.result !== 'ok') {
       await countHit(key, CHALLENGE_WINDOW_MS);
       return wrongCode(reply);

@@ -36,6 +36,11 @@ export async function hitsFor(key: string): Promise<number> {
   return row?.hits ?? 0;
 }
 
+/** Devuelve un intento que se contó de más (entró, o se rechazó sin revisar nada). */
+export async function releaseHit(key: string): Promise<void> {
+  await query(`UPDATE rate_limits SET hits = GREATEST(hits - 1, 0) WHERE key = $1`, [key]);
+}
+
 export async function clearHits(...keys: string[]): Promise<void> {
   if (keys.length) await query(`DELETE FROM rate_limits WHERE key = ANY($1::text[])`, [keys]);
 }

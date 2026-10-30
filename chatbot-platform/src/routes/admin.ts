@@ -11,8 +11,7 @@ import {
   clearSessionCookie,
   hashPassword,
   login,
-  loginAllowed,
-  registerLoginFailure,
+  ipKey,
   verifyPassword,
   currentSession,
 } from '../auth.js';
@@ -20,7 +19,8 @@ import { adapterFor } from '../channels/index.js';
 import { config } from '../config.js';
 import { assertPasswordAllowed, NewPassword } from '../identity/passwords.js';
 import { beginLogin, renewSessionAfterPasswordChange } from '../identity/mfa.js';
-import { browserOf, forgetTrustedDevices } from '../identity/devices.js';
+import { browserOf, forgetTrustedDevices, trustedDeviceFor } from '../identity/devices.js';
+import { countHit, LIMITS, releaseHit } from '../identity/rate-limit.js';
 import { notifyUser } from '../identity/notices.js';
 import { query, queryOne, withTransaction } from '../db.js';
 import { logEvent } from '../logs.js';
@@ -60,6 +60,7 @@ function checkEditedPhone(next: string | undefined, current: string | null | und
 }
 
 const Password = NewPassword;
+const ACCOUNT_LIMIT = 'Demasiados intentos con esta cuenta. Entra desde un dispositivo recordado o recupera tu contraseña por correo.';
 const accountName = async (id: string | null | undefined) => (id ? (await store.getAccount(id))?.name : undefined);
 const Email = z.string().trim().toLowerCase().email('correo inválido').max(200);
 
@@ -67,14 +68,28 @@ const Email = z.string().trim().toLowerCase().email('correo inválido').max(200)
 export async function sessionRoutes(app: FastifyInstance) {
   app.post('/api/login', async (req, reply) => {
     const body = (req.body ?? {}) as { user?: string; email?: string; password?: string };
-    if (!loginAllowed(req.ip)) return reply.code(429).send({ error: 'Demasiados intentos, espera 15 minutos' });
-    const who = String(body.email ?? body.user ?? '');
+    const who = String(body.email ?? body.user ?? '').slice(0, 200);
+    // Cada intento se cuenta antes de revisar la contraseña (una ráfaga no se salta el tope) y se devuelve si entra.
+    const ipLimit = `login-ip:${ipKey(req.ip)}`;
+    const accountLimit = `login-acct:${who.trim().toLowerCase()}`;
+    if ((await countHit(ipLimit, LIMITS.loginIp.windowMs)) > LIMITS.loginIp.max) {
+      await releaseHit(ipLimit);
+      return reply.code(429).send({ error: 'Demasiados intentos, espera 15 minutos' });
+    }
+    if ((await countHit(accountLimit, LIMITS.loginAccount.windowMs)) > LIMITS.loginAccount.max) {
+      // La cuenta está bajo ataque: solo su dispositivo recordado sigue entrando (o restablecer por correo).
+      const target = await store.getUserForLogin(who);
+      if (!target || !(await trustedDeviceFor(req, target))) {
+        await Promise.all([releaseHit(ipLimit), releaseHit(accountLimit)]);
+        return reply.code(429).send({ error: ACCOUNT_LIMIT });
+      }
+    }
     const user = await login(who, String(body.password ?? ''));
     if (!user) {
-      registerLoginFailure(req.ip);
       await logEvent({ level: 'warn', source: 'admin', message: 'Intento de acceso fallido', details: { ip: req.ip, email: who.slice(0, 100) } });
       return reply.code(401).send({ error: 'Usuario o contraseña incorrectos' });
     }
+    await Promise.all([releaseHit(ipLimit), releaseHit(accountLimit)]);
     // Contraseña buena: falta el segundo paso (el código de la app, o configurarla la primera vez), salvo desde un
     // dispositivo recordado.
     const begin = await beginLogin(reply, user, 'password');
@@ -131,8 +146,15 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
 
   api.put('/api/me/password', async (req, reply) => {
     const b = parse(z.object({ current: z.string(), password: Password }), req.body);
+    // La contraseña actual equivocada cuenta como intento a la cuenta (con una cookie robada no se adivina sin límite).
+    const accountLimit = `login-acct:${req.user.email.toLowerCase()}`;
+    if ((await countHit(accountLimit, LIMITS.loginAccount.windowMs)) > LIMITS.loginAccount.max) {
+      await releaseHit(accountLimit);
+      throw new HttpError(429, ACCOUNT_LIMIT);
+    }
     const full = await store.getUserForLogin(req.user.email);
     if (!full || !(await verifyPassword(b.current, full.password_hash))) throw new HttpError(400, 'La contraseña actual no es correcta');
+    await releaseHit(accountLimit);
     await assertPasswordAllowed(b.password, { email: req.user.email, businessName: await accountName(req.user.account_id) });
     const hash = await hashPassword(b.password);
     await store.updateUser(req.user.id, { password_hash: hash });

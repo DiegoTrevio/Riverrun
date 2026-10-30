@@ -16,7 +16,7 @@ import type { Role, User } from '../types.js';
 import { browserOf, noteDevice, trustDevice, trustedDeviceFor } from './devices.js';
 import { notifyUser } from './notices.js';
 import { qrDataUri } from './qr.js';
-import { LIMITS } from './rate-limit.js';
+import { countHit, LIMITS } from './rate-limit.js';
 import { isRecoveryCodeShape, useRecoveryCode } from './recovery-codes.js';
 import { matchTotp, newTotpSecret, otpauthUri } from './totp.js';
 
@@ -115,12 +115,14 @@ export async function burnChallenge(c: Challenge) {
  * y, si tiene la forma de uno de recuperación, como código de recuperación (avisa por correo).
  */
 export async function verifyUserCode(user: ChallengeUser, code: string): Promise<{ result: 'ok' | 'bad' | 'locked'; recoveryRemaining?: number }> {
+  if (user.mfa_locked_until && new Date(user.mfa_locked_until).getTime() > Date.now()) return { result: 'locked' };
   const secret = user.totp_secret ? decryptSecret(user.totp_secret) : null;
   if (user.totp_secret && !secret) await logEvent({ level: 'error', source: 'system', message: `No se pudo leer el secreto de verificación de ${user.email} (¿cambió SESSION_SECRET sin re-cifrar?)`, accountId: user.account_id ?? undefined });
   const step = secret ? matchTotp(secret, code) : null;
   if (step !== null) {
     const used = await queryOne(`UPDATE users SET totp_last_step = $2 WHERE id = $1 AND totp_last_step < $2 RETURNING id`, [user.id, step]);
-    return { result: used ? 'ok' : 'bad' };
+    if (used) return { result: 'ok' };
+    return wrongCode(user);
   }
   if (isRecoveryCodeShape(code)) {
     const remaining = await useRecoveryCode(user.id, code);
@@ -129,7 +131,17 @@ export async function verifyUserCode(user: ChallengeUser, code: string): Promise
       return { result: 'ok', recoveryRemaining: remaining };
     }
   }
-  return { result: 'bad' };
+  return wrongCode(user);
+}
+
+/** Un código malo más: con 10 en una hora la verificación se bloquea una hora y la persona se entera por correo. */
+async function wrongCode(user: ChallengeUser): Promise<{ result: 'bad' | 'locked' }> {
+  const hits = await countHit(`mfa-user:${user.id}`, LIMITS.codePerUser.windowMs);
+  if (hits < LIMITS.codePerUser.max) return { result: 'bad' };
+  await query(`UPDATE users SET mfa_locked_until = now() + make_interval(secs => $2) WHERE id = $1`, [user.id, LIMITS.mfaLockMs / 1000]);
+  await logEvent({ level: 'warn', source: 'system', message: `Verificación en dos pasos bloqueada una hora por códigos equivocados: ${user.email}`, accountId: user.account_id ?? undefined });
+  void notifyUser(user, 'mfa_locked');
+  return { result: 'locked' };
 }
 
 /** El secreto que se está configurando: el mismo si ya hay uno pendiente (otra pestaña, recargar, el reto venció). */

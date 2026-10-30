@@ -215,18 +215,6 @@ export async function resetSuperadminPassword(email: string, given?: string): Pr
 
 /* ------------------------------ Límite de intentos ------------------------------ */
 
-const attempts = new Map<string, { n: number; until: number }>();
-export function loginAllowed(ip: string) {
-  const a = attempts.get(ip);
-  return !a || a.until < Date.now() || a.n < 8;
-}
-export function registerLoginFailure(ip: string) {
-  const now = Date.now();
-  const a = attempts.get(ip);
-  if (!a || a.until < now) attempts.set(ip, { n: 1, until: now + 15 * 60_000 });
-  else a.n++;
-}
-
 /** Límite genérico por clave (registro, recuperación de contraseña): `max` intentos por ventana. */
 const buckets = new Map<string, { n: number; until: number }>();
 export function rateLimited(key: string, max: number, windowMs: number) {
@@ -257,6 +245,6 @@ export function ipKey(ip: string): string {
 
 /** Olvida los intentos y límites cuya ventana ya pasó. Corre cada minuto (antes solo al llegar a 10,000 claves). */
 export function pruneRateLimits(now = Date.now()) {
-  for (const m of [attempts, buckets]) for (const [k, v] of m) if (v.until < now) m.delete(k);
+  for (const [k, v] of buckets) if (v.until < now) buckets.delete(k);
 }
 setInterval(() => pruneRateLimits(), 60_000).unref();
