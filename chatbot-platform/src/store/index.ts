@@ -56,12 +56,13 @@ export function publicAccount<T extends object>(a: T): Omit<T, 'settings' | 'lim
 
 export async function createAccount(
   name: string,
-  opts: { status?: AccountStatus; trialEndsAt?: Date | null; businessType?: string; source?: string } = {},
+  opts: { status?: AccountStatus; trialEndsAt?: Date | null; businessType?: string; source?: string; pauseReason?: 'card'; pausedAt?: Date; signupPlan?: string } = {},
   client?: Queryable,
 ): Promise<Account> {
   const rows = await rowsOf(client,
-    'INSERT INTO accounts (name, status, trial_ends_at, business_type, signup_source) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-    [name, opts.status ?? 'active', opts.trialEndsAt ?? null, opts.businessType ?? '', opts.source ?? 'admin'],
+    `INSERT INTO accounts (name, status, trial_ends_at, business_type, signup_source, pause_reason, paused_at, signup_plan)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+    [name, opts.status ?? 'active', opts.trialEndsAt ?? null, opts.businessType ?? '', opts.source ?? 'admin', opts.pauseReason ?? '', opts.pausedAt ?? null, opts.signupPlan ?? ''],
   );
   const account = rows[0] as Account;
   // Su perfil de Zernio se crea cuando conecte su primera red (accountProfile), no al darse de alta.

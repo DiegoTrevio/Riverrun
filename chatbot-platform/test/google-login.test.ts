@@ -183,3 +183,20 @@ t('con el captcha activo, terminar el registro con Google pide el captcha (entra
     turnstile.close();
   }
 });
+
+t('con cobro configurado, la cuenta creada con Google también espera la tarjeta', async () => {
+  const prev = { ...config.billing.stripe };
+  Object.assign(config.billing.stripe, { secretKey: 'sk_test_google', webhookSecret: 'whsec_google' });
+  // Con un plan que se pueda pagar (sin plan no hay pago que abrir y la prueba sigue sin tarjeta).
+  assert.equal((await h.authed('POST', '/api/plans', { key: 'pro', name: 'Pro', price: 499, currency: 'MXN' })).statusCode, 200);
+  try {
+    const r = await flow({ sub: 'g-tarjeta', email: 'tarjeta@empresa.mx', email_verified: true, name: 'Tere' });
+    const token = decodeURIComponent(r.location.split('/registro-google/')[1]);
+    const done = await h.app.inject({ method: 'POST', url: '/api/signup/google', remoteAddress: '10.8.9.9', headers: { cookie: r.cookie }, payload: { token, company: 'Tere SA', accept_terms: true } });
+    assert.equal(done.statusCode, 200, done.body);
+    const acc = (await pool.query(`SELECT a.status, a.pause_reason, a.trial_ends_at FROM accounts a JOIN users u ON u.account_id = a.id WHERE u.email = 'tarjeta@empresa.mx'`)).rows[0];
+    assert.deepEqual([acc.status, acc.pause_reason, acc.trial_ends_at], ['paused', 'card', null]);
+  } finally {
+    Object.assign(config.billing.stripe, prev);
+  }
+});

@@ -9,8 +9,8 @@ import { clearHits, countHit, releaseHit } from '../identity/rate-limit.js';
 import { notifyPlatform } from '../platform/digest.js';
 import { query } from '../db.js';
 import { notifyUser } from '../identity/notices.js';
-import { billingEnabled, payable, startCheckout } from '../billing/service.js';
-import { ProviderError } from '../billing/types.js';
+import { billingEnabled, payable } from '../billing/service.js';
+import { cardRequired } from '../billing/card-check.js';
 import { config } from '../config.js';
 import { withTransaction } from '../db.js';
 import { notifySuperadmins } from '../lifecycle.js';
@@ -32,12 +32,13 @@ const HOUR = 3600_000;
 const link = (base: string, route: string, token: string) => `${base}/#/${route}?token=${encodeURIComponent(token)}`;
 
 /**
- * Cómo nace una cuenta del registro: en prueba gratuita por TRIAL_DAYS días o, con TRIAL_DAYS=0, en pausa hasta que pague
- * (puede entrar y configurar todo, pero el asistente no responde hasta que se confirme el pago).
+ * Estado de una cuenta nueva del registro. Con cobro en línea espera la tarjeta: en pausa (motivo `card`), sin días de
+ * prueba hasta que el proveedor confirme una tarjeta. Sin cobro, la prueba empieza ya (o, con TRIAL_DAYS=0, en pausa).
  */
-export function newAccountState(now = Date.now()) {
+export async function newAccountState(now = Date.now()): Promise<{ status: 'trial' | 'paused'; trialEndsAt: Date | null; pauseReason?: 'card'; pausedAt?: Date }> {
+  if (await cardRequired()) return { status: 'paused', pauseReason: 'card', pausedAt: new Date(now), trialEndsAt: null };
   const days = config.signup.trialDays;
-  return days > 0 ? { status: 'trial' as const, trialEndsAt: new Date(now + days * 24 * HOUR) } : { status: 'paused' as const, trialEndsAt: null };
+  return days > 0 ? { status: 'trial', trialEndsAt: new Date(now + days * 24 * HOUR) } : { status: 'paused', trialEndsAt: null };
 }
 
 const DAY = 24 * HOUR;
@@ -146,12 +147,13 @@ export async function signupRoutes(app: FastifyInstance) {
     const businessType = BUSINESS_TYPES.some((t) => t.key === b.business_type) ? b.business_type : 'otro';
     const verified = !config.signup.requireEmail;
     const passwordHash = await hashPassword(b.password);
-    const { status, trialEndsAt } = newAccountState();
+    const state = await newAccountState();
+    const { trialEndsAt } = state;
 
     const brand = await brandByDomain(hostOf(req)); // quien se registra desde el dominio de una marca queda con esa marca
     const release = await reserveSignup(req.ip);
     const { account, user } = await withTransaction(async (client) => {
-      const account = await store.createAccount(b.company, { status, trialEndsAt, businessType, source: 'signup' }, client);
+      const account = await store.createAccount(b.company, { ...state, businessType, source: 'signup', signupPlan: purchase?.plan.key }, client);
       const user = await store.createUser({ account_id: account.id, role: 'admin', name: b.name, email: b.email, password_hash: passwordHash, verified }, client);
       await client.query(`UPDATE accounts SET owner_user_id = $2, brand_id = $3 WHERE id = $1`, [account.id, user.id, brand?.id ?? null]);
       // Su WhatsApp recibe los avisos de "un cliente quiere hablar con una persona".
@@ -168,23 +170,12 @@ export async function signupRoutes(app: FastifyInstance) {
     await notifySuperadmins(
       account.id,
       `Nueva empresa registrada: ${account.name}`,
-      `${user.name} <${user.email}> registró "${account.name}" (${BUSINESS_TYPES.find((t) => t.key === businessType)?.label}). ${trialEndsAt ? `Prueba hasta ${trialEndsAt.toISOString().slice(0, 10)}.` : 'Sin prueba: se activa al pagar.'}${purchase ? ` Eligió el plan ${purchase.plan.name}.` : ''}`,
+      `${user.name} <${user.email}> registró "${account.name}" (${BUSINESS_TYPES.find((t) => t.key === businessType)?.label}). ${state.pauseReason === 'card' ? 'Esperando tarjeta.' : trialEndsAt ? `Prueba hasta ${trialEndsAt.toISOString().slice(0, 10)}.` : 'Sin prueba: se activa al pagar.'}${purchase ? ` Eligió el plan ${purchase.plan.name}.` : ''}`,
     );
     // Antes de ver el panel configura su verificación en dos pasos (la sesión se abre al terminar).
     const begin = await beginLogin(reply, { ...user, password_hash: passwordHash }, 'signup');
-
-    // Con plan elegido, se abre su pago. Si el proveedor falla, la cuenta ya existe: el panel lo deja reintentar en "Mi plan".
-    let checkout: { checkout_url?: string; checkout_error?: string } = {};
-    if (purchase) {
-      try {
-        checkout = { checkout_url: await startCheckout({ accountId: account.id, email: user.email, plan: purchase.plan, provider: purchase.provider, base: await baseFor(req) }) };
-      } catch (e: any) {
-        if (!(e instanceof ProviderError)) throw e;
-        await logEvent({ level: 'warn', source: 'admin', message: `No se pudo abrir el pago al registrarse: ${e.message}`, accountId: account.id });
-        checkout = { checkout_error: `Tu cuenta quedó creada, pero no pudimos abrir el pago (${e.message}). Intenta de nuevo desde aquí.` };
-      }
-    }
-    return { ok: true, user, account: store.publicAccount((await store.getAccount(account.id))!), verification_sent: !verified, ...checkout, ...begin };
+    // El plan elegido queda recordado (signup_plan): el pago se abre desde Mi plan, con el correo verificado y el 2FA.
+    return { ok: true, user, account: store.publicAccount((await store.getAccount(account.id))!), verification_sent: !verified, ...begin };
   });
 
   app.post('/api/verify-email', async (req, reply) => {

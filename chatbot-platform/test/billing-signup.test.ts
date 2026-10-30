@@ -1,4 +1,7 @@
-/** Registro con pago inmediato: crear la cuenta desde cero, pagar y quedar activa aunque el aviso del proveedor no llegue. */
+/**
+ * Registro con cobro: la cuenta nueva espera la tarjeta (el pago ya no se abre al registrarse, se abre desde Mi plan),
+ * paga y queda activa aunque el aviso del proveedor no llegue.
+ */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 // Orden obligatorio: los simulados fijan las claves y URLs ANTES de que el arnés cargue la configuración.
@@ -30,11 +33,21 @@ const as = async (r: Parameters<typeof h.sessionFrom>[0]) => {
 const accountOf = async (id: string) => (await pool.query(`SELECT status, plan, trial_ends_at FROM accounts WHERE id = $1`, [id])).rows[0];
 const subOf = async (id: string) => (await pool.query(`SELECT * FROM subscriptions WHERE account_id = $1`, [id])).rows[0];
 const lastSession = () => fake.stripe.requests.filter((x) => x.path === '/v1/checkout/sessions').at(-1)!;
+const lastSessionCount = () => fake.stripe.requests.filter((x) => x.path === '/v1/checkout/sessions').length;
 /** Lo que pasa en Stripe cuando el cliente paga: la sesión se completa y existe la suscripción. */
 const payStripe = (session: string, accountId: string, subId: string, plan = 'pro') => {
   fake.stripe.subs[subId] = stripeSub({ id: subId, customer: `cus_${subId}`, metadata: { account_id: accountId, plan_key: plan } });
   Object.assign(fake.stripe.sessions[session], { status: 'complete', subscription: subId });
 };
+/** Registrarse y abrir el pago desde Mi plan, con el correo verificado (lo pide la verificación de tarjeta). */
+async function signupPay(body: Record<string, unknown>, headers: Record<string, string> = {}) {
+  const r = await signup(body, headers);
+  assert.equal(r.statusCode, 200, r.body);
+  await pool.query(`UPDATE users SET email_verified_at = now() WHERE lower(email) = lower($1)`, [body.email]);
+  const api = await as(r);
+  const co = await api('POST', '/api/billing/checkout', { plan: body.plan, provider: body.provider });
+  return { r, api, co, accountId: r.json().account.id as string, url: co.json().url as string };
+}
 const superNotices = async (title: string) =>
   (await pool.query(`SELECT count(*)::int AS n FROM notifications n JOIN users u ON u.id = n.user_id WHERE u.role = 'superadmin' AND n.title LIKE $1`, [`${title}%`])).rows[0].n;
 
@@ -65,14 +78,37 @@ t('un plan que no existe se rechaza sin dejar una cuenta a medias', async () => 
   assert.equal((await pool.query(`SELECT count(*)::int AS n FROM users WHERE email = 'nadie@ana.mx'`)).rows[0].n, 0);
 });
 
-t('crear la cuenta y pagar ahí mismo con Stripe: al volver del pago la cuenta queda activa sin esperar el aviso', async () => {
-  const r = await signup({ email: 'ana@estetica.mx', plan: 'pro', provider: 'stripe' });
+t('con cobro, registrarse deja la cuenta esperando tarjeta: sin pago abierto y con el plan recordado', async () => {
+  const sessions = lastSessionCount();
+  const r = await signup({ email: 'espera@tarjeta.mx', company: 'Espera', plan: 'pro', provider: 'stripe' });
   assert.equal(r.statusCode, 200, r.body);
-  const body = r.json();
-  const accountId = body.account.id;
-  assert.equal(body.account.status, 'trial', 'mientras no paga, conserva su prueba');
-  assert.match(body.checkout_url, /^https:\/\/checkout\.stripe\.test\/c\/cs_\d+$/);
-  const api = await as(r);
+  assert.equal(r.json().checkout_url, undefined, 'ya no se abre el pago al registrarse');
+  assert.equal(lastSessionCount(), sessions);
+  const acc = (await pool.query(`SELECT status, pause_reason, paused_at, trial_ends_at, signup_plan FROM accounts WHERE id = $1`, [r.json().account.id])).rows[0];
+  assert.deepEqual([acc.status, acc.pause_reason, !!acc.paused_at, acc.trial_ends_at, acc.signup_plan], ['paused', 'card', true, null, 'pro']);
+});
+
+t('sin ningún proveedor de cobro, la prueba sigue sin tarjeta como hoy', async () => {
+  const prev = { stripe: config.billing.stripe.secretKey, mp: config.billing.mercadopago.accessToken };
+  Object.assign(config.billing.stripe, { secretKey: '' });
+  Object.assign(config.billing.mercadopago, { accessToken: '' });
+  try {
+    const r = await signup({ email: 'sincobro@prueba.mx', company: 'Sin cobro' });
+    assert.equal(r.statusCode, 200, r.body);
+    const acc = await accountOf(r.json().account.id);
+    assert.equal(acc.status, 'trial');
+    assert.ok(acc.trial_ends_at);
+  } finally {
+    Object.assign(config.billing.stripe, { secretKey: prev.stripe });
+    Object.assign(config.billing.mercadopago, { accessToken: prev.mp });
+  }
+});
+
+t('pagar desde Mi plan con Stripe: al volver del pago la cuenta queda activa sin esperar el aviso', async () => {
+  const { r, api, co, accountId, url } = await signupPay({ email: 'ana@estetica.mx', plan: 'pro', provider: 'stripe' });
+  assert.equal(co.statusCode, 200, co.body);
+  assert.equal(r.json().account.status, 'paused', 'mientras no agrega la tarjeta, espera');
+  assert.match(url, /^https:\/\/checkout\.stripe\.test\/c\/cs_\d+$/);
 
   // Stripe arma el precio con el monto del plan y crea su producto una sola vez.
   const req = lastSession();
@@ -92,11 +128,11 @@ t('crear la cuenta y pagar ahí mismo con Stripe: al volver del pago la cuenta q
   assert.equal((await h.app.inject({ method: 'GET', url: '/pago/stripe?estado=cancelado' })).headers.location, '/#/plan?pago=cancelado');
 
   // Antes de pagar no se activa nada.
-  const session = body.checkout_url.split('/').pop();
+  const session = url.split('/').pop()!;
   let c = await api('POST', '/api/billing/confirm');
   assert.equal(c.statusCode, 200, c.body);
   assert.equal(c.json().confirmed, false);
-  assert.equal((await accountOf(accountId)).status, 'trial');
+  assert.equal((await accountOf(accountId)).status, 'paused');
 
   // Pagó: se confirma preguntándole a Stripe (sin webhook).
   payStripe(session, accountId, 'sub_ana');
@@ -124,26 +160,23 @@ t('crear la cuenta y pagar ahí mismo con Stripe: al volver del pago la cuenta q
   // Otro registro con el mismo plan reutiliza el producto de Stripe.
   const creates = () => fake.stripe.requests.filter((x) => x.method === 'POST' && x.path === '/v1/products').length;
   const before = creates();
-  assert.equal((await signup({ email: 'otra@estetica.mx', plan: 'pro', provider: 'stripe' })).statusCode, 200);
+  assert.equal((await signupPay({ email: 'otra@estetica.mx', plan: 'pro', provider: 'stripe' })).co.statusCode, 200);
   assert.equal(creates(), before);
 });
 
 t('solo se confirma un pago de la propia cuenta', async () => {
-  const r = await signup({ email: 'beto@taller.mx', company: 'Taller Beto', plan: 'pro', provider: 'stripe' });
-  const accountId = r.json().account.id;
+  const { api, accountId, url } = await signupPay({ email: 'beto@taller.mx', company: 'Taller Beto', plan: 'pro', provider: 'stripe' });
   const other = (await pool.query(`SELECT id FROM accounts WHERE name = 'Estética Ana' ORDER BY created_at LIMIT 1`)).rows[0].id;
   // La sesión de Beto termina en una suscripción que dice ser de otra cuenta: no se aplica a ninguna.
-  payStripe(r.json().checkout_url.split('/').pop(), other, 'sub_ajena');
-  assert.equal((await (await as(r))('POST', '/api/billing/confirm')).json().confirmed, false);
-  assert.equal((await accountOf(accountId)).status, 'trial');
+  payStripe(url.split('/').pop()!, other, 'sub_ajena');
+  assert.equal((await api('POST', '/api/billing/confirm')).json().confirmed, false);
+  assert.equal((await accountOf(accountId)).status, 'paused');
   assert.notEqual((await subOf(other)).provider_subscription_id, 'sub_ajena');
 });
 
 t('Mercado Pago: la revisión periódica activa la cuenta aunque el cliente cierre la página y no llegue el aviso', async () => {
-  const r = await signup({ email: 'caro@cafe.mx', company: 'Café Caro', plan: 'basico', provider: 'mercadopago' });
-  assert.equal(r.statusCode, 200, r.body);
-  assert.equal(r.json().checkout_url, 'https://mp.test/checkout/pre_new');
-  const accountId = r.json().account.id;
+  const { accountId, url } = await signupPay({ email: 'caro@cafe.mx', company: 'Café Caro', plan: 'basico', provider: 'mercadopago' });
+  assert.equal(url, 'https://mp.test/checkout/pre_new');
   const sent = fake.mp.requests.filter((x) => x.path === '/preapproval' && x.method === 'POST').at(-1)!.body;
   assert.equal(sent.back_url, 'https://bot.test/pago/mercadopago');
   assert.equal(sent.external_reference, `${accountId}:basico`);
@@ -151,7 +184,7 @@ t('Mercado Pago: la revisión periódica activa la cuenta aunque el cliente cier
 
   fake.mp.preapprovals.pre_new = { id: 'pre_new', status: 'pending', external_reference: `${accountId}:basico`, payer_id: 9 };
   assert.equal(await syncPendingCheckouts(), 0, 'pendiente de pago: no se activa');
-  assert.equal((await accountOf(accountId)).status, 'trial');
+  assert.equal((await accountOf(accountId)).status, 'paused');
 
   Object.assign(fake.mp.preapprovals.pre_new, { status: 'authorized', next_payment_date: new Date(Date.now() + 30 * 86400_000).toISOString() });
   assert.equal(await syncPendingCheckouts(), 1);
@@ -164,10 +197,9 @@ t('Mercado Pago: la revisión periódica activa la cuenta aunque el cliente cier
 
 t('dos pagos completados (dos pestañas): se conserva el vigente y el otro se cancela y se reembolsa solo, una vez', async () => {
   const { processBillingActions } = await import('../src/billing/autopilot.js');
-  const r = await signup({ email: 'dani@spa.mx', company: 'Spa Dani', plan: 'pro', provider: 'stripe' });
-  const accountId = r.json().account.id;
-  payStripe(r.json().checkout_url.split('/').pop(), accountId, 'sub_dani_1');
-  assert.equal((await (await as(r))('POST', '/api/billing/confirm')).json().confirmed, true);
+  const { api, accountId, url } = await signupPay({ email: 'dani@spa.mx', company: 'Spa Dani', plan: 'pro', provider: 'stripe' });
+  payStripe(url.split('/').pop()!, accountId, 'sub_dani_1');
+  assert.equal((await api('POST', '/api/billing/confirm')).json().confirmed, true);
 
   fake.stripe.subs.sub_dani_2 = stripeSub({ id: 'sub_dani_2', customer: 'cus_dani', metadata: { account_id: accountId, plan_key: 'pro' } });
   fake.stripe.invoices.push({ id: 'in_dani_2', subscription: 'sub_dani_2', status: 'paid', amount_paid: 57884, currency: 'mxn', charge: 'ch_dani_2', created: Math.floor(Date.now() / 1000) });
@@ -190,36 +222,32 @@ t('dos pagos completados (dos pestañas): se conserva el vigente y el otro se ca
   assert.equal(await superNotices('Cobro duplicado resuelto'), 1);
 });
 
-t('si el proveedor falla al registrarse, la cuenta queda creada y puede reintentar el pago', async () => {
+t('si el proveedor falla al abrir el pago, la cuenta sigue esperando la tarjeta y puede reintentar', async () => {
   fake.stripe.fail = true;
+  let api: Awaited<ReturnType<typeof signupPay>>['api'];
   try {
-    const r = await signup({ email: 'eva@flores.mx', company: 'Flores Eva', plan: 'pro', provider: 'stripe' });
-    assert.equal(r.statusCode, 200, r.body);
-    assert.equal(r.json().checkout_url, undefined);
-    assert.match(r.json().checkout_error, /cuenta quedó creada/);
-    assert.equal(r.json().account.status, 'trial');
+    const first = await signupPay({ email: 'eva@flores.mx', company: 'Flores Eva', plan: 'pro', provider: 'stripe' });
+    api = first.api;
+    assert.equal(first.co.statusCode, 502, first.co.body);
+    assert.equal((await accountOf(first.accountId)).status, 'paused');
   } finally {
     fake.stripe.fail = false;
   }
+  assert.equal((await api('POST', '/api/billing/checkout', { plan: 'pro', provider: 'stripe' })).statusCode, 200, 'el reintento sí abre el pago');
 });
 
-t('si el proveedor no responde (red caída) al registrarse, la cuenta queda creada y el reintento avisa sin romperse', async () => {
+t('si el proveedor no responde (red caída) al abrir el pago, se avisa sin romperse', async () => {
   fake.stripe.drop = true;
   try {
-    const r = await signup({ email: 'ivan@red.mx', company: 'Red Iván', plan: 'pro', provider: 'stripe' });
-    assert.equal(r.statusCode, 200, r.body);
-    assert.equal(r.json().checkout_url, undefined);
-    assert.match(r.json().checkout_error, /cuenta quedó creada.*No se pudo conectar con Stripe/);
-    const retry = await (await as(r))('POST', '/api/billing/checkout', { plan: 'pro', provider: 'stripe' });
-    assert.equal(retry.statusCode, 502, retry.body);
+    const { co } = await signupPay({ email: 'ivan@red.mx', company: 'Red Iván', plan: 'pro', provider: 'stripe' });
+    assert.equal(co.statusCode, 502, co.body);
   } finally {
     fake.stripe.drop = false;
   }
 });
 
 t('Mercado Pago: un cobro rechazado que ya informó el aviso no se deshace en la revisión periódica', async () => {
-  const r = await signup({ email: 'hugo@pan.mx', company: 'Pan Hugo', plan: 'basico', provider: 'mercadopago' });
-  const accountId = r.json().account.id;
+  const { accountId } = await signupPay({ email: 'hugo@pan.mx', company: 'Pan Hugo', plan: 'basico', provider: 'mercadopago' });
   // El simulado siempre crea "pre_new" (ya usado por otra cuenta): esta cuenta tiene su propia suscripción.
   await pool.query(`UPDATE subscriptions SET checkout_ref = 'pre_hugo' WHERE account_id = $1`, [accountId]);
   fake.mp.preapprovals.pre_hugo = { id: 'pre_hugo', status: 'authorized', external_reference: `${accountId}:basico`, payer_id: 11, next_payment_date: new Date(Date.now() + 30 * 86400_000).toISOString() };
@@ -238,10 +266,9 @@ t('Mercado Pago: un cobro rechazado que ya informó el aviso no se deshace en la
 });
 
 t('el aviso tardío de un plan reemplazado (que se cancela al final del periodo) no se toma como cobro duplicado', async () => {
-  const r = await signup({ email: 'jose@libros.mx', company: 'Libros José', plan: 'pro', provider: 'stripe' });
-  const accountId = r.json().account.id;
-  payStripe(r.json().checkout_url.split('/').pop(), accountId, 'sub_jose_nuevo');
-  assert.equal((await (await as(r))('POST', '/api/billing/confirm')).json().confirmed, true);
+  const { api, accountId, url } = await signupPay({ email: 'jose@libros.mx', company: 'Libros José', plan: 'pro', provider: 'stripe' });
+  payStripe(url.split('/').pop()!, accountId, 'sub_jose_nuevo');
+  assert.equal((await api('POST', '/api/billing/confirm')).json().confirmed, true);
   const old = stripeSub({ id: 'sub_jose_viejo', customer: 'cus_jose', cancel_at_period_end: true, metadata: { account_id: accountId, plan_key: 'pro' } });
   fake.stripe.subs.sub_jose_viejo = old;
   const e = stripeEvent('customer.subscription.updated', old);
@@ -253,10 +280,15 @@ t('el aviso tardío de un plan reemplazado (que se cancela al final del periodo)
 t('con dominio de marca, el pago regresa a ese dominio; con uno desconocido, al principal', async () => {
   const b = await h.authed('POST', '/api/brands', { name: 'Agencia', domain: 'panel.agencia.test' });
   assert.equal(b.statusCode, 200, b.body);
-  assert.equal((await signup({ email: 'fer@agencia.mx', plan: 'pro', provider: 'stripe' }, { host: 'panel.agencia.test' })).statusCode, 200);
-  assert.equal(lastSession().body.get('success_url'), 'https://panel.agencia.test/pago/stripe');
-  assert.equal((await signup({ email: 'gil@agencia.mx', plan: 'pro', provider: 'stripe' }, { host: 'otro.test' })).statusCode, 200);
-  assert.equal(lastSession().body.get('success_url'), 'https://bot.test/pago/stripe');
+  // El pago se abre desde el panel de ese dominio.
+  for (const [email, host, base] of [['fer@agencia.mx', 'panel.agencia.test', 'https://panel.agencia.test'], ['gil@agencia.mx', 'otro.test', 'https://bot.test']]) {
+    const r = await signup({ email, plan: 'pro', provider: 'stripe' }, { host });
+    await pool.query(`UPDATE users SET email_verified_at = now() WHERE email = $1`, [email]);
+    const cookie = await h.sessionFrom(r);
+    const co = await h.app.inject({ method: 'POST', url: '/api/billing/checkout', headers: { cookie, host }, payload: { plan: 'pro', provider: 'stripe' } });
+    assert.equal(co.statusCode, 200, co.body);
+    assert.equal(lastSession().body.get('success_url'), `${base}/pago/stripe`);
+  }
 });
 
 t('sin prueba gratis (TRIAL_DAYS=0): la cuenta nace en pausa y el pago la activa', async () => {
@@ -264,13 +296,11 @@ t('sin prueba gratis (TRIAL_DAYS=0): la cuenta nace en pausa y el pago la activa
   config.signup.trialDays = 0;
   try {
     assert.equal((await h.app.inject({ method: 'GET', url: '/api/signup/info' })).json().trial_days, 0);
-    const r = await signup({ email: 'hugo@gym.mx', company: 'Gym Hugo', plan: 'pro', provider: 'stripe' });
-    assert.equal(r.statusCode, 200, r.body);
-    const accountId = r.json().account.id;
+    const { r, api, accountId, url } = await signupPay({ email: 'hugo@gym.mx', company: 'Gym Hugo', plan: 'pro', provider: 'stripe' });
     assert.equal(r.json().account.status, 'paused');
     assert.equal(r.json().account.trial_ends_at, null);
-    payStripe(r.json().checkout_url.split('/').pop(), accountId, 'sub_hugo');
-    assert.equal((await (await as(r))('POST', '/api/billing/confirm')).json().account_status, 'active');
+    payStripe(url.split('/').pop()!, accountId, 'sub_hugo');
+    assert.equal((await api('POST', '/api/billing/confirm')).json().account_status, 'active');
   } finally {
     config.signup.trialDays = days;
   }
@@ -278,7 +308,8 @@ t('sin prueba gratis (TRIAL_DAYS=0): la cuenta nace en pausa y el pago la activa
 
 t('los correos de fin de prueba llevan al pago en línea', async () => {
   const r = await signup({ email: 'ines@libros.mx', company: 'Libros Inés' });
-  await pool.query(`UPDATE accounts SET trial_ends_at = now() + interval '2 days' WHERE id = $1`, [r.json().account.id]);
+  // Una prueba que ya empezó (con su tarjeta): termina en 2 días.
+  await pool.query(`UPDATE accounts SET status = 'trial', trial_ends_at = now() + interval '2 days' WHERE id = $1`, [r.json().account.id]);
   await checkTrials();
   const mail = outbox.find((m) => m.to === 'ines@libros.mx' && /por terminar/.test(m.subject));
   assert.ok(mail?.text.includes('https://bot.test/#/plan'), mail?.text);

@@ -146,9 +146,10 @@ export async function googleLoginRoutes(app: FastifyInstance) {
     const businessType = BUSINESS_TYPES.some((t) => t.key === b.business_type) ? b.business_type : 'otro';
     const hash = await hashPassword(crypto.randomBytes(24).toString('base64url')); // sin contraseña: puede crear una con "Olvidé mi contraseña"
     const brand = await brandByDomain(hostOf(req));
+    const state = await newAccountState();
     const release = await reserveSignup(req.ip);
     const { account, created } = await withTransaction(async (client) => {
-      const account = await store.createAccount(b.company, { ...newAccountState(), businessType, source: 'signup' }, client);
+      const account = await store.createAccount(b.company, { ...state, businessType, source: 'signup' }, client);
       const created = await store.createUser({ account_id: account.id, role: 'admin', name: name || email.split('@')[0], email, password_hash: hash, verified: true }, client);
       await client.query(`UPDATE users SET google_sub = $2 WHERE id = $1`, [created.id, sub]);
       await client.query(`UPDATE accounts SET owner_user_id = $2, brand_id = $3 WHERE id = $1`, [account.id, created.id, brand?.id ?? null]);
