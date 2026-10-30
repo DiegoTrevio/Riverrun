@@ -279,9 +279,10 @@ async function compose(root, id, params) {
       toast(r.status === 'publicada' ? 'Publicada' : r.status === 'programada' ? 'Programada' : r.status === 'borrador' ? 'Borrador guardado' : r.status === 'parcial' ? 'Salió en algunas redes: revisa cuál falló' : r.status === 'enviando' ? 'Enviando… te avisamos si algo falla' : 'Listo', r.status === 'parcial');
       location.hash = '#/publicaciones';
     } catch (e) {
-      const list = e?.data?.issues || e?.issues || [];
+      // Lo que falta, sin la clave interna del campo («targets: …») ni repetido en el aviso.
+      const list = (e?.data?.issues || e?.issues || []).map((x) => String(x).replace(/^[\w.[\]]+: /, ''));
       fill(issues, ...(list.length ? list : [e?.message || 'No se pudo guardar']).map((x) => h('li', {}, x)));
-      toast(e?.message || 'No se pudo guardar', true);
+      toast(list.length ? list.join(' · ') : e?.message || 'No se pudo guardar', true);
     } finally {
       save.disabled = false;
     }
