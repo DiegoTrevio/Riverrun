@@ -5,9 +5,11 @@ import * as store from '../store/index.js';
 import { hydrateChatbot, type ChatbotRow } from '../types.js';
 import { indexKnowledge, knowledgeIndexStatus, vectorAvailable } from './knowledge.js';
 import { semanticPolicy } from './semantic-policy.js';
+import { AiBudgetBlocked } from '../ai/budget.js';
+import { assertAiAllowed } from '../ai/gate.js';
 
 export type KnowledgeScope = { all: true } | { accountId: string } | { chatbotId: string };
-export type PreparationResult = Awaited<ReturnType<typeof knowledgeIndexStatus>> & { chatbot_id: string; account_id: string; processed_items: number; failed: boolean };
+export type PreparationResult = Awaited<ReturnType<typeof knowledgeIndexStatus>> & { chatbot_id: string; account_id: string; processed_items: number; failed: boolean; skipped: boolean };
 
 /** Server operator entry point. HTTP callers must authorize scope before using it. */
 export async function prepareKnowledge(scope: KnowledgeScope, options: { apply?: boolean; ai?: AiProvider; onProgress?: (result: PreparationResult) => void } = {}) {
@@ -20,17 +22,19 @@ export async function prepareKnowledge(scope: KnowledgeScope, options: { apply?:
     const before = await knowledgeIndexStatus(bot);
     let processed = 0;
     let failed = false;
-    if (options.apply) {
+    // Una cuenta en pausa no usa IA (`assertAiAllowed`): se salta sin contarla como falla; el mantenimiento la prepara al reactivarse.
+    const skipped = !!options.apply && await assertAiAllowed(bot.account_id).then(() => false, (e) => { if (e instanceof AiBudgetBlocked) return true; throw e; });
+    if (options.apply && !skipped) {
       try { processed = await indexKnowledge(bot, options.ai!,Infinity,{retryNow:true}); }
       catch { failed = true; } // Preserve successful documents; continue with other agents and retry later.
     }
     const status = options.apply ? await knowledgeIndexStatus(bot) : before;
     if (failed) processed = Math.max(0,status.indexed_items-before.indexed_items);
-    const result = { ...status, chatbot_id: bot.id, account_id: bot.account_id, processed_items: processed, failed };
+    const result = { ...status, chatbot_id: bot.id, account_id: bot.account_id, processed_items: processed, failed, skipped };
     results.push(result);
     options.onProgress?.(result);
   }
-  return { applied: !!options.apply, complete: results.every((r) => r.complete && !r.failed), agents: results.length, pending_items: results.reduce((n,r) => n+r.pending_items,0), processed_items: results.reduce((n,r) => n+r.processed_items,0), failed_agents: results.filter((r) => r.failed).length, results };
+  return { applied: !!options.apply, complete: results.every((r) => r.skipped || (r.complete && !r.failed)), agents: results.length, skipped_agents: results.filter((r) => r.skipped).length, pending_items: results.reduce((n,r) => n+r.pending_items,0), processed_items: results.reduce((n,r) => n+r.processed_items,0), failed_agents: results.filter((r) => r.failed).length, results };
 }
 
 /** Bounded round-robin maintenance: at most four documents of one eligible agent per pass. */
