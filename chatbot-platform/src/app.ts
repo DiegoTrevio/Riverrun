@@ -12,6 +12,7 @@ import { config } from './config.js';
 import { requireAuth } from './auth.js';
 import { adminRoutes, sessionRoutes } from './routes/admin.js';
 import { mfaPublicRoutes, mfaRoutes } from './routes/mfa.js';
+import { originGuard } from './identity/origin-guard.js';
 import { stepUpHook } from './identity/step-up.js';
 import { agendaRoutes, calendarRoutes } from './routes/agenda.js';
 import { automationRoutes } from './routes/automation.js';
@@ -128,6 +129,8 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
   installErrorHandler(app);
   registerSecurityHeaders(app);
   await app.register(cookie);
+  // Con la cookie del panel, lo que cambia algo tiene que venir del mismo sitio (después de leer las cookies).
+  app.addHook('onRequest', originGuard);
   await app.register(multipart);
   await app.register(fastifyStatic, { root: path.resolve(here, '..', 'public'), prefix: '/' });
 
