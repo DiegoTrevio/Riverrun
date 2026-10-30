@@ -3,6 +3,7 @@
  * términos y el pase firmado con el que quien entra por primera vez con Google termina su registro.
  */
 import type { PoolClient } from 'pg';
+import { HttpError } from './access.js';
 import { config } from './config.js';
 import { logEvent } from './logs.js';
 import { hmac, safeEqual } from './secret.js';
@@ -88,22 +89,35 @@ export async function recordTermsAcceptance(client: PoolClient, o: { userId: str
 /* ------------------------------ Registro con Google ------------------------------ */
 
 const GOOGLE_PASS_MS = 15 * 60_000;
+/** Cookie del navegador que entró con Google: el pase solo sirve con ella (no se puede usar desde otro navegador). */
+export const GOOGLE_PASS_COOKIE = 'cp_gpass';
+export const googlePassCookie = { httpOnly: true, sameSite: 'strict' as const, secure: config.secureCookies, path: '/api', maxAge: GOOGLE_PASS_MS / 1000 };
+export type GooglePass = { email: string; name: string; sub: string };
 
-/** Pase firmado (15 minutos) con el correo que Google ya verificó, para terminar el registro aceptando los términos. */
-export function googleSignupPass(email: string, name: string, now = Date.now()): string {
-  const payload = Buffer.from(JSON.stringify({ email, name, exp: now + GOOGLE_PASS_MS })).toString('base64url');
+/**
+ * Pase firmado (15 minutos) con lo que Google ya verificó (correo, nombre y su identificador `sub`), para terminar el
+ * registro o aceptar una invitación. Lleva el número que va en la cookie cp_gpass de ese navegador.
+ */
+export function googleSignupPass(who: GooglePass, nonce: string, now = Date.now()): string {
+  const payload = Buffer.from(JSON.stringify({ email: who.email, name: who.name, sub: who.sub, n: nonce, exp: now + GOOGLE_PASS_MS })).toString('base64url');
   return `${payload}.${hmac(`gsignup:${payload}`)}`;
 }
 
-/** Datos del pase si es auténtico y vigente; null si no. */
-export function readGoogleSignupPass(token: string, now = Date.now()): { email: string; name: string } | null {
+/**
+ * Datos del pase si es auténtico y vigente; null si no. Si es auténtico pero el navegador no trae su cookie (lo abrieron
+ * en otro), 401.
+ */
+export function readGoogleSignupPass(token: string, req: { cookies?: Record<string, string | undefined> }, now = Date.now()): GooglePass | null {
   const [payload, sig] = String(token).split('.');
   if (!payload || !sig || !safeEqual(sig, hmac(`gsignup:${payload}`))) return null;
+  let d: any;
   try {
-    const d = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
-    if (typeof d.email !== 'string' || !d.email || typeof d.exp !== 'number' || d.exp <= now) return null;
-    return { email: d.email, name: String(d.name ?? '') };
+    d = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
   } catch {
     return null;
   }
+  if (typeof d.email !== 'string' || !d.email || typeof d.sub !== 'string' || !d.sub || typeof d.n !== 'string' || typeof d.exp !== 'number' || d.exp <= now) return null;
+  const cookie = String(req.cookies?.[GOOGLE_PASS_COOKIE] ?? '');
+  if (!cookie || !safeEqual(cookie, d.n)) throw new HttpError(401, 'Abre este paso en el mismo navegador donde entraste con Google.');
+  return { email: d.email, name: String(d.name ?? ''), sub: d.sub };
 }

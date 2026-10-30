@@ -18,7 +18,7 @@ import { assertOwner, ensureOwner } from '../identity/ownership.js';
 import { assertRecentMfa } from '../identity/step-up.js';
 import { logEvent } from '../logs.js';
 import { sendMail } from '../mailer.js';
-import { DISPOSABLE_MESSAGE, isDisposableEmail, readGoogleSignupPass, recordTermsAcceptance, termsVersion } from '../signup-guard.js';
+import { DISPOSABLE_MESSAGE, GOOGLE_PASS_COOKIE, googlePassCookie, isDisposableEmail, readGoogleSignupPass, recordTermsAcceptance, termsVersion } from '../signup-guard.js';
 import * as store from '../store/index.js';
 import type { User } from '../types.js';
 import { parse } from './util.js';
@@ -163,9 +163,10 @@ export async function invitationRoutes(api: FastifyInstance) {
 }
 
 /** La invitación de un enlace (token) o de quien entró con Google (pase firmado con su correo). */
-async function invitationFrom(q: { token?: unknown; google?: unknown }) {
+async function invitationFrom(q: { token?: unknown; google?: unknown }, req: { cookies?: Record<string, string | undefined> }) {
   if (q.google) {
-    const p = readGoogleSignupPass(String(q.google));
+    // El pase solo sirve en el navegador que entró con Google (401 en otro).
+    const p = readGoogleSignupPass(String(q.google), req);
     const inv = p ? await pendingInviteFor(p.email) : null;
     if (!p || !inv) throw new HttpError(400, 'El enlace venció. Vuelve a abrir la invitación que te llegó por correo.');
     return { inv, google: p };
@@ -183,7 +184,7 @@ async function invitationFrom(q: { token?: unknown; google?: unknown }) {
 export async function invitationPublicRoutes(app: FastifyInstance) {
   app.get('/api/invitation', async (req: any, reply) => {
     if (rateLimited(`invite-view:${req.ip}`, 60, HOUR)) return reply.code(429).send({ error: 'Demasiados intentos, espera un momento' });
-    const { inv, google } = await invitationFrom(req.query);
+    const { inv, google } = await invitationFrom(req.query, req);
     const acc = await store.getAccount(inv.account_id);
     const inviter = inv.invited_by ? await store.getUserBasic(inv.invited_by) : null;
     return {
@@ -213,7 +214,8 @@ export async function invitationPublicRoutes(app: FastifyInstance) {
       }),
       req.body,
     );
-    const { inv, google } = await invitationFrom(b);
+    const { inv, google } = await invitationFrom(b, req);
+    if (google && (await store.getUserForGoogle(google.sub))) throw new HttpError(409, 'Esa cuenta de Google ya entra a la plataforma: inicia sesión con Google.');
     if (!google && !b.password) throw new HttpError(400, 'Elige una contraseña de al menos 12 caracteres');
     if (!google) {
       const account = await queryOne<{ name: string }>(`SELECT name FROM accounts WHERE id = $1`, [inv.account_id]);
@@ -230,6 +232,7 @@ export async function invitationPublicRoutes(app: FastifyInstance) {
       // El plan pudo bajar desde que se invitó.
       await assertWithinLimit(inv.account_id, 'users');
       const created = await store.createUser({ account_id: inv.account_id, role: inv.role, name: b.name, email: inv.email, password_hash: hash, verified: true }, client);
+      if (google) await client.query(`UPDATE users SET google_sub = $2 WHERE id = $1`, [created.id, google.sub]);
       await client.query(`UPDATE account_invitations SET accepted_at = now(), accepted_user_id = $2 WHERE id = $1`, [inv.id, created.id]);
       await recordTermsAcceptance(client, { userId: created.id, accountId: inv.account_id, email: inv.email, ip: req.ip, userAgent: String(req.headers['user-agent'] ?? ''), source: 'invite' });
       return created;
@@ -238,6 +241,7 @@ export async function invitationPublicRoutes(app: FastifyInstance) {
     if (inv.role === 'admin') await ensureOwner(inv.account_id, user.id);
     await logEvent({ level: 'info', source: 'admin', message: `${inv.email} se unió al equipo (${ROLE_LABEL[inv.role]})${google ? ' con Google' : ''}`, accountId: inv.account_id, details: { ip: req.ip } });
     // Antes de entrar al panel configura su verificación en dos pasos.
+    if (google) reply.clearCookie(GOOGLE_PASS_COOKIE, { path: googlePassCookie.path });
     return { ok: true, user, ...(await beginLogin(reply, { ...user, password_hash: hash }, 'invite')) };
   });
 }

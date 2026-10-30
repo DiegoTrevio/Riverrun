@@ -121,8 +121,16 @@ export async function getUser(id: string) {
   return queryOne<User>(`SELECT ${USER_COLS} FROM users WHERE id = $1`, [id]);
 }
 
+/** Quien entra con Google: por su identificador estable (`sub`), no por el correo. */
+export async function getUserForGoogle(sub: string) {
+  return queryOne<User & { password_hash: string; account_active: boolean | null; google_sub: string | null }>(
+    `SELECT u.*, a.active AS account_active FROM users u LEFT JOIN accounts a ON a.id = u.account_id WHERE u.google_sub = $1`,
+    [sub],
+  );
+}
+
 export async function getUserForLogin(email: string) {
-  return queryOne<User & { password_hash: string; account_active: boolean | null }>(
+  return queryOne<User & { password_hash: string; account_active: boolean | null; google_sub: string | null }>(
     `SELECT u.*, a.active AS account_active FROM users u LEFT JOIN accounts a ON a.id = u.account_id WHERE lower(u.email) = lower($1)`,
     [email.trim()],
   );

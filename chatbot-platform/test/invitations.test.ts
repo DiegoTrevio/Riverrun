@@ -33,7 +33,7 @@ const tokenFor = (to: string) => {
   assert.ok(mail, `sin invitación para ${to}`);
   return decodeURIComponent(/#\/invitacion\?token=([^\s]+)/.exec(mail.text)![1]);
 };
-const info = (q: string) => h.app.inject({ method: 'GET', url: `/api/invitation?${q}`, remoteAddress: '10.9.0.1' });
+const info = (q: string, cookie?: string) => h.app.inject({ method: 'GET', url: `/api/invitation?${q}`, remoteAddress: '10.9.0.1', headers: cookie ? { cookie } : {} });
 let ip = 0;
 const accept = (body: Record<string, unknown>) =>
   h.app.inject({ method: 'POST', url: '/api/invitation/accept', remoteAddress: `10.9.1.${++ip}`, headers: { 'user-agent': 'Navegador de prueba' }, payload: { name: 'Persona', accept_terms: true, ...body } });
@@ -161,28 +161,37 @@ t('con Google: un correo invitado se une a su equipo (aunque el registro públic
   const enabled = config.signup.enabled;
   Object.assign(config.signup, { enabled: false });
   try {
-    claims = { email: 'Sofi@Taller.mx', email_verified: true, name: 'Sofía' };
+    claims = { sub: 'g-sofi', email: 'Sofi@Taller.mx', email_verified: true, name: 'Sofía' };
     const start = await h.app.inject({ method: 'GET', url: '/oauth/google/login', remoteAddress: '10.9.2.1' });
     const state = new URL(String(start.headers.location)).searchParams.get('state')!;
     const nonce = start.cookies.find((c) => c.name === 'g_nonce')!.value;
     const back = await h.app.inject({ method: 'GET', url: `/oauth/google/login/callback?code=abc&state=${encodeURIComponent(state)}`, remoteAddress: '10.9.2.1', headers: { cookie: `g_nonce=${nonce}` } });
     const location = String(back.headers.location);
-    assert.match(location, /^\/#\/invitacion\?google=/);
-    const pass = decodeURIComponent(location.split('google=')[1]);
+    assert.match(location, /^\/#\/invitacion\/google\//);
+    const pass = decodeURIComponent(location.split('/invitacion/google/')[1]);
+    const gpass = back.cookies.find((c) => c.name === 'cp_gpass');
+    assert.ok(gpass?.httpOnly && gpass.sameSite === 'Strict', 'el pase queda ligado a este navegador');
+    const cookie = `cp_gpass=${gpass!.value}`;
+    const viaGoogle = (body: Record<string, unknown>, c = cookie) =>
+      h.app.inject({ method: 'POST', url: '/api/invitation/accept', remoteAddress: `10.9.2.${++ip}`, headers: c ? { cookie: c } : {}, payload: { accept_terms: true, ...body } });
 
-    const i = (await info(`google=${encodeURIComponent(pass)}`)).json();
+    assert.equal((await info(`google=${encodeURIComponent(pass)}`)).statusCode, 401, 'en otro navegador (sin su cookie) no sirve');
+    const i = (await info(`google=${encodeURIComponent(pass)}`, cookie)).json();
     assert.deepEqual([i.account, i.email, i.name, i.via_google], ['Taller Ana', 'sofi@taller.mx', 'Sofía', true]);
-    const done = await accept({ google: pass, name: 'Sofía' });
+    assert.equal((await viaGoogle({ google: pass, name: 'Sofía' }, '')).statusCode, 401, 'ni al aceptar');
+    const done = await viaGoogle({ google: pass, name: 'Sofía' });
     assert.equal(done.statusCode, 200, done.body);
-    const u = (await pool.query(`SELECT account_id, role FROM users WHERE email = 'sofi@taller.mx'`)).rows[0];
-    assert.deepEqual([u.account_id, u.role], [A.account, 'agent']);
-    assert.equal((await accept({ google: pass, name: 'Sofía' })).statusCode, 400, 'el pase ya no tiene invitación pendiente');
+    const u = (await pool.query(`SELECT account_id, role, google_sub FROM users WHERE email = 'sofi@taller.mx'`)).rows[0];
+    assert.deepEqual([u.account_id, u.role, u.google_sub], [A.account, 'agent', 'g-sofi']);
+    assert.equal((await viaGoogle({ google: pass, name: 'Sofía' })).statusCode, 400, 'el pase ya no tiene invitación pendiente');
   } finally {
     Object.assign(config.signup, { enabled });
   }
   // Un pase de Google sin invitación pendiente no sirve.
   const { googleSignupPass } = await import('../src/signup-guard.js');
-  assert.equal((await accept({ google: googleSignupPass('nadie@taller.mx', 'X') })).statusCode, 400);
+  const lone = googleSignupPass({ email: 'nadie@taller.mx', name: 'X', sub: 'g-nadie' }, 'navegador-1');
+  const r = await h.app.inject({ method: 'POST', url: '/api/invitation/accept', remoteAddress: '10.9.3.1', headers: { cookie: 'cp_gpass=navegador-1' }, payload: { google: lone, name: 'X', accept_terms: true } });
+  assert.equal(r.statusCode, 400);
 });
 
 t('la lista de pendientes sugiere invitar y avisa las invitaciones por aceptar', async () => {

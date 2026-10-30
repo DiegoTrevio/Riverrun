@@ -16,7 +16,8 @@ import { newAccountState } from './signup.js';
 import { z } from 'zod';
 import { HttpError } from '../access.js';
 import { BUSINESS_TYPES } from '../templates/business.js';
-import { DISPOSABLE_MESSAGE, googleSignupPass, isDisposableEmail, readGoogleSignupPass, recordTermsAcceptance, termsVersion } from '../signup-guard.js';
+import { DISPOSABLE_MESSAGE, GOOGLE_PASS_COOKIE, googlePassCookie, googleSignupPass, isDisposableEmail, readGoogleSignupPass, recordTermsAcceptance, termsVersion } from '../signup-guard.js';
+import { query } from '../db.js';
 import { parse } from './util.js';
 
 const HOUR = 3600_000;
@@ -57,51 +58,62 @@ export async function googleLoginRoutes(app: FastifyInstance) {
       const t = await tokenRequest({ grant_type: 'authorization_code', code: String(req.query.code), redirect_uri: redirectUri() });
       // El id_token llega directo del servidor de Google por TLS (no por el navegador), así que sus datos son confiables.
       const claims = JSON.parse(Buffer.from((t.id_token ?? '').split('.')[1] ?? '', 'base64url').toString());
+      const sub = String(claims.sub ?? '');
       const email = String(claims.email ?? '').toLowerCase();
+      if (!sub) return fail('error');
       if (!email || claims.email_verified !== true) return fail('sin-correo');
 
-      const user = await store.getUserForLogin(email);
+      // Primero por su identificador de Google (sigue aunque cambie su correo aquí). Por correo solo se liga si los dos
+      // lados lo tienen verificado; un correo sin verificar aquí no entra con Google (lo verifica con su contraseña).
+      let user = await store.getUserForGoogle(sub);
+      if (!user) {
+        const byEmail = await store.getUserForLogin(email);
+        if (byEmail) {
+          if (byEmail.role === 'superadmin') return fail('solo-contrasena');
+          if (byEmail.google_sub) return fail('otra-cuenta');
+          if (!byEmail.email_verified_at) return fail('sin-verificar');
+          await query(`UPDATE users SET google_sub = $2 WHERE id = $1 AND google_sub IS NULL`, [byEmail.id, sub]);
+          user = { ...byEmail, google_sub: sub };
+        }
+      }
       if (user) {
         if (!user.active || (user.account_id && !user.account_active)) return fail('desactivada');
         // El superadministrador solo entra con su contraseña.
         if (user.role === 'superadmin') return fail('solo-contrasena');
-        let hash = user.password_hash;
-        if (!user.email_verified_at) {
-          // Alguien pudo registrar este correo con una contraseña que solo él conoce (sin demostrar que es suyo):
-          // al probar con Google que el correo es de quien entra, esa contraseña se invalida.
-          hash = await hashPassword(crypto.randomBytes(24).toString('base64url'));
-          await store.updateUser(user.id, { password_hash: hash });
-          await store.markEmailVerified(user.id);
-        }
         // Google es otro primer paso: falta el código de la app (o configurarla).
-        const begin = await beginLogin(reply, { ...user, password_hash: hash }, 'google');
+        const begin = await beginLogin(reply, user, 'google');
         await logEvent({ level: 'info', source: 'admin', message: `Acceso con Google: ${email}`, accountId: user.account_id, details: { ip: req.ip } });
         return reply.redirect('mfa' in begin ? `/#/login/${begin.mfa === 'verify' ? 'codigo' : 'configurar'}` : '/#/');
       }
+      // El pase para el siguiente paso solo sirve en este navegador (su número va también en la cookie cp_gpass).
+      const passForNext = (name: string) => {
+        const nonce = crypto.randomBytes(16).toString('base64url');
+        reply.setCookie(GOOGLE_PASS_COOKIE, nonce, googlePassCookie);
+        return encodeURIComponent(googleSignupPass({ email, name, sub }, nonce));
+      };
       // La invitaron a un equipo: se une a esa cuenta (aunque el registro público esté cerrado).
       const invite = await pendingInviteFor(email);
-      if (invite) return reply.redirect(`/#/invitacion?google=${encodeURIComponent(googleSignupPass(email, String(claims.name ?? '').slice(0, 120)))}`);
+      if (invite) return reply.redirect(`/#/invitacion/google/${passForNext(String(claims.name ?? '').slice(0, 120))}`);
       if (!config.signup.enabled) return fail('sin-cuenta');
       if (isDisposableEmail(email)) return fail('correo-temporal');
-      // Primera vez: la cuenta se crea hasta que acepte los términos (con un pase firmado que lleva el correo verificado).
-      const name = String(claims.name ?? email.split('@')[0]).slice(0, 120);
-      return reply.redirect(`/#/registro-google?token=${encodeURIComponent(googleSignupPass(email, name))}`);
+      // Primera vez: la cuenta se crea hasta que acepte los términos (con el pase firmado que lleva el correo verificado).
+      return reply.redirect(`/#/registro-google/${passForNext(String(claims.name ?? email.split('@')[0]).slice(0, 120))}`);
     } catch (e: any) {
       await logEvent({ level: 'error', source: 'admin', message: `Acceso con Google: ${e?.message ?? e}`, details: { ip: req.ip } });
       return fail('error');
     }
   });
 
-  const pass = (token: unknown) => {
-    const p = readGoogleSignupPass(String(token ?? ''));
+  const pass = (token: unknown, req: any) => {
+    const p = readGoogleSignupPass(String(token ?? ''), req);
     if (!p) throw new HttpError(400, 'El enlace de registro con Google venció. Vuelve a entrar con Google.');
     return p;
   };
 
-  /** Datos para terminar el registro con Google: el correo verificado, el nombre y los términos. */
-  app.get('/api/signup/google', async (req: any) => {
+  /** Datos para terminar el registro con Google: el correo verificado, el nombre y los términos (el pase va en el cuerpo, no en la URL). */
+  app.post('/api/signup/google/peek', async (req: any) => {
     if (!config.signup.enabled) throw new HttpError(404, 'El registro está cerrado');
-    const p = pass(req.query.token);
+    const p = pass(parse(z.object({ token: z.string().max(2000) }), req.body).token, req);
     return {
       email: p.email,
       name: p.name,
@@ -125,21 +137,23 @@ export async function googleLoginRoutes(app: FastifyInstance) {
       }),
       req.body,
     );
-    const { email, name } = pass(b.token);
+    const { email, name, sub } = pass(b.token, req);
     if (isDisposableEmail(email)) throw new HttpError(400, DISPOSABLE_MESSAGE);
-    if (await store.getUserForLogin(email)) throw new HttpError(409, 'Ya existe una cuenta con ese correo. Inicia sesión con Google.');
+    if ((await store.getUserForLogin(email)) || (await store.getUserForGoogle(sub))) throw new HttpError(409, 'Ya existe una cuenta con ese correo. Inicia sesión con Google.');
     const businessType = BUSINESS_TYPES.some((t) => t.key === b.business_type) ? b.business_type : 'otro';
     const hash = await hashPassword(crypto.randomBytes(24).toString('base64url')); // sin contraseña: puede crear una con "Olvidé mi contraseña"
     const brand = await brandByDomain(hostOf(req));
     const { account, created } = await withTransaction(async (client) => {
       const account = await store.createAccount(b.company, { ...newAccountState(), businessType, source: 'signup' }, client);
       const created = await store.createUser({ account_id: account.id, role: 'admin', name: name || email.split('@')[0], email, password_hash: hash, verified: true }, client);
+      await client.query(`UPDATE users SET google_sub = $2 WHERE id = $1`, [created.id, sub]);
       await client.query(`UPDATE accounts SET owner_user_id = $2, brand_id = $3 WHERE id = $1`, [account.id, created.id, brand?.id ?? null]);
       await recordTermsAcceptance(client, { userId: created.id, accountId: account.id, email, ip: req.ip, userAgent: String(req.headers['user-agent'] ?? ''), source: 'google' });
       return { account, created };
     });
     await logEvent({ level: 'info', source: 'admin', message: `Registro nuevo con Google: ${account.name} (${email})`, accountId: account.id, details: { ip: req.ip, business_type: businessType } });
     await notifySuperadmins(account.id, `Nueva empresa registrada: ${account.name}`, `${created.name} <${email}> se registró con Google.`);
+    reply.clearCookie(GOOGLE_PASS_COOKIE, { path: googlePassCookie.path });
     const begin = await beginLogin(reply, { ...created, password_hash: hash }, 'google');
     return { ok: true, user: created, account: store.publicAccount((await store.getAccount(account.id))!), ...begin };
   });
