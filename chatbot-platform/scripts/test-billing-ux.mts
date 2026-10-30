@@ -367,6 +367,35 @@ try {
   checks.push('Topar el límite de usuarios: «Subir a …» lleva a Mi plan con el plan sugerido elegido (accesible en móvil)');
 
   // El superadmin captura precios sin IVA y elige el periodo. La última tarjeta es la de "Agregar plan".
+  // Mercado Pago: subir de plan queda programado para el siguiente cobro; «Quedarme con el plan …» lo cancela.
+  {
+    assert.equal((await h.authed('POST', '/api/plans', { key: 'plus', name: 'Plus', price: 899 })).statusCode, 200);
+    fake.mp.nextId = 'pre_ux';
+    const s = await h.app.inject({ method: 'POST', url: '/api/signup', remoteAddress: '10.8.8.9',
+      payload: { name: 'Mara', company: 'Estudio Mara', business_type: 'servicios', email: 'mara@estudio.mx', password: 'clave-segura-2', accept_terms: true, plan: 'pro', provider: 'mercadopago' } });
+    assert.equal(s.statusCode, 200, s.body);
+    const mara = String(s.headers['set-cookie']).split(';')[0];
+    const call = (method: string, url: string, payload?: unknown) => h.app.inject({ method: method as any, url, payload: payload as any, headers: { cookie: mara } });
+    fake.mp.preapprovals.pre_ux = { id: 'pre_ux', status: 'authorized', external_reference: `${s.json().account.id}:pro`, payer_id: 7,
+      next_payment_date: new Date(Date.now() + 20 * 86400_000).toISOString(), auto_recurring: { transaction_amount: 578.84, currency_id: 'MXN' } };
+    assert.equal((await call('POST', '/api/billing/confirm')).json().confirmed, true);
+    assert.equal((await call('POST', '/api/billing/change', { plan: 'plus' })).json().scheduled, true);
+    const ctx = await browser.newContext({ viewport: { width: 390, height: 900 } });
+    const m = await ctx.newPage();
+    m.on('pageerror', (e) => errors.push(e.message));
+    const mx = mara.indexOf('=');
+    await ctx.addCookies([{ name: mara.slice(0, mx), value: mara.slice(mx + 1), url: base }]);
+    await m.goto(`${base}/#/plan`);
+    await m.getByText(/Con ese cobro cambias al plan Plus\./).waitFor();
+    await m.getByRole('button', { name: 'Quedarme con el plan Pro' }).click();
+    await m.getByText('Listo: sigues con el plan Pro').first().waitFor();
+    await m.getByRole('button', { name: 'Quedarme con el plan Pro' }).waitFor({ state: 'detached' });
+    const sub = (await pool.query(`SELECT plan_key, pending_plan_key FROM subscriptions WHERE account_id = $1`, [s.json().account.id])).rows[0];
+    assert.deepEqual([sub.plan_key, sub.pending_plan_key], ['pro', '']);
+    await ctx.close();
+    checks.push('Mercado Pago: la subida queda programada para el siguiente cobro y «Quedarme con el plan …» la cancela (en móvil)');
+  }
+
   await context.clearCookies();
   const sx = h.cookie.indexOf('=');
   await context.addCookies([{ name: h.cookie.slice(0, sx), value: h.cookie.slice(sx + 1), url: base }]);
