@@ -67,6 +67,19 @@ export function staticInventory(dir = DIR): Site[] {
   return sites;
 }
 
+/**
+ * Llave estable de cada sitio, sin el número de línea (cambia con cualquier edición del archivo): archivo, control,
+ * etiqueta, eventos y cuántos iguales hay antes en el mismo archivo.
+ */
+export function withKeys<T extends Site>(sites: T[]): (T & { key: string })[] {
+  const seen = new Map<string, number>();
+  return sites.map((s) => {
+    const base = `${s.file}|${s.tag}|${s.label}|${s.events.join(',')}`;
+    const n = seen.get(base) ?? 0; seen.set(base, n + 1);
+    return { ...s, key: `${base}|${n}` };
+  });
+}
+
 /** Encuentra el sitio estático de una línea vista en el navegador (la llamada puede ocupar varias líneas). */
 export function matchSite(sites: Site[], file: string, line: number): Site | undefined {
   return sites.find((s) => s.file === file && s.line === line) || sites.find((s) => s.file === file && line >= s.line && line <= s.endLine);

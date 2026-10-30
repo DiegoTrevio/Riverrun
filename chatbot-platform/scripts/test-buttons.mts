@@ -15,7 +15,7 @@ const { createHarness, pool } = await import('../test/harness.js');
 const { seedUxFixture } = await import('./ux-fixture.mts');
 const { INIT_SCRIPT } = await import('./buttons/instrument.mts');
 const { crawl, acceptDialogs, isProblem } = await import('./buttons/crawl.mts');
-const { staticInventory, matchSite, ACTION_EVENTS } = await import('./buttons/inventory.mts');
+const { staticInventory, matchSite, withKeys, ACTION_EVENTS } = await import('./buttons/inventory.mts');
 const { runAreas } = await import('./buttons/areas.mts');
 type Outcome = import('./buttons/crawl.mts').Outcome;
 
@@ -127,19 +127,17 @@ try {
   for (const s of seen) mark(s.split('@')[1], 'visto');
   for (const o of outcomes) if (pressedVerdicts.has(o.verdict)) o.sites.forEach((s) => mark(s, 'presionado'));
   for (const s of used) mark(s, 'presionado');
-  // Llave estable de cada sitio (sin el número de línea, que cambia con cualquier edición del archivo).
-  const seenKeys = new Map<string, number>();
-  const keyOf = (s: { file: string; tag: string; label: string; events: string[] }) => {
-    const base = `${s.file}|${s.tag}|${s.label}|${s.events.join(',')}`;
-    const n = seenKeys.get(base) ?? 0; seenKeys.set(base, n + 1);
-    return `${base}|${n}`;
-  };
-  const coverage = inventory.map((s) => ({ ...s, key: keyOf(s), status: status.get(s.site) || 'no apareció' }));
-  // Cada sitio que no se presiona aquí lleva su motivo en sin-presionar.json (otra prueba, servicio real, estado…).
+  const coverage = withKeys(inventory).map((s) => ({ ...s, status: status.get(s.site) || 'no apareció' }));
+  // Cada sitio que no se presiona aquí lleva su motivo en sin-presionar.json (otra prueba, servicio real, estado…), que
+  // también guarda todos los sitios que había al escribirlo: falla un sitio NUEVO que nadie presiona; uno conocido que
+  // esta vez no se alcanzó (p. ej. por tiempos) solo se avisa.
   const notesFile = path.resolve(import.meta.dirname, 'buttons', 'sin-presionar.json');
-  let notes: Record<string, string> = fs.existsSync(notesFile) ? JSON.parse(fs.readFileSync(notesFile, 'utf8')) : {};
+  const saved = fs.existsSync(notesFile) ? JSON.parse(fs.readFileSync(notesFile, 'utf8')) : {};
+  let notes: Record<string, string> = saved.sin_presionar ?? {};
+  let known = new Set<string>(saved.sitios ?? []);
   const unpressed = coverage.filter((c) => c.status !== 'presionado');
-  let missingNotes = unpressed.filter((c) => !notes[c.key]);
+  let missingNotes = unpressed.filter((c) => !notes[c.key] && !known.has(c.key));
+  const unreached = unpressed.filter((c) => !notes[c.key] && known.has(c.key));
   const staleNotes = Object.keys(notes).filter((k) => !unpressed.some((c) => c.key === k));
   if (process.env.BUTTONS_WRITE_PENDING) {
     // Evidencia de las otras pruebas (data/button-audit/pressed-*.json, de coverage-probe.mts).
@@ -152,10 +150,12 @@ try {
       }
     }
     const next = Object.fromEntries(unpressed.map((c) => [c.key, defaultReason(c, others)]));
-    fs.writeFileSync(notesFile, JSON.stringify(next, null, 2) + '\n');
-    log(`sin-presionar.json: ${Object.keys(next).length} sitios (${missingNotes.length} nuevos, ${staleNotes.length} quitados)`);
+    known = new Set(coverage.map((c) => c.key));
+    fs.writeFileSync(notesFile, JSON.stringify({ sitios: [...known], sin_presionar: next }, null, 2) + '\n');
+    log(`sin-presionar.json: ${Object.keys(next).length} sitios sin presionar (${missingNotes.length} nuevos, ${staleNotes.length} quitados)`);
     notes = next; missingNotes = [];
   }
+  for (const c of unreached) log(`  aviso: esta vez nadie presionó ${c.site} ${c.tag} «${c.label}» (sí en la corrida que escribió sin-presionar.json)`);
   const count = (v: string) => coverage.filter((c) => c.status === v).length;
   const verdicts = Object.fromEntries(Object.entries(Object.groupBy(outcomes, (o) => o.verdict)).map(([k, v]) => [k, v!.length]));
   const problems = outcomes.filter(isProblem);
@@ -175,7 +175,7 @@ try {
   for (const a of areaFailures) log(`  ÁREA · ${a}`);
   if (!process.env.BUTTONS_REPORT_ONLY) {
     assert.deepEqual(areaFailures, [], 'Comprobaciones por área que fallaron');
-    assert.deepEqual(missingNotes.map((c) => `${c.site} ${c.tag} «${c.label}»`), [], 'Controles que nadie presiona y sin motivo en scripts/buttons/sin-presionar.json: agrégales una prueba o su motivo (BUTTONS_WRITE_PENDING=1 regenera la lista)');
+    assert.deepEqual(missingNotes.map((c) => `${c.site} ${c.tag} «${c.label}»`), [], 'Controles nuevos que nadie presiona: agrégales una prueba (en el recorrido o en scripts/buttons/areas/) o su motivo en scripts/buttons/sin-presionar.json (BUTTONS_WRITE_PENDING=1 regenera la lista)');
     assert.deepEqual(problems.map((p) => `${p.verdict} · ${p.user} · ${p.route} · «${p.name}» ${p.sites[0] || p.href} ${p.note}`), [], 'Controles que no hacen lo que dicen');
     // Única salida esperada: el catálogo público de modelos (monitor.ts y «Comprobar ahora»); sin él responde «no se pudo consultar».
     assert.deepEqual(blocked.filter((b) => !(b.host === 'openrouter.ai' && /fetchCatalog|undici/.test(b.at))), [], 'El servidor intentó conectarse fuera de la máquina');
