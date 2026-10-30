@@ -120,17 +120,6 @@ export function readSession(token: string | undefined): { uid: string; pv: strin
 
 export type SessionVia = 'password' | 'google' | 'invite' | 'signup' | 'password_change';
 
-/** Inicia una sesión: queda registrada (se puede cerrar desde Mi perfil o al cerrar sesión) y se pone la cookie. */
-export async function setSessionCookie(reply: FastifyReply, userId: string, passwordHash: string, via: SessionVia = 'password') {
-  const req = reply.request;
-  const role = (await store.getUser(userId))?.role ?? 'agent';
-  const { maxMs } = sessionLimits(role);
-  const expires = new Date(Date.now() + maxMs);
-  const sid = (await store.createUserSession({ userId, expires, via, userAgent: String(req?.headers?.['user-agent'] ?? '').slice(0, 300), ip: String(req?.ip ?? '').slice(0, 64) })).id;
-  reply.setCookie(cookieName('cp_session'), createSession(userId, passwordHash, sid, expires.getTime()), { httpOnly: true, sameSite: 'strict', secure: config.secureCookies, path: '/', maxAge: maxMs / 1000 });
-  return sid;
-}
-
 export function clearSessionCookie(reply: FastifyReply) {
   reply.clearCookie(cookieName('cp_session'), { path: '/' });
 }

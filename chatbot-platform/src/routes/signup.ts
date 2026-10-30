@@ -2,7 +2,9 @@ import { googleConfigured } from '../integrations/google.js';
 import { baseFor, brandByDomain, hostOf, mailBrand } from '../brands.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { hashPassword, rateLimited, setSessionCookie } from '../auth.js';
+import { hashPassword, rateLimited } from '../auth.js';
+import { beginLogin } from '../identity/mfa.js';
+import { notifyUser } from '../identity/notices.js';
 import { billingEnabled, payable, startCheckout } from '../billing/service.js';
 import { ProviderError } from '../billing/types.js';
 import { config } from '../config.js';
@@ -113,7 +115,8 @@ export async function signupRoutes(app: FastifyInstance) {
       `Nueva empresa registrada: ${account.name}`,
       `${user.name} <${user.email}> registró "${account.name}" (${BUSINESS_TYPES.find((t) => t.key === businessType)?.label}). ${trialEndsAt ? `Prueba hasta ${trialEndsAt.toISOString().slice(0, 10)}.` : 'Sin prueba: se activa al pagar.'}${purchase ? ` Eligió el plan ${purchase.plan.name}.` : ''}`,
     );
-    await setSessionCookie(reply, user.id, passwordHash, 'signup');
+    // Antes de ver el panel configura su verificación en dos pasos (la sesión se abre al terminar).
+    const begin = await beginLogin(reply, { ...user, password_hash: passwordHash }, 'signup');
 
     // Con plan elegido, se abre su pago. Si el proveedor falla, la cuenta ya existe: el panel lo deja reintentar en "Mi plan".
     let checkout: { checkout_url?: string; checkout_error?: string } = {};
@@ -126,7 +129,7 @@ export async function signupRoutes(app: FastifyInstance) {
         checkout = { checkout_error: `Tu cuenta quedó creada, pero no pudimos abrir el pago (${e.message}). Intenta de nuevo desde aquí.` };
       }
     }
-    return { ok: true, user, account: store.publicAccount((await store.getAccount(account.id))!), verification_sent: !verified, ...checkout };
+    return { ok: true, user, account: store.publicAccount((await store.getAccount(account.id))!), verification_sent: !verified, ...checkout, ...begin };
   });
 
   app.post('/api/verify-email', async (req, reply) => {
@@ -169,6 +172,9 @@ export async function signupRoutes(app: FastifyInstance) {
     await store.revokeUserSessions(userId);
     await store.markEmailVerified(userId);
     await logEvent({ level: 'info', source: 'admin', message: 'Contraseña restablecida por correo', details: { user_id: userId } });
+    // No abre sesión: después entra con su contraseña nueva y su código.
+    const user = await store.getUser(userId);
+    if (user) void notifyUser(user, 'password_reset');
     return { ok: true };
   });
 }

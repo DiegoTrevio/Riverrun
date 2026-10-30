@@ -11,6 +11,7 @@ import type { AiProvider } from './ai/provider.js';
 import { config } from './config.js';
 import { requireAuth } from './auth.js';
 import { adminRoutes, sessionRoutes } from './routes/admin.js';
+import { mfaPublicRoutes } from './routes/mfa.js';
 import { agendaRoutes, calendarRoutes } from './routes/agenda.js';
 import { automationRoutes } from './routes/automation.js';
 import { flowBoardRoutes } from './routes/flow-boards.js';
@@ -153,6 +154,7 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
     return reply.type('text/plain; version=0.0.4; charset=utf-8').send(text);
   });
   await sessionRoutes(app);
+  await mfaPublicRoutes(app);
   await signupRoutes(app);
   await invitationPublicRoutes(app);
   await pricingRoutes(app);

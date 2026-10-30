@@ -13,13 +13,14 @@ import {
   login,
   loginAllowed,
   registerLoginFailure,
-  setSessionCookie,
   verifyPassword,
   currentSession,
 } from '../auth.js';
 import { adapterFor } from '../channels/index.js';
 import { config } from '../config.js';
 import { assertPasswordAllowed, NewPassword } from '../identity/passwords.js';
+import { beginLogin, renewSessionAfterPasswordChange } from '../identity/mfa.js';
+import { notifyUser } from '../identity/notices.js';
 import { query, queryOne, withTransaction } from '../db.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
@@ -73,10 +74,8 @@ export async function sessionRoutes(app: FastifyInstance) {
       await logEvent({ level: 'warn', source: 'admin', message: 'Intento de acceso fallido', details: { ip: req.ip, email: who.slice(0, 100) } });
       return reply.code(401).send({ error: 'Usuario o contraseña incorrectos' });
     }
-    await setSessionCookie(reply, user.id, user.password_hash, 'password');
-    const { password_hash, ...safe } = user;
-    void password_hash;
-    return { ok: true, user: safe };
+    // Contraseña buena: falta el segundo paso (el código de la app, o configurarla la primera vez).
+    return beginLogin(reply, user, 'password');
   });
 
   app.post('/api/logout', async (req, reply) => {
@@ -138,9 +137,10 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     await assertPasswordAllowed(b.password, { email: req.user.email, businessName: await accountName(req.user.account_id) });
     const hash = await hashPassword(b.password);
     await store.updateUser(req.user.id, { password_hash: hash });
-    // Las demás sesiones se cierran; esta sigue abierta con la nueva huella.
+    // Las demás sesiones se cierran; esta sigue abierta con la nueva huella (y con su verificación reciente).
     await store.revokeUserSessions(req.user.id);
-    await setSessionCookie(reply, req.user.id, hash, 'password_change');
+    await renewSessionAfterPasswordChange(reply, { id: req.user.id, role: req.user.role, password_hash: hash }, req.mfaAt);
+    void notifyUser(req.user, 'password_changed');
     return { ok: true };
   });
 

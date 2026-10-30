@@ -23,7 +23,7 @@ async function failedAccount(email: string, subId: string, ago = 0) {
   });
   assert.equal(r.statusCode, 200, r.body);
   const accountId = r.json().account.id as string;
-  const cookie = String(r.headers['set-cookie']).split(';')[0];
+  const cookie = await h.sessionFrom(r);
   const api = (method: string, url: string) => h.app.inject({ method: method as any, url, headers: { cookie } });
   const session = r.json().checkout_url.split('/').pop();
   fake.stripe.subs[subId] = stripeSub({ id: subId, customer: `cus_${subId}`, metadata: { account_id: accountId, plan_key: 'pro' } });

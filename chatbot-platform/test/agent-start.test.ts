@@ -106,7 +106,7 @@ t('permisos: otra cuenta no lo ve, un operador no conecta y hace falta el correo
   // Quien se registra solo confirma su correo antes de conectar.
   const s = await h.app.inject({ method: 'POST', url: '/api/signup', remoteAddress: '10.88.0.1', payload: { name: 'Rita', company: 'Florería Rita', business_type: 'tienda', email: 'rita@flores.mx', password: 'Pz-141-Qx-341-Kv', accept_terms: true } });
   assert.equal(s.statusCode, 200, s.body);
-  const cookie = String(s.headers['set-cookie']).split(';')[0];
+  const cookie = await h.sessionFrom(s);
   const rita = (method: string, url: string, payload?: unknown) => h.app.inject({ method: method as any, url, payload: payload as any, headers: { cookie } });
   const mine = await rita('POST', '/api/chatbots/wizard', { company: { name: 'Florería Rita', business_type: 'tienda', description: 'Arreglos florales a domicilio en Guadalajara, desde $450.' } });
   assert.equal(mine.statusCode, 200, mine.body);

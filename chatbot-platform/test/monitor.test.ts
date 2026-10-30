@@ -152,6 +152,6 @@ t('estado del sistema: solo el superadmin', async () => {
   assert.ok(body.backup && body.backup.remote_ok === false);
   const signup = await h.app.inject({ method: 'POST', url: '/api/signup', remoteAddress: '10.8.8.8', payload: { name: 'Ana', company: 'Otra', business_type: 'otro', email: 'ana@otra.mx', password: 'Pz-105-Qx-305-Kv', accept_terms: true } });
   assert.equal(signup.statusCode, 200, signup.body);
-  const cookie = String(signup.headers['set-cookie']).split(';')[0];
+  const cookie = await h.sessionFrom(signup);
   assert.equal((await h.app.inject({ method: 'GET', url: '/api/system/status', headers: { cookie } })).statusCode, 403);
 });

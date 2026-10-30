@@ -79,8 +79,8 @@ t('invitar por correo y unirse eligiendo contraseña: queda en la cuenta, con su
   assert.equal((await accept({ token, password: 'Pz-111-Qx-311-Kv', accept_terms: false })).statusCode, 400, 'sin aceptar términos');
   const done = await accept({ token, password: 'Pz-111-Qx-311-Kv', name: 'Lalo Ruiz' });
   assert.equal(done.statusCode, 200, done.body);
-  const session = done.cookies.find((c) => c.value)!;
-  const me = (await h.app.inject({ method: 'GET', url: '/api/me', headers: { cookie: `${session.name}=${session.value}` } })).json();
+  assert.equal(done.json().mfa, 'enroll', 'configura su verificación antes de entrar');
+  const me = (await h.app.inject({ method: 'GET', url: '/api/me', headers: { cookie: await h.sessionFrom(done) } })).json();
   assert.deepEqual([me.user.email, me.user.role, me.user.account_id, me.user.name], ['lalo@taller.mx', 'admin', A.account, 'Lalo Ruiz']);
   const u = (await pool.query(`SELECT id, email_verified_at FROM users WHERE email = 'lalo@taller.mx'`)).rows[0];
   assert.ok(u.email_verified_at, 'el enlace del correo prueba que el correo es suyo');

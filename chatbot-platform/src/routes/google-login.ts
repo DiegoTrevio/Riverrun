@@ -3,7 +3,8 @@ import crypto from 'node:crypto';
 import { pendingInviteFor } from './invitations.js';
 import type { FastifyInstance } from 'fastify';
 import { brandByDomain, hostOf } from '../brands.js';
-import { hashPassword, rateLimited, setSessionCookie } from '../auth.js';
+import { hashPassword, rateLimited } from '../auth.js';
+import { beginLogin } from '../identity/mfa.js';
 import { config } from '../config.js';
 import { withTransaction } from '../db.js';
 import { googleConfigured, tokenRequest } from '../integrations/google.js';
@@ -72,9 +73,10 @@ export async function googleLoginRoutes(app: FastifyInstance) {
           await store.updateUser(user.id, { password_hash: hash });
           await store.markEmailVerified(user.id);
         }
-        await setSessionCookie(reply, user.id, hash, 'google');
+        // Google es otro primer paso: falta el código de la app (o configurarla).
+        const begin = await beginLogin(reply, { ...user, password_hash: hash }, 'google');
         await logEvent({ level: 'info', source: 'admin', message: `Acceso con Google: ${email}`, accountId: user.account_id, details: { ip: req.ip } });
-        return reply.redirect('/#/');
+        return reply.redirect('mfa' in begin ? `/#/login/${begin.mfa === 'verify' ? 'codigo' : 'configurar'}` : '/#/');
       }
       // La invitaron a un equipo: se une a esa cuenta (aunque el registro público esté cerrado).
       const invite = await pendingInviteFor(email);
@@ -138,7 +140,7 @@ export async function googleLoginRoutes(app: FastifyInstance) {
     });
     await logEvent({ level: 'info', source: 'admin', message: `Registro nuevo con Google: ${account.name} (${email})`, accountId: account.id, details: { ip: req.ip, business_type: businessType } });
     await notifySuperadmins(account.id, `Nueva empresa registrada: ${account.name}`, `${created.name} <${email}> se registró con Google.`);
-    await setSessionCookie(reply, created.id, hash, 'google');
-    return { ok: true, user: created, account: store.publicAccount((await store.getAccount(account.id))!) };
+    const begin = await beginLogin(reply, { ...created, password_hash: hash }, 'google');
+    return { ok: true, user: created, account: store.publicAccount((await store.getAccount(account.id))!), ...begin };
   });
 }

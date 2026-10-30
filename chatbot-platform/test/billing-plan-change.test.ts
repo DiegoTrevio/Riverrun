@@ -22,7 +22,7 @@ async function signup(email: string, plan: string, provider: 'stripe' | 'mercado
     payload: { name: 'Eva Ruiz', company: `Negocio ${ip}`, business_type: 'belleza', email, password: 'Pz-124-Qx-324-Kv', accept_terms: true, plan, provider },
   });
   assert.equal(r.statusCode, 200, r.body);
-  const cookie = String(r.headers['set-cookie']).split(';')[0];
+  const cookie = await h.sessionFrom(r);
   const api: Api = (method, url, payload) => h.app.inject({ method: method as any, url, payload: payload as any, headers: { cookie } });
   return { api, accountId: r.json().account.id as string, checkout: r.json().checkout_url as string };
 }

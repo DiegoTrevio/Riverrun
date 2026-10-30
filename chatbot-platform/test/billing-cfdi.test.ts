@@ -33,7 +33,7 @@ async function signup(o: typeof F, ip: string) {
     payload: { name: 'Dueña', company: `Negocio ${o.email}`, business_type: 'servicios', email: o.email, password: 'Pz-144-Qx-344-Kv', accept_terms: true },
   });
   assert.equal(r.statusCode, 200, r.body);
-  const cookie = String(r.headers['set-cookie']).split(';')[0];
+  const cookie = await h.sessionFrom(r);
   o.account = r.json().user.account_id;
   o.api = (method, url, payload) => h.app.inject({ method: method as any, url, payload: payload as any, headers: { cookie } });
 }

@@ -117,7 +117,7 @@ t('derecho de supresión: borra al contacto y su historial, anonimiza citas y co
   assert.equal((await agent('DELETE', `/api/contacts/${c.id}`)).statusCode, 403);
   assert.equal((await agent('GET', `/api/contacts/${c.id}/data`)).statusCode, 403);
   const other = await h.app.inject({ method: 'POST', url: '/api/signup', remoteAddress: '10.5.5.5', payload: { name: 'Otro', company: 'Otro negocio', business_type: 'otro', email: 'otro@priv.mx', password: 'Pz-137-Qx-337-Kv', accept_terms: true } });
-  const cookie = String(other.headers['set-cookie']).split(';')[0];
+  const cookie = await h.sessionFrom(other);
   assert.equal((await h.app.inject({ method: 'DELETE', url: `/api/contacts/${c.id}`, headers: { cookie } })).statusCode, 404);
   // El administrador sí. La exportación de sus datos incluye todo lo suyo, también el correo de sus citas.
   const exported = (await h.authed('GET', `/api/contacts/${c.id}/data`)).json();

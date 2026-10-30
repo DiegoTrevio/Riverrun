@@ -14,9 +14,9 @@ const fake={complete:async()=>{throw Error('No chat');},transcribe:async()=>'',e
 before(async()=>{
  if(!ok)return;
  h=await createHarness();
- a=(await h.authed('POST','/api/accounts',{name:'Perfil supervisado',admin:{email:'supervised@test.mx',password:'supervised-pass-123'}})).json();
- b=(await h.authed('POST','/api/accounts',{name:'Perfil ajeno',admin:{email:'other@test.mx',password:'other-pass-123'}})).json();
- limited=await h.loginAs('supervised@test.mx','supervised-pass-123');
+ a=(await h.authed('POST','/api/accounts',{name:'Perfil supervisado',admin:{email:'supervised@test.mx',password:'Pz-941-Qx-942-Kv'}})).json();
+ b=(await h.authed('POST','/api/accounts',{name:'Perfil ajeno',admin:{email:'other@test.mx',password:'Pz-943-Qx-944-Kv'}})).json();
+ limited=await h.loginAs('supervised@test.mx','Pz-941-Qx-942-Kv');
  bot=await store.createChatbot(a.id,{name:'Agente'});
  await store.upsertKnowledge(bot.id,{title:'Tarifa',content:'Doble $1,650.'});
  config.knowledgeSearch.enabled=true;config.knowledgeSearch.accountIds=[a.id];config.openai.apiKey='PRIVATE-TEST-KEY';

@@ -1,0 +1,165 @@
+/**
+ * Verificación en dos pasos al entrar. Ninguna puerta (contraseña, Google, registro, invitación) abre la sesión: dejan
+ * una cookie de reto (firmada, 15 minutos) y la sesión se abre cuando llega el código de la app o uno de recuperación.
+ * La primera vez el reto es para configurar la app. Solo este módulo abre sesiones.
+ */
+import crypto from 'node:crypto';
+import type { FastifyReply, FastifyRequest } from 'fastify';
+import { cookieName, createSession, passwordVersion, sessionLimits, type SessionVia } from '../auth.js';
+import { mailBrand } from '../brands.js';
+import { config } from '../config.js';
+import { query, queryOne } from '../db.js';
+import { logEvent } from '../logs.js';
+import { decryptSecret, encryptSecret, hmac, safeEqual } from '../secret.js';
+import * as store from '../store/index.js';
+import type { Role, User } from '../types.js';
+import { notifyUser } from './notices.js';
+import { qrDataUri } from './qr.js';
+import { LIMITS } from './rate-limit.js';
+import { isRecoveryCodeShape, useRecoveryCode } from './recovery-codes.js';
+import { matchTotp, newTotpSecret, otpauthUri } from './totp.js';
+
+const CHALLENGE_MS = 15 * 60_000;
+
+export type ChallengePurpose = 'verify' | 'enroll';
+export interface Challenge { uid: string; pv: string; via: SessionVia; purpose: ChallengePurpose; cid: string; exp: number }
+
+/** El usuario del reto con lo que hace falta para verificar (nunca sale en una respuesta). */
+export type ChallengeUser = User & {
+  password_hash: string;
+  totp_secret: string | null;
+  totp_pending: string | null;
+  totp_enabled_at: Date | null;
+  totp_last_step: number;
+  mfa_locked_until: Date | null;
+};
+
+type SessionUser = { id: string; role: Role; password_hash: string };
+
+const cookieOpts = (maxAgeMs: number) => ({ httpOnly: true, sameSite: 'strict' as const, secure: config.secureCookies, path: '/', maxAge: Math.floor(maxAgeMs / 1000) });
+
+export function readChallenge(req: FastifyRequest): Challenge | null {
+  const token = req.cookies?.[cookieName('cp_mfa')];
+  if (!token) return null;
+  const [payload, sig] = token.split('.');
+  if (!payload || !sig || !safeEqual(sig, hmac(`mfa-challenge:${payload}`))) return null;
+  try {
+    const c = JSON.parse(Buffer.from(payload, 'base64url').toString());
+    if (!(c.exp > Date.now() && typeof c.uid === 'string' && typeof c.pv === 'string' && typeof c.cid === 'string' && ['verify', 'enroll'].includes(c.purpose))) return null;
+    return c as Challenge;
+  } catch {
+    return null;
+  }
+}
+
+export function clearChallenge(reply: FastifyReply) {
+  reply.clearCookie(cookieName('cp_mfa'), { path: '/' });
+}
+
+/** Abre la sesión (registrada en user_sessions) y pone su cookie. `mfaAt`: cuándo escribió el código (null si no). */
+async function openSession(reply: FastifyReply, user: SessionUser, via: SessionVia, mfaAt: Date | null): Promise<string> {
+  const req = reply.request;
+  const { maxMs } = sessionLimits(user.role);
+  const expires = new Date(Date.now() + maxMs);
+  const sid = (await store.createUserSession({ userId: user.id, expires, via, mfaAt, userAgent: String(req?.headers?.['user-agent'] ?? '').slice(0, 300), ip: String(req?.ip ?? '').slice(0, 64) })).id;
+  reply.setCookie(cookieName('cp_session'), createSession(user.id, user.password_hash, sid, expires.getTime()), cookieOpts(maxMs));
+  return sid;
+}
+
+/**
+ * La contraseña (o Google) ya se comprobó: deja el reto del segundo paso. Responde `{ mfa: 'verify' }` si la persona ya
+ * tiene la app configurada y `{ mfa: 'enroll' }` si todavía no.
+ */
+export async function beginLogin(reply: FastifyReply, user: SessionUser & { totp_enabled_at?: Date | null }, via: SessionVia): Promise<{ mfa: ChallengePurpose } | { ok: true }> {
+  const purpose: ChallengePurpose = user.totp_enabled_at ? 'verify' : 'enroll';
+  const c: Challenge = { uid: user.id, pv: passwordVersion(user.password_hash), via, purpose, cid: crypto.randomBytes(12).toString('base64url'), exp: Date.now() + CHALLENGE_MS };
+  const payload = Buffer.from(JSON.stringify(c)).toString('base64url');
+  reply.setCookie(cookieName('cp_mfa'), `${payload}.${hmac(`mfa-challenge:${payload}`)}`, cookieOpts(CHALLENGE_MS));
+  return { mfa: purpose };
+}
+
+/** El reto vigente y su usuario: activo, con la cuenta activa y con la misma contraseña que cuando empezó. */
+export async function challengeUser(req: FastifyRequest): Promise<{ challenge: Challenge; user: ChallengeUser } | null> {
+  const challenge = readChallenge(req);
+  if (!challenge) return null;
+  const base = await store.getSessionUser(challenge.uid);
+  if (!base || !safeEqual(passwordVersion(base.password_hash), challenge.pv)) return null;
+  const extra = await queryOne<{ totp_secret: string | null; totp_pending: string | null; totp_enabled_at: Date | null; totp_last_step: string; mfa_locked_until: Date | null }>(
+    `SELECT totp_secret, totp_pending, totp_enabled_at, totp_last_step, mfa_locked_until FROM users WHERE id = $1`,
+    [base.id],
+  );
+  if (!extra) return null;
+  return { challenge, user: { ...base, ...extra, totp_last_step: Number(extra.totp_last_step) } };
+}
+
+/** Intentos con el código en este reto (5 como máximo; después hay que volver a escribir la contraseña). */
+export const challengeKey = (c: Challenge) => `mfa-challenge:${c.cid}`;
+
+/** Un reto que ya abrió sesión no vuelve a servir. */
+export async function burnChallenge(c: Challenge) {
+  await query(
+    `INSERT INTO rate_limits (key, hits, expires_at) VALUES ($1, $2, now() + make_interval(secs => $3))
+     ON CONFLICT (key) DO UPDATE SET hits = $2, expires_at = now() + make_interval(secs => $3)`,
+    [challengeKey(c), LIMITS.codePerChallenge, CHALLENGE_MS / 1000],
+  );
+}
+
+/**
+ * ¿El código es bueno? Primero como código de la app (cada paso sirve una sola vez, también con dos peticiones a la vez)
+ * y, si tiene la forma de uno de recuperación, como código de recuperación (avisa por correo).
+ */
+export async function verifyUserCode(user: ChallengeUser, code: string): Promise<{ result: 'ok' | 'bad' | 'locked'; recoveryRemaining?: number }> {
+  const secret = user.totp_secret ? decryptSecret(user.totp_secret) : null;
+  if (user.totp_secret && !secret) await logEvent({ level: 'error', source: 'system', message: `No se pudo leer el secreto de verificación de ${user.email} (¿cambió SESSION_SECRET sin re-cifrar?)`, accountId: user.account_id ?? undefined });
+  const step = secret ? matchTotp(secret, code) : null;
+  if (step !== null) {
+    const used = await queryOne(`UPDATE users SET totp_last_step = $2 WHERE id = $1 AND totp_last_step < $2 RETURNING id`, [user.id, step]);
+    return { result: used ? 'ok' : 'bad' };
+  }
+  if (isRecoveryCodeShape(code)) {
+    const remaining = await useRecoveryCode(user.id, code);
+    if (remaining !== null) {
+      void notifyUser(user, 'recovery_used', { remaining });
+      return { result: 'ok', recoveryRemaining: remaining };
+    }
+  }
+  return { result: 'bad' };
+}
+
+/** El secreto que se está configurando: el mismo si ya hay uno pendiente (otra pestaña, recargar, el reto venció). */
+export async function startEnrollment(user: ChallengeUser): Promise<{ secret: string; otpauth: string; qr: string }> {
+  let secret = user.totp_pending ? decryptSecret(user.totp_pending) : null;
+  if (!secret) {
+    secret = newTotpSecret();
+    await query(`UPDATE users SET totp_pending = $2 WHERE id = $1`, [user.id, encryptSecret(secret)]);
+  }
+  const issuer = (await mailBrand(user.account_id)).fromName ?? 'Panel de Chatbots';
+  const otpauth = otpauthUri({ issuer, account: user.email, secret });
+  return { secret, otpauth, qr: qrDataUri(otpauth) };
+}
+
+/** Activa el secreto pendiente si el código es de él. El paso usado queda anotado (no vuelve a servir). */
+export async function confirmEnrollment(userId: string, code: string): Promise<boolean> {
+  const row = await queryOne<{ totp_pending: string | null }>(`SELECT totp_pending FROM users WHERE id = $1`, [userId]);
+  const secret = row?.totp_pending ? decryptSecret(row.totp_pending) : null;
+  const step = secret ? matchTotp(secret, code) : null;
+  if (step === null) return false;
+  const done = await queryOne(
+    `UPDATE users SET totp_secret = totp_pending, totp_pending = NULL, totp_enabled_at = now(), totp_last_step = $2, mfa_locked_until = NULL, updated_at = now()
+      WHERE id = $1 AND totp_pending = $3 RETURNING id`,
+    [userId, step, row!.totp_pending],
+  );
+  return !!done;
+}
+
+/** El código fue bueno: se borra el reto y se abre la sesión con la verificación de este momento. */
+export async function finishChallenge(reply: FastifyReply, user: SessionUser, challenge: Challenge): Promise<string> {
+  clearChallenge(reply);
+  await burnChallenge(challenge);
+  return openSession(reply, user, challenge.via, new Date());
+}
+
+/** Cambió su contraseña en Mi perfil: sesión nueva (las demás ya se cerraron) con la verificación que traía. */
+export async function renewSessionAfterPasswordChange(reply: FastifyReply, user: SessionUser, mfaAt: Date | null): Promise<string> {
+  return openSession(reply, user, 'password_change', mfaAt);
+}

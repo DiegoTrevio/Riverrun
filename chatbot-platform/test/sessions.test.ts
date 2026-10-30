@@ -15,7 +15,7 @@ let userId = '';
 const login = async (ua = 'Mozilla/5.0 (Windows NT 10.0) Chrome/120.0') => {
   const r = await h.app.inject({ method: 'POST', url: '/api/login', payload: { email: EMAIL, password: PASS }, headers: { 'user-agent': ua } });
   assert.equal(r.statusCode, 200, r.body);
-  return String(r.headers['set-cookie']).split(';')[0];
+  return await h.sessionFrom(r, EMAIL, { 'user-agent': ua });
 };
 const as = (cookie: string) => (method: string, url: string, payload?: unknown) => h.app.inject({ method: method as any, url, payload: payload as any, headers: { cookie } });
 const me = async (cookie: string) => (await as(cookie)('GET', '/api/me')).statusCode;

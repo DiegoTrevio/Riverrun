@@ -106,7 +106,7 @@ try {
     payload: { name: 'Ana', company: 'Estudio Ana', business_type: 'servicios', email: 'ana@estudio.mx', password: 'Pz-144-Qx-344-Kv', accept_terms: true } });
   assert.equal(r.statusCode, 200, r.body);
   const accountId = r.json().user.account_id as string;
-  const cookie = String(r.headers['set-cookie']).split(';')[0];
+  const cookie = await h.sessionFrom(r);
   const ix = cookie.indexOf('=');
   await context.addCookies([{ name: cookie.slice(0, ix), value: cookie.slice(ix + 1), url: base }]);
 
@@ -374,7 +374,7 @@ try {
     const s = await h.app.inject({ method: 'POST', url: '/api/signup', remoteAddress: '10.8.8.9',
       payload: { name: 'Mara', company: 'Estudio Mara', business_type: 'servicios', email: 'mara@estudio.mx', password: 'Pz-146-Qx-346-Kv', accept_terms: true, plan: 'pro', provider: 'mercadopago' } });
     assert.equal(s.statusCode, 200, s.body);
-    const mara = String(s.headers['set-cookie']).split(';')[0];
+    const mara = await h.sessionFrom(s);
     const call = (method: string, url: string, payload?: unknown) => h.app.inject({ method: method as any, url, payload: payload as any, headers: { cookie: mara } });
     fake.mp.preapprovals.pre_ux = { id: 'pre_ux', status: 'authorized', external_reference: `${s.json().account.id}:pro`, payer_id: 7,
       next_payment_date: new Date(Date.now() + 20 * 86400_000).toISOString(), auto_recurring: { transaction_amount: 578.84, currency_id: 'MXN' } };

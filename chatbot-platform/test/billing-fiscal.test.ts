@@ -58,7 +58,7 @@ t('guardar y leer los datos; un agente no puede; con factura y datos incompletos
     payload: { name: 'Ema Ruiz', company: 'Escuela Ema', business_type: 'servicios', email: 'ema@escuela.mx', password: 'Pz-119-Qx-319-Kv', accept_terms: true } });
   assert.equal(r.statusCode, 200, r.body);
   const accountId = r.json().account.id;
-  const cookie = String(r.headers['set-cookie']).split(';')[0];
+  const cookie = await h.sessionFrom(r);
   const api = (method: string, url: string, payload?: unknown) => h.app.inject({ method: method as any, url, payload: payload as any, headers: { cookie } });
 
   let g = (await api('GET', '/api/billing/fiscal')).json();

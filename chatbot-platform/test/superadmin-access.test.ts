@@ -38,7 +38,7 @@ t('reiniciar no devuelve la contraseña de .env a un superadmin que ya la cambi�
 
 t('recuperar el acceso: contraseña nueva, cuenta activa y las sesiones abiertas se cierran', async () => {
   const opened = await login('admin@test.mx', 'Pz-157-Qx-357-Kv');
-  const cookie = String(opened.headers['set-cookie']).split(';')[0];
+  const cookie = await h.sessionFrom(opened, 'admin@test.mx');
   await pool.query(`UPDATE users SET active = false WHERE email = 'admin@test.mx'`);
   const r = await resetSuperadminPassword('admin@test.mx');
   assert.equal(r.created, false);

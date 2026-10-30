@@ -139,10 +139,10 @@ export interface UserSession {
 }
 
 /** Abre una sesión. Una persona tiene como mucho 30 abiertas: al pasar de ahí se cierran las de uso más antiguo. */
-export async function createUserSession(s: { userId: string; expires: Date; via: string; userAgent: string; ip: string }) {
+export async function createUserSession(s: { userId: string; expires: Date; via: string; userAgent: string; ip: string; mfaAt?: Date | null }) {
   const row = (await queryOne<{ id: string }>(
-    `INSERT INTO user_sessions (user_id, expires_at, via, user_agent, ip) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-    [s.userId, s.expires, s.via, s.userAgent, s.ip],
+    `INSERT INTO user_sessions (user_id, expires_at, via, user_agent, ip, mfa_at) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+    [s.userId, s.expires, s.via, s.userAgent, s.ip, s.mfaAt ?? null],
   ))!;
   await query(
     `UPDATE user_sessions SET revoked_at = now() WHERE id IN (

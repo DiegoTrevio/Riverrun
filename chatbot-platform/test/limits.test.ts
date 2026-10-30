@@ -14,7 +14,7 @@ let ip = 0;
 async function signup(email: string) {
   const r = await h.app.inject({ method: 'POST', url: '/api/signup', remoteAddress: `10.7.7.${++ip}`, payload: { name: 'Dueño', company: `Negocio ${email}`, business_type: 'otro', email, password: 'Pz-144-Qx-344-Kv', accept_terms: true } });
   assert.equal(r.statusCode, 200, r.body);
-  return { api: as(String(r.headers['set-cookie']).split(';')[0]), account: r.json().user.account_id as string };
+  return { api: as(await h.sessionFrom(r)), account: r.json().user.account_id as string };
 }
 
 before(async () => {

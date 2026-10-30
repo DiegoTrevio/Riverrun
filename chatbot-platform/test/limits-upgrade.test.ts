@@ -17,7 +17,7 @@ async function account(email: string, plan: string) {
   assert.equal(r.statusCode, 200, r.body);
   const id = r.json().user.account_id as string;
   await pool.query(`UPDATE accounts SET status = 'active', plan = $2, trial_ends_at = NULL WHERE id = $1`, [id, plan]);
-  return { api: as(String(r.headers['set-cookie']).split(';')[0]), id };
+  return { api: as(await h.sessionFrom(r)), id };
 }
 
 before(async () => {

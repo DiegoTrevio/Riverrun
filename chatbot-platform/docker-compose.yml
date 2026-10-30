@@ -118,6 +118,9 @@ services:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       SESSION_SECRET: ${SESSION_SECRET:?Define SESSION_SECRET en .env (ejecuta ./riverrun install)}
       SECURE_COOKIES: ${SECURE_COOKIES:-false}
+      # Contraseñas filtradas (Have I Been Pwned por rango); off = solo la lista local. PASSWORD_HASH_COST es solo para pruebas.
+      PWNED_PASSWORDS_URL: ${PWNED_PASSWORDS_URL:-}
+      PASSWORD_HASH_COST: ${PASSWORD_HASH_COST:-}
       UPLOADS_DIR: /data/uploads
       # Autoregistro de empresas y correo saliente
       SIGNUP_ENABLED: ${SIGNUP_ENABLED:-true}

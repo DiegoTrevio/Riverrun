@@ -29,7 +29,7 @@ before(async () => {
   });
   assert.equal(r.statusCode, 200, r.body);
   B.account = r.json().user.account_id;
-  B.cookie = String(r.headers['set-cookie']).split(';')[0];
+  B.cookie = await h.sessionFrom(r);
   B.api = async (method, url, payload) => h.app.inject({ method: method as any, url, payload: payload as any, headers: { cookie: B.cookie } });
 });
 after(async () => {

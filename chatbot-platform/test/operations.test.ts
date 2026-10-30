@@ -67,9 +67,9 @@ t('el diagnóstico es de lectura y no presenta una clave configurada como provee
 });
 
 t('solo el maestro accede a las métricas globales; health público no las revela', async () => {
-  const account=(await h.authed('POST','/api/accounts',{name:'Admin limitado',admin:{email:'limited@ops.test',password:'limited-password-123'}})).json();
+  const account=(await h.authed('POST','/api/accounts',{name:'Admin limitado',admin:{email:'limited@ops.test',password:'Pz-949-Qx-950-Kv'}})).json();
   assert.ok(account.id);
-  const limited=await h.loginAs('limited@ops.test','limited-password-123');
+  const limited=await h.loginAs('limited@ops.test','Pz-949-Qx-950-Kv');
   assert.equal((await limited('GET','/api/health/operations')).statusCode,403);
   assert.equal((await h.app.inject({method:'GET',url:'/api/health/operations'})).statusCode,401);
   assert.equal((await h.authed('GET','/api/health/operations')).statusCode,200);

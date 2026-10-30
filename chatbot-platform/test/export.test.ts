@@ -129,7 +129,7 @@ t('permisos: solo administradores de la cuenta; otra cuenta no ve nada de esta',
   assert.equal((await agent('GET', '/api/export/contacts.csv')).statusCode, 403);
   // El administrador de otra cuenta solo recibe lo suyo (aunque pida ?account_id= ajeno)
   const other = await h.app.inject({ method: 'POST', url: '/api/signup', remoteAddress: '10.6.6.6', payload: { name: 'Otro', company: 'Otro negocio', business_type: 'otro', email: 'otro@export.mx', password: 'Pz-137-Qx-337-Kv', accept_terms: true } });
-  const cookie = String(other.headers['set-cookie']).split(';')[0];
+  const cookie = await h.sessionFrom(other);
   const api = (m: string, u: string) => h.app.inject({ method: m as any, url: u, headers: { cookie } });
   const mine = await api('GET', `/api/export/contacts.csv?account_id=${h.accountId}`);
   assert.equal(mine.statusCode, 200);

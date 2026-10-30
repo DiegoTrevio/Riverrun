@@ -96,7 +96,7 @@ t('webhook: prueba de conexión, validaciones y aislamiento entre cuentas', asyn
   assert.equal((await h.authed('POST', '/api/webhook-endpoints', { account_id: h.accountId, url: 'ftp://x.com' })).statusCode, 400);
   assert.equal((await h.authed('POST', '/api/webhook-endpoints', { account_id: h.accountId, url: hook(), events: ['evento.inventado'] })).statusCode, 400);
   const other = await h.app.inject({ method: 'POST', url: '/api/signup', remoteAddress: '10.4.4.4', payload: { name: 'Otro', company: 'Otro negocio', business_type: 'otro', email: 'otro@integra.mx', password: 'Pz-137-Qx-337-Kv', accept_terms: true } });
-  const cookie = String(other.headers['set-cookie']).split(';')[0];
+  const cookie = await h.sessionFrom(other);
   const api = (m: string, u: string, p?: unknown) => h.app.inject({ method: m as any, url: u, payload: p as any, headers: { cookie } });
   assert.equal((await api('PUT', `/api/webhook-endpoints/${ep.id}`, { active: false })).statusCode, 404);
   assert.equal((await api('POST', `/api/webhook-endpoints/${ep.id}/test`)).statusCode, 404);
@@ -222,7 +222,7 @@ t('API: listados con paginación por cursor, filtros y aislamiento entre cuentas
   assert.equal((await call(readKey, 'GET', '/api/v1/contacts?limit=500')).statusCode, 400);
   // Otra cuenta no ve nada de esta
   const other = await h.app.inject({ method: 'POST', url: '/api/signup', remoteAddress: '10.4.4.5', payload: { name: 'Ajeno', company: 'Ajeno SA', business_type: 'otro', email: 'ajeno@integra.mx', password: 'Pz-104-Qx-304-Kv', accept_terms: true } });
-  const cookie = String(other.headers['set-cookie']).split(';')[0];
+  const cookie = await h.sessionFrom(other);
   const foreign = (await h.app.inject({ method: 'POST', url: '/api/api-keys', payload: { name: 'Ajena', scope: 'write' }, headers: { cookie } })).json().key;
   assert.deepEqual((await call(foreign, 'GET', '/api/v1/contacts')).json().data, []);
   const someone = seen[0];

@@ -25,7 +25,7 @@ async function signup(email: string, ip: string) {
     payload: { name: 'Dueña', company: `Negocio ${email}`, business_type: 'servicios', email, password: 'Pz-144-Qx-344-Kv', accept_terms: true },
   });
   assert.equal(r.statusCode, 200, r.body);
-  const cookie = String(r.headers['set-cookie']).split(';')[0];
+  const cookie = await h.sessionFrom(r);
   return { account: r.json().user.account_id as string, api: ((method, url, payload) => h.app.inject({ method: method as any, url, payload: payload as any, headers: { cookie } })) as Api };
 }
 

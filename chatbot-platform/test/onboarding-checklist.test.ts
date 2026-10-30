@@ -18,7 +18,7 @@ async function newAccount(email: string, company = 'Café Luna') {
     payload: { name: 'Luna Díaz', company, business_type: 'restaurante', email, password: 'Pz-133-Qx-333-Kv', accept_terms: true },
   });
   assert.equal(r.statusCode, 200, r.body);
-  const cookie = String(r.headers['set-cookie']).split(';')[0];
+  const cookie = await h.sessionFrom(r);
   const api = (method: string, url: string, payload?: unknown) => h.app.inject({ method: method as any, url, payload: payload as any, headers: { cookie } });
   return { api, account: r.json().account.id as string, user: r.json().user.id as string };
 }

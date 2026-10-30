@@ -21,7 +21,7 @@ const signup = (body: Record<string, unknown>, headers: Record<string, string> =
     payload: { name: 'Ana Ruiz', company: 'Estética Ana', business_type: 'belleza', password: 'Pz-105-Qx-305-Kv', accept_terms: true, ...body },
   });
 const as = (r: { headers: Record<string, unknown> }) => {
-  const cookie = String(r.headers['set-cookie']).split(';')[0];
+  const cookie = await h.sessionFrom(r);
   return (method: string, url: string, payload?: unknown) => h.app.inject({ method: method as any, url, payload: payload as any, headers: { cookie } });
 };
 const accountOf = async (id: string) => (await pool.query(`SELECT status, plan, trial_ends_at FROM accounts WHERE id = $1`, [id])).rows[0];

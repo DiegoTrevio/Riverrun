@@ -6,7 +6,8 @@ import crypto from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { HttpError, requireRole, targetAccount } from '../access.js';
-import { hashPassword, rateLimited, setSessionCookie } from '../auth.js';
+import { hashPassword, rateLimited } from '../auth.js';
+import { beginLogin } from '../identity/mfa.js';
 import { hostOf, mailBrand } from '../brands.js';
 import { assertWithinLimit, effectiveLimits, LIMIT_LABELS, limitDetail, offerText, usageOf } from '../billing/limits.js';
 import { config } from '../config.js';
@@ -218,7 +219,7 @@ export async function invitationPublicRoutes(app: FastifyInstance) {
       return created;
     });
     await logEvent({ level: 'info', source: 'admin', message: `${inv.email} se unió al equipo (${ROLE_LABEL[inv.role]})${google ? ' con Google' : ''}`, accountId: inv.account_id, details: { ip: req.ip } });
-    await setSessionCookie(reply, user.id, hash, 'invite');
-    return { ok: true, user };
+    // Antes de entrar al panel configura su verificación en dos pasos.
+    return { ok: true, user, ...(await beginLogin(reply, { ...user, password_hash: hash }, 'invite')) };
   });
 }
