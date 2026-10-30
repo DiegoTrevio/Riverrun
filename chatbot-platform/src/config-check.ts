@@ -378,14 +378,14 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
       'ADMIN_PASSWORD sigue siendo la de ejemplo de .env.example (es pública).',
       'Cámbiala en .env por una contraseña propia y reinicia (o ejecuta ./riverrun install, que genera una).',
     );
-  } else if (adminPw.length < 8) {
+  } else if (adminPw.length < 12) {
     add(
       'warning',
       'security',
       'admin_password.short',
       ['ADMIN_PASSWORD'],
-      'ADMIN_PASSWORD tiene menos de 8 caracteres (el mínimo que el panel exige a cualquier usuario).',
-      'Usa una contraseña de al menos 12 caracteres.',
+      'ADMIN_PASSWORD tiene menos de 12 caracteres (el mínimo que el panel exige a cualquier contraseña nueva).',
+      'Usa una contraseña de al menos 12 caracteres (./riverrun install genera una larga).',
     );
   }
   if (prod && https && !flag('SECURE_COOKIES', false)) add(

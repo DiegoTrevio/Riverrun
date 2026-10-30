@@ -15,6 +15,8 @@ COPY --from=build /app/dist ./dist
 COPY package.json ./
 COPY migrations ./migrations
 COPY public ./public
+# Lista de contraseñas comunes (src/identity/passwords.ts la busca junto a dist/).
+COPY assets ./assets
 # Las cotizaciones se llenan en Word y se convierten a PDF con LibreOffice. Liberation tiene las mismas medidas que
 # Arial y Times New Roman, para que el PDF se vea como el formato del negocio.
 RUN apk add --no-cache libreoffice-writer font-liberation font-dejavu font-noto fontconfig \

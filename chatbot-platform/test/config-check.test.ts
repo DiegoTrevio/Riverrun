@@ -81,6 +81,7 @@ test('secretos débiles en producción: avisos visibles que no impiden arrancar 
     [{ SESSION_SECRET: 'secret' }, 'session_secret.weak'],
     [{ SESSION_SECRET: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }, 'session_secret.weak'],
     [{ ADMIN_PASSWORD: 'abc12' }, 'admin_password.short'],
+    [{ ADMIN_PASSWORD: 'once-letras' }, 'admin_password.short'],
     [{ ADMIN_PASSWORD: 'cambia-esta-clave', PUBLIC_BASE_URL: 'http://203.0.113.5:3000', SECURE_COOKIES: 'false' }, 'admin_password.placeholder'],
     [{ ADMIN_PASSWORD: 'cambia-esta-clave' }, 'admin_password.placeholder'],
   ];

@@ -279,6 +279,15 @@ export async function consumeAuthToken(token: string, kind: 'verify_email' | 're
   return row?.user_id ?? null;
 }
 
+/** De quién es un token vigente, sin gastarlo (para revisar la contraseña nueva antes de usar el enlace). */
+export async function peekAuthToken(token: string, kind: 'verify_email' | 'reset_password') {
+  return queryOne<{ user_id: string; email: string; account_name: string | null }>(
+    `SELECT t.user_id, u.email, a.name AS account_name FROM auth_tokens t JOIN users u ON u.id = t.user_id LEFT JOIN accounts a ON a.id = u.account_id
+      WHERE t.token_hash = $1 AND t.kind = $2 AND t.used_at IS NULL AND t.expires_at > now()`,
+    [tokenHash(token), kind],
+  );
+}
+
 export async function touchLogin(id: string) {
   await query('UPDATE users SET last_login_at = now() WHERE id = $1', [id]);
 }

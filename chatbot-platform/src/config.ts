@@ -83,6 +83,8 @@ export const config = {
   adminPassword: env('ADMIN_PASSWORD', ''),
   sessionSecret: env('SESSION_SECRET', ''),
   secureCookies: env('SECURE_COOKIES', 'false') === 'true',
+  /** Contraseñas filtradas (Have I Been Pwned por rango). `off` la apaga: decide solo la lista local. */
+  pwnedPasswordsUrl: env('PWNED_PASSWORDS_URL', 'https://api.pwnedpasswords.com/range/'),
   evolution: {
     url: env('EVOLUTION_URL', 'http://localhost:8080').replace(/\/$/, ''),
     apiKey: env('EVOLUTION_API_KEY', ''),

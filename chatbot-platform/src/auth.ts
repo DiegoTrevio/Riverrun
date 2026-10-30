@@ -4,6 +4,7 @@ import { promisify } from 'node:util';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { config } from './config.js';
 import { logEvent } from './logs.js';
+import { assertPasswordAllowed } from './identity/passwords.js';
 import { hmac, safeEqual } from './secret.js';
 import * as store from './store/index.js';
 import type { User } from './types.js';
@@ -28,10 +29,6 @@ export async function verifyPassword(password: string, stored: string): Promise<
   return crypto.timingSafeEqual(got, expected);
 }
 
-export function passwordProblem(pw: string): string | null {
-  if (pw.length < 8) return 'La contraseña debe tener al menos 8 caracteres';
-  return null;
-}
 
 /* ------------------------------ Sesiones ------------------------------ */
 
@@ -128,9 +125,10 @@ export async function bootstrapSuperadmin() {
  * Recupera el acceso del superadministrador desde el servidor: contraseña nueva (generada si no se da), cuenta activa y
  * todas sus sesiones cerradas. Si no existe, lo crea. Nunca convierte en superadministrador a otro usuario.
  */
-export async function resetSuperadminPassword(email: string, password = crypto.randomBytes(18).toString('base64url')): Promise<{ password: string; created: boolean }> {
-  const problem = passwordProblem(password);
-  if (problem) throw new Error(problem);
+export async function resetSuperadminPassword(email: string, given?: string): Promise<{ password: string; created: boolean }> {
+  // Una contraseña escrita pasa por las mismas reglas que en el panel; la generada (24 caracteres aleatorios) no hace falta.
+  if (given !== undefined) await assertPasswordAllowed(given, { email });
+  const password = given ?? crypto.randomBytes(18).toString('base64url');
   const existing = await store.getUserForLogin(email);
   if (existing && existing.role !== 'superadmin') throw new Error(`${email} no es superadministrador: su contraseña no se cambia desde aquí.`);
   const hash = await hashPassword(password);

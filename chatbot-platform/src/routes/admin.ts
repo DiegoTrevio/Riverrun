@@ -19,6 +19,7 @@ import {
 } from '../auth.js';
 import { adapterFor } from '../channels/index.js';
 import { config } from '../config.js';
+import { assertPasswordAllowed, NewPassword } from '../identity/passwords.js';
 import { query, queryOne, withTransaction } from '../db.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
@@ -56,7 +57,8 @@ function checkEditedPhone(next: string | undefined, current: string | null | und
   return next;
 }
 
-const Password = z.string().min(8, 'mínimo 8 caracteres').max(200);
+const Password = NewPassword;
+const accountName = async (id: string | null | undefined) => (id ? (await store.getAccount(id))?.name : undefined);
 const Email = z.string().trim().toLowerCase().email('correo inválido').max(200);
 
 /** Rutas públicas de sesión. */
@@ -135,6 +137,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     const b = parse(z.object({ current: z.string(), password: Password }), req.body);
     const full = await store.getUserForLogin(req.user.email);
     if (!full || !(await verifyPassword(b.current, full.password_hash))) throw new HttpError(400, 'La contraseña actual no es correcta');
+    await assertPasswordAllowed(b.password, { email: req.user.email, businessName: await accountName(req.user.account_id) });
     const hash = await hashPassword(b.password);
     await store.updateUser(req.user.id, { password_hash: hash });
     // Las demás sesiones se cierran; esta sigue abierta con la nueva huella.
@@ -330,6 +333,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
       }),
       req.body,
     );
+    if (b.admin) await assertPasswordAllowed(b.admin.password, { email: b.admin.email, businessName: b.name });
     const passwordHash = b.admin ? await hashPassword(b.admin.password) : null;
     const { account, admin } = await withTransaction(async (client) => {
       const account = await store.createAccount(b.name, {}, client);
@@ -395,10 +399,12 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     );
     if (b.role === 'superadmin') {
       if (req.user.role !== 'superadmin') throw new HttpError(403, 'Solo un superadministrador puede crear otro');
+      await assertPasswordAllowed(b.password, { email: b.email });
       return store.createUser({ account_id: null, role: 'superadmin', name: b.name, email: b.email, password_hash: await hashPassword(b.password) });
     }
     const accountId = await targetAccount(req.user, b.account_id);
     await assertWithinLimit(accountId, 'users');
+    await assertPasswordAllowed(b.password, { email: b.email, businessName: await accountName(accountId) });
     const created = await store.createUser({ account_id: accountId, role: b.role, name: b.name, email: b.email, password_hash: await hashPassword(b.password) });
     const user = b.phone || b.notify_whatsapp ? ((await store.updateUser(created.id, { phone: b.phone, notify_whatsapp: b.notify_whatsapp })) ?? created) : created;
     await logEvent({ level: 'info', source: 'admin', message: `Usuario creado: ${user.email} (${user.role})`, accountId });
@@ -461,7 +467,10 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
       available: b.available,
       alert_prefs: b.alert_prefs ? cleanAlertPrefs(b.alert_prefs) : undefined,
     };
-    if (b.password) patch.password_hash = await hashPassword(b.password);
+    if (b.password) {
+      await assertPasswordAllowed(b.password, { email: b.email ?? target.email, businessName: await accountName(accountId) });
+      patch.password_hash = await hashPassword(b.password);
+    }
     const updated = await store.updateUser(target.id, patch, req.user.role === 'superadmin' ? undefined : scopeAccount(req.user)!);
     if (!updated) throw notFound('Usuario no encontrado');
     // Desactivar a alguien, cambiarle el correo o la contraseña cierra todas sus sesiones abiertas. Un cambio de rol o de

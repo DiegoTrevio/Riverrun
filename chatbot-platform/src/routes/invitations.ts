@@ -12,6 +12,7 @@ import { assertWithinLimit, effectiveLimits, LIMIT_LABELS, limitDetail, offerTex
 import { config } from '../config.js';
 import { query, queryOne, withTransaction } from '../db.js';
 import { googleConfigured } from '../integrations/google.js';
+import { assertPasswordAllowed, NewPassword } from '../identity/passwords.js';
 import { logEvent } from '../logs.js';
 import { sendMail } from '../mailer.js';
 import { DISPOSABLE_MESSAGE, isDisposableEmail, readGoogleSignupPass, recordTermsAcceptance, termsVersion } from '../signup-guard.js';
@@ -190,13 +191,17 @@ export async function invitationPublicRoutes(app: FastifyInstance) {
         token: z.string().max(200).optional(),
         google: z.string().max(2000).optional(),
         name: z.string().trim().min(1, 'escribe tu nombre').max(120),
-        password: z.string().min(8, 'mínimo 8 caracteres').max(200).optional(),
+        password: NewPassword.optional(),
         accept_terms: z.literal(true, { message: 'Debes aceptar los términos' }),
       }),
       req.body,
     );
     const { inv, google } = await invitationFrom(b);
-    if (!google && !b.password) throw new HttpError(400, 'Elige una contraseña de al menos 8 caracteres');
+    if (!google && !b.password) throw new HttpError(400, 'Elige una contraseña de al menos 12 caracteres');
+    if (!google) {
+      const account = await queryOne<{ name: string }>(`SELECT name FROM accounts WHERE id = $1`, [inv.account_id]);
+      await assertPasswordAllowed(b.password!, { email: inv.email, businessName: account?.name });
+    }
     // Con Google no hay contraseña: puede crear una con «Olvidé mi contraseña».
     const hash = await hashPassword(google ? crypto.randomBytes(24).toString('base64url') : b.password!);
     const user = await withTransaction(async (client) => {

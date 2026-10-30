@@ -14,11 +14,12 @@ import * as store from '../store/index.js';
 import { BUSINESS_TYPES } from '../templates/business.js';
 import type { User } from '../types.js';
 import { HttpError } from '../access.js';
+import { assertPasswordAllowed, NewPassword } from '../identity/passwords.js';
 import { parse } from './util.js';
 import { offeredPlans } from './billing.js';
 import { CAPTCHA_MESSAGE, DISPOSABLE_MESSAGE, captchaEnabled, isDisposableEmail, recordTermsAcceptance, termsVersion, verifyCaptcha } from '../signup-guard.js';
 
-const Password = z.string().min(8, 'mínimo 8 caracteres').max(200);
+const Password = NewPassword;
 const Email = z.string().trim().toLowerCase().email('correo inválido').max(200);
 const HOUR = 3600_000;
 
@@ -86,6 +87,7 @@ export async function signupRoutes(app: FastifyInstance) {
     if (isDisposableEmail(b.email)) throw new HttpError(400, DISPOSABLE_MESSAGE);
     if (!(await verifyCaptcha(b.turnstile_token, req.ip))) throw new HttpError(400, CAPTCHA_MESSAGE);
     if (await store.getUserForLogin(b.email)) throw new HttpError(409, 'Ya existe una cuenta con ese correo. Inicia sesión o recupera tu contraseña.');
+    await assertPasswordAllowed(b.password, { email: b.email, businessName: b.company });
     // El plan se revisa antes de crear la cuenta: un plan o forma de pago que no existe no deja una cuenta a medias.
     const purchase = b.plan ? await payable(b.plan, b.provider) : null;
     const businessType = BUSINESS_TYPES.some((t) => t.key === b.business_type) ? b.business_type : 'otro';
@@ -157,6 +159,9 @@ export async function signupRoutes(app: FastifyInstance) {
   app.post('/api/reset-password', async (req, reply) => {
     if (rateLimited(`reset:${req.ip}`, 10, HOUR)) return reply.code(429).send({ error: 'Demasiados intentos, intenta más tarde' });
     const b = parse(z.object({ token: z.string().min(10).max(200), password: Password }), req.body);
+    // La contraseña se revisa antes de gastar el enlace: si no sirve, puede elegir otra con el mismo.
+    const owner = await store.peekAuthToken(b.token, 'reset_password');
+    if (owner) await assertPasswordAllowed(b.password, { email: owner.email, businessName: owner.account_name ?? undefined });
     const userId = await store.consumeAuthToken(b.token, 'reset_password');
     if (!userId) throw new HttpError(400, 'El enlace no es válido o ya venció. Pide uno nuevo.');
     // La contraseña nueva invalida todas las sesiones abiertas. Abrir el enlace también confirma el correo.
