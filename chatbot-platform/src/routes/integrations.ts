@@ -2,6 +2,7 @@
 import crypto from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { stepUp } from '../identity/step-up.js';
 import { HttpError, requireRole, scopeAccount, targetAccount } from '../access.js';
 import { config } from '../config.js';
 import { ALL_EVENTS_SET, EVENT_TYPES, deliverOnce, eventBody, redeliver, sampleEventData, type Endpoint, type PublicEvent } from '../integrations/webhooks.js';
@@ -51,7 +52,7 @@ export async function integrationRoutes(api: FastifyInstance) {
     );
   });
 
-  api.post('/api/webhook-endpoints', admins, async (req: any) => {
+  api.post('/api/webhook-endpoints', { ...admins, ...stepUp }, async (req: any) => {
     const accountId = await targetAccount(req.user, req.body?.account_id ?? req.query.account_id);
     const b = parse(EndpointBody, req.body);
     const n = (await queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM webhook_endpoints WHERE account_id = $1`, [accountId]))?.n ?? 0;
@@ -61,7 +62,7 @@ export async function integrationRoutes(api: FastifyInstance) {
     return ep;
   });
 
-  api.put('/api/webhook-endpoints/:id', admins, async (req: any) => {
+  api.put('/api/webhook-endpoints/:id', { ...admins, ...stepUp }, async (req: any) => {
     const cur = await endpointFor(req.user, req.params.id);
     const b = parse(EndpointBody, { ...cur, ...(req.body ?? {}) });
     // Volver a activarlo borra el motivo de la pausa y la cuenta de fallos.
@@ -127,7 +128,7 @@ export async function integrationRoutes(api: FastifyInstance) {
   });
 
   /** Cambia solo el secreto de webhooks (el enlace del calendario se queda igual). Las firmas viejas dejan de valer. */
-  api.post('/api/settings/rotate-webhook-secret', admins, async (req: any) => {
+  api.post('/api/settings/rotate-webhook-secret', { ...admins, ...stepUp }, async (req: any) => {
     const accountId = await targetAccount(req.user, req.body?.account_id ?? req.query.account_id);
     const s = await astore.getSettings(accountId);
     await astore.saveSettings(accountId, { ...s, webhook_secret: crypto.randomBytes(24).toString('hex') });
@@ -141,7 +142,7 @@ export async function integrationRoutes(api: FastifyInstance) {
     return query(`SELECT id, name, prefix, scope, created_at, last_used_at, revoked_at FROM api_keys WHERE account_id = $1 ORDER BY created_at DESC`, [accountId]);
   });
 
-  api.post('/api/api-keys', admins, async (req: any) => {
+  api.post('/api/api-keys', { ...admins, ...stepUp }, async (req: any) => {
     const accountId = await targetAccount(req.user, req.body?.account_id ?? req.query.account_id);
     const b = parse(z.object({ name: z.string().trim().min(1).max(80), scope: z.enum(['read', 'write']).default('read') }), req.body);
     const active = (await queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM api_keys WHERE account_id = $1 AND revoked_at IS NULL`, [accountId]))?.n ?? 0;
@@ -153,7 +154,7 @@ export async function integrationRoutes(api: FastifyInstance) {
     return { id: row!.id, name: b.name, scope: b.scope, prefix: k.prefix, key: k.key };
   });
 
-  api.delete('/api/api-keys/:id', admins, async (req: any) => {
+  api.delete('/api/api-keys/:id', { ...admins, ...stepUp }, async (req: any) => {
     const k = await queryOne<{ id: string; account_id: string; name: string }>(`SELECT id, account_id, name FROM api_keys WHERE id = $1`, [req.params.id]);
     const only = k ? scopeAccount(req.user, k.account_id) : null;
     if (!k || (only && only !== k.account_id)) throw new HttpError(404, 'No encontrado');

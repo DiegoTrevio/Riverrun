@@ -3,7 +3,7 @@
  * la primera vez, configurar la app (QR, código y los 10 códigos de recuperación).
  */
 import { publicCard } from './auth.js';
-import { api, field, fill, h, run, state, text, toast } from './core.js';
+import { api, dialog, field, fill, h, run, state, text, toast } from './core.js';
 
 /** A dónde sigue después del segundo paso: el pago del registro (si eligió plan) o el panel. */
 function goNext() {
@@ -96,4 +96,32 @@ export async function renderMfaEnroll() {
     h('form', { class: 'stack', onsubmit: submit },
       field('Código de 6 dígitos', codeInput(f)),
       h('button', { class: 'primary', type: 'submit' }, 'Activar')));
+}
+
+/**
+ * «Confirma que eres tú»: pide el código (o uno de recuperación) para una acción delicada. true si quedó confirmado.
+ * Tres oportunidades; si la verificación quedó bloqueada, lo dice y no insiste.
+ */
+export async function stepUpDialog() {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const f = { code: '' };
+    const input = text(f, 'code', { inputmode: 'numeric', autocomplete: 'one-time-code', required: true });
+    const content = h('div', { class: 'stack' },
+      h('p', {}, attempt ? 'Ese código no es correcto: espera al siguiente e inténtalo otra vez.' : 'Para hacer esto, escribe el código de tu app de autenticación (o uno de recuperación).'),
+      field('Código de 6 dígitos', input));
+    if (!(await dialog('Confirma que eres tú', content, 'Confirmar', () => input.reportValidity()))) return false;
+    try {
+      await api('POST', '/api/2fa/step-up', { code: f.code });
+      return true;
+    } catch (e) {
+      if (e.status === 429) { toast(e.message, true); return false; }
+    }
+  }
+  return false;
+}
+
+/** Antes de abrir algo que no pasa por api() (p. ej. una descarga): confirma si hace falta. */
+export async function ensureRecentMfa() {
+  const { recent } = await api('GET', '/api/2fa/recent');
+  return recent || stepUpDialog();
 }

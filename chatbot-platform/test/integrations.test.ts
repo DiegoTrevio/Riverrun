@@ -27,7 +27,7 @@ const server = http.createServer((req, res) => {
 await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
 const hook = (p = '/a') => `http://127.0.0.1:${(server.address() as any).port}${p}`;
 
-const secret = async () => (await h.authed('GET', `/api/settings?account_id=${h.accountId}`)).json().webhook_secret as string;
+const secret = async () => (await h.authed('GET', `/api/settings/secrets?account_id=${h.accountId}`)).json().webhook_secret as string;
 const mkEndpoint = async (body: Record<string, unknown>) => { const r = await h.authed('POST', '/api/webhook-endpoints', { account_id: h.accountId, ...body }); assert.equal(r.statusCode, 200, r.body); return r.json(); };
 /** Corre las tareas programadas hasta que se cumpla la condición (los eventos se procesan en segundo plano). */
 const until = (cond: () => boolean) => waitFor(async () => { await h.service.automator.settleAll(); await h.fastForward(); return cond(); }, 8000);

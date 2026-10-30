@@ -72,7 +72,7 @@ before(async () => {
   // Otro sistema suscrito a todos los eventos, y una llave de la API pública.
   const ep = await h.authed('POST', '/api/webhook-endpoints', { account_id: h.accountId, url: `http://127.0.0.1:${(server.address() as any).port}/crm`, description: 'CRM' });
   assert.equal(ep.statusCode, 200, ep.body);
-  secret = (await h.authed('GET', `/api/settings?account_id=${h.accountId}`)).json().webhook_secret;
+  secret = (await h.authed('GET', `/api/settings/secrets?account_id=${h.accountId}`)).json().webhook_secret;
   apiKey = (await h.authed('POST', '/api/api-keys', { account_id: h.accountId, name: 'CRM', scope: 'read' })).json().key;
 });
 after(async () => {

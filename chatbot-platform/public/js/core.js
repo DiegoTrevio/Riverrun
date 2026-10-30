@@ -38,7 +38,7 @@ export async function api(method, url, body, isForm = false) {
   } finally { if (pendingReads.get(key) === request) pendingReads.delete(key); }
 }
 
-async function requestApi(method, url, body, isForm) {
+async function requestApi(method, url, body, isForm, retried = false) {
   const start = performance.now();
   const group = new URL(url, location.origin).pathname.split('/')[2] || 'other';
   const opts = { method, headers: {} };
@@ -60,6 +60,14 @@ async function requestApi(method, url, body, isForm) {
     if (['session_idle', 'challenge_expired'].includes(data?.code)) { try { sessionStorage.setItem('login-notice', data.error); } catch { /* sin storage */ } }
     location.hash = '#/login';
     throw new Error('Sesión expirada');
+  }
+  // Acción delicada sin verificación reciente: pide el código y la repite una vez.
+  if (res.status === 403 && data?.code === 'step_up' && !retried) {
+    const { stepUpDialog } = await import('./mfa.js');
+    if (await stepUpDialog()) return requestApi(method, url, body, isForm, true);
+    const error = new Error('Necesitas confirmar con tu código para hacer esto');
+    error.status = 403;
+    throw error;
   }
   if (!res.ok) {
     // Un límite del plan no es un error de los datos: el mensaje ya dice qué pasó y a qué plan subir.

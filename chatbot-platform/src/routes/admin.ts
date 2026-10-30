@@ -6,6 +6,7 @@ import { knowledgeMonitorReport } from '../engine/knowledge-monitor.js';
 import { operationalStatus } from '../engine/operations.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { assertRecentMfa, stepUp } from '../identity/step-up.js';
 import { assertAccount, HttpError, notFound, requireRole, scopeAccount, targetAccount } from '../access.js';
 import {
   clearSessionCookie,
@@ -144,7 +145,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     return { ok: true, closed };
   });
 
-  api.put('/api/me/password', async (req, reply) => {
+  api.put('/api/me/password', stepUp, async (req, reply) => {
     const b = parse(z.object({ current: z.string(), password: Password }), req.body);
     // La contraseña actual equivocada cuenta como intento a la cuenta (con una cookie robada no se adivina sin límite).
     const accountLimit = `login-acct:${req.user.email.toLowerCase()}`;
@@ -205,7 +206,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     if (!v.ok) throw new HttpError(400, v.error);
     return zernioSystemStatus(true);
   });
-  api.put('/api/system/zernio', superadmin, async (req: any) => {
+  api.put('/api/system/zernio', { ...superadmin, ...stepUp }, async (req: any) => {
     if (zernioKeySource() === 'env') throw envOwned();
     const { api_key, confirm_workspace_change } = parse(z.object({ api_key: z.string().trim().min(8, 'Pega la llave completa').max(500), confirm_workspace_change: z.boolean().optional() }), req.body);
     const v = await verifyZernioKey(api_key);
@@ -220,7 +221,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     await logEvent({ level: 'info', source: 'admin', message: `Llave de Zernio guardada desde el panel por ${req.user.email} (termina en ${api_key.slice(-4)})` });
     return zernioSystemStatus(true);
   });
-  api.delete('/api/system/zernio', superadmin, async (req: any) => {
+  api.delete('/api/system/zernio', { ...superadmin, ...stepUp }, async (req: any) => {
     if (zernioKeySource() === 'env') throw envOwned();
     await removePlatformSecret(ZERNIO_SECRET);
     await logEvent({ level: 'warn', source: 'admin', message: `Llave de Zernio quitada desde el panel por ${req.user.email}: las redes sociales dejan de funcionar` });
@@ -345,7 +346,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     copilot_enabled: z.boolean().optional(),
   });
 
-  api.post('/api/accounts', { preHandler: requireRole('superadmin') }, async (req) => {
+  api.post('/api/accounts', { preHandler: requireRole('superadmin'), ...stepUp }, async (req) => {
     const b = parse(
       z.object({
         name: z.string().trim().min(1).max(120),
@@ -391,7 +392,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     return store.publicAccount(acc);
   });
 
-  api.delete('/api/accounts/:id', { preHandler: requireRole('superadmin') }, async (req: any) => {
+  api.delete('/api/accounts/:id', { preHandler: requireRole('superadmin'), ...stepUp }, async (req: any) => {
     const acc = await store.getAccount(req.params.id);
     if (!acc) throw notFound('Cuenta no encontrada');
     await deleteAccountFully(acc);
@@ -404,7 +405,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
 
   api.get('/api/users', admins, async (req: any) => store.listUsers(scopeAccount(req.user, req.query.account_id)));
 
-  api.post('/api/users', admins, async (req) => {
+  api.post('/api/users', { ...admins, ...stepUp }, async (req) => {
     const b = parse(
       z.object({
         name: z.string().trim().max(120).default(''),
@@ -456,6 +457,8 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
       }),
       req.body,
     );
+    // Cambiar el rol, dar de baja, o cambiar la contraseña o el correo de alguien pide verificación reciente.
+    if ((b.role !== undefined && b.role !== target.role) || (b.active !== undefined && b.active !== target.active) || b.password || (b.email !== undefined && b.email !== target.email)) assertRecentMfa(req);
     if (req.user.role !== 'superadmin' && (b.account_id !== undefined || b.role === 'superadmin')) {
       throw new HttpError(403, 'Solo el maestro puede asignar perfiles o acceso global');
     }
@@ -506,7 +509,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     return updated;
   });
 
-  api.delete('/api/users/:id', admins, async (req: any) => {
+  api.delete('/api/users/:id', { ...admins, ...stepUp }, async (req: any) => {
     const target = await manageable(req);
     if (target.id === req.user.id) throw new HttpError(400, 'No puedes eliminar tu propio usuario');
     if (target.role === 'superadmin' && (await store.countSuperadmins()) <= 1) throw new HttpError(400, 'Debe quedar al menos un superadministrador');

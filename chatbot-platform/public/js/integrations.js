@@ -79,14 +79,23 @@ function connectCard({ channels, fields, keys }) {
 }
 
 /** El secreto con el que se firman los webhooks, para verificarlos en tu sistema. */
-function secretCard(settings) {
-  const input = h('input', { type: 'password', readonly: true, value: settings.webhook_secret, autocomplete: 'off' });
+function secretCard() {
+  // El secreto no viene con los ajustes: «Mostrar» lo pide (con verificación reciente).
+  const input = h('input', { type: 'password', readonly: true, value: '', placeholder: '••••••••', autocomplete: 'off', 'aria-label': 'Secreto de webhooks' });
+  const reveal = async () => {
+    if (!input.value) {
+      const s = await run(() => api('GET', withAcct('/api/settings/secrets')));
+      if (!s) return false;
+      input.value = s.webhook_secret;
+    }
+    return true;
+  };
   return h('div', { class: 'card' },
     h('h2', {}, 'Secreto para verificar los webhooks'),
     h('p', { class: 'muted small' }, 'Cada aviso trae la cabecera x-riverrun-signature hecha con este secreto: compruébala para saber que el aviso es nuestro.'),
     field('Secreto de webhooks', h('div', { class: 'row' }, input,
-      h('button', { class: 'small', onclick: (e) => { const show = input.type === 'password'; input.type = show ? 'text' : 'password'; e.target.textContent = show ? 'Ocultar' : 'Mostrar'; } }, 'Mostrar'),
-      copyButton(settings.webhook_secret, 'Copiar', 'el secreto de webhooks'),
+      h('button', { class: 'small', onclick: async (e) => { const show = input.type === 'password'; if (show && !(await reveal())) return; input.type = show ? 'text' : 'password'; e.target.textContent = show ? 'Ocultar' : 'Mostrar'; } }, 'Mostrar'),
+      h('button', { class: 'small', 'aria-label': 'Copiar el secreto de webhooks', onclick: async () => { if (!(await reveal())) return; try { await navigator.clipboard.writeText(input.value); toast('Copiado'); } catch { toast('No se pudo copiar: selecciónalo y cópialo a mano', true); } } }, 'Copiar'),
       h('button', { class: 'small danger', onclick: async () => {
         if (!(await confirmAction('¿Cambiar el secreto? Los sistemas que verifican la firma rechazarán los avisos hasta que les pongas el nuevo. El enlace del calendario no cambia.', 'Cambiar secreto'))) return;
         if (await run(() => api('POST', '/api/settings/rotate-webhook-secret', acctBody()), 'Secreto cambiado: ponlo en tu sistema')) render();
@@ -190,7 +199,7 @@ export async function viewIntegrations(root, params) {
       field('Descripción', text(draft, 'description', { placeholder: 'Pasar contactos nuevos a mi CRM' })),
       field('Eventos', eventPicker(events, picked)),
       h('button', { class: 'primary', onclick: async () => { if (!picked.size) return toast('Elige al menos un evento', true); if (!(await run(() => api('POST', '/api/webhook-endpoints', acctBody({ url: draft.url, description: draft.description, events: [...picked] })), 'Webhook creado'))) return; render(); } }, 'Crear webhook')),
-    secretCard(settings));
+    secretCard());
 
   const kd = { name: '', scope: 'read' };
   root.append(

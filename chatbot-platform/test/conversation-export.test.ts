@@ -74,7 +74,7 @@ t('una marca del equipo (etiqueta) envía la conversación completa a la app, fi
   assert.equal(put.statusCode, 200, put.body);
   await until(() => sentTo('/crm').length >= 1);
   const [got] = sentTo('/crm');
-  const secret = (await h.authed('GET', `/api/settings?account_id=${h.accountId}`)).json().webhook_secret;
+  const secret = (await h.authed('GET', `/api/settings/secrets?account_id=${h.accountId}`)).json().webhook_secret;
   assert.equal(got.headers['x-signature'], `sha256=${crypto.createHmac('sha256', secret).update(got.raw).digest('hex')}`);
   assert.equal(got.headers['x-riverrun-event'], 'conversation.sent');
   const d = got.body.data;

@@ -7,6 +7,7 @@
  */
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { stepUp } from '../identity/step-up.js';
 import { HttpError, requireRole, targetAccount } from '../access.js';
 import { buildAccountExport, cancelDeletion, isOwner, ownerOf, readDeletionToken, requestDeletion, scheduleDeletion } from '../accounts/self-service.js';
 import { rateLimited } from '../auth.js';
@@ -242,7 +243,7 @@ export async function accountSelfServiceRoutes(api: FastifyInstance) {
   const admins = { preHandler: requireRole('admin') };
 
   /** Todos los datos de la cuenta en un ZIP. Del dueño (o del superadmin), unas pocas veces al día. */
-  api.get('/api/account/export.zip', admins, async (req: any, reply) => {
+  api.get('/api/account/export.zip', { ...admins, ...stepUp }, async (req: any, reply) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
     const acc = await store.getAccount(accountId);
     if (!acc) throw new HttpError(404, 'No encontrado');
@@ -258,7 +259,7 @@ export async function accountSelfServiceRoutes(api: FastifyInstance) {
   });
 
   /** Pedir el borrado: solo el dueño, escribiendo el nombre de la cuenta. Llega un correo para confirmarlo. */
-  api.post('/api/account/deletion', admins, async (req: any) => {
+  api.post('/api/account/deletion', { ...admins, ...stepUp }, async (req: any) => {
     const acc = req.user.account_id ? await store.getAccount(req.user.account_id) : null;
     if (!acc || !(await isOwner(req.user, acc))) throw new HttpError(403, 'Solo el dueño de la cuenta puede borrarla.');
     const { confirm } = parse(z.object({ confirm: z.string().max(200) }), req.body);

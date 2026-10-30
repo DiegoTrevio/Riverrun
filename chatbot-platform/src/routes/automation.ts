@@ -4,6 +4,7 @@ import { NoticeBody, sendNotice } from '../automation/notices.js';
 import { testConnectionAlert } from '../lifecycle.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { stepUp } from '../identity/step-up.js';
 import { assertAccount, conversationFor, HttpError, notFound, requireRole, scopeAccount, targetAccount } from '../access.js';
 import * as astore from '../automation/store.js';
 import { AccountSettingsSchema, AutomationBodySchema, normalizeLabel, SequenceBodySchema, WaTemplateRefSchema, type Action, type AutomationBody, type FlowButton, type WaTemplateRef } from '../automation/types.js';
@@ -132,16 +133,25 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
   };
 
   /* ------------------------------ Configuración de la cuenta ------------------------------ */
+  // Los secretos (firma de los webhooks y enlace del calendario) no viajan con los ajustes: se piden aparte, con
+  // verificación reciente («Mostrar» en el panel).
+  const hidden = <T extends object>(s: T) => ({ ...s, webhook_secret: '', calendar_token: '', ics_url: '', secrets_hidden: true });
+  const secretsOf = (s: { webhook_secret: string; calendar_token: string }) => ({ webhook_secret: s.webhook_secret, calendar_token: s.calendar_token, ics_url: `${config.publicBaseUrl}/calendar/${s.calendar_token}.ics` });
   api.get('/api/settings', admins, async (req: any) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
-    const s = await astore.getSettings(accountId);
-    return { ...s, ics_url: `${config.publicBaseUrl}/calendar/${s.calendar_token}.ics` };
+    return hidden(await astore.getSettings(accountId));
+  });
+
+  api.get('/api/settings/secrets', { ...admins, ...stepUp }, async (req: any) => {
+    const accountId = await targetAccount(req.user, req.query.account_id);
+    return secretsOf(await astore.getSettings(accountId));
   });
 
   api.put('/api/settings', admins, async (req: any) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
     const current = await astore.getSettings(accountId);
-    const raw = (req.body ?? {}) as Record<string, unknown>;
+    // Lo que solo se muestra (los secretos ocultos y su marca) no se guarda desde aquí.
+    const { secrets_hidden: _hidden, ics_url: _ics, ...raw } = (req.body ?? {}) as Record<string, unknown>;
     // Los secretos no se cambian desde aquí (se regeneran con su propia ruta).
     const next = parse(AccountSettingsSchema, { ...current, ...raw, calendar_token: current.calendar_token, webhook_secret: current.webhook_secret });
     // Se escala solo a administradores activos de esta cuenta: lo demás se descarta al guardar.
@@ -149,7 +159,7 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
     next.alert_timing.escalate_user_ids = next.alert_timing.escalate_user_ids.filter((id) => admins.has(id));
     await astore.saveSettings(accountId, next);
     await logEvent({ level: 'info', source: 'admin', message: 'Configuración de la cuenta actualizada', accountId });
-    return { ...next, ics_url: `${config.publicBaseUrl}/calendar/${next.calendar_token}.ics` };
+    return hidden(next);
   });
 
   /** Envía una alerta de desconexión de prueba a quienes se definió en los ajustes guardados. */
@@ -160,12 +170,12 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
     return r;
   });
 
-  api.post('/api/settings/rotate-secrets', admins, async (req: any) => {
+  api.post('/api/settings/rotate-secrets', { ...admins, ...stepUp }, async (req: any) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
     const s = await astore.getSettings(accountId);
     await astore.saveSettings(accountId, { ...s, calendar_token: '', webhook_secret: '' });
     const fresh = await astore.getSettings(accountId);
-    return { ...fresh, ics_url: `${config.publicBaseUrl}/calendar/${fresh.calendar_token}.ics` };
+    return { ...hidden(fresh), ...secretsOf(fresh), secrets_hidden: false };
   });
 
   /* ------------------------------ Reglas ------------------------------ */

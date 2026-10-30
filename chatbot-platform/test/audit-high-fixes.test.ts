@@ -40,7 +40,7 @@ t('un agente ve los canales del asistente sin el token del webhook ni el código
 });
 
 t('los secretos de la cuenta (calendario y webhooks) no salen en /api/me ni en /api/accounts', async () => {
-  const s = (await h.authed('GET', `/api/settings?account_id=${h.accountId}`)).json();
+  const s = (await h.authed('GET', `/api/settings/secrets?account_id=${h.accountId}`)).json();
   assert.ok(s.calendar_token && s.webhook_secret, 'la cuenta ya tiene sus secretos');
   const email = 'duena@auditoria.test';
   assert.equal((await h.authed('POST', '/api/users', { account_id: h.accountId, email, name: 'Dueña', password: PASS, role: 'admin' })).statusCode, 200);

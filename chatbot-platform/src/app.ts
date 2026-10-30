@@ -11,7 +11,8 @@ import type { AiProvider } from './ai/provider.js';
 import { config } from './config.js';
 import { requireAuth } from './auth.js';
 import { adminRoutes, sessionRoutes } from './routes/admin.js';
-import { mfaPublicRoutes } from './routes/mfa.js';
+import { mfaPublicRoutes, mfaRoutes } from './routes/mfa.js';
+import { stepUpHook } from './identity/step-up.js';
 import { agendaRoutes, calendarRoutes } from './routes/agenda.js';
 import { automationRoutes } from './routes/automation.js';
 import { flowBoardRoutes } from './routes/flow-boards.js';
@@ -176,6 +177,9 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
   // Todo lo demás requiere sesión; cada ruta verifica además la cuenta y el rol.
   await app.register(async (api) => {
     api.addHook('preHandler', requireAuth);
+    // Las acciones delicadas piden el código otra vez si el último tiene más de 15 minutos.
+    api.addHook('preHandler', stepUpHook);
+    await mfaRoutes(api);
     await adminRoutes(api, service);
     await chatbotRoutes(api, service);
     await channelRoutes(api);

@@ -376,7 +376,7 @@ t('agenda desde el panel: agendar con confirmación, reprogramar, completar, can
   await agent('POST', `/api/appointments/${second.id}/cancel`, { reason: 'El cliente llamó para cancelar' });
   assert.match(h.sent.find((s) => s.to === '5215510002001')!.text, /fue cancelada/);
   assert.ok(h.sent.some((s) => s.to === '5215588880000' && s.text.includes('Cita cancelada')), 'el equipo también se entera');
-  const settings = (await h.authed('GET', `/api/settings?account_id=${h.accountId}`)).json();
+  const settings = (await h.authed('GET', `/api/settings/secrets?account_id=${h.accountId}`)).json();
   const ics = await h.app.inject({ method: 'GET', url: settings.ics_url.replace('https://bot.test', '') });
   assert.equal(ics.statusCode, 200);
   assert.match(ics.headers['content-type'] as string, /text\/calendar/);

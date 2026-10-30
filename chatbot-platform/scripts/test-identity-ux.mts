@@ -105,6 +105,22 @@ try {
   await page.locator('.main h1').first().waitFor();
   checks.push('Entrar con el código de la app (accesible en móvil)');
 
+  // Acción delicada sin verificación reciente: pide el código y la repite.
+  await pool.query(`UPDATE user_sessions SET mfa_at = now() - interval '16 minutes' WHERE user_id = (SELECT id FROM users WHERE email = 'nuria@identidad.mx')`);
+  await page.goto(`${base}/#/integraciones`);
+  await page.getByLabel('Nombre de la llave').fill('Mi CRM');
+  await page.getByRole('button', { name: 'Crear llave' }).click();
+  const confirm = page.getByRole('dialog', { name: 'Confirma que eres tú' });
+  await confirm.waitFor();
+  await accessible(page, 'Confirma que eres tú');
+  await pool.query(`UPDATE users SET totp_last_step = 0 WHERE email = 'nuria@identidad.mx'`);
+  await confirm.getByLabel('Código de 6 dígitos').fill(totpAt(secret, currentStep()));
+  await confirm.getByRole('button', { name: 'Confirmar' }).click();
+  await page.getByRole('dialog', { name: 'Tu llave nueva' }).waitFor();
+  await page.getByRole('button', { name: 'Ya la copié' }).click();
+  assert.equal((await pool.query(`SELECT count(*)::int n FROM api_keys WHERE name = 'Mi CRM'`)).rows[0].n, 1);
+  checks.push('Acción delicada sin verificación reciente: pide el código y la termina (accesible en móvil)');
+
   // Con un código de recuperación.
   await context.clearCookies();
   await enter('nuria@identidad.mx', PASS);

@@ -88,14 +88,20 @@ export async function beginLogin(reply: FastifyReply, user: SessionUser & { totp
 export async function challengeUser(req: FastifyRequest): Promise<{ challenge: Challenge; user: ChallengeUser } | null> {
   const challenge = readChallenge(req);
   if (!challenge) return null;
-  const base = await store.getSessionUser(challenge.uid);
-  if (!base || !safeEqual(passwordVersion(base.password_hash), challenge.pv)) return null;
+  const user = await loadMfaUser(challenge.uid);
+  if (!user || !safeEqual(passwordVersion(user.password_hash), challenge.pv)) return null;
+  return { challenge, user };
+}
+
+/** El usuario (activo, con su cuenta activa) con sus datos de verificación. Nunca sale en una respuesta. */
+export async function loadMfaUser(id: string): Promise<ChallengeUser | null> {
+  const base = await store.getSessionUser(id);
+  if (!base) return null;
   const extra = await queryOne<{ totp_secret: string | null; totp_pending: string | null; totp_enabled_at: Date | null; totp_last_step: string; mfa_locked_until: Date | null }>(
     `SELECT totp_secret, totp_pending, totp_enabled_at, totp_last_step, mfa_locked_until FROM users WHERE id = $1`,
     [base.id],
   );
-  if (!extra) return null;
-  return { challenge, user: { ...base, ...extra, totp_last_step: Number(extra.totp_last_step) } };
+  return extra ? { ...base, ...extra, totp_last_step: Number(extra.totp_last_step) } : null;
 }
 
 /** Intentos con el código en este reto (5 como máximo; después hay que volver a escribir la contraseña). */

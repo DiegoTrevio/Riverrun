@@ -5,7 +5,9 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { notifyUser } from '../identity/notices.js';
-import { challengeKey, challengeUser, confirmEnrollment, finishChallenge, startEnrollment, verifyUserCode } from '../identity/mfa.js';
+import { challengeKey, challengeUser, confirmEnrollment, finishChallenge, loadMfaUser, startEnrollment, verifyUserCode } from '../identity/mfa.js';
+import { hasRecentMfa } from '../identity/step-up.js';
+import { query } from '../db.js';
 import { countHit, hitsFor, LIMITS } from '../identity/rate-limit.js';
 import { replaceRecoveryCodes } from '../identity/recovery-codes.js';
 import * as store from '../store/index.js';
@@ -63,4 +65,20 @@ export async function mfaPublicRoutes(app: FastifyInstance) {
     await finishChallenge(reply, found.user, found.challenge);
     return { ok: true, user: await store.getUser(found.user.id), recovery_codes: codes };
   });
+}
+
+/** Rutas con sesión: confirmar con el código (verificación reciente) y saber si hace falta. */
+export async function mfaRoutes(api: FastifyInstance) {
+  api.post('/api/2fa/step-up', async (req, reply) => {
+    const b = parse(Code, req.body);
+    const user = await loadMfaUser(req.user.id);
+    if (!user) return reply.code(401).send({ error: 'No autenticado' });
+    const check = await verifyUserCode(user, b.code);
+    if (check.result === 'locked') return reply.code(429).send({ error: LOCKED });
+    if (check.result !== 'ok') return wrongCode(reply);
+    await query(`UPDATE user_sessions SET mfa_at = now() WHERE id = $1 AND user_id = $2`, [req.sessionId, req.user.id]);
+    return { ok: true, ...(check.recoveryRemaining !== undefined ? { recovery_remaining: check.recoveryRemaining } : {}) };
+  });
+
+  api.get('/api/2fa/recent', async (req) => ({ recent: hasRecentMfa(req) }));
 }

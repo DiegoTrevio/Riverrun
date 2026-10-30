@@ -14,6 +14,7 @@ import { config } from '../config.js';
 import { query, queryOne, withTransaction } from '../db.js';
 import { googleConfigured } from '../integrations/google.js';
 import { assertPasswordAllowed, NewPassword } from '../identity/passwords.js';
+import { assertRecentMfa } from '../identity/step-up.js';
 import { logEvent } from '../logs.js';
 import { sendMail } from '../mailer.js';
 import { DISPOSABLE_MESSAGE, isDisposableEmail, readGoogleSignupPass, recordTermsAcceptance, termsVersion } from '../signup-guard.js';
@@ -108,6 +109,8 @@ export async function invitationRoutes(api: FastifyInstance) {
       }),
       req.body,
     );
+    // Invitar a un administrador pide verificación reciente (un agente no).
+    if (b.role === 'admin') assertRecentMfa(req);
     if (rateLimited(`invite:${accountId}`, 30, 24 * HOUR)) return reply.code(429).send({ error: 'Llegaste al máximo de invitaciones por hoy. Intenta mañana.' });
     if (isDisposableEmail(b.email)) throw new HttpError(400, DISPOSABLE_MESSAGE);
     // Cada correo pertenece a una sola cuenta de la plataforma.

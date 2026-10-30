@@ -114,6 +114,9 @@ t('se olvida al cambiar o restablecer la contraseña, al cerrar las demás sesio
   await enter(browser(), 'fer@disp.mx');
 
   let b = await trusted();
+  // Entró con el dispositivo recordado: cambiar la contraseña le pide el código (verificación reciente).
+  assert.equal((await b.send('PUT', '/api/me/password', { current: password, password: 'Pz-973-Qx-974-Kv' })).json().code, 'step_up');
+  assert.equal((await b.send('POST', '/api/2fa/step-up', { code: await h.codeFor('fer@disp.mx') })).statusCode, 200);
   assert.equal((await b.send('PUT', '/api/me/password', { current: password, password: 'Pz-973-Qx-974-Kv' })).statusCode, 200);
   password = 'Pz-973-Qx-974-Kv';
   await asksCode(b);
