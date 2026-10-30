@@ -5,6 +5,7 @@ import { logEvent } from '../logs.js';
 import { notifyUsers } from '../automation/store.js';
 import { HttpError } from '../access.js';
 import type { AiProvider, CompletionRequest, CompletionResult, EmbeddingResult } from './provider.js';
+import { assertAiAllowed } from './gate.js';
 
 const Money=z.number().finite().min(0).max(1000000).nullable();
 const Rate=z.number().finite().min(0).max(10000).refine(n=>n===0||n>=0.000001,'La tarifa positiva mínima es 0.000001 USD');
@@ -19,7 +20,8 @@ export const BudgetSettings=z.object({
 export type BudgetPolicy=z.infer<typeof BudgetSettings>;
 export const normalize=(model:string)=>model.replace(/^openai\//,'').replace(/-\d{4}-\d{2}-\d{2}$/,'');
 export class AiBudgetBlocked extends HttpError {
- constructor(public code:'budget_exhausted'|'price_unknown'|'unresolved_cost'|'audio_duration_unknown') {super(409,code==='budget_exhausted'?'El perfil llegó a su presupuesto de IA.':'No se pudo reservar el presupuesto de esta llamada. Revisa Consumo de IA.');}
+ // `ai_paused`: la cuenta está en pausa (ver ai/gate.ts); 402 con el motivo y su código en la respuesta.
+ constructor(public code:'budget_exhausted'|'price_unknown'|'unresolved_cost'|'audio_duration_unknown'|'ai_paused',message?:string) {super(code==='ai_paused'?402:409,message??(code==='budget_exhausted'?'El perfil llegó a su presupuesto de IA.':'No se pudo reservar el presupuesto de esta llamada. Revisa Consumo de IA.'),undefined,code==='ai_paused'?{code}:undefined);}
 }
 export async function expireReservations(accountId:string) {
  await query(`UPDATE ai_spend SET state='uncertain',finished_at=now() WHERE account_id=$1 AND state='reserved' AND created_at<now()-($2::int*interval '1 millisecond')`,[accountId,Math.max(300000,config.openai.timeoutMs*3+60000)]);
@@ -95,6 +97,7 @@ async function settle(accountId:string,reservation:Awaited<ReturnType<typeof res
  if(unexpected||charged===null||(reservation.amount!==null&&charged>reservation.amount+0.00000001))await notice(accountId,'cost_review');
 }
 async function invoke<T extends CompletionResult|EmbeddingResult|string>(accountId:string,botId:string|null,spec:Spec,fn:(r:Awaited<ReturnType<typeof reserve>>)=>Promise<T>):Promise<T> {
+ await assertAiAllowed(accountId);
  const held=await reserve(accountId,botId,spec);
  if(held.nearing)await notice(accountId,'budget_80');
  try{const result=await fn(held);await settle(accountId,held,spec,result);return result;}

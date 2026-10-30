@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import type { PoolClient } from 'pg';
 import { z } from 'zod';
 import { botFor, HttpError, requireRole } from '../access.js';
+import { assertAiAllowed } from '../ai/gate.js';
 import { query, queryOne, withTransaction } from '../db.js';
 import * as store from '../store/index.js';
 import { hydrateChatbot, imageSendWhen, type Chatbot } from '../types.js';
@@ -152,6 +153,7 @@ export async function agentVersionRoutes(api:FastifyInstance,service:ChatService
   });
   api.post('/api/chatbots/:id/tests/run',admin,async(req:any,reply)=>{
     const bot=await botFor(req.user,req.params.id),draft=await agentDraft(bot);
+    await assertAiAllowed(bot.account_id);
     const {revision}=parse(Revision,req.body);
     if(revision!==draft.revision) throw new HttpError(409,'El borrador cambió. Recarga antes de probar.');
     return reply.code(202).send(await startAgentTests(bot,draft,req.user,service,value=>value as Record<string,any>));

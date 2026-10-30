@@ -1,4 +1,5 @@
 import { accountAi } from '../ai/budget.js';
+import { assertAiAllowed } from '../ai/gate.js';
 /** Importar la información del negocio (web, PDF, foto, CSV o texto) para llenar el conocimiento sin escribirlo a mano. */
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -73,6 +74,7 @@ export async function knowledgeImportRoutes(api: FastifyInstance, ai: AiProvider
   });
 
   const run = async (req: any, accountId: string, chatbotId: string | null) => {
+    await assertAiAllowed(accountId);
     checkImportRate(accountId);
     const input = await readSource(req);
     let result: ImportResult;
