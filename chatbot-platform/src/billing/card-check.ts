@@ -59,6 +59,43 @@ async function braked(): Promise<boolean> {
   return true;
 }
 
+/** Lo que Mi plan muestra de la verificación de tarjeta (el paso en el que va la cuenta y por qué no avanza). */
+export async function cardCheckState(accountId: string) {
+  const acc = await queryOne<{ status: string; pause_reason: string; signup_plan: string }>(`SELECT status, pause_reason, signup_plan FROM accounts WHERE id = $1`, [accountId]);
+  const waiting = acc?.status === 'paused' && acc.pause_reason === 'card';
+  const [owner, p] = await Promise.all([accountOwner(accountId), person(accountId)]);
+  return {
+    required: await cardRequired(),
+    waiting,
+    trial_available: config.signup.trialDays > 0 && !!p && (await trialAvailable(p)),
+    trial_days: config.signup.trialDays,
+    email_verified: !!owner?.email_verified_at,
+    signup_plan: acc?.signup_plan ?? '',
+    // La última tarjeta que dio ya tuvo una prueba (`startTrialFromState`): Mi plan ofrece otra tarjeta o contratar ya.
+    card_used: waiting && !!(await queryOne(`SELECT 1 FROM billing_events WHERE account_id = $1 AND type = 'trial_refused'`, [accountId])),
+    brake: await brakeOn(),
+  };
+}
+
+/**
+ * «Activar sin tarjeta» (Cuentas): una excepción real, como una demostración o un cliente cuya tarjeta no pasa. La
+ * cuenta que esperaba tarjeta queda en prueba de TRIAL_DAYS y la prueba de esa persona cuenta como usada (se guardan
+ * sus marcas de correo y Google). Devuelve false si la cuenta no esperaba tarjeta.
+ */
+export async function trialWithoutCard(accountId: string, actor: { email: string }): Promise<boolean> {
+  const acc = await queryOne<{ name: string; trial_ends_at: Date }>(
+    `UPDATE accounts SET status = 'trial', pause_reason = '', trial_ends_at = now() + make_interval(days => $2), trial_warned_at = NULL, updated_at = now()
+      WHERE id = $1 AND status = 'paused' AND pause_reason = 'card' RETURNING name, trial_ends_at`,
+    [accountId, config.signup.trialDays],
+  );
+  if (!acc) return false;
+  const p = await person(accountId);
+  if (p) await recordTrialClaims({ accountId, email: p.email, googleSub: p.googleSub, provider: '' });
+  await logEvent({ level: 'warn', source: 'admin', message: `Prueba sin tarjeta activada por ${actor.email}: termina el ${fmt(acc.trial_ends_at)}`, accountId });
+  await tell(accountId, 'Tu prueba gratis empezó', `Activamos la prueba de "${acc.name}" sin tarjeta. Termina el ${fmt(acc.trial_ends_at)}; para seguir después, elige tu plan en Mi plan.`);
+  return true;
+}
+
 /** El superadmin quita el freno: se abren otra vez y solo cuentan las verificaciones de después. */
 export async function clearBrake(actor: { email: string }): Promise<void> {
   await query(`DELETE FROM rate_limits WHERE key IN ($1, $2)`, [BRAKE, BRAKE_CLEARED]);

@@ -20,10 +20,10 @@ let h: Awaited<ReturnType<typeof createHarness>>;
 
 let n = 0;
 /** Cuenta nueva del registro: espera la tarjeta. `verified`: con el correo ya verificado. */
-async function waiting(email: string, verified = true) {
+async function waiting(email: string, verified = true, plan = '') {
   const r = await h.app.inject({
     method: 'POST', url: '/api/signup', remoteAddress: `10.66.0.${++n}`,
-    payload: { name: 'Tere', company: `Negocio ${n}`, business_type: 'otro', email, password: 'Pz-171-Qx-371-Kv', accept_terms: true },
+    payload: { name: 'Tere', company: `Negocio ${n}`, business_type: 'otro', email, password: 'Pz-171-Qx-371-Kv', accept_terms: true, plan },
   });
   assert.equal(r.statusCode, 200, r.body);
   if (verified) await pool.query(`UPDATE users SET email_verified_at = now() WHERE email = $1`, [email]);
@@ -174,6 +174,40 @@ t('freno: con 20 abiertas en la última hora y menos del 20 % completas se cierr
     assert.equal((await b.api()).statusCode, 200, 'quitado, cuentan solo las de después');
   } finally {
     config.signup.superadminEmail = prev;
+    await pool.query(`DELETE FROM rate_limits WHERE key LIKE 'card-check-brake%'`);
+  }
+});
+
+t('«Activar sin tarjeta»: el superadmin deja la cuenta en prueba de TRIAL_DAYS, con bitácora; un administrador no puede', async () => {
+  const a = await waiting('sintarjeta@tarjeta.mx');
+  const listed = (await h.authed('GET', '/api/accounts')).json().find((x: any) => x.id === a.accountId);
+  assert.deepEqual([listed.status, listed.pause_reason], ['paused', 'card'], 'Cuentas ve «Esperando tarjeta»');
+  assert.equal((await a.as('POST', `/api/accounts/${a.accountId}/trial-without-card`)).statusCode, 403);
+  const r = await h.authed('POST', `/api/accounts/${a.accountId}/trial-without-card`);
+  assert.equal(r.statusCode, 200, r.body);
+  const acc = (await pool.query(`SELECT status, pause_reason, trial_ends_at FROM accounts WHERE id = $1`, [a.accountId])).rows[0];
+  assert.deepEqual([acc.status, acc.pause_reason], ['trial', '']);
+  const days = (new Date(acc.trial_ends_at).getTime() - Date.now()) / 86400_000;
+  assert.ok(days > 13.9 && days <= 14, String(days));
+  const log = await pool.query(`SELECT 1 FROM event_logs WHERE account_id = $1 AND message LIKE 'Prueba sin tarjeta activada por admin@test.mx%'`, [a.accountId]);
+  assert.equal(log.rowCount, 1, 'la bitácora dice quién fue');
+  assert.equal((await pool.query(`SELECT kind FROM trial_claims WHERE account_id = $1`, [a.accountId])).rows.map((x) => x.kind).join(), 'email', 'la prueba de esa persona ya se usó');
+  const again = await h.authed('POST', `/api/accounts/${a.accountId}/trial-without-card`);
+  assert.equal(again.statusCode, 400, 'solo a una cuenta que espera tarjeta');
+});
+
+t('Mi plan trae el estado de la verificación de tarjeta: correo, prueba disponible, plan elegido y freno', async () => {
+  const state = async (a: Awaited<ReturnType<typeof waiting>>) => (await a.as('GET', '/api/billing')).json().card_check;
+  const a = await waiting('estado@tarjeta.mx', false, 'pro');
+  assert.deepEqual(await state(a), { required: true, waiting: true, trial_available: true, trial_days: 14, email_verified: false, signup_plan: 'pro', card_used: false, brake: false });
+  const b = await waiting('estado2@tarjeta.mx');
+  await recordTrialClaims({ accountId: b.accountId, email: 'estado2@tarjeta.mx', provider: 'stripe' });
+  assert.deepEqual(await state(b), { required: true, waiting: true, trial_available: false, trial_days: 14, email_verified: true, signup_plan: '', card_used: false, brake: false });
+  await pool.query(`INSERT INTO rate_limits (key, hits, expires_at) VALUES ('card-check-brake', 1, now() + interval '1 hour') ON CONFLICT (key) DO UPDATE SET hits = 1, expires_at = now() + interval '1 hour'`);
+  try {
+    assert.equal((await state(b)).brake, true);
+    assert.deepEqual((await h.authed('GET', '/api/billing/card-check-brake')).json(), { on: true }, 'Cuentas sabe si está puesto');
+  } finally {
     await pool.query(`DELETE FROM rate_limits WHERE key LIKE 'card-check-brake%'`);
   }
 });

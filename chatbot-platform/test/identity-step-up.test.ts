@@ -43,6 +43,7 @@ export const STEP_UP: [string, string][] = [
   ['POST', '/api/account/transfer'],
   ['POST', '/api/accounts'],
   ['DELETE', `/api/accounts/${ID}`],
+  ['POST', `/api/accounts/${ID}/trial-without-card`],
   ['PUT', '/api/system/zernio'],
   ['DELETE', '/api/system/zernio'],
 ];

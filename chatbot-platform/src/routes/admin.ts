@@ -7,7 +7,7 @@ import { operationalStatus } from '../engine/operations.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { assertRecentMfa, stepUp } from '../identity/step-up.js';
-import { clearBrake } from '../billing/card-check.js';
+import { brakeOn, clearBrake, trialWithoutCard } from '../billing/card-check.js';
 import { assertAccount, HttpError, notFound, requireRole, scopeAccount, targetAccount } from '../access.js';
 import {
   clearSessionCookie,
@@ -236,6 +236,8 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     return { ok: true };
   });
 
+  api.get('/api/billing/card-check-brake', superadmin, async () => ({ on: await brakeOn() }));
+
   api.get('/api/system/incidents', { preHandler: requireRole('superadmin') }, async (req: any) => listIncidents(Number(req.query?.limit) || 50));
   // Configuración y servicios externos por niveles (configurado → accesible → credenciales → funcional → listo). Sin secretos.
   api.get('/api/system/diagnostics', { preHandler: requireRole('superadmin') }, async () => diagnosticsReport());
@@ -394,6 +396,14 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
       .join(', ');
     await logEvent({ level: 'info', source: 'admin', message: `Cuenta actualizada: ${acc.name}${changes ? ` (${changes})` : ''}`, accountId: acc.id });
     return store.publicAccount(acc);
+  });
+
+  // «Activar sin tarjeta»: la cuenta que esperaba tarjeta empieza su prueba sin ella (ver `trialWithoutCard`).
+  api.post('/api/accounts/:id/trial-without-card', { preHandler: requireRole('superadmin'), ...stepUp }, async (req: any) => {
+    const acc = await store.getAccount(req.params.id);
+    if (!acc) throw notFound('Cuenta no encontrada');
+    if (!(await trialWithoutCard(acc.id, req.user))) throw new HttpError(400, 'La cuenta no está esperando tarjeta');
+    return store.publicAccount((await store.getAccount(acc.id))!);
   });
 
   api.delete('/api/accounts/:id', { preHandler: requireRole('superadmin'), ...stepUp }, async (req: any) => {

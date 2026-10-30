@@ -6,7 +6,7 @@ import { HttpError, requireRole, targetAccount } from '../access.js';
 import { rateLimited } from '../auth.js';
 import { baseFor } from '../brands.js';
 import { providers, applyState, changePlan, confirmCheckout, createCheckoutSession, enabledProviders, getPlan, getSubscription, listPlans, notePaymentAction, payable, claimEvent, finishEvent, releaseEvent, startReplacement } from '../billing/service.js';
-import { openCardCheck, trialDaysFor } from '../billing/card-check.js';
+import { cardCheckState, openCardCheck, trialDaysFor } from '../billing/card-check.js';
 import { alertSuperadmins, applyDispute, recordMoney, RefundBeforePaymentError } from '../billing/ledger.js';
 import { FiscalSchema, fiscalComplete, getFiscal, personaOf, REGIMES, saveFiscal, USES, usesFor } from '../billing/fiscal.js';
 import { listPayments } from '../billing/payments.js';
@@ -179,6 +179,7 @@ export async function billingRoutes(api: FastifyInstance) {
       grace_days: config.billing.graceDays,
       support_contact: config.signup.supportContact,
       fiscal: { wants_invoice: fiscal.wants_invoice, complete: fiscalComplete(fiscal) },
+      card_check: await cardCheckState(accountId),
     };
   });
 

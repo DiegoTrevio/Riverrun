@@ -65,7 +65,7 @@ export async function cardClaim(cardKey: string): Promise<{ claimed: boolean; di
 
 /** Las marcas de una prueba que empieza. Repetirlas no hace nada (la primera se queda). */
 export async function recordTrialClaims(
-  o: { accountId: string; email: string; googleSub?: string | null; cardKey?: string | null; provider: 'stripe' | 'mercadopago' },
+  o: { accountId: string; email: string; googleSub?: string | null; cardKey?: string | null; provider: 'stripe' | 'mercadopago' | '' },
   client?: pg.PoolClient,
 ): Promise<void> {
   const marks: [ClaimKind, string][] = [['email', canonicalEmail(o.email)]];
