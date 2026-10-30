@@ -192,7 +192,8 @@ export async function bootstrapSuperadmin() {
     return;
   }
   if (await store.getUserForLogin(config.adminUser)) return;
-  await store.createUser({ account_id: null, role: 'superadmin', name: 'Administrador', email: config.adminUser, password_hash: await hashPassword(config.adminPassword) });
+  // Lo crea quien instala con su propio correo: queda verificado.
+  await store.createUser({ account_id: null, role: 'superadmin', name: 'Administrador', email: config.adminUser, password_hash: await hashPassword(config.adminPassword), verified: true });
   await logEvent({ level: 'info', source: 'system', message: `Superadministrador "${config.adminUser}" creado desde la configuración` });
 }
 
@@ -208,7 +209,7 @@ export async function resetSuperadminPassword(email: string, given?: string): Pr
   if (existing && existing.role !== 'superadmin') throw new Error(`${email} no es superadministrador: su contraseña no se cambia desde aquí.`);
   const hash = await hashPassword(password);
   if (!existing) {
-    await store.createUser({ account_id: null, role: 'superadmin', name: 'Administrador', email, password_hash: hash });
+    await store.createUser({ account_id: null, role: 'superadmin', name: 'Administrador', email, password_hash: hash, verified: true });
     await logEvent({ level: 'warn', source: 'system', message: `Superadministrador "${email}" creado desde el servidor (./riverrun admin-password)` });
     return { password, created: true };
   }

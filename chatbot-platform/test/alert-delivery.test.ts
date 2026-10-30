@@ -213,8 +213,6 @@ t('el WhatsApp del equipo se guarda solo con la lada del país', async () => {
   const bad = await h.authed('PUT', `/api/users/${boss}`, { phone: '5512345678' });
   assert.equal(bad.statusCode, 400);
   assert.match(bad.body, /lada del país/);
-  const created = await h.authed('POST', '/api/users', { account_id: h.accountId, name: 'Corto', email: 'corto@entregas.mx', password: 'Pz-121-Qx-321-Kv', role: 'agent', phone: '55 1234 5678' });
-  assert.equal(created.statusCode, 400);
   assert.equal((await h.authed('PUT', '/api/me', { phone: '123' })).statusCode, 400);
   assert.equal((await h.authed('PUT', `/api/users/${boss}`, { phone: `+${BOSS_PHONE}` })).statusCode, 200);
   // Un número guardado antes, sin lada, no impide guardar lo demás (el panel siempre manda el teléfono).

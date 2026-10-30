@@ -48,7 +48,7 @@ t('crear canales, usuarios y asistentes por encima del límite se rechaza con un
   assert.equal(ch2.statusCode, 403);
   assert.match(ch2.json().error, /1 canal/);
   await h.addUser({ account_id: a.account, email: 'agente1@limites.mx', password: 'Pz-101-Qx-301-Kv', role: 'agent' });
-  assert.equal((await a.api('POST', '/api/users', { email: 'agente2@limites.mx', password: 'Pz-103-Qx-303-Kv', role: 'agent' })).statusCode, 403);
+  assert.equal((await a.api('POST', '/api/invitations', { email: 'agente2@limites.mx', role: 'agent' })).statusCode, 403);
   // Duplicar también cuenta
   const bot = (await a.api('GET', '/api/chatbots')).json()[0];
   assert.equal((await a.api('POST', `/api/chatbots/${bot.id}/duplicate`)).statusCode, 403);

@@ -20,6 +20,7 @@ import { logEvent } from '../logs.js';
 import { sendMail } from '../mailer.js';
 import { DISPOSABLE_MESSAGE, isDisposableEmail, readGoogleSignupPass, recordTermsAcceptance, termsVersion } from '../signup-guard.js';
 import * as store from '../store/index.js';
+import type { User } from '../types.js';
 import { parse } from './util.js';
 
 const HOUR = 3600_000;
@@ -81,6 +82,27 @@ async function sendInvite(inv: Invitation, token: string, inviterName: string) {
   });
 }
 
+/** Se puede invitar a ese correo: no es desechable y no tiene usuario (cada correo es de una sola cuenta). */
+export async function assertInvitable(email: string): Promise<void> {
+  if (isDisposableEmail(email)) throw new HttpError(400, DISPOSABLE_MESSAGE);
+  if (await store.getUserForLogin(email)) throw new HttpError(409, 'Ese correo ya tiene cuenta en la plataforma: invita otro correo.');
+}
+
+/** Crea la invitación (reemplaza la pendiente al mismo correo, vencida o no), la manda y la deja en la bitácora. */
+export async function createInvitation(actor: Pick<User, 'id' | 'role' | 'name'>, accountId: string, b: { email: string; name: string; role: 'admin' | 'agent' }): Promise<Invitation> {
+  await assertInvitable(b.email);
+  await query(`UPDATE account_invitations SET revoked_at = now() WHERE account_id = $1 AND lower(email) = $2 AND ${PENDING}`, [accountId, b.email]);
+  await assertRoomForInvite(accountId);
+  const token = newToken();
+  const inv = (await queryOne<Invitation>(
+    `INSERT INTO account_invitations (account_id, email, name, role, token_hash, invited_by, expires_at) VALUES ($1,$2,$3,$4,$5,$6, now() + make_interval(days => $7)) RETURNING ${COLS}`,
+    [accountId, b.email, b.name, b.role, tokenHash(token), actor.role === 'superadmin' ? null : actor.id, DAYS_VALID],
+  ))!;
+  await sendInvite(inv, token, inviterName(actor));
+  await logEvent({ level: 'info', source: 'admin', message: `Invitación enviada a ${b.email} (${ROLE_LABEL[b.role]})`, accountId });
+  return inv;
+}
+
 const out = (i: Invitation) => ({ id: i.id, email: i.email, name: i.name, role: i.role, expires_at: i.expires_at, created_at: i.created_at, expired: new Date(i.expires_at) <= new Date() });
 const inviterName = (user: { role: string; name: string }) => (user.role === 'superadmin' ? '' : user.name);
 
@@ -116,20 +138,7 @@ export async function invitationRoutes(api: FastifyInstance) {
       assertRecentMfa(req);
     }
     if (rateLimited(`invite:${accountId}`, 30, 24 * HOUR)) return reply.code(429).send({ error: 'Llegaste al máximo de invitaciones por hoy. Intenta mañana.' });
-    if (isDisposableEmail(b.email)) throw new HttpError(400, DISPOSABLE_MESSAGE);
-    // Cada correo pertenece a una sola cuenta de la plataforma.
-    if (await store.getUserForLogin(b.email)) throw new HttpError(409, 'Ese correo ya tiene cuenta en la plataforma: invita otro correo.');
-    // Una invitación anterior al mismo correo (vencida o no) se reemplaza por la nueva.
-    await query(`UPDATE account_invitations SET revoked_at = now() WHERE account_id = $1 AND lower(email) = $2 AND ${PENDING}`, [accountId, b.email]);
-    await assertRoomForInvite(accountId);
-    const token = newToken();
-    const inv = (await queryOne<Invitation>(
-      `INSERT INTO account_invitations (account_id, email, name, role, token_hash, invited_by, expires_at) VALUES ($1,$2,$3,$4,$5,$6, now() + make_interval(days => $7)) RETURNING ${COLS}`,
-      [accountId, b.email, b.name, b.role, tokenHash(token), req.user.role === 'superadmin' ? null : req.user.id, DAYS_VALID],
-    ))!;
-    await sendInvite(inv, token, inviterName(req.user));
-    await logEvent({ level: 'info', source: 'admin', message: `Invitación enviada a ${b.email} (${ROLE_LABEL[b.role]})`, accountId });
-    return out(inv);
+    return out(await createInvitation(req.user, accountId, b));
   });
 
   /** Reenvía con un enlace nuevo (el anterior deja de servir) y otros 7 días. */

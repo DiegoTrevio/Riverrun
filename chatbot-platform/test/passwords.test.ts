@@ -75,6 +75,6 @@ t('las rutas rechazan una contraseña común o corta', async () => {
   assert.equal(r.statusCode, 400, r.body);
   assert.match(r.json().error, /de las más usadas/);
   assert.equal((await h.authed('PUT', '/api/me/password', { current: 'secreto123', password: 'corta-larga' })).statusCode, 400);
-  const created = await h.authed('POST', '/api/users', { account_id: null, name: 'Otro', email: 'otro@n.mx', password: 'qwertyuiop12', role: 'superadmin' });
-  assert.equal(created.statusCode, 400, created.body);
+  const { resetSuperadminPassword } = await import('../src/auth.js');
+  await assert.rejects(() => resetSuperadminPassword('otro@n.mx', 'qwertyuiop12'), /de las más usadas/);
 });

@@ -121,7 +121,7 @@ t('provisionar no crea usuarios inexistentes ni concede acceso a un correo sin c
 });
 
 t('crear perfil y administrador es atómico si el correo ya está en uso', async () => {
-  const response = await h.authed('POST', '/api/accounts', { name: 'Perfil incompleto', admin: { email: 'admin@perfil.test', password: 'Pz-158-Qx-358-Kv' } });
+  const response = await h.authed('POST', '/api/accounts', { name: 'Perfil incompleto', owner: { email: 'admin@perfil.test' } });
   assert.equal(response.statusCode, 409, response.body);
   assert.equal((await store.listAccounts()).length, 2);
 });

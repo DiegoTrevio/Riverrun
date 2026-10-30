@@ -577,6 +577,8 @@ export async function createHarness(opts: { realAi?: import('../src/ai/provider.
       const accountId = o.account_id ?? h.accountId;
       assert.ok(accountId, `addUser(${o.email}) necesita la cuenta: account_id o h.accountId`);
       const token = crypto.randomBytes(24).toString('base64url');
+      // Como en el producto, reemplaza una invitación pendiente al mismo correo.
+      await pool.query(`UPDATE account_invitations SET revoked_at = now() WHERE account_id = $1 AND lower(email) = lower($2) AND accepted_at IS NULL AND revoked_at IS NULL`, [accountId, o.email]);
       await pool.query(
         `INSERT INTO account_invitations (account_id, email, name, role, token_hash, invited_by, expires_at) VALUES ($1, $2, $3, $4, $5, NULL, now() + interval '1 day')`,
         [accountId, o.email, o.name ?? '', o.role, crypto.createHash('sha256').update(token).digest('hex')],

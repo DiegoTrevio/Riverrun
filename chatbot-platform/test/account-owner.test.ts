@@ -154,7 +154,6 @@ t('un administrador no toca al dueño ni a otros administradores; sí a los agen
   assert.deepEqual((await beto('PUT', `/api/users/${ciro}`, { role: 'admin' })).json(), OWNER_ONLY, 'hacer administrador a alguien es del dueño');
   assert.deepEqual((await beto('POST', '/api/invitations', { email: 'nueva-admin@duenos.mx', role: 'admin' })).json(), OWNER_ONLY, 'invitar a un administrador también');
   assert.equal((await beto('POST', '/api/invitations', { email: 'nuevo-agente@duenos.mx', role: 'agent' })).statusCode, 200, 'invitar a un agente no');
-  assert.deepEqual((await beto('POST', '/api/users', { account_id: acc, name: 'Fito', email: 'fito@duenos.mx', password: PASS, role: 'admin' })).json(), OWNER_ONLY);
 });
 
 t('nadie desactiva, degrada, mueve ni borra al dueño: primero transfiere', async () => {

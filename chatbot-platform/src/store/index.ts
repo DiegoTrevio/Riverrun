@@ -212,10 +212,10 @@ export async function createUser(
   u: { account_id: string | null; role: Role; name: string; email: string; password_hash: string; verified?: boolean },
   client?: Queryable,
 ) {
-  // Los usuarios que crea un administrador se dan por verificados; los del autoregistro, no.
+  // Sin `verified` explícito, el correo queda sin verificar: lo verifica quien abre el enlace (invitación, registro).
   const rows = await rowsOf(client,
     `INSERT INTO users (account_id, role, name, email, password_hash, email_verified_at) VALUES ($1,$2,$3,$4,$5, CASE WHEN $6::boolean THEN now() END) RETURNING ${USER_COLS}`,
-    [u.account_id, u.role, u.name, u.email.trim(), u.password_hash, u.verified ?? true],
+    [u.account_id, u.role, u.name, u.email.trim(), u.password_hash, u.verified ?? false],
   );
   return rows[0] as User;
 }

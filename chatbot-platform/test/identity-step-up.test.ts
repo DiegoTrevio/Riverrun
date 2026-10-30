@@ -18,7 +18,6 @@ export const STEP_UP: [string, string][] = [
   ['POST', '/api/me/2fa/recovery-codes'],
   ['POST', '/api/me/2fa/authenticator'],
   ['POST', '/api/me/2fa/authenticator/confirm'],
-  ['POST', '/api/users'],
   ['DELETE', `/api/users/${ID}`],
   ['POST', `/api/users/${ID}/2fa/reset`],
   ['POST', '/api/api-keys'],

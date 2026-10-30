@@ -6,7 +6,7 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { createHarness, dbAvailable, pool, waitFor } from './harness.js';
+import { createHarness, dbAvailable, pool, store, waitFor } from './harness.js';
 
 const ok = await dbAvailable();
 const t = (name: string, fn: () => Promise<void>) => test(name, { skip: !ok && 'PostgreSQL de pruebas no disponible' }, fn);
@@ -172,7 +172,8 @@ t('si la desactivan o cambia su contraseña entre la contraseña y el código, e
   assert.equal((await h.authed('PUT', `/api/users/${id}`, { active: true })).statusCode, 200);
   await resetStep('cambia@login.mx');
   const c2 = await challenge('cambia@login.mx', PASS);
-  assert.equal((await h.authed('PUT', `/api/users/${id}`, { password: 'Pz-933-Qx-934-Kv' })).statusCode, 200);
+  const { hashPassword } = await import('../src/auth.js');
+  await store.updateUser(id, { password_hash: await hashPassword('Pz-933-Qx-934-Kv') }); // la cambió (Mi perfil o el enlace del correo)
   assert.equal((await post('/api/login/2fa', c2, { code: totpAt(secret, currentStep()) })).statusCode, 401);
 });
 
