@@ -22,7 +22,7 @@ export type Outcome = Control & {
 /** No se presionan en el recorrido (cierran la sesión con la que se audita); los cubre su prueba por área. */
 const SKIP: [RegExp, string][] = [
   [/^Cerrar sesión$/i, 'cierra la sesión de la auditoría'],
-  [/cerrar (las |todas las )?(otras )?sesiones|cerrar las demás/i, 'cierra la sesión de la auditoría'],
+  [/cerrar (las |todas las )?(otras )?sesiones|cerrar las demás|cerrar sesión en todos|^Cerrar la sesión de /i, 'cierra la sesión de la auditoría (lo prueba el área global)'],
 ];
 const CANCEL = /^(Cancelar|Cerrar|No|Listo|Entendido|Volver)$/;
 const PROBLEMS: Verdict[] = ['SIN EFECTO', 'SIN MANEJADOR', 'ERROR JS', 'ERROR API', 'ERROR SILENCIOSO', 'PÁGINA NO ENCONTRADA', 'REDIRIGIDO', 'CANCELAR ESCRIBIÓ', 'NO SE PUDO PRESIONAR', 'ACEPTAR SIN EFECTO', 'NO SE ACEPTÓ'];
@@ -57,15 +57,17 @@ async function session(context: BrowserContext, base: string, log: (m: string) =
     }
   };
   const ready = async () => {
-    await page.locator('.main h1, main h1').first().waitFor({ timeout: 10000 });
+    // El panel tiene su título en .main; las páginas públicas (reservar, ayuda) en main o en el cuerpo.
+    await page.locator('.main h1, main h1, main h2, body > h1').first().waitFor({ timeout: 10000 });
     await page.locator('.main [aria-busy="true"]').first().waitFor({ state: 'hidden', timeout: 10000 }).catch(() => {});
     await settle(3000);
   };
   const collectSites = async () => { for (const s of await page.evaluate('__audit.allSites()').catch(() => []) as string[]) seenSites.add(s); };
   const fresh = async (route: string) => {
-    const url = `${base}/#/${route}`;
+    // Una ruta con «/» es una página del servidor (reservar, precios, ayuda); las demás, pantallas del panel.
+    const url = route.startsWith('/') ? `${base}${route}` : `${base}/#/${route}`;
     // Se descarta lo que quedó abierto (diálogos, Copiloto) pasando por otra ruta y volviendo.
-    if (!page.url().startsWith(base)) await page.goto(url);
+    if (!page.url().startsWith(base) || route.startsWith('/')) { await page.goto('about:blank'); await page.goto(url); }
     else { await page.goto(`${base}/#/__auditoria`); await page.goto(url); }
     await page.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d: any) => d.remove()); }).catch(() => {});
     await ready();
@@ -73,21 +75,31 @@ async function session(context: BrowserContext, base: string, log: (m: string) =
   };
   const controls = async () => (await page.evaluate('__audit.controls()')) as Control[];
   const mark = (key: string) => page.evaluate((k) => (window as any).__audit.mark(k), key) as Promise<boolean>;
-  const clickKey = async (c: Control) => {
+  /** Presiona el control; 'unica' si es una lista sin otra opción que elegir. */
+  const clickKey = async (c: Control): Promise<boolean | 'unica'> => {
     if (!(await mark(c.key))) return false;
     const target = page.locator('[data-audit-target]');
     if (c.tag === 'select') {
       const values = await target.evaluate((s: HTMLSelectElement) => ({ current: s.value, all: [...s.options].filter((o) => !o.disabled).map((o) => o.value) }));
       const next = values.all.find((v) => v !== values.current);
-      if (next === undefined) return true;
+      if (next === undefined) return 'unica';
       await target.selectOption(next);
-    } else await target.click({ timeout: 3000 });
+      return true;
+    }
+    // Un enlace que solo se ve con el foco (Saltar al contenido) se usa con el teclado, como lo usa quien lo necesita.
+    if (!(await target.isVisible()) || await target.evaluate((el) => el.matches('.skip-link, .sr-only-focusable, a[href^="#contenido"]'))) {
+      await target.focus(); await page.keyboard.press('Enter');
+      return true;
+    }
+    await target.click({ timeout: 3000 });
     return true;
   };
   /** Abre la pantalla y repite los clics que llevan al control (p. ej. «Editar» antes de «Guardar»). */
   const reach = async (route: string, parents: Control[]) => {
     await fresh(route);
     for (const p of parents) { await clickKey(p); await settle(); }
+    // Lo que se guarda solo un momento después (el lienzo guarda 900 ms después del último cambio) sale aquí, no en el clic.
+    if (parents.length) { await page.waitForTimeout(1100); await settle(); }
   };
   const start = async () => { await page.evaluate('__audit.startClick()'); reset(); on = true; };
   const stop = async () => { await settle(); on = false; return page.url().startsWith(base) ? await page.evaluate('__audit.endClick()').catch(() => ({ hash: '' })) as any : { hash: '', external: page.url() }; };
@@ -140,28 +152,44 @@ export async function crawl(opts: {
         await page.evaluate('__audit.startNoise()'); await page.waitForTimeout(150);
         if (!(await s.mark(c.key))) { record('NO ENCONTRADO', { note: 'no está al volver a abrir la pantalla' }); dirty = true; continue; }
         const beforeHash = await page.evaluate(() => location.hash);
+        const beforePath = new URL(page.url()).pathname;
         await s.start();
-        let pressed = true;
+        let pressed: boolean | 'unica' = true;
         try { pressed = await s.clickKey(c); } catch (e: any) { s.setOn(false); record('NO SE PUDO PRESIONAR', { note: e.message.split('\n')[0] }); dirty = true; continue; }
         if (!pressed) { s.setOn(false); record('NO ENCONTRADO'); dirty = true; continue; }
+        if (pressed === 'unica') { s.setOn(false); record('MISMA PÁGINA', { note: 'la lista no tiene otra opción que elegir' }); continue; }
         const fx = await s.stop();
         const writes = ev.requests.filter((r) => r.method() !== 'GET');
         const requests = ev.requests.map((r) => `${r.method()} ${new URL(r.url()).pathname}`);
-        const effects = s.describe(fx, beforeHash);
+        // Un enlace a otra página del servidor recarga el documento: eso ya es su efecto.
+        const afterPath = page.url().startsWith(base) ? new URL(page.url()).pathname : '';
+        const effects = [...s.describe(fx, beforeHash), afterPath && afterPath !== beforePath ? `abre ${afterPath}` : ''].filter(Boolean);
+        // Sin sesión, lo del panel pide entrar: un 401 que termina en #/login es lo esperado.
+        if (user === 'publico' && fx.hash === '#/login') ev.status = ev.status.filter((x) => !x.startsWith('401'));
         let verdict: Verdict = 'OK'; let note = '';
         if (ev.pageErrors.length) { verdict = 'ERROR JS'; note = ev.pageErrors.join(' | '); }
         else if (ev.status.some((x) => x.startsWith('5'))) { verdict = 'ERROR API'; note = ev.status.join(', '); }
-        else if (ev.status.length && !fx.errors?.length && !fx.toast && !fx.dialogOpened) { verdict = 'ERROR SILENCIOSO'; note = `${ev.status.join(', ')} sin mensaje en la pantalla`; }
-        else if (ev.status.length) { verdict = 'RECHAZADO'; note = `${ev.status.join(', ')}: ${fx.errors?.[0] || fx.toast}`; }
+        else if (ev.status.length && !fx.errors?.length && !fx.toast && !fx.dialogOpened && !fx.mutations) { verdict = 'ERROR SILENCIOSO'; note = `${ev.status.join(', ')} sin mensaje ni cambio en la pantalla`; }
+        else if (ev.status.length) { verdict = 'RECHAZADO'; note = `${ev.status.join(', ')}: ${fx.errors?.[0] || fx.toast || (fx.dialogOpened ? `diálogo «${fx.dialogTitle}»` : 'la pantalla cambió')}`; }
         else if (fx.h1 === 'Página no encontrada') verdict = 'PÁGINA NO ENCONTRADA';
-        else if (c.href.startsWith('#/') && fx.hash && decodeURI(fx.hash) !== decodeURI(c.href) && decodeURI(beforeHash) !== decodeURI(c.href)) { verdict = 'REDIRIGIDO'; note = `${c.href} → ${fx.hash}`; }
+        else if (c.href.startsWith('#/') && fx.hash && decodeURI(fx.hash) !== decodeURI(c.href) && decodeURI(beforeHash) !== decodeURI(c.href) && !(c.href === '#/agentes?new=1' && fx.hash === '#/agentes/nuevo') && !(user === 'publico' && fx.hash === '#/login')) { verdict = 'REDIRIGIDO'; note = `${c.href} → ${fx.hash}`; }
         else if (!effects.length && c.href.startsWith('#') && decodeURI(c.href) === decodeURI(beforeHash)) verdict = 'MISMA PÁGINA';
+        else if (!effects.length && c.href.startsWith('/') && new URL(c.href, base).pathname === beforePath) verdict = 'MISMA PÁGINA';
         else if (!effects.length && fx.alreadyActive) { verdict = 'MISMA PÁGINA'; note = 'ya estaba elegido'; }
         else if (!effects.length) verdict = 'SIN EFECTO';
         let dialog = '';
-        // Diálogo abierto: Cancelar no debe escribir nada.
+        // Diálogo abierto: lo de adentro (menos aceptar, que va en su pase) se presiona después; Cancelar no debe escribir nada.
         if (fx.dialogOpened) {
           dialog = fx.dialogTitle || '(sin título)';
+          if (parents.length === 0 && children < maxChildren) {
+            const inside = (await s.controls()).filter((n) => n.area === 'dialogo' && !CANCEL.test(n.name));
+            const accept = [...inside].reverse().find((n) => n.tag === 'button');
+            for (const n of inside) {
+              if (n === accept || known.has(n.key) || children >= maxChildren) continue;
+              known.add(n.key); children++;
+              queue.push({ c: n, parents: [...parents, c] });
+            }
+          }
           s.reset(); s.setOn(true);
           const dlg = page.locator('dialog[open]').last();
           const cancel = dlg.getByRole('button', { name: CANCEL }).first();

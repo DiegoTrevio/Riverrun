@@ -54,6 +54,12 @@ export function staticInventory(dir = DIR): Site[] {
           }
         }
       }
+      // boton.onclick = … (manejador asignado como propiedad).
+      if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isPropertyAccessExpression(node.left)
+        && /^on(click|change|submit|toggle)$/.test(node.left.name.text)) {
+        const line = lineOf(node.left.name.getStart(source));
+        sites.push({ site: `${file}:${line}`, file, line, endLine: line, events: [node.left.name.text.slice(2)], tag: node.left.expression.getText(source), label: '' });
+      }
       ts.forEachChild(node, visit);
     };
     visit(source);

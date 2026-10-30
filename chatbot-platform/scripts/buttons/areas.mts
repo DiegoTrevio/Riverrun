@@ -20,7 +20,9 @@ export type AreaResult = { area: string; passed: string[]; failed: { check: stri
 export async function runAreas(base: Omit<AreaContext, 'check' | 'open' | 'go'> & { contextFor: (role: string, options?: any) => Promise<BrowserContext> }, log: (m: string) => void) {
   const dir = path.resolve(import.meta.dirname, 'areas');
   const results: AreaResult[] = [];
-  for (const file of fs.readdirSync(dir).filter((f) => f.endsWith('.mts')).sort()) {
+  // BUTTONS_AREA=agenda,global corre solo esas áreas (para trabajar en una).
+  const pick = (process.env.BUTTONS_AREA || '').split(',').filter(Boolean);
+  for (const file of fs.readdirSync(dir).filter((f) => f.endsWith('.mts') && (!pick.length || pick.includes(f.replace(/\.mts$/, '')))).sort()) {
     const area = file.replace(/\.mts$/, '');
     const result: AreaResult = { area, passed: [], failed: [], pageErrors: [] };
     const contexts: BrowserContext[] = [];
@@ -43,7 +45,7 @@ export async function runAreas(base: Omit<AreaContext, 'check' | 'open' | 'go'> 
     // Cada comprobación es independiente: una que falla no detiene las demás del área.
     for (const [label, fn] of Object.entries(mod.checks as Record<string, (c: AreaContext) => Promise<void>>)) {
       try { await fn(ctx); ctx.check(label); }
-      catch (e: any) { result.failed.push({ check: label, error: e.message.split('\n').slice(0, 4).join(' ') }); log(`  ✗ ${area}: ${label} — ${e.message.split('\n')[0]}`); }
+      catch (e: any) { result.failed.push({ check: label, error: e.message.split('\n').slice(0, 12).join(' ') }); log(`  ✗ ${area}: ${label} — ${e.message.split('\n').slice(0, 12).join(' ')}`); }
       finally { await Promise.all(contexts.splice(0).map((c) => c.close().catch(() => {}))); }
     }
     results.push(result);

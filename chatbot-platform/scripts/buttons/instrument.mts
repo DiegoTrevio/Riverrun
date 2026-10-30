@@ -10,8 +10,9 @@ export const INIT_SCRIPT = String.raw`(() => {
   const ACTION = /^(click|change|submit|toggle)$/;
   const TRACKED = /^(click|change|submit|toggle|dragstart|dragover|drop|dragend|pointerdown|keydown)$/;
   const listeners = new WeakMap();
-  const frameRe = /at (?:(\S+) )?\(?(?:[a-z]+:\/\/[^/]+)?\/js\/([\w-]+\.js)(?:\?[^:]*)?:(\d+):\d+\)?\s*$/;
-  const frames = (stack) => String(stack || '').split('\n').slice(1).map((l) => { const m = l.match(frameRe); return m ? { fn: m[1] || '', file: m[2], line: +m[3] } : null; }).filter(Boolean);
+  // Cualquier script del mismo servidor: /js/bot.js (el panel, como «bot.js»), /reservar.js, o el de una página .html.
+  const frameRe = /at (?:(\S+) \()?[a-z]+:\/\/[^/]+\/([^\s?:)]+\.(?:js|html))(?:\?[^:)]*)?:(\d+):\d+\)?\s*$/;
+  const frames = (stack) => String(stack || '').split('\n').slice(1).map((l) => { const m = l.match(frameRe); return m ? { fn: m[1] || '', file: m[2].replace(/^js\//, ''), line: +m[3] } : null; }).filter(Boolean);
   const original = EventTarget.prototype.addEventListener;
   EventTarget.prototype.addEventListener = function (type, fn, opts) {
     if (this instanceof Element && TRACKED.test(type)) {
@@ -26,6 +27,16 @@ export const INIT_SCRIPT = String.raw`(() => {
     }
     return original.call(this, type, fn, opts);
   };
+  // Manejadores asignados como propiedad (boton.onclick = …): también se anotan con su sitio.
+  for (const prop of ['onclick', 'onchange', 'onsubmit', 'ontoggle']) {
+    const d = Object.getOwnPropertyDescriptor(HTMLElement.prototype, prop);
+    if (!d || !d.set) continue;
+    Object.defineProperty(HTMLElement.prototype, prop, { configurable: true, enumerable: d.enumerable, get: d.get, set(fn) {
+      const f = typeof fn === 'function' ? frames(new Error().stack) : [];
+      if (f[0]) { const list = listeners.get(this) || []; list.push({ event: prop.slice(2), site: f[0].file + ':' + f[0].line, chain: f.slice(0, 4).map((x) => x.file + ':' + x.line) }); listeners.set(this, list); }
+      d.set.call(this, fn);
+    } });
+  }
   const audit = window.__audit = { clipboard: [], opened: [], printed: 0, mutations: 0, noisy: new Set(), observing: false };
   // Lo que un botón hace fuera de la página: se anota y no se ejecuta (copiar, abrir otra ventana, imprimir).
   try {
@@ -52,7 +63,11 @@ export const INIT_SCRIPT = String.raw`(() => {
   /** El manejador que atiende un clic en el control: el propio, el del formulario (botón de envío) o el de un contenedor. */
   const handlerOf = (el) => {
     const own = actionSites(el); if (own.length) return { via: 'propio', sites: own };
-    if (el.matches('button:not([type=button]),input[type=submit]') && el.form) { const s = actionSites(el.form).filter((l) => l.event === 'submit'); if (s.length) return { via: 'formulario', sites: s }; }
+    if (el.matches('button:not([type=button]),input[type=submit]') && el.form) {
+      const s = actionSites(el.form).filter((l) => l.event === 'submit'); if (s.length) return { via: 'formulario', sites: s };
+      // Un formulario del servidor (con action) se envía solo, sin JavaScript.
+      if (el.form.getAttribute('action') !== null || (el.form.method || '').toLowerCase() === 'post') return { via: 'formulario nativo', sites: [] };
+    }
     if (el.matches('summary')) { const s = actionSites(el.parentElement).filter((l) => l.event === 'toggle'); return { via: 'desplegable', sites: s }; }
     for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) { const s = actionSites(p).filter((l) => l.event === 'click' || l.event === 'change'); if (s.length) return { via: 'contenedor', sites: s }; }
     return { via: '', sites: [] };
@@ -73,7 +88,8 @@ export const INIT_SCRIPT = String.raw`(() => {
       const href = el.tagName === 'A' ? el.getAttribute('href') || '' : '';
       const area = areaOf(el);
       const name = nameOf(el);
-      const base = area + '|' + (handler.sites[0]?.site || (href ? 'href=' + href : el.tagName.toLowerCase())) + '|' + name;
+      // Sin números en la llave: «hace 1 min» pasa a «hace 2 min» y el control debe seguir siendo el mismo.
+      const base = area + '|' + (handler.sites[0]?.site || (href ? 'href=' + href.replace(/[0-9a-f-]{36}/g, 'id') : el.tagName.toLowerCase())) + '|' + name.replace(/\d+/g, '#');
       const n = seen.get(base) || 0; seen.set(base, n + 1);
       if (visit(el, base + '|' + n, { handler, href, area, name }) === false) return;
     }
@@ -114,15 +130,21 @@ export const INIT_SCRIPT = String.raw`(() => {
   audit.startClick = () => {
     audit.mutations = 0; audit.clipboard = []; audit.opened = []; audit.printed = 0; audit.observing = true;
     const t = document.querySelector('[data-audit-target]');
-    audit.before = { focus: document.activeElement, scroll: scrollY, dialogs: document.querySelectorAll('dialog[open]').length, checked: t?.checked, value: t?.value, open: t?.closest('details')?.open, look: lookOf(t) };
+    audit.before = { focus: document.activeElement, scroll: scrollY, dialogs: document.querySelectorAll('dialog[open]').length, checked: t?.checked, value: t?.value, open: t?.closest('details')?.open, look: lookOf(t), errors: errorTexts() };
   };
+  const errorTexts = () => [...document.querySelectorAll('.form-error, .field-error, [aria-invalid=true], .main [role=alert], dialog[open] [role=alert], .banner.danger')]
+    .filter((e) => visible(e) && e.id !== 'toast-alert').map((e) => clean(e.textContent) || '(campo marcado: ' + (e.getAttribute('name') || e.id) + ')');
   // Estado propio del control: una pestaña o un interruptor que ya estaba elegido no cambia al tocarlo otra vez.
   const lookOf = (t) => t ? ['aria-pressed', 'aria-selected', 'aria-expanded', 'aria-current', 'aria-checked', 'class'].map((a) => t.getAttribute(a) || '').join('|') : '';
   const isActive = (t) => !!t && (['true', 'page', 'step'].includes(t.getAttribute('aria-pressed') || t.getAttribute('aria-selected') || t.getAttribute('aria-current') || '') || /(^|\s)(active|is-active|selected|on)(\s|$)/.test(t.className || ''));
   audit.endClick = () => {
+    // El clic cargó otro documento (un enlace a otra página): de esta página solo se sabe dónde quedó.
+    if (!audit.before) return { hash: location.hash, h1: clean(document.querySelector('.main h1, main h1')?.textContent), reloaded: true };
     audit.observing = false; observer?.disconnect();
     const t = document.querySelector('[data-audit-target]');
-    const errorBox = [...document.querySelectorAll('.form-error, [aria-invalid=true]')].filter(visible).map((e) => clean(e.textContent)).slice(0, 3);
+    // Mensajes de error nuevos a la vista: el de la tarjeta, el de cada campo y los avisos de error de la página
+    // (un aviso que ya estaba, como el de la cuenta, no cuenta).
+    const errorBox = errorTexts().filter((t) => !audit.before.errors.includes(t)).slice(0, 3);
     const toastText = clean((document.getElementById('toast-alert')?.textContent || '') + ' ' + (document.getElementById('toast')?.textContent || ''));
     const dialogs = [...document.querySelectorAll('dialog[open]')];
     return {
