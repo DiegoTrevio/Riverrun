@@ -386,9 +386,7 @@ async function seed(h: any, waitFor: any): Promise<Seed> {
   await h.createBot();
   h.setScript(() => ({ messages: ['Con gusto.'] }));
   const mk = async (email: string, name: string, role: string) => {
-    const r = await h.authed('POST', '/api/users', { account_id: h.accountId, email, name, password: 'Pz-110-Qx-310-Kv', role });
-    assert.equal(r.statusCode, 200, r.body);
-    return r.json().id as string;
+    return (await h.addUser({ account_id: h.accountId, email, name, password: 'Pz-110-Qx-310-Kv', role })).id as string;
   };
   await mk('duena@eval.mx', 'Dueña', 'admin');
   const agentId = await mk('luis@eval.mx', 'Luis', 'agent');

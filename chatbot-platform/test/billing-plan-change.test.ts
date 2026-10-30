@@ -116,7 +116,7 @@ t('Stripe: de mensual a anual en el mismo paso; mismo plan, plan inexistente, ag
   assert.equal((await a.api('POST', '/api/billing/change', { plan: 'pro' })).statusCode, 400);
   assert.equal((await a.api('POST', '/api/billing/change', { plan: 'nada' })).statusCode, 404);
 
-  assert.equal((await h.authed('POST', '/api/users', { account_id: a.accountId, name: 'Beto', email: 'beto@salon.mx', password: 'Pz-108-Qx-308-Kv', role: 'agent' })).statusCode, 200);
+  await h.addUser({ account_id: a.accountId, name: 'Beto', email: 'beto@salon.mx', password: 'Pz-108-Qx-308-Kv', role: 'agent' });
   assert.equal((await (await h.loginAs('beto@salon.mx', 'Pz-108-Qx-308-Kv'))('POST', '/api/billing/change', { plan: 'anual' })).statusCode, 403);
 
   fake.stripe.fail = true;

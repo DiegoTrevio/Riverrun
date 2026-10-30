@@ -26,14 +26,13 @@ const transfer = (api: Api | typeof h.authed, userId: string, q = '') => api('PO
 before(async () => {
   if (!ok) return;
   h = await createHarness();
-  acc = (await h.authed('POST', '/api/accounts', { name: 'Panadería Luna', admin: { name: 'Lupe', email: 'lupe@luna.mx', password: PASS } })).json().id;
-  const other = (await h.authed('POST', '/api/accounts', { name: 'Otra', admin: { name: 'Rita', email: 'rita@otra.mx', password: PASS } })).json().id;
+  acc = (await h.addAccount({ name: 'Panadería Luna', admin: { name: 'Lupe', email: 'lupe@luna.mx', password: PASS } })).id;
+  const other = (await h.addAccount({ name: 'Otra', admin: { name: 'Rita', email: 'rita@otra.mx', password: PASS } })).id;
   for (const [name, email, role, account] of [
     ['Memo', 'memo@luna.mx', 'admin', acc], ['Nora', 'nora@luna.mx', 'admin', acc], ['Olga', 'olga@luna.mx', 'admin', acc],
     ['Pepe', 'pepe@luna.mx', 'agent', acc], ['Quique', 'quique@luna.mx', 'admin', acc],
   ] as const) {
-    const r = await h.authed('POST', '/api/users', { account_id: account, name, email, password: PASS, role });
-    assert.equal(r.statusCode, 200, r.body);
+    const r = await h.addUser({ account_id: account, name, email, password: PASS, role });
   }
   for (const r of (await pool.query(`SELECT id, email FROM users WHERE account_id IN ($1, $2)`, [acc, other])).rows) ids[r.email] = r.id;
   lupe = await h.loginAs('lupe@luna.mx', PASS);

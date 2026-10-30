@@ -40,7 +40,7 @@ before(async () => {
   h = await createHarness();
   await h.createBot();
   h.setScript(() => ({ messages: ['Con gusto.'] }));
-  assert.equal((await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'duena@ops.mx', name: 'Dueña', password: 'Pz-117-Qx-317-Kv', role: 'admin' })).statusCode, 200);
+  await h.addUser({ account_id: h.accountId, email: 'duena@ops.mx', name: 'Dueña', password: 'Pz-117-Qx-317-Kv', role: 'admin' });
   assert.equal((await h.authed('PUT', `/api/accounts/${h.accountId}`, { copilot_enabled: true })).statusCode, 200);
   owner = await h.loginAs('duena@ops.mx', 'Pz-117-Qx-317-Kv');
   const tpl = (await owner('GET', '/api/pipelines/template')).json();

@@ -39,9 +39,8 @@ const accept = (body: Record<string, unknown>) =>
   h.app.inject({ method: 'POST', url: '/api/invitation/accept', remoteAddress: `10.9.1.${++ip}`, headers: { 'user-agent': 'Navegador de prueba' }, payload: { name: 'Persona', accept_terms: true, ...body } });
 
 async function account(name: string, email: string) {
-  const r = await h.authed('POST', '/api/accounts', { name, admin: { name: `Admin ${name}`, email, password: 'Pz-144-Qx-344-Kv' } });
-  assert.equal(r.statusCode, 200, r.body);
-  return r.json().id as string;
+  const r = await h.addAccount({ name, admin: { name: `Admin ${name}`, email, password: 'Pz-144-Qx-344-Kv' } });
+  return r.id as string;
 }
 
 before(async () => {
@@ -52,7 +51,7 @@ before(async () => {
   B.account = await account('Cuenta Beto', 'beto@otra.mx');
   A.admin = await h.loginAs('ana@taller.mx', 'Pz-144-Qx-344-Kv');
   B.admin = await h.loginAs('beto@otra.mx', 'Pz-144-Qx-344-Kv');
-  assert.equal((await A.admin('POST', '/api/users', { name: 'Agente', email: 'agente@taller.mx', password: 'Pz-144-Qx-344-Kv', role: 'agent' })).statusCode, 200);
+  await h.addUser({ account_id: A.account, name: 'Agente', email: 'agente@taller.mx', password: 'Pz-144-Qx-344-Kv', role: 'agent' });
   A.agent = await h.loginAs('agente@taller.mx', 'Pz-144-Qx-344-Kv');
 });
 after(async () => {
@@ -152,7 +151,7 @@ t('correos que ya tienen cuenta o temporales no se invitan; agentes y otras cuen
   assert.deepEqual((await B.admin('GET', '/api/invitations')).json().map((i: any) => i.email), ['rosa@otra.mx']);
 
   // Si alguien registra ese correo antes de aceptar, la invitación ya no crea otro usuario.
-  assert.equal((await B.admin('POST', '/api/users', { name: 'Quique', email: 'quique@taller.mx', password: 'Pz-144-Qx-344-Kv', role: 'agent' })).statusCode, 200);
+  await h.addUser({ account_id: B.account, name: 'Quique', email: 'quique@taller.mx', password: 'Pz-144-Qx-344-Kv', role: 'agent' });
   assert.equal((await accept({ token: tokenFor('quique@taller.mx'), password: 'Pz-114-Qx-314-Kv' })).statusCode, 409);
 });
 

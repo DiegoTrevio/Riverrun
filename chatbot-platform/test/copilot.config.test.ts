@@ -40,8 +40,8 @@ before(async () => {
   h = await createHarness();
   await h.createBot();
   h.setScript(() => ({ messages: ['Con gusto.'] }));
-  assert.equal((await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'duena@config.mx', name: 'Dueña', password: 'Pz-117-Qx-317-Kv', role: 'admin' })).statusCode, 200);
-  assert.equal((await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'agente@config.mx', name: 'Luis', password: 'Pz-102-Qx-302-Kv', role: 'agent' })).statusCode, 200);
+  await h.addUser({ account_id: h.accountId, email: 'duena@config.mx', name: 'Dueña', password: 'Pz-117-Qx-317-Kv', role: 'admin' });
+  await h.addUser({ account_id: h.accountId, email: 'agente@config.mx', name: 'Luis', password: 'Pz-102-Qx-302-Kv', role: 'agent' });
   assert.equal((await h.authed('PUT', `/api/accounts/${h.accountId}`, { copilot_enabled: true })).statusCode, 200);
   owner = await h.loginAs('duena@config.mx', 'Pz-117-Qx-317-Kv');
   agent = await h.loginAs('agente@config.mx', 'Pz-102-Qx-302-Kv');

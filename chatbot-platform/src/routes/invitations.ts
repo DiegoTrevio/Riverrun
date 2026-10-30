@@ -14,7 +14,7 @@ import { config } from '../config.js';
 import { query, queryOne, withTransaction } from '../db.js';
 import { googleConfigured } from '../integrations/google.js';
 import { assertPasswordAllowed, NewPassword } from '../identity/passwords.js';
-import { assertOwner } from '../identity/ownership.js';
+import { assertOwner, ensureOwner } from '../identity/ownership.js';
 import { assertRecentMfa } from '../identity/step-up.js';
 import { logEvent } from '../logs.js';
 import { sendMail } from '../mailer.js';
@@ -225,6 +225,8 @@ export async function invitationPublicRoutes(app: FastifyInstance) {
       await recordTermsAcceptance(client, { userId: created.id, accountId: inv.account_id, email: inv.email, ip: req.ip, userAgent: String(req.headers['user-agent'] ?? ''), source: 'invite' });
       return created;
     });
+    // El primer administrador de una cuenta sin dueño queda como dueño (ya con su usuario guardado).
+    if (inv.role === 'admin') await ensureOwner(inv.account_id, user.id);
     await logEvent({ level: 'info', source: 'admin', message: `${inv.email} se unió al equipo (${ROLE_LABEL[inv.role]})${google ? ' con Google' : ''}`, accountId: inv.account_id, details: { ip: req.ip } });
     // Antes de entrar al panel configura su verificación en dos pasos.
     return { ok: true, user, ...(await beginLogin(reply, { ...user, password_hash: hash }, 'invite')) };

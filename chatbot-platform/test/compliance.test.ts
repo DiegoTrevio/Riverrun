@@ -112,7 +112,7 @@ t('derecho de supresión: borra al contacto y su historial, anonimiza citas y co
   const aiRuns = (await pool.query(`SELECT count(*)::int AS n FROM ai_runs WHERE conversation_id = $1`, [conv])).rows[0].n;
   assert.ok(aiRuns >= 1);
   // Un agente no puede; otra cuenta tampoco
-  await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'agente@priv.mx', password: 'Pz-101-Qx-301-Kv', role: 'agent' });
+  await h.addUser({ account_id: h.accountId, email: 'agente@priv.mx', password: 'Pz-101-Qx-301-Kv', role: 'agent' });
   const agent = await h.loginAs('agente@priv.mx', 'Pz-101-Qx-301-Kv');
   assert.equal((await agent('DELETE', `/api/contacts/${c.id}`)).statusCode, 403);
   assert.equal((await agent('GET', `/api/contacts/${c.id}/data`)).statusCode, 403);

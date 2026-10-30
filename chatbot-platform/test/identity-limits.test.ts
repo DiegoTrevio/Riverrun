@@ -17,8 +17,7 @@ const login = (email: string, password: string, remoteAddress: string, cookie = 
   h.app.inject({ method: 'POST', url: '/api/login', remoteAddress, payload: { email, password }, headers: cookie ? { cookie } : {} });
 const cookiesOf = (r: any) => [r.headers['set-cookie'] ?? []].flat().map(String).map((c: string) => c.split(';')[0]).filter((c: string) => !c.endsWith('='));
 const newUser = async (email: string) => {
-  const r = await h.authed('POST', '/api/users', { account_id: h.accountId, name: 'Ivo', email, password: PASS, role: 'agent' });
-  assert.equal(r.statusCode, 200, r.body);
+  const r = await h.addUser({ account_id: h.accountId, name: 'Ivo', email, password: PASS, role: 'agent' });
 };
 const ACCOUNT_LIMIT = 'Demasiados intentos con esta cuenta. Entra desde un dispositivo recordado o recupera tu contraseña por correo.';
 

@@ -21,12 +21,10 @@ const ownerId = async () => (await pool.query(`SELECT owner_user_id FROM account
 before(async () => {
   if (!ok) return;
   h = await createHarness();
-  const created = await h.authed('POST', '/api/accounts', { name: 'Taller Duarte', admin: { name: 'Dora', email: 'dora@duenos.mx', password: PASS } });
-  assert.equal(created.statusCode, 200, created.body);
-  acc = created.json().id;
+  const created = await h.addAccount({ name: 'Taller Duarte', admin: { name: 'Dora', email: 'dora@duenos.mx', password: PASS } });
+  acc = created.id;
   for (const [name, email, role] of [['Beto', 'beto@duenos.mx', 'admin'], ['Ciro', 'ciro@duenos.mx', 'agent']] as const) {
-    const r = await h.authed('POST', '/api/users', { account_id: acc, name, email, password: PASS, role });
-    assert.equal(r.statusCode, 200, r.body);
+    const r = await h.addUser({ account_id: acc, name, email, password: PASS, role });
   }
   for (const r of (await pool.query(`SELECT id, email FROM users WHERE account_id = $1`, [acc])).rows) ids[r.email] = r.id;
 });
@@ -56,8 +54,8 @@ t('si el dueño guardado no es un administrador activo de la cuenta, lo es el ad
 });
 
 t('si la fila del dueño desaparece, el siguiente administrador queda como dueño', async () => {
-  const other = (await h.authed('POST', '/api/accounts', { name: 'Otra', admin: { name: 'Olga', email: 'olga@duenos.mx', password: PASS } })).json().id;
-  const second = (await h.authed('POST', '/api/users', { account_id: other, name: 'Pita', email: 'pita@duenos.mx', password: PASS, role: 'admin' })).json().id;
+  const other = (await h.addAccount({ name: 'Otra', admin: { name: 'Olga', email: 'olga@duenos.mx', password: PASS } })).id;
+  const second = (await h.addUser({ account_id: other, name: 'Pita', email: 'pita@duenos.mx', password: PASS, role: 'admin' })).id;
   await pool.query(`DELETE FROM users WHERE email = 'olga@duenos.mx'`);
   assert.equal((await accountOwner(other))?.id, second);
   assert.equal((await pool.query(`SELECT owner_user_id FROM accounts WHERE id = $1`, [other])).rows[0].owner_user_id, second);
@@ -135,7 +133,7 @@ t('el dueño y el superadministrador (con la cuenta en ?account_id) sí llegan',
 });
 
 t('un administrador no toca al dueño ni a otros administradores; sí a los agentes', async () => {
-  const eva = (await h.authed('POST', '/api/users', { account_id: acc, name: 'Eva', email: 'eva@duenos.mx', password: PASS, role: 'admin' })).json().id;
+  const eva = (await h.addUser({ account_id: acc, name: 'Eva', email: 'eva@duenos.mx', password: PASS, role: 'admin' })).id;
   const beto = await h.loginAs('beto@duenos.mx', PASS);
   for (const target of [ids['dora@duenos.mx'], eva]) {
     for (const [method, url, body] of [

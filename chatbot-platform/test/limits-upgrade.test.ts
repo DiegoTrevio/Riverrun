@@ -40,7 +40,7 @@ after(async () => {
 
 t('al topar un límite, la respuesta dice qué se topó y el plan más barato del mismo periodo en el que cabe todo', async () => {
   const a = await account('canales@subir.mx', 'basico');
-  assert.equal((await a.api('POST', '/api/users', { email: 'agente@subir.mx', password: 'Pz-101-Qx-301-Kv', role: 'agent' })).statusCode, 200);
+  await h.addUser({ account_id: a.id, email: 'agente@subir.mx', password: 'Pz-101-Qx-301-Kv', role: 'agent' });
   assert.equal((await a.api('POST', '/api/channels', { type: 'webchat', name: 'Web' })).statusCode, 200);
   const r = await a.api('POST', '/api/channels', { type: 'webchat', name: 'Otra web' });
   assert.equal(r.statusCode, 403);

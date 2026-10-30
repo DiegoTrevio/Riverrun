@@ -59,9 +59,8 @@ before(async () => {
     rules: { handoff_message: 'En un momento te atiende una persona del equipo.' },
   });
   assert.equal((await h.authed('PUT', `/api/settings?account_id=${h.accountId}`, { business_hours: ALL_DAY, notify_team_on_handoff: true })).statusCode, 200);
-  const u = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'sofia@hotel.mx', name: 'Sofía', password: 'Pz-148-Qx-348-Kv', role: 'admin', phone: TEAM_PHONE, notify_whatsapp: true });
-  assert.equal(u.statusCode, 200, u.body);
-  teamUserId = u.json().id;
+  const u = await h.addUser({ account_id: h.accountId, email: 'sofia@hotel.mx', name: 'Sofía', password: 'Pz-148-Qx-348-Kv', role: 'admin', phone: TEAM_PHONE, notify_whatsapp: true });
+  teamUserId = u.id;
   const s = await h.authed('POST', '/api/services', { account_id: h.accountId, name: 'Visita guiada', kind: 'appointment', duration_minutes: 60, min_notice_minutes: 0, max_days_ahead: 5, location: 'Recepción', assigned_user_ids: [teamUserId] });
   assert.equal(s.statusCode, 200, s.body);
   serviceId = s.json().id;

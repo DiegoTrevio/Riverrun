@@ -326,8 +326,7 @@ t('5. diagnóstico del panel: niveles por servicio, solo superadmin y sin secret
   }
   assert.ok(!text.includes(h.token), 'tampoco el token del webhook');
 
-  const r = await h.authed('POST', '/api/accounts', { name: 'Cliente', admin: { name: 'Dueño', email: 'dueno@cliente.mx', password: 'Pz-144-Qx-344-Kv' } });
-  assert.equal(r.statusCode, 200, r.body);
+  const r = await h.addAccount({ name: 'Cliente', admin: { name: 'Dueño', email: 'dueno@cliente.mx', password: 'Pz-144-Qx-344-Kv' } });
   const client = await h.loginAs('dueno@cliente.mx', 'Pz-144-Qx-344-Kv');
   assert.equal((await client('GET', '/api/system/diagnostics')).statusCode, 403);
   assert.equal((await client('POST', '/api/system/diagnostics/run')).statusCode, 403);

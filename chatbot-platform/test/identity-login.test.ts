@@ -30,9 +30,7 @@ const resign = (cookie: string, patch: Record<string, unknown>) => {
 };
 const PASS = 'Pz-931-Qx-932-Kv';
 const newUser = async (email: string, role = 'agent') => {
-  const r = await h.authed('POST', '/api/users', { account_id: h.accountId, name: 'Persona', email, password: PASS, role });
-  assert.equal(r.statusCode, 200, r.body);
-  return r.json().id as string;
+  return (await h.addUser({ account_id: h.accountId, name: 'Persona', email, password: PASS, role: role as 'admin' | 'agent' })).id;
 };
 /** Configura el 2FA de alguien por la API y devuelve su secreto y sus códigos. */
 const enroll = async (email: string) => {

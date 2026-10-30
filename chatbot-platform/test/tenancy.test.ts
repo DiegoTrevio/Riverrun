@@ -14,9 +14,8 @@ const A = { id: '', bot: '', channel: '', token: '', instance: '', knowledge: ''
 const B = { id: '', bot: '', channel: '', token: '', instance: '', knowledge: '', conv: '', contact: '', api: null as unknown as Api };
 
 async function setupAccount(x: typeof A, name: string, email: string, instance: string, phone: string) {
-  const acc = await h.authed('POST', '/api/accounts', { name, admin: { name: `Admin ${name}`, email, password: 'Pz-144-Qx-344-Kv' } });
-  assert.equal(acc.statusCode, 200, acc.body);
-  x.id = acc.json().id;
+  const acc = await h.addAccount({ name, admin: { name: `Admin ${name}`, email, password: 'Pz-144-Qx-344-Kv' } });
+  x.id = acc.id;
   x.api = await h.loginAs(email, 'Pz-144-Qx-344-Kv');
   // El administrador crea todo sin indicar cuenta: se usa la suya.
   const bot = await x.api('POST', '/api/chatbots', { name: `Bot ${name}`, active: true, ai: { debounce_seconds: 0.1 } });

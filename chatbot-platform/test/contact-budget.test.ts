@@ -30,8 +30,8 @@ t('teléfonos iguales en distintos perfiles no comparten datos ni fichas',async(
 });
 t('usuarios agentes solo ven sus canales, resúmenes, pendientes y citas autorizados',async()=>{
  const a=await contact((await store.getChannel(h.channelId))!),ch=await store.createChannel({account_id:h.accountId,chatbot_id:h.botId,type:'whatsapp',name:'Oculto',config:{instance:'oculto'}}),b=await contact(ch);
- const made=await h.authed('POST','/api/users',{account_id:h.accountId,name:'Operador',email:'operador'+h.botId+'@test.mx',password:'Pz-921-Qx-922-Kv',role:'agent'});assert.equal(made.statusCode,200,made.body);
- const user=made.json();await pool.query('UPDATE conversations SET assigned_user_id=$2 WHERE id=$1',[a.conversation.id,user.id]);await store.updateContact(b.contact.id,{data:{secreto:'CANAL_OCULTO'}});
+ const made=await h.addUser({account_id:h.accountId,name:'Operador',email:'operador'+h.botId+'@test.mx',password:'Pz-921-Qx-922-Kv',role:'agent'});
+ const user=made;await pool.query('UPDATE conversations SET assigned_user_id=$2 WHERE id=$1',[a.conversation.id,user.id]);await store.updateContact(b.contact.id,{data:{secreto:'CANAL_OCULTO'}});
  const logged=await h.loginAs(user.email,'Pz-921-Qx-922-Kv'),r=await logged('GET',`/api/contacts/${a.contact.id}/profile`);assert.equal(r.statusCode,200,r.body);assert.equal(r.json().records.length,1);assert.doesNotMatch(r.body,/CANAL_OCULTO/);
  assert.equal((await logged('GET',`/api/contacts/${b.contact.id}/profile`)).statusCode,404);
  assert.equal((await logged('GET',url())).statusCode,403);

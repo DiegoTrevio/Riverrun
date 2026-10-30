@@ -23,7 +23,7 @@ before(async () => {
   h = await createHarness();
   await h.createBot();
   // Una administradora de la cuenta, para recibir el aviso de "ya está respondiendo".
-  await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'duena@tienda.mx', name: 'Dueña', password: 'Pz-117-Qx-317-Kv', role: 'admin' });
+  await h.addUser({ account_id: h.accountId, email: 'duena@tienda.mx', name: 'Dueña', password: 'Pz-117-Qx-317-Kv', role: 'admin' });
 });
 after(async () => {
   if (h) await h.app.close();
@@ -98,9 +98,9 @@ t('asignarle una conexión que ya estaba conectada también lo enciende', async 
 t('permisos: otra cuenta no lo ve, un operador no conecta y hace falta el correo confirmado', async () => {
   const a = await agent('Tienda Siete');
   const other = (await h.authed('POST', '/api/accounts', { name: 'Otra cuenta' })).json();
-  await h.authed('POST', '/api/users', { account_id: other.id, email: 'ajeno@otra.mx', name: 'Ajeno', password: 'Pz-104-Qx-304-Kv', role: 'admin' });
+  await h.addUser({ account_id: other.id, email: 'ajeno@otra.mx', name: 'Ajeno', password: 'Pz-104-Qx-304-Kv', role: 'admin' });
   assert.equal((await whatsapp(a.id, await h.loginAs('ajeno@otra.mx', 'Pz-104-Qx-304-Kv'))).statusCode, 404);
-  await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'operador@tienda.mx', name: 'Operador', password: 'Pz-135-Qx-335-Kv', role: 'agent' });
+  await h.addUser({ account_id: h.accountId, email: 'operador@tienda.mx', name: 'Operador', password: 'Pz-135-Qx-335-Kv', role: 'agent' });
   assert.equal((await whatsapp(a.id, await h.loginAs('operador@tienda.mx', 'Pz-135-Qx-335-Kv'))).statusCode, 403);
 
   // Quien se registra solo confirma su correo antes de conectar.

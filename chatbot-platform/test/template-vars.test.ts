@@ -45,8 +45,8 @@ t('un mensaje proactivo lee campo.* con formato, asesor, saldo, pagos pendientes
   const f = await h.authed('POST', acc('/api/contact-fields'), { label: 'Cumpleaños', key: 'cumpleanos', type: 'date' });
   assert.equal(f.statusCode, 201, f.body);
   await pool.query(`UPDATE contacts SET data = data || '{"cumpleanos":"1990-11-03"}' WHERE id = $1`, [contactId]);
-  const u = await h.authed('POST', '/api/users', { account_id: h.accountId, name: 'Laura Méndez', email: 'laura@palmas.mx', password: 'Pz-144-Qx-344-Kv', role: 'agent' });
-  await pool.query(`UPDATE conversations SET assigned_user_id = $2 WHERE id = $1`, [convId, u.json().id]);
+  const u = await h.addUser({ account_id: h.accountId, name: 'Laura Méndez', email: 'laura@palmas.mx', password: 'Pz-144-Qx-344-Kv', role: 'agent' });
+  await pool.query(`UPDATE conversations SET assigned_user_id = $2 WHERE id = $1`, [convId, u.id]);
   for (const [amount, currency] of [[150000, 'MXN'], [50050, 'MXN'], [2000, 'USD']] as const) {
     await pool.query(`INSERT INTO receivables (account_id, contact_id, concept, amount_cents, currency, due_date) VALUES ($1, $2, 'Renta', $3, $4, current_date + 3)`, [h.accountId, contactId, amount, currency]);
   }

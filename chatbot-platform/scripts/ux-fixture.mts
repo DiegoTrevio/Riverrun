@@ -86,7 +86,7 @@ export async function seedUxFixture(h: Harness) {
   // Con qué entra cada rol (p. ej. para abrir una sesión nueva por navegador).
   const credentials: Record<string, [string, string]> = { superadmin: ['admin@test.mx', 'secreto123'] };
   for (const role of ['admin', 'agent']) {
-    const user = (await h.authed('POST', '/api/users', { account_id: h.accountId, name: `Auditor ${role}`, email: `${role}@auditoria.test`, password: 'Pz-100-Qx-300-Kv', role })).json();
+    const user = await h.addUser({ account_id: h.accountId, name: `Auditor ${role}`, email: `${role}@auditoria.test`, password: 'Pz-100-Qx-300-Kv', role: role as 'admin' | 'agent' });
     credentials[role] = [`${role}@auditoria.test`, 'Pz-100-Qx-300-Kv'];
     login[role] = await h.loginAs(...credentials[role]);
     if (role === 'agent') await h.authed('PUT', `/api/conversations/${conv.id}/assign`, { user_id: user.id });

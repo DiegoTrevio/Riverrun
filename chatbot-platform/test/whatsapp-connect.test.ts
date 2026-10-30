@@ -20,8 +20,7 @@ before(async () => {
   if (!ok) return;
   h = await createHarness();
   for (const [name, email] of [['Clínica Sonrisa', 'duena@sonrisa.mx'], ['Otra', 'otra@otra.mx']]) {
-    const r = await h.authed('POST', '/api/accounts', { name, admin: { name: 'Dueña', email, password: 'Pz-144-Qx-344-Kv' } });
-    assert.equal(r.statusCode, 200, r.body);
+    const r = await h.addAccount({ name, admin: { name: 'Dueña', email, password: 'Pz-144-Qx-344-Kv' } });
   }
   admin = await h.loginAs('duena@sonrisa.mx', 'Pz-144-Qx-344-Kv');
   other = await h.loginAs('otra@otra.mx', 'Pz-144-Qx-344-Kv');

@@ -41,8 +41,7 @@ before(async () => {
   h = await createHarness();
   await h.createBot({ personality: { prompt: 'Eres Sofi, la asistente de una clínica dental.' } });
   for (const [email, name] of [['ana@clinica.mx', 'Ana'], ['luis@clinica.mx', 'Luis']] as const) {
-    const u = await h.authed('POST', '/api/users', { account_id: h.accountId, email, name, password: PASS, role: 'agent' });
-    assert.equal(u.statusCode, 200, u.body);
+    const u = await h.addUser({ account_id: h.accountId, email, name, password: PASS, role: 'agent' });
   }
   anaId = (await pool.query(`SELECT id FROM users WHERE email = 'ana@clinica.mx'`)).rows[0].id;
   luisId = (await pool.query(`SELECT id FROM users WHERE email = 'luis@clinica.mx'`)).rows[0].id;

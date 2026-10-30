@@ -32,9 +32,7 @@ export const checks = {
     assert.equal(await role.inputValue(), 'agent', 'el selector dice «Administrador» aunque no se guardó');
   },
   'Restablecer 2FA (confirmando): borra su verificación, cierra sus sesiones y queda «2FA pendiente»': async ({ f, h, pool, open, go }: AreaContext) => {
-    const su = await h.loginAs(...f.credentials.superadmin);
-    const created = await su('POST', '/api/users', { account_id: h.accountId, name: 'Sin teléfono', email: 'sin-telefono@auditoria.test', password: 'Pz-100-Qx-300-Kv', role: 'agent' });
-    assert.equal(created.statusCode, 200, created.body);
+    await h.addUser({ account_id: h.accountId, name: 'Sin teléfono', email: 'sin-telefono@auditoria.test', password: 'Pz-100-Qx-300-Kv', role: 'agent' });
     const session = await h.loginAs('sin-telefono@auditoria.test', 'Pz-100-Qx-300-Kv'); // ya configuró su app
     const { page } = await open('admin');
     await go(page, 'users');

@@ -60,9 +60,8 @@ before(async () => {
   h = await createHarness();
   await h.createBot();
   await pool.query(`UPDATE channels SET connection_state = 'open' WHERE id = $1`, [h.channelId]);
-  const r = await h.authed('POST', '/api/users', { account_id: h.accountId, name: 'Jefa', email: BOSS_EMAIL, password: 'Pz-120-Qx-320-Kv', role: 'admin', phone: BOSS_PHONE, notify_whatsapp: true });
-  assert.equal(r.statusCode, 200, r.body);
-  boss = r.json().id;
+  const r = await h.addUser({ account_id: h.accountId, name: 'Jefa', email: BOSS_EMAIL, password: 'Pz-120-Qx-320-Kv', role: 'admin', phone: BOSS_PHONE, notify_whatsapp: true });
+  boss = r.id;
 });
 after(async () => {
   if (h) await h.app.close();
@@ -256,7 +255,7 @@ t('panel: cada aviso dice por dónde llegó, el administrador ve lo que no lleg�
   assert.equal((await jefa('POST', `/api/alert-deliveries/${row.id}/retry`)).statusCode, 404, 'una entrega que ya salió no se reintenta');
   assert.equal((await jefa('POST', '/api/alert-deliveries/abc/retry')).statusCode, 404);
 
-  assert.equal((await h.authed('POST', '/api/users', { account_id: h.accountId, name: 'Agente', email: 'agente@entregas.mx', password: 'Pz-122-Qx-322-Kv', role: 'agent' })).statusCode, 200);
+  await h.addUser({ account_id: h.accountId, name: 'Agente', email: 'agente@entregas.mx', password: 'Pz-122-Qx-322-Kv', role: 'agent' });
   const agent = await h.loginAs('agente@entregas.mx', 'Pz-122-Qx-322-Kv');
   assert.equal((await agent('GET', '/api/alert-deliveries')).statusCode, 403);
   assert.equal((await agent('POST', `/api/alert-deliveries/${row.id}/retry`)).statusCode, 403);

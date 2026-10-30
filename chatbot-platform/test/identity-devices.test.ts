@@ -42,9 +42,8 @@ const enter = async (b: ReturnType<typeof browser>, email: string, password = PA
   return (await b.send('POST', '/api/login/2fa', { code: await h.codeFor(email), remember })).json();
 };
 const newUser = async (email: string) => {
-  const r = await h.authed('POST', '/api/users', { account_id: h.accountId, name: 'Dora', email, password: PASS, role: 'agent' });
-  assert.equal(r.statusCode, 200, r.body);
-  return r.json().id as string;
+  const r = await h.addUser({ account_id: h.accountId, name: 'Dora', email, password: PASS, role: 'agent' });
+  return r.id as string;
 };
 const mails = (to: string, subject: string) => outbox.filter((m) => m.to === to && m.subject === subject).length;
 

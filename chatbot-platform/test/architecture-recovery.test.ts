@@ -33,7 +33,7 @@ t('activación por empresa verifica, prepara, compara y revierte sin habilitar a
  assert.equal((await h.authed('PUT',path(),{enabled:false})).statusCode,200);assert.equal((await semanticPolicy(h.accountId)).enabled,false);
 });
 t('un administrador ajeno no puede verificar, preparar, probar ni cambiar el conocimiento de la empresa',async()=>{
- const other=await store.createAccount('Otro cliente');await h.authed('POST','/api/users',{account_id:other.id,email:'other-architecture@test.mx',name:'Otro',password:'Pz-947-Qx-948-Kv',role:'admin'});
+ const other=await store.createAccount('Otro cliente');await h.addUser({account_id:other.id,email:'other-architecture@test.mx',name:'Otro',password:'Pz-947-Qx-948-Kv',role:'admin'});
  const user=await h.loginAs('other-architecture@test.mx','Pz-947-Qx-948-Kv');
  for(const [method,suffix,body] of [['GET','',undefined],['POST','/verify',{}],['POST','/prepare',{daily_token_budget:10000}],['POST','/test',{query:'tarifa'}],['PUT','',{enabled:true}]] as const) {
   assert.equal((await user(method,path()+suffix,body)).statusCode,404);

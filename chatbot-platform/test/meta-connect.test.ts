@@ -55,8 +55,7 @@ before(async () => {
   h = await createHarness();
   await h.createBot();
   h.setScript(() => ({ messages: ['Hola, con gusto te ayudo'] }));
-  const u = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'dueno@facebook.mx', name: 'Dueño', password: 'Pz-125-Qx-325-Kv', role: 'admin' });
-  assert.equal(u.statusCode, 200, u.body);
+  const u = await h.addUser({ account_id: h.accountId, email: 'dueno@facebook.mx', name: 'Dueño', password: 'Pz-125-Qx-325-Kv', role: 'admin' });
   await pool.query('UPDATE users SET email_verified_at = now() WHERE email = $1', ['dueno@facebook.mx']);
   owner = await h.loginAs('dueno@facebook.mx', 'Pz-125-Qx-325-Kv');
 });
@@ -200,7 +199,7 @@ t('mensajes de Messenger e Instagram llegan al canal de su página y el agente c
 
 t('auditoría S1: otro negocio no puede apartar ni recibir la página de Facebook o el Instagram de este', async () => {
   const rival = (await h.authed('POST', '/api/accounts', { name: 'Negocio rival' })).json();
-  assert.equal((await h.authed('POST', '/api/users', { account_id: rival.id, email: 'rival@otro.mx', name: 'Rival', password: 'Pz-142-Qx-342-Kv', role: 'admin' })).statusCode, 200);
+  await h.addUser({ account_id: rival.id, email: 'rival@otro.mx', name: 'Rival', password: 'Pz-142-Qx-342-Kv', role: 'admin' });
   const as = await h.loginAs('rival@otro.mx', 'Pz-142-Qx-342-Kv');
   // Crea canales manuales con la página y el Instagram del hotel, y escribe a mano que se conectaron con el botón.
   const fake = { connected_via: 'facebook', meta_connected_at: '2026-01-01T00:00:00Z', page_id: 'PAGE1', page_access_token: 'tok-falso', app_secret: 's', verify_token: 'v' };

@@ -27,8 +27,7 @@ before(async () => {
   h = await createHarness();
   await h.createBot({ personality: { prompt: 'Eres Sofi, la asistente de un restaurante.' } });
   // Los avisos llegan al equipo de la cuenta: sin integrantes no hay a quién avisar.
-  const u = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'equipo@clinica.mx', name: 'Equipo', password: 'Pz-123-Qx-323-Kv', role: 'admin' });
-  assert.equal(u.statusCode, 200, u.body);
+  const u = await h.addUser({ account_id: h.accountId, email: 'equipo@clinica.mx', name: 'Equipo', password: 'Pz-123-Qx-323-Kv', role: 'admin' });
 });
 after(async () => {
   if (h) await h.app.close();
@@ -104,7 +103,7 @@ t('reinicio: los mensajes sin respuesta de hace más de 15 minutos avisan al equ
 });
 
 t('equipo: borrar a una persona la quita de los servicios que atendía', async () => {
-  const u = (await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'temporal@equipo.mx', name: 'Temporal', password: 'Pz-149-Qx-349-Kv', role: 'agent' })).json();
+  const u = (await h.addUser({ account_id: h.accountId, email: 'temporal@equipo.mx', name: 'Temporal', password: 'Pz-149-Qx-349-Kv', role: 'agent' }));
   const s = await h.authed('POST', '/api/services', { account_id: h.accountId, name: 'Limpieza', kind: 'appointment', duration_minutes: 30, assigned_user_ids: [u.id] });
   assert.equal(s.statusCode, 200, s.body);
   assert.equal((await h.authed('DELETE', `/api/users/${u.id}`)).statusCode, 200);

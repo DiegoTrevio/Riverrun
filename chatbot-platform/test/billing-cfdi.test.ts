@@ -106,7 +106,7 @@ t('descargas: solo el administrador de la cuenta (o el superadmin)', async () =>
   assert.equal((await P.api('GET', `/api/billing/invoices/${row.id}/pdf`)).statusCode, 404, 'otra cuenta no sabe que existe');
   assert.equal((await F.api('GET', `/api/billing/invoices/${row.id}/zip`)).statusCode, 404);
   assert.equal((await h.authed('GET', `/api/billing/invoices/${row.id}/pdf`)).statusCode, 200);
-  assert.equal((await h.authed('POST', '/api/users', { account_id: F.account, name: 'Iker', email: 'iker@factura.mx', password: 'Pz-126-Qx-326-Kv', role: 'agent' })).statusCode, 200);
+  await h.addUser({ account_id: F.account, name: 'Iker', email: 'iker@factura.mx', password: 'Pz-126-Qx-326-Kv', role: 'agent' });
   const agent = await h.loginAs('iker@factura.mx', 'Pz-126-Qx-326-Kv');
   assert.equal((await agent('GET', `/api/billing/invoices/${row.id}/pdf`)).statusCode, 403);
 });

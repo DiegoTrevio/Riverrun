@@ -30,9 +30,8 @@ before(async () => {
   const s = await h.authed('PUT', `/api/settings?account_id=${h.accountId}`, { business_hours: ALL_DAY, consent: { require_for_campaigns: false } });
   assert.equal(s.statusCode, 200, s.body);
   // Miembro del equipo que recibe alertas por WhatsApp
-  const u = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'lucia@hotel.mx', name: 'Lucía', password: 'Pz-132-Qx-332-Kv', role: 'agent', phone: '5215588880000', notify_whatsapp: true });
-  assert.equal(u.statusCode, 200, u.body);
-  teamUserId = u.json().id;
+  const u = await h.addUser({ account_id: h.accountId, email: 'lucia@hotel.mx', name: 'Lucía', password: 'Pz-132-Qx-332-Kv', role: 'agent', phone: '5215588880000', notify_whatsapp: true });
+  teamUserId = u.id;
   await h.authed('POST', `/api/chatbots/${h.botId}/knowledge`, { title: 'Precios', content: 'Doble: $1,650 MXN por noche.' });
 });
 after(async () => {
@@ -404,7 +403,7 @@ t('simulador: reglas y citas de prueba sin molestar al equipo ni ocupar horarios
 });
 
 t('acceso: otra cuenta no ve ni toca la automatización; el agente no configura reglas', async () => {
-  const other = await h.authed('POST', '/api/accounts', { name: 'Otra', admin: { email: 'admin@otra.mx', password: 'Pz-136-Qx-336-Kv' } });
+  const other = await h.addAccount({ name: 'Otra', admin: { email: 'admin@otra.mx', password: 'Pz-136-Qx-336-Kv' } });
   const api = await h.loginAs('admin@otra.mx', 'Pz-136-Qx-336-Kv');
   for (const path of ['/api/automations', '/api/sequences', '/api/campaigns', '/api/services', '/api/appointments']) {
     assert.deepEqual((await api('GET', path)).json(), [], path);

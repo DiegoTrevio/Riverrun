@@ -15,9 +15,8 @@ let self: typeof import('../src/accounts/self-service.js');
 let config: typeof import('../src/config.js').config;
 
 async function account(name: string, email: string) {
-  const r = await h.authed('POST', '/api/accounts', { name, admin: { name: `Dueño ${name}`, email, password: 'Pz-144-Qx-344-Kv' } });
-  assert.equal(r.statusCode, 200, r.body);
-  return r.json().id as string;
+  const r = await h.addAccount({ name, admin: { name: `Dueño ${name}`, email, password: 'Pz-144-Qx-344-Kv' } });
+  return r.id as string;
 }
 const linkFor = (to: string) => {
   const mail = [...outbox].reverse().find((m) => m.to === to && m.text.includes('/borrar-cuenta?t='));
@@ -36,8 +35,8 @@ before(async () => {
   B.account = await account('Otra Cuenta', 'beto@otra.mx');
   A.owner = await h.loginAs('sol@floreria.mx', 'Pz-144-Qx-344-Kv');
   B.owner = await h.loginAs('beto@otra.mx', 'Pz-144-Qx-344-Kv');
-  assert.equal((await A.owner('POST', '/api/users', { name: 'Socia', email: 'socia@floreria.mx', password: 'Pz-144-Qx-344-Kv', role: 'admin' })).statusCode, 200);
-  assert.equal((await A.owner('POST', '/api/users', { name: 'Agente', email: 'agente@floreria.mx', password: 'Pz-144-Qx-344-Kv', role: 'agent' })).statusCode, 200);
+  await h.addUser({ account_id: A.account, name: 'Socia', email: 'socia@floreria.mx', password: 'Pz-144-Qx-344-Kv', role: 'admin' });
+  await h.addUser({ account_id: A.account, name: 'Agente', email: 'agente@floreria.mx', password: 'Pz-144-Qx-344-Kv', role: 'agent' });
   A.admin2 = await h.loginAs('socia@floreria.mx', 'Pz-144-Qx-344-Kv');
   A.agent = await h.loginAs('agente@floreria.mx', 'Pz-144-Qx-344-Kv');
   // Datos de cada cuenta para comprobar que la descarga no mezcla cuentas.

@@ -64,7 +64,7 @@ before(async () => {
   h = await createHarness();
   await h.createBot();
   // Un administrador de la cuenta: a quien le llegan los avisos del equipo.
-  assert.equal((await h.authed('POST', '/api/users', { account_id: h.accountId, name: 'Caja', email: 'caja@confiable.mx', password: 'Pz-144-Qx-344-Kv', role: 'admin' })).statusCode, 200);
+  await h.addUser({ account_id: h.accountId, name: 'Caja', email: 'caja@confiable.mx', password: 'Pz-144-Qx-344-Kv', role: 'admin' });
 });
 after(async () => {
   if (h) await h.app.close();

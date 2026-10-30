@@ -45,7 +45,7 @@ before(async () => {
   h = await createHarness();
   await h.createBot();
   h.setScript(() => ({ messages: ['Hola, ¿en qué te ayudo?'] }));
-  await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'wa@palmas.mx', name: 'Dueña', password: 'Pz-151-Qx-351-Kv', role: 'admin' });
+  await h.addUser({ account_id: h.accountId, email: 'wa@palmas.mx', name: 'Dueña', password: 'Pz-151-Qx-351-Kv', role: 'admin' });
   await pool.query('UPDATE users SET email_verified_at = now()');
   owner = await h.loginAs('wa@palmas.mx', 'Pz-151-Qx-351-Kv');
 });
