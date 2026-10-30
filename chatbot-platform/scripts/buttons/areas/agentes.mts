@@ -56,6 +56,31 @@ export const checks = {
     assert.equal(await count(), n);
     assert.equal((await pool.query('SELECT count(*)::int AS n FROM chatbots WHERE id = $1', [copy])).rows[0].n, 0);
   },
+  '«Quitar archivo» aparece solo con un archivo elegido y lo quita': async ({ h, open, go }: AreaContext) => {
+    const { page } = await open('admin');
+    await go(page, `bot/${h.botId}/conocimiento`);
+    const card = page.locator('.import-card').first();
+    await card.waitFor();
+    const remove = card.getByRole('button', { name: 'Quitar archivo' });
+    assert.equal(await remove.isVisible(), false, '«Quitar archivo» se ve sin ningún archivo elegido (y no hace nada)');
+    await card.locator('input[type=file]').setInputFiles({ name: 'menu.txt', mimeType: 'text/plain', buffer: Buffer.from('Menú del día: sopa y guisado.') });
+    await card.getByText('menu.txt').waitFor();
+    await remove.click();
+    assert.equal(await card.getByText('menu.txt').count(), 0, 'el archivo sigue elegido');
+    assert.equal(await remove.isVisible(), false);
+  },
+  'iPhone y Android dicen cuál está elegido': async ({ h, open, go }: AreaContext) => {
+    const { page } = await open('admin');
+    await go(page, `bot/${h.botId}/conexiones/${h.channelId}`);
+    await page.locator('.wa-connect').waitFor();
+    const iphone = page.getByRole('button', { name: 'iPhone', exact: true });
+    const android = page.getByRole('button', { name: 'Android', exact: true });
+    await iphone.click();
+    assert.equal(await page.getByRole('button', { name: 'iPhone', exact: true }).getAttribute('aria-pressed'), 'true', 'iPhone elegido no lo dice (aria-pressed)');
+    assert.equal(await android.getAttribute('aria-pressed'), 'false');
+    await android.click();
+    assert.equal(await page.getByRole('button', { name: 'Android', exact: true }).getAttribute('aria-pressed'), 'true');
+  },
   'Reiniciar conversaciones avisa cuántas reinició': async ({ h, open, go }: AreaContext) => {
     const { page } = await open('admin');
     await go(page, `bot/${h.botId}/instrucciones`);

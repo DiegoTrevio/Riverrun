@@ -136,7 +136,7 @@ export const INIT_SCRIPT = String.raw`(() => {
     .filter((e) => visible(e) && e.id !== 'toast-alert').map((e) => clean(e.textContent) || '(campo marcado: ' + (e.getAttribute('name') || e.id) + ')');
   // Estado propio del control: una pestaña o un interruptor que ya estaba elegido no cambia al tocarlo otra vez.
   const lookOf = (t) => t ? ['aria-pressed', 'aria-selected', 'aria-expanded', 'aria-current', 'aria-checked', 'class'].map((a) => t.getAttribute(a) || '').join('|') : '';
-  const isActive = (t) => !!t && (['true', 'page', 'step'].includes(t.getAttribute('aria-pressed') || t.getAttribute('aria-selected') || t.getAttribute('aria-current') || '') || /(^|\s)(active|is-active|selected|on)(\s|$)/.test(t.className || ''));
+  const isActive = (t) => !!t && ((t.type === 'radio' && t.checked) || !!t.querySelector?.('input[type=radio]:checked') || ['true', 'page', 'step'].includes(t.getAttribute('aria-pressed') || t.getAttribute('aria-selected') || t.getAttribute('aria-current') || '') || /(^|\s)(active|is-active|selected|on)(\s|$)/.test(t.className || ''));
   audit.endClick = () => {
     // El clic cargó otro documento (un enlace a otra página): de esta página solo se sabe dónde quedó.
     if (!audit.before) return { hash: location.hash, h1: clean(document.querySelector('.main h1, main h1')?.textContent), reloaded: true };
