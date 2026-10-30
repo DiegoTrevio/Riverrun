@@ -116,6 +116,74 @@ jobs:
       - name: Dependencias vulnerables (solo las de producción)
         run: npm audit --omit=dev --audit-level=high
 
+  # Auditoría de botones (docs/auditoria-botones.md): presiona cada control del panel con cada rol, en paralelo con
+  # «Tipos y pruebas» para no alargarlo. Si un botón deja de hacer lo que dice, el PR falla.
+  buttons:
+    name: Botones del panel
+    runs-on: ubuntu-latest
+    # Una corrida sana tarda ~20 min en una máquina de 4 núcleos (más la instalación); el margen es para un runner más lento.
+    timeout-minutes: 50
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.7-pg16
+        env:
+          POSTGRES_USER: chatbot
+          POSTGRES_PASSWORD: chatbot
+          POSTGRES_DB: chatbot_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U chatbot" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://chatbot:chatbot@localhost:5432/chatbot_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: chatbot-platform/package-lock.json
+      - run: npm ci
+      # Los mismos pasos (y reintentos) del navegador que «Tipos y pruebas».
+      - name: Paquetes del sistema para el navegador
+        timeout-minutes: 14
+        run: |
+          printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "5";\n' | sudo tee /etc/apt/apt.conf.d/99-ci-timeouts > /dev/null
+          for i in 1 2 3; do
+            timeout -k 15 240 npx playwright install-deps chromium && exit 0
+            echo "::warning::Paquetes del sistema: el intento $i falló o se agotó; se limpia apt y se reintenta"
+            sudo pkill -9 -x apt-get || true
+            sudo pkill -9 -x dpkg || true
+            sudo rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock
+            sudo dpkg --configure -a || true
+          done
+          exit 1
+      - name: Versión de Playwright
+        id: pw
+        run: echo "version=$(node -p "require('./node_modules/playwright/package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: Caché del navegador de pruebas
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-chromium
+      - name: Navegador de pruebas
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 10
+        run: |
+          for i in 1 2 3; do
+            timeout -k 10 180 npx playwright install chromium && exit 0
+            echo "::warning::Navegador: el intento $i falló o se agotó; se reintenta"
+          done
+          exit 1
+      - name: Presionar cada botón del panel
+        run: npm run test:buttons
+      - name: Guardar evidencia de la auditoría de botones
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: button-audit
+          path: chatbot-platform/data/button-audit
+
   scripts:
     name: Scripts y respaldos
     runs-on: ubuntu-latest

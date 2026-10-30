@@ -28,9 +28,11 @@ export function importCard({ endpoint, url = '', onResult, title = 'Llena todo p
   const source = h('select', { 'aria-label': 'Fuente de información', onchange: (e) => { f.source = e.target.value; updateSource(); } }, [['file', 'Archivo'], ['url', 'Página web'], ['text', 'Texto']].map(([v, label]) => h('option', { value: v, selected: v === f.source }, label)));
   let file = null;
   const fileName = h('span', { class: 'small muted' });
+  // «Quitar archivo» solo cuando hay uno elegido (sin archivo no tendría qué quitar).
+  const removeFile = h('button', { class: 'small', hidden: true, onclick: () => { file = null; fileInput.value = ''; fileName.textContent = ''; removeFile.hidden = true; } }, 'Quitar archivo');
   const fileInput = h('input', {
     type: 'file', hidden: true, accept: IMPORT_ACCEPT,
-    onchange: (e) => { file = e.target.files[0] || null; fileName.textContent = file ? file.name : ''; },
+    onchange: (e) => { file = e.target.files[0] || null; fileName.textContent = file ? file.name : ''; removeFile.hidden = !file; },
   });
   const status = h('span', { class: 'small muted' });
   const btn = h('button', { class: 'primary' }, button);
@@ -44,7 +46,7 @@ export function importCard({ endpoint, url = '', onResult, title = 'Llena todo p
     if (r) await onResult(r);
   });
   const website = field('Dirección web', text(f, 'url', { type: 'url', placeholder: 'https://www.minegocio.com' }));
-  const upload = h('div', { class: 'row' }, h('button', { onclick: () => fileInput.click() }, icon('paperclip', 16), 'Elegir archivo'), fileInput, fileName, h('button', { class: 'small', onclick: () => { file = null; fileInput.value = ''; fileName.textContent = ''; } }, 'Quitar archivo'));
+  const upload = h('div', { class: 'row' }, h('button', { onclick: () => fileInput.click() }, icon('paperclip', 16), 'Elegir archivo'), fileInput, fileName, removeFile);
   const pasted = field('Información del negocio', area(f, 'text', { big: true, placeholder: 'Pega tu menú, precios, horarios…', maxlength: 50000 }));
   function updateSource() { website.hidden = f.source !== 'url'; upload.hidden = f.source !== 'file'; pasted.hidden = f.source !== 'text'; }
   updateSource();

@@ -18,7 +18,9 @@ process.env.TEST_DATABASE_URL = url.href;
 
 // Orden obligatorio: los proveedores simulados fijan claves y URLs antes de que el arnés cargue la configuración.
 const { fake, stripeEvent, stripeSub } = await import('../test/billing-fakes.js');
-const { createHarness, pool } = await import('../test/harness.js');
+const { createHarness, pool, waitFor } = await import('../test/harness.js');
+const { outbox } = await import('../src/mailer.js');
+const mailsTo = (email: string) => outbox.filter((m) => String(m.to).includes(email)).length;
 const h = await createHarness();
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 const checks: string[] = [];
@@ -123,7 +125,13 @@ try {
   await card.getByText('0 de 6 pasos listos').first().waitFor();
   await card.getByText('Elige tu plan').waitFor();
   await card.getByRole('link', { name: 'Crear agente' }).waitFor();
-  await card.getByRole('button', { name: 'Reenviar correo' }).waitFor();
+  // «Reenviar correo»: recién registrada pide esperar un minuto; después manda otra vez el correo para confirmar la cuenta.
+  await card.getByRole('button', { name: 'Reenviar correo' }).click();
+  await page.getByText('Espera un minuto antes de pedir otro correo').first().waitFor();
+  await pool.query(`UPDATE auth_tokens SET created_at = now() - interval '2 minutes' WHERE kind = 'verify_email'`);
+  const verifyMails = mailsTo('ana@estudio.mx');
+  await card.getByRole('button', { name: 'Reenviar correo' }).click();
+  await waitFor(() => mailsTo('ana@estudio.mx') > verifyMails, 5000);
   await pool.query(`UPDATE users SET email_verified_at = now() WHERE email = 'ana@estudio.mx'`);
   await page.reload();
   await card.getByText('1 de 6 pasos listos').first().waitFor();
@@ -246,7 +254,10 @@ try {
   await invite.getByLabel('Nombre (opcional)').fill('Rita');
   await invite.getByRole('button', { name: 'Enviar invitación' }).click();
   await page.getByText('Invitación enviada a rita@estudio.mx').waitFor();
-  await invite.getByRole('button', { name: 'Reenviar invitación a rita@estudio.mx' }).waitFor();
+  // «Reenviar invitación» le manda el correo otra vez.
+  const inviteMails = mailsTo('rita@estudio.mx');
+  await invite.getByRole('button', { name: 'Reenviar invitación a rita@estudio.mx' }).click();
+  await waitFor(() => mailsTo('rita@estudio.mx') > inviteMails, 5000);
   await page.evaluate(axe);
   const teamViolations = await page.evaluate(async () => (await (window as any).axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] } }))
     .violations.filter((v: any) => ['serious', 'critical'].includes(v.impact)).map((v: any) => v.id));
@@ -288,7 +299,10 @@ try {
   await page.setViewportSize({ width: 390, height: 1000 });
   await page.goto(`${base}/#/plan`);
   const data = page.getByRole('region', { name: 'Tus datos' });
-  await data.getByRole('link', { name: 'Descargar todos mis datos (ZIP)' }).waitFor();
+  // «Descargar todos mis datos (ZIP)» baja un archivo con contenido.
+  const [zip] = await Promise.all([page.waitForEvent('download'), data.getByRole('link', { name: 'Descargar todos mis datos (ZIP)' }).click()]);
+  assert.match(zip.suggestedFilename(), /\.zip$/, `descargó ${zip.suggestedFilename()}`);
+  assert.ok(fs.statSync((await zip.path())!).size > 100, 'el ZIP vino vacío');
   await data.getByLabel(/Para confirmar, escribe el nombre de tu cuenta/).fill(accName);
   await data.getByRole('button', { name: 'Borrar mi cuenta' }).click();
   await page.getByText('Te enviamos un correo a ana@estudio.mx para confirmar el borrado').waitFor();
@@ -339,6 +353,17 @@ try {
   const upNow = chosen.getByRole('button', { name: 'Subir ahora a Equipo anual' });
   await upNow.waitFor();
   assert.ok(await upNow.evaluate((b) => { const r = b.getBoundingClientRect(); return r.top >= 0 && r.bottom <= window.innerHeight; }), 'el botón para subir queda a la vista');
+  // «Subir ahora» va a Stripe (su página de pago se simula aquí: nada sale de la máquina).
+  await page.route(/^https:\/\/[a-z]+\.stripe\.test\//, (route) => route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>Stripe</title><h1>Pago</h1>' }));
+  const stripeCalls = fake.stripe.requests.length;
+  await upNow.click();
+  const confirm = page.locator('dialog[open]').getByRole('button', { name: /^(Continuar|Confirmar|Subir)/ });
+  if (await confirm.count()) await confirm.first().click();
+  await waitFor(() => fake.stripe.requests.length > stripeCalls, 5000);
+  // Se espera lo que promete el botón (la página de pago de Stripe o «Listo: ahora tienes el plan …»): si su respuesta
+  // llegara después, cambiaría de página encima de lo que sigue.
+  await Promise.race([page.waitForURL(/stripe\.test/, { timeout: 10000 }), page.getByText(/^Listo: ahora tienes el plan/).first().waitFor({ timeout: 10000 })]);
+  await page.unrouteAll({ behavior: 'wait' });
   checks.push('Topar el límite de usuarios: «Subir a …» lleva a Mi plan con el plan sugerido elegido (accesible en móvil)');
 
   // El superadmin captura precios sin IVA y elige el periodo. La última tarjeta es la de "Agregar plan".

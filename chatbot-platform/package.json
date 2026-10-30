@@ -36,7 +36,8 @@
     "test:contact:ux": "node --import tsx scripts/test-contact-budget-ux.mts",
     "test:quotes:ux": "node --import tsx scripts/test-quotes-ux.mts",
     "test:billing:ux": "node --import tsx scripts/test-billing-ux.mts",
-    "test:public:ux": "node --import tsx scripts/test-public-ux.mts"
+    "test:public:ux": "node --import tsx scripts/test-public-ux.mts",
+    "test:buttons": "node --import tsx scripts/test-buttons.mts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.2",

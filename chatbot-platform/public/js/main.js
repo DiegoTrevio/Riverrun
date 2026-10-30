@@ -1,7 +1,7 @@
 import { $app, errorCard, fill, h, recordUX, state } from './core.js';
 import { brand, ensureBrand } from './brand.js';
 import { loadWhatsappStatus } from './connect.js';
-import { clearTimers, copilotAvailable, isAdmin, loadSession } from './session.js';
+import { clearTimers, copilotAvailable, isAdmin, isSuper, loadSession } from './session.js';
 import { shell } from './shell.js';
 
 /* ------------------------------ Router ------------------------------ */
@@ -54,8 +54,8 @@ export async function render() {
   if (!current()) return;
   await loadWhatsappStatus();
   if (!current()) return;
-  // Los agentes solo atienden conversaciones.
-  if (!isAdmin() && !['conversations', 'conversation', 'contacts', 'contact', 'password', 'agenda', 'notifications', 'pipeline', 'comentarios'].includes(parts[0])) {
+  // Los agentes solo atienden conversaciones (y lo de sus clientes: contactos, agenda, oportunidades y cobros).
+  if (!isAdmin() && !['conversations', 'conversation', 'contacts', 'contact', 'password', 'agenda', 'notifications', 'pipeline', 'comentarios', 'cobros'].includes(parts[0])) {
     location.hash = '#/conversations';
     return;
   }
@@ -65,7 +65,9 @@ export async function render() {
   const content = h('div', { 'aria-busy': 'true' }, pending);
   fill($app, shell(parts[0] || 'home', content));
   try {
-    if (parts[0] === 'agentes' && parts[1] === 'conexion') await view('channels', 'viewChannel', content, parts[2]);
+    // El maestro con «Todos los perfiles»: lo que es de un perfil pide elegirlo (en vez de un error del servidor).
+    if (isSuper() && !state.accountId && ['comentarios', 'publicaciones', 'cobros', 'estadisticas', 'integraciones', 'redes', 'datos-clientes'].includes(parts[0])) await view('admin', 'needAccount', content);
+    else if (parts[0] === 'agentes' && parts[1] === 'conexion') await view('channels', 'viewChannel', content, parts[2]);
     else if (parts[0] === 'agentes' && parts[1] === 'nuevo') await view('agentwizard', 'viewNewAgent', content, params);
     else if (!parts.length || ['agentes', 'asistentes'].includes(parts[0])) await view('dashboard', 'viewDashboard', content, params, !parts.length);
     // «Empezar» (y los antiguos Primeros pasos): a lo que falta para que el agente responda.

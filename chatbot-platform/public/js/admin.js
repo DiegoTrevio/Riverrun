@@ -115,7 +115,7 @@ export async function viewUsers(root) {
           return h('tr', {},
             h('td', {}, h('strong', {}, u.name || '—'), h('div', { class: 'muted small' }, u.email, u.phone ? ` · WhatsApp +${u.phone}${u.notify_whatsapp ? ' (alertas)' : ''}` : ''), !u.active ? h('span', { class: 'badge orange' }, 'desactivado') : null, u.active && u.role !== 'superadmin' && u.available === false ? h('span', { class: 'badge' }, 'no disponible para turnos') : null),
             h('td', {}, u.role === 'superadmin' || self ? ROLE_LABEL[u.role]
-              : h('select', { 'aria-label': `Rol de ${u.email}`, onchange: async (e) => { if (await run(() => api('PUT', `/api/users/${u.id}`, { role: e.target.value }), 'Rol actualizado')) render(); } },
+              : h('select', { 'aria-label': `Rol de ${u.email}`, onchange: async (e) => { if (await run(() => api('PUT', `/api/users/${u.id}`, { role: e.target.value }), 'Rol actualizado')) render(); else e.target.value = u.role; } },
                   [['agent', 'Operador del perfil'], ['admin', 'Administrador del perfil']].map(([v, l]) => h('option', { value: v, selected: u.role === v }, l)))),
             isSuper() ? h('td', { class: 'small' }, u.role === 'superadmin' ? 'Todos los perfiles' : h('select', { 'aria-label': `Perfil de ${u.email}`, onchange: async (e) => { if (await run(() => api('PUT', `/api/users/${u.id}`, { account_id: e.target.value }), 'Perfil asignado')) render(); else e.target.value = u.account_id; } }, state.accounts.map((a) => h('option', { value: a.id, selected: u.account_id === a.id }, a.name)))) : null,
             h('td', { class: 'small muted' }, u.last_login_at ? fmtDate(u.last_login_at) : 'nunca'),
@@ -312,6 +312,8 @@ export async function viewPassword(root) {
 export function needAccount(root) {
   if (!isSuper() || state.accountId) return false;
   const choice = { account_id: state.accounts.find((a) => a.active)?.id || state.accounts[0]?.id || '' };
+  // Desde el router la pantalla aún no tiene título: el de esta elección (cada página tiene su h1).
+  if (!root.querySelector('h1')) root.append(h('h1', {}, 'Elige un perfil'));
   root.append(h('div', { class: 'card' }, h('h2', {}, '¿Qué perfil quieres gestionar?'), field('Perfil de negocio', select(choice, 'account_id', state.accounts.map((a) => [a.id, a.name]))), h('button', { class: 'primary', disabled: !choice.account_id, onclick: () => { state.accountId = choice.account_id; try { localStorage.setItem('cp-account', state.accountId); } catch { /* sin almacenamiento */ } render(); } }, 'Gestionar este perfil')));
   return true;
 }
