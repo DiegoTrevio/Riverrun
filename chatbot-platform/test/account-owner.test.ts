@@ -71,9 +71,102 @@ t('/api/me dice quién es el dueño', async () => {
   assert.equal((await h.authed('GET', '/api/me')).json().owner, null, 'el superadministrador no tiene cuenta propia');
 });
 
+t('la lista del equipo marca al dueño (también para el superadministrador)', async () => {
+  const beto = await h.loginAs('beto@duenos.mx', PASS);
+  for (const list of [(await beto('GET', '/api/users')).json(), (await h.authed('GET', `/api/users?account_id=${acc}`)).json()]) {
+    assert.deepEqual(list.filter((u: any) => u.is_owner).map((u: any) => u.email), ['dora@duenos.mx']);
+  }
+  await pool.query(`UPDATE accounts SET owner_user_id = NULL WHERE id = $1`, [acc]);
+  const fixed = (await beto('GET', '/api/users')).json();
+  assert.deepEqual(fixed.filter((u: any) => u.is_owner).map((u: any) => u.email), ['dora@duenos.mx'], 'sin dueño guardado: el más antiguo, ya guardado');
+});
+
 t('nadie más calcula al dueño por su cuenta', async () => {
   const dir = path.resolve(import.meta.dirname, '../src');
   const files = (fs.readdirSync(dir, { recursive: true }) as string[]).filter((f) => f.endsWith('.ts') && !f.endsWith(path.join('identity', 'ownership.ts')));
   const copies = files.filter((f) => /ORDER BY \((u\.)?id = (\$1|a\.owner_user_id)\) DESC/.test(fs.readFileSync(path.join(dir, f), 'utf8')));
   assert.deepEqual(copies, []);
+});
+
+/* ------------------------------ Poderes del dueño ------------------------------ */
+
+const ID = '00000000-0000-4000-8000-000000000000';
+/** Lo que solo hace el dueño (o el superadministrador). */
+export const OWNER_ROUTES: [string, string][] = [
+  ['GET', '/api/billing/fiscal'],
+  ['PUT', '/api/billing/fiscal'],
+  ['GET', `/api/billing/invoices/${ID}/pdf`],
+  ['POST', '/api/billing/checkout'],
+  ['POST', '/api/billing/confirm'],
+  ['POST', '/api/billing/portal'],
+  ['POST', '/api/billing/change'],
+  ['POST', '/api/billing/payment-method'],
+  ['POST', '/api/billing/cancel'],
+  ['GET', '/api/account/export.zip'],
+  ['POST', '/api/account/deletion'],
+  ['DELETE', '/api/account/deletion'],
+];
+const OWNER_ONLY = { error: 'Solo el dueño de la cuenta (Dora) puede hacer esto', code: 'owner_only' };
+const age = (email: string) => pool.query(`UPDATE user_sessions SET mfa_at = now() - interval '16 minutes' WHERE user_id = (SELECT id FROM users WHERE email = $1)`, [email]);
+
+t('un administrador que no es dueño no llega a lo del dueño (aunque su código sea viejo: no le pide el código)', async () => {
+  const beto = await h.loginAs('beto@duenos.mx', PASS);
+  await age('beto@duenos.mx');
+  for (const [method, url] of OWNER_ROUTES) {
+    const r = await beto(method, url, {});
+    assert.equal(r.statusCode, 403, `${method} ${url}: ${r.body}`);
+    assert.deepEqual(r.json(), OWNER_ONLY, `${method} ${url}`);
+  }
+  assert.equal((await beto('GET', '/api/billing')).statusCode, 200, 'el plan sí lo ve');
+});
+
+t('el dueño y el superadministrador (con la cuenta en ?account_id) sí llegan', async () => {
+  const dora = await h.loginAs('dora@duenos.mx', PASS);
+  await h.authed('POST', '/api/2fa/step-up', { code: await h.codeFor('admin@test.mx') });
+  for (const [method, url] of OWNER_ROUTES) {
+    for (const [who, call, u] of [['dueño', dora, url], ['superadmin', h.authed, `${url}?account_id=${acc}`]] as const) {
+      const r = await call(method, u, {});
+      const code = (() => { try { return r.json().code; } catch { return undefined; } })(); // el ZIP no es JSON
+      assert.notEqual(code, 'owner_only', `${who} → ${method} ${url}: ${r.body.slice(0, 200)}`);
+      assert.notEqual(r.statusCode, 403, `${who} → ${method} ${url}: ${r.body.slice(0, 200)}`);
+    }
+  }
+});
+
+t('un administrador no toca al dueño ni a otros administradores; sí a los agentes', async () => {
+  const eva = (await h.authed('POST', '/api/users', { account_id: acc, name: 'Eva', email: 'eva@duenos.mx', password: PASS, role: 'admin' })).json().id;
+  const beto = await h.loginAs('beto@duenos.mx', PASS);
+  for (const target of [ids['dora@duenos.mx'], eva]) {
+    for (const [method, url, body] of [
+      ['PUT', `/api/users/${target}`, { name: 'Otro nombre' }],
+      ['PUT', `/api/users/${target}`, { active: false }],
+      ['PUT', `/api/users/${target}`, { role: 'agent' }],
+      ['DELETE', `/api/users/${target}`, undefined],
+      ['POST', `/api/users/${target}/2fa/reset`, {}],
+    ] as const) {
+      const r = await beto(method, url, body);
+      assert.deepEqual(r.json(), OWNER_ONLY, `${method} ${url} ${JSON.stringify(body)}`);
+    }
+  }
+  const ciro = ids['ciro@duenos.mx'];
+  assert.equal((await beto('PUT', `/api/users/${ciro}`, { name: 'Ciro Ruiz' })).statusCode, 200);
+  assert.equal((await beto('PUT', `/api/users/${ciro}`, { active: false })).statusCode, 200);
+  assert.equal((await beto('PUT', `/api/users/${ciro}`, { active: true })).statusCode, 200);
+  assert.deepEqual((await beto('PUT', `/api/users/${ciro}`, { role: 'admin' })).json(), OWNER_ONLY, 'hacer administrador a alguien es del dueño');
+  assert.deepEqual((await beto('POST', '/api/invitations', { email: 'nueva-admin@duenos.mx', role: 'admin' })).json(), OWNER_ONLY, 'invitar a un administrador también');
+  assert.equal((await beto('POST', '/api/invitations', { email: 'nuevo-agente@duenos.mx', role: 'agent' })).statusCode, 200, 'invitar a un agente no');
+  assert.deepEqual((await beto('POST', '/api/users', { account_id: acc, name: 'Fito', email: 'fito@duenos.mx', password: PASS, role: 'admin' })).json(), OWNER_ONLY);
+});
+
+t('nadie desactiva, degrada, mueve ni borra al dueño: primero transfiere', async () => {
+  const dora = ids['dora@duenos.mx'];
+  const other = (await h.authed('POST', '/api/accounts', { name: 'Destino' })).json().id;
+  await h.authed('POST', '/api/2fa/step-up', { code: await h.codeFor('admin@test.mx') });
+  for (const [method, body] of [['PUT', { active: false }], ['PUT', { role: 'agent' }], ['PUT', { account_id: other }], ['DELETE', undefined]] as const) {
+    const r = await h.authed(method, `/api/users/${dora}`, body);
+    assert.equal(r.statusCode, 400, `${method} ${JSON.stringify(body)}: ${r.body}`);
+    assert.equal(r.json().error, 'Primero transfiere la cuenta a otro administrador');
+  }
+  const owner = await h.loginAs('dora@duenos.mx', PASS);
+  assert.equal((await owner('PUT', `/api/users/${ids['beto@duenos.mx']}`, { name: 'Beto Duarte' })).statusCode, 200, 'el dueño sí maneja a los administradores');
 });

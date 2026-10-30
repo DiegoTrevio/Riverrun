@@ -109,8 +109,9 @@ export async function deleteAccount(id: string) {
 const USER_COLS = 'id, account_id, role, name, email, phone, notify_whatsapp, alert_prefs, available, active, email_verified_at, last_login_at, created_at';
 
 /** El equipo, con si ya configuró la verificación en dos pasos (nunca el secreto). */
-export async function listUsers(accountId: string | null): Promise<(User & { mfa_enabled: boolean })[]> {
-  const cols = `${USER_COLS}, totp_enabled_at IS NOT NULL AS mfa_enabled`;
+export async function listUsers(accountId: string | null): Promise<(User & { mfa_enabled: boolean; is_owner: boolean })[]> {
+  const cols = `${USER_COLS}, totp_enabled_at IS NOT NULL AS mfa_enabled,
+    EXISTS (SELECT 1 FROM accounts a WHERE a.id = users.account_id AND a.owner_user_id = users.id) AS is_owner`;
   return accountId
     ? query(`SELECT ${cols} FROM users WHERE account_id = $1 ORDER BY created_at`, [accountId])
     : query(`SELECT ${cols} FROM users ORDER BY account_id NULLS FIRST, created_at`);

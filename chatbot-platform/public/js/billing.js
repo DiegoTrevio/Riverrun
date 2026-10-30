@@ -1,7 +1,7 @@
 import { api, check, clearFieldErrors, field, fill, h, num, run, select, showFieldErrors, state, text, toast, confirmAction } from './core.js';
 import { okMark } from './icons.js';
 import { render } from './main.js';
-import { withAcct } from './session.js';
+import { isOwner, ownerOnlyText, withAcct } from './session.js';
 import { needsOnboarding } from './shell.js';
 
 /* ------------------------------ Mi plan y pagos ------------------------------ */
@@ -137,7 +137,9 @@ const MAX_CONFIRM_TRIES = 15;
 export async function viewPlan(root, params) {
   const paid = params.get('pago') === 'ok';
   if (!paid) confirmTries = 0;
-  if (paid && confirmTries < MAX_CONFIRM_TRIES) {
+  // Solo el dueño maneja el plan y los pagos: los demás administradores lo ven sin botones.
+  const mine = isOwner();
+  if (paid && confirmTries < MAX_CONFIRM_TRIES && mine) {
     confirmTries++;
     // Se pregunta al proveedor por el pago: la cuenta se activa sin esperar su aviso.
     const c = await api('POST', withAcct('/api/billing/confirm')).catch(() => null);
@@ -163,10 +165,10 @@ export async function viewPlan(root, params) {
         : h('p', { class: 'muted' }, sub.cancel_at_period_end
           ? `Tu plan se cancelará el ${longDate(sub.current_period_end)}; hasta entonces todo sigue funcionando.`
           : `Próximo cobro: ${longDate(sub.current_period_end)}.${next ? ` Con ese cobro cambias al plan ${next.name}.` : ''}`),
-      next && plan && !sub.cancel_at_period_end ? h('div', { class: 'row' }, h('button', { onclick: async () => {
+      mine && next && plan && !sub.cancel_at_period_end ? h('div', { class: 'row' }, h('button', { onclick: async () => {
         if (await run(() => api('POST', withAcct('/api/billing/change'), { plan: plan.key }), `Listo: sigues con el plan ${plan.name}`)) render();
       } }, `Quedarme con el plan ${plan.name}`)) : null,
-      h('div', { class: 'row' },
+      !mine ? null : h('div', { class: 'row' },
         sub.can_portal ? h('button', { class: 'primary', onclick: async () => { const r = await run(() => api('POST', withAcct('/api/billing/portal'))); if (r) location.href = r.url; } }, 'Administrar pago y facturas') : null,
         sub.provider === 'mercadopago' && !sub.cancel_at_period_end ? h('button', { onclick: () => goPay('/api/billing/payment-method') }, 'Cambiar tarjeta') : null,
         sub.cancel_at_period_end
@@ -191,7 +193,7 @@ export async function viewPlan(root, params) {
   const wanted = params.get('subir') || params.get('plan');
   // Con un cobro fallido en Mercado Pago, primero «Cambiar tarjeta» (cobra lo pendiente); después se cambia de plan.
   const mpDue = sub?.provider === 'mercadopago' && sub.status === 'past_due';
-  const others = live && !sub.cancel_at_period_end && !mpDue ? b.plans.filter((p) => p.key !== sub.plan_key) : [];
+  const others = mine && live && !sub.cancel_at_period_end && !mpDue ? b.plans.filter((p) => p.key !== sub.plan_key) : [];
   const current = live ? b.plans.find((p) => p.key === sub.plan_key) : null;
   const change = others.length
     ? h('section', { class: 'card', 'aria-labelledby': 'change-plan' },
@@ -218,7 +220,7 @@ export async function viewPlan(root, params) {
   const gaveUp = waiting && confirmTries >= MAX_CONFIRM_TRIES;
   const offer = h('div');
   // Mientras se confirma un pago no se ofrece contratar otra vez: un segundo clic abriría otra suscripción.
-  if ((!live || sub.cancel_at_period_end) && !(waiting && !gaveUp)) {
+  if (mine && (!live || sub.cancel_at_period_end) && !(waiting && !gaveUp)) {
     if (!b.plans.length) {
       fill(offer, h('div', { class: 'card' }, h('p', {}, 'El pago en línea todavía no está disponible.'), b.support_contact ? h('p', {}, 'Para contratar escríbenos a ', h('strong', {}, b.support_contact), '.') : null));
     } else {
@@ -273,16 +275,17 @@ export async function viewPlan(root, params) {
             h('td', { class: 'num' }, money(p.tax, p.currency)),
             h('td', { class: 'num' }, h('strong', {}, money(p.total, p.currency)), p.refunded ? h('div', { class: 'muted small' }, `Reembolsado: ${money(p.refunded, p.currency)}`) : null),
             h('td', {}, h('span', { class: `badge ${PAY_LABEL[p.status][0]}` }, PAY_LABEL[p.status][1])),
-            h('td', {}, cfdiCell(p.cfdi, p)));
+            h('td', {}, mine ? cfdiCell(p.cfdi, p) : null));
         }))),
       h('p', { class: 'muted small', style: 'margin-bottom:0' }, b.invoicing ? 'Cada pago se registra con su IVA desglosado. Tus facturas llegan por correo con su PDF y XML.' : 'Cada pago se registra con su IVA desglosado.'))
     : null;
-  const fiscal = await fiscalCard(() => render()).catch(() => null);
+  const fiscal = mine ? await fiscalCard(() => render()).catch(() => null) : null;
   // Pidió factura sin completar sus datos: se avisa antes de pagar (el servidor también lo exige).
-  const fiscalMissing = b.fiscal?.wants_invoice && !b.fiscal.complete && (!live || sub.cancel_at_period_end)
+  const fiscalMissing = mine && b.fiscal?.wants_invoice && !b.fiscal.complete && (!live || sub.cancel_at_period_end)
     ? h('p', { class: 'banner warn' }, 'Pediste factura: completa tus datos en «Facturación» antes de contratar.')
     : null;
-  root.append(h('h1', {}, 'Mi plan y pagos'), notice, status, change, fiscal, usage, fiscalMissing, offer, history, dataCard());
+  const readOnly = mine ? null : h('p', { class: 'banner', role: 'status' }, ownerOnlyText());
+  root.append(h('h1', {}, 'Mi plan y pagos'), readOnly, notice, status, change, fiscal, usage, fiscalMissing, offer, history, dataCard());
   // El plan sugerido a la vista (el foco queda en el título, como en toda página nueva).
   if (params.get('subir')) root.querySelector('.card.chosen')?.scrollIntoView({ block: 'center' });
   if (waiting && !gaveUp) state.timers.push(setTimeout(() => { state.me = null; render(); }, 4000));
@@ -295,13 +298,12 @@ export async function viewPlan(root, params) {
 function dataCard() {
   const { user, account } = state.me || {};
   if (!account || user?.role !== 'admin') return null;
-  // Sin dueño registrado, el servidor decide (su administrador más antiguo).
-  const owner = !account.owner_user_id || account.owner_user_id === user.id;
+  const owner = isOwner();
   const fmtDay = (d) => new Date(d).toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric' });
   const confirm = { text: '' };
   const removal = account.deletion_scheduled_for
     ? [h('p', { class: 'banner danger' }, `Tu cuenta se borrará el ${fmtDay(account.deletion_scheduled_for)}.`),
-      h('button', { onclick: async () => {
+      !owner ? h('p', { class: 'muted small' }, ownerOnlyText()) : h('button', { onclick: async () => {
         const r = await run(() => api('DELETE', '/api/account/deletion'), 'Listo: tu cuenta ya no se borrará');
         if (r?.resubscribe) toast('Tu plan quedó cancelado: vuelve a contratarlo en esta página para que siga activo.');
         if (r) { state.me = null; render(); }
@@ -313,7 +315,7 @@ function dataCard() {
           const r = await run(() => api('POST', '/api/account/deletion', { confirm: confirm.text }));
           if (r) toast(`Te enviamos un correo a ${r.email} para confirmar el borrado`);
         } }, 'Borrar mi cuenta')]
-      : [h('p', { class: 'muted small' }, 'Solo el dueño de la cuenta puede borrarla.')];
+      : [h('p', { class: 'muted small' }, ownerOnlyText())];
   return h('section', { class: 'card', 'aria-labelledby': 'data-title' },
     h('h2', { id: 'data-title', style: 'margin-top:0' }, 'Tus datos'),
     owner ? [h('p', {}, 'Descarga todo lo de tu cuenta: configuración, agentes y su conocimiento, contactos, conversaciones, cotizaciones, pagos y facturas.'),

@@ -11,6 +11,10 @@ export const isAdmin = () => state.me && state.me.user.role !== 'agent';
 
 export const isSuper = () => state.me && state.me.user.role === 'superadmin';
 
+/** El dueño de la cuenta (o el superadmin): el único que maneja el dinero, la cuenta y a los administradores. */
+export const isOwner = () => !!(isSuper() || (state.me?.owner && state.me.owner.id === state.me.user.id));
+export const ownerOnlyText = () => `Solo el dueño de la cuenta (${state.me?.owner?.name || 'sin dueño'}) puede hacer esto`;
+
 /** Filtro de cuenta para listados (el superadmin puede elegir una o ver todas). */
 export const acct = (prefix = '?') => (isSuper() && state.accountId ? `${prefix}account_id=${state.accountId}` : '');
 

@@ -5,7 +5,7 @@ const plainTitle = (t) => String(t || '').replace(/^[\p{Extended_Pictographic}�
 import { accountPicker } from './dashboard.js';
 import { render } from './main.js';
 import { mfaSecurityCard } from './mfa.js';
-import { ROLE_LABEL, acct, isAdmin, isSuper, withAcct } from './session.js';
+import { ROLE_LABEL, acct, isAdmin, isOwner, isSuper, ownerOnlyText, withAcct } from './session.js';
 import { refreshBell } from './shell.js';
 import { usd } from './usage.js';
 
@@ -74,7 +74,8 @@ async function inviteCard() {
       h('div', { class: 'grid' },
         field('Correo', text(inv, 'email', { type: 'email', required: true, autocomplete: 'off', placeholder: 'persona@empresa.com' })),
         field('Nombre (opcional)', text(inv, 'name', { autocomplete: 'off' })),
-        field('Rol', select(inv, 'role', [['agent', 'Operador · conversaciones y agenda'], ['admin', 'Administrador · gestiona todo el perfil']]))),
+        // Solo el dueño suma administradores.
+        field('Rol', select(inv, 'role', [['agent', 'Operador · conversaciones y agenda'], ...(isOwner() ? [['admin', 'Administrador · gestiona todo el perfil']] : [])]))),
       h('button', { class: 'primary', type: 'submit' }, 'Enviar invitación')),
     pending.length ? [
       h('h3', {}, 'Invitaciones pendientes'),
@@ -89,7 +90,7 @@ async function inviteCard() {
 export async function viewUsers(root) {
   const [users, invite] = await Promise.all([api('GET', `/api/users${acct()}`), inviteCard()]);
   const n = { name: '', email: '', password: '', role: 'agent', phone: '', notify_whatsapp: false };
-  const roles = [['agent', 'Operador · conversaciones y agenda de su perfil'], ['admin', 'Administrador · gestiona su perfil completo']];
+  const roles = [['agent', 'Operador · conversaciones y agenda de su perfil'], ...(isOwner() ? [['admin', 'Administrador · gestiona su perfil completo']] : [])];
   if (isSuper()) roles.push(['superadmin', 'Maestro · acceso a todos los perfiles']);
   const assignedProfile = h('div', {}, accountPicker(n));
   const me = state.me.user;
@@ -113,17 +114,19 @@ export async function viewUsers(root) {
         h('thead', {}, h('tr', {}, h('th', {}, 'Usuario'), h('th', {}, 'Rol'), isSuper() ? h('th', {}, 'Perfil asignado') : null, h('th', {}, 'Último acceso'), h('th', {}, 'Acciones'))),
         h('tbody', {}, users.map((u) => {
           const self = u.id === me.id;
+          // A los administradores los maneja el dueño; al dueño no se le baja, desactiva ni borra (primero transfiere).
+          const locked = !self && u.role === 'admin' && !isOwner();
           return h('tr', {},
-            h('td', {}, h('strong', {}, u.name || '—'), h('div', { class: 'muted small' }, u.email, u.phone ? ` · WhatsApp +${u.phone}${u.notify_whatsapp ? ' (alertas)' : ''}` : ''), !u.active ? h('span', { class: 'badge orange' }, 'desactivado') : null, u.mfa_enabled ? h('span', { class: 'badge green' }, '2FA activo') : h('span', { class: 'badge orange' }, '2FA pendiente'), u.active && u.role !== 'superadmin' && u.available === false ? h('span', { class: 'badge' }, 'no disponible para turnos') : null),
-            h('td', {}, u.role === 'superadmin' || self ? ROLE_LABEL[u.role]
+            h('td', {}, h('strong', {}, u.name || '—'), h('div', { class: 'muted small' }, u.email, u.phone ? ` · WhatsApp +${u.phone}${u.notify_whatsapp ? ' (alertas)' : ''}` : ''), u.is_owner ? h('span', { class: 'badge green' }, 'Dueño') : null, !u.active ? h('span', { class: 'badge orange' }, 'desactivado') : null, u.mfa_enabled ? h('span', { class: 'badge green' }, '2FA activo') : h('span', { class: 'badge orange' }, '2FA pendiente'), u.active && u.role !== 'superadmin' && u.available === false ? h('span', { class: 'badge' }, 'no disponible para turnos') : null),
+            h('td', {}, u.role === 'superadmin' || self || u.is_owner || locked || (u.role === 'agent' && !isOwner()) ? ROLE_LABEL[u.role]
               : h('select', { 'aria-label': `Rol de ${u.email}`, onchange: async (e) => { if (await run(() => api('PUT', `/api/users/${u.id}`, { role: e.target.value }), 'Rol actualizado')) render(); else e.target.value = u.role; } },
                   [['agent', 'Operador del perfil'], ['admin', 'Administrador del perfil']].map(([v, l]) => h('option', { value: v, selected: u.role === v }, l)))),
-            isSuper() ? h('td', { class: 'small' }, u.role === 'superadmin' ? 'Todos los perfiles' : h('select', { 'aria-label': `Perfil de ${u.email}`, onchange: async (e) => { if (await run(() => api('PUT', `/api/users/${u.id}`, { account_id: e.target.value }), 'Perfil asignado')) render(); else e.target.value = u.account_id; } }, state.accounts.map((a) => h('option', { value: a.id, selected: u.account_id === a.id }, a.name)))) : null,
+            isSuper() ? h('td', { class: 'small' }, u.role === 'superadmin' ? 'Todos los perfiles' : u.is_owner ? (state.accounts.find((a) => a.id === u.account_id)?.name || '—') : h('select', { 'aria-label': `Perfil de ${u.email}`, onchange: async (e) => { if (await run(() => api('PUT', `/api/users/${u.id}`, { account_id: e.target.value }), 'Perfil asignado')) render(); else e.target.value = u.account_id; } }, state.accounts.map((a) => h('option', { value: a.id, selected: u.account_id === a.id }, a.name)))) : null,
             h('td', { class: 'small muted' }, u.last_login_at ? fmtDate(u.last_login_at) : 'nunca'),
-            h('td', {}, self ? h('span', { class: 'muted small' }, 'tú') : h('div', { class: 'row' },
-              isSuper() && u.role !== 'superadmin' ? h('button', { class: 'small', onclick: async () => { if (await confirmAction(`¿Dar a ${u.email} acceso maestro a TODOS los perfiles?`)) { if (!(await run(() => api('PUT', `/api/users/${u.id}`, { role: 'superadmin' }), 'Acceso maestro asignado'))) return; render(); } } }, 'Dar acceso maestro') : null,
+            h('td', {}, self ? h('span', { class: 'muted small' }, 'tú') : locked ? h('span', { class: 'muted small' }, ownerOnlyText()) : h('div', { class: 'row' },
+              isSuper() && u.role !== 'superadmin' && !u.is_owner ? h('button', { class: 'small', onclick: async () => { if (await confirmAction(`¿Dar a ${u.email} acceso maestro a TODOS los perfiles?`)) { if (!(await run(() => api('PUT', `/api/users/${u.id}`, { role: 'superadmin' }), 'Acceso maestro asignado'))) return; render(); } } }, 'Dar acceso maestro') : null,
               u.role !== 'superadmin' && u.active ? h('button', { class: 'small', title: 'Si no está disponible se salta en el reparto por turnos', onclick: async () => { if (await run(() => api('PUT', `/api/users/${u.id}`, { available: u.available === false }), u.available === false ? 'Disponible' : 'Fuera de turno')) render(); } }, u.available === false ? 'Marcar disponible' : 'Fuera de turno') : null,
-              h('button', { class: 'small', onclick: async () => { if (await run(() => api('PUT', `/api/users/${u.id}`, { active: !u.active }), u.active ? 'Desactivado' : 'Activado')) render(); } }, u.active ? 'Desactivar' : 'Activar'),
+              u.is_owner ? null : h('button', { class: 'small', onclick: async () => { if (await run(() => api('PUT', `/api/users/${u.id}`, { active: !u.active }), u.active ? 'Desactivado' : 'Activado')) render(); } }, u.active ? 'Desactivar' : 'Activar'),
               u.mfa_enabled ? h('button', { class: 'small', 'aria-label': `Restablecer 2FA de ${u.email}`, onclick: async () => {
                 if (!(await dialog(`Restablecer 2FA de ${u.name || u.email}`, h('p', {}, 'Su verificación en dos pasos se borra, se cierran sus sesiones y la configura otra vez al entrar.'), 'Restablecer 2FA'))) return;
                 if (await run(() => api('POST', `/api/users/${u.id}/2fa/reset`), 'Verificación en dos pasos restablecida')) render();
@@ -134,7 +137,7 @@ export async function viewUsers(root) {
                 if (phone !== null && (await run(() => api('PUT', `/api/users/${u.id}`, { phone, notify_whatsapp: !!phone.replace(/\D/g, '') }), 'Actualizado'))) render();
               } }, 'Alertas WhatsApp'),
               u.role !== 'superadmin' ? h('button', { class: 'small', 'aria-label': `Avisos de ${u.email}`, onclick: () => editMemberAlerts(u) }, 'Avisos') : null,
-              h('button', { class: 'small danger', onclick: async () => { if (await confirmAction(`¿Eliminar a ${u.email}?`)) { if (!(await run(() => api('DELETE', `/api/users/${u.id}`), 'Eliminado'))) return; render(); } } }, 'Eliminar'))));
+              u.is_owner ? null : h('button', { class: 'small danger', onclick: async () => { if (await confirmAction(`¿Eliminar a ${u.email}?`)) { if (!(await run(() => api('DELETE', `/api/users/${u.id}`), 'Eliminado'))) return; render(); } } }, 'Eliminar'))));
         })))),
   );
 }

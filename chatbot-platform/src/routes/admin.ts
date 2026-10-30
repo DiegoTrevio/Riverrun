@@ -21,7 +21,7 @@ import { config } from '../config.js';
 import { assertPasswordAllowed, NewPassword } from '../identity/passwords.js';
 import { beginLogin, renewSessionAfterPasswordChange } from '../identity/mfa.js';
 import { resetMfa } from '../identity/reset-mfa.js';
-import { accountOwner } from '../identity/ownership.js';
+import { accountOwner, assertOwner } from '../identity/ownership.js';
 import { browserOf, forgetTrustedDevices, trustedDeviceFor } from '../identity/devices.js';
 import { countHit, LIMITS, releaseHit } from '../identity/rate-limit.js';
 import { notifyUser } from '../identity/notices.js';
@@ -118,7 +118,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     // Copiloto: el superadmin lo usa en la cuenta que elija (el panel revisa que esa cuenta lo tenga encendido).
     const copilot = { enabled: config.copilot.enabled && (req.user.role === 'superadmin' || !!account?.copilot_enabled) };
     const owner = account ? await accountOwner(account.id) : null;
-    return { user: req.user, account: account && { ...store.publicAccount(account), payment_due: due, deletion_date: deletionDate(account) }, owner: owner && { id: owner.id, name: owner.name }, copilot };
+    return { user: req.user, account: account && { ...store.publicAccount(account), payment_due: due, deletion_date: deletionDate(account) }, owner: owner && { id: owner.id, name: owner.name || owner.email }, copilot };
   });
 
   api.put('/api/me', async (req) => {
@@ -406,7 +406,11 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
   /* ------------------------------ Usuarios ------------------------------ */
   const admins = { preHandler: requireRole('admin') };
 
-  api.get('/api/users', admins, async (req: any) => store.listUsers(scopeAccount(req.user, req.query.account_id)));
+  api.get('/api/users', admins, async (req: any) => {
+    const accountId = scopeAccount(req.user, req.query.account_id);
+    if (accountId) await accountOwner(accountId); // deja guardado al dueño vigente antes de marcarlo
+    return store.listUsers(accountId);
+  });
 
   api.post('/api/users', { ...admins, ...stepUp }, async (req) => {
     const b = parse(
@@ -427,6 +431,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
       return store.createUser({ account_id: null, role: 'superadmin', name: b.name, email: b.email, password_hash: await hashPassword(b.password) });
     }
     const accountId = await targetAccount(req.user, b.account_id);
+    if (b.role === 'admin') await assertOwner(req, accountId);
     await assertWithinLimit(accountId, 'users');
     await assertPasswordAllowed(b.password, { email: b.email, businessName: await accountName(accountId) });
     const created = await store.createUser({ account_id: accountId, role: b.role, name: b.name, email: b.email, password_hash: await hashPassword(b.password) });
@@ -435,13 +440,17 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     return user;
   });
 
-  /** Usuario que el usuario actual puede administrar. */
+  /** Usuario que el usuario actual puede administrar: a otro administrador, solo el dueño de la cuenta. */
   const manageable = async (req: any) => {
     const target = await store.getUser(req.params.id);
     if (!target || (target.role === 'superadmin' && req.user.role !== 'superadmin')) throw notFound('Usuario no encontrado');
     if (target.account_id) assertAccount(req.user, target, 'Usuario no encontrado');
+    if (target.role === 'admin' && target.id !== req.user.id) await assertOwner(req, target.account_id!);
     return target;
   };
+  /** El dueño no se desactiva, degrada, mueve ni borra: primero transfiere la cuenta. */
+  const isOwnerUser = async (u: { id: string; role: Role; account_id: string | null }) => u.role === 'admin' && !!u.account_id && (await accountOwner(u.account_id))?.id === u.id;
+  const FIRST_TRANSFER = 'Primero transfiere la cuenta a otro administrador';
 
   api.put('/api/users/:id', admins, async (req: any) => {
     const target = await manageable(req);
@@ -477,6 +486,10 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     if (target.id === req.user.id && (b.active === false || (b.role && b.role !== req.user.role))) {
       throw new HttpError(400, 'No puedes desactivarte ni cambiar tu propio rol');
     }
+    if ((b.active === false || (b.role !== undefined && b.role !== 'admin') || (b.account_id !== undefined && b.account_id !== target.account_id)) && (await isOwnerUser(target))) {
+      throw new HttpError(400, FIRST_TRANSFER);
+    }
+    if (b.role === 'admin' && target.role !== 'admin' && target.account_id) await assertOwner(req, target.account_id);
     if (target.role === 'superadmin' && b.role && b.role !== 'superadmin') throw new HttpError(400, 'El rol de superadministrador no se cambia');
     if (target.role === 'superadmin' && b.active === false && (await store.countSuperadmins()) <= 1) {
       throw new HttpError(400, 'Debe quedar al menos un superadministrador activo');
@@ -527,6 +540,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
   api.delete('/api/users/:id', { ...admins, ...stepUp }, async (req: any) => {
     const target = await manageable(req);
     if (target.id === req.user.id) throw new HttpError(400, 'No puedes eliminar tu propio usuario');
+    if (await isOwnerUser(target)) throw new HttpError(400, FIRST_TRANSFER);
     if (target.role === 'superadmin' && (await store.countSuperadmins()) <= 1) throw new HttpError(400, 'Debe quedar al menos un superadministrador');
     const deleted = await store.deleteUser(target.id, req.user.role === 'superadmin' ? undefined : scopeAccount(req.user)!);
     if (!deleted) throw notFound('Usuario no encontrado');

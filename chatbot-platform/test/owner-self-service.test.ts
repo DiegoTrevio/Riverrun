@@ -114,12 +114,13 @@ t('borrar la cuenta: solo el dueño y escribiendo el nombre; el correo trae el e
   assert.equal((await A.owner('POST', '/api/account/deletion', { confirm: 'Florería Sol' })).statusCode, 409);
 });
 
-t('cancelar el borrado: cualquier admin de la cuenta; sin borrado programado → 409', async () => {
+t('cancelar el borrado: solo el dueño (otro admin y un agente no); sin borrado programado → 409', async () => {
   assert.equal((await A.agent('DELETE', '/api/account/deletion')).statusCode, 403);
-  const r = await A.admin2('DELETE', '/api/account/deletion');
+  assert.equal((await A.admin2('DELETE', '/api/account/deletion')).json().code, 'owner_only');
+  const r = await A.owner('DELETE', '/api/account/deletion');
   assert.equal(r.statusCode, 200, r.body);
   assert.deepEqual(await accRow(A.account), { deletion_requested_at: null, deletion_scheduled_for: null });
-  assert.equal((await A.admin2('DELETE', '/api/account/deletion')).statusCode, 409);
+  assert.equal((await A.owner('DELETE', '/api/account/deletion')).statusCode, 409);
 });
 
 t('un enlace vencido no sirve', async () => {

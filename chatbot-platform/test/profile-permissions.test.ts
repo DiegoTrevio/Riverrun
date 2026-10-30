@@ -39,7 +39,9 @@ t('un administrador solo gestiona su perfil y no puede cambiar su alcance ni dar
 });
 
 t('el maestro reasigna el perfil y una sesión abierta pierde acceso al anterior inmediatamente', async () => {
-  await pool.query('UPDATE accounts SET owner_user_id = $1 WHERE id = $2', [user.id, a.id]);
+  // Al dueño no se le mueve (primero transfiere): se mueve al otro administrador.
+  const ownerOfA = (await store.getAccount(a.id))!.owner_user_id;
+  assert.ok(ownerOfA && ownerOfA !== user.id);
   await notifyUsers(a.id, [user.id], { title: 'Datos privados A', body: 'Solo perfil A' });
   assert.equal((await member('GET', '/api/notifications')).json().unread, 1);
   const moved = await h.authed('PUT', `/api/users/${user.id}`, { account_id: b.id });
@@ -52,7 +54,7 @@ t('el maestro reasigna el perfil y una sesión abierta pierde acceso al anterior
   assert.equal((await member('GET', `/api/chatbots/${botA.id}`)).statusCode, 404);
   assert.equal((await member('GET', `/api/chatbots/${botB.id}`)).statusCode, 200);
   assert.equal((await member('GET', '/api/me')).json().account.id, b.id);
-  assert.equal((await store.getAccount(a.id))!.owner_user_id, null);
+  assert.equal((await store.getAccount(a.id))!.owner_user_id, ownerOfA, 'el dueño de A no cambia');
   await notifyUsers(b.id, [user.id], { title: 'Datos B', body: 'Perfil nuevo' });
   const notifications = (await member('GET', '/api/notifications')).json();
   assert.equal(notifications.unread, 1);
@@ -67,6 +69,10 @@ t('el maestro reasigna el perfil y una sesión abierta pierde acceso al anterior
 });
 
 t('el operador solo atiende conversaciones y agenda de su perfil', async () => {
+  // Movido a B quedó como su único administrador, o sea su dueño: primero B tiene otra dueña.
+  assert.deepEqual((await h.authed('PUT', `/api/users/${user.id}`, { role: 'agent' })).json(), { error: 'Primero transfiere la cuenta a otro administrador' });
+  const duenaB = (await h.authed('POST', '/api/users', { account_id: b.id, email: 'duena-b@perfil.test', password: 'Pz-160-Qx-360-Kv', role: 'admin' })).json();
+  await pool.query('UPDATE accounts SET owner_user_id = $1 WHERE id = $2', [duenaB.id, b.id]);
   assert.equal((await h.authed('PUT', `/api/users/${user.id}`, { role: 'agent' })).statusCode, 200);
   assert.equal((await member('GET', '/api/me')).statusCode, 401, 'cambiar el rol cierra sus sesiones');
   member = await h.loginAs('usuario@perfil.test', 'Pz-160-Qx-360-Kv');
