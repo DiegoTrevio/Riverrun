@@ -25,7 +25,7 @@ before(async () => {
   h = await createHarness();
   const r = await h.app.inject({
     method: 'POST', url: '/api/signup', remoteAddress: '10.9.9.9',
-    payload: { name: 'Laura Pérez', company: 'Clínica Sonrisa', business_type: 'salud', email: 'laura@sonrisa.mx', password: 'clave-laura-1', accept_terms: true },
+    payload: { name: 'Laura Pérez', company: 'Clínica Sonrisa', business_type: 'salud', email: 'laura@sonrisa.mx', password: 'Pz-128-Qx-328-Kv', accept_terms: true },
   });
   assert.equal(r.statusCode, 200, r.body);
   B.account = r.json().user.account_id;

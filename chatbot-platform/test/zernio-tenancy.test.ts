@@ -38,9 +38,9 @@ before(async () => {
   h = await createHarness();
   await h.createBot();
   h.setScript(() => ({ messages: ['Hola'] }));
-  await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'duena@palmas.mx', name: 'Dueña', password: 'clave-palmas-1', role: 'admin' });
+  await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'duena@palmas.mx', name: 'Dueña', password: 'Pz-138-Qx-338-Kv', role: 'admin' });
   await pool.query('UPDATE users SET email_verified_at = now()');
-  owner = await h.loginAs('duena@palmas.mx', 'clave-palmas-1');
+  owner = await h.loginAs('duena@palmas.mx', 'Pz-138-Qx-338-Kv');
   otherAccount = (await h.authed('POST', '/api/accounts', { name: 'Otro negocio' })).json().id;
 });
 after(async () => {

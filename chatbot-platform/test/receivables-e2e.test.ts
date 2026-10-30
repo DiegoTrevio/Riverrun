@@ -46,7 +46,7 @@ before(async () => {
   if (!ok) return;
   h = await createHarness();
   await h.createBot();
-  assert.equal((await h.authed('POST', '/api/users', { account_id: h.accountId, name: 'Caja', email: 'caja@e2e.mx', password: 'clave-segura-1', role: 'admin' })).statusCode, 200);
+  assert.equal((await h.authed('POST', '/api/users', { account_id: h.accountId, name: 'Caja', email: 'caja@e2e.mx', password: 'Pz-144-Qx-344-Kv', role: 'admin' })).statusCode, 200);
   h.setScript(() => ({ messages: ['Gracias, el equipo lo revisa y te confirma.'] }));
   await h.webhook('Hola, quiero reservar');
   await h.idle();

@@ -140,8 +140,8 @@ t('envío manual desde la conversación: el agente manda una foto; otra cuenta o
   const phone = '5215540000006';
   await say('hola', phone);
   const conv = await h.conversationFor(phone);
-  assert.equal((await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'agente@hotel.mx', name: 'Agente', password: 'clave-segura-1', role: 'agent' })).statusCode, 200);
-  const agent = await h.loginAs('agente@hotel.mx', 'clave-segura-1');
+  assert.equal((await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'agente@hotel.mx', name: 'Agente', password: 'Pz-144-Qx-344-Kv', role: 'agent' })).statusCode, 200);
+  const agent = await h.loginAs('agente@hotel.mx', 'Pz-144-Qx-344-Kv');
   assert.equal((await agent('GET', `/api/chatbots/${h.botId}/images`)).statusCode, 200, 'el agente ve el catálogo');
   // Un agente solo escribe en las conversaciones que tiene asignadas.
   assert.equal((await h.authed('PUT', `/api/conversations/${conv.id}/assign`, { user_id: (await agent('GET', '/api/me')).json().user.id })).statusCode, 200);

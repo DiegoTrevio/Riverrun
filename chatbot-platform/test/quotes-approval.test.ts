@@ -31,8 +31,8 @@ before(async () => {
   if (!ok) return;
   h = await createHarness();
   await h.createBot({ ai: { debounce_seconds: 0.1, quotes: { enabled: true, allow_final: true, required_fields: [], template_id: '' } } });
-  await h.authed('POST', '/api/users', { account_id: h.accountId, name: 'Agente', email: 'agente@aprueba.test', password: 'clave-agente-1', role: 'agent' });
-  agent = await h.loginAs('agente@aprueba.test', 'clave-agente-1');
+  await h.authed('POST', '/api/users', { account_id: h.accountId, name: 'Agente', email: 'agente@aprueba.test', password: 'Pz-101-Qx-301-Kv', role: 'agent' });
+  agent = await h.loginAs('agente@aprueba.test', 'Pz-101-Qx-301-Kv');
   for (const [code, name, o] of [['SALON', 'Renta de salón', { price_min: 1500000 }], ['DECO', 'Decoración', { price_mode: 'range', price_min: 300000, price_max: 500000 }]] as const) {
     await qstore.createPriceItem(h.accountId, { code, name, description: '', unit: 'servicio', price_mode: 'exact', price_min: null, price_max: null, iva_mode: 'plus', active: true, sort: 0, ...o } as qstore.PriceItemInput);
   }

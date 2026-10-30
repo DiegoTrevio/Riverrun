@@ -15,7 +15,7 @@ let ip = 0;
 async function newAccount(email: string, company: string) {
   const r = await h.app.inject({
     method: 'POST', url: '/api/signup', remoteAddress: `10.77.7.${++ip}`,
-    payload: { name: 'Teo Paz', company, business_type: 'servicios', email, password: 'clave-teo-123', accept_terms: true },
+    payload: { name: 'Teo Paz', company, business_type: 'servicios', email, password: 'Pz-150-Qx-350-Kv', accept_terms: true },
   });
   assert.equal(r.statusCode, 200, r.body);
   return r.json().account.id as string;

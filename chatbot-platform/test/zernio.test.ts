@@ -40,10 +40,10 @@ before(async () => {
   await h.createBot();
   h.setScript(() => ({ messages: ['Hola, con gusto te ayudo'] }));
   // El dueño del negocio (no el superadmin) conecta sus redes.
-  const u = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'dueno@redes.mx', name: 'Dueño', password: 'clave-redes-1', role: 'admin' });
+  const u = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'dueno@redes.mx', name: 'Dueño', password: 'Pz-140-Qx-340-Kv', role: 'admin' });
   assert.equal(u.statusCode, 200, u.body);
   await pool.query('UPDATE users SET email_verified_at = now() WHERE email = $1', ['dueno@redes.mx']);
-  owner = await h.loginAs('dueno@redes.mx', 'clave-redes-1');
+  owner = await h.loginAs('dueno@redes.mx', 'Pz-140-Qx-340-Kv');
   const r = await owner('POST', '/api/channels', { type: 'zernio', name: 'Instagram del hotel', chatbot_id: h.botId, config: { platform: 'instagram' } });
   assert.equal(r.statusCode, 200, r.body);
   channel = r.json();

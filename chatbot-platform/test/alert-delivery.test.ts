@@ -60,7 +60,7 @@ before(async () => {
   h = await createHarness();
   await h.createBot();
   await pool.query(`UPDATE channels SET connection_state = 'open' WHERE id = $1`, [h.channelId]);
-  const r = await h.authed('POST', '/api/users', { account_id: h.accountId, name: 'Jefa', email: BOSS_EMAIL, password: 'clave-entregas-1', role: 'admin', phone: BOSS_PHONE, notify_whatsapp: true });
+  const r = await h.authed('POST', '/api/users', { account_id: h.accountId, name: 'Jefa', email: BOSS_EMAIL, password: 'Pz-120-Qx-320-Kv', role: 'admin', phone: BOSS_PHONE, notify_whatsapp: true });
   assert.equal(r.statusCode, 200, r.body);
   boss = r.json().id;
 });
@@ -214,14 +214,14 @@ t('el WhatsApp del equipo se guarda solo con la lada del país', async () => {
   const bad = await h.authed('PUT', `/api/users/${boss}`, { phone: '5512345678' });
   assert.equal(bad.statusCode, 400);
   assert.match(bad.body, /lada del país/);
-  const created = await h.authed('POST', '/api/users', { account_id: h.accountId, name: 'Corto', email: 'corto@entregas.mx', password: 'clave-entregas-2', role: 'agent', phone: '55 1234 5678' });
+  const created = await h.authed('POST', '/api/users', { account_id: h.accountId, name: 'Corto', email: 'corto@entregas.mx', password: 'Pz-121-Qx-321-Kv', role: 'agent', phone: '55 1234 5678' });
   assert.equal(created.statusCode, 400);
   assert.equal((await h.authed('PUT', '/api/me', { phone: '123' })).statusCode, 400);
   assert.equal((await h.authed('PUT', `/api/users/${boss}`, { phone: `+${BOSS_PHONE}` })).statusCode, 200);
   // Un número guardado antes, sin lada, no impide guardar lo demás (el panel siempre manda el teléfono).
   await pool.query(`UPDATE users SET phone = '5512345678' WHERE id = $1`, [boss]);
   assert.equal((await h.authed('PUT', `/api/users/${boss}`, { name: 'Jefa', phone: '55 1234 5678' })).statusCode, 200);
-  const jefa = await h.loginAs(BOSS_EMAIL, 'clave-entregas-1');
+  const jefa = await h.loginAs(BOSS_EMAIL, 'Pz-120-Qx-320-Kv');
   assert.equal((await jefa('PUT', '/api/me', { name: 'Jefa', phone: '5512345678', available: true })).statusCode, 200);
   assert.equal((await jefa('PUT', '/api/me', { phone: '5598765432' })).statusCode, 400, 'cambiarlo sí exige la lada');
   assert.equal((await h.authed('PUT', `/api/users/${boss}`, { phone: BOSS_PHONE })).statusCode, 200);
@@ -239,7 +239,7 @@ t('un intento que tardó de más no pisa el resultado de quien retomó la entreg
 });
 
 t('panel: cada aviso dice por dónde llegó, el administrador ve lo que no llegó y lo puede reintentar', async () => {
-  const jefa = await h.loginAs(BOSS_EMAIL, 'clave-entregas-1');
+  const jefa = await h.loginAs(BOSS_EMAIL, 'Pz-120-Qx-320-Kv');
   const list = (await jefa('GET', '/api/notifications')).json();
   const emergency = list.items.find((n: any) => n.title === '🚨 Posible emergencia');
   assert.deepEqual(emergency.deliveries.map((d: any) => [d.channel, d.fallback]), [['whatsapp', false], ['email', true]]);
@@ -256,8 +256,8 @@ t('panel: cada aviso dice por dónde llegó, el administrador ve lo que no lleg�
   assert.equal((await jefa('POST', `/api/alert-deliveries/${row.id}/retry`)).statusCode, 404, 'una entrega que ya salió no se reintenta');
   assert.equal((await jefa('POST', '/api/alert-deliveries/abc/retry')).statusCode, 404);
 
-  assert.equal((await h.authed('POST', '/api/users', { account_id: h.accountId, name: 'Agente', email: 'agente@entregas.mx', password: 'clave-entregas-3', role: 'agent' })).statusCode, 200);
-  const agent = await h.loginAs('agente@entregas.mx', 'clave-entregas-3');
+  assert.equal((await h.authed('POST', '/api/users', { account_id: h.accountId, name: 'Agente', email: 'agente@entregas.mx', password: 'Pz-122-Qx-322-Kv', role: 'agent' })).statusCode, 200);
+  const agent = await h.loginAs('agente@entregas.mx', 'Pz-122-Qx-322-Kv');
   assert.equal((await agent('GET', '/api/alert-deliveries')).statusCode, 403);
   assert.equal((await agent('POST', `/api/alert-deliveries/${row.id}/retry`)).statusCode, 403);
 });

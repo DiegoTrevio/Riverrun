@@ -16,7 +16,7 @@ const signup = (body: Record<string, unknown>, ip = '10.0.0.1') =>
     method: 'POST',
     url: '/api/signup',
     remoteAddress: ip,
-    payload: { name: 'Laura Pérez', company: 'Clínica Sonrisa', business_type: 'salud', email: 'laura@sonrisa.mx', password: 'clave-laura-1', accept_terms: true, ...body },
+    payload: { name: 'Laura Pérez', company: 'Clínica Sonrisa', business_type: 'salud', email: 'laura@sonrisa.mx', password: 'Pz-128-Qx-328-Kv', accept_terms: true, ...body },
   });
 const cookieOf = (r: { headers: Record<string, unknown> }) => String(r.headers['set-cookie']).split(';')[0];
 const as = (cookie: string) => (method: string, url: string, payload?: unknown) => h.app.inject({ method: method as any, url, payload: payload as any, headers: { cookie } });
@@ -261,10 +261,10 @@ t('contraseña olvidada: enlace de un solo uso que vence; la nueva contraseña c
 
   const reset = (body: unknown) => h.app.inject({ method: 'POST', url: '/api/reset-password', payload: body as any });
   assert.equal((await reset({ token, password: '123' })).statusCode, 400);
-  assert.equal((await reset({ token, password: 'nueva-clave-99' })).statusCode, 200);
-  assert.equal((await reset({ token, password: 'otra-clave-99' })).statusCode, 400, 'no se reutiliza');
+  assert.equal((await reset({ token, password: 'Pz-154-Qx-354-Kv' })).statusCode, 200);
+  assert.equal((await reset({ token, password: 'Pz-156-Qx-356-Kv' })).statusCode, 400, 'no se reutiliza');
   assert.equal((await L.api('GET', '/api/me')).statusCode, 401, 'la sesión anterior deja de servir');
-  const login = await h.app.inject({ method: 'POST', url: '/api/login', payload: { email: 'laura@sonrisa.mx', password: 'nueva-clave-99' } });
+  const login = await h.app.inject({ method: 'POST', url: '/api/login', payload: { email: 'laura@sonrisa.mx', password: 'Pz-154-Qx-354-Kv' } });
   assert.equal(login.statusCode, 200);
   L.cookie = cookieOf(login);
   L.api = as(L.cookie);
@@ -273,7 +273,7 @@ t('contraseña olvidada: enlace de un solo uso que vence; la nueva contraseña c
   await forgot('laura@sonrisa.mx');
   const old = tokenFrom('laura@sonrisa.mx', 'restablecer');
   await pool.query(`UPDATE auth_tokens SET expires_at = now() - interval '1 minute' WHERE kind = 'reset_password' AND used_at IS NULL`);
-  assert.equal((await reset({ token: old, password: 'vencida-clave-1' })).statusCode, 400);
+  assert.equal((await reset({ token: old, password: 'Pz-162-Qx-362-Kv' })).statusCode, 400);
 });
 
 t('gasto de IA: costo por llamada, por cuenta y solo de la propia cuenta', async () => {

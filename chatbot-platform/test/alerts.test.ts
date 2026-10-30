@@ -32,11 +32,11 @@ before(async () => {
   h = await createHarness();
   await h.createBot({ rules: { handoff_keywords: ['asesor'], handoff_notify_number: NOTIFY } });
   h.setScript(() => ({ messages: ['Con gusto te ayudo.'] }));
-  const boss = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'jefa@avisos.mx', name: 'Jefa', password: 'clave-avisos-1', role: 'admin', phone: '5215511112222', notify_whatsapp: true });
+  const boss = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'jefa@avisos.mx', name: 'Jefa', password: 'Pz-107-Qx-307-Kv', role: 'admin', phone: '5215511112222', notify_whatsapp: true });
   assert.equal(boss.statusCode, 200, boss.body);
   bossId = boss.json().id;
-  bossApi = await h.loginAs('jefa@avisos.mx', 'clave-avisos-1');
-  const agent = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'agente@avisos.mx', name: 'Agente', password: 'clave-avisos-1', role: 'agent' });
+  bossApi = await h.loginAs('jefa@avisos.mx', 'Pz-107-Qx-307-Kv');
+  const agent = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'agente@avisos.mx', name: 'Agente', password: 'Pz-107-Qx-307-Kv', role: 'agent' });
   assert.equal(agent.statusCode, 200, agent.body);
   agentId = agent.json().id;
 });
@@ -136,7 +136,7 @@ t('«Mis avisos»: cada persona elige por dónde le llega cada grupo, y el admin
   await h.service.automator.alertTeam(h.accountId, { title: '🚨 Emergencia', body: 'x', link: `#/conversation/${conv.id}`, conversationId: conv.id, kind: 'safety' });
   assert.ok((await notices(bossId, 'safety')).some((n) => n.title === '🚨 Emergencia'), 'una emergencia sí llega');
   // El administrador lo ajusta desde Mi equipo; un agente no puede cambiar los avisos de otra persona.
-  const agent = await h.loginAs('agente@avisos.mx', 'clave-avisos-1');
+  const agent = await h.loginAs('agente@avisos.mx', 'Pz-107-Qx-307-Kv');
   assert.equal((await agent('PUT', `/api/users/${bossId}`, { alert_prefs: {} })).statusCode, 403);
   assert.equal((await h.authed('PUT', `/api/users/${bossId}`, { alert_prefs: {} })).statusCode, 200);
   assert.deepEqual((await bossApi('GET', '/api/me')).json().user.alert_prefs, {});
@@ -252,7 +252,7 @@ t('escalamiento: solo a administradores de la cuenta y, si los elegidos ya no es
   assert.deepEqual(saved.escalate_user_ids, [bossId]);
   assert.equal(saved.ai_error_repeat_minutes, 0, 'un 0 ya no rechaza los ajustes (cuenta como 10)');
   // La jefa elegida se desactiva: el escalamiento va a los demás administradores, no a nadie.
-  const other = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'otra-jefa@avisos.mx', name: 'Otra', password: 'clave-avisos-1', role: 'admin' });
+  const other = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'otra-jefa@avisos.mx', name: 'Otra', password: 'Pz-107-Qx-307-Kv', role: 'admin' });
   assert.equal(other.statusCode, 200, other.body);
   await pool.query(`UPDATE users SET active = false WHERE id = $1`, [bossId]);
   const phone = '5215530009103';

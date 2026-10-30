@@ -467,7 +467,7 @@ try {
     const phone = create.getByLabel('WhatsApp para alertas (opcional)');
     await create.getByLabel('Nombre', { exact: true }).fill('Persona sin lada');
     await create.getByLabel('Correo', { exact: true }).fill('sinlada@auditoria.test');
-    await create.getByLabel('Contraseña inicial', { exact: true }).fill('auditoria123');
+    await create.getByLabel('Contraseña inicial', { exact: true }).fill('Pz-100-Qx-300-Kv');
     await phone.fill('5512345678');
     await page.getByRole('button', { name: 'Crear usuario', exact: true }).click();
     await page.getByText(/Incluye la lada del país/).first().waitFor();

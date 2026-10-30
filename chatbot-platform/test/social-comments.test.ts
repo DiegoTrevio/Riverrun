@@ -61,11 +61,11 @@ before(async () => {
   await h.createBot();
   await h.authed('POST', `/api/chatbots/${h.botId}/knowledge`, { category: 'precios', title: 'Habitaciones', content: 'Doble: $1,650 MXN por noche. Suite con vista al mar: $2,900 MXN por noche.' });
   for (const [email, role] of [['duena@palmas.mx', 'admin'], ['recepcion@palmas.mx', 'agent']] as const) {
-    await h.authed('POST', '/api/users', { account_id: h.accountId, email, name: role, password: 'clave-redes-1', role });
+    await h.authed('POST', '/api/users', { account_id: h.accountId, email, name: role, password: 'Pz-140-Qx-340-Kv', role });
   }
   await pool.query('UPDATE users SET email_verified_at = now()');
-  owner = await h.loginAs('duena@palmas.mx', 'clave-redes-1');
-  agent = await h.loginAs('recepcion@palmas.mx', 'clave-redes-1');
+  owner = await h.loginAs('duena@palmas.mx', 'Pz-140-Qx-340-Kv');
+  agent = await h.loginAs('recepcion@palmas.mx', 'Pz-140-Qx-340-Kv');
   await connect('instagram', 'acc_ig');
   await connect('linkedin', 'acc_li');
   await connect('googlebusiness', 'acc_gb');

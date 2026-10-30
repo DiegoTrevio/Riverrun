@@ -84,8 +84,8 @@ export async function seedUxFixture(h: Harness) {
   const uxMonth = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Mexico_City', year: 'numeric', month: '2-digit' }).format(new Date());
   const login: Record<string, any> = { superadmin: h.authed };
   for (const role of ['admin', 'agent']) {
-    const user = (await h.authed('POST', '/api/users', { account_id: h.accountId, name: `Auditor ${role}`, email: `${role}@auditoria.test`, password: 'auditoria123', role })).json();
-    login[role] = await h.loginAs(`${role}@auditoria.test`, 'auditoria123');
+    const user = (await h.authed('POST', '/api/users', { account_id: h.accountId, name: `Auditor ${role}`, email: `${role}@auditoria.test`, password: 'Pz-100-Qx-300-Kv', role })).json();
+    login[role] = await h.loginAs(`${role}@auditoria.test`, 'Pz-100-Qx-300-Kv');
     if (role === 'agent') await h.authed('PUT', `/api/conversations/${conv.id}/assign`, { user_id: user.id });
   }
   // Un aviso urgente cuyo WhatsApp no llegó y salió por correo, y WhatsApp que siguen fallando (Notificaciones).

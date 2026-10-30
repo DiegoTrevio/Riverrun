@@ -40,9 +40,9 @@ before(async () => {
   h = await createHarness();
   await h.createBot();
   h.setScript(() => ({ messages: ['Con gusto.'] }));
-  assert.equal((await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'duena@ops.mx', name: 'Dueña', password: 'clave-duena-123', role: 'admin' })).statusCode, 200);
+  assert.equal((await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'duena@ops.mx', name: 'Dueña', password: 'Pz-117-Qx-317-Kv', role: 'admin' })).statusCode, 200);
   assert.equal((await h.authed('PUT', `/api/accounts/${h.accountId}`, { copilot_enabled: true })).statusCode, 200);
-  owner = await h.loginAs('duena@ops.mx', 'clave-duena-123');
+  owner = await h.loginAs('duena@ops.mx', 'Pz-117-Qx-317-Kv');
   const tpl = (await owner('GET', '/api/pipelines/template')).json();
   assert.equal((await owner('POST', '/api/pipelines', { ...tpl, chatbot_ids: [h.botId] })).statusCode, 200);
   await h.webhook('Hola, quiero agendar', { phone: '5215533330001' });

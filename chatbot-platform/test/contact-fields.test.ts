@@ -19,10 +19,10 @@ before(async () => {
   h = await createHarness();
   await h.createBot();
   for (const [email, role] of [['duena@palmas.mx', 'admin'], ['agente@palmas.mx', 'agent']]) {
-    assert.equal((await h.authed('POST', '/api/users', { account_id: h.accountId, name: role, email, password: 'clave-segura-1', role })).statusCode, 200);
+    assert.equal((await h.authed('POST', '/api/users', { account_id: h.accountId, name: role, email, password: 'Pz-144-Qx-344-Kv', role })).statusCode, 200);
   }
-  admin = await h.loginAs('duena@palmas.mx', 'clave-segura-1');
-  agent = await h.loginAs('agente@palmas.mx', 'clave-segura-1');
+  admin = await h.loginAs('duena@palmas.mx', 'Pz-144-Qx-344-Kv');
+  agent = await h.loginAs('agente@palmas.mx', 'Pz-144-Qx-344-Kv');
   h.setScript(() => ({ messages: ['¡Hola! ¿En qué te ayudo?'] }));
   await h.webhook('Hola');
   await h.idle();

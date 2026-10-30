@@ -30,7 +30,7 @@ before(async () => {
   const s = await h.authed('PUT', `/api/settings?account_id=${h.accountId}`, { business_hours: ALL_DAY, consent: { require_for_campaigns: false } });
   assert.equal(s.statusCode, 200, s.body);
   // Miembro del equipo que recibe alertas por WhatsApp
-  const u = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'lucia@hotel.mx', name: 'Lucía', password: 'clave-lucia-1', role: 'agent', phone: '5215588880000', notify_whatsapp: true });
+  const u = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'lucia@hotel.mx', name: 'Lucía', password: 'Pz-132-Qx-332-Kv', role: 'agent', phone: '5215588880000', notify_whatsapp: true });
   assert.equal(u.statusCode, 200, u.body);
   teamUserId = u.json().id;
   await h.authed('POST', `/api/chatbots/${h.botId}/knowledge`, { title: 'Precios', content: 'Doble: $1,650 MXN por noche.' });
@@ -55,7 +55,7 @@ t('regla por palabra clave: responde sin IA, etiqueta y alerta al equipo (panel 
   h.setScript(() => ({ messages: ['Hola, ¿en qué te ayudo?'] }));
   await h.webhook('hola', { phone: '5215510001001' });
   await h.idle();
-  const luciaApi = await h.loginAs('lucia@hotel.mx', 'clave-lucia-1');
+  const luciaApi = await h.loginAs('lucia@hotel.mx', 'Pz-132-Qx-332-Kv');
   assert.equal((await h.authed('PUT', `/api/conversations/${(await convOf('5215510001001')).id}/assign`, { user_id: (await luciaApi('GET', '/api/me')).json().user.id })).statusCode, 200);
   // El aviso de la asignación ya es de Lucía: se marca leído para contar solo el de la regla.
   await luciaApi('POST', '/api/notifications/read', {});
@@ -71,7 +71,7 @@ t('regla por palabra clave: responde sin IA, etiqueta y alerta al equipo (panel 
   const conv = await convOf('5215510001001');
   const detail = (await h.authed('GET', `/api/conversations/${conv.id}`)).json();
   assert.deepEqual(detail.contact.tags, ['interesado']);
-  const lucia = await h.loginAs('lucia@hotel.mx', 'clave-lucia-1');
+  const lucia = await h.loginAs('lucia@hotel.mx', 'Pz-132-Qx-332-Kv');
   const notes = (await lucia('GET', '/api/notifications')).json();
   assert.equal(notes.unread, 1);
   assert.match(notes.items[0].title, /Lista de precios/);
@@ -162,7 +162,7 @@ t('intención detectada por la IA: queja → transferir y alertar', async () => 
   h.setScript(() => ({ messages: ['Hola, ¿en qué te ayudo?'] }));
   await h.webhook('hola', { phone: '5215510001005' });
   await h.idle();
-  const luciaApi = await h.loginAs('lucia@hotel.mx', 'clave-lucia-1');
+  const luciaApi = await h.loginAs('lucia@hotel.mx', 'Pz-132-Qx-332-Kv');
   assert.equal((await h.authed('PUT', `/api/conversations/${(await convOf('5215510001005')).id}/assign`, { user_id: (await luciaApi('GET', '/api/me')).json().user.id })).statusCode, 200);
   h.reset();
   h.setScript((req) => {
@@ -358,7 +358,7 @@ t('agenda desde el panel: agendar con confirmación, reprogramar, completar, can
   const conv = await convOf('5215510002001');
   const slots = (await h.authed('GET', `/api/services/${serviceId}/slots`)).json();
   h.reset();
-  const agent = await h.loginAs('lucia@hotel.mx', 'clave-lucia-1');
+  const agent = await h.loginAs('lucia@hotel.mx', 'Pz-132-Qx-332-Kv');
   // Un agente solo agenda en sus conversaciones: esta es suya.
   assert.equal((await h.authed('PUT', `/api/conversations/${conv.id}/assign`, { user_id: (await agent('GET', '/api/me')).json().user.id })).statusCode, 200);
   const r = await agent('POST', '/api/appointments', { service_id: serviceId, slot: slots[0].key, conversation_id: conv.id, notes: 'Trae identificación' });
@@ -404,8 +404,8 @@ t('simulador: reglas y citas de prueba sin molestar al equipo ni ocupar horarios
 });
 
 t('acceso: otra cuenta no ve ni toca la automatización; el agente no configura reglas', async () => {
-  const other = await h.authed('POST', '/api/accounts', { name: 'Otra', admin: { email: 'admin@otra.mx', password: 'clave-otra-1' } });
-  const api = await h.loginAs('admin@otra.mx', 'clave-otra-1');
+  const other = await h.authed('POST', '/api/accounts', { name: 'Otra', admin: { email: 'admin@otra.mx', password: 'Pz-136-Qx-336-Kv' } });
+  const api = await h.loginAs('admin@otra.mx', 'Pz-136-Qx-336-Kv');
   for (const path of ['/api/automations', '/api/sequences', '/api/campaigns', '/api/services', '/api/appointments']) {
     assert.deepEqual((await api('GET', path)).json(), [], path);
   }
@@ -417,7 +417,7 @@ t('acceso: otra cuenta no ve ni toca la automatización; el agente no configura 
   const seq = (await h.authed('GET', `/api/sequences?account_id=${h.accountId}`)).json()[0];
   const bad = await api('POST', '/api/automations', { name: 'x', trigger: { type: 'new_contact' }, actions: [{ type: 'start_sequence', sequence_id: seq.id }] });
   assert.equal(bad.statusCode, 400);
-  const agent = await h.loginAs('lucia@hotel.mx', 'clave-lucia-1');
+  const agent = await h.loginAs('lucia@hotel.mx', 'Pz-132-Qx-332-Kv');
   assert.equal((await agent('POST', '/api/automations', { name: 'x', trigger: { type: 'new_contact' }, actions: [{ type: 'close_conversation' }] })).statusCode, 403);
   assert.equal((await agent('GET', '/api/campaigns')).statusCode, 403);
   void other;

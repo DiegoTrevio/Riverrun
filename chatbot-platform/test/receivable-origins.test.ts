@@ -26,9 +26,9 @@ before(async () => {
   h = await createHarness();
   await h.createBot();
   await h.authed('PUT', acc('/api/settings'), { business_hours: ALL_DAY });
-  assert.equal((await h.authed('POST', '/api/users', { account_id: h.accountId, name: 'Caja', email: 'caja@origenes.mx', password: 'clave-segura-1', role: 'admin' })).statusCode, 200);
-  assert.equal((await h.authed('POST', '/api/users', { account_id: h.accountId, name: 'Agente', email: 'agente@origenes.mx', password: 'clave-segura-1', role: 'agent' })).statusCode, 200);
-  agent = await h.loginAs('agente@origenes.mx', 'clave-segura-1');
+  assert.equal((await h.authed('POST', '/api/users', { account_id: h.accountId, name: 'Caja', email: 'caja@origenes.mx', password: 'Pz-144-Qx-344-Kv', role: 'admin' })).statusCode, 200);
+  assert.equal((await h.authed('POST', '/api/users', { account_id: h.accountId, name: 'Agente', email: 'agente@origenes.mx', password: 'Pz-144-Qx-344-Kv', role: 'agent' })).statusCode, 200);
+  agent = await h.loginAs('agente@origenes.mx', 'Pz-144-Qx-344-Kv');
   h.setScript(() => ({ messages: ['Claro, con gusto.'] }));
   await h.webhook('Hola, quiero agendar');
   await h.idle();

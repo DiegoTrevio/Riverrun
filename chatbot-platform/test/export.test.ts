@@ -124,11 +124,11 @@ t('más de 1,000 filas se exportan completas, sin repetir ni saltar (paginación
 
 t('permisos: solo administradores de la cuenta; otra cuenta no ve nada de esta', async () => {
   // Un agente no exporta
-  await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'agente@export.mx', password: 'clave-agente-1', role: 'agent' });
-  const agent = await h.loginAs('agente@export.mx', 'clave-agente-1');
+  await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'agente@export.mx', password: 'Pz-101-Qx-301-Kv', role: 'agent' });
+  const agent = await h.loginAs('agente@export.mx', 'Pz-101-Qx-301-Kv');
   assert.equal((await agent('GET', '/api/export/contacts.csv')).statusCode, 403);
   // El administrador de otra cuenta solo recibe lo suyo (aunque pida ?account_id= ajeno)
-  const other = await h.app.inject({ method: 'POST', url: '/api/signup', remoteAddress: '10.6.6.6', payload: { name: 'Otro', company: 'Otro negocio', business_type: 'otro', email: 'otro@export.mx', password: 'clave-otro-123', accept_terms: true } });
+  const other = await h.app.inject({ method: 'POST', url: '/api/signup', remoteAddress: '10.6.6.6', payload: { name: 'Otro', company: 'Otro negocio', business_type: 'otro', email: 'otro@export.mx', password: 'Pz-137-Qx-337-Kv', accept_terms: true } });
   const cookie = String(other.headers['set-cookie']).split(';')[0];
   const api = (m: string, u: string) => h.app.inject({ method: m as any, url: u, headers: { cookie } });
   const mine = await api('GET', `/api/export/contacts.csv?account_id=${h.accountId}`);

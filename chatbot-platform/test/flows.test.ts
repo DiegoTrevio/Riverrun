@@ -30,7 +30,7 @@ before(async () => {
     ],
   });
   await h.authed('PUT', `/api/settings?account_id=${h.accountId}`, { business_hours: ALL_DAY, timezone: 'America/Bogota', consent: { require_for_campaigns: false } });
-  const u = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'equipo@hotel.mx', name: 'Equipo', password: 'clave-equipo-1', role: 'admin' });
+  const u = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'equipo@hotel.mx', name: 'Equipo', password: 'Pz-123-Qx-323-Kv', role: 'admin' });
   assert.equal(u.statusCode, 200, u.body);
 });
 after(async () => {
@@ -83,7 +83,7 @@ t('recorrido: al cumplir el objetivo (con los datos) se pasa a una persona una s
   assert.equal(d.conversation.handoff_reason, 'Se cumplió el objetivo de la conversación');
   assert.deepEqual(h.sent.map((m) => m.text), ['¡Gracias! Con esto el equipo te confirma la reservación en breve.'], 'no se manda además el mensaje de transferencia');
   // El equipo recibe la alerta de "esperando a una persona".
-  const equipo = await h.loginAs('equipo@hotel.mx', 'clave-equipo-1');
+  const equipo = await h.loginAs('equipo@hotel.mx', 'Pz-123-Qx-323-Kv');
   await waitFor(async () => (await equipo('GET', '/api/notifications')).json().items.some((n: any) => /esperando a una persona/.test(n.title)));
 
   // Con una persona atendiendo, el asistente ya no responde.
@@ -115,7 +115,7 @@ t('recorrido: "avisar al equipo", disparador de reglas y reinicio al reabrir', a
   await waitFor(async () => (await detail(c.id)).contact.tags.includes('reservó'));
   let d = await detail(c.id);
   assert.equal(d.conversation.status, 'bot', '"avisar" no transfiere');
-  const equipo = await h.loginAs('equipo@hotel.mx', 'clave-equipo-1');
+  const equipo = await h.loginAs('equipo@hotel.mx', 'Pz-123-Qx-323-Kv');
   assert.ok((await equipo('GET', '/api/notifications')).json().items.some((n: any) => n.title === '🎯 Objetivo cumplido'));
 
   // Un segundo "cumplido" en la misma conversación no repite la acción.
@@ -233,7 +233,7 @@ t('si la IA no responde ni al reintentar, el equipo recibe un aviso (el cliente 
 
   await pool.query(`UPDATE conversations SET status = 'bot' WHERE id = $1`, [c.id]);
   await (h.service as any).aiUnavailable(c.id);
-  const equipo = await h.loginAs('equipo@hotel.mx', 'clave-equipo-1');
+  const equipo = await h.loginAs('equipo@hotel.mx', 'Pz-123-Qx-323-Kv');
   const n = (await equipo('GET', '/api/notifications')).json().items.find((x: any) => x.title === '⚠️ Un cliente espera respuesta');
   assert.ok(n, 'aviso al equipo');
   assert.equal(n.link, `#/conversation/${c.id}`);

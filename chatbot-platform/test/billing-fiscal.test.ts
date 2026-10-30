@@ -55,7 +55,7 @@ test('régimen según persona física o moral, uso del CFDI según régimen, CP 
 
 t('guardar y leer los datos; un agente no puede; con factura y datos incompletos no se puede pagar', async () => {
   const r = await h.app.inject({ method: 'POST', url: '/api/signup', remoteAddress: '10.55.0.1',
-    payload: { name: 'Ema Ruiz', company: 'Escuela Ema', business_type: 'servicios', email: 'ema@escuela.mx', password: 'clave-ema-123', accept_terms: true } });
+    payload: { name: 'Ema Ruiz', company: 'Escuela Ema', business_type: 'servicios', email: 'ema@escuela.mx', password: 'Pz-119-Qx-319-Kv', accept_terms: true } });
   assert.equal(r.statusCode, 200, r.body);
   const accountId = r.json().account.id;
   const cookie = String(r.headers['set-cookie']).split(';')[0];
@@ -96,8 +96,8 @@ t('guardar y leer los datos; un agente no puede; con factura y datos incompletos
   g = (await api('GET', '/api/billing/fiscal')).json();
   assert.deepEqual([g.fiscal.wants_invoice, g.fiscal.rfc, g.complete], [false, 'EKU9003173C9', true]);
 
-  assert.equal((await h.authed('POST', '/api/users', { account_id: accountId, name: 'Iker', email: 'iker@escuela.mx', password: 'clave-iker-123', role: 'agent' })).statusCode, 200);
-  const agent = await h.loginAs('iker@escuela.mx', 'clave-iker-123');
+  assert.equal((await h.authed('POST', '/api/users', { account_id: accountId, name: 'Iker', email: 'iker@escuela.mx', password: 'Pz-126-Qx-326-Kv', role: 'agent' })).statusCode, 200);
+  const agent = await h.loginAs('iker@escuela.mx', 'Pz-126-Qx-326-Kv');
   assert.equal((await agent('GET', '/api/billing/fiscal')).statusCode, 403);
   assert.equal((await agent('PUT', '/api/billing/fiscal', MORAL)).statusCode, 403);
 });

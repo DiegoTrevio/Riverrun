@@ -23,7 +23,7 @@ before(async () => {
   h = await createHarness();
   await h.createBot();
   // Una administradora de la cuenta, para recibir el aviso de "ya está respondiendo".
-  await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'duena@tienda.mx', name: 'Dueña', password: 'clave-duena-123', role: 'admin' });
+  await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'duena@tienda.mx', name: 'Dueña', password: 'Pz-117-Qx-317-Kv', role: 'admin' });
 });
 after(async () => {
   if (h) await h.app.close();
@@ -50,7 +50,7 @@ t('al conectarse el WhatsApp, el agente se enciende solo, una vez, con un regist
   await waitFor(async () => (await bot(a.id)).active === true);
   assert.deepEqual(await bot(a.id), { active: true, start_on_connect: false });
   assert.equal(await turnedOnLogs(a.id), 1);
-  const owner = await h.loginAs('duena@tienda.mx', 'clave-duena-123');
+  const owner = await h.loginAs('duena@tienda.mx', 'Pz-117-Qx-317-Kv');
   const notes = (await owner('GET', '/api/notifications')).json().items.filter((n: any) => n.title === 'Tu agente ya está respondiendo');
   assert.equal(notes.length, 1);
   assert.equal(notes[0].link, `#/bot/${a.id}/empezar`);
@@ -98,13 +98,13 @@ t('asignarle una conexión que ya estaba conectada también lo enciende', async 
 t('permisos: otra cuenta no lo ve, un operador no conecta y hace falta el correo confirmado', async () => {
   const a = await agent('Tienda Siete');
   const other = (await h.authed('POST', '/api/accounts', { name: 'Otra cuenta' })).json();
-  await h.authed('POST', '/api/users', { account_id: other.id, email: 'ajeno@otra.mx', name: 'Ajeno', password: 'clave-ajeno-123', role: 'admin' });
-  assert.equal((await whatsapp(a.id, await h.loginAs('ajeno@otra.mx', 'clave-ajeno-123'))).statusCode, 404);
-  await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'operador@tienda.mx', name: 'Operador', password: 'clave-operador-1', role: 'agent' });
-  assert.equal((await whatsapp(a.id, await h.loginAs('operador@tienda.mx', 'clave-operador-1'))).statusCode, 403);
+  await h.authed('POST', '/api/users', { account_id: other.id, email: 'ajeno@otra.mx', name: 'Ajeno', password: 'Pz-104-Qx-304-Kv', role: 'admin' });
+  assert.equal((await whatsapp(a.id, await h.loginAs('ajeno@otra.mx', 'Pz-104-Qx-304-Kv'))).statusCode, 404);
+  await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'operador@tienda.mx', name: 'Operador', password: 'Pz-135-Qx-335-Kv', role: 'agent' });
+  assert.equal((await whatsapp(a.id, await h.loginAs('operador@tienda.mx', 'Pz-135-Qx-335-Kv'))).statusCode, 403);
 
   // Quien se registra solo confirma su correo antes de conectar.
-  const s = await h.app.inject({ method: 'POST', url: '/api/signup', remoteAddress: '10.88.0.1', payload: { name: 'Rita', company: 'Florería Rita', business_type: 'tienda', email: 'rita@flores.mx', password: 'clave-rita-123', accept_terms: true } });
+  const s = await h.app.inject({ method: 'POST', url: '/api/signup', remoteAddress: '10.88.0.1', payload: { name: 'Rita', company: 'Florería Rita', business_type: 'tienda', email: 'rita@flores.mx', password: 'Pz-141-Qx-341-Kv', accept_terms: true } });
   assert.equal(s.statusCode, 200, s.body);
   const cookie = String(s.headers['set-cookie']).split(';')[0];
   const rita = (method: string, url: string, payload?: unknown) => h.app.inject({ method: method as any, url, payload: payload as any, headers: { cookie } });

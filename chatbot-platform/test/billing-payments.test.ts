@@ -22,7 +22,7 @@ const unix = (d: Date) => Math.floor(d.getTime() / 1000);
 async function signup(email: string, ip: string) {
   const r = await h.app.inject({
     method: 'POST', url: '/api/signup', remoteAddress: ip,
-    payload: { name: 'Dueña', company: `Negocio ${email}`, business_type: 'servicios', email, password: 'clave-segura-1', accept_terms: true },
+    payload: { name: 'Dueña', company: `Negocio ${email}`, business_type: 'servicios', email, password: 'Pz-144-Qx-344-Kv', accept_terms: true },
   });
   assert.equal(r.statusCode, 200, r.body);
   const cookie = String(r.headers['set-cookie']).split(';')[0];

@@ -24,7 +24,7 @@ const nowSec = () => Math.floor(Date.now() / 1000);
 async function signup(email: string, plan: string, provider: 'stripe' | 'mercadopago') {
   const r = await h.app.inject({
     method: 'POST', url: '/api/signup', remoteAddress: `10.77.0.${++ip}`,
-    payload: { name: 'Leo Paz', company: `Negocio ${ip}`, business_type: 'belleza', email, password: 'clave-leo-123', accept_terms: true, plan, provider },
+    payload: { name: 'Leo Paz', company: `Negocio ${ip}`, business_type: 'belleza', email, password: 'Pz-129-Qx-329-Kv', accept_terms: true, plan, provider },
   });
   assert.equal(r.statusCode, 200, r.body);
   const cookie = String(r.headers['set-cookie']).split(';')[0];

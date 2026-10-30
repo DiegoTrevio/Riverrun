@@ -10,10 +10,10 @@ export const checks = {
     await create.locator('summary').click();
     await create.getByLabel('Nombre', { exact: true }).fill('Persona nueva');
     await create.getByLabel('Correo', { exact: true }).fill('nueva@auditoria.test');
-    await create.getByLabel('Contraseña inicial', { exact: true }).fill('auditoria123');
+    await create.getByLabel('Contraseña inicial', { exact: true }).fill('Pz-100-Qx-300-Kv');
     await page.getByRole('button', { name: 'Crear usuario', exact: true }).click();
     await toast(page, 'Usuario creado');
-    const login = await h.app.inject({ method: 'POST', url: '/api/login', payload: { email: 'nueva@auditoria.test', password: 'auditoria123' } });
+    const login = await h.app.inject({ method: 'POST', url: '/api/login', payload: { email: 'nueva@auditoria.test', password: 'Pz-100-Qx-300-Kv' } });
     assert.equal(login.statusCode, 200, 'la persona creada no puede entrar');
     await page.locator('tr', { hasText: 'nueva@auditoria.test' }).getByRole('button', { name: 'Eliminar', exact: true }).click();
     await page.locator('dialog').getByRole('button', { name: 'Continuar' }).click();

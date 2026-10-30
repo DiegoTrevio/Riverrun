@@ -18,7 +18,7 @@ let ip = 0;
 const signup = (body: Record<string, unknown>, headers: Record<string, string> = {}) =>
   h.app.inject({
     method: 'POST', url: '/api/signup', remoteAddress: `10.77.0.${++ip}`, headers,
-    payload: { name: 'Ana Ruiz', company: 'Estética Ana', business_type: 'belleza', password: 'clave-ana-123', accept_terms: true, ...body },
+    payload: { name: 'Ana Ruiz', company: 'Estética Ana', business_type: 'belleza', password: 'Pz-105-Qx-305-Kv', accept_terms: true, ...body },
   });
 const as = (r: { headers: Record<string, unknown> }) => {
   const cookie = String(r.headers['set-cookie']).split(';')[0];

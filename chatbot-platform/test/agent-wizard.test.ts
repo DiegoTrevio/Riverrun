@@ -136,8 +136,8 @@ t('validaciones, permisos y límites del plan', async () => {
   assert.equal((await bad(base({ scope: { ...base().scope, role: 'inventado' } }))).statusCode, 400);
   assert.equal((await bad(base({ scope: { ...base().scope, collect: ['contraseña'] } }))).statusCode, 400);
   // Un agente (rol) no crea agentes
-  await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'op@wiz.mx', name: 'Op', password: 'clave-operador-1', role: 'agent' });
-  const op = await h.loginAs('op@wiz.mx', 'clave-operador-1');
+  await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'op@wiz.mx', name: 'Op', password: 'Pz-135-Qx-335-Kv', role: 'agent' });
+  const op = await h.loginAs('op@wiz.mx', 'Pz-135-Qx-335-Kv');
   assert.equal((await op('POST', '/api/chatbots/wizard', base())).statusCode, 403);
   assert.equal((await op('POST', '/api/chatbots/draft', base())).statusCode, 403);
   // Límite de asistentes del plan

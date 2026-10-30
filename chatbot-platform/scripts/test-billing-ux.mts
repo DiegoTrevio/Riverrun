@@ -103,7 +103,7 @@ try {
 
   // Una cuenta nueva (en prueba) ve las tarjetas de plan con el total con IVA.
   const r = await h.app.inject({ method: 'POST', url: '/api/signup', remoteAddress: '10.8.8.8',
-    payload: { name: 'Ana', company: 'Estudio Ana', business_type: 'servicios', email: 'ana@estudio.mx', password: 'clave-segura-1', accept_terms: true } });
+    payload: { name: 'Ana', company: 'Estudio Ana', business_type: 'servicios', email: 'ana@estudio.mx', password: 'Pz-144-Qx-344-Kv', accept_terms: true } });
   assert.equal(r.statusCode, 200, r.body);
   const accountId = r.json().user.account_id as string;
   const cookie = String(r.headers['set-cookie']).split(';')[0];
@@ -372,7 +372,7 @@ try {
     assert.equal((await h.authed('POST', '/api/plans', { key: 'plus', name: 'Plus', price: 899 })).statusCode, 200);
     fake.mp.nextId = 'pre_ux';
     const s = await h.app.inject({ method: 'POST', url: '/api/signup', remoteAddress: '10.8.8.9',
-      payload: { name: 'Mara', company: 'Estudio Mara', business_type: 'servicios', email: 'mara@estudio.mx', password: 'clave-segura-2', accept_terms: true, plan: 'pro', provider: 'mercadopago' } });
+      payload: { name: 'Mara', company: 'Estudio Mara', business_type: 'servicios', email: 'mara@estudio.mx', password: 'Pz-146-Qx-346-Kv', accept_terms: true, plan: 'pro', provider: 'mercadopago' } });
     assert.equal(s.statusCode, 200, s.body);
     const mara = String(s.headers['set-cookie']).split(';')[0];
     const call = (method: string, url: string, payload?: unknown) => h.app.inject({ method: method as any, url, payload: payload as any, headers: { cookie: mara } });
