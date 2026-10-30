@@ -149,6 +149,20 @@ Registro con tarjeta y una prueba gratis por persona. El diseño completo (tambi
 - Mientras la cuenta está en pausa, los botones que usan IA se ven deshabilitados con el motivo.
 - Cuentas (superadministrador): «Esperando tarjeta», «Activar sin tarjeta» para excepciones reales (queda en la bitácora y gasta la prueba de esa persona) y «Quitar freno».
 
+**Revisión independiente de la etapa 3a.** Encontró que dos cuentas de la misma persona que confirmaban la misma
+tarjeta al mismo tiempo recibían las dos su prueba: ahora la marca decide (candado por marca, y la prueba y sus marcas
+se guardan juntas). También, que en Mercado Pago «Contratar» después de una tarjeta repetida no cobraba hoy y podía
+dejar a la persona en un ciclo, y que las páginas de tarjeta por sustitución (cambiar tarjeta, reanudar, mensual ↔
+anual) quedaban fuera de los topes y del freno. Todo eso quedó corregido, con su prueba. Lo que señaló y queda para
+después:
+- A quien se le negó la prueba por su correo, el aviso le dice «Esta tarjeta ya tuvo una prueba gratis».
+- Dos clics a la vez en «Agregar tarjeta» abren dos páginas de pago (las dos cuentan para el tope).
+- Una página reutilizada al minuto 29 dura menos de un minuto en Stripe.
+- Si el correo falla a la vez que Cloudflare, el registro responde 500 en lugar de 503; el aviso del 80 % puede salir
+  más de una vez.
+- El correo «tu prueba está por terminar» habla del primer cobro también a quien ya canceló.
+- Las marcas vencidas y las verificaciones viejas no se depuran.
+
 ## Hallazgos pendientes por etapa
 
 Abreviaturas: ID identidad, PAY cobros, IN entradas, AI IA y Copiloto, INF servidor.
