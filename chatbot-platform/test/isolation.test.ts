@@ -79,6 +79,8 @@ function fillParams(url: string): string | null {
     [/^\/api\/contact-fields\/:id/, 'contact_field'],
     // Una sesión del admin de B: nadie de A la cierra.
     [/^\/api\/me\/sessions\/:id/, 'user_session'],
+    // Un dispositivo recordado del admin de B: nadie de A lo olvida.
+    [/^\/api\/me\/devices\/:id/, 'user_device'],
     [/^\/api\/alert-deliveries\/:id/, 'alert_receipt'],
     // Solo el superadmin: la cuenta A debe recibir 403.
     [/^\/api\/system\/zernio\/tenants\/:id/, 'account'],
@@ -100,14 +102,14 @@ before(async () => {
   h = await createHarness();
   h.setScript(() => ({ messages: ['Hola'] }));
   for (const [name, email] of [['Cuenta A', 'admin@a.mx'], [`Cuenta ${MARK}`, 'admin@b.mx']]) {
-    const r = await h.authed('POST', '/api/accounts', { name, admin: { name: 'Admin', email, password: 'clave-segura-1' } });
+    const r = await h.authed('POST', '/api/accounts', { name, admin: { name: 'Admin', email, password: 'Pz-144-Qx-344-Kv' } });
     assert.equal(r.statusCode, 200, r.body);
     if (email === 'admin@b.mx') B.account = r.json().id;
   }
-  adminA = await h.loginAs('admin@a.mx', 'clave-segura-1');
-  adminB = await h.loginAs('admin@b.mx', 'clave-segura-1');
-  assert.equal((await adminA('POST', '/api/users', { email: 'agente@a.mx', name: 'Agente', password: 'clave-segura-1', role: 'agent' })).statusCode, 200);
-  agentA = await h.loginAs('agente@a.mx', 'clave-segura-1');
+  adminA = await h.loginAs('admin@a.mx', 'Pz-144-Qx-344-Kv');
+  adminB = await h.loginAs('admin@b.mx', 'Pz-144-Qx-344-Kv');
+  assert.equal((await adminA('POST', '/api/users', { email: 'agente@a.mx', name: 'Agente', password: 'Pz-144-Qx-344-Kv', role: 'agent' })).statusCode, 200);
+  agentA = await h.loginAs('agente@a.mx', 'Pz-144-Qx-344-Kv');
 
   // Recursos de la cuenta B (con un marcador para detectar fugas).
   const ok200 = async (p: Promise<any>) => { const r = await p; assert.ok(r.statusCode < 300, r.body); return r.json(); };
@@ -152,7 +154,7 @@ before(async () => {
   B.service = (await ok200(adminB('POST', '/api/services', { name: `Servicio ${MARK}`, duration_minutes: 30 }))).id;
   const slot = (await adminB('GET', `/api/services/${B.service}/slots`)).json()[0];
   B.appointment = (await ok200(adminB('POST', '/api/appointments', { service_id: B.service, slot: slot.key, customer_name: `Cliente ${MARK}`, notify_customer: false }))).id;
-  B.user = (await ok200(adminB('POST', '/api/users', { email: 'agente@b.mx', name: `Agente ${MARK}`, password: 'clave-segura-1', role: 'agent' }))).id;
+  B.user = (await ok200(adminB('POST', '/api/users', { email: 'agente@b.mx', name: `Agente ${MARK}`, password: 'Pz-144-Qx-344-Kv', role: 'agent' }))).id;
   B.endpoint = (await ok200(adminB('POST', '/api/webhook-endpoints', { url: 'https://example.com/hook', description: `Hook ${MARK}` }))).id;
   B.apikey = (await ok200(adminB('POST', '/api/api-keys', { name: `Llave ${MARK}` }))).id;
   // Sesión de «Conectar con Facebook» de B, con una página y su token: A no la ve ni la aplica.
@@ -198,6 +200,8 @@ before(async () => {
     `INSERT INTO alert_receipts (account_id, alert_key, channel, destination, payload, status, last_error)
      VALUES ((SELECT account_id FROM users WHERE email = 'admin@b.mx'), gen_random_uuid(), 'email', 'equipo@b.mx', $1, 'failed', 'falla') RETURNING id`,
     [{ title: `Aviso ${MARK}`, body: MARK }])).rows[0].id;
+  B.user_device = (await pool.query(
+    `INSERT INTO user_devices (user_id, device_hash, trust_hash, trusted_until) VALUES ((SELECT id FROM users WHERE email = 'admin@b.mx'), 'disp-b', 'confianza-b', now() + interval '30 days') RETURNING id`)).rows[0].id;
   B.user_session = (await pool.query(`SELECT s.id FROM user_sessions s JOIN users u ON u.id = s.user_id WHERE u.email = 'admin@b.mx' AND s.revoked_at IS NULL ORDER BY s.created_at DESC LIMIT 1`)).rows[0].id;
   await h.idle();
 });
@@ -234,6 +238,7 @@ t('todas las rutas con :id de la cuenta B: el admin y el agente de A reciben 403
   assert.equal((await adminB('GET','/api/contact-views')).json().length,1);
   assert.equal((await pool.query('SELECT state FROM ai_spend WHERE id=$1',[B.budget_entry])).rows[0].state,'unknown');
   assert.equal((await adminB('GET', `/api/conversations/${B.conv}`)).json().conversation.status, 'bot');
+  assert.equal((await pool.query('SELECT trust_hash FROM user_devices WHERE id = $1', [B.user_device])).rows[0].trust_hash, 'confianza-b', 'nadie de A olvidó su dispositivo');
 });
 
 t('listados y rutas sin parámetros: A nunca ve datos de B (aunque pida ?account_id=B)', async () => {
@@ -263,7 +268,7 @@ t('el agente no puede usar rutas de administración de su propia cuenta', async 
   const adminOnly = [
     ['POST', '/api/chatbots', { name: 'x' }],
     ['POST', '/api/channels', { type: 'webchat', name: 'x' }],
-    ['POST', '/api/users', { email: 'x@a.mx', name: 'x', password: 'clave-segura-1', role: 'admin' }],
+    ['POST', '/api/users', { email: 'x@a.mx', name: 'x', password: 'Pz-144-Qx-344-Kv', role: 'admin' }],
     ['PUT', '/api/settings', { timezone: 'America/Bogota' }],
     ['POST', '/api/automations', { name: 'x', trigger: { type: 'new_contact' }, actions: [] }],
     ['POST', '/api/campaigns', { name: 'x', message: 'x' }],

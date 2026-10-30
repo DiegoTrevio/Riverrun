@@ -15,9 +15,9 @@ before(async () => {
   h = await createHarness();
   await h.createBot();
   for (const [n, role, phone] of [['ana', 'agent', '5215500000001'], ['beto', 'agent', '']] as const) {
-    const r = await h.authed('POST', '/api/users', { account_id: h.accountId, email: `${n}@equipo.mx`, name: n, password: 'clave-equipo-1', role, phone, notify_whatsapp: !!phone });
+    const r = await h.authed('POST', '/api/users', { account_id: h.accountId, email: `${n}@equipo.mx`, name: n, password: 'Pz-123-Qx-323-Kv', role, phone, notify_whatsapp: !!phone });
     assert.equal(r.statusCode, 200, r.body);
-    const u = { id: r.json().id, api: await h.loginAs(`${n}@equipo.mx`, 'clave-equipo-1') };
+    const u = { id: r.json().id, api: await h.loginAs(`${n}@equipo.mx`, 'Pz-123-Qx-323-Kv') };
     if (n === 'ana') ana = u; else beto = u;
   }
   h.setScript(() => ({ messages: ['¿Cuántos tacos quieres?'], save_data: [{ field: 'nombre', value: 'Luis' }] }));

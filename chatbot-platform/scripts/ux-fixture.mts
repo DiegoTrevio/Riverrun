@@ -83,9 +83,12 @@ export async function seedUxFixture(h: Harness) {
   assert.equal((await h.authed('POST', `/api/contact-fields?account_id=${h.accountId}`, { label: 'Cumpleaños', key: 'cumpleanos', type: 'date' })).statusCode, 201);
   const uxMonth = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Mexico_City', year: 'numeric', month: '2-digit' }).format(new Date());
   const login: Record<string, any> = { superadmin: h.authed };
+  // Con qué entra cada rol (p. ej. para abrir una sesión nueva por navegador).
+  const credentials: Record<string, [string, string]> = { superadmin: ['admin@test.mx', 'secreto123'] };
   for (const role of ['admin', 'agent']) {
-    const user = (await h.authed('POST', '/api/users', { account_id: h.accountId, name: `Auditor ${role}`, email: `${role}@auditoria.test`, password: 'auditoria123', role })).json();
-    login[role] = await h.loginAs(`${role}@auditoria.test`, 'auditoria123');
+    const user = (await h.authed('POST', '/api/users', { account_id: h.accountId, name: `Auditor ${role}`, email: `${role}@auditoria.test`, password: 'Pz-100-Qx-300-Kv', role })).json();
+    credentials[role] = [`${role}@auditoria.test`, 'Pz-100-Qx-300-Kv'];
+    login[role] = await h.loginAs(...credentials[role]);
     if (role === 'agent') await h.authed('PUT', `/api/conversations/${conv.id}/assign`, { user_id: user.id });
   }
   // Un aviso urgente cuyo WhatsApp no llegó y salió por correo, y WhatsApp que siguen fallando (Notificaciones).
@@ -103,5 +106,5 @@ export async function seedUxFixture(h: Harness) {
   const admin = ['agentes', `bot/${h.botId}/instrucciones`, `bot/${h.botId}/preguntas`, `bot/${h.botId}/activacion`, `bot/${h.botId}/conocimiento`, `bot/${h.botId}/imagenes`, `bot/${h.botId}/conexiones`, `bot/${h.botId}/probar`, `bot/${h.botId}/conexiones/${h.channelId}`, `bot/${h.botId}/conexiones/${socialNew.id}`, `bot/${h.botId}/conexiones/${socialOn.id}`, 'conversations', `conversation/${conv.id}`, 'agenda', 'agenda/servicios', `agenda/servicios?id=${service.id}`, 'agenda/equipo', 'agenda/enlaces', 'automation/lienzo', `automation/lienzo/${uxBoard}`, 'automation/rules', 'automation/rules/new', 'automation/sequences', 'automation/sequences/new', `automation/sequences/${uxFlow}`, 'automation/campaigns', 'automation/campaigns/new', `automation/campaigns/new?flow=${uxFlow}`, 'automation/settings', 'pipeline', 'pipeline/editar/nuevo', 'ajustes', 'integraciones', 'redes', `redes/whatsapp/${waSocial}`, 'comentarios', 'comentarios?tipo=review', 'publicaciones', `publicaciones?vista=calendario&mes=${uxMonth}`, 'publicaciones/nueva', `publicaciones/${pubA}`, 'users', 'consumo', 'logs', 'plan', 'cobros', 'cobros?tab=recurrentes', 'cobros?tab=ajustes', 'datos-clientes', 'contacts', 'estadisticas', 'estadisticas/redes', 'notifications', 'notifications?grupo=handoff', 'password', 'inicio', 'agentes/nuevo', `bot/${h.botId}/empezar`];
   const agent = ['conversations', `conversation/${conv.id}`, 'agenda', 'cobros', 'cobros?tab=recurrentes', 'datos-clientes', 'notifications', 'pipeline', 'password'];
   const superadmin = ['agentes', 'agentes/nuevo', 'accounts', 'planes', 'marcas', 'sistema', 'sistema/zernio', 'redes', 'users', 'ajustes', 'integraciones'];
-  return { conv, service, socialNew, socialOn, onCfg, waSocial, igSocial, gbSocial, uxPost, pubA, pubB, uxFlow, uxBoard, uxDue, uxCharge, uxMonth, login, auditor, uxNotice, routes: { admin, agent, superadmin } };
+  return { conv, service, socialNew, socialOn, onCfg, waSocial, igSocial, gbSocial, uxPost, pubA, pubB, uxFlow, uxBoard, uxDue, uxCharge, uxMonth, login, credentials, auditor, uxNotice, routes: { admin, agent, superadmin } };
 }

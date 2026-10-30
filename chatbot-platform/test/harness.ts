@@ -398,6 +398,10 @@ process.env.UPLOADS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'cp-uploads-'));
 process.env.ADMIN_USER = 'admin@test.mx';
 process.env.ADMIN_PASSWORD = 'secreto123';
 process.env.SESSION_SECRET = 'una-clave-de-pruebas-muy-larga';
+// Las pruebas no salen a internet: las contraseñas nuevas se revisan solo contra la lista local.
+process.env.PWNED_PASSWORDS_URL = 'off';
+// Hash de contraseñas con un costo bajo: con el de producción (OWASP) cada usuario de prueba tardaría unos 300 ms.
+process.env.PASSWORD_HASH_COST = 'test';
 // Las cotizaciones se convierten a PDF con un convertidor de prueba (QUOTE_PDF_BACKEND=soffice usa LibreOffice).
 process.env.QUOTE_PDF_BACKEND ??= 'fake';
 
@@ -405,6 +409,7 @@ export const { pool, migrate } = await import('../src/db.js');
 const { buildApp } = await import('../src/app.js');
 const { defaultTransport } = await import('../src/service.js');
 const { bootstrapSuperadmin } = await import('../src/auth.js');
+const { currentStep, totpAt } = await import('../src/identity/totp.js');
 export const store = await import('../src/store/index.js');
 export type Req = import('../src/ai/provider.js').CompletionRequest;
 
@@ -510,17 +515,49 @@ export async function createHarness(opts: { realAi?: import('../src/ai/provider.
     inflight.n++;
     try { return await handleIncomingOriginal(...args); } finally { inflight.n--; }
   }) as typeof service.handleIncoming;
+  // Verificación en dos pasos: el arnés la hace solo, por la API, como lo haría la persona con su app. Guarda el secreto
+  // de cada correo al configurarlo; `codeFor` reinicia el último paso usado para poder entrar varias veces en 30 s.
+  const totpSecrets = new Map<string, string>();
+  const cookieFrom = (r: { headers: Record<string, unknown> }, name: string) =>
+    [r.headers['set-cookie'] ?? []].flat().map(String).find((c) => c.startsWith(`${name}=`))?.split(';')[0];
+  const codeFor = async (email: string) => {
+    const secret = totpSecrets.get(email.toLowerCase());
+    assert.ok(secret, `El arnés no tiene el secreto de verificación de ${email}`);
+    await pool.query(`UPDATE users SET totp_last_step = 0 WHERE lower(email) = lower($1)`, [email]);
+    return totpAt(secret, currentStep());
+  };
+  /** La cookie de sesión que deja una respuesta de entrar, registrarse o aceptar una invitación (completa el 2FA). */
+  const sessionFrom = async (res: { statusCode: number; body: string; headers: Record<string, unknown>; json: () => any }, who?: string, extra: Record<string, string> = {}) => {
+    // Sin correo: el de la respuesta (registro o invitación devuelven al usuario).
+    const email = who ?? (res.statusCode === 200 ? res.json().user?.email : undefined);
+    assert.ok(email, `sessionFrom necesita el correo: ${res.body}`);
+    const direct = cookieFrom(res, 'cp_session');
+    if (direct && !direct.endsWith('=')) return direct;
+    const challenge = cookieFrom(res, 'cp_mfa');
+    const mfa = res.statusCode === 200 ? res.json().mfa : undefined;
+    assert.ok(challenge && mfa, `Sin sesión ni reto de verificación: ${res.statusCode} ${res.body}`);
+    const headers = { ...extra, cookie: challenge }; // p. ej. el navegador (user-agent) de la sesión
+    if (mfa === 'enroll') {
+      const e = await app.inject({ method: 'GET', url: '/api/2fa/enroll', headers });
+      assert.equal(e.statusCode, 200, e.body);
+      totpSecrets.set(email.toLowerCase(), e.json().secret);
+    }
+    const url = mfa === 'enroll' ? '/api/2fa/enroll' : '/api/login/2fa';
+    const done = await app.inject({ method: 'POST', url, headers, payload: { code: await codeFor(email) } });
+    assert.equal(done.statusCode, 200, done.body);
+    return cookieFrom(done, 'cp_session')!;
+  };
   const loginAs = async (email: string, password: string) => {
     const login = await app.inject({ method: 'POST', url: '/api/login', payload: { email, password } });
     assert.equal(login.statusCode, 200, login.body);
-    const cookie = String(login.headers['set-cookie']).split(';')[0];
+    const cookie = await sessionFrom(login, email);
     return Object.assign((method: string, url: string, payload?: unknown) => app.inject({ method: method as any, url, payload: payload as any, headers: { cookie } }), { cookie });
   };
   const authed = await loginAs('admin@test.mx', 'secreto123');
 
   let msgN = 0;
   const h = {
-    app, service, ai, calls, summaryCalls, copilotCalls, sent, authed, loginAs, cookie: authed.cookie, failNext, token: '', botId: '', accountId: '', channelId: '',
+    app, service, ai, calls, summaryCalls, copilotCalls, sent, authed, loginAs, sessionFrom, codeFor, totpSecrets, cookie: authed.cookie, failNext, token: '', botId: '', accountId: '', channelId: '',
     setScript(s: Script) { script = s; },
     setCopilotScript(s: CopilotScript) { copilotScript = s; },
     setSummary(s: string) { summary = s; },

@@ -1,5 +1,5 @@
 import { brand, brandMark, productMark, resetBrand } from './brand.js';
-import { api, h, invalidateReads, run, state } from './core.js';
+import { api, h, inBackground, invalidateReads, run, state } from './core.js';
 import { icon } from './icons.js';
 import { render } from './main.js';
 import { ROLE_LABEL, copilotAvailable, isAdmin, isSuper } from './session.js';
@@ -12,7 +12,7 @@ const bells = [h('span', { class: 'count', hidden: true }), h('span', { class: '
 
 export async function refreshBell() {
   try {
-    const n = await api('GET', '/api/notifications?limit=1');
+    const n = await inBackground(() => api('GET', '/api/notifications?limit=1'));
     for (const bell of bells) {
       bell.textContent = n.unread > 99 ? '99+' : n.unread;
       bell.hidden = !n.unread;

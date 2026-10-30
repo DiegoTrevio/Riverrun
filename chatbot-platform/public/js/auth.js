@@ -17,13 +17,16 @@ const GOOGLE_MSG = {
 export function renderLogin() {
   const flash = new URLSearchParams((location.hash.split('?')[1] || '')).get('google');
   if (flash && GOOGLE_MSG[flash]) setTimeout(() => toast(GOOGLE_MSG[flash], true), 0);
+  let notice = null;
+  try { notice = sessionStorage.getItem('login-notice'); sessionStorage.removeItem('login-notice'); } catch { /* sin storage */ }
+  if (notice) setTimeout(() => toast(notice), 0);
   const f = { email: '', password: '' };
   const signupLink = h('p', { class: 'small', style: 'margin-bottom:0' });
   const googleSlot = h('div', {});
   const submit = async (e) => {
     e.preventDefault();
     const ok = await run(() => api('POST', '/api/login', f));
-    if (ok) { state.me = null; location.hash = '#/'; }
+    if (ok) afterLogin(ok);
   };
   publicPage(
     h('form', { class: 'card login', onsubmit: submit },
@@ -46,7 +49,19 @@ export function renderLogin() {
 
 /* ------------------------------ Registro y recuperación (públicas) ------------------------------ */
 
-function publicCard(title, ...kids) {
+/**
+ * Después de la contraseña, el registro o la invitación falta el segundo paso (escribir el código o configurar la app).
+ * `next` es a dónde sigue al terminarlo; el pago del registro (`checkout_url`) tiene prioridad.
+ */
+export function afterLogin(r, next = '#/') {
+  state.me = null;
+  try { sessionStorage.setItem('after-mfa', r.checkout_url || next); } catch { /* sin storage */ }
+  if (r.mfa === 'verify') location.hash = '#/login/codigo';
+  else if (r.mfa === 'enroll') location.hash = '#/login/configurar';
+  else location.hash = next;
+}
+
+export function publicCard(title, ...kids) {
   publicPage(h('div', { class: 'card login', style: 'max-width:440px' }, h('h1', {}, title), kids));
 }
 
@@ -106,8 +121,7 @@ export async function renderGoogleSignup(token) {
     button.disabled = true;
     const r = await run(() => api('POST', '/api/signup/google', f));
     if (!r) { sending = false; button.disabled = false; return; }
-    state.me = null;
-    location.hash = '#/agentes/nuevo';
+    afterLogin(r, '#/agentes/nuevo');
   };
   publicCard('Termina tu registro',
     h('p', { class: 'muted', style: 'margin-top:0' }, 'Entraste con Google como ', h('strong', {}, info.email), '. Solo falta el nombre de tu negocio y aceptar los términos.'),
@@ -146,8 +160,7 @@ export async function renderInvite(params) {
     const { confirm: _c, ...body } = f;
     const r = await run(() => api('POST', '/api/invitation/accept', google ? { ...body, password: undefined } : body));
     if (!r) { sending = false; button.disabled = false; return; }
-    state.me = null;
-    location.hash = '#/';
+    afterLogin(r);
   };
   const role = info.role === 'admin' ? 'administrador' : 'agente';
   publicCard(`Únete a ${info.account}`,
@@ -155,8 +168,8 @@ export async function renderInvite(params) {
       google ? ['Entraste con Google como ', h('strong', {}, info.email), '.'] : ['Tu acceso será con ', h('strong', {}, info.email), '.']),
     h('form', { class: 'stack', onsubmit: submit },
       field('Tu nombre', text(f, 'name', { required: true, autocomplete: 'name' })),
-      google ? null : field('Elige tu contraseña', text(f, 'password', { type: 'password', autocomplete: 'new-password', minlength: 8, required: true }), 'Mínimo 8 caracteres.'),
-      google ? null : field('Repítela', text(f, 'confirm', { type: 'password', autocomplete: 'new-password', minlength: 8, required: true })),
+      google ? null : field('Elige tu contraseña', text(f, 'password', { type: 'password', autocomplete: 'new-password', minlength: 12, required: true }), 'Mínimo 12 caracteres; una frase de 3 o 4 palabras funciona bien.'),
+      google ? null : field('Repítela', text(f, 'confirm', { type: 'password', autocomplete: 'new-password', minlength: 12, required: true })),
       termsCheck(info, f),
       button,
       info.google_login ? h('a', { class: 'btn', href: '/oauth/google/login', style: 'display:block;text-align:center' }, 'Unirme con Google') : null,
@@ -212,10 +225,9 @@ export async function renderSignup(params = new URLSearchParams()) {
     button.disabled = true;
     const r = await run(() => api('POST', '/api/signup', { ...rest, ...(plan ? { plan, ...(provider ? { provider } : {}) } : {}) }));
     if (!r) { sending = false; button.disabled = false; return; }
-    state.me = null;
-    if (r.checkout_url) { button.textContent = 'Abriendo el pago seguro…'; location.href = r.checkout_url; return; }
-    if (r.checkout_error) { toast(r.checkout_error, true); location.hash = `#/plan?plan=${encodeURIComponent(plan)}`; return; }
-    location.hash = '#/agentes/nuevo';
+    // Primero configura su verificación en dos pasos; al terminar abre el pago (si eligió plan) o el asistente.
+    if (r.checkout_error) { toast(r.checkout_error, true); return afterLogin(r, `#/plan?plan=${encodeURIComponent(plan)}`); }
+    afterLogin(r, '#/agentes/nuevo');
   };
   const intro = info.plans.length
     ? (trial ? `Prueba gratis ${info.trial_days} días o contrata tu plan desde hoy.` : 'Crea tu cuenta y activa tu plan en un solo paso.')
@@ -227,7 +239,7 @@ export async function renderSignup(params = new URLSearchParams()) {
       field('Nombre de tu negocio', text(f, 'company', { placeholder: 'Clínica Sonrisa', required: true, autocomplete: 'organization' })),
       field('Tipo de negocio', select(f, 'business_type', info.business_types.map((b) => [b.key, b.label]))),
       field('Correo', text(f, 'email', { type: 'email', required: true, autocomplete: 'email', placeholder: 'tu@negocio.com' }), 'Te enviaremos un enlace para confirmarlo.'),
-      field('Contraseña', text(f, 'password', { type: 'password', autocomplete: 'new-password', minlength: 8, required: true }), 'Mínimo 8 caracteres.'),
+      field('Contraseña', text(f, 'password', { type: 'password', autocomplete: 'new-password', minlength: 12, required: true }), 'Mínimo 12 caracteres; una frase de 3 o 4 palabras funciona bien.'),
       field('WhatsApp para avisos (opcional)', text(f, 'phone', { type: 'tel', autocomplete: 'tel', placeholder: '5215512345678' }), 'Ahí te avisamos cuando un cliente pida hablar con una persona.'),
       info.plans.length ? planPicker(info, f, label) : null,
       info.plans.length ? h('p', { class: 'muted small', style: 'margin:0' }, 'Al elegir un plan pasas al pago seguro (Stripe o Mercado Pago); nunca vemos tu tarjeta. Se renueva cada mes y puedes cancelar cuando quieras.') : null,
@@ -265,8 +277,8 @@ export function renderReset(token) {
     const r = await run(() => api('POST', '/api/reset-password', { token: f.token, password: f.password }));
     if (r) fill(box, h('p', {}, 'Listo, ya puedes entrar con tu contraseña nueva.'), h('a', { class: 'btn primary', href: '#/login' }, 'Iniciar sesión'));
   } },
-    field('Contraseña nueva', text(f, 'password', { type: 'password', autocomplete: 'new-password', minlength: 8, required: true }), 'Mínimo 8 caracteres.'),
-    field('Repítela', text(f, 'confirm', { type: 'password', autocomplete: 'new-password', minlength: 8, required: true })),
+    field('Contraseña nueva', text(f, 'password', { type: 'password', autocomplete: 'new-password', minlength: 12, required: true }), 'Mínimo 12 caracteres; una frase de 3 o 4 palabras funciona bien.'),
+    field('Repítela', text(f, 'confirm', { type: 'password', autocomplete: 'new-password', minlength: 12, required: true })),
     h('button', { class: 'primary', type: 'submit' }, 'Guardar')));
 }
 

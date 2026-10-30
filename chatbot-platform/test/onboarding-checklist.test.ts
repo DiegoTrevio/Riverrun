@@ -15,10 +15,10 @@ let ip = 0;
 async function newAccount(email: string, company = 'Café Luna') {
   const r = await h.app.inject({
     method: 'POST', url: '/api/signup', remoteAddress: `10.66.0.${++ip}`,
-    payload: { name: 'Luna Díaz', company, business_type: 'restaurante', email, password: 'clave-luna-123', accept_terms: true },
+    payload: { name: 'Luna Díaz', company, business_type: 'restaurante', email, password: 'Pz-133-Qx-333-Kv', accept_terms: true },
   });
   assert.equal(r.statusCode, 200, r.body);
-  const cookie = String(r.headers['set-cookie']).split(';')[0];
+  const cookie = await h.sessionFrom(r);
   const api = (method: string, url: string, payload?: unknown) => h.app.inject({ method: method as any, url, payload: payload as any, headers: { cookie } });
   return { api, account: r.json().account.id as string, user: r.json().user.id as string };
 }
@@ -85,9 +85,9 @@ t('lista de pendientes: «Ocultar», permisos y cuentas creadas por el superadmi
   assert.equal(done(list).team, false);
 
   // Un agente de la cuenta no la ve; con él, el paso opcional del equipo queda hecho.
-  const agent = await h.authed('POST', '/api/users', { account_id: B.account, name: 'Beto', email: 'beto@cafe.mx', password: 'clave-beto-123', role: 'agent' });
+  const agent = await h.authed('POST', '/api/users', { account_id: B.account, name: 'Beto', email: 'beto@cafe.mx', password: 'Pz-108-Qx-308-Kv', role: 'agent' });
   assert.equal(agent.statusCode, 200, agent.body);
-  assert.equal((await (await h.loginAs('beto@cafe.mx', 'clave-beto-123'))('GET', '/api/onboarding/checklist')).statusCode, 403);
+  assert.equal((await (await h.loginAs('beto@cafe.mx', 'Pz-108-Qx-308-Kv'))('GET', '/api/onboarding/checklist')).statusCode, 403);
   list = await checklist(B.api);
   assert.equal(done(list).team, true);
 

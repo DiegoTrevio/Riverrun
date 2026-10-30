@@ -24,11 +24,11 @@ after(async () => {
 });
 
 t('reiniciar no devuelve la contraseña de .env a un superadmin que ya la cambió (ni lo reactiva)', async () => {
-  const changed = await h.authed('PUT', '/api/me/password', { current: 'secreto123', password: 'otra-clave-del-panel' });
+  const changed = await h.authed('PUT', '/api/me/password', { current: 'secreto123', password: 'Pz-157-Qx-357-Kv' });
   assert.equal(changed.statusCode, 200, changed.body);
   await bootstrapSuperadmin();
   assert.equal((await login('admin@test.mx', 'secreto123')).statusCode, 401, 'la contraseña de .env ya no entra');
-  assert.equal((await login('admin@test.mx', 'otra-clave-del-panel')).statusCode, 200);
+  assert.equal((await login('admin@test.mx', 'Pz-157-Qx-357-Kv')).statusCode, 200);
 
   await pool.query(`UPDATE users SET active = false WHERE email = 'admin@test.mx'`);
   await bootstrapSuperadmin();
@@ -37,14 +37,29 @@ t('reiniciar no devuelve la contraseña de .env a un superadmin que ya la cambi�
 });
 
 t('recuperar el acceso: contraseña nueva, cuenta activa y las sesiones abiertas se cierran', async () => {
-  const opened = await login('admin@test.mx', 'otra-clave-del-panel');
-  const cookie = String(opened.headers['set-cookie']).split(';')[0];
+  const opened = await login('admin@test.mx', 'Pz-157-Qx-357-Kv');
+  const cookie = await h.sessionFrom(opened, 'admin@test.mx');
   await pool.query(`UPDATE users SET active = false WHERE email = 'admin@test.mx'`);
   const r = await resetSuperadminPassword('admin@test.mx');
   assert.equal(r.created, false);
   assert.ok(r.password.length >= 16, 'se genera una contraseña larga');
   assert.equal((await login('admin@test.mx', r.password)).statusCode, 200);
   assert.equal((await h.app.inject({ method: 'GET', url: '/api/me', headers: { cookie } })).statusCode, 401, 'la sesión de antes se cerró');
+});
+
+t('recuperar el acceso también restablece su verificación en dos pasos y los intentos de su cuenta', async () => {
+  const id = (await pool.query(`SELECT id FROM users WHERE email = 'admin@test.mx'`)).rows[0].id;
+  const r0 = await resetSuperadminPassword('admin@test.mx');
+  await h.sessionFrom(await login('admin@test.mx', r0.password), 'admin@test.mx'); // configura su app y entra
+  await pool.query(`UPDATE users SET mfa_locked_until = now() + interval '1 hour' WHERE id = $1`, [id]);
+  await pool.query(`INSERT INTO rate_limits (key, hits, expires_at) VALUES ('login-acct:admin@test.mx', 50, now() + interval '1 hour'), ($1, 50, now() + interval '1 hour')
+    ON CONFLICT (key) DO UPDATE SET hits = 50, expires_at = now() + interval '1 hour'`, [`mfa-user:${id}`]);
+  const r = await resetSuperadminPassword('admin@test.mx');
+  const row = (await pool.query(`SELECT totp_secret, totp_pending, totp_enabled_at, mfa_locked_until FROM users WHERE id = $1`, [id])).rows[0];
+  assert.deepEqual(row, { totp_secret: null, totp_pending: null, totp_enabled_at: null, mfa_locked_until: null });
+  assert.equal((await pool.query(`SELECT count(*)::int n FROM user_recovery_codes WHERE user_id = $1`, [id])).rows[0].n, 0);
+  assert.equal((await pool.query(`SELECT count(*)::int n FROM rate_limits WHERE key IN ('login-acct:admin@test.mx', $1)`, [`mfa-user:${id}`])).rows[0].n, 0, 'sus contadores quedan en 0');
+  assert.deepEqual((await login('admin@test.mx', r.password)).json(), { mfa: 'enroll' }, 'la configura al entrar');
 });
 
 t('recuperar el acceso crea al superadmin si no existe, pero no convierte en superadmin a otro usuario', async () => {
@@ -54,8 +69,8 @@ t('recuperar el acceso crea al superadmin si no existe, pero no convierte en sup
   assert.equal((await pool.query(`SELECT role FROM users WHERE email = 'nuevo-jefe@test.mx'`)).rows[0].role, 'superadmin');
 
   const jefe = await h.loginAs('nuevo-jefe@test.mx', 'clave-elegida-larga');
-  const acc = (await jefe('POST', '/api/accounts', { name: 'Negocio de Ana', admin: { name: 'Ana', email: 'ana@negocio.mx', password: 'clave-de-ana-123' } })).json();
+  const acc = (await jefe('POST', '/api/accounts', { name: 'Negocio de Ana', admin: { name: 'Ana', email: 'ana@negocio.mx', password: 'Pz-109-Qx-309-Kv' } })).json();
   assert.ok(acc.id);
   await assert.rejects(() => resetSuperadminPassword('ana@negocio.mx'), /no es superadministrador/);
-  assert.equal((await login('ana@negocio.mx', 'clave-de-ana-123')).statusCode, 200, 'su contraseña no cambió');
+  assert.equal((await login('ana@negocio.mx', 'Pz-109-Qx-309-Kv')).statusCode, 200, 'su contraseña no cambió');
 });

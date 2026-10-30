@@ -61,8 +61,8 @@ t('pgvector busca por coseno dentro del agente, respeta presupuesto y datos obli
 });
 
 t('administrador de otro perfil no puede consultar ni preparar el índice del agente', async () => {
-  await h.authed('POST', '/api/accounts', { name: 'Perfil restringido', admin: { email: 'vector@perfil.test', password: 'vector-perfil-123' } });
-  const outsider = await h.loginAs('vector@perfil.test', 'vector-perfil-123');
+  await h.authed('POST', '/api/accounts', { name: 'Perfil restringido', admin: { email: 'vector@perfil.test', password: 'Pz-161-Qx-361-Kv' } });
+  const outsider = await h.loginAs('vector@perfil.test', 'Pz-161-Qx-361-Kv');
   assert.equal((await outsider('GET', `/api/chatbots/${h.botId}/knowledge/index`)).statusCode, 404);
   assert.equal((await outsider('POST', `/api/chatbots/${h.botId}/knowledge/index`, {})).statusCode, 404);
 });

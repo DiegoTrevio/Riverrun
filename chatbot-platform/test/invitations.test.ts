@@ -39,7 +39,7 @@ const accept = (body: Record<string, unknown>) =>
   h.app.inject({ method: 'POST', url: '/api/invitation/accept', remoteAddress: `10.9.1.${++ip}`, headers: { 'user-agent': 'Navegador de prueba' }, payload: { name: 'Persona', accept_terms: true, ...body } });
 
 async function account(name: string, email: string) {
-  const r = await h.authed('POST', '/api/accounts', { name, admin: { name: `Admin ${name}`, email, password: 'clave-segura-1' } });
+  const r = await h.authed('POST', '/api/accounts', { name, admin: { name: `Admin ${name}`, email, password: 'Pz-144-Qx-344-Kv' } });
   assert.equal(r.statusCode, 200, r.body);
   return r.json().id as string;
 }
@@ -50,10 +50,10 @@ before(async () => {
   outbox = (await import('../src/mailer.js')).outbox;
   A.account = await account('Taller Ana', 'ana@taller.mx');
   B.account = await account('Cuenta Beto', 'beto@otra.mx');
-  A.admin = await h.loginAs('ana@taller.mx', 'clave-segura-1');
-  B.admin = await h.loginAs('beto@otra.mx', 'clave-segura-1');
-  assert.equal((await A.admin('POST', '/api/users', { name: 'Agente', email: 'agente@taller.mx', password: 'clave-segura-1', role: 'agent' })).statusCode, 200);
-  A.agent = await h.loginAs('agente@taller.mx', 'clave-segura-1');
+  A.admin = await h.loginAs('ana@taller.mx', 'Pz-144-Qx-344-Kv');
+  B.admin = await h.loginAs('beto@otra.mx', 'Pz-144-Qx-344-Kv');
+  assert.equal((await A.admin('POST', '/api/users', { name: 'Agente', email: 'agente@taller.mx', password: 'Pz-144-Qx-344-Kv', role: 'agent' })).statusCode, 200);
+  A.agent = await h.loginAs('agente@taller.mx', 'Pz-144-Qx-344-Kv');
 });
 after(async () => {
   server.close();
@@ -76,21 +76,21 @@ t('invitar por correo y unirse eligiendo contraseña: queda en la cuenta, con su
   assert.deepEqual([i.json().account, i.json().email, i.json().name, i.json().role, i.json().invited_by], ['Taller Ana', 'lalo@taller.mx', 'Lalo', 'admin', 'Admin Taller Ana']);
 
   assert.equal((await accept({ token, password: 'corta' })).statusCode, 400);
-  assert.equal((await accept({ token, password: 'clave-de-lalo', accept_terms: false })).statusCode, 400, 'sin aceptar términos');
-  const done = await accept({ token, password: 'clave-de-lalo', name: 'Lalo Ruiz' });
+  assert.equal((await accept({ token, password: 'Pz-111-Qx-311-Kv', accept_terms: false })).statusCode, 400, 'sin aceptar términos');
+  const done = await accept({ token, password: 'Pz-111-Qx-311-Kv', name: 'Lalo Ruiz' });
   assert.equal(done.statusCode, 200, done.body);
-  const session = done.cookies.find((c) => c.value)!;
-  const me = (await h.app.inject({ method: 'GET', url: '/api/me', headers: { cookie: `${session.name}=${session.value}` } })).json();
+  assert.equal(done.json().mfa, 'enroll', 'configura su verificación antes de entrar');
+  const me = (await h.app.inject({ method: 'GET', url: '/api/me', headers: { cookie: await h.sessionFrom(done) } })).json();
   assert.deepEqual([me.user.email, me.user.role, me.user.account_id, me.user.name], ['lalo@taller.mx', 'admin', A.account, 'Lalo Ruiz']);
   const u = (await pool.query(`SELECT id, email_verified_at FROM users WHERE email = 'lalo@taller.mx'`)).rows[0];
   assert.ok(u.email_verified_at, 'el enlace del correo prueba que el correo es suyo');
   const terms = (await pool.query(`SELECT source, account_id, ip FROM terms_acceptances WHERE user_id = $1`, [u.id])).rows;
   assert.deepEqual(terms, [{ source: 'invite', account_id: A.account, ip: `10.9.1.${ip}` }]);
-  const lalo = await h.loginAs('lalo@taller.mx', 'clave-de-lalo');
+  const lalo = await h.loginAs('lalo@taller.mx', 'Pz-111-Qx-311-Kv');
   assert.equal((await lalo('GET', '/api/me')).statusCode, 200, 'entra con la contraseña que eligió');
 
   // El enlace ya se usó.
-  assert.match((await accept({ token, password: 'otra-clave-1' })).json().error, /ya se usó/);
+  assert.match((await accept({ token, password: 'Pz-155-Qx-355-Kv' })).json().error, /ya se usó/);
   assert.equal((await info(`token=${encodeURIComponent(token)}`)).statusCode, 400);
   assert.deepEqual((await A.admin('GET', '/api/invitations')).json(), [], 'ya no está pendiente');
 });
@@ -105,13 +105,13 @@ t('reenviar invalida el enlace anterior; cancelar y vencer también; un enlace i
   assert.equal((await info(`token=${encodeURIComponent(second)}`)).statusCode, 200);
 
   await pool.query(`UPDATE account_invitations SET expires_at = now() - interval '1 minute' WHERE id = $1`, [inv.id]);
-  assert.match((await accept({ token: second, password: 'clave-de-mia1' })).json().error, /venció/);
+  assert.match((await accept({ token: second, password: 'Pz-112-Qx-312-Kv' })).json().error, /venció/);
   // Invitar de nuevo al mismo correo reemplaza la vencida.
   const again = (await A.admin('POST', '/api/invitations', { email: 'mia@taller.mx' })).json();
   assert.equal((await pool.query(`SELECT count(*)::int n FROM account_invitations WHERE lower(email) = 'mia@taller.mx' AND revoked_at IS NULL AND accepted_at IS NULL`)).rows[0].n, 1);
   assert.equal((await A.admin('DELETE', `/api/invitations/${again.id}`)).statusCode, 200);
-  assert.match((await accept({ token: tokenFor('mia@taller.mx'), password: 'clave-de-mia1' })).json().error, /se canceló/);
-  assert.equal((await accept({ token: 'inventado', password: 'clave-de-mia1' })).statusCode, 400);
+  assert.match((await accept({ token: tokenFor('mia@taller.mx'), password: 'Pz-112-Qx-312-Kv' })).json().error, /se canceló/);
+  assert.equal((await accept({ token: 'inventado', password: 'Pz-112-Qx-312-Kv' })).statusCode, 400);
   assert.equal((await pool.query(`SELECT count(*)::int n FROM users WHERE email = 'mia@taller.mx'`)).rows[0].n, 0);
 });
 
@@ -125,12 +125,12 @@ t('límite del plan: cuentan las invitaciones pendientes, y se revisa otra vez a
   assert.match(full.json().error, /1 invitación pendiente/);
   // El plan bajó después de invitar: al aceptar ya no cabe.
   assert.equal((await h.authed('PUT', `/api/accounts/${A.account}`, { limits_override: { users: 3 } })).statusCode, 200);
-  const late = await accept({ token: tokenFor('nico@taller.mx'), password: 'clave-de-nico' });
+  const late = await accept({ token: tokenFor('nico@taller.mx'), password: 'Pz-113-Qx-313-Kv' });
   assert.equal(late.statusCode, 403);
   assert.deepEqual(late.json().issues, ['limit_reached']);
   assert.equal((await pool.query(`SELECT count(*)::int n FROM users WHERE email = 'nico@taller.mx'`)).rows[0].n, 0);
   assert.equal((await h.authed('PUT', `/api/accounts/${A.account}`, { limits_override: {} })).statusCode, 200);
-  assert.equal((await accept({ token: tokenFor('nico@taller.mx'), password: 'clave-de-nico' })).statusCode, 200, 'con lugar, la misma invitación sirve');
+  assert.equal((await accept({ token: tokenFor('nico@taller.mx'), password: 'Pz-113-Qx-313-Kv' })).statusCode, 200, 'con lugar, la misma invitación sirve');
 });
 
 t('correos que ya tienen cuenta o temporales no se invitan; agentes y otras cuentas no pueden', async () => {
@@ -152,8 +152,8 @@ t('correos que ya tienen cuenta o temporales no se invitan; agentes y otras cuen
   assert.deepEqual((await B.admin('GET', '/api/invitations')).json().map((i: any) => i.email), ['rosa@otra.mx']);
 
   // Si alguien registra ese correo antes de aceptar, la invitación ya no crea otro usuario.
-  assert.equal((await B.admin('POST', '/api/users', { name: 'Quique', email: 'quique@taller.mx', password: 'clave-segura-1', role: 'agent' })).statusCode, 200);
-  assert.equal((await accept({ token: tokenFor('quique@taller.mx'), password: 'clave-de-quique' })).statusCode, 409);
+  assert.equal((await B.admin('POST', '/api/users', { name: 'Quique', email: 'quique@taller.mx', password: 'Pz-144-Qx-344-Kv', role: 'agent' })).statusCode, 200);
+  assert.equal((await accept({ token: tokenFor('quique@taller.mx'), password: 'Pz-114-Qx-314-Kv' })).statusCode, 409);
 });
 
 t('con Google: un correo invitado se une a su equipo (aunque el registro público esté cerrado)', async () => {
@@ -188,14 +188,14 @@ t('con Google: un correo invitado se une a su equipo (aunque el registro públic
 
 t('la lista de pendientes sugiere invitar y avisa las invitaciones por aceptar', async () => {
   await account('Cuenta Nueva', 'tere@nueva.mx');
-  const admin = await h.loginAs('tere@nueva.mx', 'clave-segura-1');
+  const admin = await h.loginAs('tere@nueva.mx', 'Pz-144-Qx-344-Kv');
   const team = async () => (await admin('GET', '/api/onboarding/checklist')).json().items.find((i: any) => i.key === 'team');
   let step = await team();
   assert.deepEqual([step.label, step.action, step.done], ['Invita a tu equipo', 'Invitar', false]);
   assert.equal((await admin('POST', '/api/invitations', { email: 'uli@nueva.mx' })).statusCode, 200);
   step = await team();
   assert.equal(step.hint, 'Tienes 1 invitación por aceptar.');
-  assert.equal((await accept({ token: tokenFor('uli@nueva.mx'), password: 'clave-de-uli1' })).statusCode, 200);
+  assert.equal((await accept({ token: tokenFor('uli@nueva.mx'), password: 'Pz-115-Qx-315-Kv' })).statusCode, 200);
   step = await team();
   assert.equal(step.done, true);
 });

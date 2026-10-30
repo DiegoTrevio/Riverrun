@@ -3,6 +3,7 @@
  * Se ejecuta periódicamente; cada paso es idempotente (se puede correr las veces que sea).
  */
 import { pruneUserSessions } from './store/index.js';
+import { pruneHits } from './identity/rate-limit.js';
 import { getSettings, notifyUsers } from './automation/store.js';
 import { mailBrand } from './brands.js';
 import { config } from './config.js';
@@ -148,6 +149,7 @@ export async function lifecycleTick(deadlineMs = TICK_DEADLINE_MS): Promise<'ran
         checkOnboardingNudges().catch((e) => logEvent({ level: 'error', source: 'system', message: `Correos de seguimiento: ${e?.message ?? e}` })),
         sendSuperadminDigest().catch((e) => logEvent({ level: 'error', source: 'system', message: `Resumen diario al superadmin: ${e?.message ?? e}` })),
         pruneUserSessions().catch((e) => logEvent({ level: 'error', source: 'system', message: `Limpieza de sesiones: ${e?.message ?? e}` })),
+        pruneHits().catch((e) => logEvent({ level: 'error', source: 'system', message: `Limpieza de límites: ${e?.message ?? e}` })),
         // Facturas: primero se arma la global del mes que cerró y luego se emite todo lo pendiente.
         checkGlobalInvoice()
           .then(() => processCfdi())

@@ -28,10 +28,10 @@ type Api = (m: string, u: string, p?: unknown) => ReturnType<typeof h.app.inject
 async function signup(email: string) {
   const r = await h.app.inject({
     method: 'POST', url: '/api/signup', remoteAddress: `10.85.0.${++ip}`,
-    payload: { name: 'Dueña', company: `Negocio ${email}`, business_type: 'servicios', email, password: 'clave-segura-1', accept_terms: true },
+    payload: { name: 'Dueña', company: `Negocio ${email}`, business_type: 'servicios', email, password: 'Pz-144-Qx-344-Kv', accept_terms: true },
   });
   assert.equal(r.statusCode, 200, r.body);
-  const cookie = String(r.headers['set-cookie']).split(';')[0];
+  const cookie = await h.sessionFrom(r);
   const api: Api = (method, url, payload) => h.app.inject({ method: method as any, url, payload: payload as any, headers: { cookie } });
   return { account: r.json().user.account_id as string, api, email };
 }

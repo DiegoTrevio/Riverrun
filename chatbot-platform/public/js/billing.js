@@ -317,7 +317,12 @@ function dataCard() {
   return h('section', { class: 'card', 'aria-labelledby': 'data-title' },
     h('h2', { id: 'data-title', style: 'margin-top:0' }, 'Tus datos'),
     owner ? [h('p', {}, 'Descarga todo lo de tu cuenta: configuración, agentes y su conocimiento, contactos, conversaciones, cotizaciones, pagos y facturas.'),
-      h('a', { class: 'btn', href: withAcct('/api/account/export.zip'), download: '' }, 'Descargar todos mis datos (ZIP)')] : null,
+      h('a', { class: 'btn', href: withAcct('/api/account/export.zip'), download: '', onclick: async (e) => {
+        // La descarga es un enlace (no pasa por api()): primero confirma con el código si hace falta.
+        e.preventDefault();
+        const { ensureRecentMfa } = await import('./mfa.js');
+        if (await ensureRecentMfa()) location.href = e.currentTarget?.href || withAcct('/api/account/export.zip');
+      } }, 'Descargar todos mis datos (ZIP)')] : null,
     h('h3', {}, 'Borrar mi cuenta'),
     removal);
 }

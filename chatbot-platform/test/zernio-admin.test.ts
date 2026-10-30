@@ -38,12 +38,12 @@ before(async () => {
   h = await createHarness();
   await h.createBot();
   h.setScript(() => ({ messages: ['Hola'] }));
-  await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'redes@palmas.mx', name: 'Dueña', password: 'clave-redes-1', role: 'admin' });
+  await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'redes@palmas.mx', name: 'Dueña', password: 'Pz-140-Qx-340-Kv', role: 'admin' });
   otherAccount = (await h.authed('POST', '/api/accounts', { name: 'Florería Lila' })).json().id;
-  await h.authed('POST', '/api/users', { account_id: otherAccount, email: 'lila@flores.mx', name: 'Lila', password: 'clave-lila-1', role: 'admin' });
+  await h.authed('POST', '/api/users', { account_id: otherAccount, email: 'lila@flores.mx', name: 'Lila', password: 'Pz-130-Qx-330-Kv', role: 'admin' });
   await pool.query('UPDATE users SET email_verified_at = now()');
-  owner = await h.loginAs('redes@palmas.mx', 'clave-redes-1');
-  otherOwner = await h.loginAs('lila@flores.mx', 'clave-lila-1');
+  owner = await h.loginAs('redes@palmas.mx', 'Pz-140-Qx-340-Kv');
+  otherOwner = await h.loginAs('lila@flores.mx', 'Pz-130-Qx-330-Kv');
 });
 after(async () => {
   if (h) await h.app.close();

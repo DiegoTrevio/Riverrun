@@ -5,6 +5,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { HttpError, notFound } from '../access.js';
+import { cookieName } from '../auth.js';
 import { config } from '../config.js';
 import { query } from '../db.js';
 import { budgetPolicy, normalize } from '../ai/budget.js';
@@ -33,9 +34,10 @@ async function copilotAccount(req: FastifyRequest): Promise<string> {
 }
 
 function sessionCookie(req: FastifyRequest): string {
-  const value = (req as any).cookies?.cp_session;
+  const name = cookieName('cp_session');
+  const value = (req as any).cookies?.[name];
   if (!value) throw new HttpError(401, 'Inicia sesión');
-  return `cp_session=${value}`;
+  return `${name}=${value}`;
 }
 
 /** ¿El gasto de IA ya pasó el 80 % de un límite? Así el Copiloto no deja sin IA al agente que atiende a los clientes. */

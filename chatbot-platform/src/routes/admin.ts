@@ -6,19 +6,24 @@ import { knowledgeMonitorReport } from '../engine/knowledge-monitor.js';
 import { operationalStatus } from '../engine/operations.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { assertRecentMfa, stepUp } from '../identity/step-up.js';
 import { assertAccount, HttpError, notFound, requireRole, scopeAccount, targetAccount } from '../access.js';
 import {
   clearSessionCookie,
   hashPassword,
   login,
-  loginAllowed,
-  registerLoginFailure,
-  setSessionCookie,
+  ipKey,
   verifyPassword,
   currentSession,
 } from '../auth.js';
 import { adapterFor } from '../channels/index.js';
 import { config } from '../config.js';
+import { assertPasswordAllowed, NewPassword } from '../identity/passwords.js';
+import { beginLogin, renewSessionAfterPasswordChange } from '../identity/mfa.js';
+import { resetMfa } from '../identity/reset-mfa.js';
+import { browserOf, forgetTrustedDevices, trustedDeviceFor } from '../identity/devices.js';
+import { countHit, LIMITS, releaseHit } from '../identity/rate-limit.js';
+import { notifyUser } from '../identity/notices.js';
 import { query, queryOne, withTransaction } from '../db.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
@@ -56,25 +61,41 @@ function checkEditedPhone(next: string | undefined, current: string | null | und
   return next;
 }
 
-const Password = z.string().min(8, 'mínimo 8 caracteres').max(200);
+const Password = NewPassword;
+const ACCOUNT_LIMIT = 'Demasiados intentos con esta cuenta. Entra desde un dispositivo recordado o recupera tu contraseña por correo.';
+const accountName = async (id: string | null | undefined) => (id ? (await store.getAccount(id))?.name : undefined);
 const Email = z.string().trim().toLowerCase().email('correo inválido').max(200);
 
 /** Rutas públicas de sesión. */
 export async function sessionRoutes(app: FastifyInstance) {
   app.post('/api/login', async (req, reply) => {
     const body = (req.body ?? {}) as { user?: string; email?: string; password?: string };
-    if (!loginAllowed(req.ip)) return reply.code(429).send({ error: 'Demasiados intentos, espera 15 minutos' });
-    const who = String(body.email ?? body.user ?? '');
+    const who = String(body.email ?? body.user ?? '').slice(0, 200);
+    // Cada intento se cuenta antes de revisar la contraseña (una ráfaga no se salta el tope) y se devuelve si entra.
+    const ipLimit = `login-ip:${ipKey(req.ip)}`;
+    const accountLimit = `login-acct:${who.trim().toLowerCase()}`;
+    if ((await countHit(ipLimit, LIMITS.loginIp.windowMs)) > LIMITS.loginIp.max) {
+      await releaseHit(ipLimit);
+      return reply.code(429).send({ error: 'Demasiados intentos, espera 15 minutos' });
+    }
+    if ((await countHit(accountLimit, LIMITS.loginAccount.windowMs)) > LIMITS.loginAccount.max) {
+      // La cuenta está bajo ataque: solo su dispositivo recordado sigue entrando (o restablecer por correo).
+      const target = await store.getUserForLogin(who);
+      if (!target || !(await trustedDeviceFor(req, target))) {
+        await Promise.all([releaseHit(ipLimit), releaseHit(accountLimit)]);
+        return reply.code(429).send({ error: ACCOUNT_LIMIT });
+      }
+    }
     const user = await login(who, String(body.password ?? ''));
     if (!user) {
-      registerLoginFailure(req.ip);
       await logEvent({ level: 'warn', source: 'admin', message: 'Intento de acceso fallido', details: { ip: req.ip, email: who.slice(0, 100) } });
       return reply.code(401).send({ error: 'Usuario o contraseña incorrectos' });
     }
-    await setSessionCookie(reply, user.id, user.password_hash, 'password');
-    const { password_hash, ...safe } = user;
-    void password_hash;
-    return { ok: true, user: safe };
+    await Promise.all([releaseHit(ipLimit), releaseHit(accountLimit)]);
+    // Contraseña buena: falta el segundo paso (el código de la app, o configurarla la primera vez), salvo desde un
+    // dispositivo recordado.
+    const begin = await beginLogin(reply, user, 'password');
+    return 'ok' in begin ? { ok: true, user: await store.getUser(user.id) } : begin;
   });
 
   app.post('/api/logout', async (req, reply) => {
@@ -106,16 +127,9 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
 
   /* ------------------------------ Mis sesiones ------------------------------ */
   // Cada persona ve y cierra solo las suyas.
-  const browserOf = (ua: string) => {
-    const b = /Edg\//.test(ua) ? 'Edge' : /OPR\//.test(ua) ? 'Opera' : /Chrome\//.test(ua) ? 'Chrome' : /Firefox\//.test(ua) ? 'Firefox' : /Safari\//.test(ua) ? 'Safari' : 'Navegador';
-    const os = /iPhone|iPad/.test(ua) ? 'iPhone o iPad' : /Android/.test(ua) ? 'Android' : /Windows/.test(ua) ? 'Windows' : /Mac OS X/.test(ua) ? 'Mac' : /Linux/.test(ua) ? 'Linux' : '';
-    return os ? `${b} en ${os}` : b;
-  };
   // Solo una parte de la IP: suficiente para reconocerla, sin mostrarla completa.
   const partialIp = (ip: string) => (ip.includes(':') ? `${ip.split(':').slice(0, 3).join(':')}:…` : ip.split('.').slice(0, 2).join('.') + (ip.includes('.') ? '.…' : ''));
   api.get('/api/me/sessions', async (req: any) => ({
-    // Una sesión de antes de registrar sesiones no aparece en la lista (vence sola en máximo 7 días).
-    legacy: !req.sessionId,
     sessions: (await store.listUserSessions(req.user.id)).map((s) => ({
       id: s.id, device: browserOf(s.user_agent), ip: partialIp(s.ip), via: s.via, created_at: s.created_at, last_seen_at: s.last_seen_at, current: s.id === req.sessionId,
     })),
@@ -127,19 +141,30 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
   });
   api.post('/api/me/sessions/revoke-others', async (req: any) => {
     const closed = await store.revokeUserSessions(req.user.id, { except: req.sessionId });
+    await forgetTrustedDevices(req.user.id);
     await logEvent({ level: 'info', source: 'admin', message: `${req.user.email} cerró sus otras ${closed} sesiones`, accountId: req.user.account_id ?? undefined });
     return { ok: true, closed };
   });
 
-  api.put('/api/me/password', async (req, reply) => {
+  api.put('/api/me/password', stepUp, async (req, reply) => {
     const b = parse(z.object({ current: z.string(), password: Password }), req.body);
+    // La contraseña actual equivocada cuenta como intento a la cuenta (con una cookie robada no se adivina sin límite).
+    const accountLimit = `login-acct:${req.user.email.toLowerCase()}`;
+    if ((await countHit(accountLimit, LIMITS.loginAccount.windowMs)) > LIMITS.loginAccount.max) {
+      await releaseHit(accountLimit);
+      throw new HttpError(429, ACCOUNT_LIMIT);
+    }
     const full = await store.getUserForLogin(req.user.email);
     if (!full || !(await verifyPassword(b.current, full.password_hash))) throw new HttpError(400, 'La contraseña actual no es correcta');
+    await releaseHit(accountLimit);
+    await assertPasswordAllowed(b.password, { email: req.user.email, businessName: await accountName(req.user.account_id) });
     const hash = await hashPassword(b.password);
     await store.updateUser(req.user.id, { password_hash: hash });
-    // Las demás sesiones se cierran; esta sigue abierta con la nueva huella.
+    // Las demás sesiones se cierran; esta sigue abierta con la nueva huella (y con su verificación reciente).
     await store.revokeUserSessions(req.user.id);
-    await setSessionCookie(reply, req.user.id, hash, 'password_change');
+    await forgetTrustedDevices(req.user.id);
+    await renewSessionAfterPasswordChange(reply, { id: req.user.id, role: req.user.role, password_hash: hash }, req.mfaAt);
+    void notifyUser(req.user, 'password_changed');
     return { ok: true };
   });
 
@@ -182,7 +207,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     if (!v.ok) throw new HttpError(400, v.error);
     return zernioSystemStatus(true);
   });
-  api.put('/api/system/zernio', superadmin, async (req: any) => {
+  api.put('/api/system/zernio', { ...superadmin, ...stepUp }, async (req: any) => {
     if (zernioKeySource() === 'env') throw envOwned();
     const { api_key, confirm_workspace_change } = parse(z.object({ api_key: z.string().trim().min(8, 'Pega la llave completa').max(500), confirm_workspace_change: z.boolean().optional() }), req.body);
     const v = await verifyZernioKey(api_key);
@@ -197,7 +222,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     await logEvent({ level: 'info', source: 'admin', message: `Llave de Zernio guardada desde el panel por ${req.user.email} (termina en ${api_key.slice(-4)})` });
     return zernioSystemStatus(true);
   });
-  api.delete('/api/system/zernio', superadmin, async (req: any) => {
+  api.delete('/api/system/zernio', { ...superadmin, ...stepUp }, async (req: any) => {
     if (zernioKeySource() === 'env') throw envOwned();
     await removePlatformSecret(ZERNIO_SECRET);
     await logEvent({ level: 'warn', source: 'admin', message: `Llave de Zernio quitada desde el panel por ${req.user.email}: las redes sociales dejan de funcionar` });
@@ -322,7 +347,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     copilot_enabled: z.boolean().optional(),
   });
 
-  api.post('/api/accounts', { preHandler: requireRole('superadmin') }, async (req) => {
+  api.post('/api/accounts', { preHandler: requireRole('superadmin'), ...stepUp }, async (req) => {
     const b = parse(
       z.object({
         name: z.string().trim().min(1).max(120),
@@ -330,6 +355,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
       }),
       req.body,
     );
+    if (b.admin) await assertPasswordAllowed(b.admin.password, { email: b.admin.email, businessName: b.name });
     const passwordHash = b.admin ? await hashPassword(b.admin.password) : null;
     const { account, admin } = await withTransaction(async (client) => {
       const account = await store.createAccount(b.name, {}, client);
@@ -367,7 +393,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     return store.publicAccount(acc);
   });
 
-  api.delete('/api/accounts/:id', { preHandler: requireRole('superadmin') }, async (req: any) => {
+  api.delete('/api/accounts/:id', { preHandler: requireRole('superadmin'), ...stepUp }, async (req: any) => {
     const acc = await store.getAccount(req.params.id);
     if (!acc) throw notFound('Cuenta no encontrada');
     await deleteAccountFully(acc);
@@ -380,7 +406,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
 
   api.get('/api/users', admins, async (req: any) => store.listUsers(scopeAccount(req.user, req.query.account_id)));
 
-  api.post('/api/users', admins, async (req) => {
+  api.post('/api/users', { ...admins, ...stepUp }, async (req) => {
     const b = parse(
       z.object({
         name: z.string().trim().max(120).default(''),
@@ -395,10 +421,12 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     );
     if (b.role === 'superadmin') {
       if (req.user.role !== 'superadmin') throw new HttpError(403, 'Solo un superadministrador puede crear otro');
+      await assertPasswordAllowed(b.password, { email: b.email });
       return store.createUser({ account_id: null, role: 'superadmin', name: b.name, email: b.email, password_hash: await hashPassword(b.password) });
     }
     const accountId = await targetAccount(req.user, b.account_id);
     await assertWithinLimit(accountId, 'users');
+    await assertPasswordAllowed(b.password, { email: b.email, businessName: await accountName(accountId) });
     const created = await store.createUser({ account_id: accountId, role: b.role, name: b.name, email: b.email, password_hash: await hashPassword(b.password) });
     const user = b.phone || b.notify_whatsapp ? ((await store.updateUser(created.id, { phone: b.phone, notify_whatsapp: b.notify_whatsapp })) ?? created) : created;
     await logEvent({ level: 'info', source: 'admin', message: `Usuario creado: ${user.email} (${user.role})`, accountId });
@@ -430,6 +458,8 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
       }),
       req.body,
     );
+    // Cambiar el rol, dar de baja, o cambiar la contraseña o el correo de alguien pide verificación reciente.
+    if ((b.role !== undefined && b.role !== target.role) || (b.active !== undefined && b.active !== target.active) || b.password || (b.email !== undefined && b.email !== target.email)) assertRecentMfa(req);
     if (req.user.role !== 'superadmin' && (b.account_id !== undefined || b.role === 'superadmin')) {
       throw new HttpError(403, 'Solo el maestro puede asignar perfiles o acceso global');
     }
@@ -461,12 +491,19 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
       available: b.available,
       alert_prefs: b.alert_prefs ? cleanAlertPrefs(b.alert_prefs) : undefined,
     };
-    if (b.password) patch.password_hash = await hashPassword(b.password);
+    if (b.password) {
+      await assertPasswordAllowed(b.password, { email: b.email ?? target.email, businessName: await accountName(accountId) });
+      patch.password_hash = await hashPassword(b.password);
+    }
     const updated = await store.updateUser(target.id, patch, req.user.role === 'superadmin' ? undefined : scopeAccount(req.user)!);
     if (!updated) throw notFound('Usuario no encontrado');
-    // Desactivar a alguien, cambiarle el correo o la contraseña cierra todas sus sesiones abiertas. Un cambio de rol o de
+    // Desactivar a alguien, cambiarle el correo o la contraseña cierra todas sus sesiones abiertas y olvida sus
+    // dispositivos recordados. Un cambio de rol cierra sus sesiones (entra otra vez con los permisos nuevos); uno de
     // cuenta aplica al momento en las sesiones abiertas (el usuario se vuelve a leer en cada petición).
-    if (!updated.active || updated.email !== target.email || patch.password_hash) await store.revokeUserSessions(updated.id);
+    if (!updated.active || updated.email !== target.email || patch.password_hash) {
+      await store.revokeUserSessions(updated.id);
+      await forgetTrustedDevices(updated.id);
+    } else if (updated.role !== target.role) await store.revokeUserSessions(updated.id);
     if (updated.role !== target.role || updated.account_id !== target.account_id) {
       await logEvent({ level: 'info', source: 'admin', message: `Permisos de usuario actualizados: ${updated.email}`, accountId: updated.account_id ?? target.account_id ?? undefined,
         details: { actor_id: req.user.id, user_id: updated.id, previous_role: target.role, role: updated.role, previous_account_id: target.account_id, account_id: updated.account_id } });
@@ -474,7 +511,18 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     return updated;
   });
 
-  api.delete('/api/users/:id', admins, async (req: any) => {
+  /** «Restablecer 2FA» en Equipo (perdió su teléfono y sus códigos): se cierran sus sesiones y la configura al entrar. */
+  api.post('/api/users/:id/2fa/reset', { ...admins, ...stepUp }, async (req: any) => {
+    const target = await manageable(req);
+    if (target.id === req.user.id) throw new HttpError(400, 'Para cambiar tu propia app usa Mi perfil');
+    await resetMfa(target.id);
+    await store.revokeUserSessions(target.id);
+    await logEvent({ level: 'warn', source: 'admin', message: `Verificación en dos pasos restablecida: ${target.email} (por ${req.user.email})`, accountId: target.account_id ?? undefined });
+    void notifyUser(target, 'mfa_reset', { by: req.user.name || req.user.email });
+    return { ok: true };
+  });
+
+  api.delete('/api/users/:id', { ...admins, ...stepUp }, async (req: any) => {
     const target = await manageable(req);
     if (target.id === req.user.id) throw new HttpError(400, 'No puedes eliminar tu propio usuario');
     if (target.role === 'superadmin' && (await store.countSuperadmins()) <= 1) throw new HttpError(400, 'Debe quedar al menos un superadministrador');

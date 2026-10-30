@@ -901,3 +901,9 @@ html { scroll-padding-top: calc(var(--topbar-h) + 8px); }
 .delivery-list { list-style: none; margin: 8px 0 0; padding: 0; max-height: 50vh; overflow-y: auto; }
 .delivery-list li { padding: 8px 0; border-bottom: 1px solid var(--rule); font-size: 13px; }
 @media (max-width: 640px) { .code-block { flex-direction: column; } .code-block pre { width: 100%; } }
+
+/* Verificación en dos pasos: QR, códigos de recuperación y botones con aspecto de enlace. */
+.totp-qr { display: block; width: 200px; height: 200px; background: #fff; padding: 8px; border-radius: 8px; }
+.recovery-codes { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(10em, 1fr)); gap: 6px; }
+.recovery-codes code { font-size: 1rem; letter-spacing: .04em; }
+button.link-button { border-color: transparent; background: transparent; color: var(--accent-ink); text-decoration: underline; text-underline-offset: 3px; justify-self: start; }

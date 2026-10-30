@@ -108,10 +108,12 @@ export async function deleteAccount(id: string) {
 
 const USER_COLS = 'id, account_id, role, name, email, phone, notify_whatsapp, alert_prefs, available, active, email_verified_at, last_login_at, created_at';
 
-export async function listUsers(accountId: string | null): Promise<User[]> {
+/** El equipo, con si ya configuró la verificación en dos pasos (nunca el secreto). */
+export async function listUsers(accountId: string | null): Promise<(User & { mfa_enabled: boolean })[]> {
+  const cols = `${USER_COLS}, totp_enabled_at IS NOT NULL AS mfa_enabled`;
   return accountId
-    ? query<User>(`SELECT ${USER_COLS} FROM users WHERE account_id = $1 ORDER BY created_at`, [accountId])
-    : query<User>(`SELECT ${USER_COLS} FROM users ORDER BY account_id NULLS FIRST, created_at`);
+    ? query(`SELECT ${cols} FROM users WHERE account_id = $1 ORDER BY created_at`, [accountId])
+    : query(`SELECT ${cols} FROM users ORDER BY account_id NULLS FIRST, created_at`);
 }
 
 export async function getUser(id: string) {
@@ -139,10 +141,10 @@ export interface UserSession {
 }
 
 /** Abre una sesión. Una persona tiene como mucho 30 abiertas: al pasar de ahí se cierran las de uso más antiguo. */
-export async function createUserSession(s: { userId: string; expires: Date; via: string; userAgent: string; ip: string }) {
+export async function createUserSession(s: { userId: string; expires: Date; via: string; userAgent: string; ip: string; mfaAt?: Date | null }) {
   const row = (await queryOne<{ id: string }>(
-    `INSERT INTO user_sessions (user_id, expires_at, via, user_agent, ip) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-    [s.userId, s.expires, s.via, s.userAgent, s.ip],
+    `INSERT INTO user_sessions (user_id, expires_at, via, user_agent, ip, mfa_at) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+    [s.userId, s.expires, s.via, s.userAgent, s.ip, s.mfaAt ?? null],
   ))!;
   await query(
     `UPDATE user_sessions SET revoked_at = now() WHERE id IN (
@@ -152,16 +154,25 @@ export async function createUserSession(s: { userId: string; expires: Date; via:
   return row;
 }
 
-/** ¿Sigue abierta? Anota el uso como mucho cada 5 minutos (no se escribe en cada petición). */
-export async function touchUserSession(id: string, userId: string): Promise<boolean> {
-  if (!/^[0-9a-f-]{36}$/i.test(id)) return false;
-  const row = await queryOne<{ stale: boolean }>(
-    `SELECT last_seen_at < now() - interval '5 minutes' AS stale FROM user_sessions WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL AND expires_at > now()`,
-    [id, userId],
+/**
+ * ¿Sigue abierta? `idle` si pasó más de `idleMs` sin usarla (y entonces se cierra). Anota el uso como mucho una vez por
+ * minuto (no se escribe en cada petición).
+ */
+/** `touch: false`: lo pidió el panel solo (la campana, refrescar la pantalla): revisa la sesión sin anotar uso. */
+export async function touchUserSession(id: string, userId: string, idleMs: number, o: { touch?: boolean } = {}): Promise<{ state: 'ok'; mfaAt: Date | null } | { state: 'idle' | 'gone' }> {
+  if (!/^[0-9a-f-]{36}$/i.test(id)) return { state: 'gone' };
+  const row = await queryOne<{ stale: boolean; idle: boolean; mfa_at: Date | null }>(
+    `SELECT last_seen_at < now() - interval '1 minute' AS stale, last_seen_at <= now() - make_interval(secs => $3) AS idle, mfa_at
+       FROM user_sessions WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL AND expires_at > now()`,
+    [id, userId, idleMs / 1000],
   );
-  if (!row) return false;
-  if (row.stale) await query(`UPDATE user_sessions SET last_seen_at = now() WHERE id = $1`, [id]);
-  return true;
+  if (!row) return { state: 'gone' };
+  if (row.idle) {
+    await query(`UPDATE user_sessions SET revoked_at = now() WHERE id = $1`, [id]);
+    return { state: 'idle' };
+  }
+  if (row.stale && o.touch !== false) await query(`UPDATE user_sessions SET last_seen_at = now() WHERE id = $1`, [id]);
+  return { state: 'ok', mfaAt: row.mfa_at };
 }
 
 export async function listUserSessions(userId: string) {
@@ -277,6 +288,15 @@ export async function consumeAuthToken(token: string, kind: 'verify_email' | 're
     [tokenHash(token), kind],
   );
   return row?.user_id ?? null;
+}
+
+/** De quién es un token vigente, sin gastarlo (para revisar la contraseña nueva antes de usar el enlace). */
+export async function peekAuthToken(token: string, kind: 'verify_email' | 'reset_password') {
+  return queryOne<{ user_id: string; email: string; account_name: string | null }>(
+    `SELECT t.user_id, u.email, a.name AS account_name FROM auth_tokens t JOIN users u ON u.id = t.user_id LEFT JOIN accounts a ON a.id = u.account_id
+      WHERE t.token_hash = $1 AND t.kind = $2 AND t.used_at IS NULL AND t.expires_at > now()`,
+    [tokenHash(token), kind],
+  );
 }
 
 export async function touchLogin(id: string) {

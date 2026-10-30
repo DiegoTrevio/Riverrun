@@ -14,13 +14,13 @@ let a: any, b: any, user: any, botA: any, botB: any;
 before(async () => {
   if (!available) return;
   h = await createHarness();
-  a = (await h.authed('POST', '/api/accounts', { name: 'Perfil A', admin: { email: 'admin@perfil.test', password: 'perfil-admin-123' } })).json();
+  a = (await h.authed('POST', '/api/accounts', { name: 'Perfil A', admin: { email: 'admin@perfil.test', password: 'Pz-158-Qx-358-Kv' } })).json();
   b = (await h.authed('POST', '/api/accounts', { name: 'Perfil B' })).json();
-  admin = await h.loginAs('admin@perfil.test', 'perfil-admin-123');
+  admin = await h.loginAs('admin@perfil.test', 'Pz-158-Qx-358-Kv');
   botA = (await admin('POST', '/api/chatbots', { name: 'Asistente A' })).json();
   botB = (await h.authed('POST', '/api/chatbots', { account_id: b.id, name: 'Asistente B' })).json();
-  user = (await admin('POST', '/api/users', { email: 'usuario@perfil.test', password: 'usuario-perfil-123', role: 'admin' })).json();
-  member = await h.loginAs('usuario@perfil.test', 'usuario-perfil-123');
+  user = (await admin('POST', '/api/users', { email: 'usuario@perfil.test', password: 'Pz-160-Qx-360-Kv', role: 'admin' })).json();
+  member = await h.loginAs('usuario@perfil.test', 'Pz-160-Qx-360-Kv');
 });
 after(async () => {
   if (h) await h.app.close();
@@ -68,6 +68,8 @@ t('el maestro reasigna el perfil y una sesión abierta pierde acceso al anterior
 
 t('el operador solo atiende conversaciones y agenda de su perfil', async () => {
   assert.equal((await h.authed('PUT', `/api/users/${user.id}`, { role: 'agent' })).statusCode, 200);
+  assert.equal((await member('GET', '/api/me')).statusCode, 401, 'cambiar el rol cierra sus sesiones');
+  member = await h.loginAs('usuario@perfil.test', 'Pz-160-Qx-360-Kv');
   assert.equal((await member('POST', '/api/chatbots', { name: 'Prohibido' })).statusCode, 403);
   assert.equal((await member('GET', '/api/users')).statusCode, 403);
   assert.equal((await member('GET', '/api/conversations')).statusCode, 200);
@@ -80,15 +82,16 @@ t('el maestro puede promover un usuario existente sin cambiar su contraseña', a
   assert.equal(promoted.statusCode, 200, promoted.body);
   assert.equal(promoted.json().account_id, null);
   assert.equal((await store.getUserForLogin(user.email))!.password_hash, before!.password_hash);
+  member = await h.loginAs('usuario@perfil.test', 'Pz-160-Qx-360-Kv');
   assert.equal((await member('GET', '/api/accounts')).json().length, 2);
   assert.equal((await member('GET', `/api/chatbots/${botA.id}`)).statusCode, 200);
   assert.equal((await member('GET', `/api/chatbots/${botB.id}`)).statusCode, 200);
 });
 
 t('la migración da acceso maestro al correo de Diego verificado y conserva su contraseña', async () => {
-  const created = await h.authed('POST', '/api/users', { account_id: a.id, email: 'diegoa.trevio@gmail.com', password: 'diego-prueba-123', role: 'admin' });
+  const created = await h.authed('POST', '/api/users', { account_id: a.id, email: 'diegoa.trevio@gmail.com', password: 'Pz-152-Qx-352-Kv', role: 'admin' });
   assert.equal(created.statusCode, 200, created.body);
-  const login = await h.loginAs('diegoa.trevio@gmail.com', 'diego-prueba-123');
+  const login = await h.loginAs('diegoa.trevio@gmail.com', 'Pz-152-Qx-352-Kv');
   const before = await store.getUserForLogin('diegoa.trevio@gmail.com');
   const migration = fs.readFileSync('migrations/009_master_access.sql', 'utf8');
   await pool.query(migration);
@@ -113,7 +116,7 @@ t('provisionar no crea usuarios inexistentes ni concede acceso a un correo sin c
 });
 
 t('crear perfil y administrador es atómico si el correo ya está en uso', async () => {
-  const response = await h.authed('POST', '/api/accounts', { name: 'Perfil incompleto', admin: { email: 'admin@perfil.test', password: 'perfil-admin-123' } });
+  const response = await h.authed('POST', '/api/accounts', { name: 'Perfil incompleto', admin: { email: 'admin@perfil.test', password: 'Pz-158-Qx-358-Kv' } });
   assert.equal(response.statusCode, 409, response.body);
   assert.equal((await store.listAccounts()).length, 2);
 });

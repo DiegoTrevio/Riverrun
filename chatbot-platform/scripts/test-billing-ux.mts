@@ -20,6 +20,7 @@ process.env.TEST_DATABASE_URL = url.href;
 const { fake, stripeEvent, stripeSub } = await import('../test/billing-fakes.js');
 const { createHarness, pool, waitFor } = await import('../test/harness.js');
 const { outbox } = await import('../src/mailer.js');
+const { currentStep, totpAt } = await import('../src/identity/totp.js');
 const mailsTo = (email: string) => outbox.filter((m) => String(m.to).includes(email)).length;
 const h = await createHarness();
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
@@ -66,6 +67,13 @@ try {
     assert.equal((await pool.query(`SELECT count(*)::int AS n FROM users WHERE email = 'gema@estudio.mx'`)).rows[0].n, 0);
     await g.getByRole('checkbox').check();
     await g.getByRole('button', { name: 'Crear mi cuenta' }).click();
+    // Antes de entrar configura su verificación en dos pasos; después sigue al asistente.
+    await g.waitForURL(/#\/login\/configurar/);
+    const secret = (await g.locator('[data-totp-secret]').textContent())!.replace(/\s/g, '');
+    await g.getByLabel('Código de 6 dígitos').fill(totpAt(secret, currentStep()));
+    await g.getByRole('button', { name: 'Activar' }).click();
+    await g.getByLabel('Ya los guardé en un lugar seguro').check();
+    await g.getByRole('button', { name: 'Continuar' }).click();
     await g.waitForURL(/#\/agentes\/nuevo/);
     const terms = (await pool.query(`SELECT t.source FROM terms_acceptances t JOIN users u ON u.id = t.user_id WHERE u.email = 'gema@estudio.mx'`)).rows;
     assert.deepEqual(terms, [{ source: 'google' }]);
@@ -103,10 +111,10 @@ try {
 
   // Una cuenta nueva (en prueba) ve las tarjetas de plan con el total con IVA.
   const r = await h.app.inject({ method: 'POST', url: '/api/signup', remoteAddress: '10.8.8.8',
-    payload: { name: 'Ana', company: 'Estudio Ana', business_type: 'servicios', email: 'ana@estudio.mx', password: 'clave-segura-1', accept_terms: true } });
+    payload: { name: 'Ana', company: 'Estudio Ana', business_type: 'servicios', email: 'ana@estudio.mx', password: 'Pz-144-Qx-344-Kv', accept_terms: true } });
   assert.equal(r.statusCode, 200, r.body);
   const accountId = r.json().user.account_id as string;
-  const cookie = String(r.headers['set-cookie']).split(';')[0];
+  const cookie = await h.sessionFrom(r);
   const ix = cookie.indexOf('=');
   await context.addCookies([{ name: cookie.slice(0, ix), value: cookie.slice(ix + 1), url: base }]);
 
@@ -278,12 +286,19 @@ try {
       .violations.filter((x: any) => ['serious', 'critical'].includes(x.impact)).map((x: any) => x.id));
     assert.deepEqual(v, [], 'Invitación a 390');
     assert.ok(await g.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'Invitación sin desbordamiento a 390');
-    await g.getByLabel('Elige tu contraseña').fill('clave-de-rita');
-    await g.getByLabel('Repítela').fill('clave-de-rita');
+    await g.getByLabel('Elige tu contraseña').fill('Pz-963-Qx-964-Kv');
+    await g.getByLabel('Repítela').fill('Pz-963-Qx-964-Kv');
     await g.getByRole('checkbox').check();
     await g.getByRole('button', { name: 'Unirme al equipo' }).click();
-    await g.waitForURL((u) => !u.hash.startsWith('#/invitacion'));
-    // Ya entró con su sesión (no la manda a iniciar sesión).
+    // Antes de entrar configura su verificación en dos pasos (no la manda a iniciar sesión).
+    await g.waitForURL(/#\/login\/configurar/);
+    const secret = (await g.locator('[data-totp-secret]').textContent())!.replace(/\s/g, '');
+    await g.getByLabel('Código de 6 dígitos').fill(totpAt(secret, currentStep()));
+    await g.getByRole('button', { name: 'Activar' }).click();
+    await g.getByLabel('Ya los guardé en un lugar seguro').check();
+    await g.getByRole('button', { name: 'Continuar' }).click();
+    await g.waitForURL((u) => !u.hash.startsWith('#/login'));
+    // Ya entró con su sesión.
     const me = await g.request.get(`${base}/api/me`);
     assert.equal(me.status(), 200);
     assert.equal((await me.json()).user.email, 'rita@estudio.mx');
@@ -372,9 +387,9 @@ try {
     assert.equal((await h.authed('POST', '/api/plans', { key: 'plus', name: 'Plus', price: 899 })).statusCode, 200);
     fake.mp.nextId = 'pre_ux';
     const s = await h.app.inject({ method: 'POST', url: '/api/signup', remoteAddress: '10.8.8.9',
-      payload: { name: 'Mara', company: 'Estudio Mara', business_type: 'servicios', email: 'mara@estudio.mx', password: 'clave-segura-2', accept_terms: true, plan: 'pro', provider: 'mercadopago' } });
+      payload: { name: 'Mara', company: 'Estudio Mara', business_type: 'servicios', email: 'mara@estudio.mx', password: 'Pz-146-Qx-346-Kv', accept_terms: true, plan: 'pro', provider: 'mercadopago' } });
     assert.equal(s.statusCode, 200, s.body);
-    const mara = String(s.headers['set-cookie']).split(';')[0];
+    const mara = await h.sessionFrom(s);
     const call = (method: string, url: string, payload?: unknown) => h.app.inject({ method: method as any, url, payload: payload as any, headers: { cookie: mara } });
     fake.mp.preapprovals.pre_ux = { id: 'pre_ux', status: 'authorized', external_reference: `${s.json().account.id}:pro`, payer_id: 7,
       next_payment_date: new Date(Date.now() + 20 * 86400_000).toISOString(), auto_recurring: { transaction_amount: 578.84, currency_id: 'MXN' } };

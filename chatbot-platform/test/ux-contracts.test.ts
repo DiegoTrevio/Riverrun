@@ -34,8 +34,8 @@ t('la importación revisada es atómica y conserva la edición sin volver a llam
 
 t('el guardado revisado verifica permisos, pertenencia y tamaño', async () => {
   const account = (await h.authed('POST', '/api/accounts', { name: 'Otro perfil UX' })).json();
-  await h.authed('POST', '/api/users', { account_id: account.id, name: 'Otro admin', email: 'otro-ux@test.mx', role: 'admin', password: 'pruebas123' });
-  const other = await h.loginAs('otro-ux@test.mx', 'pruebas123');
+  await h.authed('POST', '/api/users', { account_id: account.id, name: 'Otro admin', email: 'otro-ux@test.mx', role: 'admin', password: 'Pz-159-Qx-359-Kv' });
+  const other = await h.loginAs('otro-ux@test.mx', 'Pz-159-Qx-359-Kv');
   assert.equal((await other('POST', `/api/chatbots/${h.botId}/knowledge/import-reviewed`, { sections: { catalog: 'No permitido' } })).statusCode, 404);
   assert.equal((await h.authed('POST', `/api/chatbots/${h.botId}/knowledge/import-reviewed`, { sections: { catalog: 'x'.repeat(50001) } })).statusCode, 400);
   const selector = (await other('GET', '/api/accounts?view=selector')).json();

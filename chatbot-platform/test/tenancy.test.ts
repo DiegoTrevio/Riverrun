@@ -14,10 +14,10 @@ const A = { id: '', bot: '', channel: '', token: '', instance: '', knowledge: ''
 const B = { id: '', bot: '', channel: '', token: '', instance: '', knowledge: '', conv: '', contact: '', api: null as unknown as Api };
 
 async function setupAccount(x: typeof A, name: string, email: string, instance: string, phone: string) {
-  const acc = await h.authed('POST', '/api/accounts', { name, admin: { name: `Admin ${name}`, email, password: 'clave-segura-1' } });
+  const acc = await h.authed('POST', '/api/accounts', { name, admin: { name: `Admin ${name}`, email, password: 'Pz-144-Qx-344-Kv' } });
   assert.equal(acc.statusCode, 200, acc.body);
   x.id = acc.json().id;
-  x.api = await h.loginAs(email, 'clave-segura-1');
+  x.api = await h.loginAs(email, 'Pz-144-Qx-344-Kv');
   // El administrador crea todo sin indicar cuenta: se usa la suya.
   const bot = await x.api('POST', '/api/chatbots', { name: `Bot ${name}`, active: true, ai: { debounce_seconds: 0.1 } });
   assert.equal(bot.statusCode, 200, bot.body);
@@ -118,18 +118,18 @@ t('no se puede asignar a un canal el chatbot de otra cuenta ni crear cosas en ot
   // account_id ajeno se ignora: se crea en la propia cuenta
   const bot = await A.api('POST', '/api/chatbots', { name: 'Otro', account_id: B.id });
   assert.equal(bot.json().account_id, A.id);
-  const user = await A.api('POST', '/api/users', { email: 'agente@hotel.mx', password: 'clave-agente-1', role: 'agent', account_id: B.id });
+  const user = await A.api('POST', '/api/users', { email: 'agente@hotel.mx', password: 'Pz-101-Qx-301-Kv', role: 'agent', account_id: B.id });
   assert.equal(user.statusCode, 200, user.body);
   assert.equal(user.json().account_id, A.id);
   // Un administrador no puede crear superadministradores ni cuentas
-  assert.equal((await A.api('POST', '/api/users', { email: 'x@x.mx', password: 'clave-segura-9', role: 'superadmin' })).statusCode, 403);
+  assert.equal((await A.api('POST', '/api/users', { email: 'x@x.mx', password: 'Pz-147-Qx-347-Kv', role: 'superadmin' })).statusCode, 403);
   assert.equal((await A.api('POST', '/api/accounts', { name: 'x' })).statusCode, 403);
   const usersB = (await h.authed('GET', `/api/users?account_id=${B.id}`)).json();
   assert.equal((await A.api('PUT', `/api/users/${usersB[0].id}`, { active: false })).statusCode, 404);
 });
 
 t('el agente solo atiende conversaciones: no ve ni cambia configuración', async () => {
-  const agent = await h.loginAs('agente@hotel.mx', 'clave-agente-1');
+  const agent = await h.loginAs('agente@hotel.mx', 'Pz-101-Qx-301-Kv');
   const bots = (await agent('GET', '/api/chatbots')).json();
   assert.ok(bots.length >= 1);
   assert.equal(bots[0].personality, undefined, 'el agente no ve la configuración');
@@ -168,7 +168,7 @@ t('superadmin ve todas las cuentas y puede filtrar por una', async () => {
 t('desactivar una cuenta: sus usuarios pierden acceso y sus canales dejan de responder', async () => {
   await h.authed('PUT', `/api/accounts/${B.id}`, { active: false });
   assert.equal((await B.api('GET', '/api/chatbots')).statusCode, 401, 'la sesión abierta deja de servir');
-  const login = await h.app.inject({ method: 'POST', url: '/api/login', payload: { email: 'admin@inmo.mx', password: 'clave-segura-1' } });
+  const login = await h.app.inject({ method: 'POST', url: '/api/login', payload: { email: 'admin@inmo.mx', password: 'Pz-144-Qx-344-Kv' } });
   assert.equal(login.statusCode, 401);
   h.sent.length = 0;
   h.calls.length = 0;
@@ -184,7 +184,7 @@ t('desactivar una cuenta: sus usuarios pierden acceso y sus canales dejan de res
   const conv = (await h.authed('GET', `/api/conversations/${B.conv}`)).json();
   assert.equal(conv.messages.at(-1).content, 'sigue ahí?');
   await h.authed('PUT', `/api/accounts/${B.id}`, { active: true });
-  const again = await h.loginAs('admin@inmo.mx', 'clave-segura-1');
+  const again = await h.loginAs('admin@inmo.mx', 'Pz-144-Qx-344-Kv');
   assert.equal((await again('GET', '/api/me')).statusCode, 200, 'al reactivar la cuenta vuelve el acceso');
 });
 
@@ -192,16 +192,16 @@ t('protecciones de usuarios: no autodesactivarse, siempre queda un superadmin, c
   const me = (await h.authed('GET', '/api/me')).json().user;
   assert.equal((await h.authed('PUT', `/api/users/${me.id}`, { active: false })).statusCode, 400);
   assert.equal((await h.authed('DELETE', `/api/users/${me.id}`)).statusCode, 400);
-  const bad = await A.api('PUT', '/api/me/password', { current: 'incorrecta', password: 'nueva-clave-123' });
+  const bad = await A.api('PUT', '/api/me/password', { current: 'incorrecta', password: 'Pz-153-Qx-353-Kv' });
   assert.equal(bad.statusCode, 400);
-  const other = await h.loginAs('admin@hotel.mx', 'clave-segura-1'); // otra sesión abierta (p.ej. otro dispositivo)
-  const good = await A.api('PUT', '/api/me/password', { current: 'clave-segura-1', password: 'nueva-clave-123' });
+  const other = await h.loginAs('admin@hotel.mx', 'Pz-144-Qx-344-Kv'); // otra sesión abierta (p.ej. otro dispositivo)
+  const good = await A.api('PUT', '/api/me/password', { current: 'Pz-144-Qx-344-Kv', password: 'Pz-153-Qx-353-Kv' });
   assert.equal(good.statusCode, 200);
   assert.equal((await other('GET', '/api/me')).statusCode, 401, 'las otras sesiones se cierran al cambiar la contraseña');
-  A.api = await h.loginAs('admin@hotel.mx', 'nueva-clave-123');
+  A.api = await h.loginAs('admin@hotel.mx', 'Pz-153-Qx-353-Kv');
   const weak = await A.api('POST', '/api/users', { email: 'otro@hotel.mx', password: '123', role: 'agent' });
   assert.equal(weak.statusCode, 400);
-  const dup = await A.api('POST', '/api/users', { email: 'AGENTE@hotel.mx', password: 'clave-agente-2', role: 'agent' });
+  const dup = await A.api('POST', '/api/users', { email: 'AGENTE@hotel.mx', password: 'Pz-103-Qx-303-Kv', role: 'agent' });
   assert.equal(dup.statusCode, 409, 'correo duplicado sin importar mayúsculas');
 });
 
@@ -225,7 +225,7 @@ t('eliminar una cuenta borra todo lo suyo y nada de las demás', async () => {
   assert.deepEqual(left, [], `quedaron filas de la cuenta borrada en: ${left.join(', ')}`);
   assert.equal((await h.authed('GET', `/api/chatbots/${B.bot}`)).statusCode, 404);
   assert.equal((await h.authed('GET', `/api/conversations/${B.conv}`)).statusCode, 404);
-  const a2 = await h.loginAs('admin@hotel.mx', 'nueva-clave-123');
+  const a2 = await h.loginAs('admin@hotel.mx', 'Pz-153-Qx-353-Kv');
   assert.equal((await a2('GET', `/api/chatbots/${A.bot}`)).statusCode, 200);
   const cleanupLog = (await pool.query("SELECT id FROM event_logs WHERE source = 'evolution' AND account_id IS NULL AND message = $1", [`Instancia eliminada: ${B.instance}`])).rows;
   assert.equal(cleanupLog.length, 1, 'la limpieza conserva el registro sin referenciar una cuenta eliminada');

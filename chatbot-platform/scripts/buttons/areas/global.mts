@@ -4,9 +4,9 @@ import { toast, type AreaContext } from '../areas.mts';
 
 /** Una persona aparte para no cerrar la sesión con la que se audita. */
 async function person(h: any, email: string) {
-  const r = await h.authed('POST', '/api/users', { account_id: h.accountId, name: 'Persona de sesiones', email, password: 'auditoria123', role: 'admin' });
+  const r = await h.authed('POST', '/api/users', { account_id: h.accountId, name: 'Persona de sesiones', email, password: 'Pz-100-Qx-300-Kv', role: 'admin' });
   assert.ok(r.statusCode < 300, r.body);
-  return () => h.loginAs(email, 'auditoria123');
+  return () => h.loginAs(email, 'Pz-100-Qx-300-Kv');
 }
 async function withCookie(open: AreaContext['open'], cookie: string, base: string) {
   const { page, context } = await open('admin');

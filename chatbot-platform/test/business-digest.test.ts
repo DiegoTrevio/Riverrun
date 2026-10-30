@@ -47,7 +47,7 @@ t('lo urgente sale al momento; lo demás espera al resumen (y sin resumen, sale 
 
 t('los avisos de la plataforma pasan por el resumen: el registro de una cuenta no manda correo al superadmin', async () => {
   const n = toSuper().length;
-  const r = await h.app.inject({ method: 'POST', url: '/api/signup', remoteAddress: '10.88.0.1', payload: { name: 'Leo Paz', company: 'Barbería Paz', business_type: 'belleza', email: 'leo@barberia.mx', password: 'clave-leo-123', accept_terms: true } });
+  const r = await h.app.inject({ method: 'POST', url: '/api/signup', remoteAddress: '10.88.0.1', payload: { name: 'Leo Paz', company: 'Barbería Paz', business_type: 'belleza', email: 'leo@barberia.mx', password: 'Pz-129-Qx-329-Kv', accept_terms: true } });
   assert.equal(r.statusCode, 200, r.body);
   assert.equal(toSuper().length, n);
   assert.equal((await pool.query(`SELECT count(*)::int AS n FROM superadmin_digest WHERE sent_at IS NULL AND title LIKE '%Barbería Paz%'`)).rows[0].n, 1);
@@ -129,6 +129,6 @@ t('el tablero es solo del superadmin y trae lo que falta para cobrar de verdad, 
   assert.ok(b.metrics && typeof b.metrics.trials_active === 'number');
   assert.ok(Array.isArray(b.golive));
   for (const g of b.golive) assert.ok(g.message && g.fix && ['critical', 'warning'].includes(g.level));
-  const leo = await h.loginAs('leo@barberia.mx', 'clave-leo-123');
+  const leo = await h.loginAs('leo@barberia.mx', 'Pz-129-Qx-329-Kv');
   assert.equal((await leo('GET', '/api/platform/business')).statusCode, 403);
 });

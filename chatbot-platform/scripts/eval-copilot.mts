@@ -386,15 +386,15 @@ async function seed(h: any, waitFor: any): Promise<Seed> {
   await h.createBot();
   h.setScript(() => ({ messages: ['Con gusto.'] }));
   const mk = async (email: string, name: string, role: string) => {
-    const r = await h.authed('POST', '/api/users', { account_id: h.accountId, email, name, password: 'clave-de-evaluacion-123', role });
+    const r = await h.authed('POST', '/api/users', { account_id: h.accountId, email, name, password: 'Pz-110-Qx-310-Kv', role });
     assert.equal(r.statusCode, 200, r.body);
     return r.json().id as string;
   };
   await mk('duena@eval.mx', 'Dueña', 'admin');
   const agentId = await mk('luis@eval.mx', 'Luis', 'agent');
   assert.equal((await h.authed('PUT', `/api/accounts/${h.accountId}`, { copilot_enabled: true })).statusCode, 200);
-  const owner = await h.loginAs('duena@eval.mx', 'clave-de-evaluacion-123');
-  const agent = await h.loginAs('luis@eval.mx', 'clave-de-evaluacion-123');
+  const owner = await h.loginAs('duena@eval.mx', 'Pz-110-Qx-310-Kv');
+  const agent = await h.loginAs('luis@eval.mx', 'Pz-110-Qx-310-Kv');
   const promptText = 'Eres Lalo, el asistente de la Barbería Palmas.\n\n- Corte $150\n- Barba $100\n\nAtiende de tú.';
   const v = (await owner('GET', `/api/chatbots/${h.botId}/versions`)).json();
   assert.equal((await owner('POST', `/api/chatbots/${h.botId}/version-apply`, { revision: v.draft.revision, patch: { personality: { prompt: promptText } } })).statusCode, 200);

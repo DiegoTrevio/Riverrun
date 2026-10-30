@@ -19,10 +19,10 @@ const periodEnd = new Date(Date.now() + 20 * DAY);
 async function signup(email: string, plan: string, provider: 'stripe' | 'mercadopago') {
   const r = await h.app.inject({
     method: 'POST', url: '/api/signup', remoteAddress: `10.88.0.${++ip}`,
-    payload: { name: 'Eva Ruiz', company: `Negocio ${ip}`, business_type: 'belleza', email, password: 'clave-eva-123', accept_terms: true, plan, provider },
+    payload: { name: 'Eva Ruiz', company: `Negocio ${ip}`, business_type: 'belleza', email, password: 'Pz-124-Qx-324-Kv', accept_terms: true, plan, provider },
   });
   assert.equal(r.statusCode, 200, r.body);
-  const cookie = String(r.headers['set-cookie']).split(';')[0];
+  const cookie = await h.sessionFrom(r);
   const api: Api = (method, url, payload) => h.app.inject({ method: method as any, url, payload: payload as any, headers: { cookie } });
   return { api, accountId: r.json().account.id as string, checkout: r.json().checkout_url as string };
 }
@@ -116,8 +116,8 @@ t('Stripe: de mensual a anual en el mismo paso; mismo plan, plan inexistente, ag
   assert.equal((await a.api('POST', '/api/billing/change', { plan: 'pro' })).statusCode, 400);
   assert.equal((await a.api('POST', '/api/billing/change', { plan: 'nada' })).statusCode, 404);
 
-  assert.equal((await h.authed('POST', '/api/users', { account_id: a.accountId, name: 'Beto', email: 'beto@salon.mx', password: 'clave-beto-123', role: 'agent' })).statusCode, 200);
-  assert.equal((await (await h.loginAs('beto@salon.mx', 'clave-beto-123'))('POST', '/api/billing/change', { plan: 'anual' })).statusCode, 403);
+  assert.equal((await h.authed('POST', '/api/users', { account_id: a.accountId, name: 'Beto', email: 'beto@salon.mx', password: 'Pz-108-Qx-308-Kv', role: 'agent' })).statusCode, 200);
+  assert.equal((await (await h.loginAs('beto@salon.mx', 'Pz-108-Qx-308-Kv'))('POST', '/api/billing/change', { plan: 'anual' })).statusCode, 403);
 
   fake.stripe.fail = true;
   try {

@@ -30,6 +30,16 @@ const EXPECTED_NOOP: [RegExp, RegExp, string][] = [
   [/^Enviar$/, /^(conversations|playground)\.js:/, 'el cuadro de mensaje está vacío: no hay nada que enviar'],
   [/^Limpiar filtros$/, /^(logs|conversations)\.js:/, 'no hay filtros puestos'],
 ];
+/**
+ * Al aceptar, sin efecto y está bien: el pase solo llena lo vacío y no elige ni sube archivos (título del diálogo, sitio,
+ * motivo). Antes de que cada navegador entrara con una sesión nueva, el admin llegaba aquí ya cambiado a agente (por el
+ * recorrido del maestro) y estos diálogos no se alcanzaban.
+ */
+const EXPECTED_ACCEPT_NOOP: [RegExp, RegExp, string][] = [
+  [/^Nombre del flujo$/, /^flowboard\.js:/, 'el nombre ya estaba escrito: guardarlo igual no cambia nada'],
+  [/^Foto (de referencia|o archivo del mensaje)$/, /^flowboard\.js:/, 'sin elegir una foto o un archivo, «Usar este» no tiene qué usar'],
+  [/^Importar contactos$/, /^contact-(workspace|fields)\.js:/, 'pide un archivo CSV: lo sube test:ux'],
+];
 const PROBLEMS: Verdict[] = ['SIN EFECTO', 'SIN MANEJADOR', 'ERROR JS', 'ERROR API', 'ERROR SILENCIOSO', 'PÁGINA NO ENCONTRADA', 'REDIRIGIDO', 'CANCELAR ESCRIBIÓ', 'NO SE PUDO PRESIONAR', 'ACEPTAR SIN EFECTO', 'NO SE ACEPTÓ'];
 export const isProblem = (o: Outcome) => PROBLEMS.includes(o.verdict);
 
@@ -290,6 +300,8 @@ export async function acceptDialogs(opts: { context: BrowserContext; base: strin
       // Lo escrito para confirmar no le sirvió (p. ej. «Límites» pide mensajes=1000) y lo dijo: es una validación.
       else if (!writes.length && (fx.toast || fx.errors?.length)) { verdict = 'RECHAZADO'; note += `: ${fx.toast || fx.errors[0]}`; }
       else if (!writes.length && !fx.opened?.length && !ev.downloads.length && fx.hash === beforeHash && !fx.mutations) { verdict = 'ACEPTAR SIN EFECTO'; note += ' no envió nada al servidor ni cambió la página'; }
+      const expected = (verdict === 'ACEPTAR SIN EFECTO' || verdict === 'NO SE ACEPTÓ') && EXPECTED_ACCEPT_NOOP.find(([title, site]) => title.test(item.dialog || '') && site.test(item.sites[0] || ''));
+      if (expected) { verdict = 'SOLO INFORMATIVO'; note = `«${acceptName}»: ${expected[2]}`; if (stillOpen) await page.keyboard.press('Escape').catch(() => {}); }
       record(verdict, { effects, requests, note, final: fx.hash || '' });
     } catch (e: any) {
       s.setOn(false);

@@ -8,7 +8,7 @@ const t = (name: string, fn: () => Promise<void>) => test(name, { skip: !ok && '
 let h: Awaited<ReturnType<typeof createHarness>>;
 let phoneN = 0;
 const newPhone = () => `52157${String(3000000 + ++phoneN)}`;
-const PASS = 'clave-segura-1';
+const PASS = 'Pz-144-Qx-344-Kv';
 let ana: Awaited<ReturnType<typeof h.loginAs>>;
 let luis: Awaited<ReturnType<typeof h.loginAs>>;
 let anaId = '';

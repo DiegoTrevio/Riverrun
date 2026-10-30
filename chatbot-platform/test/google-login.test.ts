@@ -60,12 +60,14 @@ t('un correo nuevo acepta los términos antes de crear su cuenta de prueba (ya v
   assert.equal((await post({ accept_terms: false })).statusCode, 400, 'sin aceptar términos no se crea');
   const done = await post({ accept_terms: true });
   assert.equal(done.statusCode, 200, done.body);
-  const session = done.cookies.find((c) => c.value);
+  // Antes de ver el panel configura su verificación en dos pasos (el arnés lo hace por la API).
+  assert.equal(done.json().mfa, 'enroll');
+  const session = await h.sessionFrom(done);
   const u = (await pool.query(`SELECT u.id, u.role, u.email_verified_at, a.status, a.name, a.business_type FROM users u JOIN accounts a ON a.id = u.account_id WHERE u.email = 'nueva@empresa.mx'`)).rows[0];
   assert.deepEqual([u.role, u.status, !!u.email_verified_at, u.name, u.business_type], ['admin', 'trial', true, 'Estética Nora', 'belleza']);
   const terms = (await pool.query(`SELECT source, ip, user_agent, email FROM terms_acceptances WHERE user_id = $1`, [u.id])).rows;
   assert.deepEqual(terms, [{ source: 'google', ip: '10.8.7.1', user_agent: 'Navegador de prueba', email: 'nueva@empresa.mx' }]);
-  const me = await h.app.inject({ method: 'GET', url: '/api/me', headers: { cookie: `${session!.name}=${session!.value}` } });
+  const me = await h.app.inject({ method: 'GET', url: '/api/me', headers: { cookie: session } });
   assert.equal(me.json().user.email, 'nueva@empresa.mx');
   assert.equal((await post({ accept_terms: true })).statusCode, 409, 'el mismo pase no crea otra cuenta');
 });
@@ -84,7 +86,9 @@ t('el pase de registro con Google no se puede alterar ni usar vencido; los corre
 t('un usuario existente entra sin crear otra cuenta', async () => {
   const before = (await pool.query(`SELECT count(*)::int n FROM accounts`)).rows[0].n;
   const r = await flow({ email: 'nueva@empresa.mx', email_verified: true, name: 'Nora' });
-  assert.ok(r.session);
+  // Google es el primer paso: falta el código de su app (ya la configuró al registrarse).
+  assert.equal(r.location, '/#/login/codigo');
+  assert.equal(r.session?.name, 'cp_mfa', 'deja el reto, no la sesión');
   assert.equal((await pool.query(`SELECT count(*)::int n FROM accounts`)).rows[0].n, before);
 });
 

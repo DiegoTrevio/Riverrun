@@ -176,9 +176,9 @@ t('las columnas se pueden editar: una que se borra manda sus tarjetas a la prime
   assert.equal(r.json().stages[0].id, 'nuevo', 'renombrar conserva el identificador');
   assert.equal((await cardOf('5215510020002')).open.stage_id, 'nuevo');
 
-  const user = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'agente-pipe@test.mx', password: 'secreto123', name: 'Agente', role: 'agent' });
+  const user = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'agente-pipe@test.mx', password: 'Pz-919-Qx-920-Kv', name: 'Agente', role: 'agent' });
   assert.equal(user.statusCode, 200, user.body);
-  const agent = await h.loginAs('agente-pipe@test.mx', 'secreto123');
+  const agent = await h.loginAs('agente-pipe@test.mx', 'Pz-919-Qx-920-Kv');
   assert.equal((await agent('GET', `/api/pipelines/${pipelineId}/board`)).json().cards.length, 0, 'sin conversaciones asignadas no ve tarjetas');
   assert.equal((await agent('POST', '/api/pipelines', { name: 'X', stages: [{ name: 'a' }, { name: 'b' }] })).statusCode, 403);
   const card = (await cardOf('5215510020002')).open;
@@ -200,6 +200,6 @@ t('oportunidades: cada tarjeta tiene su valor y el pipeline su moneda; quien ati
   assert.equal((await h.authed('PUT', `/api/pipelines/${pipelineId}`, { currency: 'usd' })).json().currency, 'USD');
   assert.equal((await h.authed('PUT', `/api/pipelines/${pipelineId}`, { name: 'Ventas' })).json().currency, 'USD');
   assert.equal((await h.authed('PUT', `/api/pipelines/${pipelineId}`, { currency: 'pesos' })).statusCode, 400);
-  const agent = await h.loginAs('agente-pipe@test.mx', 'secreto123');
+  const agent = await h.loginAs('agente-pipe@test.mx', 'Pz-919-Qx-920-Kv');
   assert.equal((await agent('PATCH', `/api/pipeline-cards/${open.id}`, { value: 1 })).statusCode, 404, 'una conversación que no tiene asignada');
 });

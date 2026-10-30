@@ -27,6 +27,8 @@ export async function render() {
 
   if (['login', 'registro', 'registro-google', 'invitacion', 'olvide', 'restablecer', 'verificar'].includes(parts[0])) await ensureBrand('host');
   if (!current()) return;
+  if (parts[0] === 'login' && parts[1] === 'codigo') return view('mfa', 'renderMfaVerify');
+  if (parts[0] === 'login' && parts[1] === 'configurar') return view('mfa', 'renderMfaEnroll');
   if (parts[0] === 'login') return view('auth', 'renderLogin');
   if (parts[0] === 'registro') return view('auth', 'renderSignup', params);
   if (parts[0] === 'registro-google') return view('auth', 'renderGoogleSignup', params.get('token') || '');

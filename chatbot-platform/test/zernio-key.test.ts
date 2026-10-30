@@ -23,10 +23,10 @@ before(async () => {
   delete process.env.ZERNIO_API_KEY;
   h = await createHarness();
   await h.createBot();
-  const u = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'dueno@llave.mx', name: 'Dueño', password: 'clave-llave-1', role: 'admin' });
+  const u = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'dueno@llave.mx', name: 'Dueño', password: 'Pz-131-Qx-331-Kv', role: 'admin' });
   assert.equal(u.statusCode, 200, u.body);
   await pool.query('UPDATE users SET email_verified_at = now() WHERE email = $1', ['dueno@llave.mx']);
-  owner = await h.loginAs('dueno@llave.mx', 'clave-llave-1');
+  owner = await h.loginAs('dueno@llave.mx', 'Pz-131-Qx-331-Kv');
 });
 after(async () => {
   process.env.ZERNIO_API_KEY = ENV_KEY;

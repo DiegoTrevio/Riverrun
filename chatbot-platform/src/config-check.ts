@@ -378,14 +378,14 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
       'ADMIN_PASSWORD sigue siendo la de ejemplo de .env.example (es pública).',
       'Cámbiala en .env por una contraseña propia y reinicia (o ejecuta ./riverrun install, que genera una).',
     );
-  } else if (adminPw.length < 8) {
+  } else if (adminPw.length < 12) {
     add(
       'warning',
       'security',
       'admin_password.short',
       ['ADMIN_PASSWORD'],
-      'ADMIN_PASSWORD tiene menos de 8 caracteres (el mínimo que el panel exige a cualquier usuario).',
-      'Usa una contraseña de al menos 12 caracteres.',
+      'ADMIN_PASSWORD tiene menos de 12 caracteres (el mínimo que el panel exige a cualquier contraseña nueva).',
+      'Usa una contraseña de al menos 12 caracteres (./riverrun install genera una larga).',
     );
   }
   if (prod && https && !flag('SECURE_COOKIES', false)) add(
@@ -630,6 +630,26 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
     'Corrígelo.',
   );
   services.push({ id: 'email', label: 'Correo saliente (SMTP)', area: 'email', state: !smtp ? 'disabled' : smtpValid ? 'configured' : 'invalid', detail: !smtp ? 'Opcional, apagado' : smtpValid ? 'Servidor definido' : 'Dirección no válida' });
+
+  /* ------------------------------ Hash de contraseñas ------------------------------ */
+  // `test` es solo para la suite: con él, una base filtrada se adivina mucho más rápido.
+  const hashCost = get('PASSWORD_HASH_COST');
+  if (has('PASSWORD_HASH_COST') && !['standard', 'test'].includes(hashCost)) add(
+    'critical',
+    'security',
+    'password_cost.invalid',
+    ['PASSWORD_HASH_COST'],
+    'PASSWORD_HASH_COST debe ser standard o test.',
+    'Bórrala (standard es el valor normal).',
+  );
+  if (hashCost === 'test' && https) add(
+    'critical',
+    'security',
+    'password_cost.test',
+    ['PASSWORD_HASH_COST'],
+    'PASSWORD_HASH_COST=test en un servidor con HTTPS: las contraseñas se guardan con el costo de las pruebas.',
+    'Bórrala: el valor normal (standard) usa los parámetros de scrypt que recomienda OWASP.',
+  );
 
   /* ------------------------------ Salida de mensajes ------------------------------ */
   // live: envíos reales (producción). sandbox: solo a OUTBOUND_SANDBOX_ALLOW (pruebas y staging).

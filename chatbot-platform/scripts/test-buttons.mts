@@ -57,10 +57,24 @@ try {
   await h.app.listen({ port: 0, host: '127.0.0.1' });
   const address: any = h.app.server.address(); const base = `http://127.0.0.1:${address.port}`;
   browser = await chromium.launch({ ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : {}), args: ['--no-sandbox'] });
+  // Una sesión nueva por navegador (con su código recién escrito): lo que un área cierra o deja vieja no afecta a las demás.
+  // El recorrido cambia a las cuentas de la auditoría (rol, perfil, baja): cada navegador entra como el rol que dice ser.
+  // En fila: dos entradas a la vez de la misma persona usarían el mismo código y la segunda se rechazaría (ya usado).
+  let logins: Promise<unknown> = Promise.resolve();
+  const freshSession = (role: string): Promise<{ cookie: string }> => {
+    const [email, password] = f.credentials[role] as [string, string];
+    const next = logins.then(async () => {
+      if (role === 'superadmin') await pool.query(`UPDATE users SET active = true WHERE email = $1`, [email]);
+      else await pool.query(`UPDATE users SET role = $2, account_id = $3, active = true WHERE email = $1`, [email, role, h.accountId]);
+      return h.loginAs(email, password);
+    });
+    logins = next.catch(() => undefined);
+    return next;
+  };
   const contextFor = async (role: string, options: any = {}) => {
     const context = await browser!.newContext({ viewport: { width: 1440, height: 1000 }, ...options });
-    if (f.login[role]) {
-      const cookie = f.login[role].cookie; const ix = cookie.indexOf('=');
+    if (f.credentials[role]) {
+      const { cookie } = await freshSession(role); const ix = cookie.indexOf('=');
       await context.addCookies([{ name: cookie.slice(0, ix), value: cookie.slice(ix + 1), url: base }]);
     }
     // (En una página de error del navegador no hay localStorage.)

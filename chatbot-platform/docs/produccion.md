@@ -89,7 +89,7 @@ Hace, en orden: revisar cambios locales, descargar, construir **sin arrancar**, 
 ## Contenedor, encabezados y apagado
 
 - **Variables:** `docker-compose.yml` le pasa al backend todas las variables que lee la app (vacía = el valor por defecto; ver `.env.example`). `test/compose-env.test.ts` falla si se agrega una a la app y no a compose o a `.env.example`.
-- **Obligatoria:** `SESSION_SECRET`. Sin ella, `docker compose` no arranca y dice «ejecuta ./riverrun install». `ADMIN_PASSWORD` solo crea al superadministrador la primera vez (`./riverrun install` la vacía al terminar): reiniciar no la vuelve a imponer, así que cambiarla en el panel es definitivo. Para recuperar el acceso: `./riverrun admin-password` (genera una contraseña nueva, la muestra una vez y cierra sus sesiones).
+- **Obligatoria:** `SESSION_SECRET`. Sin ella, `docker compose` no arranca y dice «ejecuta ./riverrun install». `ADMIN_PASSWORD` solo crea al superadministrador la primera vez (`./riverrun install` la vacía al terminar): reiniciar no la vuelve a imponer, así que cambiarla en el panel es definitivo. Para recuperar el acceso: `./riverrun admin-password` (genera una contraseña nueva, la muestra una vez, cierra sus sesiones y restablece su verificación en dos pasos; ver [Recuperar el acceso](#recuperar-el-acceso)).
 - **Salud:** el `HEALTHCHECK` de la imagen usa `/health/db` (responde y llega a la base; los primeros 60 s no cuentan). Caddy arranca hasta que el backend está sano. `/health/ready` sigue siendo el de los monitores externos (también revisa las tareas atrasadas).
 - **Apagado:** termina lo que está en curso y cierra la base, con un plazo de `SHUTDOWN_TIMEOUT_MS` (240 s, menor que los 300 s de `stop_grace_period`). Si algo se cuelga, sale con código 1 y dice qué faltó. Una segunda señal no repite el cierre.
 - **Encabezados:**
@@ -143,6 +143,22 @@ BACKUP_PASSPHRASE=... BACKUP_DATABASES="chatbot evolution" scripts/restore-drill
 - En CI (job «Imágenes de Docker») corre `scripts/test-restore-drill.sh`: la misma prueba sin S3. Crea dos bases con datos, las respalda con la imagen de producción y comprueba que el simulacro restaura ambas con clave correcta, rechaza la clave equivocada y rechaza una lista de bases que no coincide.
 - Lo que este script no prueba: que los archivos de subidas y de las sesiones de WhatsApp se puedan volver a montar en el servidor real. Eso sigue en el procedimiento de `./riverrun restore`.
 - **Estado: el script está probado con un respaldo real de una base de pruebas, con clave correcta y con clave incorrecta, y limpia lo que crea. No se ha corrido todavía desde una copia de S3 en otro servidor.**
+
+## Recuperar el acceso
+
+Todos entran con contraseña y el código de una app de autenticación ([etapa 2a](seguridad.md#etapa-2a-lo-que-se-corrigió)). Si alguien perdió el teléfono:
+
+| Quién | Cómo vuelve |
+|---|---|
+| Cualquiera con sus códigos de recuperación | Entra con uno (cada uno sirve una vez): el panel abre **Mi perfil → Verificación en dos pasos** con el aviso; ahí pulsa «Cambiar de app» y «Generar códigos nuevos». |
+| Agente o administrador | Otro administrador de su cuenta (o el superadministrador) pulsa **Restablecer 2FA** en Equipo. Se cierran sus sesiones y la configura otra vez al entrar con su contraseña. En la etapa 2b, el de un administrador lo restablece solo el dueño. |
+| Dueño de la cuenta | El superadministrador, desde Equipo de esa cuenta, después de comprobar por fuera que es él. |
+| Superadministrador | En el servidor: `./riverrun admin-password [correo]`. Contraseña nueva, 2FA restablecido (lo configura al entrar), sesiones cerradas y los intentos fallidos de su cuenta en 0. Si su conexión quedó bloqueada, espera 15 minutos. |
+
+- **10 códigos equivocados en una hora** bloquean el 2FA de esa persona una hora y le llega un correo: alguien tiene su contraseña. Que la cambie.
+- **10 contraseñas equivocadas en una hora** para un correo: esa cuenta solo entra desde un dispositivo recordado o recuperando la contraseña por correo (que reinicia el contador).
+- **`./riverrun rotate-secret`** vuelve a cifrar los secretos de la verificación en dos pasos con el `SESSION_SECRET` nuevo antes de escribirlo en `.env`. Si no puede (un secreto que no se lee), no cambia nada y lo dice.
+- **Contraseñas filtradas:** las nuevas se comparan con una lista local de las 100 000 más comunes y con Have I Been Pwned por rango (solo salen los primeros 5 caracteres del SHA-1; 1,5 s como máximo; si no responde, decide la lista local y queda en la bitácora). Sin salida a internet: `PWNED_PASSWORDS_URL=off`. `PASSWORD_HASH_COST=test` es solo para la suite de pruebas; `./riverrun preflight` lo marca como crítico con HTTPS.
 
 ## Qué hacer ante cada fallo
 

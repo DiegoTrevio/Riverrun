@@ -80,9 +80,9 @@ before(async () => {
   h = await createHarness();
   await h.createBot();
   for (const name of ['ana', 'beto']) {
-    const r = await h.authed('POST', '/api/users', { account_id: h.accountId, email: `${name}@equipo.mx`, password: 'secreto123', name: name[0].toUpperCase() + name.slice(1), role: 'agent' });
+    const r = await h.authed('POST', '/api/users', { account_id: h.accountId, email: `${name}@equipo.mx`, password: 'Pz-919-Qx-920-Kv', name: name[0].toUpperCase() + name.slice(1), role: 'agent' });
     assert.equal(r.statusCode, 200, r.body);
-    people[name] = { id: r.json().id, api: await h.loginAs(`${name}@equipo.mx`, 'secreto123') };
+    people[name] = { id: r.json().id, api: await h.loginAs(`${name}@equipo.mx`, 'Pz-919-Qx-920-Kv') };
   }
 });
 after(async () => {
@@ -270,7 +270,7 @@ t('llamadas: primero con quien ya atiende al cliente; una persona desactivada no
   } finally {
     assert.equal((await h.authed('PUT', `/api/users/${people.ana.id}`, { active: true })).statusCode, 200);
     // Desactivarla cerró sus sesiones: vuelve a entrar.
-    people.ana.api = await h.loginAs('ana@equipo.mx', 'secreto123');
+    people.ana.api = await h.loginAs('ana@equipo.mx', 'Pz-919-Qx-920-Kv');
   }
 
   // Ana atiende en la noche (horario propio); Beto no tiene horario propio: solo el del negocio (hasta las 18:00).

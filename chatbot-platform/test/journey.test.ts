@@ -59,7 +59,7 @@ before(async () => {
     rules: { handoff_message: 'En un momento te atiende una persona del equipo.' },
   });
   assert.equal((await h.authed('PUT', `/api/settings?account_id=${h.accountId}`, { business_hours: ALL_DAY, notify_team_on_handoff: true })).statusCode, 200);
-  const u = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'sofia@hotel.mx', name: 'Sofía', password: 'clave-sofia-1', role: 'admin', phone: TEAM_PHONE, notify_whatsapp: true });
+  const u = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'sofia@hotel.mx', name: 'Sofía', password: 'Pz-148-Qx-348-Kv', role: 'admin', phone: TEAM_PHONE, notify_whatsapp: true });
   assert.equal(u.statusCode, 200, u.body);
   teamUserId = u.json().id;
   const s = await h.authed('POST', '/api/services', { account_id: h.accountId, name: 'Visita guiada', kind: 'appointment', duration_minutes: 60, min_notice_minutes: 0, max_days_ahead: 5, location: 'Recepción', assigned_user_ids: [teamUserId] });
@@ -72,7 +72,7 @@ before(async () => {
   // Otro sistema suscrito a todos los eventos, y una llave de la API pública.
   const ep = await h.authed('POST', '/api/webhook-endpoints', { account_id: h.accountId, url: `http://127.0.0.1:${(server.address() as any).port}/crm`, description: 'CRM' });
   assert.equal(ep.statusCode, 200, ep.body);
-  secret = (await h.authed('GET', `/api/settings?account_id=${h.accountId}`)).json().webhook_secret;
+  secret = (await h.authed('GET', `/api/settings/secrets?account_id=${h.accountId}`)).json().webhook_secret;
   apiKey = (await h.authed('POST', '/api/api-keys', { account_id: h.accountId, name: 'CRM', scope: 'read' })).json().key;
 });
 after(async () => {
@@ -114,7 +114,7 @@ t('2) agenda la cita: queda en la agenda, avisa a quien atiende el servicio, se 
   // Equipo: aviso de la cita a quien la atiende y aviso del objetivo con el dato capturado.
   await until(() => toPhone(TEAM_PHONE).some((x) => x.includes('Cita agendada: Visita guiada')) && toPhone(GOAL_PHONE).length === 1);
   assert.match(toPhone(GOAL_PHONE)[0], /🎯 Ana López agendó: 20 de noviembre/);
-  const panel = (await (await h.loginAs('sofia@hotel.mx', 'clave-sofia-1'))('GET', '/api/notifications')).json().items;
+  const panel = (await (await h.loginAs('sofia@hotel.mx', 'Pz-148-Qx-348-Kv'))('GET', '/api/notifications')).json().items;
   assert.ok(panel.some((n: any) => /Cita agendada: Visita guiada/.test(n.title)), 'también en el panel');
 
   // Otro sistema: la cita y el objetivo, con los datos correctos.

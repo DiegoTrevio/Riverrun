@@ -4,6 +4,7 @@ import { api, area, check, field, fill, fmtDate, h, run, select, settingsSection
 const plainTitle = (t) => String(t || '').replace(/^[\p{Extended_Pictographic}️‍\s]+/u, '');
 import { accountPicker } from './dashboard.js';
 import { render } from './main.js';
+import { mfaSecurityCard } from './mfa.js';
 import { ROLE_LABEL, acct, isAdmin, isSuper, withAcct } from './session.js';
 import { refreshBell } from './shell.js';
 import { usd } from './usage.js';
@@ -101,7 +102,7 @@ export async function viewUsers(root) {
       h('div', { class: 'grid' },
         field('Nombre', text(n, 'name')),
         field('Correo', text(n, 'email', { type: 'email', autocomplete: 'off', placeholder: 'persona@empresa.com' })),
-        field('Contraseña inicial', text(n, 'password', { type: 'password', autocomplete: 'new-password', minlength: 8 }), 'Mínimo 8 caracteres. Pídele que la cambie al entrar.'),
+        field('Contraseña inicial', text(n, 'password', { type: 'password', autocomplete: 'new-password', minlength: 12 }), 'Mínimo 12 caracteres; una frase de 3 o 4 palabras funciona bien. Pídele que la cambie al entrar.'),
         field('Rol', select(n, 'role', roles, () => { assignedProfile.hidden = n.role === 'superadmin'; })),
         field('WhatsApp para alertas (opcional)', text(n, 'phone', { placeholder: '5215512345678' }))),
       check(n, 'notify_whatsapp', 'Enviarle las alertas también por WhatsApp'),
@@ -113,7 +114,7 @@ export async function viewUsers(root) {
         h('tbody', {}, users.map((u) => {
           const self = u.id === me.id;
           return h('tr', {},
-            h('td', {}, h('strong', {}, u.name || '—'), h('div', { class: 'muted small' }, u.email, u.phone ? ` · WhatsApp +${u.phone}${u.notify_whatsapp ? ' (alertas)' : ''}` : ''), !u.active ? h('span', { class: 'badge orange' }, 'desactivado') : null, u.active && u.role !== 'superadmin' && u.available === false ? h('span', { class: 'badge' }, 'no disponible para turnos') : null),
+            h('td', {}, h('strong', {}, u.name || '—'), h('div', { class: 'muted small' }, u.email, u.phone ? ` · WhatsApp +${u.phone}${u.notify_whatsapp ? ' (alertas)' : ''}` : ''), !u.active ? h('span', { class: 'badge orange' }, 'desactivado') : null, u.mfa_enabled ? h('span', { class: 'badge green' }, '2FA activo') : h('span', { class: 'badge orange' }, '2FA pendiente'), u.active && u.role !== 'superadmin' && u.available === false ? h('span', { class: 'badge' }, 'no disponible para turnos') : null),
             h('td', {}, u.role === 'superadmin' || self ? ROLE_LABEL[u.role]
               : h('select', { 'aria-label': `Rol de ${u.email}`, onchange: async (e) => { if (await run(() => api('PUT', `/api/users/${u.id}`, { role: e.target.value }), 'Rol actualizado')) render(); else e.target.value = u.role; } },
                   [['agent', 'Operador del perfil'], ['admin', 'Administrador del perfil']].map(([v, l]) => h('option', { value: v, selected: u.role === v }, l)))),
@@ -123,7 +124,11 @@ export async function viewUsers(root) {
               isSuper() && u.role !== 'superadmin' ? h('button', { class: 'small', onclick: async () => { if (await confirmAction(`¿Dar a ${u.email} acceso maestro a TODOS los perfiles?`)) { if (!(await run(() => api('PUT', `/api/users/${u.id}`, { role: 'superadmin' }), 'Acceso maestro asignado'))) return; render(); } } }, 'Dar acceso maestro') : null,
               u.role !== 'superadmin' && u.active ? h('button', { class: 'small', title: 'Si no está disponible se salta en el reparto por turnos', onclick: async () => { if (await run(() => api('PUT', `/api/users/${u.id}`, { available: u.available === false }), u.available === false ? 'Disponible' : 'Fuera de turno')) render(); } }, u.available === false ? 'Marcar disponible' : 'Fuera de turno') : null,
               h('button', { class: 'small', onclick: async () => { if (await run(() => api('PUT', `/api/users/${u.id}`, { active: !u.active }), u.active ? 'Desactivado' : 'Activado')) render(); } }, u.active ? 'Desactivar' : 'Activar'),
-              h('button', { class: 'small', onclick: async () => { const pw = await ask('Nueva contraseña (mínimo 8 caracteres)', '', { type: 'password', minlength: 8, required: true }); if (pw) if (!(await run(() => api('PUT', `/api/users/${u.id}`, { password: pw }), 'Contraseña actualizada'))) return; } }, 'Restablecer contraseña'),
+              u.mfa_enabled ? h('button', { class: 'small', 'aria-label': `Restablecer 2FA de ${u.email}`, onclick: async () => {
+                if (!(await dialog(`Restablecer 2FA de ${u.name || u.email}`, h('p', {}, 'Su verificación en dos pasos se borra, se cierran sus sesiones y la configura otra vez al entrar.'), 'Restablecer 2FA'))) return;
+                if (await run(() => api('POST', `/api/users/${u.id}/2fa/reset`), 'Verificación en dos pasos restablecida')) render();
+              } }, 'Restablecer 2FA') : null,
+              h('button', { class: 'small', onclick: async () => { const pw = await ask('Nueva contraseña (mínimo 12 caracteres)', '', { type: 'password', minlength: 12, required: true }); if (pw) if (!(await run(() => api('PUT', `/api/users/${u.id}`, { password: pw }), 'Contraseña actualizada'))) return; } }, 'Restablecer contraseña'),
               h('button', { class: 'small', onclick: async () => {
                 const phone = await ask('WhatsApp para alertas (con lada; vacío para quitar)', u.phone || '');
                 if (phone !== null && (await run(() => api('PUT', `/api/users/${u.id}`, { phone, notify_whatsapp: !!phone.replace(/\D/g, '') }), 'Actualizado'))) render();
@@ -144,7 +149,7 @@ export async function viewAccounts(root) {
     h('div', { class: 'grid' },
       field('Nombre del administrador', text(n.admin, 'name')),
       field('Correo', text(n.admin, 'email', { placeholder: 'dueño@cliente.com' })),
-      field('Contraseña inicial', text(n.admin, 'password', { type: 'password' }), 'Mínimo 8 caracteres.')));
+      field('Contraseña inicial', text(n.admin, 'password', { type: 'password' }), 'Mínimo 12 caracteres; una frase de 3 o 4 palabras funciona bien.')));
   root.append(
     h('h1', {}, 'Perfiles de negocio'),
     h('div', { class: 'card' },
@@ -265,9 +270,8 @@ function sessionsCard() {
             const r = await run(() => api('DELETE', `/api/me/sessions/${s.id}`), 'Sesión cerrada');
             if (r?.current) location.reload(); else if (r) draw();
           } }, 'Cerrar')))))) : h('p', { class: 'muted' }, 'No hay sesiones registradas.'),
-      d.legacy ? h('p', { class: 'small muted' }, 'Esta sesión es anterior al registro de sesiones: no aparece aquí y vence sola. Para verla, sal y vuelve a entrar.') : null,
       others.length ? h('button', { class: 'danger', onclick: async () => {
-        if (!(await dialog('Cerrar las demás sesiones', h('p', {}, `Se cerrarán ${others.length} ${others.length === 1 ? 'sesión' : 'sesiones'} en otros dispositivos. Esta sigue abierta.`), 'Cerrar las demás'))) return;
+        if (!(await dialog('Cerrar las demás sesiones', h('p', {}, `Se cerrarán ${others.length} ${others.length === 1 ? 'sesión' : 'sesiones'} en otros dispositivos. Esta sigue abierta. También se olvidan los dispositivos recordados (te pedirán el código otra vez).`), 'Cerrar las demás'))) return;
         if (await run(() => api('POST', '/api/me/sessions/revoke-others'), 'Sesiones cerradas')) draw();
       } }, 'Cerrar sesión en todos los demás dispositivos') : null);
   };
@@ -294,10 +298,11 @@ export async function viewPassword(root) {
     groups ? settingsSection('Mis avisos', 'Elige por dónde te llega cada aviso. Para recibirlos por WhatsApp, activa «Recibir las alertas del equipo por WhatsApp» arriba.',
       alertPrefsTable(groups, prefs, { noPhone: !(state.me.user.phone && state.me.user.notify_whatsapp) }),
       h('div', { class: 'settings-actions' }, h('button', { onclick: async () => { const u = await run(() => api('PUT', '/api/me', { alert_prefs: prefs }), 'Avisos guardados'); if (u) state.me.user = { ...state.me.user, ...u }; } }, 'Guardar avisos'))) : null,
+    settingsSection('Verificación en dos pasos', 'Además de tu contraseña, para entrar usas el código de tu app de autenticación. Si pierdes tu teléfono, entra con un código de recuperación.', mfaSecurityCard()),
     settingsSection('Sesiones abiertas', 'Dónde está abierta tu cuenta. Si no reconoces una, ciérrala y cambia tu contraseña.', sessionsCard()),
     settingsSection('Cambiar contraseña', 'La que usas para entrar al panel con tu correo.',
       field('Contraseña actual', text(f, 'current', { type: 'password' })),
-      field('Nueva contraseña', text(f, 'password', { type: 'password' }), 'Mínimo 8 caracteres. Se cerrarán tus otras sesiones abiertas.'),
+      field('Nueva contraseña', text(f, 'password', { type: 'password' }), 'Mínimo 12 caracteres; una frase de 3 o 4 palabras funciona bien. Se cerrarán tus otras sesiones abiertas.'),
       field('Repite la nueva contraseña', text(f, 'confirm', { type: 'password' })),
       h('div', { class: 'settings-actions' }, h('button', { class: 'primary', onclick: async () => {
         if (f.password !== f.confirm) return toast('Las contraseñas no coinciden', true);

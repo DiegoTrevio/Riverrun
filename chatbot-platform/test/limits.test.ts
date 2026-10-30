@@ -12,9 +12,9 @@ const lim = await import('../src/billing/limits.js');
 const as = (cookie: string) => (method: string, url: string, payload?: unknown) => h.app.inject({ method: method as any, url, payload: payload as any, headers: { cookie } });
 let ip = 0;
 async function signup(email: string) {
-  const r = await h.app.inject({ method: 'POST', url: '/api/signup', remoteAddress: `10.7.7.${++ip}`, payload: { name: 'Dueño', company: `Negocio ${email}`, business_type: 'otro', email, password: 'clave-segura-1', accept_terms: true } });
+  const r = await h.app.inject({ method: 'POST', url: '/api/signup', remoteAddress: `10.7.7.${++ip}`, payload: { name: 'Dueño', company: `Negocio ${email}`, business_type: 'otro', email, password: 'Pz-144-Qx-344-Kv', accept_terms: true } });
   assert.equal(r.statusCode, 200, r.body);
-  return { api: as(String(r.headers['set-cookie']).split(';')[0]), account: r.json().user.account_id as string };
+  return { api: as(await h.sessionFrom(r)), account: r.json().user.account_id as string };
 }
 
 before(async () => {
@@ -47,8 +47,8 @@ t('crear canales, usuarios y asistentes por encima del límite se rechaza con un
   const ch2 = await a.api('POST', '/api/channels', { type: 'telegram', name: 'TG', config: { bot_token: '123:abc' } });
   assert.equal(ch2.statusCode, 403);
   assert.match(ch2.json().error, /1 canal/);
-  assert.equal((await a.api('POST', '/api/users', { email: 'agente1@limites.mx', password: 'clave-agente-1', role: 'agent' })).statusCode, 200);
-  assert.equal((await a.api('POST', '/api/users', { email: 'agente2@limites.mx', password: 'clave-agente-2', role: 'agent' })).statusCode, 403);
+  assert.equal((await a.api('POST', '/api/users', { email: 'agente1@limites.mx', password: 'Pz-101-Qx-301-Kv', role: 'agent' })).statusCode, 200);
+  assert.equal((await a.api('POST', '/api/users', { email: 'agente2@limites.mx', password: 'Pz-103-Qx-303-Kv', role: 'agent' })).statusCode, 403);
   // Duplicar también cuenta
   const bot = (await a.api('GET', '/api/chatbots')).json()[0];
   assert.equal((await a.api('POST', `/api/chatbots/${bot.id}/duplicate`)).statusCode, 403);
@@ -136,9 +136,9 @@ t('una campaña más grande que el cupo restante no se lanza', async () => {
 t('reactivar a un usuario también respeta el límite de usuarios', async () => {
   const a = await signup('react@limites.mx');
   await h.authed('PUT', `/api/accounts/${a.account}`, { limits_override: { users: 2 } });
-  const u1 = (await a.api('POST', '/api/users', { email: 'u1@limites.mx', password: 'clave-agente-1', role: 'agent' })).json();
+  const u1 = (await a.api('POST', '/api/users', { email: 'u1@limites.mx', password: 'Pz-101-Qx-301-Kv', role: 'agent' })).json();
   assert.equal((await a.api('PUT', `/api/users/${u1.id}`, { active: false })).statusCode, 200);
-  assert.equal((await a.api('POST', '/api/users', { email: 'u2@limites.mx', password: 'clave-agente-2', role: 'agent' })).statusCode, 200);
+  assert.equal((await a.api('POST', '/api/users', { email: 'u2@limites.mx', password: 'Pz-103-Qx-303-Kv', role: 'agent' })).statusCode, 200);
   const back = await a.api('PUT', `/api/users/${u1.id}`, { active: true });
   assert.equal(back.statusCode, 403, 'ya hay 2 activos');
 });

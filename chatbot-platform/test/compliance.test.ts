@@ -112,12 +112,12 @@ t('derecho de supresión: borra al contacto y su historial, anonimiza citas y co
   const aiRuns = (await pool.query(`SELECT count(*)::int AS n FROM ai_runs WHERE conversation_id = $1`, [conv])).rows[0].n;
   assert.ok(aiRuns >= 1);
   // Un agente no puede; otra cuenta tampoco
-  await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'agente@priv.mx', password: 'clave-agente-1', role: 'agent' });
-  const agent = await h.loginAs('agente@priv.mx', 'clave-agente-1');
+  await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'agente@priv.mx', password: 'Pz-101-Qx-301-Kv', role: 'agent' });
+  const agent = await h.loginAs('agente@priv.mx', 'Pz-101-Qx-301-Kv');
   assert.equal((await agent('DELETE', `/api/contacts/${c.id}`)).statusCode, 403);
   assert.equal((await agent('GET', `/api/contacts/${c.id}/data`)).statusCode, 403);
-  const other = await h.app.inject({ method: 'POST', url: '/api/signup', remoteAddress: '10.5.5.5', payload: { name: 'Otro', company: 'Otro negocio', business_type: 'otro', email: 'otro@priv.mx', password: 'clave-otro-123', accept_terms: true } });
-  const cookie = String(other.headers['set-cookie']).split(';')[0];
+  const other = await h.app.inject({ method: 'POST', url: '/api/signup', remoteAddress: '10.5.5.5', payload: { name: 'Otro', company: 'Otro negocio', business_type: 'otro', email: 'otro@priv.mx', password: 'Pz-137-Qx-337-Kv', accept_terms: true } });
+  const cookie = await h.sessionFrom(other);
   assert.equal((await h.app.inject({ method: 'DELETE', url: `/api/contacts/${c.id}`, headers: { cookie } })).statusCode, 404);
   // El administrador sí. La exportación de sus datos incluye todo lo suyo, también el correo de sus citas.
   const exported = (await h.authed('GET', `/api/contacts/${c.id}/data`)).json();

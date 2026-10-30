@@ -12,6 +12,7 @@ export RIVERRUN_OBSERVE_SECONDS=3 RIVERRUN_OBSERVE_POLL=1
 LOG="$work/docker.log"; export LOG
 
 # docker simulado: registra cada llamada; la salud falla si existe VERSION_MALA en el directorio actual; el respaldo falla si existe FALLA_RESPALDO.
+# El re-cifrado del 2FA guarda en REKEY_IN lo que recibe por la entrada y falla si existe FALLA_REKEY.
 # Evolution: EVO_RUNNING = imagen que corre; destino = EVOLUTION_IMAGE de .env, o el archivo EVO_IMAGE (código), o "evo:latest".
 # EVO_MIG = última migración de su base; si existe MIGRA_AL_ARRANCAR, arrancar la imagen nueva la cambia (como Evolution real).
 # CONFIG_MALA → la revisión de configuración da 2; EVO_PLAN_RC / EVO_VERIFY_RC → códigos de evolution-check (plan / verify).
@@ -47,6 +48,7 @@ case "$*" in
       (( first )) || printf ','; first=0; printf '{"name":"%s","status":"%s"}' "$c" "$s"
     done; printf ']}' ;;
   *"backup.sh now"*) [[ -f FALLA_RESPALDO ]] && exit 1; exit 0 ;;
+  *"exec -T backend node dist/cli/rekey-mfa.js"*) cat > REKEY_IN; [[ -f FALLA_REKEY ]] && exit 1; echo "Secretos de verificación re-cifrados: 2" ;;
   *"backup sh -c"*) echo "/backups/riverrun-20261010-120000.tar.enc" ;;
   *"images -q backend"*) echo "sha256:abc123" ;;
   "compose config evolution") printf 'services:\n  evolution:\n    image: %s\n  redis:\n    image: redis:7-alpine\n' "$(target)" ;;
@@ -74,7 +76,7 @@ git init -q --bare "$work/origin.git"
 git clone -q "$work/origin.git" "$work/app" 2>/dev/null
 cd "$work/app"
 # Estado del docker simulado y .env: nunca entran en los commits de prueba (EVO_IMAGE sí: es "código").
-printf '%s\n' .env EVO_RUNNING EVO_MIG EVO_PLAN_RC EVO_VERIFY_RC PULLED MIGRA_AL_ARRANCAR CONFIG_MALA PULL_FALLA FALLA_RESPALDO FALLA_PREVIA SIN_FUNCIONAL CONFIG_NO_CORRE HEALTH_N FALLA_TARDIA FALLA_SOSTENIDA > .gitignore
+printf '%s\n' .env EVO_RUNNING EVO_MIG EVO_PLAN_RC EVO_VERIFY_RC PULLED MIGRA_AL_ARRANCAR CONFIG_MALA PULL_FALLA FALLA_RESPALDO FALLA_PREVIA SIN_FUNCIONAL CONFIG_NO_CORRE HEALTH_N FALLA_TARDIA FALLA_SOSTENIDA REKEY_IN FALLA_REKEY > .gitignore
 cp "$here/riverrun" . && echo "v1" > VERSION && git add -A && git commit -qm "v1" && git push -q origin HEAD:main 2>/dev/null
 git branch -q --set-upstream-to=origin/main 2>/dev/null || git branch -q -u origin/main
 # Publica una versión nueva en el "origin" y deja la copia local donde estaba. $3 = imagen de Evolution del código nuevo.
@@ -255,13 +257,24 @@ touch FALLA_RESPALDO
 if printf 'ROTAR SESSION_SECRET\n' | ./riverrun rotate-secret > "$work/out" 2>&1; then echo "ERROR: cambió sin respaldo"; exit 1; fi
 grep -q "^SESSION_SECRET=viejo-secreto-de-prueba$" .env
 rm -f FALLA_RESPALDO
+# Si no se pueden re-cifrar los secretos del 2FA, .env conserva el secreto de antes y no se reinicia nada.
+: > "$LOG"; touch FALLA_REKEY
+if printf 'ROTAR SESSION_SECRET\n' | ./riverrun rotate-secret > "$work/out" 2>&1; then echo "ERROR: cambió sin re-cifrar el 2FA"; exit 1; fi
+grep -q "No se pudieron re-cifrar los secretos de verificación en dos pasos: no se cambió nada." "$work/out"
+grep -q "^SESSION_SECRET=viejo-secreto-de-prueba$" .env
+! grep -q "up -d backend" "$LOG" || { echo "ERROR: reinició sin re-cifrar el 2FA"; exit 1; }
+rm -f FALLA_REKEY REKEY_IN
 : > "$LOG"
 printf 'ROTAR SESSION_SECRET\n' | ./riverrun rotate-secret > "$work/out" 2>&1 || { cat "$work/out"; echo "ERROR: rotación fallida"; exit 1; }
 grep -Eq "^SESSION_SECRET=[0-9a-f]{64}$" .env && ! grep -q "viejo-secreto" .env
+grep -q "Los secretos de la verificación en dos pasos se vuelven a cifrar con el nuevo." "$work/out"
 nuevo="$(sed -n 's/^SESSION_SECRET=//p' .env)"
 ! grep -q "$nuevo" "$work/out" || { echo "ERROR: el secreto nuevo se imprimió"; exit 1; }
-b="$(grep -n "backup.sh now" "$LOG" | head -n 1 | cut -d: -f1)"; u="$(grep -n "up -d backend" "$LOG" | head -n 1 | cut -d: -f1)"
-[[ -n "$b" && -n "$u" && "$b" -lt "$u" ]] || { echo "ERROR: el respaldo debe hacerse antes de reiniciar"; exit 1; }
+! grep -q "$nuevo" "$LOG" || { echo "ERROR: el secreto nuevo quedó en los argumentos"; exit 1; }
+[[ "$(cat REKEY_IN)" == "$nuevo" ]] || { echo "ERROR: el 2FA se re-cifró con otro secreto"; exit 1; }
+b="$(grep -n "backup.sh now" "$LOG" | head -n 1 | cut -d: -f1)"; k="$(grep -n "rekey-mfa.js" "$LOG" | head -n 1 | cut -d: -f1)"; u="$(grep -n "up -d backend" "$LOG" | head -n 1 | cut -d: -f1)"
+[[ -n "$b" && -n "$k" && -n "$u" && "$b" -lt "$k" && "$k" -lt "$u" ]] || { echo "ERROR: el orden debe ser respaldo → re-cifrado → reinicio"; exit 1; }
+rm -f REKEY_IN
 echo "== salud funcional: la actualización genera HEALTH_TOKEN (sin imprimirlo) y consulta /health/functional"
 : > "$LOG"; newcommit v12
 ./riverrun update > "$work/out" 2>&1 || { cat "$work/out"; echo "ERROR: la actualización con salud funcional falló"; exit 1; }

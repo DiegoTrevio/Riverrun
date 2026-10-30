@@ -61,6 +61,9 @@ test('2. configuraciones críticas inválidas impiden arrancar en modo estricto'
     [{ KNOWLEDGE_SEARCH_ACCOUNT_IDS: 'cuenta-1' }, 'knowledge.account_ids'],
     [{ KNOWLEDGE_ALERT_FALLBACK_RATIO: '5' }, 'number.KNOWLEDGE_ALERT_FALLBACK_RATIO'],
     [{ OPENROUTER_BASE_URL: 'openrouter' }, 'url.OPENROUTER_BASE_URL'],
+    // El costo de prueba del hash de contraseñas en un servidor público las dejaría fáciles de adivinar si se filtra la base.
+    [{ PASSWORD_HASH_COST: 'test' }, 'password_cost.test'],
+    [{ PASSWORD_HASH_COST: 'bajo' }, 'password_cost.invalid'],
   ];
   for (const [over, id] of cases) {
     const r = validateConfig(installed(over));
@@ -81,6 +84,7 @@ test('secretos débiles en producción: avisos visibles que no impiden arrancar 
     [{ SESSION_SECRET: 'secret' }, 'session_secret.weak'],
     [{ SESSION_SECRET: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }, 'session_secret.weak'],
     [{ ADMIN_PASSWORD: 'abc12' }, 'admin_password.short'],
+    [{ ADMIN_PASSWORD: 'once-letras' }, 'admin_password.short'],
     [{ ADMIN_PASSWORD: 'cambia-esta-clave', PUBLIC_BASE_URL: 'http://203.0.113.5:3000', SECURE_COOKIES: 'false' }, 'admin_password.placeholder'],
     [{ ADMIN_PASSWORD: 'cambia-esta-clave' }, 'admin_password.placeholder'],
   ];

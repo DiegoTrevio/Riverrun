@@ -15,7 +15,7 @@ let self: typeof import('../src/accounts/self-service.js');
 let config: typeof import('../src/config.js').config;
 
 async function account(name: string, email: string) {
-  const r = await h.authed('POST', '/api/accounts', { name, admin: { name: `Dueño ${name}`, email, password: 'clave-segura-1' } });
+  const r = await h.authed('POST', '/api/accounts', { name, admin: { name: `Dueño ${name}`, email, password: 'Pz-144-Qx-344-Kv' } });
   assert.equal(r.statusCode, 200, r.body);
   return r.json().id as string;
 }
@@ -34,12 +34,12 @@ before(async () => {
   config = (await import('../src/config.js')).config;
   A.account = await account('Florería Sol', 'sol@floreria.mx');
   B.account = await account('Otra Cuenta', 'beto@otra.mx');
-  A.owner = await h.loginAs('sol@floreria.mx', 'clave-segura-1');
-  B.owner = await h.loginAs('beto@otra.mx', 'clave-segura-1');
-  assert.equal((await A.owner('POST', '/api/users', { name: 'Socia', email: 'socia@floreria.mx', password: 'clave-segura-1', role: 'admin' })).statusCode, 200);
-  assert.equal((await A.owner('POST', '/api/users', { name: 'Agente', email: 'agente@floreria.mx', password: 'clave-segura-1', role: 'agent' })).statusCode, 200);
-  A.admin2 = await h.loginAs('socia@floreria.mx', 'clave-segura-1');
-  A.agent = await h.loginAs('agente@floreria.mx', 'clave-segura-1');
+  A.owner = await h.loginAs('sol@floreria.mx', 'Pz-144-Qx-344-Kv');
+  B.owner = await h.loginAs('beto@otra.mx', 'Pz-144-Qx-344-Kv');
+  assert.equal((await A.owner('POST', '/api/users', { name: 'Socia', email: 'socia@floreria.mx', password: 'Pz-144-Qx-344-Kv', role: 'admin' })).statusCode, 200);
+  assert.equal((await A.owner('POST', '/api/users', { name: 'Agente', email: 'agente@floreria.mx', password: 'Pz-144-Qx-344-Kv', role: 'agent' })).statusCode, 200);
+  A.admin2 = await h.loginAs('socia@floreria.mx', 'Pz-144-Qx-344-Kv');
+  A.agent = await h.loginAs('agente@floreria.mx', 'Pz-144-Qx-344-Kv');
   // Datos de cada cuenta para comprobar que la descarga no mezcla cuentas.
   for (const [acc, phone, text] of [[A.account, '5215550001111', 'Quiero un ramo de rosas'], [B.account, '5215559999999', 'Mensaje secreto de B']]) {
     const ch = (await pool.query(`INSERT INTO channels (account_id, type, name, config, webhook_token) VALUES ($1, 'whatsapp', 'WA', $2::jsonb, md5(random()::text)) RETURNING id`, [acc, JSON.stringify({ instance: `exp-${phone}`, apikey: 'clave-del-canal' })])).rows[0].id;

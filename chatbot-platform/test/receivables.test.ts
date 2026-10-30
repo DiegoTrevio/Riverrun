@@ -25,7 +25,7 @@ before(async () => {
   h = await createHarness();
   await h.createBot();
   // Alguien del equipo que reciba los avisos (pago reportado, vencido).
-  assert.equal((await h.authed('POST', '/api/users', { account_id: h.accountId, name: 'Caja', email: 'caja@palmas.mx', password: 'clave-segura-1', role: 'admin' })).statusCode, 200);
+  assert.equal((await h.authed('POST', '/api/users', { account_id: h.accountId, name: 'Caja', email: 'caja@palmas.mx', password: 'Pz-144-Qx-344-Kv', role: 'admin' })).statusCode, 200);
   h.setScript(() => ({ messages: ['Gracias, el equipo lo revisa y te confirma.'] }));
   await h.webhook('Hola, buenas tardes');
   await h.idle();
@@ -151,9 +151,9 @@ t('editar la fecha reprograma; validaciones y aislamiento entre cuentas', async 
   assert.equal((await h.authed('POST', acc('/api/receivables'), { contact_id: contactId, concept: 'X', amount_cents: 0, due_date: today(1) })).statusCode, 400);
   assert.equal((await h.authed('POST', acc('/api/receivables'), { contact_id: contactId, concept: 'X', amount_cents: 100, due_date: today(1), payment_link: 'http://inseguro.mx' })).statusCode, 400);
   // Otra cuenta: no ve ni toca los cobros de esta.
-  const other = await h.authed('POST', '/api/accounts', { name: 'Otra cuenta', admin: { name: 'Otro', email: 'otro@cobros.mx', password: 'clave-segura-1' } });
+  const other = await h.authed('POST', '/api/accounts', { name: 'Otra cuenta', admin: { name: 'Otro', email: 'otro@cobros.mx', password: 'Pz-144-Qx-344-Kv' } });
   assert.equal(other.statusCode, 200, other.body);
-  const otherAdmin = await h.loginAs('otro@cobros.mx', 'clave-segura-1');
+  const otherAdmin = await h.loginAs('otro@cobros.mx', 'Pz-144-Qx-344-Kv');
   assert.equal((await otherAdmin('GET', `/api/receivables/${r.id}`)).statusCode, 404);
   assert.equal((await otherAdmin('POST', `/api/receivables/${r.id}/paid`, {})).statusCode, 404);
   assert.equal((await otherAdmin('POST', '/api/receivables', { contact_id: contactId, concept: 'Ajeno', amount_cents: 100, due_date: today(1) })).statusCode, 400);

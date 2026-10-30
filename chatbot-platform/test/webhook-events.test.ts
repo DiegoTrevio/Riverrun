@@ -27,7 +27,7 @@ const call = (method: string, url: string, payload?: unknown) => h.app.inject({ 
 const mkEndpoint = async (body: Record<string, unknown>) => { const r = await h.authed('POST', '/api/webhook-endpoints', { account_id: h.accountId, ...body }); assert.equal(r.statusCode, 200, r.body); return r.json(); };
 const until = (cond: () => boolean) => waitFor(async () => { await h.service.automator.settleAll(); await h.fastForward(); return cond(); }, 8000);
 const at = (path: string, type?: string) => received.filter((r) => r.path === path && (!type || r.body?.type === type));
-const secret = async () => (await h.authed('GET', `/api/settings?account_id=${h.accountId}`)).json().webhook_secret as string;
+const secret = async () => (await h.authed('GET', `/api/settings/secrets?account_id=${h.accountId}`)).json().webhook_secret as string;
 const today = (days = 0) => new Date(Date.now() + days * 86400_000).toISOString().slice(0, 10);
 
 before(async () => {
@@ -162,10 +162,11 @@ t('un reenvío manual conserva sus propios reintentos, sin pisar los de la entre
 });
 
 t('el secreto de webhooks cambia solo, sin tocar el enlace del calendario', async () => {
-  const before = (await h.authed('GET', `/api/settings?account_id=${h.accountId}`)).json();
+  const before = (await h.authed('GET', `/api/settings/secrets?account_id=${h.accountId}`)).json();
   const r = await h.authed('POST', '/api/settings/rotate-webhook-secret', { account_id: h.accountId });
   assert.equal(r.statusCode, 200, r.body);
-  const after = (await h.authed('GET', `/api/settings?account_id=${h.accountId}`)).json();
+  const after = (await h.authed('GET', `/api/settings/secrets?account_id=${h.accountId}`)).json();
+  assert.ok(after.webhook_secret);
   assert.notEqual(after.webhook_secret, before.webhook_secret);
   assert.equal(r.json().webhook_secret, after.webhook_secret);
   assert.equal(after.calendar_token, before.calendar_token);

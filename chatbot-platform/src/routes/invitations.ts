@@ -6,12 +6,15 @@ import crypto from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { HttpError, requireRole, targetAccount } from '../access.js';
-import { hashPassword, rateLimited, setSessionCookie } from '../auth.js';
+import { hashPassword, rateLimited } from '../auth.js';
+import { beginLogin } from '../identity/mfa.js';
 import { hostOf, mailBrand } from '../brands.js';
 import { assertWithinLimit, effectiveLimits, LIMIT_LABELS, limitDetail, offerText, usageOf } from '../billing/limits.js';
 import { config } from '../config.js';
 import { query, queryOne, withTransaction } from '../db.js';
 import { googleConfigured } from '../integrations/google.js';
+import { assertPasswordAllowed, NewPassword } from '../identity/passwords.js';
+import { assertRecentMfa } from '../identity/step-up.js';
 import { logEvent } from '../logs.js';
 import { sendMail } from '../mailer.js';
 import { DISPOSABLE_MESSAGE, isDisposableEmail, readGoogleSignupPass, recordTermsAcceptance, termsVersion } from '../signup-guard.js';
@@ -106,6 +109,8 @@ export async function invitationRoutes(api: FastifyInstance) {
       }),
       req.body,
     );
+    // Invitar a un administrador pide verificación reciente (un agente no).
+    if (b.role === 'admin') assertRecentMfa(req);
     if (rateLimited(`invite:${accountId}`, 30, 24 * HOUR)) return reply.code(429).send({ error: 'Llegaste al máximo de invitaciones por hoy. Intenta mañana.' });
     if (isDisposableEmail(b.email)) throw new HttpError(400, DISPOSABLE_MESSAGE);
     // Cada correo pertenece a una sola cuenta de la plataforma.
@@ -190,13 +195,17 @@ export async function invitationPublicRoutes(app: FastifyInstance) {
         token: z.string().max(200).optional(),
         google: z.string().max(2000).optional(),
         name: z.string().trim().min(1, 'escribe tu nombre').max(120),
-        password: z.string().min(8, 'mínimo 8 caracteres').max(200).optional(),
+        password: NewPassword.optional(),
         accept_terms: z.literal(true, { message: 'Debes aceptar los términos' }),
       }),
       req.body,
     );
     const { inv, google } = await invitationFrom(b);
-    if (!google && !b.password) throw new HttpError(400, 'Elige una contraseña de al menos 8 caracteres');
+    if (!google && !b.password) throw new HttpError(400, 'Elige una contraseña de al menos 12 caracteres');
+    if (!google) {
+      const account = await queryOne<{ name: string }>(`SELECT name FROM accounts WHERE id = $1`, [inv.account_id]);
+      await assertPasswordAllowed(b.password!, { email: inv.email, businessName: account?.name });
+    }
     // Con Google no hay contraseña: puede crear una con «Olvidé mi contraseña».
     const hash = await hashPassword(google ? crypto.randomBytes(24).toString('base64url') : b.password!);
     const user = await withTransaction(async (client) => {
@@ -213,7 +222,7 @@ export async function invitationPublicRoutes(app: FastifyInstance) {
       return created;
     });
     await logEvent({ level: 'info', source: 'admin', message: `${inv.email} se unió al equipo (${ROLE_LABEL[inv.role]})${google ? ' con Google' : ''}`, accountId: inv.account_id, details: { ip: req.ip } });
-    await setSessionCookie(reply, user.id, hash, 'invite');
-    return { ok: true, user };
+    // Antes de entrar al panel configura su verificación en dos pasos.
+    return { ok: true, user, ...(await beginLogin(reply, { ...user, password_hash: hash }, 'invite')) };
   });
 }

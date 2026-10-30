@@ -11,6 +11,9 @@ import type { AiProvider } from './ai/provider.js';
 import { config } from './config.js';
 import { requireAuth } from './auth.js';
 import { adminRoutes, sessionRoutes } from './routes/admin.js';
+import { mfaPublicRoutes, mfaRoutes } from './routes/mfa.js';
+import { originGuard } from './identity/origin-guard.js';
+import { stepUpHook } from './identity/step-up.js';
 import { agendaRoutes, calendarRoutes } from './routes/agenda.js';
 import { automationRoutes } from './routes/automation.js';
 import { flowBoardRoutes } from './routes/flow-boards.js';
@@ -126,6 +129,8 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
   installErrorHandler(app);
   registerSecurityHeaders(app);
   await app.register(cookie);
+  // Con la cookie del panel, lo que cambia algo tiene que venir del mismo sitio (después de leer las cookies).
+  app.addHook('onRequest', originGuard);
   await app.register(multipart);
   await app.register(fastifyStatic, { root: path.resolve(here, '..', 'public'), prefix: '/' });
 
@@ -153,6 +158,7 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
     return reply.type('text/plain; version=0.0.4; charset=utf-8').send(text);
   });
   await sessionRoutes(app);
+  await mfaPublicRoutes(app);
   await signupRoutes(app);
   await invitationPublicRoutes(app);
   await pricingRoutes(app);
@@ -174,6 +180,9 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
   // Todo lo demás requiere sesión; cada ruta verifica además la cuenta y el rol.
   await app.register(async (api) => {
     api.addHook('preHandler', requireAuth);
+    // Las acciones delicadas piden el código otra vez si el último tiene más de 15 minutos.
+    api.addHook('preHandler', stepUpHook);
+    await mfaRoutes(api);
     await adminRoutes(api, service);
     await chatbotRoutes(api, service);
     await channelRoutes(api);

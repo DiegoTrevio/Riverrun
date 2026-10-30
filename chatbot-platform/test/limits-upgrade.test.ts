@@ -13,11 +13,11 @@ const as = (cookie: string) => (method: string, url: string, payload?: unknown) 
 let ip = 0;
 /** Cuenta activa con el plan `plan`. */
 async function account(email: string, plan: string) {
-  const r = await h.app.inject({ method: 'POST', url: '/api/signup', remoteAddress: `10.7.8.${++ip}`, payload: { name: 'Dueño', company: `Negocio ${email}`, business_type: 'otro', email, password: 'clave-segura-1', accept_terms: true } });
+  const r = await h.app.inject({ method: 'POST', url: '/api/signup', remoteAddress: `10.7.8.${++ip}`, payload: { name: 'Dueño', company: `Negocio ${email}`, business_type: 'otro', email, password: 'Pz-144-Qx-344-Kv', accept_terms: true } });
   assert.equal(r.statusCode, 200, r.body);
   const id = r.json().user.account_id as string;
   await pool.query(`UPDATE accounts SET status = 'active', plan = $2, trial_ends_at = NULL WHERE id = $1`, [id, plan]);
-  return { api: as(String(r.headers['set-cookie']).split(';')[0]), id };
+  return { api: as(await h.sessionFrom(r)), id };
 }
 
 before(async () => {
@@ -40,7 +40,7 @@ after(async () => {
 
 t('al topar un límite, la respuesta dice qué se topó y el plan más barato del mismo periodo en el que cabe todo', async () => {
   const a = await account('canales@subir.mx', 'basico');
-  assert.equal((await a.api('POST', '/api/users', { email: 'agente@subir.mx', password: 'clave-agente-1', role: 'agent' })).statusCode, 200);
+  assert.equal((await a.api('POST', '/api/users', { email: 'agente@subir.mx', password: 'Pz-101-Qx-301-Kv', role: 'agent' })).statusCode, 200);
   assert.equal((await a.api('POST', '/api/channels', { type: 'webchat', name: 'Web' })).statusCode, 200);
   const r = await a.api('POST', '/api/channels', { type: 'webchat', name: 'Otra web' });
   assert.equal(r.statusCode, 403);

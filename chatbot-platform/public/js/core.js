@@ -20,6 +20,16 @@ const pendingReads = new Map();
 let readVersion = 0;
 export function invalidateReads() { reads.clear(); pendingReads.clear(); readVersion++; }
 
+/**
+ * Lo que el panel consulta solo (la campana, refrescar una pantalla) va marcado: no cuenta como uso para cerrar la
+ * sesión por inactividad, así un panel abierto sin nadie enfrente igual se cierra.
+ */
+let background = 0;
+export async function inBackground(fn) {
+  background++;
+  try { return await fn(); } finally { background--; }
+}
+
 export async function api(method, url, body, isForm = false) {
   // Solo catálogos breves; sesión, permisos y conversaciones siempre se verifican.
   const cacheable = method === 'GET' && /^\/api\/(meta$|channels(?:\?|$))/.test(url);
@@ -29,7 +39,7 @@ export async function api(method, url, body, isForm = false) {
   if (cacheable && pendingReads.has(key)) return clone(await pendingReads.get(key));
   if (method !== 'GET') invalidateReads();
   const version = readVersion;
-  const request = requestApi(method, url, body, isForm);
+  const request = requestApi(method, url, body, isForm, false, background > 0);
   if (cacheable) pendingReads.set(key, request);
   try {
     const data = await request;
@@ -38,10 +48,10 @@ export async function api(method, url, body, isForm = false) {
   } finally { if (pendingReads.get(key) === request) pendingReads.delete(key); }
 }
 
-async function requestApi(method, url, body, isForm) {
+async function requestApi(method, url, body, isForm, retried = false, quiet = false) {
   const start = performance.now();
   const group = new URL(url, location.origin).pathname.split('/')[2] || 'other';
-  const opts = { method, headers: {} };
+  const opts = { method, headers: quiet ? { 'x-panel-background': '1' } : {} };
   if (body !== undefined) {
     if (isForm) opts.body = body;
     else {
@@ -55,7 +65,20 @@ async function requestApi(method, url, body, isForm) {
   let data = null;
   try { data = await res.json(); } catch { /* vacío */ }
   recordUX(`${method}:${group}`, performance.now() - start, res.ok ? 'ok' : `http_${res.status}`);
-  if (res.status === 401 && !url.endsWith('/login')) { location.hash = '#/login'; throw new Error('Sesión expirada'); }
+  if (res.status === 401 && !url.endsWith('/login')) {
+    // El motivo (p. ej. «Tu sesión se cerró por inactividad») se muestra en la pantalla de entrar.
+    if (['session_idle', 'challenge_expired'].includes(data?.code)) { try { sessionStorage.setItem('login-notice', data.error); } catch { /* sin storage */ } }
+    location.hash = '#/login';
+    throw new Error('Sesión expirada');
+  }
+  // Acción delicada sin verificación reciente: pide el código y la repite una vez.
+  if (res.status === 403 && data?.code === 'step_up' && !retried) {
+    const { stepUpDialog } = await import('./mfa.js');
+    if (await stepUpDialog()) return requestApi(method, url, body, isForm, true);
+    const error = new Error('Necesitas confirmar con tu código para hacer esto');
+    error.status = 403;
+    throw error;
+  }
   if (!res.ok) {
     // Un límite del plan no es un error de los datos: el mensaje ya dice qué pasó y a qué plan subir.
     const limited = data?.issues?.includes('limit_reached');
@@ -376,7 +399,7 @@ export function poll(fn, ms, root) {
     if (nav !== state.navigation || (root && !root.isConnected)) { clearInterval(timer); return; }
     if (document.hidden || busy || Date.now() < next) return;
     busy = true;
-    try { await fn(); failures = 0; }
+    try { await inBackground(fn); failures = 0; }
     catch { failures++; }
     finally { busy = false; next = Date.now() + Math.min(ms * 2 ** failures, 60000); }
   };

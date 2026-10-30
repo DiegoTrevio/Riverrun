@@ -56,11 +56,11 @@ before(async () => {
   h = await createHarness();
   await h.createBot();
   h.setScript(() => ({ messages: ['Con gusto.'] }));
-  assert.equal((await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'duena@copiloto.mx', name: 'Dueña', password: 'clave-duena-123', role: 'admin' })).statusCode, 200);
-  const a = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'agente@copiloto.mx', name: 'Luis', password: 'clave-agente-123', role: 'agent' });
+  assert.equal((await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'duena@copiloto.mx', name: 'Dueña', password: 'Pz-117-Qx-317-Kv', role: 'admin' })).statusCode, 200);
+  const a = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'agente@copiloto.mx', name: 'Luis', password: 'Pz-102-Qx-302-Kv', role: 'agent' });
   agentId = a.json().id;
-  owner = await h.loginAs('duena@copiloto.mx', 'clave-duena-123');
-  agent = await h.loginAs('agente@copiloto.mx', 'clave-agente-123');
+  owner = await h.loginAs('duena@copiloto.mx', 'Pz-117-Qx-317-Kv');
+  agent = await h.loginAs('agente@copiloto.mx', 'Pz-102-Qx-302-Kv');
   ana = await conversationWith('5215511110001');
   await owner('PUT', `/api/contacts/${ana.contact_id}`, { name: 'Ana López' });
   beto = await conversationWith('5215511110002');

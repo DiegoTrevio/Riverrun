@@ -35,14 +35,14 @@ before(async () => {
   h.setScript(() => ({ messages: ['Hola'] }));
   for (const n of ['ana', 'beto', 'carla']) {
     const email = `${n}@equipo.mx`;
-    const r = await h.authed('POST', '/api/users', { account_id: h.accountId, email, name: n, password: 'clave-equipo-1', role: 'agent' });
+    const r = await h.authed('POST', '/api/users', { account_id: h.accountId, email, name: n, password: 'Pz-123-Qx-323-Kv', role: 'agent' });
     assert.equal(r.statusCode, 200, r.body);
-    team.push({ id: r.json().id, email, api: await h.loginAs(email, 'clave-equipo-1') });
+    team.push({ id: r.json().id, email, api: await h.loginAs(email, 'Pz-123-Qx-323-Kv') });
   }
-  const owner = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'dueno@equipo.mx', name: 'Dueño', password: 'clave-equipo-1', role: 'admin' });
+  const owner = await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'dueno@equipo.mx', name: 'Dueño', password: 'Pz-123-Qx-323-Kv', role: 'admin' });
   assert.equal(owner.statusCode, 200, owner.body);
   ownerId = owner.json().id;
-  ownerApi = await h.loginAs('dueno@equipo.mx', 'clave-equipo-1');
+  ownerApi = await h.loginAs('dueno@equipo.mx', 'Pz-123-Qx-323-Kv');
   const rule = await h.authed('POST', '/api/automations', { account_id: h.accountId, name: 'Quiere una persona', trigger: { type: 'message_received', match: 'keywords', keywords: ['humano'] }, actions: [{ type: 'handoff', reason: 'Lo pidió el cliente' }] });
   assert.equal(rule.statusCode, 200, rule.body);
 });
@@ -173,7 +173,7 @@ t('asignación manual: permisos, validaciones y filtros de la lista', async () =
   // Ana ya no es la dueña: ni la ve, así que no puede soltarla
   assert.equal((await ana.api('PUT', `/api/conversations/${c.id}/assign`, { user_id: null })).statusCode, 404);
   // Una persona de otra cuenta no es válida
-  const other = await h.authed('POST', '/api/accounts', { name: 'Otra', admin: { name: 'Otra', email: 'otra@otra.mx', password: 'clave-segura-1' } });
+  const other = await h.authed('POST', '/api/accounts', { name: 'Otra', admin: { name: 'Otra', email: 'otra@otra.mx', password: 'Pz-144-Qx-344-Kv' } });
   const foreign = (await pool.query(`SELECT id FROM users WHERE email = 'otra@otra.mx'`)).rows[0].id;
   assert.equal((await h.authed('PUT', `/api/conversations/${c.id}/assign`, { user_id: foreign })).statusCode, 400);
   void other;

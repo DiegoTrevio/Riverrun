@@ -729,6 +729,7 @@ async function editSettings(root) {
   const s = draftModel('settings', await api('GET', withAcct('/api/settings')), false);
   root.append(draftNotice(['settings'], render));
   const team = (await api('GET', withAcct('/api/users')).catch(() => [])).filter((u) => u.account_id && u.active);
+  const secretsBox = h('div', {}, h('p', { class: 'muted small' }, 'La URL del calendario y la clave de los webhooks están ocultas.'));
   const copy = (v) => h('button', { class: 'small', onclick: async () => { try { await navigator.clipboard.writeText(v); toast('Copiado'); } catch { toast('No se pudo copiar', true); } } }, 'Copiar');
   root.append(
     settingsSection('Horario del negocio', 'Por día: 09:00-14:00, 16:00-19:00 (vacío = cerrado). Lo usan el asistente, la agenda, los flujos y las campañas.',
@@ -797,13 +798,18 @@ async function editSettings(root) {
       } }, 'Enviar alerta de prueba (con lo guardado)')),
     settingsSection('Integraciones', null,
       h('p', {}, 'Calendario de citas para Google Calendar / Outlook / Apple (suscribirse por URL):'),
-      h('p', {}, h('code', {}, s.ics_url), ' ', copy(s.ics_url)),
-      h('p', {}, 'Clave para verificar los webhooks salientes (cabecera ', h('code', {}, 'X-Signature: sha256=HMAC'), '):'),
-      h('p', {}, h('code', {}, s.webhook_secret), ' ', copy(s.webhook_secret)),
+      // Los secretos no vienen con los ajustes: «Mostrar» los pide (con verificación reciente).
+      secretsBox,
+      h('button', { class: 'small', onclick: async () => {
+        const r = await run(() => api('GET', withAcct('/api/settings/secrets')));
+        if (r) fill(secretsBox, h('p', {}, h('code', {}, r.ics_url), ' ', copy(r.ics_url)),
+          h('p', {}, 'Clave para verificar los webhooks salientes (cabecera ', h('code', {}, 'X-Signature: sha256=HMAC'), '):'),
+          h('p', {}, h('code', {}, r.webhook_secret), ' ', copy(r.webhook_secret)));
+      } }, 'Mostrar la URL y la clave'),
       h('button', { class: 'small', onclick: async () => { if (await confirmAction('Se generarán nuevas URL y claves; las anteriores dejarán de funcionar.')) { if (!(await run(() => api('POST', withAcct('/api/settings/rotate-secrets')), 'Claves regeneradas'))) return; render(); } } }, 'Regenerar URL y claves')),
     saveBar(async () => {
-      const { ics_url, ...body } = s;
-      void ics_url;
+      const { ics_url, secrets_hidden, ...body } = s;
+      void ics_url; void secrets_hidden;
       const version = draftVersion('settings');
       if (await run(() => api('PUT', withAcct('/api/settings'), body), 'Guardado')) { discardDraft('settings', version); render(); }
     }),

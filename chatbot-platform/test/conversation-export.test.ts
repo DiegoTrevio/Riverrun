@@ -74,7 +74,7 @@ t('una marca del equipo (etiqueta) envía la conversación completa a la app, fi
   assert.equal(put.statusCode, 200, put.body);
   await until(() => sentTo('/crm').length >= 1);
   const [got] = sentTo('/crm');
-  const secret = (await h.authed('GET', `/api/settings?account_id=${h.accountId}`)).json().webhook_secret;
+  const secret = (await h.authed('GET', `/api/settings/secrets?account_id=${h.accountId}`)).json().webhook_secret;
   assert.equal(got.headers['x-signature'], `sha256=${crypto.createHmac('sha256', secret).update(got.raw).digest('hex')}`);
   assert.equal(got.headers['x-riverrun-event'], 'conversation.sent');
   const d = got.body.data;
@@ -141,8 +141,8 @@ t('a mano desde el panel; un operador solo envía las conversaciones que ve', as
   assert.match(d.reason, /desde el panel/);
   assert.equal(d.trigger.event, 'manual');
 
-  await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'operador@clinica.mx', name: 'Operador', password: 'clave-operador-1', role: 'agent' });
-  const agent = await h.loginAs('operador@clinica.mx', 'clave-operador-1');
+  await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'operador@clinica.mx', name: 'Operador', password: 'Pz-135-Qx-335-Kv', role: 'agent' });
+  const agent = await h.loginAs('operador@clinica.mx', 'Pz-135-Qx-335-Kv');
   assert.equal((await agent('POST', `/api/conversations/${conv.id}/send-to-app`, { content: 'summary' })).statusCode, 404, 'no la tiene asignada');
 });
 

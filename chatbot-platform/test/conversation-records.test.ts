@@ -131,8 +131,8 @@ t('la base de datos rechaza mezclar cuentas/canales/contactos y conserva datos e
   await assert.rejects(pool.query("UPDATE contacts SET data = '[]' WHERE id = $1", [conv.contact_id]), (e: any) => e.code === '23514');
   await assert.rejects(pool.query("UPDATE contacts SET data = '{\"cantidad\":4}' WHERE id = $1", [conv.contact_id]), (e: any) => e.code === '23514');
   await assert.rejects(pool.query("UPDATE contacts SET notes = '[{}]' WHERE id = $1", [conv.contact_id]), (e: any) => e.code === '23514');
-  const outsider = (await h.authed('POST', '/api/users', { email: 'otro@resumen.test', password: 'clave-segura-123', role: 'admin', account_id: other.id })).json();
-  const api = await h.loginAs(outsider.email, 'clave-segura-123');
+  const outsider = (await h.authed('POST', '/api/users', { email: 'otro@resumen.test', password: 'Pz-145-Qx-345-Kv', role: 'admin', account_id: other.id })).json();
+  const api = await h.loginAs(outsider.email, 'Pz-145-Qx-345-Kv');
   assert.equal((await api('POST', `/api/conversations/${conv.id}/summary`)).statusCode, 404);
   assert.equal((await store.getConversation(conv.id))!.account_id, h.accountId);
 });

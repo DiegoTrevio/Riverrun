@@ -56,11 +56,11 @@ t('la marca se resuelve por dominio y el logo se sirve con tipo seguro', async (
 });
 
 t('quien se registra desde el dominio de la marca queda con ella, y sus correos salen con su nombre y su dirección', async () => {
-  const r = await h.app.inject({ method: 'POST', url: '/api/signup', remoteAddress: `10.9.9.${++ip}`, headers: { host: 'panel.miagencia.com' }, payload: { name: 'Cliente', company: 'Tienda Uno', business_type: 'otro', email: 'uno@tienda.mx', password: 'clave-segura-1', accept_terms: true } });
+  const r = await h.app.inject({ method: 'POST', url: '/api/signup', remoteAddress: `10.9.9.${++ip}`, headers: { host: 'panel.miagencia.com' }, payload: { name: 'Cliente', company: 'Tienda Uno', business_type: 'otro', email: 'uno@tienda.mx', password: 'Pz-144-Qx-344-Kv', accept_terms: true } });
   assert.equal(r.statusCode, 200, r.body);
   const accountId = r.json().account.id;
   assert.equal((await pool.query(`SELECT brand_id FROM accounts WHERE id = $1`, [accountId])).rows[0].brand_id, brandId);
-  const cookie = String(r.headers['set-cookie']).split(';')[0];
+  const cookie = await h.sessionFrom(r);
   const me = (await h.app.inject({ method: 'GET', url: '/api/brand/mine', headers: { cookie } })).json();
   assert.equal(me.name, 'Mi Agencia');
   // El correo de verificación lleva el nombre y el dominio de la marca
@@ -69,8 +69,8 @@ t('quien se registra desde el dominio de la marca queda con ella, y sus correos 
   assert.equal(mail!.fromName, 'Mi Agencia');
   assert.match(mail!.text, /https:\/\/panel\.miagencia\.com\/#\/verificar\?token=/);
   // Una cuenta sin marca usa la de la plataforma
-  const plain = await h.app.inject({ method: 'POST', url: '/api/signup', remoteAddress: `10.9.9.${++ip}`, payload: { name: 'Otro', company: 'Tienda Dos', business_type: 'otro', email: 'dos@tienda.mx', password: 'clave-segura-1', accept_terms: true } });
-  const c2 = String(plain.headers['set-cookie']).split(';')[0];
+  const plain = await h.app.inject({ method: 'POST', url: '/api/signup', remoteAddress: `10.9.9.${++ip}`, payload: { name: 'Otro', company: 'Tienda Dos', business_type: 'otro', email: 'dos@tienda.mx', password: 'Pz-144-Qx-344-Kv', accept_terms: true } });
+  const c2 = await h.sessionFrom(plain);
   assert.equal((await h.app.inject({ method: 'GET', url: '/api/brand/mine', headers: { cookie: c2 } })).json().name, 'Panel de Chatbots');
   assert.equal(outbox.find((m) => m.to === 'dos@tienda.mx')!.fromName, undefined);
   // Un admin de cuenta no administra marcas
