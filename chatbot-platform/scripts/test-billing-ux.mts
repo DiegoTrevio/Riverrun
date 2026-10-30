@@ -360,6 +360,9 @@ try {
   const confirm = page.locator('dialog[open]').getByRole('button', { name: /^(Continuar|Confirmar|Subir)/ });
   if (await confirm.count()) await confirm.first().click();
   await waitFor(() => fake.stripe.requests.length > stripeCalls, 5000);
+  // Se espera lo que promete el botón (la página de pago de Stripe o «Listo: ahora tienes el plan …»): si su respuesta
+  // llegara después, cambiaría de página encima de lo que sigue.
+  await Promise.race([page.waitForURL(/stripe\.test/, { timeout: 10000 }), page.getByText(/^Listo: ahora tienes el plan/).first().waitFor({ timeout: 10000 })]);
   await page.unrouteAll({ behavior: 'wait' });
   checks.push('Topar el límite de usuarios: «Subir a …» lleva a Mi plan con el plan sugerido elegido (accesible en móvil)');
 
