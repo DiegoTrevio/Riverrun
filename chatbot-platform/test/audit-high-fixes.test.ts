@@ -8,7 +8,7 @@ const t = (name: string, fn: () => Promise<void>) => test(name, { skip: !ok && '
 let h: Awaited<ReturnType<typeof createHarness>>;
 let agent: Awaited<ReturnType<typeof h.loginAs>>;
 let serviceId = '';
-const PASS = 'clave-auditoria-1';
+const PASS = 'Pz-913-Qx-914-Kv';
 
 before(async () => {
   if (!ok) return;

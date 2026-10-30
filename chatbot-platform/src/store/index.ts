@@ -152,16 +152,24 @@ export async function createUserSession(s: { userId: string; expires: Date; via:
   return row;
 }
 
-/** ¿Sigue abierta? Anota el uso como mucho cada 5 minutos (no se escribe en cada petición). */
-export async function touchUserSession(id: string, userId: string): Promise<boolean> {
-  if (!/^[0-9a-f-]{36}$/i.test(id)) return false;
-  const row = await queryOne<{ stale: boolean }>(
-    `SELECT last_seen_at < now() - interval '5 minutes' AS stale FROM user_sessions WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL AND expires_at > now()`,
-    [id, userId],
+/**
+ * ¿Sigue abierta? `idle` si pasó más de `idleMs` sin usarla (y entonces se cierra). Anota el uso como mucho una vez por
+ * minuto (no se escribe en cada petición).
+ */
+export async function touchUserSession(id: string, userId: string, idleMs: number): Promise<{ state: 'ok'; mfaAt: Date | null } | { state: 'idle' | 'gone' }> {
+  if (!/^[0-9a-f-]{36}$/i.test(id)) return { state: 'gone' };
+  const row = await queryOne<{ stale: boolean; idle: boolean; mfa_at: Date | null }>(
+    `SELECT last_seen_at < now() - interval '1 minute' AS stale, last_seen_at <= now() - make_interval(secs => $3) AS idle, mfa_at
+       FROM user_sessions WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL AND expires_at > now()`,
+    [id, userId, idleMs / 1000],
   );
-  if (!row) return false;
+  if (!row) return { state: 'gone' };
+  if (row.idle) {
+    await query(`UPDATE user_sessions SET revoked_at = now() WHERE id = $1`, [id]);
+    return { state: 'idle' };
+  }
   if (row.stale) await query(`UPDATE user_sessions SET last_seen_at = now() WHERE id = $1`, [id]);
-  return true;
+  return { state: 'ok', mfaAt: row.mfa_at };
 }
 
 export async function listUserSessions(userId: string) {

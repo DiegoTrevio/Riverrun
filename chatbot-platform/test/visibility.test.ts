@@ -17,7 +17,7 @@ let theirs: { id: string; contact_id: string };
 let free: { id: string; contact_id: string };
 let serviceId = '';
 
-const PASS = 'clave-visible-1';
+const PASS = 'Pz-917-Qx-918-Kv';
 async function newUser(name: string, role: 'agent' | 'admin') {
   const email = `${name}@visibilidad.test`;
   const r = await h.authed('POST', '/api/users', { account_id: h.accountId, email, name, password: PASS, role });

@@ -265,7 +265,6 @@ function sessionsCard() {
             const r = await run(() => api('DELETE', `/api/me/sessions/${s.id}`), 'Sesión cerrada');
             if (r?.current) location.reload(); else if (r) draw();
           } }, 'Cerrar')))))) : h('p', { class: 'muted' }, 'No hay sesiones registradas.'),
-      d.legacy ? h('p', { class: 'small muted' }, 'Esta sesión es anterior al registro de sesiones: no aparece aquí y vence sola. Para verla, sal y vuelve a entrar.') : null,
       others.length ? h('button', { class: 'danger', onclick: async () => {
         if (!(await dialog('Cerrar las demás sesiones', h('p', {}, `Se cerrarán ${others.length} ${others.length === 1 ? 'sesión' : 'sesiones'} en otros dispositivos. Esta sigue abierta.`), 'Cerrar las demás'))) return;
         if (await run(() => api('POST', '/api/me/sessions/revoke-others'), 'Sesiones cerradas')) draw();

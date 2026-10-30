@@ -116,8 +116,6 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
   // Solo una parte de la IP: suficiente para reconocerla, sin mostrarla completa.
   const partialIp = (ip: string) => (ip.includes(':') ? `${ip.split(':').slice(0, 3).join(':')}:…` : ip.split('.').slice(0, 2).join('.') + (ip.includes('.') ? '.…' : ''));
   api.get('/api/me/sessions', async (req: any) => ({
-    // Una sesión de antes de registrar sesiones no aparece en la lista (vence sola en máximo 7 días).
-    legacy: !req.sessionId,
     sessions: (await store.listUserSessions(req.user.id)).map((s) => ({
       id: s.id, device: browserOf(s.user_agent), ip: partialIp(s.ip), via: s.via, created_at: s.created_at, last_seen_at: s.last_seen_at, current: s.id === req.sessionId,
     })),

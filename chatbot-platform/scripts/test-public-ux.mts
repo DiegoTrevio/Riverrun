@@ -21,7 +21,7 @@ const { unsubscribeSig } = await import('../src/onboarding-checklist.js');
 try {
   await h.createBot({ name: 'Recepción', personality: { prompt: 'Saluda y ayuda.' }, data_fields: [] });
   // Reservar: una llamada con una persona a elegir, para recorrer persona → día y hora → datos → listo.
-  const ana = (await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'ana@publico.test', password: 'secreto123', name: 'Ana', role: 'agent' })).json();
+  const ana = (await h.authed('POST', '/api/users', { account_id: h.accountId, email: 'ana@publico.test', password: 'Pz-921-Qx-922-Kv', name: 'Ana', role: 'agent' })).json();
   const svc = (await h.authed('POST', '/api/services', { account_id: h.accountId, name: 'Llamada de diagnóstico', kind: 'call', duration_minutes: 30, min_notice_minutes: 0, max_days_ahead: 14, assigned_user_ids: [ana.id], customer_choice: true })).json();
   const link = (await h.authed('POST', '/api/booking-links', { account_id: h.accountId, name: 'Agenda una llamada', service_ids: [svc.id] })).json();
   // Widget: un canal de chat web con un color de marca pálido (el contraste se corrige solo).

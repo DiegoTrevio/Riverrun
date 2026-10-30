@@ -7,10 +7,8 @@ import { HttpError } from './access.js';
 import { assertPasswordAllowed } from './identity/passwords.js';
 import { hmac, safeEqual } from './secret.js';
 import * as store from './store/index.js';
-import type { User } from './types.js';
+import type { Role, User } from './types.js';
 
-const COOKIE = 'cp_session';
-const TTL_MS = 7 * 24 * 3600 * 1000;
 
 /* ------------------------------ Contraseñas ------------------------------ */
 
@@ -81,23 +79,40 @@ export function needsRehash(stored: string): boolean {
 
 /* ------------------------------ Sesiones ------------------------------ */
 
-/** Huella de la contraseña: al cambiarla, las sesiones anteriores dejan de valer. */
-const passwordVersion = (passwordHash: string) => hmac(`pv:${passwordHash}`).slice(0, 16);
+const MIN = 60_000;
+const HOUR = 60 * MIN;
 
-/** `sid`: la sesión registrada en `user_sessions` (las cookies de antes no lo traen y valen hasta vencer). */
-export function createSession(userId: string, passwordHash: string, sid?: string, exp = Date.now() + TTL_MS) {
-  const payload = Buffer.from(JSON.stringify({ uid: userId, pv: passwordVersion(passwordHash), exp, ...(sid ? { sid } : {}) })).toString('base64url');
-  return `${payload}.${hmac(payload)}`;
+/**
+ * Nombre de una cookie del panel. Con HTTPS lleva el prefijo `__Host-`: el navegador exige Secure, Path=/ y ningún
+ * dominio, así otra página del mismo dominio (o un subdominio) no puede ponerla ni pisarla.
+ */
+export function cookieName(base: 'cp_session' | 'cp_mfa' | 'cp_trust' | 'cp_device', secure = config.secureCookies): string {
+  return secure ? `__Host-${base}` : base;
 }
 
-export function readSession(token: string | undefined): { uid: string; pv: string; sid?: string } | null {
+/** Cuánto dura una sesión: se cierra tras `idleMs` sin usar el panel y, aunque se use, a los `maxMs`. */
+export function sessionLimits(role: Role): { idleMs: number; maxMs: number } {
+  return role === 'superadmin' ? { idleMs: 30 * MIN, maxMs: 12 * HOUR } : { idleMs: 12 * HOUR, maxMs: 7 * 24 * HOUR };
+}
+
+/** Huella de la contraseña: al cambiarla, las sesiones anteriores dejan de valer. */
+export const passwordVersion = (passwordHash: string) => hmac(`pv:${passwordHash}`).slice(0, 16);
+
+/** `sid`: la sesión registrada en `user_sessions`. La firma lleva su prefijo, como el resto de los HMAC. */
+export function createSession(userId: string, passwordHash: string, sid: string, exp: number) {
+  const payload = Buffer.from(JSON.stringify({ uid: userId, pv: passwordVersion(passwordHash), exp, sid })).toString('base64url');
+  return `${payload}.${hmac(`session:${payload}`)}`;
+}
+
+/** Una cookie sin `sid` (de antes de registrar sesiones) no se acepta: no se podría cerrar desde el servidor. */
+export function readSession(token: string | undefined): { uid: string; pv: string; sid: string } | null {
   if (!token) return null;
   const [payload, sig] = token.split('.');
-  if (!payload || !sig || !safeEqual(sig, hmac(payload))) return null;
+  if (!payload || !sig || !safeEqual(sig, hmac(`session:${payload}`))) return null;
   try {
     const data = JSON.parse(Buffer.from(payload, 'base64url').toString());
-    if (!(data.exp > Date.now() && typeof data.uid === 'string' && typeof data.pv === 'string')) return null;
-    return { uid: data.uid, pv: data.pv, ...(typeof data.sid === 'string' ? { sid: data.sid } : {}) };
+    if (!(data.exp > Date.now() && typeof data.uid === 'string' && typeof data.pv === 'string' && typeof data.sid === 'string')) return null;
+    return { uid: data.uid, pv: data.pv, sid: data.sid };
   } catch {
     return null;
   }
@@ -108,37 +123,45 @@ export type SessionVia = 'password' | 'google' | 'invite' | 'signup' | 'password
 /** Inicia una sesión: queda registrada (se puede cerrar desde Mi perfil o al cerrar sesión) y se pone la cookie. */
 export async function setSessionCookie(reply: FastifyReply, userId: string, passwordHash: string, via: SessionVia = 'password') {
   const req = reply.request;
-  const expires = new Date(Date.now() + TTL_MS);
+  const role = (await store.getUser(userId))?.role ?? 'agent';
+  const { maxMs } = sessionLimits(role);
+  const expires = new Date(Date.now() + maxMs);
   const sid = (await store.createUserSession({ userId, expires, via, userAgent: String(req?.headers?.['user-agent'] ?? '').slice(0, 300), ip: String(req?.ip ?? '').slice(0, 64) })).id;
-  reply.setCookie(COOKIE, createSession(userId, passwordHash, sid, expires.getTime()), { httpOnly: true, sameSite: 'strict', secure: config.secureCookies, path: '/', maxAge: TTL_MS / 1000 });
+  reply.setCookie(cookieName('cp_session'), createSession(userId, passwordHash, sid, expires.getTime()), { httpOnly: true, sameSite: 'strict', secure: config.secureCookies, path: '/', maxAge: maxMs / 1000 });
   return sid;
 }
 
 export function clearSessionCookie(reply: FastifyReply) {
-  reply.clearCookie(COOKIE, { path: '/' });
+  reply.clearCookie(cookieName('cp_session'), { path: '/' });
 }
 
 /** La sesión de esta petición (para cerrarla al salir). */
-export const currentSession = (req: FastifyRequest) => readSession(req.cookies?.[COOKIE]);
+export const currentSession = (req: FastifyRequest) => readSession(req.cookies?.[cookieName('cp_session')]);
 
 /** Autenticación del panel: carga el usuario en cada petición (si se desactiva, pierde acceso al instante). */
 export async function requireAuth(req: FastifyRequest, reply: FastifyReply) {
-  const session = readSession(req.cookies?.[COOKIE]);
+  const session = currentSession(req);
   const row = session ? await store.getSessionUser(session.uid) : null;
   if (!row || !safeEqual(passwordVersion(row.password_hash), session!.pv)) return reply.code(401).send({ error: 'No autenticado' });
-  // Una sesión registrada debe seguir abierta: cerrar sesión (aquí o desde otro dispositivo) la invalida al momento.
-  if (session!.sid && !(await store.touchUserSession(session!.sid, row.id))) return reply.code(401).send({ error: 'No autenticado' });
+  // La sesión debe seguir abierta: cerrar sesión (aquí o desde otro dispositivo) la invalida al momento, y se cierra sola
+  // tras el tiempo sin uso de su rol.
+  const state = await store.touchUserSession(session!.sid, row.id, sessionLimits(row.role).idleMs);
+  if (state.state === 'idle') return reply.code(401).send({ error: 'Tu sesión se cerró por inactividad', code: 'session_idle' });
+  if (state.state !== 'ok') return reply.code(401).send({ error: 'No autenticado' });
   const { password_hash, ...user } = row;
   void password_hash;
   req.user = user;
-  req.sessionId = session!.sid ?? null;
+  req.sessionId = session!.sid;
+  req.mfaAt = state.mfaAt;
 }
 
 declare module 'fastify' {
   interface FastifyRequest {
     user: User;
-    /** Sesión registrada de la petición (null en las cookies de antes de registrar sesiones). */
+    /** Sesión registrada de la petición. */
     sessionId: string | null;
+    /** Cuándo escribió el código de verificación por última vez en esta sesión (null: entró con dispositivo recordado). */
+    mfaAt: Date | null;
   }
 }
 

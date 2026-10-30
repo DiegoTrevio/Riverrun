@@ -7,7 +7,7 @@ const ok = await dbAvailable();
 const t = (name: string, fn: () => Promise<void>) => test(name, { skip: !ok && 'PostgreSQL de pruebas no disponible' }, fn);
 let h: Awaited<ReturnType<typeof createHarness>>;
 type Req = Awaited<ReturnType<typeof h.loginAs>>;
-const PASS = 'clave-tareas-1';
+const PASS = 'Pz-911-Qx-912-Kv';
 let adminId = '';
 let luisId = '';
 let luis: Req;

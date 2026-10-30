@@ -55,7 +55,12 @@ async function requestApi(method, url, body, isForm) {
   let data = null;
   try { data = await res.json(); } catch { /* vacío */ }
   recordUX(`${method}:${group}`, performance.now() - start, res.ok ? 'ok' : `http_${res.status}`);
-  if (res.status === 401 && !url.endsWith('/login')) { location.hash = '#/login'; throw new Error('Sesión expirada'); }
+  if (res.status === 401 && !url.endsWith('/login')) {
+    // El motivo (p. ej. «Tu sesión se cerró por inactividad») se muestra en la pantalla de entrar.
+    if (data?.code === 'session_idle') { try { sessionStorage.setItem('login-notice', data.error); } catch { /* sin storage */ } }
+    location.hash = '#/login';
+    throw new Error('Sesión expirada');
+  }
   if (!res.ok) {
     // Un límite del plan no es un error de los datos: el mensaje ya dice qué pasó y a qué plan subir.
     const limited = data?.issues?.includes('limit_reached');

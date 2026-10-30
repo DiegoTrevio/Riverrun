@@ -17,6 +17,9 @@ const GOOGLE_MSG = {
 export function renderLogin() {
   const flash = new URLSearchParams((location.hash.split('?')[1] || '')).get('google');
   if (flash && GOOGLE_MSG[flash]) setTimeout(() => toast(GOOGLE_MSG[flash], true), 0);
+  let notice = null;
+  try { notice = sessionStorage.getItem('login-notice'); sessionStorage.removeItem('login-notice'); } catch { /* sin storage */ }
+  if (notice) setTimeout(() => toast(notice), 0);
   const f = { email: '', password: '' };
   const signupLink = h('p', { class: 'small', style: 'margin-bottom:0' });
   const googleSlot = h('div', {});
