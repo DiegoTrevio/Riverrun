@@ -12,7 +12,7 @@ import { notifySuperadmins } from '../lifecycle.js';
 import { logEvent } from '../logs.js';
 import { hmac, safeEqual } from '../secret.js';
 import * as store from '../store/index.js';
-import { newAccountState } from './signup.js';
+import { newAccountState, assertSignupAttempt, reserveSignup } from './signup.js';
 import { z } from 'zod';
 import { HttpError } from '../access.js';
 import { BUSINESS_TYPES } from '../templates/business.js';
@@ -127,7 +127,7 @@ export async function googleLoginRoutes(app: FastifyInstance) {
   /** Crea la cuenta de quien entró por primera vez con Google, ya con los términos aceptados. */
   app.post('/api/signup/google', async (req, reply) => {
     if (!config.signup.enabled) throw new HttpError(404, 'El registro está cerrado');
-    if (rateLimited(`signup:${req.ip}`, 5, HOUR)) return reply.code(429).send({ error: 'Demasiados registros desde esta conexión, intenta más tarde' });
+    await assertSignupAttempt(req.ip);
     const b = parse(
       z.object({
         token: z.string().max(2000),
@@ -146,6 +146,7 @@ export async function googleLoginRoutes(app: FastifyInstance) {
     const businessType = BUSINESS_TYPES.some((t) => t.key === b.business_type) ? b.business_type : 'otro';
     const hash = await hashPassword(crypto.randomBytes(24).toString('base64url')); // sin contraseña: puede crear una con "Olvidé mi contraseña"
     const brand = await brandByDomain(hostOf(req));
+    const release = await reserveSignup(req.ip);
     const { account, created } = await withTransaction(async (client) => {
       const account = await store.createAccount(b.company, { ...newAccountState(), businessType, source: 'signup' }, client);
       const created = await store.createUser({ account_id: account.id, role: 'admin', name: name || email.split('@')[0], email, password_hash: hash, verified: true }, client);
@@ -153,6 +154,9 @@ export async function googleLoginRoutes(app: FastifyInstance) {
       await client.query(`UPDATE accounts SET owner_user_id = $2, brand_id = $3 WHERE id = $1`, [account.id, created.id, brand?.id ?? null]);
       await recordTermsAcceptance(client, { userId: created.id, accountId: account.id, email, ip: req.ip, userAgent: String(req.headers['user-agent'] ?? ''), source: 'google' });
       return { account, created };
+    }).catch(async (e) => {
+      await release();
+      throw e;
     });
     await logEvent({ level: 'info', source: 'admin', message: `Registro nuevo con Google: ${account.name} (${email})`, accountId: account.id, details: { ip: req.ip, business_type: businessType } });
     await notifySuperadmins(account.id, `Nueva empresa registrada: ${account.name}`, `${created.name} <${email}> se registró con Google.`);

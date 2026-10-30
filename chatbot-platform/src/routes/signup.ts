@@ -5,7 +5,8 @@ import { z } from 'zod';
 import { hashPassword, ipKey, rateLimited } from '../auth.js';
 import { beginLogin } from '../identity/mfa.js';
 import { forgetTrustedDevices } from '../identity/devices.js';
-import { clearHits, countHit } from '../identity/rate-limit.js';
+import { clearHits, countHit, releaseHit } from '../identity/rate-limit.js';
+import { notifyPlatform } from '../platform/digest.js';
 import { query } from '../db.js';
 import { notifyUser } from '../identity/notices.js';
 import { billingEnabled, payable, startCheckout } from '../billing/service.js';
@@ -37,6 +38,36 @@ const link = (base: string, route: string, token: string) => `${base}/#/${route}
 export function newAccountState(now = Date.now()) {
   const days = config.signup.trialDays;
   return days > 0 ? { status: 'trial' as const, trialEndsAt: new Date(now + days * 24 * HOUR) } : { status: 'paused' as const, trialEndsAt: null };
+}
+
+const DAY = 24 * HOUR;
+const TOO_MANY = 'Demasiados registros desde esta conexión, intenta más tarde';
+
+/** Intentos de registro por conexión (formulario y Google): 5 por hora, todos, también los que no crean cuenta. */
+export async function assertSignupAttempt(ip: string): Promise<void> {
+  if ((await countHit(`signup-try:${ipKey(ip)}`, HOUR)) > 5) throw new HttpError(429, TOO_MANY);
+}
+
+/**
+ * Lugar para una cuenta nueva: 3 por hora y 10 por día por conexión, y SIGNUP_DAILY_MAX por día en toda la plataforma
+ * (al 80 %, un aviso al superadministrador). Devuelve con qué soltarlo si la cuenta al final no se crea.
+ */
+export async function reserveSignup(ip: string): Promise<() => Promise<void>> {
+  const keys: [string, number, number][] = [[`signup-ip-h:${ipKey(ip)}`, HOUR, 3], [`signup-ip-d:${ipKey(ip)}`, DAY, 10], ['signup-day', DAY, config.signup.dailyMax]];
+  const taken: string[] = [];
+  const release = async () => { for (const k of taken) await releaseHit(k); };
+  for (const [key, windowMs, max] of keys) {
+    const hits = await countHit(key, windowMs);
+    taken.push(key);
+    if (hits > max) {
+      await release();
+      throw new HttpError(429, key === 'signup-day' ? 'Intenta más tarde' : TOO_MANY);
+    }
+    if (key === 'signup-day' && hits === Math.ceil(max * 0.8)) {
+      await notifyPlatform('Muchos registros hoy', `Van ${hits} cuentas nuevas hoy de ${max} permitidas (SIGNUP_DAILY_MAX). Al llegar al tope, el registro responde «Intenta más tarde» hasta mañana.`, { urgent: true });
+    }
+  }
+  return release;
 }
 
 /** El enlace para restablecer la contraseña (en segundo plano: ver /api/forgot-password). */
@@ -87,7 +118,7 @@ export async function signupRoutes(app: FastifyInstance) {
 
   app.post('/api/signup', async (req, reply) => {
     if (!config.signup.enabled) throw new HttpError(404, 'El registro está cerrado');
-    if (rateLimited(`signup:${req.ip}`, 5, HOUR)) return reply.code(429).send({ error: 'Demasiados registros desde esta conexión, intenta más tarde' });
+    await assertSignupAttempt(req.ip);
     const b = parse(
       z.object({
         name: z.string().trim().min(1, 'escribe tu nombre').max(120),
@@ -118,6 +149,7 @@ export async function signupRoutes(app: FastifyInstance) {
     const { status, trialEndsAt } = newAccountState();
 
     const brand = await brandByDomain(hostOf(req)); // quien se registra desde el dominio de una marca queda con esa marca
+    const release = await reserveSignup(req.ip);
     const { account, user } = await withTransaction(async (client) => {
       const account = await store.createAccount(b.company, { status, trialEndsAt, businessType, source: 'signup' }, client);
       const user = await store.createUser({ account_id: account.id, role: 'admin', name: b.name, email: b.email, password_hash: passwordHash, verified }, client);
@@ -126,6 +158,9 @@ export async function signupRoutes(app: FastifyInstance) {
       if (b.phone) await client.query(`UPDATE users SET phone = $2, notify_whatsapp = true WHERE id = $1`, [user.id, b.phone.replace(/\D/g, '')]);
       await recordTermsAcceptance(client, { userId: user.id, accountId: account.id, email: user.email, ip: req.ip, userAgent: String(req.headers['user-agent'] ?? ''), source: 'signup' });
       return { account, user };
+    }).catch(async (e) => {
+      await release(); // no se creó: no cuenta para los topes de cuentas
+      throw e;
     });
 
     await logEvent({ level: 'info', source: 'admin', message: `Registro nuevo: ${account.name} (${user.email})`, accountId: account.id, details: { ip: req.ip, business_type: businessType, plan: purchase?.plan.key } });
