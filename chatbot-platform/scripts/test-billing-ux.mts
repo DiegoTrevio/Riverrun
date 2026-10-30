@@ -20,6 +20,7 @@ process.env.TEST_DATABASE_URL = url.href;
 const { fake, stripeEvent, stripeSub } = await import('../test/billing-fakes.js');
 const { createHarness, pool, waitFor } = await import('../test/harness.js');
 const { outbox } = await import('../src/mailer.js');
+const { currentStep, totpAt } = await import('../src/identity/totp.js');
 const mailsTo = (email: string) => outbox.filter((m) => String(m.to).includes(email)).length;
 const h = await createHarness();
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
@@ -66,6 +67,13 @@ try {
     assert.equal((await pool.query(`SELECT count(*)::int AS n FROM users WHERE email = 'gema@estudio.mx'`)).rows[0].n, 0);
     await g.getByRole('checkbox').check();
     await g.getByRole('button', { name: 'Crear mi cuenta' }).click();
+    // Antes de entrar configura su verificación en dos pasos; después sigue al asistente.
+    await g.waitForURL(/#\/login\/configurar/);
+    const secret = (await g.locator('[data-totp-secret]').textContent())!.replace(/\s/g, '');
+    await g.getByLabel('Código de 6 dígitos').fill(totpAt(secret, currentStep()));
+    await g.getByRole('button', { name: 'Activar' }).click();
+    await g.getByLabel('Ya los guardé en un lugar seguro').check();
+    await g.getByRole('button', { name: 'Continuar' }).click();
     await g.waitForURL(/#\/agentes\/nuevo/);
     const terms = (await pool.query(`SELECT t.source FROM terms_acceptances t JOIN users u ON u.id = t.user_id WHERE u.email = 'gema@estudio.mx'`)).rows;
     assert.deepEqual(terms, [{ source: 'google' }]);
@@ -278,12 +286,19 @@ try {
       .violations.filter((x: any) => ['serious', 'critical'].includes(x.impact)).map((x: any) => x.id));
     assert.deepEqual(v, [], 'Invitación a 390');
     assert.ok(await g.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'Invitación sin desbordamiento a 390');
-    await g.getByLabel('Elige tu contraseña').fill('clave-de-rita');
-    await g.getByLabel('Repítela').fill('clave-de-rita');
+    await g.getByLabel('Elige tu contraseña').fill('Pz-963-Qx-964-Kv');
+    await g.getByLabel('Repítela').fill('Pz-963-Qx-964-Kv');
     await g.getByRole('checkbox').check();
     await g.getByRole('button', { name: 'Unirme al equipo' }).click();
-    await g.waitForURL((u) => !u.hash.startsWith('#/invitacion'));
-    // Ya entró con su sesión (no la manda a iniciar sesión).
+    // Antes de entrar configura su verificación en dos pasos (no la manda a iniciar sesión).
+    await g.waitForURL(/#\/login\/configurar/);
+    const secret = (await g.locator('[data-totp-secret]').textContent())!.replace(/\s/g, '');
+    await g.getByLabel('Código de 6 dígitos').fill(totpAt(secret, currentStep()));
+    await g.getByRole('button', { name: 'Activar' }).click();
+    await g.getByLabel('Ya los guardé en un lugar seguro').check();
+    await g.getByRole('button', { name: 'Continuar' }).click();
+    await g.waitForURL((u) => !u.hash.startsWith('#/login'));
+    // Ya entró con su sesión.
     const me = await g.request.get(`${base}/api/me`);
     assert.equal(me.status(), 200);
     assert.equal((await me.json()).user.email, 'rita@estudio.mx');

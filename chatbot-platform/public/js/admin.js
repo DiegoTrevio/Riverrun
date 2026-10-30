@@ -101,7 +101,7 @@ export async function viewUsers(root) {
       h('div', { class: 'grid' },
         field('Nombre', text(n, 'name')),
         field('Correo', text(n, 'email', { type: 'email', autocomplete: 'off', placeholder: 'persona@empresa.com' })),
-        field('Contraseña inicial', text(n, 'password', { type: 'password', autocomplete: 'new-password', minlength: 8 }), 'Mínimo 8 caracteres. Pídele que la cambie al entrar.'),
+        field('Contraseña inicial', text(n, 'password', { type: 'password', autocomplete: 'new-password', minlength: 12 }), 'Mínimo 12 caracteres; una frase de 3 o 4 palabras funciona bien. Pídele que la cambie al entrar.'),
         field('Rol', select(n, 'role', roles, () => { assignedProfile.hidden = n.role === 'superadmin'; })),
         field('WhatsApp para alertas (opcional)', text(n, 'phone', { placeholder: '5215512345678' }))),
       check(n, 'notify_whatsapp', 'Enviarle las alertas también por WhatsApp'),
@@ -123,7 +123,7 @@ export async function viewUsers(root) {
               isSuper() && u.role !== 'superadmin' ? h('button', { class: 'small', onclick: async () => { if (await confirmAction(`¿Dar a ${u.email} acceso maestro a TODOS los perfiles?`)) { if (!(await run(() => api('PUT', `/api/users/${u.id}`, { role: 'superadmin' }), 'Acceso maestro asignado'))) return; render(); } } }, 'Dar acceso maestro') : null,
               u.role !== 'superadmin' && u.active ? h('button', { class: 'small', title: 'Si no está disponible se salta en el reparto por turnos', onclick: async () => { if (await run(() => api('PUT', `/api/users/${u.id}`, { available: u.available === false }), u.available === false ? 'Disponible' : 'Fuera de turno')) render(); } }, u.available === false ? 'Marcar disponible' : 'Fuera de turno') : null,
               h('button', { class: 'small', onclick: async () => { if (await run(() => api('PUT', `/api/users/${u.id}`, { active: !u.active }), u.active ? 'Desactivado' : 'Activado')) render(); } }, u.active ? 'Desactivar' : 'Activar'),
-              h('button', { class: 'small', onclick: async () => { const pw = await ask('Nueva contraseña (mínimo 8 caracteres)', '', { type: 'password', minlength: 8, required: true }); if (pw) if (!(await run(() => api('PUT', `/api/users/${u.id}`, { password: pw }), 'Contraseña actualizada'))) return; } }, 'Restablecer contraseña'),
+              h('button', { class: 'small', onclick: async () => { const pw = await ask('Nueva contraseña (mínimo 12 caracteres)', '', { type: 'password', minlength: 12, required: true }); if (pw) if (!(await run(() => api('PUT', `/api/users/${u.id}`, { password: pw }), 'Contraseña actualizada'))) return; } }, 'Restablecer contraseña'),
               h('button', { class: 'small', onclick: async () => {
                 const phone = await ask('WhatsApp para alertas (con lada; vacío para quitar)', u.phone || '');
                 if (phone !== null && (await run(() => api('PUT', `/api/users/${u.id}`, { phone, notify_whatsapp: !!phone.replace(/\D/g, '') }), 'Actualizado'))) render();
@@ -144,7 +144,7 @@ export async function viewAccounts(root) {
     h('div', { class: 'grid' },
       field('Nombre del administrador', text(n.admin, 'name')),
       field('Correo', text(n.admin, 'email', { placeholder: 'dueño@cliente.com' })),
-      field('Contraseña inicial', text(n.admin, 'password', { type: 'password' }), 'Mínimo 8 caracteres.')));
+      field('Contraseña inicial', text(n.admin, 'password', { type: 'password' }), 'Mínimo 12 caracteres; una frase de 3 o 4 palabras funciona bien.')));
   root.append(
     h('h1', {}, 'Perfiles de negocio'),
     h('div', { class: 'card' },
@@ -296,7 +296,7 @@ export async function viewPassword(root) {
     settingsSection('Sesiones abiertas', 'Dónde está abierta tu cuenta. Si no reconoces una, ciérrala y cambia tu contraseña.', sessionsCard()),
     settingsSection('Cambiar contraseña', 'La que usas para entrar al panel con tu correo.',
       field('Contraseña actual', text(f, 'current', { type: 'password' })),
-      field('Nueva contraseña', text(f, 'password', { type: 'password' }), 'Mínimo 8 caracteres. Se cerrarán tus otras sesiones abiertas.'),
+      field('Nueva contraseña', text(f, 'password', { type: 'password' }), 'Mínimo 12 caracteres; una frase de 3 o 4 palabras funciona bien. Se cerrarán tus otras sesiones abiertas.'),
       field('Repite la nueva contraseña', text(f, 'confirm', { type: 'password' })),
       h('div', { class: 'settings-actions' }, h('button', { class: 'primary', onclick: async () => {
         if (f.password !== f.confirm) return toast('Las contraseñas no coinciden', true);

@@ -32,6 +32,13 @@ export async function mfaPublicRoutes(app: FastifyInstance) {
     return { ok: true, user: await store.getUser(found.user.id), ...(check.recoveryRemaining !== undefined ? { recovery_remaining: check.recoveryRemaining } : {}) };
   });
 
+  /** Qué pide el reto vigente (la pantalla del código no ofrece «recordar» al superadmin). */
+  app.get('/api/2fa/challenge', async (req, reply) => {
+    const found = await challengeUser(req);
+    if (!found) return expired(reply);
+    return { purpose: found.challenge.purpose, superadmin: found.user.role === 'superadmin' };
+  });
+
   /** El QR (y la clave para escribirla a mano). Recargar o abrir otra pestaña devuelve el mismo secreto. */
   app.get('/api/2fa/enroll', async (req, reply) => {
     const found = await challengeUser(req);

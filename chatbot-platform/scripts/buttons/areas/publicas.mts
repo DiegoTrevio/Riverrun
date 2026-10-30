@@ -1,4 +1,4 @@
-/** Sin sesión: entrar (con la contraseña equivocada y con la buena) y recuperar la contraseña con el correo que llega. */
+/** Sin sesión: entrar (con la contraseña equivocada y con la buena, más el código) y recuperar la contraseña con el correo que llega. */
 import assert from 'node:assert/strict';
 import { outbox } from '../../../src/mailer.js';
 import type { AreaContext } from '../areas.mts';
@@ -10,7 +10,7 @@ async function anonymous(open: AreaContext['open']) {
 }
 
 export const checks = {
-  'Entrar: la contraseña equivocada muestra el error y no entra; la buena abre el panel': async ({ base, open }: AreaContext) => {
+  'Entrar: la contraseña equivocada muestra el error y no entra; la buena abre el panel': async ({ h, base, open }: AreaContext) => {
     const page = await anonymous(open);
     await page.goto(`${base}/#/login`); await page.locator('main h1').first().waitFor();
     await page.getByLabel('Correo').fill('admin@auditoria.test');
@@ -19,6 +19,10 @@ export const checks = {
     await page.locator('.form-error, [role=alert]').filter({ hasText: /\S/ }).first().waitFor();
     assert.match(page.url(), /#\/login/);
     await page.getByLabel('Contraseña').fill('Pz-100-Qx-300-Kv');
+    await page.getByRole('button', { name: 'Entrar' }).click();
+    // Segundo paso: el código de su app.
+    await page.waitForURL(/#\/login\/codigo/);
+    await page.getByLabel('Código de 6 dígitos').fill(await h.codeFor('admin@auditoria.test'));
     await page.getByRole('button', { name: 'Entrar' }).click();
     await page.locator('.main h1').first().waitFor();
     assert.doesNotMatch(page.url(), /#\/login/);

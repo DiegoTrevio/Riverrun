@@ -57,7 +57,7 @@ async function requestApi(method, url, body, isForm) {
   recordUX(`${method}:${group}`, performance.now() - start, res.ok ? 'ok' : `http_${res.status}`);
   if (res.status === 401 && !url.endsWith('/login')) {
     // El motivo (p. ej. «Tu sesión se cerró por inactividad») se muestra en la pantalla de entrar.
-    if (data?.code === 'session_idle') { try { sessionStorage.setItem('login-notice', data.error); } catch { /* sin storage */ } }
+    if (['session_idle', 'challenge_expired'].includes(data?.code)) { try { sessionStorage.setItem('login-notice', data.error); } catch { /* sin storage */ } }
     location.hash = '#/login';
     throw new Error('Sesión expirada');
   }
