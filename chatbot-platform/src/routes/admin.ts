@@ -27,6 +27,7 @@ import { countHit, LIMITS, releaseHit } from '../identity/rate-limit.js';
 import { notifyUser } from '../identity/notices.js';
 import { query, queryOne } from '../db.js';
 import { assertInvitable, createInvitation } from './invitations.js';
+import { offboardingSummary, offboardUser } from '../identity/offboarding.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
@@ -423,6 +424,13 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     if (target.role === 'admin' && target.id !== req.user.id) await assertOwner(req, target.account_id!);
     return target;
   };
+  /** Al dar de baja: revoca sus llaves e invitaciones y pausa sus webhooks, y lo deja en la bitácora. */
+  const offboard = async (target: { id: string; name: string; email: string; account_id: string | null }, actor: { email: string }) => {
+    const gone = await offboardUser(target.id, target.name || target.email);
+    if (gone.api_keys || gone.webhooks || gone.invitations) {
+      await logEvent({ level: 'info', source: 'admin', message: `Baja de ${target.email} (por ${actor.email}): ${gone.api_keys} llaves revocadas, ${gone.webhooks} webhooks pausados, ${gone.invitations} invitaciones canceladas`, accountId: target.account_id ?? undefined });
+    }
+  };
   /** El dueño no se desactiva, degrada, mueve ni borra: primero transfiere la cuenta. */
   const isOwnerUser = async (u: { id: string; role: Role; account_id: string | null }) => u.role === 'admin' && !!u.account_id && (await accountOwner(u.account_id))?.id === u.id;
   const FIRST_TRANSFER = 'Primero transfiere la cuenta a otro administrador';
@@ -488,6 +496,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     if (!updated.active) {
       await store.revokeUserSessions(updated.id);
       await forgetTrustedDevices(updated.id);
+      if (target.active) await offboard(target, req.user);
     } else if (updated.role !== target.role) await store.revokeUserSessions(updated.id);
     if (updated.role !== target.role || updated.account_id !== target.account_id) {
       await logEvent({ level: 'info', source: 'admin', message: `Permisos de usuario actualizados: ${updated.email}`, accountId: updated.account_id ?? target.account_id ?? undefined,
@@ -495,6 +504,9 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     }
     return updated;
   });
+
+  /** Lo que se iría con la baja de alguien (para la confirmación del panel). */
+  api.get('/api/users/:id/offboarding', admins, async (req: any) => offboardingSummary((await manageable(req)).id));
 
   /** «Restablecer 2FA» en Equipo (perdió su teléfono y sus códigos): se cierran sus sesiones y la configura al entrar. */
   api.post('/api/users/:id/2fa/reset', { ...admins, ...stepUp }, async (req: any) => {
@@ -512,6 +524,8 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     if (target.id === req.user.id) throw new HttpError(400, 'No puedes eliminar tu propio usuario');
     if (await isOwnerUser(target)) throw new HttpError(400, FIRST_TRANSFER);
     if (target.role === 'superadmin' && (await store.countSuperadmins()) <= 1) throw new HttpError(400, 'Debe quedar al menos un superadministrador');
+    // Antes de borrar: después sus llaves, webhooks e invitaciones se quedan sin autor.
+    await offboard(target, req.user);
     const deleted = await store.deleteUser(target.id, req.user.role === 'superadmin' ? undefined : scopeAccount(req.user)!);
     if (!deleted) throw notFound('Usuario no encontrado');
     return { ok: true };
