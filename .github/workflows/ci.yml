@@ -121,7 +121,8 @@ jobs:
   buttons:
     name: Botones del panel
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    # Una corrida sana tarda ~20 min en una máquina de 4 núcleos (más la instalación); el margen es para un runner más lento.
+    timeout-minutes: 50
     services:
       postgres:
         image: pgvector/pgvector:0.8.7-pg16

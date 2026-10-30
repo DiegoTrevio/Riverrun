@@ -39,12 +39,15 @@ export const INIT_SCRIPT = String.raw`(() => {
   }
   const audit = window.__audit = { clipboard: [], opened: [], printed: 0, mutations: 0, noisy: new Set(), observing: false };
   // Lo que un botón hace fuera de la página: se anota y no se ejecuta (copiar, abrir otra ventana, imprimir).
-  try {
-    const clip = navigator.clipboard || {};
-    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { ...clip, writeText: async (t) => { audit.clipboard.push(String(t)); }, write: async () => { audit.clipboard.push('[blob]'); } } });
-  } catch {}
-  window.open = (url) => { audit.opened.push(String(url)); return null; };
-  window.print = () => { audit.printed++; };
+  // En otra prueba (coverage-probe.mts) solo se anota qué controles usa: su página se comporta como siempre.
+  if (!window.__auditProbe) {
+    try {
+      const clip = navigator.clipboard || {};
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { ...clip, writeText: async (t) => { audit.clipboard.push(String(t)); }, write: async () => { audit.clipboard.push('[blob]'); } } });
+    } catch {}
+    window.open = (url) => { audit.opened.push(String(url)); return null; };
+    window.print = () => { audit.printed++; };
+  }
 
   const visible = (el) => {
     if (!el.isConnected || el.closest('[inert]')) return false;

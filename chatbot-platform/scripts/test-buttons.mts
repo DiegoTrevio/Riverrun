@@ -19,24 +19,26 @@ const { staticInventory, matchSite, ACTION_EVENTS } = await import('./buttons/in
 const { runAreas } = await import('./buttons/areas.mts');
 type Outcome = import('./buttons/crawl.mts').Outcome;
 
-/** Motivo inicial de un sitio que nadie presiona aquí (se revisa a mano en sin-presionar.json). */
-function defaultReason(c: { file: string; label: string; tag: string }) {
-  const by: [RegExp, RegExp | null, string][] = [
-    [/^copilot(-cards)?\.js$/, null, 'Otra prueba: test:ux («Copiloto: pedir, deshacer, «Cambiar esto», confirmar…»)'],
-    [/^whatsapp\.js$/, null, 'Otra prueba: test:ux (QR, «Vincular de nuevo», «Con mi número» y su código)'],
-    [/^social\.js$/, null, 'Otra prueba: test:ux (Telegram con código, Instagram conectada)'],
-    [/^quotes\.js$/, null, 'Otra prueba: test:quotes:ux'],
-    [/^semantic-activation\.js$/, null, 'Otra prueba: test:semantic:ux'],
-    [/^agent-versions\.js$/, null, 'Otra prueba: test:agent:ux'],
-    [/^(ai-budget|contact-workspace)\.js$/, null, 'Otra prueba: test:contact:ux'],
+/** Prueba de npm de cada archivo de evidencia de coverage-probe.mts. */
+const PROBE_TESTS: Record<string, string> = {
+  'test-ux': 'test:ux', 'test-semantic-ux': 'test:semantic:ux', 'test-agent-quality-ux': 'test:agent:ux', 'test-contact-budget-ux': 'test:contact:ux',
+  'test-quotes-ux': 'test:quotes:ux', 'test-billing-ux': 'test:billing:ux', 'test-public-ux': 'test:public:ux',
+};
+
+/**
+ * Motivo de un sitio que nadie presiona aquí: otra prueba que lo presiona (con su evidencia de coverage-probe.mts),
+ * un servicio real (va a la lista manual) o un estado que el recorrido no prepara.
+ */
+function defaultReason(c: { site: string; file: string; label: string; tag: string }, others: Map<string, Set<string>>) {
+  if (others.has(c.site)) return `Otra prueba: ${[...others.get(c.site)!].sort().join(', ')} lo presiona`;
+  const real: [RegExp, RegExp | null, string][] = [
     [/^meta\.js$/, null, 'Servicio real: Facebook (lista manual)'],
     [/^(agenda|integrations)\.js$/, /Conectar|Desconectar/, 'Servicio real: Google Calendar / Outlook (lista manual)'],
-    [/^billing\.js$/, /pago|tarjeta|plan/i, 'Servicio real: Stripe / Mercado Pago (lista manual); lo demás, test:billing:ux'],
-    [/^billing\.js$/, null, 'Otra prueba: test:billing:ux'],
-    [/^auth\.js$/, null, 'Otra prueba: test:billing:ux (registro e invitación) y el área publicas'],
+    [/^billing\.js$/, /pago|tarjeta|plan/i, 'Servicio real: Stripe / Mercado Pago (lista manual)'],
     [/^system\.js$/, /llave|probar/i, 'Servicio real: llave de Zernio (lista manual)'],
+    [/^channels\.js$/, /correo|Telegram|número|Desconectar/i, 'Servicio real: WhatsApp, Telegram o correo de verdad (lista manual)'],
   ];
-  const hit = by.find(([f, l]) => f.test(c.file) && (!l || l.test(c.label)));
+  const hit = real.find(([f, l]) => f.test(c.file) && (!l || l.test(c.label)));
   return hit ? hit[2] : `Estado no alcanzado: ${c.tag}${c.label ? ` «${c.label}»` : ''} solo aparece en un estado que el recorrido no prepara`;
 }
 
@@ -135,14 +137,24 @@ try {
   const coverage = inventory.map((s) => ({ ...s, key: keyOf(s), status: status.get(s.site) || 'no apareció' }));
   // Cada sitio que no se presiona aquí lleva su motivo en sin-presionar.json (otra prueba, servicio real, estado…).
   const notesFile = path.resolve(import.meta.dirname, 'buttons', 'sin-presionar.json');
-  const notes: Record<string, string> = fs.existsSync(notesFile) ? JSON.parse(fs.readFileSync(notesFile, 'utf8')) : {};
+  let notes: Record<string, string> = fs.existsSync(notesFile) ? JSON.parse(fs.readFileSync(notesFile, 'utf8')) : {};
   const unpressed = coverage.filter((c) => c.status !== 'presionado');
-  const missingNotes = unpressed.filter((c) => !notes[c.key]);
+  let missingNotes = unpressed.filter((c) => !notes[c.key]);
   const staleNotes = Object.keys(notes).filter((k) => !unpressed.some((c) => c.key === k));
   if (process.env.BUTTONS_WRITE_PENDING) {
-    const next = Object.fromEntries(unpressed.map((c) => [c.key, notes[c.key] || defaultReason(c)]));
+    // Evidencia de las otras pruebas (data/button-audit/pressed-*.json, de coverage-probe.mts).
+    const others = new Map<string, Set<string>>();
+    for (const file of fs.readdirSync(output).filter((x) => /^pressed-.+\.json$/.test(x))) {
+      const test = PROBE_TESTS[file.slice(8, -5)] || file.slice(8, -5);
+      for (const site of JSON.parse(fs.readFileSync(path.join(output, file), 'utf8')) as string[]) {
+        const [f, line] = site.split(':'); const s = matchSite(inventory, f, Number(line));
+        if (s) { if (!others.has(s.site)) others.set(s.site, new Set()); others.get(s.site)!.add(test); }
+      }
+    }
+    const next = Object.fromEntries(unpressed.map((c) => [c.key, defaultReason(c, others)]));
     fs.writeFileSync(notesFile, JSON.stringify(next, null, 2) + '\n');
     log(`sin-presionar.json: ${Object.keys(next).length} sitios (${missingNotes.length} nuevos, ${staleNotes.length} quitados)`);
+    notes = next; missingNotes = [];
   }
   const count = (v: string) => coverage.filter((c) => c.status === v).length;
   const verdicts = Object.fromEntries(Object.entries(Object.groupBy(outcomes, (o) => o.verdict)).map(([k, v]) => [k, v!.length]));
