@@ -62,10 +62,10 @@ async function accessible(page: Page, label: string) {
   }
   await page.setViewportSize({ width: 1366, height: 900 });
 }
-/** El texto de un correo del buzón de pruebas (sale en segundo plano o al momento). */
+/** El texto del último correo que coincide en el buzón de pruebas (sale en segundo plano o al momento). */
 async function mailTo(to: string, re: RegExp) {
   for (let i = 0; i < 50; i++) {
-    const mail = outbox.find((m) => m.to === to && re.test(m.text));
+    const mail = outbox.filter((m) => m.to === to && re.test(m.text)).at(-1);
     if (mail) return mail.text;
     await new Promise((r) => setTimeout(r, 100));
   }
@@ -132,7 +132,14 @@ try {
   // 2) Panel en preparación: falta el correo; los botones de pago esperan; la IA, deshabilitada con su motivo.
   await page.getByRole('heading', { name: 'Activa tu prueba gratis de 14 días' }).waitFor();
   await page.getByText('Falta verificar tu correo.').waitFor();
-  await page.getByRole('button', { name: 'Reenviar' }).first().waitFor();
+  // «Reenviar» del aviso de arriba: recién registrada pide esperar un minuto; el de los pasos de Mi plan, ya pasado, lo manda.
+  await page.locator('.banner').getByRole('button', { name: 'Reenviar' }).click();
+  await page.getByText('Espera un minuto antes de pedir otro correo').first().waitFor();
+  await pool.query(`UPDATE auth_tokens SET created_at = now() - interval '2 minutes' WHERE kind = 'verify_email'`);
+  const verifyMails = outbox.filter((m) => m.to === 'tere@registro-ux.mx').length;
+  await page.locator('ul.checklist').getByRole('button', { name: 'Reenviar' }).click();
+  await page.getByText('Te enviamos un nuevo enlace').first().waitFor();
+  assert.ok(outbox.filter((m) => m.to === 'tere@registro-ux.mx').length > verifyMails, 'llegó otro enlace');
   await page.getByText('Al registrarte elegiste el plan Pro.').waitFor();
   assert.ok(await page.getByRole('button', { name: 'Agregar tarjeta con Stripe' }).isDisabled(), 'sin el correo verificado no se abre el pago');
   await accessible(page, 'Mi plan esperando el correo');
@@ -145,7 +152,7 @@ try {
   await page.getByText('Activa tu prueba para usar la IA').first().waitFor();
   assert.equal(await read.getAttribute('title'), 'Activa tu prueba para usar la IA');
   await accessible(page, 'Conocimiento con la IA deshabilitada');
-  checks.push('Panel en preparación: «Falta verificar tu correo», el pago espera y la IA se ve deshabilitada con su motivo');
+  checks.push('Panel en preparación: «Falta verificar tu correo» con «Reenviar», el pago espera y la IA se ve deshabilitada con su motivo');
 
   // 3) Confirma el correo y agrega su tarjeta: empieza la prueba de 14 días.
   const link = (await mailTo('tere@registro-ux.mx', /verificar/)).match(/https?:\/\/\S+/)![0];

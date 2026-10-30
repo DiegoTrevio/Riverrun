@@ -584,7 +584,12 @@
     "zernio-admin.js|button|Desconectar todo|click|0",
     "zernio-admin.js|button|Revisar ahora|click|0",
     "zernio-admin.js|button|Ver entregas de los últimos 30 días|click|0",
-    "zernio-admin.js|button|Buscar|click|0"
+    "zernio-admin.js|button|Buscar|click|0",
+    "admin.js|button|Quitar freno|click|0",
+    "admin.js|button|Activar sin tarjeta|click|0",
+    "billing.js|button|Reenviar|click|0",
+    "billing.js|button||click|1",
+    "shell.js|button|Reenviar|click|0"
   ],
   "sin_presionar": {
     "admin.js|button|Reenviar|click|0": "Otra prueba: test:billing:ux lo presiona",
@@ -866,6 +871,11 @@
     "work-recovery.js|button||click|0": "Estado no alcanzado: button solo aparece en un estado que el recorrido no prepara",
     "zernio-admin.js|button|Reenviar|click|0": "Estado no alcanzado: button «Reenviar» solo aparece en un estado que el recorrido no prepara",
     "zernio-admin.js|button|Copiar|click|0": "Estado no alcanzado: button «Copiar» solo aparece en un estado que el recorrido no prepara",
-    "zernio-admin.js|button|Crear perfil|click|0": "Estado no alcanzado: button «Crear perfil» solo aparece en un estado que el recorrido no prepara"
+    "zernio-admin.js|button|Crear perfil|click|0": "Estado no alcanzado: button «Crear perfil» solo aparece en un estado que el recorrido no prepara",
+    "admin.js|button|Quitar freno|click|0": "Otra prueba: test:signup:ux lo presiona",
+    "admin.js|button|Activar sin tarjeta|click|0": "Otra prueba: test:signup:ux lo presiona",
+    "billing.js|button|Reenviar|click|0": "Otra prueba: test:signup:ux lo presiona",
+    "billing.js|button||click|1": "Otra prueba: test:signup:ux lo presiona",
+    "shell.js|button|Reenviar|click|0": "Otra prueba: test:signup:ux lo presiona"
   }
 }
