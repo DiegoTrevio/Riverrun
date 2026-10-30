@@ -1,13 +1,13 @@
 /**
- * La cuenta, su dueño y el correo de cada quien. Cambiar el correo: se pide desde Mi perfil (con verificación
- * reciente) y se aplica al abrir el enlace que llega al correo nuevo. Transferir: el dueño (o el superadministrador con `?account_id`) la pasa a otro administrador
+ * La cuenta, su dueño y el correo de cada quien. Cambiar el correo: se pide desde Mi perfil (con la contraseña actual y
+ * la verificación reciente) y se aplica al abrir el enlace que llega al correo nuevo. Transferir: el dueño (o el superadministrador con `?account_id`) la pasa a otro administrador
  * activo de la cuenta con su correo verificado y su verificación en dos pasos. El cambio es una sola escritura
  * condicionada: si el destino dejó de cumplir o la cuenta cambió de dueño mientras tanto, no se aplica.
  */
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { HttpError, notFound, requireRole, targetAccount } from '../access.js';
-import { rateLimited } from '../auth.js';
+import { assertCurrentPassword, rateLimited } from '../auth.js';
 import { linkBase, mailBrand } from '../brands.js';
 import { query, withTransaction } from '../db.js';
 import { notifyUser } from '../identity/notices.js';
@@ -29,11 +29,14 @@ export async function accountRoutes(api: FastifyInstance) {
   const admins = { preHandler: requireRole('admin') };
 
   api.put('/api/me/email', stepUp, async (req: any, reply) => {
-    const { email } = parse(z.object({ email: z.string().trim().toLowerCase().email('correo inválido').max(200) }), req.body);
+    const { email, current } = parse(z.object({ email: z.string().trim().toLowerCase().email('correo inválido').max(200), current: z.string().max(200) }), req.body);
     if (email === req.user.email.toLowerCase()) throw new HttpError(400, 'Ese ya es tu correo');
     if (isDisposableEmail(email)) throw new HttpError(400, DISPOSABLE_MESSAGE);
-    if (await store.getUserForLogin(email)) throw new HttpError(409, EMAIL_TAKEN);
+    // Con la sesión sola no basta: el correo abre «Olvidé mi contraseña», así que se pide la contraseña como para cambiarla.
+    await assertCurrentPassword(req.user.email, current);
+    // El tope va antes de decir si el correo está ocupado: cada pregunta cuenta.
     if (rateLimited(`email-change:${req.user.id}`, 5, HOUR)) return reply.code(429).send({ error: 'Ya pediste varios cambios de correo: espera una hora' });
+    if (await store.getUserForLogin(email)) throw new HttpError(409, EMAIL_TAKEN);
     const token = await store.createAuthToken(req.user.id, 'change_email', EMAIL_CHANGE_HOURS * 60, email);
     const { fromName } = await mailBrand(req.user.account_id);
     await sendMail({

@@ -156,10 +156,18 @@ try {
 
   // Cambiar el correo desde Mi perfil y confirmarlo con el enlace que llega al correo nuevo.
   await go(beto.page, 'password', 'Mi perfil');
-  await beto.page.getByRole('button', { name: 'Cambiar correo' }).click();
-  await beto.page.locator('dialog').getByLabel('Correo nuevo').fill('beto@nuevo-ux.mx');
+  // Con la sesión sola no basta: pide su contraseña actual (una equivocada no manda nada).
+  const changeEmail = async (current: string) => {
+    await beto.page.getByRole('button', { name: 'Cambiar correo' }).click();
+    const dialog = beto.page.locator('dialog');
+    await dialog.getByLabel('Correo nuevo').fill('beto@nuevo-ux.mx');
+    await dialog.getByLabel('Tu contraseña actual').fill(current);
+    await dialog.getByRole('button', { name: 'Mandar enlace' }).click();
+  };
+  await changeEmail('No-Es-Mi-Clave-123');
+  await beto.page.locator('#toast, #toast-alert').filter({ hasText: 'La contraseña actual no es correcta' }).first().waitFor();
   const before = outbox.length;
-  await beto.page.locator('dialog').getByRole('button', { name: 'Guardar' }).click();
+  await changeEmail(PASS);
   await beto.page.getByText('Te mandamos un enlace a beto@nuevo-ux.mx. El cambio se aplica al abrirlo.').first().waitFor();
   const change = /#\/cambiar-correo\/([\w-]+)/.exec(await mailTo('beto@nuevo-ux.mx', /#\/cambiar-correo\//, before))![1];
   const link = await open();
@@ -167,7 +175,7 @@ try {
   await link.page.getByText('Tu correo cambió. Entra con tu correo nuevo.').waitFor();
   await accessible(link.page, 'Correo cambiado');
   assert.equal((await pool.query(`SELECT count(*)::int AS n FROM users WHERE email = 'beto@nuevo-ux.mx' AND email_verified_at IS NOT NULL`)).rows[0].n, 1);
-  checks.push('Cambiar el correo en Mi perfil: llega el enlace al correo nuevo y al abrirlo cambia (accesible en móvil)');
+  checks.push('Cambiar el correo en Mi perfil pide la contraseña actual: llega el enlace al correo nuevo y al abrirlo cambia (accesible en móvil)');
 
   // Desactivar a Beto dice qué se va con él (su llave y su webhook).
   h.totpSecrets.set('beto@nuevo-ux.mx', h.totpSecrets.get('beto@cuenta-ux.mx')!);

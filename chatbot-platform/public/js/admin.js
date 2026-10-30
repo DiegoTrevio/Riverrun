@@ -313,9 +313,12 @@ export async function viewPassword(root) {
     settingsSection('Correo', 'Con él entras al panel y te llegan los avisos. El cambio se aplica al abrir el enlace que te mandamos al correo nuevo.',
       h('p', {}, h('strong', {}, state.me.user.email)),
       h('div', { class: 'settings-actions' }, h('button', { onclick: async () => {
-        const email = await ask('Correo nuevo', '', { type: 'email', required: true, autocomplete: 'email' });
-        if (!email) return;
-        const r = await run(() => api('PUT', '/api/me/email', { email }));
+        // Con la sesión abierta sola no se cambia: el correo abre «Olvidé mi contraseña».
+        const email = h('input', { type: 'email', required: true, autocomplete: 'email' });
+        const current = h('input', { type: 'password', required: true, autocomplete: 'current-password' });
+        const form = h('div', {}, field('Correo nuevo', email), field('Tu contraseña actual', current, 'La misma con la que entras. Si siempre entras con Google, primero ponle una con «Olvidé mi contraseña» en la pantalla de entrada.'));
+        if (!(await dialog('Cambiar correo', form, 'Mandar enlace', () => email.reportValidity() && current.reportValidity()))) return;
+        const r = await run(() => api('PUT', '/api/me/email', { email: email.value, current: current.value }));
         if (r) toast(`Te mandamos un enlace a ${r.pending}. El cambio se aplica al abrirlo.`);
       } }, 'Cambiar correo'))),
     groups ? settingsSection('Mis avisos', 'Elige por dónde te llega cada aviso. Para recibirlos por WhatsApp, activa «Recibir las alertas del equipo por WhatsApp» arriba.',

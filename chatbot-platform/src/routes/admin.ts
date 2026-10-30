@@ -15,6 +15,8 @@ import {
   ipKey,
   verifyPassword,
   currentSession,
+  ACCOUNT_LIMIT,
+  assertCurrentPassword,
 } from '../auth.js';
 import { adapterFor } from '../channels/index.js';
 import { config } from '../config.js';
@@ -64,7 +66,6 @@ function checkEditedPhone(next: string | undefined, current: string | null | und
 }
 
 const Password = NewPassword;
-const ACCOUNT_LIMIT = 'Demasiados intentos con esta cuenta. Entra desde un dispositivo recordado o recupera tu contraseña por correo.';
 const accountName = async (id: string | null | undefined) => (id ? (await store.getAccount(id))?.name : undefined);
 
 /** Rutas públicas de sesión. */
@@ -154,15 +155,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
 
   api.put('/api/me/password', stepUp, async (req, reply) => {
     const b = parse(z.object({ current: z.string(), password: Password }), req.body);
-    // La contraseña actual equivocada cuenta como intento a la cuenta (con una cookie robada no se adivina sin límite).
-    const accountLimit = `login-acct:${req.user.email.toLowerCase()}`;
-    if ((await countHit(accountLimit, LIMITS.loginAccount.windowMs)) > LIMITS.loginAccount.max) {
-      await releaseHit(accountLimit);
-      throw new HttpError(429, ACCOUNT_LIMIT);
-    }
-    const full = await store.getUserForLogin(req.user.email);
-    if (!full || !(await verifyPassword(b.current, full.password_hash))) throw new HttpError(400, 'La contraseña actual no es correcta');
-    await releaseHit(accountLimit);
+    await assertCurrentPassword(req.user.email, b.current);
     await assertPasswordAllowed(b.password, { email: req.user.email, businessName: await accountName(req.user.account_id) });
     const hash = await hashPassword(b.password);
     await store.invalidateAuthTokens(req.user.id); // los enlaces para restablecer que hubiera ya no sirven

@@ -64,7 +64,7 @@ function body(kind: NoticeKind, when: string, d: NoticeDetails): string {
     case 'ownership_transferred': return `${d.by ? `${d.by} transfirió` : 'Transferiste'} la cuenta «${d.account}» a ${d.to} el ${when}. Sigues como administrador.`;
     case 'ownership_received': return `${d.from} te transfirió la cuenta «${d.account}» el ${when}. Revisa los datos de facturación en Mi plan.`;
     // A la dirección anterior: `to` es la nueva.
-    case 'email_changed': return `El correo de tu cuenta cambió a ${d.to} el ${when}.`;
+    case 'email_changed': return `El correo de tu cuenta cambió a ${d.to} el ${when} (se pidió con tu contraseña). Desde ahora entras con ese correo; si no fuiste tú, entra con él y vuelve a poner el tuyo desde Mi perfil.`;
     case 'role_changed': return `${d.by ? `${d.by} cambió` : 'Cambió'} tu rol a ${d.role} el ${when}. Al entrar otra vez tienes los permisos nuevos.`;
   }
 }
