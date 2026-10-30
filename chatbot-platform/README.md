@@ -190,6 +190,8 @@ Las facturas se emiten en la revisión periódica (cada 10 minutos), nunca dos v
 
 El panel también tiene regresión de navegador y accesibilidad: `npm run test:ux`, con Chromium y axe-core. Se ejecuta después de las pruebas del motor, contra una base aislada que el arnés reinicia. CI adjunta los resultados y las capturas. Consulta la [auditoría UX/UI](docs/ux-ui/audit.md) y su [cobertura de implementación, criterios y ejecución](docs/ux-ui/implementation.md).
 
+Cada botón del panel se presiona con cada rol en `npm run test:buttons` (trabajo «Botones del panel» del CI): un recorrido que anota qué hace cada control, acepta cada diálogo y comprueba por área, en la base, que el botón hizo lo que dice. Ver la [auditoría de botones](docs/auditoria-botones.md), con sus hallazgos, su cobertura y la lista de lo que solo se prueba con servicios reales.
+
 ## IA con OpenRouter
 
 El proveedor predeterminado es OpenRouter. Configura en el servidor (no en el prompt):
