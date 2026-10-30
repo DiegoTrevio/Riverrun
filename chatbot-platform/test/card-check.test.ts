@@ -2,6 +2,7 @@
  * La verificación de tarjeta (el pago de Mi plan): pide el correo del dueño verificado y la verificación reciente, abre
  * una sesión de pago de 30 minutos con 3D Secure y sin códigos sueltos, con 14 días gratis si la persona tiene prueba
  * disponible, reutiliza la sesión vigente y tiene topes en la base (por cuenta, por conexión y en toda la plataforma).
+ * Si en la última hora se abren muchas y casi ninguna termina (alguien probando tarjetas), un freno las cierra una hora.
  */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -13,6 +14,8 @@ const ok = await dbAvailable();
 const t = (name: string, fn: () => Promise<void>) => test(name, { skip: !ok && 'PostgreSQL de pruebas no disponible' }, fn);
 const { ipKey } = await import('../src/auth.js');
 const { recordTrialClaims } = await import('../src/billing/trial-claims.js');
+const { config } = await import('../src/config.js');
+const { outbox } = await import('../src/mailer.js');
 let h: Awaited<ReturnType<typeof createHarness>>;
 
 let n = 0;
@@ -28,7 +31,8 @@ async function waiting(email: string, verified = true) {
   const own = `10.65.0.${n}`; // cada cuenta paga desde su conexión
   const api = (body: Record<string, unknown> = { plan: 'pro', provider: 'stripe' }, ip = own) =>
     h.app.inject({ method: 'POST', url: '/api/billing/checkout', remoteAddress: ip, headers: { cookie }, payload: body });
-  return { api, accountId: r.json().account.id as string, userId: r.json().user.id as string };
+  const as = (method: string, url: string) => h.app.inject({ method: method as any, url, remoteAddress: own, headers: { cookie } });
+  return { api, as, accountId: r.json().account.id as string, userId: r.json().user.id as string };
 }
 const lastStripe = () => fake.stripe.requests.filter((x) => x.method === 'POST' && x.path === '/v1/checkout/sessions').at(-1)!.body as URLSearchParams;
 const lastMp = () => fake.mp.requests.filter((x) => x.method === 'POST' && x.path === '/preapproval').at(-1)!.body;
@@ -132,5 +136,44 @@ t('topes: 5 por día por cuenta, 10 por conexión y 300 en toda la plataforma', 
     assert.equal((await c.api()).statusCode, 429);
   } finally {
     await pool.query(`DELETE FROM rate_limits WHERE key = 'card-check-day'`);
+  }
+});
+
+/** Verificaciones de la última hora: `opened` abiertas por alguien más y `completed` de ellas terminadas. */
+const seed = async (accountId: string, opened: number, completed: number) => {
+  await pool.query(`DELETE FROM card_checks`);
+  await pool.query(
+    `INSERT INTO card_checks (account_id, provider, plan_key, ref, url, ip_key, opened_at, completed_at)
+     SELECT $1, 'stripe', 'pro', 'cs_seed_' || g, '', 'seed', now() - interval '10 minutes', CASE WHEN g <= $3 THEN now() END FROM generate_series(1, $2) g`,
+    [accountId, opened, completed],
+  );
+};
+
+t('freno: con 20 abiertas en la última hora y menos del 20 % completas se cierran las nuevas, con un solo aviso urgente; el superadmin lo quita', async () => {
+  const prev = config.signup.superadminEmail;
+  config.signup.superadminEmail = 'super@freno.mx';
+  const alerts = () => outbox.filter((m) => m.to === 'super@freno.mx' && /Freno/.test(m.subject)).length;
+  try {
+    const a = await waiting('freno@tarjeta.mx');
+    await seed(a.accountId, 20, 4);
+    assert.equal((await a.api()).statusCode, 200, 'con el 20 % completas no frena');
+
+    const b = await waiting('frenada@tarjeta.mx');
+    await seed(b.accountId, 20, 3);
+    const braked = await b.api();
+    assert.equal(braked.statusCode, 429, braked.body);
+    assert.equal(braked.json().error, 'Intenta más tarde');
+    assert.equal((await b.api(undefined, '10.68.0.9')).statusCode, 429, 'desde cualquier conexión');
+    assert.equal(alerts(), 1, 'un solo aviso aunque sigan los intentos');
+    const log = await pool.query(`SELECT 1 FROM event_logs WHERE message LIKE 'Freno de verificaciones de tarjeta puesto%'`);
+    assert.equal(log.rowCount, 1, 'queda en la bitácora');
+
+    assert.equal((await b.as('DELETE', '/api/billing/card-check-brake')).statusCode, 403, 'un administrador no lo quita');
+    const off = await h.authed('DELETE', '/api/billing/card-check-brake');
+    assert.equal(off.statusCode, 200, off.body);
+    assert.equal((await b.api()).statusCode, 200, 'quitado, cuentan solo las de después');
+  } finally {
+    config.signup.superadminEmail = prev;
+    await pool.query(`DELETE FROM rate_limits WHERE key LIKE 'card-check-brake%'`);
   }
 });

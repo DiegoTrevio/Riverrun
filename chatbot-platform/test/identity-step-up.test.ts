@@ -36,6 +36,7 @@ export const STEP_UP: [string, string][] = [
   ['POST', '/api/billing/portal'],
   ['POST', '/api/billing/cancel'],
   ['PUT', '/api/billing/fiscal'],
+  ['DELETE', '/api/billing/card-check-brake'],
   ['GET', '/api/account/export.zip'],
   ['POST', '/api/account/deletion'],
   ['DELETE', '/api/account/deletion'],

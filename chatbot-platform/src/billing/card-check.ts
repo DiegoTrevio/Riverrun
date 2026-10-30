@@ -4,7 +4,9 @@
  *
  * Abrir la página de pago es lo que se usa para probar tarjetas robadas: pide el correo del dueño verificado (y la
  * verificación reciente, en la ruta), reutiliza la sesión vigente (30 minutos) y tiene topes en la base: 5 por día por
- * cuenta, 10 por conexión y 300 en toda la plataforma.
+ * cuenta, 10 por conexión y 300 en toda la plataforma. Si en la última hora se abrieron 20 o más y se completaron menos
+ * del 20 % (alguien probando tarjetas robadas), un freno cierra las nuevas una hora y avisa con urgencia al
+ * superadministrador, que lo puede quitar desde Cuentas.
  *
  * Una prueba por persona: al confirmarse la tarjeta se revisa que ni ella ni el correo ni la cuenta de Google hayan
  * tenido una (las marcas de `trial-claims`).
@@ -14,16 +16,55 @@ import { ipKey } from '../auth.js';
 import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
 import { accountOwner } from '../identity/ownership.js';
-import { countHit, releaseHit } from '../identity/rate-limit.js';
+import { countHit, hitsFor, releaseHit } from '../identity/rate-limit.js';
 import { notifySuperadmins } from '../lifecycle.js';
 import { logEvent } from '../logs.js';
+import { notifyPlatform } from '../platform/digest.js';
 import { billingEnabled, fmt, providers, queueAction, recordEvent, tell, type Later } from './service.js';
 import { cardClaim, recordTrialClaims, trialAvailable } from './trial-claims.js';
 import type { ProviderName, SubscriptionState } from './types.js';
 
 export const CHECK_TTL_MS = 30 * 60_000;
+const HOUR = 3600_000;
 const DAY = 86400_000;
 const TOO_MANY = 'Intenta más tarde';
+/** El freno: clave de `rate_limits` que vive una hora. `BRAKE_CLEARED` marca cuándo lo quitó el superadmin. */
+const BRAKE = 'card-check-brake';
+const BRAKE_CLEARED = 'card-check-brake-cleared';
+const BRAKE_MIN_OPENED = 20;
+const BRAKE_MIN_RATE = 0.2;
+
+export async function brakeOn(): Promise<boolean> {
+  return (await hitsFor(BRAKE)) > 0;
+}
+
+/**
+ * ¿Frenar las verificaciones nuevas? Cuenta las de la última hora (desde que el superadmin quitó el freno, si fue
+ * después). Al ponerse avisa una sola vez: los que llegan con el freno puesto ya no cuentan nada.
+ */
+async function braked(): Promise<boolean> {
+  if (await brakeOn()) return true;
+  const r = await queryOne<{ opened: number; completed: number }>(
+    `SELECT count(*)::int AS opened, count(completed_at)::int AS completed FROM card_checks
+      WHERE opened_at > GREATEST(now() - interval '1 hour',
+        COALESCE((SELECT expires_at - interval '1 hour' FROM rate_limits WHERE key = $1 AND expires_at > now()), '-infinity'::timestamptz))`,
+    [BRAKE_CLEARED],
+  );
+  if (!r || r.opened < BRAKE_MIN_OPENED || r.completed >= r.opened * BRAKE_MIN_RATE) return false;
+  if ((await countHit(BRAKE, HOUR)) === 1) {
+    const what = `En la última hora se abrieron ${r.opened} verificaciones de tarjeta y solo se completaron ${r.completed}`;
+    await logEvent({ level: 'error', source: 'admin', message: `Freno de verificaciones de tarjeta puesto: ${what.toLowerCase()}` });
+    await notifyPlatform('Freno a las verificaciones de tarjeta', `${what}: puede ser alguien probando tarjetas robadas. Las nuevas quedan cerradas una hora («Intenta más tarde»). Si es tráfico legítimo, quita el freno desde Cuentas.`, { urgent: true });
+  }
+  return true;
+}
+
+/** El superadmin quita el freno: se abren otra vez y solo cuentan las verificaciones de después. */
+export async function clearBrake(actor: { email: string }): Promise<void> {
+  await query(`DELETE FROM rate_limits WHERE key IN ($1, $2)`, [BRAKE, BRAKE_CLEARED]);
+  await countHit(BRAKE_CLEARED, HOUR);
+  await logEvent({ level: 'warn', source: 'admin', message: `Freno de verificaciones de tarjeta quitado por ${actor.email}` });
+}
 
 /** ¿La cuenta nueva necesita una tarjeta para empezar su prueba? Sí, si hay cobro en línea (proveedor y planes). */
 export async function cardRequired(): Promise<boolean> {
@@ -108,6 +149,7 @@ export async function openCardCheck(o: {
     [o.accountId, o.provider, o.planKey, CHECK_TTL_MS / 1000],
   );
   if (live) return live.url;
+  if (await braked()) throw new HttpError(429, TOO_MANY);
   const keys: [string, number][] = [[`card-check-acct:${o.accountId}`, 5], [`card-check-ip:${ipKey(o.ip)}`, 10], ['card-check-day', 300]];
   const taken: string[] = [];
   const release = async () => { for (const k of taken) await releaseHit(k); };

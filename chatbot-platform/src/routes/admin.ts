@@ -7,6 +7,7 @@ import { operationalStatus } from '../engine/operations.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { assertRecentMfa, stepUp } from '../identity/step-up.js';
+import { clearBrake } from '../billing/card-check.js';
 import { assertAccount, HttpError, notFound, requireRole, scopeAccount, targetAccount } from '../access.js';
 import {
   clearSessionCookie,
@@ -227,6 +228,12 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     await removePlatformSecret(ZERNIO_SECRET);
     await logEvent({ level: 'warn', source: 'admin', message: `Llave de Zernio quitada desde el panel por ${req.user.email}: las redes sociales dejan de funcionar` });
     return zernioSystemStatus(false);
+  });
+
+  // Quita el freno contra prueba de tarjetas (Cuentas): las verificaciones de tarjeta se abren otra vez.
+  api.delete('/api/billing/card-check-brake', { ...superadmin, ...stepUp }, async (req: any) => {
+    await clearBrake(req.user);
+    return { ok: true };
   });
 
   api.get('/api/system/incidents', { preHandler: requireRole('superadmin') }, async (req: any) => listIncidents(Number(req.query?.limit) || 50));
