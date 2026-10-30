@@ -22,6 +22,8 @@ export const fake = {
   /** payments = pagos autorizados de la suscripción; charges = pagos (para reembolsos). */
   mp: {
     requests: [] as { method: string; path: string; body: any }[], preapprovals: {} as Record<string, any>, payments: {} as Record<string, any>, charges: {} as Record<string, any>,
+    /** Tarjetas guardadas de los clientes (GET /v1/customers/:id/cards/:card). */
+    cards: {} as Record<string, any>,
     /** Pagos reembolsados (POST /v1/payments/:id/refunds). */
     refunds: [] as string[],
     /** Id de la próxima suscripción que se cree (por omisión, "pre_new"). */
@@ -100,6 +102,8 @@ const stripeUrl = await serve((req, raw, res) => {
     }
     if (req.method === 'POST') {
       if (body.has('cancel_at_period_end')) sub.cancel_at_period_end = body.get('cancel_at_period_end') === 'true';
+      // Terminar la prueba ya (tarjeta que ya tuvo una): Stripe cobra al momento y la suscripción queda activa.
+      if (body.get('trial_end') === 'now') { sub.status = 'active'; delete sub.trial_end; }
       // Cambio de plan: el renglón toma el nuevo precio (por ID o armado con price_data).
       if (body.has('items[0][id]')) {
         const item = sub.items.data[0];
@@ -131,6 +135,8 @@ const mpUrl = await serve((req, raw, res) => {
     const id = fake.mp.nextId || 'pre_new';
     return json(res, 201, { id, init_point: `https://mp.test/checkout/${id}` });
   }
+  const card = path.match(/^\/v1\/customers\/([\w-]+)\/cards\/([\w-]+)$/);
+  if (card) return fake.mp.cards[card[2]] ? json(res, 200, fake.mp.cards[card[2]]) : json(res, 404, { message: 'not found' });
   let m = path.match(/^\/preapproval\/([\w-]+)$/);
   if (m) {
     const p = fake.mp.preapprovals[m[1]];

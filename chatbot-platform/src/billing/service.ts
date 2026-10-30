@@ -14,6 +14,7 @@ import { keptNote } from '../accounts/retention.js';
 import { LIMIT_LABELS, usageOf } from './limits.js';
 import { mercadopago } from './mercadopago.js';
 import { stripe } from './stripe.js';
+import { startTrialFromState } from './card-check.js';
 import { chargeCents } from './tax.js';
 import type { BillingProvider, PaymentInfo, Plan, ProviderName, Subscription, SubscriptionState } from './types.js';
 
@@ -28,7 +29,7 @@ export const getSubscription = (accountId: string) => queryOne<Subscription>(`SE
 export const money = (cents: number, currency: string) =>
   new Intl.NumberFormat('es-MX', { style: 'currency', currency, maximumFractionDigits: cents % 100 ? 2 : 0 }).format(cents / 100) + ` ${currency}`;
 
-const fmt = (d: Date | null) => (d ? new Date(d).toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'America/Mexico_City' }) : '—');
+export const fmt = (d: Date | null) => (d ? new Date(d).toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'America/Mexico_City' }) : '—');
 
 async function admins(accountId: string) {
   return query<{ id: string; email: string; name: string }>(`SELECT id, email, name FROM users WHERE account_id = $1 AND role = 'admin' AND active`, [accountId]);
@@ -159,7 +160,7 @@ async function trialLeft(accountId: string, now = Date.now()): Promise<Date | un
  * Anota algo que hay que hacer en el proveedor y que se reintenta hasta lograrlo (`processBillingActions`): cancelar una
  * suscripción o reembolsar sus cobros. Repetirlo no duplica nada.
  */
-export async function queueAction(o: { provider: ProviderName; kind: 'cancel' | 'refund_subscription'; ref: string; accountId: string | null; reason: 'duplicate' | 'replaced' | 'unpaid' | 'deleted' | 'dispute' }) {
+export async function queueAction(o: { provider: ProviderName; kind: 'cancel' | 'refund_subscription'; ref: string; accountId: string | null; reason: '' | 'duplicate' | 'replaced' | 'unpaid' | 'deleted' | 'dispute' }) {
   if (!o.ref) return;
   await query(
     `INSERT INTO billing_actions (provider, kind, ref, account_id, reason) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (provider, kind, ref) DO NOTHING`,
@@ -323,11 +324,11 @@ export async function applyState(state: SubscriptionState, now = new Date()): Pr
 }
 
 /** Avisos que salen al terminar de aplicar un estado (fuera del candado). */
-type Later = (() => Promise<unknown>)[];
+export type Later = (() => Promise<unknown>)[];
 
 async function applyStateLocked(state: SubscriptionState & { accountId: string }, now: Date, later: Later): Promise<string | null> {
   const accountId = state.accountId;
-  const acc = await queryOne<{ id: string; name: string; status: string; plan: string }>(`SELECT id, name, status, plan FROM accounts WHERE id = $1`, [accountId]);
+  const acc = await queryOne<{ id: string; name: string; status: string; plan: string; pause_reason: string }>(`SELECT id, name, status, plan, pause_reason FROM accounts WHERE id = $1`, [accountId]);
   if (!acc) return null;
 
   const prev = await getSubscription(accountId);
@@ -404,17 +405,28 @@ async function applyStateLocked(state: SubscriptionState & { accountId: string }
     else if (was === 'active') later.push(() => tell(accountId, 'Actualizamos tu plan', `Tu cuenta "${acc.name}" sigue al corriente${plan ? ` con el plan ${plan.name}` : ''} y con tu nueva forma de pago. Próximo cobro: ${fmt(periodEnd)}.`));
   }
 
-  if (state.status === 'active') {
+  // Prueba con tarjeta: el proveedor confirmó la tarjeta y el primer cobro es al terminar la prueba (`trialEnd`).
+  const trialFuture = !!state.trialEnd && state.trialEnd > now;
+  const waitingCard = acc.status === 'paused' && acc.pause_reason === 'card';
+  // La tarjeta ya se confirmó: la verificación abierta quedó completa (el freno cuenta las que no se completan).
+  if (state.status === 'active') await query(`UPDATE card_checks SET completed_at = now() WHERE account_id = $1 AND completed_at IS NULL`, [accountId]);
+
+  if (state.status === 'active' && trialFuture && waitingCard) {
+    await startTrialFromState({ ...state, accountId }, acc.name, later);
+  } else if (state.status === 'active') {
     // Cuenta al corriente: se activa (sale de prueba o de pausa) y se anota el plan contratado.
     // Solo al pasar a "al corriente" se reactiva la cuenta: una renovación mensual no deshace una pausa manual del superadmin.
     // Un contracargo abierto mantiene la pausa: solo se levanta al resolverse (ver `applyDispute`).
+    // La suscripción de una prueba con tarjeta ya estaba «al corriente»: la cuenta se activa con el primer cobro (sin
+    // días gratis por delante), y también la que esperaba tarjeta y se cobró ya (tarjeta que ya tuvo prueba).
+    const activate = was !== 'active' || (!trialFuture && (acc.status === 'trial' || waitingCard));
     await query(
       `UPDATE accounts SET status = CASE WHEN $3::boolean AND NOT (status = 'paused' AND pause_reason = 'dispute') THEN 'active' ELSE status END,
          trial_ends_at = CASE WHEN $3::boolean THEN NULL ELSE trial_ends_at END,
          plan = COALESCE(NULLIF($2, ''), plan), updated_at = now() WHERE id = $1`,
-      [accountId, planKey, was !== 'active'],
+      [accountId, planKey, activate],
     );
-    if (was !== 'active') {
+    if (activate) {
       await logEvent({ level: 'info', source: 'admin', message: `Pago confirmado (${state.provider}): plan ${planKey || '—'}`, accountId });
       later.push(() => tell(accountId, was === 'past_due' ? 'Recibimos tu pago, ¡gracias!' : '¡Tu plan está activo!', `Tu cuenta "${acc.name}" quedó al corriente${plan ? ` con el plan ${plan.name}` : ''}. Próxima renovación: ${fmt(periodEnd)}.`));
       if (was !== 'past_due') later.push(() => notifySuperadmins(accountId, `Nueva suscripción: ${acc.name}`, `"${acc.name}" contrató${plan ? ` ${plan.name} (${money(plan.price_cents, plan.currency)})` : ''} por ${state.provider}.`));
@@ -427,8 +439,11 @@ async function applyStateLocked(state: SubscriptionState & { accountId: string }
   } else if (state.status === 'canceled' && was !== 'canceled') {
     await logEvent({ level: 'info', source: 'admin', message: `Suscripción cancelada (${state.provider})`, accountId });
     const until = periodEnd && periodEnd > now ? ` Tu asistente sigue activo hasta el ${fmt(periodEnd)}.` : '';
-    later.push(() => tell(accountId, 'Tu suscripción se canceló', `La suscripción de "${acc.name}" se canceló.${until} Puedes volver a contratar cuando quieras.`));
-    later.push(() => notifySuperadmins(accountId, `Suscripción cancelada: ${acc.name}`, `"${acc.name}" canceló su plan.`));
+    // La de una cuenta que espera tarjeta la cancelamos nosotros (tarjeta que ya tuvo prueba): el dueño ya tiene su aviso.
+    if (!waitingCard) {
+      later.push(() => tell(accountId, 'Tu suscripción se canceló', `La suscripción de "${acc.name}" se canceló.${until} Puedes volver a contratar cuando quieras.`));
+      later.push(() => notifySuperadmins(accountId, `Suscripción cancelada: ${acc.name}`, `"${acc.name}" canceló su plan.`));
+    }
     later.push(() => enforceAccess(now));
   }
   return accountId;

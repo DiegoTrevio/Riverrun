@@ -58,6 +58,8 @@ t('guardar y leer los datos; un agente no puede; con factura y datos incompletos
     payload: { name: 'Ema Ruiz', company: 'Escuela Ema', business_type: 'servicios', email: 'ema@escuela.mx', password: 'Pz-119-Qx-319-Kv', accept_terms: true } });
   assert.equal(r.statusCode, 200, r.body);
   const accountId = r.json().account.id;
+  // Pagar (la verificación de tarjeta) pide el correo del dueño verificado.
+  await pool.query(`UPDATE users SET email_verified_at = now() WHERE email = 'ema@escuela.mx'`);
   const cookie = await h.sessionFrom(r);
   const api = (method: string, url: string, payload?: unknown) => h.app.inject({ method: method as any, url, payload: payload as any, headers: { cookie } });
 

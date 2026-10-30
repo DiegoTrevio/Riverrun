@@ -52,19 +52,25 @@ export async function checkTrials(now = new Date()) {
     const o = await accountOwner(acc.id);
     if (o) {
       const next = await howToContinue(acc.id);
+      // Con tarjeta (suscripción viva), la prueba no se pausa: ese día se hace el primer cobro.
+      const paying = await queryOne(`SELECT 1 FROM subscriptions WHERE account_id = $1 AND status IN ('active', 'past_due')`, [acc.id]);
       await sendMailDurable({
         fromName: next.mb.fromName,
         to: o.email,
         subject: 'Tu periodo de prueba está por terminar',
-        text: `Hola ${o.name || ''},\n\nTu prueba de "${acc.name}" termina el ${fmt(acc.trial_ends_at!)}. Después de esa fecha tu asistente dejará de responder hasta que se active tu plan.\n\n${next.text}`,
+        text: paying
+          ? `Hola ${o.name || ''},\n\nTu prueba de "${acc.name}" termina el ${fmt(acc.trial_ends_at!)} y ese día se hace el primer cobro de tu plan con la tarjeta que registraste. Si no quieres continuar, cancela antes desde Mi plan:\n${next.mb.base}/#/plan`
+          : `Hola ${o.name || ''},\n\nTu prueba de "${acc.name}" termina el ${fmt(acc.trial_ends_at!)}. Después de esa fecha tu asistente dejará de responder hasta que se active tu plan.\n\n${next.text}`,
       }, acc.id);
     }
     await notifySuperadmins(acc.id, `Prueba por vencer: ${acc.name}`, `La prueba de "${acc.name}" termina el ${fmt(acc.trial_ends_at!)}${o ? ` (${o.email})` : ''}.`);
   }
 
-  // 2) Prueba vencida: la cuenta se pausa (el panel sigue funcionando; el bot no responde).
+  // 2) Prueba vencida: la cuenta se pausa (el panel sigue funcionando; el bot no responde). La de una prueba con tarjeta
+  // no: su suscripción sigue viva y el proveedor hace el primer cobro (si falla, sigue la cobranza de siempre).
   const expired = await query<Account>(
-    `UPDATE accounts SET status = 'paused', paused_at = $1, pause_reason = 'trial', updated_at = now() WHERE status = 'trial' AND trial_ends_at <= $1 RETURNING *`,
+    `UPDATE accounts SET status = 'paused', paused_at = $1, pause_reason = 'trial', updated_at = now() WHERE status = 'trial' AND trial_ends_at <= $1
+       AND NOT EXISTS (SELECT 1 FROM subscriptions s WHERE s.account_id = accounts.id AND s.status IN ('active', 'past_due')) RETURNING *`,
     [now],
   );
   for (const acc of expired) {

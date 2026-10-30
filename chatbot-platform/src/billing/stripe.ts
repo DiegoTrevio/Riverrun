@@ -133,6 +133,9 @@ export function stateFromSubscription(sub: any, plans: Plan[]): SubscriptionStat
     status: STATUS[sub.status] ?? 'incomplete',
     periodEnd: typeof periodEnd === 'number' ? new Date(periodEnd * 1000) : null,
     cancelAtPeriodEnd: !!sub.cancel_at_period_end || !!sub.cancel_at,
+    trialEnd: sub.status === 'trialing' && typeof sub.trial_end === 'number' ? new Date(sub.trial_end * 1000) : null,
+    // Se lee con expand[]=default_payment_method: sin expandir es solo el id.
+    cardKey: typeof sub.default_payment_method === 'object' ? sub.default_payment_method?.card?.fingerprint ?? null : null,
   };
 }
 
@@ -194,7 +197,7 @@ export const stripe: BillingProvider = {
     const s = await call('GET', `/v1/checkout/sessions/${encodeURIComponent(ref)}`);
     const subId = typeof s.subscription === 'string' ? s.subscription : s.subscription?.id;
     if (s.status !== 'complete' || !subId) return null;
-    const state = stateFromSubscription(await call('GET', `/v1/subscriptions/${encodeURIComponent(subId)}`), plans);
+    const state = stateFromSubscription(await call('GET', `/v1/subscriptions/${encodeURIComponent(subId)}?expand[]=default_payment_method`), plans);
     if (!state.accountId) state.accountId = s.client_reference_id || null;
     return state;
   },
@@ -202,6 +205,10 @@ export const stripe: BillingProvider = {
   async portal(customerId, returnUrl) {
     const s = await call('POST', '/v1/billing_portal/sessions', { customer: customerId, return_url: returnUrl });
     return { url: s.url };
+  },
+
+  async endTrialNow(subscriptionId) {
+    await call('POST', `/v1/subscriptions/${encodeURIComponent(subscriptionId)}`, { trial_end: 'now' });
   },
 
   async setCancelAtPeriodEnd(sub, cancel) {
@@ -224,7 +231,7 @@ export const stripe: BillingProvider = {
   },
 
   async subscriptionState(subscriptionId, plans) {
-    return stateFromSubscription(await call('GET', `/v1/subscriptions/${encodeURIComponent(subscriptionId)}`), plans);
+    return stateFromSubscription(await call('GET', `/v1/subscriptions/${encodeURIComponent(subscriptionId)}?expand[]=default_payment_method`), plans);
   },
 
   async recentPayments(subscriptionId, since) {
@@ -271,7 +278,7 @@ export const stripe: BillingProvider = {
       event.type.startsWith('customer.subscription.') ? obj.id : obj.subscription ?? obj.parent?.subscription_details?.subscription ?? undefined;
     if (!subId) return result;
     // Siempre se lee la suscripción: refleja el estado real aunque los avisos lleguen repetidos o desordenados.
-    const sub = await call('GET', `/v1/subscriptions/${encodeURIComponent(subId)}`);
+    const sub = await call('GET', `/v1/subscriptions/${encodeURIComponent(subId)}?expand[]=default_payment_method`);
     const state = stateFromSubscription(sub, plans);
     if (!state.accountId && event.type === 'checkout.session.completed') state.accountId = obj.client_reference_id || null;
     result.state = state;
