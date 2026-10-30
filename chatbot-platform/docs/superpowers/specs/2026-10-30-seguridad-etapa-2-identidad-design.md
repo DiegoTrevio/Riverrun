@@ -64,8 +64,9 @@ Se entrega en dos PR, cada uno con pruebas que fallan con el código anterior:
 - Código QR para la app: se genera en el servidor como SVG con `qrcode-generator` (sin dependencias, versión fija). El
   panel también muestra el secreto en texto para escribirlo a mano. La URI `otpauth://` lleva como emisor el nombre de
   la marca de la cuenta (la misma de sus correos; «Panel de Chatbots» si no tiene) y como cuenta el correo.
-- Mientras configura (o cambia de app), el secreto queda pendiente (`totp_pending`): recargar, abrir otra pestaña o
-  volver a entrar muestra el mismo QR, para que la app ya escaneada siga sirviendo.
+- Mientras configura (o cambia de app), el secreto queda pendiente (`totp_pending`, `totp_pending_at`): durante una
+  hora, recargar, abrir otra pestaña o volver a entrar muestra el mismo QR, para que la app ya escaneada siga sirviendo;
+  después se cambia por uno nuevo (nadie que sepa la contraseña deja uno preparado para cuando la persona lo configure).
 
 ### 2a.2 Códigos de recuperación
 
@@ -201,7 +202,10 @@ El límite por cuenta no deja a la víctima fuera: entra desde su dispositivo re
   `__Host-cp_trust`, `__Host-cp_device`): el navegador exige HTTPS, `Path=/` y ningún dominio. Sin HTTPS (desarrollo)
   van sin prefijo.
 - Una sesión vencida por inactividad responde `401 { code: 'session_idle' }` y el panel dice «Tu sesión se cerró por
-  inactividad».
+  inactividad». Lo que el panel consulta solo (la campana, refrescar una pantalla) va con `x-panel-background: 1` y no
+  cuenta como uso: un panel abierto sin nadie enfrente también se cierra.
+- Las cookies se borran con las mismas opciones con que se ponen (con `Secure`): el navegador ignora el borrado de una
+  cookie `__Host-` sin él.
 
 ### 2a.9 Peticiones de otros sitios
 

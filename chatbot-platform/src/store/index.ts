@@ -158,7 +158,8 @@ export async function createUserSession(s: { userId: string; expires: Date; via:
  * ¿Sigue abierta? `idle` si pasó más de `idleMs` sin usarla (y entonces se cierra). Anota el uso como mucho una vez por
  * minuto (no se escribe en cada petición).
  */
-export async function touchUserSession(id: string, userId: string, idleMs: number): Promise<{ state: 'ok'; mfaAt: Date | null } | { state: 'idle' | 'gone' }> {
+/** `touch: false`: lo pidió el panel solo (la campana, refrescar la pantalla): revisa la sesión sin anotar uso. */
+export async function touchUserSession(id: string, userId: string, idleMs: number, o: { touch?: boolean } = {}): Promise<{ state: 'ok'; mfaAt: Date | null } | { state: 'idle' | 'gone' }> {
   if (!/^[0-9a-f-]{36}$/i.test(id)) return { state: 'gone' };
   const row = await queryOne<{ stale: boolean; idle: boolean; mfa_at: Date | null }>(
     `SELECT last_seen_at < now() - interval '1 minute' AS stale, last_seen_at <= now() - make_interval(secs => $3) AS idle, mfa_at
@@ -170,7 +171,7 @@ export async function touchUserSession(id: string, userId: string, idleMs: numbe
     await query(`UPDATE user_sessions SET revoked_at = now() WHERE id = $1`, [id]);
     return { state: 'idle' };
   }
-  if (row.stale) await query(`UPDATE user_sessions SET last_seen_at = now() WHERE id = $1`, [id]);
+  if (row.stale && o.touch !== false) await query(`UPDATE user_sessions SET last_seen_at = now() WHERE id = $1`, [id]);
   return { state: 'ok', mfaAt: row.mfa_at };
 }
 

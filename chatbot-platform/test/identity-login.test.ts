@@ -149,6 +149,21 @@ t('reto vencido: challenge_expired, y el secreto pendiente sigue sirviendo al vo
   assert.equal((await post('/api/login/2fa', `${again.slice(0, -2)}xx`, { code: '123456' })).statusCode, 401, 'un reto con la firma alterada no vale');
 });
 
+t('un secreto pendiente de más de una hora se cambia por uno nuevo: nadie lo deja preparado para después', async () => {
+  await newUser('sembrado@login.mx');
+  const c = await challenge('sembrado@login.mx', PASS);
+  const { secret } = (await get('/api/2fa/enroll', c)).json();
+  await pool.query(`UPDATE users SET totp_pending_at = now() - interval '59 minutes' WHERE email = 'sembrado@login.mx'`);
+  assert.equal((await get('/api/2fa/enroll', await challenge('sembrado@login.mx', PASS))).json().secret, secret, 'dentro de la hora, el mismo');
+  await pool.query(`UPDATE users SET totp_pending_at = now() - interval '61 minutes' WHERE email = 'sembrado@login.mx'`);
+  const again = await challenge('sembrado@login.mx', PASS);
+  const fresh = (await get('/api/2fa/enroll', again)).json().secret;
+  assert.notEqual(fresh, secret);
+  assert.equal((await post('/api/2fa/enroll', again, { code: totpAt(secret, currentStep()) })).statusCode, 400, 'el viejo ya no sirve');
+  assert.equal((await post('/api/2fa/enroll', again, { code: totpAt(fresh, currentStep()) })).statusCode, 200);
+  assert.equal((await pool.query(`SELECT totp_pending_at FROM users WHERE email = 'sembrado@login.mx'`)).rows[0].totp_pending_at, null);
+});
+
 t('si la desactivan o cambia su contraseña entre la contraseña y el código, el reto ya no abre sesión', async () => {
   const id = await newUser('cambia@login.mx');
   const { secret } = await enroll('cambia@login.mx');

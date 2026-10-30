@@ -150,7 +150,7 @@ Todos entran con contraseña y el código de una app de autenticación ([etapa 2
 
 | Quién | Cómo vuelve |
 |---|---|
-| Cualquiera con sus códigos de recuperación | Entra con uno (cada uno sirve una vez) y en **Mi perfil → Verificación en dos pasos** pulsa «Cambiar de app» y «Generar códigos nuevos». |
+| Cualquiera con sus códigos de recuperación | Entra con uno (cada uno sirve una vez): el panel abre **Mi perfil → Verificación en dos pasos** con el aviso; ahí pulsa «Cambiar de app» y «Generar códigos nuevos». |
 | Agente o administrador | Otro administrador de su cuenta (o el superadministrador) pulsa **Restablecer 2FA** en Equipo. Se cierran sus sesiones y la configura otra vez al entrar con su contraseña. En la etapa 2b, el de un administrador lo restablece solo el dueño. |
 | Dueño de la cuenta | El superadministrador, desde Equipo de esa cuenta, después de comprobar por fuera que es él. |
 | Superadministrador | En el servidor: `./riverrun admin-password [correo]`. Contraseña nueva, 2FA restablecido (lo configura al entrar), sesiones cerradas y los intentos fallidos de su cuenta en 0. Si su conexión quedó bloqueada, espera 15 minutos. |

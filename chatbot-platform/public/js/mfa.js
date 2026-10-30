@@ -63,7 +63,14 @@ export async function renderMfaVerify() {
     e.preventDefault();
     const r = await run(() => api('POST', '/api/login/2fa', info.superadmin ? { code: f.code } : f));
     if (!r) return;
-    if (r.recovery_remaining !== undefined) toast(`Te quedan ${r.recovery_remaining} códigos de recuperación. Si perdiste tu teléfono, configura tu app otra vez desde Mi perfil.`);
+    if (r.recovery_remaining !== undefined) {
+      // Entró sin su app: el panel le pide configurarla otra vez (Mi perfil, con el aviso fijo hasta que la cambie).
+      toast(`Te quedan ${r.recovery_remaining} códigos de recuperación.`);
+      try {
+        sessionStorage.setItem('mfa-recovery', '1');
+        if (!/^https:\/\//.test(sessionStorage.getItem('after-mfa') || '')) sessionStorage.setItem('after-mfa', '#/password'); // el pago del registro va primero
+      } catch { /* sin storage */ }
+    }
     goNext();
   };
   publicCard('Verificación en dos pasos',
@@ -152,6 +159,7 @@ async function changeAuthenticator() {
     if (!(await dialog('Cambiar de app', content, 'Cambiar de app', () => input.reportValidity()))) return false;
     try {
       await api('POST', '/api/me/2fa/authenticator/confirm', { code: f.code });
+      try { sessionStorage.removeItem('mfa-recovery'); } catch { /* sin storage */ }
       toast('Listo: desde ahora entra con el código de la app nueva');
       return true;
     } catch (e) {
@@ -168,7 +176,10 @@ export function mfaSecurityCard() {
     const d = await api('GET', '/api/me/security').catch((e) => ({ error: e.message }));
     if (d.error) return fill(box, h('p', { class: 'error' }, d.error));
     const left = d.recovery_remaining;
+    let recovered = false;
+    try { recovered = sessionStorage.getItem('mfa-recovery') === '1'; } catch { /* sin storage */ }
     fill(box,
+      recovered ? h('p', { class: 'banner warn', role: 'status' }, 'Entraste con un código de recuperación. Si perdiste tu teléfono, pulsa «Cambiar de app» para configurar la app en el nuevo.') : null,
       h('p', {}, h('span', { class: 'badge green' }, 'Activa'), d.totp_enabled_at ? ` desde el ${fmtDate(d.totp_enabled_at)}.` : null, ' Entras con tu contraseña y el código de tu app de autenticación.'),
       h('div', { class: 'row' }, h('button', { onclick: async () => { if (await changeAuthenticator()) draw(); } }, 'Cambiar de app')),
       h('h3', {}, 'Códigos de recuperación'),

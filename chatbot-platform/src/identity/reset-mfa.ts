@@ -8,7 +8,7 @@ import { clearHits } from './rate-limit.js';
 
 export async function resetMfa(userId: string): Promise<void> {
   await query(
-    `UPDATE users SET totp_secret = NULL, totp_pending = NULL, totp_enabled_at = NULL, totp_last_step = 0, mfa_locked_until = NULL, updated_at = now() WHERE id = $1`,
+    `UPDATE users SET totp_secret = NULL, totp_pending = NULL, totp_pending_at = NULL, totp_enabled_at = NULL, totp_last_step = 0, mfa_locked_until = NULL, updated_at = now() WHERE id = $1`,
     [userId],
   );
   await query(`DELETE FROM user_recovery_codes WHERE user_id = $1`, [userId]);

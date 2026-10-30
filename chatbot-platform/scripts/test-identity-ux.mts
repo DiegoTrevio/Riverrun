@@ -109,9 +109,11 @@ try {
   await accessible(page, 'Escribir el código');
   await page.getByLabel('Código de 6 dígitos').fill(totpAt(secret, currentStep()));
   await page.getByLabel('Recordar este dispositivo 30 días').check();
+  const bell = page.waitForRequest((r) => r.url().includes('/api/notifications?limit=1'));
   await page.getByRole('button', { name: 'Entrar' }).click();
   await page.locator('.main h1').first().waitFor();
-  checks.push('Entrar con el código de la app (accesible en móvil)');
+  assert.equal((await bell).headers()['x-panel-background'], '1', 'la campana no cuenta como uso de la sesión');
+  checks.push('Entrar con el código de la app (accesible en móvil); la campana va marcada como consulta del panel');
 
   // Acción delicada sin verificación reciente: pide el código y la repite.
   await pool.query(`UPDATE user_sessions SET mfa_at = now() - interval '16 minutes' WHERE user_id = (SELECT id FROM users WHERE email = 'nuria@identidad.mx')`);
@@ -178,7 +180,12 @@ try {
   await page.getByRole('button', { name: 'Entrar' }).click();
   await page.locator('.main h1').first().waitFor();
   await page.getByText(/Te quedan 9 códigos de recuperación/).first().waitFor();
-  checks.push('Entrar con un código de recuperación (en mayúsculas) y ver cuántos quedan');
+  // El panel le pide configurar su app otra vez: lo lleva a Mi perfil con el aviso fijo.
+  await page.waitForURL(/#\/password$/);
+  const reconfigure = page.getByRole('region', { name: 'Verificación en dos pasos' });
+  await reconfigure.getByText('Entraste con un código de recuperación. Si perdiste tu teléfono, pulsa «Cambiar de app» para configurar la app en el nuevo.').waitFor();
+  await accessible(page, 'Mi perfil después de un código de recuperación');
+  checks.push('Entrar con un código de recuperación (en mayúsculas): ve cuántos quedan y el panel le pide configurar su app otra vez');
 
   // El reto venció (o se borró): vuelve a pedir la contraseña con el aviso.
   await context.clearCookies();

@@ -110,7 +110,7 @@ t('varias réplicas pueden migrar simultáneamente una instalación nueva', asyn
 
 t('095: columnas y tablas de identidad', async () => {
   const cols = (await db.query(`SELECT column_name FROM information_schema.columns WHERE table_name = 'users' AND column_name LIKE ANY (ARRAY['totp%', 'mfa%'])`)).rows.map((r) => r.column_name).sort();
-  assert.deepEqual(cols, ['mfa_locked_until', 'totp_enabled_at', 'totp_last_step', 'totp_pending', 'totp_secret']);
+  assert.deepEqual(cols, ['mfa_locked_until', 'totp_enabled_at', 'totp_last_step', 'totp_pending', 'totp_pending_at', 'totp_secret']);
   for (const table of ['user_recovery_codes', 'user_devices', 'rate_limits']) assert.ok((await db.query(`SELECT to_regclass($1) AS t`, [table])).rows[0].t, table);
   assert.ok((await db.query(`SELECT 1 FROM information_schema.columns WHERE table_name = 'user_sessions' AND column_name = 'mfa_at'`)).rows.length);
 });

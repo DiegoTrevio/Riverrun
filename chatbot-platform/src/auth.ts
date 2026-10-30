@@ -123,8 +123,11 @@ export function readSession(token: string | undefined): { uid: string; pv: strin
 
 export type SessionVia = 'password' | 'google' | 'invite' | 'signup' | 'password_change';
 
+/** Con las mismas opciones que al ponerla: el navegador ignora el borrado de una cookie `__Host-` sin `Secure`. */
+export const clearCookieOpts = () => ({ path: '/', httpOnly: true, sameSite: 'strict' as const, secure: config.secureCookies });
+
 export function clearSessionCookie(reply: FastifyReply) {
-  reply.clearCookie(cookieName('cp_session'), { path: '/' });
+  reply.clearCookie(cookieName('cp_session'), clearCookieOpts());
 }
 
 /** La sesión de esta petición (para cerrarla al salir). */
@@ -136,8 +139,9 @@ export async function requireAuth(req: FastifyRequest, reply: FastifyReply) {
   const row = session ? await store.getSessionUser(session.uid) : null;
   if (!row || !safeEqual(passwordVersion(row.password_hash), session!.pv)) return reply.code(401).send({ error: 'No autenticado' });
   // La sesión debe seguir abierta: cerrar sesión (aquí o desde otro dispositivo) la invalida al momento, y se cierra sola
-  // tras el tiempo sin uso de su rol.
-  const state = await store.touchUserSession(session!.sid, row.id, sessionLimits(row.role).idleMs);
+  // tras el tiempo sin uso de su rol. Lo que el panel consulta solo (`x-panel-background: 1`) no cuenta como uso.
+  const background = req.headers['x-panel-background'] === '1';
+  const state = await store.touchUserSession(session!.sid, row.id, sessionLimits(row.role).idleMs, { touch: !background });
   if (state.state === 'idle') return reply.code(401).send({ error: 'Tu sesión se cerró por inactividad', code: 'session_idle' });
   if (state.state !== 'ok') return reply.code(401).send({ error: 'No autenticado' });
   const { password_hash, ...user } = row;

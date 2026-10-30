@@ -2,9 +2,11 @@
 -- intentos que comparten todos los procesos y sobreviven a un reinicio.
 
 -- 2FA con app de autenticación (TOTP). El secreto va cifrado (AES-256-GCM con la llave de SESSION_SECRET); el pendiente
--- es el que se está configurando. El último paso aceptado impide usar dos veces el mismo código.
+-- es el que se está configurando (se vuelve a mostrar durante una hora; después se cambia por uno nuevo, para que nadie
+-- deje uno preparado). El último paso aceptado impide usar dos veces el mismo código.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret text;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_pending text;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_pending_at timestamptz;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_enabled_at timestamptz;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_last_step bigint NOT NULL DEFAULT 0;
 -- Demasiados códigos equivocados: la verificación queda bloqueada hasta esta hora.

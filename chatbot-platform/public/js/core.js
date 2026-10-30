@@ -20,6 +20,16 @@ const pendingReads = new Map();
 let readVersion = 0;
 export function invalidateReads() { reads.clear(); pendingReads.clear(); readVersion++; }
 
+/**
+ * Lo que el panel consulta solo (la campana, refrescar una pantalla) va marcado: no cuenta como uso para cerrar la
+ * sesión por inactividad, así un panel abierto sin nadie enfrente igual se cierra.
+ */
+let background = 0;
+export async function inBackground(fn) {
+  background++;
+  try { return await fn(); } finally { background--; }
+}
+
 export async function api(method, url, body, isForm = false) {
   // Solo catálogos breves; sesión, permisos y conversaciones siempre se verifican.
   const cacheable = method === 'GET' && /^\/api\/(meta$|channels(?:\?|$))/.test(url);
@@ -29,7 +39,7 @@ export async function api(method, url, body, isForm = false) {
   if (cacheable && pendingReads.has(key)) return clone(await pendingReads.get(key));
   if (method !== 'GET') invalidateReads();
   const version = readVersion;
-  const request = requestApi(method, url, body, isForm);
+  const request = requestApi(method, url, body, isForm, false, background > 0);
   if (cacheable) pendingReads.set(key, request);
   try {
     const data = await request;
@@ -38,10 +48,10 @@ export async function api(method, url, body, isForm = false) {
   } finally { if (pendingReads.get(key) === request) pendingReads.delete(key); }
 }
 
-async function requestApi(method, url, body, isForm, retried = false) {
+async function requestApi(method, url, body, isForm, retried = false, quiet = false) {
   const start = performance.now();
   const group = new URL(url, location.origin).pathname.split('/')[2] || 'other';
-  const opts = { method, headers: {} };
+  const opts = { method, headers: quiet ? { 'x-panel-background': '1' } : {} };
   if (body !== undefined) {
     if (isForm) opts.body = body;
     else {
@@ -389,7 +399,7 @@ export function poll(fn, ms, root) {
     if (nav !== state.navigation || (root && !root.isConnected)) { clearInterval(timer); return; }
     if (document.hidden || busy || Date.now() < next) return;
     busy = true;
-    try { await fn(); failures = 0; }
+    try { await inBackground(fn); failures = 0; }
     catch { failures++; }
     finally { busy = false; next = Date.now() + Math.min(ms * 2 ** failures, 60000); }
   };

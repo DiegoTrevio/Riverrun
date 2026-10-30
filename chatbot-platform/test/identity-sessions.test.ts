@@ -65,6 +65,20 @@ t('el último uso se anota como mucho cada minuto', async () => {
   assert.ok(Number(age) < 30, `se actualizó (hace ${age} s)`);
 });
 
+t('lo que el panel consulta solo (la campana, refrescar la pantalla) no cuenta como uso, pero sí cierra la sesión vencida', async () => {
+  const { id } = await newestSession(AGENT.email);
+  const bell = () => h.app.inject({ method: 'GET', url: '/api/notifications?limit=1', headers: { cookie: agent.cookie, 'x-panel-background': '1' } });
+  const age = async () => Number((await pool.query(`SELECT extract(epoch FROM now() - last_seen_at) AS secs FROM user_sessions WHERE id = $1`, [id])).rows[0].secs);
+  await pool.query(`UPDATE user_sessions SET last_seen_at = now() - interval '5 minutes' WHERE id = $1`, [id]);
+  assert.equal((await bell()).statusCode, 200);
+  assert.ok((await age()) >= 299, 'la campana no movió el último uso');
+  assert.equal((await agent('GET', '/api/notifications?limit=1')).statusCode, 200);
+  assert.ok((await age()) < 30, 'una petición de la persona sí');
+  await pool.query(`UPDATE user_sessions SET last_seen_at = now() - interval '12 hours 1 minute' WHERE id = $1`, [id]);
+  assert.equal((await bell()).json().code, 'session_idle', 'con la sesión vencida, la campana lleva a entrar');
+  agent = await h.loginAs(AGENT.email, AGENT.password);
+});
+
 t('12 h sin uso cierran la sesión del equipo; 30 min la del superadmin', async () => {
   await pool.query(`UPDATE user_sessions SET last_seen_at = now() - interval '11 hours 50 minutes' WHERE user_id = (SELECT id FROM users WHERE email = $1)`, [AGENT.email]);
   assert.equal((await agent('GET', '/api/me')).statusCode, 200, 'menos de 12 h: sigue');

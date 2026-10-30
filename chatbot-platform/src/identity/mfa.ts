@@ -5,7 +5,7 @@
  */
 import crypto from 'node:crypto';
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import { cookieName, createSession, passwordVersion, sessionLimits, type SessionVia } from '../auth.js';
+import { clearCookieOpts, cookieName, createSession, passwordVersion, sessionLimits, type SessionVia } from '../auth.js';
 import { mailBrand } from '../brands.js';
 import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
@@ -30,6 +30,7 @@ export type ChallengeUser = User & {
   password_hash: string;
   totp_secret: string | null;
   totp_pending: string | null;
+  totp_pending_at: Date | null;
   totp_enabled_at: Date | null;
   totp_last_step: number;
   mfa_locked_until: Date | null;
@@ -54,7 +55,7 @@ export function readChallenge(req: FastifyRequest): Challenge | null {
 }
 
 export function clearChallenge(reply: FastifyReply) {
-  reply.clearCookie(cookieName('cp_mfa'), { path: '/' });
+  reply.clearCookie(cookieName('cp_mfa'), clearCookieOpts());
 }
 
 /** Abre la sesión (registrada en user_sessions) y pone su cookie. `mfaAt`: cuándo escribió el código (null si no). */
@@ -97,8 +98,8 @@ export async function challengeUser(req: FastifyRequest): Promise<{ challenge: C
 export async function loadMfaUser(id: string): Promise<ChallengeUser | null> {
   const base = await store.getSessionUser(id);
   if (!base) return null;
-  const extra = await queryOne<{ totp_secret: string | null; totp_pending: string | null; totp_enabled_at: Date | null; totp_last_step: string; mfa_locked_until: Date | null }>(
-    `SELECT totp_secret, totp_pending, totp_enabled_at, totp_last_step, mfa_locked_until FROM users WHERE id = $1`,
+  const extra = await queryOne<{ totp_secret: string | null; totp_pending: string | null; totp_pending_at: Date | null; totp_enabled_at: Date | null; totp_last_step: string; mfa_locked_until: Date | null }>(
+    `SELECT totp_secret, totp_pending, totp_pending_at, totp_enabled_at, totp_last_step, mfa_locked_until FROM users WHERE id = $1`,
     [base.id],
   );
   return extra ? { ...base, ...extra, totp_last_step: Number(extra.totp_last_step) } : null;
@@ -150,12 +151,19 @@ async function wrongCode(user: ChallengeUser): Promise<{ result: 'bad' | 'locked
   return { result: 'locked' };
 }
 
-/** El secreto que se está configurando: el mismo si ya hay uno pendiente (otra pestaña, recargar, el reto venció). */
+/** Cuánto se vuelve a mostrar el mismo secreto pendiente; después se cambia, para que nadie deje uno preparado. */
+const PENDING_MS = 60 * 60_000;
+
+/**
+ * El secreto que se está configurando: el mismo si hay uno pendiente de la última hora (otra pestaña, recargar, el reto
+ * venció mientras instalaba la app); si no, uno nuevo.
+ */
 export async function startEnrollment(user: ChallengeUser): Promise<{ secret: string; otpauth: string; qr: string }> {
-  let secret = user.totp_pending ? decryptSecret(user.totp_pending) : null;
+  const fresh = user.totp_pending_at && Date.now() - new Date(user.totp_pending_at).getTime() < PENDING_MS;
+  let secret = user.totp_pending && fresh ? decryptSecret(user.totp_pending) : null;
   if (!secret) {
     secret = newTotpSecret();
-    await query(`UPDATE users SET totp_pending = $2 WHERE id = $1`, [user.id, encryptSecret(secret)]);
+    await query(`UPDATE users SET totp_pending = $2, totp_pending_at = now() WHERE id = $1`, [user.id, encryptSecret(secret)]);
   }
   const issuer = (await mailBrand(user.account_id)).fromName ?? 'Panel de Chatbots';
   const otpauth = otpauthUri({ issuer, account: user.email, secret });
@@ -169,7 +177,7 @@ export async function confirmEnrollment(userId: string, code: string): Promise<b
   const step = secret ? matchTotp(secret, code) : null;
   if (step === null) return false;
   const done = await queryOne(
-    `UPDATE users SET totp_secret = totp_pending, totp_pending = NULL, totp_enabled_at = now(), totp_last_step = $2, mfa_locked_until = NULL, updated_at = now()
+    `UPDATE users SET totp_secret = totp_pending, totp_pending = NULL, totp_pending_at = NULL, totp_enabled_at = now(), totp_last_step = $2, mfa_locked_until = NULL, updated_at = now()
       WHERE id = $1 AND totp_pending = $3 RETURNING id`,
     [userId, step, row!.totp_pending],
   );
