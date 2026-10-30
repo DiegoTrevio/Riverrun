@@ -24,6 +24,8 @@ before(async () => {
   if (!ok) return;
   h = await createHarness();
   await h.createBot();
+  // Primero la dueña (la primera administradora que acepta): a la persona de estas pruebas se le cambia el rol.
+  await h.addUser({ account_id: h.accountId, email: 'duena@sesiones.mx', name: 'Dueña', password: PASS, role: 'admin' });
   const u = await h.addUser({ account_id: h.accountId, email: EMAIL, name: 'Recepción', password: PASS, role: 'admin' });
   userId = u.id;
 });
