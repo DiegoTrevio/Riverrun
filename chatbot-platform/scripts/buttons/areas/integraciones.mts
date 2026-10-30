@@ -1,7 +1,7 @@
 /** Integraciones: un webhook de punta a punta (crear, enviar una prueba que llega, borrar) y una llave de la API (crear, revocar). */
 import assert from 'node:assert/strict';
 import { ext, waitFor } from '../../../test/harness.js';
-import type { AreaContext } from '../areas.mts';
+import { toast, type AreaContext } from '../areas.mts';
 
 export const checks = {
   'Crear webhook → Enviar prueba llega a la dirección → Borrar lo quita': async ({ h, pool, open, go }: AreaContext) => {
@@ -25,7 +25,7 @@ export const checks = {
     assert.match(JSON.stringify(sent.body ?? {}), /"test":\s*true/, 'la prueba no va marcada "test": true');
     await card.getByRole('button', { name: 'Borrar' }).click();
     await page.locator('dialog').getByRole('button', { name: 'Continuar' }).click();
-    await page.getByText('Borrado').first().waitFor();
+    await toast(page, 'Borrado');
     assert.equal((await pool.query(`SELECT count(*)::int AS n FROM webhook_endpoints WHERE id = $1`, [ep.id])).rows[0].n, 0);
   },
   'Crear llave muestra la llave una vez; Revocar la desactiva': async ({ h, pool, open, go }: AreaContext) => {

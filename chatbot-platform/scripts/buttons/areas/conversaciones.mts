@@ -1,6 +1,6 @@
 /** Conversación abierta: pendientes, panel lateral y lo que el sondeo de 5 s vuelve a dibujar. */
 import assert from 'node:assert/strict';
-import type { AreaContext } from '../areas.mts';
+import { toast, type AreaContext } from '../areas.mts';
 
 export const checks = {
   'Marcar un pendiente como hecho: si el servidor falla, la casilla vuelve a como estaba': async ({ h, f, pool, open, go }: AreaContext) => {
@@ -18,6 +18,21 @@ export const checks = {
     await box.check();
     await page.locator('.task-row.done', { hasText: 'Confirmar la fecha del evento' }).waitFor();
     assert.equal((await pool.query(`SELECT status FROM contact_tasks WHERE body = 'Confirmar la fecha del evento'`)).rows[0].status, 'hecha');
+  },
+  'Tomar conversación, Devolver al bot y Cerrar cambian quién atiende': async ({ f, pool, open, go }: AreaContext) => {
+    const status = async () => (await pool.query('SELECT status FROM conversations WHERE id = $1', [f.conv.id])).rows[0].status;
+    const { page } = await open('admin');
+    await go(page, `conversation/${f.conv.id}`);
+    const header = page.locator('.main');
+    await header.getByRole('button', { name: 'Tomar conversación' }).click();
+    await toast(page, 'Tomaste la conversación');
+    assert.equal(await status(), 'human');
+    await header.getByRole('button', { name: 'Devolver al bot' }).click();
+    await toast(page, 'El bot vuelve a responder');
+    assert.equal(await status(), 'bot');
+    await header.getByRole('button', { name: 'Cerrar', exact: true }).first().click();
+    await toast(page, 'Cerrada');
+    assert.equal(await status(), 'closed');
   },
   'El panel lateral no cierra lo que abriste cuando se actualiza solo': async ({ f, open, go }: AreaContext) => {
     const { page } = await open('admin');

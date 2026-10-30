@@ -1,6 +1,6 @@
 /** Agentes: encender y pausar, duplicar, eliminar (escribiendo su nombre) y reiniciar sus conversaciones. */
 import assert from 'node:assert/strict';
-import type { AreaContext } from '../areas.mts';
+import { toast, type AreaContext } from '../areas.mts';
 
 const advanced = async (page: any) => {
   await page.getByText('Opciones avanzadas', { exact: true }).click();
@@ -36,7 +36,7 @@ export const checks = {
     await go(page, `bot/${h.botId}/instrucciones`);
     await advanced(page);
     await page.getByRole('button', { name: 'Duplicar', exact: true }).click();
-    await page.getByText('Chatbot duplicado').first().waitFor();
+    await toast(page, 'Chatbot duplicado');
     await page.waitForURL((u) => !u.hash.includes(h.botId) && /#\/bot\/[0-9a-f-]{36}\//.test(u.hash));
     assert.equal(await count(), n + 1);
     const copy = page.url().split('/bot/')[1].split('/')[0];
@@ -52,7 +52,7 @@ export const checks = {
     await page.getByRole('button', { name: 'Eliminar', exact: true }).click();
     await page.locator('dialog input').fill(name);
     await page.locator('dialog').getByRole('button', { name: 'Guardar' }).click();
-    await page.getByText('Eliminado').first().waitFor();
+    await toast(page, 'Eliminado');
     assert.equal(await count(), n);
     assert.equal((await pool.query('SELECT count(*)::int AS n FROM chatbots WHERE id = $1', [copy])).rows[0].n, 0);
   },
@@ -62,6 +62,6 @@ export const checks = {
     await advanced(page);
     await page.getByRole('button', { name: 'Reiniciar conversaciones' }).click();
     await page.locator('dialog').getByRole('button', { name: 'Continuar' }).click();
-    await page.getByText(/conversaci(ón|ones) reiniciadas?/).first().waitFor();
+    await toast(page, /conversaci(ón|ones) reiniciadas?/);
   },
 };

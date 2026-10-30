@@ -1,6 +1,6 @@
 /** Lo que está en todas las pantallas: la sesión (salir, cerrar las demás) y el menú de la cuenta. */
 import assert from 'node:assert/strict';
-import type { AreaContext } from '../areas.mts';
+import { toast, type AreaContext } from '../areas.mts';
 
 /** Una persona aparte para no cerrar la sesión con la que se audita. */
 async function person(h: any, email: string) {
@@ -34,7 +34,7 @@ export const checks = {
     await go(page, 'password');
     await page.getByRole('button', { name: 'Cerrar sesión en todos los demás dispositivos' }).click();
     await page.locator('dialog').getByRole('button', { name: 'Cerrar las demás' }).click();
-    await page.getByText('Sesiones cerradas').first().waitFor();
+    await toast(page, 'Sesiones cerradas');
     assert.equal((await other('GET', '/api/me')).statusCode, 401, 'la otra sesión sigue abierta');
     assert.equal((await mine('GET', '/api/me')).statusCode, 200, 'esta sesión se cerró también');
   },

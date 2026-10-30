@@ -1,6 +1,6 @@
 /** Agenda: crear una cita desde el panel, abrirla y cancelarla; crear y eliminar un servicio. */
 import assert from 'node:assert/strict';
-import type { AreaContext } from '../areas.mts';
+import { toast, type AreaContext } from '../areas.mts';
 
 export const checks = {
   'Nueva cita → Agendar la guarda; abrirla → Cancelar cita la cancela con su motivo': async ({ h, pool, open, go }: AreaContext) => {
@@ -11,7 +11,7 @@ export const checks = {
     await page.getByLabel('Nombre del cliente').fill('Cliente de la auditoría');
     await page.getByLabel('Teléfono').fill('5215598765432');
     await page.getByRole('button', { name: 'Agendar', exact: true }).click();
-    await page.getByText('Agendada').first().waitFor();
+    await toast(page, 'Agendada');
     const appt = (await pool.query(`SELECT id, status FROM appointments WHERE account_id = $1 AND customer_name = 'Cliente de la auditoría'`, [h.accountId])).rows[0];
     assert.equal(appt?.status, 'confirmed', 'la cita no quedó guardada');
     // Se busca en el calendario (vista de lista si hace falta) y se abre.
@@ -21,7 +21,7 @@ export const checks = {
     const panel = page.getByRole('dialog', { name: /Cita de Cliente de la auditoría/ });
     await panel.getByRole('button', { name: 'Cancelar cita' }).click();
     await page.getByRole('dialog', { name: /Completa la información/ }).getByRole('button', { name: 'Guardar' }).click();
-    await page.getByText('Cancelada').first().waitFor();
+    await toast(page, 'Cancelada');
     const after = (await pool.query(`SELECT status, cancel_reason FROM appointments WHERE id = $1`, [appt.id])).rows[0];
     assert.equal(after.status, 'cancelled');
     assert.equal(after.cancel_reason, 'Cancelada por el negocio');

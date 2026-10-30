@@ -17,6 +17,10 @@ export type AreaContext = {
 };
 export type AreaResult = { area: string; passed: string[]; failed: { check: string; error: string }[]; pageErrors: string[] };
 
+/** Espera el aviso emergente con ese texto (no otro texto igual que ya estaba en la página, como una etiqueta «Cerrada»). */
+export const toast = (page: Page, text: string | RegExp) =>
+  page.locator('#toast, #toast-alert').filter({ hasText: typeof text === 'string' ? new RegExp(`^${text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`) : text }).first().waitFor();
+
 export async function runAreas(base: Omit<AreaContext, 'check' | 'open' | 'go'> & { contextFor: (role: string, options?: any) => Promise<BrowserContext> }, log: (m: string) => void) {
   const dir = path.resolve(import.meta.dirname, 'areas');
   const results: AreaResult[] = [];
