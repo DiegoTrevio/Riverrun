@@ -8,7 +8,7 @@ import { z } from 'zod';
 import { HttpError, requireRole, targetAccount } from '../access.js';
 import { hashPassword, rateLimited } from '../auth.js';
 import { beginLogin } from '../identity/mfa.js';
-import { hostOf, mailBrand } from '../brands.js';
+import { hostOf, linkBase, mailBrand } from '../brands.js';
 import { assertWithinLimit, effectiveLimits, LIMIT_LABELS, limitDetail, offerText, usageOf } from '../billing/limits.js';
 import { config } from '../config.js';
 import { query, queryOne, withTransaction } from '../db.js';
@@ -79,7 +79,7 @@ async function assertRoomForInvite(accountId: string) {
 async function sendInvite(inv: Invitation, token: string, inviterName: string): Promise<boolean> {
   const acc = await store.getAccount(inv.account_id);
   const { fromName } = await mailBrand(inv.account_id);
-  const link = `${config.publicBaseUrl}/#/invitacion/${encodeURIComponent(token)}`;
+  const link = `${linkBase()}/#/invitacion/${encodeURIComponent(token)}`;
   const mail = inviteMail({ inviter: inviterName, invitee: inv.name, account: acc?.name ?? '', role: ROLE_LABEL[inv.role], link, google: googleConfigured() });
   return (await deliverMail({ fromName, to: inv.email, ...mail })) === 'sent';
 }

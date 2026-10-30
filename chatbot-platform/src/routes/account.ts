@@ -8,8 +8,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { HttpError, notFound, requireRole, targetAccount } from '../access.js';
 import { rateLimited } from '../auth.js';
-import { mailBrand } from '../brands.js';
-import { config } from '../config.js';
+import { linkBase, mailBrand } from '../brands.js';
 import { query, withTransaction } from '../db.js';
 import { notifyUser } from '../identity/notices.js';
 import { accountOwner, ownerStepUp } from '../identity/ownership.js';
@@ -41,7 +40,7 @@ export async function accountRoutes(api: FastifyInstance) {
       fromName,
       to: email,
       subject: 'Confirma tu correo nuevo',
-      text: `Hola ${req.user.name || ''},\n\nPediste que el correo de tu cuenta sea ${email}. Para confirmarlo, abre este enlace:\n\n${config.publicBaseUrl}/#/cambiar-correo/${token}\n\nEl enlace vence en ${EMAIL_CHANGE_HOURS} horas. Si no lo pediste, ignora este mensaje: tu correo no cambia.`,
+      text: `Hola ${req.user.name || ''},\n\nPediste que el correo de tu cuenta sea ${email}. Para confirmarlo, abre este enlace:\n\n${linkBase()}/#/cambiar-correo/${token}\n\nEl enlace vence en ${EMAIL_CHANGE_HOURS} horas. Si no lo pediste, ignora este mensaje: tu correo no cambia.`,
     });
     await logEvent({ level: 'info', source: 'admin', message: `${req.user.email} pidió cambiar su correo a ${email}`, accountId: req.user.account_id ?? undefined });
     return { ok: true, pending: email };

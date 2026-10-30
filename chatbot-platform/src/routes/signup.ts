@@ -1,5 +1,5 @@
 import { googleConfigured } from '../integrations/google.js';
-import { baseFor, brandByDomain, hostOf, mailBrand } from '../brands.js';
+import { baseFor, brandByDomain, hostOf, linkBase, mailBrand } from '../brands.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { hashPassword, ipKey, rateLimited } from '../auth.js';
@@ -50,7 +50,7 @@ async function sendResetLink(email: string) {
     fromName: mb.fromName,
     to: u.email,
     subject: 'Restablece tu contraseña',
-    text: `Hola ${u.name || ''},\n\nPara elegir una contraseña nueva abre este enlace (vence en 1 hora):\n\n${link(mb.base, 'restablecer', token)}\n\nSi no lo pediste, ignora este mensaje: tu contraseña no cambia.`,
+    text: `Hola ${u.name || ''},\n\nPara elegir una contraseña nueva abre este enlace (vence en 1 hora):\n\n${link(linkBase(), 'restablecer', token)}\n\nSi no lo pediste, ignora este mensaje: tu contraseña no cambia.`,
   });
 }
 
@@ -61,7 +61,7 @@ export async function sendVerification(user: Pick<User, 'id' | 'name' | 'email'>
     fromName: mb.fromName,
     to: user.email,
     subject: 'Confirma tu correo',
-    text: `Hola ${user.name || ''},\n\nConfirma tu correo para poder conectar tu WhatsApp y tus demás canales:\n\n${link(mb.base, 'verificar', token)}\n\nEl enlace vence en 48 horas. Si no creaste esta cuenta, ignora este mensaje.`,
+    text: `Hola ${user.name || ''},\n\nConfirma tu correo para poder conectar tu WhatsApp y tus demás canales:\n\n${link(linkBase(), 'verificar', token)}\n\nEl enlace vence en 48 horas. Si no creaste esta cuenta, ignora este mensaje.`,
   });
 }
 

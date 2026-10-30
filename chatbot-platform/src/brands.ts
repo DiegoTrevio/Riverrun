@@ -39,6 +39,12 @@ export function publicBrand(b: Brand | null) {
 }
 
 /** Remitente y dirección base para los correos de una cuenta: los de su marca si tiene dominio propio. */
+/**
+ * Base de los enlaces con token (verificar, restablecer, invitación, cambio de correo, borrar la cuenta): siempre el
+ * dominio principal, aunque la cuenta tenga una marca con dominio propio. Los demás enlaces siguen con su marca.
+ */
+export const linkBase = (): string => config.publicBaseUrl;
+
 export async function mailBrand(accountId: string | null | undefined): Promise<{ fromName?: string; base: string }> {
   const b = accountId ? await brandOfAccount(accountId) : null;
   return { fromName: b?.name, base: b?.domain ? `https://${b.domain}` : config.publicBaseUrl };

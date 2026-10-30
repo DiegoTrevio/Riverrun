@@ -4,7 +4,7 @@
  * dueño y se ejecuta 7 días después; mientras tanto se puede cancelar. Al confirmar, el plan deja de renovarse.
  */
 import PizZip from 'pizzip';
-import { mailBrand } from '../brands.js';
+import { linkBase, mailBrand } from '../brands.js';
 import { providers, getSubscription, queueAction } from '../billing/service.js';
 import { alertSuperadmins } from '../billing/ledger.js';
 import { query, queryOne } from '../db.js';
@@ -47,7 +47,7 @@ export function readDeletionToken(token: string, now = Date.now()): string | nul
 /** Primer paso: manda al correo del dueño el enlace para confirmar. No cambia nada todavía. */
 export async function requestDeletion(acc: Account, owner: { email: string; name: string }) {
   const mb = await mailBrand(acc.id);
-  const link = `${mb.base}/borrar-cuenta?t=${encodeURIComponent(deletionToken(acc.id))}`;
+  const link = `${linkBase()}/borrar-cuenta?t=${encodeURIComponent(deletionToken(acc.id))}`;
   await sendMail({
     fromName: mb.fromName,
     to: owner.email,

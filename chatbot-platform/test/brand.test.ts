@@ -1,7 +1,7 @@
 /** Marca blanca: nombre, logo, color y dominio por cliente. */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createHarness, dbAvailable, pool } from './harness.js';
+import { createHarness, dbAvailable, pool, waitFor } from './harness.js';
 
 const ok = await dbAvailable();
 const t = (name: string, fn: () => Promise<void>) => test(name, { skip: !ok && 'PostgreSQL de pruebas no disponible' }, fn);
@@ -63,11 +63,19 @@ t('quien se registra desde el dominio de la marca queda con ella, y sus correos 
   const cookie = await h.sessionFrom(r);
   const me = (await h.app.inject({ method: 'GET', url: '/api/brand/mine', headers: { cookie } })).json();
   assert.equal(me.name, 'Mi Agencia');
-  // El correo de verificación lleva el nombre y el dominio de la marca
+  // El correo de verificación lleva el nombre de la marca; el enlace con token, al dominio principal (no al de la marca).
   const mail = outbox.find((m) => m.to === 'uno@tienda.mx');
   assert.ok(mail, 'se envió el correo de verificación');
   assert.equal(mail!.fromName, 'Mi Agencia');
-  assert.match(mail!.text, /https:\/\/panel\.miagencia\.com\/#\/verificar\?token=/);
+  const { config } = await import('../src/config.js');
+  assert.ok(mail!.text.includes(`${config.publicBaseUrl}/#/verificar?token=`), mail!.text);
+  assert.doesNotMatch(mail!.text, /panel\.miagencia\.com/);
+  // Lo mismo el de restablecer la contraseña.
+  await h.app.inject({ method: 'POST', url: '/api/forgot-password', remoteAddress: `10.9.8.${++ip}`, payload: { email: 'uno@tienda.mx' } });
+  await waitFor(() => outbox.some((m) => m.to === 'uno@tienda.mx' && m.subject === 'Restablece tu contraseña'));
+  const reset = outbox.find((m) => m.to === 'uno@tienda.mx' && m.subject === 'Restablece tu contraseña')!;
+  assert.equal(reset.fromName, 'Mi Agencia');
+  assert.ok(reset.text.includes(`${config.publicBaseUrl}/#/restablecer?token=`), reset.text);
   // Una cuenta sin marca usa la de la plataforma
   const plain = await h.app.inject({ method: 'POST', url: '/api/signup', remoteAddress: `10.9.9.${++ip}`, payload: { name: 'Otro', company: 'Tienda Dos', business_type: 'otro', email: 'dos@tienda.mx', password: 'Pz-144-Qx-344-Kv', accept_terms: true } });
   const c2 = await h.sessionFrom(plain);
