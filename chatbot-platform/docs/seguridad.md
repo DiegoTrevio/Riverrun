@@ -15,7 +15,7 @@ Cada etapa es un PR con pruebas que fallan con el código anterior y pasan con e
 | Etapa | Qué resuelve | Estado |
 |---|---|---|
 | 1. Altos de la aplicación | ID-1, IN-1, AI-1, AI-2, AI-3, AI-4, PAY-1, INF-1 | ✅ Corregido |
-| 2. Identidad | 2FA obligatorio para todos, contraseñas filtradas, sesiones con caducidad por inactividad, límites por cuenta y en la base, dueño distinto de administrador, correo verificado de verdad (ID-2…ID-10) | Pendiente |
+| 2. Identidad | 2FA obligatorio para todos, contraseñas filtradas, sesiones con caducidad por inactividad, límites por cuenta y en la base, dueño distinto de administrador, correo verificado de verdad (ID-2…ID-10) | 2a ✅ (acceso), 2b pendiente (cuenta) |
 | 3. Registro y cobros | Captcha → correo → 2FA → pago, topes contra prueba de tarjetas (PAY-2), Radar, disputas, pruebas gratis por persona (PAY-3…PAY-16) | Pendiente |
 | 4. Abuso de entradas | Límites compartidos en la base, tamaños por ruta, firma del webhook de WhatsApp, adjuntos sin macros, PDF aislados, cuota de IA antes de transcribir (IN-2…IN-14, PAY-6) | Pendiente |
 | 5. IA y Copiloto | Tarjetas de confirmación completas, costo de sub-llamados, notas de cotización, fuga de instrucciones (AI-5…AI-13) | Pendiente |
@@ -54,6 +54,36 @@ sesiones. Todo eso quedó corregido, con su prueba. Lo que señaló y queda para
 - En Mercado Pago, con un cobro fallido primero se cambia la tarjeta y después el plan (en Stripe no cambia nada).
 - El chat web abre una sesión nueva a quien tenía una del formato anterior (solo instalaciones de prueba: no se ha lanzado).
 
+## Etapa 2a: lo que se corrigió
+
+Diseño: [`superpowers/specs/2026-10-30-seguridad-etapa-2-identidad-design.md`](superpowers/specs/2026-10-30-seguridad-etapa-2-identidad-design.md).
+
+| # | Hallazgo | Arreglo | Prueba |
+|---|---|---|---|
+| ID-3 | Límite de intentos de entrar solo por conexión, en memoria y con carrera; scrypt con los parámetros por omisión. | Límites en la base (`rate_limits`, una sola sentencia atómica, compartidos entre procesos): 8 contraseñas fallidas por conexión en 15 min (IPv6 por /64), 10 por cuenta en 1 h (salvo desde un dispositivo recordado de esa persona; recuperar por correo reinicia el contador), 5 códigos por reto y 10 por persona en 1 h (bloquea el 2FA una hora y avisa por correo). Cada intento se cuenta antes de revisar la contraseña. scrypt con N=2^15, r=8, p=3 y los parámetros dentro del hash (los de antes se recalculan al entrar); a lo más 4 cálculos a la vez y 64 en espera. | `rate-limit.test.ts`, `identity-limits.test.ts`, `password-hash.test.ts` |
+| ID-9 | Cookies de sesión sin sesión registrada (no se podían cerrar), firma sin prefijo, y la contraseña actual equivocada en Mi perfil no contaba como intento. | Toda cookie lleva su sesión registrada y la firma el prefijo `session:`; la contraseña actual equivocada cuenta para el límite por cuenta. | `sessions.test.ts`, `identity-sessions.test.ts`, `identity-limits.test.ts` |
+| Faltaba | Verificación en dos pasos. | Obligatoria para todos con una app de autenticación (TOTP, sin SMS). Cada código sirve una vez, también con dos peticiones a la vez. El secreto va cifrado y nunca se devuelve después de configurarlo. Cinco puertas (contraseña, Google, invitación, registro, restablecer) pasan por el mismo reto. | `totp.unit.test.ts`, `identity-login.test.ts`, `test:identity:ux` |
+| Faltaba | Recuperar el acceso sin el teléfono. | 10 códigos de recuperación de un solo uso; «Restablecer 2FA» en Equipo; `./riverrun admin-password` también restablece el del superadministrador y sus límites; `rotate-secret` vuelve a cifrar los secretos (todo o nada) antes de cambiar `SESSION_SECRET`. | `identity-profile.test.ts`, `superadmin-access.test.ts`, `rekey-mfa.test.ts`, `test-cli.sh` |
+| Faltaba | Verificación reciente para lo delicado. | 26 rutas (contraseña, app y códigos, equipo, llaves y webhooks, secretos, plan y tarjeta, exportar y borrar la cuenta, ajustes de la plataforma) y algunos cambios (rol, baja, contraseña o correo de otra persona, invitar a un administrador) piden el código si el último tiene más de 15 minutos. Entrar desde un dispositivo recordado no cuenta como código escrito. El Copiloto no llega a ninguna. | `identity-step-up.test.ts`, `test:identity:ux` |
+| Faltaba | Secretos a la vista en Ajustes. | El secreto de los webhooks y el enlace del calendario ya no vienen en Ajustes: «Mostrar» los pide con verificación reciente. | `identity-step-up.test.ts` |
+| Faltaba | Contraseñas cortas o filtradas. | De 12 a 128 caracteres, sin la parte local del correo ni el nombre del negocio, fuera de las 100 000 más comunes (lista local) y de las filtradas que reporta Have I Been Pwned (solo salen los primeros 5 caracteres del hash). Se aplica al registrarse, aceptar una invitación, restablecer o cambiar la contraseña, crear usuarios y en `admin-password --stdin`. | `passwords.test.ts` |
+| Faltaba | Sesiones que no caducan sin uso. | Equipo: 12 h sin usar el panel y 7 días como máximo; superadministrador: 30 min y 12 h. Cambiar el rol de alguien cierra sus sesiones. Con HTTPS, cookies `__Host-`. | `identity-sessions.test.ts`, `identity-profile.test.ts` |
+| Faltaba | Dispositivos recordados. | «Recordar este dispositivo 30 días» salta el código (nunca la contraseña, nunca para el superadministrador) y se olvida al cambiar o restablecer la contraseña, restablecer el 2FA, cerrar las demás sesiones o dar de baja a la persona. | `identity-devices.test.ts` |
+| Faltaba | Peticiones de otros sitios (segunda capa sobre `SameSite=Strict`, que no frena a otro subdominio). | Con la cookie del panel, lo que cambia algo y viene de otro sitio (`Sec-Fetch-Site`, o `Origin` distinto del host) se rechaza con 403. | `origin-guard.test.ts` |
+| Faltaba | Avisos de seguridad. | Correo al cambiar o restablecer la contraseña, configurar, cambiar o restablecer el 2FA, usar un código de recuperación, generar códigos nuevos, bloquearse el 2FA y entrar desde un dispositivo nuevo. | `security-notices.test.ts` |
+
+**Cambios que nota la gente:**
+- Al desplegar se cierran todas las sesiones. La próxima vez que entra, cada persona configura su app de autenticación (QR o clave) y guarda 10 códigos de recuperación; después entra con su contraseña y el código de 6 dígitos.
+- En la pantalla del código puede marcar «Recordar este dispositivo 30 días» (el superadministrador siempre escribe el código).
+- Cambiar la contraseña, el plan o la tarjeta, crear llaves de API, exportar o borrar la cuenta y otras acciones delicadas piden el código otra vez si pasaron más de 15 minutos («Confirma que eres tú»).
+- Ajustes ya no muestra el secreto de los webhooks ni el enlace del calendario: hay que pulsar «Mostrar».
+- Contraseñas nuevas de 12 caracteres como mínimo, que no estén filtradas ni contengan el correo o el nombre del negocio.
+- La sesión se cierra tras 12 horas sin usar el panel (30 minutos el superadministrador) y dura 7 días como máximo (12 horas).
+- Cambiar el rol de alguien cierra sus sesiones: vuelve a entrar con sus permisos nuevos.
+- Con 10 contraseñas equivocadas en una hora, esa cuenta solo entra desde un dispositivo recordado o recuperando la contraseña por correo.
+- Mi perfil tiene «Verificación en dos pasos» (cambiar de app, códigos que quedan y «Generar códigos nuevos», dispositivos recordados con «Olvidar»); Equipo muestra «2FA activo» o «2FA pendiente» y «Restablecer 2FA».
+- Llegan correos de aviso de seguridad (ver la tabla).
+
 ## Hallazgos pendientes por etapa
 
 Abreviaturas: ID identidad, PAY cobros, IN entradas, AI IA y Copiloto, INF servidor.
@@ -65,7 +95,6 @@ Abreviaturas: ID identidad, PAY cobros, IN entradas, AI IA y Copiloto, INF servi
 
 ### Medios
 - **ID-2** Cualquier administrador equivale al dueño (puede cambiar su clave, degradarlo, borrar o exportar la cuenta).
-- **ID-3** Límite de intentos de login solo por IP, con carrera y en memoria; scrypt con parámetros por omisión.
 - **ID-4** Cuentas «verificadas» sin prueba de control del correo (también las que crea un administrador); el login con Google entra a ellas.
 - **ID-5** Al dar de baja a alguien sobreviven sus invitaciones, llaves de API y webhooks.
 - **ID-6** Las invitaciones sirven para mandar correo con texto controlado desde una cuenta sin verificar.
@@ -88,8 +117,8 @@ Abreviaturas: ID identidad, PAY cobros, IN entradas, AI IA y Copiloto, INF servi
 - **INF-11** Respaldo: directorio de trabajo en claro, credencial de S3 que puede borrar, cifrado sin autenticación.
 
 ### Bajos
-ID-7…ID-10 (tiempos en recuperar contraseña, tokens de recuperación vigentes tras cambiar la clave, cookies antiguas
-irrevocables, enlaces de marca blanca), PAY-10…PAY-16, AI-10…AI-13, IN-8…IN-14 (calendario `.ics` sin escapar, asunto
+ID-7, ID-8 e ID-10 (tiempos en recuperar contraseña, tokens de recuperación vigentes tras cambiar la clave, enlaces de
+marca blanca; ID-9 quedó en la etapa 2a), PAY-10…PAY-16, AI-10…AI-13, IN-8…IN-14 (calendario `.ics` sin escapar, asunto
 reflejado, textos de la URL en el panel, reservas como relé de correo, `unsafe-inline` en páginas públicas, plazos de
 descarga, analizador JSON propio), INF-12…INF-15 (secretos impresos por el instalador, cuerpos de correo en la bitácora sin
 SMTP, `.gitignore`, acciones por etiqueta). `privacy.md` y `terms.md` (sitio de GitHub Pages) dicen «Viralize» y prometen

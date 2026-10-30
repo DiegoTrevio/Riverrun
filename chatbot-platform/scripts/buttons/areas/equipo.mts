@@ -31,6 +31,23 @@ export const checks = {
     assert.equal((await pool.query(`SELECT role FROM users WHERE email = 'agent@auditoria.test'`)).rows[0].role, 'agent');
     assert.equal(await role.inputValue(), 'agent', 'el selector dice «Administrador» aunque no se guardó');
   },
+  'Restablecer 2FA (confirmando): borra su verificación, cierra sus sesiones y queda «2FA pendiente»': async ({ f, h, pool, open, go }: AreaContext) => {
+    const su = await h.loginAs(...f.credentials.superadmin);
+    const created = await su('POST', '/api/users', { account_id: h.accountId, name: 'Sin teléfono', email: 'sin-telefono@auditoria.test', password: 'Pz-100-Qx-300-Kv', role: 'agent' });
+    assert.equal(created.statusCode, 200, created.body);
+    const session = await h.loginAs('sin-telefono@auditoria.test', 'Pz-100-Qx-300-Kv'); // ya configuró su app
+    const { page } = await open('admin');
+    await go(page, 'users');
+    const row = () => page.locator('tr', { hasText: 'sin-telefono@auditoria.test' });
+    await row().getByText('2FA activo').waitFor();
+    await row().getByRole('button', { name: 'Restablecer 2FA de sin-telefono@auditoria.test' }).click();
+    await page.locator('dialog').getByText('Su verificación en dos pasos se borra, se cierran sus sesiones y la configura otra vez al entrar.').waitFor();
+    await page.locator('dialog').getByRole('button', { name: 'Restablecer 2FA', exact: true }).click();
+    await toast(page, 'Verificación en dos pasos restablecida');
+    await row().getByText('2FA pendiente').waitFor();
+    assert.equal((await pool.query(`SELECT totp_enabled_at FROM users WHERE email = 'sin-telefono@auditoria.test'`)).rows[0].totp_enabled_at, null, 'su verificación sigue activa');
+    assert.equal((await session('GET', '/api/me')).statusCode, 401, 'sus sesiones siguen abiertas');
+  },
   'Bloquear con mis eventos ocupados: si el servidor falla, la casilla vuelve a como estaba': async ({ f, h, pool, open, go }: AreaContext) => {
     await pool.query(`INSERT INTO staff_calendars (user_id, account_id, provider, email, refresh_token, block_busy) VALUES ($1, $2, 'google', 'auditor@empresa.test', 'x', true) ON CONFLICT (user_id) DO UPDATE SET block_busy = true`, [f.auditor.id, h.accountId]);
     const { page } = await open('admin');

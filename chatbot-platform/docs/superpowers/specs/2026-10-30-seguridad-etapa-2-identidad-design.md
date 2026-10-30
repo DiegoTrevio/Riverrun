@@ -56,12 +56,16 @@ Se entrega en dos PR, cada uno con pruebas que fallan con el código anterior:
   `UPDATE … WHERE totp_last_step < $paso`).
 - Secreto de 20 bytes aleatorios, guardado cifrado con `encryptSecret` (AES-256-GCM, llave derivada de
   `SESSION_SECRET`). Nunca se devuelve después de configurarlo.
-- **`./riverrun rotate-secret`** re-cifra los secretos de 2FA antes de cambiar `SESSION_SECRET` (un comando
-  `dist/cli/rekey-mfa.js` que recibe el secreto anterior y el nuevo, en una transacción; si falla, no se cambia nada).
-  Sin esto, rotar el secreto dejaría a todos fuera. Las demás credenciales cifradas siguen como hoy hasta la etapa 6.
+- **`./riverrun rotate-secret`** re-cifra los secretos de 2FA (activos y pendientes) antes de cambiar `SESSION_SECRET`:
+  un comando `dist/cli/rekey-mfa.js` que descifra con el secreto actual (el de su entorno) y recibe el nuevo por la
+  entrada (no queda en la lista de procesos), en una transacción con `FOR UPDATE`; si uno no se puede leer, no cambia
+  nada y `.env` conserva el secreto anterior. Sin esto, rotar el secreto dejaría a todos fuera. Las demás credenciales
+  cifradas siguen como hoy hasta la etapa 6.
 - Código QR para la app: se genera en el servidor como SVG con `qrcode-generator` (sin dependencias, versión fija). El
   panel también muestra el secreto en texto para escribirlo a mano. La URI `otpauth://` lleva como emisor el nombre de
-  la marca de la plataforma y como cuenta el correo.
+  la marca de la cuenta (la misma de sus correos; «Panel de Chatbots» si no tiene) y como cuenta el correo.
+- Mientras configura (o cambia de app), el secreto queda pendiente (`totp_pending`): recargar, abrir otra pestaña o
+  volver a entrar muestra el mismo QR, para que la app ya escaneada siga sirviendo.
 
 ### 2a.2 Códigos de recuperación
 
@@ -136,7 +140,9 @@ sesiones» y al dar de baja a la persona. Entrar con un dispositivo recordado no
   - Mi perfil: cambiar contraseña, cambiar correo (2b), cambiar de autenticador, generar códigos nuevos.
   - Equipo: invitar o cambiar a administrador, cambiar rol, desactivar o borrar a alguien, restablecer su 2FA.
   - Integraciones: crear o revocar llaves de API, crear o editar webhooks, ver o cambiar el secreto de los webhooks y
-    el enlace del calendario.
+    el enlace del calendario. Ajustes ya no los devuelve (`webhook_secret`, `calendar_token` e `ics_url` vacíos con
+    `secrets_hidden: true`): el panel los muestra con «Mostrar» (`GET /api/settings/secrets`, con verificación
+    reciente).
   - Cuenta: cambiar plan, cambiar tarjeta, datos de facturación, exportar, borrar, transferir (2b).
   - Superadministrador: secretos de la plataforma, crear cuentas, cambiar usuarios de otras cuentas, restablecer
     contraseñas o 2FA ajenos.
@@ -149,7 +155,7 @@ sesiones» y al dar de baja a la persona. Entrar con un dispositivo recordado no
 - Se rechazan las de la lista local (las 100 000 más comunes, comparadas en minúsculas; archivo comprimido en el repo,
   de SecLists, licencia MIT) y las que HIBP reporta filtradas. A HIBP solo van los primeros 5 caracteres del SHA-1,
   con `Add-Padding: true` y 1,5 s de tiempo máximo; si no responde, decide la lista local y queda en la bitácora. La
-  URL es configurable (`PWNED_PASSWORDS_URL`; vacía la apaga) para pruebas e instalaciones sin salida a internet.
+  URL es configurable (`PWNED_PASSWORDS_URL`; `off` la apaga) para pruebas e instalaciones sin salida a internet.
 - Se aplica en: registro, invitación aceptada, restablecer, cambiar, `./riverrun admin-password --stdin` y el
   `ADMIN_PASSWORD` del primer arranque (config-check avisa si es corta).
 - Las contraseñas existentes no se revisan al entrar: no hay usuarios reales todavía y todas las nuevas pasan por
@@ -160,12 +166,16 @@ sesiones» y al dar de baja a la persona. Entrar con un dispositivo recordado no
   persona (una sola vez; aceptable antes del lanzamiento).
 - A lo más 4 cálculos de scrypt a la vez y 64 en espera; más allá, `503` «Hay muchos intentos, prueba en unos
   segundos». Así una avalancha de intentos no agota la memoria del servidor.
+- `PASSWORD_HASH_COST=test` (N=2^10, p=1) solo para la suite de pruebas; config-check lo marca como crítico con HTTPS.
 
 ### 2a.7 Límites de intentos en la base
 
-Tabla `rate_limits (key, window_start, hits)` y una función `hit(key, max, windowMs)` con un solo
+Tabla `rate_limits (key, hits, expires_at)` y `countHit(key, windowMs)` con un solo
 `INSERT … ON CONFLICT DO UPDATE … RETURNING` (atómica, sin carrera, compartida entre procesos y sobrevive a
-reinicios). La limpieza de ventanas vencidas va en la tarea horaria. La etapa 4 mueve aquí el resto de los límites.
+reinicios; una ventana vencida vuelve a empezar en 1). Cada intento se cuenta **antes** de revisar la contraseña
+(así una ráfaga simultánea no se salta el tope) y se devuelve (`releaseHit`) si entra o si se rechaza sin revisarla
+(p. ej. por el límite de la cuenta), para no bloquear oficinas con IP compartida. La limpieza de ventanas vencidas va
+en la tarea horaria. La etapa 4 mueve aquí el resto de los límites.
 
 | Límite | Valor | Al pasarlo |
 |---|---|---|
@@ -183,7 +193,8 @@ El límite por cuenta no deja a la víctima fuera: entra desde su dispositivo re
 
 - `expires_at` según el rol al crearla (7 días o 12 h). En cada petición se exige además
   `last_seen_at > now() - inactividad` (12 h o 30 min); `last_seen_at` se actualiza como mucho una vez por minuto.
-  Si cambia el rol de alguien, se cierran sus sesiones.
+  Si cambia el rol de alguien, se cierran sus sesiones (sin olvidar sus dispositivos recordados); un cambio de cuenta
+  aplica al momento en las sesiones abiertas, porque el usuario se vuelve a leer en cada petición.
 - Se rechazan las cookies sin `sid` (ID-9) y la firma de la sesión lleva el prefijo `session:` como el resto de los
   HMAC (ID-9). Las cookies actuales dejan de valer al desplegar (es lo que se quiere).
 - Con `SECURE_COOKIES=true` las cookies llevan el prefijo `__Host-` (`__Host-cp_session`, `__Host-cp_mfa`,
@@ -198,7 +209,10 @@ El límite por cuenta no deja a la víctima fuera: entra desde su dispositivo re
 `HEAD` ni `OPTIONS`) y trae cookie del panel se rechaza con 403 si `Sec-Fetch-Site` existe y no es `same-origin` ni
 `none`, o si no existe y `Origin` no coincide con el `Host` de la petición (el panel también se sirve en dominios de
 marca, por eso se compara con el `Host` y no con una lista). Sin ninguna de las dos cabeceras se deja pasar: no viene
-de un navegador, y sin navegador no hay ataque de este tipo. Webhooks, rutas públicas y la API con llave no se tocan.
+de un navegador, y sin navegador no hay ataque de este tipo. Un `Origin` que no se puede leer (`null`) cuenta como de
+otro sitio. Webhooks, rutas públicas y la API con llave no se tocan; el chat de la web del cliente (`/webchat/*`) se
+salta aunque el navegador mande la cookie (quien administra el panel lo prueba en su web de otro subdominio y esas rutas
+no usan la sesión).
 
 ### 2a.10 Recuperar el acceso
 
@@ -215,7 +229,7 @@ por correo; vuelve a configurarlo en su siguiente inicio de sesión (con su cont
 
 ### 2a.11 Avisos de seguridad por correo
 
-`src/security-notices.ts` con `notifyUser(user, kind, details)`: correo de texto con la marca de la plataforma, sin
+`src/identity/notices.ts` con `notifyUser(user, kind, details)`: correo de texto con la marca de su cuenta, sin
 enlaces con token, que siempre termina con «Si no fuiste tú: cambia tu contraseña y cierra todas las sesiones desde
 Mi perfil». Se manda sin detener la respuesta y un fallo queda en la bitácora. En 2a: contraseña cambiada o
 restablecida, 2FA configurado, cambiado o restablecido, código de recuperación usado, códigos nuevos, 2FA bloqueado
@@ -240,7 +254,7 @@ por intentos y entrada desde un dispositivo nuevo. 2b agrega correo cambiado, tr
 - `user_devices (id, user_id, device_hash, trust_hash, trusted_until, user_agent, ip, first_seen_at, last_seen_at)`.
 - `user_sessions`: `mfa_at timestamptz` (`via` sigue diciendo por qué puerta entró; si pasó por un dispositivo
   recordado se sabe porque `mfa_at` queda vacío).
-- `rate_limits (key text PRIMARY KEY, window_start timestamptz, hits integer)`.
+- `rate_limits (key text PRIMARY KEY, hits integer, expires_at timestamptz)`, con índice en `expires_at`.
 - Se cierran todas las sesiones abiertas (`revoked_at = now()`).
 
 ---

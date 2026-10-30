@@ -88,12 +88,16 @@ try {
   const download = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Descargar .txt' }).click();
   assert.equal((await download).suggestedFilename(), 'codigos-de-recuperacion.txt');
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: base });
+  await page.getByRole('button', { name: 'Copiar' }).click();
+  await page.getByText('Códigos copiados').first().waitFor();
+  assert.ok((await page.evaluate(() => navigator.clipboard.readText())).includes(codes[0]), 'copia los códigos');
   await accessible(page, 'Códigos de recuperación');
   await page.getByLabel('Ya los guardé en un lugar seguro').check();
   await proceed.click();
   await page.locator('.main h1').first().waitFor();
   assert.doesNotMatch(page.url(), /#\/login/);
-  checks.push('Configurar la app: QR con su clave, código malo con su error, 10 códigos que se descargan y no se avanza sin guardarlos (accesible en móvil)');
+  checks.push('Configurar la app: QR con su clave, código malo con su error, 10 códigos que se copian y se descargan, y no se avanza sin guardarlos (accesible en móvil)');
 
   // Las siguientes veces: el código.
   await context.clearCookies();
