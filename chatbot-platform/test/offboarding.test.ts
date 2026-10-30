@@ -35,7 +35,7 @@ before(async () => {
   if (!ok) return;
   h = await createHarness();
   acc = (await h.addAccount({ name: 'Imprenta Ruiz', admin: { name: 'Rocío', email: 'rocio@imprenta.mx', password: PASS } })).id;
-  for (const [name, email] of [['Mario', 'mario@imprenta.mx'], ['Nadia', 'nadia@imprenta.mx'], ['Otilia', 'otilia@imprenta.mx']]) {
+  for (const [name, email] of [['Mario', 'mario@imprenta.mx'], ['Nadia', 'nadia@imprenta.mx'], ['Otilia', 'otilia@imprenta.mx'], ['Pablo', 'pablo@imprenta.mx']]) {
     await h.addUser({ account_id: acc, name, email, password: PASS, role: 'admin' });
   }
   owner = await h.loginAs('rocio@imprenta.mx', PASS);
@@ -78,6 +78,17 @@ t('borrar a alguien hace lo mismo antes de que sus llaves y webhooks se queden s
   assert.equal((await v1(otilia.key)).statusCode, 401);
   assert.deepEqual(await hookRow(otilia.hook), { active: false, disabled_reason: 'Lo creó Otilia, que ya no está en el equipo' });
   assert.equal(await inviteOpen(otilia.invite), false);
+});
+
+t('pasar a alguien a otra cuenta también es una baja en la de antes', async () => {
+  const pablo = await equip('pablo@imprenta.mx');
+  const id = (await pool.query(`SELECT id FROM users WHERE email = 'pablo@imprenta.mx'`)).rows[0].id;
+  const other = (await h.addAccount({ name: 'Imprenta Norte' })).id;
+  const moved = await h.authed('PUT', `/api/users/${id}`, { account_id: other });
+  assert.equal(moved.statusCode, 200, moved.body);
+  assert.equal((await v1(pablo.key)).statusCode, 401, 'su llave de la cuenta de antes ya no entra');
+  assert.deepEqual(await hookRow(pablo.hook), { active: false, disabled_reason: 'Lo creó Pablo, que ya no está en el equipo' });
+  assert.equal(await inviteOpen(pablo.invite), false);
 });
 
 t('el resumen es de quien puede manejar a esa persona', async () => {

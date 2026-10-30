@@ -493,6 +493,8 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
       await forgetTrustedDevices(updated.id);
       if (target.active) await offboard(target, req.user);
     } else if (updated.role !== target.role) await store.revokeUserSessions(updated.id);
+    // Pasar a otra cuenta también es irse de la de antes: lo que dejó abierto ahí se va con la baja.
+    if (updated.active && target.active && updated.account_id !== target.account_id) await offboard(target, req.user);
     if (updated.role !== target.role) await notifyUser(updated, 'role_changed', { by: req.user.name || req.user.email, role: ROLE_NAMES[updated.role] });
     if (updated.role !== target.role || updated.account_id !== target.account_id) {
       await logEvent({ level: 'info', source: 'admin', message: `Permisos de usuario actualizados: ${updated.email}`, accountId: updated.account_id ?? target.account_id ?? undefined,
