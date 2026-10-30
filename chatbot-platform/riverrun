@@ -306,10 +306,15 @@ cmd_install() {
   pass="${RIVERRUN_ADMIN_PASSWORD:-}"
   local shown=""
   # ADMIN_PASSWORD solo crea al superadministrador la primera vez (después no cambia nada: ./riverrun admin-password).
-  if [[ "$NEW" == "1" || "$(env_get ADMIN_PASSWORD)" == cambia-esta-clave* ]]; then
+  local current; current="$(env_get ADMIN_PASSWORD)"
+  if [[ "$NEW" == "1" || "$current" == cambia-esta-clave* ]]; then
     [[ -n "$pass" ]] || { pass="$(rand 9)"; shown="$pass"; }
     env_set ADMIN_PASSWORD "$pass"
-  elif [[ -n "$pass" ]]; then warn "RIVERRUN_ADMIN_PASSWORD solo se usa al instalar por primera vez; para cambiar la contraseña: ./riverrun admin-password"; fi
+  else
+    if [[ -n "$pass" ]]; then warn "RIVERRUN_ADMIN_PASSWORD solo se usa al instalar por primera vez; para cambiar la contraseña: ./riverrun admin-password"; fi
+    # Sigue en .env: la instalación anterior no terminó (al terminar se vacía). Se vuelve a mostrar al final.
+    if [[ -n "$current" && -z "$pass" ]]; then shown="$current"; fi
+  fi
 
   if [[ -n "$domain" ]]; then
     env_set DOMAIN "$domain"; env_set SECURE_COOKIES true; env_set COMPOSE_PROFILES https
@@ -367,7 +372,8 @@ cmd_install() {
   say; say "${B}Todo listo.${N}"
   say "  Panel:      $(app_url)"
   say "  Usuario:    $email"
-  [[ -n "$shown" ]] && say "  Contraseña: ${B}$shown${N}  (cámbiala en el panel → Mi perfil)"
+  if [[ -n "$shown" ]]; then say "  Contraseña: ${B}$shown${N}  (cámbiala en el panel → Mi perfil)"
+  else say "  Contraseña: la que ya tenías (¿sin acceso? ./riverrun admin-password crea una nueva)"; fi
   say
   say "${B}Guarda esto fuera del servidor (gestor de contraseñas):${N}"
   say "  BACKUP_PASSPHRASE=$(env_get BACKUP_PASSPHRASE)"
@@ -640,8 +646,7 @@ cmd_restart() {
   export APP_VERSION; APP_VERSION="$(version)"; dc up -d; wait_healthy 120 && ok "Funcionando" || die "No respondió: ./riverrun logs backend"
 }
 
-# Cambia SESSION_SECRET (firma sesiones y enlaces, y cifra los tokens de Google). Respaldo verificado antes, confirmación
-# escrita y el secreto nuevo no se imprime. Consecuencias que se avisan: cierra sesiones del panel y reconecta Google.
+# Recupera el acceso del superadministrador: contraseña nueva (se muestra una vez) y sus sesiones cerradas.
 cmd_admin_password() {
   need_docker || die "Docker no está disponible"
   [[ -f "$ENV_FILE" ]] || die "No hay .env: primero ./riverrun install"
@@ -651,13 +656,16 @@ cmd_admin_password() {
   dc exec -T backend node dist/cli/admin-password.js "$email" || die "No se cambió la contraseña (¿el sistema está arrancado? ./riverrun status)"
 }
 
+# Cambia SESSION_SECRET (firma sesiones y enlaces, y cifra los tokens de Google). Respaldo verificado antes, confirmación
+# escrita y el secreto nuevo no se imprime. Consecuencias que se avisan: cierra sesiones del panel y reconecta Google.
 cmd_rotate_secret() {
   need_docker || die "Docker no está disponible"
   [[ -f "$ENV_FILE" ]] || die "No hay .env: esta instalación no tiene secretos que cambiar."
   say "${R}${B}Cambiar SESSION_SECRET${N}"
   say "Consecuencias: se cierran todas las sesiones del panel; los enlaces firmados de fotos dejan de funcionar"
   say "(se regeneran solos); las conexiones de Google Calendar hay que volver a conectarlas (sus tokens quedan cifrados"
-  say "con el secreto anterior). Los datos de conversaciones, cuentas, canales y WhatsApp no cambian."
+  say "con el secreto anterior). Los visitantes del chat web empiezan una conversación nueva (sus sesiones van firmadas)."
+  say "Los datos de conversaciones, cuentas, canales y WhatsApp no cambian."
   local sure=""; read -r -p "Escribe ROTAR SESSION_SECRET para continuar (cualquier otra cosa cancela): " sure || true
   [[ "$sure" == "ROTAR SESSION_SECRET" ]] || die "Cancelado: no se cambió nada."
   say "Respaldo verificado antes de cambiar nada…"

@@ -163,7 +163,7 @@ export async function viewPlan(root, params) {
         : h('p', { class: 'muted' }, sub.cancel_at_period_end
           ? `Tu plan se cancelará el ${longDate(sub.current_period_end)}; hasta entonces todo sigue funcionando.`
           : `Próximo cobro: ${longDate(sub.current_period_end)}.${next ? ` Con ese cobro cambias al plan ${next.name}.` : ''}`),
-      next && plan ? h('div', { class: 'row' }, h('button', { onclick: async () => {
+      next && plan && !sub.cancel_at_period_end ? h('div', { class: 'row' }, h('button', { onclick: async () => {
         if (await run(() => api('POST', withAcct('/api/billing/change'), { plan: plan.key }), `Listo: sigues con el plan ${plan.name}`)) render();
       } }, `Quedarme con el plan ${plan.name}`)) : null,
       h('div', { class: 'row' },
@@ -189,7 +189,9 @@ export async function viewPlan(root, params) {
 
   // Desde un límite o un aviso de uso: el plan sugerido queda elegido (un clic para subir).
   const wanted = params.get('subir') || params.get('plan');
-  const others = live && !sub.cancel_at_period_end ? b.plans.filter((p) => p.key !== sub.plan_key) : [];
+  // Con un cobro fallido en Mercado Pago, primero «Cambiar tarjeta» (cobra lo pendiente); después se cambia de plan.
+  const mpDue = sub?.provider === 'mercadopago' && sub.status === 'past_due';
+  const others = live && !sub.cancel_at_period_end && !mpDue ? b.plans.filter((p) => p.key !== sub.plan_key) : [];
   const current = live ? b.plans.find((p) => p.key === sub.plan_key) : null;
   const change = others.length
     ? h('section', { class: 'card', 'aria-labelledby': 'change-plan' },
@@ -205,10 +207,11 @@ export async function viewPlan(root, params) {
           if (r?.url) location.href = r.url;
           // Sin el plan sugerido en la dirección (cambiar la dirección ya vuelve a dibujar la página).
           else if (r) {
-            toast(r.starts_at ? `Listo: el plan ${p.name} empieza el ${longDate(r.starts_at)}` : `Listo: ahora tienes el plan ${p.name}`);
+            toast(r.scheduled ? `Listo: el plan ${p.name} empieza ${r.starts_at ? `el ${longDate(r.starts_at)}` : 'con tu siguiente cobro'}` : `Listo: ahora tienes el plan ${p.name}`);
             if (location.hash !== '#/plan') location.hash = '#/plan'; else render();
           }
-        } }, p.key === wanted ? `Subir ahora a ${p.name}` : `Cambiar a ${p.name}`)))))
+          // En Mercado Pago, subir empieza con el siguiente cobro: «ahora» sería una promesa falsa.
+        } }, p.key === wanted ? (sub.provider === 'mercadopago' ? `Subir a ${p.name}` : `Subir ahora a ${p.name}`) : `Cambiar a ${p.name}`)))))
     : null;
 
   const waiting = paid && !live;

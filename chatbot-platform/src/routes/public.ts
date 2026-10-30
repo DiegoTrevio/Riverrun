@@ -240,11 +240,10 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
   app.post('/webchat/:token/session', async (req: any, reply) => {
     const ch = await webchat(req, reply);
     if (!ch) return;
-    // Límites de sesiones nuevas, por conexión y por canal: cada una es un cliente nuevo que gasta IA y cupo del plan.
-    // Un visitante abre una sola (el widget la guarda); 10 por hora alcanzan aunque borre su navegador.
-    if (limitedFor(`webchat-session-ip:${ch.id}:${ipKey(req.ip)}`, 10, HOUR) || limitedFor(`webchat-session:${ch.id}`, 300, HOUR)) {
-      return reply.code(429).send({ error: 'Demasiadas solicitudes, espera un momento' });
-    }
+    // Sesiones nuevas por conexión: un visitante abre una sola (el widget la guarda); 30 por hora alcanzan aunque borre su
+    // navegador o varios compartan la conexión (redes móviles). El tope del canal cuenta clientes nuevos, no sesiones
+    // pedidas: pedirlas no cuesta nada y con ellas cualquiera cerraría el chat a los demás.
+    if (limitedFor(`webchat-session-ip:${ch.id}:${ipKey(req.ip)}`, 30, HOUR)) return reply.code(429).send({ error: 'Demasiadas solicitudes, espera un momento' });
     return { session: newWebchatSession(ch.id) };
   });
 
@@ -270,13 +269,17 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
     const { text, name, button } = (req.body ?? {}) as { session?: string; text?: string; name?: string; button?: string };
     // Solo una sesión que entregó el servidor para este canal: una inventada sería un cliente nuevo en cada mensaje.
     const session = readWebchatSession(ch.id, req.body?.session);
-    if (!session) return reply.code(400).send({ error: 'Sesión inválida' });
+    if (!session) return reply.code(400).send({ error: 'Sesión inválida', code: 'invalid_session' });
     const clean = truncateChars(String(text ?? '').trim(), 2000);
     if (!clean) return reply.code(400).send({ error: 'Mensaje vacío' });
     const ip = ipKey(req.ip);
     if (rateLimited(`${ch.id}:${session}`) || rateLimited(`msg-ip:${ch.id}:${ip}`, 40)
       || limitedFor(`webchat-msg-ip:${ch.id}:${ip}`, 120, HOUR) || limitedFor(`webchat-msg-day:${ch.id}:${session}`, 300, 24 * HOUR)) {
       return reply.code(429).send({ error: 'Demasiados mensajes, espera un momento' });
+    }
+    // Cada cliente nuevo gasta IA y cupo del plan: a lo más 300 por hora en cada canal.
+    if (!(await store.findContact(ch.id, session)) && limitedFor(`webchat-new:${ch.id}`, 300, HOUR)) {
+      return reply.code(429).send({ error: 'El chat está recibiendo demasiadas conversaciones nuevas: intenta en unos minutos' });
     }
     const r = await service.handleIncoming(ch, {
       messageId: `web-${crypto.randomUUID()}`,
@@ -297,7 +300,7 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
     const ch = await webchat(req, reply);
     if (!ch) return;
     const session = readWebchatSession(ch.id, req.query.session);
-    if (!session) return reply.code(400).send({ error: 'Sesión inválida' });
+    if (!session) return reply.code(400).send({ error: 'Sesión inválida', code: 'invalid_session' });
     const contact = await store.findContact(ch.id, session);
     if (!contact) return { messages: [], typing: false };
     const after = Number(req.query.after) || 0;

@@ -174,14 +174,82 @@ t('Mercado Pago: volver al plan actual antes del cobro deshace el cambio program
   assert.deepEqual([sub.plan_key, sub.pending_plan_key, await planOf(a.accountId)], ['basico', '', 'basico']);
 });
 
-t('con un cobro pendiente no se cambia de plan: primero se actualiza el pago', async () => {
-  for (const a of [await paidStripe('pia@cafe.mx', 'basico', 'sub_pia'), await paidMp('ugo@cafe.mx', 'basico', 'pre_ugo')]) {
-    await pool.query(`UPDATE subscriptions SET status = 'past_due', past_due_since = now() WHERE account_id = $1`, [a.accountId]);
-    const r = await a.api('POST', '/api/billing/change', { plan: 'pro' });
-    assert.equal(r.statusCode, 400, r.body);
-    assert.match(r.json().error, /pago pendiente/);
-    assert.equal(await planOf(a.accountId), 'basico');
+t('Mercado Pago con un cobro fallido: primero se actualiza la tarjeta (cambiar de plan lo daría por pagado)', async () => {
+  const a = await paidMp('ugo@cafe.mx', 'basico', 'pre_ugo');
+  await pool.query(`UPDATE subscriptions SET status = 'past_due', past_due_since = now() WHERE account_id = $1`, [a.accountId]);
+  const r = await a.api('POST', '/api/billing/change', { plan: 'pro' });
+  assert.equal(r.statusCode, 400, r.body);
+  assert.match(r.json().error, /pago pendiente/);
+  assert.deepEqual([(await subOf(a.accountId)).status, await planOf(a.accountId)], ['past_due', 'basico']);
+});
+
+t('Stripe con un cobro fallido sí puede subir de plan: el cobro de la diferencia decide', async () => {
+  const a = await paidStripe('pia@cafe.mx', 'basico', 'sub_pia');
+  await pool.query(`UPDATE subscriptions SET status = 'past_due', past_due_since = now() WHERE account_id = $1`, [a.accountId]);
+  const r = await a.api('POST', '/api/billing/change', { plan: 'pro' });
+  assert.equal(r.statusCode, 200, r.body);
+  assert.equal(lastStripe('/v1/subscriptions/sub_pia').get('payment_behavior'), 'error_if_incomplete', 'si el cobro falla, no cambia nada');
+});
+
+t('Mercado Pago: subir cambiando de mensual a anual da el plan nuevo con el primer cobro de la sustitución, no al autorizarla', async () => {
+  const a = await paidMp('ivo@cafe.mx', 'basico', 'pre_ivo');
+  fake.mp.nextId = 'pre_ivo2';
+  assert.equal((await a.api('POST', '/api/billing/change', { plan: 'anual' })).statusCode, 200);
+  fake.mp.preapprovals.pre_ivo2 = { id: 'pre_ivo2', status: 'authorized', external_reference: `${a.accountId}:anual`, payer_id: 7, next_payment_date: periodEnd.toISOString() };
+  outbox.length = 0;
+  assert.equal((await mpHook('subscription_preapproval', 'pre_ivo2')).statusCode, 200);
+  // Su primer cobro es al terminar el mes ya pagado: con Pro anual desde hoy, ese mes saldría gratis (y de anual a
+  // mensual, hasta 12 meses).
+  const sub = await subOf(a.accountId);
+  assert.deepEqual([sub.provider_subscription_id, sub.plan_key, sub.pending_plan_key, await planOf(a.accountId)], ['pre_ivo2', 'basico', 'anual', 'basico']);
+  assert.ok(outbox.some((m) => m.to === 'ivo@cafe.mx' && m.subject === 'Tu plan cambia a Pro anual'), JSON.stringify(outbox.map((m) => m.subject)));
+  fake.mp.payments.ap_ivo = { id: 'ap_ivo', preapproval_id: 'pre_ivo2', status: 'processed', transaction_amount: 5788.4, currency_id: 'MXN', debit_date: new Date().toISOString(), payment: { id: 2991, status: 'approved' } };
+  assert.equal((await mpHook('subscription_authorized_payment', 'ap_ivo')).statusCode, 200);
+  assert.deepEqual([(await subOf(a.accountId)).plan_key, await planOf(a.accountId)], ['anual', 'anual']);
+});
+
+t('Mercado Pago: cancelar y contratar un plan más caro con lo ya pagado tampoco lo da antes de cobrarlo', async () => {
+  const a = await paidMp('eli@cafe.mx', 'basico', 'pre_eli');
+  assert.equal((await a.api('POST', '/api/billing/cancel', {})).statusCode, 200);
+  fake.mp.nextId = 'pre_eli2';
+  const r = await a.api('POST', '/api/billing/checkout', { plan: 'pro', provider: 'mercadopago' });
+  assert.equal(r.statusCode, 200, r.body);
+  fake.mp.preapprovals.pre_eli2 = { id: 'pre_eli2', status: 'authorized', external_reference: `${a.accountId}:pro`, payer_id: 7, next_payment_date: periodEnd.toISOString() };
+  assert.equal((await mpHook('subscription_preapproval', 'pre_eli2')).statusCode, 200);
+  const sub = await subOf(a.accountId);
+  assert.deepEqual([sub.provider_subscription_id, sub.plan_key, sub.pending_plan_key, await planOf(a.accountId)], ['pre_eli2', 'basico', 'pro', 'basico']);
+});
+
+t('Mercado Pago: el plan programado no empieza con un cobro del monto anterior ni de antes del cambio; sí con el monto pactado aunque luego suba el precio', async () => {
+  const a = await paidMp('ada@cafe.mx', 'basico', 'pre_ada');
+  assert.equal((await a.api('POST', '/api/billing/change', { plan: 'pro' })).statusCode, 200);
+  let n = 3000;
+  const pay = (id: string, amount: number, at: Date) => {
+    fake.mp.payments[id] = { id, preapproval_id: 'pre_ada', status: 'processed', transaction_amount: amount, currency_id: 'MXN', debit_date: at.toISOString(), payment: { id: ++n, status: 'approved' } };
+    return mpHook('subscription_authorized_payment', id);
+  };
+  assert.equal((await pay('ap_ada_old', 230.84, new Date())).statusCode, 200);
+  assert.equal(await planOf(a.accountId), 'basico', 'el cobro con el monto de Básico es del periodo de Básico');
+  assert.equal((await pool.query(`SELECT plan_key FROM billing_payments WHERE provider_payment_id = 'ap_ada_old'`)).rows[0].plan_key, 'basico', 'y así queda registrado (y facturado)');
+  assert.equal((await pay('ap_ada_before', 578.84, new Date(Date.now() - 86400_000))).statusCode, 200);
+  assert.equal(await planOf(a.accountId), 'basico', 'un cobro de antes del cambio tampoco');
+  // El superadmin sube el precio de Pro: Mercado Pago sigue cobrando el monto que se le fijó al cambiar.
+  assert.equal((await h.authed('PUT', '/api/plans/pro', { name: 'Pro', price: 599 })).statusCode, 200);
+  try {
+    assert.equal((await pay('ap_ada_new', 578.84, new Date())).statusCode, 200);
+    assert.equal(await planOf(a.accountId), 'pro');
+  } finally {
+    assert.equal((await h.authed('PUT', '/api/plans/pro', { name: 'Pro', price: 499 })).statusCode, 200);
   }
+});
+
+t('un plan al que alguien ya tiene programado el cambio no se puede borrar', async () => {
+  assert.equal((await h.authed('POST', '/api/plans', { key: 'premium', name: 'Premium', price: 999 })).statusCode, 200);
+  const a = await paidMp('flo@cafe.mx', 'basico', 'pre_flo');
+  assert.equal((await a.api('POST', '/api/billing/change', { plan: 'premium' })).statusCode, 200);
+  const del = await h.authed('DELETE', '/api/plans/premium');
+  assert.equal(del.statusCode, 409, del.body);
+  assert.match(del.json().error, /programado/);
 });
 
 t('Mercado Pago: de mensual a anual por sustitución; al autorizarla, la anterior se cancela sin aviso de cobro duplicado', async () => {

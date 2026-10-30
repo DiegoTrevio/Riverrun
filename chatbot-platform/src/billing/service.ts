@@ -180,10 +180,12 @@ export async function startReplacement(o: { accountId: string; email: string; pl
  * Cambia el plan vigente. Stripe: ya, con prorrateo. Mercado Pago: el nuevo monto desde el siguiente cobro; si cambia el
  * periodo (mensual ↔ anual), por sustitución, y entonces devuelve la página de pago (`url`).
  */
-export async function changePlan(o: { accountId: string; email: string; planKey: string; base: string }): Promise<{ url?: string; starts_at?: Date | null }> {
+export async function changePlan(o: { accountId: string; email: string; planKey: string; base: string }): Promise<{ url?: string; starts_at?: Date | null; scheduled?: boolean }> {
   const sub = await liveSubscription(o.accountId);
-  // Con un cobro fallido, subir de plan daría el plan caro sin haber pagado ni el actual.
-  if (sub.status === 'past_due') throw new HttpError(400, 'Tienes un pago pendiente: actualiza tu forma de pago antes de cambiar de plan.');
+  // Mercado Pago informa «autorizada» aunque el último cobro se haya rechazado: cambiar el monto con un cobro fallido
+  // daría la cuenta por pagada. Primero se cambia la tarjeta (que cobra lo pendiente). En Stripe, subir cobra la diferencia
+  // al momento y, si el cobro falla, no cambia nada.
+  if (sub.status === 'past_due' && sub.provider === 'mercadopago') throw new HttpError(400, 'Tienes un pago pendiente: actualiza tu tarjeta con «Cambiar tarjeta» antes de cambiar de plan.');
   if (sub.cancel_at_period_end) throw new HttpError(400, 'Tu plan está por cancelarse: primero elige «Mantener mi plan».');
   const pending = sub.provider === 'mercadopago' ? sub.pending_plan_key : '';
   if (pending && pending === o.planKey) throw new HttpError(400, 'Ese cambio ya está programado para tu siguiente cobro.');
@@ -196,19 +198,28 @@ export async function changePlan(o: { accountId: string; email: string; planKey:
   if (sub.provider === 'mercadopago' && from && from.billing_interval !== plan.billing_interval) {
     return { url: await startReplacement({ accountId: o.accountId, email: o.email, plan, base: o.base }) };
   }
-  const state = await providers[sub.provider].changePlan(sub, plan, { upgrade });
   // Mercado Pago cobra el monto nuevo hasta la siguiente renovación (no cobra la diferencia): al subir, el plan nuevo y
   // sus límites esperan ese cobro (`promotePendingPlan`). Si no, se usaría el plan caro todo el periodo pagando el barato.
+  // Se anota antes de cambiar el monto: si el proceso cae entre los dos pasos, el aviso del proveedor no lo adelanta.
   const deferred = sub.provider === 'mercadopago' && upgrade;
-  await query(`UPDATE subscriptions SET pending_plan_key = $2, pending_plan_since = $3, updated_at = now() WHERE account_id = $1`,
-    [o.accountId, deferred ? plan.key : '', deferred ? new Date() : null]);
+  const setPending = (key: string, since: Date | null, cents: number) =>
+    query(`UPDATE subscriptions SET pending_plan_key = $2, pending_plan_since = $3, pending_amount_cents = $4, updated_at = now() WHERE account_id = $1`, [o.accountId, key, since, cents]);
+  if (deferred) await setPending(plan.key, new Date(), chargeCents(plan));
+  let state: SubscriptionState;
+  try {
+    state = await providers[sub.provider].changePlan(sub, plan, { upgrade });
+  } catch (e) {
+    if (deferred) await setPending(sub.pending_plan_key ?? '', sub.pending_plan_since ?? null, sub.pending_amount_cents ?? 0);
+    throw e;
+  }
+  if (!deferred && pending) await setPending('', null, 0);
   // El estado se aplica ya (el aviso del proveedor llegará después y no repite nada).
   await applyState({ ...state, accountId: o.accountId, planKey: deferred ? sub.plan_key : plan.key });
   const acc = await queryOne<{ name: string }>(`SELECT name FROM accounts WHERE id = $1`, [o.accountId]);
   if (deferred) {
     await logEvent({ level: 'info', source: 'admin', message: `Cambio de plan programado (mercadopago): ${sub.plan_key || '—'} → ${plan.key}, con el siguiente cobro`, accountId: o.accountId });
     await tell(o.accountId, `Tu plan cambia a ${plan.name}`, `El plan ${plan.name} de tu cuenta "${acc?.name ?? ''}" empieza con tu siguiente cobro, el ${fmt(sub.current_period_end)} (${money(chargeCents(plan), plan.currency)} con IVA). Hasta entonces sigues con ${from ? `el plan ${from.name}` : 'tu plan actual'}.`);
-    return { starts_at: sub.current_period_end };
+    return { scheduled: true, starts_at: sub.current_period_end };
   }
   if (pending && plan.key === sub.plan_key) {
     await logEvent({ level: 'info', source: 'admin', message: `Cambio de plan programado cancelado (mercadopago): sigue ${plan.key}`, accountId: o.accountId });
@@ -329,7 +340,17 @@ async function applyStateLocked(state: SubscriptionState & { accountId: string }
   // que ya trae la referencia del plan nuevo.
   const held = !!prev?.pending_plan_key && prev.provider === state.provider && prev.provider_subscription_id === state.subscriptionId
     && state.planKey === prev.pending_plan_key;
-  const planKey = (held ? prev!.plan_key : state.planKey) || prev?.plan_key || '';
+  let planKey = (held ? prev!.plan_key : state.planKey) || prev?.plan_key || '';
+  // Una sustitución a un plan más caro (mensual ↔ anual, o contratar otro tras cancelar) cobra por primera vez al terminar
+  // lo ya pagado: hasta ese cobro sigue el plan de antes, igual que al subir en el mismo periodo.
+  let scheduled: Plan | null = null;
+  if (replacing && prev?.plan_key && planKey !== prev.plan_key && prev.current_period_end && new Date(prev.current_period_end) > now) {
+    const [from, to] = await Promise.all([getPlan(prev.plan_key), getPlan(planKey)]);
+    if (from && to && monthly(to) > monthly(from)) {
+      scheduled = to;
+      planKey = from.key;
+    }
+  }
 
   const pastDueSince = state.status === 'past_due' ? prev?.past_due_since ?? now : null;
   // El periodo ya pagado no se pierde si el proveedor no lo informa.
@@ -342,10 +363,13 @@ async function applyStateLocked(state: SubscriptionState & { accountId: string }
        dunning_step = CASE WHEN $6 = 'past_due' THEN subscriptions.dunning_step ELSE 0 END,
        payment_action_url = CASE WHEN $6 = 'past_due' THEN subscriptions.payment_action_url ELSE '' END,
        access_ended_at = CASE WHEN $6 = 'active' THEN NULL ELSE subscriptions.access_ended_at END,
-       -- Otra suscripción (una sustitución): el plan programado en la anterior ya no aplica.
-       pending_plan_key = CASE WHEN subscriptions.provider_subscription_id = $4 THEN subscriptions.pending_plan_key ELSE '' END,
-       pending_plan_since = CASE WHEN subscriptions.provider_subscription_id = $4 THEN subscriptions.pending_plan_since END, updated_at = now()`,
-    [accountId, state.provider, state.customerId, state.subscriptionId, planKey, state.status, periodEnd, state.cancelAtPeriodEnd, pastDueSince],
+       -- Una sustitución a un plan más caro lo programa en la nueva; cualquier otra deja atrás lo programado en la anterior.
+       pending_plan_key = CASE WHEN $10 <> '' THEN $10 WHEN subscriptions.provider_subscription_id = $4 THEN subscriptions.pending_plan_key ELSE '' END,
+       pending_plan_since = CASE WHEN $10 <> '' THEN $11::timestamptz WHEN subscriptions.provider_subscription_id = $4 THEN subscriptions.pending_plan_since END,
+       pending_amount_cents = CASE WHEN $10 <> '' THEN $12::int WHEN subscriptions.provider_subscription_id = $4 THEN subscriptions.pending_amount_cents ELSE 0 END,
+       updated_at = now()`,
+    [accountId, state.provider, state.customerId, state.subscriptionId, planKey, state.status, periodEnd, state.cancelAtPeriodEnd, pastDueSince,
+      scheduled?.key ?? '', scheduled ? now : null, scheduled ? chargeCents(scheduled) : 0],
   );
 
   // Una sustitución no es una contratación nueva: sigue del estado en que estaba (al corriente o con pago pendiente).
@@ -364,7 +388,8 @@ async function applyStateLocked(state: SubscriptionState & { accountId: string }
       }
     }
     await logEvent({ level: 'info', source: 'admin', message: `Suscripción sustituida (${state.provider}): ${prev.provider_subscription_id} → ${state.subscriptionId}`, accountId });
-    if (was === 'active') later.push(() => tell(accountId, 'Actualizamos tu plan', `Tu cuenta "${acc.name}" sigue al corriente${plan ? ` con el plan ${plan.name}` : ''} y con tu nueva forma de pago. Próximo cobro: ${fmt(periodEnd)}.`));
+    if (scheduled) later.push(() => tell(accountId, `Tu plan cambia a ${scheduled.name}`, `El plan ${scheduled.name} de tu cuenta "${acc.name}" empieza con su primer cobro, el ${fmt(periodEnd)} (${money(chargeCents(scheduled), scheduled.currency)} con IVA). Hasta entonces sigues con ${plan ? `el plan ${plan.name}` : 'tu plan actual'}.`));
+    else if (was === 'active') later.push(() => tell(accountId, 'Actualizamos tu plan', `Tu cuenta "${acc.name}" sigue al corriente${plan ? ` con el plan ${plan.name}` : ''} y con tu nueva forma de pago. Próximo cobro: ${fmt(periodEnd)}.`));
   }
 
   if (state.status === 'active') {
@@ -398,6 +423,15 @@ async function applyStateLocked(state: SubscriptionState & { accountId: string }
 }
 
 /**
+ * ¿Este cobro empieza el plan programado? Tiene que ser de esa suscripción, posterior al cambio y por el monto pactado:
+ * un cobro de antes, o con el monto anterior, todavía es del plan de siempre.
+ */
+export function startsPendingPlan(sub: Pick<Subscription, 'pending_plan_key' | 'pending_plan_since' | 'pending_amount_cents' | 'provider_subscription_id'> | null | undefined, payment: PaymentInfo): boolean {
+  return !!sub?.pending_plan_key && !!sub.pending_plan_since && sub.provider_subscription_id === payment.subscriptionId
+    && new Date(payment.paidAt) >= new Date(sub.pending_plan_since) && payment.totalCents >= sub.pending_amount_cents;
+}
+
+/**
  * El plan al que se subió en Mercado Pago empieza con el primer cobro de su monto (ver `changePlan`): entonces se aplica,
  * con sus límites. Corre con el candado de la cuenta, igual que `applyState`, para que un aviso a la vez no lo pise.
  */
@@ -406,11 +440,9 @@ export async function promotePendingPlan(accountId: string, provider: ProviderNa
   await withTransaction(async (client) => {
     await client.query(`SELECT pg_advisory_xact_lock(hashtext('billing-apply:' || $1))`, [accountId]);
     const sub = await getSubscription(accountId);
-    if (!sub?.pending_plan_key || sub.provider !== provider || sub.provider_subscription_id !== payment.subscriptionId) return;
-    // Un cobro de antes del cambio, o con el monto anterior, todavía es del plan de siempre.
-    if (!sub.pending_plan_since || new Date(payment.paidAt) < new Date(sub.pending_plan_since)) return;
+    if (!sub || sub.provider !== provider || !startsPendingPlan(sub, payment)) return;
     const plan = await getPlan(sub.pending_plan_key);
-    if (!plan || payment.totalCents < chargeCents(plan)) return;
+    if (!plan) return;
     await query(`UPDATE subscriptions SET plan_key = $2, pending_plan_key = '', pending_plan_since = NULL, updated_at = now() WHERE account_id = $1`, [accountId, plan.key]);
     await query(`UPDATE accounts SET plan = $2, updated_at = now() WHERE id = $1`, [accountId, plan.key]);
     await logEvent({ level: 'info', source: 'admin', message: `Cambio de plan aplicado con el cobro (${provider}): ${sub.plan_key || '—'} → ${plan.key}`, accountId });

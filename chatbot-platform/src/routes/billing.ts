@@ -133,6 +133,9 @@ export async function billingRoutes(api: FastifyInstance) {
   api.delete('/api/plans/:key', supers, async (req: any) => {
     const used = await queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM subscriptions WHERE plan_key = $1 AND status IN ('active', 'past_due')`, [req.params.key]);
     if (used?.n) throw new HttpError(409, `Hay ${used.n} suscripciones activas con este plan: desactívalo en lugar de borrarlo.`);
+    // Sin el plan, el cambio programado no podría empezar con su cobro (el cliente pagaría el plan nuevo con los límites del anterior).
+    const waiting = await queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM subscriptions WHERE pending_plan_key = $1`, [req.params.key]);
+    if (waiting?.n) throw new HttpError(409, `Hay ${waiting.n} cuentas con el cambio a este plan programado para su siguiente cobro: desactívalo en lugar de borrarlo.`);
     const assigned = await queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM accounts WHERE plan = $1`, [req.params.key]);
     if (assigned?.n) throw new HttpError(409, `Hay ${assigned.n} cuentas asignadas a este plan: cámbiales el plan o desactívalo en lugar de borrarlo.`);
     await query(`DELETE FROM plans WHERE key = $1`, [req.params.key]);
@@ -298,7 +301,8 @@ export async function billingRoutes(api: FastifyInstance) {
       if (!sub.provider_customer_id) throw new HttpError(400, 'Tu plan no tiene página de administración');
       return viaProvider(() => providers.stripe.portal!(sub.provider_customer_id, `${base}/#/plan`));
     }
-    const plan = await getPlan(sub.plan_key);
+    // Con un cambio de plan programado, la tarjeta nueva lo conserva (empieza igual, con su primer cobro).
+    const plan = await getPlan(sub.pending_plan_key || sub.plan_key);
     if (!plan?.active) throw new HttpError(409, 'Tu plan ya no se ofrece: elige otro para continuar.');
     return { url: await viaProvider(() => startReplacement({ accountId, email: req.user.email, plan, base })) };
   });
@@ -310,7 +314,7 @@ export async function billingRoutes(api: FastifyInstance) {
     const sub = await getSubscription(accountId);
     // Mercado Pago no reanuda una suscripción cancelada: se contrata el mismo plan con el primer cobro al terminar lo pagado.
     if (resume && sub?.provider === 'mercadopago' && (sub.cancel_at_period_end || sub.status === 'canceled') && sub.current_period_end && sub.current_period_end > new Date()) {
-      const plan = await getPlan(sub.plan_key);
+      const plan = await getPlan(sub.pending_plan_key || sub.plan_key);
       if (!plan?.active) throw new HttpError(409, 'Tu plan ya no se ofrece: elige otro para continuar.');
       return { ok: true, url: await viaProvider(async () => startReplacement({ accountId, email: req.user.email, plan, base: await baseFor(req) })) };
     }

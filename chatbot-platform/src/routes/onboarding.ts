@@ -65,7 +65,7 @@ export async function onboardingRoutes(api: FastifyInstance) {
     const settings = await astore.getSettings(accountId);
     const answers = bot ? await store.getChatbot(bot.id) : null;
     return {
-      account: acc,
+      account: store.publicAccount(acc),
       email_verified: !!req.user.email_verified_at || req.user.role === 'superadmin' || !config.signup.requireEmail,
       steps: done,
       complete,

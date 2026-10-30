@@ -135,7 +135,7 @@ export function decodeText(buf: Buffer): string {
 }
 
 /** Etiquetas cuyo contenido no es texto de la página. */
-const NOT_TEXT = new Set(['script', 'style', 'noscript', 'svg', 'iframe', 'template', 'head']);
+const NOT_TEXT = new Set(['script', 'style', 'noscript', 'svg', 'iframe', 'template']);
 /** Al cerrarse, terminan una línea. */
 const LINE_END = new Set(['p', 'div', 'li', 'tr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'section', 'article', 'header', 'footer', 'br', 'table', 'ul', 'ol']);
 
@@ -150,37 +150,63 @@ export function htmlToText(html: string): string {
   const jsonLd: string[] = [];
   // Etiquetas que ya se buscó cerrar sin encontrarlo: no se vuelven a buscar (sería recorrer el resto otra vez).
   const unclosed = new Set<string>();
+  // El encabezado no es texto, pero sus etiquetas sí se leen (ahí suelen ir los datos estructurados): hasta esta
+  // posición no se agrega texto.
+  let quietUntil = -1;
+  let commentsEnd = true; // false: ya no hay ningún «-->» más adelante
+  const emit = (s: string, at: number) => {
+    if (at > quietUntil) out.push(s);
+  };
+  /** El cierre exacto a partir de `from`: `</head` no cuenta si es `</header`. */
+  const closeOf = (name: string, from: number) => {
+    let at = lower.indexOf(`</${name}`, from);
+    while (at >= 0 && /[a-z0-9]/.test(lower[at + name.length + 2] ?? '')) at = lower.indexOf(`</${name}`, at + 2);
+    return at;
+  };
   let i = 0;
   while (i < html.length) {
     const lt = html.indexOf('<', i);
     if (lt < 0) {
-      out.push(html.slice(i));
+      emit(html.slice(i), html.length);
       break;
     }
-    out.push(html.slice(i, lt));
+    emit(html.slice(i, lt), lt);
     if (lower.startsWith('<!--', lt)) {
-      const end = html.indexOf('-->', lt + 4);
+      const end = commentsEnd ? html.indexOf('-->', lt + 4) : -1;
       out.push(' ');
-      if (end < 0) break; // un comentario sin cerrar llega hasta el final, como en el navegador
+      // Sin cierre se descarta solo la marca: en un correo, mejor leer lo que sigue que perderlo.
+      if (end < 0) {
+        commentsEnd = false;
+        i = lt + 4;
+        continue;
+      }
       i = end + 3;
       continue;
     }
     // «3 < 4»: un < que no abre etiqueta es texto.
     if (!/[a-z/!?]/.test(lower[lt + 1] ?? '')) {
-      out.push('<');
+      emit('<', lt);
       i = lt + 1;
       continue;
     }
     const gt = html.indexOf('>', lt + 1);
-    if (gt < 0) break; // una etiqueta sin cerrar se come el resto, como en el navegador
+    if (gt < 0) {
+      // Una etiqueta sin cerrar al final se queda como texto.
+      emit(html.slice(lt), lt);
+      break;
+    }
     const tag = lower.slice(lt + 1, gt);
     const closing = tag.startsWith('/');
     const name = /^\/?\s*([a-z][a-z0-9]*)/.exec(tag)?.[1] ?? '';
     i = gt + 1;
-    if (!closing && NOT_TEXT.has(name) && !unclosed.has(name)) {
-      // El cierre exacto: `</head` no cuenta si es `</header`.
-      let close = lower.indexOf(`</${name}`, i);
-      while (close >= 0 && /[a-z0-9]/.test(lower[close + name.length + 2] ?? '')) close = lower.indexOf(`</${name}`, close + 2);
+    if (!closing && name === 'head' && lt > quietUntil && !unclosed.has('head')) {
+      // Hasta </head> o, si falta, hasta <body>; sin ninguno de los dos, el texto se conserva.
+      const close = closeOf('head', i);
+      const end = close >= 0 ? close : lower.indexOf('<body', i);
+      if (end >= 0) quietUntil = end;
+      else unclosed.add('head');
+    } else if (!closing && NOT_TEXT.has(name) && !unclosed.has(name)) {
+      const close = closeOf(name, i);
       if (close >= 0) {
         if (name === 'script' && tag.includes('application/ld+json')) {
           const data = html.slice(i, close).trim();
@@ -191,7 +217,7 @@ export function htmlToText(html: string): string {
         out.push(' ');
         continue;
       }
-      // Sin cierre (un <head> que nunca se cierra): solo se quita la etiqueta y su contenido queda como texto.
+      // Sin cierre: solo se quita la etiqueta y su contenido queda como texto.
       unclosed.add(name);
     }
     out.push(closing ? (LINE_END.has(name) ? '\n' : ' ') : name === 'br' ? '\n' : name === 'td' || name === 'th' ? ' | ' : ' ');

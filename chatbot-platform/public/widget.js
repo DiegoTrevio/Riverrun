@@ -37,6 +37,7 @@
         if (!r.ok) {
           var e = new Error(d.error || 'Error');
           e.status = r.status;
+          e.code = d.code;
           throw e;
         }
         return d;
@@ -265,7 +266,7 @@
 
     /** Una sesión que el servidor ya no acepta (de una versión anterior, o se cambió su clave) se olvida para pedir otra. */
     function forgetSession(e) {
-      if (!e || e.status !== 400 || e.message !== 'Sesión inválida') return false;
+      if (!e || e.code !== 'invalid_session') return false;
       session = null;
       storage(false, '');
       return true;

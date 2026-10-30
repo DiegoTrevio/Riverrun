@@ -286,10 +286,22 @@ t('Chat web: solo valen las sesiones que entregó el servidor para ese canal', a
   h.setScript(() => ({ messages: ['ok'] }));
   // Una sesión inventada creaba un cliente y una respuesta de IA cada vez: el límite de sesiones por conexión no servía.
   for (const forged of ['a'.repeat(32), `${session.slice(0, 32)}.${'A'.repeat(22)}`, foreign]) {
-    assert.equal((await h.app.inject({ method: 'POST', url: `${base}/messages`, payload: { session: forged, text: 'hola' } })).statusCode, 400, forged);
+    const sent = await h.app.inject({ method: 'POST', url: `${base}/messages`, payload: { session: forged, text: 'hola' } });
+    assert.deepEqual([sent.statusCode, sent.json().code], [400, 'invalid_session'], forged);
     assert.equal((await h.app.inject({ method: 'GET', url: `${base}/messages?session=${forged}` })).statusCode, 400, forged);
   }
   assert.equal((await h.app.inject({ method: 'POST', url: `${base}/messages`, payload: { session, text: 'hola' } })).statusCode, 200);
+});
+
+t('Chat web: pedir sesiones no cierra el chat a los demás (el tope del canal cuenta clientes nuevos, no sesiones)', async () => {
+  const web = await createChannel('webchat', {});
+  const base = `/webchat/${web.webhook_token}`;
+  const codes = [];
+  for (let i = 0; i < 400; i++) codes.push((await h.app.inject({ method: 'POST', url: `${base}/session`, remoteAddress: `10.77.${i >> 8}.${i & 255}` })).statusCode);
+  assert.equal(codes.filter((c) => c !== 200).length, 0, 'cada sesión pedida, aunque sean cientos, sigue funcionando');
+  const { session } = (await h.app.inject({ method: 'POST', url: `${base}/session`, remoteAddress: '10.78.0.1' })).json();
+  h.setScript(() => ({ messages: ['ok'] }));
+  assert.equal((await h.app.inject({ method: 'POST', url: `${base}/messages`, payload: { session, text: 'hola' }, remoteAddress: '10.78.0.1' })).statusCode, 200);
 });
 
 t('Chat web: el modo de color es automático por defecto y se puede fijar en claro u oscuro', async () => {
@@ -336,10 +348,10 @@ t('Chat web: orígenes permitidos, límite de mensajes y canal desactivado', asy
   // Sin cabecera Origin no es un navegador: la lista de dominios no aplica (no es autenticación), solo se valida la sesión.
   assert.equal((await h.app.inject({ method: 'POST', url: `${base}/messages`, payload: { session: 'corta', text: 'x' } })).statusCode, 400);
 
-  // Muchas sesiones desde la misma conexión tampoco sirven para saltarse el límite: a lo más 10 por hora.
+  // Muchas sesiones desde la misma conexión tampoco sirven para saltarse el límite: a lo más 30 por hora.
   const created = [];
-  for (let i = 0; i < 11; i++) created.push(await h.app.inject({ method: 'POST', url: `${base}/session` }));
-  assert.equal(created.filter((r) => r.statusCode === 200).length, 9, 'ya se había abierto una');
+  for (let i = 0; i < 31; i++) created.push(await h.app.inject({ method: 'POST', url: `${base}/session` }));
+  assert.equal(created.filter((r) => r.statusCode === 200).length, 29, 'ya se había abierto una');
   const valid = created.filter((r) => r.statusCode === 200).map((r) => r.json().session as string);
   const ipCodes: number[] = [];
   for (let i = 0; i < 30; i++) {

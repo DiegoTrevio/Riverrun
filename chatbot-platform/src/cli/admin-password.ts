@@ -24,6 +24,8 @@ try {
   console.log(`${r.created ? 'Superadministrador creado' : 'Contraseña restablecida'}: ${email}`);
   if (!typed) console.log(`Contraseña nueva: ${r.password}`);
   console.log('Sus sesiones abiertas se cerraron. Guárdala en tu gestor de contraseñas.');
+  // El límite de intentos lo lleva el servidor en memoria: este comando no lo puede levantar.
+  console.log('Si tu conexión quedó bloqueada por intentos fallidos, espera 15 minutos o reinicia (./riverrun restart).');
 } catch (error) {
   console.error(error instanceof Error ? error.message : 'No se pudo cambiar la contraseña');
   process.exitCode = 1;
