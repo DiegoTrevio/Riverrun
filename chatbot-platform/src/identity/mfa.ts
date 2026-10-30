@@ -13,6 +13,7 @@ import { logEvent } from '../logs.js';
 import { decryptSecret, encryptSecret, hmac, safeEqual } from '../secret.js';
 import * as store from '../store/index.js';
 import type { Role, User } from '../types.js';
+import { browserOf, noteDevice, trustDevice, trustedDeviceFor } from './devices.js';
 import { notifyUser } from './notices.js';
 import { qrDataUri } from './qr.js';
 import { LIMITS } from './rate-limit.js';
@@ -71,6 +72,11 @@ async function openSession(reply: FastifyReply, user: SessionUser, via: SessionV
  * tiene la app configurada y `{ mfa: 'enroll' }` si todavía no.
  */
 export async function beginLogin(reply: FastifyReply, user: SessionUser & { totp_enabled_at?: Date | null }, via: SessionVia): Promise<{ mfa: ChallengePurpose } | { ok: true }> {
+  // Dispositivo recordado (nunca el del superadmin): entra sin código, pero sin verificación reciente.
+  if (user.totp_enabled_at && (await trustedDeviceFor(reply.request, user))) {
+    await openSession(reply, user, via, null);
+    return { ok: true };
+  }
   const purpose: ChallengePurpose = user.totp_enabled_at ? 'verify' : 'enroll';
   const c: Challenge = { uid: user.id, pv: passwordVersion(user.password_hash), via, purpose, cid: crypto.randomBytes(12).toString('base64url'), exp: Date.now() + CHALLENGE_MS };
   const payload = Buffer.from(JSON.stringify(c)).toString('base64url');
@@ -152,10 +158,16 @@ export async function confirmEnrollment(userId: string, code: string): Promise<b
   return !!done;
 }
 
-/** El código fue bueno: se borra el reto y se abre la sesión con la verificación de este momento. */
-export async function finishChallenge(reply: FastifyReply, user: SessionUser, challenge: Challenge): Promise<string> {
+/**
+ * El código fue bueno: se borra el reto y se abre la sesión con la verificación de este momento. Si entra desde un
+ * dispositivo que no había usado, le avisa por correo; con `remember` (nunca el superadmin) lo recuerda 30 días.
+ */
+export async function finishChallenge(reply: FastifyReply, user: ChallengeUser, challenge: Challenge, o: { remember?: boolean } = {}): Promise<string> {
   clearChallenge(reply);
   await burnChallenge(challenge);
+  const device = await noteDevice(reply.request, reply, user.id);
+  if (device.isNew && !device.first) void notifyUser(user, 'new_device', { device: browserOf(String(reply.request.headers['user-agent'] ?? '')), ip: reply.request.ip });
+  if (o.remember && user.role !== 'superadmin') await trustDevice(reply, user.id, device.deviceHash);
   return openSession(reply, user, challenge.via, new Date());
 }
 

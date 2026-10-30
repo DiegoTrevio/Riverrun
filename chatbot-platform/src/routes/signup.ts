@@ -4,6 +4,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { hashPassword, rateLimited } from '../auth.js';
 import { beginLogin } from '../identity/mfa.js';
+import { forgetTrustedDevices } from '../identity/devices.js';
 import { notifyUser } from '../identity/notices.js';
 import { billingEnabled, payable, startCheckout } from '../billing/service.js';
 import { ProviderError } from '../billing/types.js';
@@ -170,6 +171,7 @@ export async function signupRoutes(app: FastifyInstance) {
     // La contraseña nueva invalida todas las sesiones abiertas. Abrir el enlace también confirma el correo.
     await store.updateUser(userId, { password_hash: await hashPassword(b.password) });
     await store.revokeUserSessions(userId);
+    await forgetTrustedDevices(userId);
     await store.markEmailVerified(userId);
     await logEvent({ level: 'info', source: 'admin', message: 'Contraseña restablecida por correo', details: { user_id: userId } });
     // No abre sesión: después entra con su contraseña nueva y su código.

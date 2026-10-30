@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import net from 'node:net';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { config } from './config.js';
+import { query } from './db.js';
 import { logEvent } from './logs.js';
 import { HttpError } from './access.js';
 import { assertPasswordAllowed } from './identity/passwords.js';
@@ -207,6 +208,7 @@ export async function resetSuperadminPassword(email: string, given?: string): Pr
   }
   await store.updateUser(existing.id, { password_hash: hash, active: true });
   await store.revokeUserSessions(existing.id);
+  await query(`UPDATE user_devices SET trust_hash = NULL, trusted_until = NULL WHERE user_id = $1`, [existing.id]);
   await logEvent({ level: 'warn', source: 'system', message: `Contraseña del superadministrador "${email}" restablecida desde el servidor (./riverrun admin-password); se cerraron sus sesiones` });
   return { password, created: false };
 }

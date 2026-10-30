@@ -20,6 +20,7 @@ import { adapterFor } from '../channels/index.js';
 import { config } from '../config.js';
 import { assertPasswordAllowed, NewPassword } from '../identity/passwords.js';
 import { beginLogin, renewSessionAfterPasswordChange } from '../identity/mfa.js';
+import { browserOf, forgetTrustedDevices } from '../identity/devices.js';
 import { notifyUser } from '../identity/notices.js';
 import { query, queryOne, withTransaction } from '../db.js';
 import { logEvent } from '../logs.js';
@@ -74,8 +75,10 @@ export async function sessionRoutes(app: FastifyInstance) {
       await logEvent({ level: 'warn', source: 'admin', message: 'Intento de acceso fallido', details: { ip: req.ip, email: who.slice(0, 100) } });
       return reply.code(401).send({ error: 'Usuario o contraseña incorrectos' });
     }
-    // Contraseña buena: falta el segundo paso (el código de la app, o configurarla la primera vez).
-    return beginLogin(reply, user, 'password');
+    // Contraseña buena: falta el segundo paso (el código de la app, o configurarla la primera vez), salvo desde un
+    // dispositivo recordado.
+    const begin = await beginLogin(reply, user, 'password');
+    return 'ok' in begin ? { ok: true, user: await store.getUser(user.id) } : begin;
   });
 
   app.post('/api/logout', async (req, reply) => {
@@ -107,11 +110,6 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
 
   /* ------------------------------ Mis sesiones ------------------------------ */
   // Cada persona ve y cierra solo las suyas.
-  const browserOf = (ua: string) => {
-    const b = /Edg\//.test(ua) ? 'Edge' : /OPR\//.test(ua) ? 'Opera' : /Chrome\//.test(ua) ? 'Chrome' : /Firefox\//.test(ua) ? 'Firefox' : /Safari\//.test(ua) ? 'Safari' : 'Navegador';
-    const os = /iPhone|iPad/.test(ua) ? 'iPhone o iPad' : /Android/.test(ua) ? 'Android' : /Windows/.test(ua) ? 'Windows' : /Mac OS X/.test(ua) ? 'Mac' : /Linux/.test(ua) ? 'Linux' : '';
-    return os ? `${b} en ${os}` : b;
-  };
   // Solo una parte de la IP: suficiente para reconocerla, sin mostrarla completa.
   const partialIp = (ip: string) => (ip.includes(':') ? `${ip.split(':').slice(0, 3).join(':')}:…` : ip.split('.').slice(0, 2).join('.') + (ip.includes('.') ? '.…' : ''));
   api.get('/api/me/sessions', async (req: any) => ({
@@ -126,6 +124,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
   });
   api.post('/api/me/sessions/revoke-others', async (req: any) => {
     const closed = await store.revokeUserSessions(req.user.id, { except: req.sessionId });
+    await forgetTrustedDevices(req.user.id);
     await logEvent({ level: 'info', source: 'admin', message: `${req.user.email} cerró sus otras ${closed} sesiones`, accountId: req.user.account_id ?? undefined });
     return { ok: true, closed };
   });
@@ -139,6 +138,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     await store.updateUser(req.user.id, { password_hash: hash });
     // Las demás sesiones se cierran; esta sigue abierta con la nueva huella (y con su verificación reciente).
     await store.revokeUserSessions(req.user.id);
+    await forgetTrustedDevices(req.user.id);
     await renewSessionAfterPasswordChange(reply, { id: req.user.id, role: req.user.role, password_hash: hash }, req.mfaAt);
     void notifyUser(req.user, 'password_changed');
     return { ok: true };
@@ -473,7 +473,10 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     if (!updated) throw notFound('Usuario no encontrado');
     // Desactivar a alguien, cambiarle el correo o la contraseña cierra todas sus sesiones abiertas. Un cambio de rol o de
     // cuenta aplica al momento en las sesiones abiertas (el usuario se vuelve a leer en cada petición).
-    if (!updated.active || updated.email !== target.email || patch.password_hash) await store.revokeUserSessions(updated.id);
+    if (!updated.active || updated.email !== target.email || patch.password_hash) {
+      await store.revokeUserSessions(updated.id);
+      await forgetTrustedDevices(updated.id);
+    }
     if (updated.role !== target.role || updated.account_id !== target.account_id) {
       await logEvent({ level: 'info', source: 'admin', message: `Permisos de usuario actualizados: ${updated.email}`, accountId: updated.account_id ?? target.account_id ?? undefined,
         details: { actor_id: req.user.id, user_id: updated.id, previous_role: target.role, role: updated.role, previous_account_id: target.account_id, account_id: updated.account_id } });

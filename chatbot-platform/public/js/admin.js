@@ -266,7 +266,7 @@ function sessionsCard() {
             if (r?.current) location.reload(); else if (r) draw();
           } }, 'Cerrar')))))) : h('p', { class: 'muted' }, 'No hay sesiones registradas.'),
       others.length ? h('button', { class: 'danger', onclick: async () => {
-        if (!(await dialog('Cerrar las demás sesiones', h('p', {}, `Se cerrarán ${others.length} ${others.length === 1 ? 'sesión' : 'sesiones'} en otros dispositivos. Esta sigue abierta.`), 'Cerrar las demás'))) return;
+        if (!(await dialog('Cerrar las demás sesiones', h('p', {}, `Se cerrarán ${others.length} ${others.length === 1 ? 'sesión' : 'sesiones'} en otros dispositivos. Esta sigue abierta. También se olvidan los dispositivos recordados (te pedirán el código otra vez).`), 'Cerrar las demás'))) return;
         if (await run(() => api('POST', '/api/me/sessions/revoke-others'), 'Sesiones cerradas')) draw();
       } }, 'Cerrar sesión en todos los demás dispositivos') : null);
   };

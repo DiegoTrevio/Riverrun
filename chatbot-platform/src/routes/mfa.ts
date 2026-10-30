@@ -28,7 +28,7 @@ export async function mfaPublicRoutes(app: FastifyInstance) {
       await countHit(key, CHALLENGE_WINDOW_MS);
       return wrongCode(reply);
     }
-    await finishChallenge(reply, found.user, found.challenge);
+    await finishChallenge(reply, found.user, found.challenge, { remember: b.remember });
     return { ok: true, user: await store.getUser(found.user.id), ...(check.recoveryRemaining !== undefined ? { recovery_remaining: check.recoveryRemaining } : {}) };
   });
 
