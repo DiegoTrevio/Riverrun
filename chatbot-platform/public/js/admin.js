@@ -312,6 +312,8 @@ export async function viewPassword(root) {
 export function needAccount(root) {
   if (!isSuper() || state.accountId) return false;
   const choice = { account_id: state.accounts.find((a) => a.active)?.id || state.accounts[0]?.id || '' };
+  // Desde el router la pantalla aún no tiene título: el de esta elección (cada página tiene su h1).
+  if (!root.querySelector('h1')) root.append(h('h1', {}, 'Elige un perfil'));
   root.append(h('div', { class: 'card' }, h('h2', {}, '¿Qué perfil quieres gestionar?'), field('Perfil de negocio', select(choice, 'account_id', state.accounts.map((a) => [a.id, a.name]))), h('button', { class: 'primary', disabled: !choice.account_id, onclick: () => { state.accountId = choice.account_id; try { localStorage.setItem('cp-account', state.accountId); } catch { /* sin almacenamiento */ } render(); } }, 'Gestionar este perfil')));
   return true;
 }
