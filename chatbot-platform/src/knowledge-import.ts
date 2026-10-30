@@ -134,15 +134,69 @@ export function decodeText(buf: Buffer): string {
   }
 }
 
+/** Etiquetas cuyo contenido no es texto de la página. */
+const NOT_TEXT = new Set(['script', 'style', 'noscript', 'svg', 'iframe', 'template', 'head']);
+/** Al cerrarse, terminan una línea. */
+const LINE_END = new Set(['p', 'div', 'li', 'tr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'section', 'article', 'header', 'footer', 'br', 'table', 'ul', 'ol']);
+
+/**
+ * Texto de un HTML (correos y páginas) en una sola pasada: cada búsqueda avanza y no se repite. Con expresiones que
+ * retroceden, un correo con miles de `<head` sin cerrar tardaba horas y congelaba el proceso para todas las cuentas.
+ */
 export function htmlToText(html: string): string {
-  const jsonLd = [...html.matchAll(/<script[^>]+application\/ld\+json[^>]*>([\s\S]*?)<\/script>/gi)].map((m) => m[1].trim()).filter((j) => j.length < 6000);
-  const body = html
-    .replace(/<!--[\s\S]*?-->/g, ' ')
-    .replace(/<(script|style|noscript|svg|iframe|template|head)[\s\S]*?<\/\1>/gi, ' ')
-    .replace(/<\/(p|div|li|tr|h[1-6]|section|article|header|footer|br|table|ul|ol)>|<br\s*\/?>/gi, '\n')
-    .replace(/<(td|th)[^>]*>/gi, ' | ')
-    .replace(/<[^>]+>/g, ' ');
-  const text = decode(body)
+  // Minúsculas solo ASCII: conservan las posiciones (toLowerCase puede cambiar el largo de algunos caracteres).
+  const lower = html.replace(/[A-Z]+/g, (c) => c.toLowerCase());
+  const out: string[] = [];
+  const jsonLd: string[] = [];
+  // Etiquetas que ya se buscó cerrar sin encontrarlo: no se vuelven a buscar (sería recorrer el resto otra vez).
+  const unclosed = new Set<string>();
+  let i = 0;
+  while (i < html.length) {
+    const lt = html.indexOf('<', i);
+    if (lt < 0) {
+      out.push(html.slice(i));
+      break;
+    }
+    out.push(html.slice(i, lt));
+    if (lower.startsWith('<!--', lt)) {
+      const end = html.indexOf('-->', lt + 4);
+      out.push(' ');
+      if (end < 0) break; // un comentario sin cerrar llega hasta el final, como en el navegador
+      i = end + 3;
+      continue;
+    }
+    // «3 < 4»: un < que no abre etiqueta es texto.
+    if (!/[a-z/!?]/.test(lower[lt + 1] ?? '')) {
+      out.push('<');
+      i = lt + 1;
+      continue;
+    }
+    const gt = html.indexOf('>', lt + 1);
+    if (gt < 0) break; // una etiqueta sin cerrar se come el resto, como en el navegador
+    const tag = lower.slice(lt + 1, gt);
+    const closing = tag.startsWith('/');
+    const name = /^\/?\s*([a-z][a-z0-9]*)/.exec(tag)?.[1] ?? '';
+    i = gt + 1;
+    if (!closing && NOT_TEXT.has(name) && !unclosed.has(name)) {
+      // El cierre exacto: `</head` no cuenta si es `</header`.
+      let close = lower.indexOf(`</${name}`, i);
+      while (close >= 0 && /[a-z0-9]/.test(lower[close + name.length + 2] ?? '')) close = lower.indexOf(`</${name}`, close + 2);
+      if (close >= 0) {
+        if (name === 'script' && tag.includes('application/ld+json')) {
+          const data = html.slice(i, close).trim();
+          if (data.length < 6000) jsonLd.push(data);
+        }
+        const end = html.indexOf('>', close);
+        i = end < 0 ? html.length : end + 1;
+        out.push(' ');
+        continue;
+      }
+      // Sin cierre (un <head> que nunca se cierra): solo se quita la etiqueta y su contenido queda como texto.
+      unclosed.add(name);
+    }
+    out.push(closing ? (LINE_END.has(name) ? '\n' : ' ') : name === 'br' ? '\n' : name === 'td' || name === 'th' ? ' | ' : ' ');
+  }
+  const text = decode(out.join(''))
     .split('\n')
     .map((l) => l.replace(/[ \t ]+/g, ' ').trim())
     .filter(Boolean)

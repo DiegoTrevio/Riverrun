@@ -95,7 +95,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     const due = account && req.user.role !== 'agent' ? await paymentDue(account.id) : null;
     // Copiloto: el superadmin lo usa en la cuenta que elija (el panel revisa que esa cuenta lo tenga encendido).
     const copilot = { enabled: config.copilot.enabled && (req.user.role === 'superadmin' || !!account?.copilot_enabled) };
-    return { user: req.user, account: account && { ...account, payment_due: due, deletion_date: deletionDate(account) }, copilot };
+    return { user: req.user, account: account && { ...store.publicAccount(account), payment_due: due, deletion_date: deletionDate(account) }, copilot };
   });
 
   api.put('/api/me', async (req) => {
@@ -237,9 +237,10 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     // El agente ve su cuenta sin los totales ni los datos del dueño: son de la cuenta entera.
     // Cuándo se borraría una cuenta en pausa (retención automática), para el superadmin.
     if (all) for (const r of rows as any[]) r.deletion_date = deletionDate(r);
-    if (req.user.role !== 'agent') return rows;
+    const accounts = rows.map((r) => store.publicAccount(r as Record<string, unknown>));
+    if (req.user.role !== 'agent') return accounts;
     const hidden = ['users', 'conversations', 'conversations_month', 'ai_cost_month', 'last_activity_at', 'owner_email', 'owner_verified'];
-    return rows.map((r: Record<string, unknown>) => Object.fromEntries(Object.entries(r).filter(([k]) => !hidden.includes(k))));
+    return accounts.map((r) => Object.fromEntries(Object.entries(r).filter(([k]) => !hidden.includes(k))));
   });
 
   /* ------------------------------ Consumo de IA ------------------------------ */
@@ -340,7 +341,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
       return { account, admin };
     });
     await logEvent({ level: 'info', source: 'admin', message: `Cuenta creada: ${account.name}`, accountId: account.id });
-    return { ...account, admin };
+    return { ...store.publicAccount(account), admin };
   });
 
   api.put('/api/accounts/:id', { preHandler: requireRole('superadmin') }, async (req: any) => {
@@ -363,7 +364,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
       .filter(Boolean)
       .join(', ');
     await logEvent({ level: 'info', source: 'admin', message: `Cuenta actualizada: ${acc.name}${changes ? ` (${changes})` : ''}`, accountId: acc.id });
-    return acc;
+    return store.publicAccount(acc);
   });
 
   api.delete('/api/accounts/:id', { preHandler: requireRole('superadmin') }, async (req: any) => {

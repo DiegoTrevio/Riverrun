@@ -245,7 +245,7 @@ t('Chat web: sesión, mensaje, "escribiendo…" y respuesta con imagen', async (
   const cfg = (await h.app.inject({ method: 'GET', url: `${base}/config` })).json();
   assert.equal(cfg.title, 'Hotel Palmas');
   const { session } = (await h.app.inject({ method: 'POST', url: `${base}/session` })).json();
-  assert.match(session, /^[a-f0-9]{32}$/);
+  assert.match(session, /^[a-f0-9]{32}\.[\w-]{22}$/);
   h.reset();
   let release!: () => void;
   const gate = new Promise<void>((r) => (release = r));
@@ -272,8 +272,24 @@ t('Chat web: sesión, mensaje, "escribiendo…" y respuesta con imagen', async (
   const since = (await h.app.inject({ method: 'GET', url: `${base}/messages?session=${session}&after=${after.messages[1].id}` })).json();
   assert.equal(since.messages.length, 1);
   // Otra sesión no ve esta conversación
-  const other = (await h.app.inject({ method: 'GET', url: `${base}/messages?session=${'0'.repeat(32)}` })).json();
+  const { session: another } = (await h.app.inject({ method: 'POST', url: `${base}/session` })).json();
+  const other = (await h.app.inject({ method: 'GET', url: `${base}/messages?session=${another}` })).json();
   assert.equal(other.messages.length, 0);
+});
+
+t('Chat web: solo valen las sesiones que entregó el servidor para ese canal', async () => {
+  const web = await createChannel('webchat', {});
+  const elsewhere = await createChannel('webchat', {});
+  const base = `/webchat/${web.webhook_token}`;
+  const { session } = (await h.app.inject({ method: 'POST', url: `${base}/session` })).json();
+  const { session: foreign } = (await h.app.inject({ method: 'POST', url: `/webchat/${elsewhere.webhook_token}/session` })).json();
+  h.setScript(() => ({ messages: ['ok'] }));
+  // Una sesión inventada creaba un cliente y una respuesta de IA cada vez: el límite de sesiones por conexión no servía.
+  for (const forged of ['a'.repeat(32), `${session.slice(0, 32)}.${'A'.repeat(22)}`, foreign]) {
+    assert.equal((await h.app.inject({ method: 'POST', url: `${base}/messages`, payload: { session: forged, text: 'hola' } })).statusCode, 400, forged);
+    assert.equal((await h.app.inject({ method: 'GET', url: `${base}/messages?session=${forged}` })).statusCode, 400, forged);
+  }
+  assert.equal((await h.app.inject({ method: 'POST', url: `${base}/messages`, payload: { session, text: 'hola' } })).statusCode, 200);
 });
 
 t('Chat web: el modo de color es automático por defecto y se puede fijar en claro u oscuro', async () => {
@@ -312,7 +328,7 @@ t('Chat web: orígenes permitidos, límite de mensajes y canal desactivado', asy
   assert.equal(pre.statusCode, 204);
 
   h.setScript(() => ({ messages: ['ok'] }));
-  const session = 'a'.repeat(32);
+  const { session } = (await h.app.inject({ method: 'POST', url: `${base}/session`, headers: { origin: 'https://hotelpalmas.mx' } })).json();
   const codes: number[] = [];
   for (let i = 0; i < 17; i++) codes.push((await h.app.inject({ method: 'POST', url: `${base}/messages`, headers: { origin: 'https://hotelpalmas.mx' }, payload: { session, text: `m${i}` } })).statusCode);
   assert.ok(codes.slice(0, 15).every((c) => c === 200));
@@ -320,14 +336,14 @@ t('Chat web: orígenes permitidos, límite de mensajes y canal desactivado', asy
   // Sin cabecera Origin no es un navegador: la lista de dominios no aplica (no es autenticación), solo se valida la sesión.
   assert.equal((await h.app.inject({ method: 'POST', url: `${base}/messages`, payload: { session: 'corta', text: 'x' } })).statusCode, 400);
 
-  // Muchas sesiones desde la misma IP tampoco sirven para saltarse el límite
-  const sessions: number[] = [];
-  for (let i = 0; i < 11; i++) sessions.push((await h.app.inject({ method: 'POST', url: `${base}/session` })).statusCode);
-  assert.equal(sessions.filter((c) => c === 429).length, 1);
+  // Muchas sesiones desde la misma conexión tampoco sirven para saltarse el límite: a lo más 10 por hora.
+  const created = [];
+  for (let i = 0; i < 11; i++) created.push(await h.app.inject({ method: 'POST', url: `${base}/session` }));
+  assert.equal(created.filter((r) => r.statusCode === 200).length, 9, 'ya se había abierto una');
+  const valid = created.filter((r) => r.statusCode === 200).map((r) => r.json().session as string);
   const ipCodes: number[] = [];
   for (let i = 0; i < 30; i++) {
-    const s2 = i.toString(16).padStart(32, 'c');
-    ipCodes.push((await h.app.inject({ method: 'POST', url: `${base}/messages`, payload: { session: s2, text: 'x' } })).statusCode);
+    ipCodes.push((await h.app.inject({ method: 'POST', url: `${base}/messages`, payload: { session: valid[i % valid.length], text: 'x' } })).statusCode);
   }
   assert.ok(ipCodes.includes(429), 'límite por IP entre sesiones');
 
@@ -347,7 +363,7 @@ t('un chatbot atiende varios canales con memoria separada por cliente', async ()
 t('canal sin chatbot guarda mensajes sin responder; al asignarlo, el nuevo chatbot atiende', async () => {
   const web = await createChannel('webchat', {}, null);
   const base = `/webchat/${web.webhook_token}`;
-  const session = 'b'.repeat(32);
+  const { session } = (await h.app.inject({ method: 'POST', url: `${base}/session` })).json();
   await h.idle();
   h.reset();
   await h.app.inject({ method: 'POST', url: `${base}/messages`, payload: { session, text: 'hola?' } });

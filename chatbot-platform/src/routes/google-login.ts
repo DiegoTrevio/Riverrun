@@ -139,6 +139,6 @@ export async function googleLoginRoutes(app: FastifyInstance) {
     await logEvent({ level: 'info', source: 'admin', message: `Registro nuevo con Google: ${account.name} (${email})`, accountId: account.id, details: { ip: req.ip, business_type: businessType } });
     await notifySuperadmins(account.id, `Nueva empresa registrada: ${account.name}`, `${created.name} <${email}> se registró con Google.`);
     await setSessionCookie(reply, created.id, hash, 'google');
-    return { ok: true, user: created, account: await store.getAccount(account.id) };
+    return { ok: true, user: created, account: store.publicAccount((await store.getAccount(account.id))!) };
   });
 }

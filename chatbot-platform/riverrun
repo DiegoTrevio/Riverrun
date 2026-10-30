@@ -12,6 +12,7 @@
 #   ./riverrun logs [servicio]            registros en vivo
 #   ./riverrun restart     aplica cambios hechos a .env
 #   ./riverrun rotate-secret   cambia SESSION_SECRET (respaldo antes, confirmación, consecuencias avisadas)
+#   ./riverrun admin-password [correo]   recupera el acceso del superadministrador: contraseña nueva y sesiones cerradas
 #
 # Opciones de update: --no-backup  --accept-db-image-change  --accept-evolution-change (confirma sin preguntar)
 #   RIVERRUN_OBSERVE_SECONDS  tiempo que la versión nueva se observa antes de dar por buena (120; 0 = no observar)
@@ -304,10 +305,11 @@ cmd_install() {
 
   pass="${RIVERRUN_ADMIN_PASSWORD:-}"
   local shown=""
-  if [[ "$(env_get ADMIN_PASSWORD)" == "" || "$(env_get ADMIN_PASSWORD)" == cambia-esta-clave* ]]; then
+  # ADMIN_PASSWORD solo crea al superadministrador la primera vez (después no cambia nada: ./riverrun admin-password).
+  if [[ "$NEW" == "1" || "$(env_get ADMIN_PASSWORD)" == cambia-esta-clave* ]]; then
     [[ -n "$pass" ]] || { pass="$(rand 9)"; shown="$pass"; }
     env_set ADMIN_PASSWORD "$pass"
-  elif [[ -n "$pass" ]]; then env_set ADMIN_PASSWORD "$pass"; fi
+  elif [[ -n "$pass" ]]; then warn "RIVERRUN_ADMIN_PASSWORD solo se usa al instalar por primera vez; para cambiar la contraseña: ./riverrun admin-password"; fi
 
   if [[ -n "$domain" ]]; then
     env_set DOMAIN "$domain"; env_set SECURE_COOKIES true; env_set COMPOSE_PROFILES https
@@ -352,6 +354,8 @@ cmd_install() {
   say "Esperando a que el sistema responda…"
   wait_healthy 180 || { dc logs --tail 40 backend || true; die "El sistema no respondió a tiempo. Revisa los registros de arriba o corre ./riverrun logs backend"; }
   ok "El sistema está funcionando"
+  # Ya creó al superadministrador: la contraseña inicial no se queda en .env (se cambia en el panel o con admin-password).
+  if [[ -n "$(env_get ADMIN_PASSWORD)" ]]; then env_set ADMIN_PASSWORD ""; fi
 
   # Búsqueda semántica (pgvector): útil con catálogos grandes. Opcional; si falla, el asistente sigue con palabras clave.
   if [[ -n "$(env_get OPENROUTER_API_KEY)" ]]; then
@@ -638,6 +642,15 @@ cmd_restart() {
 
 # Cambia SESSION_SECRET (firma sesiones y enlaces, y cifra los tokens de Google). Respaldo verificado antes, confirmación
 # escrita y el secreto nuevo no se imprime. Consecuencias que se avisan: cierra sesiones del panel y reconecta Google.
+cmd_admin_password() {
+  need_docker || die "Docker no está disponible"
+  [[ -f "$ENV_FILE" ]] || die "No hay .env: primero ./riverrun install"
+  local email="${1:-$(env_get ADMIN_USER)}"
+  [[ -n "$email" ]] || die "Indica el correo: ./riverrun admin-password tu@correo.com"
+  say "Se genera una contraseña nueva para ${B}$email${N} y se cierran todas sus sesiones abiertas."
+  dc exec -T backend node dist/cli/admin-password.js "$email" || die "No se cambió la contraseña (¿el sistema está arrancado? ./riverrun status)"
+}
+
 cmd_rotate_secret() {
   need_docker || die "Docker no está disponible"
   [[ -f "$ENV_FILE" ]] || die "No hay .env: esta instalación no tiene secretos que cambiar."
@@ -794,6 +807,7 @@ case "${1:-help}" in
   logs) shift; cmd_logs "$@" ;;
   restart) cmd_restart ;;
   rotate-secret) cmd_rotate_secret ;;
+  admin-password) shift; cmd_admin_password "$@" ;;
   preflight) shift; cmd_preflight "$@" ;;
   semantic) shift; cmd_semantic "$@" ;;
   help|-h|--help) usage ;;

@@ -8,7 +8,7 @@ import { emailSuperadmin } from '../platform/digest.js';
 import { query, queryOne } from '../db.js';
 import { queuePaymentCfdi } from './cfdi.js';
 import { applyRefund, recordPayment } from './payments.js';
-import { getSubscription, money, tell } from './service.js';
+import { getSubscription, money, promotePendingPlan, tell } from './service.js';
 import type { DisputeInfo, ProviderName, WebhookResult } from './types.js';
 
 /**
@@ -44,6 +44,8 @@ export async function recordMoney(name: ProviderName, result: Pick<WebhookResult
       // pago ya estuviera registrado: si el proceso murió justo después de registrarlo, el reintento la deja lista (no se
       // duplica). Si falla, el aviso se reintenta.
       if (saved) await queuePaymentCfdi(saved.id);
+      // El cobro del monto de un plan al que se subió (Mercado Pago) es el que lo activa.
+      if (saved) await promotePendingPlan(account, name, result.payment);
     }
   }
   if (result.refund) {

@@ -86,7 +86,11 @@ export const editarContacto = defineTool({
     nota: z.string().trim().min(1).max(300).optional().describe('Nota nueva para la ficha'),
   }).refine((a) => a.nombre !== undefined || a.datos !== undefined || a.nota !== undefined, 'Indica qué cambiar'),
   label: () => 'Actualizando el contacto…',
-  risk: () => 'reversible',
+  // Nombre, datos y notas los lee y los puede repetir el asistente al cliente: tras leer mensajes de clientes, lo que se
+  // guarde aquí podría ser un dato de otro cliente que una instrucción escondida pidió copiar.
+  risk: (_a, ctx) => (ctx.tainted
+    ? { level: 'confirm', reasons: ['Antes leí mensajes escritos por clientes y el asistente puede repetir lo que guarde en esta ficha: confirma el texto.'] }
+    : 'reversible'),
   async preview(a, ctx) {
     const c = (await profile(ctx, a.contacto_id)).contact;
     return {

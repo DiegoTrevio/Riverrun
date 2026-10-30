@@ -155,8 +155,10 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
       if (risk.level === 'read') {
         try {
           const r = await def.execute(args, ctx);
-          // Lo que se lee después de haber leído texto de clientes ya no amplía lo que se puede cambiar sin confirmar.
-          if (!ctx.tainted) {
+          // Lo que se lee después de haber leído texto de clientes ya no amplía lo que se puede cambiar sin confirmar. La
+          // lectura que trae ese texto, solo si es de un único cliente (lo que la persona buscó): en una lista, lo que
+          // escribió uno de los clientes podría pedir cambios sobre los demás.
+          if (!ctx.tainted && (!r.untrusted || (r.contactIds?.length ?? 0) <= 1)) {
             r.read?.forEach((t) => ctx.scope.add(t.id));
             r.contactIds?.forEach((id) => ctx.scope.add(id));
           }

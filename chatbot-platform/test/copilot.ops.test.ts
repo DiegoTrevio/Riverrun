@@ -133,12 +133,26 @@ t('cobros: registrar se confirma; corregir se deshace; recordar se confirma', as
   const r = (await list())[0];
   assert.deepEqual([r.amount_cents, String(r.due_date).slice(0, 10)], [85000, '2026-12-15']);
 
-  script([call('editar_cobro', { cobro_id: r.id, monto: 900 }), 'Corregido.']);
+  // El monto y el enlace de pago deciden cuánto y a dónde paga el cliente: se confirman, aunque se puedan deshacer.
+  script([call('editar_cobro', { cobro_id: r.id, monto: 900 }), 'Confírmalo.']);
   const edit = lastAction(await ask('Que sean 900'));
-  assert.equal(edit.status, 'done', JSON.stringify(edit));
+  assert.equal(edit.status, 'proposed', JSON.stringify(edit));
+  assert.equal((await list())[0].amount_cents, 85000, 'no cambia sin confirmar');
+  assert.equal((await confirm(edit)).json().status, 'done');
   assert.equal((await list())[0].amount_cents, 90000);
   assert.equal((await undo(edit)).statusCode, 200);
   assert.equal((await list())[0].amount_cents, 85000);
+
+  script([call('editar_cobro', { cobro_id: r.id, enlace_de_pago: 'https://pagos.example.com/otra-cuenta' }), 'Confírmalo.']);
+  const link = lastAction(await ask('Cambia el enlace de pago'));
+  assert.equal(link.status, 'proposed', JSON.stringify(link));
+  assert.equal((await list())[0].payment_link ?? '', '', 'el enlace no cambia sin confirmar');
+  assert.equal((await owner('POST', `/api/copilot/actions/${link.id}/decline`)).statusCode, 200);
+
+  script([call('editar_cobro', { cobro_id: r.id, concepto: 'Paquete de 4 cortes' }), 'Corregido.']);
+  const concept = lastAction(await ask('Ponle «Paquete de 4 cortes»'));
+  assert.equal(concept.status, 'done', 'el concepto se corrige sin confirmar');
+  assert.equal((await undo(concept)).statusCode, 200);
 
   script([call('recordar_cobro', { cobro_id: r.id }), 'Confírmalo.']);
   const remind = lastAction(await ask('Recuérdale el pago'));

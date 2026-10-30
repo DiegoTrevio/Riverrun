@@ -8,7 +8,8 @@ import { safeFileName, signedImageUrl, verifyImageSignature, verifyQuoteSignatur
 import { attachmentAbsolutePath } from '../attachments.js';
 import { findQuote } from '../store/quotes.js';
 import type { WebhookRequest } from '../channels/types.js';
-import { WEBCHAT_SESSION_RE, newWebchatSession } from '../channels/webchat.js';
+import { newWebchatSession, readWebchatSession } from '../channels/webchat.js';
+import { ipKey, rateLimited as limitedFor } from '../auth.js';
 import { eventAccountId, platformWebhookSecret, verifySignature } from '../channels/zernio.js';
 import { receiveZernioEvent } from '../channels/zernio-events.js';
 import { saveZernioAccount, ZernioOwnershipError } from '../channels/zernio-connect.js';
@@ -26,6 +27,7 @@ import type { Channel } from '../types.js';
 import { channelsForEntry, finishMetaConnect, META_NONCE_COOKIE, metaVerifyToken, verifyMetaSignature } from '../channels/meta-connect.js';
 import { dispositionHeader, sendRanged } from './util.js';
 
+const HOUR = 3600_000;
 /** Tiempo para volver de Zernio después de pulsar "Conectar cuenta". */
 const ZERNIO_CONNECT_TTL_MS = 30 * 60_000;
 
@@ -238,9 +240,12 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
   app.post('/webchat/:token/session', async (req: any, reply) => {
     const ch = await webchat(req, reply);
     if (!ch) return;
-    // Límite por IP: evita crear sesiones sin fin para saltarse el límite por sesión (y gastar IA).
-    if (rateLimited(`session-ip:${ch.id}:${req.ip}`, 10)) return reply.code(429).send({ error: 'Demasiadas solicitudes, espera un momento' });
-    return { session: newWebchatSession() };
+    // Límites de sesiones nuevas, por conexión y por canal: cada una es un cliente nuevo que gasta IA y cupo del plan.
+    // Un visitante abre una sola (el widget la guarda); 10 por hora alcanzan aunque borre su navegador.
+    if (limitedFor(`webchat-session-ip:${ch.id}:${ipKey(req.ip)}`, 10, HOUR) || limitedFor(`webchat-session:${ch.id}`, 300, HOUR)) {
+      return reply.code(429).send({ error: 'Demasiadas solicitudes, espera un momento' });
+    }
+    return { session: newWebchatSession(ch.id) };
   });
 
   const recent = new Map<string, number[]>();
@@ -262,11 +267,15 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
   app.post('/webchat/:token/messages', async (req: any, reply) => {
     const ch = await webchat(req, reply);
     if (!ch) return;
-    const { session, text, name, button } = (req.body ?? {}) as { session?: string; text?: string; name?: string; button?: string };
-    if (!session || !WEBCHAT_SESSION_RE.test(session)) return reply.code(400).send({ error: 'Sesión inválida' });
+    const { text, name, button } = (req.body ?? {}) as { session?: string; text?: string; name?: string; button?: string };
+    // Solo una sesión que entregó el servidor para este canal: una inventada sería un cliente nuevo en cada mensaje.
+    const session = readWebchatSession(ch.id, req.body?.session);
+    if (!session) return reply.code(400).send({ error: 'Sesión inválida' });
     const clean = truncateChars(String(text ?? '').trim(), 2000);
     if (!clean) return reply.code(400).send({ error: 'Mensaje vacío' });
-    if (rateLimited(`${ch.id}:${session}`) || rateLimited(`msg-ip:${ch.id}:${req.ip}`, 40)) {
+    const ip = ipKey(req.ip);
+    if (rateLimited(`${ch.id}:${session}`) || rateLimited(`msg-ip:${ch.id}:${ip}`, 40)
+      || limitedFor(`webchat-msg-ip:${ch.id}:${ip}`, 120, HOUR) || limitedFor(`webchat-msg-day:${ch.id}:${session}`, 300, 24 * HOUR)) {
       return reply.code(429).send({ error: 'Demasiados mensajes, espera un momento' });
     }
     const r = await service.handleIncoming(ch, {
@@ -287,8 +296,8 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
   app.get('/webchat/:token/messages', async (req: any, reply) => {
     const ch = await webchat(req, reply);
     if (!ch) return;
-    const session = String(req.query.session ?? '');
-    if (!WEBCHAT_SESSION_RE.test(session)) return reply.code(400).send({ error: 'Sesión inválida' });
+    const session = readWebchatSession(ch.id, req.query.session);
+    if (!session) return reply.code(400).send({ error: 'Sesión inválida' });
     const contact = await store.findContact(ch.id, session);
     if (!contact) return { messages: [], typing: false };
     const after = Number(req.query.after) || 0;

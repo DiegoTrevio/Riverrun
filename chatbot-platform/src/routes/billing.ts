@@ -33,7 +33,7 @@ const PlanBody = z.object({
 });
 
 const publicSub = (s: any) =>
-  s && { provider: s.provider, plan_key: s.plan_key, status: s.status, current_period_end: s.current_period_end, cancel_at_period_end: s.cancel_at_period_end, past_due_since: s.past_due_since, can_portal: s.provider === 'stripe' && !!s.provider_customer_id };
+  s && { provider: s.provider, plan_key: s.plan_key, pending_plan_key: s.pending_plan_key ?? '', status: s.status, current_period_end: s.current_period_end, cancel_at_period_end: s.cancel_at_period_end, past_due_since: s.past_due_since, can_portal: s.provider === 'stripe' && !!s.provider_customer_id };
 
 /** Plan para el panel: precio sin IVA, IVA y total que se cobra. */
 const planOut = (p: any) => ({ ...p, price: p.price_cents / 100, interval: p.billing_interval, tax_percent: taxPercent(), total: chargeCents(p) / 100 });

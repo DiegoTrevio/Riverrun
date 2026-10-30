@@ -138,18 +138,50 @@ t('Stripe: de mensual a anual en el mismo paso; mismo plan, plan inexistente, ag
   assert.equal((await a.api('POST', '/api/billing/change', { plan: 'pro' })).statusCode, 400);
 });
 
-t('Mercado Pago: cambio en el mismo periodo, el nuevo monto desde el siguiente cobro', async () => {
+t('Mercado Pago: subir de plan en el mismo periodo cobra el monto nuevo y da el plan nuevo con ese cobro, no antes', async () => {
   const a = await paidMp('lia@cafe.mx', 'basico', 'pre_lia');
   outbox.length = 0;
   const r = await a.api('POST', '/api/billing/change', { plan: 'pro' });
   assert.equal(r.statusCode, 200, r.body);
+  assert.ok(r.json().starts_at, 'el panel dice cuándo empieza');
   const body = lastMp('PUT', '/preapproval/pre_lia');
   assert.deepEqual(body.auto_recurring, { transaction_amount: 578.84, currency_id: 'MXN' });
   assert.equal(body.external_reference, `${a.accountId}:pro`);
   assert.equal(body.reason, 'Pro');
-  assert.equal((await subOf(a.accountId)).plan_key, 'pro');
-  assert.equal(await planOf(a.accountId), 'pro');
-  assert.match(outbox.find((m) => m.subject === 'Cambiaste al plan Pro')!.text, /desde tu siguiente cobro/);
+  // Mercado Pago no cobra la diferencia: con Pro desde hoy se usaría Pro todo el periodo pagando Básico (y se repetiría).
+  const pending = await subOf(a.accountId);
+  assert.deepEqual([pending.plan_key, pending.pending_plan_key, await planOf(a.accountId)], ['basico', 'pro', 'basico']);
+  assert.match(outbox.find((m) => m.subject === 'Tu plan cambia a Pro')!.text, /siguiente cobro/);
+
+  // El aviso de la suscripción (que ya trae la referencia de Pro) no adelanta el cambio.
+  assert.equal((await mpHook('subscription_preapproval', 'pre_lia')).statusCode, 200);
+  assert.equal(await planOf(a.accountId), 'basico');
+  // El cobro con el monto nuevo sí lo aplica.
+  fake.mp.payments.ap_lia = { id: 'ap_lia', preapproval_id: 'pre_lia', status: 'processed', transaction_amount: 578.84, currency_id: 'MXN', debit_date: new Date().toISOString(), payment: { id: 1991, status: 'approved' } };
+  assert.equal((await mpHook('subscription_authorized_payment', 'ap_lia')).statusCode, 200);
+  const done = await subOf(a.accountId);
+  assert.deepEqual([done.plan_key, done.pending_plan_key, await planOf(a.accountId)], ['pro', '', 'pro']);
+});
+
+t('Mercado Pago: volver al plan actual antes del cobro deshace el cambio programado', async () => {
+  const a = await paidMp('noe@cafe.mx', 'basico', 'pre_noe');
+  assert.equal((await a.api('POST', '/api/billing/change', { plan: 'pro' })).statusCode, 200);
+  assert.equal((await a.api('POST', '/api/billing/change', { plan: 'pro' })).statusCode, 400, 'ya está programado');
+  const r = await a.api('POST', '/api/billing/change', { plan: 'basico' });
+  assert.equal(r.statusCode, 200, r.body);
+  assert.deepEqual(lastMp('PUT', '/preapproval/pre_noe').auto_recurring, { transaction_amount: 230.84, currency_id: 'MXN' });
+  const sub = await subOf(a.accountId);
+  assert.deepEqual([sub.plan_key, sub.pending_plan_key, await planOf(a.accountId)], ['basico', '', 'basico']);
+});
+
+t('con un cobro pendiente no se cambia de plan: primero se actualiza el pago', async () => {
+  for (const a of [await paidStripe('pia@cafe.mx', 'basico', 'sub_pia'), await paidMp('ugo@cafe.mx', 'basico', 'pre_ugo')]) {
+    await pool.query(`UPDATE subscriptions SET status = 'past_due', past_due_since = now() WHERE account_id = $1`, [a.accountId]);
+    const r = await a.api('POST', '/api/billing/change', { plan: 'pro' });
+    assert.equal(r.statusCode, 400, r.body);
+    assert.match(r.json().error, /pago pendiente/);
+    assert.equal(await planOf(a.accountId), 'basico');
+  }
 });
 
 t('Mercado Pago: de mensual a anual por sustitución; al autorizarla, la anterior se cancela sin aviso de cobro duplicado', async () => {

@@ -42,6 +42,18 @@ export async function getAccount(id: string) {
   return queryOne<Account>('SELECT * FROM accounts WHERE id = $1', [id]);
 }
 
+/**
+ * La cuenta tal como sale hacia el panel: sin `settings`, que trae el token del calendario (descarga sin sesión todas las
+ * citas con los datos de los clientes) y el secreto de los webhooks, ni los avisos internos de límites. El administrador
+ * ve esos secretos en Ajustes; el resto de los roles, nunca.
+ */
+export function publicAccount<T extends object>(a: T): Omit<T, 'settings' | 'limit_notices'> {
+  const { settings, limit_notices, ...rest } = a as T & { settings?: unknown; limit_notices?: unknown };
+  void settings;
+  void limit_notices;
+  return rest;
+}
+
 export async function createAccount(
   name: string,
   opts: { status?: AccountStatus; trialEndsAt?: Date | null; businessType?: string; source?: string } = {},

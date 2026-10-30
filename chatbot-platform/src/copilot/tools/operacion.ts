@@ -420,7 +420,11 @@ export const editarCobro = defineTool({
   schema: z.object({ cobro_id: Id, concepto: Text(200).optional(), monto: Money.optional(), vence: DateStr.optional(), enlace_de_pago: z.string().trim().max(500).optional() })
     .refine((a) => a.concepto || a.monto || a.vence || a.enlace_de_pago !== undefined, 'Indica qué cambiar'),
   label: () => 'Corrigiendo el cobro…',
-  risk: () => 'reversible',
+  // El monto y el enlace deciden cuánto y a dónde paga el cliente (los repiten el asistente y los recordatorios): un
+  // enlace cambiado sin que nadie lo vea desvía los pagos, aunque luego se pueda deshacer.
+  risk: (a) => (a.monto !== undefined || a.enlace_de_pago !== undefined
+    ? { level: 'confirm', reasons: ['Cambia cuánto o a dónde paga el cliente: confírmalo antes de guardarlo.'] }
+    : 'reversible'),
   available: receivablesOn,
   async targets(a, ctx) { return [{ kind: 'contact', id: (await receivableOf(ctx, a.cobro_id)).r.contact_id }]; },
   async execute(a, ctx) {
