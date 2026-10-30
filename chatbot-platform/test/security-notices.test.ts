@@ -34,6 +34,7 @@ t('cada evento manda su asunto, saluda y termina con qué hacer si no fue la per
     new_device: 'Nuevo inicio de sesión en tu cuenta',
     ownership_transferred: 'Transferiste tu cuenta',
     ownership_received: 'Ahora eres dueño de la cuenta',
+    email_changed: 'Cambiaste tu correo',
   } as const;
   for (const [kind, subject] of Object.entries(subjects)) {
     const before = outbox.length;

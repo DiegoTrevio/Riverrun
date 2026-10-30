@@ -18,7 +18,8 @@ export type NoticeKind =
   | 'mfa_locked'
   | 'new_device'
   | 'ownership_transferred'
-  | 'ownership_received';
+  | 'ownership_received'
+  | 'email_changed';
 
 interface NoticeUser { id: string; email: string; name: string; account_id: string | null }
 interface NoticeDetails { device?: string; ip?: string; remaining?: number; by?: string; account?: string; to?: string; from?: string }
@@ -43,6 +44,7 @@ const SUBJECT: Record<NoticeKind, string> = {
   new_device: 'Nuevo inicio de sesión en tu cuenta',
   ownership_transferred: 'Transferiste tu cuenta',
   ownership_received: 'Ahora eres dueño de la cuenta',
+  email_changed: 'Cambiaste tu correo',
 };
 
 function body(kind: NoticeKind, when: string, d: NoticeDetails): string {
@@ -59,6 +61,8 @@ function body(kind: NoticeKind, when: string, d: NoticeDetails): string {
     // `by`: cuando la reasigna el superadministrador y no el dueño.
     case 'ownership_transferred': return `${d.by ? `${d.by} transfirió` : 'Transferiste'} la cuenta «${d.account}» a ${d.to} el ${when}. Sigues como administrador.`;
     case 'ownership_received': return `${d.from} te transfirió la cuenta «${d.account}» el ${when}. Revisa los datos de facturación en Mi plan.`;
+    // A la dirección anterior: `to` es la nueva.
+    case 'email_changed': return `El correo de tu cuenta cambió a ${d.to} el ${when}.`;
   }
 }
 

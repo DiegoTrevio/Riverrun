@@ -15,6 +15,7 @@ let h: Awaited<ReturnType<typeof createHarness>>;
 const ID = '00000000-0000-4000-8000-000000000000';
 export const STEP_UP: [string, string][] = [
   ['PUT', '/api/me/password'],
+  ['PUT', '/api/me/email'],
   ['POST', '/api/me/2fa/recovery-codes'],
   ['POST', '/api/me/2fa/authenticator'],
   ['POST', '/api/me/2fa/authenticator/confirm'],

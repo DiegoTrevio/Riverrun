@@ -10,7 +10,7 @@ import fastifyStatic from '@fastify/static';
 import type { AiProvider } from './ai/provider.js';
 import { config } from './config.js';
 import { requireAuth } from './auth.js';
-import { accountRoutes } from './routes/account.js';
+import { accountPublicRoutes, accountRoutes } from './routes/account.js';
 import { adminRoutes, sessionRoutes } from './routes/admin.js';
 import { mfaPublicRoutes, mfaRoutes } from './routes/mfa.js';
 import { originGuard } from './identity/origin-guard.js';
@@ -163,6 +163,7 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
   await mfaPublicRoutes(app);
   await signupRoutes(app);
   await invitationPublicRoutes(app);
+  await accountPublicRoutes(app);
   await pricingRoutes(app);
   await nudgesRoutes(app);
   await selfServicePages(app);

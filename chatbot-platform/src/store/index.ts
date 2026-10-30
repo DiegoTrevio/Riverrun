@@ -269,21 +269,38 @@ export async function markEmailVerified(id: string) {
 
 const tokenHash = (token: string) => crypto.createHash('sha256').update(token).digest('hex');
 
-/** Crea un token de un solo uso; se guarda solo su hash. Invalida los anteriores del mismo tipo. */
-export async function createAuthToken(userId: string, kind: 'verify_email' | 'reset_password', ttlMinutes: number) {
+export type AuthTokenKind = 'verify_email' | 'reset_password' | 'change_email';
+
+/**
+ * Crea un token de un solo uso; se guarda solo su hash. Invalida los anteriores del mismo tipo. `email`: el correo nuevo
+ * de un cambio de correo (se aplica al abrir el enlace).
+ */
+export async function createAuthToken(userId: string, kind: AuthTokenKind, ttlMinutes: number, email?: string) {
   const token = crypto.randomBytes(32).toString('base64url');
   await query(`UPDATE auth_tokens SET used_at = now() WHERE user_id = $1 AND kind = $2 AND used_at IS NULL`, [userId, kind]);
-  await query(`INSERT INTO auth_tokens (user_id, kind, token_hash, expires_at) VALUES ($1, $2, $3, now() + make_interval(mins => $4))`, [
+  await query(`INSERT INTO auth_tokens (user_id, kind, token_hash, expires_at, email) VALUES ($1, $2, $3, now() + make_interval(mins => $4), $5)`, [
     userId,
     kind,
     tokenHash(token),
     ttlMinutes,
+    email ?? null,
   ]);
   return token;
 }
 
+/** Ningún enlace abierto de la persona sirve ya (cambió su correo o su contraseña). */
+export async function invalidateAuthTokens(userId: string, client?: Queryable) {
+  await rowsOf(client, `UPDATE auth_tokens SET used_at = now() WHERE user_id = $1 AND used_at IS NULL`, [userId]);
+}
+
+/** El cambio de correo de un token vigente, bloqueado hasta terminar la transacción. */
+export async function lockEmailChange(token: string, client: Queryable) {
+  const rows = await rowsOf(client, `SELECT user_id, email FROM auth_tokens WHERE token_hash = $1 AND kind = 'change_email' AND used_at IS NULL AND expires_at > now() FOR UPDATE`, [tokenHash(token)]);
+  return (rows[0] as { user_id: string; email: string } | undefined) ?? null;
+}
+
 /** Consume el token (una sola vez, sin caducar). Devuelve el usuario dueño o null. */
-export async function consumeAuthToken(token: string, kind: 'verify_email' | 'reset_password') {
+export async function consumeAuthToken(token: string, kind: Exclude<AuthTokenKind, 'change_email'>) {
   const row = await queryOne<{ user_id: string }>(
     `UPDATE auth_tokens SET used_at = now() WHERE token_hash = $1 AND kind = $2 AND used_at IS NULL AND expires_at > now() RETURNING user_id`,
     [tokenHash(token), kind],
@@ -292,7 +309,7 @@ export async function consumeAuthToken(token: string, kind: 'verify_email' | 're
 }
 
 /** De quién es un token vigente, sin gastarlo (para revisar la contraseña nueva antes de usar el enlace). */
-export async function peekAuthToken(token: string, kind: 'verify_email' | 'reset_password') {
+export async function peekAuthToken(token: string, kind: Exclude<AuthTokenKind, 'change_email'>) {
   return queryOne<{ user_id: string; email: string; account_name: string | null }>(
     `SELECT t.user_id, u.email, a.name AS account_name FROM auth_tokens t JOIN users u ON u.id = t.user_id LEFT JOIN accounts a ON a.id = u.account_id
       WHERE t.token_hash = $1 AND t.kind = $2 AND t.used_at IS NULL AND t.expires_at > now()`,
