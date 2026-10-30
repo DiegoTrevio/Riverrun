@@ -22,8 +22,6 @@ export type AccountOwner = { id: string; name: string; email: string; email_veri
 export const ownerOnly = { config: { owner: true } };
 export const ownerStepUp = { config: { owner: true, stepUp: true } };
 
-const VALID_OWNER = `EXISTS (SELECT 1 FROM users o WHERE o.id = a.owner_user_id AND o.account_id = a.id AND o.role = 'admin' AND o.active)`;
-
 export async function accountOwner(accountId: string): Promise<AccountOwner | null> {
   const row = await queryOne<AccountOwner & { current: boolean }>(
     `SELECT u.id, u.name, u.email, u.email_verified_at, u.totp_enabled_at, coalesce(u.id = a.owner_user_id, false) AS current
@@ -51,11 +49,6 @@ async function ownerOnlyError(accountId: string | null): Promise<HttpError> {
 
 export async function assertOwner(req: FastifyRequest, accountId: string): Promise<void> {
   if (!(await isAccountOwner(req.user, accountId))) throw await ownerOnlyError(accountId);
-}
-
-/** El primer administrador de una cuenta sin dueño válido queda como dueño. */
-export async function ensureOwner(accountId: string, userId: string): Promise<void> {
-  await query(`UPDATE accounts a SET owner_user_id = $2 WHERE a.id = $1 AND NOT ${VALID_OWNER}`, [accountId, userId]);
 }
 
 /** Gancho de las rutas con sesión (después de requireAuth y antes de la verificación reciente). */

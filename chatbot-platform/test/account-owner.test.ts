@@ -180,3 +180,30 @@ t('cambiarle el rol a alguien le avisa por correo quién lo cambió', async () =
   assert.equal((await owner('PUT', `/api/users/${ids['ciro@duenos.mx']}`, { name: 'Ciro' })).statusCode, 200);
   assert.equal(outbox.slice(sent).filter((m) => m.to === 'ciro@duenos.mx').length, 1, 'sin cambio de rol no hay aviso');
 });
+
+t('si el dueño ya no es válido, quien acepta una invitación de administrador no se adelanta al administrador más antiguo', async () => {
+  const other = (await h.addAccount({ name: 'Ferretería Ortiz', admin: { name: 'Omar', email: 'omar@duenos.mx', password: PASS } })).id;
+  const older = (await h.addUser({ account_id: other, name: 'Paula', email: 'paula@duenos.mx', password: PASS, role: 'admin' })).id;
+  await pool.query(`UPDATE users SET active = false WHERE email = 'omar@duenos.mx'`); // y nadie abrió la cuenta desde entonces
+  await h.addUser({ account_id: other, name: 'Nico', email: 'nico@duenos.mx', password: PASS, role: 'admin' });
+  assert.equal((await pool.query(`SELECT owner_user_id FROM accounts WHERE id = $1`, [other])).rows[0].owner_user_id, older);
+});
+
+t('un administrador que no es dueño no reenvía, cancela ni cambia por una de agente la invitación de administrador', async () => {
+  const dora = await h.loginAs('dora@duenos.mx', PASS);
+  const beto = await h.loginAs('beto@duenos.mx', PASS);
+  const inv = await dora('POST', '/api/invitations', { email: 'futura@duenos.mx', name: 'Futura', role: 'admin' });
+  assert.equal(inv.statusCode, 200, inv.body);
+  const id = inv.json().id;
+  assert.equal((await beto('POST', `/api/invitations/${id}/resend`)).json().code, 'owner_only');
+  assert.equal((await beto('DELETE', `/api/invitations/${id}`)).json().code, 'owner_only');
+  const replace = await beto('POST', '/api/invitations', { email: 'futura@duenos.mx', name: 'Futura', role: 'agent' });
+  assert.equal(replace.statusCode, 409, replace.body);
+  assert.deepEqual((await pool.query(`SELECT role, revoked_at FROM account_invitations WHERE id = $1`, [id])).rows[0], { role: 'admin', revoked_at: null });
+  // Las de agente sí las maneja, y el dueño la suya.
+  const agent = await beto('POST', '/api/invitations', { email: 'agente@duenos.mx', name: 'Agente', role: 'agent' });
+  assert.equal(agent.statusCode, 200, agent.body);
+  assert.equal((await beto('POST', `/api/invitations/${agent.json().id}/resend`)).statusCode, 200);
+  assert.equal((await beto('DELETE', `/api/invitations/${agent.json().id}`)).statusCode, 200);
+  assert.equal((await dora('DELETE', `/api/invitations/${id}`)).statusCode, 200);
+});

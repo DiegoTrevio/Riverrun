@@ -14,7 +14,7 @@ import { config } from '../config.js';
 import { query, queryOne, withTransaction } from '../db.js';
 import { googleConfigured } from '../integrations/google.js';
 import { assertPasswordAllowed, NewPassword } from '../identity/passwords.js';
-import { accountOwner, assertOwner, ensureOwner } from '../identity/ownership.js';
+import { accountOwner, assertOwner, isAccountOwner } from '../identity/ownership.js';
 import { inviteMail } from '../identity/invite-text.js';
 import { countHit, releaseHit } from '../identity/rate-limit.js';
 import { assertRecentMfa } from '../identity/step-up.js';
@@ -109,12 +109,16 @@ export async function assertInvitable(email: string): Promise<void> {
 
 /** Crea la invitación (reemplaza la pendiente al mismo correo, vencida o no), la manda y la deja en la bitácora. */
 export async function createInvitation(
-  actor: Pick<User, 'id' | 'role' | 'name' | 'email_verified_at'>,
+  actor: Pick<User, 'id' | 'role' | 'name' | 'email_verified_at' | 'account_id'>,
   accountId: string,
   b: { email: string; name: string; role: 'admin' | 'agent' },
 ): Promise<{ inv: Invitation; mail_sent: boolean }> {
   await assertCanInvite(actor, accountId);
   await assertInvitable(b.email);
+  // La invitación de administrador pendiente es del dueño: nadie más la reemplaza (por ejemplo, por una de agente).
+  if (!(await isAccountOwner(actor, accountId)) && (await queryOne(`SELECT 1 FROM account_invitations WHERE account_id = $1 AND lower(email) = $2 AND role = 'admin' AND ${PENDING}`, [accountId, b.email]))) {
+    throw new HttpError(409, 'Ese correo ya tiene una invitación de administrador: solo el dueño de la cuenta la cambia');
+  }
   // La pendiente al mismo correo se reemplaza: no cuenta para el tope de pendientes.
   const pending = (await queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM account_invitations WHERE account_id = $1 AND ${PENDING} AND expires_at > now() AND lower(email) <> $2`, [accountId, b.email]))!.n;
   if (pending >= MAX_PENDING) throw new HttpError(409, `Hay ${MAX_PENDING} invitaciones pendientes: cancela alguna antes de invitar a más`);
@@ -172,6 +176,11 @@ export async function invitationRoutes(api: FastifyInstance) {
   /** Reenvía con un enlace nuevo (el anterior deja de servir) y otros 7 días. */
   api.post('/api/invitations/:id/resend', admins, async (req: any) => {
     const inv = await mine(req);
+    // Las de administrador las maneja el dueño, como al crearlas.
+    if (inv.role === 'admin') {
+      await assertOwner(req, inv.account_id);
+      assertRecentMfa(req);
+    }
     await assertCanInvite(req.user, inv.account_id);
     await countInvite(inv.account_id, inv.email);
     const token = newToken();
@@ -185,6 +194,7 @@ export async function invitationRoutes(api: FastifyInstance) {
 
   api.delete('/api/invitations/:id', admins, async (req: any) => {
     const inv = await mine(req);
+    if (inv.role === 'admin') await assertOwner(req, inv.account_id);
     await query(`UPDATE account_invitations SET revoked_at = now() WHERE id = $1`, [inv.id]);
     await logEvent({ level: 'info', source: 'admin', message: `Invitación a ${inv.email} cancelada`, accountId: inv.account_id });
     return { ok: true };
@@ -268,8 +278,9 @@ export async function invitationPublicRoutes(app: FastifyInstance) {
       await recordTermsAcceptance(client, { userId: created.id, accountId: inv.account_id, email: inv.email, ip: req.ip, userAgent: String(req.headers['user-agent'] ?? ''), source: 'invite' });
       return created;
     });
-    // El primer administrador de una cuenta sin dueño queda como dueño (ya con su usuario guardado).
-    if (inv.role === 'admin') await ensureOwner(inv.account_id, user.id);
+    // Una cuenta sin dueño válido lo tiene en cuanto entra un administrador: el activo más antiguo (quien acaba de
+    // entrar solo si no hay otro), ya con su usuario guardado.
+    if (inv.role === 'admin') await accountOwner(inv.account_id);
     await logEvent({ level: 'info', source: 'admin', message: `${inv.email} se unió al equipo (${ROLE_LABEL[inv.role]})${google ? ' con Google' : ''}`, accountId: inv.account_id, details: { ip: req.ip } });
     // Antes de entrar al panel configura su verificación en dos pasos.
     if (google) reply.clearCookie(GOOGLE_PASS_COOKIE, { path: googlePassCookie.path });
