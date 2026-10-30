@@ -9,7 +9,8 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { stepUp } from '../identity/step-up.js';
 import { HttpError, requireRole, targetAccount } from '../access.js';
-import { buildAccountExport, cancelDeletion, isOwner, ownerOf, readDeletionToken, requestDeletion, scheduleDeletion } from '../accounts/self-service.js';
+import { buildAccountExport, cancelDeletion, readDeletionToken, requestDeletion, scheduleDeletion } from '../accounts/self-service.js';
+import { accountOwner, isAccountOwner } from '../identity/ownership.js';
 import { rateLimited } from '../auth.js';
 import { brandByDomain, hostOf, publicBrand } from '../brands.js';
 import { config } from '../config.js';
@@ -247,7 +248,7 @@ export async function accountSelfServiceRoutes(api: FastifyInstance) {
     const accountId = await targetAccount(req.user, req.query.account_id);
     const acc = await store.getAccount(accountId);
     if (!acc) throw new HttpError(404, 'No encontrado');
-    if (req.user.role !== 'superadmin' && !(await isOwner(req.user, acc))) throw new HttpError(403, 'Solo el dueño de la cuenta puede descargar todos sus datos.');
+    if (!(await isAccountOwner(req.user, acc.id))) throw new HttpError(403, 'Solo el dueño de la cuenta puede descargar todos sus datos.');
     if (rateLimited(`account-export:${accountId}`, 5, 86400_000)) throw new HttpError(429, 'Ya descargaste tus datos varias veces hoy; intenta mañana.');
     const zip = await buildAccountExport(accountId);
     await logEvent({ level: 'info', source: 'admin', message: `Descarga de todos los datos de la cuenta por ${req.user.email}`, accountId });
@@ -261,12 +262,12 @@ export async function accountSelfServiceRoutes(api: FastifyInstance) {
   /** Pedir el borrado: solo el dueño, escribiendo el nombre de la cuenta. Llega un correo para confirmarlo. */
   api.post('/api/account/deletion', { ...admins, ...stepUp }, async (req: any) => {
     const acc = req.user.account_id ? await store.getAccount(req.user.account_id) : null;
-    if (!acc || !(await isOwner(req.user, acc))) throw new HttpError(403, 'Solo el dueño de la cuenta puede borrarla.');
+    if (!acc || req.user.role === 'superadmin' || !(await isAccountOwner(req.user, acc.id))) throw new HttpError(403, 'Solo el dueño de la cuenta puede borrarla.');
     const { confirm } = parse(z.object({ confirm: z.string().max(200) }), req.body);
     if (confirm.trim().toLowerCase() !== acc.name.trim().toLowerCase()) throw new HttpError(400, `Para confirmar, escribe exactamente el nombre de tu cuenta: ${acc.name}`);
     if (acc.deletion_scheduled_for) throw new HttpError(409, 'Tu cuenta ya tiene un borrado programado.');
     if (rateLimited(`account-delete:${acc.id}`, 5, 3600_000)) throw new HttpError(429, 'Ya te enviamos el correo varias veces; revisa tu bandeja (y spam).');
-    const owner = (await ownerOf(acc))!;
+    const owner = (await accountOwner(acc.id))!;
     await requestDeletion(acc, owner);
     return { ok: true, email: owner.email };
   });

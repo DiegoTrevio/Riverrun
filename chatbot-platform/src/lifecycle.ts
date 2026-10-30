@@ -9,6 +9,7 @@ import { mailBrand } from './brands.js';
 import { config } from './config.js';
 import pg from 'pg';
 import { pool, query, queryOne } from './db.js';
+import { accountOwner } from './identity/ownership.js';
 import { checkAccountRetention, keptNote } from './accounts/retention.js';
 import { checkScheduledDeletions } from './accounts/self-service.js';
 import { billingEnabled, cancelLongUnpaid, checkDunning, enforceAccess, syncPendingCheckouts } from './billing/service.js';
@@ -24,13 +25,6 @@ import { attemptDelivery, newAlertKey, queueDelivery } from './automation/alert-
 
 const WARN_DAYS = 3;
 const fmt = (d: Date) => new Date(d).toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'America/Mexico_City' });
-
-async function owner(acc: Account) {
-  return queryOne<{ id: string; name: string; email: string }>(
-    `SELECT id, name, email FROM users WHERE id = $1 OR (account_id = $2 AND role = 'admin') ORDER BY (id = $1) DESC, created_at LIMIT 1`,
-    [acc.owner_user_id, acc.id],
-  );
-}
 
 /** Avisa al superadmin: notificación en el panel y, si hay SUPERADMIN_EMAIL, correo. */
 /** Aviso al superadmin: en el panel al momento; por correo al momento si es urgente, si no en el resumen del día. */
@@ -55,7 +49,7 @@ export async function checkTrials(now = new Date()) {
     [now, WARN_DAYS],
   );
   for (const acc of warn) {
-    const o = await owner(acc);
+    const o = await accountOwner(acc.id);
     if (o) {
       const next = await howToContinue(acc.id);
       await sendMailDurable({
@@ -75,7 +69,7 @@ export async function checkTrials(now = new Date()) {
   );
   for (const acc of expired) {
     await logEvent({ level: 'warn', source: 'admin', message: `Prueba terminada: la cuenta "${acc.name}" quedó en pausa`, accountId: acc.id });
-    const o = await owner(acc);
+    const o = await accountOwner(acc.id);
     const next = await howToContinue(acc.id);
     if (o) {
       await sendMailDurable({

@@ -21,6 +21,7 @@ import { config } from '../config.js';
 import { assertPasswordAllowed, NewPassword } from '../identity/passwords.js';
 import { beginLogin, renewSessionAfterPasswordChange } from '../identity/mfa.js';
 import { resetMfa } from '../identity/reset-mfa.js';
+import { accountOwner } from '../identity/ownership.js';
 import { browserOf, forgetTrustedDevices, trustedDeviceFor } from '../identity/devices.js';
 import { countHit, LIMITS, releaseHit } from '../identity/rate-limit.js';
 import { notifyUser } from '../identity/notices.js';
@@ -116,7 +117,8 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     const due = account && req.user.role !== 'agent' ? await paymentDue(account.id) : null;
     // Copiloto: el superadmin lo usa en la cuenta que elija (el panel revisa que esa cuenta lo tenga encendido).
     const copilot = { enabled: config.copilot.enabled && (req.user.role === 'superadmin' || !!account?.copilot_enabled) };
-    return { user: req.user, account: account && { ...store.publicAccount(account), payment_due: due, deletion_date: deletionDate(account) }, copilot };
+    const owner = account ? await accountOwner(account.id) : null;
+    return { user: req.user, account: account && { ...store.publicAccount(account), payment_due: due, deletion_date: deletionDate(account) }, owner: owner && { id: owner.id, name: owner.name }, copilot };
   });
 
   api.put('/api/me', async (req) => {

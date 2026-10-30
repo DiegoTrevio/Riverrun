@@ -7,6 +7,7 @@ import { mailBrand } from '../brands.js';
 import { notifyUsers } from '../automation/store.js';
 import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
+import { accountOwner } from '../identity/ownership.js';
 import { logEvent } from '../logs.js';
 import { sendMail } from '../mailer.js';
 import type { Account } from '../types.js';
@@ -53,10 +54,7 @@ export async function checkAccountRetention(now = new Date()): Promise<{ warned:
     [now, Math.max(0, days - WARN_DAYS)],
   );
   for (const acc of warn) {
-    const owner = await queryOne<{ email: string; name: string }>(
-      `SELECT email, name FROM users WHERE id = $1 OR (account_id = $2 AND role = 'admin' AND active) ORDER BY (id = $1) DESC, created_at LIMIT 1`,
-      [acc.owner_user_id, acc.id],
-    );
+    const owner = await accountOwner(acc.id);
     const when = deletionDate(acc) ?? new Date(now.getTime() + WARN_DAYS * DAY);
     await logEvent({ level: 'warn', source: 'admin', message: `Aviso de borrado: la cuenta se borra el ${fmt(when)} si no se reactiva`, accountId: acc.id });
     if (!owner) continue;

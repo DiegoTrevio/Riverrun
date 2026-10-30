@@ -11,6 +11,7 @@ import { mergeChannelConfig, publicChannel } from '../channels/index.js';
 import { newInstanceName } from '../channels/whatsapp.js';
 import { config } from '../config.js';
 import { queryOne, withTransaction } from '../db.js';
+import { accountOwner } from '../identity/ownership.js';
 import { assertWithinLimit } from '../billing/limits.js';
 import { logEvent } from '../logs.js';
 import { accountChecklist } from '../onboarding-checklist.js';
@@ -197,7 +198,7 @@ export async function onboardingRoutes(api: FastifyInstance) {
     const accountId = await targetAccount(req.user, req.query.account_id);
     const acc = (await store.getAccount(accountId))!;
     // El superadmin que revisa otra cuenta ve lo que vería su dueño.
-    const userId = accountId === req.user.account_id ? req.user.id : acc.owner_user_id;
+    const userId = accountId === req.user.account_id ? req.user.id : ((await accountOwner(accountId))?.id ?? null);
     const list = await accountChecklist(accountId, userId);
     if (list.complete && !acc.onboarding.checklist_done) await store.markOnboarding(accountId, { checklist_done: true });
     return { ...list, show: acc.signup_source === 'signup' && !acc.onboarding.checklist_hidden && !list.complete };
