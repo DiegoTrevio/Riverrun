@@ -113,6 +113,8 @@ export interface CheckoutArgs {
   startAt?: Date;
   /** Quien paga durante su prueba no la pierde: el primer cobro es al terminar. Solo Stripe (Mercado Pago usa `startAt`). */
   trialEnd?: Date;
+  /** Verificación de tarjeta con prueba gratis: días antes del primer cobro. Solo Stripe (Mercado Pago usa `startAt`). */
+  trialDays?: number;
 }
 
 export interface BillingProvider {

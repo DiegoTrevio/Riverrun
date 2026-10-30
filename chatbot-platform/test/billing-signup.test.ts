@@ -25,10 +25,12 @@ const signup = (body: Record<string, unknown>, headers: Record<string, string> =
   });
 // La sesión de cada registro se abre una vez (el arnés hace el 2FA); después se reutiliza.
 const sessions = new WeakMap<object, Promise<string>>();
+let asIp = 0;
 const as = async (r: Parameters<typeof h.sessionFrom>[0]) => {
   if (!sessions.has(r)) sessions.set(r, h.sessionFrom(r));
   const cookie = await sessions.get(r)!;
-  return (method: string, url: string, payload?: unknown) => h.app.inject({ method: method as any, url, payload: payload as any, headers: { cookie } });
+  const from = `10.78.0.${++asIp}`; // cada cuenta paga desde su conexión (hay tope por conexión)
+  return (method: string, url: string, payload?: unknown) => h.app.inject({ method: method as any, url, remoteAddress: from, payload: payload as any, headers: { cookie } });
 };
 const accountOf = async (id: string) => (await pool.query(`SELECT status, plan, trial_ends_at FROM accounts WHERE id = $1`, [id])).rows[0];
 const subOf = async (id: string) => (await pool.query(`SELECT * FROM subscriptions WHERE account_id = $1`, [id])).rows[0];
@@ -118,7 +120,7 @@ t('pagar desde Mi plan con Stripe: al volver del pago la cuenta queda activa sin
   assert.equal(req.body.get('line_items[0][price_data][product]'), 'riverrun_pro');
   assert.equal(req.body.get('customer_email'), 'ana@estetica.mx');
   assert.equal(req.body.get('subscription_data[metadata][account_id]'), accountId);
-  assert.equal(req.body.get('success_url'), 'https://bot.test/pago/stripe');
+  assert.equal(req.body.get('success_url'), 'https://bot.test/pago/stripe?session_id={CHECKOUT_SESSION_ID}');
   assert.equal(fake.stripe.products.riverrun_pro.name, 'Pro');
 
   // Regreso desde Stripe: la dirección sin "#" lleva al panel.
@@ -287,7 +289,7 @@ t('con dominio de marca, el pago regresa a ese dominio; con uno desconocido, al 
     const cookie = await h.sessionFrom(r);
     const co = await h.app.inject({ method: 'POST', url: '/api/billing/checkout', headers: { cookie, host }, payload: { plan: 'pro', provider: 'stripe' } });
     assert.equal(co.statusCode, 200, co.body);
-    assert.equal(lastSession().body.get('success_url'), `${base}/pago/stripe`);
+    assert.equal(lastSession().body.get('success_url'), `${base}/pago/stripe?session_id={CHECKOUT_SESSION_ID}`);
   }
 });
 

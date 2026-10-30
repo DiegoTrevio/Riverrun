@@ -24,7 +24,8 @@ async function failedAccount(email: string, subId: string, ago = 0) {
   assert.equal(r.statusCode, 200, r.body);
   const accountId = r.json().account.id as string;
   const cookie = await h.sessionFrom(r);
-  const api = (method: string, url: string, payload?: unknown) => h.app.inject({ method: method as any, url, payload: payload as any, headers: { cookie } });
+  const from = `10.99.0.${ip}`;
+  const api = (method: string, url: string, payload?: unknown) => h.app.inject({ method: method as any, url, remoteAddress: from, payload: payload as any, headers: { cookie } });
   // El pago se abre desde Mi plan (ya no al registrarse), con el correo verificado.
   await pool.query(`UPDATE users SET email_verified_at = now() WHERE lower(email) = lower($1)`, [email]);
   const co = await api('POST', '/api/billing/checkout', { plan: 'pro', provider: 'stripe' });

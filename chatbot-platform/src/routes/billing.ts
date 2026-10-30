@@ -5,7 +5,8 @@ import { ownerOnly, ownerStepUp } from '../identity/ownership.js';
 import { HttpError, requireRole, targetAccount } from '../access.js';
 import { rateLimited } from '../auth.js';
 import { baseFor } from '../brands.js';
-import { providers, applyState, changePlan, confirmCheckout, enabledProviders, getPlan, getSubscription, listPlans, notePaymentAction, payable, claimEvent, finishEvent, releaseEvent, startCheckout, startReplacement } from '../billing/service.js';
+import { providers, applyState, changePlan, confirmCheckout, createCheckoutSession, enabledProviders, getPlan, getSubscription, listPlans, notePaymentAction, payable, claimEvent, finishEvent, releaseEvent, startReplacement } from '../billing/service.js';
+import { openCardCheck, trialDaysFor } from '../billing/card-check.js';
 import { alertSuperadmins, applyDispute, recordMoney, RefundBeforePaymentError } from '../billing/ledger.js';
 import { FiscalSchema, fiscalComplete, getFiscal, personaOf, REGIMES, saveFiscal, USES, usesFor } from '../billing/fiscal.js';
 import { listPayments } from '../billing/payments.js';
@@ -225,7 +226,6 @@ export async function billingRoutes(api: FastifyInstance) {
 
   api.post('/api/billing/checkout', { ...admins, ...ownerStepUp }, async (req: any, reply) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
-    if (tooMany(reply, `billing-checkout:${accountId}`, 20)) return reply;
     const b = parse(z.object({ plan: z.string().max(40), provider: z.enum(['stripe', 'mercadopago']) }), req.body);
     const { plan, provider } = await payable(b.plan, b.provider);
     const sub = await getSubscription(accountId);
@@ -236,7 +236,11 @@ export async function billingRoutes(api: FastifyInstance) {
     try {
       // Volver a contratar con Mercado Pago tras cancelar: el primer cobro es al terminar lo ya pagado.
       const paidUntil = provider === 'mercadopago' && sub && (sub.status === 'canceled' || sub.cancel_at_period_end) && sub.current_period_end && sub.current_period_end > new Date() ? sub.current_period_end : undefined;
-      return { url: await startCheckout({ accountId, email: req.user.email, plan, provider, base: await baseFor(req), startAt: paidUntil }) };
+      // La verificación de tarjeta (también el pago de quien ya tiene cuenta): correo verificado, topes y sesión vigente.
+      const trialDays = await trialDaysFor(accountId);
+      const base = await baseFor(req);
+      const url = await openCardCheck({ accountId, ip: req.ip, provider, planKey: plan.key, open: () => createCheckoutSession({ accountId, email: req.user.email, plan, provider, base, startAt: paidUntil, trialDays }) });
+      return { url, trial: trialDays > 0 };
     } catch (e: any) {
       if (e instanceof ProviderError) throw new HttpError(502, `${e.message}. Intenta de nuevo o escríbenos.`);
       throw e;

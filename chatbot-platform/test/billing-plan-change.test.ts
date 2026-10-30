@@ -23,7 +23,8 @@ async function signup(email: string, plan: string, provider: 'stripe' | 'mercado
   });
   assert.equal(r.statusCode, 200, r.body);
   const cookie = await h.sessionFrom(r);
-  const api: Api = (method, url, payload) => h.app.inject({ method: method as any, url, payload: payload as any, headers: { cookie } });
+  const from = `10.88.0.${ip}`;
+  const api: Api = (method, url, payload) => h.app.inject({ method: method as any, url, remoteAddress: from, payload: payload as any, headers: { cookie } });
   // El pago se abre desde Mi plan (ya no al registrarse), con el correo verificado.
   await pool.query(`UPDATE users SET email_verified_at = now() WHERE lower(email) = lower($1)`, [email]);
   const co = await api('POST', '/api/billing/checkout', { plan, provider });

@@ -29,8 +29,10 @@ before(async () => {
   });
   assert.equal(r.statusCode, 200, r.body);
   B.account = r.json().user.account_id;
+  // La verificación de tarjeta pide el correo verificado; cada cuenta paga desde su propia conexión.
+  await pool.query(`UPDATE users SET email_verified_at = now() WHERE email = 'laura@sonrisa.mx'`);
   B.cookie = await h.sessionFrom(r);
-  B.api = async (method, url, payload) => h.app.inject({ method: method as any, url, payload: payload as any, headers: { cookie: B.cookie } });
+  B.api = async (method, url, payload) => h.app.inject({ method: method as any, url, remoteAddress: '10.9.9.9', payload: payload as any, headers: { cookie: B.cookie } });
 });
 after(async () => {
   if (h) await h.app.close();
@@ -63,9 +65,12 @@ t('Stripe: contratar abre el pago y registra el intento', async () => {
   assert.equal(req.body.get('subscription_data[metadata][account_id]'), B.account);
   assert.equal((await sub()).status, 'incomplete');
   assert.equal((await sub()).checkout_ref, 'cs_1', 'se guarda la sesión para confirmar el pago sin esperar el aviso');
-  assert.equal(req.body.get('success_url'), 'https://bot.test/pago/stripe');
+  assert.equal(req.body.get('success_url'), 'https://bot.test/pago/stripe?session_id={CHECKOUT_SESSION_ID}');
   assert.equal(req.body.get('cancel_url'), 'https://bot.test/pago/stripe?estado=cancelado');
   assert.equal((await B.api('POST', '/api/billing/checkout', { plan: 'nada', provider: 'stripe' })).statusCode, 404);
+  // Dentro de 30 minutos se reutiliza la misma página; vencida, se pide otra (y si Stripe falla, 502).
+  assert.equal((await B.api('POST', '/api/billing/checkout', { plan: 'pro', provider: 'stripe' })).json().url, 'https://checkout.stripe.test/c/cs_1');
+  await pool.query(`UPDATE card_checks SET opened_at = opened_at - interval '31 minutes' WHERE account_id = $1`, [B.account]);
   fake.stripe.fail = true;
   assert.equal((await B.api('POST', '/api/billing/checkout', { plan: 'pro', provider: 'stripe' })).statusCode, 502);
   fake.stripe.fail = false;

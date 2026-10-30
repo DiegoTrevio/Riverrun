@@ -1,0 +1,136 @@
+/**
+ * La verificación de tarjeta (el pago de Mi plan): pide el correo del dueño verificado y la verificación reciente, abre
+ * una sesión de pago de 30 minutos con 3D Secure y sin códigos sueltos, con 14 días gratis si la persona tiene prueba
+ * disponible, reutiliza la sesión vigente y tiene topes en la base (por cuenta, por conexión y en toda la plataforma).
+ */
+import { after, before, test } from 'node:test';
+import assert from 'node:assert/strict';
+// Orden obligatorio: los simulados fijan las claves y URLs ANTES de que el arnés cargue la configuración.
+const { fake } = await import('./billing-fakes.js');
+const { createHarness, dbAvailable, pool } = await import('./harness.js');
+
+const ok = await dbAvailable();
+const t = (name: string, fn: () => Promise<void>) => test(name, { skip: !ok && 'PostgreSQL de pruebas no disponible' }, fn);
+const { ipKey } = await import('../src/auth.js');
+const { recordTrialClaims } = await import('../src/billing/trial-claims.js');
+let h: Awaited<ReturnType<typeof createHarness>>;
+
+let n = 0;
+/** Cuenta nueva del registro: espera la tarjeta. `verified`: con el correo ya verificado. */
+async function waiting(email: string, verified = true) {
+  const r = await h.app.inject({
+    method: 'POST', url: '/api/signup', remoteAddress: `10.66.0.${++n}`,
+    payload: { name: 'Tere', company: `Negocio ${n}`, business_type: 'otro', email, password: 'Pz-171-Qx-371-Kv', accept_terms: true },
+  });
+  assert.equal(r.statusCode, 200, r.body);
+  if (verified) await pool.query(`UPDATE users SET email_verified_at = now() WHERE email = $1`, [email]);
+  const cookie = await h.sessionFrom(r);
+  const own = `10.65.0.${n}`; // cada cuenta paga desde su conexión
+  const api = (body: Record<string, unknown> = { plan: 'pro', provider: 'stripe' }, ip = own) =>
+    h.app.inject({ method: 'POST', url: '/api/billing/checkout', remoteAddress: ip, headers: { cookie }, payload: body });
+  return { api, accountId: r.json().account.id as string, userId: r.json().user.id as string };
+}
+const lastStripe = () => fake.stripe.requests.filter((x) => x.method === 'POST' && x.path === '/v1/checkout/sessions').at(-1)!.body as URLSearchParams;
+const lastMp = () => fake.mp.requests.filter((x) => x.method === 'POST' && x.path === '/preapproval').at(-1)!.body;
+const checks = async (accountId: string) => (await pool.query(`SELECT count(*)::int AS n FROM card_checks WHERE account_id = $1`, [accountId])).rows[0].n;
+const age = (accountId: string) => pool.query(`UPDATE card_checks SET opened_at = opened_at - interval '31 minutes' WHERE account_id = $1`, [accountId]);
+const setHits = (key: string, hits: number) =>
+  pool.query(`INSERT INTO rate_limits (key, hits, expires_at) VALUES ($1, $2, now() + interval '1 day') ON CONFLICT (key) DO UPDATE SET hits = $2, expires_at = now() + interval '1 day'`, [key, hits]);
+
+before(async () => {
+  if (!ok) return;
+  h = await createHarness();
+  assert.equal((await h.authed('POST', '/api/plans', { key: 'pro', name: 'Pro', price: 499, currency: 'MXN' })).statusCode, 200);
+});
+after(async () => {
+  if (h) await h.app.close();
+  await pool.end();
+});
+
+t('sin el correo verificado no se abre la verificación de tarjeta', async () => {
+  const a = await waiting('sinverificar@tarjeta.mx', false);
+  const r = await a.api();
+  assert.equal(r.statusCode, 403, r.body);
+  assert.equal(r.json().error, 'Falta verificar tu correo');
+  assert.equal(await checks(a.accountId), 0);
+});
+
+t('sin verificación reciente pide el código (como todo Mi plan)', async () => {
+  const a = await waiting('reciente@tarjeta.mx');
+  await pool.query(`UPDATE user_sessions SET mfa_at = now() - interval '16 minutes' WHERE user_id = $1`, [a.userId]);
+  assert.equal((await a.api()).json().code, 'step_up');
+});
+
+t('Stripe con prueba disponible: 14 días, tarjeta obligatoria, 30 minutos, 3D Secure y sin códigos sueltos', async () => {
+  const a = await waiting('stripe@tarjeta.mx');
+  const r = await a.api();
+  assert.equal(r.statusCode, 200, r.body);
+  assert.equal(r.json().trial, true);
+  const body = lastStripe();
+  assert.equal(body.get('subscription_data[trial_period_days]'), '14');
+  assert.equal(body.get('payment_method_collection'), 'always');
+  const expires = Number(body.get('expires_at')) * 1000;
+  assert.ok(expires >= Date.now() + 30 * 60_000 && expires <= Date.now() + 32 * 60_000, `expires_at ${new Date(expires).toISOString()}`);
+  assert.equal(body.get('payment_method_options[card][request_three_d_secure]'), 'any');
+  assert.match(String(body.get('success_url')), /\{CHECKOUT_SESSION_ID\}/);
+  assert.equal(body.get('allow_promotion_codes'), null);
+  assert.equal(await checks(a.accountId), 1);
+});
+
+t('sin prueba disponible (el correo ya tuvo una), la verificación es el primer cobro', async () => {
+  const a = await waiting('repetida@tarjeta.mx');
+  await recordTrialClaims({ accountId: a.accountId, email: 'repetida+vieja@tarjeta.mx', provider: 'stripe' });
+  const r = await a.api();
+  assert.equal(r.statusCode, 200, r.body);
+  assert.equal(r.json().trial, false);
+  assert.equal(lastStripe().get('subscription_data[trial_period_days]'), null);
+});
+
+t('Mercado Pago: con prueba, el primer cobro a los 14 días; sin prueba, ya', async () => {
+  const a = await waiting('mp@tarjeta.mx');
+  assert.equal((await a.api({ plan: 'pro', provider: 'mercadopago' })).statusCode, 200);
+  const start = new Date(lastMp().auto_recurring.start_date).getTime();
+  assert.ok(Math.abs(start - (Date.now() + 14 * 86400_000)) < 60_000, new Date(start).toISOString());
+  const b = await waiting('mp2@tarjeta.mx');
+  await recordTrialClaims({ accountId: b.accountId, email: 'mp2@tarjeta.mx', provider: 'mercadopago' });
+  assert.equal((await b.api({ plan: 'pro', provider: 'mercadopago' })).statusCode, 200);
+  assert.equal(lastMp().auto_recurring.start_date, undefined);
+});
+
+t('la sesión vigente se reutiliza sin contar; pasados 30 minutos se abre otra (Review Focus 2)', async () => {
+  const a = await waiting('vuelve@tarjeta.mx');
+  const first = (await a.api()).json().url;
+  const sessions = fake.stripe.requests.filter((x) => x.path === '/v1/checkout/sessions').length;
+  const again = await a.api();
+  assert.equal(again.json().url, first, 'la misma página');
+  assert.equal(fake.stripe.requests.filter((x) => x.path === '/v1/checkout/sessions').length, sessions, 'no se pidió otra a Stripe');
+  assert.equal(await checks(a.accountId), 1);
+  await age(a.accountId);
+  const later = await a.api();
+  assert.notEqual(later.json().url, first);
+  assert.equal(await checks(a.accountId), 2);
+});
+
+t('topes: 5 por día por cuenta, 10 por conexión y 300 en toda la plataforma', async () => {
+  const a = await waiting('topes@tarjeta.mx');
+  for (let i = 0; i < 5; i++) {
+    assert.equal((await a.api()).statusCode, 200, `verificación ${i + 1}`);
+    await age(a.accountId);
+  }
+  const sixth = await a.api();
+  assert.equal(sixth.statusCode, 429, sixth.body);
+  assert.equal(sixth.json().error, 'Intenta más tarde');
+
+  const b = await waiting('conexion@tarjeta.mx');
+  await setHits(`card-check-ip:${ipKey('10.67.0.1')}`, 10);
+  assert.equal((await b.api(undefined, '10.67.0.1')).statusCode, 429);
+  assert.equal((await b.api(undefined, '10.67.0.2')).statusCode, 200, 'desde otra conexión sí');
+
+  const c = await waiting('global@tarjeta.mx');
+  await setHits('card-check-day', 300);
+  try {
+    assert.equal((await c.api()).statusCode, 429);
+  } finally {
+    await pool.query(`DELETE FROM rate_limits WHERE key = 'card-check-day'`);
+  }
+});

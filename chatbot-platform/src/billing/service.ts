@@ -117,20 +117,32 @@ export async function payable(planKey: string, providerName?: ProviderName): Pro
  * Abre la página de pago del proveedor y anota el pago como pendiente. `base` es la dirección del panel (la principal o
  * el dominio de la marca) a la que vuelve el cliente al pagar o cancelar. Puede lanzar `ProviderError`.
  */
-export async function startCheckout(o: { accountId: string; email: string; plan: Plan; provider: ProviderName; base: string; startAt?: Date }): Promise<string> {
+export async function startCheckout(o: CheckoutStart): Promise<string> {
+  return (await createCheckoutSession(o)).url;
+}
+
+type CheckoutStart = { accountId: string; email: string; plan: Plan; provider: ProviderName; base: string; startAt?: Date; trialDays?: number };
+
+/**
+ * La página de pago y su referencia. `trialDays`: verificación de tarjeta con prueba gratis (el primer cobro, en esos
+ * días); sin eso, quien paga durante una prueba de las de antes la conserva hasta su fin.
+ */
+export async function createCheckoutSession(o: CheckoutStart): Promise<{ url: string; ref: string }> {
   const sub = await getSubscription(o.accountId);
-  const trialEnd = o.startAt ? undefined : await trialLeft(o.accountId);
+  const trialEnd = o.startAt || o.trialDays ? undefined : await trialLeft(o.accountId);
+  const firstCharge = o.trialDays ? new Date(Date.now() + o.trialDays * 86400_000) : trialEnd;
   const { url, ref } = await providers[o.provider].createCheckout({
     accountId: o.accountId, email: o.email, plan: o.plan,
     successUrl: `${o.base}/pago/${o.provider}`, cancelUrl: `${o.base}/pago/${o.provider}?estado=cancelado`,
     customerId: sub?.provider === o.provider ? sub.provider_customer_id || undefined : undefined,
     // Quien contrata durante su prueba no la pierde: la tarjeta queda registrada hoy y el primer cobro es al terminar.
-    startAt: o.startAt ?? (o.provider === 'mercadopago' ? trialEnd : undefined),
+    startAt: o.startAt ?? (o.provider === 'mercadopago' ? firstCharge : undefined),
     trialEnd: o.provider === 'stripe' ? trialEnd : undefined,
+    trialDays: o.provider === 'stripe' ? o.trialDays : undefined,
   });
   await beginCheckout(o.accountId, o.provider, o.plan.key, ref);
-  await logEvent({ level: 'info', source: 'admin', message: `Pago iniciado: plan ${o.plan.key} con ${o.provider}`, accountId: o.accountId });
-  return url;
+  await logEvent({ level: 'info', source: 'admin', message: `Pago iniciado: plan ${o.plan.key} con ${o.provider}${o.trialDays ? ` (${o.trialDays} días de prueba)` : ''}`, accountId: o.accountId });
+  return { url, ref };
 }
 
 /**

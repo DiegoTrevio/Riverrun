@@ -163,21 +163,28 @@ export const stripe: BillingProvider = {
   // Con ID de precio (price_…) se usa ese; sin él, el precio mensual se arma con el monto y la moneda del plan.
   supportsPlan: () => true,
 
-  async createCheckout({ accountId, email, plan, successUrl, cancelUrl, customerId, trialEnd }) {
+  async createCheckout({ accountId, email, plan, successUrl, cancelUrl, customerId, trialEnd, trialDays }) {
     const meta = { account_id: accountId, plan_key: plan.key };
     const item = { ...(await priceOf(plan)), quantity: 1 };
     const s = await call('POST', '/v1/checkout/sessions', {
       mode: 'subscription',
       line_items: [item],
-      success_url: successUrl,
+      success_url: `${successUrl}${successUrl.includes('?') ? '&' : '?'}session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: cancelUrl,
       client_reference_id: accountId,
       ...(customerId ? { customer: customerId } : { customer_email: email }),
-      allow_promotion_codes: true,
       locale: 'es',
       metadata: meta,
-      // Durante la prueba: se guarda la tarjeta hoy y el primer cobro es al terminar la prueba.
-      subscription_data: { metadata: meta, ...(trialEnd ? { trial_end: Math.floor(trialEnd.getTime() / 1000) } : {}) },
+      // Contra la prueba de tarjetas: la tarjeta siempre se pide (también con prueba), la página vence en 30 minutos
+      // (el mínimo de Stripe) y se pide 3D Secure cuando el banco lo tiene. Los códigos de promoción no se aceptan sueltos.
+      payment_method_collection: 'always',
+      expires_at: Math.floor(Date.now() / 1000) + 31 * 60,
+      payment_method_options: { card: { request_three_d_secure: 'any' } },
+      // Con prueba: se guarda la tarjeta hoy y el primer cobro es al terminar la prueba.
+      subscription_data: {
+        metadata: meta,
+        ...(trialDays ? { trial_period_days: trialDays } : trialEnd ? { trial_end: Math.floor(trialEnd.getTime() / 1000) } : {}),
+      },
     });
     if (!s.url) throw new ProviderError('Stripe no devolvió la página de pago');
     return { url: s.url, ref: String(s.id ?? '') };
