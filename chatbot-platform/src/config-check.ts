@@ -637,7 +637,7 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
   if (has('PASSWORD_HASH_COST') && !['standard', 'test'].includes(hashCost)) add(
     'critical',
     'security',
-    'password_hash_cost.invalid',
+    'password_cost.invalid',
     ['PASSWORD_HASH_COST'],
     'PASSWORD_HASH_COST debe ser standard o test.',
     'Bórrala (standard es el valor normal).',
@@ -645,7 +645,7 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
   if (hashCost === 'test' && https) add(
     'critical',
     'security',
-    'password_hash_cost.test',
+    'password_cost.test',
     ['PASSWORD_HASH_COST'],
     'PASSWORD_HASH_COST=test en un servidor con HTTPS: las contraseñas se guardan con el costo de las pruebas.',
     'Bórrala: el valor normal (standard) usa los parámetros de scrypt que recomienda OWASP.',

@@ -20,8 +20,11 @@ const signup = (body: Record<string, unknown>, headers: Record<string, string> =
     method: 'POST', url: '/api/signup', remoteAddress: `10.77.0.${++ip}`, headers,
     payload: { name: 'Ana Ruiz', company: 'Estética Ana', business_type: 'belleza', password: 'Pz-105-Qx-305-Kv', accept_terms: true, ...body },
   });
-const as = (r: { headers: Record<string, unknown> }) => {
-  const cookie = await h.sessionFrom(r);
+// La sesión de cada registro se abre una vez (el arnés hace el 2FA); después se reutiliza.
+const sessions = new WeakMap<object, Promise<string>>();
+const as = async (r: Parameters<typeof h.sessionFrom>[0]) => {
+  if (!sessions.has(r)) sessions.set(r, h.sessionFrom(r));
+  const cookie = await sessions.get(r)!;
   return (method: string, url: string, payload?: unknown) => h.app.inject({ method: method as any, url, payload: payload as any, headers: { cookie } });
 };
 const accountOf = async (id: string) => (await pool.query(`SELECT status, plan, trial_ends_at FROM accounts WHERE id = $1`, [id])).rows[0];
@@ -69,7 +72,7 @@ t('crear la cuenta y pagar ahí mismo con Stripe: al volver del pago la cuenta q
   const accountId = body.account.id;
   assert.equal(body.account.status, 'trial', 'mientras no paga, conserva su prueba');
   assert.match(body.checkout_url, /^https:\/\/checkout\.stripe\.test\/c\/cs_\d+$/);
-  const api = as(r);
+  const api = await as(r);
 
   // Stripe arma el precio con el monto del plan y crea su producto una sola vez.
   const req = lastSession();
@@ -131,7 +134,7 @@ t('solo se confirma un pago de la propia cuenta', async () => {
   const other = (await pool.query(`SELECT id FROM accounts WHERE name = 'Estética Ana' ORDER BY created_at LIMIT 1`)).rows[0].id;
   // La sesión de Beto termina en una suscripción que dice ser de otra cuenta: no se aplica a ninguna.
   payStripe(r.json().checkout_url.split('/').pop(), other, 'sub_ajena');
-  assert.equal((await as(r)('POST', '/api/billing/confirm')).json().confirmed, false);
+  assert.equal((await (await as(r))('POST', '/api/billing/confirm')).json().confirmed, false);
   assert.equal((await accountOf(accountId)).status, 'trial');
   assert.notEqual((await subOf(other)).provider_subscription_id, 'sub_ajena');
 });
@@ -164,7 +167,7 @@ t('dos pagos completados (dos pestañas): se conserva el vigente y el otro se ca
   const r = await signup({ email: 'dani@spa.mx', company: 'Spa Dani', plan: 'pro', provider: 'stripe' });
   const accountId = r.json().account.id;
   payStripe(r.json().checkout_url.split('/').pop(), accountId, 'sub_dani_1');
-  assert.equal((await as(r)('POST', '/api/billing/confirm')).json().confirmed, true);
+  assert.equal((await (await as(r))('POST', '/api/billing/confirm')).json().confirmed, true);
 
   fake.stripe.subs.sub_dani_2 = stripeSub({ id: 'sub_dani_2', customer: 'cus_dani', metadata: { account_id: accountId, plan_key: 'pro' } });
   fake.stripe.invoices.push({ id: 'in_dani_2', subscription: 'sub_dani_2', status: 'paid', amount_paid: 57884, currency: 'mxn', charge: 'ch_dani_2', created: Math.floor(Date.now() / 1000) });
@@ -207,7 +210,7 @@ t('si el proveedor no responde (red caída) al registrarse, la cuenta queda crea
     assert.equal(r.statusCode, 200, r.body);
     assert.equal(r.json().checkout_url, undefined);
     assert.match(r.json().checkout_error, /cuenta quedó creada.*No se pudo conectar con Stripe/);
-    const retry = await as(r)('POST', '/api/billing/checkout', { plan: 'pro', provider: 'stripe' });
+    const retry = await (await as(r))('POST', '/api/billing/checkout', { plan: 'pro', provider: 'stripe' });
     assert.equal(retry.statusCode, 502, retry.body);
   } finally {
     fake.stripe.drop = false;
@@ -238,7 +241,7 @@ t('el aviso tardío de un plan reemplazado (que se cancela al final del periodo)
   const r = await signup({ email: 'jose@libros.mx', company: 'Libros José', plan: 'pro', provider: 'stripe' });
   const accountId = r.json().account.id;
   payStripe(r.json().checkout_url.split('/').pop(), accountId, 'sub_jose_nuevo');
-  assert.equal((await as(r)('POST', '/api/billing/confirm')).json().confirmed, true);
+  assert.equal((await (await as(r))('POST', '/api/billing/confirm')).json().confirmed, true);
   const old = stripeSub({ id: 'sub_jose_viejo', customer: 'cus_jose', cancel_at_period_end: true, metadata: { account_id: accountId, plan_key: 'pro' } });
   fake.stripe.subs.sub_jose_viejo = old;
   const e = stripeEvent('customer.subscription.updated', old);
@@ -267,7 +270,7 @@ t('sin prueba gratis (TRIAL_DAYS=0): la cuenta nace en pausa y el pago la activa
     assert.equal(r.json().account.status, 'paused');
     assert.equal(r.json().account.trial_ends_at, null);
     payStripe(r.json().checkout_url.split('/').pop(), accountId, 'sub_hugo');
-    assert.equal((await as(r)('POST', '/api/billing/confirm')).json().account_status, 'active');
+    assert.equal((await (await as(r))('POST', '/api/billing/confirm')).json().account_status, 'active');
   } finally {
     config.signup.trialDays = days;
   }

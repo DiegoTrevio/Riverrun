@@ -62,8 +62,8 @@ test('2. configuraciones críticas inválidas impiden arrancar en modo estricto'
     [{ KNOWLEDGE_ALERT_FALLBACK_RATIO: '5' }, 'number.KNOWLEDGE_ALERT_FALLBACK_RATIO'],
     [{ OPENROUTER_BASE_URL: 'openrouter' }, 'url.OPENROUTER_BASE_URL'],
     // El costo de prueba del hash de contraseñas en un servidor público las dejaría fáciles de adivinar si se filtra la base.
-    [{ PASSWORD_HASH_COST: 'test' }, 'password_hash_cost.test'],
-    [{ PASSWORD_HASH_COST: 'bajo' }, 'password_hash_cost.invalid'],
+    [{ PASSWORD_HASH_COST: 'test' }, 'password_cost.test'],
+    [{ PASSWORD_HASH_COST: 'bajo' }, 'password_cost.invalid'],
   ];
   for (const [over, id] of cases) {
     const r = validateConfig(installed(over));
