@@ -113,11 +113,23 @@ Diseño: el mismo de la 2a. Plan: [`superpowers/plans/2026-10-30-seguridad-etapa
 **Cambios que nota la gente:**
 - Cada cuenta tiene un dueño (el administrador que la creó o el primero que aceptó). Solo él cambia el plan y la tarjeta, ve la facturación, descarga o borra la cuenta, e invita o maneja a los administradores; los demás administradores ven Mi plan sin botones. En Equipo aparece «Dueño» y, para el dueño, «Hacer dueño» en los administradores que pueden recibir la cuenta.
 - Ya no se crean usuarios con contraseña inicial ni se cambia la contraseña de otro: se invita (Equipo → Invitar a tu equipo). El superadministrador crea una cuenta invitando a su dueño.
-- El correo propio se cambia en Mi perfil → Correo: llega un enlace al correo nuevo y el cambio se aplica al abrirlo; al anterior le llega un aviso.
+- El correo propio se cambia en Mi perfil → Correo, con la contraseña actual: llega un enlace al correo nuevo y el cambio se aplica al abrirlo; al anterior le llega un aviso.
 - Entrar con Google: si el correo de la cuenta no está verificado, primero hay que entrar con la contraseña y verificarlo.
-- Desactivar o borrar a alguien revoca sus llaves de API, pausa sus webhooks y cancela sus invitaciones (la confirmación lo dice).
+- Desactivar, borrar o pasar a otra cuenta a alguien revoca sus llaves de API, pausa sus webhooks y cancela sus invitaciones (la confirmación lo dice).
 - Para invitar hay que tener el correo verificado (y el dueño también); hay topes por día.
 - Los enlaces de los correos (verificar, restablecer, invitación, cambio de correo, borrar la cuenta) van al dominio principal también en cuentas con marca blanca.
+
+**Revisión independiente de la etapa 2b.** Encontró que con una sesión robada se podía cambiar el correo sin la
+contraseña y, con «Olvidé mi contraseña» al correo nuevo, quedarse con la cuenta. Además subí a importantes que preguntar
+por correos ocupados al cambiar el correo no tenía tope, que quien aceptaba una invitación de administrador podía quedar
+como dueño antes que un administrador más antiguo, que un administrador que no es el dueño podía cancelar, reenviar o
+cambiar por una de agente la invitación de administrador del dueño, y que al pasar a alguien a otra cuenta su llave de
+la cuenta de antes seguía entrando. Todo eso quedó corregido, con su prueba. Lo que señaló y queda para después:
+- Crear una invitación no es atómico: un doble clic al mismo correo puede responder 500 (y gastar un intento del tope).
+- Cambiar el correo e invitar al dueño de una cuenta nueva no dicen si el correo salió (sin SMTP el panel dice «te
+  mandamos…»); las invitaciones del equipo sí lo dicen.
+- El superadministrador sin cuenta elegida ve «Hacer dueño» y el servidor responde «Elige la cuenta»; tampoco ve
+  exportar o borrar la cuenta en Mi plan (la API sí se lo permite con `?account_id`).
 
 ## Hallazgos pendientes por etapa
 
