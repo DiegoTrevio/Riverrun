@@ -631,6 +631,26 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
   );
   services.push({ id: 'email', label: 'Correo saliente (SMTP)', area: 'email', state: !smtp ? 'disabled' : smtpValid ? 'configured' : 'invalid', detail: !smtp ? 'Opcional, apagado' : smtpValid ? 'Servidor definido' : 'Dirección no válida' });
 
+  /* ------------------------------ Hash de contraseñas ------------------------------ */
+  // `test` es solo para la suite: con él, una base filtrada se adivina mucho más rápido.
+  const hashCost = get('PASSWORD_HASH_COST');
+  if (has('PASSWORD_HASH_COST') && !['standard', 'test'].includes(hashCost)) add(
+    'critical',
+    'security',
+    'password_hash_cost.invalid',
+    ['PASSWORD_HASH_COST'],
+    'PASSWORD_HASH_COST debe ser standard o test.',
+    'Bórrala (standard es el valor normal).',
+  );
+  if (hashCost === 'test' && https) add(
+    'critical',
+    'security',
+    'password_hash_cost.test',
+    ['PASSWORD_HASH_COST'],
+    'PASSWORD_HASH_COST=test en un servidor con HTTPS: las contraseñas se guardan con el costo de las pruebas.',
+    'Bórrala: el valor normal (standard) usa los parámetros de scrypt que recomienda OWASP.',
+  );
+
   /* ------------------------------ Salida de mensajes ------------------------------ */
   // live: envíos reales (producción). sandbox: solo a OUTBOUND_SANDBOX_ALLOW (pruebas y staging).
   const mode = get('OUTBOUND_MODE');

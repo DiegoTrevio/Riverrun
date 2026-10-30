@@ -1,34 +1,83 @@
 import crypto from 'node:crypto';
 import net from 'node:net';
-import { promisify } from 'node:util';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { config } from './config.js';
 import { logEvent } from './logs.js';
+import { HttpError } from './access.js';
 import { assertPasswordAllowed } from './identity/passwords.js';
 import { hmac, safeEqual } from './secret.js';
 import * as store from './store/index.js';
 import type { User } from './types.js';
 
-const scrypt = promisify(crypto.scrypt) as (pw: string, salt: Buffer, len: number) => Promise<Buffer>;
 const COOKIE = 'cp_session';
 const TTL_MS = 7 * 24 * 3600 * 1000;
 
 /* ------------------------------ Contraseñas ------------------------------ */
 
+/**
+ * scrypt con los parámetros que recomienda OWASP (N=2^15, r=8, p=3: unos 32 MiB por cálculo), guardados dentro del hash
+ * para poder subirlos después. Los hashes de antes (`scrypt$sal$hash`, con los parámetros por omisión de Node) se siguen
+ * aceptando y se recalculan al entrar. `PASSWORD_HASH_COST=test` baja el costo solo para la suite.
+ */
+const COST = { standard: { ln: 15, r: 8, p: 3 }, test: { ln: 10, r: 8, p: 1 } } as const;
+const LEGACY = { ln: 14, r: 8, p: 1 };
+type Cost = { ln: number; r: number; p: number };
+const target = (): Cost => COST[config.passwordHashCost];
+
+// A lo más 4 cálculos a la vez y 64 esperando: una avalancha de intentos no agota la memoria del servidor.
+const MAX_RUNNING = 4;
+const MAX_WAITING = 64;
+let running = 0;
+const waiting: (() => void)[] = [];
+async function scrypt(pw: string, salt: Buffer, len: number, c: Cost): Promise<Buffer> {
+  if (running < MAX_RUNNING) running++;
+  else {
+    if (waiting.length >= MAX_WAITING) throw new HttpError(503, 'Hay muchos intentos, prueba en unos segundos');
+    await new Promise<void>((resolve) => waiting.push(resolve)); // el que termina le pasa su lugar
+  }
+  try {
+    return await new Promise<Buffer>((resolve, reject) =>
+      crypto.scrypt(pw, salt, len, { N: 2 ** c.ln, r: c.r, p: c.p, maxmem: 64 * 1024 * 1024 }, (err, key) => (err ? reject(err) : resolve(key))));
+  } finally {
+    const next = waiting.shift();
+    if (next) next();
+    else running--;
+  }
+}
+
+/** Parámetros y partes de un hash guardado, o null si no es uno válido (o pide un costo fuera de rango). */
+function parseHash(stored: string): { cost: Cost; salt: Buffer; hash: Buffer } | null {
+  const parts = stored.split('$');
+  if (parts[0] !== 'scrypt') return null;
+  if (parts.length === 3) return { cost: LEGACY, salt: Buffer.from(parts[1], 'base64'), hash: Buffer.from(parts[2], 'base64') };
+  if (parts.length !== 4) return null;
+  const m = /^ln=(\d+),r=(\d+),p=(\d+)$/.exec(parts[1]);
+  if (!m) return null;
+  const cost = { ln: Number(m[1]), r: Number(m[2]), p: Number(m[3]) };
+  if (cost.ln < 10 || cost.ln > 20 || cost.r < 1 || cost.r > 16 || cost.p < 1 || cost.p > 16) return null;
+  return { cost, salt: Buffer.from(parts[2], 'base64'), hash: Buffer.from(parts[3], 'base64') };
+}
+
 export async function hashPassword(password: string): Promise<string> {
+  const c = target();
   const salt = crypto.randomBytes(16);
-  const hash = await scrypt(password, salt, 64);
-  return `scrypt$${salt.toString('base64')}$${hash.toString('base64')}`;
+  const hash = await scrypt(password, salt, 64, c);
+  return `scrypt$ln=${c.ln},r=${c.r},p=${c.p}$${salt.toString('base64')}$${hash.toString('base64')}`;
 }
 
 export async function verifyPassword(password: string, stored: string): Promise<boolean> {
-  const [algo, salt, hash] = stored.split('$');
-  if (algo !== 'scrypt' || !salt || !hash) return false;
-  const expected = Buffer.from(hash, 'base64');
-  const got = await scrypt(password, Buffer.from(salt, 'base64'), expected.length);
-  return crypto.timingSafeEqual(got, expected);
+  const h = parseHash(stored);
+  if (!h || !h.salt.length || !h.hash.length) return false;
+  const got = await scrypt(password, h.salt, h.hash.length, h.cost);
+  return crypto.timingSafeEqual(got, h.hash);
 }
 
+/** El hash no usa los parámetros vigentes: se recalcula la próxima vez que la persona entra. */
+export function needsRehash(stored: string): boolean {
+  const h = parseHash(stored);
+  const c = target();
+  return !h || stored.split('$').length !== 4 || h.cost.ln !== c.ln || h.cost.r !== c.r || h.cost.p !== c.p;
+}
 
 /* ------------------------------ Sesiones ------------------------------ */
 
@@ -93,14 +142,21 @@ declare module 'fastify' {
   }
 }
 
+// Para un correo que no existe se calcula igual un hash (con los parámetros vigentes): no se nota por tiempos.
+const DUMMY_HASH = `scrypt$ln=${target().ln},r=${target().r},p=${target().p}$AAAAAAAAAAAAAAAAAAAAAA==$${'A'.repeat(86)}==`;
+
 export async function login(email: string, password: string): Promise<(User & { password_hash: string }) | null> {
   const u = await store.getUserForLogin(email);
   // Siempre se calcula un hash para no revelar por tiempos si el usuario existe.
-  const ok = await verifyPassword(password, u?.password_hash ?? 'scrypt$AAAAAAAAAAAAAAAAAAAAAA==$' + 'A'.repeat(86) + '==');
+  const ok = await verifyPassword(password, u?.password_hash ?? DUMMY_HASH);
   if (!u || !ok || !u.active || (u.account_id && !u.account_active)) return null;
   await store.touchLogin(u.id);
   const { account_active, ...user } = u;
   void account_active;
+  if (needsRehash(user.password_hash)) {
+    user.password_hash = await hashPassword(password);
+    await store.updateUser(user.id, { password_hash: user.password_hash });
+  }
   return user;
 }
 

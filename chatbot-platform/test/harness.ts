@@ -400,6 +400,8 @@ process.env.ADMIN_PASSWORD = 'secreto123';
 process.env.SESSION_SECRET = 'una-clave-de-pruebas-muy-larga';
 // Las pruebas no salen a internet: las contraseñas nuevas se revisan solo contra la lista local.
 process.env.PWNED_PASSWORDS_URL = 'off';
+// Hash de contraseñas con un costo bajo: con el de producción (OWASP) cada usuario de prueba tardaría unos 300 ms.
+process.env.PASSWORD_HASH_COST = 'test';
 // Las cotizaciones se convierten a PDF con un convertidor de prueba (QUOTE_PDF_BACKEND=soffice usa LibreOffice).
 process.env.QUOTE_PDF_BACKEND ??= 'fake';
 

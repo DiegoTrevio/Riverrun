@@ -85,6 +85,8 @@ export const config = {
   secureCookies: env('SECURE_COOKIES', 'false') === 'true',
   /** Contraseñas filtradas (Have I Been Pwned por rango). `off` la apaga: decide solo la lista local. */
   pwnedPasswordsUrl: env('PWNED_PASSWORDS_URL', 'https://api.pwnedpasswords.com/range/'),
+  /** Costo de scrypt: `test` solo para la suite (config-check lo rechaza con HTTPS); cualquier otro valor usa el normal. */
+  passwordHashCost: (env('PASSWORD_HASH_COST', 'standard') === 'test' ? 'test' : 'standard') as 'standard' | 'test',
   evolution: {
     url: env('EVOLUTION_URL', 'http://localhost:8080').replace(/\/$/, ''),
     apiKey: env('EVOLUTION_API_KEY', ''),
