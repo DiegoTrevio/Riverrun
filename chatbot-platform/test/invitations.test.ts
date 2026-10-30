@@ -29,11 +29,13 @@ const B = { account: '', admin: null as unknown as Api };
 let outbox: { to: string; subject: string; text: string }[];
 
 const tokenFor = (to: string) => {
-  const mail = [...outbox].reverse().find((m) => m.to === to && m.text.includes('#/invitacion?token='));
+  const mail = [...outbox].reverse().find((m) => m.to === to && m.text.includes('#/invitacion/'));
   assert.ok(mail, `sin invitación para ${to}`);
-  return decodeURIComponent(/#\/invitacion\?token=([^\s]+)/.exec(mail.text)![1]);
+  return decodeURIComponent(/#\/invitacion\/([^\s]+)/.exec(mail.text)![1]);
 };
-const info = (q: string, cookie?: string) => h.app.inject({ method: 'GET', url: `/api/invitation?${q}`, remoteAddress: '10.9.0.1', headers: cookie ? { cookie } : {} });
+/** Ver la invitación: `q` es `token=…` o `google=…` (va en el cuerpo, no en la URL). */
+const info = (q: string, cookie?: string) =>
+  h.app.inject({ method: 'POST', url: '/api/invitation/peek', remoteAddress: '10.9.0.1', headers: cookie ? { cookie } : {}, payload: Object.fromEntries(new URLSearchParams(q)) });
 let ip = 0;
 const accept = (body: Record<string, unknown>) =>
   h.app.inject({ method: 'POST', url: '/api/invitation/accept', remoteAddress: `10.9.1.${++ip}`, headers: { 'user-agent': 'Navegador de prueba' }, payload: { name: 'Persona', accept_terms: true, ...body } });
@@ -66,7 +68,7 @@ t('invitar por correo y unirse eligiendo contraseña: queda en la cuenta, con su
   assert.deepEqual([r.json().email, r.json().role], ['lalo@taller.mx', 'admin']);
   assert.ok(!r.body.includes('token'), 'la respuesta no trae el enlace');
   const mail = [...outbox].reverse().find((m) => m.to === 'lalo@taller.mx')!;
-  assert.match(mail.subject, /Admin Taller Ana te invitó a Taller Ana/);
+  assert.equal(mail.subject, '«Admin Taller Ana» te invitó a «Taller Ana»');
   assert.match(mail.text, /como administrador/);
   const token = tokenFor('lalo@taller.mx');
 
