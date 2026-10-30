@@ -14,7 +14,8 @@ import { keptNote } from '../accounts/retention.js';
 import { LIMIT_LABELS, usageOf } from './limits.js';
 import { mercadopago } from './mercadopago.js';
 import { stripe } from './stripe.js';
-import { startTrialFromState } from './card-check.js';
+import type pg from 'pg';
+import { openCardCheck, startTrialFromState } from './card-check.js';
 import { chargeCents } from './tax.js';
 import type { BillingProvider, PaymentInfo, Plan, ProviderName, Subscription, SubscriptionState } from './types.js';
 
@@ -181,19 +182,22 @@ async function liveSubscription(accountId: string) {
 /**
  * Sustitución (Mercado Pago): una suscripción nueva cuyo primer cobro es al terminar el periodo ya pagado. Al autorizarse
  * reemplaza a la vigente, que se cancela sola (ver `applyStateLocked`). Sirve para cambiar la tarjeta, reanudar tras
- * cancelar y cambiar entre mensual y anual. Devuelve la página de pago.
+ * cancelar y cambiar entre mensual y anual. Es una página donde se valida una tarjeta: cuenta para los topes y el freno
+ * de la verificación de tarjeta (`openCardCheck`). Devuelve la página de pago.
  */
-export async function startReplacement(o: { accountId: string; email: string; plan: Plan; base: string }): Promise<string> {
+export async function startReplacement(o: { accountId: string; email: string; plan: Plan; base: string; ip: string }): Promise<string> {
   const sub = await getSubscription(o.accountId);
   const paidUntil = sub?.status === 'past_due' ? null : sub?.current_period_end ?? null;
-  return startCheckout({ ...o, provider: 'mercadopago', startAt: paidUntil && paidUntil > new Date() ? paidUntil : undefined });
+  const startAt = paidUntil && paidUntil > new Date() ? paidUntil : undefined;
+  return openCardCheck({ accountId: o.accountId, ip: o.ip, provider: 'mercadopago', planKey: o.plan.key, replacement: true,
+    open: () => createCheckoutSession({ accountId: o.accountId, email: o.email, plan: o.plan, base: o.base, provider: 'mercadopago', startAt }) });
 }
 
 /**
  * Cambia el plan vigente. Stripe: ya, con prorrateo. Mercado Pago: el nuevo monto desde el siguiente cobro; si cambia el
  * periodo (mensual ↔ anual), por sustitución, y entonces devuelve la página de pago (`url`).
  */
-export async function changePlan(o: { accountId: string; email: string; planKey: string; base: string }): Promise<{ url?: string; starts_at?: Date | null; scheduled?: boolean }> {
+export async function changePlan(o: { accountId: string; email: string; planKey: string; base: string; ip: string }): Promise<{ url?: string; starts_at?: Date | null; scheduled?: boolean }> {
   const sub = await liveSubscription(o.accountId);
   // Mercado Pago informa «autorizada» aunque el último cobro se haya rechazado: cambiar el monto con un cobro fallido
   // daría la cuenta por pagada. Primero se cambia la tarjeta (que cobra lo pendiente). En Stripe, subir cobra la diferencia
@@ -209,7 +213,7 @@ export async function changePlan(o: { accountId: string; email: string; planKey:
   const upgrade = !from || monthly(plan) > monthly(from);
   if (!upgrade) await assertFitsPlan(o.accountId, plan);
   if (sub.provider === 'mercadopago' && from && from.billing_interval !== plan.billing_interval) {
-    return { url: await startReplacement({ accountId: o.accountId, email: o.email, plan, base: o.base }) };
+    return { url: await startReplacement({ accountId: o.accountId, email: o.email, plan, base: o.base, ip: o.ip }) };
   }
   // Mercado Pago cobra el monto nuevo hasta la siguiente renovación (no cobra la diferencia): al subir, el plan nuevo y
   // sus límites esperan ese cobro (`promotePendingPlan`). Si no, se usaría el plan caro todo el periodo pagando el barato.
@@ -314,7 +318,7 @@ export async function applyState(state: SubscriptionState, now = new Date()): Pr
     // Puede esperar al proveedor de cobro dentro de la transacción: que no la cierre el tiempo límite de inactividad.
     await client.query('SET LOCAL idle_in_transaction_session_timeout = 0');
     await client.query(`SELECT pg_advisory_xact_lock(hashtext('billing-apply:' || $1))`, [accountId]);
-    return applyStateLocked({ ...state, accountId }, now, later);
+    return applyStateLocked({ ...state, accountId }, now, later, client);
   });
   // Correos y avisos, ya sin el candado: un correo lento no detiene los cobros. Un aviso que falla no deshace el estado.
   for (const run of later) {
@@ -326,7 +330,7 @@ export async function applyState(state: SubscriptionState, now = new Date()): Pr
 /** Avisos que salen al terminar de aplicar un estado (fuera del candado). */
 export type Later = (() => Promise<unknown>)[];
 
-async function applyStateLocked(state: SubscriptionState & { accountId: string }, now: Date, later: Later): Promise<string | null> {
+async function applyStateLocked(state: SubscriptionState & { accountId: string }, now: Date, later: Later, client: pg.PoolClient): Promise<string | null> {
   const accountId = state.accountId;
   const acc = await queryOne<{ id: string; name: string; status: string; plan: string; pause_reason: string }>(`SELECT id, name, status, plan, pause_reason FROM accounts WHERE id = $1`, [accountId]);
   if (!acc) return null;
@@ -412,7 +416,7 @@ async function applyStateLocked(state: SubscriptionState & { accountId: string }
   if (state.status === 'active') await query(`UPDATE card_checks SET completed_at = now() WHERE account_id = $1 AND completed_at IS NULL`, [accountId]);
 
   if (state.status === 'active' && trialFuture && waitingCard) {
-    await startTrialFromState({ ...state, accountId }, acc.name, later);
+    await startTrialFromState({ ...state, accountId }, acc.name, later, client);
   } else if (state.status === 'active') {
     // Cuenta al corriente: se activa (sale de prueba o de pausa) y se anota el plan contratado.
     // Solo al pasar a "al corriente" se reactiva la cuenta: una renovación mensual no deshace una pausa manual del superadmin.

@@ -236,8 +236,10 @@ export async function billingRoutes(api: FastifyInstance) {
     const fiscal = await getFiscal(accountId);
     if (fiscal.wants_invoice && !fiscalComplete(fiscal)) throw new HttpError(400, 'Completa tus datos de facturación antes de pagar (en «Facturación», en esta misma página), o elige «Sin factura».');
     try {
-      // Volver a contratar con Mercado Pago tras cancelar: el primer cobro es al terminar lo ya pagado.
-      const paidUntil = provider === 'mercadopago' && sub && (sub.status === 'canceled' || sub.cancel_at_period_end) && sub.current_period_end && sub.current_period_end > new Date() ? sub.current_period_end : undefined;
+      // Volver a contratar con Mercado Pago tras cancelar: el primer cobro es al terminar lo ya pagado. Una cuenta que espera
+      // tarjeta nunca pagó (la suscripción cancelada de una tarjeta repetida no deja periodo pagado).
+      const waitingCard = !!(await queryOne(`SELECT 1 FROM accounts WHERE id = $1 AND status = 'paused' AND pause_reason = 'card'`, [accountId]));
+      const paidUntil = !waitingCard && provider === 'mercadopago' && sub && (sub.status === 'canceled' || sub.cancel_at_period_end) && sub.current_period_end && sub.current_period_end > new Date() ? sub.current_period_end : undefined;
       // La verificación de tarjeta (también el pago de quien ya tiene cuenta): correo verificado, topes y sesión vigente.
       const trialDays = b.trial === false ? 0 : await trialDaysFor(accountId);
       const base = await baseFor(req);
@@ -293,7 +295,7 @@ export async function billingRoutes(api: FastifyInstance) {
     const accountId = await targetAccount(req.user, req.query.account_id);
     if (tooMany(reply, `billing-change:${accountId}`, 10)) return reply;
     const { plan } = parse(z.object({ plan: z.string().max(40) }), req.body);
-    const r = await viaProvider(async () => changePlan({ accountId, email: req.user.email, planKey: plan, base: await baseFor(req) }));
+    const r = await viaProvider(async () => changePlan({ accountId, email: req.user.email, planKey: plan, base: await baseFor(req), ip: req.ip }));
     return { ok: true, ...r, subscription: publicSub(await getSubscription(accountId)) };
   });
 
@@ -311,7 +313,7 @@ export async function billingRoutes(api: FastifyInstance) {
     // Con un cambio de plan programado, la tarjeta nueva lo conserva (empieza igual, con su primer cobro).
     const plan = await getPlan(sub.pending_plan_key || sub.plan_key);
     if (!plan?.active) throw new HttpError(409, 'Tu plan ya no se ofrece: elige otro para continuar.');
-    return { url: await viaProvider(() => startReplacement({ accountId, email: req.user.email, plan, base })) };
+    return { url: await viaProvider(() => startReplacement({ accountId, email: req.user.email, plan, base, ip: req.ip })) };
   });
 
   api.post('/api/billing/cancel', { ...admins, ...ownerStepUp }, async (req: any, reply) => {
@@ -323,7 +325,7 @@ export async function billingRoutes(api: FastifyInstance) {
     if (resume && sub?.provider === 'mercadopago' && (sub.cancel_at_period_end || sub.status === 'canceled') && sub.current_period_end && sub.current_period_end > new Date()) {
       const plan = await getPlan(sub.pending_plan_key || sub.plan_key);
       if (!plan?.active) throw new HttpError(409, 'Tu plan ya no se ofrece: elige otro para continuar.');
-      return { ok: true, url: await viaProvider(async () => startReplacement({ accountId, email: req.user.email, plan, base: await baseFor(req) })) };
+      return { ok: true, url: await viaProvider(async () => startReplacement({ accountId, email: req.user.email, plan, base: await baseFor(req), ip: req.ip })) };
     }
     if (!sub?.provider_subscription_id || !['active', 'past_due'].includes(sub.status)) throw new HttpError(400, 'No tienes un plan activo');
     try {

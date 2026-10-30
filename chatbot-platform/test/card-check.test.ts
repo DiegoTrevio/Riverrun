@@ -187,6 +187,7 @@ t('«Activar sin tarjeta»: el superadmin deja la cuenta en prueba de TRIAL_DAYS
   assert.equal(r.statusCode, 200, r.body);
   const acc = (await pool.query(`SELECT status, pause_reason, trial_ends_at FROM accounts WHERE id = $1`, [a.accountId])).rows[0];
   assert.deepEqual([acc.status, acc.pause_reason], ['trial', '']);
+  assert.equal((await pool.query(`SELECT paused_at FROM accounts WHERE id = $1`, [a.accountId])).rows[0].paused_at, null, 'ya no cuenta como pausada (revisión final I2)');
   const days = (new Date(acc.trial_ends_at).getTime() - Date.now()) / 86400_000;
   assert.ok(days > 13.9 && days <= 14, String(days));
   const log = await pool.query(`SELECT 1 FROM event_logs WHERE account_id = $1 AND message LIKE 'Prueba sin tarjeta activada por admin@test.mx%'`, [a.accountId]);
@@ -225,4 +226,30 @@ t('el panel: «Contratar» sin prueba aunque haya una disponible; /api/me trae e
   assert.equal(me.card_check.trial_available, true);
   assert.equal((await h.authed('GET', '/api/me')).json().card_check, null, 'sin cuenta que espere tarjeta, nada');
   assert.equal((await h.app.inject({ method: 'GET', url: '/api/signup/info' })).json().card_required, true);
+});
+
+t('las páginas de tarjeta por sustitución (Mercado Pago: cambiar tarjeta) cuentan para los topes, el freno y card_checks (revisión final I3)', async () => {
+  const a = await waiting('sustituye@tarjeta.mx');
+  await seed(a.accountId, 0, 0);
+  fake.mp.nextId = 'pre_sust';
+  assert.equal((await a.api({ plan: 'pro', provider: 'mercadopago', trial: false })).statusCode, 200);
+  fake.mp.nextId = '';
+  fake.mp.preapprovals.pre_sust = { id: 'pre_sust', status: 'authorized', external_reference: `${a.accountId}:pro`, payer_id: 41,
+    next_payment_date: new Date(Date.now() + 30 * 86400_000).toISOString(), auto_recurring: { transaction_amount: 578.84, currency_id: 'MXN' } };
+  assert.equal((await a.as('POST', '/api/billing/confirm')).json().confirmed, true);
+  const before = await checks(a.accountId);
+  const change = await a.as('POST', '/api/billing/payment-method');
+  assert.equal(change.statusCode, 200, change.body);
+  assert.equal(await checks(a.accountId), before + 1, 'la página de cambiar tarjeta queda en card_checks');
+  await setHits(`card-check-acct:${a.accountId}`, 5);
+  const r = await a.as('POST', '/api/billing/payment-method');
+  assert.equal(r.statusCode, 429, r.body);
+  assert.equal(r.json().error, 'Intenta más tarde');
+  await pool.query(`INSERT INTO rate_limits (key, hits, expires_at) VALUES ('card-check-brake', 1, now() + interval '1 hour') ON CONFLICT (key) DO UPDATE SET hits = 1, expires_at = now() + interval '1 hour'`);
+  try {
+    await pool.query(`UPDATE rate_limits SET hits = 0 WHERE key = $1`, [`card-check-acct:${a.accountId}`]);
+    assert.equal((await a.as('POST', '/api/billing/payment-method')).statusCode, 429, 'con el freno puesto tampoco');
+  } finally {
+    await pool.query(`UPDATE rate_limits SET expires_at = now() WHERE key LIKE 'card-check-brake%'`);
+  }
 });

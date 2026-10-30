@@ -13,7 +13,7 @@ const { createHarness, dbAvailable, pool } = await import('./harness.js');
 const ok = await dbAvailable();
 const t = (name: string, fn: () => Promise<void>) => test(name, { skip: !ok && 'PostgreSQL de pruebas no disponible' }, fn);
 const { outbox } = await import('../src/mailer.js');
-const { recordTrialClaims } = await import('../src/billing/trial-claims.js');
+const { mpCardKey, recordTrialClaims } = await import('../src/billing/trial-claims.js');
 const { checkTrials } = await import('../src/lifecycle.js');
 let h: Awaited<ReturnType<typeof createHarness>>;
 
@@ -34,6 +34,8 @@ const accountOf = async (id: string) => (await pool.query(`SELECT status, pause_
 const claimsOf = async (id: string) => (await pool.query(`SELECT kind FROM trial_claims WHERE account_id = $1 ORDER BY kind`, [id])).rows.map((r) => r.kind);
 const mails = (to: string, subject: RegExp) => outbox.filter((m) => m.to === to && subject.test(m.subject)).length;
 const trialEnd = () => Math.floor(Date.now() / 1000) + 14 * 86400;
+const lastMp = () => fake.mp.requests.filter((x) => x.method === 'POST' && x.path === '/preapproval').at(-1)!.body;
+const post = (e: { url: string; payload: string; headers: Record<string, string> }) => h.app.inject({ method: 'POST', url: e.url, payload: e.payload, headers: e.headers });
 /** Lo que pasa en Stripe al confirmar la tarjeta: la sesión se completa con una suscripción en prueba. */
 function cardOnStripe(session: string, accountId: string, subId: string, fingerprint: string, end = trialEnd()) {
   fake.stripe.subs[subId] = stripeSub({ id: subId, customer: `cus_${subId}`, status: 'trialing', trial_end: end, default_payment_method: { id: `pm_${subId}`, card: { fingerprint } }, metadata: { account_id: accountId, plan_key: 'pro' } });
@@ -88,6 +90,7 @@ t('Stripe: una tarjeta que ya tuvo prueba termina la prueba al momento y se cobr
   const e = stripeEvent('customer.subscription.updated', fake.stripe.subs.sub_usada);
   assert.equal((await h.app.inject({ method: 'POST', url: '/webhook/billing/stripe', payload: e.payload, headers: e.headers })).statusCode, 200);
   assert.equal((await accountOf(a.accountId)).status, 'active');
+  assert.equal((await pool.query(`SELECT paused_at FROM accounts WHERE id = $1`, [a.accountId])).rows[0].paused_at, null, 'activa ya no cuenta como pausada (revisión final I2)');
 });
 
 t('Mercado Pago: autorizada con el primer cobro a futuro empieza la prueba; con una tarjeta repetida se cancela', async () => {
@@ -151,4 +154,42 @@ t('el aviso de prueba por terminar de una prueba con tarjeta habla del primer co
   assert.ok(mail, 'se avisa');
   assert.match(mail.text, /primer cobro/);
   assert.doesNotMatch(mail.text, /dejará de responder/);
+});
+
+t('dos cuentas de la misma persona que confirman la misma tarjeta a la vez: solo una empieza su prueba (revisión final C1)', async () => {
+  const a = await waiting('carrera+1@gmail.com');
+  const b = await waiting('carrera+2@gmail.com');
+  const ca = await a.api('POST', '/api/billing/checkout', { plan: 'pro', provider: 'stripe' });
+  const cb = await b.api('POST', '/api/billing/checkout', { plan: 'pro', provider: 'stripe' });
+  assert.deepEqual([ca.json().trial, cb.json().trial], [true, true], 'las dos tenían prueba al abrir el pago');
+  cardOnStripe(ca.json().url.split('/').pop(), a.accountId, 'sub_c1a', 'fp_carrera');
+  cardOnStripe(cb.json().url.split('/').pop(), b.accountId, 'sub_c1b', 'fp_carrera');
+  await Promise.all([a.api('POST', '/api/billing/confirm'), b.api('POST', '/api/billing/confirm')]);
+  const statuses = [(await accountOf(a.accountId)).status, (await accountOf(b.accountId)).status];
+  assert.equal(statuses.filter((s) => s === 'trial').length, 1, statuses.join());
+});
+
+t('Mercado Pago: tras una tarjeta repetida, «Contratar» cobra hoy, sin los días de la suscripción cancelada (revisión final I1)', async () => {
+  fake.mp.cards.card_rep = { first_six_digits: '450995', last_four_digits: '1111', expiration_month: 1, expiration_year: 2031 };
+  const old = await waiting('mprep-vieja@prueba.mx');
+  await recordTrialClaims({ accountId: old.accountId, email: 'mprep-vieja@prueba.mx', cardKey: mpCardKey(fake.mp.cards.card_rep), provider: 'mercadopago' });
+  const c = await waiting('mprep@prueba.mx');
+  await c.api('POST', '/api/billing/checkout', { plan: 'pro', provider: 'mercadopago' });
+  await pool.query(`UPDATE subscriptions SET checkout_ref = 'pre_rep' WHERE account_id = $1`, [c.accountId]);
+  const start = new Date(Date.now() + 14 * 86400_000);
+  fake.mp.preapprovals.pre_rep = { id: 'pre_rep', status: 'authorized', external_reference: `${c.accountId}:pro`, payer_id: 33, card_id: 'card_rep', auto_recurring: { start_date: start.toISOString() }, next_payment_date: start.toISOString() };
+  assert.equal((await post(mpEvent('subscription_preapproval', 'pre_rep'))).statusCode, 200);
+  assert.equal(fake.mp.preapprovals.pre_rep.status, 'cancelled');
+  const again = await c.api('POST', '/api/billing/checkout', { plan: 'pro', provider: 'mercadopago', trial: false });
+  assert.equal(again.statusCode, 200, again.body);
+  assert.equal(lastMp().auto_recurring.start_date, undefined, 'el primer cobro es hoy');
+});
+
+t('al empezar la prueba la cuenta deja de contar como pausada: Cuentas no muestra su fecha de borrado (revisión final I2)', async () => {
+  const a = await waiting('borrado@prueba.mx');
+  const co = await a.api('POST', '/api/billing/checkout', { plan: 'pro', provider: 'stripe' });
+  cardOnStripe(co.json().url.split('/').pop(), a.accountId, 'sub_borrado', 'fp_borrado');
+  await a.api('POST', '/api/billing/confirm');
+  const listed = (await h.authed('GET', '/api/accounts')).json().find((x: any) => x.id === a.accountId);
+  assert.deepEqual([listed.status, listed.paused_at, listed.deletion_date ?? null], ['trial', null, null]);
 });

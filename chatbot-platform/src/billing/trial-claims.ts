@@ -63,18 +63,46 @@ export async function cardClaim(cardKey: string): Promise<{ claimed: boolean; di
   return { claimed: !!row, disputed: !!row?.disputed };
 }
 
+export type ClaimMark = { kind: ClaimKind; digest: Buffer };
+
+/** Las marcas de una persona: su correo normalizado, su cuenta de Google y su tarjeta (las que haya). */
+export async function claimMarks(o: { email?: string | null; googleSub?: string | null; cardKey?: string | null }): Promise<ClaimMark[]> {
+  const values: [ClaimKind, string | null | undefined][] = [['email', o.email ? canonicalEmail(o.email) : null], ['google', o.googleSub], ['card', o.cardKey]];
+  const marks: ClaimMark[] = [];
+  for (const [kind, value] of values) if (value) marks.push({ kind, digest: await digest(kind, value) });
+  return marks;
+}
+
+/**
+ * Dentro de la transacción `client`, toma un candado por cada marca (en orden: dos pruebas de la misma persona se esperan
+ * sin trabarse) y devuelve cuáles ya tienen una prueba vigente. Así la marca decide: si dos cuentas de la misma persona
+ * confirman su tarjeta a la vez, la segunda espera y ve las marcas que guardó la primera (`insertClaims`).
+ */
+export async function lockClaims(client: pg.PoolClient, marks: ClaimMark[]): Promise<Set<ClaimKind>> {
+  const keys = marks.map((m) => `trial-claim:${m.kind}:${m.digest.toString('hex')}`).sort();
+  for (const key of keys) await client.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [key]);
+  if (!marks.length) return new Set();
+  const { rows } = await client.query<{ kind: ClaimKind }>(
+    `SELECT kind FROM trial_claims WHERE expires_at > now() AND (kind, digest) IN (SELECT * FROM unnest($1::text[], $2::bytea[]))`,
+    [marks.map((m) => m.kind), marks.map((m) => m.digest)],
+  );
+  return new Set(rows.map((r) => r.kind));
+}
+
+/** Guarda las marcas de una prueba que empieza. Repetirlas no hace nada (la primera se queda). */
+export async function insertClaims(db: Pick<pg.PoolClient, 'query'> | null, accountId: string, provider: string, marks: ClaimMark[]): Promise<void> {
+  for (const m of marks) {
+    const sql = `INSERT INTO trial_claims (kind, digest, account_id, provider) VALUES ($1, $2, $3, $4) ON CONFLICT (kind, digest) DO NOTHING`;
+    const params = [m.kind, m.digest, accountId, provider];
+    if (db) await db.query(sql, params);
+    else await query(sql, params);
+  }
+}
+
 /** Las marcas de una prueba que empieza. Repetirlas no hace nada (la primera se queda). */
 export async function recordTrialClaims(
   o: { accountId: string; email: string; googleSub?: string | null; cardKey?: string | null; provider: 'stripe' | 'mercadopago' | '' },
   client?: pg.PoolClient,
 ): Promise<void> {
-  const marks: [ClaimKind, string][] = [['email', canonicalEmail(o.email)]];
-  if (o.googleSub) marks.push(['google', o.googleSub]);
-  if (o.cardKey) marks.push(['card', o.cardKey]);
-  for (const [kind, value] of marks) {
-    const sql = `INSERT INTO trial_claims (kind, digest, account_id, provider) VALUES ($1, $2, $3, $4) ON CONFLICT (kind, digest) DO NOTHING`;
-    const params = [kind, await digest(kind, value), o.accountId, o.provider];
-    if (client) await client.query(sql, params);
-    else await query(sql, params);
-  }
+  await insertClaims(client ?? null, o.accountId, o.provider, await claimMarks(o));
 }
