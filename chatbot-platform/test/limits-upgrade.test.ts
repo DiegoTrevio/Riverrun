@@ -17,6 +17,7 @@ async function account(email: string, plan: string) {
   assert.equal(r.statusCode, 200, r.body);
   const id = r.json().user.account_id as string;
   await pool.query(`UPDATE accounts SET status = 'active', plan = $2, trial_ends_at = NULL WHERE id = $1`, [id, plan]);
+  await pool.query(`UPDATE users SET email_verified_at = now() WHERE account_id = $1`, [id]); // para poder invitar
   return { api: as(await h.sessionFrom(r)), id };
 }
 

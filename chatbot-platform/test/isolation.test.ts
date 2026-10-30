@@ -267,7 +267,7 @@ t('el agente no puede usar rutas de administración de su propia cuenta', async 
   const adminOnly = [
     ['POST', '/api/chatbots', { name: 'x' }],
     ['POST', '/api/channels', { type: 'webchat', name: 'x' }],
-    ['POST', '/api/users', { email: 'x@a.mx', name: 'x', password: 'Pz-144-Qx-344-Kv', role: 'admin' }],
+    ['POST', '/api/invitations', { email: 'x@a.mx', name: 'x', role: 'admin' }],
     ['PUT', '/api/settings', { timezone: 'America/Bogota' }],
     ['POST', '/api/automations', { name: 'x', trigger: { type: 'new_contact' }, actions: [] }],
     ['POST', '/api/campaigns', { name: 'x', message: 'x' }],

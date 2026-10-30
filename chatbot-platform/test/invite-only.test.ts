@@ -71,7 +71,7 @@ t('una cuenta nueva con su dueño: le llega la invitación y al aceptarla queda 
   const mail = [...outbox].reverse().find((m) => m.to === 'marina@dulceria.mx');
   assert.ok(mail, 'le llegó la invitación');
   assert.match(mail.text, /Dulcería Mar/);
-  const token = decodeURIComponent(/#\/invitacion\?token=([^\s]+)/.exec(mail.text)![1]);
+  const token = decodeURIComponent(/#\/invitacion\/([^\s]+)/.exec(mail.text)![1]);
   const accepted = await h.app.inject({ method: 'POST', url: '/api/invitation/accept', remoteAddress: '10.88.0.1', payload: { token, name: 'Marina', password: PASS, accept_terms: true } });
   assert.equal(accepted.statusCode, 200, accepted.body);
   const marina = accepted.json().user;
