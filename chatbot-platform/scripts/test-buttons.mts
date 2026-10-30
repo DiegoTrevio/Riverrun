@@ -19,6 +19,27 @@ const { staticInventory, matchSite, ACTION_EVENTS } = await import('./buttons/in
 const { runAreas } = await import('./buttons/areas.mts');
 type Outcome = import('./buttons/crawl.mts').Outcome;
 
+/** Motivo inicial de un sitio que nadie presiona aquí (se revisa a mano en sin-presionar.json). */
+function defaultReason(c: { file: string; label: string; tag: string }) {
+  const by: [RegExp, RegExp | null, string][] = [
+    [/^copilot(-cards)?\.js$/, null, 'Otra prueba: test:ux («Copiloto: pedir, deshacer, «Cambiar esto», confirmar…»)'],
+    [/^whatsapp\.js$/, null, 'Otra prueba: test:ux (QR, «Vincular de nuevo», «Con mi número» y su código)'],
+    [/^social\.js$/, null, 'Otra prueba: test:ux (Telegram con código, Instagram conectada)'],
+    [/^quotes\.js$/, null, 'Otra prueba: test:quotes:ux'],
+    [/^semantic-activation\.js$/, null, 'Otra prueba: test:semantic:ux'],
+    [/^agent-versions\.js$/, null, 'Otra prueba: test:agent:ux'],
+    [/^(ai-budget|contact-workspace)\.js$/, null, 'Otra prueba: test:contact:ux'],
+    [/^meta\.js$/, null, 'Servicio real: Facebook (lista manual)'],
+    [/^(agenda|integrations)\.js$/, /Conectar|Desconectar/, 'Servicio real: Google Calendar / Outlook (lista manual)'],
+    [/^billing\.js$/, /pago|tarjeta|plan/i, 'Servicio real: Stripe / Mercado Pago (lista manual); lo demás, test:billing:ux'],
+    [/^billing\.js$/, null, 'Otra prueba: test:billing:ux'],
+    [/^auth\.js$/, null, 'Otra prueba: test:billing:ux (registro e invitación) y el área publicas'],
+    [/^system\.js$/, /llave|probar/i, 'Servicio real: llave de Zernio (lista manual)'],
+  ];
+  const hit = by.find(([f, l]) => f.test(c.file) && (!l || l.test(c.label)));
+  return hit ? hit[2] : `Estado no alcanzado: ${c.tag}${c.label ? ` «${c.label}»` : ''} solo aparece en un estado que el recorrido no prepara`;
+}
+
 assert.ok(process.env.TEST_DATABASE_URL, 'Define TEST_DATABASE_URL para una base de pruebas aislada; el arnés reinicia public.');
 const output = path.resolve('data/button-audit'); fs.mkdirSync(output, { recursive: true });
 const started = Date.now();
@@ -28,6 +49,7 @@ const external: string[] = [];
 const outcomes: Outcome[] = [];
 const seen = new Set<string>();
 const areaResults: import('./buttons/areas.mts').AreaResult[] = [];
+const used = new Set<string>();
 try {
   const f = await seedUxFixture(h);
   await h.app.listen({ port: 0, host: '127.0.0.1' });
@@ -35,10 +57,15 @@ try {
   browser = await chromium.launch({ ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : {}), args: ['--no-sandbox'] });
   const contextFor = async (role: string, options: any = {}) => {
     const context = await browser!.newContext({ viewport: { width: 1440, height: 1000 }, ...options });
-    const cookie = f.login[role].cookie; const ix = cookie.indexOf('=');
-    await context.addCookies([{ name: cookie.slice(0, ix), value: cookie.slice(ix + 1), url: base }]);
-    if (role === 'superadmin') await context.addInitScript((id: string) => localStorage.setItem('cp-account', id), h.accountId);
+    if (f.login[role]) {
+      const cookie = f.login[role].cookie; const ix = cookie.indexOf('=');
+      await context.addCookies([{ name: cookie.slice(0, ix), value: cookie.slice(ix + 1), url: base }]);
+    }
+    // (En una página de error del navegador no hay localStorage.)
+    if (role === 'superadmin') await context.addInitScript((id: string) => { try { localStorage.setItem('cp-account', id); } catch { /* sin storage */ } }, h.accountId);
     await context.addInitScript(INIT_SCRIPT);
+    // Cada control que de verdad se usa (en el recorrido o en una prueba por área) avisa aquí su sitio.
+    await context.exposeBinding('__auditPressed', (_source, site: string) => { used.add(site); });
     // Nada sale de la máquina: lo que no sea el servidor local se bloquea y queda anotado.
     await context.route((url) => !url.href.startsWith(base) && !/^(data|blob|about):/.test(url.protocol), (route) => { external.push(route.request().url()); return route.abort('blockedbyclient'); });
     return context;
@@ -50,14 +77,20 @@ try {
     agent: ['contacts', `contact/${f.conv.contact_id}`, 'comentarios'],
     superadmin: ['negocio', 'cobros', 'consumo', 'logs', 'notifications'],
   };
+  // Sin sesión: entrar, registrarse, recuperar la contraseña, las páginas del servidor y la página para reservar.
+  const booking = (await h.authed('POST', '/api/booking-links', { account_id: h.accountId, name: 'Agenda con nosotros' })).json();
+  const publico = ['login', 'registro', 'olvide', 'restablecer?token=auditoria', 'verificar?token=auditoria', 'invitacion?token=auditoria', 'registro-google?token=auditoria',
+    '/precios', '/estado', '/contacto', '/privacidad', '/ayuda.html', new URL(booking.url).pathname];
   const only = process.env.BUTTONS_ONLY || '';
   // Primero el pase funcional por área (cada área prepara sus datos); después el recorrido, que borra al aceptar.
   if (only !== 'recorrido') areaResults.push(...await runAreas({ h, f, base, pool, contextFor }, log));
   const done = new Map<string, Outcome>();
   const workers = Math.max(1, Number(process.env.BUTTONS_WORKERS || 3));
   // El agente va primero: el recorrido del admin presiona los controles de «Mi equipo» (rol, desactivar) sobre él.
-  for (const role of (only === 'areas' ? [] : ['agent', 'admin', 'superadmin']) as ('admin' | 'agent' | 'superadmin')[]) {
-    const routes = [...f.routes[role], ...extra[role]];
+  for (const role of (only === 'areas' ? [] : ['publico', 'agent', 'admin', 'superadmin']) as ('publico' | 'admin' | 'agent' | 'superadmin')[]) {
+    // BUTTONS_ROUTES=agenda,cobros recorre solo esas pantallas (para trabajar en una).
+    const onlyRoutes = (process.env.BUTTONS_ROUTES || '').split(',').filter(Boolean);
+    const routes = (role === 'publico' ? publico : [...f.routes[role], ...extra[role]]).filter((r) => !onlyRoutes.length || onlyRoutes.includes(r.split('?')[0]));
     // Las pantallas del admin se reparten entre varias pestañas a la vez; los demás roles van en una.
     const lanes = role === 'admin' ? workers : 1;
     const shares = Array.from({ length: lanes }, (_, i) => routes.filter((_, j) => j % lanes === i));
@@ -70,7 +103,7 @@ try {
     log(`${role}: ${outcomes.filter((o) => o.user === role).length} controles anotados`);
   }
   // Aceptar cada diálogo que se abrió (lo que más borra, al final de cada rol).
-  for (const role of (only === 'areas' ? [] : ['agent', 'admin', 'superadmin']) as ('admin' | 'agent' | 'superadmin')[]) {
+  for (const role of (only === 'areas' ? [] : ['publico', 'agent', 'admin', 'superadmin']) as ('publico' | 'admin' | 'agent' | 'superadmin')[]) {
     const items = outcomes.filter((o) => o.user === role && o.dialog && o.verdict !== 'CANCELAR ESCRIBIÓ');
     if (!items.length) continue;
     const context = await contextFor(role);
@@ -91,13 +124,33 @@ try {
   };
   for (const s of seen) mark(s.split('@')[1], 'visto');
   for (const o of outcomes) if (pressedVerdicts.has(o.verdict)) o.sites.forEach((s) => mark(s, 'presionado'));
-  const coverage = inventory.map((s) => ({ ...s, status: status.get(s.site) || 'no apareció' }));
+  for (const s of used) mark(s, 'presionado');
+  // Llave estable de cada sitio (sin el número de línea, que cambia con cualquier edición del archivo).
+  const seenKeys = new Map<string, number>();
+  const keyOf = (s: { file: string; tag: string; label: string; events: string[] }) => {
+    const base = `${s.file}|${s.tag}|${s.label}|${s.events.join(',')}`;
+    const n = seenKeys.get(base) ?? 0; seenKeys.set(base, n + 1);
+    return `${base}|${n}`;
+  };
+  const coverage = inventory.map((s) => ({ ...s, key: keyOf(s), status: status.get(s.site) || 'no apareció' }));
+  // Cada sitio que no se presiona aquí lleva su motivo en sin-presionar.json (otra prueba, servicio real, estado…).
+  const notesFile = path.resolve(import.meta.dirname, 'buttons', 'sin-presionar.json');
+  const notes: Record<string, string> = fs.existsSync(notesFile) ? JSON.parse(fs.readFileSync(notesFile, 'utf8')) : {};
+  const unpressed = coverage.filter((c) => c.status !== 'presionado');
+  const missingNotes = unpressed.filter((c) => !notes[c.key]);
+  const staleNotes = Object.keys(notes).filter((k) => !unpressed.some((c) => c.key === k));
+  if (process.env.BUTTONS_WRITE_PENDING) {
+    const next = Object.fromEntries(unpressed.map((c) => [c.key, notes[c.key] || defaultReason(c)]));
+    fs.writeFileSync(notesFile, JSON.stringify(next, null, 2) + '\n');
+    log(`sin-presionar.json: ${Object.keys(next).length} sitios (${missingNotes.length} nuevos, ${staleNotes.length} quitados)`);
+  }
   const count = (v: string) => coverage.filter((c) => c.status === v).length;
   const verdicts = Object.fromEntries(Object.entries(Object.groupBy(outcomes, (o) => o.verdict)).map(([k, v]) => [k, v!.length]));
   const problems = outcomes.filter(isProblem);
   const report = {
     duration_s: Math.round((Date.now() - started) / 1000), verdicts,
-    coverage: { sites: inventory.length, pressed: count('presionado'), seen_not_pressed: count('visto'), never_seen: count('no apareció') },
+    coverage: { sites: inventory.length, pressed: count('presionado'), seen_not_pressed: count('visto'), never_seen: count('no apareció'),
+      reasons: Object.fromEntries(Object.entries(Object.groupBy(unpressed, (c) => (notes[c.key] || 'SIN MOTIVO').split(':')[0])).map(([k, v]) => [k, v!.length])) },
     blocked: { browser: [...new Set(external)], server: blocked }, areas: areaResults, problems, outcomes, coverage_sites: coverage,
   };
   const areaFailures = areaResults.flatMap((a) => [...a.failed.map((x) => `${a.area}: ${x.check} — ${x.error}`), ...a.pageErrors.map((e) => `${a.area}: error JS ${e}`)]);
@@ -110,8 +163,10 @@ try {
   for (const a of areaFailures) log(`  ÁREA · ${a}`);
   if (!process.env.BUTTONS_REPORT_ONLY) {
     assert.deepEqual(areaFailures, [], 'Comprobaciones por área que fallaron');
+    assert.deepEqual(missingNotes.map((c) => `${c.site} ${c.tag} «${c.label}»`), [], 'Controles que nadie presiona y sin motivo en scripts/buttons/sin-presionar.json: agrégales una prueba o su motivo (BUTTONS_WRITE_PENDING=1 regenera la lista)');
     assert.deepEqual(problems.map((p) => `${p.verdict} · ${p.user} · ${p.route} · «${p.name}» ${p.sites[0] || p.href} ${p.note}`), [], 'Controles que no hacen lo que dicen');
-    assert.deepEqual(blocked, [], 'El servidor intentó conectarse fuera de la máquina');
+    // Única salida esperada: el catálogo público de modelos (monitor.ts y «Comprobar ahora»); sin él responde «no se pudo consultar».
+    assert.deepEqual(blocked.filter((b) => !(b.host === 'openrouter.ai' && /fetchCatalog|undici/.test(b.at))), [], 'El servidor intentó conectarse fuera de la máquina');
   }
 } finally {
   await browser?.close(); await h.app.close(); await pool.end();

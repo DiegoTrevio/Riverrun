@@ -112,6 +112,17 @@ export const INIT_SCRIPT = String.raw`(() => {
     walk(document, (el, k) => { if (k === key) { el.setAttribute('data-audit-target', ''); found = true; return false; } });
     return found;
   };
+  // Cada uso real de un control (del recorrido o de una prueba por área) cuenta como presionado para la cobertura.
+  audit.pressed = new Set();
+  const usedEvent = (e) => {
+    for (let el = e.target; el && el !== document; el = el.parentElement) {
+      const s = actionSites(el).filter((l) => l.event === e.type || (e.type === 'click' && l.event === 'submit' && el.tagName === 'FORM'));
+      // Se avisa también a la prueba (exposeBinding), para no perderlo si el clic carga otro documento.
+      if (s.length) { s.forEach((l) => { audit.pressed.add(l.site); try { window.__auditPressed?.(l.site); } catch {} }); return; }
+    }
+  };
+  for (const type of ['click', 'change', 'submit', 'toggle']) document.addEventListener(type, usedEvent, true);
+  audit.pressedSites = () => [...audit.pressed];
   /** Todos los sitios con manejador que existen ahora en la página (visibles o no). */
   audit.allSites = () => { const out = new Set(); for (const el of document.querySelectorAll('*')) for (const l of listeners.get(el) || []) out.add(l.event + '@' + l.site); return [...out]; };
 

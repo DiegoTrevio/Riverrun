@@ -25,6 +25,11 @@ const SKIP: [RegExp, string][] = [
   [/cerrar (las |todas las )?(otras )?sesiones|cerrar las demás|cerrar sesión en todos|^Cerrar la sesión de /i, 'cierra la sesión de la auditoría (lo prueba el área global)'],
 ];
 const CANCEL = /^(Cancelar|Cerrar|No|Listo|Entendido|Volver)$/;
+/** Sin efecto y está bien: en la pantalla recién abierta no hay nada que hacer con ellos. */
+const EXPECTED_NOOP: [RegExp, RegExp, string][] = [
+  [/^Enviar$/, /^(conversations|playground)\.js:/, 'el cuadro de mensaje está vacío: no hay nada que enviar'],
+  [/^Limpiar filtros$/, /^(logs|conversations)\.js:/, 'no hay filtros puestos'],
+];
 const PROBLEMS: Verdict[] = ['SIN EFECTO', 'SIN MANEJADOR', 'ERROR JS', 'ERROR API', 'ERROR SILENCIOSO', 'PÁGINA NO ENCONTRADA', 'REDIRIGIDO', 'CANCELAR ESCRIBIÓ', 'NO SE PUDO PRESIONAR', 'ACEPTAR SIN EFECTO', 'NO SE ACEPTÓ'];
 export const isProblem = (o: Outcome) => PROBLEMS.includes(o.verdict);
 
@@ -176,7 +181,10 @@ export async function crawl(opts: {
         else if (!effects.length && c.href.startsWith('#') && decodeURI(c.href) === decodeURI(beforeHash)) verdict = 'MISMA PÁGINA';
         else if (!effects.length && c.href.startsWith('/') && new URL(c.href, base).pathname === beforePath) verdict = 'MISMA PÁGINA';
         else if (!effects.length && fx.alreadyActive) { verdict = 'MISMA PÁGINA'; note = 'ya estaba elegido'; }
-        else if (!effects.length) verdict = 'SIN EFECTO';
+        else if (!effects.length) {
+          const expected = EXPECTED_NOOP.find(([name, site]) => name.test(c.name) && site.test(c.sites[0] || ''));
+          if (expected) { verdict = 'MISMA PÁGINA'; note = expected[2]; } else verdict = 'SIN EFECTO';
+        }
         let dialog = '';
         // Diálogo abierto: lo de adentro (menos aceptar, que va en su pase) se presiona después; Cancelar no debe escribir nada.
         if (fx.dialogOpened) {
@@ -279,6 +287,8 @@ export async function acceptDialogs(opts: { context: BrowserContext; base: strin
       else if (ev.status.length && !fx.errors?.length && !fx.toast) { verdict = 'ERROR SILENCIOSO'; note += `: ${ev.status.join(', ')} sin mensaje`; }
       else if (ev.status.length) { verdict = 'RECHAZADO'; note += `: ${ev.status.join(', ')} · ${fx.errors?.[0] || fx.toast}`; }
       else if (stillOpen && !writes.length) { verdict = 'NO SE ACEPTÓ'; note += ` (el diálogo sigue abierto${fx.errors?.length ? `: ${fx.errors[0]}` : ''})`; }
+      // Lo escrito para confirmar no le sirvió (p. ej. «Límites» pide mensajes=1000) y lo dijo: es una validación.
+      else if (!writes.length && (fx.toast || fx.errors?.length)) { verdict = 'RECHAZADO'; note += `: ${fx.toast || fx.errors[0]}`; }
       else if (!writes.length && !fx.opened?.length && !ev.downloads.length && fx.hash === beforeHash && !fx.mutations) { verdict = 'ACEPTAR SIN EFECTO'; note += ' no envió nada al servidor ni cambió la página'; }
       record(verdict, { effects, requests, note, final: fx.hash || '' });
     } catch (e: any) {
