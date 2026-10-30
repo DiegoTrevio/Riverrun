@@ -159,6 +159,28 @@ Con `countHit` (tabla `rate_limits` de la 2a) y la IP agrupada por /64 con `ipKe
 - `card_checks` para el freno.
 - Las cuentas que ya existen no cambian de estado (la plataforma no se ha lanzado).
 
+### 3a.9 Lo que cambió al implementar
+
+- **No hay ruta `/api/billing/card-check`:** la verificación de tarjeta es `POST /api/billing/checkout` (solo del
+  dueño, con verificación reciente) con las puertas de 3a.4 y 3a.5, así que los topes protegen todo pago. Acepta
+  `trial: false` para contratar ya, sin días gratis (Mi plan lo ofrece tras una tarjeta repetida).
+- **El captcha de Google va en «Registro con Google»** (`POST /api/signup/google` con `turnstile_token`), no antes de
+  ir a Google: la cuenta solo se crea en ese paso, y entrar con Google a una cuenta existente sigue sin captcha.
+- **`expires_at` de Stripe:** el mínimo que acepta Stripe es 30 minutos; se manda ahora + 31.
+- **Sin ningún proveedor de cobro**, la prueba no pide tarjeta (como antes); `config:check` lo marca.
+- **La cuenta que espera tarjeta nace con `paused_at`:** la retención borra sola los registros abandonados.
+- **La prueba empieza con el fin que dice el proveedor** (Stripe `trial_end`; Mercado Pago, el primer cobro) y en ese
+  momento se revisa también el correo y la cuenta de Google: si otra cuenta de la misma persona empezó la suya mientras
+  tanto, se niega igual que una tarjeta repetida («Ya usaste tu prueba gratis con este correo»).
+- **Tarjeta repetida en Mercado Pago:** se cancela esa suscripción y Mi plan ofrece «Usar otra tarjeta» o «Contratar»
+  ya, con el primer cobro hoy (la «verificación sin prueba» de 3a.4).
+- **Una prueba con tarjeta no se pausa al vencer** mientras su suscripción siga viva (el proveedor hace el primer cobro;
+  si falla, sigue la cobranza de siempre), y su aviso de «por terminar» habla del primer cobro y de cómo cancelar.
+- **El freno** se quita con verificación reciente, y después solo cuentan las verificaciones nuevas.
+- **«Activar sin tarjeta»** gasta la prueba de esa persona (marcas de correo y Google), y a una cuenta que espera
+  tarjeta no se le «extiende la prueba».
+- **Preparar el conocimiento de todas las cuentas** salta las que la puerta de IA bloquea, sin contarlas como falla.
+
 ## PR 3b · Cobros
 
 ### 3b.1 Disputas (PAY-4, PAY-5)

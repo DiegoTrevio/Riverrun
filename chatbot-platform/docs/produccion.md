@@ -231,7 +231,10 @@ no debe mostrar nada en «Para cobrar de verdad».
      (`BILLING_GRACE_DAYS`) y cancela a los 30 días en pausa (`BILLING_CANCEL_AFTER_PAUSE_DAYS`).
    - *Portal del cliente*: permite actualizar el método de pago, ver facturas y cancelar al final del periodo.
    - 3D Secure: no hay que configurar nada; cuando el banco pide confirmar, el cliente recibe el enlace por correo y en
-     su panel.
+     su panel. Al agregar la tarjeta de la prueba se pide siempre que el banco lo tenga.
+   - *Radar → Reglas* (contra la prueba de tarjetas robadas): deja activas las reglas por omisión y agrega «Bloquear si
+     `:cvc_check: = 'fail'`» y «Solicitar 3D Secure si `:risk_level: = 'elevated'`». Si tienes Radar for Fraud Teams,
+     agrega también una regla de velocidad por conexión o por cliente.
 4. **Mercado Pago** (cuenta de vendedor, credenciales de producción):
    - Access token: `MERCADOPAGO_ACCESS_TOKEN=APP_USR-…`.
    - Webhook en *Tus integraciones → Webhooks* hacia `https://TU-DOMINIO/webhook/billing/mercadopago`, con los temas
@@ -251,7 +254,8 @@ no debe mostrar nada en «Para cobrar de verdad».
      `PRIVACY_COMPANY`, `PRIVACY_ADDRESS` y `PRIVACY_CONTACT`.
 7. **Planes**: créalos en **Planes y cobro**, con el precio sin IVA, el periodo y los límites. Revisa `/precios`.
 8. **Prueba con dinero real** antes de abrir el registro:
-   - Contrata el plan más barato con tu propia tarjeta.
+   - Contrata el plan más barato con tu propia tarjeta. Una cuenta nueva con prueba no cobra al agregar la tarjeta: para
+     un cobro de verdad usa una cuenta cuyo correo ya tuvo prueba, o «Contratar» después de una tarjeta repetida.
    - Confirma que la cuenta se activa, que llega el correo del pago, que aparece en «Tus pagos» y que sale su factura.
    - Reembolsa ese cobro desde Stripe o Mercado Pago y confirma que el reembolso y la nota de crédito quedan
      registrados.
@@ -260,6 +264,23 @@ no debe mostrar nada en «Para cobrar de verdad».
    - Revisa `#/negocio` y el resumen diario.
    - Si «Última revisión contra el proveedor» no avanza, o te llega «no está mandando avisos», revisa el webhook
      (dirección, eventos y secreto).
+
+## Registro con tarjeta y captcha
+
+- **Turnstile es obligatorio en producción:** `TURNSTILE_SITE_KEY` y `TURNSTILE_SECRET_KEY` (de Cloudflare, gratis).
+  Sin ellas el registro público queda cerrado («El registro no está disponible por ahora») y `config:check` lo avisa.
+  Si Cloudflare no responde, el registro responde «No pudimos comprobar el captcha: intenta en un momento» y te llega
+  un aviso urgente, a lo más uno por hora: no se deja pasar a nadie sin comprobar.
+- **Topes:** por conexión, 5 intentos por hora y 3 cuentas por hora o 10 por día; en toda la plataforma,
+  `SIGNUP_DAILY_MAX` cuentas por día (200 por omisión), con un aviso urgente al 80 %. Súbelo si esperas una campaña.
+- **Verificaciones de tarjeta:** 5 por día por cuenta, 10 por conexión y 300 en toda la plataforma.
+- **Freno:** si en una hora se abren 20 o más verificaciones y se completan menos del 20 %, las nuevas se cierran una
+  hora y te llega «Freno a las verificaciones de tarjeta». Suele ser alguien probando tarjetas robadas: déjalo correr
+  la hora. Si es tráfico legítimo (una campaña), quítalo en **Cuentas → Quitar freno** (pide tu código); después solo
+  cuentan las verificaciones nuevas.
+- **Excepciones:** **Cuentas → Activar sin tarjeta** da la prueba a una cuenta que espera tarjeta (una demostración, un
+  cliente cuya tarjeta no pasa). Queda en la bitácora con tu correo y esa persona ya no tiene otra prueba.
+- Sin ningún proveedor de cobro configurado, la prueba no pide tarjeta (`config:check`: «Registro sin cobro»).
 
 ## Pruebas que necesitan cuentas o teléfonos reales
 

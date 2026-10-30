@@ -127,7 +127,7 @@ Un contenedor (`backup`) respalda **cada noche** (03:30 UTC) lo que no se puede 
 
 ## Cobro automático (Stripe y Mercado Pago)
 
-Los clientes contratan y pagan solos: **al crear su cuenta** (eligen el plan en el registro y pasan directo al pago) o después desde **Ajustes → Mi plan y pagos**. Tú no cobras ni activas nada a mano.
+Los clientes contratan y pagan solos desde **Ajustes → Mi plan y pagos**: al registrarse eligen su plan y, con el correo confirmado, agregan su tarjeta ahí (con prueba gratis, no se cobra hasta que termina). Tú no cobras ni activas nada a mano.
 
 1. **Claves:** en `.env` pon `STRIPE_SECRET_KEY` + `STRIPE_WEBHOOK_SECRET` y/o `MERCADOPAGO_ACCESS_TOKEN` + `MERCADOPAGO_WEBHOOK_SECRET`; `./riverrun restart`. Cada proveedor se activa solo con sus dos claves.
 2. **Webhooks:** en el panel, **Planes y cobro** muestra la dirección exacta que debes registrar en cada proveedor (`/webhook/billing/stripe` y `/webhook/billing/mercadopago`) y qué eventos activar (en Stripe también `charge.refunded`, `charge.dispute.*` e `invoice.payment_action_required`; en Mercado Pago también «Pagos», para reembolsos y contracargos). Son la vía rápida para renovaciones, cobros fallidos, cancelaciones y el registro de pagos; si alguno se pierde, la conciliación diaria lo recupera.
@@ -137,7 +137,7 @@ Los clientes contratan y pagan solos: **al crear su cuenta** (eligen el plan en 
 
 **Registro de pagos:** cada cobro confirmado (factura pagada en Stripe, pago autorizado en Mercado Pago) se guarda una sola vez con su subtotal, IVA y total, aunque el aviso llegue repetido; los reembolsos se acumulan (parcial o completo). El cliente ve el historial en **Mi plan y pagos**. Si se borra una cuenta, sus pagos se conservan sin la cuenta (contabilidad). Es la base de la facturación (CFDI).
 
-**Registro con pago:** con cobro configurado, el registro (`/#/registro`) muestra tus planes y, si hay prueba gratis, la opción de probar sin tarjeta. Quien elige un plan crea su cuenta y pasa directo a la página de pago; al volver, la cuenta ya está activa. Para enlazar desde tu página de precios usa `https://tu-dominio/#/registro?plan=<clave>` (deja ese plan elegido). Con `TRIAL_DAYS=0` no hay prueba gratis: la cuenta nace en pausa (puede entrar y configurar todo, pero el asistente no responde) y se activa al pagar.
+**Registro con tarjeta:** con cobro configurado, el registro (`/#/registro`) pide el captcha y deja elegir un plan o la prueba gratis. La cuenta nace **esperando tarjeta**: el panel sirve para prepararla, pero el asistente no responde y la IA no se usa. Con el correo confirmado y la verificación en dos pasos, el dueño agrega su tarjeta en Mi plan; con prueba disponible no se cobra nada hasta que termina (`TRIAL_DAYS`), y si no la tiene (el mismo correo, la misma cuenta de Google o la misma tarjeta ya tuvieron una), agregarla es el primer cobro. Para enlazar desde tu página de precios usa `https://tu-dominio/#/registro?plan=<clave>` (deja ese plan elegido). Con `TRIAL_DAYS=0` no hay prueba: la cuenta se activa al pagar. Para una excepción (una demostración, una tarjeta que no pasa), **Cuentas → Activar sin tarjeta**.
 
 **Página de precios:** `https://tu-dominio/precios` publica los planes activos (precio + IVA, total, periodo y límites) y preguntas frecuentes, con la marca del dominio desde el que se visita. «Probar gratis» lleva al registro sin plan; «Contratar» lleva al registro con ese plan elegido, que pasa al pago. Se actualiza sola al cambiar los planes (caché de 5 minutos). El registro enlaza de vuelta a ella.
 
@@ -228,7 +228,7 @@ Internet ──HTTPS──> Caddy (app.tudominio.com)
                                   └─ 1 instancia por canal de WhatsApp de cada empresa: "acc<id>_<aleatorio>"
 ```
 
-1. **Registro** (`/#/registro`, enlazado desde el inicio de sesión): nombre, empresa, tipo de negocio, correo y contraseña. Se crea su cuenta en **prueba** (`TRIAL_DAYS`, 14 por defecto; con `0`, en pausa hasta que pague) con ella como administradora, y entra directo. Con cobro en línea configurado también elige su plan: si elige uno, pasa a pagarlo en ese momento (ver [Cobro automático](#cobro-automático-stripe-y-mercado-pago)). Tú recibes un aviso (panel y `SUPERADMIN_EMAIL`).
+1. **Registro** (`/#/registro`, enlazado desde el inicio de sesión): nombre, empresa, tipo de negocio, correo, contraseña y el captcha. Se crea su cuenta con ella como dueña y configura su verificación en dos pasos. Sin cobro en línea, la cuenta entra en **prueba** (`TRIAL_DAYS`, 14 por defecto). Con cobro en línea, la cuenta **espera su tarjeta**: al confirmar el correo la agrega en Mi plan y ahí empieza la prueba, sin cobro hasta que termina (ver [Cobro automático](#cobro-automático-stripe-y-mercado-pago)). Tú recibes un aviso (panel y `SUPERADMIN_EMAIL`).
 2. **Confirmar correo**: le llega un enlace (48 h, un solo uso). Mientras no lo confirme puede configurar y probar todo, pero **no puede conectar WhatsApp** ni otros canales reales.
 3. **Crea tu agente** (`/#/agentes/nuevo`), 3 pantallas (detalle en [docs/agent-creation.md](docs/agent-creation.md)):
    1. *Tu negocio*: nombre, tipo de negocio y de dónde aprende (su página web, un archivo o lo escribe); al pulsar *Siguiente* la IA lo lee y lo ordena.
