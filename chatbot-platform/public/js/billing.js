@@ -16,6 +16,9 @@ export const per = (p) => (p.interval === 'year' ? 'año' : 'mes');
 /** Lo que se cobra en total, con IVA ("" si no se suma IVA). */
 export const totalText = (p) => (p.tax_percent ? `Total con IVA (${p.tax_percent} %): $${amount(p.total)} ${p.currency} al ${per(p)}` : '');
 
+/** El proveedor por su nombre («Agregar tarjeta con Stripe»): su etiqueta ya dice «Tarjeta (Stripe)». */
+const PROVIDER_NAME = { stripe: 'Stripe', mercadopago: 'Mercado Pago' };
+
 const PAY_LABEL = { paid: ['green', 'Pagado'], partially_refunded: ['orange', 'Reembolso parcial'], refunded: ['', 'Reembolsado'] };
 const money = (n, currency) => `$${new Intl.NumberFormat('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n)} ${currency}`;
 
@@ -258,7 +261,7 @@ export async function viewPlan(root, params) {
         limitsText(p.limits) ? h('p', { class: 'small' }, okMark(true), ' Incluye ', limitsText(p.limits)) : h('p', { class: 'small' }, okMark(true), ' Sin límites de uso'),
         p.providers.length
           ? h('div', { class: 'stack' }, p.providers.flatMap((pr) => [
-            payButton(p, pr, trialOffer ? `${cc.card_used ? 'Usar otra tarjeta' : 'Agregar tarjeta'} con ${pr.label}` : `Contratar con ${pr.label}`, 'primary'),
+            payButton(p, pr, trialOffer ? `${cc.card_used ? 'Usar otra tarjeta' : 'Agregar tarjeta'} con ${PROVIDER_NAME[pr.name] || pr.label}` : `Contratar con ${pr.label}`, 'primary'),
             // La tarjeta ya tuvo prueba: también se puede contratar ya, sin días gratis.
             trialOffer && cc.card_used ? payButton(p, pr, `Contratar con ${pr.label}`, '', false) : null]))
           : h('p', { class: 'muted small' }, 'No disponible por ahora.')))),
