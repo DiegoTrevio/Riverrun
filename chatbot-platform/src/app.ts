@@ -10,6 +10,7 @@ import fastifyStatic from '@fastify/static';
 import type { AiProvider } from './ai/provider.js';
 import { config } from './config.js';
 import { requireAuth } from './auth.js';
+import { accountRoutes } from './routes/account.js';
 import { adminRoutes, sessionRoutes } from './routes/admin.js';
 import { mfaPublicRoutes, mfaRoutes } from './routes/mfa.js';
 import { originGuard } from './identity/origin-guard.js';
@@ -187,6 +188,7 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
     api.addHook('preHandler', stepUpHook);
     await mfaRoutes(api);
     await adminRoutes(api, service);
+    await accountRoutes(api);
     await chatbotRoutes(api, service);
     await channelRoutes(api);
     await socialRoutes(api);

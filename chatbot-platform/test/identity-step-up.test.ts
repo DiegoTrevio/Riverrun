@@ -37,6 +37,7 @@ export const STEP_UP: [string, string][] = [
   ['GET', '/api/account/export.zip'],
   ['POST', '/api/account/deletion'],
   ['DELETE', '/api/account/deletion'],
+  ['POST', '/api/account/transfer'],
   ['POST', '/api/accounts'],
   ['DELETE', `/api/accounts/${ID}`],
   ['PUT', '/api/system/zernio'],

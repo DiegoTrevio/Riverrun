@@ -105,6 +105,7 @@ export const OWNER_ROUTES: [string, string][] = [
   ['GET', '/api/account/export.zip'],
   ['POST', '/api/account/deletion'],
   ['DELETE', '/api/account/deletion'],
+  ['POST', '/api/account/transfer'],
 ];
 const OWNER_ONLY = { error: 'Solo el dueño de la cuenta (Dora) puede hacer esto', code: 'owner_only' };
 const age = (email: string) => pool.query(`UPDATE user_sessions SET mfa_at = now() - interval '16 minutes' WHERE user_id = (SELECT id FROM users WHERE email = $1)`, [email]);
