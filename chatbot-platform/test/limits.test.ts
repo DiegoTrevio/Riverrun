@@ -94,7 +94,8 @@ t('mensajes del mes: avisa al 80 % y al 100 %, y el asistente deja de responder 
   const titles = await notices();
   assert.equal(titles.filter((x: string) => /Estás por llegar/.test(x)).length, 1, 'un solo aviso al 80 %');
   assert.equal(titles.filter((x: string) => /Llegaste al límite/.test(x)).length, 1, 'un solo aviso al 100 %');
-  assert.ok(outbox.some((m) => m.to === 'dueña@cupo.mx' && /Llegaste al límite/.test(m.subject)));
+  // El correo sale después del aviso del panel: se espera también.
+  await waitFor(() => outbox.some((m) => m.to === 'dueña@cupo.mx' && /Llegaste al límite/.test(m.subject)), 5000);
   // El sexto mensaje ya no se responde (y no se queda en bucle)
   h.reset();
   await h.webhook('mensaje 6', { phone: phone(6) });
