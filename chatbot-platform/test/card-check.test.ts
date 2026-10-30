@@ -211,3 +211,18 @@ t('Mi plan trae el estado de la verificación de tarjeta: correo, prueba disponi
     await pool.query(`DELETE FROM rate_limits WHERE key LIKE 'card-check-brake%'`);
   }
 });
+
+t('el panel: «Contratar» sin prueba aunque haya una disponible; /api/me trae el estado de la cuenta que espera tarjeta; el registro dice si pide tarjeta', async () => {
+  const a = await waiting('panel@tarjeta.mx');
+  await seed(a.accountId, 0, 0); // sin las verificaciones sembradas por la prueba del freno
+  const r = await a.api({ plan: 'pro', provider: 'stripe', trial: false });
+  assert.equal(r.statusCode, 200, r.body);
+  assert.equal(r.json().trial, false);
+  assert.equal(lastStripe().get('subscription_data[trial_period_days]'), null);
+  const me = (await a.as('GET', '/api/me')).json();
+  assert.equal(me.account.pause_reason, 'card');
+  assert.equal(me.card_check.waiting, true);
+  assert.equal(me.card_check.trial_available, true);
+  assert.equal((await h.authed('GET', '/api/me')).json().card_check, null, 'sin cuenta que espere tarjeta, nada');
+  assert.equal((await h.app.inject({ method: 'GET', url: '/api/signup/info' })).json().card_required, true);
+});

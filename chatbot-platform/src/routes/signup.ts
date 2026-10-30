@@ -106,6 +106,8 @@ export async function signupRoutes(app: FastifyInstance) {
     // Solo en el dominio principal: Google exige registrar la dirección de regreso.
     google_login: googleConfigured() && hostOf(req) === new URL(config.publicBaseUrl).hostname,
     trial_days: Math.max(0, config.signup.trialDays),
+    // La prueba pide tarjeta (con cobro en línea): el registro lo dice antes de crear la cuenta.
+    card_required: await cardRequired(),
     support_contact: config.signup.supportContact,
     terms_url: config.signup.termsUrl,
     privacy_url: config.signup.privacyUrl,

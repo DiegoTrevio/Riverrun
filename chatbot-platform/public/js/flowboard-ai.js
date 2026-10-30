@@ -1,5 +1,6 @@
 import { api, h, toast } from './core.js';
 import { icon } from './icons.js';
+import { aiLock } from './session.js';
 
 /*
  * Crear o cambiar un flujo describiéndolo: una caja para escribir la idea, con una foto opcional (se elige, se pega
@@ -121,7 +122,7 @@ export function ideaComposer({ id, label, placeholder, examples = [], submit, st
     h('div', { class: 'ai-bar' },
       pickBtn, input,
       h('span', { class: 'ai-hint small muted', id: hintId }, 'Puedes pegar una captura (Ctrl+V) o arrastrar una foto aquí.'),
-      btn),
+      aiLock(btn)),
     examples.length ? h('div', { class: 'ai-examples' },
       h('span', { class: 'small muted' }, 'Ejemplos:'),
       examples.map(([title, idea]) => h('button', { type: 'button', class: 'ai-example', onclick: () => { ta.value = idea; grow(); ta.focus(); say(''); } }, title))) : null,

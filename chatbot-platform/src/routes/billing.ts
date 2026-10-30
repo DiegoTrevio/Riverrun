@@ -227,7 +227,8 @@ export async function billingRoutes(api: FastifyInstance) {
 
   api.post('/api/billing/checkout', { ...admins, ...ownerStepUp }, async (req: any, reply) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
-    const b = parse(z.object({ plan: z.string().max(40), provider: z.enum(['stripe', 'mercadopago']) }), req.body);
+    // `trial: false`: contratar ya, sin días gratis (p. ej. con la tarjeta que ya tuvo una prueba).
+    const b = parse(z.object({ plan: z.string().max(40), provider: z.enum(['stripe', 'mercadopago']), trial: z.boolean().optional() }), req.body);
     const { plan, provider } = await payable(b.plan, b.provider);
     const sub = await getSubscription(accountId);
     if (sub && ['active', 'past_due'].includes(sub.status) && !sub.cancel_at_period_end && sub.provider_subscription_id) throw new HttpError(409, 'Ya tienes un plan activo: para cambiarlo usa «Cambiar de plan» en Mi plan.');
@@ -238,7 +239,7 @@ export async function billingRoutes(api: FastifyInstance) {
       // Volver a contratar con Mercado Pago tras cancelar: el primer cobro es al terminar lo ya pagado.
       const paidUntil = provider === 'mercadopago' && sub && (sub.status === 'canceled' || sub.cancel_at_period_end) && sub.current_period_end && sub.current_period_end > new Date() ? sub.current_period_end : undefined;
       // La verificación de tarjeta (también el pago de quien ya tiene cuenta): correo verificado, topes y sesión vigente.
-      const trialDays = await trialDaysFor(accountId);
+      const trialDays = b.trial === false ? 0 : await trialDaysFor(accountId);
       const base = await baseFor(req);
       const url = await openCardCheck({ accountId, ip: req.ip, provider, planKey: plan.key, open: () => createCheckoutSession({ accountId, email: req.user.email, plan, provider, base, startAt: paidUntil, trialDays }) });
       return { url, trial: trialDays > 0 };

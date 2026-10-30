@@ -2,6 +2,7 @@ import { dataLabel } from './bot.js';
 import { api, fill, h, run, toast } from './core.js';
 import { icon } from './icons.js';
 import { render } from './main.js';
+import { aiLock, aiPaused } from './session.js';
 
 const ACTION_LABEL = { paused: 'No respondió: el asistente no está activo en esta conversación', reply: 'Respondió', reply_with_image: 'Respondió con foto', handoff: 'Pasó la conversación a una persona', no_reply: 'No respondió', human: 'No respondió: la conversación está con una persona', inactive: 'No respondió: el asistente está apagado', error: 'Error' };
 
@@ -62,6 +63,7 @@ export async function tabPlayground(root, bot) {
   /** `tap`: el cliente tocó un botón (va su texto y su identificador). */
   const send = async (tap = null) => {
     if (sending) return;
+    if (aiPaused()) return toast(aiPaused(), true);
     const text = tap ? tap.text : input.value.trim();
     if (!text) return;
     sending = true;
@@ -128,7 +130,7 @@ export async function tabPlayground(root, bot) {
         chat,
         h('div', { class: 'row', style: 'margin:8px 0;gap:6px;flex-wrap:wrap' }, h('span', { class: 'small muted' }, 'Prueba:'),
           TEST_IDEAS.map((q) => h('button', { class: 'small', onclick: () => { if (!sending) { input.value = q; send(); } } }, q))),
-        h('div', { class: 'composer' }, input, btn)),
+        h('div', { class: 'composer' }, input, aiLock(btn))),
       h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, 'Datos guardados automáticamente'), savedData, h('details', {}, h('summary', {}, 'Detalles de la respuesta'), debug)),
     ),
   );

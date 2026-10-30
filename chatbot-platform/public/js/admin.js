@@ -158,15 +158,25 @@ export async function viewUsers(root) {
 /* ------------------------------ Cuentas ------------------------------ */
 
 export async function viewAccounts(root) {
-  const accounts = await api('GET', '/api/accounts');
+  const [accounts, brake] = await Promise.all([api('GET', '/api/accounts'), api('GET', '/api/billing/card-check-brake').catch(() => ({ on: false }))]);
   state.accounts = accounts;
   const n = { name: '', withOwner: true, owner: { name: '', email: '' } };
   const ownerBox = h('div', {},
     h('div', { class: 'grid' },
       field('Nombre del dueño', text(n.owner, 'name')),
       field('Correo', text(n.owner, 'email', { type: 'email', placeholder: 'dueño@cliente.com' }), 'Le llega una invitación: elige su propia contraseña y queda como dueño de la cuenta.')));
+  // Freno contra prueba de tarjetas: muchas verificaciones abiertas y casi ninguna terminada en la última hora.
+  const brakeNotice = brake.on
+    ? h('div', { class: 'banner danger', role: 'status' }, h('span', { class: 'text' }, h('strong', {}, 'Freno a las verificaciones de tarjeta. '),
+      'En la última hora se abrieron muchas y casi ninguna terminó: las nuevas quedan cerradas una hora. Quítalo solo si es tráfico legítimo.'),
+    h('button', { class: 'btn', onclick: async () => {
+      if (!await confirmAction('¿Quitar el freno? Las verificaciones de tarjeta se abren otra vez.')) return;
+      if (await run(() => api('DELETE', '/api/billing/card-check-brake'), 'Freno quitado')) render();
+    } }, 'Quitar freno'))
+    : null;
   root.append(
     h('h1', {}, 'Perfiles de negocio'),
+    brakeNotice,
     h('div', { class: 'card' },
       h('p', { class: 'muted', style: 'margin-top:0' }, 'Cada perfil es una subcuenta con sus propios usuarios, asistentes, canales, conversaciones y agenda. El maestro puede abrirlos todos.'),
       h('h2', {}, 'Nuevo perfil'),
@@ -216,7 +226,12 @@ export async function viewAccounts(root) {
               if (!(await run(() => api('PUT', `/api/accounts/${a.id}`, { status: 'paused' }), 'Cuenta en pausa'))) return;
               render();
             } }, 'Pausar'),
-            a.status !== 'active' ? h('button', { class: 'small', onclick: async () => {
+            // Esperando tarjeta: la excepción va por «Activar sin tarjeta» (queda en la bitácora), no por «Extender prueba».
+            a.status === 'paused' && a.pause_reason === 'card' ? h('button', { class: 'small', onclick: async () => {
+              if (!await confirmAction(`¿Activar la prueba de "${a.name}" sin tarjeta? Úsalo solo en excepciones reales, como una demostración o una tarjeta que no pasa. Su prueba empieza hoy y queda en la bitácora.`)) return;
+              if (await run(() => api('POST', `/api/accounts/${a.id}/trial-without-card`), 'Prueba activada sin tarjeta')) render();
+            } }, 'Activar sin tarjeta') : null,
+            a.status !== 'active' && !(a.status === 'paused' && a.pause_reason === 'card') ? h('button', { class: 'small', onclick: async () => {
               const d = Number(await ask('¿Cuántos días más de prueba?', '7'));
               if (d > 0) { if (!(await run(() => api('PUT', `/api/accounts/${a.id}`, { extend_trial_days: d }), 'Prueba extendida'))) return; render(); }
             } }, 'Extender prueba') : null,
@@ -440,6 +455,7 @@ export async function viewNotifications(root, params) {
 
 export function statusBadge(a) {
   if (a.active === false) return h('span', { class: 'badge red' }, 'desactivada');
+  if (a.status === 'paused' && a.pause_reason === 'card') return h('span', { class: 'badge orange' }, 'Esperando tarjeta');
   if (a.status === 'paused') return h('span', { class: 'badge red' }, 'en pausa');
   if (a.status === 'trial') {
     const days = a.trial_ends_at ? Math.ceil((new Date(a.trial_ends_at) - Date.now()) / 86400000) : null;

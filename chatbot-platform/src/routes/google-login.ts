@@ -16,7 +16,7 @@ import { newAccountState, assertSignupAttempt, reserveSignup } from './signup.js
 import { z } from 'zod';
 import { HttpError } from '../access.js';
 import { BUSINESS_TYPES } from '../templates/business.js';
-import { assertCaptcha, DISPOSABLE_MESSAGE, GOOGLE_PASS_COOKIE, googlePassCookie, googleSignupPass, isDisposableEmail, readGoogleSignupPass, recordTermsAcceptance, termsVersion } from '../signup-guard.js';
+import { assertCaptcha, captchaEnabled, DISPOSABLE_MESSAGE, GOOGLE_PASS_COOKIE, googlePassCookie, googleSignupPass, isDisposableEmail, readGoogleSignupPass, recordTermsAcceptance, termsVersion } from '../signup-guard.js';
 import { query } from '../db.js';
 import { parse } from './util.js';
 
@@ -120,6 +120,8 @@ export async function googleLoginRoutes(app: FastifyInstance) {
       terms_url: config.signup.termsUrl,
       privacy_url: config.signup.privacyUrl,
       terms_version: termsVersion(),
+      // El captcha va también antes de crear la cuenta con Google (clave vacía si no está activo).
+      turnstile_site_key: captchaEnabled() ? config.signup.turnstile.siteKey : '',
       business_types: BUSINESS_TYPES.map(({ key, label }) => ({ key, label })),
     };
   });

@@ -64,6 +64,7 @@ t('un correo nuevo acepta los términos antes de crear su cuenta de prueba (ya v
   assert.equal((await peek('')).statusCode, 401, 'en otro navegador no sirve');
   assert.equal((await peek('cp_gpass=otro-navegador')).statusCode, 401);
   const info = await peek(r.cookie);
+  assert.equal(typeof info.json().turnstile_site_key, 'string', 'el captcha va antes de crear la cuenta');
   assert.equal(info.statusCode, 200, info.body);
   assert.deepEqual([info.json().email, info.json().name], ['nueva@empresa.mx', 'Nora']);
 

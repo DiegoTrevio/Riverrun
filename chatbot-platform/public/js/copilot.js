@@ -1,7 +1,7 @@
 // Copiloto: panel lateral desde el que se le pide al Copiloto lo que se necesita. Vive fuera de #app (navegar no lo
 // borra), tiene sus propios temporizadores (la navegación limpia los del panel) y sabe qué página está abierta.
 import { api, h, fill, invalidateReads, state, toast } from './core.js';
-import { copilotAvailable, isAdmin, withAcct } from './session.js';
+import { copilotAvailable, isAdmin, withAcct, aiPaused } from './session.js';
 import { icon } from './icons.js';
 import { actionCard, readsGroup, renderText } from './copilot-cards.js';
 
@@ -37,8 +37,9 @@ function build() {
   el.chips = h('div', { class: 'cp-chips' });
   el.send = h('button', { type: 'submit', class: 'primary', 'aria-label': 'Enviar al Copiloto' }, icon('send', 16), h('span', {}, 'Enviar'));
   el.stop = h('button', { type: 'button', class: 'cp-stop', hidden: true, onclick: stopTurn }, 'Detener');
+  el.why = h('span', { id: 'copilot-why', class: 'help cp-why', hidden: true });
   el.form = h('form', { class: 'cp-composer', onsubmit: (e) => { e.preventDefault(); return send(); } },
-    el.chips, el.input, h('div', { class: 'cp-composer-bar' }, h('span', { class: 'help cp-hint' }, 'Enter envía · Mayús+Enter, otro renglón'), el.stop, el.send));
+    el.chips, el.input, h('div', { class: 'cp-composer-bar' }, h('span', { class: 'help cp-hint' }, 'Enter envía · Mayús+Enter, otro renglón'), el.why, el.stop, el.send));
   el.root = h('aside', { id: 'copilot', class: 'copilot', 'aria-labelledby': 'copilot-title', hidden: true, onkeydown: (e) => { if (e.key === 'Escape') { e.stopPropagation(); closeCopilot(); } } },
     h('header', { class: 'cp-head' },
       h('h2', { id: 'copilot-title' }, icon('wand', 18), 'Copiloto'),
@@ -113,10 +114,20 @@ export function toggleCopilot() {
   else openCopilot();
 }
 
+/** Con la cuenta en pausa el Copiloto no responde: Enviar queda deshabilitado con el motivo a la vista. */
+function syncPaused() {
+  const why = aiPaused();
+  el.send.disabled = !!why || running();
+  el.send.title = why;
+  if (why) el.send.setAttribute('aria-describedby', 'copilot-why'); else el.send.removeAttribute('aria-describedby');
+  el.why.textContent = why;
+  el.why.hidden = !why;
+}
+
 async function openCopilot(focus = true) {
   s.open = true;
   el.root.hidden = false;
-  layout(); syncLaunchers(); save();
+  layout(); syncLaunchers(); save(); syncPaused();
   if (s.view === 'threads') await showThreads();
   else if (s.threadId) await loadThread(s.threadId);
   else render();
@@ -214,6 +225,7 @@ async function pull() {
 
 async function send() {
   const text = el.input.value.trim();
+  if (aiPaused()) return syncPaused();
   if (!text || s.sending || running()) return;
   s.sending = true;
   el.send.disabled = true;
@@ -231,7 +243,7 @@ async function send() {
     setStatus(e.message || 'No se pudo enviar', true);
   } finally {
     s.sending = false;
-    el.send.disabled = running();
+    syncPaused();
   }
 }
 

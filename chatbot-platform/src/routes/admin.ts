@@ -7,7 +7,7 @@ import { operationalStatus } from '../engine/operations.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { assertRecentMfa, stepUp } from '../identity/step-up.js';
-import { brakeOn, clearBrake, trialWithoutCard } from '../billing/card-check.js';
+import { brakeOn, cardCheckState, clearBrake, trialWithoutCard } from '../billing/card-check.js';
 import { assertAccount, HttpError, notFound, requireRole, scopeAccount, targetAccount } from '../access.js';
 import {
   clearSessionCookie,
@@ -124,7 +124,9 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     // Copiloto: el superadmin lo usa en la cuenta que elija (el panel revisa que esa cuenta lo tenga encendido).
     const copilot = { enabled: config.copilot.enabled && (req.user.role === 'superadmin' || !!account?.copilot_enabled) };
     const owner = account ? await accountOwner(account.id) : null;
-    return { user: req.user, account: account && { ...store.publicAccount(account), payment_due: due, deletion_date: deletionDate(account) }, owner: owner && { id: owner.id, name: owner.name || owner.email }, copilot };
+    // Esperando tarjeta: el aviso de arriba dice qué falta (correo, tarjeta, prueba ya usada).
+    const cardCheck = account?.status === 'paused' && account.pause_reason === 'card' ? await cardCheckState(account.id) : null;
+    return { user: req.user, account: account && { ...store.publicAccount(account), payment_due: due, deletion_date: deletionDate(account) }, owner: owner && { id: owner.id, name: owner.name || owner.email }, copilot, card_check: cardCheck };
   });
 
   api.put('/api/me', async (req) => {
