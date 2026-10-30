@@ -34,7 +34,12 @@
       body: body ? JSON.stringify(body) : undefined,
     }).then(function (r) {
       return r.json().then(function (d) {
-        if (!r.ok) throw new Error(d.error || 'Error');
+        if (!r.ok) {
+          var e = new Error(d.error || 'Error');
+          e.status = r.status;
+          e.code = d.code;
+          throw e;
+        }
         return d;
       });
     });
@@ -259,6 +264,14 @@
     unread = 0;
     launcher.removeAttribute('aria-label');
 
+    /** Una sesión que el servidor ya no acepta (de una versión anterior, o se cambió su clave) se olvida para pedir otra. */
+    function forgetSession(e) {
+      if (!e || e.code !== 'invalid_session') return false;
+      session = null;
+      storage(false, '');
+      return true;
+    }
+
     function ensureSession() {
       if (session) return Promise.resolve(session);
       session = storage(true);
@@ -284,7 +297,7 @@
           typingStatus.textContent = d.typing ? (cfg.title || 'El negocio') + ' está escribiendo…' : '';
           if (open) scroll();
         })
-        .catch(function () { /* reintento en el siguiente ciclo */ }).finally(function () { polling = null; });
+        .catch(function (e) { forgetSession(e); /* reintento en el siguiente ciclo */ }).finally(function () { polling = null; });
       return polling;
     }
 
@@ -331,8 +344,12 @@
       sending = true;
       send.disabled = true;
       err.style.display = 'none';
-      ensureSession()
-        .then(function () { return api('POST', '/messages', button ? { session: session, text: text, button: button } : { session: session, text: text }); })
+      function deliver() {
+        return ensureSession().then(function () { return api('POST', '/messages', button ? { session: session, text: text, button: button } : { session: session, text: text }); });
+      }
+      deliver()
+        // Con una sesión que ya no vale, se abre otra y el mensaje se manda una vez más.
+        .catch(function (e1) { if (forgetSession(e1)) return deliver(); throw e1; })
         .then(function (d) {
           if (!button) input.value = '';
           if (d.id) {

@@ -124,7 +124,7 @@ export async function signupRoutes(app: FastifyInstance) {
         checkout = { checkout_error: `Tu cuenta quedó creada, pero no pudimos abrir el pago (${e.message}). Intenta de nuevo desde aquí.` };
       }
     }
-    return { ok: true, user, account: await store.getAccount(account.id), verification_sent: !verified, ...checkout };
+    return { ok: true, user, account: store.publicAccount((await store.getAccount(account.id))!), verification_sent: !verified, ...checkout };
   });
 
   app.post('/api/verify-email', async (req, reply) => {

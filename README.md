@@ -10,6 +10,7 @@ Plataforma para dar a un negocio un **asistente de WhatsApp** (y Telegram, Insta
 | **Usar el panel** (soy cliente / dueño de un negocio) | [Guía del cliente](chatbot-platform/public/ayuda.html) — también está dentro del panel, en *Ayuda* |
 | **Operar** (respaldos, actualizar, cobros, alertas) | [Manual técnico](chatbot-platform/README.md) y [`docs/`](chatbot-platform/docs) |
 | **Entender el código** | [Estructura](chatbot-platform/README.md#estructura) |
+| **Seguridad** (auditoría, lo corregido y lo que sigue) | [docs/seguridad.md](chatbot-platform/docs/seguridad.md) |
 | **Contribuir** | Las pruebas y el CI corren con `npm test` (ver [CI](.github/workflows/ci.yml)) |
 
 ## Instalar en 3 comandos

@@ -39,6 +39,24 @@ t('un agente ve los canales del asistente sin el token del webhook ni el código
   assert.equal(typeof asAdmin.channels[0].webhook_token, 'string', 'el administrador sí lo ve');
 });
 
+t('los secretos de la cuenta (calendario y webhooks) no salen en /api/me ni en /api/accounts', async () => {
+  const s = (await h.authed('GET', `/api/settings?account_id=${h.accountId}`)).json();
+  assert.ok(s.calendar_token && s.webhook_secret, 'la cuenta ya tiene sus secretos');
+  const email = 'duena@auditoria.test';
+  assert.equal((await h.authed('POST', '/api/users', { account_id: h.accountId, email, name: 'Dueña', password: PASS, role: 'admin' })).statusCode, 200);
+  const admin = await h.loginAs(email, PASS);
+  for (const [who, req] of [['agente', agent], ['administrador', admin], ['superadmin', h.authed]] as const) {
+    for (const url of ['/api/me', '/api/accounts', '/api/accounts?view=selector']) {
+      const r = await req('GET', url);
+      assert.equal(r.statusCode, 200, `${who} → ${url}: ${r.body}`);
+      // Con el token del calendario se descargan, sin sesión, todas las citas de la cuenta con los datos de sus clientes.
+      assert.ok(!r.body.includes(s.calendar_token), `${who} → ${url} expone el token del calendario`);
+      assert.ok(!r.body.includes(s.webhook_secret), `${who} → ${url} expone el secreto de los webhooks`);
+    }
+  }
+  assert.equal((await agent('GET', '/api/settings')).statusCode, 403, 'el agente tampoco los ve en Ajustes');
+});
+
 t('una cita cancelada no vuelve a confirmarse sin revisar su horario', async () => {
   const slots = (await h.authed('GET', `/api/services/${serviceId}/slots`)).json();
   assert.ok(slots.length > 0, 'hay horarios disponibles para la prueba');

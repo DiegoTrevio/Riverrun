@@ -8,8 +8,8 @@ import { emailSuperadmin } from '../platform/digest.js';
 import { query, queryOne } from '../db.js';
 import { queuePaymentCfdi } from './cfdi.js';
 import { applyRefund, recordPayment } from './payments.js';
-import { getSubscription, money, tell } from './service.js';
-import type { DisputeInfo, ProviderName, WebhookResult } from './types.js';
+import { getSubscription, money, promotePendingPlan, startsPendingPlan, tell } from './service.js';
+import type { DisputeInfo, ProviderName, Subscription, WebhookResult } from './types.js';
 
 /**
  * Aviso al superadmin; si la cuenta ya no existe, solo por correo (y en la bitácora). Urgente: el correo sale ya; si no,
@@ -29,10 +29,13 @@ export async function alertSuperadmins(accountId: string | null, title: string, 
 export async function recordMoney(name: ProviderName, result: Pick<WebhookResult, 'payment' | 'refund' | 'state'>, accountId: string | null): Promise<boolean> {
   let fresh = false;
   if (result.payment) {
-    const sub = await queryOne<{ account_id: string; plan_key: string }>(
-      `SELECT account_id, plan_key FROM subscriptions WHERE provider = $1 AND provider_subscription_id = $2`, [name, result.payment.subscriptionId]);
+    const sub = await queryOne<Pick<Subscription, 'account_id' | 'plan_key' | 'provider_subscription_id' | 'pending_plan_key' | 'pending_plan_since' | 'pending_amount_cents'>>(
+      `SELECT account_id, plan_key, provider_subscription_id, pending_plan_key, pending_plan_since, pending_amount_cents FROM subscriptions WHERE provider = $1 AND provider_subscription_id = $2`,
+      [name, result.payment.subscriptionId]);
     const account = accountId ?? sub?.account_id ?? null;
-    const planKey = result.state?.planKey || sub?.plan_key || '';
+    // La referencia del proveedor ya dice el plan programado; un cobro que todavía no lo empieza es del plan de siempre.
+    const early = !!sub?.pending_plan_key && result.state?.planKey === sub.pending_plan_key && !startsPendingPlan(sub, result.payment);
+    const planKey = (early ? sub!.plan_key : result.state?.planKey) || sub?.plan_key || '';
     if (!account) await logEvent({ level: 'warn', source: 'system', message: `Cobro ${result.payment.paymentId} (${name}) sin cuenta de la plataforma: no se registra` });
     else {
       const saved = await recordPayment({ accountId: account, provider: name, planKey, payment: result.payment });
@@ -44,6 +47,8 @@ export async function recordMoney(name: ProviderName, result: Pick<WebhookResult
       // pago ya estuviera registrado: si el proceso murió justo después de registrarlo, el reintento la deja lista (no se
       // duplica). Si falla, el aviso se reintenta.
       if (saved) await queuePaymentCfdi(saved.id);
+      // El cobro del monto de un plan al que se subió (Mercado Pago) es el que lo activa.
+      if (saved) await promotePendingPlan(account, name, result.payment);
     }
   }
   if (result.refund) {

@@ -89,7 +89,7 @@ Hace, en orden: revisar cambios locales, descargar, construir **sin arrancar**, 
 ## Contenedor, encabezados y apagado
 
 - **Variables:** `docker-compose.yml` le pasa al backend todas las variables que lee la app (vacía = el valor por defecto; ver `.env.example`). `test/compose-env.test.ts` falla si se agrega una a la app y no a compose o a `.env.example`.
-- **Obligatoria:** `SESSION_SECRET`. Sin ella, `docker compose` no arranca y dice «ejecuta ./riverrun install». `ADMIN_PASSWORD` puede quedar vacía una vez creado el superadministrador (el preflight lo avisa).
+- **Obligatoria:** `SESSION_SECRET`. Sin ella, `docker compose` no arranca y dice «ejecuta ./riverrun install». `ADMIN_PASSWORD` solo crea al superadministrador la primera vez (`./riverrun install` la vacía al terminar): reiniciar no la vuelve a imponer, así que cambiarla en el panel es definitivo. Para recuperar el acceso: `./riverrun admin-password` (genera una contraseña nueva, la muestra una vez y cierra sus sesiones).
 - **Salud:** el `HEALTHCHECK` de la imagen usa `/health/db` (responde y llega a la base; los primeros 60 s no cuentan). Caddy arranca hasta que el backend está sano. `/health/ready` sigue siendo el de los monitores externos (también revisa las tareas atrasadas).
 - **Apagado:** termina lo que está en curso y cierra la base, con un plazo de `SHUTDOWN_TIMEOUT_MS` (240 s, menor que los 300 s de `stop_grace_period`). Si algo se cuelga, sale con código 1 y dice qué faltó. Una segunda señal no repite el cierre.
 - **Encabezados:**

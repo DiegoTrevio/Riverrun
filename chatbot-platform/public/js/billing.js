@@ -118,9 +118,12 @@ const monthly = (p) => (p.interval === 'year' ? p.price / 12 : p.price);
 /** Qué pasa con el cobro al cambiar de plan, en palabras del cliente. */
 function changeEffect(sub, from, to) {
   if (sub.provider === 'mercadopago') {
-    return from && from.interval !== to.interval
-      ? 'Te llevamos a Mercado Pago para autorizar el nuevo cobro; empieza cuando termine lo que ya pagaste.'
-      : `El nuevo precio (${totalText(to) ? `$${amount(to.total)} ${to.currency} con IVA` : planPrice(to)}) se cobra desde tu siguiente pago, el ${longDate(sub.current_period_end)}.`;
+    if (from && from.interval !== to.interval) return 'Te llevamos a Mercado Pago para autorizar el nuevo cobro; empieza cuando termine lo que ya pagaste.';
+    const price = totalText(to) ? `$${amount(to.total)} ${to.currency} con IVA` : planPrice(to);
+    // Mercado Pago no cobra la diferencia: al subir, el plan nuevo empieza con el cobro de su precio.
+    return !from || monthly(to) > monthly(from)
+      ? `Tu plan cambia a ${to.name} con tu siguiente cobro, el ${longDate(sub.current_period_end)} (${price}). Hasta entonces sigues con tu plan actual.`
+      : `El nuevo precio (${price}) se cobra desde tu siguiente pago, el ${longDate(sub.current_period_end)}.`;
   }
   return !from || monthly(to) > monthly(from)
     ? 'Hoy se cobra la parte proporcional de lo que queda de tu periodo.'
@@ -150,6 +153,7 @@ export async function viewPlan(root, params) {
   const status = h('div', { class: 'card' });
   if (live) {
     const plan = b.plans.find((p) => p.key === sub.plan_key);
+    const next = sub.pending_plan_key ? b.plans.find((p) => p.key === sub.pending_plan_key) : null;
     fill(status,
       h('div', { class: 'row between' },
         h('h2', { style: 'margin:0' }, plan ? `Plan ${plan.name}` : 'Tu plan', ' ', h('span', { class: `badge ${SUB_LABEL[sub.status][0]}` }, SUB_LABEL[sub.status][1])),
@@ -158,7 +162,10 @@ export async function viewPlan(root, params) {
         ? h('p', { class: 'banner warn' }, `No pudimos cobrar tu plan. Actualiza tu forma de pago${sub.provider === 'stripe' ? ' en "Administrar pago"' : ' con «Cambiar tarjeta»'} en los próximos ${b.grace_days} días para que tu asistente siga respondiendo.`)
         : h('p', { class: 'muted' }, sub.cancel_at_period_end
           ? `Tu plan se cancelará el ${longDate(sub.current_period_end)}; hasta entonces todo sigue funcionando.`
-          : `Próximo cobro: ${longDate(sub.current_period_end)}.`),
+          : `Próximo cobro: ${longDate(sub.current_period_end)}.${next ? ` Con ese cobro cambias al plan ${next.name}.` : ''}`),
+      next && plan && !sub.cancel_at_period_end ? h('div', { class: 'row' }, h('button', { onclick: async () => {
+        if (await run(() => api('POST', withAcct('/api/billing/change'), { plan: plan.key }), `Listo: sigues con el plan ${plan.name}`)) render();
+      } }, `Quedarme con el plan ${plan.name}`)) : null,
       h('div', { class: 'row' },
         sub.can_portal ? h('button', { class: 'primary', onclick: async () => { const r = await run(() => api('POST', withAcct('/api/billing/portal'))); if (r) location.href = r.url; } }, 'Administrar pago y facturas') : null,
         sub.provider === 'mercadopago' && !sub.cancel_at_period_end ? h('button', { onclick: () => goPay('/api/billing/payment-method') }, 'Cambiar tarjeta') : null,
@@ -182,7 +189,9 @@ export async function viewPlan(root, params) {
 
   // Desde un límite o un aviso de uso: el plan sugerido queda elegido (un clic para subir).
   const wanted = params.get('subir') || params.get('plan');
-  const others = live && !sub.cancel_at_period_end ? b.plans.filter((p) => p.key !== sub.plan_key) : [];
+  // Con un cobro fallido en Mercado Pago, primero «Cambiar tarjeta» (cobra lo pendiente); después se cambia de plan.
+  const mpDue = sub?.provider === 'mercadopago' && sub.status === 'past_due';
+  const others = live && !sub.cancel_at_period_end && !mpDue ? b.plans.filter((p) => p.key !== sub.plan_key) : [];
   const current = live ? b.plans.find((p) => p.key === sub.plan_key) : null;
   const change = others.length
     ? h('section', { class: 'card', 'aria-labelledby': 'change-plan' },
@@ -192,13 +201,17 @@ export async function viewPlan(root, params) {
         h('div', { class: 'kpi', style: 'margin:8px 0' }, planPrice(p), h('span', { class: 'muted small' }, ` / ${per(p)}`)),
         totalText(p) ? h('p', { class: 'muted small', style: 'margin-top:0' }, totalText(p)) : null,
         limitsText(p.limits) ? h('p', { class: 'small' }, okMark(true), ' Incluye ', limitsText(p.limits)) : h('p', { class: 'small' }, okMark(true), ' Sin límites de uso'),
-        h('button', { class: 'primary', onclick: async () => {
+        p.key === sub.pending_plan_key ? h('button', { disabled: true }, 'Empieza con tu siguiente cobro') : h('button', { class: 'primary', onclick: async () => {
           if (!await confirmAction(`¿Cambiar al plan ${p.name}? ${changeEffect(sub, current, p)}`)) return;
           const r = await run(() => api('POST', withAcct('/api/billing/change'), { plan: p.key }));
           if (r?.url) location.href = r.url;
           // Sin el plan sugerido en la dirección (cambiar la dirección ya vuelve a dibujar la página).
-          else if (r) { toast(`Listo: ahora tienes el plan ${p.name}`); if (location.hash !== '#/plan') location.hash = '#/plan'; else render(); }
-        } }, p.key === wanted ? `Subir ahora a ${p.name}` : `Cambiar a ${p.name}`)))))
+          else if (r) {
+            toast(r.scheduled ? `Listo: el plan ${p.name} empieza ${r.starts_at ? `el ${longDate(r.starts_at)}` : 'con tu siguiente cobro'}` : `Listo: ahora tienes el plan ${p.name}`);
+            if (location.hash !== '#/plan') location.hash = '#/plan'; else render();
+          }
+          // En Mercado Pago, subir empieza con el siguiente cobro: «ahora» sería una promesa falsa.
+        } }, p.key === wanted ? (sub.provider === 'mercadopago' ? `Subir a ${p.name}` : `Subir ahora a ${p.name}`) : `Cambiar a ${p.name}`)))))
     : null;
 
   const waiting = paid && !live;

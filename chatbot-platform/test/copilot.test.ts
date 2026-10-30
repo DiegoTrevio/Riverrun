@@ -422,3 +422,41 @@ t('el alcance es por cliente: tras buscar a Ana, su conversación se cambia sin 
     assert.equal((await owner('POST', `/api/copilot/actions/${other.id}/decline`)).statusCode, 200);
   });
 });
+
+t('una lista con mensajes de varios clientes no amplía el alcance: cambiar a uno de ellos se confirma', async () => {
+  await withLimits({}, async () => {
+    const id = await thread(owner);
+    h.copilotCalls.length = 0;
+    script([
+      // Los dos teléfonos empiezan igual: la lista trae a Ana y a Beto con sus últimos mensajes (texto de clientes).
+      call('buscar_conversaciones', { texto: '52155111100' }),
+      call('gestionar_conversacion', { conversacion_id: ana.id, accion: 'asignar', persona: agentId }),
+      'Listo.',
+    ]);
+    const r = await ask(owner, id, 'Revisa mis conversaciones');
+    const listed = String((h.copilotCalls[1] as any).messages.filter((m: any) => m.role === 'tool').at(-1).content);
+    assert.ok(listed.includes(ana.id) && listed.includes(beto.id), listed);
+    const change = r.actions.find((a: any) => a.tool === 'gestionar_conversacion');
+    assert.equal(change.status, 'proposed', 'el mensaje de uno de los clientes de la lista pudo pedir el cambio');
+    assert.match(change.reasons.join(' '), /no estabas viendo/);
+    assert.equal((await owner('POST', `/api/copilot/actions/${change.id}/decline`)).statusCode, 200);
+  });
+});
+
+t('tras leer los mensajes de un cliente, guardar texto en su ficha se confirma: el asistente lo podría repetir', async () => {
+  await withLimits({}, async () => {
+    const id = await thread(owner);
+    const nota = 'Teléfono de Beto: 5215511110002';
+    script([
+      call('leer_conversacion', { conversacion_id: ana.id }),
+      call('editar_contacto', { contacto_id: ana.contact_id, nota }),
+      'Listo.',
+    ]);
+    const r = await ask(owner, id, 'Revisa la conversación de Ana', { page: { hash: `#/conversation/${ana.id}` } });
+    const change = r.actions.find((a: any) => a.tool === 'editar_contacto');
+    assert.equal(change.status, 'proposed', JSON.stringify(change));
+    assert.match(change.reasons.join(' '), /mensajes escritos por clientes/);
+    assert.ok(!((await contact(ana.contact_id)).notes ?? []).includes(nota), 'no se guarda sin confirmar');
+    assert.equal((await owner('POST', `/api/copilot/actions/${change.id}/decline`)).statusCode, 200);
+  });
+});

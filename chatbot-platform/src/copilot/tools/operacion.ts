@@ -420,7 +420,14 @@ export const editarCobro = defineTool({
   schema: z.object({ cobro_id: Id, concepto: Text(200).optional(), monto: Money.optional(), vence: DateStr.optional(), enlace_de_pago: z.string().trim().max(500).optional() })
     .refine((a) => a.concepto || a.monto || a.vence || a.enlace_de_pago !== undefined, 'Indica qué cambiar'),
   label: () => 'Corrigiendo el cobro…',
-  risk: () => 'reversible',
+  // El monto y el enlace deciden cuánto y a dónde paga el cliente (los repiten el asistente y los recordatorios): un
+  // enlace cambiado sin que nadie lo vea desvía los pagos, aunque luego se pueda deshacer.
+  risk: (a, ctx) => (a.monto !== undefined || a.enlace_de_pago !== undefined
+    ? { level: 'confirm', reasons: ['Cambia cuánto o a dónde paga el cliente: confírmalo antes de guardarlo.'] }
+    // El concepto también lo repiten el asistente y los recordatorios: tras leer mensajes de clientes, se confirma.
+    : ctx.tainted && a.concepto
+      ? { level: 'confirm', reasons: ['Antes leí mensajes escritos por clientes y el concepto lo repiten el asistente y los recordatorios: confírmalo.'] }
+      : 'reversible'),
   available: receivablesOn,
   async targets(a, ctx) { return [{ kind: 'contact', id: (await receivableOf(ctx, a.cobro_id)).r.contact_id }]; },
   async execute(a, ctx) {
@@ -544,7 +551,11 @@ export const editarCotizacion = defineTool({
     notas: z.string().max(2000).optional(),
   }).refine((a) => a.cambiar?.length || a.quitar?.length || a.agregar?.length || a.notas !== undefined, 'Indica qué cambiar'),
   label: () => 'Corrigiendo la cotización…',
-  risk: () => 'reversible',
+  // Las notas y los conceptos libres van tal cual en el PDF que recibe el cliente: tras leer mensajes de clientes, se
+  // confirman (una instrucción escondida podría escribir ahí otra cuenta de pago o datos de otro cliente).
+  risk: (a, ctx) => (ctx.tainted && (a.notas !== undefined || a.agregar?.some((x) => x.nombre))
+    ? { level: 'confirm', reasons: ['Antes leí mensajes escritos por clientes y este texto va en la cotización que recibe el cliente: confírmalo.'] }
+    : 'reversible'),
   targets: (a) => [{ kind: 'quote', id: a.cotizacion_id }],
   async execute(a, ctx) {
     const q = await quoteOf(ctx, a.cotizacion_id);

@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import net from 'node:net';
 import { promisify } from 'node:util';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { config } from './config.js';
@@ -106,22 +107,42 @@ export async function login(email: string, password: string): Promise<(User & { 
   return user;
 }
 
-/** Crea (o actualiza la contraseña de) el superadministrador definido en .env. */
+/**
+ * Crea el superadministrador definido en .env si todavía no existe. ADMIN_PASSWORD solo sirve para esa primera vez: si
+ * cada arranque la volviera a imponer, la contraseña inicial (que quedó en .env y se vio al instalar) regresaría aunque
+ * se cambiara en el panel. Para recuperar el acceso está `./riverrun admin-password` (`resetSuperadminPassword`).
+ */
 export async function bootstrapSuperadmin() {
   if (!config.adminPassword) return;
   // En un servidor público no se acepta la contraseña de ejemplo de .env.example.
   if (config.adminPassword.startsWith('cambia-') && config.publicBaseUrl.startsWith('https://')) {
-    await logEvent({ level: 'error', source: 'system', message: 'ADMIN_PASSWORD sigue siendo la de ejemplo ("cambia-…"): no se crea ni actualiza el superadministrador. Cámbiala en .env (o usa ./riverrun install).' });
+    await logEvent({ level: 'error', source: 'system', message: 'ADMIN_PASSWORD sigue siendo la de ejemplo ("cambia-…"): no se crea el superadministrador. Cámbiala en .env (o usa ./riverrun install).' });
     return;
   }
-  const existing = await store.getUserForLogin(config.adminUser);
+  if (await store.getUserForLogin(config.adminUser)) return;
+  await store.createUser({ account_id: null, role: 'superadmin', name: 'Administrador', email: config.adminUser, password_hash: await hashPassword(config.adminPassword) });
+  await logEvent({ level: 'info', source: 'system', message: `Superadministrador "${config.adminUser}" creado desde la configuración` });
+}
+
+/**
+ * Recupera el acceso del superadministrador desde el servidor: contraseña nueva (generada si no se da), cuenta activa y
+ * todas sus sesiones cerradas. Si no existe, lo crea. Nunca convierte en superadministrador a otro usuario.
+ */
+export async function resetSuperadminPassword(email: string, password = crypto.randomBytes(18).toString('base64url')): Promise<{ password: string; created: boolean }> {
+  const problem = passwordProblem(password);
+  if (problem) throw new Error(problem);
+  const existing = await store.getUserForLogin(email);
+  if (existing && existing.role !== 'superadmin') throw new Error(`${email} no es superadministrador: su contraseña no se cambia desde aquí.`);
+  const hash = await hashPassword(password);
   if (!existing) {
-    await store.createUser({ account_id: null, role: 'superadmin', name: 'Administrador', email: config.adminUser, password_hash: await hashPassword(config.adminPassword) });
-    await logEvent({ level: 'info', source: 'system', message: `Superadministrador "${config.adminUser}" creado desde la configuración` });
-  } else if (existing.role === 'superadmin' && !(await verifyPassword(config.adminPassword, existing.password_hash))) {
-    // ADMIN_PASSWORD es la fuente de verdad para esta cuenta (permite recuperar el acceso).
-    await store.updateUser(existing.id, { password_hash: await hashPassword(config.adminPassword), active: true });
+    await store.createUser({ account_id: null, role: 'superadmin', name: 'Administrador', email, password_hash: hash });
+    await logEvent({ level: 'warn', source: 'system', message: `Superadministrador "${email}" creado desde el servidor (./riverrun admin-password)` });
+    return { password, created: true };
   }
+  await store.updateUser(existing.id, { password_hash: hash, active: true });
+  await store.revokeUserSessions(existing.id);
+  await logEvent({ level: 'warn', source: 'system', message: `Contraseña del superadministrador "${email}" restablecida desde el servidor (./riverrun admin-password); se cerraron sus sesiones` });
+  return { password, created: false };
 }
 
 /* ------------------------------ Límite de intentos ------------------------------ */
@@ -149,6 +170,21 @@ export function rateLimited(key: string, max: number, windowMs: number) {
   }
   b.n++;
   return b.n > max;
+}
+
+/**
+ * Clave de una conexión para los límites. Una IPv6 se agrupa por su /64: quien tiene una suele tener millones, y contarlas
+ * por separado deja saltarse cualquier límite cambiando de dirección.
+ */
+export function ipKey(ip: string): string {
+  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(ip)?.[1];
+  if (mapped) return mapped;
+  if (!net.isIPv6(ip)) return ip;
+  const [head, tail] = ip.split('::');
+  const left = head ? head.split(':') : [];
+  const right = tail ? tail.split(':') : [];
+  const groups = tail === undefined ? left : [...left, ...Array(Math.max(0, 8 - left.length - right.length)).fill('0'), ...right];
+  return `${groups.slice(0, 4).map((g) => parseInt(g || '0', 16).toString(16)).join(':')}::/64`;
 }
 
 /** Olvida los intentos y límites cuya ventana ya pasó. Corre cada minuto (antes solo al llegar a 10,000 claves). */

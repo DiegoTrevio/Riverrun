@@ -360,12 +360,12 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
   const adminPw = get('ADMIN_PASSWORD');
   if (!adminPw) {
     add(
-      prod ? 'warning' : 'optional',
+      'optional',
       'security',
       'admin_password.missing',
       ['ADMIN_PASSWORD'],
-      'ADMIN_PASSWORD no está definido: no se crea ni se recupera el superadministrador desde .env (si ya existe, sigue funcionando).',
-      'Define ADMIN_PASSWORD para crear o recuperar el acceso del superadministrador.',
+      'ADMIN_PASSWORD está vacío: es lo normal después de instalar (solo sirve para crear al superadministrador la primera vez).',
+      'Para recuperar el acceso del superadministrador usa ./riverrun admin-password.',
     );
   } else if (/^cambia-/i.test(adminPw)) {
     // auth.ts ya se niega a crear o actualizar al superadministrador con esta clave cuando hay HTTPS; sin HTTPS sigue

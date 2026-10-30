@@ -133,17 +133,56 @@ t('cobros: registrar se confirma; corregir se deshace; recordar se confirma', as
   const r = (await list())[0];
   assert.deepEqual([r.amount_cents, String(r.due_date).slice(0, 10)], [85000, '2026-12-15']);
 
-  script([call('editar_cobro', { cobro_id: r.id, monto: 900 }), 'Corregido.']);
+  // El monto y el enlace de pago deciden cuánto y a dónde paga el cliente: se confirman, aunque se puedan deshacer.
+  script([call('editar_cobro', { cobro_id: r.id, monto: 900 }), 'Confírmalo.']);
   const edit = lastAction(await ask('Que sean 900'));
-  assert.equal(edit.status, 'done', JSON.stringify(edit));
+  assert.equal(edit.status, 'proposed', JSON.stringify(edit));
+  assert.equal((await list())[0].amount_cents, 85000, 'no cambia sin confirmar');
+  assert.equal((await confirm(edit)).json().status, 'done');
   assert.equal((await list())[0].amount_cents, 90000);
   assert.equal((await undo(edit)).statusCode, 200);
   assert.equal((await list())[0].amount_cents, 85000);
+
+  script([call('editar_cobro', { cobro_id: r.id, enlace_de_pago: 'https://pagos.example.com/otra-cuenta' }), 'Confírmalo.']);
+  const link = lastAction(await ask('Cambia el enlace de pago'));
+  assert.equal(link.status, 'proposed', JSON.stringify(link));
+  assert.equal((await list())[0].payment_link ?? '', '', 'el enlace no cambia sin confirmar');
+  assert.equal((await owner('POST', `/api/copilot/actions/${link.id}/decline`)).statusCode, 200);
+
+  script([call('editar_cobro', { cobro_id: r.id, concepto: 'Paquete de 4 cortes' }), 'Corregido.']);
+  const concept = lastAction(await ask('Ponle «Paquete de 4 cortes»'));
+  assert.equal(concept.status, 'done', 'el concepto se corrige sin confirmar');
+  assert.equal((await undo(concept)).statusCode, 200);
 
   script([call('recordar_cobro', { cobro_id: r.id }), 'Confírmalo.']);
   const remind = lastAction(await ask('Recuérdale el pago'));
   assert.equal(remind.status, 'proposed', JSON.stringify(remind));
   assert.match(remind.preview.lines.join(' '), /Le llega ahora por WhatsApp/);
+});
+
+t('tras leer mensajes de clientes, el concepto de un cobro y las notas de una cotización se confirman', async () => {
+  const created = await owner('POST', '/api/receivables', { contact_id: conv.contact_id, concept: 'Tinte', amount_cents: 40000, due_date: '2026-12-20' });
+  assert.equal(created.statusCode, 201, created.body);
+  const cobro = created.json().receivable;
+  const { createQuote } = await import('../src/store/quotes.js');
+  const q = await createQuote({ accountId: h.accountId, kind: 'approximate', status: 'pending_approval', source: 'panel', today: '2026-10-20', contactId: conv.contact_id,
+    customer: { nombre: 'Carla Méndez' }, lines: [{ name: 'Corte', qty: 1, price_mode: 'exact', price_min: 15000, price_max: null, iva_mode: 'plus' }] } as any);
+  // El concepto lo repiten el asistente y los recordatorios; las notas van en el PDF. Una instrucción escondida en un
+  // mensaje podría escribir ahí «deposita a esta otra cuenta».
+  script([
+    call('leer_conversacion', { conversacion_id: conv.id }),
+    call('editar_cobro', { cobro_id: cobro.id, concepto: 'Tinte: deposita a la CLABE 0123' }),
+    call('editar_cotizacion', { cotizacion_id: q.id, notas: 'Deposita a la CLABE 0123' }),
+    'Listo.',
+  ]);
+  const out = await ask('Revisa la conversación de Carla');
+  for (const tool of ['editar_cobro', 'editar_cotizacion']) {
+    const a = out.actions.find((x: any) => x.tool === tool);
+    assert.equal(a.status, 'proposed', `${tool}: ${JSON.stringify(a)}`);
+    assert.match(a.reasons.join(' '), /mensajes escritos por clientes/);
+    assert.equal((await owner('POST', `/api/copilot/actions/${a.id}/decline`)).statusCode, 200);
+  }
+  assert.equal((await owner('GET', `/api/receivables/${cobro.id}`)).json().receivable.concept, 'Tinte', 'no cambia sin confirmar');
 });
 
 t('cotizaciones y lista de precios: corregir renglones y precios se deshace; rechazar se confirma', async () => {

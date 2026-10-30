@@ -34,6 +34,11 @@ export interface Subscription {
   payment_action_url: string;
   /** Última vez que se comparó con el proveedor. */
   reconciled_at: Date | null;
+  /** Plan al que se subió sin cobrar la diferencia (Mercado Pago): empieza con el primer cobro de su monto (vacío = ninguno). */
+  pending_plan_key: string;
+  pending_plan_since: Date | null;
+  /** Monto pactado con el proveedor para ese plan (con IVA). */
+  pending_amount_cents: number;
 }
 
 /** Estado de una suscripción tal como lo informa el proveedor, ya normalizado. */

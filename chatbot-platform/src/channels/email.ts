@@ -58,6 +58,7 @@ const addressOf = (c: MailConfig) => (c.from_address || c.imap_user).toLowerCase
 
 /** Límite del texto de un correo que se guarda (lo que no cabe se corta; el resto del hilo sigue en el correo). */
 const MAX_MAIL_TEXT = 50_000;
+const MAX_MAIL_HTML = 2 * 1024 * 1024;
 
 /** Primera línea no vacía después de la posición i. */
 function nextLine(lines: string[], i: number): string {
@@ -122,7 +123,8 @@ const realBackend: MailBackend = {
               name: from.name ?? '',
               subject: p.subject ?? '',
               // Correos solo en HTML: se convierte el HTML a texto en vez de guardar un mensaje vacío.
-              text: p.text || (typeof p.html === 'string' ? htmlToText(p.html) : ''),
+              // Del texto solo se guardan MAX_MAIL_TEXT caracteres: más de 2 MB de HTML solo gastaría memoria.
+              text: p.text || (typeof p.html === 'string' ? htmlToText(p.html.slice(0, MAX_MAIL_HTML)) : ''),
               date: p.date ?? new Date(),
               references: [p.references].flat().filter(Boolean).join(' '),
               automated,
