@@ -341,21 +341,26 @@ webhooks se van (`GET /api/users/:id/offboarding`).
 ### 2b.8 Lo que cambió al implementar
 
 - **Dueño:** se resuelve al leerlo (`accountOwner`): si el guardado ya no es un administrador activo de la cuenta, lo es
-  el administrador activo más antiguo y queda guardado. El primer administrador que acepta una invitación en una cuenta
-  sin dueño queda como dueño. La lista del equipo marca al dueño (`is_owner`) para que el superadministrador vea sus
+  el administrador activo más antiguo y queda guardado. Al aceptar una invitación de administrador en una cuenta sin
+  dueño válido, el dueño es el administrador activo más antiguo (quien acaba de entrar, si no hay otro). La lista del equipo marca al dueño (`is_owner`) para que el superadministrador vea sus
   controles. Al dueño tampoco se le mueve de cuenta.
 - **Transferir:** una sola escritura condicionada (dueño anterior y destino elegible); si la cuenta cambió de dueño
   mientras tanto, 409. Si la reasigna el superadministrador, el aviso al anterior dice quién fue.
 - **Avisos nuevos:** «Transferiste tu cuenta», «Ahora eres dueño de la cuenta», «Cambiaste tu correo» y «Tu rol
   cambió». Los de la transferencia y el cambio de correo se esperan antes de responder (nunca fallan).
-- **Cambiar el correo:** además rechaza correos desechables y topa 5 pedidos por hora por persona. Confirmarlo no
+- **Cambiar el correo:** pide también la contraseña actual (con la sesión sola no se cambia: el correo abre «Olvidé
+  mi contraseña»); rechaza correos desechables y topa 5 pedidos por hora por persona, contando también los correos
+  ocupados (el tope va antes de decir si el correo tiene cuenta). El aviso al anterior no lleva enlace: dice con qué
+  correo entrar y cómo volver a poner el suyo. Confirmarlo no
   cierra sesiones (la contraseña no cambia; el aviso llega al correo anterior). Restablecer la contraseña por correo
   también marca el correo como verificado, como antes: el enlace prueba que es suyo.
 - **Google:** el pase lleva también el `sub`. Un usuario ya ligado a otro `sub` con el mismo correo no entra
   (`google=otra-cuenta`); sin `sub`, error. La cookie del pase (`cp_gpass`) va con `path=/api`.
 - **Invitaciones:** los topes aplican también al superadministrador (solo queda exento de los correos verificados).
   Crear y reenviar dicen si el correo salió (`mail_sent`); sin SMTP el panel avisa que la invitación quedó guardada.
-- **Bajas:** quedan en la bitácora con lo que se fue.
+- **Bajas:** quedan en la bitácora con lo que se fue. Pasar a alguien a otra cuenta también es una baja en la de antes.
+- **Invitaciones de administrador:** reenviarlas (con verificación reciente), cancelarlas o reemplazarlas por otra al
+  mismo correo es del dueño, como crearlas.
 - **Recuperar contraseña:** el trabajo va en segundo plano con `setImmediate`; el tope por conexión responde 429 y el
   del correo es silencioso.
 
