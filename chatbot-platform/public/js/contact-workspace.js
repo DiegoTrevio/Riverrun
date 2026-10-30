@@ -31,10 +31,12 @@ export async function viewContacts(root,params) {
  const canSave=!isSuper()||!!state.accountId;
  if(canSave){
   const views=await api('GET',withAcct('/api/contact-views'));
-  const pick={id:''},options=select(pick,'id',[['','Mis vistas guardadas'],...views.map(v=>[v.id,v.name])],()=>{const v=views.find(v=>v.id===pick.id);if(v)location.hash=`#/contacts?${new URLSearchParams(v.filters)}`;});
+  // La vista abierta (sus filtros son los de la dirección) queda elegida: así «Eliminar vista seleccionada» la borra.
+  const same=(a)=>{const k=(o)=>new URLSearchParams(Object.entries(o||{}).filter(([,v])=>v).sort()).toString();return k(a)===k(filters());};
+  const pick={id:views.find(v=>same(v.filters))?.id||''},options=select(pick,'id',[['','Mis vistas guardadas'],...views.map(v=>[v.id,v.name])],()=>{const v=views.find(v=>v.id===pick.id);if(v)location.hash=`#/contacts?${new URLSearchParams(v.filters)}`;});
   options.setAttribute('aria-label','Vista de contactos guardada');
   saved.append(options,h('button',{class:'ghost',onclick:async()=>{const name=await ask('Nombre de esta vista');if(!name)return;if(await run(()=>api('POST',withAcct('/api/contact-views'),{name,filters:model}),'Vista guardada'))location.hash=`#/contacts?${new URLSearchParams({...filters(),saved:Date.now()})}`;}},'Guardar esta vista'),
-   h('button',{class:'ghost',onclick:async()=>{if(!pick.id)return;if(await run(()=>api('DELETE',withAcct(`/api/contact-views/${pick.id}`)),'Vista eliminada')){views.splice(views.findIndex(v=>v.id===pick.id),1);options.querySelector(`option[value="${pick.id}"]`)?.remove();pick.id='';options.value='';}}},'Eliminar vista seleccionada'));
+   h('button',{class:'ghost',disabled:!pick.id,onclick:async(e)=>{if(!pick.id)return;if(await run(()=>api('DELETE',withAcct(`/api/contact-views/${pick.id}`)),'Vista eliminada')){views.splice(views.findIndex(v=>v.id===pick.id),1);options.querySelector(`option[value="${pick.id}"]`)?.remove();pick.id='';options.value='';e.target.disabled=true;}}},'Eliminar vista seleccionada'));
  }
  const tools=isAdmin()&&canSave?h('div',{class:'row'},h('button',{onclick:async()=>{if(await importContactsDialog())load();}},'Importar contactos'),h('a',{class:'btn',href:withAcct('/api/export/contacts.csv'),download:''},'Exportar CSV')):null;
  root.append(h('div',{class:'row between'},h('h1',{},'Contactos'),tools),workspaceTabs('contacts'),h('p',{class:'help'},'Busca a una persona y retoma su atención desde su ficha. Los registros del mismo teléfono se reúnen en uno.'),
