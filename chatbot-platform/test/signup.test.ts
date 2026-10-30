@@ -256,6 +256,8 @@ t('contraseña olvidada: enlace de un solo uso que vence; la nueva contraseña c
   assert.equal((await forgot('nadie@nada.mx')).statusCode, 200, 'misma respuesta aunque el correo no exista');
   assert.equal(outbox.length, 0);
   assert.equal((await forgot('laura@sonrisa.mx')).statusCode, 200);
+  // El correo sale en segundo plano, después de responder.
+  await waitFor(() => outbox.some((m) => m.to === 'laura@sonrisa.mx' && m.text.includes('#/restablecer?token=')));
   const token = tokenFrom('laura@sonrisa.mx', 'restablecer');
 
   const reset = (body: unknown) => h.app.inject({ method: 'POST', url: '/api/reset-password', payload: body as any });

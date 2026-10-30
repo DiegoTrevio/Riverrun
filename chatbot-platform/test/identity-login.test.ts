@@ -188,7 +188,7 @@ t('registro e invitación piden configurar antes de abrir sesión', async () => 
 
   assert.equal((await h.authed('POST', `/api/invitations?account_id=${h.accountId}`, { email: 'invitada@login.mx', name: 'Inés', role: 'agent' })).statusCode, 200);
   const mail = [...outbox].reverse().find((m) => m.to === 'invitada@login.mx')!;
-  const token = decodeURIComponent(/token=([^\s&]+)/.exec(mail.text)![1]);
+  const token = decodeURIComponent(/#\/invitacion\/([^\s]+)/.exec(mail.text)![1]);
   const a = await h.app.inject({ method: 'POST', url: '/api/invitation/accept', remoteAddress: '10.62.0.2', payload: { token, name: 'Inés', password: PASS, accept_terms: true } });
   assert.equal(a.statusCode, 200, a.body);
   assert.equal(a.json().mfa, 'enroll');
@@ -208,6 +208,8 @@ t('cambiar la contraseña sigue en la sesión y avisa; restablecer por correo no
   await waitFor(() => outbox.some((m) => m.to === 'olvida@login.mx' && m.subject === 'Tu contraseña cambió'), 3000);
 
   assert.equal((await h.app.inject({ method: 'POST', url: '/api/forgot-password', remoteAddress: '10.62.0.3', payload: { email: 'olvida@login.mx' } })).statusCode, 200);
+  // El correo sale en segundo plano, después de responder.
+  await waitFor(() => outbox.some((m) => m.to === 'olvida@login.mx' && m.subject === 'Restablece tu contraseña'));
   const mail = [...outbox].reverse().find((m) => m.to === 'olvida@login.mx' && m.subject === 'Restablece tu contraseña')!;
   const token = decodeURIComponent(/restablecer\?token=([^\s&]+)/.exec(mail.text)![1]);
   const reset = await h.app.inject({ method: 'POST', url: '/api/reset-password', remoteAddress: '10.62.0.4', payload: { token, password: 'Pz-937-Qx-938-Kv' } });

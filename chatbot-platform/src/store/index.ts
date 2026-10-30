@@ -280,12 +280,18 @@ const tokenHash = (token: string) => crypto.createHash('sha256').update(token).d
 export type AuthTokenKind = 'verify_email' | 'reset_password' | 'change_email';
 
 /**
- * Crea un token de un solo uso; se guarda solo su hash. Invalida los anteriores del mismo tipo. `email`: el correo nuevo
- * de un cambio de correo (se aplica al abrir el enlace).
+ * Crea un token de un solo uso; se guarda solo su hash. De restablecer la contraseña quedan vivos los 3 más nuevos (un
+ * correo que tarda no deja inservible el siguiente); de los demás tipos, solo el nuevo. `email`: el correo nuevo de un
+ * cambio de correo (se aplica al abrir el enlace).
  */
 export async function createAuthToken(userId: string, kind: AuthTokenKind, ttlMinutes: number, email?: string) {
   const token = crypto.randomBytes(32).toString('base64url');
-  await query(`UPDATE auth_tokens SET used_at = now() WHERE user_id = $1 AND kind = $2 AND used_at IS NULL`, [userId, kind]);
+  const keep = kind === 'reset_password' ? 2 : 0;
+  await query(
+    `UPDATE auth_tokens SET used_at = now() WHERE user_id = $1 AND kind = $2 AND used_at IS NULL
+        AND id NOT IN (SELECT id FROM auth_tokens WHERE user_id = $1 AND kind = $2 AND used_at IS NULL ORDER BY created_at DESC, id DESC LIMIT $3)`,
+    [userId, kind, keep],
+  );
   await query(`INSERT INTO auth_tokens (user_id, kind, token_hash, expires_at, email) VALUES ($1, $2, $3, now() + make_interval(mins => $4), $5)`, [
     userId,
     kind,

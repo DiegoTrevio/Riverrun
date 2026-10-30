@@ -164,6 +164,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     await releaseHit(accountLimit);
     await assertPasswordAllowed(b.password, { email: req.user.email, businessName: await accountName(req.user.account_id) });
     const hash = await hashPassword(b.password);
+    await store.invalidateAuthTokens(req.user.id); // los enlaces para restablecer que hubiera ya no sirven
     await store.updateUser(req.user.id, { password_hash: hash });
     // Las demás sesiones se cierran; esta sigue abierta con la nueva huella (y con su verificación reciente).
     await store.revokeUserSessions(req.user.id);

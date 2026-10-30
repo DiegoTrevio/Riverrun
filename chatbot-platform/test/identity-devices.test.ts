@@ -125,8 +125,11 @@ t('se olvida al cambiar o restablecer la contraseña, al cerrar las demás sesio
   await asksCode(b);
 
   b = await trusted();
+  const sent = outbox.length;
   await h.app.inject({ method: 'POST', url: '/api/forgot-password', remoteAddress: '10.63.1.1', payload: { email: 'fer@disp.mx' } });
-  const mail = [...outbox].reverse().find((m) => m.to === 'fer@disp.mx' && m.subject === 'Restablece tu contraseña')!;
+  // El correo sale en segundo plano, después de responder.
+  await waitFor(() => outbox.slice(sent).some((m) => m.to === 'fer@disp.mx' && m.subject === 'Restablece tu contraseña'));
+  const mail = outbox.slice(sent).find((m) => m.to === 'fer@disp.mx' && m.subject === 'Restablece tu contraseña')!;
   const token = decodeURIComponent(/restablecer\?token=([^\s&]+)/.exec(mail.text)![1]);
   assert.equal((await h.app.inject({ method: 'POST', url: '/api/reset-password', remoteAddress: '10.63.1.2', payload: { token, password: 'Pz-975-Qx-976-Kv' } })).statusCode, 200);
   password = 'Pz-975-Qx-976-Kv';
