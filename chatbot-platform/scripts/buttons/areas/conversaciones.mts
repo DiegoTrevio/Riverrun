@@ -34,6 +34,26 @@ export const checks = {
     await toast(page, 'Cerrada');
     assert.equal(await status(), 'closed');
   },
+  'El agente que suelta su conversación («Quitar asignación») vuelve a su bandeja sin errores': async ({ h, f, pool, open, go }: AreaContext) => {
+    const agent = (await pool.query(`SELECT id FROM users WHERE email = 'agent@auditoria.test'`)).rows[0].id;
+    await h.authed('PUT', `/api/conversations/${f.conv.id}/assign`, { user_id: agent });
+    const { page } = await open('agent');
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(e.message));
+    await go(page, `conversation/${f.conv.id}`);
+    await page.getByRole('combobox', { name: 'Asignar conversación' }).selectOption('none');
+    await toast(page, 'Sin asignar');
+    await page.waitForURL(/#\/conversations$/, { timeout: 5000 }).catch(() => {});
+    await page.waitForTimeout(300);
+    try {
+      assert.equal((await pool.query('SELECT assigned_user_id FROM conversations WHERE id = $1', [f.conv.id])).rows[0].assigned_user_id, null);
+      assert.deepEqual(errors, [], 'error de JavaScript al soltar la conversación');
+      assert.match(page.url(), /#\/conversations$/, 'se quedó en una conversación que ya no puede ver');
+    } finally {
+      // Se deja como estaba: la conversación de los datos de prueba es del agente.
+      await h.authed('PUT', `/api/conversations/${f.conv.id}/assign`, { user_id: agent });
+    }
+  },
   'El panel lateral no cierra lo que abriste cuando se actualiza solo': async ({ f, open, go }: AreaContext) => {
     const { page } = await open('admin');
     await go(page, `conversation/${f.conv.id}`);

@@ -385,7 +385,10 @@ export async function viewConversation(root, id, opts = {}) {
       const v = e.target.value;
       if (!v) return;
       const r = await run(() => api('PUT', `/api/conversations/${id}/assign`, { user_id: v === 'none' ? null : v }), v === 'none' ? 'Sin asignar' : 'Asignada');
-      if (r) load(true);
+      if (!r) return;
+      // Un agente solo ve lo suyo: al soltarla, la conversación sale de su bandeja y vuelve a ella.
+      if (!isAdmin()) { location.hash = '#/conversations'; return; }
+      load(true);
     } },
       h('option', { value: '' }, 'Cambiar asignación…'),
       isAdmin() ? h('option', { value: 'next' }, 'Siguiente por turnos') : null,
