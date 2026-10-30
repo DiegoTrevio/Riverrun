@@ -13,7 +13,7 @@ export const checks = {
     const before = outbox.length;
     await card.getByRole('button', { name: 'Enviar invitación', exact: true }).click();
     // Sin SMTP en las pruebas: queda guardada y el panel avisa que el correo no salió (el buzón de pruebas sí lo tiene).
-    await toast(page, 'La invitación quedó guardada, pero no se pudo mandar el correo');
+    await toast(page, 'La invitación quedó guardada, pero no se pudo mandar el correo: revisa la configuración de correo (SMTP).');
     const mail = outbox.slice(before).find((m: any) => m.to === 'nueva@auditoria.test');
     assert.ok(mail, 'no llegó la invitación');
     const token = decodeURIComponent(/#\/invitacion\/([^\s]+)/.exec(mail.text)![1]);

@@ -39,7 +39,10 @@ export async function runAreas(base: Omit<AreaContext, 'check' | 'open' | 'go'> 
         return { page, context };
       },
       go: async (page, route) => {
-        await page.goto(`${base.base}/#/${route}`);
+        // Ir al mismo #/ruta no vuelve a dibujar la pantalla: entonces se recarga (para ver lo que cambió por la API).
+        const url = `${base.base}/#/${route}`;
+        if (page.url() === url) await page.reload();
+        else await page.goto(url);
         await page.locator('.main h1, main h1').first().waitFor();
         await page.locator('.main [aria-busy="true"]').first().waitFor({ state: 'hidden' }).catch(() => {});
       },
