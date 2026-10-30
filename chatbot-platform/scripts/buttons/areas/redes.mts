@@ -13,6 +13,11 @@ export const checks = {
     await toast(page, 'Elige al menos una red');
     assert.equal((await page.locator('.main li', { hasText: 'Elige al menos una red' }).first().innerText()).trim(), 'Elige al menos una red');
     await page.getByRole('checkbox', { name: /Instagram · @hotelpalmas/ }).first().check();
+    // Publicar en Instagram sin foto: el aviso dice qué red la pide (el nombre de la red no se quita).
+    await page.getByRole('radio', { name: 'Publicar ahora' }).check();
+    await page.getByRole('button', { name: 'Publicar ahora', exact: true }).click();
+    await toast(page, /^Instagram.*necesita una foto o un video/);
+    await page.getByRole('radio', { name: 'Guardar como borrador' }).check();
     await page.getByRole('button', { name: 'Guardar borrador', exact: true }).click();
     await toast(page, 'Borrador guardado');
     await page.waitForURL(/#\/publicaciones$/);

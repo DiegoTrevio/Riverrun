@@ -279,8 +279,9 @@ async function compose(root, id, params) {
       toast(r.status === 'publicada' ? 'Publicada' : r.status === 'programada' ? 'Programada' : r.status === 'borrador' ? 'Borrador guardado' : r.status === 'parcial' ? 'Salió en algunas redes: revisa cuál falló' : r.status === 'enviando' ? 'Enviando… te avisamos si algo falla' : 'Listo', r.status === 'parcial');
       location.hash = '#/publicaciones';
     } catch (e) {
-      // Lo que falta, sin la clave interna del campo («targets: …») ni repetido en el aviso.
-      const list = (e?.data?.issues || e?.issues || []).map((x) => String(x).replace(/^[\w.[\]]+: /, ''));
+      // Lo que falta, sin la clave interna del campo («targets: …», en minúsculas) ni repetido en el aviso; el nombre de
+      // la red («Instagram: necesita una foto») sí se queda.
+      const list = (e?.data?.issues || e?.issues || []).map((x) => String(x).replace(/^[a-z_]+(?:\.[a-z0-9_]+)*: /, ''));
       fill(issues, ...(list.length ? list : [e?.message || 'No se pudo guardar']).map((x) => h('li', {}, x)));
       toast(list.length ? list.join(' · ') : e?.message || 'No se pudo guardar', true);
     } finally {
