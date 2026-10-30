@@ -7,9 +7,9 @@ Objetivo: comprobar que **cada botón hace lo que dice su etiqueta**, en cada pa
 ## Resumen
 
 - **11 hallazgos** (BOTÓN-001 a 011): 1 alto, 6 medios y 4 bajos. **Todos corregidos**, cada uno con una prueba que lo reproducía antes de la corrección y ahora pasa.
-- **Recorrido automático:** POR_COMPLETAR controles presionados en 4 roles y POR_COMPLETAR pantallas; cada diálogo se canceló (sin escribir nada) y después se aceptó.
-- **Pase funcional por área:** POR_COMPLETAR comprobaciones que verifican en la base de datos o en el servicio simulado que el botón dejó lo que promete.
-- **Cobertura del código:** POR_COMPLETAR de los POR_COMPLETAR sitios del panel con un manejador se presionaron aquí; el resto tiene su motivo anotado en `scripts/buttons/sin-presionar.json` (ver «Cobertura»).
+- **Recorrido automático:** 1390 controles presionados con resultado comprobado (y 2461 veces más el mismo control en otra pantalla), en 109 pantallas de 4 roles; los 71 diálogos se cancelaron (sin escribir nada) y después se aceptaron. **Ningún control con problema** en la corrida final.
+- **Pase funcional por área:** 30 comprobaciones que verifican en la base de datos o en el servicio simulado que el botón dejó lo que promete.
+- **Cobertura del código:** de los 586 sitios del panel con un manejador, 315 se presionaron aquí y 33 los presiona otra prueba (con evidencia); 16 solo se prueban con un servicio real (lista manual) y 222 solo aparecen en estados que el recorrido no prepara: son lo que falta cubrir (ver «Cobertura»).
 - **Nada salió de la máquina:** el navegador y el servidor bloquean y anotan cualquier conexión externa. La única salida esperada es el catálogo público de modelos de OpenRouter (ver «Conexiones bloqueadas»).
 - **Lo que solo se prueba con servicios reales** (QR real, pagos, correo, Google/Outlook, Facebook) está en la **lista manual** al final.
 
@@ -54,7 +54,25 @@ Todo corre contra **PostgreSQL aislado** y los **servicios simulados** del arné
 
 ## Resultados de la última corrida
 
-POR_COMPLETAR
+Corrida final en modo estricto (como en el CI), 20 min en una máquina de 4 núcleos, con todas las correcciones:
+
+| Veredicto | Controles |
+|---|---|
+| OK | 1297 |
+| RECHAZADO (validación con su mensaje) | 35 |
+| MISMA PÁGINA (ya elegido, sin otra opción, no-operación esperada) | 42 |
+| ACEPTADO (pase de aceptación de diálogos) | 16 |
+| DESHABILITADO | 46 |
+| OMITIDO (cierran la sesión de la auditoría) | 7 |
+| NO ENCONTRADO (ya no estaba al volver a abrir la pantalla: lo borró otra aceptación o cambió el estado) | 114 |
+| YA PROBADO (el mismo control en otra pantalla del mismo rol) | 2461 |
+| **Con problema** | **0** |
+
+Pase funcional por área: **30 de 30** comprobaciones bien, sin errores de JavaScript.
+
+Las otras pruebas en navegador también pasan con las correcciones: `test:ux` (27 comprobaciones, 81 pantallas, 286 escenarios adaptables), `test:semantic:ux`, `test:agent:ux`, `test:contact:ux`, `test:quotes:ux`, `test:billing:ux` (con los 4 botones nuevos) y `test:public:ux`; y `npm test` (1459 pruebas, 0 fallas).
+
+**El detector detecta:** se rompió a propósito «Hoy» de Agenda (sin su manejador) y «Recordar ahora» de Cobros (avisa sin llamar al servidor); `test:buttons` falló en los dos («SIN MANEJADOR · agenda · «Hoy»» y «no salió el recordatorio») y los cambios se revirtieron.
 
 ## Falsas alarmas descartadas
 
@@ -84,11 +102,23 @@ Para juzgar un botón hay que saber qué más reinicia la pantalla (método *cli
 
 ## Cobertura
 
-POR_COMPLETAR
+Cada sitio del código con un manejador (586) termina en una de estas situaciones; el detalle, sitio por sitio, está en `scripts/buttons/sin-presionar.json` y en `data/button-audit/results.json`:
+
+| Situación | Sitios |
+|---|---|
+| Lo presiona `test:buttons` (recorrido, aceptación o pase por área) | 315 |
+| Lo presiona otra prueba en navegador, con evidencia (`coverage-probe.mts`): `test:ux` 18, `test:billing:ux` 9, `test:quotes:ux` 3, `test:semantic:ux` 3, `test:contact:ux` 1 | 33 |
+| Solo con un servicio real (lista manual): Google/Outlook 5, Stripe/Mercado Pago 4, WhatsApp/Telegram/correo de verdad 3, Facebook 2, llave de Zernio 2 | 16 |
+| **Estado que el recorrido no prepara** (pendiente de una prueba) | **222** |
+
+Lo pendiente se concentra en el **lienzo de flujos** (`flowboard*.js`, 39: editar un nodo, sus botones y su archivo, la IA del lienzo), las **pestañas del agente** (`bot.js` 17, `prompt-assistant.js` 5, `agent-versions.js` 6), la **conversación** (`conversations.js` 16: plantillas, cargar más, citas desde el chat), **automatización** (`automation.js` 15: condiciones, destinatarios de una campaña), **oportunidades** (`pipeline.js` 10: tarjetas, que solo existen cuando una conversación entra al pipeline), **conexiones** (`channels.js` 9) y el **Copiloto** con una respuesta en curso (`copilot.js` 9). Son controles que solo aparecen con datos o estados que los datos de prueba no traen; la siguiente vuelta de esta auditoría es agregarles su prueba por área.
+
+**Si se agrega un botón** que nadie presiona, la prueba falla hasta que tenga su prueba o su motivo; un sitio conocido que en una corrida no se alcanza (por tiempos) solo se avisa.
 
 ## Conexiones bloqueadas
 
-POR_COMPLETAR
+- **Servidor:** solo `openrouter.ai` (11 veces): el **catálogo público de modelos** (`src/ai/models.ts`), que consultan el monitor de fondo y «Comprobar ahora» de Sistema para avisar si un modelo configurado ya no existe. No lleva clave; sin él responde «no se pudo consultar». Es la única salida permitida; cualquier otra hace fallar la prueba.
+- **Navegador:** lo que un botón abre fuera del panel y no se sigue: las páginas de autorización de Zernio (`zernio.example`, 23, al conectar una red), el diálogo de Facebook (1, «Conectar con Facebook»), las publicaciones de Instagram de los datos de prueba (`instagram.test`, 2) y la dirección pública del negocio (`bot.test`, 1). Cada uno queda anotado como el efecto de su botón.
 
 ## Lista manual (con servicios reales, en tu servidor)
 
