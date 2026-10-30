@@ -119,7 +119,7 @@ export async function mfaRoutes(api: FastifyInstance) {
     return { ok: true };
   });
 
-  api.delete('/api/me/devices/:id', async (req: any) => {
+  api.delete('/api/me/devices/:id', stepUp, async (req: any) => {
     if (!z.string().uuid().safeParse(req.params.id).success || !(await forgetTrustedDevices(req.user.id, { only: req.params.id }))) throw notFound('Dispositivo no encontrado');
     return { ok: true };
   });

@@ -145,9 +145,12 @@ export async function verifyUserCode(user: ChallengeUser, code: string): Promise
 async function wrongCode(user: ChallengeUser): Promise<{ result: 'bad' | 'locked' }> {
   const hits = await countHit(`mfa-user:${user.id}`, LIMITS.codePerUser.windowMs);
   if (hits < LIMITS.codePerUser.max) return { result: 'bad' };
-  await query(`UPDATE users SET mfa_locked_until = now() + make_interval(secs => $2) WHERE id = $1`, [user.id, LIMITS.mfaLockMs / 1000]);
-  await logEvent({ level: 'warn', source: 'system', message: `Verificación en dos pasos bloqueada una hora por códigos equivocados: ${user.email}`, accountId: user.account_id ?? undefined });
-  void notifyUser(user, 'mfa_locked');
+  // Bloquea y avisa solo quien llega justo al tope: con muchos códigos a la vez llega un solo correo.
+  if (hits === LIMITS.codePerUser.max) {
+    await query(`UPDATE users SET mfa_locked_until = now() + make_interval(secs => $2) WHERE id = $1`, [user.id, LIMITS.mfaLockMs / 1000]);
+    await logEvent({ level: 'warn', source: 'system', message: `Verificación en dos pasos bloqueada una hora por códigos equivocados: ${user.email}`, accountId: user.account_id ?? undefined });
+    void notifyUser(user, 'mfa_locked');
+  }
   return { result: 'locked' };
 }
 

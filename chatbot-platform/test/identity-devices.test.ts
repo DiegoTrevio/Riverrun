@@ -74,6 +74,23 @@ t('recordar el dispositivo salta el código la próxima vez (sin dar verificaci�
   assert.equal((await b.send('POST', '/api/login', { email: 'dora@disp.mx', password: 'otra-clave-equivocada' })).statusCode, 401, 'la contraseña se sigue pidiendo');
 });
 
+t('un cp_trust copiado a otro navegador (sin su cp_device) no salta el código', async () => {
+  await newUser('copia@disp.mx');
+  const b = browser();
+  await enter(b, 'copia@disp.mx');
+  await b.send('POST', '/api/logout');
+  assert.ok((await enter(b, 'copia@disp.mx', PASS, true)).ok);
+  await b.send('POST', '/api/logout');
+  const thief = browser();
+  thief.jar.set('cp_trust', b.jar.get('cp_trust')!);
+  assert.equal((await thief.send('POST', '/api/login', { email: 'copia@disp.mx', password: PASS })).json().mfa, 'verify', 'sin su cp_device pide el código');
+  const other = browser();
+  other.jar.set('cp_trust', b.jar.get('cp_trust')!);
+  other.jar.set('cp_device', 'y'.repeat(43));
+  assert.equal((await other.send('POST', '/api/login', { email: 'copia@disp.mx', password: PASS })).json().mfa, 'verify', 'con el cp_device de otro navegador, también');
+  assert.equal((await b.send('POST', '/api/login', { email: 'copia@disp.mx', password: PASS })).json().ok, true, 'en su navegador sigue recordado');
+});
+
 t('el superadmin nunca queda recordado', async () => {
   const b = browser();
   const r = await enter(b, 'admin@test.mx', 'secreto123', true);
@@ -121,6 +138,9 @@ t('se olvida al cambiar o restablecer la contraseña, al cerrar las demás sesio
   await asksCode(b);
 
   b = await trusted();
+  // Entró sin escribir el código (dispositivo recordado): cerrar las demás sesiones lo pide.
+  assert.equal((await b.send('POST', '/api/me/sessions/revoke-others')).json().code, 'step_up');
+  assert.equal((await b.send('POST', '/api/2fa/step-up', { code: await h.codeFor('fer@disp.mx') })).statusCode, 200);
   assert.equal((await b.send('POST', '/api/me/sessions/revoke-others')).statusCode, 200);
   await asksCode(b);
 

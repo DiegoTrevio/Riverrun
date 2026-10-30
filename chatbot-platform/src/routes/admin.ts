@@ -144,7 +144,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     await logEvent({ level: 'info', source: 'admin', message: `Sesión cerrada desde Mi perfil por ${req.user.email}`, accountId: req.user.account_id ?? undefined });
     return { ok: true, current: req.params.id === req.sessionId };
   });
-  api.post('/api/me/sessions/revoke-others', async (req: any) => {
+  api.post('/api/me/sessions/revoke-others', stepUp, async (req: any) => {
     const closed = await store.revokeUserSessions(req.user.id, { except: req.sessionId });
     await forgetTrustedDevices(req.user.id);
     await logEvent({ level: 'info', source: 'admin', message: `${req.user.email} cerró sus otras ${closed} sesiones`, accountId: req.user.account_id ?? undefined });

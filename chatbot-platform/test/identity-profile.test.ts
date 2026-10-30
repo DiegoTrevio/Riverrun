@@ -57,6 +57,13 @@ t('códigos nuevos: los anteriores dejan de servir y llega el aviso', async () =
   await waitFor(() => mailTo('ana@perfil.mx', 'Generaste códigos de recuperación nuevos'));
 });
 
+t('dos «Generar códigos nuevos» al mismo tiempo dejan 10 códigos', async () => {
+  const both = await Promise.all([ana('POST', '/api/me/2fa/recovery-codes'), ana('POST', '/api/me/2fa/recovery-codes')]);
+  for (const r of both) assert.equal(r.statusCode, 200, r.body);
+  const n = (await pool.query(`SELECT count(*)::int AS n FROM user_recovery_codes c JOIN users u ON u.id = c.user_id WHERE u.email = 'ana@perfil.mx' AND c.used_at IS NULL`)).rows[0].n;
+  assert.equal(n, 10);
+});
+
 t('cambiar de app: el código de la anterior ya no sirve y llega el aviso', async () => {
   const old = h.totpSecrets.get('ana@perfil.mx')!;
   const started = (await ana('POST', '/api/me/2fa/authenticator')).json();

@@ -54,12 +54,19 @@ export async function trustDevice(reply: FastifyReply, userId: string, deviceHas
   reply.setCookie(cookieName('cp_trust'), token, opts(TRUST_MS));
 }
 
-/** ¿El navegador trae un dispositivo recordado vigente de esta persona? Siempre no para el superadministrador. */
+/**
+ * ¿El navegador trae un dispositivo recordado vigente de esta persona? Hace falta también la cookie `cp_device` de ese
+ * mismo dispositivo: un `cp_trust` copiado a otro navegador no salta el código. Siempre no para el superadministrador.
+ */
 export async function trustedDeviceFor(req: FastifyRequest, user: { id: string; role: Role }): Promise<boolean> {
   if (user.role === 'superadmin') return false;
   const token = req.cookies?.[cookieName('cp_trust')];
-  if (!token || !/^[\w-]{43}$/.test(token)) return false;
-  const row = await queryOne(`UPDATE user_devices SET last_seen_at = now() WHERE user_id = $1 AND trust_hash = $2 AND trusted_until > now() RETURNING id`, [user.id, sha(token)]);
+  const device = req.cookies?.[cookieName('cp_device')];
+  if (!token || !/^[\w-]{43}$/.test(token) || !device || !/^[\w-]{43}$/.test(device)) return false;
+  const row = await queryOne(
+    `UPDATE user_devices SET last_seen_at = now() WHERE user_id = $1 AND trust_hash = $2 AND device_hash = $3 AND trusted_until > now() RETURNING id`,
+    [user.id, sha(token), sha(device)],
+  );
   return !!row;
 }
 
