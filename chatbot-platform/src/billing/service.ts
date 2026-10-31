@@ -412,8 +412,9 @@ async function applyStateLocked(state: SubscriptionState & { accountId: string }
   // Prueba con tarjeta: el proveedor confirmó la tarjeta y el primer cobro es al terminar la prueba (`trialEnd`).
   const trialFuture = !!state.trialEnd && state.trialEnd > now;
   const waitingCard = acc.status === 'paused' && acc.pause_reason === 'card';
-  // La tarjeta ya se confirmó: la verificación abierta quedó completa (el freno cuenta las que no se completan).
-  if (state.status === 'active') await query(`UPDATE card_checks SET completed_at = now() WHERE account_id = $1 AND completed_at IS NULL`, [accountId]);
+  // La tarjeta ya se confirmó: la verificación abierta quedó completa (el freno cuenta las que no se completan). Solo al
+  // pasar a activa: los avisos de una suscripción que ya lo estaba (cancelar y reanudar) no completaban las demás.
+  if (state.status === 'active' && was !== 'active') await query(`UPDATE card_checks SET completed_at = now() WHERE account_id = $1 AND completed_at IS NULL`, [accountId]);
 
   if (state.status === 'active' && trialFuture && waitingCard) {
     await startTrialFromState({ ...state, accountId }, acc.name, later, client);
