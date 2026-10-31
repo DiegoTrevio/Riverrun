@@ -613,6 +613,8 @@ export const ChannelConfigSchemas = {
     last_error: z.string().max(300).default(''),
     /** Solo contesta correos con el remitente comprobado (DMARC o DKIM alineado); los demás se guardan sin respuesta (IN-17). */
     require_sender_auth: z.boolean().default(true),
+    /** Identificador del servidor que comprueba los correos (el primer dato de su Authentication-Results); vacío = el del proveedor. */
+    auth_server_id: z.string().max(200).default(''),
   }),
   playground: z.object({}),
 } as const;

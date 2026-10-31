@@ -185,6 +185,8 @@ function channelConfigFields(ch, cfg) {
         if (p === 'outlook') Object.assign(cfg, { imap_host: 'outlook.office365.com', imap_port: 993, smtp_host: 'smtp.office365.com', smtp_port: 587 });
         render();
       };
+      // Un canal nuevo empieza comprobando remitentes (como en el servidor).
+      if (cfg.require_sender_auth === undefined) cfg.require_sender_auth = true;
       return [
         field('Proveedor', h('select', { onchange: (e) => preset(e.target.value) }, [['gmail', 'Gmail / Google Workspace'], ['outlook', 'Outlook / Microsoft 365'], ['otro', 'Otro (IMAP y SMTP)']].map(([v, l]) => h('option', { value: v, selected: cfg.provider === v }, l))), 'Elige uno para rellenar los servidores.'),
         field('Correo (usuario)', text(cfg, 'imap_user', { placeholder: 'atencion@tuempresa.com' })),
@@ -196,6 +198,11 @@ function channelConfigFields(ch, cfg) {
             field('Servidor SMTP (enviar)', text(cfg, 'smtp_host')), num('smtp_port', 'Puerto SMTP', '465 usa SSL; 587 usa STARTTLS.'),
             field('Usuario SMTP', text(cfg, 'smtp_user'), 'Vacío = el mismo correo.'), secret('smtp_password', 'Contraseña SMTP', 'Vacía = la misma.'),
             field('Dirección de envío', text(cfg, 'from_address'), 'Vacía = el mismo correo.'))),
+        h('details', {}, h('summary', {}, 'Remitentes'),
+          h('div', { style: 'margin-top:10px' },
+            check(cfg, 'require_sender_auth', 'Solo contestar remitentes comprobados (recomendado)'),
+            h('p', { class: 'muted small' }, 'Un correo cuyo remitente no se puede comprobar (DMARC o DKIM) se guarda marcado «[Remitente no verificado]» y no se contesta: así nadie escribe a tu nombre de cliente.'),
+            field('Servidor que comprueba los correos', text(cfg, 'auth_server_id', { placeholder: 'mx.google.com' }), 'Vacío = el de tu proveedor. Es el primer dato del encabezado «Authentication-Results» de tus correos; con otro proveedor, pídeselo a quien te da el correo.'))),
       ];
     }
     case 'zernio':

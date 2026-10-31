@@ -118,7 +118,7 @@ t('un servidor de correo en la red interna se rechaza', async () => {
 
 t('si solo se llenó IMAP, las respuestas usan el SMTP deducido; y el primer correo de un buzón vacío sí se contesta', async () => {
   em.setMailBackend(fakeBackend); // el test anterior dejó el backend real
-  const r = await h.authed('POST', '/api/channels', { account_id: h.accountId, type: 'email', name: 'Solo IMAP', chatbot_id: h.botId, config: { imap_host: 'imap.empresa.mx', imap_user: 'hola@empresa.mx', imap_password: 'p4ss' } });
+  const r = await h.authed('POST', '/api/channels', { account_id: h.accountId, type: 'email', name: 'Solo IMAP', chatbot_id: h.botId, config: { imap_host: 'imap.empresa.mx', imap_user: 'hola@empresa.mx', imap_password: 'p4ss', auth_server_id: 'mx.google.com' } });
   const id = r.json().id;
   uid = 0; // buzón vacío
   inbox = [];
@@ -180,16 +180,29 @@ t('un WhatsApp de 65 000 caracteres se guarda recortado y el asistente responde 
   assert.ok(h.sent.some((s) => s.to === phone && s.kind === 'text'), 'el asistente respondió');
 });
 
-t('senderVerified: dmarc=pass, o dkim=pass del mismo dominio u organización; nada más (IN-17)', async () => {
-  const { senderVerified } = em;
-  assert.equal(senderVerified('mx.google.com; dmarc=pass header.from=real.com', 'a@real.com'), true);
-  assert.equal(senderVerified('mx; dkim=pass header.d=real.com; dmarc=fail', 'a@real.com'), true);
-  assert.equal(senderVerified('mx; dkim=pass header.d=mail.real.com', 'a@real.com'), true, 'subdominio de la misma organización');
-  assert.equal(senderVerified('mx; dkim=pass header.d=correo.tienda.com.mx', 'a@tienda.com.mx'), true);
-  assert.equal(senderVerified('mx; dkim=pass header.d=otro.com.mx', 'a@tienda.com.mx'), false, 'com.mx no es una organización');
-  assert.equal(senderVerified('mx; dkim=pass header.d=atacante.com; spf=pass', 'a@real.com'), false, 'firma de otro dominio');
-  assert.equal(senderVerified('mx; dkim=fail header.d=real.com; spf=pass; dmarc=fail', 'a@real.com'), false);
-  assert.equal(senderVerified(undefined, 'a@real.com'), false);
+t('senderVerified: solo el Authentication-Results del servidor del proveedor; dmarc=pass o dkim alineado (IN-17)', async () => {
+  const { senderVerified, trustedAuthServers } = em;
+  const gmail = trustedAuthServers({ provider: 'gmail', imap_host: 'imap.gmail.com' });
+  assert.deepEqual(gmail, ['mx.google.com']);
+  assert.equal(senderVerified('mx.google.com; dmarc=pass header.from=real.com', 'a@real.com', gmail), true);
+  assert.equal(senderVerified('mx.google.com; dkim=pass header.d=real.com; dmarc=fail', 'a@real.com', gmail), true);
+  // Gmail sin DMARC del remitente: dkim=pass con header.i (sin header.d).
+  assert.equal(senderVerified('mx.google.com; dkim=pass header.i=@real.com header.s=s1 header.b=abc; spf=pass', 'a@real.com', gmail), true);
+  assert.equal(senderVerified('mx.google.com; dkim=pass header.d=mail.real.com', 'a@real.com', gmail), true, 'subdominio del mismo dominio');
+  assert.equal(senderVerified('mx.google.com; dkim=pass header.d=atacante.com; spf=pass', 'a@real.com', gmail), false, 'firma de otro dominio');
+  assert.equal(senderVerified('mx.google.com; dkim=pass header.d=github.io', 'a@b.github.io', gmail), true, 'solo quien controla github.io firma por él');
+  assert.equal(senderVerified('mx.google.com; dkim=pass header.d=x.github.io', 'a@b.github.io', gmail), false, 'otro subdominio no');
+  // Un encabezado escrito por quien manda (otro servidor) no cuenta, aunque diga dmarc=pass.
+  assert.equal(senderVerified('falso.example; dmarc=pass header.from=real.com', 'a@real.com', gmail), false);
+  assert.equal(senderVerified('x; dmarc=pass', 'a@real.com', trustedAuthServers({ provider: 'otro', imap_host: 'mail.mihosting.mx' })), false);
+  assert.equal(senderVerified('server12.mihosting.mx; dmarc=pass', 'a@real.com', trustedAuthServers({ provider: 'otro', imap_host: 'mail.mihosting.mx' })), true);
+  // Outlook: el formato de Microsoft (sin identificador, con compauth).
+  const ms = trustedAuthServers({ provider: 'outlook' });
+  assert.equal(senderVerified('spf=pass (sender IP is 1.2.3.4) smtp.mailfrom=real.com; dkim=pass (signature was verified) header.d=real.com;dmarc=pass action=none header.from=real.com;compauth=pass reason=100', 'a@real.com', ms), true);
+  assert.equal(senderVerified('spf=pass smtp.mailfrom=real.com; dmarc=pass', 'a@real.com', ms), false, 'sin compauth no es de Microsoft');
+  // Configurado en el canal.
+  assert.deepEqual(trustedAuthServers({ provider: 'otro', auth_server_id: 'Mx.Ejemplo.MX, otro.mx' }), ['mx.ejemplo.mx', 'otro.mx']);
+  assert.equal(senderVerified(undefined, 'a@real.com', gmail), false);
 });
 
 t('un correo sin dkim ni dmarc se guarda sin respuesta y marcado; con dmarc=pass responde normal (IN-17)', async () => {

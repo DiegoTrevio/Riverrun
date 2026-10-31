@@ -38,7 +38,7 @@ t('el panel lleva la CSP estricta y no se puede incrustar', async () => {
 });
 
 t('variantes de la URL del panel (codificada, con ? codificado o con //) llevan la CSP estricta (IN-20)', async () => {
-  for (const url of ['/%69ndex.html', '/index.html%3F', '//index.html', '/%2e/index.html', '/no-existe']) {
+  for (const url of ['/%69ndex.html', '/index.html%3F', '//index.html', '/%2e/index.html', '/no-existe', '/pago/..%2findex.html', '/precios/..%2findex.html', '/reservar/x%2f..%2f..%2findex.html']) {
     const r = await get(url);
     if (String(r.headers['content-type'] ?? '').startsWith('text/html')) assert.equal(r.headers['content-security-policy'], PANEL_CSP, url);
   }

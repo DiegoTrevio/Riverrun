@@ -43,27 +43,47 @@ export interface RawMail {
   authResults?: string;
 }
 
-/** Dominio organizacional aproximado: los dos últimos niveles (tres con un sufijo de país de dos niveles, p. ej. com.mx). */
-function orgDomain(d: string): string {
-  const parts = d.toLowerCase().split('.').filter(Boolean);
-  const two = parts.slice(-2).join('.');
-  return /^(com|org|net|gob|edu|co|ac)\.[a-z]{2}$/.test(two) ? parts.slice(-3).join('.') : two;
+/**
+ * Servidores cuyo Authentication-Results se cree: el que configuró el canal (`auth_server_id`, separados por coma) o el
+ * del proveedor (Gmail: mx.google.com; Outlook: el formato de Microsoft, sin identificador y con compauth=); con otro
+ * proveedor, el dominio del servidor IMAP. Sin esto, quien manda podía escribir su propio «dmarc=pass» y, en un servidor
+ * que no agrega el suyo, ese era el único (revisión de la 4′).
+ */
+export function trustedAuthServers(cfg: { provider?: string; imap_host?: string; auth_server_id?: string }): string[] {
+  const set = String(cfg.auth_server_id ?? '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
+  if (set.length) return set;
+  if (cfg.provider === 'gmail' || /(^|\.)gmail\.com$|googlemail\.com$/i.test(cfg.imap_host ?? '')) return ['mx.google.com'];
+  if (cfg.provider === 'outlook' || /office365\.com$|outlook\.com$/i.test(cfg.imap_host ?? '')) return ['microsoft'];
+  const labels = String(cfg.imap_host ?? '').toLowerCase().split('.').filter(Boolean);
+  return labels.length >= 3 ? [labels.slice(1).join('.')] : labels.length === 2 ? [labels.join('.')] : [];
 }
 
+/** El Authentication-Results lo escribió un servidor de confianza. */
+function fromTrustedServer(ar: string, trusted: string[]): boolean {
+  const id = ar.split(';')[0].trim().split(/\s+/)[0].toLowerCase();
+  if (trusted.includes('microsoft') && id.includes('=') && /\bcompauth=/.test(ar)) return true;
+  if (!id || id.includes('=')) return false;
+  return trusted.some((t) => t !== 'microsoft' && (id === t || id.endsWith(`.${t}`)));
+}
+
+/** El dominio firmado y el del From son el mismo o uno es subdominio del otro (nadie firma por un dominio que no controla). */
+const aligned = (d: string, domain: string) => d === domain || domain.endsWith(`.${d}`) || d.endsWith(`.${domain}`);
+
 /**
- * ¿El remitente está comprobado (IN-17)? Solo cuenta el primer Authentication-Results (el de tu proveedor de correo: los
- * que vienen más abajo los pudo escribir quien manda): dmarc=pass, o dkim=pass con header.d del mismo dominio que el
- * From (o de su dominio organizacional).
+ * ¿El remitente está comprobado (IN-17)? Solo cuenta el primer Authentication-Results, y solo si lo escribió el
+ * servidor de tu proveedor (`trusted`): dmarc=pass, o dkim=pass del mismo dominio que el From (header.d o header.i).
  */
-export function senderVerified(authResults: string | undefined, from: string): boolean {
+export function senderVerified(authResults: string | undefined, from: string, trusted: string[] = []): boolean {
   if (!authResults) return false;
   const domain = from.split('@')[1]?.toLowerCase() ?? '';
   if (!domain) return false;
   const ar = authResults.toLowerCase();
+  if (!fromTrustedServer(ar, trusted)) return false;
   if (/\bdmarc=pass\b/.test(ar)) return true;
-  for (const m of ar.matchAll(/\bdkim=pass\b[^;]*?header\.d=([a-z0-9.-]+)/g)) {
-    const d = m[1].replace(/\.$/, '');
-    if (d === domain || orgDomain(d) === orgDomain(domain)) return true;
+  for (const part of ar.split(';')) {
+    if (!/\bdkim=pass\b/.test(part)) continue;
+    const d = /header\.d=([a-z0-9.-]+)/.exec(part)?.[1] ?? /header\.i=[^@\s]*@([a-z0-9.-]+)/.exec(part)?.[1];
+    if (d && aligned(d.replace(/\.$/, ''), domain)) return true;
   }
   return false;
 }
@@ -316,7 +336,7 @@ export async function pollEmailChannel(channel: Channel, deliver: (m: InboundMes
           continue;
         }
         // Remitente sin comprobar: cualquiera escribe «From: cliente@real.com». Se guarda marcado, sin contestar (IN-17).
-        if ((channel.config as any).require_sender_auth !== false && !senderVerified(mail.authResults, mail.address)) {
+        if ((channel.config as any).require_sender_auth !== false && !senderVerified(mail.authResults, mail.address, trustedAuthServers(channel.config as any))) {
           const msg = toInbound(mail, false);
           await deliver({ ...msg, text: `[Remitente no verificado] ${msg.text}`, captureOnly: true, held: 'remitente_no_verificado' });
           continue;

@@ -240,3 +240,15 @@ t('sin captcha válido la reserva responde 400; si Cloudflare no responde, 503 (
   }
 });
 
+t('si el horario ya se ocupó al confirmar, el enlace no se gasta (revisión de la 4′)', async () => {
+  const token = tokenOf(link.url);
+  const slot = (await pub('GET', `/api/public/booking/${token}/slots?service_id=${call.id}`)).json()[60];
+  const body = { service_id: call.id, slot: slot.key, name: 'Rita', email: 'rita@ocupado.mx', phone: '5512345678' };
+  assert.equal((await h.app.inject({ method: 'POST', url: `/api/public/booking/${token}`, payload: body, remoteAddress: '10.36.0.1' })).statusCode, 200);
+  const code = confirmCodeFor('rita@ocupado.mx');
+  // Alguien más toma ese horario antes de que Rita abra su enlace.
+  assert.equal((await book(token, { ...body, email: 'otra@ocupado.mx' }, '10.36.0.2')).statusCode, 200);
+  assert.equal((await pub('POST', `/api/public/booking/${token}/confirm`, { code })).statusCode, 409);
+  assert.equal((await pub('POST', `/api/public/booking/${token}/confirm`, { code })).statusCode, 409, 'el enlace sigue sirviendo (no 410)');
+});
+

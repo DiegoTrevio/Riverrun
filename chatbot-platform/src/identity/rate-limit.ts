@@ -50,6 +50,8 @@ export async function clearHits(...keys: string[]): Promise<void> {
 
 /** Borra los contadores vencidos (tarea periódica). */
 export async function pruneHits(): Promise<void> {
+  // Solicitudes de reserva de la página pública (IN-18): vencidas o ya usadas, a los 7 días.
+  await query(`DELETE FROM booking_requests WHERE expires_at < now() - interval '7 days'`);
   await query(`DELETE FROM rate_limits WHERE expires_at <= now()`);
 }
 

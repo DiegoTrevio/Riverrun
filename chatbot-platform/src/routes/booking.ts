@@ -41,9 +41,13 @@ interface BookingLink {
 /** Reservas próximas y solicitudes sin confirmar de un correo (normalizado) en un negocio. */
 async function upcomingFor(accountId: string, emailKey: string): Promise<number> {
   const domain = emailKey.split('@')[1] ?? '';
+  // Solo el mismo dominio (Gmail: gmail.com o googlemail.com), y la parte local que empieza igual: sin tope de filas que
+  // deje fuera las de esa persona en una cuenta con muchas citas.
+  const domains = domain === 'gmail.com' ? ['gmail.com', 'googlemail.com'] : [domain];
   const rows = await query<{ customer_email: string }>(
-    `SELECT customer_email FROM appointments WHERE account_id = $1 AND status = 'confirmed' AND starts_at > now() AND lower(customer_email) LIKE $2 LIMIT 500`,
-    [accountId, `%@${domain === 'gmail.com' ? '%' : domain}`],
+    `SELECT customer_email FROM appointments WHERE account_id = $1 AND status = 'confirmed' AND starts_at > now()
+       AND lower(split_part(customer_email, '@', 2)) = ANY($2::text[]) AND left(lower(customer_email), 1) = $3`,
+    [accountId, domains, emailKey.slice(0, 1)],
   );
   const pending = (await queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM booking_requests WHERE account_id = $1 AND email_key = $2 AND confirmed_at IS NULL AND expires_at > now()`, [accountId, emailKey]))!.n;
   return rows.filter((r) => canonicalEmail(r.customer_email) === emailKey).length + pending;
@@ -287,13 +291,16 @@ export async function bookingPublicRoutes(app: FastifyInstance, service: ChatSer
     );
     if (!row) return reply.code(410).send({ error: 'Este enlace ya se usó o venció. Vuelve a elegir tu horario.' });
     const p = row.payload;
+    // Si no se agenda (horario ocupado, servicio que ya no está o un error), el enlace vuelve a servir mientras no venza.
+    const release = () => query(`UPDATE booking_requests SET confirmed_at = NULL WHERE id = $1`, [row.id]);
     const svc = found.services.find((s) => s.id === p.service_id);
-    if (!svc) return reply.code(404).send({ error: 'Ese servicio ya no está disponible.' });
+    if (!svc) { await release(); return reply.code(404).send({ error: 'Ese servicio ya no está disponible.' }); }
     const r = await service.agenda.book({
       accountId: found.link.account_id, serviceId: svc.id, slotKey: p.slot, customerName: p.name, customerPhone: p.phone || undefined,
       customerEmail: row.email, notes: p.notes ? `${p.notes}\n(Reservó en la página: ${found.link.name})` : `Reservó en la página: ${found.link.name}`,
       source: 'pagina', assignedUserId: p.person_id ?? null,
-    });
+    }).catch(async (e) => { await release(); throw e; });
+    if (!r.ok) await release();
     if (!r.ok) return reply.code(409).send({ error: r.alternatives.length ? `Ese horario ya se ocupó. Elige otro: ${r.alternatives.join('; ')}` : 'Ese horario ya se ocupó. Elige otro.' });
     const a = r.appointment;
     const emailSent = await service.agenda.mailCustomer(a, 'booked').catch(() => false);

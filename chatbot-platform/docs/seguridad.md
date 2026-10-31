@@ -304,7 +304,7 @@ IN-6/7 y PAY-6) sigue pendiente.
 | # | Hallazgo | Arreglo | Prueba |
 |---|---|---|---|
 | 4.1 | Los límites de las rutas vivían en la memoria de cada proceso (se reiniciaban y no se compartían) y contaban la IP tal cual (una IPv6 tiene millones). | `limited()` e `ipLimitKey()` sobre la base: reservas, invitaciones, restablecer, Google, pools, redes, API, cobros y los de IA. Una IPv6 cuenta por su /64. | `rate-limit-routes.test.ts` |
-| IN-17 | El correo entrante no comprobaba al remitente: con `From: cliente@real.com` se escribía en el historial de ese cliente y se le contestaba. | Solo se contesta con DMARC o DKIM alineado en el primer `Authentication-Results` (el de tu proveedor). Si no, se guarda con «[Remitente no verificado]», sin respuesta (`require_sender_auth` por canal). Tope de 60 respuestas por hora por canal, con aviso. | `email.test.ts` |
+| IN-17 | El correo entrante no comprobaba al remitente: con `From: cliente@real.com` se escribía en el historial de ese cliente y se le contestaba. | Solo se contesta con DMARC o DKIM alineado (header.d o header.i del mismo dominio o subdominio) en el primer `Authentication-Results`, y solo si lo escribió el servidor del proveedor (Gmail, Microsoft, el del dominio IMAP o el configurado en «Remitentes»). Si no, se guarda con «[Remitente no verificado]», sin respuesta (`require_sender_auth` por canal). Tope de 60 respuestas por hora por canal, con aviso. | `email.test.ts` |
 | IN-18 | La reserva pública no tenía captcha ni confirmación del correo, el tope por correo se saltaba con `+etiqueta` y servía de relé de correo. | Se guarda una solicitud y se manda un enlace (texto fijo, una hora, un solo uso, migración 110); la cita se agenda al abrirlo. Captcha cerrado ante fallas, el tope de 3 cuenta el correo normalizado y lo pendiente, 20 por día por enlace, el nombre va entre « » en el aviso. | `booking-page.test.ts`, `test:public:ux` |
 | IN-19 | Sin cuota de almacenamiento ni ritmo en las subidas; una cuenta en pausa también subía. | `storage_mb` por plan (prueba: `TRIAL_MAX_STORAGE_MB`, 200): adjuntos, biblioteca y formatos. En pausa no se sube; 30 subidas por hora. | `attachments.test.ts`, `limits.test.ts` |
 | IN-20 | La CSP estricta del panel se saltaba con `/%69ndex.html`. | La estricta es la de por omisión; solo una lista de páginas del servidor lleva `inline`, decidida sobre la ruta decodificada. `check-frontend` rechaza HTML crudo fuera de los módulos de dibujos. | `security-headers.test.ts`, `check-frontend.unit.test.ts` |
@@ -322,6 +322,10 @@ IN-6/7 y PAY-6) sigue pendiente.
 **Queda para después:**
 - La conversión de plantillas DOCX aislada (IN-6/7, IN-21) y la firma del webhook de Evolution (IN-2), con la etapa 6.
 - La lista de las páginas con `inline` se mantiene a mano: una página nueva del servidor sale con la CSP estricta hasta agregarla.
+- Correo: se cree el `Authentication-Results` del servidor del proveedor (Gmail, Microsoft, el dominio del servidor IMAP o el que se configure en el canal). Un hosting que no agrega el suyo deja los correos sin respuesta (marcados) hasta configurarlo o apagar la comprobación en ese canal; quien adivine el nombre del servidor de un hosting sin el suyo puede escribir uno falso.
+- Almacenamiento: la cuota se revisa antes de guardar, sin candado: subidas simultáneas pueden pasarla por poco (a lo más 30 por hora).
+- Reservas: tres solicitudes pendientes con el correo de alguien le impiden reservar durante una hora; el tope de 20 por día por enlace cuenta cada solicitud.
+- Zernio: solo se juntan los avisos con el mismo cuerpo firmado; si Zernio reintentara con un cuerpo distinto, se procesaría dos veces.
 
 ## Hallazgos pendientes por etapa
 
