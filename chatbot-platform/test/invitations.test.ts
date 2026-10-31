@@ -14,7 +14,7 @@ const server = http.createServer((req, res) => {
   req.resume();
   req.on('end', () => {
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ access_token: 'a', expires_in: 3600, id_token: `x.${Buffer.from(JSON.stringify(claims)).toString('base64url')}.y` }));
+    res.end(JSON.stringify({ access_token: 'a', expires_in: 3600, id_token: `x.${Buffer.from(JSON.stringify({ iss: 'https://accounts.google.com', aud: 'cid', ...claims })).toString('base64url')}.y` }));
   });
 });
 await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
