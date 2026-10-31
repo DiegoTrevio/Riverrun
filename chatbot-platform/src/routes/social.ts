@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { botFor, HttpError, requireRole, targetAccount } from '../access.js';
 import { rateLimited } from '../auth.js';
-import { assertWithinLimit, effectiveLimits, usageOf } from '../billing/limits.js';
+import { assertWithinLimit, effectiveLimits, usageOf, assertWithinLimitLocked } from '../billing/limits.js';
 import { mergeChannelConfig } from '../channels/index.js';
 import { metaConnectEnabled } from '../channels/meta-connect.js';
 import { clientFor, networkOf, ZernioError, zernioEnabled } from '../channels/zernio.js';
@@ -96,7 +96,8 @@ export async function socialRoutes(api: FastifyInstance) {
       if (channelId && b.chatbot_id) await store.updateChannel(channelId, { chatbot_id: b.chatbot_id });
       if (!channelId) {
         await assertWithinLimit(accountId, 'channels');
-        const ch = await store.createChannel({ account_id: accountId, chatbot_id: b.chatbot_id ?? null, type: 'zernio', name: network.label, active: true, config: mergeChannelConfig('zernio', {}, { platform: network.id }) });
+        const ch = await store.createChannel({ account_id: accountId, chatbot_id: b.chatbot_id ?? null, type: 'zernio', name: network.label, active: true, config: mergeChannelConfig('zernio', {}, { platform: network.id }) },
+          { beforeInsert: (client) => assertWithinLimitLocked(client, accountId, 'channels') });
         channelId = ch.id;
       }
       return { kind: 'channel', channel_id: channelId };

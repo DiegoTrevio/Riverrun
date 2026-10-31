@@ -173,3 +173,16 @@ t('pedidos simultáneos no rebasan el límite: canales, asistentes y duplicados 
   assert.equal(chans.filter((r) => r.statusCode === 200).length, 2, chans.map((r) => r.statusCode).join(','));
   assert.equal(await count(`channels`), 2);
 });
+
+t('dos redes que se conectan a la vez con lugar para una: la segunda se quita con el aviso del plan (PAY-19)', async () => {
+  const { trimSocialOverLimit } = await import('../src/channels/zernio-connect.js');
+  const a = await signup('redes@limites.mx');
+  await h.authed('PUT', `/api/accounts/${a.account}`, { limits_override: { social_accounts: 1 } });
+  for (const [zid, ago] of [['acc_primera', '2 seconds'], ['acc_segunda', '1 second']]) {
+    await pool.query(`INSERT INTO social_accounts (account_id, zernio_account_id, profile_id, platform, status, connected_at) VALUES ($1, $2, 'prof', 'instagram', 'active', now() - $3::interval)`, [a.account, zid, ago]);
+  }
+  await trimSocialOverLimit(a.account, 'acc_primera');
+  await assert.rejects(trimSocialOverLimit(a.account, 'acc_segunda'), (e: any) => e.statusCode === 403 && /1 red social/.test(e.message));
+  const rows = (await pool.query(`SELECT zernio_account_id, status FROM social_accounts WHERE account_id = $1 ORDER BY connected_at`, [a.account])).rows;
+  assert.deepEqual(rows.map((r) => [r.zernio_account_id, r.status]), [['acc_primera', 'active'], ['acc_segunda', 'disconnected']]);
+});

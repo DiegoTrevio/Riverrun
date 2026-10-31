@@ -147,12 +147,14 @@ export const offerText = (o: UpgradeOffer, key: LimitKey) =>
   `El plan ${o.name} incluye ${o.allows ? `hasta ${o.allows.toLocaleString('es-MX')} ${o.allows === 1 ? LIMIT_LABELS[key].singular : LIMIT_LABELS[key].plural}` : `${LIMIT_LABELS[key].plural} sin límite`}.`;
 
 /**
- * Como assertWithinLimit, pero dentro de la transacción que va a crear el recurso y con la fila de la cuenta bloqueada:
+ * Como assertWithinLimit, pero dentro de la transacción que va a crear el recurso y con un candado por cuenta:
  * dos pedidos a la vez se forman y el segundo cuenta lo que el primero ya creó (PAY-19). Sin esto, 20 pedidos
  * simultáneos pasaban todos la cuenta antes de que alguno insertara.
  */
 export async function assertWithinLimitLocked(client: Q, accountId: string, key: Exclude<LimitKey, 'messages_per_month'>, adding = 1) {
-  await client.query('SELECT id FROM accounts WHERE id = $1 FOR UPDATE', [accountId]);
+  // Candado consultivo por cuenta (no la fila de la cuenta): serializa las altas sin bloquear otras escrituras a la cuenta
+  // (la guía de inicio, por ejemplo, actualiza la cuenta desde otras conexiones a la mitad de su transacción).
+  await client.query(`SELECT pg_advisory_xact_lock(hashtextextended('plan-limits:' || $1, 0))`, [accountId]);
   // Todo con la misma conexión: con el candado tomado, pedir otra al pool puede quedarse esperando a que se libere una
   // que ocupan los demás pedidos formados detrás de este candado.
   await assertWithinLimit(accountId, key, adding, client);

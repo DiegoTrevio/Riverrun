@@ -40,7 +40,7 @@ import { wizardDefaults } from '../templates/agent-builder.js';
 import { systemStatus } from '../monitor.js';
 import { listIncidents } from '../observability/incidents.js';
 import { diagnosticsReport, refreshDiagnostics } from '../diagnostics.js';
-import { assertWithinLimit, LimitsSchema } from '../billing/limits.js';
+import { assertWithinLimit, effectiveLimits, LimitsSchema, usageOf } from '../billing/limits.js';
 import { billingEnabled, paymentDue } from '../billing/service.js';
 import { deleteAccountFully } from '../accounts/delete.js';
 import { deletionDate } from '../accounts/retention.js';
@@ -508,6 +508,15 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     };
     const updated = await store.updateUser(target.id, patch, req.user.role === 'superadmin' ? undefined : scopeAccount(req.user)!);
     if (!updated) throw notFound('Usuario no encontrado');
+    // Dos reactivaciones a la vez pasaban la revisión previa (PAY-19): si al final sobran, esta se deshace con el aviso.
+    if (b.active === true && !target.active && updated.account_id) {
+      const max = (await effectiveLimits(updated.account_id)).limits.users;
+      const used = max ? (await usageOf(updated.account_id)).users : 0;
+      if (max && used > max) {
+        await store.updateUser(updated.id, { active: false });
+        await assertWithinLimit(updated.account_id, 'users');
+      }
+    }
     // Desactivar a alguien cierra todas sus sesiones abiertas y olvida sus dispositivos recordados. Un cambio de rol
     // cierra sus sesiones (entra otra vez con los permisos nuevos); uno de cuenta aplica al momento en las sesiones
     // abiertas (el usuario se vuelve a leer en cada petición).

@@ -10,7 +10,7 @@ import { assertAccount, HttpError, notFound, requireRole, targetAccount } from '
 import * as store from '../store/index.js';
 import { rateLimited } from '../auth.js';
 import { config } from '../config.js';
-import { query, queryOne } from '../db.js';
+import { query, queryOne, withTransaction } from '../db.js';
 import { logEvent } from '../logs.js';
 import * as astore from '../automation/store.js';
 import { WaTemplateRefSchema } from '../automation/types.js';
@@ -125,14 +125,18 @@ export async function createPlan(service: ChatService, accountId: string, b: z.i
     const conv = await queryOne(`SELECT 1 FROM conversations WHERE id = $1 AND account_id = $2 AND contact_id = $3`, [b.conversation_id, accountId, contact.id]);
     if (!conv) throw new HttpError(400, 'La conversación no es de este cliente');
   }
-  const active = (await queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM receivable_plans WHERE account_id = $1 AND active`, [accountId]))!.n;
+  const p = await withTransaction(async (client) => {
+  // El tope de activos se cuenta con la cuenta bloqueada (PAY-21): altas simultáneas no lo rebasan.
+  await client.query(`SELECT pg_advisory_xact_lock(hashtextextended('receivable-plans:' || $1, 0))`, [accountId]);
+  const active = (await client.query(`SELECT count(*)::int AS n FROM receivable_plans WHERE account_id = $1 AND active`, [accountId])).rows[0].n;
   if (b.active && active >= RECEIVABLE_PLANS_MAX) throw new HttpError(403, `Una cuenta puede tener hasta ${RECEIVABLE_PLANS_MAX} pagos recurrentes activos: pausa o borra los que ya no uses.`);
-  const p = (await queryOne<ReceivablePlan>(
+  return (await client.query(
     `INSERT INTO receivable_plans (account_id, contact_id, conversation_id, concept, amount_cents, currency, payment_link, reference, reminders, frequency, day, starts_on, ends_on, max_payments, active, created_by, approved_at)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, CASE WHEN $17::boolean THEN now() END) RETURNING ${PLAN_COLS}`,
     [accountId, contact.id, b.conversation_id ?? null, b.concept, b.amount_cents, b.currency, b.payment_link, b.reference, b.reminders ? JSON.stringify(b.reminders) : null,
       b.frequency, b.day, b.starts_on, b.ends_on, b.max_payments, b.active, o.userId, o.approved !== false],
-  ))!;
+  )).rows[0] as ReceivablePlan;
+  });
   await logEvent({ level: 'info', source: 'admin', message: `Pago recurrente registrado por ${o.actor}: ${p.concept} (${p.frequency})`, accountId });
   const created = p.active ? await runPlans(service.receivables, new Date(), p.id) : 0;
   return { plan: (await getPlan(p.id))!, created };

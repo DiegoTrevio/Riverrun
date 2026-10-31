@@ -1,4 +1,4 @@
-import { assertWithinLimit } from '../billing/limits.js';
+import { assertWithinLimit, effectiveLimits } from '../billing/limits.js';
 import { query, queryOne, withTransaction } from '../db.js';
 import { recordConnectionState } from '../lifecycle.js';
 import { logEvent } from '../logs.js';
@@ -217,6 +217,24 @@ export async function assertSocialRoom(accountId: string, zernioAccountId: strin
   }
 }
 
+/**
+ * Revisión después de guardar una red nueva (PAY-19): dos conexiones que terminan a la vez pasaban las dos la revisión
+ * previa. Si esta quedó por encima del límite del plan (por orden de llegada), se desconecta, se quita de Zernio y falla
+ * con el aviso del plan; la que llegó primero se queda.
+ */
+export async function trimSocialOverLimit(accountId: string, zernioAccountId: string) {
+  const max = (await effectiveLimits(accountId)).limits.social_accounts;
+  if (!max) return;
+  const rank = (await queryOne<{ n: number }>(
+    `SELECT n FROM (SELECT zernio_account_id, row_number() OVER (ORDER BY connected_at, id)::int AS n FROM social_accounts WHERE account_id = $1 AND status <> 'disconnected') x WHERE zernio_account_id = $2`,
+    [accountId, zernioAccountId]))?.n;
+  if (!rank || rank <= max) return;
+  await query(`UPDATE social_accounts SET status = 'disconnected', channel_id = NULL, updated_at = now() WHERE account_id = $1 AND zernio_account_id = $2`, [accountId, zernioAccountId]);
+  await disconnectAccount(clientFor(), zernioAccountId).catch(() => undefined);
+  await logEvent({ level: 'warn', source: 'channel', message: 'Zernio: dos redes se conectaron a la vez y el plan solo permitía una; se quitó la segunda', accountId });
+  await assertWithinLimit(accountId, 'social_accounts');
+}
+
 /** Zernio no quitó la cuenta: no se marca como desconectada. */
 export class ZernioDisconnectError extends Error {
   constructor(cause: unknown) {
@@ -266,6 +284,12 @@ export async function saveZernioAccount(channel: Channel, acc: Partial<ZernioAcc
      WHERE social_accounts.account_id = $1 RETURNING id`,
     [own.account_id, acc.id, own.config.profile_id, info.platform || own.config.platform, username, info.displayName || '', info.picture || '', own.id, own.chatbot_id]);
   if (!owned.length) await logEvent({ level: 'error', source: 'channel', message: 'Zernio: la cuenta conectada figura como de otro negocio; revisa en Sistema → Zernio', accountId: own.account_id, channelId: own.id });
+  try {
+    await trimSocialOverLimit(own.account_id, acc.id);
+  } catch (e) {
+    await save(own, { account_id: '', username: '', display_name: '', picture: '' });
+    throw e;
+  }
   await recordConnectionState(updated, 'open');
   await logEvent({ level: 'info', source: 'channel', message: `Zernio: ${networkOf(channel.config.platform)?.label ?? 'cuenta'} conectada${username ? ` (@${username})` : ''}`, accountId: channel.account_id, channelId: channel.id });
   await webhookReady(updated);

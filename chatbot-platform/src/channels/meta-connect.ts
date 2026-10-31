@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { assertWithinLimit } from '../billing/limits.js';
+import { assertWithinLimit, assertWithinLimitLocked } from '../billing/limits.js';
 import { config } from '../config.js';
 import { query, queryOne, withTransaction } from '../db.js';
 import { recordConnectionState } from '../lifecycle.js';
@@ -213,7 +213,8 @@ async function upsertChannel(accountId: string, chatbotId: string | null, type: 
     ch = (await store.updateChannel(found.id, { config: mergeChannelConfig(type, current.config, cfg), ...(chatbotId && !current.chatbot_id ? { chatbot_id: chatbotId } : {}) }))!;
   } else {
     await assertWithinLimit(accountId, 'channels');
-    ch = await store.createChannel({ account_id: accountId, chatbot_id: chatbotId, type, name: name.slice(0, 120), active: true, config: mergeChannelConfig(type, {}, cfg) });
+    ch = await store.createChannel({ account_id: accountId, chatbot_id: chatbotId, type, name: name.slice(0, 120), active: true, config: mergeChannelConfig(type, {}, cfg) },
+      { beforeInsert: (client) => assertWithinLimitLocked(client, accountId, 'channels') });
   }
   await recordConnectionState(ch, 'open');
   await logEvent({ level: 'info', source: 'channel', message: `Facebook: ${name} conectado`, accountId, channelId: ch.id });
