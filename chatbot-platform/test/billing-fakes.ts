@@ -21,6 +21,8 @@ export const fake = {
     portalConfigs: [] as string[],
     /** Calendarios de suscripción (cambio anual → mensual al terminar el periodo). */
     schedules: {} as Record<string, any>,
+    /** Cobros con su movimiento de saldo (GET /v1/charges/:id?expand[]=balance_transaction): el tipo de cambio. */
+    charges: {} as Record<string, any>,
     fraudWarnings: {} as Record<string, any>,
     /** El proveedor rechaza los reembolsos y las cancelaciones. */
     refundFail: false,
@@ -140,6 +142,8 @@ const stripeUrl = await serve((req, raw, res) => {
     } else if (req.method === 'POST') sched.update = body;
     return json(res, 200, sched);
   }
+  const chg = path.match(/^\/v1\/charges\/([\w-]+)$/);
+  if (chg && req.method === 'GET') return fake.stripe.charges[chg[1]] ? json(res, 200, fake.stripe.charges[chg[1]]) : json(res, 404, { error: { message: 'No such charge', code: 'resource_missing' } });
   const dp = path.match(/^\/v1\/disputes\/([\w-]+)$/);
   if (dp) return fake.stripe.disputes[dp[1]] ? json(res, 200, fake.stripe.disputes[dp[1]]) : json(res, 404, { error: { message: 'No such dispute', code: 'resource_missing' } });
   const efw = path.match(/^\/v1\/radar\/early_fraud_warnings\/([\w-]+)$/);

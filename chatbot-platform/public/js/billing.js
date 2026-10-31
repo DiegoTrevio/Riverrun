@@ -412,8 +412,23 @@ export async function viewPlans(root) {
         : h('p', { class: 'small muted' }, pr.name === 'stripe' ? 'Agrega STRIPE_SECRET_KEY y STRIPE_WEBHOOK_SECRET en .env y reinicia (./riverrun restart).' : 'Agrega MERCADOPAGO_ACCESS_TOKEN y MERCADOPAGO_WEBHOOK_SECRET en .env y reinicia (./riverrun restart).'),
       h('div', { class: 'small' }, 'Dirección de avisos (webhook):'),
       h('div', { class: 'row' }, h('code', { style: 'word-break:break-all' }, pr.webhook_url), copy(pr.webhook_url)),
-      h('p', { class: 'small muted' }, pr.name === 'stripe' ? 'En Stripe → Desarrolladores → Webhooks: eventos checkout.session.completed, customer.subscription.*, invoice.paid, invoice.payment_failed, invoice.payment_action_required (el banco pide confirmar), charge.refunded (reembolsos) y charge.dispute.* (contracargos).' : 'En Mercado Pago → Tus integraciones → Webhooks: eventos "Planes y suscripciones" (preapproval y pagos autorizados) y "Pagos" (reembolsos y contracargos).')))),
+      h('p', { class: 'small muted' }, pr.name === 'stripe' ? 'En Stripe → Desarrolladores → Webhooks: eventos checkout.session.completed, customer.subscription.*, invoice.paid, invoice.payment_failed, invoice.payment_action_required (el banco pide confirmar), charge.refunded (reembolsos), charge.dispute.* (contracargos) y radar.early_fraud_warning.created (alerta de fraude).' : 'En Mercado Pago → Tus integraciones → Webhooks: eventos "Planes y suscripciones" (preapproval y pagos autorizados), "Pagos" (reembolsos) y "Contracargos".')))),
     h('p', { class: 'muted' }, 'Además, cada suscripción se compara con el proveedor una vez al día: un aviso perdido no deja un cobro, una pausa o una reactivación sin aplicar.'),
+    ov.awaiting_rate?.length ? h('section', { class: 'card', 'aria-labelledby': 'awaiting-rate' },
+      h('h2', { id: 'awaiting-rate', style: 'margin-top:0' }, 'Facturas que esperan el tipo de cambio'),
+      h('p', { class: 'muted small' }, 'Pagos en otra moneda sin un tipo de cambio confiable del proveedor: su factura no sale en pesos. Captura cuántos pesos vale cada unidad de esa moneda el día del pago.'),
+      h('table', {},
+        h('thead', {}, h('tr', {}, h('th', {}, 'Cuenta'), h('th', {}, 'Fecha'), h('th', { class: 'num' }, 'Total'), h('th', {}, 'Pesos por unidad'))),
+        h('tbody', {}, ov.awaiting_rate.map((p) => {
+          const input = h('input', { type: 'number', min: 0, step: 0.0001, 'aria-label': `Tipo de cambio del pago de ${p.account}`, style: 'width:8em' });
+          return h('tr', {}, h('td', {}, p.account), h('td', {}, new Date(p.paid_at).toLocaleDateString('es-MX')),
+            h('td', { class: 'num' }, `${(p.total_cents / 100).toLocaleString('es-MX')} ${p.currency}`),
+            h('td', {}, h('div', { class: 'row' }, input, h('button', { class: 'small', onclick: async () => {
+              const rate = Number(input.value);
+              if (!(rate > 0)) return toast('Escribe el tipo de cambio', true);
+              if (await run(() => api('PUT', `/api/billing/payments/${p.id}/exchange-rate`, { rate }), 'Guardado: la factura sale en la siguiente revisión')) render();
+            } }, 'Guardar'))));
+        })))) : null,
     ...(ov.monthly_revenue.length ? [h('p', {}, h('strong', {}, 'Ingreso mensual recurrente: '), ov.monthly_revenue.map((m) => `${m.amount.toLocaleString('es-MX')} ${m.currency}`).join(' · '))] : []),
     h('h2', {}, 'Planes'),
     h('p', { class: 'muted' }, `Si un cobro falla, la cuenta sigue funcionando ${ov.grace_days} días y luego se pausa sola; al pagar, se reactiva sola.`),

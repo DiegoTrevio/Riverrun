@@ -90,6 +90,20 @@ export function disputeFromStripe(d: any): DisputeInfo {
   };
 }
 
+/**
+ * Tipo de cambio de un cobro en otra moneda (pesos por unidad), del movimiento de saldo de Stripe (PAY-9). null si el
+ * saldo no es en pesos o Stripe todavía no lo tiene.
+ */
+export async function exchangeRate(chargeRef: string): Promise<number | null> {
+  const ch = chargeRef.startsWith('pi_')
+    ? (await call('GET', `/v1/payment_intents/${encodeURIComponent(chargeRef)}?expand[]=latest_charge.balance_transaction`)).latest_charge
+    : await call('GET', `/v1/charges/${encodeURIComponent(chargeRef)}?expand[]=balance_transaction`);
+  const bt = ch?.balance_transaction;
+  if (!bt || typeof bt !== 'object' || String(bt.currency ?? '').toLowerCase() !== 'mxn') return null;
+  const rate = Number(bt.exchange_rate);
+  return rate > 0 ? rate : null;
+}
+
 /** Cada plan tiene su producto en Stripe con un ID fijo: se crea la primera vez que alguien lo contrata. */
 export const productId = (planKey: string) => `riverrun_${planKey}`;
 

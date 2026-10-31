@@ -308,6 +308,43 @@ t('sin Facturapi (o con clave de producción en sandbox) no se llama al PAC y lo
   assert.equal((await rowsOf(`id = $1`, [row.id]))[0].status, 'issued');
 });
 
+t('un pago en otra moneda se factura en esa moneda con el tipo de cambio de Stripe; sin uno confiable, espera (PAY-9)', async () => {
+  const usd = (id: string) => stripeHook('invoice.paid', {
+    id, object: 'invoice', status: 'paid', subscription: 'sub_f', customer: 'cus_sub_f', amount_paid: 3364, currency: 'usd', charge: `ch_${id}`,
+    status_transitions: { paid_at: unix(new Date()) }, lines: { data: [{ period: { start: unix(new Date()), end: unix(later(30 * 1440)) } }] },
+  });
+  // Con el movimiento de saldo de Stripe: sale en dólares con su tipo de cambio.
+  fake.stripe.charges.ch_in_usd1 = { id: 'ch_in_usd1', balance_transaction: { id: 'txn_1', currency: 'mxn', exchange_rate: 17.25 } };
+  assert.equal((await usd('in_usd1')).statusCode, 200);
+  await processCfdi();
+  let row = (await rowsOf(`payment_id = $1`, [await paymentId('in_usd1')]))[0];
+  const body = posted().find((r) => r.body.external_id === row.id)!.body;
+  assert.deepEqual([body.currency, body.exchange, body.items[0].product.price], ['USD', 17.25, 33.64]);
+  row = (await rowsOf(`id = $1`, [row.id]))[0];
+  assert.deepEqual([row.status, row.currency], ['issued', 'USD']);
+
+  // Sin tipo de cambio confiable: no sale en pesos, queda «pendiente: tipo de cambio» y se avisa una vez.
+  const n = posted().length;
+  assert.equal((await usd('in_usd2')).statusCode, 200);
+  await processCfdi();
+  assert.equal(posted().length, n, 'no se timbra');
+  let held = (await rowsOf(`payment_id = $1`, [await paymentId('in_usd2')]))[0];
+  assert.deepEqual([held.status, held.hold, held.last_error], ['pending', 'exchange_rate', 'pendiente: tipo de cambio']);
+  await pool.query(`UPDATE cfdi_invoices SET next_attempt_at = now() WHERE id = $1`, [held.id]);
+  await processCfdi();
+  assert.equal((await pool.query(`SELECT count(*)::int AS n FROM event_logs WHERE message LIKE 'CFDI pendiente: tipo de cambio%'`)).rows[0].n, 1, 'un solo aviso');
+  // Solo el superadmin captura el tipo de cambio; con él, sale.
+  const pid = await paymentId('in_usd2');
+  assert.deepEqual((await h.authed('GET', '/api/billing/overview')).json().awaiting_rate.map((p: any) => [p.id, p.currency]), [[pid, 'USD']], 'el superadmin lo ve en Planes y cobro');
+  assert.equal((await F.api('PUT', `/api/billing/payments/${pid}/exchange-rate`, { rate: 17.4 })).statusCode, 403);
+  assert.equal((await h.authed('PUT', `/api/billing/payments/${pid}/exchange-rate`, { rate: 17.4 })).statusCode, 200);
+  await processCfdi();
+  held = (await rowsOf(`id = $1`, [held.id]))[0];
+  assert.deepEqual([held.status, held.hold, held.currency], ['issued', '', 'USD']);
+  assert.equal(posted().at(-1)!.body.exchange, 17.4);
+  assert.deepEqual((await h.authed('GET', '/api/billing/overview')).json().awaiting_rate, []);
+});
+
 t('borrar la cuenta conserva sus CFDI (son contabilidad)', async () => {
   const n = (await rowsOf(`account_id = $1`, [F.account])).length;
   assert.ok(n > 3);

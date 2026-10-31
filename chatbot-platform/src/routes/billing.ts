@@ -177,6 +177,21 @@ export async function billingRoutes(api: FastifyInstance) {
     return { ok: true };
   });
 
+  /**
+   * Tipo de cambio de un pago en otra moneda (pesos por unidad), cuando no hay uno confiable del proveedor (PAY-9): sus
+   * facturas en espera («pendiente: tipo de cambio») salen en la siguiente revisión. Solo el superadministrador.
+   */
+  api.put('/api/billing/payments/:id/exchange-rate', supers, async (req: any) => {
+    const { rate } = parse(z.object({ rate: z.number().positive().max(100000) }), req.body);
+    const p = await queryOne<{ id: string; account_id: string | null; currency: string }>(
+      `UPDATE billing_payments SET exchange_rate = $2, updated_at = now() WHERE id = $1 AND upper(currency) <> 'MXN' RETURNING id, account_id, currency`, [req.params.id, rate]);
+    if (!p) throw new HttpError(404, 'No hay un pago en otra moneda con ese id');
+    await query(`UPDATE cfdi_invoices SET hold = '', next_attempt_at = now(), updated_at = now()
+      WHERE status = 'pending' AND hold = 'exchange_rate' AND (payment_id = $1 OR id = (SELECT global_cfdi_id FROM billing_payments WHERE id = $1))`, [p.id]);
+    await logEvent({ level: 'info', source: 'admin', message: `Tipo de cambio capturado para el pago ${p.id}: ${rate} MXN por ${p.currency}`, accountId: p.account_id ?? undefined });
+    return { ok: true };
+  });
+
   /** Resumen para el superadmin: qué está configurado, URLs de aviso y cuántas suscripciones hay. */
   api.get('/api/billing/overview', supers, async () => {
     const counts = await query<{ provider: string; status: string; n: number }>(`SELECT provider, status, count(*)::int AS n FROM subscriptions GROUP BY 1, 2`);
@@ -192,6 +207,13 @@ export async function billingRoutes(api: FastifyInstance) {
       grace_days: config.billing.graceDays,
       tax_percent: taxPercent(),
       invoicing: { enabled: invoicer.enabled(), counts: await cfdiCounts() },
+      // Pagos en otra moneda cuya factura espera el tipo de cambio (PAY-9).
+      awaiting_rate: await query<{ id: string; currency: string; total_cents: number; paid_at: Date; account: string }>(
+        `SELECT p.id, upper(p.currency) AS currency, p.total_cents, p.paid_at, coalesce(a.name, '(cuenta borrada)') AS account
+         FROM billing_payments p LEFT JOIN accounts a ON a.id = p.account_id
+         WHERE upper(p.currency) <> 'MXN' AND p.exchange_rate IS NULL
+           AND EXISTS (SELECT 1 FROM cfdi_invoices c WHERE c.status = 'pending' AND c.hold = 'exchange_rate' AND (c.payment_id = p.id OR c.id = p.global_cfdi_id))
+         ORDER BY p.paid_at LIMIT 50`),
     };
   });
 
