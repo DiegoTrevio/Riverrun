@@ -91,7 +91,9 @@ export async function sessionRoutes(app: FastifyInstance) {
     }
     const user = await login(who, String(body.password ?? ''));
     if (!user) {
-      await logEvent({ level: 'warn', source: 'admin', message: 'Intento de acceso fallido', details: { ip: req.ip, email: who.slice(0, 100) } });
+      // Solo si tiene forma de correo (bajos de la 2c): quien escribe su contraseña en el campo del correo no la deja en la bitácora.
+      const logged = /^[^\s@]{1,64}@[^\s@]+\.[^\s@]{2,}$/.test(who) ? who.slice(0, 100) : '[no es un correo]';
+      await logEvent({ level: 'warn', source: 'admin', message: 'Intento de acceso fallido', details: { ip: req.ip, email: logged } });
       return reply.code(401).send({ error: 'Usuario o contraseña incorrectos' });
     }
     await Promise.all([releaseHit(ipLimit), releaseHit(accountLimit)]);

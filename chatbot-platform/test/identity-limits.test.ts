@@ -146,6 +146,14 @@ t('confirmar con el código (verificación reciente): 5 por sesión en 15 minuto
   assert.equal((await api('POST', '/api/2fa/step-up', { code: await h.codeFor('tere@lim.mx') })).statusCode, 200);
 });
 
+t('el acceso fallido guarda el correo solo si tiene forma de correo (bajos de la 2c)', async () => {
+  await login('Pz-SecretoPegado-77', 'algo-cualquiera-9', '10.78.0.1');
+  await login('pepe@lim.mx', 'algo-cualquiera-9', '10.78.0.2');
+  const rows = (await pool.query(`SELECT details->>'email' AS email FROM event_logs WHERE message = 'Intento de acceso fallido' ORDER BY id DESC LIMIT 2`)).rows.map((r) => r.email);
+  assert.deepEqual(rows, ['pepe@lim.mx', '[no es un correo]']);
+  assert.equal((await pool.query(`SELECT count(*)::int AS n FROM event_logs WHERE details::text LIKE '%SecretoPegado%'`)).rows[0].n, 0);
+});
+
 t('la contraseña actual equivocada al cambiarla cuenta como intento a la cuenta', async () => {
   await newUser('lia@lim.mx');
   const lia = await h.loginAs('lia@lim.mx', PASS);
