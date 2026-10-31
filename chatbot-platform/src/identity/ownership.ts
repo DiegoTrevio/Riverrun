@@ -4,6 +4,7 @@
  * superadministrador) maneja el dinero, la cuenta y a los demás administradores: las rutas se marcan con `ownerOnly` u
  * `ownerStepUp` y `ownerHook` las revisa antes de pedir la verificación reciente.
  */
+import { COPILOT_BLOCKED, fromCopilot } from './step-up.js';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { HttpError } from '../access.js';
 import { query, queryOne } from '../db.js';
@@ -53,7 +54,10 @@ export async function assertOwner(req: FastifyRequest, accountId: string): Promi
 
 /** Gancho de las rutas con sesión (después de requireAuth y antes de la verificación reciente). */
 export async function ownerHook(req: FastifyRequest, reply: FastifyReply) {
-  if (!req.routeOptions.config?.owner || req.user.role === 'superadmin') return;
+  if (!req.routeOptions.config?.owner) return;
+  // Lo que solo hace el dueño tampoco lo hace el Copiloto en su nombre (ni con la sesión del superadmin).
+  if (fromCopilot(req)) return reply.code(403).send({ error: COPILOT_BLOCKED, code: 'copilot_blocked' });
+  if (req.user.role === 'superadmin') return;
   const accountId = req.user.account_id;
   if (accountId && (await isAccountOwner(req.user, accountId))) return;
   const e = await ownerOnlyError(accountId);

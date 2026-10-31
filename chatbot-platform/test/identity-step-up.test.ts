@@ -153,6 +153,23 @@ t('Ajustes ya no muestra los secretos; «Mostrar» los pide con verificación re
   assert.equal((await admin('GET', '/api/settings/secrets')).json().code, 'step_up');
 });
 
+t('con la marca del Copiloto, ninguna ruta delicada ni del dueño pasa, aunque el código sea de hace un momento (bajos de la 2c)', async () => {
+  await age('admin@test.mx', 0);
+  for (const header of ['x-copilot', 'x-copilot-action']) {
+    for (const [method, url] of STEP_UP) {
+      const r = await h.app.inject({ method: method as any, url, payload: {}, headers: { cookie: h.cookie, [header]: '1' } });
+      assert.equal(r.statusCode, 403, `${method} ${url}: ${r.body}`);
+      assert.equal(r.json().code, 'copilot_blocked', `${method} ${url}`);
+    }
+  }
+  // Una del dueño (sin verificación reciente) también.
+  const owner = await h.app.inject({ method: 'POST', url: `/api/billing/confirm?account_id=${h.accountId}`, payload: {}, headers: { cookie: h.cookie, 'x-copilot': '1' } });
+  assert.deepEqual([owner.statusCode, owner.json().code], [403, 'copilot_blocked']);
+  // Sin la marca, la misma sesión sí entra (lo demás del Copiloto sigue igual).
+  assert.equal((await h.authed('GET', `/api/settings/secrets?account_id=${h.accountId}`)).statusCode, 200);
+  assert.equal((await h.app.inject({ method: 'GET', url: '/api/me', headers: { cookie: h.cookie, 'x-copilot': '1' } })).statusCode, 200);
+});
+
 t('el Copiloto no llega a ninguna ruta delicada', async () => {
   const files = (fs.readdirSync('src/copilot', { recursive: true }) as string[]).filter((f) => f.endsWith('.ts'));
   const src = files.map((f) => fs.readFileSync(`src/copilot/${f}`, 'utf8')).join('\n');
