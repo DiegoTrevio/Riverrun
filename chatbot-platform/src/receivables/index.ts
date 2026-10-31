@@ -9,6 +9,7 @@
 import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
 import { normalize } from '../engine/text.js';
+import { countHit } from '../identity/rate-limit.js';
 import { logEvent } from '../logs.js';
 import { paymentEvent } from '../integrations/webhooks.js';
 import { formatMoney } from '../quotes/format.js';
@@ -23,7 +24,9 @@ const REMINDER_RETRY_LIMIT = 3;
 
 const DAY = 86400_000;
 /** Al reportar un pago, cuánto se deja de insistir mientras el equipo lo verifica. */
-export const PAUSE_ON_REPORT_MS = 2 * DAY;
+export /** Veces que un cliente pausa los recordatorios de un cobro diciendo que ya pagó. */
+const PAUSES_PER_RECEIVABLE = 2;
+const PAUSE_ON_REPORT_MS = 2 * DAY;
 
 export const DEFAULT_MESSAGES = {
   before: 'Hola {{nombre}}, te recordamos que tu pago de {{pago.concepto}} por {{pago.monto}} vence el {{pago.vencimiento}}.',
@@ -470,19 +473,29 @@ export class Receivables {
     const today = todayIn(st.timezone);
     // Una foto sin palabras de pago solo cuenta si algún cobro vence en los próximos 7 días o ya venció.
     if (!said && !pending.some((r) => daysBetween(today, r.due_date) <= 7)) return false;
-    const fresh = await query<{ id: string }>(
-      `UPDATE receivables SET paused_until = $3, conversation_id = COALESCE(conversation_id, $4), updated_at = now()
-        WHERE account_id = $1 AND contact_id = $2 AND status = 'pending' AND (paused_until IS NULL OR paused_until < now()) RETURNING id`,
-      [conv.account_id, contact.id, new Date(Date.now() + PAUSE_ON_REPORT_MS), conv.id],
-    );
-    // Ya se avisó por este reporte (varias fotos seguidas): no se repite el aviso.
-    if (!fresh.length) return true;
+    // Cada cobro se pausa por «ya pagué» hasta PAUSES_PER_RECEIVABLE veces: después solo se avisa al equipo (decir «ya
+    // pagué» cada dos días no debe apagar los recordatorios para siempre).
+    const idle = pending.filter((r) => !r.paused_until || new Date(r.paused_until).getTime() < Date.now());
+    if (!idle.length) return true; // ya se avisó por este reporte (varias fotos seguidas)
+    const pausable: string[] = [];
+    const spent: Receivable[] = [];
+    for (const r of idle) {
+      if ((await countHit(`payment-report-pause:${r.id}`, 60 * DAY)) <= PAUSES_PER_RECEIVABLE) pausable.push(r.id);
+      else spent.push(r);
+    }
+    if (pausable.length) {
+      await query(`UPDATE receivables SET paused_until = $2, conversation_id = COALESCE(conversation_id, $3), updated_at = now() WHERE id = ANY($1::uuid[]) AND status = 'pending'`,
+        [pausable, new Date(Date.now() + PAUSE_ON_REPORT_MS), conv.id]);
+    }
+    if (spent.length) {
+      await logEvent({ level: 'warn', source: 'engine', message: `El cliente ya pausó sus recordatorios ${PAUSES_PER_RECEIVABLE} veces (${spent.map((r) => r.concept).join(', ')}): siguen los recordatorios hasta que el equipo lo verifique`, accountId: conv.account_id, conversationId: conv.id });
+    }
     const s = await getReceivableSettings(conv.account_id);
     const list = pending.map((r) => { const v = paymentVars(r, s, st.timezone); return `• ${r.concept}: ${v['pago.monto']} (vence el ${v['pago.vencimiento']})`; }).join('\n');
     const name = contact.name || contact.push_name || (contact.phone ? `+${contact.phone}` : 'Un cliente');
     await this.chat.automator.alertTeam(conv.account_id, {
       title: `💳 ${name} dice que ya pagó`,
-      body: `${media ? 'Mandó un archivo y' : 'Escribió que'} ya pagó. Verifica el pago y márcalo como pagado en Cobros:\n${list}`,
+      body: `${media ? 'Mandó un archivo y' : 'Escribió que'} ya pagó. Verifica el pago y márcalo como pagado en Cobros:\n${list}${spent.length ? `\nYa pausó sus recordatorios ${PAUSES_PER_RECEIVABLE} veces: esta vez siguen hasta que lo verifiques.` : ''}`,
       link: `#/conversation/${conv.id}`,
       kind: 'payment',
       conversationId: conv.id,
