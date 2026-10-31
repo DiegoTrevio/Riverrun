@@ -100,7 +100,7 @@ export async function channelRoutes(api: FastifyInstance) {
 
   api.get('/api/channels', async (req: any) => {
     const channels = await store.listChannels(scopeAccount(req.user, req.query.account_id), { chatbotId: req.query.chatbot_id });
-    if (req.user.role === 'agent') return channels.map(({ id, account_id, chatbot_id, type, name, active }) => ({ id, account_id, chatbot_id, type, name, active }));
+    // El agente ve solo nombre, tipo y estado (publicChannel con su rol).
     return channels.map((c) => publicChannel(c, req.user));
   });
 

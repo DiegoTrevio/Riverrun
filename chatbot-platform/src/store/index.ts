@@ -47,10 +47,14 @@ export async function getAccount(id: string) {
  * citas con los datos de los clientes) y el secreto de los webhooks, ni los avisos internos de límites. El administrador
  * ve esos secretos en Ajustes; el resto de los roles, nunca.
  */
-export function publicAccount<T extends object>(a: T): Omit<T, 'settings' | 'limit_notices'> {
+/** Lo que un agente ve de su cuenta (bajos de la 2c): sin límites especiales, dueño, borrado ni datos internos. */
+const AGENT_ACCOUNT_FIELDS = ['id', 'name', 'active', 'status', 'plan', 'trial_ends_at', 'business_type', 'onboarding', 'pause_reason', 'copilot_enabled', 'brand_id', 'created_at'];
+
+export function publicAccount<T extends object>(a: T, viewer?: { role: string } | null): Partial<Omit<T, 'settings' | 'limit_notices'>> {
   const { settings, limit_notices, ...rest } = a as T & { settings?: unknown; limit_notices?: unknown };
   void settings;
   void limit_notices;
+  if (viewer?.role === 'agent') return Object.fromEntries(Object.entries(rest).filter(([k]) => AGENT_ACCOUNT_FIELDS.includes(k))) as Partial<Omit<T, 'settings' | 'limit_notices'>>;
   return rest;
 }
 

@@ -145,6 +145,22 @@ t('cuenta: el agente ve su cuenta sin totales ni datos del dueño', async () => 
   assert.notEqual(full[0].conversations, undefined);
 });
 
+t('el agente no ve secretos del canal ni datos internos de la cuenta (bajos de la 2c)', async () => {
+  await pool.query(`UPDATE accounts SET limits_override = '{"users": 50}'::jsonb WHERE id = $1`, [h.accountId]);
+  const me = (await ana('GET', '/api/me')).json().account;
+  for (const k of ['limits_override', 'owner_user_id', 'deletion_requested_at', 'deletion_date', 'keep_data', 'signup_source']) assert.equal(me[k], undefined, `/api/me: ${k}`);
+  assert.equal(me.id, h.accountId);
+  const [acc] = (await ana('GET', '/api/accounts')).json();
+  for (const k of ['limits_override', 'owner_user_id', 'conversations', 'owner_email']) assert.equal(acc[k], undefined, `/api/accounts: ${k}`);
+  const bot = (await ana('GET', `/api/chatbots/${h.botId}`)).json();
+  for (const c of bot.channels) {
+    for (const k of ['config', 'webhook_token', 'webhook_url', 'embed_code']) assert.equal(c[k], undefined, `canal ${c.type}: ${k}`);
+  }
+  for (const c of (await ana('GET', '/api/channels')).json()) assert.equal(c.config, undefined);
+  const adminBot = (await carmen('GET', `/api/chatbots/${h.botId}`)).json();
+  assert.ok(adminBot.channels.some((c: any) => c.webhook_token), 'el administrador sí');
+});
+
 t('cobros: el agente solo ve y opera los de sus contactos, y no pone enlaces de pago (ID-11)', async () => {
   const due = new Date(Date.now() + 5 * 86400_000).toISOString().slice(0, 10);
   const charge = async (contact_id: string, extra: Record<string, unknown> = {}) => {

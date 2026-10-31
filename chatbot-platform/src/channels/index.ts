@@ -42,7 +42,14 @@ export function webhookUrl(channel: Pick<Channel, 'type' | 'webhook_token'>) {
  * Versión del canal apta para el panel: secretos enmascarados e información de conexión. En redes sociales (Zernio), el
  * perfil y la cuenta solo los ve el superadmin; el negocio solo sabe si su cuenta está conectada.
  */
+/** Lo que un agente ve de un canal (bajos de la 2c): ni configuración, ni token del webhook, ni código de inserción. */
+function agentChannel(c: Channel) {
+  return { id: c.id, account_id: c.account_id, chatbot_id: c.chatbot_id, type: c.type, name: c.name, active: c.active, label: adapterFor(c.type).label,
+    connection_state: c.connection_state, down_since: c.down_since, disconnect_reason: c.disconnect_reason };
+}
+
 export function publicChannel(channel: Channel, viewer?: { role: string } | null) {
+  if (viewer?.role === 'agent') return agentChannel(channel);
   const cfg: Record<string, unknown> = { ...channel.config };
   for (const k of SECRET_FIELDS) if (cfg[k]) cfg[k] = MASK;
   if (channel.type === 'zernio') {
