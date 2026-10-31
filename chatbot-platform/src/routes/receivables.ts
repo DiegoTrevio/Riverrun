@@ -1,11 +1,13 @@
 /**
  * Cobros de la cuenta (panel): lo que deben los clientes, sus recordatorios de pago y la configuración de cobro.
- * Admin y agentes ven y registran cobros y los marcan pagados; solo un admin borra o cambia la configuración.
+ * Un agente ve, registra, recuerda y marca pagados solo los cobros de los contactos que tiene asignados, y nunca pone el
+ * enlace de pago (desviaría el pago); un admin ve todos, borra y cambia la configuración.
  */
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { dateStr } from '../dates.js';
 import { assertAccount, HttpError, notFound, requireRole, targetAccount } from '../access.js';
+import * as store from '../store/index.js';
 import { rateLimited } from '../auth.js';
 import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
@@ -101,11 +103,13 @@ export const planOut = (p: ReceivablePlan & { contact_name?: string; contact_pho
 });
 
 /** Planes de pago recurrente de una cuenta, con el nombre del cliente. */
-export async function listPlans(accountId: string, contactId?: string) {
+export async function listPlans(accountId: string, contactId?: string, assignedTo?: string) {
   return query<ReceivablePlan & { contact_name: string; contact_phone: string | null }>(
     `SELECT ${planCols('p.')}, COALESCE(NULLIF(c.name, ''), NULLIF(c.push_name, ''), '') AS contact_name, c.phone AS contact_phone
        FROM receivable_plans p JOIN contacts c ON c.id = p.contact_id
-      WHERE p.account_id = $1 AND ($2::uuid IS NULL OR p.contact_id = $2) ORDER BY p.active DESC, p.created_at DESC LIMIT 500`, [accountId, contactId ?? null]);
+      WHERE p.account_id = $1 AND ($2::uuid IS NULL OR p.contact_id = $2)
+        AND ($3::uuid IS NULL OR EXISTS (SELECT 1 FROM conversations cv WHERE cv.contact_id = p.contact_id AND cv.assigned_user_id = $3))
+      ORDER BY p.active DESC, p.created_at DESC LIMIT 500`, [accountId, contactId ?? null, assignedTo ?? null]);
 }
 
 /** Alta de un pago recurrente (panel o API): el cliente es de la cuenta. Crea de una vez el cobro que ya toque. */
@@ -148,7 +152,18 @@ export async function receivableRoutes(api: FastifyInstance, service: ChatServic
   const team = { preHandler: requireRole('agent') };
   const admins = { preHandler: requireRole('admin') };
   const enabled = () => { if (!config.receivables.enabled) throw new HttpError(404, 'Los cobros no están activados en esta plataforma'); };
-  const owned = async (user: any, id: string) => assertAccount(user, await getReceivable(id), 'Cobro no encontrado');
+  /** El agente solo llega a los cobros de sus contactos: lo demás no existe para él (404, como si fuera de otra cuenta). */
+  const seesContact = async (user: any, contactId: string | null) => user.role !== 'agent' || (!!contactId && (await store.contactAssignedTo(contactId, user.id)));
+  const assignedTo = (user: any) => (user.role === 'agent' ? user.id as string : undefined);
+  const owned = async (user: any, id: string) => {
+    const r = assertAccount(user, await getReceivable(id), 'Cobro no encontrado');
+    if (!(await seesContact(user, r.contact_id))) throw notFound('Cobro no encontrado');
+    return r;
+  };
+  /** El enlace de pago decide a quién le llega el dinero: solo lo pone o cambia un administrador. */
+  const assertLinkAllowed = (user: any, link: string | undefined) => {
+    if (user.role === 'agent' && link) throw new HttpError(403, 'Solo un administrador pone el enlace de pago');
+  };
 
   api.get('/api/receivables', team, async (req: any) => {
     enabled();
@@ -156,7 +171,7 @@ export async function receivableRoutes(api: FastifyInstance, service: ChatServic
     const q = parse(z.object({ status: z.enum(['', 'pending', 'overdue', 'paid', 'canceled']).default(''), contact_id: z.string().uuid().optional(), search: z.string().trim().max(100).optional(), account_id: z.string().optional() }), req.query);
     const st = await astore.getSettings(accountId);
     const today = todayIn(st.timezone);
-    const { rows, totals } = await listReceivables(accountId, { status: q.status, contactId: q.contact_id, search: q.search }, today, st.timezone);
+    const { rows, totals } = await listReceivables(accountId, { status: q.status, contactId: q.contact_id, search: q.search, assignedTo: assignedTo(req.user) }, today, st.timezone);
     return { today, data: rows.map(receivableOut), totals };
   });
 
@@ -182,6 +197,8 @@ export async function receivableRoutes(api: FastifyInstance, service: ChatServic
     enabled();
     const accountId = await targetAccount(req.user, req.query.account_id);
     const b = parse(ReceivableBody, req.body);
+    assertLinkAllowed(req.user, b.payment_link);
+    if (!(await seesContact(req.user, b.contact_id))) throw notFound('Cliente no encontrado');
     const { receivable, scheduled } = await createReceivable(service, accountId, b, { userId: req.user.id, source: 'manual', actor: req.user.email });
     return reply.code(201).send({ receivable: receivableOut(receivable), scheduled });
   });
@@ -196,6 +213,7 @@ export async function receivableRoutes(api: FastifyInstance, service: ChatServic
     const r = await owned(req.user, req.params.id);
     if (r.status !== 'pending') throw new HttpError(409, 'Solo se puede editar un cobro pendiente');
     const b = parse(ReceivablePatch, req.body);
+    if (b.payment_link !== r.payment_link) assertLinkAllowed(req.user, b.payment_link);
     if (b.reminders && b.reminders.length > config.receivables.maxReminders) throw new HttpError(400, `Hasta ${config.receivables.maxReminders} recordatorios por cobro`);
     if (b.conversation_id) {
       const conv = await queryOne(`SELECT 1 FROM conversations WHERE id = $1 AND account_id = $2 AND contact_id = $3`, [b.conversation_id, r.account_id, r.contact_id]);
@@ -248,7 +266,11 @@ export async function receivableRoutes(api: FastifyInstance, service: ChatServic
   });
 
   /* ------------------------------ Pagos recurrentes ------------------------------ */
-  const ownedPlan = async (user: any, id: string) => assertAccount(user, await getPlan(id), 'Pago recurrente no encontrado');
+  const ownedPlan = async (user: any, id: string) => {
+    const p = assertAccount(user, await getPlan(id), 'Pago recurrente no encontrado');
+    if (!(await seesContact(user, p.contact_id))) throw notFound('Pago recurrente no encontrado');
+    return p;
+  };
   const todayOf = async (accountId: string) => todayIn((await astore.getSettings(accountId)).timezone);
 
   api.get('/api/receivable-plans', team, async (req: any) => {
@@ -256,13 +278,16 @@ export async function receivableRoutes(api: FastifyInstance, service: ChatServic
     const accountId = await targetAccount(req.user, req.query.account_id);
     const q = parse(z.object({ contact_id: z.string().uuid().optional(), account_id: z.string().optional() }), req.query);
     const today = await todayOf(accountId);
-    return { data: (await listPlans(accountId, q.contact_id)).map((p) => planOut(p, today)) };
+    return { data: (await listPlans(accountId, q.contact_id, assignedTo(req.user))).map((p) => planOut(p, today)) };
   });
 
   api.post('/api/receivable-plans', team, async (req: any, reply) => {
     enabled();
     const accountId = await targetAccount(req.user, req.query.account_id);
-    const { plan, created } = await createPlan(service, accountId, parse(PlanBody, req.body), { userId: req.user.id, actor: req.user.email });
+    const body = parse(PlanBody, req.body);
+    assertLinkAllowed(req.user, body.payment_link);
+    if (!(await seesContact(req.user, body.contact_id))) throw notFound('Cliente no encontrado');
+    const { plan, created } = await createPlan(service, accountId, body, { userId: req.user.id, actor: req.user.email });
     return reply.code(201).send({ plan: planOut(plan, await todayOf(accountId)), created });
   });
 
@@ -270,6 +295,7 @@ export async function receivableRoutes(api: FastifyInstance, service: ChatServic
     enabled();
     const p = await ownedPlan(req.user, req.params.id);
     const b = parse(PlanPatch, req.body);
+    if (b.payment_link !== p.payment_link) assertLinkAllowed(req.user, b.payment_link);
     const merged = { ...p, ...Object.fromEntries(Object.entries(b).filter(([, v]) => v !== undefined)) } as ReceivablePlan;
     if (!dayOk(merged)) throw new HttpError(400, DAY_MSG.message);
     if (merged.ends_on && merged.ends_on < merged.starts_on) throw new HttpError(400, 'La fecha de fin es antes del inicio');
@@ -303,7 +329,7 @@ export async function receivableRoutes(api: FastifyInstance, service: ChatServic
   api.get('/api/contacts/:id/receivables', team, async (req: any) => {
     enabled();
     const c = assertAccount(req.user, await queryOne<{ id: string; account_id: string }>(`SELECT id, account_id FROM contacts WHERE id = $1`, [req.params.id]), 'Cliente no encontrado');
-    if (!c) throw notFound('Cliente no encontrado');
+    if (!c || !(await seesContact(req.user, c.id))) throw notFound('Cliente no encontrado');
     const st = await astore.getSettings(c.account_id);
     const { rows } = await listReceivables(c.account_id, { contactId: c.id, limit: 50 }, todayIn(st.timezone));
     return { data: rows.map(receivableOut) };

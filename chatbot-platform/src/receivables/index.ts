@@ -122,6 +122,8 @@ export const receivableBySource = (accountId: string, source: Receivable['source
 export const getReceivable = (id: string) => queryOne<Receivable>(`SELECT ${RECEIVABLE_COLS} FROM receivables WHERE id = $1`, [id]);
 
 export interface ReceivableFilter {
+  /** Solo los de contactos con una conversación asignada a esta persona (lo que ve un agente). */
+  assignedTo?: string;
   status?: 'pending' | 'paid' | 'canceled' | 'overdue' | '';
   contactId?: string;
   search?: string;
@@ -136,6 +138,7 @@ export async function listReceivables(accountId: string, f: ReceivableFilter, to
   if (f.status === 'overdue') where.push(`r.status = 'pending' AND r.due_date < ${arg(today)}`);
   else if (f.status) where.push(`r.status = ${arg(f.status)}`);
   if (f.contactId) where.push(`r.contact_id = ${arg(f.contactId)}`);
+  if (f.assignedTo) where.push(`EXISTS (SELECT 1 FROM conversations cv WHERE cv.contact_id = r.contact_id AND cv.assigned_user_id = ${arg(f.assignedTo)})`);
   if (f.search) {
     const p = arg(`%${f.search}%`);
     where.push(`(r.concept ILIKE ${p} OR r.reference ILIKE ${p} OR c.name ILIKE ${p} OR c.push_name ILIKE ${p} OR c.phone LIKE ${p})`);
@@ -152,8 +155,10 @@ export async function listReceivables(accountId: string, f: ReceivableFilter, to
             COALESCE(sum(amount_cents) FILTER (WHERE status = 'pending'), 0)::text AS pending,
             COALESCE(sum(amount_cents) FILTER (WHERE status = 'pending' AND due_date < $2), 0)::text AS overdue,
             COALESCE(sum(amount_cents) FILTER (WHERE status = 'paid' AND paid_at >= (date_trunc('month', now() AT TIME ZONE $3) AT TIME ZONE $3)), 0)::text AS paid_month
-       FROM receivables WHERE account_id = $1 GROUP BY currency ORDER BY currency`,
-    [accountId, today, tz],
+       FROM receivables r WHERE account_id = $1
+        AND ($4::uuid IS NULL OR EXISTS (SELECT 1 FROM conversations cv WHERE cv.contact_id = r.contact_id AND cv.assigned_user_id = $4))
+      GROUP BY currency ORDER BY currency`,
+    [accountId, today, tz, f.assignedTo ?? null],
   );
   return { rows, totals: totals.map((t) => ({ currency: t.currency, pending_cents: Number(t.pending), overdue_cents: Number(t.overdue), paid_month_cents: Number(t.paid_month) })) };
 }

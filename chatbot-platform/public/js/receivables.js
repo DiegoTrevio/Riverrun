@@ -116,7 +116,8 @@ function receivableFields(m) {
       field('Monto', h('input', { type: 'number', min: 0.01, step: 0.01, required: true, value: m.amount_cents ? m.amount_cents / 100 : '', oninput: (e) => { m.amount_cents = Math.round(Number(e.target.value) * 100); } })),
       field('Vence', h('input', { type: 'date', required: true, value: m.due_date || '', oninput: (e) => { m.due_date = e.target.value; } }))),
     h('div', { class: 'grid' },
-      field('Enlace de pago (opcional)', text(m, 'payment_link', { type: 'url', placeholder: 'https://mpago.la/…' }), 'Si lo dejas vacío, el recordatorio lleva tus instrucciones de pago.'),
+      // El enlace decide a quién llega el pago: solo lo pone un administrador (el servidor lo rechaza a un agente).
+      isAdmin() ? field('Enlace de pago (opcional)', text(m, 'payment_link', { type: 'url', placeholder: 'https://mpago.la/…' }), 'Si lo dejas vacío, el recordatorio lleva tus instrucciones de pago.') : null,
       field('Referencia (opcional)', text(m, 'reference', { maxlength: 100, placeholder: 'Folio o número de cliente' }))),
     h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: custom.on, onchange: (e) => { custom.on = e.target.checked; m.reminders = custom.on ? parseDays(custom.text) : null; drawDays(); } }), 'Usar días de recordatorio propios para este cobro'),
     daysBox,
@@ -273,7 +274,7 @@ function planForm(params, reload) {
       field('Termina (opcional)', h('input', { type: 'date', oninput: (e) => { m.ends_on = e.target.value; } })),
       field('Número de pagos (opcional)', h('input', { type: 'number', min: 1, max: 600, oninput: (e) => { m.max_payments = e.target.value; } }), 'Déjalo vacío si no tiene fin.')),
     h('div', { class: 'grid' },
-      field('Enlace de pago (opcional)', text(m, 'payment_link', { type: 'url', placeholder: 'https://mpago.la/…' })),
+      isAdmin() ? field('Enlace de pago (opcional)', text(m, 'payment_link', { type: 'url', placeholder: 'https://mpago.la/…' })) : null,
       field('Referencia (opcional)', text(m, 'reference', { maxlength: 100 }))),
     h('button', { class: 'primary', onclick: async () => {
       const amount = Math.round(Number(m.amount) * 100);

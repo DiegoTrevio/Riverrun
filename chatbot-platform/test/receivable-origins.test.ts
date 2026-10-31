@@ -27,7 +27,7 @@ before(async () => {
   await h.createBot();
   await h.authed('PUT', acc('/api/settings'), { business_hours: ALL_DAY });
   await h.addUser({ account_id: h.accountId, name: 'Caja', email: 'caja@origenes.mx', password: 'Pz-144-Qx-344-Kv', role: 'admin' });
-  await h.addUser({ account_id: h.accountId, name: 'Agente', email: 'agente@origenes.mx', password: 'Pz-144-Qx-344-Kv', role: 'agent' });
+  const agentUser = await h.addUser({ account_id: h.accountId, name: 'Agente', email: 'agente@origenes.mx', password: 'Pz-144-Qx-344-Kv', role: 'agent' });
   agent = await h.loginAs('agente@origenes.mx', 'Pz-144-Qx-344-Kv');
   h.setScript(() => ({ messages: ['Claro, con gusto.'] }));
   await h.webhook('Hola, quiero agendar');
@@ -35,6 +35,8 @@ before(async () => {
   const conv = await h.conversationFor();
   contactId = conv.contact_id;
   convId = conv.id;
+  // El agente cobra a los clientes que tiene asignados (ID-11).
+  assert.equal((await h.authed('PUT', `/api/conversations/${convId}/assign`, { user_id: agentUser.id })).statusCode, 200);
   assert.equal((await h.authed('PUT', acc('/api/receivables/settings'), { payment_instructions: 'CLABE 012180001234567890', default_reminders: [-1, 0], send_at: '10:00', respect_business_hours: false })).statusCode, 200);
 });
 after(async () => {
