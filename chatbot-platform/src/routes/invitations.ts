@@ -9,7 +9,7 @@ import { HttpError, requireRole, targetAccount } from '../access.js';
 import { hashPassword, rateLimited } from '../auth.js';
 import { beginLogin } from '../identity/mfa.js';
 import { hostOf, linkBase, mailBrand } from '../brands.js';
-import { assertWithinLimit, effectiveLimits, LIMIT_LABELS, limitDetail, offerText, usageOf } from '../billing/limits.js';
+import { assertWithinLimit, assertWithinLimitLocked, effectiveLimits, LIMIT_LABELS, limitDetail, offerText, usageOf } from '../billing/limits.js';
 import { config } from '../config.js';
 import { query, queryOne, withTransaction } from '../db.js';
 import { googleConfigured } from '../integrations/google.js';
@@ -271,7 +271,7 @@ export async function invitationPublicRoutes(app: FastifyInstance) {
       if ((await client.query(`SELECT 1 FROM users WHERE lower(email) = lower($1)`, [inv.email])).rows.length) throw new HttpError(409, 'Ese correo ya tiene cuenta: inicia sesión.');
       if (!(await client.query(`SELECT active FROM accounts WHERE id = $1`, [inv.account_id])).rows[0]?.active) throw new HttpError(400, 'Esta cuenta ya no está disponible.');
       // El plan pudo bajar desde que se invitó.
-      await assertWithinLimit(inv.account_id, 'users');
+      await assertWithinLimitLocked(client, inv.account_id, 'users');
       const created = await store.createUser({ account_id: inv.account_id, role: inv.role, name: b.name, email: inv.email, password_hash: hash, verified: true }, client);
       if (google) await client.query(`UPDATE users SET google_sub = $2 WHERE id = $1`, [created.id, google.sub]);
       await client.query(`UPDATE account_invitations SET accepted_at = now(), accepted_user_id = $2 WHERE id = $1`, [inv.id, created.id]);

@@ -141,6 +141,16 @@ export async function limitDetail(accountId: string, key: LimitKey, used: number
 export const offerText = (o: UpgradeOffer, key: LimitKey) =>
   `El plan ${o.name} incluye ${o.allows ? `hasta ${o.allows.toLocaleString('es-MX')} ${o.allows === 1 ? LIMIT_LABELS[key].singular : LIMIT_LABELS[key].plural}` : `${LIMIT_LABELS[key].plural} sin límite`}.`;
 
+/**
+ * Como assertWithinLimit, pero dentro de la transacción que va a crear el recurso y con la fila de la cuenta bloqueada:
+ * dos pedidos a la vez se forman y el segundo cuenta lo que el primero ya creó (PAY-19). Sin esto, 20 pedidos
+ * simultáneos pasaban todos la cuenta antes de que alguno insertara.
+ */
+export async function assertWithinLimitLocked(client: { query: (sql: string, args?: unknown[]) => Promise<unknown> }, accountId: string, key: Exclude<LimitKey, 'messages_per_month'>, adding = 1) {
+  await client.query('SELECT id FROM accounts WHERE id = $1 FOR UPDATE', [accountId]);
+  await assertWithinLimit(accountId, key, adding);
+}
+
 /** Falla con un mensaje claro si crear `adding` más de este recurso pasa el límite de la cuenta. */
 export async function assertWithinLimit(accountId: string, key: Exclude<LimitKey, 'messages_per_month'>, adding = 1) {
   const { limits, source } = await effectiveLimits(accountId);

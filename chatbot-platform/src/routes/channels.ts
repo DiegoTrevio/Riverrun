@@ -13,7 +13,7 @@ import { assertOwner } from '../identity/ownership.js';
 import { assertRecentMfa } from '../identity/step-up.js';
 import { coordinated } from '../engine/coordination.js';
 import { recordConnectionState, startAgentOnConnect } from '../lifecycle.js';
-import { assertWithinLimit } from '../billing/limits.js';
+import { assertWithinLimit, assertWithinLimitLocked } from '../billing/limits.js';
 import { logEvent } from '../logs.js';
 import { outboundAllowed } from '../outbound-guard.js';
 import * as store from '../store/index.js';
@@ -129,7 +129,7 @@ export async function channelRoutes(api: FastifyInstance) {
       name: b.name ?? adapter.label,
       active: b.active ?? true,
       config: cfg!,
-    });
+    }, { beforeInsert: (client) => assertWithinLimitLocked(client, accountId, 'channels') });
     await logEvent({ level: 'info', source: 'admin', message: `Canal creado: ${ch.name} (${adapter.label})`, accountId, channelId: ch.id });
     return publicChannel(ch, req.user);
   });
