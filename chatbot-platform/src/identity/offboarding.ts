@@ -43,7 +43,7 @@ async function releaseCalendar(userId: string): Promise<number> {
   const future = await query<{ id: string; account_id: string }>(
     `UPDATE appointments SET assigned_user_id = NULL WHERE assigned_user_id = $1 AND starts_at > now() RETURNING id, account_id`, [userId]);
   // Lo que ya estaba copiado en su calendario se borra de ahí mientras todavía hay permiso (sin asignar, la cita se quita).
-  for (const a of future.slice(0, 200)) {
+  for (const a of future) {
     await syncStaffEvent({ appointment_id: a.id }).catch((e) =>
       logEvent({ level: 'warn', source: 'admin', message: `No se pudo quitar una cita del calendario de quien dejó el equipo: ${e?.message ?? e}`, accountId: a.account_id }));
   }

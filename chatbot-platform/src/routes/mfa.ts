@@ -65,7 +65,7 @@ export async function mfaPublicRoutes(app: FastifyInstance) {
     const found = await challengeUser(req);
     if (!found || found.challenge.purpose !== 'enroll' || found.user.totp_enabled_at) return expired(reply);
     if (found.challenge.ev) return { ok: true, sent: false };
-    return { ok: true, sent: await sendEnrollLink(found.user) };
+    return { ok: true, sent: await sendEnrollLink(found.user, { resend: true }) };
   });
 
   /** El enlace del correo, abierto en el navegador que tiene el reto: desde ahí se configura la app. */

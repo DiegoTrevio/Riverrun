@@ -13,6 +13,7 @@ import { accountOwner, ownerStepUp } from '../identity/ownership.js';
 import { rateLimited } from '../auth.js';
 import { brandByDomain, hostOf, publicBrand } from '../brands.js';
 import { config } from '../config.js';
+import { query } from '../db.js';
 import { logEvent } from '../logs.js';
 import { sendMail } from '../mailer.js';
 import { cachedChecks } from '../monitor.js';
@@ -236,7 +237,11 @@ export async function selfServicePages(root: FastifyInstance) {
       const t = readDeletionToken(req.query?.t);
       if (!t) return invalid(reply, brand);
       if (!(await consumeDeletionLink(t))) return used(reply, brand);
-      const when = await scheduleDeletion(t.accountId);
+      // Si programar falla, el enlace vuelve a servir (se consumió antes para que dos clics no lo usen dos veces).
+      const when = await scheduleDeletion(t.accountId).catch(async (e) => {
+        await query(`UPDATE accounts SET deletion_nonce = $2 WHERE id = $1 AND deletion_nonce IS NULL`, [t.accountId, t.nonce]);
+        throw e;
+      });
       if (!when) return invalid(reply, brand);
       return html(reply, 200, page({ title: 'Borrado programado', brand, noindex: true, body: `<h1>Listo</h1><p>Tu cuenta se borrará el ${esc(fmt(when))}. Te lo confirmamos por correo. Si cambias de opinión, entra a tu panel y pulsa «Cancelar el borrado».</p><a class="btn" href="/#/plan">Ir a mi panel</a>` }));
     });

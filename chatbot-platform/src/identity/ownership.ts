@@ -49,6 +49,8 @@ async function ownerOnlyError(accountId: string | null): Promise<HttpError> {
 }
 
 export async function assertOwner(req: FastifyRequest, accountId: string): Promise<void> {
+  // Lo del dueño no lo hace el Copiloto en su nombre (igual que en `ownerHook`).
+  if (fromCopilot(req)) throw new HttpError(403, COPILOT_BLOCKED, undefined, { code: 'copilot_blocked' });
   if (!(await isAccountOwner(req.user, accountId))) throw await ownerOnlyError(accountId);
 }
 

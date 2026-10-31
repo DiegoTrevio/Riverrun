@@ -165,6 +165,9 @@ t('con la marca del Copiloto, ninguna ruta delicada ni del dueño pasa, aunque e
   // Una del dueño (sin verificación reciente) también.
   const owner = await h.app.inject({ method: 'POST', url: `/api/billing/confirm?account_id=${h.accountId}`, payload: {}, headers: { cookie: h.cookie, 'x-copilot': '1' } });
   assert.deepEqual([owner.statusCode, owner.json().code], [403, 'copilot_blocked']);
+  // Lo del dueño que se revisa dentro de la ruta (promover a administrador) también.
+  const promote = await h.app.inject({ method: 'PUT', url: `/api/users/${(await pool.query(`SELECT id FROM users WHERE email = 'mia@paso.mx'`)).rows[0].id}`, payload: { role: 'admin' }, headers: { cookie: h.cookie, 'x-copilot': '1' } });
+  assert.deepEqual([promote.statusCode, promote.json().code], [403, 'copilot_blocked']);
   // Sin la marca, la misma sesión sí entra (lo demás del Copiloto sigue igual).
   assert.equal((await h.authed('GET', `/api/settings/secrets?account_id=${h.accountId}`)).statusCode, 200);
   assert.equal((await h.app.inject({ method: 'GET', url: '/api/me', headers: { cookie: h.cookie, 'x-copilot': '1' } })).statusCode, 200);

@@ -536,6 +536,15 @@ export async function createHarness(opts: { realAi?: import('../src/ai/provider.
     assert.ok(token, `No llegó el enlace para configurar la verificación a ${email}`);
     return token;
   };
+  /**
+   * Un enlace vigente para configurar la verificación, puesto directo en la base: el inicio de sesión del arnés no depende
+   * del correo (hay pruebas que lo hacen fallar). Las pruebas del enlace mismo usan `enrollTokenFor`.
+   */
+  const enrollLinkFor = async (email: string) => {
+    const token = crypto.randomBytes(32).toString('base64url');
+    await pool.query(`UPDATE users SET mfa_enroll_token_hash = $2, mfa_enroll_sent_at = now() WHERE lower(email) = lower($1)`, [email, crypto.createHash('sha256').update(token).digest('hex')]);
+    return token;
+  };
   /** La cookie de sesión que deja una respuesta de entrar, registrarse o aceptar una invitación (completa el 2FA). */
   const sessionFrom = async (res: { statusCode: number; body: string; headers: Record<string, unknown>; json: () => any }, who?: string, extra: Record<string, string> = {}) => {
     // Sin correo: el de la respuesta (registro o invitación devuelven al usuario).
@@ -551,7 +560,7 @@ export async function createHarness(opts: { realAi?: import('../src/ai/provider.
       let e = await app.inject({ method: 'GET', url: '/api/2fa/enroll', headers });
       // Entró solo con la contraseña: abre el enlace que llegó a su correo, en el mismo navegador (ID-16).
       if (e.statusCode === 403 && e.json().code === 'email_required') {
-        const token = enrollTokenFor(email);
+        const token = await enrollLinkFor(email);
         const link = await app.inject({ method: 'POST', url: '/api/2fa/enroll/link', headers, payload: { token } });
         assert.equal(link.statusCode, 200, link.body);
         headers.cookie = cookieFrom(link, 'cp_mfa')!;

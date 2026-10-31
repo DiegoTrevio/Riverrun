@@ -255,9 +255,15 @@ t('una cuenta existente sin app recibe un enlace al correo y sin él no ve el QR
   assert.ok(mail, 'llega el enlace');
   assert.match(mail!.text, /mismo navegador/);
   assert.equal((await post('/api/2fa/enroll', c, { code: '123456' })).json().code, 'email_required', 'tampoco confirma una app');
-  // Recargar no manda otro correo en 2 minutos.
+  // Recargar no manda otro correo ni invalida el que llegó (tampoco pasados 2 minutos): eso es «Mandar otro enlace».
   await get('/api/2fa/enroll', c);
+  await pool.query(`UPDATE users SET mfa_enroll_sent_at = now() - interval '3 minutes' WHERE email = 'filtrada@login.mx'`);
+  for (let i = 0; i < 8; i++) await get('/api/2fa/enroll', c);
   assert.equal(outbox.filter((m) => m.subject === 'Configura tu verificación en dos pasos').length, 1);
+  const resent = await post('/api/2fa/enroll/resend', c, {});
+  assert.equal(resent.json().sent, true, 'recargar no gastó el tope de correos');
+  assert.equal(outbox.filter((m) => m.subject === 'Configura tu verificación en dos pasos').length, 2);
+  assert.equal((await post('/api/2fa/enroll/resend', c, {})).json().sent, false, 'otro antes de 2 minutos, no');
   // El enlace abierto en otro navegador (sin el reto) no abre nada; uno inventado tampoco.
   const token = h.enrollTokenFor('filtrada@login.mx');
   const other = await h.app.inject({ method: 'POST', url: '/api/2fa/enroll/link', payload: { token } });

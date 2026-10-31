@@ -89,6 +89,8 @@ t('borrar la cuenta: solo el dueño y escribiendo el nombre; el correo trae el e
   assert.equal((await accRow(A.account)).deletion_scheduled_for, null, 'pedirlo no programa nada todavía');
 
   const link = linkFor('sol@floreria.mx');
+  // El número de un solo uso del enlace nunca sale del servidor (ni a otro administrador).
+  assert.equal('deletion_nonce' in (await A.admin2('GET', '/api/me')).json().account, false);
   // El GET solo pregunta (los antivirus abren los enlaces del correo).
   const page = await h.app.inject({ method: 'GET', url: link.pathname + link.search });
   assert.equal(page.statusCode, 200);

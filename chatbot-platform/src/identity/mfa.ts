@@ -17,7 +17,7 @@ import type { Role, User } from '../types.js';
 import { browserOf, noteDevice, trustDevice, trustedDeviceFor } from './devices.js';
 import { notifyUser } from './notices.js';
 import { qrDataUri } from './qr.js';
-import { countHit, LIMITS, releaseHit } from './rate-limit.js';
+import { countHit, hitsFor, LIMITS, releaseHit } from './rate-limit.js';
 import { isRecoveryCodeShape, useRecoveryCode } from './recovery-codes.js';
 import { matchTotp, newTotpSecret, otpauthUri } from './totp.js';
 
@@ -100,18 +100,22 @@ function setChallenge(reply: FastifyReply, c: Challenge) {
 const sha256 = (v: string) => crypto.createHash('sha256').update(v).digest('hex');
 
 /**
- * Enrolar con solo la contraseña pide el enlace al correo (ID-16): se manda uno nuevo (a lo más cada 2 minutos y 5 por
- * hora por persona). Devuelve si salió.
+ * Enrolar con solo la contraseña pide el enlace al correo (ID-16). Sin `resend` solo sale si no hay uno vigente (recargar
+ * la pantalla no manda otro ni invalida el que ya llegó); con `resend` («Mandar otro enlace») uno nuevo reemplaza al
+ * anterior, a lo más cada 2 minutos. 5 correos por hora por persona; solo cuentan los que salen. Devuelve si salió.
  */
-export async function sendEnrollLink(user: ChallengeUser): Promise<boolean> {
-  if ((await countHit(`mfa-enroll-mail:${user.id}`, 60 * 60_000)) > 5) return false;
+export async function sendEnrollLink(user: ChallengeUser, o: { resend?: boolean } = {}): Promise<boolean> {
+  const budget = `mfa-enroll-mail:${user.id}`;
+  if ((await hitsFor(budget)) >= 5) return false;
   const token = crypto.randomBytes(32).toString('base64url');
   const set = await queryOne(
     `UPDATE users SET mfa_enroll_token_hash = $2, mfa_enroll_sent_at = now() WHERE id = $1
-       AND (mfa_enroll_sent_at IS NULL OR mfa_enroll_sent_at < now() - interval '2 minutes' OR mfa_enroll_token_hash IS NULL) RETURNING id`,
-    [user.id, sha256(token)],
+       AND (mfa_enroll_token_hash IS NULL OR mfa_enroll_sent_at IS NULL OR mfa_enroll_sent_at < now() - make_interval(secs => $3)
+            OR ($4::boolean AND mfa_enroll_sent_at < now() - interval '2 minutes')) RETURNING id`,
+    [user.id, sha256(token), ENROLL_LINK_MS / 1000, !!o.resend],
   );
   if (!set) return false;
+  await countHit(budget, 60 * 60_000);
   const mb = await mailBrand(user.account_id);
   await sendMail({
     fromName: mb.fromName,
