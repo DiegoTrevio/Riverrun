@@ -155,7 +155,11 @@ export async function syncStaffEvent(payload: { appointment_id: string }) {
     'SELECT staff_event_id, staff_event_provider, staff_event_user_id FROM appointments WHERE id = $1',
     [a.id],
   );
-  const want = a.status === 'confirmed' && a.source !== 'simulador' ? a.assigned_user_id : null;
+  // Solo a una persona activa de la misma cuenta (ID-17): alguien dado de baja o movido a otra cuenta ya no recibe citas.
+  const member = a.assigned_user_id
+    ? await queryOne(`SELECT 1 FROM users u JOIN staff_calendars c ON c.user_id = u.id WHERE u.id = $1 AND u.active AND u.account_id = $2 AND c.account_id = $2`, [a.assigned_user_id, a.account_id])
+    : null;
+  const want = a.status === 'confirmed' && a.source !== 'simulador' && member ? a.assigned_user_id : null;
   let eventId = row?.staff_event_id ?? null;
   if (eventId && row?.staff_event_user_id && row.staff_event_user_id !== want) {
     const old = await getStaffCalendar(row.staff_event_user_id);

@@ -140,3 +140,64 @@ t('la migración 099 revoca las llaves sin un administrador activo detrás y lo 
   const logs = (await pool.query(`SELECT details FROM event_logs WHERE account_id = $1 AND message LIKE 'Llave de API revocada:%'`, [acc])).rows;
   assert.deepEqual(logs.map((l) => l.details.api_key_id), [keyId], 'una sola nota');
 });
+
+/** Calendario personal conectado (Outlook: desconectarlo no llama a nadie en las pruebas) y dos citas: una pasada y una futura. */
+let agenda = '';
+let agendaOwner: Api;
+/** Cuenta propia para estas pruebas (no gasta el límite de usuarios de la de arriba). */
+async function agendaAccount() {
+  if (agenda) return;
+  agenda = (await h.addAccount({ name: 'Consultorio Vega', admin: { name: 'Vera', email: 'vera@vega.mx', password: PASS } })).id;
+  agendaOwner = await h.loginAs('vera@vega.mx', PASS);
+}
+async function withCalendar(userId: string) {
+  const acc = agenda;
+  await pool.query(`INSERT INTO staff_calendars (user_id, account_id, provider, email, refresh_token) VALUES ($1, $2, 'outlook', 'yo@outlook.test', 'x')`, [userId, acc]);
+  const appt = async (when: string) => (await pool.query(
+    `INSERT INTO appointments (account_id, customer_name, starts_at, ends_at, assigned_user_id, status) VALUES ($1, 'Cliente', now() + $2::interval, now() + $2::interval + interval '1 hour', $3, 'confirmed') RETURNING id`,
+    [acc, when, userId])).rows[0].id as string;
+  return { past: await appt('-2 days'), future: await appt('3 days') };
+}
+const assignedTo = async (id: string) => (await pool.query(`SELECT assigned_user_id FROM appointments WHERE id = $1`, [id])).rows[0].assigned_user_id;
+
+t('desactivar a alguien desconecta su calendario y desasigna sus citas futuras (ID-17)', async () => {
+  await agendaAccount();
+  const quique = (await h.addUser({ account_id: agenda, name: 'Ulises', email: 'ulises@vega.mx', password: PASS, role: 'agent' })).id;
+  const a = await withCalendar(quique);
+  assert.equal((await agendaOwner('PUT', `/api/users/${quique}`, { active: false })).statusCode, 200);
+  assert.equal((await pool.query(`SELECT count(*)::int AS n FROM staff_calendars WHERE user_id = $1`, [quique])).rows[0].n, 0, 'su calendario se desconectó');
+  assert.equal(await assignedTo(a.future), null, 'la cita futura queda sin asignar');
+  assert.equal(await assignedTo(a.past), quique, 'la pasada conserva quién la atendió');
+});
+
+t('bajar de rol a un administrador no le quita su calendario ni sus citas (sigue en el equipo)', async () => {
+  await agendaAccount();
+  const rosa = (await h.addUser({ account_id: agenda, name: 'Rosa', email: 'rosa@vega.mx', password: PASS, role: 'admin' })).id;
+  const a = await withCalendar(rosa);
+  assert.equal((await agendaOwner('PUT', `/api/users/${rosa}`, { role: 'agent' })).statusCode, 200);
+  assert.equal((await pool.query(`SELECT count(*)::int AS n FROM staff_calendars WHERE user_id = $1`, [rosa])).rows[0].n, 1);
+  assert.equal(await assignedTo(a.future), rosa);
+});
+
+t('la sincronización ignora citas de un usuario inactivo o de otra cuenta (ID-17)', async () => {
+  const { config } = await import('../src/config.js');
+  const { syncStaffEvent } = await import('../src/integrations/staff-calendars.js');
+  await agendaAccount();
+  const sara = (await h.addUser({ account_id: agenda, name: 'Tania', email: 'tania@vega.mx', password: PASS, role: 'agent' })).id;
+  const a = await withCalendar(sara);
+  const mode = config.outbound.mode;
+  config.outbound.mode = 'live';
+  try {
+    // Inactiva (sin pasar por la baja): su calendario no recibe la cita; si lo intentara, Outlook fallaría y quedaría el error.
+    await pool.query(`UPDATE users SET active = false WHERE id = $1`, [sara]);
+    await syncStaffEvent({ appointment_id: a.future });
+    // De otra cuenta: igual.
+    await pool.query(`UPDATE users SET active = true, account_id = $2 WHERE id = $1`, [sara, acc]);
+    await syncStaffEvent({ appointment_id: a.future });
+  } finally {
+    config.outbound.mode = mode;
+  }
+  const cal = (await pool.query(`SELECT last_error FROM staff_calendars WHERE user_id = $1`, [sara])).rows[0];
+  assert.equal(cal.last_error, '', 'no se intentó escribir en su calendario');
+  assert.equal((await pool.query(`SELECT staff_event_id FROM appointments WHERE id = $1`, [a.future])).rows[0].staff_event_id, null);
+});

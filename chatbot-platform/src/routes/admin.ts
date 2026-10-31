@@ -448,10 +448,10 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     return target;
   };
   /** Al dar de baja: revoca sus llaves e invitaciones y pausa sus webhooks, y lo deja en la bitácora. */
-  const offboard = async (target: { id: string; name: string; email: string; account_id: string | null }, actor: { email: string }) => {
-    const gone = await offboardUser(target.id, target.name || target.email);
-    if (gone.api_keys || gone.webhooks || gone.invitations) {
-      await logEvent({ level: 'info', source: 'admin', message: `Baja de ${target.email} (por ${actor.email}): ${gone.api_keys} llaves revocadas, ${gone.webhooks} webhooks pausados, ${gone.invitations} invitaciones canceladas`, accountId: target.account_id ?? undefined });
+  const offboard = async (target: { id: string; name: string; email: string; account_id: string | null }, actor: { email: string }, o: { leaving?: boolean } = {}) => {
+    const gone = await offboardUser(target.id, target.name || target.email, o);
+    if (gone.api_keys || gone.webhooks || gone.invitations || gone.appointments) {
+      await logEvent({ level: 'info', source: 'admin', message: `Baja de ${target.email} (por ${actor.email}): ${gone.api_keys} llaves revocadas, ${gone.webhooks} webhooks pausados, ${gone.invitations} invitaciones canceladas${gone.appointments ? `, ${gone.appointments} citas futuras sin asignar` : ''}`, accountId: target.account_id ?? undefined });
     }
   };
   /** El dueño no se desactiva, degrada, mueve ni borra: primero transfiere la cuenta. */
@@ -533,7 +533,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     // Pasar a otra cuenta también es irse de la de antes: lo que dejó abierto ahí se va con la baja. Dejar de ser
     // administrador también: sus llaves y webhooks daban acceso de administrador (leer todo, enviar como el negocio).
     if (updated.active && target.active && updated.account_id !== target.account_id) await offboard(target, req.user);
-    else if (updated.active && target.active && target.role === 'admin' && updated.role !== 'admin') await offboard(target, req.user);
+    else if (updated.active && target.active && target.role === 'admin' && updated.role !== 'admin') await offboard(target, req.user, { leaving: false });
     if (updated.role !== target.role) await notifyUser(updated, 'role_changed', { by: req.user.name || req.user.email, role: ROLE_NAMES[updated.role] });
     if (updated.role !== target.role || updated.account_id !== target.account_id) {
       await logEvent({ level: 'info', source: 'admin', message: `Permisos de usuario actualizados: ${updated.email}`, accountId: updated.account_id ?? target.account_id ?? undefined,
