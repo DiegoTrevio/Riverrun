@@ -100,3 +100,27 @@ t('el resumen es de quien puede manejar a esa persona', async () => {
   const ajeno = await h.loginAs('ajeno@otra.mx', PASS);
   assert.equal((await ajeno('GET', `/api/users/${nadiaId}/offboarding`)).statusCode, 404);
 });
+
+t('bajar a un administrador a agente revoca sus llaves, pausa sus webhooks y cancela sus invitaciones (ID-12)', async () => {
+  const user = await h.addUser({ account_id: acc, name: 'Quique', email: 'quique@imprenta.mx', password: PASS, role: 'admin' });
+  const quique = await equip('quique@imprenta.mx');
+  assert.equal((await v1(quique.key)).statusCode, 200);
+  const r = await owner('PUT', `/api/users/${user.id}`, { role: 'agent' });
+  assert.equal(r.statusCode, 200, r.body);
+  assert.equal((await v1(quique.key)).statusCode, 401, 'su llave ya no entra');
+  assert.deepEqual(await hookRow(quique.hook), { active: false, disabled_reason: 'Lo creó Quique, que ya no está en el equipo' });
+  assert.equal(await inviteOpen(quique.invite), false);
+});
+
+t('una llave cuyo creador ya no es administrador activo de la cuenta no entra, aunque no se haya revocado (ID-12)', async () => {
+  await h.addUser({ account_id: acc, name: 'Rita', email: 'rita@imprenta.mx', password: PASS, role: 'admin' });
+  const rita = await equip('rita@imprenta.mx');
+  assert.equal((await v1(rita.key)).statusCode, 200);
+  // Cambios hechos fuera de las rutas (una migración, un arreglo a mano): la llave igual deja de servir.
+  await pool.query(`UPDATE users SET role = 'agent' WHERE email = 'rita@imprenta.mx'`);
+  assert.equal((await v1(rita.key)).statusCode, 401);
+  await pool.query(`UPDATE users SET role = 'admin', active = false WHERE email = 'rita@imprenta.mx'`);
+  assert.equal((await v1(rita.key)).statusCode, 401);
+  await pool.query(`UPDATE users SET active = true WHERE email = 'rita@imprenta.mx'`);
+  assert.equal((await v1(rita.key)).statusCode, 200, 'administradora activa otra vez: entra');
+});

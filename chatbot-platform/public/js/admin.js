@@ -118,7 +118,12 @@ export async function viewUsers(root) {
           return h('tr', {},
             h('td', {}, h('strong', {}, u.name || '—'), h('div', { class: 'muted small' }, u.email, u.phone ? ` · WhatsApp +${u.phone}${u.notify_whatsapp ? ' (alertas)' : ''}` : ''), u.is_owner ? h('span', { class: 'badge green' }, 'Dueño') : null, !u.active ? h('span', { class: 'badge orange' }, 'desactivado') : null, u.mfa_enabled ? h('span', { class: 'badge green' }, '2FA activo') : h('span', { class: 'badge orange' }, '2FA pendiente'), u.active && u.role !== 'superadmin' && u.available === false ? h('span', { class: 'badge' }, 'no disponible para turnos') : null),
             h('td', {}, u.role === 'superadmin' || self || u.is_owner || locked || (u.role === 'agent' && !isOwner()) ? ROLE_LABEL[u.role]
-              : h('select', { 'aria-label': `Rol de ${u.email}`, onchange: async (e) => { if (await run(() => api('PUT', `/api/users/${u.id}`, { role: e.target.value }), 'Rol actualizado')) render(); else e.target.value = u.role; } },
+              : h('select', { 'aria-label': `Rol de ${u.email}`, onchange: async (e) => {
+                // Dejar de ser administrador revoca lo que creó (llaves, webhooks, invitaciones): se dice antes.
+                const gone = u.role === 'admin' && e.target.value !== 'admin' ? await goneWith(u) : '';
+                if (gone && !(await confirmAction(`¿Cambiar a ${u.email} a ${ROLE_LABEL[e.target.value]}? ${gone}`))) { e.target.value = u.role; return; }
+                if (await run(() => api('PUT', `/api/users/${u.id}`, { role: e.target.value }), 'Rol actualizado')) render(); else e.target.value = u.role;
+              } },
                   [['agent', 'Operador del perfil'], ['admin', 'Administrador del perfil']].map(([v, l]) => h('option', { value: v, selected: u.role === v }, l)))),
             isSuper() ? h('td', { class: 'small' }, u.role === 'superadmin' ? 'Todos los perfiles' : u.is_owner ? (state.accounts.find((a) => a.id === u.account_id)?.name || '—') : h('select', { 'aria-label': `Perfil de ${u.email}`, onchange: async (e) => { if (await run(() => api('PUT', `/api/users/${u.id}`, { account_id: e.target.value }), 'Perfil asignado')) render(); else e.target.value = u.account_id; } }, state.accounts.map((a) => h('option', { value: a.id, selected: u.account_id === a.id }, a.name)))) : null,
             h('td', { class: 'small muted' }, u.last_login_at ? fmtDate(u.last_login_at) : 'nunca'),

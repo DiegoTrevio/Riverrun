@@ -165,7 +165,11 @@ export async function apiV1Routes(app: FastifyInstance, service: ChatService) {
         const m = /^Bearer\s+(rr_[\w-]{20,})$/.exec(String(req.headers.authorization ?? ''));
         if (!m) return reply.code(401).header('www-authenticate', 'Bearer').send({ error: 'Falta la llave: Authorization: Bearer rr_…', code: 'missing_key' });
         const k = await queryOne<{ id: string; account_id: string; scope: 'read' | 'write'; name: string; active: boolean; status: string }>(
-          `SELECT k.id, k.account_id, k.scope, k.name, a.active, a.status FROM api_keys k JOIN accounts a ON a.id = k.account_id WHERE k.key_hash = $1 AND k.revoked_at IS NULL`,
+          // La llave vale lo que su creador: un administrador activo de esa cuenta (o el superadministrador). Si dejó de
+          // serlo por un camino que no la revocó, deja de entrar.
+          `SELECT k.id, k.account_id, k.scope, k.name, a.active, a.status FROM api_keys k JOIN accounts a ON a.id = k.account_id
+             JOIN users u ON u.id = k.created_by AND u.active AND (u.role = 'superadmin' OR (u.role = 'admin' AND u.account_id = k.account_id))
+            WHERE k.key_hash = $1 AND k.revoked_at IS NULL`,
           [hashKey(m[1])],
         );
         if (!k) return reply.code(401).send({ error: 'Llave inválida o revocada', code: 'invalid_key' });
