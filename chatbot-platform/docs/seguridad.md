@@ -17,6 +17,7 @@ Cada etapa es un PR con pruebas que fallan con el código anterior y pasan con e
 | 1. Altos de la aplicación | ID-1, IN-1, AI-1, AI-2, AI-3, AI-4, PAY-1, INF-1 | ✅ Corregido |
 | 2. Identidad | 2FA obligatorio para todos, contraseñas filtradas, sesiones con caducidad por inactividad, límites por cuenta y en la base, dueño distinto de administrador, correo verificado de verdad (ID-2…ID-10) | 2a ✅ (acceso), 2b ✅ (cuenta) |
 | 3. Registro y cobros | Captcha → correo → 2FA → tarjeta, topes contra prueba de tarjetas (PAY-2), pruebas gratis por persona (PAY-3), sin IA en pausa (parte de PAY-6); disputas, plan del precio, códigos y cobros a clientes (PAY-4…PAY-16) | 3a ✅ (registro), 3b pendiente (cobros) |
+| 3b′. Cobros de la revisión del 31 de octubre | PAY-17…PAY-23 y bajos de cobros | ✅ Corregido |
 | 3c. Revisión del 31 de octubre | Los altos de [la revisión del 31 de octubre](revision-seguridad-2026-10-31.md): dos caídas del proceso, atajos para sacar o borrar datos, cobros del agente, la ficha en el Copiloto (IN-15, IN-16, ID-11…ID-14, AI-5 en parte) | ✅ Corregido |
 | 4. Abuso de entradas | Límites compartidos en la base, tamaños por ruta, firma del webhook de WhatsApp, adjuntos sin macros, PDF aislados, cuota de IA antes de transcribir (IN-2…IN-14, PAY-6) | Pendiente |
 | 5. IA y Copiloto | Tarjetas de confirmación completas, costo de sub-llamados, notas de cotización, fuga de instrucciones (AI-5…AI-13) | Pendiente |
@@ -200,6 +201,37 @@ prueba. Lo que señaló y queda para después:
 - Un mensaje de más de 8 000 caracteres se guarda recortado («…[mensaje recortado]»).
 - Plantillas de cotización: hasta 2 000 marcas y 10 subidas por hora.
 - En el Copiloto, con la ficha de un cliente abierta, los cambios de configuración y el texto que se guarda en su ficha piden confirmación.
+
+## Etapa 3b′: lo que se corrigió de la revisión del 31 de octubre
+
+Los medios de cobros de [la revisión del 31 de octubre](revision-seguridad-2026-10-31.md). PAY-4…PAY-16 (disputas, plan
+del precio, códigos, CFDI y moneda) siguen en la 3b original.
+
+| # | Hallazgo | Arreglo | Prueba |
+|---|---|---|---|
+| PAY-17 | La prueba gratis empezaba sin huella de la tarjeta (Link u otro método en Checkout, o una lectura fallida en Mercado Pago). | Checkout pide solo tarjeta; Mercado Pago reintenta leerla; sin huella se trata como tarjeta ya usada («No pudimos leer tu tarjeta»). | `trial-start.test.ts` |
+| PAY-18 | El portal de Stripe y «cambiar tarjeta» quedaban fuera de los topes y del freno de PAY-2 (prueba de tarjetas robadas). | Cada página del portal pasa por `openCardCheck` como sustitución: topes, freno y `card_checks`. | `card-check.test.ts` |
+| PAY-19 | Límites del plan con carrera: 12 altas a la vez con límite 2 creaban 10. | `assertWithinLimitLocked`: cuenta dentro de la transacción del alta con la fila de la cuenta bloqueada (canales, asistentes, duplicar, aceptar invitación). | `limits.test.ts` |
+| PAY-20 | No había tope de IA que el cliente no pudiera quitar, y un administrador «confirmaba» costos dudosos en 0. | Tope de IA al mes por plan y excepción por cuenta (superadmin), `TRIAL_AI_USD` en prueba; revisión de costos solo del superadmin. Migración 101. | `ai-platform-cap.test.ts` |
+| PAY-21 | `runPlans` tomaba 2 000 planes de toda la plataforma: pasando eso, los nuevos no generaban cobros. | Recorre todos por lotes; hasta 500 pagos recurrentes activos por cuenta. | `receivable-origins.test.ts` |
+| PAY-22 | Un pago que llegaba después de la global de su mes no se facturaba nunca. | Otra global del mismo mes (`seq`, con candado); aviso diario de pagos de más de 3 meses sin CFDI; `amount_cents` bigint. Migración 102. | `billing-cfdi.test.ts` |
+| PAY-23 | Una cuenta en bucle vaciaba la cubeta de Zernio de todos. | Tope de 60 llamadas por minuto por cuenta antes de la cubeta compartida. | `zernio-budget.test.ts` |
+| Bajos | `/precios` decía «sin tarjeta»; el freno se diluía con avisos repetidos; «ya pagué» pausaba los recordatorios para siempre. | Texto según `cardRequired()`; las verificaciones se completan solo al pasar a activa; 2 pausas por cobro. | `pricing.test.ts`, `card-check.test.ts`, `receivables-e2e.test.ts` |
+
+**Cambios que nota la gente:**
+- Checkout de Stripe acepta solo tarjeta; si no se puede leer, no hay prueba y se cobra al momento.
+- El portal de Stripe cuenta para los topes de verificaciones de tarjeta (5 por día por cuenta).
+- Cada plan tiene «Gasto de IA al mes (USD)» y cada cuenta una excepción («ia=20» en Límites); en prueba, `TRIAL_AI_USD` (5). Al llegar, la IA se detiene hasta el mes siguiente («Llegaste al tope de IA de tu plan»). Confirmar importes dudosos de IA es del superadmin.
+- Hasta 500 pagos recurrentes activos por cuenta.
+- Un cliente que dice «ya pagué» pausa sus recordatorios hasta 2 veces por cobro.
+
+**Queda para después:**
+- La reserva de una parte de la cubeta de Zernio para las respuestas del bot (hoy solo hay tope por cuenta).
+- Las altas que dependen de terminar un OAuth (Meta, Zernio) siguen con la revisión de límites sin candado; reactivar un plan pausado no cuenta para el tope de 500.
+- Leer la suscripción al proveedor antes de tomar el candado (un estado viejo puede pisar al nuevo hasta la conciliación).
+- Aceptar una cotización dos veces a la vez con planes distintos deja cobros de más (solo un administrador de la cuenta).
+- Planes privados (hoy todo plan activo se publica).
+- Los montos de cada plan en «Gasto de IA al mes» los fija el dueño de la plataforma: sin ellos, solo aplica el de la prueba.
 
 ## Hallazgos pendientes por etapa
 
