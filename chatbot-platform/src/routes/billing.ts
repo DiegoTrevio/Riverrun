@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { ownerOnly, ownerStepUp } from '../identity/ownership.js';
+import { stepUp } from '../identity/step-up.js';
 import { HttpError, requireRole, targetAccount } from '../access.js';
 import { rateLimited } from '../auth.js';
 import { baseFor } from '../brands.js';
@@ -145,6 +146,8 @@ export async function billingWebhooks(app: FastifyInstance) {
 export async function billingRoutes(api: FastifyInstance) {
   const admins = { preHandler: requireRole('admin') };
   const supers = { preHandler: requireRole('superadmin') };
+  // Cambiar planes o capturar un tipo de cambio mueve dinero de toda la plataforma: con verificación reciente.
+  const supersStepUp = { ...supers, ...stepUp };
 
   /* ------------------------------ Planes ------------------------------ */
   api.get('/api/plans', admins, async (req) => (await listPlans(req.user.role === 'superadmin')).map(planOut));
@@ -160,12 +163,12 @@ export async function billingRoutes(api: FastifyInstance) {
     );
     return planOut(await getPlan(b.key));
   };
-  api.post('/api/plans', supers, async (req) => savePlan(parse(PlanBody, req.body)));
-  api.put('/api/plans/:key', supers, async (req: any) => {
+  api.post('/api/plans', supersStepUp, async (req) => savePlan(parse(PlanBody, req.body)));
+  api.put('/api/plans/:key', supersStepUp, async (req: any) => {
     if (!(await getPlan(req.params.key))) throw new HttpError(404, 'No encontrado');
     return savePlan(parse(PlanBody, { ...(req.body ?? {}), key: req.params.key }));
   });
-  api.delete('/api/plans/:key', supers, async (req: any) => {
+  api.delete('/api/plans/:key', supersStepUp, async (req: any) => {
     const used = await queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM subscriptions WHERE plan_key = $1 AND status IN ('active', 'past_due')`, [req.params.key]);
     if (used?.n) throw new HttpError(409, `Hay ${used.n} suscripciones activas con este plan: desactívalo en lugar de borrarlo.`);
     // Sin el plan, el cambio programado no podría empezar con su cobro (el cliente pagaría el plan nuevo con los límites del anterior).
@@ -181,7 +184,7 @@ export async function billingRoutes(api: FastifyInstance) {
    * Tipo de cambio de un pago en otra moneda (pesos por unidad), cuando no hay uno confiable del proveedor (PAY-9): sus
    * facturas en espera («pendiente: tipo de cambio») salen en la siguiente revisión. Solo el superadministrador.
    */
-  api.put('/api/billing/payments/:id/exchange-rate', supers, async (req: any) => {
+  api.put('/api/billing/payments/:id/exchange-rate', supersStepUp, async (req: any) => {
     const { rate } = parse(z.object({ rate: z.number().positive().max(100000) }), req.body);
     const p = await queryOne<{ id: string; account_id: string | null; currency: string }>(
       `UPDATE billing_payments SET exchange_rate = $2, updated_at = now() WHERE id = $1 AND upper(currency) <> 'MXN' RETURNING id, account_id, currency`, [req.params.id, rate]);

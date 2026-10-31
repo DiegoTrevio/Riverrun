@@ -50,6 +50,17 @@ export const STEP_UP: [string, string][] = [
   ['POST', `/api/accounts/${ID}/trial-without-card`],
   ['PUT', '/api/system/zernio'],
   ['DELETE', '/api/system/zernio'],
+  // Plataforma (bajos de la 2c): planes, cuentas, precios de IA, marcas (dominios) y tipo de cambio.
+  ['POST', '/api/plans'],
+  ['PUT', '/api/plans/pro'],
+  ['DELETE', '/api/plans/pro'],
+  ['PUT', `/api/accounts/${ID}`],
+  ['PUT', '/api/ai-prices/modelo-x'],
+  ['DELETE', '/api/ai-prices/modelo-x'],
+  ['POST', '/api/brands'],
+  ['PUT', `/api/brands/${ID}`],
+  ['DELETE', `/api/brands/${ID}`],
+  ['PUT', `/api/billing/payments/${ID}/exchange-rate`],
 ];
 const PASS = 'Pz-985-Qx-986-Kv';
 const age = (email: string, minutes: number) =>

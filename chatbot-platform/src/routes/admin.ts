@@ -325,7 +325,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
   /** Precios por modelo para estimar el costo cuando el proveedor no lo reporta (solo superadmin). */
   api.get('/api/ai-prices', { preHandler: requireRole('superadmin') }, async () => query(`SELECT * FROM ai_prices ORDER BY model`));
 
-  api.put('/api/ai-prices/:model', { preHandler: requireRole('superadmin') }, async (req: any) => {
+  api.put('/api/ai-prices/:model', { preHandler: requireRole('superadmin'), ...stepUp }, async (req: any) => {
     const n = z.number().min(0).max(10000);
     const b = parse(z.object({ input_per_mtok: n.default(0), cached_per_mtok: n.default(0), output_per_mtok: n.default(0), per_audio_minute: n.default(0),is_free:z.boolean().default(false) }), req.body);
     const model = z.string().trim().min(1).max(100).parse(req.params.model);
@@ -336,7 +336,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     );
   });
 
-  api.delete('/api/ai-prices/:model', { preHandler: requireRole('superadmin') }, async (req: any) => {
+  api.delete('/api/ai-prices/:model', { preHandler: requireRole('superadmin'), ...stepUp }, async (req: any) => {
     await query(`DELETE FROM ai_prices WHERE model = $1`, [req.params.model]);
     return { ok: true };
   });
@@ -379,7 +379,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     return store.publicAccount(account);
   });
 
-  api.put('/api/accounts/:id', { preHandler: requireRole('superadmin') }, async (req: any) => {
+  api.put('/api/accounts/:id', { preHandler: requireRole('superadmin'), ...stepUp }, async (req: any) => {
     const b = parse(AccountBody, req.body);
     const before = await store.getAccount(req.params.id);
     if (!before) throw notFound('Cuenta no encontrada');

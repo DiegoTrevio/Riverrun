@@ -1,4 +1,5 @@
 /** Marca blanca: consulta pública por dominio, logo y administración (solo superadmin). */
+import { stepUp } from '../identity/step-up.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { HttpError, requireRole } from '../access.js';
@@ -42,6 +43,8 @@ export async function brandPublicRoutes(app: FastifyInstance) {
 
 export async function brandAdminRoutes(api: FastifyInstance) {
   const supers = { preHandler: requireRole('superadmin') };
+  // Una marca decide a qué dominio llegan los enlaces de inicio de sesión y de los correos: con verificación reciente.
+  const supersStepUp = { ...supers, ...stepUp };
 
   api.get('/api/brands', supers, async () => ({ brands: (await listBrands()).map((b) => ({ ...b, logo: publicBrand(b).logo })), cname_target: process.env.DOMAIN || new URL(config.publicBaseUrl).host }));
 
@@ -70,20 +73,20 @@ export async function brandAdminRoutes(api: FastifyInstance) {
     }
   };
 
-  api.post('/api/brands', supers, async (req: any) => {
+  api.post('/api/brands', supersStepUp, async (req: any) => {
     const b = parse(BrandBody, req.body);
     const id = await save(null, b);
     await logEvent({ level: 'info', source: 'admin', message: `Marca creada: ${b.name}${b.domain ? ` (${b.domain})` : ''}` });
     return { id };
   });
 
-  api.put('/api/brands/:id', supers, async (req: any) => {
+  api.put('/api/brands/:id', supersStepUp, async (req: any) => {
     const b = parse(BrandBody, req.body);
     await save(req.params.id, b);
     return { ok: true };
   });
 
-  api.delete('/api/brands/:id', supers, async (req: any) => {
+  api.delete('/api/brands/:id', supersStepUp, async (req: any) => {
     await query(`DELETE FROM brands WHERE id = $1`, [req.params.id]);
     return { ok: true };
   });
