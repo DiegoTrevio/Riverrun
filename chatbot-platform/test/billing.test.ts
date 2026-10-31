@@ -246,3 +246,22 @@ t('un aviso con un estado leído antes de otro más nuevo no lo pisa: con el can
   assert.equal((await pool.query(`SELECT status FROM subscriptions WHERE account_id = $1`, [acc])).rows[0].status, 'active', 'queda el estado real');
   assert.equal((await pool.query(`SELECT status FROM accounts WHERE id = $1`, [acc])).rows[0].status, 'active');
 });
+
+t('planes privados: no salen en precios ni en el registro, y solo los contrata la cuenta a la que el superadmin se los asignó', async () => {
+  const { payable } = await import('../src/billing/service.js');
+  const { offeredPlans } = await import('../src/routes/billing.js');
+  const r = await h.authed('POST', '/api/plans', { key: 'especial', name: 'Plan Especial Hotel', price: 2999, currency: 'MXN', public: false });
+  assert.equal(r.statusCode, 200, r.body);
+  assert.equal(r.json().public, false);
+  assert.doesNotMatch((await h.app.inject({ method: 'GET', url: '/precios' })).body, /Plan Especial Hotel/);
+  assert.ok(!(await h.app.inject({ method: 'GET', url: '/api/signup/info' })).json().plans?.some((p: any) => p.key === 'especial'));
+  assert.ok(!(await offeredPlans()).some((p) => p.key === 'especial'));
+  await assert.rejects(payable('especial'), /no está disponible/);
+  const acc = (await h.authed('POST', '/api/accounts', { name: 'Hotel con trato especial' })).json().id;
+  await assert.rejects(payable('especial', undefined, acc), /no está disponible/, 'sin asignar, tampoco');
+  assert.equal((await h.authed('PUT', `/api/accounts/${acc}`, { plan: 'especial' })).statusCode, 200);
+  assert.equal((await payable('especial', undefined, acc)).plan.key, 'especial');
+  assert.ok((await offeredPlans(acc)).some((p) => p.key === 'especial'), 'en su Mi plan sí aparece');
+  // Editar otra cosa del plan no lo vuelve público.
+  assert.equal((await h.authed('PUT', '/api/plans/especial', { name: 'Plan Especial Hotel', price: 3199, currency: 'MXN' })).json().public, false);
+});

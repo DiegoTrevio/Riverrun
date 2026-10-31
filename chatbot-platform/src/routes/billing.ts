@@ -32,6 +32,8 @@ const PlanBody = z.object({
   sort_order: z.number().int().default(0),
   /** Límites del plan; vacío o ausente = sin límite. */
   limits: LimitsSchema.default({}),
+  /** false = privado (no se publica; solo para la cuenta a la que se asigna). Sin el campo, no cambia. */
+  public: z.boolean().optional(),
   /** Gasto de IA al mes que incluye el plan, en USD (null = sin tope; sin el campo, no cambia). */
   ai_usd_per_month: z.number().finite().min(0).max(100000).nullable().optional(),
 });
@@ -55,10 +57,12 @@ const tooMany = (reply: any, key: string, max: number) => {
 };
 
 /** Planes que se pueden contratar, con los proveedores que los cobran (para "Mi plan" y el registro). */
-export async function offeredPlans() {
+export async function offeredPlans(accountId?: string) {
   const on = enabledProviders();
+  // Los privados solo para la cuenta que los tiene asignados (en su Mi plan); nunca en precios ni en el registro.
+  const own = accountId ? (await queryOne<{ plan: string }>(`SELECT plan FROM accounts WHERE id = $1`, [accountId]))?.plan ?? '' : '';
   // El tope interno de IA del plan no se publica (precios, registro, Mi plan): es un dato de la plataforma.
-  return (await listPlans()).map((p: Plan) => {
+  return (await listPlans()).filter((p: Plan) => p.public !== false || p.key === own).map((p: Plan) => {
     const { ai_usd_per_month: _cap, ...out } = planOut(p);
     return { ...out, providers: on.filter((x) => x.supportsPlan(p)).map((x) => ({ name: x.name, label: x.label })) };
   });
@@ -127,11 +131,11 @@ export async function billingRoutes(api: FastifyInstance) {
   const savePlan = async (b: z.infer<typeof PlanBody>) => {
     const cents = Math.round(b.price * 100);
     await query(
-      `INSERT INTO plans (key, name, description, price_cents, currency, stripe_price_id, active, sort_order, limits, billing_interval, ai_usd_per_month) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$12)
+      `INSERT INTO plans (key, name, description, price_cents, currency, stripe_price_id, active, sort_order, limits, billing_interval, ai_usd_per_month, public) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$12,COALESCE($13,true))
        ON CONFLICT (key) DO UPDATE SET name = $2, description = $3, price_cents = $4, currency = $5, stripe_price_id = $6, active = $7, sort_order = $8, limits = $9, billing_interval = $10,
-         ai_usd_per_month = CASE WHEN $11 THEN $12 ELSE plans.ai_usd_per_month END`,
+         ai_usd_per_month = CASE WHEN $11 THEN $12 ELSE plans.ai_usd_per_month END, public = COALESCE($13, plans.public)`,
       [b.key, b.name, b.description, cents, b.currency, b.stripe_price_id.trim(), b.active, b.sort_order, JSON.stringify(Object.fromEntries(Object.entries(b.limits).filter(([, v]) => v))), b.interval,
-        b.ai_usd_per_month !== undefined, b.ai_usd_per_month ?? null],
+        b.ai_usd_per_month !== undefined, b.ai_usd_per_month ?? null, b.public ?? null],
     );
     return planOut(await getPlan(b.key));
   };
@@ -174,7 +178,7 @@ export async function billingRoutes(api: FastifyInstance) {
   api.get('/api/billing', admins, async (req: any) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
     const [acc, plans, sub, limits, payments, fiscal] = await Promise.all([
-      queryOne<any>(`SELECT status, plan, trial_ends_at FROM accounts WHERE id = $1`, [accountId]), offeredPlans(), getSubscription(accountId), limitsReport(accountId), listPayments(accountId), getFiscal(accountId),
+      queryOne<any>(`SELECT status, plan, trial_ends_at FROM accounts WHERE id = $1`, [accountId]), offeredPlans(accountId), getSubscription(accountId), limitsReport(accountId), listPayments(accountId), getFiscal(accountId),
     ]);
     const cfdi = await cfdiForPayments(payments.map((p) => p.id));
     return {
@@ -237,7 +241,7 @@ export async function billingRoutes(api: FastifyInstance) {
     const accountId = await targetAccount(req.user, req.query.account_id);
     // `trial: false`: contratar ya, sin días gratis (p. ej. con la tarjeta que ya tuvo una prueba).
     const b = parse(z.object({ plan: z.string().max(40), provider: z.enum(['stripe', 'mercadopago']), trial: z.boolean().optional() }), req.body);
-    const { plan, provider } = await payable(b.plan, b.provider);
+    const { plan, provider } = await payable(b.plan, b.provider, accountId);
     const sub = await getSubscription(accountId);
     if (sub && ['active', 'past_due'].includes(sub.status) && !sub.cancel_at_period_end && sub.provider_subscription_id) throw new HttpError(409, 'Ya tienes un plan activo: para cambiarlo usa «Cambiar de plan» en Mi plan.');
     // Quien pidió factura necesita sus datos completos antes del primer cobro (su CFDI sale de cada pago).

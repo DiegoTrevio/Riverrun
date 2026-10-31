@@ -3,6 +3,8 @@ export type SubStatus = 'incomplete' | 'active' | 'past_due' | 'canceled';
 
 export interface Plan {
   key: string;
+  /** false = privado: no se publica y solo lo contrata la cuenta que lo tiene asignado. */
+  public?: boolean;
   name: string;
   description: string;
   price_cents: number;

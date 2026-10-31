@@ -105,10 +105,17 @@ export async function beginCheckout(accountId: string, provider: ProviderName, p
   );
 }
 
+/** Un plan privado solo es para la cuenta a la que el superadmin se lo asignó (accounts.plan). */
+export async function planOpenTo(plan: Plan, accountId?: string | null): Promise<boolean> {
+  if (plan.public !== false) return true;
+  if (!accountId) return false;
+  return (await queryOne<{ plan: string }>(`SELECT plan FROM accounts WHERE id = $1`, [accountId]))?.plan === plan.key;
+}
+
 /** Plan y proveedor con los que se puede pagar ahora. Sin proveedor elegido, el primero disponible para ese plan. */
-export async function payable(planKey: string, providerName?: ProviderName): Promise<{ plan: Plan; provider: ProviderName }> {
+export async function payable(planKey: string, providerName?: ProviderName, accountId?: string): Promise<{ plan: Plan; provider: ProviderName }> {
   const plan = await getPlan(planKey);
-  if (!plan || !plan.active) throw new HttpError(404, 'Ese plan no está disponible');
+  if (!plan || !plan.active || !(await planOpenTo(plan, accountId))) throw new HttpError(404, 'Ese plan no está disponible');
   const options = enabledProviders().filter((p) => p.supportsPlan(plan));
   const provider = providerName ? options.find((p) => p.name === providerName) : options[0];
   if (!provider) throw new HttpError(400, providerName ? `Este plan no se puede pagar con ${providers[providerName].label}` : 'El pago en línea no está disponible por ahora');
@@ -208,7 +215,7 @@ export async function changePlan(o: { accountId: string; email: string; planKey:
   if (pending && pending === o.planKey) throw new HttpError(400, 'Ese cambio ya está programado para tu siguiente cobro.');
   if (sub.plan_key === o.planKey && !pending) throw new HttpError(400, 'Ya tienes ese plan');
   const plan = await getPlan(o.planKey);
-  if (!plan?.active) throw new HttpError(404, 'Ese plan no está disponible');
+  if (!plan?.active || !(await planOpenTo(plan, o.accountId))) throw new HttpError(404, 'Ese plan no está disponible');
   const from = await getPlan(sub.plan_key);
   const upgrade = !from || monthly(plan) > monthly(from);
   if (!upgrade) await assertFitsPlan(o.accountId, plan);
