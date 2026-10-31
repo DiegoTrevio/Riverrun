@@ -118,3 +118,22 @@ t('no se borran: con «Conservar sus datos», del superadmin, con suscripción v
   assert.equal(await row(other), undefined);
   for (const id of [keep, admin, paying]) assert.ok(await row(id), id);
 });
+
+t('una cuenta que nunca agregó su tarjeta: el aviso y el borrado lo dicen así (menor 7)', async () => {
+  const prev = { email: config.signup.superadminEmail, digest: config.signup.superadminDigest };
+  Object.assign(config.signup, { superadminEmail: 'super@reten.mx', superadminDigest: false });
+  try {
+    const id = await newAccount('nunca@taller.mx', 'Taller Nunca');
+    await pool.query(`UPDATE accounts SET status = 'paused', paused_at = now() - interval '84 days', pause_reason = 'card', deletion_warned_at = NULL WHERE id = $1`, [id]);
+    assert.equal((await checkAccountRetention()).warned, 1);
+    const warning = outbox.filter((m) => m.to === 'nunca@taller.mx' && /se borrará/.test(m.subject)).at(-1)!;
+    assert.match(warning.text, /agrega tu tarjeta/);
+    assert.doesNotMatch(warning.text, /reactiva tu plan/);
+    await pool.query(`UPDATE accounts SET paused_at = now() - interval '91 days', deletion_warned_at = now() - interval '8 days' WHERE id = $1`, [id]);
+    assert.equal((await checkAccountRetention()).deleted, 1);
+    const notice = outbox.filter((m) => m.to === 'super@reten.mx' && /Taller Nunca/.test(m.subject)).at(-1)!;
+    assert.match(notice.text, /nunca agregó su tarjeta/);
+  } finally {
+    Object.assign(config.signup, { superadminEmail: prev.email, superadminDigest: prev.digest });
+  }
+});
