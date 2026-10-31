@@ -73,8 +73,14 @@ try {
   await page.getByText(/^Te mandamos un enlace a n•+@identidad\.mx/).waitFor();
   assert.equal(await page.locator('[data-totp-secret]').count(), 0, 'sin el enlace no ve el QR');
   await accessible(page, 'Revisa tu correo (enlace para configurar)');
+  // «Mandar otro enlace» recién mandado uno: pide esperar. «Ya abrí el enlace» sin abrirlo: sigue pidiendo el correo.
+  await page.getByRole('button', { name: 'Mandar otro enlace' }).click();
+  await page.getByText('Espera un par de minutos para pedir otro enlace').first().waitFor();
+  await page.getByRole('button', { name: 'Ya abrí el enlace' }).click();
+  await page.getByRole('heading', { name: 'Revisa tu correo' }).waitFor();
+  assert.equal(await page.locator('[data-totp-secret]').count(), 0);
   await page.goto(`${base}/#/login/configurar?correo=${h.enrollTokenFor('nuria@identidad.mx')}`);
-  checks.push('Entrar solo con la contraseña pide abrir el enlace del correo antes de ver el QR');
+  checks.push('Entrar solo con la contraseña pide abrir el enlace del correo antes de ver el QR («Mandar otro enlace» y «Ya abrí el enlace»)');
   await page.getByRole('heading', { name: 'Activa la verificación en dos pasos' }).waitFor();
   await page.getByText('Escanea este código con tu app de autenticación').waitFor();
   await page.getByRole('img', { name: 'Código QR para tu app de autenticación' }).waitFor();
