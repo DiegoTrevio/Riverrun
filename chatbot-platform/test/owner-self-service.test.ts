@@ -95,7 +95,7 @@ t('borrar la cuenta: solo el dueño y escribiendo el nombre; el correo trae el e
   assert.match(page.body, /Sí, borrar mi cuenta en 7 días/);
   assert.equal((await accRow(A.account)).deletion_scheduled_for, null);
   // Un enlace alterado no sirve.
-  const forged = self.deletionToken(B.account).split('.')[0] + '.' + link.searchParams.get('t')!.split('.')[1];
+  const forged = self.deletionToken(B.account, 'x').split('.')[0] + '.' + link.searchParams.get('t')!.split('.')[1];
   assert.equal((await h.app.inject({ method: 'POST', url: `/borrar-cuenta?t=${encodeURIComponent(forged)}` })).statusCode, 400);
   assert.equal((await accRow(B.account)).deletion_scheduled_for, null);
 
@@ -105,8 +105,11 @@ t('borrar la cuenta: solo el dueño y escribiendo el nombre; el correo trae el e
   const days = (new Date(row.deletion_scheduled_for).getTime() - new Date(row.deletion_requested_at).getTime()) / 86400_000;
   assert.equal(Math.round(days), 7);
   assert.ok(outbox.some((m) => m.to === 'sol@floreria.mx' && /se borrará el/.test(m.subject)), 'confirmación por correo');
-  // Repetir el enlace no mueve la fecha.
-  await h.app.inject({ method: 'POST', url: link.pathname + link.search });
+  // El mismo enlace otra vez ya no sirve (410) y no mueve la fecha (bajos de la 2c).
+  const again = await h.app.inject({ method: 'POST', url: link.pathname + link.search });
+  assert.equal(again.statusCode, 410);
+  assert.match(again.body, /Este enlace ya no sirve/);
+  assert.equal((await h.app.inject({ method: 'GET', url: link.pathname + link.search })).statusCode, 410);
   assert.equal(String((await accRow(A.account)).deletion_scheduled_for), String(row.deletion_scheduled_for));
   // /api/me lo trae para la franja del panel; ya programado, pedirlo otra vez → 409.
   assert.ok((await A.owner('GET', '/api/me')).json().account.deletion_scheduled_for);
@@ -122,8 +125,20 @@ t('cancelar el borrado: solo el dueño (otro admin y un agente no); sin borrado 
   assert.equal((await A.owner('DELETE', '/api/account/deletion')).statusCode, 409);
 });
 
+t('pedir otro enlace, cancelar o transferir la cuenta invalida el enlace que ya estaba en el correo (bajos de la 2c)', async () => {
+  // Cancelar.
+  assert.equal((await A.owner('POST', '/api/account/deletion', { confirm: 'Florería Sol' })).statusCode, 200);
+  const first = linkFor('sol@floreria.mx');
+  assert.equal((await A.owner('POST', '/api/account/deletion', { confirm: 'Florería Sol' })).statusCode, 200);
+  const second = linkFor('sol@floreria.mx');
+  assert.equal((await h.app.inject({ method: 'POST', url: first.pathname + first.search })).statusCode, 410, 'el nuevo reemplaza al anterior');
+  assert.equal((await A.owner('DELETE', '/api/account/deletion')).statusCode, 409, 'no había borrado programado, pero el enlace se invalida igual');
+  assert.equal((await h.app.inject({ method: 'POST', url: second.pathname + second.search })).statusCode, 410);
+  assert.equal((await accRow(A.account)).deletion_scheduled_for, null);
+});
+
 t('un enlace vencido no sirve', async () => {
-  const old = self.deletionToken(A.account, Date.now() - 2 * 86400_000);
+  const old = self.deletionToken(A.account, 'n', Date.now() - 2 * 86400_000);
   assert.equal(self.readDeletionToken(old), null);
   assert.equal((await h.app.inject({ method: 'GET', url: `/borrar-cuenta?t=${encodeURIComponent(old)}` })).statusCode, 400);
   assert.equal(self.readDeletionToken('basura'), null);

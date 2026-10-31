@@ -8,7 +8,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { HttpError, requireRole, targetAccount } from '../access.js';
-import { buildAccountExport, cancelDeletion, readDeletionToken, requestDeletion, scheduleDeletion } from '../accounts/self-service.js';
+import { buildAccountExport, cancelDeletion, readDeletionToken, deletionLinkOpen, consumeDeletionLink, requestDeletion, scheduleDeletion } from '../accounts/self-service.js';
 import { accountOwner, ownerStepUp } from '../identity/ownership.js';
 import { rateLimited } from '../auth.js';
 import { brandByDomain, hostOf, publicBrand } from '../brands.js';
@@ -214,11 +214,14 @@ export async function selfServicePages(root: FastifyInstance) {
 
     /* Confirmación del borrado desde el correo. El GET solo pregunta: los antivirus de correo abren los enlaces. */
     const invalid = (reply: any, brand: any) => html(reply, 400, page({ title: 'Enlace no válido', brand, noindex: true, body: '<h1>Enlace no válido o vencido</h1><p>Vuelve a pedir el borrado desde tu panel (Mi plan y pagos → Tus datos): el enlace dura 24 horas.</p>' }));
+    // Un enlace que ya se usó (o que reemplazó otro, o que se invalidó al cancelar o transferir): 410.
+    const used = (reply: any, brand: any) => html(reply, 410, page({ title: 'Enlace ya usado', brand, noindex: true, body: '<h1>Este enlace ya no sirve</h1><p>Ya se usó, o pediste otro después. Si quieres borrar tu cuenta, vuelve a pedirlo desde tu panel (Mi plan y pagos → Tus datos).</p>' }));
     app.get('/borrar-cuenta', async (req: any, reply) => {
       const { brand } = await brandFor(req);
-      const id = readDeletionToken(req.query?.t);
-      const acc = id ? await store.getAccount(id) : null;
-      if (!acc) return invalid(reply, brand);
+      const t = readDeletionToken(req.query?.t);
+      const acc = t ? await store.getAccount(t.accountId) : null;
+      if (!t || !acc) return invalid(reply, brand);
+      if (!(await deletionLinkOpen(t))) return used(reply, brand);
       if (acc.deletion_scheduled_for) return html(reply, 200, page({ title: 'Borrado programado', brand, noindex: true, body: `<h1>Tu cuenta ya se va a borrar</h1><p>"${esc(acc.name)}" se borrará el ${esc(fmt(new Date(acc.deletion_scheduled_for)))}. Para cancelarlo entra a tu panel.</p><a class="btn" href="/#/plan">Ir a mi panel</a>` }));
       return html(reply, 200, page({
         title: 'Borrar mi cuenta', brand, noindex: true,
@@ -230,8 +233,10 @@ export async function selfServicePages(root: FastifyInstance) {
     });
     app.post('/borrar-cuenta', async (req: any, reply) => {
       const { brand } = await brandFor(req);
-      const id = readDeletionToken(req.query?.t);
-      const when = id ? await scheduleDeletion(id) : null;
+      const t = readDeletionToken(req.query?.t);
+      if (!t) return invalid(reply, brand);
+      if (!(await consumeDeletionLink(t))) return used(reply, brand);
+      const when = await scheduleDeletion(t.accountId);
       if (!when) return invalid(reply, brand);
       return html(reply, 200, page({ title: 'Borrado programado', brand, noindex: true, body: `<h1>Listo</h1><p>Tu cuenta se borrará el ${esc(fmt(when))}. Te lo confirmamos por correo. Si cambias de opinión, entra a tu panel y pulsa «Cancelar el borrado».</p><a class="btn" href="/#/plan">Ir a mi panel</a>` }));
     });

@@ -56,7 +56,7 @@ export async function accountRoutes(api: FastifyInstance) {
     if (!acc || !target || target.account_id !== accountId) throw notFound('Usuario no encontrado');
     if (owner?.id === target.id) throw new HttpError(400, target.id === req.user.id ? 'Ya eres el dueño' : 'Ya es el dueño de la cuenta');
     const moved = await query(
-      `UPDATE accounts a SET owner_user_id = $2, updated_at = now()
+      `UPDATE accounts a SET owner_user_id = $2, deletion_nonce = NULL, updated_at = now()
         WHERE a.id = $1 AND a.owner_user_id IS NOT DISTINCT FROM $3
           AND EXISTS (SELECT 1 FROM users u WHERE u.id = $2 AND u.account_id = a.id AND u.role = 'admin' AND u.active
                         AND u.totp_enabled_at IS NOT NULL AND u.email_verified_at IS NOT NULL)
