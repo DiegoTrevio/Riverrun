@@ -8,12 +8,14 @@ import { query, queryOne } from '../db.js';
 const MIN = 60_000;
 const HOUR = 60 * MIN;
 
-/** Topes de acceso. Claves: `login-ip:<ipKey>`, `login-acct:<correo>`, `mfa-challenge:<reto>`, `mfa-user:<id>`. */
+/** Topes de acceso. Claves: `login-ip:<ipKey>`, `login-acct:<correo>`, `mfa-challenge:<reto>`, `mfa-user:<id>`, `mfa-session:<sesión>`. */
 export const LIMITS = {
   loginIp: { max: 8, windowMs: 15 * MIN },
   loginAccount: { max: 10, windowMs: HOUR },
   codePerChallenge: 5,
   codePerUser: { max: 10, windowMs: HOUR },
+  /** Códigos al confirmar con la sesión abierta (verificación reciente, cambiar de app): por sesión (ID-15). */
+  codePerSession: { max: 5, windowMs: 15 * MIN },
   mfaLockMs: HOUR,
 } as const;
 

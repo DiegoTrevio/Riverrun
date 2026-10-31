@@ -11,7 +11,7 @@ import { hasRecentMfa, stepUp } from '../identity/step-up.js';
 import { notFound } from '../access.js';
 import { query } from '../db.js';
 import { logEvent } from '../logs.js';
-import { countHit, hitsFor, LIMITS } from '../identity/rate-limit.js';
+import { countHit, LIMITS, releaseHit } from '../identity/rate-limit.js';
 import { remainingRecoveryCodes, replaceRecoveryCodes } from '../identity/recovery-codes.js';
 import * as store from '../store/index.js';
 import { parse } from './util.js';
@@ -20,6 +20,7 @@ const CHALLENGE_WINDOW_MS = 15 * 60_000;
 const Code = z.object({ code: z.string().trim().min(1, 'Escribe el código').max(40) });
 const expired = (reply: FastifyReply) => reply.code(401).send({ error: 'Vuelve a escribir tu contraseña para continuar', code: 'challenge_expired' });
 export const LOCKED = 'Bloqueamos la verificación por una hora por demasiados intentos. Si no fuiste tú, cambia tu contraseña.';
+const TOO_MANY = 'Demasiados códigos equivocados. Espera 15 minutos e inténtalo de nuevo.';
 const wrongCode = (reply: FastifyReply) => reply.code(400).send({ error: 'El código no es correcto' });
 
 export async function mfaPublicRoutes(app: FastifyInstance) {
@@ -27,14 +28,12 @@ export async function mfaPublicRoutes(app: FastifyInstance) {
     const b = parse(Code.extend({ remember: z.boolean().optional() }), req.body);
     const found = await challengeUser(req);
     if (!found || found.challenge.purpose !== 'verify' || !found.user.totp_enabled_at) return expired(reply);
+    // Se cuenta antes de revisar (ID-15): muchos códigos a la vez en un reto revisan como máximo 5.
     const key = challengeKey(found.challenge);
-    if ((await hitsFor(key)) >= LIMITS.codePerChallenge) return expired(reply);
+    if ((await countHit(key, CHALLENGE_WINDOW_MS)) > LIMITS.codePerChallenge) return expired(reply);
     const check = await verifyUserCode(found.user, b.code);
     if (check.result === 'locked') return reply.code(429).send({ error: LOCKED });
-    if (check.result !== 'ok') {
-      await countHit(key, CHALLENGE_WINDOW_MS);
-      return wrongCode(reply);
-    }
+    if (check.result !== 'ok') return wrongCode(reply);
     await finishChallenge(reply, found.user, found.challenge, { remember: b.remember });
     return { ok: true, user: await store.getUser(found.user.id), ...(check.recoveryRemaining !== undefined ? { recovery_remaining: check.recoveryRemaining } : {}) };
   });
@@ -58,11 +57,8 @@ export async function mfaPublicRoutes(app: FastifyInstance) {
     const found = await challengeUser(req);
     if (!found || found.challenge.purpose !== 'enroll' || found.user.totp_enabled_at) return expired(reply);
     const key = challengeKey(found.challenge);
-    if ((await hitsFor(key)) >= LIMITS.codePerChallenge) return expired(reply);
-    if (!(await confirmEnrollment(found.user.id, b.code))) {
-      await countHit(key, CHALLENGE_WINDOW_MS);
-      return wrongCode(reply);
-    }
+    if ((await countHit(key, CHALLENGE_WINDOW_MS)) > LIMITS.codePerChallenge) return expired(reply);
+    if (!(await confirmEnrollment(found.user.id, b.code))) return wrongCode(reply);
     const codes = await replaceRecoveryCodes(found.user.id);
     void notifyUser(found.user, 'mfa_enabled');
     await finishChallenge(reply, found.user, found.challenge);
@@ -76,9 +72,13 @@ export async function mfaRoutes(api: FastifyInstance) {
     const b = parse(Code, req.body);
     const user = await loadMfaUser(req.user.id);
     if (!user) return reply.code(401).send({ error: 'No autenticado' });
+    // 5 códigos por sesión en 15 minutos, contados antes de revisarlos (ID-15); además del tope por persona.
+    const key = `mfa-session:${req.sessionId}`;
+    if ((await countHit(key, LIMITS.codePerSession.windowMs)) > LIMITS.codePerSession.max) return reply.code(429).send({ error: TOO_MANY });
     const check = await verifyUserCode(user, b.code);
     if (check.result === 'locked') return reply.code(429).send({ error: LOCKED });
     if (check.result !== 'ok') return wrongCode(reply);
+    await releaseHit(key);
     await query(`UPDATE user_sessions SET mfa_at = now() WHERE id = $1 AND user_id = $2`, [req.sessionId, req.user.id]);
     return { ok: true, ...(check.recoveryRemaining !== undefined ? { recovery_remaining: check.recoveryRemaining } : {}) };
   });
@@ -113,7 +113,10 @@ export async function mfaRoutes(api: FastifyInstance) {
   api.post('/api/me/2fa/authenticator/confirm', stepUp, async (req, reply) => {
     const b = parse(Code, req.body);
     const user = await me(req.user.id);
+    const key = `mfa-session:${req.sessionId}`;
+    if ((await countHit(key, LIMITS.codePerSession.windowMs)) > LIMITS.codePerSession.max) return reply.code(429).send({ error: TOO_MANY });
     if (!(await confirmEnrollment(user.id, b.code))) return wrongCode(reply);
+    await releaseHit(key);
     await logEvent({ level: 'info', source: 'admin', message: `${user.email} cambió su app de verificación`, accountId: user.account_id ?? undefined });
     void notifyUser(user, 'mfa_changed');
     return { ok: true };

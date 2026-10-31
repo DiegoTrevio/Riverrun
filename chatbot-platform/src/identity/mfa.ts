@@ -16,7 +16,7 @@ import type { Role, User } from '../types.js';
 import { browserOf, noteDevice, trustDevice, trustedDeviceFor } from './devices.js';
 import { notifyUser } from './notices.js';
 import { qrDataUri } from './qr.js';
-import { countHit, LIMITS } from './rate-limit.js';
+import { countHit, LIMITS, releaseHit } from './rate-limit.js';
 import { isRecoveryCodeShape, useRecoveryCode } from './recovery-codes.js';
 import { matchTotp, newTotpSecret, otpauthUri } from './totp.js';
 
@@ -123,27 +123,38 @@ export async function burnChallenge(c: Challenge) {
  */
 export async function verifyUserCode(user: ChallengeUser, code: string): Promise<{ result: 'ok' | 'bad' | 'locked'; recoveryRemaining?: number }> {
   if (user.mfa_locked_until && new Date(user.mfa_locked_until).getTime() > Date.now()) return { result: 'locked' };
+  // El intento se cuenta antes de revisar el código (ID-15): con muchos a la vez, solo se revisan los que caben en el tope.
+  const userKey = `mfa-user:${user.id}`;
+  const hits = await countHit(userKey, LIMITS.codePerUser.windowMs);
+  if (hits > LIMITS.codePerUser.max) return { result: 'locked' };
+  mfaChecks.count++;
   const secret = user.totp_secret ? decryptSecret(user.totp_secret) : null;
   if (user.totp_secret && !secret) await logEvent({ level: 'error', source: 'system', message: `No se pudo leer el secreto de verificación de ${user.email} (¿cambió SESSION_SECRET sin re-cifrar?)`, accountId: user.account_id ?? undefined });
   const step = secret ? matchTotp(secret, code) : null;
   if (step !== null) {
     const used = await queryOne(`UPDATE users SET totp_last_step = $2 WHERE id = $1 AND totp_last_step < $2 RETURNING id`, [user.id, step]);
-    if (used) return { result: 'ok' };
-    return wrongCode(user);
+    if (used) {
+      await releaseHit(userKey);
+      return { result: 'ok' };
+    }
+    return wrongCode(user, hits);
   }
   if (isRecoveryCodeShape(code)) {
     const remaining = await useRecoveryCode(user.id, code);
     if (remaining !== null) {
+      await releaseHit(userKey);
       void notifyUser(user, 'recovery_used', { remaining });
       return { result: 'ok', recoveryRemaining: remaining };
     }
   }
-  return wrongCode(user);
+  return wrongCode(user, hits);
 }
 
-/** Un código malo más: con 10 en una hora la verificación se bloquea una hora y la persona se entera por correo. */
-async function wrongCode(user: ChallengeUser): Promise<{ result: 'bad' | 'locked' }> {
-  const hits = await countHit(`mfa-user:${user.id}`, LIMITS.codePerUser.windowMs);
+/** Códigos revisados de verdad (las pruebas comprueban que los topes se aplican antes de revisar). */
+export const mfaChecks = { count: 0 };
+
+/** Un código malo más (`hits` ya lo cuenta): con 10 en una hora la verificación se bloquea una hora y la persona se entera por correo. */
+async function wrongCode(user: ChallengeUser, hits: number): Promise<{ result: 'bad' | 'locked' }> {
   if (hits < LIMITS.codePerUser.max) return { result: 'bad' };
   // Bloquea y avisa solo quien llega justo al tope: con muchos códigos a la vez llega un solo correo.
   if (hits === LIMITS.codePerUser.max) {
