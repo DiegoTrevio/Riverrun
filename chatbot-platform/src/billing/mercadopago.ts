@@ -64,6 +64,7 @@ export function stateFromPreapproval(p: any, plans?: Plan[]): SubscriptionState 
     cancelAtPeriodEnd: false,
     trialEnd: p.status === 'authorized' && start && start.getTime() > Date.now() ? start : null,
     cardKey: null,
+    collectionPaused: p.status === 'paused',
   };
 }
 
@@ -217,6 +218,14 @@ export const mercadopago: BillingProvider = {
     return pays.map(paymentFromAuthorized).filter((x): x is PaymentInfo => !!x && x.paidAt >= since);
   },
 
+  async pauseCollection(subscriptionId) {
+    await call('PUT', `/preapproval/${encodeURIComponent(subscriptionId)}`, { status: 'paused' });
+  },
+
+  async resumeCollection(subscriptionId) {
+    await call('PUT', `/preapproval/${encodeURIComponent(subscriptionId)}`, { status: 'authorized' });
+  },
+
   async cancelNow(subscriptionId) {
     try {
       await call('PUT', `/preapproval/${encodeURIComponent(subscriptionId)}`, { status: 'cancelled' });
@@ -257,6 +266,16 @@ export const mercadopago: BillingProvider = {
       const refunded = Math.round(Number(p.transaction_amount_refunded ?? 0) * 100);
       if (refunded > 0) result.refund = { paymentId: '', chargeRefs: [String(p.id ?? dataId)], refundedCents: refunded };
       result.dispute = disputeFromPayment(p) ?? undefined;
+      return result;
+    }
+
+    // Contracargo (tema «chargebacks»): manda el estado del pago, que se relee (PAY-4).
+    if (type === 'chargebacks' || type === 'topic_chargebacks_wh') {
+      const cb = await call('GET', `/v1/chargebacks/${encodeURIComponent(dataId)}`);
+      const payId = String(cb.payments?.[0] ?? cb.payment_id ?? '');
+      if (!payId) return result;
+      const p = await call('GET', `/v1/payments/${encodeURIComponent(payId)}`);
+      result.dispute = disputeFromPayment(p) ?? { disputeId: `cb_${payId}`, chargeRefs: [payId], status: 'open', amountCents: Math.round(Number(p.transaction_amount ?? 0) * 100), url: 'https://www.mercadopago.com.mx/activities' };
       return result;
     }
 

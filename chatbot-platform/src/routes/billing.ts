@@ -8,7 +8,7 @@ import { rateLimited } from '../auth.js';
 import { baseFor } from '../brands.js';
 import { providers, applyState, changePlan, confirmCheckout, createCheckoutSession, enabledProviders, getPlan, getSubscription, listPlans, notePaymentAction, payable, claimEvent, finishEvent, releaseEvent, startReplacement } from '../billing/service.js';
 import { assertPortalAllowed, cardCheckState, openCardCheck, trialDaysFor } from '../billing/card-check.js';
-import { alertSuperadmins, applyDispute, recordMoney, RefundBeforePaymentError } from '../billing/ledger.js';
+import { alertSuperadmins, applyDispute, applyFraudWarning, recordMoney, RefundBeforePaymentError } from '../billing/ledger.js';
 import { FiscalSchema, fiscalComplete, getFiscal, personaOf, REGIMES, saveFiscal, USES, usesFor } from '../billing/fiscal.js';
 import { listPayments } from '../billing/payments.js';
 import { cfdiCounts, cfdiForPayments, getCfdi, invoicer, onFiscalSaved } from '../billing/cfdi.js';
@@ -116,6 +116,7 @@ export async function billingWebhooks(app: FastifyInstance) {
           const accountId = result.state ? await applyState(result.state, new Date(), { refresh: true }) : null;
           await recordMoney(name, result, accountId);
           if (result.dispute) await applyDispute(name, result.dispute);
+          if (result.fraudWarning) await applyFraudWarning(name, result.fraudWarning);
           await finishEvent(name, result.eventId, claim.token, accountId);
         } catch (e) {
           // Un reembolso cuyo cobro nunca llegó (de otro producto en la misma cuenta del proveedor, o anterior a la

@@ -14,6 +14,9 @@ export const fake = {
     invoices: [] as any[],
     /** Reembolsos pedidos (POST /v1/refunds). */
     refunds: [] as { charge: string; payment_intent: string }[],
+    /** Disputas (GET /v1/disputes/:id: se releen en cada aviso) y alertas tempranas de fraude. */
+    disputes: {} as Record<string, any>,
+    fraudWarnings: {} as Record<string, any>,
     /** El proveedor rechaza los reembolsos y las cancelaciones. */
     refundFail: false,
     fail: false,
@@ -28,6 +31,8 @@ export const fake = {
     cards: {} as Record<string, any>,
     /** Pagos reembolsados (POST /v1/payments/:id/refunds). */
     refunds: [] as string[],
+    /** Contracargos (GET /v1/chargebacks/:id). */
+    chargebacks: {} as Record<string, any>,
     /** Id de la próxima suscripción que se cree (por omisión, "pre_new"). */
     nextId: '',
   },
@@ -99,6 +104,10 @@ const stripeUrl = await serve((req, raw, res) => {
     if (req.method === 'POST') Object.assign(p, { name: body.get('name') ?? p.name, active: body.get('active') !== 'false' });
     return json(res, 200, p);
   }
+  const dp = path.match(/^\/v1\/disputes\/([\w-]+)$/);
+  if (dp) return fake.stripe.disputes[dp[1]] ? json(res, 200, fake.stripe.disputes[dp[1]]) : json(res, 404, { error: { message: 'No such dispute', code: 'resource_missing' } });
+  const efw = path.match(/^\/v1\/radar\/early_fraud_warnings\/([\w-]+)$/);
+  if (efw) return fake.stripe.fraudWarnings[efw[1]] ? json(res, 200, fake.stripe.fraudWarnings[efw[1]]) : json(res, 404, { error: { message: 'No such warning', code: 'resource_missing' } });
   const m = path.match(/^\/v1\/subscriptions\/([\w-]+)$/);
   if (m) {
     const sub = fake.stripe.subs[m[1]];
@@ -110,6 +119,8 @@ const stripeUrl = await serve((req, raw, res) => {
     }
     if (req.method === 'POST') {
       if (body.has('cancel_at_period_end')) sub.cancel_at_period_end = body.get('cancel_at_period_end') === 'true';
+      if (body.has('pause_collection[behavior]')) sub.pause_collection = { behavior: body.get('pause_collection[behavior]') };
+      else if (body.has('pause_collection')) sub.pause_collection = null;
       // Terminar la prueba ya (tarjeta que ya tuvo una): Stripe cobra al momento y la suscripción queda activa.
       if (body.get('trial_end') === 'now') { sub.status = 'active'; delete sub.trial_end; }
       // Cambio de plan: el renglón toma el nuevo precio (por ID o armado con price_data).
@@ -159,6 +170,8 @@ const mpUrl = await serve((req, raw, res) => {
   }
   m = path.match(/^\/authorized_payments\/([\w-]+)$/);
   if (m && fake.mp.payments[m[1]]) return json(res, 200, fake.mp.payments[m[1]]);
+  m = path.match(/^\/v1\/chargebacks\/([\w-]+)$/);
+  if (m) return fake.mp.chargebacks[m[1]] ? json(res, 200, fake.mp.chargebacks[m[1]]) : json(res, 404, { message: 'not found' });
   m = path.match(/^\/v1\/payments\/([\w-]+)$/);
   if (m && fake.mp.charges[m[1]]) return json(res, 200, fake.mp.charges[m[1]]);
   json(res, 404, { message: 'ruta desconocida' });

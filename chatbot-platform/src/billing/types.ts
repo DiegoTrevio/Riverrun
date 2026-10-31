@@ -41,12 +41,16 @@ export interface Subscription {
   pending_plan_since: Date | null;
   /** Monto pactado con el proveedor para ese plan (con IVA). */
   pending_amount_cents: number;
+  /** Riverrun detuvo sus cobros por una disputa abierta (no es un pago pendiente). */
+  collection_paused: boolean;
 }
 
 /** Estado de una suscripción tal como lo informa el proveedor, ya normalizado. */
 export interface SubscriptionState {
   /** Stripe: por qué el precio cobrado no dio un plan (se avisa al superadministrador, PAY-7). */
   planMismatch?: string;
+  /** Los cobros están detenidos (Stripe `pause_collection`, Mercado Pago `paused`). */
+  collectionPaused?: boolean;
   provider: ProviderName;
   accountId: string | null;
   customerId: string;
@@ -72,6 +76,8 @@ export interface WebhookResult {
   refund?: RefundInfo;
   /** Contracargo: el cliente desconoció un cobro con su banco. */
   dispute?: DisputeInfo;
+  /** Alerta temprana de fraude (Stripe Radar): se reembolsa ese cobro y se trata como disputa perdida (PAY-5). */
+  fraudWarning?: { id: string; chargeRefs: string[] };
   /** El banco detuvo el cobro hasta que el cliente lo confirme (3DS): página donde lo confirma. */
   actionUrl?: string;
 }
@@ -154,6 +160,10 @@ export interface BillingProvider {
   cancelNow(subscriptionId: string): Promise<void>;
   /** Reembolsa por completo un cobro. Ya reembolsado cuenta como hecho. */
   refund(chargeRef: string): Promise<void>;
+  /** Detiene los cobros de la suscripción sin cancelarla (disputa abierta; PAY-4). Ya detenidos cuenta como hecho. */
+  pauseCollection(subscriptionId: string): Promise<void>;
+  /** Reanuda los cobros detenidos por una disputa (ganada). */
+  resumeCollection(subscriptionId: string): Promise<void>;
   /** Verifica la firma y devuelve el estado. Lanza `WebhookError` si la firma no es válida. */
   handleWebhook(req: { rawBody: Buffer; headers: Record<string, string | string[] | undefined>; query: Record<string, string | undefined>; plans: Plan[] }): Promise<WebhookResult | null>;
 }

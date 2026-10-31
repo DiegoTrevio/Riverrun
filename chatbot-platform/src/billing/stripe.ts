@@ -21,12 +21,12 @@ export function form(obj: Record<string, unknown>, prefix = ''): string[] {
   return out;
 }
 
-async function call(method: 'GET' | 'POST' | 'DELETE', path: string, body?: Record<string, unknown>): Promise<any> {
+async function call(method: 'GET' | 'POST' | 'DELETE', path: string, body?: Record<string, unknown> | string): Promise<any> {
   if (!credentialAllowed(cfg().secretKey, TEST_KEYS)) throw new ProviderError('Stripe: en este entorno (OUTBOUND_MODE=sandbox) solo se usan claves de prueba');
   const res = await fetch(cfg().apiUrl + path, {
     method,
     headers: { authorization: `Bearer ${cfg().secretKey}`, ...(body ? { 'content-type': 'application/x-www-form-urlencoded' } : {}) },
-    body: body ? form(body).join('&') : undefined,
+    body: typeof body === 'string' ? body : body ? form(body).join('&') : undefined,
     signal: AbortSignal.timeout(15_000),
   }).catch((e) => {
     // Sin respuesta (red, DNS o tiempo agotado): se informa como falla del proveedor, igual que un error HTTP.
@@ -156,6 +156,7 @@ export function stateFromSubscription(sub: any, plans: Plan[]): SubscriptionStat
     trialEnd: sub.status === 'trialing' && typeof sub.trial_end === 'number' ? new Date(sub.trial_end * 1000) : null,
     // Se lee con expand[]=default_payment_method: sin expandir es solo el id.
     cardKey: typeof sub.default_payment_method === 'object' ? sub.default_payment_method?.card?.fingerprint ?? null : null,
+    collectionPaused: !!sub.pause_collection,
   };
 }
 
@@ -176,7 +177,7 @@ export function verifySignature(raw: Buffer, header: string | undefined, secret:
 }
 
 const SUB_EVENTS = new Set(['checkout.session.completed', 'customer.subscription.created', 'customer.subscription.updated', 'customer.subscription.deleted', 'invoice.paid', 'invoice.payment_succeeded', 'invoice.payment_failed', 'invoice.payment_action_required']);
-const DISPUTE_EVENTS = new Set(['charge.dispute.created', 'charge.dispute.updated', 'charge.dispute.closed']);
+const DISPUTE_EVENTS = new Set(['charge.dispute.created', 'charge.dispute.updated', 'charge.dispute.closed', 'charge.dispute.funds_withdrawn', 'charge.dispute.funds_reinstated']);
 
 /**
  * La huella de la tarjeta, aunque la suscripción no la traiga (PAY-17): sin ella no hay prueba gratis. Si la suscripción
@@ -288,6 +289,15 @@ export const stripe: BillingProvider = {
     }
   },
 
+  async pauseCollection(subscriptionId) {
+    // void: las facturas de mientras se anulan (no quedan como deuda); la suscripción no se cancela.
+    await call('POST', `/v1/subscriptions/${encodeURIComponent(subscriptionId)}`, { pause_collection: { behavior: 'void' } });
+  },
+
+  async resumeCollection(subscriptionId) {
+    await call('POST', `/v1/subscriptions/${encodeURIComponent(subscriptionId)}`, 'pause_collection=');
+  },
+
   async refund(chargeRef) {
     try {
       await call('POST', '/v1/refunds', chargeRef.startsWith('pi_') ? { payment_intent: chargeRef } : { charge: chargeRef });
@@ -308,7 +318,16 @@ export const stripe: BillingProvider = {
     const result: WebhookResult = { eventId: String(event.id), type: String(event.type), state: null };
     const obj = event.data?.object ?? {};
     if (event.type === 'charge.refunded') return { ...result, refund: refundFromCharge(obj) };
-    if (DISPUTE_EVENTS.has(event.type)) return { ...result, dispute: disputeFromStripe(obj) };
+    // Manda el estado de la disputa en Stripe, no el del aviso: uno viejo que llega tarde no reabre una ya resuelta (PAY-4).
+    if (DISPUTE_EVENTS.has(event.type)) {
+      const fresh = obj.id ? await call('GET', `/v1/disputes/${encodeURIComponent(obj.id)}`) : obj;
+      return { ...result, dispute: disputeFromStripe(fresh) };
+    }
+    if (event.type === 'radar.early_fraud_warning.created') {
+      const w = obj.id ? await call('GET', `/v1/radar/early_fraud_warnings/${encodeURIComponent(obj.id)}`) : obj;
+      const chargeRefs = [idOf(w.charge), idOf(w.payment_intent)].filter(Boolean);
+      return chargeRefs.length ? { ...result, fraudWarning: { id: String(w.id ?? obj.id), chargeRefs } } : result;
+    }
     if (!SUB_EVENTS.has(event.type)) return result;
     if (event.type === 'invoice.paid' || event.type === 'invoice.payment_succeeded') result.payment = paymentFromInvoice(obj) ?? undefined;
     if (event.type === 'invoice.payment_action_required' && obj.hosted_invoice_url) result.actionUrl = String(obj.hosted_invoice_url);
