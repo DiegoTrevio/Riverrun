@@ -124,3 +124,19 @@ t('una llave cuyo creador ya no es administrador activo de la cuenta no entra, a
   await pool.query(`UPDATE users SET active = true WHERE email = 'rita@imprenta.mx'`);
   assert.equal((await v1(rita.key)).statusCode, 200, 'administradora activa otra vez: entra');
 });
+
+t('la migración 099 revoca las llaves sin un administrador activo detrás y lo anota en la bitácora (ID-12)', async () => {
+  await h.addUser({ account_id: acc, name: 'Sara', email: 'sara@imprenta.mx', password: PASS, role: 'admin' });
+  const sara = await equip('sara@imprenta.mx');
+  const live = await equip('rita@imprenta.mx');
+  const keyId = (await pool.query(`SELECT id FROM api_keys WHERE name = 'Llave de sara@imprenta.mx'`)).rows[0].id;
+  await pool.query(`UPDATE api_keys SET created_by = NULL WHERE id = $1`, [keyId]);
+  const sql = (await import('node:fs')).readFileSync('migrations/099_orphan_api_keys.sql', 'utf8');
+  await pool.query(sql);
+  await pool.query(sql);
+  assert.ok((await pool.query(`SELECT revoked_at FROM api_keys WHERE id = $1`, [keyId])).rows[0].revoked_at, 'revocada');
+  assert.equal((await v1(sara.key)).statusCode, 401);
+  assert.equal((await v1(live.key)).statusCode, 200, 'la de una administradora activa sigue');
+  const logs = (await pool.query(`SELECT details FROM event_logs WHERE account_id = $1 AND message LIKE 'Llave de API revocada:%'`, [acc])).rows;
+  assert.deepEqual(logs.map((l) => l.details.api_key_id), [keyId], 'una sola nota');
+});
