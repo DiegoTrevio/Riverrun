@@ -22,7 +22,7 @@ import * as assignment from '../automation/assignment.js';
 import { stopEnrollments } from '../automation/store.js';
 import { contactDataExport, eraseContact } from '../privacy.js';
 import { appDestinations, ExportContentSchema, sendConversation } from '../integrations/conversation-export.js';
-import { inboundAbsolutePath, safeFileName } from '../channels/media.js';
+import { inboundAbsolutePath, safeFileName, downloadName } from '../channels/media.js';
 
 /** Conversaciones y contactos: disponible para administradores y agentes de la cuenta. */
 export async function conversationRoutes(api: FastifyInstance, service: ChatService) {
@@ -180,7 +180,7 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
     const inline = ['image/jpeg', 'image/png', 'image/webp', 'video/mp4', 'video/quicktime', 'video/webm'].includes(file.mime);
     reply
       .header('content-type', inline ? file.mime : 'application/octet-stream')
-      .header('content-disposition', `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(safeFileName(file.file_name))}`)
+      .header('content-disposition', `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(downloadName(file.file_name, file.mime))}`)
       .header('x-content-type-options', 'nosniff')
       .header('cache-control', 'private, max-age=300');
     return reply.send(fs.createReadStream(abs));

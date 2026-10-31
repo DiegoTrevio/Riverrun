@@ -186,6 +186,32 @@ t('contacto: llega al buzón de soporte con «responder a», campo trampa y lím
   }
 });
 
+t('contacto: si Cloudflare no responde, el mensaje no sale (captcha cerrado ante fallas, bajos de la 4′)', async () => {
+  const prevMail = config.signup.superadminEmail;
+  const prev = { ...config.signup.turnstile };
+  config.signup.superadminEmail = 'soporte@plataforma.mx';
+  Object.assign(config.signup.turnstile, { siteKey: 'site', secretKey: 'secret', verifyUrl: 'http://127.0.0.1:9' });
+  try {
+    const n = outbox.length;
+    const r = await h.app.inject({ method: 'POST', url: '/contacto', remoteAddress: '10.41.0.1', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      payload: new URLSearchParams({ name: 'Ana', email: 'ana@cliente.mx', message: 'Mensaje de prueba largo', 'cf-turnstile-response': 'x' }).toString() });
+    assert.equal(r.statusCode, 503);
+    assert.match(r.body, /No pudimos comprobar el captcha/);
+    assert.equal(outbox.length, n, 'no sale nada');
+  } finally {
+    Object.assign(config.signup.turnstile, prev);
+    config.signup.superadminEmail = prevMail;
+  }
+});
+
+t('un cuerpo JSON con __proto__ o constructor.prototype responde 400 (bajos de la 4′)', async () => {
+  for (const payload of ['{"__proto__":{"x":1}}', '{"a":{"constructor":{"prototype":{"x":1}}}}']) {
+    const r = await h.app.inject({ method: 'POST', url: '/api/login', headers: { 'content-type': 'application/json' }, payload });
+    assert.equal(r.statusCode, 400, payload);
+  }
+  assert.equal(({} as any).x, undefined);
+});
+
 t('estado: componentes y su estado, sin mensajes de error ni direcciones internas', async () => {
   const r = await h.app.inject({ method: 'GET', url: '/estado' });
   assert.equal(r.statusCode, 200);

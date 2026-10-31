@@ -30,10 +30,11 @@ const QUEUED_EVENTS = new Set([
 ]);
 const MAX_ATTEMPTS = 6;
 
-/** Id del evento: el de Zernio (cabecera o cuerpo) o, si no viene, la huella del cuerpo firmado. */
-export function eventIdOf(headers: Record<string, unknown>, body: any, rawBody?: Buffer): string {
-  const id = headers['x-zernio-event-id'] ?? headers['x-late-event-id'] ?? body?.id;
-  if (id != null && String(id).trim()) return String(id).slice(0, 200);
+/**
+ * Id del evento: la huella del cuerpo firmado. La cabecera con el id no va firmada: con ella, el mismo evento repetido con
+ * otro id en la cabecera se procesaba otra vez. Los reintentos de Zernio mandan el mismo cuerpo (misma huella).
+ */
+export function eventIdOf(_headers: Record<string, unknown>, body: any, rawBody?: Buffer): string {
   return `sha256:${crypto.createHash('sha256').update(rawBody ?? JSON.stringify(body ?? {})).digest('hex')}`;
 }
 

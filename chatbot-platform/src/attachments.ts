@@ -1,4 +1,6 @@
 import crypto from 'node:crypto';
+import PizZip from 'pizzip';
+import { checkZip } from './zip-limits.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { INBOUND_MEDIA_MAX_BYTES } from './channels/media.js';
@@ -44,6 +46,25 @@ function isPlainText(b: Buffer): boolean {
  * Tipo real del archivo por su firma, no por la extensión ni por lo que declare quien lo sube.
  * Rechaza HTML/SVG, scripts, ejecutables y archivos comprimidos: no se mandan a un cliente.
  */
+/** Carpeta que debe traer cada formato de Office moderno. */
+const OOXML_DIR: Record<string, string> = { '.docx': 'word/', '.xlsx': 'xl/', '.pptx': 'ppt/' };
+
+/**
+ * ¿Es un Word, Excel o PowerPoint de verdad y sin macros (bajos de la 4′)? Se revisa el ZIP con topes (como las
+ * plantillas) antes de abrirlo, y se exige [Content_Types].xml y la carpeta del formato, sin vbaProject.bin.
+ */
+export function officeZipOk(b: Buffer, ext: string): boolean {
+  if (checkZip(b, { maxEntries: 2000, maxEntryBytes: 50 * 1024 * 1024, maxTotalBytes: 100 * 1024 * 1024 })) return false;
+  let names: string[];
+  try {
+    names = Object.keys(new PizZip(b).files);
+  } catch {
+    return false;
+  }
+  const dir = OOXML_DIR[ext];
+  return names.includes('[Content_Types].xml') && !!dir && names.some((n) => n.startsWith(dir)) && !names.some((n) => /vbaproject\.bin$/i.test(n));
+}
+
 export function identifyAttachment(b: Buffer, fileName: string): AttachmentType | null {
   const ext = path.extname(fileName).toLowerCase();
   const ascii = (from: number, to: number) => b.subarray(from, to).toString('latin1');
@@ -52,7 +73,7 @@ export function identifyAttachment(b: Buffer, fileName: string): AttachmentType 
   if (ascii(0, 4) === 'RIFF' && ascii(8, 12) === 'WEBP') return { mime: 'image/webp', kind: 'image', ext: '.webp' };
   if (ascii(0, 5) === '%PDF-') return { mime: 'application/pdf', kind: 'document', ext: '.pdf' };
   if (b.length >= 8 && b.subarray(0, 8).equals(OLE_SIG) && OLD_OFFICE[ext]) return { mime: OLD_OFFICE[ext], kind: 'document', ext };
-  if (b.length >= 4 && b.subarray(0, 4).equals(ZIP_SIG) && OOXML[ext]) return { mime: OOXML[ext], kind: 'document', ext };
+  if (b.length >= 4 && b.subarray(0, 4).equals(ZIP_SIG) && OOXML[ext]) return officeZipOk(b, ext) ? { mime: OOXML[ext], kind: 'document', ext } : null;
   if (ascii(0, 4) === 'OggS') return { mime: 'audio/ogg', kind: 'audio', ext: '.ogg' };
   if (ascii(0, 4) === 'RIFF' && ascii(8, 12) === 'WAVE') return { mime: 'audio/wav', kind: 'audio', ext: '.wav' };
   if (ascii(0, 3) === 'ID3' || (b.length >= 2 && b[0] === 0xff && (b[1] & 0xe0) === 0xe0)) return { mime: 'audio/mpeg', kind: 'audio', ext: '.mp3' };
