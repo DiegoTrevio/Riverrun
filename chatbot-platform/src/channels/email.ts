@@ -14,6 +14,7 @@ import { isPrivateIp } from '../automation/automator.js';
 import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
 import { htmlToText } from '../knowledge-import.js';
+import { clampInbound } from '../engine/text.js';
 import { imageAbsolutePath, type OutgoingFile, type Transport } from '../engine/transport.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
@@ -239,7 +240,9 @@ export const emailAdapter: ChannelAdapter = {
 };
 
 export function toInbound(m: RawMail, firstInThread: boolean): InboundMessage {
-  const body = stripQuoted(m.text) || m.text.trim().slice(0, MAX_MAIL_TEXT);
+  // Lo que escribió la persona va al principio: lo citado de más abajo no se revisa (un correo llega a 10 MB).
+  const head = m.text.slice(0, MAX_MAIL_TEXT);
+  const body = clampInbound(stripQuoted(head) || head.trim());
   return {
     messageId: m.messageId,
     externalId: m.address,

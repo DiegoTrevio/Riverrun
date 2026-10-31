@@ -107,8 +107,10 @@ export function toPlainText(s: string): string {
 
 // Cualquier terminación de 2 a 24 letras (mpago.la, linktr.ee, forms.gle): con una lista fija, un enlace con otra
 // terminación no se reconocía como enlace y pasaba sin revisarse.
-const URL_RE = /\b((?:https?:\/\/|www\.)[^\s<>"')]+|[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*\.[a-z]{2,24}\b(?:\/[^\s<>"')]*)?)/gi;
-const EMAIL_RE = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
+// Todas las repeticiones van acotadas (etiquetas de 63, correos de 64@253, rutas de 2 000): sin tope, un texto como
+// «a.a.a.…» o «a-a-a-…» hacía retroceder a cada posición hasta el final (17 s con 65 000 caracteres).
+const URL_RE = /\b((?:https?:\/\/|www\.)[^\s<>"')]{1,2000}|[a-z0-9][a-z0-9-]{0,62}(?:\.[a-z0-9-]{1,63}){0,8}\.[a-z]{2,24}\b(?:\/[^\s<>"')]{0,2000})?)/gi;
+const EMAIL_RE = /\b[A-Z0-9._%+-]{1,64}@[A-Z0-9.-]{1,253}\.[A-Z]{2,24}\b/gi;
 const PHONE_RE = /\+?\d[\d\s().-]{6,}\d/g;
 const NUMBER_RE = /\d+(?:[.,]\d+)*/g;
 /** "15 mil", "15k", "2 millones": la cifra completa (15000), para que no se verifique solo el 15. */
@@ -164,7 +166,7 @@ const fold = (s: string) => s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,
 
 // Moneda antes ("$", "US$", "USD", "MXN", "€", "EUR") o después ("pesos", "dlls", "MN", "varos"…) de la cifra; la cifra
 // puede venir abreviada ("15 mil", "15k").
-const AMOUNT = String.raw`\d[\d.,]*(?:\s?(?:mil|k|mill[oó]n|millones)(?![\p{L}\d]))?`;
+const AMOUNT = String.raw`\d[\d.,]{0,24}(?:\s?(?:mil|k|mill[oó]n|millones)(?![\p{L}\d]))?`;
 const MONEY_RE = new RegExp(
   String.raw`(?<![\p{L}\d])(?:us\$|\$|usd|mxn|eur|€)\s?${AMOUNT}|${AMOUNT}\s?(?:pesos|mxn|m\.?\s?n\.?|usd|d[oó]lares|dlls?\.?|dls\.?|varos|euros|eur|€)(?![\p{L}])`,
   'giu',
@@ -538,4 +540,16 @@ export function deepClean<T>(v: T): T {
 /** Recorta por caracteres, no por unidades de código: nunca parte un emoji en dos. */
 export function truncateChars(s: string, max: number): string {
   return Array.from(s).slice(0, max).join('');
+}
+
+/** Lo más largo que se guarda y se pasa a la IA de un mensaje que llega (WhatsApp admite 65 000; un correo, megas). */
+export const MAX_INBOUND_TEXT = 8000;
+
+/** Un mensaje entrante con tope: lo de más se corta y se dice, para que el equipo sepa que hubo más. */
+export function clampInbound(text: string): string {
+  if (text.length <= MAX_INBOUND_TEXT) return text;
+  let cut = MAX_INBOUND_TEXT;
+  // Sin partir un emoji: si el último es la primera mitad de un par, se queda fuera.
+  if (/[\uD800-\uDBFF]/.test(text[cut - 1])) cut--;
+  return `${text.slice(0, cut)}\n…[mensaje recortado]`;
 }
