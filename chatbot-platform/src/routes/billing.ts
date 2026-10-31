@@ -266,16 +266,25 @@ export async function billingRoutes(api: FastifyInstance) {
     return { confirmed, account_status: acc?.status, subscription: publicSub(sub) };
   });
 
+  /**
+   * El portal de Stripe deja probar tarjetas («actualizar método de pago») contra la cuenta de la plataforma: cuenta como
+   * una página de tarjeta por sustitución, con los mismos topes, el freno y su registro en card_checks (PAY-18).
+   */
+  const stripePortal = async (accountId: string, ip: string, sub: NonNullable<Awaited<ReturnType<typeof getSubscription>>>, base: string) =>
+    openCardCheck({ accountId, ip, provider: sub.provider, planKey: sub.plan_key, replacement: true,
+      open: async () => ({ url: (await providers[sub.provider].portal!(sub.provider_customer_id, `${base}/#/plan`)).url, ref: '' }) });
+
   /** Stripe: página para cambiar tarjeta, ver facturas y cancelar. */
   api.post('/api/billing/portal', { ...admins, ...ownerStepUp }, async (req: any, reply) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
-    if (tooMany(reply, `billing-portal:${accountId}`, 30)) return reply;
     const sub = await getSubscription(accountId);
     const provider = sub && providers[sub.provider];
     if (!sub || !provider?.portal || !sub.provider_customer_id) throw new HttpError(400, 'Tu plan no tiene página de administración: cancélalo desde aquí.');
+    const base = await baseFor(req);
     try {
-      return await provider.portal(sub.provider_customer_id, `${await baseFor(req)}/#/plan`);
+      return { url: await stripePortal(accountId, req.ip, sub, base) };
     } catch (e: any) {
+      if (e instanceof HttpError) throw e;
       throw new HttpError(502, e.message);
     }
   });
@@ -308,7 +317,7 @@ export async function billingRoutes(api: FastifyInstance) {
     const base = await baseFor(req);
     if (sub.provider === 'stripe') {
       if (!sub.provider_customer_id) throw new HttpError(400, 'Tu plan no tiene página de administración');
-      return viaProvider(() => providers.stripe.portal!(sub.provider_customer_id, `${base}/#/plan`));
+      return viaProvider(async () => ({ url: await stripePortal(accountId, req.ip, sub, base) }));
     }
     // Con un cambio de plan programado, la tarjeta nueva lo conserva (empieza igual, con su primer cobro).
     const plan = await getPlan(sub.pending_plan_key || sub.plan_key);
