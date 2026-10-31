@@ -1,5 +1,6 @@
 import { sleep } from '../engine/transport.js';
 import { query, queryOne } from '../db.js';
+import { countHit } from '../identity/rate-limit.js';
 
 /**
  * Presupuesto de llamadas a Zernio. El límite por minuto es de la llave (una sola para todos los negocios) y depende de
@@ -49,6 +50,28 @@ export async function tryTakeZernioBudget(priority: ZernioPriority = 'interactiv
      RETURNING tokens`,
     [KEY, cap, cap / 60, minFree]);
   return !!row;
+}
+
+/** Llamadas a Zernio por cuenta y minuto: un negocio en bucle se frena solo, sin vaciar la cubeta de todos (PAY-23). */
+export const ZERNIO_PER_ACCOUNT_PER_MIN = 60;
+
+/** Error de tope por cuenta con la forma de un 429 (el panel muestra el mensaje). */
+class ZernioAccountBusy extends Error {
+  status = 429;
+  constructor() {
+    super('Esta cuenta mandó demasiadas acciones a las redes en el último minuto. Intenta en un momento.');
+  }
+}
+
+/** Cuenta la llamada de una cuenta antes de tomar ficha de la cubeta compartida. Sin base disponible no se limita. */
+export async function takeZernioAccountBudget(accountId: string, priority: ZernioPriority = 'interactive'): Promise<void> {
+  let hits: number;
+  try {
+    hits = await countHit(`zernio-acct:${accountId}`, 60_000);
+  } catch {
+    return;
+  }
+  if (hits > ZERNIO_PER_ACCOUNT_PER_MIN) throw priority === 'background' ? new ZernioBusyError() : new ZernioAccountBusy();
 }
 
 /** Toma una ficha antes de llamar a Zernio. Sin base disponible no se limita (nunca detiene un envío por eso). */
