@@ -1,6 +1,6 @@
 /** Plataforma: el selector de perfil del maestro y lo que ve un admin que escribe la dirección de una pantalla del maestro. */
 import assert from 'node:assert/strict';
-import type { AreaContext } from '../areas.mts';
+import { toast, type AreaContext } from '../areas.mts';
 
 const PER_ACCOUNT = ['comentarios', 'publicaciones', 'cobros', 'estadisticas', 'integraciones', 'redes', 'datos-clientes'];
 
@@ -43,5 +43,28 @@ export const checks = {
       if (!/No pudimos|permiso|maestro|superadmin|no encontrada|No tienes/i.test(text) && !/#\/(conversations|agentes)$/.test(new URL(page.url()).hash)) leaks.push(`${route}: sin aviso (${text.slice(0, 100)})`);
     }
     assert.deepEqual(leaks, []);
+  },
+  'Planes y cobro: capturar el tipo de cambio de un pago en otra moneda libera su factura en espera (PAY-9)': async ({ open, go, h, pool }: AreaContext) => {
+    const pay = (await pool.query(
+      `INSERT INTO billing_payments (account_id, provider, provider_payment_id, currency, total_cents, subtotal_cents, tax_cents, tax_percent, paid_at)
+       VALUES ($1, 'stripe', 'in_botones_usd', 'USD', 3364, 2900, 464, 16, now()) RETURNING id`, [h.accountId])).rows[0].id;
+    const cfdi = (await pool.query(
+      `INSERT INTO cfdi_invoices (kind, account_id, payment_id, hold, last_error) VALUES ('payment', $1, $2, 'exchange_rate', 'pendiente: tipo de cambio') RETURNING id`,
+      [h.accountId, pay])).rows[0].id;
+    try {
+      const { page } = await open('superadmin');
+      await go(page, 'planes');
+      const card = page.locator('section', { has: page.getByRole('heading', { name: 'Facturas que esperan el tipo de cambio' }) });
+      await card.getByRole('spinbutton').first().fill('17.4');
+      await card.getByRole('button', { name: 'Guardar' }).first().click();
+      await toast(page, 'Guardado: la factura sale en la siguiente revisión');
+      const p = (await pool.query(`SELECT exchange_rate FROM billing_payments WHERE id = $1`, [pay])).rows[0];
+      const c = (await pool.query(`SELECT hold FROM cfdi_invoices WHERE id = $1`, [cfdi])).rows[0];
+      assert.deepEqual([Number(p.exchange_rate), c.hold], [17.4, '']);
+    } finally {
+      // Solo lo que esta comprobación creó.
+      await pool.query(`DELETE FROM cfdi_invoices WHERE id = $1`, [cfdi]);
+      await pool.query(`DELETE FROM billing_payments WHERE id = $1`, [pay]);
+    }
   },
 };
