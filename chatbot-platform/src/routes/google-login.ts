@@ -22,6 +22,8 @@ import { parse } from './util.js';
 
 const HOUR = 3600_000;
 const redirectUri = () => `${config.publicBaseUrl}/oauth/google/login/callback`;
+/** Emisores válidos del id_token de Google. */
+const GOOGLE_ISSUERS = ['https://accounts.google.com', 'accounts.google.com'];
 const AUTH_URL = () => process.env.GOOGLE_AUTH_URL || 'https://accounts.google.com/o/oauth2/v2/auth';
 
 /** El "state" va firmado, caduca en 10 minutos y lleva un valor aleatorio que también se guarda en una cookie (evita CSRF). */
@@ -58,6 +60,11 @@ export async function googleLoginRoutes(app: FastifyInstance) {
       const t = await tokenRequest({ grant_type: 'authorization_code', code: String(req.query.code), redirect_uri: redirectUri() });
       // El id_token llega directo del servidor de Google por TLS (no por el navegador), así que sus datos son confiables.
       const claims = JSON.parse(Buffer.from((t.id_token ?? '').split('.')[1] ?? '', 'base64url').toString());
+      // Emitido por Google para esta aplicación (bajos de la 2c): otro emisor u otro cliente no entran.
+      if (!GOOGLE_ISSUERS.includes(String(claims.iss ?? '')) || claims.aud !== process.env.GOOGLE_CLIENT_ID) {
+        await logEvent({ level: 'warn', source: 'system', message: `Inicio de sesión con Google rechazado: el id_token no es de Google para esta aplicación (iss ${String(claims.iss ?? '—').slice(0, 80)})` });
+        return fail('error');
+      }
       const sub = String(claims.sub ?? '');
       const email = String(claims.email ?? '').toLowerCase();
       if (!sub) return fail('error');

@@ -819,6 +819,17 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
     );
     services.push({ id: 'google', label: 'Google (Calendar e inicio de sesión)', area: 'integrations', state: 'incomplete', detail: 'Falta una credencial' });
   } else {
+    // En producción, los servidores de Google son los oficiales: con otro, quien lo controle firma inicios de sesión.
+    for (const [name, official] of [['GOOGLE_OAUTH_URL', 'https://oauth2.googleapis.com'], ['GOOGLE_AUTH_URL', 'https://accounts.google.com/o/oauth2/v2/auth']] as const) {
+      if (prod && get(name) && get(name).replace(/\/$/, '') !== official) add(
+        'critical',
+        'integrations',
+        'google.unofficial_url',
+        [name],
+        `${name} apunta a ${get(name)}, que no es el servidor oficial de Google: el inicio de sesión con Google confiaría en lo que ese servidor diga.`,
+        `Bórrala (se usa ${official}); solo sirve para pruebas.`,
+      );
+    }
     if (!gid.endsWith('.apps.googleusercontent.com')) add(
       'warning',
       'integrations',

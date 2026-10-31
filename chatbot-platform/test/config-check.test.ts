@@ -309,3 +309,12 @@ test('en producción el registro público pide Turnstile (aviso); sin cobro, las
   assert.ok(ids(installed(), 'optional').includes('signup.no_billing'), 'sin Stripe ni Mercado Pago');
   assert.ok(!ids(installed({ STRIPE_SECRET_KEY: 'sk_test_1', STRIPE_WEBHOOK_SECRET: 'whsec_1' })).includes('signup.no_billing'));
 });
+
+test('Google: en producción, GOOGLE_OAUTH_URL o GOOGLE_AUTH_URL distintos de los oficiales impiden arrancar (bajos de la 2c)', () => {
+  const g = { GOOGLE_CLIENT_ID: 'x.apps.googleusercontent.com', GOOGLE_CLIENT_SECRET: 's' };
+  assert.ok(ids(installed({ ...g, GOOGLE_OAUTH_URL: 'https://google.evil.example' }), 'critical').includes('google.unofficial_url'));
+  assert.ok(ids(installed({ ...g, GOOGLE_AUTH_URL: 'http://127.0.0.1:9/auth' }), 'critical').includes('google.unofficial_url'));
+  assert.ok(!ids(installed({ ...g, GOOGLE_OAUTH_URL: 'https://oauth2.googleapis.com/' })).includes('google.unofficial_url'), 'la oficial, con o sin diagonal');
+  assert.ok(!ids(installed(g)).includes('google.unofficial_url'), 'sin definirlas se usan las oficiales');
+  assert.ok(!ids({ ...installed({ ...g, GOOGLE_OAUTH_URL: 'http://127.0.0.1:9' }), NODE_ENV: 'development' }).includes('google.unofficial_url'), 'en desarrollo se permite (pruebas)');
+});
