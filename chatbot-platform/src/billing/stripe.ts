@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
+import { platformSecret } from '../platform-secrets.js';
 import { credentialAllowed } from '../outbound-guard.js';
 import { chargeCents } from './tax.js';
 import { ProviderError, WebhookError, type BillingProvider, type DisputeInfo, type PaymentInfo, type Plan, type RefundInfo, type SubStatus, type SubscriptionState, type WebhookResult } from './types.js';
@@ -197,6 +198,30 @@ export function verifySignature(raw: Buffer, header: string | undefined, secret:
 
 const SUB_EVENTS = new Set(['checkout.session.completed', 'customer.subscription.created', 'customer.subscription.updated', 'customer.subscription.deleted', 'invoice.paid', 'invoice.payment_succeeded', 'invoice.payment_failed', 'invoice.payment_action_required']);
 const DISPUTE_EVENTS = new Set(['charge.dispute.created', 'charge.dispute.updated', 'charge.dispute.closed', 'charge.dispute.funds_withdrawn', 'charge.dispute.funds_reinstated']);
+/** Todos los eventos que la plataforma atiende: los que se suscriben al configurar el webhook. */
+export const STRIPE_WEBHOOK_EVENTS = [...SUB_EVENTS, ...DISPUTE_EVENTS, 'charge.refunded', 'radar.early_fraud_warning.created'];
+
+/** Secreto de firma de los avisos: el de la variable de entorno o el que guardó «Configurar webhook» (panel). */
+export const stripeWebhookSecret = () => cfg().webhookSecret || platformSecret('stripe_webhook_secret');
+
+/**
+ * Crea (o pone al día) el webhook de la plataforma en Stripe con todos sus eventos. Stripe solo entrega el secreto de
+ * firma al crearlo: si ya existía uno con esta dirección y no se tiene su secreto, se borra y se crea otro. Devuelve el
+ * secreto nuevo (o null si se conservó el que ya se tenía).
+ */
+export async function setupStripeWebhook(url: string): Promise<{ id: string; secret: string | null; created: boolean }> {
+  const list = await call('GET', '/v1/webhook_endpoints?limit=100');
+  const same = (list.data ?? []).find((e: any) => e.url === url);
+  const body = { enabled_events: STRIPE_WEBHOOK_EVENTS, description: 'Riverrun (cobros)' };
+  if (same && stripeWebhookSecret()) {
+    await call('POST', `/v1/webhook_endpoints/${encodeURIComponent(same.id)}`, { ...body, disabled: 'false' });
+    return { id: String(same.id), secret: null, created: false };
+  }
+  if (same) await call('DELETE', `/v1/webhook_endpoints/${encodeURIComponent(same.id)}`);
+  const made = await call('POST', '/v1/webhook_endpoints', { ...body, url, api_version: undefined });
+  if (!made.secret) throw new ProviderError('Stripe no devolvió el secreto del webhook');
+  return { id: String(made.id), secret: String(made.secret), created: true };
+}
 
 /**
  * La huella de la tarjeta, aunque la suscripción no la traiga (PAY-17): sin ella no hay prueba gratis. Si la suscripción
@@ -255,7 +280,7 @@ export const stripe: BillingProvider = {
   name: 'stripe',
   label: 'Tarjeta (Stripe)',
   // Con una clave de producción en sandbox no se ofrece el pago: no se puede completar.
-  enabled: () => !!(cfg().secretKey && cfg().webhookSecret) && credentialAllowed(cfg().secretKey, TEST_KEYS),
+  enabled: () => !!(cfg().secretKey && stripeWebhookSecret()) && credentialAllowed(cfg().secretKey, TEST_KEYS),
   // Con ID de precio (price_…) se usa ese; sin él, el precio mensual se arma con el monto y la moneda del plan.
   supportsPlan: () => true,
 
@@ -410,7 +435,7 @@ export const stripe: BillingProvider = {
   },
 
   async handleWebhook({ rawBody, headers, plans }) {
-    verifySignature(rawBody, String(headers['stripe-signature'] ?? ''), cfg().webhookSecret);
+    verifySignature(rawBody, String(headers['stripe-signature'] ?? ''), stripeWebhookSecret());
     let event: any;
     try {
       event = JSON.parse(rawBody.toString('utf8'));

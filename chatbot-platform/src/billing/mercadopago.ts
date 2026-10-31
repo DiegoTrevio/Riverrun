@@ -1,6 +1,7 @@
 import { mpCardKey } from './trial-claims.js';
 import crypto from 'node:crypto';
 import { config } from '../config.js';
+import { platformSecret } from '../platform-secrets.js';
 import { credentialAllowed } from '../outbound-guard.js';
 import { chargeCents } from './tax.js';
 import { ProviderError, WebhookError, type BillingProvider, type DisputeInfo, type PaymentInfo, type SubStatus, type Plan, type SubscriptionState, type WebhookResult } from './types.js';
@@ -28,6 +29,17 @@ async function call(method: 'GET' | 'POST' | 'PUT', path: string, body?: unknown
 const STATUS: Record<string, SubStatus> = { authorized: 'active', pending: 'incomplete', paused: 'past_due', cancelled: 'canceled' };
 
 /** La referencia externa lleva cuenta y plan: "cuenta:plan". */
+
+/** Secreto de firma de los avisos: el de la variable de entorno o el que se pegó en Planes y cobro. */
+export const mpWebhookSecret = () => cfg().webhookSecret || platformSecret('mercadopago_webhook_secret');
+/** Temas a activar en Mercado Pago → Tus integraciones → Webhooks (no se pueden suscribir por la API). */
+export const MP_WEBHOOK_TOPICS = [
+  ['subscription_preapproval', 'Planes y suscripciones: suscripciones'],
+  ['subscription_authorized_payment', 'Planes y suscripciones: pagos autorizados'],
+  ['payment', 'Pagos'],
+  ['chargebacks', 'Contracargos'],
+] as const;
+
 export const reference = (accountId: string, planKey: string) => `${accountId}:${planKey}`;
 
 /**
@@ -151,7 +163,7 @@ export const mercadopago: BillingProvider = {
   name: 'mercadopago',
   label: 'Mercado Pago',
   // Con una credencial de producción en sandbox no se ofrece el pago: no se puede completar.
-  enabled: () => !!(cfg().accessToken && cfg().webhookSecret) && credentialAllowed(cfg().accessToken, TEST_TOKENS),
+  enabled: () => !!(cfg().accessToken && mpWebhookSecret()) && credentialAllowed(cfg().accessToken, TEST_TOKENS),
   supportsPlan: () => true,
 
   async createCheckout({ accountId, email, plan, successUrl, startAt }) {
@@ -253,7 +265,7 @@ export const mercadopago: BillingProvider = {
     const dataId = String(query['data.id'] ?? '');
     if (body?.data?.id !== undefined && String(body.data.id) !== dataId) throw new WebhookError('El id del aviso no coincide con el firmado');
     const requestId = String(headers['x-request-id'] ?? '');
-    verifySignature({ signature: String(headers['x-signature'] ?? ''), requestId, dataId: dataId || undefined, secret: cfg().webhookSecret });
+    verifySignature({ signature: String(headers['x-signature'] ?? ''), requestId, dataId: dataId || undefined, secret: mpWebhookSecret() });
     // El tipo no viene firmado: decide qué recurso se relee, nada más. El aviso se reconoce por lo firmado.
     const type = String(body.type ?? query.type ?? query.topic ?? '');
     const sig = String(headers['x-signature'] ?? '');

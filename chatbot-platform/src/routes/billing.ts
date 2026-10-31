@@ -17,7 +17,9 @@ import { ProviderError, WebhookError, type Plan, type ProviderName } from '../bi
 import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
 import { limitsReport, LimitsSchema, withPlanDefaults } from '../billing/limits.js';
-import { promotionCodeFor } from '../billing/stripe.js';
+import { promotionCodeFor, setupStripeWebhook, STRIPE_WEBHOOK_EVENTS, stripeWebhookSecret } from '../billing/stripe.js';
+import { MP_WEBHOOK_TOPICS, mpWebhookSecret } from '../billing/mercadopago.js';
+import { savePlatformSecret } from '../platform-secrets.js';
 import { countHit, ipLimitKey, limited, releaseHit } from '../identity/rate-limit.js';
 import { logEvent } from '../logs.js';
 import { parse } from './util.js';
@@ -195,6 +197,34 @@ export async function billingRoutes(api: FastifyInstance) {
     return { ok: true };
   });
 
+  /**
+   * «Configurar webhook en Stripe»: crea (o pone al día) el webhook de la plataforma con todos sus eventos y guarda su
+   * secreto de firma (si STRIPE_WEBHOOK_SECRET está en el servidor, manda esa).
+   */
+  api.post('/api/billing/webhooks/stripe/setup', supersStepUp, async (req: any) => {
+    if (!config.billing.stripe.secretKey) throw new HttpError(400, 'Primero agrega STRIPE_SECRET_KEY en el servidor.');
+    const url = `${config.publicBaseUrl}/webhook/billing/stripe`;
+    if (!/^https:\/\//.test(url)) throw new HttpError(400, 'Stripe solo manda avisos a una dirección https: revisa PUBLIC_BASE_URL.');
+    let r;
+    try {
+      r = await setupStripeWebhook(url);
+    } catch (e: any) {
+      if (e instanceof ProviderError) throw await providerFailure(e, 'configurar el webhook en Stripe');
+      throw e;
+    }
+    if (r.secret) await savePlatformSecret('stripe_webhook_secret', r.secret, req.user.id);
+    await logEvent({ level: 'info', source: 'admin', message: `Webhook de Stripe ${r.created ? 'creado' : 'puesto al día'} por ${req.user.email} (${STRIPE_WEBHOOK_EVENTS.length} eventos)` });
+    return { ok: true, url, created: r.created, events: STRIPE_WEBHOOK_EVENTS };
+  });
+
+  /** El secreto de firma de Mercado Pago (Tus integraciones → Webhooks → «Clave secreta»), si no está en el servidor. */
+  api.put('/api/billing/webhooks/mercadopago/secret', supersStepUp, async (req: any) => {
+    const { secret } = parse(z.object({ secret: z.string().trim().min(16, 'Pega la clave secreta completa').max(300) }), req.body);
+    await savePlatformSecret('mercadopago_webhook_secret', secret, req.user.id);
+    await logEvent({ level: 'info', source: 'admin', message: `Clave secreta del webhook de Mercado Pago guardada por ${req.user.email}` });
+    return { ok: true };
+  });
+
   /** Resumen para el superadmin: qué está configurado, URLs de aviso y cuántas suscripciones hay. */
   api.get('/api/billing/overview', supers, async () => {
     const counts = await query<{ provider: string; status: string; n: number }>(`SELECT provider, status, count(*)::int AS n FROM subscriptions GROUP BY 1, 2`);
@@ -204,7 +234,15 @@ export async function billingRoutes(api: FastifyInstance) {
        FROM subscriptions s JOIN plans p ON p.key = s.plan_key WHERE s.status IN ('active', 'past_due') GROUP BY 1`,
     );
     return {
-      providers: Object.values(providers).map((p) => ({ name: p.name, label: p.label, enabled: p.enabled(), webhook_url: `${config.publicBaseUrl}/webhook/billing/${p.name}` })),
+      providers: await Promise.all(Object.values(providers).map(async (p) => ({
+        name: p.name, label: p.label, enabled: p.enabled(), webhook_url: `${config.publicBaseUrl}/webhook/billing/${p.name}`,
+        // Qué falta para recibir avisos: la llave del proveedor y el secreto de firma (del servidor o del panel).
+        has_key: p.name === 'stripe' ? !!config.billing.stripe.secretKey : !!config.billing.mercadopago.accessToken,
+        webhook_secret: (p.name === 'stripe' ? config.billing.stripe.webhookSecret : config.billing.mercadopago.webhookSecret) ? 'server'
+          : (p.name === 'stripe' ? stripeWebhookSecret() : mpWebhookSecret()) ? 'panel' : null,
+        events: p.name === 'stripe' ? STRIPE_WEBHOOK_EVENTS : MP_WEBHOOK_TOPICS.map(([, label]) => label),
+        last_event_at: (await queryOne<{ at: Date | null }>(`SELECT max(received_at) AS at FROM billing_events WHERE provider = $1`, [p.name]))?.at ?? null,
+      }))),
       counts,
       monthly_revenue: mrr.map((m) => ({ currency: m.currency, amount: Number(m.cents) / 100 })),
       grace_days: config.billing.graceDays,

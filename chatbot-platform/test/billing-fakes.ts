@@ -23,6 +23,8 @@ export const fake = {
     schedules: {} as Record<string, any>,
     /** Cobros con su movimiento de saldo (GET /v1/charges/:id?expand[]=balance_transaction): el tipo de cambio. */
     charges: {} as Record<string, any>,
+    /** Webhooks creados en la cuenta (POST /v1/webhook_endpoints). */
+    webhookEndpoints: [] as any[],
     fraudWarnings: {} as Record<string, any>,
     /** El proveedor rechaza los reembolsos y las cancelaciones. */
     refundFail: false,
@@ -141,6 +143,20 @@ const stripeUrl = await serve((req, raw, res) => {
       if (fake.stripe.subs[sched.subscription]) fake.stripe.subs[sched.subscription].schedule = null;
     } else if (req.method === 'POST') sched.update = body;
     return json(res, 200, sched);
+  }
+  if (path === '/v1/webhook_endpoints' && req.method === 'GET') return json(res, 200, { data: fake.stripe.webhookEndpoints });
+  if (path === '/v1/webhook_endpoints' && req.method === 'POST') {
+    const ep = { id: `we_${++fake.stripe.n}`, url: body.get('url'), enabled_events: body.getAll('enabled_events[]').length ? body.getAll('enabled_events[]') : [...body.keys()].filter((k) => k.startsWith('enabled_events[')).map((k) => body.get(k)), secret: `whsec_nuevo_${fake.stripe.n}` };
+    fake.stripe.webhookEndpoints.push(ep);
+    return json(res, 200, ep);
+  }
+  const we = path.match(/^\/v1\/webhook_endpoints\/([\w-]+)$/);
+  if (we) {
+    const i = fake.stripe.webhookEndpoints.findIndex((e) => e.id === we[1]);
+    if (i < 0) return json(res, 404, { error: { message: 'No such webhook endpoint', code: 'resource_missing' } });
+    if (req.method === 'DELETE') { fake.stripe.webhookEndpoints.splice(i, 1); return json(res, 200, { id: we[1], deleted: true }); }
+    const { secret: _s, ...shown } = fake.stripe.webhookEndpoints[i];
+    return json(res, 200, shown);
   }
   const chg = path.match(/^\/v1\/charges\/([\w-]+)$/);
   if (chg && req.method === 'GET') return fake.stripe.charges[chg[1]] ? json(res, 200, fake.stripe.charges[chg[1]]) : json(res, 404, { error: { message: 'No such charge', code: 'resource_missing' } });

@@ -403,17 +403,42 @@ export async function viewPlans(root) {
         isNew ? null : h('button', { class: 'danger', onclick: async () => { if (await confirmAction(`¿Borrar el plan ${p.name}?`) && await run(() => api('DELETE', `/api/plans/${p.key}`), 'Borrado')) render(); } }, 'Borrar')));
   };
 
+  // Cada proveedor: qué falta, la dirección de avisos y cómo dejar listo el webhook (Stripe con un botón; Mercado Pago a mano).
+  const providerCard = (pr) => {
+    const secretTxt = pr.webhook_secret === 'server' ? 'secreto de firma en el servidor' : pr.webhook_secret === 'panel' ? 'secreto de firma guardado aquí' : 'falta el secreto de firma';
+    const last = pr.last_event_at ? `Último aviso recibido: ${new Date(pr.last_event_at).toLocaleString('es-MX')}` : 'Todavía no llega ningún aviso.';
+    const stripe = pr.name === 'stripe';
+    const mpSecret = { value: '' };
+    return h('div', { class: 'card' },
+      h('h2', { style: 'margin-top:0' }, pr.label, ' ', h('span', { class: `badge ${pr.enabled ? 'green' : ''}` }, pr.enabled ? 'Conectado' : 'Sin configurar')),
+      !pr.has_key
+        ? h('p', { class: 'small muted' }, stripe ? 'Agrega STRIPE_SECRET_KEY en .env y reinicia (./riverrun restart).' : 'Agrega MERCADOPAGO_ACCESS_TOKEN en .env y reinicia (./riverrun restart).')
+        : h('p', { class: 'small' }, pr.webhook_secret ? '✓ ' : '✗ ', secretTxt, ' · ', last),
+      pr.enabled ? h('p', { class: 'small muted' }, `${count(pr.name, 'active')} al corriente · ${count(pr.name, 'past_due')} con pago pendiente · ${count(pr.name, 'canceled')} canceladas`) : null,
+      h('div', { class: 'small' }, 'Dirección de avisos (webhook):'),
+      h('div', { class: 'row' }, h('code', { style: 'word-break:break-all' }, pr.webhook_url), copy(pr.webhook_url)),
+      stripe
+        ? [
+          h('p', { class: 'small muted' }, `Crea el webhook en tu cuenta de Stripe con los ${pr.events.length} eventos que atiende la plataforma y guarda su secreto de firma.`),
+          pr.has_key ? h('button', { class: pr.webhook_secret ? '' : 'primary', onclick: async () => {
+            const r = await run(() => api('POST', '/api/billing/webhooks/stripe/setup'));
+            if (r) { toast(r.created ? 'Webhook creado en Stripe' : 'Webhook de Stripe al día'); render(); }
+          } }, pr.webhook_secret ? 'Poner al día el webhook en Stripe' : 'Configurar webhook en Stripe') : null,
+        ]
+        : [
+          h('p', { class: 'small muted' }, 'Mercado Pago no deja crearlo por su API: en Tus integraciones → Webhooks → Configurar notificaciones, pega la dirección, activa estos eventos y copia la «Clave secreta» aquí:'),
+          h('ul', { class: 'small' }, pr.events.map((e) => h('li', {}, e))),
+          pr.webhook_secret === 'server' ? null : h('div', { class: 'row' },
+            h('input', { type: 'password', autocomplete: 'off', 'aria-label': 'Clave secreta del webhook de Mercado Pago', placeholder: pr.webhook_secret ? 'Guardada (pega otra para cambiarla)' : 'Clave secreta', oninput: (e) => (mpSecret.value = e.target.value) }),
+            h('button', { class: 'small', onclick: async () => {
+              if (await run(() => api('PUT', '/api/billing/webhooks/mercadopago/secret', { secret: mpSecret.value }), 'Clave guardada')) render();
+            } }, 'Guardar clave')),
+        ]);
+  };
   const copy = (v) => h('button', { class: 'small', onclick: async () => { try { await navigator.clipboard.writeText(v); toast('Copiado'); } catch { toast('Cópialo a mano', true); } } }, 'Copiar');
   root.append(
     h('h1', {}, 'Planes y cobro'),
-    h('div', { class: 'grid' }, ov.providers.map((pr) => h('div', { class: 'card' },
-      h('h2', { style: 'margin-top:0' }, pr.label, ' ', h('span', { class: `badge ${pr.enabled ? 'green' : ''}` }, pr.enabled ? 'Conectado' : 'Sin configurar')),
-      pr.enabled
-        ? h('p', { class: 'small muted' }, `${count(pr.name, 'active')} al corriente · ${count(pr.name, 'past_due')} con pago pendiente · ${count(pr.name, 'canceled')} canceladas`)
-        : h('p', { class: 'small muted' }, pr.name === 'stripe' ? 'Agrega STRIPE_SECRET_KEY y STRIPE_WEBHOOK_SECRET en .env y reinicia (./riverrun restart).' : 'Agrega MERCADOPAGO_ACCESS_TOKEN y MERCADOPAGO_WEBHOOK_SECRET en .env y reinicia (./riverrun restart).'),
-      h('div', { class: 'small' }, 'Dirección de avisos (webhook):'),
-      h('div', { class: 'row' }, h('code', { style: 'word-break:break-all' }, pr.webhook_url), copy(pr.webhook_url)),
-      h('p', { class: 'small muted' }, pr.name === 'stripe' ? 'En Stripe → Desarrolladores → Webhooks: eventos checkout.session.completed, customer.subscription.*, invoice.paid, invoice.payment_failed, invoice.payment_action_required (el banco pide confirmar), charge.refunded (reembolsos), charge.dispute.* (contracargos) y radar.early_fraud_warning.created (alerta de fraude).' : 'En Mercado Pago → Tus integraciones → Webhooks: eventos "Planes y suscripciones" (preapproval y pagos autorizados), "Pagos" (reembolsos) y "Contracargos".')))),
+    h('div', { class: 'grid' }, ov.providers.map((pr) => providerCard(pr))),
     h('p', { class: 'muted' }, 'Además, cada suscripción se compara con el proveedor una vez al día: un aviso perdido no deja un cobro, una pausa o una reactivación sin aplicar.'),
     ov.awaiting_rate?.length ? h('section', { class: 'card', 'aria-labelledby': 'awaiting-rate' },
       h('h2', { id: 'awaiting-rate', style: 'margin-top:0' }, 'Facturas que esperan el tipo de cambio'),

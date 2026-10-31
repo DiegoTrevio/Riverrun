@@ -407,3 +407,44 @@ t('Mercado Pago: el id que se procesa es el firmado; sin x-request-id o con un t
   assert.equal((await h.app.inject({ method: 'POST', url: noReq.url, payload: noReq.payload, headers: without })).statusCode, 400, 'sin x-request-id');
   assert.equal((await send(mpEvent('subscription_preapproval', 'pre_firmado', undefined, Date.now() - 10 * 60_000))).statusCode, 400, 'ts de hace 10 minutos');
 });
+
+t('webhooks: «Configurar webhook en Stripe» crea el endpoint con todos los eventos y guarda su secreto; la clave de Mercado Pago se guarda desde el panel', async () => {
+  const { config } = await import('../src/config.js');
+  const { STRIPE_WEBHOOK_EVENTS, stripeWebhookSecret } = await import('../src/billing/stripe.js');
+  const { mpWebhookSecret } = await import('../src/billing/mercadopago.js');
+  const before = { stripe: config.billing.stripe.webhookSecret, mp: config.billing.mercadopago.webhookSecret, base: config.publicBaseUrl };
+  config.billing.stripe.webhookSecret = '';
+  config.billing.mercadopago.webhookSecret = '';
+  config.publicBaseUrl = 'https://panel.ejemplo.mx';
+  try {
+    assert.equal((await B.api('POST', '/api/billing/webhooks/stripe/setup')).statusCode, 403, 'solo el superadmin');
+    const r = await h.authed('POST', '/api/billing/webhooks/stripe/setup');
+    assert.equal(r.statusCode, 200, r.body);
+    assert.equal(r.json().created, true);
+    const ep = fake.stripe.webhookEndpoints.at(-1);
+    assert.equal(ep.url, 'https://panel.ejemplo.mx/webhook/billing/stripe');
+    assert.deepEqual([...ep.enabled_events].sort(), [...STRIPE_WEBHOOK_EVENTS].sort());
+    assert.ok(STRIPE_WEBHOOK_EVENTS.includes('radar.early_fraud_warning.created') && STRIPE_WEBHOOK_EVENTS.includes('charge.dispute.closed'));
+    assert.equal(stripeWebhookSecret(), ep.secret, 'el secreto queda guardado (cifrado en la base)');
+    assert.ok((await pool.query(`SELECT 1 FROM platform_secrets WHERE key = 'stripe_webhook_secret'`)).rows.length);
+    // Otra vez: con el secreto guardado, se pone al día sin crear otro.
+    const again = await h.authed('POST', '/api/billing/webhooks/stripe/setup');
+    assert.equal(again.json().created, false);
+    assert.equal(fake.stripe.webhookEndpoints.filter((e) => e.url === ep.url).length, 1);
+    // Mercado Pago: la clave secreta se pega en el panel.
+    assert.equal((await h.authed('PUT', '/api/billing/webhooks/mercadopago/secret', { secret: 'corta' })).statusCode, 400);
+    assert.equal((await h.authed('PUT', '/api/billing/webhooks/mercadopago/secret', { secret: 'mp_clave_secreta_de_prueba_123' })).statusCode, 200);
+    assert.equal(mpWebhookSecret(), 'mp_clave_secreta_de_prueba_123');
+    const ov = (await h.authed('GET', '/api/billing/overview')).json();
+    const st = ov.providers.find((p: any) => p.name === 'stripe');
+    const mp = ov.providers.find((p: any) => p.name === 'mercadopago');
+    assert.deepEqual([st.webhook_secret, mp.webhook_secret], ['panel', 'panel']);
+    assert.ok(mp.events.includes('Contracargos'));
+    assert.ok(st.last_event_at, 'ya llegaron avisos en estas pruebas');
+  } finally {
+    Object.assign(config.billing.stripe, { webhookSecret: before.stripe });
+    Object.assign(config.billing.mercadopago, { webhookSecret: before.mp });
+    config.publicBaseUrl = before.base;
+  }
+});
+

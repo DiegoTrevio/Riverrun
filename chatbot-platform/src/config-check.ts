@@ -704,8 +704,10 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
         'billing',
         `${id}.incomplete`,
         [keyVar, hookVar],
-        `${label} está a medias: falta ${!key ? keyVar : hookVar}, así que queda desactivado aunque parezca configurado.`,
-        `Define ambas (${keyVar} y ${hookVar}) o bórralas.`,
+        !key ? `${label} está a medias: falta ${keyVar}, así que queda desactivado aunque parezca configurado.`
+          : `${label}: falta el secreto del webhook (${hookVar}). Sin él no se reciben los avisos de pago.`,
+        !key ? `Define ambas (${keyVar} y ${hookVar}) o bórralas.`
+          : `En el panel, Planes y cobro → ${label}: ${id === 'stripe' ? '«Configurar webhook en Stripe» lo crea y guarda su secreto' : 'pega la «Clave secreta» de Tus integraciones → Webhooks'} (o define ${hookVar}).`,
       );
       services.push({ id, label, area: 'billing', state: 'incomplete', detail: `Falta ${!key ? keyVar : hookVar}` });
       return;
