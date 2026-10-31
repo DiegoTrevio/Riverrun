@@ -181,6 +181,8 @@ export const stripe: BillingProvider = {
       // Contra la prueba de tarjetas: la tarjeta siempre se pide (también con prueba), la página vence en 30 minutos
       // (el mínimo de Stripe) y se pide 3D Secure cuando el banco lo tiene. Los códigos de promoción no se aceptan sueltos.
       payment_method_collection: 'always',
+      // Solo tarjeta: Link y otros métodos no traen la huella con la que se cuida una prueba por tarjeta (PAY-17).
+      payment_method_types: ['card'],
       expires_at: Math.floor(Date.now() / 1000) + 31 * 60,
       payment_method_options: { card: { request_three_d_secure: 'any' } },
       // Con prueba: se guarda la tarjeta hoy y el primer cobro es al terminar la prueba.

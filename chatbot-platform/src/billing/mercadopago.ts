@@ -53,7 +53,12 @@ async function readPreapproval(id: string): Promise<{ p: any; state: Subscriptio
   const p = await call('GET', `/preapproval/${encodeURIComponent(id)}`);
   const state = stateFromPreapproval(p);
   if (state.trialEnd && p.card_id && p.payer_id) {
-    const card = await call('GET', `/v1/customers/${encodeURIComponent(String(p.payer_id))}/cards/${encodeURIComponent(String(p.card_id))}`).catch(() => null);
+    // Sin la tarjeta no hay prueba (PAY-17): un fallo pasajero de la consulta se reintenta antes de rendirse.
+    let card: any = null;
+    for (let i = 0; i < 3 && !card; i++) {
+      if (i) await new Promise((r) => setTimeout(r, 500 * i));
+      card = await call('GET', `/v1/customers/${encodeURIComponent(String(p.payer_id))}/cards/${encodeURIComponent(String(p.card_id))}`).catch(() => null);
+    }
     state.cardKey = card ? mpCardKey(card) : null;
   }
   return { p, state };

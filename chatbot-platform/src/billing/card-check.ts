@@ -140,9 +140,11 @@ export async function startTrialFromState(state: SubscriptionState & { accountId
   const marks = await claimMarks({ email: p?.email, googleSub: p?.googleSub, cardKey: state.cardKey });
   const used = await lockClaims(client, marks);
   const cardUsed = used.has('card');
-  if (used.size) {
+  // Sin la huella de la tarjeta no se puede cuidar «una prueba por tarjeta»: se trata como una tarjeta ya usada (PAY-17).
+  const noCard = !state.cardKey;
+  if (used.size || noCard) {
     if (!(await recordEvent(provider, `card_used:${subscriptionId}`, 'trial_refused', accountId))) return 'none';
-    await logEvent({ level: 'warn', source: 'admin', message: `Prueba negada (${provider} ${subscriptionId}): ${cardUsed ? 'la tarjeta' : 'el correo o la cuenta de Google'} ya tuvo una prueba`, accountId });
+    await logEvent({ level: 'warn', source: 'admin', message: `Prueba negada (${provider} ${subscriptionId}): ${noCard && !used.size ? 'no se pudo leer la huella de la tarjeta' : `${cardUsed ? 'la tarjeta' : 'el correo o la cuenta de Google'} ya tuvo una prueba`}`, accountId });
     later.push(async () => {
       try {
         await providers[provider].endTrialNow(subscriptionId);
@@ -156,7 +158,7 @@ export async function startTrialFromState(state: SubscriptionState & { accountId
         else await notifySuperadmins(accountId, 'Termina una prueba a mano', `La tarjeta de "${name}" ya tuvo una prueba, pero no se pudo terminar la de la suscripción ${subscriptionId} en Stripe: ${e?.message ?? e}. Termínala desde Stripe para que se cobre.`, { urgent: true });
       }
     });
-    const title = cardUsed ? 'Esta tarjeta ya tuvo una prueba gratis' : 'Ya usaste tu prueba gratis con este correo';
+    const title = cardUsed ? 'Esta tarjeta ya tuvo una prueba gratis' : used.size ? 'Ya usaste tu prueba gratis con este correo' : 'No pudimos leer tu tarjeta';
     later.push(() => tell(accountId, title, provider === 'stripe'
       ? `${title}, así que tu plan de "${name}" empieza hoy con su primer cobro.`
       : `${title}. Cancelamos esa suscripción sin cobrarte. En Mi plan puedes usar otra tarjeta o contratar ya, con el primer cobro hoy.`));
@@ -168,7 +170,6 @@ export async function startTrialFromState(state: SubscriptionState & { accountId
   );
   if (!started.rowCount) return 'none';
   await insertClaims(client, accountId, provider, marks);
-  if (!state.cardKey) await logEvent({ level: 'warn', source: 'admin', message: `Prueba sin huella de tarjeta (${provider} ${subscriptionId}): la tarjeta no queda marcada`, accountId });
   await logEvent({ level: 'info', source: 'admin', message: `Prueba con tarjeta (${provider}): termina el ${fmt(state.trialEnd!)}`, accountId });
   later.push(() => tell(accountId, 'Tu prueba gratis empezó', `Tu prueba de "${name}" ya está activa. El primer cobro de tu plan será el ${fmt(state.trialEnd!)}; si cancelas antes desde Mi plan, no se cobra nada.`));
   later.push(() => notifySuperadmins(accountId, `Nueva prueba: ${name}`, `"${name}" empezó su prueba con tarjeta (${provider}); el primer cobro es el ${fmt(state.trialEnd!)}.`));
