@@ -7,12 +7,13 @@ import { beginLogin } from '../identity/mfa.js';
 import { forgetTrustedDevices } from '../identity/devices.js';
 import { clearHits, countHit, releaseHit } from '../identity/rate-limit.js';
 import { notifyPlatform } from '../platform/digest.js';
-import { query } from '../db.js';
+import { query, queryOne } from '../db.js';
 import { notifyUser } from '../identity/notices.js';
 import { billingEnabled, payable } from '../billing/service.js';
 import { cardRequired } from '../billing/card-check.js';
 import { config } from '../config.js';
 import { withTransaction } from '../db.js';
+import { resetMfa } from '../identity/reset-mfa.js';
 import { notifySuperadmins } from '../lifecycle.js';
 import { logEvent } from '../logs.js';
 import { sendMail } from '../mailer.js';
@@ -222,6 +223,13 @@ export async function signupRoutes(app: FastifyInstance) {
     await store.markEmailVerified(userId);
     await query(`UPDATE users SET mfa_locked_until = NULL WHERE id = $1`, [userId]);
     await clearHits(`mfa-user:${userId}`);
+    // Una app que se configuró sin pasar por el correo (solo con la contraseña) puede ser de quien la filtró: se quita y se
+    // configura otra vez, ya con el enlace al correo (ID-16).
+    const unproven = await queryOne(`SELECT 1 FROM users WHERE id = $1 AND totp_enabled_at IS NOT NULL AND NOT totp_email_confirmed`, [userId]);
+    if (unproven) {
+      await resetMfa(userId);
+      await logEvent({ level: 'warn', source: 'admin', message: 'Contraseña restablecida por correo: se quitó la app de verificación que no se había configurado por correo', details: { user_id: userId } });
+    }
     await logEvent({ level: 'info', source: 'admin', message: 'Contraseña restablecida por correo', details: { user_id: userId } });
     // No abre sesión: después entra con su contraseña nueva y su código.
     const user = await store.getUser(userId);

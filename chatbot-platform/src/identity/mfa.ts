@@ -10,6 +10,7 @@ import { mailBrand } from '../brands.js';
 import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
 import { logEvent } from '../logs.js';
+import { sendMail } from '../mailer.js';
 import { decryptSecret, encryptSecret, hmac, safeEqual } from '../secret.js';
 import * as store from '../store/index.js';
 import type { Role, User } from '../types.js';
@@ -23,7 +24,13 @@ import { matchTotp, newTotpSecret, otpauthUri } from './totp.js';
 const CHALLENGE_MS = 15 * 60_000;
 
 export type ChallengePurpose = 'verify' | 'enroll';
-export interface Challenge { uid: string; pv: string; via: SessionVia; purpose: ChallengePurpose; cid: string; exp: number }
+/** `ev`: el correo de la cuenta ya se comprobó en este reto (registro, invitación, Google o el enlace de enrolamiento). */
+export interface Challenge { uid: string; pv: string; via: SessionVia; purpose: ChallengePurpose; cid: string; exp: number; ev?: boolean }
+
+/** Puertas que ya prueban que el correo es de quien entra: su primer enrolamiento no pide el enlace (ID-16). */
+const EMAIL_PROVEN: SessionVia[] = ['signup', 'invite', 'google'];
+/** Vigencia del enlace para configurar la app. */
+const ENROLL_LINK_MS = 60 * 60_000;
 
 /** El usuario del reto con lo que hace falta para verificar (nunca sale en una respuesta). */
 export type ChallengeUser = User & {
@@ -79,10 +86,55 @@ export async function beginLogin(reply: FastifyReply, user: SessionUser & { totp
     return { ok: true };
   }
   const purpose: ChallengePurpose = user.totp_enabled_at ? 'verify' : 'enroll';
-  const c: Challenge = { uid: user.id, pv: passwordVersion(user.password_hash), via, purpose, cid: crypto.randomBytes(12).toString('base64url'), exp: Date.now() + CHALLENGE_MS };
+  const c: Challenge = { uid: user.id, pv: passwordVersion(user.password_hash), via, purpose, cid: crypto.randomBytes(12).toString('base64url'), exp: Date.now() + CHALLENGE_MS,
+    ...(EMAIL_PROVEN.includes(via) ? { ev: true } : {}) };
+  setChallenge(reply, c);
+  return { mfa: purpose };
+}
+
+function setChallenge(reply: FastifyReply, c: Challenge) {
   const payload = Buffer.from(JSON.stringify(c)).toString('base64url');
   reply.setCookie(cookieName('cp_mfa'), `${payload}.${hmac(`mfa-challenge:${payload}`)}`, cookieOpts(CHALLENGE_MS));
-  return { mfa: purpose };
+}
+
+const sha256 = (v: string) => crypto.createHash('sha256').update(v).digest('hex');
+
+/**
+ * Enrolar con solo la contraseña pide el enlace al correo (ID-16): se manda uno nuevo (a lo más cada 2 minutos y 5 por
+ * hora por persona). Devuelve si salió.
+ */
+export async function sendEnrollLink(user: ChallengeUser): Promise<boolean> {
+  if ((await countHit(`mfa-enroll-mail:${user.id}`, 60 * 60_000)) > 5) return false;
+  const token = crypto.randomBytes(32).toString('base64url');
+  const set = await queryOne(
+    `UPDATE users SET mfa_enroll_token_hash = $2, mfa_enroll_sent_at = now() WHERE id = $1
+       AND (mfa_enroll_sent_at IS NULL OR mfa_enroll_sent_at < now() - interval '2 minutes' OR mfa_enroll_token_hash IS NULL) RETURNING id`,
+    [user.id, sha256(token)],
+  );
+  if (!set) return false;
+  const mb = await mailBrand(user.account_id);
+  await sendMail({
+    fromName: mb.fromName,
+    to: user.email,
+    subject: 'Configura tu verificación en dos pasos',
+    text: `Hola ${user.name || ''},\n\nPara activar la verificación en dos pasos de tu cuenta, abre este enlace en el mismo navegador donde escribiste tu contraseña:\n\n${mb.base}/#/login/configurar?correo=${token}\n\nEl enlace vence en una hora y sirve una sola vez. Si no estabas entrando a tu cuenta, no lo abras y cambia tu contraseña: alguien la conoce.`,
+  });
+  await logEvent({ level: 'info', source: 'system', message: `Enlace para configurar la verificación en dos pasos enviado a ${user.email}`, accountId: user.account_id ?? undefined });
+  return true;
+}
+
+/**
+ * El enlace del correo: si es el vigente de la persona del reto, el reto queda con el correo comprobado (y 15 minutos más)
+ * y el enlace ya no sirve. Solo funciona en el navegador que tiene el reto: abrir un enlace que pidió otro no le abre nada.
+ */
+export async function useEnrollLink(reply: FastifyReply, c: Challenge, token: string): Promise<boolean> {
+  const used = await queryOne(
+    `UPDATE users SET mfa_enroll_token_hash = NULL WHERE id = $1 AND mfa_enroll_token_hash = $2 AND mfa_enroll_sent_at > now() - make_interval(secs => $3) RETURNING id`,
+    [c.uid, sha256(token), ENROLL_LINK_MS / 1000],
+  );
+  if (!used) return false;
+  setChallenge(reply, { ...c, ev: true, exp: Date.now() + CHALLENGE_MS });
+  return true;
 }
 
 /** El reto vigente y su usuario: activo, con la cuenta activa y con la misma contraseña que cuando empezó. */
@@ -185,15 +237,16 @@ export async function startEnrollment(user: ChallengeUser): Promise<{ secret: st
 }
 
 /** Activa el secreto pendiente si el código es de él. El paso usado queda anotado (no vuelve a servir). */
-export async function confirmEnrollment(userId: string, code: string): Promise<boolean> {
+export async function confirmEnrollment(userId: string, code: string, o: { emailConfirmed?: boolean } = {}): Promise<boolean> {
   const row = await queryOne<{ totp_pending: string | null }>(`SELECT totp_pending FROM users WHERE id = $1`, [userId]);
   const secret = row?.totp_pending ? decryptSecret(row.totp_pending) : null;
   const step = secret ? matchTotp(secret, code) : null;
   if (step === null) return false;
   const done = await queryOne(
-    `UPDATE users SET totp_secret = totp_pending, totp_pending = NULL, totp_pending_at = NULL, totp_enabled_at = now(), totp_last_step = $2, mfa_locked_until = NULL, updated_at = now()
+    `UPDATE users SET totp_secret = totp_pending, totp_pending = NULL, totp_pending_at = NULL, totp_enabled_at = now(), totp_last_step = $2, mfa_locked_until = NULL,
+       totp_email_confirmed = CASE WHEN $4::boolean IS NULL THEN totp_email_confirmed ELSE $4::boolean END, updated_at = now()
       WHERE id = $1 AND totp_pending = $3 RETURNING id`,
-    [userId, step, row!.totp_pending],
+    [userId, step, row!.totp_pending, o.emailConfirmed ?? null],
   );
   return !!done;
 }

@@ -5,7 +5,7 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { notifyUser } from '../identity/notices.js';
-import { challengeKey, challengeUser, confirmEnrollment, finishChallenge, loadMfaUser, startEnrollment, verifyUserCode } from '../identity/mfa.js';
+import { challengeKey, challengeUser, confirmEnrollment, finishChallenge, loadMfaUser, sendEnrollLink, startEnrollment, useEnrollLink, verifyUserCode } from '../identity/mfa.js';
 import { forgetTrustedDevices, listTrustedDevices } from '../identity/devices.js';
 import { hasRecentMfa, stepUp } from '../identity/step-up.js';
 import { notFound } from '../access.js';
@@ -20,6 +20,10 @@ const CHALLENGE_WINDOW_MS = 15 * 60_000;
 const Code = z.object({ code: z.string().trim().min(1, 'Escribe el código').max(40) });
 const expired = (reply: FastifyReply) => reply.code(401).send({ error: 'Vuelve a escribir tu contraseña para continuar', code: 'challenge_expired' });
 export const LOCKED = 'Bloqueamos la verificación por una hora por demasiados intentos. Si no fuiste tú, cambia tu contraseña.';
+/** Primer enrolamiento con solo la contraseña: hay que abrir el enlace del correo (ID-16). */
+const emailRequired = (reply: FastifyReply, sent: boolean, email: string) =>
+  reply.code(403).send({ error: `Te mandamos un enlace a ${maskEmail(email)} para configurar la verificación. Ábrelo en este mismo navegador.`, code: 'email_required', sent });
+const maskEmail = (email: string) => email.replace(/^(.)(.*)(@.*)$/, (_, a: string, b: string, c: string) => `${a}${'•'.repeat(Math.min(b.length, 6))}${c}`);
 const TOO_MANY = 'Demasiados códigos equivocados. Espera 15 minutos e inténtalo de nuevo.';
 const wrongCode = (reply: FastifyReply) => reply.code(400).send({ error: 'El código no es correcto' });
 
@@ -45,20 +49,44 @@ export async function mfaPublicRoutes(app: FastifyInstance) {
     return { purpose: found.challenge.purpose, superadmin: found.user.role === 'superadmin' };
   });
 
-  /** El QR (y la clave para escribirla a mano). Recargar o abrir otra pestaña devuelve el mismo secreto. */
+  /**
+   * El QR (y la clave para escribirla a mano). Recargar o abrir otra pestaña devuelve el mismo secreto. Si el correo no se
+   * ha comprobado en este reto (entró solo con la contraseña), primero manda el enlace al correo (ID-16).
+   */
   app.get('/api/2fa/enroll', async (req, reply) => {
     const found = await challengeUser(req);
     if (!found || found.challenge.purpose !== 'enroll' || found.user.totp_enabled_at) return expired(reply);
+    if (!found.challenge.ev) return emailRequired(reply, await sendEnrollLink(found.user), found.user.email);
     return { ...(await startEnrollment(found.user)), account: found.user.email };
+  });
+
+  /** «Mandar otro enlace». */
+  app.post('/api/2fa/enroll/resend', async (req, reply) => {
+    const found = await challengeUser(req);
+    if (!found || found.challenge.purpose !== 'enroll' || found.user.totp_enabled_at) return expired(reply);
+    if (found.challenge.ev) return { ok: true, sent: false };
+    return { ok: true, sent: await sendEnrollLink(found.user) };
+  });
+
+  /** El enlace del correo, abierto en el navegador que tiene el reto: desde ahí se configura la app. */
+  app.post('/api/2fa/enroll/link', async (req, reply) => {
+    const { token } = parse(z.object({ token: z.string().min(20).max(100) }), req.body);
+    const found = await challengeUser(req);
+    if (!found || found.challenge.purpose !== 'enroll' || found.user.totp_enabled_at) {
+      return reply.code(400).send({ error: 'Abre el enlace en el mismo navegador donde escribiste tu contraseña (o vuelve a entrar ahí y pide otro).', code: 'other_browser' });
+    }
+    if (!(await useEnrollLink(reply, found.challenge, token))) return reply.code(400).send({ error: 'El enlace no es válido o ya venció. Pide uno nuevo.' });
+    return { ok: true };
   });
 
   app.post('/api/2fa/enroll', async (req, reply) => {
     const b = parse(Code, req.body);
     const found = await challengeUser(req);
     if (!found || found.challenge.purpose !== 'enroll' || found.user.totp_enabled_at) return expired(reply);
+    if (!found.challenge.ev) return emailRequired(reply, false, found.user.email);
     const key = challengeKey(found.challenge);
     if ((await countHit(key, CHALLENGE_WINDOW_MS)) > LIMITS.codePerChallenge) return expired(reply);
-    if (!(await confirmEnrollment(found.user.id, b.code))) return wrongCode(reply);
+    if (!(await confirmEnrollment(found.user.id, b.code, { emailConfirmed: true }))) return wrongCode(reply);
     const codes = await replaceRecoveryCodes(found.user.id);
     void notifyUser(found.user, 'mfa_enabled');
     await finishChallenge(reply, found.user, found.challenge);

@@ -85,6 +85,7 @@ async function requestApi(method, url, body, isForm, retried = false, quiet = fa
     const msg = data?.issues && !limited ? `${data.error}: ${data.issues.join('; ')}` : data?.error || `Error ${res.status}`;
     const error = new Error(msg);
     error.status = res.status;
+    error.code = data?.code;
     error.issues = data?.issues;
     if (limited) error.limit = data.limit || {};
     throw error;

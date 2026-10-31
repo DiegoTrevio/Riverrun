@@ -35,7 +35,12 @@ const enter = async (b: ReturnType<typeof browser>, email: string, password = PA
   assert.equal(r.statusCode, 200, r.body);
   if (r.json().ok) return r.json();
   if (r.json().mfa === 'enroll') {
-    const e = await b.send('GET', '/api/2fa/enroll');
+    let e = await b.send('GET', '/api/2fa/enroll');
+    // Entró solo con la contraseña: abre en este navegador el enlace que llegó a su correo (ID-16).
+    if (e.statusCode === 403) {
+      assert.equal((await b.send('POST', '/api/2fa/enroll/link', { token: h.enrollTokenFor(email) })).statusCode, 200);
+      e = await b.send('GET', '/api/2fa/enroll');
+    }
     h.totpSecrets.set(email, e.json().secret);
     return (await b.send('POST', '/api/2fa/enroll', { code: await h.codeFor(email) })).json();
   }
