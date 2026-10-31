@@ -294,3 +294,21 @@ t('los planes que ven el público y los clientes no llevan ids del proveedor ni 
   }
   assert.ok(mine.plans.length && mine.plans.every((p: any) => p.key && p.total > 0 && p.limits && p.providers), JSON.stringify(mine.plans));
 });
+
+t('la pausa a mano del superadmin no la quita un pago, y el plan que él asigna no lo pisa la suscripción (PAY-8)', async () => {
+  const acc = (await h.authed('POST', '/api/accounts', { name: 'Pausada a mano' })).json().id;
+  assert.equal((await h.authed('POST', '/api/plans', { key: 'vip', name: 'VIP', price: 999, currency: 'MXN' })).statusCode, 200);
+  fake.stripe.subs.sub_manual = stripeSub({ id: 'sub_manual', customer: 'cus_manual', status: 'active', metadata: { account_id: acc, plan_key: 'pro' } });
+  // El superadmin asigna su plan y la pausa a mano.
+  assert.equal((await h.authed('PUT', `/api/accounts/${acc}`, { plan: 'vip', status: 'paused' })).statusCode, 200);
+  const a0 = (await pool.query(`SELECT status, pause_reason, plan, plan_source FROM accounts WHERE id = $1`, [acc])).rows[0];
+  assert.deepEqual([a0.status, a0.pause_reason, a0.plan, a0.plan_source], ['paused', 'manual', 'vip', 'manual']);
+  // Un pago (aviso de suscripción activa) no la reactiva ni le cambia el plan.
+  assert.equal((await stripeHook('customer.subscription.updated', fake.stripe.subs.sub_manual, 'evt_manual_1')).statusCode, 200);
+  const a1 = (await pool.query(`SELECT status, pause_reason, plan FROM accounts WHERE id = $1`, [acc])).rows[0];
+  assert.deepEqual([a1.status, a1.pause_reason, a1.plan], ['paused', 'manual', 'vip']);
+  assert.ok((await pool.query(`SELECT 1 FROM event_logs WHERE account_id = $1 AND message LIKE '%plan que asignó el superadministrador%'`, [acc])).rows.length, 'se avisa que la suscripción dice otro plan');
+  // Solo el superadmin la reactiva.
+  assert.equal((await h.authed('PUT', `/api/accounts/${acc}`, { status: 'active' })).statusCode, 200);
+  assert.deepEqual(Object.values((await pool.query(`SELECT status, pause_reason FROM accounts WHERE id = $1`, [acc])).rows[0]), ['active', '']);
+});

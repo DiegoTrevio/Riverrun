@@ -128,7 +128,8 @@ t('Stripe: de mensual a anual en el mismo paso; mismo plan, plan inexistente, ag
   try {
     const r = await a.api('POST', '/api/billing/change', { plan: 'anual' });
     assert.equal(r.statusCode, 502);
-    assert.match(r.json().error, /tarjeta fue rechazada/);
+    assert.match(r.json().error, /No pudimos completar el cambio.*referencia R-/, 'el texto del proveedor no llega al cliente (PAY-12)');
+    assert.doesNotMatch(r.json().error, /tarjeta fue rechazada/);
   } finally {
     fake.stripe.fail = false;
   }

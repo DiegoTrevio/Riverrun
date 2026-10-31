@@ -260,6 +260,8 @@ export async function billingRoutes(api: FastifyInstance) {
     // `trial: false`: contratar ya, sin días gratis (p. ej. con la tarjeta que ya tuvo una prueba).
     const b = parse(z.object({ plan: z.string().max(40), provider: z.enum(['stripe', 'mercadopago']), trial: z.boolean().optional() }), req.body);
     const { plan, provider } = await payable(b.plan, b.provider, accountId);
+    // El dueño contrata: desde aquí manda la suscripción, no un plan asignado a mano (PAY-8).
+    await query(`UPDATE accounts SET plan_source = 'provider' WHERE id = $1`, [accountId]);
     const sub = await getSubscription(accountId);
     if (sub && ['active', 'past_due'].includes(sub.status) && !sub.cancel_at_period_end && sub.provider_subscription_id) throw new HttpError(409, 'Ya tienes un plan activo: para cambiarlo usa «Cambiar de plan» en Mi plan.');
     // Quien pidió factura necesita sus datos completos antes del primer cobro (su CFDI sale de cada pago).

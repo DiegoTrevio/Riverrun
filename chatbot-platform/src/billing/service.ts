@@ -216,6 +216,8 @@ export async function changePlan(o: { accountId: string; email: string; planKey:
   if (sub.plan_key === o.planKey && !pending) throw new HttpError(400, 'Ya tienes ese plan');
   const plan = await getPlan(o.planKey);
   if (!plan?.active || !(await planOpenTo(plan, o.accountId))) throw new HttpError(404, 'Ese plan no está disponible');
+  // El dueño elige su plan: desde aquí manda la suscripción, no el plan que el superadministrador había asignado (PAY-8).
+  await query(`UPDATE accounts SET plan_source = 'provider' WHERE id = $1`, [o.accountId]);
   const from = await getPlan(sub.plan_key);
   const upgrade = !from || monthly(plan) > monthly(from);
   if (!upgrade) await assertFitsPlan(o.accountId, plan);
@@ -346,7 +348,7 @@ export type Later = (() => Promise<unknown>)[];
 
 async function applyStateLocked(state: SubscriptionState & { accountId: string }, now: Date, later: Later, client: pg.PoolClient): Promise<string | null> {
   const accountId = state.accountId;
-  const acc = await queryOne<{ id: string; name: string; status: string; plan: string; pause_reason: string }>(`SELECT id, name, status, plan, pause_reason FROM accounts WHERE id = $1`, [accountId]);
+  const acc = await queryOne<{ id: string; name: string; status: string; plan: string; pause_reason: string; plan_source: string }>(`SELECT id, name, status, plan, pause_reason, plan_source FROM accounts WHERE id = $1`, [accountId]);
   if (!acc) return null;
 
   const prev = await getSubscription(accountId);
@@ -440,12 +442,18 @@ async function applyStateLocked(state: SubscriptionState & { accountId: string }
     // La suscripción de una prueba con tarjeta ya estaba «al corriente»: la cuenta se activa con el primer cobro (sin
     // días gratis por delante), y también la que esperaba tarjeta y se cobró ya (tarjeta que ya tuvo prueba).
     const activate = was !== 'active' || (!trialFuture && (acc.status === 'trial' || waitingCard));
+    // La pausa a mano del superadministrador (y la de un contracargo) no la quita un pago; su plan asignado no se pisa (PAY-8).
     await query(
-      `UPDATE accounts SET status = CASE WHEN $3::boolean AND NOT (status = 'paused' AND pause_reason = 'dispute') THEN 'active' ELSE status END,
+      `UPDATE accounts SET status = CASE WHEN $3::boolean AND NOT (status = 'paused' AND pause_reason IN ('dispute', 'manual')) THEN 'active' ELSE status END,
+         pause_reason = CASE WHEN $3::boolean AND status = 'paused' AND pause_reason NOT IN ('dispute', 'manual') THEN '' ELSE pause_reason END,
          trial_ends_at = CASE WHEN $3::boolean THEN NULL ELSE trial_ends_at END,
-         plan = COALESCE(NULLIF($2, ''), plan), updated_at = now() WHERE id = $1`,
+         plan = CASE WHEN plan_source = 'manual' THEN plan ELSE COALESCE(NULLIF($2, ''), plan) END, updated_at = now() WHERE id = $1`,
       [accountId, planKey, activate],
     );
+    if (acc.plan_source === 'manual' && planKey && planKey !== acc.plan) {
+      await logEvent({ level: 'warn', source: 'admin', message: `La suscripción (${state.provider}) dice el plan ${planKey}, pero se conserva ${acc.plan || '—'}, el plan que asignó el superadministrador`, accountId });
+      later.push(() => notifySuperadmins(accountId, `Plan distinto en la suscripción: ${acc.name}`, `La suscripción de "${acc.name}" dice ${planKey}, pero la cuenta conserva ${acc.plan || 'sin plan'} (asignado a mano). Revísalo en Cuentas.`));
+    }
     if (activate) {
       await logEvent({ level: 'info', source: 'admin', message: `Pago confirmado (${state.provider}): plan ${planKey || '—'}`, accountId });
       later.push(() => tell(accountId, was === 'past_due' ? 'Recibimos tu pago, ¡gracias!' : '¡Tu plan está activo!', `Tu cuenta "${acc.name}" quedó al corriente${plan ? ` con el plan ${plan.name}` : ''}. Próxima renovación: ${fmt(periodEnd)}.`));
@@ -491,7 +499,7 @@ export async function promotePendingPlan(accountId: string, provider: ProviderNa
     const plan = await getPlan(sub.pending_plan_key);
     if (!plan) return;
     await query(`UPDATE subscriptions SET plan_key = $2, pending_plan_key = '', pending_plan_since = NULL, updated_at = now() WHERE account_id = $1`, [accountId, plan.key]);
-    await query(`UPDATE accounts SET plan = $2, updated_at = now() WHERE id = $1`, [accountId, plan.key]);
+    await query(`UPDATE accounts SET plan = $2, plan_source = 'provider', updated_at = now() WHERE id = $1`, [accountId, plan.key]);
     await logEvent({ level: 'info', source: 'admin', message: `Cambio de plan aplicado con el cobro (${provider}): ${sub.plan_key || '—'} → ${plan.key}`, accountId });
     later.push(() => tell(accountId, `Ya tienes el plan ${plan.name}`, `Recibimos el cobro de tu plan ${plan.name} (${money(payment.totalCents, payment.currency)}): desde hoy tu cuenta tiene todo lo que incluye.`));
   });
