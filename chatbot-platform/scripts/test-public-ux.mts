@@ -16,6 +16,7 @@ const h = await createHarness(); let browser: Awaited<ReturnType<typeof chromium
 const results: any = { screens: [], responsive: [], regressions: [], errors: [] };
 const checked = (name: string) => { results.regressions.push(name); console.log('UX ✓', name); };
 const { deletionToken } = await import('../src/accounts/self-service.js');
+const { outbox } = await import('../src/mailer.js');
 const { unsubscribeSig } = await import('../src/onboarding-checklist.js');
 
 try {
@@ -38,9 +39,11 @@ try {
   };
 
   // 1. Páginas del servidor, ayuda, inicio de sesión y registro: axe y sin desbordes, en claro y oscuro.
+  // El enlace de borrar la cuenta sirve una sola vez: lleva el número que la cuenta tiene guardado.
+  await pool.query(`UPDATE accounts SET deletion_nonce = 'ux' WHERE id = $1`, [h.accountId]);
   const pages: [string, string][] = [
     ['precios', '/precios'], ['estado', '/estado'], ['contacto', '/contacto'], ['privacidad', '/privacidad'],
-    ['borrar-cuenta', `/borrar-cuenta?t=${encodeURIComponent(deletionToken(h.accountId))}`],
+    ['borrar-cuenta', `/borrar-cuenta?t=${encodeURIComponent(deletionToken(h.accountId, 'ux'))}`],
     ['baja-recordatorios', `/baja-recordatorios?c=${h.accountId}&s=${unsubscribeSig(h.accountId)}`],
     ['ayuda', '/ayuda.html'], ['login', '/#/login'], ['registro', '/#/registro'],
   ];
@@ -116,12 +119,17 @@ try {
     await audit(page, 'reservar · datos con error', { theme });
     await phone.fill('+52 55 1234 5678');
     await page.getByRole('button', { name: 'Confirmar' }).click();
+    // La reserva se confirma con el enlace del correo (IN-18): primero «Revisa tu correo».
+    await page.getByRole('heading', { name: 'Revisa tu correo' }).waitFor();
+    await audit(page, 'reservar · revisa tu correo', { theme });
+    const mail = [...outbox].reverse().find((m) => m.to === 'lucia@cliente.mx' && /^Confirma tu reserva/.test(m.subject))!;
+    await page.goto(mail.text.match(/https?:\/\/\S+\?confirmar=[\w-]+/)![0].replace('https://bot.test', base));
     await page.getByRole('heading', { name: '¡Listo! Quedó agendada.' }).waitFor();
     assert.equal(await page.evaluate(() => document.activeElement?.textContent), '¡Listo! Quedó agendada.');
     await audit(page, 'reservar · listo', { theme });
     await ctx.close();
   }
-  checked('Reservar: foco al título de cada paso, días con su texto visible, error en su campo y confirmación (claro y oscuro)');
+  checked('Reservar: foco al título de cada paso, días con su texto visible, error en su campo, «Revisa tu correo» y confirmación con el enlace (claro y oscuro)');
 
   // 3. Widget en el sitio de un cliente (otra página, otro idioma): español, registro que anuncia y quién habla.
   for (const width of [390, 1440]) {

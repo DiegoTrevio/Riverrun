@@ -65,7 +65,10 @@
     app.replaceChildren();
     if (!st.info) return;
     app.append(header());
-    if (st.done) app.append(doneView());
+    if (st.confirmError) app.append(el('div', { class: 'card', role: 'alert' }, el('h2', { text: 'No se pudo confirmar' }), el('p', { text: st.confirmError }),
+      el('p', {}, el('a', { href: location.pathname, text: 'Elegir un horario' }))));
+    else if (st.done && st.done.pending) app.append(pendingView());
+    else if (st.done) app.append(doneView());
     else if (!st.service) app.append(servicesView());
     else if (st.service.people && st.service.people.length && st.person === null) app.append(peopleView());
     else if (!st.slot) app.append(timesView());
@@ -155,16 +158,40 @@
       input('phone', phoneNeeded ? 'Tu teléfono (te llamaremos a este número)' : 'Tu teléfono (opcional)', { type: 'tel', required: phoneNeeded, autocomplete: 'tel', maxlength: 30 }),
       input('notes', 'Algo que debamos saber (opcional)', { maxlength: 1000, rows: 3 }),
       el('div', { class: 'trap', 'aria-hidden': 'true' }, el('label', { for: 'f-website', text: 'No llenar' }), el('input', { id: 'f-website', name: 'website', tabindex: '-1', autocomplete: 'off', oninput: function (e) { st.form.website = e.target.value; } })),
+      captchaBox(),
       st.error ? el('p', { class: 'error', id: 'form-error', text: st.error }) : null, // el foco va a su campo o a él
-      el('p', {}, el('button', { class: 'primary', type: 'submit', 'aria-disabled': st.busy ? 'true' : null }, st.busy ? 'Agendando…' : 'Confirmar')));
+      el('p', {}, el('button', { class: 'primary', type: 'submit', 'aria-disabled': st.busy ? 'true' : null }, st.busy ? 'Enviando…' : 'Confirmar')));
     return el('div', { class: 'card' }, back(function () { st.slot = null; st.error = ''; step(); }, 'Cambiar horario'),
       el('h2', { text: s.name + ': ' + st.slot.day + ', ' + st.slot.label }), form);
+  }
+  /** Captcha de Cloudflare (solo si el servidor lo pide): su respuesta va con la reserva. */
+  var captchaToken = '';
+  function captchaBox() {
+    var key = st.info && st.info.turnstile_site_key;
+    if (!key) return null;
+    var box = el('div', { class: 'captcha' });
+    var render = function () { window.turnstile.render(box, { sitekey: key, language: 'es', callback: function (t) { captchaToken = t; }, 'expired-callback': function () { captchaToken = ''; } }); };
+    if (window.turnstile) setTimeout(render, 0);
+    else if (!document.getElementById('cf-turnstile')) {
+      var sc = document.createElement('script');
+      sc.id = 'cf-turnstile'; sc.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit'; sc.async = true;
+      sc.onload = render;
+      document.head.append(sc);
+    } else document.getElementById('cf-turnstile').addEventListener('load', render);
+    return box;
+  }
+  /** Se pidió la reserva: falta abrir el enlace que llegó al correo (IN-18). */
+  function pendingView() {
+    var r = st.done;
+    return el('div', { class: 'card', role: 'status' }, el('h2', { text: 'Revisa tu correo' }),
+      el('p', { text: 'Te enviamos un enlace a ' + (r.email || 'tu correo') + '. Ábrelo para confirmar tu reserva: vence en una hora.' }),
+      el('p', { class: 'small muted', text: 'Hasta que lo abras, el horario no queda apartado. Si no te llega, revisa tu correo no deseado.' }));
   }
   function submit(e) {
     e.preventDefault();
     if (st.busy) return;
     st.busy = true; st.error = ''; st.focus = 'button.primary'; draw();
-    call('POST', base, { service_id: st.service.id, slot: st.slot.key, person_id: st.person || null, name: st.form.name, email: st.form.email, phone: st.form.phone, notes: st.form.notes, website: st.form.website })
+    call('POST', base, { service_id: st.service.id, slot: st.slot.key, person_id: st.person || null, name: st.form.name, email: st.form.email, phone: st.form.phone, notes: st.form.notes, website: st.form.website, turnstile_token: captchaToken || undefined })
       .then(function (r) { st.busy = false; st.done = r; step(); })
       // El error se dice (role=alert) y el foco va a su campo, o al error si no se sabe cuál es.
       .catch(function (err) { st.busy = false; st.error = err.message; st.focus = errorField() ? '#f-' + errorField() : '#form-error'; draw(); });
@@ -178,8 +205,18 @@
         : 'Guarda estos datos: no pudimos enviarte la confirmación por correo, pero el negocio ya tiene tu reserva.' }));
   }
 
+  // Enlace del correo: confirma la reserva y la agenda.
+  var confirmCode = new URLSearchParams(location.search).get('confirmar');
   call('GET', base).then(function (info) {
     st.info = info;
+    if (confirmCode) {
+      if (/^#[0-9a-f]{6}$/i.test(info.business.color || '')) brandColors(info.business.color);
+      history.replaceState(null, '', location.pathname);
+      document.title = 'Confirmar reserva · ' + info.business.name;
+      return call('POST', base + '/confirm', { code: confirmCode })
+        .then(function (r) { st.done = r; step(); })
+        .catch(function (e) { st.confirmError = e.message; st.focus = '.card h2'; draw(); });
+    }
     if (/^#[0-9a-f]{6}$/i.test(info.business.color || '')) brandColors(info.business.color);
     document.title = (info.person ? 'Agenda con ' + info.person : info.title || 'Agendar') + ' · ' + info.business.name;
     if (info.services.length === 1) pickService(info.services[0], true); else draw();
