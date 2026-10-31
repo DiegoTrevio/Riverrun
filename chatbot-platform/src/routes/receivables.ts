@@ -158,6 +158,18 @@ export async function createReceivable(service: ChatService, accountId: string, 
   });
 }
 
+/** Dominio de un enlace de pago (para la bitácora: a dónde va el dinero). */
+const linkDomain = (link: string) => { try { return new URL(link).hostname; } catch { return '(enlace inválido)'; } };
+
+/** Un cambio de monto, moneda o enlace de pago queda en la bitácora con el antes, el después y quién (PAY-13). */
+async function logMoneyChange(user: any, before: { account_id: string; concept: string; amount_cents: number; currency: string; payment_link: string }, after: { amount_cents: number; currency: string; payment_link: string }, what: string) {
+  const changed = Number(before.amount_cents) !== Number(after.amount_cents) || before.currency !== after.currency || before.payment_link !== after.payment_link;
+  if (!changed) return;
+  await logEvent({ level: 'warn', source: 'admin', message: `Cambió el monto o el enlace de un ${what} (${before.concept}) por ${user.email}`, accountId: before.account_id,
+    details: { before: { amount_cents: Number(before.amount_cents), currency: before.currency, link: before.payment_link ? linkDomain(before.payment_link) : '' },
+      after: { amount_cents: Number(after.amount_cents), currency: after.currency, link: after.payment_link ? linkDomain(after.payment_link) : '' } } });
+}
+
 export async function receivableRoutes(api: FastifyInstance, service: ChatService) {
   const team = { preHandler: requireRole('agent') };
   const admins = { preHandler: requireRole('admin') };
@@ -234,6 +246,7 @@ export async function receivableRoutes(api: FastifyInstance, service: ChatServic
     assertAgentText(req.user, b.concept, b.reference);
     if (!(await seesContact(req.user, b.contact_id))) throw notFound('Cliente no encontrado');
     const agent = req.user.role === 'agent';
+    if (b.payment_link) await logEvent({ level: 'info', source: 'admin', message: `Cobro con enlace de pago a ${linkDomain(b.payment_link)} registrado por ${req.user.email}`, accountId, details: { domain: linkDomain(b.payment_link), amount_cents: b.amount_cents } });
     const { receivable, scheduled } = await createReceivable(service, accountId, b, { userId: req.user.id, source: 'manual', actor: req.user.email, approved: !agent });
     if (agent) await askApproval(req.user, accountId, receivable);
     return reply.code(201).send({ receivable: receivableOut(receivable), scheduled });
@@ -270,6 +283,7 @@ export async function receivableRoutes(api: FastifyInstance, service: ChatServic
     );
     if (!updated) throw new HttpError(409, 'El cobro ya no está pendiente');
     if (reapprove) await askApproval(req.user, updated.account_id, updated);
+    await logMoneyChange(req.user, r, updated, 'cobro');
     // Otra fecha o días: los recordatorios se vuelven a programar (y el aviso de vencido, si vence de nuevo).
     const scheduled = await service.receivables.schedule(updated);
     return { receivable: receivableOut(updated), scheduled };
@@ -374,6 +388,7 @@ export async function receivableRoutes(api: FastifyInstance, service: ChatServic
         merged.reminders ? JSON.stringify(merged.reminders) : null, merged.frequency, merged.day, merged.starts_on, merged.ends_on, merged.max_payments, merged.active, reapprove],
     );
     if (reapprove) await askApproval(req.user, p.account_id, merged, true);
+    await logMoneyChange(req.user, p, merged, 'pago recurrente');
     // Lo ya cobrado no cambia: los cambios aplican a los cobros que se creen de aquí en adelante.
     const created = merged.active ? await runPlans(service.receivables, new Date(), p.id) : 0;
     await logEvent({ level: 'info', source: 'admin', message: `Pago recurrente actualizado por ${req.user.email}: ${merged.concept}${merged.active ? '' : ' (pausado)'}`, accountId: p.account_id });

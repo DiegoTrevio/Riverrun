@@ -229,6 +229,10 @@ t('cobros del agente: sin datos de pago en el texto, por aprobar y con aviso a l
   assert.equal(edited.json().receivable.needs_approval, true);
   assert.equal((await carmen('POST', `/api/receivables/${r.receivable.id}/approve`, {})).statusCode, 200);
   assert.equal((await carmen('PUT', `/api/receivables/${r.receivable.id}`, { amount_cents: 30000 })).json().receivable.needs_approval, false);
+  // Cada cambio de monto o enlace queda en la bitácora con el antes, el después y quién (PAY-13).
+  const changes = (await pool.query(`SELECT message, details FROM event_logs WHERE message LIKE 'Cambió el monto o el enlace%' ORDER BY id`)).rows;
+  assert.deepEqual(changes.slice(-2).map((c) => [c.details.before.amount_cents, c.details.after.amount_cents]), [[30000, 99900], [99900, 30000]]);
+  assert.match(changes.at(-1).message, /carmen@visibilidad\.test/);
 
   // Pagos recurrentes: igual, y no generan cobros hasta aprobarse.
   const plan = await ana('POST', '/api/receivable-plans', { contact_id: mine.contact_id, concept: 'Mensualidad', amount_cents: 10000, frequency: 'monthly', day: 1, starts_on: new Date().toISOString().slice(0, 10) });
