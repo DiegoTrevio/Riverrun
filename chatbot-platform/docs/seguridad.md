@@ -19,7 +19,7 @@ Cada etapa es un PR con pruebas que fallan con el código anterior y pasan con e
 | 3. Registro y cobros | Captcha → correo → 2FA → tarjeta, topes contra prueba de tarjetas (PAY-2), pruebas gratis por persona (PAY-3), sin IA en pausa (parte de PAY-6); disputas, plan del precio, códigos y cobros a clientes (PAY-4…PAY-16) | ✅ Corregido (3a registro, 3b cobros) |
 | 3b′. Cobros de la revisión del 31 de octubre | PAY-17…PAY-23 y bajos de cobros | ✅ Corregido |
 | 3c. Revisión del 31 de octubre | Los altos de [la revisión del 31 de octubre](revision-seguridad-2026-10-31.md): dos caídas del proceso, atajos para sacar o borrar datos, cobros del agente, la ficha en el Copiloto (IN-15, IN-16, ID-11…ID-14, AI-5 en parte) | ✅ Corregido |
-| 4. Abuso de entradas | Límites compartidos en la base, tamaños por ruta, firma del webhook de WhatsApp, adjuntos sin macros, PDF aislados, cuota de IA antes de transcribir (IN-2…IN-14, PAY-6) | Pendiente |
+| 4. Abuso de entradas | Límites compartidos en la base, tamaños por ruta, firma del webhook de WhatsApp, adjuntos sin macros, PDF aislados, cuota de IA antes de transcribir (IN-2…IN-14, PAY-6) | 4′ ✅ (revisión del 31 de octubre: IN-17…IN-20, IN-22, IN-5, parte de IN-8…IN-14 y límites en la base); IN-2, IN-3, IN-6/7, IN-21 y PAY-6 pendientes |
 | 5. IA y Copiloto | Tarjetas de confirmación completas, costo de sub-llamados, notas de cotización, fuga de instrucciones (AI-5…AI-13) | Pendiente |
 | 6. Secretos y datos | Claves separadas con rotación, credenciales de canales cifradas, retención en Evolution (INF-6…INF-8, INF-13) | Pendiente |
 | 7. Detección | Bitácora de seguridad, alertas, avisos al usuario | Pendiente |
@@ -295,6 +295,34 @@ PAY-14 ya se había cerrado en la 2b (los poderes del dueño).
 - Mercado Pago no prorratea: de mensual a anual sigue por sustitución, con el primer cobro al terminar lo pagado.
 - La factura global en otra moneda usa el tipo de cambio ponderado de sus pagos.
 
+## Etapa 4′: lo que se corrigió de la revisión del 31 de octubre
+
+Las entradas de [la revisión del 31 de octubre](revision-seguridad-2026-10-31.md) (PR 4 del
+[plan](superpowers/plans/2026-10-31-seguridad-revision-correcciones.md)). El resto de la etapa 4 original (IN-2, IN-3,
+IN-6/7 y PAY-6) sigue pendiente.
+
+| # | Hallazgo | Arreglo | Prueba |
+|---|---|---|---|
+| 4.1 | Los límites de las rutas vivían en la memoria de cada proceso (se reiniciaban y no se compartían) y contaban la IP tal cual (una IPv6 tiene millones). | `limited()` e `ipLimitKey()` sobre la base: reservas, invitaciones, restablecer, Google, pools, redes, API, cobros y los de IA. Una IPv6 cuenta por su /64. | `rate-limit-routes.test.ts` |
+| IN-17 | El correo entrante no comprobaba al remitente: con `From: cliente@real.com` se escribía en el historial de ese cliente y se le contestaba. | Solo se contesta con DMARC o DKIM alineado en el primer `Authentication-Results` (el de tu proveedor). Si no, se guarda con «[Remitente no verificado]», sin respuesta (`require_sender_auth` por canal). Tope de 60 respuestas por hora por canal, con aviso. | `email.test.ts` |
+| IN-18 | La reserva pública no tenía captcha ni confirmación del correo, el tope por correo se saltaba con `+etiqueta` y servía de relé de correo. | Se guarda una solicitud y se manda un enlace (texto fijo, una hora, un solo uso, migración 110); la cita se agenda al abrirlo. Captcha cerrado ante fallas, el tope de 3 cuenta el correo normalizado y lo pendiente, 20 por día por enlace, el nombre va entre « » en el aviso. | `booking-page.test.ts`, `test:public:ux` |
+| IN-19 | Sin cuota de almacenamiento ni ritmo en las subidas; una cuenta en pausa también subía. | `storage_mb` por plan (prueba: `TRIAL_MAX_STORAGE_MB`, 200): adjuntos, biblioteca y formatos. En pausa no se sube; 30 subidas por hora. | `attachments.test.ts`, `limits.test.ts` |
+| IN-20 | La CSP estricta del panel se saltaba con `/%69ndex.html`. | La estricta es la de por omisión; solo una lista de páginas del servidor lleva `inline`, decidida sobre la ruta decodificada. `check-frontend` rechaza HTML crudo fuera de los módulos de dibujos. | `security-headers.test.ts`, `check-frontend.unit.test.ts` |
+| IN-22 | El chat web se cerraba con ~10 conexiones, su GET no tenía límite y la sesión viajaba en la URL. | 20 clientes nuevos por red (/24 o /64) y hora por canal, 120 consultas por minuto por sesión, la sesión en la cabecera `x-webchat-session`. | `channels.test.ts`, `test:public:ux` |
+| IN-5 | Adjuntos de Office con macros. | Un Word, Excel o PowerPoint debe ser un ZIP del formato (revisado con topes), con `[Content_Types].xml` y su carpeta, y sin `vbaProject.bin`. | `office-attachments.unit.test.ts` |
+| Bajos (IN-8…IN-14) | Analizador JSON propio; `/contacto` mandaba el mensaje si Cloudflare no respondía. | `secure-json-parse` (`__proto__` → 400); el captcha de `/contacto` queda cerrado ante fallas. | `owner-self-service.test.ts` |
+| Bajos | Zernio deduplicaba por una cabecera sin firma; las descargas de archivos de clientes conservaban su extensión y caracteres que invierten el texto. | Huella del cuerpo firmado; extensión del tipo detectado (o `.bin`) y nombres sin U+202A–202E ni U+2066–2069. | `zernio-events.test.ts`, `download-name.unit.test.ts` |
+
+**Cambios que nota la gente:**
+- Quien reserva en la página recibe un correo y la cita se agenda al abrir el enlace (vence en una hora; el horario no queda apartado mientras tanto). En producción la página pide captcha.
+- Un correo cuyo remitente no se puede comprobar se guarda sin respuesta, marcado «[Remitente no verificado]». Se puede apagar por canal (`require_sender_auth`).
+- Cada plan tiene «Archivos (MB)»; en la prueba, 200 MB. Una cuenta en pausa no sube archivos.
+- No se aceptan Word, Excel ni PowerPoint con macros.
+
+**Queda para después:**
+- La conversión de plantillas DOCX aislada (IN-6/7, IN-21) y la firma del webhook de Evolution (IN-2), con la etapa 6.
+- La lista de las páginas con `inline` se mantiene a mano: una página nueva del servidor sale con la CSP estricta hasta agregarla.
+
 ## Hallazgos pendientes por etapa
 
 Abreviaturas: ID identidad, PAY cobros, IN entradas, AI IA y Copiloto, INF servidor.
@@ -308,7 +336,6 @@ Abreviaturas: ID identidad, PAY cobros, IN entradas, AI IA y Copiloto, INF servi
 - **AI-5…AI-9** Nombre del contacto en el prompt del Copiloto sin marcar como texto de cliente; tarjetas de confirmación que recortan lo que se ejecuta; notas de cotización sin verificar; sin detector de fuga de instrucciones; sub-llamados de IA fuera del tope de costo.
 - **IN-2** El webhook de Evolution no tiene firma (solo el token en la URL) y su ruta es pública en Caddy.
 - **IN-3** Cuerpo de hasta 10 MB que se lee completo antes de verificar firmas; cada rechazo escribe en la bitácora; sin tiempo máximo de petición.
-- **IN-5** Adjuntos con macros de Office.
 - **IN-6/7** Plantillas DOCX que procesa LibreOffice dentro del backend, con todos los secretos en su entorno; cola de PDF única para todas las cuentas.
 - **INF-4** `update` despliega lo que haya en `main` sin verificar firma ni CI.
 - **INF-6** `rotate-secret` rompe más de lo que avisa (Zernio, Outlook, llaves guardadas); no hay versiones de clave.
@@ -319,7 +346,7 @@ Abreviaturas: ID identidad, PAY cobros, IN entradas, AI IA y Copiloto, INF servi
 
 ### Bajos
 AI-10…AI-13, IN-8…IN-14 (calendario `.ics` sin escapar, asunto
-reflejado, textos de la URL en el panel, reservas como relé de correo, `unsafe-inline` en páginas públicas, plazos de
-descarga, analizador JSON propio), INF-12…INF-15 (secretos impresos por el instalador, cuerpos de correo en la bitácora sin
+reflejado, textos de la URL en el panel, plazos de descarga; las reservas como relé, `unsafe-inline` y el analizador JSON
+ya se corrigieron en la 4′), INF-12…INF-15 (secretos impresos por el instalador, cuerpos de correo en la bitácora sin
 SMTP —los tokens ya van ocultos desde la 2b—, `.gitignore`, acciones por etiqueta). `privacy.md` y `terms.md` (sitio de GitHub Pages) dicen «Viralize» y prometen
 «encriptamos todos los datos»: lo revisa el dueño o su abogado.
