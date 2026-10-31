@@ -265,3 +265,32 @@ t('planes privados: no salen en precios ni en el registro, y solo los contrata l
   // Editar otra cosa del plan no lo vuelve público.
   assert.equal((await h.authed('PUT', '/api/plans/especial', { name: 'Plan Especial Hotel', price: 3199, currency: 'MXN' })).json().public, false);
 });
+
+t('un error del proveedor no llega al cliente: texto fijo con referencia, y el detalle solo en la bitácora del sistema (PAY-12)', async () => {
+  const acc = (await h.authed('POST', '/api/accounts', { name: 'Error del proveedor' })).json().id;
+  await pool.query(`INSERT INTO subscriptions (account_id, provider, plan_key, status, provider_customer_id, provider_subscription_id, current_period_end)
+                    VALUES ($1, 'stripe', 'pro', 'active', 'cus_err', 'sub_err', now() + interval '30 days')`, [acc]);
+  fake.stripe.fail = true;
+  try {
+    const r = await h.authed('POST', `/api/billing/portal?account_id=${acc}`);
+    assert.equal(r.statusCode, 502, r.body);
+    assert.doesNotMatch(r.body, /Tu tarjeta fue rechazada/);
+    const ref = /referencia (R-[A-Z0-9]{6})/.exec(r.json().error)?.[1];
+    assert.ok(ref, r.body);
+    const log = (await pool.query(`SELECT account_id, message FROM event_logs WHERE message LIKE $1`, [`%${ref}%`])).rows[0];
+    assert.equal(log.account_id, null, 'no queda en la bitácora de la cuenta');
+    assert.match(log.message, /Tu tarjeta fue rechazada/);
+  } finally {
+    fake.stripe.fail = false;
+  }
+});
+
+t('los planes que ven el público y los clientes no llevan ids del proveedor ni datos internos (PAY-16)', async () => {
+  await h.authed('PUT', '/api/plans/pro', { key: 'pro', name: 'Pro', price: 499, currency: 'MXN', stripe_price_id: 'price_secreto123' });
+  const info = (await h.app.inject({ method: 'GET', url: '/api/signup/info' })).json();
+  const mine = (await B.api('GET', '/api/billing')).json();
+  for (const list of [info.plans ?? [], mine.plans]) {
+    assert.doesNotMatch(JSON.stringify(list), /price_secreto123|stripe_price_id|ai_usd_per_month|sort_order/);
+  }
+  assert.ok(mine.plans.length && mine.plans.every((p: any) => p.key && p.total > 0 && p.limits && p.providers), JSON.stringify(mine.plans));
+});

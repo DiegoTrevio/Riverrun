@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 /** Cobro automático: planes (los define el superadmin), contratar, administrar el pago y avisos de Stripe / Mercado Pago. */
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -57,13 +58,30 @@ const tooMany = (reply: any, key: string, max: number) => {
 };
 
 /** Planes que se pueden contratar, con los proveedores que los cobran (para "Mi plan" y el registro). */
+/**
+ * Un error del proveedor (Stripe, Mercado Pago) no se muestra al cliente (PAY-12): su texto puede traer datos internos o
+ * de la tarjeta. Al cliente le llega un texto fijo con una referencia corta; el detalle queda en la bitácora del sistema,
+ * que solo ve el superadministrador.
+ */
+export async function providerFailure(e: unknown, action: string): Promise<HttpError> {
+  const ref = `R-${crypto.randomBytes(4).toString('hex').slice(0, 6).toUpperCase()}`;
+  await logEvent({ level: 'error', source: 'system', message: `[${ref}] ${action}: ${(e as any)?.message ?? e}` });
+  return new HttpError(502, `No pudimos ${action}. Intenta otra vez; si sigue, escribe a soporte con la referencia ${ref}.`, undefined, { ref });
+}
+
+/** Lo que el panel y el público necesitan de un plan (sin ids del proveedor ni datos internos, PAY-16). */
+const shownPlan = (p: any) => ({
+  key: p.key, name: p.name, description: p.description, price: p.price, total: p.total, tax_percent: p.tax_percent, currency: p.currency,
+  interval: p.interval, billing_interval: p.billing_interval, limits: p.limits, price_cents: p.price_cents,
+});
+
 export async function offeredPlans(accountId?: string) {
   const on = enabledProviders();
   // Los privados solo para la cuenta que los tiene asignados (en su Mi plan); nunca en precios ni en el registro.
   const own = accountId ? (await queryOne<{ plan: string }>(`SELECT plan FROM accounts WHERE id = $1`, [accountId]))?.plan ?? '' : '';
   // El tope interno de IA del plan no se publica (precios, registro, Mi plan): es un dato de la plataforma.
   return (await listPlans()).filter((p: Plan) => p.public !== false || p.key === own).map((p: Plan) => {
-    const { ai_usd_per_month: _cap, ...out } = planOut(p);
+    const out = shownPlan(planOut(p));
     return { ...out, providers: on.filter((x) => x.supportsPlan(p)).map((x) => ({ name: x.name, label: x.label })) };
   });
 }
@@ -258,7 +276,7 @@ export async function billingRoutes(api: FastifyInstance) {
       const url = await openCardCheck({ accountId, ip: req.ip, provider, planKey: plan.key, open: () => createCheckoutSession({ accountId, email: req.user.email, plan, provider, base, startAt: paidUntil, trialDays }) });
       return { url, trial: trialDays > 0 };
     } catch (e: any) {
-      if (e instanceof ProviderError) throw new HttpError(502, `${e.message}. Intenta de nuevo o escríbenos.`);
+      if (e instanceof ProviderError) throw await providerFailure(e, 'abrir el pago');
       throw e;
     }
   });
@@ -298,16 +316,16 @@ export async function billingRoutes(api: FastifyInstance) {
       return { url: await stripePortal(accountId, req.ip, sub, base) };
     } catch (e: any) {
       if (e instanceof HttpError) throw e;
-      throw new HttpError(502, e.message);
+      throw await providerFailure(e, 'abrir la página de tu plan');
     }
   });
 
-  /** Los errores del proveedor se informan como 502 con su mensaje. */
+  /** Los errores del proveedor se informan como 502 con un texto fijo y su referencia (PAY-12). */
   const viaProvider = async <T>(fn: () => Promise<T>): Promise<T> => {
     try {
       return await fn();
     } catch (e: any) {
-      if (e instanceof ProviderError) throw new HttpError(502, `${e.message}. Intenta de nuevo o escríbenos.`);
+      if (e instanceof ProviderError) throw await providerFailure(e, 'completar el cambio con el proveedor de pago');
       throw e;
     }
   };
@@ -353,7 +371,7 @@ export async function billingRoutes(api: FastifyInstance) {
     try {
       await providers[sub.provider].setCancelAtPeriodEnd(sub, !resume);
     } catch (e: any) {
-      throw new HttpError(502, e.message);
+      throw await providerFailure(e, resume ? 'reanudar tu plan' : 'cancelar tu plan');
     }
     // El proveedor confirmará por aviso; mientras tanto se refleja en el panel.
     await query(`UPDATE subscriptions SET cancel_at_period_end = $2, updated_at = now() WHERE account_id = $1`, [accountId, !resume]);
