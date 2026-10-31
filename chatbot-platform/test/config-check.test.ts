@@ -318,3 +318,14 @@ test('Google: en producción, GOOGLE_OAUTH_URL o GOOGLE_AUTH_URL distintos de lo
   assert.ok(!ids(installed(g)).includes('google.unofficial_url'), 'sin definirlas se usan las oficiales');
   assert.ok(!ids({ ...installed({ ...g, GOOGLE_OAUTH_URL: 'http://127.0.0.1:9' }), NODE_ENV: 'development' }).includes('google.unofficial_url'), 'en desarrollo se permite (pruebas)');
 });
+
+test('RESEND_API_KEY cuenta como correo saliente; un MAIL_FROM sin dominio real se avisa', () => {
+  const noMail = installed({ SIGNUP_REQUIRE_EMAIL: 'true' });
+  delete noMail.SMTP_URL;
+  assert.ok(ids(noMail, 'warning').includes('smtp.verification_blocked'));
+  const resend = { ...noMail, RESEND_API_KEY: 're_llave_de_prueba', MAIL_FROM: 'Marca <hola@marca.mx>' };
+  assert.ok(!ids(resend).includes('smtp.verification_blocked'));
+  assert.ok(!ids(resend).includes('mail_from.no_domain'));
+  assert.equal(validateConfig(resend).services.find((x) => x.id === 'email')?.state, 'configured');
+  assert.ok(ids({ ...resend, MAIL_FROM: 'Marca <hola@localhost>' }).includes('mail_from.no_domain'));
+});

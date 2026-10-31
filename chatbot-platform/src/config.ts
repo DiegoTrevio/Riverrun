@@ -179,7 +179,11 @@ export const config = {
   },
   /** Correo saliente (verificación, recuperación de contraseña, avisos). Sin SMTP_URL, los correos van al registro. */
   mail: {
-    smtpUrl: env('SMTP_URL', ''),
+    /** SMTP_URL manda; si no hay y sí hay RESEND_API_KEY, se usa el SMTP de Resend con esa llave. */
+    smtpUrl: env('SMTP_URL', '') || (env('RESEND_API_KEY', '') ? `smtps://resend:${encodeURIComponent(env('RESEND_API_KEY', ''))}@smtp.resend.com:465` : ''),
+    /** Llave de Resend (también sirve para revisar en su API si el dominio del remitente está verificado). */
+    resendApiKey: env('RESEND_API_KEY', ''),
+    provider: (env('SMTP_URL', '') ? 'smtp' : env('RESEND_API_KEY', '') ? 'resend' : '') as 'smtp' | 'resend' | '',
     from: env('MAIL_FROM', 'Chatbots <no-responder@localhost>'),
   },
   /** Autoregistro de empresas. */

@@ -52,7 +52,7 @@ export interface ConfigReport {
 /** Variables cuyo valor es secreto: nunca se muestran (ni en el panel ni en los registros). */
 export const SECRET_VARS = [
   'DATABASE_URL', 'POSTGRES_PASSWORD', 'SESSION_SECRET', 'ADMIN_PASSWORD', 'EVOLUTION_API_KEY', 'OPENROUTER_API_KEY', 'OPENAI_API_KEY',
-  'SMTP_URL', 'STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'MERCADOPAGO_ACCESS_TOKEN', 'MERCADOPAGO_WEBHOOK_SECRET',
+  'SMTP_URL', 'RESEND_API_KEY', 'STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'MERCADOPAGO_ACCESS_TOKEN', 'MERCADOPAGO_WEBHOOK_SECRET',
   'GOOGLE_CLIENT_SECRET', 'MICROSOFT_CLIENT_SECRET', 'ZERNIO_API_KEY', 'META_APP_SECRET', 'META_VERIFY_TOKEN', 'BACKUP_PASSPHRASE', 'BACKUP_S3_SECRET', 'HEARTBEAT_URL', 'ALERT_WEBHOOK_URL',
   'TURNSTILE_SECRET_KEY', 'FACTURAPI_API_KEY',
 ] as const;
@@ -584,6 +584,8 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
 
   /* ------------------------------ Correo ------------------------------ */
   const smtp = get('SMTP_URL');
+  // RESEND_API_KEY sin SMTP_URL: se usa el SMTP de Resend con esa llave.
+  const mailOn = !!smtp || !!get('RESEND_API_KEY');
   const smtpValid = !smtp || SMTP.safeParse(smtp).success;
   if (!smtpValid) add(
     'warning',
@@ -595,22 +597,22 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
   );
   const signup = flag('SIGNUP_ENABLED', true);
   const requireEmail = flag('SIGNUP_REQUIRE_EMAIL', true);
-  if (!smtp) {
+  if (!mailOn) {
     if (signup && requireEmail) add(
       prod ? 'warning' : 'optional',
       'email',
       'smtp.verification_blocked',
-      ['SMTP_URL', 'SIGNUP_REQUIRE_EMAIL'],
-      'Sin SMTP_URL no salen correos, pero SIGNUP_REQUIRE_EMAIL=true: nadie podrá confirmar su correo ni conectar canales reales.',
-      'Configura SMTP_URL o pon SIGNUP_REQUIRE_EMAIL=false.',
+      ['RESEND_API_KEY', 'SMTP_URL', 'SIGNUP_REQUIRE_EMAIL'],
+      'Sin RESEND_API_KEY ni SMTP_URL no salen correos, pero SIGNUP_REQUIRE_EMAIL=true: nadie podrá confirmar su correo ni conectar canales reales.',
+      'Pon RESEND_API_KEY (resend.com → API Keys) o SMTP_URL, o SIGNUP_REQUIRE_EMAIL=false.',
     );
     else add(
       'optional',
       'email',
       'smtp.disabled',
-      ['SMTP_URL'],
+      ['RESEND_API_KEY', 'SMTP_URL'],
       'Correo saliente apagado: los correos (avisos, recuperación de contraseña) solo quedan en el registro.',
-      'Configura SMTP_URL para enviarlos.',
+      'Pon RESEND_API_KEY (resend.com → API Keys) o SMTP_URL para enviarlos.',
     );
   } else if (smtpValid && !has('MAIL_FROM')) {
     add(
@@ -622,6 +624,15 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
       'Define MAIL_FROM con un remitente de tu dominio, p. ej. "Tu Marca <no-responder@tudominio.com>".',
     );
   }
+  if (mailOn && has('MAIL_FROM') && !/@[^@\s>]+\.[^@\s>]+>?\s*$/.test(get('MAIL_FROM'))) add(
+    prod ? 'warning' : 'optional',
+    'email',
+    'mail_from.no_domain',
+    ['MAIL_FROM'],
+    'MAIL_FROM no tiene un dominio real (p. ej. @localhost): los correos irán a spam o serán rechazados.',
+    'Usa una dirección de tu dominio verificado en el proveedor, p. ej. "Tu Marca <no-responder@tudominio.com>".',
+  );
+
   if (has('SUPERADMIN_EMAIL') && !EMAIL.safeParse(get('SUPERADMIN_EMAIL').trim()).success) add(
     'warning',
     'monitoring',
@@ -630,7 +641,7 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
     'SUPERADMIN_EMAIL no es un correo válido: no llegarán las alertas ni los avisos.',
     'Corrígelo.',
   );
-  services.push({ id: 'email', label: 'Correo saliente (SMTP)', area: 'email', state: !smtp ? 'disabled' : smtpValid ? 'configured' : 'invalid', detail: !smtp ? 'Opcional, apagado' : smtpValid ? 'Servidor definido' : 'Dirección no válida' });
+  services.push({ id: 'email', label: smtp || !mailOn ? 'Correo saliente (SMTP)' : 'Correo saliente (Resend)', area: 'email', state: !mailOn ? 'disabled' : smtpValid ? 'configured' : 'invalid', detail: !mailOn ? 'Opcional, apagado' : !smtp ? 'Llave de Resend definida' : smtpValid ? 'Servidor definido' : 'Dirección no válida' });
 
   /* ------------------------------ Hash de contraseñas ------------------------------ */
   // `test` es solo para la suite: con él, una base filtrada se adivina mucho más rápido.
@@ -948,15 +959,15 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
     `ALERT_MUTE silencia sin fecha de fin: ${mute.forever.join(', ')}. No vuelven a avisar solos.`,
     'Pon una fecha de fin: componente=AAAA-MM-DDTHH:MM:SSZ.',
   );
-  const alertEmail = has('SUPERADMIN_EMAIL') && !!smtp && smtpValid;
+  const alertEmail = has('SUPERADMIN_EMAIL') && mailOn && smtpValid;
   const alertHook = has('ALERT_WEBHOOK_URL');
   if (prod && !alertEmail && !alertHook) add(
     'warning',
     'monitoring',
     'alerts.none',
-    ['SUPERADMIN_EMAIL', 'SMTP_URL', 'ALERT_WEBHOOK_URL'],
+    ['SUPERADMIN_EMAIL', 'RESEND_API_KEY', 'SMTP_URL', 'ALERT_WEBHOOK_URL'],
     'Nadie recibe las alertas: si algo falla (WhatsApp, respaldos, disco), solo se ve entrando al panel.',
-    'Configura SUPERADMIN_EMAIL + SMTP_URL o ALERT_WEBHOOK_URL (Slack, Discord, ntfy…).',
+    'Configura SUPERADMIN_EMAIL + RESEND_API_KEY (o SMTP_URL), o ALERT_WEBHOOK_URL (Slack, Discord, ntfy…).',
   );
   if (!has('HEARTBEAT_URL')) add(
     'optional',

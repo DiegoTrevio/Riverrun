@@ -39,12 +39,42 @@ export async function viewSystem(root) {
           b.error ? h('p', { class: 'small error' }, b.error) : null,
         ] : h('p', { class: 'small muted' }, 'Todavía no hay respaldos.')),
       h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, 'Alertas'),
-        h('p', { class: 'small' }, okMark(sys.alerts_configured.email), ' ', sys.alerts_configured.email ? 'Por correo (SUPERADMIN_EMAIL + SMTP)' : 'Por correo: falta SUPERADMIN_EMAIL o SMTP_URL'),
+        h('p', { class: 'small' }, okMark(sys.alerts_configured.email), ' ', sys.alerts_configured.email ? 'Por correo (SUPERADMIN_EMAIL + SMTP)' : 'Por correo: falta SUPERADMIN_EMAIL o RESEND_API_KEY (o SMTP_URL)'),
         h('p', { class: 'small' }, okMark(sys.alerts_configured.webhook), ' ', sys.alerts_configured.webhook ? 'Por webhook (Slack, Discord, ntfy…)' : '– Por webhook: opcional (ALERT_WEBHOOK_URL)'),
         h('p', { class: 'small' }, okMark(sys.alerts_configured.heartbeat), ' ', sys.alerts_configured.heartbeat ? 'Latido externo (HEARTBEAT_URL): si el servidor cae, el servicio externo avisa' : 'Latido externo: falta HEARTBEAT_URL (por ejemplo healthchecks.io); sin él nadie avisa si el servidor completo se cae'),
-        !sys.alerts_configured.email && !sys.alerts_configured.webhook ? h('p', { class: 'banner danger', role: 'alert' }, 'Ninguna alerta sale del panel: si algo falla de noche, nadie se entera. Configura SMTP_URL o ALERT_WEBHOOK_URL.') : null,
+        !sys.alerts_configured.email && !sys.alerts_configured.webhook ? h('p', { class: 'banner danger', role: 'alert' }, 'Ninguna alerta sale del panel: si algo falla de noche, nadie se entera. Configura RESEND_API_KEY (o SMTP_URL) o ALERT_WEBHOOK_URL.') : null,
         h('p', { class: 'small' }, okMark(sys.heartbeat_configured), ' ', sys.heartbeat_configured ? 'Latido externo activo' : 'Sin latido externo: si el servidor entero cae, nadie se entera. Configura HEARTBEAT_URL (healthchecks.io es gratis).'))));
-  root.append(await zernioCard(), functionalSection(sys.functional), await configSection());
+  root.append(await mailCard(), await zernioCard(), functionalSection(sys.functional), await configSection());
+}
+
+const DNS_BADGE = { true: ['green', 'Bien'], false: ['red', 'Falta'], null: ['', 'Sin revisar'] };
+const RESEND_BADGE = { verified: 'green', pending: 'orange', failed: 'red', not_found: 'red', unknown: '' };
+
+/** Correo saliente: con qué sale, si el dominio del remitente tiene SPF/DKIM/DMARC y un botón para mandarse una prueba. */
+async function mailCard() {
+  const card = h('div', { class: 'card', id: 'correo-saliente' });
+  const title = h('h2', { style: 'margin:0' }, 'Correo saliente');
+  const draw = (m) => fill(card,
+    h('div', { class: 'row between' }, title,
+      h('span', { class: `badge ${m.enabled ? (m.bad_from ? 'orange' : 'green') : 'orange'}` }, m.enabled ? (m.provider === 'resend' ? 'Resend' : 'SMTP') : 'Apagado')),
+    !m.enabled ? h('p', { class: 'small' }, 'No sale ningún correo (solo quedan en la bitácora). Crea una llave en resend.com → API Keys y ponla como RESEND_API_KEY en el .env del servidor; luego reinicia.') : null,
+    h('p', { class: 'small' }, 'Remitente: ', h('code', {}, m.from)),
+    m.bad_from ? h('p', { class: 'banner warn', role: 'alert' }, 'MAIL_FROM no es de un dominio tuyo: los correos irán a spam o serán rechazados. Ponlo como «Tu Marca <no-responder@tudominio.com>».') : null,
+    m.resend ? h('p', { class: 'small' }, h('span', { class: `badge ${RESEND_BADGE[m.resend.status] ?? ''}` }, m.resend.status === 'verified' ? 'Dominio verificado' : 'Dominio sin verificar'), ' ', m.resend.detail) : null,
+    m.dns.length ? h('table', {}, h('tbody', {}, m.dns.map((d) => h('tr', {},
+      h('td', {}, h('strong', {}, d.label)),
+      h('td', {}, h('span', { class: `badge ${DNS_BADGE[String(d.ok)][0]}` }, DNS_BADGE[String(d.ok)][1])),
+      h('td', { class: 'small' }, h('code', {}, d.host)),
+      h('td', { class: 'small muted' }, d.detail))))) : null,
+    h('div', { class: 'row' },
+      m.enabled ? h('button', { class: 'primary', onclick: async (e) => {
+        const b = e.currentTarget;
+        b.disabled = true;
+        try { const r = await run(() => api('POST', '/api/system/mail/test')); if (r?.to) toast(`Correo de prueba enviado a ${r.to}`); } finally { b.disabled = false; }
+      } }, 'Mandarme un correo de prueba') : null,
+      h('button', { onclick: async (e) => { const b = e.currentTarget; b.disabled = true; try { const m = await run(() => api('GET', '/api/system/mail')); if (m?.dns) draw(m); } finally { b.disabled = false; } } }, 'Revisar el dominio otra vez')));
+  try { draw(await api('GET', '/api/system/mail')); } catch (e) { fill(card, title, h('p', { class: 'error' }, e.message)); }
+  return card;
 }
 
 /** Una sola llave de Zernio para todas las cuentas: se pega aquí, se prueba y queda activa sin reiniciar. */

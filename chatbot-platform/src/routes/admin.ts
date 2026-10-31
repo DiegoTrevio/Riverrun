@@ -26,7 +26,9 @@ import { beginLogin, renewSessionAfterPasswordChange } from '../identity/mfa.js'
 import { resetMfa } from '../identity/reset-mfa.js';
 import { accountOwner, assertOwner } from '../identity/ownership.js';
 import { browserOf, forgetTrustedDevices, trustedDeviceFor } from '../identity/devices.js';
-import { countHit, LIMITS, releaseHit } from '../identity/rate-limit.js';
+import { countHit, limited, LIMITS, releaseHit } from '../identity/rate-limit.js';
+import { mailStatus } from '../mail-domain.js';
+import { deliverMail } from '../mailer.js';
 import { notifyUser } from '../identity/notices.js';
 import { query, queryOne } from '../db.js';
 import { assertInvitable, createInvitation } from './invitations.js';
@@ -232,6 +234,21 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     await removePlatformSecret(ZERNIO_SECRET);
     await logEvent({ level: 'warn', source: 'admin', message: `Llave de Zernio quitada desde el panel por ${req.user.email}: las redes sociales dejan de funcionar` });
     return zernioSystemStatus(false);
+  });
+
+  /* Correo saliente: proveedor, dominio del remitente (SPF/DKIM/DMARC, verificación en Resend) y un correo de prueba. */
+  api.get('/api/system/mail', superadmin, async () => mailStatus());
+  api.post('/api/system/mail/test', superadmin, async (req: any, reply) => {
+    if (await limited(`mail-test:${req.user.id}`, 5, 60 * 60_000)) return reply.code(429).send({ error: 'Ya mandaste varios correos de prueba: espera una hora' });
+    if (!config.mail.smtpUrl) throw new HttpError(400, 'No hay correo configurado: define RESEND_API_KEY (o SMTP_URL) en el servidor y reinicia.');
+    const result = await deliverMail({
+      to: req.user.email,
+      subject: 'Correo de prueba de Riverrun',
+      text: `Si lees esto, el correo saliente funciona.\n\nRemitente: ${config.mail.from}\nProveedor: ${config.mail.provider === 'resend' ? 'Resend' : 'SMTP'}\n\nSi llegó a spam, revisa en Sistema → Correo saliente los registros SPF, DKIM y DMARC del dominio.`,
+    });
+    if (result === 'failed') throw new HttpError(502, 'El servidor de correo rechazó el envío: revisa la bitácora (Registros) para ver el motivo.');
+    if (result === 'skipped') throw new HttpError(400, 'El correo no salió: el modo de pruebas (OUTBOUND_MODE=sandbox) no permite esa dirección.');
+    return { ok: true, to: req.user.email };
   });
 
   // Quita el freno contra prueba de tarjetas (Cuentas): las verificaciones de tarjeta se abren otra vez.

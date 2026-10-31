@@ -268,7 +268,8 @@ En una imagen de producción ya compilada: `docker compose exec backend node dis
 
 **Para producción:**
 
-- Configura `SMTP_URL` (cualquier proveedor: tu hosting, Amazon SES, SendGrid, Brevo…). Sin SMTP los correos solo quedan en **Registros**; en ese caso usa `SIGNUP_REQUIRE_EMAIL=false` o nadie podrá conectar WhatsApp.
+- Correo saliente con **Resend** (recomendado): crea una llave en resend.com → API Keys y ponla en `RESEND_API_KEY`; da de alta tu dominio en resend.com → Domains y publica en tu DNS los registros que te da (DKIM en `resend._domainkey`, SPF y MX en `send.`) más un DMARC (`_dmarc`, mínimo `v=DMARC1; p=none;`). `MAIL_FROM` debe ser de ese dominio. En **Sistema → Correo saliente** ves si cada registro está bien, si Resend ya verificó el dominio, y puedes mandarte un correo de prueba.
+- ¿Otro proveedor? `SMTP_URL` (tu hosting, Amazon SES, SendGrid, Brevo…) manda sobre `RESEND_API_KEY`. Sin correo, los mensajes solo quedan en **Registros**; en ese caso usa `SIGNUP_REQUIRE_EMAIL=false` o nadie podrá conectar WhatsApp.
 - Servidor recomendado para empezar: 4 vCPU / 8 GB. Cada sesión de WhatsApp vive en Evolution; vigila su memoria (`docker stats`) conforme crecen las empresas.
 - **Respaldos y restauración**: conservar las bases `chatbot` y `evolution`, archivos y sesiones. Consulta la [revisión inicial de producción y herramientas de respaldo](docs/production-review.md). Sin las sesiones de Evolution las empresas podrían necesitar volver a escanear sus QR; sin `uploads` se perderían fotos referenciadas en la base.
 - Evolution ya viene fijado a una versión verificada. Antes de cambiarla, pruébala con `scripts/evolution-compat.sh <imagen>` y aplícala con `./riverrun update` ([docs/evolution-api.md](docs/evolution-api.md)).
