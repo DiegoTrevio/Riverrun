@@ -15,7 +15,7 @@ Cada etapa es un PR con pruebas que fallan con el código anterior y pasan con e
 | Etapa | Qué resuelve | Estado |
 |---|---|---|
 | 1. Altos de la aplicación | ID-1, IN-1, AI-1, AI-2, AI-3, AI-4, PAY-1, INF-1 | ✅ Corregido |
-| 2. Identidad | 2FA obligatorio para todos, contraseñas filtradas, sesiones con caducidad por inactividad, límites por cuenta y en la base, dueño distinto de administrador, correo verificado de verdad (ID-2…ID-10) | 2a ✅ (acceso), 2b ✅ (cuenta) |
+| 2. Identidad | 2FA obligatorio para todos, contraseñas filtradas, sesiones con caducidad por inactividad, límites por cuenta y en la base, dueño distinto de administrador, correo verificado de verdad (ID-2…ID-10) | 2a ✅ (acceso), 2b ✅ (cuenta), 2c ✅ (revisión del 31 de octubre) |
 | 3. Registro y cobros | Captcha → correo → 2FA → tarjeta, topes contra prueba de tarjetas (PAY-2), pruebas gratis por persona (PAY-3), sin IA en pausa (parte de PAY-6); disputas, plan del precio, códigos y cobros a clientes (PAY-4…PAY-16) | ✅ Corregido (3a registro, 3b cobros) |
 | 3b′. Cobros de la revisión del 31 de octubre | PAY-17…PAY-23 y bajos de cobros | ✅ Corregido |
 | 3c. Revisión del 31 de octubre | Los altos de [la revisión del 31 de octubre](revision-seguridad-2026-10-31.md): dos caídas del proceso, atajos para sacar o borrar datos, cobros del agente, la ficha en el Copiloto (IN-15, IN-16, ID-11…ID-14, AI-5 en parte) | ✅ Corregido |
@@ -132,6 +132,34 @@ la cuenta de antes seguía entrando. Todo eso quedó corregido, con su prueba. L
   mandamos…»); las invitaciones del equipo sí lo dicen.
 - El superadministrador sin cuenta elegida ve «Hacer dueño» y el servidor responde «Elige la cuenta»; tampoco ve
   exportar o borrar la cuenta en Mi plan (la API sí se lo permite con `?account_id`).
+
+## Etapa 2c: lo que se corrigió
+
+Los medios y bajos de identidad de [la revisión del 31 de octubre](revision-seguridad-2026-10-31.md). Plan:
+[`superpowers/plans/2026-10-31-seguridad-revision-correcciones.md`](superpowers/plans/2026-10-31-seguridad-revision-correcciones.md) (PR 3).
+
+| # | Hallazgo | Arreglo | Prueba |
+|---|---|---|---|
+| ID-15 | El tope de códigos se revisaba antes y se contaba solo el código malo: 200 a la vez en un reto revisaban muchos más que 5. | Cada intento se cuenta antes de revisar el código: 5 por reto, 10 por persona en una hora (después se bloquea) y uno nuevo de 5 por sesión en 15 minutos para la verificación reciente y «Cambiar de app». Un código bueno devuelve su intento. | `identity-limits.test.ts` |
+| ID-16 | El primer enrolamiento de 2FA (todas las cuentas al desplegar la 2a, tras «Restablecer 2FA», usuarios que crea un administrador) se hacía solo con la contraseña: quien la tuviera filtrada enrolaba su app primero. | Quien entra solo con la contraseña recibe un enlace al correo antes de ver el QR (token de 256 bits guardado como SHA-256, una hora, un solo uso) y solo sirve en el navegador que tiene el reto. Registro, invitación y Google ya prueban el correo. Restablecer la contraseña por correo quita una app que no se configuró por correo. Migración 108. | `identity-login.test.ts`, `test:identity:ux` |
+| ID-17 | Al dar de baja a alguien, su Google u Outlook seguía recibiendo las citas, también si pasó a otra cuenta. | Desactivar, borrar o mover a alguien deja sus citas futuras sin asignar (antes las quita de su calendario) y desconecta su calendario; bajarle el rol no. La sincronización solo escribe en el calendario de una persona activa de la misma cuenta. | `offboarding.test.ts` |
+| Bajos | Verificación reciente en planes, cuentas, precios de IA, marcas y tipo de cambio. | Las rutas del superadmin que cambian dinero, dominios o límites piden el código reciente. | `identity-step-up.test.ts` |
+| Bajos | El agente veía la configuración de los canales y datos internos de la cuenta. | Lista blanca: del canal, nombre, tipo y estado; de la cuenta, sin límites especiales, dueño, borrado ni datos internos. | `visibility.test.ts` |
+| Bajos | El Copiloto podía llegar a una ruta delicada con el código reciente de la persona. | Sus llamadas llevan `x-copilot`; la verificación reciente y lo del dueño responden 403 `copilot_blocked`. | `identity-step-up.test.ts` |
+| Bajos | El enlace para borrar la cuenta servía varias veces y sobrevivía a cancelar o transferir. | Un solo uso (`accounts.deletion_nonce`, migración 109): el mismo enlace otra vez es 410; pedir otro, cancelar o transferir lo invalida. | `owner-self-service.test.ts` |
+| Bajos | Invitar o cambiar el correo decía si un correo estaba registrado. | La respuesta es la misma; al titular le llega un aviso sin enlace. Registrarse con un correo ocupado le avisa «Alguien intentó registrarse con tu correo». | `invitations.test.ts`, `email-change.test.ts`, `signup.test.ts` |
+| Bajos | El id_token de Google no se revisaba (emisor ni cliente). | Solo con `iss` de Google y `aud` igual a `GOOGLE_CLIENT_ID`; en producción, `GOOGLE_OAUTH_URL` o `GOOGLE_AUTH_URL` no oficiales impiden arrancar. | `google-login.test.ts`, `config-check.test.ts` |
+| Bajos | Quien pegaba su contraseña en el campo del correo la dejaba en la bitácora. | El acceso fallido guarda el correo solo si tiene forma de correo. | `identity-limits.test.ts` |
+
+**Cambios que nota la gente:**
+- Quien entra por primera vez con su contraseña (o después de «Restablecer 2FA») ve «Revisa tu correo»: abre el enlace en el mismo navegador y después escanea el QR. Hay «Mandar otro enlace».
+- Al restablecer la contraseña por correo, una app de verificación configurada antes de este cambio se quita y se configura otra vez.
+- El Copiloto ya no hace nada que pida el código o que sea del dueño: lo hace la persona desde el panel.
+- Dar de baja a alguien deja sus citas futuras sin asignar.
+- El enlace para borrar la cuenta sirve una vez.
+
+**Queda para después:**
+- Registrarse con un correo que ya tiene cuenta sigue diciéndolo (la cuenta se crea al momento): ocultarlo pide que el registro pase primero por el correo. Hoy lo frenan el captcha y los topes, y el titular recibe el aviso.
 
 ## Etapa 3a: lo que se corrigió
 
