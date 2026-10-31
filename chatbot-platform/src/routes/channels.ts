@@ -8,7 +8,9 @@ import { SessionError, whatsappSession } from '../channels/whatsapp-session.js';
 import { dmNetworkOf, networkOf, zernioKey } from '../channels/zernio.js';
 import { checkTelegram, disconnectZernio, startConnect, ZernioDisconnectError } from '../channels/zernio-connect.js';
 import { config } from '../config.js';
-import { query,withTransaction } from '../db.js';
+import { query, queryOne, withTransaction } from '../db.js';
+import { assertOwner } from '../identity/ownership.js';
+import { assertRecentMfa } from '../identity/step-up.js';
 import { coordinated } from '../engine/coordination.js';
 import { recordConnectionState, startAgentOnConnect } from '../lifecycle.js';
 import { assertWithinLimit } from '../billing/limits.js';
@@ -162,6 +164,11 @@ export async function channelRoutes(api: FastifyInstance) {
 
   api.delete('/api/channels/:id', admins, async (req: any) => {
     const ch = await channelFor(req.user, req.params.id);
+    // Con conversaciones, borrar el canal borra su historial (contactos y mensajes, en cascada): es del dueño, con el código.
+    if (await queryOne(`SELECT 1 FROM conversations WHERE channel_id = $1 LIMIT 1`, [ch.id])) {
+      await assertOwner(req, ch.account_id!);
+      assertRecentMfa(req);
+    }
     await store.deleteChannel(ch.id);
     await releaseWhatsapp(ch);
     if (ch.type === 'zernio' && ch.config.account_id) {
