@@ -233,3 +233,16 @@ t('resumen para el superadmin y permisos', async () => {
   assert.equal((await B.api('GET', '/api/billing/overview')).statusCode, 403);
   assert.equal((await h.authed('DELETE', '/api/plans/pro')).statusCode, 200, 'sin suscripciones activas se puede borrar');
 });
+
+t('un aviso con un estado leído antes de otro más nuevo no lo pisa: con el candado se vuelve a leer al proveedor', async () => {
+  const { applyState } = await import('../src/billing/service.js');
+  const { stateFromSubscription } = await import('../src/billing/stripe.js');
+  const acc = (await h.authed('POST', '/api/accounts', { name: 'Clínica orden' })).json().id;
+  await pool.query(`UPDATE accounts SET status = 'paused', pause_reason = 'payment' WHERE id = $1`, [acc]);
+  // Lo que Stripe dice hoy: activa. Lo que un aviso leyó hace un momento: cancelada.
+  fake.stripe.subs.sub_orden = stripeSub({ id: 'sub_orden', customer: 'cus_orden', status: 'active', metadata: { account_id: acc, plan_key: 'pro' } });
+  const stale = stateFromSubscription({ ...fake.stripe.subs.sub_orden, status: 'canceled' }, []);
+  await applyState(stale, new Date(), { refresh: true });
+  assert.equal((await pool.query(`SELECT status FROM subscriptions WHERE account_id = $1`, [acc])).rows[0].status, 'active', 'queda el estado real');
+  assert.equal((await pool.query(`SELECT status FROM accounts WHERE id = $1`, [acc])).rows[0].status, 'active');
+});

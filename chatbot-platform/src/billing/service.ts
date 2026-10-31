@@ -306,7 +306,7 @@ export async function syncPendingCheckouts(now = new Date()): Promise<number> {
  * Aplica el estado informado por el proveedor. Idempotente: repetir el mismo estado no repite avisos.
  * Devuelve la cuenta afectada (o null si no se pudo asociar).
  */
-export async function applyState(state: SubscriptionState, now = new Date()): Promise<string | null> {
+export async function applyState(state: SubscriptionState, now = new Date(), o: { refresh?: boolean } = {}): Promise<string | null> {
   const accountId = state.accountId
     ?? (await queryOne<{ account_id: string }>(`SELECT account_id FROM subscriptions WHERE provider = $1 AND provider_subscription_id = $2`, [state.provider, state.subscriptionId]))?.account_id
     ?? null;
@@ -318,7 +318,14 @@ export async function applyState(state: SubscriptionState, now = new Date()): Pr
     // Puede esperar al proveedor de cobro dentro de la transacción: que no la cierre el tiempo límite de inactividad.
     await client.query('SET LOCAL idle_in_transaction_session_timeout = 0');
     await client.query(`SELECT pg_advisory_xact_lock(hashtext('billing-apply:' || $1))`, [accountId]);
-    return applyStateLocked({ ...state, accountId }, now, later, client);
+    // Un aviso leyó la suscripción antes de esperar este candado: si otro aviso más nuevo se aplicó mientras tanto, el
+    // estado leído ya es viejo. Con el candado tomado se vuelve a leer, así el último en aplicarse deja el estado real.
+    let current = state;
+    if (o.refresh) {
+      const fresh = await providers[state.provider].subscriptionState(state.subscriptionId, await listPlans(true), now).catch(() => null);
+      if (fresh) current = { ...fresh, accountId: fresh.accountId ?? state.accountId, cardKey: fresh.cardKey ?? state.cardKey };
+    }
+    return applyStateLocked({ ...current, accountId }, now, later, client);
   });
   // Correos y avisos, ya sin el candado: un correo lento no detiene los cobros. Un aviso que falla no deshace el estado.
   for (const run of later) {

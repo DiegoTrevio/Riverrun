@@ -91,7 +91,7 @@ export async function billingWebhooks(app: FastifyInstance) {
         try {
           // El banco pide confirmar el cobro (3DS): se guarda antes, así el aviso de cobro fallido ya dice cómo resolverlo.
           if (result.actionUrl && result.state) await notePaymentAction(name, result.state.subscriptionId, result.actionUrl);
-          const accountId = result.state ? await applyState(result.state) : null;
+          const accountId = result.state ? await applyState(result.state, new Date(), { refresh: true }) : null;
           await recordMoney(name, result, accountId);
           if (result.dispute) await applyDispute(name, result.dispute);
           await finishEvent(name, result.eventId, claim.token, accountId);
