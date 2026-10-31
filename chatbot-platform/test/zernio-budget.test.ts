@@ -25,3 +25,14 @@ t('una cuenta tiene su propio tope por minuto; al pasarlo se detiene ella, no la
   await assert.rejects(takeZernioAccountBudget(A, 'background'), (e) => e instanceof ZernioBusyError, 'lo de segundo plano se reintenta después');
   await takeZernioAccountBudget(B, 'interactive');
 });
+
+t('con la cubeta casi vacía, los mensajes directos pasan y publicar o comentar espera (les deja el 15 %)', async () => {
+  const { tryTakeZernioBudget, zernioBudgetStatus } = await import('../src/channels/zernio-budget.js');
+  await tryTakeZernioBudget('messages'); // crea la cubeta si no existe
+  const { capacity } = await zernioBudgetStatus();
+  // Queda el 10 % de la cubeta.
+  await pool.query(`UPDATE rate_buckets SET tokens = $1, updated_at = now() WHERE key = 'zernio'`, [capacity * 0.1]);
+  assert.equal(await tryTakeZernioBudget('interactive'), false, 'publicar deja libre la parte de los mensajes');
+  assert.equal(await tryTakeZernioBudget('background'), false);
+  assert.equal(await tryTakeZernioBudget('messages'), true, 'una respuesta a un cliente sí sale');
+});

@@ -11,7 +11,12 @@ import { countHit } from '../identity/rate-limit.js';
  */
 
 const KEY = 'zernio';
-export type ZernioPriority = 'interactive' | 'background';
+/**
+ * messages: los mensajes directos (respuestas del bot y del equipo), que pueden usar toda la cubeta. interactive: lo que
+ * hace un negocio en el panel (publicar, comentar, plantillas), que deja libre el 15 % para los mensajes. background:
+ * sincronizaciones, que dejan libre el 30 %.
+ */
+export type ZernioPriority = 'messages' | 'interactive' | 'background';
 
 /** Lo que corre en segundo plano no encontró lugar: se vuelve a intentar más tarde. */
 export class ZernioBusyError extends Error {
@@ -41,7 +46,7 @@ export async function zernioCapacity(): Promise<number> {
 /** Un intento de tomar una ficha (sin esperar). Lo de segundo plano solo pasa si después queda libre el 30 %. */
 export async function tryTakeZernioBudget(priority: ZernioPriority = 'interactive'): Promise<boolean> {
   const cap = await zernioCapacity();
-  const minFree = priority === 'background' ? 0.3 : 0;
+  const minFree = priority === 'background' ? 0.3 : priority === 'interactive' ? 0.15 : 0;
   // Las fichas se reponen según el tiempo pasado desde la última toma (capacidad por minuto / 60 cada segundo).
   const row = await queryOne(
     `INSERT INTO rate_buckets AS b (key, tokens, capacity, per_sec) VALUES ($1, $2::float8 - 1, $2, $3)

@@ -5,7 +5,7 @@ import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
 import { detectRisk } from '../engine/safety.js';
 import { logEvent } from '../logs.js';
-import { clientFor, eventAccountId, eventProfileId, listOf, NETWORKS, networkOf, ZernioError, zernioEnabled, type ZernioClient } from '../channels/zernio.js';
+import { clientFor, clientForAccount, eventAccountId, eventProfileId, listOf, NETWORKS, networkOf, ZernioError, zernioEnabled, type ZernioClient } from '../channels/zernio.js';
 import { ZernioBusyError, type ZernioPriority } from '../channels/zernio-budget.js';
 
 /**
@@ -147,7 +147,8 @@ const AUTO_MAX_DAYS = 7;
 
 const enc = encodeURIComponent;
 const NETWORK_IDS: string[] = NETWORKS.map((n) => n.id);
-const zclient = (priority: ZernioPriority = 'interactive') => clientFor(null, priority);
+/** Con la cuenta del negocio, la llamada cuenta para su tope propio (PAY-23); las de fondo de la plataforma, no. */
+const zclient = (priority: ZernioPriority = 'interactive', accountId?: string) => (accountId ? clientForAccount(accountId, priority) : clientFor(null, priority));
 
 /** Un error de Zernio llega como un aviso claro para el panel. */
 function explain(e: unknown): never {
@@ -550,7 +551,7 @@ export async function replyComment(accountId: string, id: string, text: string, 
         AND (replied_at IS NULL OR replied_at < now() - CASE WHEN meta ? 'reply_uncertain' THEN interval '10 minutes' ELSE interval '2 minutes' END) RETURNING id`, [c.id]);
   if (!claimed.length) throw new HttpError(409, 'Este comentario ya se respondió');
   try {
-    const r = await zclient().call<any>('POST', `/inbox/comments/${enc(c.platform_post_id)}`, {
+    const r = await zclient('interactive', c.account_id).call<any>('POST', `/inbox/comments/${enc(c.platform_post_id)}`, {
       accountId: c.zernio_account_id, message, commentId: c.comment_id,
       ...(c.meta?.cid ? { parentCid: c.meta.cid, rootUri: c.meta.rootUri ?? undefined, rootCid: c.meta.rootCid ?? undefined } : {}),
     }, { idempotencyKey: keyOf('comment-reply', c.id, message) });
@@ -584,7 +585,7 @@ export async function privateReply(accountId: string, id: string, text: string) 
     `UPDATE social_comments SET private_reply_at = now(), meta = meta || jsonb_build_object('private_reply_text', $2::text) WHERE id = $1 AND private_reply_at IS NULL RETURNING id`, [c.id, message]);
   if (!claimed.length) throw new HttpError(409, 'Ya se respondió en privado a este comentario (la red permite una sola vez)');
   try {
-    const r = await zclient().call<any>('POST', `/inbox/comments/${enc(c.platform_post_id)}/${enc(c.comment_id)}/private-reply`, { accountId: c.zernio_account_id, message });
+    const r = await zclient('interactive', c.account_id).call<any>('POST', `/inbox/comments/${enc(c.platform_post_id)}/${enc(c.comment_id)}/private-reply`, { accountId: c.zernio_account_id, message });
     await query(`UPDATE social_comments SET private_reply_message_id = $2, updated_at = now() WHERE id = $1`, [c.id, str(r?.messageId ?? r?.data?.messageId, 500)]);
   } catch (e: any) {
     const spent = e instanceof ZernioError && (e.data?.details?.privateReplyConsumed === true || e.data?.error?.details?.privateReplyConsumed === true
@@ -615,8 +616,8 @@ export async function setHidden(accountId: string, id: string, hidden: boolean) 
   assertLive();
   const path = `/inbox/comments/${enc(c.platform_post_id)}/${enc(c.comment_id)}/hide`;
   try {
-    if (hidden) await zclient().call('POST', path, { accountId: c.zernio_account_id });
-    else await zclient().call('DELETE', `${path}?accountId=${enc(c.zernio_account_id)}`);
+    if (hidden) await zclient('interactive', c.account_id).call('POST', path, { accountId: c.zernio_account_id });
+    else await zclient('interactive', c.account_id).call('DELETE', `${path}?accountId=${enc(c.zernio_account_id)}`);
   } catch (e) {
     explain(e);
   }
@@ -634,10 +635,10 @@ export async function setLiked(accountId: string, id: string, liked: boolean) {
   let likeUri = String(c.meta?.likeUri ?? '');
   try {
     if (liked) {
-      const r = await zclient().call<any>('POST', path, { accountId: c.zernio_account_id, ...(c.meta?.cid ? { cid: c.meta.cid } : {}) });
+      const r = await zclient('interactive', c.account_id).call<any>('POST', path, { accountId: c.zernio_account_id, ...(c.meta?.cid ? { cid: c.meta.cid } : {}) });
       likeUri = str(r?.likeUri ?? r?.data?.likeUri ?? likeUri, 1000);
     } else {
-      await zclient().call('DELETE', `${path}?accountId=${enc(c.zernio_account_id)}${likeUri ? `&likeUri=${enc(likeUri)}` : ''}`);
+      await zclient('interactive', c.account_id).call('DELETE', `${path}?accountId=${enc(c.zernio_account_id)}${likeUri ? `&likeUri=${enc(likeUri)}` : ''}`);
     }
   } catch (e) {
     explain(e);
@@ -652,7 +653,7 @@ export async function deleteComment(accountId: string, id: string) {
   if (c.status === 'eliminado') return getComment(accountId, c.id);
   assertLive();
   try {
-    await zclient().call('DELETE', `/inbox/comments/${enc(c.platform_post_id)}?accountId=${enc(c.zernio_account_id)}&commentId=${enc(c.comment_id)}`);
+    await zclient('interactive', c.account_id).call('DELETE', `/inbox/comments/${enc(c.platform_post_id)}?accountId=${enc(c.zernio_account_id)}&commentId=${enc(c.comment_id)}`);
   } catch (e) {
     explain(e);
   }
@@ -685,7 +686,7 @@ export async function replyReview(accountId: string, id: string, text: string, s
   if (!claimed.length) throw new HttpError(409, 'Esta reseña ya se respondió');
   try {
     // Los ids de Google llevan "/": van codificados.
-    await zclient().call('POST', `/inbox/reviews/${enc(r.review_id)}/reply`, { accountId: r.zernio_account_id, message }, { idempotencyKey: keyOf('review-reply', r.id, message) });
+    await zclient('interactive', r.account_id).call('POST', `/inbox/reviews/${enc(r.review_id)}/reply`, { accountId: r.zernio_account_id, message }, { idempotencyKey: keyOf('review-reply', r.id, message) });
   } catch (e) {
     if (!surelyNotSent(e)) throw new HttpError(502, UNCERTAIN);
     await query(`UPDATE social_reviews SET replied_at = NULL WHERE id = $1 AND reply_text = ''`, [r.id]);

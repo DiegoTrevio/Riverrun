@@ -184,6 +184,9 @@ export const clientFor = (channel?: (Pick<Channel, 'config'> & { account_id?: st
   return client;
 };
 
+/** Cliente para una acción de un negocio (publicar, responder, plantillas): cuenta para el tope de esa cuenta (PAY-23). */
+export const clientForAccount = (accountId: string, priority: ZernioPriority = 'interactive') => clientFor({ config: {}, account_id: accountId } as any, priority);
+
 /** Firma de los webhooks: HMAC-SHA256 en hexadecimal del cuerpo crudo. */
 export function zernioSignature(rawBody: Buffer, secret: string) {
   return crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
@@ -316,7 +319,8 @@ class ZernioTransport implements Transport {
   private network: Network | undefined;
 
   constructor(private channel: Channel, conversationId: string) {
-    this.client = clientFor(channel);
+    // Los mensajes directos van primero: lo que se hace en el panel (publicar, comentar) les deja una parte libre.
+    this.client = clientFor(channel, 'messages');
     this.base = `/inbox/conversations/${encodeURIComponent(conversationId)}`;
     this.network = networkOf(channel.config.platform);
   }
