@@ -14,6 +14,8 @@ no hay secretos reales (las claves que aparecen son de `test/config-check.test.t
 
 ## Altos
 
+**Estado:** los siete, corregidos en la etapa 3c (ver [`seguridad.md`](seguridad.md#etapa-3c-lo-que-se-corrigió)).
+
 | # | Hallazgo | Escenario | Arreglo | Comprobado |
 |---|---|---|---|---|
 | IN-15 | **ReDoS en la verificación de hechos.** `URL_RE` y `EMAIL_RE` (`src/engine/text.ts:110-111`) son cuadráticas; `FactCorpus` se arma con el texto del cliente en cada decisión de IA, aunque `verify_facts` esté apagado (`src/engine/validator.ts:655-657`). Ningún mensaje entrante tiene tope de largo: `handleIncoming` (`src/service.ts:521`), y en correo `stripQuoted(m.text)` no pasa por `MAX_MAIL_TEXT` (`src/channels/email.ts:242`). | Cualquiera, sin cuenta, manda por WhatsApp una línea `a.a.a.…` de 65 000 caracteres: **17 s por pasada de `extractFacts`** (medido), al menos dos por turno. El proceso (HTTP, webhooks y trabajos, `PROCESS_ROLE=all`) se congela para todas las cuentas, y otra vez en cada turno mientras el mensaje siga en el historial. Por correo (hasta 10 MB) son horas. Es la misma clase que IN-1, en otra función. | Truncar el texto entrante (≈8 000 caracteres) en `handleIncoming` y `toInbound` (también lo que devuelve `stripQuoted`); cuantificadores acotados (`{1,64}`, `{0,63}`) en `URL_RE`, `EMAIL_RE` y `MONEY_RE`; prueba con 1 MB hostil < 100 ms, como `html-to-text.unit.test.ts`. | Medido |

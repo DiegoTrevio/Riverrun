@@ -53,6 +53,11 @@ todos, la tarea 1.6 se reduce a quitarle `payment_link` y `paid`/`cancel` sobre 
 
 ## PR 1 · Etapa 3c (antes del lanzamiento): IN-15, IN-16, ID-14, ID-12, ID-13, ID-11, AI-5
 
+> **Hecho (con dos ajustes al plan).** 1.1: con las repeticiones acotadas, el costo es lineal pero con una constante
+> (~2 s por MB): la prueba exige 150 ms con 20 000 caracteres y menos de 6 s con 1 MB, en lugar de 100 ms por MB (un
+> mensaje ya se corta en 8 000). 1.3: los flujos no necesitaron cambio; solo compilan etiquetas, avisos al equipo sin
+> números, pasar a persona y secuencias. Además, 1.5 agrega «Cancelar el borrado programado» (`pending: null`).
+
 ### Task 1.1: Tope al texto entrante y expresiones lineales (IN-15)
 
 **Files:**

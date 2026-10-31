@@ -17,6 +17,7 @@ Cada etapa es un PR con pruebas que fallan con el código anterior y pasan con e
 | 1. Altos de la aplicación | ID-1, IN-1, AI-1, AI-2, AI-3, AI-4, PAY-1, INF-1 | ✅ Corregido |
 | 2. Identidad | 2FA obligatorio para todos, contraseñas filtradas, sesiones con caducidad por inactividad, límites por cuenta y en la base, dueño distinto de administrador, correo verificado de verdad (ID-2…ID-10) | 2a ✅ (acceso), 2b ✅ (cuenta) |
 | 3. Registro y cobros | Captcha → correo → 2FA → tarjeta, topes contra prueba de tarjetas (PAY-2), pruebas gratis por persona (PAY-3), sin IA en pausa (parte de PAY-6); disputas, plan del precio, códigos y cobros a clientes (PAY-4…PAY-16) | 3a ✅ (registro), 3b pendiente (cobros) |
+| 3c. Revisión del 31 de octubre | Los altos de [la revisión del 31 de octubre](revision-seguridad-2026-10-31.md): dos caídas del proceso, atajos para sacar o borrar datos, cobros del agente, la ficha en el Copiloto (IN-15, IN-16, ID-11…ID-14, AI-5 en parte) | ✅ Corregido |
 | 4. Abuso de entradas | Límites compartidos en la base, tamaños por ruta, firma del webhook de WhatsApp, adjuntos sin macros, PDF aislados, cuota de IA antes de transcribir (IN-2…IN-14, PAY-6) | Pendiente |
 | 5. IA y Copiloto | Tarjetas de confirmación completas, costo de sub-llamados, notas de cotización, fuga de instrucciones (AI-5…AI-13) | Pendiente |
 | 6. Secretos y datos | Claves separadas con rotación, credenciales de canales cifradas, retención en Evolution (INF-6…INF-8, INF-13) | Pendiente |
@@ -162,6 +163,32 @@ después:
   más de una vez.
 - El correo «tu prueba está por terminar» habla del primer cobro también a quien ya canceló.
 - Las marcas vencidas y las verificaciones viejas no se depuran.
+
+## Etapa 3c: lo que se corrigió
+
+Los altos de [la revisión del 31 de octubre](revision-seguridad-2026-10-31.md), con su
+[plan](superpowers/plans/2026-10-31-seguridad-revision-correcciones.md). Los medios y bajos de esa revisión están
+repartidos en las etapas 3b, 2c, 4, 5, 6, 9 y 10 del mismo plan.
+
+| # | Hallazgo | Arreglo | Prueba |
+|---|---|---|---|
+| IN-15 | Las expresiones de enlaces, correos y montos de la verificación de hechos eran cuadráticas y ningún mensaje entrante tenía tope: un WhatsApp de 65 000 caracteres («a.a.a.…») tardaba 17 s por pasada y congelaba el proceso para todas las cuentas, en cada turno. | Repeticiones acotadas (lineal: 20 000 caracteres en ~50 ms, 1 MB en ~2 s) y cada mensaje entrante cortado en 8 000 caracteres con «…[mensaje recortado]»; del correo se revisan los primeros 50 000 antes de quitar lo citado. | `fact-redos.unit.test.ts`, `email.test.ts` |
+| IN-16 | El guardia de las plantillas DOCX sumaba los tamaños que declara el ZIP: un archivo de 199 KB que decía pesar 400 B se inflaba a 200 MB (a gigas con 5 MB). | `checkZip` lee el índice a mano y descomprime cada parte con tope (300 partes, 8 MB por parte, 30 MB en total, medidos); 4 MB de texto por parte; 2 000 marcas; 10 subidas por hora por cuenta (en la base). Los Word de clientes con más de 1 000 partes no se abren. | `quotes-template.unit.test.ts`, `media-library.test.ts`, `quotes-routes.test.ts` |
+| ID-14 | Crear un webhook y descargar el ZIP pedían el código, pero una regla «mensaje → webhook a cualquier URL» (o reporte a un correo o número externo, o aviso a un número) y los CSV de contactos, conversaciones, cotizaciones y mensajes, no. | Los cuatro CSV piden el código; una regla lo pide al crearse o cambiarse si manda datos a un destino nuevo. | `identity-step-up.test.ts` |
+| ID-12 | Bajar a un administrador a agente no revocaba sus llaves, webhooks ni invitaciones, y la llave no miraba a su creador. | Bajar de administrador es una baja (el panel lo avisa); la API v1 solo acepta llaves de un administrador activo de esa cuenta (o del superadmin). | `offboarding.test.ts` |
+| ID-13 | Cualquier administrador, o una cookie robada, ponía la retención en 1 día: en menos de 6 h se borraban mensajes y contactos. Igual al borrar un canal con historial. | La retención la cambia el dueño con el código; para borrar, 30 días como mínimo; lo que borra más entra a los 7 días con correo al dueño (cancelable); valores en la bitácora. Borrar un canal con conversaciones es del dueño con el código. Migración 098: lo de 1 a 29 días sube a 30. | `retention.test.ts`, `compliance.test.ts`, `migration.test.ts` |
+| ID-11 | El agente veía y operaba los cobros de todos los clientes, y podía crear uno con su propio enlace de pago a un cliente ajeno (desvío de pagos). | Como en conversaciones: el agente solo ve y opera cobros y pagos recurrentes de sus contactos asignados (lo demás, 404); el enlace de pago solo lo pone un administrador. | `visibility.test.ts`, `receivable-origins.test.ts` |
+| AI-5 (parte) | El nombre del contacto de la página abierta entra al prompt del Copiloto y el turno contaba como limpio: con un nombre armado como instrucción, cambiaba la configuración sin tarjeta. | Una página de cliente marca el turno como contaminado (la configuración se confirma; lo de esa ficha sigue directo) y el nombre va marcado como escrito por el cliente. | `copilot.test.ts` |
+
+**Cambios que nota la gente:**
+- Descargar los CSV de contactos, conversaciones o mensajes, y guardar una regla que manda datos a una URL, un correo o un número nuevos, piden el código si el último tiene más de 15 minutos.
+- La retención (Ajustes → Privacidad) la cambia solo el dueño, con 30 días como mínimo; si borra más, empieza 7 días después y le llega un correo («Cancelar el borrado programado» en Ajustes). Las cuentas con menos de 30 días quedaron en 30.
+- Borrar un canal con conversaciones es del dueño, con el código.
+- Bajar a un administrador a agente revoca sus llaves de API, pausa sus webhooks y cancela sus invitaciones (la confirmación lo dice).
+- El agente ve solo los cobros de sus clientes y no pone enlaces de pago.
+- Un mensaje de más de 8 000 caracteres se guarda recortado («…[mensaje recortado]»).
+- Plantillas de cotización: hasta 2 000 marcas y 10 subidas por hora.
+- En el Copiloto, con la ficha de un cliente abierta, los cambios de configuración y el texto que se guarda en su ficha piden confirmación.
 
 ## Hallazgos pendientes por etapa
 
