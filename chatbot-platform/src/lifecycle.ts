@@ -4,6 +4,7 @@
  */
 import { pruneUserSessions } from './store/index.js';
 import { pruneHits } from './identity/rate-limit.js';
+import { pruneCardChecks } from './billing/card-check.js';
 import { getSettings, notifyUsers } from './automation/store.js';
 import { mailBrand } from './brands.js';
 import { config } from './config.js';
@@ -52,13 +53,15 @@ export async function checkTrials(now = new Date()) {
     const o = await accountOwner(acc.id);
     if (o) {
       const next = await howToContinue(acc.id);
-      // Con tarjeta (suscripción viva), la prueba no se pausa: ese día se hace el primer cobro.
-      const paying = await queryOne(`SELECT 1 FROM subscriptions WHERE account_id = $1 AND status IN ('active', 'past_due')`, [acc.id]);
+      // Con tarjeta (suscripción viva), la prueba no se pausa: ese día se hace el primer cobro (salvo que ya la cancelara).
+      const paying = await queryOne<{ cancel_at_period_end: boolean }>(`SELECT cancel_at_period_end FROM subscriptions WHERE account_id = $1 AND status IN ('active', 'past_due')`, [acc.id]);
       await sendMailDurable({
         fromName: next.mb.fromName,
         to: o.email,
         subject: 'Tu periodo de prueba está por terminar',
-        text: paying
+        text: paying?.cancel_at_period_end
+          ? `Hola ${o.name || ''},\n\nTu prueba de "${acc.name}" termina el ${fmt(acc.trial_ends_at!)}. Como cancelaste tu plan, no se hará ningún cobro y ese día tu asistente dejará de responder. Si quieres seguir, mantén tu plan desde Mi plan:\n${next.mb.base}/#/plan`
+          : paying
           ? `Hola ${o.name || ''},\n\nTu prueba de "${acc.name}" termina el ${fmt(acc.trial_ends_at!)} y ese día se hace el primer cobro de tu plan con la tarjeta que registraste. Si no quieres continuar, cancela antes desde Mi plan:\n${next.mb.base}/#/plan`
           : `Hola ${o.name || ''},\n\nTu prueba de "${acc.name}" termina el ${fmt(acc.trial_ends_at!)}. Después de esa fecha tu asistente dejará de responder hasta que se active tu plan.\n\n${next.text}`,
       }, acc.id);
@@ -150,6 +153,7 @@ export async function lifecycleTick(deadlineMs = TICK_DEADLINE_MS): Promise<'ran
         sendSuperadminDigest().catch((e) => logEvent({ level: 'error', source: 'system', message: `Resumen diario al superadmin: ${e?.message ?? e}` })),
         pruneUserSessions().catch((e) => logEvent({ level: 'error', source: 'system', message: `Limpieza de sesiones: ${e?.message ?? e}` })),
         pruneHits().catch((e) => logEvent({ level: 'error', source: 'system', message: `Limpieza de límites: ${e?.message ?? e}` })),
+        pruneCardChecks().catch((e) => logEvent({ level: 'error', source: 'system', message: `Limpieza de verificaciones de tarjeta: ${e?.message ?? e}` })),
         // Facturas: primero se arma la global del mes que cerró y luego se emite todo lo pendiente.
         checkGlobalInvoice()
           .then(() => processCfdi())

@@ -101,3 +101,12 @@ t('cambiar modelo vuelve a preparar y el mantenimiento no factura perfiles pausa
  const charged=calls;config.knowledgeSearch.model=previous.model;
  assert.equal(await indexKnowledge(botA,fake),0);assert.equal(calls,charged,'Preparar otro modelo no debe destruir una versión completa que otra instancia utiliza');
 });
+
+t('el mantenimiento prepara una prueba vencida que ya tiene su suscripción viva (menor 10)',async()=>{
+ const acc=await store.createAccount('Prueba pagada',{status:'trial',trialEndsAt:new Date(Date.now()-3600_000)});
+ await pool.query(`INSERT INTO subscriptions (account_id, provider, provider_subscription_id, plan_key, status) VALUES ($1, 'stripe', 'sub_kp', 'pro', 'active')`,[acc.id]);
+ const bot=await store.createChatbot(acc.id,{name:'Pagada'});
+ await store.upsertKnowledge(bot.id,{title:'Documento',content:'Contenido de una prueba que ya paga'});
+ const worker=new KnowledgeWorker(fake);for(let i=0;i<6;i++)await worker.runOnce();
+ assert.ok((await knowledgeIndexStatus(bot)).indexed_items>0);
+});

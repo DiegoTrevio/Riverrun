@@ -3,7 +3,7 @@
  * gratis empieza cuando el proveedor confirma una tarjeta. Sin cobro en línea configurado no se pide tarjeta.
  *
  * Abrir la página de pago es lo que se usa para probar tarjetas robadas: pide el correo del dueño verificado (y la
- * verificación reciente, en la ruta), reutiliza la sesión vigente (30 minutos) y tiene topes en la base: 5 por día por
+ * verificación reciente, en la ruta), reutiliza la sesión vigente (25 minutos) y tiene topes en la base: 5 por día por
  * cuenta, 10 por conexión y 300 en toda la plataforma. Si en la última hora se abrieron 20 o más y se completaron menos
  * del 20 % (alguien probando tarjetas robadas), un freno cierra las nuevas una hora y avisa con urgencia al
  * superadministrador, que lo puede quitar desde Cuentas.
@@ -14,7 +14,7 @@
 import { HttpError } from '../access.js';
 import { ipKey } from '../auth.js';
 import { config } from '../config.js';
-import { query, queryOne } from '../db.js';
+import { query, queryOne, withTransaction } from '../db.js';
 import { accountOwner } from '../identity/ownership.js';
 import { countHit, hitsFor, releaseHit } from '../identity/rate-limit.js';
 import { notifySuperadmins } from '../lifecycle.js';
@@ -25,7 +25,13 @@ import { claimMarks, insertClaims, lockClaims, recordTrialClaims, trialAvailable
 import type pg from 'pg';
 import type { ProviderName, SubscriptionState } from './types.js';
 
-export const CHECK_TTL_MS = 30 * 60_000;
+/**
+ * Cuánto se reutiliza la página vigente: 25 minutos. Stripe la cierra a los 31 (`expires_at`), así que a la reutilizada
+ * le quedan al menos 6 para pagar.
+ */
+export const CHECK_TTL_MS = 25 * 60_000;
+/** Cuánto se guardan las verificaciones de tarjeta: el freno mira la última hora y los topes, el día. */
+const CHECKS_KEEP_DAYS = 30;
 const HOUR = 3600_000;
 const DAY = 86400_000;
 const TOO_MANY = 'Intenta más tarde';
@@ -60,22 +66,35 @@ async function braked(): Promise<boolean> {
   return true;
 }
 
-/** Lo que Mi plan muestra de la verificación de tarjeta (el paso en el que va la cuenta y por qué no avanza). */
+/**
+ * Lo que el panel muestra de la verificación de tarjeta (el paso en el que va la cuenta y por qué no avanza). Solo para
+ * una cuenta que espera tarjeta; las demás no tienen nada que mostrar (null).
+ */
 export async function cardCheckState(accountId: string) {
   const acc = await queryOne<{ status: string; pause_reason: string; signup_plan: string }>(`SELECT status, pause_reason, signup_plan FROM accounts WHERE id = $1`, [accountId]);
-  const waiting = acc?.status === 'paused' && acc.pause_reason === 'card';
+  if (acc?.status !== 'paused' || acc.pause_reason !== 'card') return null;
   const [owner, p] = await Promise.all([accountOwner(accountId), person(accountId)]);
+  // Su suscripción ya cobra (una tarjeta que ya tuvo prueba, en Stripe): la cuenta se activa con ese primer cobro.
+  const charging = !!(await queryOne(`SELECT 1 FROM subscriptions WHERE account_id = $1 AND status IN ('active', 'past_due')`, [accountId]));
   return {
     required: await cardRequired(),
-    waiting,
+    waiting: true,
     trial_available: config.signup.trialDays > 0 && !!p && (await trialAvailable(p)),
     trial_days: config.signup.trialDays,
     email_verified: !!owner?.email_verified_at,
-    signup_plan: acc?.signup_plan ?? '',
-    // La última tarjeta que dio ya tuvo una prueba (`startTrialFromState`): Mi plan ofrece otra tarjeta o contratar ya.
-    card_used: waiting && !!(await queryOne(`SELECT 1 FROM billing_events WHERE account_id = $1 AND type = 'trial_refused'`, [accountId])),
+    signup_plan: acc.signup_plan ?? '',
+    // La última tarjeta que dio ya tuvo una prueba (`startTrialFromState`): Mi plan ofrece otra tarjeta o contratar ya. Si
+    // lo que ya tuvo prueba fue el correo o la cuenta de Google, el aviso es «Ya usaste tu prueba gratis».
+    card_used: !charging && !!(await queryOne(`SELECT 1 FROM billing_events WHERE account_id = $1 AND type = 'trial_refused'`, [accountId])),
+    charging,
     brake: await brakeOn(),
   };
+}
+
+/** Limpieza periódica: las marcas de prueba vencidas y las verificaciones de tarjeta de hace más de 30 días. */
+export async function pruneCardChecks(): Promise<void> {
+  await query(`DELETE FROM trial_claims WHERE expires_at <= now()`);
+  await query(`DELETE FROM card_checks WHERE opened_at < now() - make_interval(days => $1)`, [CHECKS_KEEP_DAYS]);
 }
 
 /**
@@ -141,7 +160,8 @@ export async function startTrialFromState(state: SubscriptionState & { accountId
   const used = await lockClaims(client, marks);
   const cardUsed = used.has('card');
   if (used.size) {
-    if (!(await recordEvent(provider, `card_used:${subscriptionId}`, 'trial_refused', accountId))) return 'none';
+    // El tipo dice qué ya tuvo prueba: `trial_refused` la tarjeta, `trial_refused_person` el correo o la cuenta de Google.
+    if (!(await recordEvent(provider, `card_used:${subscriptionId}`, cardUsed ? 'trial_refused' : 'trial_refused_person', accountId))) return 'none';
     await logEvent({ level: 'warn', source: 'admin', message: `Prueba negada (${provider} ${subscriptionId}): ${cardUsed ? 'la tarjeta' : 'el correo o la cuenta de Google'} ya tuvo una prueba`, accountId });
     later.push(async () => {
       try {
@@ -189,6 +209,16 @@ export async function openCardCheck(o: {
   open: () => Promise<{ url: string; ref: string }>;
   replacement?: boolean;
 }): Promise<string> {
+  // Una página a la vez por cuenta: dos clics juntos reciben la misma (el segundo espera y la encuentra vigente).
+  return withTransaction(async (client) => {
+    // Puede esperar al proveedor dentro de la transacción: que no la cierre el tiempo límite de inactividad.
+    await client.query('SET LOCAL idle_in_transaction_session_timeout = 0');
+    await client.query(`SELECT pg_advisory_xact_lock(hashtext('card-check:' || $1))`, [o.accountId]);
+    return openCardCheckLocked(o);
+  });
+}
+
+async function openCardCheckLocked(o: Parameters<typeof openCardCheck>[0]): Promise<string> {
   if (!o.replacement) {
     const owner = await accountOwner(o.accountId);
     if (owner && !owner.email_verified_at) throw new HttpError(403, 'Falta verificar tu correo');

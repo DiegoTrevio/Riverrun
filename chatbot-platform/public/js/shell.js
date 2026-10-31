@@ -257,7 +257,9 @@ function accountBanner() {
     const onPlan = location.hash.split('?')[0] === '#/plan';
     const go = (label) => (onPlan || !isAdmin() ? null : h('a', { class: 'btn', href: '#/plan' }, label));
     if (!isAdmin()) items.push(notice('warn', [h('strong', {}, 'La cuenta todavía no activa su prueba. '), 'El dueño la activa desde Mi plan.'], null, { role: 'status' }));
-    else if (cc && !cc.email_verified) {
+    else if (cc?.charging) {
+      items.push(notice('', [h('strong', {}, 'Estamos activando tu plan. '), 'Se activa en cuanto se confirme su primer cobro.'], null, { role: 'status' }));
+    } else if (cc && !cc.email_verified) {
       items.push(notice('warn', [h('strong', {}, 'Falta verificar tu correo. '), isOwner() ? 'Abre el enlace que te enviamos para activar tu prueba.' : 'El dueño de la cuenta tiene que abrir el enlace que le enviamos.'],
         isOwner() ? h('button', { class: 'btn', onclick: () => run(() => api('POST', '/api/me/resend-verification'), 'Te enviamos un nuevo enlace') }, 'Reenviar') : null, { role: 'status' }));
     } else if (cc?.card_used) {

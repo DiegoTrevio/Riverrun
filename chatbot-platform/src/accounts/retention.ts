@@ -61,7 +61,7 @@ export async function checkAccountRetention(now = new Date()): Promise<{ warned:
     const mb = await mailBrand(acc.id);
     await sendMail({
       fromName: mb.fromName, to: owner.email, subject: `Tu cuenta "${acc.name}" se borrará el ${fmt(when)}`,
-      text: `Hola ${owner.name || ''},\n\nTu cuenta "${acc.name}" lleva en pausa desde el ${fmt(new Date(acc.paused_at!))}. Si no se reactiva, el ${fmt(when)} borraremos tu agente, su configuración, tus contactos y tus conversaciones. No se puede deshacer.\n\nPara conservarla, reactiva tu plan:\n${mb.base}/#/plan`,
+      text: `Hola ${owner.name || ''},\n\nTu cuenta "${acc.name}" lleva en pausa desde el ${fmt(new Date(acc.paused_at!))}. Si no se reactiva, el ${fmt(when)} borraremos tu agente, su configuración, tus contactos y tus conversaciones. No se puede deshacer.\n\n${acc.pause_reason === 'card' ? 'Para conservarla, agrega tu tarjeta en Mi plan' : 'Para conservarla, reactiva tu plan'}:\n${mb.base}/#/plan`,
     });
   }
 
@@ -77,7 +77,7 @@ export async function checkAccountRetention(now = new Date()): Promise<{ warned:
       await deleteAccountFully(acc);
       deleted++;
       await logEvent({ level: 'warn', source: 'admin', message: `Cuenta borrada por retención: ${acc.name} (en pausa desde el ${fmt(new Date(acc.paused_at!))})` });
-      await superadmins(`Cuenta borrada por retención: ${acc.name}`, `"${acc.name}" estuvo en pausa más de ${days} días (${acc.pause_reason === 'trial' ? 'prueba vencida' : acc.pause_reason === 'dispute' ? 'contracargo' : 'falta de pago'}) y se borró. Se avisó al dueño el ${fmt(new Date(acc.deletion_warned_at!))}.`);
+      await superadmins(`Cuenta borrada por retención: ${acc.name}`, `"${acc.name}" estuvo en pausa más de ${days} días (${({ trial: 'prueba vencida', dispute: 'contracargo', card: 'nunca agregó su tarjeta' } as Record<string, string>)[acc.pause_reason] ?? 'falta de pago'}) y se borró. Se avisó al dueño el ${fmt(new Date(acc.deletion_warned_at!))}.`);
     } catch (e: any) {
       await logEvent({ level: 'error', source: 'admin', message: `No se pudo borrar la cuenta ${acc.name} por retención: ${e?.message ?? e}`, accountId: acc.id });
     }
