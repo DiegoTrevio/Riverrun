@@ -348,6 +348,10 @@ export type Later = (() => Promise<unknown>)[];
 
 async function applyStateLocked(state: SubscriptionState & { accountId: string }, now: Date, later: Later, client: pg.PoolClient): Promise<string | null> {
   const accountId = state.accountId;
+  if (state.planMismatch && state.status === 'active') {
+    await logEvent({ level: 'warn', source: 'admin', message: `El precio de la suscripción (${state.provider} ${state.subscriptionId}) no corresponde a un plan: ${state.planMismatch}; el plan de la cuenta no cambia`, accountId });
+    later.push(() => notifySuperadmins(accountId, 'Precio de suscripción sin plan', `La suscripción ${state.subscriptionId} cobra un precio que no corresponde a ningún plan (${state.planMismatch}). El plan de la cuenta no cambió; revísalo con el proveedor de pagos.`, { urgent: true }));
+  }
   const acc = await queryOne<{ id: string; name: string; status: string; plan: string; pause_reason: string; plan_source: string }>(`SELECT id, name, status, plan, pause_reason, plan_source FROM accounts WHERE id = $1`, [accountId]);
   if (!acc) return null;
 

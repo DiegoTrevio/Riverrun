@@ -220,7 +220,11 @@ export function mpEvent(type: string, dataId: string, secret = SECRETS.mp, ts = 
   return { url: `/webhook/billing/mercadopago?data.id=${dataId}&type=${type}`, payload: JSON.stringify({ type, data: { id: dataId } }), headers: { 'content-type': 'application/json', 'x-signature': `ts=${ts},v1=${sig}`, 'x-request-id': requestId } };
 }
 
-export const stripeSub = (over: Record<string, unknown> = {}) => ({
-  id: 'sub_1', customer: 'cus_1', status: 'active', current_period_end: Math.floor(Date.now() / 1000) + 30 * 86400, cancel_at_period_end: false,
-  metadata: { account_id: '', plan_key: 'pro' }, items: { data: [{ id: 'si_1', price: { id: 'price_pro' } }] }, ...over,
-});
+/** Suscripción simulada: su precio es del producto `riverrun_<plan>` (de ahí sale el plan, PAY-7). */
+export const stripeSub = (over: Record<string, any> = {}) => {
+  const plan = over.metadata?.plan_key ?? 'pro';
+  return {
+    id: 'sub_1', customer: 'cus_1', status: 'active', current_period_end: Math.floor(Date.now() / 1000) + 30 * 86400, cancel_at_period_end: false,
+    metadata: { account_id: '', plan_key: 'pro' }, items: { data: [{ id: 'si_1', price: { id: `price_${plan}`, product: `riverrun_${plan}` } }] }, ...over,
+  };
+};

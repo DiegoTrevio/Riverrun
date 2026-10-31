@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import { config } from '../config.js';
 import { credentialAllowed } from '../outbound-guard.js';
 import { chargeCents } from './tax.js';
-import { ProviderError, WebhookError, type BillingProvider, type DisputeInfo, type PaymentInfo, type SubStatus, type SubscriptionState, type WebhookResult } from './types.js';
+import { ProviderError, WebhookError, type BillingProvider, type DisputeInfo, type PaymentInfo, type SubStatus, type Plan, type SubscriptionState, type WebhookResult } from './types.js';
 
 const cfg = () => config.billing.mercadopago;
 /** Prefijo de las credenciales de prueba de Mercado Pago. Las de producción empiezan por APP_USR-. */
@@ -30,8 +30,26 @@ const STATUS: Record<string, SubStatus> = { authorized: 'active', pending: 'inco
 /** La referencia externa lleva cuenta y plan: "cuenta:plan". */
 export const reference = (accountId: string, planKey: string) => `${accountId}:${planKey}`;
 
-export function stateFromPreapproval(p: any): SubscriptionState {
-  const [accountId, planKey] = String(p.external_reference ?? '').split(':');
+/**
+ * La referencia externa la puede cambiar quien tenga acceso a la cuenta de Mercado Pago: el plan que dice solo vale si
+ * lo que se cobra corresponde (monto no menor al del plan, misma moneda y periodicidad; PAY-7). Si no, queda '' (no
+ * cambia el plan) y se anota en `planMismatch`.
+ */
+export function planFromPreapproval(p: any, planKey: string, plans: Plan[] | undefined): { key: string; mismatch: string } {
+  if (!planKey || !plans) return { key: planKey, mismatch: '' };
+  const plan = plans.find((x) => x.key === planKey);
+  if (!plan) return { key: '', mismatch: `el plan ${planKey} no existe` };
+  const ar = p.auto_recurring ?? {};
+  if (ar.currency_id && String(ar.currency_id).toUpperCase() !== plan.currency.toUpperCase()) return { key: '', mismatch: `la moneda (${ar.currency_id}) no es la del plan ${plan.key}` };
+  const months = ar.frequency_type === 'days' ? Number(ar.frequency) / 30 : Number(ar.frequency ?? 0);
+  if (ar.frequency !== undefined && Math.round(months) !== (plan.billing_interval === 'year' ? 12 : 1)) return { key: '', mismatch: `la periodicidad (${ar.frequency} ${ar.frequency_type ?? ''}) no es la del plan ${plan.key}` };
+  if (ar.transaction_amount !== undefined && Math.round(Number(ar.transaction_amount) * 100) < chargeCents(plan)) return { key: '', mismatch: `el monto (${ar.transaction_amount}) es menor que el del plan ${plan.key}` };
+  return { key: plan.key, mismatch: '' };
+}
+
+export function stateFromPreapproval(p: any, plans?: Plan[]): SubscriptionState {
+  const [accountId, refPlan] = String(p.external_reference ?? '').split(':');
+  const fromRef = planFromPreapproval(p, refPlan ?? '', plans);
   const next = p.next_payment_date ? new Date(p.next_payment_date) : null;
   const start = p.auto_recurring?.start_date ? new Date(p.auto_recurring.start_date) : null;
   return {
@@ -39,7 +57,8 @@ export function stateFromPreapproval(p: any): SubscriptionState {
     accountId: accountId || null,
     customerId: String(p.payer_id ?? ''),
     subscriptionId: String(p.id),
-    planKey: planKey ?? '',
+    planKey: fromRef.key,
+    ...(fromRef.mismatch ? { planMismatch: fromRef.mismatch } : {}),
     status: STATUS[p.status] ?? 'incomplete',
     periodEnd: next && !Number.isNaN(next.getTime()) ? next : null,
     cancelAtPeriodEnd: false,
@@ -49,9 +68,9 @@ export function stateFromPreapproval(p: any): SubscriptionState {
 }
 
 /** La suscripción y, si su primer cobro es a futuro (una prueba), la huella de su tarjeta (para una prueba por tarjeta). */
-async function readPreapproval(id: string): Promise<{ p: any; state: SubscriptionState }> {
+async function readPreapproval(id: string, plans?: Plan[]): Promise<{ p: any; state: SubscriptionState }> {
   const p = await call('GET', `/preapproval/${encodeURIComponent(id)}`);
-  const state = stateFromPreapproval(p);
+  const state = stateFromPreapproval(p, plans);
 
   if (state.trialEnd && p.card_id && p.payer_id) {
     // Sin la tarjeta no hay prueba (PAY-17): un fallo pasajero de la consulta se reintenta antes de rendirse.
@@ -151,8 +170,8 @@ export const mercadopago: BillingProvider = {
     return { url: p.init_point, ref: String(p.id ?? '') };
   },
 
-  async checkoutState(ref) {
-    return (await readPreapproval(ref)).state;
+  async checkoutState(ref, plans) {
+    return (await readPreapproval(ref, plans)).state;
   },
 
   async endTrialNow(subscriptionId) {
@@ -173,7 +192,7 @@ export const mercadopago: BillingProvider = {
       external_reference: reference(sub.account_id, plan.key),
       auto_recurring: { transaction_amount: chargeCents(plan) / 100, currency_id: plan.currency },
     });
-    return stateFromPreapproval(await call('GET', path));
+    return stateFromPreapproval(await call('GET', path), [plan]);
   },
 
   /**
@@ -181,8 +200,8 @@ export const mercadopago: BillingProvider = {
    * reintenta un cobro rechazado, y una recién autorizada puede no haber cobrado nunca. Ambos casos son pago pendiente.
    * Para no marcar a quien sí paga, "nunca cobró" exige que Mercado Pago lo confirme (charged_quantity = 0) y 3 días.
    */
-  async subscriptionState(subscriptionId, _plans, now = new Date()) {
-    const { p, state } = await readPreapproval(subscriptionId);
+  async subscriptionState(subscriptionId, plans, now = new Date()) {
+    const { p, state } = await readPreapproval(subscriptionId, plans);
     if (state.status !== 'active') return state;
     const pays = await authorizedPayments(subscriptionId);
     const last = pays[0];
@@ -214,7 +233,7 @@ export const mercadopago: BillingProvider = {
     await call('POST', `${path}/refunds`, {});
   },
 
-  async handleWebhook({ rawBody, headers, query }) {
+  async handleWebhook({ rawBody, headers, query, plans }) {
     let body: any = {};
     try {
       body = rawBody.length ? JSON.parse(rawBody.toString('utf8')) : {};
@@ -251,7 +270,7 @@ export const mercadopago: BillingProvider = {
       result.payment = paymentFromAuthorized(pay) ?? undefined;
     }
     if (!preapprovalId) return result;
-    const { state } = await readPreapproval(preapprovalId);
+    const { state } = await readPreapproval(preapprovalId, plans);
     // Un cobro rechazado deja la suscripción "authorized" mientras reintenta: se trata como pago pendiente.
     if (rejectedPayment && state.status === 'active') state.status = 'past_due';
     if (result.payment) result.payment.periodEnd = state.periodEnd;

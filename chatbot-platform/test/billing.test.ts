@@ -297,6 +297,7 @@ t('los planes que ven el público y los clientes no llevan ids del proveedor ni 
 
 t('la pausa a mano del superadmin no la quita un pago, y el plan que él asigna no lo pisa la suscripción (PAY-8)', async () => {
   const acc = (await h.authed('POST', '/api/accounts', { name: 'Pausada a mano' })).json().id;
+  await h.authed('POST', '/api/plans', { key: 'pro', name: 'Pro', price: 499, currency: 'MXN' }); // se borró arriba
   assert.equal((await h.authed('POST', '/api/plans', { key: 'vip', name: 'VIP', price: 999, currency: 'MXN' })).statusCode, 200);
   fake.stripe.subs.sub_manual = stripeSub({ id: 'sub_manual', customer: 'cus_manual', status: 'active', metadata: { account_id: acc, plan_key: 'pro' } });
   // El superadmin asigna su plan y la pausa a mano.
@@ -311,6 +312,54 @@ t('la pausa a mano del superadmin no la quita un pago, y el plan que él asigna 
   // Solo el superadmin la reactiva.
   assert.equal((await h.authed('PUT', `/api/accounts/${acc}`, { status: 'active' })).statusCode, 200);
   assert.deepEqual(Object.values((await pool.query(`SELECT status, pause_reason FROM accounts WHERE id = $1`, [acc])).rows[0]), ['active', '']);
+});
+
+t('Stripe: el plan sale del precio que se cobra, no de la metadata; un precio más barato no da el plan (PAY-7)', async () => {
+  const acc = (await h.authed('POST', '/api/accounts', { name: 'Precio cambiado' })).json().id;
+  await h.authed('POST', '/api/plans', { key: 'vip', name: 'VIP', price: 999, currency: 'MXN' });
+  const planOf = async () => (await pool.query(`SELECT plan FROM accounts WHERE id = $1`, [acc])).rows[0].plan;
+  // La metadata dice vip, pero el precio es del producto pro: manda el precio.
+  fake.stripe.subs.sub_meta = stripeSub({ id: 'sub_meta', customer: 'cus_meta', metadata: { account_id: acc, plan_key: 'vip' }, items: { data: [{ id: 'si_meta', price: { id: 'price_x', product: 'riverrun_pro' } }] } });
+  assert.equal((await stripeHook('customer.subscription.updated', fake.stripe.subs.sub_meta, 'evt_meta_1')).statusCode, 200);
+  assert.equal(await planOf(), 'pro');
+  // Un precio de vip más barato (creado por fuera) no sube el plan; se avisa al superadmin.
+  fake.stripe.subs.sub_meta.items.data[0].price = { id: 'price_barato', product: 'riverrun_vip', unit_amount: 100, recurring: { interval: 'month' } };
+  assert.equal((await stripeHook('customer.subscription.updated', fake.stripe.subs.sub_meta, 'evt_meta_2')).statusCode, 200);
+  assert.equal(await planOf(), 'pro', 'no cambia el plan');
+  assert.ok((await pool.query(`SELECT 1 FROM event_logs WHERE account_id = $1 AND message LIKE '%no corresponde a un plan%'`, [acc])).rows.length);
+  // Con el monto completo, sí.
+  fake.stripe.subs.sub_meta.items.data[0].price = { id: 'price_vip_ok', product: 'riverrun_vip', unit_amount: 200_000, recurring: { interval: 'month' } };
+  assert.equal((await stripeHook('customer.subscription.updated', fake.stripe.subs.sub_meta, 'evt_meta_3')).statusCode, 200);
+  assert.equal(await planOf(), 'vip');
+});
+
+t('Mercado Pago: la referencia externa solo da el plan si el cobro corresponde (monto, moneda y periodicidad) (PAY-7)', async () => {
+  const acc = (await h.authed('POST', '/api/accounts', { name: 'Referencia cambiada' })).json().id;
+  const planOf = async () => (await pool.query(`SELECT plan FROM accounts WHERE id = $1`, [acc])).rows[0].plan;
+  const send = async (id: string) => {
+    const e = mpEvent('subscription_preapproval', id);
+    return h.app.inject({ method: 'POST', url: e.url, payload: e.payload, headers: e.headers });
+  };
+  const ar = (amount: number, over: Record<string, unknown> = {}) => ({ frequency: 1, frequency_type: 'months', transaction_amount: amount, currency_id: 'MXN', ...over });
+  fake.mp.preapprovals.pre_ref = { id: 'pre_ref', status: 'authorized', external_reference: `${acc}:solo-mp`, payer_id: 901, next_payment_date: days(30).toISOString(), auto_recurring: ar(230.84) };
+  assert.equal((await send('pre_ref')).statusCode, 200);
+  assert.equal(await planOf(), 'solo-mp');
+  // Alguien cambia la referencia a vip sin cambiar el monto: no sube el plan.
+  fake.mp.preapprovals.pre_ref.external_reference = `${acc}:vip`;
+  assert.equal((await send('pre_ref')).statusCode, 200);
+  assert.equal(await planOf(), 'solo-mp');
+  assert.ok((await pool.query(`SELECT 1 FROM event_logs WHERE account_id = $1 AND message LIKE '%no corresponde a un plan%'`, [acc])).rows.length);
+  // Otra moneda o periodicidad, tampoco.
+  fake.mp.preapprovals.pre_ref.auto_recurring = ar(5000, { currency_id: 'USD' });
+  assert.equal((await send('pre_ref')).statusCode, 200);
+  assert.equal(await planOf(), 'solo-mp');
+  fake.mp.preapprovals.pre_ref.auto_recurring = ar(5000, { frequency: 12 });
+  assert.equal((await send('pre_ref')).statusCode, 200);
+  assert.equal(await planOf(), 'solo-mp');
+  // Con el monto del plan, sí.
+  fake.mp.preapprovals.pre_ref.auto_recurring = ar(5000);
+  assert.equal((await send('pre_ref')).statusCode, 200);
+  assert.equal(await planOf(), 'vip');
 });
 
 t('Mercado Pago: el id que se procesa es el firmado; sin x-request-id o con un ts de más de 5 minutos, no (PAY-15)', async () => {

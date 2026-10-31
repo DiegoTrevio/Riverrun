@@ -36,7 +36,7 @@ async function signup(email: string, plan: string, provider: 'stripe' | 'mercado
 async function paidStripe(email: string, plan: string, subId: string) {
   const a = await signup(email, plan, 'stripe');
   const session = a.checkout.split('/').pop()!;
-  fake.stripe.subs[subId] = stripeSub({ id: subId, customer: `cus_${subId}`, metadata: { account_id: a.accountId, plan_key: plan }, items: { data: [{ id: `si_${subId}`, price: { id: `price_${plan}` } }] } });
+  fake.stripe.subs[subId] = stripeSub({ id: subId, customer: `cus_${subId}`, metadata: { account_id: a.accountId, plan_key: plan }, items: { data: [{ id: `si_${subId}`, price: { id: `price_${plan}`, product: `riverrun_${plan}` } }] } });
   Object.assign(fake.stripe.sessions[session], { status: 'complete', subscription: subId });
   assert.equal((await a.api('POST', '/api/billing/confirm')).json().confirmed, true);
   return a;

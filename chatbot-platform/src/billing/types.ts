@@ -45,6 +45,8 @@ export interface Subscription {
 
 /** Estado de una suscripción tal como lo informa el proveedor, ya normalizado. */
 export interface SubscriptionState {
+  /** Stripe: por qué el precio cobrado no dio un plan (se avisa al superadministrador, PAY-7). */
+  planMismatch?: string;
   provider: ProviderName;
   accountId: string | null;
   customerId: string;

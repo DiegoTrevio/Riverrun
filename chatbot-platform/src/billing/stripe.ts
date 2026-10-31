@@ -119,17 +119,37 @@ const STATUS: Record<string, SubStatus> = {
   active: 'active', trialing: 'active', past_due: 'past_due', unpaid: 'past_due', canceled: 'canceled', incomplete_expired: 'canceled', incomplete: 'incomplete', paused: 'past_due',
 };
 
+/**
+ * El plan sale del precio que de verdad se cobra (PAY-7), no de la metadata: su id de precio configurado o el producto
+ * `riverrun_<plan>` que crea Riverrun, con el mismo periodo. Un monto menor al del plan no da ese plan (p. ej. un precio
+ * más barato elegido por fuera): queda '' (no cambia el plan) y se anota en `planMismatch`.
+ */
+export function planFromPrice(price: any, plans: Plan[]): { key: string; mismatch: string } {
+  if (!price) return { key: '', mismatch: '' };
+  const byId = plans.find((p) => p.stripe_price_id && p.stripe_price_id === price.id);
+  if (byId) return { key: byId.key, mismatch: '' };
+  const product = typeof price.product === 'string' ? price.product : price.product?.id ?? '';
+  const plan = plans.find((p) => productId(p.key) === product);
+  if (!plan) return { key: '', mismatch: product ? `el producto ${product} no es de ningún plan` : '' };
+  const interval = plan.billing_interval === 'year' ? 'year' : 'month';
+  if (price.recurring?.interval && price.recurring.interval !== interval) return { key: '', mismatch: `el periodo (${price.recurring.interval}) no es el del plan ${plan.key}` };
+  const expected = unitAmount(chargeCents(plan), plan.currency);
+  if (typeof price.unit_amount === 'number' && price.unit_amount < expected) return { key: '', mismatch: `el monto (${price.unit_amount}) es menor que el del plan ${plan.key} (${expected})` };
+  return { key: plan.key, mismatch: '' };
+}
+
 /** Normaliza una suscripción de Stripe (compatible con versiones de la API que mueven current_period_end al renglón). */
 export function stateFromSubscription(sub: any, plans: Plan[]): SubscriptionState {
   const item = sub.items?.data?.[0];
   const periodEnd = sub.current_period_end ?? item?.current_period_end;
-  const priceId = item?.price?.id as string | undefined;
+  const fromPrice = planFromPrice(item?.price, plans);
   return {
     provider: 'stripe',
     accountId: sub.metadata?.account_id || null,
     customerId: typeof sub.customer === 'string' ? sub.customer : sub.customer?.id ?? '',
     subscriptionId: sub.id,
-    planKey: sub.metadata?.plan_key || plans.find((p) => p.stripe_price_id && p.stripe_price_id === priceId)?.key || '',
+    planKey: fromPrice.key,
+    ...(fromPrice.mismatch ? { planMismatch: fromPrice.mismatch } : {}),
     status: STATUS[sub.status] ?? 'incomplete',
     periodEnd: typeof periodEnd === 'number' ? new Date(periodEnd * 1000) : null,
     cancelAtPeriodEnd: !!sub.cancel_at_period_end || !!sub.cancel_at,
