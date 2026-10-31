@@ -21,7 +21,7 @@ export type BudgetPolicy=z.infer<typeof BudgetSettings>;
 export const normalize=(model:string)=>model.replace(/^openai\//,'').replace(/-\d{4}-\d{2}-\d{2}$/,'');
 export class AiBudgetBlocked extends HttpError {
  // `ai_paused`: la cuenta está en pausa (ver ai/gate.ts); 402 con el motivo y su código en la respuesta.
- constructor(public code:'budget_exhausted'|'price_unknown'|'unresolved_cost'|'audio_duration_unknown'|'ai_paused',message?:string) {super(code==='ai_paused'?402:409,message??(code==='budget_exhausted'?'El perfil llegó a su presupuesto de IA.':'No se pudo reservar el presupuesto de esta llamada. Revisa Consumo de IA.'),undefined,code==='ai_paused'?{code}:undefined);}
+ constructor(public code:'budget_exhausted'|'price_unknown'|'unresolved_cost'|'audio_duration_unknown'|'ai_paused'|'platform_cap',message?:string) {super(code==='ai_paused'?402:409,message??(code==='budget_exhausted'?'El perfil llegó a su presupuesto de IA.':code==='platform_cap'?'Este perfil llegó al tope de IA de su plan este mes. Cambia de plan o escríbenos para seguir usando la IA.':'No se pudo reservar el presupuesto de esta llamada. Revisa Consumo de IA.'),undefined,code==='ai_paused'||code==='platform_cap'?{code}:undefined);}
 }
 export async function expireReservations(accountId:string) {
  await query(`UPDATE ai_spend SET state='uncertain',finished_at=now() WHERE account_id=$1 AND state='reserved' AND created_at<now()-($2::int*interval '1 millisecond')`,[accountId,Math.max(300000,config.openai.timeoutMs*3+60000)]);
@@ -49,9 +49,18 @@ async function notice(accountId:string,reason:string) {
   const won=await queryOne(`INSERT INTO ai_budget_notices(account_id,day,reason) VALUES($1,(now() AT TIME ZONE 'UTC')::date,$2) ON CONFLICT DO NOTHING RETURNING reason`,[accountId,reason]);
   if(!won)return;
   const admins=await query<{id:string}>("SELECT id FROM users WHERE active AND ((account_id=$1 AND role='admin') OR role='superadmin')",[accountId]);
-  await notifyUsers(accountId,admins.map(a=>a.id),{title:reason==='budget_80'?'Te acercas al presupuesto de IA':'Revisa el presupuesto de IA',body:reason==='budget_80'?'El gasto y las reservas de este perfil llegaron al 80 % de un límite.':reason==='budget_exhausted'?'Se alcanzó un límite de gasto. La atención manual y las reglas programadas siguen disponibles.':'Hay un precio o importe pendiente de confirmar antes de continuar con la IA.',kind:'alert',link:`#/consumo?account_id=${accountId}`});
+  await notifyUsers(accountId,admins.map(a=>a.id),{title:reason==='budget_80'?'Te acercas al presupuesto de IA':reason==='platform_cap'?'Llegaste al tope de IA de tu plan':'Revisa el presupuesto de IA',body:reason==='budget_80'?'El gasto y las reservas de este perfil llegaron al 80 % de un límite.':reason==='platform_cap'?'Este mes ya se gastó la IA que incluye el plan. La atención manual y las reglas programadas siguen; para seguir con la IA, cambia de plan.':reason==='budget_exhausted'?'Se alcanzó un límite de gasto. La atención manual y las reglas programadas siguen disponibles.':'Hay un precio o importe pendiente de confirmar antes de continuar con la IA.',kind:'alert',link:`#/consumo?account_id=${accountId}`});
   await logEvent({level:'warn',source:'ai',message:'ai_budget_blocked',accountId,details:{reason}});
  }catch{/* A notification outage must never permit an unreserved call. */}
+}
+/** Tope de IA al mes que pone la plataforma: la excepción de la cuenta, el de su plan o el de la prueba (null = sin tope). */
+export async function platformAiCap(accountId:string,client?:import('pg').PoolClient):Promise<number|null> {
+ const sql=`SELECT a.status,a.ai_usd_override,p.ai_usd_per_month FROM accounts a LEFT JOIN plans p ON p.key=a.plan WHERE a.id=$1`;
+ const r=client?(await client.query(sql,[accountId])).rows[0]:await queryOne<any>(sql,[accountId]);
+ if(!r)return null;
+ if(r.ai_usd_override!==null)return Number(r.ai_usd_override);
+ if(r.ai_usd_per_month!==null&&r.ai_usd_per_month!==undefined)return Number(r.ai_usd_per_month);
+ return r.status==='trial'&&config.signup.trialAiUsd>0?config.signup.trialAiUsd:null;
 }
 async function reserve(accountId:string,chatbotId:string|null,spec:Spec) {
  try{return await withTransaction(async client=>{
@@ -71,6 +80,12 @@ async function reserve(accountId:string,chatbotId:string|null,spec:Spec) {
    if(used.unknown>0)throw new AiBudgetBlocked('unresolved_cost');
    if(Number(used.used)+(amount??0)>cap.limit_usd)throw new AiBudgetBlocked('budget_exhausted');
    if(cap.limit_usd>0&&Number(used.used)+(amount??0)>=cap.limit_usd*0.8)nearing=true;
+  }
+  // Tope de la plataforma (PAY-20): lo fija el superadmin por plan o por cuenta, y el cliente no lo puede cambiar.
+  const platform=await platformAiCap(accountId,client);
+  if(platform!==null){
+   const used=(await client.query(`SELECT coalesce(sum(coalesce(charged_usd,reserved_usd)),0) AS used FROM ai_spend WHERE account_id=$1 AND created_at>=date_trunc('month',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AND state<>'rejected'`,[accountId])).rows[0];
+   if(Number(used.used)+(amount??0)>platform)throw new AiBudgetBlocked('platform_cap');
   }
   const inserted=(await client.query(`INSERT INTO ai_spend(account_id,chatbot_id,kind,models,state,reserved_usd,cost_source,policy_revision,quote) VALUES($1,$2,$3,$4,'reserved',$5,'unknown',$6,$7) RETURNING id`,[accountId,chatbotId,spec.kind,spec.models,amount,row?.revision??0,JSON.stringify({prices,input_tokens:spec.input,output_tokens:output})])).rows[0];
   return {id:inserted.id,policy,limited,output,amount,prices,nearing};

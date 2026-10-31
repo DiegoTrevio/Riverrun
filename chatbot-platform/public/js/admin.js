@@ -242,16 +242,19 @@ export async function viewAccounts(root) {
             } }, 'Extender prueba') : null,
             h('button', { class: 'small', title: 'Excepción de límites para este perfil (sobre su plan)', onclick: async () => {
               const keys = { mensajes: 'messages_per_month', canales: 'channels', usuarios: 'users', asistentes: 'chatbots', redes: 'social_accounts' };
-              const cur = Object.entries(keys).filter(([, k]) => a.limits_override?.[k]).map(([n, k]) => `${n}=${a.limits_override[k]}`).join(' ');
-              const txt = await ask('Límites especiales de este perfil (se aplican en lugar de los de su plan).\nFormato: mensajes=1000 canales=2 usuarios=5 asistentes=3 redes=2\nDéjalo vacío para quitar la excepción y usar los de su plan.', cur);
+              const cur = [...Object.entries(keys).filter(([, k]) => a.limits_override?.[k]).map(([n, k]) => `${n}=${a.limits_override[k]}`),
+                ...(a.ai_usd_override != null ? [`ia=${Number(a.ai_usd_override)}`] : [])].join(' ');
+              const txt = await ask('Límites especiales de este perfil (se aplican en lugar de los de su plan).\nFormato: mensajes=1000 canales=2 usuarios=5 asistentes=3 redes=2 ia=20 (USD de IA al mes)\nDéjalo vacío para quitar la excepción y usar los de su plan.', cur);
               if (txt === null) return;
               const limits_override = {};
+              let ai_usd_override = null;
               for (const part of txt.split(/[\s,]+/).filter(Boolean)) {
                 const [n, v] = part.split('=');
-                if (!keys[n.toLowerCase()] || !(Number(v) > 0)) return toast(`No entendí "${part}". Usa, por ejemplo: mensajes=1000 canales=2`, true);
+                if (n.toLowerCase() === 'ia' && Number(v) >= 0 && v !== '') { ai_usd_override = Number(v); continue; }
+                if (!keys[n.toLowerCase()] || !(Number(v) > 0)) return toast(`No entendí "${part}". Usa, por ejemplo: mensajes=1000 canales=2 ia=20`, true);
                 limits_override[keys[n.toLowerCase()]] = Math.floor(Number(v));
               }
-              if (!(await run(() => api('PUT', `/api/accounts/${a.id}`, { limits_override }), 'Límites actualizados'))) return; render();
+              if (!(await run(() => api('PUT', `/api/accounts/${a.id}`, { limits_override, ai_usd_override }), 'Límites actualizados'))) return; render();
             } }, 'Límites'),
             h('button', { class: 'small', title: 'Marca blanca de esta cuenta', onclick: async () => {
               const { brands } = await api('GET', '/api/brands');

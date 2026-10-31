@@ -362,7 +362,7 @@ function dataCard() {
 /** Superadmin: planes, claves configuradas y avisos de los proveedores. */
 export async function viewPlans(root) {
   const [plans, ov] = await Promise.all([api('GET', '/api/plans'), api('GET', '/api/billing/overview')]);
-  const blank = { key: '', name: '', description: '', price: 0, currency: 'MXN', interval: 'month', tax_percent: ov.tax_percent, stripe_price_id: '', active: true, sort_order: 0, limits: {} };
+  const blank = { key: '', name: '', description: '', price: 0, currency: 'MXN', interval: 'month', tax_percent: ov.tax_percent, stripe_price_id: '', active: true, sort_order: 0, limits: {}, ai_usd_per_month: null };
   const count = (provider, status) => ov.counts.filter((c) => c.provider === provider && c.status === status).reduce((a, c) => a + c.n, 0);
 
   const editor = (p, isNew) => {
@@ -383,7 +383,8 @@ export async function viewPlans(root) {
         field('Canales', num(m.limits, 'channels', { min: 1, nullable: true, placeholder: 'Sin límite' })),
         field('Usuarios', num(m.limits, 'users', { min: 1, nullable: true, placeholder: 'Sin límite' })),
         field('Asistentes', num(m.limits, 'chatbots', { min: 1, nullable: true, placeholder: 'Sin límite' })),
-        field('Redes sociales', num(m.limits, 'social_accounts', { min: 1, nullable: true, placeholder: 'Sin límite' }), 'Cuentas conectadas por Zernio (cada una tiene costo para la plataforma).')),
+        field('Redes sociales', num(m.limits, 'social_accounts', { min: 1, nullable: true, placeholder: 'Sin límite' }), 'Cuentas conectadas por Zernio (cada una tiene costo para la plataforma).'),
+        field('Gasto de IA al mes (USD)', num(m, 'ai_usd_per_month', { min: 0, step: 0.01, nullable: true, placeholder: 'Sin tope' }), 'Lo que la plataforma paga de IA por cada cuenta con este plan. Al llegar, la IA se detiene hasta el mes siguiente; el cliente no lo puede cambiar.')),
       check(m, 'active', 'Disponible para contratar'),
       h('div', { class: 'row' },
         h('button', { class: 'primary', onclick: async () => {

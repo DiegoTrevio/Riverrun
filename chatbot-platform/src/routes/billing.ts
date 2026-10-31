@@ -32,13 +32,15 @@ const PlanBody = z.object({
   sort_order: z.number().int().default(0),
   /** Límites del plan; vacío o ausente = sin límite. */
   limits: LimitsSchema.default({}),
+  /** Gasto de IA al mes que incluye el plan, en USD (null = sin tope; sin el campo, no cambia). */
+  ai_usd_per_month: z.number().finite().min(0).max(100000).nullable().optional(),
 });
 
 const publicSub = (s: any) =>
   s && { provider: s.provider, plan_key: s.plan_key, pending_plan_key: s.pending_plan_key ?? '', status: s.status, current_period_end: s.current_period_end, cancel_at_period_end: s.cancel_at_period_end, past_due_since: s.past_due_since, can_portal: s.provider === 'stripe' && !!s.provider_customer_id };
 
 /** Plan para el panel: precio sin IVA, IVA y total que se cobra. */
-const planOut = (p: any) => ({ ...p, price: p.price_cents / 100, interval: p.billing_interval, tax_percent: taxPercent(), total: chargeCents(p) / 100 });
+const planOut = (p: any) => ({ ...p, price: p.price_cents / 100, interval: p.billing_interval, tax_percent: taxPercent(), total: chargeCents(p) / 100, ai_usd_per_month: p.ai_usd_per_month == null ? null : Number(p.ai_usd_per_month) });
 
 const paymentOut = (p: any) => ({
   id: p.id, provider: p.provider, plan_key: p.plan_key, currency: p.currency, paid_at: p.paid_at, period_start: p.period_start, period_end: p.period_end, status: p.status,
@@ -121,9 +123,11 @@ export async function billingRoutes(api: FastifyInstance) {
   const savePlan = async (b: z.infer<typeof PlanBody>) => {
     const cents = Math.round(b.price * 100);
     await query(
-      `INSERT INTO plans (key, name, description, price_cents, currency, stripe_price_id, active, sort_order, limits, billing_interval) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-       ON CONFLICT (key) DO UPDATE SET name = $2, description = $3, price_cents = $4, currency = $5, stripe_price_id = $6, active = $7, sort_order = $8, limits = $9, billing_interval = $10`,
-      [b.key, b.name, b.description, cents, b.currency, b.stripe_price_id.trim(), b.active, b.sort_order, JSON.stringify(Object.fromEntries(Object.entries(b.limits).filter(([, v]) => v))), b.interval],
+      `INSERT INTO plans (key, name, description, price_cents, currency, stripe_price_id, active, sort_order, limits, billing_interval, ai_usd_per_month) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$12)
+       ON CONFLICT (key) DO UPDATE SET name = $2, description = $3, price_cents = $4, currency = $5, stripe_price_id = $6, active = $7, sort_order = $8, limits = $9, billing_interval = $10,
+         ai_usd_per_month = CASE WHEN $11 THEN $12 ELSE plans.ai_usd_per_month END`,
+      [b.key, b.name, b.description, cents, b.currency, b.stripe_price_id.trim(), b.active, b.sort_order, JSON.stringify(Object.fromEntries(Object.entries(b.limits).filter(([, v]) => v))), b.interval,
+        b.ai_usd_per_month !== undefined, b.ai_usd_per_month ?? null],
     );
     return planOut(await getPlan(b.key));
   };

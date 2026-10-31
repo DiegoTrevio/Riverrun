@@ -356,6 +356,8 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     keep_data: z.boolean().optional(),
     /** Encender o apagar el Copiloto para esta cuenta. */
     copilot_enabled: z.boolean().optional(),
+    /** Excepción del tope de IA al mes de esta cuenta, en USD (null = la del plan). */
+    ai_usd_override: z.number().finite().min(0).max(100000).nullable().optional(),
   });
 
   api.post('/api/accounts', { preHandler: requireRole('superadmin'), ...stepUp }, async (req) => {
@@ -391,7 +393,9 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
       status = status ?? 'trial';
     }
     const acc = (await store.updateAccount(before.id, { name: b.name, active: b.active, status, plan: b.plan, trial_ends_at: trialEnds, limits_override: b.limits_override ? (Object.fromEntries(Object.entries(b.limits_override).filter(([, v]) => v)) as Record<string, number>) : undefined, brand_id: b.brand_id, keep_data: b.keep_data, copilot_enabled: b.copilot_enabled }))!;
+    if (b.ai_usd_override !== undefined) await query(`UPDATE accounts SET ai_usd_override = $2 WHERE id = $1`, [before.id, b.ai_usd_override]);
     const changes = [b.active === false ? 'desactivada' : '', status && status !== before.status ? `estado: ${status}` : '', trialEnds !== undefined ? `prueba hasta ${trialEnds?.toISOString().slice(0, 10) ?? '—'}` : '',
+      b.ai_usd_override !== undefined ? `tope de IA: ${b.ai_usd_override === null ? 'el del plan' : `USD ${b.ai_usd_override}/mes`}` : '',
       b.keep_data !== undefined && b.keep_data !== before.keep_data ? (b.keep_data ? 'se conservan sus datos' : 'retención normal') : '',
       b.copilot_enabled !== undefined && b.copilot_enabled !== before.copilot_enabled ? (b.copilot_enabled ? 'Copiloto encendido' : 'Copiloto apagado') : '']
       .filter(Boolean)
