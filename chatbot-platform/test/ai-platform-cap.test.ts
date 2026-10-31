@@ -92,3 +92,17 @@ t('con tope de la plataforma, un modelo sin precio conocido no pasa (el tope no 
     await h.authed('PUT', `/api/accounts/${h.accountId}`, { ai_usd_override: null });
   }
 });
+
+t('los modelos por omisión tienen precio (también gemini-2.5-flash, para audios y fotos con OpenRouter); uno nuevo se detecta', async () => {
+  const { unpricedModels } = await import('../src/ai/budget.js');
+  const before = { ...config.openai };
+  try {
+    config.openai.transcriptionModel = 'google/gemini-2.5-flash';
+    config.openai.mediaModel = 'google/gemini-2.5-flash';
+    assert.deepEqual(await unpricedModels(), []);
+    config.openai.fallbackModels = ['proveedor-nuevo/modelo-sin-precio'];
+    assert.deepEqual(await unpricedModels(), ['proveedor-nuevo/modelo-sin-precio']);
+  } finally {
+    Object.assign(config.openai, before);
+  }
+});

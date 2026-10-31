@@ -213,3 +213,15 @@ t('Stripe: sin huella de la tarjeta no hay prueba: termina al momento y se cobra
   assert.notEqual((await accountOf(a.accountId)).status, 'trial');
   assert.equal(mails('sin-huella@prueba.mx', /No pudimos leer tu tarjeta/), 1);
 });
+
+t('Stripe: si la suscripción no trae la tarjeta (3D Secure, Apple Pay), la huella se lee de la tarjeta guardada del cliente y hay prueba (PAY-17)', async () => {
+  const a = await waiting('apple-pay@prueba.mx');
+  const co = await a.api('POST', '/api/billing/checkout', { plan: 'pro', provider: 'stripe' });
+  const session = co.json().url.split('/').pop();
+  fake.stripe.subs.sub_wallet = stripeSub({ id: 'sub_wallet', customer: 'cus_wallet', status: 'trialing', trial_end: trialEnd(), default_payment_method: null, metadata: { account_id: a.accountId, plan_key: 'pro' } });
+  fake.stripe.paymentMethods.cus_wallet = [{ id: 'pm_wallet', type: 'card', card: { fingerprint: 'fp_wallet', wallet: { type: 'apple_pay' } } }];
+  Object.assign(fake.stripe.sessions[session], { status: 'complete', subscription: 'sub_wallet' });
+  await a.api('POST', '/api/billing/confirm');
+  assert.equal((await accountOf(a.accountId)).status, 'trial');
+  assert.deepEqual(await claimsOf(a.accountId), ['card', 'email'], 'la tarjeta queda marcada');
+});

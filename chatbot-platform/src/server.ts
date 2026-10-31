@@ -77,6 +77,16 @@ async function main() {
   const resumed = await service.resumePending();
   if (resumed) console.log(`Retomando ${resumed} conversaciones pendientes`);
 
+  // Modelos sin precio: con un tope de IA, sus llamadas se bloquean. Se avisa al arrancar (PAY-20).
+  void import('./ai/budget.js').then(async ({ unpricedModels }) => {
+    const missing = await unpricedModels();
+    if (!missing.length) return;
+    const text = `Estos modelos no tienen precio en ai_prices: ${missing.join(', ')}. Con un tope de IA (todas las cuentas en prueba y los planes con «Gasto de IA al mes») sus llamadas se bloquean. Agrega su precio en Consumo de IA → «Precios por modelo (USD)».`;
+    await logEvent({ level: 'error', source: 'system', message: text });
+    const { emailSuperadmin } = await import('./platform/digest.js');
+    await emailSuperadmin('Modelos de IA sin precio', text, { urgent: true });
+  }).catch((e) => logEvent({ level: 'warn', source: 'system', message: `Revisión de precios de IA: ${e?.message ?? e}` }));
+
   // Pagos recurrentes: el cobro de cada periodo se crea unos días antes de que venza (cada hora; no se duplica).
   const plans = () => void import('./receivables/plans.js').then(({ runPlans }) => runPlans(service.receivables))
     .catch((e) => logEvent({ level: 'error', source: 'system', message: `Pagos recurrentes: ${e?.message ?? e}` }));

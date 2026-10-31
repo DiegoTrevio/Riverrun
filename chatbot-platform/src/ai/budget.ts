@@ -53,6 +53,18 @@ async function notice(accountId:string,reason:string) {
   await logEvent({level:'warn',source:'ai',message:'ai_budget_blocked',accountId,details:{reason}});
  }catch{/* A notification outage must never permit an unreserved call. */}
 }
+/**
+ * Modelos configurados (respuestas, respaldos, resúmenes, audios, imágenes, búsqueda y Copiloto) sin precio conocido.
+ * Con un tope de IA (de la plataforma o del cliente), una llamada sin precio se bloquea: al arrancar se avisa, en vez de
+ * descubrirlo con la IA detenida.
+ */
+export async function unpricedModels():Promise<string[]> {
+ const empty=BudgetSettings.parse({});
+ const models=[config.openai.defaultModel,...config.openai.fallbackModels,config.openai.summaryModel,config.openai.transcriptionModel,config.openai.mediaModel,config.knowledgeSearch.model,config.copilot.model,...config.copilot.fallbackModels];
+ const out:string[]=[];
+ for(const m of [...new Set(models.filter(Boolean))])if(!(await price(m,empty)))out.push(m);
+ return out;
+}
 /** Tope de IA al mes que pone la plataforma: la excepción de la cuenta, el de su plan o el de la prueba (null = sin tope). */
 export async function platformAiCap(accountId:string,client?:import('pg').PoolClient):Promise<number|null> {
  const sql=`SELECT a.status,a.ai_usd_override,p.ai_usd_per_month FROM accounts a LEFT JOIN plans p ON p.key=a.plan WHERE a.id=$1`;

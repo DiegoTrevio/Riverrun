@@ -158,6 +158,22 @@ export function verifySignature(raw: Buffer, header: string | undefined, secret:
 const SUB_EVENTS = new Set(['checkout.session.completed', 'customer.subscription.created', 'customer.subscription.updated', 'customer.subscription.deleted', 'invoice.paid', 'invoice.payment_succeeded', 'invoice.payment_failed', 'invoice.payment_action_required']);
 const DISPUTE_EVENTS = new Set(['charge.dispute.created', 'charge.dispute.updated', 'charge.dispute.closed']);
 
+/**
+ * La huella de la tarjeta, aunque la suscripción no la traiga (PAY-17): sin ella no hay prueba gratis. Si la suscripción
+ * no tiene su método de pago guardado (pasa con algunas tarjetas con 3D Secure o carteras como Apple Pay, según cómo
+ * termina el Checkout), se lee del cliente: su método por omisión o su tarjeta guardada más reciente.
+ */
+async function withCardKey(state: SubscriptionState): Promise<SubscriptionState> {
+  if (state.cardKey || !state.trialEnd || !state.customerId) return state;
+  const cus = encodeURIComponent(state.customerId);
+  const customer = await call('GET', `/v1/customers/${cus}?expand[]=invoice_settings.default_payment_method`).catch(() => null);
+  const fromCustomer = customer?.invoice_settings?.default_payment_method?.card?.fingerprint;
+  if (fromCustomer) return { ...state, cardKey: String(fromCustomer) };
+  const list = await call('GET', `/v1/payment_methods?customer=${cus}&type=card&limit=1`).catch(() => null);
+  const fromList = list?.data?.[0]?.card?.fingerprint;
+  return fromList ? { ...state, cardKey: String(fromList) } : state;
+}
+
 export const stripe: BillingProvider = {
   name: 'stripe',
   label: 'Tarjeta (Stripe)',
@@ -199,7 +215,7 @@ export const stripe: BillingProvider = {
     const s = await call('GET', `/v1/checkout/sessions/${encodeURIComponent(ref)}`);
     const subId = typeof s.subscription === 'string' ? s.subscription : s.subscription?.id;
     if (s.status !== 'complete' || !subId) return null;
-    const state = stateFromSubscription(await call('GET', `/v1/subscriptions/${encodeURIComponent(subId)}?expand[]=default_payment_method`), plans);
+    const state = await withCardKey(stateFromSubscription(await call('GET', `/v1/subscriptions/${encodeURIComponent(subId)}?expand[]=default_payment_method`), plans));
     if (!state.accountId) state.accountId = s.client_reference_id || null;
     return state;
   },
@@ -233,7 +249,7 @@ export const stripe: BillingProvider = {
   },
 
   async subscriptionState(subscriptionId, plans) {
-    return stateFromSubscription(await call('GET', `/v1/subscriptions/${encodeURIComponent(subscriptionId)}?expand[]=default_payment_method`), plans);
+    return withCardKey(stateFromSubscription(await call('GET', `/v1/subscriptions/${encodeURIComponent(subscriptionId)}?expand[]=default_payment_method`), plans));
   },
 
   async recentPayments(subscriptionId, since) {
@@ -281,7 +297,7 @@ export const stripe: BillingProvider = {
     if (!subId) return result;
     // Siempre se lee la suscripción: refleja el estado real aunque los avisos lleguen repetidos o desordenados.
     const sub = await call('GET', `/v1/subscriptions/${encodeURIComponent(subId)}?expand[]=default_payment_method`);
-    const state = stateFromSubscription(sub, plans);
+    const state = await withCardKey(stateFromSubscription(sub, plans));
     if (!state.accountId && event.type === 'checkout.session.completed') state.accountId = obj.client_reference_id || null;
     result.state = state;
     return result;

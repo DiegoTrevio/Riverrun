@@ -8,6 +8,8 @@ export const fake = {
     subs: {} as Record<string, any>,
     sessions: {} as Record<string, any>,
     products: {} as Record<string, any>,
+    /** Tarjetas guardadas por cliente (GET /v1/payment_methods?customer=…&type=card). */
+    paymentMethods: {} as Record<string, any[]>,
     /** Facturas que devuelve GET /v1/invoices (cobros de las suscripciones). */
     invoices: [] as any[],
     /** Reembolsos pedidos (POST /v1/refunds). */
@@ -78,6 +80,12 @@ const stripeUrl = await serve((req, raw, res) => {
   const cs = path.match(/^\/v1\/checkout\/sessions\/([\w-]+)$/);
   if (cs) return fake.stripe.sessions[cs[1]] ? json(res, 200, fake.stripe.sessions[cs[1]]) : json(res, 404, { error: { message: 'No such checkout.session' } });
   if (path === '/v1/billing_portal/sessions') return json(res, 200, { url: 'https://billing.stripe.test/p/1' });
+  const customer = path.match(/^\/v1\/customers\/([\w-]+)$/);
+  if (customer) return json(res, 200, { id: customer[1], invoice_settings: { default_payment_method: null } });
+  if (path === '/v1/payment_methods' && req.method === 'GET') {
+    const q = new URLSearchParams(req.url!.split('?')[1] ?? '');
+    return json(res, 200, { data: fake.stripe.paymentMethods[q.get('customer') ?? ''] ?? [] });
+  }
   if (path === '/v1/products' && req.method === 'POST') {
     const id = body.get('id')!;
     if (fake.stripe.products[id]) return json(res, 400, { error: { message: `Product already exists: ${id}` } });
