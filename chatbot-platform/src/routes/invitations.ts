@@ -79,6 +79,15 @@ async function assertRoomForInvite(accountId: string) {
 async function sendInvite(inv: Invitation, token: string, inviterName: string): Promise<boolean> {
   const acc = await store.getAccount(inv.account_id);
   const { fromName } = await mailBrand(inv.account_id);
+  // Un correo que ya tiene cuenta: la respuesta al que invita es la misma (no revela quién está registrado, bajos de la
+  // 2c); a esa persona le llega el aviso en lugar del enlace, y la invitación no se puede aceptar.
+  if (await store.getUserForLogin(inv.email)) {
+    return (await deliverMail({
+      fromName, to: inv.email,
+      subject: `Te invitaron a ${acc?.name ?? 'un equipo'}`,
+      text: `Hola,\n\n${inviterName || 'Alguien'} te invitó a unirte a "${acc?.name ?? ''}", pero tu correo ya tiene una cuenta y cada correo entra a una sola. Si quieres unirte, pide que inviten otro correo tuyo. Si no conoces esta invitación, ignora este mensaje.`,
+    })) === 'sent';
+  }
   const link = `${linkBase()}/#/invitacion/${encodeURIComponent(token)}`;
   const mail = inviteMail({ inviter: inviterName, invitee: inv.name, account: acc?.name ?? '', role: ROLE_LABEL[inv.role], link, google: googleConfigured() });
   return (await deliverMail({ fromName, to: inv.email, ...mail })) === 'sent';
@@ -101,10 +110,13 @@ async function countInvite(accountId: string, email: string): Promise<void> {
   }
 }
 
-/** Se puede invitar a ese correo: no es desechable y no tiene usuario (cada correo es de una sola cuenta). */
-export async function assertInvitable(email: string): Promise<void> {
+/**
+ * Se puede invitar a ese correo: no es desechable y (si `taken`) no tiene usuario. Al invitar al equipo no se revisa si
+ * tiene usuario (la respuesta no lo revela; ver `sendInvite`); al dar de alta una cuenta (superadmin), sí.
+ */
+export async function assertInvitable(email: string, o: { taken?: boolean } = { taken: true }): Promise<void> {
   if (isDisposableEmail(email)) throw new HttpError(400, DISPOSABLE_MESSAGE);
-  if (await store.getUserForLogin(email)) throw new HttpError(409, 'Ese correo ya tiene cuenta en la plataforma: invita otro correo.');
+  if (o.taken && (await store.getUserForLogin(email))) throw new HttpError(409, 'Ese correo ya tiene cuenta en la plataforma: invita otro correo.');
 }
 
 /** Crea la invitación (reemplaza la pendiente al mismo correo, vencida o no), la manda y la deja en la bitácora. */
@@ -114,7 +126,7 @@ export async function createInvitation(
   b: { email: string; name: string; role: 'admin' | 'agent' },
 ): Promise<{ inv: Invitation; mail_sent: boolean }> {
   await assertCanInvite(actor, accountId);
-  await assertInvitable(b.email);
+  await assertInvitable(b.email, { taken: false });
   // La invitación de administrador pendiente es del dueño: nadie más la reemplaza (por ejemplo, por una de agente).
   if (!(await isAccountOwner(actor, accountId)) && (await queryOne(`SELECT 1 FROM account_invitations WHERE account_id = $1 AND lower(email) = $2 AND role = 'admin' AND ${PENDING}`, [accountId, b.email]))) {
     throw new HttpError(409, 'Ese correo ya tiene una invitación de administrador: solo el dueño de la cuenta la cambia');

@@ -45,7 +45,11 @@ t('pedir el cambio pide la verificación reciente; un correo ocupado o el mismo 
   await pool.query(`UPDATE user_sessions SET mfa_at = now() - interval '16 minutes' WHERE user_id = $1`, [elsaId]);
   assert.equal((await elsa('PUT', '/api/me/email', { email: 'elsa@nuevo.mx', current: PASS })).json().code, 'step_up');
   assert.equal((await step()).statusCode, 200);
-  assert.deepEqual((await elsa('PUT', '/api/me/email', { email: 'OCUPADO@correo.mx', current: PASS })).json(), { error: 'Ese correo ya tiene una cuenta' });
+  // Ocupado: la misma respuesta que uno libre (no revela quién está registrado); al titular le llega el aviso, sin enlace.
+  assert.deepEqual((await elsa('PUT', '/api/me/email', { email: 'OCUPADO@correo.mx', current: PASS })).json(), { ok: true, pending: 'ocupado@correo.mx' });
+  const notice = [...outbox].reverse().find((m) => m.to === 'ocupado@correo.mx')!;
+  assert.equal(notice.subject, 'Alguien intentó usar tu correo');
+  assert.doesNotMatch(notice.text, /cambiar-correo/);
   assert.equal((await elsa('PUT', '/api/me/email', { email: 'elsa@viejo.mx', current: PASS })).statusCode, 400);
   assert.equal((await elsa('PUT', '/api/me/email', { email: 'no-es-correo', current: PASS })).statusCode, 400);
   assert.equal((await email()).email, 'elsa@viejo.mx');
@@ -63,7 +67,7 @@ t('con la sesión sola no basta: pide la contraseña actual, y una equivocada cu
 
 t('preguntar por correos también cuenta para el tope: el sexto intento en una hora es 429 aunque el correo esté ocupado', async () => {
   const ivan = await h.loginAs('ivan@papeleria.mx', PASS);
-  for (let i = 0; i < 5; i++) assert.equal((await ivan('PUT', '/api/me/email', { email: 'ocupado@correo.mx', current: PASS })).statusCode, 409);
+  for (let i = 0; i < 5; i++) assert.equal((await ivan('PUT', '/api/me/email', { email: 'ocupado@correo.mx', current: PASS })).statusCode, 200);
   const sixth = await ivan('PUT', '/api/me/email', { email: 'ocupado@correo.mx', current: PASS });
   assert.equal(sixth.statusCode, 429, 'no dice si el correo tiene cuenta');
 });

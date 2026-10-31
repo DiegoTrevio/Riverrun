@@ -143,7 +143,16 @@ export async function signupRoutes(app: FastifyInstance) {
     if (b.website) throw new HttpError(400, 'No se pudo completar el registro');
     if (isDisposableEmail(b.email)) throw new HttpError(400, DISPOSABLE_MESSAGE);
     await assertCaptcha(b.turnstile_token, req.ip);
-    if (await store.getUserForLogin(b.email)) throw new HttpError(409, 'Ya existe una cuenta con ese correo. Inicia sesión o recupera tu contraseña.');
+    const taken = await store.getUserForLogin(b.email);
+    if (taken) {
+      // Al titular le llega el aviso (una vez por hora): si no fue él, alguien prueba su correo.
+      if ((await countHit(`signup-taken:${b.email.toLowerCase()}`, HOUR)) === 1) {
+        const { fromName } = await mailBrand(taken.account_id);
+        await sendMail({ fromName, to: taken.email, subject: 'Alguien intentó registrarse con tu correo',
+          text: `Hola ${taken.name || ''},\n\nAlguien intentó crear una cuenta nueva con tu correo. Ya tienes una, así que no se creó nada. Si fuiste tú, entra con tu contraseña (o recupérala). Si no, no tienes que hacer nada.` }).catch(() => undefined);
+      }
+      throw new HttpError(409, 'Ya existe una cuenta con ese correo. Inicia sesión o recupera tu contraseña.');
+    }
     await assertPasswordAllowed(b.password, { email: b.email, businessName: b.company });
     // El plan se revisa antes de crear la cuenta: un plan o forma de pago que no existe no deja una cuenta a medias.
     const purchase = b.plan ? await payable(b.plan, b.provider) : null;

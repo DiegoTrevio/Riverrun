@@ -79,7 +79,11 @@ t('registro: crea la cuenta en prueba con su administradora y abre sesión', asy
 });
 
 t('registro: correo repetido, campo trampa, términos y límite por conexión', async () => {
+  const { outbox } = await import('../src/mailer.js');
+  const before = outbox.filter((m) => m.to === 'laura@sonrisa.mx' && m.subject === 'Alguien intentó registrarse con tu correo').length;
   assert.equal((await signup({}, '10.0.0.2')).statusCode, 409);
+  // Al titular le llega el aviso (bajos de la 2c), una vez por hora.
+  assert.equal(outbox.filter((m) => m.to === 'laura@sonrisa.mx' && m.subject === 'Alguien intentó registrarse con tu correo').length, before + 1);
   assert.equal((await signup({ email: 'bot@spam.mx', website: 'http://spam' }, '10.0.0.2')).statusCode, 400);
   assert.equal((await signup({ email: 'x@y.mx', accept_terms: false }, '10.0.0.2')).statusCode, 400);
   assert.equal((await signup({ email: 'corta@y.mx', password: '123' }, '10.0.0.2')).statusCode, 400);

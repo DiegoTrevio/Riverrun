@@ -36,9 +36,17 @@ export async function accountRoutes(api: FastifyInstance) {
     await assertCurrentPassword(req.user.email, current);
     // El tope va antes de decir si el correo está ocupado: cada pregunta cuenta.
     if (rateLimited(`email-change:${req.user.id}`, 5, HOUR)) return reply.code(429).send({ error: 'Ya pediste varios cambios de correo: espera una hora' });
-    if (await store.getUserForLogin(email)) throw new HttpError(409, EMAIL_TAKEN);
-    const token = await store.createAuthToken(req.user.id, 'change_email', EMAIL_CHANGE_HOURS * 60, email);
     const { fromName } = await mailBrand(req.user.account_id);
+    // Ocupado: la respuesta es la misma (no revela quién está registrado, bajos de la 2c); al titular le llega el aviso.
+    if (await store.getUserForLogin(email)) {
+      await sendMail({
+        fromName, to: email, subject: 'Alguien intentó usar tu correo',
+        text: `Hola,\n\nAlguien pidió que ${email} sea el correo de otra cuenta. Como ya es el de tu cuenta, no cambió nada. Si no sabes de qué se trata, ignora este mensaje.`,
+      });
+      await logEvent({ level: 'info', source: 'admin', message: `${req.user.email} pidió cambiar su correo a uno que ya tiene cuenta`, accountId: req.user.account_id ?? undefined });
+      return { ok: true, pending: email };
+    }
+    const token = await store.createAuthToken(req.user.id, 'change_email', EMAIL_CHANGE_HOURS * 60, email);
     await sendMail({
       fromName,
       to: email,

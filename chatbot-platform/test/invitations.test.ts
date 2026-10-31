@@ -134,10 +134,14 @@ t('límite del plan: cuentan las invitaciones pendientes, y se revisa otra vez a
   assert.equal((await accept({ token: tokenFor('nico@taller.mx'), password: 'Pz-113-Qx-313-Kv' })).statusCode, 200, 'con lugar, la misma invitación sirve');
 });
 
-t('correos que ya tienen cuenta o temporales no se invitan; agentes y otras cuentas no pueden', async () => {
+t('un correo que ya tiene cuenta recibe un aviso, no un enlace, y la respuesta no lo revela; temporales no; agentes y otras cuentas no pueden', async () => {
+  // La misma respuesta que con un correo libre (bajos de la 2c); a esa persona le llega el aviso, sin enlace.
   const taken = await A.admin('POST', '/api/invitations', { email: 'beto@otra.mx' });
-  assert.equal(taken.statusCode, 409);
-  assert.match(taken.json().error, /ya tiene cuenta/);
+  assert.equal(taken.statusCode, 200, taken.body);
+  const notice = [...outbox].reverse().find((m) => m.to === 'beto@otra.mx')!;
+  assert.match(notice.subject, /^Te invitaron a /);
+  assert.match(notice.text, /ya tiene una cuenta/);
+  assert.doesNotMatch(notice.text, /#\/invitacion\//, 'sin enlace para aceptar');
   assert.equal((await A.admin('POST', '/api/invitations', { email: 'x@mailinator.com' })).statusCode, 400);
   assert.equal((await A.admin('POST', '/api/invitations', { email: 'no-es-correo' })).statusCode, 400);
   assert.equal((await A.agent('POST', '/api/invitations', { email: 'pepe@taller.mx' })).statusCode, 403);
