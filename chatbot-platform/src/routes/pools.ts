@@ -2,11 +2,11 @@
  * Varios números de WhatsApp por cuenta: un enlace público (wa.me) que reparte a los clientes nuevos entre los
  * números conectados, para poner en la web, en redes o en anuncios. Cada número sigue siendo un canal independiente.
  */
+import { ipLimitKey, limited } from '../identity/rate-limit.js';
 import crypto from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { HttpError, requireRole, scopeAccount, targetAccount } from '../access.js';
-import { rateLimited } from '../auth.js';
 import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
 import { logEvent } from '../logs.js';
@@ -98,7 +98,7 @@ export async function poolPublicRoutes(app: FastifyInstance) {
     `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><body style="font:16px system-ui;max-width:420px;margin:15vh auto;padding:0 20px;text-align:center"><h2>${title}</h2><p>${body}</p>`;
 
   app.get('/wa/:token', async (req: any, reply) => {
-    if (rateLimited(`wa-pool:${req.ip}`, 120, 60_000)) return reply.code(429).type('text/html').send(page('Demasiadas visitas', 'Intenta de nuevo en un minuto.'));
+    if (await limited(ipLimitKey('wa-pool', req.ip), 120, 60_000)) return reply.code(429).type('text/html').send(page('Demasiadas visitas', 'Intenta de nuevo en un minuto.'));
     const pool = await queryOne<PoolRow & { account_active: boolean; account_status: string }>(
       `SELECT p.*, a.active AS account_active, a.status AS account_status FROM wa_pools p JOIN accounts a ON a.id = p.account_id WHERE p.token = $1`,
       [String(req.params.token).slice(0, 40)],

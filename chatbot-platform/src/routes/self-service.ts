@@ -5,12 +5,12 @@
  * - en el panel: descargar todos sus datos (ZIP) y pedir o cancelar el borrado de su cuenta.
  * Las páginas son HTML del servidor, sin JavaScript (salvo el captcha opcional del contacto), con la marca del dominio.
  */
+import { ipLimitKey, limited } from '../identity/rate-limit.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { HttpError, requireRole, targetAccount } from '../access.js';
 import { buildAccountExport, cancelDeletion, readDeletionToken, deletionLinkOpen, consumeDeletionLink, requestDeletion, scheduleDeletion } from '../accounts/self-service.js';
 import { accountOwner, ownerStepUp } from '../identity/ownership.js';
-import { rateLimited } from '../auth.js';
 import { brandByDomain, hostOf, publicBrand } from '../brands.js';
 import { config } from '../config.js';
 import { query } from '../db.js';
@@ -164,7 +164,7 @@ export async function selfServicePages(root: FastifyInstance) {
     app.post('/contacto', async (req: any, reply) => {
       const { brand } = await brandFor(req);
       const values = (req.body ?? {}) as Record<string, string>;
-      if (rateLimited(`contact:${req.ip}`, 5, 3600_000)) return html(reply, 429, contactForm({ brand, values, error: 'Ya recibimos varios mensajes desde tu conexión. Intenta más tarde.' }));
+      if (await limited(ipLimitKey('contact', req.ip), 5, 3600_000)) return html(reply, 429, contactForm({ brand, values, error: 'Ya recibimos varios mensajes desde tu conexión. Intenta más tarde.' }));
       const b = ContactBody.safeParse(values);
       if (!b.success) {
         const fields = [...new Set(b.error.issues.map((i) => String(i.path[0])).filter((k) => k in FIELD_ERROR))];
@@ -258,7 +258,7 @@ export async function accountSelfServiceRoutes(api: FastifyInstance) {
     const accountId = await targetAccount(req.user, req.query.account_id);
     const acc = await store.getAccount(accountId);
     if (!acc) throw new HttpError(404, 'No encontrado');
-    if (rateLimited(`account-export:${accountId}`, 5, 86400_000)) throw new HttpError(429, 'Ya descargaste tus datos varias veces hoy; intenta mañana.');
+    if (await limited(`account-export:${accountId}`, 5, 86400_000)) throw new HttpError(429, 'Ya descargaste tus datos varias veces hoy; intenta mañana.');
     const zip = await buildAccountExport(accountId);
     await logEvent({ level: 'info', source: 'admin', message: `Descarga de todos los datos de la cuenta por ${req.user.email}`, accountId });
     return reply
@@ -275,7 +275,7 @@ export async function accountSelfServiceRoutes(api: FastifyInstance) {
     const { confirm } = parse(z.object({ confirm: z.string().max(200) }), req.body);
     if (confirm.trim().toLowerCase() !== acc.name.trim().toLowerCase()) throw new HttpError(400, `Para confirmar, escribe exactamente el nombre de tu cuenta: ${acc.name}`);
     if (acc.deletion_scheduled_for) throw new HttpError(409, 'Tu cuenta ya tiene un borrado programado.');
-    if (rateLimited(`account-delete:${acc.id}`, 5, 3600_000)) throw new HttpError(429, 'Ya te enviamos el correo varias veces; revisa tu bandeja (y spam).');
+    if (await limited(`account-delete:${acc.id}`, 5, 3600_000)) throw new HttpError(429, 'Ya te enviamos el correo varias veces; revisa tu bandeja (y spam).');
     const owner = await accountOwner(acc.id);
     if (!owner) throw new HttpError(409, 'La cuenta no tiene dueño a quien mandar la confirmación.');
     await requestDeletion(acc, owner);

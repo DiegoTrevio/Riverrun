@@ -1,8 +1,8 @@
 /** «Datos de tus clientes»: los campos propios de la cuenta, y la importación de contactos desde CSV. */
+import { ipLimitKey, limited } from '../identity/rate-limit.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { assertAccount, HttpError, requireRole, scopeAccount, targetAccount } from '../access.js';
-import { rateLimited } from '../auth.js';
 import {
   ContactFieldBody, ContactFieldPatch, createContactField, deleteContactField, getContactField, listContactFields, reorderContactFields, updateContactField,
 } from '../contacts/fields.js';
@@ -69,7 +69,7 @@ export async function contactFieldRoutes(api: FastifyInstance) {
     const b = parse(z.object({ channel_id: z.string().uuid(), csv: z.string().min(1).max(5 * 1024 * 1024) }), req.body);
     const channel = assertAccount(req.user, await store.getChannel(b.channel_id), 'Canal no encontrado');
     if (channel.type !== 'whatsapp') throw new HttpError(400, 'Elige un canal de WhatsApp: los contactos se identifican por su teléfono');
-    if (rateLimited(`contacts-import:${channel.account_id}`, 20, 3600_000)) throw new HttpError(429, 'Demasiadas importaciones seguidas; intenta en un rato.');
+    if (await limited(`contacts-import:${channel.account_id}`, 20, 3600_000)) throw new HttpError(429, 'Demasiadas importaciones seguidas; intenta en un rato.');
     try {
       const r = await importContacts(channel, b.csv, await listContactFields(channel.account_id));
       await logEvent({ level: 'info', source: 'admin', message: `Importación de contactos por ${req.user.email}: ${r.created} nuevos, ${r.updated} actualizados, ${r.errors.length} con error`, accountId: channel.account_id });

@@ -4,10 +4,11 @@
  * activo de la cuenta con su correo verificado y su verificación en dos pasos. El cambio es una sola escritura
  * condicionada: si el destino dejó de cumplir o la cuenta cambió de dueño mientras tanto, no se aplica.
  */
+import { ipLimitKey, limited } from '../identity/rate-limit.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { HttpError, notFound, requireRole, targetAccount } from '../access.js';
-import { assertCurrentPassword, rateLimited } from '../auth.js';
+import { assertCurrentPassword } from '../auth.js';
 import { linkBase, mailBrand } from '../brands.js';
 import { query, withTransaction } from '../db.js';
 import { notifyUser } from '../identity/notices.js';
@@ -35,7 +36,7 @@ export async function accountRoutes(api: FastifyInstance) {
     // Con la sesión sola no basta: el correo abre «Olvidé mi contraseña», así que se pide la contraseña como para cambiarla.
     await assertCurrentPassword(req.user.email, current);
     // El tope va antes de decir si el correo está ocupado: cada pregunta cuenta.
-    if (rateLimited(`email-change:${req.user.id}`, 5, HOUR)) return reply.code(429).send({ error: 'Ya pediste varios cambios de correo: espera una hora' });
+    if (await limited(`email-change:${req.user.id}`, 5, HOUR)) return reply.code(429).send({ error: 'Ya pediste varios cambios de correo: espera una hora' });
     const { fromName } = await mailBrand(req.user.account_id);
     // Ocupado: la respuesta es la misma (no revela quién está registrado, bajos de la 2c); al titular le llega el aviso.
     if (await store.getUserForLogin(email)) {
@@ -90,7 +91,7 @@ export async function accountRoutes(api: FastifyInstance) {
 /** Rutas públicas: abrir el enlace del cambio de correo (llega sin sesión, desde el correo nuevo). */
 export async function accountPublicRoutes(app: FastifyInstance) {
   app.post('/api/email-change/confirm', async (req, reply) => {
-    if (rateLimited(`email-change-confirm:${req.ip}`, 20, HOUR)) return reply.code(429).send({ error: 'Demasiados intentos, espera un momento' });
+    if (await limited(ipLimitKey('email-change-confirm', req.ip), 20, HOUR)) return reply.code(429).send({ error: 'Demasiados intentos, espera un momento' });
     const { token } = parse(z.object({ token: z.string().min(1).max(200) }), req.body);
     const changed = await withTransaction(async (client) => {
       const change = await store.lockEmailChange(token, client);

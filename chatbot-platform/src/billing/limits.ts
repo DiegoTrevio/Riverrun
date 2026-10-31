@@ -14,6 +14,7 @@ import { HttpError } from '../access.js';
 import { notifyUsers } from '../automation/store.js';
 import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
+import { limited } from '../identity/rate-limit.js';
 
 /** Una conexión de transacción (con su candado) o, sin ella, el pool: dentro de un candado no se pide otra conexión. */
 type Q = { query: (sql: string, args?: unknown[]) => Promise<{ rows: any[] }> };
@@ -23,12 +24,13 @@ import { sendMail } from '../mailer.js';
 import { logEvent } from '../logs.js';
 import { chargeCents } from './tax.js';
 
-export const LIMIT_KEYS = ['messages_per_month', 'channels', 'users', 'chatbots', 'social_accounts'] as const;
+const MB = 1024 * 1024;
+export const LIMIT_KEYS = ['messages_per_month', 'channels', 'users', 'chatbots', 'social_accounts', 'storage_mb'] as const;
 export type LimitKey = (typeof LIMIT_KEYS)[number];
 export type Limits = Partial<Record<LimitKey, number | null>>;
 
 const Limit = z.number().int().min(1).max(100_000_000).nullable().optional();
-export const LimitsSchema = z.object({ messages_per_month: Limit, channels: Limit, users: Limit, chatbots: Limit, social_accounts: Limit }).strict();
+export const LimitsSchema = z.object({ messages_per_month: Limit, channels: Limit, users: Limit, chatbots: Limit, social_accounts: Limit, storage_mb: Limit }).strict();
 
 export const LIMIT_LABELS: Record<LimitKey, { singular: string; plural: string }> = {
   messages_per_month: { singular: 'mensaje del asistente al mes', plural: 'mensajes del asistente al mes' },
@@ -36,6 +38,7 @@ export const LIMIT_LABELS: Record<LimitKey, { singular: string; plural: string }
   users: { singular: 'usuario', plural: 'usuarios' },
   chatbots: { singular: 'asistente', plural: 'asistentes' },
   social_accounts: { singular: 'red social conectada', plural: 'redes sociales conectadas' },
+  storage_mb: { singular: 'MB de archivos', plural: 'MB de archivos' },
 };
 
 const clean = (l: unknown): Limits => {
@@ -53,6 +56,7 @@ export function trialLimits(): Limits {
   if (t.users > 0) out.users = t.users;
   if (t.chatbots > 0) out.chatbots = t.chatbots;
   if (t.socialAccounts > 0) out.social_accounts = t.socialAccounts;
+  if (t.storageMb > 0) out.storage_mb = t.storageMb;
   return out;
 }
 
@@ -88,18 +92,24 @@ export interface Usage {
   users: number;
   chatbots: number;
   social_accounts: number;
+  storage_mb: number;
 }
 
 export async function usageOf(accountId: string, q?: Q): Promise<Usage> {
-  const r = await one<{ channels: number; users: number; chatbots: number; social_accounts: number }>(q,
+  const r = await one<{ channels: number; users: number; chatbots: number; social_accounts: number; storage_bytes: string }>(q,
     `SELECT (SELECT count(*)::int FROM channels WHERE account_id = $1 AND type <> 'playground') AS channels,
             (SELECT count(*)::int FROM users WHERE account_id = $1 AND active) AS users,
             (SELECT count(*)::int FROM chatbots WHERE account_id = $1) AS chatbots,
-            (SELECT count(*)::int FROM social_accounts WHERE account_id = $1 AND status <> 'disconnected') AS social_accounts`,
+            (SELECT count(*)::int FROM social_accounts WHERE account_id = $1 AND status <> 'disconnected') AS social_accounts,
+            -- Lo que sube la cuenta (IN-19): archivos de automatizaciones, la biblioteca de cada agente y los formatos de Word.
+            ((SELECT coalesce(sum(size_bytes), 0) FROM attachments WHERE account_id = $1)
+              + (SELECT coalesce(sum(i.size_bytes), 0) FROM images i JOIN chatbots b ON b.id = i.chatbot_id WHERE b.account_id = $1)
+              + (SELECT coalesce(sum(size_bytes), 0) FROM quote_templates WHERE account_id = $1))::text AS storage_bytes`,
     [accountId],
   );
   return {
     messages_per_month: await messagesUsed(accountId, monthKey(), q), channels: r?.channels ?? 0, users: r?.users ?? 0, chatbots: r?.chatbots ?? 0, social_accounts: r?.social_accounts ?? 0,
+    storage_mb: Math.ceil(Number(r?.storage_bytes ?? 0) / MB),
   };
 }
 
@@ -247,3 +257,15 @@ export async function noticeMessagesReached(accountId: string) {
   const q = await messageQuota(accountId);
   if (q.max) await notifyLimit(accountId, 'messages_100', monthKey(), q.used, q.max);
 }
+
+/**
+ * Antes de guardar un archivo que sube la cuenta (IN-19): una cuenta en pausa no sube nada, 30 subidas por hora por
+ * cuenta, y lo guardado más el archivo nuevo cabe en `storage_mb` del plan (o de la prueba).
+ */
+export async function assertUploadAllowed(accountId: string, bytes: number) {
+  const acc = await queryOne<{ status: string; active: boolean }>(`SELECT status, active FROM accounts WHERE id = $1`, [accountId]);
+  if (!acc?.active || acc.status === 'paused') throw new HttpError(403, 'Tu cuenta está en pausa: no se pueden subir archivos.', undefined, { code: 'account_paused' });
+  if (await limited(`uploads:${accountId}`, UPLOADS_PER_HOUR, 3600_000)) throw new HttpError(429, `Subiste muchos archivos en la última hora (más de ${UPLOADS_PER_HOUR}); espera un rato.`);
+  if (bytes > 0) await assertWithinLimit(accountId, 'storage_mb', Math.ceil(bytes / MB));
+}
+export const UPLOADS_PER_HOUR = 30;

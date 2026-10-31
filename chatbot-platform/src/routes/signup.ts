@@ -2,10 +2,10 @@ import { googleConfigured } from '../integrations/google.js';
 import { baseFor, brandByDomain, hostOf, linkBase, mailBrand } from '../brands.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { hashPassword, ipKey, rateLimited } from '../auth.js';
+import { hashPassword, ipKey } from '../auth.js';
 import { beginLogin } from '../identity/mfa.js';
 import { forgetTrustedDevices } from '../identity/devices.js';
-import { clearHits, countHit, releaseHit } from '../identity/rate-limit.js';
+import { clearHits, countHit, ipLimitKey, limited, releaseHit } from '../identity/rate-limit.js';
 import { notifyPlatform } from '../platform/digest.js';
 import { query, queryOne } from '../db.js';
 import { notifyUser } from '../identity/notices.js';
@@ -191,7 +191,7 @@ export async function signupRoutes(app: FastifyInstance) {
   });
 
   app.post('/api/verify-email', async (req, reply) => {
-    if (rateLimited(`verify:${req.ip}`, 20, HOUR)) return reply.code(429).send({ error: 'Demasiados intentos, intenta más tarde' });
+    if (await limited(ipLimitKey('verify', req.ip), 20, HOUR)) return reply.code(429).send({ error: 'Demasiados intentos, intenta más tarde' });
     const { token } = parse(z.object({ token: z.string().min(10).max(200) }), req.body);
     const userId = await store.consumeAuthToken(token, 'verify_email');
     if (!userId) throw new HttpError(400, 'El enlace no es válido o ya venció. Pide uno nuevo desde tu panel.');
@@ -214,7 +214,7 @@ export async function signupRoutes(app: FastifyInstance) {
   });
 
   app.post('/api/reset-password', async (req, reply) => {
-    if (rateLimited(`reset:${req.ip}`, 10, HOUR)) return reply.code(429).send({ error: 'Demasiados intentos, intenta más tarde' });
+    if (await limited(ipLimitKey('reset', req.ip), 10, HOUR)) return reply.code(429).send({ error: 'Demasiados intentos, intenta más tarde' });
     const b = parse(z.object({ token: z.string().min(10).max(200), password: Password }), req.body);
     // La contraseña se revisa antes de gastar el enlace: si no sirve, puede elegir otra con el mismo.
     const owner = await store.peekAuthToken(b.token, 'reset_password');

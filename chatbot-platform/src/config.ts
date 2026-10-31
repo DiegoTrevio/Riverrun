@@ -204,6 +204,8 @@ export const config = {
       users: Number(env('TRIAL_MAX_USERS', '3')),
       chatbots: Number(env('TRIAL_MAX_CHATBOTS', '2')),
       socialAccounts: Number(env('TRIAL_MAX_SOCIAL_ACCOUNTS', '2')),
+      /** Archivos que sube una cuenta en prueba (IN-19). */
+      storageMb: Number(env('TRIAL_MAX_STORAGE_MB', '200')),
     },
     /** Gasto de IA al mes de una cuenta en prueba, en USD (0 = sin tope). Los planes llevan el suyo (PAY-20). */
     trialAiUsd: Number(env('TRIAL_AI_USD', '5')),

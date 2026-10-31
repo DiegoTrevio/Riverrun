@@ -1,4 +1,5 @@
 import { accountAi } from '../ai/budget.js';
+import { assertUploadAllowed } from '../billing/limits.js';
 import { assertAiAllowed } from '../ai/gate.js';
 import { agentVersionRoutes } from './agent-versions.js';
 import type { PoolClient } from 'pg';
@@ -492,6 +493,7 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
     const meta = parse(ImageMeta, upload.fields);
     if (!meta.code || !meta.name) throw new HttpError(400, 'El ID y el nombre son obligatorios');
     if (!upload.file) throw new HttpError(400, 'Falta el archivo');
+    await assertUploadAllowed(bot.account_id, upload.file.buffer.length); // en pausa, ritmo y almacenamiento (IN-19)
     const rel = await saveFile(bot.id, upload.file);
     try {
       const img = await store.insertImage({
@@ -525,6 +527,8 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
     if (req.isMultipart()) ({ fields, file } = await readUpload(req));
     const patch: Record<string, unknown> = { ...parse(ImageMeta, fields) };
     if (file) {
+      const owner = (await store.getChatbot(img.chatbot_id))!.account_id;
+      await assertUploadAllowed(owner, Math.max(0, file.buffer.length - (img.size_bytes ?? 0)));
       patch.file_path = await saveFile(img.chatbot_id, file);
       patch.mime_type = file.mime;
       patch.size_bytes = file.buffer.length;

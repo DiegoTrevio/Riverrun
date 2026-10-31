@@ -241,10 +241,10 @@ export async function viewAccounts(root) {
               if (d > 0) { if (!(await run(() => api('PUT', `/api/accounts/${a.id}`, { extend_trial_days: d }), 'Prueba extendida'))) return; render(); }
             } }, 'Extender prueba') : null,
             h('button', { class: 'small', title: 'Excepción de límites para este perfil (sobre su plan)', onclick: async () => {
-              const keys = { mensajes: 'messages_per_month', canales: 'channels', usuarios: 'users', asistentes: 'chatbots', redes: 'social_accounts' };
+              const keys = { mensajes: 'messages_per_month', canales: 'channels', usuarios: 'users', asistentes: 'chatbots', redes: 'social_accounts', archivos: 'storage_mb' };
               const cur = [...Object.entries(keys).filter(([, k]) => a.limits_override?.[k]).map(([n, k]) => `${n}=${a.limits_override[k]}`),
                 ...(a.ai_usd_override != null ? [`ia=${Number(a.ai_usd_override)}`] : [])].join(' ');
-              const txt = await ask('Límites especiales de este perfil (se aplican en lugar de los de su plan).\nFormato: mensajes=1000 canales=2 usuarios=5 asistentes=3 redes=2 ia=20 (USD de IA al mes)\nDéjalo vacío para quitar la excepción y usar los de su plan.', cur);
+              const txt = await ask('Límites especiales de este perfil (se aplican en lugar de los de su plan).\nFormato: mensajes=1000 canales=2 usuarios=5 asistentes=3 redes=2 archivos=500 (MB) ia=20 (USD de IA al mes)\nDéjalo vacío para quitar la excepción y usar los de su plan.', cur);
               if (txt === null) return;
               const limits_override = {};
               let ai_usd_override = null;

@@ -37,6 +37,24 @@ t('el panel lleva la CSP estricta y no se puede incrustar', async () => {
   assert.match(PANEL_CSP, /script-src 'self' https:\/\/challenges\.cloudflare\.com/);
 });
 
+t('variantes de la URL del panel (codificada, con ? codificado o con //) llevan la CSP estricta (IN-20)', async () => {
+  for (const url of ['/%69ndex.html', '/index.html%3F', '//index.html', '/%2e/index.html', '/no-existe']) {
+    const r = await get(url);
+    if (String(r.headers['content-type'] ?? '').startsWith('text/html')) assert.equal(r.headers['content-security-policy'], PANEL_CSP, url);
+  }
+  const panel = await get('/%69ndex.html');
+  assert.equal(panel.statusCode, 200, 'el servidor sí la sirve decodificada');
+  assert.equal(panel.headers['content-security-policy'], PANEL_CSP);
+});
+
+t('precios, estado y ayuda llevan la suya (con inline); solo ellas', async () => {
+  for (const url of ['/precios', '/estado', '/ayuda', '/ayuda.html', '/privacidad']) {
+    const r = await get(url);
+    if (!String(r.headers['content-type'] ?? '').startsWith('text/html')) continue;
+    assert.match(String(r.headers['content-security-policy']), /'unsafe-inline'/, url);
+  }
+});
+
 t('las páginas del servidor tampoco se pueden incrustar', async () => {
   const r = await get('/precios');
   assert.equal(r.statusCode, 200);

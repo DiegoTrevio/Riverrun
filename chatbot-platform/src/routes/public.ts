@@ -1,4 +1,5 @@
 import { truncateChars } from '../engine/text.js';
+import { limited } from '../identity/rate-limit.js';
 import { parsePayload } from '../automation/buttons.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -32,6 +33,10 @@ const HOUR = 3600_000;
 const ZERNIO_CONNECT_TTL_MS = 30 * 60_000;
 
 /** Webhooks de las plataformas, API del chat web e imágenes públicas firmadas. */
+
+/** Consultas de mensajes por minuto y sesión del chat web (IN-22). Las pruebas que consultan muy seguido lo suben. */
+export const webchatLimits = { pollsPerMin: 120 };
+
 export async function publicRoutes(app: FastifyInstance, service: ChatService) {
   /* ------------------------------ Webhooks ------------------------------ */
 
@@ -206,7 +211,7 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
     } else {
       reply.header('access-control-allow-origin', '*');
     }
-    reply.header('access-control-allow-methods', 'GET, POST, OPTIONS').header('access-control-allow-headers', 'content-type').header('access-control-max-age', '600');
+    reply.header('access-control-allow-methods', 'GET, POST, OPTIONS').header('access-control-allow-headers', 'content-type, x-webchat-session').header('access-control-max-age', '600');
     return true;
   };
 
@@ -236,6 +241,14 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
     const { title, subtitle, color, welcome_message, launcher_text, theme } = ch.config;
     return { title, subtitle, color, welcome_message, launcher_text, theme: theme || 'auto' };
   });
+
+  /** Red de una conexión: /24 en IPv4 y /64 en IPv6 (ver `ipKey`). */
+  const netKey = (ip: string) => {
+    const k = ipKey(ip);
+    const v4 = /^(\d+\.\d+\.\d+)\.\d+$/.exec(k);
+    return v4 ? `${v4[1]}.0/24` : k;
+  };
+  const NEW_PER_NET_HOUR = 20;
 
   app.post('/webchat/:token/session', async (req: any, reply) => {
     const ch = await webchat(req, reply);
@@ -277,9 +290,15 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
       || limitedFor(`webchat-msg-ip:${ch.id}:${ip}`, 120, HOUR) || limitedFor(`webchat-msg-day:${ch.id}:${session}`, 300, 24 * HOUR)) {
       return reply.code(429).send({ error: 'Demasiados mensajes, espera un momento' });
     }
-    // Cada cliente nuevo gasta IA y cupo del plan: a lo más 300 por hora en cada canal.
-    if (!(await store.findContact(ch.id, session)) && limitedFor(`webchat-new:${ch.id}`, 300, HOUR)) {
-      return reply.code(429).send({ error: 'El chat está recibiendo demasiadas conversaciones nuevas: intenta en unos minutos' });
+    // Cada cliente nuevo gasta IA y cupo del plan. Primero 20 por hora por red (/24 en IPv4, /64 en IPv6) y canal: así unas
+    // pocas conexiones no agotan el cupo del canal para los demás (IN-22); después, a lo más 300 por hora en el canal.
+    if (!(await store.findContact(ch.id, session))) {
+      if (await limited(`webchat-new-net:${ch.id}:${netKey(req.ip)}`, NEW_PER_NET_HOUR, HOUR)) {
+        return reply.code(429).send({ error: 'Demasiadas conversaciones nuevas desde tu red: intenta en un rato' });
+      }
+      if (await limited(`webchat-new:${ch.id}`, 300, HOUR)) {
+        return reply.code(429).send({ error: 'El chat está recibiendo demasiadas conversaciones nuevas: intenta en unos minutos' });
+      }
     }
     const r = await service.handleIncoming(ch, {
       messageId: `web-${crypto.randomUUID()}`,
@@ -299,8 +318,12 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
   app.get('/webchat/:token/messages', async (req: any, reply) => {
     const ch = await webchat(req, reply);
     if (!ch) return;
-    const session = readWebchatSession(ch.id, req.query.session);
+    // La sesión viaja en la cabecera (no queda en registros de URL ni en el Referer); la de la URL se acepta todavía para
+    // los widgets que ya están cargados en los sitios (hasta el 1 de diciembre de 2026).
+    const session = readWebchatSession(ch.id, String(req.headers['x-webchat-session'] ?? '') || req.query.session);
     if (!session) return reply.code(400).send({ error: 'Sesión inválida', code: 'invalid_session' });
+    // Leer también tiene tope (IN-22): el widget consulta cada pocos segundos; 120 por minuto por sesión sobra.
+    if (limitedFor(`webchat-poll:${ch.id}:${session}`, webchatLimits.pollsPerMin, 60_000)) return reply.code(429).send({ error: 'Demasiadas consultas, espera un momento' });
     const contact = await store.findContact(ch.id, session);
     if (!contact) return { messages: [], typing: false };
     const after = Number(req.query.after) || 0;

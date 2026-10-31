@@ -3,12 +3,12 @@
  * Un agente ve, registra, recuerda y marca pagados solo los cobros de los contactos que tiene asignados, y nunca pone el
  * enlace de pago (desviaría el pago); un admin ve todos, borra y cambia la configuración.
  */
+import { ipLimitKey, limited } from '../identity/rate-limit.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { dateStr } from '../dates.js';
 import { assertAccount, HttpError, notFound, requireRole, targetAccount } from '../access.js';
 import * as store from '../store/index.js';
-import { rateLimited } from '../auth.js';
 import { config } from '../config.js';
 import { query, queryOne, withTransaction } from '../db.js';
 import { logEvent } from '../logs.js';
@@ -316,7 +316,7 @@ export async function receivableRoutes(api: FastifyInstance, service: ChatServic
     const r = await owned(req.user, req.params.id);
     if (r.status !== 'pending') throw new HttpError(409, 'El cobro ya no está pendiente');
     if (!r.approved_at) throw new HttpError(409, 'Un administrador debe aprobar este cobro antes de mandarlo');
-    if (rateLimited(`receivable-remind:${r.id}`, config.receivables.manualRemindPerDay, 86400_000)) throw new HttpError(429, 'Ya se le recordó varias veces hoy: espera a mañana.');
+    if (await limited(`receivable-remind:${r.id}`, config.receivables.manualRemindPerDay, 86400_000)) throw new HttpError(429, 'Ya se le recordó varias veces hoy: espera a mañana.');
     const res = await service.receivables.remind(r, { manual: true });
     if (!res.sent) throw new HttpError(422, `No se pudo enviar: ${res.reason}`);
     return { sent: true, receivable: receivableOut((await getReceivable(r.id))!) };

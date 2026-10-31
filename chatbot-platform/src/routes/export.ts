@@ -1,9 +1,9 @@
 /** Exportar contactos, conversaciones y mensajes a CSV (solo administradores; cada exportación queda en el registro). */
+import { ipLimitKey, limited } from '../identity/rate-limit.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { dateStr } from '../dates.js';
 import { HttpError, requireRole, targetAccount } from '../access.js';
-import { rateLimited } from '../auth.js';
 import { query } from '../db.js';
 import { listContactFields } from '../contacts/fields.js';
 import { csvStream, exportFilename } from '../export.js';
@@ -20,7 +20,7 @@ export async function exportRoutes(api: FastifyInstance) {
 
   /** Prepara la respuesta de descarga y registra quién exportó qué. */
   const download = async (req: any, reply: any, kind: string, accountId: string, stream: ReturnType<typeof csvStream>) => {
-    if (rateLimited(`export:${req.user.id}`, 20, 3600_000)) throw new HttpError(429, 'Demasiadas exportaciones seguidas; intenta en un rato.');
+    if (await limited(`export:${req.user.id}`, 20, 3600_000)) throw new HttpError(429, 'Demasiadas exportaciones seguidas; intenta en un rato.');
     await logEvent({ level: 'info', source: 'admin', message: `Exportación CSV de ${kind} por ${req.user.email}`, accountId });
     return reply
       .header('content-type', 'text/csv; charset=utf-8')

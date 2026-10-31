@@ -1,4 +1,5 @@
 import { cleanFieldValue, listContactFields, TYPE_LABELS } from '../contacts/fields.js';
+import { ipLimitKey, limited } from '../identity/rate-limit.js';
 import { contactWorkspaceRoutes } from './contact-workspace.js';
 import { describeConversation } from '../automation/alert-format.js';
 import fs from 'node:fs';
@@ -14,7 +15,6 @@ import * as store from '../store/index.js';
 import { cardsOfConversation } from '../store/pipelines.js';
 import { getQuote, listQuotes, OPEN_STATUSES } from '../store/quotes.js';
 import { parse } from './util.js';
-import { rateLimited } from '../auth.js';
 import { deliverReport, ReportSendSchema, reportRecipients } from '../automation/report-delivery.js';
 import { buildReport, renderReport, transcriptTail } from '../engine/report-format.js';
 import * as astore from '../automation/store.js';
@@ -289,7 +289,7 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
     const external = b.emails.length + b.phones.length > 0;
     if (external && req.user.role !== 'admin' && req.user.role !== 'superadmin') throw new HttpError(403, 'Solo un administrador puede enviar reportes fuera del equipo');
     if (!b.user_ids.length && !external) throw new HttpError(400, 'Elige al menos un destinatario');
-    if (rateLimited(`report:${req.user.id}`, 20, 10 * 60_000)) throw new HttpError(429, 'Demasiados reportes enviados: espera unos minutos');
+    if (await limited(`report:${req.user.id}`, 20, 10 * 60_000)) throw new HttpError(429, 'Demasiados reportes enviados: espera unos minutos');
     const users = await reportRecipients(conv.account_id, { userIds: b.user_ids });
     if (users.length !== new Set(b.user_ids).size) throw new HttpError(400, 'Algún destinatario no pertenece a esta cuenta o está inactivo');
     return deliverReport(service, conv.id, { users, emails: b.emails, phones: b.phones, note: b.note, includeTranscript: b.include_transcript, refresh: b.refresh, by: req.user.email });
@@ -309,7 +309,7 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
     // Antes de gastar IA en el resumen: ¿hay a dónde enviarla?
     const targets = (await appDestinations(conv.account_id)).filter((d) => (b.endpoint_id ? d.id === b.endpoint_id : d.receives_conversations));
     if (!targets.length) throw new HttpError(400, b.endpoint_id ? 'Esa app no está conectada o está apagada' : 'No hay una app conectada que reciba conversaciones. Conéctala en Ajustes → Integraciones (webhook con el evento «Conversación enviada a tu app»).');
-    if (rateLimited(`send-to-app:${req.user.id}`, 30, 10 * 60_000)) throw new HttpError(429, 'Demasiados envíos seguidos: espera unos minutos');
+    if (await limited(`send-to-app:${req.user.id}`, 30, 10 * 60_000)) throw new HttpError(429, 'Demasiados envíos seguidos: espera unos minutos');
     const sent = await sendConversation(conv.account_id, conv.id, {
       content: b.content, endpointId: b.endpoint_id, refresh: (id) => service.summarize(id),
       reason: `enviada por ${req.user.name || req.user.email} desde el panel`, trigger: { event: 'manual', user_id: req.user.id },

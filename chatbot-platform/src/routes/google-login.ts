@@ -1,9 +1,10 @@
 /** Iniciar sesión o registrarse con Google (OpenID Connect). Solo funciona en el dominio principal. */
+import { ipLimitKey, limited } from '../identity/rate-limit.js';
 import crypto from 'node:crypto';
 import { pendingInviteFor } from './invitations.js';
 import type { FastifyInstance } from 'fastify';
 import { brandByDomain, hostOf } from '../brands.js';
-import { hashPassword, rateLimited } from '../auth.js';
+import { hashPassword } from '../auth.js';
 import { beginLogin } from '../identity/mfa.js';
 import { config } from '../config.js';
 import { withTransaction } from '../db.js';
@@ -36,7 +37,7 @@ function readState(state: string, nonce: string, now = Date.now()) {
 export async function googleLoginRoutes(app: FastifyInstance) {
   app.get('/oauth/google/login', async (req, reply) => {
     if (!googleConfigured()) return reply.redirect('/#/login?google=off');
-    if (rateLimited(`glogin:${req.ip}`, 30, HOUR)) return reply.redirect('/#/login?google=demasiados');
+    if (await limited(ipLimitKey('glogin', req.ip), 30, HOUR)) return reply.redirect('/#/login?google=demasiados');
     const nonce = crypto.randomBytes(16).toString('hex');
     reply.setCookie('g_nonce', nonce, { httpOnly: true, sameSite: 'lax', secure: config.secureCookies, path: '/oauth/google', maxAge: 600 });
     const p = new URLSearchParams({

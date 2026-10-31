@@ -611,6 +611,8 @@ export const ChannelConfigSchemas = {
     last_uid: z.number().int().min(0).default(0),
     uid_validity: z.number().int().min(0).default(0),
     last_error: z.string().max(300).default(''),
+    /** Solo contesta correos con el remitente comprobado (DMARC o DKIM alineado); los demás se guardan sin respuesta (IN-17). */
+    require_sender_auth: z.boolean().default(true),
   }),
   playground: z.object({}),
 } as const;

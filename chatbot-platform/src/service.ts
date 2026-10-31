@@ -616,7 +616,7 @@ export class ChatService {
         await logEvent({ level: 'warn', source: 'ai', message: `No se pudo leer el archivo del cliente: ${e?.message ?? e}`, ...logBase });
       }
     }
-    const meta: Record<string, unknown> = stale ? { name: msg.displayName, stale: true } : msg.captureOnly ? { name: msg.displayName, held: 'limite_de_correos' } : { name: msg.displayName };
+    const meta: Record<string, unknown> = stale ? { name: msg.displayName, stale: true } : msg.captureOnly ? { name: msg.displayName, held: msg.held ?? 'limite_de_correos' } : { name: msg.displayName };
     if (mediaError) meta.media_error = mediaError;
     // Botón tocado: su identificador (las automatizaciones reconocen a qué botón de qué mensaje corresponde).
     if (msg.payload) meta.button = String(msg.payload).slice(0, 200);

@@ -1,11 +1,11 @@
 import crypto from 'node:crypto';
+import { ipLimitKey, limited } from '../identity/rate-limit.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { HttpError, requireRole, targetAccount } from '../access.js';
-import { rateLimited } from '../auth.js';
 import { freeSlots } from '../automation/agenda.js';
 import { activeStaff, staffNames } from '../automation/staff.js';
 import * as astore from '../automation/store.js';
@@ -164,7 +164,7 @@ export async function bookingPublicRoutes(app: FastifyInstance, service: ChatSer
 
   /** Lo que muestra la página: el negocio, la persona del enlace (si es suyo) y los servicios. */
   app.get('/api/public/booking/:token', async (req: any, reply) => {
-    if (rateLimited(`booking-info:${req.ip}`, 120, 60_000)) return reply.code(429).send({ error: 'Demasiadas visitas; intenta en un minuto.' });
+    if (await limited(ipLimitKey('booking-info', req.ip), 120, 60_000)) return reply.code(429).send({ error: 'Demasiadas visitas; intenta en un minuto.' });
     const found = await linkFor(String(req.params.token));
     if (!found) return reply.code(404).send({ error: 'Este enlace para reservar ya no está disponible.' });
     const { link, services } = found;
@@ -185,7 +185,7 @@ export async function bookingPublicRoutes(app: FastifyInstance, service: ChatSer
 
   /** Horarios libres del servicio (con la persona del enlace o la que eligió el cliente). */
   app.get('/api/public/booking/:token/slots', async (req: any, reply) => {
-    if (rateLimited(`booking-slots:${req.ip}`, 120, 60_000)) return reply.code(429).send({ error: 'Demasiadas visitas; intenta en un minuto.' });
+    if (await limited(ipLimitKey('booking-slots', req.ip), 120, 60_000)) return reply.code(429).send({ error: 'Demasiadas visitas; intenta en un minuto.' });
     const found = await linkFor(String(req.params.token));
     if (!found) return reply.code(404).send({ error: 'Este enlace para reservar ya no está disponible.' });
     const svc = found.services.find((s) => s.id === String(req.query?.service_id ?? ''));
@@ -202,7 +202,7 @@ export async function bookingPublicRoutes(app: FastifyInstance, service: ChatSer
 
   /** Reserva: se vuelve a revisar el horario (como en el chat) y se confirma por correo. */
   app.post('/api/public/booking/:token', async (req: any, reply) => {
-    if (rateLimited(`booking-book:${req.ip}`, 10, 60 * 60_000)) return reply.code(429).send({ error: 'Hiciste demasiadas reservas seguidas; intenta más tarde.' });
+    if (await limited(ipLimitKey('booking-book', req.ip), 10, 60 * 60_000)) return reply.code(429).send({ error: 'Hiciste demasiadas reservas seguidas; intenta más tarde.' });
     const found = await linkFor(String(req.params.token));
     if (!found) return reply.code(404).send({ error: 'Este enlace para reservar ya no está disponible.' });
     const b = parse(BookBody, req.body ?? {});
@@ -214,7 +214,7 @@ export async function bookingPublicRoutes(app: FastifyInstance, service: ChatSer
     if (svc.kind === 'call' && svc.call_mode !== 'video' && phone.length < 8) throw new HttpError(400, 'Escribe tu teléfono: te llamaremos a ese número');
     const person = found.link.user_id ?? b.person_id;
     if (person && !found.link.user_id && !(await choosable(svc, found.link)).some((p) => p.id === person)) throw new HttpError(400, 'Esa persona no atiende este servicio');
-    if (rateLimited(`booking-link:${found.link.id}`, MAX_PER_LINK_HOUR, 60 * 60_000)) return reply.code(429).send({ error: 'Este enlace recibió muchas reservas seguidas; intenta más tarde.' });
+    if (await limited(`booking-link:${found.link.id}`, MAX_PER_LINK_HOUR, 60 * 60_000)) return reply.code(429).send({ error: 'Este enlace recibió muchas reservas seguidas; intenta más tarde.' });
     const upcoming = await queryOne<{ n: number }>(
       `SELECT count(*)::int AS n FROM appointments WHERE account_id = $1 AND customer_email = $2 AND status = 'confirmed' AND starts_at > now()`,
       [found.link.account_id, b.email.toLowerCase()]);

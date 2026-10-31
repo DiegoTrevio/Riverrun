@@ -409,6 +409,9 @@ process.env.QUOTE_PDF_BACKEND ??= 'fake';
 
 export const { pool, migrate } = await import('../src/db.js');
 const { buildApp } = await import('../src/app.js');
+// Las pruebas consultan el chat web cada 25 ms (el widget, cada pocos segundos): el tope por sesión se sube aquí; la prueba
+// del tope lo baja a su valor real.
+(await import('../src/routes/public.js')).webchatLimits.pollsPerMin = 1_000_000;
 const { defaultTransport } = await import('../src/service.js');
 const { bootstrapSuperadmin } = await import('../src/auth.js');
 const { currentStep, totpAt } = await import('../src/identity/totp.js');

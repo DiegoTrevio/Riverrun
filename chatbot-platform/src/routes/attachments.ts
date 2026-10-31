@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { assertUploadAllowed } from '../billing/limits.js';
 import type { FastifyInstance } from 'fastify';
 import { assertAccount, HttpError, requireRole, scopeAccount, targetAccount } from '../access.js';
 import { ATTACHMENT_MAX_BYTES, attachmentAbsolutePath, identifyAttachment, newAttachmentId, removeAttachmentFile, saveAttachment } from '../attachments.js';
@@ -22,6 +23,7 @@ export async function attachmentRoutes(api: FastifyInstance) {
       upload = { buffer, name: part.filename || 'archivo' };
     }
     if (!upload) throw new HttpError(400, 'Elige un archivo');
+    await assertUploadAllowed(accountId, upload.buffer.length); // en pausa, ritmo y almacenamiento (IN-19)
     const type = identifyAttachment(upload.buffer, upload.name);
     if (!type) {
       throw new HttpError(400, 'Tipo de archivo no permitido. Se aceptan PDF, Word, Excel, PowerPoint, CSV, TXT, audio (MP3, OGG, WAV, M4A), video (MP4, MOV, WebM) y fotos JPG, PNG o WEBP.');

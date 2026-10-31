@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { limited } from '../identity/rate-limit.js';
 import { z } from 'zod';
 import { HttpError } from '../access.js';
 import type { AiProvider, ChatMessage, CompletionResult, ContentPart } from '../ai/provider.js';
@@ -454,12 +455,7 @@ export async function designFlow(ai: AiProvider, input: FlowAiInput): Promise<Fl
   };
 }
 
-/** Límite por cuenta (cada uso gasta IA): 60 por hora entre crear flujos y cambiar instrucciones. */
-const hits = new Map<string, number[]>();
-export function checkAiDesignRate(accountId: string, now = Date.now()) {
-  const recent = (hits.get(accountId) ?? []).filter((t) => now - t < 3_600_000);
-  if (recent.length >= 60) throw new HttpError(429, 'Usaste mucho la IA en esta hora. Intenta de nuevo en un rato.');
-  recent.push(now);
-  hits.set(accountId, recent);
+/** Límite por cuenta (cada uso gasta IA): 60 por hora entre crear flujos y cambiar instrucciones. En la base (todos los procesos). */
+export async function checkAiDesignRate(accountId: string) {
+  if (await limited(`ai-design:${accountId}`, 60, 3_600_000)) throw new HttpError(429, 'Usaste mucho la IA en esta hora. Intenta de nuevo en un rato.');
 }
-setInterval(() => { const now = Date.now(); for (const [k, v] of hits) if (!v.some((t) => now - t < 3_600_000)) hits.delete(k); }, 60_000).unref();

@@ -10,7 +10,9 @@ const em = await import('../src/channels/email.js');
 
 const mail = (over: Partial<import('../src/channels/email.js').RawMail> = {}): import('../src/channels/email.js').RawMail => ({
   uid: 101, messageId: '<m1@cliente.com>', address: 'ana@cliente.com', name: 'Ana', subject: 'Precios de habitaciones',
-  text: 'Hola, ¿cuánto cuesta?\n\nEl lun, 5 oct 2026 10:00, Hotel escribió:\n> Gracias por escribir', date: new Date(), references: '', automated: false, ...over,
+  text: 'Hola, ¿cuánto cuesta?\n\nEl lun, 5 oct 2026 10:00, Hotel escribió:\n> Gracias por escribir', date: new Date(), references: '', automated: false,
+  // Como lo deja Gmail al recibirlo: el remitente está comprobado (IN-17).
+  authResults: 'mx.google.com; dkim=pass header.i=@cliente.com header.s=s1 header.d=cliente.com; spf=pass smtp.mailfrom=cliente.com; dmarc=pass (p=NONE) header.from=cliente.com', ...over,
 });
 let inbox: ReturnType<typeof mail>[] = [];
 let uid = 100;
@@ -177,3 +179,48 @@ t('un WhatsApp de 65 000 caracteres se guarda recortado y el asistente responde 
   assert.match(stored, /…\[mensaje recortado\]$/);
   assert.ok(h.sent.some((s) => s.to === phone && s.kind === 'text'), 'el asistente respondió');
 });
+
+t('senderVerified: dmarc=pass, o dkim=pass del mismo dominio u organización; nada más (IN-17)', async () => {
+  const { senderVerified } = em;
+  assert.equal(senderVerified('mx.google.com; dmarc=pass header.from=real.com', 'a@real.com'), true);
+  assert.equal(senderVerified('mx; dkim=pass header.d=real.com; dmarc=fail', 'a@real.com'), true);
+  assert.equal(senderVerified('mx; dkim=pass header.d=mail.real.com', 'a@real.com'), true, 'subdominio de la misma organización');
+  assert.equal(senderVerified('mx; dkim=pass header.d=correo.tienda.com.mx', 'a@tienda.com.mx'), true);
+  assert.equal(senderVerified('mx; dkim=pass header.d=otro.com.mx', 'a@tienda.com.mx'), false, 'com.mx no es una organización');
+  assert.equal(senderVerified('mx; dkim=pass header.d=atacante.com; spf=pass', 'a@real.com'), false, 'firma de otro dominio');
+  assert.equal(senderVerified('mx; dkim=fail header.d=real.com; spf=pass; dmarc=fail', 'a@real.com'), false);
+  assert.equal(senderVerified(undefined, 'a@real.com'), false);
+});
+
+t('un correo sin dkim ni dmarc se guarda sin respuesta y marcado; con dmarc=pass responde normal (IN-17)', async () => {
+  const before = sent.length;
+  inbox = [mail({ uid: 1001, messageId: '<falso@x>', address: 'cliente.falso@real.com', text: 'Cancelen mi cita', authResults: 'mx.google.com; spf=softfail; dkim=none; dmarc=fail' })];
+  await em.pollEmailChannels(h.service);
+  await h.idle();
+  assert.equal(sent.length, before, 'no se contesta');
+  const saved = (await pool.query(`SELECT m.content, m.meta FROM messages m JOIN conversations cv ON cv.id = m.conversation_id JOIN contacts c ON c.id = cv.contact_id WHERE c.external_id = 'cliente.falso@real.com' ORDER BY m.created_at DESC LIMIT 1`)).rows[0];
+  assert.match(saved.content, /^\[Remitente no verificado\] Cancelen mi cita/);
+  assert.equal(saved.meta.held, 'remitente_no_verificado');
+  // Con la comprobación apagada en el canal, se contesta.
+  await pool.query(`UPDATE channels SET config = config || '{"require_sender_auth": false}'::jsonb WHERE id = $1`, [channelId]);
+  inbox = [mail({ uid: 1002, messageId: '<sinauth@x>', address: 'otro@real.com', authResults: undefined })];
+  await em.pollEmailChannels(h.service);
+  await h.idle();
+  await waitFor(() => sent.length === before + 1, 8000);
+  await pool.query(`UPDATE channels SET config = config - 'require_sender_auth' WHERE id = $1`, [channelId]);
+});
+
+t('más de 60 respuestas por hora en un canal se detienen y avisan (IN-17)', async () => {
+  await h.addUser({ account_id: h.accountId, name: 'Admin', email: 'admin.correo@hotel.mx', password: 'Pz-701-Qx-702-Kv', role: 'admin' });
+  await pool.query(`INSERT INTO rate_limits (key, hits, expires_at) VALUES ($1, 60, now() + interval '1 hour') ON CONFLICT (key) DO UPDATE SET hits = 60`, [`email-replies:${channelId}`]);
+  const before = sent.length;
+  inbox = [mail({ uid: 1003, messageId: '<tope@x>', address: 'tope@cliente.com' })];
+  await em.pollEmailChannels(h.service);
+  await h.idle();
+  // Otros canales de correo de estas pruebas leen el mismo buzón simulado: solo cuenta lo que contestó este canal.
+  const mine = sent.slice(before).filter((m: any) => m.cfg.imap_user === 'atencion@hotel.mx');
+  assert.equal(mine.length, 0, 'el 61 no se contesta');
+  assert.ok((await pool.query(`SELECT 1 FROM notifications WHERE title = 'Tu correo contestó demasiados mensajes'`)).rows.length, 'avisa a los administradores');
+  assert.ok((await pool.query(`SELECT 1 FROM event_logs WHERE message LIKE '%respuestas en una hora%'`)).rows.length, 'y queda en la bitácora');
+});
+

@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
+import { ipLimitKey, limited } from '../identity/rate-limit.js';
 import { z } from 'zod';
 import { botFor, HttpError, requireRole, targetAccount } from '../access.js';
-import { rateLimited } from '../auth.js';
 import { assertWithinLimit, effectiveLimits, usageOf, assertWithinLimitLocked } from '../billing/limits.js';
 import { mergeChannelConfig } from '../channels/index.js';
 import { metaConnectEnabled } from '../channels/meta-connect.js';
@@ -180,7 +180,7 @@ export async function socialRoutes(api: FastifyInstance) {
   api.get('/api/system/zernio/health', superadmin, async () => zernioHealthSummary());
   api.post('/api/system/zernio/health/check', superadmin, async () => {
     zernioOn();
-    if (rateLimited('zernio-health-check', 6, 60_000)) throw new HttpError(429, 'Espera un minuto antes de volver a revisar.');
+    if (await limited('zernio-health-check', 6, 60_000)) throw new HttpError(429, 'Espera un minuto antes de volver a revisar.');
     const r = await viaZernio(() => checkZernioHealth({ force: true, client: clientFor(null) }));
     return { ...r, summary: await zernioHealthSummary() };
   });
@@ -254,7 +254,7 @@ const LINK_RESULT: Record<Exclude<FinishCode, 'ok'>, [string, string]> = {
 export async function socialPublicRoutes(app: FastifyInstance) {
   /** Zernio vuelve aquí al terminar de autorizar (desde "Redes sociales" o desde un enlace para el cliente). */
   app.get('/zernio/return/:state', async (req: any, reply) => {
-    if (rateLimited(`zernio-return:${req.ip}`, 60, 60_000)) return page(reply, 429, 'Demasiadas visitas', 'Intenta de nuevo en un minuto.');
+    if (await limited(ipLimitKey('zernio-return', req.ip), 60, 60_000)) return page(reply, 429, 'Demasiadas visitas', 'Intenta de nuevo en un minuto.');
     const { code, session } = await finishConnect(String(req.params.state), req.query ?? {});
     if (!session || (code === 'invalid' && session.kind === 'panel')) {
       await logEvent({ level: 'warn', source: 'channel', message: 'Zernio: retorno de conexión con estado inválido o ya usado; se rechaza', details: { ip: req.ip } });
@@ -273,7 +273,7 @@ export async function socialPublicRoutes(app: FastifyInstance) {
 
   /** Enlace que el administrador le manda al cliente: lo lleva directo a autorizar su red, sin iniciar sesión. */
   app.get('/conectar-red/:token', async (req: any, reply) => {
-    if (rateLimited(`zernio-link:${req.ip}`, 30, 60_000)) return page(reply, 429, 'Demasiadas visitas', 'Intenta de nuevo en un minuto.');
+    if (await limited(ipLimitKey('zernio-link', req.ip), 30, 60_000)) return page(reply, 429, 'Demasiadas visitas', 'Intenta de nuevo en un minuto.');
     const token = String(req.params.token);
     const session = await connectSession(token);
     if (!session || session.kind !== 'link' || session.used_at) return page(reply, 404, ...LINK_RESULT.invalid);

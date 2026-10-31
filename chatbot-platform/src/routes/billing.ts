@@ -5,7 +5,6 @@ import { z } from 'zod';
 import { ownerOnly, ownerStepUp } from '../identity/ownership.js';
 import { stepUp } from '../identity/step-up.js';
 import { HttpError, requireRole, targetAccount } from '../access.js';
-import { rateLimited } from '../auth.js';
 import { baseFor } from '../brands.js';
 import { providers, applyState, changePlan, confirmCheckout, createCheckoutSession, enabledProviders, getPlan, getSubscription, listPlans, notePaymentAction, payable, claimEvent, finishEvent, releaseEvent, startReplacement } from '../billing/service.js';
 import { assertPortalAllowed, cardCheckState, openCardCheck, trialDaysFor } from '../billing/card-check.js';
@@ -19,7 +18,7 @@ import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
 import { limitsReport, LimitsSchema } from '../billing/limits.js';
 import { promotionCodeFor } from '../billing/stripe.js';
-import { countHit, releaseHit } from '../identity/rate-limit.js';
+import { countHit, ipLimitKey, limited, releaseHit } from '../identity/rate-limit.js';
 import { logEvent } from '../logs.js';
 import { parse } from './util.js';
 
@@ -54,8 +53,8 @@ const paymentOut = (p: any) => ({
 });
 
 /** Límite de veces por hora y cuenta: estas rutas llaman al proveedor (y un ciclo en el panel no debe saturarlo). */
-const tooMany = (reply: any, key: string, max: number) => {
-  if (!rateLimited(key, max, 3600_000)) return false;
+const tooMany = async (reply: any, key: string, max: number) => {
+  if (!(await limited(key, max, 3600_000))) return false;
   reply.code(429).send({ error: 'Demasiados intentos, espera un momento y vuelve a intentar' });
   return true;
 };
@@ -257,7 +256,7 @@ export async function billingRoutes(api: FastifyInstance) {
 
   api.put('/api/billing/fiscal', { ...admins, ...ownerStepUp }, async (req: any, reply) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
-    if (tooMany(reply, `billing-fiscal:${accountId}`, 30)) return reply;
+    if (await tooMany(reply, `billing-fiscal:${accountId}`, 30)) return reply;
     const d = parse(FiscalSchema, req.body);
     const f = await saveFiscal(accountId, req.user.role === 'superadmin' ? null : req.user.id, d);
     await logEvent({ level: 'info', source: 'admin', message: d.wants_invoice ? `Datos de facturación guardados (RFC ${d.rfc}, ${personaOf(d.rfc) === 'moral' ? 'persona moral' : 'persona física'})` : 'Facturación: sin factura (público en general)', accountId });
@@ -273,7 +272,7 @@ export async function billingRoutes(api: FastifyInstance) {
     const c = await getCfdi(id);
     const mine = c && (req.user.role === 'superadmin' || (c.account_id && c.account_id === (await targetAccount(req.user, req.query.account_id))));
     if (!c || !mine || c.status !== 'issued') throw new HttpError(404, 'No encontrado');
-    if (tooMany(reply, `billing-invoice:${req.user.id}`, 120)) return reply;
+    if (await tooMany(reply, `billing-invoice:${req.user.id}`, 120)) return reply;
     const file = await viaProvider(() => invoicer.download(c.provider_invoice_id, format));
     const name = `${c.series}${c.folio}` || c.sat_uuid;
     return reply
@@ -328,7 +327,7 @@ export async function billingRoutes(api: FastifyInstance) {
   /** Al volver de la página de pago: se pregunta al proveedor por el pago iniciado y, si ya se cobró, la cuenta se activa. */
   api.post('/api/billing/confirm', { ...admins, ...ownerOnly }, async (req: any, reply) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
-    if (rateLimited(`billing-confirm:${accountId}`, 60, 3600_000)) return reply.code(429).send({ error: 'Demasiadas consultas, espera un momento' });
+    if (await limited(`billing-confirm:${accountId}`, 60, 3600_000)) return reply.code(429).send({ error: 'Demasiadas consultas, espera un momento' });
     let confirmed = false;
     try {
       confirmed = await confirmCheckout(accountId);
@@ -377,7 +376,7 @@ export async function billingRoutes(api: FastifyInstance) {
   /** Cambiar de plan. Mercado Pago entre mensual y anual pasa por su página de pago: entonces responde `url`. */
   api.post('/api/billing/change', { ...admins, ...ownerStepUp }, async (req: any, reply) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
-    if (tooMany(reply, `billing-change:${accountId}`, 10)) return reply;
+    if (await tooMany(reply, `billing-change:${accountId}`, 10)) return reply;
     const { plan } = parse(z.object({ plan: z.string().max(40) }), req.body);
     const r = await viaProvider(async () => changePlan({ accountId, email: req.user.email, planKey: plan, base: await baseFor(req), ip: req.ip }));
     return { ok: true, ...r, subscription: publicSub(await getSubscription(accountId)) };
@@ -386,7 +385,7 @@ export async function billingRoutes(api: FastifyInstance) {
   /** Cambiar la tarjeta. Stripe: su página de administración. Mercado Pago: una suscripción nueva desde el siguiente cobro. */
   api.post('/api/billing/payment-method', { ...admins, ...ownerStepUp }, async (req: any, reply) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
-    if (tooMany(reply, `billing-payment-method:${accountId}`, 10)) return reply;
+    if (await tooMany(reply, `billing-payment-method:${accountId}`, 10)) return reply;
     const sub = await getSubscription(accountId);
     if (!sub?.provider_subscription_id || !['active', 'past_due'].includes(sub.status)) throw new HttpError(400, 'No tienes un plan activo');
     const base = await baseFor(req);
@@ -402,7 +401,7 @@ export async function billingRoutes(api: FastifyInstance) {
 
   api.post('/api/billing/cancel', { ...admins, ...ownerStepUp }, async (req: any, reply) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
-    if (tooMany(reply, `billing-cancel:${accountId}`, 20)) return reply;
+    if (await tooMany(reply, `billing-cancel:${accountId}`, 20)) return reply;
     const { resume } = parse(z.object({ resume: z.boolean().default(false) }), req.body);
     const sub = await getSubscription(accountId);
     // Mercado Pago no reanuda una suscripción cancelada: se contrata el mismo plan con el primer cobro al terminar lo pagado.

@@ -3,6 +3,7 @@
  * reinicio los borraba y dos peticiones simultáneas podían pasar las dos). Cada clave lleva un contador que vuelve a 1
  * cuando vence su ventana; un solo INSERT … ON CONFLICT lo hace atómico.
  */
+import { ipKey } from '../auth.js';
 import { query, queryOne } from '../db.js';
 
 const MIN = 60_000;
@@ -51,3 +52,14 @@ export async function clearHits(...keys: string[]): Promise<void> {
 export async function pruneHits(): Promise<void> {
   await query(`DELETE FROM rate_limits WHERE expires_at <= now()`);
 }
+
+/**
+ * ¿Ya pasó el tope? Suma el intento en la base (lo comparten todos los procesos y sobrevive a un reinicio) y dice si va
+ * por encima de `max` en la ventana. Es lo que usan las rutas; `rateLimited` (en memoria) ya no se usa en rutas.
+ */
+export async function limited(key: string, max: number, windowMs: number): Promise<boolean> {
+  return (await countHit(key, windowMs)) > max;
+}
+
+/** Clave de límite por conexión: una IPv6 cuenta por su /64 (ver `ipKey`). */
+export const ipLimitKey = (prefix: string, ip: string) => `${prefix}:${ipKey(ip)}`;

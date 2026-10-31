@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { HttpError, requireRole, targetAccount } from '../access.js';
-import { hashPassword, rateLimited } from '../auth.js';
+import { hashPassword } from '../auth.js';
 import { beginLogin } from '../identity/mfa.js';
 import { hostOf, linkBase, mailBrand } from '../brands.js';
 import { assertWithinLimit, assertWithinLimitLocked, effectiveLimits, LIMIT_LABELS, limitDetail, offerText, usageOf } from '../billing/limits.js';
@@ -16,7 +16,7 @@ import { googleConfigured } from '../integrations/google.js';
 import { assertPasswordAllowed, NewPassword } from '../identity/passwords.js';
 import { accountOwner, assertOwner, isAccountOwner } from '../identity/ownership.js';
 import { inviteMail } from '../identity/invite-text.js';
-import { countHit, releaseHit } from '../identity/rate-limit.js';
+import { countHit, ipLimitKey, limited, releaseHit } from '../identity/rate-limit.js';
 import { assertRecentMfa } from '../identity/step-up.js';
 import { logEvent } from '../logs.js';
 import { deliverMail } from '../mailer.js';
@@ -235,7 +235,7 @@ async function invitationFrom(q: { token?: unknown; google?: unknown }, req: { c
 export async function invitationPublicRoutes(app: FastifyInstance) {
   /** Ver la invitación antes de aceptarla. El token (o el pase de Google) va en el cuerpo, no en la URL. */
   app.post('/api/invitation/peek', async (req: any, reply) => {
-    if (rateLimited(`invite-view:${req.ip}`, 60, HOUR)) return reply.code(429).send({ error: 'Demasiados intentos, espera un momento' });
+    if (await limited(ipLimitKey('invite-view', req.ip), 60, HOUR)) return reply.code(429).send({ error: 'Demasiados intentos, espera un momento' });
     const q = parse(z.object({ token: z.string().max(200).optional(), google: z.string().max(2000).optional() }), req.body ?? {});
     const { inv, google } = await invitationFrom(q, req);
     const acc = await store.getAccount(inv.account_id);
@@ -256,7 +256,7 @@ export async function invitationPublicRoutes(app: FastifyInstance) {
   });
 
   app.post('/api/invitation/accept', async (req, reply) => {
-    if (rateLimited(`invite-accept:${req.ip}`, 10, HOUR)) return reply.code(429).send({ error: 'Demasiados intentos desde esta conexión, intenta más tarde' });
+    if (await limited(ipLimitKey('invite-accept', req.ip), 10, HOUR)) return reply.code(429).send({ error: 'Demasiados intentos desde esta conexión, intenta más tarde' });
     const b = parse(
       z.object({
         token: z.string().max(200).optional(),

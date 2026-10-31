@@ -205,7 +205,7 @@ export async function flowBoardRoutes(api: FastifyInstance, ai: AiProvider) {
     await assertAiAllowed(accountId);
     const input = await readDesignInput(req);
     if (!input.idea.trim() && !input.image) throw new HttpError(400, 'Escribe tu idea o sube una imagen del flujo.');
-    checkAiDesignRate(accountId);
+    await checkAiDesignRate(accountId);
     const current = input.board === undefined ? null : readBoard(input.board);
     const uploadId = input.image ? newAttachmentId() : null;
     let result;

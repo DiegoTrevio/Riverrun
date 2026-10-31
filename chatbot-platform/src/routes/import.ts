@@ -75,7 +75,7 @@ export async function knowledgeImportRoutes(api: FastifyInstance, ai: AiProvider
 
   const run = async (req: any, accountId: string, chatbotId: string | null) => {
     await assertAiAllowed(accountId);
-    checkImportRate(accountId);
+    await checkImportRate(accountId);
     const input = await readSource(req);
     let result: ImportResult;
     try {

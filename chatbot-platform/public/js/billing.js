@@ -43,7 +43,7 @@ function cfdiCell(c, p) {
 
 const longDate = (d) => (d ? new Date(d).toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric' }) : '');
 
-const LIMIT_SHORT = { messages_per_month: ['mensajes al mes', 'mensaje al mes'], channels: ['canales', 'canal'], users: ['usuarios', 'usuario'], chatbots: ['asistentes', 'asistente'], social_accounts: ['redes sociales', 'red social'] };
+const LIMIT_SHORT = { messages_per_month: ['mensajes al mes', 'mensaje al mes'], channels: ['canales', 'canal'], users: ['usuarios', 'usuario'], chatbots: ['asistentes', 'asistente'], social_accounts: ['redes sociales', 'red social'], storage_mb: ['MB de archivos', 'MB de archivos'] };
 /** "hasta 1,000 mensajes al mes · 1 canal · …" (vacío si el plan no tiene límites). */
 export const limitsText = (limits = {}) => Object.entries(LIMIT_SHORT).filter(([k]) => limits[k]).map(([k, [pl, sg]]) => `${limits[k].toLocaleString('es-MX')} ${limits[k] === 1 ? sg : pl}`).join(' · ');
 
@@ -391,6 +391,7 @@ export async function viewPlans(root) {
         field('Usuarios', num(m.limits, 'users', { min: 1, nullable: true, placeholder: 'Sin límite' })),
         field('Asistentes', num(m.limits, 'chatbots', { min: 1, nullable: true, placeholder: 'Sin límite' })),
         field('Redes sociales', num(m.limits, 'social_accounts', { min: 1, nullable: true, placeholder: 'Sin límite' }), 'Cuentas conectadas por Zernio (cada una tiene costo para la plataforma).'),
+        field('Archivos (MB)', num(m.limits, 'storage_mb', { min: 1, nullable: true, placeholder: 'Sin límite' }), 'Lo que la cuenta sube: archivos de automatizaciones, la biblioteca de sus agentes y formatos de Word.'),
         field('Gasto de IA al mes (USD)', num(m, 'ai_usd_per_month', { min: 0, step: 0.01, nullable: true, placeholder: 'Sin tope' }), 'Lo que la plataforma paga de IA por cada cuenta con este plan. Al llegar, la IA se detiene hasta el mes siguiente; el cliente no lo puede cambiar.')),
       check(m, 'active', 'Disponible para contratar'),
       check(m, 'public', 'Público: aparece en Precios y en el registro (si no, solo lo contrata la cuenta a la que se lo asignes)'),

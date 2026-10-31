@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { assertUploadAllowed } from '../billing/limits.js';
 import { sendsAnyFile } from '../engine/transport.js';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
@@ -329,6 +330,7 @@ export async function quoteRoutes(api: FastifyInstance, service: ChatService) {
       upload = { buffer, name: part.filename || 'formato.docx' };
     }
     if (!upload) throw new HttpError(400, 'Elige el archivo de Word (.docx)');
+    await assertUploadAllowed(accountId, upload.buffer.length); // en pausa, ritmo y almacenamiento (IN-19)
     if (!/\.docx$/i.test(upload.name)) throw new HttpError(400, 'El formato debe ser un documento de Word (.docx). Si tiene macros (.docm), guárdalo como .docx');
     const report = inspectTemplate(upload.buffer);
     if (report.errors.length) throw new HttpError(400, 'El formato no se puede usar', report.errors);

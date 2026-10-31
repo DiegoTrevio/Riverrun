@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
+import { ipLimitKey, limited } from '../identity/rate-limit.js';
 import { z } from 'zod';
 import { HttpError, requireRole, targetAccount } from '../access.js';
-import { rateLimited } from '../auth.js';
 import { ZernioBusyError } from '../channels/zernio-budget.js';
 import { zernioEnabled } from '../channels/zernio.js';
 import { query, queryOne } from '../db.js';
@@ -49,8 +49,8 @@ export async function socialInboxRoutes(api: FastifyInstance, service: ChatServi
   const admins = { preHandler: requireRole('admin') };
   const ai = service.aiProvider;
   /** Sugerir gasta IA: un tope por persona. */
-  const suggestLimit = (user: User) => {
-    if (rateLimited(`social-suggest:${user.id}`, 30, 60_000)) throw new HttpError(429, 'Pediste muchas sugerencias seguidas; espera un minuto.');
+  const suggestLimit = async (user: User) => {
+    if (await limited(`social-suggest:${user.id}`, 30, 60_000)) throw new HttpError(429, 'Pediste muchas sugerencias seguidas; espera un minuto.');
   };
 
   api.get('/api/social-inbox', agents, async (req: any) => {
@@ -62,7 +62,7 @@ export async function socialInboxRoutes(api: FastifyInstance, service: ChatServi
   api.post('/api/social-inbox/sync', admins, async (req: any) => {
     if (!zernioEnabled()) throw new HttpError(400, 'Las redes sociales no están activadas en esta instalación.');
     const accountId = await targetAccount(req.user, req.body?.account_id ?? req.query?.account_id);
-    if (rateLimited(`social-sync:${accountId}`, 3, 10 * 60_000)) throw new HttpError(429, 'Ya se revisó hace poco; espera unos minutos.');
+    if (await limited(`social-sync:${accountId}`, 3, 10 * 60_000)) throw new HttpError(429, 'Ya se revisó hace poco; espera unos minutos.');
     const accounts = await query<{ id: string }>(`SELECT id FROM social_accounts WHERE account_id = $1 AND status = 'active'`, [accountId]);
     let failed = 0;
     for (const a of accounts) await busy(() => syncEngagement(a.id)).catch(() => failed++);
@@ -73,7 +73,7 @@ export async function socialInboxRoutes(api: FastifyInstance, service: ChatServi
   /* ------------------------------ Comentarios ------------------------------ */
 
   api.post('/api/social-comments/:id/suggest', agents, async (req: any) => {
-    suggestLimit(req.user);
+    await suggestLimit(req.user);
     const id = idParam(req);
     return suggestReply(ai, await accountFor(req.user, 'comment', id), 'comment', id);
   });
@@ -110,7 +110,7 @@ export async function socialInboxRoutes(api: FastifyInstance, service: ChatServi
   /* ------------------------------ Reseñas ------------------------------ */
 
   api.post('/api/social-reviews/:id/suggest', agents, async (req: any) => {
-    suggestLimit(req.user);
+    await suggestLimit(req.user);
     const id = idParam(req);
     return suggestReply(ai, await accountFor(req.user, 'review', id), 'review', id);
   });

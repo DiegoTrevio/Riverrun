@@ -304,6 +304,45 @@ t('Chat web: pedir sesiones no cierra el chat a los demás (el tope del canal cu
   assert.equal((await h.app.inject({ method: 'POST', url: `${base}/messages`, payload: { session, text: 'hola' }, remoteAddress: '10.78.0.1' })).statusCode, 200);
 });
 
+t('Chat web: 20 clientes nuevos por red y hora; una red llena no cierra el chat a las demás (IN-22)', async () => {
+  // Sin agente: los mensajes se guardan sin respuesta (así 200 clientes no dejan a la IA ocupada para las demás pruebas).
+  const web = await createChannel('webchat', {}, null);
+  const base = `/webchat/${web.webhook_token}`;
+  const newClient = async (ip: string) => {
+    const { session } = (await h.app.inject({ method: 'POST', url: `${base}/session`, remoteAddress: ip })).json();
+    return (await h.app.inject({ method: 'POST', url: `${base}/messages`, payload: { session, text: 'hola' }, remoteAddress: ip })).statusCode;
+  };
+  const one = [];
+  for (let i = 0; i < 21; i++) one.push(await newClient(`10.90.1.${i + 1}`));
+  assert.equal(one.filter((c) => c === 200).length, 20, one.join(','));
+  assert.equal(one.at(-1), 429, 'la /24 se topa en 20');
+  // Una red que llenó su cupo no cierra el chat a las demás (el del canal, 300 por hora, es aparte).
+  for (const n of [2, 3]) assert.equal(await newClient(`10.90.${n}.1`), 200, `red 10.90.${n}.0/24`);
+  await h.idle();
+});
+
+t('Chat web: el GET de mensajes tiene tope por sesión y la sesión viaja en la cabecera (IN-22)', async () => {
+  const web = await createChannel('webchat', {});
+  const base = `/webchat/${web.webhook_token}`;
+  const { session } = (await h.app.inject({ method: 'POST', url: `${base}/session` })).json();
+  const byHeader = await h.app.inject({ method: 'GET', url: `${base}/messages`, headers: { 'x-webchat-session': session } });
+  assert.equal(byHeader.statusCode, 200, byHeader.body);
+  assert.equal((await h.app.inject({ method: 'GET', url: `${base}/messages?session=${session}` })).statusCode, 200, 'la de la URL se sigue aceptando');
+  const pre = await h.app.inject({ method: 'OPTIONS', url: `${base}/messages`, headers: { origin: 'https://cliente.example', 'access-control-request-headers': 'x-webchat-session' } });
+  assert.match(String(pre.headers['access-control-allow-headers']), /x-webchat-session/);
+  const { webchatLimits } = await import('../src/routes/public.js');
+  const before = webchatLimits.pollsPerMin;
+  webchatLimits.pollsPerMin = 120; // el valor real (el arnés lo sube para las demás pruebas)
+  const codes = [];
+  try {
+    for (let i = 0; i < 125; i++) codes.push((await h.app.inject({ method: 'GET', url: `${base}/messages`, headers: { 'x-webchat-session': session } })).statusCode);
+  } finally {
+    webchatLimits.pollsPerMin = before;
+  }
+  assert.ok(codes.includes(429), 'pasando 120 por minuto responde 429');
+  assert.ok(codes.filter((c) => c === 200).length <= 120);
+});
+
 t('Chat web: el modo de color es automático por defecto y se puede fijar en claro u oscuro', async () => {
   const web = await createChannel('webchat', { title: 'Hotel Palmas' });
   const config = async () => (await h.app.inject({ method: 'GET', url: `/webchat/${web.webhook_token}/config` })).json();
