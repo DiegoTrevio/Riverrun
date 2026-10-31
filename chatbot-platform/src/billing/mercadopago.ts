@@ -52,6 +52,7 @@ export function stateFromPreapproval(p: any): SubscriptionState {
 async function readPreapproval(id: string): Promise<{ p: any; state: SubscriptionState }> {
   const p = await call('GET', `/preapproval/${encodeURIComponent(id)}`);
   const state = stateFromPreapproval(p);
+
   if (state.trialEnd && p.card_id && p.payer_id) {
     // Sin la tarjeta no hay prueba (PAY-17): un fallo pasajero de la consulta se reintenta antes de rendirse.
     let card: any = null;
@@ -111,6 +112,8 @@ const MP_DAY = 86400_000;
 export function verifySignature(opts: { signature?: string; requestId?: string; dataId?: string; secret: string; now?: number }) {
   const { signature, requestId, dataId, secret } = opts;
   if (!signature || !secret) throw new WebhookError('Falta la firma de Mercado Pago');
+  // El id y el x-request-id van en la firma: sin ellos no hay nada firmado que procesar (PAY-15).
+  if (!dataId || !requestId) throw new WebhookError('Firma de Mercado Pago incompleta');
   const parts = Object.fromEntries(signature.split(',').map((p) => p.trim().split('=') as [string, string]));
   if (!parts.ts || !parts.v1) throw new WebhookError('Firma de Mercado Pago inválida');
   const id = dataId && /^[a-z0-9]+$/i.test(dataId) ? dataId.toLowerCase() : dataId ?? '';
@@ -119,9 +122,9 @@ export function verifySignature(opts: { signature?: string; requestId?: string; 
   const got = Buffer.from(parts.v1, 'hex');
   if (got.length !== expected.length || !crypto.timingSafeEqual(got, expected)) throw new WebhookError('Firma de Mercado Pago inválida');
   const ts = Number(parts.ts);
-  // El ts puede venir en milisegundos o segundos; se acepta una ventana amplia (1 hora) contra reenvíos antiguos.
+  // El ts puede venir en milisegundos o segundos; 5 minutos contra reenvíos, como Stripe (PAY-15; antes, 1 hora).
   const ms = ts > 1e12 ? ts : ts * 1000;
-  if (Math.abs((opts.now ?? Date.now()) - ms) > 3_600_000) throw new WebhookError('Firma de Mercado Pago vencida');
+  if (Math.abs((opts.now ?? Date.now()) - ms) > 300_000) throw new WebhookError('Firma de Mercado Pago vencida');
 }
 
 export const mercadopago: BillingProvider = {
@@ -218,11 +221,15 @@ export const mercadopago: BillingProvider = {
     } catch {
       throw new WebhookError('Cuerpo inválido');
     }
-    const dataId = String(query['data.id'] ?? body?.data?.id ?? '');
-    verifySignature({ signature: String(headers['x-signature'] ?? ''), requestId: String(headers['x-request-id'] ?? ''), dataId: query['data.id'] ?? undefined, secret: cfg().webhookSecret });
+    // Lo que se procesa es el id firmado (el de la dirección): si el cuerpo trae otro, el aviso no es confiable (PAY-15).
+    const dataId = String(query['data.id'] ?? '');
+    if (body?.data?.id !== undefined && String(body.data.id) !== dataId) throw new WebhookError('El id del aviso no coincide con el firmado');
+    const requestId = String(headers['x-request-id'] ?? '');
+    verifySignature({ signature: String(headers['x-signature'] ?? ''), requestId, dataId: dataId || undefined, secret: cfg().webhookSecret });
+    // El tipo no viene firmado: decide qué recurso se relee, nada más. El aviso se reconoce por lo firmado.
     const type = String(body.type ?? query.type ?? query.topic ?? '');
     const sig = String(headers['x-signature'] ?? '');
-    const result: WebhookResult = { eventId: `${type}:${dataId}:${sig.match(/ts=(\d+)/)?.[1] ?? ''}`, type, state: null };
+    const result: WebhookResult = { eventId: `${dataId}:${sig.match(/ts=(\d+)/)?.[1] ?? ''}:${requestId}`, type, state: null };
     if (!dataId) return result;
 
     // Reembolso: llega como aviso del pago (tema "payment") con lo reembolsado hasta ahora.

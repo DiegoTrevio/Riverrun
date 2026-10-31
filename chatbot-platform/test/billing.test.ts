@@ -312,3 +312,14 @@ t('la pausa a mano del superadmin no la quita un pago, y el plan que él asigna 
   assert.equal((await h.authed('PUT', `/api/accounts/${acc}`, { status: 'active' })).statusCode, 200);
   assert.deepEqual(Object.values((await pool.query(`SELECT status, pause_reason FROM accounts WHERE id = $1`, [acc])).rows[0]), ['active', '']);
 });
+
+t('Mercado Pago: el id que se procesa es el firmado; sin x-request-id o con un ts de más de 5 minutos, no (PAY-15)', async () => {
+  const send = (e: ReturnType<typeof mpEvent>, over: { payload?: string; headers?: Record<string, string> } = {}) =>
+    h.app.inject({ method: 'POST', url: e.url, payload: over.payload ?? e.payload, headers: { ...e.headers, ...(over.headers ?? {}) } });
+  const e = mpEvent('subscription_preapproval', 'pre_firmado');
+  assert.equal((await send(e, { payload: JSON.stringify({ type: 'subscription_preapproval', data: { id: 'pre_de_otro' } }) })).statusCode, 400, 'otro id en el cuerpo');
+  const noReq = mpEvent('subscription_preapproval', 'pre_firmado');
+  const { 'x-request-id': _r, ...without } = noReq.headers;
+  assert.equal((await h.app.inject({ method: 'POST', url: noReq.url, payload: noReq.payload, headers: without })).statusCode, 400, 'sin x-request-id');
+  assert.equal((await send(mpEvent('subscription_preapproval', 'pre_firmado', undefined, Date.now() - 10 * 60_000))).statusCode, 400, 'ts de hace 10 minutos');
+});
