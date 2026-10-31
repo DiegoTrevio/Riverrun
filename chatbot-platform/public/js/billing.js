@@ -244,8 +244,15 @@ export async function viewPlan(root, params) {
   // Esperando tarjeta con prueba disponible: el pago es la verificación de la tarjeta (sin cobro hasta que termine).
   const trialOffer = !!cc?.waiting && cc.trial_available;
   const unverified = !!cc?.waiting && !cc.email_verified;
+  // Código de promoción (solo con tarjeta: Mercado Pago no tiene códigos).
+  const promo = h('input', { id: 'promo-code', type: 'text', maxlength: 60, autocomplete: 'off', placeholder: 'Opcional' });
+  const promoField = b.plans.some((p) => p.providers.some((pr) => pr.name === 'stripe'))
+    ? h('div', { class: 'card' }, h('label', { for: 'promo-code' }, 'Código de promoción'), promo,
+      h('p', { class: 'muted small', style: 'margin-bottom:0' }, 'Solo al pagar con tarjeta (Stripe).'))
+    : null;
   const payButton = (p, pr, label, cls, trial) => h('button', { class: cls, disabled: unverified, title: unverified ? 'Falta verificar tu correo' : '', onclick: async () => {
-    const r = await run(() => api('POST', withAcct('/api/billing/checkout'), { plan: p.key, provider: pr.name, ...(trial === false ? { trial: false } : {}) }));
+    const code = pr.name === 'stripe' ? promo.value.trim() : '';
+    const r = await run(() => api('POST', withAcct('/api/billing/checkout'), { plan: p.key, provider: pr.name, ...(trial === false ? { trial: false } : {}), ...(code ? { promo_code: code } : {}) }));
     if (r) location.href = r.url;
   } }, label);
   // Mientras se confirma un pago no se ofrece contratar otra vez: un segundo clic abriría otra suscripción.
@@ -253,7 +260,7 @@ export async function viewPlan(root, params) {
     if (!b.plans.length) {
       fill(offer, h('div', { class: 'card' }, h('p', {}, 'El pago en línea todavía no está disponible.'), b.support_contact ? h('p', {}, 'Para contratar escríbenos a ', h('strong', {}, b.support_contact), '.') : null));
     } else {
-      fill(offer, h('div', { class: 'grid' }, b.plans.map((p) => h('div', { class: p.key === wanted ? 'card chosen' : 'card' },
+      fill(offer, promoField, h('div', { class: 'grid' }, b.plans.map((p) => h('div', { class: p.key === wanted ? 'card chosen' : 'card' },
         h('h2', { style: 'margin:0' }, p.name),
         h('div', { class: 'kpi', style: 'margin:8px 0' }, planPrice(p), h('span', { class: 'muted small' }, ` / ${per(p)}`)),
         totalText(p) ? h('p', { class: 'muted small', style: 'margin-top:0' }, totalText(p)) : null,

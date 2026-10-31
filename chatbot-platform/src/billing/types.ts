@@ -129,6 +129,8 @@ export interface CheckoutArgs {
   trialEnd?: Date;
   /** Verificación de tarjeta con prueba gratis: días antes del primer cobro. Solo Stripe (Mercado Pago usa `startAt`). */
   trialDays?: number;
+  /** Código de promoción de Stripe ya validado (`promotionCodeFor`). Mercado Pago no tiene códigos. */
+  promotionCode?: string;
 }
 
 export interface BillingProvider {

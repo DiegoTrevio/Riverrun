@@ -110,7 +110,20 @@ t('Stripe: ya con plan activo no se vuelve a cobrar; se administra en el portal'
   assert.equal((await B.api('POST', '/api/billing/checkout', { plan: 'pro', provider: 'stripe' })).statusCode, 409);
   const portal = await B.api('POST', '/api/billing/portal');
   assert.equal(portal.json().url, 'https://billing.stripe.test/p/1');
-  assert.equal(fake.stripe.requests.at(-1)!.body.get('customer'), 'cus_1');
+  const sess = fake.stripe.requests.at(-1)!.body;
+  assert.equal(sess.get('customer'), 'cus_1');
+  // El portal usa la configuración propia de Riverrun: sin cambiar de plan desde ahí (3b.3).
+  const conf = fake.stripe.requests.find((r) => r.path === '/v1/billing_portal/configurations')!.body;
+  assert.equal(conf.get('features[subscription_update][enabled]'), 'false');
+  assert.equal(conf.get('features[subscription_cancel][mode]'), 'at_period_end');
+  assert.equal(conf.get('features[payment_method_update][enabled]'), 'true');
+  assert.equal(sess.get('configuration'), fake.stripe.portalConfigs.at(-1));
+  // Se crea una vez; si Stripe ya no la tiene, se crea otra.
+  await B.api('POST', '/api/billing/portal');
+  assert.equal(fake.stripe.portalConfigs.length, 1);
+  fake.stripe.portalConfigs.length = 0;
+  assert.equal((await B.api('POST', '/api/billing/portal')).json().url, 'https://billing.stripe.test/p/1');
+  assert.equal(fake.stripe.portalConfigs.length, 1);
   assert.equal((await B.api('GET', '/api/billing')).json().subscription.can_portal, true);
 });
 
@@ -312,6 +325,28 @@ t('la pausa a mano del superadmin no la quita un pago, y el plan que él asigna 
   // Solo el superadmin la reactiva.
   assert.equal((await h.authed('PUT', `/api/accounts/${acc}`, { status: 'active' })).statusCode, 200);
   assert.deepEqual(Object.values((await pool.query(`SELECT status, pause_reason FROM accounts WHERE id = $1`, [acc])).rows[0]), ['active', '']);
+});
+
+t('códigos de promoción: solo los marcados para Riverrun y para el plan elegido; con Mercado Pago, no (3b.3)', async () => {
+  const acc = (await h.authed('POST', '/api/accounts', { name: 'Con código' })).json().id;
+  await h.authed('POST', '/api/plans', { key: 'pro', name: 'Pro', price: 499, currency: 'MXN' });
+  fake.stripe.promoCodes.push(
+    { id: 'promo_ok', code: 'BIENVENIDA', active: true, metadata: { riverrun: '1' } },
+    { id: 'promo_suelto', code: 'SUELTO', active: true, metadata: {} },
+    { id: 'promo_vip', code: 'SOLOVIP', active: true, metadata: { riverrun: '1', riverrun_plans: 'vip, otro' } },
+  );
+  const co = (promo_code: string, provider = 'stripe') => h.authed('POST', `/api/billing/checkout?account_id=${acc}`, { plan: 'pro', provider, promo_code });
+  for (const code of ['SUELTO', 'SOLOVIP', 'NOEXISTE']) {
+    const r = await co(code);
+    assert.equal(r.statusCode, 400, code);
+    assert.equal(r.json().error, 'Ese código no es válido para este plan');
+  }
+  assert.equal((await co('BIENVENIDA', 'mercadopago')).statusCode, 400, 'Mercado Pago no tiene códigos');
+  const r = await co('bienvenida');
+  assert.equal(r.statusCode, 200, r.body);
+  const sent = fake.stripe.requests.filter((x) => x.path === '/v1/checkout/sessions' && x.method === 'POST').at(-1)!.body;
+  assert.equal(sent.get('discounts[0][promotion_code]'), 'promo_ok');
+  assert.equal(sent.has('allow_promotion_codes'), false);
 });
 
 t('Stripe: el plan sale del precio que se cobra, no de la metadata; un precio más barato no da el plan (PAY-7)', async () => {

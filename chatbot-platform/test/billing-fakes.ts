@@ -16,6 +16,9 @@ export const fake = {
     refunds: [] as { charge: string; payment_intent: string }[],
     /** Disputas (GET /v1/disputes/:id: se releen en cada aviso) y alertas tempranas de fraude. */
     disputes: {} as Record<string, any>,
+    /** Códigos de promoción (GET /v1/promotion_codes?code=…) y configuraciones del portal creadas. */
+    promoCodes: [] as any[],
+    portalConfigs: [] as string[],
     fraudWarnings: {} as Record<string, any>,
     /** El proveedor rechaza los reembolsos y las cancelaciones. */
     refundFail: false,
@@ -84,7 +87,20 @@ const stripeUrl = await serve((req, raw, res) => {
   }
   const cs = path.match(/^\/v1\/checkout\/sessions\/([\w-]+)$/);
   if (cs) return fake.stripe.sessions[cs[1]] ? json(res, 200, fake.stripe.sessions[cs[1]]) : json(res, 404, { error: { message: 'No such checkout.session' } });
-  if (path === '/v1/billing_portal/sessions') return json(res, 200, { url: 'https://billing.stripe.test/p/1' });
+  if (path === '/v1/billing_portal/configurations' && req.method === 'POST') {
+    const id = `bpc_${++fake.stripe.n}`;
+    fake.stripe.portalConfigs.push(id);
+    return json(res, 200, { id });
+  }
+  if (path === '/v1/billing_portal/sessions') {
+    const conf = body.get('configuration');
+    if (conf && !fake.stripe.portalConfigs.includes(conf)) return json(res, 400, { error: { message: 'No such configuration', code: 'resource_missing' } });
+    return json(res, 200, { url: 'https://billing.stripe.test/p/1' });
+  }
+  if (path === '/v1/promotion_codes' && req.method === 'GET') {
+    const q = new URLSearchParams(qs);
+    return json(res, 200, { data: fake.stripe.promoCodes.filter((p) => p.code.toLowerCase() === (q.get('code') ?? '').toLowerCase() && p.active !== false).slice(0, 1) });
+  }
   const customer = path.match(/^\/v1\/customers\/([\w-]+)$/);
   if (customer) return json(res, 200, { id: customer[1], invoice_settings: { default_payment_method: null } });
   if (path === '/v1/payment_methods' && req.method === 'GET') {

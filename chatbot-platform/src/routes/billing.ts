@@ -17,6 +17,8 @@ import { ProviderError, WebhookError, type Plan, type ProviderName } from '../bi
 import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
 import { limitsReport, LimitsSchema } from '../billing/limits.js';
+import { promotionCodeFor } from '../billing/stripe.js';
+import { countHit, releaseHit } from '../identity/rate-limit.js';
 import { logEvent } from '../logs.js';
 import { parse } from './util.js';
 
@@ -259,8 +261,22 @@ export async function billingRoutes(api: FastifyInstance) {
   api.post('/api/billing/checkout', { ...admins, ...ownerStepUp }, async (req: any, reply) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
     // `trial: false`: contratar ya, sin días gratis (p. ej. con la tarjeta que ya tuvo una prueba).
-    const b = parse(z.object({ plan: z.string().max(40), provider: z.enum(['stripe', 'mercadopago']), trial: z.boolean().optional() }), req.body);
+    const b = parse(z.object({ plan: z.string().max(40), provider: z.enum(['stripe', 'mercadopago']), trial: z.boolean().optional(), promo_code: z.string().trim().max(60).optional() }), req.body);
     const { plan, provider } = await payable(b.plan, b.provider, accountId);
+    // Código de promoción (3b.3): solo con tarjeta, solo los marcados para Riverrun; los intentos fallidos tienen tope.
+    let promotionCode: string | undefined;
+    if (b.promo_code) {
+      if (provider !== 'stripe') throw new HttpError(400, 'Los códigos de promoción solo aplican al pagar con tarjeta (Stripe).');
+      if ((await countHit(`promo:${accountId}`, 3600_000)) > 10) throw new HttpError(429, 'Demasiados intentos con códigos de promoción. Intenta en una hora.');
+      try {
+        promotionCode = (await promotionCodeFor(b.promo_code, plan.key)) ?? undefined;
+      } catch (e: any) {
+        if (e instanceof ProviderError) throw await providerFailure(e, 'revisar el código');
+        throw e;
+      }
+      if (!promotionCode) throw new HttpError(400, 'Ese código no es válido para este plan');
+      await releaseHit(`promo:${accountId}`);
+    }
     // El dueño contrata: desde aquí manda la suscripción, no un plan asignado a mano (PAY-8).
     await query(`UPDATE accounts SET plan_source = 'provider' WHERE id = $1`, [accountId]);
     const sub = await getSubscription(accountId);
@@ -276,7 +292,7 @@ export async function billingRoutes(api: FastifyInstance) {
       // La verificación de tarjeta (también el pago de quien ya tiene cuenta): correo verificado, topes y sesión vigente.
       const trialDays = b.trial === false ? 0 : await trialDaysFor(accountId);
       const base = await baseFor(req);
-      const url = await openCardCheck({ accountId, ip: req.ip, provider, planKey: plan.key, open: () => createCheckoutSession({ accountId, email: req.user.email, plan, provider, base, startAt: paidUntil, trialDays }) });
+      const url = await openCardCheck({ accountId, ip: req.ip, provider, planKey: plan.key, open: () => createCheckoutSession({ accountId, email: req.user.email, plan, provider, base, startAt: paidUntil, trialDays, promotionCode }) });
       return { url, trial: trialDays > 0 };
     } catch (e: any) {
       if (e instanceof ProviderError) throw await providerFailure(e, 'abrir el pago');

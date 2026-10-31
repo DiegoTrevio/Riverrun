@@ -131,7 +131,7 @@ export async function startCheckout(o: CheckoutStart): Promise<string> {
   return (await createCheckoutSession(o)).url;
 }
 
-type CheckoutStart = { accountId: string; email: string; plan: Plan; provider: ProviderName; base: string; startAt?: Date; trialDays?: number };
+type CheckoutStart = { accountId: string; email: string; plan: Plan; provider: ProviderName; base: string; startAt?: Date; trialDays?: number; promotionCode?: string };
 
 /**
  * La página de pago y su referencia. `trialDays`: verificación de tarjeta con prueba gratis (el primer cobro, en esos
@@ -149,6 +149,7 @@ export async function createCheckoutSession(o: CheckoutStart): Promise<{ url: st
     startAt: o.startAt ?? (o.provider === 'mercadopago' ? firstCharge : undefined),
     trialEnd: o.provider === 'stripe' ? trialEnd : undefined,
     trialDays: o.provider === 'stripe' ? o.trialDays : undefined,
+    promotionCode: o.provider === 'stripe' ? o.promotionCode : undefined,
   });
   await beginCheckout(o.accountId, o.provider, o.plan.key, ref);
   await logEvent({ level: 'info', source: 'admin', message: `Pago iniciado: plan ${o.plan.key} con ${o.provider}${o.trialDays ? ` (${o.trialDays} días de prueba)` : ''}`, accountId: o.accountId });

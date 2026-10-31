@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { config } from '../config.js';
+import { query, queryOne } from '../db.js';
 import { credentialAllowed } from '../outbound-guard.js';
 import { chargeCents } from './tax.js';
 import { ProviderError, WebhookError, type BillingProvider, type DisputeInfo, type PaymentInfo, type Plan, type RefundInfo, type SubStatus, type SubscriptionState, type WebhookResult } from './types.js';
@@ -195,6 +196,43 @@ async function withCardKey(state: SubscriptionState): Promise<SubscriptionState>
   return fromList ? { ...state, cardKey: String(fromList) } : state;
 }
 
+/**
+ * Código de promoción que escribe el cliente (3b.3): solo los que Riverrun marcó en Stripe (`metadata.riverrun = '1'`) y,
+ * si su `metadata.riverrun_plans` lista planes (separados por coma), solo para esos. Devuelve el id del código o null.
+ */
+export async function promotionCodeFor(code: string, planKey: string): Promise<string | null> {
+  const r = await call('GET', `/v1/promotion_codes?${new URLSearchParams({ code, active: 'true', limit: '1' })}`);
+  const pc = r.data?.[0];
+  if (!pc?.id || pc.code?.toLowerCase() !== code.toLowerCase() || pc.metadata?.riverrun !== '1') return null;
+  const plans = String(pc.metadata?.riverrun_plans ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+  if (plans.length && !plans.includes(planKey)) return null;
+  return String(pc.id);
+}
+
+/**
+ * Configuración propia del portal de Stripe (3b.3): cambiar la tarjeta, ver facturas y cancelar al final del periodo; sin
+ * cambiar de plan (eso pasa por Riverrun, con sus reglas). Se crea una vez y su id se guarda en `system_keys`.
+ */
+async function portalConfiguration(fresh = false): Promise<string> {
+  if (!fresh) {
+    const row = await queryOne<{ value: Buffer }>(`SELECT value FROM system_keys WHERE name = 'stripe_portal_configuration'`);
+    if (row) return row.value.toString('utf8');
+  }
+  const c = await call('POST', '/v1/billing_portal/configurations', {
+    business_profile: { headline: 'Tu suscripción de Riverrun' },
+    features: {
+      payment_method_update: { enabled: 'true' },
+      invoice_history: { enabled: 'true' },
+      subscription_cancel: { enabled: 'true', mode: 'at_period_end' },
+      subscription_update: { enabled: 'false' },
+      customer_update: { enabled: 'false' },
+    },
+  });
+  if (!c.id) throw new ProviderError('Stripe no devolvió la configuración del portal');
+  await query(`INSERT INTO system_keys (name, value) VALUES ('stripe_portal_configuration', $1) ON CONFLICT (name) DO UPDATE SET value = EXCLUDED.value`, [Buffer.from(String(c.id))]);
+  return String(c.id);
+}
+
 export const stripe: BillingProvider = {
   name: 'stripe',
   label: 'Tarjeta (Stripe)',
@@ -203,7 +241,7 @@ export const stripe: BillingProvider = {
   // Con ID de precio (price_…) se usa ese; sin él, el precio mensual se arma con el monto y la moneda del plan.
   supportsPlan: () => true,
 
-  async createCheckout({ accountId, email, plan, successUrl, cancelUrl, customerId, trialEnd, trialDays }) {
+  async createCheckout({ accountId, email, plan, successUrl, cancelUrl, customerId, trialEnd, trialDays, promotionCode }) {
     const meta = { account_id: accountId, plan_key: plan.key };
     const item = { ...(await priceOf(plan)), quantity: 1 };
     const s = await call('POST', '/v1/checkout/sessions', {
@@ -222,6 +260,8 @@ export const stripe: BillingProvider = {
       payment_method_types: ['card'],
       expires_at: Math.floor(Date.now() / 1000) + 31 * 60,
       payment_method_options: { card: { request_three_d_secure: 'any' } },
+      // Solo el código que Riverrun validó (no se aceptan códigos sueltos en la página de Stripe).
+      ...(promotionCode ? { discounts: [{ promotion_code: promotionCode }] } : {}),
       // Con prueba: se guarda la tarjeta hoy y el primer cobro es al terminar la prueba.
       subscription_data: {
         metadata: meta,
@@ -242,7 +282,15 @@ export const stripe: BillingProvider = {
   },
 
   async portal(customerId, returnUrl) {
-    const s = await call('POST', '/v1/billing_portal/sessions', { customer: customerId, return_url: returnUrl });
+    const open = async (configuration: string) => call('POST', '/v1/billing_portal/sessions', { customer: customerId, return_url: returnUrl, configuration });
+    let s;
+    try {
+      s = await open(await portalConfiguration());
+    } catch (e) {
+      // La configuración guardada ya no existe en Stripe (otra cuenta de Stripe, o la borraron): se crea otra.
+      if (!(e instanceof ProviderError && (e.status === 404 || e.code === 'resource_missing'))) throw e;
+      s = await open(await portalConfiguration(true));
+    }
     return { url: s.url };
   },
 
