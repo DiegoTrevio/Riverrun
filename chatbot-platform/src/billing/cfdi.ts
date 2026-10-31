@@ -10,6 +10,7 @@ import { mailBrand } from '../brands.js';
 import { config } from '../config.js';
 import { query, queryOne, withTransaction } from '../db.js';
 import { accountOwner } from '../identity/ownership.js';
+import { countHit } from '../identity/rate-limit.js';
 import { logEvent } from '../logs.js';
 import { sendMail } from '../mailer.js';
 import { facturapi, type CfdiDocument, type CfdiReceiver, type InvoiceProvider } from './facturapi.js';
@@ -123,6 +124,18 @@ export async function checkGlobalInvoice(now = new Date()) {
   );
   let created = 0;
   for (const { period } of months) created += await globalFor(period);
+  // Lo de más de 3 meses ya no se timbra solo: si quedó un pago sin factura, el superadmin lo revisa con el contador.
+  const orphans = (await queryOne<{ n: number; total: string }>(
+    `SELECT count(*)::int AS n, coalesce(sum(total_cents), 0)::text AS total FROM billing_payments
+     WHERE global_cfdi_id IS NULL AND refunded_cents < total_cents AND paid_at <= $1::timestamptz - interval '3 months'
+       AND NOT EXISTS (SELECT 1 FROM cfdi_invoices x WHERE x.payment_id = billing_payments.id AND x.kind = 'payment' AND x.status <> 'void')`,
+    [now],
+  ))!;
+  if (orphans.n && (await countHit(`cfdi-orphans:${now.toISOString().slice(0, 10)}`, 86400_000)) === 1) {
+    const text = `${orphans.n} pago(s) por ${(Number(orphans.total) / 100).toFixed(2)} llevan más de 3 meses sin CFDI (ni propio ni en una global). Revísalos con tu contador.`;
+    await logEvent({ level: 'error', source: 'admin', message: `Pagos sin CFDI: ${text}` });
+    await emailSuperadmin('Pagos sin factura', text).catch(() => undefined);
+  }
   return created;
 }
 
@@ -133,10 +146,15 @@ async function globalFor(period: string) {
     const done = await withTransaction(async (c) => {
       const pay = `provider = $1 AND global_cfdi_id IS NULL AND refunded_cents < total_cents AND to_char(paid_at AT TIME ZONE '${TZ}', 'YYYY-MM') = $2
         AND NOT EXISTS (SELECT 1 FROM cfdi_invoices x WHERE x.payment_id = billing_payments.id AND x.kind = 'payment' AND x.status <> 'void')`;
+      // Un proceso a la vez por mes y forma de pago: así la siguiente global no se crea dos veces.
+      await c.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [`cfdi-global:${period}:${form}`]);
       const any = (await c.query(`SELECT 1 FROM billing_payments WHERE ${pay} LIMIT 1`, [provider, period])).rows.length;
       if (!any) return false;
+      // Si la global de ese mes ya salió, los pagos que llegaron después van en otra del mismo mes (PAY-22).
       const g = (await c.query(
-        `INSERT INTO cfdi_invoices (kind, global_period, payment_form, receiver) VALUES ('global', $1, $2, $3) ON CONFLICT DO NOTHING RETURNING id`,
+        `INSERT INTO cfdi_invoices (kind, global_period, payment_form, receiver, seq)
+         VALUES ('global', $1, $2, $3, (SELECT coalesce(max(seq), 0) + 1 FROM cfdi_invoices WHERE kind = 'global' AND global_period = $1 AND payment_form = $2))
+         ON CONFLICT DO NOTHING RETURNING id`,
         [period, form, JSON.stringify({ ...PUBLIC, zip: config.billing.cfdi.issuerZip })],
       )).rows[0];
       if (!g) return false;

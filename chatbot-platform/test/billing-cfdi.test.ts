@@ -265,6 +265,28 @@ t('global del mes: una por forma de pago con los pagos sin factura, una sola vez
   assert.ok(ov.invoicing.counts.some((c: any) => c.kind === 'global' && c.status === 'issued' && c.n === 2));
 });
 
+t('un pago que llega después de emitida la global de su mes entra en otra global del mismo mes, una sola vez (PAY-22)', async () => {
+  const [y, m] = mexicoMonth(new Date()).split('-').map(Number);
+  const nextMonth = new Date(Date.UTC(m === 12 ? y + 1 : y, m === 12 ? 0 : m, 1, 18));
+  // La global de este mes (Stripe, 04) ya se emitió en la prueba anterior; el reintento del aviso trae otro pago del mes.
+  assert.equal((await paid('in_p3', 'sub_p')).statusCode, 200);
+  assert.equal(await checkGlobalInvoice(nextMonth), 1);
+  assert.equal(await checkGlobalInvoice(nextMonth), 0, 'una sola vez');
+  const late = (await pool.query(`SELECT c.global_period, c.payment_form, c.seq FROM billing_payments p JOIN cfdi_invoices c ON c.id = p.global_cfdi_id WHERE p.provider_payment_id = 'in_p3'`)).rows[0];
+  assert.deepEqual([late.global_period, late.payment_form, late.seq], [mexicoMonth(new Date()), '04', 2]);
+  await processCfdi();
+  assert.equal((await rowsOf(`kind = 'global' AND seq = 2`))[0].status, 'issued');
+});
+
+t('un pago de hace más de 3 meses sin CFDI avisa una vez al día (PAY-22)', async () => {
+  await pool.query(`UPDATE billing_payments SET global_cfdi_id = NULL, paid_at = now() - interval '4 months' WHERE provider_payment_id = 'in_p3'`);
+  const count = async () => (await pool.query(`SELECT count(*)::int AS n FROM event_logs WHERE message LIKE 'Pagos sin CFDI:%'`)).rows[0].n;
+  const before = await count();
+  await checkGlobalInvoice(new Date());
+  await checkGlobalInvoice(new Date());
+  assert.equal(await count(), before + 1);
+});
+
 t('sin Facturapi (o con clave de producción en sandbox) no se llama al PAC y los CFDI esperan', async () => {
   assert.equal((await paid('in_f6', 'sub_f')).statusCode, 200);
   const n = fake.facturapi.requests.length;
