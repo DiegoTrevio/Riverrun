@@ -312,3 +312,28 @@ t('cotización con rango: exige el monto final; sin plan solo se marca aceptada;
   const draft = await createQuote({ accountId: h.accountId, kind: 'final', status: 'draft', source: 'panel', today: today(0), lines: [{ name: 'X', qty: 1, price_mode: 'exact', price_min: 100, price_max: null, iva_mode: 'exempt' }] });
   assert.equal((await h.authed('POST', `/api/quotes/${draft.id}/accept`, {})).statusCode, 409);
 });
+
+t('con más de 2 000 pagos recurrentes activos, el más nuevo también genera su cobro; una cuenta tiene hasta 500 (PAY-21)', async () => {
+  const { runPlans } = await import('../src/receivables/plans.js');
+  // 2 100 planes viejos de otra cuenta que todavía no tocan (empiezan en un año).
+  const other = (await h.authed('POST', '/api/accounts', { name: 'Gimnasio grande' })).json().id;
+  const ch = (await pool.query(`INSERT INTO channels (account_id, type, name, config, webhook_token) VALUES ($1, 'webchat', 'Web', '{}', md5(random()::text)) RETURNING id`, [other])).rows[0].id;
+  const ct = (await pool.query(`INSERT INTO contacts (account_id, channel_id, external_id) VALUES ($1, $2, 'socio') RETURNING id`, [other, ch])).rows[0].id;
+  await pool.query(`INSERT INTO receivable_plans (account_id, contact_id, concept, amount_cents, currency, frequency, day, starts_on, active, created_at)
+                    SELECT $1, $2, 'Cuota ' || g, 10000, 'MXN', 'monthly', 1, (now() + interval '1 year')::date, true, now() - interval '1 day'
+                      FROM generate_series(1, 2100) g`, [other, ct]);
+  // El más nuevo, de esta cuenta, ya toca.
+  const day = Number(today(2).slice(8, 10));
+  const r = await h.authed('POST', acc('/api/receivable-plans'), { contact_id: contactId, concept: 'Cuota nueva', amount_cents: 20000, frequency: 'monthly', day, starts_on: today(0), active: false });
+  assert.equal(r.statusCode, 201, r.body);
+  const id = r.json().plan.id;
+  await pool.query(`UPDATE receivable_plans SET active = true WHERE id = $1`, [id]);
+  await runPlans(h.service.receivables);
+  assert.ok((await bySource('recurring', `${id}:%`)).length >= 1, 'el plan más nuevo no quedó fuera');
+  // Tope por cuenta: la otra ya tiene 2 100 activos.
+  await pool.query(`INSERT INTO users (account_id, role, name, email, password_hash, email_verified_at) VALUES ($1, 'admin', 'Gym', 'gym@tope.mx', 'x', now())`, [other]);
+  const over = await h.authed('POST', `/api/receivable-plans?account_id=${other}`, { contact_id: ct, concept: 'Una más', amount_cents: 100, frequency: 'monthly', day: 1, starts_on: today(0) });
+  assert.equal(over.statusCode, 403, over.body);
+  assert.match(over.json().error, /500 pagos recurrentes activos/);
+  await pool.query(`UPDATE receivable_plans SET active = false WHERE account_id = $1`, [other]);
+});

@@ -17,7 +17,7 @@ import { WaTemplateRefSchema } from '../automation/types.js';
 import {
   getReceivable, getReceivableSettings, listReceivables, RECEIVABLE_COLS, receivableOut, saveReceivableSettings, todayIn, type Receivable,
 } from '../receivables/index.js';
-import { getPlan, nextDue, PLAN_COLS, planCols, runPlans, type ReceivablePlan } from '../receivables/plans.js';
+import { getPlan, nextDue, PLAN_COLS, planCols, RECEIVABLE_PLANS_MAX, runPlans, type ReceivablePlan } from '../receivables/plans.js';
 import { extractFacts } from '../engine/text.js';
 import { formatMoney } from '../quotes/format.js';
 import type { ChatService } from '../service.js';
@@ -125,6 +125,8 @@ export async function createPlan(service: ChatService, accountId: string, b: z.i
     const conv = await queryOne(`SELECT 1 FROM conversations WHERE id = $1 AND account_id = $2 AND contact_id = $3`, [b.conversation_id, accountId, contact.id]);
     if (!conv) throw new HttpError(400, 'La conversación no es de este cliente');
   }
+  const active = (await queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM receivable_plans WHERE account_id = $1 AND active`, [accountId]))!.n;
+  if (b.active && active >= RECEIVABLE_PLANS_MAX) throw new HttpError(403, `Una cuenta puede tener hasta ${RECEIVABLE_PLANS_MAX} pagos recurrentes activos: pausa o borra los que ya no uses.`);
   const p = (await queryOne<ReceivablePlan>(
     `INSERT INTO receivable_plans (account_id, contact_id, conversation_id, concept, amount_cents, currency, payment_link, reference, reminders, frequency, day, starts_on, ends_on, max_payments, active, created_by, approved_at)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, CASE WHEN $17::boolean THEN now() END) RETURNING ${PLAN_COLS}`,

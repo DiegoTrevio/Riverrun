@@ -90,13 +90,25 @@ export function nextDue(p: ReceivablePlan, today: string): string | null {
  * Crea los cobros de los planes activos cuyo vencimiento cae en los próximos días (RECEIVABLE_RECURRING_LEAD_DAYS, en la
  * zona de cada negocio). Al llegar a su fecha de fin o a su número de pagos, el plan se desactiva solo.
  */
+/** Planes por consulta al recorrerlos todos. */
+const PLAN_BATCH = 500;
+/** Pagos recurrentes activos por cuenta (PAY-21). */
+export const RECEIVABLE_PLANS_MAX = 500;
+
 export async function runPlans(receivables: Receivables, now = new Date(), planId?: string): Promise<number> {
   if (!config.receivables.enabled) return 0;
-  const plans = await query<ReceivablePlan>(
-    `SELECT ${cols('p.')} FROM receivable_plans p JOIN accounts a ON a.id = p.account_id
-      WHERE p.active AND p.approved_at IS NOT NULL AND a.status <> 'paused' AND ($1::uuid IS NULL OR p.id = $1) ORDER BY p.created_at LIMIT 2000`, [planId ?? null]);
   let created = 0;
   const tzOf = new Map<string, string>();
+  // Por lotes y hasta el final (PAY-21): con un tope fijo, pasando 2 000 planes activos en toda la plataforma los más
+  // nuevos nunca entraban y dejaban de generar sus cobros.
+  let after = '00000000-0000-0000-0000-000000000000';
+  for (;;) {
+  const plans = await query<ReceivablePlan>(
+    `SELECT ${cols('p.')} FROM receivable_plans p JOIN accounts a ON a.id = p.account_id
+      WHERE p.active AND p.approved_at IS NOT NULL AND a.status <> 'paused' AND ($1::uuid IS NULL OR p.id = $1) AND p.id > $2
+      ORDER BY p.id LIMIT ${PLAN_BATCH}`, [planId ?? null, after]);
+  if (!plans.length) break;
+  after = plans[plans.length - 1].id;
   for (const p of plans) {
     try {
       if (!tzOf.has(p.account_id)) tzOf.set(p.account_id, (await astore.getSettings(p.account_id)).timezone);
@@ -135,6 +147,8 @@ export async function runPlans(receivables: Receivables, now = new Date(), planI
     } catch (e: any) {
       await logEvent({ level: 'error', source: 'engine', message: `No se pudo crear el cobro del pago recurrente «${p.concept}»: ${e?.message ?? e}`, accountId: p.account_id });
     }
+  }
+  if (plans.length < PLAN_BATCH) break;
   }
   return created;
 }
