@@ -1,6 +1,7 @@
 /** Formatos de Word: marcas encontradas y obligatorias, archivos peligrosos, llenado seguro y conversión real a PDF. */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import PizZip from 'pizzip';
 import { docxText, exampleTemplate, fillTemplate, inspectTemplate, type TemplateData } from '../src/quotes/template.js';
 
@@ -60,6 +61,46 @@ test('formato: se rechazan macros, ActiveX, objetos incrustados, contenido de in
   const bomb = new PizZip();
   bomb.file('word/document.xml', 'a'.repeat(31 * 1024 * 1024));
   assert.match(inspectTemplate(bomb.generate({ type: 'nodebuffer', compression: 'DEFLATE' }) as Buffer).errors.join(), /demasiado grande/);
+});
+
+/** Escribe `size` como tamaño descomprimido declarado en cada parte (encabezado local y directorio central): mentir es gratis. */
+function lie(buf: Buffer, size: number): Buffer {
+  const out = Buffer.from(buf);
+  for (let i = 0; i + 4 <= out.length; i++) {
+    const sig = out.readUInt32LE(i);
+    if (sig === 0x04034b50) out.writeUInt32LE(size, i + 22);
+    if (sig === 0x02014b50) out.writeUInt32LE(size, i + 24);
+  }
+  return out;
+}
+
+test('formato: un .docx que miente en su tamaño se rechaza sin descomprimirlo todo (IN-16)', () => {
+  const bomb = new PizZip();
+  bomb.file('[Content_Types].xml', '<Types/>');
+  bomb.file('word/document.xml', ' '.repeat(200 * 1024 * 1024));
+  const buf = lie(bomb.generate({ type: 'nodebuffer', compression: 'DEFLATE' }) as Buffer, 200);
+  assert.ok(buf.length < 400_000, 'pesa poco');
+  const started = performance.now();
+  assert.deepEqual(inspectTemplate(buf).errors, ['El archivo descomprimido es demasiado grande']);
+  assert.ok(performance.now() - started < 500, `${(performance.now() - started).toFixed(0)} ms`);
+});
+
+test('formato: miles de partes se rechazan antes de abrir el archivo (IN-16)', () => {
+  const many = new PizZip();
+  for (let i = 0; i < 5000; i++) many.file(`x${i}`, '');
+  assert.deepEqual(inspectTemplate(many.generate({ type: 'nodebuffer' }) as Buffer).errors, ['El archivo tiene demasiadas partes internas']);
+});
+
+test('formato: más de 2 000 marcas se rechaza antes de compilarlo (IN-16)', () => {
+  const body = REQUIRED + Array.from({ length: 2100 }, (_, i) => p(`{{cliente.k${i}}}`)).join('');
+  assert.deepEqual(inspectTemplate(docx(body)).errors, ['El formato tiene demasiadas marcas (máximo 2 000)']);
+  assert.deepEqual(inspectTemplate(docx(REQUIRED + Array.from({ length: 300 }, (_, i) => p(`{{cliente.k${i}}}`)).join(''))).errors, []);
+});
+
+test('formato: uno con una imagen de 3 MB sigue entrando', () => {
+  const zip = new PizZip(exampleTemplate());
+  zip.file('word/media/image1.png', crypto.randomBytes(3 * 1024 * 1024));
+  assert.deepEqual(inspectTemplate(zip.generate({ type: 'nodebuffer', compression: 'DEFLATE' }) as Buffer).errors, []);
 });
 
 test('formato: se llena con los datos (escapados), la tabla de conceptos y las secciones de aproximada/final', () => {

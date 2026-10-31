@@ -133,3 +133,14 @@ t('formatos: subir, revisar marcas, versiones, vista previa y descargas', async 
   assert.equal((await h.authed('DELETE', `/api/quote-templates/${second.id}`)).statusCode, 200);
   assert.equal((await h.authed('GET', `/api/quote-templates?account_id=${h.accountId}`)).json().every((x: any) => x.status === 'archived'), true);
 });
+
+t('formatos: la subida 11 de una cuenta en una hora responde 429 (IN-16)', async () => {
+  const { exampleTemplate } = await import('../src/quotes/template.js');
+  const { clearHits } = await import('../src/identity/rate-limit.js');
+  await clearHits(`quote-template:${h.accountId}`);
+  for (let i = 0; i < 10; i++) assert.equal((await uploadTemplate(exampleTemplate(), `f${i}.docx`, `Tope ${i}`)).statusCode, 200);
+  const r = await uploadTemplate(exampleTemplate(), 'f10.docx', 'Tope 10');
+  assert.equal(r.statusCode, 429, r.body);
+  assert.equal(r.json().error, 'Subiste demasiados formatos en la última hora. Intenta más tarde.');
+  await clearHits(`quote-template:${h.accountId}`);
+});

@@ -7,6 +7,7 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { assertAccount, HttpError, notFound, requireRole, scopeAccount, targetAccount } from '../access.js';
 import { attachmentAbsolutePath } from '../attachments.js';
+import { countHit } from '../identity/rate-limit.js';
 import { safeFileName } from '../channels/media.js';
 import { logEvent } from '../logs.js';
 import { AcceptBody, acceptedTotal, planCharges } from '../quotes/accept.js';
@@ -99,6 +100,9 @@ async function friendly<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 /** Cotizaciones de la cuenta: ajustes, lista de precios y el historial de cotizaciones enviadas o por aprobar. */
+const TEMPLATE_UPLOADS_PER_HOUR = 10;
+const TEMPLATE_WINDOW_MS = 60 * 60_000;
+
 export async function quoteRoutes(api: FastifyInstance, service: ChatService) {
   const admins = { preHandler: requireRole('admin') };
   const itemFor = async (user: any, id: string) => assertAccount(user, await qstore.findPriceItem(id), 'Concepto no encontrado');
@@ -294,6 +298,10 @@ export async function quoteRoutes(api: FastifyInstance, service: ChatService) {
 
   api.post('/api/quote-templates', admins, async (req: any) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
+    // Revisar un formato descomprime y compila el archivo: con tope por cuenta, en la base (vale para todos los procesos).
+    if ((await countHit(`quote-template:${accountId}`, TEMPLATE_WINDOW_MS)) > TEMPLATE_UPLOADS_PER_HOUR) {
+      throw new HttpError(429, 'Subiste demasiados formatos en la última hora. Intenta más tarde.');
+    }
     let upload: { buffer: Buffer; name: string } | undefined;
     let name = '';
     for await (const part of req.parts({ limits: { fileSize: TEMPLATE_MAX_BYTES, files: 1 } })) {
