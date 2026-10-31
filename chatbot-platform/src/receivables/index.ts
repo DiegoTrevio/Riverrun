@@ -56,6 +56,8 @@ export interface Receivable {
   paused_until: string | null;
   overdue_notified_at: string | null;
   created_by: string | null;
+  /** null = lo registró un agente y falta que un administrador lo apruebe (sin recordatorios ni mención al cliente). */
+  approved_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -66,7 +68,7 @@ export const receivableOut = (r: Receivable & { contact_name?: string; contact_p
   concept: r.concept, amount_cents: Number(r.amount_cents), currency: r.currency, due_date: r.due_date, status: r.status,
   paid_at: r.paid_at, paid_note: r.paid_note, payment_link: r.payment_link, reference: r.reference, source: r.source, reminders: r.reminders,
   reminders_sent: r.reminders_sent, last_reminded_at: r.last_reminded_at, paused_until: r.paused_until, created_at: r.created_at,
-  source_id: r.source_id, installment: r.installment,
+  source_id: r.source_id, installment: r.installment, needs_approval: !r.approved_at,
 });
 
 export interface ReceivableSettings {
@@ -84,7 +86,7 @@ export interface ReceivableSettings {
 /** Columnas de un cobro (el monto como número y el vencimiento como YYYY-MM-DD). */
 const cols = (p = '') => `${p}id, ${p}account_id, ${p}contact_id, ${p}conversation_id, ${p}concept, ${p}amount_cents::float8 AS amount_cents, ${p}currency,
   to_char(${p}due_date, 'YYYY-MM-DD') AS due_date, ${p}status, ${p}paid_at, ${p}paid_by, ${p}paid_note, ${p}payment_link, ${p}reference, ${p}source, ${p}source_id, ${p}installment,
-  ${p}reminders, ${p}reminders_sent, ${p}last_reminded_at, ${p}paused_until, ${p}overdue_notified_at, ${p}created_by, ${p}created_at, ${p}updated_at`;
+  ${p}reminders, ${p}reminders_sent, ${p}last_reminded_at, ${p}paused_until, ${p}overdue_notified_at, ${p}created_by, ${p}approved_at, ${p}created_at, ${p}updated_at`;
 export const RECEIVABLE_COLS = cols();
 
 /* ------------------------------ Datos ------------------------------ */
@@ -165,7 +167,7 @@ export async function listReceivables(accountId: string, f: ReceivableFilter, to
 
 /** Cobros pendientes de un contacto (los del asistente, la ficha y el aviso de comprobante). */
 export const pendingForContact = (accountId: string, contactId: string) =>
-  query<Receivable>(`SELECT ${RECEIVABLE_COLS} FROM receivables WHERE account_id = $1 AND contact_id = $2 AND status = 'pending' ORDER BY due_date LIMIT 20`, [accountId, contactId]);
+  query<Receivable>(`SELECT ${RECEIVABLE_COLS} FROM receivables WHERE account_id = $1 AND contact_id = $2 AND status = 'pending' AND approved_at IS NOT NULL ORDER BY due_date LIMIT 20`, [accountId, contactId]);
 
 /** La conversación más reciente del contacto (por donde va el recordatorio si el cobro no tiene una). */
 export async function latestConversationOf(contactId: string) {
@@ -249,6 +251,8 @@ export interface NewReceivable {
   createdBy?: string | null;
   /** Quién lo registró, para la bitácora. */
   actor: string;
+  /** false: lo registró un agente y queda por aprobar. Por omisión, aprobado. */
+  approved?: boolean;
 }
 
 export class Receivables {
@@ -261,11 +265,11 @@ export class Receivables {
   async create(n: NewReceivable): Promise<{ receivable: Receivable; scheduled: number; existed?: boolean }> {
     const sourceId = n.source === 'manual' ? '' : (n.sourceId ?? '').slice(0, 200);
     const r = await queryOne<Receivable>(
-      `INSERT INTO receivables (account_id, contact_id, conversation_id, concept, amount_cents, currency, due_date, payment_link, reference, reminders, source, source_id, installment, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+      `INSERT INTO receivables (account_id, contact_id, conversation_id, concept, amount_cents, currency, due_date, payment_link, reference, reminders, source, source_id, installment, created_by, approved_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, CASE WHEN $15::boolean THEN now() END)
        ON CONFLICT (account_id, source, source_id) WHERE source <> 'manual' AND source_id <> '' DO NOTHING RETURNING ${RECEIVABLE_COLS}`,
       [n.accountId, n.contactId, n.conversationId ?? null, n.concept.slice(0, 200), n.amountCents, n.currency ?? 'MXN', n.dueDate, n.paymentLink ?? '', n.reference ?? '',
-        n.reminders ? JSON.stringify(n.reminders) : null, n.source, sourceId, n.installment ?? '', n.createdBy ?? null],
+        n.reminders ? JSON.stringify(n.reminders) : null, n.source, sourceId, n.installment ?? '', n.createdBy ?? null, n.approved !== false],
     );
     if (!r) {
       const existing = (await queryOne<Receivable>(`SELECT ${RECEIVABLE_COLS} FROM receivables WHERE account_id = $1 AND source = $2 AND source_id = $3`, [n.accountId, n.source, sourceId]))!;
@@ -279,7 +283,8 @@ export class Receivables {
   /** Programa (o reprograma) los recordatorios de un cobro pendiente y la revisión de vencido. Devuelve cuántos quedaron. */
   async schedule(r: Receivable, now = new Date()) {
     await cancelReceivableJobs(r.id);
-    if (r.status !== 'pending' || !config.receivables.enabled) return 0;
+    // Sin aprobar no se programa nada: ni recordatorios ni el aviso de vencido (que puede disparar reglas hacia el cliente).
+    if (r.status !== 'pending' || !r.approved_at || !config.receivables.enabled) return 0;
     const [s, st] = await Promise.all([getReceivableSettings(r.account_id), astore.getSettings(r.account_id)]);
     const offsets = (r.reminders ?? s.default_reminders).slice(0, config.receivables.maxReminders);
     const hasHours = Object.values(st.business_hours).some((w) => w.length > 0);
@@ -322,6 +327,7 @@ export class Receivables {
       await logEvent({ level: 'warn', source: 'engine', message: `Recordatorio de pago no enviado (${r.concept}): ${reason}`, accountId: r.account_id, conversationId: conversationId ?? undefined });
       return { sent: false, reason, conversationId };
     };
+    if (!r.approved_at) return skip('falta que un administrador lo apruebe', r.conversation_id);
     if (!o.manual && r.reminders_sent >= config.receivables.maxReminders) return skip('se alcanzó el máximo de recordatorios de este cobro', r.conversation_id);
     const conversationId = r.conversation_id ?? (r.contact_id ? await latestConversationOf(r.contact_id) : null);
     if (!conversationId) return skip('el cliente no tiene una conversación por donde escribirle');

@@ -188,3 +188,57 @@ t('cobros: el agente solo ve y opera los de sus contactos, y no pone enlaces de 
   assert.deepEqual((await ana('GET', '/api/receivable-plans')).json().data, [], 'los pagos recurrentes de otros tampoco');
   assert.equal((await ana('PUT', `/api/receivable-plans/${plan.json().plan.id}`, { concept: 'Otro' })).statusCode, 404);
 });
+
+t('cobros del agente: sin datos de pago en el texto, por aprobar y con aviso a los administradores (ID-11)', async () => {
+  const { pendingForContact } = await import('../src/receivables/index.js');
+  const { runPlans } = await import('../src/receivables/plans.js');
+  const due = new Date(Date.now() + 10 * 86400_000).toISOString().slice(0, 10);
+  const body = (extra: Record<string, unknown>) => ({ contact_id: mine.contact_id, concept: 'Sesión', amount_cents: 30000, due_date: due, ...extra });
+
+  // (a) El texto que llega al cliente no lleva datos de pago cuando lo escribe un agente.
+  const BAD = 'El concepto y la referencia no pueden llevar enlaces, correos ni números de cuenta o tarjeta: los datos de pago los pone un administrador.';
+  for (const [field, value] of [['concept', 'Paga en mpago.la/abc'], ['concept', 'Deposita a pagos@otra.mx'], ['concept', 'CLABE 0121 8000 1234 5678 90'], ['reference', '4152313812345678'], ['concept', 'https://pago.example.com']]) {
+    const r = await ana('POST', '/api/receivables', body({ [field]: value }));
+    assert.equal(r.statusCode, 400, `${field}: ${value}`);
+    assert.equal(r.json().error, BAD);
+  }
+  assert.equal((await h.authed('POST', `/api/receivables?account_id=${h.accountId}`, body({ concept: 'Paga en mpago.la/abc' }))).statusCode, 201, 'un administrador sí');
+
+  // (b) y (c): lo que registra un agente queda por aprobar, sin recordatorios ni mención al cliente, y avisa a los administradores.
+  const created = await ana('POST', '/api/receivables', body({ concept: 'Sesión de seguimiento', reference: 'Factura A-1234' }));
+  assert.equal(created.statusCode, 201, created.body);
+  const r = created.json();
+  assert.equal(r.receivable.needs_approval, true);
+  assert.equal(r.scheduled, 0, 'sin recordatorios programados');
+  assert.ok(!(await pendingForContact(h.accountId, mine.contact_id)).some((x) => x.id === r.receivable.id), 'el asistente no lo menciona');
+  const remind = await ana('POST', `/api/receivables/${r.receivable.id}/remind`, {});
+  assert.equal(remind.statusCode, 409);
+  assert.equal(remind.json().error, 'Un administrador debe aprobar este cobro antes de mandarlo');
+  const notified = (await pool.query(`SELECT user_id FROM notifications WHERE title = '💳 Cobro por aprobar' AND link = $1`, [`#/cobros?id=${r.receivable.id}`])).rows.map((x) => x.user_id);
+  assert.ok(notified.includes(carmenId) && !notified.includes(anaId), 'a los administradores, no a quien lo registró');
+
+  assert.equal((await ana('POST', `/api/receivables/${r.receivable.id}/approve`, {})).statusCode, 403, 'el agente no se aprueba a sí mismo');
+  const ok = await carmen('POST', `/api/receivables/${r.receivable.id}/approve`, {});
+  assert.equal(ok.statusCode, 200, ok.body);
+  assert.equal(ok.json().receivable.needs_approval, false);
+  assert.ok(ok.json().scheduled > 0, 'al aprobarlo se programan los recordatorios');
+  assert.ok((await pendingForContact(h.accountId, mine.contact_id)).some((x) => x.id === r.receivable.id));
+
+  // Si el agente lo cambia después, vuelve a quedar por aprobar; si lo cambia un administrador, no.
+  const edited = await ana('PUT', `/api/receivables/${r.receivable.id}`, { amount_cents: 99900 });
+  assert.equal(edited.json().receivable.needs_approval, true);
+  assert.equal((await carmen('POST', `/api/receivables/${r.receivable.id}/approve`, {})).statusCode, 200);
+  assert.equal((await carmen('PUT', `/api/receivables/${r.receivable.id}`, { amount_cents: 30000 })).json().receivable.needs_approval, false);
+
+  // Pagos recurrentes: igual, y no generan cobros hasta aprobarse.
+  const plan = await ana('POST', '/api/receivable-plans', { contact_id: mine.contact_id, concept: 'Mensualidad', amount_cents: 10000, frequency: 'monthly', day: 1, starts_on: new Date().toISOString().slice(0, 10) });
+  assert.equal(plan.statusCode, 201, plan.body);
+  assert.equal(plan.json().plan.needs_approval, true);
+  assert.equal(plan.json().created, 0);
+  await runPlans(h.service.receivables, new Date(Date.now() + 40 * 86400_000));
+  assert.equal((await pool.query(`SELECT count(*)::int AS n FROM receivables WHERE source = 'recurring' AND source_id LIKE $1`, [`${plan.json().plan.id}:%`])).rows[0].n, 0);
+  assert.equal((await ana('POST', '/api/receivable-plans', { contact_id: mine.contact_id, concept: 'Cuota en mpago.la/x', amount_cents: 10000, frequency: 'monthly', day: 1, starts_on: due })).statusCode, 400);
+  const approved = await carmen('POST', `/api/receivable-plans/${plan.json().plan.id}/approve`, {});
+  assert.equal(approved.statusCode, 200, approved.body);
+  assert.equal(approved.json().plan.needs_approval, false);
+});

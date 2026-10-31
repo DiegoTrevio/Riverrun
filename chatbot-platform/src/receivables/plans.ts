@@ -30,6 +30,8 @@ export interface ReceivablePlan {
   last_due: string | null;
   active: boolean;
   created_by: string | null;
+  /** null = lo registró un agente y falta que un administrador lo apruebe (no genera cobros). */
+  approved_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -37,7 +39,7 @@ export interface ReceivablePlan {
 const cols = (p = '') => `${p}id, ${p}account_id, ${p}contact_id, ${p}conversation_id, ${p}concept, ${p}amount_cents::float8 AS amount_cents, ${p}currency,
   ${p}payment_link, ${p}reference, ${p}reminders, ${p}frequency, ${p}day, to_char(${p}starts_on, 'YYYY-MM-DD') AS starts_on,
   to_char(${p}ends_on, 'YYYY-MM-DD') AS ends_on, ${p}max_payments, ${p}payments_created, to_char(${p}last_due, 'YYYY-MM-DD') AS last_due,
-  ${p}active, ${p}created_by, ${p}created_at, ${p}updated_at`;
+  ${p}active, ${p}created_by, ${p}approved_at, ${p}created_at, ${p}updated_at`;
 export const PLAN_COLS = cols();
 export const planCols = cols;
 
@@ -92,7 +94,7 @@ export async function runPlans(receivables: Receivables, now = new Date(), planI
   if (!config.receivables.enabled) return 0;
   const plans = await query<ReceivablePlan>(
     `SELECT ${cols('p.')} FROM receivable_plans p JOIN accounts a ON a.id = p.account_id
-      WHERE p.active AND a.status <> 'paused' AND ($1::uuid IS NULL OR p.id = $1) ORDER BY p.created_at LIMIT 2000`, [planId ?? null]);
+      WHERE p.active AND p.approved_at IS NOT NULL AND a.status <> 'paused' AND ($1::uuid IS NULL OR p.id = $1) ORDER BY p.created_at LIMIT 2000`, [planId ?? null]);
   let created = 0;
   const tzOf = new Map<string, string>();
   for (const p of plans) {

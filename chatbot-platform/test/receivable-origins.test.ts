@@ -93,6 +93,9 @@ t('pausar un plan deja de crear cobros pero conserva los ya creados; borrar es s
   const r = await agent('POST', acc('/api/receivable-plans'), { contact_id: contactId, concept: 'Clase de natación', amount_cents: 40000, frequency: 'weekly', day: new Date(`${today(2)}T12:00:00Z`).getUTCDay(), starts_on: today(0) });
   assert.equal(r.statusCode, 201, r.body);
   const id = r.json().plan.id;
+  // Lo que registra un agente queda por aprobar: sin cobros hasta que un administrador lo revisa.
+  assert.equal((await bySource('recurring', `${id}:%`)).length, 0);
+  assert.equal((await h.authed('POST', `/api/receivable-plans/${id}/approve`, {})).statusCode, 200);
   assert.ok((await bySource('recurring', `${id}:%`)).length >= 1);
   const paused = await agent('PUT', `/api/receivable-plans/${id}`, { active: false });
   assert.equal(paused.statusCode, 200, paused.body);
