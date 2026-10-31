@@ -254,7 +254,7 @@ t('las páginas de tarjeta por sustitución (Mercado Pago: cambiar tarjeta) cuen
   }
 });
 
-t('el portal de Stripe (y «cambiar tarjeta» en Stripe) cuenta para los topes, el freno y card_checks (PAY-18)', async () => {
+t('el portal de Stripe (y «cambiar tarjeta» en Stripe) tiene su tope por cuenta y respeta el freno, sin contar como verificación (PAY-18)', async () => {
   const a = await waiting('portal@tarjeta.mx');
   await seed(a.accountId, 0, 0);
   await pool.query(`INSERT INTO subscriptions (account_id, provider, plan_key, status, provider_customer_id, provider_subscription_id, current_period_end)
@@ -266,16 +266,16 @@ t('el portal de Stripe (y «cambiar tarjeta» en Stripe) cuenta para los topes, 
     assert.equal(r.statusCode, 200, `${path}: ${r.body}`);
     assert.ok(r.json().url, path);
   }
-  assert.equal(await checks(a.accountId), before + 2, 'cada página del portal queda en card_checks');
-  await setHits(`card-check-acct:${a.accountId}`, 5);
+  assert.equal(await checks(a.accountId), before, 'ver facturas no es una verificación abierta (no alimenta el freno)');
+  await setHits(`billing-portal-acct:${a.accountId}`, 10);
   for (const path of ['/api/billing/portal', '/api/billing/payment-method']) {
     const r = await a.as('POST', path);
     assert.equal(r.statusCode, 429, `${path}: ${r.body}`);
     assert.equal(r.json().error, 'Intenta más tarde');
   }
+  await pool.query(`UPDATE rate_limits SET hits = 0 WHERE key = $1`, [`billing-portal-acct:${a.accountId}`]);
   await pool.query(`INSERT INTO rate_limits (key, hits, expires_at) VALUES ('card-check-brake', 1, now() + interval '1 hour') ON CONFLICT (key) DO UPDATE SET hits = 1, expires_at = now() + interval '1 hour'`);
   try {
-    await pool.query(`UPDATE rate_limits SET hits = 0 WHERE key = $1`, [`card-check-acct:${a.accountId}`]);
     assert.equal((await a.as('POST', '/api/billing/portal')).statusCode, 429, 'con el freno puesto tampoco');
   } finally {
     await pool.query(`UPDATE rate_limits SET expires_at = now() WHERE key LIKE 'card-check-brake%'`);

@@ -6,7 +6,7 @@ import { HttpError, requireRole, targetAccount } from '../access.js';
 import { rateLimited } from '../auth.js';
 import { baseFor } from '../brands.js';
 import { providers, applyState, changePlan, confirmCheckout, createCheckoutSession, enabledProviders, getPlan, getSubscription, listPlans, notePaymentAction, payable, claimEvent, finishEvent, releaseEvent, startReplacement } from '../billing/service.js';
-import { cardCheckState, openCardCheck, trialDaysFor } from '../billing/card-check.js';
+import { assertPortalAllowed, cardCheckState, openCardCheck, trialDaysFor } from '../billing/card-check.js';
 import { alertSuperadmins, applyDispute, recordMoney, RefundBeforePaymentError } from '../billing/ledger.js';
 import { FiscalSchema, fiscalComplete, getFiscal, personaOf, REGIMES, saveFiscal, USES, usesFor } from '../billing/fiscal.js';
 import { listPayments } from '../billing/payments.js';
@@ -57,7 +57,11 @@ const tooMany = (reply: any, key: string, max: number) => {
 /** Planes que se pueden contratar, con los proveedores que los cobran (para "Mi plan" y el registro). */
 export async function offeredPlans() {
   const on = enabledProviders();
-  return (await listPlans()).map((p: Plan) => ({ ...planOut(p), providers: on.filter((x) => x.supportsPlan(p)).map((x) => ({ name: x.name, label: x.label })) }));
+  // El tope interno de IA del plan no se publica (precios, registro, Mi plan): es un dato de la plataforma.
+  return (await listPlans()).map((p: Plan) => {
+    const { ai_usd_per_month: _cap, ...out } = planOut(p);
+    return { ...out, providers: on.filter((x) => x.supportsPlan(p)).map((x) => ({ name: x.name, label: x.label })) };
+  });
 }
 
 /** Cuánto se espera el cobro de un reembolso que llegó antes (el proveedor reintenta mientras tanto). */
@@ -271,12 +275,13 @@ export async function billingRoutes(api: FastifyInstance) {
   });
 
   /**
-   * El portal de Stripe deja probar tarjetas («actualizar método de pago») contra la cuenta de la plataforma: cuenta como
-   * una página de tarjeta por sustitución, con los mismos topes, el freno y su registro en card_checks (PAY-18).
+   * El portal de Stripe deja probar tarjetas («actualizar método de pago») contra la cuenta de la plataforma: tiene sus
+   * propios topes en la base y respeta el freno de las verificaciones (PAY-18).
    */
-  const stripePortal = async (accountId: string, ip: string, sub: NonNullable<Awaited<ReturnType<typeof getSubscription>>>, base: string) =>
-    openCardCheck({ accountId, ip, provider: sub.provider, planKey: sub.plan_key, replacement: true,
-      open: async () => ({ url: (await providers[sub.provider].portal!(sub.provider_customer_id, `${base}/#/plan`)).url, ref: '' }) });
+  const stripePortal = async (accountId: string, ip: string, sub: NonNullable<Awaited<ReturnType<typeof getSubscription>>>, base: string) => {
+    await assertPortalAllowed(accountId, ip);
+    return (await providers[sub.provider].portal!(sub.provider_customer_id, `${base}/#/plan`)).url;
+  };
 
   /** Stripe: página para cambiar tarjeta, ver facturas y cancelar. */
   api.post('/api/billing/portal', { ...admins, ...ownerStepUp }, async (req: any, reply) => {

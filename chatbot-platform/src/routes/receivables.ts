@@ -350,6 +350,11 @@ export async function receivableRoutes(api: FastifyInstance, service: ChatServic
     assertAgentText(req.user, b.concept, b.reference);
     const reapprove = req.user.role === 'agent' && (['concept', 'amount_cents', 'currency', 'reference', 'frequency', 'day', 'starts_on', 'ends_on', 'max_payments'] as const).some((k) => b[k] !== undefined && b[k] !== p[k]);
     const merged = { ...p, ...Object.fromEntries(Object.entries(b).filter(([, v]) => v !== undefined)) } as ReceivablePlan;
+    // Reanudar un plan pausado también cuenta para el tope de activos de la cuenta (PAY-21).
+    if (merged.active && !p.active) {
+      const active = (await queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM receivable_plans WHERE account_id = $1 AND active`, [p.account_id]))!.n;
+      if (active >= RECEIVABLE_PLANS_MAX) throw new HttpError(403, `Una cuenta puede tener hasta ${RECEIVABLE_PLANS_MAX} pagos recurrentes activos: pausa o borra los que ya no uses.`);
+    }
     if (!dayOk(merged)) throw new HttpError(400, DAY_MSG.message);
     if (merged.ends_on && merged.ends_on < merged.starts_on) throw new HttpError(400, 'La fecha de fin es antes del inicio');
     if (merged.reminders && merged.reminders.length > config.receivables.maxReminders) throw new HttpError(400, `Hasta ${config.receivables.maxReminders} recordatorios por cobro`);

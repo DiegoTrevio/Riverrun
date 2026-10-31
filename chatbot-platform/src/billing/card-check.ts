@@ -177,6 +177,19 @@ export async function startTrialFromState(state: SubscriptionState & { accountId
 }
 
 /**
+ * El portal de Stripe (ver facturas, cancelar, cambiar la tarjeta) deja probar tarjetas contra la cuenta de la
+ * plataforma (PAY-18). No crea una suscripción, así que no es una verificación que se complete (si contara en card_checks,
+ * unos cuantos clientes viendo sus facturas encenderían el freno para todos): tiene sus propios topes en la base (10 por
+ * día por cuenta y 20 por conexión) y respeta el freno.
+ */
+export async function assertPortalAllowed(accountId: string, ip: string): Promise<void> {
+  if (await braked()) throw new HttpError(429, TOO_MANY);
+  for (const [key, max] of [[`billing-portal-acct:${accountId}`, 10], [`billing-portal-ip:${ipKey(ip)}`, 20]] as const) {
+    if ((await countHit(key, DAY)) > max) throw new HttpError(429, TOO_MANY);
+  }
+}
+
+/**
  * Abre (o reutiliza) la página de pago de la cuenta con las puertas y los topes de arriba; devuelve su dirección.
  * `replacement`: una página de tarjeta de quien ya paga (Mercado Pago: cambiar tarjeta, reanudar, mensual ↔ anual). Cuenta
  * igual para los topes y el freno y queda en `card_checks`, pero no pide el correo verificado (ya es cliente) ni

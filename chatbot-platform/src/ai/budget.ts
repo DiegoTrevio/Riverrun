@@ -66,7 +66,9 @@ async function reserve(accountId:string,chatbotId:string|null,spec:Spec) {
  try{return await withTransaction(async client=>{
   await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`ai-budget:${accountId}`]);
   const row=(await client.query('SELECT revision,settings FROM ai_budget_settings WHERE account_id=$1',[accountId])).rows[0];
-  const policy=BudgetSettings.parse(row?.settings??{}),limited=constrained(policy,spec.models);
+  // Con tope de la plataforma (PAY-20) la llamada también va limitada: sin precio conocido no se puede cuidar el tope.
+  const platform=await platformAiCap(accountId,client);
+  const policy=BudgetSettings.parse(row?.settings??{}),limited=constrained(policy,spec.models)||platform!==null;
   const output=limited&&spec.kind!=='transcription'?Math.min(spec.output,policy.max_output_tokens):spec.output;
   const prices=await Promise.all(spec.models.map(m=>price(m,policy,client)));
   if(limited&&prices.some(p=>!p))throw new AiBudgetBlocked('price_unknown');
@@ -82,9 +84,9 @@ async function reserve(accountId:string,chatbotId:string|null,spec:Spec) {
    if(cap.limit_usd>0&&Number(used.used)+(amount??0)>=cap.limit_usd*0.8)nearing=true;
   }
   // Tope de la plataforma (PAY-20): lo fija el superadmin por plan o por cuenta, y el cliente no lo puede cambiar.
-  const platform=await platformAiCap(accountId,client);
   if(platform!==null){
-   const used=(await client.query(`SELECT coalesce(sum(coalesce(charged_usd,reserved_usd)),0) AS used FROM ai_spend WHERE account_id=$1 AND created_at>=date_trunc('month',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AND state<>'rejected'`,[accountId])).rows[0];
+   const used=(await client.query(`SELECT coalesce(sum(coalesce(charged_usd,reserved_usd)),0) AS used,count(*) FILTER(WHERE charged_usd IS NULL AND reserved_usd IS NULL)::int AS unknown FROM ai_spend WHERE account_id=$1 AND created_at>=date_trunc('month',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AND state<>'rejected'`,[accountId])).rows[0];
+   if(used.unknown>0)throw new AiBudgetBlocked('unresolved_cost');
    if(Number(used.used)+(amount??0)>platform)throw new AiBudgetBlocked('platform_cap');
   }
   const inserted=(await client.query(`INSERT INTO ai_spend(account_id,chatbot_id,kind,models,state,reserved_usd,cost_source,policy_revision,quote) VALUES($1,$2,$3,$4,'reserved',$5,'unknown',$6,$7) RETURNING id`,[accountId,chatbotId,spec.kind,spec.models,amount,row?.revision??0,JSON.stringify({prices,input_tokens:spec.input,output_tokens:output})])).rows[0];

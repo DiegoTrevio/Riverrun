@@ -14,6 +14,11 @@ import { HttpError } from '../access.js';
 import { notifyUsers } from '../automation/store.js';
 import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
+
+/** Una conexión de transacción (con su candado) o, sin ella, el pool: dentro de un candado no se pide otra conexión. */
+type Q = { query: (sql: string, args?: unknown[]) => Promise<{ rows: any[] }> };
+const one = async <T extends Record<string, any>>(q: Q | undefined, sql: string, args: unknown[]): Promise<T | null> => (q ? ((await q.query(sql, args)).rows[0] as T | undefined) ?? null : queryOne<T>(sql, args));
+const many = async <T extends Record<string, any>>(q: Q | undefined, sql: string, args: unknown[] = []): Promise<T[]> => (q ? ((await q.query(sql, args)).rows as T[]) : query<T>(sql, args));
 import { sendMail } from '../mailer.js';
 import { logEvent } from '../logs.js';
 import { chargeCents } from './tax.js';
@@ -57,11 +62,11 @@ export interface EffectiveLimits {
   plan_key: string;
 }
 
-export async function effectiveLimits(accountId: string): Promise<EffectiveLimits> {
-  const acc = await queryOne<{ status: string; plan: string; limits_override: unknown }>(`SELECT status, plan, limits_override FROM accounts WHERE id = $1`, [accountId]);
+export async function effectiveLimits(accountId: string, q?: Q): Promise<EffectiveLimits> {
+  const acc = await one<{ status: string; plan: string; limits_override: unknown }>(q, `SELECT status, plan, limits_override FROM accounts WHERE id = $1`, [accountId]);
   if (!acc) return { limits: {}, source: 'none', plan_key: '' };
   const override = clean(acc.limits_override);
-  const plan = acc.plan ? await queryOne<{ limits: unknown }>(`SELECT limits FROM plans WHERE key = $1`, [acc.plan]) : null;
+  const plan = acc.plan ? await one<{ limits: unknown }>(q, `SELECT limits FROM plans WHERE key = $1`, [acc.plan]) : null;
   // Un plan que ya no existe (clave mal escrita o borrada) no puede dejar a la cuenta sin límites: se aplican los de prueba.
   const missingPlan = !!acc.plan && !plan;
   if (missingPlan) await logEvent({ level: 'error', source: 'admin', message: `La cuenta tiene el plan "${acc.plan}", que no existe; se aplican límites restrictivos`, accountId });
@@ -73,8 +78,8 @@ export async function effectiveLimits(accountId: string): Promise<EffectiveLimit
 
 export const monthKey = (d = new Date()) => d.toISOString().slice(0, 7);
 
-export async function messagesUsed(accountId: string, month = monthKey()): Promise<number> {
-  return (await queryOne<{ messages: number }>(`SELECT messages FROM usage_counters WHERE account_id = $1 AND month = $2`, [accountId, month]))?.messages ?? 0;
+export async function messagesUsed(accountId: string, month = monthKey(), q?: Q): Promise<number> {
+  return (await one<{ messages: number }>(q, `SELECT messages FROM usage_counters WHERE account_id = $1 AND month = $2`, [accountId, month]))?.messages ?? 0;
 }
 
 export interface Usage {
@@ -85,8 +90,8 @@ export interface Usage {
   social_accounts: number;
 }
 
-export async function usageOf(accountId: string): Promise<Usage> {
-  const r = await queryOne<{ channels: number; users: number; chatbots: number; social_accounts: number }>(
+export async function usageOf(accountId: string, q?: Q): Promise<Usage> {
+  const r = await one<{ channels: number; users: number; chatbots: number; social_accounts: number }>(q,
     `SELECT (SELECT count(*)::int FROM channels WHERE account_id = $1 AND type <> 'playground') AS channels,
             (SELECT count(*)::int FROM users WHERE account_id = $1 AND active) AS users,
             (SELECT count(*)::int FROM chatbots WHERE account_id = $1) AS chatbots,
@@ -94,7 +99,7 @@ export async function usageOf(accountId: string): Promise<Usage> {
     [accountId],
   );
   return {
-    messages_per_month: await messagesUsed(accountId), channels: r?.channels ?? 0, users: r?.users ?? 0, chatbots: r?.chatbots ?? 0, social_accounts: r?.social_accounts ?? 0,
+    messages_per_month: await messagesUsed(accountId, monthKey(), q), channels: r?.channels ?? 0, users: r?.users ?? 0, chatbots: r?.chatbots ?? 0, social_accounts: r?.social_accounts ?? 0,
   };
 }
 
@@ -114,11 +119,11 @@ export interface UpgradeOffer {
  * todo lo que la cuenta ya usa; primero los del mismo periodo que su plan (mensual si no tiene) y, entre ellos, el más
  * barato. null si ningún plan alcanza (o no hay planes).
  */
-export async function nextPlanFor(accountId: string, key: LimitKey, needed: number): Promise<UpgradeOffer | null> {
+export async function nextPlanFor(accountId: string, key: LimitKey, needed: number, q?: Q): Promise<UpgradeOffer | null> {
   const [acc, used, plans] = await Promise.all([
-    queryOne<{ plan: string }>(`SELECT plan FROM accounts WHERE id = $1`, [accountId]),
-    usageOf(accountId),
-    query<{ key: string; name: string; price_cents: number; currency: string; billing_interval: 'month' | 'year'; limits: unknown }>(`SELECT key, name, price_cents, currency, billing_interval, limits FROM plans WHERE active`),
+    one<{ plan: string }>(q, `SELECT plan FROM accounts WHERE id = $1`, [accountId]),
+    usageOf(accountId, q),
+    many<{ key: string; name: string; price_cents: number; currency: string; billing_interval: 'month' | 'year'; limits: unknown }>(q, `SELECT key, name, price_cents, currency, billing_interval, limits FROM plans WHERE active`),
   ]);
   const fits = (max: number | null | undefined, n: number) => !max || max >= n;
   const monthly = (p: { price_cents: number; billing_interval: string }) => (p.billing_interval === 'year' ? p.price_cents / 12 : p.price_cents);
@@ -133,8 +138,8 @@ export async function nextPlanFor(accountId: string, key: LimitKey, needed: numb
 }
 
 /** Lo que el panel necesita para ofrecer subir de plan al topar un límite. */
-export async function limitDetail(accountId: string, key: LimitKey, used: number, max: number) {
-  return { key, label: LIMIT_LABELS[key].plural, used, max, next_plan: await nextPlanFor(accountId, key, Math.max(used, max) + 1) };
+export async function limitDetail(accountId: string, key: LimitKey, used: number, max: number, q?: Q) {
+  return { key, label: LIMIT_LABELS[key].plural, used, max, next_plan: await nextPlanFor(accountId, key, Math.max(used, max) + 1, q) };
 }
 
 /** "El plan Pro incluye hasta 5 canales" / "…sin límite de canales". */
@@ -146,21 +151,23 @@ export const offerText = (o: UpgradeOffer, key: LimitKey) =>
  * dos pedidos a la vez se forman y el segundo cuenta lo que el primero ya creó (PAY-19). Sin esto, 20 pedidos
  * simultáneos pasaban todos la cuenta antes de que alguno insertara.
  */
-export async function assertWithinLimitLocked(client: { query: (sql: string, args?: unknown[]) => Promise<unknown> }, accountId: string, key: Exclude<LimitKey, 'messages_per_month'>, adding = 1) {
+export async function assertWithinLimitLocked(client: Q, accountId: string, key: Exclude<LimitKey, 'messages_per_month'>, adding = 1) {
   await client.query('SELECT id FROM accounts WHERE id = $1 FOR UPDATE', [accountId]);
-  await assertWithinLimit(accountId, key, adding);
+  // Todo con la misma conexión: con el candado tomado, pedir otra al pool puede quedarse esperando a que se libere una
+  // que ocupan los demás pedidos formados detrás de este candado.
+  await assertWithinLimit(accountId, key, adding, client);
 }
 
 /** Falla con un mensaje claro si crear `adding` más de este recurso pasa el límite de la cuenta. */
-export async function assertWithinLimit(accountId: string, key: Exclude<LimitKey, 'messages_per_month'>, adding = 1) {
-  const { limits, source } = await effectiveLimits(accountId);
+export async function assertWithinLimit(accountId: string, key: Exclude<LimitKey, 'messages_per_month'>, adding = 1, q?: Q) {
+  const { limits, source } = await effectiveLimits(accountId, q);
   const max = limits[key];
   if (!max) return;
-  const used = (await usageOf(accountId))[key];
+  const used = (await usageOf(accountId, q))[key];
   if (used + adding > max) {
     const who = source === 'trial' ? 'Tu periodo de prueba permite' : 'Tu plan permite';
     const l = LIMIT_LABELS[key];
-    const detail = await limitDetail(accountId, key, used, max);
+    const detail = await limitDetail(accountId, key, used, max, q);
     const offer = detail.next_plan ? ` ${offerText(detail.next_plan, key)}` : '';
     throw new HttpError(403, `${who} hasta ${max} ${max === 1 ? l.singular : l.plural} y ya tienes ${used}.${offer} Para agregar más, cambia de plan en Ajustes → Mi plan y pagos.`, ['limit_reached'], { limit: detail });
   }

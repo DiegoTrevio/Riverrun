@@ -82,3 +82,13 @@ t('el administrador de la cuenta no cambia el tope ni confirma costos dudosos', 
   assert.equal(r.statusCode, 403, r.body);
   assert.equal((await h.authed('POST', `/api/ai-budget/review/${row.id}?account_id=${h.accountId}`, { amount_usd: 0.001, note: 'Revisado con el proveedor' })).statusCode, 200, 'el superadmin sí');
 });
+
+t('con tope de la plataforma, un modelo sin precio conocido no pasa (el tope no se puede cuidar) (revisión 3b)', async () => {
+  await h.authed('PUT', `/api/accounts/${h.accountId}`, { ai_usd_override: 100 });
+  try {
+    const r = accountAi(h.ai, h.accountId, h.botId).complete({ ...req, model: 'proveedor-nuevo/modelo-sin-precio', fallback_models: 'none' });
+    await assert.rejects(r, (e: any) => e instanceof AiBudgetBlocked && e.code === 'price_unknown');
+  } finally {
+    await h.authed('PUT', `/api/accounts/${h.accountId}`, { ai_usd_override: null });
+  }
+});

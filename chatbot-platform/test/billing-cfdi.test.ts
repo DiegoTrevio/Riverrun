@@ -278,7 +278,7 @@ t('un pago que llega después de emitida la global de su mes entra en otra globa
   assert.equal((await rowsOf(`kind = 'global' AND seq = 2`))[0].status, 'issued');
 });
 
-t('un pago de hace más de 3 meses sin CFDI avisa una vez al día (PAY-22)', async () => {
+t('un pago de hace más de 3 meses sin CFDI avisa una vez por semana (PAY-22)', async () => {
   await pool.query(`UPDATE billing_payments SET global_cfdi_id = NULL, paid_at = now() - interval '4 months' WHERE provider_payment_id = 'in_p3'`);
   const count = async () => (await pool.query(`SELECT count(*)::int AS n FROM event_logs WHERE message LIKE 'Pagos sin CFDI:%'`)).rows[0].n;
   const before = await count();

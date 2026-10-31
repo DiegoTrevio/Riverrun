@@ -56,10 +56,12 @@ export async function tryTakeZernioBudget(priority: ZernioPriority = 'interactiv
 export const ZERNIO_PER_ACCOUNT_PER_MIN = 60;
 
 /** Error de tope por cuenta con la forma de un 429 (el panel muestra el mensaje). */
-class ZernioAccountBusy extends Error {
+class ZernioAccountBusy extends ZernioBusyError {
   status = 429;
   constructor() {
-    super('Esta cuenta mandó demasiadas acciones a las redes en el último minuto. Intenta en un momento.');
+    super();
+    // Es un ZernioBusyError: quien envía sabe que no salió nada (no «quizá se envió»).
+    this.message = 'Esta cuenta mandó demasiadas acciones a las redes en el último minuto. Intenta en un momento.';
   }
 }
 

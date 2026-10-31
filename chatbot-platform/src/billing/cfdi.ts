@@ -131,7 +131,8 @@ export async function checkGlobalInvoice(now = new Date()) {
        AND NOT EXISTS (SELECT 1 FROM cfdi_invoices x WHERE x.payment_id = billing_payments.id AND x.kind = 'payment' AND x.status <> 'void')`,
     [now],
   ))!;
-  if (orphans.n && (await countHit(`cfdi-orphans:${now.toISOString().slice(0, 10)}`, 86400_000)) === 1) {
+  // Una vez por semana mientras sigan ahí (pagos de antes de activar Facturapi, por ejemplo): no un correo diario.
+  if (orphans.n && (await countHit('cfdi-orphans', 7 * 86400_000)) === 1) {
     const text = `${orphans.n} pago(s) por ${(Number(orphans.total) / 100).toFixed(2)} llevan más de 3 meses sin CFDI (ni propio ni en una global). Revísalos con tu contador.`;
     await logEvent({ level: 'error', source: 'admin', message: `Pagos sin CFDI: ${text}` });
     await emailSuperadmin('Pagos sin factura', text).catch(() => undefined);

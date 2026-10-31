@@ -158,7 +158,10 @@ t('pedidos simultáneos no rebasan el límite: canales, asistentes y duplicados 
   const a = await signup('carrera@limites.mx');
   await h.authed('PUT', `/api/accounts/${a.account}`, { limits_override: { channels: 2, chatbots: 2 } });
   const count = async (table: string) => (await pool.query(`SELECT count(*)::int AS n FROM ${table} WHERE account_id = $1`, [a.account])).rows[0].n;
-  const bots = await Promise.all(Array.from({ length: 12 }, (_, i) => a.api('POST', '/api/chatbots', { name: `Bot ${i}`, active: false })));
+  // Más pedidos que conexiones del pool (10): con el candado tomado, el conteo no debe pedir otra conexión.
+  const started = Date.now();
+  const bots = await Promise.all(Array.from({ length: 25 }, (_, i) => a.api('POST', '/api/chatbots', { name: `Bot ${i}`, active: false })));
+  assert.ok(Date.now() - started < 10_000, `tardó ${Date.now() - started} ms (¿esperando conexiones del pool?)`);
   assert.equal(bots.filter((r) => r.statusCode === 200).length, 2, bots.map((r) => r.statusCode).join(','));
   assert.equal(await count('chatbots'), 2);
   const bot = (await a.api('GET', '/api/chatbots')).json()[0];

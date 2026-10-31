@@ -487,6 +487,9 @@ export class Receivables {
       await query(`UPDATE receivables SET paused_until = $2, conversation_id = COALESCE(conversation_id, $3), updated_at = now() WHERE id = ANY($1::uuid[]) AND status = 'pending'`,
         [pausable, new Date(Date.now() + PAUSE_ON_REPORT_MS), conv.id]);
     }
+    // Sin nada que pausar (ya usó sus pausas), el aviso al equipo sale como mucho una vez por hora: varias fotos seguidas
+    // no lo repiten.
+    if (!pausable.length && (await countHit(`payment-report-alert:${conv.id}`, 3600_000)) > 1) return true;
     if (spent.length) {
       await logEvent({ level: 'warn', source: 'engine', message: `El cliente ya pausó sus recordatorios ${PAUSES_PER_RECEIVABLE} veces (${spent.map((r) => r.concept).join(', ')}): siguen los recordatorios hasta que el equipo lo verifique`, accountId: conv.account_id, conversationId: conv.id });
     }
@@ -500,7 +503,7 @@ export class Receivables {
       kind: 'payment',
       conversationId: conv.id,
     });
-    await logEvent({ level: 'info', source: 'engine', message: `El cliente reportó un pago: se avisó al equipo y se pausan los recordatorios ${PAUSE_ON_REPORT_MS / DAY} días`, accountId: conv.account_id, conversationId: conv.id });
+    await logEvent({ level: 'info', source: 'engine', message: `El cliente reportó un pago: se avisó al equipo${pausable.length ? ` y se pausan los recordatorios ${PAUSE_ON_REPORT_MS / DAY} días` : ''}`, accountId: conv.account_id, conversationId: conv.id });
     return true;
   }
 
