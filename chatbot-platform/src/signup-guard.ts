@@ -6,6 +6,11 @@ import type { PoolClient } from 'pg';
 import { HttpError } from './access.js';
 import { config } from './config.js';
 import { logEvent } from './logs.js';
+import { runtimeEnv } from './config-check.js';
+import { countHit } from './identity/rate-limit.js';
+import { notifyPlatform } from './platform/digest.js';
+
+const HOUR = 3600_000;
 import { hmac, safeEqual } from './secret.js';
 
 /** Servicios de correo temporal más comunes. Se bloquea el dominio y sus subdominios. */
@@ -48,14 +53,18 @@ export const DISPOSABLE_MESSAGE = 'Usa un correo permanente de tu negocio: no ac
 
 const turnstile = () => config.signup.turnstile;
 export const captchaEnabled = () => !!(turnstile().siteKey && turnstile().secretKey);
+/** En producción el registro público siempre pide captcha; fuera de ella, solo si están las dos claves. */
+export const captchaRequired = () => runtimeEnv() === 'production' || captchaEnabled();
+/** El registro se puede usar: en producción sin las claves de Turnstile queda cerrado. */
+export const signupAvailable = () => config.signup.enabled && (captchaEnabled() || runtimeEnv() !== 'production');
 
-/**
- * Valida el captcha. Sin Turnstile configurado no se pide. Si Cloudflare no responde, se deja pasar (con aviso en la
- * bitácora): una caída suya no debe cerrar el registro; el límite por conexión sigue frenando abusos.
- */
-export async function verifyCaptcha(token: string | undefined, ip: string): Promise<boolean> {
-  if (!captchaEnabled()) return true;
-  if (!token) return false;
+export const SIGNUP_UNAVAILABLE = 'El registro no está disponible por ahora';
+export const CAPTCHA_UNAVAILABLE = 'No pudimos comprobar el captcha: intenta en un momento';
+
+/** Valida el captcha: `ok` (o no se pide), `invalid` (sin token o rechazado) o `unavailable` (Cloudflare no respondió). */
+export async function verifyCaptcha(token: string | undefined, ip: string): Promise<'ok' | 'invalid' | 'unavailable'> {
+  if (!captchaEnabled()) return 'ok';
+  if (!token) return 'invalid';
   try {
     const res = await fetch(turnstile().verifyUrl, {
       method: 'POST',
@@ -65,10 +74,29 @@ export async function verifyCaptcha(token: string | undefined, ip: string): Prom
     });
     const data: any = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return data.success === true;
+    return data.success === true ? 'ok' : 'invalid';
   } catch (e: any) {
-    await logEvent({ level: 'warn', source: 'system', message: `Captcha sin respuesta de Cloudflare (se deja pasar): ${e?.message ?? e}`, details: { ip } });
-    return true;
+    await logEvent({ level: 'warn', source: 'system', message: `Captcha sin respuesta de Cloudflare: ${e?.message ?? e}`, details: { ip } });
+    return 'unavailable';
+  }
+}
+
+/**
+ * El captcha del registro, cerrado ante fallas: sin claves en producción no se abre el registro, un token inválido es
+ * 400 y si Cloudflare no responde el registro espera (503), con un solo aviso por hora al superadministrador.
+ */
+export async function assertCaptcha(token: string | undefined, ip: string): Promise<void> {
+  if (!captchaEnabled()) {
+    if (captchaRequired()) throw new HttpError(503, SIGNUP_UNAVAILABLE);
+    return;
+  }
+  const result = await verifyCaptcha(token, ip);
+  if (result === 'invalid') throw new HttpError(400, CAPTCHA_MESSAGE);
+  if (result === 'unavailable') {
+    if ((await countHit('captcha-down-alert', HOUR)) === 1) {
+      await notifyPlatform('El captcha del registro no responde', 'Cloudflare Turnstile no respondió: los registros nuevos esperan hasta que vuelva («intenta en un momento»).', { urgent: true });
+    }
+    throw new HttpError(503, CAPTCHA_UNAVAILABLE);
   }
 }
 export const CAPTCHA_MESSAGE = 'Confirma que no eres un robot e intenta de nuevo.';

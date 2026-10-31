@@ -1,5 +1,6 @@
 import { api, h, toast } from './core.js';
 import { icon } from './icons.js';
+import { aiLock } from './session.js';
 
 /*
  * Cambiar las instrucciones del agente escribiendo qué se quiere: «quita lo de envíos gratis y agrega que los domingos
@@ -182,7 +183,7 @@ export function promptAssistant({ botId, getPrompt, apply, context = '', label =
   const box = h('div', { class: 'ai-compose ai-prompt' },
     h('label', { class: 'ai-label', for: taId }, label),
     ta,
-    h('div', { class: 'ai-bar' }, h('span', { class: 'ai-hint small muted' }, 'Di qué quitar, qué agregar o qué cambiar. Antes de aplicarlo ves cómo queda.'), askBtn),
+    h('div', { class: 'ai-bar' }, h('span', { class: 'ai-hint small muted' }, 'Di qué quitar, qué agregar o qué cambiar. Antes de aplicarlo ves cómo queda.'), aiLock(askBtn)),
     h('div', { class: 'ai-examples' }, h('span', { class: 'small muted' }, 'Ejemplos:'),
       EXAMPLES.map(([title, idea]) => h('button', { type: 'button', class: 'ai-example', onclick: () => { ta.value = idea; grow(); ta.focus(); say(''); } }, title))),
     status,

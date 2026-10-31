@@ -12,11 +12,11 @@ import { notifySuperadmins } from '../lifecycle.js';
 import { logEvent } from '../logs.js';
 import { hmac, safeEqual } from '../secret.js';
 import * as store from '../store/index.js';
-import { newAccountState } from './signup.js';
+import { newAccountState, assertSignupAttempt, reserveSignup } from './signup.js';
 import { z } from 'zod';
 import { HttpError } from '../access.js';
 import { BUSINESS_TYPES } from '../templates/business.js';
-import { DISPOSABLE_MESSAGE, GOOGLE_PASS_COOKIE, googlePassCookie, googleSignupPass, isDisposableEmail, readGoogleSignupPass, recordTermsAcceptance, termsVersion } from '../signup-guard.js';
+import { assertCaptcha, captchaEnabled, DISPOSABLE_MESSAGE, GOOGLE_PASS_COOKIE, googlePassCookie, googleSignupPass, isDisposableEmail, readGoogleSignupPass, recordTermsAcceptance, termsVersion } from '../signup-guard.js';
 import { query } from '../db.js';
 import { parse } from './util.js';
 
@@ -120,6 +120,8 @@ export async function googleLoginRoutes(app: FastifyInstance) {
       terms_url: config.signup.termsUrl,
       privacy_url: config.signup.privacyUrl,
       terms_version: termsVersion(),
+      // El captcha va también antes de crear la cuenta con Google (clave vacía si no está activo).
+      turnstile_site_key: captchaEnabled() ? config.signup.turnstile.siteKey : '',
       business_types: BUSINESS_TYPES.map(({ key, label }) => ({ key, label })),
     };
   });
@@ -127,29 +129,37 @@ export async function googleLoginRoutes(app: FastifyInstance) {
   /** Crea la cuenta de quien entró por primera vez con Google, ya con los términos aceptados. */
   app.post('/api/signup/google', async (req, reply) => {
     if (!config.signup.enabled) throw new HttpError(404, 'El registro está cerrado');
-    if (rateLimited(`signup:${req.ip}`, 5, HOUR)) return reply.code(429).send({ error: 'Demasiados registros desde esta conexión, intenta más tarde' });
+    await assertSignupAttempt(req.ip);
     const b = parse(
       z.object({
         token: z.string().max(2000),
         company: z.string().trim().min(2, 'escribe el nombre de tu empresa').max(120),
         business_type: z.string().max(40).default('otro'),
         accept_terms: z.literal(true, { message: 'Debes aceptar los términos' }),
+        turnstile_token: z.string().max(4000).optional(),
       }),
       req.body,
     );
+    // La cuenta se crea aquí: el captcha va en este paso (entrar con Google a una cuenta que ya existe no lo pide).
+    await assertCaptcha(b.turnstile_token, req.ip);
     const { email, name, sub } = pass(b.token, req);
     if (isDisposableEmail(email)) throw new HttpError(400, DISPOSABLE_MESSAGE);
     if ((await store.getUserForLogin(email)) || (await store.getUserForGoogle(sub))) throw new HttpError(409, 'Ya existe una cuenta con ese correo. Inicia sesión con Google.');
     const businessType = BUSINESS_TYPES.some((t) => t.key === b.business_type) ? b.business_type : 'otro';
     const hash = await hashPassword(crypto.randomBytes(24).toString('base64url')); // sin contraseña: puede crear una con "Olvidé mi contraseña"
     const brand = await brandByDomain(hostOf(req));
+    const state = await newAccountState();
+    const release = await reserveSignup(req.ip);
     const { account, created } = await withTransaction(async (client) => {
-      const account = await store.createAccount(b.company, { ...newAccountState(), businessType, source: 'signup' }, client);
+      const account = await store.createAccount(b.company, { ...state, businessType, source: 'signup' }, client);
       const created = await store.createUser({ account_id: account.id, role: 'admin', name: name || email.split('@')[0], email, password_hash: hash, verified: true }, client);
       await client.query(`UPDATE users SET google_sub = $2 WHERE id = $1`, [created.id, sub]);
       await client.query(`UPDATE accounts SET owner_user_id = $2, brand_id = $3 WHERE id = $1`, [account.id, created.id, brand?.id ?? null]);
       await recordTermsAcceptance(client, { userId: created.id, accountId: account.id, email, ip: req.ip, userAgent: String(req.headers['user-agent'] ?? ''), source: 'google' });
       return { account, created };
+    }).catch(async (e) => {
+      await release();
+      throw e;
     });
     await logEvent({ level: 'info', source: 'admin', message: `Registro nuevo con Google: ${account.name} (${email})`, accountId: account.id, details: { ip: req.ip, business_type: businessType } });
     await notifySuperadmins(account.id, `Nueva empresa registrada: ${account.name}`, `${created.name} <${email}> se registró con Google.`);

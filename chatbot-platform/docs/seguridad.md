@@ -16,7 +16,7 @@ Cada etapa es un PR con pruebas que fallan con el código anterior y pasan con e
 |---|---|---|
 | 1. Altos de la aplicación | ID-1, IN-1, AI-1, AI-2, AI-3, AI-4, PAY-1, INF-1 | ✅ Corregido |
 | 2. Identidad | 2FA obligatorio para todos, contraseñas filtradas, sesiones con caducidad por inactividad, límites por cuenta y en la base, dueño distinto de administrador, correo verificado de verdad (ID-2…ID-10) | 2a ✅ (acceso), 2b ✅ (cuenta) |
-| 3. Registro y cobros | Captcha → correo → 2FA → pago, topes contra prueba de tarjetas (PAY-2), Radar, disputas, pruebas gratis por persona (PAY-3…PAY-16) | Pendiente |
+| 3. Registro y cobros | Captcha → correo → 2FA → tarjeta, topes contra prueba de tarjetas (PAY-2), pruebas gratis por persona (PAY-3), sin IA en pausa (parte de PAY-6); disputas, plan del precio, códigos y cobros a clientes (PAY-4…PAY-16) | 3a ✅ (registro), 3b pendiente (cobros) |
 | 4. Abuso de entradas | Límites compartidos en la base, tamaños por ruta, firma del webhook de WhatsApp, adjuntos sin macros, PDF aislados, cuota de IA antes de transcribir (IN-2…IN-14, PAY-6) | Pendiente |
 | 5. IA y Copiloto | Tarjetas de confirmación completas, costo de sub-llamados, notas de cotización, fuga de instrucciones (AI-5…AI-13) | Pendiente |
 | 6. Secretos y datos | Claves separadas con rotación, credenciales de canales cifradas, retención en Evolution (INF-6…INF-8, INF-13) | Pendiente |
@@ -131,19 +131,49 @@ la cuenta de antes seguía entrando. Todo eso quedó corregido, con su prueba. L
 - El superadministrador sin cuenta elegida ve «Hacer dueño» y el servidor responde «Elige la cuenta»; tampoco ve
   exportar o borrar la cuenta en Mi plan (la API sí se lo permite con `?account_id`).
 
+## Etapa 3a: lo que se corrigió
+
+Registro con tarjeta y una prueba gratis por persona. El diseño completo (también lo que queda para la 3b) está en
+[la especificación](superpowers/specs/2026-10-30-seguridad-etapa-3-registro-cobros-design.md).
+
+| # | Hallazgo | Arreglo | Prueba |
+|---|---|---|---|
+| PAY-2 | Prueba de tarjetas robadas: el registro abría una sesión de pago sin correo verificado, con captcha opcional y límites en memoria; la sesión no vencía pronto y aceptaba cualquier cupón. | El orden es captcha → correo → 2FA → tarjeta → prueba. El registro ya no abre el pago: la cuenta nueva espera su tarjeta (en pausa, motivo `card`) y la verificación se abre desde Mi plan, solo con el correo del dueño verificado y verificación reciente. La sesión de Stripe vence a los 31 minutos, siempre pide tarjeta, pide 3D Secure cuando el banco lo tiene y no acepta cupones sueltos; la sesión vigente se reutiliza. Topes en la base: 5 verificaciones por día por cuenta, 10 por conexión (IPv6 por /64) y 300 en toda la plataforma. Si en una hora se abren 20 o más y se completan menos del 20 %, un freno cierra las nuevas una hora y avisa con urgencia; lo quita el superadministrador. El captcha (Turnstile) es obligatorio en producción, en el formulario y en el registro con Google, y cerrado ante fallas: si Cloudflare no responde, «No pudimos comprobar el captcha» (503) y un aviso por hora. Registros: 5 intentos por hora por conexión, 3 cuentas por hora o 10 por día, y `SIGNUP_DAILY_MAX` (200) por día en la plataforma, con aviso al 80 %. | `card-check.test.ts`, `signup.test.ts`, `signup-limits.test.ts`, `google-login.test.ts`, `test:signup:ux` |
+| PAY-3 | Pruebas gratis sin límite (correo sin normalizar, sin huella de la tarjeta). | Una prueba por persona: marcas del correo normalizado (sin `+etiqueta`; en Gmail también sin puntos), de la cuenta de Google y de la tarjeta (la huella de Stripe; en Mercado Pago, primeros 6, últimos 4, vencimiento y titular), guardadas 2 años como HMAC con una llave que vive en la base. Sin prueba disponible, agregar la tarjeta es el primer cobro. Una tarjeta que ya tuvo prueba: en Stripe la prueba termina al momento y se cobra; en Mercado Pago se cancela esa suscripción. La prueba empieza al confirmarse la tarjeta, con el fin que dice el proveedor, una sola vez aunque el aviso se repita; no se pausa al vencer mientras su suscripción siga viva. Las cuentas que ya existían dejan marcado el correo de su dueño. | `trial-claims.test.ts`, `trial-start.test.ts`, `migration.test.ts` |
+| PAY-6 (parte) | Cuentas en pausa seguían gastando IA. | Una sola puerta (`assertAiAllowed`) en el envoltorio de las llamadas de IA y al empezar cada ruta con IA (Copiloto, asistente de instrucciones, pruebas del agente, simulador, «Probar mensaje», flujos con IA, importar): una cuenta en pausa o desactivada responde 402 `ai_paused`, y los audios e imágenes que llegan se guardan sin transcribir. En el panel esos botones se ven deshabilitados con el motivo. Lo de las cuentas sin cupo va en la etapa 4. | `ai-gate.test.ts`, `knowledge-preparation.test.ts`, `test:signup:ux` |
+
+**Cambios que nota la gente:**
+- Para empezar la prueba de 14 días hay que agregar una tarjeta en Mi plan, después de confirmar el correo y configurar la verificación en dos pasos. No se cobra nada hasta que termina, y si se cancela antes no se cobra. Mientras tanto el panel sirve para preparar el asistente, sin IA y sin responder a clientes.
+- Una persona tiene una sola prueba: el mismo correo (aunque lleve `+etiqueta`), la misma cuenta de Google o la misma tarjeta ya no dan otra. Sin prueba, agregar la tarjeta es contratar.
+- El registro pide el captcha, también el registro con Google.
+- Mientras la cuenta está en pausa, los botones que usan IA se ven deshabilitados con el motivo.
+- Cuentas (superadministrador): «Esperando tarjeta», «Activar sin tarjeta» para excepciones reales (queda en la bitácora y gasta la prueba de esa persona) y «Quitar freno».
+
+**Revisión independiente de la etapa 3a.** Encontró que dos cuentas de la misma persona que confirmaban la misma
+tarjeta al mismo tiempo recibían las dos su prueba: ahora la marca decide (candado por marca, y la prueba y sus marcas
+se guardan juntas). También, que en Mercado Pago «Contratar» después de una tarjeta repetida no cobraba hoy y podía
+dejar a la persona en un ciclo, y que las páginas de tarjeta por sustitución (cambiar tarjeta, reanudar, mensual ↔
+anual) quedaban fuera de los topes y del freno. Todo eso quedó corregido, con su prueba. Lo que señaló y queda para
+después:
+- A quien se le negó la prueba por su correo, el aviso le dice «Esta tarjeta ya tuvo una prueba gratis».
+- Dos clics a la vez en «Agregar tarjeta» abren dos páginas de pago (las dos cuentan para el tope).
+- Una página reutilizada al minuto 29 dura menos de un minuto en Stripe.
+- Si el correo falla a la vez que Cloudflare, el registro responde 500 en lugar de 503; el aviso del 80 % puede salir
+  más de una vez.
+- El correo «tu prueba está por terminar» habla del primer cobro también a quien ya canceló.
+- Las marcas vencidas y las verificaciones viejas no se depuran.
+
 ## Hallazgos pendientes por etapa
 
 Abreviaturas: ID identidad, PAY cobros, IN entradas, AI IA y Copiloto, INF servidor.
 
-### Altos (en etapas 3 y 8)
-- **PAY-2** Prueba de tarjetas robadas: el registro abre una sesión de pago de Stripe sin correo verificado, captcha opcional y límites en memoria (unas 100 sesiones por hora desde una conexión); la sesión no vence pronto y acepta cualquier cupón.
+### Altos (en la etapa 8)
 - **INF-2** Un solo superusuario de PostgreSQL compartido por el backend, Evolution y el respaldo; Redis sin contraseña (guarda las claves de las sesiones de WhatsApp); red plana.
 - **INF-3** `./riverrun update` nunca actualiza Caddy, Node, Redis ni PostgreSQL.
 
 ### Medios
-- **PAY-3** Pruebas gratis sin límite (correo sin normalizar, sin huella de tarjeta).
 - **PAY-4/5** Disputas: un aviso fuera de orden re-pausa para siempre; una disputa abierta no detiene los cobros.
-- **PAY-6** Cuentas en pausa o sin cupo siguen gastando IA (transcripción, Copiloto, herramientas con IA).
+- **PAY-6** Cuentas sin cupo siguen gastando IA (transcripción, Copiloto, herramientas con IA); las que están en pausa ya no, desde la 3a.
 - **PAY-7** El plan se toma de la metadata de Stripe sin comparar con el precio; portal sin configuración propia; cupones de toda la cuenta.
 - **PAY-8** Un pago reactiva cuentas pausadas a mano; la conciliación pisa el plan que asignó el superadmin.
 - **PAY-9** El CFDI ignora la moneda del plan.

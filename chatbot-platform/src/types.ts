@@ -447,7 +447,7 @@ export interface Account {
   limits_override?: Record<string, number>;
   /** Pausa automática (prueba vencida o falta de pago): desde cuándo y por qué. Vacío si no está en pausa o se pausó a mano. */
   paused_at: Date | null;
-  pause_reason: '' | 'trial' | 'payment' | 'dispute';
+  pause_reason: '' | 'trial' | 'payment' | 'dispute' | 'card';
   /** Aviso al dueño de que la cuenta se borrará (retención). */
   deletion_warned_at: Date | null;
   /** El dueño pidió borrar la cuenta (y lo confirmó por correo): cuándo, y cuándo se borra. */

@@ -69,14 +69,14 @@ try {
     assert.equal((await pool.query(`SELECT count(*)::int AS n FROM users WHERE email = 'gema@estudio.mx'`)).rows[0].n, 0);
     await g.getByRole('checkbox').check();
     await g.getByRole('button', { name: 'Crear mi cuenta' }).click();
-    // Antes de entrar configura su verificación en dos pasos; después sigue al asistente.
+    // Antes de entrar configura su verificación en dos pasos; después sigue a Mi plan (la prueba pide tarjeta).
     await g.waitForURL(/#\/login\/configurar/);
     const secret = (await g.locator('[data-totp-secret]').textContent())!.replace(/\s/g, '');
     await g.getByLabel('Código de 6 dígitos').fill(totpAt(secret, currentStep()));
     await g.getByRole('button', { name: 'Activar' }).click();
     await g.getByLabel('Ya los guardé en un lugar seguro').check();
     await g.getByRole('button', { name: 'Continuar' }).click();
-    await g.waitForURL(/#\/agentes\/nuevo/);
+    await g.waitForURL(/#\/plan/);
     const terms = (await pool.query(`SELECT t.source FROM terms_acceptances t JOIN users u ON u.id = t.user_id WHERE u.email = 'gema@estudio.mx'`)).rows;
     assert.deepEqual(terms, [{ source: 'google' }]);
     await ctx.close();
@@ -96,7 +96,8 @@ try {
   await page.setViewportSize({ width: 1366, height: 1000 });
   await page.getByText('Total con IVA: $578.84 MXN al mes').waitFor();
   await page.getByRole('link', { name: 'Contratar el plan Pro', exact: true }).click();
-  await page.getByRole('button', { name: 'Crear mi cuenta y pagar' }).waitFor();
+  // El pago ya no se abre al registrarse: el plan elegido queda para Mi plan.
+  await page.getByRole('button', { name: 'Crear mi cuenta', exact: true }).waitFor();
   assert.ok(await page.locator('input[name="signup-plan"][value="pro"]').isChecked(), 'el plan elegido llega marcado');
   await page.goto(`${base}/precios`);
   await page.getByRole('link', { name: 'Probar 14 días gratis' }).click();
@@ -395,6 +396,9 @@ try {
     assert.equal(s.statusCode, 200, s.body);
     const mara = await h.sessionFrom(s);
     const call = (method: string, url: string, payload?: unknown) => h.app.inject({ method: method as any, url, payload: payload as any, headers: { cookie: mara } });
+    // El pago ya no se abre al registrarse: con el correo verificado, se abre desde Mi plan.
+    await pool.query(`UPDATE users SET email_verified_at = now() WHERE email = 'mara@estudio.mx'`);
+    assert.equal((await call('POST', '/api/billing/checkout', { plan: 'pro', provider: 'mercadopago' })).statusCode, 200);
     fake.mp.preapprovals.pre_ux = { id: 'pre_ux', status: 'authorized', external_reference: `${s.json().account.id}:pro`, payer_id: 7,
       next_payment_date: new Date(Date.now() + 20 * 86400_000).toISOString(), auto_recurring: { transaction_amount: 578.84, currency_id: 'MXN' } };
     assert.equal((await call('POST', '/api/billing/confirm')).json().confirmed, true);

@@ -4,6 +4,7 @@ import type pg from 'pg';
 import { z } from 'zod';
 import { assertAccount, HttpError, requireRole, scopeAccount, targetAccount } from '../access.js';
 import { accountAi } from '../ai/budget.js';
+import { assertAiAllowed } from '../ai/gate.js';
 import type { AiProvider } from '../ai/provider.js';
 import { identifyAttachment, newAttachmentId, saveAttachment } from '../attachments.js';
 import { checkAiDesignRate, designFlow } from '../automation/flow-ai.js';
@@ -201,6 +202,7 @@ export async function flowBoardRoutes(api: FastifyInstance, ai: AiProvider) {
    */
   api.post('/api/flow-boards/ai', admins, async (req: any) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
+    await assertAiAllowed(accountId);
     const input = await readDesignInput(req);
     if (!input.idea.trim() && !input.image) throw new HttpError(400, 'Escribe tu idea o sube una imagen del flujo.');
     checkAiDesignRate(accountId);

@@ -7,6 +7,7 @@ import { operationalStatus } from '../engine/operations.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { assertRecentMfa, stepUp } from '../identity/step-up.js';
+import { brakeOn, cardCheckState, clearBrake, trialWithoutCard } from '../billing/card-check.js';
 import { assertAccount, HttpError, notFound, requireRole, scopeAccount, targetAccount } from '../access.js';
 import {
   clearSessionCookie,
@@ -123,7 +124,9 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     // Copiloto: el superadmin lo usa en la cuenta que elija (el panel revisa que esa cuenta lo tenga encendido).
     const copilot = { enabled: config.copilot.enabled && (req.user.role === 'superadmin' || !!account?.copilot_enabled) };
     const owner = account ? await accountOwner(account.id) : null;
-    return { user: req.user, account: account && { ...store.publicAccount(account), payment_due: due, deletion_date: deletionDate(account) }, owner: owner && { id: owner.id, name: owner.name || owner.email }, copilot };
+    // Esperando tarjeta: el aviso de arriba dice qué falta (correo, tarjeta, prueba ya usada).
+    const cardCheck = account?.status === 'paused' && account.pause_reason === 'card' ? await cardCheckState(account.id) : null;
+    return { user: req.user, account: account && { ...store.publicAccount(account), payment_due: due, deletion_date: deletionDate(account) }, owner: owner && { id: owner.id, name: owner.name || owner.email }, copilot, card_check: cardCheck };
   });
 
   api.put('/api/me', async (req) => {
@@ -228,6 +231,14 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     await logEvent({ level: 'warn', source: 'admin', message: `Llave de Zernio quitada desde el panel por ${req.user.email}: las redes sociales dejan de funcionar` });
     return zernioSystemStatus(false);
   });
+
+  // Quita el freno contra prueba de tarjetas (Cuentas): las verificaciones de tarjeta se abren otra vez.
+  api.delete('/api/billing/card-check-brake', { ...superadmin, ...stepUp }, async (req: any) => {
+    await clearBrake(req.user);
+    return { ok: true };
+  });
+
+  api.get('/api/billing/card-check-brake', superadmin, async () => ({ on: await brakeOn() }));
 
   api.get('/api/system/incidents', { preHandler: requireRole('superadmin') }, async (req: any) => listIncidents(Number(req.query?.limit) || 50));
   // Configuración y servicios externos por niveles (configurado → accesible → credenciales → funcional → listo). Sin secretos.
@@ -387,6 +398,14 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
       .join(', ');
     await logEvent({ level: 'info', source: 'admin', message: `Cuenta actualizada: ${acc.name}${changes ? ` (${changes})` : ''}`, accountId: acc.id });
     return store.publicAccount(acc);
+  });
+
+  // «Activar sin tarjeta»: la cuenta que esperaba tarjeta empieza su prueba sin ella (ver `trialWithoutCard`).
+  api.post('/api/accounts/:id/trial-without-card', { preHandler: requireRole('superadmin'), ...stepUp }, async (req: any) => {
+    const acc = await store.getAccount(req.params.id);
+    if (!acc) throw notFound('Cuenta no encontrada');
+    if (!(await trialWithoutCard(acc.id, req.user))) throw new HttpError(400, 'La cuenta no está esperando tarjeta');
+    return store.publicAccount((await store.getAccount(acc.id))!);
   });
 
   api.delete('/api/accounts/:id', { preHandler: requireRole('superadmin'), ...stepUp }, async (req: any) => {

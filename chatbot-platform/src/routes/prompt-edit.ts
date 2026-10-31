@@ -4,6 +4,7 @@ import { botFor, requireRole } from '../access.js';
 import { agentDraft } from '../agent-quality.js';
 import { editPrompt } from '../agent-prompt-edit.js';
 import { accountAi } from '../ai/budget.js';
+import { assertAiAllowed } from '../ai/gate.js';
 import type { AiProvider } from '../ai/provider.js';
 import { checkAiDesignRate } from '../automation/flow-ai.js';
 import { logEvent } from '../logs.js';
@@ -25,6 +26,7 @@ const Body = z.object({
 export async function promptEditRoutes(api: FastifyInstance, ai: AiProvider) {
   api.post('/api/chatbots/:id/prompt-edit', { preHandler: requireRole('admin') }, async (req: any) => {
     const bot = await botFor(req.user, req.params.id);
+    await assertAiAllowed(bot.account_id);
     const body = parse(Body, req.body);
     checkAiDesignRate(bot.account_id);
     const prompt = body.prompt ?? hydrateChatbot({ ...bot, ...(await agentDraft(bot)).configuration }).personality.prompt;

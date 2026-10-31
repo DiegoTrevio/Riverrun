@@ -24,8 +24,13 @@ async function failedAccount(email: string, subId: string, ago = 0) {
   assert.equal(r.statusCode, 200, r.body);
   const accountId = r.json().account.id as string;
   const cookie = await h.sessionFrom(r);
-  const api = (method: string, url: string) => h.app.inject({ method: method as any, url, headers: { cookie } });
-  const session = r.json().checkout_url.split('/').pop();
+  const from = `10.99.0.${ip}`;
+  const api = (method: string, url: string, payload?: unknown) => h.app.inject({ method: method as any, url, remoteAddress: from, payload: payload as any, headers: { cookie } });
+  // El pago se abre desde Mi plan (ya no al registrarse), con el correo verificado.
+  await pool.query(`UPDATE users SET email_verified_at = now() WHERE lower(email) = lower($1)`, [email]);
+  const co = await api('POST', '/api/billing/checkout', { plan: 'pro', provider: 'stripe' });
+  assert.equal(co.statusCode, 200, co.body);
+  const session = co.json().url.split('/').pop();
   fake.stripe.subs[subId] = stripeSub({ id: subId, customer: `cus_${subId}`, metadata: { account_id: accountId, plan_key: 'pro' } });
   Object.assign(fake.stripe.sessions[session], { status: 'complete', subscription: subId });
   assert.equal((await api('POST', '/api/billing/confirm')).json().confirmed, true);

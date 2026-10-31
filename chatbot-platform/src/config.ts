@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { validateConfig } from './config-check.js';
+import { runtimeEnv, validateConfig } from './config-check.js';
 import { parseAlertMute } from './alert-mute.js';
 
 function env(name: string, fallback = ''): string {
@@ -186,8 +186,11 @@ export const config = {
   signup: {
     enabled: env('SIGNUP_ENABLED', 'true') === 'true',
     trialDays: Number(env('TRIAL_DAYS', '14')),
+    /** Cuentas nuevas por día en toda la plataforma (al 80 % se avisa al superadministrador). */
+    dailyMax: Number(env('SIGNUP_DAILY_MAX', '200')),
     /** Exigir correo verificado para conectar canales reales. Sin SMTP conviene "false". */
-    requireEmail: env('SIGNUP_REQUIRE_EMAIL', 'true') === 'true',
+    // En producción el correo siempre se verifica (la tarjeta solo se pide con el correo verificado).
+    requireEmail: env('SIGNUP_REQUIRE_EMAIL', 'true') === 'true' || runtimeEnv() === 'production',
     /** Correo del superadmin para avisos (cuentas nuevas, pruebas que vencen, gasto alto). */
     superadminEmail: env('SUPERADMIN_EMAIL', ''),
     /** Lo no urgente llega en un solo correo al día (false: un correo por aviso, como antes). */

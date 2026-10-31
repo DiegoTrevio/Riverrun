@@ -2,7 +2,7 @@ import { brand, brandMark, productMark, resetBrand } from './brand.js';
 import { api, h, inBackground, invalidateReads, run, state } from './core.js';
 import { icon } from './icons.js';
 import { render } from './main.js';
-import { ROLE_LABEL, copilotAvailable, isAdmin, isSuper } from './session.js';
+import { ROLE_LABEL, copilotAvailable, isAdmin, isSuper, isOwner } from './session.js';
 
 /** Abre o cierra el Copiloto (su módulo se carga solo si la cuenta lo tiene). */
 const toggleCopilot = () => import('./copilot.js').then((m) => m.toggleCopilot());
@@ -251,7 +251,25 @@ function accountBanner() {
       `Actualiza tu forma de pago antes del ${new Date(due.grace_ends_at).toLocaleDateString('es-MX', { day: 'numeric', month: 'long' })} para que tu asistente siga respondiendo. `],
       location.hash.split('?')[0] === '#/plan' ? null : h('a', { class: 'btn', href: '#/plan' }, 'Actualizar pago'), { role: 'status' }));
   }
-  if (account.status === 'paused') {
+  const cc = state.me.card_check;
+  if (account.status === 'paused' && account.pause_reason === 'card') {
+    // Esperando tarjeta: el paso que falta (correo, tarjeta, o ya no hay prueba). Lo resuelve el dueño en Mi plan.
+    const onPlan = location.hash.split('?')[0] === '#/plan';
+    const go = (label) => (onPlan || !isAdmin() ? null : h('a', { class: 'btn', href: '#/plan' }, label));
+    if (!isAdmin()) items.push(notice('warn', [h('strong', {}, 'La cuenta todavía no activa su prueba. '), 'El dueño la activa desde Mi plan.'], null, { role: 'status' }));
+    else if (cc && !cc.email_verified) {
+      items.push(notice('warn', [h('strong', {}, 'Falta verificar tu correo. '), isOwner() ? 'Abre el enlace que te enviamos para activar tu prueba.' : 'El dueño de la cuenta tiene que abrir el enlace que le enviamos.'],
+        isOwner() ? h('button', { class: 'btn', onclick: () => run(() => api('POST', '/api/me/resend-verification'), 'Te enviamos un nuevo enlace') }, 'Reenviar') : null, { role: 'status' }));
+    } else if (cc?.card_used) {
+      items.push(notice('warn', [h('strong', {}, 'Esta tarjeta ya tuvo una prueba gratis. '), 'Puedes usar otra tarjeta o contratar ya.'], go('Usar otra tarjeta'), { role: 'status' }));
+    } else if (cc && !cc.trial_available) {
+      items.push(notice('warn', [h('strong', {}, 'Ya usaste tu prueba gratis. '), 'Elige tu plan para activar tu asistente.'], go('Contratar'), { role: 'status' }));
+    } else {
+      const days = cc?.trial_days || 14;
+      const until = new Date(Date.now() + days * 86400000).toLocaleDateString('es-MX', { day: 'numeric', month: 'long' });
+      items.push(notice('', [h('strong', {}, `Activa tu prueba gratis de ${days} días: agrega tu tarjeta. `), `No se cobra nada hasta el ${until}.`], go('Agregar tarjeta'), { role: 'status' }));
+    }
+  } else if (account.status === 'paused') {
     items.push(notice('danger', [h('strong', {}, 'Tu cuenta está en pausa. '),
       'Tu asistente no está respondiendo ni enviando mensajes; tu configuración y tus conversaciones se conservan',
       account.deletion_date ? ` hasta el ${new Date(account.deletion_date).toLocaleDateString('es-MX', { day: 'numeric', month: 'long' })}.` : '.',

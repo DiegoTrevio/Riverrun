@@ -94,7 +94,9 @@ t('cambiar modelo vuelve a preparar y el mantenimiento no factura perfiles pausa
  assert.ok((await knowledgeIndexStatus(botA)).pending_items>0);
  const worker=new KnowledgeWorker(fake);for(let i=0;i<5;i++)await worker.runOnce();
  assert.equal((await knowledgeIndexStatus(botA)).complete,true);assert.equal((await knowledgeIndexStatus(bot)).indexed_items,0);
+ // Una cuenta en pausa no usa IA: preparar todo la salta (sin contarla como falla); se prepara al reactivarse.
  const all=await prepareKnowledge({all:true},{apply:true,ai:fake});assert.equal(all.complete,true);
+ const skipped=all.results.find((r)=>r.chatbot_id===bot.id)!;assert.deepEqual([skipped.skipped,skipped.failed,skipped.indexed_items],[true,false,0]);assert.equal(all.skipped_agents,1);
  assert.equal((await pool.query('SELECT DISTINCT model FROM knowledge_chunks')).rows.length,2);
  const charged=calls;config.knowledgeSearch.model=previous.model;
  assert.equal(await indexKnowledge(botA,fake),0);assert.equal(calls,charged,'Preparar otro modelo no debe destruir una versión completa que otra instancia utiliza');

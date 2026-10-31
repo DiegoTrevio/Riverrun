@@ -11,7 +11,7 @@ import { importCard, importPreview } from './importer.js';
 import { render } from './main.js';
 import { tabPlayground } from './playground.js';
 import { promptAssistant } from './prompt-assistant.js';
-import { accountName, isSuper } from './session.js';
+import { accountName, isSuper, aiLock } from './session.js';
 
 /* ------------------------------ Chatbot ------------------------------ */
 
@@ -298,10 +298,10 @@ async function tabKnowledge(root, bot) {
       onResult: (data) => importPreview(preview, bot, data),
     }),
     ...(sources.length ? [h('p', { class: 'small muted', style: 'margin:-8px 0 16px' }, 'Información importada de ',
-      sources.map((u) => [h('strong', {}, u), ' ', h('button', { class: 'small', onclick: async () => {
+      sources.map((u) => [h('strong', {}, u), ' ', aiLock(h('button', { class: 'small', onclick: async () => {
         const r = await run(() => api('POST', `/api/chatbots/${bot.id}/knowledge/import`, { url: u, save: true }), 'Actualizado desde tu página');
         if (r) render();
-      } }, 'Volver a sincronizar')]))] : []),
+      } }, 'Volver a sincronizar'))]))] : []),
     preview,
     field('Buscar información cargada', h('input', { type: 'search', placeholder: 'Tema o contenido…', oninput: (e) => { const value = e.target.value.trim().toLocaleLowerCase('es'); root.querySelectorAll('[data-search]').forEach((item) => { item.hidden = !item.dataset.search.includes(value); }); } })),
     h('div', { class: 'card' },
@@ -892,7 +892,7 @@ export function messageTester(bots, botId) {
       field('Estado del asistente en esa conversación', select(t, 'agent', [['', 'Como empieza una conversación nueva'], ['on', 'Activo'], ['paused', 'En pausa'], ['waiting', 'Esperando palabra de activación']])),
       field('Canal', select(t, 'channel', (state.meta?.channel_types || [{ type: 'whatsapp', label: 'WhatsApp' }]).map((c) => [c.type, c.label])))),
     check(t, 'first', 'Es el primer mensaje del cliente'),
-    h('div', { class: 'row' }, h('button', { class: 'primary', onclick: go }, 'Probar')),
+    h('div', { class: 'row' }, aiLock(h('button', { class: 'primary', onclick: go }, 'Probar'))),
     out);
 }
 

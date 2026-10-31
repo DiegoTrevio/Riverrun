@@ -1,3 +1,4 @@
+import { mpCardKey } from './trial-claims.js';
 import crypto from 'node:crypto';
 import { config } from '../config.js';
 import { credentialAllowed } from '../outbound-guard.js';
@@ -32,6 +33,7 @@ export const reference = (accountId: string, planKey: string) => `${accountId}:$
 export function stateFromPreapproval(p: any): SubscriptionState {
   const [accountId, planKey] = String(p.external_reference ?? '').split(':');
   const next = p.next_payment_date ? new Date(p.next_payment_date) : null;
+  const start = p.auto_recurring?.start_date ? new Date(p.auto_recurring.start_date) : null;
   return {
     provider: 'mercadopago',
     accountId: accountId || null,
@@ -41,7 +43,20 @@ export function stateFromPreapproval(p: any): SubscriptionState {
     status: STATUS[p.status] ?? 'incomplete',
     periodEnd: next && !Number.isNaN(next.getTime()) ? next : null,
     cancelAtPeriodEnd: false,
+    trialEnd: p.status === 'authorized' && start && start.getTime() > Date.now() ? start : null,
+    cardKey: null,
   };
+}
+
+/** La suscripción y, si su primer cobro es a futuro (una prueba), la huella de su tarjeta (para una prueba por tarjeta). */
+async function readPreapproval(id: string): Promise<{ p: any; state: SubscriptionState }> {
+  const p = await call('GET', `/preapproval/${encodeURIComponent(id)}`);
+  const state = stateFromPreapproval(p);
+  if (state.trialEnd && p.card_id && p.payer_id) {
+    const card = await call('GET', `/v1/customers/${encodeURIComponent(String(p.payer_id))}/cards/${encodeURIComponent(String(p.card_id))}`).catch(() => null);
+    state.cardKey = card ? mpCardKey(card) : null;
+  }
+  return { p, state };
 }
 
 /** Cobro de un pago autorizado de la suscripción (null si todavía no se cobra o se rechazó). */
@@ -129,7 +144,11 @@ export const mercadopago: BillingProvider = {
   },
 
   async checkoutState(ref) {
-    return stateFromPreapproval(await call('GET', `/preapproval/${encodeURIComponent(ref)}`));
+    return (await readPreapproval(ref)).state;
+  },
+
+  async endTrialNow(subscriptionId) {
+    await call('PUT', `/preapproval/${encodeURIComponent(subscriptionId)}`, { status: 'cancelled' });
   },
 
   async setCancelAtPeriodEnd(sub, cancel) {
@@ -155,8 +174,7 @@ export const mercadopago: BillingProvider = {
    * Para no marcar a quien sí paga, "nunca cobró" exige que Mercado Pago lo confirme (charged_quantity = 0) y 3 días.
    */
   async subscriptionState(subscriptionId, _plans, now = new Date()) {
-    const p = await call('GET', `/preapproval/${encodeURIComponent(subscriptionId)}`);
-    const state = stateFromPreapproval(p);
+    const { p, state } = await readPreapproval(subscriptionId);
     if (state.status !== 'active') return state;
     const pays = await authorizedPayments(subscriptionId);
     const last = pays[0];
@@ -221,7 +239,7 @@ export const mercadopago: BillingProvider = {
       result.payment = paymentFromAuthorized(pay) ?? undefined;
     }
     if (!preapprovalId) return result;
-    const state = stateFromPreapproval(await call('GET', `/preapproval/${encodeURIComponent(preapprovalId)}`));
+    const { state } = await readPreapproval(preapprovalId);
     // Un cobro rechazado deja la suscripción "authorized" mientras reintenta: se trata como pago pendiente.
     if (rejectedPayment && state.status === 'active') state.status = 'past_due';
     if (result.payment) result.payment.periodEnd = state.periodEnd;

@@ -2,6 +2,7 @@ import { api, confirmAction, field, fill, h, run, select, state, text } from './
 import { okMark } from './icons.js';
 import { render } from './main.js';
 import { discardDraft, draftModel, draftVersion, hasUnsavedDrafts, markDraftSaved } from './editing.js';
+import { aiLock } from './session.js';
 
 /**
  * Cambios que quedaron como borrador con la versión anterior del panel (antes guardar no aplicaba): se aplican o se
@@ -98,7 +99,7 @@ export function agentTestsCard(bot,versions) {
   }},'Guardar y ejecutar pruebas');
   draw();
   box.append(h('h2',{style:'margin:0'},'Pruebas automáticas'),h('p',{class:'help'},'Opcional: guarda conversaciones de ejemplo y compruébalas cuando cambies tu agente. Usa tu IA (puede costar); las fotos y las reservas se simulan. Hasta 10 casos de 6 turnos.'),cases,
-    h('div',{class:'row'},h('button',{onclick:()=>{if(suite.cases.length>=10)return;suite.cases.push({name:'Nueva prueba',turns:[{text:'',expect:{contains:[],not_contains:[],image_codes:[],data:{}}}]});draw();}},'Agregar prueba'),h('button',{onclick:save},'Guardar pruebas'),execute,h('a',{href:`/api/chatbots/${bot.id}/tests/promptfoo`,download:'agent-promptfoo.json'},'Exportar a Promptfoo')),results);
+    h('div',{class:'row'},h('button',{onclick:()=>{if(suite.cases.length>=10)return;suite.cases.push({name:'Nueva prueba',turns:[{text:'',expect:{contains:[],not_contains:[],image_codes:[],data:{}}}]});draw();}},'Agregar prueba'),h('button',{onclick:save},'Guardar pruebas'),aiLock(execute),h('a',{href:`/api/chatbots/${bot.id}/tests/promptfoo`,download:'agent-promptfoo.json'},'Exportar a Promptfoo')),results);
   if(versions.runs[0])showRun(versions.runs[0]);
   return box;
 }

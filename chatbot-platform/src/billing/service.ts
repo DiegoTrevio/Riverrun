@@ -14,6 +14,8 @@ import { keptNote } from '../accounts/retention.js';
 import { LIMIT_LABELS, usageOf } from './limits.js';
 import { mercadopago } from './mercadopago.js';
 import { stripe } from './stripe.js';
+import type pg from 'pg';
+import { openCardCheck, startTrialFromState } from './card-check.js';
 import { chargeCents } from './tax.js';
 import type { BillingProvider, PaymentInfo, Plan, ProviderName, Subscription, SubscriptionState } from './types.js';
 
@@ -28,7 +30,7 @@ export const getSubscription = (accountId: string) => queryOne<Subscription>(`SE
 export const money = (cents: number, currency: string) =>
   new Intl.NumberFormat('es-MX', { style: 'currency', currency, maximumFractionDigits: cents % 100 ? 2 : 0 }).format(cents / 100) + ` ${currency}`;
 
-const fmt = (d: Date | null) => (d ? new Date(d).toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'America/Mexico_City' }) : '—');
+export const fmt = (d: Date | null) => (d ? new Date(d).toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'America/Mexico_City' }) : '—');
 
 async function admins(accountId: string) {
   return query<{ id: string; email: string; name: string }>(`SELECT id, email, name FROM users WHERE account_id = $1 AND role = 'admin' AND active`, [accountId]);
@@ -117,20 +119,32 @@ export async function payable(planKey: string, providerName?: ProviderName): Pro
  * Abre la página de pago del proveedor y anota el pago como pendiente. `base` es la dirección del panel (la principal o
  * el dominio de la marca) a la que vuelve el cliente al pagar o cancelar. Puede lanzar `ProviderError`.
  */
-export async function startCheckout(o: { accountId: string; email: string; plan: Plan; provider: ProviderName; base: string; startAt?: Date }): Promise<string> {
+export async function startCheckout(o: CheckoutStart): Promise<string> {
+  return (await createCheckoutSession(o)).url;
+}
+
+type CheckoutStart = { accountId: string; email: string; plan: Plan; provider: ProviderName; base: string; startAt?: Date; trialDays?: number };
+
+/**
+ * La página de pago y su referencia. `trialDays`: verificación de tarjeta con prueba gratis (el primer cobro, en esos
+ * días); sin eso, quien paga durante una prueba de las de antes la conserva hasta su fin.
+ */
+export async function createCheckoutSession(o: CheckoutStart): Promise<{ url: string; ref: string }> {
   const sub = await getSubscription(o.accountId);
-  const trialEnd = o.startAt ? undefined : await trialLeft(o.accountId);
+  const trialEnd = o.startAt || o.trialDays ? undefined : await trialLeft(o.accountId);
+  const firstCharge = o.trialDays ? new Date(Date.now() + o.trialDays * 86400_000) : trialEnd;
   const { url, ref } = await providers[o.provider].createCheckout({
     accountId: o.accountId, email: o.email, plan: o.plan,
     successUrl: `${o.base}/pago/${o.provider}`, cancelUrl: `${o.base}/pago/${o.provider}?estado=cancelado`,
     customerId: sub?.provider === o.provider ? sub.provider_customer_id || undefined : undefined,
     // Quien contrata durante su prueba no la pierde: la tarjeta queda registrada hoy y el primer cobro es al terminar.
-    startAt: o.startAt ?? (o.provider === 'mercadopago' ? trialEnd : undefined),
+    startAt: o.startAt ?? (o.provider === 'mercadopago' ? firstCharge : undefined),
     trialEnd: o.provider === 'stripe' ? trialEnd : undefined,
+    trialDays: o.provider === 'stripe' ? o.trialDays : undefined,
   });
   await beginCheckout(o.accountId, o.provider, o.plan.key, ref);
-  await logEvent({ level: 'info', source: 'admin', message: `Pago iniciado: plan ${o.plan.key} con ${o.provider}`, accountId: o.accountId });
-  return url;
+  await logEvent({ level: 'info', source: 'admin', message: `Pago iniciado: plan ${o.plan.key} con ${o.provider}${o.trialDays ? ` (${o.trialDays} días de prueba)` : ''}`, accountId: o.accountId });
+  return { url, ref };
 }
 
 /**
@@ -147,7 +161,7 @@ async function trialLeft(accountId: string, now = Date.now()): Promise<Date | un
  * Anota algo que hay que hacer en el proveedor y que se reintenta hasta lograrlo (`processBillingActions`): cancelar una
  * suscripción o reembolsar sus cobros. Repetirlo no duplica nada.
  */
-export async function queueAction(o: { provider: ProviderName; kind: 'cancel' | 'refund_subscription'; ref: string; accountId: string | null; reason: 'duplicate' | 'replaced' | 'unpaid' | 'deleted' | 'dispute' }) {
+export async function queueAction(o: { provider: ProviderName; kind: 'cancel' | 'refund_subscription'; ref: string; accountId: string | null; reason: '' | 'duplicate' | 'replaced' | 'unpaid' | 'deleted' | 'dispute' }) {
   if (!o.ref) return;
   await query(
     `INSERT INTO billing_actions (provider, kind, ref, account_id, reason) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (provider, kind, ref) DO NOTHING`,
@@ -168,19 +182,22 @@ async function liveSubscription(accountId: string) {
 /**
  * Sustitución (Mercado Pago): una suscripción nueva cuyo primer cobro es al terminar el periodo ya pagado. Al autorizarse
  * reemplaza a la vigente, que se cancela sola (ver `applyStateLocked`). Sirve para cambiar la tarjeta, reanudar tras
- * cancelar y cambiar entre mensual y anual. Devuelve la página de pago.
+ * cancelar y cambiar entre mensual y anual. Es una página donde se valida una tarjeta: cuenta para los topes y el freno
+ * de la verificación de tarjeta (`openCardCheck`). Devuelve la página de pago.
  */
-export async function startReplacement(o: { accountId: string; email: string; plan: Plan; base: string }): Promise<string> {
+export async function startReplacement(o: { accountId: string; email: string; plan: Plan; base: string; ip: string }): Promise<string> {
   const sub = await getSubscription(o.accountId);
   const paidUntil = sub?.status === 'past_due' ? null : sub?.current_period_end ?? null;
-  return startCheckout({ ...o, provider: 'mercadopago', startAt: paidUntil && paidUntil > new Date() ? paidUntil : undefined });
+  const startAt = paidUntil && paidUntil > new Date() ? paidUntil : undefined;
+  return openCardCheck({ accountId: o.accountId, ip: o.ip, provider: 'mercadopago', planKey: o.plan.key, replacement: true,
+    open: () => createCheckoutSession({ accountId: o.accountId, email: o.email, plan: o.plan, base: o.base, provider: 'mercadopago', startAt }) });
 }
 
 /**
  * Cambia el plan vigente. Stripe: ya, con prorrateo. Mercado Pago: el nuevo monto desde el siguiente cobro; si cambia el
  * periodo (mensual ↔ anual), por sustitución, y entonces devuelve la página de pago (`url`).
  */
-export async function changePlan(o: { accountId: string; email: string; planKey: string; base: string }): Promise<{ url?: string; starts_at?: Date | null; scheduled?: boolean }> {
+export async function changePlan(o: { accountId: string; email: string; planKey: string; base: string; ip: string }): Promise<{ url?: string; starts_at?: Date | null; scheduled?: boolean }> {
   const sub = await liveSubscription(o.accountId);
   // Mercado Pago informa «autorizada» aunque el último cobro se haya rechazado: cambiar el monto con un cobro fallido
   // daría la cuenta por pagada. Primero se cambia la tarjeta (que cobra lo pendiente). En Stripe, subir cobra la diferencia
@@ -196,7 +213,7 @@ export async function changePlan(o: { accountId: string; email: string; planKey:
   const upgrade = !from || monthly(plan) > monthly(from);
   if (!upgrade) await assertFitsPlan(o.accountId, plan);
   if (sub.provider === 'mercadopago' && from && from.billing_interval !== plan.billing_interval) {
-    return { url: await startReplacement({ accountId: o.accountId, email: o.email, plan, base: o.base }) };
+    return { url: await startReplacement({ accountId: o.accountId, email: o.email, plan, base: o.base, ip: o.ip }) };
   }
   // Mercado Pago cobra el monto nuevo hasta la siguiente renovación (no cobra la diferencia): al subir, el plan nuevo y
   // sus límites esperan ese cobro (`promotePendingPlan`). Si no, se usaría el plan caro todo el periodo pagando el barato.
@@ -301,7 +318,7 @@ export async function applyState(state: SubscriptionState, now = new Date()): Pr
     // Puede esperar al proveedor de cobro dentro de la transacción: que no la cierre el tiempo límite de inactividad.
     await client.query('SET LOCAL idle_in_transaction_session_timeout = 0');
     await client.query(`SELECT pg_advisory_xact_lock(hashtext('billing-apply:' || $1))`, [accountId]);
-    return applyStateLocked({ ...state, accountId }, now, later);
+    return applyStateLocked({ ...state, accountId }, now, later, client);
   });
   // Correos y avisos, ya sin el candado: un correo lento no detiene los cobros. Un aviso que falla no deshace el estado.
   for (const run of later) {
@@ -311,11 +328,11 @@ export async function applyState(state: SubscriptionState, now = new Date()): Pr
 }
 
 /** Avisos que salen al terminar de aplicar un estado (fuera del candado). */
-type Later = (() => Promise<unknown>)[];
+export type Later = (() => Promise<unknown>)[];
 
-async function applyStateLocked(state: SubscriptionState & { accountId: string }, now: Date, later: Later): Promise<string | null> {
+async function applyStateLocked(state: SubscriptionState & { accountId: string }, now: Date, later: Later, client: pg.PoolClient): Promise<string | null> {
   const accountId = state.accountId;
-  const acc = await queryOne<{ id: string; name: string; status: string; plan: string }>(`SELECT id, name, status, plan FROM accounts WHERE id = $1`, [accountId]);
+  const acc = await queryOne<{ id: string; name: string; status: string; plan: string; pause_reason: string }>(`SELECT id, name, status, plan, pause_reason FROM accounts WHERE id = $1`, [accountId]);
   if (!acc) return null;
 
   const prev = await getSubscription(accountId);
@@ -392,17 +409,28 @@ async function applyStateLocked(state: SubscriptionState & { accountId: string }
     else if (was === 'active') later.push(() => tell(accountId, 'Actualizamos tu plan', `Tu cuenta "${acc.name}" sigue al corriente${plan ? ` con el plan ${plan.name}` : ''} y con tu nueva forma de pago. Próximo cobro: ${fmt(periodEnd)}.`));
   }
 
-  if (state.status === 'active') {
+  // Prueba con tarjeta: el proveedor confirmó la tarjeta y el primer cobro es al terminar la prueba (`trialEnd`).
+  const trialFuture = !!state.trialEnd && state.trialEnd > now;
+  const waitingCard = acc.status === 'paused' && acc.pause_reason === 'card';
+  // La tarjeta ya se confirmó: la verificación abierta quedó completa (el freno cuenta las que no se completan).
+  if (state.status === 'active') await query(`UPDATE card_checks SET completed_at = now() WHERE account_id = $1 AND completed_at IS NULL`, [accountId]);
+
+  if (state.status === 'active' && trialFuture && waitingCard) {
+    await startTrialFromState({ ...state, accountId }, acc.name, later, client);
+  } else if (state.status === 'active') {
     // Cuenta al corriente: se activa (sale de prueba o de pausa) y se anota el plan contratado.
     // Solo al pasar a "al corriente" se reactiva la cuenta: una renovación mensual no deshace una pausa manual del superadmin.
     // Un contracargo abierto mantiene la pausa: solo se levanta al resolverse (ver `applyDispute`).
+    // La suscripción de una prueba con tarjeta ya estaba «al corriente»: la cuenta se activa con el primer cobro (sin
+    // días gratis por delante), y también la que esperaba tarjeta y se cobró ya (tarjeta que ya tuvo prueba).
+    const activate = was !== 'active' || (!trialFuture && (acc.status === 'trial' || waitingCard));
     await query(
       `UPDATE accounts SET status = CASE WHEN $3::boolean AND NOT (status = 'paused' AND pause_reason = 'dispute') THEN 'active' ELSE status END,
          trial_ends_at = CASE WHEN $3::boolean THEN NULL ELSE trial_ends_at END,
          plan = COALESCE(NULLIF($2, ''), plan), updated_at = now() WHERE id = $1`,
-      [accountId, planKey, was !== 'active'],
+      [accountId, planKey, activate],
     );
-    if (was !== 'active') {
+    if (activate) {
       await logEvent({ level: 'info', source: 'admin', message: `Pago confirmado (${state.provider}): plan ${planKey || '—'}`, accountId });
       later.push(() => tell(accountId, was === 'past_due' ? 'Recibimos tu pago, ¡gracias!' : '¡Tu plan está activo!', `Tu cuenta "${acc.name}" quedó al corriente${plan ? ` con el plan ${plan.name}` : ''}. Próxima renovación: ${fmt(periodEnd)}.`));
       if (was !== 'past_due') later.push(() => notifySuperadmins(accountId, `Nueva suscripción: ${acc.name}`, `"${acc.name}" contrató${plan ? ` ${plan.name} (${money(plan.price_cents, plan.currency)})` : ''} por ${state.provider}.`));
@@ -415,8 +443,11 @@ async function applyStateLocked(state: SubscriptionState & { accountId: string }
   } else if (state.status === 'canceled' && was !== 'canceled') {
     await logEvent({ level: 'info', source: 'admin', message: `Suscripción cancelada (${state.provider})`, accountId });
     const until = periodEnd && periodEnd > now ? ` Tu asistente sigue activo hasta el ${fmt(periodEnd)}.` : '';
-    later.push(() => tell(accountId, 'Tu suscripción se canceló', `La suscripción de "${acc.name}" se canceló.${until} Puedes volver a contratar cuando quieras.`));
-    later.push(() => notifySuperadmins(accountId, `Suscripción cancelada: ${acc.name}`, `"${acc.name}" canceló su plan.`));
+    // La de una cuenta que espera tarjeta la cancelamos nosotros (tarjeta que ya tuvo prueba): el dueño ya tiene su aviso.
+    if (!waitingCard) {
+      later.push(() => tell(accountId, 'Tu suscripción se canceló', `La suscripción de "${acc.name}" se canceló.${until} Puedes volver a contratar cuando quieras.`));
+      later.push(() => notifySuperadmins(accountId, `Suscripción cancelada: ${acc.name}`, `"${acc.name}" canceló su plan.`));
+    }
     later.push(() => enforceAccess(now));
   }
   return accountId;

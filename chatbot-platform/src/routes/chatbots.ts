@@ -1,4 +1,5 @@
 import { accountAi } from '../ai/budget.js';
+import { assertAiAllowed } from '../ai/gate.js';
 import { agentVersionRoutes } from './agent-versions.js';
 import type { PoolClient } from 'pg';
 import { buildAgent, withTemplateDefaults, WizardSchema } from '../templates/agent-builder.js';
@@ -575,6 +576,7 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
 
   api.post('/api/chatbots/:id/playground', admins, async (req: any) => {
     const bot = await botFor(req.user, req.params.id);
+    await assertAiAllowed(bot.account_id);
     const { session: sid, text, button } = (req.body ?? {}) as { session?: string; text?: string; button?: string };
     if (!text?.trim()) throw new HttpError(400, 'Escribe un mensaje');
     // Toque de un botón de un flujo: su identificador (cualquier otro valor se ignora).
@@ -595,6 +597,7 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
   });
   api.post('/api/chatbots/:id/test-message', admins, async (req: any) => {
     const bot = await botFor(req.user, req.params.id);
+    await assertAiAllowed(bot.account_id);
     const b = parse(TestMessageBody, req.body);
     const agent = b.agent ?? (bot.rules.activation.mode === 'keywords' ? 'waiting' : 'on');
     return service.automator.testMessage(bot, { text: b.text, firstMessage: b.first_message, channelType: b.channel_type, agent, tags: b.tags });

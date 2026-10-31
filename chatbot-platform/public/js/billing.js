@@ -16,6 +16,9 @@ export const per = (p) => (p.interval === 'year' ? 'año' : 'mes');
 /** Lo que se cobra en total, con IVA ("" si no se suma IVA). */
 export const totalText = (p) => (p.tax_percent ? `Total con IVA (${p.tax_percent} %): $${amount(p.total)} ${p.currency} al ${per(p)}` : '');
 
+/** El proveedor por su nombre («Agregar tarjeta con Stripe»): su etiqueta ya dice «Tarjeta (Stripe)». */
+const PROVIDER_NAME = { stripe: 'Stripe', mercadopago: 'Mercado Pago' };
+
 const PAY_LABEL = { paid: ['green', 'Pagado'], partially_refunded: ['orange', 'Reembolso parcial'], refunded: ['', 'Reembolsado'] };
 const money = (n, currency) => `$${new Intl.NumberFormat('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n)} ${currency}`;
 
@@ -150,6 +153,7 @@ export async function viewPlan(root, params) {
   const sub = b.subscription;
   const live = sub && ['active', 'past_due'].includes(sub.status);
   const acc = b.account;
+  const cc = b.card_check;
   const days = acc.trial_ends_at ? Math.max(0, Math.ceil((new Date(acc.trial_ends_at) - Date.now()) / 86400000)) : null;
 
   const status = h('div', { class: 'card' });
@@ -181,6 +185,24 @@ export async function viewPlan(root, params) {
             if (!await confirmAction('¿Cancelar tu plan? Seguirás usándolo hasta el final del periodo ya pagado.')) return;
             if (await run(() => api('POST', withAcct('/api/billing/cancel'), {}), 'Cancelación registrada')) render();
           } }, 'Cancelar plan') : null));
+  } else if (cc?.waiting) {
+    // Cuenta nueva que espera su tarjeta: en qué paso va, el plan que eligió y por qué no avanza.
+    const chosen = b.plans.find((p) => p.key === cc.signup_plan);
+    const until = longDate(new Date(Date.now() + cc.trial_days * 86400000));
+    const step = (done, text, extra = null) => h('li', { class: done ? 'ok' : '' }, okMark(done), ' ', text, extra);
+    fill(status,
+      h('h2', { style: 'margin-top:0' }, cc.trial_available ? `Activa tu prueba gratis de ${cc.trial_days} días` : 'Elige tu plan'),
+      h('ul', { class: 'checklist', 'aria-label': 'Pasos para activar tu cuenta' },
+        step(true, 'Creaste tu cuenta'),
+        step(cc.email_verified, cc.email_verified ? 'Verificaste tu correo' : 'Falta verificar tu correo',
+          !cc.email_verified && mine ? [' ', h('button', { class: 'small', onclick: () => run(() => api('POST', '/api/me/resend-verification'), 'Te enviamos un nuevo enlace') }, 'Reenviar')] : null),
+        step(false, cc.trial_available ? `Agrega tu tarjeta: no se cobra nada hasta el ${until}` : 'Contrata tu plan')),
+      chosen ? h('p', {}, `Al registrarte elegiste el plan ${chosen.name}.`) : null,
+      cc.card_used ? h('p', { class: 'banner warn' }, h('strong', {}, 'Esta tarjeta ya tuvo una prueba gratis. '),
+        cc.trial_available ? 'Usa otra tarjeta para tu prueba, o contrata ya con el primer cobro hoy.' : 'Contrata tu plan para activar tu asistente.') : null,
+      !cc.trial_available && !cc.card_used ? h('p', { class: 'banner warn' }, 'Ya usaste tu prueba gratis con este correo') : null,
+      cc.brake ? h('p', { class: 'banner warn', role: 'status' }, 'Por ahora no podemos abrir la verificación de tarjeta. Intenta más tarde.') : null,
+      h('p', { class: 'muted small' }, 'Mientras tanto puedes configurar tu asistente: empieza a responder y a usar la IA en cuanto empiece tu prueba.'));
   } else {
     fill(status,
       h('h2', { style: 'margin-top:0' }, acc.status === 'paused' ? 'Tu asistente está en pausa' : acc.status === 'trial' ? 'Estás en periodo de prueba' : 'Elige tu plan'),
@@ -190,7 +212,7 @@ export async function viewPlan(root, params) {
   }
 
   // Desde un límite o un aviso de uso: el plan sugerido queda elegido (un clic para subir).
-  const wanted = params.get('subir') || params.get('plan');
+  const wanted = params.get('subir') || params.get('plan') || cc?.signup_plan;
   // Con un cobro fallido en Mercado Pago, primero «Cambiar tarjeta» (cobra lo pendiente); después se cambia de plan.
   const mpDue = sub?.provider === 'mercadopago' && sub.status === 'past_due';
   const others = mine && live && !sub.cancel_at_period_end && !mpDue ? b.plans.filter((p) => p.key !== sub.plan_key) : [];
@@ -219,6 +241,13 @@ export async function viewPlan(root, params) {
   const waiting = paid && !live;
   const gaveUp = waiting && confirmTries >= MAX_CONFIRM_TRIES;
   const offer = h('div');
+  // Esperando tarjeta con prueba disponible: el pago es la verificación de la tarjeta (sin cobro hasta que termine).
+  const trialOffer = !!cc?.waiting && cc.trial_available;
+  const unverified = !!cc?.waiting && !cc.email_verified;
+  const payButton = (p, pr, label, cls, trial) => h('button', { class: cls, disabled: unverified, title: unverified ? 'Falta verificar tu correo' : '', onclick: async () => {
+    const r = await run(() => api('POST', withAcct('/api/billing/checkout'), { plan: p.key, provider: pr.name, ...(trial === false ? { trial: false } : {}) }));
+    if (r) location.href = r.url;
+  } }, label);
   // Mientras se confirma un pago no se ofrece contratar otra vez: un segundo clic abriría otra suscripción.
   if (mine && (!live || sub.cancel_at_period_end) && !(waiting && !gaveUp)) {
     if (!b.plans.length) {
@@ -231,12 +260,13 @@ export async function viewPlan(root, params) {
         p.description ? h('p', { class: 'muted' }, p.description) : null,
         limitsText(p.limits) ? h('p', { class: 'small' }, okMark(true), ' Incluye ', limitsText(p.limits)) : h('p', { class: 'small' }, okMark(true), ' Sin límites de uso'),
         p.providers.length
-          ? h('div', { class: 'stack' }, p.providers.map((pr) => h('button', { class: 'primary', onclick: async () => {
-            const r = await run(() => api('POST', withAcct('/api/billing/checkout'), { plan: p.key, provider: pr.name }));
-            if (r) location.href = r.url;
-          } }, `Contratar con ${pr.label}`)))
+          ? h('div', { class: 'stack' }, p.providers.flatMap((pr) => [
+            payButton(p, pr, trialOffer ? `${cc.card_used ? 'Usar otra tarjeta' : 'Agregar tarjeta'} con ${PROVIDER_NAME[pr.name] || pr.label}` : `Contratar con ${pr.label}`, 'primary'),
+            // La tarjeta ya tuvo prueba: también se puede contratar ya, sin días gratis.
+            trialOffer && cc.card_used ? payButton(p, pr, `Contratar con ${pr.label}`, '', false) : null]))
           : h('p', { class: 'muted small' }, 'No disponible por ahora.')))),
       h('p', { class: 'muted small' }, 'Pago seguro en la página de Stripe o Mercado Pago: nosotros nunca vemos los datos de tu tarjeta.',
+        trialOffer ? ` Con la prueba, el primer cobro es al terminar los ${cc.trial_days} días; si cancelas antes, no se cobra nada.` : '',
         b.plans.some((p) => p.tax_percent) ? ' Los precios no incluyen IVA: se cobra el total con IVA.' : '',
         ' El cobro se renueva solo y puedes cancelar cuando quieras.'));
     }

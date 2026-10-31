@@ -51,6 +51,10 @@ export interface SubscriptionState {
   status: SubStatus;
   periodEnd: Date | null;
   cancelAtPeriodEnd: boolean;
+  /** Prueba gratis con tarjeta: el primer cobro es en esta fecha (Stripe `trialing`; Mercado Pago, primer cobro a futuro). */
+  trialEnd?: Date | null;
+  /** Huella de la tarjeta (Stripe `card.fingerprint`; Mercado Pago, la armada con `mpCardKey`), para una prueba por tarjeta. */
+  cardKey?: string | null;
 }
 
 export interface WebhookResult {
@@ -113,6 +117,8 @@ export interface CheckoutArgs {
   startAt?: Date;
   /** Quien paga durante su prueba no la pierde: el primer cobro es al terminar. Solo Stripe (Mercado Pago usa `startAt`). */
   trialEnd?: Date;
+  /** Verificación de tarjeta con prueba gratis: días antes del primer cobro. Solo Stripe (Mercado Pago usa `startAt`). */
+  trialDays?: number;
 }
 
 export interface BillingProvider {
@@ -128,6 +134,8 @@ export interface BillingProvider {
   /** Página del proveedor para cambiar la tarjeta y ver facturas (si la tiene). */
   portal?(customerId: string, returnUrl: string): Promise<{ url: string }>;
   setCancelAtPeriodEnd(sub: Subscription, cancel: boolean): Promise<void>;
+  /** Una tarjeta que ya tuvo prueba: Stripe termina la prueba y cobra ya; Mercado Pago cancela esa suscripción. */
+  endTrialNow(subscriptionId: string): Promise<void>;
   /**
    * Cambia el plan de la suscripción vigente y devuelve su estado ya cambiado. `upgrade`: el nuevo plan cuesta más (Stripe
    * cobra hoy la diferencia proporcional; al bajar, el saldo a favor se descuenta del siguiente cobro). Mercado Pago solo

@@ -1,6 +1,7 @@
 import { api, area, field, fill, h, run, text, toast } from './core.js';
 import { icon } from './icons.js';
 import { render } from './main.js';
+import { aiLock } from './session.js';
 
 /* ------------------------------ Importar información del negocio ------------------------------ */
 
@@ -50,7 +51,7 @@ export function importCard({ endpoint, url = '', onResult, title = 'Llena todo p
   const pasted = field('Información del negocio', area(f, 'text', { big: true, placeholder: 'Pega tu menú, precios, horarios…', maxlength: 50000 }));
   function updateSource() { website.hidden = f.source !== 'url'; upload.hidden = f.source !== 'file'; pasted.hidden = f.source !== 'text'; }
   updateSource();
-  return h('div', { class: 'card import-card' }, h('h2', { style: 'margin-top:0' }, title), h('p', { class: 'muted' }, intro || 'Elige una fuente. Ordenamos la información para que la revises antes de guardarla.'), field('Leer información desde', source), website, upload, pasted, h('div', { class: 'row' }, btn, status));
+  return h('div', { class: 'card import-card' }, h('h2', { style: 'margin-top:0' }, title), h('p', { class: 'muted' }, intro || 'Elige una fuente. Ordenamos la información para que la revises antes de guardarla.'), field('Leer información desde', source), website, upload, pasted, h('div', { class: 'row' }, aiLock(btn), status));
 }
 
 /** Propuesta de importación (en la pestaña Conocimiento): se revisa y se guarda con un clic. */

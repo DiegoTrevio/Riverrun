@@ -7,6 +7,7 @@ import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { createHarness, dbAvailable, pool } from './harness.js';
+const { config } = await import('../src/config.js');
 
 const ok = await dbAvailable();
 const t = (name: string, fn: () => Promise<void>) => test(name, { skip: !ok && 'PostgreSQL de pruebas no disponible' }, fn);
@@ -63,6 +64,7 @@ t('un correo nuevo acepta los términos antes de crear su cuenta de prueba (ya v
   assert.equal((await peek('')).statusCode, 401, 'en otro navegador no sirve');
   assert.equal((await peek('cp_gpass=otro-navegador')).statusCode, 401);
   const info = await peek(r.cookie);
+  assert.equal(typeof info.json().turnstile_site_key, 'string', 'el captcha va antes de crear la cuenta');
   assert.equal(info.statusCode, 200, info.body);
   assert.deepEqual([info.json().email, info.json().name], ['nueva@empresa.mx', 'Nora']);
 
@@ -154,4 +156,48 @@ t('con el registro cerrado no crea cuentas nuevas, y el botón solo aparece en e
   const info = (host: string) => h.app.inject({ method: 'GET', url: '/api/signup/info', headers: { host } }).then((r) => r.json().google_login);
   assert.equal(await info(new URL(config.publicBaseUrl).host), true);
   assert.equal(await info('panel.otra-marca.com'), false);
+});
+
+t('con el captcha activo, terminar el registro con Google pide el captcha (entrar a una cuenta que existe, no)', async () => {
+  let valid = true;
+  const turnstile = http.createServer((req, res) => { req.resume(); req.on('end', () => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ success: valid })); }); });
+  await new Promise<void>((r) => turnstile.listen(0, '127.0.0.1', r));
+  const prev = { ...config.signup.turnstile };
+  Object.assign(config.signup.turnstile, { siteKey: 'sitio', secretKey: 'secreto', verifyUrl: `http://127.0.0.1:${(turnstile.address() as any).port}` });
+  try {
+    const r = await flow({ sub: 'g-capi', email: 'capi@empresa.mx', email_verified: true, name: 'Capi' });
+    const token = decodeURIComponent(r.location.split('/registro-google/')[1]);
+    const post = (extra: Record<string, unknown>) => h.app.inject({ method: 'POST', url: '/api/signup/google', remoteAddress: '10.8.9.1', headers: { cookie: r.cookie }, payload: { token, company: 'Capi SA', accept_terms: true, ...extra } });
+    const sinToken = await post({});
+    assert.equal(sinToken.statusCode, 400, sinToken.body);
+    assert.equal(sinToken.json().error, 'Confirma que no eres un robot e intenta de nuevo.');
+    valid = false;
+    assert.equal((await post({ turnstile_token: 'malo' })).statusCode, 400);
+    valid = true;
+    const done = await post({ turnstile_token: 'bueno' });
+    assert.equal(done.statusCode, 200, done.body);
+    // Ya con cuenta, entrar con Google no pide captcha.
+    const back = await flow({ sub: 'g-capi', email: 'capi@empresa.mx', email_verified: true, name: 'Capi' });
+    assert.doesNotMatch(back.location, /registro-google/);
+  } finally {
+    Object.assign(config.signup.turnstile, prev);
+    turnstile.close();
+  }
+});
+
+t('con cobro configurado, la cuenta creada con Google también espera la tarjeta', async () => {
+  const prev = { ...config.billing.stripe };
+  Object.assign(config.billing.stripe, { secretKey: 'sk_test_google', webhookSecret: 'whsec_google' });
+  // Con un plan que se pueda pagar (sin plan no hay pago que abrir y la prueba sigue sin tarjeta).
+  assert.equal((await h.authed('POST', '/api/plans', { key: 'pro', name: 'Pro', price: 499, currency: 'MXN' })).statusCode, 200);
+  try {
+    const r = await flow({ sub: 'g-tarjeta', email: 'tarjeta@empresa.mx', email_verified: true, name: 'Tere' });
+    const token = decodeURIComponent(r.location.split('/registro-google/')[1]);
+    const done = await h.app.inject({ method: 'POST', url: '/api/signup/google', remoteAddress: '10.8.9.9', headers: { cookie: r.cookie }, payload: { token, company: 'Tere SA', accept_terms: true } });
+    assert.equal(done.statusCode, 200, done.body);
+    const acc = (await pool.query(`SELECT a.status, a.pause_reason, a.trial_ends_at FROM accounts a JOIN users u ON u.account_id = a.id WHERE u.email = 'tarjeta@empresa.mx'`)).rows[0];
+    assert.deepEqual([acc.status, acc.pause_reason, acc.trial_ends_at], ['paused', 'card', null]);
+  } finally {
+    Object.assign(config.billing.stripe, prev);
+  }
 });

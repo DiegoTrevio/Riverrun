@@ -105,6 +105,8 @@ jobs:
         run: npm run test:identity:ux
       - name: Cuenta en navegador (dueño, invitar, transferir, cambiar el correo, bajas)
         run: npm run test:account:ux
+      - name: Registro en navegador (captcha, esperar tarjeta, prueba con tarjeta, Activar sin tarjeta, freno)
+        run: npm run test:signup:ux
       - name: Guardar evidencia UX
         if: always()
         uses: actions/upload-artifact@v4

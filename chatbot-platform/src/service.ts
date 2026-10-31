@@ -544,7 +544,8 @@ export class ChatService {
 
     let content = describeInbound(msg);
     const adapter = adapterFor(channel.type);
-    if (msg.type === 'audio' && bot?.ai.transcribe_audio && adapter.downloadAudio) {
+    // Con la cuenta en pausa no se gasta IA: el audio se guarda como nota de voz, sin transcribir.
+    if (msg.type === 'audio' && bot?.ai.transcribe_audio && adapter.downloadAudio && channel.account_active !== false) {
       try {
         const audio = await adapter.downloadAudio(channel, msg);
         if (audio) {
@@ -593,7 +594,7 @@ export class ChatService {
     }
     // Foto o documento: el agente lee lo que contiene (una sola vez), en lugar de saber solo que llegó un archivo. Solo si
     // el asistente va a contestar: con una persona atendiendo o el agente apagado no se gasta IA.
-    if (media && bot?.ai.understand_media && bot.active && conv.status !== 'human' && (media.kind === 'image' || media.kind === 'document') && triggers) {
+    if (media && bot?.ai.understand_media && bot.active && channel.account_active !== false && conv.status !== 'human' && (media.kind === 'image' || media.kind === 'document') && triggers) {
       const started = Date.now();
       try {
         const understood = await understandMedia(accountAi(this.ai, channel.account_id, bot.id, 'media'), media);

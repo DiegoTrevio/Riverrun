@@ -23,8 +23,13 @@ async function signup(email: string, plan: string, provider: 'stripe' | 'mercado
   });
   assert.equal(r.statusCode, 200, r.body);
   const cookie = await h.sessionFrom(r);
-  const api: Api = (method, url, payload) => h.app.inject({ method: method as any, url, payload: payload as any, headers: { cookie } });
-  return { api, accountId: r.json().account.id as string, checkout: r.json().checkout_url as string };
+  const from = `10.88.0.${ip}`;
+  const api: Api = (method, url, payload) => h.app.inject({ method: method as any, url, remoteAddress: from, payload: payload as any, headers: { cookie } });
+  // El pago se abre desde Mi plan (ya no al registrarse), con el correo verificado.
+  await pool.query(`UPDATE users SET email_verified_at = now() WHERE lower(email) = lower($1)`, [email]);
+  const co = await api('POST', '/api/billing/checkout', { plan, provider });
+  assert.equal(co.statusCode, 200, co.body);
+  return { api, accountId: r.json().account.id as string, checkout: co.json().url as string };
 }
 
 /** Cuenta que ya paga `plan` con Stripe (suscripción `subId`). */

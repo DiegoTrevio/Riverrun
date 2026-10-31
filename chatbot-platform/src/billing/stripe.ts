@@ -133,6 +133,9 @@ export function stateFromSubscription(sub: any, plans: Plan[]): SubscriptionStat
     status: STATUS[sub.status] ?? 'incomplete',
     periodEnd: typeof periodEnd === 'number' ? new Date(periodEnd * 1000) : null,
     cancelAtPeriodEnd: !!sub.cancel_at_period_end || !!sub.cancel_at,
+    trialEnd: sub.status === 'trialing' && typeof sub.trial_end === 'number' ? new Date(sub.trial_end * 1000) : null,
+    // Se lee con expand[]=default_payment_method: sin expandir es solo el id.
+    cardKey: typeof sub.default_payment_method === 'object' ? sub.default_payment_method?.card?.fingerprint ?? null : null,
   };
 }
 
@@ -163,21 +166,28 @@ export const stripe: BillingProvider = {
   // Con ID de precio (price_…) se usa ese; sin él, el precio mensual se arma con el monto y la moneda del plan.
   supportsPlan: () => true,
 
-  async createCheckout({ accountId, email, plan, successUrl, cancelUrl, customerId, trialEnd }) {
+  async createCheckout({ accountId, email, plan, successUrl, cancelUrl, customerId, trialEnd, trialDays }) {
     const meta = { account_id: accountId, plan_key: plan.key };
     const item = { ...(await priceOf(plan)), quantity: 1 };
     const s = await call('POST', '/v1/checkout/sessions', {
       mode: 'subscription',
       line_items: [item],
-      success_url: successUrl,
+      success_url: `${successUrl}${successUrl.includes('?') ? '&' : '?'}session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: cancelUrl,
       client_reference_id: accountId,
       ...(customerId ? { customer: customerId } : { customer_email: email }),
-      allow_promotion_codes: true,
       locale: 'es',
       metadata: meta,
-      // Durante la prueba: se guarda la tarjeta hoy y el primer cobro es al terminar la prueba.
-      subscription_data: { metadata: meta, ...(trialEnd ? { trial_end: Math.floor(trialEnd.getTime() / 1000) } : {}) },
+      // Contra la prueba de tarjetas: la tarjeta siempre se pide (también con prueba), la página vence en 30 minutos
+      // (el mínimo de Stripe) y se pide 3D Secure cuando el banco lo tiene. Los códigos de promoción no se aceptan sueltos.
+      payment_method_collection: 'always',
+      expires_at: Math.floor(Date.now() / 1000) + 31 * 60,
+      payment_method_options: { card: { request_three_d_secure: 'any' } },
+      // Con prueba: se guarda la tarjeta hoy y el primer cobro es al terminar la prueba.
+      subscription_data: {
+        metadata: meta,
+        ...(trialDays ? { trial_period_days: trialDays } : trialEnd ? { trial_end: Math.floor(trialEnd.getTime() / 1000) } : {}),
+      },
     });
     if (!s.url) throw new ProviderError('Stripe no devolvió la página de pago');
     return { url: s.url, ref: String(s.id ?? '') };
@@ -187,7 +197,7 @@ export const stripe: BillingProvider = {
     const s = await call('GET', `/v1/checkout/sessions/${encodeURIComponent(ref)}`);
     const subId = typeof s.subscription === 'string' ? s.subscription : s.subscription?.id;
     if (s.status !== 'complete' || !subId) return null;
-    const state = stateFromSubscription(await call('GET', `/v1/subscriptions/${encodeURIComponent(subId)}`), plans);
+    const state = stateFromSubscription(await call('GET', `/v1/subscriptions/${encodeURIComponent(subId)}?expand[]=default_payment_method`), plans);
     if (!state.accountId) state.accountId = s.client_reference_id || null;
     return state;
   },
@@ -195,6 +205,10 @@ export const stripe: BillingProvider = {
   async portal(customerId, returnUrl) {
     const s = await call('POST', '/v1/billing_portal/sessions', { customer: customerId, return_url: returnUrl });
     return { url: s.url };
+  },
+
+  async endTrialNow(subscriptionId) {
+    await call('POST', `/v1/subscriptions/${encodeURIComponent(subscriptionId)}`, { trial_end: 'now' });
   },
 
   async setCancelAtPeriodEnd(sub, cancel) {
@@ -217,7 +231,7 @@ export const stripe: BillingProvider = {
   },
 
   async subscriptionState(subscriptionId, plans) {
-    return stateFromSubscription(await call('GET', `/v1/subscriptions/${encodeURIComponent(subscriptionId)}`), plans);
+    return stateFromSubscription(await call('GET', `/v1/subscriptions/${encodeURIComponent(subscriptionId)}?expand[]=default_payment_method`), plans);
   },
 
   async recentPayments(subscriptionId, since) {
@@ -264,7 +278,7 @@ export const stripe: BillingProvider = {
       event.type.startsWith('customer.subscription.') ? obj.id : obj.subscription ?? obj.parent?.subscription_details?.subscription ?? undefined;
     if (!subId) return result;
     // Siempre se lee la suscripción: refleja el estado real aunque los avisos lleguen repetidos o desordenados.
-    const sub = await call('GET', `/v1/subscriptions/${encodeURIComponent(subId)}`);
+    const sub = await call('GET', `/v1/subscriptions/${encodeURIComponent(subId)}?expand[]=default_payment_method`);
     const state = stateFromSubscription(sub, plans);
     if (!state.accountId && event.type === 'checkout.session.completed') state.accountId = obj.client_reference_id || null;
     result.state = state;

@@ -53,11 +53,11 @@ export function renderLogin() {
 
 /**
  * Después de la contraseña, el registro o la invitación falta el segundo paso (escribir el código o configurar la app).
- * `next` es a dónde sigue al terminarlo; el pago del registro (`checkout_url`) tiene prioridad.
+ * `next` es a dónde sigue al terminarlo (el pago ya no se abre desde el registro: va en Mi plan, con el correo verificado).
  */
 export function afterLogin(r, next = '#/') {
   state.me = null;
-  try { sessionStorage.setItem('after-mfa', r.checkout_url || next); } catch { /* sin storage */ }
+  try { sessionStorage.setItem('after-mfa', next); } catch { /* sin storage */ }
   if (r.mfa === 'verify') location.hash = '#/login/codigo';
   else if (r.mfa === 'enroll') location.hash = '#/login/configurar';
   else location.hash = next;
@@ -123,7 +123,7 @@ export async function renderGoogleSignup(token) {
     button.disabled = true;
     const r = await run(() => api('POST', '/api/signup/google', f));
     if (!r) { sending = false; button.disabled = false; return; }
-    afterLogin(r, '#/agentes/nuevo');
+    afterLogin(r, r.account?.status === 'paused' ? '#/plan' : '#/agentes/nuevo');
   };
   publicCard('Termina tu registro',
     h('p', { class: 'muted', style: 'margin-top:0' }, 'Entraste con Google como ', h('strong', {}, info.email), '. Solo falta el nombre de tu negocio y aceptar los términos.'),
@@ -131,6 +131,7 @@ export async function renderGoogleSignup(token) {
       field('Nombre de tu negocio', text(f, 'company', { required: true, autocomplete: 'organization' })),
       field('Tipo de negocio', select(f, 'business_type', info.business_types.map((b) => [b.key, b.label]))),
       termsCheck(info, f),
+      captcha(info.turnstile_site_key, f),
       button,
       h('p', { class: 'small', style: 'margin:0' }, '¿No eres tú? ', h('a', { href: '#/login' }, 'Volver'))));
 }
@@ -196,7 +197,7 @@ function planPicker(info, f, onChange) {
   };
   fill(box,
     field('Tu plan', h('div', {},
-      info.trial_days > 0 ? option('', `Probar gratis ${info.trial_days} ${info.trial_days === 1 ? 'día' : 'días'}`, '', 'Sin tarjeta. Contratas cuando quieras desde tu panel.') : null,
+      info.trial_days > 0 ? option('', `Probar gratis ${info.trial_days} ${info.trial_days === 1 ? 'día' : 'días'}`, '', info.card_required ? 'Agregas tu tarjeta en tu panel y no se cobra nada hasta que termine la prueba.' : 'Sin tarjeta. Contratas cuando quieras desde tu panel.') : null,
       info.plans.map((p) => option(p.key, p.name, `${planPrice(p)} / ${per(p)}`, [p.description, limitsText(p.limits), totalText(p)].filter(Boolean).join(' · ') || 'Sin límites de uso')))),
     method);
   drawMethod();
@@ -209,13 +210,15 @@ export async function renderSignup(params = new URLSearchParams()) {
   try { info = await api('GET', '/api/signup/info'); } catch { info = { enabled: false, business_types: [], plans: [] }; }
   if (navigation !== state.navigation) return;
   if (!info.enabled) return publicCard('Registro cerrado', h('p', {}, 'Por ahora el registro no está disponible.'), h('a', { href: '#/login' }, 'Iniciar sesión'));
+  if (info.signup_available === false) return publicCard('Registro cerrado', h('p', {}, 'El registro no está disponible por ahora'), h('a', { href: '#/login' }, 'Iniciar sesión'));
   info.plans = info.plans || [];
   const trial = info.trial_days > 0;
   // Un enlace desde tu página de precios puede traer el plan elegido: #/registro?plan=pro
   const wanted = info.plans.find((p) => p.key === params.get('plan'))?.key;
   const f = { name: '', company: '', business_type: 'otro', email: '', password: '', phone: '', accept_terms: false, website: '', plan: wanted || (trial ? '' : info.plans[0]?.key || ''), provider: '' };
   const button = h('button', { class: 'primary', type: 'submit' });
-  const label = () => (button.textContent = f.plan ? 'Crear mi cuenta y pagar' : 'Crear mi cuenta');
+  // El pago no se abre desde aquí: la cuenta se crea y la tarjeta se agrega en Mi plan (con el correo ya verificado).
+  const label = () => (button.textContent = 'Crear mi cuenta');
   label();
   let sending = false;
   const submit = async (e) => {
@@ -227,12 +230,11 @@ export async function renderSignup(params = new URLSearchParams()) {
     button.disabled = true;
     const r = await run(() => api('POST', '/api/signup', { ...rest, ...(plan ? { plan, ...(provider ? { provider } : {}) } : {}) }));
     if (!r) { sending = false; button.disabled = false; return; }
-    // Primero configura su verificación en dos pasos; al terminar abre el pago (si eligió plan) o el asistente.
-    if (r.checkout_error) { toast(r.checkout_error, true); return afterLogin(r, `#/plan?plan=${encodeURIComponent(plan)}`); }
-    afterLogin(r, '#/agentes/nuevo');
+    // Primero configura su verificación en dos pasos; al terminar sigue a Mi plan (si la prueba pide tarjeta) o al asistente.
+    afterLogin(r, info.card_required ? `#/plan${plan ? `?plan=${encodeURIComponent(plan)}` : ''}` : '#/agentes/nuevo');
   };
   const intro = info.plans.length
-    ? (trial ? `Prueba gratis ${info.trial_days} días o contrata tu plan desde hoy.` : 'Crea tu cuenta y activa tu plan en un solo paso.')
+    ? (trial ? `Prueba gratis ${info.trial_days} días${info.card_required ? ' (con tarjeta: no se cobra nada hasta que termine)' : ''} o contrata tu plan desde hoy.` : 'Crea tu cuenta y activa tu plan desde tu panel.')
     : (trial ? `Prueba gratis ${info.trial_days} días.` : `Crea tu cuenta; tu asistente se activa al contratar tu plan${info.support_contact ? ` (escríbenos a ${info.support_contact})` : ''}.`);
   publicCard('Crea tu asistente',
     h('p', { class: 'muted', style: 'margin-top:0' }, `${intro} En unos minutos tu asistente responde por WhatsApp.`),
@@ -244,7 +246,7 @@ export async function renderSignup(params = new URLSearchParams()) {
       field('Contraseña', text(f, 'password', { type: 'password', autocomplete: 'new-password', minlength: 12, required: true }), 'Mínimo 12 caracteres; una frase de 3 o 4 palabras funciona bien.'),
       field('WhatsApp para avisos (opcional)', text(f, 'phone', { type: 'tel', autocomplete: 'tel', placeholder: '5215512345678' }), 'Ahí te avisamos cuando un cliente pida hablar con una persona.'),
       info.plans.length ? planPicker(info, f, label) : null,
-      info.plans.length ? h('p', { class: 'muted small', style: 'margin:0' }, 'Al elegir un plan pasas al pago seguro (Stripe o Mercado Pago); nunca vemos tu tarjeta. Se renueva cada mes y puedes cancelar cuando quieras.') : null,
+      info.plans.length ? h('p', { class: 'muted small', style: 'margin:0' }, 'Después de confirmar tu correo agregas tu tarjeta en Mi plan, en la página segura de Stripe o Mercado Pago; nunca vemos tu tarjeta. Se renueva cada mes y puedes cancelar cuando quieras.') : null,
       // Campo trampa para bots: oculto para las personas.
       h('div', { style: 'position:absolute;left:-9999px', 'aria-hidden': 'true' }, h('input', { tabindex: '-1', autocomplete: 'off', oninput: (e) => (f.website = e.target.value) })),
       termsCheck(info, f),

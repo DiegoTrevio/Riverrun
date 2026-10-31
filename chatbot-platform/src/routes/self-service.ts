@@ -171,7 +171,7 @@ export async function selfServicePages(root: FastifyInstance) {
       }
       // Campo trampa: solo un robot lo llena. Se le contesta igual para no darle pistas.
       if (!b.data.web) {
-        if (!(await verifyCaptcha(b.data['cf-turnstile-response'], req.ip))) return html(reply, 400, contactForm({ brand, values, error: CAPTCHA_MESSAGE }));
+        if ((await verifyCaptcha(b.data['cf-turnstile-response'], req.ip)) === 'invalid') return html(reply, 400, contactForm({ brand, values, error: CAPTCHA_MESSAGE }));
         const to = supportInbox();
         if (to) await sendMail({ to, replyTo: b.data.email, subject: `Contacto: ${b.data.name}`, text: `${b.data.name} <${b.data.email}> escribió desde ${brand.name} (/contacto):\n\n${b.data.message}` });
         await logEvent({ level: to ? 'info' : 'warn', source: 'system', message: to ? `Mensaje de contacto de ${b.data.email}` : `Mensaje de contacto de ${b.data.email} sin buzón de soporte (define SUPERADMIN_EMAIL)`, details: to ? undefined : { message: b.data.message.slice(0, 2000) } });
@@ -206,6 +206,7 @@ export async function selfServicePages(root: FastifyInstance) {
   <p>Si eres cliente de un negocio que usa este servicio, dirige tu solicitud a ese negocio; nosotros le ayudamos a atenderla.</p>
   <h2>Conservación</h2>
   <p>Conservamos los datos mientras tu cuenta esté activa. Una cuenta en pausa se borra sola después de un tiempo, con aviso previo, y puedes borrarla tú cuando quieras. Los pagos y las facturas se conservan el tiempo que exige la ley fiscal.</p>
+  <p><strong>Una prueba gratis por persona:</strong> para que nadie repita la prueba, guardamos durante 2 años una huella irreversible (no el dato) de tu correo, de tu cuenta de Google y de tu tarjeta. Con ella no se puede saber cuál es tu correo ni tu tarjeta, solo reconocerlos si vuelven a usarse para otra prueba. Borrar tu cuenta no borra esa huella antes de tiempo.</p>
   <h2>Cambios</h2>
   <p>Publicaremos aquí cualquier cambio a este aviso y, si es importante, te avisaremos por correo.</p>`;
       return reply.code(200).type('text/html; charset=utf-8').header('cache-control', 'public, max-age=300').header('vary', 'Host').send(page({ title: 'Aviso de privacidad', brand, body }));

@@ -28,8 +28,13 @@ async function signup(email: string, plan: string, provider: 'stripe' | 'mercado
   });
   assert.equal(r.statusCode, 200, r.body);
   const cookie = await h.sessionFrom(r);
-  const api: Api = (method, url, payload) => h.app.inject({ method: method as any, url, payload: payload as any, headers: { cookie } });
-  return { api, accountId: r.json().account.id as string, checkout: r.json().checkout_url as string, email };
+  const from = `10.77.0.${ip}`;
+  const api: Api = (method, url, payload) => h.app.inject({ method: method as any, url, remoteAddress: from, payload: payload as any, headers: { cookie } });
+  // El pago se abre desde Mi plan (ya no al registrarse), con el correo verificado.
+  await pool.query(`UPDATE users SET email_verified_at = now() WHERE lower(email) = lower($1)`, [email]);
+  const co = await api('POST', '/api/billing/checkout', { plan, provider });
+  assert.equal(co.statusCode, 200, co.body);
+  return { api, accountId: r.json().account.id as string, checkout: co.json().url as string, email };
 }
 
 async function paidStripe(email: string, subId: string) {
@@ -293,7 +298,12 @@ t('una cancelación que el proveedor rechaza se reintenta con espera creciente y
 
 t('pagar durante la prueba no la acorta: el primer cobro es al terminarla (con menos de 2 días, se cobra ya)', async () => {
   const a = await signup('prueba@spa.mx', 'pro', 'stripe');
+  // Una cuenta en prueba de las de antes (sin tarjeta) que paga durante su prueba.
+  await pool.query(`UPDATE accounts SET status = 'trial', trial_ends_at = now() + interval '10 days' WHERE id = $1`, [a.accountId]);
+  const expire = () => pool.query(`UPDATE card_checks SET opened_at = opened_at - interval '31 minutes' WHERE account_id = $1`, [a.accountId]);
+  await expire(); // la página del alta ya venció: se abre otra
   const ends = (await pool.query(`SELECT trial_ends_at FROM accounts WHERE id = $1`, [a.accountId])).rows[0].trial_ends_at as Date;
+  assert.equal((await a.api('POST', '/api/billing/checkout', { plan: 'pro', provider: 'stripe' })).statusCode, 200);
   const session = fake.stripe.requests.filter((x) => x.method === 'POST' && x.path === '/v1/checkout/sessions').at(-1)!.body;
   assert.equal(session.get('subscription_data[trial_end]'), String(Math.floor(ends.getTime() / 1000)));
 
@@ -302,6 +312,7 @@ t('pagar durante la prueba no la acorta: el primer cobro es al terminarla (con m
   assert.equal(new Date(pre.auto_recurring.start_date).getTime(), ends.getTime());
 
   await pool.query(`UPDATE accounts SET trial_ends_at = now() + interval '1 day' WHERE id = $1`, [a.accountId]);
+  await expire();
   assert.equal((await a.api('POST', '/api/billing/checkout', { plan: 'pro', provider: 'stripe' })).statusCode, 200);
   const late = fake.stripe.requests.filter((x) => x.method === 'POST' && x.path === '/v1/checkout/sessions').at(-1)!.body;
   assert.equal(late.get('subscription_data[trial_end]'), null);
@@ -312,9 +323,13 @@ t('pagar durante la prueba no la acorta: el primer cobro es al terminarla (con m
 t('las rutas de cobro tienen límite por cuenta (429)', async () => {
   const a = await signup('ansioso@spa.mx', 'pro', 'stripe');
   const codes: number[] = [];
-  for (let i = 0; i < 21; i++) codes.push((await a.api('POST', '/api/billing/checkout', { plan: 'pro', provider: 'stripe' })).statusCode);
-  assert.deepEqual(codes.slice(0, 20), Array(20).fill(200));
-  assert.equal(codes[20], 429);
+  // Páginas de pago: 5 por día por cuenta (el alta ya abrió una). Cada una vence a los 30 minutos.
+  for (let i = 0; i < 5; i++) {
+    await pool.query(`UPDATE card_checks SET opened_at = opened_at - interval '31 minutes' WHERE account_id = $1`, [a.accountId]);
+    codes.push((await a.api('POST', '/api/billing/checkout', { plan: 'pro', provider: 'stripe' })).statusCode);
+  }
+  assert.deepEqual(codes.slice(0, 4), Array(4).fill(200));
+  assert.equal(codes[4], 429);
 });
 
 /* ------------------------------ Avisos que no llegan ------------------------------ */

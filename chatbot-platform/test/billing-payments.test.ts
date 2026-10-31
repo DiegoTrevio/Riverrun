@@ -25,8 +25,9 @@ async function signup(email: string, ip: string) {
     payload: { name: 'Dueña', company: `Negocio ${email}`, business_type: 'servicios', email, password: 'Pz-144-Qx-344-Kv', accept_terms: true },
   });
   assert.equal(r.statusCode, 200, r.body);
+  await pool.query(`UPDATE users SET email_verified_at = now() WHERE email = $1`, [email]);
   const cookie = await h.sessionFrom(r);
-  return { account: r.json().user.account_id as string, api: ((method, url, payload) => h.app.inject({ method: method as any, url, payload: payload as any, headers: { cookie } })) as Api };
+  return { account: r.json().user.account_id as string, api: ((method, url, payload) => h.app.inject({ method: method as any, url, remoteAddress: ip, payload: payload as any, headers: { cookie } })) as Api };
 }
 
 const invoice = (over: Record<string, unknown> = {}) => {

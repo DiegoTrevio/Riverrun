@@ -9,6 +9,7 @@ import { cookieName } from '../auth.js';
 import { config } from '../config.js';
 import { query } from '../db.js';
 import { budgetPolicy, normalize } from '../ai/budget.js';
+import { assertAiAllowed } from '../ai/gate.js';
 import * as store from '../store/index.js';
 import { parse } from '../routes/util.js';
 import { confirmAction, declineAction, undoAction, undoTurn } from './actions.js';
@@ -154,6 +155,7 @@ export async function copilotRoutes(api: FastifyInstance, deps: RunnerDeps) {
 
   api.post('/api/copilot/threads/:id/messages', async (req: any, reply) => {
     const thread = await ownThread(req);
+    await assertAiAllowed(thread.account_id);
     const b = parse(z.object({
       text: z.string().trim().min(1, 'Escribe qué necesitas').max(4000),
       page: z.object({ hash: z.string().max(300).default('') }).default({ hash: '' }),
