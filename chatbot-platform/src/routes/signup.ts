@@ -64,8 +64,10 @@ export async function reserveSignup(ip: string): Promise<() => Promise<void>> {
       await release();
       throw new HttpError(429, key === 'signup-day' ? 'Intenta más tarde' : TOO_MANY);
     }
-    if (key === 'signup-day' && hits === Math.ceil(max * 0.8)) {
-      await notifyPlatform('Muchos registros hoy', `Van ${hits} cuentas nuevas hoy de ${max} permitidas (SIGNUP_DAILY_MAX). Al llegar al tope, el registro responde «Intenta más tarde» hasta mañana.`, { urgent: true });
+    // Una vez al día (los registros que no se crean devuelven su lugar y el contador puede volver a pasar por el 80 %).
+    if (key === 'signup-day' && hits >= Math.ceil(max * 0.8) && (await countHit('signup-day-alert', DAY)) === 1) {
+      await notifyPlatform('Muchos registros hoy', `Van ${hits} cuentas nuevas hoy de ${max} permitidas (SIGNUP_DAILY_MAX). Al llegar al tope, el registro responde «Intenta más tarde» hasta mañana.`, { urgent: true })
+        .catch((e) => logEvent({ level: 'error', source: 'system', message: `No se pudo avisar de los registros del día: ${e?.message ?? e}` }));
     }
   }
   return release;

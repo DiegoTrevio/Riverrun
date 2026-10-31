@@ -153,15 +153,21 @@ Registro con tarjeta y una prueba gratis por persona. El diseño completo (tambi
 tarjeta al mismo tiempo recibían las dos su prueba: ahora la marca decide (candado por marca, y la prueba y sus marcas
 se guardan juntas). También, que en Mercado Pago «Contratar» después de una tarjeta repetida no cobraba hoy y podía
 dejar a la persona en un ciclo, y que las páginas de tarjeta por sustitución (cambiar tarjeta, reanudar, mensual ↔
-anual) quedaban fuera de los topes y del freno. Todo eso quedó corregido, con su prueba. Lo que señaló y queda para
-después:
-- A quien se le negó la prueba por su correo, el aviso le dice «Esta tarjeta ya tuvo una prueba gratis».
-- Dos clics a la vez en «Agregar tarjeta» abren dos páginas de pago (las dos cuentan para el tope).
-- Una página reutilizada al minuto 29 dura menos de un minuto en Stripe.
-- Si el correo falla a la vez que Cloudflare, el registro responde 500 en lugar de 503; el aviso del 80 % puede salir
-  más de una vez.
-- El correo «tu prueba está por terminar» habla del primer cobro también a quien ya canceló.
-- Las marcas vencidas y las verificaciones viejas no se depuran.
+anual) quedaban fuera de los topes y del freno. Todo eso quedó corregido, con su prueba. Lo menor que señaló se
+corrigió en el PR siguiente, también con su prueba:
+- A quien se le negó la prueba por su correo o su cuenta de Google ya no se le dice «Esta tarjeta ya tuvo una prueba
+  gratis», sino «Ya usaste tu prueba gratis».
+- Con una tarjeta que ya tuvo prueba en Stripe, mientras llega el primer cobro, el panel dice «Estamos activando tu
+  plan» y ya no ofrece «Usar otra tarjeta».
+- La página de pago se reutiliza 25 minutos (Stripe la cierra a los 31), y dos clics a la vez en «Agregar tarjeta»
+  abren una sola.
+- El aviso del 80 % de registros sale una vez al día; si un aviso falla, el registro responde igual (también con el
+  captcha caído).
+- El correo «tu prueba está por terminar» a quien ya canceló dice que no se cobrará.
+- La retención dice «nunca agregó su tarjeta» (y al dueño, «agrega tu tarjeta») en las cuentas que esperaban tarjeta.
+- Las marcas vencidas y las verificaciones de más de 30 días se depuran solas.
+- Mi plan solo calcula el estado de la tarjeta con la cuenta esperándola, y el mantenimiento del conocimiento sigue
+  con una prueba vencida que ya tiene su suscripción.
 
 ## Hallazgos pendientes por etapa
 

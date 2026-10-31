@@ -193,3 +193,45 @@ t('al empezar la prueba la cuenta deja de contar como pausada: Cuentas no muestr
   const listed = (await h.authed('GET', '/api/accounts')).json().find((x: any) => x.id === a.accountId);
   assert.deepEqual([listed.status, listed.paused_at, listed.deletion_date ?? null], ['trial', null, null]);
 });
+
+t('negada por el correo (otra cuenta de la misma persona empezó antes): Mi plan no dice «esta tarjeta» (menor 1)', async () => {
+  fake.mp.cards.card_motivo = { first_six_digits: '450995', last_four_digits: '2222', expiration_month: 2, expiration_year: 2031 };
+  const a = await waiting('motivo@prueba.mx');
+  await a.api('POST', '/api/billing/checkout', { plan: 'pro', provider: 'mercadopago' });
+  const other = await waiting('motivo+otra@prueba.mx');
+  await recordTrialClaims({ accountId: other.accountId, email: 'motivo+otra@prueba.mx', provider: 'mercadopago' });
+  await pool.query(`UPDATE subscriptions SET checkout_ref = 'pre_motivo' WHERE account_id = $1`, [a.accountId]);
+  const start = new Date(Date.now() + 14 * 86400_000);
+  fake.mp.preapprovals.pre_motivo = { id: 'pre_motivo', status: 'authorized', external_reference: `${a.accountId}:pro`, payer_id: 34, card_id: 'card_motivo', auto_recurring: { start_date: start.toISOString() }, next_payment_date: start.toISOString() };
+  assert.equal((await post(mpEvent('subscription_preapproval', 'pre_motivo'))).statusCode, 200);
+  assert.equal(mails('motivo@prueba.mx', /Ya usaste tu prueba gratis con este correo/), 1);
+  const cc = (await a.api('GET', '/api/billing')).json().card_check;
+  assert.deepEqual([cc.waiting, cc.trial_available, cc.card_used], [true, false, false]);
+});
+
+t('Stripe con una tarjeta que ya tuvo prueba: mientras llega el primer cobro, el panel dice que el plan se está activando (menor 11)', async () => {
+  const old = await waiting('cobro-vieja@prueba.mx');
+  await recordTrialClaims({ accountId: old.accountId, email: 'cobro-vieja@prueba.mx', cardKey: 'fp_cobro', provider: 'stripe' });
+  const a = await waiting('cobro@prueba.mx');
+  const co = await a.api('POST', '/api/billing/checkout', { plan: 'pro', provider: 'stripe' });
+  cardOnStripe(co.json().url.split('/').pop(), a.accountId, 'sub_cobro', 'fp_cobro');
+  await a.api('POST', '/api/billing/confirm');
+  const cc = (await a.api('GET', '/api/billing')).json().card_check;
+  assert.deepEqual([cc.waiting, cc.card_used, cc.charging], [true, false, true], 'no ofrece «Usar otra tarjeta»: ya se está cobrando');
+  assert.equal((await a.api('GET', '/api/me')).json().card_check.charging, true);
+});
+
+t('el aviso de prueba por terminar a quien ya canceló dice que no se cobrará (menor 6)', async () => {
+  const a = await waiting('cancelo@prueba.mx');
+  const co = await a.api('POST', '/api/billing/checkout', { plan: 'pro', provider: 'stripe' });
+  cardOnStripe(co.json().url.split('/').pop(), a.accountId, 'sub_cancelo', 'fp_cancelo');
+  await a.api('POST', '/api/billing/confirm');
+  assert.equal((await accountOf(a.accountId)).status, 'trial');
+  await pool.query(`UPDATE subscriptions SET cancel_at_period_end = true WHERE account_id = $1`, [a.accountId]);
+  await pool.query(`UPDATE accounts SET trial_ends_at = now() + interval '2 days' WHERE id = $1`, [a.accountId]);
+  await checkTrials();
+  const mail = outbox.filter((m) => m.to === 'cancelo@prueba.mx' && /está por terminar/.test(m.subject)).at(-1);
+  assert.ok(mail, 'se avisa');
+  assert.match(mail.text, /cancelaste/);
+  assert.doesNotMatch(mail.text, /primer cobro/);
+});

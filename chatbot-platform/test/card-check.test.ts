@@ -14,6 +14,7 @@ const ok = await dbAvailable();
 const t = (name: string, fn: () => Promise<void>) => test(name, { skip: !ok && 'PostgreSQL de pruebas no disponible' }, fn);
 const { ipKey } = await import('../src/auth.js');
 const { recordTrialClaims } = await import('../src/billing/trial-claims.js');
+const { pruneCardChecks } = await import('../src/billing/card-check.js');
 const { config } = await import('../src/config.js');
 const { outbox } = await import('../src/mailer.js');
 let h: Awaited<ReturnType<typeof createHarness>>;
@@ -193,6 +194,7 @@ t('«Activar sin tarjeta»: el superadmin deja la cuenta en prueba de TRIAL_DAYS
   const log = await pool.query(`SELECT 1 FROM event_logs WHERE account_id = $1 AND message LIKE 'Prueba sin tarjeta activada por admin@test.mx%'`, [a.accountId]);
   assert.equal(log.rowCount, 1, 'la bitácora dice quién fue');
   assert.equal((await pool.query(`SELECT kind FROM trial_claims WHERE account_id = $1`, [a.accountId])).rows.map((x) => x.kind).join(), 'email', 'la prueba de esa persona ya se usó');
+  assert.equal((await a.as('GET', '/api/billing')).json().card_check, null, 'ya no espera tarjeta: Mi plan no la calcula (menor 9)');
   const again = await h.authed('POST', `/api/accounts/${a.accountId}/trial-without-card`);
   assert.equal(again.statusCode, 400, 'solo a una cuenta que espera tarjeta');
 });
@@ -200,10 +202,10 @@ t('«Activar sin tarjeta»: el superadmin deja la cuenta en prueba de TRIAL_DAYS
 t('Mi plan trae el estado de la verificación de tarjeta: correo, prueba disponible, plan elegido y freno', async () => {
   const state = async (a: Awaited<ReturnType<typeof waiting>>) => (await a.as('GET', '/api/billing')).json().card_check;
   const a = await waiting('estado@tarjeta.mx', false, 'pro');
-  assert.deepEqual(await state(a), { required: true, waiting: true, trial_available: true, trial_days: 14, email_verified: false, signup_plan: 'pro', card_used: false, brake: false });
+  assert.deepEqual(await state(a), { required: true, waiting: true, trial_available: true, trial_days: 14, email_verified: false, signup_plan: 'pro', card_used: false, charging: false, brake: false });
   const b = await waiting('estado2@tarjeta.mx');
   await recordTrialClaims({ accountId: b.accountId, email: 'estado2@tarjeta.mx', provider: 'stripe' });
-  assert.deepEqual(await state(b), { required: true, waiting: true, trial_available: false, trial_days: 14, email_verified: true, signup_plan: '', card_used: false, brake: false });
+  assert.deepEqual(await state(b), { required: true, waiting: true, trial_available: false, trial_days: 14, email_verified: true, signup_plan: '', card_used: false, charging: false, brake: false });
   await pool.query(`INSERT INTO rate_limits (key, hits, expires_at) VALUES ('card-check-brake', 1, now() + interval '1 hour') ON CONFLICT (key) DO UPDATE SET hits = 1, expires_at = now() + interval '1 hour'`);
   try {
     assert.equal((await state(b)).brake, true);
@@ -252,4 +254,38 @@ t('las páginas de tarjeta por sustitución (Mercado Pago: cambiar tarjeta) cuen
   } finally {
     await pool.query(`UPDATE rate_limits SET expires_at = now() WHERE key LIKE 'card-check-brake%'`);
   }
+});
+
+t('una página abierta hace más de 25 minutos ya no se reutiliza: le quedaría muy poco antes de que Stripe la cierre (menor 2)', async () => {
+  const a = await waiting('poco@tarjeta.mx');
+  await seed(a.accountId, 0, 0);
+  const first = (await a.api()).json().url;
+  await pool.query(`UPDATE card_checks SET opened_at = opened_at - interval '26 minutes' WHERE account_id = $1`, [a.accountId]);
+  assert.notEqual((await a.api()).json().url, first);
+});
+
+t('dos clics a la vez en «Agregar tarjeta» abren una sola página (menor 3)', async () => {
+  const a = await waiting('dobleclic@tarjeta.mx');
+  await seed(a.accountId, 0, 0);
+  const [r1, r2] = await Promise.all([a.api(), a.api()]);
+  assert.equal(r1.statusCode, 200, r1.body);
+  assert.equal(r1.json().url, r2.json().url);
+  assert.equal(await checks(a.accountId), 1);
+});
+
+t('las marcas vencidas y las verificaciones de más de 30 días se depuran (menor 8)', async () => {
+  const a = await waiting('depura@tarjeta.mx');
+  await pool.query(
+    `INSERT INTO card_checks (account_id, provider, plan_key, ref, url, ip_key, opened_at) VALUES
+       ($1, 'stripe', 'pro', 'cs_vieja', '', 'x', now() - interval '31 days'), ($1, 'stripe', 'pro', 'cs_reciente', '', 'x', now() - interval '1 day')`,
+    [a.accountId],
+  );
+  await pool.query(
+    `INSERT INTO trial_claims (kind, digest, account_id, expires_at) VALUES
+       ('email', convert_to('vencida', 'UTF8'), $1, now() - interval '1 day'), ('email', convert_to('vigente', 'UTF8'), $1, now() + interval '1 day')`,
+    [a.accountId],
+  );
+  await pruneCardChecks();
+  assert.deepEqual((await pool.query(`SELECT ref FROM card_checks WHERE account_id = $1 ORDER BY ref`, [a.accountId])).rows.map((r) => r.ref), ['cs_reciente']);
+  assert.deepEqual((await pool.query(`SELECT convert_from(digest, 'UTF8') AS d FROM trial_claims WHERE account_id = $1`, [a.accountId])).rows.map((r) => r.d), ['vigente']);
 });

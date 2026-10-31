@@ -47,7 +47,8 @@ export class KnowledgeWorker {
   async runOnce() {
     if (!this.ai.embed || !await vectorAvailable()) return;
     const rows = await query<ChatbotRow>(`SELECT b.* FROM chatbots b JOIN accounts a ON a.id=b.account_id
-      WHERE a.active AND a.status IN ('active','trial') AND (a.status <> 'trial' OR a.trial_ends_at > now()) ORDER BY b.id`);
+      WHERE a.active AND a.status IN ('active','trial') AND (a.status <> 'trial' OR a.trial_ends_at > now()
+        OR EXISTS (SELECT 1 FROM subscriptions s WHERE s.account_id = a.id AND s.status IN ('active','past_due'))) ORDER BY b.id`);
     for (let scanned = 0; scanned < rows.length; scanned++) {
       const bot = hydrateChatbot(rows[this.cursor++ % rows.length]);
       if(!(await semanticPolicy(bot.account_id)).preparing) continue;

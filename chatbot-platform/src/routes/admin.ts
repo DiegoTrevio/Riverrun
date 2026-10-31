@@ -125,7 +125,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     const copilot = { enabled: config.copilot.enabled && (req.user.role === 'superadmin' || !!account?.copilot_enabled) };
     const owner = account ? await accountOwner(account.id) : null;
     // Esperando tarjeta: el aviso de arriba dice qué falta (correo, tarjeta, prueba ya usada).
-    const cardCheck = account?.status === 'paused' && account.pause_reason === 'card' ? await cardCheckState(account.id) : null;
+    const cardCheck = account ? await cardCheckState(account.id) : null;
     return { user: req.user, account: account && { ...store.publicAccount(account), payment_due: due, deletion_date: deletionDate(account) }, owner: owner && { id: owner.id, name: owner.name || owner.email }, copilot, card_check: cardCheck };
   });
 
