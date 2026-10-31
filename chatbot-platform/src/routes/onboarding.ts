@@ -159,7 +159,9 @@ export async function onboardingRoutes(api: FastifyInstance) {
         botId = bot.id;
       } else {
         await assertWithinLimit(accountId, 'chatbots');
-        // El alta va con la cuenta bloqueada en esta transacción (PAY-19): dos pedidos a la vez no rebasan el límite.
+        // El candado de límites de la cuenta queda tomado hasta el fin de esta transacción (PAY-19): otro pedido a la vez
+        // espera y ya cuenta este asistente. El alta se guarda de inmediato (no dentro de la transacción) porque el
+        // conocimiento y la bitácora de abajo se escriben fuera de ella y apuntan a él.
         await assertWithinLimitLocked(client, accountId, 'chatbots');
         const bot = await store.createChatbot(accountId, {
           name: tpl.name,
@@ -168,7 +170,7 @@ export async function onboardingRoutes(api: FastifyInstance) {
           rules: RulesSchema.parse(tpl.rules),
           flow: FlowSchema.parse(tpl.flow),
           data_fields: tpl.data_fields.map((f) => DataFieldSchema.parse(f)),
-        }, client);
+        });
         botId = bot.id;
         await logEvent({ level: 'info', source: 'admin', message: `Chatbot creado con el asistente (${businessType})`, accountId, chatbotId: bot.id });
       }
