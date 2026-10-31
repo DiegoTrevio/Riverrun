@@ -193,3 +193,35 @@ t('al empezar la prueba la cuenta deja de contar como pausada: Cuentas no muestr
   const listed = (await h.authed('GET', '/api/accounts')).json().find((x: any) => x.id === a.accountId);
   assert.deepEqual([listed.status, listed.paused_at, listed.deletion_date ?? null], ['trial', null, null]);
 });
+
+t('Stripe: Checkout pide solo tarjeta (Link y otros métodos no traen huella) (PAY-17)', async () => {
+  const a = await waiting('solo-tarjeta@prueba.mx');
+  assert.equal((await a.api('POST', '/api/billing/checkout', { plan: 'pro', provider: 'stripe' })).statusCode, 200);
+  const body = fake.stripe.requests.filter((x) => x.method === 'POST' && x.path === '/v1/checkout/sessions').at(-1)!.body;
+  assert.equal(body.get('payment_method_types[0]'), 'card');
+});
+
+t('Stripe: sin huella de la tarjeta no hay prueba: termina al momento y se cobra (PAY-17)', async () => {
+  const a = await waiting('sin-huella@prueba.mx');
+  const co = await a.api('POST', '/api/billing/checkout', { plan: 'pro', provider: 'stripe' });
+  const session = co.json().url.split('/').pop();
+  fake.stripe.subs.sub_sin_huella = stripeSub({ id: 'sub_sin_huella', customer: 'cus_sin_huella', status: 'trialing', trial_end: trialEnd(), default_payment_method: { id: 'pm_link', type: 'link' }, metadata: { account_id: a.accountId, plan_key: 'pro' } });
+  Object.assign(fake.stripe.sessions[session], { status: 'complete', subscription: 'sub_sin_huella' });
+  await a.api('POST', '/api/billing/confirm');
+  const end = fake.stripe.requests.filter((x) => x.method === 'POST' && x.path === '/v1/subscriptions/sub_sin_huella').at(-1)?.body;
+  assert.equal(end?.get('trial_end'), 'now', 'la prueba termina ya');
+  assert.notEqual((await accountOf(a.accountId)).status, 'trial');
+  assert.equal(mails('sin-huella@prueba.mx', /No pudimos leer tu tarjeta/), 1);
+});
+
+t('Stripe: si la suscripción no trae la tarjeta (3D Secure, Apple Pay), la huella se lee de la tarjeta guardada del cliente y hay prueba (PAY-17)', async () => {
+  const a = await waiting('apple-pay@prueba.mx');
+  const co = await a.api('POST', '/api/billing/checkout', { plan: 'pro', provider: 'stripe' });
+  const session = co.json().url.split('/').pop();
+  fake.stripe.subs.sub_wallet = stripeSub({ id: 'sub_wallet', customer: 'cus_wallet', status: 'trialing', trial_end: trialEnd(), default_payment_method: null, metadata: { account_id: a.accountId, plan_key: 'pro' } });
+  fake.stripe.paymentMethods.cus_wallet = [{ id: 'pm_wallet', type: 'card', card: { fingerprint: 'fp_wallet', wallet: { type: 'apple_pay' } } }];
+  Object.assign(fake.stripe.sessions[session], { status: 'complete', subscription: 'sub_wallet' });
+  await a.api('POST', '/api/billing/confirm');
+  assert.equal((await accountOf(a.accountId)).status, 'trial');
+  assert.deepEqual(await claimsOf(a.accountId), ['card', 'email'], 'la tarjeta queda marcada');
+});

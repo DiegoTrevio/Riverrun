@@ -17,7 +17,7 @@ import { isOpen, nextOpen, spanishDate, spanishTime } from './automation/time.js
 import { detectRisk, maskSensitive } from './engine/safety.js';
 import { customerLabel } from './engine/customer-data.js';
 import { assertOutbound, guardTransport } from './outbound-guard.js';
-import { cleanText, deepClean, toPlainText } from './engine/text.js';
+import { clampInbound, cleanText, deepClean, toPlainText } from './engine/text.js';
 import { adapterFor } from './channels/index.js';
 import { INBOUND_MEDIA_MAX_BYTES, removeInboundFiles, saveInboundMedia, type StoredMedia } from './channels/media.js';
 import { config } from './config.js';
@@ -521,6 +521,8 @@ export class ChatService {
   async handleIncoming(channel: Channel, msg: InboundMessage): Promise<{ conversationId: string | null; messageId: number | null }> {
     // Lo que llega de la plataforma se limpia una vez aquí (NUL y surrogates sueltos no caben en PostgreSQL).
     msg = deepClean(msg);
+    // Con tope: un mensaje de 65 000 caracteres (o un correo de megas) no se guarda ni se pasa entero a la IA.
+    if (msg.text) msg = { ...msg, text: clampInbound(msg.text) };
     // El eco de un aviso interno (alerta al equipo) no es una conversación: no crea contacto ni pausa al asistente.
     if (msg.fromMe && msg.text && (await store.consumeInternalNotice(channel.account_id, (msg.phone || msg.externalId).replace(/\D/g, ''), msg.text))) {
       return { conversationId: null, messageId: null };

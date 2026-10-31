@@ -23,6 +23,17 @@ export const checks = {
     await toast(page, 'Desactivada');
     assert.equal((await pool.query('SELECT active FROM automations WHERE id = $1', [id])).rows[0].active, false);
   },
+  'Ajustes → Privacidad: «Cancelar el borrado programado» deja la retención como estaba': async ({ h, pool, open, go }: AreaContext) => {
+    const pending = { messages_days: 90, inactive_contacts_days: 0, effective_at: new Date(Date.now() + 7 * 86400_000).toISOString() };
+    await pool.query(`UPDATE accounts SET settings = jsonb_set(COALESCE(settings, '{}'::jsonb), '{retention}', $2::jsonb) WHERE id = $1`, [h.accountId, JSON.stringify({ messages_days: 0, inactive_contacts_days: 0, pending })]);
+    const { page } = await open('admin');
+    await go(page, 'automation/settings');
+    await page.getByText(/Programado para el .*: borrar los mensajes con más de 90 días/).waitFor();
+    await page.getByRole('button', { name: 'Cancelar el borrado programado' }).click();
+    await toast(page, 'Borrado programado cancelado');
+    const r = (await pool.query(`SELECT settings->'retention' AS r FROM accounts WHERE id = $1`, [h.accountId])).rows[0].r;
+    assert.deepEqual([r.messages_days, r.pending], [0, null]);
+  },
   'Publicar el lienzo deja la versión publicada y lo dice': async ({ f, pool, open, go }: AreaContext) => {
     const { page } = await open('admin');
     await go(page, `automation/lienzo/${f.uxBoard}`);

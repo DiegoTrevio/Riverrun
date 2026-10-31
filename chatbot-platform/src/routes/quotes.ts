@@ -7,7 +7,9 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { assertAccount, HttpError, notFound, requireRole, scopeAccount, targetAccount } from '../access.js';
 import { attachmentAbsolutePath } from '../attachments.js';
+import { countHit } from '../identity/rate-limit.js';
 import { safeFileName } from '../channels/media.js';
+import { pool } from '../db.js';
 import { logEvent } from '../logs.js';
 import { AcceptBody, acceptedTotal, planCharges } from '../quotes/accept.js';
 import { quoteEvent } from '../quotes/agent.js';
@@ -99,6 +101,9 @@ async function friendly<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 /** Cotizaciones de la cuenta: ajustes, lista de precios y el historial de cotizaciones enviadas o por aprobar. */
+const TEMPLATE_UPLOADS_PER_HOUR = 10;
+const TEMPLATE_WINDOW_MS = 60 * 60_000;
+
 export async function quoteRoutes(api: FastifyInstance, service: ChatService) {
   const admins = { preHandler: requireRole('admin') };
   const itemFor = async (user: any, id: string) => assertAccount(user, await qstore.findPriceItem(id), 'Concepto no encontrado');
@@ -220,6 +225,23 @@ export async function quoteRoutes(api: FastifyInstance, service: ChatService) {
    * recordatorios de pago: el total, un anticipo y el resto, o varias parcialidades.
    */
   api.post('/api/quotes/:id/accept', admins, async (req: any) => {
+    // Una aceptación a la vez por cotización: dos al mismo tiempo con planes distintos dejaban los cobros de las dos. La
+    // segunda no espera: responde 409 al momento (el candado vive en su propia conexión y se suelta al terminar).
+    const lock = await pool.connect();
+    try {
+      const got = (await lock.query('SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS ok', [`quote-accept:${req.params.id}`])).rows[0].ok;
+      if (!got) throw new HttpError(409, 'Esta cotización se está aceptando en otra sesión');
+      try {
+        return await acceptQuote(req);
+      } finally {
+        await lock.query('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [`quote-accept:${req.params.id}`]).catch(() => undefined);
+      }
+    } finally {
+      lock.release();
+    }
+  });
+
+  const acceptQuote = async (req: any) => {
     const quote = await quoteFor(req.user, req.params.id);
     if (quote.status !== 'sent') throw new HttpError(409, quote.status === 'accepted' ? 'Esta cotización ya está aceptada' : 'Solo se puede aceptar una cotización enviada al cliente');
     const body = parse(AcceptBody, req.body ?? {});
@@ -257,7 +279,7 @@ export async function quoteRoutes(api: FastifyInstance, service: ChatService) {
     if (quote.conversation_id) service.automator.emit({ type: 'quote_accepted', conversationId: quote.conversation_id, quote: quoteEvent(done) });
     await logEvent({ level: 'info', source: 'admin', message: `Cotización ${quote.folio} aceptada por el cliente (marcó ${req.user.email})${created.length ? `; ${created.length} cobro(s) creado(s)` : ''}`, accountId: quote.account_id, conversationId: quote.conversation_id });
     return { quote: done, receivables: created };
-  });
+  };
 
   /** El PDF (o el Word) generado de una cotización. */
   api.get('/api/quotes/:id/file', admins, async (req: any, reply) => {
@@ -294,6 +316,10 @@ export async function quoteRoutes(api: FastifyInstance, service: ChatService) {
 
   api.post('/api/quote-templates', admins, async (req: any) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
+    // Revisar un formato descomprime y compila el archivo: con tope por cuenta, en la base (vale para todos los procesos).
+    if ((await countHit(`quote-template:${accountId}`, TEMPLATE_WINDOW_MS)) > TEMPLATE_UPLOADS_PER_HOUR) {
+      throw new HttpError(429, 'Subiste demasiados formatos en la última hora. Intenta más tarde.');
+    }
     let upload: { buffer: Buffer; name: string } | undefined;
     let name = '';
     for await (const part of req.parts({ limits: { fileSize: TEMPLATE_MAX_BYTES, files: 1 } })) {

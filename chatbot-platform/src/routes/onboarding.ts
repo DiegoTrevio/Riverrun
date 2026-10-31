@@ -12,7 +12,7 @@ import { newInstanceName } from '../channels/whatsapp.js';
 import { config } from '../config.js';
 import { queryOne, withTransaction } from '../db.js';
 import { accountOwner } from '../identity/ownership.js';
-import { assertWithinLimit } from '../billing/limits.js';
+import { assertWithinLimit, assertWithinLimitLocked } from '../billing/limits.js';
 import { logEvent } from '../logs.js';
 import { accountChecklist } from '../onboarding-checklist.js';
 import * as store from '../store/index.js';
@@ -159,6 +159,10 @@ export async function onboardingRoutes(api: FastifyInstance) {
         botId = bot.id;
       } else {
         await assertWithinLimit(accountId, 'chatbots');
+        // El candado de límites de la cuenta queda tomado hasta el fin de esta transacción (PAY-19): otro pedido a la vez
+        // espera y ya cuenta este asistente. El alta se guarda de inmediato (no dentro de la transacción) porque el
+        // conocimiento y la bitácora de abajo se escriben fuera de ella y apuntan a él.
+        await assertWithinLimitLocked(client, accountId, 'chatbots');
         const bot = await store.createChatbot(accountId, {
           name: tpl.name,
           active: true,
@@ -223,7 +227,7 @@ export async function onboardingRoutes(api: FastifyInstance) {
       name: 'WhatsApp',
       active: true,
       config: mergeChannelConfig('whatsapp', {}, { instance: newInstanceName(accountId) }),
-    });
+    }, { beforeInsert: (client) => assertWithinLimitLocked(client, accountId, 'channels') });
     await logEvent({ level: 'info', source: 'admin', message: 'Canal de WhatsApp creado con el asistente', accountId, channelId: ch.id });
     return publicChannel(ch);
   });
@@ -248,7 +252,7 @@ export async function onboardingRoutes(api: FastifyInstance) {
         name: 'WhatsApp',
         active: true,
         config: mergeChannelConfig('whatsapp', {}, { instance: newInstanceName(bot.account_id) }),
-      });
+      }, { beforeInsert: (client) => assertWithinLimitLocked(client, bot.account_id, 'channels') });
       await logEvent({ level: 'info', source: 'admin', message: `WhatsApp creado para el agente ${bot.name}`, accountId: bot.account_id, chatbotId: bot.id, channelId: ch.id });
       return publicChannel(ch);
     });

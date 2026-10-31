@@ -171,6 +171,9 @@ t('retención: borra mensajes viejos y su resumen; borra contactos inactivos sal
   // Sin política de retención no se borra nada
   assert.deepEqual(await applyRetention(), { accounts: 0, messages: 0, contacts: 0 });
   await settings({ retention: { messages_days: 365, inactive_contacts_days: 365 } });
+  // Borrar más entra 7 días después de guardarlo (ID-13): antes de esa fecha no se toca nada.
+  assert.deepEqual(await applyRetention(), { accounts: 0, messages: 0, contacts: 0 });
+  await pool.query(`UPDATE accounts SET settings = jsonb_set(settings, '{retention,pending,effective_at}', to_jsonb((now() - interval '1 minute')::text)) WHERE id = $1`, [h.accountId]);
   const r = await applyRetention();
   assert.equal(r.accounts, 1);
   assert.ok(r.messages >= 2 && r.contacts === 1, JSON.stringify(r));

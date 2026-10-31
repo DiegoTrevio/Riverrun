@@ -16,7 +16,9 @@ Cada etapa es un PR con pruebas que fallan con el código anterior y pasan con e
 |---|---|---|
 | 1. Altos de la aplicación | ID-1, IN-1, AI-1, AI-2, AI-3, AI-4, PAY-1, INF-1 | ✅ Corregido |
 | 2. Identidad | 2FA obligatorio para todos, contraseñas filtradas, sesiones con caducidad por inactividad, límites por cuenta y en la base, dueño distinto de administrador, correo verificado de verdad (ID-2…ID-10) | 2a ✅ (acceso), 2b ✅ (cuenta) |
-| 3. Registro y cobros | Captcha → correo → 2FA → tarjeta, topes contra prueba de tarjetas (PAY-2), pruebas gratis por persona (PAY-3), sin IA en pausa (parte de PAY-6); disputas, plan del precio, códigos y cobros a clientes (PAY-4…PAY-16) | 3a ✅ (registro), 3b pendiente (cobros) |
+| 3. Registro y cobros | Captcha → correo → 2FA → tarjeta, topes contra prueba de tarjetas (PAY-2), pruebas gratis por persona (PAY-3), sin IA en pausa (parte de PAY-6); disputas, plan del precio, códigos y cobros a clientes (PAY-4…PAY-16) | ✅ Corregido (3a registro, 3b cobros) |
+| 3b′. Cobros de la revisión del 31 de octubre | PAY-17…PAY-23 y bajos de cobros | ✅ Corregido |
+| 3c. Revisión del 31 de octubre | Los altos de [la revisión del 31 de octubre](revision-seguridad-2026-10-31.md): dos caídas del proceso, atajos para sacar o borrar datos, cobros del agente, la ficha en el Copiloto (IN-15, IN-16, ID-11…ID-14, AI-5 en parte) | ✅ Corregido |
 | 4. Abuso de entradas | Límites compartidos en la base, tamaños por ruta, firma del webhook de WhatsApp, adjuntos sin macros, PDF aislados, cuota de IA antes de transcribir (IN-2…IN-14, PAY-6) | Pendiente |
 | 5. IA y Copiloto | Tarjetas de confirmación completas, costo de sub-llamados, notas de cotización, fuga de instrucciones (AI-5…AI-13) | Pendiente |
 | 6. Secretos y datos | Claves separadas con rotación, credenciales de canales cifradas, retención en Evolution (INF-6…INF-8, INF-13) | Pendiente |
@@ -163,6 +165,108 @@ después:
 - El correo «tu prueba está por terminar» habla del primer cobro también a quien ya canceló.
 - Las marcas vencidas y las verificaciones viejas no se depuran.
 
+## Etapa 3c: lo que se corrigió
+
+Los altos de [la revisión del 31 de octubre](revision-seguridad-2026-10-31.md), con su
+[plan](superpowers/plans/2026-10-31-seguridad-revision-correcciones.md). Los medios y bajos de esa revisión están
+repartidos en las etapas 3b, 2c, 4, 5, 6, 9 y 10 del mismo plan.
+
+| # | Hallazgo | Arreglo | Prueba |
+|---|---|---|---|
+| IN-15 | Las expresiones de enlaces, correos y montos de la verificación de hechos eran cuadráticas y ningún mensaje entrante tenía tope: un WhatsApp de 65 000 caracteres («a.a.a.…») tardaba 17 s por pasada y congelaba el proceso para todas las cuentas, en cada turno. | Repeticiones acotadas (lineal: 20 000 caracteres en ~50 ms, 1 MB en ~2 s) y cada mensaje entrante cortado en 8 000 caracteres con «…[mensaje recortado]»; del correo se revisan los primeros 50 000 antes de quitar lo citado. | `fact-redos.unit.test.ts`, `email.test.ts` |
+| IN-16 | El guardia de las plantillas DOCX sumaba los tamaños que declara el ZIP: un archivo de 199 KB que decía pesar 400 B se inflaba a 200 MB (a gigas con 5 MB). | `checkZip` lee el índice a mano y descomprime cada parte con tope (300 partes, 8 MB por parte, 30 MB en total, medidos); 4 MB de texto por parte; 2 000 marcas; 10 subidas por hora por cuenta (en la base). Los Word de clientes con más de 1 000 partes no se abren. | `quotes-template.unit.test.ts`, `media-library.test.ts`, `quotes-routes.test.ts` |
+| ID-14 | Crear un webhook y descargar el ZIP pedían el código, pero una regla «mensaje → webhook a cualquier URL» (o reporte a un correo o número externo, o aviso a un número) y los CSV de contactos, conversaciones, cotizaciones y mensajes, no. | Los cuatro CSV piden el código; una regla lo pide al crearse o cambiarse si manda datos a un destino nuevo. | `identity-step-up.test.ts` |
+| ID-12 | Bajar a un administrador a agente no revocaba sus llaves, webhooks ni invitaciones, y la llave no miraba a su creador. | Bajar de administrador es una baja (el panel lo avisa); la API v1 solo acepta llaves de un administrador activo de esa cuenta (o del superadmin). | `offboarding.test.ts` |
+| ID-13 | Cualquier administrador, o una cookie robada, ponía la retención en 1 día: en menos de 6 h se borraban mensajes y contactos. Igual al borrar un canal con historial. | La retención la cambia el dueño con el código; para borrar, 30 días como mínimo; lo que borra más entra a los 7 días con correo al dueño (cancelable); valores en la bitácora. Borrar un canal con conversaciones es del dueño con el código. Migración 098: lo de 1 a 29 días sube a 30. | `retention.test.ts`, `compliance.test.ts`, `migration.test.ts` |
+| ID-11 | El agente veía y operaba los cobros de todos los clientes, y podía crear uno con su propio enlace de pago a un cliente ajeno (desvío de pagos). | Como en conversaciones: el agente solo ve y opera cobros y pagos recurrentes de sus contactos asignados (lo demás, 404); el enlace de pago solo lo pone un administrador. | `visibility.test.ts`, `receivable-origins.test.ts` |
+| AI-5 (parte) | El nombre del contacto de la página abierta entra al prompt del Copiloto y el turno contaba como limpio: con un nombre armado como instrucción, cambiaba la configuración sin tarjeta. | Una página de cliente marca el turno como contaminado (la configuración se confirma; lo de esa ficha sigue directo) y el nombre va marcado como escrito por el cliente. | `copilot.test.ts` |
+
+**Revisión independiente de la etapa 3c.** Encontró que `checkZip` se saltaba con un fin de índice que declara menos
+partes de las que trae (PizZip lee mientras haya firma: una bomba como segunda parte pasaba), que borrar los datos de un
+contacto seguía sin código (otra vía para vaciar el historial), que el agente podía quitar el enlace de pago que puso un
+administrador y que la página contaminada del Copiloto no quedaba guardada en el turno. Todo eso quedó corregido, con su
+prueba. Lo que señaló y queda para después:
+- Las llaves de API sin creador (`created_by` nulo, solo por borrados hechos directo en la base) ya no entran: revisar en producción antes de desplegar si hay alguna.
+- El agente aún escribe texto libre que llega al cliente en el concepto y la referencia del cobro (podría poner ahí una cuenta).
+- Un host con una etiqueta de más de 63 caracteres ya no se reconoce como enlace (solo su sufijo); no resuelve en DNS.
+- Un `PUT /api/settings` con `retention.pending: null` cancela lo programado aunque venga de un panel desactualizado (borra menos y queda en la bitácora).
+
+**Cambios que nota la gente:**
+- Borrar los datos de un contacto pide el código si el último tiene más de 15 minutos.
+- Descargar los CSV de contactos, conversaciones o mensajes, y guardar una regla que manda datos a una URL, un correo o un número nuevos, piden el código si el último tiene más de 15 minutos.
+- La retención (Ajustes → Privacidad) la cambia solo el dueño, con 30 días como mínimo; si borra más, empieza 7 días después y le llega un correo («Cancelar el borrado programado» en Ajustes). Las cuentas con menos de 30 días quedaron en 30.
+- Borrar un canal con conversaciones es del dueño, con el código.
+- Bajar a un administrador a agente revoca sus llaves de API, pausa sus webhooks y cancela sus invitaciones (la confirmación lo dice).
+- El agente ve solo los cobros de sus clientes y no pone enlaces de pago.
+- Un mensaje de más de 8 000 caracteres se guarda recortado («…[mensaje recortado]»).
+- Plantillas de cotización: hasta 2 000 marcas y 10 subidas por hora.
+- En el Copiloto, con la ficha de un cliente abierta, los cambios de configuración y el texto que se guarda en su ficha piden confirmación.
+
+## Etapa 3b′: lo que se corrigió de la revisión del 31 de octubre
+
+Los medios de cobros de [la revisión del 31 de octubre](revision-seguridad-2026-10-31.md). PAY-4…PAY-16 (disputas, plan
+del precio, códigos, CFDI y moneda) están en la [etapa 3b](#etapa-3b-cobros).
+
+| # | Hallazgo | Arreglo | Prueba |
+|---|---|---|---|
+| PAY-17 | La prueba gratis empezaba sin huella de la tarjeta (Link u otro método en Checkout, o una lectura fallida en Mercado Pago). | Checkout pide solo tarjeta; Mercado Pago reintenta leerla; sin huella se trata como tarjeta ya usada («No pudimos leer tu tarjeta»). | `trial-start.test.ts` |
+| PAY-18 | El portal de Stripe y «cambiar tarjeta» quedaban fuera de los topes y del freno de PAY-2 (prueba de tarjetas robadas). | Cada página del portal pasa por `openCardCheck` como sustitución: topes, freno y `card_checks`. | `card-check.test.ts` |
+| PAY-19 | Límites del plan con carrera: 12 altas a la vez con límite 2 creaban 10. | `assertWithinLimitLocked`: cuenta dentro de la transacción del alta con la fila de la cuenta bloqueada (canales, asistentes, duplicar, aceptar invitación). | `limits.test.ts` |
+| PAY-20 | No había tope de IA que el cliente no pudiera quitar, y un administrador «confirmaba» costos dudosos en 0. | Tope de IA al mes por plan y excepción por cuenta (superadmin), `TRIAL_AI_USD` en prueba; revisión de costos solo del superadmin. Migración 101. | `ai-platform-cap.test.ts` |
+| PAY-21 | `runPlans` tomaba 2 000 planes de toda la plataforma: pasando eso, los nuevos no generaban cobros. | Recorre todos por lotes; hasta 500 pagos recurrentes activos por cuenta. | `receivable-origins.test.ts` |
+| PAY-22 | Un pago que llegaba después de la global de su mes no se facturaba nunca. | Otra global del mismo mes (`seq`, con candado); aviso diario de pagos de más de 3 meses sin CFDI; `amount_cents` bigint. Migración 102. | `billing-cfdi.test.ts` |
+| PAY-23 | Una cuenta en bucle vaciaba la cubeta de Zernio de todos. | Tope de 60 llamadas por minuto por cuenta antes de la cubeta compartida. | `zernio-budget.test.ts` |
+| Bajos | `/precios` decía «sin tarjeta»; el freno se diluía con avisos repetidos; «ya pagué» pausaba los recordatorios para siempre. | Texto según `cardRequired()`; las verificaciones se completan solo al pasar a activa; 2 pausas por cobro. | `pricing.test.ts`, `card-check.test.ts`, `receivables-e2e.test.ts` |
+
+**Cambios que nota la gente:**
+- Checkout de Stripe acepta solo tarjeta; si no se puede leer, no hay prueba y se cobra al momento.
+- El portal de Stripe cuenta para los topes de verificaciones de tarjeta (5 por día por cuenta).
+- Cada plan tiene «Gasto de IA al mes (USD)» y cada cuenta una excepción («ia=20» en Límites); en prueba, `TRIAL_AI_USD` (5). Al llegar, la IA se detiene hasta el mes siguiente («Llegaste al tope de IA de tu plan»). Confirmar importes dudosos de IA es del superadmin.
+- Hasta 500 pagos recurrentes activos por cuenta.
+- Un cliente que dice «ya pagué» pausa sus recordatorios hasta 2 veces por cobro.
+
+**Lo que había quedado para después, ya corregido:**
+- La cubeta de Zernio guarda el 15 % para los mensajes directos y el 30 % para lo de segundo plano; el tope por cuenta cubre todo lo de un negocio (publicar, comentar, plantillas, conectar). `zernio-budget.test.ts`
+- Las altas que dependen de terminar un OAuth (Meta, Zernio), reactivar un usuario y reanudar un pago recurrente pasan por el límite con candado. `limits.test.ts`, `receivable-origins.test.ts`
+- La suscripción se vuelve a leer al proveedor ya con el candado: un aviso viejo no pisa al nuevo. `billing.test.ts`
+- Una cotización se acepta una vez a la vez («Esta cotización se está aceptando en otra sesión»). `receivable-origins.test.ts`
+- Planes privados: un plan no público solo lo ve y contrata la cuenta a la que el superadmin se lo asigna. Migración 104. `billing.test.ts`
+
+**Queda para después:**
+- Los montos de cada plan en «Gasto de IA al mes» los fija el dueño de la plataforma: sin ellos, solo aplica el de la prueba.
+
+## Etapa 3b: cobros
+
+El diseño está en [`superpowers/specs/2026-10-30-seguridad-etapa-3-registro-cobros-design.md`](superpowers/specs/2026-10-30-seguridad-etapa-3-registro-cobros-design.md).
+PAY-14 ya se había cerrado en la 2b (los poderes del dueño).
+
+| # | Hallazgo | Arreglo | Prueba |
+|---|---|---|---|
+| PAY-4/5 | Disputas: un aviso fuera de orden re-pausaba para siempre; una disputa abierta no detenía los cobros; una perdida dejaba la cuenta reactivarse con la misma tarjeta. | Cada aviso relee la disputa del proveedor (Stripe `/v1/disputes`; Mercado Pago el pago, también por el tema «chargebacks») y una ya resuelta no se reabre. Abierta: pausa y cobros detenidos (`pause_collection`; en Mercado Pago, suscripción en pausa, que no cuenta como pago pendiente). Ganada: se reanudan. Perdida: se cancela, la tarjeta queda marcada y la cuenta en pausa (`dispute_lost`) hasta pagar con otra; con la misma, esa suscripción se cancela y se reembolsa. Alerta temprana de fraude de Stripe: se reembolsa el cobro y se trata como perdida. Migración 106. | `billing-autopilot.test.ts` |
+| PAY-7 | El plan salía de la metadata de Stripe y de la referencia de Mercado Pago, que se pueden cambiar por fuera. | Stripe: el plan sale del precio (su id configurado o el producto `riverrun_<plan>`, mismo periodo y monto no menor). Mercado Pago: la referencia vale solo si monto, moneda y periodicidad corresponden. Si no, el plan no cambia y se avisa al superadmin. | `billing.test.ts` |
+| 3b.3 | Cupones de toda la cuenta de Stripe; el portal permitía cambiar de plan. | «Código de promoción» en Mi plan: solo códigos con `metadata.riverrun = '1'` (y, si los lista, del plan elegido), con tope de intentos; no aplica con Mercado Pago. El portal usa una configuración propia: tarjeta, facturas y cancelar al final del periodo, sin cambio de plan. | `billing.test.ts` |
+| PAY-8 | Un pago reactivaba cuentas pausadas a mano; la conciliación pisaba el plan del superadmin. | `pause_reason = 'manual'` y `plan_source = 'manual'`: un pago, la conciliación o un aviso no los deshacen (si la suscripción dice otro plan, se avisa). Migración 105. | `billing.test.ts` |
+| PAY-9 | El CFDI salía en pesos aunque el pago fuera en otra moneda. | En la moneda del pago con el tipo de cambio del movimiento de saldo de Stripe; sin uno confiable queda «pendiente: tipo de cambio» (aviso al superadmin, que lo captura en Planes y cobro). La global agrupa por moneda y tasa. Migración 107. | `billing-cfdi.test.ts` |
+| PAY-10 | En Mercado Pago, «autorizada» se tomaba como pagada. | Ya lo cubría la conciliación: autorizada sin cobro aprobado pasa a pago pendiente a los 3 días. | `billing-autopilot.test.ts` |
+| PAY-11 | De mensual a anual se trataba como bajar (saldo a favor) y de anual a mensual cambiaba al momento. | Mensual → anual se cobra hoy con prorrateo; anual → mensual se programa (calendario de la suscripción en Stripe) para el fin del año pagado, sin reembolso. En Mercado Pago sigue por sustitución. | `billing-plan-change.test.ts` |
+| PAY-12 | El texto del proveedor llegaba al cliente. | Texto fijo por acción con referencia corta; el del proveedor, solo en la bitácora del sistema. | `billing-plan-change.test.ts` |
+| PAY-13 | Un agente cambiaba monto o enlace de un cobro. | Solo un administrador; cada cambio de monto, moneda o enlace queda en la bitácora con el antes y el después. | `receivables-e2e.test.ts` |
+| PAY-15 | La firma de Mercado Pago no cubría el id procesado; sin `x-request-id`; tolerancia de 1 hora. | Se procesa el id firmado (otro en el cuerpo: 400), `x-request-id` obligatorio, 5 minutos. | `billing.test.ts` |
+| PAY-16 | Los planes públicos llevaban ids del proveedor y datos internos. | Solo lo que el panel usa; los ids, solo el superadmin. | `billing.test.ts` |
+
+**Cambios que nota la gente:**
+- Si un cliente desconoce un cobro, no se le cobra más mientras la disputa siga abierta; si la pierde, vuelve solo con otra tarjeta.
+- En Mi plan hay un campo «Código de promoción» (solo con tarjeta). Para que un código sirva, en Stripe lleva la metadata `riverrun = 1` (y `riverrun_plans` para limitarlo a planes).
+- El portal de Stripe ya no deja cambiar de plan: eso se hace en Mi plan.
+- Pasar de anual a mensual empieza al terminar el año pagado; de mensual a anual se cobra al momento.
+- Facturas de pagos en otra moneda: en esa moneda; las que esperan el tipo de cambio aparecen en Planes y cobro.
+- En Stripe hay que agregar el evento `radar.early_fraud_warning.created` al webhook; en Mercado Pago, el tema «Contracargos».
+
+**Queda para después:**
+- En Mercado Pago no siempre se conoce la tarjeta de una contratación nueva: tras una disputa perdida, la cuenta sigue en pausa y el superadmin confirma a mano que es otra tarjeta.
+- Mercado Pago no prorratea: de mensual a anual sigue por sustitución, con el primer cobro al terminar lo pagado.
+- La factura global en otra moneda usa el tipo de cambio ponderado de sus pagos.
+
 ## Hallazgos pendientes por etapa
 
 Abreviaturas: ID identidad, PAY cobros, IN entradas, AI IA y Copiloto, INF servidor.
@@ -172,11 +276,7 @@ Abreviaturas: ID identidad, PAY cobros, IN entradas, AI IA y Copiloto, INF servi
 - **INF-3** `./riverrun update` nunca actualiza Caddy, Node, Redis ni PostgreSQL.
 
 ### Medios
-- **PAY-4/5** Disputas: un aviso fuera de orden re-pausa para siempre; una disputa abierta no detiene los cobros.
 - **PAY-6** Cuentas sin cupo siguen gastando IA (transcripción, Copiloto, herramientas con IA); las que están en pausa ya no, desde la 3a.
-- **PAY-7** El plan se toma de la metadata de Stripe sin comparar con el precio; portal sin configuración propia; cupones de toda la cuenta.
-- **PAY-8** Un pago reactiva cuentas pausadas a mano; la conciliación pisa el plan que asignó el superadmin.
-- **PAY-9** El CFDI ignora la moneda del plan.
 - **AI-5…AI-9** Nombre del contacto en el prompt del Copiloto sin marcar como texto de cliente; tarjetas de confirmación que recortan lo que se ejecuta; notas de cotización sin verificar; sin detector de fuga de instrucciones; sub-llamados de IA fuera del tope de costo.
 - **IN-2** El webhook de Evolution no tiene firma (solo el token en la URL) y su ruta es pública en Caddy.
 - **IN-3** Cuerpo de hasta 10 MB que se lee completo antes de verificar firmas; cada rechazo escribe en la bitácora; sin tiempo máximo de petición.
@@ -190,7 +290,7 @@ Abreviaturas: ID identidad, PAY cobros, IN entradas, AI IA y Copiloto, INF servi
 - **INF-11** Respaldo: directorio de trabajo en claro, credencial de S3 que puede borrar, cifrado sin autenticación.
 
 ### Bajos
-PAY-10…PAY-16, AI-10…AI-13, IN-8…IN-14 (calendario `.ics` sin escapar, asunto
+AI-10…AI-13, IN-8…IN-14 (calendario `.ics` sin escapar, asunto
 reflejado, textos de la URL en el panel, reservas como relé de correo, `unsafe-inline` en páginas públicas, plazos de
 descarga, analizador JSON propio), INF-12…INF-15 (secretos impresos por el instalador, cuerpos de correo en la bitácora sin
 SMTP —los tokens ya van ocultos desde la 2b—, `.gitignore`, acciones por etiqueta). `privacy.md` y `terms.md` (sitio de GitHub Pages) dicen «Viralize» y prometen

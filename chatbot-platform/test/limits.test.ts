@@ -153,3 +153,36 @@ t('una campaña lanzada dos veces seguidas programa cada mensaje una sola vez', 
   const jobs = (await pool.query(`SELECT payload->>'conversation_id' AS c FROM jobs WHERE type = 'campaign_send' AND payload->>'campaign_id' = $1`, [camp.id])).rows;
   assert.equal(new Set(jobs.map((j) => j.c)).size, jobs.length, 'sin tareas duplicadas');
 });
+
+t('pedidos simultáneos no rebasan el límite: canales, asistentes y duplicados (PAY-19)', async () => {
+  const a = await signup('carrera@limites.mx');
+  await h.authed('PUT', `/api/accounts/${a.account}`, { limits_override: { channels: 2, chatbots: 2 } });
+  const count = async (table: string) => (await pool.query(`SELECT count(*)::int AS n FROM ${table} WHERE account_id = $1`, [a.account])).rows[0].n;
+  // Más pedidos que conexiones del pool (10): con el candado tomado, el conteo no debe pedir otra conexión.
+  const started = Date.now();
+  const bots = await Promise.all(Array.from({ length: 25 }, (_, i) => a.api('POST', '/api/chatbots', { name: `Bot ${i}`, active: false })));
+  assert.ok(Date.now() - started < 10_000, `tardó ${Date.now() - started} ms (¿esperando conexiones del pool?)`);
+  assert.equal(bots.filter((r) => r.statusCode === 200).length, 2, bots.map((r) => r.statusCode).join(','));
+  assert.equal(await count('chatbots'), 2);
+  const bot = (await a.api('GET', '/api/chatbots')).json()[0];
+  await pool.query(`DELETE FROM chatbots WHERE account_id = $1 AND id <> $2`, [a.account, bot.id]);
+  const dups = await Promise.all(Array.from({ length: 8 }, () => a.api('POST', `/api/chatbots/${bot.id}/duplicate`)));
+  assert.equal(dups.filter((r) => r.statusCode === 200).length, 1, dups.map((r) => r.statusCode).join(','));
+  assert.equal(await count('chatbots'), 2);
+  const chans = await Promise.all(Array.from({ length: 12 }, (_, i) => a.api('POST', '/api/channels', { type: 'webchat', name: `Web ${i}` })));
+  assert.equal(chans.filter((r) => r.statusCode === 200).length, 2, chans.map((r) => r.statusCode).join(','));
+  assert.equal(await count(`channels`), 2);
+});
+
+t('dos redes que se conectan a la vez con lugar para una: la segunda se quita con el aviso del plan (PAY-19)', async () => {
+  const { trimSocialOverLimit } = await import('../src/channels/zernio-connect.js');
+  const a = await signup('redes@limites.mx');
+  await h.authed('PUT', `/api/accounts/${a.account}`, { limits_override: { social_accounts: 1 } });
+  for (const [zid, ago] of [['acc_primera', '2 seconds'], ['acc_segunda', '1 second']]) {
+    await pool.query(`INSERT INTO social_accounts (account_id, zernio_account_id, profile_id, platform, status, connected_at) VALUES ($1, $2, 'prof', 'instagram', 'active', now() - $3::interval)`, [a.account, zid, ago]);
+  }
+  await trimSocialOverLimit(a.account, 'acc_primera');
+  await assert.rejects(trimSocialOverLimit(a.account, 'acc_segunda'), (e: any) => e.statusCode === 403 && /1 red social/.test(e.message));
+  const rows = (await pool.query(`SELECT zernio_account_id, status FROM social_accounts WHERE account_id = $1 ORDER BY connected_at`, [a.account])).rows;
+  assert.deepEqual(rows.map((r) => [r.zernio_account_id, r.status]), [['acc_primera', 'active'], ['acc_segunda', 'disconnected']]);
+});

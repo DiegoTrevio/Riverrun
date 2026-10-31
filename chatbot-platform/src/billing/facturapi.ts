@@ -37,6 +37,9 @@ export interface CfdiDocument {
   relatedUuid?: string;
   /** Factura global a público en general. */
   global?: { months: string; year: number };
+  /** Pago en otra moneda: su moneda y el tipo de cambio (pesos por unidad) (PAY-9). En pesos, sin esto. */
+  currency?: string;
+  exchangeRate?: number;
 }
 
 export interface IssuedCfdi {
@@ -95,6 +98,7 @@ export function invoiceBody(doc: CfdiDocument) {
     ...(doc.type === 'I' ? { payment_method: 'PUE' } : {}),
     ...(doc.relatedUuid ? { related_documents: [{ relationship: '01', documents: [doc.relatedUuid] }] } : {}),
     ...(doc.global ? { global: { periodicity: 'month', months: doc.global.months, year: doc.global.year } } : {}),
+    ...(doc.currency && doc.currency !== 'MXN' ? { currency: doc.currency, exchange: doc.exchangeRate } : {}),
   };
 }
 

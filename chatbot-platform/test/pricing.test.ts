@@ -56,6 +56,11 @@ test('sin pago en línea, cada plan ofrece la prueba gratis; con el registro cer
   const open = pricingPage(base);
   assert.match(open, /<a class="btn ghost" href="\/#\/registro">Empezar prueba gratis<\/a>/);
   assert.doesNotMatch(open, /registro\?plan=/);
+  assert.match(open, /días gratis, sin tarjeta\./);
+  const card = pricingPage({ ...base, cardRequired: true });
+  assert.doesNotMatch(card, /sin tarjeta/, 'con cobro en línea la prueba pide tarjeta (3a)');
+  assert.match(card, /no se cobra nada hasta que terminan/);
+  assert.match(card, /Sí\. Tu prueba de 14 días empieza al agregar tu tarjeta/);
   const closed = pricingPage({ ...base, signup: false });
   assert.doesNotMatch(closed, /href="\/#\/registro/);
   assert.match(closed, /el registro está cerrado\. Escríbenos a <strong>hola@x\.mx<\/strong>/);

@@ -145,6 +145,11 @@ export async function ensureRecentMfa() {
   return recent || stepUpDialog();
 }
 
+/** Una descarga que pide el código (los CSV y el ZIP no pasan por api()): confirma si hace falta y luego descarga. */
+export async function stepUpDownload(href) {
+  if (await ensureRecentMfa()) location.href = href;
+}
+
 /** «Cambiar de app»: escanea el QR nuevo y confirma con un código de la app nueva. true si quedó cambiada. */
 async function changeAuthenticator() {
   const data = await run(() => api('POST', '/api/me/2fa/authenticator'));

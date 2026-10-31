@@ -488,8 +488,10 @@ export class WhatsappProfileLimitError extends Error {
   }
 }
 
-export async function createChannel(c: { account_id: string; chatbot_id: string | null; type: ChannelType; name: string; active?: boolean; config: Record<string, unknown> }) {
+export async function createChannel(c: { account_id: string; chatbot_id: string | null; type: ChannelType; name: string; active?: boolean; config: Record<string, unknown> }, o: { beforeInsert?: (client: import('pg').PoolClient) => Promise<void> } = {}) {
   const id = await withTransaction(async (client) => {
+    // El límite del plan se revisa aquí, con la cuenta bloqueada en esta misma transacción (PAY-19).
+    if (o.beforeInsert) await o.beforeInsert(client);
     if (c.type === 'whatsapp') {
       // Serialize reservations per account, including concurrent onboarding requests.
       await client.query('SELECT id FROM accounts WHERE id = $1 FOR UPDATE', [c.account_id]);

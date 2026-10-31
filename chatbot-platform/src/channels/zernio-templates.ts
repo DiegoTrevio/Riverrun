@@ -5,7 +5,7 @@ import { query, queryOne } from '../db.js';
 import type { OutgoingTemplate } from '../engine/transport.js';
 import { logEvent } from '../logs.js';
 import type { Channel } from '../types.js';
-import { clientFor, ZernioError } from './zernio.js';
+import { clientFor, clientForAccount, ZernioError } from './zernio.js';
 
 /**
  * Plantillas de WhatsApp (API oficial por Zernio). Meta las revisa y son lo único que se puede enviar cuando el cliente
@@ -100,7 +100,7 @@ export async function listTemplates(accountId: string, socialAccountId?: string)
 /** Trae de Meta (por Zernio) las plantillas del número: agrega las nuevas, actualiza su estado y quita las borradas. */
 export async function syncTemplates(accountId: string, socialAccountId: string): Promise<number> {
   const wa = await waAccount(accountId, socialAccountId);
-  const r = await clientFor().call<any>('GET', `/whatsapp/templates?accountId=${encodeURIComponent(wa.zernio_account_id)}`);
+  const r = await clientForAccount(accountId).call<any>('GET', `/whatsapp/templates?accountId=${encodeURIComponent(wa.zernio_account_id)}`);
   if (!Array.isArray(r?.templates)) throw new HttpError(502, 'Zernio no devolvió las plantillas');
   const keep: string[] = [];
   for (const t of r.templates) {
@@ -159,7 +159,7 @@ export async function createTemplate(accountId: string, input: TemplateInput) {
   const components = templateComponents(input);
   let r: any;
   try {
-    r = await clientFor().call<any>('POST', '/whatsapp/templates', { accountId: wa.zernio_account_id, name: input.name, category: input.category, language: input.language, components });
+    r = await clientForAccount(accountId).call<any>('POST', '/whatsapp/templates', { accountId: wa.zernio_account_id, name: input.name, category: input.category, language: input.language, components });
   } catch (e) {
     if (e instanceof ZernioError && e.status < 500) throw new HttpError(400, `Meta no aceptó la plantilla: ${String(e.data?.error?.message ?? e.data?.message ?? e.data?.error ?? e.message).slice(0, 300)}`);
     throw e;
@@ -180,7 +180,7 @@ export async function deleteTemplate(accountId: string, id: string) {
   const row = await queryOne<WaTemplate & { zernio_account_id: string }>(
     `SELECT t.*, s.zernio_account_id FROM wa_templates t JOIN social_accounts s ON s.id = t.social_account_id WHERE t.id = $1 AND t.account_id = $2`, [id, accountId]);
   if (!row) throw new HttpError(404, 'Plantilla no encontrada');
-  await clientFor().call('DELETE', `/whatsapp/templates/${encodeURIComponent(row.name)}?accountId=${encodeURIComponent(row.zernio_account_id)}&language=${encodeURIComponent(row.language)}`).catch((e) => {
+  await clientForAccount(accountId).call('DELETE', `/whatsapp/templates/${encodeURIComponent(row.name)}?accountId=${encodeURIComponent(row.zernio_account_id)}&language=${encodeURIComponent(row.language)}`).catch((e) => {
     if (!(e instanceof ZernioError && e.status === 404)) throw e;
   });
   await query(`DELETE FROM wa_templates WHERE id = $1 AND account_id = $2`, [id, accountId]);
@@ -190,7 +190,7 @@ export async function deleteTemplate(accountId: string, id: string) {
 export async function registerWhatsappPin(accountId: string, socialAccountId: string, pin: string) {
   const wa = await waAccount(accountId, socialAccountId);
   try {
-    await clientFor().call('POST', `/accounts/${encodeURIComponent(wa.zernio_account_id)}/whatsapp/register`, { pin });
+    await clientForAccount(accountId).call('POST', `/accounts/${encodeURIComponent(wa.zernio_account_id)}/whatsapp/register`, { pin });
   } catch (e) {
     if (e instanceof ZernioError && (e.status === 422 || e.status === 400)) throw new HttpError(400, 'Meta no aceptó el PIN. Revisa el PIN de verificación en dos pasos de tu número (6 dígitos) e inténtalo de nuevo.');
     throw e;

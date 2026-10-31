@@ -110,7 +110,20 @@ t('Stripe: ya con plan activo no se vuelve a cobrar; se administra en el portal'
   assert.equal((await B.api('POST', '/api/billing/checkout', { plan: 'pro', provider: 'stripe' })).statusCode, 409);
   const portal = await B.api('POST', '/api/billing/portal');
   assert.equal(portal.json().url, 'https://billing.stripe.test/p/1');
-  assert.equal(fake.stripe.requests.at(-1)!.body.get('customer'), 'cus_1');
+  const sess = fake.stripe.requests.at(-1)!.body;
+  assert.equal(sess.get('customer'), 'cus_1');
+  // El portal usa la configuración propia de Riverrun: sin cambiar de plan desde ahí (3b.3).
+  const conf = fake.stripe.requests.find((r) => r.path === '/v1/billing_portal/configurations')!.body;
+  assert.equal(conf.get('features[subscription_update][enabled]'), 'false');
+  assert.equal(conf.get('features[subscription_cancel][mode]'), 'at_period_end');
+  assert.equal(conf.get('features[payment_method_update][enabled]'), 'true');
+  assert.equal(sess.get('configuration'), fake.stripe.portalConfigs.at(-1));
+  // Se crea una vez; si Stripe ya no la tiene, se crea otra.
+  await B.api('POST', '/api/billing/portal');
+  assert.equal(fake.stripe.portalConfigs.length, 1);
+  fake.stripe.portalConfigs.length = 0;
+  assert.equal((await B.api('POST', '/api/billing/portal')).json().url, 'https://billing.stripe.test/p/1');
+  assert.equal(fake.stripe.portalConfigs.length, 1);
   assert.equal((await B.api('GET', '/api/billing')).json().subscription.can_portal, true);
 });
 
@@ -232,4 +245,165 @@ t('resumen para el superadmin y permisos', async () => {
   assert.ok(o.json().providers.every((p: any) => p.enabled && p.webhook_url.endsWith(`/webhook/billing/${p.name}`)));
   assert.equal((await B.api('GET', '/api/billing/overview')).statusCode, 403);
   assert.equal((await h.authed('DELETE', '/api/plans/pro')).statusCode, 200, 'sin suscripciones activas se puede borrar');
+});
+
+t('un aviso con un estado leído antes de otro más nuevo no lo pisa: con el candado se vuelve a leer al proveedor', async () => {
+  const { applyState } = await import('../src/billing/service.js');
+  const { stateFromSubscription } = await import('../src/billing/stripe.js');
+  const acc = (await h.authed('POST', '/api/accounts', { name: 'Clínica orden' })).json().id;
+  await pool.query(`UPDATE accounts SET status = 'paused', pause_reason = 'payment' WHERE id = $1`, [acc]);
+  // Lo que Stripe dice hoy: activa. Lo que un aviso leyó hace un momento: cancelada.
+  fake.stripe.subs.sub_orden = stripeSub({ id: 'sub_orden', customer: 'cus_orden', status: 'active', metadata: { account_id: acc, plan_key: 'pro' } });
+  const stale = stateFromSubscription({ ...fake.stripe.subs.sub_orden, status: 'canceled' }, []);
+  await applyState(stale, new Date(), { refresh: true });
+  assert.equal((await pool.query(`SELECT status FROM subscriptions WHERE account_id = $1`, [acc])).rows[0].status, 'active', 'queda el estado real');
+  assert.equal((await pool.query(`SELECT status FROM accounts WHERE id = $1`, [acc])).rows[0].status, 'active');
+});
+
+t('planes privados: no salen en precios ni en el registro, y solo los contrata la cuenta a la que el superadmin se los asignó', async () => {
+  const { payable } = await import('../src/billing/service.js');
+  const { offeredPlans } = await import('../src/routes/billing.js');
+  const r = await h.authed('POST', '/api/plans', { key: 'especial', name: 'Plan Especial Hotel', price: 2999, currency: 'MXN', public: false });
+  assert.equal(r.statusCode, 200, r.body);
+  assert.equal(r.json().public, false);
+  assert.doesNotMatch((await h.app.inject({ method: 'GET', url: '/precios' })).body, /Plan Especial Hotel/);
+  assert.ok(!(await h.app.inject({ method: 'GET', url: '/api/signup/info' })).json().plans?.some((p: any) => p.key === 'especial'));
+  assert.ok(!(await offeredPlans()).some((p) => p.key === 'especial'));
+  await assert.rejects(payable('especial'), /no está disponible/);
+  const acc = (await h.authed('POST', '/api/accounts', { name: 'Hotel con trato especial' })).json().id;
+  await assert.rejects(payable('especial', undefined, acc), /no está disponible/, 'sin asignar, tampoco');
+  assert.equal((await h.authed('PUT', `/api/accounts/${acc}`, { plan: 'especial' })).statusCode, 200);
+  assert.equal((await payable('especial', undefined, acc)).plan.key, 'especial');
+  assert.ok((await offeredPlans(acc)).some((p) => p.key === 'especial'), 'en su Mi plan sí aparece');
+  // Editar otra cosa del plan no lo vuelve público.
+  assert.equal((await h.authed('PUT', '/api/plans/especial', { name: 'Plan Especial Hotel', price: 3199, currency: 'MXN' })).json().public, false);
+});
+
+t('un error del proveedor no llega al cliente: texto fijo con referencia, y el detalle solo en la bitácora del sistema (PAY-12)', async () => {
+  const acc = (await h.authed('POST', '/api/accounts', { name: 'Error del proveedor' })).json().id;
+  await pool.query(`INSERT INTO subscriptions (account_id, provider, plan_key, status, provider_customer_id, provider_subscription_id, current_period_end)
+                    VALUES ($1, 'stripe', 'pro', 'active', 'cus_err', 'sub_err', now() + interval '30 days')`, [acc]);
+  fake.stripe.fail = true;
+  try {
+    const r = await h.authed('POST', `/api/billing/portal?account_id=${acc}`);
+    assert.equal(r.statusCode, 502, r.body);
+    assert.doesNotMatch(r.body, /Tu tarjeta fue rechazada/);
+    const ref = /referencia (R-[A-Z0-9]{6})/.exec(r.json().error)?.[1];
+    assert.ok(ref, r.body);
+    const log = (await pool.query(`SELECT account_id, message FROM event_logs WHERE message LIKE $1`, [`%${ref}%`])).rows[0];
+    assert.equal(log.account_id, null, 'no queda en la bitácora de la cuenta');
+    assert.match(log.message, /Tu tarjeta fue rechazada/);
+  } finally {
+    fake.stripe.fail = false;
+  }
+});
+
+t('los planes que ven el público y los clientes no llevan ids del proveedor ni datos internos (PAY-16)', async () => {
+  await h.authed('PUT', '/api/plans/pro', { key: 'pro', name: 'Pro', price: 499, currency: 'MXN', stripe_price_id: 'price_secreto123' });
+  const info = (await h.app.inject({ method: 'GET', url: '/api/signup/info' })).json();
+  const mine = (await B.api('GET', '/api/billing')).json();
+  for (const list of [info.plans ?? [], mine.plans]) {
+    assert.doesNotMatch(JSON.stringify(list), /price_secreto123|stripe_price_id|ai_usd_per_month|sort_order/);
+  }
+  assert.ok(mine.plans.length && mine.plans.every((p: any) => p.key && p.total > 0 && p.limits && p.providers), JSON.stringify(mine.plans));
+});
+
+t('la pausa a mano del superadmin no la quita un pago, y el plan que él asigna no lo pisa la suscripción (PAY-8)', async () => {
+  const acc = (await h.authed('POST', '/api/accounts', { name: 'Pausada a mano' })).json().id;
+  await h.authed('POST', '/api/plans', { key: 'pro', name: 'Pro', price: 499, currency: 'MXN' }); // se borró arriba
+  assert.equal((await h.authed('POST', '/api/plans', { key: 'vip', name: 'VIP', price: 999, currency: 'MXN' })).statusCode, 200);
+  fake.stripe.subs.sub_manual = stripeSub({ id: 'sub_manual', customer: 'cus_manual', status: 'active', metadata: { account_id: acc, plan_key: 'pro' } });
+  // El superadmin asigna su plan y la pausa a mano.
+  assert.equal((await h.authed('PUT', `/api/accounts/${acc}`, { plan: 'vip', status: 'paused' })).statusCode, 200);
+  const a0 = (await pool.query(`SELECT status, pause_reason, plan, plan_source FROM accounts WHERE id = $1`, [acc])).rows[0];
+  assert.deepEqual([a0.status, a0.pause_reason, a0.plan, a0.plan_source], ['paused', 'manual', 'vip', 'manual']);
+  // Un pago (aviso de suscripción activa) no la reactiva ni le cambia el plan.
+  assert.equal((await stripeHook('customer.subscription.updated', fake.stripe.subs.sub_manual, 'evt_manual_1')).statusCode, 200);
+  const a1 = (await pool.query(`SELECT status, pause_reason, plan FROM accounts WHERE id = $1`, [acc])).rows[0];
+  assert.deepEqual([a1.status, a1.pause_reason, a1.plan], ['paused', 'manual', 'vip']);
+  assert.ok((await pool.query(`SELECT 1 FROM event_logs WHERE account_id = $1 AND message LIKE '%plan que asignó el superadministrador%'`, [acc])).rows.length, 'se avisa que la suscripción dice otro plan');
+  // Solo el superadmin la reactiva.
+  assert.equal((await h.authed('PUT', `/api/accounts/${acc}`, { status: 'active' })).statusCode, 200);
+  assert.deepEqual(Object.values((await pool.query(`SELECT status, pause_reason FROM accounts WHERE id = $1`, [acc])).rows[0]), ['active', '']);
+});
+
+t('códigos de promoción: solo los marcados para Riverrun y para el plan elegido; con Mercado Pago, no (3b.3)', async () => {
+  const acc = (await h.authed('POST', '/api/accounts', { name: 'Con código' })).json().id;
+  await h.authed('POST', '/api/plans', { key: 'pro', name: 'Pro', price: 499, currency: 'MXN' });
+  fake.stripe.promoCodes.push(
+    { id: 'promo_ok', code: 'BIENVENIDA', active: true, metadata: { riverrun: '1' } },
+    { id: 'promo_suelto', code: 'SUELTO', active: true, metadata: {} },
+    { id: 'promo_vip', code: 'SOLOVIP', active: true, metadata: { riverrun: '1', riverrun_plans: 'vip, otro' } },
+  );
+  const co = (promo_code: string, provider = 'stripe') => h.authed('POST', `/api/billing/checkout?account_id=${acc}`, { plan: 'pro', provider, promo_code });
+  for (const code of ['SUELTO', 'SOLOVIP', 'NOEXISTE']) {
+    const r = await co(code);
+    assert.equal(r.statusCode, 400, code);
+    assert.equal(r.json().error, 'Ese código no es válido para este plan');
+  }
+  assert.equal((await co('BIENVENIDA', 'mercadopago')).statusCode, 400, 'Mercado Pago no tiene códigos');
+  const r = await co('bienvenida');
+  assert.equal(r.statusCode, 200, r.body);
+  const sent = fake.stripe.requests.filter((x) => x.path === '/v1/checkout/sessions' && x.method === 'POST').at(-1)!.body;
+  assert.equal(sent.get('discounts[0][promotion_code]'), 'promo_ok');
+  assert.equal(sent.has('allow_promotion_codes'), false);
+});
+
+t('Stripe: el plan sale del precio que se cobra, no de la metadata; un precio más barato no da el plan (PAY-7)', async () => {
+  const acc = (await h.authed('POST', '/api/accounts', { name: 'Precio cambiado' })).json().id;
+  await h.authed('POST', '/api/plans', { key: 'vip', name: 'VIP', price: 999, currency: 'MXN' });
+  const planOf = async () => (await pool.query(`SELECT plan FROM accounts WHERE id = $1`, [acc])).rows[0].plan;
+  // La metadata dice vip, pero el precio es del producto pro: manda el precio.
+  fake.stripe.subs.sub_meta = stripeSub({ id: 'sub_meta', customer: 'cus_meta', metadata: { account_id: acc, plan_key: 'vip' }, items: { data: [{ id: 'si_meta', price: { id: 'price_x', product: 'riverrun_pro' } }] } });
+  assert.equal((await stripeHook('customer.subscription.updated', fake.stripe.subs.sub_meta, 'evt_meta_1')).statusCode, 200);
+  assert.equal(await planOf(), 'pro');
+  // Un precio de vip más barato (creado por fuera) no sube el plan; se avisa al superadmin.
+  fake.stripe.subs.sub_meta.items.data[0].price = { id: 'price_barato', product: 'riverrun_vip', unit_amount: 100, recurring: { interval: 'month' } };
+  assert.equal((await stripeHook('customer.subscription.updated', fake.stripe.subs.sub_meta, 'evt_meta_2')).statusCode, 200);
+  assert.equal(await planOf(), 'pro', 'no cambia el plan');
+  assert.ok((await pool.query(`SELECT 1 FROM event_logs WHERE account_id = $1 AND message LIKE '%no corresponde a un plan%'`, [acc])).rows.length);
+  // Con el monto completo, sí.
+  fake.stripe.subs.sub_meta.items.data[0].price = { id: 'price_vip_ok', product: 'riverrun_vip', unit_amount: 200_000, recurring: { interval: 'month' } };
+  assert.equal((await stripeHook('customer.subscription.updated', fake.stripe.subs.sub_meta, 'evt_meta_3')).statusCode, 200);
+  assert.equal(await planOf(), 'vip');
+});
+
+t('Mercado Pago: la referencia externa solo da el plan si el cobro corresponde (monto, moneda y periodicidad) (PAY-7)', async () => {
+  const acc = (await h.authed('POST', '/api/accounts', { name: 'Referencia cambiada' })).json().id;
+  const planOf = async () => (await pool.query(`SELECT plan FROM accounts WHERE id = $1`, [acc])).rows[0].plan;
+  const send = async (id: string) => {
+    const e = mpEvent('subscription_preapproval', id);
+    return h.app.inject({ method: 'POST', url: e.url, payload: e.payload, headers: e.headers });
+  };
+  const ar = (amount: number, over: Record<string, unknown> = {}) => ({ frequency: 1, frequency_type: 'months', transaction_amount: amount, currency_id: 'MXN', ...over });
+  fake.mp.preapprovals.pre_ref = { id: 'pre_ref', status: 'authorized', external_reference: `${acc}:solo-mp`, payer_id: 901, next_payment_date: days(30).toISOString(), auto_recurring: ar(230.84) };
+  assert.equal((await send('pre_ref')).statusCode, 200);
+  assert.equal(await planOf(), 'solo-mp');
+  // Alguien cambia la referencia a vip sin cambiar el monto: no sube el plan.
+  fake.mp.preapprovals.pre_ref.external_reference = `${acc}:vip`;
+  assert.equal((await send('pre_ref')).statusCode, 200);
+  assert.equal(await planOf(), 'solo-mp');
+  assert.ok((await pool.query(`SELECT 1 FROM event_logs WHERE account_id = $1 AND message LIKE '%no corresponde a un plan%'`, [acc])).rows.length);
+  // Otra moneda o periodicidad, tampoco.
+  fake.mp.preapprovals.pre_ref.auto_recurring = ar(5000, { currency_id: 'USD' });
+  assert.equal((await send('pre_ref')).statusCode, 200);
+  assert.equal(await planOf(), 'solo-mp');
+  fake.mp.preapprovals.pre_ref.auto_recurring = ar(5000, { frequency: 12 });
+  assert.equal((await send('pre_ref')).statusCode, 200);
+  assert.equal(await planOf(), 'solo-mp');
+  // Con el monto del plan, sí.
+  fake.mp.preapprovals.pre_ref.auto_recurring = ar(5000);
+  assert.equal((await send('pre_ref')).statusCode, 200);
+  assert.equal(await planOf(), 'vip');
+});
+
+t('Mercado Pago: el id que se procesa es el firmado; sin x-request-id o con un ts de más de 5 minutos, no (PAY-15)', async () => {
+  const send = (e: ReturnType<typeof mpEvent>, over: { payload?: string; headers?: Record<string, string> } = {}) =>
+    h.app.inject({ method: 'POST', url: e.url, payload: over.payload ?? e.payload, headers: { ...e.headers, ...(over.headers ?? {}) } });
+  const e = mpEvent('subscription_preapproval', 'pre_firmado');
+  assert.equal((await send(e, { payload: JSON.stringify({ type: 'subscription_preapproval', data: { id: 'pre_de_otro' } }) })).statusCode, 400, 'otro id en el cuerpo');
+  const noReq = mpEvent('subscription_preapproval', 'pre_firmado');
+  const { 'x-request-id': _r, ...without } = noReq.headers;
+  assert.equal((await h.app.inject({ method: 'POST', url: noReq.url, payload: noReq.payload, headers: without })).statusCode, 400, 'sin x-request-id');
+  assert.equal((await send(mpEvent('subscription_preapproval', 'pre_firmado', undefined, Date.now() - 10 * 60_000))).statusCode, 400, 'ts de hace 10 minutos');
 });

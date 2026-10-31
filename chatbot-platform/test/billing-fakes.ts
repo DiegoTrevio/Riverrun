@@ -8,10 +8,22 @@ export const fake = {
     subs: {} as Record<string, any>,
     sessions: {} as Record<string, any>,
     products: {} as Record<string, any>,
+    /** Tarjetas guardadas por cliente (GET /v1/payment_methods?customer=…&type=card). */
+    paymentMethods: {} as Record<string, any[]>,
     /** Facturas que devuelve GET /v1/invoices (cobros de las suscripciones). */
     invoices: [] as any[],
     /** Reembolsos pedidos (POST /v1/refunds). */
     refunds: [] as { charge: string; payment_intent: string }[],
+    /** Disputas (GET /v1/disputes/:id: se releen en cada aviso) y alertas tempranas de fraude. */
+    disputes: {} as Record<string, any>,
+    /** Códigos de promoción (GET /v1/promotion_codes?code=…) y configuraciones del portal creadas. */
+    promoCodes: [] as any[],
+    portalConfigs: [] as string[],
+    /** Calendarios de suscripción (cambio anual → mensual al terminar el periodo). */
+    schedules: {} as Record<string, any>,
+    /** Cobros con su movimiento de saldo (GET /v1/charges/:id?expand[]=balance_transaction): el tipo de cambio. */
+    charges: {} as Record<string, any>,
+    fraudWarnings: {} as Record<string, any>,
     /** El proveedor rechaza los reembolsos y las cancelaciones. */
     refundFail: false,
     fail: false,
@@ -26,6 +38,8 @@ export const fake = {
     cards: {} as Record<string, any>,
     /** Pagos reembolsados (POST /v1/payments/:id/refunds). */
     refunds: [] as string[],
+    /** Contracargos (GET /v1/chargebacks/:id). */
+    chargebacks: {} as Record<string, any>,
     /** Id de la próxima suscripción que se cree (por omisión, "pre_new"). */
     nextId: '',
   },
@@ -77,7 +91,26 @@ const stripeUrl = await serve((req, raw, res) => {
   }
   const cs = path.match(/^\/v1\/checkout\/sessions\/([\w-]+)$/);
   if (cs) return fake.stripe.sessions[cs[1]] ? json(res, 200, fake.stripe.sessions[cs[1]]) : json(res, 404, { error: { message: 'No such checkout.session' } });
-  if (path === '/v1/billing_portal/sessions') return json(res, 200, { url: 'https://billing.stripe.test/p/1' });
+  if (path === '/v1/billing_portal/configurations' && req.method === 'POST') {
+    const id = `bpc_${++fake.stripe.n}`;
+    fake.stripe.portalConfigs.push(id);
+    return json(res, 200, { id });
+  }
+  if (path === '/v1/billing_portal/sessions') {
+    const conf = body.get('configuration');
+    if (conf && !fake.stripe.portalConfigs.includes(conf)) return json(res, 400, { error: { message: 'No such configuration', code: 'resource_missing' } });
+    return json(res, 200, { url: 'https://billing.stripe.test/p/1' });
+  }
+  if (path === '/v1/promotion_codes' && req.method === 'GET') {
+    const q = new URLSearchParams(qs);
+    return json(res, 200, { data: fake.stripe.promoCodes.filter((p) => p.code.toLowerCase() === (q.get('code') ?? '').toLowerCase() && p.active !== false).slice(0, 1) });
+  }
+  const customer = path.match(/^\/v1\/customers\/([\w-]+)$/);
+  if (customer) return json(res, 200, { id: customer[1], invoice_settings: { default_payment_method: null } });
+  if (path === '/v1/payment_methods' && req.method === 'GET') {
+    const q = new URLSearchParams(req.url!.split('?')[1] ?? '');
+    return json(res, 200, { data: fake.stripe.paymentMethods[q.get('customer') ?? ''] ?? [] });
+  }
   if (path === '/v1/products' && req.method === 'POST') {
     const id = body.get('id')!;
     if (fake.stripe.products[id]) return json(res, 400, { error: { message: `Product already exists: ${id}` } });
@@ -91,6 +124,30 @@ const stripeUrl = await serve((req, raw, res) => {
     if (req.method === 'POST') Object.assign(p, { name: body.get('name') ?? p.name, active: body.get('active') !== 'false' });
     return json(res, 200, p);
   }
+  if (path === '/v1/subscription_schedules' && req.method === 'POST') {
+    const sub = fake.stripe.subs[body.get('from_subscription') ?? ''];
+    if (!sub) return json(res, 404, { error: { message: 'No such subscription', code: 'resource_missing' } });
+    const id = `sub_sched_${++fake.stripe.n}`;
+    fake.stripe.schedules[id] = { id, subscription: sub.id, status: 'active', current_phase: { start_date: sub.current_period_end - 365 * 86400, end_date: sub.current_period_end }, phases: [] };
+    sub.schedule = id;
+    return json(res, 200, fake.stripe.schedules[id]);
+  }
+  const sc = path.match(/^\/v1\/subscription_schedules\/([\w-]+)(\/release)?$/);
+  if (sc) {
+    const sched = fake.stripe.schedules[sc[1]];
+    if (!sched) return json(res, 404, { error: { message: 'No such schedule', code: 'resource_missing' } });
+    if (sc[2]) {
+      sched.status = 'released';
+      if (fake.stripe.subs[sched.subscription]) fake.stripe.subs[sched.subscription].schedule = null;
+    } else if (req.method === 'POST') sched.update = body;
+    return json(res, 200, sched);
+  }
+  const chg = path.match(/^\/v1\/charges\/([\w-]+)$/);
+  if (chg && req.method === 'GET') return fake.stripe.charges[chg[1]] ? json(res, 200, fake.stripe.charges[chg[1]]) : json(res, 404, { error: { message: 'No such charge', code: 'resource_missing' } });
+  const dp = path.match(/^\/v1\/disputes\/([\w-]+)$/);
+  if (dp) return fake.stripe.disputes[dp[1]] ? json(res, 200, fake.stripe.disputes[dp[1]]) : json(res, 404, { error: { message: 'No such dispute', code: 'resource_missing' } });
+  const efw = path.match(/^\/v1\/radar\/early_fraud_warnings\/([\w-]+)$/);
+  if (efw) return fake.stripe.fraudWarnings[efw[1]] ? json(res, 200, fake.stripe.fraudWarnings[efw[1]]) : json(res, 404, { error: { message: 'No such warning', code: 'resource_missing' } });
   const m = path.match(/^\/v1\/subscriptions\/([\w-]+)$/);
   if (m) {
     const sub = fake.stripe.subs[m[1]];
@@ -102,6 +159,8 @@ const stripeUrl = await serve((req, raw, res) => {
     }
     if (req.method === 'POST') {
       if (body.has('cancel_at_period_end')) sub.cancel_at_period_end = body.get('cancel_at_period_end') === 'true';
+      if (body.has('pause_collection[behavior]')) sub.pause_collection = { behavior: body.get('pause_collection[behavior]') };
+      else if (body.has('pause_collection')) sub.pause_collection = null;
       // Terminar la prueba ya (tarjeta que ya tuvo una): Stripe cobra al momento y la suscripción queda activa.
       if (body.get('trial_end') === 'now') { sub.status = 'active'; delete sub.trial_end; }
       // Cambio de plan: el renglón toma el nuevo precio (por ID o armado con price_data).
@@ -151,6 +210,8 @@ const mpUrl = await serve((req, raw, res) => {
   }
   m = path.match(/^\/authorized_payments\/([\w-]+)$/);
   if (m && fake.mp.payments[m[1]]) return json(res, 200, fake.mp.payments[m[1]]);
+  m = path.match(/^\/v1\/chargebacks\/([\w-]+)$/);
+  if (m) return fake.mp.chargebacks[m[1]] ? json(res, 200, fake.mp.chargebacks[m[1]]) : json(res, 404, { message: 'not found' });
   m = path.match(/^\/v1\/payments\/([\w-]+)$/);
   if (m && fake.mp.charges[m[1]]) return json(res, 200, fake.mp.charges[m[1]]);
   json(res, 404, { message: 'ruta desconocida' });
@@ -212,7 +273,11 @@ export function mpEvent(type: string, dataId: string, secret = SECRETS.mp, ts = 
   return { url: `/webhook/billing/mercadopago?data.id=${dataId}&type=${type}`, payload: JSON.stringify({ type, data: { id: dataId } }), headers: { 'content-type': 'application/json', 'x-signature': `ts=${ts},v1=${sig}`, 'x-request-id': requestId } };
 }
 
-export const stripeSub = (over: Record<string, unknown> = {}) => ({
-  id: 'sub_1', customer: 'cus_1', status: 'active', current_period_end: Math.floor(Date.now() / 1000) + 30 * 86400, cancel_at_period_end: false,
-  metadata: { account_id: '', plan_key: 'pro' }, items: { data: [{ id: 'si_1', price: { id: 'price_pro' } }] }, ...over,
-});
+/** Suscripción simulada: su precio es del producto `riverrun_<plan>` (de ahí sale el plan, PAY-7). */
+export const stripeSub = (over: Record<string, any> = {}) => {
+  const plan = over.metadata?.plan_key ?? 'pro';
+  return {
+    id: 'sub_1', customer: 'cus_1', status: 'active', current_period_end: Math.floor(Date.now() / 1000) + 30 * 86400, cancel_at_period_end: false,
+    metadata: { account_id: '', plan_key: 'pro' }, items: { data: [{ id: 'si_1', price: { id: `price_${plan}`, product: `riverrun_${plan}` } }] }, ...over,
+  };
+};

@@ -3,6 +3,8 @@ export type SubStatus = 'incomplete' | 'active' | 'past_due' | 'canceled';
 
 export interface Plan {
   key: string;
+  /** false = privado: no se publica y solo lo contrata la cuenta que lo tiene asignado. */
+  public?: boolean;
   name: string;
   description: string;
   price_cents: number;
@@ -39,10 +41,16 @@ export interface Subscription {
   pending_plan_since: Date | null;
   /** Monto pactado con el proveedor para ese plan (con IVA). */
   pending_amount_cents: number;
+  /** Riverrun detuvo sus cobros por una disputa abierta (no es un pago pendiente). */
+  collection_paused: boolean;
 }
 
 /** Estado de una suscripción tal como lo informa el proveedor, ya normalizado. */
 export interface SubscriptionState {
+  /** Stripe: por qué el precio cobrado no dio un plan (se avisa al superadministrador, PAY-7). */
+  planMismatch?: string;
+  /** Los cobros están detenidos (Stripe `pause_collection`, Mercado Pago `paused`). */
+  collectionPaused?: boolean;
   provider: ProviderName;
   accountId: string | null;
   customerId: string;
@@ -68,6 +76,8 @@ export interface WebhookResult {
   refund?: RefundInfo;
   /** Contracargo: el cliente desconoció un cobro con su banco. */
   dispute?: DisputeInfo;
+  /** Alerta temprana de fraude (Stripe Radar): se reembolsa ese cobro y se trata como disputa perdida (PAY-5). */
+  fraudWarning?: { id: string; chargeRefs: string[] };
   /** El banco detuvo el cobro hasta que el cliente lo confirme (3DS): página donde lo confirma. */
   actionUrl?: string;
 }
@@ -119,6 +129,8 @@ export interface CheckoutArgs {
   trialEnd?: Date;
   /** Verificación de tarjeta con prueba gratis: días antes del primer cobro. Solo Stripe (Mercado Pago usa `startAt`). */
   trialDays?: number;
+  /** Código de promoción de Stripe ya validado (`promotionCodeFor`). Mercado Pago no tiene códigos. */
+  promotionCode?: string;
 }
 
 export interface BillingProvider {
@@ -142,6 +154,12 @@ export interface BillingProvider {
    * cambia el monto desde el siguiente cobro y no cambia el periodo (mensual o anual): eso va por sustitución.
    */
   changePlan(sub: Subscription, plan: Plan, o: { upgrade: boolean }): Promise<SubscriptionState>;
+  /**
+   * Programa el cambio al plan para el final del periodo pagado, sin reembolso (anual → mensual, PAY-11). Solo Stripe
+   * (con un calendario de la suscripción); `cancelScheduledChange` lo deshace.
+   */
+  schedulePlanChange?(sub: Subscription, plan: Plan): Promise<void>;
+  cancelScheduledChange?(sub: Subscription): Promise<void>;
   /** Estado actual de una suscripción (conciliación: por si un aviso se perdió). */
   subscriptionState(subscriptionId: string, plans: Plan[], now?: Date): Promise<SubscriptionState>;
   /** Cobros confirmados de la suscripción desde `since` (conciliación: los que no llegaron por aviso). */
@@ -150,6 +168,10 @@ export interface BillingProvider {
   cancelNow(subscriptionId: string): Promise<void>;
   /** Reembolsa por completo un cobro. Ya reembolsado cuenta como hecho. */
   refund(chargeRef: string): Promise<void>;
+  /** Detiene los cobros de la suscripción sin cancelarla (disputa abierta; PAY-4). Ya detenidos cuenta como hecho. */
+  pauseCollection(subscriptionId: string): Promise<void>;
+  /** Reanuda los cobros detenidos por una disputa (ganada). */
+  resumeCollection(subscriptionId: string): Promise<void>;
   /** Verifica la firma y devuelve el estado. Lanza `WebhookError` si la firma no es válida. */
   handleWebhook(req: { rawBody: Buffer; headers: Record<string, string | string[] | undefined>; query: Record<string, string | undefined>; plans: Plan[] }): Promise<WebhookResult | null>;
 }

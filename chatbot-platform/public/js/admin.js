@@ -118,7 +118,12 @@ export async function viewUsers(root) {
           return h('tr', {},
             h('td', {}, h('strong', {}, u.name || '—'), h('div', { class: 'muted small' }, u.email, u.phone ? ` · WhatsApp +${u.phone}${u.notify_whatsapp ? ' (alertas)' : ''}` : ''), u.is_owner ? h('span', { class: 'badge green' }, 'Dueño') : null, !u.active ? h('span', { class: 'badge orange' }, 'desactivado') : null, u.mfa_enabled ? h('span', { class: 'badge green' }, '2FA activo') : h('span', { class: 'badge orange' }, '2FA pendiente'), u.active && u.role !== 'superadmin' && u.available === false ? h('span', { class: 'badge' }, 'no disponible para turnos') : null),
             h('td', {}, u.role === 'superadmin' || self || u.is_owner || locked || (u.role === 'agent' && !isOwner()) ? ROLE_LABEL[u.role]
-              : h('select', { 'aria-label': `Rol de ${u.email}`, onchange: async (e) => { if (await run(() => api('PUT', `/api/users/${u.id}`, { role: e.target.value }), 'Rol actualizado')) render(); else e.target.value = u.role; } },
+              : h('select', { 'aria-label': `Rol de ${u.email}`, onchange: async (e) => {
+                // Dejar de ser administrador revoca lo que creó (llaves, webhooks, invitaciones): se dice antes.
+                const gone = u.role === 'admin' && e.target.value !== 'admin' ? await goneWith(u) : '';
+                if (gone && !(await confirmAction(`¿Cambiar a ${u.email} a ${ROLE_LABEL[e.target.value]}? ${gone}`))) { e.target.value = u.role; return; }
+                if (await run(() => api('PUT', `/api/users/${u.id}`, { role: e.target.value }), 'Rol actualizado')) render(); else e.target.value = u.role;
+              } },
                   [['agent', 'Operador del perfil'], ['admin', 'Administrador del perfil']].map(([v, l]) => h('option', { value: v, selected: u.role === v }, l)))),
             isSuper() ? h('td', { class: 'small' }, u.role === 'superadmin' ? 'Todos los perfiles' : u.is_owner ? (state.accounts.find((a) => a.id === u.account_id)?.name || '—') : h('select', { 'aria-label': `Perfil de ${u.email}`, onchange: async (e) => { if (await run(() => api('PUT', `/api/users/${u.id}`, { account_id: e.target.value }), 'Perfil asignado')) render(); else e.target.value = u.account_id; } }, state.accounts.map((a) => h('option', { value: a.id, selected: u.account_id === a.id }, a.name)))) : null,
             h('td', { class: 'small muted' }, u.last_login_at ? fmtDate(u.last_login_at) : 'nunca'),
@@ -237,16 +242,19 @@ export async function viewAccounts(root) {
             } }, 'Extender prueba') : null,
             h('button', { class: 'small', title: 'Excepción de límites para este perfil (sobre su plan)', onclick: async () => {
               const keys = { mensajes: 'messages_per_month', canales: 'channels', usuarios: 'users', asistentes: 'chatbots', redes: 'social_accounts' };
-              const cur = Object.entries(keys).filter(([, k]) => a.limits_override?.[k]).map(([n, k]) => `${n}=${a.limits_override[k]}`).join(' ');
-              const txt = await ask('Límites especiales de este perfil (se aplican en lugar de los de su plan).\nFormato: mensajes=1000 canales=2 usuarios=5 asistentes=3 redes=2\nDéjalo vacío para quitar la excepción y usar los de su plan.', cur);
+              const cur = [...Object.entries(keys).filter(([, k]) => a.limits_override?.[k]).map(([n, k]) => `${n}=${a.limits_override[k]}`),
+                ...(a.ai_usd_override != null ? [`ia=${Number(a.ai_usd_override)}`] : [])].join(' ');
+              const txt = await ask('Límites especiales de este perfil (se aplican en lugar de los de su plan).\nFormato: mensajes=1000 canales=2 usuarios=5 asistentes=3 redes=2 ia=20 (USD de IA al mes)\nDéjalo vacío para quitar la excepción y usar los de su plan.', cur);
               if (txt === null) return;
               const limits_override = {};
+              let ai_usd_override = null;
               for (const part of txt.split(/[\s,]+/).filter(Boolean)) {
                 const [n, v] = part.split('=');
-                if (!keys[n.toLowerCase()] || !(Number(v) > 0)) return toast(`No entendí "${part}". Usa, por ejemplo: mensajes=1000 canales=2`, true);
+                if (n.toLowerCase() === 'ia' && Number(v) >= 0 && v !== '') { ai_usd_override = Number(v); continue; }
+                if (!keys[n.toLowerCase()] || !(Number(v) > 0)) return toast(`No entendí "${part}". Usa, por ejemplo: mensajes=1000 canales=2 ia=20`, true);
                 limits_override[keys[n.toLowerCase()]] = Math.floor(Number(v));
               }
-              if (!(await run(() => api('PUT', `/api/accounts/${a.id}`, { limits_override }), 'Límites actualizados'))) return; render();
+              if (!(await run(() => api('PUT', `/api/accounts/${a.id}`, { limits_override, ai_usd_override }), 'Límites actualizados'))) return; render();
             } }, 'Límites'),
             h('button', { class: 'small', title: 'Marca blanca de esta cuenta', onclick: async () => {
               const { brands } = await api('GET', '/api/brands');

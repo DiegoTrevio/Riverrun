@@ -121,6 +121,7 @@ const NUMBERS: { name: string; min: number; max: number; int?: boolean; area: Ar
   { name: 'TRIAL_MAX_USERS', min: 0, max: 1e6, int: true, area: 'core', what: 'límite de usuarios de la prueba' },
   { name: 'TRIAL_MAX_CHATBOTS', min: 0, max: 1e6, int: true, area: 'core', what: 'límite de asistentes de la prueba' },
   { name: 'TRIAL_MAX_SOCIAL_ACCOUNTS', min: 0, max: 1e6, int: true, area: 'core', what: 'límite de redes sociales conectadas de la prueba' },
+  { name: 'TRIAL_AI_USD', min: 0, max: 1e6, area: 'core', what: 'gasto de IA al mes de la prueba (USD)' },
   { name: 'BILLING_GRACE_DAYS', min: 0, max: 365, int: true, area: 'billing', what: 'días de gracia de cobro' },
   { name: 'BILLING_TAX_PERCENT', min: 0, max: 100, area: 'billing', what: 'IVA que se suma al precio de los planes (%)' },
   { name: 'CFDI_MAX_ATTEMPTS', min: 1, max: 100, int: true, area: 'billing', what: 'intentos para emitir un CFDI' },

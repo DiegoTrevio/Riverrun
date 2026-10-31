@@ -38,6 +38,10 @@ export const STEP_UP: [string, string][] = [
   ['PUT', '/api/billing/fiscal'],
   ['DELETE', '/api/billing/card-check-brake'],
   ['GET', '/api/account/export.zip'],
+  ['GET', '/api/export/contacts.csv'],
+  ['GET', '/api/export/conversations.csv'],
+  ['GET', '/api/export/quotes.csv'],
+  ['GET', '/api/export/messages.csv'],
   ['POST', '/api/account/deletion'],
   ['DELETE', '/api/account/deletion'],
   ['POST', '/api/account/transfer'],
@@ -94,6 +98,32 @@ t('algunas acciones lo piden según lo que cambian', async () => {
   assert.equal((await admin('PUT', `/api/users/${agent.id}`, { active: false })).json().code, 'step_up', 'dar de baja sí');
   assert.equal((await admin('POST', '/api/invitations', { email: 'otra@paso.mx', role: 'agent' })).statusCode, 200, 'invitar a un agente no');
   assert.equal((await admin('POST', '/api/invitations', { email: 'jefa@paso.mx', role: 'admin' })).json().code, 'step_up', 'invitar a un administrador sí');
+});
+
+t('una regla que manda datos afuera pide el código; una que solo etiqueta, no (ID-14)', async () => {
+  await age('mia@paso.mx', 16);
+  const rule = (actions: unknown[]) => ({ name: 'Regla', trigger: { type: 'message_received' }, actions });
+  const out: [string, unknown][] = [
+    ['webhook', { type: 'webhook', url: 'https://hooks.example.com/x' }],
+    ['reporte a un correo', { type: 'send_report', emails: ['fuera@example.com'] }],
+    ['reporte a un número', { type: 'send_report', phones: ['+5215500000000'] }],
+    ['aviso a un número', { type: 'alert_team', phones: ['+5215500000000'] }],
+  ];
+  for (const [what, action] of out) {
+    assert.equal((await admin('POST', '/api/automations', rule([action]))).json().code, 'step_up', `${what}: crear`);
+  }
+  const tag = await admin('POST', '/api/automations', rule([{ type: 'add_tag', tag: 'nuevo' }]));
+  assert.equal(tag.statusCode, 200, `etiquetar no: ${tag.body}`);
+  const id = tag.json().id;
+  assert.equal((await admin('PUT', `/api/automations/${id}`, { actions: [{ type: 'webhook', url: 'https://hooks.example.com/x' }] })).json().code, 'step_up', 'cambiarla para que mande datos, sí');
+  assert.equal((await admin('PUT', `/api/automations/${id}`, { name: 'Etiquetar a los nuevos' })).statusCode, 200, 'renombrarla, no');
+  // Con el código se guarda; después, cambiar solo el nombre de una regla que ya mandaba datos al mismo lugar no lo pide.
+  await admin('POST', '/api/2fa/step-up', { code: await h.codeFor('mia@paso.mx') });
+  const hook = await admin('POST', '/api/automations', rule([{ type: 'webhook', url: 'https://hooks.example.com/x' }]));
+  assert.equal(hook.statusCode, 200, hook.body);
+  await age('mia@paso.mx', 16);
+  assert.equal((await admin('PUT', `/api/automations/${hook.json().id}`, { name: 'Avisar a mi sistema' })).statusCode, 200);
+  assert.equal((await admin('PUT', `/api/automations/${hook.json().id}`, { actions: [{ type: 'webhook', url: 'https://otro.example.com/y' }] })).json().code, 'step_up', 'otro destino, sí');
 });
 
 t('Ajustes ya no muestra los secretos; «Mostrar» los pide con verificación reciente', async () => {

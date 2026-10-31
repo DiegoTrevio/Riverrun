@@ -40,7 +40,7 @@ import { wizardDefaults } from '../templates/agent-builder.js';
 import { systemStatus } from '../monitor.js';
 import { listIncidents } from '../observability/incidents.js';
 import { diagnosticsReport, refreshDiagnostics } from '../diagnostics.js';
-import { assertWithinLimit, LimitsSchema } from '../billing/limits.js';
+import { assertWithinLimit, effectiveLimits, LimitsSchema, usageOf } from '../billing/limits.js';
 import { billingEnabled, paymentDue } from '../billing/service.js';
 import { deleteAccountFully } from '../accounts/delete.js';
 import { deletionDate } from '../accounts/retention.js';
@@ -356,6 +356,8 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     keep_data: z.boolean().optional(),
     /** Encender o apagar el Copiloto para esta cuenta. */
     copilot_enabled: z.boolean().optional(),
+    /** Excepción del tope de IA al mes de esta cuenta, en USD (null = la del plan). */
+    ai_usd_override: z.number().finite().min(0).max(100000).nullable().optional(),
   });
 
   api.post('/api/accounts', { preHandler: requireRole('superadmin'), ...stepUp }, async (req) => {
@@ -391,7 +393,14 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
       status = status ?? 'trial';
     }
     const acc = (await store.updateAccount(before.id, { name: b.name, active: b.active, status, plan: b.plan, trial_ends_at: trialEnds, limits_override: b.limits_override ? (Object.fromEntries(Object.entries(b.limits_override).filter(([, v]) => v)) as Record<string, number>) : undefined, brand_id: b.brand_id, keep_data: b.keep_data, copilot_enabled: b.copilot_enabled }))!;
+    if (b.ai_usd_override !== undefined) await query(`UPDATE accounts SET ai_usd_override = $2 WHERE id = $1`, [before.id, b.ai_usd_override]);
+    // Lo que decide el superadministrador a mano no lo deshace un pago (PAY-8): su pausa es «manual» y solo él la quita, y
+    // el plan que asigna no lo pisa la suscripción.
+    if (status === 'paused' && before.status !== 'paused') await query(`UPDATE accounts SET pause_reason = 'manual' WHERE id = $1`, [before.id]);
+    if (status && status !== 'paused' && before.status === 'paused') await query(`UPDATE accounts SET pause_reason = '' WHERE id = $1`, [before.id]);
+    if (b.plan !== undefined && b.plan !== before.plan) await query(`UPDATE accounts SET plan_source = 'manual' WHERE id = $1`, [before.id]);
     const changes = [b.active === false ? 'desactivada' : '', status && status !== before.status ? `estado: ${status}` : '', trialEnds !== undefined ? `prueba hasta ${trialEnds?.toISOString().slice(0, 10) ?? '—'}` : '',
+      b.ai_usd_override !== undefined ? `tope de IA: ${b.ai_usd_override === null ? 'el del plan' : `USD ${b.ai_usd_override}/mes`}` : '',
       b.keep_data !== undefined && b.keep_data !== before.keep_data ? (b.keep_data ? 'se conservan sus datos' : 'retención normal') : '',
       b.copilot_enabled !== undefined && b.copilot_enabled !== before.copilot_enabled ? (b.copilot_enabled ? 'Copiloto encendido' : 'Copiloto apagado') : '']
       .filter(Boolean)
@@ -504,6 +513,15 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     };
     const updated = await store.updateUser(target.id, patch, req.user.role === 'superadmin' ? undefined : scopeAccount(req.user)!);
     if (!updated) throw notFound('Usuario no encontrado');
+    // Dos reactivaciones a la vez pasaban la revisión previa (PAY-19): si al final sobran, esta se deshace con el aviso.
+    if (b.active === true && !target.active && updated.account_id) {
+      const max = (await effectiveLimits(updated.account_id)).limits.users;
+      const used = max ? (await usageOf(updated.account_id)).users : 0;
+      if (max && used > max) {
+        await store.updateUser(updated.id, { active: false });
+        await assertWithinLimit(updated.account_id, 'users');
+      }
+    }
     // Desactivar a alguien cierra todas sus sesiones abiertas y olvida sus dispositivos recordados. Un cambio de rol
     // cierra sus sesiones (entra otra vez con los permisos nuevos); uno de cuenta aplica al momento en las sesiones
     // abiertas (el usuario se vuelve a leer en cada petición).
@@ -512,8 +530,10 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
       await forgetTrustedDevices(updated.id);
       if (target.active) await offboard(target, req.user);
     } else if (updated.role !== target.role) await store.revokeUserSessions(updated.id);
-    // Pasar a otra cuenta también es irse de la de antes: lo que dejó abierto ahí se va con la baja.
+    // Pasar a otra cuenta también es irse de la de antes: lo que dejó abierto ahí se va con la baja. Dejar de ser
+    // administrador también: sus llaves y webhooks daban acceso de administrador (leer todo, enviar como el negocio).
     if (updated.active && target.active && updated.account_id !== target.account_id) await offboard(target, req.user);
+    else if (updated.active && target.active && target.role === 'admin' && updated.role !== 'admin') await offboard(target, req.user);
     if (updated.role !== target.role) await notifyUser(updated, 'role_changed', { by: req.user.name || req.user.email, role: ROLE_NAMES[updated.role] });
     if (updated.role !== target.role || updated.account_id !== target.account_id) {
       await logEvent({ level: 'info', source: 'admin', message: `Permisos de usuario actualizados: ${updated.email}`, accountId: updated.account_id ?? target.account_id ?? undefined,

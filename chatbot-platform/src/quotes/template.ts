@@ -5,11 +5,17 @@
  */
 import Docxtemplater from 'docxtemplater';
 import PizZip from 'pizzip';
+import { checkZip } from '../zip-limits.js';
 
 export const TEMPLATE_MAX_BYTES = 5 * 1024 * 1024;
 const MAX_ENTRIES = 300;
+/** Medidos descomprimiendo de verdad (con tope), no lo que el archivo dice pesar. */
+const MAX_PART = 8 * 1024 * 1024;
 const MAX_UNCOMPRESSED = 30 * 1024 * 1024;
-const MAX_RATIO = 100;
+/** Más marcas que esto no es un formato de cotización: compilarlas llena la memoria. */
+const MAX_TAGS = 2000;
+/** El texto de una cotización con su tabla cabe de sobra; las imágenes van en otras partes. */
+const MAX_TEXT_PART = 4 * 1024 * 1024;
 const DELIMITERS = { start: '{{', end: '}}' };
 
 /** Marcas que el sistema sabe llenar. `cliente.<dato>` acepta cualquier dato del agente. */
@@ -67,12 +73,12 @@ function compileErrors(e: any): string[] {
 function openZip(buffer: Buffer): { zip?: PizZip; errors: string[] } {
   if (buffer.length > TEMPLATE_MAX_BYTES) return { errors: ['El archivo supera 5 MB'] };
   if (buffer.subarray(0, 4).toString('latin1') !== 'PK\u0003\u0004') return { errors: ['El archivo no es un Word (.docx)'] };
+  const problem = checkZip(buffer, { maxEntries: MAX_ENTRIES, maxEntryBytes: MAX_PART, maxTotalBytes: MAX_UNCOMPRESSED });
+  if (problem) return { errors: [problem] };
   let zip: PizZip;
   try { zip = new PizZip(buffer); } catch { return { errors: ['El archivo está dañado o no es un Word (.docx)'] }; }
-  const entries = Object.values(zip.files);
-  if (entries.length > MAX_ENTRIES) return { errors: ['El archivo tiene demasiadas partes internas'] };
-  const total = entries.reduce((n, f: any) => n + Number(f._data?.uncompressedSize ?? 0), 0);
-  if (total > MAX_UNCOMPRESSED || total > buffer.length * MAX_RATIO) return { errors: ['El archivo descomprimido es demasiado grande'] };
+  // Segunda revisión, ya abierto: las partes que de verdad leyó PizZip.
+  if (Object.keys(zip.files).length > MAX_ENTRIES) return { errors: ['El archivo tiene demasiadas partes internas'] };
   const names = Object.keys(zip.files);
   if (!zip.file('word/document.xml')) return { errors: ['El archivo no es un documento de Word (.docx)'] };
   const errors: string[] = [];
@@ -103,6 +109,11 @@ const textParts = (zip: PizZip) => Object.keys(zip.files).filter((n) => /^word\/
 export function inspectTemplate(buffer: Buffer): TemplateReport {
   const { zip, errors } = openZip(buffer);
   if (!zip) return { errors, found: [], unknown: [], missingRequired: [...REQUIRED_TAGS] };
+  // Lo que compila docxtemplater (cuerpo, encabezados y pies) cuesta memoria al doble de su tamaño y más con cada marca.
+  const texts = textParts(zip).map((part) => zip.file(part)!.asText());
+  if (texts.some((x) => x.length > MAX_TEXT_PART)) return { errors: [...errors, 'El archivo descomprimido es demasiado grande'], found: [], unknown: [], missingRequired: [] };
+  const tags = texts.reduce((n, x) => n + (x.match(/\{\{/g)?.length ?? 0), 0);
+  if (tags > MAX_TAGS) return { errors: [...errors, 'El formato tiene demasiadas marcas (máximo 2 000)'], found: [], unknown: [], missingRequired: [] };
   try {
     new Docxtemplater(zip, { delimiters: DELIMITERS, paragraphLoop: true, linebreaks: true, errorLogging: false, parser });
   } catch (e) {

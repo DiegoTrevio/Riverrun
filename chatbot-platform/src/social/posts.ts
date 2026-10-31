@@ -6,7 +6,7 @@ import { identifyAttachment } from '../attachments.js';
 import * as astore from '../automation/store.js';
 import { zonedToUtc } from '../automation/time.js';
 import { ZernioBusyError } from '../channels/zernio-budget.js';
-import { clientFor, idOf, networkOf, ZernioError } from '../channels/zernio.js';
+import { clientFor, clientForAccount, idOf, networkOf, ZernioError } from '../channels/zernio.js';
 import { query, queryOne, withTransaction } from '../db.js';
 import { logEvent } from '../logs.js';
 import { hmac, safeEqual } from '../secret.js';
@@ -144,7 +144,7 @@ export async function uploadMedia(accountId: string, buffer: Buffer, fileName: s
   const brand = buffer.subarray(8, 12).toString('latin1');
   const okVideo = type?.kind === 'video' && !/^(heic|heix|hevc|mif1|msf1|avif|avis)$/.test(brand);
   if (!type || !(['image/jpeg', 'image/png', 'image/webp'].includes(type.mime) || okVideo)) throw new HttpError(400, 'Sube una foto (JPG, PNG o WEBP) o un video (MP4)');
-  const url = await clientFor(null).upload(buffer, `publicacion-${crypto.randomUUID()}${type.ext}`, type.mime);
+  const url = await clientForAccount(accountId).upload(buffer, `publicacion-${crypto.randomUUID()}${type.ext}`, type.mime);
   const kind = type.kind as 'image' | 'video';
   return { url, type: kind, name: fileName.slice(0, 200), size: buffer.length, token: mediaToken(accountId, url, kind) };
 }
@@ -348,7 +348,7 @@ export async function updatePublication(accountId: string, userId: string | null
     if (claimed.zernio_post_id) {
       const when = input.mode === 'now' ? 'now' : input.mode === 'schedule' ? 'schedule' : 'draft';
       const body = { ...bodyOf({ ...claimed, text: input.text, media: input.media, scheduled_for: scheduledFor, timezone: tz }, inputTargets(input, accounts), when), isDraft: when === 'draft' };
-      const r = await zcall(() => clientFor(null).call<any>('PUT', `/posts/${enc(claimed.zernio_post_id!)}`, body, { timeoutMs: 120_000, scopedLimits: true }));
+      const r = await zcall(() => clientForAccount(accountId).call<any>('PUT', `/posts/${enc(claimed.zernio_post_id!)}`, body, { timeoutMs: 120_000, scopedLimits: true }));
       await saveLocal();
       await applyPost(p.id, r?.post ?? r, { event: 'update' });
       if (when === 'draft') await query(`UPDATE social_publications SET status = 'borrador' WHERE id = $1`, [p.id]);
@@ -374,7 +374,7 @@ export async function cancelPublication(accountId: string, id: string) {
   if (!claimed) throw new HttpError(409, 'Esta publicación se está enviando; inténtalo en un momento');
   try {
     if (claimed.zernio_post_id) {
-      await zcall(() => clientFor(null).call('DELETE', `/posts/${enc(claimed.zernio_post_id!)}`).catch((e) => { if (!(e instanceof ZernioError && e.status === 404)) throw e; }));
+      await zcall(() => clientForAccount(accountId).call('DELETE', `/posts/${enc(claimed.zernio_post_id!)}`).catch((e) => { if (!(e instanceof ZernioError && e.status === 404)) throw e; }));
     }
     await query(`UPDATE social_publications SET status = 'cancelada', updated_at = now(), version = version + 1 WHERE id = $1`, [p.id]);
     await query(`UPDATE social_publication_targets SET status = 'cancelada', updated_at = now() WHERE publication_id = $1 AND status IN ('pendiente', 'publicando')`, [p.id]);
@@ -393,7 +393,7 @@ export async function retryPublication(accountId: string, id: string) {
   const claimed = await query(`UPDATE social_publications SET busy_until = now() + interval '3 minutes', notified_at = NULL WHERE id = $1 AND status IN ('fallida', 'parcial') AND (busy_until IS NULL OR busy_until < now()) RETURNING id`, [p.id]);
   if (!claimed.length) throw new HttpError(409, 'Ya se está reintentando');
   try {
-    const r = await zcall(() => clientFor(null).call<any>('POST', `/posts/${enc(p.zernio_post_id!)}/retry`, {}, { timeoutMs: 120_000, scopedLimits: true }));
+    const r = await zcall(() => clientForAccount(accountId).call<any>('POST', `/posts/${enc(p.zernio_post_id!)}/retry`, {}, { timeoutMs: 120_000, scopedLimits: true }));
     await applyPost(p.id, r?.post ?? r, { event: 'retry' });
   } finally {
     await query(`UPDATE social_publications SET busy_until = NULL WHERE id = $1`, [p.id]);
@@ -407,7 +407,7 @@ export async function deletePublication(accountId: string, id: string) {
   const { p, targets } = await loadPublication(accountId, id);
   if (!publicView(p, targets).can.delete) throw new HttpError(409, p.status === 'programada' ? 'Primero cancélala' : 'Espera a que termine de publicarse');
   if (p.status === 'borrador' && p.zernio_post_id) {
-    await zcall(() => clientFor(null).call('DELETE', `/posts/${enc(p.zernio_post_id!)}`).catch((e) => { if (!(e instanceof ZernioError && e.status === 404)) throw e; }));
+    await zcall(() => clientForAccount(accountId).call('DELETE', `/posts/${enc(p.zernio_post_id!)}`).catch((e) => { if (!(e instanceof ZernioError && e.status === 404)) throw e; }));
   }
   const gone = await query(`DELETE FROM social_publications WHERE id = $1 AND account_id = $2 AND status IN ('borrador', 'publicada', 'parcial', 'fallida', 'cancelada') AND (busy_until IS NULL OR busy_until < now()) RETURNING id`, [p.id, accountId]);
   if (!gone.length) throw new HttpError(409, 'Esta publicación se está enviando; inténtalo en un momento');
@@ -488,7 +488,7 @@ async function send(accountId: string, pubId: string, now: boolean, resend = fal
   await scheduleCheck(pubId, new Date(Date.now() + 5 * 60_000));
   try {
     const body = await buildBody(pubId, now);
-    const r = await clientFor(null).call<any>('POST', '/posts', body, { idempotencyKey: `pub-${pubId}-${claimed.send_seq}`, timeoutMs: 120_000, scopedLimits: true });
+    const r = await clientForAccount(accountId).call<any>('POST', '/posts', body, { idempotencyKey: `pub-${pubId}-${claimed.send_seq}`, timeoutMs: 120_000, scopedLimits: true });
     await applyPost(pubId, r?.post ?? r, { event: 'create' });
   } catch (e) {
     await query(`UPDATE social_publications SET busy_until = NULL WHERE id = $1`, [pubId]);

@@ -145,3 +145,35 @@ t('un correo que falla no bloquea el buzón: el cursor avanza y los demás se pr
   const maxUid = Math.max(...(await pool.query(`SELECT (config->>'last_uid')::int u FROM channels WHERE type = 'email'`)).rows.map((x) => x.u));
   assert.ok(maxUid >= 201, 'el cursor pasó el correo roto');
 });
+
+t('un correo enorme se guarda recortado a 8 000 caracteres y se contesta (IN-15)', async () => {
+  // Una sola línea «a.a.a.…» de 60 000 caracteres: antes congelaba la verificación de hechos durante segundos.
+  const r = em.toInbound(mail({ text: 'a.'.repeat(30_000) }), true);
+  assert.ok(r.text.length <= 8000 + 80, `${r.text.length}`);
+  assert.match(r.text, /…\[mensaje recortado\]$/);
+
+  h.setScript(() => ({ messages: ['Recibimos tu mensaje, ¿en qué te ayudo?'] }));
+  const before = sent.length;
+  inbox = [mail({ uid: 301, messageId: '<enorme@cliente.com>', address: 'enorme@cliente.com', text: 'a.'.repeat(30_000) })];
+  const t0 = Date.now();
+  await em.pollEmailChannels(h.service);
+  await waitFor(() => sent.length > before, 8000);
+  assert.ok(Date.now() - t0 < 6000, `tardó ${Date.now() - t0} ms`);
+  const stored = (await pool.query(`SELECT m.content FROM messages m JOIN conversations c ON c.id = m.conversation_id JOIN contacts k ON k.id = c.contact_id WHERE k.external_id = 'enorme@cliente.com' AND m.direction = 'in'`)).rows[0].content;
+  assert.ok(stored.length <= 8000 + 80, `${stored.length}`);
+});
+
+t('un WhatsApp de 65 000 caracteres se guarda recortado y el asistente responde (IN-15)', async () => {
+  h.setScript(() => ({ messages: ['Hola, ¿en qué te ayudo?'] }));
+  const phone = '5215599990001';
+  const t0 = Date.now();
+  const r = await h.webhook('a.'.repeat(32_500), { phone });
+  assert.equal(r.statusCode, 200, r.body);
+  await h.idle();
+  assert.ok(Date.now() - t0 < 8000, `tardó ${Date.now() - t0} ms`);
+  const conv = await h.conversationFor(phone);
+  const stored = (await pool.query(`SELECT content FROM messages WHERE conversation_id = $1 AND direction = 'in'`, [conv.id])).rows[0].content;
+  assert.ok(stored.length <= 8030, `${stored.length}`);
+  assert.match(stored, /…\[mensaje recortado\]$/);
+  assert.ok(h.sent.some((s) => s.to === phone && s.kind === 'text'), 'el asistente respondió');
+});

@@ -36,7 +36,8 @@ export async function aiBudgetRoutes(api:FastifyInstance) {
   await logEvent({level:'info',source:'admin',message:`Presupuesto de IA actualizado por ${req.user.email}`,accountId:id,details:{revision:saved.revision,monthly_usd:body.settings.monthly_usd,daily_usd:body.settings.daily_usd}});
   return saved;
  });
- api.post('/api/ai-budget/review/:id',admin,async(req:any)=>{
+ // Confirmar un costo dudoso decide cuánto cuenta para los topes: es del superadmin (un administrador lo dejaba en 0, PAY-20).
+ api.post('/api/ai-budget/review/:id',{preHandler:requireRole('superadmin')},async(req:any)=>{
   const accountId=await account(req),body=parse(z.object({amount_usd:z.number().finite().min(0).max(1000000),note:z.string().trim().min(5).max(500)}),req.body);
   const row=await withTransaction(async client=>{
    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`ai-budget:${accountId}`]);

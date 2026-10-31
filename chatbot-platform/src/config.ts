@@ -205,6 +205,8 @@ export const config = {
       chatbots: Number(env('TRIAL_MAX_CHATBOTS', '2')),
       socialAccounts: Number(env('TRIAL_MAX_SOCIAL_ACCOUNTS', '2')),
     },
+    /** Gasto de IA al mes de una cuenta en prueba, en USD (0 = sin tope). Los planes llevan el suyo (PAY-20). */
+    trialAiUsd: Number(env('TRIAL_AI_USD', '5')),
     /** Direcciones públicas de tus términos y tu aviso de privacidad (se enlazan en el registro). */
     termsUrl: env('TERMS_URL', ''),
     privacyUrl: env('PRIVACY_URL', ''),

@@ -4,10 +4,13 @@ import { NoticeBody, sendNotice } from '../automation/notices.js';
 import { testConnectionAlert } from '../lifecycle.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { stepUp } from '../identity/step-up.js';
+import { assertRecentMfa, stepUp } from '../identity/step-up.js';
+import { addsDataOut } from '../automation/data-out.js';
+import { accountOwner, assertOwner } from '../identity/ownership.js';
+import { notifyUser } from '../identity/notices.js';
 import { assertAccount, conversationFor, HttpError, notFound, requireRole, scopeAccount, targetAccount } from '../access.js';
 import * as astore from '../automation/store.js';
-import { AccountSettingsSchema, AutomationBodySchema, normalizeLabel, SequenceBodySchema, WaTemplateRefSchema, type Action, type AutomationBody, type FlowButton, type WaTemplateRef } from '../automation/types.js';
+import { AccountSettingsSchema, AutomationBodySchema, RETENTION_DELAY_DAYS, RETENTION_MIN_DAYS, type Retention, normalizeLabel, SequenceBodySchema, WaTemplateRefSchema, type Action, type AutomationBody, type FlowButton, type WaTemplateRef } from '../automation/types.js';
 import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
 import { logEvent } from '../logs.js';
@@ -118,6 +121,48 @@ async function checkCampaignFlow(accountId: string, b: { kind: string; sequence_
   if (!seq || seq.account_id !== accountId) throw new HttpError(400, 'El flujo no pertenece a la cuenta');
 }
 
+const sameDays = (a: Pick<Retention, 'messages_days' | 'inactive_contacts_days'>, b: Pick<Retention, 'messages_days' | 'inactive_contacts_days'>) =>
+  a.messages_days === b.messages_days && a.inactive_contacts_days === b.inactive_contacts_days;
+/** «los mensajes con más de 90 días y los contactos sin actividad en 365 días» */
+const retentionText = (r: Pick<Retention, 'messages_days' | 'inactive_contacts_days'>) => [
+  r.messages_days ? `los mensajes con más de ${r.messages_days} días` : '',
+  r.inactive_contacts_days ? `los contactos sin actividad en ${r.inactive_contacts_days} días` : '',
+].filter(Boolean).join(' y ');
+
+/**
+ * La retención es borrar el historial: la cambia el dueño con el código reciente, con 30 días como mínimo, y lo que
+ * borra más entra 7 días después con aviso al dueño (lo que conserva más entra al momento). Lo programado lo pone el
+ * servidor: lo que mande el panel en `pending` se ignora.
+ */
+async function nextRetention(req: any, accountId: string, current: Retention, asked: Retention, cancel: boolean): Promise<Retention> {
+  // Cancelar lo programado deja todo como está (borra menos): cualquier administrador puede, y queda en la bitácora.
+  if (cancel && current.pending && sameDays(asked, current)) {
+    await logEvent({ level: 'info', source: 'admin', message: `Retención de datos: ${req.user.email} canceló el borrado programado`, accountId, details: current.pending });
+    return { ...current, pending: null };
+  }
+  if (sameDays(asked, current) || (current.pending && sameDays(asked, current.pending))) return current;
+  await assertOwner(req, accountId);
+  assertRecentMfa(req);
+  for (const days of [asked.messages_days, asked.inactive_contacts_days]) {
+    if (days > 0 && days < RETENTION_MIN_DAYS) throw new HttpError(400, `Para borrar automáticamente, pon al menos ${RETENTION_MIN_DAYS} días (o 0 para conservar siempre).`);
+  }
+  const deletesMore = (n: number, o: number) => n > 0 && (o === 0 || n < o);
+  const later = deletesMore(asked.messages_days, current.messages_days) || deletesMore(asked.inactive_contacts_days, current.inactive_contacts_days);
+  const days = { messages_days: asked.messages_days, inactive_contacts_days: asked.inactive_contacts_days };
+  if (!later) {
+    await logEvent({ level: 'info', source: 'admin', message: `Retención de datos cambiada por ${req.user.email}`, accountId, details: days });
+    return { ...days, pending: null };
+  }
+  const effective = new Date(Date.now() + RETENTION_DELAY_DAYS * 86400_000);
+  await logEvent({ level: 'warn', source: 'admin', message: `Retención de datos programada por ${req.user.email}`, accountId, details: { ...days, effective_at: effective.toISOString() } });
+  const owner = await accountOwner(accountId);
+  if (owner) {
+    const on = new Intl.DateTimeFormat('es-MX', { dateStyle: 'long', timeZone: 'America/Mexico_City' }).format(effective);
+    void notifyUser({ ...owner, account_id: accountId }, 'retention_scheduled', { by: req.user.name || req.user.email, detail: retentionText(days), on });
+  }
+  return { messages_days: current.messages_days, inactive_contacts_days: current.inactive_contacts_days, pending: { ...days, effective_at: effective.toISOString() } };
+}
+
 export async function automationRoutes(api: FastifyInstance, service: ChatService) {
   const admins = { preHandler: requireRole('admin') };
   const scheduleBody = async (body: any, accountId: string) => {
@@ -154,6 +199,7 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
     const { secrets_hidden: _hidden, ics_url: _ics, ...raw } = (req.body ?? {}) as Record<string, unknown>;
     // Los secretos no se cambian desde aquí (se regeneran con su propia ruta).
     const next = parse(AccountSettingsSchema, { ...current, ...raw, calendar_token: current.calendar_token, webhook_secret: current.webhook_secret });
+    next.retention = await nextRetention(req, accountId, current.retention, next.retention, (raw.retention as any)?.pending === null);
     // Se escala solo a administradores activos de esta cuenta: lo demás se descarta al guardar.
     const admins = new Set((await astore.teamMembers(accountId, ['admin'])).map((u) => u.id));
     next.alert_timing.escalate_user_ids = next.alert_timing.escalate_user_ids.filter((id) => admins.has(id));
@@ -184,6 +230,8 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
   api.post('/api/automations', admins, async (req: any) => {
     const body = parse(AutomationBodySchema, req.body);
     const accountId = await targetAccount(req.user, req.body?.account_id);
+    // Mandar datos de clientes a una URL, un correo o un número nuevos pide el código, como crear un webhook.
+    if (addsDataOut(body.actions)) assertRecentMfa(req);
     await checkReferences(accountId, body);
     return astore.saveAutomation(accountId, body);
   });
@@ -192,6 +240,7 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
     const existing = await automationFor(req.user, req.params.id);
     const raw = (req.body ?? {}) as Partial<AutomationBody>;
     const body = parse(AutomationBodySchema, { ...existing, ...raw });
+    if (addsDataOut(body.actions, existing.actions)) assertRecentMfa(req);
     await checkReferences(existing.account_id, body, { clearMissing: true });
     return astore.saveAutomation(existing.account_id, body, existing.id);
   });

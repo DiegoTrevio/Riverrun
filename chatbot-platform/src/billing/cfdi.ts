@@ -10,11 +10,13 @@ import { mailBrand } from '../brands.js';
 import { config } from '../config.js';
 import { query, queryOne, withTransaction } from '../db.js';
 import { accountOwner } from '../identity/ownership.js';
+import { countHit } from '../identity/rate-limit.js';
 import { logEvent } from '../logs.js';
 import { sendMail } from '../mailer.js';
 import { facturapi, type CfdiDocument, type CfdiReceiver, type InvoiceProvider } from './facturapi.js';
 import { fiscalComplete, getFiscal, usesFor } from './fiscal.js';
 import { taxPercent } from './tax.js';
+import { exchangeRate as stripeExchangeRate } from './stripe.js';
 import { emailSuperadmin } from '../platform/digest.js';
 import { ProviderError, type ProviderName } from './types.js';
 
@@ -40,6 +42,8 @@ export interface Cfdi {
   series: string;
   folio: string;
   issued_at: Date | null;
+  currency: string;
+  hold: '' | 'exchange_rate';
 }
 
 const TZ = 'America/Mexico_City';
@@ -123,27 +127,50 @@ export async function checkGlobalInvoice(now = new Date()) {
   );
   let created = 0;
   for (const { period } of months) created += await globalFor(period);
+  // Lo de más de 3 meses ya no se timbra solo: si quedó un pago sin factura, el superadmin lo revisa con el contador.
+  const orphans = (await queryOne<{ n: number; total: string }>(
+    `SELECT count(*)::int AS n, coalesce(sum(total_cents), 0)::text AS total FROM billing_payments
+     WHERE global_cfdi_id IS NULL AND refunded_cents < total_cents AND paid_at <= $1::timestamptz - interval '3 months'
+       AND NOT EXISTS (SELECT 1 FROM cfdi_invoices x WHERE x.payment_id = billing_payments.id AND x.kind = 'payment' AND x.status <> 'void')`,
+    [now],
+  ))!;
+  // Una vez por semana mientras sigan ahí (pagos de antes de activar Facturapi, por ejemplo): no un correo diario.
+  if (orphans.n && (await countHit('cfdi-orphans', 7 * 86400_000)) === 1) {
+    const text = `${orphans.n} pago(s) por ${(Number(orphans.total) / 100).toFixed(2)} llevan más de 3 meses sin CFDI (ni propio ni en una global). Revísalos con tu contador.`;
+    await logEvent({ level: 'error', source: 'admin', message: `Pagos sin CFDI: ${text}` });
+    await emailSuperadmin('Pagos sin factura', text).catch(() => undefined);
+  }
   return created;
 }
 
-/** La global de un mes, una por forma de pago. Devuelve cuántas se crearon. */
+/** La global de un mes, una por forma de pago, moneda y tasa de IVA (PAY-9). Devuelve cuántas se crearon. */
 async function globalFor(period: string) {
   let created = 0;
   for (const [provider, form] of Object.entries(PAYMENT_FORM)) {
-    const done = await withTransaction(async (c) => {
-      const pay = `provider = $1 AND global_cfdi_id IS NULL AND refunded_cents < total_cents AND to_char(paid_at AT TIME ZONE '${TZ}', 'YYYY-MM') = $2
-        AND NOT EXISTS (SELECT 1 FROM cfdi_invoices x WHERE x.payment_id = billing_payments.id AND x.kind = 'payment' AND x.status <> 'void')`;
-      const any = (await c.query(`SELECT 1 FROM billing_payments WHERE ${pay} LIMIT 1`, [provider, period])).rows.length;
-      if (!any) return false;
-      const g = (await c.query(
-        `INSERT INTO cfdi_invoices (kind, global_period, payment_form, receiver) VALUES ('global', $1, $2, $3) ON CONFLICT DO NOTHING RETURNING id`,
-        [period, form, JSON.stringify({ ...PUBLIC, zip: config.billing.cfdi.issuerZip })],
-      )).rows[0];
-      if (!g) return false;
-      await c.query(`UPDATE billing_payments SET global_cfdi_id = $3, updated_at = now() WHERE ${pay}`, [provider, period, g.id]);
-      return true;
-    });
-    if (done) created++;
+    const pay = `provider = $1 AND global_cfdi_id IS NULL AND refunded_cents < total_cents AND to_char(paid_at AT TIME ZONE '${TZ}', 'YYYY-MM') = $2
+      AND NOT EXISTS (SELECT 1 FROM cfdi_invoices x WHERE x.payment_id = billing_payments.id AND x.kind = 'payment' AND x.status <> 'void')`;
+    const groups = await query<{ currency: string; tax_percent: string }>(`SELECT DISTINCT upper(currency) AS currency, tax_percent::text FROM billing_payments WHERE ${pay}`, [provider, period]);
+    for (const grp of groups) {
+      const done = await withTransaction(async (c) => {
+        const mine = `${pay} AND upper(currency) = $3 AND tax_percent = $4::numeric`;
+        // Un proceso a la vez por mes y forma de pago: así la siguiente global no se crea dos veces.
+        await c.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [`cfdi-global:${period}:${form}`]);
+        const any = (await c.query(`SELECT 1 FROM billing_payments WHERE ${mine} LIMIT 1`, [provider, period, grp.currency, grp.tax_percent])).rows.length;
+        if (!any) return false;
+        // Si la global de ese mes ya salió, los pagos que llegaron después van en otra del mismo mes (PAY-22).
+        const g = (await c.query(
+          `INSERT INTO cfdi_invoices (kind, global_period, payment_form, receiver, currency, tax_percent, seq)
+           VALUES ('global', $1, $2, $3, $4, $5::numeric, (SELECT coalesce(max(seq), 0) + 1 FROM cfdi_invoices
+             WHERE kind = 'global' AND global_period = $1 AND payment_form = $2 AND currency = $4 AND coalesce(tax_percent, -1) = $5::numeric))
+           ON CONFLICT DO NOTHING RETURNING id`,
+          [period, form, JSON.stringify({ ...PUBLIC, zip: config.billing.cfdi.issuerZip }), grp.currency, grp.tax_percent],
+        )).rows[0];
+        if (!g) return false;
+        await c.query(`UPDATE billing_payments SET global_cfdi_id = $5, updated_at = now() WHERE ${mine}`, [provider, period, grp.currency, grp.tax_percent, g.id]);
+        return true;
+      });
+      if (done) created++;
+    }
   }
   return created;
 }
@@ -174,15 +201,50 @@ const planName = async (key: string) => (await queryOne<{ name: string }>(`SELEC
 const period = (a: Date | null, b: Date | null) =>
   a && b ? ` del ${a.toLocaleDateString('es-MX', { timeZone: TZ })} al ${b.toLocaleDateString('es-MX', { timeZone: TZ })}` : '';
 
-/** Arma el documento. Devuelve null si ya no hay nada que facturar (todo reembolsado). */
-async function build(row: Cfdi): Promise<{ doc: CfdiDocument; invoiced: { id: string; cents: number }[] } | null> {
+/** Falta el tipo de cambio de un pago que no es en pesos: la factura espera (no sale en pesos). */
+const HOLD = { hold: 'exchange_rate' as const };
+
+/**
+ * Tipo de cambio (pesos por unidad) de un pago en otra moneda: el guardado o el del movimiento de saldo de Stripe, que se
+ * guarda. null si no hay uno confiable (Mercado Pago, o Stripe todavía no lo tiene).
+ */
+async function rateFor(p: { id: string; currency: string; provider: ProviderName; provider_charge_ref: string; exchange_rate: string | null }): Promise<number | null> {
+  if (p.currency.toUpperCase() === 'MXN') return 1;
+  if (p.exchange_rate) return Number(p.exchange_rate);
+  if (p.provider !== 'stripe' || !p.provider_charge_ref) return null;
+  const rate = await stripeExchangeRate(p.provider_charge_ref).catch(() => null);
+  if (rate) await query(`UPDATE billing_payments SET exchange_rate = $2, updated_at = now() WHERE id = $1 AND exchange_rate IS NULL`, [p.id, rate]);
+  return rate;
+}
+
+/** Moneda y tipo de cambio del documento: en pesos, nada; en otra moneda, su tipo de cambio (o null si falta). */
+async function currencyOf(ps: any[]): Promise<{ currency?: string; exchangeRate?: number } | null> {
+  const currency = String(ps[0].currency).toUpperCase();
+  if (currency === 'MXN') return {};
+  // Varios pagos (global): el tipo de cambio ponderado por monto, para que el total en pesos sea la suma de cada uno.
+  let foreign = 0;
+  let pesos = 0;
+  for (const p of ps) {
+    const rate = await rateFor(p);
+    if (!rate) return null;
+    const cents = p.total_cents - p.refunded_cents;
+    foreign += cents;
+    pesos += cents * rate;
+  }
+  return { currency, exchangeRate: Math.round((pesos / foreign) * 1e6) / 1e6 };
+}
+
+/** Arma el documento. Devuelve null si ya no hay nada que facturar (todo reembolsado), o `HOLD` si falta el tipo de cambio. */
+async function build(row: Cfdi): Promise<{ doc: CfdiDocument; invoiced: { id: string; cents: number }[] } | typeof HOLD | null> {
   const percent = taxPercent();
   if (row.kind === 'payment') {
     const p = await queryOne<any>(`SELECT * FROM billing_payments WHERE id = $1`, [row.payment_id]);
     const net = p ? p.total_cents - p.refunded_cents : 0;
     if (!(net > 0)) return null;
+    const cur = await currencyOf([p]);
+    if (!cur) return HOLD;
     return {
-      doc: { externalId: row.id, type: 'I', receiver: row.receiver, paymentForm: PAYMENT_FORM[p.provider as ProviderName], taxPercent: Number(p.tax_percent ?? percent),
+      doc: { externalId: row.id, type: 'I', receiver: row.receiver, paymentForm: PAYMENT_FORM[p.provider as ProviderName], taxPercent: Number(p.tax_percent ?? percent), ...cur,
         lines: [{ description: `Suscripción ${await planName(p.plan_key)}${period(p.period_start, p.period_end)}`, cents: net }] },
       invoiced: [{ id: p.id, cents: net }],
     };
@@ -190,11 +252,13 @@ async function build(row: Cfdi): Promise<{ doc: CfdiDocument; invoiced: { id: st
   if (row.kind === 'global') {
     const ps = await query<any>(`SELECT * FROM billing_payments WHERE global_cfdi_id = $1 AND refunded_cents < total_cents ORDER BY paid_at`, [row.id]);
     if (!ps.length) return null;
+    const cur = await currencyOf(ps);
+    if (!cur) return HOLD;
     const [year, months] = row.global_period.split('-');
     const lines = [];
     for (const p of ps) lines.push({ description: `Suscripción ${await planName(p.plan_key)} (pago ${p.provider_payment_id})`, cents: p.total_cents - p.refunded_cents });
     return {
-      doc: { externalId: row.id, type: 'I', receiver: row.receiver, paymentForm: row.payment_form, taxPercent: Number(ps[0].tax_percent ?? percent), lines, global: { months, year: Number(year) } },
+      doc: { externalId: row.id, type: 'I', receiver: row.receiver, paymentForm: row.payment_form, taxPercent: Number(ps[0].tax_percent ?? percent), ...cur, lines, global: { months, year: Number(year) } },
       invoiced: ps.map((p) => ({ id: p.id, cents: p.total_cents - p.refunded_cents })),
     };
   }
@@ -203,9 +267,12 @@ async function build(row: Cfdi): Promise<{ doc: CfdiDocument; invoiced: { id: st
   if (!origin || !p || !(row.amount_cents > 0)) return null;
   // Devoluciones (G02) si el régimen del receptor puede deducir; si no (o a público en general), sin efectos fiscales.
   const use = origin.kind === 'payment' && usesFor(origin.receiver.tax_regime).includes('G03') ? 'G02' : 'S01';
+  // En la moneda del pago, con su mismo tipo de cambio.
+  const cur = await currencyOf([p]);
+  if (!cur) return HOLD;
   return {
     doc: { externalId: row.id, type: 'E', receiver: { ...origin.receiver, cfdi_use: use }, paymentForm: origin.payment_form || PAYMENT_FORM[p.provider as ProviderName],
-      taxPercent: Number(p.tax_percent ?? percent), relatedUuid: origin.sat_uuid, lines: [{ description: `Reembolso del pago ${p.provider_payment_id}`, cents: row.amount_cents }] },
+      taxPercent: Number(p.tax_percent ?? percent), ...cur, relatedUuid: origin.sat_uuid, lines: [{ description: `Reembolso del pago ${p.provider_payment_id}`, cents: row.amount_cents }] },
     invoiced: [],
   };
 }
@@ -261,14 +328,25 @@ async function attempt(row: Cfdi, now: Date) {
       await query(`UPDATE cfdi_invoices SET status = 'void', updated_at = now() WHERE id = $1`, [row.id]);
       return;
     }
+    if ('hold' in built) {
+      // No sale en pesos: espera el tipo de cambio (se vuelve a buscar cada 6 horas, sin gastar intentos) y se avisa una vez.
+      const first = (await queryOne(`UPDATE cfdi_invoices SET hold = 'exchange_rate', attempts = GREATEST(attempts - 1, 0), next_attempt_at = now() + interval '6 hours',
+          last_error = 'pendiente: tipo de cambio', updated_at = now() WHERE id = $1 AND hold = '' RETURNING id`, [row.id]));
+      if (!first) await query(`UPDATE cfdi_invoices SET attempts = GREATEST(attempts - 1, 0), next_attempt_at = now() + interval '6 hours', updated_at = now() WHERE id = $1`, [row.id]);
+      else {
+        await logEvent({ level: 'warn', source: 'admin', message: `CFDI pendiente: tipo de cambio (${label(row)})`, accountId: row.account_id ?? undefined });
+        await alertPlatform(row.account_id, 'Factura pendiente: tipo de cambio', `La ${label(row)} (${row.id}) es de un pago en otra moneda y no hay un tipo de cambio confiable. No se emite en pesos: captura el tipo de cambio del pago en Planes y cobro → «Facturas que esperan el tipo de cambio» para que salga.`);
+      }
+      return;
+    }
     // Si el intento anterior sí timbró pero se perdió la respuesta, el CFDI ya existe en el PAC.
     const r = (await invoicer.findByExternal(row.id)) ?? (await invoicer.issue(built.doc));
     const total = built.doc.lines.reduce((s, l) => s + l.cents, 0);
     await withTransaction(async (c) => {
       await c.query(
         `UPDATE cfdi_invoices SET status = 'issued', provider_invoice_id = $2, sat_uuid = $3, series = $4, folio = $5, amount_cents = $6, payment_form = $7,
-           issued_at = now(), last_error = '', data_error = false, updated_at = now() WHERE id = $1`,
-        [row.id, r.id, r.uuid, r.series, r.folio, total, built.doc.paymentForm],
+           currency = $8, hold = '', issued_at = now(), last_error = '', data_error = false, updated_at = now() WHERE id = $1`,
+        [row.id, r.id, r.uuid, r.series, r.folio, total, built.doc.paymentForm, built.doc.currency ?? 'MXN'],
       );
       for (const p of built.invoiced) await c.query(`UPDATE billing_payments SET invoiced_cents = $2, updated_at = now() WHERE id = $1`, [p.id, p.cents]);
     });

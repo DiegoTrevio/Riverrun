@@ -56,6 +56,8 @@ function fillParams(url: string): string | null {
     [/^\/api\/ai-prices\/:model/, 'model'],
     // Los planes son globales (solo el superadmin los edita): la cuenta A debe recibir 403 sea cual sea la clave.
     [/^\/api\/plans\/:key/, 'bot'],
+    // El tipo de cambio de un pago lo captura solo el superadmin: la cuenta A recibe 403 con cualquier id.
+    [/^\/api\/billing\/payments\/:id/, 'bot'],
     [/^\/api\/webhook-endpoints\/:id/, 'endpoint'],
     [/^\/api\/api-keys\/:id/, 'apikey'],
     [/^\/api\/wa-pools\/:id/, 'wapool'],

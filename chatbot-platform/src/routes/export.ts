@@ -7,6 +7,7 @@ import { rateLimited } from '../auth.js';
 import { query } from '../db.js';
 import { listContactFields } from '../contacts/fields.js';
 import { csvStream, exportFilename } from '../export.js';
+import { stepUp } from '../identity/step-up.js';
 import { logEvent } from '../logs.js';
 import * as store from '../store/index.js';
 import { parse } from './util.js';
@@ -29,7 +30,7 @@ export async function exportRoutes(api: FastifyInstance) {
   };
 
   /* ------------------------------ Contactos ------------------------------ */
-  api.get('/api/export/contacts.csv', admins, async (req: any, reply) => {
+  api.get('/api/export/contacts.csv', { ...admins, ...stepUp }, async (req: any, reply) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
     const q = parse(z.object({ channel_id: z.string().uuid().optional(), tag: z.string().max(60).optional(), opted_out: z.enum(['true', 'false']).optional(), since: Day.optional() }), req.query);
     // Columnas de datos: primero los «Datos de tus clientes» de la cuenta, en su orden; luego los que piden los asistentes.
@@ -66,7 +67,7 @@ export async function exportRoutes(api: FastifyInstance) {
   });
 
   /* ------------------------------ Conversaciones ------------------------------ */
-  api.get('/api/export/conversations.csv', admins, async (req: any, reply) => {
+  api.get('/api/export/conversations.csv', { ...admins, ...stepUp }, async (req: any, reply) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
     const q = parse(z.object({ channel_id: z.string().uuid().optional(), chatbot_id: z.string().uuid().optional(), status: z.enum(['bot', 'human', 'closed']).optional(), from: Day.optional(), to: Day.optional() }), req.query);
     const header = ['id', 'contacto', 'telefono', 'canal', 'tipo_de_canal', 'asistente', 'estado', 'motivo_de_transferencia', 'mensajes', 'primer_mensaje', 'ultimo_mensaje', 'objetivo_cumplido', 'etapa', 'datos_de_la_conversacion', 'resumen'];
@@ -93,7 +94,7 @@ export async function exportRoutes(api: FastifyInstance) {
   });
 
   /* ------------------------------ Cotizaciones ------------------------------ */
-  api.get('/api/export/quotes.csv', admins, async (req: any, reply) => {
+  api.get('/api/export/quotes.csv', { ...admins, ...stepUp }, async (req: any, reply) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
     const q = parse(z.object({ from: Day.optional(), to: Day.optional() }), req.query);
     const header = ['folio', 'tipo', 'estado', 'cliente', 'telefono', 'moneda', 'subtotal_min', 'subtotal_max', 'iva_min', 'iva_max', 'total_min', 'total_max', 'conceptos', 'vigencia', 'creada', 'enviada', 'origen', 'conversacion'];
@@ -119,7 +120,7 @@ export async function exportRoutes(api: FastifyInstance) {
   });
 
   /* ------------------------------ Mensajes (transcripciones) ------------------------------ */
-  api.get('/api/export/messages.csv', admins, async (req: any, reply) => {
+  api.get('/api/export/messages.csv', { ...admins, ...stepUp }, async (req: any, reply) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
     const q = parse(z.object({ conversation_id: z.string().uuid().optional(), channel_id: z.string().uuid().optional(), from: Day.optional(), to: Day.optional() }), req.query);
     const header = ['id', 'fecha', 'conversacion', 'contacto', 'telefono', 'canal', 'direccion', 'remitente', 'tipo', 'texto', 'imagen', 'estado_de_envio'];
