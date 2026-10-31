@@ -65,4 +65,17 @@ export const checks = {
     await page.waitForTimeout(6000);
     assert.equal(await page.locator('details', { has: page.locator('summary', { hasText: 'Privacidad de este cliente' }) }).evaluate((d: HTMLDetailsElement) => d.open), true, 'el sondeo cerró «Privacidad de este cliente»');
   },
+  'Exportar → Contactos (CSV): con el código reciente descarga el archivo; sin él, lo pide antes': async ({ f, pool, open, go }: AreaContext) => {
+    const { page } = await open('admin');
+    // El menú «Exportar» está en la vista de tabla.
+    await go(page, 'conversations?vista=tabla');
+    await page.locator('summary', { hasText: 'Exportar' }).click();
+    const [file] = await Promise.all([page.waitForEvent('download'), page.getByRole('link', { name: 'Contactos (CSV)' }).click()]);
+    assert.match(file.suggestedFilename(), /\.csv$/);
+    // Sin código reciente, el panel lo pide antes de descargar (el enlace solo no daría un CSV sino un error).
+    await pool.query(`UPDATE user_sessions SET mfa_at = now() - interval '20 minutes' WHERE user_id = (SELECT id FROM users WHERE email = $1)`, [f.credentials.admin[0]]);
+    await page.locator('details.menu', { has: page.locator('summary', { hasText: 'Exportar' }) }).evaluate((d: any) => { d.open = true; });
+    await page.getByRole('link', { name: 'Mensajes completos (CSV)' }).click();
+    await page.getByRole('dialog').getByText(/código/i).first().waitFor();
+  },
 };
