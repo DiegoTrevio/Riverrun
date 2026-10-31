@@ -4,7 +4,8 @@ import { NoticeBody, sendNotice } from '../automation/notices.js';
 import { testConnectionAlert } from '../lifecycle.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { stepUp } from '../identity/step-up.js';
+import { assertRecentMfa, stepUp } from '../identity/step-up.js';
+import { addsDataOut } from '../automation/data-out.js';
 import { assertAccount, conversationFor, HttpError, notFound, requireRole, scopeAccount, targetAccount } from '../access.js';
 import * as astore from '../automation/store.js';
 import { AccountSettingsSchema, AutomationBodySchema, normalizeLabel, SequenceBodySchema, WaTemplateRefSchema, type Action, type AutomationBody, type FlowButton, type WaTemplateRef } from '../automation/types.js';
@@ -184,6 +185,8 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
   api.post('/api/automations', admins, async (req: any) => {
     const body = parse(AutomationBodySchema, req.body);
     const accountId = await targetAccount(req.user, req.body?.account_id);
+    // Mandar datos de clientes a una URL, un correo o un número nuevos pide el código, como crear un webhook.
+    if (addsDataOut(body.actions)) assertRecentMfa(req);
     await checkReferences(accountId, body);
     return astore.saveAutomation(accountId, body);
   });
@@ -192,6 +195,7 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
     const existing = await automationFor(req.user, req.params.id);
     const raw = (req.body ?? {}) as Partial<AutomationBody>;
     const body = parse(AutomationBodySchema, { ...existing, ...raw });
+    if (addsDataOut(body.actions, existing.actions)) assertRecentMfa(req);
     await checkReferences(existing.account_id, body, { clearMissing: true });
     return astore.saveAutomation(existing.account_id, body, existing.id);
   });
