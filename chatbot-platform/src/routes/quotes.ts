@@ -9,6 +9,7 @@ import { assertAccount, HttpError, notFound, requireRole, scopeAccount, targetAc
 import { attachmentAbsolutePath } from '../attachments.js';
 import { countHit } from '../identity/rate-limit.js';
 import { safeFileName } from '../channels/media.js';
+import { pool } from '../db.js';
 import { logEvent } from '../logs.js';
 import { AcceptBody, acceptedTotal, planCharges } from '../quotes/accept.js';
 import { quoteEvent } from '../quotes/agent.js';
@@ -224,6 +225,23 @@ export async function quoteRoutes(api: FastifyInstance, service: ChatService) {
    * recordatorios de pago: el total, un anticipo y el resto, o varias parcialidades.
    */
   api.post('/api/quotes/:id/accept', admins, async (req: any) => {
+    // Una aceptación a la vez por cotización: dos al mismo tiempo con planes distintos dejaban los cobros de las dos. La
+    // segunda no espera: responde 409 al momento (el candado vive en su propia conexión y se suelta al terminar).
+    const lock = await pool.connect();
+    try {
+      const got = (await lock.query('SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS ok', [`quote-accept:${req.params.id}`])).rows[0].ok;
+      if (!got) throw new HttpError(409, 'Esta cotización se está aceptando en otra sesión');
+      try {
+        return await acceptQuote(req);
+      } finally {
+        await lock.query('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [`quote-accept:${req.params.id}`]).catch(() => undefined);
+      }
+    } finally {
+      lock.release();
+    }
+  });
+
+  const acceptQuote = async (req: any) => {
     const quote = await quoteFor(req.user, req.params.id);
     if (quote.status !== 'sent') throw new HttpError(409, quote.status === 'accepted' ? 'Esta cotización ya está aceptada' : 'Solo se puede aceptar una cotización enviada al cliente');
     const body = parse(AcceptBody, req.body ?? {});
@@ -261,7 +279,7 @@ export async function quoteRoutes(api: FastifyInstance, service: ChatService) {
     if (quote.conversation_id) service.automator.emit({ type: 'quote_accepted', conversationId: quote.conversation_id, quote: quoteEvent(done) });
     await logEvent({ level: 'info', source: 'admin', message: `Cotización ${quote.folio} aceptada por el cliente (marcó ${req.user.email})${created.length ? `; ${created.length} cobro(s) creado(s)` : ''}`, accountId: quote.account_id, conversationId: quote.conversation_id });
     return { quote: done, receivables: created };
-  });
+  };
 
   /** El PDF (o el Word) generado de una cotización. */
   api.get('/api/quotes/:id/file', admins, async (req: any, reply) => {

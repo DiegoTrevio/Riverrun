@@ -337,3 +337,15 @@ t('con más de 2 000 pagos recurrentes activos, el más nuevo también genera su
   assert.match(over.json().error, /500 pagos recurrentes activos/);
   await pool.query(`UPDATE receivable_plans SET active = false WHERE account_id = $1`, [other]);
 });
+
+t('aceptar la misma cotización dos veces a la vez con planes distintos: una gana y no quedan cobros de más', async () => {
+  const q = await sentQuote([{ name: 'Banquete', qty: 1, price_mode: 'exact', price_min: 90000, price_max: null, iva_mode: 'plus' }]);
+  const [a, b] = await Promise.all([
+    h.authed('POST', `/api/quotes/${q.id}/accept`, { plan: { type: 'full', due_date: today(3) } }),
+    h.authed('POST', `/api/quotes/${q.id}/accept`, { plan: { type: 'installments', count: 3, every: 'month', first_due: today(5) } }),
+  ]);
+  assert.deepEqual([a.statusCode, b.statusCode].sort(), [200, 409], `${a.body} / ${b.body}`);
+  const won = a.statusCode === 200 ? a.json() : b.json();
+  const pending = (await pool.query(`SELECT count(*)::int AS n FROM receivables WHERE source = 'quote' AND source_id LIKE $1 AND status = 'pending'`, [`${q.id}:%`])).rows[0].n;
+  assert.equal(pending, won.receivables.length, 'solo los cobros del plan que ganó');
+});
