@@ -393,7 +393,12 @@ export async function billingRoutes(api: FastifyInstance) {
       throw await providerFailure(e, resume ? 'reanudar tu plan' : 'cancelar tu plan');
     }
     // El proveedor confirmará por aviso; mientras tanto se refleja en el panel.
-    await query(`UPDATE subscriptions SET cancel_at_period_end = $2, updated_at = now() WHERE account_id = $1`, [accountId, !resume]);
+    await query(
+      `UPDATE subscriptions SET cancel_at_period_end = $2,
+         pending_plan_key = CASE WHEN $2 AND provider = 'stripe' THEN '' ELSE pending_plan_key END,
+         pending_plan_since = CASE WHEN $2 AND provider = 'stripe' THEN NULL ELSE pending_plan_since END,
+         pending_amount_cents = CASE WHEN $2 AND provider = 'stripe' THEN 0 ELSE pending_amount_cents END,
+         updated_at = now() WHERE account_id = $1`, [accountId, !resume]);
     await logEvent({ level: 'info', source: 'admin', message: resume ? 'Cancelación del plan revertida' : 'Cancelación del plan solicitada', accountId });
     return { ok: true };
   });

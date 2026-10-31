@@ -154,6 +154,12 @@ export interface BillingProvider {
    * cambia el monto desde el siguiente cobro y no cambia el periodo (mensual o anual): eso va por sustitución.
    */
   changePlan(sub: Subscription, plan: Plan, o: { upgrade: boolean }): Promise<SubscriptionState>;
+  /**
+   * Programa el cambio al plan para el final del periodo pagado, sin reembolso (anual → mensual, PAY-11). Solo Stripe
+   * (con un calendario de la suscripción); `cancelScheduledChange` lo deshace.
+   */
+  schedulePlanChange?(sub: Subscription, plan: Plan): Promise<void>;
+  cancelScheduledChange?(sub: Subscription): Promise<void>;
   /** Estado actual de una suscripción (conciliación: por si un aviso se perdió). */
   subscriptionState(subscriptionId: string, plans: Plan[], now?: Date): Promise<SubscriptionState>;
   /** Cobros confirmados de la suscripción desde `since` (conciliación: los que no llegaron por aviso). */

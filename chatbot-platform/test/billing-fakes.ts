@@ -19,6 +19,8 @@ export const fake = {
     /** Códigos de promoción (GET /v1/promotion_codes?code=…) y configuraciones del portal creadas. */
     promoCodes: [] as any[],
     portalConfigs: [] as string[],
+    /** Calendarios de suscripción (cambio anual → mensual al terminar el periodo). */
+    schedules: {} as Record<string, any>,
     fraudWarnings: {} as Record<string, any>,
     /** El proveedor rechaza los reembolsos y las cancelaciones. */
     refundFail: false,
@@ -119,6 +121,24 @@ const stripeUrl = await serve((req, raw, res) => {
     if (!p) return json(res, 404, { error: { message: 'No such product' } });
     if (req.method === 'POST') Object.assign(p, { name: body.get('name') ?? p.name, active: body.get('active') !== 'false' });
     return json(res, 200, p);
+  }
+  if (path === '/v1/subscription_schedules' && req.method === 'POST') {
+    const sub = fake.stripe.subs[body.get('from_subscription') ?? ''];
+    if (!sub) return json(res, 404, { error: { message: 'No such subscription', code: 'resource_missing' } });
+    const id = `sub_sched_${++fake.stripe.n}`;
+    fake.stripe.schedules[id] = { id, subscription: sub.id, status: 'active', current_phase: { start_date: sub.current_period_end - 365 * 86400, end_date: sub.current_period_end }, phases: [] };
+    sub.schedule = id;
+    return json(res, 200, fake.stripe.schedules[id]);
+  }
+  const sc = path.match(/^\/v1\/subscription_schedules\/([\w-]+)(\/release)?$/);
+  if (sc) {
+    const sched = fake.stripe.schedules[sc[1]];
+    if (!sched) return json(res, 404, { error: { message: 'No such schedule', code: 'resource_missing' } });
+    if (sc[2]) {
+      sched.status = 'released';
+      if (fake.stripe.subs[sched.subscription]) fake.stripe.subs[sched.subscription].schedule = null;
+    } else if (req.method === 'POST') sched.update = body;
+    return json(res, 200, sched);
   }
   const dp = path.match(/^\/v1\/disputes\/([\w-]+)$/);
   if (dp) return fake.stripe.disputes[dp[1]] ? json(res, 200, fake.stripe.disputes[dp[1]]) : json(res, 404, { error: { message: 'No such dispute', code: 'resource_missing' } });

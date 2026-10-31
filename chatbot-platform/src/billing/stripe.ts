@@ -22,8 +22,12 @@ export function form(obj: Record<string, unknown>, prefix = ''): string[] {
   return out;
 }
 
-async function call(method: 'GET' | 'POST' | 'DELETE', path: string, body?: Record<string, unknown> | string): Promise<any> {
+function assertKeyAllowed() {
   if (!credentialAllowed(cfg().secretKey, TEST_KEYS)) throw new ProviderError('Stripe: en este entorno (OUTBOUND_MODE=sandbox) solo se usan claves de prueba');
+}
+
+async function call(method: 'GET' | 'POST' | 'DELETE', path: string, body?: Record<string, unknown> | string): Promise<any> {
+  assertKeyAllowed();
   const res = await fetch(cfg().apiUrl + path, {
     method,
     headers: { authorization: `Bearer ${cfg().secretKey}`, ...(body ? { 'content-type': 'application/x-www-form-urlencoded' } : {}) },
@@ -282,6 +286,7 @@ export const stripe: BillingProvider = {
   },
 
   async portal(customerId, returnUrl) {
+    assertKeyAllowed();
     const open = async (configuration: string) => call('POST', '/v1/billing_portal/sessions', { customer: customerId, return_url: returnUrl, configuration });
     let s;
     try {
@@ -299,7 +304,42 @@ export const stripe: BillingProvider = {
   },
 
   async setCancelAtPeriodEnd(sub, cancel) {
+    // Un cambio programado (anual → mensual) ya no aplica a una suscripción que se cancela.
+    if (cancel && sub.pending_plan_key) await stripe.cancelScheduledChange!(sub);
     await call('POST', `/v1/subscriptions/${encodeURIComponent(sub.provider_subscription_id)}`, { cancel_at_period_end: cancel ? 'true' : 'false' });
+  },
+
+  async schedulePlanChange(sub, plan) {
+    const s = await call('GET', `/v1/subscriptions/${encodeURIComponent(sub.provider_subscription_id)}`);
+    const price = s.items?.data?.[0]?.price?.id;
+    if (!price) throw new ProviderError('Stripe: la suscripción no tiene un concepto que cambiar');
+    let scheduleId = typeof s.schedule === 'string' ? s.schedule : s.schedule?.id;
+    if (!scheduleId) scheduleId = (await call('POST', '/v1/subscription_schedules', { from_subscription: sub.provider_subscription_id })).id;
+    const sched = await call('GET', `/v1/subscription_schedules/${encodeURIComponent(scheduleId)}`);
+    const now = sched.current_phase ?? sched.phases?.[0];
+    if (!now?.start_date || !now?.end_date) throw new ProviderError('Stripe: el calendario de la suscripción no tiene su periodo');
+    // Lo pagado sigue hasta su fin (sin reembolso); el plan nuevo empieza con el siguiente cobro y luego sigue solo.
+    await call('POST', `/v1/subscription_schedules/${encodeURIComponent(scheduleId)}`, {
+      end_behavior: 'release',
+      proration_behavior: 'none',
+      phases: [
+        { items: [{ price, quantity: 1 }], start_date: now.start_date, end_date: now.end_date },
+        { items: [{ ...(await priceOf(plan)), quantity: 1 }], iterations: 1, metadata: { account_id: sub.account_id, plan_key: plan.key } },
+      ],
+    });
+  },
+
+  async cancelScheduledChange(sub) {
+    const s = await call('GET', `/v1/subscriptions/${encodeURIComponent(sub.provider_subscription_id)}`);
+    const scheduleId = typeof s.schedule === 'string' ? s.schedule : s.schedule?.id;
+    if (!scheduleId) return;
+    try {
+      await call('POST', `/v1/subscription_schedules/${encodeURIComponent(scheduleId)}/release`, {});
+    } catch (e) {
+      // Ya liberado o terminado: no hay nada más que deshacer.
+      if (e instanceof ProviderError && (e.status === 404 || e.status === 400)) return;
+      throw e;
+    }
   },
 
   async changePlan(sub, plan, { upgrade }) {

@@ -221,7 +221,7 @@ export async function changePlan(o: { accountId: string; email: string; planKey:
   // al momento y, si el cobro falla, no cambia nada.
   if (sub.status === 'past_due' && sub.provider === 'mercadopago') throw new HttpError(400, 'Tienes un pago pendiente: actualiza tu tarjeta con «Cambiar tarjeta» antes de cambiar de plan.');
   if (sub.cancel_at_period_end) throw new HttpError(400, 'Tu plan está por cancelarse: primero elige «Mantener mi plan».');
-  const pending = sub.provider === 'mercadopago' ? sub.pending_plan_key : '';
+  const pending = sub.pending_plan_key;
   if (pending && pending === o.planKey) throw new HttpError(400, 'Ese cambio ya está programado para tu siguiente cobro.');
   if (sub.plan_key === o.planKey && !pending) throw new HttpError(400, 'Ya tienes ese plan');
   const plan = await getPlan(o.planKey);
@@ -229,10 +229,32 @@ export async function changePlan(o: { accountId: string; email: string; planKey:
   // El dueño elige su plan: desde aquí manda la suscripción, no el plan que el superadministrador había asignado (PAY-8).
   await query(`UPDATE accounts SET plan_source = 'provider' WHERE id = $1`, [o.accountId]);
   const from = await getPlan(sub.plan_key);
-  const upgrade = !from || monthly(plan) > monthly(from);
+  // Mensual → anual es subir (se cobra hoy, con prorrateo); anual → mensual es bajar y espera al fin del año pagado (PAY-11).
+  // Entre planes del mismo periodo se compara el precio mensual equivalente.
+  const toAnnual = !!from && from.billing_interval !== 'year' && plan.billing_interval === 'year';
+  const toMonthly = !!from && from.billing_interval === 'year' && plan.billing_interval !== 'year';
+  const upgrade = !from || toAnnual || (!toMonthly && monthly(plan) > monthly(from));
   if (!upgrade) await assertFitsPlan(o.accountId, plan);
   if (sub.provider === 'mercadopago' && from && from.billing_interval !== plan.billing_interval) {
     return { url: await startReplacement({ accountId: o.accountId, email: o.email, plan, base: o.base, ip: o.ip }) };
+  }
+  const acc0 = await queryOne<{ name: string }>(`SELECT name FROM accounts WHERE id = $1`, [o.accountId]);
+  if (sub.provider === 'stripe' && pending) {
+    // Elegir otro plan (o quedarse con el actual) deshace el cambio programado.
+    await providers.stripe.cancelScheduledChange!(sub);
+    await query(`UPDATE subscriptions SET pending_plan_key = '', pending_plan_since = NULL, pending_amount_cents = 0, updated_at = now() WHERE account_id = $1`, [o.accountId]);
+    if (plan.key === sub.plan_key) {
+      await logEvent({ level: 'info', source: 'admin', message: `Cambio de plan programado cancelado (stripe): sigue ${plan.key}`, accountId: o.accountId });
+      await tell(o.accountId, `Sigues con el plan ${plan.name}`, `Cancelamos el cambio que tenías programado: tu cuenta "${acc0?.name ?? ''}" sigue con el plan ${plan.name}.`);
+      return {};
+    }
+  }
+  if (sub.provider === 'stripe' && toMonthly) {
+    await providers.stripe.schedulePlanChange!(sub, plan);
+    await query(`UPDATE subscriptions SET pending_plan_key = $2, pending_plan_since = now(), pending_amount_cents = $3, updated_at = now() WHERE account_id = $1`, [o.accountId, plan.key, chargeCents(plan)]);
+    await logEvent({ level: 'info', source: 'admin', message: `Cambio de plan programado (stripe): ${sub.plan_key || '—'} → ${plan.key}, al terminar el periodo anual`, accountId: o.accountId });
+    await tell(o.accountId, `Tu plan cambia a ${plan.name}`, `El plan ${plan.name} de tu cuenta "${acc0?.name ?? ''}" empieza al terminar tu año pagado, el ${fmt(sub.current_period_end)} (${money(chargeCents(plan), plan.currency)} con IVA). Hasta entonces sigues con ${from ? `el plan ${from.name}` : 'tu plan actual'}; no hay reembolso por el año en curso.`);
+    return { scheduled: true, starts_at: sub.current_period_end };
   }
   // Mercado Pago cobra el monto nuevo hasta la siguiente renovación (no cobra la diferencia): al subir, el plan nuevo y
   // sus límites esperan ese cobro (`promotePendingPlan`). Si no, se usaría el plan caro todo el periodo pagando el barato.
@@ -385,7 +407,7 @@ async function applyStateLocked(state: SubscriptionState & { accountId: string }
   }
   // Un plan al que se subió en Mercado Pago empieza con el cobro de su monto (`promotePendingPlan`), no con este aviso,
   // que ya trae la referencia del plan nuevo.
-  const held = !!prev?.pending_plan_key && prev.provider === state.provider && prev.provider_subscription_id === state.subscriptionId
+  const held = !!prev?.pending_plan_key && state.provider === 'mercadopago' && prev.provider === state.provider && prev.provider_subscription_id === state.subscriptionId
     && state.planKey === prev.pending_plan_key;
   let planKey = (held ? prev!.plan_key : state.planKey) || prev?.plan_key || '';
   // Una sustitución a un plan más caro (mensual ↔ anual, o contratar otro tras cancelar) cobra por primera vez al terminar
@@ -424,6 +446,10 @@ async function applyStateLocked(state: SubscriptionState & { accountId: string }
       scheduled?.key ?? '', scheduled ? now : null, scheduled ? chargeCents(scheduled) : 0],
   );
 
+  // Stripe: el plan programado (anual → mensual) llegó con la renovación, o la suscripción se va a cancelar: ya no está pendiente.
+  if (state.provider === 'stripe' && prev?.pending_plan_key && prev.provider_subscription_id === state.subscriptionId && (planKey === prev.pending_plan_key || state.cancelAtPeriodEnd)) {
+    await query(`UPDATE subscriptions SET pending_plan_key = '', pending_plan_since = NULL, pending_amount_cents = 0, updated_at = now() WHERE account_id = $1`, [accountId]);
+  }
   // Una sustitución no es una contratación nueva: sigue del estado en que estaba (al corriente o con pago pendiente).
   const was = prev?.provider_subscription_id === state.subscriptionId || (replacing && ['active', 'past_due'].includes(prev!.status)) ? prev!.status : 'incomplete';
   const plan = planKey ? await getPlan(planKey) : null;
