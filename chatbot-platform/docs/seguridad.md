@@ -180,7 +180,18 @@ repartidos en las etapas 3b, 2c, 4, 5, 6, 9 y 10 del mismo plan.
 | ID-11 | El agente veía y operaba los cobros de todos los clientes, y podía crear uno con su propio enlace de pago a un cliente ajeno (desvío de pagos). | Como en conversaciones: el agente solo ve y opera cobros y pagos recurrentes de sus contactos asignados (lo demás, 404); el enlace de pago solo lo pone un administrador. | `visibility.test.ts`, `receivable-origins.test.ts` |
 | AI-5 (parte) | El nombre del contacto de la página abierta entra al prompt del Copiloto y el turno contaba como limpio: con un nombre armado como instrucción, cambiaba la configuración sin tarjeta. | Una página de cliente marca el turno como contaminado (la configuración se confirma; lo de esa ficha sigue directo) y el nombre va marcado como escrito por el cliente. | `copilot.test.ts` |
 
+**Revisión independiente de la etapa 3c.** Encontró que `checkZip` se saltaba con un fin de índice que declara menos
+partes de las que trae (PizZip lee mientras haya firma: una bomba como segunda parte pasaba), que borrar los datos de un
+contacto seguía sin código (otra vía para vaciar el historial), que el agente podía quitar el enlace de pago que puso un
+administrador y que la página contaminada del Copiloto no quedaba guardada en el turno. Todo eso quedó corregido, con su
+prueba. Lo que señaló y queda para después:
+- Las llaves de API sin creador (`created_by` nulo, solo por borrados hechos directo en la base) ya no entran: revisar en producción antes de desplegar si hay alguna.
+- El agente aún escribe texto libre que llega al cliente en el concepto y la referencia del cobro (podría poner ahí una cuenta).
+- Un host con una etiqueta de más de 63 caracteres ya no se reconoce como enlace (solo su sufijo); no resuelve en DNS.
+- Un `PUT /api/settings` con `retention.pending: null` cancela lo programado aunque venga de un panel desactualizado (borra menos y queda en la bitácora).
+
 **Cambios que nota la gente:**
+- Borrar los datos de un contacto pide el código si el último tiene más de 15 minutos.
 - Descargar los CSV de contactos, conversaciones o mensajes, y guardar una regla que manda datos a una URL, un correo o un número nuevos, piden el código si el último tiene más de 15 minutos.
 - La retención (Ajustes → Privacidad) la cambia solo el dueño, con 30 días como mínimo; si borra más, empieza 7 días después y le llega un correo («Cancelar el borrado programado» en Ajustes). Las cuentas con menos de 30 días quedaron en 30.
 - Borrar un canal con conversaciones es del dueño, con el código.

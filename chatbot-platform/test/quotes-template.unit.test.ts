@@ -91,6 +91,28 @@ test('formato: miles de partes se rechazan antes de abrir el archivo (IN-16)', (
   assert.deepEqual(inspectTemplate(many.generate({ type: 'nodebuffer' }) as Buffer).errors, ['El archivo tiene demasiadas partes internas']);
 });
 
+/** Escribe `count` como número de entradas en el fin del índice (EOCD): mentir aquí también es gratis. */
+function fakeCount(buf: Buffer, count: number): Buffer {
+  const out = Buffer.from(buf);
+  const at = out.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+  out.writeUInt16LE(count, at + 8);
+  out.writeUInt16LE(count, at + 10);
+  return out;
+}
+
+test('formato: un índice que dice tener menos partes de las que trae se rechaza sin abrirlo (IN-16)', () => {
+  const bomb = new PizZip();
+  bomb.file('[Content_Types].xml', '<Types/>');
+  bomb.file('word/document.xml', ' '.repeat(200 * 1024 * 1024));
+  const buf = fakeCount(bomb.generate({ type: 'nodebuffer', compression: 'DEFLATE' }) as Buffer, 1);
+  const started = performance.now();
+  assert.deepEqual(inspectTemplate(buf).errors, ['El archivo tiene demasiadas partes internas']);
+  assert.ok(performance.now() - started < 500, `${(performance.now() - started).toFixed(0)} ms`);
+  const many = new PizZip();
+  for (let i = 0; i < 2000; i++) many.file(`x${i}`, '');
+  assert.deepEqual(inspectTemplate(fakeCount(many.generate({ type: 'nodebuffer' }) as Buffer, 1)).errors, ['El archivo tiene demasiadas partes internas']);
+});
+
 test('formato: más de 2 000 marcas se rechaza antes de compilarlo (IN-16)', () => {
   const body = REQUIRED + Array.from({ length: 2100 }, (_, i) => p(`{{cliente.k${i}}}`)).join('');
   assert.deepEqual(inspectTemplate(docx(body)).errors, ['El formato tiene demasiadas marcas (máximo 2 000)']);

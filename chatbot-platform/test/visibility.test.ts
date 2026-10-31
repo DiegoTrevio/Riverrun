@@ -178,6 +178,7 @@ t('cobros: el agente solo ve y opera los de sus contactos, y no pone enlaces de 
   assert.equal((await h.authed('PUT', `/api/receivables/${own}`, { payment_link: 'https://pago.negocio.mx/a' })).statusCode, 200);
   const edited = await ana('PUT', `/api/receivables/${own}`, { concept: 'Consulta de seguimiento', payment_link: 'https://pago.negocio.mx/a' });
   assert.equal(edited.statusCode, 200, edited.body);
+  assert.equal((await ana('PUT', `/api/receivables/${own}`, { payment_link: '' })).statusCode, 403, 'tampoco quita el que puso el administrador');
   const plain = await ana('POST', '/api/receivables', { contact_id: mine.contact_id, concept: 'Extra', amount_cents: 100, due_date: due });
   assert.equal(plain.statusCode, 201, plain.body);
   assert.equal((await ana('GET', `/api/contacts/${mine.contact_id}/receivables`)).json().data.length, 2);

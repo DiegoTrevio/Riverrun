@@ -139,3 +139,12 @@ t('borrar un canal con conversaciones es del dueño con el código; uno vacío, 
   await owner('POST', '/api/2fa/step-up', { code: await h.codeFor('lucia@luna.mx') });
   assert.equal((await owner('DELETE', `/api/channels/${full}`)).statusCode, 200);
 });
+
+t('borrar los datos de un contacto pide el código reciente', async () => {
+  const ch = (await owner('POST', '/api/channels', { account_id: acc, type: 'webchat', name: 'Chat', config: {} })).json().id;
+  const contact = (await pool.query(`INSERT INTO contacts (account_id, channel_id, external_id) VALUES ($1, $2, 'v-2') RETURNING id`, [acc, ch])).rows[0].id;
+  await age('omar@luna.mx', 16);
+  assert.equal((await other('DELETE', `/api/contacts/${contact}`)).json().code, 'step_up');
+  await other('POST', '/api/2fa/step-up', { code: await h.codeFor('omar@luna.mx') });
+  assert.equal((await other('DELETE', `/api/contacts/${contact}`)).statusCode, 200);
+});

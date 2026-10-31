@@ -98,7 +98,11 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
     for (const id of [page.id, page.contactId]) if (id) ctx.scope.add(id);
     // La página de un cliente lleva su nombre al prompt, y ese nombre lo escribe el cliente: el turno cuenta como si
     // hubiera leído sus mensajes (lo de esa ficha sigue sin confirmación; la configuración se confirma).
-    if (page.contactId) ctx.tainted = true;
+    if (page.contactId) {
+      ctx.tainted = true;
+      // Queda en el turno: la respuesta (que puede citar el nombre) cuenta como contaminada en los turnos siguientes.
+      await cs.markTurn(turn.id, { tainted: true, contactIds: [page.contactId] });
+    }
     // Las acciones señaladas con «Cambiar esto» se pueden cambiar sin pedir confirmación aunque el turno lea mensajes de clientes.
     for (const a of await cs.actionsByIds(req.refs, thread.id)) {
       a.contact_ids.forEach((id) => ctx.scope.add(id));

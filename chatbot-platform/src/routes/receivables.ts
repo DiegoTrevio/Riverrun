@@ -161,8 +161,8 @@ export async function receivableRoutes(api: FastifyInstance, service: ChatServic
     return r;
   };
   /** El enlace de pago decide a quién le llega el dinero: solo lo pone o cambia un administrador. */
-  const assertLinkAllowed = (user: any, link: string | undefined) => {
-    if (user.role === 'agent' && link) throw new HttpError(403, 'Solo un administrador pone el enlace de pago');
+  const assertLinkAllowed = (user: any, link: string | undefined, current = '') => {
+    if (user.role === 'agent' && link !== undefined && link !== current) throw new HttpError(403, 'Solo un administrador pone el enlace de pago');
   };
 
   api.get('/api/receivables', team, async (req: any) => {
@@ -213,7 +213,7 @@ export async function receivableRoutes(api: FastifyInstance, service: ChatServic
     const r = await owned(req.user, req.params.id);
     if (r.status !== 'pending') throw new HttpError(409, 'Solo se puede editar un cobro pendiente');
     const b = parse(ReceivablePatch, req.body);
-    if (b.payment_link !== r.payment_link) assertLinkAllowed(req.user, b.payment_link);
+    assertLinkAllowed(req.user, b.payment_link, r.payment_link);
     if (b.reminders && b.reminders.length > config.receivables.maxReminders) throw new HttpError(400, `Hasta ${config.receivables.maxReminders} recordatorios por cobro`);
     if (b.conversation_id) {
       const conv = await queryOne(`SELECT 1 FROM conversations WHERE id = $1 AND account_id = $2 AND contact_id = $3`, [b.conversation_id, r.account_id, r.contact_id]);
@@ -295,7 +295,7 @@ export async function receivableRoutes(api: FastifyInstance, service: ChatServic
     enabled();
     const p = await ownedPlan(req.user, req.params.id);
     const b = parse(PlanPatch, req.body);
-    if (b.payment_link !== p.payment_link) assertLinkAllowed(req.user, b.payment_link);
+    assertLinkAllowed(req.user, b.payment_link, p.payment_link);
     const merged = { ...p, ...Object.fromEntries(Object.entries(b).filter(([, v]) => v !== undefined)) } as ReceivablePlan;
     if (!dayOk(merged)) throw new HttpError(400, DAY_MSG.message);
     if (merged.ends_on && merged.ends_on < merged.starts_on) throw new HttpError(400, 'La fecha de fin es antes del inicio');

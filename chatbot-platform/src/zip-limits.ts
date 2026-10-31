@@ -66,5 +66,8 @@ export function checkZip(buffer: Buffer, o: ZipLimits): string | null {
     if (size > room) return ZIP_TOO_BIG;
     total += size;
   }
+  // PizZip no se fía del número que declara el fin del índice: lee entradas mientras haya firma. Un archivo que dice
+  // tener 1 y trae miles (o una bomba como segunda) pasaría sin esto.
+  if (pos + 4 <= buffer.length && buffer.readUInt32LE(pos) === CENTRAL) return ZIP_TOO_MANY;
   return null;
 }

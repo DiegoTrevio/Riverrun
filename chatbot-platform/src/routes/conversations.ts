@@ -3,6 +3,7 @@ import { contactWorkspaceRoutes } from './contact-workspace.js';
 import { describeConversation } from '../automation/alert-format.js';
 import fs from 'node:fs';
 import type { FastifyInstance } from 'fastify';
+import { stepUp } from '../identity/step-up.js';
 import { z } from 'zod';
 import { assertAccount, contactFor, conversationFor, HttpError, scopeAccount, requireRole } from '../access.js';
 import { query, withTransaction } from '../db.js';
@@ -374,7 +375,8 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
   });
 
   /** Derecho de supresión: borra al contacto y todo su historial (no se puede deshacer). */
-  api.delete('/api/contacts/:id', async (req: any) => {
+  // Borra todo el historial de una persona al momento: pide el código, como borrar un canal con conversaciones (ID-13).
+  api.delete('/api/contacts/:id', stepUp, async (req: any) => {
     if (req.user.role === 'agent') throw new HttpError(403, 'Solo un administrador puede borrar los datos de un contacto');
     const contact = assertAccount(req.user, await store.getContact(req.params.id), 'Contacto no encontrado');
     const r = await eraseContact(contact.id);

@@ -77,6 +77,8 @@ function openZip(buffer: Buffer): { zip?: PizZip; errors: string[] } {
   if (problem) return { errors: [problem] };
   let zip: PizZip;
   try { zip = new PizZip(buffer); } catch { return { errors: ['El archivo está dañado o no es un Word (.docx)'] }; }
+  // Segunda revisión, ya abierto: las partes que de verdad leyó PizZip.
+  if (Object.keys(zip.files).length > MAX_ENTRIES) return { errors: ['El archivo tiene demasiadas partes internas'] };
   const names = Object.keys(zip.files);
   if (!zip.file('word/document.xml')) return { errors: ['El archivo no es un documento de Word (.docx)'] };
   const errors: string[] = [];
