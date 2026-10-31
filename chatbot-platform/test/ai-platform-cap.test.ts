@@ -106,3 +106,17 @@ t('los modelos por omisión tienen precio (también gemini-2.5-flash, para audio
     Object.assign(config.openai, before);
   }
 });
+
+t('un plan sin su propio tope lleva el de por omisión (PLAN_DEFAULT_AI_USD); con el suyo, el suyo', async () => {
+  const { platformAiCap } = await import('../src/ai/budget.js');
+  assert.equal((await h.authed('POST', '/api/plans', { key: 'sintope', name: 'Sin tope', price: 99, currency: 'MXN' })).statusCode, 200);
+  await pool.query(`UPDATE accounts SET plan = 'sintope', status = 'active' WHERE id = $1`, [h.accountId]);
+  try {
+    assert.equal(await platformAiCap(h.accountId), config.signup.planDefaultAiUsd);
+    assert.equal(config.signup.planDefaultAiUsd, 20);
+    await pool.query(`UPDATE plans SET ai_usd_per_month = 7 WHERE key = 'sintope'`);
+    assert.equal(await platformAiCap(h.accountId), 7);
+  } finally {
+    await pool.query(`UPDATE accounts SET plan = '' WHERE id = $1`, [h.accountId]);
+  }
+});

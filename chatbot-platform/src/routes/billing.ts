@@ -16,7 +16,7 @@ import { chargeCents, taxPercent } from '../billing/tax.js';
 import { ProviderError, WebhookError, type Plan, type ProviderName } from '../billing/types.js';
 import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
-import { limitsReport, LimitsSchema } from '../billing/limits.js';
+import { limitsReport, LimitsSchema, withPlanDefaults } from '../billing/limits.js';
 import { promotionCodeFor } from '../billing/stripe.js';
 import { countHit, ipLimitKey, limited, releaseHit } from '../identity/rate-limit.js';
 import { logEvent } from '../logs.js';
@@ -74,7 +74,8 @@ export async function providerFailure(e: unknown, action: string): Promise<HttpE
 /** Lo que el panel y el público necesitan de un plan (sin ids del proveedor ni datos internos, PAY-16). */
 const shownPlan = (p: any) => ({
   key: p.key, name: p.name, description: p.description, price: p.price, total: p.total, tax_percent: p.tax_percent, currency: p.currency,
-  interval: p.interval, billing_interval: p.billing_interval, limits: p.limits, price_cents: p.price_cents,
+  // Con el tope de archivos por omisión si el plan no tiene el suyo: lo que se muestra es lo que se aplica.
+  interval: p.interval, billing_interval: p.billing_interval, limits: withPlanDefaults(p.limits ?? {}), price_cents: p.price_cents,
 });
 
 export async function offeredPlans(accountId?: string) {
@@ -207,6 +208,7 @@ export async function billingRoutes(api: FastifyInstance) {
       counts,
       monthly_revenue: mrr.map((m) => ({ currency: m.currency, amount: Number(m.cents) / 100 })),
       grace_days: config.billing.graceDays,
+      plan_defaults: { ai_usd_per_month: config.signup.planDefaultAiUsd || null, storage_mb: config.signup.planDefaultStorageMb || null },
       tax_percent: taxPercent(),
       invoicing: { enabled: invoicer.enabled(), counts: await cfdiCounts() },
       // Pagos en otra moneda cuya factura espera el tipo de cambio (PAY-9).

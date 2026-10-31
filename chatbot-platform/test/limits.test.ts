@@ -60,11 +60,11 @@ t('el plan contratado manda sobre la prueba, y la excepción del superadmin sobr
   await pool.query(`UPDATE accounts SET status = 'active', plan = 'basico' WHERE id = $1`, [a.account]);
   let eff = await lim.effectiveLimits(a.account);
   assert.equal(eff.source, 'plan');
-  assert.deepEqual(eff.limits, { channels: 1, messages_per_month: 1000 });
+  assert.deepEqual(eff.limits, { channels: 1, messages_per_month: 1000, storage_mb: 1024 }, 'con el tope de archivos por omisión');
   await h.authed('PUT', `/api/accounts/${a.account}`, { limits_override: { channels: 10 } });
   eff = await lim.effectiveLimits(a.account);
   assert.equal(eff.source, 'override');
-  assert.deepEqual(eff.limits, { channels: 10, messages_per_month: 1000 }, 'la excepción cambia solo lo indicado');
+  assert.deepEqual(eff.limits, { channels: 10, messages_per_month: 1000, storage_mb: 1024 }, 'la excepción cambia solo lo indicado');
   await h.authed('PUT', `/api/accounts/${a.account}`, { limits_override: {} });
   assert.equal((await lim.effectiveLimits(a.account)).source, 'plan');
   // Una cuenta activada a mano, sin plan, no tiene límites
@@ -185,4 +185,13 @@ t('dos redes que se conectan a la vez con lugar para una: la segunda se quita co
   await assert.rejects(trimSocialOverLimit(a.account, 'acc_segunda'), (e: any) => e.statusCode === 403 && /1 red social/.test(e.message));
   const rows = (await pool.query(`SELECT zernio_account_id, status FROM social_accounts WHERE account_id = $1 ORDER BY connected_at`, [a.account])).rows;
   assert.deepEqual(rows.map((r) => [r.zernio_account_id, r.status]), [['acc_primera', 'active'], ['acc_segunda', 'disconnected']]);
+});
+
+t('un plan sin tope de archivos lleva el de por omisión (PLAN_DEFAULT_STORAGE_MB) y así se muestra', async () => {
+  const a = await signup('omision@limites.mx');
+  assert.equal((await h.authed('POST', '/api/plans', { key: 'basico-mb', name: 'Básico MB', price: 99, currency: 'MXN', limits: { channels: 1 } })).statusCode, 200);
+  await pool.query(`UPDATE accounts SET plan = 'basico-mb', status = 'active' WHERE id = $1`, [a.account]);
+  assert.equal((await lim.effectiveLimits(a.account)).limits.storage_mb, 1024);
+  await h.authed('PUT', '/api/plans/basico-mb', { key: 'basico-mb', name: 'Básico MB', price: 99, currency: 'MXN', limits: { channels: 1, storage_mb: 300 } });
+  assert.equal((await lim.effectiveLimits(a.account)).limits.storage_mb, 300);
 });

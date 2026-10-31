@@ -18,6 +18,7 @@ const LIMITS: [string, string, string][] = [
   ['chatbots', 'asistentes', 'asistente'],
   ['users', 'personas del equipo', 'persona del equipo'],
   ['social_accounts', 'redes sociales conectadas', 'red social conectada'],
+  ['storage_mb', 'MB para tus archivos', 'MB para tus archivos'],
 ];
 const HEX = /^#[0-9a-f]{3,8}$/i;
 
@@ -35,7 +36,8 @@ function planCta(p: Offered, o: { signup: boolean; trialDays: number }) {
 
 function planCard(p: Offered, o: { signup: boolean; trialDays: number }) {
   const per = p.billing_interval === 'year' ? 'año' : 'mes';
-  const limits = LIMITS.filter(([k]) => p.limits?.[k]).map(([k, pl, sg]) => `<li>${esc(Number(p.limits[k]).toLocaleString('es-MX'))} ${p.limits[k] === 1 ? sg : pl}</li>`);
+  const lim = (p.limits ?? {}) as Record<string, number | null | undefined>;
+  const limits = LIMITS.filter(([k]) => lim[k]).map(([k, pl, sg]) => `<li>${esc(Number(lim[k]).toLocaleString('es-MX'))} ${lim[k] === 1 ? sg : pl}</li>`);
   return `<article class="plan">
   <h2>${esc(p.name)}</h2>
   <p class="price"><strong>$${esc(amount(p.price))}</strong> <span>${esc(p.currency)}${p.tax_percent ? ' + IVA' : ''} / ${per}</span></p>

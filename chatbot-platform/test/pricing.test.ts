@@ -40,7 +40,7 @@ t('muestra los planes activos con precio + IVA, total, límites y el botón al r
   assert.match(r.body, /1,000 mensajes del asistente al mes/);
   assert.match(r.body, /1 canal \(WhatsApp/);
   assert.match(r.body, /\$4,990<\/strong> <span>MXN \+ IVA \/ año/);
-  assert.match(r.body, /Sin límites de uso/);
+  assert.match(r.body, /1,024 MB para tus archivos/, 'un plan sin límites propios muestra el tope de archivos por omisión');
   assert.match(r.body, /<a class="btn" href="\/#\/registro">Probar 14 días gratis<\/a>/, 'la prueba gratis va al registro sin plan');
   assert.match(r.body, /href="\/#\/registro\?plan=pro">Contratar<span class="sr"> el plan Pro/, 'contratar lleva al registro con el plan, que pasa al pago');
   assert.match(r.body, /href="\/#\/registro\?plan=anual">Contratar/);

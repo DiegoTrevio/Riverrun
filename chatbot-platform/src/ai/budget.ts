@@ -67,11 +67,13 @@ export async function unpricedModels():Promise<string[]> {
 }
 /** Tope de IA al mes que pone la plataforma: la excepción de la cuenta, el de su plan o el de la prueba (null = sin tope). */
 export async function platformAiCap(accountId:string,client?:import('pg').PoolClient):Promise<number|null> {
- const sql=`SELECT a.status,a.ai_usd_override,p.ai_usd_per_month FROM accounts a LEFT JOIN plans p ON p.key=a.plan WHERE a.id=$1`;
+ const sql=`SELECT a.status,a.ai_usd_override,p.key AS plan_key,p.ai_usd_per_month FROM accounts a LEFT JOIN plans p ON p.key=a.plan WHERE a.id=$1`;
  const r=client?(await client.query(sql,[accountId])).rows[0]:await queryOne<any>(sql,[accountId]);
  if(!r)return null;
  if(r.ai_usd_override!==null)return Number(r.ai_usd_override);
  if(r.ai_usd_per_month!==null&&r.ai_usd_per_month!==undefined)return Number(r.ai_usd_per_month);
+ // Un plan sin su propio tope lleva el de por omisión (PLAN_DEFAULT_AI_USD).
+ if(r.plan_key&&config.signup.planDefaultAiUsd>0)return config.signup.planDefaultAiUsd;
  return r.status==='trial'&&config.signup.trialAiUsd>0?config.signup.trialAiUsd:null;
 }
 async function reserve(accountId:string,chatbotId:string|null,spec:Spec) {

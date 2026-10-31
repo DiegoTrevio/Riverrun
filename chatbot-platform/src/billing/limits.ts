@@ -60,6 +60,11 @@ export function trialLimits(): Limits {
   return out;
 }
 
+/** Un plan sin su propio tope de archivos lleva el de por omisión (PLAN_DEFAULT_STORAGE_MB). */
+export function withPlanDefaults(l: Limits): Limits {
+  return l.storage_mb || config.signup.planDefaultStorageMb <= 0 ? l : { ...l, storage_mb: config.signup.planDefaultStorageMb };
+}
+
 export interface EffectiveLimits {
   limits: Limits;
   source: 'override' | 'plan' | 'trial' | 'none';
@@ -74,7 +79,7 @@ export async function effectiveLimits(accountId: string, q?: Q): Promise<Effecti
   // Un plan que ya no existe (clave mal escrita o borrada) no puede dejar a la cuenta sin límites: se aplican los de prueba.
   const missingPlan = !!acc.plan && !plan;
   if (missingPlan) await logEvent({ level: 'error', source: 'admin', message: `La cuenta tiene el plan "${acc.plan}", que no existe; se aplican límites restrictivos`, accountId });
-  const base = plan ? clean(plan.limits) : acc.status === 'trial' || missingPlan ? trialLimits() : {};
+  const base = plan ? withPlanDefaults(clean(plan.limits)) : acc.status === 'trial' || missingPlan ? trialLimits() : {};
   const source = Object.keys(override).length ? 'override' : plan ? 'plan' : acc.status === 'trial' || missingPlan ? 'trial' : 'none';
   // La excepción puede cambiar solo algunos límites: el resto sigue el plan.
   return { limits: { ...base, ...override }, source, plan_key: acc.plan };
@@ -140,7 +145,7 @@ export async function nextPlanFor(accountId: string, key: LimitKey, needed: numb
   // Quien paga cada mes no debería ver como "siguiente plan" un compromiso anual solo por salir más barato al mes.
   const period = plans.find((p) => p.key === acc?.plan)?.billing_interval ?? 'month';
   const best = plans
-    .map((p) => ({ ...p, lim: clean(p.limits) }))
+    .map((p) => ({ ...p, lim: withPlanDefaults(clean(p.limits)) }))
     .filter((p) => p.key !== acc?.plan && fits(p.lim[key], needed) && LIMIT_KEYS.every((k) => k === key || k === 'messages_per_month' || fits(p.lim[k], used[k])))
     .sort((a, b) => Number(a.billing_interval !== period) - Number(b.billing_interval !== period) || monthly(a) - monthly(b))[0];
   if (!best) return null;
