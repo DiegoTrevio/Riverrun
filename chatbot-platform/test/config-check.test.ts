@@ -105,6 +105,10 @@ test('POSTGRES_PASSWORD=cambia-esta-clave en producción es crítico y no arranc
     [{ EVOLUTION_API_KEY: 'cambia-esta-clave-larga' }, 'evolution.key_example'],
     [{ EVOLUTION_API_KEY: 'CAMBIA-ESTA-CLAVE' }, 'evolution.key_example'],
     [{ SESSION_SECRET: 'cambia-esta-clave-larga' }, 'session_secret.example'],
+    // Con espacios o comillas sigue siendo la de ejemplo; y sin DATABASE_URL también se revisa POSTGRES_PASSWORD.
+    [{ EVOLUTION_API_KEY: 'cambia-esta-clave-larga ' }, 'evolution.key_example'],
+    [{ SESSION_SECRET: ' "cambia-esta-clave" ' }, 'session_secret.example'],
+    [{ DATABASE_URL: '', POSTGRES_PASSWORD: 'cambia-esta-clave' }, 'database.example_password'],
   ];
   for (const [over, id] of cases) {
     const r = validateConfig(installed(over));

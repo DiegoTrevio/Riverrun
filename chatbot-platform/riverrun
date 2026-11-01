@@ -263,17 +263,23 @@ abort_update() {
 # antes de confiar en ella, en lugar de ejecutar un script bajado de internet (curl … | sh).
 DOCKER_GPG_FPR="9DC858229FC7DD38854AE2D88D81803C0EBFCD88"
 
-# Instala Docker y su plugin compose desde el repositorio apt oficial (Debian y Ubuntu). RIVERRUN_ETC solo existe para
-# las pruebas (un /etc de mentira); en un servidor es /etc y hace falta ser root.
+# Instala Docker y su plugin compose desde el repositorio apt oficial (Debian, Ubuntu y sus derivados de Ubuntu).
+# RIVERRUN_ETC (un /etc de mentira) solo se acepta con RIVERRUN_TEST=1, para las pruebas; en un servidor es /etc y hace
+# falta ser root.
 cmd_install_docker() {
-  local etc="${RIVERRUN_ETC:-/etc}"
-  [[ -n "${RIVERRUN_ETC:-}" || "$(id -u)" == "0" ]] || die "Instalar Docker requiere root (sudo ./riverrun install-docker)"
-  [[ -r "$etc/os-release" ]] || die "No se reconoce el sistema: instala Docker con la guía oficial (https://docs.docker.com/engine/install/)"
-  local id codename
-  id="$(sed -n 's/^ID=//p' "$etc/os-release" | tr -d '"' | head -n 1)"
-  codename="$(sed -n 's/^VERSION_CODENAME=//p' "$etc/os-release" | tr -d '"' | head -n 1)"
-  case "$id" in ubuntu|debian) ;; *) die "Este instalador solo conoce Debian y Ubuntu ($id): instala Docker con la guía oficial (https://docs.docker.com/engine/install/)" ;; esac
-  [[ -n "$codename" ]] || die "No se encontró la versión de $id (VERSION_CODENAME): instala Docker con la guía oficial (https://docs.docker.com/engine/install/)"
+  local etc=/etc
+  if [[ "${RIVERRUN_TEST:-}" == "1" && -n "${RIVERRUN_ETC:-}" ]]; then etc="$RIVERRUN_ETC"
+  else [[ "$(id -u)" == "0" ]] || die "Instalar Docker requiere root (sudo ./riverrun install-docker)"; fi
+  local guide="instala Docker con la guía oficial (https://docs.docker.com/engine/install/)"
+  [[ -r "$etc/os-release" ]] || die "No se reconoce el sistema: $guide"
+  local id like codename ubuntu_codename
+  osval() { sed -n "s/^$1=//p" "$etc/os-release" | tr -d '"' | head -n 1; }
+  id="$(osval ID)"; like="$(osval ID_LIKE)"; codename="$(osval VERSION_CODENAME)"; ubuntu_codename="$(osval UBUNTU_CODENAME)"
+  # Como en la guía de Docker: los derivados de Ubuntu (Mint, Pop!_OS…) usan el repositorio de Ubuntu con su UBUNTU_CODENAME.
+  if [[ "$id" != ubuntu && "$id" != debian && " $like " == *" ubuntu "* && -n "$ubuntu_codename" ]]; then id=ubuntu; fi
+  [[ "$id" == ubuntu && -n "$ubuntu_codename" ]] && codename="$ubuntu_codename"
+  case "$id" in ubuntu|debian) ;; *) die "Este instalador solo conoce Debian y Ubuntu ($id): $guide" ;; esac
+  [[ "$codename" =~ ^[a-z0-9]+$ ]] || die "No se reconoce la versión de $id (VERSION_CODENAME): $guide"
 
   say "Instalando Docker desde su repositorio oficial ($id $codename)…"
   apt-get update -qq
@@ -281,10 +287,14 @@ cmd_install_docker() {
   local tmp fpr
   tmp="$(mktemp)"
   curl -fsSL "https://download.docker.com/linux/$id/gpg" -o "$tmp" || { rm -f "$tmp"; die "No se pudo descargar la llave de Docker"; }
-  fpr="$(gpg --show-keys --with-colons "$tmp" 2>/dev/null | awk -F: '/^fpr:/ { print $10; exit }')"
-  if [[ "$fpr" != "$DOCKER_GPG_FPR" ]]; then
+  # Una sola llave (un archivo con la de Docker y otra más pasaría si solo se viera la primera) y con la huella esperada.
+  local keys pubs
+  keys="$(gpg --show-keys --with-colons "$tmp" 2>/dev/null || true)"
+  pubs="$(grep -c '^pub:' <<<"$keys" || true)"
+  fpr="$(awk -F: '/^pub:/ { p = 1; next } p && /^fpr:/ { print $10; exit }' <<<"$keys")"
+  if [[ "$pubs" != "1" || "$fpr" != "$DOCKER_GPG_FPR" ]]; then
     rm -f "$tmp"
-    die "La llave descargada de Docker no tiene la huella esperada ($DOCKER_GPG_FPR, llegó ${fpr:-ninguna}): no se instala nada"
+    die "La llave descargada de Docker no es la esperada (huella $DOCKER_GPG_FPR; llegaron $pubs llave(s), la primera ${fpr:-sin huella}): no se instala nada"
   fi
   install -d -m 0755 "$etc/apt/keyrings" "$etc/apt/sources.list.d"
   install -m 0644 "$tmp" "$etc/apt/keyrings/docker.asc"
@@ -323,6 +333,11 @@ cmd_install() {
     if [[ -z "$cur" || "$cur" == cambia-esta-clave* ]]; then
       case "$k" in POSTGRES_PASSWORD) env_set "$k" "$(rand 16)" ;; *) env_set "$k" "$(rand 32)" ;; esac
       gen=1
+      # Una base que ya existía guarda la contraseña anterior en su volumen: hay que cambiarla también adentro.
+      if [[ "$k" == POSTGRES_PASSWORD && "$NEW" != "1" && -n "$cur" ]]; then
+        warn "Se generó una contraseña nueva para la base (la de ejemplo es pública). Si la base ya existía, cámbiala también en PostgreSQL:"
+        warn "  docker compose exec postgres psql -U chatbot -c \"ALTER USER chatbot PASSWORD '\$(grep '^POSTGRES_PASSWORD=' .env | cut -d= -f2-)'\""
+      fi
     fi
   done
   (( gen )) && ok "Claves internas generadas"
