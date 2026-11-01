@@ -354,6 +354,18 @@ t('AI-14: una regla que etiqueta o guarda un dato y dispara otra que manda mensa
     assert.equal(field.status, 'proposed', JSON.stringify(field));
     assert.ok(field.reasons.some((r: string) => /«Envío por ciudad»/.test(r)));
 
+    // Pasar a una persona dispara las reglas de «handoff»; y la cadena sigue también por un dato guardado.
+    ids.push(await make({ name: 'Aviso de persona', trigger: { type: 'handoff' }, actions: [{ type: 'send_message', text: 'Te atiende alguien' }] }));
+    ids.push(await make({ name: 'Marca ciudad', trigger: { type: 'tag_added', tag: 'local' }, actions: [{ type: 'set_field', field: 'ciudad', value: 'CDMX' }] }));
+    script([call('crear_regla', { nombre: 'Pasa a persona', cuando: { type: 'message_received', match: 'any' }, acciones: [{ type: 'handoff' }] }), 'Confírmalo.']);
+    const hand = lastAction(await ask(owner, 'A quien escriba, pásalo a una persona'));
+    assert.equal(hand.status, 'proposed', JSON.stringify(hand));
+    assert.ok(hand.reasons.some((r: string) => /«Aviso de persona»/.test(r)));
+    script([call('crear_regla', { nombre: 'Locales', cuando: { type: 'message_received', match: 'any' }, acciones: [{ type: 'add_tag', tag: 'local' }] }), 'Confírmalo.']);
+    const chain = lastAction(await ask(owner, 'Etiqueta como local a quien escriba'));
+    assert.equal(chain.status, 'proposed', JSON.stringify(chain));
+    assert.ok(chain.reasons.some((r: string) => /«Envío por ciudad»/.test(r)), JSON.stringify(chain.reasons));
+
     // En pausa no dispara nada: se crea sin tarjeta.
     script([call('crear_regla', { nombre: 'Promo en pausa', activa: false, cuando: { type: 'message_received', match: 'any' }, acciones: [{ type: 'add_tag', tag: 'promo' }] }), 'Listo.']);
     const paused = lastAction(await ask(owner, 'Déjala en pausa'));

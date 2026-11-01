@@ -7,7 +7,7 @@ import { z } from 'zod';
 import { ActionSchema, ConditionSchema, TriggerSchema } from '../../automation/types.js';
 import { path, ToolError } from '../executor.js';
 import { defineTool, type Ctx, type RiskInfo, type TriggerHint } from '../registry.js';
-import { OUTWARD } from '../risk.js';
+import { actionEvents, OUTWARD } from '../risk.js';
 import { stableJson } from '../store.js';
 import { links, when } from '../summarize.js';
 import { Id } from './common.js';
@@ -106,13 +106,11 @@ function ruleRisk(rule: { active?: boolean; actions?: any[]; stop_ai?: boolean }
 }
 
 /**
- * Lo que la regla, activa, dispara en otras reglas (AI-14): sus etiquetas y datos guardados. Con eso `assessRisk` busca
+ * Lo que la regla, activa, dispara en otras reglas (AI-14): etiquetas, datos guardados, pasar a una persona. Con eso `assessRisk` busca
  * las reglas activas que mandan algo hacia afuera (siguiendo la cadena), igual que con `etiquetar`.
  */
 function ruleEvents(rule: { active?: boolean; actions?: any[] }): TriggerHint[] {
-  if (rule.active === false) return [];
-  return (rule.actions ?? []).flatMap((x): TriggerHint[] =>
-    x.type === 'add_tag' && x.tag ? [{ type: 'tag_added', value: x.tag }] : x.type === 'set_field' && x.field ? [{ type: 'data_captured', value: x.field }] : []);
+  return rule.active === false ? [] : (rule.actions ?? []).flatMap(actionEvents);
 }
 
 /** Una acción completa para quien confirma: el texto entero de lo que se envía y a qué números. */

@@ -335,10 +335,12 @@ sigue pendiente.
 
 | # | Hallazgo | Arreglo | Prueba |
 |---|---|---|---|
-| AI-14 | `crear_regla` y `cambiar_regla` del Copiloto no seguían la cadena de etiquetas: «a quien escriba, etiquétalo promo» se creaba sin tarjeta y disparaba una regla existente de envío masivo. | Las dos herramientas declaran lo que la regla, activa, dispara (`add_tag` → etiqueta, `set_field` → dato guardado); `assessRisk` busca las reglas activas que mandan algo afuera (hasta tres saltos), como ya hacía `etiquetar`. Una regla en pausa, o solo renombrarla o pausarla, sigue sin tarjeta. | `copilot.config.test.ts` |
-| Bajo | Con un proveedor que no reporta `cost_usd` (distinto de OpenRouter), el Copiloto sumaba 0 y su tope por pedido nunca cortaba. | Al liquidar la llamada, quien llama recibe el costo estimado con `ai_prices` y los tokens. | `copilot.test.ts` |
-| Bajo | Importar una página guardaba el texto que la página esconde (`display:none`) y se podía guardar sin revisar (`save`). | `htmlToText` salta lo oculto (`hidden`, `aria-hidden="true"`, `display:none`, `visibility:hidden`) con su contenido, en una sola pasada; solo cuentan los atributos reales. La importación ya no guarda con `save`: devuelve la propuesta y se guarda desde la revisión («Volver a sincronizar» también abre la revisión). | `html-to-text.unit.test.ts`, `import.test.ts` |
-| Bajo | Las respuestas automáticas en redes podían publicar lo que el comentario indujera. | Además de los datos sin respaldo, va a revisión una respuesta con `@`, `#` o un enlace, o con más de la mitad de sus palabras largas fuera de la información del negocio y del comentario (con al menos 4). La bandeja dice el motivo. | `social-comments.test.ts` |
+| AI-14 | `crear_regla` y `cambiar_regla` del Copiloto no seguían la cadena de etiquetas: «a quien escriba, etiquétalo promo» se creaba sin tarjeta y disparaba una regla existente de envío masivo. | Las dos herramientas declaran lo que la regla, activa, dispara (`actionEvents`: etiqueta, dato guardado, pasar a una persona, pausar al asistente); `assessRisk` busca las reglas activas que mandan algo afuera y sigue la cadena por esos mismos eventos (hasta tres saltos), como ya hacía `etiquetar`. Una regla en pausa, o solo renombrarla o pausarla, sigue sin tarjeta. | `copilot.config.test.ts` |
+| Bajo | Con un proveedor que no reporta `cost_usd` (distinto de OpenRouter), el Copiloto sumaba 0 y su tope por pedido nunca cortaba. | Al liquidar la llamada, quien llama recibe una copia con el costo estimado con `ai_prices` y los tokens (`cost_estimated`); la respuesta del proveedor no se toca. | `copilot.test.ts` |
+| Bajo | Importar una página guardaba el texto que la página esconde (`display:none`) y se podía guardar sin revisar (`save`). | `htmlToText` salta lo oculto (`hidden`; en el estilo en línea `display:none`, `visibility:hidden|collapse`, `opacity:0`, `font-size:0`, con entidades, comentarios y escapes de CSS resueltos) con su contenido, en tiempo lineal; solo cuentan los atributos reales y el `>` dentro de comillas no corta la etiqueta. Un oculto sin cierre descarta lo que sigue. `aria-hidden` no cuenta (no oculta a la vista). La importación ya no guarda con `save`: devuelve la propuesta y se guarda desde la revisión («Volver a sincronizar» también abre la revisión). | `html-to-text.unit.test.ts`, `import.test.ts` |
+| Bajo | Las respuestas automáticas en redes podían publicar lo que el comentario indujera. | Además de los datos sin respaldo, va a revisión una respuesta con `@`, `#` (también de ancho completo) o un enlace (cualquier dominio, IP o `bit[.]ly`), con más de la mitad de sus palabras largas fuera de la información del negocio y del comentario (con al menos 4), o que repite tres o más palabras del comentario que no están en la información del negocio. La bandeja dice el motivo. | `social-comments.test.ts` |
+
+Revisión independiente: encontró la cadena de reglas por «pasar a una persona» y datos guardados, una pasada no lineal con nombres de etiqueta distintos, formas de esconder texto que no se detectaban (`>` en comillas, entidades, comentarios de CSS) y menciones o enlaces que se colaban; todo quedó corregido y probado.
 
 **Cambios que nota la gente:**
 - «Volver a sincronizar» ya no guarda directo: muestra lo leído para revisarlo y guardarlo.
@@ -346,7 +348,9 @@ sigue pendiente.
 
 **Queda para después:**
 - Lo que una página oculta con una hoja de estilos (una clase) no se detecta; tampoco el texto del mismo color que el fondo.
-- La revisión del vocabulario de las respuestas en redes es por palabras (umbral fijo), no por significado.
+- La revisión del vocabulario de las respuestas en redes es por palabras (umbral fijo), no por significado; una frase corta (menos de 4 palabras largas) no la activa.
+- AI-14: la cadena de reglas no sigue los cambios de columna del embudo que hace una etiqueta, y se corta a los tres saltos.
+- Con un modelo sin precio en `ai_prices`, el tope por pedido del Copiloto sigue sin poder contar el costo.
 - `npm run eval:copilot` (simulado): 20 de 22. «dato» y «oportunidad» ya fallaban igual en `main` antes de esta etapa (el Copiloto propone en lugar de aplicar); se revisan aparte.
 
 ## Hallazgos pendientes por etapa

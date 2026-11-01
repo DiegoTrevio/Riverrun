@@ -14,7 +14,22 @@ import { riskInfo } from './registry.js';
 export const OUTWARD = new Set(['send_message', 'start_sequence', 'webhook', 'send_conversation', 'send_report']);
 const CONFIG_AREAS = new Set(['agente', 'automatizacion', 'cuenta']);
 
-interface RuleRow { name: string; trigger: Record<string, any>; actions: { type: string; tag?: string }[] }
+interface RuleRow { name: string; trigger: Record<string, any>; actions: { type: string; tag?: string; field?: string; take_over?: boolean }[] }
+
+/**
+ * Eventos que una acción de regla provoca en el motor (`automator.ts`), y que a su vez disparan otras reglas: etiquetar,
+ * guardar un dato, pasar a una persona (también `assign` con `take_over`) y pausar al asistente.
+ */
+export function actionEvents(a: { type: string; tag?: string; field?: string; take_over?: boolean }): TriggerHint[] {
+  switch (a.type) {
+    case 'add_tag': return a.tag ? [{ type: 'tag_added', value: a.tag }] : [];
+    case 'set_field': return a.field ? [{ type: 'data_captured', value: a.field }] : [];
+    case 'handoff': return [{ type: 'handoff' }];
+    case 'assign': return a.take_over ? [{ type: 'handoff' }] : [];
+    case 'pause_bot': return [{ type: 'agent_off' }];
+    default: return [];
+  }
+}
 
 function matches(trigger: Record<string, any>, hint: TriggerHint): boolean {
   if (trigger?.type !== hint.type) return false;
@@ -34,7 +49,7 @@ function matches(trigger: Record<string, any>, hint: TriggerHint): boolean {
 
 /**
  * Reglas activas de la cuenta que se dispararían con estos eventos y que mandan algo hacia afuera. Una regla que agrega
- * una etiqueta dispara a su vez las reglas de esa etiqueta: se siguen hasta tres saltos.
+ * una etiqueta, guarda un dato o pasa a una persona dispara a su vez otras reglas: se siguen hasta tres saltos.
  */
 export async function outwardRules(accountId: string, hints: TriggerHint[]): Promise<string[]> {
   if (!hints.length) return [];
@@ -46,7 +61,7 @@ export async function outwardRules(accountId: string, hints: TriggerHint[]): Pro
     const fired = rules.filter((r) => !seen.has(r) && wave.some((h) => matches(r.trigger, h)));
     fired.forEach((r) => seen.add(r));
     for (const r of fired) if ((r.actions ?? []).some((a) => OUTWARD.has(a.type))) names.add(r.name || 'sin nombre');
-    wave = fired.flatMap((r) => (r.actions ?? []).filter((a) => a.type === 'add_tag' && a.tag).map((a) => ({ type: 'tag_added', value: a.tag })));
+    wave = fired.flatMap((r) => (r.actions ?? []).flatMap(actionEvents));
   }
   return [...names];
 }

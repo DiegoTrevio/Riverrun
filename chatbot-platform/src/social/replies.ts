@@ -46,22 +46,31 @@ const COURTESY = new Set<string>((['graci', 'mucha', 'comen', 'mensa', 'direc', 
   'amable', 'linda', 'bonit', 'queda', 'mejor', 'cuand', 'quier', 'puede', 'puedes', 'hacer', 'tenga', 'tengas',
   'bienv', 'ojala', 'tarde', 'noche', 'grande', 'perso'] as string[]).map((w) => w.slice(0, 5)));
 const stem = (w: string) => w.slice(0, 5);
-const longWords = (s: string) => (normalize(s).match(/[a-z0-9ñ]{5,}/g) ?? []).map(stem);
+/** Palabras de 5 letras o más, ya en NFKC (las letras de ancho completo o compatibles cuentan como las normales). */
+const longWords = (s: string) => (normalize(s.normalize('NFKC')).match(/[a-z0-9]{5,}/g) ?? []).map(stem);
 
 /**
  * Lo que hace que una respuesta pública la revise una persona aunque la IA no lo pida: es a nombre del negocio y la
- * puede influir el comentario. Menciones (@), etiquetas (#) o enlaces, y mucho vocabulario que no está ni en la
- * información del negocio ni en el comentario (umbral fijo: más de la mitad de las palabras largas, con al menos 4).
+ * puede influir el comentario.
+ *  - Menciones (@) o etiquetas (#), también con sus variantes de ancho completo, y enlaces (cualquier dominio, una IP o
+ *    escritos como «bit[.]ly»).
+ *  - Mucho vocabulario que no está ni en la información del negocio ni en el comentario (umbral fijo: más de la mitad de
+ *    las palabras largas, con al menos 4).
+ *  - Repetir tres o más palabras del comentario que no están en la información del negocio (lo que el comentario
+ *    quiere que el negocio diga).
  */
 export function publicReplyReview(reply: string, sources: string[], comment: string): string[] {
   const reasons: string[] = [];
-  if (/(^|[\s(¡¿"'])@[\p{L}\p{N}_.]/u.test(reply)) reasons.push('menciona una cuenta (@)');
-  if (/(^|[\s(¡¿"'])#[\p{L}\p{N}_]/u.test(reply)) reasons.push('trae una etiqueta (#)');
-  if (/https?:\/\/|\bwww\.|\b[a-z0-9-]+\.(?:com|mx|net|org|io|ly|co|me|app|link|shop|store|site|info|biz)\b/i.test(reply)) reasons.push('trae un enlace');
-  const known = new Set([...sources, comment].flatMap(longWords));
-  const words = longWords(reply).filter((w) => !COURTESY.has(w));
-  const novel = words.filter((w) => !known.has(w));
+  const text = reply.normalize('NFKC');
+  if (/(?<![\p{L}\p{N}_])[@＠﹫][\p{L}\p{N}_]/u.test(text)) reasons.push('menciona una cuenta (@)');
+  if (/(?<![\p{L}\p{N}_&])[#＃﹟][\p{L}\p{N}_]/u.test(text)) reasons.push('trae una etiqueta (#)');
+  if (/https?:|\bwww\.|[\p{L}\p{N}-]{2,}(?:[.。․．]|\[\.\]|\(\.\)|\s?\(dot\)\s?)[a-z]{2,}\b|\b\d{1,3}(?:\.\d{1,3}){3}\b/iu.test(text)) reasons.push('trae un enlace');
+  const business = new Set(sources.flatMap(longWords));
+  const said = new Set(longWords(comment));
+  const words = longWords(text).filter((w) => !COURTESY.has(w));
+  const novel = words.filter((w) => !business.has(w) && !said.has(w));
   if (words.length >= 4 && novel.length / words.length > 0.5) reasons.push('dice cosas que no están en la información del negocio');
+  if (new Set(words.filter((w) => said.has(w) && !business.has(w))).size >= 3) reasons.push('repite lo que pide el comentario');
   return reasons;
 }
 
