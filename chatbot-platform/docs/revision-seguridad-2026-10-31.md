@@ -12,6 +12,26 @@ expresiones y bibliotecas reales, fuera de la app. Dependencias: `npm audit --om
 por `@fastify/static`, sin entrada del usuario); los 8 altos son de `promptfoo` (solo desarrollo). En el historial de git
 no hay secretos reales (las claves que aparecen son de `test/config-check.test.ts`).
 
+## Estado: cada hallazgo y su PR
+
+Cierre del programa ([plan](superpowers/plans/2026-10-31-seguridad-revision-correcciones.md)). El detalle de cada arreglo y
+su prueba está en [`seguridad.md`](seguridad.md).
+
+| Hallazgos | Etapa | PR |
+|---|---|---|
+| Altos: IN-15, IN-16, ID-11, ID-12, ID-13, ID-14, AI-5 (la parte de la ficha) | 3c | #95 |
+| PAY-17…PAY-23 y bajos de cobros (`/precios`, freno, pausas de recordatorios, `amount_cents`); además PAY-4/5, PAY-7…PAY-16 de la etapa 3b | 3b′ y 3b | #95 |
+| ID-15, ID-16, ID-17 y los bajos de identidad (verificación reciente del superadmin, lista blanca para el agente, Copiloto fuera de lo delicado, enlace de borrar de un solo uso, enumeración de correos, `iss`/`aud` de Google, correo crudo en la bitácora) | 2c | #95 |
+| IN-17…IN-20, IN-22, límites en la base con `ipKey` y los bajos de entradas (JSON, captcha de `/contacto`, deduplicación de Zernio, descargas, Office) | 4′ | #95 |
+| AI-14 y los bajos de IA (costo sin `cost_usd`, texto oculto al importar, respuestas automáticas en redes) | 5′ | #96 |
+| Secretos en el ZIP, `HTTP_LOG` con tokens, IN-21 | 6′ | #97 |
+| Claves de ejemplo en producción, `curl \| sh` del instalador | 9 y 10′ | (este PR) |
+
+**Quedó abierto (documentado en `seguridad.md`):** de cobros, una cotización aceptada dos veces a la vez, un estado viejo
+de Stripe que pisa uno nuevo, los planes privados y el tope de Zernio completo; la conversión de plantillas aislada
+(IN-6/7) y la firma del webhook de Evolution (IN-2), con las etapas que ya existían. (Los topes de diseño con IA e
+importación ya están en la base desde la 4′.)
+
 ## Altos
 
 **Estado:** los siete, corregidos en la etapa 3c (ver [`seguridad.md`](seguridad.md#etapa-3c-lo-que-se-corrigió)).

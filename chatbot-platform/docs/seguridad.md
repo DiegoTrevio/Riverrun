@@ -24,8 +24,8 @@ Cada etapa es un PR con pruebas que fallan con el código anterior y pasan con e
 | 6. Secretos y datos | Claves separadas con rotación, credenciales de canales cifradas, retención en Evolution (INF-6…INF-8, INF-13) | Pendiente |
 | 7. Detección | Bitácora de seguridad, alertas, avisos al usuario | Pendiente |
 | 8. Contenedores | Roles de base de datos, Redis con clave, redes aisladas, límites, imágenes al día (INF-2, INF-3, INF-9, INF-10) | Pendiente |
-| 9. Servidor | `./riverrun harden`: firewall (también `DOCKER-USER`), SSH con llave, fail2ban, actualizaciones automáticas, respaldos con cifrado autenticado (INF-11, INF-12) | Pendiente |
-| 10. Cadena de suministro | Dependabot, versiones fijadas por SHA y digest, búsqueda de secretos, escaneos programados (INF-4, INF-15) | Pendiente |
+| 9. Servidor | `./riverrun harden`: firewall (también `DOCKER-USER`), SSH con llave, fail2ban, actualizaciones automáticas, respaldos con cifrado autenticado (INF-11, INF-12) | 9′ ✅ (revisión del 31 de octubre: claves de ejemplo en producción); `harden`, INF-11 e INF-12 pendientes |
+| 10. Cadena de suministro | Dependabot, versiones fijadas por SHA y digest, búsqueda de secretos, escaneos programados (INF-4, INF-15) | 10′ ✅ (revisión del 31 de octubre: Docker sin `curl \| sh`); INF-4 e INF-15 pendientes |
 
 ## Etapa 1: lo que se corrigió
 
@@ -326,6 +326,22 @@ IN-6/7 y PAY-6) sigue pendiente.
 - Almacenamiento: la cuota se revisa antes de guardar, sin candado: subidas simultáneas pueden pasarla por poco (a lo más 30 por hora).
 - Reservas: tres solicitudes pendientes con el correo de alguien le impiden reservar durante una hora; el tope de 20 por día por enlace cuenta cada solicitud.
 - Zernio: solo se juntan los avisos con el mismo cuerpo firmado; si Zernio reintentara con un cuerpo distinto, se procesaría dos veces.
+
+## Etapas 9′ y 10′: lo que se corrigió de la revisión del 31 de octubre
+
+Servidor y cadena de suministro de [la revisión del 31 de octubre](revision-seguridad-2026-10-31.md) (PR 7 del
+[plan](superpowers/plans/2026-10-31-seguridad-revision-correcciones.md)). Con esto, cada hallazgo de esa revisión tiene su
+PR (tabla «Estado» al inicio de la revisión).
+
+| # | Hallazgo | Arreglo | Prueba |
+|---|---|---|---|
+| Bajo | Las claves de ejemplo de `.env.example` (`cambia-esta-clave`, públicas) solo daban aviso en producción. | Con `NODE_ENV=production`, la contraseña de la base (`POSTGRES_PASSWORD` o la de `DATABASE_URL`), `EVOLUTION_API_KEY` y `SESSION_SECRET` con el valor de ejemplo son críticas: el servidor no arranca (`CONFIG_VALIDATION=warn` deja salir de un apuro). Una clave débil que no es la de ejemplo sigue siendo aviso, para no tumbar instalaciones existentes. `ADMIN_PASSWORD` de ejemplo sigue como aviso: el servidor ya se niega a usarla con HTTPS y el instalador la vacía. | `config-check.test.ts` |
+| Bajo | El instalador ofrecía `curl https://get.docker.com \| sh` (un script de internet ejecutado como root). | `./riverrun install-docker` (y la pregunta de `install`): repositorio apt oficial de Docker; la llave se baja, se revisa su huella (`9DC8 5822 9FC7 DD38 854A E2D8 8D81 803C 0EBF CD88`) antes de guardarla en `/etc/apt/keyrings/docker.asc`, y el repositorio queda firmado con ella. Con otra huella no instala nada; fuera de Debian/Ubuntu manda a la guía oficial. | `scripts/test-cli.sh` |
+
+**Cambios que nota la gente:**
+- Un servidor de producción con la contraseña de la base, la clave de Evolution o `SESSION_SECRET` de ejemplo ya no arranca: el mensaje dice qué cambiar. `./riverrun install` siempre generó claves propias, así que solo afecta a un `.env` copiado a mano sin cambiarlas.
+
+**Queda para después:** `./riverrun harden` (INF-11, INF-12) y la cadena de suministro de fondo (INF-4, INF-15), en las etapas 9 y 10 originales.
 
 ## Hallazgos pendientes por etapa
 
