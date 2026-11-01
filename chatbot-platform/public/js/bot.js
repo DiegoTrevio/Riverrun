@@ -299,8 +299,9 @@ async function tabKnowledge(root, bot) {
     }),
     ...(sources.length ? [h('p', { class: 'small muted', style: 'margin:-8px 0 16px' }, 'Información importada de ',
       sources.map((u) => [h('strong', {}, u), ' ', aiLock(h('button', { class: 'small', onclick: async () => {
-        const r = await run(() => api('POST', `/api/chatbots/${bot.id}/knowledge/import`, { url: u, save: true }), 'Actualizado desde tu página');
-        if (r) render();
+        // Se vuelve a leer la página y se revisa antes de guardar (puede traer texto que no se ve en ella).
+        const r = await run(() => api('POST', `/api/chatbots/${bot.id}/knowledge/import`, { url: u }));
+        if (r?.sections) { importPreview(preview, bot, { ...r, source_url: u }); preview.scrollIntoView({ block: 'start' }); }
       } }, 'Volver a sincronizar'))]))] : []),
     preview,
     field('Buscar información cargada', h('input', { type: 'search', placeholder: 'Tema o contenido…', oninput: (e) => { const value = e.target.value.trim().toLocaleLowerCase('es'); root.querySelectorAll('[data-search]').forEach((item) => { item.hidden = !item.dataset.search.includes(value); }); } })),

@@ -137,6 +137,26 @@ export function decodeText(buf: Buffer): string {
 
 /** Etiquetas cuyo contenido no es texto de la página. */
 const NOT_TEXT = new Set(['script', 'style', 'noscript', 'svg', 'iframe', 'template']);
+/** Etiquetas sin cierre: si van ocultas, solo se quita la etiqueta. */
+const VOID = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr']);
+/**
+ * ¿La etiqueta (en minúsculas, sin «<» ni «>») marca su contenido como oculto? `hidden`, `aria-hidden="true"` o un
+ * estilo en línea con `display:none` o `visibility:hidden`. Es lo que una página usa para esconder instrucciones a la IA
+ * que la persona no ve («deposita a la cuenta 1234»). Lo oculto por una hoja de estilos externa no se puede saber aquí.
+ */
+function hiddenTag(tag: string): boolean {
+  if (!tag.includes('hidden') && !tag.includes('none')) return false;
+  // Atributos reales (nombre y valor): «hidden» dentro del valor de otro atributo (title, alt, class) no cuenta.
+  const attrs = new Map<string, string>();
+  for (const m of tag.replace(/^[a-z][a-z0-9]*/, '').matchAll(/([^\s=/"']+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"']+)))?/g)) {
+    attrs.set(m[1], m[2] ?? m[3] ?? m[4] ?? '');
+  }
+  if (attrs.has('hidden')) return true;
+  if (attrs.get('aria-hidden')?.trim() === 'true') return true;
+  const css = (attrs.get('style') ?? '').replace(/\s+/g, '');
+  return /(?:^|;)display:none(?:!important)?(?:;|$)/.test(css) || /(?:^|;)visibility:hidden(?:!important)?(?:;|$)/.test(css);
+}
+
 /** Al cerrarse, terminan una línea. */
 const LINE_END = new Set(['p', 'div', 'li', 'tr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'section', 'article', 'header', 'footer', 'br', 'table', 'ul', 'ol']);
 
@@ -163,6 +183,28 @@ export function htmlToText(html: string): string {
     let at = lower.indexOf(`</${name}`, from);
     while (at >= 0 && /[a-z0-9]/.test(lower[at + name.length + 2] ?? '')) at = lower.indexOf(`</${name}`, at + 2);
     return at;
+  };
+  const openOf = (name: string, from: number) => {
+    let at = lower.indexOf(`<${name}`, from);
+    while (at >= 0 && /[a-z0-9]/.test(lower[at + name.length + 1] ?? '')) at = lower.indexOf(`<${name}`, at + 1);
+    return at;
+  };
+  /**
+   * Fin del elemento oculto que abre en `from` (cuenta los del mismo nombre anidados), o -1 si no cierra. Cada apertura
+   * y cada cierre se buscan una sola vez: sigue siendo una pasada aunque el HTML venga roto a propósito.
+   */
+  const endOfElement = (name: string, from: number) => {
+    let depth = 1, at = from, open = -2, close = -2;
+    while (depth > 0) {
+      if (close < at) close = closeOf(name, at);
+      if (close < 0) return -1;
+      if (open !== -1 && open < at) open = openOf(name, at);
+      if (open >= 0 && open < close) { depth++; at = open + 1; continue; }
+      depth--;
+      at = close + 1;
+    }
+    const gt = html.indexOf('>', at);
+    return gt < 0 ? html.length : gt + 1;
   };
   let i = 0;
   while (i < html.length) {
@@ -200,6 +242,15 @@ export function htmlToText(html: string): string {
     const closing = tag.startsWith('/');
     const name = /^\/?\s*([a-z][a-z0-9]*)/.exec(tag)?.[1] ?? '';
     i = gt + 1;
+    // Lo oculto no es texto de la página: se salta con todo su contenido.
+    if (!closing && name && lt > quietUntil && hiddenTag(tag)) {
+      if (VOID.has(name)) { out.push(' '); continue; }
+      if (!unclosed.has(`hidden:${name}`)) {
+        const end = endOfElement(name, i);
+        if (end >= 0) { i = end; out.push(' '); continue; }
+        unclosed.add(`hidden:${name}`);
+      }
+    }
     if (!closing && name === 'head' && lt > quietUntil && !unclosed.has('head')) {
       // Hasta </head> o, si falta, hasta <body>; sin ninguno de los dos, el texto se conserva.
       const close = closeOf('head', i);

@@ -37,6 +37,9 @@ async function readSource(req: any): Promise<{ source: Source; url?: string; hin
     hint = typeof b.hint === 'string' ? b.hint : '';
     save = b.save === true;
   }
+  // Lo leído de una página o archivo se revisa antes de guardarse (puede traer texto que la persona no vio): se guarda
+  // con import-reviewed, tal como quedó en la pantalla de revisión.
+  if (save) throw new HttpError(400, 'Revisa la información antes de guardarla: impórtala, corrígela y guárdala desde la revisión.');
   if (file) return { source: sourceFromFile(file), hint, save };
   if (url.trim()) return { source: await sourceFromUrl(url), url: url.trim(), hint, save };
   if (text.trim().length >= 20) return { source: { kind: 'text', text: text.trim(), label: 'texto pegado' }, hint, save };
@@ -108,21 +111,13 @@ export async function knowledgeImportRoutes(api: FastifyInstance, ai: AiProvider
     return view(result, url);
   });
 
-  /**
-   * En el conocimiento del chatbot: sin `save` devuelve la propuesta para revisarla;
-   * con `save` la guarda (una sección por bloque, reemplazando la anterior) y recuerda la página para re-sincronizar.
-   */
+  /** En el conocimiento del chatbot: devuelve la propuesta para revisarla; se guarda con import-reviewed. */
   api.post('/api/chatbots/:id/knowledge/import', admins, async (req: any) => {
     const bot = await store.getChatbot(req.params.id);
     if (!bot) throw new HttpError(404, 'No encontrado');
     const accountId = await targetAccount(req.user, bot.account_id);
     if (accountId !== bot.account_id) throw new HttpError(404, 'No encontrado');
-    const { url, save, result } = await run(req, bot.account_id, bot.id);
-    if (!save) return view(result, url);
-    // Dos guardados a la vez (o uno mientras otro guarda) no pueden crear dos secciones con el mismo título:
-    // se turnan por asistente con un candado consultivo. No se bloquean filas: el resto del sistema las escribe sin ese candado.
-    const saved = await saveSections(bot.id, result.sections, url);
-    await logEvent({ level: 'info', source: 'admin', message: `Conocimiento importado de ${result.source}: ${saved.join(', ')}`, accountId: bot.account_id, chatbotId: bot.id });
-    return { ...view(result, url), saved };
+    const { url, result } = await run(req, bot.account_id, bot.id);
+    return view(result, url);
   });
 }
