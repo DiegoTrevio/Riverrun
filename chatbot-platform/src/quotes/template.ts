@@ -96,7 +96,37 @@ function openZip(buffer: Buffer): { zip?: PizZip; errors: string[] } {
       }
     }
   }
+  // Campos y dibujos que traen contenido de afuera (IN-21): LibreOffice los seguiría al generar el PDF, hacia la red
+  // interna o a archivos del servidor.
+  for (const n of names.filter((x) => /^word\/.+\.xml$/i.test(x))) {
+    if (externalFields(zip.file(n)?.asText() ?? '')) { errors.push(EXTERNAL_FIELDS); break; }
+  }
   return { zip, errors: [...new Set(errors)] };
+}
+
+const EXTERNAL_FIELDS = 'El archivo tiene campos que cargan contenido de afuera: quítalos';
+/** Entidades de XML (con nombre y numéricas): `&#73;NCLUDE` es INCLUDE. */
+const xmlDecode = (s: string) => s.replace(/&(#x?[0-9a-f]{1,8}|lt|gt|quot|apos|amp);/gi, (m, e: string) => {
+  if (e[0] !== '#') return ({ lt: '<', gt: '>', quot: '"', apos: "'", amp: '&' } as Record<string, string>)[e.toLowerCase()] ?? m;
+  const code = e[1].toLowerCase() === 'x' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
+  return code > 0 && code < 0x110000 ? String.fromCodePoint(code) : '';
+});
+/** Códigos de campo que leen archivos, páginas u otros programas. HYPERLINK, PAGE o DATE no. */
+const FIELD_CODES = /(?:^|[^a-z])(?:includepicture|includetext|include|import|link|ddeauto|dde)(?![a-z])/i;
+
+/**
+ * ¿La parte trae un campo que carga contenido de afuera? Los códigos de los campos complejos (`w:instrText`, que Word
+ * parte en varios trozos: se juntan) y de los simples (`w:fldSimple w:instr`), y los atributos de VML (`src`, `href`,
+ * `o:href`) que apuntan a http, file o una ruta de red.
+ */
+function externalFields(xml: string): boolean {
+  const instr = [...xml.matchAll(/<w:instrText\b[^>]*>([^<]*)<\/w:instrText>/g)].map((m) => m[1]).join('');
+  const simple = [...xml.matchAll(/<w:fldSimple\s[^>]*?w:instr\s*=\s*(?:"([^"]*)"|'([^']*)')/g)].map((m) => m[1] ?? m[2]);
+  if ([instr, ...simple].some((code) => FIELD_CODES.test(xmlDecode(code)))) return true;
+  for (const m of xml.matchAll(/\s(?:[a-z]+:)?(?:src|href)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi)) {
+    if (/^\s*(?:https?:|ftp:|file:|smb:|\\\\|\/\/)/i.test(xmlDecode(m[1] ?? m[2]))) return true;
+  }
+  return false;
 }
 
 const xmlText = (xml: string) => xml.replace(/<[^>]+>/g, '')

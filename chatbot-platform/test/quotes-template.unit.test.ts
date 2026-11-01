@@ -74,6 +74,33 @@ function lie(buf: Buffer, size: number): Buffer {
   return out;
 }
 
+const FIELD_ERROR = /campos que cargan contenido de afuera/;
+/** Un campo complejo como lo guarda Word: el código partido en varios `w:instrText`. */
+const field = (...instr: string[]) => `<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r>${instr.map((t) => `<w:r><w:instrText xml:space="preserve">${t}</w:instrText></w:r>`).join('')}<w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>`;
+
+test('formato: INCLUDEPICTURE, INCLUDETEXT, LINK, DDE y DDEAUTO en w:instrText o w:fldSimple se rechazan (IN-21)', () => {
+  for (const code of ['INCLUDEPICTURE "http://169.254.169.254/x.png"', 'INCLUDETEXT "file:///etc/passwd"', 'LINK Excel.Sheet.8 "C:\\\\x.xls" ""', 'DDE cmd "/c calc" ""', 'DDEAUTO cmd "/c calc" ""', ' includepicture "http://x/y.png" \\d']) {
+    assert.match(inspectTemplate(docx(REQUIRED + field(code))).errors.join(), FIELD_ERROR, code);
+    assert.match(inspectTemplate(docx(REQUIRED + `<w:p><w:fldSimple w:instr=" ${code.replace(/"/g, '&quot;')} "><w:r><w:t>x</w:t></w:r></w:fldSimple></w:p>`)).errors.join(), FIELD_ERROR, `fldSimple ${code}`);
+  }
+  // Partido por Word en varios trozos, o con entidades, también.
+  assert.match(inspectTemplate(docx(REQUIRED + field('INCLUDE', 'PICTURE "http://x/y.png"'))).errors.join(), FIELD_ERROR);
+  assert.match(inspectTemplate(docx(REQUIRED + field('&#73;NCLUDETEXT "file:///x"'))).errors.join(), FIELD_ERROR);
+  // En un encabezado o pie de página, igual.
+  assert.match(inspectTemplate(docx(REQUIRED, { 'word/header1.xml': `<?xml version="1.0"?><w:hdr ${W}>${field('INCLUDEPICTURE "http://x/y.png"')}</w:hdr>` })).errors.join(), FIELD_ERROR);
+  // Los campos comunes (página, fecha, hipervínculo) siguen entrando.
+  const ok = inspectTemplate(docx(REQUIRED + field('PAGE') + field('DATE \\@ "d/M/yyyy"') + field('HYPERLINK "https://minegocio.mx"')));
+  assert.ok(!FIELD_ERROR.test(ok.errors.join()), ok.errors.join());
+});
+
+test('formato: un atributo VML con http, file o una ruta de red se rechaza (IN-21)', () => {
+  const vml = (attr: string) => `<w:p><w:r><w:pict><v:shape xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office"><v:imagedata ${attr}/></v:shape></w:pict></w:r></w:p>`;
+  for (const attr of ['src="http://169.254.169.254/x.png"', "o:href='file:///etc/passwd'", 'src="\\\\servidor\\c$\\x.png"', 'href="https://evil.example/x"']) {
+    assert.match(inspectTemplate(docx(REQUIRED + vml(attr))).errors.join(), FIELD_ERROR, attr);
+  }
+  assert.ok(!FIELD_ERROR.test(inspectTemplate(docx(REQUIRED + vml('r:id="rId5" o:title=""'))).errors.join()));
+});
+
 test('formato: un .docx que miente en su tamaño se rechaza sin descomprimirlo todo (IN-16)', () => {
   const bomb = new PizZip();
   bomb.file('[Content_Types].xml', '<Types/>');
