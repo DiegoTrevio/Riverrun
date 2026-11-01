@@ -9,7 +9,7 @@ import { unsupportedClaims } from '../engine/claims.js';
 import { hoursText, selectKnowledge } from '../engine/context.js';
 import { semanticKnowledge } from '../engine/knowledge.js';
 import { detectRisk } from '../engine/safety.js';
-import { FactCorpus } from '../engine/text.js';
+import { FactCorpus, normalize } from '../engine/text.js';
 import { networkOf } from '../channels/zernio.js';
 import * as store from '../store/index.js';
 import type { Chatbot } from '../types.js';
@@ -37,7 +37,33 @@ const ResultSchema = z.object({
   needs_human: z.boolean().catch(true),
 });
 
-export interface Suggestion { reply: string; sentiment: 'positive' | 'neutral' | 'negative'; needs_human: boolean; unverified: string[]; risk?: string }
+export interface Suggestion { reply: string; sentiment: 'positive' | 'neutral' | 'negative'; needs_human: boolean; unverified: string[]; review?: string[]; risk?: string }
+
+/** Cortesía de cualquier respuesta pública (los primeros 5 caracteres, sin acentos): no cuenta como contenido nuevo. */
+const COURTESY = new Set<string>((['graci', 'mucha', 'comen', 'mensa', 'direc', 'escri', 'esper', 'verte', 'pront', 'gusto', 'encan', 'alegr', 'saber',
+  'disfr', 'exper', 'visit', 'regre', 'vuelv', 'atend', 'aprec', 'palab', 'resen', 'opini', 'servi', 'equip', 'lamen', 'sient', 'resol',
+  'ayuda', 'conta', 'estam', 'nuest', 'saludo', 'siemp', 'dispo', 'cualq', 'dudas', 'apoyo', 'compa', 'recom', 'herma', 'feliz', 'excel',
+  'amable', 'linda', 'bonit', 'queda', 'mejor', 'cuand', 'quier', 'puede', 'puedes', 'hacer', 'tenga', 'tengas',
+  'bienv', 'ojala', 'tarde', 'noche', 'grande', 'perso'] as string[]).map((w) => w.slice(0, 5)));
+const stem = (w: string) => w.slice(0, 5);
+const longWords = (s: string) => (normalize(s).match(/[a-z0-9ñ]{5,}/g) ?? []).map(stem);
+
+/**
+ * Lo que hace que una respuesta pública la revise una persona aunque la IA no lo pida: es a nombre del negocio y la
+ * puede influir el comentario. Menciones (@), etiquetas (#) o enlaces, y mucho vocabulario que no está ni en la
+ * información del negocio ni en el comentario (umbral fijo: más de la mitad de las palabras largas, con al menos 4).
+ */
+export function publicReplyReview(reply: string, sources: string[], comment: string): string[] {
+  const reasons: string[] = [];
+  if (/(^|[\s(¡¿"'])@[\p{L}\p{N}_.]/u.test(reply)) reasons.push('menciona una cuenta (@)');
+  if (/(^|[\s(¡¿"'])#[\p{L}\p{N}_]/u.test(reply)) reasons.push('trae una etiqueta (#)');
+  if (/https?:\/\/|\bwww\.|\b[a-z0-9-]+\.(?:com|mx|net|org|io|ly|co|me|app|link|shop|store|site|info|biz)\b/i.test(reply)) reasons.push('trae un enlace');
+  const known = new Set([...sources, comment].flatMap(longWords));
+  const words = longWords(reply).filter((w) => !COURTESY.has(w));
+  const novel = words.filter((w) => !known.has(w));
+  if (words.length >= 4 && novel.length / words.length > 0.5) reasons.push('dice cosas que no están en la información del negocio');
+  return reasons;
+}
 
 /** Agente que contesta: el de los ajustes de la cuenta, el de su canal de mensajes o el primero activo del negocio. */
 async function botFor(accountId: string, sa: { chatbot_id: string | null; comment_settings: Record<string, unknown> }): Promise<Chatbot> {
@@ -125,9 +151,10 @@ export async function suggestReply(ai: AiProvider, accountId: string, kind: Kind
   const sources = [...chosen.map((k) => `${k.title}\n${k.content}`), bot.personality.prompt, bot.name, hours];
   const trusted = new FactCorpus(sources);
   const unverified = reply ? [...trusted.unverified(reply, trusted, new FactCorpus([text])), ...unsupportedClaims(reply, sources)] : [];
-  const needsHuman = parsed.needs_human || !reply || unverified.length > 0;
+  const review = reply ? publicReplyReview(reply, sources, text) : [];
+  const needsHuman = parsed.needs_human || !reply || unverified.length > 0 || review.length > 0;
   // Se guarda lo calculado: con datos sin respaldo (o sin respuesta) la ve una persona, aunque la IA no lo pidiera.
   await query(`UPDATE ${table} SET ai_suggestion = $2, sentiment = $3, needs_human = needs_human OR $4, updated_at = now() WHERE id = $1`,
     [id, reply, parsed.sentiment, needsHuman]);
-  return { reply, sentiment: parsed.sentiment, needs_human: needsHuman, unverified };
+  return { reply, sentiment: parsed.sentiment, needs_human: needsHuman, unverified, review };
 }
