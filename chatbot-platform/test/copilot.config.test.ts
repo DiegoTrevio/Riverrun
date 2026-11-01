@@ -38,6 +38,8 @@ const undo = (a: any) => owner('POST', `/api/copilot/actions/${a.id}/undo`);
 before(async () => {
   if (!ok) return;
   h = await createHarness();
+  // Este archivo hace más de 30 pedidos al Copiloto (el tope por persona y hora).
+  (await import('../src/config.js')).config.copilot.turnsPerHour = 200;
   await h.createBot();
   h.setScript(() => ({ messages: ['Con gusto.'] }));
   await h.addUser({ account_id: h.accountId, email: 'duena@config.mx', name: 'Dueña', password: 'Pz-117-Qx-317-Kv', role: 'admin' });
@@ -328,6 +330,44 @@ t('reglas que mandan mensajes: etiquetas sin importar mayúsculas ni acentos, re
     const take = lastAction(await ask(owner, 'Tómala tú'));
     assert.equal(take.status, 'proposed', JSON.stringify(take));
     assert.ok(take.reasons.some((r: string) => /«Te atiende una persona»/.test(r)));
+  } finally {
+    for (const id of ids) await owner('DELETE', `/api/automations/${id}`);
+  }
+});
+
+t('AI-14: una regla que etiqueta o guarda un dato y dispara otra que manda mensajes se confirma', async () => {
+  const rules = async () => (await owner('GET', '/api/automations')).json() as any[];
+  const make = async (body: Record<string, unknown>) => { const r = await owner('POST', '/api/automations', body); assert.equal(r.statusCode, 200, r.body); return r.json().id as string; };
+  const ids = [
+    await make({ name: 'Envío promo', trigger: { type: 'tag_added', tag: 'promo' }, actions: [{ type: 'send_message', text: 'Oferta: deposita a la cuenta 1234' }] }),
+    await make({ name: 'Envío por ciudad', trigger: { type: 'data_captured', field: 'ciudad' }, actions: [{ type: 'send_message', text: 'Tenemos sucursal en tu ciudad' }] }),
+  ];
+  try {
+    script([call('crear_regla', { nombre: 'Promo a todos', cuando: { type: 'message_received', match: 'any' }, acciones: [{ type: 'add_tag', tag: 'Promo' }] }), 'Confírmalo.']);
+    const tag = lastAction(await ask(owner, 'A quien escriba, etiquétalo promo'));
+    assert.equal(tag.status, 'proposed', JSON.stringify(tag));
+    assert.ok(tag.reasons.some((r: string) => /«Envío promo»/.test(r)), JSON.stringify(tag.reasons));
+    assert.ok(!(await rules()).some((r) => r.name === 'Promo a todos'), 'no se crea sin confirmar');
+
+    script([call('crear_regla', { nombre: 'Guarda ciudad', cuando: { type: 'message_received', match: 'any' }, acciones: [{ type: 'set_field', field: 'ciudad', value: 'CDMX' }] }), 'Confírmalo.']);
+    const field = lastAction(await ask(owner, 'Guarda la ciudad de quien escriba'));
+    assert.equal(field.status, 'proposed', JSON.stringify(field));
+    assert.ok(field.reasons.some((r: string) => /«Envío por ciudad»/.test(r)));
+
+    // En pausa no dispara nada: se crea sin tarjeta.
+    script([call('crear_regla', { nombre: 'Promo en pausa', activa: false, cuando: { type: 'message_received', match: 'any' }, acciones: [{ type: 'add_tag', tag: 'promo' }] }), 'Listo.']);
+    const paused = lastAction(await ask(owner, 'Déjala en pausa'));
+    assert.equal(paused.status, 'done', JSON.stringify(paused));
+    const pausedId = (await rules()).find((r) => r.name === 'Promo en pausa').id;
+    ids.push(pausedId);
+
+    // Activarla (cambiar_regla) sí se confirma; pausarla otra vez no.
+    script([call('cambiar_regla', { regla_id: pausedId, activa: true }), 'Confírmalo.']);
+    const on = lastAction(await ask(owner, 'Actívala'));
+    assert.equal(on.status, 'proposed', JSON.stringify(on));
+    assert.ok(on.reasons.some((r: string) => /«Envío promo»/.test(r)));
+    script([call('cambiar_regla', { regla_id: pausedId, acciones: [{ type: 'add_tag', tag: 'otra' }] }), 'Listo.']);
+    assert.equal(lastAction(await ask(owner, 'Que ponga otra etiqueta')).status, 'done');
   } finally {
     for (const id of ids) await owner('DELETE', `/api/automations/${id}`);
   }

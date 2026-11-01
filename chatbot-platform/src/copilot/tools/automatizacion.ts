@@ -6,7 +6,7 @@
 import { z } from 'zod';
 import { ActionSchema, ConditionSchema, TriggerSchema } from '../../automation/types.js';
 import { path, ToolError } from '../executor.js';
-import { defineTool, type Ctx, type RiskInfo } from '../registry.js';
+import { defineTool, type Ctx, type RiskInfo, type TriggerHint } from '../registry.js';
 import { OUTWARD } from '../risk.js';
 import { stableJson } from '../store.js';
 import { links, when } from '../summarize.js';
@@ -105,6 +105,16 @@ function ruleRisk(rule: { active?: boolean; actions?: any[]; stop_ai?: boolean }
   return reasons.length ? { level: 'confirm', reasons } : { level: 'reversible', reasons: [] };
 }
 
+/**
+ * Lo que la regla, activa, dispara en otras reglas (AI-14): sus etiquetas y datos guardados. Con eso `assessRisk` busca
+ * las reglas activas que mandan algo hacia afuera (siguiendo la cadena), igual que con `etiquetar`.
+ */
+function ruleEvents(rule: { active?: boolean; actions?: any[] }): TriggerHint[] {
+  if (rule.active === false) return [];
+  return (rule.actions ?? []).flatMap((x): TriggerHint[] =>
+    x.type === 'add_tag' && x.tag ? [{ type: 'tag_added', value: x.tag }] : x.type === 'set_field' && x.field ? [{ type: 'data_captured', value: x.field }] : []);
+}
+
 /** Una acción completa para quien confirma: el texto entero de lo que se envía y a qué números. */
 function actionDetail(a: any): string {
   if (a.type === 'send_message') return `→ Envía al cliente${a.delay_minutes ? ` (a los ${a.delay_minutes} min)` : ''}: «${a.text || (a.wa_template ? 'una plantilla de WhatsApp' : '')}»`;
@@ -142,6 +152,7 @@ export const crearRegla = defineTool({
   schema: z.object(RuleFields),
   label: (a) => `Creando la regla «${a.nombre}»…`,
   risk: (a) => ruleRisk({ active: a.activa, actions: a.acciones, stop_ai: a.detener_asistente }),
+  events: (a) => ruleEvents({ active: a.activa, actions: a.acciones }),
   preview: (a) => rulePreview(`Crear la regla «${a.nombre}»${a.activa === false ? ' (en pausa)' : ' (activa)'}`, ruleBody(a)),
   async execute(a, ctx) {
     const r = await ctx.call.send<any>('POST', '/api/automations', { active: true, ...ruleBody(a) });
@@ -175,6 +186,9 @@ const CambiarReglaParaModelo = z.object({
   activa: z.boolean().optional().describe('false la pausa; true la activa'),
 });
 
+/** Solo renombrar o pausar no cambia lo que la regla manda; lo demás (incluido a qué agente aplica o cuántas veces) sí. */
+const materialChange = (a: any) => Object.keys(RuleFields).some((k) => a[k] !== undefined && k !== 'nombre' && !(k === 'activa' && a[k] === false));
+
 export const cambiarRegla = defineTool({
   name: 'cambiar_regla',
   area: 'automatizacion',
@@ -185,9 +199,12 @@ export const cambiarRegla = defineTool({
   label: () => 'Cambiando la regla…',
   async risk(a: any, ctx) {
     const rule = await findRule(ctx, a.regla_id);
-    // Solo renombrar o pausar no cambia lo que la regla manda; lo demás (incluido a qué agente aplica o cuántas veces) sí.
-    const material = Object.keys(RuleFields).some((k) => a[k] !== undefined && k !== 'nombre' && !(k === 'activa' && a[k] === false));
-    return material ? ruleRisk({ ...rule, ...ruleBody(a) }) : 'reversible';
+    return materialChange(a) ? ruleRisk({ ...rule, ...ruleBody(a) }) : 'reversible';
+  },
+  async events(a: any, ctx) {
+    if (!materialChange(a)) return [];
+    const rule = await findRule(ctx, a.regla_id);
+    return ruleEvents({ ...rule, ...ruleBody(a) });
   },
   async preview(a: any, ctx) {
     const rule = await findRule(ctx, a.regla_id);
