@@ -183,7 +183,7 @@ export async function buildAccountExport(accountId: string, now = new Date()): P
     one<any>(`SELECT cv.id, cv.contact_id, ch.name AS channel, cv.status, cv.summary, cv.data, cv.created_at, cv.last_message_at FROM conversations cv JOIN channels ch ON ch.id = cv.channel_id WHERE cv.account_id = $1 AND ch.type <> 'playground' ORDER BY cv.created_at`),
     query<any>(`SELECT m.id, m.conversation_id, m.created_at, m.direction, m.sender, m.type, m.content FROM messages m JOIN conversations cv ON cv.id = m.conversation_id JOIN channels ch ON ch.id = cv.channel_id
                 WHERE cv.account_id = $1 AND ch.type <> 'playground' ORDER BY m.id LIMIT ${EXPORT_MAX_MESSAGES}`, [accountId]),
-    one<{ q: unknown }>(`SELECT to_jsonb(q) AS q FROM quotes q WHERE q.account_id = $1 ORDER BY q.created_at`),
+    one<{ q: unknown }>(`SELECT to_jsonb(q) - 'docx_path' - 'pdf_path' AS q FROM quotes q WHERE q.account_id = $1 ORDER BY q.created_at`),
     one<any>(`SELECT provider, provider_payment_id, plan_key, currency, subtotal_cents, tax_cents, total_cents, refunded_cents, status, paid_at FROM billing_payments WHERE account_id = $1 ORDER BY paid_at`),
     one<any>(`SELECT kind, status, series, folio, sat_uuid, amount_cents, issued_at FROM cfdi_invoices WHERE account_id = $1 ORDER BY created_at`),
   ]);

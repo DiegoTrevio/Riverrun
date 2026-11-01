@@ -1,7 +1,7 @@
 /** HTTP_LOG=true: el registro de cada petición no trae tokens (van en la ruta o en la query de los enlaces públicos). */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { reqSerializer, safeMessage, safeUrl } from '../src/http-log.js';
+import { errSerializer, reqSerializer, safeMessage, safeUrl } from '../src/http-log.js';
 
 test('el registro de la petición no trae la query ni los segmentos de /webhook/, /calendar/, /reservar/ y /q/', () => {
   const cases: [string, string][] = [
@@ -47,4 +47,15 @@ test('con HTTP_LOG el servidor registra la ruta sin el token', async () => {
   const all = lines.join('');
   assert.match(all, /\/webhook\/\[oculto\]/);
   assert.ok(!all.includes('SECRETO'), all);
+});
+
+test('mayúsculas, barras repetidas, tokens cortos y errores tampoco dejan pasar el token', () => {
+  assert.equal(safeUrl('/Webhook/SECRETO'), '/webhook/[oculto]');
+  assert.equal(safeUrl('//webhook/SECRETO'), '/webhook/[oculto]');
+  assert.equal(safeUrl('/api/algo/ab12cd34ef56gh78'), '/api/algo/[oculto]');
+  assert.equal(safeUrl('/api/chatbots/knowledge-import'), '/api/chatbots/knowledge-import');
+  const e = Object.assign(new Error('Route GET:/webhook/SECRETO not found'), { statusCode: 404 });
+  const out = errSerializer(e);
+  assert.ok(!JSON.stringify(out).includes('SECRETO'), JSON.stringify(out));
+  assert.equal(out.statusCode, 404);
 });

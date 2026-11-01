@@ -101,6 +101,39 @@ test('formato: un atributo VML con http, file o una ruta de red se rechaza (IN-2
   assert.ok(!FIELD_ERROR.test(inspectTemplate(docx(REQUIRED + vml('r:id="rId5" o:title=""'))).errors.join()));
 });
 
+test('formato: trucos contra la revisión de campos (IN-21): señuelos, CDATA, comentarios, otro prefijo, «>» en un valor, otra parte principal', () => {
+  const bad = [
+    docx(REQUIRED + field('A') + field('INCLUDETEXT "/etc/passwd"')),
+    docx(REQUIRED + '<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText><![CDATA[INCLUDETEXT "/etc/passwd"]]></w:instrText></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>'),
+    docx(REQUIRED + field('INCLUDE<!-- x -->TEXT "/etc/passwd"')),
+    docx(REQUIRED + '<w:p xmlns:x="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><x:r><x:fldChar x:fldCharType="begin"/></x:r><x:r><x:instrText>INCLUDEPICTURE "http://x/y.png"</x:instrText></x:r><x:r><x:fldChar x:fldCharType="end"/></x:r></w:p>'),
+    docx(REQUIRED + '<w:p><w:fldSimple w:a="x>y" w:instr=" INCLUDETEXT &quot;/etc/passwd&quot; "><w:r><w:t>x</w:t></w:r></w:fldSimple></w:p>'),
+    docx(REQUIRED + '<w:p><w:r><w:pict><v:imagedata xmlns:v="urn:schemas-microsoft-com:vml" src="/etc/passwd"/></w:pict></w:r></w:p>'),
+    docx(REQUIRED, { 'x/otra.xml': `<?xml version="1.0"?><w:document ${W}><w:body>${field('INCLUDETEXT "/etc/passwd"')}</w:body></w:document>` }),
+  ];
+  for (const [i, b] of bad.entries()) assert.match(inspectTemplate(b).errors.join(), FIELD_ERROR, `caso ${i}`);
+  // Un documento principal que no es word/document.xml.
+  const other = new PizZip(docx(REQUIRED));
+  other.file('_rels/.rels', '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="x/main.xml"/></Relationships>');
+  assert.match(inspectTemplate(other.generate({ type: 'nodebuffer' }) as Buffer).errors.join(), /no es un documento de Word/);
+  // UTF-16: no se podría revisar.
+  const utf16 = new PizZip(docx(REQUIRED));
+  utf16.file('word/header1.xml', Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('<w:hdr/>', 'utf16le')]));
+  assert.match(inspectTemplate(utf16.generate({ type: 'nodebuffer' }) as Buffer).errors.join(), FIELD_ERROR);
+});
+
+test('formato: sin falsos positivos con campos y nombres comunes (IN-21)', () => {
+  const ok = inspectTemplate(docx(REQUIRED + field('HYPERLINK "https://x.com/link/a"') + field('MERGEFIELD import_date') + field('REF _Ref_include \\h') + field('MERGEFIELD Link')));
+  assert.ok(!FIELD_ERROR.test(ok.errors.join()), ok.errors.join());
+});
+
+test('formato: la revisión de campos es lineal con comillas sin cerrar (IN-21)', () => {
+  const body = `<w:p a='x>`.repeat(300_000) + REQUIRED;
+  const started = performance.now();
+  inspectTemplate(docx(body));
+  assert.ok(performance.now() - started < 3000, `tardó ${Math.round(performance.now() - started)} ms`);
+});
+
 test('formato: un .docx que miente en su tamaño se rechaza sin descomprimirlo todo (IN-16)', () => {
   const bomb = new PizZip();
   bomb.file('[Content_Types].xml', '<Types/>');

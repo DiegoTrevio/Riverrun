@@ -83,6 +83,8 @@ t('cuenta.json no contiene calendar_token, webhook_secret ni deletion_nonce', as
     const cuenta = JSON.parse(zip.file('cuenta.json')!.asText());
     assert.equal(cuenta.settings.timezone, 'America/Mexico_City', 'los demás ajustes sí van');
     assert.ok(!('calendar_token' in cuenta.settings) && !('webhook_secret' in cuenta.settings) && !('deletion_nonce' in cuenta));
+    assert.ok(!/docx_path|pdf_path/.test(zip.file('cotizaciones.json')!.asText()), 'sin rutas de archivos del servidor');
+    assert.deepEqual(Object.keys(JSON.parse(zip.file('agentes.json')!.asText())[0] ?? {}).filter((k) => /key|secret|token/i.test(k)), []);
   } finally {
     await pool.query(`UPDATE accounts SET deletion_nonce = NULL WHERE id = $1`, [acc]);
   }

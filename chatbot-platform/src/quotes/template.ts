@@ -97,36 +97,96 @@ function openZip(buffer: Buffer): { zip?: PizZip; errors: string[] } {
     }
   }
   // Campos y dibujos que traen contenido de afuera (IN-21): LibreOffice los seguiría al generar el PDF, hacia la red
-  // interna o a archivos del servidor.
-  for (const n of names.filter((x) => /^word\/.+\.xml$/i.test(x))) {
-    if (externalFields(zip.file(n)?.asText() ?? '')) { errors.push(EXTERNAL_FIELDS); break; }
+  // interna o a archivos del servidor. Se revisa todo lo que es texto (no solo word/*.xml), y el documento principal
+  // tiene que ser word/document.xml (otro, señalado desde _rels/.rels, se saltaría la revisión del cuerpo).
+  const main = /Type="[^"]*\/officeDocument"[^>]*Target="\/?([^"]+)"|Target="\/?([^"]+)"[^>]*Type="[^"]*\/officeDocument"/.exec(zip.file('_rels/.rels')?.asText() ?? '');
+  if (main && (main[1] ?? main[2]) !== 'word/document.xml') errors.push('El archivo no es un documento de Word (.docx) normal');
+  for (const n of names.filter((x) => !zip.files[x].dir && !BINARY_PART.test(x))) {
+    const text = zip.file(n)?.asText() ?? '';
+    // UTF-16 (o con bytes nulos): la revisión no lo podría leer; Word guarda en UTF-8.
+    if (text.includes('\u0000') || /^﻿?[￾﻿]/.test(text) || text.charCodeAt(0) === 0xfffd) { errors.push(EXTERNAL_FIELDS); break; }
+    if (!n.endsWith('.rels') && externalFields(text)) { errors.push(EXTERNAL_FIELDS); break; }
   }
   return { zip, errors: [...new Set(errors)] };
 }
 
 const EXTERNAL_FIELDS = 'El archivo tiene campos que cargan contenido de afuera: quítalos';
+/** Partes binarias (imágenes, objetos): no son XML y no se revisan como texto. */
+const BINARY_PART = /\.(?:png|jpe?g|gif|bmp|tiff?|emf|wmf|ico|webp|bin|odttf|ttf|otf|fntdata)$/i;
 /** Entidades de XML (con nombre y numéricas): `&#73;NCLUDE` es INCLUDE. */
 const xmlDecode = (s: string) => s.replace(/&(#x?[0-9a-f]{1,8}|lt|gt|quot|apos|amp);/gi, (m, e: string) => {
   if (e[0] !== '#') return ({ lt: '<', gt: '>', quot: '"', apos: "'", amp: '&' } as Record<string, string>)[e.toLowerCase()] ?? m;
   const code = e[1].toLowerCase() === 'x' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
   return code > 0 && code < 0x110000 ? String.fromCodePoint(code) : '';
 });
-/** Códigos de campo que leen archivos, páginas u otros programas. HYPERLINK, PAGE o DATE no. */
-const FIELD_CODES = /(?:^|[^a-z])(?:includepicture|includetext|include|import|link|ddeauto|dde)(?![a-z])/i;
+/**
+ * Campos que leen archivos, páginas u otros programas: la primera palabra del código del campo (así `HYPERLINK "…/link"`
+ * o `MERGEFIELD import_date` no cuentan).
+ */
+const FIELD_CODES = /^\s*(?:includepicture|includetext|include|import|link|ddeauto|dde|rd|database)(?![\w])/i;
+
+/** Quita comentarios y abre los CDATA (su texto, escapado) en una sola pasada. */
+function flattenXml(xml: string): string {
+  let out = '', i = 0;
+  for (;;) {
+    const c = xml.indexOf('<!--', i), d = xml.indexOf('<![CDATA[', i);
+    const next = c < 0 ? d : d < 0 ? c : Math.min(c, d);
+    if (next < 0) return out + xml.slice(i);
+    out += xml.slice(i, next);
+    if (next === c) {
+      const end = xml.indexOf('-->', c + 4);
+      if (end < 0) return out;
+      i = end + 3;
+    } else {
+      const end = xml.indexOf(']]>', d + 9);
+      out += xml.slice(d + 9, end < 0 ? xml.length : end).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+      if (end < 0) return out;
+      i = end + 3;
+    }
+  }
+}
+
+/** Un atributo (con cualquier prefijo) de una etiqueta ya cortada bien (respetando comillas). */
+const attrOf = (tag: string, name: string) => {
+  const m = new RegExp(`\\s(?:[\\w.-]+:)?${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`).exec(tag);
+  return m ? xmlDecode(m[1] ?? m[2]) : null;
+};
 
 /**
- * ¿La parte trae un campo que carga contenido de afuera? Los códigos de los campos complejos (`w:instrText`, que Word
- * parte en varios trozos: se juntan) y de los simples (`w:fldSimple w:instr`), y los atributos de VML (`src`, `href`,
- * `o:href`) que apuntan a http, file o una ruta de red.
+ * ¿La parte trae un campo que carga contenido de afuera? Cada campo complejo se arma con sus `instrText` (Word los parte
+ * en trozos) entre su `fldChar` de inicio y de fin, y se revisa solo; también los campos simples (`fldSimple instr`) y
+ * los atributos `src`/`href` que no son un ancla interna (`#…`) ni `data:`. Con cualquier prefijo de espacio de nombres.
  */
-function externalFields(xml: string): boolean {
-  const instr = [...xml.matchAll(/<w:instrText\b[^>]*>([^<]*)<\/w:instrText>/g)].map((m) => m[1]).join('');
-  const simple = [...xml.matchAll(/<w:fldSimple\s[^>]*?w:instr\s*=\s*(?:"([^"]*)"|'([^']*)')/g)].map((m) => m[1] ?? m[2]);
-  if ([instr, ...simple].some((code) => FIELD_CODES.test(xmlDecode(code)))) return true;
-  for (const m of xml.matchAll(/\s(?:[a-z]+:)?(?:src|href)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi)) {
-    if (/^\s*(?:https?:|ftp:|file:|smb:|\\\\|\/\/)/i.test(xmlDecode(m[1] ?? m[2]))) return true;
+function externalFields(raw: string): boolean {
+  const xml = flattenXml(raw);
+  const codes: string[] = [];
+  const stack: string[] = [];
+  // Etiquetas con sus atributos entre comillas (un «>» dentro de un valor no las corta), y el texto de los instrText.
+  // En XML un «<» no puede ir dentro de un valor: cada intento termina en el siguiente «<» y la pasada sigue lineal.
+  const TAG = /<(\/?)(?:[\w.-]+:)?([\w.-]+)((?:[^>"'<]|"[^"<]*"|'[^'<]*')*)>([^<]*)/g;
+  for (const m of xml.matchAll(TAG)) {
+    const [, closing, name, attrs, after] = m;
+    if (closing) continue;
+    const local = name.toLowerCase();
+    if (local === 'fldchar') {
+      const type = (attrOf(attrs, 'fldCharType') ?? '').toLowerCase();
+      if (type === 'begin') stack.push('');
+      else if (type === 'end' && stack.length) codes.push(stack.pop()!);
+    } else if (local === 'instrtext') {
+      const text = xmlDecode(after);
+      if (stack.length) stack[stack.length - 1] += text;
+      else codes.push(text);
+    } else if (local === 'fldsimple') {
+      const instr = attrOf(attrs, 'instr');
+      if (instr !== null) codes.push(instr);
+    }
+    for (const attr of ['src', 'href']) {
+      const v = attrOf(attrs, attr);
+      if (v !== null && v.trim() && !/^\s*(?:#|data:)/i.test(v)) return true;
+    }
   }
-  return false;
+  codes.push(...stack);
+  return codes.some((code) => FIELD_CODES.test(code));
 }
 
 const xmlText = (xml: string) => xml.replace(/<[^>]+>/g, '')
