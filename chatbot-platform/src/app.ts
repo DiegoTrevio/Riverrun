@@ -1,4 +1,5 @@
 import { settleAgentTests } from './agent-quality.js';
+import { httpLoggerOptions } from './http-log.js';
 import sjson from 'secure-json-parse';
 import { migrateLegacyZernioKeys } from './channels/zernio-connect.js';
 import { createHash, timingSafeEqual } from 'node:crypto';
@@ -92,7 +93,7 @@ declare module 'fastify' {
 }
 
 export async function buildApp(opts: { ai: AiProvider; transportFactory?: TransportFactory; logger?: boolean }) {
-  const app = Fastify({ logger: opts.logger ?? false, bodyLimit: 10 * 1024 * 1024, trustProxy: (_addr: string, hop: number) => hop < config.trustProxyHops });
+  const app = Fastify({ logger: opts.logger ? httpLoggerOptions : false, bodyLimit: 10 * 1024 * 1024, trustProxy: (_addr: string, hop: number) => hop < config.trustProxyHops });
   const service = new ChatService(opts.ai, opts.transportFactory);
   // Llaves guardadas desde el panel (Zernio): disponibles desde el arranque y al día en todos los procesos.
   await loadPlatformSecrets();
