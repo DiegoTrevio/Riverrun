@@ -20,7 +20,7 @@ Cada etapa es un PR con pruebas que fallan con el código anterior y pasan con e
 | 3b′. Cobros de la revisión del 31 de octubre | PAY-17…PAY-23 y bajos de cobros | ✅ Corregido |
 | 3c. Revisión del 31 de octubre | Los altos de [la revisión del 31 de octubre](revision-seguridad-2026-10-31.md): dos caídas del proceso, atajos para sacar o borrar datos, cobros del agente, la ficha en el Copiloto (IN-15, IN-16, ID-11…ID-14, AI-5 en parte) | ✅ Corregido |
 | 4. Abuso de entradas | Límites compartidos en la base, tamaños por ruta, firma del webhook de WhatsApp, adjuntos sin macros, PDF aislados, cuota de IA antes de transcribir (IN-2…IN-14, PAY-6) | 4′ ✅ (revisión del 31 de octubre: IN-17…IN-20, IN-22, IN-5, parte de IN-8…IN-14 y límites en la base); IN-2, IN-3, IN-6/7, IN-21 y PAY-6 pendientes |
-| 5. IA y Copiloto | Tarjetas de confirmación completas, costo de sub-llamados, notas de cotización, fuga de instrucciones (AI-5…AI-13) | Pendiente |
+| 5. IA y Copiloto | Tarjetas de confirmación completas, costo de sub-llamados, notas de cotización, fuga de instrucciones (AI-5…AI-13) | 5′ ✅ (revisión del 31 de octubre: AI-14 y bajos de IA); AI-6…AI-13 pendientes |
 | 6. Secretos y datos | Claves separadas con rotación, credenciales de canales cifradas, retención en Evolution (INF-6…INF-8, INF-13) | Pendiente |
 | 7. Detección | Bitácora de seguridad, alertas, avisos al usuario | Pendiente |
 | 8. Contenedores | Roles de base de datos, Redis con clave, redes aisladas, límites, imágenes al día (INF-2, INF-3, INF-9, INF-10) | Pendiente |
@@ -327,6 +327,28 @@ IN-6/7 y PAY-6) sigue pendiente.
 - Reservas: tres solicitudes pendientes con el correo de alguien le impiden reservar durante una hora; el tope de 20 por día por enlace cuenta cada solicitud.
 - Zernio: solo se juntan los avisos con el mismo cuerpo firmado; si Zernio reintentara con un cuerpo distinto, se procesaría dos veces.
 
+## Etapa 5′: lo que se corrigió de la revisión del 31 de octubre
+
+La IA de [la revisión del 31 de octubre](revision-seguridad-2026-10-31.md) (PR 5 del
+[plan](superpowers/plans/2026-10-31-seguridad-revision-correcciones.md)). El resto de la etapa 5 original (AI-6…AI-13)
+sigue pendiente.
+
+| # | Hallazgo | Arreglo | Prueba |
+|---|---|---|---|
+| AI-14 | `crear_regla` y `cambiar_regla` del Copiloto no seguían la cadena de etiquetas: «a quien escriba, etiquétalo promo» se creaba sin tarjeta y disparaba una regla existente de envío masivo. | Las dos herramientas declaran lo que la regla, activa, dispara (`add_tag` → etiqueta, `set_field` → dato guardado); `assessRisk` busca las reglas activas que mandan algo afuera (hasta tres saltos), como ya hacía `etiquetar`. Una regla en pausa, o solo renombrarla o pausarla, sigue sin tarjeta. | `copilot.config.test.ts` |
+| Bajo | Con un proveedor que no reporta `cost_usd` (distinto de OpenRouter), el Copiloto sumaba 0 y su tope por pedido nunca cortaba. | Al liquidar la llamada, quien llama recibe el costo estimado con `ai_prices` y los tokens. | `copilot.test.ts` |
+| Bajo | Importar una página guardaba el texto que la página esconde (`display:none`) y se podía guardar sin revisar (`save`). | `htmlToText` salta lo oculto (`hidden`, `aria-hidden="true"`, `display:none`, `visibility:hidden`) con su contenido, en una sola pasada; solo cuentan los atributos reales. La importación ya no guarda con `save`: devuelve la propuesta y se guarda desde la revisión («Volver a sincronizar» también abre la revisión). | `html-to-text.unit.test.ts`, `import.test.ts` |
+| Bajo | Las respuestas automáticas en redes podían publicar lo que el comentario indujera. | Además de los datos sin respaldo, va a revisión una respuesta con `@`, `#` o un enlace, o con más de la mitad de sus palabras largas fuera de la información del negocio y del comentario (con al menos 4). La bandeja dice el motivo. | `social-comments.test.ts` |
+
+**Cambios que nota la gente:**
+- «Volver a sincronizar» ya no guarda directo: muestra lo leído para revisarlo y guardarlo.
+- Algunas respuestas automáticas en redes que antes salían solas ahora esperan a una persona (menciones, etiquetas, enlaces o contenido que no está en la información del negocio).
+
+**Queda para después:**
+- Lo que una página oculta con una hoja de estilos (una clase) no se detecta; tampoco el texto del mismo color que el fondo.
+- La revisión del vocabulario de las respuestas en redes es por palabras (umbral fijo), no por significado.
+- `npm run eval:copilot` (simulado): 20 de 22. «dato» y «oportunidad» ya fallaban igual en `main` antes de esta etapa (el Copiloto propone en lugar de aplicar); se revisan aparte.
+
 ## Hallazgos pendientes por etapa
 
 Abreviaturas: ID identidad, PAY cobros, IN entradas, AI IA y Copiloto, INF servidor.
@@ -337,7 +359,7 @@ Abreviaturas: ID identidad, PAY cobros, IN entradas, AI IA y Copiloto, INF servi
 
 ### Medios
 - **PAY-6** Cuentas sin cupo siguen gastando IA (transcripción, Copiloto, herramientas con IA); las que están en pausa ya no, desde la 3a.
-- **AI-5…AI-9** Nombre del contacto en el prompt del Copiloto sin marcar como texto de cliente; tarjetas de confirmación que recortan lo que se ejecuta; notas de cotización sin verificar; sin detector de fuga de instrucciones; sub-llamados de IA fuera del tope de costo.
+- **AI-5…AI-9** (AI-14 corregido en la 5′) Nombre del contacto en el prompt del Copiloto sin marcar como texto de cliente; tarjetas de confirmación que recortan lo que se ejecuta; notas de cotización sin verificar; sin detector de fuga de instrucciones; sub-llamados de IA fuera del tope de costo.
 - **IN-2** El webhook de Evolution no tiene firma (solo el token en la URL) y su ruta es pública en Caddy.
 - **IN-3** Cuerpo de hasta 10 MB que se lee completo antes de verificar firmas; cada rechazo escribe en la bitácora; sin tiempo máximo de petición.
 - **IN-6/7** Plantillas DOCX que procesa LibreOffice dentro del backend, con todos los secretos en su entorno; cola de PDF única para todas las cuentas.
