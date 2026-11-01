@@ -58,6 +58,8 @@ export const SECRET_VARS = [
 ] as const;
 
 /** Valores de ejemplo conocidos (completos, no prefijos: un secreto aleatorio puede empezar con "x" o "test"). */
+/** Las claves de ejemplo de .env.example: son públicas, así que en producción no se arranca con ellas. */
+const EXAMPLE_SECRET = /^cambia-esta-clave(-larga)?$/i;
 const PLACEHOLDER = /^(cambia-esta-clave.*|changeme|change-me|secret|secreto|password|contrase(n|ñ)a|admin|123456\d*|test|x+)$/i;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const LOCAL_HOST = /^(localhost|127\.\d+\.\d+\.\d+|\[?::1\]?|0\.0\.0\.0)$/i;
@@ -253,7 +255,15 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
   } else if (prod) {
     try {
       const pw = decodeURIComponent(new URL(get('DATABASE_URL')).password);
-      if (!pw || pw === 'chatbot' || PLACEHOLDER.test(pw)) add(
+      if (EXAMPLE_SECRET.test(pw) || EXAMPLE_SECRET.test(get('POSTGRES_PASSWORD'))) add(
+        'critical',
+        'security',
+        'database.example_password',
+        ['DATABASE_URL', 'POSTGRES_PASSWORD'],
+        'La base de datos usa la contraseña de ejemplo de .env.example (es pública): no se arranca en producción con ella.',
+        'Cambia la contraseña del usuario de PostgreSQL (ALTER USER … PASSWORD) y pon la nueva en POSTGRES_PASSWORD; no basta con cambiar .env: el volumen guarda la clave anterior.',
+      );
+      else if (!pw || pw === 'chatbot' || PLACEHOLDER.test(pw)) add(
         'warning',
         'security',
         'database.weak_password',
@@ -337,6 +347,15 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
       ['SESSION_SECRET'],
       'SESSION_SECRET no está definido: cada reinicio cierra todas las sesiones y los datos cifrados (p. ej. Google Calendar) dejan de poder leerse.',
       'Genera uno con `openssl rand -hex 32`, guárdalo en .env (y fuera del servidor) y reinicia.',
+    );
+  } else if (prod && EXAMPLE_SECRET.test(secret)) {
+    add(
+      'critical',
+      'security',
+      'session_secret.example',
+      ['SESSION_SECRET'],
+      'SESSION_SECRET es el valor de ejemplo (público): cualquiera podría firmar sesiones. No se arranca en producción con él.',
+      'Cámbialo con `./riverrun rotate-secret` (genera uno largo; cierra las sesiones del panel y hay que volver a conectar Google Calendar).',
     );
   } else if (secret.length < 16 || PLACEHOLDER.test(secret) || new Set(secret).size < 6) {
     // Aviso y no crítico: hay instalaciones ya en marcha con valores cortos y no deben dejar de arrancar tras actualizar.
@@ -511,6 +530,14 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
       ['EVOLUTION_API_KEY'],
       'EVOLUTION_API_KEY está vacía: Evolution rechaza toda petición sin clave, así que WhatsApp no funcionará.',
       'Genera una con `openssl rand -hex 32`, ponla en EVOLUTION_API_KEY (la usan Evolution y el backend) y ejecuta ./riverrun restart.',
+    );
+    else if (prod && EXAMPLE_SECRET.test(evoKey)) add(
+      'critical',
+      'security',
+      'evolution.key_example',
+      ['EVOLUTION_API_KEY'],
+      'EVOLUTION_API_KEY es la de ejemplo de .env.example (pública): controla todas las sesiones de WhatsApp. No se arranca en producción con ella.',
+      'Reemplázala por `openssl rand -hex 32` y reinicia ambos servicios (./riverrun restart).',
     );
     else if (prod && (evoKey.length < 16 || PLACEHOLDER.test(evoKey))) add(
       'warning',
