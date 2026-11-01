@@ -27,10 +27,10 @@ su prueba está en [`seguridad.md`](seguridad.md).
 | Secretos en el ZIP, `HTTP_LOG` con tokens, IN-21 | 6′ | #97 |
 | Claves de ejemplo en producción, `curl \| sh` del instalador | 9 y 10′ | (este PR) |
 
-**Quedó abierto (documentado en `seguridad.md`):** de cobros, una cotización aceptada dos veces a la vez, un estado viejo
-de Stripe que pisa uno nuevo, los planes privados y el tope de Zernio completo; la conversión de plantillas aislada
-(IN-6/7) y la firma del webhook de Evolution (IN-2), con las etapas que ya existían. (Los topes de diseño con IA e
-importación ya están en la base desde la 4′.)
+**Quedó abierto (documentado en `seguridad.md`):** lo que cada etapa anota en «Queda para después», sobre todo la
+conversión de plantillas aislada (IN-6/7) y la firma del webhook de Evolution (IN-2), con las etapas que ya existían. Los
+bajos de cobros que la 3b′ dejó para después (cotización aceptada dos veces, estado viejo de Stripe, planes privados, tope
+de Zernio completo) y los topes de diseño con IA e importación (en la base desde la 4′) ya están corregidos.
 
 ## Altos
 
