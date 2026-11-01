@@ -6,6 +6,7 @@ import type { FastifyInstance } from 'fastify';
 import { brandByDomain, hostOf, publicBrand } from '../brands.js';
 import { config } from '../config.js';
 import { offeredPlans } from './billing.js';
+import { cardRequired } from '../billing/card-check.js';
 import { privacyUrl } from './self-service.js';
 import { publicPalette } from '../public-colors.js';
 
@@ -17,6 +18,7 @@ const LIMITS: [string, string, string][] = [
   ['chatbots', 'asistentes', 'asistente'],
   ['users', 'personas del equipo', 'persona del equipo'],
   ['social_accounts', 'redes sociales conectadas', 'red social conectada'],
+  ['storage_mb', 'MB para tus archivos', 'MB para tus archivos'],
 ];
 const HEX = /^#[0-9a-f]{3,8}$/i;
 
@@ -34,7 +36,8 @@ function planCta(p: Offered, o: { signup: boolean; trialDays: number }) {
 
 function planCard(p: Offered, o: { signup: boolean; trialDays: number }) {
   const per = p.billing_interval === 'year' ? 'año' : 'mes';
-  const limits = LIMITS.filter(([k]) => p.limits?.[k]).map(([k, pl, sg]) => `<li>${esc(Number(p.limits[k]).toLocaleString('es-MX'))} ${p.limits[k] === 1 ? sg : pl}</li>`);
+  const lim = (p.limits ?? {}) as Record<string, number | null | undefined>;
+  const limits = LIMITS.filter(([k]) => lim[k]).map(([k, pl, sg]) => `<li>${esc(Number(lim[k]).toLocaleString('es-MX'))} ${lim[k] === 1 ? sg : pl}</li>`);
   return `<article class="plan">
   <h2>${esc(p.name)}</h2>
   <p class="price"><strong>$${esc(amount(p.price))}</strong> <span>${esc(p.currency)}${p.tax_percent ? ' + IVA' : ''} / ${per}</span></p>
@@ -45,13 +48,15 @@ function planCard(p: Offered, o: { signup: boolean; trialDays: number }) {
 </article>`;
 }
 
-export function pricingPage(o: { brand: ReturnType<typeof publicBrand>; plans: Offered[]; trialDays: number; signup: boolean; support: string; terms: string; privacy: string }) {
+export function pricingPage(o: { brand: ReturnType<typeof publicBrand>; plans: Offered[]; trialDays: number; signup: boolean; support: string; terms: string; privacy: string; cardRequired?: boolean }) {
   const name = o.brand.name;
   // Colores con contraste AA en los dos temas, también con el color de una marca blanca.
   const palette = publicPalette(HEX.test(o.brand.color) ? o.brand.color : '');
   const contact = o.support ? `Escríbenos a <strong>${esc(o.support)}</strong>.` : '';
   const faq: [string, string][] = [
-    ...(o.trialDays > 0 ? [['¿Necesito tarjeta para probar?', `No. Tienes ${o.trialDays} días gratis para configurar y probar tu asistente; eliges plan cuando quieras.`] as [string, string]] : []),
+    ...(o.trialDays > 0 ? [['¿Necesito tarjeta para probar?', o.cardRequired
+      ? `Sí. Tu prueba de ${o.trialDays} días empieza al agregar tu tarjeta, y no se cobra nada hasta que termina; si cancelas antes desde Mi plan, no se cobra.`
+      : `No. Tienes ${o.trialDays} días gratis para configurar y probar tu asistente; eliges plan cuando quieras.`] as [string, string]] : []),
     ['¿El precio incluye IVA?', o.plans.some((p) => p.tax_percent) ? 'No: los precios son más IVA. Antes de pagar ves el total con IVA.' : 'Ves el total exacto antes de pagar.'],
     ['¿Cómo pago?', 'Con tarjeta en la página segura de Stripe o de Mercado Pago. Nosotros nunca vemos los datos de tu tarjeta.'],
     ['¿Puedo cancelar?', 'Sí, cuando quieras desde tu panel. Sigues usando tu plan hasta el final del periodo pagado.'],
@@ -100,7 +105,7 @@ export function pricingPage(o: { brand: ReturnType<typeof publicBrand>; plans: O
 <main>
   <div class="brand">${o.brand.logo ? `<img src="${esc(o.brand.logo)}" alt="" />` : ''}<span>${esc(name)}</span></div>
   <h1>Precios</h1>
-  <p class="lead">Tu asistente responde por WhatsApp las 24 horas, agenda citas y envía cotizaciones.${o.trialDays > 0 ? ` Empieza con ${o.trialDays} días gratis, sin tarjeta.` : ''}</p>
+  <p class="lead">Tu asistente responde por WhatsApp las 24 horas, agenda citas y envía cotizaciones.${o.trialDays > 0 ? ` Empieza con ${o.trialDays} días gratis${o.cardRequired ? ': no se cobra nada hasta que terminan' : ', sin tarjeta'}.` : ''}</p>
   ${o.signup && o.trialDays > 0 ? `<p class="hero"><a class="btn" href="/#/registro">Probar ${o.trialDays} días gratis</a></p>` : ''}
   ${o.plans.length
     ? `<div class="plans">${o.plans.map((p) => planCard(p, o)).join('\n')}</div>
@@ -136,6 +141,8 @@ export async function pricingRoutes(app: FastifyInstance) {
       support: own?.support_email || config.signup.supportContact,
       terms: config.signup.termsUrl,
       privacy: privacyUrl(),
+      // Con cobro en línea, la prueba empieza al agregar la tarjeta (etapa 3a): la página no debe decir «sin tarjeta».
+      cardRequired: await cardRequired(),
     });
     // Cada dominio ve su marca: un caché intermedio no debe mezclarlas.
     return reply.header('cache-control', 'public, max-age=300').header('vary', 'Host').type('text/html; charset=utf-8').send(html);

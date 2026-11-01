@@ -3,6 +3,7 @@
  * Borrar se pide desde el panel (escribiendo el nombre de la cuenta), se confirma con el enlace que llega al correo del
  * dueño y se ejecuta 7 días después; mientras tanto se puede cancelar. Al confirmar, el plan deja de renovarse.
  */
+import crypto from 'node:crypto';
 import PizZip from 'pizzip';
 import { linkBase, mailBrand } from '../brands.js';
 import { providers, getSubscription, queueAction } from '../billing/service.js';
@@ -26,28 +27,44 @@ const fmt = (d: Date) => d.toLocaleDateString('es-MX', { day: 'numeric', month: 
 
 /* ------------------------------ Borrar la cuenta ------------------------------ */
 
-/** Enlace firmado para confirmar el borrado: cuenta y vencimiento, con HMAC. */
-export function deletionToken(accountId: string, now = Date.now()) {
-  const payload = Buffer.from(JSON.stringify({ a: accountId, exp: now + LINK_MS })).toString('base64url');
+/**
+ * Enlace firmado para confirmar el borrado: cuenta, vencimiento y un número de un solo uso (`accounts.deletion_nonce`),
+ * con HMAC. Sirve una vez: confirmar lo consume, y cancelar el borrado o transferir la cuenta lo invalida.
+ */
+export function deletionToken(accountId: string, nonce: string, now = Date.now()) {
+  const payload = Buffer.from(JSON.stringify({ a: accountId, n: nonce, exp: now + LINK_MS })).toString('base64url');
   return `${payload}.${hmac(`account-delete:${payload}`)}`;
 }
 
-/** Cuenta del enlace si es auténtico y vigente; null si no. */
-export function readDeletionToken(token: string, now = Date.now()): string | null {
+/** Cuenta y número del enlace si es auténtico y vigente (sin revisar si ya se usó); null si no. */
+export function readDeletionToken(token: string, now = Date.now()): { accountId: string; nonce: string } | null {
   const [payload, sig] = String(token ?? '').split('.');
   if (!payload || !sig || !safeEqual(sig, hmac(`account-delete:${payload}`))) return null;
   try {
     const d = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
-    return typeof d.a === 'string' && typeof d.exp === 'number' && d.exp > now ? d.a : null;
+    return typeof d.a === 'string' && typeof d.n === 'string' && d.n && typeof d.exp === 'number' && d.exp > now ? { accountId: d.a, nonce: d.n } : null;
   } catch {
     return null;
   }
 }
 
+/** ¿El enlace es el vigente de la cuenta (no usado ni reemplazado)? */
+export async function deletionLinkOpen(t: { accountId: string; nonce: string }): Promise<boolean> {
+  return !!(await queryOne(`SELECT 1 FROM accounts WHERE id = $1 AND deletion_nonce = $2`, [t.accountId, t.nonce]));
+}
+
+/** Consume el enlace: true solo la primera vez. */
+export async function consumeDeletionLink(t: { accountId: string; nonce: string }): Promise<boolean> {
+  return !!(await queryOne(`UPDATE accounts SET deletion_nonce = NULL WHERE id = $1 AND deletion_nonce = $2 RETURNING id`, [t.accountId, t.nonce]));
+}
+
 /** Primer paso: manda al correo del dueño el enlace para confirmar. No cambia nada todavía. */
 export async function requestDeletion(acc: Account, owner: { email: string; name: string }) {
   const mb = await mailBrand(acc.id);
-  const link = `${linkBase()}/borrar-cuenta?t=${encodeURIComponent(deletionToken(acc.id))}`;
+  // Un enlace nuevo reemplaza al anterior.
+  const nonce = crypto.randomBytes(16).toString('base64url');
+  await query(`UPDATE accounts SET deletion_nonce = $2 WHERE id = $1`, [acc.id, nonce]);
+  const link = `${linkBase()}/borrar-cuenta?t=${encodeURIComponent(deletionToken(acc.id, nonce))}`;
   await sendMail({
     fromName: mb.fromName,
     to: owner.email,
@@ -95,6 +112,8 @@ export async function scheduleDeletion(accountId: string, now = new Date()): Pro
 
 /** Cancela un borrado programado. Stripe vuelve a renovar; en Mercado Pago (que no reanuda) se vuelve a contratar. */
 export async function cancelDeletion(accountId: string): Promise<{ canceled: boolean; resubscribe: boolean }> {
+  // Un enlace de confirmación que siga en el correo ya no sirve.
+  await query(`UPDATE accounts SET deletion_nonce = NULL WHERE id = $1`, [accountId]);
   const row = await queryOne<{ id: string }>(`UPDATE accounts SET deletion_requested_at = NULL, deletion_scheduled_for = NULL, updated_at = now() WHERE id = $1 AND deletion_scheduled_for IS NOT NULL RETURNING id`, [accountId]);
   if (!row) return { canceled: false, resubscribe: false };
   let resubscribe = false;

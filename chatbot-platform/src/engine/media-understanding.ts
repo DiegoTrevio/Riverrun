@@ -9,6 +9,7 @@ import PizZip from 'pizzip';
 import type { AiProvider, CompletionResult, ContentPart } from '../ai/provider.js';
 import { config } from '../config.js';
 import type { StoredMedia } from '../channels/media.js';
+import { checkZip } from '../zip-limits.js';
 import { inboundAbsolutePath } from '../channels/media.js';
 
 /** Lo que la IA puede leer de una sola vez (como la importación de conocimiento). */
@@ -27,6 +28,8 @@ const oneLine = (s: string) => s.replace(/\s+/g, ' ').trim();
 
 /** Lo más que se descomprime del texto de un Word: un .docx malicioso (zip bomb) no puede llenar la memoria. */
 export const DOCX_XML_MAX = 2_000_000;
+/** Un Word real tiene decenas de partes; uno con imágenes, unos cientos. */
+export const DOCX_MAX_PARTS = 1000;
 /** Lo que la IA tiene para leer un archivo: si tarda más, el mensaje sigue sin su resumen (no frena a los demás). */
 export const MEDIA_AI_TIMEOUT_MS = 20_000;
 
@@ -35,6 +38,8 @@ export const MEDIA_AI_TIMEOUT_MS = 20_000;
  * zip solo se lee de forma perezosa, y lo que crezca más allá de DOCX_XML_MAX se descarta sin terminar de descomprimir.
  */
 export function docxText(buffer: Buffer): string {
+  // PizZip lee todo el índice al abrir: con decenas de miles de partes eso solo ya cuesta segundos y memoria.
+  if (checkZip(buffer, { maxEntries: DOCX_MAX_PARTS })) return '';
   const entry = (new PizZip(buffer).file('word/document.xml') as any)?._data;
   if (!entry || entry.uncompressedSize > DOCX_XML_MAX) return '';
   const raw = Buffer.from(entry.getCompressedContent());

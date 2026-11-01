@@ -1,4 +1,5 @@
 import { settleAgentTests } from './agent-quality.js';
+import sjson from 'secure-json-parse';
 import { migrateLegacyZernioKeys } from './channels/zernio-connect.js';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
@@ -120,7 +121,8 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
     req.rawBody = body;
     if (!body.length) return done(null, {});
     try {
-      done(null, JSON.parse(body.toString('utf8')));
+      // Con la protección de Fastify: un cuerpo con __proto__ o constructor.prototype se rechaza (no contamina objetos).
+      done(null, sjson.parse(body.toString('utf8'), undefined, { protoAction: 'error', constructorAction: 'error' }));
     } catch {
       const err: any = new Error('JSON inválido');
       err.statusCode = 400;

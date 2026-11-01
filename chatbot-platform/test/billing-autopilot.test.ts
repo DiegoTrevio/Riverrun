@@ -53,6 +53,11 @@ async function paidMp(email: string, preId: string, extra: Record<string, unknow
   return a;
 }
 
+/** Aviso de disputa: Stripe la relee, así que el estado que vale es el que tiene guardado. */
+const disputeHook = (type: string, d: Record<string, any>) => {
+  fake.stripe.disputes[d.id] = d;
+  return stripeHook(type, d);
+};
 const subOf = async (id: string) => (await pool.query(`SELECT * FROM subscriptions WHERE account_id = $1`, [id])).rows[0];
 const accOf = async (id: string) => (await pool.query(`SELECT status, pause_reason, plan FROM accounts WHERE id = $1`, [id])).rows[0];
 const mails = (to: string) => outbox.filter((m) => m.to === to).map((m) => m.subject);
@@ -200,14 +205,14 @@ t('contracargo abierto pausa la cuenta y avisa con el enlace; ganado la reactiva
   const a = await paidStripe('disputa@spa.mx', 'sub_disp');
   await paidInvoice(a, 'sub_disp', 'in_disp', 'ch_disp');
   outbox.length = 0;
-  assert.equal((await stripeHook('charge.dispute.created', { id: 'dp_1', charge: 'ch_disp', amount: 57884, currency: 'mxn', status: 'needs_response' })).statusCode, 200);
+  assert.equal((await disputeHook('charge.dispute.created', { id: 'dp_1', charge: 'ch_disp', amount: 57884, currency: 'mxn', status: 'needs_response' })).statusCode, 200);
   assert.deepEqual(await accOf(a.accountId), { status: 'paused', pause_reason: 'dispute', plan: 'pro' });
   assert.equal((await paymentsOf(a.accountId)).at(-1).dispute_status, 'open');
   assert.deepEqual(mails(a.email), ['Tu asistente está en pausa']);
   const notice = (await pool.query(`SELECT body FROM notifications WHERE title LIKE 'Contracargo:%' ORDER BY created_at DESC LIMIT 1`)).rows[0];
   assert.match(notice.body, /dashboard\.stripe\.com\/disputes\/dp_1/);
   // El aviso repetido no repite nada.
-  assert.equal((await stripeHook('charge.dispute.created', { id: 'dp_1', charge: 'ch_disp', amount: 57884, currency: 'mxn', status: 'needs_response' })).statusCode, 200);
+  assert.equal((await disputeHook('charge.dispute.created', { id: 'dp_1', charge: 'ch_disp', amount: 57884, currency: 'mxn', status: 'needs_response' })).statusCode, 200);
   assert.deepEqual(mails(a.email), ['Tu asistente está en pausa']);
 
   // Una renovación que falla y luego se cobra no levanta la pausa de la disputa.
@@ -215,7 +220,7 @@ t('contracargo abierto pausa la cuenta y avisa con el enlace; ganado la reactiva
   assert.equal((await stripeHook('customer.subscription.updated', fake.stripe.subs.sub_disp)).statusCode, 200);
   assert.equal((await accOf(a.accountId)).status, 'paused');
 
-  assert.equal((await stripeHook('charge.dispute.closed', { id: 'dp_1', charge: 'ch_disp', amount: 57884, currency: 'mxn', status: 'won' })).statusCode, 200);
+  assert.equal((await disputeHook('charge.dispute.closed', { id: 'dp_1', charge: 'ch_disp', amount: 57884, currency: 'mxn', status: 'won' })).statusCode, 200);
   assert.equal((await accOf(a.accountId)).status, 'active');
   assert.equal((await paymentsOf(a.accountId)).at(-1).dispute_status, 'won');
   assert.ok(mails(a.email).includes('Tu asistente volvió a responder'));
@@ -224,8 +229,8 @@ t('contracargo abierto pausa la cuenta y avisa con el enlace; ganado la reactiva
 t('contracargo perdido: cuenta como reembolso, la suscripción se cancela y la cuenta sigue en pausa', async () => {
   const a = await paidStripe('perdida@spa.mx', 'sub_perd');
   await paidInvoice(a, 'sub_perd', 'in_perd', 'ch_perd');
-  await stripeHook('charge.dispute.created', { id: 'dp_2', charge: 'ch_perd', amount: 57884, currency: 'mxn', status: 'needs_response' });
-  assert.equal((await stripeHook('charge.dispute.closed', { id: 'dp_2', charge: 'ch_perd', amount: 57884, currency: 'mxn', status: 'lost' })).statusCode, 200);
+  await disputeHook('charge.dispute.created', { id: 'dp_2', charge: 'ch_perd', amount: 57884, currency: 'mxn', status: 'needs_response' });
+  assert.equal((await disputeHook('charge.dispute.closed', { id: 'dp_2', charge: 'ch_perd', amount: 57884, currency: 'mxn', status: 'lost' })).statusCode, 200);
   const p = (await paymentsOf(a.accountId)).at(-1);
   assert.deepEqual([p.dispute_status, p.refunded_cents], ['lost', 57884]);
   assert.equal((await subOf(a.accountId)).status, 'canceled');
@@ -243,6 +248,81 @@ t('contracargo de Mercado Pago (pago "charged_back") también pausa la cuenta', 
   assert.equal((await mpHook('payment', 'p_cb')).statusCode, 200);
   assert.deepEqual(await accOf(a.accountId), { status: 'paused', pause_reason: 'dispute', plan: 'pro' });
   assert.equal((await paymentsOf(a.accountId)).at(-1).dispute_status, 'open');
+});
+
+t('disputa abierta: se detienen los cobros; ganada: se reanudan; un aviso viejo que llega tarde no la reabre (PAY-4)', async () => {
+  const a = await paidStripe('detiene@spa.mx', 'sub_det');
+  await paidInvoice(a, 'sub_det', 'in_det', 'ch_det');
+  const open = { id: 'dp_det', charge: 'ch_det', amount: 57884, currency: 'mxn', status: 'needs_response' };
+  const notices = await superNotices('Contracargo: ');
+  assert.equal((await disputeHook('charge.dispute.created', open)).statusCode, 200);
+  assert.deepEqual(fake.stripe.subs.sub_det.pause_collection, { behavior: 'void' }, 'Stripe deja de cobrar');
+  assert.equal((await subOf(a.accountId)).collection_paused, true);
+  // Los fondos se retiran: el aviso relee la disputa y no repite nada.
+  assert.equal((await disputeHook('charge.dispute.funds_withdrawn', open)).statusCode, 200);
+  assert.equal(await superNotices('Contracargo: '), notices + 1);
+  assert.equal((await disputeHook('charge.dispute.closed', { ...open, status: 'won' })).statusCode, 200);
+  assert.equal(fake.stripe.subs.sub_det.pause_collection, null, 'se reanudan los cobros');
+  assert.equal((await subOf(a.accountId)).collection_paused, false);
+  assert.equal((await accOf(a.accountId)).status, 'active');
+  // El aviso de apertura llega tarde (su cuerpo dice abierta), pero Stripe dice ganada: no se reabre.
+  assert.equal((await stripeHook('charge.dispute.created', open)).statusCode, 200);
+  assert.equal((await accOf(a.accountId)).status, 'active');
+  assert.equal((await paymentsOf(a.accountId)).at(-1).dispute_status, 'won');
+  assert.equal(fake.stripe.subs.sub_det.pause_collection, null);
+});
+
+t('disputa perdida: la cuenta solo se reactiva con otra tarjeta; con la misma, se cancela y se reembolsa (PAY-5)', async () => {
+  const a = await paidStripe('otra@spa.mx', 'sub_otra');
+  fake.stripe.subs.sub_otra.default_payment_method = { id: 'pm_otra', card: { fingerprint: 'fp_disputada' } };
+  await paidInvoice(a, 'sub_otra', 'in_otra', 'ch_otra');
+  await disputeHook('charge.dispute.created', { id: 'dp_otra', charge: 'ch_otra', amount: 57884, currency: 'mxn', status: 'needs_response' });
+  await disputeHook('charge.dispute.closed', { id: 'dp_otra', charge: 'ch_otra', amount: 57884, currency: 'mxn', status: 'lost' });
+  assert.deepEqual(await accOf(a.accountId), { status: 'paused', pause_reason: 'dispute_lost', plan: 'pro' });
+  const { cardClaim } = await import('../src/billing/trial-claims.js');
+  assert.equal((await cardClaim('fp_disputada')).disputed, true, 'la tarjeta queda marcada');
+  // Vuelve a contratar con la misma tarjeta: no se reactiva; esa suscripción se cancela y se reembolsa.
+  fake.stripe.subs.sub_misma = stripeSub({ id: 'sub_misma', customer: 'cus_otra', metadata: { account_id: a.accountId, plan_key: 'pro' }, default_payment_method: { id: 'pm_m', card: { fingerprint: 'fp_disputada' } } });
+  assert.equal((await stripeHook('customer.subscription.created', fake.stripe.subs.sub_misma)).statusCode, 200);
+  assert.equal((await accOf(a.accountId)).status, 'paused');
+  const acts = (await pool.query(`SELECT kind FROM billing_actions WHERE ref = 'sub_misma' ORDER BY kind`)).rows.map((r) => r.kind);
+  assert.deepEqual(acts, ['cancel', 'refund_subscription']);
+  assert.ok(mails(a.email).includes('Usa otra tarjeta'));
+  // Con otra tarjeta, sí.
+  fake.stripe.subs.sub_nueva = stripeSub({ id: 'sub_nueva', customer: 'cus_otra', metadata: { account_id: a.accountId, plan_key: 'pro' }, default_payment_method: { id: 'pm_n', card: { fingerprint: 'fp_limpia' } } });
+  assert.equal((await stripeHook('customer.subscription.created', fake.stripe.subs.sub_nueva)).statusCode, 200);
+  assert.deepEqual(await accOf(a.accountId), { status: 'active', pause_reason: '', plan: 'pro' });
+});
+
+t('alerta temprana de fraude: se reembolsa el cobro, se cancela la suscripción y la cuenta queda en pausa (PAY-5)', async () => {
+  const a = await paidStripe('fraude@spa.mx', 'sub_efw');
+  await paidInvoice(a, 'sub_efw', 'in_efw', 'ch_efw');
+  fake.stripe.fraudWarnings.issfr_1 = { id: 'issfr_1', charge: 'ch_efw', actionable: true };
+  assert.equal((await stripeHook('radar.early_fraud_warning.created', { id: 'issfr_1' })).statusCode, 200);
+  assert.deepEqual(await accOf(a.accountId), { status: 'paused', pause_reason: 'dispute_lost', plan: 'pro' });
+  assert.equal((await subOf(a.accountId)).status, 'canceled');
+  assert.equal((await paymentsOf(a.accountId)).at(-1).refunded_cents, 57884);
+  await processBillingActions(new Date(Date.now() + 1000));
+  assert.ok(fake.stripe.refunds.some((r) => r.charge === 'ch_efw'), 'el cobro se reembolsó en Stripe');
+  assert.equal(fake.stripe.subs.sub_efw.status, 'canceled');
+  assert.equal(await superNotices('Alerta de fraude'), 1);
+});
+
+t('Mercado Pago: el contracargo (tema chargebacks) pausa los cobros; la suscripción en pausa no se toma como pago pendiente (PAY-4)', async () => {
+  const a = await paidMp('cbmp@cafe.mx', 'pre_cbmp');
+  fake.mp.payments.ap_cbmp = { id: 'ap_cbmp', preapproval_id: 'pre_cbmp', status: 'processed', payment: { id: 'p_cbmp', status: 'approved' }, transaction_amount: 578.84, currency_id: 'MXN', date_created: new Date().toISOString() };
+  assert.equal((await mpHook('subscription_authorized_payment', 'ap_cbmp')).statusCode, 200);
+  fake.mp.charges.p_cbmp = { id: 'p_cbmp', status: 'charged_back', status_detail: 'in_process', transaction_amount: 578.84 };
+  fake.mp.chargebacks.cb_9 = { id: 'cb_9', payments: ['p_cbmp'] };
+  assert.equal((await mpHook('chargebacks', 'cb_9')).statusCode, 200);
+  assert.deepEqual(await accOf(a.accountId), { status: 'paused', pause_reason: 'dispute', plan: 'pro' });
+  assert.equal(fake.mp.preapprovals.pre_cbmp.status, 'paused');
+  assert.equal((await mpHook('subscription_preapproval', 'pre_cbmp')).statusCode, 200);
+  assert.equal((await subOf(a.accountId)).status, 'active', 'pausada por nosotros, no por falta de pago');
+  fake.mp.charges.p_cbmp.status_detail = 'reimbursed';
+  assert.equal((await mpHook('chargebacks', 'cb_9')).statusCode, 200);
+  assert.equal(fake.mp.preapprovals.pre_cbmp.status, 'authorized');
+  assert.equal((await accOf(a.accountId)).status, 'active');
 });
 
 /* ------------------------------ 3DS ------------------------------ */
@@ -350,10 +430,10 @@ t('si un proveedor con suscripciones no manda ningún aviso en más de un ciclo,
 t('contracargo ganado con el plan sin pagar: sigue en pausa por falta de pago y se reactiva sola al pagar', async () => {
   const a = await paidStripe('gana@spa.mx', 'sub_gana');
   await paidInvoice(a, 'sub_gana', 'in_gana', 'ch_gana');
-  await stripeHook('charge.dispute.created', { id: 'dp_3', charge: 'ch_gana', amount: 57884, currency: 'mxn', status: 'needs_response' });
+  await disputeHook('charge.dispute.created', { id: 'dp_3', charge: 'ch_gana', amount: 57884, currency: 'mxn', status: 'needs_response' });
   fake.stripe.subs.sub_gana.status = 'past_due';
   await stripeHook('customer.subscription.updated', fake.stripe.subs.sub_gana);
-  await stripeHook('charge.dispute.closed', { id: 'dp_3', charge: 'ch_gana', amount: 57884, currency: 'mxn', status: 'won' });
+  await disputeHook('charge.dispute.closed', { id: 'dp_3', charge: 'ch_gana', amount: 57884, currency: 'mxn', status: 'won' });
   assert.deepEqual(await accOf(a.accountId), { status: 'paused', pause_reason: 'payment', plan: 'pro' });
   fake.stripe.subs.sub_gana.status = 'active';
   await stripeHook('customer.subscription.updated', fake.stripe.subs.sub_gana);

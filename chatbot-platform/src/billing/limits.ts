@@ -14,16 +14,23 @@ import { HttpError } from '../access.js';
 import { notifyUsers } from '../automation/store.js';
 import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
+import { limited } from '../identity/rate-limit.js';
+
+/** Una conexión de transacción (con su candado) o, sin ella, el pool: dentro de un candado no se pide otra conexión. */
+type Q = { query: (sql: string, args?: unknown[]) => Promise<{ rows: any[] }> };
+const one = async <T extends Record<string, any>>(q: Q | undefined, sql: string, args: unknown[]): Promise<T | null> => (q ? ((await q.query(sql, args)).rows[0] as T | undefined) ?? null : queryOne<T>(sql, args));
+const many = async <T extends Record<string, any>>(q: Q | undefined, sql: string, args: unknown[] = []): Promise<T[]> => (q ? ((await q.query(sql, args)).rows as T[]) : query<T>(sql, args));
 import { sendMail } from '../mailer.js';
 import { logEvent } from '../logs.js';
 import { chargeCents } from './tax.js';
 
-export const LIMIT_KEYS = ['messages_per_month', 'channels', 'users', 'chatbots', 'social_accounts'] as const;
+const MB = 1024 * 1024;
+export const LIMIT_KEYS = ['messages_per_month', 'channels', 'users', 'chatbots', 'social_accounts', 'storage_mb'] as const;
 export type LimitKey = (typeof LIMIT_KEYS)[number];
 export type Limits = Partial<Record<LimitKey, number | null>>;
 
 const Limit = z.number().int().min(1).max(100_000_000).nullable().optional();
-export const LimitsSchema = z.object({ messages_per_month: Limit, channels: Limit, users: Limit, chatbots: Limit, social_accounts: Limit }).strict();
+export const LimitsSchema = z.object({ messages_per_month: Limit, channels: Limit, users: Limit, chatbots: Limit, social_accounts: Limit, storage_mb: Limit }).strict();
 
 export const LIMIT_LABELS: Record<LimitKey, { singular: string; plural: string }> = {
   messages_per_month: { singular: 'mensaje del asistente al mes', plural: 'mensajes del asistente al mes' },
@@ -31,6 +38,7 @@ export const LIMIT_LABELS: Record<LimitKey, { singular: string; plural: string }
   users: { singular: 'usuario', plural: 'usuarios' },
   chatbots: { singular: 'asistente', plural: 'asistentes' },
   social_accounts: { singular: 'red social conectada', plural: 'redes sociales conectadas' },
+  storage_mb: { singular: 'MB de archivos', plural: 'MB de archivos' },
 };
 
 const clean = (l: unknown): Limits => {
@@ -48,7 +56,13 @@ export function trialLimits(): Limits {
   if (t.users > 0) out.users = t.users;
   if (t.chatbots > 0) out.chatbots = t.chatbots;
   if (t.socialAccounts > 0) out.social_accounts = t.socialAccounts;
+  if (t.storageMb > 0) out.storage_mb = t.storageMb;
   return out;
+}
+
+/** Un plan sin su propio tope de archivos lleva el de por omisión (PLAN_DEFAULT_STORAGE_MB). */
+export function withPlanDefaults(l: Limits): Limits {
+  return l.storage_mb || config.signup.planDefaultStorageMb <= 0 ? l : { ...l, storage_mb: config.signup.planDefaultStorageMb };
 }
 
 export interface EffectiveLimits {
@@ -57,15 +71,15 @@ export interface EffectiveLimits {
   plan_key: string;
 }
 
-export async function effectiveLimits(accountId: string): Promise<EffectiveLimits> {
-  const acc = await queryOne<{ status: string; plan: string; limits_override: unknown }>(`SELECT status, plan, limits_override FROM accounts WHERE id = $1`, [accountId]);
+export async function effectiveLimits(accountId: string, q?: Q): Promise<EffectiveLimits> {
+  const acc = await one<{ status: string; plan: string; limits_override: unknown }>(q, `SELECT status, plan, limits_override FROM accounts WHERE id = $1`, [accountId]);
   if (!acc) return { limits: {}, source: 'none', plan_key: '' };
   const override = clean(acc.limits_override);
-  const plan = acc.plan ? await queryOne<{ limits: unknown }>(`SELECT limits FROM plans WHERE key = $1`, [acc.plan]) : null;
+  const plan = acc.plan ? await one<{ limits: unknown }>(q, `SELECT limits FROM plans WHERE key = $1`, [acc.plan]) : null;
   // Un plan que ya no existe (clave mal escrita o borrada) no puede dejar a la cuenta sin límites: se aplican los de prueba.
   const missingPlan = !!acc.plan && !plan;
   if (missingPlan) await logEvent({ level: 'error', source: 'admin', message: `La cuenta tiene el plan "${acc.plan}", que no existe; se aplican límites restrictivos`, accountId });
-  const base = plan ? clean(plan.limits) : acc.status === 'trial' || missingPlan ? trialLimits() : {};
+  const base = plan ? withPlanDefaults(clean(plan.limits)) : acc.status === 'trial' || missingPlan ? trialLimits() : {};
   const source = Object.keys(override).length ? 'override' : plan ? 'plan' : acc.status === 'trial' || missingPlan ? 'trial' : 'none';
   // La excepción puede cambiar solo algunos límites: el resto sigue el plan.
   return { limits: { ...base, ...override }, source, plan_key: acc.plan };
@@ -73,8 +87,8 @@ export async function effectiveLimits(accountId: string): Promise<EffectiveLimit
 
 export const monthKey = (d = new Date()) => d.toISOString().slice(0, 7);
 
-export async function messagesUsed(accountId: string, month = monthKey()): Promise<number> {
-  return (await queryOne<{ messages: number }>(`SELECT messages FROM usage_counters WHERE account_id = $1 AND month = $2`, [accountId, month]))?.messages ?? 0;
+export async function messagesUsed(accountId: string, month = monthKey(), q?: Q): Promise<number> {
+  return (await one<{ messages: number }>(q, `SELECT messages FROM usage_counters WHERE account_id = $1 AND month = $2`, [accountId, month]))?.messages ?? 0;
 }
 
 export interface Usage {
@@ -83,18 +97,24 @@ export interface Usage {
   users: number;
   chatbots: number;
   social_accounts: number;
+  storage_mb: number;
 }
 
-export async function usageOf(accountId: string): Promise<Usage> {
-  const r = await queryOne<{ channels: number; users: number; chatbots: number; social_accounts: number }>(
+export async function usageOf(accountId: string, q?: Q): Promise<Usage> {
+  const r = await one<{ channels: number; users: number; chatbots: number; social_accounts: number; storage_bytes: string }>(q,
     `SELECT (SELECT count(*)::int FROM channels WHERE account_id = $1 AND type <> 'playground') AS channels,
             (SELECT count(*)::int FROM users WHERE account_id = $1 AND active) AS users,
             (SELECT count(*)::int FROM chatbots WHERE account_id = $1) AS chatbots,
-            (SELECT count(*)::int FROM social_accounts WHERE account_id = $1 AND status <> 'disconnected') AS social_accounts`,
+            (SELECT count(*)::int FROM social_accounts WHERE account_id = $1 AND status <> 'disconnected') AS social_accounts,
+            -- Lo que sube la cuenta (IN-19): archivos de automatizaciones, la biblioteca de cada agente y los formatos de Word.
+            ((SELECT coalesce(sum(size_bytes), 0) FROM attachments WHERE account_id = $1)
+              + (SELECT coalesce(sum(i.size_bytes), 0) FROM images i JOIN chatbots b ON b.id = i.chatbot_id WHERE b.account_id = $1)
+              + (SELECT coalesce(sum(size_bytes), 0) FROM quote_templates WHERE account_id = $1))::text AS storage_bytes`,
     [accountId],
   );
   return {
-    messages_per_month: await messagesUsed(accountId), channels: r?.channels ?? 0, users: r?.users ?? 0, chatbots: r?.chatbots ?? 0, social_accounts: r?.social_accounts ?? 0,
+    messages_per_month: await messagesUsed(accountId, monthKey(), q), channels: r?.channels ?? 0, users: r?.users ?? 0, chatbots: r?.chatbots ?? 0, social_accounts: r?.social_accounts ?? 0,
+    storage_mb: Math.ceil(Number(r?.storage_bytes ?? 0) / MB),
   };
 }
 
@@ -114,18 +134,18 @@ export interface UpgradeOffer {
  * todo lo que la cuenta ya usa; primero los del mismo periodo que su plan (mensual si no tiene) y, entre ellos, el más
  * barato. null si ningún plan alcanza (o no hay planes).
  */
-export async function nextPlanFor(accountId: string, key: LimitKey, needed: number): Promise<UpgradeOffer | null> {
+export async function nextPlanFor(accountId: string, key: LimitKey, needed: number, q?: Q): Promise<UpgradeOffer | null> {
   const [acc, used, plans] = await Promise.all([
-    queryOne<{ plan: string }>(`SELECT plan FROM accounts WHERE id = $1`, [accountId]),
-    usageOf(accountId),
-    query<{ key: string; name: string; price_cents: number; currency: string; billing_interval: 'month' | 'year'; limits: unknown }>(`SELECT key, name, price_cents, currency, billing_interval, limits FROM plans WHERE active`),
+    one<{ plan: string }>(q, `SELECT plan FROM accounts WHERE id = $1`, [accountId]),
+    usageOf(accountId, q),
+    many<{ key: string; name: string; price_cents: number; currency: string; billing_interval: 'month' | 'year'; limits: unknown }>(q, `SELECT key, name, price_cents, currency, billing_interval, limits FROM plans WHERE active`),
   ]);
   const fits = (max: number | null | undefined, n: number) => !max || max >= n;
   const monthly = (p: { price_cents: number; billing_interval: string }) => (p.billing_interval === 'year' ? p.price_cents / 12 : p.price_cents);
   // Quien paga cada mes no debería ver como "siguiente plan" un compromiso anual solo por salir más barato al mes.
   const period = plans.find((p) => p.key === acc?.plan)?.billing_interval ?? 'month';
   const best = plans
-    .map((p) => ({ ...p, lim: clean(p.limits) }))
+    .map((p) => ({ ...p, lim: withPlanDefaults(clean(p.limits)) }))
     .filter((p) => p.key !== acc?.plan && fits(p.lim[key], needed) && LIMIT_KEYS.every((k) => k === key || k === 'messages_per_month' || fits(p.lim[k], used[k])))
     .sort((a, b) => Number(a.billing_interval !== period) - Number(b.billing_interval !== period) || monthly(a) - monthly(b))[0];
   if (!best) return null;
@@ -133,24 +153,38 @@ export async function nextPlanFor(accountId: string, key: LimitKey, needed: numb
 }
 
 /** Lo que el panel necesita para ofrecer subir de plan al topar un límite. */
-export async function limitDetail(accountId: string, key: LimitKey, used: number, max: number) {
-  return { key, label: LIMIT_LABELS[key].plural, used, max, next_plan: await nextPlanFor(accountId, key, Math.max(used, max) + 1) };
+export async function limitDetail(accountId: string, key: LimitKey, used: number, max: number, q?: Q) {
+  return { key, label: LIMIT_LABELS[key].plural, used, max, next_plan: await nextPlanFor(accountId, key, Math.max(used, max) + 1, q) };
 }
 
 /** "El plan Pro incluye hasta 5 canales" / "…sin límite de canales". */
 export const offerText = (o: UpgradeOffer, key: LimitKey) =>
   `El plan ${o.name} incluye ${o.allows ? `hasta ${o.allows.toLocaleString('es-MX')} ${o.allows === 1 ? LIMIT_LABELS[key].singular : LIMIT_LABELS[key].plural}` : `${LIMIT_LABELS[key].plural} sin límite`}.`;
 
+/**
+ * Como assertWithinLimit, pero dentro de la transacción que va a crear el recurso y con un candado por cuenta:
+ * dos pedidos a la vez se forman y el segundo cuenta lo que el primero ya creó (PAY-19). Sin esto, 20 pedidos
+ * simultáneos pasaban todos la cuenta antes de que alguno insertara.
+ */
+export async function assertWithinLimitLocked(client: Q, accountId: string, key: Exclude<LimitKey, 'messages_per_month'>, adding = 1) {
+  // Candado consultivo por cuenta (no la fila de la cuenta): serializa las altas sin bloquear otras escrituras a la cuenta
+  // (la guía de inicio, por ejemplo, actualiza la cuenta desde otras conexiones a la mitad de su transacción).
+  await client.query(`SELECT pg_advisory_xact_lock(hashtextextended('plan-limits:' || $1, 0))`, [accountId]);
+  // Todo con la misma conexión: con el candado tomado, pedir otra al pool puede quedarse esperando a que se libere una
+  // que ocupan los demás pedidos formados detrás de este candado.
+  await assertWithinLimit(accountId, key, adding, client);
+}
+
 /** Falla con un mensaje claro si crear `adding` más de este recurso pasa el límite de la cuenta. */
-export async function assertWithinLimit(accountId: string, key: Exclude<LimitKey, 'messages_per_month'>, adding = 1) {
-  const { limits, source } = await effectiveLimits(accountId);
+export async function assertWithinLimit(accountId: string, key: Exclude<LimitKey, 'messages_per_month'>, adding = 1, q?: Q) {
+  const { limits, source } = await effectiveLimits(accountId, q);
   const max = limits[key];
   if (!max) return;
-  const used = (await usageOf(accountId))[key];
+  const used = (await usageOf(accountId, q))[key];
   if (used + adding > max) {
     const who = source === 'trial' ? 'Tu periodo de prueba permite' : 'Tu plan permite';
     const l = LIMIT_LABELS[key];
-    const detail = await limitDetail(accountId, key, used, max);
+    const detail = await limitDetail(accountId, key, used, max, q);
     const offer = detail.next_plan ? ` ${offerText(detail.next_plan, key)}` : '';
     throw new HttpError(403, `${who} hasta ${max} ${max === 1 ? l.singular : l.plural} y ya tienes ${used}.${offer} Para agregar más, cambia de plan en Ajustes → Mi plan y pagos.`, ['limit_reached'], { limit: detail });
   }
@@ -228,3 +262,15 @@ export async function noticeMessagesReached(accountId: string) {
   const q = await messageQuota(accountId);
   if (q.max) await notifyLimit(accountId, 'messages_100', monthKey(), q.used, q.max);
 }
+
+/**
+ * Antes de guardar un archivo que sube la cuenta (IN-19): una cuenta en pausa no sube nada, 30 subidas por hora por
+ * cuenta, y lo guardado más el archivo nuevo cabe en `storage_mb` del plan (o de la prueba).
+ */
+export async function assertUploadAllowed(accountId: string, bytes: number) {
+  const acc = await queryOne<{ status: string; active: boolean }>(`SELECT status, active FROM accounts WHERE id = $1`, [accountId]);
+  if (!acc?.active || acc.status === 'paused') throw new HttpError(403, 'Tu cuenta está en pausa: no se pueden subir archivos.', undefined, { code: 'account_paused' });
+  if (await limited(`uploads:${accountId}`, UPLOADS_PER_HOUR, 3600_000)) throw new HttpError(429, `Subiste muchos archivos en la última hora (más de ${UPLOADS_PER_HOUR}); espera un rato.`);
+  if (bytes > 0) await assertWithinLimit(accountId, 'storage_mb', Math.ceil(bytes / MB));
+}
+export const UPLOADS_PER_HOUR = 30;

@@ -14,9 +14,13 @@ export const checks = {
     await toast(page, 'Agendada');
     const appt = (await pool.query(`SELECT id, status FROM appointments WHERE account_id = $1 AND customer_name = 'Cliente de la auditoría'`, [h.accountId])).rows[0];
     assert.equal(appt?.status, 'confirmed', 'la cita no quedó guardada');
-    // Se busca en el calendario (vista de lista si hace falta) y se abre.
+    // Se busca en el calendario y se abre. El primer horario libre puede caer en la semana siguiente (p. ej. un sábado):
+    // entonces se avanza de periodo hasta verla (la agenda no tiene vista de lista).
     const event = page.getByRole('button', { name: /Cliente de la auditoría/ }).first();
-    if (!(await event.count())) await page.getByRole('button', { name: 'Lista', exact: true }).click().catch(() => {});
+    for (let i = 0; i < 4 && !(await event.count()); i++) {
+      await page.getByRole('button', { name: 'Periodo siguiente' }).click();
+      await page.waitForTimeout(400);
+    }
     await event.click();
     const panel = page.getByRole('dialog', { name: /Cita de Cliente de la auditoría/ });
     await panel.getByRole('button', { name: 'Cancelar cita' }).click();

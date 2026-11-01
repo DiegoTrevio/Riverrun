@@ -212,6 +212,15 @@ t('un Word «bomba» (se descomprime a gigas) no frena al servidor: se deja de l
   assert.equal(docxText(docx('Hola')), 'Hola');
 });
 
+t('un Word con miles de partes no se abre: se rechaza antes de leer su índice completo (IN-16)', async () => {
+  const zip = new PizZip();
+  zip.file('word/document.xml', '<w:document><w:body><w:p><w:r><w:t>Hola</w:t></w:r></w:p></w:body></w:document>');
+  for (let i = 0; i < 20_000; i++) zip.file(`x/${i}`, '');
+  const started = Date.now();
+  assert.equal(docxText(zip.generate({ type: 'nodebuffer' }) as Buffer), '');
+  assert.ok(Date.now() - started < 1000);
+});
+
 t('lo que se lee de un archivo se enmascara, y con una persona atendiendo no se gasta IA', async () => {
   h.reset();
   const phone = '5215550000013';

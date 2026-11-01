@@ -89,13 +89,15 @@ t('borrar la cuenta: solo el dueño y escribiendo el nombre; el correo trae el e
   assert.equal((await accRow(A.account)).deletion_scheduled_for, null, 'pedirlo no programa nada todavía');
 
   const link = linkFor('sol@floreria.mx');
+  // El número de un solo uso del enlace nunca sale del servidor (ni a otro administrador).
+  assert.equal('deletion_nonce' in (await A.admin2('GET', '/api/me')).json().account, false);
   // El GET solo pregunta (los antivirus abren los enlaces del correo).
   const page = await h.app.inject({ method: 'GET', url: link.pathname + link.search });
   assert.equal(page.statusCode, 200);
   assert.match(page.body, /Sí, borrar mi cuenta en 7 días/);
   assert.equal((await accRow(A.account)).deletion_scheduled_for, null);
   // Un enlace alterado no sirve.
-  const forged = self.deletionToken(B.account).split('.')[0] + '.' + link.searchParams.get('t')!.split('.')[1];
+  const forged = self.deletionToken(B.account, 'x').split('.')[0] + '.' + link.searchParams.get('t')!.split('.')[1];
   assert.equal((await h.app.inject({ method: 'POST', url: `/borrar-cuenta?t=${encodeURIComponent(forged)}` })).statusCode, 400);
   assert.equal((await accRow(B.account)).deletion_scheduled_for, null);
 
@@ -105,8 +107,11 @@ t('borrar la cuenta: solo el dueño y escribiendo el nombre; el correo trae el e
   const days = (new Date(row.deletion_scheduled_for).getTime() - new Date(row.deletion_requested_at).getTime()) / 86400_000;
   assert.equal(Math.round(days), 7);
   assert.ok(outbox.some((m) => m.to === 'sol@floreria.mx' && /se borrará el/.test(m.subject)), 'confirmación por correo');
-  // Repetir el enlace no mueve la fecha.
-  await h.app.inject({ method: 'POST', url: link.pathname + link.search });
+  // El mismo enlace otra vez ya no sirve (410) y no mueve la fecha (bajos de la 2c).
+  const again = await h.app.inject({ method: 'POST', url: link.pathname + link.search });
+  assert.equal(again.statusCode, 410);
+  assert.match(again.body, /Este enlace ya no sirve/);
+  assert.equal((await h.app.inject({ method: 'GET', url: link.pathname + link.search })).statusCode, 410);
   assert.equal(String((await accRow(A.account)).deletion_scheduled_for), String(row.deletion_scheduled_for));
   // /api/me lo trae para la franja del panel; ya programado, pedirlo otra vez → 409.
   assert.ok((await A.owner('GET', '/api/me')).json().account.deletion_scheduled_for);
@@ -122,8 +127,20 @@ t('cancelar el borrado: solo el dueño (otro admin y un agente no); sin borrado 
   assert.equal((await A.owner('DELETE', '/api/account/deletion')).statusCode, 409);
 });
 
+t('pedir otro enlace, cancelar o transferir la cuenta invalida el enlace que ya estaba en el correo (bajos de la 2c)', async () => {
+  // Cancelar.
+  assert.equal((await A.owner('POST', '/api/account/deletion', { confirm: 'Florería Sol' })).statusCode, 200);
+  const first = linkFor('sol@floreria.mx');
+  assert.equal((await A.owner('POST', '/api/account/deletion', { confirm: 'Florería Sol' })).statusCode, 200);
+  const second = linkFor('sol@floreria.mx');
+  assert.equal((await h.app.inject({ method: 'POST', url: first.pathname + first.search })).statusCode, 410, 'el nuevo reemplaza al anterior');
+  assert.equal((await A.owner('DELETE', '/api/account/deletion')).statusCode, 409, 'no había borrado programado, pero el enlace se invalida igual');
+  assert.equal((await h.app.inject({ method: 'POST', url: second.pathname + second.search })).statusCode, 410);
+  assert.equal((await accRow(A.account)).deletion_scheduled_for, null);
+});
+
 t('un enlace vencido no sirve', async () => {
-  const old = self.deletionToken(A.account, Date.now() - 2 * 86400_000);
+  const old = self.deletionToken(A.account, 'n', Date.now() - 2 * 86400_000);
   assert.equal(self.readDeletionToken(old), null);
   assert.equal((await h.app.inject({ method: 'GET', url: `/borrar-cuenta?t=${encodeURIComponent(old)}` })).statusCode, 400);
   assert.equal(self.readDeletionToken('basura'), null);
@@ -167,6 +184,32 @@ t('contacto: llega al buzón de soporte con «responder a», campo trampa y lím
   } finally {
     config.signup.superadminEmail = prev;
   }
+});
+
+t('contacto: si Cloudflare no responde, el mensaje no sale (captcha cerrado ante fallas, bajos de la 4′)', async () => {
+  const prevMail = config.signup.superadminEmail;
+  const prev = { ...config.signup.turnstile };
+  config.signup.superadminEmail = 'soporte@plataforma.mx';
+  Object.assign(config.signup.turnstile, { siteKey: 'site', secretKey: 'secret', verifyUrl: 'http://127.0.0.1:9' });
+  try {
+    const n = outbox.length;
+    const r = await h.app.inject({ method: 'POST', url: '/contacto', remoteAddress: '10.41.0.1', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      payload: new URLSearchParams({ name: 'Ana', email: 'ana@cliente.mx', message: 'Mensaje de prueba largo', 'cf-turnstile-response': 'x' }).toString() });
+    assert.equal(r.statusCode, 503);
+    assert.match(r.body, /No pudimos comprobar el captcha/);
+    assert.equal(outbox.length, n, 'no sale nada');
+  } finally {
+    Object.assign(config.signup.turnstile, prev);
+    config.signup.superadminEmail = prevMail;
+  }
+});
+
+t('un cuerpo JSON con __proto__ o constructor.prototype responde 400 (bajos de la 4′)', async () => {
+  for (const payload of ['{"__proto__":{"x":1}}', '{"a":{"constructor":{"prototype":{"x":1}}}}']) {
+    const r = await h.app.inject({ method: 'POST', url: '/api/login', headers: { 'content-type': 'application/json' }, payload });
+    assert.equal(r.statusCode, 400, payload);
+  }
+  assert.equal(({} as any).x, undefined);
 });
 
 t('estado: componentes y su estado, sin mensajes de error ni direcciones internas', async () => {

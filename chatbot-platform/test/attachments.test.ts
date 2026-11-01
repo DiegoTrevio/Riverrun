@@ -96,3 +96,42 @@ t('borrar: el archivo deja de estar disponible y no se puede descargar', async (
   assert.equal((await h.authed('DELETE', `/api/attachments/${pdf.id}`)).statusCode, 200);
   assert.equal((await agent('GET', `/api/attachments/${pdf.id}/file`)).statusCode, 404);
 });
+
+/* ------------------------------ Almacenamiento (IN-19) ------------------------------ */
+
+t('pasar storage_mb del límite responde 403 limit_reached (IN-19)', async () => {
+  await pool.query(`UPDATE accounts SET limits_override = '{"storage_mb": 1}'::jsonb WHERE id = $1`, [h.accountId]);
+  try {
+    const big = Buffer.concat([PDF, Buffer.alloc(1100 * 1024, 0x20)]);
+    const r = await upload('grande.pdf', big);
+    assert.equal(r.statusCode, 403, r.body);
+    assert.deepEqual(r.json().issues, ['limit_reached']);
+    assert.match(r.json().error, /MB de archivos/);
+  } finally {
+    await pool.query(`UPDATE accounts SET limits_override = '{}'::jsonb WHERE id = $1`, [h.accountId]);
+  }
+});
+
+t('una cuenta en pausa no sube archivos (IN-19)', async () => {
+  await pool.query(`UPDATE accounts SET status = 'paused', pause_reason = 'manual' WHERE id = $1`, [h.accountId]);
+  try {
+    const r = await upload('pausa.pdf', PDF);
+    assert.equal(r.statusCode, 403);
+    assert.equal(r.json().code, 'account_paused');
+  } finally {
+    await pool.query(`UPDATE accounts SET status = 'active', pause_reason = '' WHERE id = $1`, [h.accountId]);
+  }
+});
+
+t('la subida 31 en una hora responde 429 (IN-19)', async () => {
+  await pool.query(`INSERT INTO rate_limits (key, hits, expires_at) VALUES ($1, 30, now() + interval '1 hour') ON CONFLICT (key) DO UPDATE SET hits = 30, expires_at = now() + interval '1 hour'`, [`uploads:${h.accountId}`]);
+  const r = await upload('otra.pdf', PDF);
+  assert.equal(r.statusCode, 429);
+  await pool.query(`UPDATE rate_limits SET expires_at = now() - interval '1 second' WHERE key = $1`, [`uploads:${h.accountId}`]);
+});
+
+t('el uso de almacenamiento suma adjuntos, biblioteca y formatos, y sale en «Tu uso»', async () => {
+  const { usageOf } = await import('../src/billing/limits.js');
+  const used = (await usageOf(h.accountId)).storage_mb;
+  assert.ok(used >= 1, `usa ${used} MB`);
+});

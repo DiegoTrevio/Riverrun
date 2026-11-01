@@ -26,7 +26,9 @@ import { beginLogin, renewSessionAfterPasswordChange } from '../identity/mfa.js'
 import { resetMfa } from '../identity/reset-mfa.js';
 import { accountOwner, assertOwner } from '../identity/ownership.js';
 import { browserOf, forgetTrustedDevices, trustedDeviceFor } from '../identity/devices.js';
-import { countHit, LIMITS, releaseHit } from '../identity/rate-limit.js';
+import { countHit, limited, LIMITS, releaseHit } from '../identity/rate-limit.js';
+import { mailStatus } from '../mail-domain.js';
+import { deliverMail } from '../mailer.js';
 import { notifyUser } from '../identity/notices.js';
 import { query, queryOne } from '../db.js';
 import { assertInvitable, createInvitation } from './invitations.js';
@@ -40,7 +42,7 @@ import { wizardDefaults } from '../templates/agent-builder.js';
 import { systemStatus } from '../monitor.js';
 import { listIncidents } from '../observability/incidents.js';
 import { diagnosticsReport, refreshDiagnostics } from '../diagnostics.js';
-import { assertWithinLimit, LimitsSchema } from '../billing/limits.js';
+import { assertWithinLimit, effectiveLimits, LimitsSchema, usageOf } from '../billing/limits.js';
 import { billingEnabled, paymentDue } from '../billing/service.js';
 import { deleteAccountFully } from '../accounts/delete.js';
 import { deletionDate } from '../accounts/retention.js';
@@ -91,7 +93,9 @@ export async function sessionRoutes(app: FastifyInstance) {
     }
     const user = await login(who, String(body.password ?? ''));
     if (!user) {
-      await logEvent({ level: 'warn', source: 'admin', message: 'Intento de acceso fallido', details: { ip: req.ip, email: who.slice(0, 100) } });
+      // Solo si tiene forma de correo (bajos de la 2c): quien escribe su contraseña en el campo del correo no la deja en la bitácora.
+      const logged = /^[^\s@]{1,64}@[^\s@]+\.[^\s@]{2,}$/.test(who) ? who.slice(0, 100) : '[no es un correo]';
+      await logEvent({ level: 'warn', source: 'admin', message: 'Intento de acceso fallido', details: { ip: req.ip, email: logged } });
       return reply.code(401).send({ error: 'Usuario o contraseña incorrectos' });
     }
     await Promise.all([releaseHit(ipLimit), releaseHit(accountLimit)]);
@@ -126,7 +130,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     const owner = account ? await accountOwner(account.id) : null;
     // Esperando tarjeta: el aviso de arriba dice qué falta (correo, tarjeta, prueba ya usada).
     const cardCheck = account?.status === 'paused' && account.pause_reason === 'card' ? await cardCheckState(account.id) : null;
-    return { user: req.user, account: account && { ...store.publicAccount(account), payment_due: due, deletion_date: deletionDate(account) }, owner: owner && { id: owner.id, name: owner.name || owner.email }, copilot, card_check: cardCheck };
+    return { user: req.user, account: account && { ...store.publicAccount(account, req.user), payment_due: due, ...(req.user.role === 'agent' ? {} : { deletion_date: deletionDate(account) }) }, owner: owner && { id: owner.id, name: owner.name || owner.email }, copilot, card_check: cardCheck };
   });
 
   api.put('/api/me', async (req) => {
@@ -232,6 +236,21 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     return zernioSystemStatus(false);
   });
 
+  /* Correo saliente: proveedor, dominio del remitente (SPF/DKIM/DMARC, verificación en Resend) y un correo de prueba. */
+  api.get('/api/system/mail', superadmin, async () => mailStatus());
+  api.post('/api/system/mail/test', superadmin, async (req: any, reply) => {
+    if (await limited(`mail-test:${req.user.id}`, 5, 60 * 60_000)) return reply.code(429).send({ error: 'Ya mandaste varios correos de prueba: espera una hora' });
+    if (!config.mail.smtpUrl) throw new HttpError(400, 'No hay correo configurado: define RESEND_API_KEY (o SMTP_URL) en el servidor y reinicia.');
+    const result = await deliverMail({
+      to: req.user.email,
+      subject: 'Correo de prueba de Riverrun',
+      text: `Si lees esto, el correo saliente funciona.\n\nRemitente: ${config.mail.from}\nProveedor: ${config.mail.provider === 'resend' ? 'Resend' : 'SMTP'}\n\nSi llegó a spam, revisa en Sistema → Correo saliente los registros SPF, DKIM y DMARC del dominio.`,
+    });
+    if (result === 'failed') throw new HttpError(502, 'El servidor de correo rechazó el envío: revisa la bitácora (Registros) para ver el motivo.');
+    if (result === 'skipped') throw new HttpError(400, 'El correo no salió: el modo de pruebas (OUTBOUND_MODE=sandbox) no permite esa dirección.');
+    return { ok: true, to: req.user.email };
+  });
+
   // Quita el freno contra prueba de tarjetas (Cuentas): las verificaciones de tarjeta se abren otra vez.
   api.delete('/api/billing/card-check-brake', { ...superadmin, ...stepUp }, async (req: any) => {
     await clearBrake(req.user);
@@ -273,10 +292,8 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     // El agente ve su cuenta sin los totales ni los datos del dueño: son de la cuenta entera.
     // Cuándo se borraría una cuenta en pausa (retención automática), para el superadmin.
     if (all) for (const r of rows as any[]) r.deletion_date = deletionDate(r);
-    const accounts = rows.map((r) => store.publicAccount(r as Record<string, unknown>));
-    if (req.user.role !== 'agent') return accounts;
-    const hidden = ['users', 'conversations', 'conversations_month', 'ai_cost_month', 'last_activity_at', 'owner_email', 'owner_verified'];
-    return accounts.map((r) => Object.fromEntries(Object.entries(r).filter(([k]) => !hidden.includes(k))));
+    // Al agente, solo los campos de su lista (sin totales, dueño, límites especiales ni borrado).
+    return rows.map((r) => store.publicAccount(r as Record<string, unknown>, req.user));
   });
 
   /* ------------------------------ Consumo de IA ------------------------------ */
@@ -325,7 +342,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
   /** Precios por modelo para estimar el costo cuando el proveedor no lo reporta (solo superadmin). */
   api.get('/api/ai-prices', { preHandler: requireRole('superadmin') }, async () => query(`SELECT * FROM ai_prices ORDER BY model`));
 
-  api.put('/api/ai-prices/:model', { preHandler: requireRole('superadmin') }, async (req: any) => {
+  api.put('/api/ai-prices/:model', { preHandler: requireRole('superadmin'), ...stepUp }, async (req: any) => {
     const n = z.number().min(0).max(10000);
     const b = parse(z.object({ input_per_mtok: n.default(0), cached_per_mtok: n.default(0), output_per_mtok: n.default(0), per_audio_minute: n.default(0),is_free:z.boolean().default(false) }), req.body);
     const model = z.string().trim().min(1).max(100).parse(req.params.model);
@@ -336,7 +353,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     );
   });
 
-  api.delete('/api/ai-prices/:model', { preHandler: requireRole('superadmin') }, async (req: any) => {
+  api.delete('/api/ai-prices/:model', { preHandler: requireRole('superadmin'), ...stepUp }, async (req: any) => {
     await query(`DELETE FROM ai_prices WHERE model = $1`, [req.params.model]);
     return { ok: true };
   });
@@ -356,6 +373,8 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     keep_data: z.boolean().optional(),
     /** Encender o apagar el Copiloto para esta cuenta. */
     copilot_enabled: z.boolean().optional(),
+    /** Excepción del tope de IA al mes de esta cuenta, en USD (null = la del plan). */
+    ai_usd_override: z.number().finite().min(0).max(100000).nullable().optional(),
   });
 
   api.post('/api/accounts', { preHandler: requireRole('superadmin'), ...stepUp }, async (req) => {
@@ -377,7 +396,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     return store.publicAccount(account);
   });
 
-  api.put('/api/accounts/:id', { preHandler: requireRole('superadmin') }, async (req: any) => {
+  api.put('/api/accounts/:id', { preHandler: requireRole('superadmin'), ...stepUp }, async (req: any) => {
     const b = parse(AccountBody, req.body);
     const before = await store.getAccount(req.params.id);
     if (!before) throw notFound('Cuenta no encontrada');
@@ -391,7 +410,14 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
       status = status ?? 'trial';
     }
     const acc = (await store.updateAccount(before.id, { name: b.name, active: b.active, status, plan: b.plan, trial_ends_at: trialEnds, limits_override: b.limits_override ? (Object.fromEntries(Object.entries(b.limits_override).filter(([, v]) => v)) as Record<string, number>) : undefined, brand_id: b.brand_id, keep_data: b.keep_data, copilot_enabled: b.copilot_enabled }))!;
+    if (b.ai_usd_override !== undefined) await query(`UPDATE accounts SET ai_usd_override = $2 WHERE id = $1`, [before.id, b.ai_usd_override]);
+    // Lo que decide el superadministrador a mano no lo deshace un pago (PAY-8): su pausa es «manual» y solo él la quita, y
+    // el plan que asigna no lo pisa la suscripción.
+    if (status === 'paused' && before.status !== 'paused') await query(`UPDATE accounts SET pause_reason = 'manual' WHERE id = $1`, [before.id]);
+    if (status && status !== 'paused' && before.status === 'paused') await query(`UPDATE accounts SET pause_reason = '' WHERE id = $1`, [before.id]);
+    if (b.plan !== undefined && b.plan !== before.plan) await query(`UPDATE accounts SET plan_source = 'manual' WHERE id = $1`, [before.id]);
     const changes = [b.active === false ? 'desactivada' : '', status && status !== before.status ? `estado: ${status}` : '', trialEnds !== undefined ? `prueba hasta ${trialEnds?.toISOString().slice(0, 10) ?? '—'}` : '',
+      b.ai_usd_override !== undefined ? `tope de IA: ${b.ai_usd_override === null ? 'el del plan' : `USD ${b.ai_usd_override}/mes`}` : '',
       b.keep_data !== undefined && b.keep_data !== before.keep_data ? (b.keep_data ? 'se conservan sus datos' : 'retención normal') : '',
       b.copilot_enabled !== undefined && b.copilot_enabled !== before.copilot_enabled ? (b.copilot_enabled ? 'Copiloto encendido' : 'Copiloto apagado') : '']
       .filter(Boolean)
@@ -439,10 +465,10 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     return target;
   };
   /** Al dar de baja: revoca sus llaves e invitaciones y pausa sus webhooks, y lo deja en la bitácora. */
-  const offboard = async (target: { id: string; name: string; email: string; account_id: string | null }, actor: { email: string }) => {
-    const gone = await offboardUser(target.id, target.name || target.email);
-    if (gone.api_keys || gone.webhooks || gone.invitations) {
-      await logEvent({ level: 'info', source: 'admin', message: `Baja de ${target.email} (por ${actor.email}): ${gone.api_keys} llaves revocadas, ${gone.webhooks} webhooks pausados, ${gone.invitations} invitaciones canceladas`, accountId: target.account_id ?? undefined });
+  const offboard = async (target: { id: string; name: string; email: string; account_id: string | null }, actor: { email: string }, o: { leaving?: boolean } = {}) => {
+    const gone = await offboardUser(target.id, target.name || target.email, o);
+    if (gone.api_keys || gone.webhooks || gone.invitations || gone.appointments) {
+      await logEvent({ level: 'info', source: 'admin', message: `Baja de ${target.email} (por ${actor.email}): ${gone.api_keys} llaves revocadas, ${gone.webhooks} webhooks pausados, ${gone.invitations} invitaciones canceladas${gone.appointments ? `, ${gone.appointments} citas futuras sin asignar` : ''}`, accountId: target.account_id ?? undefined });
     }
   };
   /** El dueño no se desactiva, degrada, mueve ni borra: primero transfiere la cuenta. */
@@ -504,6 +530,15 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     };
     const updated = await store.updateUser(target.id, patch, req.user.role === 'superadmin' ? undefined : scopeAccount(req.user)!);
     if (!updated) throw notFound('Usuario no encontrado');
+    // Dos reactivaciones a la vez pasaban la revisión previa (PAY-19): si al final sobran, esta se deshace con el aviso.
+    if (b.active === true && !target.active && updated.account_id) {
+      const max = (await effectiveLimits(updated.account_id)).limits.users;
+      const used = max ? (await usageOf(updated.account_id)).users : 0;
+      if (max && used > max) {
+        await store.updateUser(updated.id, { active: false });
+        await assertWithinLimit(updated.account_id, 'users');
+      }
+    }
     // Desactivar a alguien cierra todas sus sesiones abiertas y olvida sus dispositivos recordados. Un cambio de rol
     // cierra sus sesiones (entra otra vez con los permisos nuevos); uno de cuenta aplica al momento en las sesiones
     // abiertas (el usuario se vuelve a leer en cada petición).
@@ -512,8 +547,10 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
       await forgetTrustedDevices(updated.id);
       if (target.active) await offboard(target, req.user);
     } else if (updated.role !== target.role) await store.revokeUserSessions(updated.id);
-    // Pasar a otra cuenta también es irse de la de antes: lo que dejó abierto ahí se va con la baja.
+    // Pasar a otra cuenta también es irse de la de antes: lo que dejó abierto ahí se va con la baja. Dejar de ser
+    // administrador también: sus llaves y webhooks daban acceso de administrador (leer todo, enviar como el negocio).
     if (updated.active && target.active && updated.account_id !== target.account_id) await offboard(target, req.user);
+    else if (updated.active && target.active && target.role === 'admin' && updated.role !== 'admin') await offboard(target, req.user, { leaving: false });
     if (updated.role !== target.role) await notifyUser(updated, 'role_changed', { by: req.user.name || req.user.email, role: ROLE_NAMES[updated.role] });
     if (updated.role !== target.role || updated.account_id !== target.account_id) {
       await logEvent({ level: 'info', source: 'admin', message: `Permisos de usuario actualizados: ${updated.email}`, accountId: updated.account_id ?? target.account_id ?? undefined,

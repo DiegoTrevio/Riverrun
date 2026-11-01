@@ -589,7 +589,9 @@
     "admin.js|button|Activar sin tarjeta|click|0",
     "billing.js|button|Reenviar|click|0",
     "billing.js|button||click|1",
-    "shell.js|button|Reenviar|click|0"
+    "shell.js|button|Reenviar|click|0",
+    "mfa.js|button|Ya abrí el enlace|click|0",
+    "mfa.js|button|Mandar otro enlace|click|0"
   ],
   "sin_presionar": {
     "admin.js|button|Reenviar|click|0": "Otra prueba: test:billing:ux lo presiona",
@@ -876,6 +878,11 @@
     "admin.js|button|Activar sin tarjeta|click|0": "Otra prueba: test:signup:ux lo presiona",
     "billing.js|button|Reenviar|click|0": "Otra prueba: test:signup:ux lo presiona",
     "billing.js|button||click|1": "Otra prueba: test:signup:ux lo presiona",
-    "shell.js|button|Reenviar|click|0": "Otra prueba: test:signup:ux lo presiona"
+    "shell.js|button|Reenviar|click|0": "Otra prueba: test:signup:ux lo presiona",
+    "mfa.js|button|Ya abrí el enlace|click|0": "Otra prueba: test:identity:ux lo presiona",
+    "mfa.js|button|Mandar otro enlace|click|0": "Otra prueba: test:identity:ux lo presiona",
+    "billing.js|button||click|2": "Servicio real: crea o pone al día el webhook en la cuenta de Stripe (lista manual; probado en billing.test.ts)",
+    "billing.js|button|Guardar clave|click|0": "Servicio real: clave del webhook de Mercado Pago (lista manual; probado en billing.test.ts)",
+    "system.js|button|Mandarme un correo de prueba|click|0": "Servicio real: manda un correo por Resend o SMTP (lista manual; probado en mail-domain.test.ts)"
   }
 }

@@ -409,9 +409,13 @@ process.env.QUOTE_PDF_BACKEND ??= 'fake';
 
 export const { pool, migrate } = await import('../src/db.js');
 const { buildApp } = await import('../src/app.js');
+// Las pruebas consultan el chat web cada 25 ms (el widget, cada pocos segundos): el tope por sesión se sube aquí; la prueba
+// del tope lo baja a su valor real.
+(await import('../src/routes/public.js')).webchatLimits.pollsPerMin = 1_000_000;
 const { defaultTransport } = await import('../src/service.js');
 const { bootstrapSuperadmin } = await import('../src/auth.js');
 const { currentStep, totpAt } = await import('../src/identity/totp.js');
+const { outbox: mailOutbox } = await import('../src/mailer.js');
 export const store = await import('../src/store/index.js');
 export type Req = import('../src/ai/provider.js').CompletionRequest;
 
@@ -528,6 +532,22 @@ export async function createHarness(opts: { realAi?: import('../src/ai/provider.
     await pool.query(`UPDATE users SET totp_last_step = 0 WHERE lower(email) = lower($1)`, [email]);
     return totpAt(secret, currentStep());
   };
+  /** El token del último enlace para configurar la verificación que llegó a ese correo. */
+  const enrollTokenFor = (email: string) => {
+    const mail = [...mailOutbox].reverse().find((m) => m.to.toLowerCase() === email.toLowerCase() && m.subject === 'Configura tu verificación en dos pasos');
+    const token = mail?.text.match(/configurar\?correo=([\w-]+)/)?.[1];
+    assert.ok(token, `No llegó el enlace para configurar la verificación a ${email}`);
+    return token;
+  };
+  /**
+   * Un enlace vigente para configurar la verificación, puesto directo en la base: el inicio de sesión del arnés no depende
+   * del correo (hay pruebas que lo hacen fallar). Las pruebas del enlace mismo usan `enrollTokenFor`.
+   */
+  const enrollLinkFor = async (email: string) => {
+    const token = crypto.randomBytes(32).toString('base64url');
+    await pool.query(`UPDATE users SET mfa_enroll_token_hash = $2, mfa_enroll_sent_at = now() WHERE lower(email) = lower($1)`, [email, crypto.createHash('sha256').update(token).digest('hex')]);
+    return token;
+  };
   /** La cookie de sesión que deja una respuesta de entrar, registrarse o aceptar una invitación (completa el 2FA). */
   const sessionFrom = async (res: { statusCode: number; body: string; headers: Record<string, unknown>; json: () => any }, who?: string, extra: Record<string, string> = {}) => {
     // Sin correo: el de la respuesta (registro o invitación devuelven al usuario).
@@ -540,7 +560,15 @@ export async function createHarness(opts: { realAi?: import('../src/ai/provider.
     assert.ok(challenge && mfa, `Sin sesión ni reto de verificación: ${res.statusCode} ${res.body}`);
     const headers = { ...extra, cookie: challenge }; // p. ej. el navegador (user-agent) de la sesión
     if (mfa === 'enroll') {
-      const e = await app.inject({ method: 'GET', url: '/api/2fa/enroll', headers });
+      let e = await app.inject({ method: 'GET', url: '/api/2fa/enroll', headers });
+      // Entró solo con la contraseña: abre el enlace que llegó a su correo, en el mismo navegador (ID-16).
+      if (e.statusCode === 403 && e.json().code === 'email_required') {
+        const token = await enrollLinkFor(email);
+        const link = await app.inject({ method: 'POST', url: '/api/2fa/enroll/link', headers, payload: { token } });
+        assert.equal(link.statusCode, 200, link.body);
+        headers.cookie = cookieFrom(link, 'cp_mfa')!;
+        e = await app.inject({ method: 'GET', url: '/api/2fa/enroll', headers });
+      }
       assert.equal(e.statusCode, 200, e.body);
       totpSecrets.set(email.toLowerCase(), e.json().secret);
     }
@@ -560,7 +588,7 @@ export async function createHarness(opts: { realAi?: import('../src/ai/provider.
   let msgN = 0;
   let acceptN = 0;
   const h = {
-    app, service, ai, calls, summaryCalls, copilotCalls, sent, authed, loginAs, sessionFrom, codeFor, totpSecrets, cookie: authed.cookie, failNext, token: '', botId: '', accountId: '', channelId: '',
+    app, service, ai, calls, summaryCalls, copilotCalls, sent, authed, loginAs, sessionFrom, codeFor, totpSecrets, enrollTokenFor, cookie: authed.cookie, failNext, token: '', botId: '', accountId: '', channelId: '',
     setScript(s: Script) { script = s; },
     setCopilotScript(s: CopilotScript) { copilotScript = s; },
     setSummary(s: string) { summary = s; },

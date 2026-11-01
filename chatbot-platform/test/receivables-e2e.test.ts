@@ -225,3 +225,16 @@ t('con RECEIVABLES_ENABLED=false la sección no existe: panel y API responden 40
     config.receivables.enabled = true;
   }
 });
+
+t('un cliente pausa sus recordatorios dos veces por cobro; a la tercera solo se avisa al equipo', async () => {
+  const { receivable: r } = await create({ concept: 'Mensualidad de clases', reminders: [1] });
+  for (let i = 1; i <= 3; i++) {
+    await pool.query(`UPDATE receivables SET paused_until = NULL WHERE id = $1`, [r.id]);
+    await h.webhook(i === 2 ? 'Ya te pagué' : 'Ya pagué');
+    await h.idle();
+    await h.service.automator.settleAll();
+    if (i <= 2) await waitFor(async () => Boolean((await get(r.id)).paused_until));
+  }
+  await waitFor(async () => (await pool.query(`SELECT count(*)::int AS n FROM event_logs WHERE message LIKE '%ya pausó sus recordatorios 2 veces%'`)).rows[0].n > 0);
+  assert.equal((await get(r.id)).paused_until, null, 'la tercera vez ya no se pausa');
+});

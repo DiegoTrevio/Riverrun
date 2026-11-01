@@ -47,10 +47,16 @@ export async function getAccount(id: string) {
  * citas con los datos de los clientes) y el secreto de los webhooks, ni los avisos internos de límites. El administrador
  * ve esos secretos en Ajustes; el resto de los roles, nunca.
  */
-export function publicAccount<T extends object>(a: T): Omit<T, 'settings' | 'limit_notices'> {
-  const { settings, limit_notices, ...rest } = a as T & { settings?: unknown; limit_notices?: unknown };
+/** Lo que un agente ve de su cuenta (bajos de la 2c): sin límites especiales, dueño, borrado ni datos internos. */
+const AGENT_ACCOUNT_FIELDS = ['id', 'name', 'active', 'status', 'plan', 'trial_ends_at', 'business_type', 'onboarding', 'pause_reason', 'copilot_enabled', 'brand_id', 'created_at'];
+
+export function publicAccount<T extends object>(a: T, viewer?: { role: string } | null): Partial<Omit<T, 'settings' | 'limit_notices' | 'deletion_nonce'>> {
+  // deletion_nonce: el número de un solo uso del enlace para borrar la cuenta nunca sale del servidor.
+  const { settings, limit_notices, deletion_nonce, ...rest } = a as T & { settings?: unknown; limit_notices?: unknown; deletion_nonce?: unknown };
   void settings;
   void limit_notices;
+  void deletion_nonce;
+  if (viewer?.role === 'agent') return Object.fromEntries(Object.entries(rest).filter(([k]) => AGENT_ACCOUNT_FIELDS.includes(k))) as Partial<Omit<T, 'settings' | 'limit_notices' | 'deletion_nonce'>>;
   return rest;
 }
 
@@ -488,8 +494,10 @@ export class WhatsappProfileLimitError extends Error {
   }
 }
 
-export async function createChannel(c: { account_id: string; chatbot_id: string | null; type: ChannelType; name: string; active?: boolean; config: Record<string, unknown> }) {
+export async function createChannel(c: { account_id: string; chatbot_id: string | null; type: ChannelType; name: string; active?: boolean; config: Record<string, unknown> }, o: { beforeInsert?: (client: import('pg').PoolClient) => Promise<void> } = {}) {
   const id = await withTransaction(async (client) => {
+    // El límite del plan se revisa aquí, con la cuenta bloqueada en esta misma transacción (PAY-19).
+    if (o.beforeInsert) await o.beforeInsert(client);
     if (c.type === 'whatsapp') {
       // Serialize reservations per account, including concurrent onboarding requests.
       await client.query('SELECT id FROM accounts WHERE id = $1 FOR UPDATE', [c.account_id]);

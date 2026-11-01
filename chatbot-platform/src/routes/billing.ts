@@ -1,13 +1,14 @@
+import crypto from 'node:crypto';
 /** Cobro automático: planes (los define el superadmin), contratar, administrar el pago y avisos de Stripe / Mercado Pago. */
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { ownerOnly, ownerStepUp } from '../identity/ownership.js';
+import { stepUp } from '../identity/step-up.js';
 import { HttpError, requireRole, targetAccount } from '../access.js';
-import { rateLimited } from '../auth.js';
 import { baseFor } from '../brands.js';
 import { providers, applyState, changePlan, confirmCheckout, createCheckoutSession, enabledProviders, getPlan, getSubscription, listPlans, notePaymentAction, payable, claimEvent, finishEvent, releaseEvent, startReplacement } from '../billing/service.js';
-import { cardCheckState, openCardCheck, trialDaysFor } from '../billing/card-check.js';
-import { alertSuperadmins, applyDispute, recordMoney, RefundBeforePaymentError } from '../billing/ledger.js';
+import { assertPortalAllowed, cardCheckState, openCardCheck, trialDaysFor } from '../billing/card-check.js';
+import { alertSuperadmins, applyDispute, applyFraudWarning, recordMoney, RefundBeforePaymentError } from '../billing/ledger.js';
 import { FiscalSchema, fiscalComplete, getFiscal, personaOf, REGIMES, saveFiscal, USES, usesFor } from '../billing/fiscal.js';
 import { listPayments } from '../billing/payments.js';
 import { cfdiCounts, cfdiForPayments, getCfdi, invoicer, onFiscalSaved } from '../billing/cfdi.js';
@@ -15,7 +16,11 @@ import { chargeCents, taxPercent } from '../billing/tax.js';
 import { ProviderError, WebhookError, type Plan, type ProviderName } from '../billing/types.js';
 import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
-import { limitsReport, LimitsSchema } from '../billing/limits.js';
+import { limitsReport, LimitsSchema, withPlanDefaults } from '../billing/limits.js';
+import { promotionCodeFor, setupStripeWebhook, STRIPE_WEBHOOK_EVENTS, stripeWebhookSecret } from '../billing/stripe.js';
+import { MP_WEBHOOK_TOPICS, mpWebhookSecret } from '../billing/mercadopago.js';
+import { savePlatformSecret } from '../platform-secrets.js';
+import { countHit, ipLimitKey, limited, releaseHit } from '../identity/rate-limit.js';
 import { logEvent } from '../logs.js';
 import { parse } from './util.js';
 
@@ -32,13 +37,17 @@ const PlanBody = z.object({
   sort_order: z.number().int().default(0),
   /** Límites del plan; vacío o ausente = sin límite. */
   limits: LimitsSchema.default({}),
+  /** false = privado (no se publica; solo para la cuenta a la que se asigna). Sin el campo, no cambia. */
+  public: z.boolean().optional(),
+  /** Gasto de IA al mes que incluye el plan, en USD (null = sin tope; sin el campo, no cambia). */
+  ai_usd_per_month: z.number().finite().min(0).max(100000).nullable().optional(),
 });
 
 const publicSub = (s: any) =>
   s && { provider: s.provider, plan_key: s.plan_key, pending_plan_key: s.pending_plan_key ?? '', status: s.status, current_period_end: s.current_period_end, cancel_at_period_end: s.cancel_at_period_end, past_due_since: s.past_due_since, can_portal: s.provider === 'stripe' && !!s.provider_customer_id };
 
 /** Plan para el panel: precio sin IVA, IVA y total que se cobra. */
-const planOut = (p: any) => ({ ...p, price: p.price_cents / 100, interval: p.billing_interval, tax_percent: taxPercent(), total: chargeCents(p) / 100 });
+const planOut = (p: any) => ({ ...p, price: p.price_cents / 100, interval: p.billing_interval, tax_percent: taxPercent(), total: chargeCents(p) / 100, ai_usd_per_month: p.ai_usd_per_month == null ? null : Number(p.ai_usd_per_month) });
 
 const paymentOut = (p: any) => ({
   id: p.id, provider: p.provider, plan_key: p.plan_key, currency: p.currency, paid_at: p.paid_at, period_start: p.period_start, period_end: p.period_end, status: p.status,
@@ -46,16 +55,40 @@ const paymentOut = (p: any) => ({
 });
 
 /** Límite de veces por hora y cuenta: estas rutas llaman al proveedor (y un ciclo en el panel no debe saturarlo). */
-const tooMany = (reply: any, key: string, max: number) => {
-  if (!rateLimited(key, max, 3600_000)) return false;
+const tooMany = async (reply: any, key: string, max: number) => {
+  if (!(await limited(key, max, 3600_000))) return false;
   reply.code(429).send({ error: 'Demasiados intentos, espera un momento y vuelve a intentar' });
   return true;
 };
 
 /** Planes que se pueden contratar, con los proveedores que los cobran (para "Mi plan" y el registro). */
-export async function offeredPlans() {
+/**
+ * Un error del proveedor (Stripe, Mercado Pago) no se muestra al cliente (PAY-12): su texto puede traer datos internos o
+ * de la tarjeta. Al cliente le llega un texto fijo con una referencia corta; el detalle queda en la bitácora del sistema,
+ * que solo ve el superadministrador.
+ */
+export async function providerFailure(e: unknown, action: string): Promise<HttpError> {
+  const ref = `R-${crypto.randomBytes(4).toString('hex').slice(0, 6).toUpperCase()}`;
+  await logEvent({ level: 'error', source: 'system', message: `[${ref}] ${action}: ${(e as any)?.message ?? e}` });
+  return new HttpError(502, `No pudimos ${action}. Intenta otra vez; si sigue, escribe a soporte con la referencia ${ref}.`, undefined, { ref });
+}
+
+/** Lo que el panel y el público necesitan de un plan (sin ids del proveedor ni datos internos, PAY-16). */
+const shownPlan = (p: any) => ({
+  key: p.key, name: p.name, description: p.description, price: p.price, total: p.total, tax_percent: p.tax_percent, currency: p.currency,
+  // Con el tope de archivos por omisión si el plan no tiene el suyo: lo que se muestra es lo que se aplica.
+  interval: p.interval, billing_interval: p.billing_interval, limits: withPlanDefaults(p.limits ?? {}), price_cents: p.price_cents,
+});
+
+export async function offeredPlans(accountId?: string) {
   const on = enabledProviders();
-  return (await listPlans()).map((p: Plan) => ({ ...planOut(p), providers: on.filter((x) => x.supportsPlan(p)).map((x) => ({ name: x.name, label: x.label })) }));
+  // Los privados solo para la cuenta que los tiene asignados (en su Mi plan); nunca en precios ni en el registro.
+  const own = accountId ? (await queryOne<{ plan: string }>(`SELECT plan FROM accounts WHERE id = $1`, [accountId]))?.plan ?? '' : '';
+  // El tope interno de IA del plan no se publica (precios, registro, Mi plan): es un dato de la plataforma.
+  return (await listPlans()).filter((p: Plan) => p.public !== false || p.key === own).map((p: Plan) => {
+    const out = shownPlan(planOut(p));
+    return { ...out, providers: on.filter((x) => x.supportsPlan(p)).map((x) => ({ name: x.name, label: x.label })) };
+  });
 }
 
 /** Cuánto se espera el cobro de un reembolso que llegó antes (el proveedor reintenta mientras tanto). */
@@ -85,9 +118,10 @@ export async function billingWebhooks(app: FastifyInstance) {
         try {
           // El banco pide confirmar el cobro (3DS): se guarda antes, así el aviso de cobro fallido ya dice cómo resolverlo.
           if (result.actionUrl && result.state) await notePaymentAction(name, result.state.subscriptionId, result.actionUrl);
-          const accountId = result.state ? await applyState(result.state) : null;
+          const accountId = result.state ? await applyState(result.state, new Date(), { refresh: true }) : null;
           await recordMoney(name, result, accountId);
           if (result.dispute) await applyDispute(name, result.dispute);
+          if (result.fraudWarning) await applyFraudWarning(name, result.fraudWarning);
           await finishEvent(name, result.eventId, claim.token, accountId);
         } catch (e) {
           // Un reembolso cuyo cobro nunca llegó (de otro producto en la misma cuenta del proveedor, o anterior a la
@@ -114,6 +148,8 @@ export async function billingWebhooks(app: FastifyInstance) {
 export async function billingRoutes(api: FastifyInstance) {
   const admins = { preHandler: requireRole('admin') };
   const supers = { preHandler: requireRole('superadmin') };
+  // Cambiar planes o capturar un tipo de cambio mueve dinero de toda la plataforma: con verificación reciente.
+  const supersStepUp = { ...supers, ...stepUp };
 
   /* ------------------------------ Planes ------------------------------ */
   api.get('/api/plans', admins, async (req) => (await listPlans(req.user.role === 'superadmin')).map(planOut));
@@ -121,18 +157,20 @@ export async function billingRoutes(api: FastifyInstance) {
   const savePlan = async (b: z.infer<typeof PlanBody>) => {
     const cents = Math.round(b.price * 100);
     await query(
-      `INSERT INTO plans (key, name, description, price_cents, currency, stripe_price_id, active, sort_order, limits, billing_interval) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-       ON CONFLICT (key) DO UPDATE SET name = $2, description = $3, price_cents = $4, currency = $5, stripe_price_id = $6, active = $7, sort_order = $8, limits = $9, billing_interval = $10`,
-      [b.key, b.name, b.description, cents, b.currency, b.stripe_price_id.trim(), b.active, b.sort_order, JSON.stringify(Object.fromEntries(Object.entries(b.limits).filter(([, v]) => v))), b.interval],
+      `INSERT INTO plans (key, name, description, price_cents, currency, stripe_price_id, active, sort_order, limits, billing_interval, ai_usd_per_month, public) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$12,COALESCE($13,true))
+       ON CONFLICT (key) DO UPDATE SET name = $2, description = $3, price_cents = $4, currency = $5, stripe_price_id = $6, active = $7, sort_order = $8, limits = $9, billing_interval = $10,
+         ai_usd_per_month = CASE WHEN $11 THEN $12 ELSE plans.ai_usd_per_month END, public = COALESCE($13, plans.public)`,
+      [b.key, b.name, b.description, cents, b.currency, b.stripe_price_id.trim(), b.active, b.sort_order, JSON.stringify(Object.fromEntries(Object.entries(b.limits).filter(([, v]) => v))), b.interval,
+        b.ai_usd_per_month !== undefined, b.ai_usd_per_month ?? null, b.public ?? null],
     );
     return planOut(await getPlan(b.key));
   };
-  api.post('/api/plans', supers, async (req) => savePlan(parse(PlanBody, req.body)));
-  api.put('/api/plans/:key', supers, async (req: any) => {
+  api.post('/api/plans', supersStepUp, async (req) => savePlan(parse(PlanBody, req.body)));
+  api.put('/api/plans/:key', supersStepUp, async (req: any) => {
     if (!(await getPlan(req.params.key))) throw new HttpError(404, 'No encontrado');
     return savePlan(parse(PlanBody, { ...(req.body ?? {}), key: req.params.key }));
   });
-  api.delete('/api/plans/:key', supers, async (req: any) => {
+  api.delete('/api/plans/:key', supersStepUp, async (req: any) => {
     const used = await queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM subscriptions WHERE plan_key = $1 AND status IN ('active', 'past_due')`, [req.params.key]);
     if (used?.n) throw new HttpError(409, `Hay ${used.n} suscripciones activas con este plan: desactívalo en lugar de borrarlo.`);
     // Sin el plan, el cambio programado no podría empezar con su cobro (el cliente pagaría el plan nuevo con los límites del anterior).
@@ -141,6 +179,49 @@ export async function billingRoutes(api: FastifyInstance) {
     const assigned = await queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM accounts WHERE plan = $1`, [req.params.key]);
     if (assigned?.n) throw new HttpError(409, `Hay ${assigned.n} cuentas asignadas a este plan: cámbiales el plan o desactívalo en lugar de borrarlo.`);
     await query(`DELETE FROM plans WHERE key = $1`, [req.params.key]);
+    return { ok: true };
+  });
+
+  /**
+   * Tipo de cambio de un pago en otra moneda (pesos por unidad), cuando no hay uno confiable del proveedor (PAY-9): sus
+   * facturas en espera («pendiente: tipo de cambio») salen en la siguiente revisión. Solo el superadministrador.
+   */
+  api.put('/api/billing/payments/:id/exchange-rate', supersStepUp, async (req: any) => {
+    const { rate } = parse(z.object({ rate: z.number().positive().max(100000) }), req.body);
+    const p = await queryOne<{ id: string; account_id: string | null; currency: string }>(
+      `UPDATE billing_payments SET exchange_rate = $2, updated_at = now() WHERE id = $1 AND upper(currency) <> 'MXN' RETURNING id, account_id, currency`, [req.params.id, rate]);
+    if (!p) throw new HttpError(404, 'No hay un pago en otra moneda con ese id');
+    await query(`UPDATE cfdi_invoices SET hold = '', next_attempt_at = now(), updated_at = now()
+      WHERE status = 'pending' AND hold = 'exchange_rate' AND (payment_id = $1 OR id = (SELECT global_cfdi_id FROM billing_payments WHERE id = $1))`, [p.id]);
+    await logEvent({ level: 'info', source: 'admin', message: `Tipo de cambio capturado para el pago ${p.id}: ${rate} MXN por ${p.currency}`, accountId: p.account_id ?? undefined });
+    return { ok: true };
+  });
+
+  /**
+   * «Configurar webhook en Stripe»: crea (o pone al día) el webhook de la plataforma con todos sus eventos y guarda su
+   * secreto de firma (si STRIPE_WEBHOOK_SECRET está en el servidor, manda esa).
+   */
+  api.post('/api/billing/webhooks/stripe/setup', supersStepUp, async (req: any) => {
+    if (!config.billing.stripe.secretKey) throw new HttpError(400, 'Primero agrega STRIPE_SECRET_KEY en el servidor.');
+    const url = `${config.publicBaseUrl}/webhook/billing/stripe`;
+    if (!/^https:\/\//.test(url)) throw new HttpError(400, 'Stripe solo manda avisos a una dirección https: revisa PUBLIC_BASE_URL.');
+    let r;
+    try {
+      r = await setupStripeWebhook(url);
+    } catch (e: any) {
+      if (e instanceof ProviderError) throw await providerFailure(e, 'configurar el webhook en Stripe');
+      throw e;
+    }
+    if (r.secret) await savePlatformSecret('stripe_webhook_secret', r.secret, req.user.id);
+    await logEvent({ level: 'info', source: 'admin', message: `Webhook de Stripe ${r.created ? 'creado' : 'puesto al día'} por ${req.user.email} (${STRIPE_WEBHOOK_EVENTS.length} eventos)` });
+    return { ok: true, url, created: r.created, events: STRIPE_WEBHOOK_EVENTS };
+  });
+
+  /** El secreto de firma de Mercado Pago (Tus integraciones → Webhooks → «Clave secreta»), si no está en el servidor. */
+  api.put('/api/billing/webhooks/mercadopago/secret', supersStepUp, async (req: any) => {
+    const { secret } = parse(z.object({ secret: z.string().trim().min(16, 'Pega la clave secreta completa').max(300) }), req.body);
+    await savePlatformSecret('mercadopago_webhook_secret', secret, req.user.id);
+    await logEvent({ level: 'info', source: 'admin', message: `Clave secreta del webhook de Mercado Pago guardada por ${req.user.email}` });
     return { ok: true };
   });
 
@@ -153,12 +234,28 @@ export async function billingRoutes(api: FastifyInstance) {
        FROM subscriptions s JOIN plans p ON p.key = s.plan_key WHERE s.status IN ('active', 'past_due') GROUP BY 1`,
     );
     return {
-      providers: Object.values(providers).map((p) => ({ name: p.name, label: p.label, enabled: p.enabled(), webhook_url: `${config.publicBaseUrl}/webhook/billing/${p.name}` })),
+      providers: await Promise.all(Object.values(providers).map(async (p) => ({
+        name: p.name, label: p.label, enabled: p.enabled(), webhook_url: `${config.publicBaseUrl}/webhook/billing/${p.name}`,
+        // Qué falta para recibir avisos: la llave del proveedor y el secreto de firma (del servidor o del panel).
+        has_key: p.name === 'stripe' ? !!config.billing.stripe.secretKey : !!config.billing.mercadopago.accessToken,
+        webhook_secret: (p.name === 'stripe' ? config.billing.stripe.webhookSecret : config.billing.mercadopago.webhookSecret) ? 'server'
+          : (p.name === 'stripe' ? stripeWebhookSecret() : mpWebhookSecret()) ? 'panel' : null,
+        events: p.name === 'stripe' ? STRIPE_WEBHOOK_EVENTS : MP_WEBHOOK_TOPICS.map(([, label]) => label),
+        last_event_at: (await queryOne<{ at: Date | null }>(`SELECT max(received_at) AS at FROM billing_events WHERE provider = $1`, [p.name]))?.at ?? null,
+      }))),
       counts,
       monthly_revenue: mrr.map((m) => ({ currency: m.currency, amount: Number(m.cents) / 100 })),
       grace_days: config.billing.graceDays,
+      plan_defaults: { ai_usd_per_month: config.signup.planDefaultAiUsd || null, storage_mb: config.signup.planDefaultStorageMb || null },
       tax_percent: taxPercent(),
       invoicing: { enabled: invoicer.enabled(), counts: await cfdiCounts() },
+      // Pagos en otra moneda cuya factura espera el tipo de cambio (PAY-9).
+      awaiting_rate: await query<{ id: string; currency: string; total_cents: number; paid_at: Date; account: string }>(
+        `SELECT p.id, upper(p.currency) AS currency, p.total_cents, p.paid_at, coalesce(a.name, '(cuenta borrada)') AS account
+         FROM billing_payments p LEFT JOIN accounts a ON a.id = p.account_id
+         WHERE upper(p.currency) <> 'MXN' AND p.exchange_rate IS NULL
+           AND EXISTS (SELECT 1 FROM cfdi_invoices c WHERE c.status = 'pending' AND c.hold = 'exchange_rate' AND (c.payment_id = p.id OR c.id = p.global_cfdi_id))
+         ORDER BY p.paid_at LIMIT 50`),
     };
   });
 
@@ -166,7 +263,7 @@ export async function billingRoutes(api: FastifyInstance) {
   api.get('/api/billing', admins, async (req: any) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
     const [acc, plans, sub, limits, payments, fiscal] = await Promise.all([
-      queryOne<any>(`SELECT status, plan, trial_ends_at FROM accounts WHERE id = $1`, [accountId]), offeredPlans(), getSubscription(accountId), limitsReport(accountId), listPayments(accountId), getFiscal(accountId),
+      queryOne<any>(`SELECT status, plan, trial_ends_at FROM accounts WHERE id = $1`, [accountId]), offeredPlans(accountId), getSubscription(accountId), limitsReport(accountId), listPayments(accountId), getFiscal(accountId),
     ]);
     const cfdi = await cfdiForPayments(payments.map((p) => p.id));
     return {
@@ -199,7 +296,7 @@ export async function billingRoutes(api: FastifyInstance) {
 
   api.put('/api/billing/fiscal', { ...admins, ...ownerStepUp }, async (req: any, reply) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
-    if (tooMany(reply, `billing-fiscal:${accountId}`, 30)) return reply;
+    if (await tooMany(reply, `billing-fiscal:${accountId}`, 30)) return reply;
     const d = parse(FiscalSchema, req.body);
     const f = await saveFiscal(accountId, req.user.role === 'superadmin' ? null : req.user.id, d);
     await logEvent({ level: 'info', source: 'admin', message: d.wants_invoice ? `Datos de facturación guardados (RFC ${d.rfc}, ${personaOf(d.rfc) === 'moral' ? 'persona moral' : 'persona física'})` : 'Facturación: sin factura (público en general)', accountId });
@@ -215,7 +312,7 @@ export async function billingRoutes(api: FastifyInstance) {
     const c = await getCfdi(id);
     const mine = c && (req.user.role === 'superadmin' || (c.account_id && c.account_id === (await targetAccount(req.user, req.query.account_id))));
     if (!c || !mine || c.status !== 'issued') throw new HttpError(404, 'No encontrado');
-    if (tooMany(reply, `billing-invoice:${req.user.id}`, 120)) return reply;
+    if (await tooMany(reply, `billing-invoice:${req.user.id}`, 120)) return reply;
     const file = await viaProvider(() => invoicer.download(c.provider_invoice_id, format));
     const name = `${c.series}${c.folio}` || c.sat_uuid;
     return reply
@@ -228,8 +325,24 @@ export async function billingRoutes(api: FastifyInstance) {
   api.post('/api/billing/checkout', { ...admins, ...ownerStepUp }, async (req: any, reply) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
     // `trial: false`: contratar ya, sin días gratis (p. ej. con la tarjeta que ya tuvo una prueba).
-    const b = parse(z.object({ plan: z.string().max(40), provider: z.enum(['stripe', 'mercadopago']), trial: z.boolean().optional() }), req.body);
-    const { plan, provider } = await payable(b.plan, b.provider);
+    const b = parse(z.object({ plan: z.string().max(40), provider: z.enum(['stripe', 'mercadopago']), trial: z.boolean().optional(), promo_code: z.string().trim().max(60).optional() }), req.body);
+    const { plan, provider } = await payable(b.plan, b.provider, accountId);
+    // Código de promoción (3b.3): solo con tarjeta, solo los marcados para Riverrun; los intentos fallidos tienen tope.
+    let promotionCode: string | undefined;
+    if (b.promo_code) {
+      if (provider !== 'stripe') throw new HttpError(400, 'Los códigos de promoción solo aplican al pagar con tarjeta (Stripe).');
+      if ((await countHit(`promo:${accountId}`, 3600_000)) > 10) throw new HttpError(429, 'Demasiados intentos con códigos de promoción. Intenta en una hora.');
+      try {
+        promotionCode = (await promotionCodeFor(b.promo_code, plan.key)) ?? undefined;
+      } catch (e: any) {
+        if (e instanceof ProviderError) throw await providerFailure(e, 'revisar el código');
+        throw e;
+      }
+      if (!promotionCode) throw new HttpError(400, 'Ese código no es válido para este plan');
+      await releaseHit(`promo:${accountId}`);
+    }
+    // El dueño contrata: desde aquí manda la suscripción, no un plan asignado a mano (PAY-8).
+    await query(`UPDATE accounts SET plan_source = 'provider' WHERE id = $1`, [accountId]);
     const sub = await getSubscription(accountId);
     if (sub && ['active', 'past_due'].includes(sub.status) && !sub.cancel_at_period_end && sub.provider_subscription_id) throw new HttpError(409, 'Ya tienes un plan activo: para cambiarlo usa «Cambiar de plan» en Mi plan.');
     // Quien pidió factura necesita sus datos completos antes del primer cobro (su CFDI sale de cada pago).
@@ -243,10 +356,10 @@ export async function billingRoutes(api: FastifyInstance) {
       // La verificación de tarjeta (también el pago de quien ya tiene cuenta): correo verificado, topes y sesión vigente.
       const trialDays = b.trial === false ? 0 : await trialDaysFor(accountId);
       const base = await baseFor(req);
-      const url = await openCardCheck({ accountId, ip: req.ip, provider, planKey: plan.key, open: () => createCheckoutSession({ accountId, email: req.user.email, plan, provider, base, startAt: paidUntil, trialDays }) });
+      const url = await openCardCheck({ accountId, ip: req.ip, provider, planKey: plan.key, open: () => createCheckoutSession({ accountId, email: req.user.email, plan, provider, base, startAt: paidUntil, trialDays, promotionCode }) });
       return { url, trial: trialDays > 0 };
     } catch (e: any) {
-      if (e instanceof ProviderError) throw new HttpError(502, `${e.message}. Intenta de nuevo o escríbenos.`);
+      if (e instanceof ProviderError) throw await providerFailure(e, 'abrir el pago');
       throw e;
     }
   });
@@ -254,7 +367,7 @@ export async function billingRoutes(api: FastifyInstance) {
   /** Al volver de la página de pago: se pregunta al proveedor por el pago iniciado y, si ya se cobró, la cuenta se activa. */
   api.post('/api/billing/confirm', { ...admins, ...ownerOnly }, async (req: any, reply) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
-    if (rateLimited(`billing-confirm:${accountId}`, 60, 3600_000)) return reply.code(429).send({ error: 'Demasiadas consultas, espera un momento' });
+    if (await limited(`billing-confirm:${accountId}`, 60, 3600_000)) return reply.code(429).send({ error: 'Demasiadas consultas, espera un momento' });
     let confirmed = false;
     try {
       confirmed = await confirmCheckout(accountId);
@@ -266,26 +379,36 @@ export async function billingRoutes(api: FastifyInstance) {
     return { confirmed, account_status: acc?.status, subscription: publicSub(sub) };
   });
 
+  /**
+   * El portal de Stripe deja probar tarjetas («actualizar método de pago») contra la cuenta de la plataforma: tiene sus
+   * propios topes en la base y respeta el freno de las verificaciones (PAY-18).
+   */
+  const stripePortal = async (accountId: string, ip: string, sub: NonNullable<Awaited<ReturnType<typeof getSubscription>>>, base: string) => {
+    await assertPortalAllowed(accountId, ip);
+    return (await providers[sub.provider].portal!(sub.provider_customer_id, `${base}/#/plan`)).url;
+  };
+
   /** Stripe: página para cambiar tarjeta, ver facturas y cancelar. */
   api.post('/api/billing/portal', { ...admins, ...ownerStepUp }, async (req: any, reply) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
-    if (tooMany(reply, `billing-portal:${accountId}`, 30)) return reply;
     const sub = await getSubscription(accountId);
     const provider = sub && providers[sub.provider];
     if (!sub || !provider?.portal || !sub.provider_customer_id) throw new HttpError(400, 'Tu plan no tiene página de administración: cancélalo desde aquí.');
+    const base = await baseFor(req);
     try {
-      return await provider.portal(sub.provider_customer_id, `${await baseFor(req)}/#/plan`);
+      return { url: await stripePortal(accountId, req.ip, sub, base) };
     } catch (e: any) {
-      throw new HttpError(502, e.message);
+      if (e instanceof HttpError) throw e;
+      throw await providerFailure(e, 'abrir la página de tu plan');
     }
   });
 
-  /** Los errores del proveedor se informan como 502 con su mensaje. */
+  /** Los errores del proveedor se informan como 502 con un texto fijo y su referencia (PAY-12). */
   const viaProvider = async <T>(fn: () => Promise<T>): Promise<T> => {
     try {
       return await fn();
     } catch (e: any) {
-      if (e instanceof ProviderError) throw new HttpError(502, `${e.message}. Intenta de nuevo o escríbenos.`);
+      if (e instanceof ProviderError) throw await providerFailure(e, 'completar el cambio con el proveedor de pago');
       throw e;
     }
   };
@@ -293,7 +416,7 @@ export async function billingRoutes(api: FastifyInstance) {
   /** Cambiar de plan. Mercado Pago entre mensual y anual pasa por su página de pago: entonces responde `url`. */
   api.post('/api/billing/change', { ...admins, ...ownerStepUp }, async (req: any, reply) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
-    if (tooMany(reply, `billing-change:${accountId}`, 10)) return reply;
+    if (await tooMany(reply, `billing-change:${accountId}`, 10)) return reply;
     const { plan } = parse(z.object({ plan: z.string().max(40) }), req.body);
     const r = await viaProvider(async () => changePlan({ accountId, email: req.user.email, planKey: plan, base: await baseFor(req), ip: req.ip }));
     return { ok: true, ...r, subscription: publicSub(await getSubscription(accountId)) };
@@ -302,13 +425,13 @@ export async function billingRoutes(api: FastifyInstance) {
   /** Cambiar la tarjeta. Stripe: su página de administración. Mercado Pago: una suscripción nueva desde el siguiente cobro. */
   api.post('/api/billing/payment-method', { ...admins, ...ownerStepUp }, async (req: any, reply) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
-    if (tooMany(reply, `billing-payment-method:${accountId}`, 10)) return reply;
+    if (await tooMany(reply, `billing-payment-method:${accountId}`, 10)) return reply;
     const sub = await getSubscription(accountId);
     if (!sub?.provider_subscription_id || !['active', 'past_due'].includes(sub.status)) throw new HttpError(400, 'No tienes un plan activo');
     const base = await baseFor(req);
     if (sub.provider === 'stripe') {
       if (!sub.provider_customer_id) throw new HttpError(400, 'Tu plan no tiene página de administración');
-      return viaProvider(() => providers.stripe.portal!(sub.provider_customer_id, `${base}/#/plan`));
+      return viaProvider(async () => ({ url: await stripePortal(accountId, req.ip, sub, base) }));
     }
     // Con un cambio de plan programado, la tarjeta nueva lo conserva (empieza igual, con su primer cobro).
     const plan = await getPlan(sub.pending_plan_key || sub.plan_key);
@@ -318,7 +441,7 @@ export async function billingRoutes(api: FastifyInstance) {
 
   api.post('/api/billing/cancel', { ...admins, ...ownerStepUp }, async (req: any, reply) => {
     const accountId = await targetAccount(req.user, req.query.account_id);
-    if (tooMany(reply, `billing-cancel:${accountId}`, 20)) return reply;
+    if (await tooMany(reply, `billing-cancel:${accountId}`, 20)) return reply;
     const { resume } = parse(z.object({ resume: z.boolean().default(false) }), req.body);
     const sub = await getSubscription(accountId);
     // Mercado Pago no reanuda una suscripción cancelada: se contrata el mismo plan con el primer cobro al terminar lo pagado.
@@ -331,10 +454,15 @@ export async function billingRoutes(api: FastifyInstance) {
     try {
       await providers[sub.provider].setCancelAtPeriodEnd(sub, !resume);
     } catch (e: any) {
-      throw new HttpError(502, e.message);
+      throw await providerFailure(e, resume ? 'reanudar tu plan' : 'cancelar tu plan');
     }
     // El proveedor confirmará por aviso; mientras tanto se refleja en el panel.
-    await query(`UPDATE subscriptions SET cancel_at_period_end = $2, updated_at = now() WHERE account_id = $1`, [accountId, !resume]);
+    await query(
+      `UPDATE subscriptions SET cancel_at_period_end = $2,
+         pending_plan_key = CASE WHEN $2 AND provider = 'stripe' THEN '' ELSE pending_plan_key END,
+         pending_plan_since = CASE WHEN $2 AND provider = 'stripe' THEN NULL ELSE pending_plan_since END,
+         pending_amount_cents = CASE WHEN $2 AND provider = 'stripe' THEN 0 ELSE pending_amount_cents END,
+         updated_at = now() WHERE account_id = $1`, [accountId, !resume]);
     await logEvent({ level: 'info', source: 'admin', message: resume ? 'Cancelación del plan revertida' : 'Cancelación del plan solicitada', accountId });
     return { ok: true };
   });

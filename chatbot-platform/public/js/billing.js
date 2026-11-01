@@ -43,7 +43,7 @@ function cfdiCell(c, p) {
 
 const longDate = (d) => (d ? new Date(d).toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric' }) : '');
 
-const LIMIT_SHORT = { messages_per_month: ['mensajes al mes', 'mensaje al mes'], channels: ['canales', 'canal'], users: ['usuarios', 'usuario'], chatbots: ['asistentes', 'asistente'], social_accounts: ['redes sociales', 'red social'] };
+const LIMIT_SHORT = { messages_per_month: ['mensajes al mes', 'mensaje al mes'], channels: ['canales', 'canal'], users: ['usuarios', 'usuario'], chatbots: ['asistentes', 'asistente'], social_accounts: ['redes sociales', 'red social'], storage_mb: ['MB de archivos', 'MB de archivos'] };
 /** "hasta 1,000 mensajes al mes · 1 canal · …" (vacío si el plan no tiene límites). */
 export const limitsText = (limits = {}) => Object.entries(LIMIT_SHORT).filter(([k]) => limits[k]).map(([k, [pl, sg]]) => `${limits[k].toLocaleString('es-MX')} ${limits[k] === 1 ? sg : pl}`).join(' · ');
 
@@ -244,8 +244,15 @@ export async function viewPlan(root, params) {
   // Esperando tarjeta con prueba disponible: el pago es la verificación de la tarjeta (sin cobro hasta que termine).
   const trialOffer = !!cc?.waiting && cc.trial_available;
   const unverified = !!cc?.waiting && !cc.email_verified;
+  // Código de promoción (solo con tarjeta: Mercado Pago no tiene códigos).
+  const promo = h('input', { id: 'promo-code', type: 'text', maxlength: 60, autocomplete: 'off', placeholder: 'Opcional' });
+  const promoField = b.plans.some((p) => p.providers.some((pr) => pr.name === 'stripe'))
+    ? h('div', { class: 'card' }, h('label', { for: 'promo-code' }, 'Código de promoción'), promo,
+      h('p', { class: 'muted small', style: 'margin-bottom:0' }, 'Solo al pagar con tarjeta (Stripe).'))
+    : null;
   const payButton = (p, pr, label, cls, trial) => h('button', { class: cls, disabled: unverified, title: unverified ? 'Falta verificar tu correo' : '', onclick: async () => {
-    const r = await run(() => api('POST', withAcct('/api/billing/checkout'), { plan: p.key, provider: pr.name, ...(trial === false ? { trial: false } : {}) }));
+    const code = pr.name === 'stripe' ? promo.value.trim() : '';
+    const r = await run(() => api('POST', withAcct('/api/billing/checkout'), { plan: p.key, provider: pr.name, ...(trial === false ? { trial: false } : {}), ...(code ? { promo_code: code } : {}) }));
     if (r) location.href = r.url;
   } }, label);
   // Mientras se confirma un pago no se ofrece contratar otra vez: un segundo clic abriría otra suscripción.
@@ -253,7 +260,7 @@ export async function viewPlan(root, params) {
     if (!b.plans.length) {
       fill(offer, h('div', { class: 'card' }, h('p', {}, 'El pago en línea todavía no está disponible.'), b.support_contact ? h('p', {}, 'Para contratar escríbenos a ', h('strong', {}, b.support_contact), '.') : null));
     } else {
-      fill(offer, h('div', { class: 'grid' }, b.plans.map((p) => h('div', { class: p.key === wanted ? 'card chosen' : 'card' },
+      fill(offer, promoField, h('div', { class: 'grid' }, b.plans.map((p) => h('div', { class: p.key === wanted ? 'card chosen' : 'card' },
         h('h2', { style: 'margin:0' }, p.name),
         h('div', { class: 'kpi', style: 'margin:8px 0' }, planPrice(p), h('span', { class: 'muted small' }, ` / ${per(p)}`)),
         totalText(p) ? h('p', { class: 'muted small', style: 'margin-top:0' }, totalText(p)) : null,
@@ -362,11 +369,11 @@ function dataCard() {
 /** Superadmin: planes, claves configuradas y avisos de los proveedores. */
 export async function viewPlans(root) {
   const [plans, ov] = await Promise.all([api('GET', '/api/plans'), api('GET', '/api/billing/overview')]);
-  const blank = { key: '', name: '', description: '', price: 0, currency: 'MXN', interval: 'month', tax_percent: ov.tax_percent, stripe_price_id: '', active: true, sort_order: 0, limits: {} };
+  const blank = { key: '', name: '', description: '', price: 0, currency: 'MXN', interval: 'month', tax_percent: ov.tax_percent, stripe_price_id: '', active: true, sort_order: 0, limits: {}, ai_usd_per_month: null, public: true };
   const count = (provider, status) => ov.counts.filter((c) => c.provider === provider && c.status === status).reduce((a, c) => a + c.n, 0);
 
   const editor = (p, isNew) => {
-    const m = { ...p, limits: { ...(p.limits || {}) } };
+    const m = { ...p, public: p.public !== false, limits: { ...(p.limits || {}) } };
     return h('div', { class: 'card' },
       h('div', { class: 'grid' },
         field(isNew ? 'Clave (minúsculas, sin espacios)' : 'Clave', isNew ? text(m, 'key', { placeholder: 'basico' }) : h('input', { value: p.key, disabled: true })),
@@ -383,8 +390,11 @@ export async function viewPlans(root) {
         field('Canales', num(m.limits, 'channels', { min: 1, nullable: true, placeholder: 'Sin límite' })),
         field('Usuarios', num(m.limits, 'users', { min: 1, nullable: true, placeholder: 'Sin límite' })),
         field('Asistentes', num(m.limits, 'chatbots', { min: 1, nullable: true, placeholder: 'Sin límite' })),
-        field('Redes sociales', num(m.limits, 'social_accounts', { min: 1, nullable: true, placeholder: 'Sin límite' }), 'Cuentas conectadas por Zernio (cada una tiene costo para la plataforma).')),
+        field('Redes sociales', num(m.limits, 'social_accounts', { min: 1, nullable: true, placeholder: 'Sin límite' }), 'Cuentas conectadas por Zernio (cada una tiene costo para la plataforma).'),
+        field('Archivos (MB)', num(m.limits, 'storage_mb', { min: 1, nullable: true, placeholder: ov.plan_defaults?.storage_mb ? `Por omisión: ${ov.plan_defaults.storage_mb}` : 'Sin límite' }), 'Lo que la cuenta sube: archivos de automatizaciones, la biblioteca de sus agentes y formatos de Word.'),
+        field('Gasto de IA al mes (USD)', num(m, 'ai_usd_per_month', { min: 0, step: 0.01, nullable: true, placeholder: ov.plan_defaults?.ai_usd_per_month ? `Por omisión: ${ov.plan_defaults.ai_usd_per_month}` : 'Sin tope' }), 'Lo que la plataforma paga de IA por cada cuenta con este plan. Al llegar, la IA se detiene hasta el mes siguiente; el cliente no lo puede cambiar.')),
       check(m, 'active', 'Disponible para contratar'),
+      check(m, 'public', 'Público: aparece en Precios y en el registro (si no, solo lo contrata la cuenta a la que se lo asignes)'),
       h('div', { class: 'row' },
         h('button', { class: 'primary', onclick: async () => {
           const body = { ...m, price: Number(m.price), limits: Object.fromEntries(Object.entries(m.limits).filter(([, v]) => v)) };
@@ -393,18 +403,58 @@ export async function viewPlans(root) {
         isNew ? null : h('button', { class: 'danger', onclick: async () => { if (await confirmAction(`¿Borrar el plan ${p.name}?`) && await run(() => api('DELETE', `/api/plans/${p.key}`), 'Borrado')) render(); } }, 'Borrar')));
   };
 
+  // Cada proveedor: qué falta, la dirección de avisos y cómo dejar listo el webhook (Stripe con un botón; Mercado Pago a mano).
+  const providerCard = (pr) => {
+    const secretTxt = pr.webhook_secret === 'server' ? 'secreto de firma en el servidor' : pr.webhook_secret === 'panel' ? 'secreto de firma guardado aquí' : 'falta el secreto de firma';
+    const last = pr.last_event_at ? `Último aviso recibido: ${new Date(pr.last_event_at).toLocaleString('es-MX')}` : 'Todavía no llega ningún aviso.';
+    const stripe = pr.name === 'stripe';
+    const mpSecret = { value: '' };
+    return h('div', { class: 'card' },
+      h('h2', { style: 'margin-top:0' }, pr.label, ' ', h('span', { class: `badge ${pr.enabled ? 'green' : ''}` }, pr.enabled ? 'Conectado' : 'Sin configurar')),
+      !pr.has_key
+        ? h('p', { class: 'small muted' }, stripe ? 'Agrega STRIPE_SECRET_KEY en .env y reinicia (./riverrun restart).' : 'Agrega MERCADOPAGO_ACCESS_TOKEN en .env y reinicia (./riverrun restart).')
+        : h('p', { class: 'small' }, pr.webhook_secret ? '✓ ' : '✗ ', secretTxt, ' · ', last),
+      pr.enabled ? h('p', { class: 'small muted' }, `${count(pr.name, 'active')} al corriente · ${count(pr.name, 'past_due')} con pago pendiente · ${count(pr.name, 'canceled')} canceladas`) : null,
+      h('div', { class: 'small' }, 'Dirección de avisos (webhook):'),
+      h('div', { class: 'row' }, h('code', { style: 'word-break:break-all' }, pr.webhook_url), copy(pr.webhook_url)),
+      stripe
+        ? [
+          h('p', { class: 'small muted' }, `Crea el webhook en tu cuenta de Stripe con los ${pr.events.length} eventos que atiende la plataforma y guarda su secreto de firma.`),
+          pr.has_key ? h('button', { class: pr.webhook_secret ? '' : 'primary', onclick: async () => {
+            const r = await run(() => api('POST', '/api/billing/webhooks/stripe/setup'));
+            if (r) { toast(r.created ? 'Webhook creado en Stripe' : 'Webhook de Stripe al día'); render(); }
+          } }, pr.webhook_secret ? 'Poner al día el webhook en Stripe' : 'Configurar webhook en Stripe') : null,
+        ]
+        : [
+          h('p', { class: 'small muted' }, 'Mercado Pago no deja crearlo por su API: en Tus integraciones → Webhooks → Configurar notificaciones, pega la dirección, activa estos eventos y copia la «Clave secreta» aquí:'),
+          h('ul', { class: 'small' }, pr.events.map((e) => h('li', {}, e))),
+          pr.webhook_secret === 'server' ? null : h('div', { class: 'row' },
+            h('input', { type: 'password', autocomplete: 'off', 'aria-label': 'Clave secreta del webhook de Mercado Pago', placeholder: pr.webhook_secret ? 'Guardada (pega otra para cambiarla)' : 'Clave secreta', oninput: (e) => (mpSecret.value = e.target.value) }),
+            h('button', { class: 'small', onclick: async () => {
+              if (await run(() => api('PUT', '/api/billing/webhooks/mercadopago/secret', { secret: mpSecret.value }), 'Clave guardada')) render();
+            } }, 'Guardar clave')),
+        ]);
+  };
   const copy = (v) => h('button', { class: 'small', onclick: async () => { try { await navigator.clipboard.writeText(v); toast('Copiado'); } catch { toast('Cópialo a mano', true); } } }, 'Copiar');
   root.append(
     h('h1', {}, 'Planes y cobro'),
-    h('div', { class: 'grid' }, ov.providers.map((pr) => h('div', { class: 'card' },
-      h('h2', { style: 'margin-top:0' }, pr.label, ' ', h('span', { class: `badge ${pr.enabled ? 'green' : ''}` }, pr.enabled ? 'Conectado' : 'Sin configurar')),
-      pr.enabled
-        ? h('p', { class: 'small muted' }, `${count(pr.name, 'active')} al corriente · ${count(pr.name, 'past_due')} con pago pendiente · ${count(pr.name, 'canceled')} canceladas`)
-        : h('p', { class: 'small muted' }, pr.name === 'stripe' ? 'Agrega STRIPE_SECRET_KEY y STRIPE_WEBHOOK_SECRET en .env y reinicia (./riverrun restart).' : 'Agrega MERCADOPAGO_ACCESS_TOKEN y MERCADOPAGO_WEBHOOK_SECRET en .env y reinicia (./riverrun restart).'),
-      h('div', { class: 'small' }, 'Dirección de avisos (webhook):'),
-      h('div', { class: 'row' }, h('code', { style: 'word-break:break-all' }, pr.webhook_url), copy(pr.webhook_url)),
-      h('p', { class: 'small muted' }, pr.name === 'stripe' ? 'En Stripe → Desarrolladores → Webhooks: eventos checkout.session.completed, customer.subscription.*, invoice.paid, invoice.payment_failed, invoice.payment_action_required (el banco pide confirmar), charge.refunded (reembolsos) y charge.dispute.* (contracargos).' : 'En Mercado Pago → Tus integraciones → Webhooks: eventos "Planes y suscripciones" (preapproval y pagos autorizados) y "Pagos" (reembolsos y contracargos).')))),
+    h('div', { class: 'grid' }, ov.providers.map((pr) => providerCard(pr))),
     h('p', { class: 'muted' }, 'Además, cada suscripción se compara con el proveedor una vez al día: un aviso perdido no deja un cobro, una pausa o una reactivación sin aplicar.'),
+    ov.awaiting_rate?.length ? h('section', { class: 'card', 'aria-labelledby': 'awaiting-rate' },
+      h('h2', { id: 'awaiting-rate', style: 'margin-top:0' }, 'Facturas que esperan el tipo de cambio'),
+      h('p', { class: 'muted small' }, 'Pagos en otra moneda sin un tipo de cambio confiable del proveedor: su factura no sale en pesos. Captura cuántos pesos vale cada unidad de esa moneda el día del pago.'),
+      h('table', {},
+        h('thead', {}, h('tr', {}, h('th', {}, 'Cuenta'), h('th', {}, 'Fecha'), h('th', { class: 'num' }, 'Total'), h('th', {}, 'Pesos por unidad'))),
+        h('tbody', {}, ov.awaiting_rate.map((p) => {
+          const input = h('input', { type: 'number', min: 0, step: 0.0001, 'aria-label': `Tipo de cambio del pago de ${p.account}`, style: 'width:8em' });
+          return h('tr', {}, h('td', {}, p.account), h('td', {}, new Date(p.paid_at).toLocaleDateString('es-MX')),
+            h('td', { class: 'num' }, `${(p.total_cents / 100).toLocaleString('es-MX')} ${p.currency}`),
+            h('td', {}, h('div', { class: 'row' }, input, h('button', { class: 'small', onclick: async () => {
+              const rate = Number(input.value);
+              if (!(rate > 0)) return toast('Escribe el tipo de cambio', true);
+              if (await run(() => api('PUT', `/api/billing/payments/${p.id}/exchange-rate`, { rate }), 'Guardado: la factura sale en la siguiente revisión')) render();
+            } }, 'Guardar'))));
+        })))) : null,
     ...(ov.monthly_revenue.length ? [h('p', {}, h('strong', {}, 'Ingreso mensual recurrente: '), ov.monthly_revenue.map((m) => `${m.amount.toLocaleString('es-MX')} ${m.currency}`).join(' · '))] : []),
     h('h2', {}, 'Planes'),
     h('p', { class: 'muted' }, `Si un cobro falla, la cuenta sigue funcionando ${ov.grace_days} días y luego se pausa sola; al pagar, se reactiva sola.`),

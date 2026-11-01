@@ -5,14 +5,15 @@
  * - en el panel: descargar todos sus datos (ZIP) y pedir o cancelar el borrado de su cuenta.
  * Las páginas son HTML del servidor, sin JavaScript (salvo el captcha opcional del contacto), con la marca del dominio.
  */
+import { ipLimitKey, limited } from '../identity/rate-limit.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { HttpError, requireRole, targetAccount } from '../access.js';
-import { buildAccountExport, cancelDeletion, readDeletionToken, requestDeletion, scheduleDeletion } from '../accounts/self-service.js';
+import { buildAccountExport, cancelDeletion, readDeletionToken, deletionLinkOpen, consumeDeletionLink, requestDeletion, scheduleDeletion } from '../accounts/self-service.js';
 import { accountOwner, ownerStepUp } from '../identity/ownership.js';
-import { rateLimited } from '../auth.js';
 import { brandByDomain, hostOf, publicBrand } from '../brands.js';
 import { config } from '../config.js';
+import { query } from '../db.js';
 import { logEvent } from '../logs.js';
 import { sendMail } from '../mailer.js';
 import { cachedChecks } from '../monitor.js';
@@ -163,7 +164,7 @@ export async function selfServicePages(root: FastifyInstance) {
     app.post('/contacto', async (req: any, reply) => {
       const { brand } = await brandFor(req);
       const values = (req.body ?? {}) as Record<string, string>;
-      if (rateLimited(`contact:${req.ip}`, 5, 3600_000)) return html(reply, 429, contactForm({ brand, values, error: 'Ya recibimos varios mensajes desde tu conexión. Intenta más tarde.' }));
+      if (await limited(ipLimitKey('contact', req.ip), 5, 3600_000)) return html(reply, 429, contactForm({ brand, values, error: 'Ya recibimos varios mensajes desde tu conexión. Intenta más tarde.' }));
       const b = ContactBody.safeParse(values);
       if (!b.success) {
         const fields = [...new Set(b.error.issues.map((i) => String(i.path[0])).filter((k) => k in FIELD_ERROR))];
@@ -171,7 +172,10 @@ export async function selfServicePages(root: FastifyInstance) {
       }
       // Campo trampa: solo un robot lo llena. Se le contesta igual para no darle pistas.
       if (!b.data.web) {
-        if ((await verifyCaptcha(b.data['cf-turnstile-response'], req.ip)) === 'invalid') return html(reply, 400, contactForm({ brand, values, error: CAPTCHA_MESSAGE }));
+        // Cerrado ante fallas: si Cloudflare no responde, el mensaje espera (no sale sin comprobar).
+        const captcha = await verifyCaptcha(b.data['cf-turnstile-response'], req.ip);
+        if (captcha === 'invalid') return html(reply, 400, contactForm({ brand, values, error: CAPTCHA_MESSAGE }));
+        if (captcha === 'unavailable') return html(reply, 503, contactForm({ brand, values, error: 'No pudimos comprobar el captcha: intenta en un momento.' }));
         const to = supportInbox();
         if (to) await sendMail({ to, replyTo: b.data.email, subject: `Contacto: ${b.data.name}`, text: `${b.data.name} <${b.data.email}> escribió desde ${brand.name} (/contacto):\n\n${b.data.message}` });
         await logEvent({ level: to ? 'info' : 'warn', source: 'system', message: to ? `Mensaje de contacto de ${b.data.email}` : `Mensaje de contacto de ${b.data.email} sin buzón de soporte (define SUPERADMIN_EMAIL)`, details: to ? undefined : { message: b.data.message.slice(0, 2000) } });
@@ -214,11 +218,14 @@ export async function selfServicePages(root: FastifyInstance) {
 
     /* Confirmación del borrado desde el correo. El GET solo pregunta: los antivirus de correo abren los enlaces. */
     const invalid = (reply: any, brand: any) => html(reply, 400, page({ title: 'Enlace no válido', brand, noindex: true, body: '<h1>Enlace no válido o vencido</h1><p>Vuelve a pedir el borrado desde tu panel (Mi plan y pagos → Tus datos): el enlace dura 24 horas.</p>' }));
+    // Un enlace que ya se usó (o que reemplazó otro, o que se invalidó al cancelar o transferir): 410.
+    const used = (reply: any, brand: any) => html(reply, 410, page({ title: 'Enlace ya usado', brand, noindex: true, body: '<h1>Este enlace ya no sirve</h1><p>Ya se usó, o pediste otro después. Si quieres borrar tu cuenta, vuelve a pedirlo desde tu panel (Mi plan y pagos → Tus datos).</p>' }));
     app.get('/borrar-cuenta', async (req: any, reply) => {
       const { brand } = await brandFor(req);
-      const id = readDeletionToken(req.query?.t);
-      const acc = id ? await store.getAccount(id) : null;
-      if (!acc) return invalid(reply, brand);
+      const t = readDeletionToken(req.query?.t);
+      const acc = t ? await store.getAccount(t.accountId) : null;
+      if (!t || !acc) return invalid(reply, brand);
+      if (!(await deletionLinkOpen(t))) return used(reply, brand);
       if (acc.deletion_scheduled_for) return html(reply, 200, page({ title: 'Borrado programado', brand, noindex: true, body: `<h1>Tu cuenta ya se va a borrar</h1><p>"${esc(acc.name)}" se borrará el ${esc(fmt(new Date(acc.deletion_scheduled_for)))}. Para cancelarlo entra a tu panel.</p><a class="btn" href="/#/plan">Ir a mi panel</a>` }));
       return html(reply, 200, page({
         title: 'Borrar mi cuenta', brand, noindex: true,
@@ -230,8 +237,14 @@ export async function selfServicePages(root: FastifyInstance) {
     });
     app.post('/borrar-cuenta', async (req: any, reply) => {
       const { brand } = await brandFor(req);
-      const id = readDeletionToken(req.query?.t);
-      const when = id ? await scheduleDeletion(id) : null;
+      const t = readDeletionToken(req.query?.t);
+      if (!t) return invalid(reply, brand);
+      if (!(await consumeDeletionLink(t))) return used(reply, brand);
+      // Si programar falla, el enlace vuelve a servir (se consumió antes para que dos clics no lo usen dos veces).
+      const when = await scheduleDeletion(t.accountId).catch(async (e) => {
+        await query(`UPDATE accounts SET deletion_nonce = $2 WHERE id = $1 AND deletion_nonce IS NULL`, [t.accountId, t.nonce]);
+        throw e;
+      });
       if (!when) return invalid(reply, brand);
       return html(reply, 200, page({ title: 'Borrado programado', brand, noindex: true, body: `<h1>Listo</h1><p>Tu cuenta se borrará el ${esc(fmt(when))}. Te lo confirmamos por correo. Si cambias de opinión, entra a tu panel y pulsa «Cancelar el borrado».</p><a class="btn" href="/#/plan">Ir a mi panel</a>` }));
     });
@@ -248,7 +261,7 @@ export async function accountSelfServiceRoutes(api: FastifyInstance) {
     const accountId = await targetAccount(req.user, req.query.account_id);
     const acc = await store.getAccount(accountId);
     if (!acc) throw new HttpError(404, 'No encontrado');
-    if (rateLimited(`account-export:${accountId}`, 5, 86400_000)) throw new HttpError(429, 'Ya descargaste tus datos varias veces hoy; intenta mañana.');
+    if (await limited(`account-export:${accountId}`, 5, 86400_000)) throw new HttpError(429, 'Ya descargaste tus datos varias veces hoy; intenta mañana.');
     const zip = await buildAccountExport(accountId);
     await logEvent({ level: 'info', source: 'admin', message: `Descarga de todos los datos de la cuenta por ${req.user.email}`, accountId });
     return reply
@@ -265,7 +278,7 @@ export async function accountSelfServiceRoutes(api: FastifyInstance) {
     const { confirm } = parse(z.object({ confirm: z.string().max(200) }), req.body);
     if (confirm.trim().toLowerCase() !== acc.name.trim().toLowerCase()) throw new HttpError(400, `Para confirmar, escribe exactamente el nombre de tu cuenta: ${acc.name}`);
     if (acc.deletion_scheduled_for) throw new HttpError(409, 'Tu cuenta ya tiene un borrado programado.');
-    if (rateLimited(`account-delete:${acc.id}`, 5, 3600_000)) throw new HttpError(429, 'Ya te enviamos el correo varias veces; revisa tu bandeja (y spam).');
+    if (await limited(`account-delete:${acc.id}`, 5, 3600_000)) throw new HttpError(429, 'Ya te enviamos el correo varias veces; revisa tu bandeja (y spam).');
     const owner = await accountOwner(acc.id);
     if (!owner) throw new HttpError(409, 'La cuenta no tiene dueño a quien mandar la confirmación.');
     await requestDeletion(acc, owner);

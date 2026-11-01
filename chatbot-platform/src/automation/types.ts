@@ -56,12 +56,27 @@ export const ConsentSchema = z.object({
 
 export const SendingSchema = z.object({ daily_cap_per_number: z.number().int().min(0).max(100000).default(0) });
 
+/** Para borrar solo, al menos esto (0 = conservar siempre). Se revisa al guardar: lo ya guardado se lee igual. */
+export const RETENTION_MIN_DAYS = 30;
+/** Un cambio que borra más entra después de estos días, con aviso al dueño: da tiempo de deshacerlo. */
+export const RETENTION_DELAY_DAYS = 7;
+const RetentionDays = z.number().int().min(0).max(3650);
 export const RetentionSchema = z.object({
   /** Borrar mensajes con más de N días (0 = no borrar). */
-  messages_days: z.number().int().min(0).max(3650).default(0),
+  messages_days: RetentionDays.default(0),
   /** Borrar contactos (y sus conversaciones) sin actividad en N días y sin citas futuras (0 = no borrar). */
-  inactive_contacts_days: z.number().int().min(0).max(3650).default(0),
+  inactive_contacts_days: RetentionDays.default(0),
+  /** Lo que entra en `effective_at` (lo pone el servidor; lo que mande el panel se ignora). */
+  pending: z.object({ messages_days: RetentionDays, inactive_contacts_days: RetentionDays, effective_at: z.string() }).nullable().default(null),
 });
+export type Retention = z.infer<typeof RetentionSchema>;
+
+/** Los días que valen hoy: los guardados, o los programados si ya llegó su fecha. Acepta lo guardado tal cual (sin validar). */
+export function effectiveRetention(r: Partial<Retention> | null | undefined, now: Date): { messages_days: number; inactive_contacts_days: number } {
+  const p = r?.pending;
+  if (p && new Date(p.effective_at).getTime() <= now.getTime()) return { messages_days: p.messages_days ?? 0, inactive_contacts_days: p.inactive_contacts_days ?? 0 };
+  return { messages_days: r?.messages_days ?? 0, inactive_contacts_days: r?.inactive_contacts_days ?? 0 };
+}
 
 /** Reparto de conversaciones al equipo por turnos (round robin). */
 export const AssignmentSchema = z.object({

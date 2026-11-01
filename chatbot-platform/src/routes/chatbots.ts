@@ -1,4 +1,5 @@
 import { accountAi } from '../ai/budget.js';
+import { assertUploadAllowed } from '../billing/limits.js';
 import { assertAiAllowed } from '../ai/gate.js';
 import { agentVersionRoutes } from './agent-versions.js';
 import type { PoolClient } from 'pg';
@@ -25,7 +26,7 @@ import { reserveEmbeddingTokens } from '../engine/semantic-policy.js';
 import { mentionsPhotoCode, photoWarnings } from '../engine/photo-check.js';
 import { isSensitiveField } from '../engine/safety.js';
 import { imageAbsolutePath } from '../engine/transport.js';
-import { assertWithinLimit } from '../billing/limits.js';
+import { assertWithinLimit, assertWithinLimitLocked } from '../billing/limits.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
@@ -183,7 +184,7 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
         const prev = (await client.query(`SELECT id FROM chatbots WHERE account_id = $1 AND creation_ref = $2`, [accountId, w.request_id])).rows[0];
         if (prev) return { bot: null, repeatedId: prev.id as string };
       }
-      await assertWithinLimit(accountId, 'chatbots');
+      await assertWithinLimitLocked(client, accountId, 'chatbots');
       // Nace apagado para probarlo en el simulador; se enciende solo al conectar su WhatsApp (start_on_connect).
       const bot = await store.createChatbot(accountId, {
         name: built.name, active: false, personality: built.personality, rules: built.rules, flow: built.flow, data_fields: built.data_fields,
@@ -240,6 +241,7 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
       prepared.data_fields = [];
     }
     const bot = await withTransaction(async (client) => {
+      await assertWithinLimitLocked(client, accountId, 'chatbots');
       const created = await store.createChatbot(accountId, prepared, client);
       if (setup) await store.upsertKnowledge(created.id, { title: 'Información del negocio', content: setup.knowledge, category: 'general' }, client);
       return created;
@@ -251,10 +253,7 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
   api.get('/api/chatbots/:id', async (req: any) => {
     const bot = await botFor(req.user, req.params.id);
     // El token del webhook y el código de inserción permiten enviar mensajes al canal: los agentes no los ven.
-    const channels = (await store.listChannels(bot.account_id, { chatbotId: bot.id })).map((c) => {
-      const view = publicChannel(c);
-      return req.user.role === 'agent' ? { ...view, webhook_token: undefined, webhook_url: undefined, embed_code: undefined } : view;
-    });
+    const channels = (await store.listChannels(bot.account_id, { chatbotId: bot.id })).map((c) => publicChannel(c, req.user));
     return { ...visibleBot(req.user, bot), channels, photo_warnings: photoWarnings(bot, await store.listImages(bot.id)) };
   });
 
@@ -338,14 +337,18 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
     const { account_id } = parse(z.object({ account_id: z.string().uuid().optional() }), req.body);
     const accountId = await targetAccount(req.user, account_id ?? src.account_id);
     await assertWithinLimit(accountId, 'chatbots');
-    const copy = await store.createChatbot(accountId, {
-      name: `${src.name} (copia)`,
-      active: false,
-      personality: src.personality,
-      rules: src.rules,
-      data_fields: src.data_fields,
-      flow: src.flow,
-      ai: src.ai,
+    // El alta va con la cuenta bloqueada: varias copias pedidas a la vez no rebasan el límite (PAY-19).
+    const copy = await withTransaction(async (client) => {
+      await assertWithinLimitLocked(client, accountId, 'chatbots');
+      return store.createChatbot(accountId, {
+        name: `${src.name} (copia)`,
+        active: false,
+        personality: src.personality,
+        rules: src.rules,
+        data_fields: src.data_fields,
+        flow: src.flow,
+        ai: src.ai,
+      }, client);
     });
     for (const k of await store.listKnowledge(src.id)) {
       await store.upsertKnowledge(copy.id, { category: k.category, title: k.title, content: k.content, always_include: k.always_include, active: k.active, sort_order: k.sort_order });
@@ -490,6 +493,7 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
     const meta = parse(ImageMeta, upload.fields);
     if (!meta.code || !meta.name) throw new HttpError(400, 'El ID y el nombre son obligatorios');
     if (!upload.file) throw new HttpError(400, 'Falta el archivo');
+    await assertUploadAllowed(bot.account_id, upload.file.buffer.length); // en pausa, ritmo y almacenamiento (IN-19)
     const rel = await saveFile(bot.id, upload.file);
     try {
       const img = await store.insertImage({
@@ -523,6 +527,8 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
     if (req.isMultipart()) ({ fields, file } = await readUpload(req));
     const patch: Record<string, unknown> = { ...parse(ImageMeta, fields) };
     if (file) {
+      const owner = (await store.getChatbot(img.chatbot_id))!.account_id;
+      await assertUploadAllowed(owner, Math.max(0, file.buffer.length - (img.size_bytes ?? 0)));
       patch.file_path = await saveFile(img.chatbot_id, file);
       patch.mime_type = file.mime;
       patch.size_bytes = file.buffer.length;

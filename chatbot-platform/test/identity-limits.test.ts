@@ -10,6 +10,7 @@ import { createHarness, dbAvailable, pool, sleep, waitFor } from './harness.js';
 const ok = await dbAvailable();
 const t = (name: string, fn: () => Promise<void>) => test(name, { skip: !ok && 'PostgreSQL de pruebas no disponible' }, fn);
 const { outbox } = await import('../src/mailer.js');
+const { mfaChecks } = await import('../src/identity/mfa.js');
 let h: Awaited<ReturnType<typeof createHarness>>;
 
 const PASS = 'Pz-981-Qx-982-Kv';
@@ -55,7 +56,11 @@ t('10 contraseñas malas a una cuenta la bloquean, salvo desde su dispositivo re
   // Su navegador de siempre: configura el 2FA y pide recordar el dispositivo.
   const first = await login('jo@lim.mx', PASS, '10.71.0.1');
   const jar = cookiesOf(first);
-  const challenge = jar.join('; ');
+  let challenge = jar.join('; ');
+  // Entró solo con la contraseña: primero abre el enlace del correo en este navegador (ID-16).
+  await h.app.inject({ method: 'GET', url: '/api/2fa/enroll', headers: { cookie: challenge } });
+  const link = await h.app.inject({ method: 'POST', url: '/api/2fa/enroll/link', headers: { cookie: challenge }, payload: { token: h.enrollTokenFor('jo@lim.mx') } });
+  challenge = [...jar.filter((c: string) => !c.startsWith('cp_mfa=')), ...cookiesOf(link)].join('; ');
   const e = await h.app.inject({ method: 'GET', url: '/api/2fa/enroll', headers: { cookie: challenge } });
   h.totpSecrets.set('jo@lim.mx', e.json().secret);
   const done = await h.app.inject({ method: 'POST', url: '/api/2fa/enroll', headers: { cookie: challenge }, payload: { code: await h.codeFor('jo@lim.mx') } });
@@ -104,6 +109,49 @@ t('con 12 códigos malos a la vez llega un solo correo de bloqueo', async () => 
   assert.ok(results.some((r) => r.statusCode === 429), 'quedó bloqueada');
   await sleep(500);
   assert.equal(outbox.filter((m) => m.to === 'tino@lim.mx' && m.subject === 'Bloqueamos tu verificación por intentos fallidos').length, 1);
+});
+
+t('200 códigos malos a la vez en un reto revisan como máximo 5 (ID-15)', async () => {
+  await newUser('ruben@lim.mx');
+  await h.loginAs('ruben@lim.mx', PASS); // configura la app
+  const cookie = cookiesOf(await login('ruben@lim.mx', PASS, '10.76.0.1')).join('; ');
+  const before = mfaChecks.count;
+  const all = await Promise.all(Array.from({ length: 200 }, () => h.app.inject({ method: 'POST', url: '/api/login/2fa', headers: { cookie }, payload: { code: '111111' } })));
+  assert.ok(mfaChecks.count - before <= 5, `se revisaron ${mfaChecks.count - before}`);
+  const codes = all.map((r) => r.statusCode);
+  assert.equal(codes.filter((c) => c === 400).length, mfaChecks.count - before, 'los revisados dicen «código equivocado»');
+  assert.ok(all.filter((r) => r.statusCode !== 400).every((r) => r.statusCode === 429 || r.json().code === 'challenge_expired'), codes.join(','));
+});
+
+t('a varios retos a la vez, una persona revisa como máximo 10 códigos por hora (ID-15)', async () => {
+  await newUser('sol@lim.mx');
+  await h.loginAs('sol@lim.mx', PASS);
+  const challenges: string[] = [];
+  for (let i = 0; i < 8; i++) challenges.push(cookiesOf(await login('sol@lim.mx', PASS, `10.77.0.${i + 1}`)).join('; '));
+  const before = mfaChecks.count;
+  await Promise.all(challenges.flatMap((cookie) => Array.from({ length: 25 }, () => h.app.inject({ method: 'POST', url: '/api/login/2fa', headers: { cookie }, payload: { code: '111111' } }))));
+  assert.ok(mfaChecks.count - before <= 10, `se revisaron ${mfaChecks.count - before}`);
+  assert.ok((await pool.query(`SELECT mfa_locked_until > now() AS locked FROM users WHERE email = 'sol@lim.mx'`)).rows[0].locked);
+});
+
+t('confirmar con el código (verificación reciente): 5 por sesión en 15 minutos, contados antes de revisar (ID-15)', async () => {
+  await newUser('tere@lim.mx');
+  const api = await h.loginAs('tere@lim.mx', PASS);
+  const before = mfaChecks.count;
+  const all = await Promise.all(Array.from({ length: 200 }, () => api('POST', '/api/2fa/step-up', { code: '111111' })));
+  assert.ok(mfaChecks.count - before <= 5, `se revisaron ${mfaChecks.count - before}`);
+  assert.ok(all.some((r) => r.statusCode === 429 && /Espera 15 minutos/.test(r.json().error)));
+  // El tope por persona no se bloqueó (5 < 10): pasada la ventana de la sesión, un código bueno sirve.
+  await pool.query(`UPDATE rate_limits SET expires_at = now() - interval '1 second' WHERE key LIKE 'mfa-session:%'`);
+  assert.equal((await api('POST', '/api/2fa/step-up', { code: await h.codeFor('tere@lim.mx') })).statusCode, 200);
+});
+
+t('el acceso fallido guarda el correo solo si tiene forma de correo (bajos de la 2c)', async () => {
+  await login('Pz-SecretoPegado-77', 'algo-cualquiera-9', '10.78.0.1');
+  await login('pepe@lim.mx', 'algo-cualquiera-9', '10.78.0.2');
+  const rows = (await pool.query(`SELECT details->>'email' AS email FROM event_logs WHERE message = 'Intento de acceso fallido' ORDER BY id DESC LIMIT 2`)).rows.map((r) => r.email);
+  assert.deepEqual(rows, ['pepe@lim.mx', '[no es un correo]']);
+  assert.equal((await pool.query(`SELECT count(*)::int AS n FROM event_logs WHERE details::text LIKE '%SecretoPegado%'`)).rows[0].n, 0);
 });
 
 t('la contraseña actual equivocada al cambiarla cuenta como intento a la cuenta', async () => {

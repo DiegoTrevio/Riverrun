@@ -8,6 +8,7 @@ import { logEvent } from './logs.js';
 import * as astore from './automation/store.js';
 import { pruneThreads, redactContact } from './copilot/store.js';
 import { config } from './config.js';
+import { effectiveRetention, type Retention } from './automation/types.js';
 
 /** Todo lo que el sistema guarda de un contacto, listo para entregárselo (acceso / portabilidad). */
 export async function contactDataExport(contactId: string) {
@@ -116,9 +117,13 @@ export async function applyRetention(now = new Date()): Promise<{ accounts: numb
   let messagesDeleted = 0, contactsDeleted = 0, touched = 0;
   for (const a of accounts) {
     try {
-    const s = (a.settings ?? {}) as { retention?: { messages_days?: number; inactive_contacts_days?: number } };
-    const days = s.retention?.messages_days ?? 0;
-    const inactive = s.retention?.inactive_contacts_days ?? 0;
+    const s = (a.settings ?? {}) as { retention?: Partial<Retention> };
+    const { messages_days: days, inactive_contacts_days: inactive } = effectiveRetention(s.retention, now);
+    // Lo programado que ya llegó a su fecha queda como lo vigente (el panel lo muestra así).
+    const pending = s.retention?.pending;
+    if (pending && new Date(pending.effective_at).getTime() <= now.getTime()) {
+      await query(`UPDATE accounts SET settings = jsonb_set(settings, '{retention}', $2::jsonb) WHERE id = $1`, [a.id, JSON.stringify({ messages_days: days, inactive_contacts_days: inactive, pending: null })]);
+    }
     if (!days && !inactive) continue;
     let m = 0, c = 0;
     if (days > 0) {

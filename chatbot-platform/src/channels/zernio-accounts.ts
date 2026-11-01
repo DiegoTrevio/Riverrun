@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { HttpError } from '../access.js';
-import { assertWithinLimit } from '../billing/limits.js';
+import { assertWithinLimit, assertWithinLimitLocked } from '../billing/limits.js';
 import { brandOfAccount, DEFAULT_BRAND } from '../brands.js';
 import { config } from '../config.js';
 import { query, queryOne, withTransaction } from '../db.js';
@@ -11,7 +11,7 @@ import type { Channel } from '../types.js';
 import { mergeChannelConfig } from './index.js';
 import { metaConnectEnabled } from './meta-connect.js';
 import { accountInfo, clientFor, disconnectAccount, dmNetworkOf, ensurePlatformWebhook, idOf, networkOf, profileFor, ZernioError } from './zernio.js';
-import { accountProfile, assertSocialRoom, disconnectZernio, FRESH_CONNECTION, ZernioDisconnectError, ZernioOwnershipError } from './zernio-connect.js';
+import { accountProfile, assertSocialRoom, trimSocialOverLimit, disconnectZernio, FRESH_CONNECTION, ZernioDisconnectError, ZernioOwnershipError } from './zernio-connect.js';
 import { publicHealth } from '../social/health.js';
 
 /**
@@ -195,6 +195,7 @@ export async function adoptAccount(accountId: string, platform: string, zernioAc
      WHERE social_accounts.account_id = $1 RETURNING id, channel_id, chatbot_id`,
     [accountId, zernioAccountId, profileId, platform, info.username, info.displayName, info.picture, opts.chatbotId ?? null]);
   if (!row) throw new ZernioOwnershipError('in_use', 'Esta cuenta ya está conectada en otro negocio.');
+  await trimSocialOverLimit(accountId, zernioAccountId);
   const label = networkOf(platform)?.label ?? platform;
   if (zernioHandlesDm(platform)) await linkChannel(accountId, row, { platform, zid: zernioAccountId, profileId, info, chatbotId: opts.chatbotId ?? row.chatbot_id });
   await ensurePlatformWebhook(clientFor()).catch((e) =>
@@ -239,11 +240,18 @@ async function linkChannel(
         await logEvent({ level: 'warn', source: 'channel', message: `Zernio: ${networkOf(a.platform)?.label} quedó conectada sin mensajes: tu plan no permite más conexiones`, accountId });
         return null;
       }
-      ch = await store.createChannel({
-        account_id: accountId, chatbot_id: a.chatbotId, type: 'zernio', active: true,
-        name: `${networkOf(a.platform)?.label ?? a.platform}${a.info.username ? ` @${a.info.username}` : ''}`.slice(0, 120),
-        config: mergeChannelConfig('zernio', {}, values),
-      });
+      try {
+        ch = await store.createChannel({
+          account_id: accountId, chatbot_id: a.chatbotId, type: 'zernio', active: true,
+          name: `${networkOf(a.platform)?.label ?? a.platform}${a.info.username ? ` @${a.info.username}` : ''}`.slice(0, 120),
+          config: mergeChannelConfig('zernio', {}, values),
+        }, { beforeInsert: (client) => assertWithinLimitLocked(client, accountId, 'channels') });
+      } catch (e: any) {
+        // Otra conexión ocupó el último lugar mientras tanto: igual que sin lugar, la red queda sin mensajes.
+        if (!e?.issues?.includes?.('limit_reached')) throw e;
+        await logEvent({ level: 'warn', source: 'channel', message: `Zernio: ${networkOf(a.platform)?.label} quedó conectada sin mensajes: tu plan no permite más conexiones`, accountId });
+        return null;
+      }
     }
   } catch (e: any) {
     if (e?.code === '23505') throw new ZernioOwnershipError('in_use', 'Esta cuenta ya está conectada en otra conexión. Desconéctala ahí primero.');

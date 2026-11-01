@@ -2,9 +2,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { attachmentAbsolutePath, identifyAttachment } from '../src/attachments.js';
+import { exampleTemplate } from '../src/quotes/template.js';
 
 const PDF = Buffer.from('%PDF-1.4\n1 0 obj << >> endobj\ntrailer\n%%EOF\n');
-const ZIP = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(64, 0x20)]); // Office moderno y ZIP
+const ZIP = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(64, 0x20)]); // un ZIP cualquiera (no es un Office de verdad)
+const DOCX = exampleTemplate(); // un Word real
 const HTML = Buffer.from('<!doctype html><html><script>alert(1)</script></html>');
 const EXE = Buffer.from([0x4d, 0x5a, 0x90, 0x00, 0x03, 0x00, 0x00, 0x00]); // MZ: ejecutable de Windows
 const OGG = Buffer.from('OggS\u0000\u0002' + 'x'.repeat(40), 'latin1');
@@ -15,7 +17,8 @@ const CSV = Buffer.from('nombre,telefono\nAna,5215500000001\n');
 
 test('archivos: el tipo real sale de la firma; la extensión solo distingue los formatos de Office', () => {
   assert.equal(identifyAttachment(PDF, 'cotizacion.pdf')?.mime, 'application/pdf');
-  assert.equal(identifyAttachment(ZIP, 'lista.docx')?.mime, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+  assert.equal(identifyAttachment(DOCX, 'lista.docx')?.mime, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+  assert.equal(identifyAttachment(ZIP, 'lista.docx'), null, 'un ZIP que no es un Word de verdad, no (bajos de la 4′)');
   assert.equal(identifyAttachment(OGG, 'nota.ogg')?.kind, 'audio');
   assert.equal(identifyAttachment(MP3, 'audio.mp3')?.mime, 'audio/mpeg');
   assert.equal(identifyAttachment(MP4, 'video.mp4')?.kind, 'video');

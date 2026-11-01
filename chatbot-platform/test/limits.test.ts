@@ -30,9 +30,9 @@ t('la prueba gratuita trae límites por defecto y los muestra con su uso', async
   const a = await signup('prueba@limites.mx');
   const eff = await lim.effectiveLimits(a.account);
   assert.equal(eff.source, 'trial');
-  assert.deepEqual(eff.limits, { messages_per_month: 300, channels: 2, users: 3, chatbots: 2, social_accounts: 2 });
+  assert.deepEqual(eff.limits, { messages_per_month: 300, channels: 2, users: 3, chatbots: 2, social_accounts: 2, storage_mb: 200 });
   const view = (await a.api('GET', '/api/billing')).json();
-  assert.deepEqual(view.limits.items.map((i: any) => [i.key, i.max]), [['messages_per_month', 300], ['channels', 2], ['users', 3], ['chatbots', 2], ['social_accounts', 2]]);
+  assert.deepEqual(view.limits.items.map((i: any) => [i.key, i.max]), [['messages_per_month', 300], ['channels', 2], ['users', 3], ['chatbots', 2], ['social_accounts', 2], ['storage_mb', 200]]);
   assert.equal(view.limits.items.find((i: any) => i.key === 'users').used, 1);
 });
 
@@ -60,11 +60,11 @@ t('el plan contratado manda sobre la prueba, y la excepción del superadmin sobr
   await pool.query(`UPDATE accounts SET status = 'active', plan = 'basico' WHERE id = $1`, [a.account]);
   let eff = await lim.effectiveLimits(a.account);
   assert.equal(eff.source, 'plan');
-  assert.deepEqual(eff.limits, { channels: 1, messages_per_month: 1000 });
+  assert.deepEqual(eff.limits, { channels: 1, messages_per_month: 1000, storage_mb: 1024 }, 'con el tope de archivos por omisión');
   await h.authed('PUT', `/api/accounts/${a.account}`, { limits_override: { channels: 10 } });
   eff = await lim.effectiveLimits(a.account);
   assert.equal(eff.source, 'override');
-  assert.deepEqual(eff.limits, { channels: 10, messages_per_month: 1000 }, 'la excepción cambia solo lo indicado');
+  assert.deepEqual(eff.limits, { channels: 10, messages_per_month: 1000, storage_mb: 1024 }, 'la excepción cambia solo lo indicado');
   await h.authed('PUT', `/api/accounts/${a.account}`, { limits_override: {} });
   assert.equal((await lim.effectiveLimits(a.account)).source, 'plan');
   // Una cuenta activada a mano, sin plan, no tiene límites
@@ -152,4 +152,46 @@ t('una campaña lanzada dos veces seguidas programa cada mensaje una sola vez', 
   assert.ok([r1.statusCode, r2.statusCode].includes(200));
   const jobs = (await pool.query(`SELECT payload->>'conversation_id' AS c FROM jobs WHERE type = 'campaign_send' AND payload->>'campaign_id' = $1`, [camp.id])).rows;
   assert.equal(new Set(jobs.map((j) => j.c)).size, jobs.length, 'sin tareas duplicadas');
+});
+
+t('pedidos simultáneos no rebasan el límite: canales, asistentes y duplicados (PAY-19)', async () => {
+  const a = await signup('carrera@limites.mx');
+  await h.authed('PUT', `/api/accounts/${a.account}`, { limits_override: { channels: 2, chatbots: 2 } });
+  const count = async (table: string) => (await pool.query(`SELECT count(*)::int AS n FROM ${table} WHERE account_id = $1`, [a.account])).rows[0].n;
+  // Más pedidos que conexiones del pool (10): con el candado tomado, el conteo no debe pedir otra conexión.
+  const started = Date.now();
+  const bots = await Promise.all(Array.from({ length: 25 }, (_, i) => a.api('POST', '/api/chatbots', { name: `Bot ${i}`, active: false })));
+  assert.ok(Date.now() - started < 10_000, `tardó ${Date.now() - started} ms (¿esperando conexiones del pool?)`);
+  assert.equal(bots.filter((r) => r.statusCode === 200).length, 2, bots.map((r) => r.statusCode).join(','));
+  assert.equal(await count('chatbots'), 2);
+  const bot = (await a.api('GET', '/api/chatbots')).json()[0];
+  await pool.query(`DELETE FROM chatbots WHERE account_id = $1 AND id <> $2`, [a.account, bot.id]);
+  const dups = await Promise.all(Array.from({ length: 8 }, () => a.api('POST', `/api/chatbots/${bot.id}/duplicate`)));
+  assert.equal(dups.filter((r) => r.statusCode === 200).length, 1, dups.map((r) => r.statusCode).join(','));
+  assert.equal(await count('chatbots'), 2);
+  const chans = await Promise.all(Array.from({ length: 12 }, (_, i) => a.api('POST', '/api/channels', { type: 'webchat', name: `Web ${i}` })));
+  assert.equal(chans.filter((r) => r.statusCode === 200).length, 2, chans.map((r) => r.statusCode).join(','));
+  assert.equal(await count(`channels`), 2);
+});
+
+t('dos redes que se conectan a la vez con lugar para una: la segunda se quita con el aviso del plan (PAY-19)', async () => {
+  const { trimSocialOverLimit } = await import('../src/channels/zernio-connect.js');
+  const a = await signup('redes@limites.mx');
+  await h.authed('PUT', `/api/accounts/${a.account}`, { limits_override: { social_accounts: 1 } });
+  for (const [zid, ago] of [['acc_primera', '2 seconds'], ['acc_segunda', '1 second']]) {
+    await pool.query(`INSERT INTO social_accounts (account_id, zernio_account_id, profile_id, platform, status, connected_at) VALUES ($1, $2, 'prof', 'instagram', 'active', now() - $3::interval)`, [a.account, zid, ago]);
+  }
+  await trimSocialOverLimit(a.account, 'acc_primera');
+  await assert.rejects(trimSocialOverLimit(a.account, 'acc_segunda'), (e: any) => e.statusCode === 403 && /1 red social/.test(e.message));
+  const rows = (await pool.query(`SELECT zernio_account_id, status FROM social_accounts WHERE account_id = $1 ORDER BY connected_at`, [a.account])).rows;
+  assert.deepEqual(rows.map((r) => [r.zernio_account_id, r.status]), [['acc_primera', 'active'], ['acc_segunda', 'disconnected']]);
+});
+
+t('un plan sin tope de archivos lleva el de por omisión (PLAN_DEFAULT_STORAGE_MB) y así se muestra', async () => {
+  const a = await signup('omision@limites.mx');
+  assert.equal((await h.authed('POST', '/api/plans', { key: 'basico-mb', name: 'Básico MB', price: 99, currency: 'MXN', limits: { channels: 1 } })).statusCode, 200);
+  await pool.query(`UPDATE accounts SET plan = 'basico-mb', status = 'active' WHERE id = $1`, [a.account]);
+  assert.equal((await lim.effectiveLimits(a.account)).limits.storage_mb, 1024);
+  await h.authed('PUT', '/api/plans/basico-mb', { key: 'basico-mb', name: 'Básico MB', price: 99, currency: 'MXN', limits: { channels: 1, storage_mb: 300 } });
+  assert.equal((await lim.effectiveLimits(a.account)).limits.storage_mb, 300);
 });

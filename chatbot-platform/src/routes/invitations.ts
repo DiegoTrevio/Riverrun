@@ -6,17 +6,17 @@ import crypto from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { HttpError, requireRole, targetAccount } from '../access.js';
-import { hashPassword, rateLimited } from '../auth.js';
+import { hashPassword } from '../auth.js';
 import { beginLogin } from '../identity/mfa.js';
 import { hostOf, linkBase, mailBrand } from '../brands.js';
-import { assertWithinLimit, effectiveLimits, LIMIT_LABELS, limitDetail, offerText, usageOf } from '../billing/limits.js';
+import { assertWithinLimit, assertWithinLimitLocked, effectiveLimits, LIMIT_LABELS, limitDetail, offerText, usageOf } from '../billing/limits.js';
 import { config } from '../config.js';
 import { query, queryOne, withTransaction } from '../db.js';
 import { googleConfigured } from '../integrations/google.js';
 import { assertPasswordAllowed, NewPassword } from '../identity/passwords.js';
 import { accountOwner, assertOwner, isAccountOwner } from '../identity/ownership.js';
 import { inviteMail } from '../identity/invite-text.js';
-import { countHit, releaseHit } from '../identity/rate-limit.js';
+import { countHit, ipLimitKey, limited, releaseHit } from '../identity/rate-limit.js';
 import { assertRecentMfa } from '../identity/step-up.js';
 import { logEvent } from '../logs.js';
 import { deliverMail } from '../mailer.js';
@@ -79,6 +79,15 @@ async function assertRoomForInvite(accountId: string) {
 async function sendInvite(inv: Invitation, token: string, inviterName: string): Promise<boolean> {
   const acc = await store.getAccount(inv.account_id);
   const { fromName } = await mailBrand(inv.account_id);
+  // Un correo que ya tiene cuenta: la respuesta al que invita es la misma (no revela quién está registrado, bajos de la
+  // 2c); a esa persona le llega el aviso en lugar del enlace, y la invitación no se puede aceptar.
+  if (await store.getUserForLogin(inv.email)) {
+    return (await deliverMail({
+      fromName, to: inv.email,
+      subject: `Te invitaron a ${acc?.name ?? 'un equipo'}`,
+      text: `Hola,\n\n${inviterName || 'Alguien'} te invitó a unirte a "${acc?.name ?? ''}", pero tu correo ya tiene una cuenta y cada correo entra a una sola. Si quieres unirte, pide que inviten otro correo tuyo. Si no conoces esta invitación, ignora este mensaje.`,
+    })) === 'sent';
+  }
   const link = `${linkBase()}/#/invitacion/${encodeURIComponent(token)}`;
   const mail = inviteMail({ inviter: inviterName, invitee: inv.name, account: acc?.name ?? '', role: ROLE_LABEL[inv.role], link, google: googleConfigured() });
   return (await deliverMail({ fromName, to: inv.email, ...mail })) === 'sent';
@@ -101,10 +110,13 @@ async function countInvite(accountId: string, email: string): Promise<void> {
   }
 }
 
-/** Se puede invitar a ese correo: no es desechable y no tiene usuario (cada correo es de una sola cuenta). */
-export async function assertInvitable(email: string): Promise<void> {
+/**
+ * Se puede invitar a ese correo: no es desechable y (si `taken`) no tiene usuario. Al invitar al equipo no se revisa si
+ * tiene usuario (la respuesta no lo revela; ver `sendInvite`); al dar de alta una cuenta (superadmin), sí.
+ */
+export async function assertInvitable(email: string, o: { taken?: boolean } = { taken: true }): Promise<void> {
   if (isDisposableEmail(email)) throw new HttpError(400, DISPOSABLE_MESSAGE);
-  if (await store.getUserForLogin(email)) throw new HttpError(409, 'Ese correo ya tiene cuenta en la plataforma: invita otro correo.');
+  if (o.taken && (await store.getUserForLogin(email))) throw new HttpError(409, 'Ese correo ya tiene cuenta en la plataforma: invita otro correo.');
 }
 
 /** Crea la invitación (reemplaza la pendiente al mismo correo, vencida o no), la manda y la deja en la bitácora. */
@@ -114,7 +126,7 @@ export async function createInvitation(
   b: { email: string; name: string; role: 'admin' | 'agent' },
 ): Promise<{ inv: Invitation; mail_sent: boolean }> {
   await assertCanInvite(actor, accountId);
-  await assertInvitable(b.email);
+  await assertInvitable(b.email, { taken: false });
   // La invitación de administrador pendiente es del dueño: nadie más la reemplaza (por ejemplo, por una de agente).
   if (!(await isAccountOwner(actor, accountId)) && (await queryOne(`SELECT 1 FROM account_invitations WHERE account_id = $1 AND lower(email) = $2 AND role = 'admin' AND ${PENDING}`, [accountId, b.email]))) {
     throw new HttpError(409, 'Ese correo ya tiene una invitación de administrador: solo el dueño de la cuenta la cambia');
@@ -223,7 +235,7 @@ async function invitationFrom(q: { token?: unknown; google?: unknown }, req: { c
 export async function invitationPublicRoutes(app: FastifyInstance) {
   /** Ver la invitación antes de aceptarla. El token (o el pase de Google) va en el cuerpo, no en la URL. */
   app.post('/api/invitation/peek', async (req: any, reply) => {
-    if (rateLimited(`invite-view:${req.ip}`, 60, HOUR)) return reply.code(429).send({ error: 'Demasiados intentos, espera un momento' });
+    if (await limited(ipLimitKey('invite-view', req.ip), 60, HOUR)) return reply.code(429).send({ error: 'Demasiados intentos, espera un momento' });
     const q = parse(z.object({ token: z.string().max(200).optional(), google: z.string().max(2000).optional() }), req.body ?? {});
     const { inv, google } = await invitationFrom(q, req);
     const acc = await store.getAccount(inv.account_id);
@@ -244,7 +256,7 @@ export async function invitationPublicRoutes(app: FastifyInstance) {
   });
 
   app.post('/api/invitation/accept', async (req, reply) => {
-    if (rateLimited(`invite-accept:${req.ip}`, 10, HOUR)) return reply.code(429).send({ error: 'Demasiados intentos desde esta conexión, intenta más tarde' });
+    if (await limited(ipLimitKey('invite-accept', req.ip), 10, HOUR)) return reply.code(429).send({ error: 'Demasiados intentos desde esta conexión, intenta más tarde' });
     const b = parse(
       z.object({
         token: z.string().max(200).optional(),
@@ -271,7 +283,7 @@ export async function invitationPublicRoutes(app: FastifyInstance) {
       if ((await client.query(`SELECT 1 FROM users WHERE lower(email) = lower($1)`, [inv.email])).rows.length) throw new HttpError(409, 'Ese correo ya tiene cuenta: inicia sesión.');
       if (!(await client.query(`SELECT active FROM accounts WHERE id = $1`, [inv.account_id])).rows[0]?.active) throw new HttpError(400, 'Esta cuenta ya no está disponible.');
       // El plan pudo bajar desde que se invitó.
-      await assertWithinLimit(inv.account_id, 'users');
+      await assertWithinLimitLocked(client, inv.account_id, 'users');
       const created = await store.createUser({ account_id: inv.account_id, role: inv.role, name: b.name, email: inv.email, password_hash: hash, verified: true }, client);
       if (google) await client.query(`UPDATE users SET google_sub = $2 WHERE id = $1`, [created.id, google.sub]);
       await client.query(`UPDATE account_invitations SET accepted_at = now(), accepted_user_id = $2 WHERE id = $1`, [inv.id, created.id]);

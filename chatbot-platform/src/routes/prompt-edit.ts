@@ -28,7 +28,7 @@ export async function promptEditRoutes(api: FastifyInstance, ai: AiProvider) {
     const bot = await botFor(req.user, req.params.id);
     await assertAiAllowed(bot.account_id);
     const body = parse(Body, req.body);
-    checkAiDesignRate(bot.account_id);
+    await checkAiDesignRate(bot.account_id);
     const prompt = body.prompt ?? hydrateChatbot({ ...bot, ...(await agentDraft(bot)).configuration }).personality.prompt;
     let result;
     try {

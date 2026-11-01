@@ -7,7 +7,7 @@
 import { query, queryOne } from '../db.js';
 import { logEvent } from '../logs.js';
 import { alertSuperadmins, recordMoney } from './ledger.js';
-import { applyState, listPlans, providers, recordEvent, tell } from './service.js';
+import { applyState, listPlans, providers, recordEvent, tell, type ActionKind } from './service.js';
 import { ProviderError, type ProviderName, type Subscription } from './types.js';
 
 const MIN = 60_000;
@@ -25,7 +25,7 @@ const weekOf = (d: Date) => Math.floor(d.getTime() / (7 * DAY));
 interface Action {
   id: string;
   provider: ProviderName;
-  kind: 'cancel' | 'refund_subscription';
+  kind: ActionKind;
   ref: string;
   account_id: string | null;
   reason: string;
@@ -38,6 +38,14 @@ const WHAT: Record<string, string> = {
   unpaid: 'una suscripción sin pago',
   deleted: 'la suscripción de una cuenta borrada',
   dispute: 'una suscripción con un contracargo perdido',
+  fraud_warning: 'un cobro con alerta de fraude',
+};
+const DONE: Record<ActionKind, [string, string]> = {
+  cancel: ['Cancelada', 'cancelar'],
+  refund_subscription: ['Reembolsada', 'reembolsar'],
+  refund_charge: ['Reembolsado', 'reembolsar'],
+  pause_collection: ['Cobros detenidos de', 'detener los cobros de'],
+  resume_collection: ['Cobros reanudados de', 'reanudar los cobros de'],
 };
 
 /** Hace las acciones pendientes cuyo turno llegó. Devuelve cuántas se completaron. */
@@ -60,6 +68,9 @@ export async function processBillingActions(now = new Date()): Promise<number> {
     try {
       let refunded = 0;
       if (a.kind === 'cancel') await p.cancelNow(a.ref);
+      else if (a.kind === 'refund_charge') await p.refund(a.ref);
+      else if (a.kind === 'pause_collection') await p.pauseCollection(a.ref);
+      else if (a.kind === 'resume_collection') await p.resumeCollection(a.ref);
       else {
         // Todos sus cobros (una duplicada no lleva mucho tiempo cobrando).
         for (const pay of await p.recentPayments(a.ref, new Date(now.getTime() - 400 * DAY))) {
@@ -70,7 +81,7 @@ export async function processBillingActions(now = new Date()): Promise<number> {
       }
       await query(`UPDATE billing_actions SET status = 'done', last_error = '', updated_at = now() WHERE id = $1`, [a.id]);
       done++;
-      await logEvent({ level: 'info', source: 'admin', message: `${a.kind === 'cancel' ? 'Cancelada' : 'Reembolsada'} ${WHAT[a.reason] ?? 'una suscripción'} (${a.provider} ${a.ref})`, accountId: a.account_id ?? undefined });
+      await logEvent({ level: 'info', source: 'admin', message: `${DONE[a.kind][0]} ${WHAT[a.reason] ?? 'una suscripción'} (${a.provider} ${a.ref})`, accountId: a.account_id ?? undefined });
       if (a.kind === 'refund_subscription' && a.reason === 'duplicate' && a.account_id) {
         if (refunded > 0) await tell(a.account_id, 'Te devolvimos un cobro doble', 'Detectamos que tu plan se cobró dos veces y reembolsamos el cobro de más. Puede tardar unos días en reflejarse en tu tarjeta. Tu plan sigue igual.');
         await alertSuperadmins(a.account_id, 'Cobro duplicado resuelto', `Se canceló la suscripción duplicada ${a.provider} ${a.ref}${refunded > 0 ? ' y se reembolsó su cobro' : ''}. No hay nada que hacer.`);
@@ -79,9 +90,9 @@ export async function processBillingActions(now = new Date()): Promise<number> {
       const msg = String(e?.message ?? e).slice(0, 500);
       if (a.attempts >= MAX_ACTION_ATTEMPTS) {
         await query(`UPDATE billing_actions SET status = 'failed', last_error = $2, updated_at = now() WHERE id = $1`, [a.id, msg]);
-        await logEvent({ level: 'error', source: 'admin', message: `No se pudo ${a.kind === 'cancel' ? 'cancelar' : 'reembolsar'} ${WHAT[a.reason] ?? 'una suscripción'} tras ${a.attempts} intentos: ${msg}`, accountId: a.account_id ?? undefined });
-        await alertSuperadmins(a.account_id, a.kind === 'cancel' ? 'Cancela una suscripción a mano' : 'Reembolsa un cobro a mano',
-          `No se pudo ${a.kind === 'cancel' ? 'cancelar' : 'reembolsar los cobros de'} ${WHAT[a.reason] ?? 'una suscripción'} (${a.provider} ${a.ref}) tras ${a.attempts} intentos: ${msg}. Hazlo desde ${p.label} para que no se cobre de más.`, { urgent: true });
+        await logEvent({ level: 'error', source: 'admin', message: `No se pudo ${DONE[a.kind][1]} ${WHAT[a.reason] ?? 'una suscripción'} tras ${a.attempts} intentos: ${msg}`, accountId: a.account_id ?? undefined });
+        await alertSuperadmins(a.account_id, a.kind === 'cancel' ? 'Cancela una suscripción a mano' : a.kind.endsWith('_collection') ? 'Revisa los cobros de una suscripción a mano' : 'Reembolsa un cobro a mano',
+          `No se pudo ${a.kind === 'refund_subscription' ? 'reembolsar los cobros de' : DONE[a.kind][1]} ${WHAT[a.reason] ?? 'una suscripción'} (${a.provider} ${a.ref}) tras ${a.attempts} intentos: ${msg}. Hazlo desde ${p.label} para que no se cobre de más.`, { urgent: true });
       } else {
         const wait = BACKOFF[Math.min(a.attempts - 1, BACKOFF.length - 1)];
         await query(`UPDATE billing_actions SET last_error = $2, next_attempt_at = $3, updated_at = now() WHERE id = $1`, [a.id, msg, new Date(now.getTime() + wait)]);

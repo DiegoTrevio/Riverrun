@@ -77,7 +77,7 @@ export async function checkAccountRetention(now = new Date()): Promise<{ warned:
       await deleteAccountFully(acc);
       deleted++;
       await logEvent({ level: 'warn', source: 'admin', message: `Cuenta borrada por retención: ${acc.name} (en pausa desde el ${fmt(new Date(acc.paused_at!))})` });
-      await superadmins(`Cuenta borrada por retención: ${acc.name}`, `"${acc.name}" estuvo en pausa más de ${days} días (${acc.pause_reason === 'trial' ? 'prueba vencida' : acc.pause_reason === 'dispute' ? 'contracargo' : 'falta de pago'}) y se borró. Se avisó al dueño el ${fmt(new Date(acc.deletion_warned_at!))}.`);
+      await superadmins(`Cuenta borrada por retención: ${acc.name}`, `"${acc.name}" estuvo en pausa más de ${days} días (${acc.pause_reason === 'trial' ? 'prueba vencida' : acc.pause_reason === 'dispute' || acc.pause_reason === 'dispute_lost' ? 'contracargo' : 'falta de pago'}) y se borró. Se avisó al dueño el ${fmt(new Date(acc.deletion_warned_at!))}.`);
     } catch (e: any) {
       await logEvent({ level: 'error', source: 'admin', message: `No se pudo borrar la cuenta ${acc.name} por retención: ${e?.message ?? e}`, accountId: acc.id });
     }

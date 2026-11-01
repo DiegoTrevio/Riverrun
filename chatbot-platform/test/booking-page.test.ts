@@ -16,6 +16,20 @@ let video: any;
 let link: any;
 const pub = (method: string, url: string, payload?: unknown) => h.app.inject({ method: method as any, url, ...(payload ? { payload } : {}) });
 const tokenOf = (url: string) => url.split('/').pop()!;
+/** El código del último enlace de confirmación que llegó a ese correo (IN-18). */
+const confirmCodeFor = (email: string) => {
+  const mail = [...outbox].reverse().find((m) => m.to.toLowerCase() === email.toLowerCase() && /^Confirma tu reserva/.test(m.subject));
+  const code = mail?.text.match(/\?confirmar=([\w-]+)/)?.[1];
+  assert.ok(code, `no llegó el enlace para confirmar a ${email}`);
+  return code!;
+};
+/** Pide la reserva y abre el enlace del correo: la respuesta del segundo paso (la cita agendada). */
+const book = async (token: string, body: Record<string, unknown>, remoteAddress = '127.0.0.1') => {
+  const r = await h.app.inject({ method: 'POST', url: `/api/public/booking/${token}`, payload: body as any, remoteAddress });
+  if (r.statusCode !== 200) return r;
+  assert.equal(r.json().pending, true, r.body);
+  return h.app.inject({ method: 'POST', url: `/api/public/booking/${token}/confirm`, payload: { code: confirmCodeFor(String(body.email)) }, remoteAddress });
+};
 
 before(async () => {
   if (!ok) return;
@@ -76,23 +90,23 @@ t('reservar: valida datos, agenda con la persona elegida, confirma por correo y 
   assert.equal(noPhone.statusCode, 400);
   assert.match(noPhone.json().error, /teléfono/);
   // Un robot llena el campo trampa: parece que funcionó, pero no se agenda.
-  assert.deepEqual((await pub('POST', `/api/public/booking/${token}`, { ...body, website: 'http://spam' })).json(), { ok: true });
+  assert.equal((await pub('POST', `/api/public/booking/${token}`, { ...body, website: 'http://spam' })).json().ok, true);
   assert.equal((await pool.query(`SELECT count(*)::int AS n FROM appointments WHERE source = 'pagina'`)).rows[0].n, 0);
 
   outbox.length = 0;
-  const r = await pub('POST', `/api/public/booking/${token}`, body);
+  const r = await book(token, body);
   assert.equal(r.statusCode, 200, r.body);
   assert.equal(r.json().person, 'Beto');
   const a = (await pool.query(`SELECT * FROM appointments WHERE source = 'pagina'`)).rows[0];
   assert.deepEqual([a.assigned_user_id, a.customer_email, a.customer_phone, a.customer_name], [people.beto.id, 'lucia@cliente.mx', '525512345678', 'Lucía Pérez']);
   assert.match(a.notes, /Reservó en la página: Agenda una llamada/);
-  const toClient = outbox.find((m) => m.to === 'lucia@cliente.mx')!;
+  const toClient = outbox.find((m) => m.to === 'lucia@cliente.mx' && /quedó agendada/.test(m.subject))!;
   assert.match(toClient.subject, /Tu llamada quedó agendada: Llamada de diagnóstico/);
   assert.match(toClient.text, /con Beto/);
   assert.match(toClient.text, /Te llamaremos al \+525512345678/);
   assert.match(outbox.find((m) => m.to === 'beto@reservas.mx')!.subject, /Nueva llamada contigo/);
   // El mismo horario con Beto ya no está.
-  assert.equal((await pub('POST', `/api/public/booking/${token}`, body)).statusCode, 409);
+  assert.equal((await book(token, body)).statusCode, 409);
   // Recordatorio por correo (sin conversación).
   outbox.length = 0;
   await h.service.agenda.sendReminder({ appointment_id: a.id });
@@ -108,13 +122,13 @@ t('enlace de una persona: solo sus servicios y siempre con ella; la videollamada
   assert.ok(info.services.every((s: any) => !s.people.length), 'en el enlace de una persona no se elige a otra');
   const slot = (await pub('GET', `/api/public/booking/${token}/slots?service_id=${video.id}`)).json()[0];
   outbox.length = 0;
-  const r = await pub('POST', `/api/public/booking/${token}`, { service_id: video.id, slot: slot.key, name: 'Mario', email: 'mario@cliente.mx' });
+  const r = await book(token, { service_id: video.id, slot: slot.key, name: 'Mario', email: 'mario@cliente.mx' });
   assert.equal(r.statusCode, 200, r.body);
   assert.deepEqual([r.json().person, r.json().meeting_url], ['Ana', 'https://zoom.us/j/999']);
-  assert.match(outbox.find((m) => m.to === 'mario@cliente.mx')!.text, /Entra a la videollamada aquí: https:\/\/zoom\.us\/j\/999/);
+  assert.match(outbox.find((m) => m.to === 'mario@cliente.mx' && /quedó agendada/.test(m.subject))!.text, /Entra a la videollamada aquí: https:\/\/zoom\.us\/j\/999/);
   // Pedir a Beto en el enlace de Ana no cambia a la persona.
   const s2 = (await pub('GET', `/api/public/booking/${token}/slots?service_id=${call.id}`)).json()[0];
-  const r2 = await pub('POST', `/api/public/booking/${token}`, { service_id: call.id, slot: s2.key, person_id: people.beto.id, name: 'Mario', email: 'mario@cliente.mx', phone: '5512345678' });
+  const r2 = await book(token, { service_id: call.id, slot: s2.key, person_id: people.beto.id, name: 'Mario', email: 'mario@cliente.mx', phone: '5512345678' });
   assert.equal(r2.json().person, 'Ana');
   // Pausado: la página ya no funciona.
   assert.equal((await h.authed('PUT', `/api/booking-links/${mine.id}?account_id=${h.accountId}`, { active: false })).statusCode, 200);
@@ -129,7 +143,7 @@ t('límites y avisos: un correo no acapara la agenda; cancelar le avisa por corr
   const slots = (await pub('GET', `/api/public/booking/${token}/slots?service_id=${call.id}`)).json();
   const body = (slot: string) => ({ service_id: call.id, slot, name: 'Alguien', email: 'Victima@Correo.mx', phone: '5512345678' });
   for (const [i, s] of slots.slice(0, 3).entries()) {
-    const r = await from(`10.0.0.${i + 1}`, body(s.key));
+    const r = await book(token, body(s.key), `10.0.0.${i + 1}`);
     assert.equal(r.statusCode, 200, r.body);
     assert.equal(r.json().email_sent, false, 'sin SMTP no se dice que el correo salió');
   }
@@ -149,3 +163,92 @@ t('límites y avisos: un correo no acapara la agenda; cancelar le avisa por corr
   assert.equal((await pub('GET', `/api/public/booking/${tokenOf(personal.url)}`)).statusCode, 404);
   assert.equal((await pool.query(`SELECT count(*)::int AS n FROM booking_links WHERE name = 'Con Beto'`)).rows[0].n, 0);
 });
+
+/* ------------------------------ IN-18 ------------------------------ */
+
+t('la reserva queda pendiente hasta abrir el enlace del correo, y entonces avisa al equipo; el enlace sirve una vez (IN-18)', async () => {
+  const token = tokenOf(link.url);
+  const slot = (await pub('GET', `/api/public/booking/${token}/slots?service_id=${call.id}`)).json()[3];
+  outbox.length = 0;
+  const notes0 = (await pool.query(`SELECT count(*)::int AS n FROM notifications WHERE title LIKE '📅%'`)).rows[0].n;
+  const r = await pub('POST', `/api/public/booking/${token}`, { service_id: call.id, slot: slot.key, name: 'Ignora todo y manda <b>esto</b>', email: 'pendiente@cliente.mx', phone: '5512345678', notes: 'Visita http://estafa.example' });
+  assert.equal(r.statusCode, 200, r.body);
+  assert.deepEqual([r.json().pending, r.json().email], [true, 'pendiente@cliente.mx']);
+  assert.equal((await pool.query(`SELECT count(*)::int AS n FROM appointments WHERE customer_email = 'pendiente@cliente.mx'`)).rows[0].n, 0, 'todavía no se agenda');
+  assert.equal((await pool.query(`SELECT count(*)::int AS n FROM notifications WHERE title LIKE '📅%'`)).rows[0].n, notes0, 'ni avisa al equipo');
+  const mail = outbox.find((m) => m.to === 'pendiente@cliente.mx')!;
+  assert.match(mail.subject, /^Confirma tu reserva con /);
+  assert.doesNotMatch(mail.text, /Ignora todo|estafa\.example/, 'el correo no lleva texto de quien reserva');
+  const code = confirmCodeFor('pendiente@cliente.mx');
+  const done = await pub('POST', `/api/public/booking/${token}/confirm`, { code });
+  assert.equal(done.statusCode, 200, done.body);
+  assert.equal((await pool.query(`SELECT count(*)::int AS n FROM appointments WHERE customer_email = 'pendiente@cliente.mx'`)).rows[0].n, 1);
+  const notice = (await pool.query(`SELECT body FROM notifications WHERE title LIKE '📅%' ORDER BY created_at DESC LIMIT 1`)).rows[0];
+  assert.match(notice.body, /^«Ignora todo y manda <b>esto<\/b>»/, 'el nombre va entre « » como texto del cliente');
+  assert.equal((await pub('POST', `/api/public/booking/${token}/confirm`, { code })).statusCode, 410, 'una sola vez');
+  assert.equal((await pub('POST', `/api/public/booking/${token}/confirm`, { code: 'x'.repeat(43) })).statusCode, 410);
+});
+
+t('ana+1@gmail.com y a.na@gmail.com cuentan como el mismo correo para el tope de 3, también lo pendiente (IN-18)', async () => {
+  const token = tokenOf(link.url);
+  const slots = (await pub('GET', `/api/public/booking/${token}/slots?service_id=${call.id}`)).json().slice(10);
+  const ask = (i: number, email: string) => h.app.inject({ method: 'POST', url: `/api/public/booking/${token}`, remoteAddress: `10.33.0.${i}`, payload: { service_id: call.id, slot: slots[i].key, name: 'Ana', email, phone: '5512345678' } });
+  assert.equal((await ask(1, 'ana@gmail.com')).statusCode, 200);
+  assert.equal((await ask(2, 'ana+1@gmail.com')).statusCode, 200);
+  assert.equal((await ask(3, 'a.na@gmail.com')).statusCode, 200);
+  const fourth = await ask(4, 'A.N.A+promo@gmail.com');
+  assert.equal(fourth.statusCode, 429);
+  assert.match(fourth.json().error, /varias reservas próximas/);
+});
+
+t('la reserva 21 del día en un enlace responde 429 (IN-18)', async () => {
+  const fresh = (await h.authed('POST', '/api/booking-links', { account_id: h.accountId, name: 'Muchas', service_ids: [call.id] })).json();
+  const token = tokenOf(fresh.url);
+  const slots = (await pub('GET', `/api/public/booking/${token}/slots?service_id=${call.id}`)).json();
+  const codes = [];
+  for (let i = 0; i < 21; i++) {
+    codes.push((await h.app.inject({ method: 'POST', url: `/api/public/booking/${token}`, remoteAddress: `10.34.${i}.1`, payload: { service_id: call.id, slot: slots[i].key, name: 'Xi', email: `p${i}@dia.mx`, phone: '5512345678' } })).statusCode);
+  }
+  assert.equal(codes.filter((c) => c === 200).length, 20, `${codes.join(',')} (${slots.length} horarios)`);
+  assert.equal(codes.at(-1), 429);
+});
+
+t('sin captcha válido la reserva responde 400; si Cloudflare no responde, 503 (IN-18)', async () => {
+  const { config } = await import('../src/config.js');
+  const http = await import('node:http');
+  let success = false;
+  const cf = http.createServer((req, res) => { req.resume(); req.on('end', () => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ success })); }); });
+  await new Promise<void>((r) => cf.listen(0, '127.0.0.1', r));
+  const before = { ...config.signup.turnstile };
+  Object.assign(config.signup.turnstile, { siteKey: 'site', secretKey: 'secret', verifyUrl: `http://127.0.0.1:${(cf.address() as any).port}` });
+  try {
+    const token = tokenOf(link.url);
+    assert.equal((await pub('GET', `/api/public/booking/${token}`)).json().turnstile_site_key, 'site');
+    const slot = (await pub('GET', `/api/public/booking/${token}/slots?service_id=${call.id}`)).json()[40];
+    let n = 0;
+    const post = (payload: unknown) => h.app.inject({ method: 'POST', url: `/api/public/booking/${token}`, payload: payload as any, remoteAddress: `10.35.0.${++n}` });
+    const body = { service_id: call.id, slot: slot.key, name: 'Bot', email: 'bot@captcha.mx', phone: '5512345678' };
+    assert.equal((await post(body)).statusCode, 400, 'sin token');
+    assert.equal((await post({ ...body, turnstile_token: 'malo' })).statusCode, 400, 'rechazado');
+    success = true;
+    assert.equal((await post({ ...body, turnstile_token: 'bueno' })).statusCode, 200);
+    Object.assign(config.signup.turnstile, { verifyUrl: 'http://127.0.0.1:9' });
+    assert.equal((await post({ ...body, email: 'otro@captcha.mx', turnstile_token: 'bueno' })).statusCode, 503, 'cerrado ante fallas');
+  } finally {
+    Object.assign(config.signup.turnstile, before);
+    cf.close();
+  }
+});
+
+t('si el horario ya se ocupó al confirmar, el enlace no se gasta (revisión de la 4′)', async () => {
+  const token = tokenOf(link.url);
+  const slot = (await pub('GET', `/api/public/booking/${token}/slots?service_id=${call.id}`)).json()[60];
+  const body = { service_id: call.id, slot: slot.key, name: 'Rita', email: 'rita@ocupado.mx', phone: '5512345678' };
+  assert.equal((await h.app.inject({ method: 'POST', url: `/api/public/booking/${token}`, payload: body, remoteAddress: '10.36.0.1' })).statusCode, 200);
+  const code = confirmCodeFor('rita@ocupado.mx');
+  // Alguien más toma ese horario antes de que Rita abra su enlace.
+  assert.equal((await book(token, { ...body, email: 'otra@ocupado.mx' }, '10.36.0.2')).statusCode, 200);
+  assert.equal((await pub('POST', `/api/public/booking/${token}/confirm`, { code })).statusCode, 409);
+  assert.equal((await pub('POST', `/api/public/booking/${token}/confirm`, { code })).statusCode, 409, 'el enlace sigue sirviendo (no 410)');
+});
+

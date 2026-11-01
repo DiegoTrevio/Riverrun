@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
-const dir = path.resolve(import.meta.dirname, '..', 'public', 'js');
+// CHECK_FRONTEND_DIR: otra carpeta (las pruebas del propio chequeo).
+const dir = process.env.CHECK_FRONTEND_DIR || path.resolve(import.meta.dirname, '..', 'public', 'js');
 const files = fs.readdirSync(dir).filter((f) => f.endsWith('.js'));
 const exportsOf = {};
 const src = {};
@@ -35,5 +36,12 @@ try {
   console.warn('No se pudo ejecutar la revisión de nombres (¿falta typescript?):', e.message);
 }
 if (/^import /m.test(src['core.js'])) problems.push('core.js no debe importar otros módulos (evita ciclos al arrancar)');
+// HTML crudo (IN-20): `html:` de h() escribe innerHTML. Solo en los módulos de dibujos fijos (SVG sin datos de nadie);
+// todo lo demás arma el DOM con h() y texto. innerHTML/outerHTML/insertAdjacentHTML directos, solo en core.js (el de h()).
+const HTML_OK = new Set(['icons.js', 'brand.js', 'whatsapp.js']);
+for (const f of files) {
+  if (!HTML_OK.has(f) && /\bhtml\s*:/.test(src[f].replace(/\/\/.*$/gm, ''))) problems.push(`${f}: usa html: (HTML crudo); arma el contenido con h() o pásalo como texto`);
+  if (f !== 'core.js' && /\.(innerHTML|outerHTML)\s*=|insertAdjacentHTML\(/.test(src[f])) problems.push(`${f}: escribe HTML crudo (innerHTML/outerHTML/insertAdjacentHTML)`);
+}
 if (problems.length) { console.error(problems.join('\n')); process.exit(1); }
 console.log(`Panel OK: ${files.length} módulos, ${Object.values(src).join('\n').split('\n').length} líneas`);

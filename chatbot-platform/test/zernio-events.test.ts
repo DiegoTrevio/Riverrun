@@ -64,14 +64,12 @@ t('un mismo evento (reintento de Zernio) cuenta una sola vez; uno de hace más d
   await h.idle();
   const msgs = await pool.query(`SELECT m.id FROM messages m JOIN conversations c ON c.id = m.conversation_id JOIN contacts k ON k.id = c.contact_id WHERE k.external_id = 'conv_dup' AND m.direction = 'in'`);
   assert.equal(msgs.rowCount, 1);
-  assert.equal((await pool.query(`SELECT state FROM zernio_events WHERE event_id = 'evt_dup_1'`)).rows[0].state, 'done');
-  // El id también puede venir solo en la cabecera.
-  const noId: any = inbound('conv_hdr', 'Hola');
-  delete noId.id;
-  assert.equal((await deliver(noId, { 'x-zernio-event-id': 'evt_hdr_1' })).statusCode, 200);
-  assert.equal((await deliver(noId, { 'x-zernio-event-id': 'evt_hdr_1' })).statusCode, 200);
+  // El id de la cabecera no va firmado: el mismo cuerpo con otra cabecera sigue siendo el mismo evento (bajos de la 4′).
+  const same: any = inbound('conv_hdr', 'Hola');
+  for (const hdr of ['evt_hdr_1', 'evt_hdr_2', 'otro']) assert.equal((await deliver(same, { 'x-zernio-event-id': hdr })).statusCode, 200);
   await h.idle();
-  assert.equal((await pool.query(`SELECT 1 FROM zernio_events WHERE event_id = 'evt_hdr_1'`)).rowCount, 1);
+  const hdrMsgs = await pool.query(`SELECT m.id FROM messages m JOIN conversations c ON c.id = m.conversation_id JOIN contacts k ON k.id = c.contact_id WHERE k.external_id = 'conv_hdr' AND m.direction = 'in'`);
+  assert.equal(hdrMsgs.rowCount, 1, 'se procesó una sola vez');
 
   const old = { ...inbound('conv_vieja', 'Hola de hace mucho'), timestamp: new Date(Date.now() - 40 * 86400_000).toISOString() };
   assert.equal((await deliver(old)).statusCode, 200);

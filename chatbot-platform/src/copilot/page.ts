@@ -71,5 +71,8 @@ export async function describePage(page: Page, call: Caller): Promise<Page & { c
     // Sin permiso o ya no existe: se describe solo el tipo de página.
     return { ...page, id: undefined, label: kind };
   }
-  return { ...page, label: name ? `${kind} · ${String(name).slice(0, 80)}` : kind, ...(contactId ? { contactId } : {}) };
+  // El nombre de un cliente lo escribió él: va entre comillas, en una línea y dicho como tal.
+  const shown = String(name).replace(/\s+/g, ' ').trim().slice(0, 80);
+  const label = !shown ? kind : contactId ? `${kind} · «${shown}» (nombre escrito por el cliente)` : `${kind} · ${shown}`;
+  return { ...page, label, ...(contactId ? { contactId } : {}) };
 }

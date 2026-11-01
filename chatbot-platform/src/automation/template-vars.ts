@@ -38,7 +38,7 @@ export async function lookupVars(texts: (string | null | undefined)[], c: VarsCo
   if (c.contactId && (mentions(t, 'saldo') || mentions(t, 'pagos_pendientes'))) {
     const rows = await query<{ currency: string; total: string; n: number }>(
       `SELECT currency, sum(amount_cents)::text AS total, count(*)::int AS n FROM receivables
-        WHERE account_id = $1 AND contact_id = $2 AND status = 'pending' GROUP BY currency ORDER BY sum(amount_cents) DESC`,
+        WHERE account_id = $1 AND contact_id = $2 AND status = 'pending' AND approved_at IS NOT NULL GROUP BY currency ORDER BY sum(amount_cents) DESC`,
       [c.accountId, c.contactId],
     );
     vars.saldo = rows.length ? rows.map((r) => formatMoney(Number(r.total), r.currency)).join(' + ') : formatMoney(0);

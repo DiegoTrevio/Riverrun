@@ -1,17 +1,20 @@
 import crypto from 'node:crypto';
+import { ipLimitKey, limited } from '../identity/rate-limit.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { HttpError, requireRole, targetAccount } from '../access.js';
-import { rateLimited } from '../auth.js';
 import { freeSlots } from '../automation/agenda.js';
 import { activeStaff, staffNames } from '../automation/staff.js';
 import * as astore from '../automation/store.js';
 import { spanishDate, spanishTime } from '../automation/time.js';
 import type { Service } from '../automation/types.js';
-import { brandOfAccount, publicBrand } from '../brands.js';
+import { brandOfAccount, mailBrand, publicBrand } from '../brands.js';
+import { canonicalEmail } from '../billing/trial-claims.js';
+import { sendMail } from '../mailer.js';
+import { CAPTCHA_MESSAGE, CAPTCHA_UNAVAILABLE, captchaEnabled, captchaRequired, verifyCaptcha } from '../signup-guard.js';
 import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
 import { logEvent } from '../logs.js';
@@ -35,11 +38,41 @@ interface BookingLink {
   created_at: string;
 }
 
+/** Reservas próximas y solicitudes sin confirmar de un correo (normalizado) en un negocio. */
+async function upcomingFor(accountId: string, emailKey: string): Promise<number> {
+  const domain = emailKey.split('@')[1] ?? '';
+  // Solo el mismo dominio (Gmail: gmail.com o googlemail.com), y la parte local que empieza igual: sin tope de filas que
+  // deje fuera las de esa persona en una cuenta con muchas citas.
+  const domains = domain === 'gmail.com' ? ['gmail.com', 'googlemail.com'] : [domain];
+  const rows = await query<{ customer_email: string }>(
+    `SELECT customer_email FROM appointments WHERE account_id = $1 AND status = 'confirmed' AND starts_at > now()
+       AND lower(split_part(customer_email, '@', 2)) = ANY($2::text[]) AND left(lower(customer_email), 1) = $3`,
+    [accountId, domains, emailKey.slice(0, 1)],
+  );
+  const pending = (await queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM booking_requests WHERE account_id = $1 AND email_key = $2 AND confirmed_at IS NULL AND expires_at > now()`, [accountId, emailKey]))!.n;
+  return rows.filter((r) => canonicalEmail(r.customer_email) === emailKey).length + pending;
+}
+
 const linkUrl = (token: string) => `${config.publicBaseUrl}/reservar/${token}`;
 /** Un mismo correo no acapara la agenda ni recibe correos sin fin: reservas próximas por negocio. */
 const MAX_UPCOMING_PER_EMAIL = 3;
-/** Reservas por enlace y hora (además del límite por IP). */
+/** Reservas por enlace y hora (además del límite por IP), y por día (IN-18). */
 const MAX_PER_LINK_HOUR = 60;
+const MAX_PER_LINK_DAY = 20;
+/** Vigencia del enlace del correo para confirmar la reserva. */
+const CONFIRM_MS = 60 * 60_000;
+const sha256 = (v: string) => crypto.createHash('sha256').update(v).digest('hex');
+
+/** El captcha de la página de reservas, cerrado ante fallas (como el del registro). */
+async function assertBookingCaptcha(token: string | undefined, ip: string) {
+  if (!captchaEnabled()) {
+    if (captchaRequired()) throw new HttpError(503, 'Las reservas en línea no están disponibles por ahora. Escríbele al negocio.');
+    return;
+  }
+  const r = await verifyCaptcha(token, ip);
+  if (r === 'invalid') throw new HttpError(400, CAPTCHA_MESSAGE);
+  if (r === 'unavailable') throw new HttpError(503, CAPTCHA_UNAVAILABLE);
+}
 /** Horarios que devuelve la página (alcanza para 30 días de un servicio corto). */
 const MAX_SLOTS = 1500;
 
@@ -154,6 +187,7 @@ const BookBody = z.object({
   notes: z.string().trim().max(1000).default(''),
   /** Campo trampa: las personas no lo ven; los robots lo llenan. */
   website: z.string().max(200).default(''),
+  turnstile_token: z.string().max(4000).optional(),
 });
 
 export async function bookingPublicRoutes(app: FastifyInstance, service: ChatService) {
@@ -164,7 +198,7 @@ export async function bookingPublicRoutes(app: FastifyInstance, service: ChatSer
 
   /** Lo que muestra la página: el negocio, la persona del enlace (si es suyo) y los servicios. */
   app.get('/api/public/booking/:token', async (req: any, reply) => {
-    if (rateLimited(`booking-info:${req.ip}`, 120, 60_000)) return reply.code(429).send({ error: 'Demasiadas visitas; intenta en un minuto.' });
+    if (await limited(ipLimitKey('booking-info', req.ip), 120, 60_000)) return reply.code(429).send({ error: 'Demasiadas visitas; intenta en un minuto.' });
     const found = await linkFor(String(req.params.token));
     if (!found) return reply.code(404).send({ error: 'Este enlace para reservar ya no está disponible.' });
     const { link, services } = found;
@@ -173,6 +207,7 @@ export async function bookingPublicRoutes(app: FastifyInstance, service: ChatSer
     const person = link.user_id ? (await staffNames([link.user_id])).get(link.user_id) ?? null : null;
     return {
       business: { name: brand.brand_id ? brand.name : link.account_name, color: brand.color, logo: brand.logo },
+      turnstile_site_key: captchaEnabled() ? config.signup.turnstile.siteKey : null,
       title: link.name,
       person,
       timezone: settings.timezone,
@@ -185,7 +220,7 @@ export async function bookingPublicRoutes(app: FastifyInstance, service: ChatSer
 
   /** Horarios libres del servicio (con la persona del enlace o la que eligió el cliente). */
   app.get('/api/public/booking/:token/slots', async (req: any, reply) => {
-    if (rateLimited(`booking-slots:${req.ip}`, 120, 60_000)) return reply.code(429).send({ error: 'Demasiadas visitas; intenta en un minuto.' });
+    if (await limited(ipLimitKey('booking-slots', req.ip), 120, 60_000)) return reply.code(429).send({ error: 'Demasiadas visitas; intenta en un minuto.' });
     const found = await linkFor(String(req.params.token));
     if (!found) return reply.code(404).send({ error: 'Este enlace para reservar ya no está disponible.' });
     const svc = found.services.find((s) => s.id === String(req.query?.service_id ?? ''));
@@ -200,30 +235,72 @@ export async function bookingPublicRoutes(app: FastifyInstance, service: ChatSer
     }));
   });
 
-  /** Reserva: se vuelve a revisar el horario (como en el chat) y se confirma por correo. */
+  /**
+   * Reserva, primer paso (IN-18): con captcha y topes se guarda la solicitud y se manda al correo un enlace (texto fijo,
+   * una hora, un solo uso). La cita se agenda al abrirlo: sin correo confirmado nadie llena la agenda, avisa al equipo,
+   * crea anticipos ni usa el correo de la plataforma para mandar texto propio.
+   */
   app.post('/api/public/booking/:token', async (req: any, reply) => {
-    if (rateLimited(`booking-book:${req.ip}`, 10, 60 * 60_000)) return reply.code(429).send({ error: 'Hiciste demasiadas reservas seguidas; intenta más tarde.' });
+    if (await limited(ipLimitKey('booking-book', req.ip), 10, 60 * 60_000)) return reply.code(429).send({ error: 'Hiciste demasiadas reservas seguidas; intenta más tarde.' });
     const found = await linkFor(String(req.params.token));
     if (!found) return reply.code(404).send({ error: 'Este enlace para reservar ya no está disponible.' });
     const b = parse(BookBody, req.body ?? {});
     // Un robot llenó el campo trampa: se responde como si nada, sin reservar.
-    if (b.website) return { ok: true };
+    if (b.website) return { ok: true, pending: true, email: b.email };
+    await assertBookingCaptcha(b.turnstile_token, req.ip);
     const svc = found.services.find((s) => s.id === b.service_id);
     if (!svc) throw new HttpError(404, 'Servicio no disponible');
     const phone = b.phone.replace(/\D/g, '');
     if (svc.kind === 'call' && svc.call_mode !== 'video' && phone.length < 8) throw new HttpError(400, 'Escribe tu teléfono: te llamaremos a ese número');
     const person = found.link.user_id ?? b.person_id;
     if (person && !found.link.user_id && !(await choosable(svc, found.link)).some((p) => p.id === person)) throw new HttpError(400, 'Esa persona no atiende este servicio');
-    if (rateLimited(`booking-link:${found.link.id}`, MAX_PER_LINK_HOUR, 60 * 60_000)) return reply.code(429).send({ error: 'Este enlace recibió muchas reservas seguidas; intenta más tarde.' });
-    const upcoming = await queryOne<{ n: number }>(
-      `SELECT count(*)::int AS n FROM appointments WHERE account_id = $1 AND customer_email = $2 AND status = 'confirmed' AND starts_at > now()`,
-      [found.link.account_id, b.email.toLowerCase()]);
-    if (upcoming!.n >= MAX_UPCOMING_PER_EMAIL) return reply.code(429).send({ error: 'Ya tienes varias reservas próximas con este negocio. Si necesitas otra, escríbeles directamente.' });
+    if (await limited(`booking-link:${found.link.id}`, MAX_PER_LINK_HOUR, 60 * 60_000)) return reply.code(429).send({ error: 'Este enlace recibió muchas reservas seguidas; intenta más tarde.' });
+    if (await limited(`booking-link-day:${found.link.id}`, MAX_PER_LINK_DAY, 24 * 60 * 60_000)) return reply.code(429).send({ error: 'Este enlace ya recibió muchas reservas hoy; intenta mañana o escríbele al negocio.' });
+    // El tope por correo cuenta el mismo correo escrito de otra forma (ana+1@gmail.com, a.na@gmail.com) y lo pendiente.
+    const key = canonicalEmail(b.email);
+    if ((await upcomingFor(found.link.account_id, key)) >= MAX_UPCOMING_PER_EMAIL) return reply.code(429).send({ error: 'Ya tienes varias reservas próximas con este negocio. Si necesitas otra, escríbeles directamente.' });
+    const token = crypto.randomBytes(32).toString('base64url');
+    await query(
+      `INSERT INTO booking_requests (link_id, account_id, email, email_key, payload, token_hash, expires_at) VALUES ($1, $2, $3, $4, $5, $6, now() + make_interval(secs => $7))`,
+      [found.link.id, found.link.account_id, b.email.toLowerCase(), key,
+        JSON.stringify({ service_id: svc.id, slot: b.slot, person_id: person, name: b.name, phone, notes: b.notes }), sha256(token), CONFIRM_MS / 1000],
+    );
+    const settings = await astore.getSettings(found.link.account_id);
+    const slot = (await freeSlots(svc, settings, new Date(), { days: Math.min(svc.max_days_ahead, 30) })).find((s) => s.key === b.slot);
+    const when = slot ? `${spanishDate(slot.start, settings.timezone)} a las ${spanishTime(slot.start, settings.timezone)}` : '';
+    const mb = await mailBrand(found.link.account_id);
+    const business = mb.fromName || found.link.account_name;
+    // Texto fijo: ni el nombre ni las notas que escribió quien reserva (no sirve para mandar mensajes a otros).
+    const emailSent = await sendMail({
+      fromName: mb.fromName, to: b.email,
+      subject: `Confirma tu reserva con ${business}`,
+      text: `Hola,\n\nPara confirmar tu reserva de ${svc.name}${when ? ` el ${when}` : ''} con ${business}, abre este enlace (vence en una hora):\n\n${linkUrl(String(req.params.token))}?confirmar=${token}\n\nSi no la pediste, ignora este correo: no se agenda nada.`,
+    }).catch(() => false);
+    return { ok: true, pending: true, email: b.email, email_sent: emailSent };
+  });
+
+  /** Reserva, segundo paso: el enlace del correo. Se vuelve a revisar el horario (como en el chat) y se agenda. */
+  app.post('/api/public/booking/:token/confirm', async (req: any, reply) => {
+    if (await limited(ipLimitKey('booking-confirm', req.ip), 30, 60 * 60_000)) return reply.code(429).send({ error: 'Demasiados intentos; espera un momento.' });
+    const found = await linkFor(String(req.params.token));
+    if (!found) return reply.code(404).send({ error: 'Este enlace para reservar ya no está disponible.' });
+    const { code } = parse(z.object({ code: z.string().min(20).max(100) }), req.body ?? {});
+    const row = await queryOne<{ id: string; email: string; payload: any }>(
+      `UPDATE booking_requests SET confirmed_at = now() WHERE token_hash = $1 AND link_id = $2 AND confirmed_at IS NULL AND expires_at > now() RETURNING id, email, payload`,
+      [sha256(code), found.link.id],
+    );
+    if (!row) return reply.code(410).send({ error: 'Este enlace ya se usó o venció. Vuelve a elegir tu horario.' });
+    const p = row.payload;
+    // Si no se agenda (horario ocupado, servicio que ya no está o un error), el enlace vuelve a servir mientras no venza.
+    const release = () => query(`UPDATE booking_requests SET confirmed_at = NULL WHERE id = $1`, [row.id]);
+    const svc = found.services.find((s) => s.id === p.service_id);
+    if (!svc) { await release(); return reply.code(404).send({ error: 'Ese servicio ya no está disponible.' }); }
     const r = await service.agenda.book({
-      accountId: found.link.account_id, serviceId: svc.id, slotKey: b.slot, customerName: b.name, customerPhone: phone || undefined,
-      customerEmail: b.email, notes: b.notes ? `${b.notes}\n(Reservó en la página: ${found.link.name})` : `Reservó en la página: ${found.link.name}`,
-      source: 'pagina', assignedUserId: person,
-    });
+      accountId: found.link.account_id, serviceId: svc.id, slotKey: p.slot, customerName: p.name, customerPhone: p.phone || undefined,
+      customerEmail: row.email, notes: p.notes ? `${p.notes}\n(Reservó en la página: ${found.link.name})` : `Reservó en la página: ${found.link.name}`,
+      source: 'pagina', assignedUserId: p.person_id ?? null,
+    }).catch(async (e) => { await release(); throw e; });
+    if (!r.ok) await release();
     if (!r.ok) return reply.code(409).send({ error: r.alternatives.length ? `Ese horario ya se ocupó. Elige otro: ${r.alternatives.join('; ')}` : 'Ese horario ya se ocupó. Elige otro.' });
     const a = r.appointment;
     const emailSent = await service.agenda.mailCustomer(a, 'booked').catch(() => false);
@@ -233,4 +310,5 @@ export async function bookingPublicRoutes(app: FastifyInstance, service: ChatSer
       person: a.assigned_user_name ?? null, meeting_url: a.meeting_url || null, email: a.customer_email, email_sent: emailSent,
     };
   });
+
 }

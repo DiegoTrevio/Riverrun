@@ -27,10 +27,12 @@
     return null;
   }
 
-  function api(method, path, body) {
+  function api(method, path, body, extraHeaders) {
+    var headers = body ? { 'content-type': 'application/json' } : {};
+    for (var k in (extraHeaders || {})) headers[k] = extraHeaders[k];
     return fetch(base + path, {
       method: method,
-      headers: body ? { 'content-type': 'application/json' } : undefined,
+      headers: headers,
       body: body ? JSON.stringify(body) : undefined,
     }).then(function (r) {
       return r.json().then(function (d) {
@@ -287,7 +289,8 @@
     function poll() {
       if (polling) return polling;
       if (!session || document.hidden) return Promise.resolve();
-      polling = api('GET', '/messages?session=' + session + '&after=' + lastId)
+      // La sesión va en la cabecera: no queda en la URL (registros, Referer).
+      polling = api('GET', '/messages?after=' + lastId, undefined, { 'x-webchat-session': session })
         .then(function (d) {
           (d.messages || []).forEach(function (m) {
             addMessage(m);

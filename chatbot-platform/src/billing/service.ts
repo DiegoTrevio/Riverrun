@@ -17,6 +17,7 @@ import { stripe } from './stripe.js';
 import type pg from 'pg';
 import { openCardCheck, startTrialFromState } from './card-check.js';
 import { chargeCents } from './tax.js';
+import { cardClaim } from './trial-claims.js';
 import type { BillingProvider, PaymentInfo, Plan, ProviderName, Subscription, SubscriptionState } from './types.js';
 
 export const providers: Record<ProviderName, BillingProvider> = { stripe, mercadopago };
@@ -105,10 +106,17 @@ export async function beginCheckout(accountId: string, provider: ProviderName, p
   );
 }
 
+/** Un plan privado solo es para la cuenta a la que el superadmin se lo asignó (accounts.plan). */
+export async function planOpenTo(plan: Plan, accountId?: string | null): Promise<boolean> {
+  if (plan.public !== false) return true;
+  if (!accountId) return false;
+  return (await queryOne<{ plan: string }>(`SELECT plan FROM accounts WHERE id = $1`, [accountId]))?.plan === plan.key;
+}
+
 /** Plan y proveedor con los que se puede pagar ahora. Sin proveedor elegido, el primero disponible para ese plan. */
-export async function payable(planKey: string, providerName?: ProviderName): Promise<{ plan: Plan; provider: ProviderName }> {
+export async function payable(planKey: string, providerName?: ProviderName, accountId?: string): Promise<{ plan: Plan; provider: ProviderName }> {
   const plan = await getPlan(planKey);
-  if (!plan || !plan.active) throw new HttpError(404, 'Ese plan no está disponible');
+  if (!plan || !plan.active || !(await planOpenTo(plan, accountId))) throw new HttpError(404, 'Ese plan no está disponible');
   const options = enabledProviders().filter((p) => p.supportsPlan(plan));
   const provider = providerName ? options.find((p) => p.name === providerName) : options[0];
   if (!provider) throw new HttpError(400, providerName ? `Este plan no se puede pagar con ${providers[providerName].label}` : 'El pago en línea no está disponible por ahora');
@@ -123,7 +131,7 @@ export async function startCheckout(o: CheckoutStart): Promise<string> {
   return (await createCheckoutSession(o)).url;
 }
 
-type CheckoutStart = { accountId: string; email: string; plan: Plan; provider: ProviderName; base: string; startAt?: Date; trialDays?: number };
+type CheckoutStart = { accountId: string; email: string; plan: Plan; provider: ProviderName; base: string; startAt?: Date; trialDays?: number; promotionCode?: string };
 
 /**
  * La página de pago y su referencia. `trialDays`: verificación de tarjeta con prueba gratis (el primer cobro, en esos
@@ -141,6 +149,7 @@ export async function createCheckoutSession(o: CheckoutStart): Promise<{ url: st
     startAt: o.startAt ?? (o.provider === 'mercadopago' ? firstCharge : undefined),
     trialEnd: o.provider === 'stripe' ? trialEnd : undefined,
     trialDays: o.provider === 'stripe' ? o.trialDays : undefined,
+    promotionCode: o.provider === 'stripe' ? o.promotionCode : undefined,
   });
   await beginCheckout(o.accountId, o.provider, o.plan.key, ref);
   await logEvent({ level: 'info', source: 'admin', message: `Pago iniciado: plan ${o.plan.key} con ${o.provider}${o.trialDays ? ` (${o.trialDays} días de prueba)` : ''}`, accountId: o.accountId });
@@ -161,10 +170,18 @@ async function trialLeft(accountId: string, now = Date.now()): Promise<Date | un
  * Anota algo que hay que hacer en el proveedor y que se reintenta hasta lograrlo (`processBillingActions`): cancelar una
  * suscripción o reembolsar sus cobros. Repetirlo no duplica nada.
  */
-export async function queueAction(o: { provider: ProviderName; kind: 'cancel' | 'refund_subscription'; ref: string; accountId: string | null; reason: '' | 'duplicate' | 'replaced' | 'unpaid' | 'deleted' | 'dispute' }) {
+export type ActionKind = 'cancel' | 'refund_subscription' | 'refund_charge' | 'pause_collection' | 'resume_collection';
+export async function queueAction(o: { provider: ProviderName; kind: ActionKind; ref: string; accountId: string | null; reason: '' | 'duplicate' | 'replaced' | 'unpaid' | 'deleted' | 'dispute' | 'fraud_warning' }) {
   if (!o.ref) return;
+  // Detener y reanudar se alternan (otra disputa más adelante): la acción se vuelve a abrir y la contraria pendiente se descarta.
+  const toggle = o.kind === 'pause_collection' || o.kind === 'resume_collection';
+  if (toggle) {
+    await query(`UPDATE billing_actions SET status = 'done', last_error = 'reemplazada', updated_at = now() WHERE provider = $1 AND kind = $2 AND ref = $3 AND status = 'pending'`,
+      [o.provider, o.kind === 'pause_collection' ? 'resume_collection' : 'pause_collection', o.ref]);
+  }
   await query(
-    `INSERT INTO billing_actions (provider, kind, ref, account_id, reason) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (provider, kind, ref) DO NOTHING`,
+    `INSERT INTO billing_actions (provider, kind, ref, account_id, reason) VALUES ($1,$2,$3,$4,$5)
+     ON CONFLICT (provider, kind, ref) DO ${toggle ? `UPDATE SET status = 'pending', attempts = 0, next_attempt_at = now(), last_error = '', updated_at = now()` : 'NOTHING'}`,
     [o.provider, o.kind, o.ref, o.accountId, o.reason],
   );
 }
@@ -204,16 +221,40 @@ export async function changePlan(o: { accountId: string; email: string; planKey:
   // al momento y, si el cobro falla, no cambia nada.
   if (sub.status === 'past_due' && sub.provider === 'mercadopago') throw new HttpError(400, 'Tienes un pago pendiente: actualiza tu tarjeta con «Cambiar tarjeta» antes de cambiar de plan.');
   if (sub.cancel_at_period_end) throw new HttpError(400, 'Tu plan está por cancelarse: primero elige «Mantener mi plan».');
-  const pending = sub.provider === 'mercadopago' ? sub.pending_plan_key : '';
+  const pending = sub.pending_plan_key;
   if (pending && pending === o.planKey) throw new HttpError(400, 'Ese cambio ya está programado para tu siguiente cobro.');
   if (sub.plan_key === o.planKey && !pending) throw new HttpError(400, 'Ya tienes ese plan');
   const plan = await getPlan(o.planKey);
-  if (!plan?.active) throw new HttpError(404, 'Ese plan no está disponible');
+  if (!plan?.active || !(await planOpenTo(plan, o.accountId))) throw new HttpError(404, 'Ese plan no está disponible');
+  // El dueño elige su plan: desde aquí manda la suscripción, no el plan que el superadministrador había asignado (PAY-8).
+  await query(`UPDATE accounts SET plan_source = 'provider' WHERE id = $1`, [o.accountId]);
   const from = await getPlan(sub.plan_key);
-  const upgrade = !from || monthly(plan) > monthly(from);
+  // Mensual → anual es subir (se cobra hoy, con prorrateo); anual → mensual es bajar y espera al fin del año pagado (PAY-11).
+  // Entre planes del mismo periodo se compara el precio mensual equivalente.
+  const toAnnual = !!from && from.billing_interval !== 'year' && plan.billing_interval === 'year';
+  const toMonthly = !!from && from.billing_interval === 'year' && plan.billing_interval !== 'year';
+  const upgrade = !from || toAnnual || (!toMonthly && monthly(plan) > monthly(from));
   if (!upgrade) await assertFitsPlan(o.accountId, plan);
   if (sub.provider === 'mercadopago' && from && from.billing_interval !== plan.billing_interval) {
     return { url: await startReplacement({ accountId: o.accountId, email: o.email, plan, base: o.base, ip: o.ip }) };
+  }
+  const acc0 = await queryOne<{ name: string }>(`SELECT name FROM accounts WHERE id = $1`, [o.accountId]);
+  if (sub.provider === 'stripe' && pending) {
+    // Elegir otro plan (o quedarse con el actual) deshace el cambio programado.
+    await providers.stripe.cancelScheduledChange!(sub);
+    await query(`UPDATE subscriptions SET pending_plan_key = '', pending_plan_since = NULL, pending_amount_cents = 0, updated_at = now() WHERE account_id = $1`, [o.accountId]);
+    if (plan.key === sub.plan_key) {
+      await logEvent({ level: 'info', source: 'admin', message: `Cambio de plan programado cancelado (stripe): sigue ${plan.key}`, accountId: o.accountId });
+      await tell(o.accountId, `Sigues con el plan ${plan.name}`, `Cancelamos el cambio que tenías programado: tu cuenta "${acc0?.name ?? ''}" sigue con el plan ${plan.name}.`);
+      return {};
+    }
+  }
+  if (sub.provider === 'stripe' && toMonthly) {
+    await providers.stripe.schedulePlanChange!(sub, plan);
+    await query(`UPDATE subscriptions SET pending_plan_key = $2, pending_plan_since = now(), pending_amount_cents = $3, updated_at = now() WHERE account_id = $1`, [o.accountId, plan.key, chargeCents(plan)]);
+    await logEvent({ level: 'info', source: 'admin', message: `Cambio de plan programado (stripe): ${sub.plan_key || '—'} → ${plan.key}, al terminar el periodo anual`, accountId: o.accountId });
+    await tell(o.accountId, `Tu plan cambia a ${plan.name}`, `El plan ${plan.name} de tu cuenta "${acc0?.name ?? ''}" empieza al terminar tu año pagado, el ${fmt(sub.current_period_end)} (${money(chargeCents(plan), plan.currency)} con IVA). Hasta entonces sigues con ${from ? `el plan ${from.name}` : 'tu plan actual'}; no hay reembolso por el año en curso.`);
+    return { scheduled: true, starts_at: sub.current_period_end };
   }
   // Mercado Pago cobra el monto nuevo hasta la siguiente renovación (no cobra la diferencia): al subir, el plan nuevo y
   // sus límites esperan ese cobro (`promotePendingPlan`). Si no, se usaría el plan caro todo el periodo pagando el barato.
@@ -306,7 +347,7 @@ export async function syncPendingCheckouts(now = new Date()): Promise<number> {
  * Aplica el estado informado por el proveedor. Idempotente: repetir el mismo estado no repite avisos.
  * Devuelve la cuenta afectada (o null si no se pudo asociar).
  */
-export async function applyState(state: SubscriptionState, now = new Date()): Promise<string | null> {
+export async function applyState(state: SubscriptionState, now = new Date(), o: { refresh?: boolean } = {}): Promise<string | null> {
   const accountId = state.accountId
     ?? (await queryOne<{ account_id: string }>(`SELECT account_id FROM subscriptions WHERE provider = $1 AND provider_subscription_id = $2`, [state.provider, state.subscriptionId]))?.account_id
     ?? null;
@@ -318,7 +359,14 @@ export async function applyState(state: SubscriptionState, now = new Date()): Pr
     // Puede esperar al proveedor de cobro dentro de la transacción: que no la cierre el tiempo límite de inactividad.
     await client.query('SET LOCAL idle_in_transaction_session_timeout = 0');
     await client.query(`SELECT pg_advisory_xact_lock(hashtext('billing-apply:' || $1))`, [accountId]);
-    return applyStateLocked({ ...state, accountId }, now, later, client);
+    // Un aviso leyó la suscripción antes de esperar este candado: si otro aviso más nuevo se aplicó mientras tanto, el
+    // estado leído ya es viejo. Con el candado tomado se vuelve a leer, así el último en aplicarse deja el estado real.
+    let current = state;
+    if (o.refresh) {
+      const fresh = await providers[state.provider].subscriptionState(state.subscriptionId, await listPlans(true), now).catch(() => null);
+      if (fresh) current = { ...fresh, accountId: fresh.accountId ?? state.accountId, cardKey: fresh.cardKey ?? state.cardKey };
+    }
+    return applyStateLocked({ ...current, accountId }, now, later, client);
   });
   // Correos y avisos, ya sin el candado: un correo lento no detiene los cobros. Un aviso que falla no deshace el estado.
   for (const run of later) {
@@ -332,7 +380,11 @@ export type Later = (() => Promise<unknown>)[];
 
 async function applyStateLocked(state: SubscriptionState & { accountId: string }, now: Date, later: Later, client: pg.PoolClient): Promise<string | null> {
   const accountId = state.accountId;
-  const acc = await queryOne<{ id: string; name: string; status: string; plan: string; pause_reason: string }>(`SELECT id, name, status, plan, pause_reason FROM accounts WHERE id = $1`, [accountId]);
+  if (state.planMismatch && state.status === 'active') {
+    await logEvent({ level: 'warn', source: 'admin', message: `El precio de la suscripción (${state.provider} ${state.subscriptionId}) no corresponde a un plan: ${state.planMismatch}; el plan de la cuenta no cambia`, accountId });
+    later.push(() => notifySuperadmins(accountId, 'Precio de suscripción sin plan', `La suscripción ${state.subscriptionId} cobra un precio que no corresponde a ningún plan (${state.planMismatch}). El plan de la cuenta no cambió; revísalo con el proveedor de pagos.`, { urgent: true }));
+  }
+  const acc = await queryOne<{ id: string; name: string; status: string; plan: string; pause_reason: string; plan_source: string }>(`SELECT id, name, status, plan, pause_reason, plan_source FROM accounts WHERE id = $1`, [accountId]);
   if (!acc) return null;
 
   const prev = await getSubscription(accountId);
@@ -355,7 +407,7 @@ async function applyStateLocked(state: SubscriptionState & { accountId: string }
   }
   // Un plan al que se subió en Mercado Pago empieza con el cobro de su monto (`promotePendingPlan`), no con este aviso,
   // que ya trae la referencia del plan nuevo.
-  const held = !!prev?.pending_plan_key && prev.provider === state.provider && prev.provider_subscription_id === state.subscriptionId
+  const held = !!prev?.pending_plan_key && state.provider === 'mercadopago' && prev.provider === state.provider && prev.provider_subscription_id === state.subscriptionId
     && state.planKey === prev.pending_plan_key;
   let planKey = (held ? prev!.plan_key : state.planKey) || prev?.plan_key || '';
   // Una sustitución a un plan más caro (mensual ↔ anual, o contratar otro tras cancelar) cobra por primera vez al terminar
@@ -369,6 +421,10 @@ async function applyStateLocked(state: SubscriptionState & { accountId: string }
     }
   }
 
+  // Mercado Pago marca «paused» la suscripción cuyos cobros detuvimos por una disputa: no es un pago pendiente (PAY-4).
+  if (state.provider === 'mercadopago' && state.collectionPaused && prev?.collection_paused && prev.provider_subscription_id === state.subscriptionId && state.status === 'past_due') {
+    state = { ...state, status: prev.status };
+  }
   const pastDueSince = state.status === 'past_due' ? prev?.past_due_since ?? now : null;
   // El periodo ya pagado no se pierde si el proveedor no lo informa.
   const periodEnd = state.periodEnd ?? (prev?.provider_subscription_id === state.subscriptionId ? prev.current_period_end : null);
@@ -384,11 +440,16 @@ async function applyStateLocked(state: SubscriptionState & { accountId: string }
        pending_plan_key = CASE WHEN $10 <> '' THEN $10 WHEN subscriptions.provider_subscription_id = $4 THEN subscriptions.pending_plan_key ELSE '' END,
        pending_plan_since = CASE WHEN $10 <> '' THEN $11::timestamptz WHEN subscriptions.provider_subscription_id = $4 THEN subscriptions.pending_plan_since END,
        pending_amount_cents = CASE WHEN $10 <> '' THEN $12::int WHEN subscriptions.provider_subscription_id = $4 THEN subscriptions.pending_amount_cents ELSE 0 END,
+       collection_paused = CASE WHEN subscriptions.provider_subscription_id = $4 THEN subscriptions.collection_paused ELSE false END,
        updated_at = now()`,
     [accountId, state.provider, state.customerId, state.subscriptionId, planKey, state.status, periodEnd, state.cancelAtPeriodEnd, pastDueSince,
       scheduled?.key ?? '', scheduled ? now : null, scheduled ? chargeCents(scheduled) : 0],
   );
 
+  // Stripe: el plan programado (anual → mensual) llegó con la renovación, o la suscripción se va a cancelar: ya no está pendiente.
+  if (state.provider === 'stripe' && prev?.pending_plan_key && prev.provider_subscription_id === state.subscriptionId && (planKey === prev.pending_plan_key || state.cancelAtPeriodEnd)) {
+    await query(`UPDATE subscriptions SET pending_plan_key = '', pending_plan_since = NULL, pending_amount_cents = 0, updated_at = now() WHERE account_id = $1`, [accountId]);
+  }
   // Una sustitución no es una contratación nueva: sigue del estado en que estaba (al corriente o con pago pendiente).
   const was = prev?.provider_subscription_id === state.subscriptionId || (replacing && ['active', 'past_due'].includes(prev!.status)) ? prev!.status : 'incomplete';
   const plan = planKey ? await getPlan(planKey) : null;
@@ -412,8 +473,10 @@ async function applyStateLocked(state: SubscriptionState & { accountId: string }
   // Prueba con tarjeta: el proveedor confirmó la tarjeta y el primer cobro es al terminar la prueba (`trialEnd`).
   const trialFuture = !!state.trialEnd && state.trialEnd > now;
   const waitingCard = acc.status === 'paused' && acc.pause_reason === 'card';
-  // La tarjeta ya se confirmó: la verificación abierta quedó completa (el freno cuenta las que no se completan).
-  if (state.status === 'active') await query(`UPDATE card_checks SET completed_at = now() WHERE account_id = $1 AND completed_at IS NULL`, [accountId]);
+  // La tarjeta ya se confirmó: la verificación abierta quedó completa (el freno cuenta las que no se completan). Solo al
+  // pasar a activa (o al llegar la suscripción que sustituye a otra): los avisos de una que ya lo estaba (cancelar y
+  // reanudar) no completan las demás.
+  if (state.status === 'active' && (was !== 'active' || replacing)) await query(`UPDATE card_checks SET completed_at = now() WHERE account_id = $1 AND completed_at IS NULL`, [accountId]);
 
   if (state.status === 'active' && trialFuture && waitingCard) {
     await startTrialFromState({ ...state, accountId }, acc.name, later, client);
@@ -424,13 +487,37 @@ async function applyStateLocked(state: SubscriptionState & { accountId: string }
     // La suscripción de una prueba con tarjeta ya estaba «al corriente»: la cuenta se activa con el primer cobro (sin
     // días gratis por delante), y también la que esperaba tarjeta y se cobró ya (tarjeta que ya tuvo prueba).
     const activate = was !== 'active' || (!trialFuture && (acc.status === 'trial' || waitingCard));
+    // Tras perder una disputa, solo otra tarjeta reactiva la cuenta (PAY-5). Con la misma, la suscripción nueva se cancela
+    // y se reembolsa; si no se sabe qué tarjeta es, sigue en pausa y lo revisa el superadministrador.
+    const lost = acc.status === 'paused' && acc.pause_reason === 'dispute_lost';
+    const sameCard = lost && !!state.cardKey && (await cardClaim(state.cardKey)).disputed;
+    const cardOk = !lost || (!!state.cardKey && !sameCard);
+    if (lost && activate && !cardOk) {
+      if (sameCard) {
+        await logEvent({ level: 'warn', source: 'admin', message: `Contratación con la tarjeta de una disputa perdida (${state.provider} ${state.subscriptionId}): se cancela y se reembolsa`, accountId });
+        await queueAction({ provider: state.provider, kind: 'cancel', ref: state.subscriptionId, accountId, reason: 'dispute' });
+        await queueAction({ provider: state.provider, kind: 'refund_subscription', ref: state.subscriptionId, accountId, reason: 'dispute' });
+        // Ya no cuenta como vigente: otra contratación (con otra tarjeta) no es un duplicado.
+        await query(`UPDATE subscriptions SET status = 'canceled', cancel_at_period_end = false, updated_at = now() WHERE account_id = $1 AND provider_subscription_id = $2`, [accountId, state.subscriptionId]);
+        later.push(() => tell(accountId, 'Usa otra tarjeta', `La tarjeta con la que pagaste es la del cobro que se desconoció con el banco, así que cancelamos ese pago y te lo reembolsamos. Para reactivar "${acc.name}", contrata desde Mi plan con otra tarjeta.`));
+      } else {
+        await logEvent({ level: 'warn', source: 'admin', message: `Pago tras una disputa perdida sin saber con qué tarjeta (${state.provider} ${state.subscriptionId}): la cuenta sigue en pausa`, accountId });
+        later.push(() => notifySuperadmins(accountId, `Revisa la tarjeta: ${acc.name}`, `"${acc.name}" perdió una disputa y volvió a contratar (${state.provider} ${state.subscriptionId}), pero no se pudo confirmar que sea otra tarjeta. Sigue en pausa: si es otra tarjeta, reactívala en Cuentas.`, { urgent: true }));
+      }
+    }
+    // La pausa a mano del superadministrador (y la de un contracargo) no la quita un pago; su plan asignado no se pisa (PAY-8).
     await query(
-      `UPDATE accounts SET status = CASE WHEN $3::boolean AND NOT (status = 'paused' AND pause_reason = 'dispute') THEN 'active' ELSE status END,
+      `UPDATE accounts SET status = CASE WHEN $3::boolean AND NOT (status = 'paused' AND pause_reason IN ('dispute', 'manual')) THEN 'active' ELSE status END,
+         pause_reason = CASE WHEN $3::boolean AND status = 'paused' AND pause_reason NOT IN ('dispute', 'manual') THEN '' ELSE pause_reason END,
          trial_ends_at = CASE WHEN $3::boolean THEN NULL ELSE trial_ends_at END,
-         plan = COALESCE(NULLIF($2, ''), plan), updated_at = now() WHERE id = $1`,
-      [accountId, planKey, activate],
+         plan = CASE WHEN plan_source = 'manual' THEN plan ELSE COALESCE(NULLIF($2, ''), plan) END, updated_at = now() WHERE id = $1`,
+      [accountId, planKey, activate && cardOk],
     );
-    if (activate) {
+    if (acc.plan_source === 'manual' && planKey && planKey !== acc.plan) {
+      await logEvent({ level: 'warn', source: 'admin', message: `La suscripción (${state.provider}) dice el plan ${planKey}, pero se conserva ${acc.plan || '—'}, el plan que asignó el superadministrador`, accountId });
+      later.push(() => notifySuperadmins(accountId, `Plan distinto en la suscripción: ${acc.name}`, `La suscripción de "${acc.name}" dice ${planKey}, pero la cuenta conserva ${acc.plan || 'sin plan'} (asignado a mano). Revísalo en Cuentas.`));
+    }
+    if (activate && cardOk) {
       await logEvent({ level: 'info', source: 'admin', message: `Pago confirmado (${state.provider}): plan ${planKey || '—'}`, accountId });
       later.push(() => tell(accountId, was === 'past_due' ? 'Recibimos tu pago, ¡gracias!' : '¡Tu plan está activo!', `Tu cuenta "${acc.name}" quedó al corriente${plan ? ` con el plan ${plan.name}` : ''}. Próxima renovación: ${fmt(periodEnd)}.`));
       if (was !== 'past_due') later.push(() => notifySuperadmins(accountId, `Nueva suscripción: ${acc.name}`, `"${acc.name}" contrató${plan ? ` ${plan.name} (${money(plan.price_cents, plan.currency)})` : ''} por ${state.provider}.`));
@@ -475,7 +562,7 @@ export async function promotePendingPlan(accountId: string, provider: ProviderNa
     const plan = await getPlan(sub.pending_plan_key);
     if (!plan) return;
     await query(`UPDATE subscriptions SET plan_key = $2, pending_plan_key = '', pending_plan_since = NULL, updated_at = now() WHERE account_id = $1`, [accountId, plan.key]);
-    await query(`UPDATE accounts SET plan = $2, updated_at = now() WHERE id = $1`, [accountId, plan.key]);
+    await query(`UPDATE accounts SET plan = $2, plan_source = 'provider', updated_at = now() WHERE id = $1`, [accountId, plan.key]);
     await logEvent({ level: 'info', source: 'admin', message: `Cambio de plan aplicado con el cobro (${provider}): ${sub.plan_key || '—'} → ${plan.key}`, accountId });
     later.push(() => tell(accountId, `Ya tienes el plan ${plan.name}`, `Recibimos el cobro de tu plan ${plan.name} (${money(payment.totalCents, payment.currency)}): desde hoy tu cuenta tiene todo lo que incluye.`));
   });

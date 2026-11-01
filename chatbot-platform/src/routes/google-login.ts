@@ -1,9 +1,10 @@
 /** Iniciar sesión o registrarse con Google (OpenID Connect). Solo funciona en el dominio principal. */
+import { ipLimitKey, limited } from '../identity/rate-limit.js';
 import crypto from 'node:crypto';
 import { pendingInviteFor } from './invitations.js';
 import type { FastifyInstance } from 'fastify';
 import { brandByDomain, hostOf } from '../brands.js';
-import { hashPassword, rateLimited } from '../auth.js';
+import { hashPassword } from '../auth.js';
 import { beginLogin } from '../identity/mfa.js';
 import { config } from '../config.js';
 import { withTransaction } from '../db.js';
@@ -22,6 +23,8 @@ import { parse } from './util.js';
 
 const HOUR = 3600_000;
 const redirectUri = () => `${config.publicBaseUrl}/oauth/google/login/callback`;
+/** Emisores válidos del id_token de Google. */
+const GOOGLE_ISSUERS = ['https://accounts.google.com', 'accounts.google.com'];
 const AUTH_URL = () => process.env.GOOGLE_AUTH_URL || 'https://accounts.google.com/o/oauth2/v2/auth';
 
 /** El "state" va firmado, caduca en 10 minutos y lleva un valor aleatorio que también se guarda en una cookie (evita CSRF). */
@@ -34,7 +37,7 @@ function readState(state: string, nonce: string, now = Date.now()) {
 export async function googleLoginRoutes(app: FastifyInstance) {
   app.get('/oauth/google/login', async (req, reply) => {
     if (!googleConfigured()) return reply.redirect('/#/login?google=off');
-    if (rateLimited(`glogin:${req.ip}`, 30, HOUR)) return reply.redirect('/#/login?google=demasiados');
+    if (await limited(ipLimitKey('glogin', req.ip), 30, HOUR)) return reply.redirect('/#/login?google=demasiados');
     const nonce = crypto.randomBytes(16).toString('hex');
     reply.setCookie('g_nonce', nonce, { httpOnly: true, sameSite: 'lax', secure: config.secureCookies, path: '/oauth/google', maxAge: 600 });
     const p = new URLSearchParams({
@@ -58,6 +61,11 @@ export async function googleLoginRoutes(app: FastifyInstance) {
       const t = await tokenRequest({ grant_type: 'authorization_code', code: String(req.query.code), redirect_uri: redirectUri() });
       // El id_token llega directo del servidor de Google por TLS (no por el navegador), así que sus datos son confiables.
       const claims = JSON.parse(Buffer.from((t.id_token ?? '').split('.')[1] ?? '', 'base64url').toString());
+      // Emitido por Google para esta aplicación (bajos de la 2c): otro emisor u otro cliente no entran.
+      if (!GOOGLE_ISSUERS.includes(String(claims.iss ?? '')) || claims.aud !== process.env.GOOGLE_CLIENT_ID) {
+        await logEvent({ level: 'warn', source: 'system', message: `Inicio de sesión con Google rechazado: el id_token no es de Google para esta aplicación (iss ${String(claims.iss ?? '—').slice(0, 80)})` });
+        return fail('error');
+      }
       const sub = String(claims.sub ?? '');
       const email = String(claims.email ?? '').toLowerCase();
       if (!sub) return fail('error');

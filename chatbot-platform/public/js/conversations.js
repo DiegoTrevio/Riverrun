@@ -160,13 +160,20 @@ export async function viewConversations(root, params) {
     if (f.status && kind === 'conversations') qs.set('status', f.status);
     return `/api/export/${kind}.csv?${qs}`;
   };
+  // Exportar pide el código si el último tiene más de 15 minutos: se confirma antes de descargar.
+  const exportLink = (kind, label) => h('a', { href: exportUrl(kind), download: '', onclick: async (e) => {
+    e.preventDefault();
+    const href = e.currentTarget.href;
+    const { stepUpDownload } = await import('./mfa.js');
+    stepUpDownload(href);
+  } }, label);
   const exportMenu = isAdmin()
     ? h('details', { class: 'menu' },
       h('summary', { class: 'btn' }, icon('download', 16), 'Exportar'),
       h('div', { class: 'menu-items' },
-        h('a', { href: exportUrl('contacts'), download: '' }, 'Contactos (CSV)'),
-        h('a', { href: exportUrl('conversations'), download: '' }, 'Conversaciones (CSV)'),
-        h('a', { href: exportUrl('messages'), download: '' }, 'Mensajes completos (CSV)')))
+        exportLink('contacts', 'Contactos (CSV)'),
+        exportLink('conversations', 'Conversaciones (CSV)'),
+        exportLink('messages', 'Mensajes completos (CSV)')))
     : null;
   const filters = [
     h('div', { class: 'filter' }, field('Agente', select(f, 'chatbot_id', [['', 'Todos los chatbots'], ...bots.map((b) => [b.id, b.name])], apply))),

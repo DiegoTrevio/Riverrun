@@ -33,7 +33,8 @@ after(async () => { server.close(); if (h) await h.app.close(); await pool.end()
 
 /** Recorre el flujo: inicia, "Google" regresa con el state y el mismo navegador (cookie g_nonce). */
 async function flow(who: Record<string, unknown>, opts: { tamper?: boolean; noCookie?: boolean; query?: string } = {}) {
-  claims = who;
+  // Un id_token de Google para esta aplicación, salvo que la prueba lo cambie.
+  claims = { iss: 'https://accounts.google.com', aud: 'cid', ...who };
   const start = await h.app.inject({ method: 'GET', url: '/oauth/google/login', remoteAddress: '10.8.8.8' });
   assert.equal(start.statusCode, 302);
   const loc = new URL(String(start.headers.location));
@@ -144,6 +145,17 @@ t('se rechaza: correo sin verificar en Google, state alterado, sin cookie, cance
   await fails(await flow({ email: 'x@y.mx', email_verified: true }), /google=error/);
   await fails(await flow({ sub: 'g-admin', email: 'admin@test.mx', email_verified: true }), /google=solo-contrasena/);
   assert.equal((await pool.query(`SELECT count(*)::int n FROM users WHERE email = 'x@y.mx'`)).rows[0].n, 0);
+});
+
+t('un id_token de otro emisor o para otra aplicación no entra (bajos de la 2c)', async () => {
+  for (const bad of [{ iss: 'https://evil.example' }, { aud: 'otra-app' }, { aud: ['cid', 'otra'] }]) {
+    const r = await flow({ sub: 'g-ajeno', email: 'ajeno@gmail.com', email_verified: true, ...bad });
+    assert.match(r.location, /google=error/, JSON.stringify(bad));
+  }
+  assert.equal((await pool.query(`SELECT count(*)::int AS n FROM users WHERE email = 'ajeno@gmail.com'`)).rows[0].n, 0);
+  // Sin el prefijo https:// también es de Google.
+  const r = await flow({ iss: 'accounts.google.com', sub: 'g-ajeno2', email: 'ajeno2@gmail.com', email_verified: true });
+  assert.doesNotMatch(r.location, /google=error/);
 });
 
 t('con el registro cerrado no crea cuentas nuevas, y el botón solo aparece en el dominio principal', async () => {

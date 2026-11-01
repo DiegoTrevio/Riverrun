@@ -9,7 +9,7 @@ import { ChannelConfigSchemas, type Channel, type ImageAsset } from '../types.js
 import { INBOUND_MEDIA_MAX_BYTES, signedImageUrl } from './media.js';
 import type { ChannelAdapter, InboundMessage, ParseResult, WebhookRequest } from './types.js';
 import { platformSecret } from '../platform-secrets.js';
-import { drainZernioBudget, noteZernioLimit, takeZernioBudget, type ZernioPriority } from './zernio-budget.js';
+import { drainZernioBudget, noteZernioLimit, takeZernioAccountBudget, takeZernioBudget, type ZernioPriority } from './zernio-budget.js';
 
 /**
  * Zernio: una sola API para los mensajes directos de varias redes (Instagram, Facebook, WhatsApp Business, Telegram, X,
@@ -89,6 +89,8 @@ export class ZernioError extends Error {
 export class ZernioClient {
   beforeRequest?:()=>Promise<void>;
   priority: ZernioPriority = 'interactive';
+  /** La cuenta del negocio por la que se llama (para su tope propio); sin ella, solo la cubeta de la plataforma. */
+  accountId: string | null = null;
   constructor(private apiKey: string, private base = config.zernioApiUrl) {}
 
   async call<T = any>(method: Method, path: string, body?: unknown, opts: { idempotencyKey?: string; timeoutMs?: number; scopedLimits?: boolean } = {}): Promise<T> {
@@ -147,6 +149,7 @@ export class ZernioClient {
 
   private async send(method: Method, path: string, body?: unknown, opts: { idempotencyKey?: string; timeoutMs?: number } = {}) {
     await this.beforeRequest?.();
+    if (this.accountId) await takeZernioAccountBudget(this.accountId, this.priority);
     await takeZernioBudget(this.priority);
     const res = await fetch(`${this.base}${path}`, {
       method,
@@ -174,11 +177,15 @@ export class ZernioClient {
   }
 }
 
-export const clientFor = (channel?: Pick<Channel, 'config'> | null, priority: ZernioPriority = 'interactive') => {
+export const clientFor = (channel?: (Pick<Channel, 'config'> & { account_id?: string | null }) | null, priority: ZernioPriority = 'interactive') => {
   const client = new ZernioClient(zernioKey(channel));
   client.priority = priority;
+  client.accountId = channel?.account_id ?? null;
   return client;
 };
+
+/** Cliente para una acción de un negocio (publicar, responder, plantillas): cuenta para el tope de esa cuenta (PAY-23). */
+export const clientForAccount = (accountId: string, priority: ZernioPriority = 'interactive') => clientFor({ config: {}, account_id: accountId } as any, priority);
 
 /** Firma de los webhooks: HMAC-SHA256 en hexadecimal del cuerpo crudo. */
 export function zernioSignature(rawBody: Buffer, secret: string) {
@@ -312,7 +319,8 @@ class ZernioTransport implements Transport {
   private network: Network | undefined;
 
   constructor(private channel: Channel, conversationId: string) {
-    this.client = clientFor(channel);
+    // Los mensajes directos van primero: lo que se hace en el panel (publicar, comentar) les deja una parte libre.
+    this.client = clientFor(channel, 'messages');
     this.base = `/inbox/conversations/${encodeURIComponent(conversationId)}`;
     this.network = networkOf(channel.config.platform);
   }

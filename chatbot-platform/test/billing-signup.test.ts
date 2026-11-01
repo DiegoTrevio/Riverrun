@@ -71,7 +71,7 @@ t('el registro muestra los planes que se pueden pagar', async () => {
   const pro = info.plans.find((p: any) => p.key === 'pro');
   assert.equal(pro.price, 499);
   assert.deepEqual(pro.providers.map((x: any) => x.name), ['stripe', 'mercadopago']);
-  assert.equal(pro.stripe_price_id, '', 'no hace falta crear el precio en Stripe a mano');
+  assert.equal(pro.stripe_price_id, undefined, 'los ids del proveedor no se publican (PAY-16)');
 });
 
 t('un plan que no existe se rechaza sin dejar una cuenta a medias', async () => {

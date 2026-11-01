@@ -14,8 +14,11 @@ import { isPrivateIp } from '../automation/automator.js';
 import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
 import { htmlToText } from '../knowledge-import.js';
+import { clampInbound } from '../engine/text.js';
 import { imageAbsolutePath, type OutgoingFile, type Transport } from '../engine/transport.js';
 import { logEvent } from '../logs.js';
+import { notifyUsers } from '../automation/store.js';
+import { countHit } from '../identity/rate-limit.js';
 import type { ChatService } from '../service.js';
 import { ChannelConfigSchemas, type Channel, type ImageAsset } from '../types.js';
 import type { ChannelAdapter, InboundMessage } from './types.js';
@@ -36,7 +39,56 @@ export interface RawMail {
   date: Date;
   references: string;
   automated: boolean;
+  /** El primer encabezado Authentication-Results (el que pone el servidor que recibió el correo). */
+  authResults?: string;
 }
+
+/**
+ * Servidores cuyo Authentication-Results se cree: el que configuró el canal (`auth_server_id`, separados por coma) o el
+ * del proveedor (Gmail: mx.google.com; Outlook: el formato de Microsoft, sin identificador y con compauth=); con otro
+ * proveedor, el dominio del servidor IMAP. Sin esto, quien manda podía escribir su propio «dmarc=pass» y, en un servidor
+ * que no agrega el suyo, ese era el único (revisión de la 4′).
+ */
+export function trustedAuthServers(cfg: { provider?: string; imap_host?: string; auth_server_id?: string }): string[] {
+  const set = String(cfg.auth_server_id ?? '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
+  if (set.length) return set;
+  if (cfg.provider === 'gmail' || /(^|\.)gmail\.com$|googlemail\.com$/i.test(cfg.imap_host ?? '')) return ['mx.google.com'];
+  if (cfg.provider === 'outlook' || /office365\.com$|outlook\.com$/i.test(cfg.imap_host ?? '')) return ['microsoft'];
+  const labels = String(cfg.imap_host ?? '').toLowerCase().split('.').filter(Boolean);
+  return labels.length >= 3 ? [labels.slice(1).join('.')] : labels.length === 2 ? [labels.join('.')] : [];
+}
+
+/** El Authentication-Results lo escribió un servidor de confianza. */
+function fromTrustedServer(ar: string, trusted: string[]): boolean {
+  const id = ar.split(';')[0].trim().split(/\s+/)[0].toLowerCase();
+  if (trusted.includes('microsoft') && id.includes('=') && /\bcompauth=/.test(ar)) return true;
+  if (!id || id.includes('=')) return false;
+  return trusted.some((t) => t !== 'microsoft' && (id === t || id.endsWith(`.${t}`)));
+}
+
+/** El dominio firmado y el del From son el mismo o uno es subdominio del otro (nadie firma por un dominio que no controla). */
+const aligned = (d: string, domain: string) => d === domain || domain.endsWith(`.${d}`) || d.endsWith(`.${domain}`);
+
+/**
+ * ¿El remitente está comprobado (IN-17)? Solo cuenta el primer Authentication-Results, y solo si lo escribió el
+ * servidor de tu proveedor (`trusted`): dmarc=pass, o dkim=pass del mismo dominio que el From (header.d o header.i).
+ */
+export function senderVerified(authResults: string | undefined, from: string, trusted: string[] = []): boolean {
+  if (!authResults) return false;
+  const domain = from.split('@')[1]?.toLowerCase() ?? '';
+  if (!domain) return false;
+  const ar = authResults.toLowerCase();
+  if (!fromTrustedServer(ar, trusted)) return false;
+  if (/\bdmarc=pass\b/.test(ar)) return true;
+  for (const part of ar.split(';')) {
+    if (!/\bdkim=pass\b/.test(part)) continue;
+    const d = /header\.d=([a-z0-9.-]+)/.exec(part)?.[1] ?? /header\.i=[^@\s]*@([a-z0-9.-]+)/.exec(part)?.[1];
+    if (d && aligned(d.replace(/\.$/, ''), domain)) return true;
+  }
+  return false;
+}
+/** Respuestas por hora en un canal de correo: más se guardan sin contestar y se avisa (IN-17). */
+export const EMAIL_REPLIES_PER_HOUR = 60;
 
 export interface OutMail { from: string; to: string; subject: string; text: string; inReplyTo: string; references: string; attachment?: { path: string; filename: string } }
 
@@ -128,6 +180,7 @@ const realBackend: MailBackend = {
               date: p.date ?? new Date(),
               references: [p.references].flat().filter(Boolean).join(' '),
               automated,
+              authResults: firstHeader(h.get('authentication-results')),
             });
           } catch {
             /* correo ilegible: se omite y se sigue */
@@ -238,8 +291,17 @@ export const emailAdapter: ChannelAdapter = {
   },
 };
 
+/** El primer valor de un encabezado que puede venir repetido. */
+function firstHeader(v: unknown): string | undefined {
+  const first = Array.isArray(v) ? v[0] : v;
+  if (first == null) return undefined;
+  return typeof first === 'string' ? first : typeof (first as any).value === 'string' ? (first as any).value : String((first as any).text ?? first);
+}
+
 export function toInbound(m: RawMail, firstInThread: boolean): InboundMessage {
-  const body = stripQuoted(m.text) || m.text.trim().slice(0, MAX_MAIL_TEXT);
+  // Lo que escribió la persona va al principio: lo citado de más abajo no se revisa (un correo llega a 10 MB).
+  const head = m.text.slice(0, MAX_MAIL_TEXT);
+  const body = clampInbound(stripQuoted(head) || head.trim());
   return {
     messageId: m.messageId,
     externalId: m.address,
@@ -271,6 +333,23 @@ export async function pollEmailChannel(channel: Channel, deliver: (m: InboundMes
         if (recent >= 12) {
           // Freno de bucles: se guarda pero no se contesta (nada se pierde del historial del cliente).
           await deliver({ ...toInbound(mail, false), captureOnly: true });
+          continue;
+        }
+        // Remitente sin comprobar: cualquiera escribe «From: cliente@real.com». Se guarda marcado, sin contestar (IN-17).
+        if ((channel.config as any).require_sender_auth !== false && !senderVerified(mail.authResults, mail.address, trustedAuthServers(channel.config as any))) {
+          const msg = toInbound(mail, false);
+          await deliver({ ...msg, text: `[Remitente no verificado] ${msg.text}`, captureOnly: true, held: 'remitente_no_verificado' });
+          continue;
+        }
+        // Tope del canal: más de 60 respuestas en una hora se guardan sin contestar, con un aviso (IN-17).
+        const replies = await countHit(`email-replies:${channel.id}`, 3600_000);
+        if (replies > EMAIL_REPLIES_PER_HOUR) {
+          if (replies === EMAIL_REPLIES_PER_HOUR + 1) {
+            await logEvent({ level: 'warn', source: 'channel', message: `El correo ${addressOf(cfg)} llegó a ${EMAIL_REPLIES_PER_HOUR} respuestas en una hora: los demás correos se guardan sin contestar hasta la siguiente hora`, accountId: channel.account_id, channelId: channel.id });
+            const admins = await query<{ id: string }>(`SELECT id FROM users WHERE account_id = $1 AND role = 'admin' AND active`, [channel.account_id]);
+            await notifyUsers(channel.account_id, admins.map((a) => a.id), { title: 'Tu correo contestó demasiados mensajes', body: `El asistente del correo ${addressOf(cfg)} contestó ${EMAIL_REPLIES_PER_HOUR} correos en una hora. Los siguientes se guardan sin respuesta hasta la siguiente hora; revisa si hay correo masivo.`, link: '#/conversations', kind: 'channel' }).catch(() => undefined);
+          }
+          await deliver({ ...toInbound(mail, false), captureOnly: true, held: 'limite_del_canal' });
           continue;
         }
         const prior = await queryOne(`SELECT 1 FROM email_threads WHERE channel_id = $1 AND address = $2`, [channel.id, mail.address]);

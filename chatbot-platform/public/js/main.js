@@ -28,7 +28,7 @@ export async function render() {
   if (['login', 'registro', 'registro-google', 'invitacion', 'olvide', 'restablecer', 'verificar', 'cambiar-correo'].includes(parts[0])) await ensureBrand('host');
   if (!current()) return;
   if (parts[0] === 'login' && parts[1] === 'codigo') return view('mfa', 'renderMfaVerify');
-  if (parts[0] === 'login' && parts[1] === 'configurar') return view('mfa', 'renderMfaEnroll');
+  if (parts[0] === 'login' && parts[1] === 'configurar') return view('mfa', 'renderMfaEnroll', params);
   if (parts[0] === 'login') return view('auth', 'renderLogin');
   if (parts[0] === 'registro') return view('auth', 'renderSignup', params);
   // El pase de Google va en la ruta (no en la URL de la API) y solo sirve en este navegador (cookie cp_gpass).

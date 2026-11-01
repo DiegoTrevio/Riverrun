@@ -36,7 +36,7 @@ async function signup(email: string, plan: string, provider: 'stripe' | 'mercado
 async function paidStripe(email: string, plan: string, subId: string) {
   const a = await signup(email, plan, 'stripe');
   const session = a.checkout.split('/').pop()!;
-  fake.stripe.subs[subId] = stripeSub({ id: subId, customer: `cus_${subId}`, metadata: { account_id: a.accountId, plan_key: plan }, items: { data: [{ id: `si_${subId}`, price: { id: `price_${plan}` } }] } });
+  fake.stripe.subs[subId] = stripeSub({ id: subId, customer: `cus_${subId}`, metadata: { account_id: a.accountId, plan_key: plan }, items: { data: [{ id: `si_${subId}`, price: { id: `price_${plan}`, product: `riverrun_${plan}` } }] } });
   Object.assign(fake.stripe.sessions[session], { status: 'complete', subscription: subId });
   assert.equal((await a.api('POST', '/api/billing/confirm')).json().confirmed, true);
   return a;
@@ -128,7 +128,8 @@ t('Stripe: de mensual a anual en el mismo paso; mismo plan, plan inexistente, ag
   try {
     const r = await a.api('POST', '/api/billing/change', { plan: 'anual' });
     assert.equal(r.statusCode, 502);
-    assert.match(r.json().error, /tarjeta fue rechazada/);
+    assert.match(r.json().error, /No pudimos completar el cambio.*referencia R-/, 'el texto del proveedor no llega al cliente (PAY-12)');
+    assert.doesNotMatch(r.json().error, /tarjeta fue rechazada/);
   } finally {
     fake.stripe.fail = false;
   }
@@ -136,6 +137,7 @@ t('Stripe: de mensual a anual en el mismo paso; mismo plan, plan inexistente, ag
 
   assert.equal((await a.api('POST', '/api/billing/change', { plan: 'anual' })).statusCode, 200);
   assert.equal(lastStripe('/v1/subscriptions/sub_ana').get('items[0][price_data][recurring][interval]'), 'year');
+  assert.equal(lastStripe('/v1/subscriptions/sub_ana').get('proration_behavior'), 'always_invoice', 'mensual → anual es subir: se cobra hoy con prorrateo (PAY-11)');
   assert.equal(await planOf(a.accountId), 'anual');
 
   // Con la cancelación pendiente, primero hay que mantener el plan.
@@ -194,6 +196,37 @@ t('Stripe con un cobro fallido sí puede subir de plan: el cobro de la diferenci
   const r = await a.api('POST', '/api/billing/change', { plan: 'pro' });
   assert.equal(r.statusCode, 200, r.body);
   assert.equal(lastStripe('/v1/subscriptions/sub_pia').get('payment_behavior'), 'error_if_incomplete', 'si el cobro falla, no cambia nada');
+});
+
+t('Stripe: de anual a mensual se programa para el fin del año pagado, sin reembolso; elegir el actual lo deshace (PAY-11)', async () => {
+  const a = await paidStripe('ana2@salon.mx', 'anual', 'sub_ana2');
+  fake.stripe.subs.sub_ana2.items.data[0].price = { id: 'price_anual', product: 'riverrun_anual', recurring: { interval: 'year' } };
+  const posts = () => fake.stripe.requests.filter((x) => x.method === 'POST' && x.path === '/v1/subscriptions/sub_ana2').length;
+  const before = posts();
+  const r = await a.api('POST', '/api/billing/change', { plan: 'pro' });
+  assert.equal(r.statusCode, 200, r.body);
+  assert.equal(r.json().scheduled, true);
+  assert.equal(posts(), before, 'la suscripción no cambia hoy');
+  const schedId = fake.stripe.subs.sub_ana2.schedule;
+  const upd = fake.stripe.schedules[schedId].update as URLSearchParams;
+  assert.equal(upd.get('phases[0][items][0][price]'), 'price_anual');
+  assert.equal(upd.get('phases[1][items][0][price_data][recurring][interval]'), 'month');
+  assert.equal(upd.get('proration_behavior'), 'none');
+  assert.equal(upd.get('end_behavior'), 'release');
+  let sub = await subOf(a.accountId);
+  assert.deepEqual([sub.plan_key, sub.pending_plan_key, await planOf(a.accountId)], ['anual', 'pro', 'anual']);
+  assert.equal((await a.api('POST', '/api/billing/change', { plan: 'pro' })).statusCode, 400, 'ya está programado');
+  // Elegir el plan actual deshace el cambio.
+  assert.equal((await a.api('POST', '/api/billing/change', { plan: 'anual' })).statusCode, 200);
+  assert.equal(fake.stripe.schedules[schedId].status, 'released');
+  assert.equal((await subOf(a.accountId)).pending_plan_key, '');
+  // Se programa otra vez y llega la renovación con el precio mensual: el plan cambia y deja de estar pendiente.
+  assert.equal((await a.api('POST', '/api/billing/change', { plan: 'pro' })).statusCode, 200);
+  fake.stripe.subs.sub_ana2.items.data[0].price = { id: 'price_m', product: 'riverrun_pro', recurring: { interval: 'month' } };
+  const e = (await import('./billing-fakes.js')).stripeEvent('customer.subscription.updated', fake.stripe.subs.sub_ana2);
+  assert.equal((await h.app.inject({ method: 'POST', url: '/webhook/billing/stripe', payload: e.payload, headers: e.headers })).statusCode, 200);
+  sub = await subOf(a.accountId);
+  assert.deepEqual([sub.plan_key, sub.pending_plan_key, await planOf(a.accountId)], ['pro', '', 'pro']);
 });
 
 t('Mercado Pago: subir cambiando de mensual a anual da el plan nuevo con el primer cobro de la sustitución, no al autorizarla', async () => {

@@ -2,17 +2,18 @@ import { googleConfigured } from '../integrations/google.js';
 import { baseFor, brandByDomain, hostOf, linkBase, mailBrand } from '../brands.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { hashPassword, ipKey, rateLimited } from '../auth.js';
+import { hashPassword, ipKey } from '../auth.js';
 import { beginLogin } from '../identity/mfa.js';
 import { forgetTrustedDevices } from '../identity/devices.js';
-import { clearHits, countHit, releaseHit } from '../identity/rate-limit.js';
+import { clearHits, countHit, ipLimitKey, limited, releaseHit } from '../identity/rate-limit.js';
 import { notifyPlatform } from '../platform/digest.js';
-import { query } from '../db.js';
+import { query, queryOne } from '../db.js';
 import { notifyUser } from '../identity/notices.js';
 import { billingEnabled, payable } from '../billing/service.js';
 import { cardRequired } from '../billing/card-check.js';
 import { config } from '../config.js';
 import { withTransaction } from '../db.js';
+import { resetMfa } from '../identity/reset-mfa.js';
 import { notifySuperadmins } from '../lifecycle.js';
 import { logEvent } from '../logs.js';
 import { sendMail } from '../mailer.js';
@@ -142,7 +143,16 @@ export async function signupRoutes(app: FastifyInstance) {
     if (b.website) throw new HttpError(400, 'No se pudo completar el registro');
     if (isDisposableEmail(b.email)) throw new HttpError(400, DISPOSABLE_MESSAGE);
     await assertCaptcha(b.turnstile_token, req.ip);
-    if (await store.getUserForLogin(b.email)) throw new HttpError(409, 'Ya existe una cuenta con ese correo. Inicia sesión o recupera tu contraseña.');
+    const taken = await store.getUserForLogin(b.email);
+    if (taken) {
+      // Al titular le llega el aviso (una vez por hora): si no fue él, alguien prueba su correo.
+      if ((await countHit(`signup-taken:${b.email.toLowerCase()}`, HOUR)) === 1) {
+        const { fromName } = await mailBrand(taken.account_id);
+        await sendMail({ fromName, to: taken.email, subject: 'Alguien intentó registrarse con tu correo',
+          text: `Hola ${taken.name || ''},\n\nAlguien intentó crear una cuenta nueva con tu correo. Ya tienes una, así que no se creó nada. Si fuiste tú, entra con tu contraseña (o recupérala). Si no, no tienes que hacer nada.` }).catch(() => undefined);
+      }
+      throw new HttpError(409, 'Ya existe una cuenta con ese correo. Inicia sesión o recupera tu contraseña.');
+    }
     await assertPasswordAllowed(b.password, { email: b.email, businessName: b.company });
     // El plan se revisa antes de crear la cuenta: un plan o forma de pago que no existe no deja una cuenta a medias.
     const purchase = b.plan ? await payable(b.plan, b.provider) : null;
@@ -181,7 +191,7 @@ export async function signupRoutes(app: FastifyInstance) {
   });
 
   app.post('/api/verify-email', async (req, reply) => {
-    if (rateLimited(`verify:${req.ip}`, 20, HOUR)) return reply.code(429).send({ error: 'Demasiados intentos, intenta más tarde' });
+    if (await limited(ipLimitKey('verify', req.ip), 20, HOUR)) return reply.code(429).send({ error: 'Demasiados intentos, intenta más tarde' });
     const { token } = parse(z.object({ token: z.string().min(10).max(200) }), req.body);
     const userId = await store.consumeAuthToken(token, 'verify_email');
     if (!userId) throw new HttpError(400, 'El enlace no es válido o ya venció. Pide uno nuevo desde tu panel.');
@@ -204,7 +214,7 @@ export async function signupRoutes(app: FastifyInstance) {
   });
 
   app.post('/api/reset-password', async (req, reply) => {
-    if (rateLimited(`reset:${req.ip}`, 10, HOUR)) return reply.code(429).send({ error: 'Demasiados intentos, intenta más tarde' });
+    if (await limited(ipLimitKey('reset', req.ip), 10, HOUR)) return reply.code(429).send({ error: 'Demasiados intentos, intenta más tarde' });
     const b = parse(z.object({ token: z.string().min(10).max(200), password: Password }), req.body);
     // La contraseña se revisa antes de gastar el enlace: si no sirve, puede elegir otra con el mismo.
     const owner = await store.peekAuthToken(b.token, 'reset_password');
@@ -222,6 +232,13 @@ export async function signupRoutes(app: FastifyInstance) {
     await store.markEmailVerified(userId);
     await query(`UPDATE users SET mfa_locked_until = NULL WHERE id = $1`, [userId]);
     await clearHits(`mfa-user:${userId}`);
+    // Una app que se configuró sin pasar por el correo (solo con la contraseña) puede ser de quien la filtró: se quita y se
+    // configura otra vez, ya con el enlace al correo (ID-16).
+    const unproven = await queryOne(`SELECT 1 FROM users WHERE id = $1 AND totp_enabled_at IS NOT NULL AND NOT totp_email_confirmed`, [userId]);
+    if (unproven) {
+      await resetMfa(userId);
+      await logEvent({ level: 'warn', source: 'admin', message: 'Contraseña restablecida por correo: se quitó la app de verificación que no se había configurado por correo', details: { user_id: userId } });
+    }
     await logEvent({ level: 'info', source: 'admin', message: 'Contraseña restablecida por correo', details: { user_id: userId } });
     // No abre sesión: después entra con su contraseña nueva y su código.
     const user = await store.getUser(userId);

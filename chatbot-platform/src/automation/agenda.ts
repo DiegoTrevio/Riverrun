@@ -299,7 +299,8 @@ export class Agenda {
     if (service.notify_team && !simulated) {
       await this.chat.automator.alertTeam(o.accountId, {
         title: `📅 ${kindName} agendada: ${service.name}`,
-        body: `${result.customer_name || 'Cliente'}${result.customer_phone ? ` (+${result.customer_phone.replace(/^\+/, '')})` : ''} · ${when}${o.source === 'bot' ? ' · agendada por el bot' : ''}`,
+        // El nombre lo escribe el cliente: va entre « » para que se lea como texto suyo (IN-18).
+        body: `${result.customer_name ? `«${result.customer_name}»` : 'Cliente'}${result.customer_phone ? ` (+${result.customer_phone.replace(/^\+/, '')})` : ''} · ${when}${o.source === 'bot' ? ' · agendada por el bot' : ''}`,
         link: o.conversation ? `#/conversation/${o.conversation.id}` : '#/agenda',
         userIds: result.assigned_user_id ? [result.assigned_user_id] : undefined,
         staffId: result.assigned_user_id ?? null,

@@ -7,11 +7,11 @@
  * el teléfono se acepta en cualquier formato, cada error trae un `code` estable y los campos con problema, y un POST/PUT
  * con Idempotency-Key se puede reintentar sin duplicar nada.
  */
+import { ipLimitKey, limited } from '../identity/rate-limit.js';
 import crypto from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { HttpError } from '../access.js';
-import { rateLimited } from '../auth.js';
 import { query, queryOne } from '../db.js';
 import { deepClean } from '../engine/text.js';
 import { cleanFieldValue, listContactFields, type ContactField } from '../contacts/fields.js';
@@ -161,17 +161,21 @@ export async function apiV1Routes(app: FastifyInstance, service: ChatService) {
   await app.register(
     async (v1) => {
       v1.addHook('preHandler', async (req, reply) => {
-        if (rateLimited(`apiip:${req.ip}`, 600, 60_000)) return reply.code(429).header('retry-after', '60').send({ error: 'Demasiadas solicitudes desde esta conexión', code: 'rate_limited' });
+        if (await limited(ipLimitKey('apiip', req.ip), 600, 60_000)) return reply.code(429).header('retry-after', '60').send({ error: 'Demasiadas solicitudes desde esta conexión', code: 'rate_limited' });
         const m = /^Bearer\s+(rr_[\w-]{20,})$/.exec(String(req.headers.authorization ?? ''));
         if (!m) return reply.code(401).header('www-authenticate', 'Bearer').send({ error: 'Falta la llave: Authorization: Bearer rr_…', code: 'missing_key' });
         const k = await queryOne<{ id: string; account_id: string; scope: 'read' | 'write'; name: string; active: boolean; status: string }>(
-          `SELECT k.id, k.account_id, k.scope, k.name, a.active, a.status FROM api_keys k JOIN accounts a ON a.id = k.account_id WHERE k.key_hash = $1 AND k.revoked_at IS NULL`,
+          // La llave vale lo que su creador: un administrador activo de esa cuenta (o el superadministrador). Si dejó de
+          // serlo por un camino que no la revocó, deja de entrar.
+          `SELECT k.id, k.account_id, k.scope, k.name, a.active, a.status FROM api_keys k JOIN accounts a ON a.id = k.account_id
+             JOIN users u ON u.id = k.created_by AND u.active AND (u.role = 'superadmin' OR (u.role = 'admin' AND u.account_id = k.account_id))
+            WHERE k.key_hash = $1 AND k.revoked_at IS NULL`,
           [hashKey(m[1])],
         );
         if (!k) return reply.code(401).send({ error: 'Llave inválida o revocada', code: 'invalid_key' });
         if (!k.active) return reply.code(403).send({ error: 'La cuenta está desactivada', code: 'account_inactive' });
         const write = req.method !== 'GET';
-        if (rateLimited(`apikey:${k.id}${write ? ':w' : ''}`, write ? 60 : 300, 60_000)) return reply.code(429).header('retry-after', '60').send({ error: 'Demasiadas solicitudes: espera un minuto', code: 'rate_limited' });
+        if (await limited(`apikey:${k.id}${write ? ':w' : ''}`, write ? 60 : 300, 60_000)) return reply.code(429).header('retry-after', '60').send({ error: 'Demasiadas solicitudes: espera un minuto', code: 'rate_limited' });
         if (write && k.scope !== 'write') return reply.code(403).send({ error: 'Esta llave es de solo lectura: crea una de lectura y escritura en Integraciones', code: 'read_only_key' });
         if (write && k.status === 'paused') return reply.code(402).send({ error: 'La cuenta está en pausa: regulariza tu plan para escribir por la API', code: 'account_paused' });
         req.apiKey = { id: k.id, account_id: k.account_id, scope: k.scope, name: k.name };

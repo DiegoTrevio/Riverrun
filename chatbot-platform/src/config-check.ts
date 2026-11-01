@@ -52,7 +52,7 @@ export interface ConfigReport {
 /** Variables cuyo valor es secreto: nunca se muestran (ni en el panel ni en los registros). */
 export const SECRET_VARS = [
   'DATABASE_URL', 'POSTGRES_PASSWORD', 'SESSION_SECRET', 'ADMIN_PASSWORD', 'EVOLUTION_API_KEY', 'OPENROUTER_API_KEY', 'OPENAI_API_KEY',
-  'SMTP_URL', 'STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'MERCADOPAGO_ACCESS_TOKEN', 'MERCADOPAGO_WEBHOOK_SECRET',
+  'SMTP_URL', 'RESEND_API_KEY', 'STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'MERCADOPAGO_ACCESS_TOKEN', 'MERCADOPAGO_WEBHOOK_SECRET',
   'GOOGLE_CLIENT_SECRET', 'MICROSOFT_CLIENT_SECRET', 'ZERNIO_API_KEY', 'META_APP_SECRET', 'META_VERIFY_TOKEN', 'BACKUP_PASSPHRASE', 'BACKUP_S3_SECRET', 'HEARTBEAT_URL', 'ALERT_WEBHOOK_URL',
   'TURNSTILE_SECRET_KEY', 'FACTURAPI_API_KEY',
 ] as const;
@@ -121,6 +121,7 @@ const NUMBERS: { name: string; min: number; max: number; int?: boolean; area: Ar
   { name: 'TRIAL_MAX_USERS', min: 0, max: 1e6, int: true, area: 'core', what: 'límite de usuarios de la prueba' },
   { name: 'TRIAL_MAX_CHATBOTS', min: 0, max: 1e6, int: true, area: 'core', what: 'límite de asistentes de la prueba' },
   { name: 'TRIAL_MAX_SOCIAL_ACCOUNTS', min: 0, max: 1e6, int: true, area: 'core', what: 'límite de redes sociales conectadas de la prueba' },
+  { name: 'TRIAL_AI_USD', min: 0, max: 1e6, area: 'core', what: 'gasto de IA al mes de la prueba (USD)' },
   { name: 'BILLING_GRACE_DAYS', min: 0, max: 365, int: true, area: 'billing', what: 'días de gracia de cobro' },
   { name: 'BILLING_TAX_PERCENT', min: 0, max: 100, area: 'billing', what: 'IVA que se suma al precio de los planes (%)' },
   { name: 'CFDI_MAX_ATTEMPTS', min: 1, max: 100, int: true, area: 'billing', what: 'intentos para emitir un CFDI' },
@@ -583,6 +584,8 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
 
   /* ------------------------------ Correo ------------------------------ */
   const smtp = get('SMTP_URL');
+  // RESEND_API_KEY sin SMTP_URL: se usa el SMTP de Resend con esa llave.
+  const mailOn = !!smtp || !!get('RESEND_API_KEY');
   const smtpValid = !smtp || SMTP.safeParse(smtp).success;
   if (!smtpValid) add(
     'warning',
@@ -594,22 +597,22 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
   );
   const signup = flag('SIGNUP_ENABLED', true);
   const requireEmail = flag('SIGNUP_REQUIRE_EMAIL', true);
-  if (!smtp) {
+  if (!mailOn) {
     if (signup && requireEmail) add(
       prod ? 'warning' : 'optional',
       'email',
       'smtp.verification_blocked',
-      ['SMTP_URL', 'SIGNUP_REQUIRE_EMAIL'],
-      'Sin SMTP_URL no salen correos, pero SIGNUP_REQUIRE_EMAIL=true: nadie podrá confirmar su correo ni conectar canales reales.',
-      'Configura SMTP_URL o pon SIGNUP_REQUIRE_EMAIL=false.',
+      ['RESEND_API_KEY', 'SMTP_URL', 'SIGNUP_REQUIRE_EMAIL'],
+      'Sin RESEND_API_KEY ni SMTP_URL no salen correos, pero SIGNUP_REQUIRE_EMAIL=true: nadie podrá confirmar su correo ni conectar canales reales.',
+      'Pon RESEND_API_KEY (resend.com → API Keys) o SMTP_URL, o SIGNUP_REQUIRE_EMAIL=false.',
     );
     else add(
       'optional',
       'email',
       'smtp.disabled',
-      ['SMTP_URL'],
+      ['RESEND_API_KEY', 'SMTP_URL'],
       'Correo saliente apagado: los correos (avisos, recuperación de contraseña) solo quedan en el registro.',
-      'Configura SMTP_URL para enviarlos.',
+      'Pon RESEND_API_KEY (resend.com → API Keys) o SMTP_URL para enviarlos.',
     );
   } else if (smtpValid && !has('MAIL_FROM')) {
     add(
@@ -621,6 +624,15 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
       'Define MAIL_FROM con un remitente de tu dominio, p. ej. "Tu Marca <no-responder@tudominio.com>".',
     );
   }
+  if (mailOn && has('MAIL_FROM') && !/@[^@\s>]+\.[^@\s>]+>?\s*$/.test(get('MAIL_FROM'))) add(
+    prod ? 'warning' : 'optional',
+    'email',
+    'mail_from.no_domain',
+    ['MAIL_FROM'],
+    'MAIL_FROM no tiene un dominio real (p. ej. @localhost): los correos irán a spam o serán rechazados.',
+    'Usa una dirección de tu dominio verificado en el proveedor, p. ej. "Tu Marca <no-responder@tudominio.com>".',
+  );
+
   if (has('SUPERADMIN_EMAIL') && !EMAIL.safeParse(get('SUPERADMIN_EMAIL').trim()).success) add(
     'warning',
     'monitoring',
@@ -629,7 +641,7 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
     'SUPERADMIN_EMAIL no es un correo válido: no llegarán las alertas ni los avisos.',
     'Corrígelo.',
   );
-  services.push({ id: 'email', label: 'Correo saliente (SMTP)', area: 'email', state: !smtp ? 'disabled' : smtpValid ? 'configured' : 'invalid', detail: !smtp ? 'Opcional, apagado' : smtpValid ? 'Servidor definido' : 'Dirección no válida' });
+  services.push({ id: 'email', label: smtp || !mailOn ? 'Correo saliente (SMTP)' : 'Correo saliente (Resend)', area: 'email', state: !mailOn ? 'disabled' : smtpValid ? 'configured' : 'invalid', detail: !mailOn ? 'Opcional, apagado' : !smtp ? 'Llave de Resend definida' : smtpValid ? 'Servidor definido' : 'Dirección no válida' });
 
   /* ------------------------------ Hash de contraseñas ------------------------------ */
   // `test` es solo para la suite: con él, una base filtrada se adivina mucho más rápido.
@@ -703,8 +715,10 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
         'billing',
         `${id}.incomplete`,
         [keyVar, hookVar],
-        `${label} está a medias: falta ${!key ? keyVar : hookVar}, así que queda desactivado aunque parezca configurado.`,
-        `Define ambas (${keyVar} y ${hookVar}) o bórralas.`,
+        !key ? `${label} está a medias: falta ${keyVar}, así que queda desactivado aunque parezca configurado.`
+          : `${label}: falta el secreto del webhook (${hookVar}). Sin él no se reciben los avisos de pago.`,
+        !key ? `Define ambas (${keyVar} y ${hookVar}) o bórralas.`
+          : `En el panel, Planes y cobro → ${label}: ${id === 'stripe' ? '«Configurar webhook en Stripe» lo crea y guarda su secreto' : 'pega la «Clave secreta» de Tus integraciones → Webhooks'} (o define ${hookVar}).`,
       );
       services.push({ id, label, area: 'billing', state: 'incomplete', detail: `Falta ${!key ? keyVar : hookVar}` });
       return;
@@ -818,6 +832,17 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
     );
     services.push({ id: 'google', label: 'Google (Calendar e inicio de sesión)', area: 'integrations', state: 'incomplete', detail: 'Falta una credencial' });
   } else {
+    // En producción, los servidores de Google son los oficiales: con otro, quien lo controle firma inicios de sesión.
+    for (const [name, official] of [['GOOGLE_OAUTH_URL', 'https://oauth2.googleapis.com'], ['GOOGLE_AUTH_URL', 'https://accounts.google.com/o/oauth2/v2/auth']] as const) {
+      if (prod && get(name) && get(name).replace(/\/$/, '') !== official) add(
+        'critical',
+        'integrations',
+        'google.unofficial_url',
+        [name],
+        `${name} apunta a ${get(name)}, que no es el servidor oficial de Google: el inicio de sesión con Google confiaría en lo que ese servidor diga.`,
+        `Bórrala (se usa ${official}); solo sirve para pruebas.`,
+      );
+    }
     if (!gid.endsWith('.apps.googleusercontent.com')) add(
       'warning',
       'integrations',
@@ -934,15 +959,15 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
     `ALERT_MUTE silencia sin fecha de fin: ${mute.forever.join(', ')}. No vuelven a avisar solos.`,
     'Pon una fecha de fin: componente=AAAA-MM-DDTHH:MM:SSZ.',
   );
-  const alertEmail = has('SUPERADMIN_EMAIL') && !!smtp && smtpValid;
+  const alertEmail = has('SUPERADMIN_EMAIL') && mailOn && smtpValid;
   const alertHook = has('ALERT_WEBHOOK_URL');
   if (prod && !alertEmail && !alertHook) add(
     'warning',
     'monitoring',
     'alerts.none',
-    ['SUPERADMIN_EMAIL', 'SMTP_URL', 'ALERT_WEBHOOK_URL'],
+    ['SUPERADMIN_EMAIL', 'RESEND_API_KEY', 'SMTP_URL', 'ALERT_WEBHOOK_URL'],
     'Nadie recibe las alertas: si algo falla (WhatsApp, respaldos, disco), solo se ve entrando al panel.',
-    'Configura SUPERADMIN_EMAIL + SMTP_URL o ALERT_WEBHOOK_URL (Slack, Discord, ntfy…).',
+    'Configura SUPERADMIN_EMAIL + RESEND_API_KEY (o SMTP_URL), o ALERT_WEBHOOK_URL (Slack, Discord, ntfy…).',
   );
   if (!has('HEARTBEAT_URL')) add(
     'optional',

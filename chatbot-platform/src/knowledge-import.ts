@@ -3,6 +3,7 @@
  * un archivo de texto/CSV, una hoja de Google Sheets o texto pegado. La IA solo ordena lo que ya existe en la fuente
  * en las secciones de conocimiento; el cliente lo revisa antes de guardarlo.
  */
+import { limited } from './identity/rate-limit.js';
 import dns from 'node:dns/promises';
 import http from 'node:http';
 import https from 'node:https';
@@ -340,17 +341,7 @@ export async function importKnowledge(ai: AiProvider, source: Source, hint = '')
   };
 }
 
-/** Límite de importaciones por cuenta (cada una gasta IA): 20 por hora. */
-const hits = new Map<string, number[]>();
-export function checkImportRate(accountId: string, now = Date.now()) {
-  const recent = (hits.get(accountId) ?? []).filter((t) => now - t < 3_600_000);
-  if (recent.length >= 20) throw new HttpError(429, 'Hiciste muchas importaciones seguidas. Intenta de nuevo en un rato.');
-  recent.push(now);
-  hits.set(accountId, recent);
+/** Límite de importaciones por cuenta (cada una gasta IA): 20 por hora. En la base (todos los procesos). */
+export async function checkImportRate(accountId: string) {
+  if (await limited(`ai-import:${accountId}`, 20, 3_600_000)) throw new HttpError(429, 'Hiciste muchas importaciones seguidas. Intenta de nuevo en un rato.');
 }
-
-/** Olvida las cuentas sin importaciones en la última hora (antes el mapa nunca se limpiaba). */
-export function pruneImportRate(now = Date.now()) {
-  for (const [k, v] of hits) if (!v.some((t) => now - t < 3_600_000)) hits.delete(k);
-}
-setInterval(() => pruneImportRate(), 60_000).unref();

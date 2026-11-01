@@ -7,7 +7,7 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 // Orden obligatorio: los simulados fijan las claves y URLs ANTES de que el arnés cargue la configuración.
-const { fake } = await import('./billing-fakes.js');
+const { fake, stripeEvent, stripeSub } = await import('./billing-fakes.js');
 const { createHarness, dbAvailable, pool } = await import('./harness.js');
 
 const ok = await dbAvailable();
@@ -252,4 +252,49 @@ t('las páginas de tarjeta por sustitución (Mercado Pago: cambiar tarjeta) cuen
   } finally {
     await pool.query(`UPDATE rate_limits SET expires_at = now() WHERE key LIKE 'card-check-brake%'`);
   }
+});
+
+t('el portal de Stripe (y «cambiar tarjeta» en Stripe) tiene su tope por cuenta y respeta el freno, sin contar como verificación (PAY-18)', async () => {
+  const a = await waiting('portal@tarjeta.mx');
+  await seed(a.accountId, 0, 0);
+  await pool.query(`INSERT INTO subscriptions (account_id, provider, plan_key, status, provider_customer_id, provider_subscription_id, current_period_end)
+                    VALUES ($1, 'stripe', 'pro', 'active', 'cus_portal', 'sub_portal', now() + interval '30 days')
+                    ON CONFLICT (account_id) DO UPDATE SET provider = 'stripe', status = 'active', provider_customer_id = 'cus_portal', provider_subscription_id = 'sub_portal'`, [a.accountId]);
+  const before = await checks(a.accountId);
+  for (const path of ['/api/billing/portal', '/api/billing/payment-method']) {
+    const r = await a.as('POST', path);
+    assert.equal(r.statusCode, 200, `${path}: ${r.body}`);
+    assert.ok(r.json().url, path);
+  }
+  assert.equal(await checks(a.accountId), before, 'ver facturas no es una verificación abierta (no alimenta el freno)');
+  await setHits(`billing-portal-acct:${a.accountId}`, 10);
+  for (const path of ['/api/billing/portal', '/api/billing/payment-method']) {
+    const r = await a.as('POST', path);
+    assert.equal(r.statusCode, 429, `${path}: ${r.body}`);
+    assert.equal(r.json().error, 'Intenta más tarde');
+  }
+  await pool.query(`UPDATE rate_limits SET hits = 0 WHERE key = $1`, [`billing-portal-acct:${a.accountId}`]);
+  await pool.query(`INSERT INTO rate_limits (key, hits, expires_at) VALUES ('card-check-brake', 1, now() + interval '1 hour') ON CONFLICT (key) DO UPDATE SET hits = 1, expires_at = now() + interval '1 hour'`);
+  try {
+    assert.equal((await a.as('POST', '/api/billing/portal')).statusCode, 429, 'con el freno puesto tampoco');
+  } finally {
+    await pool.query(`UPDATE rate_limits SET expires_at = now() WHERE key LIKE 'card-check-brake%'`);
+  }
+});
+
+t('avisos repetidos de una suscripción que ya estaba activa no dan por completas las verificaciones abiertas (el freno no se diluye)', async () => {
+  const a = await waiting('diluye@tarjeta.mx');
+  await pool.query(`INSERT INTO subscriptions (account_id, provider, plan_key, status, provider_customer_id, provider_subscription_id, current_period_end)
+                    VALUES ($1, 'stripe', 'pro', 'active', 'cus_diluye', 'sub_diluye', now() + interval '30 days')
+                    ON CONFLICT (account_id) DO UPDATE SET provider = 'stripe', status = 'active', provider_customer_id = 'cus_diluye', provider_subscription_id = 'sub_diluye'`, [a.accountId]);
+  await pool.query(`UPDATE accounts SET status = 'active', pause_reason = '' WHERE id = $1`, [a.accountId]);
+  await pool.query(`INSERT INTO card_checks (account_id, provider, plan_key, ref, url, ip_key) SELECT $1, 'stripe', 'pro', 'cs_' || g, '', 'x' FROM generate_series(1, 3) g`, [a.accountId]);
+  fake.stripe.subs.sub_diluye = stripeSub({ id: 'sub_diluye', customer: 'cus_diluye', status: 'active', metadata: { account_id: a.accountId, plan_key: 'pro' } });
+  for (const [i, cancel] of [[1, true], [2, false], [3, true]] as const) {
+    fake.stripe.subs.sub_diluye.cancel_at_period_end = cancel;
+    const e = stripeEvent('customer.subscription.updated', fake.stripe.subs.sub_diluye, `evt_diluye_${i}`);
+    assert.equal((await h.app.inject({ method: 'POST', url: '/webhook/billing/stripe', payload: e.payload, headers: e.headers })).statusCode, 200);
+  }
+  const open = (await pool.query(`SELECT count(*)::int AS n FROM card_checks WHERE account_id = $1 AND completed_at IS NULL`, [a.accountId])).rows[0].n;
+  assert.equal(open, 3, 'siguen abiertas: ninguna se completó con esos avisos');
 });

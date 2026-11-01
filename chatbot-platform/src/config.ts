@@ -179,7 +179,11 @@ export const config = {
   },
   /** Correo saliente (verificación, recuperación de contraseña, avisos). Sin SMTP_URL, los correos van al registro. */
   mail: {
-    smtpUrl: env('SMTP_URL', ''),
+    /** SMTP_URL manda; si no hay y sí hay RESEND_API_KEY, se usa el SMTP de Resend con esa llave. */
+    smtpUrl: env('SMTP_URL', '') || (env('RESEND_API_KEY', '') ? `smtps://resend:${encodeURIComponent(env('RESEND_API_KEY', ''))}@smtp.resend.com:465` : ''),
+    /** Llave de Resend (también sirve para revisar en su API si el dominio del remitente está verificado). */
+    resendApiKey: env('RESEND_API_KEY', ''),
+    provider: (env('SMTP_URL', '') ? 'smtp' : env('RESEND_API_KEY', '') ? 'resend' : '') as 'smtp' | 'resend' | '',
     from: env('MAIL_FROM', 'Chatbots <no-responder@localhost>'),
   },
   /** Autoregistro de empresas. */
@@ -204,7 +208,17 @@ export const config = {
       users: Number(env('TRIAL_MAX_USERS', '3')),
       chatbots: Number(env('TRIAL_MAX_CHATBOTS', '2')),
       socialAccounts: Number(env('TRIAL_MAX_SOCIAL_ACCOUNTS', '2')),
+      /** Archivos que sube una cuenta en prueba (IN-19). */
+      storageMb: Number(env('TRIAL_MAX_STORAGE_MB', '200')),
     },
+    /**
+     * Topes de un plan que no tiene los suyos (0 = sin tope): gasto de IA al mes en USD y megabytes de archivos. El
+     * superadmin los cambia por plan en Planes y cobro; estos aplican mientras el plan los deje vacíos.
+     */
+    planDefaultAiUsd: Number(env('PLAN_DEFAULT_AI_USD', '20')),
+    planDefaultStorageMb: Number(env('PLAN_DEFAULT_STORAGE_MB', '1024')),
+    /** Gasto de IA al mes de una cuenta en prueba, en USD (0 = sin tope). Los planes llevan el suyo (PAY-20). */
+    trialAiUsd: Number(env('TRIAL_AI_USD', '5')),
     /** Direcciones públicas de tus términos y tu aviso de privacidad (se enlazan en el registro). */
     termsUrl: env('TERMS_URL', ''),
     privacyUrl: env('PRIVACY_URL', ''),

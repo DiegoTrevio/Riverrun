@@ -309,3 +309,23 @@ test('en producción el registro público pide Turnstile (aviso); sin cobro, las
   assert.ok(ids(installed(), 'optional').includes('signup.no_billing'), 'sin Stripe ni Mercado Pago');
   assert.ok(!ids(installed({ STRIPE_SECRET_KEY: 'sk_test_1', STRIPE_WEBHOOK_SECRET: 'whsec_1' })).includes('signup.no_billing'));
 });
+
+test('Google: en producción, GOOGLE_OAUTH_URL o GOOGLE_AUTH_URL distintos de los oficiales impiden arrancar (bajos de la 2c)', () => {
+  const g = { GOOGLE_CLIENT_ID: 'x.apps.googleusercontent.com', GOOGLE_CLIENT_SECRET: 's' };
+  assert.ok(ids(installed({ ...g, GOOGLE_OAUTH_URL: 'https://google.evil.example' }), 'critical').includes('google.unofficial_url'));
+  assert.ok(ids(installed({ ...g, GOOGLE_AUTH_URL: 'http://127.0.0.1:9/auth' }), 'critical').includes('google.unofficial_url'));
+  assert.ok(!ids(installed({ ...g, GOOGLE_OAUTH_URL: 'https://oauth2.googleapis.com/' })).includes('google.unofficial_url'), 'la oficial, con o sin diagonal');
+  assert.ok(!ids(installed(g)).includes('google.unofficial_url'), 'sin definirlas se usan las oficiales');
+  assert.ok(!ids({ ...installed({ ...g, GOOGLE_OAUTH_URL: 'http://127.0.0.1:9' }), NODE_ENV: 'development' }).includes('google.unofficial_url'), 'en desarrollo se permite (pruebas)');
+});
+
+test('RESEND_API_KEY cuenta como correo saliente; un MAIL_FROM sin dominio real se avisa', () => {
+  const noMail = installed({ SIGNUP_REQUIRE_EMAIL: 'true' });
+  delete noMail.SMTP_URL;
+  assert.ok(ids(noMail, 'warning').includes('smtp.verification_blocked'));
+  const resend = { ...noMail, RESEND_API_KEY: 're_llave_de_prueba', MAIL_FROM: 'Marca <hola@marca.mx>' };
+  assert.ok(!ids(resend).includes('smtp.verification_blocked'));
+  assert.ok(!ids(resend).includes('mail_from.no_domain'));
+  assert.equal(validateConfig(resend).services.find((x) => x.id === 'email')?.state, 'configured');
+  assert.ok(ids({ ...resend, MAIL_FROM: 'Marca <hola@localhost>' }).includes('mail_from.no_domain'));
+});

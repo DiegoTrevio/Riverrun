@@ -86,16 +86,22 @@ function table(r, reload) {
         h('td', { class: 'num' }, money(x.amount_cents, x.currency)),
         h('td', {}, day(x.due_date)),
         h('td', {}, h('span', { class: `badge${overdue ? ' danger' : x.status === 'paid' ? ' ok' : ''}` }, overdue ? 'Vencido' : STATUS[x.status]),
+          x.needs_approval && x.status === 'pending' ? h('div', {}, h('span', { class: 'badge warn' }, 'Por aprobar')) : null,
           x.paused_until && new Date(x.paused_until) > new Date() ? h('div', { class: 'small' }, 'Dice que ya pagó: verifícalo') : null,
           x.status === 'paid' && x.paid_at ? h('div', { class: 'small muted' }, fmtDate(x.paid_at)) : null),
         h('td', { class: 'small' }, `${x.reminders_sent} enviado${x.reminders_sent === 1 ? '' : 's'}`, x.last_reminded_at ? h('div', { class: 'muted' }, `último: ${fmtDate(x.last_reminded_at)}`) : null),
         h('td', {}, x.status === 'pending' ? h('div', { class: 'row', style: 'gap:6px;flex-wrap:wrap' },
+          // Lo que registró un agente no se le recuerda al cliente hasta que un administrador lo revisa.
+          x.needs_approval && isAdmin() ? act('Aprobar', async () => {
+            if (!(await confirmAction(`¿Aprobar el cobro «${x.concept}» de ${money(x.amount_cents, x.currency)}? Desde ahora se le recordará al cliente.`))) return;
+            if (await run(() => api('POST', `/api/receivables/${x.id}/approve`), 'Cobro aprobado')) reload();
+          }, 'small', x.concept) : null,
           act('Marcar pagado', async () => {
             const note = h('input', { placeholder: 'Opcional: cómo pagó, folio de la transferencia…' });
             if (!(await dialog(`¿Marcar «${x.concept}» como pagado?`, field('Nota', note), 'Marcar pagado'))) return;
             if (await run(() => api('POST', `/api/receivables/${x.id}/paid`, { note: note.value }), 'Cobro marcado como pagado')) reload();
           }, 'small', x.concept),
-          act('Recordar ahora', async () => { if (await run(() => api('POST', `/api/receivables/${x.id}/remind`), 'Recordatorio enviado')) reload(); }, 'small ghost', x.concept),
+          x.needs_approval ? null : act('Recordar ahora', async () => { if (await run(() => api('POST', `/api/receivables/${x.id}/remind`), 'Recordatorio enviado')) reload(); }, 'small ghost', x.concept),
           act('Editar', () => editDialog(x, reload), 'small ghost', x.concept),
           act('Cancelar', async () => {
             if (!(await confirmAction(`¿Cancelar el cobro «${x.concept}»? Ya no se le recordará al cliente.`))) return;
@@ -116,7 +122,9 @@ function receivableFields(m) {
       field('Monto', h('input', { type: 'number', min: 0.01, step: 0.01, required: true, value: m.amount_cents ? m.amount_cents / 100 : '', oninput: (e) => { m.amount_cents = Math.round(Number(e.target.value) * 100); } })),
       field('Vence', h('input', { type: 'date', required: true, value: m.due_date || '', oninput: (e) => { m.due_date = e.target.value; } }))),
     h('div', { class: 'grid' },
-      field('Enlace de pago (opcional)', text(m, 'payment_link', { type: 'url', placeholder: 'https://mpago.la/…' }), 'Si lo dejas vacío, el recordatorio lleva tus instrucciones de pago.'),
+      // El enlace decide a quién llega el pago: solo lo pone un administrador (el servidor lo rechaza a un agente).
+      isAdmin() ? field('Enlace de pago (opcional)', text(m, 'payment_link', { type: 'url', placeholder: 'https://mpago.la/…' }), 'Si lo dejas vacío, el recordatorio lleva tus instrucciones de pago.')
+        : h('p', { class: 'help' }, 'Un administrador lo revisa y lo aprueba antes de que se le recuerde al cliente. El concepto y la referencia no llevan enlaces, correos ni números de cuenta.'),
       field('Referencia (opcional)', text(m, 'reference', { maxlength: 100, placeholder: 'Folio o número de cliente' }))),
     h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: custom.on, onchange: (e) => { custom.on = e.target.checked; m.reminders = custom.on ? parseDays(custom.text) : null; drawDays(); } }), 'Usar días de recordatorio propios para este cobro'),
     daysBox,
@@ -234,8 +242,12 @@ async function plansView(root, params) {
           h('td', { class: 'num' }, money(p.amount_cents, p.currency)),
           h('td', { class: 'small' }, planWhen(p), p.max_payments ? h('div', { class: 'muted' }, `${p.payments_created} de ${p.max_payments} pagos`) : p.ends_on ? h('div', { class: 'muted' }, `hasta ${day(p.ends_on)}`) : null),
           h('td', {}, p.next_due ? day(p.next_due) : '—'),
-          h('td', {}, h('span', { class: `badge${p.active ? ' ok' : ''}` }, p.active ? 'Activo' : p.next_due === null && p.payments_created ? 'Terminado' : 'Pausado')),
+          h('td', {}, h('span', { class: `badge${p.needs_approval ? ' warn' : p.active ? ' ok' : ''}` }, p.needs_approval ? 'Por aprobar' : p.active ? 'Activo' : p.next_due === null && p.payments_created ? 'Terminado' : 'Pausado')),
           h('td', {}, h('div', { class: 'row', style: 'gap:6px;flex-wrap:wrap' },
+            p.needs_approval && isAdmin() ? h('button', { 'aria-label': `Aprobar: ${p.concept}`, onclick: async () => {
+              if (!(await confirmAction(`¿Aprobar el pago recurrente «${p.concept}» de ${money(p.amount_cents, p.currency)}? Desde ahora crea sus cobros y recordatorios.`))) return;
+              if (await run(() => api('POST', `/api/receivable-plans/${p.id}/approve`), 'Pago recurrente aprobado')) load();
+            } }, 'Aprobar') : null,
             h('button', { 'aria-label': `${p.active ? 'Pausar' : 'Reanudar'}: ${p.concept}`, onclick: async () => {
               if (await run(() => api('PUT', `/api/receivable-plans/${p.id}`, { active: !p.active }), p.active ? 'Pago recurrente pausado' : 'Pago recurrente reanudado')) load();
             } }, p.active ? 'Pausar' : 'Reanudar'),
@@ -273,7 +285,7 @@ function planForm(params, reload) {
       field('Termina (opcional)', h('input', { type: 'date', oninput: (e) => { m.ends_on = e.target.value; } })),
       field('Número de pagos (opcional)', h('input', { type: 'number', min: 1, max: 600, oninput: (e) => { m.max_payments = e.target.value; } }), 'Déjalo vacío si no tiene fin.')),
     h('div', { class: 'grid' },
-      field('Enlace de pago (opcional)', text(m, 'payment_link', { type: 'url', placeholder: 'https://mpago.la/…' })),
+      isAdmin() ? field('Enlace de pago (opcional)', text(m, 'payment_link', { type: 'url', placeholder: 'https://mpago.la/…' })) : null,
       field('Referencia (opcional)', text(m, 'reference', { maxlength: 100 }))),
     h('button', { class: 'primary', onclick: async () => {
       const amount = Math.round(Number(m.amount) * 100);

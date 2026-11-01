@@ -1,6 +1,6 @@
 import { api, check, confirmAction, field, fmtDate, h, num, run, select, text } from './core.js';
 import { render } from './main.js';
-import { withAcct } from './session.js';
+import { isSuper, withAcct } from './session.js';
 const money=n=>Number(n)>0&&Number(n)<0.0001?'US$<0.0001':`US$${Number(n||0).toFixed(4)}`;
 export async function budgetCard() {
  const current=await api('GET',withAcct('/api/ai-budget')),model=JSON.parse(JSON.stringify(current.settings));
@@ -27,7 +27,7 @@ export async function budgetCard() {
     const check={amount_usd:r.charged_usd??r.reserved_usd??0,note:''};
     return h('div',{class:'stack'},h('strong',{},r.models.join(', ')),h('p',{class:'small'},`${fmtDate(r.created_at)} · ${r.state==='reserved'?'En curso':r.state==='unknown'?'Precio desconocido':'Resultado incierto'} · reserva: ${r.reserved_usd===null?'no determinada':money(r.reserved_usd)}`),
      ...(r.state==='reserved'?[h('p',{class:'help'},'Si el proceso se interrumpió, la reserva se conserva. Revísala tras el periodo de espera.')]:[]),
-     ...(r.state!=='reserved'?[field('Importe confirmado (USD)',num(check,'amount_usd',{min:0,step:0.0001})),field('Motivo de la confirmación',text(check,'note',{placeholder:'Ej. Revisado con el proveedor'})),h('button',{class:'small',onclick:async()=>{if(await run(()=>api('POST',withAcct(`/api/ai-budget/review/${r.id}`),{...check,amount_usd:Number(check.amount_usd)}),'Importe confirmado'))render();}},'Confirmar importe')]:[]));
+     ...(r.state!=='reserved'&&isSuper()?[field('Importe confirmado (USD)',num(check,'amount_usd',{min:0,step:0.0001})),field('Motivo de la confirmación',text(check,'note',{placeholder:'Ej. Revisado con el proveedor'})),h('button',{class:'small',onclick:async()=>{if(await run(()=>api('POST',withAcct(`/api/ai-budget/review/${r.id}`),{...check,amount_usd:Number(check.amount_usd)}),'Importe confirmado'))render();}},'Confirmar importe')]:[]));
    })),
   h('p',{class:'help'},'Las reservas pueden superar el costo final, y una llamada ya enviada puede terminar después de cambiar el límite. Con presupuesto, el audio sin duración verificada no se envía.'));
 }

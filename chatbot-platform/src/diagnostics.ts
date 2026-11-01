@@ -109,7 +109,7 @@ async function probeWhatsapp(): Promise<Probe> {
 
 /** SMTP: se conecta y se autentica sin enviar nada. */
 async function probeEmail(): Promise<Probe> {
-  const label = 'Correo saliente (SMTP)';
+  const label = config.mail.provider === 'resend' ? 'Correo saliente (Resend)' : 'Correo saliente (SMTP)';
   if (!config.mail.smtpUrl) return probe('email', label, { configured: false, status: 'na', detail: 'Opcional, apagado: los correos solo quedan en el registro' });
   let t;
   try {

@@ -58,8 +58,22 @@ const EXT_BY_MIME: Record<string, string> = { 'image/jpeg': '.jpg', 'image/png':
 
 /** Nombre para descargar: sin rutas ni caracteres de control, con un máximo de 120 caracteres. */
 export function safeFileName(name: string): string {
-  const clean = name.replace(/[\\/\x00-\x1f\x7f]/g, ' ').replace(/\s+/g, ' ').trim();
+  // También sin los caracteres que invierten el texto (U+202A–202E, U+2066–2069): «factura‮fdp.exe» se vería «factura.pdf».
+  const clean = name.replace(/[\\/\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/g, ' ').replace(/\s+/g, ' ').trim();
   return truncateChars(clean, 120) || 'archivo';
+}
+
+/**
+ * Nombre para descargar un archivo de un cliente: el suyo, pero con la extensión del tipo que se detectó en el contenido
+ * (o .bin si no se reconoce). Un «foto.jpg.exe» o un «.html» disfrazado no se guarda en el equipo con su extensión.
+ */
+const DOWNLOAD_EXT: Record<string, string> = {
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx', 'text/csv': '.csv', 'text/plain': '.txt',
+  'audio/ogg': '.ogg', 'audio/mpeg': '.mp3', 'audio/mp4': '.m4a', 'audio/wav': '.wav',
+};
+export function downloadName(name: string, mime: string): string {
+  const base = safeFileName(name).replace(/\.[^.\s]{1,10}$/, '') || 'archivo';
+  return `${base}${DOWNLOAD_EXT[mime] ?? EXT_BY_MIME[mime] ?? '.bin'}`;
 }
 
 /**

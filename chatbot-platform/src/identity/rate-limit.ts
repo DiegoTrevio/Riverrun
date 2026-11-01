@@ -3,17 +3,20 @@
  * reinicio los borraba y dos peticiones simultáneas podían pasar las dos). Cada clave lleva un contador que vuelve a 1
  * cuando vence su ventana; un solo INSERT … ON CONFLICT lo hace atómico.
  */
+import { ipKey } from '../auth.js';
 import { query, queryOne } from '../db.js';
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
 
-/** Topes de acceso. Claves: `login-ip:<ipKey>`, `login-acct:<correo>`, `mfa-challenge:<reto>`, `mfa-user:<id>`. */
+/** Topes de acceso. Claves: `login-ip:<ipKey>`, `login-acct:<correo>`, `mfa-challenge:<reto>`, `mfa-user:<id>`, `mfa-session:<sesión>`. */
 export const LIMITS = {
   loginIp: { max: 8, windowMs: 15 * MIN },
   loginAccount: { max: 10, windowMs: HOUR },
   codePerChallenge: 5,
   codePerUser: { max: 10, windowMs: HOUR },
+  /** Códigos al confirmar con la sesión abierta (verificación reciente, cambiar de app): por sesión (ID-15). */
+  codePerSession: { max: 5, windowMs: 15 * MIN },
   mfaLockMs: HOUR,
 } as const;
 
@@ -47,5 +50,18 @@ export async function clearHits(...keys: string[]): Promise<void> {
 
 /** Borra los contadores vencidos (tarea periódica). */
 export async function pruneHits(): Promise<void> {
+  // Solicitudes de reserva de la página pública (IN-18): vencidas o ya usadas, a los 7 días.
+  await query(`DELETE FROM booking_requests WHERE expires_at < now() - interval '7 days'`);
   await query(`DELETE FROM rate_limits WHERE expires_at <= now()`);
 }
+
+/**
+ * ¿Ya pasó el tope? Suma el intento en la base (lo comparten todos los procesos y sobrevive a un reinicio) y dice si va
+ * por encima de `max` en la ventana. Es lo que usan las rutas; `rateLimited` (en memoria) ya no se usa en rutas.
+ */
+export async function limited(key: string, max: number, windowMs: number): Promise<boolean> {
+  return (await countHit(key, windowMs)) > max;
+}
+
+/** Clave de límite por conexión: una IPv6 cuenta por su /64 (ver `ipKey`). */
+export const ipLimitKey = (prefix: string, ip: string) => `${prefix}:${ipKey(ip)}`;

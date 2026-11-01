@@ -754,10 +754,17 @@ async function editSettings(root) {
         field('Frases con las que aceptan', lines(s.consent, 'opt_in_keywords'), 'El mensaje debe ser exactamente una de ellas.'),
         field('Respuesta al aceptar', area(s.consent, 'opt_in_message'))),
       ),
-    settingsSection('Privacidad: cuánto tiempo guardar los datos', 'El borrado es automático y no se puede deshacer (los respaldos los conservan hasta renovarse). Para una sola persona, usa «Borrar todos sus datos» en su ficha.',
+    settingsSection('Privacidad: cuánto tiempo guardar los datos', 'El borrado es automático y no se puede deshacer (los respaldos los conservan hasta renovarse). Solo el dueño lo cambia; si borra más, empieza 7 días después y le llega un correo. Para una sola persona, usa «Borrar todos sus datos» en su ficha.',
+      s.retention.pending ? h('p', { class: 'banner warn', role: 'status' }, `Programado para el ${fmtDate(s.retention.pending.effective_at)}: borrar ${[
+        s.retention.pending.messages_days ? `los mensajes con más de ${s.retention.pending.messages_days} días` : '',
+        s.retention.pending.inactive_contacts_days ? `los contactos sin actividad en ${s.retention.pending.inactive_contacts_days} días` : '',
+      ].filter(Boolean).join(' y ') || 'nada (se apaga)'}. `,
+        h('button', { type: 'button', class: 'small', onclick: async () => {
+          if (await run(() => api('PUT', withAcct('/api/settings'), { retention: { messages_days: s.retention.messages_days, inactive_contacts_days: s.retention.inactive_contacts_days, pending: null } }), 'Borrado programado cancelado')) { s.retention.pending = null; render(); }
+        } }, 'Cancelar el borrado programado')) : null,
       h('div', { class: 'grid' },
-        field('Borrar mensajes con más de … días', num(s.retention, 'messages_days', { min: 0 }), '0 = conservarlos siempre. También se limpian los resúmenes de esas conversaciones.'),
-        field('Borrar contactos sin actividad en … días', num(s.retention, 'inactive_contacts_days', { min: 0 }), '0 = nunca. No se borran contactos con citas futuras.')),
+        field('Borrar mensajes con más de … días', num(s.retention, 'messages_days', { min: 0 }), '0 = conservarlos siempre; si no, al menos 30. También se limpian los resúmenes de esas conversaciones.'),
+        field('Borrar contactos sin actividad en … días', num(s.retention, 'inactive_contacts_days', { min: 0 }), '0 = nunca; si no, al menos 30. No se borran contactos con citas futuras.')),
       ),
     settingsSection('Reparto de conversaciones por turnos (round robin)', 'Cada persona recibe un aviso en el panel (y por WhatsApp si lo activó). Quien no está disponible se salta sin perder su turno.',
       check(s.assignment, 'enabled', 'Asignar automáticamente cada conversación que pasa a una persona, una a una, entre el equipo'),

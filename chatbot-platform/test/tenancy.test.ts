@@ -201,8 +201,10 @@ t('protecciones de usuarios: no autodesactivarse, siempre queda un superadmin, c
   A.api = await h.loginAs('admin@hotel.mx', 'Pz-153-Qx-353-Kv');
   const weak = await A.api('PUT', '/api/me/password', { current: 'Pz-153-Qx-353-Kv', password: '123' });
   assert.equal(weak.statusCode, 400);
+  // Un correo que ya tiene cuenta (sin importar mayúsculas) no recibe enlace: solo el aviso, con la misma respuesta.
   const dup = await A.api('POST', '/api/invitations', { email: 'AGENTE@hotel.mx', role: 'agent' });
-  assert.equal(dup.statusCode, 409, 'correo duplicado sin importar mayúsculas');
+  assert.equal(dup.statusCode, 200, 'la respuesta no revela que ya tiene cuenta');
+  assert.equal((await pool.query(`SELECT count(*)::int AS n FROM users WHERE lower(email) = 'agente@hotel.mx'`)).rows[0].n, 1);
 });
 
 t('eliminar una cuenta borra todo lo suyo y nada de las demás', async () => {

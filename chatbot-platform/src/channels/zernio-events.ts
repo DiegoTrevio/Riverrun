@@ -8,6 +8,7 @@ import * as store from '../store/index.js';
 import type { Channel } from '../types.js';
 import { eventAccountId, eventProfileId, networkOf } from './zernio.js';
 import { handleTemplateStatus } from './zernio-templates.js';
+import { trimSocialOverLimit } from './zernio-connect.js';
 import { handleCommentEvent, handleReviewEvent } from '../social/engagement.js';
 import { handlePostEvent } from '../social/posts.js';
 import { notifyDown } from '../social/health.js';
@@ -29,10 +30,11 @@ const QUEUED_EVENTS = new Set([
 ]);
 const MAX_ATTEMPTS = 6;
 
-/** Id del evento: el de Zernio (cabecera o cuerpo) o, si no viene, la huella del cuerpo firmado. */
-export function eventIdOf(headers: Record<string, unknown>, body: any, rawBody?: Buffer): string {
-  const id = headers['x-zernio-event-id'] ?? headers['x-late-event-id'] ?? body?.id;
-  if (id != null && String(id).trim()) return String(id).slice(0, 200);
+/**
+ * Id del evento: la huella del cuerpo firmado. La cabecera con el id no va firmada: con ella, el mismo evento repetido con
+ * otro id en la cabecera se procesaba otra vez. Los reintentos de Zernio mandan el mismo cuerpo (misma huella).
+ */
+export function eventIdOf(_headers: Record<string, unknown>, body: any, rawBody?: Buffer): string {
   return `sha256:${crypto.createHash('sha256').update(rawBody ?? JSON.stringify(body ?? {})).digest('hex')}`;
 }
 
@@ -152,6 +154,13 @@ async function handleAccount(body: any, connected: boolean) {
     `INSERT INTO social_accounts (account_id, zernio_account_id, profile_id, platform, username, display_name, picture)
      VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (zernio_account_id) DO NOTHING RETURNING id`,
     [tenant, zid, eventProfileId(body), platform, String(body?.account?.username ?? ''), String(body?.account?.displayName ?? body?.account?.name ?? ''), String(body?.account?.profilePicture ?? '')]);
+  if (adopted.length) {
+    try {
+      await trimSocialOverLimit(tenant, zid);
+    } catch {
+      return;
+    }
+  }
   if (adopted.length) await logEvent({ level: 'info', source: 'channel', message: `Zernio: ${networkOf(platform)!.label} conectada desde Zernio${body?.account?.username ? ` (@${body.account.username})` : ''}; ya aparece en Redes sociales`, accountId: tenant });
 }
 
