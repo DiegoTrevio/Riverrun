@@ -25,7 +25,7 @@ su prueba está en [`seguridad.md`](seguridad.md).
 | IN-17…IN-20, IN-22, límites en la base con `ipKey` y los bajos de entradas (JSON, captcha de `/contacto`, deduplicación de Zernio, descargas, Office) | 4′ | #95 |
 | AI-14 y los bajos de IA (costo sin `cost_usd`, texto oculto al importar, respuestas automáticas en redes) | 5′ | #96 |
 | Secretos en el ZIP, `HTTP_LOG` con tokens, IN-21 | 6′ | #97 |
-| Claves de ejemplo en producción, `curl \| sh` del instalador | 9 y 10′ | (este PR) |
+| Claves de ejemplo en producción, `curl \| sh` del instalador | 9 y 10′ | #98 |
 
 **Quedó abierto (documentado en `seguridad.md`):** lo que cada etapa anota en «Queda para después», sobre todo la
 conversión de plantillas aislada (IN-6/7) y la firma del webhook de Evolution (IN-2), con las etapas que ya existían. Los
