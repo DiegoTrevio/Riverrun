@@ -120,6 +120,9 @@ async function settle(accountId:string,reservation:Awaited<ReturnType<typeof res
  const cached=Math.min(input,Math.max(0,usage?.cached_tokens??0));
  const estimate=tariff&&(tariff.per_audio_minute===0||spec.seconds!==undefined)?cost(tariff,input,output,spec.seconds,cached):null;
  const charged=validReport?reported:estimate;
+ // Sin costo del proveedor (uno distinto de OpenRouter), quien llama recibe el estimado con ai_prices y los tokens:
+ // el tope por pedido del Copiloto lo usa y, si no, se quedaría en 0.
+ if(!validReport&&estimate!==null&&object&&'usage' in object)(object as CompletionResult).cost_usd=estimate;
  const unexpected=!known;
  await withTransaction(async client=>{
   await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`ai-budget:${accountId}`]);
