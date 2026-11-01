@@ -2,6 +2,7 @@
 # riverrun — instalar, actualizar, respaldar y vigilar la plataforma con un solo comando.
 #
 #   ./riverrun install     instala todo (genera claves, pregunta lo mínimo, levanta los servicios)
+#   ./riverrun install-docker   instala Docker desde su repositorio apt oficial (Debian/Ubuntu, llave verificada; root)
 #   ./riverrun update      actualiza con respaldo previo y vuelta atrás automática si algo falla
 #                          (si cambia Evolution: compatibilidad, respaldo verificado, confirmación y verificación de sesiones)
 #   ./riverrun status      estado de los servicios, salud, último respaldo y si hay versión nueva
@@ -258,6 +259,42 @@ abort_update() {
 }
 
 # ------------------------------------------------------------------ install
+# Llave con la que Docker firma sus paquetes (https://docs.docker.com/engine/install/ubuntu/): se revisa la huella
+# antes de confiar en ella, en lugar de ejecutar un script bajado de internet (curl … | sh).
+DOCKER_GPG_FPR="9DC858229FC7DD38854AE2D88D81803C0EBFCD88"
+
+# Instala Docker y su plugin compose desde el repositorio apt oficial (Debian y Ubuntu). RIVERRUN_ETC solo existe para
+# las pruebas (un /etc de mentira); en un servidor es /etc y hace falta ser root.
+cmd_install_docker() {
+  local etc="${RIVERRUN_ETC:-/etc}"
+  [[ -n "${RIVERRUN_ETC:-}" || "$(id -u)" == "0" ]] || die "Instalar Docker requiere root (sudo ./riverrun install-docker)"
+  [[ -r "$etc/os-release" ]] || die "No se reconoce el sistema: instala Docker con la guía oficial (https://docs.docker.com/engine/install/)"
+  local id codename
+  id="$(sed -n 's/^ID=//p' "$etc/os-release" | tr -d '"' | head -n 1)"
+  codename="$(sed -n 's/^VERSION_CODENAME=//p' "$etc/os-release" | tr -d '"' | head -n 1)"
+  case "$id" in ubuntu|debian) ;; *) die "Este instalador solo conoce Debian y Ubuntu ($id): instala Docker con la guía oficial (https://docs.docker.com/engine/install/)" ;; esac
+  [[ -n "$codename" ]] || die "No se encontró la versión de $id (VERSION_CODENAME): instala Docker con la guía oficial (https://docs.docker.com/engine/install/)"
+
+  say "Instalando Docker desde su repositorio oficial ($id $codename)…"
+  apt-get update -qq
+  apt-get install -y -qq ca-certificates curl gnupg
+  local tmp fpr
+  tmp="$(mktemp)"
+  curl -fsSL "https://download.docker.com/linux/$id/gpg" -o "$tmp" || { rm -f "$tmp"; die "No se pudo descargar la llave de Docker"; }
+  fpr="$(gpg --show-keys --with-colons "$tmp" 2>/dev/null | awk -F: '/^fpr:/ { print $10; exit }')"
+  if [[ "$fpr" != "$DOCKER_GPG_FPR" ]]; then
+    rm -f "$tmp"
+    die "La llave descargada de Docker no tiene la huella esperada ($DOCKER_GPG_FPR, llegó ${fpr:-ninguna}): no se instala nada"
+  fi
+  install -d -m 0755 "$etc/apt/keyrings" "$etc/apt/sources.list.d"
+  install -m 0644 "$tmp" "$etc/apt/keyrings/docker.asc"
+  rm -f "$tmp"
+  printf 'deb [arch=%s signed-by=%s] https://download.docker.com/linux/%s %s stable\n' "$(dpkg --print-architecture)" "$etc/apt/keyrings/docker.asc" "$id" "$codename" > "$etc/apt/sources.list.d/docker.list"
+  apt-get update -qq
+  apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  ok "Docker instalado desde download.docker.com (llave verificada)"
+}
+
 cmd_install() {
   INTERACTIVE=1; START=1
   for a in "$@"; do case "$a" in --non-interactive) INTERACTIVE=0 ;; --no-start) START=0 ;; *) die "Opción desconocida: $a" ;; esac; done
@@ -267,8 +304,8 @@ cmd_install() {
   if (( START )) && ! need_docker; then
     warn "Docker (con el plugin compose) no está instalado."
     if [[ "$INTERACTIVE" == "1" && "$(id -u)" == "0" ]]; then
-      if [[ "$(ask '¿Instalarlo ahora con el instalador oficial de Docker? (s/n)' s)" =~ ^[sSyY] ]]; then
-        curl -fsSL https://get.docker.com | sh
+      if [[ "$(ask '¿Instalarlo ahora desde el repositorio oficial de Docker? (s/n)' s)" =~ ^[sSyY] ]]; then
+        cmd_install_docker
       fi
     fi
     need_docker || die "Instala Docker (https://docs.docker.com/engine/install/) y vuelve a correr ./riverrun install"
@@ -812,6 +849,7 @@ usage() { awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' 
 
 case "${1:-help}" in
   install) shift; cmd_install "$@" ;;
+  install-docker) cmd_install_docker ;;
   update) shift; cmd_update "$@" ;;
   status) cmd_status ;;
   backup) cmd_backup ;;
