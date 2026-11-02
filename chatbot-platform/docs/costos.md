@@ -238,6 +238,25 @@ en Riverrun (`docs/produccion.md`); guías de terceros hablan de ~200–500 MB p
 Contra el mismo ejemplo con redes en Zernio (~437–648 USD) y sin contar lo que Meta cobraría con WhatsApp oficial. Con
 Evolution, la IA es ~90 % del costo: el precio de un plan se fija casi solo con su tope de IA.
 
+**Ejemplo con un solo cliente** (un número de WhatsApp; ~5 respuestas por conversación). Con un cliente, el servidor
+lo paga entero él: un VPS de 4 GB alcanza (Hetzner CX23 ~6 USD, o ~24 USD en DigitalOcean).
+
+| Al mes (USD) | Chico: 200 conversaciones | Mediano: 1 000 | Grande: 3 000 |
+|---|---|---|---|
+| IA, + 5.5 % de OpenRouter | ~2–4 | ~11–21 | ~32–63 |
+| VPS de 4 GB | ~6–24 | ~6–24 | ~6–24 |
+| Dominio | ~1–2 | ~1–2 | ~1–2 |
+| Respaldos, correo, monitoreo, Zernio, Meta | 0 | 0 | 0 |
+| **Total** | **~9–30** | **~18–47** | **~39–89** |
+
+- El cliente grande gasta más IA que el tope por omisión (20 USD): sube el tope de su plan a ~60 USD o el agente deja
+  de responder con IA a mitad de mes.
+- OpenRouter cobra mínimo 0.80 USD por compra de créditos: con poco gasto, compra de 25 USD o más de una vez.
+- Además, al cobrarle: con Stripe, un plan de 1 000 MXN + IVA (1 160 MXN) deja ~52 MXN de comisión (3.6 % + 3 MXN, más
+  el IVA de la comisión). Facturapi, según su plan.
+- Si quiere redes por Zernio, las **2 primeras cuentas de la plataforma son gratis**: con un solo cliente, por ejemplo
+  Instagram y Facebook por Zernio no cuestan (X sí cobra su API por cada operación).
+
 **Lo que no llega en una factura pero cuesta:**
 
 - **Bloqueo del número.** Evolution no es oficial: si WhatsApp lo bloquea, el negocio pierde ese número y sus chats.
