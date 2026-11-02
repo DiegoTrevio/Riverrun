@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 /** Cobro automático: planes (los define el superadmin), contratar, administrar el pago y avisos de Stripe / Mercado Pago. */
+import { WEBHOOK_BODY_LIMIT } from './public.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { ownerOnly, ownerStepUp } from '../identity/ownership.js';
@@ -104,7 +105,7 @@ export async function billingWebhooks(app: FastifyInstance) {
   });
 
   for (const name of Object.keys(providers) as ProviderName[]) {
-    app.post(`/webhook/billing/${name}`, async (req, reply) => {
+    app.post(`/webhook/billing/${name}`, { bodyLimit: WEBHOOK_BODY_LIMIT }, async (req, reply) => {
       const provider = providers[name];
       if (!provider.enabled()) return reply.code(404).send({ error: 'No configurado' });
       try {
