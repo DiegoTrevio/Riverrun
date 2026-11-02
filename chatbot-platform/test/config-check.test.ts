@@ -98,6 +98,31 @@ test('secretos débiles en producción: avisos visibles que no impiden arrancar 
   }
 });
 
+test('POSTGRES_PASSWORD=cambia-esta-clave en producción es crítico y no arranca, y lo mismo con EVOLUTION_API_KEY', () => {
+  const cases: [Env, string][] = [
+    [{ POSTGRES_PASSWORD: 'cambia-esta-clave' }, 'database.example_password'],
+    [{ DATABASE_URL: 'postgres://chatbot:cambia-esta-clave@postgres:5432/chatbot' }, 'database.example_password'],
+    [{ EVOLUTION_API_KEY: 'cambia-esta-clave-larga' }, 'evolution.key_example'],
+    [{ EVOLUTION_API_KEY: 'CAMBIA-ESTA-CLAVE' }, 'evolution.key_example'],
+    [{ SESSION_SECRET: 'cambia-esta-clave-larga' }, 'session_secret.example'],
+    // Con espacios o comillas sigue siendo la de ejemplo; y sin DATABASE_URL también se revisa POSTGRES_PASSWORD.
+    [{ EVOLUTION_API_KEY: 'cambia-esta-clave-larga ' }, 'evolution.key_example'],
+    [{ SESSION_SECRET: ' "cambia-esta-clave" ' }, 'session_secret.example'],
+    [{ DATABASE_URL: '', POSTGRES_PASSWORD: 'cambia-esta-clave' }, 'database.example_password'],
+  ];
+  for (const [over, id] of cases) {
+    const r = validateConfig(installed(over));
+    assert.ok(r.issues.some((i) => i.id === id && i.level === 'critical'), `${id} debería ser crítico\n${formatReport(r)}`);
+    assert.equal(blocksStartup(r), true, id);
+    // Fuera de producción (desarrollo) solo avisa o ni eso: no bloquea.
+    assert.equal(blocksStartup(validateConfig(installed({ ...over, NODE_ENV: 'development', PUBLIC_BASE_URL: 'http://localhost:3000', DOMAIN: '', SECURE_COOKIES: 'false' }))), false, `${id} en desarrollo`);
+  }
+  // Débil pero no la de ejemplo: sigue siendo aviso (instalaciones existentes).
+  const weak = validateConfig(installed({ EVOLUTION_API_KEY: 'corta' }));
+  assert.ok(weak.issues.some((i) => i.id === 'evolution.key_weak' && i.level === 'warning'));
+  assert.equal(blocksStartup(weak), false);
+});
+
 test('CONFIG_VALIDATION=warn deja arrancar con críticos (y lo dice); un valor desconocido sigue siendo estricto', () => {
   const lines: string[] = [];
   const sink = { log: (m: string) => lines.push(m), warn: (m: string) => lines.push(m), error: (m: string) => lines.push(m) };
@@ -185,12 +210,15 @@ test('6. compatibilidad: instalaciones existentes siguen arrancando', () => {
   const local = installed({ PUBLIC_BASE_URL: 'http://127.0.0.1:3000', DOMAIN: 'localhost', SECURE_COOKIES: 'false', ALERT_WEBHOOK_URL: '' });
   assert.equal(blocksStartup(validateConfig(local)), false, formatReport(validateConfig(local)));
   // b) .env copiado de .env.example y editado a mano, con docker compose (sin SESSION_SECRET, imagen sin fijar,
-  //    ADMIN_PASSWORD de ejemplo con HTTPS: auth.ts ya se niega a usarla). Antes solo avisaba; sigue arrancando.
+  //    ADMIN_PASSWORD de ejemplo con HTTPS: auth.ts ya se niega a usarla). Con las claves de la base y de Evolution ya
+  //    cambiadas sigue arrancando; con las de ejemplo (públicas) ya no (etapa 9′).
   const example = Object.fromEntries(fs.readFileSync('.env.example', 'utf8').split('\n').filter((l) => /^[A-Z_]+=/.test(l)).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]));
   const fromExample: Env = {
     ...example,
     NODE_ENV: 'production',
-    DATABASE_URL: `postgres://chatbot:${example.POSTGRES_PASSWORD}@postgres:5432/chatbot`,
+    POSTGRES_PASSWORD: KEY.db,
+    EVOLUTION_API_KEY: KEY.evolution,
+    DATABASE_URL: `postgres://chatbot:${KEY.db}@postgres:5432/chatbot`,
     WEBHOOK_BASE_URL: 'http://backend:3000',
     PUBLIC_BASE_URL: `https://${example.DOMAIN}`,
     EVOLUTION_URL: 'http://evolution:8080',
@@ -200,6 +228,8 @@ test('6. compatibilidad: instalaciones existentes siguen arrancando', () => {
   assert.equal(blocksStartup(r), false, formatReport(r));
   assert.ok(r.issues.some((i) => i.id === 'session_secret.missing' && i.level === 'warning'));
   assert.ok(r.issues.some((i) => i.id === 'evolution.image_unpinned'));
+  const untouched = validateConfig({ ...fromExample, POSTGRES_PASSWORD: example.POSTGRES_PASSWORD, EVOLUTION_API_KEY: example.EVOLUTION_API_KEY, DATABASE_URL: `postgres://chatbot:${example.POSTGRES_PASSWORD}@postgres:5432/chatbot` });
+  assert.equal(blocksStartup(untouched), true, 'con las claves de ejemplo de .env.example no se arranca en producción');
   // c) assertProductionConfig() se conserva para quien la usaba.
   assert.ok(Array.isArray(validateConfig(installed()).issues));
 });

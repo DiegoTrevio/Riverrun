@@ -353,4 +353,69 @@ set +e; RIVERRUN_OBSERVE_SECONDS=abc ./riverrun update > "$work/out" 2>&1; rc=$?
 ! grep -q "backup.sh now\|compose up\|git pull\|up -d" "$LOG" || { echo "ERROR: hizo trabajo antes de validar"; exit 1; }
 [[ "$(cat VERSION)" == "$before" ]]
 
+echo "== install sin Docker usa el repositorio apt con la llave de Docker (huella revisada antes de usarla)"
+dk="$work/docker-apt"; mkdir -p "$dk/bin" "$dk/etc"
+printf 'ID=ubuntu\nVERSION_CODENAME=noble\n' > "$dk/etc/os-release"
+APTLOG="$dk/apt.log"; export APTLOG
+cat > "$dk/bin/apt-get" <<'SHIM'
+#!/usr/bin/env bash
+echo "apt-get $*" >> "$APTLOG"
+SHIM
+cat > "$dk/bin/curl" <<'SHIM'
+#!/usr/bin/env bash
+echo "curl $*" >> "$APTLOG"
+[[ "$*" == *"| sh"* || "$*" == *get.docker.com* ]] && exit 9
+out=""; while (( $# )); do [[ "$1" == "-o" ]] && { out="$2"; shift; }; shift; done
+[[ -n "$out" ]] && echo "LLAVE-FALSA" > "$out"
+SHIM
+cat > "$dk/bin/gpg" <<'SHIM'
+#!/usr/bin/env bash
+echo "gpg $*" >> "$APTLOG"
+echo "pub:-:4096:1:8D81803C0EBFCD88:1487788586:::-:::scESA::::::23::0:"
+echo "fpr:::::::::${FAKE_FPR:-9DC858229FC7DD38854AE2D88D81803C0EBFCD88}:"
+echo "sub:-:4096:1:7EA0A9C3F273FCD8:1487792064::::::s::::::23:"
+echo "fpr:::::::::D3306A018370199E527AE7997EA0A9C3F273FCD8:"
+if [[ -n "${FAKE_SECOND_KEY:-}" ]]; then echo "pub:-:4096:1:1111111111111111:1487788586:::-:::scESA::::::23::0:"; echo "fpr:::::::::1111111111111111111111111111111111111111:"; fi
+SHIM
+cat > "$dk/bin/dpkg" <<'SHIM'
+#!/usr/bin/env bash
+echo amd64
+SHIM
+chmod +x "$dk/bin/"*
+dkenv=(env PATH="$dk/bin:$PATH" RIVERRUN_TEST=1 RIVERRUN_ETC="$dk/etc")
+"${dkenv[@]}" ./riverrun install-docker > "$work/out" 2>&1 || { cat "$work/out"; echo "ERROR: install-docker falló con la llave correcta"; exit 1; }
+grep -q "download.docker.com/linux/ubuntu/gpg" "$APTLOG" || { cat "$APTLOG"; echo "ERROR: no bajó la llave de Docker"; exit 1; }
+grep -q "apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin" "$APTLOG" || { cat "$APTLOG"; echo "ERROR: no instaló desde apt"; exit 1; }
+! grep -q "get.docker.com" "$APTLOG" || { echo "ERROR: usó get.docker.com"; exit 1; }
+grep -q "signed-by=$dk/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu noble stable" "$dk/etc/apt/sources.list.d/docker.list" || { cat "$dk/etc/apt/sources.list.d/docker.list"; echo "ERROR: repositorio mal escrito"; exit 1; }
+[[ "$(cat "$dk/etc/apt/keyrings/docker.asc")" == "LLAVE-FALSA" ]] || { echo "ERROR: no guardó la llave"; exit 1; }
+# Una llave con otra huella: no se guarda ni se agrega el repositorio.
+rm -rf "$dk/etc/apt"; : > "$APTLOG"
+set +e; "${dkenv[@]}" FAKE_FPR=0000000000000000000000000000000000000000 ./riverrun install-docker > "$work/out" 2>&1; rc=$?; set -e
+[[ "$rc" != 0 ]] && grep -q "huella" "$work/out" || { cat "$work/out"; echo "ERROR: aceptó una llave con otra huella"; exit 1; }
+[[ ! -e "$dk/etc/apt/keyrings/docker.asc" && ! -e "$dk/etc/apt/sources.list.d/docker.list" ]] || { echo "ERROR: dejó la llave o el repositorio con otra huella"; exit 1; }
+! grep -q "docker-ce" "$APTLOG" || { echo "ERROR: instaló con una llave mala"; exit 1; }
+# Dos llaves en el archivo (la de Docker y otra): no se acepta aunque la primera sea la buena.
+rm -rf "$dk/etc/apt"; : > "$APTLOG"
+set +e; "${dkenv[@]}" FAKE_SECOND_KEY=1 ./riverrun install-docker > "$work/out" 2>&1; rc=$?; set -e
+[[ "$rc" != 0 && ! -e "$dk/etc/apt/keyrings/docker.asc" ]] && ! grep -q "docker-ce" "$APTLOG" || { cat "$work/out"; echo "ERROR: aceptó un archivo con dos llaves"; exit 1; }
+# Un derivado de Ubuntu (Mint) usa el repositorio de Ubuntu con su UBUNTU_CODENAME; un nombre raro se rechaza.
+printf 'ID=linuxmint\nID_LIKE="ubuntu debian"\nVERSION_CODENAME=wilma\nUBUNTU_CODENAME=noble\n' > "$dk/etc/os-release"
+"${dkenv[@]}" ./riverrun install-docker > "$work/out" 2>&1 || { cat "$work/out"; echo "ERROR: Mint debía instalarse"; exit 1; }
+grep -q "download.docker.com/linux/ubuntu noble stable" "$dk/etc/apt/sources.list.d/docker.list" || { cat "$dk/etc/apt/sources.list.d/docker.list"; echo "ERROR: Mint debía usar ubuntu noble"; exit 1; }
+rm -rf "$dk/etc/apt"
+printf 'ID=debian\nVERSION_CODENAME="bookworm main"\n' > "$dk/etc/os-release"
+set +e; "${dkenv[@]}" ./riverrun install-docker > "$work/out" 2>&1; rc=$?; set -e
+[[ "$rc" != 0 && ! -e "$dk/etc/apt/sources.list.d/docker.list" ]] || { cat "$work/out"; echo "ERROR: aceptó una versión con espacios"; exit 1; }
+# Sin RIVERRUN_TEST=1, RIVERRUN_ETC no se usa y sin root no se instala. Como root se omite: escribiría en el /etc real.
+if [[ "$(id -u)" != 0 ]]; then
+  set +e; env PATH="$dk/bin:$PATH" RIVERRUN_ETC="$dk/etc" ./riverrun install-docker > "$work/out" 2>&1; rc=$?; set -e
+  [[ "$rc" != 0 ]] && grep -q "requiere root" "$work/out" || { cat "$work/out"; echo "ERROR: RIVERRUN_ETC sin RIVERRUN_TEST saltó el root"; exit 1; }
+fi
+# Un sistema que no es Debian ni Ubuntu: no se adivina, se manda a la guía oficial.
+printf 'ID=fedora\nVERSION_CODENAME=\n' > "$dk/etc/os-release"
+set +e; "${dkenv[@]}" ./riverrun install-docker > "$work/out" 2>&1; rc=$?; set -e
+[[ "$rc" != 0 ]] && grep -q "docs.docker.com/engine/install" "$work/out" || { cat "$work/out"; echo "ERROR: en otro sistema debía mandar a la guía"; exit 1; }
+! grep -q "get.docker.com" "$here/riverrun" || { echo "ERROR: riverrun aún menciona get.docker.com"; exit 1; }
+
 echo "OK: el flujo de actualización funciona"
