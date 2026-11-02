@@ -7,6 +7,7 @@
  * el teléfono se acepta en cualquier formato, cada error trae un `code` estable y los campos con problema, y un POST/PUT
  * con Idempotency-Key se puede reintentar sin duplicar nada.
  */
+import { safeMessage, safeUrl } from '../http-log.js';
 import { ipLimitKey, limited } from '../identity/rate-limit.js';
 import crypto from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
@@ -229,7 +230,7 @@ export async function apiV1Routes(app: FastifyInstance, service: ChatService) {
       v1.setErrorHandler(async (err: any, req: any, reply) => {
         const status = err instanceof HttpError ? err.statusCode : err?.code === '23505' ? 409 : err?.statusCode && err.statusCode < 500 ? err.statusCode : 500;
         if (status >= 500) {
-          await logEvent({ level: 'error', source: 'system', message: `Error en ${req.method} ${req.url.split('?')[0]} (API): ${err?.message ?? err}`, details: err, accountId: req.apiKey?.account_id });
+          await logEvent({ level: 'error', source: 'system', message: `Error en ${req.method} ${safeUrl(req.url)} (API): ${safeMessage(String(err?.message ?? err))}`, details: err, accountId: req.apiKey?.account_id });
           return reply.code(500).send({ error: 'Error interno del servidor: vuelve a intentarlo en unos minutos', code: 'internal_error' });
         }
         if (err instanceof HttpError) return reply.code(status).send({ code: CODE_BY_STATUS[status] ?? 'error', ...err.data, error: err.message, issues: err.issues });

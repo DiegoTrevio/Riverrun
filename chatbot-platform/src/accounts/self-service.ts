@@ -167,7 +167,10 @@ export const EXPORT_MAX_MESSAGES = 200_000;
 export async function buildAccountExport(accountId: string, now = new Date()): Promise<Buffer> {
   const one = <T extends Record<string, any>>(sql: string) => query<T>(sql, [accountId]);
   const [account, users, bots, knowledge, automations, sequences, services, appointments, channels, contacts, conversations, messages, quotes, payments, invoices] = await Promise.all([
-    one<{ a: unknown }>(`SELECT to_jsonb(a) - 'limit_notices' AS a FROM accounts a WHERE a.id = $1`),
+    // Sin secretos: el token del calendario, la clave de firma de los webhooks y el de borrar la cuenta (un ZIP se reenvía).
+    one<{ a: unknown }>(`SELECT to_jsonb(a) - 'limit_notices' - 'deletion_nonce'
+                          || jsonb_build_object('settings', coalesce(a.settings, '{}'::jsonb) - 'calendar_token' - 'webhook_secret') AS a
+                         FROM accounts a WHERE a.id = $1`),
     one<any>(`SELECT id, name, email, role, active, phone, created_at FROM users WHERE account_id = $1 ORDER BY created_at`),
     one<{ b: any }>(`SELECT to_jsonb(b) AS b FROM chatbots b WHERE b.account_id = $1 ORDER BY b.created_at`),
     one<{ chatbot_id: string; k: unknown }>(`SELECT k.chatbot_id, to_jsonb(k) - 'embedding' - 'embedding_model' - 'search_vector' AS k FROM knowledge_items k JOIN chatbots b ON b.id = k.chatbot_id WHERE b.account_id = $1`),
@@ -180,7 +183,7 @@ export async function buildAccountExport(accountId: string, now = new Date()): P
     one<any>(`SELECT cv.id, cv.contact_id, ch.name AS channel, cv.status, cv.summary, cv.data, cv.created_at, cv.last_message_at FROM conversations cv JOIN channels ch ON ch.id = cv.channel_id WHERE cv.account_id = $1 AND ch.type <> 'playground' ORDER BY cv.created_at`),
     query<any>(`SELECT m.id, m.conversation_id, m.created_at, m.direction, m.sender, m.type, m.content FROM messages m JOIN conversations cv ON cv.id = m.conversation_id JOIN channels ch ON ch.id = cv.channel_id
                 WHERE cv.account_id = $1 AND ch.type <> 'playground' ORDER BY m.id LIMIT ${EXPORT_MAX_MESSAGES}`, [accountId]),
-    one<{ q: unknown }>(`SELECT to_jsonb(q) AS q FROM quotes q WHERE q.account_id = $1 ORDER BY q.created_at`),
+    one<{ q: unknown }>(`SELECT to_jsonb(q) - 'docx_path' - 'pdf_path' AS q FROM quotes q WHERE q.account_id = $1 ORDER BY q.created_at`),
     one<any>(`SELECT provider, provider_payment_id, plan_key, currency, subtotal_cents, tax_cents, total_cents, refunded_cents, status, paid_at FROM billing_payments WHERE account_id = $1 ORDER BY paid_at`),
     one<any>(`SELECT kind, status, series, folio, sat_uuid, amount_cents, issued_at FROM cfdi_invoices WHERE account_id = $1 ORDER BY created_at`),
   ]);

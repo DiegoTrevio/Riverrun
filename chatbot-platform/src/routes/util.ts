@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { safeMessage, safeUrl } from '../http-log.js';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
@@ -27,7 +28,7 @@ export function installErrorHandler(app: FastifyInstance) {
     if (err instanceof HttpError) return reply.code(err.statusCode).send({ ...err.data, error: err.message, issues: err.issues });
     if (err?.code === '23505') return reply.code(409).send({ error: uniqueMessage(err) });
     if (err?.statusCode && err.statusCode < 500) return reply.code(err.statusCode).send({ error: err.message });
-    await logEvent({ level: 'error', source: 'system', message: `Error en ${req.method} ${req.url.split('?')[0]}: ${err?.message ?? err}`, details: err });
+    await logEvent({ level: 'error', source: 'system', message: `Error en ${req.method} ${safeUrl(req.url)}: ${safeMessage(String(err?.message ?? err))}`, details: err });
     return reply.code(500).send({ error: 'Error interno (revisa los registros)' });
   });
 }

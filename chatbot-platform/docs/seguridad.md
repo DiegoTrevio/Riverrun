@@ -21,7 +21,7 @@ Cada etapa es un PR con pruebas que fallan con el código anterior y pasan con e
 | 3c. Revisión del 31 de octubre | Los altos de [la revisión del 31 de octubre](revision-seguridad-2026-10-31.md): dos caídas del proceso, atajos para sacar o borrar datos, cobros del agente, la ficha en el Copiloto (IN-15, IN-16, ID-11…ID-14, AI-5 en parte) | ✅ Corregido |
 | 4. Abuso de entradas | Límites compartidos en la base, tamaños por ruta, firma del webhook de WhatsApp, adjuntos sin macros, PDF aislados, cuota de IA antes de transcribir (IN-2…IN-14, PAY-6) | 4′ ✅ (revisión del 31 de octubre: IN-17…IN-20, IN-22, IN-5, parte de IN-8…IN-14 y límites en la base); IN-2, IN-3, IN-6/7, IN-21 y PAY-6 pendientes |
 | 5. IA y Copiloto | Tarjetas de confirmación completas, costo de sub-llamados, notas de cotización, fuga de instrucciones (AI-5…AI-13) | 5′ ✅ (revisión del 31 de octubre: AI-14 y bajos de IA); AI-6…AI-13 pendientes |
-| 6. Secretos y datos | Claves separadas con rotación, credenciales de canales cifradas, retención en Evolution (INF-6…INF-8, INF-13) | Pendiente |
+| 6. Secretos y datos | Claves separadas con rotación, credenciales de canales cifradas, retención en Evolution (INF-6…INF-8, INF-13) | 6′ ✅ (revisión del 31 de octubre: ZIP sin secretos, `HTTP_LOG` sin tokens, IN-21); INF-6…INF-8, INF-13 e IN-6/7 pendientes |
 | 7. Detección | Bitácora de seguridad, alertas, avisos al usuario | Pendiente |
 | 8. Contenedores | Roles de base de datos, Redis con clave, redes aisladas, límites, imágenes al día (INF-2, INF-3, INF-9, INF-10) | Pendiente |
 | 9. Servidor | `./riverrun harden`: firewall (también `DOCKER-USER`), SSH con llave, fail2ban, actualizaciones automáticas, respaldos con cifrado autenticado (INF-11, INF-12) | Pendiente |
@@ -352,6 +352,27 @@ Revisión independiente: encontró la cadena de reglas por «pasar a una persona
 - AI-14: la cadena de reglas no sigue los cambios de columna del embudo que hace una etiqueta, y se corta a los tres saltos.
 - Con un modelo sin precio en `ai_prices`, el tope por pedido del Copiloto sigue sin poder contar el costo.
 - `npm run eval:copilot` (simulado): 20 de 22. «dato» y «oportunidad» ya fallaban igual en `main` antes de esta etapa (el Copiloto propone en lugar de aplicar); se revisan aparte.
+
+## Etapa 6′: lo que se corrigió de la revisión del 31 de octubre
+
+Secretos y datos de [la revisión del 31 de octubre](revision-seguridad-2026-10-31.md) (PR 6 del
+[plan](superpowers/plans/2026-10-31-seguridad-revision-correcciones.md)). El resto de la etapa 6 original (INF-6…INF-8,
+INF-13) y la conversión aislada de plantillas (IN-6/7) siguen pendientes.
+
+| # | Hallazgo | Arreglo | Prueba |
+|---|---|---|---|
+| Bajo | «Descargar mis datos» incluía en `cuenta.json` el `calendar_token` (agenda pública en .ics) y el `webhook_secret` (firma de los avisos a otras apps); un ZIP se reenvía. | `cuenta.json` sin esos dos ajustes ni `deletion_nonce`; `cotizaciones.json` sin las rutas de archivos del servidor. Los canales ya solo exportaban id, tipo y nombre. | `owner-self-service.test.ts` |
+| Bajo | `HTTP_LOG=true` registraba las URLs con tokens (webhook de WhatsApp, calendario, reservas, cotizaciones, chat web, borrar la cuenta, OAuth). | Serializadores propios en el logger de Fastify: la ruta sin query, sin los segmentos de los enlaces públicos (también con mayúsculas o `//`) ni los que tienen forma de token, sin cabeceras; los mensajes (el «Route … not found» de Fastify) y los errores también se limpian. Los errores 500 que van a la bitácora de la base usan la misma ruta limpia. | `http-log.unit.test.ts` |
+| IN-21 | La revisión del DOCX solo miraba `TargetMode="External"`: pasaban `INCLUDEPICTURE`, `INCLUDETEXT`, `LINK` y DDE en códigos de campo, que LibreOffice (dentro del backend) puede seguir a la red interna o a archivos locales. | Se rechazan los campos `INCLUDEPICTURE`, `INCLUDETEXT`, `INCLUDE`, `IMPORT`, `LINK`, `DDE`, `DDEAUTO`, `RD` y `DATABASE` (cada campo armado con sus trozos entre su inicio y su fin, por su primera palabra) y los `src`/`href` que no son un ancla interna ni `data:`, con cualquier prefijo, sin comentarios ni CDATA y respetando `>` dentro de los valores, en todas las partes de texto del archivo. Se rechaza un documento principal distinto de `word/document.xml` y las partes en UTF-16. | `quotes-template.unit.test.ts` |
+
+Revisión independiente: encontró campos señuelo que escondían el peligroso al juntarlos, CDATA, comentarios, otro prefijo de espacio de nombres, otra parte principal, UTF-16, rutas locales en VML, falsos positivos (`HYPERLINK …/link`, `MERGEFIELD import_date`), errores y rutas con mayúsculas en la bitácora; todo quedó corregido y probado.
+
+**Cambios que nota la gente:**
+- Un formato de Word con campos que cargan contenido de afuera (imágenes o texto vinculados, DDE) se rechaza con «El archivo tiene campos que cargan contenido de afuera: quítalos».
+
+**Queda para después:**
+- La conversión de plantillas sigue dentro del backend (IN-6/7): esta revisión es la primera barrera, no el aislamiento.
+- La bitácora HTTP oculta los tokens de las rutas conocidas y los que parecen token; un token corto y sin dígitos en una ruta nueva no se reconocería.
 
 ## Hallazgos pendientes por etapa
 

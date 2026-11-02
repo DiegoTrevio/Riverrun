@@ -70,6 +70,26 @@ t('descargar mis datos: ZIP con todo lo de la cuenta, sin credenciales ni datos 
   assert.ok(!/password_hash|\$2[aby]\$/.test(all), 'no trae contraseñas');
 });
 
+t('cuenta.json no contiene calendar_token, webhook_secret ni deletion_nonce', async () => {
+  const acc = (await pool.query(`SELECT a.id FROM accounts a WHERE a.name = 'Florería Sol'`)).rows[0].id;
+  await pool.query(`UPDATE accounts SET deletion_nonce = 'nonce-secreto-123',
+    settings = coalesce(settings, '{}'::jsonb) || '{"calendar_token":"cal-secreto-456","webhook_secret":"hook-secreto-789","timezone":"America/Mexico_City"}'::jsonb WHERE id = $1`, [acc]);
+  try {
+    const r = await h.app.inject({ method: 'GET', url: '/api/account/export.zip', headers: { cookie: A.owner.cookie } });
+    assert.equal(r.statusCode, 200, r.body);
+    const zip = new PizZip(r.rawPayload);
+    const all = Object.values(zip.files).map((f) => f.asText()).join('\n');
+    for (const secret of ['cal-secreto-456', 'hook-secreto-789', 'nonce-secreto-123']) assert.ok(!all.includes(secret), `el ZIP trae ${secret}`);
+    const cuenta = JSON.parse(zip.file('cuenta.json')!.asText());
+    assert.equal(cuenta.settings.timezone, 'America/Mexico_City', 'los demás ajustes sí van');
+    assert.ok(!('calendar_token' in cuenta.settings) && !('webhook_secret' in cuenta.settings) && !('deletion_nonce' in cuenta));
+    assert.ok(!/docx_path|pdf_path/.test(zip.file('cotizaciones.json')!.asText()), 'sin rutas de archivos del servidor');
+    assert.deepEqual(Object.keys(JSON.parse(zip.file('agentes.json')!.asText())[0] ?? {}).filter((k) => /key|secret|token/i.test(k)), []);
+  } finally {
+    await pool.query(`UPDATE accounts SET deletion_nonce = NULL WHERE id = $1`, [acc]);
+  }
+});
+
 t('descargar mis datos: solo el dueño (otro admin y un agente no), y el superadmin con ?account_id', async () => {
   const get = (api: Api, q = '') => h.app.inject({ method: 'GET', url: `/api/account/export.zip${q}`, headers: { cookie: api.cookie } });
   assert.equal((await get(A.admin2)).statusCode, 403);
