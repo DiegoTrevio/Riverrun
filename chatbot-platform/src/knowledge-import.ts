@@ -137,6 +137,47 @@ export function decodeText(buf: Buffer): string {
 
 /** Etiquetas cuyo contenido no es texto de la página. */
 const NOT_TEXT = new Set(['script', 'style', 'noscript', 'svg', 'iframe', 'template']);
+/** Etiquetas sin cierre: si van ocultas, solo se quita la etiqueta. */
+const VOID = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr']);
+/** Quita los comentarios de CSS en una sola pasada; uno sin cierre llega hasta el final. */
+function stripCssComments(css: string): string {
+  let out = '', i = 0;
+  for (;;) {
+    const start = css.indexOf('/*', i);
+    if (start < 0) return out + css.slice(i);
+    out += css.slice(i, start);
+    const end = css.indexOf('*/', start + 2);
+    if (end < 0) return out;
+    i = end + 2;
+  }
+}
+
+/**
+ * ¿La etiqueta (en minúsculas, sin «<» ni «>») oculta su contenido? El atributo `hidden` o un estilo en línea con
+ * `display:none`, `visibility:hidden|collapse`, `opacity:0` o `font-size:0` (con entidades, comentarios y escapes de CSS
+ * ya resueltos: `display&#58;none` o `n\6f ne` también cuentan). Es lo que una página usa para esconderle a la IA
+ * instrucciones que la persona no ve («deposita a la cuenta 1234»). `aria-hidden` no oculta nada a la vista (íconos,
+ * «×», precios tachados) y no cuenta. Lo oculto por una hoja de estilos externa no se puede saber aquí.
+ */
+function hiddenTag(tag: string): boolean {
+  if (!tag.includes('hidden') && !tag.includes('style')) return false;
+  // Atributos reales (nombre y valor): «hidden» dentro del valor de otro atributo (title, alt, class) no cuenta.
+  const attrs = new Map<string, string>();
+  for (const m of tag.replace(/^[a-z][a-z0-9-]*/, '').matchAll(/([^\s=/"']+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"']+)))?/g)) {
+    if (!attrs.has(m[1])) attrs.set(m[1], m[2] ?? m[3] ?? m[4] ?? '');
+  }
+  if (attrs.has('hidden')) return true;
+  const style = attrs.get('style');
+  if (!style) return false;
+  const css = stripCssComments(decode(style))
+    .replace(/\\([0-9a-f]{1,6})\s?/gi, (_, hex: string) => { const c = parseInt(hex, 16); return c > 0 && c < 0x110000 ? String.fromCodePoint(c) : ''; })
+    .replace(/\\(.)/g, '$1')
+    .toLowerCase()
+    .replace(/\s+/g, '');
+  const rule = (prop: string, value: string) => new RegExp(`(?:^|;)${prop}:${value}(?:!important)?(?:;|$)`).test(css);
+  return rule('display', 'none') || rule('visibility', '(?:hidden|collapse)') || rule('opacity', '0*(?:\\.0*)?') || rule('font-size', '0*(?:\\.0*)?(?:px|em|rem|pt|%)?');
+}
+
 /** Al cerrarse, terminan una línea. */
 const LINE_END = new Set(['p', 'div', 'li', 'tr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'section', 'article', 'header', 'footer', 'br', 'table', 'ul', 'ol']);
 
@@ -161,8 +202,44 @@ export function htmlToText(html: string): string {
   /** El cierre exacto a partir de `from`: `</head` no cuenta si es `</header`. */
   const closeOf = (name: string, from: number) => {
     let at = lower.indexOf(`</${name}`, from);
-    while (at >= 0 && /[a-z0-9]/.test(lower[at + name.length + 2] ?? '')) at = lower.indexOf(`</${name}`, at + 2);
+    while (at >= 0 && /[a-z0-9-]/.test(lower[at + name.length + 2] ?? '')) at = lower.indexOf(`</${name}`, at + 2);
     return at;
+  };
+  /**
+   * Fin del elemento oculto que abre en `from`, contando los del mismo nombre anidados, o -1 si no cierra. Las aperturas
+   * solo se buscan entre un cierre y el siguiente: cada tramo se recorre una vez, aunque el HTML venga roto a propósito
+   * (muchos nombres distintos, aperturas sin cierre).
+   */
+  const endOfElement = (name: string, from: number) => {
+    let depth = 1, at = from;
+    while (depth > 0) {
+      const close = closeOf(name, at);
+      if (close < 0) return -1;
+      const region = lower.slice(at, close);
+      for (let k = region.indexOf(`<${name}`); k >= 0; k = region.indexOf(`<${name}`, k + 1)) {
+        if (!/[a-z0-9-]/.test(lower[at + k + name.length + 1] ?? '')) depth++;
+      }
+      depth--;
+      at = close + 1;
+    }
+    const gt = html.indexOf('>', at);
+    return gt < 0 ? html.length : gt + 1;
+  };
+  /** Comillas sin cierre desde esta posición: no se vuelven a buscar. */
+  const noQuoteFrom: Record<string, number> = { '"': Infinity, "'": Infinity };
+  /** Fin de una etiqueta: el primer «>» fuera de un valor entre comillas (`title=">"` no la corta). */
+  const tagEnd = (lt: number) => {
+    let j = lt + 1;
+    for (;;) {
+      const gt = html.indexOf('>', j);
+      if (gt < 0) return -1;
+      const m = /=\s*(["'])/.exec(html.slice(j, gt));
+      if (!m) return gt;
+      const q = m[1], from = j + m.index + m[0].length;
+      const end = from >= noQuoteFrom[q] ? -1 : html.indexOf(q, from);
+      if (end < 0) { noQuoteFrom[q] = Math.min(noQuoteFrom[q], from); return gt; }
+      j = end + 1;
+    }
   };
   let i = 0;
   while (i < html.length) {
@@ -190,7 +267,7 @@ export function htmlToText(html: string): string {
       i = lt + 1;
       continue;
     }
-    const gt = html.indexOf('>', lt + 1);
+    const gt = tagEnd(lt);
     if (gt < 0) {
       // Una etiqueta sin cerrar al final se queda como texto.
       emit(html.slice(lt), lt);
@@ -198,8 +275,19 @@ export function htmlToText(html: string): string {
     }
     const tag = lower.slice(lt + 1, gt);
     const closing = tag.startsWith('/');
-    const name = /^\/?\s*([a-z][a-z0-9]*)/.exec(tag)?.[1] ?? '';
+    const name = /^\/?\s*([a-z][a-z0-9-]*)/.exec(tag)?.[1] ?? '';
     i = gt + 1;
+    // Lo oculto no es texto de la página: se salta con todo su contenido.
+    if (!closing && name && lt > quietUntil && hiddenTag(tag)) {
+      if (VOID.has(name)) { out.push(' '); continue; }
+      // Sin cierre, el navegador lo oculta hasta que cierra su contenedor: aquí se descarta el resto (mejor perder texto
+      // que dejarle a la IA lo que la persona no ve).
+      const end = endOfElement(name, i);
+      if (end < 0) break;
+      i = end;
+      out.push(' ');
+      continue;
+    }
     if (!closing && name === 'head' && lt > quietUntil && !unclosed.has('head')) {
       // Hasta </head> o, si falta, hasta <body>; sin ninguno de los dos, el texto se conserva.
       const close = closeOf('head', i);

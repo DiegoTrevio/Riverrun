@@ -107,7 +107,8 @@ async function reserve(accountId:string,chatbotId:string|null,spec:Spec) {
   return {id:inserted.id,policy,limited,output,amount,prices,nearing};
  });}catch(e){if(e instanceof AiBudgetBlocked)await notice(accountId,e.code);throw e;}
 }
-async function settle(accountId:string,reservation:Awaited<ReturnType<typeof reserve>>,spec:Spec,result:CompletionResult|EmbeddingResult|string) {
+/** Liquida la reserva; devuelve el costo estimado cuando el proveedor no lo informó (o null). */
+async function settle(accountId:string,reservation:Awaited<ReturnType<typeof reserve>>,spec:Spec,result:CompletionResult|EmbeddingResult|string):Promise<number|null> {
  const object=typeof result==='string'?null:result;
  const model=normalize(object?.model??spec.models[0]);
  const usage=object&&'usage' in object?object.usage:undefined;
@@ -126,12 +127,19 @@ async function settle(accountId:string,reservation:Awaited<ReturnType<typeof res
   await client.query(`UPDATE ai_spend SET state=$2,charged_usd=$3,cost_source=$4,input_tokens=$5,output_tokens=$6,models=$7,quote=quote||jsonb_build_object('model_mismatch',$8::boolean),finished_at=now() WHERE id=$1 AND state IN ('reserved','uncertain') AND cost_source<>'confirmed'`,[reservation.id,charged===null||unexpected?'uncertain':'settled',charged,validReport?'reported':charged!==null?'estimated':'unknown',input,output,known?[known]:[...new Set([...spec.models,model])],unexpected]);
  });
  if(unexpected||charged===null||(reservation.amount!==null&&charged>reservation.amount+0.00000001))await notice(accountId,'cost_review');
+ return validReport?null:estimate;
 }
 async function invoke<T extends CompletionResult|EmbeddingResult|string>(accountId:string,botId:string|null,spec:Spec,fn:(r:Awaited<ReturnType<typeof reserve>>)=>Promise<T>):Promise<T> {
  await assertAiAllowed(accountId);
  const held=await reserve(accountId,botId,spec);
  if(held.nearing)await notice(accountId,'budget_80');
- try{const result=await fn(held);await settle(accountId,held,spec,result);return result;}
+ try{
+  const result=await fn(held);const estimated=await settle(accountId,held,spec,result);
+  // Sin costo del proveedor (uno distinto de OpenRouter), quien llama recibe una copia con el estimado (ai_prices y
+  // tokens) y su origen: el tope por pedido del Copiloto lo usa (si no, se quedaría en 0). La respuesta original no se toca.
+  if(estimated!==null&&typeof result==='object'&&result&&'usage' in result)return {...result,cost_usd:estimated,cost_estimated:true} as T;
+  return result;
+ }
  catch(e:any){
   const rejected=e?.notDispatched===true||([400,401,403,404,422,429].includes(e?.status)&&e?.definiteRejection!==false);
   await query(`UPDATE ai_spend SET state=$2,charged_usd=$3,cost_source='unknown',finished_at=now() WHERE id=$1 AND state='reserved'`,[held.id,rejected?'rejected':'uncertain',rejected?0:null]).catch(()=>undefined);

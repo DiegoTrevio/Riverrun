@@ -335,6 +335,37 @@ t('automático: no contesta entre clientes, lo neutral, lo que trae enlaces ajen
   }
 });
 
+t('automático: menciones, etiquetas, enlaces o lo que no está en la información del negocio los revisa una persona', async () => {
+  const ig = nets.instagram.socialId;
+  assert.equal((await owner('PUT', `/api/social-accounts/${ig}/comment-settings`, { mode: 'auto', max_per_hour: 10 })).statusCode, 200);
+  h.reset();
+  const replyFor: Record<string, string> = {
+    mencion: '¡Gracias! Síguenos en @otra_cuenta',
+    etiqueta: '¡Gracias! #PromoVerano',
+    inventa: 'Cerramos para siempre la sucursal; compren boletos de la rifa urgente hoy mismo.',
+    cortes: '¡Gracias por tu comentario! Esperamos verte pronto.',
+  };
+  h.setScript((req) => {
+    const key = Object.keys(replyFor).find((k) => String(req.messages[1]?.content ?? '').includes(`clave ${k}`))!;
+    return { reply: replyFor[key], sentiment: 'positive', needs_human: false };
+  });
+  const replies = () => zernioCalls('/inbox/comments/post_1').filter((x) => x.method === 'POST').length;
+  const before = replies();
+  try {
+    for (const k of Object.keys(replyFor)) await commentEvent('instagram', 'acc_ig', { id: `c_rev_${k}`, text: `Me encantó, clave ${k}` });
+    await h.idle();
+    await h.fastForward();
+    assert.equal(replies() - before, 1, 'solo la de cortesía sale sola');
+    assert.equal((await commentRow('c_rev_cortes')).reply_source, 'auto');
+    for (const k of ['mencion', 'etiqueta', 'inventa']) {
+      const row = await commentRow(`c_rev_${k}`);
+      assert.deepEqual([k, row.status, row.needs_human], [k, 'nuevo', true]);
+    }
+  } finally {
+    await owner('PUT', `/api/social-accounts/${ig}/comment-settings`, { mode: 'suggest' });
+  }
+});
+
 t('reseñas: la buena se guarda, la de 2 estrellas avisa al momento, responder codifica el id de Google', async () => {
   const review = (id: string, rating: number, text: string, extra: Record<string, unknown> = {}) => deliver({
     event: 'review.new', review: { id, platform: 'googlebusiness', rating, text, reviewer: { id: 'r1', name: 'Ana' }, createdAt: new Date().toISOString(), hasReply: false, ...extra },

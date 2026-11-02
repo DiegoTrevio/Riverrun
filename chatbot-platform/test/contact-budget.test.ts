@@ -124,7 +124,7 @@ t('un modelo inesperado mantiene su costo conocido y bloquea importes sin determ
  row=(await pool.query('SELECT * FROM ai_spend WHERE account_id=$1 ORDER BY created_at DESC',[h.accountId])).rows[0];assert.equal(Number(row.charged_usd),0.02);assert.equal(row.cost_source,'reported');
 });
 t('una reserva abandonada se revisa sin liberar el saldo automáticamente',async()=>{
- const r=(await pool.query("INSERT INTO ai_spend(account_id,kind,models,state,reserved_usd,cost_source,created_at) VALUES($1,'decision',ARRAY['gpt-4.1-mini'],'reserved',0.1,'unknown',now()-interval '1 day') RETURNING id",[h.accountId])).rows[0];
+ const r=(await pool.query("INSERT INTO ai_spend(account_id,kind,models,state,reserved_usd,cost_source,created_at) VALUES($1,'decision',ARRAY['gpt-4.1-mini'],'reserved',0.1,'unknown',now()-interval '10 minutes') RETURNING id",[h.accountId])).rows[0];
  const status=(await h.authed('GET',url())).json();assert.equal(status.review.find((x:any)=>x.id===r.id).state,'uncertain');assert.equal(Number(status.review.find((x:any)=>x.id===r.id).reserved_usd),0.1);
 });
 t('el cuerpo de error en HTTP 200 no libera una reserva como si fuera un rechazo previo',async()=>{
