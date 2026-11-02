@@ -108,6 +108,7 @@ function content(it, redraw) {
           m.text = s.reply;
           box.value = s.reply;
           warn.textContent = s.unverified?.length ? `Revisa antes de enviar: ${s.unverified.join(', ')} no está en la información de tu agente.`
+            : s.review?.length ? `Revisa antes de enviar: ${s.review.join('; ')}.`
             : s.needs_human ? 'La IA sugiere que una persona lo revise antes de responder.' : '';
           box.focus();
         } }, 'Sugerir respuesta'),

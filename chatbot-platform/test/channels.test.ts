@@ -318,7 +318,8 @@ t('Chat web: 20 clientes nuevos por red y hora; una red llena no cierra el chat 
   assert.equal(one.at(-1), 429, 'la /24 se topa en 20');
   // Una red que llenó su cupo no cierra el chat a las demás (el del canal, 300 por hora, es aparte).
   for (const n of [2, 3]) assert.equal(await newClient(`10.90.${n}.1`), 200, `red 10.90.${n}.0/24`);
-  await h.idle();
+  // 22 mensajes en cola: en la CI tardan más de los 8 s de siempre en guardarse (es limpieza para la prueba siguiente).
+  await h.idle(30_000);
 });
 
 t('Chat web: el GET de mensajes tiene tope por sesión y la sesión viaja en la cabecera (IN-22)', async () => {

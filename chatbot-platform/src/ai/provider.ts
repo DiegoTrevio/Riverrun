@@ -54,6 +54,8 @@ export interface CompletionResult {
   latency_ms: number;
   /** Costo reportado por OpenRouter en USD, cuando está disponible. */
   cost_usd?: number;
+  /** El costo no lo informó el proveedor: se estimó con ai_prices y los tokens. */
+  cost_estimated?: boolean;
   /** Herramientas que pidió el modelo (solo si la petición traía `tools`). */
   tool_calls?: ToolCall[];
   /** `stop`, `tool_calls`, `length`… tal como lo reporta el proveedor. */
