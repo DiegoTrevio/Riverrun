@@ -198,6 +198,56 @@ negocio en su WABA) y + 20 cuentas en Zernio (+60 USD).
 (20 USD por omisión) + la comisión del cobro. Un plan por debajo de ~30 USD al mes + IVA con 3 redes y 20 USD de IA
 pierde dinero con un negocio que lo use todo.
 
+## Escenario: todo con Evolution (sin Zernio)
+
+WhatsApp con QR (Evolution), Messenger e Instagram con la app de Meta propia (`META_APP_ID`), Telegram, chat web y
+correo. Ninguno pasa por Zernio, así que **Zernio cuesta 0** y Meta no cobra nada por mensaje. Zernio solo hace falta
+para X, Bluesky, Reddit, LinkedIn, TikTok, YouTube, Threads, Pinterest y Google, o para comentarios, publicaciones y
+estadísticas de redes.
+
+| Concepto | Al mes | Nota |
+|---|---|---|
+| IA (OpenRouter) | ~0.01–0.02 USD por conversación, + 5.5 % | Lo único que crece con el uso. Con tope por plan (`PLAN_DEFAULT_AI_USD`, 20 USD). |
+| VPS | ~6–100 USD | Según cuántos números de WhatsApp (tabla abajo). |
+| Dominio, respaldos, monitoreo | ~2 USD | |
+| Correo (Resend) | 0–20 USD | Gratis hasta 3 000 correos al mes. |
+| Zernio | 0 | Sin redes conectadas por Zernio. |
+| Meta (por mensaje) | 0 | Campañas, recordatorios, cobros y respuestas de varias burbujas no cuestan, a cualquier hora. |
+| Stripe / Mercado Pago | ~3.6 % + 3 MXN / ~3.49 %, + IVA | Por cada cobro a tus clientes. |
+| Facturapi | Según su plan | *(verificar)* |
+
+**Servidor según los números conectados.** Cada número es una sesión dentro de Evolution y ocupa memoria. No está medido
+en Riverrun (`docs/produccion.md`); guías de terceros hablan de ~200–500 MB por número con la versión de Node. Calcula
+~2 GB para lo demás (PostgreSQL, Redis, backend, respaldos) y mide con `docker stats` en cuanto tengas clientes.
+
+| Números de WhatsApp | RAM | Ejemplos de precio |
+|---|---|---|
+| Hasta ~5 | 4 GB | Hetzner CX23 ~5.49 EUR (poca disponibilidad); DigitalOcean ~24 USD |
+| ~10–20 | 8 GB | Hetzner CX33 ~8.49 EUR; DigitalOcean ~48 USD |
+| ~25–50 | 16 GB | DigitalOcean ~96 USD *(verificar)* |
+
+**Ejemplo con 20 negocios** (1 000 conversaciones al mes cada uno, un número por negocio):
+
+| Concepto | Al mes |
+|---|---|
+| IA: 20 × 10–20 USD, + 5.5 % | ~211–422 USD |
+| VPS de 8–16 GB | ~25–50 USD |
+| Dominio, respaldos, correo | ~2 USD |
+| **Total** | **~238–474 USD (~12–24 USD por negocio)** |
+
+Contra el mismo ejemplo con redes en Zernio (~437–648 USD) y sin contar lo que Meta cobraría con WhatsApp oficial. Con
+Evolution, la IA es ~90 % del costo: el precio de un plan se fija casi solo con su tope de IA.
+
+**Lo que no llega en una factura pero cuesta:**
+
+- **Bloqueo del número.** Evolution no es oficial: si WhatsApp lo bloquea, el negocio pierde ese número y sus chats.
+  Pasa sobre todo con envíos masivos a quien no escribió primero.
+- **Licencia de Evolution.** Riverrun fija la versión 2.3.7, que no pide licencia. Desde la 2.4 hay que activar una
+  licencia (`LICENSE_REQUIRED`, `docs/evolution-api.md`); su precio no está publicado. Si un día hace falta actualizar
+  por seguridad, puede empezar a costar.
+- **Mantenimiento.** Sesiones que se caen (por ejemplo, si el teléfono pasa unos 14 días sin conectarse, WhatsApp
+  desvincula los dispositivos), actualizaciones de Evolution y la memoria del servidor corren por tu cuenta.
+
 ## Fuentes
 
 Consultadas el 2 nov 2026. Desde esta sesión no se pudieron abrir `docs.zernio.com` ni `developers.facebook.com`; los
@@ -219,5 +269,8 @@ datos de esas páginas vienen de resúmenes de búsqueda y de sitios de terceros
   [DigitalOcean](https://betterstack.com/community/guides/web-servers/digitalocean-review/),
   [Backblaze B2](https://costbench.com/software/cloud-infrastructure/backblaze-b2/)
 - Correo: [Resend](https://www.usecarly.com/blog/resend-pricing/)
+- Evolution: [memoria por número (Hostinger)](https://www.hostinger.com/vps/docker/evolution-go),
+  [despliegue y memoria (Railway)](https://railway.com/deploy/evolution-whatsapp-api),
+  [licencia desde la 2.4](https://github.com/evolution-foundation/evolution-api/releases)
 - Cobros: [Stripe vs Mercado Pago (Guía de Software)](https://www.guiadesoftware.com/blog/stripe-vs-mercado-pago),
   [comisiones en México (Ecom Calc Tools)](https://ecomcalctools.com/es/blog/stripe-vs-paypal-latam/)
