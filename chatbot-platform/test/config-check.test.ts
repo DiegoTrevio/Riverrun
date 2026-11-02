@@ -6,6 +6,7 @@ import { blocksStartup, checkConfigAtStartup, formatReport, redactSecrets, runti
 
 const KEY = {
   session: 'a3f1c9e07b2d48a6915e3c7d0f8b2a4c6e9d1b3f5a7c9e0d2b4f6a8c0e1d3b5f',
+  data: '7c2e9b4f1a6d3c8e0b5f2a7d4c9e1b6f3a8d0c5e2b7f4a9d1c6e3b8f0a5d2c7e',
   evolution: '5d9e1a7c3b8f4e2a6d0c9b7e5f3a1d8c2e6b4f0a9d7c5e3b1f8a6d4c2e0b9f7a',
   admin: 'Kp4!vQ9zR2mW7xL3',
   ai: 'sk-or-v1-0f7e9d2c4b6a8e1d3c5b7a9f2e4d6c8b0a1f3e5d7c9b2a4f6e8d0c1b3a5f7e9',
@@ -31,6 +32,7 @@ const installed = (over: Env = {}): Env => ({
   TURNSTILE_SITE_KEY: '0x4AAAAAAAsitio',
   TURNSTILE_SECRET_KEY: '0x4AAAAAAAsecreto',
   SESSION_SECRET: KEY.session,
+  DATA_KEY: KEY.data,
   SECURE_COOKIES: 'true',
   SIGNUP_ENABLED: 'true',
   SIGNUP_REQUIRE_EMAIL: 'false',
@@ -85,6 +87,8 @@ test('secretos débiles en producción: avisos visibles que no impiden arrancar 
   const cases: [Env, string][] = [
     [{ SESSION_SECRET: 'secret' }, 'session_secret.weak'],
     [{ SESSION_SECRET: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }, 'session_secret.weak'],
+    [{ DATA_KEY: '' }, 'data_key.missing'],
+    [{ DATA_KEY: KEY.session }, 'data_key.same'],
     [{ ADMIN_PASSWORD: 'abc12' }, 'admin_password.short'],
     [{ ADMIN_PASSWORD: 'once-letras' }, 'admin_password.short'],
     [{ ADMIN_PASSWORD: 'cambia-esta-clave', PUBLIC_BASE_URL: 'http://203.0.113.5:3000', SECURE_COOKIES: 'false' }, 'admin_password.placeholder'],

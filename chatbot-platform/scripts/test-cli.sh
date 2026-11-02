@@ -48,7 +48,7 @@ case "$*" in
       (( first )) || printf ','; first=0; printf '{"name":"%s","status":"%s"}' "$c" "$s"
     done; printf ']}' ;;
   *"backup.sh now"*) [[ -f FALLA_RESPALDO ]] && exit 1; exit 0 ;;
-  *"exec -T backend node dist/cli/rekey-mfa.js"*) cat > REKEY_IN; [[ -f FALLA_REKEY ]] && exit 1; echo "Secretos de verificación re-cifrados: 2" ;;
+  *"exec -T backend node dist/cli/rekey-secrets.js"*) [[ -f FALLA_REKEY ]] && exit 1; echo "Secretos re-cifrados: 2" ;;
   *"backup sh -c"*) echo "/backups/riverrun-20261010-120000.tar.enc" ;;
   *"images -q backend"*) echo "sha256:abc123" ;;
   "compose config evolution") printf 'services:\n  evolution:\n    image: %s\n  redis:\n    image: redis:7-alpine\n' "$(target)" ;;
@@ -278,24 +278,38 @@ touch FALLA_RESPALDO
 if printf 'ROTAR SESSION_SECRET\n' | ./riverrun rotate-secret > "$work/out" 2>&1; then echo "ERROR: cambió sin respaldo"; exit 1; fi
 grep -q "^SESSION_SECRET=viejo-secreto-de-prueba$" .env
 rm -f FALLA_RESPALDO
-# Si no se pueden re-cifrar los secretos del 2FA, .env conserva el secreto de antes y no se reinicia nada.
+# La actualización generó DATA_KEY (INF-6) sin imprimirla.
+grep -Eq "^DATA_KEY=[0-9a-f]{64}$" .env || { echo "ERROR: falta DATA_KEY en .env"; exit 1; }
+dk="$(sed -n 's/^DATA_KEY=//p' .env)"
+# Si no se puede re-cifrar con la llave de datos, .env conserva el secreto de antes y no se reinicia nada.
 : > "$LOG"; touch FALLA_REKEY
-if printf 'ROTAR SESSION_SECRET\n' | ./riverrun rotate-secret > "$work/out" 2>&1; then echo "ERROR: cambió sin re-cifrar el 2FA"; exit 1; fi
-grep -q "No se pudieron re-cifrar los secretos de verificación en dos pasos: no se cambió nada." "$work/out"
+if printf 'ROTAR SESSION_SECRET\n' | ./riverrun rotate-secret > "$work/out" 2>&1; then echo "ERROR: cambió sin re-cifrar"; exit 1; fi
+grep -q "No se pudieron re-cifrar los secretos con la llave de datos: no se cambió SESSION_SECRET." "$work/out"
 grep -q "^SESSION_SECRET=viejo-secreto-de-prueba$" .env
-! grep -q "up -d backend" "$LOG" || { echo "ERROR: reinició sin re-cifrar el 2FA"; exit 1; }
-rm -f FALLA_REKEY REKEY_IN
+! grep -q "up -d backend" "$LOG" || { echo "ERROR: reinició sin re-cifrar"; exit 1; }
+rm -f FALLA_REKEY
 : > "$LOG"
 printf 'ROTAR SESSION_SECRET\n' | ./riverrun rotate-secret > "$work/out" 2>&1 || { cat "$work/out"; echo "ERROR: rotación fallida"; exit 1; }
 grep -Eq "^SESSION_SECRET=[0-9a-f]{64}$" .env && ! grep -q "viejo-secreto" .env
-grep -q "Los secretos de la verificación en dos pasos se vuelven a cifrar con el nuevo." "$work/out"
+grep -q "no hay que volver a conectar nada" "$work/out"
+[[ "$(sed -n 's/^DATA_KEY=//p' .env)" == "$dk" ]] || { echo "ERROR: rotate-secret cambió DATA_KEY"; exit 1; }
 nuevo="$(sed -n 's/^SESSION_SECRET=//p' .env)"
 ! grep -q "$nuevo" "$work/out" || { echo "ERROR: el secreto nuevo se imprimió"; exit 1; }
 ! grep -q "$nuevo" "$LOG" || { echo "ERROR: el secreto nuevo quedó en los argumentos"; exit 1; }
-[[ "$(cat REKEY_IN)" == "$nuevo" ]] || { echo "ERROR: el 2FA se re-cifró con otro secreto"; exit 1; }
-b="$(grep -n "backup.sh now" "$LOG" | head -n 1 | cut -d: -f1)"; k="$(grep -n "rekey-mfa.js" "$LOG" | head -n 1 | cut -d: -f1)"; u="$(grep -n "up -d backend" "$LOG" | head -n 1 | cut -d: -f1)"
+b="$(grep -n "backup.sh now" "$LOG" | head -n 1 | cut -d: -f1)"; k="$(grep -n "rekey-secrets.js" "$LOG" | head -n 1 | cut -d: -f1)"; u="$(grep -n "up -d backend" "$LOG" | head -n 1 | cut -d: -f1)"
 [[ -n "$b" && -n "$k" && -n "$u" && "$b" -lt "$k" && "$k" -lt "$u" ]] || { echo "ERROR: el orden debe ser respaldo → re-cifrado → reinicio"; exit 1; }
-rm -f REKEY_IN
+
+echo "== rotate-data-key: la anterior queda en DATA_KEYS_OLD, el backend arranca con las dos y luego se re-cifra"
+: > "$LOG"
+if printf 'nope\n' | ./riverrun rotate-data-key > "$work/out" 2>&1; then echo "ERROR: cambió sin confirmación"; exit 1; fi
+[[ "$(sed -n 's/^DATA_KEY=//p' .env)" == "$dk" ]]
+printf 'ROTAR DATA_KEY\n' | ./riverrun rotate-data-key > "$work/out" 2>&1 || { cat "$work/out"; echo "ERROR: rotación de DATA_KEY fallida"; exit 1; }
+nk="$(sed -n 's/^DATA_KEY=//p' .env)"
+[[ "$nk" =~ ^[0-9a-f]{64}$ && "$nk" != "$dk" ]] || { echo "ERROR: DATA_KEY no cambió"; exit 1; }
+[[ "$(sed -n 's/^DATA_KEYS_OLD=//p' .env)" == "$dk" ]] || { echo "ERROR: la anterior no quedó en DATA_KEYS_OLD"; exit 1; }
+! grep -q "$nk" "$work/out" && ! grep -q "$nk" "$LOG" || { echo "ERROR: la llave nueva se imprimió"; exit 1; }
+b="$(grep -n "backup.sh now" "$LOG" | head -n 1 | cut -d: -f1)"; u="$(grep -n "up -d backend" "$LOG" | head -n 1 | cut -d: -f1)"; k="$(grep -n "rekey-secrets.js" "$LOG" | head -n 1 | cut -d: -f1)"
+[[ -n "$b" && -n "$k" && -n "$u" && "$b" -lt "$u" && "$u" -lt "$k" ]] || { echo "ERROR: el orden debe ser respaldo → reinicio con las dos llaves → re-cifrado"; exit 1; }
 echo "== salud funcional: la actualización genera HEALTH_TOKEN (sin imprimirlo) y consulta /health/functional"
 : > "$LOG"; newcommit v12
 ./riverrun update > "$work/out" 2>&1 || { cat "$work/out"; echo "ERROR: la actualización con salud funcional falló"; exit 1; }

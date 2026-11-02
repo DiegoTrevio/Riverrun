@@ -13,6 +13,7 @@
 #   ./riverrun logs [servicio]            registros en vivo
 #   ./riverrun restart     aplica cambios hechos a .env
 #   ./riverrun rotate-secret   cambia SESSION_SECRET (respaldo antes, confirmación, consecuencias avisadas)
+#   ./riverrun rotate-data-key cambia DATA_KEY, la llave de los datos cifrados (respaldo antes; nada se desconecta)
 #   ./riverrun db-roles    un usuario de PostgreSQL por servicio (lo hacen solos install, update y restore)
 #   ./riverrun admin-password [correo]   recupera el acceso del superadministrador: contraseña nueva y sesiones cerradas
 #
@@ -141,6 +142,15 @@ ensure_health_token() {
   [[ -n "$(env_get HEALTH_TOKEN)" ]] && return 0
   env_set HEALTH_TOKEN "$(rand 32)"
   ok "Token de salud generado (HEALTH_TOKEN en .env; no se muestra)"
+}
+
+# Llave de los datos cifrados (INF-6), aparte de SESSION_SECRET. Generarla en una instalación con datos es seguro: lo
+# cifrado antes sigue leyéndose con SESSION_SECRET y lo nuevo usa esta llave. Devuelve 0 si la acaba de generar.
+ensure_data_key() {
+  [[ -n "$(env_get DATA_KEY)" ]] && return 1
+  env_set DATA_KEY "$(rand 32)"
+  ok "Llave de datos generada (DATA_KEY en .env; no se muestra). Guárdala fuera del servidor junto con SESSION_SECRET."
+  return 0
 }
 
 # Redis con contraseña (INF-2): guarda las claves de las sesiones de WhatsApp. Se genera una vez.
@@ -367,7 +377,7 @@ cmd_install() {
 
   # Claves internas: se generan una sola vez y nunca se pisan.
   local gen=0 k
-  for k in POSTGRES_PASSWORD EVOLUTION_API_KEY SESSION_SECRET BACKUP_PASSPHRASE HEALTH_TOKEN REDIS_PASSWORD; do
+  for k in POSTGRES_PASSWORD EVOLUTION_API_KEY SESSION_SECRET DATA_KEY BACKUP_PASSPHRASE HEALTH_TOKEN REDIS_PASSWORD; do
     local cur; cur="$(env_get "$k")"
     if [[ -z "$cur" || "$cur" == cambia-esta-clave* ]]; then
       case "$k" in POSTGRES_PASSWORD) env_set "$k" "$(rand 16)" ;; *) env_set "$k" "$(rand 32)" ;; esac
@@ -716,6 +726,7 @@ cmd_update() {
   # anterior sigue funcionando con el superusuario (los objetos que ya cambiaron de dueño no le estorban).
   db_roles || abort_update "No se pudieron crear los usuarios de PostgreSQL (arriba el error). No se aplicó la versión nueva."
   ensure_redis_password
+  ensure_data_key || true
   if dc up -d --build && wait_healthy 180 && evolution_verify && no_new_failures && observe_window; then
     ok "Actualizado a $APP_VERSION"
     (( EVO_CHANGES )) && ok "Evolution: $EVO_TARGET"
@@ -766,30 +777,57 @@ cmd_admin_password() {
   dc exec -T backend node dist/cli/admin-password.js "$email" || die "No se cambió la contraseña (¿el sistema está arrancado? ./riverrun status)"
 }
 
-# Cambia SESSION_SECRET (firma sesiones y enlaces, y cifra los tokens de Google). Respaldo verificado antes, confirmación
-# escrita y el secreto nuevo no se imprime. Consecuencias que se avisan: cierra sesiones del panel y reconecta Google.
+# Cambia SESSION_SECRET (firma sesiones y enlaces). Lo cifrado en la base pasa antes a DATA_KEY. Respaldo verificado antes, confirmación
+# escrita y el secreto nuevo no se imprime. Consecuencia que se avisa: cierra las sesiones del panel.
 cmd_rotate_secret() {
   need_docker || die "Docker no está disponible"
   [[ -f "$ENV_FILE" ]] || die "No hay .env: esta instalación no tiene secretos que cambiar."
   say "${R}${B}Cambiar SESSION_SECRET${N}"
   say "Consecuencias: se cierran todas las sesiones del panel; los enlaces firmados de fotos dejan de funcionar"
-  say "(se regeneran solos); las conexiones de Google Calendar hay que volver a conectarlas (sus tokens quedan cifrados"
-  say "con el secreto anterior). Los visitantes del chat web empiezan una conversación nueva (sus sesiones van firmadas)."
-  say "Los datos de conversaciones, cuentas, canales y WhatsApp no cambian."
-  say "Los secretos de la verificación en dos pasos se vuelven a cifrar con el nuevo."
+  say "(se regeneran solos). Los visitantes del chat web empiezan una conversación nueva (sus sesiones van firmadas)."
+  say "Lo cifrado en la base (2FA, Google Calendar, Outlook, credenciales de canales) se pasa antes a la llave de datos"
+  say "(DATA_KEY): no hay que volver a conectar nada."
   local sure=""; read -r -p "Escribe ROTAR SESSION_SECRET para continuar (cualquier otra cosa cancela): " sure || true
   [[ "$sure" == "ROTAR SESSION_SECRET" ]] || die "Cancelado: no se cambió nada."
   say "Respaldo verificado antes de cambiar nada…"
   dc exec -T backup /usr/local/bin/backup.sh now || die "El respaldo falló: no se cambia el secreto sin respaldo. No se cambió nada."
-  # El secreto nuevo va por la entrada (no queda en la lista de procesos); el re-cifrado es todo o nada.
-  local new; new="$(rand 32)"
-  printf '%s\n' "$new" | dc exec -T backend node dist/cli/rekey-mfa.js || die "No se pudieron re-cifrar los secretos de verificación en dos pasos: no se cambió nada."
-  env_set SESSION_SECRET "$new"
   export APP_VERSION; APP_VERSION="$(version)"
+  # Sin DATA_KEY todavía: se genera y el backend arranca con ella antes de re-cifrar.
+  if ensure_data_key; then
+    dc up -d backend
+    wait_healthy 120 || die "El backend no respondió con la llave de datos nueva: ./riverrun logs backend. SESSION_SECRET no se cambió."
+  fi
+  dc exec -T backend node dist/cli/rekey-secrets.js || die "No se pudieron re-cifrar los secretos con la llave de datos: no se cambió SESSION_SECRET."
+  local new; new="$(rand 32)"
+  env_set SESSION_SECRET "$new"
   dc up -d backend
   wait_healthy 120 || die "El .env ya tiene el secreto nuevo pero el sistema no respondió: ./riverrun logs backend (luego ./riverrun restart). El respaldo previo está en /backups."
   ok "SESSION_SECRET cambiado. Guarda el nuevo fuera del servidor: está en .env (no se muestra aquí)."
-  warn "Vuelve a iniciar sesión en el panel y reconecta Google Calendar si lo usas."
+  warn "Vuelve a iniciar sesión en el panel."
+}
+
+# Cambia DATA_KEY (INF-6): la anterior pasa a DATA_KEYS_OLD (sigue descifrando), el backend arranca con las dos y luego
+# se re-cifra todo con la nueva. Respaldo verificado antes; en ningún momento se deja de poder leer lo guardado.
+cmd_rotate_data_key() {
+  need_docker || die "Docker no está disponible"
+  [[ -f "$ENV_FILE" ]] || die "No hay .env: esta instalación no tiene secretos que cambiar."
+  say "${R}${B}Cambiar DATA_KEY${N}"
+  say "Se vuelven a cifrar el 2FA, los permisos de Google Calendar y Outlook, las llaves de la plataforma y las"
+  say "credenciales de los canales. No se cierra ninguna sesión ni hay que volver a conectar nada."
+  local sure=""; read -r -p "Escribe ROTAR DATA_KEY para continuar (cualquier otra cosa cancela): " sure || true
+  [[ "$sure" == "ROTAR DATA_KEY" ]] || die "Cancelado: no se cambió nada."
+  say "Respaldo verificado antes de cambiar nada…"
+  dc exec -T backup /usr/local/bin/backup.sh now || die "El respaldo falló: no se cambia la llave sin respaldo. No se cambió nada."
+  export APP_VERSION; APP_VERSION="$(version)"
+  local old; old="$(env_get DATA_KEY)"
+  env_set DATA_KEY "$(rand 32)"
+  # Lo que estaba con la anterior (o con SESSION_SECRET, si no había) se sigue leyendo durante el re-cifrado.
+  [[ -n "$old" ]] && env_set DATA_KEYS_OLD "$old"
+  dc up -d backend
+  wait_healthy 120 || die "El backend no respondió con la llave nueva: ./riverrun logs backend. La anterior quedó en DATA_KEYS_OLD (sigue descifrando)."
+  dc exec -T backend node dist/cli/rekey-secrets.js || die "No se pudo re-cifrar todo con la llave nueva; lo guardado se sigue leyendo con DATA_KEYS_OLD. Corrige y vuelve a correr ./riverrun rotate-data-key."
+  ok "DATA_KEY cambiada y todo re-cifrado. Guarda la nueva fuera del servidor (está en .env; no se muestra)."
+  say "DATA_KEYS_OLD conserva la anterior: puedes borrarla de .env después del próximo respaldo."
 }
 
 # ------------------------------------------------------------------ revisión previa a producción (solo lectura)
@@ -930,6 +968,7 @@ case "${1:-help}" in
   logs) shift; cmd_logs "$@" ;;
   restart) cmd_restart ;;
   rotate-secret) cmd_rotate_secret ;;
+  rotate-data-key) cmd_rotate_data_key ;;
   db-roles) cmd_db_roles ;;
   admin-password) shift; cmd_admin_password "$@" ;;
   preflight) shift; cmd_preflight "$@" ;;

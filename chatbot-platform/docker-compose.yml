@@ -127,6 +127,9 @@ services:
       # Puede quedar vacía una vez creado el superadministrador (config-check lo avisa); SESSION_SECRET no.
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       SESSION_SECRET: ${SESSION_SECRET:?Define SESSION_SECRET en .env (ejecuta ./riverrun install)}
+      # INF-6: llave de los datos cifrados en la base (aparte de SESSION_SECRET); DATA_KEYS_OLD solo durante una rotación.
+      DATA_KEY: ${DATA_KEY:-}
+      DATA_KEYS_OLD: ${DATA_KEYS_OLD:-}
       SECURE_COOKIES: ${SECURE_COOKIES:-false}
       # Contraseñas filtradas (Have I Been Pwned por rango); off = solo la lista local. PASSWORD_HASH_COST es solo para pruebas.
       PWNED_PASSWORDS_URL: ${PWNED_PASSWORDS_URL:-}
