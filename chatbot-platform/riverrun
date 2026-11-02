@@ -18,6 +18,7 @@
 #   ./riverrun admin-password [correo]   recupera el acceso del superadministrador: contraseña nueva y sesiones cerradas
 #
 # Opciones de update: --no-backup  --accept-db-image-change  --accept-evolution-change (confirma sin preguntar)
+#   --skip-ci-check (solo emergencias: aplica aunque el CI de GitHub no esté en verde)
 #   RIVERRUN_OBSERVE_SECONDS  tiempo que la versión nueva se observa antes de dar por buena (120; 0 = no observar)
 # Opciones de install (o variables de entorno, para instalar sin preguntas):
 #   --non-interactive  --no-start
@@ -571,7 +572,7 @@ cmd_restore() {
 # Fases: opciones → código → qué corre hoy → pull (y relanzar si el procedimiento cambió) → revisión previa sin
 # arrancar → respaldo → aplicar y verificar → vuelta atrás si algo falla. Las variables UPD_* y EVO_* pasan los datos.
 update_args() {
-  UPD_BACKUP=1; ACCEPT_DB_IMAGE=0; ACCEPT_EVO=0; UPD_RESUME=""; UPD_PG_BEFORE=""; UPD_FORWARD=()
+  UPD_BACKUP=1; ACCEPT_DB_IMAGE=0; ACCEPT_EVO=0; UPD_RESUME=""; UPD_PG_BEFORE=""; UPD_FORWARD=(); SKIP_CI=0; UPD_TARGET=""
   # --resume-from/--pg-before: uso interno, cuando el procedimiento se relanza con el riverrun recién descargado.
   local args=("$@") i
   for (( i = 0; i < ${#args[@]}; i++ )); do
@@ -579,6 +580,7 @@ update_args() {
       --no-backup) UPD_BACKUP=0; UPD_FORWARD+=(--no-backup) ;;
       --accept-db-image-change) ACCEPT_DB_IMAGE=1; UPD_FORWARD+=(--accept-db-image-change) ;;
       --accept-evolution-change) ACCEPT_EVO=1; UPD_FORWARD+=(--accept-evolution-change) ;;
+      --skip-ci-check) SKIP_CI=1; UPD_FORWARD+=(--skip-ci-check) ;;
       --resume-from) UPD_RESUME="${args[$((i + 1))]:-}"; i=$((i + 1)) ;;
       --pg-before) UPD_PG_BEFORE="${args[$((i + 1))]:-}"; i=$((i + 1)) ;;
     esac
@@ -604,8 +606,55 @@ update_fetch() {
     say "No hay código nuevo, pero la imagen de Evolution configurada cambió."
   else
     say "${B}Cambios nuevos ($UPD_BEHIND):${N}"; git log --oneline HEAD..'@{u}' | head -n 15 | sed 's/^/  /'; say
+    UPD_TARGET="$(git rev-parse '@{u}')"
+    update_verify_target "$UPD_TARGET"
   fi
   return 0
+}
+
+# INF-4: lo que se va a desplegar se comprueba antes de tocar nada. Si el código viene de GitHub, el commit exacto debe
+# tener todas sus comprobaciones de CI terminadas y en verde (las pruebas, las imágenes y los scripts). Con
+# UPDATE_ALLOWED_SIGNERS (un archivo de firmantes permitidos que vive FUERA del repositorio), además, la firma del commit.
+# --skip-ci-check se salta solo lo del CI, a la vista.
+github_repo() {
+  [[ -n "${RIVERRUN_GITHUB_REPO:-}" ]] && { echo "$RIVERRUN_GITHUB_REPO"; return 0; }
+  local url; url="$(git remote get-url origin 2>/dev/null || true)"
+  [[ "$url" =~ github\.com[:/]([^/]+)/([^/]+)$ ]] || return 1
+  echo "${BASH_REMATCH[1]}/${BASH_REMATCH[2]%.git}"
+}
+update_verify_target() {
+  local sha="$1" repo body total status conclusion checked top
+  local signers; signers="$(env_get UPDATE_ALLOWED_SIGNERS)"
+  if [[ -n "$signers" ]]; then
+    [[ -f "$signers" ]] || die "UPDATE_ALLOWED_SIGNERS apunta a $signers, que no existe. No se aplicó nada."
+    git -c gpg.format=ssh -c gpg.ssh.allowedSignersFile="$signers" verify-commit "$sha" >/dev/null 2>&1 \
+      || die "El commit $sha no tiene una firma de alguien en UPDATE_ALLOWED_SIGNERS. No se aplicó nada."
+    ok "Firma del commit verificada"
+  fi
+  if ! repo="$(github_repo)"; then
+    warn "El código no viene de GitHub: no se puede comprobar su CI. Revisa los cambios de arriba antes de seguir."
+    return 0
+  fi
+  if (( SKIP_CI )); then
+    warn "Se omite la comprobación del CI (--skip-ci-check): se aplica ${sha:0:12} sin saber si sus pruebas pasaron."
+    return 0
+  fi
+  # El CI corre solo cuando cambia la plataforma: se comprueba el último commit del rango que la cambió (es el código
+  # que se va a desplegar). Si en el rango no cambió nada de la plataforma, no hay código nuevo que probar.
+  top="$(git rev-parse --show-toplevel)"
+  checked="$(git log -1 --format=%H "HEAD..$sha" -- . "$top/.github/workflows/${RIVERRUN_CI_WORKFLOW:-ci.yml}")"
+  if [[ -z "$checked" ]]; then ok "Los cambios no tocan la plataforma: no hay CI que comprobar"; return 0; fi
+  # Solo el flujo de CI (las pruebas, las imágenes y los scripts), no otros flujos que no deciden si se despliega.
+  body="$(curl -fsS --max-time 20 -H 'Accept: application/vnd.github+json' "${RIVERRUN_GITHUB_API:-https://api.github.com}/repos/$repo/actions/workflows/${RIVERRUN_CI_WORKFLOW:-ci.yml}/runs?head_sha=$checked&per_page=5" 2>/dev/null)" \
+    || die "No se pudo consultar el CI de ${checked:0:12} en GitHub (¿sin internet?). No se aplicó nada; reintenta, o con --skip-ci-check si es una emergencia."
+  total="$(printf '%s' "$body" | grep -o '"total_count": *[0-9]*' | head -n 1 | grep -o '[0-9]*$' || echo 0)"
+  (( total > 0 )) || die "El commit ${checked:0:12} no tiene una corrida del CI en GitHub. No se aplicó nada (¿se subió sin pasar por el CI?)."
+  # La corrida más reciente es la primera de la lista.
+  status="$(printf '%s' "$body" | grep -o '"status": *"[a-z_]*"' | head -n 1 | sed 's/.*"\([a-z_]*\)"$/\1/')"
+  conclusion="$(printf '%s' "$body" | grep -o '"conclusion": *\("[a-z_]*"\|null\)' | head -n 1 | sed 's/.*: *"*\([a-z_]*\)"*$/\1/')"
+  [[ "$status" == completed ]] || die "El CI de ${checked:0:12} todavía está corriendo. No se aplicó nada: espera a que termine y vuelve a correr ./riverrun update."
+  [[ "$conclusion" == success ]] || die "El CI de ${checked:0:12} no está en verde (${conclusion:-sin resultado}). No se aplicó nada."
+  ok "CI en verde para ${checked:0:12}"
 }
 
 # Lo que corre hoy, antes de tocar nada: qué fallaba, la imagen de backend anterior y Evolution (versión y esquema).
@@ -631,7 +680,8 @@ update_snapshot() {
 # Pull del código. Si el procedimiento mismo cambió, se relanza con el nuevo (lo que corre no se toca hasta entonces).
 update_pull() {
   if (( UPD_BEHIND > 0 )); then
-    git pull -q --ff-only
+    # Exactamente el commit que se comprobó (si main avanzó mientras tanto, eso queda para la próxima).
+    git merge -q --ff-only "$UPD_TARGET"
     if ! git diff --quiet "$OLD_HEAD" HEAD -- riverrun; then
       say "El procedimiento de actualización cambió: se continúa con el nuevo."
       exec ./riverrun update --resume-from "$OLD_HEAD" --pg-before "$UPD_PG_BEFORE" "${UPD_FORWARD[@]}"
