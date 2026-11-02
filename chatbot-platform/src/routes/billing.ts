@@ -1,6 +1,5 @@
 import crypto from 'node:crypto';
 /** Cobro automático: planes (los define el superadmin), contratar, administrar el pago y avisos de Stripe / Mercado Pago. */
-import { WEBHOOK_BODY_LIMIT } from './public.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { ownerOnly, ownerStepUp } from '../identity/ownership.js';
@@ -24,6 +23,7 @@ import { savePlatformSecret } from '../platform-secrets.js';
 import { countHit, ipLimitKey, limited, releaseHit } from '../identity/rate-limit.js';
 import { logEvent } from '../logs.js';
 import { parse } from './util.js';
+import { WEBHOOK_BODY_LIMIT } from './public.js';
 
 const PlanBody = z.object({
   key: z.string().regex(/^[a-z0-9_-]{1,40}$/, 'Clave: minúsculas, números, guion y guion bajo'),

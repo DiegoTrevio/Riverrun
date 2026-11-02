@@ -417,10 +417,11 @@ Revisión independiente: encontró que la vuelta atrás dejaba al backend anteri
 | # | Hallazgo | Arreglo | Prueba |
 |---|---|---|---|
 | IN-2 | El webhook de Evolution no tenía firma (solo el token en la URL) y su ruta era pública en Caddy: con el token se podían inventar mensajes de cualquier cliente de WhatsApp. | Con `WEBHOOK_BASE_URL` interna (en Docker, `http://backend:3000`), Evolution le habla al backend por la red interna, sin Caddy. Un aviso de WhatsApp que llega por el proxy (trae `X-Forwarded-For`) o desde una IP pública se responde como un token que no existe (404) y no se procesa. | `webhook-hardening.test.ts` |
-| IN-3 | Los webhooks aceptaban cuerpos de hasta 10 MB antes de verificar la firma; cada rechazo escribía en la bitácora; las peticiones no tenían tiempo máximo. | Tope de 1 MB en los webhooks (`/webhook/…`, Zernio, Meta, Stripe y Mercado Pago; los avisos reales son de unos KB). A lo más 10 rechazos por minuto y conexión llegan a la bitácora. Una petición tiene 2 minutos para llegar completa (`requestTimeout`). | `webhook-hardening.test.ts` |
+| IN-3 | Los webhooks aceptaban cuerpos de hasta 10 MB antes de verificar la firma; cada rechazo escribía en la bitácora; las peticiones no tenían tiempo máximo. | Tope de 1 MB en los webhooks (`/webhook/…`, Zernio, Stripe y Mercado Pago; los avisos reales son de unos KB) y de 3 MB en el de Meta (lo que documenta para un lote). A lo más 10 rechazos por minuto y conexión llegan a la bitácora (si la base no responde, no se registra y la respuesta no cambia). Una petición tiene 5 minutos para llegar completa (`requestTimeout`; solo cuenta la llegada, no la respuesta). | `webhook-hardening.test.ts` |
 
 **Queda para después:**
 - Un Evolution externo (fuera de Docker) con `WEBHOOK_BASE_URL` pública sigue dependiendo del token de la URL: Evolution no firma sus avisos.
+- La revisión de IN-2 confía en que el proxy agregue `X-Forwarded-For` (Caddy lo hace siempre). Una instalación fuera de Docker con otro proxy delante (nginx, etc.) debe configurarlo para que lo agregue; si no, sus peticiones parecerían internas.
 - La firma de cada proveedor se sigue revisando con el cuerpo ya leído (hasta 1 MB): no se puede firmar lo que aún no llega.
 
 ## Hallazgos pendientes por etapa

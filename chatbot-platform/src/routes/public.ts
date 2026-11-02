@@ -42,6 +42,8 @@ export const webchatLimits = { pollsPerMin: 120 };
 /** Tope del cuerpo de un webhook entrante (IN-3): los avisos de los proveedores son de unos KB; 10 MB (el general) no. */
 export const WEBHOOK_BODY_LIMIT = 1024 * 1024;
 const webhookRoute = { bodyLimit: WEBHOOK_BODY_LIMIT };
+/** Meta documenta avisos de hasta 3 MB (varios eventos juntos): uno más grande lo reintentaría hasta apagar el webhook. */
+export const META_WEBHOOK_BODY_LIMIT = 3 * 1024 * 1024;
 
 /**
  * IN-2: con WEBHOOK_BASE_URL interna (en Docker, http://backend:3000), Evolution le habla al backend por la red interna,
@@ -61,7 +63,9 @@ const fromInternalNetwork = (req: FastifyRequest) =>
 
 /** Un rechazo va a la bitácora, pero no más de 10 por minuto por conexión (IN-3): un ataque no la llena. */
 async function logRejected(req: FastifyRequest, kind: string, entry: Parameters<typeof logEvent>[0]) {
-  if (await limited(ipLimitKey(`webhook-reject:${kind}`, req.ip), 10, 60_000)) return;
+  // Si la base no responde, no se registra (como antes con logEvent): la respuesta sigue siendo la del rechazo.
+  const over = await limited(ipLimitKey(`webhook-reject:${kind}`, req.ip), 10, 60_000).catch(() => true);
+  if (over) return;
   await logEvent(entry);
 }
 
@@ -168,7 +172,7 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
   });
 
   /** Mensajes de todas las páginas e Instagram conectados con el botón: cada evento va al canal de su página o cuenta. */
-  app.post('/meta/webhook', webhookRoute, async (req: any, reply) => {
+  app.post('/meta/webhook', { bodyLimit: META_WEBHOOK_BODY_LIMIT }, async (req: any, reply) => {
     if (!verifyMetaSignature(req.headers['x-hub-signature-256'], req.rawBody)) {
       await logRejected(req, 'meta', { level: 'warn', source: 'webhook', message: 'Facebook: firma inválida en el webhook de la plataforma; se rechaza', details: { ip: req.ip } });
       return reply.code(401).send({ ok: false });

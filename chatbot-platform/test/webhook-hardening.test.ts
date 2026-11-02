@@ -5,7 +5,7 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHarness, dbAvailable, pool } from './harness.js';
-const { internalWebhookBase, WEBHOOK_BODY_LIMIT } = await import('../src/routes/public.js');
+const { internalWebhookBase, META_WEBHOOK_BODY_LIMIT, WEBHOOK_BODY_LIMIT } = await import('../src/routes/public.js');
 
 const ok = await dbAvailable();
 const t = (name: string, fn: () => Promise<void>) => test(name, { skip: !ok && 'PostgreSQL de pruebas no disponible' }, fn);
@@ -48,10 +48,14 @@ t('IN-2: un aviso de WhatsApp por el proxy o desde una IP pública se rechaza co
 
 t('IN-3: un webhook de más de 1 MB se rechaza sin procesarlo', async () => {
   const big = 'x'.repeat(WEBHOOK_BODY_LIMIT + 10);
-  for (const url of [`/webhook/${h.token}`, `/webhook/${h.token}/messages-upsert`, '/zernio/events', '/meta/webhook', '/webhook/billing/stripe']) {
+  for (const url of [`/webhook/${h.token}`, `/webhook/${h.token}/messages-upsert`, '/zernio/events', '/webhook/billing/stripe']) {
     const r = await h.app.inject({ method: 'POST', url, payload: JSON.stringify({ big }), headers: { 'content-type': 'application/json' } });
     assert.equal(r.statusCode, 413, `${url}: ${r.statusCode}`);
   }
+  // Meta: hasta 3 MB (lo que documenta); 1 MB pasa al revisar la firma (401) y más de 3 MB se rechaza.
+  const meta = (n: number) => h.app.inject({ method: 'POST', url: '/meta/webhook', payload: JSON.stringify({ big: 'x'.repeat(n) }), headers: { 'content-type': 'application/json' } });
+  assert.equal((await meta(WEBHOOK_BODY_LIMIT + 10)).statusCode, 401);
+  assert.equal((await meta(META_WEBHOOK_BODY_LIMIT + 10)).statusCode, 413);
   // Un aviso normal sigue entrando.
   assert.equal((await h.app.inject({ method: 'POST', url: `/webhook/${h.token}`, payload: upsert('Aviso normal', 'X-4') })).statusCode, 200);
 });
@@ -67,6 +71,6 @@ t('IN-3: muchos rechazos desde la misma conexión dejan a lo más 10 registros p
   assert.ok(added <= 10 && added >= 1, `se registraron ${added}`);
 });
 
-t('IN-3: una petición tiene 2 minutos para llegar completa', async () => {
-  assert.equal(h.app.server.requestTimeout, 120_000);
+t('IN-3: una petición tiene 5 minutos para llegar completa', async () => {
+  assert.equal(h.app.server.requestTimeout, 300_000);
 });
