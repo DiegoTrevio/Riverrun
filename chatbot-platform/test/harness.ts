@@ -651,7 +651,7 @@ export async function createHarness(opts: { realAi?: import('../src/ai/provider.
       await h.idle();
     },
     /** Espera a que la cola termine todo lo pendiente (evita que una prueba contamine a la siguiente). */
-    async idle() { await waitFor(async () => service.queue.size === 0 && service.inbox.size === 0 && service.zernioEvents.size === 0 && inflight.n === 0 && (await pool.query("SELECT count(*)::int AS n FROM zernio_events WHERE state IN ('pending','running')")).rows[0].n===0 && (await pool.query("SELECT count(*)::int AS n FROM conversation_work WHERE state IN ('pending','running')")).rows[0].n===0 && (await pool.query("SELECT count(*)::int AS n FROM inbound_receipts WHERE state IN ('pending','running')")).rows[0].n===0, 8000); },
+    async idle(ms = 8000) { await waitFor(async () => service.queue.size === 0 && service.inbox.size === 0 && service.zernioEvents.size === 0 && inflight.n === 0 && (await pool.query("SELECT count(*)::int AS n FROM zernio_events WHERE state IN ('pending','running')")).rows[0].n===0 && (await pool.query("SELECT count(*)::int AS n FROM conversation_work WHERE state IN ('pending','running')")).rows[0].n===0 && (await pool.query("SELECT count(*)::int AS n FROM inbound_receipts WHERE state IN ('pending','running')")).rows[0].n===0, ms); },
     webhook(text: string, opts: { fromMe?: boolean; phone?: string; id?: string; timestamp?: number; instance?: string } = {}) {
       const phone = opts.phone ?? '5215511112222';
       return app.inject({

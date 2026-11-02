@@ -481,3 +481,28 @@ t('con la ficha de un cliente abierta, un cambio de configuración se confirma: 
     }
   });
 });
+
+t('sin costo del proveedor, el tope por pedido usa el estimado con ai_prices y los tokens', async () => {
+  const model = config.copilot.model;
+  const saved = (await pool.query(`SELECT * FROM ai_prices WHERE model = $1`, [model])).rows[0];
+  // 300 tokens de entrada a 5 000 USD por millón = 1.5 USD: más que el tope de 0.5 por pedido.
+  await pool.query(`INSERT INTO ai_prices (model, input_per_mtok, output_per_mtok) VALUES ($1, 5000, 0)
+    ON CONFLICT (model) DO UPDATE SET input_per_mtok = 5000, cached_per_mtok = 0, output_per_mtok = 0, per_audio_minute = 0`, [model]);
+  const id = await thread(owner);
+  try {
+    await withLimits({ turnMaxUsd: 0.5, accountUsdPerDay: 0 }, async () => {
+      h.copilotCalls.length = 0;
+      script([call('etiquetar', { contacto_ids: [ana.contact_id], agregar: ['estimado'] }), 'Resumen.']);
+      const r = await ask(owner, id, 'Etiqueta a Ana como estimado');
+      assert.equal(h.copilotCalls.length, 2);
+      assert.equal(h.copilotCalls[1].tool_choice, 'none', 'pasado el tope estimado, el siguiente paso solo resume');
+      const turn = (await pool.query(`SELECT cost_usd::float8 AS usd FROM copilot_turns WHERE thread_id = $1 ORDER BY started_at DESC LIMIT 1`, [id])).rows[0];
+      assert.ok(turn.usd >= 1.5, `el pedido guarda el costo estimado (${turn.usd})`);
+      assert.equal(r.turn.status, 'done');
+    });
+  } finally {
+    if (saved) await pool.query(`UPDATE ai_prices SET input_per_mtok = $2, cached_per_mtok = $3, output_per_mtok = $4, per_audio_minute = $5 WHERE model = $1`, [model, saved.input_per_mtok, saved.cached_per_mtok, saved.output_per_mtok, saved.per_audio_minute]);
+    else await pool.query(`DELETE FROM ai_prices WHERE model = $1`, [model]);
+    await pool.query(`UPDATE copilot_turns SET cost_usd = 0 WHERE account_id = $1`, [h.accountId]);
+  }
+});

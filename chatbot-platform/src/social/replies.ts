@@ -9,7 +9,7 @@ import { unsupportedClaims } from '../engine/claims.js';
 import { hoursText, selectKnowledge } from '../engine/context.js';
 import { semanticKnowledge } from '../engine/knowledge.js';
 import { detectRisk } from '../engine/safety.js';
-import { FactCorpus } from '../engine/text.js';
+import { FactCorpus, normalize } from '../engine/text.js';
 import { networkOf } from '../channels/zernio.js';
 import * as store from '../store/index.js';
 import type { Chatbot } from '../types.js';
@@ -37,7 +37,42 @@ const ResultSchema = z.object({
   needs_human: z.boolean().catch(true),
 });
 
-export interface Suggestion { reply: string; sentiment: 'positive' | 'neutral' | 'negative'; needs_human: boolean; unverified: string[]; risk?: string }
+export interface Suggestion { reply: string; sentiment: 'positive' | 'neutral' | 'negative'; needs_human: boolean; unverified: string[]; review?: string[]; risk?: string }
+
+/** Cortesía de cualquier respuesta pública (los primeros 5 caracteres, sin acentos): no cuenta como contenido nuevo. */
+const COURTESY = new Set<string>((['graci', 'mucha', 'comen', 'mensa', 'direc', 'escri', 'esper', 'verte', 'pront', 'gusto', 'encan', 'alegr', 'saber',
+  'disfr', 'exper', 'visit', 'regre', 'vuelv', 'atend', 'aprec', 'palab', 'resen', 'opini', 'servi', 'equip', 'lamen', 'sient', 'resol',
+  'ayuda', 'conta', 'estam', 'nuest', 'saludo', 'siemp', 'dispo', 'cualq', 'dudas', 'apoyo', 'compa', 'recom', 'herma', 'feliz', 'excel',
+  'amable', 'linda', 'bonit', 'queda', 'mejor', 'cuand', 'quier', 'puede', 'puedes', 'hacer', 'tenga', 'tengas',
+  'bienv', 'ojala', 'tarde', 'noche', 'grande', 'perso'] as string[]).map((w) => w.slice(0, 5)));
+const stem = (w: string) => w.slice(0, 5);
+/** Palabras de 5 letras o más, ya en NFKC (las letras de ancho completo o compatibles cuentan como las normales). */
+const longWords = (s: string) => (normalize(s.normalize('NFKC')).match(/[a-z0-9]{5,}/g) ?? []).map(stem);
+
+/**
+ * Lo que hace que una respuesta pública la revise una persona aunque la IA no lo pida: es a nombre del negocio y la
+ * puede influir el comentario.
+ *  - Menciones (@) o etiquetas (#), también con sus variantes de ancho completo, y enlaces (cualquier dominio, una IP o
+ *    escritos como «bit[.]ly»).
+ *  - Mucho vocabulario que no está ni en la información del negocio ni en el comentario (umbral fijo: más de la mitad de
+ *    las palabras largas, con al menos 4).
+ *  - Repetir tres o más palabras del comentario que no están en la información del negocio (lo que el comentario
+ *    quiere que el negocio diga).
+ */
+export function publicReplyReview(reply: string, sources: string[], comment: string): string[] {
+  const reasons: string[] = [];
+  const text = reply.normalize('NFKC');
+  if (/(?<![\p{L}\p{N}_])[@＠﹫][\p{L}\p{N}_]/u.test(text)) reasons.push('menciona una cuenta (@)');
+  if (/(?<![\p{L}\p{N}_&])[#＃﹟][\p{L}\p{N}_]/u.test(text)) reasons.push('trae una etiqueta (#)');
+  if (/https?:|\bwww\.|[\p{L}\p{N}-]{2,}(?:[.。․．]|\[\.\]|\(\.\)|\s?\(dot\)\s?)[a-z]{2,}\b|\b\d{1,3}(?:\.\d{1,3}){3}\b/iu.test(text)) reasons.push('trae un enlace');
+  const business = new Set(sources.flatMap(longWords));
+  const said = new Set(longWords(comment));
+  const words = longWords(text).filter((w) => !COURTESY.has(w));
+  const novel = words.filter((w) => !business.has(w) && !said.has(w));
+  if (words.length >= 4 && novel.length / words.length > 0.5) reasons.push('dice cosas que no están en la información del negocio');
+  if (new Set(words.filter((w) => said.has(w) && !business.has(w))).size >= 3) reasons.push('repite lo que pide el comentario');
+  return reasons;
+}
 
 /** Agente que contesta: el de los ajustes de la cuenta, el de su canal de mensajes o el primero activo del negocio. */
 async function botFor(accountId: string, sa: { chatbot_id: string | null; comment_settings: Record<string, unknown> }): Promise<Chatbot> {
@@ -125,9 +160,10 @@ export async function suggestReply(ai: AiProvider, accountId: string, kind: Kind
   const sources = [...chosen.map((k) => `${k.title}\n${k.content}`), bot.personality.prompt, bot.name, hours];
   const trusted = new FactCorpus(sources);
   const unverified = reply ? [...trusted.unverified(reply, trusted, new FactCorpus([text])), ...unsupportedClaims(reply, sources)] : [];
-  const needsHuman = parsed.needs_human || !reply || unverified.length > 0;
+  const review = reply ? publicReplyReview(reply, sources, text) : [];
+  const needsHuman = parsed.needs_human || !reply || unverified.length > 0 || review.length > 0;
   // Se guarda lo calculado: con datos sin respaldo (o sin respuesta) la ve una persona, aunque la IA no lo pidiera.
   await query(`UPDATE ${table} SET ai_suggestion = $2, sentiment = $3, needs_human = needs_human OR $4, updated_at = now() WHERE id = $1`,
     [id, reply, parsed.sentiment, needsHuman]);
-  return { reply, sentiment: parsed.sentiment, needs_human: needsHuman, unverified };
+  return { reply, sentiment: parsed.sentiment, needs_human: needsHuman, unverified, review };
 }

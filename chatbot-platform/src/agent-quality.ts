@@ -101,9 +101,9 @@ async function executeAgentTests(runId:string,bot:Chatbot,draft:AgentDraft,cases
     if(calls>=40||Date.now()>deadline||cost>=1) throw new Error('Se alcanzó el límite de 40 llamadas, dos minutos o USD 1 de costo informado. Reduce la cantidad de turnos.');
     calls++;
   };
-  const record=(response:{model:string;usage?:{input_tokens:number;output_tokens:number};input_tokens?:number;cost_usd?:number})=>{
+  const record=(response:{model:string;usage?:{input_tokens:number;output_tokens:number};input_tokens?:number;cost_usd?:number;cost_estimated?:boolean})=>{
     models.add(response.model);inputTokens+=response.usage?.input_tokens??response.input_tokens??0;outputTokens+=response.usage?.output_tokens??0;
-    if(response.cost_usd!==undefined){cost+=response.cost_usd;hasCost=true;}
+    if(response.cost_usd!==undefined&&!response.cost_estimated){cost+=response.cost_usd;hasCost=true;}
   };
   const provider:AiProvider={transcribe:(...args)=>service.aiProvider.transcribe(...args),async complete(request) {
     guardRequest();
