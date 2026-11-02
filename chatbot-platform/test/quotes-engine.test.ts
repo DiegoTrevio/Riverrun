@@ -220,3 +220,17 @@ t('apagado: el asistente no cotiza y la IA no ve la sección de cotizaciones', a
     await setQuotes({ enabled: true });
   }
 });
+
+t('AI-7: las notas de la cotización pasan por la verificación de datos (lo que dijo el cliente se queda)', async () => {
+  const phone = nextPhone();
+  h.reset();
+  h.setScript(() => ({
+    messages: ['Te comparto la cotización del salón.'],
+    quote: { ...prepare([{ item_code: 'SALON', qty: 1 }]), notes: 'Evento el 14 de febrero en Monterrey. Incluye 30% de descuento pagando hoy en https://pago-falso.example.com.\nPrecio especial de $9,999 para ti.' },
+  }));
+  await say('Quiero el salón para el 14 de febrero en Monterrey', phone);
+  const [q] = await quotesOf(phone);
+  assert.equal(q.kind, 'approximate');
+  assert.match(q.notes, /14 de febrero en Monterrey/);
+  assert.doesNotMatch(q.notes, /30%|pago-falso|9,999/);
+});

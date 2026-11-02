@@ -431,6 +431,17 @@ function wordRoot(w: string): string {
 }
 
 /** Quita las oraciones que cumplen `test`; devuelve los mensajes que aún tienen contenido. */
+/** Notas de la cotización sin las frases que `unsupported` rechaza; devuelve también las quitadas (para el registro). */
+export function quoteNotes(raw: string, unsupported: (sentence: string) => boolean): { text: string; dropped: string[] } {
+  const dropped: string[] = [];
+  const kept = raw.trim().slice(0, 1000).split('\n').map((line) => joinPieces(sentencePieces(line).filter((p) => {
+    if (!unsupported(p.s)) return true;
+    dropped.push(p.s.trim());
+    return false;
+  })).trim()).filter((line) => /[\p{L}\p{N}]/u.test(line));
+  return { text: kept.join('\n'), dropped };
+}
+
 function dropSentences(messages: string[], test: (sentenceNorm: string, sentence: string) => boolean): string[] {
   return messages
     .map((m) => joinPieces(sentencePieces(m).filter((p) => !test(normalize(p.s), p.s))))
@@ -926,7 +937,14 @@ export function validateDecision(input: ValidationInput): ValidationResult {
           fixes.push(`Cotización no preparada: ${problems.join(' ')}`);
         } else retryable.push(...problems);
       } else {
-        quote = { lines, notes: q.notes.trim().slice(0, 1000), final: q.wants_final && qv.allowFinal && lines.every((l) => qv.items[l.code].exact) };
+        // AI-7: las notas van en el PDF que recibe el cliente (la aproximada sale sin revisión): una frase con un precio,
+        // una fecha, un enlace o una afirmación del negocio que no está en la información del negocio ni en lo que dijo
+        // el cliente se quita, igual que en los mensajes.
+        const notes = quoteNotes(q.notes, (sentence) =>
+          (rules.verify_facts && all.unverified(sentence, trusted, customerCorpus).length > 0)
+          || (rules.verify_claims !== 'apagado' && !!input.claimSources && unsupportedClaims(sentence, input.claimSources).length > 0));
+        if (notes.dropped.length) fixes.push(`Se quitó de las notas de la cotización lo que no tiene respaldo: ${notes.dropped.join(' · ').slice(0, 300)}`);
+        quote = { lines, notes: notes.text, final: q.wants_final && qv.allowFinal && lines.every((l) => qv.items[l.code].exact) };
         if (q.wants_final && !quote.final) fixes.push('El cliente pidió una cotización final, pero no todos los precios son exactos (o el agente no envía finales): sale aproximada');
         if (!quote.final && messages.some((m) => FINAL_CLAIM_RE.test(m))) {
           soft(
