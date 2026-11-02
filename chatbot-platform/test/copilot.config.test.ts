@@ -409,3 +409,21 @@ t('repetir una consulta grande no rompe el pedido, y después de un cambio la co
   const v2 = (await owner('GET', `/api/chatbots/${h.botId}/versions`)).json();
   assert.equal((await owner('POST', `/api/chatbots/${h.botId}/version-apply`, { revision: v2.draft.revision, patch: { personality: { prompt: before } } })).statusCode, 200);
 });
+
+t('AI-9: la IA que gastan las herramientas por dentro cuenta para el costo del pedido', async () => {
+  h.setScript(() => JSON.stringify({ summary: 'Quité el corte.', question: '', operations: [{ op: 'remove', line: 3, text: '' }] }));
+  script([call('cambiar_instrucciones', { agente_id: h.botId, cambio: 'quita el precio del corte' }), 'Listo.']);
+  const since = (await pool.query(`SELECT now() AS t`)).rows[0].t;
+  const out = await ask(owner, 'Quita el precio del corte');
+  assert.equal(lastAction(out).status, 'done', JSON.stringify(lastAction(out)));
+  const spend = (await pool.query(
+    `SELECT kind, sum(coalesce(charged_usd, reserved_usd))::float8 AS usd FROM ai_spend WHERE account_id = $1 AND created_at >= $2 GROUP BY kind`,
+    [h.accountId, since],
+  )).rows as { kind: string; usd: number }[];
+  const sub = spend.find((r) => r.kind === 'prompt_edit')?.usd ?? 0;
+  const own = spend.find((r) => r.kind === 'copilot')?.usd ?? 0;
+  assert.ok(sub > 0, `la edición de instrucciones tiene costo: ${JSON.stringify(spend)}`);
+  const turn = (await pool.query(`SELECT cost_usd::float8 AS usd FROM copilot_turns WHERE account_id = $1 ORDER BY started_at DESC LIMIT 1`, [h.accountId])).rows[0];
+  assert.ok(Math.abs(turn.usd - (own + sub)) < 1e-6, `el turno (${turn.usd}) suma lo del Copiloto (${own}) y lo de la herramienta (${sub})`);
+  await undo(lastAction(out));
+});

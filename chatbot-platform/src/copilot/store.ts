@@ -130,6 +130,11 @@ export async function addUsage(id: string, u: { input: number; cached: number; o
   );
 }
 
+/** AI-9: lo que gastaron en IA las herramientas del turno (cuenta para el tope del pedido y el del día). */
+export async function addSubCost(id: string, usd: number) {
+  await query(`UPDATE copilot_turns SET cost_usd = cost_usd + $2 WHERE id = $1`, [id, usd]);
+}
+
 export async function countToolCall(id: string) {
   await query(`UPDATE copilot_turns SET tool_calls = tool_calls + 1 WHERE id = $1`, [id]);
 }

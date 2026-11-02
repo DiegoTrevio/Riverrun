@@ -8,6 +8,7 @@ import { queryOne } from '../db.js';
 import type { AiProvider, AnyMessage, ToolCall } from '../ai/provider.js';
 import { AiError } from '../ai/provider.js';
 import { accountAi, AiBudgetBlocked } from '../ai/budget.js';
+import { trackSubSpend, type SubSpend } from '../ai/sub-spend.js';
 import { insertAiRun } from '../store/index.js';
 import { logEvent } from '../logs.js';
 import type { User } from '../types.js';
@@ -145,7 +146,23 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
       return res;
     };
 
+    // AI-9: la IA que gastan las herramientas por dentro (editar instrucciones, diseñar un flujo, importar…) cuenta para el
+    // tope del pedido y para el del día de la cuenta, igual que la del propio Copiloto.
+    const sub: SubSpend = { usd: 0, calls: 0 };
+    let subCounted = 0;
     const runTool = async (call: ToolCall): Promise<string> => {
+      try {
+        return await trackSubSpend(sub, () => runToolInner(call));
+      } finally {
+        const delta = sub.usd - subCounted;
+        if (delta > 0) {
+          subCounted = sub.usd;
+          cost += delta;
+          await cs.addSubCost(turn.id, delta).catch(() => undefined);
+        }
+      }
+    };
+    const runToolInner = async (call: ToolCall): Promise<string> => {
       toolCalls++;
       await cs.countToolCall(turn.id);
       if (toolCalls > limits.maxToolCalls) { limitHit = 'herramientas'; return err('limite', 'Llegué al máximo de acciones por pedido.'); }
